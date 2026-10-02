@@ -70,6 +70,7 @@ must never be taught one.
       "globs": [
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
+        "packages/server/src/action-authority-fence.ts",
         "packages/server/src/plugin-installs.ts",
         "packages/server/src/plugin-releases.ts",
         "packages/server/src/plugin-updates.ts",
@@ -550,7 +551,7 @@ work list rather than a ledger of debt: every row lands in this change.
 | notes/text element renderer + its inline editor                          | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                        |
 | canvas renderer, portal internals, canvas toolbar, viewport              | `core.canvas`               | moved; decomposed `core.shell.container-view`; absorbed stroke geometry |
 | composition-route internals, tile drop gestures, carry previews          | `core.compositions`         | decomposes `core.shell.container-view`                                  |
-| machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory and drain are actions; color lives on the wire    |
+| machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory, drain and atomic host-view metadata are actions  |
 | container/folder CRUD, index moves, and the index reads (bespoke routes) | `core.index` actions        | routes deleted, callers migrated (D13); reads keep container scope      |
 | terminal pool/park rows, the terminal index, terminal rows               | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)                 |
 | token and principal administration routes                                | `core.access`               | identity mechanism stays floor; administration converts now             |
@@ -2275,15 +2276,15 @@ seconds. RED names the resource and the measured rate.
 their timers for subscriptions on the session channel (ADR 0012), so a steady workspace asks
 nothing at all — but the ceilings stay in the table rather than leaving it, because a resource
 with no row is a resource that escaped the budget, and a subscription that regresses to a timer
-has to land on a number somebody wrote down. The cadence itself is not gone: it is the documented
-fallback for exactly two states, a socket that is down and a feed with no topics at all (the
-roomless workspace root), and it never runs beside a live subscription. Neither state is what this
-table measures, which is why zero is the honest ceiling and not an aspiration.
+has to land on a number somebody wrote down. The cadence remains the honest fallback for
+disconnected, event-ineligible, unsynchronized or not-yet-caught-up feeds and feeds without
+topics. An open socket does not prove workspace event eligibility. The idle table measures
+synchronized eligible feeds after catch-up, whose steady network ceiling remains zero.
 
-The settle window is where the honest exception lives. A subscription-backed feed still takes ONE
-initial read — catch-up is reading state, never draining a backlog — plus one more if the socket
-reached `open` after the mount read, which closes the mount-to-subscribe gap. Both land inside
-the settle, and both are counted by the feed as `initial`/`resume` rather than `timer`/`event`.
+The settle window is where the honest exception lives. Event-backed feeds declare interests,
+await the connection's bounded subscription-ordering fence, then take the qualifying catch-up
+read. A read issued before that fence cannot close the gap. Initial/resume reads land inside
+settle; fallback polling remains until the eligible catch-up succeeds.
 What the table governs is the steady state AFTER that, where the answer is zero.
 
 Four rules give it teeth:

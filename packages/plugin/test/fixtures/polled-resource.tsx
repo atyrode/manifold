@@ -50,6 +50,9 @@ function Reader({ name, destination }: { readonly name: string; readonly destina
         };
       },
       on: () => () => undefined,
+      workspaceEventsAvailable: () => true,
+      onAuthorityChange: () => () => undefined,
+      syncSubscriptions: async () => true,
     };
     doors.set(doorId, events);
   }

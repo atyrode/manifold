@@ -58,7 +58,7 @@ export type ChannelFrame = Exclude<
  */
 export type ConnectionFrame = Exclude<
   Extract<ServerMessageBody, { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] }>,
-  { type: "ping" | "observed" } | { subscriptionId: string }
+  { type: "ping" | "observed" | "subscriptions_synced" } | { subscriptionId: string }
 >;
 
 /**
@@ -130,6 +130,8 @@ export interface PooledSession {
   readonly transportId: string;
   isOpen(): boolean;
   subscribe(topics: readonly ManifoldRef[]): () => void;
+  /** Orders prior declarations on the authenticated socket; never reports topic admission. */
+  syncSubscriptions(): Promise<boolean>;
   openStream(options: OpenStreamOptions): StreamHandle;
   /** Re-establishes the transport: an explicit `connect()` on a live handle asks for this. */
   redial(): void;
@@ -250,6 +252,20 @@ interface TopicRecord {
   count: number;
 }
 
+/** One coalesced ordering fence, covering only declarations made before its request. */
+interface SubscriptionSyncBatch {
+  readonly id: number;
+  readonly generation: number;
+  readonly authorityEpoch: number;
+  watermark: number;
+  readonly promise: Promise<boolean>;
+  readonly resolve: (synchronized: boolean) => void;
+  cancelTimeout: (() => void) | null;
+}
+
+const SUBSCRIPTION_SYNC_TIMEOUT_MS = 5_000;
+const MAX_SUBSCRIPTION_SYNC_ID = 2_147_483_647;
+
 /**
  * The slice of a browser `window` the pool listens on, typed structurally: the SDK is
  * consumed by the server and the testkit under bun-types alone, so it may not name the DOM
@@ -287,9 +303,20 @@ class PooledConnection {
   private readonly observers = new Set<ObserverSink>();
   private observerSent = false;
   private observerAdmitted = false;
-  private readonly connectionState: ConnectionState = { session: null, plugins: null };
+  private readonly connectionState: ConnectionState = {
+    session: null,
+    plugins: null,
+    authority_context: null,
+  };
   /** Live subscriptions, keyed by the ONE joined form of their address. */
   private readonly topics = new Map<string, TopicRecord>();
+  private physicalGeneration = 0;
+  private authorityEpoch = 0;
+  private declarationWatermark = 0;
+  private coveredWatermark = -1;
+  private nextSyncId = 0;
+  private subscriptionSync: SubscriptionSyncBatch | null = null;
+  private queuedSubscriptionSync: SubscriptionSyncBatch | null = null;
   private readonly streams = new Map<string, { state: StreamState; count: number }>();
   private readonly streamsById = new Map<string, StreamState>();
   private nextStreamSeq = 0;
@@ -389,6 +416,7 @@ class PooledConnection {
         this.sendBody(record, body);
       },
       subscribe: (topics) => this.subscribe(topics),
+      syncSubscriptions: () => this.syncSubscriptions(),
       openStream: (options) => this.openStream(options),
       redial: () => {
         this.dial();
@@ -422,6 +450,7 @@ class PooledConnection {
       transportId: this.id,
       isOpen: () => this.socket?.readyState === 1 && this.observerAdmitted,
       subscribe: (topics) => this.subscribe(topics),
+      syncSubscriptions: () => this.syncSubscriptions(),
       openStream: (options) => this.openStream(options),
       redial: () => {
         this.dial();
@@ -498,10 +527,11 @@ class PooledConnection {
    * socket, so splicing a channel prefix onto it would be a routing lie — and the server
    * strict-parses, so it would be a closed socket rather than a warning.
    */
-  private writeConnection(body: ClientMessageBody): void {
+  private writeConnection(body: ClientMessageBody): boolean {
     const socket = this.socket;
-    if (socket === null || socket.readyState !== 1) return;
+    if (socket === null || socket.readyState !== 1) return false;
     socket.send(JSON.stringify(body));
+    return true;
   }
 
   private openStream(options: OpenStreamOptions): StreamHandle {
@@ -585,8 +615,89 @@ class PooledConnection {
    */
   private declare(type: "subscribe" | "unsubscribe", refs: readonly ManifoldRef[]): void {
     for (let at = 0; at < refs.length; at += MAX_SUBSCRIBE_TOPICS) {
-      this.writeConnection({ type, topics: refs.slice(at, at + MAX_SUBSCRIBE_TOPICS) });
+      if (this.writeConnection({ type, topics: refs.slice(at, at + MAX_SUBSCRIBE_TOPICS) })) {
+        this.declarationWatermark += 1;
+      }
     }
+  }
+
+  private syncSubscriptions(): Promise<boolean> {
+    if (this.socket?.readyState !== 1 || this.connectionState.authority_context === null) {
+      return Promise.resolve(false);
+    }
+    const watermark = this.declarationWatermark;
+    if (watermark <= this.coveredWatermark) return Promise.resolve(true);
+    if (this.subscriptionSync !== null) {
+      if (watermark <= this.subscriptionSync.watermark) return this.subscriptionSync.promise;
+      if (this.queuedSubscriptionSync !== null) {
+        this.queuedSubscriptionSync.watermark = watermark;
+        return this.queuedSubscriptionSync.promise;
+      }
+    }
+    // Do not reuse a correlation ID on one retained connection, even after a timeout.
+    if (this.nextSyncId === MAX_SUBSCRIPTION_SYNC_ID) return Promise.resolve(false);
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    const batch: SubscriptionSyncBatch = {
+      id: ++this.nextSyncId,
+      generation: this.physicalGeneration,
+      authorityEpoch: this.authorityEpoch,
+      watermark,
+      promise,
+      resolve,
+      cancelTimeout: null,
+    };
+    if (this.subscriptionSync === null) this.sendSubscriptionSync(batch);
+    else this.queuedSubscriptionSync = batch;
+    return promise;
+  }
+
+  private sendSubscriptionSync(batch: SubscriptionSyncBatch): void {
+    this.subscriptionSync = batch;
+    const timeout = setTimeout(() => {
+      if (this.subscriptionSync === batch) this.retireSubscriptionSync();
+    }, SUBSCRIPTION_SYNC_TIMEOUT_MS);
+    batch.cancelTimeout = () => clearTimeout(timeout);
+    if (!this.writeConnection({ type: "sync_subscriptions", id: batch.id })) {
+      this.retireSubscriptionSync();
+    }
+  }
+
+  private acceptSubscriptionSync(id: number): void {
+    const batch = this.subscriptionSync;
+    if (
+      batch === null ||
+      batch.id !== id ||
+      batch.generation !== this.physicalGeneration ||
+      batch.authorityEpoch !== this.authorityEpoch
+    ) {
+      return;
+    }
+    batch.cancelTimeout?.();
+    this.subscriptionSync = null;
+    this.coveredWatermark = Math.max(this.coveredWatermark, batch.watermark);
+    batch.resolve(true);
+    const queued = this.queuedSubscriptionSync;
+    this.queuedSubscriptionSync = null;
+    if (queued !== null) this.sendSubscriptionSync(queued);
+  }
+
+  private retireSubscriptionSync(): void {
+    const current = this.subscriptionSync;
+    const queued = this.queuedSubscriptionSync;
+    this.subscriptionSync = null;
+    this.queuedSubscriptionSync = null;
+    current?.cancelTimeout?.();
+    current?.resolve(false);
+    queued?.resolve(false);
+  }
+
+  private retireConnectionAuthority(): void {
+    this.physicalGeneration += 1;
+    this.authorityEpoch += 1;
+    this.connectionState.authority_context = null;
+    this.declarationWatermark = 0;
+    this.coveredWatermark = -1;
+    this.retireSubscriptionSync();
   }
 
   private release(record: ChannelRecord): void {
@@ -612,6 +723,7 @@ class PooledConnection {
     // events may arrive after the replacement has already opened.
     const previousSocket = this.socket;
     this.socket = null;
+    this.retireConnectionAuthority();
     previousSocket?.close(1000);
 
     this.connectionState.session = null;
@@ -684,6 +796,7 @@ class PooledConnection {
     socket.onclose = (event: CloseEvent) => {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
+      this.retireConnectionAuthority();
       this.liveness.clear();
       for (const record of this.channels.values()) {
         record.sent = false;
@@ -745,11 +858,20 @@ class PooledConnection {
       for (const sink of [...this.observers]) sink.observed();
       return;
     }
+    if (frame.type === "subscriptions_synced") {
+      this.acceptSubscriptionSync(frame.id);
+      return;
+    }
     if ("subscriptionId" in frame) {
       this.streamsById.get(frame.subscriptionId)?.receive(frame);
       return;
     }
-    if (frame.type === "session" || frame.type === "plugins" || frame.type === "event") {
+    if (
+      frame.type === "session" ||
+      frame.type === "plugins" ||
+      frame.type === "authority_context" ||
+      frame.type === "event"
+    ) {
       this.acceptConnectionFrame(frame);
       return;
     }
@@ -799,6 +921,30 @@ class PooledConnection {
       case "plugins":
         this.connectionState.plugins = frame;
         break;
+      case "authority_context": {
+        const prior = this.connectionState.authority_context;
+        if (
+          prior !== null &&
+          prior.workspaceEvents === frame.workspaceEvents &&
+          prior.workspaceCaps.length === frame.workspaceCaps.length &&
+          prior.workspaceCaps.every((cap, index) => cap === frame.workspaceCaps[index])
+        ) {
+          return;
+        }
+        this.authorityEpoch += 1;
+        this.coveredWatermark = -1;
+        this.retireSubscriptionSync();
+        this.connectionState.authority_context = frame;
+        // Refused workspace interests were never retained by the server. A local refcount
+        // alone cannot recover them when this credential gains event access.
+        if (prior?.workspaceEvents === false && frame.workspaceEvents) {
+          this.declare(
+            "subscribe",
+            [...this.topics.values()].map((held) => held.ref),
+          );
+        }
+        break;
+      }
       case "event":
         break;
       default: {
@@ -856,6 +1002,7 @@ class PooledConnection {
     pageWindow()?.removeEventListener("pageshow", this.onPageShow);
     const socket = this.socket;
     this.socket = null;
+    this.retireConnectionAuthority();
     if (closeCode !== null) socket?.close(closeCode);
     const orphans = [...this.channels.values()];
     this.channels.clear();

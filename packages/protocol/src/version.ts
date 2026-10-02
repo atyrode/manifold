@@ -1,14 +1,18 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 48;
+export const PROTOCOL_VERSION = 49;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
- * Protocol 48 preserves the protocol 47 plugin ABI: shared imports use the host's
- * current schemas, and older hardened inventory readers retain their old projection.
+ * Protocol 49 preserves the protocol 47/48 plugin ABI. Live workspace authority and
+ * subscription ordering are additive; older strict Workers keep their admitted context.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
-export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["47", "48"]);
+export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set([
+  "47",
+  "48",
+  "49",
+]);
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -454,9 +458,16 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * hub before transports because older hubs parse hello strictly. Instance frames are
  * unchanged and add 48. Hardened contract 10 carries the optional inventory field;
  * hosts omit it for older guests whose inventory parser cannot understand it.
+ *
+ * v49: LIVE WORKSPACE AUTHORITY AND SUBSCRIPTION ORDERING (issue #956).
+ * Session connections publish authority_context for their actual credential and support
+ * ID-only sync_subscriptions/subscriptions_synced ordering fences. Hardened contract 12
+ * forwards those facts and the bounded fence to portable feeds; older strict Workers
+ * retain their exact context projection. Machine, instance and retained-owner IPC are
+ * unchanged, so their compatibility sets add 49 without requiring a fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
 ]);
 
 /**
@@ -507,10 +518,10 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v48 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v49 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
 ]);
 
 /**

@@ -293,6 +293,8 @@ export class AccessBrowser {
       const root = createRoot(document.getElementById("root"));
       const requests = [], pending = new Map(), navigations = [], terminals = [], eventListeners = new Set();
       const client = caps => ({ selfCaps: () => caps, status: "open", on: () => () => {},
+        workspaceCaps: () => caps, workspaceEventsAvailable: () => true,
+        onAuthorityChange: () => () => {}, syncSubscriptions: async () => true,
         subscribe: (_topics, listener) => { eventListeners.add(listener); return () => eventListeners.delete(listener); },
         action: (action, args) => {
         const { promise, resolve } = Promise.withResolvers();

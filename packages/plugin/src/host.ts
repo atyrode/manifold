@@ -50,14 +50,16 @@ export type PlaceOutcome =
  */
 export type SessionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 /**
- * The event-plane door a feed subscribes through — {@link SessionHandle} narrowed to the
- * three members this module uses, so a test may hand it a socket made of two closures and
- * the engine never imports the SDK.
+ * The event-plane door a feed subscribes through — {@link SessionHandle} narrowed to its
+ * live event authority and transport fence, without importing the SDK.
  */
 export interface FeedEvents {
   subscribe(topics: readonly ManifoldRef[], handler: (event: unknown) => void): () => void;
   readonly status: SessionStatus;
   on(event: "status", fn: (status: SessionStatus) => void): () => void;
+  workspaceEventsAvailable(): boolean;
+  onAuthorityChange(callback: () => void): () => void;
+  syncSubscriptions(): Promise<boolean>;
   /** A non-DOM consumer receives its host page's visibility as data. */
   readonly hidden?: boolean;
   onVisibilityChange?(fn: () => void): () => void;
@@ -98,6 +100,13 @@ export interface SessionHandle {
   place(ref: PlacementRef, destination: PlacementDestination): Promise<PlaceOutcome>;
   /** The caller's own caps, as the server granted them: what UI to offer, and what to gray out. */
   selfCaps(): readonly Cap[];
+  /** Live connection authority at the workspace root, not the mounted container's caps. */
+  workspaceCaps(): readonly Cap[];
+  /** Whether this credential may receive workspace event notifications. */
+  workspaceEventsAvailable(): boolean;
+  onAuthorityChange(callback: () => void): () => void;
+  /** Orders earlier declarations on the transport; reveals no topic admission result. */
+  syncSubscriptions(): Promise<boolean>;
   machines(): Promise<readonly MachineSummary[]>;
   index(): Promise<readonly IndexEntry[]>;
   attendanceByContainer(): Promise<readonly Attendance[]>;
@@ -642,6 +651,7 @@ export interface PortableSessionHandle
       | "action"
       | "place"
       | "selfCaps"
+      | "workspaceCaps"
       | "machines"
       | "resolve"
       | "openStream"

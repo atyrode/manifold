@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CAPS,
   CHANNEL_LIMIT_CLOSE_CODE,
   CURSOR_MIN_INTERVAL_MS,
   DIAL_PING_INTERVAL_MS,
@@ -164,8 +165,13 @@ function join(
 ): void {
   gateway.open(id, socket);
   send(gateway, id, CH, { type: "join", containerId, token, protocolVersion: PROTOCOL_VERSION });
-  // Correlation and plugin vocabulary belong to the SOCKET and arrive before the room init.
-  expect(socket.messages().map((message) => message.type)).toEqual(["session", "plugins", "init"]);
+  // Socket correlation, vocabulary and authority arrive before the room's readiness.
+  expect(socket.messages().map((message) => message.type)).toEqual([
+    "session",
+    "plugins",
+    "authority_context",
+    "init",
+  ]);
   socket.clear();
 }
 
@@ -185,7 +191,12 @@ function joinSpectator(
     protocolVersion: PROTOCOL_VERSION,
     spectator: true,
   });
-  expect(socket.messages().map((message) => message.type)).toEqual(["session", "plugins", "init"]);
+  expect(socket.messages().map((message) => message.type)).toEqual([
+    "session",
+    "plugins",
+    "authority_context",
+    "init",
+  ]);
   socket.clear();
 }
 
@@ -570,7 +581,10 @@ describe("SessionGateway channel multiplexing", () => {
         protocolVersion: PROTOCOL_VERSION,
       }),
     );
-    expect(socket.frames()).toEqual([{ type: "observed" }]);
+    expect(socket.frames()).toEqual([
+      { type: "authority_context", workspaceCaps: [...CAPS], workspaceEvents: true },
+      { type: "observed" },
+    ]);
     expect(fixture.rooms.live(fixture.container.id)).toBeNull();
 
     fixture.clock.advance(10_000);
@@ -699,6 +713,254 @@ describe("SessionGateway channel multiplexing", () => {
 
     fixture.gateway.shutdown();
     fixture.store.close();
+  });
+});
+
+describe("SessionGateway live workspace authority", () => {
+  test("workspace and container credentials receive their own root hints before room readiness", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const owner = fixture.auth.authenticate(fixture.ownerKey);
+      for (const containerId of [undefined, fixture.container.id]) {
+        const token = fixture.auth.mintToken(
+          {
+            principal: { name: "fleet reader", kind: "human" },
+            caps: ["containers:read", "machines:mint"],
+            ...(containerId === undefined ? {} : { containerId }),
+          },
+          owner,
+        ).token;
+        const socket = new FakeSocket();
+        const id = containerId === undefined ? "workspace" : "scoped";
+        fixture.gateway.open(id, socket);
+        expect(socket.frames().some((frame) => frame.type === "authority_context")).toBe(false);
+        joinChannel(fixture, id, socket, { token });
+        expect(socket.frames().map((frame) => frame.type)).toEqual([
+          "session",
+          "plugins",
+          "authority_context",
+          "init",
+        ]);
+        expect(socket.frames()[2]).toEqual({
+          type: "authority_context",
+          workspaceCaps: containerId === undefined ? ["containers:read", "machines:mint"] : [],
+          workspaceEvents: containerId === undefined,
+        });
+        expect(socket.frames().find((frame) => frame.type === "init")?.selfCaps).toContain(
+          "containers:read",
+        );
+      }
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("machine-targeted Runs have no workspace hint even with a null container scope", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const owner = fixture.auth.authenticate(fixture.ownerKey);
+      const registered = await fixture.auth.registerAgent(
+        {
+          name: "machine observer",
+          purpose: "Read one machine",
+          harness: "external",
+          context: { profile: {} },
+          grant: {
+            caps: ["containers:read", "machines:read"],
+            targets: ["manifold://machine/machine"],
+            reach: "subtree",
+            maxRunLifetimeMs: 600_000,
+            delegation: { maxDepth: 0, maxDescendants: 0 },
+            expiresAt: 3_600_000,
+          },
+        },
+        owner,
+      );
+      const runner = fixture.auth.authenticate(registered.credential!.token);
+      const admitted = CreateRunCredentialResultSchema.parse(
+        fixture.auth.createRun(
+          {
+            agentId: registered.agent.agentId,
+            target: "manifold://machine/machine",
+            lifetimeMs: 120_000,
+            session: { harness: "external", sessionId: "machine-session", machineId: "machine" },
+          },
+          runner,
+        ),
+      );
+      const actor = fixture.auth.authenticate(admitted.credential.token);
+      expect(actor.containerScope).toBeNull();
+      const policy = fixture.auth.agentPolicyChallenge(actor);
+      fixture.auth.acknowledgeAgentPolicy(
+        {
+          revision: policy.revision,
+          acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+        },
+        actor,
+      );
+      const socket = new FakeSocket();
+      fixture.gateway.open("machine", socket);
+      socket.clear();
+      fixture.gateway.message(
+        "machine",
+        JSON.stringify({
+          type: "observe",
+          token: admitted.credential.token,
+          protocolVersion: PROTOCOL_VERSION,
+        }),
+      );
+      expect(socket.frames()).toEqual([
+        { type: "authority_context", workspaceCaps: [], workspaceEvents: false },
+        { type: "observed" },
+      ]);
+      fixture.gateway.message(
+        "machine",
+        JSON.stringify({
+          type: "subscribe",
+          topics: [{ kind: "plugin", pluginId: "core.machines" }],
+        }),
+      );
+      expect(fixture.events.held("machine")).toBe(0);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("live denies narrow hints without remounting, and wildcard hints require unattenuated root", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const owner = fixture.auth.authenticate(fixture.ownerKey);
+      const token = fixture.auth.mintToken(
+        { principal: { name: "fleet administrator", kind: "human" }, caps: ["*"] },
+        owner,
+      ).token;
+      const actor = fixture.auth.authenticate(token);
+      const socket = new FakeSocket();
+      join(fixture.gateway, "fleet", socket, fixture.container.id, token);
+      const descendantDenial = fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://container/${fixture.container.id}`,
+          caps: ["scenes:write"],
+          effect: "deny",
+          reach: "subtree",
+        },
+        owner,
+      );
+      expect(socket.frames()).toEqual([
+        {
+          type: "authority_context",
+          workspaceCaps: CAPS.filter((cap) => cap !== "*"),
+          workspaceEvents: true,
+        },
+      ]);
+      socket.clear();
+      const workspaceDenial = fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: "manifold://",
+          caps: ["containers:read", "machines:mint"],
+          effect: "deny",
+          reach: "node",
+        },
+        owner,
+      );
+      expect(socket.frames()).toEqual([
+        {
+          type: "authority_context",
+          workspaceCaps: CAPS.filter(
+            (cap) => cap !== "*" && cap !== "containers:read" && cap !== "machines:mint",
+          ),
+          workspaceEvents: false,
+        },
+      ]);
+      socket.clear();
+      fixture.auth.revokeGrant(descendantDenial.id, owner);
+      expect(socket.frames()).toEqual([]);
+      expect(socket.closed).toBeNull();
+      send(fixture.gateway, "fleet", CH, { type: "resync_request" });
+      expect(socket.frames().map((frame) => frame.type)).toEqual(["resync"]);
+      socket.clear();
+      fixture.auth.revokeGrant(workspaceDenial.id, owner);
+      expect(socket.frames()).toEqual([
+        { type: "authority_context", workspaceCaps: [...CAPS], workspaceEvents: true },
+      ]);
+      socket.clear();
+      fixture.gateway.close("fleet");
+      fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: "manifold://",
+          caps: ["terminals:write"],
+          effect: "deny",
+          reach: "node",
+        },
+        owner,
+      );
+      expect(socket.frames()).toEqual([]);
+      fixture.gateway.shutdown();
+      expect(fixture.clock.pendingJobs).toBe(0);
+      fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: "manifold://",
+          caps: ["containers:write"],
+          effect: "deny",
+          reach: "node",
+        },
+        owner,
+      );
+      expect(socket.frames()).toEqual([]);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("a later broader handshake cannot replace the physical credential's event authority", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const token = fixture.auth.mintToken(
+        {
+          principal: { name: "scoped observer", kind: "human" },
+          caps: ["containers:read"],
+          containerId: fixture.container.id,
+        },
+        fixture.auth.authenticate(fixture.ownerKey),
+      ).token;
+      const socket = new FakeSocket();
+      fixture.gateway.open("tab", socket);
+      socket.clear();
+      fixture.gateway.message(
+        "tab",
+        JSON.stringify({ type: "observe", token, protocolVersion: PROTOCOL_VERSION }),
+      );
+      expect(socket.frames()).toEqual([
+        { type: "authority_context", workspaceCaps: [], workspaceEvents: false },
+        { type: "observed" },
+      ]);
+      socket.clear();
+      joinChannel(fixture, "tab", socket, { token: fixture.ownerKey });
+      expect(socket.frames().some((frame) => frame.type === "authority_context")).toBe(false);
+      fixture.gateway.message(
+        "tab",
+        JSON.stringify({
+          type: "subscribe",
+          topics: [{ kind: "plugin", pluginId: "core.machines" }],
+        }),
+      );
+      expect(fixture.events.held("tab")).toBe(0);
+      fixture.auth.revokePrincipal(
+        fixture.auth.authenticate(token).principal.id,
+        fixture.auth.authenticate(fixture.ownerKey),
+      );
+      expect(socket.closed).toEqual({ code: 4403, reason: "revoked" });
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
   });
 });
 

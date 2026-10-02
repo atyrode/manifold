@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import {
   HARDENED_CONTRACT_VERSION,
   MAX_UI_DEPTH,
@@ -12,6 +12,8 @@ import {
 import type {
   AuthoringHandle,
   PortablePanelProps,
+  PortableHostServices,
+  PortableSessionHandle,
   PortableSectionProps,
   StreamHandle,
 } from "@manifold/plugin";
@@ -41,6 +43,8 @@ function context(overrides: Partial<WebHostContext> = {}): WebHostContext {
   return {
     principal,
     caps: ["containers:read"],
+    workspaceCaps: ["containers:read"],
+    workspaceEvents: true,
     containerId: "c1",
     topics: { index: [], terminals: [], attendance: [], machines: [] },
     status: "open",
@@ -406,6 +410,161 @@ describe("events and owned calls", () => {
 });
 
 describe("host context", () => {
+  test("a later Worker interest cannot inherit an earlier subscription fence", async () => {
+    let client: PortableSessionHandle | undefined;
+    const Capture = ({ host }: PortablePanelProps): ReactElement => {
+      client = host.client;
+      return frame("empty", { text: "feed" });
+    };
+    const { fake } = await mounted({ id: "example.thing", panels: { main: Capture } });
+    const live = client;
+    if (live === undefined) throw new Error("view was not mounted");
+    try {
+      const earlier = live.syncSubscriptions();
+      const first = await fake.next();
+      if (first.t !== "call") throw new Error("expected initial fence");
+      live.subscribe([{ kind: "plugin", pluginId: "core.machines" }], () => {});
+      const declaration = await fake.next();
+      if (declaration.t !== "call") throw new Error("expected later interest");
+      fake.send({ t: "reply", id: declaration.id, ok: true, result: null });
+      const later = live.syncSubscriptions();
+      let laterSettled = false;
+      void later.then(() => {
+        laterSettled = true;
+      });
+      fake.send({ t: "reply", id: first.id, ok: true, result: true });
+      expect(await earlier).toBe(true);
+      await Promise.resolve();
+      expect(laterSettled).toBe(false);
+      const second = await fake.next();
+      if (second.t !== "call") throw new Error("expected later fence");
+      fake.send({ t: "reply", id: second.id, ok: true, result: true });
+      expect(await later).toBe(true);
+    } finally {
+      fake.send({ t: "unmount", instance: "i1" });
+    }
+  });
+
+  test("live workspace authority replaces unknown hints without remounting the mounted view", async () => {
+    let current: PortableHostServices | undefined;
+    let mounts = 0;
+    const changes: string[] = [];
+    function Fleet({ host }: PortablePanelProps): ReactElement {
+      current = host;
+      const [draft, setDraft] = useState(0);
+      useEffect(() => {
+        mounts += 1;
+        return host.client.onAuthorityChange(() => {
+          changes.push(
+            `${host.client.workspaceCaps().join(",")}:${String(host.client.workspaceEventsAvailable())}`,
+          );
+        });
+      }, [host.client]);
+      return frame(
+        "box",
+        {},
+        frame("text", {
+          text: `${String(draft)}:${host.client.workspaceCaps().includes("machines:mint") ? "manage" : "read"}`,
+        }),
+        frame("button", { label: "Draft", onClick: () => setDraft((value) => value + 1) }),
+      );
+    }
+    const { fake, tree } = await mounted(
+      { id: "example.thing", panels: { main: Fleet } },
+      { context: context({ caps: ["*"], workspaceCaps: undefined, workspaceEvents: undefined }) },
+    );
+    const first = current;
+    if (first === undefined) throw new Error("view was not mounted");
+    expect(first.client.workspaceCaps()).toEqual([]);
+    expect(first.client.workspaceEventsAvailable()).toBe(false);
+    expect(await first.client.syncSubscriptions()).toBe(false);
+    fake.send({ t: "event", instance: "i1", event: eventOf(tree, "Draft") });
+    expect(textsOf(await rendered(fake))).toEqual(["1:read"]);
+    fake.send({
+      t: "context",
+      instance: "i1",
+      context: context({ workspaceCaps: ["machines:mint"], workspaceEvents: false }),
+    });
+    expect(textsOf(await rendered(fake))).toEqual(["1:manage"]);
+    expect(current).toBe(first);
+    expect(mounts).toBe(1);
+    expect(changes).toEqual(["machines:mint:false"]);
+    fake.send({
+      t: "context",
+      instance: "i1",
+      context: context({ workspaceCaps: [], workspaceEvents: true }),
+    });
+    expect(textsOf(await rendered(fake))).toEqual(["1:read"]);
+    expect(changes).toEqual(["machines:mint:false", ":true"]);
+    fake.send({ t: "unmount", instance: "i1" });
+    expect(first.client.workspaceCaps()).toEqual([]);
+    expect(first.client.workspaceEventsAvailable()).toBe(false);
+  });
+
+  test("authority retirement cannot complete a successor subscription fence", async () => {
+    let client: PortableSessionHandle | undefined;
+    const Capture = ({ host }: PortablePanelProps): ReactElement => {
+      client = host.client;
+      return frame("empty", { text: "feed" });
+    };
+    const { fake } = await mounted({ id: "example.thing", panels: { main: Capture } });
+    const live = client;
+    if (live === undefined) throw new Error("view was not mounted");
+    const old = live.syncSubscriptions();
+    const prior = await fake.next();
+    if (prior.t !== "call") throw new Error("expected pending fence");
+    fake.send({
+      t: "context",
+      instance: "i1",
+      context: context({ workspaceEvents: false }),
+    });
+    expect(await old).toBe(false);
+    const successor = live.syncSubscriptions();
+    const next = await fake.next();
+    if (next.t !== "call") throw new Error("expected successor fence");
+    let settled = false;
+    void successor.then(() => {
+      settled = true;
+    });
+    fake.send({ t: "reply", id: prior.id, ok: true, result: true });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    fake.send({ t: "unmount", instance: "i1" });
+    expect(await successor).toBe(false);
+    fake.send({ t: "reply", id: next.id, ok: true, result: true });
+    expect(await live.syncSubscriptions()).toBe(false);
+    expect(fake.warnings).toEqual([]);
+  });
+
+  test("an unanswered transport fence expires and a malformed reply cannot enable event-only reads", async () => {
+    vi.useFakeTimers();
+    try {
+      let client: PortableSessionHandle | undefined;
+      const Capture = ({ host }: PortablePanelProps): ReactElement => {
+        client = host.client;
+        return frame("empty", { text: "feed" });
+      };
+      const { fake } = await mounted({ id: "example.thing", panels: { main: Capture } });
+      const live = client;
+      if (live === undefined) throw new Error("view was not mounted");
+      const timed = live.syncSubscriptions();
+      const expired = await fake.next();
+      if (expired.t !== "call") throw new Error("expected pending fence");
+      vi.advanceTimersByTime(5_000);
+      expect(await timed).toBe(false);
+      const fresh = live.syncSubscriptions();
+      const current = await fake.next();
+      if (current.t !== "call") throw new Error("expected fresh fence");
+      fake.send({ t: "reply", id: expired.id, ok: true, result: true });
+      fake.send({ t: "reply", id: current.id, ok: true, result: { synced: true } });
+      expect(await fresh).toBe(false);
+      expect(fake.warnings).toEqual([]);
+      fake.send({ t: "unmount", instance: "i1" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("context refreshes props and caps without resetting state; status reaches listeners", async () => {
     const statuses: string[] = [];
     function Viewer({ host, arg }: PortablePanelProps): ReactElement {

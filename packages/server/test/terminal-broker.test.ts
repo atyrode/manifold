@@ -12,7 +12,14 @@ import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from ".
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
@@ -1113,6 +1120,44 @@ describe("TerminalBroker drain (issue #278)", () => {
     };
     return { ...setup, machine, answer, lastRequest };
   }
+
+  test("inventory news follows the committed latch even when the owner refuses", async () => {
+    const setup = drainSetup();
+    const host = await testPluginHost(
+      setup.store,
+      setup.auth,
+      setup.rooms,
+      setup.broker,
+      setup.runtime,
+    );
+    const inventoryNews = () =>
+      setup.store
+        .listEvents({ type: "machine_inventory_changed", limit: 100 })
+        .map(({ payload }) => JSON.parse(payload) as unknown);
+    try {
+      const closing = setup.broker.drain(setup.machine.machineId, true);
+      expect(inventoryNews()).toEqual([{ machineId: setup.machine.machineId, draining: true }]);
+      setup.clock.advance(10_000);
+      expect((await closing).ok).toBe(false);
+      expect(setup.store.getMachine(setup.machine.machineId)?.draining).toBe(true);
+
+      const unchanged = setup.broker.drain(setup.machine.machineId, true);
+      setup.answer(setup.lastRequest(), { terminalHostId: "wrong-owner" });
+      expect((await unchanged).ok).toBe(false);
+      expect(inventoryNews()).toEqual([{ machineId: setup.machine.machineId, draining: true }]);
+
+      setup.broker.setMachineOffline(setup.machine);
+      expect((await setup.broker.drain(setup.machine.machineId, false)).ok).toBe(false);
+      expect(setup.store.getMachine(setup.machine.machineId)?.draining).toBe(false);
+      expect(inventoryNews()).toEqual([
+        { machineId: setup.machine.machineId, draining: false },
+        { machineId: setup.machine.machineId, draining: true },
+      ]);
+    } finally {
+      host.close();
+      setup.store.close();
+    }
+  });
 
   test("draining closes admission first, then reports what the owner holds behind every create", async () => {
     const setup = drainSetup();

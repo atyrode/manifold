@@ -175,6 +175,8 @@ interface Mounted {
   host: HostServices;
   arg: PanelArg | undefined;
   offStatus: (() => void) | null;
+  offAuthority: (() => void) | null;
+  authorityEpoch: number;
   contextStamp: string | null;
   faulted: boolean;
   readonly onRender: (tree: UiNode) => void;
@@ -302,6 +304,8 @@ export class WorkerHost {
       host: options.host ?? this.host,
       arg: options.arg,
       offStatus: null,
+      offAuthority: null,
+      authorityEpoch: 0,
       contextStamp: null,
       faulted: false,
       onRender,
@@ -327,6 +331,7 @@ export class WorkerHost {
     entry.arg = arg;
     if (entry.announced && this.contract >= 9) {
       if (changedClient) {
+        entry.authorityEpoch += 1;
         try {
           this.observeStatus(instance, entry);
           for (const [id, stream] of this.streams) {
@@ -413,6 +418,12 @@ export class WorkerHost {
     return WebHostContextSchema.parse({
       principal: host.principal,
       caps: host.client.selfCaps(),
+      ...(this.contract < 12
+        ? {}
+        : {
+            workspaceCaps: host.client.workspaceCaps(),
+            workspaceEvents: host.client.workspaceEventsAvailable(),
+          }),
       containerId: host.containerId,
       topics: host.topics,
       status: host.client.status,
@@ -423,7 +434,18 @@ export class WorkerHost {
 
   private observeStatus(instance: string, entry: Mounted): void {
     entry.offStatus?.();
+    entry.offAuthority?.();
+    entry.offAuthority = null;
+    const client = entry.host.client;
     entry.offStatus = entry.host.client.on("status", () => this.sendContext(instance, entry));
+    if (this.contract >= 12) {
+      entry.offAuthority = client.onAuthorityChange(() => {
+        if (entry.host.client !== client || this.mounted.get(instance) !== entry || entry.faulted)
+          return;
+        entry.authorityEpoch += 1;
+        this.sendContext(instance, entry);
+      });
+    }
   }
 
   private sendContext(instance: string, entry: Mounted): void {
@@ -449,6 +471,9 @@ export class WorkerHost {
   private releaseInstance(instance: string, entry: Mounted): void {
     entry.offStatus?.();
     entry.offStatus = null;
+    entry.offAuthority?.();
+    entry.offAuthority = null;
+    entry.authorityEpoch += 1;
     for (const [id, stream] of this.streams) {
       if (stream.instance === instance) this.closeStream(id);
     }
@@ -497,6 +522,18 @@ export class WorkerHost {
           return;
         }
         this.contract = contract;
+        if (contract >= 12) {
+          // The common init handshake predates knowing the guest's admitted contract.
+          this.post({
+            t: "init",
+            pluginId: this.deps.pluginId,
+            principal: this.deps.principal,
+            caps: [...this.host.client.selfCaps()],
+            containerId: this.deps.containerId,
+            workspaceCaps: [...this.host.client.workspaceCaps()],
+            workspaceEvents: this.host.client.workspaceEventsAvailable(),
+          });
+        }
         this.sections = new Set(frame.sections ?? []);
         this.panels = new Set(frame.panels);
         for (const [instance, entry] of this.mounted) this.announce(instance, entry);
@@ -531,13 +568,21 @@ export class WorkerHost {
     let reply: IsolateReplyFrame;
     const scoped = this.contract >= 9 || this.deps.portableWorker === true;
     const owner = frame.instance === undefined ? undefined : this.mounted.get(frame.instance);
+    const syncEpoch = owner?.authorityEpoch;
+    const syncClient = owner?.host.client;
     if (scoped && (owner === undefined || !owner.announced || owner.faulted)) {
       this.reply(refusalFrame(frame.id, "call owner is not mounted"));
       return;
     }
     try {
       const value: unknown = await this.dispatch(frame.method, frame.args, frame.instance);
-      const result = this.contract < 10 ? legacyMachineResult(frame, value) : value;
+      const result =
+        frame.method === "syncSubscriptions" &&
+        (owner?.authorityEpoch !== syncEpoch || owner?.host.client !== syncClient)
+          ? false
+          : this.contract < 10
+            ? legacyMachineResult(frame, value)
+            : value;
       reply = { t: "reply", id: frame.id, ok: true, result };
     } catch (reason) {
       reply = refusalFrame(frame.id, reason);
@@ -658,6 +703,9 @@ export class WorkerHost {
   ): unknown {
     const host = this.contract >= 9 ? this.mountedOwner(instance).host : this.host;
     const client = host.client;
+    if (method === "syncSubscriptions" && this.contract < 12) {
+      throw new Error("slice_unavailable: syncSubscriptions requires hardened contract 12");
+    }
     if (
       this.contract < 9 &&
       (method === "subscribe" ||
@@ -668,6 +716,14 @@ export class WorkerHost {
       throw new Error(`slice_unavailable: ${method} requires hardened contract 9`);
     }
     switch (method) {
+      case "syncSubscriptions":
+        if (args.length !== 0) throw new TypeError("syncSubscriptions takes no arguments");
+        return client.syncSubscriptions().then((synced) => {
+          if (typeof synced !== "boolean") {
+            throw new TypeError("syncSubscriptions result must be a boolean");
+          }
+          return synced;
+        });
       case "subscribe": {
         this.mountedOwner(instance);
         const id = argText(method, args, 0);

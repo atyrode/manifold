@@ -9,9 +9,9 @@ import {
 } from "../src/polled-resource.ts";
 
 /**
- * THE WAVE-2 CLAIM, measured (ADR 0012): a feed with a live socket reads ONCE and then only
- * when an event says the world moved, a burst of commits is one read, and the cadence exists
- * only while there is no channel to carry an event.
+ * THE WAVE-2 CLAIM, measured (ADR 0012): a synchronized, eligible feed reads ONCE and then
+ * only when an event says the world moved. Until its ordering fence and catch-up complete,
+ * or while its audience is ineligible, the shared fallback cadence keeps the snapshot fresh.
  *
  * The feed store is exercised through {@link attachFeed} rather than through React: the hook
  * adds ref discipline and nothing else, and what has to be defended here is a REQUEST RATE —
@@ -95,7 +95,7 @@ const originalGlobals = new Map(
  * in this file, which is what the virtual clock above exists for.
  */
 const flush = async (): Promise<void> => {
-  for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+  for (let tick = 0; tick < 16; tick += 1) await Promise.resolve();
 };
 
 const INDEX_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.index" };
@@ -105,6 +105,9 @@ interface FakeSocket extends FeedEvents {
   /** Deliver one event to every standing subscription, as the SDK's router would. */
   fire(): void;
   moveTo(status: SessionStatus): void;
+  changeAuthority(workspaceEvents: boolean): void;
+  /** Each fence covers only the declarations that existed when it was requested. */
+  readonly syncWatermarks: readonly number[];
   /** How many declarations this socket currently holds, and how many it ever held. */
   readonly standing: number;
   readonly declared: number;
@@ -112,10 +115,19 @@ interface FakeSocket extends FeedEvents {
   readonly topics: readonly ManifoldRef[];
 }
 
-function fakeSocket(status: SessionStatus = "open"): FakeSocket {
+function fakeSocket(
+  status: SessionStatus = "open",
+  options: {
+    readonly workspaceEvents?: boolean;
+    readonly sync?: (watermark: number) => Promise<boolean>;
+  } = {},
+): FakeSocket {
   let current = status;
   let declared = 0;
   let released = 0;
+  let workspaceEvents = options.workspaceEvents ?? true;
+  const syncWatermarks: number[] = [];
+  const authorityListeners = new Set<() => void>();
   const listeners = new Set<(next: SessionStatus) => void>();
   const subscriptions = new Set<{
     readonly topics: readonly ManifoldRef[];
@@ -136,6 +148,18 @@ function fakeSocket(status: SessionStatus = "open"): FakeSocket {
     },
     get topics() {
       return [...subscriptions].flatMap((record) => record.topics);
+    },
+    get syncWatermarks() {
+      return syncWatermarks;
+    },
+    workspaceEventsAvailable: () => workspaceEvents,
+    onAuthorityChange(listener) {
+      authorityListeners.add(listener);
+      return () => authorityListeners.delete(listener);
+    },
+    syncSubscriptions() {
+      syncWatermarks.push(declared);
+      return options.sync?.(declared) ?? Promise.resolve(current === "open");
     },
     subscribe(topics, handler) {
       declared += 1;
@@ -167,6 +191,10 @@ function fakeSocket(status: SessionStatus = "open"): FakeSocket {
       current = next;
       for (const listener of [...listeners]) listener(next);
     },
+    changeAuthority(available) {
+      workspaceEvents = available;
+      for (const listener of [...authorityListeners]) listener();
+    },
   };
 }
 
@@ -184,6 +212,7 @@ function reader(
     readonly feedId?: string;
     readonly hold?: () => boolean;
     readonly answer?: (n: number) => unknown;
+    readonly requiresWorkspaceEvents?: boolean;
   } = {},
 ): Reader {
   let reads = 0;
@@ -202,6 +231,7 @@ function reader(
     ...(options.hold === undefined ? {} : { hold: options.hold }),
     events,
     topics: options.topics ?? [INDEX_TOPIC],
+    requiresWorkspaceEvents: options.requiresWorkspaceEvents ?? false,
   });
   return { release, reads: () => reads, notices: () => notices };
 }
@@ -468,6 +498,373 @@ describe("a subscription-backed feed", () => {
   });
 });
 
+describe("event eligibility and subscription ordering", () => {
+  test("an open scoped viewer keeps one shared poller and publishes unseen fleet changes", async () => {
+    const socket = fakeSocket("open", { workspaceEvents: false });
+    let revoked = false;
+    const options = {
+      feedId: "core.machines.list|null",
+      topics: [MACHINES_TOPIC],
+      requiresWorkspaceEvents: true,
+      answer: () => ({ machines: [{ id: "offline", online: false, revoked }] }),
+    };
+    const machines = reader(socket, options);
+    const canvas = reader(socket, options);
+    await flush();
+    expect(machines.reads() + canvas.reads()).toBe(1);
+    expect(machines.notices()).toBe(1);
+    expect(canvas.notices()).toBe(1);
+
+    // No event can reach this audience, even though the socket remains open.
+    revoked = true;
+    clock.advance(2_000);
+    await flush();
+    expect(machines.reads() + canvas.reads()).toBe(2);
+    expect(machines.notices()).toBe(2);
+    expect(canvas.notices()).toBe(2);
+    expect(polledFeedReport()[0]).toMatchObject({
+      live: true,
+      mode: "timer",
+      intervalMs: 2_000,
+    });
+    expect(socket.syncWatermarks).toEqual([]);
+    machines.release();
+    canvas.release();
+  });
+
+  test("even a non-workspace feed waits for synchronization and accepted catch-up", async () => {
+    const fence = Promise.withResolvers<boolean>();
+    const snapshot = Promise.withResolvers<unknown>();
+    const socket = fakeSocket("open", {
+      workspaceEvents: false,
+      sync: () => fence.promise,
+    });
+    const index = reader(socket, { answer: () => snapshot.promise });
+    await flush();
+    expect(index.reads()).toBe(0);
+    expect(socket.syncWatermarks).toEqual([1]);
+    expect(polledFeedReport()[0]?.intervalMs).toBe(2_000);
+
+    fence.resolve(true);
+    await flush();
+    expect(index.reads()).toBe(1);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+    snapshot.resolve({ revision: "after-subscription-admission" });
+    await flush();
+    expect(index.notices()).toBe(1);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    clock.advance(60_000);
+    await flush();
+    expect(index.reads()).toBe(1);
+    expect(polledFeedReport()[0]?.reads.timer).toBe(0);
+    index.release();
+  });
+
+  test("a fallback read before the fence cannot retire polling or replace post-fence catch-up", async () => {
+    const fence = Promise.withResolvers<boolean>();
+    const socket = fakeSocket("open", { sync: () => fence.promise });
+    let revision = 1;
+    const index = reader(socket, { answer: () => ({ revision }) });
+    clock.advance(2_000);
+    await flush();
+    expect(index.reads()).toBe(1);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+
+    // A commit in the subscription-admission gap must be read AFTER the fence, not lost.
+    revision = 2;
+    fence.resolve(true);
+    await flush();
+    expect(index.reads()).toBe(2);
+    expect(index.notices()).toBe(2);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    clock.advance(60_000);
+    await flush();
+    expect(index.reads()).toBe(2);
+    index.release();
+  });
+
+  test("a new feed interest cannot borrow a fence requested before its declaration", async () => {
+    const firstFence = Promise.withResolvers<boolean>();
+    const laterFence = Promise.withResolvers<boolean>();
+    const socket = fakeSocket("open", {
+      sync: (watermark) => (watermark === 1 ? firstFence.promise : laterFence.promise),
+    });
+    const index = reader(socket);
+    let revoked = false;
+    const machines = reader(socket, {
+      feedId: "core.machines.list|null",
+      topics: [MACHINES_TOPIC],
+      requiresWorkspaceEvents: true,
+      answer: () => ({ revoked }),
+    });
+    expect(socket.syncWatermarks).toEqual([1, 2]);
+    firstFence.resolve(true);
+    await flush();
+    expect(index.reads()).toBe(1);
+    expect(machines.reads()).toBe(0);
+    expect(polledFeedReport().find((row) => row.key === "core.machines.list|null")?.mode).toBe(
+      "timer",
+    );
+
+    revoked = true;
+    laterFence.resolve(true);
+    await flush();
+    expect(machines.reads()).toBe(1);
+    expect(machines.notices()).toBe(1);
+    expect(polledFeedReport().find((row) => row.key === "core.machines.list|null")?.mode).toBe(
+      "events",
+    );
+    clock.advance(60_000);
+    await flush();
+    expect(index.reads()).toBe(1);
+    expect(machines.reads()).toBe(1);
+    index.release();
+    machines.release();
+  });
+
+  test("authority loss retires a pending fence and gain earns a fresh catch-up", async () => {
+    const obsoleteFence = Promise.withResolvers<boolean>();
+    const currentFence = Promise.withResolvers<boolean>();
+    let attempts = 0;
+    const socket = fakeSocket("open", {
+      workspaceEvents: false,
+      sync: () => (++attempts === 1 ? obsoleteFence.promise : currentFence.promise),
+    });
+    let revision = 1;
+    const machines = reader(socket, {
+      requiresWorkspaceEvents: true,
+      answer: () => ({ revision }),
+    });
+    await flush();
+    socket.changeAuthority(true);
+    socket.changeAuthority(false);
+    obsoleteFence.resolve(true);
+    await flush();
+    expect(machines.reads()).toBe(1);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+
+    revision = 2;
+    clock.advance(2_000);
+    await flush();
+    expect(machines.notices()).toBe(2);
+    socket.changeAuthority(true);
+    revision = 3;
+    currentFence.resolve(true);
+    await flush();
+    expect(socket.syncWatermarks).toEqual([1, 1]);
+    expect(machines.reads()).toBe(3);
+    expect(machines.notices()).toBe(3);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    machines.release();
+  });
+
+  test("a read admitted before authority loss cannot qualify the regained event binding", async () => {
+    const oldSnapshot = Promise.withResolvers<unknown>();
+    const currentSnapshot = Promise.withResolvers<unknown>();
+    const socket = fakeSocket("open");
+    const machines = reader(socket, {
+      requiresWorkspaceEvents: true,
+      answer: (n) => (n === 1 ? oldSnapshot.promise : currentSnapshot.promise),
+    });
+    await flush();
+    expect(machines.reads()).toBe(1);
+    socket.changeAuthority(false);
+    socket.changeAuthority(true);
+    await flush();
+    oldSnapshot.resolve({ revision: "before-loss" });
+    await flush();
+    expect(machines.reads()).toBe(2);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+    currentSnapshot.resolve({ revision: "after-gain" });
+    await flush();
+    expect(machines.notices()).toBe(2);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    machines.release();
+  });
+
+  test("rebinding topics on the same door discards the previous declaration's pending fence", async () => {
+    const oldFence = Promise.withResolvers<boolean>();
+    const currentFence = Promise.withResolvers<boolean>();
+    const socket = fakeSocket("open", {
+      sync: (watermark) => (watermark === 1 ? oldFence.promise : currentFence.promise),
+    });
+    const index = reader(socket);
+    rebindFeed("core.index.read|null", socket, [MACHINES_TOPIC], "manifold://plugin/core.machines");
+    oldFence.resolve(true);
+    await flush();
+    expect(index.reads()).toBe(0);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+    currentFence.resolve(true);
+    await flush();
+    expect(index.reads()).toBe(1);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    expect(socket.syncWatermarks).toEqual([1, 2]);
+    index.release();
+  });
+
+  test("the workspace-event requirement participates in rebinding without changing resource identity", async () => {
+    const socket = fakeSocket("open", { workspaceEvents: false });
+    let revision = 1;
+    const index = reader(socket, { answer: () => ({ revision }) });
+    await flush();
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    rebindFeed("core.index.read|null", socket, [INDEX_TOPIC], "manifold://plugin/core.index", true);
+    revision = 2;
+    clock.advance(2_000);
+    await flush();
+    expect(index.notices()).toBe(2);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+
+    rebindFeed(
+      "core.index.read|null",
+      socket,
+      [INDEX_TOPIC],
+      "manifold://plugin/core.index",
+      false,
+    );
+    await flush();
+    expect(index.reads()).toBe(3);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    index.release();
+  });
+
+  test.each(["timeout", "transport failure"] as const)(
+    "%s retains polling without retrying the fence until a normal authority transition",
+    async (failure) => {
+      let attempts = 0;
+      const socket = fakeSocket("open", {
+        sync: () => {
+          attempts += 1;
+          if (attempts > 1) return Promise.resolve(true);
+          return failure === "timeout"
+            ? Promise.resolve(false)
+            : Promise.reject(new Error(failure));
+        },
+      });
+      const index = reader(socket);
+      await flush();
+      expect(index.reads()).toBe(1);
+      for (let tick = 0; tick < 3; tick += 1) {
+        clock.advance(2_000);
+        await flush();
+      }
+      socket.fire();
+      clock.advance(50);
+      await flush();
+      expect(index.reads()).toBe(5);
+      expect(attempts).toBe(1);
+      expect(polledFeedReport()[0]?.mode).toBe("timer");
+
+      socket.changeAuthority(true);
+      await flush();
+      expect(attempts).toBe(2);
+      expect(index.reads()).toBe(6);
+      expect(polledFeedReport()[0]?.mode).toBe("events");
+      clock.advance(60_000);
+      await flush();
+      expect(index.reads()).toBe(6);
+      index.release();
+    },
+  );
+
+  test("a new subscriber activation refreshes a failed fence without multiplying readers", async () => {
+    let attempts = 0;
+    const socket = fakeSocket("open", { sync: async () => ++attempts > 1 });
+    const first = reader(socket);
+    await flush();
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+    const second = reader(socket);
+    await flush();
+    expect(first.reads() + second.reads()).toBe(2);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    clock.advance(60_000);
+    await flush();
+    expect(first.reads() + second.reads()).toBe(2);
+    first.release();
+    second.release();
+  });
+
+  test("a failed qualifying read retains polling and recovers without an immediate retry loop", async () => {
+    const socket = fakeSocket("open");
+    const index = reader(socket, {
+      answer: (n) => (n === 1 ? Promise.reject(new Error("read failed")) : { revision: n }),
+    });
+    await flush();
+    expect(index.reads()).toBe(1);
+    expect(index.notices()).toBe(0);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+    clock.advance(2_000);
+    await flush();
+    expect(index.reads()).toBe(2);
+    expect(index.notices()).toBe(1);
+    expect(socket.syncWatermarks).toEqual([1]);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    index.release();
+  });
+
+  test("an event during the qualifying read still queues the newer snapshot", async () => {
+    const snapshot = Promise.withResolvers<unknown>();
+    const socket = fakeSocket("open");
+    const index = reader(socket, {
+      answer: (n) => (n === 1 ? snapshot.promise : { revision: 2 }),
+    });
+    await flush();
+    socket.fire();
+    clock.advance(50);
+    await flush();
+    snapshot.resolve({ revision: 1 });
+    await flush();
+    clock.advance(50);
+    await flush();
+    expect(index.reads()).toBe(2);
+    expect(index.notices()).toBe(2);
+    expect(polledFeedReport()[0]?.reads.event).toBe(1);
+    clock.advance(60_000);
+    await flush();
+    expect(index.reads()).toBe(2);
+    index.release();
+  });
+
+  test("retiring a pending event mount restores the survivor's ineligible polling policy", async () => {
+    const survivingDoor = fakeSocket("open", { workspaceEvents: false });
+    const obsoleteFence = Promise.withResolvers<boolean>();
+    const retiringDoor = fakeSocket("open", { sync: () => obsoleteFence.promise });
+    const survivor = reader(survivingDoor, { requiresWorkspaceEvents: true });
+    await flush();
+    const retiring = reader(retiringDoor);
+    retiring.release();
+    obsoleteFence.resolve(true);
+    await flush();
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+    clock.advance(2_000);
+    await flush();
+    expect(survivor.reads()).toBe(2);
+    expect(survivor.notices()).toBe(2);
+    expect(survivingDoor.syncWatermarks).toEqual([]);
+    survivor.release();
+    expect(clock.pending).toBe(0);
+  });
+
+  test("a retired feed's pending fence cannot issue reads for a replacement generation", async () => {
+    const oldFence = Promise.withResolvers<boolean>();
+    const currentFence = Promise.withResolvers<boolean>();
+    const old = reader(fakeSocket("open", { sync: () => oldFence.promise }));
+    old.release();
+    const current = reader(fakeSocket("open", { sync: () => currentFence.promise }));
+    oldFence.resolve(true);
+    await flush();
+    expect(old.reads()).toBe(0);
+    expect(current.reads()).toBe(0);
+    expect(current.notices()).toBe(0);
+    currentFence.resolve(true);
+    await flush();
+    expect(current.reads()).toBe(1);
+    expect(current.notices()).toBe(1);
+    current.release();
+    expect(clock.pending).toBe(0);
+  });
+});
+
 describe("the fallback cadence", () => {
   test("resumes while the socket is down and stops again when it returns", async () => {
     const socket = fakeSocket("open");
@@ -532,6 +929,7 @@ describe("a socket that comes and goes", () => {
       const first = reader(status === null ? null : fakeSocket(status), {
         answer: (n) => (n === 1 ? snapshot.promise : { revision: 2 }),
       });
+      await flush();
       const live = fakeSocket("open");
       const second = reader(live);
       const third = reader(live);
@@ -618,6 +1016,7 @@ describe("a socket that comes and goes", () => {
     const first = reader(fakeSocket("open"), {
       answer: (n) => (n === 1 ? snapshot.promise : { revision: 2 }),
     });
+    await flush();
     const live = fakeSocket("open");
     const second = reader(live);
     live.fire();
@@ -751,6 +1150,9 @@ test("a Worker feed pauses on host visibility and releases the old visibility bi
       return socket.status;
     },
     on: (event, listener) => socket.on(event, listener),
+    workspaceEventsAvailable: () => socket.workspaceEventsAvailable(),
+    onAuthorityChange: (listener) => socket.onAuthorityChange(listener),
+    syncSubscriptions: () => socket.syncSubscriptions(),
     get hidden() {
       return hidden;
     },
@@ -784,4 +1186,51 @@ test("a Worker feed pauses on host visibility and releases the old visibility bi
   index.release();
   expect(clock.pending).toBe(0);
   expect(socket.standing).toBe(0);
+});
+
+test("an open ineligible Worker feed suspends fallback while hidden and catches up on activation", async () => {
+  let hidden = true;
+  let revision = 1;
+  const visibility = new Set<() => void>();
+  const socket = fakeSocket("open", { workspaceEvents: false });
+  const door: FeedEvents = {
+    subscribe: (topics, listener) => socket.subscribe(topics, listener),
+    get status() {
+      return socket.status;
+    },
+    on: (event, listener) => socket.on(event, listener),
+    workspaceEventsAvailable: () => socket.workspaceEventsAvailable(),
+    onAuthorityChange: (listener) => socket.onAuthorityChange(listener),
+    syncSubscriptions: () => socket.syncSubscriptions(),
+    get hidden() {
+      return hidden;
+    },
+    onVisibilityChange(listener) {
+      visibility.add(listener);
+      return () => visibility.delete(listener);
+    },
+  };
+  const machines = reader(door, {
+    requiresWorkspaceEvents: true,
+    answer: () => ({ revision }),
+  });
+  await flush();
+  revision = 2;
+  clock.advance(60_000);
+  await flush();
+  expect(machines.reads()).toBe(1);
+  expect(polledFeedReport()[0]?.intervalMs).toBeNull();
+
+  hidden = false;
+  for (const listener of visibility) listener();
+  await flush();
+  expect(machines.notices()).toBe(2);
+  expect(polledFeedReport()[0]?.intervalMs).toBe(2_000);
+  revision = 3;
+  clock.advance(2_000);
+  await flush();
+  expect(machines.notices()).toBe(3);
+  machines.release();
+  expect(visibility.size).toBe(0);
+  expect(clock.pending).toBe(0);
 });

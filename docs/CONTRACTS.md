@@ -1835,6 +1835,15 @@ recorded so none runs twice. Version rules: equal assembles; minor-only differen
 no migration; a major difference needs an unapplied migration or the plugin is refused; stored major
 greater than code major is refused as a downgrade.
 
+Action storage and database handles carry one hub-private live authority fence. Each use
+restores the original admitted credential, not attenuated native bridge hints, and rechecks
+its ordered contextual or exact-target requirements plus the current parser, handler,
+declarations and installation ceiling. An awaited read does not preserve withdrawn authority
+for a later CAS or database write. Preparation has no durable-data authority; settlement,
+deadline, disable, actual binding retirement and shutdown retire the handle. A pending
+replacement still drains already-admitted work against its unchanged old binding before
+retirement; it does not lend the replacement's authority to that work.
+
 **Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
 `layout:<principalId>` and read at `GET /api/layout`. When unset the door answers a DEFAULT that
 is COMPOSED rather than authored: `composeDefaultLayout(roster)` in `@manifold/plugin` lays the
@@ -2042,6 +2051,25 @@ because `GET /api/machines` answered any authenticated token including a scoped 
 viewer still has to paint the machine badge on the terminal in front of it); its containment
 obligation is vacuous, since nothing in a fleet-wide answer is addressed by container.
 
+Host views are plugin-owned display metadata, not another machine or authority identity.
+`core.machines.listHostViews {}` returns `{ revision, hosts }` under the inventory's existing
+`containers:read`/container-scope audience. `setHostView { expectedRevision, host }` requires
+workspace `machines:mint` and `containers:read` for its caller-bound membership validation;
+`removeHostView { expectedRevision, hostId }` requires workspace `machines:mint`.
+Each host has a client-generated UUID, a trimmed nonempty name and 1–64 distinct
+`{ machineId, accountLabel }` members. Names and labels are at most 64 characters, at most
+128 views exist, and an endpoint belongs to at most one view.
+
+One JSON registry at plugin storage key `host-views` starts at revision zero. A mutation
+checks `expectedRevision` first, makes identical current content a no-op, and writes with
+one exact previously-read string/null CAS. Conflict is `host_views_changed`; excess
+64 KiB UTF-8 capacity is `host_view_capacity_exceeded`, never truncation.
+New or relabelled members must resolve through the existing authorized inventory or
+refuse as `machine_unavailable`. Unchanged revoked, offline or forgotten members remain
+metadata until explicitly removed and never rebind by name. Removal deletes metadata only.
+The manifest declares data version 1.0 and storage purging; successful CAS emits the
+revision-only `host_views_changed` at the machine plugin node.
+
 Roster rows may carry `physicalCoreCount`, a positive integer from the current admitted live
 machine hello (#939). It counts distinct OS-visible physical package/core identities among
 online Linux CPUs, not logical processors, cgroup quota or bare-metal attestation. Unknown,
@@ -2069,6 +2097,11 @@ latch after restart and sends it after every capable hello. The host latch survi
 transport replacement, not host replacement. `MachineSummary.draining?` publishes the
 hub state (absent means open). This action is not `cleanup: true`; a disabled machines
 plugin must be re-enabled to change the latch.
+
+The floor emits declared `machine_inventory_changed` at a changed latch's owning commit,
+before owner acknowledgement; a later refusal cannot suppress the committed inventory news.
+Successful revoke and forget handlers also emit it, including withdrawal of an already-offline
+endpoint. Payloads contain exact machine IDs/state, never credentials or host paths.
 
 An empty drain result is not authority to signal or replace a host: exited terminals may
 still be retained pending acknowledgement. Maintenance must use the host's atomic
@@ -2584,7 +2617,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
 at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
-`format: 1`, `hardenedContract: 11`, the validated `PluginManifest`
+`format: 1`, `hardenedContract: 12`, the validated `PluginManifest`
 ([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
 `entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
 and base64 `files["server.js"]`, `files["web.js"]`,
@@ -2647,8 +2680,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 11; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 12; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2675,6 +2708,11 @@ Contract 11 adds optional `hook.metadata` for credential-bound
 read-only lifecycle metadata. Older admitted guests omit newer metadata and preserve their
 normalized declarations and digests. Host-to-guest optional fields are gated by the admitted
 contract, never sent speculatively.
+Contract 12 adds optional live workspace authority to Worker init/mounted contexts and the
+bounded `syncSubscriptions` client method. The initial common init remains strictly legacy;
+after a current guest announces contract 12, the host sends its enriched init before mounts.
+Pre-12 guests omit both workspace fields and cannot call the new method. Authority changes
+update current getters and listeners without remounting or replacing the client.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
@@ -2868,14 +2906,20 @@ as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `i
 | worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                       |
 
 `WEB_HOST_METHODS` include `action`, `place`, `selfCaps`, `machines`,
-`resolve`, `navigate`, terminal read/input/open/create, streams and event
-subscriptions/acknowledgements. The Worker calls the page's **current**
-`HostServices` through these bounded methods, never receiving its bearer.
+`resolve`, `navigate`, terminal read/input/open/create, streams, event
+subscriptions/acknowledgements and the contract-12-only `syncSubscriptions` ordering fence.
+The Worker calls the page's **current** `HostServices` through these bounded methods,
+never receiving its bearer.
 Events address only controls in the latest committed React tree; teardown
 unmounts the root, runs effect cleanup, releases subscriptions/streams and
 retires outstanding instance calls. Disable or a moved SPA session terminates
 its Worker. A recovered error boundary can render again; an uncaught root
 fault paints a bounded error state and cannot keep event authority.
+Workspace authority getters read the current mounted context, never room caps or a caller's
+chosen container. `workspaceCaps()` is empty and `workspaceEventsAvailable()` false when
+unknown or disconnected. `onAuthorityChange` observes updated getters; retirement cleans its
+listeners and resolves pending synchronization false. Only `syncSubscriptions`, not either
+getter or an arbitrary client method, crosses the specifically allowlisted RPC boundary.
 
 **Present browser limit (#409).** The init frame does not carry the viewer's bearer, and the
 Worker receives neither the page DOM nor live host objects. This is a message/DOM boundary,
@@ -3070,7 +3114,7 @@ Consumers interpreting a kind qualify by `event.plugin`; topic-only invalidation
 unchanged. `GET /api/protocol` publishes the origin field and each kind's owner. Subscribing is a READ of the
 topic's node, discharged with the same authority the resolve door uses; a topic this credential
 may not read is simply not subscribed, because a per-topic refusal frame would make the plane a
-permission oracle. There are no offsets, acknowledgements or replay: an event reaches the sockets
+permission oracle. There are no offsets, delivery acknowledgements or replay: an event reaches the sockets
 subscribed AT THE INSTANT OF EMISSION and catch-up is reading state back through the ordinary
 door. Subscriptions are presence-class state — they die with the socket, and the SDK pool
 re-declares every live topic immediately after writing its handshake (`observe` or the room
@@ -3082,6 +3126,27 @@ Event delivery shares the session channel's send bound (256 queued frames or 1 M
 socket's event queue); past it, the event is dropped and logged as `socket_backpressure`
 with `connectionId` and `topic` while the socket and its subscriptions stay live, and catch-up
 is a state read (ADR 0012 rule 5).
+
+**Live workspace authority and transport ordering (v49, #956).** An accepted connection receives
+`authority_context { workspaceCaps: Cap[], workspaceEvents: boolean }` before `observed` or room
+`init`, and changed snapshots follow live authority changes. Caps are evaluated at
+`MANIFOLD_ROOT_URI` for the actual first authenticated physical credential; `*` is included
+only when `holdsRoot` succeeds. Container/machine-only scopes have no root caps. Event
+eligibility reuses EventHub's workspace-event predicate. This is the caller's coarse hint,
+not a per-topic verdict or action authorization; mounted `containerId` and `selfCaps` cannot
+substitute for it. The SDK caches/replays the snapshot before late-handle readiness and clears
+it on physical retirement. Gaining workspace event access re-declares retained interests.
+
+`sync_subscriptions { id }` receives only `subscriptions_synced { id }` after preceding
+subscribe/unsubscribe declarations have been processed on that authenticated socket. IDs are
+positive integers at most 2,147,483,647. The reply is identical for accepted and refused topics;
+it reveals no topics, counts, existence, admission or delivery result and does not wait for
+unrelated terminal/action effects. `SessionClient.syncSubscriptions(): Promise<boolean>` tracks
+physical generation, authority epoch and declaration watermark, with at most one in-flight fence
+and one queued later watermark. An old reply cannot cover newer interests. The cached coverage
+is retired with authority/transport changes; waits expire after five seconds and settle false
+on retirement. Failed synchronization retains polling until the next normal activation,
+rebind, reconnect or authority transition, never an unbounded retry loop.
 
 **Which subscription hears which event** is `topicMatches(subscribed, topic)`, published by
 `@manifold/protocol` and used by BOTH halves — the server to pick sockets, the SDK to pick
@@ -3116,13 +3181,15 @@ addresses, so the collection can only ever narrow, never widen, who hears a room
 **What a subscriber owes itself.** An event says something happened; it is not the new state, and
 nothing is replayed. A consumer that needs the state READS it, through the same door a fresh
 client uses — which is why the browser's shared feeds
-(`@manifold/plugin/hooks`, `usePolledResource`) still hold exactly one fetch function and traded
-only their cadence: one initial read at mount, then one read per burst of matching events, and a
-content compare so an unchanged answer reaches no subscriber. The cadence is NOT removed — it is
-the documented fallback, and it runs while the socket is down or while a feed has no topics at
-all. It never runs beside a live subscription; the two are mutually exclusive by construction,
-and `mode: "events"` is precisely the state in which no timer exists. `REGISTRY.md` §Budgets is
-the ceiling that keeps that honest — every network row is ZERO at idle.
+(`@manifold/plugin/hooks`, `usePolledResource`) still hold exactly one fetch function, coalesce
+matching events and suppress equal content. Event-backed feeds declare interests, await their
+current transport fence, then perform a qualifying catch-up read before retiring polling.
+`requiresWorkspaceEvents` defaults false; every Machines/host-view inventory reader sets it
+true. While disconnected, ineligible, unsynchronized, not yet caught up or without topics,
+the shared `FALLBACK_POLL_MS` cadence remains. Hidden tabs suspend that timer but retain
+interests. An event during a fetch still queues the subsequent read. `mode: "events"` means a
+synchronized eligible binding has caught up and has no timer. `REGISTRY.md` §Budgets keeps
+idle eligible network rows at zero; unreadable workspace event audiences retain honest polling.
 
 Handshake: the FIRST client frame on a connection MUST be either
 `join { ch, containerId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }` or
@@ -3143,6 +3210,9 @@ full Yjs state update for the room. `selfCaps` mirrors the joining principal's g
 room clients can gate UI affordances without a separate introspection round-trip; an observer has
 no room and therefore exposes empty `selfCaps()`. Presence is carried by `attendance`, whose
 entries are `PresenceState`; there is no separate `presences` field.
+Workspace controls instead read live `workspaceCaps()` and subscribe with `onAuthorityChange`;
+an observer receives those facts without acquiring a room. Unknown transport authority must
+not be described as a proven credential withdrawal.
 
 **Liveness (v19, issue #55).** The session channel is a DIAL like the machine and instance
 channels, so it runs their one scheme rather than a second ([One authoritative implementation](#one-authoritative-implementation)) off the same

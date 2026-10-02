@@ -31,7 +31,10 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
  *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":37}
  *                      client → server  {"type":"pong"}
  *                      client → server  {"type":"subscribe","topics":[…]}
+ *                      client → server  {"type":"sync_subscriptions","id":1}
  *                      server → client  {"type":"observed"}
+ *                      server → client  {"type":"authority_context","workspaceCaps":[…],"workspaceEvents":true}
+ *                      server → client  {"type":"subscriptions_synced","id":1}
  *                      server → client  {"type":"ping"}
  *                      server → client  {"type":"session","connectionId":"…"}
  *                      server → client  {"type":"plugins","roster":[…]}
@@ -52,7 +55,8 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
  *
  * Handshake: the FIRST client frame on a connection MUST be `join` or `observe` (ten-second
  * deadline). `join` binds a room channel and earns `init`; `observe` authenticates a
- * connection that deliberately holds no room and earns `observed`. Per-channel epoch/rev
+ * connection that deliberately holds no room and earns `observed`. The accepted credential's
+ * live `authority_context` arrives before either readiness frame. Per-channel epoch/rev
  * resume hints ride each channel's own `join`, so a reconnect redials ONE socket and
  * re-establishes every observer and channel.
  *
@@ -325,6 +329,9 @@ const CLIENT_BODIES = {
  */
 const ClientPongSchema = z.strictObject({ type: z.literal("pong") });
 
+/** Correlations are bounded to a positive signed 32-bit integer on both sides of the fence. */
+const SubscriptionSyncIdSchema = z.number().int().positive().max(2_147_483_647);
+
 /**
  * CONNECTION-LEVEL client frames with a payload: the subscription pair (ADR 0012).
  *
@@ -340,11 +347,16 @@ const ClientPongSchema = z.strictObject({ type: z.literal("pong") });
  * has no such namespace to police. `formatManifoldUri` remains the one joiner, used by each
  * side to key its own index.
  *
- * There is NO acknowledgement frame, in either direction. A subscribe is a declaration of
- * interest, exactly as a presence frame is: the server subscribes the topics this credential
- * may read and silently declines the rest, because a per-topic refusal would turn the event
- * plane into an oracle answering "does this node exist and may I read it?" one probe at a
- * time. A client learns its authority from `selfCaps`, never by subscribing.
+ * There is NO per-topic acknowledgement. A subscribe is a declaration of interest, exactly
+ * as a presence frame is: the server subscribes the topics this credential may read and
+ * silently declines the rest, because a per-topic refusal would turn the event plane into an
+ * oracle answering "does this node exist and may I read it?" one probe at a time.
+ *
+ * `sync_subscriptions` is only a transport ordering fence. Its ID-only reply follows all
+ * preceding subscription declarations on this authenticated socket, identically whether they
+ * were accepted or refused; it neither acknowledges delivery nor waits for unrelated effects.
+ * Workspace event eligibility comes from this credential's own `authority_context`, never
+ * from the fence or a mounted room's caps. Catch-up reads happen after the fence.
  *
  * Ordering is the socket's: the credential arrives on `join` or `observe`, so a
  * `subscribe` before the first handshake has nothing to authorize against and is refused
@@ -365,6 +377,10 @@ export const CLIENT_CONNECTION_BODIES = {
   unsubscribe: z.strictObject({
     type: z.literal("unsubscribe"),
     topics: z.array(ManifoldRefSchema).min(1).max(MAX_SUBSCRIBE_TOPICS),
+  }),
+  sync_subscriptions: z.strictObject({
+    type: z.literal("sync_subscriptions"),
+    id: SubscriptionSyncIdSchema,
   }),
 } as const;
 
@@ -392,6 +408,7 @@ export const ClientMessageBodySchema = z.discriminatedUnion("type", [
   ClientPongSchema,
   CLIENT_CONNECTION_BODIES.subscribe,
   CLIENT_CONNECTION_BODIES.unsubscribe,
+  CLIENT_CONNECTION_BODIES.sync_subscriptions,
   CLIENT_CONNECTION_BODIES.stream_open,
   CLIENT_CONNECTION_BODIES.stream_close,
 ]);
@@ -418,6 +435,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CLIENT_CONNECTION_BODIES.subscribe,
   CLIENT_CONNECTION_BODIES.unsubscribe,
+  CLIENT_CONNECTION_BODIES.sync_subscriptions,
   CLIENT_CONNECTION_BODIES.stream_open,
   CLIENT_CONNECTION_BODIES.stream_close,
 ]);
@@ -583,8 +601,8 @@ const ServerPingSchema = z.strictObject({ type: z.literal("ping") });
  * An `event` frame is the same category for the same reason: its topic is a NODE, which may
  * be a container nobody on this socket joined, a principal, or a plugin's own node. It is
  * delivered to the sockets subscribed AT THE INSTANT OF EMISSION and to no others — there is
- * no offset, no acknowledgement and no replay, because catch-up is reading state back through
- * the door a fresh client already uses (ADR 0012 §5).
+ * no offset, no delivery acknowledgement and no replay, because catch-up is reading state
+ * back through the door after a transport subscription fence (ADR 0012 §5).
  *
  * Kept as a keyed table so routing can look a frame's parser up by type. `ping` stays a
  * bare literal beside it rather than joining the table: it has no body to parse.
@@ -592,6 +610,20 @@ const ServerPingSchema = z.strictObject({ type: z.literal("ping") });
 export const CONNECTION_BODIES = {
   /** Acknowledges a roomless observer after its credential and protocol version are accepted. */
   observed: z.strictObject({ type: z.literal("observed") }),
+  /**
+   * This physical credential's live, coarse workspace authority, before readiness and on
+   * change. It is neither a per-node subscription verdict nor authorization for an action.
+   */
+  authority_context: z.strictObject({
+    type: z.literal("authority_context"),
+    workspaceCaps: z.array(CapSchema),
+    workspaceEvents: z.boolean(),
+  }),
+  /** Ordering only: no topic, count, existence, delivery or authorization information. */
+  subscriptions_synced: z.strictObject({
+    type: z.literal("subscriptions_synced"),
+    id: SubscriptionSyncIdSchema,
+  }),
   /**
    * Server-issued correlation for this physical socket. It arrives before any room join,
    * so a refusal before `init` still has an identifier the browser can show an operator.
@@ -656,6 +688,8 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.error,
   SERVER_BODIES.channel_closed,
   CONNECTION_BODIES.observed,
+  CONNECTION_BODIES.authority_context,
+  CONNECTION_BODIES.subscriptions_synced,
   ServerPingSchema,
   CONNECTION_BODIES.session,
   CONNECTION_BODIES.plugins,
@@ -685,6 +719,8 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.error),
   channelized(SERVER_BODIES.channel_closed),
   CONNECTION_BODIES.observed,
+  CONNECTION_BODIES.authority_context,
+  CONNECTION_BODIES.subscriptions_synced,
   ServerPingSchema,
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CONNECTION_BODIES.session,
@@ -723,6 +759,8 @@ export type ServerEvent = Extract<ServerMessageBody, { type: "event" }>;
  */
 export const SERVER_MESSAGE_TYPES = [
   "observed",
+  "authority_context",
+  "subscriptions_synced",
   "init",
   "resync",
   "doc_update",
@@ -768,20 +806,24 @@ export const CLIENT_MESSAGE_TYPES = [
   "pong",
   "subscribe",
   "unsubscribe",
+  "sync_subscriptions",
   "stream_open",
   "stream_close",
 ] as const satisfies readonly ClientMessage["type"][];
 
 /**
  * Frames that carry no `ch`: the socket's handshake/liveness pair, plus every frame that
- * describes the CONNECTION's world rather than a room's — the plugin roster, and the event
- * plane's subscription pair and notification. Routing reads this to tell a connection-level
- * frame from a channel-level one without a second discriminator, and a channel handle is never
+ * describes the CONNECTION's world rather than a room's — the plugin roster, live authority,
+ * and the event plane's declarations, ordering fence and notification. Routing uses this to
+ * distinguish connection-level and channel-level frames, and a channel handle is never
  * handed one of these.
  */
 export const CONNECTION_LEVEL_MESSAGE_TYPES = [
   "observe",
   "observed",
+  "authority_context",
+  "sync_subscriptions",
+  "subscriptions_synced",
   "ping",
   "pong",
   "session",

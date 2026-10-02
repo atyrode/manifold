@@ -851,6 +851,7 @@ export const WEB_HOST_METHODS = [
   "subscribe",
   "unsubscribe",
   "ackEvent",
+  "syncSubscriptions",
   "createTerminal",
 ] as const;
 
@@ -858,6 +859,8 @@ export const WEB_HOST_METHODS = [
 export const WebHostContextSchema = z.strictObject({
   principal: PrincipalSchema,
   caps: CapSchema.array(),
+  workspaceCaps: CapSchema.array().optional(),
+  workspaceEvents: z.boolean().optional(),
   containerId: z.string().min(1).nullable(),
   topics: z.strictObject({
     index: ManifoldRefSchema.array().max(64),
@@ -885,6 +888,8 @@ export const WebIsolateHostFrameSchema = z.discriminatedUnion("t", [
     pluginId: PluginIdSchema,
     principal: PrincipalSchema,
     caps: CapSchema.array(),
+    workspaceCaps: CapSchema.array().optional(),
+    workspaceEvents: z.boolean().optional(),
     containerId: z.string().min(1).nullable(),
   }),
   z.strictObject({
@@ -986,10 +991,13 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    for older admitted guests, whose strict inventory parser predates the field.
  * 10 -> 11: Additive-optional hook.metadata announces read-only lifecycle host/fleet/service
  *    metadata. Older packed strict guests retain their original hook frames.
+ * 11 -> 12: Additive-optional live workspace authority in Worker contexts and bounded
+ *    subscription-ordering fences. Hosts omit new context fields for older strict guests;
+ *    using the new transport-only sync method requires contract 12.
  */
-export const HARDENED_CONTRACT_VERSION = 11;
+export const HARDENED_CONTRACT_VERSION = 12;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 

@@ -1682,20 +1682,26 @@ Source for this entire contract:
 - **`topics?: readonly ManifoldRef[]` (default empty):** all event topics that invalidate
   this answer. There is **no event-kind filter option**; every matching topic event
   schedules a read.
-- **`events?: FeedEvents`:** pass `host.client`. Its structural contract is
-  `subscribe(topics, handler): () => void`, `status`, and
-  `on("status", handler): () => void` (`FeedEvents` is defined in the implementation,
-  not re-exported by `/hooks`). Both nonempty `topics` and this door are needed for
-  event-backed reads.
+- **`events?: FeedEvents`:** pass `host.client`. Its structural contract includes
+  `subscribe`, `status`, `on("status", handler)`, `workspaceEventsAvailable()`,
+  `onAuthorityChange(handler)` and `syncSubscriptions(): Promise<boolean>`.
+  `FeedEvents` is defined in `host.ts`, not re-exported by `/hooks`. Both nonempty
+  topics and this door are needed for event-backed reads.
+- **`requiresWorkspaceEvents?: boolean` (default `false`):** true requires the explicit
+  workspace-event hint before event-only mode. Set true for Machines and host-view
+  readers; a mounted container or wildcard room caps are not workspace authority.
 
 The return is `{ value: T, setValue: Dispatch<SetStateAction<T>>, refresh: () => void }`.
 `setValue` publishes a local/optimistic answer to the shared feed; it does **not** mutate
 the server. `refresh()` asks for a read now, for example after a successful action.
-The feed reads initially, catches up when the channel becomes live, and coalesces event
-bursts. With a live subscription there is no polling timer; without one it uses the
-fallback cadence. Hidden tabs stop the fallback timer, keep subscriptions, and read once
-on visibility return. On unmount or disable the hook releases that reader; the last
-reader releases the subscription and timer. Do not add a parallel polling effect.
+The feed declares interests, awaits their transport ordering fence, then reads a catch-up
+snapshot before retiring polling; this also applies to new interests on an already-open
+socket. Until synchronized and caught up, or while event-ineligible/disconnected, it uses
+the shared fallback cadence. A failed five-second fence retains polling, with another
+attempt on normal activation/rebind/reconnect/authority transition rather than a retry loop.
+Hidden tabs suspend fallback and retain subscriptions; visibility return catches up.
+Events during a fetch queue another read. On unmount/disable the last reader releases the
+subscription, listeners and timer. Do not add a parallel polling effect.
 
 For example, the shipped
 [`MachinesSection`](../packages/plugins/machines/src/web.tsx) reads through this contract:
@@ -3845,6 +3851,14 @@ of caps or identity does not authorize a later call. Import `PortablePanelProps`
 and `PortableSectionProps` with `import type`; the Worker may import
 `@manifold/plugin/hooks` only for its portable hook exports.
 
+Contract 12 adds `workspaceCaps()`, `workspaceEventsAvailable()`,
+`onAuthorityChange(callback)` and bounded `syncSubscriptions()`. The authority getters
+use current mounted facts and default empty/false when unknown/disconnected; they do not
+authorize a door. Updates notify without remounting or changing client identity. Older
+admitted strict Workers omit the new context fields and cannot call the synchronization
+RPC. That RPC reports socket ordering only, never per-topic admission; the physical pool
+coalesces by declaration watermark, so a later interest cannot inherit an earlier fence.
+
 ### The vocabulary
 
 Fourteen `UiNode` kinds are emitted by the portable `@manifold/ui` components
@@ -3895,7 +3909,7 @@ isolated Bun child, `web.js` linked to the page's React/design system, and a
 web definition and attaches the guest runtime; authors do not write a separate
 Worker or add `--self-contained` (that flag conflicts with a page-linked portable
 entry). The JSON artifact carries exact-byte SHA-256, base64 members,
-`format: 1`, `hardenedContract: 11` and a protocol stamp. The host serves the
+`format: 1`, `hardenedContract: 12` and a protocol stamp. The host serves the
 declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
 with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
 page's engine objects; unsupported imports/JSX refuse by name. Hardening
@@ -3903,15 +3917,17 @@ selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
 exercise the panel in a browser too. The install door and grant remain §7.
 
-Current packs stamp contract 11; the hub admits stamped contracts 1–11 using
+Current packs stamp contract 12; the hub admits stamped contracts 1–12 using
 each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
 contract 9 adds React frame roots, mounted context/sections, generated portable
 Worker member, event invalidations, authoring and narrow machine bridges. Portable Workers
 require an accepted contract of at least 9, not the newest stamp. Contract 10 adds optional
 physical-core metadata; older strict consumers retain the old machine-list shape through
 nested server calls and both Worker machine-reading routes. Contract 11 adds credential-bound
-read-only lifecycle metadata. Older admitted artifacts keep their declared behavior rather
-than acquiring these facilities. Missing stamps require a genuine repack, not an assumed contract 1;
+read-only lifecycle metadata. Contract 12 adds live workspace authority hints and bounded
+subscription ordering; older strict Workers retain their original contexts. Older admitted
+artifacts keep their declared behavior rather than acquiring these facilities.
+Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 
 ### Developing against a hub

@@ -1,5 +1,6 @@
 import {
   AUTH_REFUSALS,
+  CAPS,
   CHANNEL_LIMIT_CLOSE_CODE,
   CLIENT_MESSAGE_TYPES,
   CONNECTION_BODIES,
@@ -8,6 +9,7 @@ import {
   DIAL_PING_INTERVAL_MS,
   GESTURE_MIN_INTERVAL_MS,
   GESTURE_TTL_MS,
+  MANIFOLD_ROOT_URI,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   MAX_SESSION_FRAME_BYTES,
   MAX_STREAM_SUBSCRIPTIONS_PER_CONNECTION,
@@ -17,6 +19,7 @@ import {
   type ClientMessage,
   type ErrorCode,
   type RuntimeDeps,
+  type ServerMessageBody,
 } from "@manifold/protocol";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { EventHub, EventSubscriber } from "./event-hub.ts";
@@ -41,6 +44,7 @@ type GestureUpdate = Extract<ClientMessage, { type: "gesture" }>;
 type JoinMessage = Extract<ClientMessage, { type: "join" }>;
 type ObserveMessage = Extract<ClientMessage, { type: "observe" }>;
 type SubscriptionUpdate = Extract<ClientMessage, { type: "subscribe" | "unsubscribe" }>;
+type AuthorityContextFrame = Extract<ServerMessageBody, { type: "authority_context" }>;
 
 const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
   CLIENT_MESSAGE_TYPES.map((type): [string, true] => [type, true]),
@@ -118,6 +122,7 @@ const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
   pong: true,
   subscribe: true,
   unsubscribe: true,
+  sync_subscriptions: true,
   stream_open: true,
   stream_close: true,
   terminal_attach: true,
@@ -192,6 +197,8 @@ interface SessionConnection {
    * grant.
    */
   subscriber: EventSubscriber | null;
+  /** Last sent live hint, always evaluated against the first physical credential above. */
+  authorityContext: AuthorityContextFrame | null;
   eventSender: SessionSender | null;
   streamSender: SessionSender | null;
   readonly streams: Map<string, () => void>;
@@ -241,6 +248,7 @@ export class SessionGateway {
   private readonly connections = new Map<string, SessionConnection>();
   private readonly removeRevocationListener: () => void;
   private readonly removeRosterListener: () => void;
+  private readonly removeAuthorityListener: () => void;
 
   constructor(
     private readonly auth: AuthService,
@@ -267,6 +275,9 @@ export class SessionGateway {
     this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
       this.revokePrincipal(principalId, containerId);
     });
+    this.removeAuthorityListener = auth.onAuthorityChanged(() => {
+      for (const connection of this.connections.values()) this.sendAuthorityContext(connection);
+    });
     this.removeRosterListener = plugins.onRosterChange((roster, developerMode) => {
       const frame = JSON.stringify(
         CONNECTION_BODIES.plugins.parse({ type: "plugins", roster, developerMode }),
@@ -286,6 +297,7 @@ export class SessionGateway {
       channels: new Map(),
       drainCursor: 0,
       subscriber: null,
+      authorityContext: null,
       eventSender: null,
       streamSender: null,
       streams: new Map(),
@@ -375,7 +387,7 @@ export class SessionGateway {
   /** Classifies, validates, and routes one inbound text frame to its channel. */
   message(id: string, data: unknown): void {
     const connection = this.connections.get(id);
-    if (connection === undefined) return;
+    if (connection === undefined || connection.closed) return;
     const classified = classifyClientFrame(data);
     switch (classified.kind) {
       case "unknown_type":
@@ -417,6 +429,19 @@ export class SessionGateway {
           this.routeSubscription(connection, message);
           return;
         }
+        if (message.type === "sync_subscriptions") {
+          // Subscription declarations above are synchronous. Echo only socket ordering,
+          // identically for accepted/refused topics, without awaiting action or PTY effects.
+          connection.socket.send(
+            JSON.stringify(
+              CONNECTION_BODIES.subscriptions_synced.parse({
+                type: "subscriptions_synced",
+                id: message.id,
+              }),
+            ),
+          );
+          return;
+        }
         if (message.type === "stream_open" || message.type === "stream_close") {
           this.routeStream(connection, message);
           return;
@@ -445,10 +470,10 @@ export class SessionGateway {
    * and tying a subscription's lifetime to a room membership that has nothing to do with it is
    * exactly the id pun the frame grammar keeps connection-level frames out of.
    *
-   * Neither frame is answered. The hub subscribes the topics this credential may read and
-   * declines the rest silently (ADR 0012): a per-topic refusal would turn the plane into an
-   * oracle answering "does this node exist and may I read it" one probe at a time, and a
-   * client learns its authority from `selfCaps` instead.
+   * Neither declaration is answered. The hub subscribes the topics this credential may read
+   * and declines the rest silently (ADR 0012): a per-topic refusal would turn the plane into
+   * an oracle. `sync_subscriptions` reports ordering only; `authority_context` provides the
+   * caller's coarse workspace eligibility, not a verdict about any subscribed node.
    */
   private routeSubscription(connection: SessionConnection, message: SubscriptionUpdate): void {
     const subscriber = connection.subscriber;
@@ -581,11 +606,37 @@ export class SessionGateway {
     }
   }
 
+  /** Publishes only changed hints; a later room handshake never replaces physical authority. */
+  private sendAuthorityContext(connection: SessionConnection): void {
+    const context = connection.subscriber?.auth;
+    if (connection.closed || context === undefined) return;
+    const effective = this.auth.effectiveCaps(context, MANIFOLD_ROOT_URI);
+    const root = this.auth.holdsRoot(context);
+    const workspaceCaps = CAPS.filter((cap) => (cap === "*" ? root : effective.has(cap)));
+    const workspaceEvents = this.events.workspaceEventsAvailable(context);
+    const previous = connection.authorityContext;
+    if (
+      previous !== null &&
+      previous.workspaceEvents === workspaceEvents &&
+      previous.workspaceCaps.length === workspaceCaps.length &&
+      previous.workspaceCaps.every((cap, index) => cap === workspaceCaps[index])
+    )
+      return;
+    const frame = CONNECTION_BODIES.authority_context.parse({
+      type: "authority_context",
+      workspaceCaps,
+      workspaceEvents,
+    });
+    connection.authorityContext = frame;
+    connection.socket.send(JSON.stringify(frame));
+  }
+
   /** Seats connection-level liveness, expiry, events and streams after either handshake. */
   private admitConnection(connection: SessionConnection, context: AuthContext): void {
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
     if (connection.cancelPing === null) this.schedulePing(connection);
+    if (connection.subscriber !== null) return;
     if (connection.cancelExpiry === null && context.expiresAt !== undefined) {
       connection.cancelExpiry = this.timers.schedule(
         () => {
@@ -597,7 +648,6 @@ export class SessionGateway {
         Math.max(0, context.expiresAt - this.runtime.now()),
       );
     }
-    if (connection.subscriber !== null) return;
     const close = (code: number, reason: string): void => {
       this.closeSocket(connection, code, reason, "transport_overflow");
       this.close(connection.id, code);
@@ -619,6 +669,7 @@ export class SessionGateway {
         return sender.sendSerialized({ type: "event", body, bytes, authoritative: false });
       },
     };
+    this.sendAuthorityContext(connection);
   }
 
   /** Authenticates a workspace observer without manufacturing room membership. */
@@ -1004,6 +1055,7 @@ export class SessionGateway {
       case "pong":
       case "subscribe":
       case "unsubscribe":
+      case "sync_subscriptions":
       case "stream_open":
       case "stream_close":
         // Routed before dispatch: handshakes admit the connection or create channels, and
@@ -1178,6 +1230,7 @@ export class SessionGateway {
     connection.cancelExpiry = null;
     for (const ch of [...connection.channels.keys()]) this.releaseChannel(connection, ch);
     connection.subscriber = null;
+    connection.authorityContext = null;
     this.events.release(id);
   }
 
@@ -1212,6 +1265,7 @@ export class SessionGateway {
   shutdown(): void {
     this.removeRevocationListener();
     this.removeRosterListener();
+    this.removeAuthorityListener();
     this.auth.setRunConnectionReader(() => []);
     this.plugins.streams.shutdown();
     for (const [id, connection] of [...this.connections]) {

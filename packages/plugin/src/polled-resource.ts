@@ -9,10 +9,10 @@
  * client uses. A feed chooses its fetch and equality policy from a current subscriber;
  * a reader that changes resources cannot redirect requests still owed to the old one.
  *
- * What is left of the timer is the honest fallback and only that: while the socket is DOWN
- * (or a feed has no topics at all, which is the workspace root before any room exists) the
- * cadence returns, because a client with no channel learns nothing by waiting. It never runs
- * beside a live subscription — the two are exclusive by construction in {@link arm}.
+ * The timer is the honest fallback: a feed polls while disconnected, event-ineligible or
+ * waiting for its subscription ordering fence and catch-up read. An open socket alone is
+ * not proof that this viewer receives the feed's events. Only a synchronized, eligible
+ * subscription with an accepted catch-up read retires the shared cadence.
  *
  * The defect this module exists to close is unchanged and predates the event plane: polling —
  * now subscribing — the same door once per COMPONENT. The shell and the index section each
@@ -103,8 +103,8 @@ const HELD_STARVATION_MS = 10_000;
 
 /**
  * Why a read was issued. Kept per feed because the whole claim of this wave is a RATE, and a
- * rate you cannot attribute is an anecdote: `timer` must stay at zero while a socket is up,
- * and the budget gate asserts exactly that (`__manifoldFeeds`).
+ * rate you cannot attribute is an anecdote: `timer` must stay at zero for synchronized,
+ * eligible feeds, and the budget gate asserts exactly that (`__manifoldFeeds`).
  */
 type ReadReason = "initial" | "event" | "timer" | "manual" | "resume";
 
@@ -144,15 +144,15 @@ export interface PolledResourceOptions<T> {
    */
   readonly restartKey?: string | number | boolean | null;
   /**
-   * THE NODES this answer is news about (ADR 0012). Given them, the feed subscribes and the
-   * timer is gone for as long as the socket is up: it reads once at mount, once more when the
-   * channel goes live (the mount read predates the subscription, and that gap is real), and
-   * afterwards only when a matching event arrives. Omit them and the feed polls, which is
-   * what the workspace root — no room, therefore no channel — honestly still does.
+   * THE NODES this answer is news about (ADR 0012). The feed declares them, synchronizes the
+   * transport and reads a catch-up snapshot before switching to event-only refreshes. Until
+   * then it keeps its fallback cadence. Omit topics and the feed always polls.
    */
   readonly topics?: readonly ManifoldRef[];
   /** The door {@link PolledResourceOptions.topics} are declared through; `host.client`. */
   readonly events?: FeedEvents;
+  /** Workspace plugin feeds require the caller's explicit live workspace-event hint. */
+  readonly requiresWorkspaceEvents?: boolean;
 }
 
 export interface PolledResource<T> {
@@ -184,7 +184,7 @@ function digest(value: unknown): string {
 interface Subscriber {
   readonly intervalMs: number;
   /** The live reader owns its event door just as it owns its fetch callback. */
-  readonly binding: Pick<FeedAttachment, "events" | "topics">;
+  readonly binding: Pick<FeedAttachment, "events" | "topics" | "requiresWorkspaceEvents">;
   /** Reading and comparison follow a live reader, never a departed first attachment. */
   readonly fetchFn: () => Promise<unknown>;
   readonly equal: PolledEquality<never> | undefined;
@@ -200,7 +200,7 @@ interface Feed {
   /** Digest of `value`, so an unchanged answer costs one string compare and no re-render. */
   stamp: string;
   seeded: boolean;
-  /** The FALLBACK cadence's handle. Non-null only while no live subscription is standing. */
+  /** The FALLBACK cadence runs until an eligible subscription has synchronized and caught up. */
   timer: ReturnType<typeof globalThis.setInterval> | null;
   /** Bumped when the feed is torn down, so a late response cannot revive a dead route. */
   generation: number;
@@ -211,16 +211,20 @@ interface Feed {
   topics: readonly ManifoldRef[];
   /** The topics joined as URIs: what a rebind compares, in one string compare. */
   topicKey: string;
+  requiresWorkspaceEvents: boolean;
+  /** Retires callbacks from replaced declarations, independently of transport transitions. */
+  bindingGeneration: number;
+  /** Retires synchronization and qualifying reads on rebind/status/authority changes. */
+  authorityEpoch: number;
+  syncPending: boolean;
+  synchronized: boolean;
+  caughtUp: boolean;
   release: (() => void) | null;
   offStatus: (() => void) | null;
+  offAuthority: (() => void) | null;
   offVisibility: (() => void) | null;
   /** Whether the channel was up at the last transition this feed heard. */
   live: boolean;
-  /**
-   * Whether the last read was ISSUED through the current live binding. False means its
-   * answer predates that subscription; an in-flight read owes catch-up when it settles.
-   */
-  lastReadLive: boolean;
   /** The pending coalesced read; the burst rule lives in this one slot. */
   settle: ReturnType<typeof globalThis.setTimeout> | null;
   /** When the current hold began; null while unheld. Feeds the starvation cap. */
@@ -251,15 +255,22 @@ function cadence(feed: Feed): number | null {
   return smallest;
 }
 
-/**
- * A subscription-backed feed on a live channel is the ONE state with no timer, and this is
- * where that exclusivity is enforced rather than promised: every path that could change
- * either half — a subscriber joining or leaving, a status transition, a tab hiding — re-arms
- * through here, so there is no arrangement of them that leaves a cadence running beside a
- * standing subscription.
- */
+/** An open socket is usable only when this feed's explicit event audience is eligible. */
+function eventEligible(feed: Feed): boolean {
+  return (
+    feed.release !== null &&
+    feed.live &&
+    (!feed.requiresWorkspaceEvents || feed.events?.workspaceEventsAvailable() === true)
+  );
+}
+
+/** The ordering fence precedes the read that qualifies this binding for event-only mode. */
+function subscriptionReady(feed: Feed): boolean {
+  return feed.synchronized && eventEligible(feed);
+}
+
 function subscriptionBacked(feed: Feed): boolean {
-  return feed.release !== null && feed.live;
+  return subscriptionReady(feed) && feed.caughtUp;
 }
 
 function arm(feed: Feed): void {
@@ -338,8 +349,9 @@ function fetchOnce(feed: Feed, reason: ReadReason): void {
   }
   feed.inFlight = true;
   feed.reads[reason] += 1;
-  feed.lastReadLive = subscriptionBacked(feed);
   const issued = feed.generation;
+  const authorityEpoch = feed.authorityEpoch;
+  const qualifies = subscriptionReady(feed);
   void reader
     .fetchFn()
     .then((incoming) => {
@@ -350,6 +362,10 @@ function fetchOnce(feed: Feed, reason: ReadReason): void {
       }
       publish(feed, incoming);
       for (const subscriber of feed.subscribers) subscriber.onSuccess?.();
+      if (authorityEpoch === feed.authorityEpoch && qualifies && subscriptionReady(feed)) {
+        feed.caughtUp = true;
+        arm(feed);
+      }
     })
     .catch((reason_: unknown) => {
       if (issued !== feed.generation) return;
@@ -358,18 +374,53 @@ function fetchOnce(feed: Feed, reason: ReadReason): void {
     .finally(() => {
       if (issued !== feed.generation) return;
       feed.inFlight = false;
-      // A new live binding can stand after this request took its snapshot. Drain that gap
-      // on settlement, unless an already-owed event/held read will cover it. Same-binding
-      // joins leave lastReadLive alone and therefore do not buy a second initial read.
-      if (!feed.lastReadLive && subscriptionBacked(feed) && feed.settle === null) {
+      // A pre-fence or retired-binding read cannot close the current subscription gap.
+      // An already-owed event/held read covers it; failed qualifying reads retain polling.
+      if (
+        (!qualifies || authorityEpoch !== feed.authorityEpoch) &&
+        subscriptionReady(feed) &&
+        !feed.caughtUp &&
+        feed.settle === null &&
+        !isHidden(feed)
+      ) {
         fetchOnce(feed, "resume");
       }
     });
 }
 
+/** Retire every asynchronous proof of the previous authority/transport binding. */
+function retireSynchronization(feed: Feed): void {
+  feed.authorityEpoch += 1;
+  feed.syncPending = false;
+  feed.synchronized = false;
+  feed.caughtUp = false;
+}
+
 /**
- * Binds a feed to the event plane: one subscription for the whole feed, whatever the number
- * of readers, and one status listener behind it.
+ * One attempt per ordinary activation/transition, never a retry loop. The connection owns
+ * the bounded wait and declaration watermark; this feed owns the subsequent qualifying read.
+ */
+function synchronize(feed: Feed): void {
+  const events = feed.events;
+  if (events === null || !eventEligible(feed) || feed.syncPending || feed.synchronized) return;
+  const issued = feed.generation;
+  const authorityEpoch = feed.authorityEpoch;
+  feed.syncPending = true;
+  const settle = (synced: boolean): void => {
+    if (issued !== feed.generation || authorityEpoch !== feed.authorityEpoch) return;
+    feed.syncPending = false;
+    feed.synchronized = synced && eventEligible(feed);
+    arm(feed);
+    if (isHidden(feed) || feed.inFlight || feed.settle !== null) return;
+    if (feed.synchronized) fetchOnce(feed, feed.seeded ? "resume" : "initial");
+    else if (!feed.seeded) fetchOnce(feed, "initial");
+  };
+  void events.syncSubscriptions().then(settle, () => settle(false));
+}
+
+/**
+ * Binds a feed to the event plane: one subscription and one set of transport/authority
+ * listeners for the whole feed, whatever the number of readers.
  *
  * Rebinding matters as much as binding. The workspace's session handle is rebuilt when the
  * viewer navigates to another container, and the feed outlives that — so a feed holding a
@@ -380,69 +431,80 @@ function bindEvents(
   events: FeedEvents | null,
   topics: readonly ManifoldRef[],
   topicKey: string,
+  requiresWorkspaceEvents: boolean,
 ): void {
-  if (feed.events === events && feed.topicKey === topicKey) return;
+  if (
+    feed.events === events &&
+    feed.topicKey === topicKey &&
+    feed.requiresWorkspaceEvents === requiresWorkspaceEvents
+  ) {
+    return;
+  }
   feed.release?.();
   feed.offStatus?.();
+  feed.offAuthority?.();
   feed.offVisibility?.();
   feed.release = null;
   feed.offStatus = null;
+  feed.offAuthority = null;
   feed.offVisibility = null;
   feed.events = events;
   feed.topics = topics;
   feed.topicKey = topicKey;
+  feed.requiresWorkspaceEvents = requiresWorkspaceEvents;
+  feed.bindingGeneration += 1;
+  const bindingGeneration = feed.bindingGeneration;
+  retireSynchronization(feed);
   feed.live = false;
-  feed.offVisibility = events?.onVisibilityChange?.(() => observeVisibility(feed)) ?? null;
-  /*
-    Whatever this feed holds was read through a channel that is no longer the one delivering
-    its news. The first request after binding covers that gap; a request already on the wire
-    does not, and its settlement must pay the catch-up before the feed can fall quiet.
-   */
-  feed.lastReadLive = false;
+  feed.offVisibility =
+    events?.onVisibilityChange?.(() => {
+      if (bindingGeneration === feed.bindingGeneration) observeVisibility(feed);
+    }) ?? null;
   if (events === null || topics.length === 0) {
     arm(feed);
     return;
   }
   feed.release = events.subscribe(topics, () => {
-    scheduleRead(feed, "event");
+    if (bindingGeneration === feed.bindingGeneration) scheduleRead(feed, "event");
   });
   feed.offStatus = events.on("status", (status) => {
-    observeStatus(feed, status);
+    if (bindingGeneration === feed.bindingGeneration) observeStatus(feed, status);
   });
-  // Seeded straight from the door rather than through `observeStatus`, so binding onto an
-  // already-open channel is not mistaken for a transition and charged a second read.
+  feed.offAuthority = events.onAuthorityChange(() => {
+    if (bindingGeneration !== feed.bindingGeneration) return;
+    retireSynchronization(feed);
+    arm(feed);
+    synchronize(feed);
+  });
   feed.live = events.status === "open";
   arm(feed);
-  if (feed.live && feed.seeded && !feed.inFlight) fetchOnce(feed, "resume");
+  synchronize(feed);
 }
 
 /**
- * The channel went up or down. Going down re-arms the cadence, which is the whole of the
- * fallback; coming up kills it and pays the ONE read that a subscription cannot: whatever
- * happened while nobody was listening (ADR 0012 §5 — catch-up is reading state, never a
- * replayed backlog).
+ * The channel went up or down. Both retire the preceding ordering/catch-up proof. On return
+ * a fresh transport fence and read close the gap; until then the fallback cadence remains.
  */
 function observeStatus(feed: Feed, status: SessionStatus): void {
   const live = status === "open";
   if (live === feed.live) return;
   feed.live = live;
+  retireSynchronization(feed);
   arm(feed);
-  if (!live) {
-    // From here the feed hears nothing, so whatever it holds is owed a catch-up on return —
-    // however fresh a cadence read makes it look in the meantime.
-    feed.lastReadLive = false;
-    return;
-  }
-  if (!feed.lastReadLive && !feed.inFlight) fetchOnce(feed, "resume");
+  if (live) synchronize(feed);
 }
 
 function detach(feed: Feed): void {
   feed.release?.();
   feed.offStatus?.();
+  feed.offAuthority?.();
   feed.offVisibility?.();
   feed.release = null;
   feed.offStatus = null;
+  feed.offAuthority = null;
   feed.offVisibility = null;
+  feed.bindingGeneration += 1;
+  retireSynchronization(feed);
   if (feed.timer !== null) globalThis.clearInterval(feed.timer);
   feed.timer = null;
   if (feed.settle !== null) globalThis.clearTimeout(feed.settle);
@@ -452,7 +514,10 @@ function detach(feed: Feed): void {
 function observeVisibility(feed: Feed): void {
   // Keep subscriptions while hidden; only the fallback cadence pauses.
   arm(feed);
-  if (!isHidden(feed)) fetchOnce(feed, "resume");
+  if (!isHidden(feed)) {
+    synchronize(feed);
+    if (!feed.syncPending) fetchOnce(feed, "resume");
+  }
 }
 
 function bindVisibility(): void {
@@ -483,7 +548,7 @@ export function resetPolledResources(): void {
 export interface PolledFeedReport {
   readonly key: string;
   readonly subscribers: number;
-  /** `events` iff a subscription is standing on a live channel — the no-timer state. */
+  /** `events` iff the current eligible subscription has synchronized and caught up. */
   readonly mode: "events" | "timer";
   readonly live: boolean;
   /** The subscribed nodes as `manifold://` URIs. */
@@ -528,8 +593,8 @@ function installFeedProbe(): void {
 /**
  * WHAT ONE READER BRINGS to a shared feed. {@link usePolledResource} is the React adapter
  * over this and adds nothing but ref discipline — which is also what makes the feed's real
- * behaviour (one read, a burst coalesced, a cadence that only exists while the socket is
- * down) testable without a renderer.
+ * behaviour (one synchronized read, a burst coalesced, and shared fallback while events
+ * cannot yet keep the snapshot current) testable without a renderer.
  */
 export interface FeedAttachment {
   /** `key|restartKey`: what partitions one resource's answers. */
@@ -547,6 +612,7 @@ export interface FeedAttachment {
   readonly notify: () => void;
   readonly events?: FeedEvents | null | undefined;
   readonly topics?: readonly ManifoldRef[] | undefined;
+  readonly requiresWorkspaceEvents?: boolean | undefined;
 }
 
 function ensureFeed(attachment: Pick<FeedAttachment, "feedId" | "initial">): Feed {
@@ -563,11 +629,17 @@ function ensureFeed(attachment: Pick<FeedAttachment, "feedId" | "initial">): Fee
       events: null,
       topics: NO_TOPICS,
       topicKey: "",
+      requiresWorkspaceEvents: false,
+      bindingGeneration: 0,
+      authorityEpoch: 0,
+      syncPending: false,
+      synchronized: false,
+      caughtUp: false,
       release: null,
       offStatus: null,
+      offAuthority: null,
       offVisibility: null,
       live: false,
-      lastReadLive: false,
       settle: null,
       heldSince: null,
       reads: { initial: 0, event: 0, timer: 0, manual: 0, resume: 0 },
@@ -600,10 +672,17 @@ export function attachFeed(attachment: FeedAttachment): () => void {
   };
   feed.subscribers.add(subscriber);
   const topics = attachment.topics ?? NO_TOPICS;
-  bindEvents(feed, attachment.events ?? null, topics, topics.map(formatManifoldUri).join(" "));
+  bindEvents(
+    feed,
+    attachment.events ?? null,
+    topics,
+    topics.map(formatManifoldUri).join(" "),
+    attachment.requiresWorkspaceEvents ?? false,
+  );
+  synchronize(feed);
   arm(feed);
   // A joining subscriber inherits the published answer; only the FIRST one pays a request.
-  if (!feed.seeded && !feed.inFlight) fetchOnce(feed, "initial");
+  if (!feed.seeded && !feed.inFlight && !feed.syncPending) fetchOnce(feed, "initial");
   return () => {
     feed.subscribers.delete(subscriber);
     const survivor = feed.subscribers.values().next().value;
@@ -614,6 +693,7 @@ export function attachFeed(attachment: FeedAttachment): () => void {
         survivor.binding.events ?? null,
         topics,
         topics.map(formatManifoldUri).join(" "),
+        survivor.binding.requiresWorkspaceEvents ?? false,
       );
       arm(feed);
       return;
@@ -630,10 +710,11 @@ export function rebindFeed(
   events: FeedEvents | null,
   topics: readonly ManifoldRef[],
   topicKey: string,
+  requiresWorkspaceEvents = false,
 ): void {
   const feed = FEEDS.get(feedId);
   if (feed === undefined || feed.subscribers.size === 0) return;
-  bindEvents(feed, events, topics, topicKey);
+  bindEvents(feed, events, topics, topicKey, requiresWorkspaceEvents);
 }
 
 /**
@@ -657,6 +738,7 @@ export function usePolledResource<T>(
     restartKey = null,
     topics = NO_TOPICS,
     events,
+    requiresWorkspaceEvents = false,
   } = options;
   const feedId = `${key}|${String(restartKey)}`;
   /**
@@ -682,9 +764,21 @@ export function usePolledResource<T>(
     initial,
     events,
     topics,
+    requiresWorkspaceEvents,
   });
   useEffect(() => {
-    const next = { feedId, fetchFn, hold, equal, onError, onSuccess, initial, events, topics };
+    const next = {
+      feedId,
+      fetchFn,
+      hold,
+      equal,
+      onError,
+      onSuccess,
+      initial,
+      events,
+      topics,
+      requiresWorkspaceEvents,
+    };
     if (policy.current.feedId === feedId) Object.assign(policy.current, next);
     else policy.current = next;
   });
@@ -720,6 +814,9 @@ export function usePolledResource<T>(
         get topics() {
           return current.topics;
         },
+        get requiresWorkspaceEvents() {
+          return current.requiresWorkspaceEvents;
+        },
       });
     },
     [enabled, feedId, intervalMs],
@@ -732,8 +829,8 @@ export function usePolledResource<T>(
    */
   useEffect(() => {
     if (!enabled) return;
-    rebindFeed(feedId, events ?? null, policy.current.topics, topicKey);
-  }, [enabled, events, feedId, topicKey]);
+    rebindFeed(feedId, events ?? null, policy.current.topics, topicKey, requiresWorkspaceEvents);
+  }, [enabled, events, feedId, topicKey, requiresWorkspaceEvents]);
 
   const snapshot = useCallback((): T => {
     const feed = FEEDS.get(feedId);
