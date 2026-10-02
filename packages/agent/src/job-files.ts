@@ -334,6 +334,66 @@ export class HeldDirectory {
       closeSync(fd);
     }
   }
+  /**
+   * Opens and validates the read-only staging inode before publishing it. `handoff` takes
+   * ownership synchronously at publication and must not throw; no destination reopen occurs.
+   * A later durability failure is thrown with the published descriptor already handed off.
+   */
+  atomicWriteHeld(
+    name: string,
+    data: Uint8Array,
+    validate: (fd: number) => void,
+    handoff: (fd: number) => void,
+    mode = 0o600,
+    exclusive = false,
+  ): void {
+    safeComponent(name);
+    const stat = this.stat();
+    if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
+      throw new Error("directory_not_private");
+    const syncFd = openSync(
+      `${this.procPath}/.`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
+    );
+    const temporary = `.stage-${randomUUID()}`;
+    let fd: number | undefined;
+    let readFd: number | undefined;
+    try {
+      fd = this.createFile(temporary, mode);
+      const bytes = data;
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = writeSync(fd, bytes, offset, bytes.length - offset);
+        if (!written) throw new Error("short_file_write");
+        offset += written;
+      }
+      fsyncSync(fd);
+      readFd = this.openFile(temporary);
+      const writer = fstatSync(fd, { bigint: true });
+      const reader = fstatSync(readFd, { bigint: true });
+      if (writer.dev !== reader.dev || writer.ino !== reader.ino)
+        throw new Error("staged_file_identity_changed");
+      validate(readFd);
+      if (exclusive) renameNoReplace(this, temporary, this, name);
+      else renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${name}`);
+      const publishedFd = readFd;
+      readFd = undefined;
+      handoff(publishedFd);
+      fsyncSync(syncFd);
+    } catch (error) {
+      try {
+        this.unlink(temporary);
+      } catch (cleanup) {
+        if ((cleanup as NodeJS.ErrnoException).code !== "ENOENT")
+          throw new AggregateError([error, cleanup], "atomic_write_cleanup_failed");
+      }
+      throw error;
+    } finally {
+      if (readFd !== undefined) closeSync(readFd);
+      if (fd !== undefined) closeSync(fd);
+      closeSync(syncFd);
+    }
+  }
   /** Moves one entry into another held directory on this mount; never replaces a name there. */
   moveInto(name: string, destination: HeldDirectory): void {
     safeComponent(name);

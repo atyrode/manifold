@@ -38,6 +38,7 @@ export {
 } from "./terminal-host-listener.ts";
 export { FrameReader, FrameTooLargeError, FrameWriter } from "./ipc-framing.ts";
 export { MachineJobOwner, type JobOwnerOptions } from "./job-owner.ts";
+export { HeldServiceCredentialRegistry } from "./job-credentials.ts";
 export {
   listenJobOwner,
   unixJobOwnerDialer,

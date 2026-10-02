@@ -7,6 +7,7 @@ import {
   canonicalJobJson,
   AGENT_TOOL_MAX_CALLS,
   JOB_OWNER_PROTOCOL_VERSION,
+  createServiceCredentialEnrollmentKey,
   jobOwnerInstallRestoresProjection,
   JobCommandSchema,
   ServiceConfigurationSchema,
@@ -21,7 +22,7 @@ import {
   type ServiceAuthoritySubject,
   type ServiceCall,
   type ServiceConfiguration,
-  type ServiceCredentialReference,
+  type ServiceCredentialEnrollmentKey,
   type ServicePolicy,
   type ServiceReply,
   type ServiceRefusal,
@@ -78,6 +79,7 @@ import {
   heldServiceCredentialResolver,
   type AuthorizeServiceCall,
   type JobServiceRunner,
+  type ResolveServiceCredential,
 } from "./job-services.ts";
 import {
   createJobServiceProxy,
@@ -88,6 +90,8 @@ import {
 } from "./job-service-proxy.ts";
 import { materializeJobInputs, type JobServiceEndpoint } from "./job-inputs.ts";
 import { createServiceTunnel, type ServiceTunnel } from "./job-service-tunnel.ts";
+import { HeldServiceCredentialRegistry } from "./job-credentials.ts";
+import { JobCredentialEnrollment } from "./job-credential-enrollment.ts";
 
 interface OwnedServiceTunnel {
   wire: ServiceTunnel;
@@ -130,8 +134,8 @@ export interface JobOwnerOptions {
   /** Reviewed local runtime closures, not executable/cwd/env RPC fields. */
   runtimeTools: Readonly<Record<string, readonly LinuxJobBind[]>>;
   artifactAuthority: ArtifactAuthority;
-  /** Bootstrap-held source credentials; only references and allowed origins are advertised. */
-  serviceCredentials?: ReadonlyMap<string, { fd: number; origins: readonly string[] }>;
+  /** Sole-owned declared source capabilities; only refs/origins/availability are advertised. */
+  credentialSources?: HeldServiceCredentialRegistry;
   /**
    * Structured diagnostics for refusals this process decides alone (#703). The owner emits
    * protocol events for everything a hub can act on; a refused admission is decided here and
@@ -272,6 +276,9 @@ export class MachineJobOwner {
   private readonly resources: JobResources;
   private serviceConfiguration: ServiceConfiguration = { revision: null, policies: [] };
   private readonly serviceRunner: JobServiceRunner;
+  private readonly credentialSources: HeldServiceCredentialRegistry;
+  private readonly resolveCredential: ResolveServiceCredential;
+  private readonly credentialEnrollment: JobCredentialEnrollment;
   private seatController = new AbortController();
   /** One revocation per configured service: a reconfiguration aborts only the services whose
    * policy it changed or removed, so work admitted under an unchanged policy keeps running. */
@@ -299,65 +306,98 @@ export class MachineJobOwner {
    * roots nothing ran in: the owner's, never deleted, until a durable refusal of that identity. */
   private readonly unrecordedScratch = new Set<OwnedJob>();
 
-  private constructor(private readonly options: JobOwnerOptions) {
+  private constructor(
+    private readonly options: JobOwnerOptions,
+    private readonly credentialEnrollmentKey: ServiceCredentialEnrollmentKey,
+  ) {
     this.admissionKey = createPublicKey(options.admissionPublicKey);
     if (options.protectedDirectories.length === 0) throw new Error("private_owner_roots_required");
-    this.exclusions = new DirectoryExclusions(options.protectedDirectories);
+    this.credentialSources = options.credentialSources ?? new HeldServiceCredentialRegistry();
+    this.credentialSources.sealDeclarations();
+    this.exclusions = new DirectoryExclusions([
+      ...options.protectedDirectories,
+      ...this.credentialSources.protectedDirectories(),
+    ]);
+    this.resolveCredential = heldServiceCredentialResolver((ref) =>
+      this.credentialSources.currentDescriptor(ref),
+    );
+    this.credentialEnrollment = new JobCredentialEnrollment({
+      machineId: options.machineId,
+      ownerId: options.journal.ownerId,
+      ownerGeneration: options.journal.generation,
+      sources: this.credentialSources,
+      key: credentialEnrollmentKey,
+      active: () =>
+        this.ready && !this.draining && this.sink !== null && !this.seatController.signal.aborted,
+      emit: (event) => this.sink?.(event) ?? false,
+      published: () => {
+        this.resources.refresh({ tools: [], anchors: [], services: [] });
+        this.publishResources();
+        for (const installation of this.installs.values())
+          this.publishInstallation(installation.command);
+      },
+    });
     this.resources = new JobResources({
       anchors: options.anchors,
       ...(options.operatorAnchors ? { operatorAnchors: options.operatorAnchors } : {}),
       runtimeTools: options.runtimeTools,
-      credentialReferences: () => this.credentialReferences(),
+      credentialReferences: () => this.credentialSources.references(),
       runtimeAvailable: (policy, inventory) => this.runtimeAvailable(policy, inventory, new Set()),
     });
     this.serviceRunner = createJobServiceRunner({
       policies: [],
-      resolveCredential: heldServiceCredentialResolver(
-        new Map([...(options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd])),
-      ),
+      resolveCredential: this.resolveCredential,
       resolveRuntime: (policy, signal) => this.instanceService(policy, signal),
     });
   }
 
   static async open(options: JobOwnerOptions): Promise<MachineJobOwner> {
-    const owner = new MachineJobOwner(options);
-    // Recovery proves no old descendants retain output writers before a new generation admits.
-    await recoverLinuxJobs(options.delegatedCgroup);
-    const journal = options.journal;
-    owner.draining = journal.draining;
-    for (const command of journal.installations()) {
-      if (command.action !== "purge") owner.restoreInstallation(command);
-    }
-    // Recovered jobs stay in the journal, which retains their identity, permit, result and
-    // input cursor but not their request content (#848). None of them has a process.
-    for (const job of journal.jobs()) {
-      if (ACTIVE[job.result.state])
-        journal.append({
-          kind: "result",
-          result: {
-            ...job.result,
-            state: "interrupted",
-            reason: "owner_restart_effects_unknown",
-            finishedAt: Date.now(),
-            usage: null,
-            outputs: [],
-          },
-        });
-    }
-    // Only now is every earlier workload proven gone and every earlier job's result terminal, so
-    // nothing left in the temporary namespace can still be written, sealed or read. A namespace
-    // that cannot be cleared stays whole: it closes admission, never the owner's retained state.
+    let key: ServiceCredentialEnrollmentKey | undefined;
     try {
-      options.outputScratch?.recover();
+      key = await createServiceCredentialEnrollmentKey();
+      const owner = new MachineJobOwner(options, key);
+      // Recovery proves no old descendants retain output writers before a new generation admits.
+      await recoverLinuxJobs(options.delegatedCgroup);
+      const journal = options.journal;
+      owner.draining = journal.draining;
+      for (const command of journal.installations()) {
+        if (command.action !== "purge") owner.restoreInstallation(command);
+      }
+      // Recovered jobs stay in the journal, which retains their identity, permit, result and
+      // input cursor but not their request content (#848). None of them has a process.
+      for (const job of journal.jobs()) {
+        if (ACTIVE[job.result.state])
+          journal.append({
+            kind: "result",
+            result: {
+              ...job.result,
+              state: "interrupted",
+              reason: "owner_restart_effects_unknown",
+              finishedAt: Date.now(),
+              usage: null,
+              outputs: [],
+            },
+          });
+      }
+      // Only now is every earlier workload proven gone and every earlier job's result terminal, so
+      // nothing left in the temporary namespace can still be written, sealed or read. A namespace
+      // that cannot be cleared stays whole: it closes admission, never the owner's retained state.
+      try {
+        options.outputScratch?.recover();
+      } catch (error) {
+        owner.draining = true;
+        owner.log("warn", "job_output_cleanup_failed", {
+          phase: "recovery",
+          code: outputCleanupCode(error),
+        });
+      }
+      owner.ready = true;
+      return owner;
     } catch (error) {
-      owner.draining = true;
-      owner.log("warn", "job_output_cleanup_failed", {
-        phase: "recovery",
-        code: outputCleanupCode(error),
-      });
+      key?.close();
+      options.credentialSources?.close();
+      throw error;
     }
-    owner.ready = true;
-    return owner;
   }
 
   bindTerminalHost(terminalHostId: string): void {
@@ -377,6 +417,7 @@ export class MachineJobOwner {
     if (this.draining === draining) return;
     this.options.journal.append({ kind: "drain", draining });
     this.draining = draining;
+    if (draining) this.credentialEnrollment.invalidate("credential_owner_offline");
     if (draining) for (const tunnel of this.serviceTunnels.values()) tunnel.controller.abort();
     if (draining) for (const job of this.jobs.values()) job.context?.abortAgentRuns();
   }
@@ -394,6 +435,7 @@ export class MachineJobOwner {
       inventoryDigest: journal.inventoryDigest(),
       resources: this.resources.snapshot(),
       ...(this.terminalHostId ? { terminalHostId: this.terminalHostId } : {}),
+      credentialEnrollment: this.credentialEnrollmentKey.metadata,
     };
   }
 
@@ -408,6 +450,7 @@ export class MachineJobOwner {
       if (this.sink === sink) {
         this.sink = null;
         this.seatController.abort();
+        this.credentialEnrollment.invalidate("credential_owner_offline");
         for (const pending of this.serviceAuthorizations.values()) pending.resolve(false);
         for (const pending of this.directServiceCalls.values()) pending.controller.abort();
         for (const pending of this.inputAuthorizations.values()) pending.resolve(false);
@@ -430,6 +473,7 @@ export class MachineJobOwner {
           if (this.challenges.has(challenge) || this.challenges.size >= 4096)
             throw new Error("owner_challenge_replayed_or_exhausted");
           this.challenges.add(challenge);
+          this.credentialEnrollment.proved(command.serverEpoch, command.nonce);
           const body = {
             nonce: command.nonce,
             serverEpoch: command.serverEpoch,
@@ -540,6 +584,18 @@ export class MachineJobOwner {
         case "configure_services":
           this.configureServices(command.configuration);
           return;
+        case "credential_enrollment_prepare":
+          this.credentialEnrollment.prepare(command, parentJobId === null);
+          return;
+        case "credential_enrollment_commit":
+          await this.credentialEnrollment.commit(command, parentJobId === null);
+          return;
+        case "credential_enrollment_cancel":
+          this.credentialEnrollment.cancel(command, parentJobId === null);
+          return;
+        case "credential_enrollment_authorized":
+          this.credentialEnrollment.authorized(command, parentJobId === null);
+          return;
         case "service_authorized": {
           const pending = this.serviceAuthorizations.get(command.authorizationId);
           if (pending && jobDigest(pending.subject) === jobDigest(command.subject))
@@ -627,25 +683,6 @@ export class MachineJobOwner {
       }
       this.emit({ type: "refusal", jobId, reason }, job);
     }
-  }
-
-  private credentialReferences(): ServiceCredentialReference[] {
-    return [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => {
-      let available = false;
-      try {
-        const stat = fstatSync(value.fd);
-        available =
-          stat.isFile() &&
-          stat.uid === process.getuid?.() &&
-          (stat.mode & 0o077) === 0 &&
-          stat.nlink === 1 &&
-          stat.size > 0 &&
-          stat.size <= 16384;
-      } catch {
-        /* A lost descriptor never becomes ambient path lookup. */
-      }
-      return { ref, origins: [...value.origins], available };
-    });
   }
 
   private policy(serviceId: string): ServicePolicy | undefined {
@@ -1259,11 +1296,7 @@ export class MachineJobOwner {
         signal: job.serviceController.signal,
         authoritySignal: () =>
           AbortSignal.any([this.seatController.signal, this.serviceAuthority(serviceId)]),
-        resolveCredential: heldServiceCredentialResolver(
-          new Map(
-            [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd]),
-          ),
-        ),
+        resolveCredential: this.resolveCredential,
         authorize: async (call, signal) => {
           await job.launched;
           return this.authorizeService(
@@ -3558,9 +3591,11 @@ export class MachineJobOwner {
     if (!this.ready) return;
     this.draining = true;
     this.seatController.abort();
+    this.credentialEnrollment.close();
     for (const authority of this.serviceAuthorities.values()) authority.abort();
     this.unconfiguredServices.abort();
     this.serviceRunner.close();
+    this.credentialSources.close();
     for (const pending of this.directServiceCalls.values()) pending.controller.abort();
     this.options.journal.append({ kind: "drain", draining: true });
     await Promise.all([...this.jobs.values()].map((job) => this.cancel(job.request.jobId)));

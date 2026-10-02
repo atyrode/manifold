@@ -1,11 +1,12 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
-import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { createConnection } from "node:net";
 import {
   chmodSync,
   existsSync,
   closeSync,
+  fstatSync,
   linkSync,
   lstatSync,
   statfsSync,
@@ -27,6 +28,8 @@ import {
   jobResourceBindingsFor,
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  sealServiceCredentialEnrollment,
+  type ServiceCredentialEnrollmentChallenge,
   type ServicePolicy,
   type JobCommand,
   type JobEvent,
@@ -45,6 +48,7 @@ import { artifactCacheKey } from "../src/job-artifacts.ts";
 import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
 import { createServiceTunnel } from "../src/job-service-tunnel.ts";
+import { HeldServiceCredentialRegistry } from "../src/job-credentials.ts";
 
 function tarMember(name: string, contents: Buffer): Buffer {
   const header = Buffer.alloc(512);
@@ -69,6 +73,294 @@ const busybox = process.env.MANIFOLD_TEST_STATIC_BUSYBOX;
 const cgroupRoot = process.env.MANIFOLD_TEST_CGROUP;
 const compiledProbe = process.env.MANIFOLD_TEST_SYSCALL_PROBE;
 const realBackend = linux && Boolean(bwrap && busybox && cgroupRoot);
+
+test.skipIf(!realBackend)(
+  "[real-linux] sealed enrollment resolves replacement, fences late authority and rotates only the incarnation key",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "owner-sealed-entry-"));
+    const held: HeldDirectory[] = [];
+    const sources: HeldServiceCredentialRegistry[] = [];
+    const upstream: string[] = [];
+    const events: JobEvent[] = [];
+    const keys = generateKeyPairSync("ed25519");
+    const admissionPublicKey = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
+    let owner: MachineJobOwner | undefined;
+    let outputs: JobOutputStore | undefined;
+    let detach: (() => void) | undefined;
+    let bwrapFd: number | undefined;
+    type Authorize = Extract<JobEvent, { type: "credential_enrollment_authorize" }>;
+    let holdAuthorization: ((event: Authorize) => void) | undefined;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        upstream.push(request.headers.get("authorization") ?? "missing");
+        return Response.json({ status: "readable", private: "never-return-this" });
+      },
+    });
+    try {
+      const state = HeldDirectory.openAbsolute(root, { private: true });
+      const cache = state.openChild("cache", { create: true });
+      const managedState = state.openChild("locations", { create: true });
+      const outputDirectory = state.openChild("outputs", { create: true });
+      const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+      held.push(state, cache, managedState, outputDirectory, delegatedCgroup);
+      state.openChild("credentials", { create: true }).close();
+      const bwrapParent = HeldDirectory.openAbsolute(dirname(bwrap!));
+      try {
+        bwrapFd = bwrapParent.openRuntimeFile(basename(bwrap!));
+      } finally {
+        bwrapParent.close();
+      }
+      outputs = JobOutputStore.open(outputDirectory);
+      const store = outputs;
+      const open = async () => {
+        const registry = new HeldServiceCredentialRegistry();
+        sources.push(registry);
+        registry.declare("fixture-key", state.openChild("credentials"), "key", [server.url.origin]);
+        const journal = new JobJournal(state.openChild("journal", { create: true }));
+        try {
+          return await MachineJobOwner.open({
+            machineId: "machine",
+            admissionPublicKey,
+            journal,
+            cache,
+            managedState,
+            outputs: store,
+            delegatedCgroup,
+            bubblewrapFd: bwrapFd!,
+            anchors: {},
+            runtimeTools: {},
+            protectedDirectories: [state],
+            credentialSources: registry,
+            artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+          });
+        } catch (error) {
+          journal.close();
+          registry.close();
+          throw error;
+        }
+      };
+      const attach = () =>
+        owner!.attach((raw) => {
+          const event = JobEventSchema.parse(raw);
+          events.push(event);
+          if (event.type === "service_authorize")
+            void owner!.execute({
+              type: "service_authorized",
+              subject: event.subject,
+              authorizationId: event.authorizationId,
+              allowed: true,
+            });
+          if (event.type === "credential_enrollment_authorize") {
+            if (holdAuthorization) holdAuthorization(event);
+            else
+              void owner!.execute({
+                type: "credential_enrollment_authorized",
+                requestId: event.requestId,
+                nonce: event.nonce,
+                allowed: true,
+                reason: null,
+              });
+          }
+          return true;
+        });
+      let proofNonce = randomUUID();
+      const prove = async () => {
+        proofNonce = randomUUID();
+        await owner!.execute({
+          type: "owner_challenge",
+          nonce: proofNonce,
+          serverEpoch: "sealed-fixture-epoch",
+          machineId: "machine",
+          admissionPublicKey,
+        });
+      };
+      const prepare = async (replace: boolean): Promise<ServiceCredentialEnrollmentChallenge> => {
+        const requestId = randomUUID();
+        await owner!.execute({
+          type: "credential_enrollment_prepare",
+          requestId,
+          serverEpoch: "sealed-fixture-epoch",
+          ownerChallenge: proofNonce,
+          machineId: "machine",
+          credentialRef: "fixture-key",
+          origin: server.url.origin,
+          replace,
+        });
+        const event = events.findLast(
+          (event) => event.type === "credential_enrollment_prepared" && event.requestId === requestId,
+        );
+        if (event?.type !== "credential_enrollment_prepared" || event.reply.kind !== "prepared")
+          throw new Error("native_entry_prepare_refused");
+        return event.reply.challenge;
+      };
+      const seal = async (challenge: ServiceCredentialEnrollmentChallenge, value: string) => {
+        const bytes = new TextEncoder().encode(value);
+        try {
+          return await sealServiceCredentialEnrollment(challenge, bytes);
+        } finally {
+          bytes.fill(0);
+        }
+      };
+      const policy: ServicePolicy = {
+        serviceId: "fixture.sealed",
+        revision: "r1",
+        origin: server.url.origin,
+        allowLoopbackHttp: true,
+        maxConcurrent: 1,
+        credential: { ref: "fixture-key", header: "Authorization", prefix: "Bearer " },
+        operations: {
+          read: {
+            method: "GET",
+            readable: true,
+            path: "/metadata",
+            input: {},
+            query: {},
+            body: [],
+            timeoutMs: 5000,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 1024,
+            maxResultBytes: 1024,
+            response: { kind: "projected-json", fields: [["status"]], maxArrayItems: 1 },
+          },
+        },
+      };
+      const configure = () =>
+        owner!.execute({
+          type: "configure_services",
+          configuration: { revision: jobDigest([policy]), policies: [policy] },
+        });
+      const read = async () => {
+        const requestId = randomUUID();
+        await owner!.execute({
+          type: "service_read",
+          requestId,
+          machineId: "machine",
+          serviceId: policy.serviceId,
+          revision: policy.revision,
+          policySha256: jobDigest(policy),
+          operationId: "read",
+          input: {},
+        });
+        const result = events.findLast(
+          (event) => event.type === "service_read_result" && event.requestId === requestId,
+        );
+        expect(result).toMatchObject({ reply: { ok: true, result: { status: "readable" } } });
+      };
+      owner = await open();
+      detach = attach();
+      await prove();
+      const initialIdentity = owner.identity;
+      const proof = events.findLast((event) => event.type === "owner_proof");
+      if (proof?.type !== "owner_proof") throw new Error("missing_native_owner_proof");
+      const proofBody = {
+        nonce: proof.nonce,
+        serverEpoch: proof.serverEpoch,
+        machineId: proof.machineId,
+        owner: proof.owner,
+      };
+      expect(
+        verify(null, Buffer.from(canonicalJobJson(proofBody)), createPublicKey(initialIdentity.publicKey), Buffer.from(proof.signature, "base64")),
+      ).toBe(true);
+      expect(
+        verify(null, Buffer.from(canonicalJobJson({
+          ...proofBody,
+          owner: { ...proof.owner, credentialEnrollment: { ...proof.owner.credentialEnrollment!, keyId: "f".repeat(64) } },
+        })), createPublicKey(initialIdentity.publicKey), Buffer.from(proof.signature, "base64")),
+      ).toBe(false);
+      await configure();
+      expect(owner.identity.resources!.credentialReferences).toEqual([
+        { ref: "fixture-key", origins: [server.url.origin], available: false },
+      ]);
+      const initial = await prepare(false);
+      await owner.execute({ type: "credential_enrollment_commit", envelope: await seal(initial, "synthetic-native-one") });
+      expect(events.findLast((event) => event.type === "credential_enrollment_result")).toMatchObject({
+        reply: { kind: "stored", replaced: false, available: true },
+      });
+      expect(owner.identity.resources!.services[policy.serviceId]).toBe(jobDigest(policy));
+      await read();
+      const replacement = await prepare(true);
+      await owner.execute({ type: "credential_enrollment_commit", envelope: await seal(replacement, "synthetic-native-two") });
+      expect(events.findLast((event) => event.type === "credential_enrollment_result")).toMatchObject({
+        reply: { kind: "stored", replaced: true },
+      });
+      await read();
+      expect(upstream).toEqual(["synthetic-native-one", "synthetic-native-two"].map((value) => "Bearer " + value));
+      expect(owner.identity.credentialEnrollment).toEqual(initialIdentity.credentialEnrollment);
+
+      // Real final-authorize races: cancel, current full-proof replacement and seat loss.
+      for (const fence of ["cancel", "proof", "detach"] as const) {
+        const offered = await prepare(true);
+        const final = Promise.withResolvers<Authorize>();
+        holdAuthorization = final.resolve;
+        const commit = owner.execute({
+          type: "credential_enrollment_commit",
+          envelope: await seal(offered, `synthetic-forbidden-${fence}`),
+        });
+        const authorization = await final.promise;
+        if (fence === "cancel")
+          await owner.execute({ type: "credential_enrollment_cancel", requestId: authorization.requestId, nonce: authorization.nonce });
+        if (fence === "proof") await prove();
+        if (fence === "detach") detach();
+        await owner.execute({
+          type: "credential_enrollment_authorized",
+          requestId: authorization.requestId,
+          nonce: authorization.nonce,
+          allowed: true,
+          reason: null,
+        });
+        await commit;
+        holdAuthorization = undefined;
+        if (fence === "detach") { detach = attach(); await prove(); }
+        expect(readFileSync(join(root, "credentials", "key"), "utf8")).toBe("synthetic-native-two");
+      }
+      const oldOffer = await prepare(true);
+      const oldEnvelope = await seal(oldOffer, "synthetic-forbidden-restart");
+      const oldFd = sources.at(-1)!.currentDescriptor("fixture-key")!;
+      detach();
+      await owner.shutdown();
+      owner = undefined;
+      expect(() => fstatSync(oldFd)).toThrow();
+      owner = await open();
+      expect(owner.identity.ownerId).toBe(initialIdentity.ownerId);
+      expect(owner.identity.publicKey).toBe(initialIdentity.publicKey);
+      expect(owner.identity.generation).toBe(initialIdentity.generation + 1);
+      expect(owner.identity.credentialEnrollment!.keyId).not.toBe(initialIdentity.credentialEnrollment!.keyId);
+      owner.setDraining(false);
+      detach = attach();
+      await prove();
+      await configure();
+      await owner.execute({ type: "credential_enrollment_commit", envelope: oldEnvelope });
+      expect(events.findLast((event) => event.type === "credential_enrollment_result")).toMatchObject({
+        reply: { kind: "refused", reason: "credential_owner_changed" },
+      });
+      await read();
+      expect(upstream.at(-1)).toBe("Bearer " + "synthetic-native-two");
+      const observed = JSON.stringify(events);
+      for (const value of ["synthetic-native-one", "synthetic-native-two", "synthetic-forbidden-", root, oldEnvelope.ciphertext])
+        expect(observed).not.toContain(value);
+      for (const name of readdirSync(join(root, "journal"))) {
+        const path = join(root, "journal", name);
+        if (!lstatSync(path).isFile()) continue;
+        const journal = readFileSync(path, "utf8");
+        for (const value of ["synthetic-native-one", "synthetic-native-two", "synthetic-forbidden-", oldOffer.context.nonce, oldOffer.context.requestId, oldEnvelope.ciphertext, join(root, "credentials")])
+          expect(journal).not.toContain(value);
+      }
+    } finally {
+      detach?.();
+      await owner?.shutdown();
+      outputs?.close();
+      for (const registry of sources) registry.close();
+      if (bwrapFd !== undefined) closeSync(bwrapFd);
+      for (const directory of held.reverse()) directory.close();
+      await server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
 test
   .skipIf(!linux || !cgroupRoot)
   .each(["expired", "status", "cancel", "retire", "recovered-status"] as const)(
