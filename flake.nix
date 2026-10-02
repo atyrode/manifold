@@ -36,6 +36,7 @@
       # Measured from the exact dependency fileset using pinned Bun's explicit target selectors.
       # Each native CI lane independently builds and rebuilds its fixed-output tree;
       # foreign-target materialization is not native compiled-package or VM evidence.
+      # Regenerate and requalify these hashes whenever their inputs change.
       depsHashes = {
         x86_64-linux = "sha256-G5PGfMuskpP/1hBiMhlTOpySUoTQYTqR0tfQestspP0=";
         aarch64-linux = "sha256-TNV7aarXFtw6iIEKW1JQYCtQnnkqAY3897C/iy/bOeE=";

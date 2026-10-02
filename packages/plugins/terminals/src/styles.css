@@ -216,6 +216,21 @@
   color: #adb5bd;
 }
 
+.terminal-renderer-control {
+  width: 2.15rem;
+  font-size: 0.65rem;
+}
+
+.terminal-renderer-control[aria-pressed="true"] {
+  color: #e6e9ef;
+  background: #364fc7;
+}
+
+.terminal-renderer-control:focus-visible {
+  outline: 2px solid #74c0fc;
+  outline-offset: 1px;
+}
+
 .xterm-host {
   position: relative;
   grid-area: 2 / 1;

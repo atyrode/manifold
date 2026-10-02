@@ -3903,6 +3903,31 @@ document edit or an action. Spectators can adjust their own font but cannot cons
 A controller's eligible view remeasures after font changes and snapshot replay; zoom updates
 the existing xterm instance, not the socket or terminal lifecycle.
 
+**DOM remains the default renderer.** The terminal titlebar's **GPU** toggle explicitly requests
+WebGL for this device and terminal ID, shared by its local mounted aliases, not other devices.
+`manifold:terminal-renderers` stores at most 128 WebGL opt-ins with oldest-updated eviction;
+malformed values are ignored and returning to DOM removes the entry. The pressed toggle is
+the request, not a guarantee of GPU availability. The actual xterm host reports `dom`, `loading`,
+`webgl` or `fallback` in `data-terminal-renderer`. The maintained, pinned addon is loaded only
+after opt-in; [the dependency decision](decisions/2026-10-02-xterm-webgl.md) owns its provenance
+and bounded upstream/local patch rationale. No parser, PTY, input, clipboard or buffer
+implementation is replaced.
+
+Initialization refusal and unresolved context loss dispose the addon and restore the same
+Terminal's DOM renderer, with a visible named notice. The upstream addon allows a bounded
+three-second context-restoration grace before reporting loss. There is no application retry
+loop: the stored request remains unchanged, and a person may toggle off/on to retry. A late
+module load cannot install after a changed request or view disposal. Retirement owns listeners,
+render layers and GPU resources, including partially constructed renderers; explicit immediate
+context loss uses the browser's `WEBGL_lose_context` extension. Renderer changes do not reset
+the current screen, retained history, terminal connection or shared sizing authority.
+
+The real terminal consumer proof covers software WebGL rendering and fallback without claiming
+native GPU performance. [The bounded Mac/PC A/B card](spikes/terminal-quality-investigation.md#bounded-opt-in-renderer-ab-card-878)
+records exact source, browser/GPU/display/workload conditions and unavailable device evidence.
+Native correctness/performance must support a separately recorded decision before any default
+renderer change; synthetic input is not native IME or assistive-technology qualification.
+
 The terminal's visual inset is outside the FitAddon measurement box, so the measured host
 is usable cell space rather than padding counted as rows. After snapshot replay, measurement
 schedules at most one pending animation-frame publication; unchanged proposals are not sent

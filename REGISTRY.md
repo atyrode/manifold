@@ -2100,6 +2100,10 @@ register. Anything else is presence, document, or action state — A2 leaves no 
       "why": "core.terminals' per-device, per-terminalId font-size map: integer pixels 8..32, default/reset 13, at most 128 non-default entries with oldest-updated eviction and malformed entries ignored. Readability depends on THIS display, so it is neither shared document nor action state; spectators may adjust their own font but do not constrain the PTY. Eligible foreground visible controller-principal views publish independent desired measurements after replay and never from a preview; the broker minimizes columns and rows independently"
     },
     {
+      "key": "manifold:terminal-renderers",
+      "why": "core.terminals' per-device, per-terminalId WebGL opt-in map: DOM is the default; at most 128 explicit WebGL entries with oldest-updated eviction and malformed entries ignored. Renderer availability depends on THIS browser/GPU, not shared document or action state. Mounted aliases share the local request; initialization refusal or context loss retires the addon and returns the same xterm/PTY view to DOM without silently changing the stored request or retrying"
+    },
+    {
       "key": "terminal-clipboard",
       "prefix": true,
       "why": "core.terminals' in-memory clipboard exchange and terminal-clipboard:<terminalId> consent/notice surface, never persistent storage: captured MIME bytes, the one-use paste grant and an unapproved OSC 52 copy belong only to this focused, authorized browser view. Publishing another device's clipboard would violate its consent. Captures expire after 15 seconds and are discarded on completion, refusal, blur, deactivation, authority loss, snapshot replacement, disconnect or disposal; approved paste bytes use existing controller-authorized PTY input, not a shared-file store"
@@ -2183,6 +2187,11 @@ string" is the question a broken gate actually asks.
       "testid": "plugin-manager-row-open",
       "renderer": "packages/plugins/plugin-manager/src/web.tsx",
       "why": "the terminal-selection gate opens the Terminals settings through the same plugin detail affordance as a person, then proves each default-off clipboard gesture and its live opt-in transition"
+    },
+    {
+      "testid": "terminal-renderer-toggle",
+      "renderer": "packages/plugins/terminals/src/terminal-view.tsx",
+      "why": "the terminal-selection gate explicitly requests the device-local optional WebGL renderer and proves real rendered output, selection/copy, initialization refusal, context-loss DOM fallback and owned-context retirement without replacing the PTY or terminal buffer"
     },
     {
       "testid": "plugin-manager-machine-runtime",
