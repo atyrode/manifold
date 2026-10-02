@@ -1698,6 +1698,8 @@ interface DispatchOrigin {
   readonly plugin: string;
   readonly parentTrace: number | string;
   readonly stack: readonly string[];
+  /** A host-only late ceiling verdict, never supplied by a caller or handler. */
+  callerCeilingCap?: Cap;
 }
 
 /** What a caller may say about a dispatch beyond the four arguments every dispatch has. */
@@ -5137,6 +5139,34 @@ export class PluginHost {
     const roster = this.roster();
     for (const listener of this.rosterListeners) listener(roster, developerMode);
   }
+  private callerEngineCeiling(caller: string): readonly AuthoredCap[] {
+    const callerRow = this.assembled.roster.find((entry) => entry.manifest.id === caller);
+    const granted = this.installed.get(caller)?.row.grantedCaps;
+    return (callerRow?.manifest.capabilities ?? []).filter(
+      (cap) =>
+        granted === undefined || (!GOVERNED_CAPS.includes(cap) && withinCeiling(cap, granted)),
+    );
+  }
+
+  /**
+   * A composed door may gain engine requirements only after preparation. Keep the caller's
+   * ceiling attached to the host-owned origin so a late refusal cannot be forged as a result.
+   */
+  private callerCeilingAllows(
+    origin: DispatchOrigin | undefined,
+    values: Iterable<AuthoredCap | PreparedRequirement>,
+  ): boolean {
+    if (origin === undefined) return true;
+    const ceiling = this.callerEngineCeiling(origin.plugin);
+    for (const value of values) {
+      const cap = typeof value === "string" ? value : value.cap;
+      if (!isEngineCap(cap) || withinCeiling(cap, ceiling)) continue;
+      origin.callerCeilingCap ??= cap;
+      return false;
+    }
+    return true;
+  }
+
 
   /**
    * The CALLER, when a dispatch was opened by another plugin's handler rather than by a
@@ -5251,14 +5281,12 @@ export class PluginHost {
           grant never consents to governed authority (its consent is version-bound and
           discharged per artifact revision), so an edge must not be able to carry one.
         */
-        const granted = this.installed.get(caller)?.row.grantedCaps;
-        const ceiling = (callerRow?.manifest.capabilities ?? []).filter(
-          (cap) =>
-            granted === undefined || (!GOVERNED_CAPS.includes(cap) && withinCeiling(cap, granted)),
-        );
-        for (const cap of this.assembled.actions.get(door)?.def.caps ?? []) {
-          if (!isEngineCap(cap) || withinCeiling(cap, ceiling)) continue;
-          throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${cap})`);
+        const origin: DispatchOrigin = { plugin: caller, parentTrace, stack };
+        if (!this.callerCeilingAllows(origin, this.assembled.actions.get(door)?.def.caps ?? [])) {
+          throw new ActionCallRefused(
+            "caller_ceiling",
+            `${caller} -> ${door} (${origin.callerCeilingCap!})`,
+          );
         }
         /*
           THE CALLEE'S OWN LADDER, unchanged and whole: the same method a client's dispatch
@@ -5272,10 +5300,13 @@ export class PluginHost {
         let outcome: ActionOutcome;
         try {
           outcome = await this.dispatch(auth, door, request.input, session, {
-            origin: { plugin: caller, parentTrace, stack },
+            origin,
             ...(beforeCall === undefined ? {} : { beforeAdmission: beforeCall }),
           });
         } catch {
+          const callerCeilingCap = origin.callerCeilingCap;
+          if (callerCeilingCap !== undefined)
+            throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${callerCeilingCap})`);
           /*
             A BROKEN CALLEE IS NOT A REFUSAL, and its error text is not the caller's to
             publish. The callee's own row already settled `failed` and the host already logged
@@ -5286,6 +5317,9 @@ export class PluginHost {
           */
           throw new ActionCallRefused("refused", `${caller} -> ${door} (failed)`);
         }
+        const callerCeilingCap = origin.callerCeilingCap;
+        if (callerCeilingCap !== undefined)
+          throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${callerCeilingCap})`);
         if (outcome.ok) return outcome.result;
         const { rule, message } = outcome.denial;
         if (rule === "unknown_action") throw new ActionCallRefused("unknown_action", door);
@@ -5907,6 +5941,8 @@ export class PluginHost {
       first-party row has no grant and skips this half unchanged.
     */
     const nativeCaps = [...entry.def.caps, ...(entry.def.delegates ?? [])];
+    const origin = options.origin;
+    const callerEngineCaps = origin === undefined ? null : entry.def.caps.filter(isEngineCap);
     const install = this.installed.get(pluginId);
     if (install !== undefined) {
       for (const cap of nativeCaps) {
@@ -5968,12 +6004,22 @@ export class PluginHost {
     const binding = this.actionBinding(fullName)!;
     const handler = binding.handler;
     const epoch = this.actionEpochs.get(pluginId) ?? 0;
+    const originCurrent = (): boolean => {
+      if (origin === undefined || callerEngineCaps === null) return true;
+      try {
+        options.beforeAdmission?.();
+      } catch {
+        return false;
+      }
+      return this.callerCeilingAllows(origin, callerEngineCaps);
+    };
     const bindingCurrent = (): boolean =>
       !this.closed &&
       (this.actionEpochs.get(pluginId) ?? 0) === epoch &&
       this.actionBinding(fullName) === binding &&
       this.installed.get(pluginId) === install &&
-      (this.assembled.enabled(pluginId) || binding.declaration.cleanup === true);
+      (this.assembled.enabled(pluginId) || binding.declaration.cleanup === true) &&
+      originCurrent();
     const parsed: { data: unknown } = { data: rawArgs };
     if (guestInput) {
       const initial = binding.declaration.input.safeParse(rawArgs);
@@ -6127,10 +6173,12 @@ export class PluginHost {
     ): ActionAdmissionDenial | null => {
       if (!bindingCurrent())
         return new ActionAdmissionDenial("forbidden", "action binding unavailable");
-      try {
-        options.beforeAdmission?.();
-      } catch {
-        return new ActionAdmissionDenial("forbidden", "settled job authority unavailable");
+      if (origin === undefined) {
+        try {
+          options.beforeAdmission?.();
+        } catch {
+          return new ActionAdmissionDenial("forbidden", "settled job authority unavailable");
+        }
       }
       if (options.admissionFence) {
         const current = options.admissionFence();
@@ -6200,6 +6248,8 @@ export class PluginHost {
             `${requirement.cap} not granted to plugin ${pluginId}`,
           );
       }
+      if (!this.callerCeilingAllows(origin, additions))
+        return new ActionAdmissionDenial("forbidden", "caller plugin authority unavailable");
       governed = governed || additions.some(({ cap }) => GOVERNED_CAPS.includes(cap));
       const requirements: AuthorityRequirement[] = [];
       const fixedRequirements: ActionAuthorityRequirement[] = [];
@@ -6265,6 +6315,10 @@ export class PluginHost {
           return new ActionAdmissionDenial("forbidden", "explicit version-bound consent required");
         if (carrying.length > 0) carried = carrying;
       }
+      if (callerEngineCaps !== null) {
+        for (const { cap } of additions)
+          if (isEngineCap(cap) && !callerEngineCaps.includes(cap)) callerEngineCaps.push(cap);
+      }
       actionRequirements =
         entry.def.requirements === undefined
           ? [...contextRequirements, ...fixedRequirements]
@@ -6314,6 +6368,10 @@ export class PluginHost {
             !withinCeiling(requirement.cap, install.row.grantedCaps)
           )
             throw new ServiceError("forbidden", "preparer requirement not granted to plugin");
+        }
+        if (!this.callerCeilingAllows(origin, additions))
+          throw new ActionAdmissionDenial("forbidden", "caller plugin authority unavailable");
+        for (const requirement of additions) {
           if (
             !this.authService.allowsNode(
               current,
@@ -6334,6 +6392,10 @@ export class PluginHost {
         )
           throw new ServiceError("forbidden", "explicit version-bound consent required");
         for (const { cap } of additions) if (!nativeCaps.includes(cap)) nativeCaps.push(cap);
+        if (callerEngineCaps !== null) {
+          for (const { cap } of additions)
+            if (isEngineCap(cap) && !callerEngineCaps.includes(cap)) callerEngineCaps.push(cap);
+        }
         admittedNativeRequirements = nativeRequirements;
         governed = native;
       },
@@ -6350,7 +6412,7 @@ export class PluginHost {
     const checkActionAuthority = (): AuthContext => {
       requireActionEffects();
       try {
-        options.beforeAdmission?.();
+        if (origin === undefined) options.beforeAdmission?.();
         const current = authorityFence.checkCurrent();
         if (options.admissionFence && options.admissionFence() === null)
           throw new ServiceError("forbidden", "admission unavailable");
@@ -6668,7 +6730,7 @@ export class PluginHost {
         The stack is this trace's frames plus this plugin, so a callee already on it is a
         cycle and a chain that never repeats an id still stops at the depth bound.
       */
-      actions: this.actionCalls(pluginId, auth, session, traceId, actionStack),
+      actions: this.actionCalls(pluginId, auth, session, traceId, actionStack, checkActionAuthority),
       streams: {
         open: (kind, node) => {
           requireActionEffects();
@@ -6987,6 +7049,13 @@ export class PluginHost {
             options.onPrepared(parsed.data, authorityFence.retain(), traceId);
         }
         const answer = await invoke(ctx, parsed.data);
+        // A hardened preparer can refuse before it calls admitPrepared. Its proxy returns the
+        // normal refusal envelope; settle that actual answer before review treats the absence
+        // of admission as successful evidence or execution calls it an unavailable isolate.
+        if (guestInput && !guestAdmitted && answer !== null && typeof answer === "object") {
+          const denial = Reflect.get(answer, "refused");
+          if (typeof denial === "string") throw new IsolateDenial("refused", denial);
+        }
         if (guestInput && options.reviewOnly)
           return {
             originalArgsDigest: preparedEvidence.originalArgsDigest,

@@ -639,6 +639,161 @@ describe("what a sibling call is refused by", () => {
     });
     base.store.close();
   });
+  test("a caller ceiling also bounds the callee's selected prepared engine requirement", async () => {
+    let effects = 0;
+    const thin: ServerPluginDef = {
+      manifest: {
+        id: "test.prepared-thin",
+        version: "1.0.0",
+        title: "Prepared thin caller",
+        description: "Calls a conditionally prepared capability it did not declare.",
+        capabilities: [],
+        dependencies: { "test.prepared-callee": { type: "required" } },
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "relay",
+          title: "Relay prepared work",
+          caps: [],
+          input: z.strictObject({}),
+          result: z.strictObject({ done: z.literal(true) }),
+        }),
+      ],
+      handlers: {
+        relay: async (ctx: ActionCtx) =>
+          ctx.actions.call({ plugin: "test.prepared-callee", action: "inspect", input: {} }),
+      },
+    };
+    const callee: ServerPluginDef = {
+      manifest: {
+        id: "test.prepared-callee",
+        version: "1.0.0",
+        title: "Conditionally prepared callee",
+        description: "Selects a machine capability after the initial composed-door check.",
+        capabilities: ["machines:shell"],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "inspect",
+          title: "Inspect",
+          caps: [],
+          input: z.strictObject({}),
+          result: z.strictObject({ done: z.literal(true) }),
+        }),
+      ],
+      prepareActions: {
+        inspect: {
+          caps: ["machines:shell"],
+          prepare: async (_ctx, args) => ({
+            args,
+            targets: [],
+            additionalRequirements: [
+              {
+                cap: "machines:shell" as const,
+                node: "manifold://machine/conditional",
+                reach: "node" as const,
+              },
+            ],
+          }),
+        },
+      },
+      handlers: {
+        inspect: async () => {
+          effects++;
+          return { done: true };
+        },
+      },
+    };
+    const base = await fixture([thin, callee]);
+
+    const outcome = await base.host.dispatch(base.owner, "test.prepared-thin.relay", {});
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: "caller_ceiling: test.prepared-thin -> test.prepared-callee.inspect (machines:shell)",
+    });
+    expect(rowFor(base, "test.prepared-callee.inspect").outcome).toBe("forbidden");
+    expect(effects).toBe(0);
+    base.store.close();
+  });
+  test("a caller ceiling also bounds a callee's retained prepared extension", async () => {
+    let effects = 0;
+    const thin: ServerPluginDef = {
+      manifest: {
+        id: "test.extension-thin",
+        version: "1.0.0",
+        title: "Extension thin caller",
+        description: "Calls a continuation that discovers machine authority after admission.",
+        capabilities: [],
+        dependencies: { "test.extension-callee": { type: "required" } },
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "relay",
+          title: "Relay extension work",
+          caps: [],
+          input: z.strictObject({}),
+          result: z.strictObject({ done: z.literal(true) }),
+        }),
+      ],
+      handlers: {
+        relay: async (ctx: ActionCtx) =>
+          ctx.actions.call({ plugin: "test.extension-callee", action: "inspect", input: {} }),
+      },
+    };
+    const callee: ServerPluginDef = {
+      manifest: {
+        id: "test.extension-callee",
+        version: "1.0.0",
+        title: "Continuation callee",
+        description: "Resolves a permitted native requirement after its action is admitted.",
+        capabilities: ["machines:shell"],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "inspect",
+          title: "Inspect",
+          caps: [],
+          input: z.strictObject({}),
+          result: z.strictObject({ done: z.literal(true) }),
+        }),
+      ],
+      prepareActions: {
+        inspect: {
+          caps: ["machines:shell"],
+          prepare: async (_ctx, args) => ({ args, targets: [] }),
+        },
+      },
+      handlers: {
+        inspect: async (ctx: ActionCtx) => {
+          ctx.authorityFence.extendPrepared([
+            {
+              cap: "machines:shell",
+              node: "manifold://machine/continuation",
+              reach: "node",
+            },
+          ]);
+          effects++;
+          return { done: true };
+        },
+      },
+    };
+    const base = await fixture([thin, callee]);
+
+    const outcome = await base.host.dispatch(base.owner, "test.extension-thin.relay", {});
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: "caller_ceiling: test.extension-thin -> test.extension-callee.inspect (machines:shell)",
+    });
+    expect(rowFor(base, "test.extension-callee.inspect").outcome).toBe("forbidden");
+    expect(effects).toBe(0);
+    base.store.close();
+  });
 
   test("an engine builtin is not a callee at all, however a manifest names it", async () => {
     /*
