@@ -18,7 +18,7 @@ import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./job
 import { AgentSchema, HarnessDefinitionSchema, HarnessTargetSchema } from "./agents.ts";
 import { AgentRunSchema, SendRunInputRequestSchema } from "./agent-runs.ts";
 import { SessionRefSchema } from "./session-ref.ts";
-import { TerminalRuntimeSchema } from "./jobs.ts";
+import { TerminalRuntimeSchema, type TerminalRuntime } from "./jobs.ts";
 import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
 import { TerminalExecutionSchema } from "./machine.ts";
 import { PanelArgSchema, validPanelArg } from "./layout.ts";
@@ -578,6 +578,42 @@ export const IsolatePreparationMetadataSchema = z
     message: "too many action preparers",
   });
 export type IsolatePreparationMetadata = z.infer<typeof IsolatePreparationMetadataSchema>;
+
+/**
+ * Contract 12 native preparation discloses selectors, not literal inputs or session contents.
+ * The host verifies these against its installation and owner; the digest commits the private
+ * full runtime for validation at effect admission. It is not proof that opaque inputs are valid.
+ */
+export const NativePreparationDemandSchema = z.strictObject({
+  machineId: TerminalRuntimeSchema.shape.machineId,
+  pluginId: TerminalRuntimeSchema.shape.pluginId,
+  operationId: TerminalRuntimeSchema.shape.operationId,
+  installationRevision: TerminalRuntimeSchema.shape.installationRevision,
+  artifactSha256: TerminalRuntimeSchema.shape.artifactSha256,
+  resourceBindingDigest: TerminalRuntimeSchema.shape.resourceBindingDigest,
+  inputs: TerminalRuntimeSchema.shape.inputs,
+  sessionMachineId: TerminalRuntimeSchema.shape.machineId.optional(),
+  runtimeDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type NativePreparationDemand = z.infer<typeof NativePreparationDemandSchema>;
+
+export function projectNativePreparationDemand(
+  runtime: TerminalRuntime,
+  runtimeDigest: string,
+): NativePreparationDemand {
+  return NativePreparationDemandSchema.parse({
+    machineId: runtime.machineId,
+    pluginId: runtime.pluginId,
+    operationId: runtime.operationId,
+    installationRevision: runtime.installationRevision,
+    artifactSha256: runtime.artifactSha256,
+    resourceBindingDigest: runtime.resourceBindingDigest,
+    ...(runtime.inputs === undefined ? {} : { inputs: runtime.inputs }),
+    ...(runtime.session === undefined ? {} : { sessionMachineId: runtime.session.machineId }),
+    runtimeDigest,
+  });
+}
+
 export const IsolatePreparationArgsSchemas = {
   "prepare.terminals.resolveMachine": z.tuple([
     z.strictObject({
@@ -588,7 +624,7 @@ export const IsolatePreparationArgsSchemas = {
   "prepare.terminals.stored": z.tuple([z.string().min(1).max(128)]),
   "prepare.containers.placement": z.tuple([z.string().min(1).max(128)]),
   "prepare.native.demand": z.tuple([
-    z.string().regex(/^[a-f0-9]{64}$/),
+    NativePreparationDemandSchema,
     z.string().min(1).max(128),
     z.string().min(1).max(128),
   ]),

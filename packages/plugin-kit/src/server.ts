@@ -26,6 +26,7 @@ import {
   IsolateHostEnvelopeSchema,
   IsolatePreparationMetadataSchema,
   IsolatePreparationResultSchemas,
+  projectNativePreparationDemand,
   type IsolatePreparationMethod,
   type IsolatePreparationMetadata,
   type ActionPreparationCtx,
@@ -1038,7 +1039,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       native: Object.freeze({
         demand: async (...args: Parameters<ActionPreparationCtx["native"]["demand"]>) =>
           IsolatePreparationResultSchemas["prepare.native.demand"].parse(
-            await call("prepare.native.demand", [argumentDigest(args[0]), args[1], args[2]]),
+            await call("prepare.native.demand", [
+              projectNativePreparationDemand(args[0], argumentDigest(args[0])),
+              args[1],
+              args[2],
+            ]),
           ),
       }),
     });

@@ -35,6 +35,7 @@ export interface NativeDemandBinding {
   readonly installationRevision: string;
   readonly artifactSha256: string;
   readonly resourceBindingDigest: string;
+  /** Commitment only during preparation; full opaque literals are checked at native admission. */
   readonly runtimeDigest: string;
   readonly ownerId: string;
   readonly ownerGeneration: number;

@@ -993,6 +993,8 @@ export class IsolateSupervisor implements IsolateRunner {
       // Calls wait behind earlier host work; a captured ctx is not authority after teardown.
       if (pending !== undefined && isolate.pending.get(pending.request.id) !== pending)
         throw new Error("no such request");
+      // Contracts 1–11 retain legacy prepared admission; only sealed contract-12 dispatches
+      // may request host-verified native selectors. No raw-input fallback is preparation authority.
       if (isPreparationMethod(frame.method)) {
         if (
           (isolate.ref.hardenedContract ?? 1) < 12 ||

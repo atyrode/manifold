@@ -93,6 +93,7 @@ import {
   SessionRefSchema,
   type TerminalRuntime,
   TerminalRuntimeSchema,
+  projectNativePreparationDemand,
   HarnessTargetSchema,
   LaunchRunResultSchema,
   ListHarnessesResultSchema,
@@ -121,6 +122,7 @@ import type {
   ActionPreparationDef,
   IsolatePreparationMetadata,
   PreparedRequirement,
+  NativePreparationDemand,
   GrantNode,
   GrantReach,
   AuthoredCap,
@@ -933,7 +935,7 @@ export interface ActionCtx {
   readonly preparation?: ActionPreparationCtx;
   readonly preparationMode?: "review";
   readonly prepareNativeDemand?: (
-    runtimeDigest: string,
+    demand: NativePreparationDemand,
     machineId: string,
     containerId: string,
   ) => Promise<readonly PreparedRequirement[]>;
@@ -6053,6 +6055,17 @@ export class PluginHost {
         terminalHostId: resolved.terminalHostId,
       });
     };
+    const prepareNativeDemand = async (
+      demand: NativePreparationDemand,
+      machineId: string,
+      containerId: string,
+    ): Promise<readonly PreparedRequirement[]> => {
+      if (this.jobs === null)
+        throw new ServiceError("forbidden", "terminal runtime unavailable");
+      const binding = this.jobs.prepareTerminalDemandBinding(demand, machineId, containerId);
+      nativeBindings.push(binding);
+      return structuredClone(binding.requirements);
+    };
     const preparationContext: ActionPreparationCtx = Object.freeze({
       terminals: Object.freeze({
         resolveMachine: async (input: {
@@ -6105,35 +6118,14 @@ export class PluginHost {
         },
       }),
       native: Object.freeze({
-        demand: async (runtime: TerminalRuntime, machineId: string, containerId: string) => {
-          if (this.jobs === null)
-            throw new ServiceError("forbidden", "terminal runtime unavailable");
-          const requirements = this.jobs.terminalDemand(runtime, machineId, containerId);
-          nativeBindings.push(this.jobs.terminalDemandBinding(runtime, machineId, containerId));
-          return structuredClone(requirements);
-        },
+        demand: async (runtime: TerminalRuntime, machineId: string, containerId: string) =>
+          prepareNativeDemand(
+            projectNativePreparationDemand(runtime, argumentDigest(runtime)),
+            machineId,
+            containerId,
+          ),
       }),
     });
-    const prepareNativeDemand = async (
-      digest: string,
-      machineId: string,
-      containerId: string,
-    ): Promise<readonly PreparedRequirement[]> => {
-      // Lookup original transported input by digest. No transformed secret crosses from a guest.
-      const candidates: unknown[] = [rawArgs];
-      for (let index = 0; index < candidates.length; index++) {
-        const value = candidates[index];
-        const runtime = TerminalRuntimeSchema.safeParse(value);
-        if (runtime.success && argumentDigest(runtime.data) === digest)
-          return preparationContext.native.demand(runtime.data, machineId, containerId);
-        if (value !== null && typeof value === "object") {
-          candidates.push(...Object.values(value));
-          if (candidates.length > 4096)
-            throw new ServiceError("forbidden", "native preparation input limit");
-        }
-      }
-      throw new ServiceError("forbidden", "native preparation input changed");
-    };
     if (!guestInput) {
       try {
         const prepared = await runActionPreparation(() =>

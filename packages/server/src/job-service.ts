@@ -37,6 +37,8 @@ import {
   type ManifoldRef,
   type Cap,
   type PreparedRequirement,
+  type NativePreparationDemand,
+  projectNativePreparationDemand,
   type RuntimeDeps,
   type PluginBundle,
   type JobArtifactDelivery,
@@ -5119,14 +5121,37 @@ export class JobService {
     }
   }
 
-  /** The host captures this binding itself; a preparer cannot manufacture native evidence. */
+  /** Validate the complete runtime at admission, not merely the opaque preparation commitment. */
   terminalDemandBinding(
     runtime: TerminalRuntime,
     machineId: string,
     containerId: string,
   ): NativeDemandBinding {
+    const binding = this.prepareTerminalDemandBinding(
+      projectNativePreparationDemand(runtime, digest(runtime)),
+      machineId,
+      containerId,
+    );
+    const install = this.jobs.installation(machineId, runtime.pluginId)!;
+    const inputReason = this.operationInputRefusal(
+      install.machine.operations[runtime.operationId]!,
+      runtime.input,
+    );
+    if (inputReason) fail(inputReason);
+    return binding;
+  }
+
+  /**
+   * Host-authoritative selector discovery shared by in-realm and isolated preparation.
+   * Literal input values stay private until effect admission; their digest is only a commitment.
+   */
+  prepareTerminalDemandBinding(
+    runtime: NativePreparationDemand,
+    machineId: string,
+    containerId: string,
+  ): NativeDemandBinding {
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
-    if (runtime.session !== undefined && runtime.session.machineId !== machineId)
+    if (runtime.sessionMachineId !== undefined && runtime.sessionMachineId !== machineId)
       fail("terminal_runtime_session_destination_changed");
     const live = this.channels.get(machineId);
     if (
@@ -5135,15 +5160,7 @@ export class JobService {
       !live.owner.platforms.some((platform) => platform.startsWith("linux-"))
     )
       fail("terminal_runtime_host_unsupported");
-    const { install, op } = this.discoverExecution(runtime.pluginId, {
-      machineId,
-      operationId: runtime.operationId,
-      installationRevision: runtime.installationRevision,
-      artifactSha256: runtime.artifactSha256,
-      resourceBindingDigest: runtime.resourceBindingDigest,
-      input: runtime.input,
-      inputs: runtime.inputs,
-    });
+    const { install, op } = this.discoverOperation(runtime.pluginId, runtime);
     if (this.heldPlugins.has(runtime.pluginId)) fail("plugin_held");
     if (
       !install.ready ||
@@ -5167,7 +5184,7 @@ export class JobService {
       installationRevision: install.revision,
       artifactSha256: install.artifact,
       resourceBindingDigest: digest(this.operationBindings(install, runtime.operationId) ?? null),
-      runtimeDigest: digest(runtime),
+      runtimeDigest: runtime.runtimeDigest,
       ownerId: live.owner.ownerId,
       ownerGeneration: live.owner.generation,
       terminalHostId: live.owner.terminalHostId,
@@ -5183,11 +5200,19 @@ export class JobService {
     };
   }
 
-  /** Pure declaration/resource/input discovery shared by preparation and real admission. */
-  private discoverExecution(
+  /** Declaration and resource discovery never needs a caller's opaque literal input values. */
+  private discoverOperation(
     pluginId: string,
-    args: Omit<JobExecution, "jobId" | "outputs" | "agentRun">,
-    agentRun?: { expiresAt: number },
+    args: Pick<
+      JobExecution,
+      | "machineId"
+      | "operationId"
+      | "installationRevision"
+      | "artifactSha256"
+      | "resourceBindingDigest"
+      | "resourceBindings"
+      | "expectedServiceBindings"
+    >,
   ) {
     const install = this.jobs.installation(args.machineId, pluginId);
     const op = install?.machine.operations[args.operationId];
@@ -5211,6 +5236,15 @@ export class JobService {
     this.requireServiceBindings(install, args.operationId, args.expectedServiceBindings);
     const resourceReason = this.resourceRefusal(install, args.operationId);
     if (resourceReason) fail(resourceReason);
+    return { install, op, resourceBindings };
+  }
+
+  private discoverExecution(
+    pluginId: string,
+    args: Omit<JobExecution, "jobId" | "outputs" | "agentRun">,
+    agentRun?: { expiresAt: number },
+  ) {
+    const { install, op, resourceBindings } = this.discoverOperation(pluginId, args);
     const inputFieldReason = this.operationInputRefusal(op, args.input);
     if (inputFieldReason) fail(inputFieldReason);
     const ceiling = jobLimits(op.limits);
@@ -5604,10 +5638,30 @@ export class JobService {
     privateEnv?: Extract<JobCommand, { type: "start" }>["privateEnv"],
     authorityFence?: ActionAuthorityFence,
   ): Extract<JobCommand, { type: "start" }> {
-    authorityFence?.checkCurrent();
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
     if (runtime.session !== undefined && runtime.session.machineId !== runtime.machineId)
       fail("terminal_runtime_session_destination_changed");
+    // Resolve the complete private runtime and match every planned fact before even the
+    // authority recheck can append an admission decision. A digest alone is not authority.
+    const native = this.terminalDemandBinding(runtime, machineId, terminal.containerId);
+    const captured = authorityFence?.snapshot().nativeDemand;
+    if (captured !== undefined) {
+      if (
+        !Array.isArray(captured) ||
+        !captured.some((binding) => {
+          const parsed = AuthoritySnapshotSchema.shape.native.unwrap().safeParse(binding);
+          return (
+            parsed.success &&
+            digest(parsed.data) === digest(native) &&
+            this.terminalDemandBindingCurrent(parsed.data)
+          );
+        })
+      )
+        fail("terminal_runtime_destination_changed");
+    }
+    if (native.terminalHostId !== terminal.terminalHostId)
+      fail("terminal_runtime_host_unsupported");
+    authorityFence?.checkCurrent();
     const runLaunch =
       terminal.runId !== undefined &&
       runtime.launchBinding !== undefined &&
@@ -5642,23 +5696,6 @@ export class JobService {
       )
         fail("terminal_restart_recipe_changed");
     }
-    const live = this.channels.get(machineId);
-    const install = this.jobs.installation(machineId, runtime.pluginId);
-    if (
-      !live?.proved ||
-      live.owner.terminalHostId !== terminal.terminalHostId ||
-      !live.owner.platforms.some((platform) => platform.startsWith("linux-"))
-    )
-      fail("terminal_runtime_host_unsupported");
-    if (
-      !install?.ready ||
-      !install.enabled ||
-      install.revision !== runtime.installationRevision ||
-      install.artifact !== runtime.artifactSha256
-    )
-      fail("installation_changed");
-    if (!install.machine.operations[runtime.operationId]?.stdin)
-      fail("terminal_operation_requires_stdin");
     const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const pinned = this.build(
@@ -5677,24 +5714,6 @@ export class JobService {
       undefined,
       terminal,
     );
-    const native = this.terminalDemandBinding(runtime, machineId, terminal.containerId);
-    const captured = authorityFence?.snapshot().nativeDemand;
-    if (captured !== undefined) {
-      if (
-        !Array.isArray(captured) ||
-        !captured.some((binding) => {
-          const parsed = AuthoritySnapshotSchema.shape.native.unwrap().safeParse(binding);
-          return (
-            parsed.success &&
-            parsed.data.machineId === machineId &&
-            parsed.data.runtimeDigest === native.runtimeDigest &&
-            parsed.data.operationId === native.operationId &&
-            this.terminalDemandBindingCurrent(parsed.data)
-          );
-        })
-      )
-        fail("terminal_runtime_destination_changed");
-    }
     const job = this.store.transaction(() => {
       authorityFence?.checkCurrent();
       return this.jobs.reserve(

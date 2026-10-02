@@ -160,6 +160,7 @@ export interface ActionPreparationCtx {
     placement(containerId: string): Promise<"element" | "tile">;
   };
   readonly native: {
+    /** Plans exact native authority; opaque literal inputs are validated only at effect admission. */
     demand(
       runtime: TerminalRuntime,
       machineId: string,

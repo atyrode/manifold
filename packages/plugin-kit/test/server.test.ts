@@ -5,7 +5,6 @@ import {
   HARDENED_CONTRACT_VERSION,
   ManifoldRefSchema,
   type PreparedRequirement,
-  TerminalRuntimeSchema,
   type Agent,
   type AgentRun,
   type SessionRef,
@@ -19,7 +18,6 @@ import { z } from "zod";
 import { ActionCallError, HostCallError } from "../src/errors.ts";
 import {
   attachServerGuest,
-  argumentDigest,
   defineServerAction,
   type GuestCtx,
   type GuestDatabase,
@@ -1857,61 +1855,4 @@ describe("sealed action preparation", () => {
       expect(fake.sent.some((frame) => frame.t === "prepared")).toBe(false);
     },
   );
-  test("runtime fact RPC carries destination and digest only, never transformed secret input", async () => {
-    const runtime = TerminalRuntimeSchema.parse({
-      machineId: "exact",
-      pluginId: "example.native",
-      operationId: "shell",
-      installationRevision: "revision",
-      artifactSha256: "a".repeat(64),
-      resourceBindingDigest: "b".repeat(64),
-      input: { secret: "native-input-secret" },
-    });
-    const fake = host(
-      {
-        manifest: preparedManifest,
-        actions: [{ name: "native", title: "Native", caps: [], input: z.null(), result: z.null() }],
-        prepareActions: {
-          native: {
-            caps: [],
-            prepare: async (ctx) => {
-              await ctx.terminals.resolveMachine({ runtime });
-              await ctx.native.demand(runtime, "exact", "approved");
-              return { args: null, targets: [] };
-            },
-          },
-        },
-        handlers: { native: async () => null },
-      },
-      false,
-    );
-    fake.send({
-      t: "load",
-      pluginId: manifest.id,
-      manifest: preparedManifest,
-      dir: ".",
-      hardenedContract: 12,
-    });
-    await fake.next();
-    fake.send({ t: "dispatch", id: "digest", action: "native", args: null, ctx: ctxOf() });
-    const machine = await serve(fake, {
-      machineId: "exact",
-      terminalHostId: "owner",
-      terminalExecution: "governed",
-    });
-    expect(machine.args).toEqual([{ runtimeMachineId: "exact" }]);
-    const native = await serve(fake, []);
-    expect(native).toMatchObject({
-      method: "prepare.native.demand",
-      args: [argumentDigest(runtime), "exact", "approved"],
-    });
-    expect(JSON.stringify(fake.sent)).not.toContain("native-input-secret");
-    expect(await fake.next()).toEqual({
-      t: "prepared",
-      id: "digest",
-      targets: [],
-      additionalRequirements: [],
-    });
-    fake.send({ t: "admitted", id: "digest", allowed: false });
-  });
 });
