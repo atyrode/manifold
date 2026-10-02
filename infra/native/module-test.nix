@@ -1336,10 +1336,26 @@ in
         # Stop the replaceable transport before testing either post-shutdown custody path.
         node.succeed("systemctl stop manifold-shell-transport.service")
         if profile_role == "coexist":
-            # An account name alone is not a custody boundary. With the root directory
-            # prerequisite still active from boot, each ordinary-account preflight must
-            # independently reject a live NSS alias after the retained owner has exited.
-            node.succeed("usermod -o -u \"$(id -u manifold)\" account-shell")
+            # Do not rewrite account-shell's UID to the live native UID: shadow refuses to
+            # restore that record while the protected owner correctly remains running. Route a
+            # disposable NSS alias through the actual inactive units instead, so their
+            # effective-UID preflight is what rejects the overlap.
+            alias_user = "account-shell-alias"
+            node.succeed(
+                "useradd --no-create-home --non-unique --uid \"$(id -u manifold)\" "
+                "--gid shell-primary " + alias_user
+            )
+            alias_dropins = []
+            for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
+                directory = "/run/systemd/system/" + unit + ".d"
+                path = directory + "/identity-alias.conf"
+                node.succeed("mkdir -p " + shlex.quote(directory))
+                node.succeed(
+                    "printf '[Service]\\nUser=" + alias_user + "\\nWorkingDirectory=/\\n' > "
+                    + shlex.quote(path)
+                )
+                alias_dropins.append((directory, path))
+            node.succeed("systemctl daemon-reload")
             for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
                 node.succeed("systemctl reset-failed " + unit)
                 node.fail("systemctl start " + unit)
@@ -1348,7 +1364,11 @@ in
                 assert node.succeed("systemctl show -p MainPID --value " + unit).strip() == "0"
                 if unit == "manifold-shell-transport.service":
                     node.succeed("systemctl stop " + unit)
-            node.succeed("usermod -u 1400 account-shell")
+            for directory, path in alias_dropins:
+                node.succeed("rm " + shlex.quote(path))
+                node.succeed("rmdir " + shlex.quote(directory))
+            node.succeed("systemctl daemon-reload")
+            assert node.succeed("id -u account-shell").strip() == "1400"
             assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
 
         # Only after exact-owner shutdown may this fixture alter its private state.

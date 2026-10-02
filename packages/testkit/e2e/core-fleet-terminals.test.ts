@@ -201,6 +201,9 @@ for (const hardened of [false, true]) {
         ownerKey: hub.ownerKey,
         env: serverEnv,
       });
+      // A restarted hub begins with no live channel. Wait for beta's fresh owner before
+      // asking native preparation to bind its revisioned runtime facts.
+      await waitFor(() => isMachineOnline(hub, beta.machineId), 15_000, 50);
       await waitFor(
         () =>
           browser.evaluate<boolean>(
