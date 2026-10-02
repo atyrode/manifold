@@ -4130,11 +4130,14 @@ export class JobService {
     if (event.type !== "output" && event.type !== "inference_call")
       this.jobs.appendJournal(jobId, seq, this.runtime.now(), event);
     this.retainJobEvent(jobId, seq, event, reason !== null);
-    if (event.type === "result") this.wakeOwner(jobId);
+    // A terminal result has no further owner-side effects. Retire the originating action's
+    // transient fence before reconstructing durable settled-hook authority: a job born in a
+    // settled hook must not inherit that hook's already-closed lease.
     if (event.type === "result" || event.type === "refusal") {
       this.effectFences.get(jobId)?.close();
       this.effectFences.delete(jobId);
     }
+    if (event.type === "result") this.wakeOwner(jobId);
     if (this.followQueue.length >= 64) {
       for (const follower of [...this.followers]) this.closeFollower(follower, "limit");
       this.followQueue.length = 0;
