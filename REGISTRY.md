@@ -280,6 +280,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "persistence: SQLite schema and migrations"
     },
     {
+      "glob": "packages/server/src/migration-statements.ts",
+      "why": "persistence: ordered prepared migration statements propagate SQLite runtime refusals through the caller's version transaction"
+    },
+    {
       "glob": "packages/server/src/stores.ts",
       "why": "persistence: containers, tokens, terminals, plugin enablement, per-principal workspace layout, and atomic metadata-only direct-service monetary reservations/settlements"
     },
