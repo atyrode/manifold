@@ -105,7 +105,7 @@ import {
 } from "../packages/protocol/src/index.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
 import { jobDoors } from "../packages/server/src/job-doors.ts";
-import { serviceDoors } from "../packages/server/src/service-doors.ts";
+import { serviceDoorMetadata } from "../packages/server/src/service-doors.ts";
 import { machineDoors } from "../packages/server/src/machine-doors.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
@@ -433,7 +433,7 @@ try {
   const builtins = [
     { manifest: enginePluginsManifest, actions: enginePluginsActions },
     jobDoors,
-    serviceDoors,
+    serviceDoorMetadata,
     machineDoors,
   ];
   assembly = assembleRoster([...SERVER_PLUGIN_DEFS, ...builtins], new Set(), {

@@ -283,7 +283,7 @@ import type {
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService, SettledJobDelivery } from "./job-service.ts";
 import type { NativeDemandBinding } from "./authority-snapshot.ts";
-import { serviceContext, serviceDoors, serviceDoorSchemas } from "./service-doors.ts";
+import { serviceContext, createServiceDoors, serviceDoorSchemas } from "./service-doors.ts";
 import { machineDoors } from "./machine-doors.ts";
 import { jobSettledTimeouts, type JobSettledTimeouts } from "./settled-job-timeouts.ts";
 
@@ -1221,9 +1221,13 @@ const UPDATE_AUTHORITY_REFUSAL = "forbidden: root authority required";
  * same published JSON Schemas, same denial ladder, same roster — which is the point.
  * `source: "builtin"` says only "this row has no toggle".
  */
-const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
+function engineBuiltinDefs(
+  service: () => JobService | null,
+  signal: AbortSignal,
+): readonly ServerPluginDef[] {
+  return [
   jobDoors,
-  serviceDoors,
+  createServiceDoors(service, signal),
   machineDoors,
   {
     manifest: enginePluginsManifest,
@@ -1362,7 +1366,8 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
       },
     },
   },
-];
+  ];
+}
 
 /**
  * THE TRACE LEDGER, as the ladder needs it (axiom A6, ADR 0018). Three derivations and a
@@ -2435,9 +2440,13 @@ export class PluginHost {
     },
     builtinCodeIdentity: string,
   ) {
-    this.firstParty = [...ENGINE_BUILTIN_DEFS, ...defs];
+    const builtins = engineBuiltinDefs(() => {
+      requireActionEffects();
+      return this.jobs;
+    }, this.lifetime.signal);
+    this.firstParty = [...builtins, ...defs];
     this.defs = this.firstParty;
-    this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
+    this.builtins = new Set(builtins.map((def) => def.manifest.id));
     this.distribution = options.distribution;
     this.builtinCodeIdentity = builtinCodeIdentity;
     this.isolates = options.isolates ?? null;

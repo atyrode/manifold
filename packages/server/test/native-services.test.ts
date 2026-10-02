@@ -1,6 +1,6 @@
 import "../src/shared-modules.ts";
 import { expect, test } from "bun:test";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,17 @@ import {
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
+  CREDENTIAL_ENROLLMENT_TTL_MS,
+  CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+  CREDENTIAL_ENROLLMENT_PENDING_LIMIT,
+  createServiceCredentialEnrollmentKey,
+  sealServiceCredentialEnrollment,
+  type ServiceCredentialEnrollmentChallenge,
+  type ServiceCredentialEnrollmentContext,
+  type ServiceCredentialEnrollmentEnvelope,
+  type ServiceCredentialEnrollmentPrepareReply,
+  type ServiceCredentialEnrollmentCommitReply,
+  type LogEvent,
   type JobCommand,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   type JobOwner,
@@ -40,7 +51,7 @@ import {
   serveCtxCall,
   type IsolateDispatchOutcome,
 } from "../src/isolate/proxy-def.ts";
-import type { ActionCtx } from "../src/plugin-host.ts";
+import type { ActionCtx, PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { silentLogger } from "../src/log.ts";
@@ -116,12 +127,12 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read", path 
       return true;
     },
   };
-  const prove = (target = service) => {
-    target.online(channel, owner, "epoch");
+  const prove = (target = service, seat = channel, identity = owner) => {
+    target.online(seat, identity, "epoch");
     const challenge = commands.at(-1);
     if (challenge?.type !== "owner_challenge") throw new Error("missing challenge");
-    const body = { nonce: challenge.nonce, serverEpoch: challenge.serverEpoch, machineId, owner };
-    target.event(channel, {
+    const body = { nonce: challenge.nonce, serverEpoch: challenge.serverEpoch, machineId, owner: identity };
+    target.event(seat, {
       type: "owner_proof",
       ...body,
       signature: sign(null, Buffer.from(canonicalJobJson(body)), pair.privateKey).toString(
@@ -200,6 +211,822 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read", path 
     result,
   };
 }
+
+async function enrollmentFixture(replace = false) {
+  const recipient = await createServiceCredentialEnrollmentKey();
+  const f = fixture();
+  f.channel.protocolVersion = PROTOCOL_VERSION;
+  f.owner.credentialEnrollment = recipient.metadata;
+  f.owner.resources!.credentialReferences![0]!.available = false;
+  f.prove();
+  const args = {
+    machineId: f.machineId,
+    credentialRef: "native-account",
+    origin: policy.origin!,
+    replace,
+  };
+  const prepareCommand = () => {
+    const command = f.commands.findLast((command) => command.type === "credential_enrollment_prepare");
+    if (command?.type !== "credential_enrollment_prepare") throw new Error("missing preparation");
+    return command;
+  };
+  const offer = (patch: Partial<ServiceCredentialEnrollmentContext> = {}, emit = true) => {
+    const command = prepareCommand();
+    const challenge: ServiceCredentialEnrollmentChallenge = {
+      key: recipient.metadata,
+      context: {
+        version: recipient.metadata.version,
+        suite: recipient.metadata.suite,
+        keyId: recipient.metadata.keyId,
+        machineId: f.machineId,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        requestId: command.requestId,
+        serverEpoch: command.serverEpoch,
+        ownerChallenge: command.ownerChallenge,
+        credentialRef: args.credentialRef,
+        origin: args.origin,
+        nonce: randomUUID(),
+        expiresAt: f.runtime.now() + CREDENTIAL_ENROLLMENT_TTL_MS,
+        replace,
+        sourceRevision: replace ? randomUUID() : null,
+        ...patch,
+      },
+    };
+    if (emit)
+    f.service.event(f.channel, {
+      type: "credential_enrollment_prepared",
+      requestId: command.requestId,
+      reply: { kind: "prepared", challenge },
+    });
+    return challenge;
+  };
+  const prepare = async (caller = f.root, patch: Partial<ServiceCredentialEnrollmentContext> = {}) => {
+    const pending = f.service.prepareCredentialEnrollment(f.auth.credentialReference(caller), args);
+    offer(patch);
+    const reply = await pending;
+    if (reply.kind !== "prepared") throw new Error(`preparation refused: ${reply.kind}`);
+    return reply.challenge;
+  };
+  const seal = async (challenge: ServiceCredentialEnrollmentChallenge) => {
+    const bytes = new TextEncoder().encode("disposable-enrollment-marker");
+    try {
+      return await sealServiceCredentialEnrollment(challenge, bytes);
+    } finally {
+      bytes.fill(0);
+    }
+  };
+  const authorize = (challenge: ServiceCredentialEnrollmentChallenge, nonce = challenge.context.nonce) =>
+    f.service.event(f.channel, {
+      type: "credential_enrollment_authorize",
+      requestId: challenge.context.requestId,
+      nonce,
+    });
+  const stored = (challenge: ServiceCredentialEnrollmentChallenge, patch = {}) =>
+    f.service.event(f.channel, {
+      type: "credential_enrollment_result",
+      requestId: challenge.context.requestId,
+      reply: {
+        kind: "stored",
+        credentialRef: args.credentialRef,
+        available: true,
+        replaced: challenge.context.sourceRevision !== null,
+        sourceRevision: randomUUID(),
+        ...patch,
+      },
+    });
+  const close = () => {
+    f.service.offline(f.channel);
+    recipient.close();
+    f.store.close();
+  };
+  return { ...f, recipient, enrollmentArgs: args, prepareCommand, offer, prepare, seal, authorize, stored, close };
+}
+
+test.each([
+  ["offline", "credential_owner_offline"],
+  ["unproved", "credential_owner_unproved"],
+  ["old-owner", "credential_protocol_unsupported"],
+  ["retired-owner", "credential_protocol_unsupported"],
+  ["old-transport", "credential_protocol_unsupported"],
+  ["unknown-transport", "credential_protocol_unsupported"],
+  ["no-transport", "credential_protocol_unsupported"],
+  ["missing-key", "credential_key_unavailable"],
+  ["invalid-key", "credential_key_unavailable"],
+  ["key-version", "credential_key_version_unsupported"],
+  ["reference", "credential_reference_unknown"],
+  ["origin", "credential_origin_disallowed"],
+] as const)("credential preparation refuses %s before owner dispatch", async (failure, reason) => {
+  const f = await enrollmentFixture();
+  try {
+    if (failure === "offline") f.service.offline(f.channel);
+    if (failure === "unproved") f.service.online(f.channel, f.owner, "epoch");
+    if (failure === "old-owner" || failure === "retired-owner") {
+      f.owner.protocolVersion = failure === "old-owner" ? 44 : 46;
+      if (failure === "old-owner") f.prove();
+      else f.service.online(f.channel, f.owner, "epoch");
+    }
+    if (failure === "old-transport") f.channel.protocolVersion = PROTOCOL_VERSION - 1;
+    if (failure === "unknown-transport") f.channel.protocolVersion = PROTOCOL_VERSION + 1;
+    if (failure === "no-transport") delete f.channel.protocolVersion;
+    if (failure === "missing-key") delete f.owner.credentialEnrollment;
+    if (failure === "invalid-key")
+      f.owner.credentialEnrollment = { ...f.recipient.metadata, publicKey: "bad-key" };
+    if (failure === "key-version")
+      f.owner.credentialEnrollment = { ...f.recipient.metadata, version: 2 };
+    const args = {
+      ...f.enrollmentArgs,
+      ...(failure === "reference" ? { credentialRef: "not-declared" } : {}),
+      ...(failure === "origin" ? { origin: "https://other.invalid" } : {}),
+    };
+    expect(await f.service.prepareCredentialEnrollment(f.auth.credentialReference(f.root), args))
+      .toEqual({ kind: "refused", reason });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_prepare")).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test("enrollment restores root and exact-machine authority, not owner principal or copied caps", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const ownerToken = f.auth.authenticate(f.auth.mintToken({
+      principalId: f.root.principal.id,
+      caps: ["services:configure"],
+    }, f.root).token);
+    const browser = f.auth.authenticate(f.auth.bootstrapPrincipal({
+      kind: "human", name: "credential browser",
+    }, f.root).token);
+    for (const caller of [
+      ownerToken,
+      { ...browser, caps: [] },
+      { ...browser, authorityScope: [{
+        target: formatManifoldUri({ kind: "machine", machineId: "wrong-machine" }),
+        reach: "node" as const,
+        caps: ["services:configure" as const],
+      }] },
+    ]) {
+      expect(await f.service.prepareCredentialEnrollment(f.auth.credentialReference(caller), f.enrollmentArgs))
+        .toEqual({ kind: "refused", reason: "credential_unauthorized" });
+    }
+    expect(await f.service.prepareCredentialEnrollment(
+      f.auth.credentialReference(f.root),
+      { ...f.enrollmentArgs, machineId: "unknown-machine" },
+    )).toEqual({ kind: "refused", reason: "credential_machine_unknown" });
+    const narrowed = { ...browser, caps: ["services:configure" as const] };
+    const challenge = await f.prepare(narrowed);
+    const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(narrowed), {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    });
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await pending).toMatchObject({ kind: "stored", replaced: false });
+  } finally {
+    f.close();
+  }
+});
+
+test("a second root token on the same principal cannot take over an existing offer", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const browser = f.auth.authenticate(f.auth.bootstrapPrincipal({
+      kind: "human", name: "credential browser",
+    }, f.root).token);
+    const sibling = f.auth.authenticate(f.auth.mintToken({
+      principalId: browser.principal.id, caps: ["*"],
+    }, f.root).token);
+    const challenge = await f.prepare(browser);
+    const envelope = await f.seal(challenge);
+    expect(await f.service.commitCredentialEnrollment(f.auth.credentialReference(sibling), {
+      machineId: f.machineId, envelope,
+    })).toEqual({ kind: "refused", reason: "credential_unauthorized" });
+    expect(await f.service.cancelCredentialEnrollment(f.auth.credentialReference(sibling), {
+      machineId: f.machineId, requestId: challenge.context.requestId, nonce: challenge.context.nonce,
+    })).toEqual({ kind: "refused", reason: "credential_unauthorized" });
+    const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(browser), {
+      machineId: f.machineId, envelope,
+    });
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await pending).toMatchObject({ kind: "stored" });
+  } finally {
+    f.close();
+  }
+});
+
+const enrollmentContextChanges: readonly Partial<ServiceCredentialEnrollmentContext>[] = [
+  { version: 2 },
+  { keyId: "0".repeat(64) },
+  { machineId: "wrong-machine" },
+  { ownerId: "another-owner" },
+  { ownerGeneration: 2 },
+  { requestId: "00000000-0000-4000-8000-000000000001" },
+  { serverEpoch: "another-epoch" },
+  { ownerChallenge: "another-proof" },
+  { credentialRef: "another-reference" },
+  { origin: "https://other.invalid" },
+  { nonce: "00000000-0000-4000-8000-000000000002" },
+  { expiresAt: 1 },
+  { replace: true },
+  { sourceRevision: "00000000-0000-4000-8000-000000000003" },
+];
+
+test.each([
+  ...enrollmentContextChanges.filter((patch) => patch.nonce === undefined && patch.expiresAt === undefined),
+  { expiresAt: 0 },
+  { expiresAt: CREDENTIAL_ENROLLMENT_TTL_MS + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS + 1 },
+])("owner offer mismatch %j is never published to the caller", async (patch) => {
+  const f = await enrollmentFixture();
+  try {
+    const pending = f.service.prepareCredentialEnrollment(f.auth.credentialReference(f.root), f.enrollmentArgs);
+    f.offer(patch);
+    expect(await pending).toEqual({ kind: "refused", reason: "credential_target_mismatch" });
+    expect(f.commands.at(-1)).toMatchObject({ type: "credential_enrollment_cancel", nonce: null });
+  } finally {
+    f.close();
+  }
+});
+
+test.each(enrollmentContextChanges)("copied commit context mismatch %j never reaches the native owner", async (patch) => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    const envelope = await f.seal(challenge);
+    const changed: ServiceCredentialEnrollmentEnvelope = {
+      ...envelope, context: { ...envelope.context, ...patch },
+    };
+    expect(await f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope: changed,
+    })).toEqual({
+      kind: "refused",
+      reason: patch.requestId === undefined ? "credential_target_mismatch" : "credential_enrollment_unknown",
+    });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_commit")).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test("mutating the returned offer cannot change the hub's immutable expected context", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    const original = structuredClone(challenge);
+    challenge.context.origin = "https://other.invalid";
+    challenge.key.keyId = "0".repeat(64);
+    const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope: await f.seal(original),
+    });
+    f.authorize(original);
+    f.stored(original);
+    expect(await pending).toMatchObject({ kind: "stored" });
+  } finally {
+    f.close();
+  }
+});
+
+test.each(["offer", "authorization", "result"] as const)(
+  "live authority withdrawal at %s closes the original enrollment without replay",
+  async (phase) => {
+    for (const withdrawal of ["revoke", "expire", "attenuate"] as const) {
+      const f = await enrollmentFixture();
+      try {
+        const browser = f.auth.authenticate(f.auth.mintToken({
+          principal: { kind: "human", name: "credential browser" },
+          caps: ["*"],
+        }, f.root).token);
+        if (browser.expiresAt === undefined) throw new Error("missing human expiry");
+        f.runtime.time = browser.expiresAt - 1_000;
+        const credential = f.auth.credentialReference(browser);
+        let offer: ServiceCredentialEnrollmentChallenge;
+        let pending: Promise<ServiceCredentialEnrollmentPrepareReply | ServiceCredentialEnrollmentCommitReply>;
+        if (phase === "offer") {
+          pending = f.service.prepareCredentialEnrollment(credential, f.enrollmentArgs);
+          offer = f.offer({}, false);
+        } else {
+          offer = await f.prepare(browser);
+          pending = f.service.commitCredentialEnrollment(credential, {
+            machineId: f.machineId, envelope: await f.seal(offer),
+          });
+          if (phase === "result") f.authorize(offer);
+        }
+        if (withdrawal === "revoke") f.auth.revokePrincipal(browser.principal.id, f.root);
+        if (withdrawal === "expire") {
+          f.runtime.time = browser.expiresAt;
+          f.service.tick();
+        }
+        if (withdrawal === "attenuate") f.auth.grant({
+          principal: { kind: "principal", id: browser.principal.id },
+          node: formatManifoldUri({ kind: "machine", machineId: f.machineId }),
+          reach: "node", effect: "deny", caps: ["services:configure"],
+        }, f.root);
+        if (phase === "offer") f.service.event(f.channel, {
+          type: "credential_enrollment_prepared", requestId: offer.context.requestId,
+          reply: { kind: "prepared", challenge: offer },
+        });
+        else if (phase === "authorization") f.authorize(offer);
+        else f.stored(offer);
+        expect(await pending).toEqual(phase === "result"
+          ? { kind: "unknown", reason: "credential_outcome_unknown" }
+          : { kind: "refused", reason: "credential_unauthorized" });
+        const allowed = f.commands.filter((command) =>
+          command.type === "credential_enrollment_authorized" && command.allowed,
+        );
+        expect(allowed).toHaveLength(phase === "result" ? 1 : 0);
+        f.prove();
+        expect(f.commands.filter((command) => command.type === "credential_enrollment_commit"))
+          .toHaveLength(phase === "offer" ? 0 : 1);
+      } finally {
+        f.close();
+      }
+    }
+  },
+);
+
+test.each(["offline", "replacement"] as const)(
+  "an %s owner channel cancels only its original seat and never migrates a pending envelope",
+  async (failure) => {
+    for (const authorized of [false, true]) {
+      const f = await enrollmentFixture();
+      try {
+        const challenge = await f.prepare();
+        const envelope = await f.seal(challenge);
+        const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+          machineId: f.machineId, envelope,
+        });
+        if (authorized) f.authorize(challenge);
+        const replacement = { ...f.channel };
+        if (failure === "offline") f.service.offline(f.channel);
+        else f.prove(f.service, replacement);
+        expect(await pending).toEqual(authorized
+          ? { kind: "unknown", reason: "credential_outcome_unknown" }
+          : { kind: "refused", reason: "credential_owner_offline" });
+        f.stored(challenge);
+        f.authorize(challenge);
+        if (failure === "offline") f.prove(f.service, replacement);
+        const before = f.commands.length;
+        expect(await f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+          machineId: f.machineId, envelope,
+        })).toEqual({ kind: "refused", reason: "credential_enrollment_unknown" });
+        f.service.offline(f.channel);
+        expect(f.commands.length).toBe(before);
+        expect(f.commands.filter((command) => command.type === "credential_enrollment_commit"))
+          .toHaveLength(1);
+        f.service.offline(replacement);
+      } finally {
+        f.close();
+      }
+    }
+  },
+);
+
+test("an action abort before an offer cancels by request identity and ignores a late owner reply", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const abort = new AbortController();
+    const pending = f.service.prepareCredentialEnrollment(
+      f.auth.credentialReference(f.root), f.enrollmentArgs, "abort", undefined, abort.signal,
+    );
+    abort.abort(new Error("/private/path/never-disclose"));
+    f.offer();
+    expect(await pending).toEqual({ kind: "refused", reason: "credential_enrollment_cancelled" });
+    expect(f.commands.at(-1)).toMatchObject({ type: "credential_enrollment_cancel", nonce: null });
+    expect(JSON.stringify(f.store.listEvents({ type: TRACE_ROW_TYPE, limit: 20 })))
+      .not.toContain("/private/path");
+  } finally {
+    f.close();
+  }
+});
+
+test.each([false, true])("an aborted action fence after authorization=%s closes every continuation", async (authorized) => {
+  const f = await enrollmentFixture();
+  try {
+    let current = true;
+    const fence = new ActionAuthorityFence(f.auth, f.root, () => current, null);
+    fence.admit([{ cap: "*" }]);
+    const challenge = await f.prepare();
+    const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    }, "fenced", fence);
+    if (authorized) f.authorize(challenge);
+    current = false;
+    f.service.tick();
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await pending).toEqual(authorized
+      ? { kind: "unknown", reason: "credential_outcome_unknown" }
+      : { kind: "refused", reason: "credential_unauthorized" });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_commit")).toHaveLength(1);
+  } finally {
+    f.close();
+  }
+});
+
+test.each(["prepare", "offer", "commit", "authorized"] as const)(
+  "the %s deadline releases control waiters and refuses all late work",
+  async (phase) => {
+    const f = await enrollmentFixture();
+    try {
+      const credential = f.auth.credentialReference(f.root);
+      const preparing = f.service.prepareCredentialEnrollment(credential, f.enrollmentArgs);
+      let challenge: ServiceCredentialEnrollmentChallenge | undefined;
+      let committing: Promise<unknown> | undefined;
+      if (phase !== "prepare") {
+        f.offer();
+        const reply = await preparing;
+        if (reply.kind !== "prepared") throw new Error("missing offer");
+        challenge = reply.challenge;
+        if (phase === "commit" || phase === "authorized") {
+          committing = f.service.commitCredentialEnrollment(credential, {
+            machineId: f.machineId, envelope: await f.seal(challenge),
+          });
+          if (phase === "authorized") f.authorize(challenge);
+        }
+      }
+      f.runtime.time = phase === "offer"
+        ? CREDENTIAL_ENROLLMENT_TTL_MS
+        : CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS;
+      f.service.tick();
+      if (phase === "prepare") expect(await preparing)
+        .toEqual({ kind: "refused", reason: "credential_enrollment_expired" });
+      if (committing) expect(await committing).toEqual(phase === "authorized"
+        ? { kind: "unknown", reason: "credential_outcome_unknown" }
+        : { kind: "refused", reason: "credential_enrollment_expired" });
+      if (challenge) expect(await f.service.commitCredentialEnrollment(credential, {
+        machineId: f.machineId, envelope: await f.seal(challenge),
+      })).toEqual(phase === "authorized"
+        ? { kind: "unknown", reason: "credential_outcome_unknown" }
+        : { kind: "refused", reason: "credential_enrollment_expired" });
+      expect(f.commands.filter((command) => command.type === "credential_enrollment_cancel")).toHaveLength(1);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each([false, true])("explicit cancellation after authorization=%s never promises a rollback", async (authorized) => {
+  const f = await enrollmentFixture();
+  try {
+    const credential = f.auth.credentialReference(f.root);
+    const challenge = await f.prepare();
+    const committing = f.service.commitCredentialEnrollment(credential, {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    });
+    if (authorized) f.authorize(challenge);
+    const cancel = f.service.cancelCredentialEnrollment(credential, {
+      machineId: f.machineId, requestId: challenge.context.requestId, nonce: challenge.context.nonce,
+    });
+    if (!authorized) f.authorize(challenge);
+    f.service.event(f.channel, {
+      type: "credential_enrollment_cancelled",
+      requestId: challenge.context.requestId,
+      reply: authorized ? { kind: "unknown", reason: "credential_outcome_unknown" } : { kind: "cancelled" },
+    });
+    expect(await committing).toEqual(authorized
+      ? { kind: "unknown", reason: "credential_outcome_unknown" }
+      : { kind: "refused", reason: "credential_enrollment_cancelled" });
+    expect(await cancel).toEqual(authorized
+      ? { kind: "unknown", reason: "credential_outcome_unknown" }
+      : { kind: "cancelled" });
+    expect(await f.service.commitCredentialEnrollment(credential, {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    })).toEqual(authorized
+      ? { kind: "unknown", reason: "credential_outcome_unknown" }
+      : { kind: "refused", reason: "credential_enrollment_cancelled" });
+  } finally {
+    f.close();
+  }
+});
+
+test("a wrong nonce cannot cancel or authorize the live offer", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    const credential = f.auth.credentialReference(f.root);
+    expect(await f.service.cancelCredentialEnrollment(credential, {
+      machineId: f.machineId, requestId: challenge.context.requestId, nonce: randomUUID(),
+    })).toEqual({ kind: "refused", reason: "credential_target_mismatch" });
+    const pending = f.service.commitCredentialEnrollment(credential, {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    });
+    f.authorize(challenge, randomUUID());
+    expect(await pending).toEqual({ kind: "refused", reason: "credential_target_mismatch" });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_authorized" && command.allowed))
+      .toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test.each(["before-authorize", "reference", "replacement", "source-revision"] as const)(
+  "owner stored result mismatch %s never claims storage",
+  async (failure) => {
+    const f = await enrollmentFixture(true);
+    try {
+      const challenge = await f.prepare();
+      const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+        machineId: f.machineId, envelope: await f.seal(challenge),
+      });
+      if (failure !== "before-authorize") f.authorize(challenge);
+      f.stored(challenge, {
+        ...(failure === "reference" ? { credentialRef: "different-reference" } : {}),
+        ...(failure === "replacement" ? { replaced: false } : {}),
+        ...(failure === "source-revision" ? { sourceRevision: challenge.context.sourceRevision } : {}),
+      });
+      expect(await pending).toEqual(failure === "before-authorize"
+        ? { kind: "refused", reason: "credential_target_mismatch" }
+        : { kind: "unknown", reason: "credential_outcome_unknown" });
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["false", "throw"] as const)("a %s owner send has a closed result and is never retried", async (failure) => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      if (message.command.type !== "credential_enrollment_commit") return send(message);
+      if (failure === "throw") throw new Error("/private/crypto/never-disclose");
+      return false;
+    };
+    const envelope = await f.seal(challenge);
+    expect(await f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope,
+    })).toEqual({ kind: "refused", reason: "credential_owner_offline" });
+    f.channel.send = send;
+    expect(await f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope,
+    })).toEqual({ kind: "refused", reason: "credential_owner_offline" });
+    expect(JSON.stringify(f.store.listEvents({ type: TRACE_ROW_TYPE, limit: 20 })))
+      .not.toContain("/private/crypto");
+  } finally {
+    f.close();
+  }
+});
+
+test("one owner cannot evict an unexpired offer to exceed the pending limit", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const credential = f.auth.credentialReference(f.root);
+    const pending = Array.from({ length: CREDENTIAL_ENROLLMENT_PENDING_LIMIT }, () =>
+      f.service.prepareCredentialEnrollment(credential, f.enrollmentArgs),
+    );
+    expect(await f.service.prepareCredentialEnrollment(credential, f.enrollmentArgs))
+      .toEqual({ kind: "refused", reason: "credential_enrollment_busy" });
+    f.service.offline(f.channel);
+    expect(await Promise.all(pending)).toEqual(Array.from(
+      { length: CREDENTIAL_ENROLLMENT_PENDING_LIMIT },
+      () => ({ kind: "refused", reason: "credential_owner_offline" }),
+    ));
+    f.prove();
+    const challenge = await f.prepare();
+    const cancel = f.service.cancelCredentialEnrollment(credential, {
+      machineId: f.machineId, requestId: challenge.context.requestId, nonce: challenge.context.nonce,
+    });
+    f.service.event(f.channel, {
+      type: "credential_enrollment_cancelled", requestId: challenge.context.requestId, reply: { kind: "cancelled" },
+    });
+    expect(await cancel).toEqual({ kind: "cancelled" });
+  } finally {
+    f.close();
+  }
+});
+
+test.each([
+  ["key", "credential_key_changed"],
+  ["owner", "credential_owner_changed"],
+  ["generation", "credential_owner_changed"],
+  ["reference", "credential_reference_unknown"],
+  ["origin", "credential_origin_disallowed"],
+] as const)("live %s changes across the commit await cannot gain publication authority", async (change, reason) => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    });
+    if (change === "key")
+      f.owner.credentialEnrollment = { ...f.recipient.metadata, keyId: "0".repeat(64) };
+    if (change === "owner") f.owner.ownerId = "another-owner";
+    if (change === "generation") f.owner.generation++;
+    if (change === "reference" || change === "origin")
+      f.service.event(f.channel, {
+        type: "resources",
+        resources: {
+          ...f.owner.resources!,
+          credentialReferences: change === "reference" ? [] : [{
+            ref: f.enrollmentArgs.credentialRef, origins: ["https://other.invalid"], available: false,
+          }],
+        },
+      });
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await pending).toEqual({ kind: "refused", reason });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_authorized" && command.allowed))
+      .toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test("resources-only refresh preserves the proved key and a declared missing-source offer", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    f.service.event(f.channel, {
+      type: "resources",
+      resources: { ...f.owner.resources!, tools: {} },
+    });
+    const pending = f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    });
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await pending).toMatchObject({ kind: "stored", replaced: false });
+  } finally {
+    f.close();
+  }
+});
+
+test("a duplicate commit cannot replay the envelope or disturb the already consuming request", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    const args = { machineId: f.machineId, envelope: await f.seal(challenge) };
+    const credential = f.auth.credentialReference(f.root);
+    const first = f.service.commitCredentialEnrollment(credential, args);
+    expect(await f.service.commitCredentialEnrollment(credential, args))
+      .toEqual({ kind: "refused", reason: "credential_enrollment_replayed" });
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await first).toMatchObject({ kind: "stored" });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_commit")).toHaveLength(1);
+  } finally {
+    f.close();
+  }
+});
+
+test("an owner cannot reuse another live or consumed enrollment nonce", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare();
+    const credential = f.auth.credentialReference(f.root);
+    const duplicated = f.service.prepareCredentialEnrollment(credential, f.enrollmentArgs);
+    f.offer({ nonce: challenge.context.nonce });
+    expect(await duplicated).toEqual({ kind: "refused", reason: "credential_enrollment_replayed" });
+    const commit = f.service.commitCredentialEnrollment(credential, {
+      machineId: f.machineId, envelope: await f.seal(challenge),
+    });
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await commit).toMatchObject({ kind: "stored" });
+    const reused = f.service.prepareCredentialEnrollment(credential, f.enrollmentArgs);
+    f.offer({ nonce: challenge.context.nonce });
+    expect(await reused).toEqual({ kind: "refused", reason: "credential_enrollment_replayed" });
+  } finally {
+    f.close();
+  }
+});
+
+test("replacement before the native offer retires the original request even while the new owner is unproved", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const credential = f.auth.credentialReference(f.root);
+    const pending = f.service.prepareCredentialEnrollment(credential, f.enrollmentArgs);
+    const replacement = { ...f.channel };
+    f.service.online(replacement, f.owner, "epoch");
+    const late = f.offer({}, false);
+    f.service.event(f.channel, {
+      type: "credential_enrollment_prepared", requestId: late.context.requestId,
+      reply: { kind: "prepared", challenge: late },
+    });
+    f.service.event(replacement, {
+      type: "credential_enrollment_prepared", requestId: late.context.requestId,
+      reply: { kind: "prepared", challenge: late },
+    });
+    expect(await pending).toEqual({ kind: "refused", reason: "credential_owner_offline" });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_cancel"))
+      .toEqual([{ type: "credential_enrollment_cancel", requestId: late.context.requestId, nonce: null }]);
+    f.prove(f.service, replacement);
+    expect(await f.service.commitCredentialEnrollment(credential, {
+      machineId: f.machineId, envelope: await f.seal(late),
+    })).toEqual({ kind: "refused", reason: "credential_enrollment_unknown" });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_commit")).toEqual([]);
+    f.service.offline(replacement);
+  } finally {
+    f.close();
+  }
+});
+
+test("modest native clock lead preserves the exact offer but never extends hub custody", async () => {
+  const f = await enrollmentFixture();
+  try {
+    const challenge = await f.prepare(f.root, {
+      expiresAt: CREDENTIAL_ENROLLMENT_TTL_MS + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+    });
+    const envelope = await f.seal(challenge);
+    expect(envelope.context.expiresAt).toBe(
+      CREDENTIAL_ENROLLMENT_TTL_MS + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+    );
+    f.runtime.time = CREDENTIAL_ENROLLMENT_TTL_MS;
+    f.service.tick();
+    expect(await f.service.commitCredentialEnrollment(f.auth.credentialReference(f.root), {
+      machineId: f.machineId, envelope,
+    })).toEqual({ kind: "refused", reason: "credential_enrollment_expired" });
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_commit")).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test("ordinary opaque builtin enrollment uses the late JobService and audits only explicit safe metadata", async () => {
+  const f = await enrollmentFixture(true);
+  let host: PluginHost | undefined;
+  try {
+    const observedLogs: unknown[] = [];
+    const recordLog = (event: LogEvent, fields?: Readonly<Record<string, unknown>>) => {
+      observedLogs.push({ event, fields });
+    };
+    const clock = new FakeClock(f.runtime);
+    const rooms = new RoomManager(f.store, f.runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      f.store, f.auth, rooms, f.runtime, clock, silentLogger,
+      () => "http://localhost:7777", testTileTrees,
+    );
+    host = await testPluginHost(f.store, f.auth, rooms, broker, f.runtime, {
+      logger: { info: recordLog, warn: recordLog, error: recordLog },
+    });
+    expect(await host.dispatch(f.root, "engine.services.prepareCredentialEnrollment", f.enrollmentArgs))
+      .toEqual({ ok: true, result: { kind: "refused", reason: "credential_owner_offline" } });
+    host.setJobs(f.service);
+    const preparedOnWire = Promise.withResolvers<void>();
+    const committedOnWire = Promise.withResolvers<void>();
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      const sent = send(message);
+      if (message.command.type === "credential_enrollment_prepare") preparedOnWire.resolve();
+      if (message.command.type === "credential_enrollment_commit") committedOnWire.resolve();
+      return sent;
+    };
+    const opening = host.dispatch(f.root, "engine.services.prepareCredentialEnrollment", f.enrollmentArgs);
+    await Promise.race([
+      preparedOnWire.promise,
+      opening.then(() => { throw new Error("preparation settled before owner offer"); }),
+    ]);
+    f.offer();
+    const prepared = await opening;
+    if (!prepared.ok) throw new Error("preparation refused");
+    const reply = prepared.result as ServiceCredentialEnrollmentPrepareReply;
+    if (reply.kind !== "prepared") throw new Error("missing private offer");
+    const challenge = reply.challenge;
+    const envelope = await f.seal(challenge);
+    expect(await host.dispatch(f.reader, "engine.services.commitCredentialEnrollment", {
+      machineId: f.machineId, envelope,
+    })).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+    const committing = host.dispatch(f.root, "engine.services.commitCredentialEnrollment", {
+      machineId: f.machineId, envelope,
+    });
+    await Promise.race([
+      committedOnWire.promise,
+      committing.then(() => { throw new Error("commit settled before owner authorization"); }),
+    ]);
+    f.authorize(challenge);
+    f.stored(challenge);
+    expect(await committing).toMatchObject({ ok: true, result: { kind: "stored", replaced: true } });
+    expect(await host.dispatch(f.root, "engine.services.commitCredentialEnrollment", {
+      machineId: f.machineId, envelope,
+    })).toEqual({ ok: true, result: { kind: "refused", reason: "credential_enrollment_replayed" } });
+    expect(await host.dispatch(f.root, "engine.services.cancelCredentialEnrollment", {
+      machineId: f.machineId, requestId: challenge.context.requestId, nonce: challenge.context.nonce,
+    })).toEqual({ ok: true, result: { kind: "unknown", reason: "credential_outcome_unknown" } });
+    const traces = f.store.listEvents({ type: TRACE_ROW_TYPE, limit: 100 });
+    const audit = traces.map((trace) => JSON.parse(trace.payload) as Record<string, unknown>)
+      .filter((payload) => payload.serviceLifecycle === "credential-enrollment");
+    expect(audit.find((payload) => payload.status === "authorized")).toMatchObject({
+      machineId: f.machineId, credentialRef: f.enrollmentArgs.credentialRef, replace: true,
+    });
+    expect(audit.find((payload) => payload.status === "stored")).toMatchObject({ replace: true });
+    const observations = JSON.stringify({ traces, logs: observedLogs });
+    for (const excluded of [
+      "disposable-enrollment-marker",
+      envelope.ciphertext,
+      envelope.enc,
+      challenge.context.requestId,
+      challenge.context.nonce,
+      challenge.context.sourceRevision!,
+      challenge.key.keyId,
+      challenge.key.publicKey,
+    ]) expect(observations).not.toContain(excluded);
+    expect(f.store.db.query("SELECT job_id FROM machine_jobs").all()).toEqual([]);
+    expect(f.commands.filter((command) => command.type === "credential_enrollment_commit")).toHaveLength(1);
+  } finally {
+    host?.close();
+    f.close();
+  }
+});
 
 test("pending native service results retain the original action fence and refuse late withdrawal", async () => {
   const f = fixture();
