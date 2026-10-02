@@ -814,6 +814,7 @@ describe("shared transport", () => {
     const { first, late, socket } = await admittedObservers();
     try {
       await late.connect();
+      const pendingFence = late.syncSubscriptions();
       const transportId = first.transportId;
       const off = first.onAuthorityChange(() => {
         if (!first.workspaceCaps().includes("tokens:mint")) return;
@@ -838,7 +839,7 @@ describe("shared transport", () => {
       expect(first.workspaceCaps()).toEqual(["containers:read"]);
       expect(late.workspaceCaps()).toEqual(["containers:read"]);
       expect(late.workspaceEventsAvailable()).toBe(false);
-      expect(await late.syncSubscriptions()).toBe(false);
+      expect(await pendingFence).toBe(false);
     } finally {
       late.close();
       first.close();
