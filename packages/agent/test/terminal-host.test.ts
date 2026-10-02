@@ -59,6 +59,129 @@ function openPeer(host: TerminalHost): Peer {
   return peer;
 }
 
+function terminalForTest(host: TerminalHost, terminalId: string): PtyTerminal {
+  const target: unknown = host;
+  if (
+    typeof target !== "object" ||
+    target === null ||
+    !("terminals" in target) ||
+    !(target.terminals instanceof Map)
+  )
+    throw new Error("TerminalHost terminal registry is unavailable");
+  const terminal: unknown = target.terminals.get(terminalId);
+  if (!(terminal instanceof PtyTerminal)) throw new Error(`missing terminal ${terminalId}`);
+  return terminal;
+}
+
+function injectPtyOutput(terminal: PtyTerminal, data: string): void {
+  const target: unknown = terminal;
+  if (
+    typeof target !== "object" ||
+    target === null ||
+    !("ingest" in target) ||
+    typeof target.ingest !== "function"
+  )
+    throw new Error("PtyTerminal ingress is unavailable");
+  target.ingest.call(terminal, Buffer.from(data));
+}
+
+test("seated geometry support and snapshots preserve exact observer and legacy bodies", async () => {
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-c", "read -r _"] });
+  try {
+    const peer = openPeer(host);
+    peer.session.deliver({ type: "attach" });
+    peer.session.deliver({ type: "status_request" });
+    expect(peer.events.slice(1)).toEqual([{ type: "terminal_geometry_supported" }, host.status()]);
+    const observer = openPeer(host);
+    observer.session.deliver({ type: "status_request" });
+    expect(observer.events).toEqual([host.status()]);
+
+    peer.session.deliver({ type: "create", terminalId: "geometry", cols: 12, rows: 3, env: {} });
+    const terminal = terminalForTest(host, "geometry");
+    injectPtyOutput(terminal, "EARLY_ROW\r\nrow-1\r\nrow-2\r\nrow-3\r\nrow-4\r\n");
+    peer.session.deliver({ type: "snapshot_request", terminalId: "geometry" });
+    peer.session.deliver({ type: "geometry_snapshot_request", terminalId: "geometry" });
+    peer.session.deliver({ type: "resize", terminalId: "geometry", cols: 12, rows: 12 });
+    injectPtyOutput(terminal, "LATER_ROW\r\n");
+    const legacy = await peer.next("snapshot");
+    const snapshot = await peer.next("geometry_snapshot");
+    if (legacy.type !== "snapshot" || snapshot.type !== "geometry_snapshot")
+      throw new Error("snapshot frames required");
+    expect(Object.keys(legacy).sort()).toEqual(["data", "seq", "terminalId", "type"]);
+    expect(snapshot).toEqual({
+      ...legacy,
+      type: "geometry_snapshot",
+      geometry: { cols: 12, rows: 3, revision: 0 },
+    });
+    const data = Buffer.from(legacy.data, "base64").toString();
+    expect(data).toContain("EARLY_ROW");
+    expect(data).not.toContain("LATER_ROW");
+    expect(peer.events.find((event) => event.type === "terminal_geometry")).toEqual({
+      type: "terminal_geometry",
+      terminalId: "geometry",
+      seq: 1,
+      geometry: { cols: 12, rows: 12, revision: 1 },
+    });
+
+    observer.session.deliver({ type: "geometry_snapshot_request", terminalId: "geometry" });
+    expect(observer.events.at(-1)).toMatchObject({ type: "error", code: "not_attached" });
+    expect(observer.closed).toBe(true);
+    peer.session.deliver({ type: "geometry_snapshot_request", terminalId: "" });
+    expect(peer.events.at(-1)).toMatchObject({ type: "error", code: "malformed_frame" });
+    expect(peer.closed).toBe(true);
+    expect(terminal.alive).toBe(true);
+    const successor = openPeer(host);
+    successor.session.deliver({ type: "attach" });
+    successor.session.deliver({ type: "geometry_snapshot_request", terminalId: "geometry" });
+    expect(await successor.next("geometry_snapshot")).toMatchObject({
+      seq: 2,
+      geometry: { cols: 12, rows: 12, revision: 1 },
+    });
+  } finally {
+    await host.shutdown();
+  }
+});
+
+test.each(["snapshot_request", "geometry_snapshot_request"] as const)(
+  "a pending %s belongs to its requesting seat, not the successor",
+  async (requestType) => {
+    const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-c", "read -r _"] });
+    try {
+      const previous = openPeer(host);
+      previous.session.deliver({ type: "attach" });
+      previous.session.deliver({
+        type: "create",
+        terminalId: "retained",
+        cols: 12,
+        rows: 4,
+        env: {},
+      });
+      const terminal = terminalForTest(host, "retained");
+      injectPtyOutput(terminal, "BEFORE\r\n");
+      previous.session.deliver({ type: requestType, terminalId: "retained" });
+      previous.session.deliver({ type: "resize", terminalId: "retained", cols: 10, rows: 6 });
+      injectPtyOutput(terminal, "AFTER\r\n");
+      previous.session.detach();
+      const successor = openPeer(host);
+      successor.session.deliver({ type: "attach" });
+      successor.session.deliver({ type: "geometry_snapshot_request", terminalId: "retained" });
+      const snapshot = await successor.next("geometry_snapshot");
+      if (snapshot.type !== "geometry_snapshot") throw new Error("geometry snapshot required");
+      expect(snapshot.geometry).toEqual({ cols: 10, rows: 6, revision: 1 });
+      expect(snapshot.seq).toBe(2);
+      expect(Buffer.from(snapshot.data, "base64").toString()).toContain("AFTER");
+      expect(
+        previous.events.some(
+          (event) => event.type === "snapshot" || event.type === "geometry_snapshot",
+        ),
+      ).toBe(false);
+      expect(terminalForTest(host, "retained")).toBe(terminal);
+    } finally {
+      await host.shutdown();
+    }
+  },
+);
+
 test("only the seat holder mutates; observers read status and are cut on a mutation", async () => {
   const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
   try {
@@ -485,6 +608,7 @@ test.skipIf(process.platform !== "linux")(
       rmSync(current, { recursive: true });
       peer.events.length = 0;
       peer.session.deliver({ type: "snapshot_request", terminalId: "running" });
+      peer.session.deliver({ type: "geometry_snapshot_request", terminalId: "running" });
       peer.session.deliver({ type: "terminal_restart", terminalId: "running" });
       expect(
         await terminalEvent(peer, (event) => event.type === "terminal_restarted", 2_000),
@@ -496,6 +620,7 @@ test.skipIf(process.platform !== "linux")(
       });
       expect(peer.events.some((event) => event.type === "exited")).toBe(false);
       expect(peer.events.some((event) => event.type === "snapshot")).toBe(false);
+      expect(peer.events.some((event) => event.type === "geometry_snapshot")).toBe(false);
       await terminalEvent(
         peer,
         (event) =>

@@ -11,6 +11,7 @@ import {
   OutputRing,
   PtyTerminal,
   resolveShellCommand,
+  type PtyGeometry,
   type PtyOutput,
   type PtyTerminalOptions,
 } from "../src/terminal.ts";
@@ -33,6 +34,7 @@ const SHELL_COMMAND = [BASH, "--norc", "-i"] as const;
 interface Harness {
   readonly terminal: PtyTerminal;
   readonly outputs: PtyOutput[];
+  readonly stream: Array<PtyOutput | PtyGeometry>;
   readonly text: () => string;
   /** Resolves as soon as accumulated output satisfies `predicate` (checked per chunk). */
   readonly waitUntil: (predicate: () => boolean) => Promise<void>;
@@ -42,6 +44,7 @@ const live: PtyTerminal[] = [];
 
 function harnessFor(opts: Omit<PtyTerminalOptions, "onOutput">): Harness {
   const outputs: PtyOutput[] = [];
+  const stream: Array<PtyOutput | PtyGeometry> = [];
   const decoder = new TextDecoder();
   const waiters = new Set<{ predicate: () => boolean; resolve: () => void }>();
   let buffer = "";
@@ -50,6 +53,7 @@ function harnessFor(opts: Omit<PtyTerminalOptions, "onOutput">): Harness {
     ...opts,
     onOutput: (output) => {
       outputs.push(output);
+      stream.push(output);
       buffer += decoder.decode(output.bytes, { stream: true });
       for (const waiter of waiters) {
         if (waiter.predicate()) {
@@ -57,6 +61,10 @@ function harnessFor(opts: Omit<PtyTerminalOptions, "onOutput">): Harness {
           waiter.resolve();
         }
       }
+    },
+    onGeometry: (geometry) => {
+      stream.push(geometry);
+      opts.onGeometry?.(geometry);
     },
   });
   live.push(terminal);
@@ -68,7 +76,7 @@ function harnessFor(opts: Omit<PtyTerminalOptions, "onOutput">): Harness {
     return promise;
   };
 
-  return { terminal, outputs, text: () => buffer, waitUntil };
+  return { terminal, outputs, stream, text: () => buffer, waitUntil };
 }
 
 /** Convenience: a harness whose PTY runs the pinned deterministic shell. */
@@ -104,6 +112,37 @@ function injectPtyOutput(terminal: PtyTerminal, data: string): void {
     throw new Error("PtyTerminal ingest callback is unavailable");
   }
   target.ingest.call(target, new TextEncoder().encode(data));
+}
+
+function writeHeadless(terminal: HeadlessTerminal, data: string | Uint8Array): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  terminal.write(data, resolve);
+  return promise;
+}
+
+function enqueueStream(
+  terminal: HeadlessTerminal,
+  records: readonly (PtyOutput | PtyGeometry)[],
+): void {
+  for (const record of records) {
+    if ("bytes" in record) terminal.write(record.bytes);
+    else terminal.write("", () => terminal.resize(record.geometry.cols, record.geometry.rows));
+  }
+}
+
+function headlessState(terminal: HeadlessTerminal) {
+  const buffer = terminal.buffer.active;
+  return {
+    cols: terminal.cols,
+    rows: terminal.rows,
+    cursorX: buffer.cursorX,
+    cursorY: buffer.cursorY,
+    baseY: buffer.baseY,
+    lines: Array.from({ length: buffer.length }, (_, index) => {
+      const line = buffer.getLine(index);
+      return { text: line?.translateToString(), wrapped: line?.isWrapped };
+    }),
+  };
 }
 
 test("unknown native startup rejects exit and retains disposal authority until positive empty proof", async () => {
@@ -287,6 +326,172 @@ test("snapshot excludes output queued after its drain marker", async () => {
   expect(Buffer.from(snapshot.data).toString()).not.toContain("SNAPSHOT_AFTER");
   expect(h.terminal.seq).toBeGreaterThan(snapshot.seq);
 }, 12000);
+
+test("snapshot queued before a later resize retains its original history and grid", async () => {
+  const h = harnessFor({
+    terminalId: "snapshot-before-resize",
+    cols: 12,
+    rows: 3,
+    command: [SH, "-c", "read -r _"],
+  });
+  const before = Array.from({ length: 8 }, (_, index) => `row-${index}\r\n`).join("");
+  injectPtyOutput(h.terminal, before);
+  const reference = await h.terminal.snapshot();
+
+  const pending = h.terminal.snapshot();
+  h.terminal.resize(12, 12);
+  const after = "LATER_ROW\r\n";
+  injectPtyOutput(h.terminal, after);
+  const snapshot = await pending;
+
+  // The marker precedes the taller grid. Mutable requested rows must not make its bounded
+  // serializer discard history that was present in the actual three-row mirror.
+  expect(snapshot.data).toEqual(reference.data);
+  expect(Buffer.from(snapshot.data).toString()).toContain("row-0");
+  expect(Buffer.from(snapshot.data).toString()).not.toContain("LATER_ROW");
+  expect(snapshot.seq).toBe(1);
+  expect(snapshot.geometry).toEqual({ cols: 12, rows: 3, revision: 0 });
+  expect(h.outputs.map((output) => [output.seq, Buffer.from(output.bytes).toString()])).toEqual([
+    [1, before],
+    [2, after],
+  ]);
+
+  const restored = new HeadlessTerminal({
+    cols: 12,
+    rows: 3,
+    scrollback: 5000,
+    allowProposedApi: true,
+  });
+  const expected = new HeadlessTerminal({
+    cols: 12,
+    rows: 3,
+    scrollback: 5000,
+    allowProposedApi: true,
+  });
+  try {
+    await writeHeadless(expected, reference.data);
+    await writeHeadless(restored, snapshot.data);
+    expect(headlessState(restored)).toEqual(headlessState(expected));
+    const later = await h.terminal.snapshot();
+    expect(later.geometry).toEqual({ cols: 12, rows: 12, revision: 1 });
+    expect(snapshot.geometry).toEqual({ cols: 12, rows: 3, revision: 0 });
+  } finally {
+    restored.dispose();
+    expected.dispose();
+  }
+});
+
+test("resize queued before snapshot captures its parsed grid and excludes later redraw", async () => {
+  const h = harnessFor({
+    terminalId: "resize-before-snapshot",
+    cols: 12,
+    rows: 4,
+    command: [SH, "-c", "read -r _"],
+  });
+  const before = "abcdefghijklmnopqrstuvwx\r\nBASE\r\n";
+  injectPtyOutput(h.terminal, before);
+  h.terminal.resize(8, 4);
+  const pending = h.terminal.snapshot();
+  h.terminal.resize(16, 6);
+  const after = "\u001b[1A\r\u001b[2KLATER_REDRAW\r\n";
+  injectPtyOutput(h.terminal, after);
+  const snapshot = await pending;
+  expect(snapshot.geometry).toEqual({ cols: 8, rows: 4, revision: 1 });
+  expect(snapshot.seq).toBe(1);
+  expect(Buffer.from(snapshot.data).toString()).not.toContain("LATER_REDRAW");
+
+  const restored = new HeadlessTerminal({
+    cols: snapshot.geometry.cols,
+    rows: snapshot.geometry.rows,
+    scrollback: 5000,
+    allowProposedApi: true,
+  });
+  const expected = new HeadlessTerminal({
+    cols: 12,
+    rows: 4,
+    scrollback: 5000,
+    allowProposedApi: true,
+  });
+  try {
+    await writeHeadless(expected, before);
+    expected.resize(8, 4);
+    await writeHeadless(restored, snapshot.data);
+    expect(headlessState(restored)).toEqual(headlessState(expected));
+    const later = await h.terminal.snapshot();
+    expect(later.geometry).toEqual({ cols: 16, rows: 6, revision: 2 });
+    expect(snapshot.geometry).toEqual({ cols: 8, rows: 4, revision: 1 });
+    expect(h.outputs.map((output) => Buffer.from(output.bytes).toString())).toEqual([
+      before,
+      after,
+    ]);
+  } finally {
+    restored.dispose();
+    expected.dispose();
+  }
+});
+
+test("idle geometry revisions at one output seq replay in source order without changing bytes", async () => {
+  const h = harnessFor({
+    terminalId: "idle-geometry",
+    cols: 12,
+    rows: 4,
+    command: [SH, "-c", "read -r _"],
+  });
+  const repeated = "abcdefghijklmnopqrstuvwx\r\n";
+  injectPtyOutput(h.terminal, repeated);
+  const baseline = await h.terminal.snapshot();
+  h.terminal.resize(8, 4);
+  h.terminal.resize(10, 6);
+  h.terminal.resize(12, 4);
+  h.terminal.resize(12, 4);
+  injectPtyOutput(h.terminal, repeated);
+  const redraw = "\u001b[1A\r\u001b[2KFINAL\r\n";
+  injectPtyOutput(h.terminal, redraw);
+
+  // Publication is synchronous at enqueue, not deferred behind xterm's parser. All three
+  // idle boundaries share seq 1, but each changed grid remains an independent revision.
+  expect(
+    h.stream.map((record) =>
+      "bytes" in record ? { seq: record.seq, bytes: Buffer.from(record.bytes).toString() } : record,
+    ),
+  ).toEqual([
+    { seq: 1, bytes: repeated },
+    { seq: 1, geometry: { cols: 8, rows: 4, revision: 1 } },
+    { seq: 1, geometry: { cols: 10, rows: 6, revision: 2 } },
+    { seq: 1, geometry: { cols: 12, rows: 4, revision: 3 } },
+    { seq: 2, bytes: repeated },
+    { seq: 3, bytes: redraw },
+  ]);
+  const final = await h.terminal.snapshot();
+  const makeViewer = () =>
+    new HeadlessTerminal({ cols: 12, rows: 4, scrollback: 5000, allowProposedApi: true });
+  const liveViewer = makeViewer();
+  const lateViewer = makeViewer();
+  const mirrorViewer = makeViewer();
+  try {
+    enqueueStream(liveViewer, h.stream);
+    await writeHeadless(liveViewer, "");
+    await writeHeadless(lateViewer, baseline.data);
+    enqueueStream(
+      lateViewer,
+      h.stream.filter((record) =>
+        "bytes" in record
+          ? record.seq > baseline.seq
+          : record.geometry.revision > baseline.geometry.revision,
+      ),
+    );
+    await writeHeadless(lateViewer, "");
+    await writeHeadless(mirrorViewer, final.data);
+    expect(headlessState(lateViewer)).toEqual(headlessState(liveViewer));
+    expect(headlessState(mirrorViewer)).toEqual(headlessState(liveViewer));
+    expect(final.geometry).toEqual({ cols: 12, rows: 4, revision: 3 });
+    expect(final.seq).toBe(3);
+  } finally {
+    liveViewer.dispose();
+    lateViewer.dispose();
+    mirrorViewer.dispose();
+  }
+});
 
 test("reattached viewers recover private paste mode at the snapshot watermark", async () => {
   const h = spawn({});

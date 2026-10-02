@@ -268,7 +268,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/agent/src/**",
-      "why": "the PTY plane's far end: the terminal host owns terminals, bounded transient graphics and exact parser-continuation snapshots (ADR 0031), and a separate replaceable transport dials in over its private IPC seam; both survive server restarts"
+      "why": "the PTY plane's far end: the terminal host owns terminals, source-ordered byte/geometry boundaries, bounded transient graphics and marker-local parser-continuation snapshots (ADR 0031), and a separate replaceable transport dials in over its private IPC seam; both survive server restarts"
     },
     {
       "glob": "packages/server/src/main.ts",
@@ -348,7 +348,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/terminal-broker.ts",
-      "why": "the PTY broker: attach state machine, viewer registry, no-gap invariant and ephemeral controller-authorized smallest active viewport arbitration"
+      "why": "the PTY broker: bounded arrival-ordered byte/geometry attach handoff, viewer registry, no-gap invariant, explicit legacy-owner projection and ephemeral controller-authorized smallest active viewport arbitration"
     },
     {
       "glob": "packages/server/src/placement.ts",

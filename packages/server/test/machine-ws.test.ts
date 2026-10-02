@@ -18,7 +18,7 @@ import { JobService } from "../src/job-service.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import { LiveMachineChannel, MachineGateway, decideAdmission } from "../src/machine-ws.ts";
 import { RoomManager } from "../src/room.ts";
-import type { RawSocket } from "../src/session-channel.ts";
+import { SessionChannel, type RawSocket } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./helpers.ts";
 
@@ -226,6 +226,148 @@ describe("machine channel send status", () => {
 });
 
 describe("machine hello reconciliation", () => {
+  test("geometry delivery uses the current owner's capability and fences a superseded transport", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, "c".repeat(64), runtime);
+    const root = auth.authenticate("c".repeat(64));
+    const container: Container = {
+      id: runtime.newId(),
+      name: "geometry composition",
+      createdAt: runtime.now(),
+      discipline: "composition",
+    };
+    store.createContainer(container);
+    const enrollment = auth.enrollMachine("geometry-owner", root);
+    const terminalId = runtime.newId();
+    store.createTerminal({
+      id: terminalId,
+      machineId: enrollment.machine.id,
+      containerId: container.id,
+      createdBy: root.principal.id,
+      agentPrincipalId: null,
+      createdAt: runtime.now(),
+    });
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+    const gateway = new MachineGateway(
+      auth,
+      store,
+      broker,
+      clock,
+      silentLogger,
+      "geometry-epoch",
+      runtime,
+    );
+    const ownerSocket = new FakeSocket();
+    gateway.open("geometry-owner", ownerSocket);
+    gateway.message(
+      "geometry-owner",
+      JSON.stringify({
+        type: "hello",
+        token: enrollment.machineToken,
+        name: "geometry-owner",
+        agentVersion: "test",
+        protocolVersion: PROTOCOL_VERSION,
+        terminalGeometry: true,
+        terminals: [{ terminalId, alive: true, cols: 80, rows: 24, seq: 0 }],
+      }),
+    );
+    const viewerSocket = new FakeSocket();
+    const viewer = new SessionChannel(runtime.newId(), viewerSocket, root, container.id, "viewer");
+    broker.attach(viewer, { type: "terminal_attach", terminalId });
+    expect(machineMessages(ownerSocket).at(-1)).toEqual({
+      type: "geometry_snapshot_request",
+      terminalId,
+    });
+    gateway.message(
+      "geometry-owner",
+      JSON.stringify({
+        type: "geometry_snapshot",
+        terminalId,
+        seq: 0,
+        data: Buffer.from("initial").toString("base64"),
+        geometry: { cols: 80, rows: 24, revision: 0 },
+      }),
+    );
+    gateway.message(
+      "geometry-owner",
+      JSON.stringify({
+        type: "terminal_geometry",
+        terminalId,
+        seq: 0,
+        geometry: { cols: 60, rows: 18, revision: 1 },
+      }),
+    );
+    expect(viewerSocket.messages().filter((frame) => frame.type === "terminal_geometry")).toEqual([
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 0,
+        geometry: { cols: 60, rows: 18, revision: 1 },
+      },
+    ]);
+    const replacement = new FakeSocket();
+    gateway.open("legacy-replacement", replacement);
+    gateway.message(
+      "legacy-replacement",
+      JSON.stringify({
+        type: "hello",
+        token: enrollment.machineToken,
+        name: "geometry-owner",
+        agentVersion: "test",
+        protocolVersion: PROTOCOL_VERSION,
+        terminals: [{ terminalId, alive: true, cols: 60, rows: 18, seq: 0 }],
+      }),
+    );
+    expect(ownerSocket.closed?.code).toBe(4001);
+    expect(machineMessages(replacement).at(-1)).toEqual({ type: "snapshot_request", terminalId });
+    viewerSocket.clear();
+    for (const connection of ["geometry-owner", "legacy-replacement"]) {
+      gateway.message(
+        connection,
+        JSON.stringify({
+          type: "terminal_geometry",
+          terminalId,
+          seq: 0,
+          geometry: { cols: 10, rows: 10, revision: 2 },
+        }),
+      );
+    }
+    gateway.message(
+      "legacy-replacement",
+      JSON.stringify({
+        type: "snapshot",
+        terminalId,
+        seq: 0,
+        data: Buffer.from("retained process").toString("base64"),
+      }),
+    );
+    expect(viewerSocket.messages()).toEqual([
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 0,
+        data: Buffer.from("retained process").toString("base64"),
+        geometry: { cols: 60, rows: 18, revision: null },
+      },
+    ]);
+    expect(broker.listForContainer(container.id)).toMatchObject([{ cols: 60, rows: 18 }]);
+    gateway.shutdown();
+    store.close();
+  });
+
   test("an empty inventory on a vacant seat retains the missing terminal until dismissal", () => {
     const runtime = new FakeRuntime();
     const clock = new FakeClock(runtime);

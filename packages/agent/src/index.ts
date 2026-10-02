@@ -12,6 +12,7 @@ export {
   PtyError,
   PtyTerminal,
   type PtyExit,
+  type PtyGeometry,
   type PtyOutput,
   type PtyTerminalOptions,
   type PtySnapshot,

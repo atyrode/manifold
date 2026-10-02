@@ -143,6 +143,8 @@ interface Seat {
   readonly link: TerminalHostLink;
   readonly terminalHostId: string;
   terminalRestart: boolean;
+  /** Learned only from support on this exact seat; an old or replacement host starts false. */
+  terminalGeometry: boolean;
   /** Set by the host's `destructive_stop`; every exit forwarded after it carries the reason. */
   stopReason: TerminalOwnerStopReason | null;
 }
@@ -335,6 +337,7 @@ export class Agent {
           link,
           terminalHostId: event.terminalHostId,
           terminalRestart: false,
+          terminalGeometry: false,
           stopReason: null,
         };
         this.seatAttempts = 0;
@@ -354,6 +357,7 @@ export class Agent {
         this.scheduleSeatRetry();
         return;
       case "status":
+        if (this.seat?.link !== link) return;
         this.onHostStatus(event);
         return;
       case "shutdown_refused":
@@ -365,6 +369,13 @@ export class Agent {
       case "destructive_stop":
         // Only the seat holder is told; the exits it announces follow on the same link.
         if (this.seat?.link === link) this.seat.stopReason = event.reason;
+        return;
+      case "terminal_geometry_supported":
+        if (this.seat?.link === link) this.seat.terminalGeometry = true;
+        return;
+      case "terminal_geometry":
+      case "geometry_snapshot":
+        if (this.seat?.link === link && this.seat.terminalGeometry) this.bridgeToHub(event);
         return;
       case "created":
       case "create_error":
@@ -760,6 +771,7 @@ export class Agent {
         ? {}
         : { terminalExecution: status.terminalExecution }),
       ...(status.terminalRestart !== undefined ? { terminalRestart: status.terminalRestart } : {}),
+      ...(seat.terminalGeometry ? { terminalGeometry: true } : {}),
       ...(this.jobOwnerLink ? { jobOwner: this.jobOwnerLink.identity } : {}),
       ...(physicalCoreCount === undefined ? {} : { physicalCoreCount }),
     });
@@ -885,6 +897,9 @@ export class Agent {
             });
           });
         return;
+      case "geometry_snapshot_request":
+        if (this.seat?.terminalGeometry) this.seat.link.send(msg);
+        return;
       case "terminal_restart":
         if (this.seat?.terminalRestart) this.seat.link.send(msg);
         else
@@ -919,6 +934,8 @@ export class Agent {
           | "create_error"
           | "output"
           | "snapshot"
+          | "terminal_geometry"
+          | "geometry_snapshot"
           | "exited"
           | "drain_status"
           | "terminal_cwd"

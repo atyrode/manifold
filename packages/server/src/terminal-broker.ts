@@ -3,6 +3,7 @@ import {
   MachinePathSchema,
   canonicalJobJson,
   TERMINAL_RESTART_PROTOCOL_VERSION,
+  TERMINAL_GEOMETRY_PROTOCOL_VERSION,
   MAX_TERMINAL_VIEWPORTS,
   TERMINAL_VIEWPORT_LEASE_MS,
   MANIFOLD_ROOT_URI,
@@ -20,6 +21,7 @@ import {
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalInfo,
+  type TerminalGeometry,
   type TerminalReadiness,
   type TerminalExecution,
   type TerminalExitReason,
@@ -40,6 +42,7 @@ import type { RoomManager, RoomTimers, TileTreeDisciplines } from "./room.ts";
 import {
   serializeServerMessage,
   type SerializedServerMessage,
+  type ChannelMessage,
   type SessionChannel,
 } from "./session-channel.ts";
 import type { ServerStore, TerminalLaunchRecipe } from "./stores.ts";
@@ -62,10 +65,13 @@ type TerminalInput = Extract<ClientMessageBody, { type: "terminal_input" }>;
 type TerminalResize = Extract<ClientMessageBody, { type: "terminal_resize" }>;
 type TerminalTake = Extract<ClientMessageBody, { type: "terminal_take" }>;
 type OutputFrame = Extract<AgentMessage, { type: "output" }>;
-type SnapshotFrame = Extract<AgentMessage, { type: "snapshot" }>;
+type SnapshotFrame = Extract<AgentMessage, { type: "snapshot" | "geometry_snapshot" }>;
+type OwnerGeometryFrame = Extract<AgentMessage, { type: "terminal_geometry" }>;
+type GeometryFrame = Extract<ChannelMessage, { type: "terminal_geometry" }>;
+type StreamFrame = OutputFrame | GeometryFrame;
 
-const PENDING_OUTPUT_FRAMES = 256;
-const PENDING_OUTPUT_BYTES = 1_048_576;
+const PENDING_STREAM_FRAMES = 256;
+const PENDING_STREAM_BYTES = 1_048_576;
 const CREATE_DEADLINE_MS = 10_000;
 const SNAPSHOT_DEADLINE_MS = 10_000;
 const DRAIN_DEADLINE_MS = 10_000;
@@ -82,6 +88,7 @@ export interface MachineChannel {
   readonly terminalExecution: TerminalExecution | null;
   readonly protocolVersion?: number;
   readonly terminalRestart?: boolean;
+  readonly terminalGeometry?: boolean;
   send(message: ServerToAgentMessage): boolean;
 }
 
@@ -104,11 +111,12 @@ interface PendingDrain {
 
 interface Viewer {
   state: "PENDING" | "LIVE";
-  queue: OutputFrame[];
+  queue: StreamFrame[];
   queuedBytes: number;
   cancelSnapshotDeadline: (() => void) | null;
   snapshotGeneration: number;
   lastDeliveredSeq: number;
+  lastDeliveredGeometryRevision: number;
   credential: CredentialReference;
   viewports: Map<string, { cols: number; rows: number; expiresAt: number }>;
 }
@@ -117,6 +125,10 @@ interface RuntimeTerminal {
   info: TerminalInfo;
   viewers: Map<SessionChannel, Viewer>;
   lastReceivedOutputSeq: number;
+  /** -1 means the adopted or restarted owner's current revision has not been observed yet. */
+  lastReceivedGeometryRevision: number;
+  /** Desired admission is separate from the asynchronously applied owner grid. */
+  lastRequestedGrid: Pick<TerminalGeometry, "cols" | "rows"> | null;
   snapshotGeneration: number;
   snapshotRequestOutstanding: boolean;
   sizing: TerminalSizing;
@@ -400,6 +412,8 @@ export class TerminalBroker implements TerminalPlacementPort {
         info,
         viewers: new Map(),
         lastReceivedOutputSeq: 0,
+        lastReceivedGeometryRevision: -1,
+        lastRequestedGrid: null,
         snapshotGeneration: 0,
         snapshotRequestOutstanding: false,
         sizing: { mode: "retained", columns: [], rows: [] },
@@ -521,6 +535,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         continue;
       }
       terminal.snapshotRequestOutstanding = false;
+      terminal.lastRequestedGrid = null;
       // Every attached view belongs to its room, including a cold PENDING view.
       // Adoption will heal both with a fresh snapshot; an offline owner has no
       // snapshot deadline, and transport withdrawal must not erase attachment.
@@ -760,21 +775,29 @@ export class TerminalBroker implements TerminalPlacementPort {
         if (viewport.rows === rows) rowLimiters.push({ connId: channel.id, viewportId });
       }
     }
+    const requestedGrid = terminal.lastRequestedGrid ?? terminal.info;
     if (
       cols !== null &&
       rows !== null &&
-      (cols !== terminal.info.cols || rows !== terminal.info.rows)
+      (cols !== requestedGrid.cols || rows !== requestedGrid.rows)
     ) {
       const machine = this.machines.get(terminal.info.machineId);
       if (machine?.send({ type: "resize", terminalId: terminal.info.id, cols, rows })) {
-        terminal.info = { ...terminal.info, cols, rows };
-        this.rooms.live(terminal.info.containerId)?.broadcast({
-          type: "terminal_event",
-          terminalId: terminal.info.id,
-          kind: "resized",
-          cols,
-          rows,
-        });
+        terminal.lastRequestedGrid = { cols, rows };
+        if (!this.supportsTerminalGeometry(machine)) {
+          this.publishGeometryState(terminal, cols, rows);
+          // Retained owners have no source-relative resize ordering to offer a cold view.
+          this.relayStreamFrame(
+            terminal,
+            {
+              type: "terminal_geometry",
+              terminalId: terminal.info.id,
+              seq: terminal.lastReceivedOutputSeq,
+              geometry: { cols, rows, revision: null },
+            },
+            false,
+          );
+        }
       } else {
         // The owner admitted no new grid. Retire participation before the reliable refusal
         // can re-enter through viewer cleanup, then derive retained attribution.
@@ -810,9 +833,14 @@ export class TerminalBroker implements TerminalPlacementPort {
     });
   }
 
-  private removeViewer(terminal: RuntimeTerminal, channel: SessionChannel, arbitrate = true): void {
+  private removeViewer(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    arbitrate = true,
+    expected?: Viewer,
+  ): void {
     const viewer = terminal.viewers.get(channel);
-    if (viewer === undefined) return;
+    if (viewer === undefined || (expected !== undefined && viewer !== expected)) return;
     viewer.cancelSnapshotDeadline?.();
     viewer.cancelSnapshotDeadline = null;
     viewer.viewports.clear();
@@ -895,7 +923,15 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (viewer.state === "PENDING") viewer.snapshotGeneration = generation;
     }
     terminal.snapshotRequestOutstanding = true;
-    if (machine.send({ type: "snapshot_request", terminalId: terminal.info.id })) return;
+    if (
+      machine.send({
+        type: this.supportsTerminalGeometry(machine)
+          ? "geometry_snapshot_request"
+          : "snapshot_request",
+        terminalId: terminal.info.id,
+      })
+    )
+      return;
 
     terminal.snapshotRequestOutstanding = false;
     for (const [channel, viewer] of terminal.viewers) {
@@ -931,6 +967,8 @@ export class TerminalBroker implements TerminalPlacementPort {
         info,
         viewers: new Map(),
         lastReceivedOutputSeq: 0,
+        lastReceivedGeometryRevision: -1,
+        lastRequestedGrid: null,
         snapshotGeneration: 0,
         snapshotRequestOutstanding: false,
         sizing: { mode: "retained", columns: [], rows: [] },
@@ -960,6 +998,8 @@ export class TerminalBroker implements TerminalPlacementPort {
       rows: advertised.rows,
     };
     terminal.lastReceivedOutputSeq = advertised.seq;
+    terminal.lastReceivedGeometryRevision = -1;
+    terminal.lastRequestedGrid = null;
     terminal.snapshotRequestOutstanding = false;
     const adoptedContainerId = terminal.info.containerId;
     if (adoptedContainerId !== null) {
@@ -984,6 +1024,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         viewer.queue = [];
         viewer.queuedBytes = 0;
         viewer.lastDeliveredSeq = 0;
+        viewer.lastDeliveredGeometryRevision = -1;
         viewer.snapshotGeneration = terminal.snapshotGeneration + 1;
         this.armSnapshotDeadline(terminal, channel, viewer);
       }
@@ -1641,6 +1682,8 @@ export class TerminalBroker implements TerminalPlacementPort {
       info,
       viewers: new Map(),
       lastReceivedOutputSeq: 0,
+      lastReceivedGeometryRevision: 0,
+      lastRequestedGrid: null,
       snapshotGeneration: 0,
       snapshotRequestOutstanding: false,
       sizing: { mode: "retained", columns: [], rows: [] },
@@ -1745,6 +1788,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       cancelSnapshotDeadline: null,
       snapshotGeneration: terminal.snapshotGeneration + 1,
       lastDeliveredSeq: 0,
+      lastDeliveredGeometryRevision: -1,
       credential: this.auth.credentialReference(channel.auth),
       viewports: new Map(),
     };
@@ -1777,41 +1821,78 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
   }
 
-  /** Queues output for PENDING viewers and relays it directly only after handoff is LIVE. */
-  onOutput(machineId: string, output: OutputFrame): void {
-    const terminal = this.terminals.get(output.terminalId);
-    if (
-      terminal === undefined ||
-      terminal.info.machineId !== machineId ||
-      terminal.info.status !== "running"
-    ) {
-      return;
-    }
-    if (output.seq <= terminal.lastReceivedOutputSeq) return;
-    terminal.lastReceivedOutputSeq = output.seq;
+  private supportsTerminalGeometry(machine: MachineChannel | undefined): boolean {
+    return (
+      machine?.terminalGeometry === true &&
+      (machine.protocolVersion ?? 0) >= TERMINAL_GEOMETRY_PROTOCOL_VERSION
+    );
+  }
+
+  private publishGeometryState(terminal: RuntimeTerminal, cols: number, rows: number): void {
+    terminal.info = { ...terminal.info, cols, rows };
+    this.rooms.live(terminal.info.containerId)?.broadcast({
+      type: "terminal_event",
+      terminalId: terminal.info.id,
+      kind: "resized",
+      cols,
+      rows,
+    });
+  }
+
+  private serializeStreamFrame(frame: StreamFrame): SerializedServerMessage {
+    return serializeServerMessage(
+      frame.type === "output"
+        ? {
+            type: "terminal_output",
+            terminalId: frame.terminalId,
+            seq: frame.seq,
+            data: frame.data,
+          }
+        : frame,
+    );
+  }
+
+  /** One bounded, arrival-ordered lane; output and geometry have independent watermarks. */
+  private relayStreamFrame(
+    terminal: RuntimeTerminal,
+    frame: StreamFrame,
+    queuePending = true,
+  ): void {
     let serialized: SerializedServerMessage | null = null;
+    let queuedBytes: number | null = null;
     let retiredViewer = false;
     for (const [channel, viewer] of terminal.viewers) {
       if (viewer.state === "LIVE") {
-        if (output.seq <= viewer.lastDeliveredSeq) continue;
-        serialized ??= serializeServerMessage({
-          type: "terminal_output",
-          terminalId: output.terminalId,
-          seq: output.seq,
-          data: output.data,
-        });
+        if (frame.type === "output") {
+          if (frame.seq <= viewer.lastDeliveredSeq) continue;
+        } else if (
+          frame.geometry.revision !== null &&
+          frame.geometry.revision <= viewer.lastDeliveredGeometryRevision
+        ) {
+          continue;
+        }
+        serialized ??= this.serializeStreamFrame(frame);
         if (!channel.sendSerialized(serialized)) {
-          this.removeViewer(terminal, channel, false);
+          this.removeViewer(terminal, channel, false, viewer);
           retiredViewer = true;
           continue;
         }
-        viewer.lastDeliveredSeq = output.seq;
+        if (terminal.viewers.get(channel) !== viewer) continue;
+        if (frame.type === "output") viewer.lastDeliveredSeq = frame.seq;
+        else viewer.lastDeliveredGeometryRevision = frame.geometry.revision ?? -1;
         continue;
       }
-      const bytes = Buffer.byteLength(output.data);
+      if (!queuePending) continue;
+      if (queuedBytes === null) {
+        if (frame.type === "output") queuedBytes = Buffer.byteLength(frame.data);
+        else {
+          serialized ??= this.serializeStreamFrame(frame);
+          queuedBytes = serialized.bytes;
+        }
+      }
       if (
-        viewer.queue.length >= PENDING_OUTPUT_FRAMES ||
-        viewer.queuedBytes + bytes > PENDING_OUTPUT_BYTES
+        viewer.queue.length >= PENDING_STREAM_FRAMES ||
+        viewer.queuedBytes + queuedBytes > PENDING_STREAM_BYTES
       ) {
         this.failViewer(
           terminal,
@@ -1824,63 +1905,135 @@ export class TerminalBroker implements TerminalPlacementPort {
         retiredViewer = true;
         continue;
       }
-      viewer.queue.push(output);
-      viewer.queuedBytes += bytes;
+      viewer.queue.push(frame);
+      viewer.queuedBytes += queuedBytes;
     }
     if (retiredViewer) this.arbitrateViewports(terminal);
   }
 
-  /** Completes PENDING attach as snapshot(S) followed exactly by unique queued seq > S. */
+  /** Queues output for PENDING viewers and relays it directly only after handoff is LIVE. */
+  onOutput(machineId: string, output: OutputFrame): void {
+    const terminal = this.terminals.get(output.terminalId);
+    if (
+      terminal === undefined ||
+      terminal.info.machineId !== machineId ||
+      terminal.info.status !== "running"
+    ) {
+      return;
+    }
+    if (output.seq <= terminal.lastReceivedOutputSeq) return;
+    terminal.lastReceivedOutputSeq = output.seq;
+    this.relayStreamFrame(terminal, output);
+  }
+
+  /** Only the capable owner publishes applied geometry, never resize command admission. */
+  onGeometry(machineId: string, frame: OwnerGeometryFrame): void {
+    const terminal = this.terminals.get(frame.terminalId);
+    if (
+      terminal === undefined ||
+      terminal.info.machineId !== machineId ||
+      terminal.info.status !== "running" ||
+      !this.supportsTerminalGeometry(this.machines.get(machineId)) ||
+      frame.geometry.revision <= terminal.lastReceivedGeometryRevision
+    )
+      return;
+    terminal.lastReceivedGeometryRevision = frame.geometry.revision;
+    this.publishGeometryState(terminal, frame.geometry.cols, frame.geometry.rows);
+    this.relayStreamFrame(terminal, frame);
+  }
+
+  private isCurrentSnapshotViewer(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    viewer: Viewer,
+    generation: number,
+  ): boolean {
+    return (
+      terminal.viewers.get(channel) === viewer &&
+      viewer.state === "PENDING" &&
+      viewer.snapshotGeneration === generation
+    );
+  }
+
+  /** Snapshot(S,G), then outputs > S and geometry > G in their source arrival order. */
   onSnapshot(machineId: string, snapshot: SnapshotFrame): void {
     const terminal = this.terminals.get(snapshot.terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
     if (terminal.info.status !== "running") return;
     if (!terminal.snapshotRequestOutstanding) return;
+    if (
+      this.supportsTerminalGeometry(this.machines.get(machineId)) !==
+      (snapshot.type === "geometry_snapshot")
+    )
+      return;
     const generation = terminal.snapshotGeneration;
     terminal.snapshotRequestOutstanding = false;
+    const geometry =
+      snapshot.type === "geometry_snapshot"
+        ? snapshot.geometry
+        : { cols: terminal.info.cols, rows: terminal.info.rows, revision: null };
+    if (
+      snapshot.type === "geometry_snapshot" &&
+      snapshot.geometry.revision > terminal.lastReceivedGeometryRevision
+    ) {
+      terminal.lastReceivedGeometryRevision = snapshot.geometry.revision;
+      if (
+        terminal.info.cols !== snapshot.geometry.cols ||
+        terminal.info.rows !== snapshot.geometry.rows
+      )
+        this.publishGeometryState(terminal, snapshot.geometry.cols, snapshot.geometry.rows);
+    }
     const snapshotFrame = serializeServerMessage({
       type: "terminal_snapshot",
       terminalId: snapshot.terminalId,
       seq: snapshot.seq,
       data: snapshot.data,
+      geometry,
     });
-    const outputFrames = new Map<number, SerializedServerMessage>();
+    const streamFrames = new Map<StreamFrame, SerializedServerMessage>();
     for (const [channel, viewer] of terminal.viewers) {
-      if (viewer.state !== "PENDING" || viewer.snapshotGeneration !== generation) continue;
+      if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) continue;
       viewer.cancelSnapshotDeadline?.();
       viewer.cancelSnapshotDeadline = null;
       if (!channel.sendSerialized(snapshotFrame)) {
-        this.removeViewer(terminal, channel, false);
+        this.removeViewer(terminal, channel, false, viewer);
         continue;
       }
-      viewer.queue.sort((left, right) => left.seq - right.seq);
+      if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) continue;
       let lastSeq = snapshot.seq;
+      let lastRevision = geometry.revision ?? -1;
       let live = true;
-      for (const output of viewer.queue) {
-        if (output.seq <= lastSeq) continue;
-        let outputFrame = outputFrames.get(output.seq);
-        if (outputFrame === undefined) {
-          outputFrame = serializeServerMessage({
-            type: "terminal_output",
-            terminalId: output.terminalId,
-            seq: output.seq,
-            data: output.data,
-          });
-          outputFrames.set(output.seq, outputFrame);
+      for (const frame of viewer.queue) {
+        if (frame.type === "output") {
+          if (frame.seq <= lastSeq) continue;
+        } else if (frame.geometry.revision !== null && frame.geometry.revision <= lastRevision) {
+          continue;
         }
-        if (!channel.sendSerialized(outputFrame)) {
+        let serialized = streamFrames.get(frame);
+        if (serialized === undefined) {
+          serialized = this.serializeStreamFrame(frame);
+          streamFrames.set(frame, serialized);
+        }
+        if (!channel.sendSerialized(serialized)) {
           live = false;
           break;
         }
-        lastSeq = output.seq;
+        if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) {
+          live = false;
+          break;
+        }
+        if (frame.type === "output") lastSeq = frame.seq;
+        else lastRevision = frame.geometry.revision ?? -1;
       }
+      if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) continue;
       if (!live) {
-        this.removeViewer(terminal, channel, false);
+        this.removeViewer(terminal, channel, false, viewer);
         continue;
       }
       viewer.queue = [];
       viewer.queuedBytes = 0;
       viewer.lastDeliveredSeq = lastSeq;
+      viewer.lastDeliveredGeometryRevision = lastRevision;
       viewer.state = "LIVE";
     }
     this.requestSnapshotForPending(terminal);
@@ -2468,12 +2621,15 @@ export class TerminalBroker implements TerminalPlacementPort {
     };
     pending.fence.commit();
     terminal.lastReceivedOutputSeq = 0;
+    terminal.lastReceivedGeometryRevision = -1;
+    terminal.lastRequestedGrid = null;
     terminal.snapshotRequestOutstanding = false;
     for (const [channel, viewer] of terminal.viewers) {
       viewer.state = "PENDING";
       viewer.queue = [];
       viewer.queuedBytes = 0;
       viewer.lastDeliveredSeq = 0;
+      viewer.lastDeliveredGeometryRevision = -1;
       this.armSnapshotDeadline(terminal, channel, viewer);
     }
     const event = {

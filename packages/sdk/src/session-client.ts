@@ -962,7 +962,8 @@ export class SessionClient {
       case "cursor":
       case "gesture":
       case "terminal_snapshot":
-      case "terminal_output": {
+      case "terminal_output":
+      case "terminal_geometry": {
         this.emit(msg.type, msg);
         break;
       }

@@ -127,6 +127,7 @@ class Socket {
         terminalId: TERMINAL.id,
         seq: this.sequence,
         data: Buffer.from("NEVER RETURN SNAPSHOT HISTORY").toString("base64"),
+        geometry: { cols: TERMINAL.cols, rows: TERMINAL.rows, revision: null },
       });
       this.receive({
         type: "terminal_output",

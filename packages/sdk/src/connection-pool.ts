@@ -176,41 +176,89 @@ type ClassifiedFrame =
   | { kind: "unknown_type" }
   | { kind: "malformed"; detail: string };
 
-type TerminalDataFrame = Extract<ServerMessage, { type: "terminal_output" | "terminal_snapshot" }>;
+type TerminalStreamFrame = Extract<
+  ServerMessage,
+  { type: "terminal_output" | "terminal_snapshot" | "terminal_geometry" }
+>;
 
 /**
  * Frame policy (CONTRACTS.md): unknown `type` values are ignored for forward
  * compatibility; malformed frames of KNOWN types (or non-JSON) are protocol errors — the
  * connection closes (4002) and heals via reconnect → fresh init on every channel. The envelope
  * half is the dial skeleton's (`./dial-loop.ts`); what a valid server frame IS stays here, in
- * the schema and in the one hand-written predicate below.
+ * the schema and in the bounded terminal-stream predicates below.
  */
-function isTerminalDataFrame(raw: object): raw is TerminalDataFrame {
+function isTerminalGeometry(
+  raw: unknown,
+): raw is Extract<TerminalStreamFrame, { type: "terminal_geometry" }>["geometry"] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  const cols = Reflect.get(raw, "cols");
+  const rows = Reflect.get(raw, "rows");
+  const revision = Reflect.get(raw, "revision");
+  if (
+    typeof cols !== "number" ||
+    !Number.isInteger(cols) ||
+    cols <= 0 ||
+    cols > 1000 ||
+    typeof rows !== "number" ||
+    !Number.isInteger(rows) ||
+    rows <= 0 ||
+    rows > 1000 ||
+    (revision !== null &&
+      (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0))
+  ) {
+    return false;
+  }
+  for (const key in raw) {
+    if (key !== "cols" && key !== "rows" && key !== "revision") return false;
+  }
+  return true;
+}
+
+function isTerminalStreamFrame(raw: object): raw is TerminalStreamFrame {
   const type = Reflect.get(raw, "type");
   const ch = Reflect.get(raw, "ch");
   const terminalId = Reflect.get(raw, "terminalId");
   const seq = Reflect.get(raw, "seq");
   const data = Reflect.get(raw, "data");
-  return (
-    (type === "terminal_output" || type === "terminal_snapshot") &&
-    typeof ch === "string" &&
-    ch.length > 0 &&
-    typeof terminalId === "string" &&
-    terminalId.length > 0 &&
-    typeof seq === "number" &&
-    Number.isInteger(seq) &&
-    seq >= 0 &&
-    typeof data === "string" &&
-    data.length <= MAX_SESSION_BASE64_CHARS
-  );
+  if (
+    (type !== "terminal_output" && type !== "terminal_snapshot" && type !== "terminal_geometry") ||
+    typeof ch !== "string" ||
+    ch.length === 0 ||
+    typeof terminalId !== "string" ||
+    terminalId.length === 0 ||
+    typeof seq !== "number" ||
+    !Number.isSafeInteger(seq) ||
+    seq < 0
+  ) {
+    return false;
+  }
+  if (type !== "terminal_output" && !isTerminalGeometry(Reflect.get(raw, "geometry"))) {
+    return false;
+  }
+  if (type === "terminal_geometry") {
+    for (const key in raw) {
+      if (
+        key !== "type" &&
+        key !== "ch" &&
+        key !== "terminalId" &&
+        key !== "seq" &&
+        key !== "geometry"
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return typeof data === "string" && data.length <= MAX_SESSION_BASE64_CHARS;
 }
 
 function classifyServerFrame(data: unknown): ClassifiedFrame {
   const envelope = classifyEnvelope(data, (type) => KNOWN_SERVER_TYPES.has(type));
   if (envelope.kind !== "envelope") return envelope;
   const { type, raw } = envelope;
-  if (type === "terminal_output" || type === "terminal_snapshot") {
-    return isTerminalDataFrame(raw)
+  if (type === "terminal_output" || type === "terminal_snapshot" || type === "terminal_geometry") {
+    return isTerminalStreamFrame(raw)
       ? { kind: "message", message: raw }
       : { kind: "malformed", detail: `invalid ${type} frame` };
   }

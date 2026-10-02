@@ -13,6 +13,7 @@ import {
   inlineImageDimensions,
   encodeTerminalRgba,
   decodeTerminalRgba,
+  type ServerMessageBody,
 } from "@manifold/protocol";
 
 interface ImageSpec {
@@ -88,7 +89,11 @@ function decodeBase64(data: string): Uint8Array<ArrayBuffer> {
 }
 
 export interface TerminalGraphics {
-  writeSnapshot(data: Uint8Array, callback?: () => void): void;
+  writeSnapshot(
+    data: Uint8Array,
+    geometry: Extract<ServerMessageBody, { type: "terminal_snapshot" }>["geometry"],
+    callback?: () => void,
+  ): void;
   dispose(): void;
 }
 
@@ -524,17 +529,20 @@ export function installTerminalGraphics(
     return true;
   });
   return {
-    writeSnapshot: (data, callback) => {
+    writeSnapshot: (data, geometry, callback) => {
       // Invalidate async image work immediately, then reset behind queued writes.
       // Public xterm.reset() leaves its parser queue/state intact: CAN first
       // cancels an unfinished old control so it cannot consume the new snapshot.
       generation++;
       terminal.write("\x18", () => {
+        if (disposed) return;
         terminal.reset();
         addon.reset();
+        terminal.resize(geometry.cols, geometry.rows);
         restoring = true;
       });
       terminal.write(data, () => {
+        if (disposed) return;
         restoring = false;
         callback?.();
       });

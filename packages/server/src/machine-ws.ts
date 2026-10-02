@@ -87,6 +87,8 @@ export class LiveMachineChannel implements MachineChannel {
     readonly terminalRestart = false,
     /** Ephemeral OS-visible topology from this channel's admitted hello, never durable. */
     readonly physicalCoreCount?: number,
+    /** Actual retained-owner support, not inferred from the transport's protocol version. */
+    readonly terminalGeometry = false,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -376,6 +378,7 @@ export class MachineGateway {
       message.protocolVersion,
       message.terminalRestart === true,
       message.physicalCoreCount,
+      message.terminalGeometry === true,
     );
     const older = this.activeByMachine.get(authenticated.id) ?? null;
     const advertised = new Set<string>();
@@ -505,7 +508,11 @@ export class MachineGateway {
         this.broker.onOutput(channel.machineId, message);
         return;
       case "snapshot":
+      case "geometry_snapshot":
         this.broker.onSnapshot(channel.machineId, message);
+        return;
+      case "terminal_geometry":
+        this.broker.onGeometry(channel.machineId, message);
         return;
       case "exited":
         this.broker.onExited(

@@ -234,9 +234,9 @@ export interface SessionHandle {
   ): Promise<TerminalInfo>;
   /**
    * Declares a view on a terminal: the server answers with a fresh `terminal_snapshot` and
-   * every `terminal_output` after it, gap-free (CONTRACTS.md §attach). Refcounted per handle,
-   * so two views of one terminal share one wire subscription and the last `detachTerminal`
-   * is the one that releases it; the handle re-attaches by itself after a reconnect.
+   * every `terminal_output` and applied `terminal_geometry` after it, in stream order.
+   * Refcounted per handle, so two views of one terminal share one wire subscription and the
+   * last `detachTerminal` releases it; the handle re-attaches by itself after a reconnect.
    */
   attachTerminal(terminalId: string): void;
   /** Releases one view; the wire subscription ends with the last one. */
@@ -256,7 +256,7 @@ export interface SessionHandle {
   killTerminal(terminalId: string): void;
   /** The terminal table changed: a birth, an exit, a rename, a lease transfer. */
   on(event: "terminals_changed", fn: () => void): () => void;
-  /** A complete screen for an attached terminal, seq-anchored: outputs with `seq` above it follow. */
+  /** A complete screen with its own applied geometry and byte watermark; the ordered tail follows. */
   on(
     event: "terminal_snapshot",
     fn: (message: ServerMessageOf<"terminal_snapshot">) => void,
@@ -265,6 +265,14 @@ export interface SessionHandle {
   on(
     event: "terminal_output",
     fn: (message: ServerMessageOf<"terminal_output">) => void,
+  ): () => void;
+  /**
+   * An applied grid at the preceding byte watermark, ordered with output, not viewport intent.
+   * Null revision marks a legacy admission without owner-relative ordering evidence.
+   */
+  on(
+    event: "terminal_geometry",
+    fn: (message: ServerMessageOf<"terminal_geometry">) => void,
   ): () => void;
   /** A terminal's lifecycle, including truthful application/bracketed-paste `ready` evidence. */
   on(event: "terminal_event", fn: (message: ServerMessageOf<"terminal_event">) => void): () => void;
