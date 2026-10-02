@@ -7,7 +7,6 @@ import { canonicalJobJson, type JobRequest } from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore } from "../src/stores.ts";
 import {
-  JOB_SCHEDULE_SCHEMA_SQL,
   JobSchedules,
   type JobInvocationSpec,
   type JobScheduleSpec,
@@ -60,7 +59,6 @@ function fixture() {
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "hub.sqlite");
   let store = new ServerStore(openDatabase(path));
-  store.db.exec(JOB_SCHEDULE_SCHEMA_SQL);
   // Enqueue models the durable job insert, not an in-memory delivery observation.
   store.db.exec("CREATE TABLE enqueued(job_id TEXT PRIMARY KEY, request TEXT NOT NULL)");
   cleanup.push(() => store.close());

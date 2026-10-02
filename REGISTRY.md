@@ -106,6 +106,7 @@ must never be taught one.
       "id": "persistence",
       "globs": [
         "packages/server/src/db.ts",
+        "packages/server/src/migration-statements.ts",
         "packages/server/src/stores.ts",
         "packages/server/src/migrate-solo.ts",
         "packages/server/src/migrate-lexicon.ts",
@@ -284,6 +285,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/db.ts",
       "why": "persistence: SQLite schema and migrations"
+    },
+    {
+      "glob": "packages/server/src/migration-statements.ts",
+      "why": "persistence: ordered prepared migration statements propagate SQLite runtime refusals through the caller's version transaction"
     },
     {
       "glob": "packages/server/src/stores.ts",

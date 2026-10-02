@@ -10,7 +10,6 @@ import {
   type JobResourceBindings,
 } from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
-import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
 import { JobStore } from "../src/job-store.ts";
 import { ServerStore } from "../src/stores.ts";
 import {
@@ -52,7 +51,6 @@ function fixture() {
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "hub.sqlite");
   let store = new ServerStore(openDatabase(path));
-  store.db.exec(JOB_SCHEDULE_SCHEMA_SQL);
   cleanup.push(() => store.close());
   let jobs = new JobStore(store, () => {});
   return {
