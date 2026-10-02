@@ -111,6 +111,11 @@ for (const hardened of [false, true]) {
   test(`bare-core ${hardened ? "packed" : "native"} account launch and mounted fleet continuity`, async () => {
     const dist = resolveWebDist("manifold-core-fleet-web-");
     const browser = new Browser();
+    const sessionChannels = new Map<
+      string,
+      { readonly containerId: string; readonly spectator: boolean }
+    >();
+    const readyContainers = new Set<string>();
     let server: TestServer | undefined;
     const agents: TestAgent[] = [];
     const serverEnv = {
@@ -135,6 +140,50 @@ for (const hardened of [false, true]) {
       const composition = await createContainer(hub, "Fleet composition", "composition");
       await browser.launch({ incognito: true });
       await browser.send("Network.enable", {});
+      browser.on("Network.webSocketFrameSent", (params) => {
+        const response = params["response"] as
+          { payloadData?: string; opcode?: number } | undefined;
+        if (response?.opcode !== 1 || response.payloadData === undefined) return;
+        try {
+          const message = JSON.parse(response.payloadData) as {
+            readonly ch?: unknown;
+            readonly containerId?: unknown;
+            readonly spectator?: unknown;
+            readonly type?: unknown;
+          };
+          if (
+            message.type !== "join" ||
+            typeof message.ch !== "string" ||
+            typeof message.containerId !== "string"
+          )
+            return;
+          const spectator = message.spectator === true;
+          sessionChannels.set(message.ch, { containerId: message.containerId, spectator });
+          if (!spectator) readyContainers.delete(message.containerId);
+        } catch {
+          // Non-JSON websocket frames are outside the session protocol.
+        }
+      });
+      browser.on("Network.webSocketFrameReceived", (params) => {
+        const response = params["response"] as
+          { payloadData?: string; opcode?: number } | undefined;
+        if (response?.opcode !== 1 || response.payloadData === undefined) return;
+        try {
+          const message = JSON.parse(response.payloadData) as {
+            readonly ch?: unknown;
+            readonly type?: unknown;
+          };
+          if (
+            (message.type !== "init" && message.type !== "resync") ||
+            typeof message.ch !== "string"
+          )
+            return;
+          const channel = sessionChannels.get(message.ch);
+          if (channel !== undefined && !channel.spectator) readyContainers.add(channel.containerId);
+        } catch {
+          // Non-JSON websocket frames are outside the session protocol.
+        }
+      });
       await browser.send("Emulation.setDeviceMetricsOverride", {
         width: 1440,
         height: 1000,
@@ -194,6 +243,8 @@ for (const hardened of [false, true]) {
       );
       expect(await values()).toEqual(["Unsaved grouping draft", "Original account"]);
       await hub.stop();
+      sessionChannels.clear();
+      readyContainers.clear();
       await waitFor(async () => !(await visible(browser, editor)), 10_000, 50);
       server = await startServer({
         dataDir: hub.dataDir,
@@ -201,9 +252,10 @@ for (const hardened of [false, true]) {
         ownerKey: hub.ownerKey,
         env: serverEnv,
       });
-      // A restarted hub begins with no live channel. Wait for beta's fresh owner before
-      // asking native preparation to bind its revisioned runtime facts.
+      // A restarted hub begins with no live channel. Wait for beta's fresh owner and the
+      // browser's canvas occupant before asking native preparation to bind runtime facts.
       await waitFor(() => isMachineOnline(hub, beta.machineId), 15_000, 50);
+      await waitFor(() => readyContainers.has(canvas.id), 15_000, 50);
       await waitFor(
         () =>
           browser.evaluate<boolean>(
@@ -256,6 +308,7 @@ for (const hardened of [false, true]) {
       for (const container of [canvas, composition]) {
         const existing = new Set((await listTerminals(hub)).map((terminal) => terminal.id));
         await browser.goto(`${hub.httpUrl}/p/${container.id}`);
+        await waitFor(() => readyContainers.has(container.id), 15_000, 50);
         await openSidebar(browser);
         const selector = 'button[aria-label="New terminal on fleet-account-beta"]';
         await waitFor(
