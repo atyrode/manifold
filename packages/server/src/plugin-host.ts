@@ -5169,7 +5169,6 @@ export class PluginHost {
     return true;
   }
 
-
   /**
    * The CALLER, when a dispatch was opened by another plugin's handler rather than by a
    * client (ADR 0041). Everything in it is the host's own knowledge of the dispatch already
@@ -5308,7 +5307,10 @@ export class PluginHost {
         } catch {
           const callerCeilingCap = origin.callerCeilingCap;
           if (callerCeilingCap !== undefined)
-            throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${callerCeilingCap})`);
+            throw new ActionCallRefused(
+              "caller_ceiling",
+              `${caller} -> ${door} (${callerCeilingCap})`,
+            );
           /*
             A BROKEN CALLEE IS NOT A REFUSAL, and its error text is not the caller's to
             publish. The callee's own row already settled `failed` and the host already logged
@@ -5321,7 +5323,10 @@ export class PluginHost {
         }
         const callerCeilingCap = origin.callerCeilingCap;
         if (callerCeilingCap !== undefined)
-          throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${callerCeilingCap})`);
+          throw new ActionCallRefused(
+            "caller_ceiling",
+            `${caller} -> ${door} (${callerCeilingCap})`,
+          );
         if (outcome.ok) return outcome.result;
         const { rule, message } = outcome.denial;
         if (rule === "unknown_action") throw new ActionCallRefused("unknown_action", door);
@@ -6060,8 +6065,7 @@ export class PluginHost {
       machineId: string,
       containerId: string,
     ): Promise<readonly PreparedRequirement[]> => {
-      if (this.jobs === null)
-        throw new ServiceError("forbidden", "terminal runtime unavailable");
+      if (this.jobs === null) throw new ServiceError("forbidden", "terminal runtime unavailable");
       const binding = this.jobs.prepareTerminalDemandBinding(demand, machineId, containerId);
       nativeBindings.push(binding);
       return structuredClone(binding.requirements);
@@ -6722,7 +6726,14 @@ export class PluginHost {
         The stack is this trace's frames plus this plugin, so a callee already on it is a
         cycle and a chain that never repeats an id still stops at the depth bound.
       */
-      actions: this.actionCalls(pluginId, auth, session, traceId, actionStack, checkActionAuthority),
+      actions: this.actionCalls(
+        pluginId,
+        auth,
+        session,
+        traceId,
+        actionStack,
+        checkActionAuthority,
+      ),
       streams: {
         open: (kind, node) => {
           requireActionEffects();

@@ -99,9 +99,13 @@ export async function nativePreparationFixture(
   const clock = new FakeClock(runtime);
   const store = testStore();
   const ownerKey = randomBytes(32).toString("hex");
-  let service: JobService;
+  const serviceRef: { current: JobService | null } = { current: null };
   const auth = new AuthService(store, ownerKey, runtime, {
-    decide: (request) => service.decide(request),
+    decide: (request) => {
+      const service = serviceRef.current;
+      if (service === null) throw new Error("native preparation service is not initialized");
+      return service.decide(request);
+    },
   });
   const root = auth.authenticate(ownerKey);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
@@ -119,7 +123,8 @@ export async function nativePreparationFixture(
   const host = await testPluginHost(store, auth, rooms, broker, runtime, {
     isolates: { runner, dataDir },
   });
-  service = new JobService(store, auth, runtime);
+  const service = new JobService(store, auth, runtime);
+  serviceRef.current = service;
   host.setJobs(service);
   const fences: ActionAuthorityFence[] = [];
   const close = async () => {
@@ -323,12 +328,18 @@ export default definition;
       review: () => host.prepareActionInput(root, `${NATIVE_PREPARATION_PLUGIN}.native`, null),
       async capture() {
         const handoff: { value?: { fence: ActionAuthorityFence } } = {};
-        const outcome = await host.dispatch(root, `${NATIVE_PREPARATION_PLUGIN}.native`, null, null, {
-          onPrepared: (_args, fence) => {
-            fences.push(fence);
-            handoff.value = { fence };
+        const outcome = await host.dispatch(
+          root,
+          `${NATIVE_PREPARATION_PLUGIN}.native`,
+          null,
+          null,
+          {
+            onPrepared: (_args, fence) => {
+              fences.push(fence);
+              handoff.value = { fence };
+            },
           },
-        });
+        );
         if (!outcome.ok || handoff.value === undefined)
           throw new Error("native preparation did not reach real host admission");
         // Native admission is reached from a terminal-open trace, not the preparer's

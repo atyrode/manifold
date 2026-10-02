@@ -665,7 +665,11 @@ test("browser descriptors bind distinct runs without returning or journaling the
     await expect(f.open(a.runtime, f.auth.authenticate(other.token))).rejects.toThrow();
     const substituted = await f.open({ ...a.runtime, input: { changed: true } });
     expect(substituted.messages()).toContainEqual(
-      expect.objectContaining({ type: "error", code: "forbidden", message: "run launch binding refused" }),
+      expect.objectContaining({
+        type: "error",
+        code: "forbidden",
+        message: "run launch binding refused",
+      }),
     );
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     await f.open(a.runtime);

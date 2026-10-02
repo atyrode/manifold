@@ -64,9 +64,9 @@ test.each([false, true])(
         ownerGeneration: f.owner.generation,
         terminalHostId: f.terminal.terminalHostId,
       });
-      expect(
-        JSON.stringify([review, f.traces()]).includes(argumentDigest(f.terminalRuntime)),
-      ).toBe(false);
+      expect(JSON.stringify([review, f.traces()]).includes(argumentDigest(f.terminalRuntime))).toBe(
+        false,
+      );
       const publicEvidence = JSON.stringify([review, f.preparation, snapshot, f.traces()]);
       expect(publicEvidence.includes(f.privateValue)).toBe(false);
       expect(publicEvidence.includes(f.privateSession)).toBe(false);

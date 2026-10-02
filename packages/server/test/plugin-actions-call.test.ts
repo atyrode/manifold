@@ -712,7 +712,8 @@ describe("what a sibling call is refused by", () => {
 
     expect(denial(outcome)).toEqual({
       rule: "refused",
-      message: "caller_ceiling: test.prepared-thin -> test.prepared-callee.inspect (machines:shell)",
+      message:
+        "caller_ceiling: test.prepared-thin -> test.prepared-callee.inspect (machines:shell)",
     });
     expect(rowFor(base, "test.prepared-callee.inspect").outcome).toBe("forbidden");
     expect(effects).toBe(0);
@@ -771,7 +772,8 @@ describe("what a sibling call is refused by", () => {
       handlers: {
         inspect: async (ctx: ActionCtx) => {
           const fence = ctx.authorityFence;
-          if (fence === undefined) throw new Error("prepared action is missing its authority fence");
+          if (fence === undefined)
+            throw new Error("prepared action is missing its authority fence");
           fence.extendPrepared([
             {
               cap: "machines:shell",
@@ -790,7 +792,8 @@ describe("what a sibling call is refused by", () => {
 
     expect(denial(outcome)).toEqual({
       rule: "refused",
-      message: "caller_ceiling: test.extension-thin -> test.extension-callee.inspect (machines:shell)",
+      message:
+        "caller_ceiling: test.extension-thin -> test.extension-callee.inspect (machines:shell)",
     });
     expect(rowFor(base, "test.extension-callee.inspect").outcome).toBe("forbidden");
     expect(effects).toBe(0);

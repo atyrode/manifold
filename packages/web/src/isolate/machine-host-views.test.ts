@@ -222,9 +222,7 @@ test("an event read failure retries without another event or socket and retains 
     "unavailable grouping with individual enrollments",
   );
   expect(
-    await browser.evaluate<boolean>(
-      `document.querySelector(${JSON.stringify(grouping)}) === null`,
-    ),
+    await browser.evaluate<boolean>(`document.querySelector(${JSON.stringify(grouping)}) === null`),
   ).toBe(true);
   expect(
     await browser.evaluate<boolean>(
@@ -237,9 +235,7 @@ test("an event read failure retries without another event or socket and retains 
   await readCount(3);
   expect(await browser.evaluate<unknown>("window.hostViewsFixture.activity()")).toEqual(activity);
   expect(
-    await browser.evaluate<boolean>(
-      `document.querySelector(${JSON.stringify(grouping)}) === null`,
-    ),
+    await browser.evaluate<boolean>(`document.querySelector(${JSON.stringify(grouping)}) === null`),
   ).toBe(true);
   await browser.evaluate("window.hostViewsFixture.answer(2)");
   await waitFor(
@@ -286,9 +282,7 @@ test("a delayed successful mutation cannot resurrect a grouping removed by a new
     "successful editor close",
   );
   expect(
-    await browser.evaluate<boolean>(
-      `document.querySelector(${JSON.stringify(grouping)}) === null`,
-    ),
+    await browser.evaluate<boolean>(`document.querySelector(${JSON.stringify(grouping)}) === null`),
   ).toBe(true);
   expect(await browser.evaluate<boolean>("window.hostViewsFixture.resurrected")).toBe(false);
   await browser.evaluate("window.hostViewsFixture.answer(3)");
