@@ -107,10 +107,7 @@ async function openSidebar(browser: Browser): Promise<void> {
   await waitFor(() => visible(browser, '[data-testid="machines-rail"]'), 10_000, 50);
 }
 
-async function waitForOpenConnection(
-  browser: Browser,
-  discipline: "canvas" | "composition",
-): Promise<void> {
+async function waitForOpenConnection(browser: Browser, discipline: string): Promise<void> {
   const expression =
     discipline === "canvas"
       ? 'document.querySelector(\'[data-testid="connection-state"]\')?.textContent === "Open"'
