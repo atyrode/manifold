@@ -11,12 +11,15 @@ interface CredentialSlot {
   readonly fd: number;
   readonly revision: string;
 }
+interface CredentialPublication {
+  current: CredentialSlot | undefined;
+  mutating: boolean;
+}
 interface CredentialSource {
   readonly parent: HeldDirectory;
   readonly leaf: string;
   readonly origins: readonly string[];
-  current: CredentialSlot | undefined;
-  mutating: boolean;
+  readonly publication: CredentialPublication;
 }
 
 function privateCredential(stat: Stats): boolean {
@@ -33,6 +36,7 @@ function privateCredential(stat: Stats): boolean {
 /** Sole close-owner of declared source parents and their current read-only descriptors. */
 export class HeldServiceCredentialRegistry {
   private readonly sources = new Map<string, CredentialSource>();
+  private readonly publications = new Map<string, CredentialPublication>();
   private closed = false;
   private declarationsSealed = false;
 
@@ -54,13 +58,24 @@ export class HeldServiceCredentialRegistry {
       }
       if (fd !== undefined && !privateCredential(fstatSync(fd)))
         throw new Error("unsafe_service_credential_reference");
-      this.sources.set(ref, {
-        parent,
-        leaf,
-        origins: Object.freeze([...origins]),
-        current: fd === undefined ? undefined : { fd, revision: randomUUID() },
-        mutating: false,
-      });
+      const identity = fstatSync(parent.fd, { bigint: true });
+      const sourceKey = `${identity.dev}:${identity.ino}:${leaf}`;
+      const allowedOrigins = Object.freeze([...origins]);
+      let publication = this.publications.get(sourceKey);
+      if (publication) {
+        // An alias cannot replace the already-held bootstrap slot by reopening its name.
+        if (fd !== undefined) {
+          closeSync(fd);
+          fd = undefined;
+        }
+      } else {
+        publication = {
+          current: fd === undefined ? undefined : { fd, revision: randomUUID() },
+          mutating: false,
+        };
+      }
+      this.sources.set(ref, { parent, leaf, origins: allowedOrigins, publication });
+      this.publications.set(sourceKey, publication);
     } catch (error) {
       try {
         if (fd !== undefined) closeSync(fd);
@@ -83,15 +98,16 @@ export class HeldServiceCredentialRegistry {
 
   /** Reads have no await: one live slot lookup and synchronous use, with no lease/refcount. */
   currentDescriptor(ref: string): number | undefined {
-    return this.closed ? undefined : this.sources.get(ref)?.current?.fd;
+    return this.closed ? undefined : this.sources.get(ref)?.publication.current?.fd;
   }
 
   references(): ServiceCredentialReference[] {
     return [...this.sources].map(([ref, source]) => {
       let available = false;
-      if (!this.closed && source.current) {
+      const current = source.publication.current;
+      if (!this.closed && current) {
         try {
-          available = privateCredential(fstatSync(source.current.fd));
+          available = privateCredential(fstatSync(current.fd));
         } catch {
           // A lost or unsafe descriptor is unavailable, never a reason to reopen a source path.
         }
@@ -115,8 +131,8 @@ export class HeldServiceCredentialRegistry {
         fdMountReadOnly(source.parent.fd)
       )
         throw new ServiceCredentialEnrollmentError("credential_source_read_only");
-      if (source.current) {
-        const current = fstatSync(source.current.fd);
+      if (source.publication.current) {
+        const current = fstatSync(source.publication.current.fd);
         if (!privateCredential(current))
           throw new ServiceCredentialEnrollmentError("credential_source_invalid");
         if ((current.mode & 0o200) === 0)
@@ -130,15 +146,15 @@ export class HeldServiceCredentialRegistry {
   }
 
   prepare(ref: string, origin: string, replace: boolean): string | null {
-    const source = this.target(ref, origin);
-    if (source.mutating) throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
-    if (source.current && !replace)
+    const publication = this.target(ref, origin).publication;
+    if (publication.mutating) throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
+    if (publication.current && !replace)
       throw new ServiceCredentialEnrollmentError("credential_already_held");
-    return source.current?.revision ?? null;
+    return publication.current?.revision ?? null;
   }
 
   /**
-   * Owner-local revision CAS under this ref's lock. Private native writers are trusted: the
+   * Owner-local revision CAS under the shared source lock. Private native writers are trusted: the
    * held-name identity check is not a kernel expected-inode CAS against hostile same-UID writers.
    * Only initial RENAME_NOREPLACE publication is kernel-exclusive.
    */
@@ -150,11 +166,12 @@ export class HeldServiceCredentialRegistry {
     bytes: Uint8Array,
   ): { sourceRevision: string; replaced: boolean; durable: boolean } {
     const source = this.target(ref, origin);
-    if (source.mutating) throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
-    source.mutating = true;
+    const publication = source.publication;
+    if (publication.mutating) throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
+    publication.mutating = true;
     let published = false;
     const revision = randomUUID();
-    const previous = source.current;
+    const previous = publication.current;
     try {
       if ((previous?.revision ?? null) !== expectedRevision)
         throw new ServiceCredentialEnrollmentError("credential_source_changed");
@@ -183,7 +200,7 @@ export class HeldServiceCredentialRegistry {
             throw new ServiceCredentialEnrollmentError("credential_source_invalid");
         },
         (fd) => {
-          source.current = { fd, revision };
+          publication.current = { fd, revision };
           published = true;
           // Synchronous resolver reads cannot overlap this handoff in this owner event loop.
           if (previous) closeSync(previous.fd);
@@ -202,7 +219,7 @@ export class HeldServiceCredentialRegistry {
         throw new ServiceCredentialEnrollmentError("credential_source_changed");
       throw new ServiceCredentialEnrollmentError("credential_storage_failed");
     } finally {
-      source.mutating = false;
+      publication.mutating = false;
     }
   }
 
@@ -210,21 +227,24 @@ export class HeldServiceCredentialRegistry {
     if (this.closed) return;
     this.closed = true;
     const errors: unknown[] = [];
-    for (const source of this.sources.values()) {
+    for (const publication of this.publications.values()) {
       try {
-        if (source.current) closeSync(source.current.fd);
+        if (publication.current) closeSync(publication.current.fd);
       } catch (error) {
         errors.push(error);
       } finally {
-        source.current = undefined;
-        try {
-          source.parent.close();
-        } catch (error) {
-          errors.push(error);
-        }
+        publication.current = undefined;
+      }
+    }
+    for (const parent of new Set([...this.sources.values()].map((source) => source.parent))) {
+      try {
+        parent.close();
+      } catch (error) {
+        errors.push(error);
       }
     }
     this.sources.clear();
+    this.publications.clear();
     if (errors.length) throw new AggregateError(errors, "credential_registry_close_failed");
   }
 }
