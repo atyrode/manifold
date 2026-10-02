@@ -15,7 +15,7 @@ import {
 } from "@manifold/scene";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
-import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
+import { JOB_SCHEDULE_SCHEMA_STATEMENTS } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
@@ -2296,7 +2296,7 @@ CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT 
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0);
 ${LEGACY_PLUGIN_INSTALLS}
-${JOB_SCHEDULE_SCHEMA_SQL}
+${JOB_SCHEDULE_SCHEMA_STATEMENTS}
 INSERT INTO machine_job_installs VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}', 1, 1, 0);
 INSERT INTO machine_job_installations VALUES
   ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{}'),
@@ -2403,7 +2403,7 @@ CREATE TABLE native_instance_services(
   plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
   configured_by TEXT NOT NULL,configured_at INTEGER NOT NULL);
 ${LEGACY_PLUGIN_INSTALLS}
-${JOB_SCHEDULE_SCHEMA_SQL}
+${JOB_SCHEDULE_SCHEMA_STATEMENTS}
 INSERT INTO machine_jobs(job_id, machine_id, plugin_id, digest, request, state, created_at, cancel_reason) VALUES
   ('legacy', 'machine', 'vendor.worker', 'legacy-digest', '{}', 'started', 1, 'instance_service_configuration_changed'),
   ('active', 'machine', 'vendor.worker', 'active-digest', '{}', 'started', 2, NULL);
