@@ -1,9 +1,12 @@
 import type { SectionProps } from "@manifold/plugin";
-import { instanceOrigin, selectedInstanceOrigin } from "@manifold/plugin/instance";
 import {
   FALLBACK_POLL_MS,
   MACHINES_RESOURCE_OPTIONS,
+  instanceOrigin,
+  privateCredentialEntryBypass,
+  selectedInstanceOrigin,
   usePolledResource,
+  type Bypass,
 } from "@manifold/plugin/hooks";
 import {
   ServiceConfigurationReadSchema,
@@ -12,7 +15,6 @@ import {
 } from "@manifold/protocol";
 import { Cluster, Stack } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { privateCredentialEntryBypass, type Bypass } from "@manifold/plugin/private-entry";
 
 type Metadata = Pick<ServiceConfigurationRead, "connected" | "credentialReferences">;
 const UPDATE_GUIDANCE =

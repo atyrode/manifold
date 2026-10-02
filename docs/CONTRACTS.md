@@ -130,6 +130,9 @@ it does not turn already trusted same-origin in-realm code, shared browser stora
 compromised origin/service worker into an untrusted security domain. No value accessor or
 enrollment method is added to plugin service context. Private documents/assets are not
 offline shell content, and opening one must not expose its DOM through a parent opener.
+The metadata launcher consumes instance selection and the bypass guard through the sanctioned
+`@manifold/plugin/hooks` browser API. The private document imports their independent narrow
+entries directly, never the hooks barrel or its ordinary plugin/UI graph.
 Both the current controller and the active registration covering the destination must prove
 private document/asset bypass before the metadata launcher opens entry; an uncontrolled
 launcher is not proof that its new tab has no active worker. Unsupported workers fail closed

@@ -282,8 +282,11 @@ export {
   instanceOrigin,
   instanceUrl,
   isForeignInstance,
+  selectedInstanceOrigin,
   sessionUrl,
 } from "./instance.ts";
+/** Metadata-only launch guard; the private document still imports its independent entry graph. */
+export { privateCredentialEntryBypass, type Bypass } from "./private-entry.ts";
 /**
  * The read-only automation seam the browser gates read. It touches `window`, so it rides this
  * browser-only subpath and never `@manifold/plugin`'s platform-free root.
