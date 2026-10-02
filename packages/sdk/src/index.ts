@@ -7,7 +7,7 @@ export {
   type ActionHttpOptions,
   type ActionInvocation,
 } from "./action-http.ts";
-export { base64ToBytes, base64ToText, bytesToBase64, textToBase64 } from "./base64.ts";
+export { base64ToBytes, base64ToText, bytesToBase64, textToBase64 } from "@manifold/protocol";
 export {
   InstanceDial,
   dialInstance,

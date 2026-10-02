@@ -55,7 +55,7 @@ must never be taught one.
       "id": "protocol",
       "globs": ["packages/protocol/src/**"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar, shared private-mode parser (ADR 0029), and bounded transient VT graphics snapshot grammar and admission shared by the authoritative mirror and every viewer (ADR 0031). Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
+      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar, shared private-mode parser (ADR 0029), bounded transient VT graphics snapshot grammar and admission shared by the authoritative mirror and every viewer (ADR 0031), and the strict sealed credential-enrollment carrier with one lazy HPKE mechanism, binary codec and canonical authenticated-context encoder (ADR 0059). Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -240,7 +240,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
   "floor": [
     {
       "glob": "packages/protocol/src/**",
-      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks; bounded transient VT graphics snapshot grammar and shared admission (ADR 0031); and the one CSS selector walk (`stylesheet.ts`, string parsing and nothing else) the gate reads the tree with and the hub admits a bundle's sheet with (ADR 0025 §7)"
+      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks; bounded transient VT graphics snapshot grammar and shared admission (ADR 0031); strict sealed credential-enrollment schemas and the one lazy HPKE mechanism, binary codec and canonical authenticated-context encoder (ADR 0059); and the one CSS selector walk (`stylesheet.ts`, string parsing and nothing else) the gate reads the tree with and the hub admits a bundle's sheet with (ADR 0025 §7)"
     },
     {
       "glob": "packages/scene/src/**",

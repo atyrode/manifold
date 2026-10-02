@@ -1,10 +1,10 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 54;
+export const PROTOCOL_VERSION = 55;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
- * Protocol 54 retains the prior bundle ABI through explicit compatibility projections.
- * Session authority, correlated scopes and subscription ordering require the current SDK.
+ * Protocol 55 retains the prior bundle ABI through explicit compatibility projections.
+ * Private credential entry adds no plugin secret/value interface or hardened contract change.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
@@ -15,6 +15,7 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
   "52",
   "53",
   "54",
+  "55",
 ]);
 
 /**
@@ -481,9 +482,15 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * forwards those facts and the bounded fence to portable feeds; older strict Workers
  * retain their exact context projection. Machine, instance and retained-owner IPC are
  * unchanged, so their compatibility sets add 54 without requiring a fleet restart.
+ * v55: SEALED NATIVE CREDENTIAL ENROLLMENT (issue #768, ADR 0059).
+ * Optional signed owner key metadata and closed enrollment command/event modes require
+ * both machine transport55 and owner RPC45. Earlier accepted spokes/owners retain ordinary
+ * jobs and externally provisioned credential consumption; they receive no enrollment mode.
+ * Session/HTTP discovery moves to55 for the separate host-only entry document. Federation
+ * and the existing plugin/hardened ABI are unchanged, so their explicit sets add55.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
 ]);
 
 /**
@@ -504,6 +511,9 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
 
 /** Strict transport parsers must understand the optional monetary policy/command/reply fields. */
 export const MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 52;
+
+/** Older strict machine parsers must never receive sealed-enrollment commands or metadata. */
+export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -542,7 +552,7 @@ export const MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 52;
  * the instance set so old ambient-admission peers cannot resume through the new contract.
  * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

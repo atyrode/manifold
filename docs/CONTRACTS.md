@@ -102,6 +102,31 @@ Owner keys and tokens never appear in logs, URLs, errors or committed files; the
 fragment `#key=` is the one allowed URL carrier, under the opt-in
 [runtime contract](#runtime-contracts). It is not permission to disclose a key-bearing URL.
 
+#### Private credential entry
+
+The narrow host-only document in [ADR 0059](decisions/0059-private-credential-entry.md)
+loads no plugin code and seals at most16,384 bytes using the shared RFC9180 P-256/HKDF-SHA256/
+AES-256-GCM mechanism. The current proved native owner's nonextractable recipient is
+memory-only per incarnation; its public metadata is signed on `JobOwner`, not substituted
+through resource announcements. Session/machine55 and owner45 describe this mode;
+older compatible owners and spokes retain ordinary jobs and external-file provisioning.
+
+Root and exact-machine `services:configure` are checked from the original current credential
+at prepare, submission and the final native publication fence. The authenticated context
+binds key/format, machine, owner/generation, server epoch/proof challenge, request identity,
+declared reference/exact origin, one owner-created nonce/expiry, explicit replacement and
+an opaque source revision. Hub relay is transient ciphertext-only. Traces are opaque,
+recording safe status/refusal rather than value, envelope, path or library diagnostics.
+Only declared sources under retained directory capabilities can be enrolled. Initial
+publication is exclusive; explicit replacement must retire the old held descriptor only
+after every resolver observes the successfully published current source.
+
+The document isolates the entry DOM and module graph from ordinary plugin execution;
+it does not turn already trusted same-origin in-realm code, shared browser storage or a
+compromised origin/service worker into an untrusted security domain. No value accessor or
+enrollment method is added to plugin service context. Private documents/assets are not
+offline shell content, and opening one must not expose its DOM through a parent opener.
+
 ### Dependency decisions
 
 No new runtime dependency without a dated entry in `docs/decisions/` justifying it against

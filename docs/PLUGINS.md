@@ -1576,6 +1576,14 @@ type OpenPanelOutcome =
     };
 ```
 
+Credential enrollment is not a plugin service-context method or a plugin form field.
+Plugin management may show declared reference/origin/availability metadata and open the
+host-owned separate private-entry document (ADR0059); no credential value or value accessor
+is passed into the plugin realm. That no-plugin document uses the ordinary discovered
+engine action ladder and seals directly to the current proved native owner. The hub sees
+only a bounded sealed envelope and safe outcome. This is not a general host-owned service
+management surface or a new default plugin seat.
+
 **A panel is opened FOR something** (ADR 0037, issue #516). `arg` is yours: an opaque record
 naming the subject of that tile — `{ kind: "record", id }` — stored on the leaf with the panel
 id, kept across reloads and rearrangements, and handed back byte for byte. The engine never

@@ -25,6 +25,18 @@ import {
   MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
 } from "./version.ts";
+import { canonicalJobJson } from "./canonical-json.ts";
+import {
+  ServiceCredentialEnrollmentKeySchema,
+  ServiceCredentialEnrollmentPrepareCommandSchema,
+  ServiceCredentialEnrollmentCommitCommandSchema,
+  ServiceCredentialEnrollmentCancelCommandSchema,
+  ServiceCredentialEnrollmentAuthorizedCommandSchema,
+  ServiceCredentialEnrollmentPreparedEventSchema,
+  ServiceCredentialEnrollmentResultEventSchema,
+  ServiceCredentialEnrollmentCancelledEventSchema,
+  ServiceCredentialEnrollmentAuthorizeEventSchema,
+} from "./credential-enrollment.ts";
 
 /** Feature floor after v41 agent tools; v38 and v39 stay reserved by drafts. */
 const ISOLATED_JOB_PROTOCOL_VERSION = 42;
@@ -32,8 +44,10 @@ const ISOLATED_JOB_PROTOCOL_VERSION = 42;
 const TEMPORARY_LOCATIONS_PROTOCOL_VERSION = 43;
 /** Owner-quoted single-call direct monetary reservations. */
 const DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 44;
+/** Sealed enrollment requires both this owner RPC and machine transport v55. */
+const CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 45;
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION;
+export const JOB_OWNER_PROTOCOL_VERSION = CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -55,6 +69,9 @@ export const JOB_OWNER_PROTOCOL_VERSION = DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VER
  * and every operation using one is omitted from its install projection rather than retained.
  * v44 adds opt-in bounded direct service accounting and installed model context bounds.
  * Policies carrying these fields and monetary invokes require the explicit capability.
+ * v45 adds an optional signed per-incarnation enrollment key and closed sealed-enrollment
+ * commands/events. Only machine transports v55 and owners with this explicit capability
+ * receive them; older admitted owners retain ordinary jobs and externally provisioned sources.
  * v38 and v39 were reserved by drafts and are never accepted: capability checks compare
  * revisions, so a later change must not reuse them. Revision-pinned policies and ordinary
  * admissions remain unchanged; contextual policies are sent only to owners and machine
@@ -70,6 +87,7 @@ export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   ISOLATED_JOB_PROTOCOL_VERSION,
   TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
   DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
+  CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
@@ -82,7 +100,8 @@ export type JobOwnerCapability =
   | "serviceBindings"
   | "outputOnlyLocations"
   | "temporaryLocations"
-  | "directServiceAccounting";
+  | "directServiceAccounting"
+  | "credentialEnrollment";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
@@ -94,6 +113,7 @@ const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> =
   outputOnlyLocations: ISOLATED_JOB_PROTOCOL_VERSION,
   temporaryLocations: TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
   directServiceAccounting: DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
+  credentialEnrollment: CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -1087,6 +1107,8 @@ export const JobOwnerSchema = z.strictObject({
   resources: JobResourceInventorySchema.optional(),
   /** Present only when this owner shares the native terminal host's supervision boundary. */
   terminalHostId: id.optional(),
+  /** Immutable encryption metadata is signed with the owner, never a mutable resource row. */
+  credentialEnrollment: ServiceCredentialEnrollmentKeySchema.optional(),
 });
 export type JobOwner = z.infer<typeof JobOwnerSchema>;
 /** The existing 16 MiB plugin JSON budget also bounds a single base64 machine member. */
@@ -1258,6 +1280,10 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     requestId: id,
     payload: agentToolReplyPayload,
   }),
+  ServiceCredentialEnrollmentPrepareCommandSchema,
+  ServiceCredentialEnrollmentCommitCommandSchema,
+  ServiceCredentialEnrollmentCancelCommandSchema,
+  ServiceCredentialEnrollmentAuthorizedCommandSchema,
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
 
@@ -1531,6 +1557,10 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     payload: AgentToolPayloadSchema,
   }),
   z.strictObject({ type: z.literal("agent_run_cancel"), jobId: id, requestId: id }),
+  ServiceCredentialEnrollmentPreparedEventSchema,
+  ServiceCredentialEnrollmentResultEventSchema,
+  ServiceCredentialEnrollmentCancelledEventSchema,
+  ServiceCredentialEnrollmentAuthorizeEventSchema,
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;
 export const JobFollowEventSchema = z.union([
@@ -1647,14 +1677,4 @@ export const SettledJobSchema = z.strictObject({
   outputs: JobResultSchema.shape.outputs,
 });
 export type SettledJob = z.infer<typeof SettledJobSchema>;
-/** Canonical signing/digest encoding: sorted object keys, order-preserving arrays. */
-export function canonicalJobJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJobJson).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object)
-    .filter((k) => object[k] !== undefined)
-    .sort()
-    .map((k) => `${JSON.stringify(k)}:${canonicalJobJson(object[k])}`)
-    .join(",")}}`;
-}
+
