@@ -322,16 +322,29 @@ export default definition;
       prove,
       review: () => host.prepareActionInput(root, `${NATIVE_PREPARATION_PLUGIN}.native`, null),
       async capture() {
-        const handoff: { value?: { fence: ActionAuthorityFence; traceId: number } } = {};
+        const handoff: { value?: { fence: ActionAuthorityFence } } = {};
         const outcome = await host.dispatch(root, `${NATIVE_PREPARATION_PLUGIN}.native`, null, null, {
-          onPrepared: (_args, fence, traceId) => {
+          onPrepared: (_args, fence) => {
             fences.push(fence);
-            handoff.value = { fence, traceId };
+            handoff.value = { fence };
           },
         });
         if (!outcome.ok || handoff.value === undefined)
           throw new Error("native preparation did not reach real host admission");
-        return handoff.value;
+        // Native admission is reached from a terminal-open trace, not the preparer's
+        // action trace. Keep the real prepared fence but emulate that broker-owned origin.
+        const traceId = store.appendTrace({
+          actor: root.principal.id,
+          authority: "terminals:spawn",
+          door: "core.terminals.open",
+          containerId,
+          session: null,
+          ts: runtime.now(),
+          outcome: "ok",
+          targets: [],
+          payload: {},
+        });
+        return { fence: handoff.value.fence, traceId };
       },
       effects: () => ({
         jobs: store.db.query("SELECT COUNT(*) AS count FROM machine_jobs").get(),
