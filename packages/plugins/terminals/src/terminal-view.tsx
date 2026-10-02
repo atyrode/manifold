@@ -348,6 +348,8 @@ export function TerminalView({
         selectionBackground: "#364fc766",
       },
     });
+    // Pinch belongs to the canvas; xterm must neither scroll history nor report it to the PTY.
+    terminal.attachCustomWheelEventHandler((event) => !event.ctrlKey);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);
