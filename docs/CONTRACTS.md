@@ -144,6 +144,10 @@ Production and Vite development serve the same independent bundled private graph
 headers; private routes have no plugin-shell, source/HMR or missing-resource fallback. Static
 aliases are reserved without capturing authenticated plugin API namespaces. Input limits
 validate the complete UTF-8 value before sealing, rather than truncating a pasted prefix.
+The metadata launcher follows live workspace-root authority, including from the index with no
+mounted container; room `selfCaps()` cannot authorize or hide this machine-wide entry. Protocol
+discovery uses the SDK runner's bounded 16 MiB response ceiling, separately from the 1 MiB
+action-response ceiling and 16,384-byte credential-value limit.
 
 ### Dependency decisions
 

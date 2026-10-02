@@ -37,6 +37,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
   type ReactElement,
@@ -2316,6 +2317,16 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const canManage = caps.includes("*") || caps.includes("plugins:manage");
   /** Installing admits a stranger's code: root only, the door's own rule (`caps: ["*"]`). */
   const canInstall = caps.includes("*");
+  const subscribeAuthority = useCallback(
+    (notify: () => void) => host.client.onAuthorityChange(notify),
+    [host.client],
+  );
+  const readWorkspaceCaps = useCallback(() => host.client.workspaceCaps(), [host.client]);
+  const workspaceCaps = useSyncExternalStore(
+    subscribeAuthority,
+    readWorkspaceCaps,
+    readWorkspaceCaps,
+  );
   const { sidebarOpen, layout, seatPanels } = useWorkspaceShell();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -2735,7 +2746,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
 
   const list = (
     <Stack className="plugin-manager" gap="0.35rem" data-testid="plugin-manager">
-      {canInstall ? <CredentialReferences host={host} /> : null}
+      {workspaceCaps.includes("*") ? <CredentialReferences host={host} /> : null}
       <Cluster className="plugin-manager-controls" gap="0.4rem">
         <input
           className="plugin-manager-search"

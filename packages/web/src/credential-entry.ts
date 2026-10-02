@@ -295,7 +295,7 @@ async function readMetadata(): Promise<void> {
         origin: hub,
         token: identity.token,
         timeoutMs: 10_000,
-        maxResponseBytes: 4 * 1024 * 1024,
+        maxResponseBytes: 16 * 1024 * 1024,
       });
       if (
         !Object.values(ACTIONS).every((name) =>
