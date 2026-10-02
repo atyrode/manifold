@@ -607,10 +607,14 @@ shell permission.
 
 Preparation receives a newly constructed read-only context: exact terminal destination and
 admitted owner facts, declared container placement, nonsecret stored home/machine/mode facts,
-and pure native demand extraction. It has no storage, database, lifecycle mint, launch,
-credential, sibling-action, event, stream or machine-administration interface. Stored recipes
-and transformed secret-bearing arguments never become preparation evidence. A review uses
-this same path and stops before handler admission; an approval is not an execution.
+and pure native demand extraction. In hardened contract 12, native demand is a strict nonsecret
+selector — machine, provider plugin/operation, installation/artifact/resource pins, bound-input
+references, session machine and a commitment digest — never a full runtime, literal input or
+session body. It has no storage, database, lifecycle mint, launch, credential, sibling-action,
+event, stream or machine-administration interface. Stored recipes and transformed secret-bearing
+arguments never become preparation evidence; opaque literal validation remains at native effect
+admission. A review uses this same path and stops before handler admission; an approval is not an
+execution.
 
 In-realm parsing and preparation also refuse host effects through retained mutable contexts,
 including asynchronous descendants that outlive preparation. Catching an attempted effect
@@ -3855,11 +3859,12 @@ adds the same real parser → pure preparer → real parser path as in-realm. Th
 additional-capability ceiling is sealed in the verified artifact, never trusted from the reply.
 Transformed arguments remain guest-owned, including secret-bearing and non-JSON values.
 Before `admitted`, only the read-only preparation methods are served: resolver calls send
-machine identities and native-demand calls send a digest, not runtime input. Storage, ordinary
-context calls and successful execution results remain forbidden. Review returns preparation
-evidence and answers `admitted: false`, so the handler never runs. Bindings without a preparer
-retain their released single-parse, transformed-argument and target-extraction contract, but parsing
-and target extraction also run in the read-only preparation phase. Asynchronous descendants retain
+machine identities, while native-demand calls send the contract-12 nonsecret selector plus its
+runtime commitment, never full runtime/input/session contents. Storage, ordinary context calls
+and successful execution results remain forbidden. Review returns preparation evidence and answers
+`admitted: false`, so the handler never runs. Bindings without a preparer retain their released
+single-parse, transformed-argument and target-extraction contract, but parsing and target
+extraction also run in the read-only preparation phase. Asynchronous descendants retain
 that phase after review completes; captured mutable contexts cannot turn review into an effect.
 The `result` schema is enforced on the way out too; the roster publishes both schemas from
 the `loaded` frame. Repack existing self-contained guests with the current kit for this mandatory

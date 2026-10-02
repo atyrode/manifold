@@ -1834,6 +1834,10 @@ the dispatch it was serving. They are the ledger's alone: `tracePayload` strips 
 every door's arguments (`RESERVED_TRACE_KEYS`), so a client cannot attribute its own dispatch to a
 plugin by typing them into a request body, on a committed row or on a refused rung's write-ahead one.
 
+The same live caller ceiling applies to each actual engine requirement selected by conditional
+preparation and to every later prepared extension retained by a continuation; alternatives that
+were not selected and `delegates` remain outside that bound.
+
 **Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
 destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and
 element-type reservations all survive, and re-enabling restores them in place. Contributions render
@@ -2129,7 +2133,9 @@ disables Save and Remove without silently rebasing the draft; explicit reload di
 loads the current grouping for review. A removed grouping must be explicitly closed, never
 recreated by a stale save. Conflict refusal refreshes the registry without retrying the mutation.
 Client replacement or proven administration withdrawal closes the draft.
-Grouping is optional presentation: read failure falls back to individual accounts.
+Grouping is optional presentation: a failed event-triggered grouping read re-arms timer fallback,
+and only serialized authoritative list reads publish registry state, so a late mutation reply
+cannot resurrect a newer removal. Read failure otherwise falls back to individual accounts.
 Multi-member launch requires explicit exact-account choice, and an unavailable selected
 member is never replaced. Positive unconfined declaration, online/nonrevoked/nonpaused
 state and current placement are independent prerequisites, not inferred from host rollup.
@@ -3981,6 +3987,15 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   Strict session/SDK consumers update together. Machine, terminal-host, native-owner RPC and
   instance frames are unchanged; the machine and instance acceptance sets add revision 42
   without retiring compatible peers or requiring a fleet restart.
+
+For hardened contract 12 preparation, native demand crosses the isolate boundary only as a
+strict nonsecret selector — machine, provider plugin and operation, installation/artifact/resource
+pins, bound-input references, session machine and a commitment digest of the private runtime.
+Neither literal inputs nor full session/runtime contents become review evidence. Native effect
+admission recomputes the complete binding from the private runtime and requires equality with the
+prepared binding before an authority-fence recheck, governed decision, reservation or command;
+opaque literal validation deliberately remains at that effect boundary.
+
 - **An unconfined terminal may be born running a program** (issue #192, protocol v22). `program { argv }`
   names what the PTY execs in place of the machine's shell: `argv[0]` with `argv.slice(1)`,
   under the same PTY, the same lifecycle (snapshot, resize, `terminal_exited`, controller lease)
