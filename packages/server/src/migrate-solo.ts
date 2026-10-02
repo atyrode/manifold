@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { ROOT_TILE_ID } from "@manifold/protocol";
 import { ELEMENTS_KEY, LAYOUT_KEY, Y, createSceneDoc } from "@manifold/scene";
+import { executeMigrationStatements } from "./migration-statements.ts";
 
 /**
  * Schema 9: every terminal gets a home.
@@ -29,6 +30,13 @@ import { ELEMENTS_KEY, LAYOUT_KEY, Y, createSceneDoc } from "@manifold/scene";
  * current `SceneElementSchema` deliberately rejects, so the typed scene helpers would
  * refuse to see exactly the elements this migration exists to convert.
  */
+
+const SCHEMA_STATEMENTS: readonly string[] = [
+  "ALTER TABLE pads DROP COLUMN transient;",
+  "ALTER TABLE pads DROP COLUMN origin_pad_id;",
+  "ALTER TABLE sessions DROP COLUMN sort_order;",
+  "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '9');",
+];
 
 interface SessionMigrationRow {
   id: string;
@@ -246,10 +254,5 @@ export function migrateToSoloCompositions(db: Database, path: string): void {
   );
   for (const row of stale) dropDoc.run(row.padId, row.epoch, row.rev);
 
-  db.exec(`
-ALTER TABLE pads DROP COLUMN transient;
-ALTER TABLE pads DROP COLUMN origin_pad_id;
-ALTER TABLE sessions DROP COLUMN sort_order;
-INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '9');
-`);
+  executeMigrationStatements(db, SCHEMA_STATEMENTS);
 }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { LAYOUT_KEY, Y, createSceneDoc } from "@manifold/scene";
+import { executeMigrationStatements } from "./migration-statements.ts";
 
 /**
  * Schema 11: the lexicon cut, applied to durable state.
@@ -39,31 +40,35 @@ const PANEL_ID_RENAMES: Readonly<Record<string, string>> = {
   "core.shell.pad-view": "core.shell.container-view",
 };
 
-const SCHEMA_SQL = `
--- Nothing to reclaim: migration 9 already dropped pads.transient, pads.origin_pad_id
+const SCHEMA_STATEMENTS: readonly string[] = [
+  `-- Nothing to reclaim: migration 9 already dropped pads.transient, pads.origin_pad_id
 -- and sessions.sort_order (migrate-solo.ts).
-ALTER TABLE pads RENAME COLUMN layout TO discipline;
-UPDATE pads SET discipline = 'composition' WHERE discipline = 'tiled';
-ALTER TABLE pads RENAME TO containers;
-ALTER TABLE pad_folders RENAME TO container_folders;
-ALTER TABLE sessions RENAME TO terminals;
-ALTER TABLE scene_docs RENAME COLUMN pad_id TO container_id;
-ALTER TABLE events    RENAME COLUMN pad_id TO container_id;
-ALTER TABLE tokens    RENAME COLUMN pad_id TO container_id;
-ALTER TABLE terminals RENAME COLUMN pad_id TO container_id;
--- Capabilities are stored as a JSON array of strings, so the rename is a textual one on a
+ALTER TABLE pads RENAME COLUMN layout TO discipline;`,
+  "UPDATE pads SET discipline = 'composition' WHERE discipline = 'tiled';",
+  "ALTER TABLE pads RENAME TO containers;",
+  "ALTER TABLE pad_folders RENAME TO container_folders;",
+  "ALTER TABLE sessions RENAME TO terminals;",
+  "ALTER TABLE scene_docs RENAME COLUMN pad_id TO container_id;",
+  "ALTER TABLE events    RENAME COLUMN pad_id TO container_id;",
+  "ALTER TABLE tokens    RENAME COLUMN pad_id TO container_id;",
+  "ALTER TABLE terminals RENAME COLUMN pad_id TO container_id;",
+  `-- Capabilities are stored as a JSON array of strings, so the rename is a textual one on a
 -- closed vocabulary: five names in, five names out, and a cap this workspace never issued
 -- cannot be produced by a replace that has nothing to match.
 UPDATE tokens SET caps = replace(replace(replace(replace(caps,
   '"pads:read"','"containers:read"'), '"pads:write"','"containers:write"'),
-  '"scene:write"','"scenes:write"'), '"terminal:spawn"','"terminals:spawn"');
-UPDATE tokens SET caps = replace(caps, '"terminal:write"','"terminals:write"');
--- The event index is created lazily by the store under its canon name; the old one still
+  '"scene:write"','"scenes:write"'), '"terminal:spawn"','"terminals:spawn"');`,
+  `UPDATE tokens SET caps = replace(caps, '"terminal:write"','"terminals:write"');`,
+  `-- The event index is created lazily by the store under its canon name; the old one still
 -- indexes the renamed column, so it is dropped rather than left as a legacy name in the
 -- live schema.
-DROP INDEX IF EXISTS events_by_pad_recency;
-INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '11');
-`;
+DROP INDEX IF EXISTS events_by_pad_recency;`,
+  "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '11');",
+];
+
+const ELEMENT_REF_STATEMENTS: readonly string[] = [
+  "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '19')",
+];
 
 interface DocRow {
   container_id: string;
@@ -166,7 +171,7 @@ function rewriteLayoutJson(raw: string): string | null {
  */
 export function migrateToCanonLexicon(db: Database, path: string): void {
   void path;
-  db.exec(SCHEMA_SQL);
+  executeMigrationStatements(db, SCHEMA_STATEMENTS);
   rewriteStoredLayouts(db, rewriteLayout, rewriteLayoutJson);
 }
 
@@ -269,5 +274,5 @@ function rewriteElementLayoutJson(raw: string): string | null {
 export function migrateToElementRefs(db: Database, path: string): void {
   void path;
   rewriteStoredLayouts(db, rewriteElementLayout, rewriteElementLayoutJson);
-  db.exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '19')");
+  executeMigrationStatements(db, ELEMENT_REF_STATEMENTS);
 }
