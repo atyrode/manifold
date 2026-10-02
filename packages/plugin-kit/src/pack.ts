@@ -5,6 +5,7 @@ import type { BuildOutput, BunPlugin } from "bun";
 import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { verifyBundledArtifacts } from "./artifacts.ts";
+import { inspectServerBinding } from "./server-binding.ts";
 import {
   HARDENED_CONTRACT_VERSION,
   ISOLATE_MAX_ARTIFACT_BYTES,
@@ -497,6 +498,7 @@ export async function compilePlugin(
     manifest.entry.web === undefined || shared === false
       ? manifestPlugins
       : [...manifestPlugins, await sharedModules(pluginDir, builtAgainst)];
+  let serverBinding: PluginBundle["serverBinding"];
   if (manifest.entry.server === true) {
     // A hardened server has no browser realm or shared-module registry.
     const entry =
@@ -505,6 +507,7 @@ export async function compilePlugin(
         : resolve(pluginDir, registered.server);
     const server = await build(entry, "bun", manifestPlugins);
     files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(server, "utf8").toString("base64");
+    serverBinding = await inspectServerBinding(server, manifest);
   }
   if (manifest.entry.web !== undefined) {
     const entry =
@@ -529,6 +532,7 @@ export async function compilePlugin(
     manifest,
     files,
     builtAgainst,
+    ...(serverBinding === undefined ? {} : { serverBinding }),
   });
   await verifyBundledArtifacts(bundle);
   const bytes = new TextEncoder().encode(JSON.stringify(bundle));

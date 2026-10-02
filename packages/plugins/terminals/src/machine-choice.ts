@@ -34,7 +34,8 @@ export function browserMachineStorage(): MachineStorage {
 
 /**
  * Picks the remembered eligible machine, otherwise the sole eligible online machine.
- * Unconfined launches require an affirmative owner declaration. Governed requests may
+ * Revoked/draining endpoints cannot start new work. Unconfined launches require an
+ * affirmative owner declaration. Governed requests may
  * reach retained older owners, but still require native admission at the hub and owner.
  */
 export function chooseDefaultMachine(
@@ -45,7 +46,7 @@ export function chooseDefaultMachine(
   let sole: MachineSummary | null = null;
   let ambiguous = false;
   for (const machine of machines) {
-    if (!machine.online) continue;
+    if (!machine.online || machine.revoked === true || machine.draining === true) continue;
     if (
       execution === "unconfined"
         ? machine.terminalExecution !== "unconfined"

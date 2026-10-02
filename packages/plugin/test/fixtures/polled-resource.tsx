@@ -1,16 +1,19 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import type { MachineSummary, ManifoldRef } from "@manifold/protocol";
 import type { FeedEvents } from "../../src/host.ts";
-import { usePolledResource } from "../../src/polled-resource.ts";
+import {
+  MACHINES_RESOURCE_OPTIONS,
+  polledFeedReport,
+  usePolledResource,
+} from "../../src/polled-resource.ts";
 
 import type { FeedRead } from "./polled-resource-contract.ts";
 
 const requests: FeedRead[] = [];
 const values = new Map<string, string>();
-const initialStatus =
-  new URLSearchParams(window.location.search).get("initialStatus") === "connecting"
-    ? "connecting"
-    : "open";
+const parameters = new URLSearchParams(window.location.search);
+const initialStatus = parameters.get("initialStatus") === "connecting" ? "connecting" : "open";
 const pending = new Map<
   number,
   {
@@ -50,6 +53,9 @@ function Reader({ name, destination }: { readonly name: string; readonly destina
         };
       },
       on: () => () => undefined,
+      workspaceEventsAvailable: () => true,
+      onAuthorityChange: () => () => undefined,
+      syncSubscriptions: async () => true,
     };
     doors.set(doorId, events);
   }
@@ -147,8 +153,119 @@ function App() {
   );
 }
 
+const MACHINE_TOPIC = { kind: "plugin", pluginId: "core.machines" } as const;
+const ROSTER_TOPIC = { kind: "plugin", pluginId: "engine.plugins" } as const;
+let inventoryEnabled = true;
+let inventoryOnline = parameters.get("initialOnline") === "true";
+const inventoryRequests: { id: number; enabled: boolean; online: boolean }[] = [];
+const inventoryPending = new Map<number, () => void>();
+const inventorySubscriptions = new Set<{
+  readonly topics: readonly ManifoldRef[];
+  readonly handler: (event: unknown) => void;
+}>();
+const inventoryEvents: FeedEvents = {
+  status: "open",
+  subscribe(topics, handler) {
+    const record = { topics, handler };
+    inventorySubscriptions.add(record);
+    return () => {
+      inventorySubscriptions.delete(record);
+    };
+  },
+  on: () => () => undefined,
+  workspaceEventsAvailable: () => true,
+  onAuthorityChange: () => () => undefined,
+  syncSubscriptions: async () => true,
+};
+
+function inventoryEvent(topic: typeof MACHINE_TOPIC | typeof ROSTER_TOPIC, kind: string): void {
+  for (const record of inventorySubscriptions) {
+    if (
+      record.topics.some(
+        (subscribed) => subscribed.kind === "plugin" && subscribed.pluginId === topic.pluginId,
+      )
+    ) {
+      record.handler({ topic, kind, plugin: topic.pluginId, payload: { plugin: "core.machines" } });
+    }
+  }
+}
+
+function InventoryReader({ name }: { readonly name: string }) {
+  const [failure, setFailure] = useState<string | null>(null);
+  const { value } = usePolledResource<readonly MachineSummary[] | null>(
+    () => {
+      const response = Promise.withResolvers<readonly MachineSummary[]>();
+      const request = {
+        id: inventoryRequests.length + 1,
+        enabled: inventoryEnabled,
+        online: inventoryOnline,
+      };
+      inventoryRequests.push(request);
+      inventoryPending.set(request.id, () => {
+        if (!request.enabled) response.reject(new Error("plugin_disabled"));
+        else
+          response.resolve([
+            {
+              id: "machine",
+              name: "Machine",
+              online: request.online,
+              terminalExecution: "unconfined",
+            },
+          ]);
+      });
+      return response.promise;
+    },
+    60_000,
+    {
+      ...MACHINES_RESOURCE_OPTIONS,
+      events: inventoryEvents,
+      topics: [MACHINE_TOPIC, ROSTER_TOPIC],
+      onError: (reason) => {
+        setFailure(reason instanceof Error ? reason.message : "Machine inventory unavailable");
+      },
+      onSuccess: () => setFailure(null),
+    },
+  );
+  return (
+    <section data-inventory-reader={name}>
+      <output data-testid={`${name}-inventory`}>
+        {value === null ? "UNKNOWN" : value[0]?.online ? "online" : "offline"}
+      </output>
+      <output data-testid={`${name}-failure`}>{failure ?? "readable"}</output>
+    </section>
+  );
+}
+
+function InventoryApp() {
+  return (
+    <>
+      <InventoryReader name="canvas" />
+      <InventoryReader name="composition" />
+      <InventoryReader name="fleet" />
+    </>
+  );
+}
+
 // Browser-fixture controls settle the actual hook's I/O, never the feed store or React state.
 Object.assign(window, {
+  inventoryFeedFixture: {
+    requests: inventoryRequests,
+    report: polledFeedReport,
+    setEnabled(enabled: boolean) {
+      inventoryEnabled = enabled;
+      inventoryEvent(ROSTER_TOPIC, enabled ? "plugin_enabled" : "plugin_disabled");
+    },
+    setOnline(online: boolean) {
+      inventoryOnline = online;
+      inventoryEvent(MACHINE_TOPIC, online ? "machine_online" : "machine_offline");
+    },
+    finish(id: number) {
+      const settle = inventoryPending.get(id);
+      if (settle === undefined) throw new Error(`No pending inventory read ${String(id)}`);
+      inventoryPending.delete(id);
+      settle();
+    },
+  },
   polledResourceFixture: {
     requests,
     mutate(destination: string, value: string) {
@@ -178,4 +295,4 @@ Object.assign(window, {
 });
 const root = document.getElementById("root");
 if (root === null) throw new Error("Missing fixture root");
-createRoot(root).render(<App />);
+createRoot(root).render(parameters.get("scenario") === "machines" ? <InventoryApp /> : <App />);

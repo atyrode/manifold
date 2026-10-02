@@ -16,6 +16,7 @@ import {
   settingRefId,
   settingWriteRefusal,
   type Assembly,
+  type AnyActionDef,
   type AssemblyDelta,
   type AssemblyEnv,
   type EmitEvent,
@@ -38,6 +39,16 @@ import {
 } from "@manifold/plugin";
 import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
+import {
+  ActionPreparationError,
+  prepareActionInput,
+  validatePreparedRequirements,
+  argumentDigest,
+  type ActionPreparationEvidence,
+} from "@manifold/plugin-kit/server";
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { z } from "zod";
 import { BundleOrderError, familyOrder, requiredDependencyIds } from "@manifold/plugin-kit/install";
 import {
   ActionCallArgsSchema,
@@ -60,6 +71,9 @@ import {
   hasCap,
   isEngineCap,
   ManifoldRefSchema,
+  MANIFOLD_ROOT_URI,
+  projectLegacyAgent,
+  projectLegacyRun,
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
   PLUGIN_BUNDLE_SERVER_FILE,
@@ -77,7 +91,9 @@ import {
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
   SessionRefSchema,
+  type TerminalRuntime,
   TerminalRuntimeSchema,
+  projectNativePreparationDemand,
   HarnessTargetSchema,
   LaunchRunResultSchema,
   ListHarnessesResultSchema,
@@ -87,6 +103,8 @@ import type {
   ActionDenialRule,
   ActionOutcome,
   AgentRun,
+  AgentRunAuthority,
+  AgentAuthority,
   ApproveShareRecipientRequest,
   HarnessDefinition,
   HarnessTarget,
@@ -100,6 +118,13 @@ import type {
   AcknowledgeAgentPolicyResult,
   AgentPolicyChallenge,
   AskableCap,
+  ActionPreparationCtx,
+  ActionPreparationDef,
+  IsolatePreparationMetadata,
+  PreparedRequirement,
+  NativePreparationDemand,
+  GrantNode,
+  GrantReach,
   AuthoredCap,
   Cap,
   RegisterAgentRequest,
@@ -147,6 +172,23 @@ import type {
   PluginRoster,
   PluginUpdateApplyRequest,
   PluginUpdateApplyResult,
+  MintTokenV2Request,
+  TokenGrantV2,
+  RegisterAgentV2Request,
+  RegisterAgentV2Result,
+  GetAgentV2Result,
+  ListAgentsV2Result,
+  UpdateAgentV2Request,
+  CreateRunV2Request,
+  CreateChildRunV2Request,
+  CreateRunV2Result,
+  InspectRunV2Result,
+  ListRunsV2Result,
+  ReportRunActivityV2Result,
+  AcknowledgeAgentPolicyV2Result,
+  RenewAgentRunV2Result,
+  FinishAgentRunV2Result,
+  PrincipalCredentialsV2,
   PluginUpdateReviewResult,
   Principal,
   PrincipalCredentials,
@@ -160,6 +202,14 @@ import type {
   UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
 import { isContainerGrantCap, ServiceError } from "./auth.ts";
+import {
+  ActionAuthorityFence,
+  type ActionAuthorityRequirement,
+  type HarnessAuthoritySnapshotBinding,
+  type TerminalOwnerBinding,
+} from "./action-authority-fence.ts";
+import { requireActionEffects, runActionPreparation } from "./action-preparation-phase.ts";
+import { builtinCodeIdentity } from "./builtin-code-identity.ts";
 import type {
   AuthContext,
   AuthService,
@@ -232,6 +282,7 @@ import type {
 } from "@manifold/plugin";
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService, SettledJobDelivery } from "./job-service.ts";
+import type { NativeDemandBinding } from "./authority-snapshot.ts";
 import { serviceContext, serviceDoors, serviceDoorSchemas } from "./service-doors.ts";
 import { machineDoors } from "./machine-doors.ts";
 import { jobSettledTimeouts, type JobSettledTimeouts } from "./settled-job-timeouts.ts";
@@ -257,6 +308,7 @@ export interface ActionAuth {
   readonly isRoot: boolean;
   /** One evaluator question: the engine's capabilities, or this plugin's own (ADR 0035). */
   allows(cap: AskableCap, ref?: ManifoldRef): boolean;
+  allowsNode(cap: AskableCap, node: GrantNode, reach?: GrantReach): boolean;
 }
 
 /**
@@ -287,6 +339,25 @@ export interface IdentityDoor {
   createPrincipal(input: BootstrapPrincipalRequest): IdentityResult<TokenGrant>;
   /** Mints authority no broader than the caller's own, within the caller's container scope. */
   mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
+  mintTokenV2(input: MintTokenV2Request): IdentityResult<TokenGrantV2>;
+  registerAgentV2(input: RegisterAgentV2Request): Promise<IdentityResult<RegisterAgentV2Result>>;
+  getAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  listAgentsV2(): IdentityResult<ListAgentsV2Result>;
+  updateAgentV2(input: UpdateAgentV2Request): Promise<IdentityResult<GetAgentV2Result>>;
+  disableAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  enableAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  retireAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  createRunV2(input: CreateRunV2Request): IdentityResult<CreateRunV2Result>;
+  createChildRunV2(input: CreateChildRunV2Request): IdentityResult<CreateRunV2Result>;
+  inspectRunV2(input: InspectRunRequest): IdentityResult<InspectRunV2Result>;
+  listRunsV2(input: ListRunsRequest): IdentityResult<ListRunsV2Result>;
+  reportRunActivityV2(input: ReportRunActivityRequest): IdentityResult<ReportRunActivityV2Result>;
+  acknowledgeAgentPolicyV2(
+    input: AcknowledgeAgentPolicyRequest,
+  ): IdentityResult<AcknowledgeAgentPolicyV2Result>;
+  renewAgentRunV2(input: RenewAgentRunRequest): IdentityResult<RenewAgentRunV2Result>;
+  finishAgentRunV2(input: FinishAgentRunRequest): IdentityResult<FinishAgentRunV2Result>;
+  listCredentialsV2(): IdentityResult<PrincipalCredentialsV2[]>;
   registerAgent(input: RegisterAgentRequest): Promise<IdentityResult<RegisterAgentResult>>;
   getAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
   listAgents(): IdentityResult<ListAgentsResult>;
@@ -408,11 +479,14 @@ export interface DialDoor {
 /** Runs one mechanism call, turning its expected refusal into data and nothing else. */
 function identityCall<T>(run: () => T): IdentityResult<T> {
   try {
+    requireActionEffects();
     return { ok: true, value: run() };
   } catch (error) {
     if (error instanceof ServiceError) {
       return { ok: false, code: error.code, message: error.message };
     }
+    if (error instanceof Error && error.message === "scoped_authority_requires_v2")
+      return { ok: false, code: "forbidden", message: error.message };
     throw error;
   }
 }
@@ -425,11 +499,14 @@ function identityCall<T>(run: () => T): IdentityResult<T> {
  */
 async function identityCallAsync<T>(run: () => Promise<T>): Promise<IdentityResult<T>> {
   try {
+    requireActionEffects();
     return { ok: true, value: await run() };
   } catch (error) {
     if (error instanceof ServiceError) {
       return { ok: false, code: error.code, message: error.message };
     }
+    if (error instanceof Error && error.message === "scoped_authority_requires_v2")
+      return { ok: false, code: "forbidden", message: error.message };
     throw error;
   }
 }
@@ -851,7 +928,27 @@ export interface ActionCtx {
   readonly credential: CredentialReference;
   readonly admission: GovernedAdmissionDecision | null;
   /** Host-only continuation after the isolate's real input parse; not a guest ctx slice. */
-  readonly admitPrepared?: (targets: readonly unknown[]) => void;
+  readonly admitPrepared?: (
+    targets: readonly unknown[],
+    additionalRequirements?: readonly PreparedRequirement[],
+  ) => void;
+  readonly preparation?: ActionPreparationCtx;
+  readonly preparationMode?: "review";
+  readonly prepareNativeDemand?: (
+    demand: NativePreparationDemand,
+    machineId: string,
+    containerId: string,
+  ) => Promise<readonly PreparedRequirement[]>;
+  readonly prepareResolveMachine?: (input: {
+    readonly machineId?: string;
+    readonly runtimeMachineId?: string;
+  }) => Promise<{
+    readonly machineId: string;
+    readonly terminalHostId: string | null;
+    readonly terminalExecution: TerminalExecution | null;
+  }>;
+  /** Private effect lease; never part of a plugin wire context. */
+  readonly authorityFence?: ActionAuthorityFence;
   readonly streams: PluginStreamContext;
   readonly jobs: JobContext;
   readonly services: PluginServiceContext;
@@ -995,10 +1092,91 @@ export type ActionHandler = (ctx: ActionCtx, args: never) => Promise<unknown>;
 /** A plugin's server half: what it declares, plus a handler per declared action. */
 export type ServerPluginDef = PluginDef & {
   readonly handlers: Readonly<Record<string, ActionHandler>>;
-  readonly harness?: ServerHarness<ActionCtx>;
+  readonly harness?: ServerHarness<ActionCtx, AgentRunAuthority, AgentAuthority>;
+  readonly prepareActions?: Readonly<Record<string, ActionPreparationDef>>;
+  readonly guestPreparation?: IsolatePreparationMetadata;
   /** Set only by the isolate bridge: real parsing precedes the host admission continuation. */
   readonly inputValidation?: "guest";
 };
+
+interface BindingHistory<T> {
+  readonly pluginId: string;
+  readonly revision: number;
+  current: T | null;
+}
+
+interface CachedHarnessBinding {
+  readonly fingerprint: string;
+  readonly manifest: ServerPluginDef["manifest"];
+  readonly manifestVersion: string;
+  readonly declaration: ServerPluginDef["manifest"]["contributes"]["harness"];
+  readonly harnessId: string;
+  readonly caps: readonly AuthoredCap[];
+  readonly code: string;
+  readonly harness: NonNullable<ServerPluginDef["harness"]>;
+  readonly profileSchema: z.ZodType;
+  readonly profileValidator: z.ZodType["safeParseAsync"];
+  readonly launch: NonNullable<ServerPluginDef["harness"]>["launch"];
+  readonly sessions: NonNullable<ServerPluginDef["harness"]>["sessions"];
+  readonly resolveSession: NonNullable<ServerPluginDef["harness"]>["resolveSession"];
+  readonly send: NonNullable<ServerPluginDef["harness"]>["send"];
+}
+
+interface CachedActionBinding {
+  readonly fingerprint: string;
+  readonly installation: InstalledPlugin | undefined;
+  readonly definition: AnyActionDef;
+  readonly declaration: AnyActionDef;
+  readonly parser: z.ZodType["safeParse"];
+  readonly manifest: PluginDef["manifest"];
+  readonly manifestCapabilities: PluginDef["manifest"]["capabilities"];
+  readonly manifestCapValues: readonly AuthoredCap[];
+  readonly manifestId: string;
+  readonly manifestVersion: string;
+  readonly machine: PluginDef["manifest"]["machine"];
+  readonly definitions: readonly ServerPluginDef[];
+  readonly pluginDef: ServerPluginDef | undefined;
+  readonly sourceManifest: ServerPluginDef["manifest"] | undefined;
+  readonly sourceCapabilities: readonly AuthoredCap[] | undefined;
+  readonly sourceCapValues: readonly AuthoredCap[] | undefined;
+  readonly handler: ActionHandler | undefined;
+  readonly caps: AnyActionDef["caps"];
+  readonly delegates: AnyActionDef["delegates"];
+  readonly requirements: AnyActionDef["requirements"];
+  readonly preparation: ActionPreparationDef | undefined;
+  readonly preparer: ActionPreparationDef["prepare"] | undefined;
+  readonly preparedDefinition: ActionPreparationDef | undefined;
+  readonly guestPreparation: IsolatePreparationMetadata[string] | undefined;
+  readonly preparationCapSource: readonly AskableCap[] | undefined;
+  readonly preparationCaps: readonly AskableCap[] | undefined;
+  readonly code: string;
+}
+
+function sameOrderedValues<T>(
+  current: readonly T[] | undefined,
+  captured: readonly T[] | undefined,
+): boolean {
+  if (current === undefined || captured === undefined) return current === captured;
+  if (current.length !== captured.length) return false;
+  for (let index = 0; index < current.length; index++)
+    if (current[index] !== captured[index]) return false;
+  return true;
+}
+
+function sameActionRequirements(
+  current: AnyActionDef["requirements"],
+  captured: AnyActionDef["requirements"],
+): boolean {
+  if (current === undefined || captured === undefined) return current === captured;
+  if (current.length !== captured.length) return false;
+  for (let index = 0; index < current.length; index++) {
+    const requirement = current[index]!;
+    const previous = captured[index]!;
+    if (requirement.cap !== previous.cap || !sameOrderedValues(requirement.target, previous.target))
+      return false;
+  }
+  return true;
+}
 
 class ActionAdmissionDenial extends Error {
   constructor(
@@ -1522,10 +1700,12 @@ interface DispatchOrigin {
   readonly plugin: string;
   readonly parentTrace: number | string;
   readonly stack: readonly string[];
+  /** A host-only late ceiling verdict, never supplied by a caller or handler. */
+  callerCeilingCap?: Cap;
 }
 
 /** What a caller may say about a dispatch beyond the four arguments every dispatch has. */
-interface DispatchOptions {
+export interface DispatchOptions {
   agentJustification?: string;
   resultProjectionDigest?: string;
   onTrace?: (traceId: number) => void;
@@ -1534,6 +1714,10 @@ interface DispatchOptions {
   /** Settled caller lease after awaits; unlike admissionFence, it applies to non-Agent credentials. */
   beforeAdmission?: () => void;
   onAdmitted?: () => void;
+  /** Hub-owned socket handoff, never a serialized action result. */
+  onPrepared?: (args: unknown, fence: ActionAuthorityFence, traceId: number) => void;
+  /** Pure preparation for future permission review, never handler admission. */
+  reviewOnly?: boolean;
   /** Never a field a request carries: only `actionCalls` sets it. */
   origin?: DispatchOrigin;
 }
@@ -1601,6 +1785,8 @@ export class PluginHost {
    */
   private readonly replacing = new Set<string>();
   private readonly activeDispatches = new Map<string, Set<Promise<void>>>();
+  /** Durable action bindings retire at disable/handle retirement, not a pending replacement. */
+  private readonly actionEpochs = new Map<string, number>();
   private readonly isolates: IsolateDeps | null;
   /**
    * The unpacked directory's hands (ADR 0025 §4): present exactly when this host admits
@@ -1650,6 +1836,7 @@ export class PluginHost {
    * set from it would let any manifest authorize its own `core.` id.
    */
   private readonly distribution: ReadonlySet<string> | undefined;
+  private readonly builtinCodeIdentity: string;
   /**
    * The outcome of the last lifecycle fan-out per plugin. In MEMORY, deliberately: it
    * describes this process's attempt to tell a plugin about a transition, not a durable
@@ -1693,7 +1880,9 @@ export class PluginHost {
     return problems;
   }
 
-  private harnessDefinition(id: string): ServerPluginDef & { harness: ServerHarness<ActionCtx> } {
+  private harnessDefinition(
+    id: string,
+  ): ServerPluginDef & { harness: ServerHarness<ActionCtx, AgentRunAuthority, AgentAuthority> } {
     const def = this.defs.find(
       (def) =>
         this.assembled.enabled(def.manifest.id) && def.manifest.contributes.harness?.id === id,
@@ -1724,58 +1913,142 @@ export class PluginHost {
     id: string,
     session: string | null,
     stack: readonly string[],
-    invoke: (harness: ServerHarness<ActionCtx>, ctx: ActionCtx, pluginId: string) => Promise<T>,
+    invoke: (
+      harness: ServerHarness<ActionCtx, AgentRunAuthority, AgentAuthority>,
+      ctx: ActionCtx,
+      pluginId: string,
+    ) => Promise<T>,
   ): Promise<T> {
     const def = this.harnessDefinition(id);
     const pluginId = def.manifest.id;
     const install = this.installed.get(pluginId);
     const current = this.authService.restoreCredential(this.authService.credentialReference(actor));
     if (!current) throw new ServiceError("forbidden", "harness caller unavailable");
+    const harnessCaps = CAPS.filter(
+      (cap) =>
+        withinCeiling(cap, current.caps) &&
+        withinCeiling(cap, def.manifest.capabilities) &&
+        (!install || GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)),
+    );
     const nativeAuth = {
       ...current,
-      caps: CAPS.filter(
-        (cap) =>
-          withinCeiling(cap, current.caps) &&
-          withinCeiling(cap, def.manifest.capabilities) &&
-          (!install || GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)),
-      ),
+      caps: harnessCaps,
+      ...(current.authorityScope === undefined
+        ? {}
+        : {
+            authorityScope: current.authorityScope
+              .map((entry) => ({
+                ...entry,
+                caps: entry.caps.filter((cap) => withinCeiling(cap, harnessCaps)),
+              }))
+              .filter((entry) => entry.caps.length > 0),
+          }),
     };
-    const lease = this.dataLease(pluginId);
+    const credential = this.authService.credentialReference(nativeAuth);
+    const binding = this.harnessBinding(pluginId);
+    if (binding === null) throw new ServiceError("forbidden", "harness authority unavailable");
+    const harness = def.harness;
+    const launch = harness.launch;
+    const epoch = this.actionEpochs.get(pluginId) ?? 0;
+    const checkHarnessCurrent = (): void => {
+      if (
+        this.closed ||
+        (this.actionEpochs.get(pluginId) ?? 0) !== epoch ||
+        this.harnessBinding(pluginId) !== binding ||
+        this.installed.get(pluginId) !== install ||
+        harnessCaps.some(
+          (cap) =>
+            !withinCeiling(cap, def.manifest.capabilities) ||
+            (install !== undefined &&
+              !GOVERNED_CAPS.includes(cap) &&
+              !withinCeiling(cap, install.row.grantedCaps)),
+        ) ||
+        this.authService.restoreCredential(credential) === null
+      )
+        throw new ServiceError("forbidden", "harness authority unavailable");
+    };
+    // Keep the originating door's full ordered authority separate from the harness's
+    // native credential. Retained native effects own this fence, not the data lease.
+    base.authorityFence?.dependOnHarness(
+      {
+        pluginId,
+        harnessId: id,
+        fingerprint: binding.fingerprint,
+        caps: harnessCaps,
+      },
+      checkHarnessCurrent,
+    );
+    const authorityFence = base.authorityFence?.retain();
+    const checkCurrent = (): void => {
+      if (authorityFence === undefined) checkHarnessCurrent();
+      else authorityFence.checkCurrent();
+    };
+    const lease = this.dataLease(pluginId, undefined, undefined, checkCurrent);
     const settled = Promise.withResolvers<void>();
     let active = this.activeDispatches.get(pluginId);
     if (!active) this.activeDispatches.set(pluginId, (active = new Set()));
     active.add(settled.promise);
     const service = () => {
+      lease.check();
       if (!this.jobs) throw new ServiceError("forbidden", "job service unavailable");
       return this.jobs;
     };
     const shared = { ...base };
     delete shared.database;
     try {
-      return await invoke(
-        def.harness,
+      const result = await invoke(
+        {
+          ...harness,
+          async launch(ctx, run, agent, target) {
+            lease.check();
+            const prepared = await launch.call(harness, ctx, run, agent, target);
+            // The continuation may mint a fresh private Run credential. Refuse before
+            // handing it a descriptor prepared under a withdrawn door or harness.
+            lease.check();
+            return prepared;
+          },
+        },
         {
           ...shared,
           pluginId,
           // The host invokes a harness; the door's own caller did not call this plugin.
           callerPlugin: null,
-          actions: this.actionCalls(pluginId, current, session, base.traceId, [...stack, pluginId]),
-          credential: this.authService.credentialReference(nativeAuth),
-          jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
+          ...(authorityFence === undefined ? {} : { authorityFence }),
+          actions: this.actionCalls(
+            pluginId,
+            current,
+            session,
+            base.traceId,
+            [...stack, pluginId],
+            lease.check,
+          ),
+          credential,
+          jobs: jobContext(
+            service,
+            nativeAuth,
+            pluginId,
+            base.traceId,
+            lease.check,
+            authorityFence,
+          ),
           services: serviceContext(
             service,
             nativeAuth,
             pluginId,
             base.traceId,
             withinCeiling("services:invoke", nativeAuth.caps) ? "invoke" : "read",
+            authorityFence,
           ),
           storage: lease.storage,
           ...(lease.database ? { database: lease.database } : {}),
         },
         pluginId,
       );
+      lease.check();
+      return result;
     } finally {
       lease.close();
+      authorityFence?.close();
       settled.resolve();
       active.delete(settled.promise);
       if (active.size === 0) this.activeDispatches.delete(pluginId);
@@ -1828,7 +2101,13 @@ export class PluginHost {
         session,
         stack,
         async (harness, ctx, pluginId) => {
-          const prepared = await harness.launch(ctx, claim.run, claim.agent, target.data);
+          const guest = this.guestInputPlugins.has(pluginId);
+          const prepared = await harness.launch(
+            ctx,
+            guest ? claim.run : projectLegacyRun(claim.run),
+            guest ? claim.agent : projectLegacyAgent(claim.agent),
+            target.data,
+          );
           const runtime = TerminalRuntimeSchema.parse(prepared.runtime);
           const session = SessionRefSchema.parse(prepared.session);
           if (
@@ -1867,7 +2146,36 @@ export class PluginHost {
 
   /** Trusted runtime composition; registered doors refuse until the durable service is ready. */
   setJobs(jobs: JobService): void {
+    requireActionEffects();
     jobs.setLifecycleRecorder((record) => this.store.appendTrace(record));
+    jobs.setActionBindingValidator((binding) => {
+      if (binding.actionName === undefined) return false;
+      const entry = this.assembled.actions.get(binding.actionName);
+      if (
+        entry === undefined ||
+        (!this.assembled.enabled(entry.plugin.id) && entry.def.cleanup !== true) ||
+        this.replacing.has(entry.plugin.id) ||
+        this.actionBinding(binding.actionName)?.fingerprint !== binding.fingerprint
+      )
+        return false;
+      if (binding.terminalOwners?.some((owner) => !this.broker.terminalOwnerBindingCurrent(owner)))
+        return false;
+      for (const dependency of binding.harnesses ?? [])
+        if (!this.harnessBindingCurrent(dependency)) return false;
+      const install = this.installed.get(entry.plugin.id);
+      if (install === undefined) return true;
+      const granted = install.row.grantedCaps;
+      for (const cap of entry.def.caps)
+        if (!GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, granted)) return false;
+      if (entry.def.delegates !== undefined)
+        for (const cap of entry.def.delegates)
+          if (!GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, granted)) return false;
+      // Retained requirements contain only the preparer mode actually admitted.
+      // Governed capabilities still use their separate revision-bound native consent.
+      for (const { cap } of binding.requirements)
+        if (!GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, granted)) return false;
+      return true;
+    });
     jobs.setAgentTools({
       harnessPlugin: (agent) => {
         // One-shot jobs consume their separately reviewed native inputs, not the
@@ -1875,8 +2183,8 @@ export class PluginHost {
         // harness launch; synchronous native fences resolve the live owner only.
         return this.harnessDefinition(agent.harness).manifest.id;
       },
-      call: (restore, request, signal, admitted) =>
-        this.agentToolCall(restore, request, signal, admitted),
+      call: (restore, request, signal, admitted, legacy) =>
+        this.agentToolCall(restore, request, signal, admitted, legacy),
     });
     jobs.setManifestResolver((pluginId) => {
       if (!this.assembled.enabled(pluginId)) return null;
@@ -1955,6 +2263,7 @@ export class PluginHost {
     request: AgentToolRequest,
     signal: AbortSignal,
     admitted: () => void,
+    legacy = false,
   ): Promise<AgentToolReply> {
     const authority = restore();
     if (request.type === "describe") {
@@ -1988,7 +2297,12 @@ export class PluginHost {
     if (selected && !selected.ok) return { type: "refused", code: selected.reason, traceId: null };
     const approval = selected?.ok ? selected.approval : undefined;
     const entry = selected?.ok ? selected.entry : undefined;
-    const door = request.type === "ack" ? "core.access.acknowledgeAgentPolicy" : request.door;
+    const door =
+      request.type === "ack"
+        ? legacy
+          ? "core.access.acknowledgeAgentPolicy"
+          : "core.access.acknowledgeAgentPolicyV2"
+        : request.door;
     let traceId: number | null = null;
     let began = false;
     const fence = (): AuthContext | null => {
@@ -2119,11 +2433,13 @@ export class PluginHost {
       readonly isolates?: IsolateDeps;
       readonly dataDir?: string;
     },
+    builtinCodeIdentity: string,
   ) {
     this.firstParty = [...ENGINE_BUILTIN_DEFS, ...defs];
     this.defs = this.firstParty;
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.distribution = options.distribution;
+    this.builtinCodeIdentity = builtinCodeIdentity;
     this.isolates = options.isolates ?? null;
     this.dataDir = options.dataDir ?? options.isolates?.dataDir ?? null;
     this.authored =
@@ -2232,6 +2548,7 @@ export class PluginHost {
       logger,
       events,
       options,
+      await builtinCodeIdentity(),
     );
     if (host.dataDir !== null) recoverPluginDatabases(host.dataDir, store);
     await host.loadTrusted(options.trusted ?? []);
@@ -2288,6 +2605,9 @@ export class PluginHost {
           manifest: registered.manifest,
           dir: extractTrustedBuild(isolates.dataDir, build),
           hardenedContract: HARDENED_CONTRACT_VERSION,
+          ...(build.bundle.serverBinding === undefined
+            ? {}
+            : { serverBinding: build.bundle.serverBinding }),
         },
       });
       await this.startTrusted(id);
@@ -2401,6 +2721,7 @@ export class PluginHost {
           row.hardened === true,
         ),
       );
+      this.resetBindingHistory(row.pluginId);
     } catch (error) {
       this.installedDefs.set(row.pluginId, {
         manifest: bundle.manifest,
@@ -2471,6 +2792,17 @@ export class PluginHost {
           dataVersion: bundle.manifest.dataVersion,
           migrations: migrations.map(({ name, to }) => ({ name, to })),
         });
+        const actualPreparation = Object.fromEntries(
+          Object.entries(def.prepareActions ?? {}).map(([name, value]) => [
+            name,
+            { caps: [...(value as ActionPreparationDef).caps].sort() },
+          ]),
+        );
+        if (
+          canonicalJobJson(actualPreparation) !==
+          canonicalJobJson(bundle.serverBinding?.prepareActions ?? {})
+        )
+          throw new Error("server preparer binding differs from verified artifact");
         const adapted = declarations.migrations.map((metadata, index): PluginMigration => {
           const migration = migrations[index];
           if (migration === undefined || typeof migration.migrate !== "function")
@@ -2507,6 +2839,7 @@ export class PluginHost {
       manifest: bundle.manifest,
       dir,
       hardenedContract: bundle.hardenedContract,
+      ...(bundle.serverBinding === undefined ? {} : { serverBinding: bundle.serverBinding }),
     });
     return { ...loaded.def, lifecycle: loaded.lifecycle };
   }
@@ -2519,6 +2852,14 @@ export class PluginHost {
     for (const def of this.defs) {
       this.handlers.set(def.manifest.id, def.handlers);
       if (def.inputValidation === "guest") this.guestInputPlugins.add(def.manifest.id);
+      for (const [name, preparation] of Object.entries(def.prepareActions ?? {})) {
+        if (
+          !def.actions.some((action) => action.name === name) ||
+          preparation.caps.length > 128 ||
+          preparation.caps.some((cap) => !withinCeiling(cap, def.manifest.capabilities))
+        )
+          throw new Error(`${def.manifest.id}: invalid action preparation ceiling`);
+      }
     }
   }
 
@@ -2730,11 +3071,13 @@ export class PluginHost {
   ): PluginDataLease {
     let open = true;
     const check = (): void => {
+      requireActionEffects();
       if (!open || this.closed) throw new Error("plugin data request is closed");
       checkCurrent?.();
     };
     const live = database !== null && this.databases.get(pluginId) === database;
     const checkDatabase = (): void => {
+      requireActionEffects();
       if (!open || this.closed) throw new PluginDatabaseError("plugin database request is closed");
       if (live && this.databases.get(pluginId) !== database)
         throw new PluginDatabaseError("plugin database request belongs to a retired handle");
@@ -2856,8 +3199,20 @@ export class PluginHost {
     this.settlementEpochs.set(pluginId, (this.settlementEpochs.get(pluginId) ?? 0) + 1);
   }
 
+  private revokeActionAuthority(pluginId: string): void {
+    this.actionEpochs.set(pluginId, (this.actionEpochs.get(pluginId) ?? 0) + 1);
+  }
+
+  /** Only verified executable publication or uninstall resets the cold binding baseline. */
+  private resetBindingHistory(pluginId: string): void {
+    for (const [name, history] of this.actionFingerprints)
+      if (history.pluginId === pluginId) this.actionFingerprints.delete(name);
+    this.harnessFingerprints.delete(pluginId);
+  }
+
   private retireDatabase(pluginId: string): void {
     this.revokeSettlements(pluginId);
+    this.revokeActionAuthority(pluginId);
     const database = this.databases.get(pluginId);
     this.databases.delete(pluginId);
     database?.close();
@@ -3073,8 +3428,10 @@ export class PluginHost {
    * else, so there is exactly one "the plugins changed" signal (docs/CONTRACTS.md §One authoritative implementation).
    */
   onRosterChange(listener: (roster: PluginRoster, developerMode: boolean) => void): () => void {
+    requireActionEffects();
     this.rosterListeners.add(listener);
     return () => {
+      requireActionEffects();
       this.rosterListeners.delete(listener);
     };
   }
@@ -3085,7 +3442,12 @@ export class PluginHost {
    * stop; a host that admits no bundles has nothing to watch and returns a no-op.
    */
   watchAuthored(): () => void {
-    return this.authored?.watch() ?? (() => {});
+    requireActionEffects();
+    const stop = this.authored?.watch();
+    return () => {
+      requireActionEffects();
+      stop?.();
+    };
   }
 
   /**
@@ -3094,7 +3456,12 @@ export class PluginHost {
    * that admits no bundles has nothing to poll and returns a no-op.
    */
   watchUpdates(): () => void {
-    return this.updates?.startPolling() ?? (() => {});
+    requireActionEffects();
+    const stop = this.updates?.startPolling();
+    return () => {
+      requireActionEffects();
+      stop?.();
+    };
   }
 
   private async changeAssembly<T>(change: () => Promise<T>): Promise<T> {
@@ -3148,6 +3515,7 @@ export class PluginHost {
     enabled: boolean,
     changedBy: string,
   ): Promise<ActionRefused | { ok: true }> {
+    requireActionEffects();
     return this.changeAssembly(async () => {
       if (!enabled || this.assembled.enabled(id) || this.assembled.builtin(id))
         return this.setEnabledNow(id, enabled, changedBy);
@@ -3206,6 +3574,7 @@ export class PluginHost {
         if (!verdict.ok) return installRefused(verdict.refusal, verdict.detail);
         try {
           this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, false));
+          this.resetBindingHistory(id);
           this.heldUnloaded.delete(id);
           this.syncDefs();
         } catch (error) {
@@ -3254,7 +3623,10 @@ export class PluginHost {
       this.assembled.roster.filter((row) => row.enabled).map((row) => row.manifest.id),
     );
     this.store.setPluginEnabled(id, enabled, changedBy, this.runtime.now());
-    if (!enabled) this.revokeSettlements(id);
+    if (!enabled) {
+      this.revokeSettlements(id);
+      this.revokeActionAuthority(id);
+    }
     if (!enabled) this.jobs?.disablePlugin(id);
     // COMMIT FIRST, then tell people. A lifecycle hook has no vote (ADR 0013 §2): the roster
     // every client will render is already the truth by the time any plugin hears about it.
@@ -3327,6 +3699,7 @@ export class PluginHost {
    * now claim the type deliberately.
    */
   async purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
+    requireActionEffects();
     return this.changeAssembly(() => this.purgeNow(id, purgedBy));
   }
 
@@ -3471,6 +3844,7 @@ export class PluginHost {
     installer: CredentialReference | null,
     unpacked?: { readonly id: string },
   ): Promise<ActionRefused | PluginInstallResult> {
+    requireActionEffects();
     return this.changeAssembly(async () => {
       const isolates = this.isolates;
       if (isolates === null) {
@@ -3958,6 +4332,7 @@ export class PluginHost {
             ? this.dormantDef(member.row, member.bundle)
             : member.def!,
         );
+        this.resetBindingHistory(member.id);
         this.lifecycleStates.delete(member.id);
         this.heldUnloaded.delete(member.id);
       }
@@ -4125,6 +4500,7 @@ export class PluginHost {
    * `developer_mode_off` marks lift, and the next save or authoring call builds again.
    */
   async setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }> {
+    requireActionEffects();
     return this.changeAssembly(() => this.setDeveloperModeNow(on, changedBy));
   }
 
@@ -4164,6 +4540,7 @@ export class PluginHost {
     authoredBy: string,
     credential: CredentialReference,
   ): Promise<ActionRefused | PluginAuthorResult> {
+    requireActionEffects();
     this.assertOpen();
     if (this.authored === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
@@ -4189,6 +4566,7 @@ export class PluginHost {
         const verdict = verifyInstalledBundle(previous.row);
         if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
         this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, true));
+        this.resetBindingHistory(id);
       } else {
         // Keep dormant, never-loaded incumbents dormant, and reuse in-realm definitions.
         this.installedDefs.set(id, previousDef);
@@ -4201,6 +4579,7 @@ export class PluginHost {
     id: string,
     authority: PluginUpdateAuthority,
   ): Promise<ActionRefused | PluginUpdateReviewResult> {
+    requireActionEffects();
     if (this.updates === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
@@ -4215,6 +4594,7 @@ export class PluginHost {
     request: PluginUpdateApplyRequest,
     authority: PluginUpdateAuthority,
   ): Promise<ActionRefused | PluginUpdateApplyResult> {
+    requireActionEffects();
     if (this.updates === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
@@ -4338,6 +4718,7 @@ export class PluginHost {
     removedBy: string,
     purge: boolean,
   ): Promise<ActionRefused | { ok: true }> {
+    requireActionEffects();
     return this.changeAssembly(() => this.uninstallNow(id, removedBy, purge));
   }
 
@@ -4383,6 +4764,7 @@ export class PluginHost {
     this.store.clearPluginEnablement(id);
     this.installed.delete(id);
     this.installedDefs.delete(id);
+    this.resetBindingHistory(id);
     this.heldUnloaded.delete(id);
     this.lifecycleStates.delete(id);
     // The row is gone, so the handle onto its file is too. The BYTES stay unless a purge took
@@ -4520,6 +4902,7 @@ export class PluginHost {
         of whatever the plugin chooses to announce about its own state afterwards.
        */
       emit: (ref, kind, payload) => {
+        requireActionEffects();
         this.events.emit(pluginId, ref, kind, null, payload ?? {});
       },
       ...(auth === null
@@ -4752,10 +5135,38 @@ export class PluginHost {
 
   private publish(): void {
     if (this.closed) return;
+    this.observeBindingPublication();
     this.streams.reconcile();
     const developerMode = this.store.developerMode();
     const roster = this.roster();
     for (const listener of this.rosterListeners) listener(roster, developerMode);
+  }
+  private callerEngineCeiling(caller: string): readonly AuthoredCap[] {
+    const callerRow = this.assembled.roster.find((entry) => entry.manifest.id === caller);
+    const granted = this.installed.get(caller)?.row.grantedCaps;
+    return (callerRow?.manifest.capabilities ?? []).filter(
+      (cap) =>
+        granted === undefined || (!GOVERNED_CAPS.includes(cap) && withinCeiling(cap, granted)),
+    );
+  }
+
+  /**
+   * A composed door may gain engine requirements only after preparation. Keep the caller's
+   * ceiling attached to the host-owned origin so a late refusal cannot be forged as a result.
+   */
+  private callerCeilingAllows(
+    origin: DispatchOrigin | undefined,
+    values: Iterable<AuthoredCap | PreparedRequirement>,
+  ): boolean {
+    if (origin === undefined) return true;
+    const ceiling = this.callerEngineCeiling(origin.plugin);
+    for (const value of values) {
+      const cap = typeof value === "string" ? value : value.cap;
+      if (!isEngineCap(cap) || withinCeiling(cap, ceiling)) continue;
+      origin.callerCeilingCap ??= cap;
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -4781,6 +5192,7 @@ export class PluginHost {
   ): PluginActionContext {
     return {
       call: async (args) => {
+        requireActionEffects();
         beforeCall?.();
         // Parsed here, as every native slice parses (`jobContext`): the frame a hardened
         // guest sends and the object an in-realm handler passes meet the same schema.
@@ -4870,14 +5282,12 @@ export class PluginHost {
           grant never consents to governed authority (its consent is version-bound and
           discharged per artifact revision), so an edge must not be able to carry one.
         */
-        const granted = this.installed.get(caller)?.row.grantedCaps;
-        const ceiling = (callerRow?.manifest.capabilities ?? []).filter(
-          (cap) =>
-            granted === undefined || (!GOVERNED_CAPS.includes(cap) && withinCeiling(cap, granted)),
-        );
-        for (const cap of this.assembled.actions.get(door)?.def.caps ?? []) {
-          if (!isEngineCap(cap) || withinCeiling(cap, ceiling)) continue;
-          throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${cap})`);
+        const origin: DispatchOrigin = { plugin: caller, parentTrace, stack };
+        if (!this.callerCeilingAllows(origin, this.assembled.actions.get(door)?.def.caps ?? [])) {
+          throw new ActionCallRefused(
+            "caller_ceiling",
+            `${caller} -> ${door} (${origin.callerCeilingCap!})`,
+          );
         }
         /*
           THE CALLEE'S OWN LADDER, unchanged and whole: the same method a client's dispatch
@@ -4891,10 +5301,16 @@ export class PluginHost {
         let outcome: ActionOutcome;
         try {
           outcome = await this.dispatch(auth, door, request.input, session, {
-            origin: { plugin: caller, parentTrace, stack },
+            origin,
             ...(beforeCall === undefined ? {} : { beforeAdmission: beforeCall }),
           });
         } catch {
+          const callerCeilingCap = origin.callerCeilingCap;
+          if (callerCeilingCap !== undefined)
+            throw new ActionCallRefused(
+              "caller_ceiling",
+              `${caller} -> ${door} (${callerCeilingCap})`,
+            );
           /*
             A BROKEN CALLEE IS NOT A REFUSAL, and its error text is not the caller's to
             publish. The callee's own row already settled `failed` and the host already logged
@@ -4905,6 +5321,12 @@ export class PluginHost {
           */
           throw new ActionCallRefused("refused", `${caller} -> ${door} (failed)`);
         }
+        const callerCeilingCap = origin.callerCeilingCap;
+        if (callerCeilingCap !== undefined)
+          throw new ActionCallRefused(
+            "caller_ceiling",
+            `${caller} -> ${door} (${callerCeilingCap})`,
+          );
         if (outcome.ok) return outcome.result;
         const { rule, message } = outcome.denial;
         if (rule === "unknown_action") throw new ActionCallRefused("unknown_action", door);
@@ -4944,6 +5366,7 @@ export class PluginHost {
     session: string | null = null,
     options: DispatchOptions = {},
   ): Promise<ActionOutcome> {
+    requireActionEffects();
     const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
     const settled = Promise.withResolvers<void>();
     let active: Set<Promise<void>> | undefined;
@@ -5096,6 +5519,271 @@ export class PluginHost {
     };
   }
 
+  /**
+   * Observe every published binding, not just queried doors. Tombstones retain a named
+   * binding's history across disappearance and restoration without retaining its code.
+   */
+  private observeBindingPublication(): void {
+    for (const name of this.actionFingerprints.keys()) this.actionBinding(name);
+    for (const name of this.assembled.actions.keys())
+      if (!this.actionFingerprints.has(name)) this.actionBinding(name);
+    for (const pluginId of this.harnessFingerprints.keys()) this.harnessBinding(pluginId);
+    for (const def of this.defs)
+      if (def.harness !== undefined && !this.harnessFingerprints.has(def.manifest.id))
+        this.harnessBinding(def.manifest.id);
+  }
+
+  private readonly harnessFingerprints = new Map<string, BindingHistory<CachedHarnessBinding>>();
+
+  private harnessBinding(pluginId: string): CachedHarnessBinding | null {
+    // A pending replacement is a fence, not a publication retiring the incumbent.
+    if (this.replacing.has(pluginId)) return null;
+    const history = this.harnessFingerprints.get(pluginId);
+    const def = this.defs.find((entry) => entry.manifest.id === pluginId);
+    const harness = def?.harness;
+    const declaration = def?.manifest.contributes.harness;
+    if (
+      def === undefined ||
+      harness === undefined ||
+      declaration === undefined ||
+      !this.assembled.enabled(pluginId)
+    ) {
+      if (history !== undefined) history.current = null;
+      return null;
+    }
+    const code =
+      this.installed.get(pluginId)?.row.sha256 ??
+      this.trusted.get(pluginId)?.sha256 ??
+      this.builtinCodeIdentity;
+    const cached = history?.current;
+    if (
+      cached !== undefined &&
+      cached !== null &&
+      cached.manifest === def.manifest &&
+      cached.manifestVersion === def.manifest.version &&
+      cached.declaration === declaration &&
+      cached.harnessId === declaration.id &&
+      sameOrderedValues(def.manifest.capabilities, cached.caps) &&
+      cached.code === code &&
+      cached.harness === harness &&
+      cached.profileSchema === harness.profileSchema &&
+      cached.profileValidator === harness.profileSchema.safeParseAsync &&
+      cached.launch === harness.launch &&
+      cached.sessions === harness.sessions &&
+      cached.resolveSession === harness.resolveSession &&
+      cached.send === harness.send
+    )
+      return cached;
+    const revision = history === undefined ? 0 : history.revision + 1;
+    const binding: CachedHarnessBinding = {
+      fingerprint: createHash("sha256")
+        .update(
+          canonicalJobJson({
+            code,
+            // Preserve the released cold hash; live replacements add a nonzero revision.
+            ...(revision === 0 ? {} : { revision }),
+            manifest: def.manifest,
+            profile: z.toJSONSchema(harness.profileSchema, { io: "input" }),
+            launch: String(harness.launch),
+            sessions: String(harness.sessions),
+            resolveSession: String(harness.resolveSession),
+            send: String(harness.send),
+          }),
+        )
+        .digest("hex"),
+      manifest: def.manifest,
+      manifestVersion: def.manifest.version,
+      declaration,
+      harnessId: declaration.id,
+      caps: [...def.manifest.capabilities],
+      code,
+      harness,
+      profileSchema: harness.profileSchema,
+      profileValidator: harness.profileSchema.safeParseAsync,
+      launch: harness.launch,
+      sessions: harness.sessions,
+      resolveSession: harness.resolveSession,
+      send: harness.send,
+    };
+    this.harnessFingerprints.set(pluginId, { pluginId, revision, current: binding });
+    return binding;
+  }
+
+  private harnessBindingCurrent(dependency: HarnessAuthoritySnapshotBinding): boolean {
+    const binding = this.harnessBinding(dependency.pluginId);
+    if (
+      binding === null ||
+      binding.harnessId !== dependency.harnessId ||
+      binding.fingerprint !== dependency.fingerprint
+    )
+      return false;
+    const install = this.installed.get(dependency.pluginId);
+    return dependency.caps.every(
+      (cap) =>
+        withinCeiling(cap, binding.caps) &&
+        (install === undefined ||
+          GOVERNED_CAPS.includes(cap) ||
+          withinCeiling(cap, install.row.grantedCaps)),
+    );
+  }
+
+  // Roster entries and their parsed manifests are rebuilt for unrelated lifecycle changes.
+  // The named door retains custody only while its executable definition and authority agree.
+  private readonly actionFingerprints = new Map<string, BindingHistory<CachedActionBinding>>();
+  private actionBinding(name: string): CachedActionBinding | null {
+    const entry = this.assembled.actions.get(name);
+    const history = this.actionFingerprints.get(name);
+    if (entry === undefined) {
+      if (history !== undefined) history.current = null;
+      return null;
+    }
+    const cached = history?.current;
+    const installation = this.installed.get(entry.plugin.id);
+    const pluginDef =
+      cached?.definitions === this.defs
+        ? cached.pluginDef
+        : this.defs.find((candidate) => candidate.manifest.id === entry.plugin.id);
+    const preparation =
+      pluginDef?.prepareActions !== undefined &&
+      Object.hasOwn(pluginDef.prepareActions, entry.def.name)
+        ? pluginDef.prepareActions[entry.def.name]
+        : undefined;
+    const guestPreparation =
+      pluginDef?.guestPreparation !== undefined &&
+      Object.hasOwn(pluginDef.guestPreparation, entry.def.name)
+        ? pluginDef.guestPreparation[entry.def.name]
+        : undefined;
+    const preparationCaps = preparation?.caps ?? guestPreparation?.caps;
+    const handler = this.handlers.get(entry.plugin.id)?.[entry.def.name];
+    const code =
+      installation?.row.sha256 ??
+      this.trusted.get(entry.plugin.id)?.sha256 ??
+      this.builtinCodeIdentity;
+    if (
+      cached !== undefined &&
+      cached !== null &&
+      cached.installation === installation &&
+      cached.definition === entry.def &&
+      (cached.manifest === entry.plugin
+        ? cached.machine === entry.plugin.machine &&
+          cached.manifestCapabilities === entry.plugin.capabilities
+        : isDeepStrictEqual(cached.manifest, entry.plugin)) &&
+      cached.manifestId === entry.plugin.id &&
+      cached.manifestVersion === entry.plugin.version &&
+      sameOrderedValues(entry.plugin.capabilities, cached.manifestCapValues) &&
+      cached.sourceManifest === pluginDef?.manifest &&
+      cached.sourceCapabilities === pluginDef?.manifest.capabilities &&
+      sameOrderedValues(pluginDef?.manifest.capabilities, cached.sourceCapValues) &&
+      cached.declaration.name === entry.def.name &&
+      cached.declaration.input === entry.def.input &&
+      cached.parser === entry.def.input.safeParse &&
+      cached.declaration.result === entry.def.result &&
+      cached.declaration.scope === entry.def.scope &&
+      cached.declaration.cleanup === entry.def.cleanup &&
+      cached.declaration.runAccess === entry.def.runAccess &&
+      cached.declaration.agentJustification === entry.def.agentJustification &&
+      cached.declaration.trace === entry.def.trace &&
+      cached.caps === entry.def.caps &&
+      sameOrderedValues(entry.def.caps, cached.declaration.caps) &&
+      cached.delegates === entry.def.delegates &&
+      sameOrderedValues(entry.def.delegates, cached.declaration.delegates) &&
+      cached.requirements === entry.def.requirements &&
+      sameActionRequirements(entry.def.requirements, cached.declaration.requirements) &&
+      cached.handler === handler &&
+      cached.preparation === preparation &&
+      cached.preparer === preparation?.prepare &&
+      cached.guestPreparation === guestPreparation &&
+      cached.preparationCapSource === preparationCaps &&
+      sameOrderedValues(preparationCaps, cached.preparationCaps) &&
+      cached.code === code
+    )
+      return cached;
+    const declaration: AnyActionDef = {
+      ...entry.def,
+      caps: [...entry.def.caps],
+      ...(entry.def.delegates === undefined ? {} : { delegates: [...entry.def.delegates] }),
+      ...(entry.def.requirements === undefined
+        ? {}
+        : {
+            requirements: entry.def.requirements.map(({ cap, target }) => ({
+              cap,
+              target: [...target],
+            })),
+          }),
+    };
+    const preparedDefinition =
+      preparation === undefined
+        ? undefined
+        : { caps: [...preparation.caps], prepare: preparation.prepare };
+    const capturedPreparationCaps =
+      preparedDefinition?.caps ??
+      (preparationCaps === undefined ? undefined : [...preparationCaps]);
+    // Keep per-door history even when the entire definition is replaced or restored:
+    // equal schema/function text cannot recycle a settled dispatch's fingerprint.
+    // Verified publication explicitly clears history; ordinary object/code changes do not.
+    // Thus genuine reloads use the cold baseline while live grants remain conjunctive.
+    const revision = history === undefined ? 0 : history.revision + 1;
+    const fingerprint = createHash("sha256")
+      .update(
+        canonicalJobJson({
+          action: name,
+          revision,
+          code,
+          manifest: entry.plugin,
+          handlerCode: String(handler),
+          input: z.toJSONSchema(declaration.input, { io: "input" }),
+          result: z.toJSONSchema(declaration.result, { io: "output" }),
+          caps: declaration.caps,
+          delegates: declaration.delegates ?? [],
+          requirements: declaration.requirements ?? [],
+          scope: declaration.scope ?? "workspace",
+          cleanup: declaration.cleanup ?? false,
+          runAccess: declaration.runAccess ?? null,
+          agentJustification: declaration.agentJustification ?? null,
+          trace: declaration.trace ?? null,
+          preparationCaps: preparationCaps ?? [],
+          preparationCode: preparation === undefined ? null : String(preparation.prepare),
+        }),
+      )
+      .digest("hex");
+    const binding: CachedActionBinding = {
+      fingerprint,
+      installation,
+      definition: entry.def,
+      declaration,
+      parser: entry.def.input.safeParse,
+      manifest: entry.plugin,
+      manifestId: entry.plugin.id,
+      manifestVersion: entry.plugin.version,
+      machine: entry.plugin.machine,
+      manifestCapabilities: entry.plugin.capabilities,
+      manifestCapValues: [...entry.plugin.capabilities],
+      definitions: this.defs,
+      pluginDef,
+      sourceManifest: pluginDef?.manifest,
+      sourceCapabilities: pluginDef?.manifest.capabilities,
+      sourceCapValues: pluginDef === undefined ? undefined : [...pluginDef.manifest.capabilities],
+      handler,
+      caps: entry.def.caps,
+      delegates: entry.def.delegates,
+      requirements: entry.def.requirements,
+      preparation,
+      preparer: preparation?.prepare,
+      preparedDefinition,
+      guestPreparation,
+      preparationCapSource: preparationCaps,
+      preparationCaps: capturedPreparationCaps,
+      code,
+    };
+    this.actionFingerprints.set(name, { pluginId: entry.plugin.id, revision, current: binding });
+    return binding;
+  }
+
+  /** The same pure path as execution; no handler or effect admission occurs in review. */
+  prepareActionInput(auth: AuthContext, name: string, args: unknown): Promise<ActionOutcome> {
+    return this.run(auth, name, args, null, { reviewOnly: true });
+  }
+
   private async run(
     auth: AuthContext,
     fullName: string,
@@ -5195,6 +5883,9 @@ export class PluginHost {
       fullName === "core.access.createRun" ||
       fullName === "core.access.createChildRun" ||
       fullName === "core.access.renewAgentRun" ||
+      fullName === "core.access.createRunV2" ||
+      fullName === "core.access.createChildRunV2" ||
+      fullName === "core.access.renewAgentRunV2" ||
       fullName === "engine.jobs.execute" ||
       fullName === "engine.jobs.schedule";
     if (runPolicyState === "expired") {
@@ -5240,7 +5931,13 @@ export class PluginHost {
       handler's contractual obligation.
     */
     const scope = entry.def.scope ?? "workspace";
-    if (auth.containerScope !== null && scope !== "container" && runAccess === undefined) {
+    if (
+      !options.reviewOnly &&
+      auth.authorityScope === undefined &&
+      auth.containerScope !== null &&
+      scope !== "container" &&
+      runAccess === undefined
+    ) {
       return refuse("forbidden", "scoped tokens cannot invoke workspace actions");
     }
     /*
@@ -5251,6 +5948,8 @@ export class PluginHost {
       first-party row has no grant and skips this half unchanged.
     */
     const nativeCaps = [...entry.def.caps, ...(entry.def.delegates ?? [])];
+    const origin = options.origin;
+    const callerEngineCaps = origin === undefined ? null : entry.def.caps.filter(isEngineCap);
     const install = this.installed.get(pluginId);
     if (install !== undefined) {
       for (const cap of nativeCaps) {
@@ -5272,6 +5971,7 @@ export class PluginHost {
       none has no carried container here.
     */
     let carriedContainer: string | null = null;
+    let actionRequirements: ActionAuthorityRequirement[] = [];
     if (entry.def.requirements === undefined) {
       const carriedScope =
         scope === "container" ? this.authService.carriedScope(auth, entry.def.caps) : null;
@@ -5281,7 +5981,10 @@ export class PluginHost {
           cap === "agents:delegate" &&
           (fullName === "core.access.createRun" ||
             fullName === "core.access.createChildRun" ||
-            fullName === "core.access.renewAgentRun")
+            fullName === "core.access.renewAgentRun" ||
+            fullName === "core.access.createRunV2" ||
+            fullName === "core.access.createChildRunV2" ||
+            fullName === "core.access.renewAgentRunV2")
         )
           continue;
         if (GOVERNED_CAPS.includes(cap))
@@ -5292,33 +5995,186 @@ export class PluginHost {
         const held =
           cap === "*"
             ? this.authService.holdsRoot(auth)
-            : this.authService.allows(auth, cap) ||
+            : (scope === "workspace"
+                ? this.authService.allowsNode(auth, cap, MANIFOLD_ROOT_URI)
+                : this.authService.allows(auth, cap)) ||
               (isContainerGrantCap(cap) && carriedContainer !== null);
-        if (!held) return refuse("forbidden", `${cap} capability required`);
+        if (!options.reviewOnly && !held) return refuse("forbidden", `${cap} capability required`);
+        actionRequirements.push(
+          scope === "workspace" ? { cap, node: MANIFOLD_ROOT_URI, reach: "node" } : { cap },
+        );
       }
     }
+    const contextRequirements: readonly ActionAuthorityRequirement[] = actionRequirements;
     // What the handler reads as its container scope: the token's own, or the carried one.
     const handlerScope = auth.containerScope ?? carriedContainer;
-    const parsed = entry.def.input.safeParse(rawArgs);
-    if (!parsed.success) {
-      if (opaque) return refuse("invalid_args", "invalid action arguments");
-      const detail = parsed.error.issues
-        .map((issue) => `${issue.path.map(String).join(".") || "(root)"} ${issue.message}`)
-        .join("; ");
-      return refuse("invalid_args", detail);
-    }
-    let admission: GovernedAdmissionDecision | null = null;
-    const governed = entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
-    // What this dispatch's admission discharged at containers, for its native bridge (ADR 0051).
-    let carried: readonly ContainerGrant[] | undefined;
-    const admitInput = (
-      args: unknown,
-      preparedTargets?: readonly unknown[],
-    ): ActionAdmissionDenial | null => {
+    const binding = this.actionBinding(fullName)!;
+    const handler = binding.handler;
+    const epoch = this.actionEpochs.get(pluginId) ?? 0;
+    const originCurrent = (): boolean => {
+      if (origin === undefined || callerEngineCaps === null) return true;
       try {
         options.beforeAdmission?.();
       } catch {
-        return new ActionAdmissionDenial("forbidden", "settled job authority unavailable");
+        return false;
+      }
+      return this.callerCeilingAllows(origin, callerEngineCaps);
+    };
+    const bindingCurrent = (): boolean =>
+      !this.closed &&
+      (this.actionEpochs.get(pluginId) ?? 0) === epoch &&
+      this.actionBinding(fullName) === binding &&
+      this.installed.get(pluginId) === install &&
+      (this.assembled.enabled(pluginId) || binding.declaration.cleanup === true) &&
+      originCurrent();
+    const parsed: { data: unknown } = { data: rawArgs };
+    if (guestInput) {
+      const initial = binding.declaration.input.safeParse(rawArgs);
+      if (!initial.success)
+        return refuse("invalid_args", opaque ? "invalid action arguments" : initial.error.message);
+      parsed.data = initial.data;
+    }
+    const preparation = binding.preparedDefinition;
+    const preparationCaps = binding.preparationCaps ?? [];
+    const securityFingerprint = binding.fingerprint;
+    let preparedEvidence: ActionPreparationEvidence = {
+      originalArgsDigest: argumentDigest(rawArgs),
+      targets: [],
+      additionalRequirements: [],
+    };
+    let resolvedMachineId: string | undefined;
+    let resolvedContainerId: string | undefined;
+    const nativeBindings: unknown[] = [];
+    const terminalOwners: TerminalOwnerBinding[] = [];
+    const captureTerminalOwner = (resolved: TerminalOwnerBinding): void => {
+      const prior = terminalOwners.find(({ machineId }) => machineId === resolved.machineId);
+      if (prior !== undefined) {
+        if (prior.terminalHostId !== resolved.terminalHostId)
+          throw new ServiceError("forbidden", "terminal destination owner changed");
+        return;
+      }
+      if (terminalOwners.length >= 64)
+        throw new ServiceError("forbidden", "terminal preparation destination limit");
+      terminalOwners.push({
+        machineId: resolved.machineId,
+        terminalHostId: resolved.terminalHostId,
+      });
+    };
+    const prepareNativeDemand = async (
+      demand: NativePreparationDemand,
+      machineId: string,
+      containerId: string,
+    ): Promise<readonly PreparedRequirement[]> => {
+      if (this.jobs === null) throw new ServiceError("forbidden", "terminal runtime unavailable");
+      const binding = this.jobs.prepareTerminalDemandBinding(demand, machineId, containerId);
+      nativeBindings.push(binding);
+      return structuredClone(binding.requirements);
+    };
+    const preparationContext: ActionPreparationCtx = Object.freeze({
+      terminals: Object.freeze({
+        resolveMachine: async (input: {
+          readonly machineId?: string;
+          readonly runtime?: TerminalRuntime;
+        }) => {
+          const resolved = this.broker.resolveTerminalMachine(
+            input.machineId,
+            input.runtime?.machineId,
+          );
+          resolvedMachineId = resolved.machineId;
+          captureTerminalOwner(resolved);
+          return Object.freeze({ ...resolved });
+        },
+        stored: async (terminalId: string) => {
+          const terminal = this.store.getTerminal(terminalId);
+          if (terminal === null) return null;
+          resolvedMachineId = terminal.machineId;
+          resolvedContainerId = terminal.containerId;
+          const governed =
+            terminal.launchRecipe?.runtime !== undefined || terminal.runId !== undefined;
+          let native: NativeDemandBinding | null = null;
+          if (governed) {
+            if (this.jobs === null)
+              throw new ServiceError("forbidden", "terminal runtime unavailable");
+            native = this.jobs.storedTerminalDemandBinding(terminalId);
+            if (native === null)
+              throw new ServiceError("forbidden", "terminal runtime unavailable");
+            nativeBindings.push(native);
+          }
+          if (!governed)
+            captureTerminalOwner(this.broker.resolveTerminalMachine(terminal.machineId));
+          return Object.freeze({
+            governed,
+            machineId: terminal.machineId,
+            containerId: terminal.containerId,
+            ...(native === null
+              ? {}
+              : { nativeRequirements: structuredClone(native.requirements) }),
+          });
+        },
+      }),
+      containers: Object.freeze({
+        placement: async (containerId: string) => {
+          const container = this.store.getContainer(containerId);
+          if (container === null)
+            throw new ServiceError("not_found", "terminal placement unavailable");
+          resolvedContainerId = containerId;
+          return this.broker.terminalPlacement(containerId);
+        },
+      }),
+      native: Object.freeze({
+        demand: async (runtime: TerminalRuntime, machineId: string, containerId: string) =>
+          prepareNativeDemand(
+            projectNativePreparationDemand(runtime, argumentDigest(runtime)),
+            machineId,
+            containerId,
+          ),
+      }),
+    });
+    if (!guestInput) {
+      try {
+        const prepared = await runActionPreparation(() =>
+          prepareActionInput(
+            binding.declaration.input,
+            binding.declaration.requirements ?? [],
+            rawArgs,
+            preparationContext,
+            preparation,
+          ),
+        );
+        if (!bindingCurrent()) return refuse("forbidden", "action binding unavailable");
+        parsed.data = prepared.args;
+        preparedEvidence = prepared;
+      } catch (error) {
+        return refuse(
+          error instanceof ActionPreparationError || error instanceof z.ZodError
+            ? "invalid_args"
+            : "refused",
+          opaque && (error instanceof ActionPreparationError || error instanceof z.ZodError)
+            ? "invalid action arguments"
+            : error instanceof Error
+              ? error.message
+              : "action preparation refused",
+        );
+      }
+    }
+    let admission: GovernedAdmissionDecision | null = null;
+    let governed = entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
+    // What this dispatch's admission discharged at containers, for its native bridge (ADR 0051).
+    let carried: readonly ContainerGrant[] | undefined;
+    let admittedNativeRequirements: readonly AuthorityRequirement[] = [];
+    const admitInput = (
+      args: unknown,
+      preparedTargets?: readonly unknown[],
+      additionalRequirements: readonly PreparedRequirement[] = preparedEvidence.additionalRequirements,
+    ): ActionAdmissionDenial | null => {
+      if (!bindingCurrent())
+        return new ActionAdmissionDenial("forbidden", "action binding unavailable");
+      if (origin === undefined) {
+        try {
+          options.beforeAdmission?.();
+        } catch {
+          return new ActionAdmissionDenial("forbidden", "settled job authority unavailable");
+        }
       }
       if (options.admissionFence) {
         const current = options.admissionFence();
@@ -5335,13 +6191,14 @@ export class PluginHost {
                 : "forbidden",
             "agent authority unavailable",
           );
-        if (
-          this.assembled.actions.get(fullName) !== entry ||
-          !this.assembled.enabled(pluginId) ||
-          this.replacing.has(pluginId)
-        )
+        if (!bindingCurrent() || !this.assembled.enabled(pluginId) || this.replacing.has(pluginId))
           return new ActionAdmissionDenial("unavailable", "action unavailable");
-        if (auth.containerScope !== null && scope !== "container" && runAccess === undefined)
+        if (
+          auth.authorityScope === undefined &&
+          auth.containerScope !== null &&
+          scope !== "container" &&
+          runAccess === undefined
+        )
           return new ActionAdmissionDenial("forbidden", "scope unavailable");
         const installed = this.installed.get(pluginId);
         if (
@@ -5362,7 +6219,36 @@ export class PluginHost {
       const declaredRequirements = entry.def.requirements ?? [];
       if (preparedTargets !== undefined && preparedTargets.length !== declaredRequirements.length)
         return new ActionAdmissionDenial("invalid_args", "invalid authority targets");
+      let additions: readonly PreparedRequirement[];
+      try {
+        additions = validatePreparedRequirements(additionalRequirements, preparationCaps);
+      } catch (error) {
+        return new ActionAdmissionDenial(
+          "invalid_args",
+          error instanceof Error ? error.message : "invalid preparation",
+        );
+      }
+      for (const requirement of additions) {
+        if (!withinCeiling(requirement.cap, entry.plugin.capabilities))
+          return new ActionAdmissionDenial(
+            "invalid_args",
+            "preparer requirement not declared by plugin",
+          );
+        if (
+          install !== undefined &&
+          !GOVERNED_CAPS.includes(requirement.cap) &&
+          !withinCeiling(requirement.cap, install.row.grantedCaps)
+        )
+          return new ActionAdmissionDenial(
+            "forbidden",
+            `${requirement.cap} not granted to plugin ${pluginId}`,
+          );
+      }
+      if (!this.callerCeilingAllows(origin, additions))
+        return new ActionAdmissionDenial("forbidden", "caller plugin authority unavailable");
+      governed = governed || additions.some(({ cap }) => GOVERNED_CAPS.includes(cap));
       const requirements: AuthorityRequirement[] = [];
+      const fixedRequirements: ActionAuthorityRequirement[] = [];
       const carrying: { readonly containerId: string; readonly caps: ContainerGrantCap[] }[] = [];
       for (const [index, declared] of declaredRequirements.entries()) {
         let value: unknown = args;
@@ -5395,21 +6281,150 @@ export class PluginHost {
           if (grant === undefined) carrying.push({ containerId, caps: [declared.cap] });
           else if (!grant.caps.includes(declared.cap)) grant.caps.push(declared.cap);
         }
-        if (!this.authService.allowsRef(auth, declared.cap, ref.data))
+        if (!options.reviewOnly && !this.authService.allowsRef(auth, declared.cap, ref.data))
           return new ActionAdmissionDenial(
             "forbidden",
             `${declared.cap} capability required at target`,
           );
+        fixedRequirements.push({ cap: declared.cap, ref: ref.data });
         // Only engine capabilities have native revision-bound admission evidence.
         if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
       }
-      if (governed) {
+      for (const requirement of additions) {
+        if (
+          !options.reviewOnly &&
+          !this.authService.allowsNode(auth, requirement.cap, requirement.node, requirement.reach)
+        )
+          return new ActionAdmissionDenial(
+            "forbidden",
+            `${requirement.cap} capability required at ${requirement.node}`,
+          );
+        fixedRequirements.push(requirement);
+        if (!nativeCaps.includes(requirement.cap)) nativeCaps.push(requirement.cap);
+        const ref = parseManifoldUri(requirement.node);
+        if (ref !== null && isEngineCap(requirement.cap) && requirement.cap !== "machines:shell")
+          requirements.push({ cap: requirement.cap, ref });
+      }
+      if (governed && !options.reviewOnly) {
         admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
         if (!admission.allowed)
           return new ActionAdmissionDenial("forbidden", "explicit version-bound consent required");
         if (carrying.length > 0) carried = carrying;
       }
+      if (callerEngineCaps !== null) {
+        for (const { cap } of additions)
+          if (isEngineCap(cap) && !callerEngineCaps.includes(cap)) callerEngineCaps.push(cap);
+      }
+      actionRequirements =
+        entry.def.requirements === undefined
+          ? [...contextRequirements, ...fixedRequirements]
+          : fixedRequirements;
+      admittedNativeRequirements = requirements;
       return null;
+    };
+    const authorityFence = new ActionAuthorityFence(
+      this.authService,
+      auth,
+      () =>
+        bindingCurrent() &&
+        nativeBindings.every(
+          (binding) => this.jobs?.terminalDemandBindingCurrent(binding, false) === true,
+        ) &&
+        terminalOwners.every((binding) => this.broker.terminalOwnerBindingCurrent(binding)) &&
+        (install === undefined ||
+          nativeCaps.every(
+            (cap) => GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps),
+          )),
+      handlerScope,
+      (current) => {
+        if (
+          governed &&
+          !this.authService.admitGoverned(current, pluginId, fullName, admittedNativeRequirements)
+            .allowed
+        )
+          throw new ServiceError("forbidden", "explicit version-bound consent required");
+      },
+      (current, requirements) => {
+        const additions = validatePreparedRequirements(
+          requirements.map(({ cap, node, ref, reach }) => {
+            const target = node ?? (ref === undefined ? undefined : formatManifoldUri(ref));
+            if (cap === "*" || target === undefined)
+              throw new ServiceError("forbidden", "invalid prepared extension requirement");
+            return { cap, node: target, reach: reach ?? "node" };
+          }),
+          preparationCaps,
+        );
+        const nativeRequirements = [...admittedNativeRequirements];
+        for (const requirement of additions) {
+          if (!withinCeiling(requirement.cap, entry.plugin.capabilities))
+            throw new ServiceError("forbidden", "preparer requirement not declared by plugin");
+          if (
+            install !== undefined &&
+            !GOVERNED_CAPS.includes(requirement.cap) &&
+            !withinCeiling(requirement.cap, install.row.grantedCaps)
+          )
+            throw new ServiceError("forbidden", "preparer requirement not granted to plugin");
+        }
+        if (!this.callerCeilingAllows(origin, additions))
+          throw new ActionAdmissionDenial("forbidden", "caller plugin authority unavailable");
+        for (const requirement of additions) {
+          if (
+            !this.authService.allowsNode(
+              current,
+              requirement.cap,
+              requirement.node,
+              requirement.reach,
+            )
+          )
+            throw new ServiceError("forbidden", "prepared extension authority unavailable");
+          const ref = parseManifoldUri(requirement.node);
+          if (ref !== null && isEngineCap(requirement.cap) && requirement.cap !== "machines:shell")
+            nativeRequirements.push({ cap: requirement.cap, ref });
+        }
+        const native = governed || additions.some(({ cap }) => GOVERNED_CAPS.includes(cap));
+        if (
+          native &&
+          !this.authService.admitGoverned(current, pluginId, fullName, nativeRequirements).allowed
+        )
+          throw new ServiceError("forbidden", "explicit version-bound consent required");
+        for (const { cap } of additions) if (!nativeCaps.includes(cap)) nativeCaps.push(cap);
+        if (callerEngineCaps !== null) {
+          for (const { cap } of additions)
+            if (isEngineCap(cap) && !callerEngineCaps.includes(cap)) callerEngineCaps.push(cap);
+        }
+        admittedNativeRequirements = nativeRequirements;
+        governed = native;
+      },
+    );
+    authorityFence.bind({
+      originalArgsDigest: preparedEvidence.originalArgsDigest,
+      actionName: fullName,
+      ...(securityFingerprint === null ? {} : { fingerprint: securityFingerprint }),
+      ...(resolvedMachineId === undefined ? {} : { machineId: resolvedMachineId }),
+      ...(resolvedContainerId === undefined ? {} : { containerId: resolvedContainerId }),
+      ...(terminalOwners.length === 0 ? {} : { terminalOwners }),
+      ...(nativeBindings.length === 0 ? {} : { nativeDemand: nativeBindings }),
+    });
+    const checkActionAuthority = (): AuthContext => {
+      requireActionEffects();
+      try {
+        if (origin === undefined) options.beforeAdmission?.();
+        const current = authorityFence.checkCurrent();
+        if (options.admissionFence && options.admissionFence() === null)
+          throw new ServiceError("forbidden", "admission unavailable");
+        if (
+          governed &&
+          !this.authService.admitGoverned(current, pluginId, fullName, admittedNativeRequirements)
+            .allowed
+        )
+          throw new ServiceError("forbidden", "explicit version-bound consent required");
+        return current;
+      } catch (error) {
+        authorityFence.close();
+        if (error instanceof ServiceError)
+          throw new ActionAdmissionDenial("forbidden", error.message);
+        throw error;
+      }
     };
     const projection =
       options.resultProjectionDigest === undefined ? undefined : entry.resultProjection;
@@ -5422,11 +6437,22 @@ export class PluginHost {
         ? new ActionAdmissionDenial("invalid_args", "result projection request is unavailable")
         : null;
     if (!guestInput) {
-      const denial = admitInput(parsed.data);
+      const denial = admitInput(parsed.data, preparedEvidence.targets);
       if (denial !== null) return refuse(denial.rule, denial.message);
       if (!nativeEffectAdmission && declarationDenial !== null)
         return refuse(declarationDenial.rule, declarationDenial.message);
       if (projectionDenial !== null) return refuse(projectionDenial.rule, projectionDenial.message);
+      if (options.reviewOnly)
+        return {
+          ok: true,
+          result: {
+            originalArgsDigest: preparedEvidence.originalArgsDigest,
+            targets: preparedEvidence.targets,
+            additionalRequirements: preparedEvidence.additionalRequirements,
+            requirements: actionRequirements,
+            fingerprint: securityFingerprint,
+          },
+        };
     }
     /*
       THE STAGING BUFFER, one per dispatch. `ctx.emit` appends here and nothing leaves until
@@ -5456,7 +6482,6 @@ export class PluginHost {
      */
     const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
     options.onTrace?.(traceId);
-    const handler = this.handlers.get(pluginId)?.[entry.def.name];
     if (handler === undefined) {
       // An assembled door is accountable even when its handler is broken or absent.
       this.store.settleTrace(traceId, "failed", []);
@@ -5486,12 +6511,22 @@ export class PluginHost {
         ? auth
         : {
             ...auth,
-            caps: CAPS.filter(
-              (cap) =>
-                withinCeiling(cap, auth.caps) &&
-                withinCeiling(cap, nativeCaps) &&
-                !(governed && isContainerGrantCap(cap)),
-            ),
+            get caps() {
+              return CAPS.filter(
+                (cap) =>
+                  withinCeiling(cap, auth.caps) &&
+                  withinCeiling(cap, nativeCaps) &&
+                  !(governed && isContainerGrantCap(cap)),
+              );
+            },
+            get authorityScope() {
+              return auth.authorityScope
+                ?.map((entry) => ({
+                  ...entry,
+                  caps: entry.caps.filter((cap) => withinCeiling(cap, nativeCaps)),
+                }))
+                .filter((entry) => entry.caps.length > 0);
+            },
             // Read at use: an isolated guest is admitted only after this bridge is built.
             get containerGrants() {
               return carried ?? lent;
@@ -5499,7 +6534,12 @@ export class PluginHost {
           };
     let lease: PluginDataLease;
     try {
-      lease = this.dataLease(pluginId);
+      lease = this.dataLease(
+        pluginId,
+        undefined,
+        options.reviewOnly ? null : undefined,
+        checkActionAuthority,
+      );
     } catch (error) {
       this.store.settleTrace(traceId, "failed", []);
       throw error;
@@ -5521,25 +6561,26 @@ export class PluginHost {
       `ctx.auth.allows` answers the caller's question alone and is NOT that ceiling, so a handler
       whose door declares nothing reaches no machine however much its caller holds.
     */
-    let machineBridgeOpen = true;
     const machineAuthority = (
       cap: "containers:read" | "machines:mint" | "machines:read",
       workspace: boolean,
       node?: ManifoldRef,
     ): AuthContext => {
-      if (
-        !machineBridgeOpen ||
-        this.closed ||
-        this.assembled.actions.get(fullName)?.def !== entry.def ||
-        this.replacing.has(pluginId) ||
-        (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true)
-      )
+      // Fleet calls retain their existing early replacement refusal; durable data drains
+      // against the still-current admitted binding until it is actually retired.
+      if (this.replacing.has(pluginId))
         throw new ServiceError("forbidden", "plugin authority unavailable");
+      let live: AuthContext;
+      try {
+        live = checkActionAuthority();
+      } catch (error) {
+        if (error instanceof ActionAdmissionDenial)
+          throw new ServiceError("forbidden", error.message);
+        throw error;
+      }
       const grant = this.installed.get(pluginId)?.row.grantedCaps;
-      const live =
-        withinCeiling(cap, nativeCaps) && (grant === undefined || withinCeiling(cap, grant))
-          ? this.authService.restoreCredential(this.authService.credentialReference(nativeAuth))
-          : null;
+      if (!withinCeiling(cap, nativeCaps) || (grant !== undefined && !withinCeiling(cap, grant)))
+        throw new ServiceError("forbidden", "plugin authority unavailable");
       // Graded where `ctx.auth.allows` grades a dispatch admitted on carried authority.
       const graded =
         live !== null && carriedContainer !== null && isContainerGrantCap(cap)
@@ -5551,9 +6592,11 @@ export class PluginHost {
         live === null ||
         graded === null ||
         !(node === undefined
-          ? this.authService.allows(graded, cap)
+          ? workspace
+            ? this.authService.allowsNode(graded, cap, MANIFOLD_ROOT_URI)
+            : this.authService.allows(graded, cap)
           : this.authService.allowsRef(graded, cap, node)) ||
-        (workspace && live.containerScope !== null)
+        (workspace && live.authorityScope === undefined && live.containerScope !== null)
       )
         throw new ServiceError("forbidden", `${cap} capability required`);
       return live;
@@ -5585,19 +6628,66 @@ export class PluginHost {
       },
       ...(guestInput
         ? {
-            admitPrepared: (targets: readonly unknown[]): void => {
+            admitPrepared: (
+              targets: readonly unknown[],
+              additionalRequirements?: readonly PreparedRequirement[],
+            ): void => {
               if (guestAdmitted) throw new IsolateDenial("unavailable", "isolate admitted twice");
-              const denial = admitInput(undefined, targets);
+              const denial = admitInput(undefined, targets, additionalRequirements ?? []);
               if (denial !== null) throw denial;
+              preparedEvidence = {
+                originalArgsDigest: argumentDigest(rawArgs),
+                targets: ManifoldRefSchema.array().parse(targets),
+                additionalRequirements: validatePreparedRequirements(
+                  additionalRequirements,
+                  preparationCaps,
+                ),
+              };
+              authorityFence.bind({
+                actionName: fullName,
+                originalArgsDigest: preparedEvidence.originalArgsDigest,
+                ...(securityFingerprint === null ? {} : { fingerprint: securityFingerprint }),
+                ...(resolvedMachineId === undefined ? {} : { machineId: resolvedMachineId }),
+                ...(resolvedContainerId === undefined ? {} : { containerId: resolvedContainerId }),
+                ...(terminalOwners.length === 0 ? {} : { terminalOwners }),
+                ...(nativeBindings.length === 0 ? {} : { nativeDemand: nativeBindings }),
+              });
+              if (options.reviewOnly) return;
               enforceDeclaration();
               if (projectionDenial !== null) throw projectionDenial;
+              authorityFence.admit(actionRequirements);
+              checkActionAuthority();
               guestAdmitted = true;
               options.onAdmitted?.();
+              if (options.onPrepared !== undefined)
+                options.onPrepared(
+                  resolvedMachineId === undefined ||
+                    parsed.data === null ||
+                    typeof parsed.data !== "object"
+                    ? parsed.data
+                    : { ...parsed.data, machineId: resolvedMachineId },
+                  authorityFence.retain(),
+                  traceId,
+                );
             },
           }
         : {}),
+      preparation: preparationContext,
+      prepareNativeDemand,
+      prepareResolveMachine: async (input) => {
+        const resolved = this.broker.resolveTerminalMachine(
+          input.machineId,
+          input.runtimeMachineId,
+        );
+        resolvedMachineId = resolved.machineId;
+        captureTerminalOwner(resolved);
+        return resolved;
+      },
+      ...(options.reviewOnly ? { preparationMode: "review" as const } : {}),
+      authorityFence,
       jobs: jobContext(
         () => {
+          requireActionEffects();
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
           return this.jobs;
         },
@@ -5605,9 +6695,11 @@ export class PluginHost {
         pluginId,
         traceId,
         nativeEffectAdmission ? enforceDeclaration : undefined,
+        authorityFence,
       ),
       services: serviceContext(
         () => {
+          requireActionEffects();
           if (this.jobs === null)
             throw new ServiceError("forbidden", "service authority unavailable");
           return this.jobs;
@@ -5620,6 +6712,7 @@ export class PluginHost {
           withinCeiling("services:invoke", nativeCaps)
           ? "invoke"
           : "read",
+        authorityFence,
       ),
       /*
         THE SIBLING VERB, bound to the CALLER'S OWN `auth` rather than to `nativeAuth` (ADR
@@ -5633,9 +6726,17 @@ export class PluginHost {
         The stack is this trace's frames plus this plugin, so a callee already on it is a
         cycle and a chain that never repeats an id still stops at the depth bound.
       */
-      actions: this.actionCalls(pluginId, auth, session, traceId, actionStack),
+      actions: this.actionCalls(
+        pluginId,
+        auth,
+        session,
+        traceId,
+        actionStack,
+        checkActionAuthority,
+      ),
       streams: {
         open: (kind, node) => {
+          requireActionEffects();
           if (!streamAdmissionOpen) throw new Error("stream open requires an active action");
           const descriptor = this.assembled.streams.get(kind)?.descriptor;
           if (
@@ -5671,7 +6772,28 @@ export class PluginHost {
             });
           });
           openedStreams.push(producer);
-          return producer;
+          return {
+            epoch: producer.epoch,
+            get closed() {
+              return producer.closed;
+            },
+            publish: (body) => {
+              requireActionEffects();
+              producer.publish(body);
+            },
+            close: () => {
+              requireActionEffects();
+              producer.close();
+            },
+            onClose: (listener) => {
+              requireActionEffects();
+              const stop = producer.onClose(listener);
+              return () => {
+                requireActionEffects();
+                stop();
+              };
+            },
+          };
         },
       },
       principal: auth.principal,
@@ -5699,15 +6821,30 @@ export class PluginHost {
             ? this.authService.allows(graded, cap)
             : this.authService.allowsRef(graded, cap, ref);
         },
+        allowsNode: (cap, node, reach = "node") =>
+          this.authService.allowsNode(auth, cap, node, reach),
       },
       containerScope: handlerScope,
-      outsideScope: (containerId) =>
-        handlerScope !== null && containerId !== handlerScope
-          ? { refused: OUTSIDE_SCOPE_REFUSAL }
-          : null,
+      outsideScope: (containerId) => {
+        if (auth.authorityScope === undefined)
+          return handlerScope !== null && containerId !== handlerScope
+            ? { refused: OUTSIDE_SCOPE_REFUSAL }
+            : null;
+        const caps =
+          entry.def.requirements === undefined
+            ? entry.def.caps
+            : actionRequirements.map(({ cap }) => cap).filter(isContainerGrantCap);
+        return caps.every((cap) =>
+          cap === "*"
+            ? this.authService.holdsRoot(auth)
+            : this.authService.allowsNode(auth, cap, `manifold://container/${containerId}`),
+        )
+          ? null
+          : { refused: OUTSIDE_SCOPE_REFUSAL };
+      },
       store: this.store,
       rooms: this.rooms,
-      broker: this.broker,
+      broker: this.broker.withAuthorityFence(authorityFence),
       machines: {
         isOnline: (machineId) => this.machines.isOnline(machineId),
         getTerminalExecution: (machineId) => this.machines.getTerminalExecution(machineId),
@@ -5749,7 +6886,12 @@ export class PluginHost {
               agent.harness,
               session,
               actionStack,
-              (harness, bound) => harness.send(bound, run, input.input),
+              (harness, bound, pluginId) =>
+                harness.send(
+                  bound,
+                  this.guestInputPlugins.has(pluginId) ? run : projectLegacyRun(run),
+                  input.input,
+                ),
             );
             return {};
           }),
@@ -5793,6 +6935,31 @@ export class PluginHost {
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
+        mintTokenV2: (input) => identityCall(() => this.authService.mintTokenV2(input, auth)),
+        registerAgentV2: (input) =>
+          identityCallAsync(() => this.authService.registerAgentV2(input, auth)),
+        getAgentV2: (input) => identityCall(() => this.authService.getAgentV2(input, auth)),
+        listAgentsV2: () => identityCall(() => this.authService.listAgentsV2(auth)),
+        updateAgentV2: (input) =>
+          identityCallAsync(() => this.authService.updateAgentV2(input, auth)),
+        disableAgentV2: (input) => identityCall(() => this.authService.disableAgentV2(input, auth)),
+        enableAgentV2: (input) => identityCall(() => this.authService.enableAgentV2(input, auth)),
+        retireAgentV2: (input) => identityCall(() => this.authService.retireAgentV2(input, auth)),
+        createRunV2: (input) =>
+          identityCall(() => this.authService.createRunV2(input, auth, enforceDeclaration)),
+        createChildRunV2: (input) =>
+          identityCall(() => this.authService.createChildRunV2(input, auth, enforceDeclaration)),
+        inspectRunV2: (input) => identityCall(() => this.authService.inspectRunV2(input, auth)),
+        listRunsV2: (input) => identityCall(() => this.authService.listRunsV2(input, auth)),
+        reportRunActivityV2: (input) =>
+          identityCall(() => this.authService.reportRunActivityV2(input, auth)),
+        acknowledgeAgentPolicyV2: (input) =>
+          identityCall(() => this.authService.acknowledgeAgentPolicyV2(input, auth)),
+        renewAgentRunV2: (input) =>
+          identityCall(() => this.authService.renewAgentRunV2(input, auth, enforceDeclaration)),
+        finishAgentRunV2: (input) =>
+          identityCall(() => this.authService.finishAgentRunV2(input, auth)),
+        listCredentialsV2: () => identityCall(() => this.authService.listCredentialsV2(auth)),
         registerAgent: (input) =>
           identityCallAsync(() => this.authService.registerAgent(input, auth)),
         getAgent: (input) => identityCall(() => this.authService.getAgent(input, auth)),
@@ -5855,11 +7022,16 @@ export class PluginHost {
       // only of its type — and what the isolate proxy answers `slice_unavailable` for.
       ...(database === undefined ? {} : { database }),
       now: () => this.runtime.now(),
-      newId: () => this.runtime.newId(),
+      newId: () => {
+        requireActionEffects();
+        return this.runtime.newId();
+      },
       target: (ref) => {
+        requireActionEffects();
         if (!opaque) targets.push(ref);
       },
       emit: (ref, kind, payload) => {
+        requireActionEffects();
         staged.push({ ref, kind, payload: payload ?? {} });
         if (!opaque) targets.push(ref);
       },
@@ -5867,17 +7039,34 @@ export class PluginHost {
     let produced: unknown;
     const admitted = async (): Promise<unknown> => {
       try {
-        const handler = this.handlers.get(pluginId)?.[entry.def.name];
-        if (handler === undefined) throw new Error(`action "${fullName}" has no server handler`);
         const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
         if (!guestInput) {
           if (options.admissionFence) {
-            const denial = admitInput(parsed.data);
+            const denial = admitInput(parsed.data, preparedEvidence.targets);
             if (denial !== null) throw denial;
           }
+          authorityFence.admit(actionRequirements);
+          checkActionAuthority();
           options.onAdmitted?.();
+          if (options.onPrepared !== undefined)
+            options.onPrepared(parsed.data, authorityFence.retain(), traceId);
         }
         const answer = await invoke(ctx, parsed.data);
+        // A hardened preparer can refuse before it calls admitPrepared. Its proxy returns the
+        // normal refusal envelope; settle that actual answer before review treats the absence
+        // of admission as successful evidence or execution calls it an unavailable isolate.
+        if (guestInput && !guestAdmitted && answer !== null && typeof answer === "object") {
+          const denial = Reflect.get(answer, "refused");
+          if (typeof denial === "string") throw new ActionAdmissionDenial("refused", denial);
+        }
+        if (guestInput && options.reviewOnly)
+          return {
+            originalArgsDigest: preparedEvidence.originalArgsDigest,
+            targets: preparedEvidence.targets,
+            additionalRequirements: preparedEvidence.additionalRequirements,
+            requirements: actionRequirements,
+            fingerprint: securityFingerprint,
+          };
         if (guestInput && !guestAdmitted)
           throw new IsolateDenial("unavailable", "isolate returned before admission");
         // Shutdown revoked this dispatch: nothing it staged may be announced as committed.
@@ -5885,7 +7074,7 @@ export class PluginHost {
         return answer;
       } finally {
         lease.close();
-        machineBridgeOpen = false;
+        authorityFence.close();
       }
     };
     try {
@@ -5916,6 +7105,10 @@ export class PluginHost {
       // it with the same word.
       this.store.settleTrace(traceId, "failed", traceTargets(targets));
       throw error;
+    }
+    if (options.reviewOnly) {
+      this.store.settleTrace(traceId, "ok", []);
+      return { ok: true, result: produced };
     }
     streamAdmissionOpen = false;
     if (produced !== null && typeof produced === "object") {
@@ -5990,6 +7183,7 @@ export class PluginHost {
    * answer refused, and the authored loop builds nothing further (#318).
    */
   close(): void {
+    requireActionEffects();
     this.lifetime.abort(new Error("the plugin host is closed"));
     this.updates?.close();
     this.authored?.close();

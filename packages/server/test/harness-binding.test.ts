@@ -19,7 +19,9 @@ import {
   ContainerTerminalsResponseSchema,
   TerminalsResponseSchema,
   type ActionOutcome,
-  type AgentRun,
+  type AgentRunAuthority,
+  type AuthorityScope,
+  type Cap,
   type HarnessTarget,
   type JobCommand,
   type JobOwner,
@@ -32,7 +34,7 @@ import { openDatabase } from "../src/db.ts";
 import { ServerStore } from "../src/stores.ts";
 import { JobService } from "../src/job-service.ts";
 import { silentLogger } from "../src/log.ts";
-import type { ActionCtx, ServerPluginDef } from "../src/plugin-host.ts";
+import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -82,24 +84,49 @@ function result(outcome: ActionOutcome): unknown {
   return outcome.result;
 }
 
+async function admittedMessage<T>(
+  message: Promise<T>,
+  pending: Promise<ActionOutcome>,
+  phase: string,
+): Promise<T> {
+  return Promise.race([
+    message,
+    pending.then((outcome) => {
+      result(outcome);
+      throw new Error(`action settled before ${phase}`);
+    }),
+  ]);
+}
+
 async function fixture(
   dependency?: ServerPluginDef,
   inputs?: string[],
   databasePath?: string,
   profileSchema: z.ZodType = z.strictObject({ label: z.string().min(1) }),
+  baseMachine: MachineHalf = machine,
+  extraHarnessCaps: Cap[] = [],
+  configureHarness?: (
+    harness: NonNullable<ServerPluginDef["harness"]>,
+    effects: HarnessEffectFixture,
+  ) => void,
 ) {
   const declaredMachine: MachineHalf =
     inputs === undefined
-      ? machine
+      ? baseMachine
       : {
-          ...machine,
-          operations: { [operationId]: { ...machine.operations[operationId]!, inputs } },
+          ...baseMachine,
+          operations: {
+            ...baseMachine.operations,
+            [operationId]: { ...baseMachine.operations[operationId]!, inputs },
+          },
         };
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store =
     databasePath === undefined ? testStore() : new ServerStore(openDatabase(databasePath));
-  const auth = new AuthService(store, "a".repeat(64), runtime);
+  const auth: AuthService = new AuthService(store, "a".repeat(64), runtime, {
+    decide: (request) => service.decide(request),
+  });
   const root = auth.authenticate("a".repeat(64));
   const machineId = auth.enrollMachine("harness owner", root).machine.id;
   const containerId = runtime.newId();
@@ -118,14 +145,14 @@ async function fixture(
     resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
     input: { mode: "start" },
   };
-  const launches: { run: AgentRun; target: HarnessTarget }[] = [];
+  const launches: { run: AgentRunAuthority; target: HarnessTarget }[] = [];
   const definition: ServerPluginDef = {
     manifest: {
       id: pluginId,
       version: "1.0.0",
       title: "Test harness",
       description: "Binding boundary fixture",
-      capabilities: ["machines:run", "jobs:read", "jobs:input"],
+      capabilities: ["machines:run", "jobs:read", "jobs:input", ...extraHarnessCaps],
       ...(dependency
         ? { dependencies: { [dependency.manifest.id]: { type: "required" as const } } }
         : {}),
@@ -182,6 +209,7 @@ async function fixture(
       },
     },
   };
+  configureHarness?.(definition.harness!, { descriptor, runtime });
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
@@ -196,7 +224,7 @@ async function fixture(
   const host = await testPluginHost(store, auth, rooms, broker, runtime, {
     settingsPlugins: dependency ? [definition, dependency] : [definition],
   });
-  const service = new JobService(store, auth, runtime);
+  const service: JobService = new JobService(store, auth, runtime);
   host.setJobs(service);
   broker.setJobs(service);
   service.install(root, {
@@ -217,7 +245,12 @@ async function fixture(
   });
   const commands: JobCommand[] = [];
   const sent: ServerToAgentMessage[] = [];
-  const channel = {
+  const createWaiters = new Map<string, () => void>();
+  const firstCreate = Promise.withResolvers<Extract<ServerToAgentMessage, { type: "create" }>>();
+  const firstRestart =
+    Promise.withResolvers<Extract<ServerToAgentMessage, { type: "terminal_restart" }>>();
+  let acknowledgeRestarts = true;
+  let channel = {
     machineId,
     protocolVersion: PROTOCOL_VERSION,
     terminalRestart: true,
@@ -226,7 +259,12 @@ async function fixture(
     send(message: ServerToAgentMessage) {
       sent.push(message);
       if (message.type === "job_command") commands.push(message.command);
-      if (message.type === "terminal_restart")
+      if (message.type === "create") {
+        firstCreate.resolve(message);
+        createWaiters.get(message.terminalId)?.();
+      }
+      if (message.type === "terminal_restart") firstRestart.resolve(message);
+      if (message.type === "terminal_restart" && acknowledgeRestarts)
         broker.onRestarted(machineId, {
           type: "terminal_restarted",
           terminalId: message.terminalId,
@@ -244,10 +282,15 @@ async function fixture(
     platforms: ["linux-x64"],
     inventoryDigest: "b".repeat(64),
   };
-  const connect = (protocolVersion: number, ownerProtocolVersion: number) => {
+  const proveOwner = (
+    target: JobService,
+    protocolVersion = PROTOCOL_VERSION,
+    ownerProtocolVersion = JOB_OWNER_PROTOCOL_VERSION,
+  ) => {
     channel.protocolVersion = protocolVersion;
     const advertised = { ...owner, protocolVersion: ownerProtocolVersion };
-    service.online(channel, advertised, "epoch");
+    channel.terminalHostId = advertised.terminalHostId ?? "terminal-host";
+    target.online(channel, advertised, "epoch");
     if (JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(ownerProtocolVersion)) {
       const challenge = commands.at(-1);
       if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
@@ -257,20 +300,33 @@ async function fixture(
         machineId,
         owner: advertised,
       };
-      service.event(channel, {
+      target.event(channel, {
         type: "owner_proof",
         ...proof,
         signature: sign(null, Buffer.from(canonicalJobJson(proof)), pair.privateKey).toString(
           "base64",
         ),
       });
-      service.event(channel, {
+      target.event(channel, {
         type: "installed",
         pluginId,
         installationRevision: "r1",
         artifactSha256: hash,
       });
     }
+  };
+  const connect = (
+    protocolVersion: number,
+    ownerProtocolVersion: number,
+    replaceTransport = false,
+  ) => {
+    if (replaceTransport) {
+      service.offline(channel);
+      channel = { ...channel };
+    }
+    proveOwner(service, protocolVersion, ownerProtocolVersion);
+    // Match the hub's durable owner admission, not just the broker's live transport.
+    store.touchMachine(machineId, "harness owner", runtime.now(), channel.terminalHostId);
     broker.setMachineOnline(channel);
   };
   connect(PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION);
@@ -307,6 +363,20 @@ async function fixture(
     );
   const open = async (value: TerminalRuntime, actor: AuthContext = root) => {
     const socket = new FakeSocket();
+    const finished = Promise.withResolvers<void>();
+    const send = socket.send.bind(socket);
+    socket.send = (data) => {
+      const bytes = send(data);
+      const frame: unknown = JSON.parse(data);
+      if (
+        frame !== null &&
+        typeof frame === "object" &&
+        "type" in frame &&
+        (frame.type === "terminal_error" || frame.type === "error")
+      )
+        finished.resolve();
+      return bytes;
+    };
     const peer = new SessionChannel(runtime.newId(), socket, actor, containerId, "c1");
     const request = {
       elementId: runtime.newId(),
@@ -333,12 +403,18 @@ async function fixture(
     );
     if (tile?.dir !== null || tile.ref?.kind !== "terminal")
       throw new Error("pending terminal tile missing");
-    broker.resize(peer, {
-      type: "terminal_resize",
-      terminalId: tile.ref.terminalId,
-      viewportId: "fixture",
-      viewport: { cols: 80, rows: 24 },
-    });
+    createWaiters.set(tile.ref.terminalId, finished.resolve);
+    try {
+      broker.resize(peer, {
+        type: "terminal_resize",
+        terminalId: tile.ref.terminalId,
+        viewportId: "fixture",
+        viewport: { cols: 80, rows: 24 },
+      });
+      await finished.promise;
+    } finally {
+      createWaiters.delete(tile.ref.terminalId);
+    }
     return socket;
   };
   return {
@@ -366,7 +442,28 @@ async function fixture(
       return create;
     },
     sent,
+    commands,
+    owner,
+    containerId,
+    firstCreate: firstCreate.promise,
+    firstRestart: firstRestart.promise,
+    holdRestartAcknowledgement() {
+      acknowledgeRestarts = false;
+    },
+    replaceTransport: () => connect(PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION, true),
+    started(command: Extract<JobCommand, { type: "start" }>) {
+      service.event(channel, {
+        type: "state",
+        jobId: command.request.jobId,
+        requestDigest: command.request.requestDigest,
+        ownerId: command.permit.ownerId,
+        ownerGeneration: command.permit.ownerGeneration,
+        state: "started",
+      });
+    },
     connect,
+    proveOwner,
+    channel: () => channel,
     duplicate: () =>
       testPluginHost(store, auth, rooms, broker, runtime, {
         settingsPlugins: [
@@ -534,11 +631,13 @@ test("cross-machine session references and refused native admission leave no cor
         1,
       ),
     ).toThrow("terminal_runtime_session_destination_changed");
-    await f.open({
-      ...f.descriptor,
-      installationRevision: "stale",
-      session: { ...session, machineId: f.descriptor.machineId },
-    });
+    await expect(
+      f.open({
+        ...f.descriptor,
+        installationRevision: "stale",
+        session: { ...session, machineId: f.descriptor.machineId },
+      }),
+    ).rejects.toThrow();
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     expect(f.store.listTerminals()).toEqual([]);
   } finally {
@@ -563,8 +662,15 @@ test("browser descriptors bind distinct runs without returning or journaling the
       },
       f.root,
     );
-    await f.open(a.runtime, f.auth.authenticate(other.token));
-    await f.open({ ...a.runtime, input: { changed: true } });
+    await expect(f.open(a.runtime, f.auth.authenticate(other.token))).rejects.toThrow();
+    const substituted = await f.open({ ...a.runtime, input: { changed: true } });
+    expect(substituted.messages()).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        code: "forbidden",
+        message: "run launch binding refused",
+      }),
+    );
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     await f.open(a.runtime);
     const firstCreate = f.sent.find((message) => message.type === "create");
@@ -602,7 +708,7 @@ test("harness launch bindings reject input removal and unavailable sources never
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     // The unmodified descriptor is bound correctly, but its source is unavailable.
     const unavailable = await f.launch((await f.create()).run.id);
-    await f.open(unavailable.runtime);
+    await expect(f.open(unavailable.runtime)).rejects.toThrow();
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     delete f.descriptor.inputs;
     const plain = await f.create();
@@ -623,6 +729,16 @@ test("harness restart refuses a freshly bound unavailable input without replacin
     const launched = await f.launch(run.id);
     const create = await f.openCreated(launched.runtime);
     const before = f.store.getTerminal(create.terminalId);
+    const layout = f.rooms.get(before!.containerId)!.tileLayout();
+    const jobs = f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all();
+    const liveRunTokens = () =>
+      f.store
+        .listTokensForAgentRun(run.id)
+        .filter((token) => token.revokedAt === null)
+        .map((token) => token.id)
+        .sort();
+    const originalTokens = liveRunTokens();
+    const incumbentToken = create.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN;
     f.descriptor.inputs = [
       { name: "material", from: { jobId: "missing-producer", output: "material" } },
     ];
@@ -630,11 +746,68 @@ test("harness restart refuses a freshly bound unavailable input without replacin
       terminalId: create.terminalId,
     });
     expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error("unavailable input admitted");
+    expect(refused.denial.message).toContain("input_source_unavailable:material");
     expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
     expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+    expect(f.rooms.get(before!.containerId)!.tileLayout()).toEqual(layout);
+    expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
+    expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+    expect(liveRunTokens()).toEqual(originalTokens);
+    expect(f.auth.authenticate(incumbentToken).agentRunId).toBe(run.id);
     // A new harness launch may review a different descriptor; an old recipe does
     // not authorize a missing source, and a refusal does not strand the terminal.
     delete f.descriptor.inputs;
+    const original = { ...f.descriptor };
+    for (const changed of [
+      { machineId: "forged-destination" },
+      { operationId: `${operationId}.forged` },
+      { installationRevision: "changed-revision" },
+      { artifactSha256: "b".repeat(64) },
+      { resourceBindingDigest: "c".repeat(64) },
+      { session: { ...launched.session, sessionId: "changed-session" } },
+    ]) {
+      Object.assign(f.descriptor, changed);
+      const outcome = await f.host.dispatch(f.root, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      });
+      expect(outcome.ok).toBe(false);
+      expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+      expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+      expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+      expect(f.rooms.get(before!.containerId)!.tileLayout()).toEqual(layout);
+      expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(
+        jobs,
+      );
+      expect(liveRunTokens()).toEqual(originalTokens);
+      expect(f.auth.authenticate(incumbentToken).agentRunId).toBe(run.id);
+      Object.assign(f.descriptor, original);
+      delete f.descriptor.session;
+    }
+    // A retained signed admission is still known native authority when its generic recipe
+    // is absent. Home control alone must refuse before harness/private credential effects.
+    f.store.db.query("UPDATE terminals SET launch_recipe=NULL WHERE id=?").run(create.terminalId);
+    const retained = f.store.getTerminal(create.terminalId);
+    const homeOnly = f.auth.mintToken(
+      {
+        principal: { name: "Home controller", kind: "human" },
+        caps: ["terminals:write"],
+        containerId: before!.containerId,
+      },
+      f.root,
+    );
+    const launchesBefore = f.launches.length;
+    const unavailable = await f.host.dispatch(
+      f.auth.authenticate(homeOnly.token),
+      "core.terminals.restart",
+      { terminalId: create.terminalId },
+    );
+    if (unavailable.ok) throw new Error("home control admitted native relaunch");
+    expect(unavailable.denial.message).toContain("machines:run capability required");
+    expect(f.launches).toHaveLength(launchesBefore);
+    expect(liveRunTokens()).toEqual(originalTokens);
+    expect(f.store.getTerminal(create.terminalId)).toEqual(retained);
+    expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
     expect(
       result(
         await f.host.dispatch(f.root, "core.terminals.restart", {
@@ -704,11 +877,42 @@ test("run terminal restart relaunches its harness session with fresh private sig
       expiresAt: run.expiresAt,
       renewals: 0,
     });
+    const initialSnapshot = f.service.jobs.get(create.runtime!.request.jobId)!.authoritySnapshot!;
+    const replacementSnapshot = f.service.jobs.get(replacement.request.jobId)!.authoritySnapshot!;
+    expect(replacementSnapshot.native).toMatchObject({
+      machineId: before.machineId,
+      containerId: before.containerId,
+      pluginId,
+      operationId,
+      installationRevision: f.descriptor.installationRevision,
+      artifactSha256: f.descriptor.artifactSha256,
+      resourceBindingDigest: f.descriptor.resourceBindingDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      terminalHostId: f.owner.terminalHostId,
+    });
+    expect(replacementSnapshot.native!.runtimeDigest).not.toBe(
+      initialSnapshot.native!.runtimeDigest,
+    );
+    expect(replacementSnapshot.action).toMatchObject({
+      actionName: "core.terminals.restart",
+      nativeDemand: [replacementSnapshot.native],
+      requirements: [
+        { cap: "terminals:write", ref: { kind: "container", containerId: before.containerId } },
+        ...initialSnapshot.native!.requirements,
+        ...replacementSnapshot.native!.requirements,
+      ],
+    });
+    expect(replacementSnapshot.action!.originalArgsDigest).toBe(
+      createHash("sha256").update(canonicalJobJson({ terminalId })).digest("hex"),
+    );
+    expect(replacementSnapshot.actionCredential).toMatchObject(f.auth.credentialReference(f.root));
     const publicState = JSON.stringify([
       outcome,
       f.store.listTerminals(),
       f.store.db.query("SELECT payload FROM events").all(),
       replacement.request,
+      replacementSnapshot,
     ]);
     expect(publicState).not.toContain(token);
     expect(publicState).not.toContain(oldToken);
@@ -855,7 +1059,7 @@ test("an awaited harness launch holds the restart guard and rechecks home author
     const pending = f.host.dispatch(actor, "core.terminals.restart", {
       terminalId: create.terminalId,
     });
-    await entered.promise;
+    await admittedMessage(entered.promise, pending, "harness restart launch");
     f.broker.onRestarted(f.descriptor.machineId, {
       type: "terminal_restarted",
       terminalId: create.terminalId,
@@ -885,6 +1089,616 @@ test("an awaited harness launch holds the restart guard and rechecks home author
     f.close();
   }
 });
+
+interface HarnessEffectFixture {
+  descriptor: TerminalRuntime;
+  runtime: FakeRuntime;
+}
+
+function harnessJob(f: HarnessEffectFixture, jobId: string) {
+  return {
+    jobId,
+    machineId: f.descriptor.machineId,
+    operationId,
+    installationRevision: "r1",
+    artifactSha256: hash,
+    input: { mode: "harness-effect" },
+    outputs: [],
+  };
+}
+
+function harnessSchedule(f: HarnessEffectFixture, scheduleId: string) {
+  return {
+    ...harnessJob(f, `template-${scheduleId}`),
+    scheduleId,
+    revision: "one",
+    firstNominalAt: f.runtime.now() + 1000,
+    intervalMs: 60_000,
+    deadlineMs: 30_000,
+    expiresAt: f.runtime.now() + 60_000,
+    offlinePolicy: "coalesce-one" as const,
+  };
+}
+
+test.each(["live", "home-write", "action-binding", "harness-binding", "retired"] as const)(
+  "a late harness restart keeps its originating authority for every effect (%s)",
+  async (change) => {
+    const f = await fixture(undefined, undefined, undefined, undefined, undefined, [
+      "services:configure",
+    ]);
+    const gate = Promise.withResolvers<void>();
+    const action = f.host.assembly().actions.get("core.terminals.restart")!.def;
+    const originalInput = action.input;
+    let retiring: Promise<ActionOutcome> | undefined;
+    try {
+      const actor = f.auth.authenticate(
+        f.auth.mintToken(
+          { principal: { name: "harness restart administrator", kind: "human" }, caps: ["*"] },
+          f.root,
+        ).token,
+      );
+      const { run } = await f.create();
+      const create = await f.openCreated((await f.launch(run.id)).runtime);
+      const incumbentToken = create.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN;
+      const before = f.store.getTerminal(create.terminalId);
+      const jobsBefore = f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all();
+      const entered = Promise.withResolvers<void>();
+      let retained: ActionCtx | undefined;
+      let effects: PromiseSettledResult<unknown>[] = [];
+      const harness = f.definition.harness!;
+      const launch = harness.launch;
+      harness.launch = async (ctx, ...args) => {
+        retained = ctx;
+        entered.resolve();
+        await gate.promise;
+        effects = await Promise.allSettled([
+          Promise.resolve().then(() => ctx.storage.set("harness-effect", change)),
+          Promise.resolve().then(() => ctx.jobs.execute(harnessJob(f, "harness-effect"))),
+          Promise.resolve().then(() => ctx.jobs.schedule(harnessSchedule(f, "harness-effect"))),
+          Promise.resolve().then(() =>
+            ctx.services.configureConfiguration({
+              machineId: f.descriptor.machineId,
+              expectedRevision: null,
+              policies: [],
+            }),
+          ),
+        ]);
+        return launch(ctx, ...args);
+      };
+      const pending = f.host.dispatch(actor, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      });
+      await admittedMessage(entered.promise, pending, "captured harness restart");
+      switch (change) {
+        case "home-write":
+          f.auth.grant(
+            {
+              principal: { kind: "principal", id: actor.principal.id },
+              node: `manifold://container/${f.containerId}`,
+              caps: ["terminals:write"],
+              reach: "node",
+              effect: "deny",
+            },
+            f.root,
+          );
+          // Native permission survives; it must not replace the originating home requirement.
+          expect(
+            f.auth.allowsNode(
+              actor,
+              "machines:run",
+              `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+            ),
+          ).toBe(true);
+          break;
+        case "action-binding":
+          Reflect.set(action, "input", z.strictObject({}));
+          break;
+        case "harness-binding":
+          harness.launch = launch;
+          break;
+        case "retired": {
+          const disabled = Promise.withResolvers<void>();
+          const disablePlugin = f.service.disablePlugin.bind(f.service);
+          f.service.disablePlugin = (id) => {
+            disablePlugin(id);
+            if (id === pluginId) disabled.resolve();
+          };
+          retiring = f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+            id: pluginId,
+            enabled: false,
+          });
+          await admittedMessage(disabled.promise, retiring, "harness disable committed");
+          break;
+        }
+      }
+      gate.resolve();
+      const outcome = await pending;
+      if (retiring !== undefined) {
+        result(await retiring);
+        result(
+          await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+            id: pluginId,
+            enabled: true,
+          }),
+        );
+      }
+      if (change === "live") {
+        expect(outcome).toMatchObject({ ok: true });
+        expect(effects.map((effect) => effect.status)).toEqual([
+          "fulfilled",
+          "fulfilled",
+          "fulfilled",
+          "fulfilled",
+        ]);
+        expect(await f.store.pluginStorage(pluginId).get("harness-effect")).toBe("live");
+        expect(f.service.jobs.get("harness-effect")?.state).toBe("start-committed");
+        expect(f.service.jobSchedules.listSchedules().map((entry) => entry.scheduleId)).toEqual([
+          "harness-effect",
+        ]);
+        expect(
+          f.service.readServiceConfiguration(f.root, {
+            machineId: f.descriptor.machineId,
+          }).configuration.revision,
+        ).not.toBeNull();
+      } else {
+        expect(outcome).toMatchObject({ ok: false });
+        expect(effects.map((effect) => effect.status)).toEqual([
+          "rejected",
+          "rejected",
+          "rejected",
+          "rejected",
+        ]);
+        expect(await f.store.pluginStorage(pluginId).get("harness-effect")).toBeNull();
+        expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(
+          jobsBefore,
+        );
+        expect(f.service.jobSchedules.listSchedules()).toEqual([]);
+        expect(
+          f.service.readServiceConfiguration(f.root, {
+            machineId: f.descriptor.machineId,
+          }).configuration.revision,
+        ).toBeNull();
+        expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+        expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+        expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+        expect(f.auth.authenticate(incumbentToken).agentRunId).toBe(run.id);
+      }
+      if (retained === undefined) throw new Error("harness context was not captured");
+      await expect(retained.storage.set("after-return", "forbidden")).rejects.toThrow();
+      expect(() => retained!.jobs.execute(harnessJob(f, "after-return"))).toThrow();
+      expect(() => retained!.jobs.schedule(harnessSchedule(f, "after-return"))).toThrow();
+      expect(() =>
+        retained!.services.configureConfiguration({
+          machineId: f.descriptor.machineId,
+          expectedRevision: f.service.readServiceConfiguration(f.root, {
+            machineId: f.descriptor.machineId,
+          }).configuration.revision,
+          policies: [],
+        }),
+      ).toThrow();
+      expect(f.service.jobs.get("after-return")).toBeNull();
+    } finally {
+      gate.resolve();
+      Reflect.set(action, "input", originalInput);
+      f.close();
+    }
+  },
+);
+
+test.each(["fresh", "recovered"] as const)(
+  "harness native effects and schedules retain the original action credential on %s restore",
+  async (recovery) => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-harness-effect-custody-"));
+    const path = join(dir, "hub.sqlite");
+    const f = await fixture(
+      undefined,
+      undefined,
+      path,
+      undefined,
+      undefined,
+      [],
+      (harness, effects) => {
+        const launch = harness.launch;
+        harness.launch = async (ctx, ...args) => {
+          if (args[0].session !== null) {
+            ctx.jobs.execute(harnessJob(effects, "durable-harness"));
+            ctx.jobs.schedule(harnessSchedule(effects, "durable-harness"));
+          }
+          return launch(ctx, ...args);
+        };
+      },
+    );
+    let closed = false;
+    let recoveredStore: ServerStore | undefined;
+    let recoveredHost: PluginHost | undefined;
+    try {
+      const actor = f.auth.authenticate(
+        f.auth.mintToken(
+          { principal: { name: "durable harness administrator", kind: "human" }, caps: ["*"] },
+          f.root,
+        ).token,
+      );
+      const { run } = await f.create();
+      const create = await f.openCreated((await f.launch(run.id)).runtime);
+      expect(
+        result(
+          await f.host.dispatch(actor, "core.terminals.restart", {
+            terminalId: create.terminalId,
+          }),
+        ),
+      ).toEqual({});
+      const native = f.service.jobs.get("durable-harness")!;
+      const schedule = f.service.jobSchedules.listSchedules()[0]!;
+      for (const snapshot of [native.authoritySnapshot, schedule.authoritySnapshot]) {
+        expect(snapshot?.actionCredential).toEqual(f.auth.credentialReference(actor));
+        expect(snapshot?.credential.caps).toContain("machines:run");
+        expect(snapshot?.credential.caps).not.toContain("terminals:write");
+        expect(snapshot?.action).toMatchObject({
+          actionName: "core.terminals.restart",
+          originalArgsDigest: createHash("sha256")
+            .update(canonicalJobJson({ terminalId: create.terminalId }))
+            .digest("hex"),
+          requirements: [
+            { cap: "terminals:write", ref: { kind: "container", containerId: f.containerId } },
+            {
+              cap: "machines:run",
+              node: `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+              reach: "node",
+            },
+          ],
+        });
+      }
+      const start = f.commands.find(
+        (command) => command.type === "start" && command.request.jobId === native.request.jobId,
+      );
+      if (start?.type !== "start") throw new Error("harness native effect was not admitted");
+      f.started(start);
+      let service = f.service;
+      let auth = f.auth;
+      let root = f.root;
+      if (recovery === "recovered") {
+        f.close();
+        closed = true;
+        recoveredStore = new ServerStore(openDatabase(path));
+        const store = recoveredStore;
+        auth = new AuthService(store, "a".repeat(64), f.runtime, {
+          decide: (request) => service.decide(request),
+        });
+        root = auth.authenticate("a".repeat(64));
+        const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
+        const broker = new TerminalBroker(
+          store,
+          auth,
+          rooms,
+          f.runtime,
+          f.clock,
+          silentLogger,
+          () => "http://localhost:7777",
+          testTileTrees,
+        );
+        recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
+          settingsPlugins: [f.definition],
+        });
+        service = new JobService(store, auth, f.runtime);
+        recoveredHost.setJobs(service);
+        broker.setJobs(service);
+        f.proveOwner(service);
+      }
+      service.tick();
+      expect(service.jobs.get(native.request.jobId)?.request).toEqual(native.request);
+      expect(service.jobs.cancellation(native.request.jobId)).toBeNull();
+      const incumbentCancellation = service.jobs.cancellation(create.runtime!.request.jobId);
+      auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://container/${f.containerId}`,
+          caps: ["terminals:write"],
+          reach: "node",
+          effect: "deny",
+        },
+        root,
+      );
+      expect(
+        auth.allowsNode(
+          auth.restoreCredential(f.auth.credentialReference(actor))!,
+          "machines:run",
+          `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+        ),
+      ).toBe(true);
+      f.runtime.time = schedule.firstNominalAt;
+      service.tick();
+      expect(service.jobs.cancellation(native.request.jobId)?.mode).toBe("cancel");
+      expect(service.jobSchedules.listSchedules()).toEqual([]);
+      const occurrenceId = `schedule-${createHash("sha256")
+        .update(canonicalJobJson([schedule.scheduleId, schedule.revision, schedule.firstNominalAt]))
+        .digest("hex")}`;
+      expect(service.jobs.get(occurrenceId)).toBeNull();
+      expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
+      expect(
+        f.commands.filter(
+          (command) => command.type === "start" && command.request.jobId === occurrenceId,
+        ),
+      ).toEqual([]);
+      expect(service.jobs.cancellation(create.runtime!.request.jobId)).toEqual(
+        incumbentCancellation,
+      );
+    } finally {
+      recoveredHost?.close();
+      recoveredStore?.close();
+      if (!closed) f.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each([
+  ["unchanged", false],
+  ["implementation", false],
+  ["implementation", true],
+  ["launch", false],
+  ["launch", true],
+  ["sessions", false],
+  ["sessions", true],
+  ["resolveSession", false],
+  ["resolveSession", true],
+  ["send", false],
+  ["send", true],
+  ["profile", false],
+  ["profile", true],
+  ["profile validator", false],
+  ["profile validator", true],
+  ["missing harness", true],
+] as const)(
+  "published harness %s retires captured schedules without an intervening query (restored: %s)",
+  async (change, restored) => {
+    const f = await fixture();
+    try {
+      const original = f.definition.harness!;
+      const makeHarness = (): NonNullable<ServerPluginDef["harness"]> => ({
+        profileSchema: z.strictObject({ label: z.string().min(1) }),
+        async launch(ctx, run, agent, target) {
+          ctx.jobs.schedule(harnessSchedule(f, "published-harness"));
+          return original.launch(ctx, run, agent, target);
+        },
+        async sessions(ctx, target) {
+          return original.sessions(ctx, target);
+        },
+        async resolveSession(ctx, ref) {
+          return original.resolveSession(ctx, ref);
+        },
+        async send(ctx, run, input) {
+          return original.send(ctx, run, input);
+        },
+      });
+      const harness = makeHarness();
+      Reflect.set(f.definition, "harness", harness);
+      const captured = { ...harness };
+      const profileValidator = harness.profileSchema.safeParseAsync;
+      const { run } = await f.create();
+      await f.launch(run.id);
+      const schedule = f.service.jobSchedules.listSchedules()[0]!;
+      expect(schedule.scheduleId).toBe("published-harness");
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      switch (change) {
+        case "implementation":
+          Reflect.set(f.definition, "harness", makeHarness());
+          break;
+        case "launch":
+        case "sessions":
+        case "resolveSession":
+        case "send":
+          Reflect.set(harness, change, makeHarness()[change]);
+          break;
+        case "profile":
+          Reflect.set(harness, "profileSchema", makeHarness().profileSchema);
+          break;
+        case "profile validator":
+          harness.profileSchema.safeParseAsync = makeHarness().profileSchema.safeParseAsync;
+          break;
+        case "missing harness":
+          Reflect.deleteProperty(f.definition, "harness");
+          break;
+      }
+      expect(await f.host.setEnabled("core.machines", false, "admin")).toEqual({ ok: true });
+      if (restored) {
+        Object.assign(harness, captured);
+        harness.profileSchema.safeParseAsync = profileValidator;
+        Reflect.set(f.definition, "harness", harness);
+      }
+      expect(await f.host.setEnabled("core.machines", true, "admin")).toEqual({ ok: true });
+      // Keep the same exact native installation and consent; only the server binding moved.
+      expect(f.service.jobs.installation(f.descriptor.machineId, pluginId)).toMatchObject({
+        revision: "r1",
+        artifact: hash,
+        enabled: true,
+      });
+      const occurrenceId = `schedule-${createHash("sha256")
+        .update(canonicalJobJson([schedule.scheduleId, schedule.revision, schedule.firstNominalAt]))
+        .digest("hex")}`;
+      f.runtime.time = schedule.firstNominalAt;
+      f.service.tick();
+      if (change === "unchanged") {
+        expect(f.service.jobs.get(occurrenceId)?.state).toBe("start-committed");
+        expect(
+          f.commands
+            .filter((command) => command.type === "start")
+            .map((command) => command.request.jobId),
+        ).toEqual([occurrenceId]);
+      } else {
+        expect(f.service.jobs.get(occurrenceId)).toBeNull();
+        expect(f.service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
+        expect(f.service.jobSchedules.listSchedules()).toEqual([]);
+        expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      }
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
+  "cold harness restoration conjunctively pins server binding while retaining native artifact (%s)",
+  async (change) => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-cold-harness-binding-"));
+    const path = join(dir, "hub.sqlite");
+    const f = await fixture(
+      undefined,
+      undefined,
+      path,
+      undefined,
+      undefined,
+      [],
+      (harness, effects) => {
+        const launch = harness.launch;
+        harness.launch = async (ctx, run, agent, target) => {
+          if (run.session !== null) {
+            ctx.jobs.execute(harnessJob(effects, "cold-harness"));
+            ctx.jobs.schedule(harnessSchedule(effects, "cold-harness"));
+          }
+          return launch.call(harness, ctx, run, agent, target);
+        };
+      },
+    );
+    let closed = false;
+    let recoveredStore: ServerStore | undefined;
+    let recoveredHost: PluginHost | undefined;
+    try {
+      // This fixture bypasses MachineGateway; persist the same admitted owner fact.
+      const machineId = f.descriptor.machineId;
+      f.store.touchMachine(
+        machineId,
+        f.store.getMachine(machineId)!.name,
+        f.runtime.now(),
+        f.owner.terminalHostId ?? null,
+      );
+      const harness = f.definition.harness!;
+      const { run } = await f.create();
+      const create = await f.openCreated((await f.launch(run.id)).runtime);
+      expect(
+        result(
+          await f.host.dispatch(f.root, "core.terminals.restart", {
+            terminalId: create.terminalId,
+          }),
+        ),
+      ).toEqual({});
+      const replacement = f.sent.find((message) => message.type === "terminal_restart")?.create
+        ?.runtime;
+      if (replacement === undefined) throw new Error("replacement native admission missing");
+      const bound = f.service.jobs.get("cold-harness")!;
+      const schedule = f.service.jobSchedules.listSchedules()[0]!;
+      const independent = f.service.execute(f.root, pluginId, "independent", {
+        ...harnessJob(f, "independent"),
+      });
+      for (const job of [bound, independent]) {
+        const start = f.commands.find(
+          (command) => command.type === "start" && command.request.jobId === job.request.jobId,
+        );
+        if (start?.type !== "start") throw new Error("native effect was not admitted");
+        f.started(start);
+      }
+      const originalAction = bound.authoritySnapshot!.action!;
+      expect(originalAction.actionName).toBe("core.terminals.restart");
+      expect(originalAction.requirements[0]).toEqual({
+        cap: "terminals:write",
+        ref: { kind: "container", containerId: f.containerId },
+      });
+      let restoredDefinition: ServerPluginDef = {
+        ...f.definition,
+        harness: { ...harness },
+      };
+      if (change === "implementation") {
+        const previous = restoredDefinition.harness!.launch;
+        restoredDefinition.harness!.launch = async (ctx, currentRun, agent, target) => ({
+          ...(await previous(ctx, currentRun, agent, target)),
+          reviewDigest: "b".repeat(64),
+        });
+      } else if (change === "profile") {
+        restoredDefinition = {
+          ...restoredDefinition,
+          harness: {
+            ...restoredDefinition.harness!,
+            profileSchema: z.strictObject({
+              label: z.string().min(1),
+              reviewedMode: z.literal("interactive").optional(),
+            }),
+          },
+        };
+      } else if (change === "manifest") {
+        restoredDefinition = {
+          ...restoredDefinition,
+          manifest: { ...restoredDefinition.manifest, version: "2.0.0" },
+        };
+      }
+      f.close();
+      closed = true;
+      recoveredStore = new ServerStore(openDatabase(path));
+      const store = recoveredStore;
+      const auth = new AuthService(store, "a".repeat(64), f.runtime, {
+        decide: (request) => service.decide(request),
+      });
+      const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
+      const broker = new TerminalBroker(
+        store,
+        auth,
+        rooms,
+        f.runtime,
+        f.clock,
+        silentLogger,
+        () => "http://localhost:7777",
+        testTileTrees,
+      );
+      recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
+        settingsPlugins: [restoredDefinition],
+      });
+      const service: JobService = new JobService(store, auth, f.runtime);
+      recoveredHost.setJobs(service);
+      broker.setJobs(service);
+      f.proveOwner(service);
+      expect(service.jobs.installation(machineId, pluginId)).toMatchObject({
+        revision: "r1",
+        artifact: hash,
+        enabled: true,
+      });
+      f.runtime.time = schedule.firstNominalAt;
+      service.tick();
+      expect(service.jobs.get(bound.request.jobId)?.request).toEqual(bound.request);
+      expect(service.jobs.get(bound.request.jobId)?.authoritySnapshot?.action).toEqual(
+        originalAction,
+      );
+      expect(service.jobs.cancellation(independent.request.jobId)).toBeNull();
+      expect(service.jobs.get(independent.request.jobId)?.state).toBe("started");
+      const occurrenceId = `schedule-${createHash("sha256")
+        .update(canonicalJobJson([schedule.scheduleId, schedule.revision, schedule.firstNominalAt]))
+        .digest("hex")}`;
+      if (change === "unchanged") {
+        expect(service.jobs.cancellation(bound.request.jobId)).toBeNull();
+        expect(service.jobs.cancellation(replacement.request.jobId)).toBeNull();
+        expect(service.jobs.get(occurrenceId)?.state).toBe("start-committed");
+        expect(
+          f.commands.filter(
+            (command) => command.type === "start" && command.request.jobId === occurrenceId,
+          ),
+        ).toHaveLength(1);
+      } else {
+        expect(service.jobs.cancellation(bound.request.jobId)?.mode).toBe("cancel");
+        expect(service.jobs.cancellation(replacement.request.jobId)?.mode).toBe("cancel");
+        expect(service.jobs.get(occurrenceId)).toBeNull();
+        expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
+        expect(service.jobSchedules.listSchedules()).toEqual([]);
+        expect(
+          f.commands.filter(
+            (command) => command.type === "start" && command.request.jobId === occurrenceId,
+          ),
+        ).toEqual([]);
+      }
+    } finally {
+      recoveredHost?.close();
+      recoveredStore?.close();
+      if (!closed) f.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("restart transport capability cannot override the negotiated protocol floor", async () => {
   const f = await fixture();
@@ -975,7 +1789,7 @@ test.each(["profile_changed", "run_revoked"] as const)(
       const created = await f.create();
       validatingLaunch = true;
       pending = f.host.dispatch(f.root, "core.access.launchRun", { runId: created.run.id });
-      await entered.promise;
+      await admittedMessage(entered.promise, pending, "harness profile validation");
       validatingLaunch = false;
       if (change === "profile_changed")
         await f.auth.updateAgent(
@@ -1247,7 +2061,7 @@ test.each(["draining", "disabled", "withdrawn"] as const)(
       const pending = f.host.dispatch(f.root, "core.terminals.restart", {
         terminalId: create.terminalId,
       });
-      await entered.promise;
+      await admittedMessage(entered.promise, pending, "harness restart launch");
       let drain: Promise<unknown> | undefined;
       switch (change) {
         case "draining":
@@ -1273,6 +2087,650 @@ test.each(["draining", "disabled", "withdrawn"] as const)(
     } finally {
       gate.resolve();
       f.close();
+    }
+  },
+);
+
+interface GovernedTerminalFixture {
+  auth: AuthService;
+  root: AuthContext;
+  host: PluginHost;
+  broker: TerminalBroker;
+  runtime: FakeRuntime;
+  descriptor: TerminalRuntime;
+  containerId: string;
+  firstCreate: Promise<Extract<ServerToAgentMessage, { type: "create" }>>;
+  sent: ServerToAgentMessage[];
+  owner: JobOwner;
+  openCreated(value: TerminalRuntime): Promise<Extract<ServerToAgentMessage, { type: "create" }>>;
+}
+
+function governedTerminalScope(f: GovernedTerminalFixture): AuthorityScope {
+  return [
+    {
+      target: "manifold://",
+      reach: "subtree",
+      caps: [
+        "containers:read",
+        "containers:write",
+        "scenes:write",
+        "terminals:spawn",
+        "terminals:write",
+      ],
+    },
+    {
+      target: `manifold://machine/${f.descriptor.machineId}/operation/${f.descriptor.operationId}`,
+      reach: "node",
+      caps: ["machines:run"],
+    },
+  ];
+}
+
+async function governedCreated(
+  f: GovernedTerminalFixture,
+  actor: AuthContext = f.root,
+  legacy = false,
+) {
+  if (legacy) return f.openCreated(f.descriptor);
+  const pending = f.host.dispatch(actor, "core.terminals.create", {
+    containerId: f.containerId,
+    elementId: f.runtime.newId(),
+    machineId: f.descriptor.machineId,
+    placement: "tile",
+    cols: 80,
+    rows: 24,
+    runtime: f.descriptor,
+  });
+  const create = await admittedMessage(f.firstCreate, pending, "governed terminal create");
+  f.broker.onCreated(f.descriptor.machineId, create.terminalId);
+  result(await pending);
+  return create;
+}
+
+async function admissionDrain(f: GovernedTerminalFixture, terminalId: string) {
+  const pending = f.broker.drain(f.descriptor.machineId, true);
+  const drain = f.sent.findLast((message) => message.type === "drain");
+  if (!drain) throw new Error("drain request missing");
+  f.broker.onDrainStatus(f.descriptor.machineId, {
+    type: "drain_status",
+    requestId: drain.requestId,
+    terminalHostId: f.owner.terminalHostId!,
+    draining: true,
+    terminalIds: [terminalId],
+  });
+  expect(await pending).toMatchObject({ ok: true, status: { terminalIds: [terminalId] } });
+}
+
+test.each(["legacy birth", "prepared birth", "restart"] as const)(
+  "committed governed %s survives retained-owner transport replacement and admission drain",
+  async (phase) => {
+    const f = await fixture();
+    try {
+      const create = await governedCreated(f, f.root, phase === "legacy birth");
+      if (!create.runtime) throw new Error("governed create missing");
+      let command = create.runtime;
+      f.started(command);
+      if (phase === "restart") {
+        const pending = f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        });
+        const restart = await admittedMessage(f.firstRestart, pending, "governed terminal restart");
+        result(await pending);
+        if (!restart.create?.runtime) throw new Error("governed restart missing");
+        command = restart.create.runtime;
+        f.started(command);
+      }
+      const jobId = command.request.jobId;
+      expect(f.service.jobs.get(jobId)?.state).toBe("started");
+      f.replaceTransport();
+      f.service.tick();
+      expect(f.service.jobs.cancellation(jobId)).toBeNull();
+      expect(
+        f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId),
+      ).toEqual([]);
+      await admissionDrain(f, create.terminalId);
+      f.service.tick();
+      expect(f.service.jobs.get(jobId)?.state).toBe("started");
+      expect(f.service.jobs.cancellation(jobId)).toBeNull();
+      expect(
+        f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId),
+      ).toEqual([]);
+      expect(f.store.getTerminal(create.terminalId)?.status).toBe("running");
+      expect(await f.broker.restartById(create.terminalId, f.root.principal.id)).toBe(
+        "machine_draining",
+      );
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["deny", "transport", "owner", "drain"] as const)(
+  "pending governed birth refuses a late %s change and cleans only its owned effect",
+  async (change) => {
+    const f = await fixture();
+    try {
+      const minted = f.auth.mintTokenV2(
+        {
+          principal: { name: "pending opener", kind: "human" },
+          scope: governedTerminalScope(f),
+          containerId: f.containerId,
+          expiresAt: f.runtime.now() + 60_000,
+        },
+        f.root,
+      );
+      const actor = f.auth.authenticate(minted.token);
+      const pending = f.host.dispatch(actor, "core.terminals.create", {
+        containerId: f.containerId,
+        elementId: f.runtime.newId(),
+        machineId: f.descriptor.machineId,
+        placement: "tile",
+        cols: 80,
+        rows: 24,
+        runtime: f.descriptor,
+      });
+      const create = await admittedMessage(f.firstCreate, pending, "pending governed create");
+      if (!create.runtime) throw new Error("governed create missing");
+      if (change === "deny") {
+        f.auth.grant(
+          {
+            principal: { kind: "principal", id: actor.principal.id },
+            node: `manifold://container/${f.containerId}`,
+            caps: ["terminals:spawn"],
+            effect: "deny",
+            reach: "node",
+          },
+          f.root,
+        );
+      } else if (change === "drain") {
+        await admissionDrain(f, create.terminalId);
+      } else {
+        if (change === "owner") {
+          f.owner.generation++;
+          f.owner.terminalHostId = "replacement-terminal-host";
+        }
+        f.replaceTransport();
+      }
+      f.broker.onCreated(f.descriptor.machineId, create.terminalId);
+      expect((await pending).ok).toBe(false);
+      expect(f.store.getTerminal(create.terminalId)).toBeNull();
+      expect(
+        Object.values(f.rooms.get(f.containerId)?.tileLayout() ?? {}).some(
+          (tile) => tile.ref?.kind === "terminal" && tile.ref.terminalId === create.terminalId,
+        ),
+      ).toBe(false);
+      const kills = f.sent.filter(
+        (entry) => entry.type === "kill" && entry.terminalId === create.terminalId,
+      );
+      if (change === "owner") expect(kills).toEqual([]);
+      else {
+        expect(kills).toEqual([{ type: "kill", terminalId: create.terminalId }]);
+        expect(f.service.jobs.cancellation(create.runtime.request.jobId)?.mode).toBe("cancel");
+      }
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["deny", "transport", "owner", "drain"] as const)(
+  "pending governed restart refuses a late %s change without publishing success",
+  async (change) => {
+    const f = await fixture();
+    try {
+      const minted = f.auth.mintTokenV2(
+        {
+          principal: { name: "pending restarter", kind: "human" },
+          scope: governedTerminalScope(f),
+          containerId: f.containerId,
+          expiresAt: f.runtime.now() + 60_000,
+        },
+        f.root,
+      );
+      const actor = f.auth.authenticate(minted.token);
+      const create = await governedCreated(f, actor);
+      f.holdRestartAcknowledgement();
+      const pending = f.host.dispatch(actor, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      });
+      const restart = await admittedMessage(f.firstRestart, pending, "pending governed restart");
+      if (!restart.create?.runtime) throw new Error("governed restart missing");
+      if (change === "deny") {
+        f.auth.grant(
+          {
+            principal: { kind: "principal", id: actor.principal.id },
+            node: `manifold://container/${f.containerId}`,
+            caps: ["terminals:write"],
+            effect: "deny",
+            reach: "node",
+          },
+          f.root,
+        );
+      } else if (change === "drain") {
+        await admissionDrain(f, create.terminalId);
+      } else {
+        if (change === "owner") {
+          f.owner.generation++;
+          f.owner.terminalHostId = "replacement-terminal-host";
+        }
+        f.replaceTransport();
+      }
+      f.broker.onRestarted(f.descriptor.machineId, {
+        type: "terminal_restarted",
+        terminalId: create.terminalId,
+      });
+      expect((await pending).ok).toBe(false);
+      expect(f.store.getTerminal(create.terminalId)?.status).toBe("running");
+      expect(
+        f.store.db.query("SELECT id FROM events WHERE type='terminal_restarted'").all(),
+      ).toEqual([]);
+      if (change !== "owner")
+        expect(f.service.jobs.cancellation(restart.create.runtime.request.jobId)?.mode).toBe(
+          "cancel",
+        );
+      else
+        expect(
+          f.sent.filter((entry) => entry.type === "kill" && entry.terminalId === create.terminalId),
+        ).toEqual([]);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+async function continuingGovernedRun(f: GovernedTerminalFixture, scope: AuthorityScope) {
+  const minted = f.auth.mintTokenV2(
+    {
+      principal: { name: "terminal sponsor", kind: "human" },
+      scope: scope.map((entry) => ({
+        ...entry,
+        caps: [...entry.caps, "agents:delegate"],
+      })),
+      containerId: f.containerId,
+      expiresAt: f.runtime.now() + 120_000,
+    },
+    f.root,
+  );
+  const sponsor = f.auth.authenticate(minted.token);
+  const registered = await f.auth.registerAgentV2(
+    {
+      name: "continuing native opener",
+      purpose: "Retain only the sponsored composition and native operation",
+      harness: "test-harness",
+      context: { profile: { label: "reviewed" } },
+      grant: {
+        scope,
+        maxRunLifetimeMs: 60_000,
+        delegation: { maxDepth: 0, maxDescendants: 0 },
+        expiresAt: f.runtime.now() + 120_000,
+      },
+    },
+    sponsor,
+  );
+  if (registered.credential === undefined) throw new Error("fixture Agent must be new");
+  const created = f.auth.createRunV2(
+    {
+      agentId: registered.agent.agentId,
+      target: { containerId: f.containerId, machineId: f.descriptor.machineId },
+      lifetimeMs: 60_000,
+    },
+    f.auth.authenticate(registered.credential.token),
+  );
+  if (created.credential === undefined) throw new Error("fixture Run must have custody");
+  const issued = f.auth.authenticate(created.credential.token);
+  const challenge = f.auth.agentPolicyChallenge(issued);
+  f.auth.acknowledgeAgentPolicyV2(
+    {
+      revision: challenge.revision,
+      acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+    },
+    issued,
+  );
+  const actor = f.auth.restoreCredential(f.auth.credentialReference(issued));
+  if (actor === null) throw new Error("fixture Run credential must restore");
+  expect(registered.agent.sponsorPrincipalId).toBe(sponsor.principal.id);
+  expect(actor.agentRunId).toBe(created.run.id);
+  expect(actor.containerScope).toBe(f.containerId);
+  expect(actor.authorityScope).toEqual(created.run.scope);
+  expect(created.run.scope).toEqual(registered.agent.grant.scope);
+  return { actor, sponsor };
+}
+
+test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "consent"] as const)(
+  "committed governed effects still cancel on continuing %s authority withdrawal",
+  async (change) => {
+    const f = await fixture();
+    const action = f.host.assembly().actions.get("core.terminals.create")!.def;
+    const originalInput = action.input;
+    try {
+      const scope = governedTerminalScope(f).map((entry) => ({
+        ...entry,
+        target:
+          entry.target === "manifold://" ? `manifold://container/${f.containerId}` : entry.target,
+      }));
+      const sponsored = change === "sponsor" ? await continuingGovernedRun(f, scope) : undefined;
+      const actor =
+        sponsored?.actor ??
+        f.auth.authenticate(
+          f.auth.mintTokenV2(
+            {
+              principal: { name: "continuing opener", kind: "human" },
+              scope,
+              containerId: f.containerId,
+              expiresAt: f.runtime.now() + 30_000,
+            },
+            f.root,
+          ).token,
+        );
+      const create = await governedCreated(f, actor);
+      if (!create.runtime) throw new Error("governed create missing");
+      f.started(create.runtime);
+      f.replaceTransport();
+      f.service.tick();
+      expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toBeNull();
+      switch (change) {
+        case "deny":
+          f.auth.grant(
+            {
+              principal: { kind: "principal", id: actor.principal.id },
+              node: `manifold://container/${f.containerId}`,
+              caps: ["terminals:spawn"],
+              effect: "deny",
+              reach: "node",
+            },
+            f.root,
+          );
+          break;
+        case "expiry":
+          f.clock.advance(30_001);
+          break;
+        case "sponsor":
+          if (sponsored === undefined) throw new Error("fixture sponsor missing");
+          f.auth.revokePrincipal(sponsored.sponsor.principal.id, f.root);
+          expect(f.auth.allowsNode(actor, "terminals:spawn", scope[0]!.target)).toBe(false);
+          expect(f.auth.allowsNode(actor, "machines:run", scope[1]!.target)).toBe(false);
+          break;
+        case "action":
+          Reflect.set(action, "input", z.strictObject({}));
+          break;
+        case "installation":
+          expect(() =>
+            f.service.install(f.root, {
+              machineId: f.descriptor.machineId,
+              pluginId,
+              installationRevision: "r2",
+              artifactSha256: hash,
+              machine,
+            }),
+          ).toThrow("active_installation");
+          f.service.tick();
+          expect(f.service.jobs.get(create.runtime.request.jobId)?.state).toBe("started");
+          expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toBeNull();
+          expect(f.service.jobs.installation(f.descriptor.machineId, pluginId)).toMatchObject({
+            revision: "r1",
+            artifact: hash,
+            enabled: true,
+          });
+          expect(
+            f.commands.filter(
+              (entry) => entry.type === "install" && entry.installationRevision === "r2",
+            ),
+          ).toEqual([]);
+          result(
+            await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+              id: pluginId,
+              enabled: false,
+            }),
+          );
+          expect(f.service.jobs.installation(f.descriptor.machineId, pluginId)).toMatchObject({
+            revision: "r1",
+            artifact: hash,
+            enabled: false,
+          });
+          expect(f.commands).toContainEqual(
+            expect.objectContaining({
+              type: "install",
+              action: "disable",
+              pluginId,
+              installationRevision: "r1",
+              artifactSha256: hash,
+            }),
+          );
+          expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toEqual({
+            mode: "cancel",
+            reason: "plugin_disabled",
+          });
+          expect(
+            (
+              await f.host.dispatch(actor, "core.terminals.create", {
+                containerId: f.containerId,
+                elementId: f.runtime.newId(),
+                machineId: f.descriptor.machineId,
+                placement: "tile",
+                cols: 80,
+                rows: 24,
+                runtime: f.descriptor,
+              })
+            ).ok,
+          ).toBe(false);
+          expect(f.sent.filter((entry) => entry.type === "create")).toEqual([create]);
+          break;
+        case "owner":
+          f.owner.terminalHostId = "replacement-terminal-host";
+          f.replaceTransport();
+          break;
+        case "consent":
+          f.service.consent(f.root, {
+            machineId: f.descriptor.machineId,
+            pluginId,
+            installationRevision: "r1",
+            artifactSha256: hash,
+            node: `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+            cap: "machines:run",
+            enabled: false,
+          });
+          break;
+      }
+      f.service.tick();
+      expect(f.service.jobs.cancellation(create.runtime.request.jobId)?.mode).toBe("cancel");
+      if (change !== "owner")
+        expect(
+          f.commands.some(
+            (entry) => entry.type === "cancel" && entry.jobId === create.runtime!.request.jobId,
+          ),
+        ).toBe(true);
+    } finally {
+      Reflect.set(action, "input", originalInput);
+      f.close();
+    }
+  },
+);
+
+test.each(["fresh", "recovered"] as const)(
+  "%s governed terminal cancels only its bound effect when source-input consent is withdrawn",
+  async (recovery) => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-native-source-consent-"));
+    const path = join(dir, "manifold.db");
+    const producerId = `${pluginId}.produce`;
+    const locationId = `${pluginId}.sealed`;
+    const producing: MachineHalf = {
+      ...machine,
+      locations: {
+        [locationId]: {
+          anchor: "runtime",
+          components: ["sealed"],
+          revision: "1",
+          kind: "directory",
+        },
+      },
+      operations: {
+        ...machine.operations,
+        [producerId]: {
+          ...machine.operations[operationId]!,
+          stdin: false,
+          locations: [{ locationId, access: "write" }],
+          outputs: ["material"],
+        },
+      },
+    };
+    const f = await fixture(undefined, ["material"], path, undefined, producing);
+    let closed = false;
+    let recoveredStore: ServerStore | undefined;
+    let recoveredHost: PluginHost | undefined;
+    try {
+      const machineId = f.descriptor.machineId;
+      for (const [node, cap] of [
+        [`manifold://machine/${machineId}/operation/${producerId}`, "machines:run"],
+        [`manifold://machine/${machineId}/operation/${producerId}`, "jobs:read"],
+        [`manifold://machine/${machineId}/location/${locationId}`, "locations:write"],
+      ] as const)
+        f.service.consent(f.root, {
+          machineId,
+          pluginId,
+          installationRevision: "r1",
+          artifactSha256: hash,
+          node,
+          cap,
+          enabled: true,
+        });
+      const producer = f.service.execute(f.root, pluginId, "trace-produce", {
+        jobId: "producer",
+        machineId,
+        operationId: producerId,
+        input: { mode: "produce" },
+        outputs: [{ name: "material", locationId, components: ["material"] }],
+      });
+      f.service.event(f.channel(), {
+        type: "result",
+        result: {
+          jobId: producer.request.jobId,
+          requestDigest: producer.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation,
+          state: "exited",
+          exitCode: 0,
+          reason: null,
+          startedAt: 0,
+          finishedAt: f.runtime.now(),
+          usage: { elapsedMs: 1, memoryBytes: 1, processes: 1, outputBytes: 2048 },
+          limits: producer.request.limits,
+          outputs: [
+            { outputId: "sealed-material", name: "material", sha256: hash, bytes: 2048, files: 1 },
+          ],
+        },
+      });
+      f.descriptor.inputs = [
+        { name: "material", from: { jobId: producer.request.jobId, output: "material" } },
+      ];
+      const scope: AuthorityScope = [
+        ...governedTerminalScope(f).map((entry) => ({
+          ...entry,
+          target:
+            entry.target === "manifold://" ? `manifold://container/${f.containerId}` : entry.target,
+        })),
+        {
+          target: `manifold://machine/${machineId}/operation/${producerId}/job/${producer.request.jobId}`,
+          reach: "node",
+          caps: ["jobs:read"],
+        },
+      ];
+      const actor = f.auth.authenticate(
+        f.auth.mintTokenV2(
+          {
+            principal: { name: "bound-input opener", kind: "human" },
+            scope,
+            containerId: f.containerId,
+            expiresAt: f.runtime.now() + 60_000,
+          },
+          f.root,
+        ).token,
+      );
+      const create = await governedCreated(f, actor);
+      if (!create.runtime) throw new Error("bound-input terminal missing native admission");
+      f.started(create.runtime);
+      const boundId = create.runtime.request.jobId;
+      const unrelated = f.service.execute(f.root, pluginId, "trace-unrelated", {
+        jobId: "unrelated",
+        machineId,
+        operationId,
+        input: { mode: "independent" },
+        outputs: [],
+      });
+      const unrelatedStart = f.commands.findLast(
+        (command) => command.type === "start" && command.request.jobId === unrelated.request.jobId,
+      );
+      if (unrelatedStart?.type !== "start") throw new Error("unrelated effect not admitted");
+      f.started(unrelatedStart);
+      const signedRequest = create.runtime.request;
+      let service = f.service;
+      let root = f.root;
+      let store = f.store;
+      service.offline(f.channel());
+      if (recovery === "recovered") {
+        f.close();
+        closed = true;
+        recoveredStore = new ServerStore(openDatabase(path));
+        store = recoveredStore;
+        const auth = new AuthService(store, "a".repeat(64), f.runtime, {
+          decide: (request) => service.decide(request),
+        });
+        root = auth.authenticate("a".repeat(64));
+        const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
+        const broker = new TerminalBroker(
+          store,
+          auth,
+          rooms,
+          f.runtime,
+          f.clock,
+          silentLogger,
+          () => "http://localhost:7777",
+          testTileTrees,
+        );
+        recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
+          settingsPlugins: [f.definition],
+        });
+        service = new JobService(store, auth, f.runtime);
+        recoveredHost.setJobs(service);
+        broker.setJobs(service);
+      }
+      service.tick();
+      expect(service.jobs.get(boundId)?.request).toEqual(signedRequest);
+      expect(service.jobs.get(boundId)?.state).toBe("started");
+      expect(service.jobs.cancellation(boundId)).toBeNull();
+      expect(service.jobs.get(unrelated.request.jobId)?.state).toBe("started");
+      expect(service.jobs.cancellation(unrelated.request.jobId)).toBeNull();
+      // Loss of transport/readiness is not withdrawal of an acknowledged owner's authority.
+      expect(store.getTerminal(create.terminalId)?.status).toBe("running");
+      service.consent(root, {
+        machineId,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        node: `manifold://machine/${machineId}/operation/${producerId}`,
+        cap: "jobs:read",
+        enabled: false,
+      });
+      service.tick();
+      expect(service.jobs.cancellation(boundId)?.mode).toBe("cancel");
+      expect(service.jobs.cancellation(unrelated.request.jobId)).toBeNull();
+      expect(service.jobs.get(unrelated.request.jobId)?.state).toBe("started");
+      expect(service.jobs.cancellation(producer.request.jobId)).toBeNull();
+      expect(service.jobs.get(producer.request.jobId)?.result?.outputs).toEqual([
+        { outputId: "sealed-material", name: "material", sha256: hash, bytes: 2048, files: 1 },
+      ]);
+      f.proveOwner(service);
+      expect(
+        new Set(
+          f.commands.filter((command) => command.type === "cancel").map((command) => command.jobId),
+        ),
+      ).toEqual(new Set([boundId]));
+      expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+      expect(f.sent.filter((message) => message.type === "create")).toEqual([create]);
+    } finally {
+      recoveredHost?.close();
+      recoveredStore?.close();
+      if (!closed) f.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   },
 );

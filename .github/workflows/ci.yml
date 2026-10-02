@@ -596,10 +596,42 @@ jobs:
           nix_conf: |
             experimental-features = nix-command flakes
             sandbox = true
-      - name: Verify native Nix packaging
+            extra-system-features = ${{ endsWith(matrix.system, '-linux') && 'nixos-test' || '' }}
+      - name: Verify native Nix packaging and Linux profile
+        id: nix-proof
         uses: ./.github/actions/gate-slice
+        env:
+          MANIFOLD_NIX_PROOF_DIR: ${{ runner.temp }}/nix-evidence
         with:
           task: nix
+      - name: Record exact-system Nix receipt
+        if: always()
+        shell: bash
+        env:
+          NIX_RESULT: ${{ steps.nix-proof.outcome }}
+          MANIFOLD_NIX_PROOF_DIR: ${{ runner.temp }}/nix-evidence
+        run: |
+          profile=not_reached
+          [[ $MANIFOLD_NIX_SYSTEM == *-darwin ]] && profile=not_applicable
+          execution=$profile
+          if [[ -f $MANIFOLD_NIX_PROOF_DIR/native-profile.json ]]; then
+            profile=$(jq -r '.result' "$MANIFOLD_NIX_PROOF_DIR/native-profile.json")
+            execution=$(jq -r '.execution' "$MANIFOLD_NIX_PROOF_DIR/native-profile.json")
+          fi
+          source_hash=unavailable
+          if [[ -f $MANIFOLD_NIX_PROOF_DIR/source.json ]]; then
+            source_hash=$(jq -r '.sourceHash' "$MANIFOLD_NIX_PROOF_DIR/source.json")
+          fi
+          # shellcheck disable=SC2016
+          printf '### Nix proof receipt\n\n- Commit: `%s`\n- Native system: `%s`\n- Source hash: `%s`\n- Packaging/profile gate: **%s**\n- Native profile: **%s**\n- Profile execution: **%s**\n' "$GITHUB_SHA" "$MANIFOLD_NIX_SYSTEM" "$source_hash" "${NIX_RESULT:-not_reached}" "$profile" "$execution" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain Nix build and serial evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nix-evidence-${{ matrix.system }}-${{ github.sha }}
+          path: ${{ runner.temp }}/nix-evidence
+          if-no-files-found: warn
+          retention-days: 1
 
   gate:
     name: gate

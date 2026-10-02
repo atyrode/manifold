@@ -418,6 +418,9 @@ test.skipIf(!realBackend)(
       expect((await readOutput("stderr")).toString("utf8")).toBe("diagnostic");
       expect((await execute("once")).result).toEqual(result);
       await agent.restartTransport("SIGKILL");
+      // `restartTransport` observes the replacement's welcome, not the hub's replacement
+      // channel. Native terminal preparation must start from that fresh live owner.
+      await waitFor(() => isMachineOnline(hub, machineId), 10_000, 20);
       expect((await status("once")).result).toEqual(result);
       expect(starts()).toEqual(["once"]);
 

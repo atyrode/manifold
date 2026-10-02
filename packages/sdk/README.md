@@ -15,9 +15,19 @@ manifold context
 manifold doctor
 manifold actions
 manifold machines
-manifold ssh <machine-id-or-exact-name> uname -srm
-manifold ssh <machine-id-or-exact-name> 'wc -c' < local-file
-manifold exec --machine <machine-id-or-exact-name> -- /bin/sh -c 'printf "remote output\n"'
+```
+
+An ordinary terminal lifecycle binding retains local inspection and terminal control, but
+does **not** authorize another shell. For remote automation, an authorized human uses
+Access → Sessions to mint a finite V2 credential with working placement rights and
+`machines:shell` at one exact enrolled machine/account. Its trusted launcher provisions
+the binding through the owning tool, never argv, prompts, a copied browser token or an
+Agent identity workaround. Then:
+
+```sh
+manifold ssh <explicitly-delegated-machine-id> uname -srm
+manifold ssh <explicitly-delegated-machine-id> 'wc -c' < local-file
+manifold exec --machine <explicitly-delegated-machine-id> -- /bin/sh -c 'printf "remote output\n"'
 ```
 
 The client privately consumes the ordinary terminal's inherited `MANIFOLD_URL`,
@@ -69,6 +79,14 @@ diagnose the selected machine's suitability. A missing harness-specific tool doe
 establish that core access is unavailable. Terminal access is not Windows desktop or game
 control.
 
+`doctor` reports remote shell launch as `not_probed`; it never creates a terminal to test
+delegation. A lifecycle binding's `ssh`/`exec` refusal is `shell_spawn_not_delegated`,
+requiring `terminals:spawn` at placement and `machines:shell` at the exact account.
+Workspace working authority supports composition and independent canvas homes; one-C
+authority supports only that existing composition's tile path. Terminal control is separate:
+a workspace `terminals:write` grant may reach an existing PTY on another machine, so an
+M1 creation grant is not blanket “M1-only machine access.”
+
 The package installs its product-owned skill at
 `share/agent-skills/manifold-terminal/SKILL.md`. A machine's configuration owner should
 install the executable and expose that same skill through its managed harness loaders.
@@ -101,6 +119,30 @@ attendance. This session-only revision does not require a native owner or fleet 
 Native resize admission failure also retires sizing intent and retains the last successful grid;
 only a fresh eligible measurement can enter again. Do not describe an unapplied desired size
 as the shared grid.
+
+## Live session authority and feeds
+
+`SessionClient.workspaceCaps()` reports live effective engine caps at the workspace root
+for its actual physical connection credential. `workspaceEventsAvailable()` reports coarse
+workspace-event eligibility. Unknown/disconnected authority is empty/false; room `selfCaps()`
+and the mounted container do not answer either question. `onAuthorityChange(callback)`
+returns its release and calls back after current getters update, without replacing the client.
+Late room/observer handles inherit the current snapshot before readiness. A pooled handle and
+its pre-connect subscriptions are installed before synchronous readiness listeners run, so those
+listeners may safely add interests and request a fence. Retirement callbacks may reconnect the
+handle without the retired attachment clearing its successor's authority.
+A synchronous listener that redials or publishes newer authority retires the rest of
+the earlier frame's fan-out. Later observers cannot regain the old snapshot while the
+replacement is unauthenticated or overwrite a newer snapshot on the same socket.
+
+After `subscribe(topics, handler)`, await `syncSubscriptions(): Promise<boolean>` before the
+catch-up read that switches a feed to event-only mode. Its five-second deadline starts at invocation,
+including time queued behind an earlier watermark; queue promotion does not extend it. This is a
+socket ordering fence, not a subscription acknowledgement: the server replies identically for
+accepted and refused topics and reveals no per-topic admission. The physical pool coalesces
+requests by generation, authority epoch and declaration watermark; an earlier reply cannot cover later
+interests. False means retain fallback polling. Rebind/disconnect/authority retirement clears
+the proof, and gaining workspace-event access re-declares all retained interests.
 
 ## Trusted launcher
 

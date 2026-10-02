@@ -10,9 +10,11 @@ import {
   formatManifoldUri,
   JOB_OWNER_PROTOCOL_VERSION,
   InstanceServicesDescriptionSchema,
+  IsolateCtxMethodSchema,
 } from "@manifold/protocol";
 import type {
   Cap,
+  LegacyCap,
   IsolateChildFrame,
   PluginManifest,
   ServicePolicy,
@@ -402,7 +404,7 @@ test("an installer whose credential no longer restores lends no slice, and the t
   }
 });
 
-const METADATA_CAPS: Cap[] = ["containers:read", "services:read"];
+const METADATA_CAPS: LegacyCap[] = ["containers:read", "services:read"];
 type MetadataHook = LifecycleCtx | GuestLifecycleCtx;
 
 /** Exercise the same host authority through the actual guest SDK and correlated proxy. */
@@ -417,7 +419,10 @@ async function metadataGuest(ctx: LifecycleCtx, run: (ctx: MetadataHook) => Prom
       },
       send: (frame) => {
         if (frame.t === "call") {
-          void serveCtxCall(frame.method, frame.args, { kind: "hook", ctx }).then(
+          void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, {
+            kind: "hook",
+            ctx,
+          }).then(
             (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
             (error: unknown) =>
               receive({

@@ -216,6 +216,8 @@ export interface ButtonProps extends VocabularyMeta {
   readonly onBlur?: (() => void) | undefined;
   readonly tone?: UiTone | undefined;
   readonly disabled?: boolean | undefined;
+  /** Disclosure state when this button shows or hides an associated subtree. */
+  readonly expanded?: boolean | undefined;
   /**
    * The FULL action name the press ultimately dispatches, painted as `data-action` so the
    * affordance names the door it opens (AXIOMS.md §Foundation law and REGISTRY.md §Foundation,
@@ -233,6 +235,7 @@ export function Button({
   onBlur,
   tone,
   disabled,
+  expanded,
   "data-action": action,
   icon,
   iconOnly,
@@ -248,6 +251,7 @@ export function Button({
       onBlur,
       tone,
       disabled,
+      expanded,
       action,
       icon,
       iconOnly,
@@ -264,6 +268,7 @@ export function Button({
       disabled={disabled === true}
       {...attributes(meta)}
       aria-label={meta.ariaLabel ?? (bare ? label : undefined)}
+      aria-expanded={expanded}
       onClick={() => onClick()}
       onBlur={onBlur === undefined ? undefined : () => onBlur()}
     >
@@ -330,6 +335,8 @@ export interface InputProps extends VocabularyMeta {
   readonly placeholder?: string | undefined;
   readonly mono?: boolean | undefined;
   readonly disabled?: boolean | undefined;
+  /** Prevent edits while retaining focus and text selection. */
+  readonly readOnly?: boolean | undefined;
   /** Every edit, as the field's whole text. */
   readonly onChange: (value: string) => void;
   readonly onBlur?: (() => void) | undefined;
@@ -341,7 +348,8 @@ export interface InputProps extends VocabularyMeta {
  * trip away when the owner is a portable plugin — which drops characters typed inside that
  * trip and breaks composition (IME) outright. So the field is uncontrolled: `value` is
  * written into it on every render it is NOT focused for, and on blur — the owner's answer
- * wins the moment the reader stops typing, never while they are.
+ * wins the moment the reader stops typing, never while they are. Read-only fields always
+ * display the owner's value, including while focused for selection.
  */
 export function Input({
   value,
@@ -349,6 +357,7 @@ export function Input({
   placeholder,
   mono,
   disabled,
+  readOnly = false,
   onChange,
   onBlur,
   ...rest
@@ -362,6 +371,7 @@ export function Input({
       placeholder,
       mono,
       disabled,
+      readOnly: readOnly === true ? true : undefined,
       onChange,
       onBlur,
       ...meta,
@@ -374,6 +384,7 @@ export function Input({
       defaultValue={value}
       placeholder={placeholder}
       disabled={disabled === true}
+      readOnly={readOnly === true}
       {...attributes(meta)}
       /*
         The buffer discipline described above: this callback runs on every commit (it is a
@@ -381,7 +392,11 @@ export function Input({
         into lands in the DOM; one that arrived mid-typing waits for the blur.
       */
       ref={(element) => {
-        if (element !== null && element.ownerDocument.activeElement !== element) {
+        if (
+          element !== null &&
+          (readOnly === true || element.ownerDocument.activeElement !== element) &&
+          element.value !== value
+        ) {
           element.value = value;
         }
       }}

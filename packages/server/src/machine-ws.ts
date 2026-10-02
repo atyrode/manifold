@@ -591,12 +591,12 @@ export class MachineGateway {
    * and owner round trip; this is the door, not a second implementation.
    */
   drain(machineId: string, draining: boolean): Promise<DrainOutcome> {
-    this.store.setMachineDraining(machineId, draining);
+    const outcome = this.broker.drain(machineId, draining);
     const channel = this.activeByMachine.get(machineId);
     if (channel !== undefined) {
       channel.send({ type: "job_command", command: { type: "drain", draining } });
     }
-    return this.broker.drain(machineId, draining);
+    return outcome;
   }
 
   /**

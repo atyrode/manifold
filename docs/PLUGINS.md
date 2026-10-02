@@ -594,6 +594,91 @@ export const archive = defineAction({
 effect: "allow", reach: "subtree" }` is then the whole administration: one principal, one
 machine, one verb.
 
+### Pure conditional preparation
+
+A server definition may register `prepareActions[localName] = { caps, prepare }`.
+The real action parser runs first, the preparer receives its parsed arguments, and the
+same parser validates the normalized result. The preparer returns `{ args, targets,
+additionalRequirements? }`. Fixed targets retain the declared count, capability and order;
+additional `{ cap, node, reach }` requirements are conjunctive, bounded to 64, and must be
+inside both the sealed preparer ceiling and the manifest. Only requirements actually used
+consume the installation/effect ceiling; a governed alternative does not require ordinary
+shell permission.
+
+Preparation receives a newly constructed read-only context: exact terminal destination and
+admitted owner facts, declared container placement, nonsecret stored home/machine/mode facts,
+and pure native demand extraction. In hardened contract 12, native demand is a strict nonsecret
+selector — machine, provider plugin/operation, installation/artifact/resource pins, bound-input
+references, session machine and a commitment digest — never a full runtime, literal input or
+session body. It has no storage, database, lifecycle mint, launch, credential, sibling-action,
+event, stream or machine-administration interface. Stored recipes and transformed secret-bearing
+arguments never become preparation evidence; opaque literal validation remains at native effect
+admission. A review uses this same path and stops before handler admission; an approval is not an
+execution.
+
+In-realm parsing and preparation also refuse host effects through retained mutable contexts,
+including asynchronous descendants that outlive preparation. Catching an attempted effect
+does not make the preparation admissible. Independently admitted handlers keep their own
+authority; preparation does not globally suspend unrelated work.
+This confinement covers supported host-owned mutation entrypoints, retained owner objects
+and returned storage or lifecycle callbacks, while allowing pure reads. Server-private
+raw SQLite handles and Yjs documents remain trusted implementation internals, not a plugin
+API or a JavaScript sandbox boundary; hardened guests never receive those objects.
+
+Ordinary terminal birth requires `terminals:spawn` at placement C and `machines:shell` at
+the exact enrolled M. A canvas creates an independent home H: before allocating anything it
+requires workspace-root **subtree** container read/write, scene write and terminal spawn/write,
+then checks exact H again before send and commit. C-only automation should open its approved
+composition with tile placement instead. Restart uses the stored mode/home/machine; ordinary
+restart additionally requires home spawn and exact-M shell, while governed restart retains
+fresh native consent without unrelated shell permission. Existing terminal control grants
+remain independent: creation scoped to M1 is not blanket M1-only access to existing PTYs.
+The host privately retains the admitted destination owner before authorization. A replacement
+owner cannot receive a prepared ordinary launch or restart; replacement transport for that
+same owner remains valid. Deferred restoration checks the durable admitted owner when its
+transport is disconnected.
+An ordinary birth or restart acknowledged by that exact owner retires its one-time
+admission guard before checking continuing authority. A drain committed while the owner
+was working blocks subsequent admission, not the already-acknowledged ordinary PTY.
+Credential and installed-code withdrawal remain live through completion.
+
+The private effect lease retains the original correlated credential, ordered requirements,
+parser/preparer/code binding and native demand through awaits and acknowledgements. Withdrawal
+before commit refuses success and settles only the pending owned effect. Native jobs retain a
+hub-only faithful authority snapshot; signed owner requests keep their released vocabulary
+and omit ordinary-only capabilities. Snapshot-less retained jobs use their legacy restore path.
+Transport and readiness guards are admission-only: they retire after the owner acknowledges
+the birth or restart, not merely after a command is sent. Credential, sponsor, code,
+installation, resource, consent and native-owner identity guards remain live. Restored effects
+recheck the current installation against the capabilities actually admitted, including the
+selected prepared requirements; unused alternatives do not consume that ceiling.
+Durable restoration repeats both caller authorization and revision-bound native consent
+for every captured governed requirement, including source-job input reads; recovery does
+not turn a capability grant into consent.
+Harness handoffs keep the originating action credential and ordered requirements conjunctive
+with the harness's attenuated native credential. Captured server-harness dependencies reach
+already retained fences and persist in the private snapshot: cold restoration checks the
+server code, profile validator, manifest and admitted installation ceiling as well as the
+native artifact. Closing the temporary harness data lease does not retire an owned effect;
+using that retained context after return still refuses.
+Trusted harness relaunch may refresh private input only for the exact retained session and
+native identity. The host captures its fresh demand and conjunctively extends the sealed
+fence before reservation, while preserving the original ordered requirements and credential.
+Known retained demand is checked before private relaunch even without a generic recipe;
+refusal or timeout retires only that attempt's fresh private credential.
+Installed and trusted bindings pin their verified artifact digest. Built-in source bindings
+also pin a once-per-process digest of actual source dependency bytes; compiled hubs hash their
+executable bytes. Deployment labels and `.dirty` version suffixes are not security identities:
+a changed imported helper makes a new process refuse the old fingerprint-bound continuation.
+Parser objects and their actual parsing methods, handlers, preparers and declaration ceilings
+are captured before preparation awaits. Every roster publication observes action and harness
+binding changes and disappearance, even without an intervening action query. Restoring an earlier
+object or an equal serialized schema/function does not revive a retired binding.
+Harness revisions cover callable implementations and the profile object and asynchronous validator,
+and persist in private continuation fingerprints. Temporary trusted hold/release preserves that
+history; verified installation replacement establishes a new artifact boundary.
+Unchanged cold bindings keep deterministic restart fingerprints.
+
 For selected high-impact delegated effects, **`agentJustification: "required"`** publishes a
 bounded declaration requirement in the same action metadata at `GET /api/protocol`.
 An active accountable run supplies `x-manifold-agent-justification` through the shared action
@@ -1679,6 +1764,10 @@ Source for this entire contract:
   `ATTENDANCE_RESOURCE` or `MACHINES_RESOURCE` when reading those collections.
 - **`initial: T` (required):** the value exposed before a response has seeded the shared
   feed. It is not a reset command for an already-published value.
+- **`resetOnError?: boolean` (default `false`):** publish `initial` to every mounted reader
+  when a read fails, retire caught-up state and restore bounded polling. Use it for
+  resources where an unreadable answer must become unknown rather than stay confirmed.
+  A later eligible successful catch-up is still required before polling can stop.
 - **`enabled?: boolean` (default `true`):** false detaches this subscriber, so it does not
   fetch or keep the feed alive; other enabled readers continue.
 - **`hold?: () => boolean`:** any subscriber returning true holds publication for all
@@ -1687,8 +1776,9 @@ Source for this entire contract:
 - **`equal?: (current: T, incoming: T) => boolean`:** suppress publication of equal
   answers. Default comparison uses a JSON structural digest (object key order matters);
   provide a comparator only when that is wrong for the resource.
-- **`onError?: (reason: unknown) => void`:** receives read failures. The existing value
-  remains; there is no separate error field in the return value.
+- **`onError?: (reason: unknown) => void`:** receives read failures after any requested
+  `resetOnError` publication. By default the existing value remains; there is no
+  separate error field in the return value.
 - **`onSuccess?: () => void`:** receives accepted successful reads, including answers
   equal to the current value. Use it to clear a transient read error without requiring
   data to change. Held responses, detached generations and local `setValue` calls do
@@ -1700,26 +1790,36 @@ Source for this entire contract:
 - **`topics?: readonly ManifoldRef[]` (default empty):** all event topics that invalidate
   this answer. There is **no event-kind filter option**; every matching topic event
   schedules a read.
-- **`events?: FeedEvents`:** pass `host.client`. Its structural contract is
-  `subscribe(topics, handler): () => void`, `status`, and
-  `on("status", handler): () => void` (`FeedEvents` is defined in the implementation,
-  not re-exported by `/hooks`). Both nonempty `topics` and this door are needed for
-  event-backed reads.
+- **`events?: FeedEvents`:** pass `host.client`. Its structural contract includes
+  `subscribe`, `status`, `on("status", handler)`, `workspaceEventsAvailable()`,
+  `onAuthorityChange(handler)` and `syncSubscriptions(): Promise<boolean>`.
+  `FeedEvents` is defined in `host.ts`, not re-exported by `/hooks`. Both nonempty
+  topics and this door are needed for event-backed reads.
+- **`requiresWorkspaceEvents?: boolean` (default `false`):** true requires the explicit
+  workspace-event hint before event-only mode. Set true for Machines and host-view
+  readers; a mounted container or wildcard room caps are not workspace authority.
 
 The return is `{ value: T, setValue: Dispatch<SetStateAction<T>>, refresh: () => void }`.
 `setValue` publishes a local/optimistic answer to the shared feed; it does **not** mutate
 the server. `refresh()` asks for a read now, for example after a successful action.
-The feed reads initially, catches up when the channel becomes live, and coalesces event
-bursts. With a live subscription there is no polling timer; without one it uses the
-fallback cadence. Hidden tabs stop the fallback timer, keep subscriptions, and read once
-on visibility return. On unmount or disable the hook releases that reader; the last
-reader releases the subscription and timer. Do not add a parallel polling effect.
+The feed declares interests, awaits their transport ordering fence, then reads a catch-up
+snapshot before retiring polling; this also applies to new interests on an already-open
+socket. Until synchronized and caught up, or while event-ineligible/disconnected, it uses
+the shared fallback cadence. A failed five-second fence retains polling, with another
+attempt on normal activation/rebind/reconnect/authority transition rather than a retry loop.
+Hidden tabs suspend fallback and retain subscriptions; visibility return catches up.
+Events during a fetch queue another read. On unmount/disable the last reader releases the
+subscription, listeners and timer. Do not add a parallel polling effect.
 
 For example, the shipped
 [`MachinesSection`](../packages/plugins/machines/src/web.tsx) reads through this contract:
 
 ```tsx
-import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
+import {
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE_OPTIONS,
+  usePolledResource,
+} from "@manifold/plugin/hooks";
 import type { HostServices } from "@manifold/plugin";
 import type { MachineSummary } from "@manifold/protocol";
 
@@ -1728,8 +1828,7 @@ function MachineCount({ host }: { host: HostServices }) {
     () => host.client.machines(),
     FALLBACK_POLL_MS,
     {
-      key: MACHINES_RESOURCE,
-      initial: null,
+      ...MACHINES_RESOURCE_OPTIONS,
       topics: host.topics.machines,
       events: host.client,
     },
@@ -1738,10 +1837,13 @@ function MachineCount({ host }: { host: HostServices }) {
 }
 ```
 
-This is the same feed as the shipped section, with only its rendering reduced. The section
-also uses `refresh()` after a successful administration action, not an event payload as
-replacement state. Reading another collection changes the fetch, resource key and topic
-array together; no new client or socket is involved.
+This is the same feed and unknown-on-error policy as the shipped readers. Machine topics
+include roster changes: disabling Machines still refuses its ordinary list door, clears
+all mounted readers to unknown and keeps polling; enabling it requires a fresh catch-up,
+not restoration of old rows. No cleanup or privileged inventory exception is involved.
+The section also uses `refresh()` after successful administration, not an event payload
+as replacement state. Reading another collection changes the fetch, key and topics
+together; no new client or socket is involved.
 
 #### Governed jobs and continuous streams
 
@@ -3751,11 +3853,19 @@ served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLA
 
 Two rungs of the ladder are graded IN YOUR PROCESS (`ISOLATE_GUEST_DENIAL_RULES`): the runtime
 parses arguments against your action's own Zod `input` (`invalid_args`) and your handler's
-`{ refused }` is `refused`. Host policy/scope/capability checks precede invocation. After the
-guest's one real parse, its runtime sends `prepared` with only the declared authority targets;
-transformed arguments remain in the guest, including non-JSON values. The host evaluates its
-own requirements and agent declaration, then answers `admitted`. Context calls and successful
-results are forbidden before that admission, and a refused preparation never invokes the handler.
+`{ refused }` is `refused`. Host policy/scope/capability checks precede invocation. Contract 12
+adds the same real parser → pure preparer → real parser path as in-realm. The guest's
+`prepared` frame carries only canonical targets and bounded conjunctive requirements; its
+additional-capability ceiling is sealed in the verified artifact, never trusted from the reply.
+Transformed arguments remain guest-owned, including secret-bearing and non-JSON values.
+Before `admitted`, only the read-only preparation methods are served: resolver calls send
+machine identities, while native-demand calls send the contract-12 nonsecret selector plus its
+runtime commitment, never full runtime/input/session contents. Storage, ordinary context calls
+and successful execution results remain forbidden. Review returns preparation evidence and answers
+`admitted: false`, so the handler never runs. Bindings without a preparer retain their released
+single-parse, transformed-argument and target-extraction contract, but parsing and target
+extraction also run in the read-only preparation phase. Asynchronous descendants retain
+that phase after review completes; captured mutable contexts cannot turn review into an effect.
 The `result` schema is enforced on the way out too; the roster publishes both schemas from
 the `loaded` frame. Repack existing self-contained guests with the current kit for this mandatory
 handshake; there is no old-runtime validation fallback or second public action door.
@@ -3893,6 +4003,18 @@ of caps or identity does not authorize a later call. Import `PortablePanelProps`
 and `PortableSectionProps` with `import type`; the Worker may import
 `@manifold/plugin/hooks` only for its portable hook exports.
 
+Contract 12 adds `workspaceCaps()`, `workspaceEventsAvailable()`,
+`onAuthorityChange(callback)` and bounded `syncSubscriptions()`. The authority getters
+use current mounted facts and default empty/false when unknown/disconnected; they do not
+authorize a door. Updates notify without remounting or changing client identity. Older
+admitted strict Workers omit the new context fields and cannot call the synchronization
+RPC. That RPC reports socket ordering only, never per-topic admission; the physical pool
+coalesces by declaration watermark, so a later interest cannot inherit an earlier fence.
+Contract 12 mounted contexts also carry an opaque `clientEpoch`: changing the actual page
+client replaces the portable client and retires its old calls, listeners and subscriptions
+without remounting the React component. Identical coarse authority facts do not preserve
+old custody. Ordinary presentation/authority updates retain client identity.
+
 ### The vocabulary
 
 Fourteen `UiNode` kinds are emitted by the portable `@manifold/ui` components
@@ -3908,17 +4030,28 @@ Fourteen `UiNode` kinds are emitted by the portable `@manifold/ui` components
 | `icon`    | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size                                                             |
 | `divider` | `Divider`                 | horizontal separator                                                                                   |
 | `spinner` | `Spinner`                 | optional progress label                                                                                |
-| `button`  | `Button`                  | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action`                        |
+| `button`  | `Button`                  | label, tone, disabled, optional icon/`expanded`; `onClick`, `onBlur`, public `data-action`             |
 | `select`  | `Select`                  | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur`                |
-| `input`   | `Input`                   | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur`                                |
+| `input`   | `Input`                   | text, label, placeholder, `mono`, disabled, optional `readOnly`; scalar `onChange`, `onBlur`           |
 | `toggle`  | `Toggle`                  | boolean, label, disabled; scalar `onChange`, `onBlur`                                                  |
 | `list`    | `List`                    | keyed rows with primary/secondary text and optional `onClick`                                          |
 | `empty`   | `Empty`                   | empty-state text                                                                                       |
+
+`Input.readOnly` defaults false and is omitted from frames when unused/false. True blocks
+typing/paste while preserving focus/selection and follows controlled value changes even
+while focused; editable inputs retain their focused-buffer discipline. A credential reveal
+must still unmount on hide or custody loss. `Button.expanded` is the closed disclosure
+state mapped to `aria-expanded`, not an arbitrary DOM attribute escape. Both features
+require contract 12; a pre-12 artifact declaring either is quarantined per instance without
+terminating unaffected siblings.
 
 Five tones mean `neutral`, `accent`, `muted`, `danger`, `success`, never arbitrary
 colours. Text-bearing components take text, not nested markup. Control callbacks
 receive scalars (or no argument), never DOM events. A `Button`'s full action name
 goes in **`data-action`**; its callback actually dispatches through `host.client.action`.
+Buttons keep their natural label size when space permits, then wrap the full label
+within their container instead of clipping it. This intrinsic sizing is shared by
+native and portable rendering; it needs no layout prop or nested `Text`.
 Metadata is limited to `title`, `aria-label`, `data-testid` and
 `role="status" | "alert"`. A frame has at most 32 levels and 2000 nodes, 256
 select options and 500 list rows; ordinary text is limited to 4096 characters.
@@ -4107,7 +4240,7 @@ isolated Bun child, `web.js` linked to the page's React/design system, and a
 web definition and attaches the guest runtime; authors do not write a separate
 Worker or add `--self-contained` (that flag conflicts with a page-linked portable
 entry). The JSON artifact carries exact-byte SHA-256, base64 members,
-`format: 1`, `hardenedContract: 11` and a protocol stamp. The host serves the
+`format: 1`, `hardenedContract: 12` and a protocol stamp. The host serves the
 declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
 with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
 page's engine objects; unsupported imports/JSX refuse by name. Hardening
@@ -4115,15 +4248,20 @@ selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
 exercise the panel in a browser too. The install door and grant remain §7.
 
-Current packs stamp contract 11; the hub admits stamped contracts 1–11 using
+Current packs stamp contract 12; the hub admits stamped contracts 1–12 using
 each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
 contract 9 adds React frame roots, mounted context/sections, generated portable
 Worker member, event invalidations, authoring and narrow machine bridges. Portable Workers
 require an accepted contract of at least 9, not the newest stamp. Contract 10 adds optional
 physical-core metadata; older strict consumers retain the old machine-list shape through
 nested server calls and both Worker machine-reading routes. Contract 11 adds credential-bound
-read-only lifecycle metadata. Older admitted artifacts keep their declared behavior rather
-than acquiring these facilities. Missing stamps require a genuine repack, not an assumed contract 1;
+read-only lifecycle metadata. Contract 12 adds live workspace authority hints, bounded
+subscription ordering, explicit client-binding retirement, readonly inputs, disclosure buttons
+and sealed pure action preparation; older strict Workers and server isolates retain their
+original contexts and truthful legacy authority projections. An unrepresentable correlated
+Agent/Run snapshot refuses as `scoped_authority_requires_v2` before posting; a coarse hint is
+never used to restore hub authority. Older admitted artifacts do not acquire new facilities.
+Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 
 ### Developing against a hub

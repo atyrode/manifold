@@ -4,8 +4,8 @@ import {
   ACTION_TRACE_ID_HEADER,
   ActionRunnerRequestSchema,
   ActionRunnerResponseSchema,
-  CreateChildRunRequestSchema,
-  CreateRunRequestSchema,
+  CreateChildRunV2RequestSchema,
+  CreateRunV2RequestSchema,
   FinishAgentRunRequestSchema,
   ReportRunActivityRequestSchema,
   PROTOCOL_VERSION,
@@ -13,7 +13,7 @@ import {
   type ActionResultProjection,
   type ActionRunnerReadResults,
   type ActionSummary,
-  type AgentRun,
+  type AgentRunV2,
   type ActionRunnerResponse,
 } from "@manifold/protocol";
 import { ActionRunner } from "../src/action-runner.ts";
@@ -127,21 +127,21 @@ describe("launcher-only runner binding", () => {
 });
 
 test("trusted pipes admit before input, keep children on the Agent, and report activity without model authority", async () => {
-  const runs: AgentRun[] = [];
-  const bearers = new Map<string, AgentRun>();
+  const runs: AgentRunV2[] = [];
+  const bearers = new Map<string, AgentRunV2>();
   const policyBody = "Read-only smoke policy.";
   const digest = new Bun.CryptoHasher("sha256").update(policyBody).digest("hex");
   let traceId = 0;
   const activities: string[] = [];
   const doors = [
-    "createRun",
-    "createChildRun",
-    "inspectRun",
-    "reportRunActivity",
+    "createRunV2",
+    "createChildRunV2",
+    "inspectRunV2",
+    "reportRunActivityV2",
     "getAgentPolicy",
-    "acknowledgeAgentPolicy",
-    "renewAgentRun",
-    "finishAgentRun",
+    "acknowledgeAgentPolicyV2",
+    "renewAgentRunV2",
+    "finishAgentRunV2",
   ];
   const server = Bun.serve({
     port: 0,
@@ -162,15 +162,15 @@ test("trusted pipes admit before input, keep children on the Agent, and report a
       const input: unknown = await request.json();
       const caller = bearers.get(request.headers.get("authorization") ?? "");
       let result: unknown;
-      if (door === "createRun" || door === "createChildRun") {
+      if (door === "createRunV2" || door === "createChildRunV2") {
         const declaration =
-          door === "createRun"
-            ? CreateRunRequestSchema.parse(input)
-            : CreateChildRunRequestSchema.parse(input);
+          door === "createRunV2"
+            ? CreateRunV2RequestSchema.parse(input)
+            : CreateChildRunV2RequestSchema.parse(input);
         const parent =
           "runId" in declaration ? runs.find((run) => run.id === declaration.runId) : undefined;
         const id = `run-${runs.length + 1}`;
-        const run: AgentRun = {
+        const run: AgentRunV2 = {
           id,
           agentId: parent?.agentId ?? declaration.agentId!,
           session: null,
@@ -185,6 +185,9 @@ test("trusted pipes admit before input, keep children on the Agent, and report a
           target: "manifold://",
           reach: "subtree",
           caps: ["containers:read"],
+          scope: declaration.scope ?? [
+            { target: "manifold://", reach: "subtree", caps: ["containers:read"] },
+          ],
           createdAt: 1,
           expiresAt: 120_001,
           renewals: 0,
@@ -207,16 +210,16 @@ test("trusted pipes admit before input, keep children on the Agent, and report a
           issuedAt: 1,
           required: [{ id: "policy", source: "builtin", body: policyBody, digest }],
         };
-      else if (door === "acknowledgeAgentPolicy" && caller !== undefined) {
+      else if (door === "acknowledgeAgentPolicyV2" && caller !== undefined) {
         caller.state = "active";
         result = { run: caller };
-      } else if (door === "reportRunActivity" && caller !== undefined) {
+      } else if (door === "reportRunActivityV2" && caller !== undefined) {
         const report = ReportRunActivityRequestSchema.parse(input);
         if (report.runId !== caller.id) throw new Error("cross-run activity");
         caller.activity = report.activity;
         activities.push(report.activity);
         result = { run: caller };
-      } else if (door === "finishAgentRun") {
+      } else if (door === "finishAgentRunV2") {
         const finish = FinishAgentRunRequestSchema.parse(input);
         const root = runs.find((run) => run.id === finish.runId)!;
         for (const run of runs) {
@@ -261,7 +264,9 @@ test("trusted pipes admit before input, keep children on the Agent, and report a
       type: "child",
       id: "child",
       runId: root.runId,
-      declaration: { caps: ["containers:read"] },
+      declaration: {
+        scope: [{ target: "manifold://", reach: "subtree", caps: ["containers:read"] }],
+      },
     });
     await activityDone.promise;
     yield line({ type: "finish", id: "finish", runId: root.runId, outcome: "completed" });
@@ -282,7 +287,7 @@ test("trusted pipes admit before input, keep children on the Agent, and report a
         if (frame.type === "policy") (frame.id === null ? rootPolicy : childPolicy).resolve(frame);
         if (
           frame.type === "result" &&
-          frame.door === "core.access.reportRunActivity" &&
+          frame.door === "core.access.reportRunActivityV2" &&
           ++activityResults === 4
         )
           activityDone.resolve();
@@ -335,7 +340,7 @@ async function readResultScenario(options: {
   const policyDigest = new Bun.CryptoHasher("sha256").update(policyBody).digest("hex");
   const contractDigest = await actionResultProjectionDigest(readPolicy);
   const runToken = "b".repeat(64);
-  const run: AgentRun = {
+  const run: AgentRunV2 = {
     id: "read-run",
     agentId: "reader",
     session: null,
@@ -350,6 +355,7 @@ async function readResultScenario(options: {
     target: "manifold://",
     reach: "subtree",
     caps: ["containers:read"],
+    scope: [{ target: "manifold://", reach: "subtree", caps: ["containers:read"] }],
     createdAt: 1,
     expiresAt: 120_001,
     renewals: 0,
@@ -361,7 +367,7 @@ async function readResultScenario(options: {
     policyRevision: policyDigest,
     cleanup: { revokedCredentials: 0, revokedGrants: 0 },
   };
-  const childRun: AgentRun = { ...run, id: "read-child", parentRunId: run.id, depth: 1 };
+  const childRun: AgentRunV2 = { ...run, id: "read-child", parentRunId: run.id, depth: 1 };
   const calls: { door: string; projection: string | null; trace: number }[] = [];
   const output: ActionRunnerResponse[] = [];
   const lines: string[] = [];
@@ -390,14 +396,14 @@ async function readResultScenario(options: {
           protocolVersion: PROTOCOL_VERSION,
           actions: [
             ...[
-              "createRun",
-              "createChildRun",
-              "inspectRun",
-              "reportRunActivity",
+              "createRunV2",
+              "createChildRunV2",
+              "inspectRunV2",
+              "reportRunActivityV2",
               "getAgentPolicy",
-              "acknowledgeAgentPolicy",
-              "renewAgentRun",
-              "finishAgentRun",
+              "acknowledgeAgentPolicyV2",
+              "renewAgentRunV2",
+              "finishAgentRunV2",
             ].map((name) => summary(`core.access.${name}`)),
             {
               ...summary(readDoor),
@@ -444,14 +450,14 @@ async function readResultScenario(options: {
         );
       }
       let result: unknown;
-      if (door === "core.access.createRun") {
+      if (door === "core.access.createRunV2") {
         result = { run, credential: { token: runToken, expiresAt: run.expiresAt } };
-      } else if (door === "core.access.createChildRun") {
+      } else if (door === "core.access.createChildRunV2") {
         result = {
           run: childRun,
           credential: { token: "c".repeat(64), expiresAt: childRun.expiresAt },
         };
-      } else if (door === "core.access.renewAgentRun") {
+      } else if (door === "core.access.renewAgentRunV2") {
         result = {
           run,
           credential: { token: "d".repeat(64), expiresAt: run.expiresAt },
@@ -467,14 +473,14 @@ async function readResultScenario(options: {
           issuedAt: 1,
           required: [{ id: "policy", source: "builtin", body: policyBody, digest: policyDigest }],
         };
-      } else if (door === "core.access.acknowledgeAgentPolicy") {
+      } else if (door === "core.access.acknowledgeAgentPolicyV2") {
         expect(await request.json()).toEqual({
           revision: policyDigest,
           acknowledgements: [{ id: "policy", digest: policyDigest }],
         });
         run.state = "active";
         result = { run };
-      } else if (door === "core.access.finishAgentRun") {
+      } else if (door === "core.access.finishAgentRunV2") {
         const finish = FinishAgentRunRequestSchema.parse(await request.json());
         run.state = finish.outcome;
         run.cleanup = { finishedAt: 2, revokedCredentials: 1, revokedGrants: 1 };
@@ -525,7 +531,9 @@ async function readResultScenario(options: {
         type: "child",
         id: "child",
         runId: run.id,
-        declaration: { caps: ["containers:read"] },
+        declaration: {
+          scope: [{ target: "manifold://", reach: "subtree", caps: ["containers:read"] }],
+        },
       });
       yield line({ type: "renew", id: "renew", runId: run.id, lifetimeMs: 120_000 });
     }

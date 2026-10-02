@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ActionOutcome, Cap } from "@manifold/protocol";
+import type { ActionOutcome, LegacyCap } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../../../server/src/auth.ts";
 import { silentLogger } from "../../../server/src/log.ts";
 import { RoomManager } from "../../../server/src/room.ts";
@@ -68,7 +68,7 @@ async function fixture(): Promise<Fixture> {
 }
 
 /** A real token, so authority is exercised through attenuation rather than a hand-built context. */
-function context(where: Fixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function context(where: Fixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
   const grant = where.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },

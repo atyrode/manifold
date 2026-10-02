@@ -7,6 +7,7 @@ import {
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
+  MintTokenV2RequestSchema,
   AttendanceResponseSchema,
   ContainerResponseSchema,
   ContainerTerminalsResponseSchema,
@@ -18,12 +19,14 @@ import {
   ShareInventorySchema,
   TerminalsResponseSchema,
   TokenGrantSchema,
+  TokenGrantV2Schema,
   type ActionOutcome,
   type Cap,
   type Dial,
   type DialTicket,
   type HttpError,
   type MintTokenRequest,
+  type MintTokenV2Request,
   type Container,
   type ContainerTerminalSummary,
   type ShareGrant,
@@ -31,6 +34,7 @@ import {
   type ShareRecipient,
   type TerminalSummary,
   type TokenGrant,
+  type TokenGrantV2,
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
 import { existsSync } from "node:fs";
@@ -695,6 +699,15 @@ export async function mintToken(
 ): Promise<TokenGrant> {
   const body = MintTokenRequestSchema.parse(request);
   return TokenGrantSchema.parse(await ownerAction(server, "core.access.mint", body));
+}
+
+/** Issues explicit, correlated fixture authority through the current scoped credential door. */
+export async function mintTokenV2(
+  server: TestServer,
+  request: MintTokenV2Request,
+): Promise<TokenGrantV2> {
+  const body = MintTokenV2RequestSchema.parse(request);
+  return TokenGrantV2Schema.parse(await ownerAction(server, "core.access.mintTokenV2", body));
 }
 
 /**

@@ -41,6 +41,7 @@ beforeAll(async () => {
     const outside = document.getElementById("outside");
     const principal = { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" };
     const context = { principal, caps: ["machines:mint"], containerId: null,
+      workspaceCaps: ["machines:mint"], workspaceEvents: false,
       topics: { index: [], terminals: [], attendance: [], machines: [] },
       status: "open", hidden: false, canAuthor: false };
     let machines = [{ id: "machine-one", name: "Review machine", online: !revoked,
@@ -59,6 +60,7 @@ beforeAll(async () => {
       return barrier.promise;
     };
     const act = (action, args) => {
+      if (action === "core.machines.listHostViews") return Promise.resolve({ ok: true, result: { revision: 0, hosts: [] } });
       actions.push({ action, args });
       const pending = Promise.withResolvers();
       finish = () => {
@@ -96,6 +98,8 @@ beforeAll(async () => {
       worker.postMessage(init);
     } else {
       const client = { selfCaps: () => context.caps, machines: async () => machines,
+        workspaceCaps: () => context.workspaceCaps, workspaceEventsAvailable: () => false,
+        onAuthorityChange: () => () => {}, syncSubscriptions: async () => true,
         status: "open", on: () => () => {}, subscribe: () => () => {}, action: act };
       const host = { ...context, client, authoring: null, navigate: () => {} };
       flushSync(() => root.render(createElement(MachinesSection, { host })));

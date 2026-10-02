@@ -1,18 +1,18 @@
 import {
   ACTION_RUNNER_MAX_FRAMES,
-  AcknowledgeAgentPolicyResultSchema,
+  AcknowledgeAgentPolicyV2ResultSchema,
   ActionRunnerActivitySchema,
   ActionRunnerBindSchema,
   ActionRunnerRequestSchema,
   ActionRunnerReadResultsSchema,
   ActionRunnerResponseSchema,
   AgentPolicyChallengeSchema,
-  CreateRunCredentialResultSchema,
-  FinishAgentRunResultSchema,
-  InspectRunResultSchema,
+  CreateRunV2CredentialResultSchema,
+  FinishAgentRunV2ResultSchema,
+  InspectRunV2ResultSchema,
   JsonProjectionError,
   MANIFOLD_ROOT_URI,
-  RenewAgentRunResultSchema,
+  RenewAgentRunV2ResultSchema,
   actionResultProjectionDigest,
   compileJsonProjection,
   projectJson,
@@ -24,7 +24,7 @@ import {
   type ActionRunnerRequest,
   type ActionRunnerResponse,
   type AgentPolicyChallenge,
-  type AgentRun,
+  type AgentRunV2,
   type AgentRunTerminalOutcome,
 } from "@manifold/protocol";
 import {
@@ -48,7 +48,7 @@ export class ActionRunnerError extends Error {
 }
 
 interface OwnedRun {
-  run: Pick<AgentRun, "id" | "agentId" | "parentRunId" | "target" | "expiresAt">;
+  run: Pick<AgentRunV2, "id" | "agentId" | "parentRunId" | "target" | "expiresAt">;
   token: string;
   policy: AgentPolicyChallenge | null;
   acknowledged: boolean;
@@ -65,14 +65,14 @@ interface ReadResultContract {
 const MAX_RESPONSE_BYTES = 16 * 1_048_576;
 
 const LIFECYCLE = {
-  create: "core.access.createRun",
-  child: "core.access.createChildRun",
-  inspect: "core.access.inspectRun",
-  activity: "core.access.reportRunActivity",
+  create: "core.access.createRunV2",
+  child: "core.access.createChildRunV2",
+  inspect: "core.access.inspectRunV2",
+  activity: "core.access.reportRunActivityV2",
   policy: "core.access.getAgentPolicy",
-  ack: "core.access.acknowledgeAgentPolicy",
-  renew: "core.access.renewAgentRun",
-  finish: "core.access.finishAgentRun",
+  ack: "core.access.acknowledgeAgentPolicyV2",
+  renew: "core.access.renewAgentRunV2",
+  finish: "core.access.finishAgentRunV2",
 } as const;
 
 /** The sole sequence executor. No bearer-bearing value is returned by its public methods. */
@@ -413,7 +413,7 @@ export class ActionRunner {
         this.#result(null, null, LIFECYCLE.inspect, MANIFOLD_ROOT_URI, invocation);
         throw new ActionRunnerError("invalid_state", invocation.traceId);
       }
-      const parsed = InspectRunResultSchema.safeParse(invocation.outcome.result);
+      const parsed = InspectRunV2ResultSchema.safeParse(invocation.outcome.result);
       if (
         !parsed.success ||
         parsed.data.availability !== "available" ||
@@ -462,7 +462,7 @@ export class ActionRunner {
         await this.#policy(id, parent);
       return;
     }
-    const parsed = CreateRunCredentialResultSchema.safeParse(invocation.outcome.result);
+    const parsed = CreateRunV2CredentialResultSchema.safeParse(invocation.outcome.result);
     if (!parsed.success) throw new ActionRunnerError("invalid_response", invocation.traceId);
     const owned = this.#retain(parsed.data.run, parsed.data.credential.token);
     if (parent === undefined) {
@@ -526,7 +526,7 @@ export class ActionRunner {
         const invocation = await this.#call(run, LIFECYCLE.ack, frame.policy);
         this.#result(frame.id, run, LIFECYCLE.ack, run.run.target, invocation);
         if (invocation.outcome.ok) {
-          const result = AcknowledgeAgentPolicyResultSchema.safeParse(invocation.outcome.result);
+          const result = AcknowledgeAgentPolicyV2ResultSchema.safeParse(invocation.outcome.result);
           if (
             !result.success ||
             result.data.run.id !== run.run.id ||
@@ -555,7 +555,7 @@ export class ActionRunner {
           run.run.id,
         );
         if (invocation.outcome.ok) {
-          const result = RenewAgentRunResultSchema.safeParse(invocation.outcome.result);
+          const result = RenewAgentRunV2ResultSchema.safeParse(invocation.outcome.result);
           if (!result.success || result.data.run.id !== run.run.id)
             throw new ActionRunnerError("invalid_response", invocation.traceId);
           run.run = result.data.run;
@@ -634,7 +634,7 @@ export class ActionRunner {
       this.#result(id, run, LIFECYCLE.finish, run.run.target, invocation);
       throw new ActionRunnerError("cleanup_failed", invocation.traceId);
     }
-    const result = FinishAgentRunResultSchema.safeParse(invocation.outcome.result);
+    const result = FinishAgentRunV2ResultSchema.safeParse(invocation.outcome.result);
     if (
       !result.success ||
       result.data.run.id !== run.run.id ||
@@ -682,7 +682,7 @@ export class ActionRunner {
           this.#binding.runId,
         );
         const result = invocation.outcome.ok
-          ? FinishAgentRunResultSchema.safeParse(invocation.outcome.result)
+          ? FinishAgentRunV2ResultSchema.safeParse(invocation.outcome.result)
           : null;
         if (
           result?.success !== true ||

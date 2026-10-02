@@ -3,7 +3,7 @@ import {
   MachineRepositoryFactSchema,
   formatManifoldUri,
   type ActionOutcome,
-  type Cap,
+  type LegacyCap,
   type MachineRepositoryFact,
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
@@ -82,7 +82,7 @@ async function fixture(answer?: MachineRepositoryOutcome): Promise<Fixture> {
 }
 
 /** A real token, so authority is exercised through attenuation rather than a hand-built context. */
-function context(fix: Fixture, caps: readonly Cap[]): AuthContext {
+function context(fix: Fixture, caps: readonly LegacyCap[]): AuthContext {
   const grant = fix.auth.mintToken(
     { principal: { name: "reader", kind: "human" }, caps: [...caps] },
     fix.owner,

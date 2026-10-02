@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { tileIdForRef } from "@manifold/scene";
+import { formatManifoldUri } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -8,7 +9,7 @@ import {
   enrollMachine,
   listTerminalsByContainer,
   listTerminals,
-  mintToken,
+  mintTokenV2,
   startAgent,
   startServer,
   waitFor,
@@ -69,9 +70,22 @@ test("terminal readiness follows opened and identifies an application declaratio
         name: "ready-terminal-agent",
       }),
     );
-    const principal = await mintToken(server, {
+    const principal = await mintTokenV2(server, {
       principal: { kind: "human", name: "Ready Observer", color: "#447755" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: formatManifoldUri({ kind: "container", containerId: container.id }),
+          reach: "subtree",
+          caps: ["containers:read", "terminals:spawn", "terminals:write"],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      containerId: container.id,
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, { containerId: container.id, token: principal.token });
     clients.push(client);
@@ -94,11 +108,14 @@ test("terminal readiness follows opened and identifies an application declaratio
         ],
       },
     });
-    const pendingId = await fitPendingTerminal(client, 80, 24);
-    const terminal = await opening;
+    const [terminal, pendingId, readiness] = await Promise.all([
+      opening,
+      fitPendingTerminal(client, 80, 24),
+      ready,
+    ]);
     expect(terminal.id).toBe(pendingId);
     expect(terminal.readiness).toBeNull();
-    expect(await ready).toMatchObject({
+    expect(readiness).toMatchObject({
       terminalId: terminal.id,
       kind: "ready",
       readiness: "application",
@@ -141,15 +158,29 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     agents.push(agent);
     expect(agent.machineId).toBe(enrolled.machineId);
 
-    // Workspace-scoped grants: a terminal is born into a composition of its own, and driving
-    // it means joining that composition — an id no container-scoped token could name.
-    const alice = await mintToken(server, {
+    // The opener needs workspace-subtree authority to create an independent home.
+    // Later controllers receive only that home's read/write authority, not shell-spawn rights.
+    const alice = await mintTokenV2(server, {
       principal: { kind: "human", name: "Terminal Alice", color: "#aa3344" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
-    });
-    const bob = await mintToken(server, {
-      principal: { kind: "human", name: "Terminal Bob", color: "#3355cc" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const canvas = await connect(server, { containerId: container.id, token: alice.token });
     clients.push(canvas);
@@ -163,6 +194,18 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
       portalAt: { x: 120, y: 90 },
     });
     clients.push(clientA);
+    const bob = await mintTokenV2(server, {
+      principal: { kind: "human", name: "Terminal Bob", color: "#3355cc" },
+      scope: [
+        {
+          target: formatManifoldUri({ kind: "container", containerId: terminal.containerId }),
+          reach: "subtree",
+          caps: ["containers:read", "terminals:write"],
+        },
+      ],
+      containerId: terminal.containerId,
+      expiresAt: Date.now() + 600_000,
+    });
     expect(terminal.controllerId).toBe(alice.principal.id);
     expect(terminal.containerId).not.toBe(container.id);
     // What the canvas got is a REFERENCE to that composition, never the terminal itself.
@@ -374,9 +417,27 @@ test("controller lease accepts input from a second connection of the same princi
         name: "same-principal-controller-agent",
       }),
     );
-    const owner = await mintToken(server, {
+    const owner = await mintTokenV2(server, {
       principal: { kind: "human", name: "Shared Controller", color: "#465da8" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const canvas = await connect(server, {
       containerId: canvasContainer.id,
@@ -390,9 +451,17 @@ test("controller lease accepts input from a second connection of the same princi
     });
     clients.push(homeClient);
 
-    const secondGrant = await mintToken(server, {
+    const secondGrant = await mintTokenV2(server, {
       principalId: owner.principal.id,
-      caps: ["containers:read", "terminals:write"],
+      scope: [
+        {
+          target: formatManifoldUri({ kind: "container", containerId: terminal.containerId }),
+          reach: "subtree",
+          caps: ["containers:read", "terminals:write"],
+        },
+      ],
+      containerId: terminal.containerId,
+      expiresAt: Date.now() + 600_000,
     });
     expect(secondGrant.principal.id).toBe(owner.principal.id);
     expect(secondGrant.token).not.toBe(owner.token);
@@ -447,9 +516,27 @@ test("nested exit preserves the shell; root failure retains the terminal for eve
       name: "exited-terminal-agent",
     });
     agents.push(agent);
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Exited Controller", color: "#854d9e" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const canvas = await connect(server, {
       containerId: container.id,
@@ -541,9 +628,27 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
     expect(firstAgent.machineId).toBe(firstEnrollment.machineId);
     expect(secondAgent.machineId).toBe(secondEnrollment.machineId);
 
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Machine Picker", color: "#287c69" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        ...[firstEnrollment, secondEnrollment].map(({ machineId }) => ({
+          target: formatManifoldUri({ kind: "machine", machineId }),
+          reach: "node" as const,
+          caps: ["machines:shell" as const],
+        })),
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, {
       containerId: container.id,
@@ -556,10 +661,7 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
       client,
       "error",
       5_000,
-      (message) =>
-        message.code === "no_machine" &&
-        message.ref === "el-ambiguous-machine" &&
-        message.message === "no unambiguous online machine",
+      (message) => message.code === "conflict" && message.ref === "el-ambiguous-machine",
     );
     const ambiguousOpen = client
       .openTerminal({
@@ -572,8 +674,9 @@ test("terminal_open rejects ambiguous machines and honors an explicit machineId"
         () => "opened" as const,
         () => "rejected" as const,
       );
-    expect((await ambiguousError).code).toBe("no_machine");
+    expect((await ambiguousError).code).toBe("conflict");
     expect(await ambiguousOpen).toBe("rejected");
+    expect(await listTerminals(server)).toEqual([]);
 
     const { terminal, homeClient: home } = await openTerminalAt(client, server, {
       elementId: "el-explicit-machine",
@@ -616,9 +719,27 @@ test("deleting the composition a terminal lives in kills its agent-owned PTY", a
       name: "delete-terminal-agent",
     });
     agents.push(agent);
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Container Deleter", color: "#a04b39" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, {
       containerId: container.id,
@@ -674,10 +795,22 @@ test("the Machines + on a view births a terminal the server places as a tile, an
     });
     agents.push(agent);
 
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Tile Opener", color: "#557799" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: formatManifoldUri({ kind: "container", containerId: view.id }),
+          reach: "subtree",
+          caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
       containerId: view.id,
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, { containerId: view.id, token: grant.token });
     clients.push(client);
@@ -690,8 +823,7 @@ test("the Machines + on a view births a terminal the server places as a tile, an
       elementId: "correlation-only",
       placement: "tile",
     });
-    const pendingId = await fitPendingTerminal(client, 117, 33);
-    const terminal = await opening;
+    const [terminal, pendingId] = await Promise.all([opening, fitPendingTerminal(client, 117, 33)]);
     expect(terminal).toMatchObject({ id: pendingId, cols: 117, rows: 33 });
     expect(terminal.status).toBe("running");
     expect(terminal.containerId).toBe(view.id);

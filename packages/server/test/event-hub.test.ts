@@ -9,7 +9,7 @@ import {
   ServerMessageSchema,
   formatManifoldUri,
   topicMatches,
-  type Cap,
+  type LegacyCap,
   type Container,
   type ManifoldRef,
   type ServerEvent,
@@ -172,7 +172,7 @@ async function planeFixture(
 }
 
 /** A minted token, so authority is exercised through real attenuation rather than a literal. */
-function context(fixture: PlaneFixture, caps: readonly Cap[], containerId?: string): string {
+function context(fixture: PlaneFixture, caps: readonly LegacyCap[], containerId?: string): string {
   const grant = fixture.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
@@ -356,6 +356,137 @@ describe("governed event disclosure", () => {
 });
 
 describe("event plane subscription authority", () => {
+  test("V2 scope, not a null legacy anchor, determines workspace inventory event eligibility", async () => {
+    const fixture = await planeFixture();
+    try {
+      const machine = formatManifoldUri({ kind: "machine", machineId: "account" });
+      const container = formatManifoldUri({ kind: "container", containerId: fixture.container.id });
+      const cases = [
+        {
+          id: "machine-only",
+          scope: [{ target: machine, reach: "node" as const, caps: ["machines:shell" as const] }],
+          eligible: false,
+        },
+        {
+          id: "composition-machine",
+          scope: [
+            { target: container, reach: "subtree" as const, caps: ["containers:read" as const] },
+            { target: machine, reach: "node" as const, caps: ["machines:shell" as const] },
+          ],
+          eligible: false,
+        },
+        {
+          id: "workspace-machine",
+          scope: [
+            {
+              target: "manifold://",
+              reach: "subtree" as const,
+              caps: ["containers:read" as const],
+            },
+            { target: machine, reach: "node" as const, caps: ["machines:shell" as const] },
+          ],
+          eligible: true,
+        },
+      ];
+      const sockets: { socket: FakeSocket; eligible: boolean }[] = [];
+      for (const item of cases) {
+        const credential = fixture.auth.mintTokenV2(
+          {
+            principal: { name: item.id, kind: "human" },
+            scope: item.scope,
+            expiresAt: fixture.runtime.now() + 120_000,
+          },
+          fixture.owner,
+        );
+        const actor = fixture.auth.authenticate(credential.token);
+        expect(actor.containerScope).toBeNull();
+        expect(fixture.events.workspaceEventsAvailable(actor)).toBe(item.eligible);
+        const socket = new FakeSocket();
+        fixture.gateway.open(item.id, socket);
+        fixture.gateway.message(
+          item.id,
+          JSON.stringify({
+            type: "observe",
+            token: credential.token,
+            protocolVersion: PROTOCOL_VERSION,
+          }),
+        );
+        socket.clear();
+        subscribe(fixture, item.id, [{ kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.machines }]);
+        sockets.push({ socket, eligible: item.eligible });
+      }
+      fixture.events.emitCollection(
+        "machines",
+        "machine_inventory_changed",
+        fixture.owner.principal.id,
+      );
+      for (const { socket, eligible } of sockets)
+        expect(eventsOn(socket).map((event) => event.kind)).toEqual(
+          eligible ? ["machine_inventory_changed"] : [],
+        );
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("accepted and refused interests receive the same ID-only ordering fence", async () => {
+    const fixture = await planeFixture();
+    try {
+      const owner = connect(fixture, "owner");
+      const scoped = connect(fixture, "scoped", {
+        token: context(fixture, ["containers:read"], fixture.container.id),
+      });
+      owner.clear();
+      scoped.clear();
+      for (const id of ["owner", "scoped"]) {
+        subscribe(fixture, id, [INDEX_TOPIC]);
+        fixture.gateway.message(id, JSON.stringify({ type: "sync_subscriptions", id: 17 }));
+      }
+      expect(fixture.events.held("owner")).toBe(1);
+      expect(fixture.events.held("scoped")).toBe(0);
+      expect(owner.sent).toEqual(scoped.sent);
+      expect(owner.frames()).toEqual([{ type: "subscriptions_synced", id: 17 }]);
+      await fixture.host.dispatch(fixture.owner, "core.index.createContainer", {
+        name: "after admission fence",
+      });
+      expect(eventsOn(owner).map((event) => event.kind)).toEqual(["container_created"]);
+      expect(eventsOn(scoped)).toEqual([]);
+      owner.clear();
+      unsubscribe(fixture, "owner", [INDEX_TOPIC]);
+      fixture.gateway.message("owner", JSON.stringify({ type: "sync_subscriptions", id: 18 }));
+      expect(owner.frames()).toEqual([{ type: "subscriptions_synced", id: 18 }]);
+      await fixture.host.dispatch(fixture.owner, "core.index.createContainer", {
+        name: "after release fence",
+      });
+      expect(eventsOn(owner)).toEqual([]);
+      expect(owner.closed).toBeNull();
+      expect(scoped.closed).toBeNull();
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("an ordering fence requires a surviving authenticated connection", async () => {
+    const fixture = await planeFixture();
+    try {
+      const cold = new FakeSocket();
+      fixture.gateway.open("cold", cold);
+      cold.clear();
+      fixture.gateway.message("cold", JSON.stringify({ type: "sync_subscriptions", id: 1 }));
+      expect(cold.frames()).toEqual([]);
+      expect(cold.closed).toEqual({ code: 4002, reason: "first frame must be join or observe" });
+      const live = connect(fixture, "live");
+      fixture.gateway.close("live");
+      fixture.gateway.message("live", JSON.stringify({ type: "sync_subscriptions", id: 2 }));
+      expect(live.frames()).toEqual([]);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("an owner subscribes to a container and hears it; the OTHER container stays silent", async () => {
     const fixture = await planeFixture();
     const socket = connect(fixture, "tab");

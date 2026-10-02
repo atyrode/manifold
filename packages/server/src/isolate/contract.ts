@@ -1,5 +1,5 @@
 import type { PluginLifecycle } from "@manifold/plugin";
-import type { PluginLifecycleState, PluginManifest } from "@manifold/protocol";
+import type { PluginBundle, PluginLifecycleState, PluginManifest } from "@manifold/protocol";
 import type { ServerPluginDef } from "../plugin-host.ts";
 
 /**
@@ -26,6 +26,8 @@ export interface InstalledPluginRef {
   readonly dir: string;
   /** The assembly-admitted stamp; absent only for a caller supplying a raw contract-1 guest. */
   readonly hardenedContract?: number;
+  /** Hash-pinned artifact metadata; never accepted from a dispatch result. */
+  readonly serverBinding?: PluginBundle["serverBinding"];
 }
 
 /**

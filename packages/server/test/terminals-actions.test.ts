@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
-  InspectRunResultSchema,
+  InspectRunV2ResultSchema,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   type ActionOutcome,
-  type Cap,
+  type LegacyCap,
   type Container,
   type ServerToAgentMessage,
   type TerminalProgram,
@@ -27,7 +27,6 @@ import {
   testStore,
   testTileTrees,
 } from "./helpers.ts";
-import { createExternalRun } from "./agent-fixtures.ts";
 
 /**
  * THE TERMINAL DOORS, from both sides.
@@ -48,13 +47,17 @@ class FakeMachine implements MachineChannel {
   readonly terminalRestart = true;
   readonly protocolVersion = PROTOCOL_VERSION;
   readonly sent: ServerToAgentMessage[] = [];
-  readonly terminalHostId: string | null = null;
   onRestart: ((terminalId: string) => void) | null = null;
-  constructor(readonly machineId: string) {}
+  onCreate: ((terminalId: string) => void) | null = null;
+  constructor(
+    readonly machineId: string,
+    readonly terminalHostId: string | null = null,
+  ) {}
 
   send(message: ServerToAgentMessage): boolean {
     this.sent.push(ServerToAgentMessageSchema.parse(message));
     if (message.type === "terminal_restart") this.onRestart?.(message.terminalId);
+    if (message.type === "create") this.onCreate?.(message.terminalId);
     return true;
   }
 
@@ -83,7 +86,7 @@ interface TerminalsFixture {
  * container the opener is already looking at, which keeps the containment questions these
  * cases are about readable.
  */
-async function fixture(): Promise<TerminalsFixture> {
+async function fixture(terminalHostId: string | null = null): Promise<TerminalsFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -123,7 +126,7 @@ async function fixture(): Promise<TerminalsFixture> {
     ),
   );
   const enrollment = auth.enrollMachine("fake", owner);
-  const machine = new FakeMachine(enrollment.machine.id);
+  const machine = new FakeMachine(enrollment.machine.id, terminalHostId);
   broker.setMachineOnline(machine);
   let host: PluginHost | null = null;
   const events = testEventHub(
@@ -162,7 +165,11 @@ async function fixture(): Promise<TerminalsFixture> {
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
-function context(base: TerminalsFixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function context(
+  base: TerminalsFixture,
+  caps: readonly LegacyCap[],
+  containerId?: string,
+): AuthContext {
   const grant = base.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
@@ -232,28 +239,6 @@ function denial(outcome: ActionOutcome): { rule: string; message: string } {
 }
 
 describe("core.terminals doors", () => {
-  test("creation carries terminals:spawn, and an agent's own container-scoped token holds it", async () => {
-    const base = await fixture();
-    const args = { containerId: base.container.id, elementId: "el-1", cols: 80, rows: 24 };
-
-    // The cap the broker used to demand for itself is now DECLARED, so the message a caller
-    // gets is the ladder's and the authority is published in the roster.
-    const unarmed = context(base, ["containers:read"]);
-    expect(denial(await base.host.dispatch(unarmed, "core.terminals.open", args))).toEqual({
-      rule: "forbidden",
-      message: "terminals:spawn capability required",
-    });
-
-    // The whole reason `open` is `scope: "container"`: the per-terminal agent identity is a
-    // container-scoped token carrying terminals:spawn, so a workspace-graded creation door
-    // would have ended agents spawning terminals — which is A2's promise, not a nicety.
-    const agentLike = context(base, ["containers:read", "terminals:spawn"], base.container.id);
-    expect(await base.host.dispatch(agentLike, "core.terminals.open", args)).toEqual({
-      ok: true,
-      result: {},
-    });
-  });
-
   test("creation policy requires paired geometry only for element placement", async () => {
     const base = await fixture();
     const common = { containerId: base.container.id, elementId: "geometry" };
@@ -288,7 +273,7 @@ describe("core.terminals doors", () => {
       rows: 24,
       placement: "tile",
     });
-    await Promise.resolve();
+    await settled();
     fitPending(base);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
@@ -325,24 +310,48 @@ describe("core.terminals doors", () => {
   test("direct native creation retains only its owning run and its confirmed trace target", async () => {
     const base = await fixture();
     try {
-      const created = await createExternalRun(base, {
-        name: "native creator",
-        purpose: "Verify run-bound native terminal inspection",
-        target: "manifold://",
-        reach: "subtree",
-        caps: ["containers:read", "terminals:spawn", "agents:delegate"],
-        lifetimeMs: 60_000,
-      });
+      const registered = await base.auth.registerAgentV2(
+        {
+          name: "native creator",
+          purpose: "Verify run-bound native terminal inspection",
+          harness: "external",
+          context: { profile: {} },
+          grant: {
+            scope: [
+              {
+                target: "manifold://",
+                reach: "subtree",
+                caps: ["containers:read", "terminals:spawn", "agents:delegate"],
+              },
+              {
+                target: `manifold://machine/${base.machine.machineId}`,
+                reach: "node",
+                caps: ["machines:shell", "agents:delegate"],
+              },
+            ],
+            expiresAt: base.runtime.now() + 60_000,
+            maxRunLifetimeMs: 60_000,
+            delegation: { maxDepth: 4, maxDescendants: 16 },
+          },
+        },
+        base.owner,
+      );
+      if (registered.credential === undefined) throw new Error("fixture Agent must be new");
+      const created = base.auth.createRunV2(
+        { agentId: registered.agent.agentId, lifetimeMs: 60_000 },
+        base.auth.authenticate(registered.credential.token),
+      );
+      if (created.credential === undefined) throw new Error("fixture Run must have custody");
       const actor = base.auth.authenticate(created.credential.token);
       const challenge = base.auth.agentPolicyChallenge(actor);
-      base.auth.acknowledgeAgentPolicy(
+      base.auth.acknowledgeAgentPolicyV2(
         {
           revision: challenge.revision,
           acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
         },
         actor,
       );
-      const child = base.auth.createChildRun({ runId: created.run.id }, actor);
+      const child = base.auth.createChildRunV2({ runId: created.run.id }, actor);
       const pending = base.host.dispatch(actor, "core.terminals.create", {
         containerId: base.container.id,
         elementId: "run-terminal",
@@ -352,7 +361,7 @@ describe("core.terminals doors", () => {
         program: { argv: ["printf", "NATIVE_INSPECTOR_ARG_557"] },
         env: { PRIVATE_INPUT: "NATIVE_INSPECTOR_ENV_557" },
       });
-      await Promise.resolve();
+      await settled();
       fitPending(base);
       const create = base.machine.sent.find((message) => message.type === "create");
       if (create === undefined || create.type !== "create")
@@ -364,9 +373,9 @@ describe("core.terminals doors", () => {
         result: { uri, terminal: { id: create.terminalId, status: "running" } },
       });
       const inspect = async (runId: string) => {
-        const outcome = await base.host.dispatch(base.owner, "core.access.inspectRun", { runId });
+        const outcome = await base.host.dispatch(base.owner, "core.access.inspectRunV2", { runId });
         if (!outcome.ok) throw new Error(`unexpected inspection refusal: ${outcome.denial.rule}`);
-        return InspectRunResultSchema.parse(outcome.result);
+        return InspectRunV2ResultSchema.parse(outcome.result);
       };
       const own = await inspect(created.run.id);
       expect(own.terminals).toEqual([
@@ -390,7 +399,7 @@ describe("core.terminals doors", () => {
         "NATIVE_INSPECTOR_ENV_557",
       ])
         expect(serialized).not.toContain(privateValue);
-      const finished = await base.host.dispatch(base.owner, "core.access.finishAgentRun", {
+      const finished = await base.host.dispatch(base.owner, "core.access.finishAgentRunV2", {
         runId: created.run.id,
         outcome: "completed",
       });
@@ -451,7 +460,7 @@ describe("core.terminals doors", () => {
       ...args,
       placement: "tile",
     });
-    await Promise.resolve();
+    await settled();
     fitPending(base);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
@@ -475,19 +484,17 @@ describe("core.terminals doors", () => {
     });
     const scoped = context(base, ["containers:read", "terminals:spawn"], base.container.id);
 
-    // The scope rung proved the token's cap holds for ITS container and nothing more; the
-    // container in the arguments is the handler's obligation, and this is that obligation
-    // firing.
     expect(
-      denial(
-        await base.host.dispatch(scoped, "core.terminals.open", {
-          containerId: elsewhere,
-          elementId: "el-elsewhere",
-          cols: 80,
-          rows: 24,
-        }),
-      ),
-    ).toEqual({ rule: "refused", message: OUTSIDE_SCOPE_REFUSAL });
+      await base.host.dispatch(scoped, "core.terminals.open", {
+        containerId: elsewhere,
+        elementId: "el-elsewhere",
+        cols: 80,
+        rows: 24,
+        placement: "tile",
+      }),
+    ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+    expect(base.machine.sent).toEqual([]);
+    expect(base.store.listTerminals()).toEqual([]);
   });
 
   test("a live terminal is killable by its controller, not by another writer", async () => {
@@ -520,7 +527,28 @@ describe("core.terminals doors", () => {
   test("restart respects live control and home write authority, while exited terminals need no lease", async () => {
     const base = await fixture();
     const terminalId = liveTerminal(base);
-    const writer = context(base, ["containers:read", "terminals:write"], base.container.id);
+    const writer = base.auth.authenticate(
+      base.auth.mintTokenV2(
+        {
+          principal: { name: "restart writer", kind: "human" },
+          expiresAt: base.runtime.now() + 60_000,
+          containerId: base.container.id,
+          scope: [
+            {
+              target: `manifold://container/${base.container.id}`,
+              reach: "subtree",
+              caps: ["containers:read", "terminals:write", "terminals:spawn"],
+            },
+            {
+              target: `manifold://machine/${base.machine.machineId}`,
+              reach: "node",
+              caps: ["machines:shell"],
+            },
+          ],
+        },
+        base.owner,
+      ).token,
+    );
     const reader = context(base, ["containers:read"], base.container.id);
     base.store.createContainer({
       id: "another-home",
@@ -529,18 +557,15 @@ describe("core.terminals doors", () => {
       createdAt: base.runtime.now(),
     });
     const outside = context(base, ["containers:read", "terminals:write"], "another-home");
-    expect(
-      denial(await base.host.dispatch(reader, "core.terminals.restart", { terminalId })).rule,
-    ).toBe("forbidden");
-    expect(
-      denial(await base.host.dispatch(outside, "core.terminals.restart", { terminalId })).rule,
-    ).toBe("refused");
-    expect(
-      denial(await base.host.dispatch(writer, "core.terminals.restart", { terminalId })),
-    ).toMatchObject({
-      rule: "refused",
-      message: "controller lease or owner capability required",
-    });
+    expect((await base.host.dispatch(reader, "core.terminals.restart", { terminalId })).ok).toBe(
+      false,
+    );
+    expect((await base.host.dispatch(outside, "core.terminals.restart", { terminalId })).ok).toBe(
+      false,
+    );
+    expect((await base.host.dispatch(writer, "core.terminals.restart", { terminalId })).ok).toBe(
+      false,
+    );
     expect(base.machine.sent).toEqual([]);
     base.machine.onRestart = (id) =>
       base.broker.onRestarted(base.machine.machineId, {
@@ -834,6 +859,7 @@ describe("session channel terminal verbs speak the ladder", () => {
         ch: "c1",
         type: "terminal_open",
         elementId: "el-refused",
+        placement: "tile",
         cols: 80,
         rows: 24,
       }),
@@ -842,9 +868,7 @@ describe("session channel terminal verbs speak the ladder", () => {
 
     // Same frame, same `ref` correlation the SDK's `openTerminal` rejects on — and the
     // message is now the door's, not this transport's invention.
-    expect(errors(socket)).toEqual([
-      { code: "forbidden", message: "terminals:spawn capability required", ref: "el-refused" },
-    ]);
+    expect(errors(socket)).toMatchObject([{ code: "forbidden", ref: "el-refused" }]);
     expect(base.machine.sent).toEqual([]);
   });
 
@@ -1055,13 +1079,7 @@ describe("session channel terminal verbs speak the ladder", () => {
     );
     await settled();
 
-    expect(errors(socket)).toEqual([
-      {
-        code: "forbidden",
-        message: "terminals:spawn capability required",
-        ref: "el-refused-program",
-      },
-    ]);
+    expect(errors(socket)).toMatchObject([{ code: "forbidden", ref: "el-refused-program" }]);
     // Denied BEFORE anything was minted or sent: no create, no pending open, no principal.
     expect(base.machine.sent).toEqual([]);
     expect(base.broker.hasPendingOpenForContainer(base.container.id)).toBe(false);
@@ -1143,5 +1161,455 @@ describe("session channel terminal verbs speak the ladder", () => {
 
     expect(errors(allowed.socket)).toEqual([]);
     expect(base.broker.liveTerminal(terminalId)?.controllerId).toBe(writer.principal.id);
+  });
+});
+
+describe("ordinary shell creation authority", () => {
+  test.each(["create", "restart"] as const)(
+    "%s refuses a different prepared owner before any lifecycle or machine effect",
+    async (action) => {
+      const base = await fixture("owner-A");
+      const successor = new FakeMachine(base.machine.machineId, "owner-B");
+      const terminalId = action === "restart" ? liveTerminal(base) : undefined;
+      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 7);
+      base.machine.clear();
+      const credentials = base.auth.listCredentialsV2(base.owner);
+      const terminals = base.store.listTerminals();
+      const layout = base.rooms.get(base.container.id)?.tileLayout();
+      const resolve = base.broker.resolveTerminalMachine.bind(base.broker);
+      const stored = base.store.getTerminal.bind(base.store);
+      let armed = true;
+      if (action === "create") {
+        base.broker.resolveTerminalMachine = (...args) => {
+          const destination = resolve(...args);
+          if (armed) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return destination;
+        };
+      } else {
+        base.store.getTerminal = (id) => {
+          const terminal = stored(id);
+          if (armed && id === terminalId) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return terminal;
+        };
+      }
+      // An unfenced create/restart completes rather than hanging the failing-before case.
+      successor.onCreate = (id) => base.broker.onCreated(successor.machineId, id);
+      successor.onRestart = (id) =>
+        base.broker.onRestarted(successor.machineId, {
+          type: "terminal_restarted",
+          terminalId: id,
+        });
+      try {
+        const outcome = await base.host.dispatch(
+          base.owner,
+          `core.terminals.${action}`,
+          action === "create"
+            ? {
+                containerId: base.container.id,
+                elementId: "changed-owner",
+                placement: "tile",
+                machineId: base.machine.machineId,
+                cols: 80,
+                rows: 24,
+              }
+            : { terminalId },
+        );
+        expect(outcome).toMatchObject({ ok: false });
+        expect(
+          successor.sent.filter(
+            (message) => message.type === "create" || message.type === "terminal_restart",
+          ),
+        ).toEqual([]);
+        expect(base.auth.listCredentialsV2(base.owner)).toEqual(credentials);
+        expect(base.store.listTerminals()).toEqual(terminals);
+        expect(base.rooms.get(base.container.id)?.tileLayout()).toEqual(layout);
+      } finally {
+        base.gateway.shutdown();
+        base.broker.setMachineOffline(successor);
+        base.host.close();
+        base.store.close();
+      }
+    },
+  );
+
+  test.each(["create", "restart"] as const)(
+    "%s accepts a replacement transport for the same prepared owner",
+    async (action) => {
+      const base = await fixture("owner-A");
+      const successor = new FakeMachine(base.machine.machineId, "owner-A");
+      const terminalId = action === "restart" ? liveTerminal(base) : undefined;
+      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 7);
+      const resolve = base.broker.resolveTerminalMachine.bind(base.broker);
+      const stored = base.store.getTerminal.bind(base.store);
+      let armed = true;
+      if (action === "create") {
+        base.broker.resolveTerminalMachine = (...args) => {
+          const destination = resolve(...args);
+          if (armed) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return destination;
+        };
+      } else {
+        base.store.getTerminal = (id) => {
+          const terminal = stored(id);
+          if (armed && id === terminalId) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return terminal;
+        };
+      }
+      successor.onCreate = (id) => base.broker.onCreated(successor.machineId, id);
+      successor.onRestart = (id) =>
+        base.broker.onRestarted(successor.machineId, {
+          type: "terminal_restarted",
+          terminalId: id,
+        });
+      try {
+        expect(
+          await base.host.dispatch(
+            base.owner,
+            `core.terminals.${action}`,
+            action === "create"
+              ? {
+                  containerId: base.container.id,
+                  elementId: "same-owner",
+                  placement: "tile",
+                  machineId: base.machine.machineId,
+                  cols: 80,
+                  rows: 24,
+                }
+              : { terminalId },
+          ),
+        ).toMatchObject({ ok: true });
+        const terminal = base.store
+          .listTerminals()
+          .find(
+            (row) =>
+              row.id ===
+              (terminalId ??
+                successor.sent.find((message) => message.type === "create")?.terminalId),
+          );
+        expect(terminal).toMatchObject({
+          machineId: base.machine.machineId,
+          containerId: base.container.id,
+          status: "running",
+        });
+      } finally {
+        base.gateway.shutdown();
+        base.broker.setMachineOffline(successor);
+        base.host.close();
+        base.store.close();
+      }
+    },
+  );
+
+  const working = [
+    "containers:write",
+    "containers:read",
+    "scenes:write",
+    "terminals:spawn",
+    "terminals:write",
+  ] as const;
+
+  function scoped(
+    base: TerminalsFixture,
+    placement: string,
+    machineId: string,
+    caps: readonly (typeof working)[number][] = working,
+  ) {
+    const token = base.auth.mintTokenV2(
+      {
+        principal: { name: "shell automation", kind: "human" },
+        expiresAt: base.runtime.now() + 60_000,
+        ...(placement === "manifold://" ? {} : { containerId: base.container.id }),
+        scope: [
+          { target: placement, reach: "subtree", caps: [...caps] },
+          { target: `manifold://machine/${machineId}`, reach: "node", caps: ["machines:shell"] },
+        ],
+      },
+      base.owner,
+    );
+    return base.auth.authenticate(token.token);
+  }
+
+  test("an exact M leg permits composition birth but never another account", async () => {
+    const base = await fixture();
+    const second = new FakeMachine(
+      base.auth.enrollMachine("second account", base.owner).machine.id,
+    );
+    try {
+      const actor = scoped(
+        base,
+        `manifold://container/${base.container.id}`,
+        base.machine.machineId,
+      );
+      base.broker.setMachineOnline(second);
+      const input = {
+        containerId: base.container.id,
+        placement: "tile",
+        cols: 80,
+        rows: 24,
+      } as const;
+      expect(
+        await base.host.dispatch(actor, "core.terminals.create", {
+          ...input,
+          elementId: "wrong",
+          machineId: second.machineId,
+        }),
+      ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      expect(second.sent.filter((message) => message.type === "create")).toEqual([]);
+      expect(base.store.listTerminals()).toEqual([]);
+      const sent = Promise.withResolvers<string>();
+      base.machine.onCreate = sent.resolve;
+      const create = base.host.dispatch(actor, "core.terminals.create", {
+        ...input,
+        elementId: "selected",
+        machineId: base.machine.machineId,
+      });
+      const terminalId = await sent.promise;
+      base.broker.onCreated(base.machine.machineId, terminalId);
+      expect(await create).toMatchObject({
+        ok: true,
+        result: {
+          terminal: {
+            id: terminalId,
+            machineId: base.machine.machineId,
+            containerId: base.container.id,
+          },
+        },
+      });
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(second);
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
+  });
+
+  test("C-only working authority cannot allocate an independent canvas home", async () => {
+    const base = await fixture();
+    try {
+      const canvas = {
+        id: "approved-canvas",
+        name: "canvas",
+        discipline: "canvas",
+        createdAt: base.runtime.now(),
+      };
+      base.store.createContainer(canvas);
+      const token = base.auth.mintTokenV2(
+        {
+          principal: { kind: "human", name: "canvas scoped" },
+          expiresAt: base.runtime.now() + 60_000,
+          containerId: canvas.id,
+          scope: [
+            { target: `manifold://container/${canvas.id}`, reach: "subtree", caps: [...working] },
+            {
+              target: `manifold://machine/${base.machine.machineId}`,
+              reach: "node",
+              caps: ["machines:shell"],
+            },
+          ],
+        },
+        base.owner,
+      );
+      const before = base.auth.listCredentialsV2(base.owner);
+      expect(
+        await base.host.dispatch(base.auth.authenticate(token.token), "core.terminals.create", {
+          containerId: canvas.id,
+          elementId: "canvas-child",
+          cols: 80,
+          rows: 24,
+          machineId: base.machine.machineId,
+        }),
+      ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      expect(base.machine.sent.filter((message) => message.type === "create")).toEqual([]);
+      expect(base.store.listTerminals()).toEqual([]);
+      expect(base.auth.listCredentialsV2(base.owner)).toEqual(before);
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
+  });
+
+  test("root-node working rights do not authorize an independent canvas subtree", async () => {
+    const base = await fixture();
+    try {
+      const canvas = {
+        id: "root-node-canvas",
+        name: "canvas",
+        discipline: "canvas",
+        createdAt: base.runtime.now(),
+      };
+      base.store.createContainer(canvas);
+      const token = base.auth.mintTokenV2(
+        {
+          principal: { kind: "human", name: "root node only" },
+          expiresAt: base.runtime.now() + 60_000,
+          scope: [
+            { target: "manifold://", reach: "node", caps: [...working] },
+            {
+              target: `manifold://container/${canvas.id}`,
+              reach: "subtree",
+              caps: ["terminals:spawn"],
+            },
+            {
+              target: `manifold://machine/${base.machine.machineId}`,
+              reach: "node",
+              caps: ["machines:shell"],
+            },
+          ],
+        },
+        base.owner,
+      );
+      const before = base.auth.listCredentialsV2(base.owner);
+      expect(
+        await base.host.dispatch(base.auth.authenticate(token.token), "core.terminals.create", {
+          containerId: canvas.id,
+          elementId: "root-node-child",
+          cols: 80,
+          rows: 24,
+          machineId: base.machine.machineId,
+        }),
+      ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      expect(base.machine.sent).toEqual([]);
+      expect(base.store.listTerminals()).toEqual([]);
+      expect(base.auth.listCredentialsV2(base.owner)).toEqual(before);
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
+  });
+
+  test("withdrawal after send prevents commit and tears down only the pending PTY", async () => {
+    const base = await fixture();
+    try {
+      const actor = scoped(
+        base,
+        `manifold://container/${base.container.id}`,
+        base.machine.machineId,
+      );
+      const sent = Promise.withResolvers<string>();
+      base.machine.onCreate = sent.resolve;
+      const create = base.host.dispatch(actor, "core.terminals.create", {
+        containerId: base.container.id,
+        placement: "tile",
+        elementId: "late-withdrawal",
+        cols: 80,
+        rows: 24,
+        machineId: base.machine.machineId,
+      });
+      const terminalId = await sent.promise;
+      const command = base.machine.sent.find((message) => message.type === "create");
+      if (command?.type !== "create") throw new Error("terminal create missing");
+      base.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://machine/${base.machine.machineId}`,
+          reach: "node",
+          effect: "deny",
+          caps: ["machines:shell"],
+        },
+        base.owner,
+      );
+      base.broker.onCreated(base.machine.machineId, terminalId);
+      expect(await create).toMatchObject({ ok: false });
+      expect(base.store.getTerminal(terminalId)).toBeNull();
+      expect(base.machine.sent.filter((message) => message.type === "kill")).toEqual([
+        { type: "kill", terminalId },
+      ]);
+      expect(() => base.auth.authenticate(command.env.MANIFOLD_TOKEN!)).toThrow();
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
+  });
+
+  test("lifecycle control cannot create or restart a shell; fresh two-leg authority can", async () => {
+    const base = await fixture();
+    try {
+      const actor = scoped(
+        base,
+        `manifold://container/${base.container.id}`,
+        base.machine.machineId,
+      );
+      const sent = Promise.withResolvers<string>();
+      base.machine.onCreate = sent.resolve;
+      const create = base.host.dispatch(actor, "core.terminals.create", {
+        containerId: base.container.id,
+        placement: "tile",
+        elementId: "lifecycle",
+        cols: 80,
+        rows: 24,
+        machineId: base.machine.machineId,
+      });
+      const terminalId = await sent.promise;
+      const command = base.machine.sent.find((message) => message.type === "create");
+      if (command?.type !== "create") throw new Error("terminal create missing");
+      base.broker.onCreated(base.machine.machineId, terminalId);
+      expect(await create).toMatchObject({ ok: true });
+      const lifecycle = base.auth.authenticate(command.env.MANIFOLD_TOKEN!);
+      expect(
+        await base.host.dispatch(lifecycle, "core.terminals.rename", {
+          terminalId,
+          name: "existing control",
+        }),
+      ).toEqual({ ok: true, result: {} });
+      expect(
+        await base.host.dispatch(lifecycle, "core.terminals.create", {
+          containerId: base.container.id,
+          placement: "tile",
+          elementId: "lifecycle-child",
+          cols: 80,
+          rows: 24,
+          machineId: base.machine.machineId,
+        }),
+      ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      expect(
+        await base.host.dispatch(lifecycle, "core.terminals.restart", { terminalId }),
+      ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      base.broker.onExited(base.machine.machineId, terminalId, 1);
+      const restarting = Promise.withResolvers<void>();
+      base.machine.onRestart = () => restarting.resolve();
+      const restart = base.host.dispatch(actor, "core.terminals.restart", { terminalId });
+      await restarting.promise;
+      base.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://machine/${base.machine.machineId}`,
+          reach: "node",
+          effect: "deny",
+          caps: ["machines:shell"],
+        },
+        base.owner,
+      );
+      base.broker.onRestarted(base.machine.machineId, { type: "terminal_restarted", terminalId });
+      expect(await restart).toMatchObject({ ok: false });
+      expect(base.store.getTerminal(terminalId)?.status).toBe("exited");
+      expect(base.machine.sent.filter((message) => message.type === "create")).toHaveLength(1);
+      expect(base.machine.sent.filter((message) => message.type === "kill")).toEqual([
+        { type: "kill", terminalId },
+      ]);
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
   });
 });

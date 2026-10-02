@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { MAX_DOC_UPDATE_BYTES, PROTOCOL_VERSION, type ServerMessage } from "@manifold/protocol";
+import {
+  MAX_DOC_UPDATE_BYTES,
+  PROTOCOL_VERSION,
+  formatManifoldUri,
+  type ServerMessage,
+} from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   Y,
@@ -14,6 +19,7 @@ import {
   createContainer,
   enrollMachine,
   mintToken,
+  mintTokenV2,
   startServer,
   waitFor,
   type TestServer,
@@ -224,9 +230,27 @@ test("a reused machine token fences the old socket before routing later commands
     const container = await createContainer(server, "machine fence");
     // Workspace-scoped: killing the terminal is a message to the composition it lives in,
     // and that composition's id is minted by the server as the PTY lands.
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Machine Fence User", color: "#4777b8" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, {
       containerId: container.id,
@@ -234,20 +258,23 @@ test("a reused machine token fences the old socket before routing later commands
       reconnect: false,
     });
     clients.push(client);
-    const opening = client.openTerminal({
-      elementId: "el-fenced-machine",
-      cols: 80,
-      rows: 24,
-      machineId: enrolled.machineId,
-    });
-    const create = await waitFor(
-      () => second.frames.find((frame) => frame.type === "create"),
-      5_000,
-      20,
-    );
-    if (create.type !== "create") throw new Error("active machine did not receive create");
-    second.send({ type: "created", terminalId: create.terminalId });
-    const terminal = await opening;
+    const [terminal] = await Promise.all([
+      client.openTerminal({
+        elementId: "el-fenced-machine",
+        cols: 80,
+        rows: 24,
+        machineId: enrolled.machineId,
+      }),
+      (async () => {
+        const create = await waitFor(
+          () => second.frames.find((frame) => frame.type === "create"),
+          5_000,
+          20,
+        );
+        if (create.type !== "create") throw new Error("active machine did not receive create");
+        second.send({ type: "created", terminalId: create.terminalId });
+      })(),
+    ]);
     expect(terminal.machineId).toBe(enrolled.machineId);
     expect(first.frames).toHaveLength(firstFrameCount);
 

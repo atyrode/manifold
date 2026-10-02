@@ -142,6 +142,7 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
           data-action={node.action}
           icon={node.icon}
           iconOnly={node.iconOnly}
+          expanded={node.expanded}
           {...metaOf(node)}
           onClick={() => onEvent(node.event, node.payload)}
           onBlur={blurOf(node.blurEvent, onEvent)}
@@ -169,6 +170,7 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
           placeholder={node.placeholder}
           mono={node.mono}
           disabled={node.disabled}
+          readOnly={node.readOnly}
           {...metaOf(node)}
           onChange={(value) => onEvent(node.event, value)}
           onBlur={blurOf(node.blurEvent, onEvent)}

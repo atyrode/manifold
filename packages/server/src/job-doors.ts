@@ -43,6 +43,7 @@ import { z } from "zod";
 import { ServiceError, type AuthContext } from "./auth.ts";
 import type { ActionCtx, ServerPluginDef } from "./plugin-host.ts";
 import type { JobService } from "./job-service.ts";
+import type { ActionAuthorityFence } from "./action-authority-fence.ts";
 
 const id = z.string().min(1).max(256);
 const jobNode = ManifoldRefSchema.options[10];
@@ -154,6 +155,7 @@ export function jobContext(
   pluginId: string,
   traceId: number | string,
   beforeEffect?: () => void,
+  authorityFence?: ActionAuthorityFence,
 ): JobContext {
   const callee = (requested?: string): string =>
     pluginId === "engine.jobs" ? id.parse(requested) : pluginId;
@@ -193,6 +195,7 @@ export function jobContext(
           String(traceId),
           (pluginId === "engine.jobs" ? execute : nativeExecute).parse(request),
           beforeEffect,
+          authorityFence,
         ),
       );
     },
@@ -228,7 +231,9 @@ export function jobContext(
         a.eof,
         pluginId,
         String(traceId),
+        authorityFence,
       );
+      authorityFence?.checkCurrent();
       return { accepted: true as const };
     },
     cancel: (node: z.infer<typeof jobNode>) => {
@@ -272,6 +277,7 @@ export function jobContext(
         schedule.parse(request),
         pluginId,
         beforeEffect,
+        authorityFence,
       );
       return {};
     },
@@ -279,14 +285,16 @@ export function jobContext(
       service()
         .schedules(auth, pluginId)
         // The carried container authority is the hub's, never a schedule fact (ADR 0051).
-        .map(({ request, containerGrants: _carried, ...metadata }) => ({
-          ...metadata,
-          machineId: request.machineId,
-          pluginId: request.pluginId,
-          operationId: request.operationId,
-          installationRevision: request.installationRevision,
-          artifactSha256: request.artifactSha256,
-        })),
+        .map(
+          ({ request, containerGrants: _carried, authoritySnapshot: _snapshot, ...metadata }) => ({
+            ...metadata,
+            machineId: request.machineId,
+            pluginId: request.pluginId,
+            operationId: request.operationId,
+            installationRevision: request.installationRevision,
+            artifactSha256: request.artifactSha256,
+          }),
+        ),
     disableSchedule: (args: z.infer<typeof schemas.disableSchedule>) => {
       const a = schemas.disableSchedule.parse(args);
       service().disableSchedule(auth, a.scheduleId, a.revision, pluginId);

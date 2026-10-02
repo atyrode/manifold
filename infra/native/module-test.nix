@@ -1,4 +1,5 @@
-{ self, pkgs }:
+{ self, pkgs, role }:
+assert builtins.elem role [ "shellonly" "coexist" "machine" "credential" "anchors" ];
 let
   # Generate fixtures through the real packer: hand-built unstamped bundles must stay held.
   packFixture = pkgs.runCommand "manifold-native-profile-packer" {
@@ -10,11 +11,228 @@ let
     cp -R ${self.packages.${pkgs.stdenv.hostPlatform.system}.bun-deps}/. .
     mkdir -p "$out/bin"
     bun build --compile packages/plugin-kit/src/pack.ts --outfile "$out/bin/manifold-pack"
+    cp ${shellClientSource} shell-client.ts
+    bun build --compile shell-client.ts --outfile "$out/bin/manifold-shell-client"
   '';
   platform = "linux-${if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64"}";
   closureMessage = pkgs.writeText "native-runtime-message" "native-module:closures\n";
   closureReader = pkgs.writeShellScriptBin "closure-reader" ''
     exec ${pkgs.gitMinimal}/bin/git hash-object --stdin < ${closureMessage}
+  '';
+  shellHome = "/home/account shell";
+  shellState = "/srv/account shell/owner/state";
+  shellToken = "/srv/account shell/credentials/private/token";
+  shellSocket = "${shellState}/terminal-host/host.sock";
+  shellOperatorAnchor = "/srv/shell-fixture/operator-anchor";
+  shellProfile = pkgs.writeShellScriptBin "user-profile-only" ''
+    printf 'user-profile:%s\n' "$USER"
+  '';
+  # Runtime-tool custody opens the declared file without following links. Preserve that
+  # boundary even though the Nix package's public python3 entry is a versioned symlink.
+  nativePython = pkgs.runCommand "manifold-shell-native-python" { } ''
+    mkdir -p "$out/bin"
+    cp --dereference ${pkgs.python3}/bin/python3 "$out/bin/python3"
+  '';
+  wrapperSource = pkgs.writeText "shell-authority-probe.c" ''
+    #include <stdio.h>
+    #include <unistd.h>
+    int main(void) {
+      FILE *file = fopen("/srv/shell-fixture/wrapper-private", "r");
+      if (file == NULL || getuid() != 1400 || geteuid() != 0) return 71;
+      char value[64];
+      if (fgets(value, sizeof(value), file) == NULL) return 72;
+      fclose(file);
+      printf("wrapper:%s", value);
+      return 0;
+    }
+  '';
+  wrapperProbe = pkgs.runCommand "shell-authority-probe" {
+    nativeBuildInputs = [ pkgs.stdenv.cc ];
+  } ''
+    mkdir -p "$out/bin"
+    cc -O2 -Wall -Werror ${wrapperSource} -o "$out/bin/shell-authority-probe"
+  '';
+  # Compile against the same public SDK as the packaged hub. No private owner protocol,
+  # fake PTY or source-text assertions substitute for the account's actual shell output.
+  shellClientSource = pkgs.writeText "manifold-shell-client.ts" ''
+    import { SessionClient } from "@manifold/sdk";
+    import {
+      ActionOutcomeSchema, ContainerResponseSchema, MachinesResponseSchema, TerminalsResponseSchema,
+    } from "@manifold/protocol";
+    import { z } from "zod";
+
+    const hub = process.env.SHELL_FIXTURE_HUB ?? "http://127.0.0.1:7777";
+    const key = (await Bun.file(process.env.SHELL_FIXTURE_KEY_FILE!).text()).trim();
+    const mode = process.argv[2];
+    const statePath = "/run/shell-fixture/session.json";
+    const StateSchema = z.strictObject({
+      machineId: z.string().min(1),
+      terminalId: z.string().min(1),
+      homeId: z.string().min(1),
+      terminalHostId: z.string().min(1),
+      shellPid: z.string().regex(/^\d+$/).optional(),
+    });
+    function require(condition: unknown, message: string): asserts condition {
+      if (!condition) throw new Error(message);
+    }
+    async function action(name: string, args: unknown): Promise<unknown> {
+      const response = await fetch(hub + "/api/actions/" + name, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      });
+      const outcome = ActionOutcomeSchema.parse(await response.json());
+      if (!outcome.ok) throw new Error(name + " refused: " + JSON.stringify(outcome.denial));
+      return outcome.result;
+    }
+    async function waitFor(predicate: () => boolean | Promise<boolean>, message: string) {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        if (await predicate()) return;
+        await Bun.sleep(50);
+      }
+      throw new Error(message);
+    }
+    async function connect(containerId: string) {
+      const url = new URL("/ws/session", hub);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      const client = new SessionClient({ url: url.toString(), containerId, token: key, reconnect: false });
+      await client.connect();
+      return client;
+    }
+    const machines = MachinesResponseSchema.parse(await action("core.machines.list", {})).machines;
+    const machine = machines.find((entry) => entry.name === "account-shell");
+    require(machine?.online && machine.terminalExecution === "unconfined", "ordinary account not admitted");
+    if (mode === "ready") {
+      console.log(JSON.stringify({ machineId: machine.id }));
+    } else if (mode === "governed-ready") {
+      const governed = machines.find((entry) => entry.terminalExecution === "governed");
+      require(governed?.online, "native owner not admitted alongside ordinary account");
+      console.log(JSON.stringify({ machineId: governed.id }));
+    } else if (mode === "governed-refusal") {
+      const governed = machines.find((entry) => entry.terminalExecution === "governed");
+      require(governed?.online, "native owner not admitted alongside ordinary account");
+      const container = ContainerResponseSchema.parse(await action("core.index.createContainer", {
+        name: "governed runtime refusal", discipline: "composition",
+      })).container;
+      const client = await connect(container.id);
+      try {
+        let refused = false;
+        try {
+          await client.openTerminal({
+            elementId: crypto.randomUUID(), machineId: governed.id, placement: "tile", cols: 80, rows: 24,
+          });
+        } catch (error) {
+          refused = error instanceof Error && error.message.includes("requires a declared terminal runtime");
+        }
+        require(refused, "governed endpoint accepted ordinary runtime-free birth or refused for another reason");
+        const terminals = TerminalsResponseSchema.parse(await action("core.terminals.listAll", {})).terminals;
+        require(!terminals.some((entry) => entry.machineId === governed.id), "refused birth allocated a native terminal");
+      } finally {
+        client.close();
+      }
+    } else {
+      let state: z.infer<typeof StateSchema>;
+      if (mode === "create") {
+        const container = ContainerResponseSchema.parse(await action("core.index.createContainer", {
+          name: "ordinary account continuity", discipline: "composition",
+        })).container;
+        const opener = await connect(container.id);
+        try {
+          const terminal = await opener.openTerminal({
+            elementId: crypto.randomUUID(), machineId: machine.id, placement: "tile", cols: 120, rows: 30,
+          });
+          const owner = await opener.drainMachine(machine.id, false);
+          require(owner.ok, "ordinary owner status refused");
+          require(owner.result.terminalIds.includes(terminal.id), "owner failed to retain new PTY");
+          state = { machineId: machine.id, terminalId: terminal.id, homeId: terminal.containerId,
+            terminalHostId: owner.result.terminalHostId };
+        } finally {
+          opener.close();
+        }
+      } else {
+        state = StateSchema.parse(await Bun.file(statePath).json());
+        require(state.machineId === machine.id, "transport rebound to another endpoint");
+      }
+      const client = await connect(state.homeId);
+      try {
+        const terminal = client.terminals.get(state.terminalId);
+        require(terminal?.status === "running", "retained terminal is no longer running");
+        let snapshot = false;
+        let text = "";
+        client.on("terminal_snapshot", (message) => {
+          if (message.terminalId !== state.terminalId) return;
+          text = Buffer.from(message.data, "base64").toString();
+          snapshot = true;
+        });
+        client.on("terminal_output", (message) => {
+          if (message.terminalId === state.terminalId) text += Buffer.from(message.data, "base64").toString();
+        });
+        client.attachTerminal(state.terminalId);
+        await waitFor(() => snapshot, "retained PTY snapshot missing");
+        client.takeTerminal(state.terminalId);
+        await waitFor(() => client.terminals.get(state.terminalId)?.controllerId === client.self?.id,
+          "terminal control not granted");
+        await waitFor(() => text.includes("SHELL_FIXTURE_READY> "),
+          "account shell did not finish its normal startup");
+        if (mode === "exit") {
+          client.sendTerminalInput(state.terminalId, "exit\n");
+          await waitFor(() => !client.terminals.has(state.terminalId) ||
+            client.terminals.get(state.terminalId)?.status === "exited", "PTY failed to exit");
+        } else {
+          const nonce = crypto.randomUUID();
+          // The complete marker is not present in the echoed input: only executed output
+          // can satisfy this match, including after owner/transport reconnection.
+          const marker = "ACCOUNT_" + nonce + ":";
+          client.sendTerminalInput(state.terminalId,
+            "printf 'ACCOUNT_%s:%s:%s:%s:%s:%s:%s:%s:%s:%s\\n' " +
+            "'" + nonce + "' \"$" + "$\" \"$(id -un)\" \"$HOME\" \"$SHELL\" \"$PWD\" " +
+            "\"$(id -gn)\" \"$(cat /srv/shell-fixture/group/readable)\" " +
+            "\"$(home-profile-only)\" \"$(user-profile-only)\"; " +
+            "authority=\"$(shell-authority-probe)\"; authority_status=$?; " +
+            "printf 'AUTHORITY_%s:%s\\n' '" + nonce + "' \"$authority\"; " +
+            "printf 'AUTHORITY_STATUS_%s:%s\\n' '" + nonce + "' \"$authority_status\"; " +
+            "printf '%s\\n' home-write > \"$HOME/shell-created\"\n");
+          try {
+            await waitFor(() => text.includes(marker) &&
+              text.includes("AUTHORITY_" + nonce + ":wrapper:wrapper-authority"),
+              "account authority or wrapper/profile command output missing");
+          } catch (error) {
+            // Report fixture observations, never raw PTY bytes or credential material.
+            const statusMarker = "AUTHORITY_STATUS_" + nonce + ":";
+            const statusOffset = text.indexOf(statusMarker);
+            const status = statusOffset < 0 ? null :
+              Number.parseInt(text.slice(statusOffset + statusMarker.length), 10);
+            throw new Error(JSON.stringify({
+              accountOutput: text.includes(marker),
+              authorityOutput: text.includes("AUTHORITY_" + nonce + ":"),
+              authorityStatus: Number.isFinite(status) ? status : null,
+              commandsUnavailable: [...text.matchAll(/command not found: ([a-z][a-z0-9-]*)/g)]
+                .map((match) => match[1]).slice(0, 4),
+              wrongProfileWrapper: text.includes("wrong-profile-wrapper"),
+              homeProfileUnavailable: text.includes("command not found: home-profile-only"),
+              userProfileUnavailable: text.includes("command not found: user-profile-only"),
+            }), { cause: error });
+          }
+          const line = text.slice(text.indexOf(marker) + marker.length).split(/\r?\n/)[0]!;
+          const fields = line.split(":");
+          require(/^\d+$/.test(fields[0]!), "shell did not report its own PID");
+          require(fields.slice(1).join(":") ===
+            "account-shell:${shellHome}:/run/current-system/sw/bin/zsh:${shellHome}:shell-primary:group-access:home-profile:account-shell:user-profile:account-shell",
+            "account home, login shell, primary/supplementary groups or profile authority changed");
+          if (state.shellPid !== undefined) require(state.shellPid === fields[0], "PTY process replaced across reconnect");
+          state.shellPid = fields[0];
+          const owner = await client.drainMachine(machine.id, false);
+          require(owner.ok && owner.result.terminalHostId === state.terminalHostId &&
+            owner.result.terminalIds.includes(state.terminalId), "owner identity changed across reconnect");
+          await Bun.write(statePath, JSON.stringify(state));
+          console.log(JSON.stringify({ machineId: state.machineId, terminalId: state.terminalId,
+            terminalHostId: state.terminalHostId, shellPid: state.shellPid }));
+        }
+      } finally {
+        client.close();
+      }
+    }
   '';
   inspect = pkgs.writeText "manifold-native-profile-inspect.py" ''
     import base64
@@ -304,6 +522,180 @@ let
   '';
   inspectCommand = "${pkgs.python3}/bin/python3 ${inspect}";
   maintenanceCommand = "${self.packages.${pkgs.stdenv.hostPlatform.system}.manifold-agent}/bin/manifold-agent --maintenance";
+  shellFixture = pkgs.writeText "manifold-shell-fixture.py" ''
+    import base64
+    import errno
+    import hashlib
+    import json
+    import os
+    import pwd
+    import socket
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from urllib.request import Request, urlopen
+
+    hub = os.environ.get("SHELL_FIXTURE_HUB", "http://127.0.0.1:7777")
+    key_file = Path(os.environ["SHELL_FIXTURE_KEY_FILE"])
+
+    def action(name, args):
+        request = Request(
+            hub + "/api/actions/" + name, data=json.dumps(args).encode(),
+            headers={"Authorization": "Bearer " + key_file.read_text().strip(), "Content-Type": "application/json"},
+        )
+        with urlopen(request, timeout=120) as response:
+            outcome = json.load(response)
+        assert outcome["ok"], outcome.get("denial")
+        return outcome["result"]
+
+    if sys.argv[1] == "enroll":
+        deadline = time.monotonic() + 180
+        while True:
+            try:
+                enrolled = action("core.machines.enroll", {"name": "account-shell"})
+                break
+            except (OSError, ValueError):
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.2)
+        # This is the one-time traced action handoff on a disposable fixture. Never emit
+        # the bearer, copy an incumbent token or retry enrollment by rotating credentials.
+        token = enrolled.get("machineToken")
+        assert isinstance(token, str) and token, "fresh fixture enrollment did not return a one-time credential"
+        account = pwd.getpwnam("account-shell")
+        parent = Path("${shellToken}").parent
+        # The disposable root enrollment service has a private umask. Its public
+        # credentials ancestor must remain traversable; only the account-owned leaf
+        # carries token custody.
+        parent.parent.mkdir(parents=True, exist_ok=True)
+        os.chown(parent.parent, 0, 0)
+        parent.parent.chmod(0o755)
+        parent.mkdir(parents=True, exist_ok=True)
+        os.chown(parent, account.pw_uid, account.pw_gid)
+        parent.chmod(0o700)
+        with os.fdopen(os.open("${shellToken}", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
+            output.write(token + "\n")
+        os.chown("${shellToken}", account.pw_uid, account.pw_gid)
+    elif sys.argv[1] in ("owner-environment", "transport-environment"):
+        # Inspect keys without ever displaying environment values or private credential
+        # bytes, even when a broken implementation accidentally adds secret configuration.
+        raw = Path("/proc/" + sys.argv[2] + "/environ").read_bytes()
+        environment = dict(entry.split(b"=", 1) for entry in raw.split(b"\0") if b"=" in entry)
+        keys = {key.decode() for key in environment if key.startswith(b"MANIFOLD_")}
+        allowed = {"MANIFOLD_BUILD", "MANIFOLD_VERSION", "MANIFOLD_TERMINAL_HOST_SOCKET"}
+        if sys.argv[1] == "transport-environment":
+            allowed |= {"MANIFOLD_SERVER_URL", "MANIFOLD_MACHINE_NAME", "MANIFOLD_MACHINE_TOKEN_FILE"}
+            assert environment.get(b"MANIFOLD_SERVER_URL") == hub.encode(), "transport lost its explicit origin"
+            assert environment.get(b"MANIFOLD_MACHINE_NAME") == b"account-shell", "transport lost its explicit enrollment"
+            assert environment.get(b"MANIFOLD_MACHINE_TOKEN_FILE") == b"${shellToken}", "transport lost file-based custody"
+        assert keys <= allowed, sorted(keys - allowed)
+        assert environment.get(b"MANIFOLD_TERMINAL_HOST_SOCKET") == b"${shellSocket}", "wrong account socket"
+    elif sys.argv[1] == "host-custody":
+        # NSS separation also denies access outside bubblewrap, not only by absent mounts.
+        for operation in ("token", "socket"):
+            try:
+                if operation == "token":
+                    with open("${shellToken}", "rb") as token:
+                        token.read(1)
+                else:
+                    with socket.socket(socket.AF_UNIX) as connection:
+                        connection.connect("${shellSocket}")
+            except OSError as error:
+                assert error.errno == errno.EACCES, (operation, error.errno)
+            else:
+                raise AssertionError(operation + " custody allowed the protected account")
+    else:
+        machines = action("core.machines.list", {})["machines"]
+        native = [machine for machine in machines if machine.get("terminalExecution") == "governed"]
+        assert len(native) == 1 and native[0]["online"], "coexistence must retain one native owner"
+        machine_id = native[0]["id"]
+        plugin_id = "fixture.shell-custody"
+        operation_id = plugin_id + ".probe"
+        job_id = "shell-custody-probe"
+        node = {"kind": "job", "machineId": machine_id, "operationId": operation_id, "jobId": job_id}
+        limits = {"timeoutMs": 120000, "memoryBytes": 134217728, "processes": 32, "outputBytes": 4096}
+        if sys.argv[1] == "custody-start":
+            # Both syscalls run in a real admitted governed workload, under its unchanged
+            # owner/template. The account token and socket are not declared workload inputs.
+            executable = (
+                "#!/usr/bin/python3\n"
+                "import errno, socket\n"
+                "def denied(operation):\n"
+                "    try:\n"
+                "        if operation == 'token':\n"
+                "            with open('${shellToken}', 'rb') as value: value.read(1)\n"
+                "        else:\n"
+                "            with socket.socket(socket.AF_UNIX) as connection: connection.connect('${shellSocket}')\n"
+                "    except OSError as error:\n"
+                "        assert error.errno in (errno.EACCES, errno.ENOENT), (operation, error.errno)\n"
+                "        print(operation + ':denied', flush=True)\n"
+                "    else: raise AssertionError(operation + ':allowed')\n"
+                "denied('token')\n"
+                "denied('socket')\n"
+            ).encode()
+            digest = hashlib.sha256(executable).hexdigest()
+            declaration = {
+                "artifacts": {"${platform}": {
+                    "bundleFile": "worker", "sha256": digest, "format": "raw",
+                    "entry": ["fixture"], "entrySha256": digest,
+                    "maxBytes": len(executable), "maxExpandedBytes": len(executable), "maxMembers": 1,
+                }},
+                "locations": {},
+                "operations": {operation_id: {
+                    "argv": [], "input": {}, "runtimeTools": ["python"], "locations": [],
+                    "outputs": [], "network": "none", "limits": limits, "stdin": False,
+                }},
+            }
+            manifest = {
+                "id": plugin_id, "version": "1.0.0", "title": "Account custody acceptance",
+                "description": "Disposable governed shell-custody proof", "capabilities": [], "entry": {},
+                "contributes": {"panels": [], "sections": [], "elements": [], "tools": [], "events": []},
+                "machine": declaration,
+            }
+            with TemporaryDirectory(prefix="shell-custody-pack-") as directory:
+                source = Path(directory)
+                (source / "manifest.json").write_text(json.dumps(manifest))
+                (source / "worker").write_bytes(executable)
+                packed = source / "bundle.json"
+                subprocess.run(["${packFixture}/bin/manifold-pack", directory, "--out", str(packed),
+                                "--self-contained"], check=True, stdout=subprocess.PIPE)
+                bundle = packed.read_bytes()
+            bundle_path = Path("/var/lib/manifold/shell-custody-fixture.json")
+            with os.fdopen(os.open(bundle_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
+                output.write(bundle)
+            os.chown(bundle_path, key_file.stat().st_uid, -1)
+            action("engine.plugins.install", {
+                "source": str(bundle_path), "sha256": hashlib.sha256(bundle).hexdigest(), "hardened": True,
+            })
+            installation = {"machineId": machine_id, "pluginId": plugin_id,
+                            "installationRevision": "r1", "artifactSha256": digest}
+            action("engine.jobs.install", {**installation, "machine": declaration})
+            for cap in ("jobs:read", "machines:run"):
+                action("engine.jobs.consent", {
+                    **installation, "cap": cap, "enabled": True,
+                    "node": "manifold://machine/" + machine_id + "/operation/" + operation_id,
+                })
+            job = action("engine.jobs.execute", {
+                "jobId": job_id, "machineId": machine_id, "pluginId": plugin_id,
+                "operationId": operation_id, "input": {}, "outputs": [], "limits": limits,
+            })
+            assert job["state"] not in ("refused", "interrupted", "cancelled"), job["state"]
+        else:
+            assert sys.argv[1] == "custody-result"
+            job = action("engine.jobs.status", {"node": node})
+            assert job["state"] == "exited", (job["state"], (job.get("result") or {}).get("reason"))
+            assert job["result"]["exitCode"] == 0, job["result"]["exitCode"]
+            stdout = next(output for output in job["result"]["outputs"] if output["name"] == "stdout")
+            result = action("engine.jobs.output", {
+                "node": {**node, "kind": "output", "outputId": stdout["outputId"]}, "offset": 0, "maxBytes": 4096,
+            })
+            assert result["type"] == "output" and result["eof"], result["type"]
+            assert base64.b64decode(result["data"]) == b"token:denied\nsocket:denied\n", "governed custody probe failed"
+  '';
+  shellFixtureCommand = "${pkgs.python3}/bin/python3 ${shellFixture}";
+  shellClientCommand = "${packFixture}/bin/manifold-shell-client";
   # A bad operator anchor declaration must fail evaluation, so it can never be activated. The
   # test script names this derivation, so building the check evaluates every case below.
   anchorEvaluations = let
@@ -354,9 +746,154 @@ let
     assert refuses normalized { operatorAnchors = { one.path = "/srv/sessions"; two.path = "/srv/sessions"; }; };
     assert refuses names { operatorAnchors."Sessions".path = "/srv/sessions"; };
     pkgs.writeText "manifold-operator-anchor-evaluations" "refused as declared\n";
+  shellEvaluations = let
+    inherit (pkgs) lib;
+    evaluate = module: (import (pkgs.path + "/nixos/lib/eval-config.nix") {
+      inherit (pkgs.stdenv.hostPlatform) system;
+      inherit pkgs;
+      modules = [
+        self.nixosModules.native
+        {
+          boot.loader.grub.enable = false;
+          fileSystems."/" = { device = "/dev/null"; fsType = "ext4"; };
+          system.stateVersion = "26.05";
+          programs.zsh.enable = true;
+          users.groups.shell-primary = {};
+          users.groups.shell-access = {};
+          users.users.account-shell = {
+            isNormalUser = true;
+            group = "shell-primary";
+            extraGroups = [ "shell-access" ];
+            home = shellHome;
+            shell = pkgs.zsh;
+          };
+        }
+        module
+      ];
+    }).config;
+    shellOnly = {
+      services.manifold = {
+        enable = true;
+        hub.enable = false;
+        execution.enable = false;
+        shell = {
+          enable = true;
+          machineName = "account-shell";
+          user = "account-shell";
+          serverUrl = "https://hub.example.test";
+          tokenFile = shellToken;
+          stateDirectory = shellState;
+        };
+      };
+    };
+    coexistence = lib.recursiveUpdate shellOnly {
+      services.manifold.hub.enable = true;
+      services.manifold.execution = {
+        enable = true;
+        artifactOrigins = [ "https://artifacts.example.test" ];
+      };
+    };
+    configured = evaluate shellOnly;
+    defaults = evaluate { services.manifold.enable = true; };
+    # Force the actual NixOS toplevel, including generated units, tmpfiles and dependency
+    # options. Merely selecting config.assertions misses shell-only evaluation regressions.
+    fullyEvaluates = module: builtins.deepSeq (evaluate module).system.build.toplevel.drvPath true;
+    refuses = patch:
+      let module = lib.recursiveUpdate shellOnly patch;
+      in lib.assertMsg (!(builtins.tryEval (fullyEvaluates module)).success)
+        "invalid account-shell configuration fully evaluated: ${builtins.toJSON patch}";
+    shellPatch = shell: { services.manifold.shell = shell; };
+    protected = [
+      "/var/lib/manifold" "/var/lib/manifold-workload" "/var/lib/manifold-output"
+      "/run/credentials" "/proc" "/sys" "/dev" "/nix/store"
+    ];
+    malformed = [ "" "/" "relative/path" "/srv//shell" "/srv/./shell" "/srv/../shell"
+      "/srv/shell/" "/srv/%n" "/srv/name:field" "/srv/name\\field" "/srv/name\nfield" ];
+    anchorPatch = path: lib.recursiveUpdate coexistence {
+      services.manifold.execution.operatorAnchors.fixture.path = path;
+    };
+  in
+    assert fullyEvaluates { services.manifold.enable = true; };
+    assert lib.assertMsg (defaults.services.manifold.shell == {
+      enable = false; machineName = ""; user = ""; serverUrl = ""; tokenFile = null; stateDirectory = "";
+    }) "ordinary shell role must remain opt-in with empty configuration";
+    assert !(defaults.systemd.services ? manifold-shell-directories);
+    assert !(defaults.systemd.services ? manifold-shell-owner);
+    assert !(defaults.systemd.services ? manifold-shell-transport);
+    assert fullyEvaluates shellOnly;
+    assert fullyEvaluates coexistence;
+    assert fullyEvaluates (lib.recursiveUpdate coexistence { services.manifold.execution.enable = false; });
+    # NSS permits differently named UID aliases when explicitly configured. Their
+    # effective service identity is refused at runtime below, including after NSS changes.
+    assert fullyEvaluates (lib.recursiveUpdate coexistence {
+      users.enforceIdUniqueness = false;
+      users.users.account-shell.uid = 1400;
+      users.users.manifold.uid = lib.mkForce 1400;
+    });
+    assert fullyEvaluates (lib.recursiveUpdate shellOnly {
+      users.users.account-shell.shell = lib.mkForce "${pkgs.zsh}/bin/zsh";
+    });
+    assert fullyEvaluates (lib.recursiveUpdate shellOnly {
+      services.manifold.shell.user = "root";
+    });
+    assert !(configured.users.users ? manifold);
+    assert !(configured.users.groups ? manifold);
+    assert lib.all (name: !(builtins.hasAttr name configured.systemd.services)) [
+      "manifold-server" "manifold-owner" "manifold-transport" "manifold-operator-anchors"
+      "manifold-token-credential-source"
+    ];
+    assert lib.all (rule: !lib.any (path: lib.hasInfix path rule)
+      [ "/var/lib/manifold" "/var/lib/manifold-workload" "/var/lib/manifold-output" ])
+      configured.systemd.tmpfiles.rules;
+    assert lib.all (rule: !lib.hasInfix shellState rule) configured.systemd.tmpfiles.rules;
+    assert configured.systemd.services.manifold-shell-directories.serviceConfig.User == "root";
+    assert configured.systemd.services.manifold-shell-directories.serviceConfig.Group == "root";
+    assert configured.systemd.services.manifold-shell-owner.restartIfChanged == false;
+    assert configured.systemd.services.manifold-shell-owner.stopIfChanged == false;
+    assert lib.all (name: configured.systemd.services.${name}.serviceConfig.User == "account-shell"
+      && configured.systemd.services.${name}.serviceConfig.Group == "shell-primary")
+      [ "manifold-shell-owner" "manifold-shell-transport" ];
+    assert refuses (shellPatch { user = ""; });
+    assert refuses (shellPatch { user = "missing-account"; });
+    assert refuses { users.users.account-shell.enable = false; };
+    assert refuses (shellPatch { user = "manifold"; });
+    assert refuses (shellPatch { machineName = ""; });
+    assert refuses (shellPatch { serverUrl = ""; });
+    assert refuses (shellPatch { tokenFile = null; });
+    assert refuses (shellPatch { tokenFile = pkgs.writeText "invalid-shell-store-token" "public-fixture"; });
+    assert refuses { services.manifold.shell.enable = false; };
+    assert refuses (lib.recursiveUpdate coexistence (shellPatch { user = "manifold"; }));
+    assert refuses (lib.recursiveUpdate coexistence (shellPatch { serverUrl = ""; }));
+    assert refuses (lib.recursiveUpdate coexistence { services.manifold.shell.machineName = "local"; });
+    assert lib.all (path: refuses (shellPatch { stateDirectory = path; })
+      && refuses (shellPatch { tokenFile = path; })) malformed;
+    assert lib.all (path: refuses (shellPatch { stateDirectory = path + "/private shell"; })
+      && refuses (shellPatch { tokenFile = path + "/private shell/token"; })) protected;
+    # Both ancestor directions, including state/socket custody and token custody. Space
+    # bearing valid sibling paths above must evaluate and also boot in the VM below.
+    assert refuses (shellPatch { stateDirectory = "/var/lib"; });
+    assert refuses (shellPatch { tokenFile = "/var/lib"; });
+    assert refuses (anchorPatch "/srv/account shell");
+    assert refuses (anchorPatch (shellState + "/view"));
+    assert refuses (anchorPatch (shellState + "/terminal-host"));
+    assert refuses (anchorPatch (shellToken + "/view"));
+    assert refuses (lib.recursiveUpdate coexistence (shellPatch { stateDirectory = "/run/manifold-anchors"; }));
+    assert refuses (lib.recursiveUpdate coexistence (shellPatch { tokenFile = "/run/manifold-anchors/fixture/token"; }));
+    assert refuses (lib.recursiveUpdate coexistence (shellPatch { stateDirectory = "/run"; }));
+    assert refuses (lib.recursiveUpdate coexistence {
+      services.manifold.execution.tokenCredentialFile = "/srv/native credentials/token";
+      services.manifold.shell.stateDirectory = "/srv/native credentials/shell";
+    });
+    assert refuses (lib.recursiveUpdate coexistence {
+      services.manifold.execution.serviceCredentials.fixture = {
+        source = "/srv/service credentials/token"; origins = [ "https://service.example.test" ];
+      };
+      services.manifold.shell.tokenFile = "/srv/service credentials/shell/token";
+    });
+    pkgs.writeText "manifold-account-shell-evaluations" "full toplevel evaluated; invalid custody refused\n";
 in
 {
-  name = "manifold-native-profile";
+  name = "manifold-native-profile-${role}";
   hostPkgs = pkgs;
   # The VM also runs on builders without nested virtualization, using QEMU's CPU emulation.
   requiredFeatures.kvm = false;
@@ -385,7 +922,89 @@ in
     virtualisation.additionalPaths = [ inspect pkgs.python3 ];
     system.stateVersion = "26.05";
   };
-  in {
+  shellAccount = { ... }: {
+    services.manifold = {
+      enable = true;
+      shell = {
+        enable = true;
+        machineName = "account-shell";
+        user = "account-shell";
+        serverUrl = "http://127.0.0.1:7777";
+        tokenFile = shellToken;
+        stateDirectory = shellState;
+      };
+    };
+    programs.zsh.enable = true;
+    programs.zsh.promptInit = "PROMPT='SHELL_FIXTURE_READY> '";
+    users.groups.shell-primary.gid = 1400;
+    users.groups.shell-access = {};
+    users.users.account-shell = {
+      isNormalUser = true;
+      uid = 1400;
+      group = "shell-primary";
+      extraGroups = [ "shell-access" ];
+      home = shellHome;
+      homeMode = "700";
+      shell = pkgs.zsh;
+      packages = [ shellProfile ];
+    };
+    security.wrappers.shell-authority-probe = {
+      source = "${wrapperProbe}/bin/shell-authority-probe";
+      owner = "root";
+      group = "root";
+      setuid = true;
+    };
+    systemd.services.shell-fixture-files = {
+      wantedBy = [ "multi-user.target" ];
+      before = [ "manifold-shell-directories.service" "manifold-shell-owner.service" ];
+      requiredBy = [ "manifold-shell-directories.service" "manifold-shell-owner.service" ];
+      after = [ "systemd-tmpfiles-setup.service" ];
+      script = ''
+        set -eu
+        install -d -o root -g root -m 0755 /srv/shell-fixture
+        # A root-owned but lexical-safe parent makes the later alias probe exercise the
+        # privileged provisioner, not an ordinary account's own mkdir.
+        install -d -o root -g root -m 0755 '/srv/account shell/owner'
+        install -d -o account-shell -g shell-primary -m 0700 '${shellOperatorAnchor}'
+        install -d -o root -g shell-access -m 0750 /srv/shell-fixture/group
+        printf group-access > /srv/shell-fixture/group/readable
+        chown root:shell-access /srv/shell-fixture/group/readable
+        chmod 0640 /srv/shell-fixture/group/readable
+        printf 'wrapper-authority\n' > /srv/shell-fixture/wrapper-private
+        chmod 0600 /srv/shell-fixture/wrapper-private
+        # This is an existing configured account, not zsh's first-user setup dialogue.
+        printf 'export SHELL_FIXTURE_LOGIN=ready\n' > '${shellHome}/.zshrc'
+        chown account-shell:shell-primary '${shellHome}/.zshrc'
+        chmod 0600 '${shellHome}/.zshrc'
+        install -d -o account-shell -g shell-primary -m 0700 '${shellHome}/.nix-profile' '${shellHome}/.nix-profile/bin'
+        printf '#!${pkgs.runtimeShell}\nprintf "home-profile:account-shell\\n"\n' > '${shellHome}/.nix-profile/bin/home-profile-only'
+        printf '#!${pkgs.runtimeShell}\nprintf "wrong-profile-wrapper\\n"\n' > '${shellHome}/.nix-profile/bin/shell-authority-probe'
+        chown account-shell:shell-primary '${shellHome}/.nix-profile/bin/'*
+        chmod 0700 '${shellHome}/.nix-profile/bin/'*
+        install -d -o root -g root -m 0700 /run/shell-fixture
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+    };
+    systemd.services.shell-fixture-enrollment = {
+      wantedBy = [ "multi-user.target" ];
+      before = [ "manifold-shell-transport.service" ];
+      requiredBy = [ "manifold-shell-transport.service" ];
+      after = [ "shell-fixture-files.service" ];
+      environment.SHELL_FIXTURE_HUB = "http://127.0.0.1:7777";
+      script = "${shellFixtureCommand} enroll";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        UMask = "0077";
+      };
+    };
+    virtualisation.additionalPaths = [ shellFixture packFixture pkgs.python3 ];
+    system.stateVersion = "26.05";
+  };
+  in pkgs.lib.getAttrs [ role ] {
     machine = common;
     credential = { pkgs, ... }: {
       imports = [ common ];
@@ -472,6 +1091,70 @@ in
         };
       };
     };
+    shellonly = { ... }: {
+      imports = [ self.nixosModules.native shellAccount ];
+      services.manifold.hub.enable = false;
+      services.manifold.execution.enable = false;
+      users.groups.shell-fixture-hub = {};
+      users.users.shell-fixture-hub = {
+        isSystemUser = true;
+        group = "shell-fixture-hub";
+        home = "/srv/shell-fixture-hub";
+        createHome = true;
+        homeMode = "700";
+      };
+      # A separate disposable fixture hub proves the selected module roles are truly
+      # shell-only. This is not services.manifold.hub and provisions no native account,
+      # owner, template, workload mount or execution bootstrap.
+      systemd.services.shell-fixture-hub = {
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network.target" ];
+        environment = {
+          MANIFOLD_DATA_DIR = "/srv/shell-fixture-hub";
+          MANIFOLD_BIND = "127.0.0.1";
+          MANIFOLD_PORT = "7777";
+          MANIFOLD_PUBLIC_URL = "http://127.0.0.1:7777";
+          MANIFOLD_SPAWN_AGENT = "0";
+        };
+        serviceConfig = {
+          User = "shell-fixture-hub";
+          Group = "shell-fixture-hub";
+          ExecStart = "${self.packages.${pkgs.stdenv.hostPlatform.system}.manifold-server}/bin/manifold-server";
+          UMask = "0077";
+          Restart = "on-failure";
+        };
+      };
+      systemd.services.shell-fixture-enrollment = {
+        after = [ "shell-fixture-hub.service" ];
+        environment.SHELL_FIXTURE_KEY_FILE = "/srv/shell-fixture-hub/owner.key";
+      };
+      virtualisation.cores = 2;
+      virtualisation.memorySize = 2048;
+      virtualisation.useNixStoreImage = true;
+      # Registering the guest's store paths and account profile needs a VM-local overlay,
+      # just as in the governed guests; the backing store image remains immutable.
+      virtualisation.writableStore = true;
+    };
+    coexist = { ... }: {
+      imports = [ common shellAccount ];
+      services.manifold.execution = {
+        operatorAnchors.shell-fixture.path = shellOperatorAnchor;
+        runtimeTools.python = [{
+          source = "${nativePython}/bin/python3";
+          target = "/usr/bin/python3";
+          kind = "file";
+        }];
+        runtimeToolClosures.python = [ pkgs.python3 ];
+      };
+      systemd.services.shell-fixture-files = {
+        before = [ "manifold-operator-anchors.service" ];
+        requiredBy = [ "manifold-operator-anchors.service" ];
+      };
+      systemd.services.shell-fixture-enrollment = {
+        after = [ "manifold-server.service" "manifold-transport.service" ];
+        environment.SHELL_FIXTURE_KEY_FILE = "/var/lib/manifold/owner.key";
+      };
+    };
   };
   testScript = ''
     import json
@@ -489,10 +1172,249 @@ in
         return result
 
     # Operator anchor evaluation refusals: ${anchorEvaluations}
-    start_all()
-    # Serial log backlog is not boot readiness; connect to the guest shell itself.
-    for node in (machine, credential, anchors):
+    # Complete account-shell toplevel evaluation and custody refusals: ${shellEvaluations}
+  '' + pkgs.lib.optionalString (builtins.elem role [ "shellonly" "coexist" ]) ''
+    # Each independently bounded derivation retains its complete scenario and shutdown.
+
+    # The ordinary role is exercised independently and beside the unchanged governed
+    # role. All secret values remain in private guest files and HTTP bearer headers.
+    profile_role = "${role}"
+    for node, hub_unit, key_file in [
+        (
+            ${role},
+            "${if role == "shellonly" then "shell-fixture-hub.service" else "manifold-server.service"}",
+            "${if role == "shellonly" then "/srv/shell-fixture-hub/owner.key" else "/var/lib/manifold/owner.key"}",
+        ),
+    ]:
+        node.start()
         node.connect()
+        node.wait_for_unit(hub_unit, timeout=180)
+        node.wait_for_unit("manifold-shell-directories.service", timeout=180)
+        assert node.succeed("systemctl show -p ActiveState --value manifold-shell-directories.service").strip() == "active"
+        node.wait_for_unit("manifold-shell-owner.service", timeout=180)
+        node.wait_for_unit("manifold-shell-transport.service", timeout=180)
+        fixture_env = "env SHELL_FIXTURE_KEY_FILE=" + shlex.quote(key_file) + " "
+        client_command = fixture_env + "${shellClientCommand}"
+        fixture_command = fixture_env + "${shellFixtureCommand} "
+        node.wait_until_succeeds(client_command + " ready", timeout=180)
+        shell_owner = node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip()
+        assert int(shell_owner) > 1
+        node.succeed(fixture_command + "owner-environment " + shell_owner)
+        transport_pid = node.succeed("systemctl show -p MainPID --value manifold-shell-transport.service").strip()
+        node.succeed(fixture_command + "transport-environment " + transport_pid)
+        owner_restarts = node.succeed("systemctl show -p NRestarts --value manifold-shell-owner.service").strip()
+        assert node.succeed("systemctl show -p RefuseManualStop --value manifold-shell-owner.service").strip() == "yes"
+        assert node.succeed("systemctl show -p OOMPolicy --value manifold-shell-owner.service").strip() == "continue"
+        for field in ["PartOf", "BindsTo", "Requires"]:
+            dependencies = node.succeed(f"systemctl show -p {field} --value manifold-shell-owner.service").split()
+            assert not any(name in dependencies for name in [
+                "manifold-shell-transport.service", hub_unit, "manifold-owner.service",
+            ]), (field, dependencies)
+        assert "manifold-shell-directories.service" in node.succeed(
+            "systemctl show -p Requires --value manifold-shell-owner.service"
+        ).split()
+        token = shlex.quote("${shellToken}")
+        token_parent = shlex.quote("${builtins.dirOf shellToken}")
+        state = shlex.quote("${shellState}")
+        socket_path = shlex.quote("${shellSocket}")
+        for path in [state, shlex.quote("${shellState}/terminal-host"), token_parent]:
+            assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "700 account-shell shell-primary"
+        for path in [token, socket_path]:
+            assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "600 account-shell shell-primary"
+        node.succeed(f"test ! -L {token} && test -f {token} && test -S {socket_path}")
+        if profile_role == "shellonly":
+            node.fail("getent passwd manifold")
+            node.fail("getent group manifold")
+            for unit in ["manifold-server", "manifold-owner", "manifold-transport", "manifold-operator-anchors"]:
+                node.fail("systemctl cat " + unit + ".service")
+            node.succeed("test ! -e /var/lib/manifold && test ! -e /var/lib/manifold-workload && test ! -e /var/lib/manifold-output")
+        else:
+            node.wait_for_unit("manifold-owner.service", timeout=180)
+            node.wait_for_unit("manifold-transport.service", timeout=180)
+            native_owner = node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
+            native_configuration = node.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json")
+            # The other account retains no token traversal or Unix connect permission,
+            # even outside the workload namespace. Do not lend it extra NSS membership.
+            node.succeed("runuser -u manifold -- " + fixture_command + "host-custody")
+            # A Type=simple unit is active before its retained owner and transport admit.
+            # Wait on read-only inventory, then perform the refusal assertion exactly once.
+            node.wait_until_succeeds(client_command + " governed-ready", timeout=180)
+            node.succeed(client_command + " governed-refusal")
+            node.succeed(fixture_command + "custody-start")
+            node.wait_until_succeeds(fixture_command + "custody-result", timeout=180)
+
+        # Actual SDK attach/input/output observes login shell, account identity, HOME,
+        # primary and supplementary groups, writable home and profile/wrapper authority.
+        initial = json.loads(node.succeed(client_command + " create"))
+        node.wait_until_succeeds("test \"$(cat " + shlex.quote("${shellHome}/shell-created") + ")\" = home-write", timeout=30)
+        assert node.succeed("stat -c '%a %U %G' " + shlex.quote("${shellHome}/shell-created")).strip() == "600 account-shell shell-primary"
+        node.fail("systemctl stop manifold-shell-owner.service")
+        assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == shell_owner
+        for service in ["manifold-shell-transport.service", hub_unit]:
+            node.succeed("systemctl restart " + service)
+            node.wait_for_unit(service, timeout=180)
+            node.wait_until_succeeds(client_command + " ready", timeout=180)
+            after = json.loads(node.succeed(client_command + " io"))
+            assert after == initial, "endpoint, owner, terminal or shell process changed across reconnect"
+            assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == shell_owner
+
+        # Every start rechecks exact custody without repairing the declaring tool's
+        # token or its parent. The occupied owner remains alive and never restarts.
+        for alter, restore in [
+            (f"chmod 0644 {token}", f"chmod 0600 {token}"),
+            (f"chmod 0400 {token}", f"chmod 0600 {token}"),
+            (f"chown root:shell-primary {token}", f"chown account-shell:shell-primary {token}"),
+            (f"chmod 0750 {token_parent}", f"chmod 0700 {token_parent}"),
+            (f"chown root:shell-primary {token_parent}", f"chown account-shell:shell-primary {token_parent}"),
+            (f"mv {token} {token}.held && ln -s token.held {token}", f"rm {token} && mv {token}.held {token}"),
+            (f"mv {token} {token}.held && mkdir {token}", f"rmdir {token} && mv {token}.held {token}"),
+            (f"mv {token} {token}.held", f"mv {token}.held {token}"),
+        ]:
+            node.succeed("systemctl stop manifold-shell-transport.service")
+            node.succeed(alter)
+            metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {token_parent}"
+            if "mv " not in alter or "ln -s " in alter or "mkdir " in alter:
+                metadata_command += f" && stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {token}"
+            invalid_metadata = node.succeed(metadata_command)
+            node.fail("systemctl start manifold-shell-transport.service")
+            assert node.succeed("systemctl show -p MainPID --value manifold-shell-transport.service").strip() == "0"
+            node.succeed("systemctl stop manifold-shell-transport.service")
+            assert node.succeed(metadata_command) == invalid_metadata, "transport repaired invalid credential custody"
+            assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == shell_owner
+            assert node.succeed("systemctl show -p NRestarts --value manifold-shell-owner.service").strip() == owner_restarts
+            node.succeed(restore)
+            node.succeed("systemctl reset-failed manifold-shell-transport.service")
+            node.succeed("systemctl start manifold-shell-transport.service")
+            node.wait_until_succeeds(client_command + " ready", timeout=180)
+            assert json.loads(node.succeed(client_command + " io")) == initial
+
+        # A real private basename and parent do not make an aliased ancestor safe.
+        # Beside native execution the target is already a held, idmapped operator view.
+        credential_root = shlex.quote("/srv/account shell/credentials")
+        exposed_credentials = shlex.quote("${shellOperatorAnchor}/credentials")
+        node.succeed("systemctl stop manifold-shell-transport.service")
+        node.succeed(f"mv {credential_root} {exposed_credentials} && ln -s {exposed_credentials} {credential_root}")
+        node.succeed(f"test -L {credential_root} && test ! -L {token_parent} && test ! -L {token} && test -f {token}")
+        assert node.succeed(f"stat -c '%a %U %G' {token_parent}").strip() == "700 account-shell shell-primary"
+        assert node.succeed(f"stat -c '%a %U %G' {token}").strip() == "600 account-shell shell-primary"
+        if profile_role == "coexist":
+            node.succeed("runuser -u manifold -- test -r /run/manifold-anchors/shell-fixture/credentials/private/token")
+        metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {credential_root} {token_parent} {token}"
+        aliased_metadata = node.succeed(metadata_command)
+        node.fail("systemctl start manifold-shell-transport.service")
+        assert node.succeed("systemctl show -p MainPID --value manifold-shell-transport.service").strip() == "0"
+        node.succeed("systemctl stop manifold-shell-transport.service")
+        assert node.succeed(metadata_command) == aliased_metadata, "transport repaired aliased credential custody"
+        assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == shell_owner
+        assert node.succeed("systemctl show -p NRestarts --value manifold-shell-owner.service").strip() == owner_restarts
+        node.succeed(f"rm {credential_root} && mv {exposed_credentials} {credential_root}")
+        node.succeed("systemctl reset-failed manifold-shell-transport.service")
+        node.succeed("systemctl start manifold-shell-transport.service")
+        node.wait_until_succeeds(client_command + " ready", timeout=180)
+        assert json.loads(node.succeed(client_command + " io")) == initial
+
+        admission = dict(hub="http://127.0.0.1:7777", machine_id=initial["machineId"], owner_key_file=key_file)
+        shutdown = dict(socket="${shellSocket}", terminal_host_id=initial["terminalHostId"])
+        drained = maintenance(node, "drain", **admission)
+        assert drained["draining"] and drained["terminalHostId"] == initial["terminalHostId"], drained
+        assert drained["terminalIds"] == [initial["terminalId"]], drained
+        held = maintenance(node, "shutdown", expected_code=1, **shutdown)
+        assert held["hold"] and held["reason"] == "terminals_retained", held
+        assert held["terminalIds"] == [initial["terminalId"]], held
+        assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == shell_owner
+        # Exit via ordinary PTY input, not a supervisor signal or fallback kill.
+        node.succeed(client_command + " exit")
+        empty = maintenance(node, "drain", **admission)
+        assert empty["terminalIds"] == [] and empty["terminalHostId"] == initial["terminalHostId"], empty
+        stopped = maintenance(node, "shutdown", **shutdown)
+        assert stopped["terminalHostId"] == initial["terminalHostId"], stopped
+        node.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value manifold-shell-owner.service)\" = inactive", timeout=30)
+        node.succeed("sleep 5")
+        assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == "0"
+        assert node.succeed("systemctl show -p NRestarts --value manifold-shell-owner.service").strip() == owner_restarts
+
+        # Stop the replaceable transport before testing either post-shutdown custody path.
+        node.succeed("systemctl stop manifold-shell-transport.service")
+        if profile_role == "coexist":
+            # Do not rewrite account-shell's UID to the live native UID: shadow refuses to
+            # restore that record while the protected owner correctly remains running. Route a
+            # disposable NSS alias through the actual inactive units instead, so their
+            # effective-UID preflight is what rejects the overlap.
+            alias_user = "account-shell-alias"
+            node.succeed(
+                "useradd --no-create-home --non-unique --uid \"$(id -u manifold)\" "
+                "--gid shell-primary " + alias_user
+            )
+            alias_dropins = []
+            for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
+                directory = "/run/systemd/system/" + unit + ".d"
+                path = directory + "/identity-alias.conf"
+                node.succeed("mkdir -p " + shlex.quote(directory))
+                node.succeed(
+                    "printf '[Service]\\nUser=" + alias_user + "\\nWorkingDirectory=/\\n' > "
+                    + shlex.quote(path)
+                )
+                alias_dropins.append((directory, path))
+            node.succeed("systemctl daemon-reload")
+            for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
+                node.succeed("systemctl reset-failed " + unit)
+                node.fail("systemctl start " + unit)
+                service_log = node.succeed("journalctl -b -u " + unit + " --no-pager")
+                assert "Manifold shell account shares the protected manifold UID; refusing startup" in service_log
+                assert node.succeed("systemctl show -p MainPID --value " + unit).strip() == "0"
+                if unit == "manifold-shell-transport.service":
+                    node.succeed("systemctl stop " + unit)
+            for directory, path in alias_dropins:
+                node.succeed("rm " + shlex.quote(path))
+                node.succeed("rmdir " + shlex.quote(directory))
+            node.succeed("systemctl daemon-reload")
+            assert node.succeed("id -u account-shell").strip() == "1400"
+            assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
+
+        # Only after exact-owner shutdown may this fixture alter its private state.
+        # Keep the alias in place until guest teardown, so automatic retries cannot
+        # accidentally start a new owner between the refusal and shutdown assertions.
+        owner_root = shlex.quote("/srv/account shell/owner")
+        exposed_owner = shlex.quote("${shellOperatorAnchor}/owner")
+        socket_parent = shlex.quote("${shellState}/terminal-host")
+        assert node.succeed(f"stat -c '%a %U %G' {owner_root}").strip() == "755 root root"
+        node.succeed(f"mv {owner_root} {exposed_owner} && ln -s {exposed_owner} {owner_root}")
+        node.succeed(f"test -L {owner_root} && test ! -L {state} && test ! -L {socket_parent} && test ! -e {socket_path}")
+        for path in [state, socket_parent]:
+            assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "700 account-shell shell-primary"
+        if profile_role == "coexist":
+            node.succeed("runuser -u manifold -- test -x /run/manifold-anchors/shell-fixture/owner/state/terminal-host")
+
+        # A root-owned alias points at a foreign state whose private leaves need repair.
+        # The old tmpfiles rules would follow this alias and chown/chmod those leaves.
+        node.succeed(f"chown root:root {state} {socket_parent} && chmod 0755 {state} {socket_parent}")
+        for path in [state, socket_parent]:
+            assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "755 root root"
+        metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {owner_root} {state} {socket_parent}"
+        aliased_metadata = node.succeed(metadata_command)
+        node.succeed("systemctl reset-failed manifold-shell-directories.service")
+        node.fail("systemctl restart manifold-shell-directories.service")
+        directory_log = node.succeed("journalctl -b -u manifold-shell-directories.service --no-pager")
+        assert "Manifold shell directory provisioning refused: unsafe state ancestor owner" in directory_log
+        assert node.succeed(metadata_command) == aliased_metadata, "root provisioner repaired aliased state"
+
+        for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
+            node.succeed("systemctl reset-failed " + unit)
+            node.fail("systemctl start " + unit)
+            assert node.succeed("systemctl show -p MainPID --value " + unit).strip() == "0"
+            if unit == "manifold-shell-transport.service":
+                node.succeed("systemctl stop " + unit)
+        node.succeed(f"test ! -e {socket_path}")
+        assert node.succeed(metadata_command) == aliased_metadata, "startup repaired aliased owner state"
+
+        if profile_role == "coexist":
+            assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
+            assert node.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == native_configuration
+            node.succeed(fixture_command + "custody-result")
+        node.shutdown()
+  '' + pkgs.lib.optionalString (role == "machine") ''
+    machine.start()
+    machine.connect()
     machine.wait_for_unit("manifold-server.service", timeout=180)
     machine.wait_for_unit("manifold-owner.service", timeout=180)
     machine.wait_for_unit("manifold-transport.service", timeout=180)
@@ -570,6 +1492,11 @@ in
     assert not reopened["draining"] and reopened["terminalHostId"] != expected_host, reopened
     machine.succeed("${inspectCommand} execute module-native-recovered")
     machine.wait_until_succeeds("${inspectCommand} result module-native-recovered", timeout=180)
+
+    machine.shutdown()
+  '' + pkgs.lib.optionalString (role == "credential") ''
+    credential.start()
+    credential.connect()
 
     # A separate node retains the default local-bootstrap proof above while
     # exercising the exact same packaged transport with a declared credential.
@@ -650,6 +1577,11 @@ in
     credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
     credential.succeed("${inspectCommand} result module-credential-restarted")
 
+    credential.shutdown()
+  '' + pkgs.lib.optionalString (role == "anchors") ''
+    anchors.start()
+    anchors.connect()
+
     # Operator anchors: root-made read-only idmapped views of a 0700 home beneath protected /home.
     anchors.wait_for_unit("manifold-owner.service", timeout=180)
     anchors.wait_for_unit("manifold-transport.service", timeout=180)
@@ -706,5 +1638,7 @@ in
     assert anchors.succeed("stat -c '%a %U' /home/alice/sessions/later.jsonl").strip() == "600 alice"
     anchors.succeed("${inspectCommand} anchors-execute anchors-later later.jsonl")
     anchors.wait_until_succeeds("${inspectCommand} anchors-result anchors-later later-session", timeout=180)
+
+    anchors.shutdown()
   '';
 }

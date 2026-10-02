@@ -2,8 +2,8 @@ import { z } from "zod";
 
 /**
  * Capability-scoped authority. Uniform identity (humans and agents are both principals)
- * never implies uniform authority: every token carries an explicit cap set, optionally
- * scoped to a single container.
+ * never implies uniform authority. A credential's capability union is only a discovery
+ * summary; its correlated resource scope remains the authority ceiling.
  *
  * Every name is `<domain-plural>:<verb>`, which is the whole naming law: a reader of a
  * token's cap set can tell what it reaches and what it may do there without a table.
@@ -28,6 +28,8 @@ export const CAPS = [
    * there, and separate from `machines:mint` because a reader must never imply an enroller.
    */
   "machines:read",
+  /** Start an ordinary unconfined shell on the exact enrolled machine/account. */
+  "machines:shell",
   "machines:run",
   "jobs:read",
   "jobs:input",

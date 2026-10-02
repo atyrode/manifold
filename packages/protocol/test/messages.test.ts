@@ -18,6 +18,7 @@ import {
   ContainerSchema,
   ROOT_TILE_ID,
   ServerMessageSchema,
+  ServerMessageBodySchema,
   ServerToAgentMessageSchema,
   SceneElementSchema,
   TerminalsResponseSchema,
@@ -31,6 +32,7 @@ import {
   soloLeaf,
   validateTileLayout,
   type LocationPath,
+  type ServerMessageBody,
   type Tile,
   type TileRef,
 } from "@manifold/protocol";
@@ -50,6 +52,46 @@ const element = (id: string) => ({
   zIndex: 0,
 });
 describe("session channel schemas", () => {
+  test("authority hints stay strict, connection-level and confined to engine capabilities", () => {
+    const frame: Extract<ServerMessageBody, { type: "authority_context" }> = {
+      type: "authority_context",
+      workspaceCaps: ["containers:read", "machines:mint"],
+      workspaceEvents: true,
+    };
+    for (const schema of [ServerMessageSchema, ServerMessageBodySchema]) {
+      expect(schema.parse(frame)).toEqual(frame);
+      expect(schema.safeParse({ ...frame, workspaceCaps: [] }).success).toBe(true);
+      expect(schema.safeParse({ ...frame, ch: "room" }).success).toBe(false);
+      expect(schema.safeParse({ ...frame, workspaceCaps: ["acme.fleet:read"] }).success).toBe(
+        false,
+      );
+      expect(schema.safeParse({ ...frame, workspaceEvents: "true" }).success).toBe(false);
+      expect(schema.safeParse({ ...frame, topics: [] }).success).toBe(false);
+      expect(schema.safeParse({ type: "authority_context", workspaceCaps: [] }).success).toBe(
+        false,
+      );
+    }
+  });
+
+  test("subscription ordering correlations are bounded and cannot disclose topic admission", () => {
+    const parsers = [
+      { type: "sync_subscriptions", schemas: [ClientMessageSchema, ClientMessageBodySchema] },
+      { type: "subscriptions_synced", schemas: [ServerMessageSchema, ServerMessageBodySchema] },
+    ] as const;
+    for (const { type, schemas } of parsers) {
+      for (const schema of schemas) {
+        for (const id of [1, 2_147_483_647]) {
+          const frame = { type, id };
+          expect(schema.parse(frame)).toEqual(frame);
+          for (const extra of [{ ch: "room" }, { topics: [] }, { accepted: true }, { count: 0 }])
+            expect(schema.safeParse({ ...frame, ...extra }).success).toBe(false);
+        }
+        for (const id of [undefined, 0, -1, 1.5, 2_147_483_648, Number.MAX_SAFE_INTEGER, "1"])
+          expect(schema.safeParse({ type, id }).success).toBe(false);
+      }
+    }
+  });
+
   test("stream subscriptions are strict connection frames and bodies cannot bypass hard bounds", () => {
     const open = {
       type: "stream_open",

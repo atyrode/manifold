@@ -2,14 +2,88 @@
 
 Choose the deployment profile, not a hosting provider:
 
-- **Full native Linux:** the NixOS module below runs the hub, an independently supervised
-  terminal/native owner and a replaceable transport on one node. Execution-only remote nodes
-  use the same owner and authority protocol, with explicit enrolled IDs.
+- **Normal-account shells:** enroll an existing Linux or Darwin account using
+  [ENROLL.md](ENROLL.md). Linux/systemd, Darwin/launchd and the optional NixOS shell role
+  below keep a retained ordinary terminal owner separate from its replaceable transport.
+  No custom plugin, Agent profile or governed runtime is required.
+- **Optional governed Linux execution:** the native role runs a protected terminal/native
+  owner as `manifold`, independently of ordinary-account owners. Execution-only remote nodes
+  use the same native authority protocol, with explicit enrolled IDs.
 - **Container hub:** Compose serves the web app and canonical store. Set
-  `MANIFOLD_SPAWN_AGENT=0` for a hub-only deployment and enroll native execution nodes.
+  `MANIFOLD_SPAWN_AGENT=0` for a hub-only deployment and enroll ordinary or governed accounts.
   The existing default also serves disposable in-container terminals, not governed native
   execution. Container privileges, tmpfs alone and detached children are not native
   enforcement or survival across container replacement.
+
+## Normal-account shells (NixOS)
+
+Include the pinned `inputs.manifold.nixosModules.native` module in the NixOS configuration
+that already owns the account. This explicitly shell-only selection does not create the
+native `manifold` account or native workload directories, require artifact origins, or enable
+bubblewrap/job facilities:
+
+```nix
+services.manifold = {
+  enable = true;
+  hub.enable = false;
+  execution.enable = false;
+  shell = {
+    enable = true;
+    machineName = "workstation-alice";
+    user = "alice"; # already declared in users.users
+    serverUrl = "https://manifold.example.com";
+    tokenFile = "/home/alice/.config/manifold-shell/machine.token";
+    stateDirectory = "/home/alice/.local/state/manifold-shell";
+  };
+};
+```
+
+The shell role defaults to disabled and never activates during an upgrade. Its four string
+settings and the token reference are explicit; even a co-located hub requires `serverUrl`.
+`tokenFile` is a quoted absolute runtime path, not secret bytes or a Nix path literal.
+Enroll the distinct name through `core.machines.enroll` and hand the one-time credential to
+its existing custodian as described in [ENROLL.md](ENROLL.md#1-mint-a-machine-token-once-per-account-endpoint).
+Enrollment alone neither installs nor starts an owner. The module never enrolls, copies,
+rotates, prints or repairs a token.
+
+**The setup grant is the selected OS account's normal authority.** Shells use its configured
+home, primary group, login-shell executable and NSS supplementary groups. Security-wrapper
+PATH precedence and user/system profiles remain available. Manifold ownership does not
+confer OS root, but selecting an already privileged account does not remove its privileges.
+An unconfined shell can use that account's files and credentials; this is not an OS sandbox.
+
+`manifold-shell-owner.service` owns `${stateDirectory}/terminal-host/host.sock`; only
+`manifold-shell-transport.service` receives the enrollment-token reference and hub origin.
+Both run as the configured account with `UMask=0077`. The selected state/terminal-host
+directories are mode 0700. The token must already be a regular non-symlink file, mode 0600,
+owned by the account, in an immediate mode-0700 parent owned by the same account.
+Invalid custody refuses the transport without destroying its retained owner.
+Before either account service can start, the root-owned
+`manifold-shell-directories.service` resolves every state component through held no-follow
+descriptors and provisions only missing components. A symlink or a changed component refuses
+before root can chmod or chown it; existing account-owned state is checked by the ordinary
+account service instead of being root-repaired. In coexistence, this prerequisite also refuses
+the selected account before any directory mutation when its NSS UID aliases protected
+`manifold`.
+
+State, socket and token paths must be normalized absolute paths, nonoverlapping with native
+control/workload/output storage, `/run/credentials`, kernel pseudo-filesystems, `/nix/store`,
+declared operator-anchor sources and `/run/manifold-anchors` views. Ancestors as well as
+descendants are refused: select separate private custody rather than widening an incumbent
+native owner's exclusions. Spaces are supported; path traversal and systemd specifiers are not.
+
+For coexistence, keep the native role under its protected `manifold` account and give the shell
+role a different account and enrollment name. When a hub or native execution role exists,
+service preflight also refuses a differently named account sharing `manifold`'s effective UID.
+That check is not protection from an explicitly root/privileged shell account.
+
+Transport replacement and hub restart do not stop the shell owner or its PTYs. The owner
+has `restartIfChanged=false`, `stopIfChanged=false`, `RefuseManualStop=true`,
+`OOMPolicy=continue` and `Restart=on-failure`; accepted empty maintenance shutdown stays
+stopped. Updating or removing an occupied owner requires the existing exact-owner drain and
+atomic empty shutdown. A refusal is a maintenance hold, never permission to send a signal.
+Use the account's supported configuration/supervisor path for initial activation, and retain
+its old immutable package generation until that owner exits.
 
 ## Full native Linux (NixOS)
 
@@ -49,14 +123,20 @@ disposable machine records; disable refuses ordinary doors and the Worker,
 while the cleanup revoke remains available, and re-enable restores service.
 Unknown or recipe-less selections must refuse before a child/listener starts,
 with the plugin named. The verifier shuts down its own processes and deletes
-only its own temporary data. CI is configured for native Linux and macOS,
-x64 and arm64; a warm dependency store path alone is not proof of a pinned hash.
+only its own temporary data. CI keeps all four native Linux/macOS x64/arm64 packaging
+jobs; a warm dependency store path alone is not proof of a pinned hash. On Linux,
+the same required `nix` gate additionally finishes `checks.<system>.native-profile`,
+including every VM scenario and guest shutdown. macOS reports that Linux-only check
+as not applicable, while still running all dependency and compiled-package assertions.
+CI verifies the flake revision against its exact checkout and builds that locked
+reference. Local dirty-tree receipts are explicitly uncommitted, not commit evidence.
 
 When dependency inputs change, derive replacement hashes from fresh installs
 and retain the independent rebuild. Explicit `--os`/`--cpu` can measure another
-target's dependency bytes, not execute that target's binary. This packaged
-smoke does not enroll or activate a native machine owner and does not establish
-kernel containment, production credentials or persistent deployment readiness.
+target's dependency bytes, not execute that target's binary. The packaged hub
+smoke alone does not activate a native machine owner or establish kernel containment;
+the separate Linux VM check below exercises disposable owners. Neither proof establishes
+production credentials or persistent deployment readiness.
 
 ### Terminal-local command
 
@@ -664,15 +744,40 @@ after boot is read by the next job. Absent and link-reached sources get no view 
 only their operation unavailable. The check's build also evaluates the module's refusals,
 and the first node proves that declaring no anchor leaves the owner configuration unchanged.
 
-Run all packaged scenarios:
+The full verifier includes this check on both native Linux targets:
 
 ```sh
-nix build .#checks.x86_64-linux.native-profile
+bun scripts/verify-nix-packaging.ts
 ```
 
-Use the corresponding `aarch64-linux` check on that target. QEMU can use CPU emulation on
-builders without nested virtualization. This lifecycle check complements, rather than
-replaces, the workload, escape-boundary and occupied-owner acceptance above.
+For a direct VM-only run, use
+`nix build --no-link --max-jobs 1 --print-build-logs .#checks.x86_64-linux.native-profile`
+or the corresponding `aarch64-linux` check on that target. The verifier evaluates the
+exact-source aggregate and all five roles, then builds `native-profile-shellonly`,
+`native-profile-coexist`, `native-profile-machine`, `native-profile-credential` and
+`native-profile-anchors` serially. Each complete role retains the 15-minute build/runtime
+bound; the unchanged 45-minute CI lane bounds the whole packaging/profile proof. The
+aggregate cannot succeed without the exact five successful runtime outputs. Serial
+builds also keep CPU-emulated ARM verification from running several memory-heavy guests
+together. Dependency cold/rebuild and native package smoke remain unchanged.
+The declared VMs support QEMU CPU emulation without nested virtualization; CI advertises
+the `nixos-test` builder feature but does not claim or require KVM availability.
+
+The verifier prints its private evidence directory (or uses `MANIFOLD_NIX_PROOF_DIR`).
+`source.json` records native system, revision and source hash; `native-profile.json`
+records the aggregate and complete matching role ledger, elapsed times and per-build
+deadline scope. Each `native-profile-<role>.json` and `.log` retains exact derivation,
+output, result and structured activity/guest diagnostics. Exact-derivation cached reuse
+is distinct from fresh execution and additionally retains the successful runtime log
+as `.cached.log`; missing or unobserved role evidence cannot complete the aggregate.
+Readable messages stream to CI on success, failure and timeout.
+CI publishes an exact-system/head summary and one-day `nix-evidence-<system>-<sha>`
+artifacts on success and failure. It does not upload guest disks, owner data,
+configuration or credential files. A missing, incomplete or failed VM receipt is
+not a profile pass; successful package compilation is not substituted for it.
+This lifecycle check complements, rather than replaces, the workload, escape-boundary
+and occupied-owner acceptance above. These are configured verification paths, not a
+claim that either Linux system has passed at the current revision.
 
 ## Settled-job callback limits
 

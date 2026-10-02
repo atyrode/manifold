@@ -1,40 +1,46 @@
 import type { SectionProps } from "@manifold/plugin";
 import {
-  ListRunsResultSchema,
-  CreateRunResultSchema,
-  FinishAgentRunResultSchema,
-  GetAgentResultSchema,
+  ListRunsV2ResultSchema,
+  CreateRunV2ResultSchema,
+  FinishAgentRunV2ResultSchema,
+  GetAgentV2ResultSchema,
   LaunchRunResultSchema,
-  ListAgentsResultSchema,
+  ListAgentsV2ResultSchema,
   ListHarnessesResultSchema,
-  RegisterAgentResultSchema,
+  RegisterAgentV2ResultSchema,
   formatManifoldUri,
-  type Agent,
-  type ListRunsResult,
-  type RegisterAgentRequest,
+  type AgentV2,
+  type ListRunsV2Result,
+  type RegisterAgentV2Request,
 } from "@manifold/protocol";
 import { Chip, Cluster, Disclosure, KeyValueList, KeyValueRow, Stack } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
-  ACCESS_CREATE_RUN_ACTION,
-  ACCESS_DISABLE_AGENT_ACTION,
-  ACCESS_ENABLE_AGENT_ACTION,
-  ACCESS_FINISH_AGENT_RUN_ACTION,
-  ACCESS_GET_AGENT_ACTION,
-  ACCESS_INSPECT_RUN_ACTION,
+  ACCESS_CREATE_RUN_V2_ACTION,
+  ACCESS_DISABLE_AGENT_V2_ACTION,
+  ACCESS_ENABLE_AGENT_V2_ACTION,
+  ACCESS_FINISH_AGENT_RUN_V2_ACTION,
+  ACCESS_GET_AGENT_V2_ACTION,
+  ACCESS_INSPECT_RUN_V2_ACTION,
   ACCESS_LAUNCH_RUN_ACTION,
-  ACCESS_LIST_AGENTS_ACTION,
+  ACCESS_LIST_AGENTS_V2_ACTION,
   ACCESS_LIST_HARNESSES_ACTION,
-  ACCESS_LIST_RUNS_ACTION,
-  ACCESS_REGISTER_AGENT_ACTION,
-  ACCESS_RETIRE_AGENT_ACTION,
+  ACCESS_LIST_RUNS_V2_ACTION,
+  ACCESS_REGISTER_AGENT_V2_ACTION,
+  ACCESS_RETIRE_AGENT_V2_ACTION,
 } from "./index.ts";
 import { AgentRegistration } from "./agent-form.tsx";
 import { useAccessRead } from "./reads.ts";
 import { partitionAgents } from "./rows.ts";
-import { InspectionFold, NativeReference, RunInspector, inspectionTime } from "./runs.tsx";
+import {
+  AuthorityScopeDetails,
+  InspectionFold,
+  NativeReference,
+  RunInspector,
+  inspectionTime,
+} from "./runs.tsx";
 
-type RunSummary = ListRunsResult["runs"][number];
+type RunSummary = ListRunsV2Result["runs"][number];
 
 /** Replace the entire privileged subtree when the viewer or its client changes. */
 export function AgentsSection({ host }: SectionProps): ReactElement {
@@ -69,12 +75,18 @@ function AgentIndex({ host }: SectionProps): ReactElement {
   const [retiredOpen, setRetiredOpen] = useState(false);
   const agents = useAccessRead(
     host,
-    ACCESS_LIST_AGENTS_ACTION,
-    ListAgentsResultSchema,
+    ACCESS_LIST_AGENTS_V2_ACTION,
+    ListAgentsV2ResultSchema,
     {},
     revision,
   );
-  const runs = useAccessRead(host, ACCESS_LIST_RUNS_ACTION, ListRunsResultSchema, {}, revision);
+  const runs = useAccessRead(
+    host,
+    ACCESS_LIST_RUNS_V2_ACTION,
+    ListRunsV2ResultSchema,
+    {},
+    revision,
+  );
   const harnesses = useAccessRead(
     host,
     ACCESS_LIST_HARNESSES_ACTION,
@@ -88,16 +100,16 @@ function AgentIndex({ host }: SectionProps): ReactElement {
     if (requestedRef?.kind === "agent") setSelection({ agentId: requestedRef.agentId });
     if (requestedRef?.kind === "run") setSelection({ runId: requestedRef.runId });
   }
-  const register = async (request: RegisterAgentRequest): Promise<void> => {
+  const register = async (request: RegisterAgentV2Request): Promise<void> => {
     setPending(true);
     setFailure(null);
     try {
-      const outcome = await host.client.action(ACCESS_REGISTER_AGENT_ACTION, request);
+      const outcome = await host.client.action(ACCESS_REGISTER_AGENT_V2_ACTION, request);
       if (!outcome.ok) {
         setFailure(outcome.denial.message);
         return;
       }
-      const parsed = RegisterAgentResultSchema.safeParse(outcome.result);
+      const parsed = RegisterAgentV2ResultSchema.safeParse(outcome.result);
       if (!parsed.success) {
         setFailure("The registered Agent could not be read.");
         return;
@@ -130,7 +142,7 @@ function AgentIndex({ host }: SectionProps): ReactElement {
   }
   const parts = partitionAgents(agents.state === "ready" ? agents.result.agents : []);
   const selectedRetired = parts.retired.some((agent) => agent.agentId === selection?.agentId);
-  const renderAgent = (agent: Agent): ReactElement => {
+  const renderAgent = (agent: AgentV2): ReactElement => {
     const last = latestRuns.get(agent.agentId);
     const lastLabel =
       runs.state !== "ready"
@@ -188,14 +200,14 @@ function AgentIndex({ host }: SectionProps): ReactElement {
           {agents.state === "ready" ? `${String(agents.result.agents.length)} Agents` : "Agents"}
         </span>
         <Chip
-          data-action={ACCESS_LIST_AGENTS_ACTION}
+          data-action={ACCESS_LIST_AGENTS_V2_ACTION}
           onClick={() => setRevision((current) => current + 1)}
         >
           Refresh
         </Chip>
         {mayRegister && credential === null ? (
           <Chip
-            data-action={ACCESS_REGISTER_AGENT_ACTION}
+            data-action={ACCESS_REGISTER_AGENT_V2_ACTION}
             aria-expanded={registering}
             onClick={() => setRegistering((current) => !current)}
           >
@@ -361,8 +373,8 @@ function AgentDetail({
 }): ReactElement {
   const read = useAccessRead(
     host,
-    ACCESS_GET_AGENT_ACTION,
-    GetAgentResultSchema,
+    ACCESS_GET_AGENT_V2_ACTION,
+    GetAgentV2ResultSchema,
     { agentId },
     revision,
   );
@@ -387,13 +399,9 @@ function AgentDetail({
       </KeyValueList>
       <InspectionFold title="Standing grant and context">
         <KeyValueList>
-          <KeyValueRow label="Capabilities">{agent.grant.caps.join(", ")}</KeyValueRow>
-          <KeyValueRow label="Targets">
-            {agent.grant.targets.map((target) => (
-              <NativeReference key={target} host={host} uri={target} />
-            ))}
+          <KeyValueRow label="Authority scope">
+            <AuthorityScopeDetails host={host} scope={agent.grant.scope} />
           </KeyValueRow>
-          <KeyValueRow label="Reach">{agent.grant.reach}</KeyValueRow>
           <KeyValueRow label="Run lifetime">
             {agent.grant.maxRunLifetimeMs / 60_000} minutes maximum
           </KeyValueRow>
@@ -424,7 +432,7 @@ function AgentControls({
   host,
   agent,
   changed,
-}: SectionProps & { readonly agent: Agent; readonly changed: () => void }): ReactElement {
+}: SectionProps & { readonly agent: AgentV2; readonly changed: () => void }): ReactElement {
   const [pending, setPending] = useState(false);
   const [armed, setArmed] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -458,7 +466,7 @@ function AgentControls({
     setPending(true);
     setFailure(null);
     try {
-      const created = await host.client.action(ACCESS_CREATE_RUN_ACTION, {
+      const created = await host.client.action(ACCESS_CREATE_RUN_V2_ACTION, {
         agentId: agent.agentId,
         target: {
           machineId: machineId.trim(),
@@ -470,7 +478,7 @@ function AgentControls({
         setFailure(created.denial.message);
         return;
       }
-      const parsed = CreateRunResultSchema.safeParse(created.result);
+      const parsed = CreateRunV2ResultSchema.safeParse(created.result);
       if (!parsed.success) {
         setFailure("The created run could not be read. Refresh the Agent before trying again.");
         return;
@@ -513,7 +521,7 @@ function AgentControls({
     if (unconfirmedRunId === null) return;
     setPending(true);
     try {
-      const outcome = await host.client.action(ACCESS_FINISH_AGENT_RUN_ACTION, {
+      const outcome = await host.client.action(ACCESS_FINISH_AGENT_RUN_V2_ACTION, {
         runId: unconfirmedRunId,
         outcome: "cancelled",
       });
@@ -521,7 +529,7 @@ function AgentControls({
         setFailure(outcome.denial.message);
         return;
       }
-      if (!FinishAgentRunResultSchema.safeParse(outcome.result).success) {
+      if (!FinishAgentRunV2ResultSchema.safeParse(outcome.result).success) {
         setFailure("Run cancellation returned an unreadable result. Cleanup is unconfirmed.");
         return;
       }
@@ -548,14 +556,14 @@ function AgentControls({
               disabled={pending}
               data-action={
                 agent.state === "disabled"
-                  ? ACCESS_ENABLE_AGENT_ACTION
-                  : ACCESS_DISABLE_AGENT_ACTION
+                  ? ACCESS_ENABLE_AGENT_V2_ACTION
+                  : ACCESS_DISABLE_AGENT_V2_ACTION
               }
               onClick={() =>
                 void control(
                   agent.state === "disabled"
-                    ? ACCESS_ENABLE_AGENT_ACTION
-                    : ACCESS_DISABLE_AGENT_ACTION,
+                    ? ACCESS_ENABLE_AGENT_V2_ACTION
+                    : ACCESS_DISABLE_AGENT_V2_ACTION,
                 )
               }
             >
@@ -565,11 +573,11 @@ function AgentControls({
               className="credential-agent-control"
               type="button"
               disabled={pending}
-              data-action={ACCESS_RETIRE_AGENT_ACTION}
+              data-action={ACCESS_RETIRE_AGENT_V2_ACTION}
               data-confirming={armed}
               onBlur={() => setArmed(false)}
               onClick={() => {
-                if (armed) void control(ACCESS_RETIRE_AGENT_ACTION);
+                if (armed) void control(ACCESS_RETIRE_AGENT_V2_ACTION);
                 else setArmed(true);
               }}
             >
@@ -599,7 +607,7 @@ function AgentControls({
               host.containerId === null ||
               machineId.trim() === ""
             }
-            data-action={ACCESS_CREATE_RUN_ACTION}
+            data-action={ACCESS_CREATE_RUN_V2_ACTION}
             onClick={() => void start()}
           >
             {pending ? "Working…" : "Start run"}
@@ -630,7 +638,7 @@ function AgentControls({
             className="credential-agent-control"
             type="button"
             disabled={pending}
-            data-action={ACCESS_FINISH_AGENT_RUN_ACTION}
+            data-action={ACCESS_FINISH_AGENT_RUN_V2_ACTION}
             onClick={() => void cancel()}
           >
             Cancel unconfirmed run
@@ -648,8 +656,8 @@ function AgentRuns({
 }: SectionProps & { readonly agentId: string; readonly revision: number }): ReactElement {
   const read = useAccessRead(
     host,
-    ACCESS_LIST_RUNS_ACTION,
-    ListRunsResultSchema,
+    ACCESS_LIST_RUNS_V2_ACTION,
+    ListRunsV2ResultSchema,
     { agentId },
     revision,
   );
@@ -678,7 +686,7 @@ function AgentRuns({
             <button
               className="credential-agent-run"
               type="button"
-              data-action={ACCESS_INSPECT_RUN_ACTION}
+              data-action={ACCESS_INSPECT_RUN_V2_ACTION}
               aria-expanded={selected === run.id}
               aria-label={`Inspect run ${run.id}`}
               onClick={() => setSelected((current) => (current === run.id ? null : run.id))}

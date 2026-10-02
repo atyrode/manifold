@@ -890,7 +890,7 @@ describe("host-administered share recipients", () => {
 });
 
 test("ticket-derived ordinary, terminal and child-share credentials retire with their source approval", () => {
-  const caps: Cap[] = ["tokens:mint", "containers:read", "scenes:write"];
+  const caps = ["tokens:mint", "containers:read", "scenes:write"] satisfies Cap[];
   const fix = recipientFixture(caps);
   try {
     const input = { shareId: fix.share.id, guestPrincipalId: RECIPIENT_GUEST.id };
@@ -947,24 +947,24 @@ test("ticket-derived ordinary, terminal and child-share credentials retire with 
       fix.root,
     );
     expect(() =>
-      fix.auth.mintSessionAgentToken("missing-source", fix.container.id, actor.principal.id),
+      fix.auth.mintTerminalLifecycleToken("missing-source", fix.container.id, actor.principal.id),
     ).toThrow("share_recipient_source_required");
     expect(() =>
-      fix.auth.mintSessionAgentToken(
+      fix.auth.mintTerminalLifecycleToken(
         "wrong-source",
         fix.container.id,
         actor.principal.id,
         childActor.tokenId,
       ),
     ).toThrow("share_recipient_source_refused");
-    const terminal = fix.auth.mintSessionAgentToken(
+    const terminal = fix.auth.mintTerminalLifecycleToken(
       "derived-terminal",
       fix.container.id,
       childActor.principal.id,
       childActor.tokenId,
     );
     expect(() =>
-      fix.auth.mintSessionAgentToken(
+      fix.auth.mintTerminalLifecycleToken(
         "wrong-container",
         "elsewhere",
         childActor.principal.id,
@@ -1027,7 +1027,7 @@ test("ticket-derived ordinary, terminal and child-share credentials retire with 
       ),
     );
     expect(() =>
-      fix.auth.mintSessionAgentToken(
+      fix.auth.mintTerminalLifecycleToken(
         "retired-source",
         fix.container.id,
         actor.principal.id,

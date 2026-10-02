@@ -26,7 +26,7 @@ import {
   StatusRow,
 } from "@manifold-plugin/shell/web";
 import { terminalsManifest } from "@manifold-plugin/terminals";
-import { panelRefId, type FeedTopics } from "@manifold/plugin";
+import { enginePluginsManifest, panelRefId, type FeedTopics } from "@manifold/plugin";
 import type { WebPluginDef } from "./plugin-host.tsx";
 
 /**
@@ -79,7 +79,7 @@ export const ACCESS_CREATE_PRINCIPAL_ACTION = `${accessManifest.id}.createPrinci
 /**
  * WHICH NODES each shared feed subscribes to (ADR 0012). Every entry is a COLLECTION — a
  * plugin's own node — and each member lists every node that MOVES that reading, not only
- * its owner's. Two of them move readings that are not their own, and both are here because
+ * its owner's. Three of them move readings that are not their own, and all are here because
  * the reading would otherwise go stale in a way no cadence is left to cover:
  *
  *   `core.space` — a placement commit births solo compositions, absorbs the emptied ones,
@@ -88,6 +88,8 @@ export const ACCESS_CREATE_PRINCIPAL_ACTION = `${accessManifest.id}.createPrinci
  *   `core.terminals` — a terminal is BORN with a home composition and takes it away when it
  *     is killed (`createHome`, `dropContainer`), so a terminal's lifecycle adds and removes
  *     rows at the index's own top level.
+ *   `engine.plugins` — enablement changes whether machine inventory is readable. A mounted
+ *     reader must lose stale confirmation on disable and read fresh inventory on re-enable.
  *
  * One subscription per node, rather than one per container, because all four answers are
  * workspace-wide readings taken from chrome outside every room they report on — which is also
@@ -112,7 +114,10 @@ export const FEED_TOPICS: FeedTopics = {
     { kind: "plugin", pluginId: spaceManifest.id },
   ],
   attendance: [{ kind: "plugin", pluginId: presenceManifest.id }],
-  machines: [{ kind: "plugin", pluginId: machinesManifest.id }],
+  machines: [
+    { kind: "plugin", pluginId: machinesManifest.id },
+    { kind: "plugin", pluginId: enginePluginsManifest.id },
+  ],
 };
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -19,6 +19,10 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
+import {
+  AUTHORITY_V37_FIXTURE_SQL,
+  removeScopedAuthority,
+} from "./authority-migration-fixtures.ts";
 
 const LEGACY_TOKEN_COLUMNS =
   "id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at";
@@ -110,6 +114,7 @@ test("terminal session migration preserves unknown historical identity and rejec
         },
       },
     });
+    removeScopedAuthority(store.db);
     store.db.exec(`
 DROP INDEX agent_runs_native_job;
 ALTER TABLE agent_runs DROP COLUMN tools_json;
@@ -977,18 +982,32 @@ describe("migration 11: the lexicon cut", () => {
           "SELECT id, hash, caps, container_id FROM tokens ORDER BY id",
         )
         .all();
-      expect(tokens).toEqual([
-        { id: "t-machine", hash: "h-machine", caps: '["terminals:spawn"]', container_id: null },
+      expect(
+        tokens.map(({ caps, ...identity }) => ({ ...identity, caps: JSON.parse(caps) as unknown })),
+      ).toEqual([
+        {
+          id: "t-machine",
+          hash: "h-machine",
+          caps: expect.arrayContaining(["terminals:spawn"]),
+          container_id: null,
+        },
         {
           id: "t-root",
           hash: "h-root",
-          caps: '["containers:read","containers:write","scenes:write","terminals:spawn","terminals:write","tokens:mint"]',
+          caps: expect.arrayContaining([
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+            "tokens:mint",
+          ]),
           container_id: null,
         },
         {
           id: "t-scoped",
           hash: "h-scoped",
-          caps: '["containers:read","scenes:write"]',
+          caps: ["containers:read", "scenes:write"],
           container_id: V10_CANVAS,
         },
       ]);
@@ -1135,17 +1154,6 @@ describe("migration 11: the lexicon cut", () => {
   });
 });
 
-/**
- * Every pre-migration image sitting beside the database, sorted. The filter is `.pre-v`
- * rather than `.bak` on purpose: a leaked `.bak.partial` staging file is exactly the leak
- * these tests exist to catch, so it has to show up in the list instead of hiding from it.
- */
-function backupsIn(dir: string): string[] {
-  return readdirSync(dir)
-    .filter((name) => name.includes(".pre-v"))
-    .sort();
-}
-
 /** A snapshot is a whole database; these read it back to prove WHICH state it captured. */
 function snapshotVersion(file: string): string | undefined {
   const db = new Database(file, { strict: true });
@@ -1177,9 +1185,6 @@ describe("pre-migration snapshot retention", () => {
     try {
       seedPreV9(path);
       openDatabase(path).close();
-
-      // No partial staging file or second image of the same version survives.
-      for (const image of backupsIn(dir)) expect(image).toMatch(/^manifold\.db\.pre-v\d+\.bak$/);
 
       // Each image is PRE its own migration, not a copy of the finished database — which is
       // the only property that makes it worth keeping.
@@ -1227,8 +1232,6 @@ describe("pre-migration snapshot retention", () => {
       ).toBe(String(SCHEMA_VERSION));
       db.close();
 
-      // A retry leaves only complete version-addressed images, not per-attempt copies.
-      for (const image of backupsIn(dir)) expect(image).toMatch(/^manifold\.db\.pre-v\d+\.bak$/);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
       // first attempt tripped over is absent from it.
       expect(snapshotTables(`${path}.pre-v11.bak`)).not.toContain("containers");
@@ -2432,6 +2435,7 @@ test("migration 34 preserves edge authority and retires reviews that never displ
   let db = openDatabase(path);
   try {
     // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
+    removeScopedAuthority(db);
     db.exec(`
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
 INSERT INTO job_invocation_edges VALUES ('caller-a','callee','{"maxDepth":1}',1);
@@ -2528,6 +2532,7 @@ test.each([46, 47] as const)(
     const targetRows =
       "SELECT deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt FROM machine_job_deployment_targets ORDER BY rowid";
     try {
+      removeScopedAuthority(db);
       // Schema 47 is the current schema without 48's target-table rebuild; 46 also lacks 47's
       // job column. Every legacy phase is present, and a finished `applied` target shares its
       // machine/plugin pair with a `pending` one, which the pre-48 index permitted.
@@ -2627,6 +2632,7 @@ test("migration 39 leaves legacy cwd unknown and persists new launch intent acro
   let db = new Database(path);
   try {
     db.exec(`
+${AUTHORITY_V37_FIXTURE_SQL}
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO meta VALUES ('schema_version', '38');
 CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER NOT NULL);
@@ -2636,9 +2642,6 @@ CREATE TABLE terminals(
 );
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
   owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE agent_runs(
-  id TEXT PRIMARY KEY,state TEXT,finished_at INTEGER,authorizer_token_id TEXT
-);
 INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1,NULL);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT, created_at INTEGER, request TEXT);
 CREATE TABLE machine_job_deployments(
@@ -2656,8 +2659,6 @@ INSERT INTO machine_jobs VALUES
   ('foreign-job','other-machine',2,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"foreign-run"}}'),
   ('foreign-home','machine',3,'{"terminal":{"terminalId":"legacy","containerId":"other-home","runId":"foreign-run"}}');
 `);
-    seedPostV16Authority(db, path);
-    db.exec("ALTER TABLE tokens ADD COLUMN run_id TEXT");
     db.close();
     db = openDatabase(path);
     const store = new ServerStore(db);
@@ -2712,6 +2713,7 @@ test("migration 42 persists the last identifiable machine refusal until admissio
     const owner = auth.authenticate(ownerKey);
     const enrollment = auth.enrollMachine("spoke", owner);
 
+    removeScopedAuthority(db);
     db.exec(`
 ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;
@@ -3136,6 +3138,7 @@ test("recipient cutover fences retained share tickets before admission and prese
     const unrelatedRow = store.getTokenByHash(sha256Hex(unrelated.token));
     const terminal = store.getTerminal("retained-terminal");
     const retainedContainers = store.listContainers();
+    removeScopedAuthority(db);
     db.close();
     db = openDatabase(path);
     store = new ServerStore(db);

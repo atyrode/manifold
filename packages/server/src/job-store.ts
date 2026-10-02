@@ -1,6 +1,7 @@
 import {
   formatManifoldUri,
   JobResourceBindingsSchema,
+  projectLegacyCaps,
   type JobResourceBindings,
 } from "@manifold/protocol";
 import { ContainerGrantsSchema, type AuthorityEvidence, type ContainerGrant } from "./auth.ts";
@@ -25,6 +26,13 @@ import {
 } from "../../protocol/src/jobs.ts";
 import type { ServerStore, TraceAttribution } from "./stores.ts";
 import type { JobOccurrence } from "./job-schedules.ts";
+import {
+  initializeAuthoritySnapshots,
+  projectJobCredential,
+  readAuthoritySnapshot,
+  storeAuthoritySnapshot,
+  type AuthoritySnapshot,
+} from "./authority-snapshot.ts";
 export type JobAuditOrigin = Pick<
   TraceAttribution,
   "actor" | "authority" | "door" | "containerId" | "session"
@@ -48,6 +56,8 @@ export interface JobRecord {
    * request's credential at settle. Absent on every row that carries none.
    */
   containerGrants?: readonly ContainerGrant[];
+  /** Faithful hub authority; absent only on released snapshot-less records. */
+  authoritySnapshot?: AuthoritySnapshot;
 }
 export interface JobInstallation {
   machineId: string;
@@ -81,6 +91,7 @@ export class JobStore {
     readonly store: ServerStore,
     private readonly lifecycle: (job: JobRecord, phase: string) => void,
   ) {
+    initializeAuthoritySnapshots(store);
     // Settled jobs stay in `machine_jobs`, so the reads the hub repeats on every tick, owner
     // event and authority change must reach the few live rows through an index rather than
     // scan the whole history (#841). A derived index changes no stored fact, so it is created
@@ -109,6 +120,8 @@ export class JobStore {
         "SELECT request,state,permit,result,audit_origin,decision_id,next_input_seq,stdin_closed,owner_closed,container_grants FROM machine_jobs WHERE job_id=?",
       )
       .get(jobId);
+    const authoritySnapshot =
+      r === null ? undefined : readAuthoritySnapshot(this.store, "job", jobId);
     return r
       ? {
           request: JobRequestSchema.parse(JSON.parse(r.request)),
@@ -120,6 +133,7 @@ export class JobStore {
           nextInputSeq: r.next_input_seq,
           stdinClosed: r.stdin_closed === 1,
           ownerClosed: r.owner_closed === 1,
+          ...(authoritySnapshot === undefined ? {} : { authoritySnapshot }),
           ...(r.container_grants === null
             ? {}
             : { containerGrants: ContainerGrantsSchema.parse(JSON.parse(r.container_grants)) }),
@@ -140,15 +154,25 @@ export class JobStore {
     seq: number,
     actor: string,
     traceId: string,
+    authoritySnapshot?: AuthoritySnapshot,
   ): boolean {
-    return (
-      this.store.db
-        .query(
-          `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
+    return this.store.transaction(() => {
+      const inserted =
+        this.store.db
+          .query(
+            `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
        VALUES(?,?,?,?,?,?,'pending') ON CONFLICT(job_id,request_id) DO NOTHING`,
-        )
-        .run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1
-    );
+          )
+          .run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1;
+      if (inserted)
+        storeAuthoritySnapshot(
+          this.store,
+          "input",
+          JSON.stringify([job.request.jobId, requestId]),
+          authoritySnapshot,
+        );
+      return inserted;
+    });
   }
   inputResult(
     jobId: string,
@@ -174,24 +198,42 @@ export class JobStore {
     request: JobRequest,
     now: number,
     containerGrants: readonly ContainerGrant[] | undefined,
+    authoritySnapshot?: AuthoritySnapshot,
   ): JobRecord {
-    const previous = this.reservation(request);
-    if (previous !== null) return previous;
-    this.store.db
-      .query(
-        "INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at,audit_origin,container_grants) VALUES (?,?,?,?,?,'queued',?,?,?)",
+    return this.store.transaction(() => {
+      const previous = this.reservation(request);
+      if (previous !== null) {
+        if (
+          previous.authoritySnapshot !== undefined &&
+          authoritySnapshot !== undefined &&
+          canonicalJobJson(previous.authoritySnapshot) !== canonicalJobJson(authoritySnapshot)
+        )
+          throw new Error("job_authority_snapshot_conflict");
+        return previous;
+      }
+      if (
+        authoritySnapshot !== undefined &&
+        canonicalJobJson(projectJobCredential(authoritySnapshot.credential)) !==
+          canonicalJobJson(request.credential)
       )
-      .run(
-        request.jobId,
-        request.machineId,
-        request.pluginId,
-        request.requestDigest,
-        canonicalJobJson(request),
-        now,
-        JSON.stringify(this.origin(request)),
-        containerGrants === undefined ? null : canonicalJobJson(containerGrants),
-      );
-    return this.get(request.jobId)!;
+        throw new Error("job_authority_snapshot_mismatch");
+      this.store.db
+        .query(
+          "INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at,audit_origin,container_grants) VALUES (?,?,?,?,?,'queued',?,?,?)",
+        )
+        .run(
+          request.jobId,
+          request.machineId,
+          request.pluginId,
+          request.requestDigest,
+          canonicalJobJson(request),
+          now,
+          JSON.stringify(this.origin(request)),
+          containerGrants === undefined ? null : canonicalJobJson(containerGrants),
+        );
+      storeAuthoritySnapshot(this.store, "job", request.jobId, authoritySnapshot);
+      return this.get(request.jobId)!;
+    });
   }
   active(machineId?: string): JobRecord[] {
     const rows =
@@ -502,14 +544,16 @@ export class JobStore {
               policyRevision: row.policy_revision,
               allowed: evidence.allowed,
               refusal: evidence.refusal,
-              grants: evidence.requirements.map(({ requirement, winner, revision, allowed }) => ({
-                node: formatManifoldUri(requirement.ref),
-                cap: requirement.cap,
-                allowed,
-                grantId: winner?.id ?? null,
-                authorizer: winner?.createdBy ?? null,
-                revision,
-              })),
+              grants: evidence.requirements.flatMap(({ requirement, winner, revision, allowed }) =>
+                projectLegacyCaps([requirement.cap]).map((cap) => ({
+                  node: formatManifoldUri(requirement.ref),
+                  cap,
+                  allowed,
+                  grantId: winner?.id ?? null,
+                  authorizer: winner?.createdBy ?? null,
+                  revision,
+                })),
+              ),
               consents: JSON.parse(row.consents),
             }
           : null,

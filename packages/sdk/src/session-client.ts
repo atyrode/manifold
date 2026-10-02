@@ -195,6 +195,8 @@ export interface SessionEvents {
    * nothing about it is off.
    */
   plugins_changed: (roster: PluginRoster, developerMode: boolean) => void;
+  /** Current coarse workspace authority changed, or its physical connection retired. */
+  authority_changed: () => void;
 }
 
 /**
@@ -207,6 +209,13 @@ interface TopicSubscription {
   readonly handler: (event: ServerEvent) => void;
   release: (() => void) | null;
 }
+
+interface WorkspaceAuthorityState {
+  readonly workspaceCaps: readonly Cap[];
+  readonly workspaceEvents: boolean;
+}
+
+const NO_WORKSPACE_CAPS: readonly Cap[] = [];
 
 type EventKey = ChannelFrame["type"] | keyof SessionEvents;
 type Handler = (...args: never[]) => void;
@@ -276,6 +285,8 @@ export class SessionClient {
   self: Principal | null = null;
   selfConnId: string | null = null;
   private selfCapsState: readonly Cap[] = [];
+  private workspaceAuthority: WorkspaceAuthorityState | null = null;
+  private readonly subscriptionSyncWaits = new Set<() => void>();
   status: ConnectionStatus = "idle";
   private connectionIdState: string | null = null;
 
@@ -283,6 +294,7 @@ export class SessionClient {
     SessionClientOptions;
   /** This handle's room channel or roomless observer; null before connect and after close. */
   private channel: PooledSession | null = null;
+  private attachmentEpoch = 0;
   private listeners = new Map<EventKey, Set<Handler>>();
   private outbox: ClientMessageBody[] = [];
   private closeError: SessionConnectionError | null = null;
@@ -341,6 +353,66 @@ export class SessionClient {
    */
   selfCaps(): readonly Cap[] {
     return this.selfCapsState;
+  }
+
+  /** Effective caps at the workspace root for this physical connection's credential. */
+  workspaceCaps(): readonly Cap[] {
+    return this.workspaceAuthority?.workspaceCaps ?? NO_WORKSPACE_CAPS;
+  }
+
+  /** A coarse event-plane hint, never a per-topic admission or action authorization. */
+  workspaceEventsAvailable(): boolean {
+    return this.workspaceAuthority?.workspaceEvents ?? false;
+  }
+
+  onAuthorityChange(callback: () => void): () => void {
+    return this.on("authority_changed", callback);
+  }
+
+  /** Orders declarations before a catch-up read; false preserves the caller's polling. */
+  syncSubscriptions(): Promise<boolean> {
+    const channel = this.channel;
+    const authority = this.workspaceAuthority;
+    if (channel === null || this.status !== "open" || authority === null) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      const retire = (): void => {
+        this.subscriptionSyncWaits.delete(retire);
+        resolve(false);
+      };
+      this.subscriptionSyncWaits.add(retire);
+      void channel.syncSubscriptions().then((synchronized) => {
+        this.subscriptionSyncWaits.delete(retire);
+        resolve(
+          synchronized &&
+            this.channel === channel &&
+            this.status === "open" &&
+            this.workspaceAuthority === authority,
+        );
+      });
+    });
+  }
+
+  private retireSubscriptionSyncWaits(): void {
+    for (const retire of this.subscriptionSyncWaits) retire();
+  }
+
+  private updateWorkspaceAuthority(authority: WorkspaceAuthorityState | null): void {
+    const prior = this.workspaceAuthority;
+    if (
+      prior === authority ||
+      (prior !== null &&
+        authority !== null &&
+        prior.workspaceEvents === authority.workspaceEvents &&
+        prior.workspaceCaps.length === authority.workspaceCaps.length &&
+        prior.workspaceCaps.every((cap, index) => cap === authority.workspaceCaps[index]))
+    ) {
+      return;
+    }
+    this.retireSubscriptionSyncWaits();
+    this.workspaceAuthority = authority;
+    this.emit("authority_changed");
   }
 
   private installDoc(doc: Y.Doc): void {
@@ -425,6 +497,7 @@ export class SessionClient {
       this.terminalSizing.clear();
       this.emit("terminals_changed");
     }
+    if (status !== "open") this.retireSubscriptionSyncWaits();
     this.emit("status", status);
   }
 
@@ -484,6 +557,7 @@ export class SessionClient {
   }
 
   close(): void {
+    const retiredEpoch = ++this.attachmentEpoch;
     this.closeError = null;
     const channel = this.channel;
     this.channel = null;
@@ -497,6 +571,7 @@ export class SessionClient {
     // Releasing drops this room or observer and closes the socket only when no pooled handle remains.
     channel?.release();
     this.setStatus("closed");
+    if (this.attachmentEpoch === retiredEpoch) this.updateWorkspaceAuthority(null);
   }
 
   /** The join THIS room wants, rebuilt per attempt so resume hints are current. */
@@ -515,6 +590,7 @@ export class SessionClient {
 
   /** Acquires this handle on the pooled connection its (url, token) names. */
   private attach(): void {
+    const attachmentEpoch = ++this.attachmentEpoch;
     const options = {
       url: this.opts.url,
       token: this.opts.token,
@@ -525,15 +601,19 @@ export class SessionClient {
         : {}),
     };
     const connectionFrame = (body: ConnectionFrame): void => {
-      this.handleConnection(body);
+      if (this.attachmentEpoch === attachmentEpoch) this.handleConnection(body);
     };
     const transportPhase = (phase: ConnectionStatus): void => {
+      if (this.attachmentEpoch !== attachmentEpoch) return;
       this.connectionIdState = null;
       this.setStatus(phase);
+      if (this.attachmentEpoch === attachmentEpoch) this.updateWorkspaceAuthority(null);
     };
     const transportClosed = (
       failure: { readonly code: number; readonly reason: string } | null,
     ): void => {
+      if (this.attachmentEpoch !== attachmentEpoch) return;
+      const retiredEpoch = ++this.attachmentEpoch;
       const channelId = this.channelId;
       this.forgetSubscriptions();
       this.channel = null;
@@ -547,29 +627,34 @@ export class SessionClient {
               failure.reason,
             );
       this.setStatus("closed");
+      if (this.attachmentEpoch === retiredEpoch) this.updateWorkspaceAuthority(null);
     };
-    this.channel =
+    const channel =
       this.opts.containerId === null
         ? acquireObserver(options, {
             connectionFrame,
             transportPhase,
             observed: () => {
-              this.setStatus("open");
+              if (this.attachmentEpoch === attachmentEpoch && this.channel?.isOpen()) {
+                this.setStatus("open");
+              }
             },
             transportClosed,
           })
         : acquireChannel(options, {
             joinBody: () => this.joinBody(),
             receive: (body) => {
-              this.handle(body);
+              if (this.attachmentEpoch === attachmentEpoch) this.handle(body);
             },
             connectionFrame,
             transportPhase,
             channelClosed: (code, reason, terminal) => {
+              if (this.attachmentEpoch !== attachmentEpoch) return;
               if (!terminal) {
                 this.setStatus("reconnecting");
                 return;
               }
+              const retiredEpoch = ++this.attachmentEpoch;
               const channelId = this.channelId;
               this.releaseSubscriptions();
               this.channel = null;
@@ -580,10 +665,17 @@ export class SessionClient {
                 reason,
               );
               this.setStatus("closed");
+              if (this.attachmentEpoch === retiredEpoch) this.updateWorkspaceAuthority(null);
             },
             transportClosed,
           });
-    for (const record of this.subscriptions) record.release = this.channel.subscribe(record.topics);
+    // Replayed state can synchronously close or replace this handle before acquisition returns.
+    if (this.attachmentEpoch !== attachmentEpoch) {
+      channel.release();
+      return;
+    }
+    this.channel = channel;
+    for (const record of this.subscriptions) record.release = channel.subscribe(record.topics);
   }
 
   /**
@@ -635,6 +727,9 @@ export class SessionClient {
         this.emit("plugins_changed", body.roster, developerMode);
         return;
       }
+      case "authority_context":
+        this.updateWorkspaceAuthority(body);
+        return;
       case "event":
         this.deliverEvent(body);
         return;

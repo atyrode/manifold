@@ -167,6 +167,8 @@ test("retargeting the first shared reader keeps both destinations and committed 
   await browser.evaluate("window.polledResourceFixture.reject(8)");
   await text("first-status", "error:B:1");
   await text("second-status", "ok:A:1");
+  await text("first-value", "B:live");
+  await text("second-value", "A:event");
   await browser.clickTestId("first-refresh");
   await reads(9);
   await answer(9, "live");
@@ -273,3 +275,85 @@ test("old completions cannot cross a last-reader teardown or replace a new gener
   await sleep(100);
   await reads(5);
 }, 60_000);
+
+for (const initialOnline of [false, true]) {
+  test(`mounted machine readers lose ${initialOnline ? "online" : "offline"} confirmation on disable and catch up on re-enable`, async () => {
+    if (server === undefined) throw new Error("Fixture server did not start");
+    await browser.goto(
+      `http://127.0.0.1:${String(server.port)}/?scenario=machines&initialOnline=${String(initialOnline)}`,
+    );
+    await until(
+      () =>
+        browser.evaluate<boolean>(
+          'document.querySelectorAll("[data-inventory-reader]").length === 3',
+        ),
+      5_000,
+      "mounted canvas, composition and fleet readers",
+    );
+    await browser.evaluate(
+      'window.retainedInventoryReaders = [...document.querySelectorAll("[data-inventory-reader]")]; undefined',
+    );
+    const request = async (count: number, enabled: boolean, online: boolean): Promise<void> => {
+      await until(
+        () =>
+          browser.evaluate<boolean>(
+            `window.inventoryFeedFixture.requests.length >= ${String(count)}`,
+          ),
+        5_000,
+        `machine inventory read ${String(count)}`,
+      );
+      const requests = await browser.evaluate<
+        readonly { id: number; enabled: boolean; online: boolean }[]
+      >("window.inventoryFeedFixture.requests");
+      expect(requests).toHaveLength(count);
+      expect(requests[count - 1]).toEqual({ id: count, enabled, online });
+    };
+    const inventory = async (value: string, failure: string, mode: string): Promise<void> => {
+      for (const name of ["canvas", "composition", "fleet"]) {
+        await text(`${name}-inventory`, value);
+        await text(`${name}-failure`, failure);
+      }
+      expect(
+        await browser.evaluate<{ mode: string; subscribers: number }>(
+          `(() => {
+            const { mode, subscribers } = window.inventoryFeedFixture.report()[0];
+            return { mode, subscribers };
+          })()`,
+        ),
+      ).toEqual({ mode, subscribers: 3 });
+      expect(
+        await browser.evaluate<boolean>(
+          `window.retainedInventoryReaders.every((node, index) =>
+            node === document.querySelectorAll("[data-inventory-reader]")[index])`,
+        ),
+      ).toBe(true);
+    };
+
+    await request(1, true, initialOnline);
+    await browser.evaluate("window.inventoryFeedFixture.finish(1)");
+    await inventory(initialOnline ? "online" : "offline", "readable", "events");
+
+    // Only the roster topic changes. The machine's own declarations still exist, and all
+    // readers stay mounted: a last-reader cache eviction cannot hide stale confirmation.
+    await browser.evaluate("window.inventoryFeedFixture.setEnabled(false)");
+    await request(2, false, initialOnline);
+    await browser.evaluate("window.inventoryFeedFixture.finish(2)");
+    await inventory("UNKNOWN", "plugin_disabled", "timer");
+
+    // Reality changes behind the ordinary refused door. No reader may turn the refusal
+    // into a successful empty list or keep the earlier online/offline determination.
+    await browser.evaluate(`window.inventoryFeedFixture.setOnline(${String(!initialOnline)})`);
+    await request(3, false, !initialOnline);
+    await browser.evaluate("window.inventoryFeedFixture.finish(3)");
+    await inventory("UNKNOWN", "plugin_disabled", "timer");
+
+    await browser.evaluate("window.inventoryFeedFixture.setEnabled(true)");
+    await request(4, true, !initialOnline);
+    // Eligibility and a live socket alone cannot retire polling or republish old rows.
+    await inventory("UNKNOWN", "plugin_disabled", "timer");
+    await browser.evaluate("window.inventoryFeedFixture.finish(4)");
+    await inventory(initialOnline ? "offline" : "online", "readable", "events");
+    await sleep(100);
+    await request(4, true, !initialOnline);
+  }, 60_000);
+}

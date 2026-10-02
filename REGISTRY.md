@@ -70,6 +70,8 @@ must never be taught one.
       "globs": [
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
+        "packages/server/src/action-authority-fence.ts",
+        "packages/server/src/builtin-code-identity.ts",
         "packages/server/src/plugin-installs.ts",
         "packages/server/src/plugin-releases.ts",
         "packages/server/src/plugin-updates.ts",
@@ -86,14 +88,14 @@ must never be taught one.
         "packages/server/src/index.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition. Mounted projection scopes, optional titlebar contributions and the single tile-motion owner are neutral renderer contracts admitted by ADR 0024, not plugin policy.",
+      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. Server-only action preparers declare conjunctive requirements inside an admitted ceiling; the shared read-only preparation and exact-code live effect fence are neutral arbitration, not terminal policy. It ASSEMBLES the roster; it never renders a composition. Mounted projection scopes, optional titlebar contributions and the single tile-motion owner are neutral renderer contracts admitted by ADR 0024, not plugin policy.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
       "id": "identity-caps",
       "globs": ["packages/server/src/auth.ts", "packages/web/src/identity.tsx"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "who is asking and what they may do, plus this device's token custody. Every door presupposes it, it knows no domain noun, and it is the one call surface the A5 evaluator replaces. Administration of principals and tokens is NOT here: those verbs are core.access.",
+      "verdict": "who is asking and what they may do, plus this device's token custody. Every door presupposes it, it knows no domain noun, and it is the one call surface the A5 evaluator replaces. Correlated target/reach/capability scopes, credential-owned grant membership and live lineage constrain the same evaluator; a capability union is discovery, never a caps-times-targets grant. Administration of principals and tokens is NOT here: those verbs are core.access.",
       "adr": "docs/decisions/0011-permission-waterfall.md"
     },
     {
@@ -117,6 +119,7 @@ must never be taught one.
         "packages/server/src/stream-service.ts",
         "packages/server/src/machine-ws.ts",
         "packages/server/src/job-service.ts",
+        "packages/server/src/authority-snapshot.ts",
         "packages/server/src/job-store.ts",
         "packages/server/src/job-schedules.ts",
         "packages/server/src/job-deployments.ts",
@@ -300,6 +303,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle; owner-quoted bounded direct-service calls share atomic allowance admission, current-authority receipt recovery and original-owner settlement"
     },
     {
+      "glob": "packages/server/src/authority-snapshot.ts",
+      "why": "ADR 0058 hub-only deferred authority carrier in the transport pillar: bootstrap because effects need retained hub authority before execution; neutral because it preserves protocol ceilings and binding without selecting plugin policy; arbitration because action/native attenuation and delayed effects cannot trust receiver claims"
+    },
+    {
       "glob": "packages/server/src/job-store.ts",
       "why": "ADR 0033 durable immutable request reservations, owner fencing, installation evidence and replay tombstones"
     },
@@ -338,6 +345,14 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/plugin-host.ts",
       "why": "action dispatch: the denial ladder, capability intersection, enablement, roster change fan-out"
+    },
+    {
+      "glob": "packages/server/src/action-authority-fence.ts",
+      "why": "ADR 0058 invocation-private live fence in the assembly-engine pillar: bootstrap because handler effects need host admission first; neutral because requirements and targets are authored data; arbitration because a handler cannot judge its own continued authority or code binding"
+    },
+    {
+      "glob": "packages/server/src/builtin-code-identity.ts",
+      "why": "ADR 0058 executable preparation identity in the assembly-engine pillar: bootstrap because admission needs code identity before handler execution; neutral because it hashes executable dependencies rather than feature names; arbitration because a plugin cannot assert identity for a different executing implementation"
     },
     {
       "glob": "packages/server/src/shared-modules.ts",
@@ -573,7 +588,7 @@ work list rather than a ledger of debt: every row lands in this change.
 | notes/text element renderer + its inline editor                          | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                        |
 | canvas renderer, portal internals, canvas toolbar, viewport              | `core.canvas`               | moved; decomposed `core.shell.container-view`; absorbed stroke geometry |
 | composition-route internals, tile drop gestures, carry previews          | `core.compositions`         | decomposes `core.shell.container-view`                                  |
-| machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory and drain are actions; color lives on the wire    |
+| machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory, drain and atomic host-view metadata are actions  |
 | container/folder CRUD, index moves, and the index reads (bespoke routes) | `core.index` actions        | routes deleted, callers migrated (D13); reads keep container scope      |
 | terminal pool/park rows, the terminal index, terminal rows               | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)                 |
 | token and principal administration routes                                | `core.access`               | identity mechanism stays floor; administration converts now             |
@@ -2304,15 +2319,15 @@ seconds. RED names the resource and the measured rate.
 their timers for subscriptions on the session channel (ADR 0012), so a steady workspace asks
 nothing at all — but the ceilings stay in the table rather than leaving it, because a resource
 with no row is a resource that escaped the budget, and a subscription that regresses to a timer
-has to land on a number somebody wrote down. The cadence itself is not gone: it is the documented
-fallback for exactly two states, a socket that is down and a feed with no topics at all (the
-roomless workspace root), and it never runs beside a live subscription. Neither state is what this
-table measures, which is why zero is the honest ceiling and not an aspiration.
+has to land on a number somebody wrote down. The cadence remains the honest fallback for
+disconnected, event-ineligible, unsynchronized or not-yet-caught-up feeds and feeds without
+topics. An open socket does not prove workspace event eligibility. The idle table measures
+synchronized eligible feeds after catch-up, whose steady network ceiling remains zero.
 
-The settle window is where the honest exception lives. A subscription-backed feed still takes ONE
-initial read — catch-up is reading state, never draining a backlog — plus one more if the socket
-reached `open` after the mount read, which closes the mount-to-subscribe gap. Both land inside
-the settle, and both are counted by the feed as `initial`/`resume` rather than `timer`/`event`.
+The settle window is where the honest exception lives. Event-backed feeds declare interests,
+await the connection's bounded subscription-ordering fence, then take the qualifying catch-up
+read. A read issued before that fence cannot close the gap. Initial/resume reads land inside
+settle; fallback polling remains until the eligible catch-up succeeds.
 What the table governs is the steady state AFTER that, where the answer is zero.
 
 Four rules give it teeth:
@@ -2332,7 +2347,7 @@ Four rules give it teeth:
   inferred from a rate. A timer beside a live subscription is RED even at a rate the table would
   otherwise admit.
 
-`feed` is the join between this table and the feed vocabulary those five names live in, and it is
+`feed` is the join between this table and the feed vocabulary those resource names live in, and it is
 checked in both directions like every other runtime join here: a row whose feed is absent from
 the page is RED, and a live feed with no row is the undeclared-resource rule.
 
@@ -2375,6 +2390,12 @@ asserts is the same defect as an undeclared door, one register further in.
         "feed": "core.machines.list",
         "perMin": 0,
         "why": "the machine roster. ZERO: one subscription to manifold://plugin/core.machines. It was the slowest timer of the five on the grounds that a machine coming online is not a thing an operator waits on; with `machine_online` gated on a genuine transition, the operator no longer waits at all"
+      },
+      {
+        "resource": "core.machines.listHostViews",
+        "feed": "core.machines.listHostViews",
+        "perMin": 0,
+        "why": "optional host/account display metadata. ZERO after synchronized eligible catch-up: the shared machine-plugin subscription invalidates registry changes; scoped or unsynchronized viewers retain the same shared fallback, never a per-account timer"
       }
     ],
     "idleCanvas": {

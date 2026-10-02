@@ -11,6 +11,7 @@ import {
   type TerminalInfo,
 } from "@manifold/protocol";
 import { LocalOutputError, runTerminalClient, type TerminalClientStdio } from "./client.ts";
+import { terminalsManifest } from "../src/index.ts";
 
 const TOKEN = "private-terminal-bearer-never-print";
 const ORIGIN = "http://private-hub.invalid";
@@ -106,6 +107,19 @@ class Socket {
         attendance: [],
         terminals: [],
       });
+      this.onmessage?.({
+        data: JSON.stringify({
+          type: "plugins",
+          roster: [
+            {
+              manifest: terminalsManifest,
+              source: "plugin",
+              enabled: true,
+              actions: PROTOCOL.actions,
+            },
+          ],
+        }),
+      } as MessageEvent);
     } else if (frame["type"] === "terminal_attach") {
       this.attached = true;
       this.receive({
@@ -251,6 +265,29 @@ describe("terminal-local client boundaries", () => {
       }),
     ).toBe(0);
     expect(JSON.parse(text).machines[0].id).toBe(MACHINE.id);
+  });
+
+  test("doctor admits its existing terminal but never probes shell authority by launching", async () => {
+    const fixture = harness();
+    let text = "";
+    const status = await runTerminalClient(["doctor"], {
+      environment: environment(),
+      output: (value) => {
+        text = value;
+      },
+      webSocketFactory: fixture.factory,
+    });
+    const result = JSON.parse(text) as {
+      ok: boolean;
+      session: string;
+      remoteShellLaunch: string;
+    };
+    expect(status).toBe(0);
+    expect(result.ok).toBe(true);
+    expect(result.session).toBe("admitted");
+    expect(result.remoteShellLaunch).toBe("not_probed");
+    expect(fixture.creates).toBe(0);
+    expect(fixture.kills).toEqual([]);
   });
 
   test("rejects protocol skew before admission and never reflects unsafe HTTP errors or inherited values", async () => {

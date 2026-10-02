@@ -24,6 +24,7 @@ import {
 import { sameTileRef, tileIdForRef, tileLeafIds } from "@manifold/scene";
 import type { Room, RoomManager, TileTreeDisciplines } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
+import { requireActionEffects } from "./action-preparation-phase.ts";
 
 /**
  * THE CONTRIBUTED HALF of the placement vocabulary, as the executor asks for it: the
@@ -251,6 +252,7 @@ export class PlaceExecutor {
    * is carried out.
    */
   place(request: PlaceRequest): PlaceOutcome {
+    requireActionEffects();
     return this.executePlace(request, null);
   }
 
@@ -260,6 +262,7 @@ export class PlaceExecutor {
    * after a successful write.
    */
   placeWithTraceTargets(request: PlaceRequest): PlaceTraceResult {
+    requireActionEffects();
     const containerIds = new Set<string>();
     const outcome = this.executePlace(request, containerIds);
     return { outcome, containerIds: [...containerIds] };
@@ -561,6 +564,7 @@ export class PlaceExecutor {
    * portal now, and a route reimplementing most of a rule is how the rule comes apart.
    */
   deleteContainer(containerId: string): void {
+    requireActionEffects();
     this.removeReferences(containerId);
     this.terminals.dropContainer(containerId);
     this.rooms.drop(containerId);
@@ -1794,6 +1798,7 @@ export class PlaceExecutor {
    * terminal. A composition emptied this way retires with it.
    */
   removeTile(containerId: string, tileId: string): "ok" | PlaceFailure {
+    requireActionEffects();
     const container = this.store.getContainer(containerId);
     if (container === null) return "not_found";
     if (!this.holdsTileTree(container.discipline)) return "conflict";
@@ -1838,6 +1843,7 @@ export class PlaceExecutor {
    * second lookalike path.
    */
   killTerminal(terminalId: string, reason: "killed" | "exited" = "killed"): "ok" | "not_found" {
+    requireActionEffects();
     const placed = this.terminals.placedTerminal(terminalId);
     if (placed === null) return "not_found";
     const room = this.rooms.get(placed.containerId);
@@ -1868,6 +1874,7 @@ export class PlaceExecutor {
    * might never arrive, not the identity. Returns the home's leaf id.
    */
   createHome(homeId: string, terminalId: string, name: string): string | null {
+    requireActionEffects();
     this.store.createContainer({
       id: homeId,
       name: name.slice(0, MAX_CONTAINER_NAME),
@@ -1889,6 +1896,7 @@ export class PlaceExecutor {
    * pointing at one.
    */
   retireHome(containerId: string): void {
+    requireActionEffects();
     const container = this.store.getContainer(containerId);
     if (container === null || !this.holdsTileTree(container.discipline)) return;
     const room = this.rooms.get(containerId);

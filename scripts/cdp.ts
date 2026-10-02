@@ -428,25 +428,60 @@ export class Browser {
   }
 
   async evaluate<T>(expression: string): Promise<T> {
-    const frame = await this.send("Runtime.evaluate", {
+    // CDP's awaitPromise callback is weak. Retain the returned remote object until
+    // awaiting/serialization finishes, then release the exact evaluation group.
+    const objectGroup = `manifold-evaluation-${String(this.nextId)}`;
+    let frame = await this.send("Runtime.evaluate", {
       expression,
-      returnByValue: true,
-      awaitPromise: true,
+      objectGroup,
+      returnByValue: false,
+      awaitPromise: false,
     });
-    if (frame.error !== undefined) throw new Error(`CDP evaluation failed: ${frame.error.message}`);
-    const exception = frame.result?.["exceptionDetails"] as
-      { text?: string; exception?: unknown } | undefined;
-    if (exception !== undefined) {
-      throw new Error(
-        `Page evaluation failed: ${
-          exception.exception === undefined
-            ? (exception.text ?? "unknown exception")
-            : describeRemoteObject(exception.exception)
-        }`,
-      );
+    const result = frame.result?.["result"];
+    const remote = typeof result === "object" && result !== null ? result : null;
+    const objectId =
+      remote !== null && "objectId" in remote && typeof remote.objectId === "string"
+        ? remote.objectId
+        : null;
+    const isPromise = remote !== null && "subtype" in remote && remote.subtype === "promise";
+    try {
+      if (
+        objectId !== null &&
+        frame.result?.["exceptionDetails"] === undefined &&
+        frame.error === undefined
+      ) {
+        frame = await this.send(
+          isPromise ? "Runtime.awaitPromise" : "Runtime.callFunctionOn",
+          isPromise
+            ? { promiseObjectId: objectId, returnByValue: true }
+            : { objectId, functionDeclaration: "function() { return this; }", returnByValue: true },
+        );
+      }
+      if (frame.error !== undefined)
+        throw new Error(`CDP evaluation failed: ${frame.error.message}`);
+      const exception = frame.result?.["exceptionDetails"];
+      if (exception !== undefined) {
+        const details = typeof exception === "object" && exception !== null ? exception : null;
+        const fault = details !== null && "exception" in details ? details.exception : undefined;
+        const text =
+          details !== null && "text" in details && typeof details.text === "string"
+            ? details.text
+            : "unknown exception";
+        throw new Error(
+          `Page evaluation failed: ${fault === undefined ? text : describeRemoteObject(fault)}`,
+        );
+      }
+      const response = frame.result?.["result"];
+      const value =
+        typeof response === "object" && response !== null && "value" in response
+          ? response.value
+          : undefined;
+      // Callers supply the type of their JavaScript expression; CDP returns unknown.
+      const typedValue = value as T;
+      return typedValue;
+    } finally {
+      if (objectId !== null) await this.send("Runtime.releaseObjectGroup", { objectGroup });
     }
-    const value = (frame.result?.["result"] as { value?: T } | undefined)?.value;
-    return value as T;
   }
 
   /**

@@ -15,6 +15,12 @@ import {
   type CredentialReference,
 } from "./auth.ts";
 import type { ServerStore } from "./stores.ts";
+import {
+  AuthoritySnapshotSchema,
+  cloneAuthoritySnapshot,
+  normalizeAuthoritySnapshot,
+  type AuthoritySnapshot,
+} from "./authority-snapshot.ts";
 
 export interface InstanceServiceRecord {
   serviceId: string;
@@ -24,6 +30,7 @@ export interface InstanceServiceRecord {
   policy: ServicePolicy;
   enabled: boolean;
   credential: CredentialReference | null;
+  authoritySnapshot?: AuthoritySnapshot;
   jobId: string | null;
   configuredBy: string;
   configuredAt: number;
@@ -46,6 +53,7 @@ const storedConfiguration = z.strictObject({
   policy: ServicePolicySchema,
   enabled: z.boolean(),
   traceId: z.string().min(1).max(256),
+  authoritySnapshot: AuthoritySnapshotSchema.transform(normalizeAuthoritySnapshot).optional(),
 });
 
 function record(row: InstanceServiceRow): InstanceServiceRecord {
@@ -58,7 +66,11 @@ function record(row: InstanceServiceRow): InstanceServiceRecord {
     policy: configuration.policy,
     enabled: configuration.enabled,
     credential:
-      row.credential === null ? null : JobCredentialSchema.parse(JSON.parse(row.credential)),
+      configuration.authoritySnapshot?.credential ??
+      (row.credential === null ? null : JobCredentialSchema.parse(JSON.parse(row.credential))),
+    ...(configuration.authoritySnapshot === undefined
+      ? {}
+      : { authoritySnapshot: configuration.authoritySnapshot }),
     jobId: row.job_id,
     configuredBy: row.configured_by,
     configuredAt: row.configured_at,
@@ -164,6 +176,8 @@ export class InstanceServiceStore {
             requirements,
           )
         : null;
+      const authoritySnapshot =
+        credential === null ? undefined : cloneAuthoritySnapshot({ credential });
       // A sent admission still owns its old lifetime. Keep its dedicated authority
       // until the owner proves empty; external revocation remains an independent fence.
       const retiring = previous?.jobId
@@ -184,6 +198,7 @@ export class InstanceServiceStore {
         policy,
         enabled: args.enabled,
         credential,
+        ...(authoritySnapshot === undefined ? {} : { authoritySnapshot }),
         jobId: null,
         configuredBy: currentActor.principal.id,
         configuredAt: this.runtime.now(),
@@ -202,7 +217,12 @@ export class InstanceServiceStore {
           current.revision,
           machineId,
           current.pluginId,
-          canonicalJobJson({ policy, enabled: args.enabled, traceId }),
+          canonicalJobJson({
+            policy,
+            enabled: args.enabled,
+            traceId,
+            ...(authoritySnapshot === undefined ? {} : { authoritySnapshot }),
+          }),
           credential === null ? null : canonicalJobJson(credential),
           current.configuredBy,
           current.configuredAt,
@@ -244,11 +264,22 @@ export class InstanceServiceStore {
         current.configuredBy,
         requirements,
       );
+      const authoritySnapshot = cloneAuthoritySnapshot({ credential });
       this.store.db
         .query(
-          "UPDATE native_instance_services SET credential=?,job_id=NULL WHERE service_id=? AND revision=?",
+          "UPDATE native_instance_services SET credential=?,configuration=?,job_id=NULL WHERE service_id=? AND revision=?",
         )
-        .run(canonicalJobJson(credential), serviceId, revision);
+        .run(
+          canonicalJobJson(credential),
+          canonicalJobJson({
+            policy: current.policy,
+            enabled: current.enabled,
+            traceId: current.traceId,
+            authoritySnapshot,
+          }),
+          serviceId,
+          revision,
+        );
       this.store.addEvent(
         null,
         this.runtime.now(),
@@ -256,7 +287,7 @@ export class InstanceServiceStore {
         "service_credential_reminted",
         { serviceId, machineId: current.machineId, previousTokenId },
       );
-      return { ...current, credential, jobId: null };
+      return { ...current, credential, authoritySnapshot, jobId: null };
     });
   }
 

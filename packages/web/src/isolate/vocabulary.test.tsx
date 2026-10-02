@@ -39,12 +39,13 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
       import { defineWebPlugin } from ${JSON.stringify(Bun.resolveSync("@manifold/plugin-kit/web", import.meta.dir))};
       function Form({ arg = {}, host }) {
         if (arg.empty) return createElement(Empty, null, arg.empty);
-        const { before, after, visible = true, value = "server" } = arg;
+        const { before, after, visible = true, value = "server", readOnly = false, observeBlur = false } = arg;
         return createElement(Fragment, null,
           before ? createElement(Text, { key: "before", "data-testid": "before" }, "Before") : null,
           visible ? createElement(Input, {
-            key: "field", label: "Name", value,
+            key: "field", label: "Name", value, readOnly,
             onChange: edited => { void host.client.action("example.frame.edit", { value: edited }); },
+            onBlur: observeBlur ? () => { void host.client.action("example.frame.blur", {}); } : undefined,
           }) : null,
           after ? createElement(Text, { key: "after", "data-testid": "after" }, "After") : null);
       }
@@ -73,7 +74,7 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
       import { createElement } from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
       import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", import.meta.dir))};
       import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
-      import { Empty } from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
+      import { Empty, Input } from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
       import { VocabularyRenderer } from ${JSON.stringify(resolve(import.meta.dir, "vocabulary.tsx"))};
       const worker = new Worker("/worker.js", { type: "module" });
       const root = createRoot(document.getElementById("root"));
@@ -93,12 +94,13 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
       };
       const init = { t: "init", pluginId: "example.frame", principal, caps: [], containerId: null };
       const calls = [], barriers = [], errors = [];
+      let nativeChanges = 0, nativeBlurs = 0, workerBlurs = 0;
       let mounted = false, inputEvent, pendingPaint;
       worker.addEventListener("error", event => errors.push(event.message));
       worker.onmessage = ({ data: frame }) => {
         if (frame.t === "ready") barriers.shift()?.();
         else if (frame.t === "render") {
-          inputEvent = fieldEvent(frame.tree);
+          inputEvent = fieldNode(frame.tree)?.event;
           lastTree = frame.tree;
           paintTree();
           pendingPaint?.resolve();
@@ -106,6 +108,9 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
         } else if (frame.t === "call") {
           if (frame.method === "action" && frame.args[0] === "example.frame.edit") {
             calls.push(frame.args[1].value);
+            worker.postMessage({ t: "reply", id: frame.id, ok: true, result: { ok: true, result: {} } });
+          } else if (frame.method === "action" && frame.args[0] === "example.frame.blur") {
+            workerBlurs += 1;
             worker.postMessage({ t: "reply", id: frame.id, ok: true, result: { ok: true, result: {} } });
           } else errors.push("Unexpected host call: " + frame.method);
         } else if (frame.t === "fault") {
@@ -122,9 +127,9 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
         await barrier.promise;
         if (errors.length) throw new Error(errors.join("; "));
       }
-      function fieldEvent(node) {
-        if (node.type === "input") return node.event;
-        if (node.type === "box") return node.children.map(fieldEvent).find(Boolean);
+      function fieldNode(node) {
+        if (node.type === "input") return node;
+        if (node.type === "box") return node.children.map(fieldNode).find(Boolean);
       }
       window.frameFixture = {
         async paint(props) {
@@ -138,6 +143,21 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
           await painted.promise;
         },
         inputEvent: () => inputEvent,
+        readOnlyDeclared: () => {
+          const field = fieldNode(lastTree);
+          return field !== undefined && "readOnly" in field;
+        },
+        native(props) {
+          flushSync(() => reference.render(props.visible === false ? null : createElement(Input, {
+            label: "Native credential", value: props.value, readOnly: props.readOnly,
+            onChange: () => { nativeChanges += 1; },
+            onBlur: () => { nativeBlurs += 1; },
+          })));
+        },
+        async counts() {
+          await settle();
+          return { nativeChanges, nativeBlurs, workerBlurs };
+        },
         async deliver(event, payload) {
           worker.postMessage({ t: "event", instance: "form", event, payload });
           await settle();
@@ -200,6 +220,7 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
     await browser.launch({ incognito: true });
     await browser.goto(`http://127.0.0.1:${String(server.port)}/`);
     await browser.evaluate<void>("window.frameFixture.paint({})");
+    expect(await browser.evaluate<boolean>("window.frameFixture.readOnlyDeclared()")).toBe(false);
     const originalEvent = await browser.evaluate<string>("window.frameFixture.inputEvent()");
     await browser.evaluate<void>(`
       window.originalInput = document.querySelector("input");
@@ -271,6 +292,156 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
     expect((await browser.evaluate<string[]>("window.frameFixture.calls()")).at(-1)).toBe(
       "returned!",
     );
+    await browser.evaluate<void>(
+      "window.frameFixture.paint({ value: 'returned!', readOnly: false })",
+    );
+    expect(await browser.evaluate<boolean>("window.frameFixture.readOnlyDeclared()")).toBe(false);
+
+    const target = await browser.send("Target.getTargetInfo", {});
+    const targetInfo = target.result?.["targetInfo"];
+    if (
+      typeof targetInfo !== "object" ||
+      targetInfo === null ||
+      !("browserContextId" in targetInfo) ||
+      typeof targetInfo.browserContextId !== "string"
+    ) {
+      throw new Error("fixture browser context is unavailable");
+    }
+    const permission = await browser.send(
+      "Browser.grantPermissions",
+      {
+        browserContextId: targetInfo.browserContextId,
+        origin: `http://127.0.0.1:${String(server.port)}`,
+        permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+      },
+      false,
+    );
+    if (permission.error !== undefined) throw new Error(permission.error.message);
+    await browser.evaluate<void>("navigator.clipboard.writeText('pasted replacement')");
+    const paste = async () => {
+      await browser.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "v",
+        code: "KeyV",
+        modifiers: 2,
+        windowsVirtualKeyCode: 86,
+      });
+      await browser.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "v",
+        code: "KeyV",
+        modifiers: 2,
+        windowsVirtualKeyCode: 86,
+      });
+      await browser.evaluate<void>(`
+        (() => {
+          const { promise, resolve } = Promise.withResolvers();
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+          return promise;
+        })()
+      `);
+    };
+    await browser.evaluate<void>(`
+      window.frameFixture.native({ value: "editable", readOnly: false });
+      document.querySelector("#reference input").focus();
+      document.querySelector("#reference input").select();
+    `);
+    await paste();
+    expect(await browser.evaluate<string>('document.querySelector("#reference input").value')).toBe(
+      "pasted replacement",
+    );
+    await browser.evaluate<void>(
+      "window.frameFixture.native({ value: 'stale owner value', readOnly: false })",
+    );
+    expect(await browser.evaluate<string>('document.querySelector("#reference input").value')).toBe(
+      "pasted replacement",
+    );
+    await browser.evaluate<void>('document.querySelector("#reference input").blur()');
+    expect(await browser.evaluate<string>('document.querySelector("#reference input").value')).toBe(
+      "stale owner value",
+    );
+    const beforeReadOnly = await browser.evaluate<{
+      nativeChanges: number;
+      nativeBlurs: number;
+      workerBlurs: number;
+    }>("window.frameFixture.counts()");
+    const callsBeforeReadOnly = await browser.evaluate<string[]>("window.frameFixture.calls()");
+
+    await browser.evaluate<void>(
+      "window.frameFixture.paint({ value: 'fixture credential', readOnly: true, observeBlur: true })",
+    );
+    await browser.evaluate<void>(
+      "window.frameFixture.native({ value: 'fixture credential', readOnly: true })",
+    );
+    expect(await browser.evaluate<boolean>("window.frameFixture.readOnlyDeclared()")).toBe(true);
+    for (const id of ["root", "reference"]) {
+      const selector = `#${id} input`;
+      await browser.evaluate<void>(`
+        window.selectedCredential = document.querySelector(${JSON.stringify(selector)});
+        window.selectedCredential.focus();
+        window.selectedCredential.select();
+      `);
+      await browser.typeText("typed replacement");
+      await paste();
+      expect(
+        await browser.evaluate<Record<string, unknown>>(`
+          ({
+            focused: document.activeElement === window.selectedCredential,
+            labelled: window.selectedCredential.labels[0].control === window.selectedCredential,
+            value: window.selectedCredential.value,
+            disabled: window.selectedCredential.disabled,
+            selection: [window.selectedCredential.selectionStart, window.selectedCredential.selectionEnd],
+          })
+        `),
+      ).toEqual({
+        focused: true,
+        labelled: true,
+        value: "fixture credential",
+        disabled: false,
+        selection: [0, "fixture credential".length],
+      });
+      const repaint = id === "root" ? "paint" : "native";
+      await browser.evaluate<void>(`
+        window.selectedCredential.setSelectionRange(1, 4);
+        window.frameFixture.${repaint}({ value: "fixture credential", readOnly: true, observeBlur: true, before: true });
+      `);
+      expect(
+        await browser.evaluate<number[]>(
+          "[window.selectedCredential.selectionStart, window.selectedCredential.selectionEnd]",
+        ),
+      ).toEqual([1, 4]);
+      await browser.evaluate<void>(`
+        window.frameFixture.${repaint}({ value: "replacement credential", readOnly: true, observeBlur: true });
+      `);
+      expect(await browser.evaluate<string>("window.selectedCredential.value")).toBe(
+        "replacement credential",
+      );
+      const beforeBlur = await browser.evaluate<typeof beforeReadOnly>(
+        "window.frameFixture.counts()",
+      );
+      await browser.evaluate<void>("window.selectedCredential.blur()");
+      const blurCount = id === "root" ? "workerBlurs" : "nativeBlurs";
+      expect(await browser.evaluate<typeof beforeReadOnly>("window.frameFixture.counts()")).toEqual(
+        {
+          ...beforeBlur,
+          [blurCount]: beforeBlur[blurCount] + 1,
+        },
+      );
+      await browser.evaluate<void>("window.selectedCredential.focus()");
+      await browser.evaluate<void>(`window.frameFixture.${repaint}({ visible: false })`);
+      expect(
+        await browser.evaluate<boolean>(`
+          document.querySelector(${JSON.stringify(selector)}) === null && !window.selectedCredential.isConnected
+        `),
+      ).toBe(true);
+    }
+    expect(await browser.evaluate<string[]>("window.frameFixture.calls()")).toEqual(
+      callsBeforeReadOnly,
+    );
+    const afterReadOnly = await browser.evaluate<typeof beforeReadOnly>(
+      "window.frameFixture.counts()",
+    );
+    expect(afterReadOnly.nativeChanges).toBe(beforeReadOnly.nativeChanges);
     await browser.evaluate<void>("window.frameFixture.paint({ empty: 'Empty footprint' })");
     for (const kind of ["panel", "section"]) {
       const sizing = await browser.evaluate<{

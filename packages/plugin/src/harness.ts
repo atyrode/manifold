@@ -8,12 +8,12 @@ import type {
 import type { z } from "zod";
 
 /** A harness prepares descriptors; native terminal admission alone authorizes execution. */
-export interface ServerHarness<Ctx> {
+export interface ServerHarness<Ctx, Run = AgentRun, StandingAgent = Agent> {
   readonly profileSchema: z.ZodType;
   launch(
     ctx: Ctx,
-    run: AgentRun,
-    agent: Agent,
+    run: Run,
+    agent: StandingAgent,
     target: HarnessTarget,
   ): Promise<{
     runtime: TerminalRuntime;
@@ -22,7 +22,7 @@ export interface ServerHarness<Ctx> {
   }>;
   sessions(ctx: Ctx, target: HarnessTarget): Promise<SessionRef[]>;
   resolveSession(ctx: Ctx, ref: SessionRef): Promise<SessionRef | null>;
-  send(ctx: Ctx, run: AgentRun, input: string): Promise<void>;
+  send(ctx: Ctx, run: Run, input: string): Promise<void>;
 }
 
 export type {

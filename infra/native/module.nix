@@ -1,9 +1,11 @@
 { self }:
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, utils, ... }:
 let
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.services.manifold;
   native = cfg.execution.enable;
+  nativeRole = cfg.hub.enable || native;
+  shell = cfg.shell.enable;
   local = cfg.hub.enable && native;
   packages = self.packages.${pkgs.stdenv.hostPlatform.system};
   data = "/var/lib/manifold";
@@ -21,6 +23,135 @@ let
     lib.hasPrefix "/" path
     && lib.all (part: part != "" && part != "." && part != "..") (lib.drop 1 (lib.splitString "/" path))
     && lib.all (character: !lib.hasInfix character path) [ "%" ":" "\n" "\r" "\\" ];
+  overlapsPath = first: second: containsPath first second || containsPath second first;
+  shellAccountExists = builtins.hasAttr cfg.shell.user config.users.users
+    && config.users.users.${cfg.shell.user}.enable;
+  shellAccount = if shellAccountExists then config.users.users.${cfg.shell.user} else {
+    name = "";
+    group = "";
+    home = "";
+    shell = null;
+  };
+  shellSocket = "${cfg.shell.stateDirectory}/terminal-host/host.sock";
+  shellPaths = [ cfg.shell.stateDirectory shellSocket ]
+    ++ lib.optional (cfg.shell.tokenFile != null) cfg.shell.tokenFile;
+  shellExecutable = if shellAccount.shell == null then "" else toString (utils.toShellPath shellAccount.shell);
+  # Root provisions only the two directories the shell owner needs. Every existing
+  # component is opened with O_NOFOLLOW and held while descendants are made, so a
+  # lexical path cannot redirect privileged chmod/chown through a swapped alias.
+  provisionShellDirectories = pkgs.writeShellScript "manifold-shell-directories" ''
+    exec ${pkgs.python3}/bin/python3 - ${lib.escapeShellArg shellAccount.name} ${lib.escapeShellArg shellAccount.group} ${lib.escapeShellArg cfg.shell.stateDirectory} ${lib.escapeShellArg (if nativeRole then "manifold" else "")} <<'PY'
+    import errno
+    import grp
+    import os
+    import pwd
+    import sys
+
+    def refuse(reason):
+        print("Manifold shell directory provisioning refused: " + reason, file=sys.stderr)
+        raise SystemExit(1)
+
+    account_name, group_name, state_path, protected_name = sys.argv[1:]
+    try:
+        account = pwd.getpwnam(account_name)
+        group = grp.getgrnam(group_name)
+    except KeyError:
+        refuse("configured account or group is absent")
+    if protected_name:
+        try:
+            protected = pwd.getpwnam(protected_name)
+        except KeyError:
+            refuse("protected account is absent")
+        if account.pw_uid == protected.pw_uid:
+            refuse("configured account shares the protected manifold UID")
+
+    parts = state_path.split("/")[1:]
+    if not state_path.startswith("/") or not parts or any(part in ("", ".", "..") for part in parts):
+        refuse("configured state directory is not normalized")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    opened = []
+    created = []
+
+    def child(parent_fd, component):
+        try:
+            return os.open(component, directory_flags, dir_fd=parent_fd), False
+        except OSError as error:
+            if error.errno != errno.ENOENT:
+                refuse("unsafe state ancestor " + component + ": " + str(error))
+        try:
+            os.mkdir(component, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            refuse("state ancestor changed during provisioning")
+        except OSError as error:
+            refuse("cannot create state ancestor " + component + ": " + str(error))
+        try:
+            descriptor = os.open(component, directory_flags, dir_fd=parent_fd)
+        except OSError as error:
+            refuse("unsafe state ancestor " + component + ": " + str(error))
+        # A writable parent can rename immediately after mkdirat. It cannot manufacture a
+        # root-owned replacement, so never chown a descriptor unless it is ours.
+        if os.fstat(descriptor).st_uid != 0:
+            os.close(descriptor)
+            refuse("state ancestor changed during provisioning")
+        return descriptor, True
+
+    root = os.open("/", directory_flags)
+    opened.append(root)
+    try:
+        current = root
+        for component in parts:
+            current, made = child(current, component)
+            opened.append(current)
+            if made:
+                created.append(current)
+        state = current
+        terminal_host, made = child(state, "terminal-host")
+        opened.append(terminal_host)
+        if made:
+            created.append(terminal_host)
+
+        # Mutate only newly created descriptors whose full ancestry has been safely opened.
+        # Existing account-owned state is validated by the ordinary service preflight, never
+        # repaired by root after an account may have changed its pathname.
+        managed = created
+        seen = set()
+        for descriptor in managed:
+            identity = os.fstat(descriptor)
+            key = (identity.st_dev, identity.st_ino)
+            if key in seen:
+                continue
+            seen.add(key)
+            os.fchown(descriptor, account.pw_uid, group.gr_gid)
+            os.fchmod(descriptor, 0o700)
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+    PY
+  '';
+  # These are the ordinary NixOS account/system profiles, not governed runtime
+  # tools. Wrappers must stay ahead of every profile and packaged executable.
+  shellEnvironment = {
+    HOME = shellAccount.home;
+    USER = shellAccount.name;
+    LOGNAME = shellAccount.name;
+    SHELL = shellExecutable;
+    PATH = lib.concatStringsSep ":" [
+      (toString config.security.wrapperDir)
+      "${shellAccount.home}/.nix-profile/bin"
+      "${shellAccount.home}/.local/state/nix/profile/bin"
+      "/etc/profiles/per-user/${shellAccount.name}/bin"
+      "/nix/var/nix/profiles/default/bin"
+      "/run/current-system/sw/bin"
+      (lib.makeBinPath [ packages.manifold-agent packages.bun-runtime pkgs.coreutils ])
+    ];
+    MANIFOLD_TERMINAL_HOST_SOCKET = shellSocket;
+  };
+  # Environment= is quoted by NixOS, but systemd still expands percent specifiers.
+  # Unlike Exec*=, dollar signs here are literal and must not be doubled.
+  shellUnitEnvironment = variables: lib.mapAttrs (_: value:
+    if value == null then null else lib.replaceStrings [ "%" ] [ "%%" ] value
+  ) variables;
   # Operator anchors are presented to the owner only through root-made read-only views here.
   viewRoot = "/run/manifold-anchors";
   declaredAnchors = cfg.execution.operatorAnchors;
@@ -37,6 +168,13 @@ let
     ++ map (credential: credential.source) (builtins.attrValues cfg.execution.serviceCredentials);
   # Areas a view may never present at all, nor lie within.
   reservedAreas = [ data workload output viewRoot "/run/credentials" "/proc" "/sys" "/dev" "/nix/store" ];
+  # Do not alter the native owner's retained exclusions to accommodate a shell.
+  # Its credential parents and operator sources must instead remain disjoint.
+  shellReservedPaths = reservedAreas ++ cfg.execution.protectedDirectories
+    ++ lib.optional (cfg.execution.tokenFile != null) (builtins.dirOf cfg.execution.tokenFile)
+    ++ lib.optional credentialMode (builtins.dirOf credentialSource)
+    ++ map (credential: builtins.dirOf credential.source) (builtins.attrValues cfg.execution.serviceCredentials)
+    ++ map (anchor: anchor.path) (builtins.attrValues declaredAnchors);
   # The owner holds exclusion descriptors. A private source can sit beneath an
   # explicitly protected, traversable ancestor without opening its private parent.
   credentialSourceDirectories = lib.optional
@@ -306,6 +444,61 @@ let
     '') declaredAnchors)}
     exit "$refused"
   '';
+  checkPrivateToken = path: ''
+    token=${lib.escapeShellArg (if path == null then "" else path)}
+    if test -L "$token"; then
+      echo 'Manifold shell enrollment token is symbolic; refusing startup' >&2
+      exit 1
+    fi
+    if ! test -e "$token"; then
+      echo 'Manifold shell enrollment token is absent; refusing startup' >&2
+      exit 1
+    fi
+    if ! test -f "$token"; then
+      echo 'Manifold shell enrollment token is non-regular; refusing startup' >&2
+      exit 1
+    fi
+    if test "$(${pkgs.coreutils}/bin/stat -c '%u:%a' "$token")" != "$(${pkgs.coreutils}/bin/id -u):600"; then
+      echo 'Manifold shell enrollment token custody is unsafe; refusing startup' >&2
+      exit 1
+    fi
+    if test "$(${pkgs.coreutils}/bin/stat -c '%u:%a' "$(${pkgs.coreutils}/bin/dirname "$token")")" != "$(${pkgs.coreutils}/bin/id -u):700"; then
+      echo 'Manifold shell enrollment token parent custody is unsafe; refusing startup' >&2
+      exit 1
+    fi
+  '';
+  # NSS names are not a custody boundary: aliases of the protected UID fail
+  # under the actual service identity. This does not isolate an OS-root shell.
+  checkShellIdentity = lib.optionalString nativeRole ''
+    shell_uid="$(${pkgs.coreutils}/bin/id -u)" || exit 1
+    protected_uid="$(${pkgs.coreutils}/bin/id -u manifold)" || exit 1
+    if test "$shell_uid" = "$protected_uid"; then
+      echo 'Manifold shell account shares the protected manifold UID; refusing startup' >&2
+      exit 1
+    fi
+  '';
+  # Lexical disjointness is only meaningful without aliases into protected trees.
+  # The owner checks only its socket/state path: token custody belongs to transport.
+  checkShellPaths = paths: ''
+    for path in ${lib.escapeShellArgs paths}; do
+      while test "$path" != /; do
+        if test -L "$path"; then
+          echo 'Manifold shell private path contains a symbolic link; refusing startup' >&2
+          exit 1
+        fi
+        path="$(${pkgs.coreutils}/bin/dirname "$path")"
+      done
+    done
+  '';
+  shellService = {
+    User = shellAccount.name;
+    Group = shellAccount.group;
+    # No SupplementaryGroups override: systemd retains the account's NSS groups.
+    UMask = "0077";
+    WorkingDirectory = lib.replaceStrings [ "%" ] [ "%%" ] shellAccount.home;
+    Restart = "on-failure";
+    RestartSec = 3;
+  };
   commonService = {
     User = "manifold";
     Group = "manifold";
@@ -384,12 +577,20 @@ in
       outputBytes = mkOption { type = types.ints.positive; default = 1048576; description = "Dedicated named-output tmpfs capacity. Every job using it reserves the entire capacity from outputBytes, before stdout/stderr."; };
       outputInodes = mkOption { type = types.ints.between 1 10000; default = 4096; };
     };
+    shell = {
+      enable = mkEnableOption "ordinary account shells with an independently retained owner and replaceable transport";
+      machineName = mkOption { type = types.str; default = ""; description = "Explicit enrollment name for this OS account's shell endpoint, distinct from native execution."; };
+      user = mkOption { type = types.str; default = ""; description = "Existing configured OS account whose ordinary home, login shell, primary and NSS supplementary groups authorize every shell. This is an account-authority grant, not a sandbox or OS-root grant."; };
+      serverUrl = mkOption { type = types.str; default = ""; description = "Explicit hub origin, including when the hub is local."; };
+      tokenFile = mkOption { type = types.nullOr types.str; default = null; description = "Quoted absolute runtime path to the account's regular 0600 enrollment token, in a 0700 parent owned by that same account, with no symbolic link in any path component. Never secret bytes or a Nix path literal; provisioning refuses unsafe custody rather than repairing, enrolling or rotating it."; };
+      stateDirectory = mkOption { type = types.str; default = ""; description = "Private normalized absolute runtime state directory owned by the selected account, with no symbolic link in any state or socket path component. Must not overlap native storage, credentials, operator sources/views, kernel interfaces or the Nix store."; };
+    };
   };
 
   config = mkIf cfg.enable {
     assertions = [
       { assertion = pkgs.stdenv.hostPlatform.isLinux && builtins.elem pkgs.stdenv.hostPlatform.system [ "x86_64-linux" "aarch64-linux" ]; message = "Native Manifold supports Linux x64/arm64 only."; }
-      { assertion = cfg.hub.enable || native; message = "Select at least one Manifold role."; }
+      { assertion = nativeRole || shell; message = "Select at least one Manifold role."; }
       { assertion = !local || cfg.hub.port > 0 && builtins.elem cfg.hub.bind [ "127.0.0.1" "0.0.0.0" ]; message = "Single-node Manifold requires a fixed port reachable on IPv4 loopback by its transport."; }
       { assertion = !native || lib.versionAtLeast config.systemd.package.version "254"; message = "Native Manifold requires systemd >= 254 (DelegateSubgroup)."; }
       { assertion = !native || cfg.execution.artifactOrigins != []; message = "Declare reviewed Manifold artifact origins."; }
@@ -428,19 +629,43 @@ in
         assertion = !native || lib.all (anchor: !lib.any (guarded: containsPath anchor.path guarded) guardedPaths) (builtins.attrValues declaredAnchors);
         message = "A Manifold operator anchor may present a subtree beneath a protected directory, never one that is or contains a protected directory, the enrollment token or a service credential source.";
       }
+      {
+        assertion = !shell || (
+          cfg.shell.machineName != "" && cfg.shell.user != "" && cfg.shell.serverUrl != ""
+          && cfg.shell.stateDirectory != "" && cfg.shell.tokenFile != null && cfg.shell.tokenFile != ""
+        );
+        message = "Manifold shell provisioning requires an explicit machineName, configured user, serverUrl, stateDirectory and runtime tokenFile.";
+      }
+      {
+        assertion = !shell || (shellAccountExists && shellAccount.home != "" && shellExecutable != "");
+        message = "Manifold shell.user must select an enabled configured account with a home and login shell.";
+      }
+      { assertion = !shell || (cfg.shell.user != "manifold" && shellAccount.name != "manifold"); message = "Ordinary shells must not use the protected native manifold service account."; }
+      { assertion = !shell || !native || cfg.shell.machineName != cfg.execution.machineName; message = "Shell and native execution endpoints require distinct machine names."; }
+      {
+        assertion = !shell || (
+          normalizedPath cfg.shell.stateDirectory
+          && cfg.shell.tokenFile != null && normalizedPath cfg.shell.tokenFile
+        );
+        message = "Manifold shell stateDirectory and tokenFile must be quoted static normalized absolute runtime paths other than /, without traversal or systemd specifiers.";
+      }
+      {
+        assertion = !shell || lib.all (path: !lib.any (reserved: overlapsPath path reserved) shellReservedPaths) shellPaths;
+        message = "Manifold shell state, token and socket paths must not overlap native storage or credential parents, systemd credentials, kernel interfaces, the Nix store, or declared operator anchor sources/views in either ancestor direction.";
+      }
     ];
 
-    users.groups.manifold = {};
-    users.users.manifold = {
+    users.groups.manifold = mkIf nativeRole {};
+    users.users.manifold = mkIf nativeRole {
       isSystemUser = true;
       group = "manifold";
       home = anchors.home;
       shell = pkgs.bashInteractive;
     };
-    systemd.tmpfiles.rules = [
+    systemd.tmpfiles.rules = lib.optionals nativeRole ([
       "d ${data} 0700 manifold manifold -"
       "d ${workload} 0700 manifold manifold -"
-    ] ++ map (path: "d ${path} 0700 manifold manifold -") (builtins.attrValues (builtins.removeAttrs anchors [ "runtime" ]))
+    ] ++ map (path: "d ${path} 0700 manifold manifold -") (builtins.attrValues (builtins.removeAttrs anchors [ "runtime" ])))
       ++ lib.optionals (native && credentialMode) [
         # Unspecified metadata creates the default root 0755 directory only if
         # absent; it never chmods/chowns an existing systemd credential store.
@@ -542,6 +767,63 @@ in
       };
     };
 
+    # Unlike tmpfiles, this unit resolves every existing component through held
+    # no-follow descriptors before it creates or changes private shell custody.
+    systemd.services.manifold-shell-directories = mkIf shell {
+      description = "Provision Manifold ordinary-account shell directories safely";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "manifold-shell-owner.service" "manifold-shell-transport.service" ];
+      after = [ "local-fs.target" "systemd-sysusers.service" ];
+      restartIfChanged = false;
+      stopIfChanged = false;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "root";
+        Group = "root";
+        ExecStart = "${provisionShellDirectories}";
+      };
+    };
+
+    systemd.services.manifold-shell-owner = mkIf shell {
+      description = "Manifold retained ordinary account terminal owner";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "systemd-tmpfiles-setup.service" "manifold-shell-directories.service" ];
+      requires = [ "manifold-shell-directories.service" ];
+      # No transport/hub lifetime dependency and no governed workload restrictions.
+      # An occupied owner is maintained only by exact-owner drain/atomic shutdown.
+      restartIfChanged = false;
+      stopIfChanged = false;
+      unitConfig.RefuseManualStop = true;
+      enableDefaultPath = false;
+      environment = shellUnitEnvironment shellEnvironment;
+      preStart = checkShellIdentity + checkShellPaths [ shellSocket ];
+      serviceConfig = shellService // {
+        ExecStart = "${packages.manifold-agent}/bin/manifold-agent --terminal-host";
+        OOMPolicy = "continue";
+        TimeoutStopSec = 90;
+      };
+    };
+
+    systemd.services.manifold-shell-transport = mkIf shell {
+      description = "Manifold replaceable ordinary account machine transport";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "manifold-shell-owner.service" "manifold-shell-directories.service" "network-online.target" ];
+      requires = [ "manifold-shell-directories.service" ];
+      wants = [ "network-online.target" ];
+      enableDefaultPath = false;
+      environment = shellUnitEnvironment (shellEnvironment // {
+        MANIFOLD_SERVER_URL = cfg.shell.serverUrl;
+        MANIFOLD_MACHINE_NAME = cfg.shell.machineName;
+        MANIFOLD_MACHINE_TOKEN_FILE = cfg.shell.tokenFile;
+      });
+      preStart = checkShellIdentity + checkShellPaths shellPaths + checkPrivateToken cfg.shell.tokenFile;
+      serviceConfig = shellService // {
+        ExecStart = "${packages.manifold-agent}/bin/manifold-agent";
+        Restart = "always";
+      };
+    };
+
     # A separate prerequisite, rather than ExecStartPre, runs before PID 1 reads
     # LoadCredential. It never reads bytes or repairs the declaring tool's custody.
     # No RemainAfterExit: every transport start rechecks the source and its parents.
@@ -574,13 +856,7 @@ in
         test -r "$token"
         test ! -w "$token"
         test ! -w "$CREDENTIALS_DIRECTORY"
-      '' else ''
-        token=${lib.escapeShellArg (if tokenFile == null then "" else tokenFile)}
-        test ! -L "$token"
-        test -f "$token"
-        test "$(stat -c '%u:%a' "$token")" = "$(id -u):600"
-        test "$(stat -c '%u:%a' "$(dirname "$token")")" = "$(id -u):700"
-      '');
+      '' else checkPrivateToken tokenFile);
       serviceConfig = commonService // {
         ExecStart = "${packages.manifold-agent}/bin/manifold-agent";
       } // lib.optionalAttrs credentialMode {

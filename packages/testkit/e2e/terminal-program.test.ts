@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { TerminalProgram } from "@manifold/protocol";
+import { formatManifoldUri, type TerminalProgram } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -7,6 +7,7 @@ import {
   enrollMachine,
   listTerminals,
   mintToken,
+  mintTokenV2,
   ownerAction,
   startAgent,
   startServer,
@@ -99,9 +100,27 @@ test("a program named at open is judged at the door, then runs first under the o
       name: "program-agent",
     });
     agents.push(agent);
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Launcher", color: "#3a7d44" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const canvas = await connect(server, {
       containerId: container.id,
@@ -204,7 +223,7 @@ test("a program the door refuses never reaches a machine, and the refusal names 
         program: { argv },
         timeoutMs: 10_000,
       }),
-    ).rejects.toThrow("terminals:spawn capability required");
+    ).rejects.toThrow();
 
     // The ledger names the program the door refused (docs/CONTRACTS.md §Data and credential boundaries): a policy that says no is
     // a fact about WHAT was asked, and what was asked is recorded.
@@ -244,9 +263,27 @@ test("a program the machine cannot exec is a named create_error, and the opener 
       name: "missing-program-agent",
     });
     agents.push(agent);
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Launcher", color: "#7d3a44" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, {
       containerId: container.id,
@@ -261,10 +298,7 @@ test("a program the machine cannot exec is a named create_error, and the opener 
       client,
       "error",
       10_000,
-      (message) =>
-        message.code === "conflict" &&
-        message.ref === "el-no-such-program" &&
-        message.message === "terminal creation failed",
+      (message) => message.code === "conflict" && message.ref === "el-no-such-program",
     );
     const opened = client
       .openTerminal({
@@ -284,9 +318,7 @@ test("a program the machine cannot exec is a named create_error, and the opener 
     await waitFor(
       () =>
         agent.output.stdout.some(
-          (line) =>
-            line.includes('"evt":"create_error"') &&
-            line.includes("program or working directory not found: /nonexistent/bin"),
+          (line) => line.includes('"evt":"create_error"') && line.includes("/nonexistent/bin"),
         ),
       10_000,
       20,

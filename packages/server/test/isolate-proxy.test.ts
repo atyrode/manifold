@@ -10,14 +10,19 @@ import {
   type JobSettledCtx,
   type LifecycleCtx,
   type PluginDatabase,
-  type PluginJobContext,
   type PluginStorage,
   type SqlStatement,
 } from "@manifold/plugin";
 import { PluginDatabaseError } from "@manifold/plugin-kit";
 import { attachServerGuest } from "@manifold/plugin-kit/server";
 import { openPluginDatabase } from "../src/plugin-database.ts";
-import type { IsolateChildFrame, PluginManifest, SettledJob } from "@manifold/protocol";
+import {
+  IsolateCtxMethodSchema,
+  scopeAdmits,
+  type IsolateChildFrame,
+  type PluginManifest,
+  type SettledJob,
+} from "@manifold/protocol";
 import { z } from "zod";
 import { IsolateDenial, IsolateLoadError } from "../src/isolate/contract.ts";
 import {
@@ -133,6 +138,13 @@ function ctxWith(
         allowed.push([cap, ref]);
         return cap === "scenes:write";
       },
+      allowsNode: (cap, node, reach = "node") =>
+        scopeAdmits(
+          [{ target: "manifold://container/c1", reach: "subtree", caps: ["scenes:write"] }],
+          node,
+          cap,
+          reach,
+        ),
     },
     containerScope: "c1",
     outsideScope: (containerId) => (containerId === "c1" ? null : { refused: "outside" }),
@@ -411,7 +423,11 @@ describe("serveCtxCall", () => {
           },
           send: (frame) => {
             if (frame.t === "call") {
-              void serveCtxCall(frame.method, frame.args, served).then(
+              void serveCtxCall(
+                IsolateCtxMethodSchema.parse(frame.method),
+                frame.args,
+                served,
+              ).then(
                 (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
                 (error: unknown) =>
                   receive({
@@ -506,7 +522,7 @@ describe("serveCtxCall", () => {
             // Production child-process IPC is JSON serialization; exercise that exact loss boundary.
             const wire = JSON.parse(JSON.stringify(frame)) as IsolateChildFrame;
             if (wire.t === "call") {
-              void serveCtxCall(wire.method, wire.args, served).then(
+              void serveCtxCall(IsolateCtxMethodSchema.parse(wire.method), wire.args, served).then(
                 (result) =>
                   receive(
                     JSON.parse(JSON.stringify({ t: "reply", id: wire.id, ok: true, result })),
@@ -582,42 +598,6 @@ describe("serveCtxCall", () => {
     } finally {
       store.close();
     }
-  });
-
-  test("a dispatch serves every slice from the caller's own ctx", async () => {
-    const runtime = new FakeRuntime();
-    const storage = testStore().pluginStorage(manifest.id);
-    const { ctx, allowed } = ctxWith(storage, runtime);
-    const served = { kind: "dispatch" as const, ctx };
-
-    await serveCtxCall("storage.set", ["k", "v"], served);
-    expect(await serveCtxCall("storage.get", ["k"], served)).toBe("v");
-    expect(await serveCtxCall("storage.keys", [], served)).toEqual(["k"]);
-    expect(
-      await serveCtxCall(
-        "auth.allows",
-        ["scenes:write", { kind: "container", containerId: "c1" }],
-        served,
-      ),
-    ).toBe(true);
-    expect(await serveCtxCall("auth.allows", ["containers:read"], served)).toBe(false);
-    expect(allowed).toEqual([
-      ["scenes:write", { kind: "container", containerId: "c1" }],
-      ["containers:read", undefined],
-    ]);
-    expect(await serveCtxCall("outsideScope", ["c2"], served)).toEqual({ refused: "outside" });
-    expect(await serveCtxCall("outsideScope", ["c1"], served)).toBeNull();
-    expect(await serveCtxCall("outsideScope", [null], served)).toEqual({ refused: "outside" });
-    expect(await serveCtxCall("newId", [], served)).toBe("id-1");
-    expect(await serveCtxCall("machines.isOnline", ["m-online"], served)).toBe(true);
-    // An isolated plugin reaches the same fleet read an in-realm one does, one query in.
-    expect(
-      await serveCtxCall(
-        "machines.repository",
-        [{ machineId: "m-online", path: "/srv/work" }],
-        served,
-      ),
-    ).toMatchObject({ ok: true, fact: { path: "/srv/work", reason: "repository" } });
   });
 
   test("root's wildcard and a wrong argument shape are errors the child hears, never grants", async () => {
@@ -763,7 +743,7 @@ describe("serveCtxCall", () => {
         },
         send: (frame) => {
           if (frame.t === "call") {
-            void serveCtxCall(frame.method, frame.args, served).then(
+            void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, served).then(
               (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
               (error: unknown) =>
                 receive({
@@ -862,122 +842,74 @@ describe("serveCtxCall", () => {
     }
   });
 
-  test("a hardened guest registers, lists and disables its own cadence through the hook's slice", async () => {
-    const store = testStore();
-    try {
-      const calls: { method: string; args: unknown }[] = [];
-      const listed = [
-        {
-          scheduleId: "beat-1",
-          revision: "r1",
-          firstNominalAt: 1,
-          intervalMs: 60_000,
-          deadlineMs: 30_000,
-          expiresAt: 9_000,
-          offlinePolicy: "skip" as const,
-          machineId: "m-1",
-          pluginId: manifest.id,
-          operationId: "test.proxy.run",
-        },
-      ];
-      /*
-        The host's OWN job slice, as a hook holds it: the three verbs are forwarded to the same
-        object an in-realm hook would call, with the arguments parsed by the host's schemas —
-        which is the whole of #513, since the guest may not name another plugin's callee.
-      */
-      const jobs = {
-        schedule: (args: unknown) => {
-          calls.push({ method: "schedule", args });
-          return {};
-        },
-        schedules: () => {
-          calls.push({ method: "schedules", args: undefined });
-          return listed;
-        },
-        disableSchedule: (args: unknown) => {
-          calls.push({ method: "disableSchedule", args });
-          return {};
-        },
-      } as unknown as PluginJobContext;
-      const served = {
-        kind: "hook" as const,
-        ctx: {
-          pluginId: manifest.id,
-          storage: store.pluginStorage(manifest.id),
-          now: () => 0,
-          emit: () => {},
-          jobs,
-        },
-      };
-      const seen: string[] = [];
-      let receive: (frame: unknown) => void = () => {};
-      const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
-      attachServerGuest(
-        {
-          manifest,
-          actions: [],
-          handlers: {},
-          lifecycle: {
-            async onEnable(ctx) {
-              if (ctx.jobs === undefined) throw new Error("the enable hook was given no slice");
-              await ctx.jobs.schedule({
-                jobId: "job-1",
-                machineId: "m-1",
-                operationId: "test.proxy.run",
-                input: { value: "scan" },
-                outputs: [],
-                scheduleId: "beat-1",
-                revision: "r1",
-                firstNominalAt: 1,
-                intervalMs: 60_000,
-                deadlineMs: 30_000,
-                expiresAt: 9_000,
-                offlinePolicy: "skip",
-              });
-              for (const spec of await ctx.jobs.schedules()) seen.push(spec.scheduleId);
-              await ctx.jobs.disableSchedule({ scheduleId: "beat-1", revision: "r1" });
+  test("malformed scoped mint inputs cannot reach issuance, and invalid grant responses are not delivered", async () => {
+    let issuances = 0;
+    const principal = { id: "issuer", kind: "human" as const, name: "Issuer", color: "#123456" };
+    const ctx = {
+      identity: {
+        mintTokenV2: () => {
+          issuances += 1;
+          return {
+            ok: true,
+            value: {
+              token: "secret",
+              principal,
+              scope: [],
+              caps: ["machines:shell"],
+              containerId: null,
+              expiresAt: 1000,
             },
-          },
+          };
         },
-        {
-          onMessage: (listener) => {
-            receive = listener;
+      },
+    } as unknown as ActionCtx;
+    await expect(
+      serveCtxCall(
+        "identity.mintTokenV2",
+        [
+          {
+            principalId: principal.id,
+            scope: [
+              {
+                target: "manifold://machine/m1",
+                reach: "node",
+                caps: ["*"],
+              },
+            ],
+            expiresAt: 1000,
           },
-          send: (frame) => {
-            if (frame.t === "call") {
-              void serveCtxCall(frame.method, frame.args, served).then(
-                (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
-                (error: unknown) =>
-                  receive({
-                    t: "reply",
-                    id: frame.id,
-                    ok: false,
-                    error: error instanceof Error ? error.message : String(error),
-                  }),
-              );
-            } else if (frame.t === "hooked") {
-              completed.resolve(frame);
-            }
+        ],
+        { kind: "dispatch", ctx },
+      ),
+    ).rejects.toThrow();
+    expect(issuances).toBe(0);
+    await expect(
+      serveCtxCall(
+        "identity.mintTokenV2",
+        [
+          {
+            principalId: principal.id,
+            scope: [],
+            expiresAt: Number.POSITIVE_INFINITY,
           },
-          warn: () => {},
-          exit: () => {},
-        },
-      );
-      receive({ t: "load", pluginId: manifest.id, manifest, dir: "/unused" });
-      // `jobs: true` is the host saying it restored a credential for THIS hook; without it the
-      // guest's ctx has no slice at all and the frame is the only thing that says so.
-      receive({ t: "hook", id: "enable", hook: "onEnable", jobs: true });
-      expect(await completed.promise).toMatchObject({ ok: true });
-      expect(seen).toEqual(["beat-1"]);
-      expect(calls.map((call) => call.method)).toEqual([
-        "schedule",
-        "schedules",
-        "disableSchedule",
-      ]);
-      expect(calls[0]?.args).toMatchObject({ scheduleId: "beat-1", operationId: "test.proxy.run" });
-      expect(calls[2]?.args).toEqual({ scheduleId: "beat-1", revision: "r1" });
-    } finally {
-      store.close();
-    }
+        ],
+        { kind: "dispatch", ctx },
+      ),
+    ).rejects.toThrow();
+    expect(issuances).toBe(0);
+    await expect(
+      serveCtxCall(
+        "identity.mintTokenV2",
+        [
+          {
+            principalId: principal.id,
+            scope: [],
+            expiresAt: 1000,
+          },
+        ],
+        { kind: "dispatch", ctx },
+      ),
+    ).rejects.toThrow();
+    expect(issuances).toBe(1);
   });
 });

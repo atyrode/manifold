@@ -888,13 +888,13 @@ remain root-only; this rule does not decide deny attenuation or create a new gra
 audience. A token-bound grant is never independently revocable: credential withdrawal is its
 sole retirement path and deletes it atomically only with the targeted token.
 
-**Tokens reference grants; they do not carry authority.** `TokenRecord.grant_id` and
-`ShareRecord.grant_id` point at the row the credential was minted from — the referrer holds the
-reference, so `authenticate()` gains no query and the published `Cap[]` on a `TokenGrant` is
-unchanged. Migration 13 turned every existing token's flat caps into exactly one referenced row
-(root `manifold://` for an unscoped token, `manifold://container/<id>` for a scoped one, both
-`reach: "subtree"`, both `effect: "allow"`), which is why **every pre-migration token answers
-every authority question identically after it** — parity is a fixture, not a claim.
+**Tokens own their grant rows.** `token_grants` binds each credential to its canonical rows;
+another credential of the same principal cannot borrow them. `TokenRecord.grant_id` remains the
+released placement/context anchor, and `ShareRecord.grant_id` retains its single-row meaning.
+Migration 13 converted flat ceilings to one root/container subtree row; migration 51 backfills
+that membership before introducing scoped credentials. Credential withdrawal removes every
+membership and exclusively owned row atomically, retaining a row still owned by another live
+credential. Authentication restores the stored credential scope, never principal-wide rows.
 
 **Evaluation.** `AuthService.effectiveCaps(context, node)` walks `containmentPath(node)` —
 `manifold://` → `manifold://container/<id>` → `…/element/<id>` or `…/tile/<id>` — collecting the
@@ -909,9 +909,10 @@ plugin action's declared `requirements: [{ cap, target }]`, evaluated with `allo
 or the credential's anchor and never sees a machine row. Engine fleet doors are unchanged:
 `core.machines.revoke` still requires workspace `machines:mint` and names the machine as its
 trace target, because its argument is a bare machine id — grading those doors at their machine
-is owed to #156/#190. A container-scoped credential is refused at a machine node whatever the
-rows say. Sharing remains container-only (ADR 0014): a machine reference is a valid address,
-not permission to mint a machine share.
+is owed to #156/#190. A legacy container-scoped credential is refused at a machine node whatever
+the rows say. An explicit V2 scope can authorize an exact machine independently of its unchanged
+container context anchor. Sharing remains container-only (ADR 0014): a machine reference is a
+valid address, not permission to mint a machine share.
 
 **The capability vocabulary is closed for the engine and open for a plugin (ADR 0035).** `CAPS`
 stays the engine's enum. A manifest may also declare capabilities in its OWN namespace,
@@ -922,9 +923,10 @@ because a row is written by a principal rather than by a plugin and must survive
 an uninstall; what makes an undeclared name inert is the door. **`*` never expands into a
 plugin's namespace** — the open half has no roster-independent enumeration — so a root
 credential and the owner key hold a plugin's capability only where a row names it. A plugin
-capability is never minted into a credential (`mintToken` refuses it by schema), never governed
-and never a `delegate`; an install's `grantedCaps` may carry one and grants it by default,
-since it confers authority over nothing but the declaring plugin's own doors.
+capability cannot enter a released V1 credential (`mintToken` refuses it by schema), is never
+governed and is never a `delegate`. A V2 scope may name declared plugin capabilities explicitly;
+its engine-cap union remains only a discovery hint. An install's `grantedCaps` may carry one
+and grants it by default, since it confers authority over only the declaring plugin's doors.
 
 | #   | Rule                        | Reading                                                                                             |
 | --- | --------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -938,14 +940,12 @@ plus a principal allow, and a `deny` that outranked specificity would make that 
 expands to the concrete cap set before comparison, so a deny at depth bites through a wildcard
 allow at the root.
 
-**The ceiling rule** (implementation deviation, recorded in ADR 0011's landed addendum): a row
-REFERENCED by a token applies only to the credential that references it; an UNREFERENCED row —
-everything `core.access.grant` writes, plus a share's row — applies to every credential of the
-matching principal or class. Without it, a principal holding both a broad and a narrow token
-would see the narrow one inherit the broad one's row: a parity break and a live attenuation hole.
-With it, a node-scoped grant genuinely widens or narrows a LIVE credential — observable through
-ordinary dispatch, with no re-authentication, because authority is a per-request question and
-never cached into a session.
+**The ceiling rule** (ADR 0011's landed addendum): a token-bound row applies only to credentials
+whose `token_grants` membership names it. An unbound row — everything `core.access.grant` writes,
+plus a share's row — applies to the matching principal/class, subject to the credential's scope.
+Without membership isolation, a narrow token of a broad principal could inherit another token's
+row. Administered denies remain independently live. Credential scopes, sponsor/parent ceilings,
+expiry, current policy and installed action ceilings are intersected, never substituted for rows.
 
 **The owner key is synthesized, never stored.** The raw owner-key context (no token, no grant
 row, the owner principal) is evaluated against a synthesized root grant (`manifold://`, `["*"]`,
@@ -959,6 +959,59 @@ refuses only a principal-specific `deny` naming the owner (`cannot deny the work
 rather than refusing every row that could match the owner principal. This is ADR 0011 §5's
 split as amended on 2026-09-22, implemented by `AuthService.applicableRows` and
 `AuthService.grant` in `packages/server/src/auth.ts`.
+
+**Correlated V2 authority (core fleet terminals, Stage 2).** `AuthorityScope` is at most 64
+canonical `{target, reach, caps}` entries with at most 128 caps per entry; identical target/reach
+pairs merge and sorted entries/caps deduplicate. Rights are correlated, not a cap × target
+product. `[]` means no ordinary authority; absence preserves the released single-scope meaning.
+`scopeAdmits`, `scopeWithin` and scope intersection govern exact-node and subtree checks. A
+root-node grant does not establish subtree authority, and the exact descendant is still checked
+for denies. An explicit scope is never root-class merely because its principal or cap summary
+is broad. Deferred restoration retains the exact scope and credential membership; dropping or
+expanding a stored scope refuses rather than recovering broad principal authority.
+
+`core.access.mintTokenV2` requires finite expiry, `tokens:mint` and the issuer's actual live
+authority at every scoped resource. It preserves an explicit C placement anchor alongside M
+entries, never clears C to obtain machine authority. V2 Agent registration/updates and Run
+admission/lifecycle/inspection use faithful scope-bearing contracts and require `agents:delegate`
+plus every requested right at each resource, within standing/parent lifetime and budget bounds.
+The existing Agent exclusions remain (`*`, `tokens:mint`, `machines:mint`, `plugins:manage`,
+`agents:run`); `machines:shell` is ordinary working authority, not administration.
+
+Released V1 DTOs retain their strict vocabulary and are explicitly constructed. V1 may preserve
+scope on context/purpose/lifecycle changes but cannot replace it through legacy caps/targets.
+A conservative projection is returned only when every authority-bearing right fits the actual
+V1 vocabulary, anchor and cap/target product. A `machines:shell` leg, empty-minimum or other
+unrepresentable result refuses as `scoped_authority_requires_v2`, including whole authorized
+lists; no omitted rights, rows or sentinel caps. Legacy coarse hints omit `machines:shell`;
+these hints never restore authority. The
+coordinated current session protocol requires a matching SDK; V1 payload preservation does not
+make an old SDK binary compatible.
+
+**Ordinary account-shell creation is separate from placement and control.** An ordinary create
+requires `terminals:spawn` at C and `machines:shell` at exact enrolled M. Ordinary restart also
+requires the existing home write/control authority and current spawn at H plus shell at stored
+M. Governed launches keep their native machine/operation/resource consent and never require
+ordinary `machines:shell`. Existing attach/input/resize/read/take/rename/kill rules are unchanged:
+a broad terminal-control grant may interact with an existing PTY on another machine even when
+shell creation is confined to M1. This is not OS root, blanket machine isolation or recall of
+filesystem/process effects outside the tracked lifecycle.
+
+Canvas creation allocates an independent composition H, so it first requires the five working
+caps (`containers:read`, `containers:write`, `scenes:write`, `terminals:spawn`, `terminals:write`)
+at workspace-root subtree before any effect, then checks exact H again before send and commit.
+A C-only scope supports that composition's tile path, not independent canvas-home creation;
+portal placement lends no automatic H grant. `mintTerminalLifecycleToken` retains terminal-local
+read/scene/control only, with neither spawn, machine-shell nor Agent bootstrap authority.
+
+Migration 49 is a one-time, durable cutover, not a spawn alias. Pre-cutover explicit
+root/subtree `terminals:spawn` allow and deny rows gain `machines:shell` in place with their
+identity, binding, provenance and expiry. Only genuinely global, admitted, unconfined associated
+token/Agent/Run/sponsor ceilings are translated. C-only, carried-container, root-node,
+machine/operation/native-bound and container-targeted ceilings are not widened. New placement
+issuance never implies shell permission. Existing PTYs and retained signed governed jobs remain
+unchanged; new hub-only authority snapshots preserve full scope while governed wire credentials
+keep their released closed vocabulary.
 
 **Root-class authority is asked live, and any effective deny withdraws it (#411).** A declared
 `*` door, and every root-only service verb, asks `AuthService.holdsRoot(context)` at the moment
@@ -1781,6 +1834,10 @@ the dispatch it was serving. They are the ledger's alone: `tracePayload` strips 
 every door's arguments (`RESERVED_TRACE_KEYS`), so a client cannot attribute its own dispatch to a
 plugin by typing them into a request body, on a committed row or on a refused rung's write-ahead one.
 
+The same live caller ceiling applies to each actual engine requirement selected by conditional
+preparation and to every later prepared extension retained by a continuation; alternatives that
+were not selected and `delegates` remain outside that bound.
+
 **Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
 destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and
 element-type reservations all survive, and re-enabling restores them in place. Contributions render
@@ -1834,6 +1891,15 @@ for enabled plugins and at the enablement door for one being switched on; applie
 recorded so none runs twice. Version rules: equal assembles; minor-only difference assembles with
 no migration; a major difference needs an unapplied migration or the plugin is refused; stored major
 greater than code major is refused as a downgrade.
+
+Action storage and database handles carry one hub-private live authority fence. Each use
+restores the original admitted credential, not attenuated native bridge hints, and rechecks
+its ordered contextual or exact-target requirements plus the current parser, handler,
+declarations and installation ceiling. An awaited read does not preserve withdrawn authority
+for a later CAS or database write. Preparation has no durable-data authority; settlement,
+deadline, disable, actual binding retirement and shutdown retire the handle. A pending
+replacement still drains already-admitted work against its unchanged old binding before
+retirement; it does not lend the replacement's authority to that work.
 
 **Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
 `layout:<principalId>` and read at `GET /api/layout`. When unset the door answers a DEFAULT that
@@ -2042,6 +2108,43 @@ because `GET /api/machines` answered any authenticated token including a scoped 
 viewer still has to paint the machine badge on the terminal in front of it); its containment
 obligation is vacuous, since nothing in a fleet-wide answer is addressed by container.
 
+Host views are plugin-owned display metadata, not another machine or authority identity.
+`core.machines.listHostViews {}` returns `{ revision, hosts }` under the inventory's existing
+`containers:read`/container-scope audience. `setHostView { expectedRevision, host }` requires
+workspace `machines:mint` and `containers:read` for its caller-bound membership validation;
+`removeHostView { expectedRevision, hostId }` requires workspace `machines:mint`.
+Each host has a client-generated UUID, a trimmed nonempty name and 1–64 distinct
+`{ machineId, accountLabel }` members. Names and labels are at most 64 characters, at most
+128 views exist, and an endpoint belongs to at most one view.
+
+One JSON registry at plugin storage key `host-views` starts at revision zero. A mutation
+checks `expectedRevision` first, makes identical current content a no-op, and writes with
+one exact previously-read string/null CAS. Conflict is `host_views_changed`; excess
+64 KiB UTF-8 capacity is `host_view_capacity_exceeded`, never truncation.
+New or relabelled members must resolve through the existing authorized inventory or
+refuse as `machine_unavailable`. Unchanged revoked, offline or forgotten members remain
+metadata until explicitly removed and never rebind by name. Removal deletes metadata only.
+The manifest declares data version 1.0 and storage purging; successful CAS emits the
+revision-only `host_views_changed` at the machine plugin node.
+
+The core Machines section edits that registry with CAS. The private draft and its original
+revision survive temporary authority uncertainty and editor remounts together. A changed registry
+disables Save and Remove without silently rebasing the draft; explicit reload discards it and
+loads the current grouping for review. A removed grouping must be explicitly closed, never
+recreated by a stale save. Conflict refusal refreshes the registry without retrying the mutation.
+Client replacement or proven administration withdrawal closes the draft.
+Grouping is optional presentation: a failed event-triggered grouping read re-arms timer fallback,
+and only serialized authoritative list reads publish registry state, so a late mutation reply
+cannot resurrect a newer removal. Read failure otherwise falls back to individual accounts.
+Multi-member launch requires explicit exact-account choice, and an unavailable selected
+member is never replaced. Positive unconfined declaration, online/nonrevoked/nonpaused
+state and current placement are independent prerequisites, not inferred from host rollup.
+Enrollment uses the existing door with a distinct explicit name and no implicit rotation.
+Only a newly returned credential enters component-local transient state, in a selectable
+readonly input; hide, unmount, client replacement or actual administration loss retires it.
+Unknown/disconnected authority is not claimed as withdrawal. Core setup instructions do
+not install an account/owner or confer shell authority.
+
 Roster rows may carry `physicalCoreCount`, a positive integer from the current admitted live
 machine hello (#939). It counts distinct OS-visible physical package/core identities among
 online Linux CPUs, not logical processors, cgroup quota or bare-metal attestation. Unknown,
@@ -2069,6 +2172,11 @@ latch after restart and sends it after every capable hello. The host latch survi
 transport replacement, not host replacement. `MachineSummary.draining?` publishes the
 hub state (absent means open). This action is not `cleanup: true`; a disabled machines
 plugin must be re-enabled to change the latch.
+
+The floor emits declared `machine_inventory_changed` at a changed latch's owning commit,
+before owner acknowledgement; a later refusal cannot suppress the committed inventory news.
+Successful revoke and forget handlers also emit it, including withdrawal of an already-offline
+endpoint. Payloads contain exact machine IDs/state, never credentials or host paths.
 
 An empty drain result is not authority to signal or replace a host: exited terminals may
 still be retained pending acknowledgement. Maintenance must use the host's atomic
@@ -2627,7 +2735,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
 at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
-`format: 1`, `hardenedContract: 11`, the validated `PluginManifest`
+`format: 1`, `hardenedContract: 12`, the validated `PluginManifest`
 ([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
 `entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
 and base64 `files["server.js"]`, `files["web.js"]`,
@@ -2690,8 +2798,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 11; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 12; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2718,6 +2826,17 @@ Contract 11 adds optional `hook.metadata` for credential-bound
 read-only lifecycle metadata. Older admitted guests omit newer metadata and preserve their
 normalized declarations and digests. Host-to-guest optional fields are gated by the admitted
 contract, never sent speculatively.
+Contract 12 adds optional live workspace authority to Worker init/mounted contexts and the
+bounded `syncSubscriptions` client method. The initial common init remains strictly legacy;
+after a current guest announces contract 12, the host sends its enriched init before mounts.
+Pre-12 guests omit workspace fields and the optional mounted `clientEpoch`, and cannot
+call the new method. Authority/presentation changes update current getters and listeners
+without remounting or replacing the client. Actual page-client replacement increments the
+opaque epoch even when all coarse facts are identical, retires captured old client custody
+and pending replies, and supplies a new portable client without remounting React.
+Contract 12 also admits optional readonly inputs and expanded buttons. Unused/false
+readonly is omitted from frames; true prevents edits but preserves text selection and
+focused controlled updates. A pre-12 declaration of either feature faults only its instance.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
@@ -2918,14 +3037,20 @@ operation or change its own authority and effect rules.
 | worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                       |
 
 `WEB_HOST_METHODS` include `action`, `place`, `selfCaps`, `machines`,
-`resolve`, `navigate`, terminal read/input/open/create, streams and event
-subscriptions/acknowledgements. The Worker calls the page's **current**
-`HostServices` through these bounded methods, never receiving its bearer.
+`resolve`, `navigate`, terminal read/input/open/create, streams, event
+subscriptions/acknowledgements and the contract-12-only `syncSubscriptions` ordering fence.
+The Worker calls the page's **current** `HostServices` through these bounded methods,
+never receiving its bearer.
 Events address only controls in the latest committed React tree; teardown
 unmounts the root, runs effect cleanup, releases subscriptions/streams and
 retires outstanding instance calls. Disable or a moved SPA session terminates
 its Worker. A recovered error boundary can render again; an uncaught root
 fault paints a bounded error state and cannot keep event authority.
+Workspace authority getters read the current mounted context, never room caps or a caller's
+chosen container. `workspaceCaps()` is empty and `workspaceEventsAvailable()` false when
+unknown or disconnected. `onAuthorityChange` observes updated getters; retirement cleans its
+listeners and resolves pending synchronization false. Only `syncSubscriptions`, not either
+getter or an arbitrary client method, crosses the specifically allowlisted RPC boundary.
 
 **Present browser limit (#409).** The init frame does not carry the viewer's bearer, and the
 Worker receives neither the page DOM nor live host objects. This is a message/DOM boundary,
@@ -3207,7 +3332,7 @@ Consumers interpreting a kind qualify by `event.plugin`; topic-only invalidation
 unchanged. `GET /api/protocol` publishes the origin field and each kind's owner. Subscribing is a READ of the
 topic's node, discharged with the same authority the resolve door uses; a topic this credential
 may not read is simply not subscribed, because a per-topic refusal frame would make the plane a
-permission oracle. There are no offsets, acknowledgements or replay: an event reaches the sockets
+permission oracle. There are no offsets, delivery acknowledgements or replay: an event reaches the sockets
 subscribed AT THE INSTANT OF EMISSION and catch-up is reading state back through the ordinary
 door. Subscriptions are presence-class state — they die with the socket, and the SDK pool
 re-declares every live topic immediately after writing its handshake (`observe` or the room
@@ -3219,6 +3344,31 @@ Event delivery shares the session channel's send bound (256 queued frames or 1 M
 socket's event queue); past it, the event is dropped and logged as `socket_backpressure`
 with `connectionId` and `topic` while the socket and its subscriptions stay live, and catch-up
 is a state read (ADR 0012 rule 5).
+
+**Live workspace authority and transport ordering (v54, #956).** An accepted connection receives
+`authority_context { workspaceCaps: Cap[], workspaceEvents: boolean }` before `observed` or room
+`init`, and changed snapshots follow live authority changes. Caps are evaluated at
+`MANIFOLD_ROOT_URI` for the actual first authenticated physical credential; `*` is included
+only when `holdsRoot` succeeds. Container/machine-only scopes have no root caps. Event
+eligibility reuses EventHub's workspace-event predicate. This is the caller's coarse hint,
+not a per-topic verdict or action authorization; mounted `containerId` and `selfCaps` cannot
+substitute for it. The SDK installs a late pooled handle and its retained pre-connect interests
+before publishing readiness, replaying the current authority snapshot first. Synchronous readiness
+listeners may declare additional interests and request an ordering fence. Physical retirement
+clears authority without clearing a successor attachment created by a retirement callback.
+Gaining workspace event access re-declares retained interests.
+
+`sync_subscriptions { id }` receives only `subscriptions_synced { id }` after preceding
+subscribe/unsubscribe declarations have been processed on that authenticated socket. IDs are
+positive integers at most 2,147,483,647. The reply is identical for accepted and refused topics;
+it reveals no topics, counts, existence, admission or delivery result and does not wait for
+unrelated terminal/action effects. `SessionClient.syncSubscriptions(): Promise<boolean>` tracks
+physical generation, authority epoch and declaration watermark, with at most one in-flight fence
+and one queued later watermark. An old reply cannot cover newer interests. The cached coverage
+is retired with authority/transport changes; each wait expires five seconds after its invocation,
+including time queued behind an earlier watermark, and promotion never extends that deadline.
+Retirement settles false. Failed synchronization retains polling until the next normal activation,
+rebind, reconnect or authority transition, never an unbounded retry loop.
 
 **Which subscription hears which event** is `topicMatches(subscribed, topic)`, published by
 `@manifold/protocol` and used by BOTH halves — the server to pick sockets, the SDK to pick
@@ -3253,13 +3403,15 @@ addresses, so the collection can only ever narrow, never widen, who hears a room
 **What a subscriber owes itself.** An event says something happened; it is not the new state, and
 nothing is replayed. A consumer that needs the state READS it, through the same door a fresh
 client uses — which is why the browser's shared feeds
-(`@manifold/plugin/hooks`, `usePolledResource`) still hold exactly one fetch function and traded
-only their cadence: one initial read at mount, then one read per burst of matching events, and a
-content compare so an unchanged answer reaches no subscriber. The cadence is NOT removed — it is
-the documented fallback, and it runs while the socket is down or while a feed has no topics at
-all. It never runs beside a live subscription; the two are mutually exclusive by construction,
-and `mode: "events"` is precisely the state in which no timer exists. `REGISTRY.md` §Budgets is
-the ceiling that keeps that honest — every network row is ZERO at idle.
+(`@manifold/plugin/hooks`, `usePolledResource`) still hold exactly one fetch function, coalesce
+matching events and suppress equal content. Event-backed feeds declare interests, await their
+current transport fence, then perform a qualifying catch-up read before retiring polling.
+`requiresWorkspaceEvents` defaults false; every Machines/host-view inventory reader sets it
+true. While disconnected, ineligible, unsynchronized, not yet caught up or without topics,
+the shared `FALLBACK_POLL_MS` cadence remains. Hidden tabs suspend that timer but retain
+interests. An event during a fetch still queues the subsequent read. `mode: "events"` means a
+synchronized eligible binding has caught up and has no timer. `REGISTRY.md` §Budgets keeps
+idle eligible network rows at zero; unreadable workspace event audiences retain honest polling.
 
 Handshake: the FIRST client frame on a connection MUST be either
 `join { ch, containerId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }` or
@@ -3270,6 +3422,8 @@ authenticate the socket, seat event/stream subscriptions, arm credential expiry 
 same liveness watchdog. The ten-second deadline applies until one handshake survives. After an
 observer releases, the socket stays admitted while any room channel remains; after its last room
 leaves, it stays admitted while any observer remains. A socket with neither closes.
+Credential expiry is an absolute admitted deadline. Long lifetimes use bounded timer wakes;
+an intermediate wake or a wall-clock rollback never expires a still-valid credential.
 Resume hints (`lastEpoch`/`lastRev`) ride each channel's own join, so a reconnect redials ONE
 socket and re-establishes every observer and channel; a mismatch simply yields a full init.
 `leave { ch }` frees one channel while every other channel and roomless observer keeps streaming.
@@ -3280,6 +3434,9 @@ full Yjs state update for the room. `selfCaps` mirrors the joining principal's g
 room clients can gate UI affordances without a separate introspection round-trip; an observer has
 no room and therefore exposes empty `selfCaps()`. Presence is carried by `attendance`, whose
 entries are `PresenceState`; there is no separate `presences` field.
+Workspace controls instead read live `workspaceCaps()` and subscribe with `onAuthorityChange`;
+an observer receives those facts without acquiring a room. Unknown transport authority must
+not be described as a proven credential withdrawal.
 
 **Liveness (v19, issue #55).** The session channel is a DIAL like the machine and instance
 channels, so it runs their one scheme rather than a second ([One authoritative implementation](#one-authoritative-implementation)) off the same
@@ -3830,6 +3987,15 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   Strict session/SDK consumers update together. Machine, terminal-host, native-owner RPC and
   instance frames are unchanged; the machine and instance acceptance sets add revision 42
   without retiring compatible peers or requiring a fleet restart.
+
+For hardened contract 12 preparation, native demand crosses the isolate boundary only as a
+strict nonsecret selector — machine, provider plugin and operation, installation/artifact/resource
+pins, bound-input references, session machine and a commitment digest of the private runtime.
+Neither literal inputs nor full session/runtime contents become review evidence. Native effect
+admission recomputes the complete binding from the private runtime and requires equality with the
+prepared binding before an authority-fence recheck, governed decision, reservation or command;
+opaque literal validation deliberately remains at that effect boundary.
+
 - **An unconfined terminal may be born running a program** (issue #192, protocol v22). `program { argv }`
   names what the PTY execs in place of the machine's shell: `argv[0]` with `argv.slice(1)`,
   under the same PTY, the same lifecycle (snapshot, resize, `terminal_exited`, controller lease)
@@ -3883,6 +4049,11 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   IPC v3; replacing only the transport in front of a retained v2 host cannot create that
   evidence.
 
+  A replaceable transport does not retire a live viewer's room channel. Re-adoption refreshes
+  the occupant snapshot and restores writable input to the same retained PTY. A snapshot with
+  the already painted output sequence does not replace the terminal buffer or clear its
+  selection; a real restart still resets the session.
+
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never
@@ -3925,6 +4096,11 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
      queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
      Viewer byte stream ≡ snapshot(S) + outputs(S+1…). e2e MUST assert mid-stream attach
      contiguity (counter test), repeated ≥10×.
+     A known running terminal retains its channel attachment when its owner transport is
+     unavailable, including a viewer first mounted offline or disconnected before its first
+     snapshot. No snapshot deadline runs against an offline owner. Exact retained-owner
+     adoption re-pends the same viewers and heals their ordered stream without another mount
+     or room reconnect; detach, channel closure and authority withdrawal retain their bounds.
 - **Snapshot geometry.** Before a tiled PTY exists, a viewer MAY construct an unpainted local
   xterm grid solely to measure its host; that placeholder is never process geometry. The winning
   fit becomes the advertised terminal `cols`/`rows`. After birth, a viewer MUST construct or
@@ -4880,8 +5056,10 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   than executing them again; owner recovery clears old descendants before a new generation
   admits work. An unobserved reserved execution is `interrupted`/unknown, not safe to retry.
   Temporary transport unavailability does not itself revoke a retained run's grants.
-  Current authority, consent and exact installation/resource/policy pins still apply;
-  live readiness remains mandatory for new admission and each service effect.
+  Birth/restart readiness and exact transport guards retire only after the owner's
+  acknowledgement. Current credential and sponsor authority, consent, code, exact
+  installation/resource/policy pins and native-owner identity still apply; live readiness
+  remains mandatory for new admission and each service effect.
   Retained identity records prevent expired output/result retention from permitting replay.
   The journal is hash-chained and segmented, with no lifetime capacity (#848). A full segment
   is sealed by a checkpoint signed with the owner identity that continues the chain and
@@ -5188,9 +5366,10 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   fresh authority. A sibling's delayed guest preparation rechecks the lease before admission;
   queued isolate calls recheck that their request is still live before being served. Effects
   already admitted are not rolled back or retroactively cancelled.
-- **Carried container authority (ADR 0051).** A GOVERNED door — one whose `caps` include a
-  governed capability — may declare `containers:read` or `containers:write` with a
-  `requirements` target, and that target must be a container `ManifoldRef`; any other ref is
+- **Carried container authority (ADR 0051).** A GOVERNED door — one whose fixed or
+  sealed prepared requirements include a governed capability — may declare `containers:read`
+  or `containers:write` with a `requirements` target, and that target must be a container
+  `ManifoldRef`; any other ref is
   refused `invalid_args` (`containers:write requires a container target`). Admission discharges
   it against the CALLER at that container, its flat ceiling and the waterfall both, with no
   consent row, as for `terminals:*`: a caller lacking it there is refused `forbidden`
@@ -5221,6 +5400,9 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   so revocation, expiry, a pause or a deny ends the carried cap. Dispatches whose caller carries
   no grants through doors without container targets, and `delegates` (native-only), are
   unchanged.
+  Ordinary workspace, scene and terminal rights are also caller requirements, not native
+  consent. Retained prepared-action authority keeps these requirements beside the signed
+  request and rechecks them before a lifecycle continuation is invoked.
 - **Schedules.** The same admission path consumes durable schedule revision, nominal
   occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
   identity is committed before enqueue. Original credential lineage/ceiling persists;

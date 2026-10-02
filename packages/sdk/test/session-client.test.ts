@@ -88,6 +88,10 @@ const DocUpdateFrameSchema = z.looseObject({
   type: z.literal("doc_update"),
   update: z.string(),
 });
+const SubscriptionSyncFrameSchema = z.strictObject({
+  type: z.literal("sync_subscriptions"),
+  id: z.number().int().positive(),
+});
 
 function sentTypes(socket: FakeSocket): string[] {
   return socket.sent.map((f) => SentFrameSchema.parse(JSON.parse(f)).type);
@@ -98,6 +102,26 @@ function framesOfType(socket: FakeSocket, type: string): Record<string, unknown>
   return socket.sent
     .map((raw) => SentFrameSchema.parse(JSON.parse(raw)))
     .filter((frame) => frame.type === type);
+}
+
+function syncIds(socket: FakeSocket): number[] {
+  return framesOfType(socket, "sync_subscriptions").map(
+    (frame) => SubscriptionSyncFrameSchema.parse(frame).id,
+  );
+}
+
+function authority(socket: FakeSocket, workspaceEvents: boolean): void {
+  socket.receive(
+    JSON.stringify({
+      type: "authority_context",
+      workspaceCaps: workspaceEvents ? ["containers:read", "machines:mint"] : [],
+      workspaceEvents,
+    }),
+  );
+}
+
+function synchronized(socket: FakeSocket, id: number): void {
+  socket.receive(JSON.stringify({ type: "subscriptions_synced", id }));
 }
 
 type DocUpdateFrame = z.infer<typeof DocUpdateFrameSchema>;
@@ -276,6 +300,234 @@ describe("handshake", () => {
   });
 });
 
+describe("workspace authority and subscription ordering", () => {
+  const MACHINES: ManifoldRef = { kind: "plugin", pluginId: "core.machines" };
+  const CONTAINER: ManifoldRef = { kind: "container", containerId: "container1" };
+
+  test("workspace authority is independent of room caps and clears with the physical connection", async () => {
+    const { client, socket, connection } = dialing();
+    const changes: string[][] = [];
+    const off = client.onAuthorityChange(() => changes.push([...client.workspaceCaps()]));
+    expect(client.workspaceCaps()).toEqual([]);
+    expect(client.workspaceEventsAvailable()).toBe(false);
+    socket.open();
+    authority(socket, false);
+    socket.receive(INIT);
+    await connection;
+    expect(client.selfCaps()).toEqual(["*"]);
+    expect(client.workspaceCaps()).toEqual([]);
+    expect(client.workspaceEventsAvailable()).toBe(false);
+    authority(socket, true);
+    expect(client.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+    expect(client.workspaceEventsAvailable()).toBe(true);
+    authority(socket, true);
+    expect(changes).toEqual([[], ["containers:read", "machines:mint"]]);
+    client.close();
+    expect(client.workspaceCaps()).toEqual([]);
+    expect(client.workspaceEventsAvailable()).toBe(false);
+    expect(changes).toEqual([[], ["containers:read", "machines:mint"], []]);
+    off();
+  });
+
+  test("a reply covers only its watermark and later declarations share one queued fence", async () => {
+    const { client, socket } = connected();
+    try {
+      authority(socket, true);
+      client.subscribe([MACHINES], () => undefined);
+      const first = client.syncSubscriptions();
+      const duplicate = client.syncSubscriptions();
+      const [firstId] = syncIds(socket);
+      client.subscribe([CONTAINER], () => undefined);
+      const later = client.syncSubscriptions();
+      const laterDuplicate = client.syncSubscriptions();
+      let laterSettled = false;
+      void later.then(() => {
+        laterSettled = true;
+      });
+      expect(syncIds(socket)).toEqual([firstId!]);
+      synchronized(socket, firstId!);
+      expect(await first).toBe(true);
+      expect(await duplicate).toBe(true);
+      expect(laterSettled).toBe(false);
+      const ids = syncIds(socket);
+      expect(ids).toHaveLength(2);
+      synchronized(socket, firstId!);
+      await Promise.resolve();
+      expect(laterSettled).toBe(false);
+      synchronized(socket, ids[1]!);
+      expect(await later).toBe(true);
+      expect(await laterDuplicate).toBe(true);
+      expect(await client.syncSubscriptions()).toBe(true);
+      expect(syncIds(socket)).toEqual(ids);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a five-second failure retires queued waits and a fresh fence ignores the old reply", async () => {
+    vi.useFakeTimers();
+    const { client, socket } = connected();
+    try {
+      authority(socket, false);
+      client.subscribe([CONTAINER], () => undefined);
+      const first = client.syncSubscriptions();
+      const [oldId] = syncIds(socket);
+      client.subscribe([MACHINES], () => undefined);
+      const queued = client.syncSubscriptions();
+      vi.advanceTimersByTime(4_999);
+      let settled = false;
+      void first.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      vi.advanceTimersByTime(1);
+      expect(await first).toBe(false);
+      expect(await queued).toBe(false);
+      expect(syncIds(socket)).toEqual([oldId!]);
+      const fresh = client.syncSubscriptions();
+      let freshSettled = false;
+      void fresh.then(() => {
+        freshSettled = true;
+      });
+      synchronized(socket, oldId!);
+      await Promise.resolve();
+      expect(freshSettled).toBe(false);
+      synchronized(socket, syncIds(socket)[1]!);
+      expect(await fresh).toBe(true);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("promotion and coalescing cannot extend a queued invocation's five-second deadline", async () => {
+    vi.useFakeTimers();
+    const { client, socket } = connected();
+    try {
+      authority(socket, true);
+      client.subscribe([MACHINES], () => undefined);
+      const first = client.syncSubscriptions();
+      const [firstId] = syncIds(socket);
+      vi.advanceTimersByTime(1_000);
+      client.subscribe([CONTAINER], () => undefined);
+      const queued = client.syncSubscriptions();
+      let queuedResult: boolean | undefined;
+      void queued.then((result) => {
+        queuedResult = result;
+      });
+
+      vi.advanceTimersByTime(3_999);
+      client.subscribe([{ kind: "plugin", pluginId: "core.index" }], () => undefined);
+      const coalesced = client.syncSubscriptions();
+      let coalescedResult: boolean | undefined;
+      void coalesced.then((result) => {
+        coalescedResult = result;
+      });
+      expect(syncIds(socket)).toEqual([firstId!]);
+      synchronized(socket, firstId!);
+      expect(await first).toBe(true);
+      expect(syncIds(socket)).toHaveLength(2);
+
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+      expect(queuedResult).toBeUndefined();
+      expect(coalescedResult).toBeUndefined();
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(queuedResult).toBe(false);
+      expect(coalescedResult).toBe(false);
+
+      const expiredId = syncIds(socket)[1]!;
+      const fresh = client.syncSubscriptions();
+      const freshId = syncIds(socket)[2]!;
+      expect(freshId).toBeGreaterThan(expiredId);
+      let freshResult: boolean | undefined;
+      void fresh.then((result) => {
+        freshResult = result;
+      });
+      synchronized(socket, expiredId);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(freshResult).toBeUndefined();
+      synchronized(socket, freshId);
+      expect(await fresh).toBe(true);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("gaining workspace events redeclares refused interests before the authority listener fences them", async () => {
+    const { client, socket } = connected();
+    try {
+      authority(socket, false);
+      client.subscribe([MACHINES], () => undefined);
+      const obsolete = client.syncSubscriptions();
+      client.subscribe([CONTAINER], () => undefined);
+      const queued = client.syncSubscriptions();
+      let current: Promise<boolean> | undefined;
+      const off = client.onAuthorityChange(() => {
+        if (client.workspaceEventsAvailable()) current = client.syncSubscriptions();
+      });
+      authority(socket, true);
+      expect(await obsolete).toBe(false);
+      expect(await queued).toBe(false);
+      expect(sentTypes(socket).slice(-2)).toEqual(["subscribe", "sync_subscriptions"]);
+      expect(framesOfType(socket, "subscribe").at(-1)).toEqual({
+        type: "subscribe",
+        topics: [MACHINES, CONTAINER],
+      });
+      const ids = syncIds(socket);
+      synchronized(socket, ids[0]!);
+      let settled = false;
+      void current!.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      synchronized(socket, ids[1]!);
+      expect(await current).toBe(true);
+      off();
+    } finally {
+      client.close();
+    }
+  });
+
+  test("rebind retires authority and waits while old-socket replies cannot settle the successor", async () => {
+    const { client, socket } = connected();
+    try {
+      authority(socket, true);
+      client.subscribe([MACHINES], () => undefined);
+      const obsolete = client.syncSubscriptions();
+      const [oldId] = syncIds(socket);
+      client.subscribe([CONTAINER], () => undefined);
+      const queued = client.syncSubscriptions();
+      const reconnect = client.connect();
+      expect(await obsolete).toBe(false);
+      expect(await queued).toBe(false);
+      expect(client.workspaceCaps()).toEqual([]);
+      expect(await client.syncSubscriptions()).toBe(false);
+      const replacement = FakeSocket.instances.at(-1)!;
+      replacement.open();
+      authority(replacement, true);
+      replacement.receive(INIT);
+      await reconnect;
+      const current = client.syncSubscriptions();
+      let settled = false;
+      void current.then(() => {
+        settled = true;
+      });
+      synchronized(socket, oldId!);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      synchronized(replacement, syncIds(replacement)[0]!);
+      expect(await current).toBe(true);
+    } finally {
+      client.close();
+    }
+  });
+});
+
 describe("shared transport", () => {
   interface MultiplexHarness {
     readonly first: SessionClient;
@@ -326,6 +578,31 @@ describe("shared transport", () => {
     socket.receive({ ch: channelOf(client), ...body });
   }
 
+  async function admittedObservers(): Promise<{
+    first: SessionClient;
+    late: SessionClient;
+    socket: FakeSocket;
+  }> {
+    FakeSocket.instances = [];
+    const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
+    const options = {
+      url: "ws://test/ws/session",
+      token: "tok",
+      containerId: null,
+      reconnect: false,
+      webSocketFactory: factory,
+    } as const;
+    const first = new SessionClient(options);
+    const connection = first.connect();
+    const socket = FakeSocket.instances.at(-1);
+    if (!socket) throw new Error("no socket dialed");
+    socket.open();
+    authority(socket, true);
+    socket.receive(JSON.stringify({ type: "observed" }));
+    await connection;
+    return { first, late: new SessionClient(options), socket };
+  }
+
   test("two rooms share ONE connection and each joins its own channel", async () => {
     const { first, second, socket, firstConnect, secondConnect } = twoRooms();
 
@@ -366,6 +643,7 @@ describe("shared transport", () => {
 
     socket.open();
     expect(sentTypes(socket).slice(0, 2)).toEqual(["observe", "join"]);
+    authority(socket, true);
     socket.receive(JSON.stringify({ type: "observed" }));
     receiveOn(socket, room, initFor(room, "e-room", "in-room"));
     await Promise.all([observerConnect, roomConnect]);
@@ -375,15 +653,305 @@ describe("shared transport", () => {
     expect(socket.closedWith).toBeNull();
 
     const replacement = new SessionClient({ ...options, containerId: null });
+    const machines: ManifoldRef = { kind: "plugin", pluginId: "core.machines" };
+    const container: ManifoldRef = { kind: "container", containerId: "container1" };
+    const updates: string[] = [];
+    replacement.subscribe([machines], (event) => updates.push(event.kind));
+    let eventReady = false;
+    let fence: Promise<boolean> | undefined;
+    replacement.on("status", (status) => {
+      if (status !== "open") return;
+      replacement.subscribe([container], () => undefined);
+      fence = replacement.syncSubscriptions().then((ready) => {
+        eventReady = ready && replacement.workspaceEventsAvailable();
+        return ready;
+      });
+    });
+    const before = socket.sent.length;
     await replacement.connect();
     expect(replacement.status).toBe("open");
+    expect(replacement.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+    expect(replacement.workspaceEventsAvailable()).toBe(true);
     expect(framesOfType(socket, "observe")).toHaveLength(1);
+    const [id] = syncIds(socket);
+    expect(socket.sent.slice(before).map((frame) => JSON.parse(frame))).toEqual([
+      { type: "subscribe", topics: [machines] },
+      { type: "subscribe", topics: [container] },
+      { type: "sync_subscriptions", id },
+    ]);
+    expect(eventReady).toBe(false);
+    synchronized(socket, id!);
+    expect(await fence).toBe(true);
+    expect(eventReady).toBe(true);
+    socket.receive(
+      JSON.stringify({
+        type: "event",
+        topic: machines,
+        plugin: "core.machines",
+        kind: "machine_online",
+        at: 1,
+        actor: "p1",
+        payload: {},
+      }),
+    );
+    expect(updates).toEqual(["machine_online"]);
 
     room.close();
     expect(socket.closedWith).toBeNull();
     expect(framesOfType(socket, "leave")).toHaveLength(1);
     replacement.close();
     expect(socket.closedWith).toEqual({ code: 1000, reason: "" });
+  });
+
+  test("closing a late observer retires deferred admission without reopening it", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      const opened: boolean[] = [];
+      late.on("status", (status) => {
+        if (status === "open") opened.push(late.workspaceEventsAvailable());
+      });
+      const connection = late.connect();
+      late.close();
+      await expect(connection).rejects.toThrow("observer closed before admission");
+      await Promise.resolve();
+      expect(late.status).toBe("closed");
+      expect(late.transportId).toBeNull();
+      expect(late.workspaceCaps()).toEqual([]);
+      expect(opened).toEqual([]);
+      expect(await late.syncSubscriptions()).toBe(false);
+      expect(first.status).toBe("open");
+      expect(socket.closedWith).toBeNull();
+
+      await late.connect();
+      expect(opened).toEqual([true]);
+      expect(late.transportId).toBe(first.transportId);
+    } finally {
+      late.close();
+      first.close();
+    }
+  });
+
+  test("synchronous reconnect from closed status retains the successor observer's authority", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      const machines = { kind: "plugin" as const, pluginId: "core.machines" };
+      const updates: string[] = [];
+      late.subscribe([machines], (event) => updates.push(event.kind));
+      await late.connect();
+      let replacement: Promise<void> | undefined;
+      const off = late.on("status", (status) => {
+        if (status !== "closed") return;
+        off();
+        replacement = late.connect();
+      });
+      late.close();
+      if (replacement === undefined) throw new Error("Closed callback did not reconnect");
+      await replacement;
+      expect(late.status).toBe("open");
+      expect(late.transportId).toBe(first.transportId);
+      expect(late.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+      expect(late.workspaceEventsAvailable()).toBe(true);
+      const fence = late.syncSubscriptions();
+      synchronized(socket, syncIds(socket).at(-1)!);
+      expect(await fence).toBe(true);
+      socket.receive(
+        JSON.stringify({
+          type: "event",
+          topic: machines,
+          plugin: "core.machines",
+          kind: "machine_online",
+          at: 1,
+          actor: "p1",
+          payload: {},
+        }),
+      );
+      expect(updates).toEqual(["machine_online"]);
+      expect(socket.closedWith).toBeNull();
+    } finally {
+      late.close();
+      first.close();
+    }
+  });
+
+  test("authority fan-out cannot restore a retired snapshot after a listener redials", async () => {
+    const { first, late, socket } = await admittedObservers();
+    let redial: Promise<void> | undefined;
+    try {
+      await late.connect();
+      const off = first.onAuthorityChange(() => {
+        if (redial !== undefined || !first.workspaceCaps().includes("tokens:mint")) return;
+        off();
+        redial = first.connect();
+      });
+      socket.receive(
+        JSON.stringify({
+          type: "authority_context",
+          workspaceCaps: ["tokens:mint"],
+          workspaceEvents: true,
+        }),
+      );
+      const replacement = FakeSocket.instances.at(-1)!;
+      expect(replacement).not.toBe(socket);
+      expect(first.workspaceCaps()).toEqual([]);
+      expect(late.workspaceCaps()).toEqual([]);
+      expect(late.workspaceEventsAvailable()).toBe(false);
+      expect(await late.syncSubscriptions()).toBe(false);
+      replacement.open();
+      authority(replacement, true);
+      replacement.receive(JSON.stringify({ type: "observed" }));
+      if (redial === undefined) throw new Error("Authority listener did not redial");
+      await redial;
+      expect(late.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+      expect(late.workspaceEventsAvailable()).toBe(true);
+    } finally {
+      late.close();
+      first.close();
+      await redial?.catch(() => undefined);
+    }
+  });
+
+  test("nested authority publication supersedes earlier fan-out without replacing the socket", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      await late.connect();
+      const transportId = first.transportId;
+      const off = first.onAuthorityChange(() => {
+        if (!first.workspaceCaps().includes("tokens:mint")) return;
+        off();
+        socket.receive(
+          JSON.stringify({
+            type: "authority_context",
+            workspaceCaps: ["containers:read"],
+            workspaceEvents: false,
+          }),
+        );
+      });
+      socket.receive(
+        JSON.stringify({
+          type: "authority_context",
+          workspaceCaps: ["tokens:mint"],
+          workspaceEvents: true,
+        }),
+      );
+      expect(first.transportId).toBe(transportId);
+      expect(late.transportId).toBe(transportId);
+      expect(first.workspaceCaps()).toEqual(["containers:read"]);
+      expect(late.workspaceCaps()).toEqual(["containers:read"]);
+      expect(late.workspaceEventsAvailable()).toBe(false);
+      expect(await late.syncSubscriptions()).toBe(false);
+    } finally {
+      late.close();
+      first.close();
+    }
+  });
+
+  test("closing during cached authority replay cannot install or admit the abandoned observer", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      let opens = 0;
+      late.subscribe([{ kind: "plugin", pluginId: "core.machines" }], () => undefined);
+      late.on("status", (status) => {
+        if (status === "open") opens += 1;
+      });
+      const off = late.onAuthorityChange(() => {
+        if (late.workspaceEventsAvailable()) late.close();
+      });
+      const connection = late.connect();
+      await expect(connection).rejects.toThrow("observer closed before admission");
+      expect(late.status).toBe("closed");
+      expect(late.transportId).toBeNull();
+      expect(late.workspaceEventsAvailable()).toBe(false);
+      expect(opens).toBe(0);
+      expect(framesOfType(socket, "subscribe")).toEqual([]);
+      expect(first.status).toBe("open");
+      expect(socket.closedWith).toBeNull();
+
+      off();
+      await late.connect();
+      expect(opens).toBe(1);
+      const fence = late.syncSubscriptions();
+      synchronized(socket, syncIds(socket)[0]!);
+      expect(await fence).toBe(true);
+    } finally {
+      late.close();
+      first.close();
+    }
+  });
+
+  test("redial retires deferred admission until the replacement physical socket is admitted", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      let opens = 0;
+      let fence: Promise<boolean> | undefined;
+      late.subscribe([{ kind: "plugin", pluginId: "core.machines" }], () => undefined);
+      late.on("status", (status) => {
+        if (status !== "open") return;
+        opens += 1;
+        fence = late.syncSubscriptions();
+      });
+      const lateConnect = late.connect();
+      const reconnect = first.connect();
+      await Promise.resolve();
+      expect(opens).toBe(0);
+      expect(late.status).toBe("connecting");
+      expect(late.workspaceEventsAvailable()).toBe(false);
+      expect(await late.syncSubscriptions()).toBe(false);
+
+      const replacement = FakeSocket.instances.at(-1)!;
+      expect(replacement).not.toBe(socket);
+      replacement.open();
+      authority(replacement, true);
+      socket.receive(JSON.stringify({ type: "observed" }));
+      await Promise.resolve();
+      expect(opens).toBe(0);
+      replacement.receive(JSON.stringify({ type: "observed" }));
+      await Promise.all([lateConnect, reconnect]);
+      expect(opens).toBe(1);
+      expect(sentTypes(replacement)).toEqual(["observe", "subscribe", "sync_subscriptions"]);
+      synchronized(replacement, syncIds(replacement)[0]!);
+      expect(await fence).toBe(true);
+    } finally {
+      late.close();
+      first.close();
+    }
+  });
+
+  test("authority replacement refreshes deferred admission without reusing prior ordering proof", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      first.subscribe([{ kind: "container", containerId: "container1" }], () => undefined);
+      const obsolete = first.syncSubscriptions();
+      const [oldId] = syncIds(socket);
+      const eligibility: boolean[] = [];
+      let fence: Promise<boolean> | undefined;
+      late.subscribe([{ kind: "plugin", pluginId: "core.machines" }], () => undefined);
+      late.on("status", (status) => {
+        if (status !== "open") return;
+        eligibility.push(late.workspaceEventsAvailable());
+        fence = late.syncSubscriptions();
+      });
+      const connection = late.connect();
+      authority(socket, false);
+      await connection;
+      expect(await obsolete).toBe(false);
+      expect(eligibility).toEqual([false]);
+      expect(late.workspaceCaps()).toEqual([]);
+      expect(late.status).toBe("open");
+      let synchronizedCurrent: boolean | undefined;
+      void fence!.then((result) => {
+        synchronizedCurrent = result;
+      });
+      synchronized(socket, oldId!);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(synchronizedCurrent).toBeUndefined();
+      synchronized(socket, syncIds(socket)[1]!);
+      expect(await fence).toBe(true);
+      expect(late.workspaceEventsAvailable()).toBe(false);
+    } finally {
+      late.close();
+      first.close();
+    }
   });
 
   test("a late room retains the current server correlation when it joins an open pool", async () => {
@@ -401,6 +969,7 @@ describe("shared transport", () => {
     if (!socket) throw new Error("no socket dialed");
     socket.open();
     socket.receive(JSON.stringify({ type: "session", connectionId: "server-late" }));
+    authority(socket, true);
     receiveOn(socket, first, initFor(first, "e-a", "in-a"));
     await firstConnect;
 
@@ -408,10 +977,30 @@ describe("shared transport", () => {
     const secondConnect = second.connect();
     expect(second.transportId).toBe(first.transportId);
     expect(second.connectionId).toBe("server-late");
+    expect(second.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+    expect(second.workspaceEventsAvailable()).toBe(true);
     receiveOn(socket, second, initFor(second, "e-b", "in-b"));
     await secondConnect;
 
     first.close();
+    second.close();
+  });
+
+  test("one handle's retirement leaves sibling subscription fences alive", async () => {
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    socket.open();
+    authority(socket, true);
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await Promise.all([firstConnect, secondConnect]);
+    first.subscribe([{ kind: "plugin", pluginId: "core.machines" }], () => undefined);
+    const firstWait = first.syncSubscriptions();
+    const secondWait = second.syncSubscriptions();
+    first.close();
+    expect(await firstWait).toBe(false);
+    expect(second.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+    synchronized(socket, syncIds(socket)[0]!);
+    expect(await secondWait).toBe(true);
     second.close();
   });
 

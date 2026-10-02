@@ -10,6 +10,7 @@ import type {
 } from "@manifold/protocol";
 import {
   ActionOutcomeSchema,
+  HARDENED_CONTRACT_VERSION,
   MachineSummarySchema,
   MachinesResponseSchema,
   WebIsolateHostFrameSchema,
@@ -79,6 +80,10 @@ interface FakeClient {
   readonly status: SessionHandle["status"];
   subscribe: SessionHandle["subscribe"];
   on: SessionHandle["on"];
+  workspaceCaps: SessionHandle["workspaceCaps"];
+  workspaceEventsAvailable: SessionHandle["workspaceEventsAvailable"];
+  onAuthorityChange: SessionHandle["onAuthorityChange"];
+  syncSubscriptions: SessionHandle["syncSubscriptions"];
   action(name: string, args: unknown): Promise<unknown>;
   place(ref: unknown, destination: unknown): Promise<unknown>;
   selfCaps(): readonly string[];
@@ -103,6 +108,10 @@ function fakeClient(calls: string[]): FakeClient {
       return Promise.resolve({ ok: true, result: { placed: true } });
     },
     selfCaps: () => ["containers:read"],
+    workspaceCaps: () => ["containers:read"],
+    workspaceEventsAvailable: () => true,
+    onAuthorityChange: () => () => {},
+    syncSubscriptions: () => Promise.resolve(true),
     machines: () => Promise.resolve([{ id: "m1" }]),
     resolve: (uri) => {
       calls.push(`resolve:${uri}`);
@@ -572,32 +581,120 @@ describe("portable Worker compatibility", () => {
     },
   );
 
-  test.each([undefined, 8, 12])("portable contract %s cannot mount or call", async (contract) => {
-    const { host, worker, calls } = bench(undefined, true);
+  test.each([undefined, 8, HARDENED_CONTRACT_VERSION + 1])(
+    "portable contract %s cannot mount or call",
+    async (contract) => {
+      const { host, worker, calls } = bench(undefined, true);
+      host.mount(
+        "i1",
+        "main",
+        () => {},
+        () => {},
+      );
+      worker.emit({
+        t: "ready",
+        panels: ["main"],
+        ...(contract === undefined ? {} : { hardenedContract: contract }),
+      });
+      worker.emit({
+        t: "call",
+        id: "after-fault",
+        instance: "i1",
+        method: "action",
+        args: [MACHINES_RESOURCE, {}],
+      });
+      await flush();
+      expect(worker.terminated).toBe(true);
+      expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
+      expect(calls).toEqual([]);
+    },
+  );
+
+  test.each([1, 9, 11])(
+    "contract %i isolates contract-12 input and disclosure features from unaffected instances",
+    (contract) => {
+      const { host, worker } = bench(undefined, contract >= 9);
+      const rendered: UiNode[] = [];
+      const faultedInstances: string[] = [];
+      host.mount(
+        "editable",
+        "main",
+        (tree) => rendered.push(tree),
+        () => faultedInstances.push("editable"),
+      );
+      const editable: UiNode = { type: "input", event: "edit", value: "draft" };
+      const button: UiNode = { type: "button", event: "toggle", label: "Show accounts" };
+      const features: readonly { instance: string; tree: UiNode }[] = [
+        { instance: "read-only", tree: { ...editable, readOnly: true } },
+        { instance: "explicit-false", tree: { ...editable, readOnly: false } },
+        { instance: "expanded", tree: { ...button, expanded: true } },
+        { instance: "collapsed", tree: { ...button, expanded: false } },
+      ];
+      for (const { instance } of features) {
+        host.mount(
+          instance,
+          "main",
+          (tree) => rendered.push(tree),
+          () => faultedInstances.push(instance),
+        );
+      }
+      try {
+        worker.emit({ t: "ready", hardenedContract: contract, panels: ["main"] });
+        worker.emit({ t: "render", instance: "editable", tree: button });
+        worker.emit({ t: "render", instance: "editable", tree: editable });
+        for (const { instance, tree } of features) {
+          worker.emit({
+            t: "render",
+            instance,
+            tree: { type: "box", children: [{ type: "box", children: [tree] }] },
+          });
+        }
+        worker.emit({ t: "render", instance: "read-only", tree: editable });
+        worker.emit({
+          t: "render",
+          instance: "editable",
+          tree: { ...editable, value: "still editable" },
+        });
+        expect(rendered).toEqual([button, editable, { ...editable, value: "still editable" }]);
+        expect(faultedInstances).toEqual(["read-only", "explicit-false", "expanded", "collapsed"]);
+        expect(worker.frames().filter((frame) => frame.t === "unmount")).toEqual([
+          { t: "unmount", instance: "read-only" },
+          { t: "unmount", instance: "explicit-false" },
+          { t: "unmount", instance: "expanded" },
+          { t: "unmount", instance: "collapsed" },
+        ]);
+        expect(worker.terminated).toBe(false);
+      } finally {
+        host.stop();
+      }
+    },
+  );
+
+  test("contract 12 admits a selectable input tree until its instance unmounts", () => {
+    const { host, worker } = bench(undefined, true);
+    const rendered: UiNode[] = [];
     const faults: string[] = [];
-    host.mount(
+    const unmount = host.mount(
       "i1",
       "main",
-      () => {},
+      (tree) => rendered.push(tree),
       (error) => faults.push(error),
     );
-    worker.emit({
-      t: "ready",
-      panels: ["main"],
-      ...(contract === undefined ? {} : { hardenedContract: contract }),
-    });
-    worker.emit({
-      t: "call",
-      id: "after-fault",
-      instance: "i1",
-      method: "action",
-      args: [MACHINES_RESOURCE, {}],
-    });
-    await flush();
-    expect(faults).toEqual([`unsupported web hardened contract ${String(contract ?? 1)}`]);
-    expect(worker.terminated).toBe(true);
-    expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
-    expect(calls).toEqual([]);
+    const tree: UiNode = {
+      type: "box",
+      children: [{ type: "input", event: "edit", value: "fixture credential", readOnly: true }],
+    };
+    try {
+      worker.emit({ t: "ready", hardenedContract: 12, panels: ["main"] });
+      worker.emit({ t: "render", instance: "i1", tree });
+      unmount();
+      worker.emit({ t: "render", instance: "i1", tree });
+      expect(rendered).toEqual([tree]);
+      expect(faults).toEqual([]);
+      expect(worker.terminated).toBe(false);
+    } finally {
+      host.stop();
+    }
   });
 
   test("legacy projection preserves refusals and leaves unrelated or invalid results untouched", async () => {
@@ -708,6 +805,99 @@ describe("WorkerRegistry", () => {
     registry.stopAll();
     expect(made.every((worker) => worker.terminated)).toBe(true);
   });
+});
+test.each([9, 10, 11])("contract %s cannot invoke the new transport fence", async (contract) => {
+  const client = fakeClient([]);
+  let calls = 0;
+  client.syncSubscriptions = async () => {
+    calls += 1;
+    return true;
+  };
+  const { worker, host } = bench(client, true);
+  host.mount(
+    "i1",
+    "main",
+    () => {},
+    () => {},
+  );
+  try {
+    worker.emit({ t: "ready", hardenedContract: contract, panels: ["main"] });
+    worker.emit({
+      t: "call",
+      id: "sync",
+      instance: "i1",
+      method: "syncSubscriptions",
+      args: [],
+    });
+    await flush();
+    expect(calls).toBe(0);
+    expect(
+      worker.frames().find((frame) => frame.t === "reply" && frame.id === "sync"),
+    ).toMatchObject({
+      ok: false,
+      error: "slice_unavailable: syncSubscriptions requires hardened contract 12",
+    });
+  } finally {
+    host.stop();
+  }
+});
+
+test("a transport fence cannot survive replacement of its mounted connection authority", async () => {
+  const pending = Promise.withResolvers<boolean>();
+  const client = fakeClient([]);
+  client.syncSubscriptions = () => pending.promise;
+  const authority = new Set<() => void>();
+  client.onAuthorityChange = (callback) => {
+    authority.add(callback);
+    return () => authority.delete(callback);
+  };
+  const { worker, host } = bench(client, true);
+  host.mount(
+    "i1",
+    "main",
+    () => {},
+    () => {},
+  );
+  try {
+    worker.emit({ t: "ready", hardenedContract: 12, panels: ["main"] });
+    worker.emit({
+      t: "call",
+      id: "before",
+      instance: "i1",
+      method: "syncSubscriptions",
+      args: [],
+    });
+    expect(authority.size).toBe(1);
+    const retiredAuthority = [...authority];
+    host.update("i1", fakeHost([], "c1", fakeClient([])));
+    expect(authority.size).toBe(0);
+    pending.resolve(true);
+    await flush();
+    expect(replyResult(worker, "before")).toBe(false);
+    worker.emit({
+      t: "call",
+      id: "after",
+      instance: "i1",
+      method: "syncSubscriptions",
+      args: [],
+    });
+    for (const callback of retiredAuthority) callback();
+    worker.emit({
+      t: "call",
+      id: "args",
+      instance: "i1",
+      method: "syncSubscriptions",
+      args: ["topic"],
+    });
+    await flush();
+    expect(replyResult(worker, "after")).toBe(true);
+    expect(
+      worker.frames().find((frame) => frame.t === "reply" && frame.id === "args"),
+    ).toMatchObject({ ok: false, error: "syncSubscriptions takes no arguments" });
+  } finally {
+    host.stop();
+  }
+  expect(authority.size).toBe(0);
 });
 
 test("event invalidations are bounded, payload-free and owned by the mounted instance", async () => {

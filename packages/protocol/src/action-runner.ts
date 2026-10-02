@@ -3,8 +3,8 @@ import {
   AcknowledgeAgentPolicyRequestSchema,
   AgentPolicyChallengeSchema,
   AgentRunTerminalOutcomeSchema,
-  CreateChildRunRequestSchema,
-  CreateRunRequestSchema,
+  CreateChildRunV2RequestSchema,
+  CreateRunV2RequestSchema,
   RenewAgentRunRequestSchema,
 } from "./agent-runs.ts";
 import { ReportRunActivityRequestSchema } from "./agents.ts";
@@ -44,7 +44,7 @@ const RunIdSchema = z.string().min(1).max(128);
 
 /** Launcher-only data, never a member of the model-facing request union. */
 export const ActionRunnerBindSchema = z.union([
-  CreateRunRequestSchema.pick({ agentId: true, session: true, model: true }),
+  CreateRunV2RequestSchema.pick({ agentId: true, session: true, model: true }),
   z.strictObject({ runId: RunIdSchema }),
 ]);
 export type ActionRunnerBind = z.infer<typeof ActionRunnerBindSchema>;
@@ -88,7 +88,7 @@ export const ActionRunnerRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("child"),
     id: IdSchema,
     runId: RunIdSchema,
-    declaration: CreateChildRunRequestSchema.omit({
+    declaration: CreateChildRunV2RequestSchema.omit({
       runId: true,
       agentId: true,
       session: true,

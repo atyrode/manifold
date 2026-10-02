@@ -4,12 +4,13 @@ import { join, resolve } from "node:path";
 import { formatManifoldUri } from "@manifold/protocol";
 import type {
   ActionOutcome,
-  Agent,
-  AgentRun,
-  InspectRunResult,
-  CredentialsResponse,
+  AgentV2,
+  AgentRunV2,
+  InspectRunV2Result,
+  ListRunsV2Result,
+  CredentialsResponseV2,
   InstanceServiceDescription,
-  PrincipalCredentials,
+  PrincipalCredentialsV2,
 } from "@manifold/protocol";
 import { Browser } from "../../../../scripts/cdp.ts";
 import { until } from "../../../../scripts/gate-lib.ts";
@@ -22,7 +23,7 @@ export const scheduledJobUri = formatManifoldUri({
   machineId: "machine-one",
   operationId: "check",
 });
-export const agent: Agent = {
+export const agent: AgentV2 = {
   agentId: "profile-one",
   principalId: "agent-one",
   sponsorPrincipalId: "viewer",
@@ -30,9 +31,7 @@ export const agent: Agent = {
   purpose: "Review the retained lifecycle facts",
   harness: "external",
   grant: {
-    caps: ["containers:read"],
-    targets: ["manifold://container/review"],
-    reach: "subtree",
+    scope: [{ target: "manifold://container/review", reach: "subtree", caps: ["containers:read"] }],
     maxRunLifetimeMs: 3_600_000,
     delegation: { maxDepth: 2, maxDescendants: 4 },
     expiresAt: at + 86_400_000,
@@ -43,7 +42,7 @@ export const agent: Agent = {
   createdAt: at,
   updatedAt: at,
 };
-export const credentials: CredentialsResponse = {
+export const credentials: CredentialsResponseV2 = {
   principals: [
     {
       principal: { id: "agent-one", kind: "agent", name: "Review agent", color: "#91a7ff" },
@@ -62,7 +61,7 @@ export const credentials: CredentialsResponse = {
     },
   ],
 };
-export const nativeService: PrincipalCredentials = {
+export const nativeService: PrincipalCredentialsV2 = {
   principal: {
     id: "service-one",
     kind: "service",
@@ -89,7 +88,7 @@ export const nativeServiceDescription: InstanceServiceDescription = {
   reason: null,
 };
 
-export const inspection: InspectRunResult = {
+export const inspection: InspectRunV2Result = {
   availability: "available",
   observedAt: at + 2_000,
   run: {
@@ -110,6 +109,7 @@ export const inspection: InspectRunResult = {
     target: "manifold://container/review",
     reach: "subtree",
     caps: ["containers:read"],
+    scope: [{ target: "manifold://container/review", reach: "subtree", caps: ["containers:read"] }],
     createdAt: at,
     expiresAt: at + 60_000,
     renewals: 0,
@@ -200,7 +200,7 @@ export const inspection: InspectRunResult = {
   terminals: [],
   nativeTruncated: true,
 };
-export const inventory = {
+export const inventory: ListRunsV2Result = {
   observedAt: at,
   truncated: false,
   runs: [
@@ -218,6 +218,7 @@ export const inventory = {
       parentRunId: null,
       actionCount: 2,
       refusalCount: 0,
+      scope: agent.grant.scope,
     },
     {
       id: "run-one",
@@ -234,11 +235,12 @@ export const inventory = {
       parentRunId: "run-root",
       actionCount: 3,
       refusalCount: 1,
+      scope: agent.grant.scope,
     },
   ],
 };
 
-export const admittedRun: AgentRun = {
+export const admittedRun: AgentRunV2 = {
   id: "admitted-run",
   agentId: agent.agentId,
   session: null,
@@ -258,6 +260,7 @@ export const admittedRun: AgentRun = {
   target: "manifold://container/review",
   reach: "subtree",
   caps: ["containers:read"],
+  scope: agent.grant.scope,
   createdAt: at,
   expiresAt: at + 60_000,
   renewals: 0,
@@ -292,18 +295,25 @@ export class AccessBrowser {
       import ${JSON.stringify(resolve(import.meta.dir, "../../../ui/src/styles.css"))};
       const root = createRoot(document.getElementById("root"));
       const requests = [], pending = new Map(), navigations = [], terminals = [], eventListeners = new Set();
-      const client = caps => ({ selfCaps: () => caps, status: "open", on: () => () => {},
+      const client = caps => { let workspace = caps; const authorityListeners = new Set(); return {
+        selfCaps: () => caps, status: "open", on: () => () => {},
+        workspaceCaps: () => workspace, workspaceEventsAvailable: () => true,
+        onAuthorityChange: listener => { authorityListeners.add(listener); return () => authorityListeners.delete(listener); },
+        withdrawWorkspace: () => { workspace = []; for (const listener of authorityListeners) listener(); },
+        syncSubscriptions: async () => true,
         subscribe: (_topics, listener) => { eventListeners.add(listener); return () => eventListeners.delete(listener); },
+        machines: async () => [{id:"machine-one",name:"Account one",online:true,terminalExecution:"unconfined"}],
         action: (action, args) => {
         const { promise, resolve } = Promise.withResolvers();
         const id = requests.length; requests.push({ id, action, args }); pending.set(id, resolve); return promise;
-      }, openTerminal: async options => { terminals.push(options); return { id: "opened-terminal" }; } });
-      let host = { principal: { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" }, client: client(["*"]), requestedRef: null, containerId: "review", navigate: uri => { navigations.push(uri); host = { ...host, requestedRef: parseManifoldUri(uri) }; render(); } };
+      }, openTerminal: async options => { terminals.push(options); return { id: "opened-terminal" }; } }; };
+      let host = { principal: { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" }, client: client(["*"]), topics: { machines: [{kind:"plugin",pluginId:"core.machines"}] }, requestedRef: null, containerId: "review", navigate: uri => { navigations.push(uri); host = { ...host, requestedRef: parseManifoldUri(uri) }; render(); } };
       let renderer = new URL(location.href).searchParams.get("surface") ?? "agents";
       const render = () => root.render(createElement(renderer === "sessions" ? SessionsSection : AgentsSection, { host }));
       window.accessFixture = { requests, navigations, terminals,
         mount: value => { renderer = value; render(); },
         replaceViewer: (id, caps) => { host = { ...host, principal: { ...host.principal, id }, client: client(caps) }; flushSync(render); },
+        withdrawWorkspace: () => flushSync(() => host.client.withdrawWorkspace()),
         leaveRoom: () => { host = { ...host, containerId: null, client: client([]) }; flushSync(render); },
         answer: (id, outcome) => { const resolve = pending.get(id); if (!resolve) throw new Error("No pending action " + id); pending.delete(id); resolve(outcome); },
         pending: () => requests.filter(request => pending.has(request.id)),
@@ -364,9 +374,9 @@ export class AccessBrowser {
     );
   }
 
-  async boot(agents: readonly Agent[] = [agent]): Promise<void> {
-    await this.answer("core.access.listAgents", { agents, truncated: false, canRegister: true });
-    await this.answer("core.access.listRuns", inventory);
+  async boot(agents: readonly AgentV2[] = [agent]): Promise<void> {
+    await this.answer("core.access.listAgentsV2", { agents, truncated: false, canRegister: true });
+    await this.answer("core.access.listRunsV2", inventory);
     await this.answer("core.access.listHarnesses", {
       harnesses: [
         { id: "external", title: "External runner", profileSchema: {}, sessionRef: "typed" },
@@ -392,10 +402,10 @@ export class AccessBrowser {
     if (!found) throw new Error(`Visible button unavailable: ${label}`);
   }
 
-  async detail(value: Agent = agent): Promise<void> {
+  async detail(value: AgentV2 = agent): Promise<void> {
     await this.click(value.name);
-    await this.answer("core.access.getAgent", { agent: value, canManage: true });
-    await this.answer("core.access.listRuns", inventory);
+    await this.answer("core.access.getAgentV2", { agent: value, canManage: true });
+    await this.answer("core.access.listRunsV2", inventory);
   }
 
   async screenshot(name: string): Promise<void> {

@@ -1,7 +1,7 @@
 import { useState, type ReactElement } from "react";
 import { Stack } from "@manifold/ui";
-import { RegisterAgentRequestSchema, type RegisterAgentRequest } from "@manifold/protocol";
-import { ACCESS_REGISTER_AGENT_ACTION } from "./index.ts";
+import { RegisterAgentV2RequestSchema, type RegisterAgentV2Request } from "@manifold/protocol";
+import { ACCESS_REGISTER_AGENT_V2_ACTION } from "./index.ts";
 
 export function AgentRegistration({
   harnesses,
@@ -10,7 +10,7 @@ export function AgentRegistration({
 }: {
   readonly harnesses: readonly { readonly id: string; readonly title: string }[];
   readonly pending: boolean;
-  readonly register: (request: RegisterAgentRequest) => Promise<void>;
+  readonly register: (request: RegisterAgentV2Request) => Promise<void>;
 }): ReactElement {
   const [failure, setFailure] = useState<string | null>(null);
   return (
@@ -25,18 +25,12 @@ export function AgentRegistration({
           const profile: unknown = JSON.parse(text("profile") || "{}");
           const tools: unknown = JSON.parse(text("tools") || "[]");
           const instructions = text("instructions");
-          const request = RegisterAgentRequestSchema.safeParse({
+          const request = RegisterAgentV2RequestSchema.safeParse({
             name: text("name"),
             purpose: text("purpose"),
             harness: text("harness"),
             grant: {
-              caps: text("caps")
-                .split(/[\s,]+/)
-                .filter(Boolean),
-              targets: text("targets")
-                .split(/[\s,]+/)
-                .filter(Boolean),
-              reach: text("reach"),
+              scope: JSON.parse(text("scope") || "[]") as unknown,
               maxRunLifetimeMs: Number(text("lifetime")) * 60_000,
               delegation: {
                 maxDepth: Number(text("depth")),
@@ -58,7 +52,9 @@ export function AgentRegistration({
           setFailure(null);
           void register(request.data);
         } catch {
-          setFailure("The harness profile and callable tool grants must be valid JSON.");
+          setFailure(
+            "The authority scope, harness profile and callable tool grants must be valid JSON.",
+          );
         }
       }}
     >
@@ -82,8 +78,8 @@ export function AgentRegistration({
           </select>
         </label>
         <label>
-          Capabilities
-          <textarea name="caps" required rows={2} placeholder="containers:read terminals:open" />
+          Correlated authority scope (JSON)
+          <textarea name="scope" required rows={4} defaultValue="[]" spellCheck={false} />
         </label>
         <label>
           Callable tool grants (JSON)
@@ -91,19 +87,9 @@ export function AgentRegistration({
         </label>
         <span className="credential-inspection-note">
           Each entry needs an exact door and contractDigest. An empty list grants no callable tools;
-          each Run must select its tools explicitly. Capabilities and targets still apply.
+          each Run must select its tools explicitly. Each scope entry binds its own caps to an exact
+          target/reach.
         </span>
-        <label>
-          Granted targets
-          <textarea name="targets" required rows={2} placeholder="manifold://container/…" />
-        </label>
-        <label>
-          Reach
-          <select name="reach" defaultValue="subtree">
-            <option value="node">This node</option>
-            <option value="subtree">Subtree</option>
-          </select>
-        </label>
         <label>
           Maximum run lifetime (minutes)
           <input name="lifetime" type="number" required min={1} step={1} defaultValue={60} />
@@ -140,7 +126,7 @@ export function AgentRegistration({
         <button
           className="credential-agent-control"
           type="submit"
-          data-action={ACCESS_REGISTER_AGENT_ACTION}
+          data-action={ACCESS_REGISTER_AGENT_V2_ACTION}
           disabled={pending || harnesses.length === 0}
         >
           {pending ? "Registering…" : "Register Agent"}

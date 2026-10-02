@@ -37,6 +37,8 @@ import {
 } from "@manifold/ui";
 import {
   COMPOSITION_TREE_CLASSES,
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE_OPTIONS,
   TilePreviewOverlay,
   TileTree,
   TileZoneDebug,
@@ -73,6 +75,7 @@ import {
   useCarry,
   useItemDrop,
   useProjection,
+  usePolledResource,
   useRemoteCursors,
   useRemoteGestures,
   useRoomPipeRegistration,
@@ -246,7 +249,16 @@ export function CompositionView({
   useEffect(() => registerRoomPipe(containerId, client), [registerRoomPipe, containerId, client]);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [layout, setLayout] = useState<TileLayout | null>(null);
-  const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
+  const fetchMachines = useCallback(() => host.client.machines(), [host.client]);
+  const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
+    fetchMachines,
+    FALLBACK_POLL_MS,
+    {
+      ...MACHINES_RESOURCE_OPTIONS,
+      topics: host.topics.machines,
+      events: host.client,
+    },
+  );
   const [focusedTileId, setFocusedTileId] = useState<string | null>(null);
   const areaRef = useRef<HTMLDivElement | null>(null);
   /** The per-frame channel to the preview overlay; only the overlay re-renders on it. */
@@ -363,21 +375,6 @@ export function CompositionView({
     // without arming a reconnect: this effect connects exactly once per client (the ref
     // guard), and a dependency that never moves can never trip that guard.
   }, [client, notify]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void host.client
-      .machines()
-      .then((fetched) => {
-        if (!cancelled) setMachines(fetched);
-      })
-      .catch(() => {
-        // Machine badges are decoration; the tiles render without them.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [host.client]);
 
   const shrink = useCallback((): void => {
     navigate(originContainerId === null ? "/" : `/p/${encodeURIComponent(originContainerId)}`);

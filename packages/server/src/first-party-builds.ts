@@ -6,6 +6,7 @@ import { compilePlugin, type CompiledPlugin } from "@manifold/plugin-kit/pack";
 import {
   HARDENED_CONTRACT_VERSION,
   PluginManifestSchema,
+  IsolatePreparationMetadataSchema,
   type PluginBundle,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -124,6 +125,16 @@ export function assertTrustedBinding(def: ServerPluginDef, build: TrustedBuild):
   const registered: unknown = JSON.parse(JSON.stringify(PluginManifestSchema.parse(def.manifest)));
   if (!isDeepStrictEqual(manifest, registered))
     refuse("its manifest is not the registered manifest");
+  const preparation = IsolatePreparationMetadataSchema.parse(
+    Object.fromEntries(
+      Object.entries(def.prepareActions ?? {}).map(([name, definition]) => [
+        name,
+        { caps: [...definition.caps].sort() },
+      ]),
+    ),
+  );
+  if (!isDeepStrictEqual(preparation, build.bundle.serverBinding?.prepareActions ?? {}))
+    refuse("its action preparers are not the registered preparers");
   if (build.bundle.hardenedContract !== HARDENED_CONTRACT_VERSION)
     refuse(`it is not hardened contract ${String(HARDENED_CONTRACT_VERSION)}`);
   if (manifest.entry.server !== true) refuse("it has no server half to supervise");
@@ -157,7 +168,16 @@ export function assertLoadedBinding(def: ServerPluginDef, loaded: ServerPluginDe
   });
   if (
     !isDeepStrictEqual(def.actions.map(published), loaded.actions.map(published)) ||
-    (def.harness === undefined) !== (loaded.harness === undefined)
+    (def.harness === undefined) !== (loaded.harness === undefined) ||
+    !isDeepStrictEqual(
+      Object.fromEntries(
+        Object.entries(def.prepareActions ?? {}).map(([name, definition]) => [
+          name,
+          { caps: [...definition.caps].sort() },
+        ]),
+      ),
+      loaded.guestPreparation ?? {},
+    )
   )
     throw new Error(
       `${def.manifest.id}: hardened build refused: its doors are not the registered doors`,

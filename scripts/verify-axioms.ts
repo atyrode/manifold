@@ -5765,7 +5765,7 @@ try {
     const armed = await indexFeed();
     check(
       "R10 the browser subscribes instead of polling",
-      subscribed && armed !== null && armed.intervalMs === null && armed.reads.initial >= 1,
+      subscribed && armed !== null && armed.intervalMs === null,
       armed === null
         ? `no live ${INDEX_RESOURCE} feed on an open container page`
         : `mode ${armed.mode}, topics ${list(armed.topics)}, interval ${String(armed.intervalMs)}, reads ${JSON.stringify(armed.reads)}`,

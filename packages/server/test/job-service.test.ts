@@ -5,6 +5,7 @@ import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:cryp
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeScopedAuthority } from "./authority-migration-fixtures.ts";
 import {
   formatManifoldUri,
   PluginBundleSchema,
@@ -26,6 +27,7 @@ import {
   type ServicePolicy,
   type ServicePolicyTemplate,
   type Cap,
+  type LegacyCap,
   JobDeploymentRequestSchema,
   JobDeploymentSchema,
   JobDeploymentDescriptionSchema,
@@ -50,6 +52,8 @@ import { RoomManager } from "../src/room.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { ServerStore } from "../src/stores.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
+import { ActionAuthorityFence } from "../src/action-authority-fence.ts";
+import { captureAuthoritySnapshot, projectJobCredential } from "../src/authority-snapshot.ts";
 
 const key = "9".repeat(64);
 const pluginId = "sample.worker";
@@ -102,7 +106,10 @@ interface Fixture {
 function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
   const store = new ServerStore(openDatabase(path));
   const runtime = new FakeRuntime();
-  const auth = new AuthService(store, key, runtime);
+  let f: Fixture;
+  const auth = new AuthService(store, key, runtime, {
+    decide: (request) => f.service.decide(request),
+  });
   const root = auth.authenticate(key);
   const machineId = auth.enrollMachine("worker", root).machine.id;
   const service = new JobService(store, auth, runtime);
@@ -132,7 +139,7 @@ function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
     artifactSha256: hash,
     machine: manifest,
   });
-  return {
+  return (f = {
     store,
     auth,
     root,
@@ -143,7 +150,7 @@ function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
     channel,
     owner,
     privateKey: pair.privateKey,
-  };
+  });
 }
 function prove(f: Fixture, wrongNonce = false): void {
   f.service.online(f.channel, f.owner, "epoch");
@@ -187,6 +194,265 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
     outputs: [],
   });
 }
+
+test("terminal demand discovers exact native requirements without reserving or consenting", () => {
+  const f = fixture();
+  try {
+    f.owner.terminalHostId = "prepared-host";
+    prove(f);
+    const runtime: TerminalRuntime = {
+      machineId: f.machineId,
+      pluginId,
+      operationId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
+      input: { value: "safe" },
+    };
+    const effects = () => ({
+      jobs: f.store.db.query("SELECT COUNT(*) AS count FROM machine_jobs").get(),
+      decisions: f.store.db.query("SELECT COUNT(*) AS count FROM machine_job_decisions").get(),
+      consents: f.store.db.query("SELECT COUNT(*) AS count FROM machine_job_consents").get(),
+      tokens: f.store.db.query("SELECT COUNT(*) AS count FROM tokens").get(),
+      commands: f.commands.length,
+    });
+    const before = effects();
+    expect(f.service.terminalDemand(runtime, f.machineId, "approved")).toEqual([
+      {
+        cap: "machines:run",
+        node: formatManifoldUri({ kind: "operation", machineId: f.machineId, operationId }),
+        reach: "node",
+      },
+    ]);
+    const binding = f.service.terminalDemandBinding(runtime, f.machineId, "approved");
+    expect(binding).toMatchObject({
+      machineId: f.machineId,
+      containerId: "approved",
+      terminalHostId: "prepared-host",
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    expect(() =>
+      f.service.terminalDemand({ ...runtime, machineId: "substituted" }, f.machineId, "approved"),
+    ).toThrow("terminal_runtime_destination_changed");
+    expect(() =>
+      f.service.terminalDemand({ ...runtime, input: { value: 1 } }, f.machineId, "approved"),
+    ).toThrow("invalid_input");
+    expect(() =>
+      f.service.terminalDemand(
+        { ...runtime, installationRevision: "stale" },
+        f.machineId,
+        "approved",
+      ),
+    ).toThrow("installation_changed");
+    expect(effects()).toEqual(before);
+    expect(f.service.terminalDemandBindingCurrent(binding)).toBe(true);
+    f.service.offline(f.channel);
+    expect(f.service.terminalDemandBindingCurrent(binding)).toBe(false);
+    expect(f.service.terminalDemandBindingCurrent(binding, false)).toBe(true);
+    f.service.setHeldPlugins([pluginId]);
+    expect(f.service.terminalDemandBindingCurrent(binding, false)).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("a persisted scoped job cannot borrow unrelated live machine grants after deferred restore", () => {
+  const declaration = structuredClone(machine);
+  const otherOperationId = `${pluginId}.other`;
+  declaration.operations[otherOperationId] = structuredClone(machine.operations[operationId]!);
+  const f = fixture(":memory:", declaration);
+  try {
+    consent(f, "machines:run");
+    const exact = formatManifoldUri({ kind: "operation", machineId: f.machineId, operationId });
+    const other = f.auth.enrollMachine("other-account", f.root).machine.id;
+    const minted = f.auth.mintTokenV2(
+      {
+        principal: { name: "correlated-native", kind: "human" },
+        scope: [
+          { target: exact, reach: "node", caps: ["machines:run"] },
+          {
+            target: formatManifoldUri({ kind: "machine", machineId: other }),
+            reach: "node",
+            caps: ["machines:shell"],
+          },
+        ],
+        expiresAt: f.runtime.now() + 60_000,
+      },
+      f.root,
+    );
+    const caller = f.auth.authenticate(minted.token);
+    const first = f.service.execute(caller, pluginId, "scoped-trace", {
+      jobId: "scoped",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+    });
+    expect(first.state).toBe("queued");
+    expect(first.request.credential.caps).toEqual(["machines:run"]);
+    expect(first.request.credential).not.toHaveProperty("authorityScope");
+    expect(first.authoritySnapshot?.credential.authorityScope).toEqual(caller.authorityScope);
+    // A same-principal root grant is not part of the selected credential's ceiling.
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: caller.principal.id },
+        node: "manifold://",
+        reach: "subtree",
+        caps: ["machines:run"],
+        effect: "allow",
+      },
+      f.root,
+    );
+    const body = {
+      ...first.request,
+      jobId: "substituted-operation",
+      operationId: otherOperationId,
+    };
+    Reflect.deleteProperty(body, "requestDigest");
+    const changed = {
+      ...body,
+      requestDigest: createHash("sha256").update(canonicalJobJson(body)).digest("hex"),
+    };
+    f.service.jobs.reserve(
+      changed,
+      f.runtime.now(),
+      undefined,
+      captureAuthoritySnapshot(f.auth, caller),
+    );
+    f.service.consent(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      node: formatManifoldUri({
+        kind: "operation",
+        machineId: f.machineId,
+        operationId: changed.operationId,
+      }),
+      cap: "machines:run",
+      enabled: true,
+    });
+    prove(f);
+    expect(f.service.jobs.get("scoped")?.state).toBe("start-committed");
+    expect(f.service.jobs.get(changed.jobId)?.state).toBe("refused");
+    expect(
+      f.commands
+        .filter((command) => command.type === "start")
+        .map((command) => command.request.jobId),
+    ).toEqual(["scoped"]);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("native admission retains its action fence after dispatch closes and cancels on withdrawal", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    let current = true;
+    const fence = new ActionAuthorityFence(f.auth, f.root, () => current, null);
+    fence.admit([
+      { cap: "machines:run", ref: { kind: "operation", machineId: f.machineId, operationId } },
+    ]);
+    const job = f.service.execute(
+      f.root,
+      pluginId,
+      "fenced",
+      {
+        jobId: "fenced",
+        machineId: f.machineId,
+        operationId,
+        input: { value: "safe" },
+        outputs: [],
+      },
+      undefined,
+      fence,
+    );
+    fence.close();
+    f.service.tick();
+    expect(f.commands.filter((command) => command.type === "cancel")).toEqual([]);
+    current = false;
+    f.service.tick();
+    expect(f.commands.at(-1)).toMatchObject({ type: "cancel", jobId: job.request.jobId });
+  } finally {
+    f.store.close();
+  }
+});
+
+test("withdrawal during native decision refuses before durable job reservation", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    let current = true;
+    const fence = new ActionAuthorityFence(f.auth, f.root, () => current, null);
+    fence.admit([]);
+    expect(() =>
+      f.service.execute(
+        f.root,
+        pluginId,
+        "withdrawn",
+        {
+          jobId: "withdrawn",
+          machineId: f.machineId,
+          operationId,
+          input: { value: "safe" },
+          outputs: [],
+        },
+        () => {
+          current = false;
+        },
+        fence,
+      ),
+    ).toThrow("action authority unavailable");
+    expect(f.service.jobs.get("withdrawn")).toBeNull();
+    expect(f.commands.some((command) => command.type === "start")).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("snapshot-less released jobs keep their original signed request and live legacy restore", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    const minted = f.auth.mintToken(
+      { principal: { name: "released-job-owner", kind: "human" }, caps: ["machines:run"] },
+      f.root,
+    );
+    const caller = f.auth.authenticate(minted.token);
+    const queued = f.service.execute(caller, pluginId, "released", {
+      jobId: "released",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+    });
+    const signed = canonicalJobJson(queued.request);
+    f.store.db
+      .query("DELETE FROM native_authority_snapshots WHERE kind='job' AND id=?")
+      .run(queued.request.jobId);
+    const restarted = new JobService(f.store, f.auth, f.runtime);
+    restarted.setLifecycleRecorder((record) => f.store.appendTrace(record));
+    restarted.setManifestResolver((id) => (id === pluginId ? machine : null));
+    f.service = restarted;
+    prove(f);
+    expect(f.service.jobs.get(queued.request.jobId)).not.toHaveProperty("authoritySnapshot");
+    expect(f.commands.find((command) => command.type === "start")).toMatchObject({
+      request: queued.request,
+    });
+    expect(canonicalJobJson(f.service.jobs.get(queued.request.jobId)!.request)).toBe(signed);
+    f.auth.revokePrincipal(caller.principal.id, f.root);
+    f.service.tick();
+    expect(f.commands.at(-1)).toMatchObject({ type: "cancel", jobId: queued.request.jobId });
+  } finally {
+    f.store.close();
+  }
+});
 
 test("nonterminal Run binding requires dual capability, is one-use, and closes before output settlement", async () => {
   const f = fixture();
@@ -919,7 +1185,9 @@ test.each(["same build", "rollback"] as const)(
       f.service.offline(f.channel);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -1517,7 +1785,9 @@ test.each(["running", "exited", "awaiting-empty", "awaiting-result"] as const)(
       f.service.offline(f.channel);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -1609,6 +1879,7 @@ test("data-only credential migration and author audit projection preserve enable
     f.store.db
       .query("UPDATE principals SET kind='agent' WHERE id=?")
       .run(start.request.credential.principalId);
+    removeScopedAuthority(f.store.db);
     f.store.db.exec(`
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
@@ -1631,7 +1902,9 @@ UPDATE meta SET value='37' WHERE key='schema_version';
     f.service.offline(f.channel);
     f.store.close();
     f.store = new ServerStore(openDatabase(path));
-    f.auth = new AuthService(f.store, key, f.runtime);
+    f.auth = new AuthService(f.store, key, f.runtime, {
+      decide: (request) => f.service.decide(request),
+    });
     f.root = f.auth.authenticate(key);
     f.service = new JobService(f.store, f.auth, f.runtime);
     f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -2069,7 +2342,7 @@ test("retiring an instance preserves admitted descendants but refuses new descen
         ...base,
         jobId,
         parent: { parentJobId: start.request.jobId, invocationId: jobId },
-        credential: { ...credential, caps: [...credential.caps] },
+        credential: projectJobCredential(credential),
         limits,
       };
       const request: JobRequest = {
@@ -2487,7 +2760,9 @@ test("replacement replays retirement across restart and waits for confirmed old 
     f.service.offline(f.channel);
     f.store.close();
     f.store = new ServerStore(openDatabase(path));
-    f.auth = new AuthService(f.store, key, f.runtime);
+    f.auth = new AuthService(f.store, key, f.runtime, {
+      decide: (request) => f.service.decide(request),
+    });
     f.root = f.auth.authenticate(key);
     f.service = new JobService(f.store, f.auth, f.runtime);
     f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -3329,6 +3604,45 @@ function inputFixture() {
     });
   return { ...f, node, input, authorize, receipt, cursor };
 }
+
+test("deferred stdin refuses after its originating action binding changes without claiming bytes accepted", async () => {
+  const f = inputFixture();
+  try {
+    let current = true;
+    const fence = new ActionAuthorityFence(f.auth, f.root, () => current, null);
+    fence.admit([]);
+    const pending = jobContext(() => f.service, f.root, pluginId, 42, undefined, fence).input({
+      node: f.node,
+      requestId: "fenced-input",
+      seq: 0,
+      data: Buffer.from("private-input").toString("base64"),
+      eof: false,
+    });
+    const observed = pending.then(
+      () => "accepted",
+      (error: Error) => error.message,
+    );
+    await Promise.resolve();
+    current = false;
+    f.authorize("fenced-input");
+    expect(
+      f.commands.find(
+        (command) => command.type === "input_authorized" && command.requestId === "fenced-input",
+      ),
+    ).toMatchObject({ allowed: false });
+    f.receipt("fenced-input", false);
+    expect(await observed).not.toBe("accepted");
+    expect(
+      f.store.db
+        .query("SELECT state FROM machine_job_inputs WHERE request_id=?")
+        .get("fenced-input"),
+    ).toEqual({ state: "rejected" });
+    expect(f.service.jobs.get(f.node.jobId)?.state).toBe("started");
+    expect(f.commands.some((command) => command.type === "cancel")).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
 
 test("stdin accepts only an owner receipt; stale concurrent input cannot poison a running job", async () => {
   const f = inputFixture();
@@ -4918,8 +5232,10 @@ describe("durable job authority", () => {
       expect(f.commands.filter((c) => c.type === "start")).toHaveLength(1);
       f.store.close();
       reopened = new ServerStore(openDatabase(path));
-      const auth = new AuthService(reopened, key, f.runtime);
-      const service = new JobService(reopened, auth, f.runtime);
+      const auth: AuthService = new AuthService(reopened, key, f.runtime, {
+        decide: (request) => service.decide(request),
+      });
+      const service: JobService = new JobService(reopened, auth, f.runtime);
       service.setLifecycleRecorder((record) => reopened!.appendTrace(record));
       service.setManifestResolver((id) => (id === pluginId ? machine : null));
       const resumed = {
@@ -5194,7 +5510,9 @@ describe("durable job authority", () => {
       f.service.offline(f.channel);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -6864,7 +7182,7 @@ describe("reviewed native deployment approvals", () => {
             f.service
               .describe(f.root, { machineId: f.machineId, pluginId: callerPlugin })
               .consents.filter((row) => row.enabled)
-              .map((row) => row.cap)
+              .map((row): Cap => row.cap)
               .sort(),
           ).toEqual(target.consents.map((row) => row.cap).sort());
         }
@@ -7068,7 +7386,7 @@ describe("reviewed native deployment approvals", () => {
       acknowledge();
       // Everything a job credential can legitimately carry, and nothing more: the one
       // governed capability deliberately absent is the one this hop used to demand.
-      const granted: Cap[] = [
+      const granted: LegacyCap[] = [
         "containers:read",
         "containers:write",
         "machines:run",
@@ -8275,7 +8593,9 @@ describe("reviewed native deployment approvals", () => {
       // Compact replay fences outlive the process, unlike an in-memory retired-ID cache.
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -8392,6 +8712,7 @@ describe("reviewed native deployment approvals", () => {
         .query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?")
         .run(canonicalJobJson(legacy), value.deploymentId);
       // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
+      removeScopedAuthority(f.store.db);
       f.store.db.exec(`
 UPDATE machine_job_deployment_targets SET receipt=json_extract(receipt,'$.consents');
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
@@ -8426,7 +8747,9 @@ UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -8480,7 +8803,9 @@ UPDATE meta SET value='33' WHERE key='schema_version';
         .run(interrupted.deploymentId);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -9413,7 +9738,9 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
         .run(value.deploymentId);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -9765,6 +10092,70 @@ describe("a job input bound to an earlier job's sealed output", () => {
       },
     };
   }
+
+  test("pure terminal demand includes exact sealed source authority rather than only the consumer operation", () => {
+    const f = bound();
+    try {
+      const t = terminalConsumer(f);
+      const runtime = {
+        ...t.runtime,
+        inputs: [{ name: "material", from: { jobId: "producer", output: "material" } }],
+      };
+      expect(() => f.service.terminalDemand(runtime, f.machineId, t.terminal.containerId)).toThrow(
+        "input_source_unavailable:material",
+      );
+      seal(f);
+      const demand = f.service.terminalDemand(runtime, f.machineId, t.terminal.containerId);
+      expect(demand).toEqual([
+        {
+          cap: "machines:run",
+          reach: "node",
+          node: formatManifoldUri({
+            kind: "operation",
+            machineId: f.machineId,
+            operationId: consumerId,
+          }),
+        },
+        {
+          cap: "jobs:read",
+          reach: "node",
+          node: formatManifoldUri({
+            kind: "job",
+            machineId: f.machineId,
+            operationId: producerId,
+            jobId: "producer",
+          }),
+        },
+      ]);
+      expect(f.store.db.query("SELECT job_id FROM machine_jobs").all()).toEqual([
+        { job_id: "producer" },
+      ]);
+      expect(() =>
+        f.service.terminalDemand(
+          {
+            ...runtime,
+            inputs: [{ name: "undeclared", from: { jobId: "producer", output: "material" } }],
+          },
+          f.machineId,
+          t.terminal.containerId,
+        ),
+      ).toThrow("unknown_input:undeclared");
+      expect(() =>
+        f.service.terminalDemand(
+          {
+            ...runtime,
+            pluginId: otherPlugin,
+            operationId: otherConsumerId,
+            inputs: [{ name: "notes", from: { jobId: "producer", output: "notes" } }],
+          },
+          f.machineId,
+          t.terminal.containerId,
+        ),
+      ).toThrow("input_not_exported:notes");
+    } finally {
+      f.store.close();
+    }
+  });
 
   test("terminal admission refuses unavailable, unexported and unreadable bound inputs instead of dropping them", () => {
     const f = bound();

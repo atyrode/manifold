@@ -477,7 +477,7 @@ describe("external action runner over real doors", () => {
         id: "child",
         runId: rootId,
         declaration: {
-          caps: ["containers:read"],
+          scope: [{ target: "manifold://", reach: "subtree", caps: ["containers:read"] }],
           lifetimeMs: 60_000,
         },
         justification: "Delegate a read-only subset of the approved task.",
@@ -795,13 +795,13 @@ describe("external action runner over real doors", () => {
             expect.objectContaining({
               type: "error",
               code: "cleanup_failed",
-              door: "core.access.finishAgentRun",
+              door: "core.access.finishAgentRunV2",
               runId: policyFrame(frames).runId,
             }),
           );
         } else {
           const cleanup = frames.findLast(
-            (frame) => frame.type === "result" && frame.door === "core.access.finishAgentRun",
+            (frame) => frame.type === "result" && frame.door === "core.access.finishAgentRunV2",
           );
           expect(cleanup).toMatchObject({
             outcome: { ok: true },
@@ -811,7 +811,7 @@ describe("external action runner over real doors", () => {
             (await ledger(server.publicUrl)).find(
               (trace) => trace.id === (cleanup?.type === "result" ? cleanup.traceId : null),
             ),
-          ).toMatchObject({ door: "core.access.finishAgentRun", outcome: "ok" });
+          ).toMatchObject({ door: "core.access.finishAgentRunV2", outcome: "ok" });
         }
         expect(JSON.stringify(frames)).not.toContain(SPONSOR);
         expect(await new Response(child.stderr).text()).toBe("");

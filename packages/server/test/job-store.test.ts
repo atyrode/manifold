@@ -13,6 +13,11 @@ import { openDatabase } from "../src/db.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
 import { JobStore } from "../src/job-store.ts";
 import { ServerStore } from "../src/stores.ts";
+import {
+  projectJobCredential,
+  readAuthoritySnapshot,
+  type AuthoritySnapshot,
+} from "../src/authority-snapshot.ts";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -314,4 +319,63 @@ test("candidate reads enforce their hard bound and parse stored requests before 
     .query("UPDATE job_schedule_occurrences SET request=? WHERE job_id=?")
     .run(JSON.stringify({ ...request("corrupt"), credential: "invalid" }), "corrupt");
   expect(() => f.jobs.runCandidates(filter, 1)).toThrow();
+});
+
+test("faithful authority survives reopen without changing the signed request or legacy rows", () => {
+  const f = fixture();
+  const snapshot: AuthoritySnapshot = {
+    credential: {
+      principalId: "principal",
+      tokenId: "private-token",
+      grantId: null,
+      caps: ["containers:write", "machines:shell"],
+      containerScope: "approved",
+      authorityScope: [
+        { target: "manifold://container/approved", reach: "subtree", caps: ["containers:write"] },
+        { target: "manifold://machine/machine", reach: "node", caps: ["machines:shell"] },
+      ],
+    },
+    action: {
+      contextScope: "approved",
+      requirements: [{ cap: "machines:shell", node: "manifold://machine/machine", reach: "node" }],
+    },
+  };
+  const signed = request("scoped", { credential: projectJobCredential(snapshot.credential) });
+  const encoded = canonicalJobJson(signed);
+  f.jobs.reserve(signed, 1, undefined, snapshot);
+  f.jobs.reserve(request("legacy"), 2, undefined);
+  f.reopen();
+  expect(f.jobs.get("scoped")?.authoritySnapshot).toEqual(snapshot);
+  expect(canonicalJobJson(f.jobs.get("scoped")!.request)).toBe(encoded);
+  expect(f.jobs.get("legacy")).not.toHaveProperty("authoritySnapshot");
+  const changed = { ...snapshot, credential: { ...snapshot.credential, authorityScope: [] } };
+  expect(() => f.jobs.reserve(signed, 3, undefined, changed)).toThrow(
+    "job_authority_snapshot_conflict",
+  );
+  expect(f.jobs.get("scoped")?.authoritySnapshot).toEqual(snapshot);
+});
+
+test("native input keeps its caller snapshot and cannot replace it on request replay", () => {
+  const f = fixture();
+  const job = f.jobs.reserve(request("input-snapshot"), 1, undefined);
+  const snapshot: AuthoritySnapshot = {
+    credential: {
+      ...job.request.credential,
+      caps: ["jobs:input", "machines:shell"],
+      authorityScope: [
+        { target: "manifold://machine/machine", reach: "subtree", caps: ["jobs:input"] },
+      ],
+    },
+  };
+  expect(f.jobs.reserveInput(job, "one-input", 0, "principal", "trace", snapshot)).toBe(true);
+  f.reopen();
+  expect(
+    f.jobs.reserveInput(f.jobs.get(job.request.jobId)!, "one-input", 0, "principal", "trace", {
+      ...snapshot,
+      credential: { ...snapshot.credential, authorityScope: [] },
+    }),
+  ).toBe(false);
+  expect(
+    readAuthoritySnapshot(f.store, "input", JSON.stringify([job.request.jobId, "one-input"])),
+  ).toEqual(snapshot);
 });

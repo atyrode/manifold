@@ -93,7 +93,9 @@ mkdir -m 700 "$root/home" "$root/tmp" "$root/mount-tree" "$root/mount-tree/outpu
 path="$(dirname -- "$bun"):/usr/local/bin:/usr/bin:/bin"
 if [[ $mode == browser ]]; then
   git=$(executable "$(command -v git || true)" git)
+  dbus=$(executable "$(command -v dbus-daemon || true)" dbus-daemon)
   path+=":$(dirname -- "$git")"
+  path+=":$(dirname -- "$dbus")"
 fi
 "$timeout" --kill-after=5s 60s "$env_bin" -i PATH="$path" HOME="$root/home" TMPDIR="$root/tmp" \
   "$cc" -static -O2 -Wall -Wextra "$repo/packages/agent/test/fixtures/job-syscall-probe.c" -o "$root/syscall-probe"

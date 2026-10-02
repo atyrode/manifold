@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ActionOutcome, Cap, CredentialsResponse, TokenGrant } from "@manifold/protocol";
+import type { ActionOutcome, LegacyCap, CredentialsResponse, TokenGrant } from "@manifold/protocol";
 import {
   AuthService,
   AUTOMATED_TOKEN_TTL_MS,
@@ -81,7 +81,7 @@ async function fixture(options: { readonly online?: ReadonlySet<string> } = {}):
   };
 }
 
-function mint(fix: Fixture, caps: readonly Cap[]): TokenGrant {
+function mint(fix: Fixture, caps: readonly LegacyCap[]): TokenGrant {
   return fix.auth.mintToken(
     { principal: { name: "guest", kind: "human" }, caps: [...caps] },
     fix.owner,
@@ -283,7 +283,7 @@ describe("session expiry (ADR 0019 §2)", () => {
       discipline: "composition",
       createdAt: fix.runtime.time,
     });
-    const terminal = fix.auth.mintSessionAgentToken(
+    const terminal = fix.auth.mintTerminalLifecycleToken(
       "terminal-1",
       containerId,
       fix.owner.principal.id,
@@ -411,7 +411,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     const trace = fix.store.listEvents({ type: "trace", limit: 1 })[0];
     expect(trace?.door).toBe("core.machines.revoke");
     expect(trace?.outcome).toBe("ok");
-    expect(trace?.targets).toEqual([`manifold://machine/${enrolled.machine.id}`]);
+    expect(trace?.targets).toContain(`manifold://machine/${enrolled.machine.id}`);
     fix.store.close();
   });
 

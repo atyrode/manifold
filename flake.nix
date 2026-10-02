@@ -77,11 +77,30 @@
       nixosModules.native = import ./infra/native/module.nix { inherit self; };
       checks = eachSystem (
         pkgs:
-        nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          native-profile = (import (nixpkgs + "/nixos/lib") { inherit (pkgs) lib; }).runTest (
-            import ./infra/native/module-test.nix { inherit self pkgs; }
-          );
-        }
+        nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
+          let
+            roles = [ "shellonly" "coexist" "machine" "credential" "anchors" ];
+            roleChecks = nixpkgs.lib.genAttrs roles (role:
+              (import (nixpkgs + "/nixos/lib") { inherit (pkgs) lib; }).runTest (
+                import ./infra/native/module-test.nix { inherit self pkgs role; }
+              )
+            );
+          in
+          nixpkgs.lib.mapAttrs' (role: check:
+            nixpkgs.lib.nameValuePair "native-profile-${role}" check
+          ) roleChecks // {
+            # This output exists only after every role, including guest shutdown, succeeds.
+            # The verifier builds roles serially before this aggregate: never five VMs at once.
+            native-profile = pkgs.runCommand "manifold-native-profile" {
+              passthru.roles = roleChecks;
+            } ''
+              mkdir -p "$out"
+              ${nixpkgs.lib.concatMapStringsSep "\n" (role: ''
+                ln -s ${roleChecks.${role}} "$out/${role}"
+              '') roles}
+            '';
+          }
+        )
       );
       packages = eachSystem (
         pkgs:

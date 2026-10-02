@@ -242,7 +242,7 @@ describe("machine hello reconciliation", () => {
     };
     store.createContainer(container);
     const enrollment = auth.enrollMachine("agent", root);
-    const sessionGrant = auth.mintSessionAgentToken(
+    const sessionGrant = auth.mintTerminalLifecycleToken(
       "missing-terminal",
       container.id,
       root.principal.id,
@@ -389,7 +389,7 @@ describe("machine hello reconciliation", () => {
     };
     store.createContainer(container);
     const enrollment = auth.enrollMachine("agent", root);
-    const sessionGrant = auth.mintSessionAgentToken(
+    const sessionGrant = auth.mintTerminalLifecycleToken(
       "pre-reset-terminal",
       container.id,
       root.principal.id,
@@ -784,7 +784,7 @@ describe("machine admission and terminal continuity", () => {
     }
     const terminalTokens = new Map<string, string>();
     for (const terminalId of runningTerminals) {
-      const grant = auth.mintSessionAgentToken(terminalId, container.id, root.principal.id);
+      const grant = auth.mintTerminalLifecycleToken(terminalId, container.id, root.principal.id);
       terminalTokens.set(terminalId, grant.token);
       store.createTerminal({
         id: terminalId,

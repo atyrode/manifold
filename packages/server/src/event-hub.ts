@@ -3,6 +3,8 @@ import {
   CONNECTION_BODIES,
   MAX_SUBSCRIPTIONS_PER_CONNECTION,
   formatManifoldUri,
+  MANIFOLD_ROOT_URI,
+  scopeAdmits,
   topicMatches,
   type EventKind,
   type EventPayload,
@@ -23,8 +25,8 @@ import type { Logger } from "./log.ts";
  * plugin's node, and it answers it with the SAME authority discharge `/api/resolve` performs
  * for a node read — one permission vocabulary, per ADR 0012 §2.
  *
- * What it deliberately is NOT: a queue. No offsets, no acknowledgements, no replay, no
- * delivery guarantee beyond "delivered to the sockets subscribed at the instant of emission".
+ * What it deliberately is NOT: a queue. No offsets, no delivery acknowledgements, no replay,
+ * no guarantee beyond "delivered to the sockets subscribed at the instant of emission".
  * Catch-up is reading state through the doors a fresh client already uses, and durable history
  * is the `events` table this class appends to — as a table read by `core.events.list`, never a
  * stream a consumer positions itself in.
@@ -41,6 +43,7 @@ import type { Logger } from "./log.ts";
  */
 export interface EventAuthority {
   allows(context: AuthContext, cap: "containers:read", containerId?: string): boolean;
+  allowsNode(context: AuthContext, cap: "containers:read", node: string): boolean;
   canReadAgentNode(
     context: AuthContext,
     ref: Extract<ManifoldRef, { kind: "agent" | "run" }>,
@@ -219,6 +222,16 @@ export class EventHub {
     private readonly logger: Logger,
   ) {}
 
+  /** The caller's coarse workspace-event hint, shared with connection authority snapshots. */
+  workspaceEventsAvailable(auth: AuthContext): boolean {
+    if (auth.authorityScope !== undefined)
+      return (
+        scopeAdmits(auth.authorityScope, MANIFOLD_ROOT_URI, "containers:read", "subtree") &&
+        this.authority.allowsNode(auth, "containers:read", MANIFOLD_ROOT_URI)
+      );
+    return auth.containerScope === null && this.authority.allows(auth, "containers:read");
+  }
+
   /**
    * MAY THIS CREDENTIAL HEAR ABOUT THIS NODE — the whole authorization story, asked once and
    * used twice (at subscribe, to refuse growing useless state; at delivery, because a
@@ -232,9 +245,7 @@ export class EventHub {
    * scoped token cannot invoke a workspace action.
    */
   private authorized(auth: AuthContext, containerId: string | null): boolean {
-    if (containerId === null) {
-      return auth.containerScope === null && this.authority.allows(auth, "containers:read");
-    }
+    if (containerId === null) return this.workspaceEventsAvailable(auth);
     return this.authority.allows(auth, "containers:read", containerId);
   }
 
@@ -249,10 +260,10 @@ export class EventHub {
 
   /**
    * Registers interest in every topic this credential may read, and silently declines the
-   * rest. There is no acknowledgement by design (ADR 0012, the frame grammar): a per-topic
+   * rest. There is no per-topic acknowledgement by design (ADR 0012, the frame grammar): a
    * refusal on the wire would make the plane an oracle answering "does this node exist and may
-   * I read it" one probe at a time. The refusal is a LOG line instead, where an operator can
-   * see it and an attacker cannot.
+   * I read it" one probe at a time. The gateway's ID-only transport fence reports no admission
+   * result. Refusals are LOG lines instead, where an operator can see them and an attacker cannot.
    *
    * Past {@link MAX_SUBSCRIPTIONS_PER_CONNECTION} the excess is dropped and named, and the
    * socket lives: closing a tab because one panel over-subscribed is exactly the blast radius

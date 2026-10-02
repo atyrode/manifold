@@ -7,6 +7,7 @@ import {
   PlaceResponseSchema,
   censusSolo,
   elementString,
+  formatManifoldUri,
   type CensusItem,
   type ContainerCensus,
   type Container,
@@ -20,7 +21,7 @@ import {
   createContainer,
   enrollMachine,
   listTerminals,
-  mintToken,
+  mintTokenV2,
   ownerAction,
   ownerFetch,
   startAgent,
@@ -89,15 +90,27 @@ async function startWorkspace(
     name: `${label}-agent`,
   });
   agents.push(agent);
-  const owner = await mintToken(server, {
+  const owner = await mintTokenV2(server, {
     principal: { kind: "human", name: "Container Owner", color: "#3fa46b" },
-    caps: [
-      "containers:read",
-      "containers:write",
-      "scenes:write",
-      "terminals:spawn",
-      "terminals:write",
+    scope: [
+      {
+        target: "manifold://",
+        reach: "subtree",
+        caps: [
+          "containers:read",
+          "containers:write",
+          "scenes:write",
+          "terminals:spawn",
+          "terminals:write",
+        ],
+      },
+      {
+        target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+        reach: "node",
+        caps: ["machines:shell"],
+      },
     ],
+    expiresAt: Date.now() + 600_000,
   });
   return { server, agent, token: owner.token, container };
 }

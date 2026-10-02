@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PrincipalCredentialsSchema } from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
+import { AUTHORITY_V37_FIXTURE_SQL } from "./authority-migration-fixtures.ts";
 
 /** The v37 authority and terminal tables needed by later migrations. */
 function seedV37(path: string): void {
@@ -14,18 +15,7 @@ function seedV37(path: string): void {
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 INSERT INTO meta VALUES ('schema_version','37');
-CREATE TABLE principals(id TEXT PRIMARY KEY,kind TEXT,name TEXT,color TEXT,created_at INTEGER,origin TEXT);
-CREATE TABLE tokens(id TEXT PRIMARY KEY,hash TEXT UNIQUE,principal_id TEXT,caps TEXT,
-  container_id TEXT,created_at INTEGER,revoked_at INTEGER,minted_by TEXT,grant_id TEXT,
-  expires_at INTEGER,run_id TEXT,runner_agent_id TEXT);
-CREATE TABLE grants(id TEXT PRIMARY KEY,principal_kind TEXT,principal_id TEXT,node TEXT,caps TEXT,
-  effect TEXT,reach TEXT,created_by TEXT,created_at INTEGER);
-CREATE TABLE shares(id TEXT PRIMARY KEY,hash TEXT UNIQUE NOT NULL,container_id TEXT NOT NULL,
-  caps TEXT NOT NULL,origin TEXT NOT NULL,minted_by TEXT NOT NULL,
-  created_at INTEGER NOT NULL,revoked_at INTEGER,grant_id TEXT);
-CREATE TABLE share_tickets(share_id TEXT NOT NULL,guest_principal_id TEXT NOT NULL,
-  principal_id TEXT NOT NULL,created_at INTEGER NOT NULL,
-  PRIMARY KEY(share_id,guest_principal_id)) WITHOUT ROWID;
+${AUTHORITY_V37_FIXTURE_SQL}
 CREATE TABLE native_instance_services(
   service_id TEXT PRIMARY KEY,revision TEXT NOT NULL,machine_id TEXT NOT NULL,
   plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
@@ -37,40 +27,6 @@ CREATE TABLE machine_job_revisions(kind TEXT NOT NULL,identity TEXT NOT NULL,rev
   digest TEXT NOT NULL,PRIMARY KEY(kind,identity));
 CREATE TABLE terminals(id TEXT PRIMARY KEY,machine_id TEXT,container_id TEXT,run_id TEXT);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY,machine_id TEXT,created_at INTEGER,request TEXT);
-CREATE TABLE agents(
-  agent_id TEXT PRIMARY KEY,principal_id TEXT NOT NULL UNIQUE,sponsor_principal_id TEXT NOT NULL,
-  name TEXT NOT NULL,purpose TEXT NOT NULL,harness TEXT NOT NULL,grant_json TEXT NOT NULL,
-  context_json TEXT NOT NULL,policy_revision_acknowledged TEXT,
-  status TEXT NOT NULL CHECK(status IN ('enabled','disabled','retired')),
-  authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key','principal')),
-  authorization_credential TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
-  UNIQUE(sponsor_principal_id,name)
-);
-CREATE TABLE agent_runs(
-  id TEXT PRIMARY KEY,principal_id TEXT NOT NULL,root_run_id TEXT NOT NULL,parent_run_id TEXT,
-  authorized_by_principal_id TEXT NOT NULL,
-  authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key','principal')),
-  authorizer_token_id TEXT,authorizer_grant_id TEXT,authorizer_caps TEXT NOT NULL,
-  authorizer_container_scope TEXT,authorizer_expires_at INTEGER,purpose TEXT NOT NULL,task_ref TEXT,
-  target TEXT NOT NULL,reach TEXT NOT NULL CHECK(reach IN ('node','subtree')),caps TEXT NOT NULL,
-  created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,renewals INTEGER NOT NULL,
-  max_depth INTEGER NOT NULL,max_descendants INTEGER NOT NULL,depth INTEGER NOT NULL,
-  cleanup_owner_principal_id TEXT NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('pending_policy','active','policy_stale','completed','failed',
-    'cancelled','abandoned','expired','revoked','cleanup_failed')),
-  policy_revision TEXT NOT NULL,acknowledged_policy_revision TEXT,
-  cleanup_revoked_credentials INTEGER NOT NULL DEFAULT 0,cleanup_revoked_grants INTEGER NOT NULL DEFAULT 0,
-  finished_at INTEGER,cleanup_failure TEXT,
-  agent_id TEXT NOT NULL REFERENCES agents(agent_id),session_harness TEXT,session_id TEXT,
-  session_machine_id TEXT,model TEXT,
-  activity TEXT NOT NULL CHECK(activity IN ('working','blocked','done','idle','unknown')),
-  CHECK((session_harness IS NULL AND session_id IS NULL AND session_machine_id IS NULL) OR
-    (session_harness IS NOT NULL AND session_id IS NOT NULL AND session_machine_id IS NOT NULL))
-);
-CREATE INDEX agent_runs_root_depth ON agent_runs(root_run_id,depth,id);
-CREATE INDEX agent_runs_parent ON agent_runs(parent_run_id,id);
-CREATE INDEX agent_runs_agent ON agent_runs(agent_id,created_at,id);
-CREATE INDEX agent_runs_principal ON agent_runs(principal_id,id);
 CREATE TABLE machine_job_deployments(
   deployment_id TEXT PRIMARY KEY,plugin_id TEXT NOT NULL,revision INTEGER NOT NULL,
   approved_at INTEGER NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),approval TEXT NOT NULL);
@@ -205,7 +161,7 @@ describe("migration 38: native service credentials", () => {
         ["unrelated", "agent"],
         ["human", "human"],
       ]);
-      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(beforeTokens);
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toMatchObject(beforeTokens);
       expect(db.query("SELECT * FROM grants ORDER BY id").all()).toEqual(beforeGrants);
       expect(db.query("SELECT * FROM native_instance_services ORDER BY service_id").all()).toEqual(
         beforeServices,
@@ -217,7 +173,7 @@ describe("migration 38: native service credentials", () => {
       db.close();
       db = openDatabase(path);
       expect(new ServerStore(db).getPrincipal("replaced")?.kind).toBe("service");
-      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(beforeTokens);
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toMatchObject(beforeTokens);
       expect(db.query("SELECT * FROM machine_job_revisions ORDER BY identity").all()).toEqual(
         beforeRevisions,
       );

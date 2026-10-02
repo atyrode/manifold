@@ -1,10 +1,16 @@
 import { z } from "zod";
 import { AgentRunStateSchema } from "./agent-runs.ts";
 import { AuthoredCapSchema } from "./plugin.ts";
-import { GrantReachSchema } from "./grants.ts";
+import { AuthorityScopeSchema, GrantReachSchema } from "./grants.ts";
+import { LegacyAuthoredCapSchema } from "./legacy-authority.ts";
 import { JobStateSchema } from "./jobs.ts";
 import { TraceOutcomeSchema } from "./trace.ts";
-import { AgentIdSchema, RunModelSchema, RunActivitySchema } from "./agents.ts";
+import {
+  AgentAuthorityScopeSchema,
+  AgentIdSchema,
+  RunModelSchema,
+  RunActivitySchema,
+} from "./agents.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 
 export const AGENT_JUSTIFICATION_MAX_LENGTH = 512;
@@ -73,7 +79,7 @@ export const AgentRunInspectionSchema = z.strictObject({
     taskRef: text.optional(),
     target: z.string().max(1024),
     reach: GrantReachSchema,
-    caps: z.array(AuthoredCapSchema).max(128),
+    caps: z.array(LegacyAuthoredCapSchema).max(128),
     createdAt: at,
     expiresAt: at,
     renewals: z.number().int().nonnegative(),
@@ -103,7 +109,7 @@ export const AgentRunInspectionSchema = z.strictObject({
         grant: z
           .strictObject({
             node: z.string().max(1024),
-            caps: z.array(AuthoredCapSchema).max(128),
+            caps: z.array(LegacyAuthoredCapSchema).max(128),
             reach: GrantReachSchema,
             effect: z.enum(["allow", "deny"]),
           })
@@ -181,3 +187,40 @@ export const InspectRunRequestSchema = z
 export type InspectRunRequest = z.infer<typeof InspectRunRequestSchema>;
 export const InspectRunResultSchema = AgentRunInspectionSchema;
 export type InspectRunResult = z.infer<typeof InspectRunResultSchema>;
+
+/** Scope is evidence; the inventory's other fields remain observations, not authority factors. */
+export const AgentRunInventoryV2Schema = AgentRunInventorySchema.extend({
+  runs: z
+    .array(
+      AgentRunInventorySchema.shape.runs.element.extend({
+        scope: AgentAuthorityScopeSchema,
+      }),
+    )
+    .max(100),
+});
+export type AgentRunInventoryV2 = z.infer<typeof AgentRunInventoryV2Schema>;
+const inspectionCredentialV2 = AgentRunInspectionSchema.shape.credentials.element.extend({
+  authorityScope: AuthorityScopeSchema.optional(),
+  grant: AgentRunInspectionSchema.shape.credentials.element.shape.grant
+    .unwrap()
+    .extend({
+      caps: z.array(AuthoredCapSchema).max(128),
+    })
+    .nullable(),
+});
+export const AgentRunInspectionV2Schema = AgentRunInspectionSchema.extend({
+  run: AgentRunInspectionSchema.shape.run.extend({
+    caps: z.array(AuthoredCapSchema).max(128),
+    scope: AgentAuthorityScopeSchema,
+  }),
+  credentials: z.array(inspectionCredentialV2).max(100),
+});
+export type AgentRunInspectionV2 = z.infer<typeof AgentRunInspectionV2Schema>;
+export const ListRunsV2RequestSchema = ListRunsRequestSchema;
+export type ListRunsV2Request = z.infer<typeof ListRunsV2RequestSchema>;
+export const ListRunsV2ResultSchema = AgentRunInventoryV2Schema;
+export type ListRunsV2Result = z.infer<typeof ListRunsV2ResultSchema>;
+export const InspectRunV2RequestSchema = InspectRunRequestSchema;
+export type InspectRunV2Request = z.infer<typeof InspectRunV2RequestSchema>;
+export const InspectRunV2ResultSchema = AgentRunInspectionV2Schema;
+export type InspectRunV2Result = z.infer<typeof InspectRunV2ResultSchema>;

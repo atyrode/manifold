@@ -10,6 +10,7 @@ import {
   canonicalJobJson,
   formatManifoldUri,
   JobCommandSchema,
+  IsolateCtxMethodSchema,
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
@@ -43,6 +44,7 @@ import type { ActionCtx } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { silentLogger } from "../src/log.ts";
+import { ActionAuthorityFence } from "../src/action-authority-fence.ts";
 
 import { createExternalRun } from "./agent-fixtures.ts";
 const hash = (value: unknown) => createHash("sha256").update(canonicalJobJson(value)).digest("hex");
@@ -198,6 +200,98 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read", path 
     result,
   };
 }
+
+test("pending native service results retain the original action fence and refuse late withdrawal", async () => {
+  const f = fixture();
+  try {
+    let current = true;
+    const fence = new ActionAuthorityFence(f.auth, f.reader, () => current, null);
+    fence.admit([
+      {
+        cap: "services:read",
+        ref: {
+          kind: "service",
+          machineId: f.machineId,
+          serviceId: f.args.serviceId,
+          operationId: f.args.operationId,
+        },
+      },
+    ]);
+    const pending = serviceContext(
+      () => f.service,
+      f.reader,
+      "sample.reader",
+      42,
+      "read",
+      fence,
+    ).read(f.args);
+    const disclosed = pending.then(
+      () => true,
+      () => false,
+    );
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    fence.close();
+    await Promise.resolve();
+    current = false;
+    f.result(requestId);
+    expect(await disclosed).toBe(false);
+    expect(
+      f.commands.some(
+        (command) => command.type === "service_read_cancel" && command.requestId === requestId,
+      ),
+    ).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("direct native service restore preserves selected scoped source rather than projected caps", async () => {
+  const f = fixture();
+  try {
+    const target = formatManifoldUri({
+      kind: "service",
+      machineId: f.machineId,
+      serviceId: f.args.serviceId,
+      operationId: f.args.operationId,
+    });
+    const minted = f.auth.mintTokenV2(
+      {
+        principal: { name: "scoped-service-reader", kind: "human" },
+        scope: [{ target, reach: "node", caps: ["services:read"] }],
+        expiresAt: f.runtime.now() + 60_000,
+      },
+      f.root,
+    );
+    const reader = f.auth.authenticate(minted.token);
+    const first = f.service.readService(reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    f.result(requestId);
+    expect(await first).toMatchObject({ ok: true, result: { remaining: 12 } });
+    const second = f.service.readService(reader, f.args);
+    const observed = second.then(
+      () => "disclosed",
+      (error: Error) => error.message,
+    );
+    const pendingId = f.pendingCommand().requestId;
+    f.authorize(pendingId);
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: reader.principal.id },
+        node: target,
+        reach: "node",
+        caps: ["services:read"],
+        effect: "deny",
+      },
+      f.root,
+    );
+    f.result(pendingId);
+    expect(await observed).toBe("service_unauthorized");
+  } finally {
+    f.store.close();
+  }
+});
 
 test("limited consumers can establish metering readiness without configuration authority", async () => {
   const priced: ServicePolicy = {
@@ -1217,7 +1311,10 @@ async function orchestratorHost(f: {
           }
         } else if (frame.t === "call") {
           if (!active) throw new Error("host call outside dispatch");
-          void serveCtxCall(frame.method, frame.args, { kind: "dispatch", ctx: active }).then(
+          void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, {
+            kind: "dispatch",
+            ctx: active,
+          }).then(
             (result) =>
               receive({ t: "reply", id: frame.id, ok: true, result } satisfies IsolateHostFrame),
             (error: unknown) =>

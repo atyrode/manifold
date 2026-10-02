@@ -19,7 +19,7 @@ import { presenceHandlers } from "@manifold-plugin/presence/server";
 import { spaceActions, spaceManifest, shellManifest } from "@manifold-plugin/shell";
 import { spaceHandlers } from "@manifold-plugin/shell/server";
 import { terminalsActions, terminalsManifest } from "@manifold-plugin/terminals";
-import { terminalsHandlers } from "@manifold-plugin/terminals/server";
+import { terminalsHandlers, terminalsPreparers } from "@manifold-plugin/terminals/server";
 import { uriManifest } from "@manifold-plugin/uri";
 import { debugManifest } from "@manifold-plugin/debug";
 import { indexActions, indexManifest } from "@manifold-plugin/index";
@@ -98,7 +98,12 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   */
   { manifest: brandManifest, actions: [], handlers: {} },
   { manifest: keysManifest, actions: keysActions, handlers: keysHandlers },
-  { manifest: terminalsManifest, actions: terminalsActions, handlers: terminalsHandlers },
+  {
+    manifest: terminalsManifest,
+    actions: terminalsActions,
+    handlers: terminalsHandlers,
+    prepareActions: terminalsPreparers,
+  },
   { manifest: presenceManifest, actions: presenceActions, handlers: presenceHandlers },
   { manifest: accessManifest, actions: accessActions, handlers: accessHandlers },
   /*

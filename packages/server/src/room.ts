@@ -62,6 +62,7 @@ import {
   type SessionChannel,
 } from "./session-channel.ts";
 import type { ServerStore } from "./stores.ts";
+import { isActionPreparation, requireActionEffects } from "./action-preparation-phase.ts";
 
 const QUIET_SAVE_MS = 1_500;
 const MAX_SAVE_MS = 10_000;
@@ -280,6 +281,7 @@ export class Room {
     this.docBytes = Y.encodeStateAsUpdate(this.doc).byteLength;
     this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
 
+    let loading = true;
     elementsMap(this.doc).observeDeep((events) => {
       if (this.collectingIds === null) return;
       for (const id of changedElementIds(events as unknown as readonly Y.YEvent<never>[])) {
@@ -291,6 +293,11 @@ export class Room {
       this.encodedDoc = null;
       this.beforeUpdateCheckpoint = null;
       this.recoveryDelta = null;
+      // A lazy read may seed the cached tile root, but owns no broadcast or persistence timer.
+      if (loading && isActionPreparation()) {
+        this.dirty = true;
+        return;
+      }
       this.broadcast({
         type: "doc_update",
         update: encodeUpdate(update),
@@ -312,6 +319,7 @@ export class Room {
       third-party tile-tree discipline is seeded exactly like the shipped one.
     */
     if (holdsTileTree) initCompositionLayout(this.doc, SERVER_PLACE_ORIGIN);
+    loading = false;
   }
 
   private locationsFor(peers: ReadonlySet<SessionChannel>): ConnectionLocation[] {
@@ -374,6 +382,7 @@ export class Room {
 
   /** Registers a tab, sends init first, then publishes principal-level attendance deltas. */
   join(peer: SessionChannel): boolean {
+    requireActionEffects();
     if (peer.spectator) {
       // A watcher receives the same authoritative state (its preview IS this room) and
       // nothing else: no attendance row, no presence entry, no principal_joined event.
@@ -426,6 +435,7 @@ export class Room {
 
   /** Removes a tab and expires principal presence only after its final connection leaves. */
   leave(peer: SessionChannel): void {
+    requireActionEffects();
     this.forgetRecipient(peer);
     for (const delivery of this.recipientDeliveries.values()) {
       delivery.cursors.delete(peer.id);
@@ -484,6 +494,7 @@ export class Room {
 
   /** Emits a full state replacement to one connection. */
   sendResync(peer: SessionChannel): void {
+    requireActionEffects();
     this.sendState("resync", peer);
   }
 
@@ -508,6 +519,7 @@ export class Room {
 
   /** Applies one bounded update, then repairs schema-invalid element projections. */
   applyDocUpdate(peer: SessionChannel, encoded: DocUpdate["update"]): boolean {
+    requireActionEffects();
     let update: Uint8Array;
     try {
       update = decodeUpdate(encoded);
@@ -593,6 +605,7 @@ export class Room {
    * anybody by claiming a principal it is not, so the field simply never crosses inbound.
    */
   updatePresence(peer: SessionChannel, payload: PresencePayload): void {
+    requireActionEffects();
     const principalId = peer.auth.principal.id;
     const client: PresencePayload = { ...payload };
     delete client.spotlight;
@@ -619,6 +632,7 @@ export class Room {
    * state and there is no reporting socket behind a server write.
    */
   writeSpotlight(principalId: string, spotlight: { uri: string; from: string }): boolean {
+    requireActionEffects();
     const peers = this.connections.get(principalId);
     const first = peers?.values().next().value;
     if (first === undefined) return false;
@@ -630,6 +644,7 @@ export class Room {
 
   /** Relays high-rate cursor motion with droppable delivery under socket pressure. */
   relayCursor(peer: SessionChannel, cursor: CursorUpdate): void {
+    requireActionEffects();
     this.broadcast(
       {
         type: "cursor",
@@ -654,6 +669,7 @@ export class Room {
    * the two would drift the first time a field is added.
    */
   relayGesture(peer: SessionChannel, gesture: GestureUpdate, aimOnly = false): void {
+    requireActionEffects();
     this.broadcast(
       {
         type: "gesture",
@@ -676,6 +692,7 @@ export class Room {
 
   /** Broadcasts one schema serialization to all current room members. */
   broadcast(message: ChannelMessage, droppable = false, except?: SessionChannel): void {
+    requireActionEffects();
     let frame: SerializedServerMessage | undefined;
     for (const peers of this.connections.values()) {
       for (const peer of peers) {
@@ -952,6 +969,7 @@ export class Room {
 
   /** Persists dirty canonical state immediately and emits the durable revision watermark. */
   flushSnapshot(): boolean {
+    requireActionEffects();
     if (!this.dirty) return false;
     const at = this.runtime.now();
     const doc = Y.encodeStateAsUpdate(this.doc);
@@ -976,6 +994,7 @@ export class Room {
 
   /** Cancels persistence callbacks when the room can no longer safely touch its store. */
   cancelSnapshotTimers(): void {
+    requireActionEffects();
     this.cancelQuiet?.();
     this.cancelMax?.();
     this.cancelQuiet = null;
@@ -990,6 +1009,7 @@ export class Room {
    * fire the room-empty hook on its way out.
    */
   closeAll(code: number, reason: string): void {
+    requireActionEffects();
     this.cancelSnapshotTimers();
     const members: SessionChannel[] = [];
     for (const peers of this.connections.values()) members.push(...peers);
@@ -1102,6 +1122,7 @@ export class Room {
     edge: TileEdge | null,
     between = false,
   ): string | null {
+    requireActionEffects();
     const aim = this.tileAim(targetTileId, edge);
     if (aim === null) return null;
     return writeTileLeaf(this.doc, ref, aim.target, aim.edge, SERVER_PLACE_ORIGIN, between);
@@ -1121,6 +1142,7 @@ export class Room {
     edge: TileEdge | null,
     between = false,
   ): string | null {
+    requireActionEffects();
     const aim = this.tileAim(targetTileId, edge);
     if (aim === null) return null;
     return writeTileStructure(
@@ -1144,6 +1166,7 @@ export class Room {
 
   /** Removes one tile leaf, collapsing the split it leaves behind. */
   removeTileLeafById(tileId: string): boolean {
+    requireActionEffects();
     return removeTileLeaf(this.doc, tileId, SERVER_PLACE_ORIGIN);
   }
 
@@ -1153,6 +1176,7 @@ export class Room {
    * where they are and their contents trade places.
    */
   swapTileLeavesById(aTileId: string, bTileId: string): boolean {
+    requireActionEffects();
     return swapTileLeaves(this.doc, aTileId, bTileId, SERVER_PLACE_ORIGIN);
   }
 
@@ -1163,6 +1187,7 @@ export class Room {
    * whole operation.
    */
   setTileRef(tileId: string, ref: TileRef | null): boolean {
+    requireActionEffects();
     return writeTileLeafRef(this.doc, tileId, ref, SERVER_PLACE_ORIGIN);
   }
 
@@ -1174,6 +1199,7 @@ export class Room {
    * and why it patches fields instead of re-authoring the elements.
    */
   swapElementGeometry(aElementId: string, bElementId: string): boolean {
+    requireActionEffects();
     if (aElementId === bElementId) return false;
     const a = readElement(this.doc, aElementId);
     const b = readElement(this.doc, bElementId);
@@ -1202,6 +1228,7 @@ export class Room {
    * new id that collaborators' selections would lose.
    */
   repointPortal(elementId: string, containerId: string): boolean {
+    requireActionEffects();
     const element = readElement(this.doc, elementId);
     if (element === null || element.type !== "portal") return false;
     if (elementString(element, "containerId") === containerId) return true;
@@ -1233,6 +1260,7 @@ export class Room {
    * the bubble's single stored return address.
    */
   removePortalsTo(containerId: string): number {
+    requireActionEffects();
     let removed = 0;
     for (const id of this.portalIdsTo(containerId)) {
       if (removeElement(this.doc, id, SERVER_PLACE_ORIGIN)) removed += 1;
@@ -1246,6 +1274,7 @@ export class Room {
    * living where it lives, and cycles are legal because portals navigate.
    */
   placePortalElement(containerId: string, x: number, y: number): string {
+    requireActionEffects();
     const id = crypto.randomUUID();
     writeElement(
       this.doc,
@@ -1271,6 +1300,7 @@ export class Room {
    * element, new coordinates, one server-origin transaction.
    */
   moveElement(elementId: string, x: number, y: number): boolean {
+    requireActionEffects();
     const element = readElement(this.doc, elementId);
     if (element === null) return false;
     writeElement(
@@ -1300,6 +1330,7 @@ export class Room {
     y: number,
     collaborative: readonly string[],
   ): void {
+    requireActionEffects();
     writeElement(
       this.doc,
       { ...element, x, y, zIndex: nextZIndex(this.doc) },
@@ -1310,6 +1341,7 @@ export class Room {
 
   /** Removes one element the server placed or is releasing; the update hook broadcasts it. */
   removeElementById(elementId: string): boolean {
+    requireActionEffects();
     return removeElement(this.doc, elementId, SERVER_PLACE_ORIGIN);
   }
 
@@ -1407,16 +1439,19 @@ export class RoomManager {
 
   /** Installs the broker's per-container terminal view after circular startup wiring done. */
   setTerminalProvider(provider: (containerId: string) => readonly TerminalInfo[]): void {
+    requireActionEffects();
     this.terminalProvider = provider;
   }
 
   /** Installs the assembly's element-payload boundary; see `elementPayloadGuard`. */
   setElementPayloadGuard(guard: (element: SceneElement) => ElementPayloadRefusal | null): void {
+    requireActionEffects();
     this.payloadGuard = guard;
   }
 
   /** Installs the broker's in-flight create view for residency decisions. */
   setPendingOpenProvider(provider: (containerId: string) => boolean): void {
+    requireActionEffects();
     this.pendingOpenProvider = provider;
   }
 
@@ -1432,6 +1467,7 @@ export class RoomManager {
    * and nothing that used to arrive stops arriving.
    */
   setEvents(events: EventHub): void {
+    requireActionEffects();
     this.announce = (containerId, principalId, kind) => {
       events.emitCollection("attendance", kind, principalId, { containerId }, containerId);
     };
@@ -1571,6 +1607,7 @@ export class RoomManager {
     principalId: string,
     spotlight: { uri: string; from: string },
   ): boolean {
+    requireActionEffects();
     return this.rooms.get(containerId)?.writeSpotlight(principalId, spotlight) ?? false;
   }
 
@@ -1593,6 +1630,7 @@ export class RoomManager {
 
   /** Rechecks an idle resident after its last running terminal exits. */
   evictIfIdle(containerId: string): boolean {
+    requireActionEffects();
     const room = this.rooms.get(containerId);
     if (room === undefined) return false;
     return this.evict(room);
@@ -1620,6 +1658,7 @@ export class RoomManager {
 
   /** Evicts and fences a deleted container's live room. */
   drop(containerId: string): void {
+    requireActionEffects();
     const room = this.rooms.get(containerId);
     if (room === undefined) return;
     room.closeAll(4404, "container deleted");
@@ -1628,6 +1667,7 @@ export class RoomManager {
 
   /** Flushes every dirty scene for graceful shutdown. */
   flushAll(): void {
+    requireActionEffects();
     for (const room of this.rooms.values()) {
       try {
         room.flushSnapshot();

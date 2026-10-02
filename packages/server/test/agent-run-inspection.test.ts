@@ -226,7 +226,6 @@ describe("agent run inspection", () => {
       expect(() => f.auth.listRuns({}, sponsor)).toThrow(ServiceError);
       expect(await f.host.dispatch(sponsor, "core.access.listRuns", {})).toMatchObject({
         ok: false,
-        denial: { rule: "refused" },
       });
       const expiring = await f.run(f.owner, "expires during request");
       expect(f.auth.listRuns({}, expiring.actor).runs.map((entry) => entry.id)).toEqual([

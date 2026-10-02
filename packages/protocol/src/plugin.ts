@@ -1,11 +1,13 @@
 import { z } from "zod";
-import { CapSchema, type Cap, type PluginCap } from "./capabilities.ts";
+import { CapSchema, type AskableCap, type Cap, type PluginCap } from "./capabilities.ts";
 import { EventKindSchema } from "./events.ts";
 import { ContainerDisciplineSchema } from "./layout.ts";
 import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from "./stream.ts";
-import { MachineHalfSchema } from "./jobs.ts";
+import { MachineHalfSchema, type TerminalRuntime } from "./jobs.ts";
 import { HarnessDefinitionSchema } from "./agents.ts";
-import { ManifoldRefSchema } from "./uri.ts";
+import { ManifoldRefSchema, type ManifoldRef } from "./uri.ts";
+import type { GrantNode, GrantReach } from "./grants.ts";
+import type { TerminalExecution } from "./machine.ts";
 import { compileJsonProjection, JsonProjectionError, JsonProjectionSchema } from "./services.ts";
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
@@ -122,6 +124,61 @@ export const AuthoredCapSchema = z.union([CapSchema, PluginCapSchema]);
  * engine's "everything" and an authority question is asked about one capability at a node.
  */
 export const AskableCapSchema = z.union([CapSchema.exclude(["*"]), PluginCapSchema]);
+
+/** Conjunctive authority added by an installed, sealed action preparer. */
+export interface PreparedRequirement {
+  readonly cap: AskableCap;
+  readonly node: GrantNode;
+  readonly reach: GrantReach;
+}
+
+export interface PreparedActionInput {
+  readonly args: unknown;
+  readonly targets: readonly ManifoldRef[];
+  readonly additionalRequirements?: readonly PreparedRequirement[];
+}
+
+/** Only nonsecret facts; this is never a narrowed or cast mutable action context. */
+export interface ActionPreparationCtx {
+  readonly terminals: {
+    resolveMachine(input: {
+      readonly machineId?: string;
+      readonly runtime?: TerminalRuntime;
+    }): Promise<{
+      readonly machineId: string;
+      readonly terminalHostId: string | null;
+      readonly terminalExecution: TerminalExecution | null;
+    }>;
+    stored(terminalId: string): Promise<{
+      readonly machineId: string;
+      readonly containerId: string;
+      readonly governed: boolean;
+      readonly nativeRequirements?: readonly PreparedRequirement[];
+    } | null>;
+  };
+  readonly containers: {
+    placement(containerId: string): Promise<"element" | "tile">;
+  };
+  readonly native: {
+    /** Plans exact native authority; opaque literal inputs are validated only at effect admission. */
+    demand(
+      runtime: TerminalRuntime,
+      machineId: string,
+      containerId: string,
+    ): Promise<readonly PreparedRequirement[]>;
+  };
+}
+
+export type ActionPreparer = (
+  ctx: ActionPreparationCtx,
+  args: never,
+) => Promise<PreparedActionInput>;
+
+export interface ActionPreparationDef {
+  /** Pinned additional-capability ceiling, not a guest-returned assertion. */
+  readonly caps: readonly AskableCap[];
+  readonly prepare: ActionPreparer;
+}
 
 /**
  * WHOSE capability this is, or null for one of the engine's own (and for anything malformed).
