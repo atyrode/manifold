@@ -17,6 +17,7 @@ import {
 } from "@manifold/protocol";
 import { ActionHttpError, ActionProtocolError, discoverActions, invokeAction } from "@manifold/sdk";
 import { selectedInstanceOrigin } from "@manifold/plugin/instance";
+import { privateCredentialEntryBypass } from "@manifold/plugin/private-entry";
 import { identityExpired, loadIdentity } from "./identity-storage.ts";
 
 const ACTIONS = {
@@ -213,33 +214,8 @@ function retire(message: string): void {
 
 /** A direct URL has the same fail-closed old-worker boundary as the manager launcher. */
 async function requirePrivateBypass(): Promise<void> {
-  if (!("serviceWorker" in navigator)) return;
-  const controller = navigator.serviceWorker.controller;
-  if (controller === null) return; // No controller: the document and graph are network-only.
-  const supported = await new Promise<boolean>((resolve) => {
-    const channel = new MessageChannel();
-    const timer = window.setTimeout(() => finish(false), 2000);
-    const finish = (value: boolean): void => {
-      window.clearTimeout(timer);
-      channel.port1.close();
-      channel.port2.close();
-      resolve(value);
-    };
-    channel.port1.onmessage = (event: MessageEvent<unknown>) => {
-      const data = event.data;
-      finish(data !== null && typeof data === "object" &&
-        Reflect.get(data, "type") === "manifold.private-credential-bypass" &&
-        Reflect.get(data, "version") === 1 && Reflect.get(data, "supported") === true);
-    };
-    try {
-      controller.postMessage({ type: "manifold.private-credential-bypass", version: 1 }, [channel.port2]);
-    } catch {
-      finish(false);
-    }
-  });
-  if (!supported || navigator.serviceWorker.controller !== controller) {
-    throw new PrivateEntryFailure("worker_unsupported");
-  }
+  const result = await privateCredentialEntryBypass();
+  if (result.phase !== "ready") throw new PrivateEntryFailure("worker_unsupported");
 }
 
 async function readMetadata(): Promise<void> {

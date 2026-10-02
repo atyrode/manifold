@@ -8,44 +8,10 @@ import {
 } from "@manifold/protocol";
 import { Cluster, Stack } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import { privateCredentialEntryBypass, type Bypass } from "@manifold/plugin/private-entry";
 
 type Metadata = Pick<ServiceConfigurationRead, "connected" | "credentialReferences">;
-type Bypass = { phase: "checking" | "ready" | "unsupported"; controller: ServiceWorker | null };
 const UPDATE_GUIDANCE = "Private entry is closed until the current root worker proves bypass support. Accept the ordinary workspace update activation, then check again. No worker update is activated here.";
-
-/** Capability negotiation contains no identity, target, envelope or typed credential data. */
-async function privateBypass(): Promise<Bypass> {
-  if (!("serviceWorker" in navigator)) return { phase: "ready", controller: null };
-  const controller = navigator.serviceWorker.controller;
-  if (controller === null) return { phase: "ready", controller: null };
-  const supported = await new Promise<boolean>((resolve) => {
-    const channel = new MessageChannel();
-    const finish = (value: boolean): void => {
-      window.clearTimeout(timer);
-      channel.port1.close();
-      channel.port2.close();
-      resolve(value);
-    };
-    const timer = window.setTimeout(() => finish(false), 2000);
-    channel.port1.onmessage = (event: MessageEvent<unknown>) => {
-      const data = event.data;
-      finish(data !== null && typeof data === "object" &&
-        Reflect.get(data, "type") === "manifold.private-credential-bypass" &&
-        Reflect.get(data, "version") === 1 && Reflect.get(data, "supported") === true);
-    };
-    try {
-      // The old worker ignores the reply port; querying its active incarnation cannot activate
-      // a waiting worker. In particular this is not the ordinary null activation message.
-      controller.postMessage({ type: "manifold.private-credential-bypass", version: 1 }, [channel.port2]);
-    } catch {
-      finish(false);
-    }
-  });
-  return {
-    phase: supported && navigator.serviceWorker.controller === controller ? "ready" : "unsupported",
-    controller,
-  };
-}
 
 /** Machine-wide metadata/launch source in the existing manager, never a plugin runtime form. */
 export function CredentialReferences({ host }: Pick<SectionProps, "host">): ReactElement {
@@ -74,7 +40,7 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
     setPending(false);
     const check = (): void => {
       setBypass({ phase: "checking", controller: null });
-      void privateBypass().then((result) => { if (current) setBypass(result); });
+      void privateCredentialEntryBypass().then((result) => { if (current) setBypass(result); });
     };
     check();
     const changed = (): void => {
