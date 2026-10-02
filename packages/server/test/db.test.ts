@@ -1136,7 +1136,7 @@ describe("migration 11: the lexicon cut", () => {
     try {
       seedPreV11(path);
       db = new Database(path, { strict: true });
-      const pads = db.query("SELECT * FROM pads ORDER BY id").all();
+      const originalContainers = db.query("SELECT * FROM pads ORDER BY id").all();
       const tokens = db.query("SELECT * FROM tokens ORDER BY id").all();
       const docs = db.query("SELECT * FROM scene_docs ORDER BY pad_id, epoch, rev").all();
       const metadata = db.query("SELECT * FROM meta ORDER BY key").all();
@@ -1162,7 +1162,7 @@ END;
       expect(snapshotVersion(`${path}.pre-v11.bak`)).toBe("10");
       expect(existsSync(`${path}.pre-v13.bak`)).toBeFalse();
       db = new Database(path, { strict: true });
-      expect(db.query("SELECT * FROM pads ORDER BY id").all()).toEqual(pads);
+      expect(db.query("SELECT * FROM pads ORDER BY id").all()).toEqual(originalContainers);
       expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(tokens);
       expect(db.query("SELECT * FROM scene_docs ORDER BY pad_id, epoch, rev").all()).toEqual(docs);
       expect(db.query("SELECT * FROM meta ORDER BY key").all()).toEqual(metadata);
@@ -1174,7 +1174,7 @@ END;
       ).toEqual({ name: "events_by_pad_recency" });
       const backup = new Database(`${path}.pre-v11.bak`, { strict: true });
       try {
-        expect(backup.query("SELECT * FROM pads ORDER BY id").all()).toEqual(pads);
+        expect(backup.query("SELECT * FROM pads ORDER BY id").all()).toEqual(originalContainers);
         expect(backup.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(tokens);
         expect(backup.query("SELECT * FROM scene_docs ORDER BY pad_id, epoch, rev").all()).toEqual(
           docs,
