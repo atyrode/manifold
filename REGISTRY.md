@@ -2125,6 +2125,11 @@ Room admission belongs to the current document. A fixture's transport observer c
 previous document's bindings before navigation. The fleet fixture also waits for the current
 view's rendered admission: canvas `connection-state` is `Open`, or the composition's
 `composition-status` has `is-open`. Receiving a frame is not its consumer having applied it.
+Before sending trusted pointer events, the fleet fixture also requires the enabled hit target's
+rectangle to remain unchanged after two rendered frames. Measurements run in the task after each
+animation-frame callback, not before that frame's layout and paint have completed. Visibility
+alone does not establish a stable target while the sidebar settles. This actionability wait is
+bounded to ten seconds; it does not retry a click or replace the native terminal-birth assertion.
 
 This register holds the contracts, NOT the inventory. A `data-testid` no gate queries is
 ordinary markup and belongs nowhere near this list: `plugin-manager`, `sidebar-list` and

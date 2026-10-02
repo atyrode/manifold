@@ -43,12 +43,45 @@ async function click(browser: Browser, selector: string, text?: string): Promise
     }
     if (!(element instanceof HTMLElement) || element.matches(':disabled') || !element.checkVisibility()) return null;
     element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-    const rect = element.getBoundingClientRect();
-    const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-    const hit = document.elementFromPoint(point.x, point.y);
-    return hit !== null && element.contains(hit) ? point : null;
+    const { promise, resolve } = Promise.withResolvers();
+    let previous = null;
+    let frame = 0;
+    let measurement = 0;
+    const finish = (point) => {
+      clearTimeout(timeout);
+      cancelAnimationFrame(frame);
+      clearTimeout(measurement);
+      resolve(point);
+    };
+    const timeout = setTimeout(() => finish(null), 10_000);
+    const nextFrame = () => {
+      // RAF precedes layout/paint; sample in the following task, not mid-frame.
+      frame = requestAnimationFrame(() => {
+        measurement = setTimeout(sample, 0);
+      });
+    };
+    const sample = () => {
+      if (!element.isConnected || element.matches(':disabled') || !element.checkVisibility()) {
+        finish(null);
+        return;
+      }
+      const rect = element.getBoundingClientRect();
+      const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      const hit = document.elementFromPoint(point.x, point.y);
+      const hittable = hit !== null && element.contains(hit);
+      if (hittable && previous !== null &&
+          rect.x === previous.x && rect.y === previous.y &&
+          rect.width === previous.width && rect.height === previous.height) {
+        finish(point);
+        return;
+      }
+      previous = hittable ? rect : null;
+      nextFrame();
+    };
+    nextFrame();
+    return promise;
   })()`);
-  if (point === null) throw new Error(`No enabled fleet control: ${selector}`);
+  if (point === null) throw new Error(`No stable enabled fleet control: ${selector}`);
   await browser.send("Input.dispatchMouseEvent", {
     type: "mousePressed",
     button: "left",
