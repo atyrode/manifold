@@ -347,6 +347,7 @@ function activeDevelopment(
   const { sources } = inventory;
   let server: ViteDevServer | undefined;
   const watchers: FSWatcher[] = [];
+  let stopped = false;
   const dependencyRoots = new Map<string, Set<string>>();
   const owners = new Map<string, Set<string>>();
   const authorized = new Set<string>();
@@ -379,6 +380,7 @@ function activeDevelopment(
     );
   };
   const stop = (): void => {
+    stopped = true;
     cancel(byId.keys(), "stopped");
     for (const watcher of watchers) watcher.close();
     watchers.length = 0;
@@ -388,6 +390,8 @@ function activeDevelopment(
     callback: (path: string) => void,
     recursive: boolean,
   ): void => {
+    // A dependency lookup can finish after stop while Vite drains pending transforms.
+    if (stopped) return;
     const watcher = watch(directory, { recursive }, (_event, filename) => {
       if (filename === null) return;
       callback(resolve(directory, String(filename)));

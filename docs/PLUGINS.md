@@ -4822,6 +4822,10 @@ install/review path. After accepting frontend changes, stop source development, 
 normal artifacts and publish through the existing release workflow; a development URL is not
 a release.
 
+`close()`, SIGINT and SIGTERM retire source/dependency watcher admission before draining the
+session's resources. A module lookup already in flight may finish during shutdown, but it cannot
+create another owned watcher that keeps the stopped development process alive.
+
 ### Development workshops
 
 A workshop combines the source frontend with the existing server-plugin compilation and
