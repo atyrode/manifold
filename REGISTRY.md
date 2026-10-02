@@ -102,6 +102,7 @@ must never be taught one.
       "id": "persistence",
       "globs": [
         "packages/server/src/db.ts",
+        "packages/server/src/migration-statements.ts",
         "packages/server/src/stores.ts",
         "packages/server/src/migrate-solo.ts",
         "packages/server/src/migrate-lexicon.ts",

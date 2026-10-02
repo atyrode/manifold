@@ -34,14 +34,15 @@ interface CodeMigration {
 type Migration = SqlMigration | CodeMigration;
 
 const MIGRATIONS: Readonly<Record<number, Migration>> = {
-  1: { sql: [
-  `
+  1: {
+    sql: [
+      `
   CREATE TABLE IF NOT EXISTS pads(
     id TEXT PRIMARY KEY,
     name TEXT,
     created_at INTEGER
   );`,
-  `
+      `
   CREATE TABLE IF NOT EXISTS snapshots(
     pad_id TEXT,
     epoch TEXT,
@@ -51,7 +52,7 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     blob TEXT,
     PRIMARY KEY (pad_id, epoch, rev)
   );`,
-  `
+      `
   CREATE TABLE IF NOT EXISTS events(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pad_id TEXT,
@@ -60,7 +61,7 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     type TEXT,
     payload TEXT
   );`,
-  `
+      `
   CREATE TABLE IF NOT EXISTS principals(
     id TEXT PRIMARY KEY,
     kind TEXT,
@@ -68,7 +69,7 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     color TEXT,
     created_at INTEGER
   );`,
-  `
+      `
   CREATE TABLE IF NOT EXISTS tokens(
     id TEXT PRIMARY KEY,
     hash TEXT UNIQUE,
@@ -79,14 +80,14 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     revoked_at INTEGER,
     minted_by TEXT
   );`,
-  `
+      `
   CREATE TABLE IF NOT EXISTS machines(
     id TEXT PRIMARY KEY,
     name TEXT,
     token_id TEXT,
     last_seen INTEGER
   );`,
-  `
+      `
   CREATE TABLE IF NOT EXISTS sessions(
     id TEXT PRIMARY KEY,
     machine_id TEXT,
@@ -98,53 +99,57 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     created_at INTEGER,
     agent_principal_id TEXT
   );`,
-  `
+      `
   CREATE TABLE IF NOT EXISTS meta(
     key TEXT PRIMARY KEY,
     value TEXT
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '1');
   `,
-  ] },
-  2: { sql: [
-  `
+    ],
+  },
+  2: {
+    sql: [
+      `
   ALTER TABLE pads ADD COLUMN sort_order INTEGER;`,
-  `
+      `
   ALTER TABLE pads ADD COLUMN folder_id TEXT;`,
-  `
+      `
   WITH ordered AS (
     SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) - 1 AS position
     FROM pads
   )
   UPDATE pads
   SET sort_order = (SELECT position FROM ordered WHERE ordered.id = pads.id);`,
-  `
+      `
   CREATE TABLE pad_folders(
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');
   `,
-  ] },
-  3: { sql: [
-  `
+    ],
+  },
+  3: {
+    sql: [
+      `
   ALTER TABLE pad_folders ADD COLUMN parent_folder_id TEXT;`,
-  `
+      `
   ALTER TABLE pad_folders ADD COLUMN sort_order INTEGER;`,
-  `
+      `
   
   UPDATE pad_folders
   SET sort_order = COALESCE(
     (SELECT MIN(sort_order) FROM pads WHERE pads.folder_id = pad_folders.id),
     (SELECT COUNT(*) FROM pads) + ROWID
   );`,
-  `
+      `
   
   CREATE TEMP TABLE tree_migration_order(kind TEXT, id TEXT, sibling_order INTEGER);`,
-  `
+      `
   INSERT INTO tree_migration_order(kind, id, sibling_order)
   SELECT kind, id, ROW_NUMBER() OVER (ORDER BY position, created_at, kind, id) - 1
   FROM (
@@ -152,22 +157,22 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     UNION ALL
     SELECT 'folder' AS kind, id, sort_order AS position, created_at FROM pad_folders
   );`,
-  `
+      `
   UPDATE pads
   SET sort_order = (
     SELECT sibling_order FROM tree_migration_order
     WHERE tree_migration_order.kind = 'pad' AND tree_migration_order.id = pads.id
   )
   WHERE folder_id IS NULL;`,
-  `
+      `
   UPDATE pad_folders
   SET sort_order = (
     SELECT sibling_order FROM tree_migration_order
     WHERE tree_migration_order.kind = 'folder' AND tree_migration_order.id = pad_folders.id
   );`,
-  `
+      `
   DROP TABLE tree_migration_order;`,
-  `
+      `
   
   WITH ranked AS (
     SELECT id, ROW_NUMBER() OVER (PARTITION BY folder_id ORDER BY sort_order, created_at, id) - 1 AS sibling_order
@@ -177,13 +182,15 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
   UPDATE pads
   SET sort_order = (SELECT sibling_order FROM ranked WHERE ranked.id = pads.id)
   WHERE folder_id IS NOT NULL;`,
-  `
+      `
   
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');
   `,
-  ] },
-  4: { sql: [
-  `
+    ],
+  },
+  4: {
+    sql: [
+      `
   -- Enrollment is idempotent by machine name (#43), so storage must enforce the
   -- name's uniqueness (#46). Databases shaped by the pre-#43 always-mint path may
   -- hold duplicate names. Non-destructive resolution (#48): the row the live
@@ -197,14 +204,14 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
   -- still v3); version-stamped ephemeral DBs that ran the earlier destructive
   -- shape never re-run it, and both shapes satisfy the index.
   CREATE TEMP TABLE machine_survivors(id TEXT);`,
-  `
+      `
   INSERT INTO machine_survivors(id)
   SELECT id FROM (
     SELECT id, ROW_NUMBER() OVER (PARTITION BY name ORDER BY last_seen DESC, rowid DESC) AS rank
     FROM machines
   )
   WHERE rank = 1;`,
-  `
+      `
   UPDATE tokens
   SET revoked_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
   WHERE revoked_at IS NULL
@@ -212,22 +219,24 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
       SELECT token_id FROM machines
       WHERE id NOT IN (SELECT id FROM machine_survivors)
     );`,
-  `
+      `
   UPDATE machines
   SET name = name || '#' || id
   WHERE id NOT IN (SELECT id FROM machine_survivors);`,
-  `
+      `
   DROP TABLE machine_survivors;`,
-  `
+      `
   
   CREATE UNIQUE INDEX IF NOT EXISTS machines_name_unique ON machines(name);`,
-  `
+      `
   
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '4');
   `,
-  ] },
-  5: { sql: [
-  `
+    ],
+  },
+  5: {
+    sql: [
+      `
   CREATE TABLE scene_docs(
     pad_id TEXT NOT NULL,
     epoch TEXT NOT NULL,
@@ -237,27 +246,31 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     doc BLOB NOT NULL,
     PRIMARY KEY (pad_id, epoch, rev)
   );`,
-  `
+      `
   DROP TABLE snapshots;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '5');
   `,
-  ] },
-  6: { sql: [
-  `
+    ],
+  },
+  6: {
+    sql: [
+      `
   -- Terminals became renameable, durably ordered pool rows (#15, #57): the
   -- session row carries the operator-assigned name and its pool position. Both
   -- are nullable — pre-#57 sessions have no name and no explicit order, and the
   -- pool listing sorts NULL sort_order last so they keep their creation order.
   ALTER TABLE sessions ADD COLUMN name TEXT;`,
-  `
+      `
   ALTER TABLE sessions ADD COLUMN sort_order INTEGER;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '6');
   `,
-  ] },
-  7: { sql: [
-  `
+    ],
+  },
+  7: {
+    sql: [
+      `
   -- Container discipline (#15, #57): a View and a Pad are ONE object differing only
   -- in their layout. A transient pad is a bubble — an unsplit, unpinned view that
   -- dissolves when its last occupant leaves — and origin_pad_id is that bubble's
@@ -265,26 +278,29 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
   -- address never appears on the wire: it is server-side lifecycle state, and
   -- clearing it (rename or pin) is what makes a container explicitly claimed.
   ALTER TABLE pads ADD COLUMN layout TEXT NOT NULL DEFAULT 'canvas';`,
-  `
+      `
   ALTER TABLE pads ADD COLUMN transient INTEGER NOT NULL DEFAULT 0;`,
-  `
+      `
   ALTER TABLE pads ADD COLUMN origin_pad_id TEXT;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '7');
   `,
-  ] },
-  8: { sql: [
-  `
+    ],
+  },
+  8: {
+    sql: [
+      `
   -- Placement left the session row (#59). sessions.element_id was written once at
   -- birth and never read: a session can be placed several times (mirrors) and in
   -- either discipline, so the id of "its" placement was a lie the moment the
   -- placement algebra made placements first-class. Live containers are the only
   -- source of truth for where a session appears — the column goes.
   ALTER TABLE sessions DROP COLUMN element_id;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '8');
   `,
-  ] },
+    ],
+  },
   /**
    * Solo compositions (#59). Every terminal now lives in a composition of its own and a
    * canvas references it through a portal, so `pads.transient` (the bubble flag),
@@ -305,18 +321,20 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    * under the engine builtin's own id (`$owner:<type>`) and are tombstones: they outlive
    * their owner leaving the build, because the documents that stored the type do not.
    */
-  10: { sql: [
-  `
+  10: {
+    sql: [
+      `
   CREATE TABLE plugin_kv(
     plugin_id TEXT NOT NULL,
     key TEXT NOT NULL,
     value TEXT NOT NULL,
     PRIMARY KEY (plugin_id, key)
   ) WITHOUT ROWID;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '10');
   `,
-  ] },
+    ],
+  },
   /**
    * The lexicon cut (#69). Tables and columns take the canon names — `containers`,
    * `container_folders`, `terminals`, `*.container_id`, `containers.discipline` with values
@@ -362,8 +380,9 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    * column needs no backfill because absence IS the local answer, and that is the whole
    * reason the field is nullable rather than defaulted to a string.
    */
-  12: { sql: [
-  `
+  12: {
+    sql: [
+      `
   CREATE TABLE shares(
     id TEXT PRIMARY KEY,
     hash TEXT UNIQUE NOT NULL,
@@ -374,7 +393,7 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     created_at INTEGER NOT NULL,
     revoked_at INTEGER
   );`,
-  `
+      `
   CREATE TABLE share_tickets(
     share_id TEXT NOT NULL,
     guest_principal_id TEXT NOT NULL,
@@ -382,7 +401,7 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     created_at INTEGER NOT NULL,
     PRIMARY KEY (share_id, guest_principal_id)
   ) WITHOUT ROWID;`,
-  `
+      `
   CREATE TABLE dials(
     id TEXT PRIMARY KEY,
     origin TEXT NOT NULL,
@@ -395,14 +414,15 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     dialed_at INTEGER NOT NULL,
     revoked_at INTEGER
   );`,
-  `
+      `
   CREATE UNIQUE INDEX dials_origin_secret_unique ON dials(origin, secret);`,
-  `
+      `
   ALTER TABLE principals ADD COLUMN origin TEXT;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '12');
   `,
-  ] },
+    ],
+  },
   /**
    * The permission waterfall's substrate (#77, ADR 0011). Authority stops being a field on a
    * credential and becomes a row on the node tree: `grants` holds ADR 0011's row verbatim, and
@@ -444,21 +464,23 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    * predicate the ordering scan applies rather than a seek (`ServerStore.listEvents`). A
    * third index would cost every write to speed a read nobody has measured.
    */
-  14: { sql: [
-  `
+  14: {
+    sql: [
+      `
   ALTER TABLE events ADD COLUMN door TEXT;`,
-  `
+      `
   ALTER TABLE events ADD COLUMN authority TEXT;`,
-  `
+      `
   ALTER TABLE events ADD COLUMN targets TEXT;`,
-  `
+      `
   ALTER TABLE events ADD COLUMN outcome TEXT;`,
-  `
+      `
   ALTER TABLE events ADD COLUMN session TEXT;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '14');
   `,
-  ] },
+    ],
+  },
   /**
    * Credential expiry (#108, ADR 0019 §2). ONE nullable column on `tokens`, and the
    * nullability is the whole migration: NULL means "does not expire", which is exactly what
@@ -476,13 +498,15 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    * nothing queries BY expiry: the credential list filters in the reader, over a table whose
    * size is the number of credentials a workspace has ever issued.
    */
-  15: { sql: [
-  `
+  15: {
+    sql: [
+      `
   ALTER TABLE tokens ADD COLUMN expires_at INTEGER;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '15');
   `,
-  ] },
+    ],
+  },
   /**
    * Dead-token grant rows retired (#140). A token's grant row is that one credential's
    * synthesized authority and reaches no other, so once the token is revoked the row answers
@@ -505,14 +529,14 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
   16: {
     backup: true,
     sql: [
-    `
+      `
     DELETE FROM grants
      WHERE id IN (SELECT grant_id FROM tokens WHERE revoked_at IS NOT NULL AND grant_id IS NOT NULL)
        AND id NOT IN (SELECT grant_id FROM tokens WHERE revoked_at IS NULL AND grant_id IS NOT NULL);`,
-    `
+      `
     UPDATE tokens SET grant_id = NULL
      WHERE revoked_at IS NOT NULL AND grant_id NOT IN (SELECT id FROM grants);`,
-    `
+      `
     INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '16');
     `,
     ],
@@ -527,8 +551,9 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    *
    * Plain SQL, no snapshot: a new table, nothing rewritten, reversible by a DROP.
    */
-  17: { sql: [
-  `
+  17: {
+    sql: [
+      `
   CREATE TABLE plugin_installs(
     plugin_id TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL,
@@ -538,10 +563,11 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
     installed_at INTEGER NOT NULL,
     bundle_path TEXT NOT NULL
   ) WITHOUT ROWID;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '17');
   `,
-  ] },
+    ],
+  },
   /**
    * The doors an install published (ADR 0016 R8, the boot-refusal fix): the `ActionSummary[]`
    * the assembly published for the row when it was admitted, as JSON. A bundle that fails
@@ -553,13 +579,15 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    *
    * Plain SQL, no snapshot: one added column with a default, reversible by a DROP COLUMN.
    */
-  18: { sql: [
-  `
+  18: {
+    sql: [
+      `
   ALTER TABLE plugin_installs ADD COLUMN actions TEXT NOT NULL DEFAULT '[]';`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '18');
   `,
-  ] },
+    ],
+  },
   /**
    * Contributed element refs (#222). Rewrite every saved scene revision and workspace
    * layout before the strict TileSchema reads them; element payloads and topology stay put.
@@ -584,15 +612,17 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    * Plain SQL and no snapshot: nothing rewritten, every existing row keeps every answer,
    * reversible by dropping two columns.
    */
-  20: { sql: [
-  `
+  20: {
+    sql: [
+      `
   ALTER TABLE machines ADD COLUMN owner_host_id TEXT;`,
-  `
+      `
   ALTER TABLE machines ADD COLUMN draining INTEGER NOT NULL DEFAULT 0;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '20');
   `,
-  ] },
+    ],
+  },
   /**
    * In-realm loading with optional hardening (#256). `hardened` records the runner the
    * installer consented to: `1` is the isolate child, `0` is a plain module import in the hub's
@@ -608,17 +638,19 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    *
    * Plain SQL, no snapshot: two added columns and one backfill, reversible by two DROPs.
    */
-  21: { sql: [
-  `
+  21: {
+    sql: [
+      `
   ALTER TABLE plugin_installs ADD COLUMN hardened INTEGER NOT NULL DEFAULT 0;`,
-  `
+      `
   ALTER TABLE plugin_installs ADD COLUMN built_against TEXT;`,
-  `
+      `
   UPDATE plugin_installs SET hardened = 1;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '21');
   `,
-  ] },
+    ],
+  },
   /**
    * Unpacked plugins (#257, ADR 0025 §4). `mode` records who packed an install's bytes:
    * `'bundle'` is an artifact somebody handed to the install door, `'unpacked'` a directory
@@ -628,13 +660,15 @@ const MIGRATIONS: Readonly<Record<number, Migration>> = {
    *
    * Plain SQL, no snapshot: one added column, reversible by one DROP.
    */
-  22: { sql: [
-  `
+  22: {
+    sql: [
+      `
   ALTER TABLE plugin_installs ADD COLUMN mode TEXT NOT NULL DEFAULT 'bundle';`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '22');
   `,
-  ] },
+    ],
+  },
   /**
    * Canvas draw's id cutover (#262). Move the whole namespace, including its version and
    * ledger, together with reservations and enablement bookkeeping before composition reads
@@ -708,129 +742,140 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
 `,
       ).run(now);
       executeMigrationStatements(db, [
-      `INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '24')`,
+        `INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '24')`,
       ]);
     },
   },
-  25: { sql: [
-  `
+  25: {
+    sql: [
+      `
   CREATE TABLE machine_job_owners(machine_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, public_key TEXT NOT NULL, generation INTEGER NOT NULL);`,
-  `
+      `
   CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));`,
-  `
+      `
   CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));`,
-  `
+      `
   CREATE TABLE machine_job_consents(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, node TEXT NOT NULL, cap TEXT NOT NULL, installation_revision TEXT NOT NULL, artifact TEXT NOT NULL, revision TEXT NOT NULL, enabled INTEGER NOT NULL, PRIMARY KEY(machine_id,plugin_id,installation_revision,node,cap));`,
-  `
+      `
   CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT);`,
-  `
+      `
   CREATE INDEX machine_jobs_active ON machine_jobs(machine_id,state);`,
-  `
+      `
   ALTER TABLE machine_jobs ADD COLUMN cancel_reason TEXT;`,
-  `
+      `
   ALTER TABLE machine_jobs ADD COLUMN event_seq INTEGER NOT NULL DEFAULT 0;`,
-  `
+      `
   ALTER TABLE machine_jobs ADD COLUMN output_seq INTEGER;`,
-  `
+      `
   ALTER TABLE machine_job_installs ADD COLUMN purge_requested INTEGER NOT NULL DEFAULT 0;`,
-  `
+      `
   CREATE TABLE machine_job_decisions(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plugin_id TEXT NOT NULL, action TEXT NOT NULL, credential TEXT NOT NULL, policy_revision TEXT NOT NULL, evidence TEXT NOT NULL, consents TEXT NOT NULL);`,
-  `
+      `
   CREATE TABLE machine_job_outputs(node TEXT PRIMARY KEY, job_id TEXT NOT NULL, plugin_id TEXT NOT NULL, metadata TEXT NOT NULL, released INTEGER NOT NULL DEFAULT 0);`,
-  `
+      `
   CREATE TABLE machine_job_revisions(kind TEXT NOT NULL, identity TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(kind,identity));`,
-  `
+      `
   CREATE TRIGGER job_grant_insert AFTER INSERT ON grants BEGIN
    INSERT INTO machine_job_revisions VALUES ('grant',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
   END;`,
-  `
+      `
   CREATE TRIGGER job_grant_update AFTER UPDATE ON grants BEGIN
    INSERT INTO machine_job_revisions VALUES ('grant',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
   END;`,
-  `
+      `
   CREATE TRIGGER job_grant_delete AFTER DELETE ON grants BEGIN
    INSERT INTO machine_job_revisions VALUES ('grant',OLD.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
   END;`,
-  `
+      `
   CREATE TRIGGER job_token_insert AFTER INSERT ON tokens BEGIN
    INSERT INTO machine_job_revisions VALUES ('credential',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
   END;`,
-  `
+      `
   CREATE TRIGGER job_token_update AFTER UPDATE ON tokens BEGIN
    INSERT INTO machine_job_revisions VALUES ('credential',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
   END;`,
-  `
+      `
   CREATE TRIGGER job_token_delete AFTER DELETE ON tokens BEGIN
    INSERT INTO machine_job_revisions VALUES ('credential',OLD.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
   END;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','25');
   
   `,
-  ...JOB_SCHEDULE_SCHEMA_STATEMENTS,
-  ] },
-  26: { sql: [
-  `
+      ...JOB_SCHEDULE_SCHEMA_STATEMENTS,
+    ],
+  },
+  26: {
+    sql: [
+      `
   ALTER TABLE machine_jobs ADD COLUMN next_input_seq INTEGER;`,
-  `
+      `
   ALTER TABLE machine_jobs ADD COLUMN stdin_closed INTEGER NOT NULL DEFAULT 0;`,
-  `
+      `
   CREATE TABLE machine_job_inputs(
    job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL,
    actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT,
    state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id)
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','26');
   `,
-  ] },
-  27: { sql: [
-  `
+    ],
+  },
+  27: {
+    sql: [
+      `
   ALTER TABLE machine_job_installs ADD COLUMN resource_bindings TEXT;`,
-  `
+      `
   ALTER TABLE machine_job_installations ADD COLUMN resource_bindings TEXT;`,
-  `
+      `
   CREATE TABLE native_service_configurations(machine_id TEXT PRIMARY KEY,revision TEXT NOT NULL,configuration TEXT NOT NULL);`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','27');
   `,
-  ] },
-  28: { sql: [
-  `
+    ],
+  },
+  28: {
+    sql: [
+      `
   ALTER TABLE machine_jobs ADD COLUMN owner_closed INTEGER NOT NULL DEFAULT 0 CHECK(owner_closed IN (0,1));`,
-  `
+      `
   CREATE TABLE native_instance_services(
    service_id TEXT PRIMARY KEY, revision TEXT NOT NULL, machine_id TEXT NOT NULL,
    plugin_id TEXT NOT NULL, configuration TEXT NOT NULL, credential TEXT, job_id TEXT,
    configured_by TEXT NOT NULL, configured_at INTEGER NOT NULL
   );`,
-  `
+      `
   CREATE INDEX machine_jobs_instance_service
    ON machine_jobs(json_extract(request,'$.service.serviceId'))
    WHERE json_extract(request,'$.service.serviceId') IS NOT NULL AND
    (state IN ('queued','admitted','start-committed','started') OR
     (permit IS NOT NULL AND owner_closed=0));`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','28');
   `,
-  ] },
-  29: { sql: [
-  `
+    ],
+  },
+  29: {
+    sql: [
+      `
   ALTER TABLE machine_jobs ADD COLUMN cancel_mode TEXT NOT NULL DEFAULT 'cancel' CHECK(cancel_mode IN ('cancel','retire'));`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','29');
   `,
-  ] },
-  30: { sql: [
-  `
+    ],
+  },
+  30: {
+    sql: [
+      `
   CREATE TABLE machine_job_deployments(
    deployment_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, revision INTEGER NOT NULL,
    approved_at INTEGER NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),
    approval TEXT NOT NULL
   );`,
-  `
+      `
   CREATE INDEX machine_job_deployments_plugin ON machine_job_deployments(plugin_id);`,
-  `
+      `
   CREATE TABLE machine_job_deployment_targets(
    deployment_id TEXT NOT NULL REFERENCES machine_job_deployments(deployment_id),
    machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
@@ -838,23 +883,26 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    attempt TEXT, reason TEXT, receipt TEXT,
    PRIMARY KEY(deployment_id,machine_id)
   );`,
-  `
+      `
   CREATE UNIQUE INDEX machine_job_deployment_pending
    ON machine_job_deployment_targets(machine_id,plugin_id) WHERE phase IN ('pending','applying');`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','30');
   `,
-  ] },
-  31: { sql: [
-  `
+    ],
+  },
+  31: {
+    sql: [
+      `
   CREATE TABLE machine_job_journal(
    job_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, event TEXT NOT NULL,
    PRIMARY KEY(job_id,seq)
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','31');
   `,
-  ] },
+    ],
+  },
   /**
    * The installer's CREDENTIAL beside the installer's name (#514). `installed_by` is a
    * principal id and a principal alone can never reconstruct delayed authority — the rule
@@ -864,32 +912,36 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    * before this migration and every row the rebuild loop writes on nobody's behalf, and it
    * reads as "no jobs slice", which is exactly what those rows could do before.
    */
-  32: { sql: [
-  `
+  32: {
+    sql: [
+      `
   ALTER TABLE plugin_installs ADD COLUMN installer_credential TEXT;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','32');
   `,
-  ] },
-  33: { sql: [
-  `
+    ],
+  },
+  33: {
+    sql: [
+      `
   CREATE TABLE plugin_database_journal(
    plugin_id TEXT PRIMARY KEY,
    phase TEXT NOT NULL CHECK(phase IN ('prepared','committed')),
    previous TEXT,
    next TEXT
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','33');
   `,
-  ] },
+    ],
+  },
   34: {
     backup: false,
     apply(db) {
       executeMigrationStatements(db, [
-      `
+        `
       ALTER TABLE job_invocation_edges ADD COLUMN revision TEXT NOT NULL DEFAULT '';`,
-      `
+        `
       UPDATE job_invocation_edges SET revision=lower(hex(randomblob(16)));
       `,
       ]);
@@ -940,12 +992,13 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
         );
       }
       executeMigrationStatements(db, [
-      `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','34');`,
+        `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','34');`,
       ]);
     },
   },
-  35: { sql: [
-  `
+  35: {
+    sql: [
+      `
   CREATE TABLE agent_runs(
     id TEXT PRIMARY KEY,
     principal_id TEXT NOT NULL UNIQUE,
@@ -981,11 +1034,11 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
     finished_at INTEGER,
     cleanup_failure TEXT
   );`,
-  `
+      `
   CREATE INDEX agent_runs_root_depth ON agent_runs(root_run_id,depth,id);`,
-  `
+      `
   CREATE INDEX agent_runs_parent ON agent_runs(parent_run_id,id);`,
-  `
+      `
   CREATE TABLE agent_run_policy_snapshots(
     run_id TEXT NOT NULL,
     revision TEXT NOT NULL,
@@ -994,10 +1047,11 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
     acknowledged_at INTEGER,
     PRIMARY KEY(run_id,revision)
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','35');
   `,
-  ] },
+    ],
+  },
   /**
    * Only dispatcher-reserved declarations are claims (#557). Older refusal payloads may
    * contain caller-authored agentDeclaration fields, so record the last untrusted event
@@ -1007,26 +1061,29 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    * overflow may make a historical row trusted. This migration is its only writer;
    * missing/corrupt metadata on an already-upgraded database must remain fail-closed.
    */
-  36: { sql: [
-  `
+  36: {
+    sql: [
+      `
   INSERT OR REPLACE INTO meta(key,value)
   SELECT 'agent-runs:declarations-after-event-id',
     CAST(MAX(0,
       COALESCE((SELECT MAX(id) FROM events),0),
       COALESCE((SELECT MAX(seq) FROM sqlite_sequence WHERE name='events'),0)
     ) AS TEXT);`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','36');
   `,
-  ] },
+    ],
+  },
   37: { backup: true, apply: migrateToDurableAgents },
   /**
    * Service credentials have their own principal kind (#594). Mint events retain the
    * identity of replaced credentials; current records cover credentials without that
    * history. Only identity classification changes, never bearer hashes or token rows.
    */
-  38: { sql: [
-  `
+  38: {
+    sql: [
+      `
   UPDATE principals SET kind='service'
   WHERE kind='agent' AND id IN (
     SELECT json_extract(credential,'$.principalId') FROM native_instance_services
@@ -1043,16 +1100,18 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
       json_type(payload,'$.machineId')='text' AND json_extract(payload,'$.machineId')<>''
     END
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','38');
   `,
-  ] },
-  39: { sql: [
-  `
+    ],
+  },
+  39: {
+    sql: [
+      `
   ALTER TABLE terminals ADD COLUMN cwd TEXT;`,
-  `
+      `
   ALTER TABLE terminals ADD COLUMN launch_recipe TEXT;`,
-  `
+      `
   UPDATE terminals SET run_id = (
     SELECT json_extract(request,'$.terminal.runId') FROM machine_jobs
     WHERE json_extract(request,'$.terminal.terminalId') = terminals.id
@@ -1062,10 +1121,11 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
       AND length(json_extract(request,'$.terminal.runId')) > 0
     ORDER BY created_at DESC, job_id DESC LIMIT 1
   ) WHERE run_id IS NULL;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','39');
   `,
-  ] },
+    ],
+  },
   /**
    * Running inference totals cannot be reconstructed from the bounded lifecycle journal.
    * A nullable row is also the explicit incomplete sentinel for jobs that were already
@@ -1076,7 +1136,7 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
     backup: false,
     apply(db) {
       executeMigrationStatements(db, [
-      `
+        `
       CREATE TABLE IF NOT EXISTS machine_job_inference_usage(
         job_id TEXT PRIMARY KEY,
         usage TEXT CHECK(usage IS NULL OR json_valid(usage))
@@ -1086,13 +1146,13 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
       const columns = db.query<{ name: string }, []>("PRAGMA table_info(machine_jobs)").all();
       if (columns.some((column) => column.name === "state"))
         executeMigrationStatements(db, [
-        `
+          `
         INSERT OR IGNORE INTO machine_job_inference_usage(job_id,usage)
         SELECT job_id,NULL FROM machine_jobs WHERE state='started';
         `,
         ]);
       executeMigrationStatements(db, [
-      `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','40')`,
+        `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','40')`,
       ]);
     },
   },
@@ -1100,17 +1160,19 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    * Access pause is credential lifecycle state rather than a grant row: it must dominate every
    * descendant allow without changing ADR 0011's waterfall, and survive a process restart.
    */
-  41: { sql: [
-  `
+  41: {
+    sql: [
+      `
   CREATE TABLE principal_access_pauses(
     principal_id TEXT PRIMARY KEY REFERENCES principals(id) ON DELETE CASCADE,
     paused_at INTEGER NOT NULL,
     paused_by TEXT NOT NULL
   );`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','41');
   `,
-  ] },
+    ],
+  },
   42: {
     backup: false,
     apply(db) {
@@ -1128,21 +1190,21 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
         );
         if (!columns.has("last_refusal_code"))
           executeMigrationStatements(db, [
-          `
+            `
           ALTER TABLE machines ADD COLUMN last_refusal_code INTEGER
             CHECK(last_refusal_code IS NULL OR last_refusal_code IN (4003,4401,4403,4409));
           `,
           ]);
         if (!columns.has("last_refusal_at"))
           executeMigrationStatements(db, [
-          `
+            `
           ALTER TABLE machines ADD COLUMN last_refusal_at INTEGER
             CHECK(last_refusal_at IS NULL OR last_refusal_at >= 0);
           `,
           ]);
       }
       executeMigrationStatements(db, [
-      `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','42')`,
+        `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','42')`,
       ]);
     },
   },
@@ -1150,50 +1212,58 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    * Native creation provenance outlives bounded audit history. It is not the harness launch
    * binding in run_id; existing terminals retain unknown creator-Run provenance.
    */
-  43: { sql: [
-  `
+  43: {
+    sql: [
+      `
   ALTER TABLE terminals ADD COLUMN created_by_run_id TEXT;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','43');
   `,
-  ] },
+    ],
+  },
   /** Admitted terminal correlation only; historical rows remain unknown. */
-  44: { sql: [
-  `
+  44: {
+    sql: [
+      `
   ALTER TABLE terminals ADD COLUMN session TEXT;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','44');
   `,
-  ] },
+    ],
+  },
   /** Exact tool selections and one-use owner bindings never upgrade existing Runs. */
-  45: { sql: [
-  `
+  45: {
+    sql: [
+      `
   ALTER TABLE agent_runs ADD COLUMN tools_json TEXT;`,
-  `
+      `
   ALTER TABLE agent_runs ADD COLUMN launch_target_json TEXT;`,
-  `
+      `
   ALTER TABLE agent_runs ADD COLUMN native_job_id TEXT;`,
-  `
+      `
   ALTER TABLE agent_runs ADD COLUMN native_credential_json TEXT;`,
-  `
+      `
   ALTER TABLE agent_runs ADD COLUMN native_call_ids_json TEXT NOT NULL DEFAULT '[]';`,
-  `
+      `
   CREATE UNIQUE INDEX agent_runs_native_job ON agent_runs(native_job_id) WHERE native_job_id IS NOT NULL;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','45');
   `,
-  ] },
+    ],
+  },
   /**
    * Why an owner ended a retained terminal (#853). Nullable: existing rows keep the meaning
    * they had, an exit with no owner reason, and restart clears it with the exit code.
    */
-  46: { sql: [
-  `
+  46: {
+    sql: [
+      `
   ALTER TABLE terminals ADD COLUMN exit_reason TEXT;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','46');
   `,
-  ] },
+    ],
+  },
   /**
    * The container authority a job's posting lineage carried (ADR 0051), kept BESIDE the signed
    * request because a machine's owner parses the request's credential strictly. Nullable, and
@@ -1208,10 +1278,10 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
         .map((column) => column.name);
       if (columns.length > 0 && !columns.includes("container_grants"))
         executeMigrationStatements(db, [
-        `ALTER TABLE machine_jobs ADD COLUMN container_grants TEXT;`,
+          `ALTER TABLE machine_jobs ADD COLUMN container_grants TEXT;`,
         ]);
       executeMigrationStatements(db, [
-      `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','47')`,
+        `INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','47')`,
       ]);
     },
   },
@@ -1234,8 +1304,9 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    * and predate bootstraps, so each finishes at `applied` and the widened index covers exactly
    * the `pending`/`applying` rows the previous one did.
    */
-  48: { sql: [
-  `
+  48: {
+    sql: [
+      `
   CREATE TABLE machine_job_deployment_targets_next(
    deployment_id TEXT NOT NULL REFERENCES machine_job_deployments(deployment_id),
    machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
@@ -1245,24 +1316,26 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    attempt TEXT, reason TEXT, receipt TEXT,
    PRIMARY KEY(deployment_id,machine_id)
   );`,
-  `
+      `
   INSERT INTO machine_job_deployment_targets_next(deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt)
    SELECT deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt
    FROM machine_job_deployment_targets;`,
-  `
+      `
   DROP TABLE machine_job_deployment_targets;`,
-  `
+      `
   ALTER TABLE machine_job_deployment_targets_next RENAME TO machine_job_deployment_targets;`,
-  `
+      `
   CREATE UNIQUE INDEX machine_job_deployment_pending
    ON machine_job_deployment_targets(machine_id,plugin_id)
    WHERE phase NOT IN ('needs_review','cancelled') AND phase<>final_phase;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','48');
   `,
-  ] },
-  49: { sql: [
-  `
+    ],
+  },
+  49: {
+    sql: [
+      `
   CREATE TABLE native_service_attempts(
    actor_id TEXT NOT NULL, call_id TEXT NOT NULL,
    request_id TEXT NOT NULL UNIQUE, request_digest TEXT NOT NULL,
@@ -1277,15 +1350,16 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
    PRIMARY KEY(actor_id,call_id),
    CHECK((state='settled')=(charged_micros IS NOT NULL))
   );`,
-  `
+      `
   CREATE INDEX native_service_attempts_allowance ON native_service_attempts(machine_id,service_id);`,
-  `
+      `
   CREATE INDEX native_service_attempts_execution ON native_service_attempts(execution_job_id)
    WHERE execution_job_id IS NOT NULL;`,
-  `
+      `
   INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','49');
   `,
-  ] },
+    ],
+  },
   /**
    * Host consent is per share and guest principal, never inherited from a retained ticket.
    * Legacy relationships remain inspectable proposals; their credentials, standing Agent
@@ -1325,7 +1399,7 @@ UNION
  JOIN issued i ON r.parent_run_id=i.run_id`
         : "";
       executeMigrationStatements(db, [
-      `
+        `
       CREATE TABLE share_recipients(
        share_id TEXT NOT NULL REFERENCES shares(id),
        guest_principal_id TEXT NOT NULL,
@@ -1341,7 +1415,7 @@ UNION
        CHECK((approved_at IS NULL AND approved_by IS NULL AND caps='[]')
              OR (approved_at IS NOT NULL AND approved_by IS NOT NULL))
       ) WITHOUT ROWID;`,
-      `
+        `
       CREATE TABLE share_ticket_credentials(
        token_id TEXT NOT NULL REFERENCES tokens(id),
        share_id TEXT NOT NULL,
@@ -1350,10 +1424,10 @@ UNION
        FOREIGN KEY(share_id,guest_principal_id)
          REFERENCES share_recipients(share_id,guest_principal_id)
       ) WITHOUT ROWID;`,
-      `
+        `
       CREATE INDEX share_ticket_credentials_recipient
        ON share_ticket_credentials(share_id,guest_principal_id);`,
-      `
+        `
       CREATE TABLE share_recipient_delegations(
        share_id TEXT NOT NULL REFERENCES shares(id),
        source_share_id TEXT NOT NULL,
@@ -1362,10 +1436,10 @@ UNION
        FOREIGN KEY(source_share_id,source_guest_principal_id)
          REFERENCES share_recipients(share_id,guest_principal_id)
       ) WITHOUT ROWID;`,
-      `
+        `
       CREATE INDEX share_recipient_delegations_source
        ON share_recipient_delegations(source_share_id,source_guest_principal_id);`,
-      `
+        `
       INSERT INTO share_recipients(
        share_id,guest_principal_id,guest_principal,requested_caps,requested_at
       )
@@ -1374,7 +1448,7 @@ UNION
               s.caps,st.created_at
        FROM share_tickets st JOIN shares s ON s.id=st.share_id
        JOIN principals p ON p.id=st.principal_id;`,
-      `
+        `
       WITH RECURSIVE issued(token_id,share_id,guest_principal_id,principal_id,run_id) AS (
        SELECT t.id,st.share_id,st.guest_principal_id,t.principal_id,t.run_id
        FROM tokens t JOIN share_tickets st ON st.principal_id=t.principal_id
@@ -1393,13 +1467,13 @@ UNION
       )
       INSERT INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
        SELECT DISTINCT token_id,share_id,guest_principal_id FROM issued;`,
-      `
+        `
       INSERT INTO share_recipient_delegations(share_id,source_share_id,source_guest_principal_id)
        SELECT DISTINCT s.id,c.share_id,c.guest_principal_id
        FROM shares s JOIN tokens issuer ON issuer.principal_id=s.minted_by
        JOIN share_ticket_credentials c ON c.token_id=issuer.id
        WHERE s.id<>c.share_id;`,
-      `
+        `
       UPDATE agent_runs
        SET state='revoked',finished_at=COALESCE(finished_at,CAST(unixepoch('subsec')*1000 AS INTEGER))
        WHERE state IN ('pending_policy','active','policy_stale')
@@ -1410,15 +1484,15 @@ UNION
            WHERE t.run_id IS NOT NULL
          )
        );`,
-      `
+        `
       DELETE FROM grants WHERE id IN (
        SELECT grant_id FROM shares WHERE id IN (SELECT share_id FROM share_recipient_delegations)
       );`,
-      `
+        `
       UPDATE shares
        SET revoked_at=COALESCE(revoked_at,CAST(unixepoch('subsec')*1000 AS INTEGER)),grant_id=NULL
        WHERE id IN (SELECT share_id FROM share_recipient_delegations);`,
-      `
+        `
       DELETE FROM grants
        WHERE id IN (
          SELECT t.grant_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
@@ -1428,7 +1502,7 @@ UNION
          SELECT t.grant_id FROM tokens t
          WHERE t.grant_id IS NOT NULL AND t.id NOT IN (SELECT token_id FROM share_ticket_credentials)
        );`,
-      `
+        `
       DELETE FROM grants
        WHERE created_by IN (
          SELECT t.principal_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
@@ -1437,11 +1511,11 @@ UNION
          SELECT t.grant_id FROM tokens t
          WHERE t.grant_id IS NOT NULL AND t.id NOT IN (SELECT token_id FROM share_ticket_credentials)
        );`,
-      `
+        `
       UPDATE tokens
        SET revoked_at=COALESCE(revoked_at,CAST(unixepoch('subsec')*1000 AS INTEGER)),grant_id=NULL
        WHERE id IN (SELECT token_id FROM share_ticket_credentials);`,
-      `
+        `
       INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','50');
       `,
       ]);
@@ -1459,40 +1533,40 @@ UNION
   51: {
     backup: true,
     sql: [
-        `
+      `
 ALTER TABLE tokens ADD COLUMN authority_scope TEXT;
 `,
-        `
+      `
 ALTER TABLE agent_runs ADD COLUMN authority_scope TEXT;
 `,
-        `
+      `
 ALTER TABLE agent_runs ADD COLUMN authorizer_authority_scope TEXT;
 `,
-        `
+      `
 CREATE TABLE token_grants(
   token_id TEXT NOT NULL REFERENCES tokens(id),
   grant_id TEXT NOT NULL REFERENCES grants(id),
   PRIMARY KEY(token_id,grant_id)
 ) WITHOUT ROWID;
 `,
-        `
+      `
 CREATE INDEX token_grants_grant ON token_grants(grant_id,token_id);
 `,
-        `
+      `
 INSERT INTO token_grants(token_id,grant_id)
   SELECT t.id,g.id FROM tokens t JOIN grants g ON g.id=t.grant_id;
 `,
-        `
+      `
 CREATE TRIGGER token_grants_delete_grant AFTER DELETE ON grants BEGIN
   DELETE FROM token_grants WHERE grant_id=OLD.id;
 END;
 `,
-        `
+      `
 CREATE TRIGGER token_grants_delete_token AFTER DELETE ON tokens BEGIN
   DELETE FROM token_grants WHERE token_id=OLD.id;
 END;
 `,
-        `
+      `
 
 -- Capture OLD admission before extending any row. Wildcard evidence already admits
 -- ordinary spawn, but needs no added cap. Node-only and descendant rows are not global.
@@ -1501,7 +1575,7 @@ SELECT g.id,g.effect FROM grants g
 WHERE g.node='manifold://' AND g.reach='subtree'
   AND EXISTS(SELECT 1 FROM json_each(g.caps) WHERE value IN ('terminals:spawn','*'));
 `,
-        `
+      `
 CREATE TEMP TABLE stage2_global_spawn_tokens AS
 SELECT t.id FROM tokens t JOIN grants g ON g.id=t.grant_id
 JOIN stage2_global_spawn_grants old ON old.id=g.id AND old.effect='allow'
@@ -1534,7 +1608,7 @@ WHERE t.container_id IS NULL
         OR EXISTS(SELECT 1 FROM token_grants mine WHERE mine.grant_id=d.id AND mine.token_id=t.id))
   );
 `,
-        `
+      `
 CREATE TEMP TABLE stage2_global_spawn_agents AS
 SELECT a.agent_id FROM agents a
 WHERE json_extract(a.grant_json,'$.reach')='subtree'
@@ -1557,7 +1631,7 @@ WHERE json_extract(a.grant_json,'$.reach')='subtree'
         AND t.grant_id IS json_extract(a.authorization_credential,'$.grantId'))
   );
 `,
-        `
+      `
 CREATE TEMP TABLE stage2_global_spawn_runs AS
 SELECT r.id FROM agent_runs r
 WHERE r.target='manifold://' AND r.reach='subtree' AND r.native_job_id IS NULL
@@ -1574,56 +1648,56 @@ WHERE r.target='manifold://' AND r.reach='subtree' AND r.native_job_id IS NULL
         AND t.grant_id IS r.authorizer_grant_id)
   );
 `,
-        `
+      `
 
 UPDATE grants SET caps=json_insert(caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_grants)
   AND EXISTS(SELECT 1 FROM json_each(caps) WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(caps) WHERE value='machines:shell');
 `,
-        `
+      `
 UPDATE tokens SET caps=json_insert(caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_tokens)
   AND EXISTS(SELECT 1 FROM json_each(caps) WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(caps) WHERE value='machines:shell');
 `,
-        `
+      `
 UPDATE agents SET grant_json=json_set(grant_json,'$.caps',
   json_insert(json_extract(grant_json,'$.caps'),'$[#]','machines:shell'))
 WHERE agent_id IN (SELECT agent_id FROM stage2_global_spawn_agents)
   AND NOT EXISTS(SELECT 1 FROM json_each(grant_json,'$.caps') WHERE value='machines:shell');
 `,
-        `
+      `
 UPDATE agents SET authorization_credential=json_set(authorization_credential,'$.caps',
   json_insert(json_extract(authorization_credential,'$.caps'),'$[#]','machines:shell'))
 WHERE agent_id IN (SELECT agent_id FROM stage2_global_spawn_agents)
   AND EXISTS(SELECT 1 FROM json_each(authorization_credential,'$.caps') WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(authorization_credential,'$.caps') WHERE value='machines:shell');
 `,
-        `
+      `
 UPDATE agent_runs SET caps=json_insert(caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_runs)
   AND NOT EXISTS(SELECT 1 FROM json_each(caps) WHERE value='machines:shell');
 `,
-        `
+      `
 UPDATE agent_runs SET authorizer_caps=json_insert(authorizer_caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_runs)
   AND EXISTS(SELECT 1 FROM json_each(authorizer_caps) WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(authorizer_caps) WHERE value='machines:shell');
 `,
-        `
+      `
 DROP TABLE stage2_global_spawn_runs;
 `,
-        `
+      `
 DROP TABLE stage2_global_spawn_agents;
 `,
-        `
+      `
 DROP TABLE stage2_global_spawn_tokens;
 `,
-        `
+      `
 DROP TABLE stage2_global_spawn_grants;
 `,
-        `
+      `
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','51');
 `,
     ],

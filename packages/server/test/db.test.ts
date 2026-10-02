@@ -1155,7 +1155,9 @@ END;
 
       // ALTER has already renamed layout when this UPDATE steps the trigger. The refusal
       // must undo that DDL too, not continue with the later table/cap/document rewrites.
-      expect(() => openDatabase(path).close()).toThrow("fixture lexicon refusal; preserve schema 10");
+      expect(() => openDatabase(path).close()).toThrow(
+        "fixture lexicon refusal; preserve schema 10",
+      );
       expect(snapshotVersion(path)).toBe("10");
       expect(snapshotVersion(`${path}.pre-v11.bak`)).toBe("10");
       expect(existsSync(`${path}.pre-v13.bak`)).toBeFalse();
@@ -1191,12 +1193,11 @@ END;
         db.query("SELECT discipline FROM containers WHERE id = ?").get(V10_COMPOSITION),
       ).toEqual({ discipline: "composition" });
       expect(
-        db.query<{ caps: string }, []>("SELECT caps FROM tokens WHERE id = 't-scoped'").get()
-          ?.caps,
+        db.query<{ caps: string }, []>("SELECT caps FROM tokens WHERE id = 't-scoped'").get()?.caps,
       ).toBe('["containers:read","scenes:write"]');
-      expect(
-        db.query("SELECT container_id FROM terminals WHERE id = ?").get(V10_TERMINAL),
-      ).toEqual({ container_id: V10_COMPOSITION });
+      expect(db.query("SELECT container_id FROM terminals WHERE id = ?").get(V10_TERMINAL)).toEqual(
+        { container_id: V10_COMPOSITION },
+      );
       const recovered = db
         .query<DocRow, [string]>(
           "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE container_id = ? AND rev = 1",
@@ -1325,7 +1326,9 @@ END;
 
       // The revoked grant was already deleted by the previous statement. The failed unbind
       // must put it back, keep its credential attached, and never stamp schema 16.
-      expect(() => openDatabase(path).close()).toThrow("fixture retirement refusal; preserve schema 15");
+      expect(() => openDatabase(path).close()).toThrow(
+        "fixture retirement refusal; preserve schema 15",
+      );
       expect(snapshotVersion(path)).toBe("15");
       expect(snapshotVersion(`${path}.pre-v16.bak`)).toBe("15");
       expect(existsSync(`${path}.pre-v19.bak`)).toBeFalse();
