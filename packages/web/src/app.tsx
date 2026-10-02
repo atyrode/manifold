@@ -1,7 +1,7 @@
 import { WORKSPACE_OVERLAY_SLOTS, WorkspaceOverlayOutlet } from "@manifold/plugin/hooks";
 import { parseManifoldUri, ROUTE_SEGMENT_PATTERN, type ManifoldRef } from "@manifold/protocol";
 import { useCallback, useEffect, useState, type ReactElement } from "react";
-import type { StoredIdentity } from "./api.ts";
+import type { StoredIdentity } from "./identity-storage.ts";
 import { WorkspaceHost } from "./workspace.tsx";
 import {
   HostServicesGate,

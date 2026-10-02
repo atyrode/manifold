@@ -78,16 +78,15 @@ export class ServiceFailure extends Error {
   }
 }
 
-/** Borrow only descriptors safely opened by HeldDirectory.openFile under an owner-private
- * directory. Positional bounded reads never reopen a pathname or consume the owner's offset.
- * The owner keeps descriptors open for the lifetime of this resolver, and owns closing them. */
+/** Resolve a live owner-held slot, then read it entirely synchronously. Positional bounded reads
+ * never reopen a pathname or consume the owner's offset. Because no read crosses an await, the
+ * registry may switch its current slot and synchronously close the old fd without leases. */
 export function heldServiceCredentialResolver(
-  descriptors: ReadonlyMap<string, number>,
+  currentDescriptor: (ref: string) => number | undefined,
 ): ResolveServiceCredential {
-  const held = new Map(descriptors);
   return async (ref, signal) => {
     signal.throwIfAborted();
-    const fd = held.get(ref);
+    const fd = currentDescriptor(ref);
     if (fd === undefined) throw new ServiceFailure("service_credential_unavailable");
     const before = fstatSync(fd, { bigint: true });
     if (

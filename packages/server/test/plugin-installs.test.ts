@@ -875,4 +875,71 @@ describe("GET /api/plugins/:id/web.js", () => {
     ).toEqual({ ok: true, result: {} });
     expect((await fetch(moduleUrl, { headers })).status).toBe(404);
   });
+
+  test("private static routes do not capture installed credential-entry plugin APIs", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "manifold-private-api-"));
+    temporaryDirectories.push(cwd);
+    const config = loadConfig(
+      {
+        MANIFOLD_PORT: "0",
+        MANIFOLD_DATA_DIR: "data",
+        MANIFOLD_OWNER_KEY: OWNER_KEY,
+        MANIFOLD_SPAWN_AGENT: "0",
+      },
+      cwd,
+    );
+    const id = "credential-entry.example";
+    const web = "export const panel = 'ordinary installed plugin';";
+    const bytes = bundleBytes(
+      { ...MANIFEST, id },
+      {
+        "web.js": web,
+        "server.js": `
+          import { z } from ${JSON.stringify(import.meta.resolve("zod"))};
+          const { defineAction } = globalThis[Symbol.for("manifold.shared")]["@manifold/plugin"];
+          export default {
+            actions: [defineAction({
+              name: "increment", title: "Increment counter", caps: ["containers:read"],
+              input: z.strictObject({}), result: z.strictObject({ count: z.number().int() }),
+            })],
+            handlers: { async increment(ctx) {
+              const count = Number(await ctx.storage.get("count") ?? "0") + 1;
+              await ctx.storage.set("count", String(count));
+              return { count };
+            } },
+          };
+        `,
+      },
+    );
+    const uploads = join(config.dataDir, PLUGIN_UPLOADS_DIR);
+    mkdirSync(uploads, { recursive: true });
+    const source = join(uploads, "private-api.manifold-plugin.json");
+    writeFileSync(source, bytes);
+    const running = await startServer({ config, logger: silentLogger, announce: false });
+    runningServers.push(running);
+    const headers = { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" };
+    const door = async (name: string, body: unknown) => {
+      const response = await fetch(`${running.publicUrl}/api/actions/${name}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
+      return ActionOutcomeSchema.parse(await response.json());
+    };
+    expect(
+      await door("engine.plugins.install", { source, sha256: sha256Hex(bytes) }),
+    ).toMatchObject({
+      ok: true,
+      result: { id },
+    });
+    const moduleUrl = `${running.publicUrl}/api/plugins/${id}/web.js`;
+    const served = await fetch(moduleUrl, { headers });
+    expect(served.status).toBe(200);
+    expect(await served.text()).toBe(web);
+    expect((await fetch(moduleUrl)).status).toBe(401);
+    expect(await door(`${id}.increment`, {})).toEqual({ ok: true, result: { count: 1 } });
+    expect(await door(`${id}.increment`, {})).toEqual({ ok: true, result: { count: 2 } });
+  }, 30_000);
 });

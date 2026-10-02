@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import {
-  canonicalJobJson,
   MachineArtifactSchema,
   MachineLocationSchema,
   MachineOperationSchema,
@@ -25,6 +24,7 @@ import {
   type PublicJob,
   type PublicScheduleOccurrence,
 } from "../src/jobs.ts";
+import { canonicalJobJson } from "../src/canonical-json.ts";
 import { JobDeploymentRequestSchema } from "../src/job-deployments.ts";
 import { JobOwnerConfigSchema } from "../src/job-owner-config.ts";
 import { JobResourceInventorySchema, jobResourceRefusal } from "../src/job-resources.ts";

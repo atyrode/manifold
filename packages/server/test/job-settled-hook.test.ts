@@ -15,7 +15,7 @@ import {
   type JobOwner,
   type MachineHalf,
   type SettledJob,
-} from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
 import { defineAction, type JobSettledCtx, type PluginStorage } from "@manifold/plugin";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";

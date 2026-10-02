@@ -5,6 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./hooks": "./src/hooks.ts",
+    "./instance": "./src/instance.ts",
+    "./private-entry": "./src/private-entry.ts",
     "./portable-hooks": "./src/portable-hooks.ts",
     "./ui": "./src/ui/index.ts"
   },

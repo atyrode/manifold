@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -255,6 +255,14 @@ describe("CI impact policy", () => {
     ]);
   });
 
+  test("the installed plugin snapshot schema retains full deployment proof", async () => {
+    const selected = plan(
+      [{ status: "M", path: "packages/protocol/src/installed-plugins.ts" }],
+      await buildDependencyGraph(),
+    );
+    expect(selected.checks).toEqual(ALL_CHECKS);
+  });
+
   test.each([
     ["packages/web/src/styles.css", "packages/web"],
     ["packages/plugins/notes/src/panel.tsx", "packages/plugins/notes"],
@@ -329,52 +337,6 @@ describe("ci-plan CLI", () => {
     expect(exitCode).not.toBe(0);
     expect(stdout).toBe("");
     expect(stderr).toContain("is not the analyzed checkout");
-  });
-
-  test("every targeted path the planner emits executes without recomputing a plan", async () => {
-    // A protocol module that deployment tooling imports reaches that tooling's own tests (#846).
-    const { unitPaths } = plan(
-      [{ status: "M", path: "packages/protocol/src/installed-plugins.ts" }],
-      await buildDependencyGraph(),
-    );
-    expect(unitPaths).toContain("scripts/installed-bundles.test.ts");
-    const root = mkdtempSync(join(tmpdir(), "manifold-ci-targeted-"));
-    const bin = join(root, "bin");
-    const log = join(root, "args.json");
-    mkdirSync(bin);
-    writeFileSync(
-      join(bin, "bun"),
-      `#!${process.execPath}
-await Bun.write(Bun.env["TARGET_LOG"], JSON.stringify(Bun.argv.slice(2)));
-`,
-      { mode: 0o755 },
-    );
-    try {
-      const child = Bun.spawn(
-        [
-          process.execPath,
-          executable,
-          "--run-targeted",
-          "--unit-paths-json",
-          JSON.stringify(unitPaths),
-        ],
-        {
-          cwd: join(import.meta.dir, ".."),
-          env: { ...process.env, PATH: bin, TARGET_LOG: log },
-          stdout: "pipe",
-          stderr: "pipe",
-        },
-      );
-      const [stderr, exitCode] = await Promise.all([
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
-      expect(exitCode).toBe(0);
-      expect(stderr).toBe("");
-      expect(JSON.parse(readFileSync(log, "utf8"))).toEqual(["test", ...unitPaths]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   test.each([

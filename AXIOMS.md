@@ -486,6 +486,14 @@ silently degrades. **A fork of the client is never the answer.** A shell that ne
 behavior contributes plugins; if it needs the lens itself to change, that is a change to the one
 lens every host shares.
 
+**Narrow private-entry exception (ADR 0059, ratified #768).** A host-owned separate browser
+document may collect and seal a credential only to the current proved native owner's
+ephemeral key. It loads no plugin code and uses the ordinary described and traced action
+ladder, current root authority and exact-machine configuration scope. Plugin management
+owns only metadata and the launch control; neither plugin service context nor the hub
+receives plaintext. This admits no general floor-owned service UI, alternate native
+transport, preferred provider, default plugin seat or relaxation of the portable lens.
+
 ### Growing the foundation
 
 Growing the foundation means **editing the pillar registry**, in the same commit as the code, with

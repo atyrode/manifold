@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css",
     "./frames": "./src/frames.ts"
   },
   "dependencies": {

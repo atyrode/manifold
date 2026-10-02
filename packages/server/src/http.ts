@@ -45,6 +45,13 @@ import {
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { composeDefaultLayout } from "@manifold/plugin";
+import {
+  CREDENTIAL_ENTRY_ASSETS_PREFIX,
+  CREDENTIAL_ENTRY_DOCUMENT_PATH,
+  CREDENTIAL_ENTRY_SECURITY_HEADERS,
+  privateCredentialEntryCsp,
+  privateCredentialEntryStaticPath,
+} from "@manifold/plugin/private-entry";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
@@ -89,6 +96,10 @@ function errorResponse(error: RequestError): Response {
   const body = HttpErrorSchema.parse({ error: { code: error.code, message: error.message } });
   return jsonResponse(body, STATUS_BY_CODE[error.code]);
 }
+
+const CREDENTIAL_ENTRY_ASSET_PATH = new RegExp(
+  `^${CREDENTIAL_ENTRY_ASSETS_PREFIX}[A-Za-z0-9_-][A-Za-z0-9._-]*$`,
+);
 
 /**
  * The cross-origin permission every door answers with, applied by {@link HttpApp.fetch} rather
@@ -364,6 +375,12 @@ export class HttpApp {
         ? new Response(null, { status: 204 })
         : await respond(url);
     response.headers.set("x-content-type-options", "nosniff");
+    if (privateCredentialEntryStaticPath(url.pathname)) {
+      for (const [name, value] of CREDENTIAL_ENTRY_SECURITY_HEADERS) {
+        response.headers.set(name, value);
+      }
+      response.headers.set("content-security-policy", privateCredentialEntryCsp(url.origin));
+    }
     // Callback documents deliberately carry the stricter no-referrer policy.
     if (!response.headers.has("referrer-policy")) {
       response.headers.set("referrer-policy", "strict-origin-when-cross-origin");
@@ -452,6 +469,9 @@ export class HttpApp {
         );
       }
       if (url.pathname.startsWith("/api")) return await this.api(request, url.pathname);
+      if (privateCredentialEntryStaticPath(url.pathname)) {
+        return this.credentialEntryFile(request, url.pathname);
+      }
       if (
         request.method === "GET" &&
         !url.pathname.startsWith("/ws") &&
@@ -1042,6 +1062,27 @@ export class HttpApp {
         return { exists: false, title: null };
       }
     }
+  }
+
+  private credentialEntryFile(request: Request, pathname: string): Response {
+    const document = pathname === CREDENTIAL_ENTRY_DOCUMENT_PATH;
+    const asset = CREDENTIAL_ENTRY_ASSET_PATH.test(pathname) && !pathname.endsWith(".html");
+    if ((request.method !== "GET" && request.method !== "HEAD") || (!document && !asset)) {
+      throw new RequestError("not_found", "private credential entry route not found");
+    }
+    const candidate = resolve(this.config.webDist, `.${pathname}`);
+    try {
+      if (statSync(candidate).isFile()) {
+        const file = Bun.file(candidate);
+        return new Response(request.method === "HEAD" ? null : file, {
+          headers: { "content-type": file.type },
+        });
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || Reflect.get(error, "code") !== "ENOENT") throw error;
+    }
+    // Never substitute the plugin shell, including during an incomplete/missing deployment.
+    throw new RequestError("not_found", "private credential entry is not built");
   }
 
   private staticFile(pathname: string): Response {

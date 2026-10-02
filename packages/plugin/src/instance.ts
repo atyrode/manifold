@@ -112,6 +112,14 @@ export function instanceOrigin(): string {
 }
 
 /**
+ * Read the device's already selected hub without consuming a URL choice or mutating storage.
+ * A private credential document must never bearer-discover at a query-provided destination.
+ */
+export function selectedInstanceOrigin(): string {
+  return chooseInstance(window.location.origin, storedInstance(), null).origin;
+}
+
+/**
  * Whether this lens is pointed somewhere other than the instance that served it. Read by the
  * floor to SAY so — a device looking at a foreign instance is a fact a human is owed, not a
  * behavioural branch: every door works identically either way.

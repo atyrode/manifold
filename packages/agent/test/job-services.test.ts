@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { closeSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createTCPServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import type {
 } from "@manifold/protocol";
 import { createJobServiceRunner, heldServiceCredentialResolver } from "../src/job-services.ts";
 import { HeldDirectory } from "../src/job-files.ts";
+import { HeldServiceCredentialRegistry } from "../src/job-credentials.ts";
 import { JobResources } from "../src/job-resources.ts";
 import { connectWorkloadLoopback } from "../src/job-listener-proof.ts";
 
@@ -701,8 +702,9 @@ test("held credential reads remain positional, bounded and owner-private without
   const path = mkdtempSync(join(tmpdir(), "service-credential-"));
   writeFileSync(join(path, "key"), "test-only-key\n", { mode: 0o600 });
   const directory = HeldDirectory.openAbsolute(path, { private: true });
-  const fd = directory.openFile("key");
-  const resolver = heldServiceCredentialResolver(new Map([["key", fd]]));
+  const sources = new HeldServiceCredentialRegistry();
+  sources.declare("key", directory, "key", ["https://service.invalid"]);
+  const resolver = heldServiceCredentialResolver((ref) => sources.currentDescriptor(ref));
   const signal = new AbortController().signal;
   try {
     expect(await resolver("key", signal)).toBe("test-only-key");
@@ -717,8 +719,7 @@ test("held credential reads remain positional, bounded and owner-private without
     rmSync(join(path, "key"));
     await expect(resolver("key", signal)).rejects.toThrow("service_credential_unavailable");
   } finally {
-    closeSync(fd);
-    directory.close();
+    sources.close();
     rmSync(path, { recursive: true, force: true });
   }
 });

@@ -43,13 +43,18 @@ export async function listenJobOwner(
   const path = `${directory.procPath}/${name}`;
   await reclaimStaleSocket(path);
   const connections = new Set<Bun.Socket<OwnerConnection>>();
+  const disconnect = (socket: Bun.Socket<OwnerConnection>): void => {
+    socket.data.closed = true;
+    socket.data.detach();
+    socket.end();
+  };
   const server = Bun.listen<OwnerConnection>({
     unix: path,
     socket: {
       open(socket) {
         const state: OwnerConnection = {
           reader: new FrameReader(MAX_FRAME),
-          writer: new FrameWriter(socket, () => socket.end(), MAX_QUEUE),
+          writer: new FrameWriter(socket, () => disconnect(socket), MAX_QUEUE),
           detach: () => {},
           pending: 0,
           closed: false,
@@ -78,13 +83,13 @@ export async function listenJobOwner(
             if (state.pending > MAX_QUEUE) throw new Error("owner_command_queue_limit");
             void owner
               .execute(command)
-              .catch(() => socket.end())
+              .catch(() => disconnect(socket))
               .finally(() => {
                 state.pending -= count;
               });
           }
         } catch {
-          socket.end();
+          disconnect(socket);
         }
       },
       drain(socket) {
@@ -96,7 +101,7 @@ export async function listenJobOwner(
         connections.delete(socket);
       },
       error(socket) {
-        socket.end();
+        disconnect(socket);
       },
     },
   });
@@ -105,7 +110,7 @@ export async function listenJobOwner(
     stop() {
       if (stopped) return;
       stopped = true;
-      for (const socket of connections) socket.end();
+      for (const socket of connections) disconnect(socket);
       try {
         server.stop(true);
       } finally {

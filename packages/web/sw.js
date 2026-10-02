@@ -62,6 +62,15 @@ const SHELL_DOCUMENT = "/index.html";
 
 const ASSETS = new Set(SHELL.assets);
 
+/** Reserved private document and physical/encoded aliases never enter a shell cache path. */
+function privateCredentialPath(pathname) {
+  // The server rejects these spellings; offline they must not become shell navigations either.
+  const decoded = pathname.replace(/%(?:25)*([0-9a-f]{2})/gi, (_escape, hex) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+  return decoded.split(/[/\\]+/).some((part) => part.toLowerCase().startsWith("credential-entry"));
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
@@ -87,17 +96,22 @@ self.addEventListener("activate", (event) => {
 });
 
 /**
- * THE HANDOVER, and it has to be asked for. A reload alone does NOT release a registration —
- * the reloading tab is still a client of it — so a waiting generation would sit there until every
- * tab closed, which is a browser pinned to an old lens by a different route. The page therefore
- * says "stop waiting" and reloads when control changes (`lens.tsx`).
- *
- * ANY message means that, because there is exactly one thing a page has to tell this worker and a
- * name both programs must spell identically is a join nothing checks. A second message would need
- * a discriminator, and this comment is where it goes.
+ * Update activation remains the ordinary explicit, user-driven null message from lens.tsx.
+ * A private launcher asks the CURRENT controller for bypass support over a fresh MessagePort;
+ * that query must never activate a waiting generation or transfer any credential material.
  */
-self.addEventListener("message", () => {
-  void self.skipWaiting();
+self.addEventListener("message", (event) => {
+  if (event.data === null) {
+    void self.skipWaiting();
+    return;
+  }
+  if (event.data?.type === "manifold.private-credential-bypass" && event.data.version === 1) {
+    event.ports[0]?.postMessage({
+      type: "manifold.private-credential-bypass",
+      version: 1,
+      supported: true,
+    });
+  }
 });
 
 async function shellDocument(request) {
@@ -135,6 +149,11 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   // A door is never the shell's business, whichever verb it is dialed with.
   const { pathname } = url;
+  // Before EVERY navigation/asset-cache branch: no substitution, read, write or offline shell.
+  if (privateCredentialPath(pathname)) {
+    event.respondWith(fetch(new Request(request, { cache: "no-store" })));
+    return;
+  }
   if (pathname === "/healthz" || pathname.startsWith("/api") || pathname.startsWith("/ws")) return;
   if (request.mode === "navigate") {
     event.respondWith(shellDocument(request));

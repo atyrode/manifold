@@ -1853,3 +1853,61 @@ button.plugin-manager-chip:disabled {
 .plugin-manager-update-actions .plugin-manager-filter:disabled {
   cursor: not-allowed;
 }
+
+/* Machine-wide safe metadata and launch only; no credential-value control belongs here. */
+.plugin-manager-credentials {
+  min-width: 0;
+  margin: 0.25rem;
+  padding: 0.65rem;
+  border: 1px solid #495057;
+  border-radius: 0.45rem;
+  background: #1d2025;
+  color: #dee2e6;
+  font-size: 0.75rem;
+}
+
+.plugin-manager-credentials h3,
+.plugin-manager-credentials p {
+  margin: 0;
+}
+
+.plugin-manager-credentials p {
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-credential-list {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.plugin-manager-credential-list > li,
+.plugin-manager-credential-list ul > li {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.45rem;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-credential-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-manager-credential-list span {
+  color: #adb5bd;
+}
+
+.plugin-manager-credential-list a {
+  justify-self: start;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid #748ffc;
+  border-radius: 0.3rem;
+  color: #a5d8ff;
+}
+
+.plugin-manager-credential-list a:focus-visible {
+  outline: 2px solid #a5d8ff;
+  outline-offset: 2px;
+}

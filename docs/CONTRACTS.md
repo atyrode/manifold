@@ -102,6 +102,62 @@ Owner keys and tokens never appear in logs, URLs, errors or committed files; the
 fragment `#key=` is the one allowed URL carrier, under the opt-in
 [runtime contract](#runtime-contracts). It is not permission to disclose a key-bearing URL.
 
+#### Private credential entry
+
+The narrow host-only document in [ADR 0059](decisions/0059-private-credential-entry.md)
+loads no plugin code and seals at most16,384 bytes using the shared RFC9180 P-256/HKDF-SHA256/
+AES-256-GCM mechanism. The current proved native owner's nonextractable recipient is
+memory-only per incarnation; its public metadata is signed on `JobOwner`, not substituted
+through resource announcements. Session/machine55 and owner45 describe this mode;
+older compatible owners and spokes retain ordinary jobs and external-file provisioning.
+
+Root and exact-machine `services:configure` are checked from the original current credential
+at prepare, submission and the final native publication fence. The authenticated context
+binds key/format, machine, owner/generation, server epoch/proof challenge, request identity,
+declared reference/exact origin, one owner-created nonce/expiry, explicit replacement and
+an opaque source revision. Hub relay is transient ciphertext-only. Traces are opaque,
+recording safe status/refusal rather than value, envelope, path or library diagnostics.
+Draining retires pending offers and authorizations without discarding the attached channel's
+proof; admission remains closed until resume. A current proof received while draining can be
+used after resume without reconnecting. Disconnect, proof replacement and owner close still
+retire that authority.
+Only declared sources under retained directory capabilities can be enrolled. Initial
+publication is kernel-exclusive. Explicit replacement compares the owner-local opaque source
+revision under a shared-source mutation lock, publishes the validated staged read-only inode,
+then switches every live resolver to its new descriptor before closing the old one. References
+to the same held parent identity and leaf share this slot and revision, while retaining their
+independently declared origins and parent write restrictions. Native owner-private OS writers
+are trusted: this is enrollment-state CAS, not an expected-inode
+kernel CAS against a hostile same-UID writer. Unsafe/root-managed/read-only parents gain
+neither write authority nor an alternate credential store.
+
+The document isolates the entry DOM and module graph from ordinary plugin execution;
+it does not turn already trusted same-origin in-realm code, shared browser storage or a
+compromised origin/service worker into an untrusted security domain. No value accessor or
+enrollment method is added to plugin service context. Private documents/assets are not
+offline shell content, and opening one must not expose its DOM through a parent opener.
+The metadata launcher consumes instance selection and the bypass guard through the sanctioned
+`@manifold/plugin/hooks` browser API. The private document imports their independent narrow
+entries directly, never the hooks barrel or its ordinary plugin/UI graph.
+Both the current controller and the active registration covering the destination must prove
+private document/asset bypass before the metadata launcher opens entry; an uncontrolled
+launcher is not proof that its new tab has no active worker. Unsupported workers fail closed
+and direct the operator to ordinary user-driven activation, never activate an update here.
+The accepted controller/registration incarnations are checked at launch and action boundaries;
+their state changes clear and retire entry. This does not isolate against trusted same-origin
+code creating a different registration after negotiation. A page with neither a controller nor
+an active destination registration may use the ordinary network-only document route. Private
+entry never treats an offline cached plugin shell as its document.
+
+Production and Vite development serve the same independent bundled private graph and privacy
+headers; private routes have no plugin-shell, source/HMR or missing-resource fallback. Static
+aliases are reserved without capturing authenticated plugin API namespaces. Input limits
+validate the complete UTF-8 value before sealing, rather than truncating a pasted prefix.
+The metadata launcher follows live workspace-root authority, including from the index with no
+mounted container; room `selfCaps()` cannot authorize or hide this machine-wide entry. Protocol
+discovery uses the SDK runner's bounded 16 MiB response ceiling, separately from the 1 MiB
+action-response ceiling and 16,384-byte credential-value limit.
+
 ### Dependency decisions
 
 No new runtime dependency without a dated entry in `docs/decisions/` justifying it against

@@ -11,20 +11,11 @@ import {
   PreviewIdentityNonceResponseSchema,
   type Container,
   type Attendance,
-  type Principal,
   type TileLayout,
 } from "@manifold/protocol";
 import { requestJson } from "./http.ts";
 import { ACCESS_CREATE_PRINCIPAL_ACTION, INDEX_READ_CONTAINER_ACTION } from "./assembly.ts";
-
-/** The browser persists only the bearer token and stable identity it needs after bootstrap. */
-export interface StoredIdentity {
-  readonly token: string;
-  readonly principal: Principal;
-  readonly expiresInMs?: number;
-  readonly receivedAt?: number;
-  readonly expiresAt?: number;
-}
+import type { StoredIdentity } from "./identity-storage.ts";
 
 function fieldFromObject(body: unknown, field: string): unknown {
   if (body === null || typeof body !== "object") {

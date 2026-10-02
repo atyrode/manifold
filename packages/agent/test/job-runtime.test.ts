@@ -22,29 +22,101 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lockExclusive } from "../src/job-files.ts";
+import type { ServiceCredentialEnrollmentPrepareReply } from "@manifold/protocol";
 
 // Each opening runs in a subprocess so refused startup descriptors and module
 // spies cannot leak into another test. Only cgroup recovery is replaced; the
 // credential, private listener and filesystem state belong entirely to the fixture.
 const openFixture = `
   import { spyOn } from "bun:test";
+  import { createPublicKey, randomUUID, verify } from "node:crypto";
+  import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+  import { canonicalJobJson } from "@manifold/protocol";
   import * as linux from ${JSON.stringify(new URL("../src/job-linux.ts", import.meta.url).href)};
   import { openConfiguredJobOwner } from ${JSON.stringify(new URL("../src/job-runtime.ts", import.meta.url).href)};
   import { listenJobOwner } from ${JSON.stringify(new URL("../src/job-owner-link.ts", import.meta.url).href)};
   spyOn(linux, "recoverLinuxJobs").mockResolvedValue(undefined);
-  const [root, uid] = process.argv.slice(1);
+  const [root, uid, mode] = process.argv.slice(1);
   if (uid !== "") process.setuid(Number(uid));
   try {
     const owner = await openConfiguredJobOwner(
       root + "/config/owner.json", root + "/socket/owner.sock", root + "/terminal/host.sock",
     );
     const generation = owner.identity.generation;
+    let reply;
+    let metadata;
+    let detach;
+    const firstIdentity = owner.identity;
+    if (mode === "prepare" || mode === "metadata") {
+      const config = JSON.parse(readFileSync(root + "/config/owner.json", "utf8"));
+      const events = [];
+      detach = owner.attach(event => { events.push(event); return true; });
+      const nonce = randomUUID();
+      await owner.execute({
+        type: "owner_challenge", nonce, serverEpoch: "fixture-epoch",
+        machineId: config.machineId, admissionPublicKey: config.admissionPublicKey,
+      });
+      if (mode === "prepare") {
+        await owner.execute({
+          type: "credential_enrollment_prepare", requestId: randomUUID(),
+          serverEpoch: "fixture-epoch", ownerChallenge: nonce, machineId: config.machineId,
+          credentialRef: "fixture", origin: "https://service.invalid", replace: true,
+        });
+        reply = events.find(event => event.type === "credential_enrollment_prepared").reply;
+      } else {
+        const proof = events.find(event => event.type === "owner_proof");
+        const body = {
+          nonce: proof.nonce, serverEpoch: proof.serverEpoch, machineId: proof.machineId,
+          owner: proof.owner,
+        };
+        const check = owner => verify(null, Buffer.from(canonicalJobJson({ ...body, owner })),
+          createPublicKey(firstIdentity.publicKey), Buffer.from(proof.signature, "base64"));
+        metadata = {
+          proofVerified: check(body.owner),
+          alteredKeyRefused: !check({
+            ...body.owner, credentialEnrollment: { ...body.owner.credentialEnrollment, keyId: "f".repeat(64) },
+          }),
+          repeatedIdentityKeyStable:
+            canonicalJobJson(firstIdentity.credentialEnrollment) === canonicalJobJson(owner.identity.credentialEnrollment),
+        };
+      }
+      detach();
+    }
     const listener = await listenJobOwner(owner, root + "/socket/owner.sock");
     await owner.shutdown();
     listener.stop();
-    console.log(JSON.stringify({ generation }));
+    if (mode === "metadata") {
+      const restarted = await openConfiguredJobOwner(
+        root + "/config/owner.json", root + "/socket/owner.sock", root + "/terminal/host.sock",
+      );
+      metadata = {
+        ...metadata,
+        durableIdentityStable:
+          restarted.identity.ownerId === firstIdentity.ownerId && restarted.identity.publicKey === firstIdentity.publicKey,
+        generationAdvanced: restarted.identity.generation === firstIdentity.generation + 1,
+        recipientRotated: restarted.identity.credentialEnrollment.keyId !== firstIdentity.credentialEnrollment.keyId,
+      };
+      await restarted.shutdown();
+    }
+    console.log(JSON.stringify({
+      generation,
+      ...(mode === "prepare" ? { reply, references: firstIdentity.resources.credentialReferences } : {}),
+      ...(mode === "metadata" ? { metadata } : {}),
+    }));
   } catch (error) {
-    console.log(JSON.stringify({ error: error.message, code: error.code }));
+    let heldSourceDescriptors;
+    if (mode === "unwind") {
+      heldSourceDescriptors = 0;
+      for (const name of readdirSync("/proc/self/fd")) {
+        try {
+          if (readlinkSync("/proc/self/fd/" + name).startsWith(root + "/source")) heldSourceDescriptors++;
+        } catch {}
+      }
+    }
+    console.log(JSON.stringify({
+      error: error.message, code: error.code,
+      ...(mode === "unwind" ? { heldSourceDescriptors } : {}),
+    }));
   }
 `;
 
@@ -57,6 +129,9 @@ type FixtureOptions = {
   symlink?: "file" | "parent";
   exposedDirectory?: "config" | "state" | "socket" | "terminal";
   hardlinks?: "runtime" | "bubblewrap" | "credential";
+  missing?: "leaf" | "parent";
+  mode?: "prepare" | "metadata" | "unwind";
+  missingBubblewrap?: boolean;
 };
 
 function openCredentialFixture(options: FixtureOptions = {}) {
@@ -77,6 +152,8 @@ function openCredentialFixture(options: FixtureOptions = {}) {
       linkSync(source, join(root, "source", "credential-alias"));
     const original = lstatSync(source);
     let reference = source;
+    if (options.missing === "leaf") reference = join(root, "source", "missing");
+    if (options.missing === "parent") reference = join(root, "absent", "missing");
     if (options.symlink === "file") {
       reference = join(root, "source", "link");
       symlinkSync(source, reference);
@@ -105,7 +182,7 @@ function openCredentialFixture(options: FixtureOptions = {}) {
           .toString(),
         stateDirectory: join(root, "state"),
         delegatedCgroup: join(root, "cgroup"),
-        bubblewrap,
+        bubblewrap: options.missingBubblewrap ? join(root, "absent-bubblewrap") : bubblewrap,
         protectedDirectories: [],
         anchors: {},
         runtimeTools:
@@ -126,17 +203,38 @@ function openCredentialFixture(options: FixtureOptions = {}) {
     chmodSync(join(root, "source"), options.parentMode ?? 0o755);
     const originalParent = lstatSync(join(root, "source"));
     const child = Bun.spawnSync(
-      [process.execPath, "-e", openFixture, root, String(options.runnerUid ?? "")],
+      [
+        process.execPath,
+        "-e",
+        openFixture,
+        root,
+        String(options.runnerUid ?? ""),
+        options.mode ?? "",
+      ],
       {
+        cwd: import.meta.dir,
         stdout: "pipe",
         stderr: "pipe",
         timeout: 10_000,
       },
     );
     expect(child.exitCode, child.stderr.toString()).toBe(0);
-    const result: { generation?: number; error?: string; code?: string } = JSON.parse(
-      child.stdout.toString(),
-    );
+    const result: {
+      generation?: number;
+      error?: string;
+      code?: string;
+      reply?: ServiceCredentialEnrollmentPrepareReply;
+      references?: Array<{ ref: string; origins: string[]; available: boolean }>;
+      heldSourceDescriptors?: number;
+      metadata?: {
+        proofVerified: boolean;
+        alteredKeyRefused: boolean;
+        repeatedIdentityKeyStable: boolean;
+        durableIdentityStable: boolean;
+        generationAdvanced: boolean;
+        recipientRotated: boolean;
+      };
+    } = JSON.parse(child.stdout.toString());
     // Opening must retain the original private source, not chmod, copy or relocate it.
     const retainedParent = lstatSync(join(root, "source"));
     expect([
@@ -165,6 +263,63 @@ function openCredentialFixture(options: FixtureOptions = {}) {
 describe.skipIf(process.platform !== "linux")("native credential source opening", () => {
   test("accepts a private credential in its existing traversable user-owned parent", () => {
     expect(openCredentialFixture()).toEqual({ generation: 1 });
+  });
+
+  test("a held private parent with missing declared leaf remains unavailable but enrollable", () => {
+    const result = openCredentialFixture({ missing: "leaf", parentMode: 0o700, mode: "prepare" });
+    expect(result.references).toEqual([
+      { ref: "fixture", origins: ["https://service.invalid"], available: false },
+    ]);
+    expect(result.reply).toMatchObject({
+      kind: "prepared",
+      challenge: { context: { sourceRevision: null, credentialRef: "fixture" } },
+    });
+  });
+
+  test("a missing declared parent refuses bootstrap rather than creating fallback storage", () => {
+    expect(openCredentialFixture({ missing: "parent" })).toMatchObject({ code: "ENOENT" });
+  });
+
+  test.each([0o755, 0o500])(
+    "mode %o parents retain read access but refuse enrollment",
+    (parentMode) => {
+      const result = openCredentialFixture({ parentMode, mode: "prepare" });
+      expect(result.references).toEqual([
+        { ref: "fixture", origins: ["https://service.invalid"], available: true },
+      ]);
+      expect(result.reply).toEqual({ kind: "refused", reason: "credential_source_read_only" });
+    },
+  );
+
+  test.skipIf(process.getuid?.() !== 0)(
+    "root-managed private parents never gain enrollment authority",
+    () => {
+      const result = openCredentialFixture({
+        runnerUid: 65534,
+        parentUid: 0,
+        parentMode: 0o755,
+        mode: "prepare",
+      });
+      expect(result.reply).toEqual({ kind: "refused", reason: "credential_source_read_only" });
+    },
+  );
+
+  test("a later bootstrap failure closes every held source descriptor and parent", () => {
+    expect(openCredentialFixture({ missingBubblewrap: true, mode: "unwind" })).toMatchObject({
+      code: "ENOENT",
+      heldSourceDescriptors: 0,
+    });
+  });
+
+  test("the signed owner binds immutable recipient metadata, rotating it independently of durable identity", () => {
+    expect(openCredentialFixture({ mode: "metadata" }).metadata).toEqual({
+      proofVerified: true,
+      alteredKeyRefused: true,
+      repeatedIdentityKeyStable: true,
+      durableIdentityStable: true,
+      generationAdvanced: true,
+      recipientRotated: true,
+    });
   });
 
   test("opens a private credential without directory-listing authority", () => {
@@ -290,6 +445,7 @@ function withScratchRoot(body: (root: string) => void): void {
 }
 function startOwner(root: string): { generation?: number; error?: string; code?: string } {
   const child = Bun.spawnSync([process.execPath, "-e", openFixture, root, ""], {
+    cwd: import.meta.dir,
     stdout: "pipe",
     stderr: "pipe",
     timeout: 10_000,

@@ -6361,6 +6361,35 @@ describe("registered native service doors", () => {
             ],
           },
         ],
+        [
+          "engine.services.prepareCredentialEnrollment",
+          {
+            machineId: "machine",
+            credentialRef: "private-reference",
+            origin: "https://example.invalid",
+            replace: true,
+            plaintext: "never-persist-value",
+          },
+        ],
+        [
+          "engine.services.commitCredentialEnrollment",
+          {
+            machineId: "machine",
+            envelope: {
+              context: { credentialRef: "private-reference", nonce: "never-persist-nonce" },
+              enc: "never-persist-encapsulation",
+              ciphertext: "never-persist-ciphertext",
+            },
+          },
+        ],
+        [
+          "engine.services.cancelCredentialEnrollment",
+          {
+            machineId: "machine",
+            requestId: "never-persist-request",
+            nonce: "never-persist-nonce",
+          },
+        ],
       ] as const) {
         const outcome = await fixture.host.dispatch(fixture.owner, door, args);
         expect(denial(outcome).rule).toBe("invalid_args");

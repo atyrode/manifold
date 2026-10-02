@@ -10,6 +10,12 @@ import {
   ServiceProxyOperationPolicySchema,
   ServiceOperationPolicySchema,
   ServicePolicySchema,
+  ServiceCredentialEnrollmentPrepareArgsSchema,
+  ServiceCredentialEnrollmentPrepareReplySchema,
+  ServiceCredentialEnrollmentCommitArgsSchema,
+  ServiceCredentialEnrollmentCommitReplySchema,
+  ServiceCredentialEnrollmentCancelArgsSchema,
+  ServiceCredentialEnrollmentCancelReplySchema,
 } from "@manifold/protocol";
 import {
   InstanceServiceTargetSchema,
@@ -43,6 +49,9 @@ export const serviceDoorSchemas = {
   configureInstance: ConfigureInstanceServiceArgsSchema,
   readInstance: InstanceServiceReadArgsSchema,
   invokeInstance: InstanceServiceInvokeArgsSchema,
+  prepareCredentialEnrollment: ServiceCredentialEnrollmentPrepareArgsSchema,
+  commitCredentialEnrollment: ServiceCredentialEnrollmentCommitArgsSchema,
+  cancelCredentialEnrollment: ServiceCredentialEnrollmentCancelArgsSchema,
 };
 const description: z.ZodType<ServiceDescription> = z.strictObject({
   machineId: ServiceReadArgsSchema.shape.machineId,
@@ -152,7 +161,8 @@ async function call(run: () => unknown, accounting = false) {
   }
 }
 
-export const serviceDoors: ServerPluginDef = {
+/** Static declarations are also the axiom verifier's authoritative builtin metadata input. */
+export const serviceDoorMetadata: Pick<ServerPluginDef, "manifest" | "actions"> = {
   manifest: {
     id: "engine.services",
     version: "1.0.0",
@@ -170,6 +180,9 @@ export const serviceDoors: ServerPluginDef = {
         "configureConfiguration",
         "readInstanceConfiguration",
         "configureInstance",
+        "prepareCredentialEnrollment",
+        "commitCredentialEnrollment",
+        "cancelCredentialEnrollment",
       ].includes(name)
         ? ["*"]
         : [],
@@ -177,47 +190,108 @@ export const serviceDoors: ServerPluginDef = {
       trace: "opaque",
       input,
       result:
-        name === "describe"
-          ? description
-          : name === "readConfiguration"
-            ? ServiceConfigurationReadSchema
-            : name === "configureConfiguration"
-              ? ServiceConfigurationSchema
-              : name === "describeInstance" || name === "configureInstance"
-                ? InstanceServiceDescriptionSchema
-                : name === "listInstances"
-                  ? InstanceServicesDescriptionSchema
-                  : name === "readInstanceConfiguration"
-                    ? InstanceServiceConfigurationReadSchema
-                    : ServiceReplySchema,
+        name === "prepareCredentialEnrollment"
+          ? ServiceCredentialEnrollmentPrepareReplySchema
+          : name === "commitCredentialEnrollment"
+            ? ServiceCredentialEnrollmentCommitReplySchema
+            : name === "cancelCredentialEnrollment"
+              ? ServiceCredentialEnrollmentCancelReplySchema
+              : name === "describe"
+                ? description
+                : name === "readConfiguration"
+                  ? ServiceConfigurationReadSchema
+                  : name === "configureConfiguration"
+                    ? ServiceConfigurationSchema
+                    : name === "describeInstance" || name === "configureInstance"
+                      ? InstanceServiceDescriptionSchema
+                      : name === "listInstances"
+                        ? InstanceServicesDescriptionSchema
+                        : name === "readInstanceConfiguration"
+                          ? InstanceServiceConfigurationReadSchema
+                          : ServiceReplySchema,
     }),
   ),
-  handlers: {
-    describe: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
-      call(() => ctx.services.describe(args)),
-    readConfiguration: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
-      call(() => ctx.services.readConfiguration(args)),
-    configureConfiguration: (
-      ctx: ActionCtx,
-      args: z.infer<typeof serviceDoorSchemas.configureConfiguration>,
-    ) => call(() => ctx.services.configureConfiguration(args)),
-    read: (ctx: ActionCtx, args: z.infer<typeof ServiceReadArgsSchema>) =>
-      call(() => ctx.services.read(args)),
-    invoke: (ctx: ActionCtx, args: z.infer<typeof ServiceInvokeArgsSchema>) =>
-      call(() => ctx.services.invoke(args), args.accounting !== undefined),
-    describeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceTargetSchema>) =>
-      call(() => ctx.services.describeInstance(args)),
-    listInstances: (ctx: ActionCtx, args: Record<string, never>) =>
-      call(() => ctx.services.listInstances(args)),
-    readInstanceConfiguration: (
-      ctx: ActionCtx,
-      args: z.infer<typeof InstanceServiceTargetSchema>,
-    ) => call(() => ctx.services.readInstanceConfiguration(args)),
-    configureInstance: (ctx: ActionCtx, args: z.infer<typeof ConfigureInstanceServiceArgsSchema>) =>
-      call(() => ctx.services.configureInstance(args)),
-    readInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
-      call(() => ctx.services.readInstance(args)),
-    invokeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceInvokeArgsSchema>) =>
-      call(() => ctx.services.invokeInstance(args), args.accounting !== undefined),
-  },
 };
+
+/** Enrollment is a host-only closure, not a PluginServiceContext or isolate bridge member. */
+export function createServiceDoors(
+  service: () => JobService | null,
+  signal?: AbortSignal,
+): ServerPluginDef {
+  return {
+    ...serviceDoorMetadata,
+    handlers: {
+      describe: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
+        call(() => ctx.services.describe(args)),
+      readConfiguration: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
+        call(() => ctx.services.readConfiguration(args)),
+      configureConfiguration: (
+        ctx: ActionCtx,
+        args: z.infer<typeof serviceDoorSchemas.configureConfiguration>,
+      ) => call(() => ctx.services.configureConfiguration(args)),
+      read: (ctx: ActionCtx, args: z.infer<typeof ServiceReadArgsSchema>) =>
+        call(() => ctx.services.read(args)),
+      invoke: (ctx: ActionCtx, args: z.infer<typeof ServiceInvokeArgsSchema>) =>
+        call(() => ctx.services.invoke(args), args.accounting !== undefined),
+      describeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceTargetSchema>) =>
+        call(() => ctx.services.describeInstance(args)),
+      listInstances: (ctx: ActionCtx, args: Record<string, never>) =>
+        call(() => ctx.services.listInstances(args)),
+      readInstanceConfiguration: (
+        ctx: ActionCtx,
+        args: z.infer<typeof InstanceServiceTargetSchema>,
+      ) => call(() => ctx.services.readInstanceConfiguration(args)),
+      configureInstance: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ConfigureInstanceServiceArgsSchema>,
+      ) => call(() => ctx.services.configureInstance(args)),
+      readInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
+        call(() => ctx.services.readInstance(args)),
+      invokeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceInvokeArgsSchema>) =>
+        call(() => ctx.services.invokeInstance(args), args.accounting !== undefined),
+      prepareCredentialEnrollment: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ServiceCredentialEnrollmentPrepareArgsSchema>,
+      ) => {
+        const jobs = service();
+        return jobs
+          ? jobs.prepareCredentialEnrollment(
+              ctx.credential,
+              args,
+              String(ctx.traceId),
+              ctx.authorityFence,
+              signal,
+            )
+          : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
+      },
+      commitCredentialEnrollment: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ServiceCredentialEnrollmentCommitArgsSchema>,
+      ) => {
+        const jobs = service();
+        return jobs
+          ? jobs.commitCredentialEnrollment(
+              ctx.credential,
+              args,
+              String(ctx.traceId),
+              ctx.authorityFence,
+            )
+          : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
+      },
+      cancelCredentialEnrollment: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ServiceCredentialEnrollmentCancelArgsSchema>,
+      ) => {
+        const jobs = service();
+        return jobs
+          ? jobs.cancelCredentialEnrollment(
+              ctx.credential,
+              args,
+              String(ctx.traceId),
+              ctx.authorityFence,
+            )
+          : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
+      },
+    },
+  };
+}

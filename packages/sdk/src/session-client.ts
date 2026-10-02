@@ -23,6 +23,8 @@ import {
   ResolveResponseSchema,
   TerminalsResponseSchema,
   TokenGrantSchema,
+  bytesToBase64,
+  textToBase64,
   placementContainerFor,
   placementRefusalRule,
   topicMatches,
@@ -84,7 +86,6 @@ import {
   writeElement,
   type ScenePatch,
 } from "@manifold/scene";
-import { bytesToBase64, textToBase64 } from "./base64.ts";
 import { invokeAction } from "./action-http.ts";
 import {
   acquireChannel,

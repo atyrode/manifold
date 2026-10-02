@@ -1576,6 +1576,41 @@ type OpenPanelOutcome =
     };
 ```
 
+Credential enrollment is not a plugin service-context method or a plugin form field.
+Plugin management may show declared reference/origin/availability metadata and open the
+host-owned separate private-entry document (ADR0059); no credential value or value accessor
+is passed into the plugin realm. That no-plugin document uses the ordinary discovered
+engine action ladder and seals directly to the current proved native owner. The hub sees
+only a bounded sealed envelope and safe outcome. This is not a general host-owned service
+management surface or a new default plugin seat.
+Tell the operator to open **Plugins → Native credential references**, select the native machine,
+then **Read credential references → Open private entry** beside the declared reference and
+approved use origin. In that separate page, **Prepare secure entry**, paste the value, and
+**Seal and store on native owner**. An existing value requires the explicit replacement
+checkbox before preparing. Do not put a credential input in the plugin's own panel.
+
+The metadata control follows current workspace-root authority, including when no container is
+open. It cannot grant enrollment authority: each ordinary action rechecks the original current
+credential and exact-machine `services:configure`. A plugin cannot invoke enrollment through
+`ctx.services`, obtain a value accessor, or use an undeclared reference as a new storage slot.
+
+Enrollment refusals are a closed protocol vocabulary, not provider/library error strings:
+
+| Condition                            | Named refusal                                                                                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Current authority or target          | `credential_unauthorized`, `credential_machine_unknown`, `credential_target_mismatch`                                                                               |
+| Owner presence and proof             | `credential_owner_offline`, `credential_owner_unproved`, `credential_owner_changed`                                                                                 |
+| Protocol and recipient key           | `credential_protocol_unsupported`, `credential_key_unavailable`, `credential_key_version_unsupported`, `credential_key_changed`                                     |
+| Declared reference and use origin    | `credential_reference_unknown`, `credential_origin_disallowed`                                                                                                      |
+| Held source and explicit replacement | `credential_already_held`, `credential_source_unavailable`, `credential_source_read_only`, `credential_source_changed`, `credential_source_invalid`                 |
+| Bounded single-use challenge         | `credential_enrollment_busy`, `credential_enrollment_expired`, `credential_enrollment_replayed`, `credential_enrollment_unknown`, `credential_enrollment_cancelled` |
+| Sealed input and native publication  | `credential_envelope_invalid`, `credential_value_invalid`, `credential_storage_failed`                                                                              |
+
+An uncertain transport outcome is separately `kind: "unknown"` with
+`credential_outcome_unknown`, never a false success or permission to resubmit. The private
+document clears the input on refusal, cancellation, expiry and lifecycle retirement. Inspect
+fresh reference metadata before a new attempt; replacement always needs an explicit decision.
+
 **A panel is opened FOR something** (ADR 0037, issue #516). `arg` is yours: an opaque record
 naming the subject of that tile — `{ kind: "record", id }` — stored on the leaf with the panel
 id, kept across reloads and rearrangements, and handed back byte for byte. The engine never

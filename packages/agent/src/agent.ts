@@ -1,5 +1,6 @@
 import {
   AGENT_TOOL_MAX_CALLS,
+  CREDENTIAL_ENROLLMENT_PENDING_LIMIT,
   DIAL_LIVENESS_TIMEOUT_MS,
   MAX_MACHINE_HELLO_TERMINALS,
   PROTOCOL_VERSION,
@@ -20,8 +21,24 @@ import type { AgentLogRecord, AgentLogSink } from "./log.ts";
 import type { TerminalHostDialer, TerminalHostLink } from "./terminal-host-link.ts";
 import type { JobOwnerDialer, JobOwnerLink } from "./job-owner-link.ts";
 import { RepositoryObserver } from "./repository.ts";
-import type { JobEvent } from "@manifold/protocol";
+import type { JobCommand, JobEvent, ServiceCredentialEnrollmentRefusal } from "@manifold/protocol";
 import { readPhysicalCoreCount, type MachineTopologyOptions } from "./machine-topology.ts";
+
+type CredentialEnrollmentCommand = Extract<
+  JobCommand,
+  {
+    type:
+      | "credential_enrollment_prepare"
+      | "credential_enrollment_commit"
+      | "credential_enrollment_cancel"
+      | "credential_enrollment_authorized";
+  }
+>;
+interface CredentialEnrollmentRelay {
+  socket: WebSocket;
+  owner: JobOwnerLink;
+  nonce: string | null;
+}
 
 /**
  * The manifold-agent's single machine-channel client — the TRANSPORT half of a machine
@@ -146,6 +163,8 @@ export class Agent {
   private jobOwnerDialing = false;
   private jobOwnerTimer: Timer | null = null;
   private readonly jobOutputGaps = new Set<string>();
+  /** Transient cancellation correlation only; never retain a command, envelope or value. */
+  private readonly credentialEnrollments = new Map<string, CredentialEnrollmentRelay>();
   private readonly agentCalls = new Map<
     string,
     {
@@ -239,6 +258,7 @@ export class Agent {
       clearTimeout(this.jobOwnerTimer);
       this.jobOwnerTimer = null;
     }
+    this.abortCredentialEnrollments();
     this.jobOwnerLink?.close();
     this.jobOwnerLink = null;
     if (this.reconnectTimer !== null) {
@@ -407,11 +427,13 @@ export class Agent {
     let closed = false;
     try {
       const link = await this.dialJobOwner({
-        onEvent: (event) => this.onJobEvent(event),
+        onEvent: (event) => this.onJobEvent(event, acquired),
         onClose: () => {
           closed = true;
           if (acquired && this.jobOwnerLink === acquired) {
             this.jobOwnerLink = null;
+            for (const [requestId, pending] of this.credentialEnrollments)
+              if (pending.owner === acquired) this.credentialEnrollments.delete(requestId);
             this.agentCalls.clear();
             this.socket?.close(4011, "job owner unavailable");
           }
@@ -442,8 +464,162 @@ export class Agent {
     }
   }
 
-  private onJobEvent(event: JobEvent): void {
+  private abortCredentialEnrollments(socket?: WebSocket): void {
+    for (const [requestId, pending] of this.credentialEnrollments) {
+      if (socket && pending.socket !== socket) continue;
+      this.credentialEnrollments.delete(requestId);
+      try {
+        pending.owner.send({
+          type: "credential_enrollment_cancel",
+          requestId,
+          nonce: pending.nonce,
+        });
+      } catch {
+        // A failed local cancellation must release the native seat rather than retain plaintext.
+        pending.owner.close();
+      }
+    }
+  }
+
+  private refuseCredentialEnrollment(
+    socket: WebSocket,
+    command: CredentialEnrollmentCommand,
+    reason: ServiceCredentialEnrollmentRefusal,
+  ): void {
+    const requestId =
+      command.type === "credential_enrollment_commit"
+        ? command.envelope.context.requestId
+        : command.requestId;
+    const reply = { kind: "refused" as const, reason };
+    if (command.type === "credential_enrollment_prepare")
+      this.send(socket, {
+        type: "job_event",
+        event: { type: "credential_enrollment_prepared", requestId, reply },
+      });
+    else if (command.type === "credential_enrollment_cancel")
+      this.send(socket, {
+        type: "job_event",
+        event: { type: "credential_enrollment_cancelled", requestId, reply },
+      });
+    else
+      this.send(socket, {
+        type: "job_event",
+        event: { type: "credential_enrollment_result", requestId, reply },
+      });
+  }
+
+  private forwardCredentialEnrollment(
+    socket: WebSocket,
+    command: CredentialEnrollmentCommand,
+  ): void {
+    const owner = this.jobOwnerLink;
+    if (!owner) {
+      this.refuseCredentialEnrollment(socket, command, "credential_owner_offline");
+      return;
+    }
+    const requestId =
+      command.type === "credential_enrollment_commit"
+        ? command.envelope.context.requestId
+        : command.requestId;
+    const pending = this.credentialEnrollments.get(requestId);
+    if (pending && (pending.socket !== socket || pending.owner !== owner)) {
+      this.refuseCredentialEnrollment(socket, command, "credential_owner_changed");
+      return;
+    }
+    if (command.type === "credential_enrollment_prepare" && pending) {
+      this.refuseCredentialEnrollment(socket, command, "credential_enrollment_replayed");
+      return;
+    }
+    if (!pending) {
+      if (
+        command.type !== "credential_enrollment_prepare" &&
+        command.type !== "credential_enrollment_cancel"
+      ) {
+        this.refuseCredentialEnrollment(socket, command, "credential_enrollment_unknown");
+        return;
+      }
+      if (this.credentialEnrollments.size >= CREDENTIAL_ENROLLMENT_PENDING_LIMIT) {
+        this.refuseCredentialEnrollment(socket, command, "credential_enrollment_busy");
+        return;
+      }
+      this.credentialEnrollments.set(requestId, {
+        socket,
+        owner,
+        nonce: command.type === "credential_enrollment_cancel" ? command.nonce : null,
+      });
+    }
+    try {
+      owner.send(command);
+    } catch {
+      this.credentialEnrollments.delete(requestId);
+      owner.close();
+      this.refuseCredentialEnrollment(socket, command, "credential_owner_offline");
+    }
+  }
+
+  private onJobEvent(event: JobEvent, sourceOwner: JobOwnerLink | null): void {
     const socket = this.socket;
+    if (
+      event.type === "credential_enrollment_prepared" ||
+      event.type === "credential_enrollment_result" ||
+      event.type === "credential_enrollment_cancelled" ||
+      event.type === "credential_enrollment_authorize"
+    ) {
+      if (sourceOwner !== this.jobOwnerLink) return;
+      const pending = this.credentialEnrollments.get(event.requestId);
+      if (
+        !pending ||
+        pending.socket !== socket ||
+        pending.owner !== this.jobOwnerLink ||
+        socket === null ||
+        this.helloSent !== socket ||
+        socket.readyState !== WebSocket.OPEN
+      ) {
+        if (
+          event.type === "credential_enrollment_authorize" ||
+          (event.type === "credential_enrollment_prepared" && event.reply.kind === "prepared")
+        ) {
+          try {
+            this.jobOwnerLink?.send({
+              type: "credential_enrollment_cancel",
+              requestId: event.requestId,
+              nonce: null,
+            });
+          } catch {
+            this.jobOwnerLink?.close();
+          }
+        }
+        return;
+      }
+      if (event.type === "credential_enrollment_prepared" && event.reply.kind === "prepared") {
+        if (event.reply.challenge.context.requestId !== event.requestId) {
+          this.abortCredentialEnrollments(socket);
+          return;
+        }
+        pending.nonce = event.reply.challenge.context.nonce;
+      } else if (event.type === "credential_enrollment_authorize") {
+        if (pending.nonce !== event.nonce) {
+          this.abortCredentialEnrollments(socket);
+          return;
+        }
+      } else if (
+        event.type !== "credential_enrollment_cancelled" ||
+        event.reply.kind !== "refused"
+      ) {
+        this.credentialEnrollments.delete(event.requestId);
+      }
+      if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT_BYTES) {
+        socket.close(4009, "outbound buffer exceeded");
+        this.onDisconnect(socket);
+        return;
+      }
+      try {
+        this.send(socket, { type: "job_event", event });
+      } catch {
+        this.onDisconnect(socket);
+      }
+      return;
+    }
     if (event.type === "agent_run_request") {
       const owner = this.jobOwnerLink;
       if (!owner) return; // The abandoned owner seat cancels its own pending calls.
@@ -640,6 +816,14 @@ export class Agent {
         return;
       }
       case "job_command":
+        switch (msg.command.type) {
+          case "credential_enrollment_prepare":
+          case "credential_enrollment_commit":
+          case "credential_enrollment_cancel":
+          case "credential_enrollment_authorized":
+            this.forwardCredentialEnrollment(socket, msg.command);
+            return;
+        }
         if (msg.command.type === "agent_run_result") {
           const key = JSON.stringify([msg.command.jobId, msg.command.requestId]);
           const pending = this.agentCalls.get(key);
@@ -799,6 +983,7 @@ export class Agent {
   private onDisconnect(socket: WebSocket, code?: number, reason?: string): void {
     if (this.socket !== socket) return; // stale/superseded socket
     this.socket = null;
+    this.abortCredentialEnrollments(socket);
     for (const [key, pending] of this.agentCalls) {
       if (pending.socket !== socket) continue;
       this.agentCalls.delete(key);

@@ -55,7 +55,7 @@ must never be taught one.
       "id": "protocol",
       "globs": ["packages/protocol/src/**"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar, shared private-mode parser (ADR 0029), and bounded transient VT graphics snapshot grammar and admission shared by the authoritative mirror and every viewer (ADR 0031). Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
+      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar, shared private-mode parser (ADR 0029), bounded transient VT graphics snapshot grammar and admission shared by the authoritative mirror and every viewer (ADR 0031), and the strict sealed credential-enrollment carrier with one lazy HPKE mechanism, binary codec and canonical authenticated-context encoder (ADR 0059). Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -93,7 +93,11 @@ must never be taught one.
     },
     {
       "id": "identity-caps",
-      "globs": ["packages/server/src/auth.ts", "packages/web/src/identity.tsx"],
+      "globs": [
+        "packages/server/src/auth.ts",
+        "packages/web/src/identity.tsx",
+        "packages/web/src/identity-storage.ts"
+      ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
       "verdict": "who is asking and what they may do, plus this device's token custody. Every door presupposes it, it knows no domain noun, and it is the one call surface the A5 evaluator replaces. Correlated target/reach/capability scopes, credential-owned grant membership and live lineage constrain the same evaluator; a capability union is discovery, never a caps-times-targets grant. Administration of principals and tokens is NOT here: those verbs are core.access.",
       "adr": "docs/decisions/0011-permission-waterfall.md"
@@ -155,6 +159,9 @@ must never be taught one.
       "id": "web-plugin-host",
       "globs": [
         "packages/web/src/main.tsx",
+        "packages/web/credential-entry.html",
+        "packages/web/src/credential-entry.ts",
+        "packages/web/src/credential-entry.css",
         "packages/web/src/app.tsx",
         "packages/web/src/plugin-host.tsx",
         "packages/web/src/plugin-development.ts",
@@ -241,7 +248,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
   "floor": [
     {
       "glob": "packages/protocol/src/**",
-      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks; bounded transient VT graphics snapshot grammar and shared admission (ADR 0031); and the one CSS selector walk (`stylesheet.ts`, string parsing and nothing else) the gate reads the tree with and the hub admits a bundle's sheet with (ADR 0025 §7)"
+      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks; bounded transient VT graphics snapshot grammar and shared admission (ADR 0031); strict sealed credential-enrollment schemas and the one lazy HPKE mechanism, binary codec and canonical authenticated-context encoder (ADR 0059); and the one CSS selector walk (`stylesheet.ts`, string parsing and nothing else) the gate reads the tree with and the hub admits a bundle's sheet with (ADR 0025 §7)"
     },
     {
       "glob": "packages/scene/src/**",
@@ -440,6 +447,18 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "browser entry"
     },
     {
+      "glob": "packages/web/credential-entry.html",
+      "why": "ADR 0059 canonical host-owned private document: an independent no-plugin build graph, network-only private assets, no frame or opener relationship, and no value-bearing workspace composition"
+    },
+    {
+      "glob": "packages/web/src/credential-entry.ts",
+      "why": "ADR 0059 narrow private-entry mechanism: current stored hub identity, described ordinary actions, single-use native HPKE challenges, uncontrolled bounded input and synchronous clearing; plugin management owns only reference metadata and the launcher"
+    },
+    {
+      "glob": "packages/web/src/credential-entry.css",
+      "why": "the separate host-only document's class-scoped skin, composing the one @manifold/ui ground through its public stylesheet export"
+    },
+    {
       "glob": "packages/web/src/app.tsx",
       "why": "route table and the identity gate the plugin host mounts inside"
     },
@@ -474,6 +493,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/identity.tsx",
       "why": "identity bootstrap and token custody on this device"
+    },
+    {
+      "glob": "packages/web/src/identity-storage.ts",
+      "why": "the one neutral parser and per-instance key for this device's existing identity, shared by the ordinary identity gate and the no-plugin private document; URL target hints cannot select its bearer destination"
     },
     {
       "glob": "packages/web/src/lens.tsx",
@@ -1671,6 +1694,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "not a prefix: the rules with no class at all. The reset, `:root` (the tokens), the element defaults and `[data-drop-denial]` reach every node in the document, which is exactly the reach a plugin must not have — so they live in the design system's GROUND (`@manifold/ui`, the sheet every owner's skin composes over, #240) and the check refuses them anywhere else. Tokens are the theming seam: a mod reads them for free coherence or sets its own under its root"
     },
     {
+      "family": "credential-entry",
+      "owner": "packages/web/src/credential-entry.css",
+      "why": "ADR 0059 separate host-owned private document, including its scrolling page root, reference metadata, bounded uncontrolled form, status and trust-boundary guidance; no plugin skin loads here"
+    },
+    {
       "family": "gate",
       "owner": "packages/web/src/styles.css",
       "why": "the pre-identity gate screen and its card: the first paint of the product, before any plugin exists to have an opinion"
@@ -2435,18 +2463,19 @@ asserts is the same defect as an undeclared door, one register further in.
 The law is `AXIOMS.md` §Foundation law, "Every runtime-joined namespace has a registry". These
 are its instances, each written after the join it guards had already broken once:
 
-| Runtime-joined namespace                                         | Registry                                                                                                       | Check                                              |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| device-local storage keys                                        | the `deviceLocal` register                                                                                     | S3                                                 |
-| `data-action` markers ↔ published actions                        | the live assembly                                                                                              | S4                                                 |
-| `/api/…` route literals ↔ the doors that exist                   | the script's allowlist                                                                                         | S7                                                 |
-| every word for a concept, across every plane                     | §Lexicon rows                                                                                                  | S11                                                |
-| item kind → display noun                                         | `ITEM_NOUNS`, the ONE table                                                                                    | S12                                                |
-| CSS selector families ↔ their owning package                     | §Lexicon `cssFamilies`                                                                                         | S13                                                |
-| `evt=` log names ↔ the gates that match them                     | `LOG_EVENTS`                                                                                                   | S14                                                |
-| `data-testid` attributes ↔ the gates that click them             | §Gate-contracts rows                                                                                           | S15                                                |
-| §Budgets rows ↔ the browser's feed vocabulary                    | each row's `feed` field                                                                                        | `verify:budgets`                                   |
-| source-development liveness/cancellation ↔ browser source leases | `PLUGIN_REFRESH_READY_EVENT` and `PLUGIN_REFRESH_CANCEL_EVENT` in `packages/plugin-kit/src/refresh-runtime.ts` | `packages/testkit/e2e/plugin-fast-refresh.test.ts` |
+| Runtime-joined namespace                                         | Registry                                                                                                                                                                                                                                                                                                                | Check                                                               |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| device-local storage keys                                        | the `deviceLocal` register                                                                                                                                                                                                                                                                                              | S3                                                                  |
+| `data-action` markers ↔ published actions                        | the live assembly                                                                                                                                                                                                                                                                                                       | S4                                                                  |
+| `/api/…` route literals ↔ the doors that exist                   | the script's allowlist                                                                                                                                                                                                                                                                                                  | S7                                                                  |
+| every word for a concept, across every plane                     | §Lexicon rows                                                                                                                                                                                                                                                                                                           | S11                                                                 |
+| item kind → display noun                                         | `ITEM_NOUNS`, the ONE table                                                                                                                                                                                                                                                                                             | S12                                                                 |
+| CSS selector families ↔ their owning package                     | §Lexicon `cssFamilies`                                                                                                                                                                                                                                                                                                  | S13                                                                 |
+| `evt=` log names ↔ the gates that match them                     | `LOG_EVENTS`                                                                                                                                                                                                                                                                                                            | S14                                                                 |
+| `data-testid` attributes ↔ the gates that click them             | §Gate-contracts rows                                                                                                                                                                                                                                                                                                    | S15                                                                 |
+| §Budgets rows ↔ the browser's feed vocabulary                    | each row's `feed` field                                                                                                                                                                                                                                                                                                 | `verify:budgets`                                                    |
+| source-development liveness/cancellation ↔ browser source leases | `PLUGIN_REFRESH_READY_EVENT` and `PLUGIN_REFRESH_CANCEL_EVENT` in `packages/plugin-kit/src/refresh-runtime.ts`                                                                                                                                                                                                          | `packages/testkit/e2e/plugin-fast-refresh.test.ts`                  |
+| private document, asset graph and worker-bypass handshake        | `/credential-entry.html`, `/credential-entry-assets/`, and `manifold.private-credential-bypass` version 1 with `supported: true`; `packages/plugin/src/private-entry.ts` defines the one browser negotiation, `packages/web/sw.js` answers it, and `packages/server/src/http.ts` reserves the exact network-only routes | HTTP routing regressions and actual native/browser enrollment proof |
 
 ## Gates
 

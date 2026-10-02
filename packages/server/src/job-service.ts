@@ -30,6 +30,31 @@ import {
   quoteDirectService,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
+  MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION,
+  MACHINE_PROTOCOL_COMPAT_VERSIONS,
+  CREDENTIAL_ENROLLMENT_VERSION,
+  CREDENTIAL_ENROLLMENT_TTL_MS,
+  CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+  CREDENTIAL_ENROLLMENT_PENDING_LIMIT,
+  CREDENTIAL_ENROLLMENT_REPLAY_LIMIT,
+  ServiceCredentialEnrollmentError,
+  ServiceCredentialEnrollmentKeySchema,
+  ServiceCredentialEnrollmentPrepareArgsSchema,
+  ServiceCredentialEnrollmentCommitArgsSchema,
+  ServiceCredentialEnrollmentCancelArgsSchema,
+  ServiceCredentialEnrollmentPreparedEventSchema,
+  ServiceCredentialEnrollmentResultEventSchema,
+  ServiceCredentialEnrollmentCancelledEventSchema,
+  ServiceCredentialEnrollmentAuthorizeEventSchema,
+  type ServiceCredentialEnrollmentPublicKey,
+  type ServiceCredentialEnrollmentChallenge,
+  type ServiceCredentialEnrollmentRefusal,
+  type ServiceCredentialEnrollmentPrepareArgs,
+  type ServiceCredentialEnrollmentPrepareReply,
+  type ServiceCredentialEnrollmentCommitArgs,
+  type ServiceCredentialEnrollmentCommitReply,
+  type ServiceCredentialEnrollmentCancelArgs,
+  type ServiceCredentialEnrollmentCancelReply,
   jobOwnerOperationRefusal,
   jobOwnerMachine,
   jobOwnerRequestRefusal,
@@ -91,16 +116,16 @@ import {
   type SettledJob,
   type JobFollowUpdate,
   type TerminalRuntime,
-} from "../../protocol/src/jobs.ts";
-import type { JobDescription } from "../../protocol/src/jobs.ts";
-import { JobOutputRuleSchema } from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
+import type { JobDescription } from "@manifold/protocol";
+import { JobOutputRuleSchema } from "@manifold/protocol";
 import {
   JobResourceBindingsSchema,
   jobResourceBindingsFor,
   jobResourceRefusal,
   type JobResourceBindings,
   type JobResourceInventory,
-} from "../../protocol/src/job-resources.ts";
+} from "@manifold/protocol";
 import {
   ServiceConfigurationSchema,
   ServicePolicySchema,
@@ -115,7 +140,7 @@ import {
   type ServiceReadArgs,
   type ServiceInvokeArgs,
   type ServiceReply,
-} from "../../protocol/src/services.ts";
+} from "@manifold/protocol";
 import {
   ServiceError,
   type AuthContext,
@@ -178,6 +203,54 @@ interface LiveJobOwner {
   proved: boolean;
   retirementOnly: boolean;
   retirementProved: boolean;
+}
+type CredentialEnrollmentTerminalReply = Extract<
+  ServiceCredentialEnrollmentPrepareReply,
+  { kind: "refused" | "unknown" }
+>;
+type CredentialEnrollmentWaiter =
+  | {
+      phase: "prepare";
+      resolve(reply: ServiceCredentialEnrollmentPrepareReply): void;
+      credential: CredentialReference;
+      authorityFence: ActionAuthorityFence | undefined;
+    }
+  | {
+      phase: "commit";
+      resolve(reply: ServiceCredentialEnrollmentCommitReply): void;
+      credential: CredentialReference;
+      authorityFence: ActionAuthorityFence | undefined;
+    }
+  | {
+      phase: "cancel";
+      resolve(reply: ServiceCredentialEnrollmentCancelReply): void;
+      credential: CredentialReference;
+      authorityFence: ActionAuthorityFence | undefined;
+    };
+interface HubCredentialEnrollment {
+  readonly command: Extract<JobCommand, { type: "credential_enrollment_prepare" }>;
+  readonly credential: CredentialReference;
+  readonly channel: JobChannel;
+  readonly ownerId: string;
+  readonly ownerGeneration: number;
+  readonly ownerPublicKey: string;
+  readonly key: ServiceCredentialEnrollmentPublicKey;
+  readonly signal?: AbortSignal;
+  readonly abort: () => void;
+  challenge: ServiceCredentialEnrollmentChallenge | null;
+  offerDeadline: number | null;
+  phase: "preparing" | "prepared" | "committing" | "cancelling";
+  authorized: boolean;
+  traceId: string;
+  deadline: number;
+  timer: NodeJS.Timeout | undefined;
+  waiter: CredentialEnrollmentWaiter | null;
+}
+interface CredentialEnrollmentTombstone {
+  readonly credential: CredentialReference;
+  readonly nonce: string | null;
+  readonly expiresAt: number;
+  readonly reply: CredentialEnrollmentTerminalReply;
 }
 interface ProposedServiceContext {
   installation: JobInstallation;
@@ -484,6 +557,12 @@ export class JobService {
   >();
   private machinePresence: ((machineId: string) => boolean) | null = null;
   private readonly serviceTunnels = new Map<string, HubServiceTunnel>();
+  /** Owner-private control state. It contains no envelope and never transfers to another seat. */
+  private readonly credentialEnrollments = new Map<string, HubCredentialEnrollment>();
+  private readonly credentialEnrollmentRecent = new Map<
+    JobChannel,
+    Map<string, CredentialEnrollmentTombstone>
+  >();
 
   setMachinePresence(presence: (machineId: string) => boolean): void {
     this.machinePresence = presence;
@@ -1241,6 +1320,651 @@ export class JobService {
       ),
     };
   }
+  private credentialEnrollmentAuthority(
+    credential: CredentialReference,
+    machineId: string,
+    authorityFence?: ActionAuthorityFence,
+  ): AuthContext {
+    try {
+      authorityFence?.checkCurrent();
+      const original = this.auth.restoreCredential(credential);
+      if (original === null) throw new ServiceCredentialEnrollmentError("credential_unauthorized");
+      if (
+        !this.store.getMachine(machineId) &&
+        this.auth.holdsRoot(original) &&
+        (original.caps.includes("*") || original.caps.includes("services:configure"))
+      )
+        throw new ServiceCredentialEnrollmentError("credential_machine_unknown");
+      return this.configurationAuthority(original, machineId);
+    } catch (error) {
+      if (error instanceof ServiceCredentialEnrollmentError) throw error;
+      throw new ServiceCredentialEnrollmentError("credential_unauthorized");
+    }
+  }
+
+  private credentialEnrollmentTarget(args: ServiceCredentialEnrollmentPrepareArgs) {
+    if (!this.store.getMachine(args.machineId))
+      throw new ServiceCredentialEnrollmentError("credential_machine_unknown");
+    const live = this.channels.get(args.machineId);
+    if (!live) throw new ServiceCredentialEnrollmentError("credential_owner_offline");
+    if (live.retirementOnly)
+      throw new ServiceCredentialEnrollmentError("credential_protocol_unsupported");
+    if (!live.proved) throw new ServiceCredentialEnrollmentError("credential_owner_unproved");
+    const transport = live.channel.protocolVersion;
+    if (
+      transport === undefined ||
+      !MACHINE_PROTOCOL_COMPAT_VERSIONS.has(transport) ||
+      transport < MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION ||
+      !jobOwnerSupports(live.owner.protocolVersion, "credentialEnrollment")
+    )
+      throw new ServiceCredentialEnrollmentError("credential_protocol_unsupported");
+    const pinned = this.jobs.owner(args.machineId);
+    if (
+      !pinned ||
+      pinned.ownerId !== live.owner.ownerId ||
+      pinned.publicKey !== live.owner.publicKey ||
+      pinned.generation !== live.owner.generation
+    )
+      throw new ServiceCredentialEnrollmentError("credential_owner_changed");
+    const key = ServiceCredentialEnrollmentKeySchema.safeParse(live.owner.credentialEnrollment);
+    if (!key.success) throw new ServiceCredentialEnrollmentError("credential_key_unavailable");
+    if (key.data.version !== CREDENTIAL_ENROLLMENT_VERSION)
+      throw new ServiceCredentialEnrollmentError("credential_key_version_unsupported");
+    const reference = live.owner.resources?.credentialReferences?.find(
+      (reference) => reference.ref === args.credentialRef,
+    );
+    if (!reference) throw new ServiceCredentialEnrollmentError("credential_reference_unknown");
+    if (!reference.origins.includes(args.origin))
+      throw new ServiceCredentialEnrollmentError("credential_origin_disallowed");
+    return { live, key: key.data };
+  }
+
+  private sameEnrollmentCredential(a: CredentialReference, b: CredentialReference): boolean {
+    return a.principalId === b.principalId && a.tokenId === b.tokenId && a.grantId === b.grantId;
+  }
+
+  private credentialEnrollmentCurrent(pending: HubCredentialEnrollment): AuthContext {
+    if (pending.signal?.aborted)
+      throw new ServiceCredentialEnrollmentError("credential_enrollment_cancelled");
+    if (this.runtime.now() >= pending.deadline)
+      throw new ServiceCredentialEnrollmentError("credential_enrollment_expired");
+    const current = this.credentialEnrollmentAuthority(
+      pending.credential,
+      pending.command.machineId,
+      pending.waiter?.authorityFence,
+    );
+    if (pending.waiter !== null)
+      this.credentialEnrollmentAuthority(pending.waiter.credential, pending.command.machineId);
+    const { live, key } = this.credentialEnrollmentTarget(pending.command);
+    if (
+      live.channel !== pending.channel ||
+      live.owner.ownerId !== pending.ownerId ||
+      live.owner.generation !== pending.ownerGeneration ||
+      live.owner.publicKey !== pending.ownerPublicKey ||
+      live.epoch !== pending.command.serverEpoch ||
+      live.nonce !== pending.command.ownerChallenge
+    )
+      throw new ServiceCredentialEnrollmentError("credential_owner_changed");
+    if (
+      key.version !== pending.key.version ||
+      key.suite !== pending.key.suite ||
+      key.keyId !== pending.key.keyId ||
+      key.publicKey !== pending.key.publicKey
+    )
+      throw new ServiceCredentialEnrollmentError("credential_key_changed");
+    return current;
+  }
+
+  private credentialEnrollmentReason(error: unknown): ServiceCredentialEnrollmentRefusal {
+    return error instanceof ServiceCredentialEnrollmentError
+      ? error.reason
+      : "credential_storage_failed";
+  }
+
+  private credentialEnrollmentAudit(
+    pending: HubCredentialEnrollment,
+    status: "prepared" | "authorized" | "stored" | "cancelled" | "refused" | "unknown",
+    reason?: ServiceCredentialEnrollmentRefusal | "credential_outcome_unknown",
+  ): void {
+    if (!this.lifecycleRecorder)
+      throw new ServiceCredentialEnrollmentError("credential_storage_failed");
+    const action =
+      pending.waiter?.phase === "cancel"
+        ? "cancelCredentialEnrollment"
+        : pending.waiter?.phase === "commit" || pending.authorized
+          ? "commitCredentialEnrollment"
+          : "prepareCredentialEnrollment";
+    this.lifecycleRecorder({
+      actor: pending.credential.principalId,
+      authority: "services:configure",
+      door: `engine.services.${action}`,
+      containerId: pending.credential.containerScope,
+      session: null,
+      ts: this.runtime.now(),
+      outcome: status === "refused" || status === "unknown" ? "forbidden" : "ok",
+      targets: [],
+      // This allowlist is deliberate: no envelope, nonce, key, source revision or path.
+      payload: {
+        serviceLifecycle: "credential-enrollment",
+        callerPluginId: "engine.services",
+        parentTrace: pending.traceId,
+        machineId: pending.command.machineId,
+        credentialRef: pending.command.credentialRef,
+        replace: pending.command.replace,
+        status,
+        ...(reason === undefined ? {} : { reason }),
+      },
+    });
+  }
+
+  private sendCredentialEnrollment(pending: HubCredentialEnrollment, command: JobCommand): boolean {
+    if (this.channels.get(pending.command.machineId)?.channel !== pending.channel) return false;
+    try {
+      return pending.channel.send({ type: "job_command", command });
+    } catch {
+      return false;
+    }
+  }
+
+  private removeCredentialEnrollment(
+    pending: HubCredentialEnrollment,
+    reply: CredentialEnrollmentTerminalReply,
+    cancel: boolean,
+  ): CredentialEnrollmentWaiter | null {
+    if (this.credentialEnrollments.get(pending.command.requestId) !== pending) return null;
+    this.credentialEnrollments.delete(pending.command.requestId);
+    clearTimeout(pending.timer);
+    pending.signal?.removeEventListener("abort", pending.abort);
+    const waiter = pending.waiter;
+    pending.waiter = null;
+    let recent = this.credentialEnrollmentRecent.get(pending.channel);
+    if (!recent) this.credentialEnrollmentRecent.set(pending.channel, (recent = new Map()));
+    for (const [requestId, entry] of recent)
+      if (entry.expiresAt <= this.runtime.now()) recent.delete(requestId);
+    while (recent.size >= CREDENTIAL_ENROLLMENT_REPLAY_LIMIT)
+      recent.delete(recent.keys().next().value!);
+    recent.set(pending.command.requestId, {
+      credential: pending.credential,
+      nonce: pending.challenge?.context.nonce ?? null,
+      expiresAt: this.runtime.now() + CREDENTIAL_ENROLLMENT_TTL_MS,
+      reply,
+    });
+    if (cancel)
+      this.sendCredentialEnrollment(pending, {
+        type: "credential_enrollment_cancel",
+        requestId: pending.command.requestId,
+        nonce: pending.challenge?.context.nonce ?? null,
+      });
+    return waiter;
+  }
+
+  private settleCredentialEnrollment(
+    pending: HubCredentialEnrollment,
+    reply: CredentialEnrollmentTerminalReply,
+    cancel: boolean,
+  ): void {
+    if (this.credentialEnrollments.get(pending.command.requestId) !== pending) return;
+    try {
+      this.credentialEnrollmentAudit(pending, reply.kind, reply.reason);
+    } catch {
+      reply = pending.authorized
+        ? { kind: "unknown", reason: "credential_outcome_unknown" }
+        : { kind: "refused", reason: "credential_storage_failed" };
+    }
+    this.removeCredentialEnrollment(pending, reply, cancel)?.resolve(reply);
+  }
+
+  private abandonCredentialEnrollment(
+    pending: HubCredentialEnrollment,
+    reason: ServiceCredentialEnrollmentRefusal,
+  ): void {
+    this.settleCredentialEnrollment(
+      pending,
+      pending.authorized
+        ? { kind: "unknown", reason: "credential_outcome_unknown" }
+        : { kind: "refused", reason },
+      true,
+    );
+  }
+
+  private credentialEnrollmentDeadline(pending: HubCredentialEnrollment, deadline: number): void {
+    clearTimeout(pending.timer);
+    pending.deadline = deadline;
+    pending.timer = setTimeout(
+      () => this.abandonCredentialEnrollment(pending, "credential_enrollment_expired"),
+      Math.max(0, deadline - this.runtime.now()),
+    );
+  }
+
+  private recentCredentialEnrollment(
+    credential: CredentialReference,
+    machineId: string,
+    requestId: string,
+    nonce: string,
+  ): CredentialEnrollmentTerminalReply {
+    const channel = this.channels.get(machineId)?.channel;
+    const recent = channel && this.credentialEnrollmentRecent.get(channel);
+    const entry = recent?.get(requestId);
+    if (entry && entry.expiresAt <= this.runtime.now()) recent?.delete(requestId);
+    else if (
+      entry &&
+      entry.nonce === nonce &&
+      this.sameEnrollmentCredential(credential, entry.credential)
+    )
+      return entry.reply;
+    return { kind: "refused", reason: "credential_enrollment_unknown" };
+  }
+
+  prepareCredentialEnrollment(
+    credential: CredentialReference,
+    args: ServiceCredentialEnrollmentPrepareArgs,
+    traceId = "credential-enrollment",
+    authorityFence?: ActionAuthorityFence,
+    signal?: AbortSignal,
+  ): Promise<ServiceCredentialEnrollmentPrepareReply> {
+    try {
+      const parsed = ServiceCredentialEnrollmentPrepareArgsSchema.safeParse(args);
+      if (!parsed.success) throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      const original = structuredClone(credential);
+      this.credentialEnrollmentAuthority(original, parsed.data.machineId, authorityFence);
+      const { live, key } = this.credentialEnrollmentTarget(parsed.data);
+      if (signal?.aborted)
+        throw new ServiceCredentialEnrollmentError("credential_enrollment_cancelled");
+      let count = 0;
+      for (const pending of this.credentialEnrollments.values())
+        if (pending.channel === live.channel) count++;
+      if (count >= CREDENTIAL_ENROLLMENT_PENDING_LIMIT)
+        throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
+      const command: Extract<JobCommand, { type: "credential_enrollment_prepare" }> = Object.freeze(
+        {
+          type: "credential_enrollment_prepare",
+          requestId: randomUUID(),
+          serverEpoch: live.epoch,
+          ownerChallenge: live.nonce,
+          ...parsed.data,
+        },
+      );
+      const { promise, resolve } = Promise.withResolvers<ServiceCredentialEnrollmentPrepareReply>();
+      const pending: HubCredentialEnrollment = {
+        command,
+        credential: original,
+        channel: live.channel,
+        ownerId: live.owner.ownerId,
+        ownerGeneration: live.owner.generation,
+        ownerPublicKey: live.owner.publicKey,
+        key: Object.freeze(key),
+        ...(signal === undefined ? {} : { signal }),
+        abort: () => this.abandonCredentialEnrollment(pending, "credential_enrollment_cancelled"),
+        challenge: null,
+        offerDeadline: null,
+        phase: "preparing",
+        authorized: false,
+        traceId,
+        deadline: 0,
+        timer: undefined,
+        waiter: { phase: "prepare", resolve, credential: original, authorityFence },
+      };
+      this.credentialEnrollments.set(command.requestId, pending);
+      this.credentialEnrollmentDeadline(
+        pending,
+        this.runtime.now() + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+      );
+      signal?.addEventListener("abort", pending.abort, { once: true });
+      if (!this.sendCredentialEnrollment(pending, command))
+        this.abandonCredentialEnrollment(pending, "credential_owner_offline");
+      return promise;
+    } catch (error) {
+      return Promise.resolve({ kind: "refused", reason: this.credentialEnrollmentReason(error) });
+    }
+  }
+
+  commitCredentialEnrollment(
+    credential: CredentialReference,
+    args: ServiceCredentialEnrollmentCommitArgs,
+    traceId = "credential-enrollment",
+    authorityFence?: ActionAuthorityFence,
+  ): Promise<ServiceCredentialEnrollmentCommitReply> {
+    let pending: HubCredentialEnrollment | undefined;
+    try {
+      const parsed = ServiceCredentialEnrollmentCommitArgsSchema.safeParse(args);
+      if (!parsed.success)
+        throw new ServiceCredentialEnrollmentError("credential_envelope_invalid");
+      const { machineId, envelope } = parsed.data;
+      const caller = structuredClone(credential);
+      this.credentialEnrollmentAuthority(caller, machineId, authorityFence);
+      pending = this.credentialEnrollments.get(envelope.context.requestId);
+      if (!pending)
+        return Promise.resolve(
+          this.recentCredentialEnrollment(
+            caller,
+            machineId,
+            envelope.context.requestId,
+            envelope.context.nonce,
+          ),
+        );
+      if (!this.sameEnrollmentCredential(caller, pending.credential)) {
+        pending = undefined;
+        throw new ServiceCredentialEnrollmentError("credential_unauthorized");
+      }
+      if (pending.phase !== "prepared")
+        return Promise.resolve({ kind: "refused", reason: "credential_enrollment_replayed" });
+      this.credentialEnrollmentCurrent(pending);
+      if (
+        machineId !== pending.command.machineId ||
+        canonicalJobJson(envelope.context) !== canonicalJobJson(pending.challenge!.context)
+      )
+        throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      const { promise, resolve } = Promise.withResolvers<ServiceCredentialEnrollmentCommitReply>();
+      pending.phase = "committing";
+      pending.traceId = traceId;
+      pending.waiter = { phase: "commit", resolve, credential: caller, authorityFence };
+      this.credentialEnrollmentDeadline(
+        pending,
+        Math.min(
+          pending.offerDeadline!,
+          this.runtime.now() + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+        ),
+      );
+      // The envelope exists only on this synchronous dispatch stack, never in pending state.
+      if (
+        !this.sendCredentialEnrollment(pending, { type: "credential_enrollment_commit", envelope })
+      )
+        this.abandonCredentialEnrollment(pending, "credential_owner_offline");
+      return promise;
+    } catch (error) {
+      const reason = this.credentialEnrollmentReason(error);
+      if (pending) this.abandonCredentialEnrollment(pending, reason);
+      return Promise.resolve({ kind: "refused", reason });
+    }
+  }
+
+  cancelCredentialEnrollment(
+    credential: CredentialReference,
+    args: ServiceCredentialEnrollmentCancelArgs,
+    traceId = "credential-enrollment",
+    authorityFence?: ActionAuthorityFence,
+  ): Promise<ServiceCredentialEnrollmentCancelReply> {
+    let pending: HubCredentialEnrollment | undefined;
+    try {
+      const parsed = ServiceCredentialEnrollmentCancelArgsSchema.safeParse(args);
+      if (!parsed.success) throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      const caller = structuredClone(credential);
+      this.credentialEnrollmentAuthority(caller, parsed.data.machineId, authorityFence);
+      pending = this.credentialEnrollments.get(parsed.data.requestId);
+      if (!pending) {
+        const reply = this.recentCredentialEnrollment(
+          caller,
+          parsed.data.machineId,
+          parsed.data.requestId,
+          parsed.data.nonce,
+        );
+        return Promise.resolve(
+          reply.kind === "refused" && reply.reason === "credential_enrollment_cancelled"
+            ? { kind: "cancelled" }
+            : reply.kind === "refused" && reply.reason === "credential_enrollment_replayed"
+              ? { kind: "unknown", reason: "credential_outcome_unknown" }
+              : reply,
+        );
+      }
+      if (!this.sameEnrollmentCredential(caller, pending.credential)) {
+        pending = undefined;
+        throw new ServiceCredentialEnrollmentError("credential_unauthorized");
+      }
+      if (
+        parsed.data.machineId !== pending.command.machineId ||
+        parsed.data.nonce !== pending.challenge?.context.nonce
+      ) {
+        pending = undefined;
+        throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      }
+      if (pending.phase === "cancelling")
+        return Promise.resolve({ kind: "refused", reason: "credential_enrollment_busy" });
+      this.credentialEnrollmentCurrent(pending);
+      pending.waiter?.resolve(
+        pending.authorized
+          ? { kind: "unknown", reason: "credential_outcome_unknown" }
+          : { kind: "refused", reason: "credential_enrollment_cancelled" },
+      );
+      const { promise, resolve } = Promise.withResolvers<ServiceCredentialEnrollmentCancelReply>();
+      pending.phase = "cancelling";
+      pending.traceId = traceId;
+      pending.waiter = { phase: "cancel", resolve, credential: caller, authorityFence };
+      this.credentialEnrollmentDeadline(
+        pending,
+        Math.min(
+          pending.offerDeadline!,
+          this.runtime.now() + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+        ),
+      );
+      if (
+        !this.sendCredentialEnrollment(pending, {
+          type: "credential_enrollment_cancel",
+          requestId: parsed.data.requestId,
+          nonce: parsed.data.nonce,
+        })
+      )
+        this.abandonCredentialEnrollment(pending, "credential_owner_offline");
+      return promise;
+    } catch (error) {
+      const reason = this.credentialEnrollmentReason(error);
+      if (pending) this.abandonCredentialEnrollment(pending, reason);
+      return Promise.resolve({ kind: "refused", reason });
+    }
+  }
+
+  private credentialEnrollmentEvent(
+    channel: JobChannel,
+    event: Extract<
+      JobEvent,
+      {
+        type:
+          | "credential_enrollment_prepared"
+          | "credential_enrollment_result"
+          | "credential_enrollment_cancelled"
+          | "credential_enrollment_authorize";
+      }
+    >,
+  ): void {
+    const pending = this.credentialEnrollments.get(event.requestId);
+    if (!pending) {
+      if (event.type !== "credential_enrollment_authorize") return;
+      const parsed = ServiceCredentialEnrollmentAuthorizeEventSchema.safeParse(event);
+      const recent = this.credentialEnrollmentRecent.get(channel)?.get(event.requestId);
+      if (!parsed.success || !recent || recent.nonce !== parsed.data.nonce) return;
+      try {
+        channel.send({
+          type: "job_command",
+          command: {
+            type: "credential_enrollment_authorized",
+            requestId: event.requestId,
+            nonce: parsed.data.nonce,
+            allowed: false,
+            reason:
+              recent.expiresAt <= this.runtime.now()
+                ? "credential_enrollment_expired"
+                : recent.reply.kind === "refused"
+                  ? recent.reply.reason
+                  : "credential_enrollment_unknown",
+          },
+        });
+      } catch {
+        // Tombstones can only deny. No payload or authorization is replayed after cleanup.
+      }
+      return;
+    }
+    if (pending.channel !== channel) return;
+    try {
+      this.credentialEnrollmentCurrent(pending);
+      if (event.type === "credential_enrollment_prepared") {
+        const parsed = ServiceCredentialEnrollmentPreparedEventSchema.safeParse(event);
+        if (!parsed.success)
+          throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+        if (pending.phase !== "preparing" || pending.waiter?.phase !== "prepare") return;
+        const reply = parsed.data.reply;
+        if (reply.kind !== "prepared") {
+          this.settleCredentialEnrollment(pending, reply, false);
+          return;
+        }
+        const { context, key } = reply.challenge;
+        if (
+          context.version !== pending.key.version ||
+          context.suite !== pending.key.suite ||
+          context.keyId !== pending.key.keyId ||
+          key.version !== pending.key.version ||
+          key.suite !== pending.key.suite ||
+          key.keyId !== pending.key.keyId ||
+          key.publicKey !== pending.key.publicKey ||
+          context.machineId !== pending.command.machineId ||
+          context.ownerId !== pending.ownerId ||
+          context.ownerGeneration !== pending.ownerGeneration ||
+          context.requestId !== pending.command.requestId ||
+          context.serverEpoch !== pending.command.serverEpoch ||
+          context.ownerChallenge !== pending.command.ownerChallenge ||
+          context.credentialRef !== pending.command.credentialRef ||
+          context.origin !== pending.command.origin ||
+          context.replace !== pending.command.replace ||
+          (!context.replace && context.sourceRevision !== null) ||
+          context.expiresAt <= this.runtime.now() ||
+          context.expiresAt >
+            this.runtime.now() +
+              CREDENTIAL_ENROLLMENT_TTL_MS +
+              CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS
+        )
+          throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+        for (const other of this.credentialEnrollments.values())
+          if (
+            other !== pending &&
+            other.channel === channel &&
+            other.challenge?.context.nonce === context.nonce
+          )
+            throw new ServiceCredentialEnrollmentError("credential_enrollment_replayed");
+        for (const recent of this.credentialEnrollmentRecent.get(channel)?.values() ?? [])
+          if (recent.expiresAt > this.runtime.now() && recent.nonce === context.nonce)
+            throw new ServiceCredentialEnrollmentError("credential_enrollment_replayed");
+        pending.challenge = Object.freeze({
+          context: Object.freeze(context),
+          key: pending.key,
+        });
+        this.credentialEnrollmentAudit(pending, "prepared");
+        const waiter = pending.waiter;
+        pending.waiter = null;
+        pending.phase = "prepared";
+        pending.offerDeadline = Math.min(
+          context.expiresAt,
+          this.runtime.now() + CREDENTIAL_ENROLLMENT_TTL_MS,
+        );
+        this.credentialEnrollmentDeadline(pending, pending.offerDeadline);
+        waiter.resolve({ kind: "prepared", challenge: structuredClone(pending.challenge) });
+        return;
+      }
+      if (event.type === "credential_enrollment_authorize") {
+        const parsed = ServiceCredentialEnrollmentAuthorizeEventSchema.safeParse(event);
+        if (
+          parsed.success &&
+          pending.phase === "cancelling" &&
+          parsed.data.nonce === pending.challenge?.context.nonce
+        ) {
+          if (
+            !this.sendCredentialEnrollment(pending, {
+              type: "credential_enrollment_authorized",
+              requestId: event.requestId,
+              nonce: parsed.data.nonce,
+              allowed: false,
+              reason: "credential_enrollment_cancelled",
+            })
+          )
+            this.abandonCredentialEnrollment(pending, "credential_owner_offline");
+          return;
+        }
+        if (
+          !parsed.success ||
+          pending.phase !== "committing" ||
+          pending.waiter?.phase !== "commit" ||
+          parsed.data.nonce !== pending.challenge?.context.nonce
+        )
+          throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+        if (pending.authorized) return;
+        // Audit the explicit replacement intent before any owner-local publication is allowed.
+        this.credentialEnrollmentAudit(pending, "authorized");
+        this.credentialEnrollmentCurrent(pending);
+        pending.authorized = true;
+        if (
+          !this.sendCredentialEnrollment(pending, {
+            type: "credential_enrollment_authorized",
+            requestId: event.requestId,
+            nonce: parsed.data.nonce,
+            allowed: true,
+            reason: null,
+          })
+        )
+          this.abandonCredentialEnrollment(pending, "credential_owner_offline");
+        return;
+      }
+      if (event.type === "credential_enrollment_result") {
+        const parsed = ServiceCredentialEnrollmentResultEventSchema.safeParse(event);
+        if (!parsed.success)
+          throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+        if (pending.phase === "cancelling") {
+          if (parsed.data.reply.kind === "stored" || parsed.data.reply.kind === "unknown")
+            this.settleCredentialEnrollment(
+              pending,
+              { kind: "unknown", reason: "credential_outcome_unknown" },
+              false,
+            );
+          return;
+        }
+        if (pending.phase !== "committing" || pending.waiter?.phase !== "commit")
+          throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+        const reply = parsed.data.reply;
+        if (reply.kind !== "stored") {
+          this.settleCredentialEnrollment(pending, reply, false);
+          return;
+        }
+        if (
+          !pending.authorized ||
+          reply.credentialRef !== pending.command.credentialRef ||
+          reply.replaced !== (pending.challenge!.context.sourceRevision !== null) ||
+          reply.sourceRevision === pending.challenge!.context.sourceRevision
+        )
+          throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+        this.credentialEnrollmentAudit(pending, "stored");
+        const waiter = this.removeCredentialEnrollment(
+          pending,
+          { kind: "refused", reason: "credential_enrollment_replayed" },
+          false,
+        );
+        if (waiter?.phase === "commit") waiter.resolve(reply);
+        return;
+      }
+      const parsed = ServiceCredentialEnrollmentCancelledEventSchema.safeParse(event);
+      if (!parsed.success) throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      if (pending.phase !== "cancelling" || pending.waiter?.phase !== "cancel") return;
+      const reply = parsed.data.reply;
+      if (reply.kind !== "cancelled") {
+        this.settleCredentialEnrollment(pending, reply, false);
+        return;
+      }
+      this.credentialEnrollmentAudit(pending, "cancelled");
+      const waiter = this.removeCredentialEnrollment(
+        pending,
+        { kind: "refused", reason: "credential_enrollment_cancelled" },
+        false,
+      );
+      if (waiter?.phase === "cancel") waiter.resolve(reply);
+    } catch (error) {
+      const reason = this.credentialEnrollmentReason(error);
+      if (event.type === "credential_enrollment_authorize")
+        this.sendCredentialEnrollment(pending, {
+          type: "credential_enrollment_authorized",
+          requestId: pending.command.requestId,
+          nonce: pending.challenge?.context.nonce ?? event.nonce,
+          allowed: false,
+          reason,
+        });
+      this.abandonCredentialEnrollment(pending, reason);
+    }
+  }
+
   configureServiceConfiguration(
     auth: AuthContext,
     args: { machineId: string; expectedRevision: string | null; policies: ServicePolicy[] },
@@ -3404,6 +4128,13 @@ export class JobService {
   }
 
   private reconcileAuthority(): void {
+    for (const pending of this.credentialEnrollments.values()) {
+      try {
+        this.credentialEnrollmentCurrent(pending);
+      } catch (error) {
+        this.abandonCredentialEnrollment(pending, this.credentialEnrollmentReason(error));
+      }
+    }
     for (const tunnel of this.serviceTunnels.values())
       if (!this.serviceTunnelCurrent(tunnel)) this.closeServiceTunnel(tunnel);
     for (const pending of [...this.directServiceCalls.values()]) {
@@ -4410,6 +5141,14 @@ export class JobService {
       this.accessChanged();
     });
     auth.onRevoked((principalId) => {
+      for (const pending of this.credentialEnrollments.values()) {
+        const machine = this.store.getMachine(pending.command.machineId);
+        if (
+          pending.credential.principalId === principalId ||
+          (machine && this.store.getToken(machine.tokenId)?.principalId === principalId)
+        )
+          this.abandonCredentialEnrollment(pending, "credential_unauthorized");
+      }
       for (const pending of [...this.directServiceCalls.values()]) {
         const machine = this.store.getMachine(pending.args.machineId);
         if (
@@ -6156,6 +6895,10 @@ export class JobService {
       this.closeServiceTunnel(tunnel);
   }
   private disconnectInputs(channel: JobChannel): void {
+    for (const pending of this.credentialEnrollments.values())
+      if (pending.channel === channel)
+        this.abandonCredentialEnrollment(pending, "credential_owner_offline");
+    this.credentialEnrollmentRecent.delete(channel);
     for (const pending of this.agentCalls.values())
       if (pending.channel === channel) this.closeAgentCalls(pending.jobId, "disconnected");
     for (const tunnel of this.serviceTunnels.values())
@@ -6329,6 +7072,15 @@ export class JobService {
           (event.type !== "result" || active.has(event.result.state)))
       )
         return;
+    }
+    if (
+      event.type === "credential_enrollment_prepared" ||
+      event.type === "credential_enrollment_result" ||
+      event.type === "credential_enrollment_cancelled" ||
+      event.type === "credential_enrollment_authorize"
+    ) {
+      this.credentialEnrollmentEvent(channel, event);
+      return;
     }
     if (event.type === "agent_run_request") {
       this.agentRunRequest(channel, event);

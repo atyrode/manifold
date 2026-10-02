@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@hpke/core": "1.9.0",
     "zod": "4.4.3"
   }
 }

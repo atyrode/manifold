@@ -57,7 +57,8 @@ import {
   SIDEBAR_PANEL,
   SPACE_SET_LAYOUT_ACTION,
 } from "./assembly.ts";
-import { getContainer, getAttendance, getWorkspaceLayout, type StoredIdentity } from "./api.ts";
+import { getContainer, getAttendance, getWorkspaceLayout } from "./api.ts";
+import type { StoredIdentity } from "./identity-storage.ts";
 import {
   browserContainerStorage,
   chooseInitialContainer,

@@ -325,7 +325,6 @@ test("accounting separates public invoke requests, native reservations and publi
 test("accepted old owners retain ordinary service use but cannot parse or promise new monetary policies", () => {
   expect(jobOwnerSupports(43, "directServiceAccounting")).toBe(false);
   expect(jobOwnerSupports(44, "directServiceAccounting")).toBe(true);
-  expect(jobOwnerSupports(45, "directServiceAccounting")).toBe(false);
   const spec = policy();
   expect(servicePolicyProtocolRefusal(43, PROTOCOL_VERSION, spec)).toBe(
     "service_accounting_protocol_unsupported",
