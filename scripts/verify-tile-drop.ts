@@ -25,6 +25,8 @@
  *      the seam's VISIBLE centre at canvas zoom, without neighbouring content stealing it.
  *   9. LIVE RESIZE DOES NOT SCALE CONTENT — ratio updates change the rendered layout
  *      without stretching or trailing live contents; structural transitions still animate.
+ *      A genuine pre-change RAF and bounded sampled width transition establish the proof;
+ *      elapsed Node-side sleeps alone do not establish that Chromium painted any frame.
  *  10. TILE IDS ARE TREE-LOCAL — a workspace panel re-seated as local `t1` never steals the
  *      content seat or Arrange geometry of an earlier canvas portal's own local `t1`.
  *
@@ -547,7 +549,10 @@ try {
   );
   // A remote producer's proportions must be laid out immediately, not replayed as
   // placement FLIP animations. Sample in the browser every frame, not after settlement.
+  // Wait for the sampler's pre-change paint before mutating, then keep it running until
+  // each requested change has a sampled live-width transition. Never manufacture a baseline.
   await sleep(600);
+  const ratioDeadline = Date.now() + 20_000;
   await browser.evaluate(`(() => {
     const result = { frames: 0, movedFrames: 0, minWidth: Infinity, maxWidth: 0 };
     let running = true;
@@ -564,15 +569,39 @@ try {
       }
       requestAnimationFrame(tick);
     };
+    window.__ratioMotion = () => result;
     window.__finishRatioMotion = () => { running = false; return result; };
     requestAnimationFrame(tick);
   })()`);
+  await until(
+    () => browser!.evaluate<boolean>("Number.isFinite(window.__ratioMotion().minWidth)"),
+    Math.max(0, ratioDeadline - Date.now()),
+    "ratio sampler captured a genuine pre-change frame",
+  );
   const originalRatios = [...(layoutNow()[ROOT_TILE_ID]?.ratios ?? [])];
   for (let step = 1; step <= 8; step++) {
+    const before = await browser.evaluate<{ frames: number; maxWidth: number }>(
+      "window.__ratioMotion()",
+    );
     viewClient.setTileRatios(ROOT_TILE_ID, [1 + step * 0.04, 1 - step * 0.04]);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          `window.__ratioMotion().frames > ${before.frames} && window.__ratioMotion().maxWidth > ${before.maxWidth}`,
+        ),
+      Math.max(0, ratioDeadline - Date.now()),
+      `ratio step ${step} painted a sampled live-width transition`,
+    );
     await sleep(60);
   }
-  await sleep(100);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "window.__ratioMotion().frames >= 2 && window.__ratioMotion().maxWidth - window.__ratioMotion().minWidth > 20",
+      ),
+    Math.max(0, ratioDeadline - Date.now()),
+    "ratio update painted a sampled live-width transition",
+  );
   const ratioMotion = await browser.evaluate<{
     frames: number;
     movedFrames: number;
