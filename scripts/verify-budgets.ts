@@ -312,6 +312,7 @@ try {
   browser.on("Network.webSocketFrameReceived", countFrame);
   browser.on("Network.webSocketFrameSent", countFrame);
 
+  const page = browser;
   await browser.goto(`${origin}/#key=${ownerKey}`);
   /*
     The feed report seam rides the same opt-in flag as the canvas probe. Set BEFORE the identity
@@ -319,10 +320,19 @@ try {
     created — the seam is installed once, by whichever feed comes first.
   */
   await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
-  await browser.typeInto('input[name="name"], input', "budget");
+  await until(
+    () => page.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+    10_000,
+    "budget browser identity form",
+  );
+  await browser.typeInto("#identity-name", "budget");
   await browser.clickTestId("identity-enter");
+  await until(
+    () => page.evaluate<boolean>("localStorage.getItem('manifold.identity') !== null"),
+    10_000,
+    "budget browser admitted identity",
+  );
   await browser.goto(`${origin}/p/${encodeURIComponent(containerId)}`);
-  const page = browser;
   await until(
     async () =>
       (await page.evaluate<number>(`document.querySelectorAll('.react-flow__node').length`)) >= 13,
