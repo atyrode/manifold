@@ -118,6 +118,131 @@ test("public handle serves multiple explicit entries and releases its listener",
   }
 }, 30000);
 
+test("SIGTERM exits after an in-flight dependency lookup resumes beyond watcher shutdown", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-shutdown-"));
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  let drain: Promise<void[]> | undefined;
+  let pendingRequest: Promise<unknown> | undefined;
+  let kill: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const directory = await source(root, "plugin", "example.refresh");
+    const dependency = join(root, "node_modules/late-watch-dependency");
+    await mkdir(dependency, { recursive: true });
+    await Bun.write(
+      join(root, "package.json"),
+      JSON.stringify({
+        private: true,
+        type: "module",
+        dependencies: { "late-watch-dependency": "1.0.0" },
+      }),
+    );
+    const metadata = join(dependency, "package.json");
+    await Bun.write(
+      metadata,
+      JSON.stringify({ name: "late-watch-dependency", type: "module", main: "index.ts" }),
+    );
+    await Bun.write(join(dependency, "index.ts"), 'export const value = "dependency";');
+    await Bun.write(
+      join(directory, "web.tsx"),
+      'import { value } from "late-watch-dependency"; export const result = value; export default { id: "example.refresh", panels: {} };',
+    );
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => !name.startsWith("MANIFOLD_") && !name.startsWith("REFRESH_TEST_"),
+      ),
+    );
+    const proc = Bun.spawn(
+      [
+        process.execPath,
+        "--preload",
+        join(import.meta.dir, "fixtures/fast-refresh/shutdown-preload.ts"),
+        join(import.meta.dir, "../src/dev.ts"),
+        root,
+        "--fast-refresh",
+        "--hub",
+        HUB,
+        "--port",
+        "0",
+      ],
+      {
+        env: { ...env, NODE_ENV: "development", REFRESH_TEST_DEPENDENCY_METADATA: metadata },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    child = proc;
+    const events: string[] = [];
+    let url: string | undefined;
+    let cleanupComplete = false;
+    let diagnostic = "";
+    const consume = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
+      let carry = "";
+      const decoder = new TextDecoder();
+      for await (const chunk of stream) {
+        carry += decoder.decode(chunk, { stream: true });
+        const lines = carry.split("\n");
+        carry = lines.pop() ?? "";
+        for (const line of lines) {
+          diagnostic = `${diagnostic}\n${line}`.slice(-4000);
+          if (!line.startsWith("{")) continue;
+          const value: unknown = JSON.parse(line);
+          if (
+            typeof value !== "object" ||
+            value === null ||
+            !("event" in value) ||
+            typeof value.event !== "string"
+          )
+            continue;
+          events.push(value.event);
+          if (
+            value.event === "plugin-refresh-ready" &&
+            "url" in value &&
+            typeof value.url === "string"
+          )
+            url = value.url;
+          if (value.event === "plugin-refresh-stopped" && "cleanup" in value)
+            cleanupComplete = value.cleanup === "complete";
+        }
+      }
+    };
+    drain = Promise.all([consume(proc.stdout), consume(proc.stderr)]);
+    const event = async (name: string): Promise<void> => {
+      // Readiness and the held filesystem lookup cross a real child/OS boundary.
+      const deadline = performance.now() + 30000;
+      while (!events.includes(name)) {
+        if (proc.exitCode !== null || performance.now() >= deadline)
+          throw new Error(`refresh did not report ${name}: ${diagnostic}`);
+        await Bun.sleep(25);
+      }
+    };
+    await event("plugin-refresh-ready");
+    if (url === undefined) throw new Error("refresh readiness omitted its URL");
+    pendingRequest = fetch(new URL(`/@fs${join(directory, "web.tsx")}`, url), {
+      signal: AbortSignal.timeout(30000),
+    })
+      .then((response) => response.text())
+      .catch(() => undefined); // Closing the real listener aborts its pending response.
+    await event("fixture-dependency-held");
+    proc.kill("SIGTERM");
+    // A leaked watcher must fail the ordinary process-exit boundary, not be unref'ed
+    // or hidden by the test runner's own shutdown. Match the public E2E's bound.
+    kill = setTimeout(() => proc.kill("SIGKILL"), 10000);
+    const code = await proc.exited;
+    await drain;
+    expect(events).toContain("fixture-listener-closed");
+    expect(cleanupComplete).toBe(true);
+    expect(code, diagnostic).toBe(0);
+  } finally {
+    clearTimeout(kill);
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await child?.exited;
+    await drain;
+    await pendingRequest;
+    await rm(root, { recursive: true, force: true });
+  }
+}, 90000);
+
 test("HTTP source boundaries refuse arbitrary modules, secrets, encoded traversal and symlink escapes without cancelling legitimate entries", async () => {
   const root = await mkdtemp(join(tmpdir(), "plugin-refresh-boundaries-"));
   const outside = await mkdtemp(join(tmpdir(), "plugin-refresh-outside-"));
