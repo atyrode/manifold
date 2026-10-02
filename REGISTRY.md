@@ -2122,8 +2122,9 @@ be queried by some script — an unqueried row is stale and fails, exactly as a 
 fails S6.
 
 Room admission belongs to the current document. A fixture's transport observer clears the
-previous document's bindings before navigation; a canvas gate also waits for `connection-state`
-to render `Open`, so receiving a frame is not mistaken for its consumer having applied it.
+previous document's bindings before navigation. The fleet fixture also waits for the current
+view's rendered admission: canvas `connection-state` is `Open`, or the composition's
+`composition-status` has `is-open`. Receiving a frame is not its consumer having applied it.
 
 This register holds the contracts, NOT the inventory. A `data-testid` no gate queries is
 ordinary markup and belongs nowhere near this list: `plugin-manager`, `sidebar-list` and
