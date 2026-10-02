@@ -17,7 +17,7 @@ import {
 } from "@manifold/protocol";
 import { ActionHttpError, ActionProtocolError, discoverActions, invokeAction } from "@manifold/sdk";
 import { selectedInstanceOrigin } from "@manifold/plugin/instance";
-import { privateCredentialEntryBypass } from "@manifold/plugin/private-entry";
+import { privateCredentialEntryBypass, type Bypass } from "@manifold/plugin/private-entry";
 import { identityExpired, loadIdentity } from "./identity-storage.ts";
 
 const ACTIONS = {
@@ -26,6 +26,7 @@ const ACTIONS = {
   commit: "engine.services.commitCredentialEnrollment",
   cancel: "engine.services.cancelCredentialEnrollment",
 } as const;
+const WORKER_CHANGE_MESSAGE = "A worker serving this entry changed. The entry was cleared; reopen from the ordinary workspace.";
 
 const REFUSAL_WORDS: Record<ServiceCredentialEnrollmentRefusal, string> = {
   credential_unauthorized: "Your current root and exact-machine authority are required. Return to the ordinary workspace to sign in.",
@@ -109,6 +110,7 @@ let epoch = 0;
 let challenge: ServiceCredentialEnrollmentChallenge | null = null;
 let expiryTimer: number | undefined;
 let plaintext: Uint8Array | null = null;
+let bypass: Bypass = { phase: "checking" };
 
 function clearInput(): void {
   input.value = "";
@@ -146,11 +148,13 @@ function currentIdentity(): boolean {
 
 async function request<T>(name: string, args: unknown, schema: ReplySchema<T>): Promise<T> {
   if (identity === null) throw new PrivateEntryFailure("unauthorized");
+  if (name !== ACTIONS.cancel && !currentPrivateBypass()) throw new PrivateEntryFailure("worker_unsupported");
   const { outcome } = await invokeAction(
     { origin: hub, token: identity.token, timeoutMs: 10_000, maxResponseBytes: 1024 * 1024 },
     name,
     args,
   );
+  if (name !== ACTIONS.cancel && !currentPrivateBypass()) throw new PrivateEntryFailure("worker_unsupported");
   if (!outcome.ok) throw new PrivateEntryFailure("unauthorized");
   const parsed = schema.safeParse(outcome.result);
   if (!parsed.success) throw new PrivateEntryFailure("invalid_response");
@@ -168,7 +172,7 @@ function failureWords(error: unknown): string {
     return REFUSAL_WORDS.credential_unauthorized;
   }
   if (error instanceof PrivateEntryFailure && error.reason === "worker_unsupported") {
-    return "The current root worker has not proved private-document bypass support. Return to the ordinary workspace, accept its update activation, then reopen this entry.";
+    return "A worker that can serve this entry has not proved private-document bypass support. Return to the ordinary workspace, accept its update activation, then reopen this entry.";
   }
   if (error instanceof PrivateEntryFailure && error.reason === "invalid_response") {
     return "The selected hub returned an invalid enrollment response. The entry is closed; no automatic retry is made.";
@@ -204,6 +208,7 @@ async function cancelChallenge(current: ServiceCredentialEnrollmentChallenge, st
 function retire(message: string): void {
   if (retired) return;
   retired = true;
+  if (bypass.phase === "ready") bypass.dispose();
   epoch++;
   busy = null;
   const current = dropChallenge();
@@ -212,10 +217,25 @@ function retire(message: string): void {
   if (current !== null) void cancelChallenge(current, epoch, false);
 }
 
-/** A direct URL has the same fail-closed old-worker boundary as the manager launcher. */
+function currentPrivateBypass(): boolean {
+  if (bypass.phase === "ready" && bypass.isCurrent()) return true;
+  retire(WORKER_CHANGE_MESSAGE);
+  return false;
+}
+
+/** A direct URL retains the same live, fail-closed guard as the manager launcher. */
 async function requirePrivateBypass(): Promise<void> {
-  const result = await privateCredentialEntryBypass();
-  if (result.phase !== "ready") throw new PrivateEntryFailure("worker_unsupported");
+  if (bypass.phase !== "checking") {
+    if (!currentPrivateBypass()) throw new PrivateEntryFailure("worker_unsupported");
+    return;
+  }
+  const result = await privateCredentialEntryBypass(() => retire(WORKER_CHANGE_MESSAGE));
+  if (retired) {
+    if (result.phase === "ready") result.dispose();
+    throw new PrivateEntryFailure("worker_unsupported");
+  }
+  bypass = result;
+  if (result.phase !== "ready" || !result.isCurrent()) throw new PrivateEntryFailure("worker_unsupported");
 }
 
 async function readMetadata(): Promise<void> {
@@ -278,6 +298,7 @@ async function readMetadata(): Promise<void> {
 async function prepare(): Promise<void> {
   if (retired || !ready || needsRefresh || target === null || busy !== null || pendingCommit || challenge !== null) return;
   clearInput();
+  if (!currentPrivateBypass()) return;
   if (!currentIdentity()) {
     retire("Your selected hub or sign-in changed or expired. Reopen from the ordinary workspace.");
     return;
@@ -361,6 +382,7 @@ async function commit(): Promise<void> {
   let bytes: Uint8Array | null = null;
   let envelope: ServiceCredentialEnrollmentEnvelope | null = null;
   try {
+    if (!currentPrivateBypass()) return;
     if (!currentIdentity()) {
       retire("Your selected hub or sign-in changed or expired. The input was cleared; reopen from the ordinary workspace.");
       return;
@@ -465,9 +487,6 @@ window.addEventListener("pagehide", () => retire("This entry was closed and its 
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) retire("A restored document cannot reuse an enrollment challenge. Reopen from the ordinary workspace.");
 });
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.addEventListener("controllerchange", () => retire("The root worker changed. The entry was cleared; reopen from the ordinary workspace."));
-}
 if (identity?.expiresInMs !== undefined && identity.receivedAt !== undefined) {
   window.setTimeout(() => retire("Your local sign-in expired. The entry was cleared; return to the ordinary workspace to sign in."),
     Math.max(0, identity.expiresInMs - (Date.now() - identity.receivedAt)));

@@ -11,7 +11,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { privateCredentialEntryBypass, type Bypass } from "@manifold/plugin/private-entry";
 
 type Metadata = Pick<ServiceConfigurationRead, "connected" | "credentialReferences">;
-const UPDATE_GUIDANCE = "Private entry is closed until the current root worker proves bypass support. Accept the ordinary workspace update activation, then check again. No worker update is activated here.";
+const UPDATE_GUIDANCE = "Private entry is closed until the current controller and the destination's active root worker prove bypass support. Accept the ordinary workspace update activation, then check again. No worker update is activated here.";
 
 /** Machine-wide metadata/launch source in the existing manager, never a plugin runtime form. */
 export function CredentialReferences({ host }: Pick<SectionProps, "host">): ReactElement {
@@ -21,7 +21,7 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [hubChanged, setHubChanged] = useState(false);
-  const [bypass, setBypass] = useState<Bypass>({ phase: "checking", controller: null });
+  const [bypass, setBypass] = useState<Bypass>({ phase: "checking" });
   const [bypassCheck, setBypassCheck] = useState(0);
   const requestEpoch = useRef(0);
   const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
@@ -37,23 +37,28 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
 
   useEffect(() => {
     let current = true;
+    let snapshot: Extract<Bypass, { phase: "ready" }> | null = null;
     setPending(false);
-    const check = (): void => {
-      setBypass({ phase: "checking", controller: null });
-      void privateCredentialEntryBypass().then((result) => { if (current) setBypass(result); });
-    };
-    check();
+    setBypass({ phase: "checking" });
     const changed = (): void => {
+      if (!current) return;
       requestEpoch.current++;
       setMetadata(null);
       setPending(false);
-      check();
+      setBypass({ phase: "unsupported" });
     };
-    if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("controllerchange", changed);
+    void privateCredentialEntryBypass(changed).then((result) => {
+      if (!current) {
+        if (result.phase === "ready") result.dispose();
+        return;
+      }
+      if (result.phase === "ready") snapshot = result;
+      setBypass(result);
+    });
     return () => {
       current = false;
+      snapshot?.dispose();
       requestEpoch.current++;
-      if ("serviceWorker" in navigator) navigator.serviceWorker.removeEventListener("controllerchange", changed);
     };
   }, [bypassCheck]);
 
@@ -97,6 +102,17 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
     }
   };
 
+  const guardNavigation = (event: Pick<Event, "preventDefault">): void => {
+    if (bypass.phase === "ready" && bypass.isCurrent() && selectedInstanceOrigin() === hub) return;
+    event.preventDefault();
+    if (bypass.phase === "ready") bypass.dispose();
+    requestEpoch.current++;
+    setMetadata(null);
+    setPending(false);
+    setFailure(UPDATE_GUIDANCE);
+    setBypass({ phase: "unsupported" });
+  };
+
   return (
     <section className="plugin-manager-credentials" aria-labelledby="plugin-manager-credentials-title" data-testid="plugin-manager-credential-references">
       <Stack gap="0.45rem">
@@ -127,7 +143,7 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
           {bypass.phase === "unsupported" ? <button type="button" className="plugin-manager-filter" onClick={() => setBypassCheck((value) => value + 1)}>Check private-entry support again</button> : null}
         </Cluster>
         <p role="status">
-          {bypass.phase === "checking" ? "Checking current root-worker private bypass support…" : bypass.phase === "unsupported" ? UPDATE_GUIDANCE : bypass.controller === null ? "No controlling worker: private entry will be network-only." : "The current controller explicitly supports network-only private document and asset bypass."}
+          {bypass.phase === "checking" ? "Checking controller and destination-worker private bypass support…" : bypass.phase === "unsupported" ? UPDATE_GUIDANCE : !bypass.hasWorker ? "No covering worker registration or controller: private entry will be network-only." : "Every worker that could serve the private entry explicitly supports network-only document and asset bypass."}
         </p>
         {failure === null ? null : <p className="plugin-manager-error" role="alert">{failure}</p>}
         {metadata === null ? null : !metadata.connected ? <p role="status">No current proved native owner is connected. Private entry is closed.</p> : metadata.credentialReferences.length === 0 ? <p>No credential references are declared by this owner.</p> : (
@@ -148,14 +164,8 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
                             target="_blank"
                             rel="noopener noreferrer"
                             referrerPolicy="no-referrer"
-                            onClick={(event) => {
-                              const controller = "serviceWorker" in navigator ? navigator.serviceWorker.controller : null;
-                              if (controller === bypass.controller && selectedInstanceOrigin() === hub) return;
-                              event.preventDefault();
-                              setMetadata(null);
-                              setFailure(UPDATE_GUIDANCE);
-                              setBypass({ phase: "unsupported", controller });
-                            }}
+                            onClick={guardNavigation}
+                            onAuxClick={guardNavigation}
                           >
                             Open private entry
                           </a>

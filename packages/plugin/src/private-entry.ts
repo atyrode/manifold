@@ -1,37 +1,122 @@
-export type Bypass = { phase: "checking" | "ready" | "unsupported"; controller: ServiceWorker | null };
+export type Bypass =
+  | { readonly phase: "checking" | "unsupported" }
+  | {
+    readonly phase: "ready";
+    readonly hasWorker: boolean;
+    isCurrent(): boolean;
+    dispose(): void;
+  };
 
 /** Capability negotiation contains no identity, target, envelope or typed credential data. */
-export async function privateCredentialEntryBypass(): Promise<Bypass> {
-    if (!("serviceWorker" in navigator)) return { phase: "ready", controller: null };
-    const controller = navigator.serviceWorker.controller;
-    if (controller === null) return { phase: "ready", controller: null };
-    const supported = await new Promise<boolean>((resolve) => {
-        const channel = new MessageChannel();
-        const finish = (value: boolean): void => {
-            window.clearTimeout(timer);
-            channel.port1.close();
-            channel.port2.close();
-            resolve(value);
-        };
-        const timer = window.setTimeout(() => finish(false), 2000);
-        channel.port1.onmessage = (event: MessageEvent<unknown>) => {
-            const data = event.data;
-            finish(data !== null && typeof data === "object" &&
-                Reflect.get(data, "type") === "manifold.private-credential-bypass" &&
-                Reflect.get(data, "version") === 1 && Reflect.get(data, "supported") === true);
-        };
-        try {
-            // The old worker ignores the reply port; querying its active incarnation cannot activate
-            // a waiting worker. In particular this is not the ordinary null activation message.
-            controller.postMessage({ type: "manifold.private-credential-bypass", version: 1 }, [channel.port2]);
-        } catch {
-            finish(false);
-        }
-    });
+export async function privateCredentialEntryBypass(onChanged: () => void): Promise<Bypass> {
+  if (!("serviceWorker" in navigator)) {
+    let disposed = false;
     return {
-        phase: supported && navigator.serviceWorker.controller === controller ? "ready" : "unsupported",
-        controller,
+      phase: "ready",
+      hasWorker: false,
+      isCurrent: () => !disposed && !("serviceWorker" in navigator),
+      dispose: () => { disposed = true; },
     };
+  }
+  const container = navigator.serviceWorker;
+  const controller = container.controller;
+  const lifetime = new AbortController();
+  let registration: ServiceWorkerRegistration | undefined;
+  let active: ServiceWorker | null = null;
+  let installing: ServiceWorker | null = null;
+  let waiting: ServiceWorker | null = null;
+  let disposed = false;
+  let ready = false;
+  const states = new Map<ServiceWorker, ServiceWorkerState>();
+  const isCurrent = (): boolean => {
+    if (disposed || navigator.serviceWorker !== container || container.controller !== controller ||
+      (controller !== null && controller.state !== "activated") ||
+      (registration !== undefined && (
+        registration.active !== active || active === null || active.state !== "activated" ||
+        registration.installing !== installing || registration.waiting !== waiting
+      ))) return false;
+    for (const [worker, state] of states) {
+      if (worker.state !== state) return false;
+    }
+    return true;
+  };
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    lifetime.abort();
+  };
+  const changed = (): void => {
+    if (disposed) return;
+    dispose();
+    onChanged();
+  };
+  container.addEventListener("controllerchange", changed, { signal: lifetime.signal });
+  try {
+    // An uncontrolled launcher can still open a document controlled by this registration.
+    registration = await container.getRegistration(CREDENTIAL_ENTRY_DOCUMENT_PATH);
+    active = registration?.active ?? null;
+    installing = registration?.installing ?? null;
+    waiting = registration?.waiting ?? null;
+    for (const worker of [controller, active, installing, waiting]) {
+      if (worker === null || states.has(worker)) continue;
+      states.set(worker, worker.state);
+      worker.addEventListener("statechange", changed, { signal: lifetime.signal });
+    }
+    registration?.addEventListener("updatefound", changed, { signal: lifetime.signal });
+    if (!isCurrent()) return { phase: "unsupported" };
+    const [controllerSupported, activeSupported] = await Promise.all([
+      controller === null || acknowledgePrivateBypass(controller, lifetime.signal),
+      active === null || active === controller || acknowledgePrivateBypass(active, lifetime.signal),
+    ]);
+    if (!controllerSupported || !activeSupported || !isCurrent()) return { phase: "unsupported" };
+    // Recheck scope selection as well as the live incarnation after asynchronous replies.
+    if (await container.getRegistration(CREDENTIAL_ENTRY_DOCUMENT_PATH) !== registration ||
+      !isCurrent()) return { phase: "unsupported" };
+    ready = true;
+    return { phase: "ready", hasWorker: controller !== null || active !== null, isCurrent, dispose };
+  } catch {
+    return { phase: "unsupported" };
+  } finally {
+    if (!ready) dispose();
+  }
+}
+
+function acknowledgePrivateBypass(worker: ServiceWorker, signal: AbortSignal): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const channel = new MessageChannel();
+    let settled = false;
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", aborted);
+      channel.port1.onmessage = null;
+      channel.port1.onmessageerror = null;
+      channel.port1.close();
+      channel.port2.close();
+      resolve(value);
+    };
+    const aborted = (): void => finish(false);
+    const timer = window.setTimeout(aborted, 2000);
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) {
+      finish(false);
+      return;
+    }
+    channel.port1.onmessage = (event: MessageEvent<unknown>) => {
+      const data = event.data;
+      finish(data !== null && typeof data === "object" &&
+        Reflect.get(data, "type") === "manifold.private-credential-bypass" &&
+        Reflect.get(data, "version") === 1 && Reflect.get(data, "supported") === true);
+    };
+    channel.port1.onmessageerror = aborted;
+    try {
+      // Query only the controller/active incarnation, never a waiting worker or activation.
+      worker.postMessage({ type: "manifold.private-credential-bypass", version: 1 }, [channel.port2]);
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 export const CREDENTIAL_ENTRY_DOCUMENT_PATH = "/credential-entry.html";
