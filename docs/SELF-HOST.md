@@ -58,6 +58,13 @@ Both run as the configured account with `UMask=0077`. The selected state/termina
 directories are mode 0700. The token must already be a regular non-symlink file, mode 0600,
 owned by the account, in an immediate mode-0700 parent owned by the same account.
 Invalid custody refuses the transport without destroying its retained owner.
+Before either account service can start, the root-owned
+`manifold-shell-directories.service` resolves every state component through held no-follow
+descriptors and provisions only missing components. A symlink or a changed component refuses
+before root can chmod or chown it; existing account-owned state is checked by the ordinary
+account service instead of being root-repaired. In coexistence, this prerequisite also refuses
+the selected account before any directory mutation when its NSS UID aliases protected
+`manifold`.
 
 State, socket and token paths must be normalized absolute paths, nonoverlapping with native
 control/workload/output storage, `/run/credentials`, kernel pseudo-filesystems, `/nix/store`,

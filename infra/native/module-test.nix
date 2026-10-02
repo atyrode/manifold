@@ -566,6 +566,12 @@ let
         assert isinstance(token, str) and token, "fresh fixture enrollment did not return a one-time credential"
         account = pwd.getpwnam("account-shell")
         parent = Path("${shellToken}").parent
+        # The disposable root enrollment service has a private umask. Its public
+        # credentials ancestor must remain traversable; only the account-owned leaf
+        # carries token custody.
+        parent.parent.mkdir(parents=True, exist_ok=True)
+        os.chown(parent.parent, 0, 0)
+        parent.parent.chmod(0o755)
         parent.mkdir(parents=True, exist_ok=True)
         os.chown(parent, account.pw_uid, account.pw_gid)
         parent.chmod(0o700)
@@ -811,6 +817,7 @@ let
     assert lib.assertMsg (defaults.services.manifold.shell == {
       enable = false; machineName = ""; user = ""; serverUrl = ""; tokenFile = null; stateDirectory = "";
     }) "ordinary shell role must remain opt-in with empty configuration";
+    assert !(defaults.systemd.services ? manifold-shell-directories);
     assert !(defaults.systemd.services ? manifold-shell-owner);
     assert !(defaults.systemd.services ? manifold-shell-transport);
     assert fullyEvaluates shellOnly;
@@ -838,6 +845,9 @@ let
     assert lib.all (rule: !lib.any (path: lib.hasInfix path rule)
       [ "/var/lib/manifold" "/var/lib/manifold-workload" "/var/lib/manifold-output" ])
       configured.systemd.tmpfiles.rules;
+    assert lib.all (rule: !lib.hasInfix shellState rule) configured.systemd.tmpfiles.rules;
+    assert configured.systemd.services.manifold-shell-directories.serviceConfig.User == "root";
+    assert configured.systemd.services.manifold-shell-directories.serviceConfig.Group == "root";
     assert configured.systemd.services.manifold-shell-owner.restartIfChanged == false;
     assert configured.systemd.services.manifold-shell-owner.stopIfChanged == false;
     assert lib.all (name: configured.systemd.services.${name}.serviceConfig.User == "account-shell"
@@ -946,12 +956,15 @@ in
     };
     systemd.services.shell-fixture-files = {
       wantedBy = [ "multi-user.target" ];
-      before = [ "manifold-shell-owner.service" ];
-      requiredBy = [ "manifold-shell-owner.service" ];
+      before = [ "manifold-shell-directories.service" "manifold-shell-owner.service" ];
+      requiredBy = [ "manifold-shell-directories.service" "manifold-shell-owner.service" ];
       after = [ "systemd-tmpfiles-setup.service" ];
       script = ''
         set -eu
         install -d -o root -g root -m 0755 /srv/shell-fixture
+        # A root-owned but lexical-safe parent makes the later alias probe exercise the
+        # privileged provisioner, not an ordinary account's own mkdir.
+        install -d -o root -g root -m 0755 '/srv/account shell/owner'
         install -d -o account-shell -g shell-primary -m 0700 '${shellOperatorAnchor}'
         install -d -o root -g shell-access -m 0750 /srv/shell-fixture/group
         printf group-access > /srv/shell-fixture/group/readable
@@ -1176,6 +1189,8 @@ in
         node.start()
         node.connect()
         node.wait_for_unit(hub_unit, timeout=180)
+        node.wait_for_unit("manifold-shell-directories.service", timeout=180)
+        assert node.succeed("systemctl show -p ActiveState --value manifold-shell-directories.service").strip() == "active"
         node.wait_for_unit("manifold-shell-owner.service", timeout=180)
         node.wait_for_unit("manifold-shell-transport.service", timeout=180)
         fixture_env = "env SHELL_FIXTURE_KEY_FILE=" + shlex.quote(key_file) + " "
@@ -1195,6 +1210,9 @@ in
             assert not any(name in dependencies for name in [
                 "manifold-shell-transport.service", hub_unit, "manifold-owner.service",
             ]), (field, dependencies)
+        assert "manifold-shell-directories.service" in node.succeed(
+            "systemctl show -p Requires --value manifold-shell-owner.service"
+        ).split()
         token = shlex.quote("${shellToken}")
         token_parent = shlex.quote("${builtins.dirOf shellToken}")
         state = shlex.quote("${shellState}")
@@ -1315,22 +1333,51 @@ in
         assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == "0"
         assert node.succeed("systemctl show -p NRestarts --value manifold-shell-owner.service").strip() == owner_restarts
 
+        # Stop the replaceable transport before testing either post-shutdown custody path.
+        node.succeed("systemctl stop manifold-shell-transport.service")
+        if profile_role == "coexist":
+            # An account name alone is not a custody boundary. With the root directory
+            # prerequisite still active from boot, each ordinary-account preflight must
+            # independently reject a live NSS alias after the retained owner has exited.
+            node.succeed("usermod -o -u \"$(id -u manifold)\" account-shell")
+            for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
+                node.succeed("systemctl reset-failed " + unit)
+                node.fail("systemctl start " + unit)
+                service_log = node.succeed("journalctl -b -u " + unit + " --no-pager")
+                assert "Manifold shell account shares the protected manifold UID; refusing startup" in service_log
+                assert node.succeed("systemctl show -p MainPID --value " + unit).strip() == "0"
+                if unit == "manifold-shell-transport.service":
+                    node.succeed("systemctl stop " + unit)
+            node.succeed("usermod -u 1400 account-shell")
+            assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
+
         # Only after exact-owner shutdown may this fixture alter its private state.
-        # The state and socket parent themselves remain real 0700 account directories.
         # Keep the alias in place until guest teardown, so automatic retries cannot
         # accidentally start a new owner between the refusal and shutdown assertions.
-        node.succeed("systemctl stop manifold-shell-transport.service")
         owner_root = shlex.quote("/srv/account shell/owner")
         exposed_owner = shlex.quote("${shellOperatorAnchor}/owner")
         socket_parent = shlex.quote("${shellState}/terminal-host")
+        assert node.succeed(f"stat -c '%a %U %G' {owner_root}").strip() == "755 root root"
         node.succeed(f"mv {owner_root} {exposed_owner} && ln -s {exposed_owner} {owner_root}")
         node.succeed(f"test -L {owner_root} && test ! -L {state} && test ! -L {socket_parent} && test ! -e {socket_path}")
         for path in [state, socket_parent]:
             assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "700 account-shell shell-primary"
         if profile_role == "coexist":
             node.succeed("runuser -u manifold -- test -x /run/manifold-anchors/shell-fixture/owner/state/terminal-host")
+
+        # A root-owned alias points at a foreign state whose private leaves need repair.
+        # The old tmpfiles rules would follow this alias and chown/chmod those leaves.
+        node.succeed(f"chown root:root {state} {socket_parent} && chmod 0755 {state} {socket_parent}")
+        for path in [state, socket_parent]:
+            assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "755 root root"
         metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {owner_root} {state} {socket_parent}"
         aliased_metadata = node.succeed(metadata_command)
+        node.succeed("systemctl reset-failed manifold-shell-directories.service")
+        node.fail("systemctl restart manifold-shell-directories.service")
+        directory_log = node.succeed("journalctl -b -u manifold-shell-directories.service --no-pager")
+        assert "Manifold shell directory provisioning refused: unsafe state ancestor owner" in directory_log
+        assert node.succeed(metadata_command) == aliased_metadata, "root provisioner repaired aliased state"
+
         for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
             node.succeed("systemctl reset-failed " + unit)
             node.fail("systemctl start " + unit)
@@ -1344,20 +1391,6 @@ in
             assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
             assert node.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == native_configuration
             node.succeed(fixture_command + "custody-result")
-            # An account name alone is not a custody boundary. Change live NSS only after
-            # the exact owner is empty/stopped; both preflights must reject the UID alias,
-            # rather than passing by merely having different account names.
-            node.succeed("systemctl stop manifold-shell-transport.service")
-            node.succeed("usermod -o -u \"$(id -u manifold)\" account-shell")
-            for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
-                node.succeed("systemctl reset-failed " + unit)
-                node.fail("systemctl start " + unit)
-                service_log = node.succeed("journalctl -b -u " + unit + " --no-pager")
-                assert "Manifold shell account shares the protected manifold UID; refusing startup" in service_log
-                assert node.succeed("systemctl show -p MainPID --value " + unit).strip() == "0"
-                if unit == "manifold-shell-transport.service":
-                    node.succeed("systemctl stop " + unit)
-            assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
         node.shutdown()
   '' + pkgs.lib.optionalString (role == "machine") ''
     machine.start()
