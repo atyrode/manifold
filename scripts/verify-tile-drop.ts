@@ -550,8 +550,9 @@ try {
   // A remote producer's proportions must be laid out immediately, not replayed as
   // placement FLIP animations. Sample in the browser every frame, not after settlement.
   // Wait for the sampler's pre-change paint before mutating, then keep it running until
-  // actual painted samples include a changed live width. Never manufacture a baseline.
+  // each requested change has a sampled live-width transition. Never manufacture a baseline.
   await sleep(600);
+  const ratioDeadline = Date.now() + 20_000;
   await browser.evaluate(`(() => {
     const result = { frames: 0, movedFrames: 0, minWidth: Infinity, maxWidth: 0 };
     let running = true;
@@ -574,12 +575,23 @@ try {
   })()`);
   await until(
     () => browser!.evaluate<boolean>("Number.isFinite(window.__ratioMotion().minWidth)"),
-    20_000,
+    Math.max(0, ratioDeadline - Date.now()),
     "ratio sampler captured a genuine pre-change frame",
   );
   const originalRatios = [...(layoutNow()[ROOT_TILE_ID]?.ratios ?? [])];
   for (let step = 1; step <= 8; step++) {
+    const before = await browser.evaluate<{ frames: number; maxWidth: number }>(
+      "window.__ratioMotion()",
+    );
     viewClient.setTileRatios(ROOT_TILE_ID, [1 + step * 0.04, 1 - step * 0.04]);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          `window.__ratioMotion().frames > ${before.frames} && window.__ratioMotion().maxWidth > ${before.maxWidth}`,
+        ),
+      Math.max(0, ratioDeadline - Date.now()),
+      `ratio step ${step} painted a sampled live-width transition`,
+    );
     await sleep(60);
   }
   await until(
@@ -587,7 +599,7 @@ try {
       browser!.evaluate<boolean>(
         "window.__ratioMotion().frames >= 2 && window.__ratioMotion().maxWidth - window.__ratioMotion().minWidth > 20",
       ),
-    20_000,
+    Math.max(0, ratioDeadline - Date.now()),
     "ratio update painted a sampled live-width transition",
   );
   const ratioMotion = await browser.evaluate<{
