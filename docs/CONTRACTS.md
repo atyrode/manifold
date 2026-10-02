@@ -118,14 +118,22 @@ declared reference/exact origin, one owner-created nonce/expiry, explicit replac
 an opaque source revision. Hub relay is transient ciphertext-only. Traces are opaque,
 recording safe status/refusal rather than value, envelope, path or library diagnostics.
 Only declared sources under retained directory capabilities can be enrolled. Initial
-publication is exclusive; explicit replacement must retire the old held descriptor only
-after every resolver observes the successfully published current source.
+publication is kernel-exclusive. Explicit replacement compares the owner-local opaque source
+revision under a per-reference mutation lock, publishes the validated staged read-only inode,
+then switches every live resolver to its new descriptor before closing the old one. Native
+owner-private OS writers are trusted: this is enrollment-state CAS, not an expected-inode
+kernel CAS against a hostile same-UID writer. Unsafe/root-managed/read-only parents gain
+neither write authority nor an alternate credential store.
 
 The document isolates the entry DOM and module graph from ordinary plugin execution;
 it does not turn already trusted same-origin in-realm code, shared browser storage or a
 compromised origin/service worker into an untrusted security domain. No value accessor or
 enrollment method is added to plugin service context. Private documents/assets are not
 offline shell content, and opening one must not expose its DOM through a parent opener.
+An already controlling older root worker must prove support for private document/asset bypass
+before the metadata launcher opens entry; otherwise it requests ordinary user-driven worker
+activation and fails closed. Private entry never treats an offline cached plugin shell as its
+document. A page with no controller may use the ordinary network-only document route.
 
 ### Dependency decisions
 
