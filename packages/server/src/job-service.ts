@@ -5647,20 +5647,48 @@ export class JobService {
     // Resolve the complete private runtime and match every planned fact before even the
     // authority recheck can append an admission decision. A digest alone is not authority.
     const native = this.terminalDemandBinding(runtime, machineId, terminal.containerId);
-    const captured = authorityFence?.snapshot().nativeDemand;
-    if (captured !== undefined) {
-      if (
-        !Array.isArray(captured) ||
-        !captured.some((binding) => {
+    if (authorityFence !== undefined) {
+      const snapshot = authorityFence.snapshot();
+      const captured = snapshot.nativeDemand;
+      if (captured !== undefined) {
+        if (!Array.isArray(captured)) fail("terminal_runtime_destination_changed");
+        const matches = (binding: unknown): boolean => {
           const parsed = AuthoritySnapshotSchema.shape.native.unwrap().safeParse(binding);
           return (
             parsed.success &&
             digest(parsed.data) === digest(native) &&
             this.terminalDemandBindingCurrent(parsed.data)
           );
-        })
-      )
-        fail("terminal_runtime_destination_changed");
+        };
+        if (!captured.some(matches)) {
+          const sourceContainerId = snapshot.containerId;
+          if (
+            (snapshot.actionName !== "core.terminals.open" &&
+              snapshot.actionName !== "core.terminals.create") ||
+            sourceContainerId === undefined ||
+            sourceContainerId === terminal.containerId
+          )
+            fail("terminal_runtime_destination_changed");
+          let rebound = false;
+          const reboundBindings = captured.map((binding) => {
+            const parsed = AuthoritySnapshotSchema.shape.native.unwrap().safeParse(binding);
+            if (
+              rebound ||
+              !parsed.success ||
+              parsed.data.containerId !== sourceContainerId ||
+              digest({ ...parsed.data, containerId: native.containerId }) !== digest(native) ||
+              !this.terminalDemandBindingCurrent(parsed.data)
+            )
+              return binding;
+            rebound = true;
+            return native;
+          });
+          if (!rebound) fail("terminal_runtime_destination_changed");
+          // An element home is allocated only after policy preparation. Its source binding must
+          // remain current, then the broker's newly admitted home authority replaces it.
+          authorityFence.bind({ ...snapshot, nativeDemand: reboundBindings });
+        }
+      }
     }
     if (native.terminalHostId !== terminal.terminalHostId)
       fail("terminal_runtime_host_unsupported");

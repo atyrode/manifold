@@ -1321,7 +1321,9 @@ export class TerminalBroker implements TerminalPlacementPort {
             reach: "node" as const,
           })),
         );
-      fence.bind({ ...fence.snapshot(), machineId: machine.machineId, containerId: homeId });
+      // Keep the policy preparer's source container. A generated element home rebinds its
+      // native demand only after this fence has admitted authority to work in that home.
+      fence.bind({ ...fence.snapshot(), machineId: machine.machineId });
       fence.checkCurrent();
     } catch (error) {
       fence.close();

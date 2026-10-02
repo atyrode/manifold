@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
 import { argumentDigest } from "@manifold/plugin-kit/server";
-import { projectNativePreparationDemand, type TerminalRuntime } from "@manifold/protocol";
+import {
+  formatManifoldUri,
+  projectNativePreparationDemand,
+  type TerminalRuntime,
+} from "@manifold/protocol";
 import { AuthoritySnapshotSchema } from "../src/authority-snapshot.ts";
 import { ActionAuthorityFence } from "../src/action-authority-fence.ts";
+import type { MachineChannel } from "../src/terminal-broker.ts";
 import {
   nativePreparationFixture,
   type NativePreparationPrivateState,
@@ -168,6 +173,87 @@ test("full runtime substitutions after packed-child preparation refuse before re
       expect(f.effects()).toEqual(before);
     }
   } finally {
+    await f.close();
+  }
+});
+
+test("a core terminal can rebind its current native demand to its broker-owned element home", async () => {
+  const f = await nativePreparationFixture();
+  let fence: ActionAuthorityFence | undefined;
+  try {
+    const terminalChannel: MachineChannel = {
+      machineId: f.terminalRuntime.machineId,
+      terminalHostId: f.terminal.terminalHostId,
+      terminalExecution: "governed",
+      send: () => true,
+    };
+    f.broker.setMachineOnline(terminalChannel);
+    const sourceContainerId = "native-preparation-canvas";
+    f.store.createContainer({
+      id: sourceContainerId,
+      name: "Native preparation canvas",
+      discipline: "canvas",
+      createdAt: 0,
+    });
+    let prepared: { fence: ActionAuthorityFence; traceId: number } | undefined;
+    const outcome = await f.host.dispatch(
+      f.root,
+      "core.terminals.open",
+      {
+        containerId: sourceContainerId,
+        elementId: "broker-owned-element",
+        machineId: f.terminalRuntime.machineId,
+        cols: 80,
+        rows: 24,
+        runtime: f.terminalRuntime,
+      },
+      null,
+      {
+        onPrepared: (_args, captured, traceId) => {
+          prepared = { fence: captured, traceId };
+        },
+      },
+    );
+    if (!outcome.ok) throw new Error(outcome.denial.message);
+    if (prepared === undefined)
+      throw new Error("core terminal preparation did not reach native admission");
+    ({ fence } = prepared);
+    const homeId = "broker-owned-element-home";
+    fence.extend(
+      (
+        [
+          "containers:write",
+          "containers:read",
+          "scenes:write",
+          "terminals:spawn",
+          "terminals:write",
+        ] as const
+      ).map((cap) => ({
+        cap,
+        node: formatManifoldUri({ kind: "container", containerId: homeId }),
+        reach: "node" as const,
+      })),
+    );
+    fence.bind({ ...fence.snapshot(), machineId: f.terminalRuntime.machineId });
+    const terminal = { ...f.terminal, containerId: homeId };
+    const command = f.service.admitTerminal(
+      f.root,
+      f.terminalRuntime,
+      f.terminalRuntime.machineId,
+      terminal,
+      prepared.traceId,
+      undefined,
+      fence,
+    );
+    expect(command.type).toBe("start");
+    expect(command.request.terminal).toEqual(terminal);
+    const [rebound] = AuthoritySnapshotSchema.shape.native
+      .unwrap()
+      .array()
+      .parse(fence.snapshot().nativeDemand);
+    expect(rebound?.containerId).toBe(homeId);
+  } finally {
+    fence?.close();
     await f.close();
   }
 });

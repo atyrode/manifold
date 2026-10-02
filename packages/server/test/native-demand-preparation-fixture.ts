@@ -311,6 +311,7 @@ export default definition;
       auth,
       root,
       host,
+      broker,
       store,
       service,
       machine,
