@@ -773,6 +773,78 @@ describe("shared transport", () => {
     }
   });
 
+  test("authority fan-out cannot restore a retired snapshot after a listener redials", async () => {
+    const { first, late, socket } = await admittedObservers();
+    let redial: Promise<void> | undefined;
+    try {
+      await late.connect();
+      const off = first.onAuthorityChange(() => {
+        if (redial !== undefined || !first.workspaceCaps().includes("tokens:mint")) return;
+        off();
+        redial = first.connect();
+      });
+      socket.receive(
+        JSON.stringify({
+          type: "authority_context",
+          workspaceCaps: ["tokens:mint"],
+          workspaceEvents: true,
+        }),
+      );
+      const replacement = FakeSocket.instances.at(-1)!;
+      expect(replacement).not.toBe(socket);
+      expect(first.workspaceCaps()).toEqual([]);
+      expect(late.workspaceCaps()).toEqual([]);
+      expect(late.workspaceEventsAvailable()).toBe(false);
+      expect(await late.syncSubscriptions()).toBe(false);
+      replacement.open();
+      authority(replacement, true);
+      replacement.receive(JSON.stringify({ type: "observed" }));
+      if (redial === undefined) throw new Error("Authority listener did not redial");
+      await redial;
+      expect(late.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+      expect(late.workspaceEventsAvailable()).toBe(true);
+    } finally {
+      late.close();
+      first.close();
+      await redial?.catch(() => undefined);
+    }
+  });
+
+  test("nested authority publication supersedes earlier fan-out without replacing the socket", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      await late.connect();
+      const transportId = first.transportId;
+      const off = first.onAuthorityChange(() => {
+        if (!first.workspaceCaps().includes("tokens:mint")) return;
+        off();
+        socket.receive(
+          JSON.stringify({
+            type: "authority_context",
+            workspaceCaps: ["containers:read"],
+            workspaceEvents: false,
+          }),
+        );
+      });
+      socket.receive(
+        JSON.stringify({
+          type: "authority_context",
+          workspaceCaps: ["tokens:mint"],
+          workspaceEvents: true,
+        }),
+      );
+      expect(first.transportId).toBe(transportId);
+      expect(late.transportId).toBe(transportId);
+      expect(first.workspaceCaps()).toEqual(["containers:read"]);
+      expect(late.workspaceCaps()).toEqual(["containers:read"]);
+      expect(late.workspaceEventsAvailable()).toBe(false);
+      expect(await late.syncSubscriptions()).toBe(false);
+    } finally {
+      late.close();
+      first.close();
+    }
+  });
+
   test("closing during cached authority replay cannot install or admit the abandoned observer", async () => {
     const { first, late, socket } = await admittedObservers();
     try {

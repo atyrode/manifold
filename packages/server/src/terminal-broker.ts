@@ -179,6 +179,7 @@ interface PendingRestart {
   agentPrincipalId: string | null;
   jobId: string | null;
   runLaunch: { bindingId: string; runId: string; token: string } | null;
+  ordinary: boolean;
   dispatched: boolean;
   fence: ActionAuthorityFence;
   terminalHostId: string | null;
@@ -520,18 +521,13 @@ export class TerminalBroker implements TerminalPlacementPort {
         continue;
       }
       terminal.snapshotRequestOutstanding = false;
-      // Mounted LIVE views belong to their room channels, not this replaceable transport.
-      // Adoption will fence a fresh owner snapshot before forwarding any resumed output.
+      // Every attached view belongs to its room, including a cold PENDING view.
+      // Adoption will heal both with a fresh snapshot; an offline owner has no
+      // snapshot deadline, and transport withdrawal must not erase attachment.
       this.clearViewportIntents(terminal);
-      for (const [viewerChannel, viewer] of terminal.viewers) {
-        if (viewer.state === "LIVE") continue;
-        this.failViewer(
-          terminal,
-          viewerChannel,
-          viewer,
-          "no_machine",
-          "terminal machine disconnected",
-        );
+      for (const viewer of terminal.viewers.values()) {
+        viewer.cancelSnapshotDeadline?.();
+        viewer.cancelSnapshotDeadline = null;
       }
       this.arbitrateViewports(terminal);
     }
@@ -856,6 +852,8 @@ export class TerminalBroker implements TerminalPlacementPort {
     viewer: Viewer,
   ): void {
     viewer.cancelSnapshotDeadline?.();
+    viewer.cancelSnapshotDeadline = null;
+    if (!this.machines.has(terminal.info.machineId)) return;
     viewer.cancelSnapshotDeadline = this.timers.schedule(() => {
       viewer.cancelSnapshotDeadline = null;
       if (terminal.viewers.get(channel) !== viewer || viewer.state !== "PENDING") return;
@@ -889,14 +887,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (!hasPending) return;
 
     const machine = this.machines.get(terminal.info.machineId);
-    if (machine === undefined) {
-      for (const [channel, viewer] of terminal.viewers) {
-        if (viewer.state === "PENDING") {
-          this.failViewer(terminal, channel, viewer, "no_machine", "terminal machine is offline");
-        }
-      }
-      return;
-    }
+    if (machine === undefined) return;
 
     terminal.snapshotGeneration += 1;
     const generation = terminal.snapshotGeneration;
@@ -1120,7 +1111,8 @@ export class TerminalBroker implements TerminalPlacementPort {
         const value: unknown = Reflect.get(broker, key);
         return typeof value === "function"
           ? (...args: unknown[]) => {
-              requireActionEffects();
+              // The published terminal context includes this pure lifecycle-state read.
+              if (key !== "liveTerminal") requireActionEffects();
               return Reflect.apply(value, broker, args);
             }
           : value;
@@ -1743,16 +1735,6 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       return;
     }
-    const machine = this.machines.get(terminal.info.machineId);
-    if (machine === undefined) {
-      channel.send({
-        type: "error",
-        code: "no_machine",
-        message: "terminal machine is offline",
-        ref: message.terminalId,
-      });
-      return;
-    }
     this.removeViewer(terminal, channel, false);
     const viewer: Viewer = {
       state: "PENDING",
@@ -2195,6 +2177,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       agentPrincipalId: null,
       jobId: null,
       runLaunch: null,
+      ordinary: false,
       dispatched: false,
       resolve: completion.resolve,
       cancelDeadline: null,
@@ -2331,6 +2314,7 @@ export class TerminalBroker implements TerminalPlacementPort {
           );
       pending.agentPrincipalId = grant?.principal.id ?? null;
       pending.fence.checkCurrent();
+      pending.ordinary = runtime === undefined;
       pending.dispatched = true;
       // A relative launch cwd belongs in the restart recipe. Only an observed absolute cwd
       // may occupy the precedence field older agents already parse as MachinePathSchema.
@@ -2443,6 +2427,13 @@ export class TerminalBroker implements TerminalPlacementPort {
       !pending.dispatched
     )
       return;
+    if (this.machines.get(machineId)?.terminalHostId !== pending.terminalHostId) {
+      this.finishRestart(message.terminalId, "terminal owner changed");
+      return;
+    }
+    // Drain closes new admission, not an ordinary PTY already accepted by this exact owner.
+    // Continuing credential and implementation guards remain live after commit.
+    if (pending.ordinary) pending.fence.commit();
     try {
       pending.fence.checkCurrent();
     } catch (error) {
@@ -2453,10 +2444,6 @@ export class TerminalBroker implements TerminalPlacementPort {
         message.terminalId,
         error instanceof Error ? error.message : "terminal restart authority withdrawn",
       );
-      return;
-    }
-    if (this.machines.get(machineId)?.terminalHostId !== pending.terminalHostId) {
-      this.finishRestart(message.terminalId, "terminal owner changed");
       return;
     }
     const stored = this.store.getTerminal(message.terminalId);

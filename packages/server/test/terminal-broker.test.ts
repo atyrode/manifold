@@ -1412,6 +1412,56 @@ describe("TerminalBroker controller lease", () => {
     fixture.store.close();
   });
 
+  test("a viewer first attached offline survives until retained owner adoption and ordered replay", () => {
+    const fixture = brokerFixture();
+    const terminalId = fixture.create.terminalId;
+    fixture.broker.setMachineOffline(fixture.machine);
+    fixture.rooms.get(fixture.container.id)?.join(fixture.opener);
+    fixture.socket.clear();
+    fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+    fixture.clock.advance(30_000);
+    expect(fixture.socket.messages().filter((message) => message.type === "error")).toEqual([]);
+    expect(fixture.machine.sent).toEqual([]);
+    fixture.broker.setMachineOnline(fixture.machine);
+    expect(
+      fixture.broker.adoptTerminal(fixture.machine.machineId, {
+        terminalId,
+        cols: 80,
+        rows: 24,
+        alive: true,
+        seq: 10,
+      }),
+    ).toBeTrue();
+    expect(fixture.machine.sent).toEqual([{ type: "snapshot_request", terminalId }]);
+    fixture.broker.onOutput(fixture.machine.machineId, {
+      type: "output",
+      terminalId,
+      seq: 11,
+      data: encoded("tail"),
+    });
+    expect(
+      fixture.socket.messages().filter((message) => message.type === "terminal_output"),
+    ).toEqual([]);
+    fixture.broker.onSnapshot(fixture.machine.machineId, {
+      type: "snapshot",
+      terminalId,
+      seq: 10,
+      data: encoded("retained owner"),
+    });
+    expect(
+      fixture.socket
+        .messages()
+        .filter(
+          (message) => message.type === "terminal_snapshot" || message.type === "terminal_output",
+        )
+        .map((message) => [message.type, message.seq, message.data]),
+    ).toEqual([
+      ["terminal_snapshot", 10, encoded("retained owner")],
+      ["terminal_output", 11, encoded("tail")],
+    ]);
+    fixture.store.close();
+  });
+
   test("successful adoption re-pends existing viewers and requests a healing snapshot", () => {
     const fixture = brokerFixture();
     fixture.broker.attach(fixture.opener, {
@@ -2235,6 +2285,54 @@ describe("TerminalBroker drain (issue #278)", () => {
     };
     return { ...setup, machine, answer, lastRequest };
   }
+
+  test("ordinary restart acknowledgement survives a drain latched after owner dispatch", async () => {
+    const setup = drainSetup();
+    try {
+      setup.broker.open(setup.opener, {
+        type: "terminal_open",
+        elementId: "restart-before-drain",
+        placement: "tile",
+      });
+      const terminalId = fitPending(setup);
+      setup.broker.onCreated(setup.machine.machineId, terminalId);
+      const before = setup.store.getTerminal(terminalId);
+      setup.machine.clear();
+      const restarted = setup.broker.restartById(
+        terminalId,
+        setup.root.principal.id,
+        setup.auth.credentialReference(setup.root),
+      );
+      const command = setup.machine.sent.find((message) => message.type === "terminal_restart");
+      if (command?.type !== "terminal_restart") throw new Error("restart was not dispatched");
+
+      const drained = setup.broker.drain(setup.machine.machineId, true);
+      setup.answer(setup.lastRequest(), { terminalIds: [terminalId] });
+      expect((await drained).ok).toBe(true);
+      setup.broker.onRestarted(setup.machine.machineId, {
+        type: "terminal_restarted",
+        terminalId,
+      });
+
+      expect(await restarted).toBe("ok");
+      expect(setup.machine.sent.some((message) => message.type === "kill")).toBe(false);
+      expect(setup.store.getTerminal(terminalId)).toMatchObject({
+        id: terminalId,
+        containerId: before!.containerId,
+        createdAt: before!.createdAt,
+        status: "running",
+      });
+      expect(
+        await setup.broker.restartById(
+          terminalId,
+          setup.root.principal.id,
+          setup.auth.credentialReference(setup.root),
+        ),
+      ).toBe("machine_draining");
+    } finally {
+      setup.store.close();
+    }
+  });
 
   test("inventory news follows the committed latch even when the owner refuses", async () => {
     const setup = drainSetup();

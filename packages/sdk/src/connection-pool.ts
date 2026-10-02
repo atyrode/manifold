@@ -982,9 +982,19 @@ class PooledConnection {
         void exhaustive;
       }
     }
-    // Snapshot: a sink may release its handle while hearing this.
-    for (const record of [...this.channels.values()]) record.sink.connectionFrame(frame);
-    for (const sink of [...this.observers]) sink.connectionFrame(frame);
+    // A listener may retire the physical connection or supersede authority synchronously.
+    const physicalGeneration = this.physicalGeneration;
+    const authorityEpoch = this.authorityEpoch;
+    for (const record of [...this.channels.values()]) {
+      if (physicalGeneration !== this.physicalGeneration || authorityEpoch !== this.authorityEpoch)
+        return;
+      record.sink.connectionFrame(frame);
+    }
+    for (const sink of [...this.observers]) {
+      if (physicalGeneration !== this.physicalGeneration || authorityEpoch !== this.authorityEpoch)
+        return;
+      sink.connectionFrame(frame);
+    }
   }
 
   /**

@@ -4081,6 +4081,11 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
      queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
      Viewer byte stream ≡ snapshot(S) + outputs(S+1…). e2e MUST assert mid-stream attach
      contiguity (counter test), repeated ≥10×.
+     A known running terminal retains its channel attachment when its owner transport is
+     unavailable, including a viewer first mounted offline or disconnected before its first
+     snapshot. No snapshot deadline runs against an offline owner. Exact retained-owner
+     adoption re-pends the same viewers and heals their ordered stream without another mount
+     or room reconnect; detach, channel closure and authority withdrawal retain their bounds.
 - **Snapshot geometry.** Before a tiled PTY exists, a viewer MAY construct an unpainted local
   xterm grid solely to measure its host; that placeholder is never process geometry. The winning
   fit becomes the advertised terminal `cols`/`rows`. After birth, a viewer MUST construct or

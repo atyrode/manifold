@@ -384,7 +384,7 @@ export function CanvasView({
   titlebarExtras,
   titlebarMiddle,
 }: ContainerRendererProps) {
-  const { notify } = useNotice();
+  const { notify, dismiss } = useNotice();
   const route = useContainerRoute();
   /*
     THIS ROOM'S OCCUPANT PIPE (A4): the canvas dials the room it renders with the host's grant.
@@ -494,6 +494,7 @@ export function CanvasView({
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [sceneRevision, setSceneRevision] = useState(0);
   const fetchMachines = useCallback(() => host.client.machines(), [host.client]);
+  const machinesNotice = useRef<string | null>(null);
   const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
     fetchMachines,
     FALLBACK_POLL_MS,
@@ -501,11 +502,17 @@ export function CanvasView({
       ...MACHINES_RESOURCE_OPTIONS,
       topics: host.topics.machines,
       events: host.client,
-      onError: (reason) =>
-        notify(reason instanceof Error ? reason.message : "Could not load machines", {
-          lifetime: "sticky",
-          key: "machines",
-        }),
+      onError: (reason) => {
+        machinesNotice.current = notify(
+          reason instanceof Error ? reason.message : "Could not load machines",
+          { lifetime: "sticky", key: "machines" },
+        );
+      },
+      onSuccess: () => {
+        if (machinesNotice.current === null) return;
+        dismiss(machinesNotice.current);
+        machinesNotice.current = null;
+      },
     },
   );
   /** Bumped on every presence frame; the invalidation key for anything derived from the roster. */

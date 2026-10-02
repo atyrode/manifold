@@ -616,6 +616,10 @@ In-realm parsing and preparation also refuse host effects through retained mutab
 including asynchronous descendants that outlive preparation. Catching an attempted effect
 does not make the preparation admissible. Independently admitted handlers keep their own
 authority; preparation does not globally suspend unrelated work.
+This confinement covers supported host-owned mutation entrypoints, retained owner objects
+and returned storage or lifecycle callbacks, while allowing pure reads. Server-private
+raw SQLite handles and Yjs documents remain trusted implementation internals, not a plugin
+API or a JavaScript sandbox boundary; hardened guests never receive those objects.
 
 Ordinary terminal birth requires `terminals:spawn` at placement C and `machines:shell` at
 the exact enrolled M. A canvas creates an independent home H: before allocating anything it
@@ -629,6 +633,10 @@ The host privately retains the admitted destination owner before authorization. 
 owner cannot receive a prepared ordinary launch or restart; replacement transport for that
 same owner remains valid. Deferred restoration checks the durable admitted owner when its
 transport is disconnected.
+An ordinary birth or restart acknowledged by that exact owner retires its one-time
+admission guard before checking continuing authority. A drain committed while the owner
+was working blocks subsequent admission, not the already-acknowledged ordinary PTY.
+Credential and installed-code withdrawal remain live through completion.
 
 The private effect lease retains the original correlated credential, ordered requirements,
 parser/preparer/code binding and native demand through awaits and acknowledgements. Withdrawal
@@ -1752,6 +1760,10 @@ Source for this entire contract:
   `ATTENDANCE_RESOURCE` or `MACHINES_RESOURCE` when reading those collections.
 - **`initial: T` (required):** the value exposed before a response has seeded the shared
   feed. It is not a reset command for an already-published value.
+- **`resetOnError?: boolean` (default `false`):** publish `initial` to every mounted reader
+  when a read fails, retire caught-up state and restore bounded polling. Use it for
+  resources where an unreadable answer must become unknown rather than stay confirmed.
+  A later eligible successful catch-up is still required before polling can stop.
 - **`enabled?: boolean` (default `true`):** false detaches this subscriber, so it does not
   fetch or keep the feed alive; other enabled readers continue.
 - **`hold?: () => boolean`:** any subscriber returning true holds publication for all
@@ -1760,8 +1772,9 @@ Source for this entire contract:
 - **`equal?: (current: T, incoming: T) => boolean`:** suppress publication of equal
   answers. Default comparison uses a JSON structural digest (object key order matters);
   provide a comparator only when that is wrong for the resource.
-- **`onError?: (reason: unknown) => void`:** receives read failures. The existing value
-  remains; there is no separate error field in the return value.
+- **`onError?: (reason: unknown) => void`:** receives read failures after any requested
+  `resetOnError` publication. By default the existing value remains; there is no
+  separate error field in the return value.
 - **`onSuccess?: () => void`:** receives accepted successful reads, including answers
   equal to the current value. Use it to clear a transient read error without requiring
   data to change. Held responses, detached generations and local `setValue` calls do
@@ -1798,7 +1811,11 @@ For example, the shipped
 [`MachinesSection`](../packages/plugins/machines/src/web.tsx) reads through this contract:
 
 ```tsx
-import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
+import {
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE_OPTIONS,
+  usePolledResource,
+} from "@manifold/plugin/hooks";
 import type { HostServices } from "@manifold/plugin";
 import type { MachineSummary } from "@manifold/protocol";
 
@@ -1807,8 +1824,7 @@ function MachineCount({ host }: { host: HostServices }) {
     () => host.client.machines(),
     FALLBACK_POLL_MS,
     {
-      key: MACHINES_RESOURCE,
-      initial: null,
+      ...MACHINES_RESOURCE_OPTIONS,
       topics: host.topics.machines,
       events: host.client,
     },
@@ -1817,10 +1833,13 @@ function MachineCount({ host }: { host: HostServices }) {
 }
 ```
 
-This is the same feed as the shipped section, with only its rendering reduced. The section
-also uses `refresh()` after a successful administration action, not an event payload as
-replacement state. Reading another collection changes the fetch, resource key and topic
-array together; no new client or socket is involved.
+This is the same feed and unknown-on-error policy as the shipped readers. Machine topics
+include roster changes: disabling Machines still refuses its ordinary list door, clears
+all mounted readers to unknown and keeps polling; enabling it requires a fresh catch-up,
+not restoration of old rows. No cleanup or privileged inventory exception is involved.
+The section also uses `refresh()` after successful administration, not an event payload
+as replacement state. Reading another collection changes the fetch, key and topics
+together; no new client or socket is involved.
 
 #### Governed jobs and continuous streams
 

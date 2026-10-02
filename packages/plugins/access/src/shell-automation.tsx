@@ -1,5 +1,9 @@
 import type { SectionProps } from "@manifold/plugin";
-import { FALLBACK_POLL_MS, usePolledResource } from "@manifold/plugin/hooks";
+import {
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE_OPTIONS,
+  usePolledResource,
+} from "@manifold/plugin/hooks";
 import {
   ContainersResponseSchema,
   MANIFOLD_ROOT_URI,
@@ -71,14 +75,19 @@ export function ShellAutomation({
     fetchMachines,
     FALLBACK_POLL_MS,
     {
-      key: "core.machines.list",
-      initial: null,
+      ...MACHINES_RESOURCE_OPTIONS,
       topics: host.topics.machines,
       events: host.client,
-      requiresWorkspaceEvents: true,
     },
   );
-  const containers = useAccessRead(host, "core.index.listContainers", ContainersResponseSchema, {});
+  const containers = useAccessRead(
+    host,
+    "core.index.listContainers",
+    ContainersResponseSchema,
+    {},
+    0,
+    host.topics.index,
+  );
   useLayoutEffect(() => {
     const off = host.client.onAuthorityChange(() => {
       epoch.current++;
@@ -95,7 +104,7 @@ export function ShellAutomation({
       }
     });
     return () => {
-      epoch.current++;
+      epoch.current += 1;
       off();
     };
   }, [host.client, mayMint]);

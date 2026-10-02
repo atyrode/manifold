@@ -15,7 +15,7 @@
  *      so an aim just below `.portal__strip` resolves at the area's top, not
  *      offset by the strip height.
  *   5. PANES STAY PUT — hover leaves painted pane rectangles and terminal layout boxes
- *      unchanged, with no terminal_resize frame. Only accepted canonical changes animate.
+ *      unchanged, with no viewport geometry change. Lease renewals are not reflow.
  *   6. FIVE ZONES ON A NESTED TILE — leaf B of `A | (B/C)` answers all four bands and
  *      center for a tile carry (swap at center), a seatless carry replaces at center,
  *      and the displaced terminal survives in a fresh home of its own.
@@ -147,20 +147,38 @@ const rectDrift = (a: Rect, b: Rect): number =>
     Math.abs(a.height - b.height),
   );
 
+/** Observe effective viewport intent changes, independently of identical lease renewals. */
+const viewportSpyJs = `(() => {
+  window.__resizeFrames = [];
+  window.__viewportChanges = [];
+  const sockets = new WeakMap();
+  const original = WebSocket.prototype.send;
+  WebSocket.prototype.send = function (data) {
+    if (typeof data === 'string' && data.includes('terminal_resize')) {
+      const frame = JSON.parse(data);
+      if (frame.type === 'terminal_resize') {
+        window.__resizeFrames.push(frame);
+        let states = sockets.get(this);
+        if (states === undefined) { states = new Map(); sockets.set(this, states); }
+        const key = JSON.stringify([frame.ch, frame.terminalId, frame.viewportId]);
+        const before = states.get(key);
+        const after = frame.viewport;
+        const unchanged = before !== undefined && (before === null
+          ? after === null : after !== null && before.cols === after.cols && before.rows === after.rows);
+        if (!unchanged) window.__viewportChanges.push(frame);
+        states.set(key, after);
+      }
+    }
+    return original.call(this, data);
+  };
+})()`;
+
 /** Keep actual nodes and layout dimensions, so cancellation cannot pass by remounting. */
 const rememberTileState = (target: Browser): Promise<boolean> =>
   target.evaluate<boolean>(
     `(() => {
     const area = document.querySelector('.tile-area');
     if (area === null) return false;
-    if (window.__resizeFrames === undefined) {
-      window.__resizeFrames = [];
-      const original = WebSocket.prototype.send;
-      WebSocket.prototype.send = function (data) {
-        if (typeof data === 'string' && data.includes('terminal_resize')) window.__resizeFrames.push(data);
-        return original.call(this, data);
-      };
-    }
     const hosts = [...area.querySelectorAll('.tile-content-host')];
     window.__tileMotionBaseline = hosts.map((host) => {
       const terminal = host.querySelector('.xterm');
@@ -168,7 +186,8 @@ const rememberTileState = (target: Browser): Promise<boolean> =>
       return { host, terminal, w: terminal?.offsetWidth, h: terminal?.offsetHeight,
         rect: { left: box.left, top: box.top, width: box.width, height: box.height } };
     });
-    window.__tileMotionResizeCount = window.__resizeFrames?.length ?? 0;
+    window.__tileMotionViewportChangesCount = window.__viewportChanges.length;
+    window.__tileMotionWireCount = window.__resizeFrames.length;
     return hosts.some((host) => host.querySelector('.xterm') !== null);
   })()`,
   );
@@ -184,8 +203,33 @@ const tileStateRestoredJs = `() => {
       Math.abs(box.width - rect.width), Math.abs(box.height - rect.height)) <= 1 &&
       getComputedStyle(host).opacity === '1' &&
       terminal?.offsetWidth === w && terminal?.offsetHeight === h;
-  }) && (window.__resizeFrames?.length ?? 0) === window.__tileMotionResizeCount;
+  }) && window.__viewportChanges.length === window.__tileMotionViewportChangesCount;
 }`;
+
+async function clickVisible(target: Browser, selector: string): Promise<void> {
+  const point = await target.evaluate<{ x: number; y: number } | null>(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!(element instanceof HTMLElement) || element.matches(':disabled') || !element.checkVisibility()) return null;
+    element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    const box = element.getBoundingClientRect();
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const hit = document.elementFromPoint(point.x, point.y);
+    return hit !== null && element.contains(hit) ? point : null;
+  })()`);
+  if (point === null) throw new Error(`No visible control: ${selector}`);
+  await target.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    button: "left",
+    clickCount: 1,
+    ...point,
+  });
+  await target.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    button: "left",
+    clickCount: 1,
+    ...point,
+  });
+}
 
 /** One mid-drag observation: the slot, painted content-host motion, and a custom extra. */
 interface HoverSample {
@@ -458,7 +502,8 @@ try {
   const leafB = leafOf(termB.id);
 
   browser = new Browser();
-  await browser.launch();
+  await browser.launch({ incognito: true });
+  await browser.send("Page.addScriptToEvaluateOnNewDocument", { source: viewportSpyJs });
   await browser.goto(`${origin}/#key=${ownerKey}`);
   await until(
     () =>
@@ -549,14 +594,7 @@ try {
   // Round 5's spy and round 7's stamp go in before the gesture.
   const paneBBefore = await browser.evaluate<(Rect & { w: number; h: number }) | null>(
     `(() => {
-      window.__resizeFrames = [];
-      const original = WebSocket.prototype.send;
-      WebSocket.prototype.send = function (data) {
-        if (typeof data === 'string' && data.includes('terminal_resize')) {
-          window.__resizeFrames.push(data);
-        }
-        return original.call(this, data);
-      };
+      window.__hoverViewportBaseline = window.__viewportChanges.length;
       const keeper = document.querySelector('[data-tile-id="${leafB}"] .xterm');
       const host = keeper?.closest('.tile-content-host');
       if (keeper === null || host === null || host === undefined) return null;
@@ -584,7 +622,7 @@ try {
     `() => {
       const pane = document.querySelector('[data-tile-id="${leafB}"] .xterm');
       return {
-        resizeFrames: window.__resizeFrames.length,
+        viewportChanges: window.__viewportChanges.length - window.__hoverViewportBaseline,
         paneW: pane === null ? -1 : pane.offsetWidth,
         paneH: pane === null ? -1 : pane.offsetHeight,
       };
@@ -647,7 +685,7 @@ try {
   );
 
   const extras1 = (hover1?.extra ?? null) as {
-    resizeFrames: number;
+    viewportChanges: number;
     paneW: number;
     paneH: number;
   } | null;
@@ -666,12 +704,12 @@ try {
     "hover neither stretches nor reflows terminals",
     extras1 !== null &&
       paneBBefore !== null &&
-      extras1.resizeFrames === 0 &&
+      extras1.viewportChanges === 0 &&
       paneBBefore.w > 0 &&
       paneBBefore.h > 0 &&
       extras1.paneW === paneBBefore.w &&
       extras1.paneH === paneBBefore.h,
-    `terminal layout box ${String(paneBBefore?.w)}×${String(paneBBefore?.h)} -> ${String(extras1?.paneW)}×${String(extras1?.paneH)} with ${String(extras1?.resizeFrames)} terminal_resize frames mid-hover`,
+    `terminal layout box ${String(paneBBefore?.w)}×${String(paneBBefore?.h)} -> ${String(extras1?.paneW)}×${String(extras1?.paneH)} with ${String(extras1?.viewportChanges)} viewport geometry changes mid-hover`,
   );
 
   const probe = await browser.evaluate<boolean>(
@@ -691,6 +729,40 @@ try {
 
   /* ── Round 6: five zones on nested leaf B of `A | (B/C)` ── */
 
+  // Exercise live controller geometry, not a spectator that cannot publish a viewport.
+  const controlWireStart = await browser.evaluate<number>("window.__resizeFrames.length");
+  const takeSelector = `[data-tile-id="${leafB}"] button[aria-label="Take control of terminal"]`;
+  if (
+    await browser.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(takeSelector)})?.checkVisibility() === true`,
+    )
+  )
+    await clickVisible(browser, takeSelector);
+  await clickVisible(browser, `[data-tile-id="${leafB}"] .terminal-frame`);
+  await until(
+    () =>
+      browser!
+        .evaluate<boolean>(`document.querySelector(${JSON.stringify(takeSelector)}) === null &&
+      window.__resizeFrames.slice(${String(controlWireStart)}).some(frame =>
+        frame.terminalId === ${JSON.stringify(termB.id)} && frame.viewport !== null)`),
+    5_000,
+    "browser owns the live terminal viewport",
+  );
+  const controlGeometry = await browser.evaluate<{ cols: number; rows: number }>(
+    `window.__resizeFrames.slice(${String(controlWireStart)}).findLast(frame =>
+      frame.terminalId === ${JSON.stringify(termB.id)} && frame.viewport !== null).viewport`,
+  );
+  await until(
+    () => {
+      const terminal = viewClient?.terminals.get(termB.id);
+      return terminal?.cols === controlGeometry.cols && terminal.rows === controlGeometry.rows;
+    },
+    5_000,
+    "retained owner applies current controller geometry",
+  );
+  await browser.evaluate(
+    "document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))",
+  );
   await until(
     () =>
       browser!.evaluate<boolean>(
@@ -710,7 +782,7 @@ try {
         selector: `[data-tile-id="${leafB}"]`,
         fx: 0.08,
         fy: 0.5,
-        holdMs: 120,
+        holdMs: 11_000,
       },
       {
         selector: `[data-tile-id="${leafB}"]`,
@@ -774,15 +846,36 @@ try {
     () => browser!.evaluate<boolean>(`(${tileStateRestoredJs})()`),
     10_000,
   );
+  const renewalsDuringCancel = await browser.evaluate<number>(
+    "window.__resizeFrames.length - window.__tileMotionWireCount",
+  );
   check(
     "cancellation restores live content without terminal reflow",
     rememberedCancel &&
+      renewalsDuringCancel > 0 &&
       edgeSamples.every(
         (sample) =>
           sample !== null && Object.values(sample.motion).every((motion) => !motion.moved),
       ) &&
       cancelRestored,
-    "after changing preview zones and cancelling, the same hosts/xterms regain their original painted boxes, layout sizes and opacity with no terminal_resize",
+    JSON.stringify({
+      remembered: rememberedCancel,
+      restored: cancelRestored,
+      edgeSamples: edgeSamples.map((sample) => sample?.motion ?? null),
+      state: await browser.evaluate(
+        `(() => ({
+          viewportChanges: window.__viewportChanges.slice(window.__tileMotionViewportChangesCount),
+          renewalFrames: window.__resizeFrames.length - window.__tileMotionWireCount,
+          hosts: window.__tileMotionBaseline?.map(({host, terminal, w, h, rect}) => {
+            const box = host.getBoundingClientRect();
+            return { connected: host.isConnected, sameTerminal: host.querySelector('.xterm') === terminal,
+              before: { w, h, rect }, after: { w: terminal?.offsetWidth, h: terminal?.offsetHeight,
+                rect: {left: box.left, top: box.top, width: box.width, height: box.height},
+                opacity: getComputedStyle(host).opacity } };
+          }),
+        }))()`,
+      ),
+    }),
   );
 
   // A composition cannot be embedded into itself. The refused prospect may paint a
@@ -806,7 +899,7 @@ try {
       deniedSample.extra === true &&
       Object.values(deniedSample.motion).every((motion) => !motion.moved && motion.opacity === 1) &&
       JSON.stringify(layoutNow()) === JSON.stringify(layout1),
-    "self-embedding refused with the same content hosts, painted boxes, xterm layout and terminal_resize count",
+    "self-embedding refused with the same content hosts, painted boxes, xterm layout and viewport geometry",
   );
 
   // The seatless half: a sidebar terminal on B's center replaces, re-homing B.
@@ -1060,7 +1153,8 @@ try {
   /* ── Multiplayer (#61): a second browser paints the dragger's live preview ── */
 
   viewer = new Browser();
-  await viewer.launch();
+  await viewer.launch({ incognito: true });
+  await viewer.send("Page.addScriptToEvaluateOnNewDocument", { source: viewportSpyJs });
   await viewer.goto(`${origin}/#key=${ownerKey}`);
   await until(
     () =>
@@ -1719,8 +1813,8 @@ try {
               cMoved: sample.motion[stableLeafC]?.moved,
             },
       ),
-      resizeDelta: await browser.evaluate<number>(
-        "(window.__resizeFrames?.length ?? 0) - window.__tileMotionResizeCount",
+      viewportChanges: await browser.evaluate<number>(
+        "window.__viewportChanges.length - window.__tileMotionViewportChangesCount",
       ),
     }),
   );

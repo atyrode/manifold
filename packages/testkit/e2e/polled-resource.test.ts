@@ -284,12 +284,14 @@ for (const initialOnline of [false, true]) {
     );
     await until(
       () =>
-        browser.evaluate<boolean>('document.querySelectorAll("[data-inventory-reader]").length === 3'),
+        browser.evaluate<boolean>(
+          'document.querySelectorAll("[data-inventory-reader]").length === 3',
+        ),
       5_000,
       "mounted canvas, composition and fleet readers",
     );
     await browser.evaluate(
-      'window.retainedInventoryReaders = [...document.querySelectorAll("[data-inventory-reader]")]',
+      'window.retainedInventoryReaders = [...document.querySelectorAll("[data-inventory-reader]")]; undefined',
     );
     const request = async (count: number, enabled: boolean, online: boolean): Promise<void> => {
       await until(

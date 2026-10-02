@@ -131,6 +131,9 @@ Late room/observer handles inherit the current snapshot before readiness. A pool
 its pre-connect subscriptions are installed before synchronous readiness listeners run, so those
 listeners may safely add interests and request a fence. Retirement callbacks may reconnect the
 handle without the retired attachment clearing its successor's authority.
+A synchronous listener that redials or publishes newer authority retires the rest of
+the earlier frame's fan-out. Later observers cannot regain the old snapshot while the
+replacement is unauthenticated or overwrite a newer snapshot on the same socket.
 
 After `subscribe(topics, handler)`, await `syncSubscriptions(): Promise<boolean>` before the
 catch-up read that switches a feed to event-only mode. Its five-second deadline starts at invocation,

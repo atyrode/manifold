@@ -744,22 +744,26 @@ bun scripts/verify-nix-packaging.ts
 ```
 
 For a direct VM-only run, use
-`nix build --no-link --print-build-logs .#checks.x86_64-linux.native-profile`
-or the corresponding `aarch64-linux` check on that target. The verifier allows five
-minutes for check evaluation and bounds its build/whole VM run to 15 minutes after
-the existing packaging proof, within the unchanged 45-minute CI job deadline.
-The exact-source check may reuse a trusted Nix result; its receipt distinguishes
-cached results from observed execution of the VM check derivation. The normal cold
-dependency build and independent dependency reproducibility check remain unchanged.
-The declared VM supports QEMU CPU emulation without nested virtualization; CI advertises
+`nix build --no-link --max-jobs 1 --print-build-logs .#checks.x86_64-linux.native-profile`
+or the corresponding `aarch64-linux` check on that target. The verifier evaluates the
+exact-source aggregate and all five roles, then builds `native-profile-shellonly`,
+`native-profile-coexist`, `native-profile-machine`, `native-profile-credential` and
+`native-profile-anchors` serially. Each complete role retains the 15-minute build/runtime
+bound; the unchanged 45-minute CI lane bounds the whole packaging/profile proof. The
+aggregate cannot succeed without the exact five successful runtime outputs. Serial
+builds also keep CPU-emulated ARM verification from running several memory-heavy guests
+together. Dependency cold/rebuild and native package smoke remain unchanged.
+The declared VMs support QEMU CPU emulation without nested virtualization; CI advertises
 the `nixos-test` builder feature but does not claim or require KVM availability.
 
 The verifier prints its private evidence directory (or uses `MANIFOLD_NIX_PROOF_DIR`).
 `source.json` records native system, revision and source hash; `native-profile.json`
-records the exact check derivation, output, result, cached-versus-executed status,
-elapsed time and deadline. `native-profile.log` retains Nix's structured build activity
-and test-driver output, including guest serial diagnostics; readable messages also
-stream to the CI log on success, failure and timeout.
+records the aggregate and complete matching role ledger, elapsed times and per-build
+deadline scope. Each `native-profile-<role>.json` and `.log` retains exact derivation,
+output, result and structured activity/guest diagnostics. Exact-derivation cached reuse
+is distinct from fresh execution and additionally retains the successful runtime log
+as `.cached.log`; missing or unobserved role evidence cannot complete the aggregate.
+Readable messages stream to CI on success, failure and timeout.
 CI publishes an exact-system/head summary and one-day `nix-evidence-<system>-<sha>`
 artifacts on success and failure. It does not upload guest disks, owner data,
 configuration or credential files. A missing, incomplete or failed VM receipt is

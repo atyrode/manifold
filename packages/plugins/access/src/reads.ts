@@ -1,5 +1,6 @@
 import type { SectionProps } from "@manifold/plugin";
 import { FALLBACK_POLL_MS, usePolledResource } from "@manifold/plugin/hooks";
+import type { ManifoldRef } from "@manifold/protocol";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { z } from "zod";
 import { accessManifest } from "./index.ts";
@@ -10,6 +11,7 @@ export type AccessRead<T> =
   | { readonly state: "ready"; readonly result: T; readonly observedAt: number };
 
 const LOADING = { state: "loading" } as const;
+const ACCESS_TOPICS: readonly ManifoldRef[] = [{ kind: "plugin", pluginId: accessManifest.id }];
 
 /** Event refresh uses the shared feed, but privileged answers never share an authority cache. */
 export function useAccessRead<T>(
@@ -18,6 +20,7 @@ export function useAccessRead<T>(
   schema: z.ZodType<T>,
   args: Readonly<Record<string, unknown>>,
   revision = 0,
+  topics: readonly ManifoldRef[] = ACCESS_TOPICS,
 ): AccessRead<T> {
   const readerId = useId();
   const request = JSON.stringify(args);
@@ -65,8 +68,9 @@ export function useAccessRead<T>(
     key: `${action}:${readerId}`,
     restartKey: `${String(generation)}:${request}`,
     initial: LOADING,
-    topics: [{ kind: "plugin", pluginId: accessManifest.id }],
+    topics,
     events: host.client,
+    requiresWorkspaceEvents: true,
   });
   const observedRevision = useRef(revision);
   useEffect(() => {
