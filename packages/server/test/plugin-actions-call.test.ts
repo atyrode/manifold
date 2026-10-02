@@ -770,7 +770,9 @@ describe("what a sibling call is refused by", () => {
       },
       handlers: {
         inspect: async (ctx: ActionCtx) => {
-          ctx.authorityFence.extendPrepared([
+          const fence = ctx.authorityFence;
+          if (fence === undefined) throw new Error("prepared action is missing its authority fence");
+          fence.extendPrepared([
             {
               cap: "machines:shell",
               node: "manifold://machine/continuation",

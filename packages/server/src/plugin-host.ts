@@ -7046,7 +7046,7 @@ export class PluginHost {
         // of admission as successful evidence or execution calls it an unavailable isolate.
         if (guestInput && !guestAdmitted && answer !== null && typeof answer === "object") {
           const denial = Reflect.get(answer, "refused");
-          if (typeof denial === "string") throw new IsolateDenial("refused", denial);
+          if (typeof denial === "string") throw new ActionAdmissionDenial("refused", denial);
         }
         if (guestInput && options.reviewOnly)
           return {
