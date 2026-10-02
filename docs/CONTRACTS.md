@@ -117,11 +117,17 @@ binds key/format, machine, owner/generation, server epoch/proof challenge, reque
 declared reference/exact origin, one owner-created nonce/expiry, explicit replacement and
 an opaque source revision. Hub relay is transient ciphertext-only. Traces are opaque,
 recording safe status/refusal rather than value, envelope, path or library diagnostics.
+Draining retires pending offers and authorizations without discarding the attached channel's
+proof; admission remains closed until resume. A current proof received while draining can be
+used after resume without reconnecting. Disconnect, proof replacement and owner close still
+retire that authority.
 Only declared sources under retained directory capabilities can be enrolled. Initial
 publication is kernel-exclusive. Explicit replacement compares the owner-local opaque source
-revision under a per-reference mutation lock, publishes the validated staged read-only inode,
-then switches every live resolver to its new descriptor before closing the old one. Native
-owner-private OS writers are trusted: this is enrollment-state CAS, not an expected-inode
+revision under a shared-source mutation lock, publishes the validated staged read-only inode,
+then switches every live resolver to its new descriptor before closing the old one. References
+to the same held parent identity and leaf share this slot and revision, while retaining their
+independently declared origins and parent write restrictions. Native owner-private OS writers
+are trusted: this is enrollment-state CAS, not an expected-inode
 kernel CAS against a hostile same-UID writer. Unsafe/root-managed/read-only parents gain
 neither write authority nor an alternate credential store.
 

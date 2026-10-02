@@ -147,7 +147,8 @@ export class HeldServiceCredentialRegistry {
 
   prepare(ref: string, origin: string, replace: boolean): string | null {
     const publication = this.target(ref, origin).publication;
-    if (publication.mutating) throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
+    if (publication.mutating)
+      throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
     if (publication.current && !replace)
       throw new ServiceCredentialEnrollmentError("credential_already_held");
     return publication.current?.revision ?? null;
@@ -167,7 +168,8 @@ export class HeldServiceCredentialRegistry {
   ): { sourceRevision: string; replaced: boolean; durable: boolean } {
     const source = this.target(ref, origin);
     const publication = source.publication;
-    if (publication.mutating) throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
+    if (publication.mutating)
+      throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
     publication.mutating = true;
     let published = false;
     const revision = randomUUID();
@@ -236,7 +238,9 @@ export class HeldServiceCredentialRegistry {
         publication.current = undefined;
       }
     }
-    for (const parent of new Set([...this.sources.values()].map((source) => source.parent))) {
+    const parents = new Set<HeldDirectory>();
+    for (const source of this.sources.values()) parents.add(source.parent);
+    for (const parent of parents) {
       try {
         parent.close();
       } catch (error) {
