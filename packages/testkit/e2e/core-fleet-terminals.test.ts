@@ -107,6 +107,14 @@ async function openSidebar(browser: Browser): Promise<void> {
   await waitFor(() => visible(browser, '[data-testid="machines-rail"]'), 10_000, 50);
 }
 
+async function waitForOpenConnection(browser: Browser, discipline: string): Promise<void> {
+  const expression =
+    discipline === "canvas"
+      ? 'document.querySelector(\'[data-testid="connection-state"]\')?.textContent === "Open"'
+      : 'document.querySelector(".composition-status.is-open") !== null';
+  await waitFor(() => browser.evaluate<boolean>(expression), 15_000, 50);
+}
+
 for (const hardened of [false, true]) {
   test(`bare-core ${hardened ? "packed" : "native"} account launch and mounted fleet continuity`, async () => {
     const dist = resolveWebDist("manifold-core-fleet-web-");
@@ -256,6 +264,7 @@ for (const hardened of [false, true]) {
       // browser's canvas occupant before asking native preparation to bind runtime facts.
       await waitFor(() => isMachineOnline(hub, beta.machineId), 15_000, 50);
       await waitFor(() => readyContainers.has(canvas.id), 15_000, 50);
+      await waitForOpenConnection(browser, "canvas");
       await waitFor(
         () =>
           browser.evaluate<boolean>(
@@ -307,9 +316,12 @@ for (const hardened of [false, true]) {
 
       for (const container of [canvas, composition]) {
         const existing = new Set((await listTerminals(hub)).map((terminal) => terminal.id));
+        sessionChannels.clear();
+        readyContainers.clear();
         await browser.goto(`${hub.httpUrl}/p/${container.id}`);
         await waitFor(() => readyContainers.has(container.id), 15_000, 50);
         await openSidebar(browser);
+        await waitForOpenConnection(browser, container.discipline);
         const selector = 'button[aria-label="New terminal on fleet-account-beta"]';
         await waitFor(
           () =>
