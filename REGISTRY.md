@@ -2191,7 +2191,7 @@ string" is the question a broken gate actually asks.
     {
       "testid": "terminal-renderer-toggle",
       "renderer": "packages/plugins/terminals/src/terminal-view.tsx",
-      "why": "the terminal-selection gate explicitly requests the device-local optional WebGL renderer and proves real rendered output, selection/copy, initialization refusal, context-loss DOM fallback and owned-context retirement without replacing the PTY or terminal buffer"
+      "why": "the terminal-selection gate explicitly requests the device-local optional WebGL renderer and proves real rendered output, selection/copy, focused pinch with populated scrollback, ordinary terminal scrolling, initialization refusal, context-loss DOM fallback and owned-context retirement without replacing the PTY or terminal buffer"
     },
     {
       "testid": "plugin-manager-machine-runtime",

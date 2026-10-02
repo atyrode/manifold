@@ -295,7 +295,9 @@ Ghostty may be a separately labelled reference, never a replacement for the DOM/
    remain DOM unless separately opted in.
 3. **Check correctness before timing.** Print generated ASCII, box drawing, wide text and
    combining accents. Select and copy them at 100% and 120% canvas zoom; compare actual copied
-   Unicode, selection paint, cursor placement and rendered glyphs. Exercise normal typing,
+   Unicode, selection paint, cursor placement and rendered glyphs. With populated history and
+   the terminal focused, pinch in/out over its contents: the canvas must zoom without moving
+   through history. Ordinary terminal scrolling must still leave the canvas fixed. Exercise normal typing,
    arrows, Backspace, paste, the device's real IME composition and cancellation, and the
    configured screen reader's input label/focus/output behavior. Resize the same pane between
    two recorded dimensions three times, scroll into retained history, then reload/remount.

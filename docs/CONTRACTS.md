@@ -3928,6 +3928,13 @@ records exact source, browser/GPU/display/workload conditions and unavailable de
 Native correctness/performance must support a separately recorded decision before any default
 renderer change; synthetic input is not native IME or assistive-technology qualification.
 
+**Ctrl-wheel pinch belongs to the canvas**, including over a focused DOM or WebGL terminal
+with populated scrollback or application mouse reporting. It changes canvas zoom without
+scrolling terminal history or emitting PTY input. Ordinary wheel input over an engaged terminal
+retains its existing scrollback/reporting behavior and must not pan the canvas. The public
+xterm wheel preflight owns that decision before scrolling or reporting; the bounded producer
+correction is recorded in the dependency decision above, not a competing capture-phase zoom path.
+
 The terminal's visual inset is outside the FitAddon measurement box, so the measured host
 is usable cell space rather than padding counted as rows. After snapshot replay, measurement
 schedules at most one pending animation-frame publication; unchanged proposals are not sent

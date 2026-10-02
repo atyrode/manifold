@@ -336,6 +336,19 @@ try {
     await browser!.evaluate(
       "document.querySelector('[aria-label=\"Close the plugin manager\"]').click()",
     );
+    // Let the closing dialog return focus before the next terminal gesture.
+    // Otherwise its queued return can steal Enter after a successful paste.
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`new Promise(resolve => {
+          requestAnimationFrame(() => setTimeout(() => resolve(
+            document.querySelector('[aria-label="Close the plugin manager"]') === null
+              && document.activeElement === document.querySelector('[data-testid="plugin-manager-open"]')
+          ), 0));
+        })`),
+      3000,
+      "plugin manager closes and returns keyboard focus",
+    );
     await browser!.evaluate("document.querySelector('.xterm-helper-textarea').focus()");
   }
 
@@ -752,6 +765,104 @@ try {
     if(right<=left||bottom<=top)throw new Error('terminal has no visible wheel target');
     return {x:(left+right)/2,y:(top+bottom)/2};
   })()`);
+  const scrollbackPosition = () =>
+    browser!.evaluate<number | null>(`(() => {
+      const slider = document.querySelector('.xterm .scrollbar.vertical .slider');
+      if (!slider) return null;
+      const thumb = slider.getBoundingClientRect(), track = slider.parentElement.getBoundingClientRect();
+      const travel = track.height - thumb.height;
+      return thumb.height > 0 && travel > 1 ? (thumb.top - track.top) / travel : null;
+    })()`);
+  async function settleViewport(label: string): Promise<void> {
+    let previous = await viewport();
+    let previousScroll = await scrollbackPosition();
+    let stableFrames = 0;
+    await until(
+      async () => {
+        await browser!.evaluate(
+          "new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)))",
+        );
+        const current = await viewport();
+        const scroll = await scrollbackPosition();
+        stableFrames =
+          JSON.stringify(current) === JSON.stringify(previous) &&
+          scroll !== null &&
+          scroll === previousScroll
+            ? stableFrames + 1
+            : 0;
+        previous = current;
+        previousScroll = scroll;
+        return stableFrames >= 3;
+      },
+      5000,
+      label,
+    );
+  }
+  async function focusedScrollback(renderer: string): Promise<void> {
+    await until(
+      async () => {
+        const gap = await scrollbackBottomGap();
+        return gap !== null && Math.abs(gap) < 1;
+      },
+      5000,
+      `${renderer}: engaged terminal starts at the scrollback bottom`,
+    );
+    const before = await viewport();
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...(await terminalPoint()),
+      deltaX: 0,
+      deltaY: -120,
+    });
+    await until(
+      async () => {
+        const gap = await scrollbackBottomGap();
+        return gap !== null && gap >= 1;
+      },
+      5000,
+      `${renderer}: engaged terminal scrollback`,
+    );
+    const after = await viewport();
+    if (
+      after.scrollX !== before.scrollX ||
+      after.scrollY !== before.scrollY ||
+      after.zoom !== before.zoom
+    )
+      throw new Error(`${renderer}: engaged terminal scrollback moved the canvas`);
+    console.log(
+      `PASS  ${renderer} engaged terminal keeps ordinary scrollback without panning canvas`,
+    );
+  }
+  async function focusedPinch(deltaY: number, label: string): Promise<void> {
+    if (
+      !(await browser!.evaluate<boolean>(
+        "document.querySelector('.xterm-host:not(.xterm-host--inactive)')?.contains(document.activeElement) === true && document.activeElement?.matches('.xterm-helper-textarea') === true",
+      ))
+    )
+      throw new Error(`${label}: pinch witness is not a focused active terminal`);
+    await settleViewport(`${label}: preceding wheel and zoom settled`);
+    const before = await viewport();
+    const position = await scrollbackPosition();
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...(await terminalPoint()),
+      modifiers: 2,
+      deltaX: 0,
+      deltaY,
+    });
+    await until(
+      async () => {
+        const zoom = (await viewport()).zoom;
+        return deltaY < 0 ? zoom > before.zoom : zoom < before.zoom;
+      },
+      5000,
+      `${label}: focused terminal pinch reaches canvas zoom with populated scrollback`,
+    );
+    await settleViewport(`${label}: focused pinch settled`);
+    const after = await scrollbackPosition();
+    if (position === null || after === null || Math.abs(after - position) > 0.002)
+      throw new Error(`${label}: pinch changed terminal history position`);
+  }
 
   // Focus is not input readiness: returning to canvas creates a spectator, and a
   // click focuses xterm before the occupant join finishes. typeText only awaits
@@ -896,50 +1007,11 @@ try {
   );
   // Pinch animation can continue after its first visible zoom change and focus.
   // Measure the next gesture only after that preceding gesture has settled.
-  let previousViewport = await viewport();
-  let stableFrames = 0;
-  await until(
-    async () => {
-      const current = await viewport();
-      stableFrames =
-        JSON.stringify(current) === JSON.stringify(previousViewport) ? stableFrames + 1 : 0;
-      previousViewport = current;
-      return stableFrames >= 3;
-    },
-    5000,
-    "preceding pinch animation settled",
-  );
-  await until(
-    async () => {
-      const gap = await scrollbackBottomGap();
-      return gap !== null && Math.abs(gap) < 1;
-    },
-    5000,
-    "engaged terminal starts at the scrollback bottom",
-  );
-  const beforeScroll = await viewport();
-  await browser.send("Input.dispatchMouseEvent", {
-    type: "mouseWheel",
-    ...(await terminalPoint()),
-    deltaX: 0,
-    deltaY: -120,
-  });
-  await until(
-    async () => {
-      const gap = await scrollbackBottomGap();
-      return gap !== null && gap >= 1;
-    },
-    5000,
-    "engaged terminal scrollback",
-  );
-  const afterScroll = await viewport();
-  if (
-    afterScroll.scrollX !== beforeScroll.scrollX ||
-    afterScroll.scrollY !== beforeScroll.scrollY ||
-    afterScroll.zoom !== beforeScroll.zoom
-  )
-    throw new Error("engaged terminal scrollback moved the canvas");
-  console.log("PASS  engaged terminal keeps ordinary scrollback without panning canvas");
+  await settleViewport("preceding pinch animation settled");
+  await focusedScrollback("DOM");
+  await focusedPinch(-40, "DOM zoom in");
+  await focusedPinch(40, "DOM zoom out");
+  console.log("PASS  focused DOM pinch zooms in/out without scrolling populated terminal history");
 
   // Renderer changes happen only after every existing DOM assertion above.
   // Observers retain genuine platform contexts; only fresh refusal documents
@@ -956,6 +1028,8 @@ try {
   );
 
   async function rendererZoom(scaled: boolean): Promise<void> {
+    let wheelMagnitude = 80;
+    let previousDecrease: boolean | undefined;
     for (let attempt = 0; attempt < 12; attempt++) {
       const zoom = (await viewport()).zoom;
       if (scaled ? zoom >= 1.15 && zoom <= 1.3 : Math.abs(zoom - 1) < 0.06) {
@@ -963,21 +1037,10 @@ try {
         return;
       }
       const decrease = zoom > (scaled ? 1.3 : 1);
-      await browser!.send("Input.dispatchMouseEvent", {
-        type: "mouseWheel",
-        ...(await terminalPoint()),
-        modifiers: 2,
-        deltaX: 0,
-        deltaY: decrease ? 80 : -80,
-      });
-      await until(
-        async () => {
-          const next = (await viewport()).zoom;
-          return decrease ? next < zoom : next > zoom;
-        },
-        20_000,
-        "renderer witness canvas zoom changes through real pinch",
-      );
+      // Adjust gesture size after crossing the target, never redispatch a failed gesture.
+      if (previousDecrease !== undefined && previousDecrease !== decrease) wheelMagnitude /= 2;
+      previousDecrease = decrease;
+      await focusedPinch(decrease ? wheelMagnitude : -wheelMagnitude, "renderer selection scale");
     }
     throw new Error(`renderer witness did not reach ${scaled ? "scaled" : "baseline"} canvas zoom`);
   }
@@ -1002,9 +1065,10 @@ try {
   async function rendererFocus(): Promise<void> {
     const point = await browser!.evaluate<{ x: number; y: number }>(`(() => {
       const screen = document.querySelector('.xterm-screen'), box = screen.getBoundingClientRect();
+      const host = screen.closest('.xterm-host').getBoundingClientRect();
       const canvas = document.querySelector('.canvas')?.getBoundingClientRect();
-      const left = Math.max(box.left, canvas?.left ?? 0, 0), right = Math.min(box.right, canvas?.right ?? innerWidth, innerWidth);
-      const top = Math.max(box.top, canvas?.top ?? 0, 0), bottom = Math.min(box.bottom, canvas?.bottom ?? innerHeight, innerHeight);
+      const left = Math.max(box.left, host.left, canvas?.left ?? 0, 0), right = Math.min(box.right, host.right, canvas?.right ?? innerWidth, innerWidth);
+      const top = Math.max(box.top, host.top, canvas?.top ?? 0, 0), bottom = Math.min(box.bottom, host.bottom, canvas?.bottom ?? innerHeight, innerHeight);
       if (right - left < 40 || bottom - top < 40) throw new Error('renderer has no visible input target');
       return { x: (left + right) / 2, y: (top + bottom) / 2 };
     })()`);
@@ -1021,13 +1085,38 @@ try {
       "renderer witness occupant and real input ready",
     );
   }
+  async function rendererCanvasReady(label: string): Promise<void> {
+    await rendererFocus();
+    // Until this canvas viewer engages, the PTY retains its last eligible fullscreen grid.
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`(() => {
+          const host = document.querySelector('.xterm-host');
+          const screen = host?.querySelector('.xterm-screen');
+          if (!host || !screen) return false;
+          const clip = host.getBoundingClientRect(), painted = screen.getBoundingClientRect();
+          return painted.width > 0 && painted.height > 0
+            && painted.width <= clip.width + 1 && painted.height <= clip.height + 1;
+        })()`),
+      20_000,
+      `${label}: engaged canvas viewer applies its eligible terminal grid`,
+    );
+    await revealScreen();
+  }
   async function rendererScroll(edge: "top" | "bottom"): Promise<void> {
-    await browser!.send("Input.dispatchMouseEvent", {
-      type: "mouseWheel",
-      ...(await terminalPoint()),
-      deltaX: 0,
-      deltaY: edge === "top" ? -100_000 : 100_000,
-    });
+    // xterm normalizes wheel deltas: one large wheel event is not scroll-to-edge.
+    // Drag the real scrollbar, then prove its endpoint geometrically.
+    const points = await browser!.evaluate<{ x: number; y: number }[]>(`(() => {
+      const slider = document.querySelector('.xterm .scrollbar.vertical .slider');
+      if (!slider) throw new Error('renderer witness lost its scrollback scrollbar');
+      const thumb = slider.getBoundingClientRect(), track = slider.parentElement.getBoundingClientRect();
+      const x = thumb.left + thumb.width / 2;
+      return [
+        { x, y: thumb.top + thumb.height / 2 },
+        { x, y: ${edge === "top" ? "track.top + 1" : "track.bottom - 1"} },
+      ];
+    })()`);
+    await browser!.drag(points, 30);
     await until(
       () =>
         browser!.evaluate<boolean>(`(() => {
@@ -1038,7 +1127,7 @@ try {
             && Math.abs(${edge === "top" ? "thumb.top - track.top" : "track.bottom - thumb.bottom"}) < 1;
         })()`),
       20_000,
-      `renderer witness scrollback reaches ${edge} through real wheel input`,
+      `renderer witness scrollback reaches ${edge} through the real scrollbar`,
     );
     await browser!.evaluate(
       "(() => { const { promise, resolve } = Promise.withResolvers(); requestAnimationFrame(() => requestAnimationFrame(resolve)); return promise; })()",
@@ -1350,6 +1439,8 @@ try {
     await rendererSelect(unicodeRow, rowCount, false);
     await setGesturePreference("copy-on-select", true);
     await rendererSelect(unicodeRow, rowCount, true);
+    await focusedScrollback("WebGL");
+    await rendererScroll("bottom");
     await rendererZoom(true);
     await rendererSelect(unicodeRow, rowCount, true);
     await rendererZoom(false);
@@ -1508,8 +1599,7 @@ try {
       `${label}: fresh document replays the existing terminal in DOM`,
     );
     await rendererState("dom", false);
-    await revealScreen();
-    await rendererFocus();
+    await rendererCanvasReady(label);
     const marker = `PTY-${rendererNonce}-${label}`;
     // Refresh only the visible witnesses, never the process or its history.
     // The retained shell variable must still equal the original real PID.
@@ -1675,6 +1765,12 @@ try {
   }
   try {
     await browser.send("Network.setCacheDisabled", { cacheDisabled: true });
+    // A cached worker response does not cross the page's Fetch interception boundary.
+    const workerBypass = await browser.send("Network.setBypassServiceWorker", { bypass: true });
+    if (workerBypass.error !== undefined)
+      throw new Error(
+        "could not expose this fixture's real renderer requests at the network boundary",
+      );
     const interception = await browser.send("Fetch.enable", {
       patterns: [{ urlPattern: "*", resourceType: "Script", requestStage: "Request" }],
     });
@@ -1714,8 +1810,8 @@ try {
 
     await rendererFreshDom("PENDING-REMOUNT");
     await rendererMount();
-    await browser.evaluate(
-      "window.__terminalRendererDisposedMount = window.__terminalRendererMount",
+    await browser.evaluate<void>(
+      "void (window.__terminalRendererDisposedMount = window.__terminalRendererMount)",
     );
     await browser.clickTestId("terminal-renderer-toggle");
     await until(
@@ -1764,8 +1860,7 @@ try {
       "pending-import remount returns through the existing canvas lifecycle",
     );
     await rendererState("dom", false);
-    await revealScreen();
-    await rendererFocus();
+    await rendererCanvasReady("pending-import return");
     const finalBuffer = await rendererBuffer();
     if (
       !historyFixtures.every((line) => finalBuffer.history.some((page) => page.includes(line))) ||
@@ -1784,6 +1879,7 @@ try {
     stopPausing();
     await browser.send("Fetch.disable", {});
     await browser.send("Network.setCacheDisabled", { cacheDisabled: false });
+    await browser.send("Network.setBypassServiceWorker", { bypass: false });
   }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
