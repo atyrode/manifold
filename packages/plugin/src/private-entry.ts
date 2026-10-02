@@ -37,6 +37,15 @@ export async function privateCredentialEntryBypass(): Promise<Bypass> {
 export const CREDENTIAL_ENTRY_DOCUMENT_PATH = "/credential-entry.html";
 export const CREDENTIAL_ENTRY_ASSETS_PREFIX = "/credential-entry-assets/";
 
+/** Static aliases are reserved, never the names of ordinary authenticated plugin APIs. */
+export function privateCredentialEntryStaticPath(pathname: string): boolean {
+  if (pathname.startsWith("/api")) return false;
+  const decoded = pathname.replace(/%(?:25)*([0-9a-f]{2})/gi, (_escape, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+  return /(?:^|[/\\])credential-entry/i.test(decoded);
+}
+
 /** One immutable private-document policy shared by the hub and development server. */
 export const CREDENTIAL_ENTRY_SECURITY_HEADERS = Object.freeze([
   Object.freeze(["cache-control", "no-store"] as const),
