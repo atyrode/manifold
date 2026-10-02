@@ -66,6 +66,7 @@ export const TERMINAL_HOST_MACHINE_COMMAND_TYPES = [
   "terminal_restart",
   "snapshot_request",
   "drain",
+  "geometry_snapshot_request",
 ] as const satisfies readonly ServerToAgentMessage["type"][];
 
 /** The machine event members the host produces; `hello` and `pong` are the transport's. */
@@ -74,6 +75,8 @@ export const TERMINAL_HOST_MACHINE_EVENT_TYPES = [
   "create_error",
   "output",
   "snapshot",
+  "terminal_geometry",
+  "geometry_snapshot",
   "exited",
   "terminal_cwd",
   "terminal_ready",
@@ -236,6 +239,14 @@ export const TerminalHostErrorSchema = z.strictObject({
 });
 export type TerminalHostErrorCode = (typeof TERMINAL_HOST_ERRORS)[number];
 
+/**
+ * Sent only to the seated transport, before its unchanged status response. Older transports
+ * ignore this new type; observer/maintenance status remains exactly one existing frame.
+ */
+export const TerminalHostGeometrySupportedSchema = z.strictObject({
+  type: z.literal("terminal_geometry_supported"),
+});
+
 export const TerminalHostEventSchema = z.discriminatedUnion("type", [
   TerminalHostStatusSchema,
   TerminalHostAttachedSchema,
@@ -244,6 +255,7 @@ export const TerminalHostEventSchema = z.discriminatedUnion("type", [
   TerminalHostShuttingDownSchema,
   TerminalHostDestructiveStopSchema,
   TerminalHostErrorSchema,
+  TerminalHostGeometrySupportedSchema,
   ...membersOf(AgentMessageSchema.options, TERMINAL_HOST_MACHINE_EVENT_TYPES),
 ]);
 export type TerminalHostEvent =
@@ -254,6 +266,7 @@ export type TerminalHostEvent =
   | z.infer<typeof TerminalHostShuttingDownSchema>
   | z.infer<typeof TerminalHostDestructiveStopSchema>
   | z.infer<typeof TerminalHostErrorSchema>
+  | z.infer<typeof TerminalHostGeometrySupportedSchema>
   | Extract<AgentMessage, { type: MachineEventType }>;
 
 // ---------------------------------------------------------------------------- type inventories
@@ -273,6 +286,7 @@ export const TERMINAL_HOST_EVENT_TYPES = [
   "shutting_down",
   "destructive_stop",
   "error",
+  "terminal_geometry_supported",
   ...TERMINAL_HOST_MACHINE_EVENT_TYPES,
 ] as const satisfies readonly TerminalHostEvent["type"][];
 

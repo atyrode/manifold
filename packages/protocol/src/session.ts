@@ -6,6 +6,7 @@ import {
   MachinePathSchema,
   TerminalCwdSchema,
   TerminalExitReasonSchema,
+  TerminalGeometrySchema,
   TerminalProgramSchema,
   TerminalReadinessSchema,
 } from "./machine.ts";
@@ -481,6 +482,11 @@ const stateFields = {
   terminals: z.array(TerminalInfoSchema),
 };
 
+/** Null marks retained legacy owners whose resize has no owner-relative stream boundary. */
+const ViewerTerminalGeometrySchema = TerminalGeometrySchema.extend({
+  revision: z.number().int().nonnegative().nullable(),
+});
+
 const SERVER_BODIES = {
   init: z.strictObject({ type: z.literal("init"), ...stateFields }),
   resync: z.strictObject({ type: z.literal("resync"), ...stateFields }),
@@ -546,12 +552,19 @@ const SERVER_BODIES = {
     /** Byte-sequence watermark: outputs with seq > this follow with no gap. */
     seq: z.number().int().nonnegative(),
     data: base64,
+    geometry: ViewerTerminalGeometrySchema,
   }),
   terminal_output: z.strictObject({
     type: z.literal("terminal_output"),
     terminalId: z.string().min(1),
     seq: z.number().int().positive(),
     data: base64,
+  }),
+  terminal_geometry: z.strictObject({
+    type: z.literal("terminal_geometry"),
+    terminalId: z.string().min(1),
+    seq: z.number().int().nonnegative(),
+    geometry: ViewerTerminalGeometrySchema,
   }),
   terminal_event: z.strictObject({
     type: z.literal("terminal_event"),
@@ -706,6 +719,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.terminal_opened,
   SERVER_BODIES.terminal_snapshot,
   SERVER_BODIES.terminal_output,
+  SERVER_BODIES.terminal_geometry,
   SERVER_BODIES.terminal_event,
   SERVER_BODIES.terminal_sizing,
   SERVER_BODIES.saved,
@@ -738,6 +752,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.terminal_opened),
   channelized(SERVER_BODIES.terminal_snapshot),
   channelized(SERVER_BODIES.terminal_output),
+  channelized(SERVER_BODIES.terminal_geometry),
   channelized(SERVER_BODIES.terminal_event),
   channelized(SERVER_BODIES.terminal_sizing),
   channelized(SERVER_BODIES.saved),
@@ -796,6 +811,7 @@ export const SERVER_MESSAGE_TYPES = [
   "terminal_opened",
   "terminal_snapshot",
   "terminal_output",
+  "terminal_geometry",
   "terminal_event",
   "terminal_sizing",
   "saved",

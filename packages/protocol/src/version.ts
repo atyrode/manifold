@@ -1,10 +1,11 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 55;
+export const PROTOCOL_VERSION = 56;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
- * Protocol 55 retains the prior bundle ABI through explicit compatibility projections.
+ * Protocol 56 adds terminal stream geometry without changing prior plugin call signatures.
  * Private credential entry adds no plugin secret/value interface or hardened contract change.
+ * Session authority, correlated scopes and subscription ordering require the current SDK.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
@@ -16,6 +17,7 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
   "53",
   "54",
   "55",
+  "56",
 ]);
 
 /**
@@ -488,9 +490,16 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * jobs and externally provisioned credential consumption; they receive no enrollment mode.
  * Session/HTTP discovery moves to55 for the separate host-only entry document. Federation
  * and the existing plugin/hardened ABI are unchanged, so their explicit sets add55.
+ *
+ * v56: ORDERED TERMINAL GEOMETRY (issue #879). Current session snapshots carry their own
+ * geometry, and sparse geometry frames share the owner's output ordering. Optional machine
+ * hello terminalGeometry selects new geometry_snapshot/request types only for capable owners.
+ * Absent capability preserves legacy owners. IPC3 keeps every existing frame unchanged;
+ * new-type support and geometry events are ignored by older transports. Instance wire and
+ * native-owner RPC are unchanged; their supported peers do not require a fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56,
 ]);
 
 /**
@@ -502,6 +511,9 @@ export const MACHINE_REPOSITORY_PROTOCOL_VERSION = 31;
 
 /** A pre-v33 transport must never receive the restart command it cannot answer. */
 export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
+
+/** Ordered terminal geometry additionally requires explicit support from the retained owner. */
+export const TERMINAL_GEOMETRY_PROTOCOL_VERSION = 56;
 
 /** Older machine parsers must never receive a contextual self-provider runtime policy. */
 export const MACHINE_SELF_PROVIDER_PROTOCOL_VERSION = 41;
@@ -552,7 +564,7 @@ export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
  * the instance set so old ambient-admission peers cannot resume through the new contract.
  * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

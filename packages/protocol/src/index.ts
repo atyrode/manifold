@@ -415,6 +415,7 @@ export {
   PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
   TERMINAL_RESTART_PROTOCOL_VERSION,
+  TERMINAL_GEOMETRY_PROTOCOL_VERSION,
 } from "./version.ts";
 export {
   MAX_TERMINAL_HOST_FRAME_BYTES,
@@ -438,6 +439,7 @@ export {
   TerminalHostShutdownRequestSchema,
   TerminalHostShuttingDownSchema,
   TerminalHostDestructiveStopSchema,
+  TerminalHostGeometrySupportedSchema,
   TerminalHostStatusRequestSchema,
   TerminalHostStatusSchema,
   type TerminalHostCommand,
@@ -1177,6 +1179,7 @@ export {
   TerminalExitReasonSchema,
   TerminalOwnerStopReasonSchema,
   TerminalReadinessSchema,
+  TerminalGeometrySchema,
   type AdvertisedTerminal,
   type AgentMessage,
   type MachineRepositoryFact,
@@ -1188,6 +1191,7 @@ export {
   type TerminalExecution,
   type TerminalExitReason,
   type TerminalOwnerStopReason,
+  type TerminalGeometry,
 } from "./machine.ts";
 export {
   InstanceOriginSchema,
