@@ -753,10 +753,11 @@ bun scripts/verify-nix-packaging.ts
 For a direct VM-only run, use
 `nix build --no-link --max-jobs 1 --print-build-logs .#checks.x86_64-linux.native-profile`
 or the corresponding `aarch64-linux` check on that target. The verifier evaluates the
-exact-source aggregate and all five roles, then builds `native-profile-shellonly`,
+exact-source aggregate and all five roles once, then builds their validated derivation paths
+directly instead of re-evaluating the flake: `native-profile-shellonly`,
 `native-profile-coexist`, `native-profile-machine`, `native-profile-credential` and
-`native-profile-anchors` serially. Each complete role retains the 15-minute build/runtime
-bound; the unchanged 45-minute CI lane bounds the whole packaging/profile proof. The
+`native-profile-anchors` serially, followed by the aggregate. Each complete role retains its
+15-minute build/runtime bound; the unchanged 45-minute CI lane bounds the whole packaging/profile proof. The
 aggregate cannot succeed without the exact five successful runtime outputs. Serial
 builds also keep CPU-emulated ARM verification from running several memory-heavy guests
 together. Dependency cold/rebuild and native package smoke remain unchanged.

@@ -275,6 +275,7 @@ async function nativeProfile(): Promise<void> {
     state.execution = existsSync(output) ? "cached" : "not_started";
     record();
     console.log(`Nix native-profile: ${system} ${state.check}`);
+    // Build the source-bound derivation already evaluated below, without re-evaluating the flake.
     const built = await command(
       [
         nix!,
@@ -287,7 +288,7 @@ async function nativeProfile(): Promise<void> {
         "--no-update-lock-file",
         "--max-jobs",
         "1",
-        `${flake}#${state.check}`,
+        `${derivation}^*`,
       ],
       NATIVE_PROFILE_TIMEOUT_MS,
       repoRoot,
