@@ -165,22 +165,21 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
     if (!parsed.success) throw new Error("Could not verify host grouping inventory");
     return parsed.data;
   }, [host.client]);
-  const {
-    value: hostViews,
-    setValue: publishHostViews,
-    refresh: refreshHostViews,
-  } = usePolledResource<HostViews | null>(fetchHostViews, FALLBACK_POLL_MS, {
-    key: MACHINES_LIST_HOST_VIEWS_ACTION,
-    initial: null,
-    topics: host.topics.machines,
-    events: host.client,
-    requiresWorkspaceEvents: true,
-    onError: (reason) =>
-      setGroupingFailure(
-        reason instanceof Error ? reason.message : "Could not read host groupings",
-      ),
-    onSuccess: () => setGroupingFailure(null),
-  });
+  const { value: hostViews, refresh: refreshHostViews } = usePolledResource<HostViews | null>(
+    fetchHostViews,
+    FALLBACK_POLL_MS,
+    {
+      ...MACHINES_RESOURCE_OPTIONS,
+      key: MACHINES_LIST_HOST_VIEWS_ACTION,
+      topics: host.topics.machines,
+      events: host.client,
+      onError: (reason) =>
+        setGroupingFailure(
+          reason instanceof Error ? reason.message : "Could not read host groupings",
+        ),
+      onSuccess: () => setGroupingFailure(null),
+    },
+  );
   const subscribeAuthority = useCallback(
     (notify: () => void) => host.client.onAuthorityChange(notify),
     [host.client],
@@ -313,7 +312,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
   const acceptGrouping = (result: unknown): void => {
     const parsed = HostViewsSchema.safeParse(result);
     if (!parsed.success) throw new Error("Could not verify the committed grouping");
-    publishHostViews(parsed.data);
+    // Only serialized reads publish: this mutation reply may trail a newer registry commit.
   };
   const launch = async (machine: MachineSummary): Promise<void> => {
     if (!inventoryUsable || authoring === null || shellUnavailable(machine, true) !== null) return;
