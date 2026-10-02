@@ -415,6 +415,128 @@ function siblingDoor(onCall: () => void): ServerPluginDef {
   };
 }
 
+test.each(["credential", "action", "consent"] as const)(
+  "a sibling native child outlives the settled hook but still loses %s authority",
+  async (withdrawal) => {
+    const posted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let retained: JobSettledCtx | undefined;
+    const sibling = def("sample.sibling");
+    const f = await fixture([
+      def(
+        "sample.alpha",
+        async (ctx, job) => {
+          retained = ctx;
+          try {
+            await ctx.actions.call({
+              plugin: "sample.sibling",
+              action: "post",
+              input: { machineId: job.machineId, jobId: "child" },
+            });
+            posted.resolve();
+            await release.promise;
+          } catch (error) {
+            posted.reject(error);
+          }
+        },
+        {
+          capabilities: ["containers:read"],
+          dependencies: { "sample.sibling": { type: "optional" } },
+        },
+      ),
+      {
+        ...sibling,
+        manifest: {
+          ...sibling.manifest,
+          capabilities: ["containers:read", "machines:run"],
+        },
+        actions: [
+          defineAction({
+            name: "post",
+            title: "Post",
+            caps: ["containers:read"],
+            delegates: ["machines:run"],
+            input: z.strictObject({ machineId: z.string(), jobId: z.string() }),
+            result: z.strictObject({ jobId: z.string() }),
+          }),
+        ],
+        handlers: {
+          post: async (ctx, args: { machineId: string; jobId: string }) => {
+            const child = await ctx.jobs.execute({
+              ...args,
+              operationId: "sample.sibling.run",
+              input: { value: "safe" },
+              outputs: [],
+            });
+            return { jobId: child.jobId };
+          },
+        },
+      },
+    ]);
+    try {
+      const token = f.auth.mintToken(
+        {
+          principal: { name: "settlement runner", kind: "human" },
+          caps: ["containers:read", "machines:run", "jobs:read"],
+        },
+        f.root,
+      );
+      const actor = f.auth.authenticate(token.token);
+      run(f, "sample.alpha", "parent", actor);
+      await posted.promise;
+      f.service.tick();
+      expect(f.service.jobs.get("child")?.state).toBe("start-committed");
+      expect(f.service.jobs.cancellation("child")).toBeNull();
+      release.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expect(
+        retained!.actions.call({
+          plugin: "sample.sibling",
+          action: "post",
+          input: { machineId: f.machineId, jobId: "late-child" },
+        }),
+      ).rejects.toThrow();
+      expect(f.service.jobs.get("late-child")).toBeNull();
+      f.service.tick();
+      expect(f.service.jobs.get("child")?.state).toBe("start-committed");
+      expect(f.service.jobs.cancellation("child")).toBeNull();
+      if (withdrawal === "credential") {
+        f.auth.revokePrincipal(actor.principal.id, f.root);
+      } else if (withdrawal === "action") {
+        await f.host.setEnabled("sample.sibling", false, f.root.principal.id);
+      } else {
+        f.service.consent(f.root, {
+          machineId: f.machineId,
+          pluginId: "sample.sibling",
+          installationRevision: "r1",
+          artifactSha256: hash,
+          node: formatManifoldUri({
+            kind: "operation",
+            machineId: f.machineId,
+            operationId: "sample.sibling.run",
+          }),
+          cap: "machines:run",
+          enabled: false,
+        });
+      }
+      f.service.tick();
+      expect(f.service.jobs.cancellation("child")).toEqual({
+        reason:
+          withdrawal === "credential"
+            ? "credential_revoked"
+            : withdrawal === "action"
+              ? "plugin_disabled"
+              : "job_consent_refused:machines:run",
+        mode: "cancel",
+      });
+    } finally {
+      release.resolve();
+      f.host.close();
+      f.store.close();
+    }
+  },
+);
+
 test("selected settlement retains its own longer lease; the unselected hook times out and policy is copied", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-settled-lease-"));
   const unselectedExpired = Promise.withResolvers<void>();

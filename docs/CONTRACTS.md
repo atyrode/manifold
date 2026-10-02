@@ -5366,6 +5366,9 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   fresh authority. A sibling's delayed guest preparation rechecks the lease before admission;
   queued isolate calls recheck that their request is still live before being served. Effects
   already admitted are not rolled back or retroactively cancelled.
+  An admitted ordinary native job uses its durable authority snapshot after its initiating
+  hook or action returns; credential, action/code, grant and native-consent withdrawal still
+  cancels it. A pending terminal admission keeps its live effect fence until owner acknowledgement.
 - **Carried container authority (ADR 0051).** A GOVERNED door — one whose fixed or
   sealed prepared requirements include a governed capability — may declare `containers:read`
   or `containers:write` with a `requirements` target, and that target must be a container
