@@ -93,6 +93,7 @@ import {
   workspacePanelSeats,
 } from "./seat-discovery.ts";
 import { MachineRuntime } from "./runtime.tsx";
+import { CredentialReferences } from "./credential-references.tsx";
 
 /**
  * Composition administration, rendered by the composition it administers (issue #239). The
@@ -2734,6 +2735,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
 
   const list = (
     <Stack className="plugin-manager" gap="0.35rem" data-testid="plugin-manager">
+      {canInstall ? <CredentialReferences host={host} /> : null}
       <Cluster className="plugin-manager-controls" gap="0.4rem">
         <input
           className="plugin-manager-search"

@@ -90,6 +90,16 @@ function errorResponse(error: RequestError): Response {
   return jsonResponse(body, STATUS_BY_CODE[error.code]);
 }
 
+/** Reserved private paths, including noncanonical physical and encoded aliases, fail closed. */
+function credentialEntryPath(pathname: string): boolean {
+  // Recognize the reserved ASCII family even inside repeated percent escapes or an otherwise
+  // malformed path. Serving still requires the raw, exact canonical spelling below.
+  const decoded = pathname.replace(/%(?:25)*([0-9a-f]{2})/gi, (_escape, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+  return decoded.split(/[/\\]+/).some((part) => part.toLowerCase().startsWith("credential-entry"));
+}
+
 /**
  * The cross-origin permission every door answers with, applied by {@link HttpApp.fetch} rather
  * than by each door: the set is one sentence — anyone may ask, with a bearer token, using the
@@ -364,6 +374,29 @@ export class HttpApp {
         ? new Response(null, { status: 204 })
         : await respond(url);
     response.headers.set("x-content-type-options", "nosniff");
+    if (credentialEntryPath(url.pathname)) {
+      response.headers.set("cache-control", "no-store");
+      response.headers.set("referrer-policy", "no-referrer");
+      response.headers.set("x-frame-options", "DENY");
+      response.headers.set("cross-origin-opener-policy", "noopener-allow-popups");
+      response.headers.set("cross-origin-resource-policy", "same-origin");
+      response.headers.set(
+        "content-security-policy",
+        [
+          "default-src 'none'",
+          `script-src ${url.origin}/credential-entry-assets/`,
+          `style-src ${url.origin}/credential-entry-assets/`,
+          // Selected foreign hubs are device-local, unknown to this static responder. This is
+          // portable-lens compatibility, NOT a claim of destination network confinement.
+          "connect-src https: http:",
+          "base-uri 'none'",
+          "form-action 'none'",
+          "frame-ancestors 'none'",
+          "object-src 'none'",
+          "worker-src 'none'",
+        ].join("; "),
+      );
+    }
     // Callback documents deliberately carry the stricter no-referrer policy.
     if (!response.headers.has("referrer-policy")) {
       response.headers.set("referrer-policy", "strict-origin-when-cross-origin");
@@ -373,6 +406,9 @@ export class HttpApp {
 
   private async route(request: Request, url: URL): Promise<Response> {
     try {
+      if (credentialEntryPath(url.pathname)) {
+        return this.credentialEntryFile(request, url.pathname);
+      }
       if (request.method === "GET" && url.pathname === "/healthz") {
         // What runs, by the one derivation the web bundle also carries (`scripts/build-identity.ts`);
         // protocol compatibility is a separate number and is the one the lens negotiates on.
@@ -1042,6 +1078,29 @@ export class HttpApp {
         return { exists: false, title: null };
       }
     }
+  }
+
+  private credentialEntryFile(request: Request, pathname: string): Response {
+    const document = pathname === "/credential-entry.html";
+    const asset =
+      /^\/credential-entry-assets\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(pathname) &&
+      !pathname.endsWith(".html");
+    if ((request.method !== "GET" && request.method !== "HEAD") || (!document && !asset)) {
+      throw new RequestError("not_found", "private credential entry route not found");
+    }
+    const candidate = resolve(this.config.webDist, `.${pathname}`);
+    try {
+      if (statSync(candidate).isFile()) {
+        const file = Bun.file(candidate);
+        return new Response(request.method === "HEAD" ? null : file, {
+          headers: { "content-type": file.type },
+        });
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || Reflect.get(error, "code") !== "ENOENT") throw error;
+    }
+    // Never substitute the plugin shell, including during an incomplete/missing deployment.
+    throw new RequestError("not_found", "private credential entry is not built");
   }
 
   private staticFile(pathname: string): Response {

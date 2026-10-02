@@ -78,7 +78,8 @@ import {
   type ReactNode,
 } from "react";
 import { Cover, Stack } from "@manifold/ui";
-import { dispatchAction, type StoredIdentity } from "./api.ts";
+import { dispatchAction } from "./api.ts";
+import type { StoredIdentity } from "./identity-storage.ts";
 import { requestJson, requestResponse } from "./http.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";

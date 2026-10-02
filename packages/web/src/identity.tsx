@@ -1,5 +1,5 @@
-import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
-import { instanceOrigin, isForeignInstance } from "@manifold/plugin/hooks";
+import { IDENTITY_COLORS } from "@manifold/protocol";
+import { instanceOrigin } from "@manifold/plugin/instance";
 import { Cover } from "@manifold/ui";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
@@ -7,12 +7,17 @@ import {
   getPreviewIdentityAuthority,
   issuePreviewIdentity,
   startPreviewIdentity,
-  type StoredIdentity,
 } from "./api.ts";
 import { onIdentityRejected } from "./http.ts";
+import {
+  IDENTITY_STORAGE,
+  credentialKey,
+  identityExpired,
+  loadIdentity,
+  type StoredIdentity,
+} from "./identity-storage.ts";
 
 const OWNER_KEY_STORAGE = "manifold.ownerKey";
-const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 const PREVIEW_NONCE_STORAGE = "manifold.previewNonce";
@@ -122,22 +127,6 @@ function PreviewHandoff({
 }
 
 /**
- * A CREDENTIAL BELONGS TO ONE INSTANCE. A token is minted by the server that will be asked to
- * honour it, and an owner key authenticates as root at exactly one origin — so a lens pointed
- * at a second instance may not read, and must never overwrite, the grant it holds for the
- * first. The key therefore carries the instance whenever the lens is looking somewhere other
- * than its birthplace (`manifold.identity@https://other.example`), and stays bare in the
- * ordinary case where those are the same place.
- *
- * Bare is not a special case dressed up: the served instance is the one every deployment has,
- * so its key is the one every reader — a human in devtools, a browser gate — already knows.
- * `REGISTRY.md` §Device-local register carries both spellings under one prefixed row.
- */
-function credentialKey(base: string): string {
-  return isForeignInstance() ? `${base}@${instanceOrigin()}` : base;
-}
-
-/**
  * The one color scheme: principals pick from it, machine dots hash into it. It lives in the
  * protocol now, because the server derives `MachineSummary.color` from the same palette and
  * two ends agreeing on a list of colors makes it vocabulary rather than styling.
@@ -178,50 +167,6 @@ function loadOwnerKey(): string | null {
   return bootstrapOwnerKey?.storageKey === credentialKey(OWNER_KEY_STORAGE)
     ? bootstrapOwnerKey.value
     : null;
-}
-
-function loadIdentity(): StoredIdentity | null {
-  const serialized = window.localStorage.getItem(credentialKey(IDENTITY_STORAGE));
-  if (serialized === null) return null;
-  try {
-    const decoded: unknown = JSON.parse(serialized);
-    if (decoded === null || typeof decoded !== "object") throw new Error("invalid identity");
-    const token = Reflect.get(decoded, "token");
-    const expiresAt = Reflect.get(decoded, "expiresAt");
-    const expiresInMs = Reflect.get(decoded, "expiresInMs");
-    const receivedAt = Reflect.get(decoded, "receivedAt");
-    const principal = PrincipalSchema.safeParse(Reflect.get(decoded, "principal"));
-    if (
-      typeof token !== "string" ||
-      token.length === 0 ||
-      (expiresAt !== undefined && (typeof expiresAt !== "number" || !Number.isFinite(expiresAt))) ||
-      (expiresInMs !== undefined &&
-        (typeof expiresInMs !== "number" || !Number.isFinite(expiresInMs))) ||
-      (receivedAt !== undefined &&
-        (typeof receivedAt !== "number" || !Number.isFinite(receivedAt))) ||
-      (expiresInMs === undefined) !== (receivedAt === undefined) ||
-      !principal.success
-    ) {
-      throw new Error("invalid identity");
-    }
-    return {
-      token,
-      principal: principal.data,
-      ...(typeof expiresAt === "number" ? { expiresAt } : {}),
-      ...(typeof expiresInMs === "number" ? { expiresInMs } : {}),
-      ...(typeof receivedAt === "number" ? { receivedAt } : {}),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function identityExpired(identity: StoredIdentity): boolean {
-  return (
-    identity.expiresInMs !== undefined &&
-    identity.receivedAt !== undefined &&
-    Date.now() - identity.receivedAt >= identity.expiresInMs
-  );
 }
 
 interface IdentityGateProps {

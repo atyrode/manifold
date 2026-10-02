@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, relative, resolve, sep } from "node:path";
-import { defineConfig, loadEnv } from "vite";
+import { build, defineConfig, loadEnv } from "vite";
 import type { Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { pluginDevelopment } from "@manifold/plugin-kit/refresh-vite";
@@ -128,6 +128,79 @@ function shellIdentity(env: Record<string, string>, title: string): Plugin {
  */
 const SHELL_MARKER = /^const SHELL = .*; \/\/ MANIFOLD_SHELL$/m;
 
+const PRIVATE_DOCUMENT = "/credential-entry.html";
+const PRIVATE_ASSET_PREFIX = "/credential-entry-assets/";
+
+/**
+ * A second, independent Vite graph in the existing build command. Multipage shared chunks
+ * would make the private document depend on shell chunks (or remove shell offline assets).
+ * This entry deliberately has no React, plugin-development or shell composition plugins.
+ */
+function credentialEntry(): Plugin {
+  let outDir = resolve(packageRoot, "dist");
+  let mode = "production";
+  return {
+    name: "manifold-credential-entry",
+    apply: "build",
+    configResolved(config) {
+      outDir = resolve(config.root, config.build.outDir);
+      mode = config.mode;
+    },
+    writeBundle: {
+      order: "pre",
+      sequential: true,
+      async handler() {
+        await build({
+          configFile: false,
+          root: packageRoot,
+          mode,
+          base: "/",
+          publicDir: false,
+          logLevel: "warn",
+          plugins: [{
+            name: "manifold-credential-graph-boundary",
+            generateBundle(_options, bundle) {
+              for (const output of Object.values(bundle)) {
+                if (
+                  output.fileName !== PRIVATE_DOCUMENT.slice(1) &&
+                  !output.fileName.startsWith(PRIVATE_ASSET_PREFIX.slice(1))
+                ) {
+                  throw new Error("Private credential assets must have their own URL namespace");
+                }
+                if (output.type !== "chunk") continue;
+                for (const id of Object.keys(output.modules)) {
+                  const path = id.split(sep).join("/");
+                  if (
+                    path.includes("/packages/plugins/") ||
+                    /\/packages\/web\/src\/(?:main|app|identity|api|assembly|plugin-host|shared-registry)\.(?:ts|tsx)$/.test(path) ||
+                    /\/packages\/plugin\/src\/(?:hooks|index|runtime)\.ts$/.test(path)
+                  ) {
+                    throw new Error("The private credential entry must not load the plugin shell");
+                  }
+                }
+              }
+            },
+          }],
+          build: {
+            outDir,
+            emptyOutDir: false,
+            sourcemap: false,
+            assetsDir: PRIVATE_ASSET_PREFIX.slice(1, -1),
+            rollupOptions: {
+              input: resolve(packageRoot, PRIVATE_DOCUMENT.slice(1)),
+              output: {
+                entryFileNames: "credential-entry-assets/[name]-[hash].js",
+                chunkFileNames: "credential-entry-assets/[name]-[hash].js",
+                assetFileNames: "credential-entry-assets/[name]-[hash][extname]",
+              },
+            },
+          },
+        });
+      },
+    },
+  };
+}
+
 /**
  * Ships the app shell's service worker (`sw.js`) from the ONE existing build — no second build
  * target, no `vite-plugin-pwa`, no generated worker (see `sw.js` for the docs/CONTRACTS.md §Dependency decisions reasoning).
@@ -151,33 +224,44 @@ function shellWorker(): Plugin {
     configResolved(config) {
       outDir = resolve(config.root, config.build.outDir);
     },
-    writeBundle() {
-      const shipped = readdirSync(outDir, { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .map(
-          (entry) =>
-            `/${relative(outDir, resolve(entry.parentPath, entry.name)).split(sep).join("/")}`,
-        )
-        .filter((entry) => entry !== "/sw.js" && !entry.endsWith(".map"))
-        .sort();
-      const hash = createHash("sha256");
-      for (const path of shipped) {
-        hash
-          .update(path)
-          .update("\0")
-          .update(readFileSync(resolve(outDir, `.${path}`)))
-          .update("\0");
-      }
-      const digest = hash.digest("hex");
-      const source = readFileSync(resolve(packageRoot, "sw.js"), "utf8");
-      if (!SHELL_MARKER.test(source)) {
-        throw new Error("packages/web/sw.js is missing its MANIFOLD_SHELL line");
-      }
-      const shell = { build: `${identity.build}-${digest.slice(0, 8)}`, assets: shipped };
-      writeFileSync(
-        resolve(outDir, "sw.js"),
-        source.replace(SHELL_MARKER, `const SHELL = ${JSON.stringify(shell)}; // MANIFOLD_SHELL`),
-      );
+    writeBundle: {
+      order: "post",
+      sequential: true,
+      handler() {
+        const shipped = readdirSync(outDir, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile())
+          .map(
+            (entry) =>
+              `/${relative(outDir, resolve(entry.parentPath, entry.name)).split(sep).join("/")}`,
+          )
+          .filter(
+            (entry) =>
+              entry !== "/sw.js" &&
+              entry !== PRIVATE_DOCUMENT &&
+              !entry.startsWith(PRIVATE_ASSET_PREFIX) &&
+              !entry.endsWith(".map"),
+          )
+          .sort();
+        const source = readFileSync(resolve(packageRoot, "sw.js"), "utf8");
+        // Policy-only worker changes also need a new generation, not just changed shell assets.
+        const hash = createHash("sha256").update(source).update("\0");
+        for (const path of shipped) {
+          hash
+            .update(path)
+            .update("\0")
+            .update(readFileSync(resolve(outDir, `.${path}`)))
+            .update("\0");
+        }
+        const digest = hash.digest("hex");
+        if (!SHELL_MARKER.test(source)) {
+          throw new Error("packages/web/sw.js is missing its MANIFOLD_SHELL line");
+        }
+        const shell = { build: `${identity.build}-${digest.slice(0, 8)}`, assets: shipped };
+        writeFileSync(
+          resolve(outDir, "sw.js"),
+          source.replace(SHELL_MARKER, `const SHELL = ${JSON.stringify(shell)}; // MANIFOLD_SHELL`),
+        );
+      },
     },
   };
 }
@@ -193,7 +277,13 @@ export default defineConfig(({ mode }) => {
   return {
     // These files are templates for shellIdentity, not a second set of unbranded public URLs.
     publicDir: false,
-    plugins: [react(), pluginDevelopment(), shellIdentity(env, title), shellWorker()],
+    plugins: [
+      react(),
+      pluginDevelopment(),
+      shellIdentity(env, title),
+      credentialEntry(),
+      shellWorker(),
+    ],
     define: {
       "import.meta.env.VITE_MANIFOLD_WEB_VERSION": JSON.stringify(identity.version),
       "import.meta.env.VITE_MANIFOLD_WEB_BUILD": JSON.stringify(identity.build),
