@@ -17,6 +17,7 @@ import { AuthService, ServiceError } from "../src/auth.ts";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
 import { JOB_SCHEDULE_SCHEMA_STATEMENTS } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
+import { migrateToCanonLexicon } from "../src/migrate-lexicon.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 import {
@@ -1128,6 +1129,92 @@ describe("migration 11: the lexicon cut", () => {
     }
   });
 
+  test("a refused mid-batch discipline rewrite rolls schema and rows back before retry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-lexicon-rollback-"));
+    const path = join(dir, "manifold.db");
+    let db: Database | undefined;
+    try {
+      seedPreV11(path);
+      db = new Database(path, { strict: true });
+      const pads = db.query("SELECT * FROM pads ORDER BY id").all();
+      const tokens = db.query("SELECT * FROM tokens ORDER BY id").all();
+      const docs = db.query("SELECT * FROM scene_docs ORDER BY pad_id, epoch, rev").all();
+      const metadata = db.query("SELECT * FROM meta ORDER BY key").all();
+      const storage = db.query("SELECT * FROM plugin_kv ORDER BY plugin_id, key").all();
+      db.exec(`
+CREATE TRIGGER reject_lexicon_discipline BEFORE UPDATE ON pads
+ WHEN OLD.layout = 'tiled' AND NEW.layout = 'composition'
+BEGIN
+  UPDATE plugin_kv SET value = 'fixture touched; must not persist'
+   WHERE plugin_id = 'core.draw' AND key = 'strokes';
+  SELECT RAISE(ABORT, 'fixture lexicon refusal; preserve schema 10');
+END;
+`);
+      db.close();
+      db = undefined;
+
+      // ALTER has already renamed layout when this UPDATE steps the trigger. The refusal
+      // must undo that DDL too, not continue with the later table/cap/document rewrites.
+      expect(() => openDatabase(path).close()).toThrow("fixture lexicon refusal; preserve schema 10");
+      expect(snapshotVersion(path)).toBe("10");
+      expect(snapshotVersion(`${path}.pre-v11.bak`)).toBe("10");
+      expect(existsSync(`${path}.pre-v13.bak`)).toBeFalse();
+      db = new Database(path, { strict: true });
+      expect(db.query("SELECT * FROM pads ORDER BY id").all()).toEqual(pads);
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(tokens);
+      expect(db.query("SELECT * FROM scene_docs ORDER BY pad_id, epoch, rev").all()).toEqual(docs);
+      expect(db.query("SELECT * FROM meta ORDER BY key").all()).toEqual(metadata);
+      expect(db.query("SELECT * FROM plugin_kv ORDER BY plugin_id, key").all()).toEqual(storage);
+      expect(snapshotTables(path)).toContain("sessions");
+      expect(snapshotTables(path)).not.toContain("containers");
+      expect(
+        db.query("SELECT name FROM sqlite_master WHERE name = 'events_by_pad_recency'").get(),
+      ).toEqual({ name: "events_by_pad_recency" });
+      const backup = new Database(`${path}.pre-v11.bak`, { strict: true });
+      try {
+        expect(backup.query("SELECT * FROM pads ORDER BY id").all()).toEqual(pads);
+        expect(backup.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(tokens);
+        expect(backup.query("SELECT * FROM scene_docs ORDER BY pad_id, epoch, rev").all()).toEqual(
+          docs,
+        );
+      } finally {
+        backup.close();
+      }
+
+      db.exec("DROP TRIGGER reject_lexicon_discipline");
+      db.close();
+      db = undefined;
+      openDatabase(path).close();
+      db = openDatabase(path);
+      expect(snapshotVersion(path)).toBe(String(SCHEMA_VERSION));
+      expect(
+        db.query("SELECT discipline FROM containers WHERE id = ?").get(V10_COMPOSITION),
+      ).toEqual({ discipline: "composition" });
+      expect(
+        db.query<{ caps: string }, []>("SELECT caps FROM tokens WHERE id = 't-scoped'").get()
+          ?.caps,
+      ).toBe('["containers:read","scenes:write"]');
+      expect(
+        db.query("SELECT container_id FROM terminals WHERE id = ?").get(V10_TERMINAL),
+      ).toEqual({ container_id: V10_COMPOSITION });
+      const recovered = db
+        .query<DocRow, [string]>(
+          "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE container_id = ? AND rev = 1",
+        )
+        .get(V10_COMPOSITION);
+      if (recovered === null) throw new Error("retry lost the historical composition");
+      const recoveredDoc = decoded(recovered);
+      expect(readTileLayout(recoveredDoc, V10_COMPOSITION)?.[ROOT_TILE_ID]?.ref).toEqual({
+        kind: "terminal",
+        terminalId: V10_TERMINAL,
+      });
+      recoveredDoc.destroy();
+    } finally {
+      db?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a fresh database boots straight to the canon schema, with no migration to replay", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-db-fresh-"));
     const path = join(dir, "manifold.db");
@@ -1177,6 +1264,104 @@ function snapshotTables(file: string): string[] {
     db.close();
   }
 }
+
+/** Build schema 15 from the lexicon fixture, without leaving any later tables behind. */
+function seedPreV16(path: string): void {
+  seedPreV11(path);
+  const db = new Database(path, { strict: true });
+  try {
+    db.transaction(() => {
+      migrateToCanonLexicon(db, path);
+      db.exec(`
+CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id TEXT NOT NULL,
+  caps TEXT NOT NULL, origin TEXT NOT NULL, minted_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL, revoked_at INTEGER);
+CREATE TABLE share_tickets(share_id TEXT NOT NULL, guest_principal_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY (share_id, guest_principal_id)) WITHOUT ROWID;
+CREATE TABLE dials(id TEXT PRIMARY KEY, origin TEXT NOT NULL, secret TEXT NOT NULL, ref TEXT,
+  caps TEXT NOT NULL, title TEXT, dialed_at INTEGER NOT NULL, revoked_at INTEGER);
+CREATE UNIQUE INDEX dials_origin_secret_unique ON dials(origin, secret);
+ALTER TABLE principals ADD COLUMN origin TEXT;
+`);
+      migrateToGrantRows(db, path);
+      db.exec(`
+ALTER TABLE events ADD COLUMN door TEXT;
+ALTER TABLE events ADD COLUMN authority TEXT;
+ALTER TABLE events ADD COLUMN targets TEXT;
+ALTER TABLE events ADD COLUMN outcome TEXT;
+ALTER TABLE events ADD COLUMN session TEXT;
+ALTER TABLE tokens ADD COLUMN expires_at INTEGER;
+UPDATE tokens SET revoked_at = 123 WHERE id = 't-scoped';
+UPDATE meta SET value = '15' WHERE key = 'schema_version';
+`);
+    })();
+  } finally {
+    db.close();
+  }
+}
+
+describe("migration 16: retired credential authority", () => {
+  test("a refused mid-batch unbind rolls grant deletion and version back before retry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-retirement-rollback-"));
+    const path = join(dir, "manifold.db");
+    let db: Database | undefined;
+    try {
+      seedPreV16(path);
+      db = new Database(path, { strict: true });
+      const grants = db.query("SELECT * FROM grants ORDER BY id").all();
+      const tokens = db.query("SELECT * FROM tokens ORDER BY id").all();
+      const metadata = db.query("SELECT * FROM meta ORDER BY key").all();
+      db.exec(`
+CREATE TRIGGER reject_retired_token_unbind BEFORE UPDATE OF grant_id ON tokens
+ WHEN OLD.id = 't-scoped' AND NEW.grant_id IS NULL
+BEGIN
+  UPDATE meta SET value = 'fixture touched; must not persist' WHERE key = 'plugins:disabled';
+  SELECT RAISE(ABORT, 'fixture retirement refusal; preserve schema 15');
+END;
+`);
+      db.close();
+      db = undefined;
+
+      // The revoked grant was already deleted by the previous statement. The failed unbind
+      // must put it back, keep its credential attached, and never stamp schema 16.
+      expect(() => openDatabase(path).close()).toThrow("fixture retirement refusal; preserve schema 15");
+      expect(snapshotVersion(path)).toBe("15");
+      expect(snapshotVersion(`${path}.pre-v16.bak`)).toBe("15");
+      expect(existsSync(`${path}.pre-v19.bak`)).toBeFalse();
+      db = new Database(path, { strict: true });
+      expect(db.query("SELECT * FROM grants ORDER BY id").all()).toEqual(grants);
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(tokens);
+      expect(db.query("SELECT * FROM meta ORDER BY key").all()).toEqual(metadata);
+      expect(snapshotTables(path)).not.toContain("plugin_installs");
+      const backup = new Database(`${path}.pre-v16.bak`, { strict: true });
+      try {
+        expect(backup.query("SELECT * FROM grants ORDER BY id").all()).toEqual(grants);
+        expect(backup.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(tokens);
+      } finally {
+        backup.close();
+      }
+
+      db.exec("DROP TRIGGER reject_retired_token_unbind");
+      db.close();
+      db = undefined;
+      openDatabase(path).close();
+      db = openDatabase(path);
+      expect(snapshotVersion(path)).toBe(String(SCHEMA_VERSION));
+      expect(
+        db.query("SELECT revoked_at, grant_id FROM tokens WHERE id = 't-scoped'").get(),
+      ).toEqual({ revoked_at: 123, grant_id: null });
+      expect(db.query("SELECT id FROM grants WHERE id = 'grant-token-t-scoped'").get()).toBeNull();
+      expect(db.query("SELECT id FROM grants WHERE id = 'grant-token-t-root'").get()).toEqual({
+        id: "grant-token-t-root",
+      });
+      expect(snapshotVersion(`${path}.pre-v16.bak`)).toBe("15");
+    } finally {
+      db?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("pre-migration snapshot retention", () => {
   test("one image per backed-up version, each capturing the state before its own migration", () => {
@@ -2296,7 +2481,7 @@ CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT 
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0);
 ${LEGACY_PLUGIN_INSTALLS}
-${JOB_SCHEDULE_SCHEMA_STATEMENTS}
+${JOB_SCHEDULE_SCHEMA_STATEMENTS.join("\n")}
 INSERT INTO machine_job_installs VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}', 1, 1, 0);
 INSERT INTO machine_job_installations VALUES
   ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{}'),
@@ -2403,7 +2588,7 @@ CREATE TABLE native_instance_services(
   plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
   configured_by TEXT NOT NULL,configured_at INTEGER NOT NULL);
 ${LEGACY_PLUGIN_INSTALLS}
-${JOB_SCHEDULE_SCHEMA_STATEMENTS}
+${JOB_SCHEDULE_SCHEMA_STATEMENTS.join("\n")}
 INSERT INTO machine_jobs(job_id, machine_id, plugin_id, digest, request, state, created_at, cancel_reason) VALUES
   ('legacy', 'machine', 'vendor.worker', 'legacy-digest', '{}', 'started', 1, 'instance_service_configuration_changed'),
   ('active', 'machine', 'vendor.worker', 'active-digest', '{}', 'started', 2, NULL);
