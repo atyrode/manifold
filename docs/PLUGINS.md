@@ -1583,6 +1583,11 @@ is passed into the plugin realm. That no-plugin document uses the ordinary disco
 engine action ladder and seals directly to the current proved native owner. The hub sees
 only a bounded sealed envelope and safe outcome. This is not a general host-owned service
 management surface or a new default plugin seat.
+Tell the operator to open **Plugins → Native credential references**, select the native machine,
+then **Read credential references → Open private entry** beside the declared reference and
+approved use origin. In that separate page, **Prepare secure entry**, paste the value, and
+**Seal and store on native owner**. An existing value requires the explicit replacement
+checkbox before preparing. Do not put a credential input in the plugin's own panel.
 
 The metadata control follows current workspace-root authority, including when no container is
 open. It cannot grant enrollment authority: each ordinary action rechecks the original current
