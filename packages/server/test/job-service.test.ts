@@ -348,41 +348,6 @@ test("a persisted scoped job cannot borrow unrelated live machine grants after d
   }
 });
 
-test("native admission retains its action fence after dispatch closes and cancels on withdrawal", () => {
-  const f = fixture();
-  try {
-    consent(f, "machines:run");
-    prove(f);
-    let current = true;
-    const fence = new ActionAuthorityFence(f.auth, f.root, () => current, null);
-    fence.admit([
-      { cap: "machines:run", ref: { kind: "operation", machineId: f.machineId, operationId } },
-    ]);
-    const job = f.service.execute(
-      f.root,
-      pluginId,
-      "fenced",
-      {
-        jobId: "fenced",
-        machineId: f.machineId,
-        operationId,
-        input: { value: "safe" },
-        outputs: [],
-      },
-      undefined,
-      fence,
-    );
-    fence.close();
-    f.service.tick();
-    expect(f.commands.filter((command) => command.type === "cancel")).toEqual([]);
-    current = false;
-    f.service.tick();
-    expect(f.commands.at(-1)).toMatchObject({ type: "cancel", jobId: job.request.jobId });
-  } finally {
-    f.store.close();
-  }
-});
-
 test("withdrawal during native decision refuses before durable job reservation", () => {
   const f = fixture();
   try {

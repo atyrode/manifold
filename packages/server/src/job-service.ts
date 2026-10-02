@@ -5455,8 +5455,8 @@ export class JobService {
       }
       return this.jobs.get(request.jobId)!;
     });
-    if (job.state === "queued" && authorityFence !== undefined)
-      this.effectFences.set(job.request.jobId, authorityFence.retain());
+    // Reservation owns the durable authority snapshot, not its caller's transient lease.
+    // Terminal admission still retains its live fence through owner acknowledgement.
     this.changed(job.request);
     if (job.state === "queued") this.start(job);
     return this.jobs.get(request.jobId)!;
