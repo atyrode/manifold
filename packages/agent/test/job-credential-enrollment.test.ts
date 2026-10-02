@@ -38,7 +38,8 @@ async function fixture(holdDecryption?: Promise<void>) {
   const opened = Promise.withResolvers<Uint8Array>();
   const plaintext: Uint8Array[] = [];
   let now = Date.now();
-  let active = true;
+  let attached = true;
+  let draining = false;
   const enrollment = new JobCredentialEnrollment({
     machineId: "fixture-machine",
     ownerId: "fixture-owner",
@@ -56,7 +57,8 @@ async function fixture(holdDecryption?: Promise<void>) {
       },
       close: () => key.close(),
     },
-    active: () => active,
+    attached: () => attached,
+    active: () => attached && !draining,
     now: () => now,
     emit(event) {
       events.push(event);
@@ -64,7 +66,7 @@ async function fixture(holdDecryption?: Promise<void>) {
         waits.get(event.requestId)?.(event);
         waits.delete(event.requestId);
       }
-      return active;
+      return attached;
     },
     published() {
       resources.refresh({ tools: [], anchors: [], services: [] });
@@ -133,9 +135,16 @@ async function fixture(holdDecryption?: Promise<void>) {
     setNow(value: number) {
       now = value;
     },
+    setDraining(value: boolean) {
+      draining = value;
+      if (draining) enrollment.retirePending("credential_owner_offline");
+    },
     disconnect() {
-      active = false;
+      attached = false;
       enrollment.invalidate("credential_owner_offline");
+    },
+    reconnect() {
+      attached = true;
     },
     close() {
       enrollment.close();
@@ -231,7 +240,7 @@ describe.skipIf(process.platform !== "linux")("native sealed credential enrollme
     }
   });
 
-  test.each(["denied", "cancelled", "expired", "control-timeout"] as const)(
+  test.each(["denied", "cancelled", "expired", "control-timeout", "drained"] as const)(
     "%s after decryption never publishes and wipes pending plaintext",
     async (mode) => {
       const native = await fixture();
@@ -252,6 +261,11 @@ describe.skipIf(process.platform !== "linux")("native sealed credential enrollme
           });
           expect(bytes.every((byte) => byte === 0)).toBe(true);
         } else {
+          if (mode === "drained") {
+            native.setDraining(true);
+            expect(bytes.every((byte) => byte === 0)).toBe(true);
+            native.setDraining(false);
+          }
           if (mode === "expired") native.setNow(offer.context.expiresAt);
           if (mode === "control-timeout")
             native.setNow(
@@ -278,7 +292,7 @@ describe.skipIf(process.platform !== "linux")("native sealed credential enrollme
         });
         expect(bytes.every((byte) => byte === 0)).toBe(true);
         expect(readdirSync(native.root)).toEqual([]);
-        // Late allowed messages cannot resurrect a cancelled/expired consumed nonce.
+        // Late allowed messages cannot resurrect a retired consumed nonce.
         native.enrollment.authorized({
           ...authorization,
           type: "credential_enrollment_authorized",
@@ -292,7 +306,7 @@ describe.skipIf(process.platform !== "linux")("native sealed credential enrollme
     },
   );
 
-  test.each(["cancelled", "expired", "disconnected", "new-proof", "shutdown"] as const)(
+  test.each(["cancelled", "expired", "disconnected", "drained", "new-proof", "shutdown"] as const)(
     "%s while decrypting is rechecked before any publication",
     async (mode) => {
       const gate = Promise.withResolvers<void>();
@@ -312,6 +326,10 @@ describe.skipIf(process.platform !== "linux")("native sealed credential enrollme
           });
         if (mode === "expired") native.setNow(offer.context.expiresAt);
         if (mode === "disconnected") native.disconnect();
+        if (mode === "drained") {
+          native.setDraining(true);
+          native.setDraining(false);
+        }
         if (mode === "new-proof")
           native.enrollment.proved("replacement-epoch", "replacement-proof");
         if (mode === "shutdown") native.enrollment.close();
@@ -324,7 +342,7 @@ describe.skipIf(process.platform !== "linux")("native sealed credential enrollme
               ? "credential_enrollment_cancelled"
               : mode === "expired"
                 ? "credential_enrollment_expired"
-                : mode === "disconnected"
+                : mode === "disconnected" || mode === "drained"
                   ? "credential_owner_offline"
                   : "credential_owner_changed",
         });
@@ -467,6 +485,84 @@ describe.skipIf(process.platform !== "linux")("native sealed credential enrollme
       expect(native.prepare(false, { requestId }).reply).toEqual({
         kind: "refused",
         reason: "credential_enrollment_cancelled",
+      });
+    } finally {
+      native.close();
+    }
+  });
+
+  test.each(["before-drain", "during-drain"] as const)(
+    "the proof received %s admits fresh enrollment after resume but never a retired offer",
+    async (timing) => {
+      const native = await fixture();
+      const currentProof =
+        timing === "before-drain"
+          ? proof
+          : { serverEpoch: "draining-epoch", ownerChallenge: "draining-proof" };
+      try {
+        const retired = native.offer();
+        const retiredEnvelope = await envelope(retired, "synthetic-retired-value");
+        native.setDraining(true);
+        if (timing === "during-drain")
+          native.enrollment.proved(currentProof.serverEpoch, currentProof.ownerChallenge);
+        expect(native.prepare(false, currentProof).reply).toEqual({
+          kind: "refused",
+          reason: "credential_owner_offline",
+        });
+        native.setDraining(false);
+        await native.enrollment.commit({
+          type: "credential_enrollment_commit",
+          envelope: retiredEnvelope,
+        });
+        expect(native.result(retired.context.requestId)).toEqual({
+          kind: "refused",
+          reason: "credential_owner_offline",
+        });
+        expect(native.plaintext).toEqual([]);
+        if (timing === "during-drain")
+          expect(native.prepare().reply).toEqual({
+            kind: "refused",
+            reason: "credential_target_mismatch",
+          });
+        const { reply } = native.prepare(false, currentProof);
+        if (reply.kind !== "prepared") throw new Error("resume_prepare_refused");
+        const commit = native.enrollment.commit({
+          type: "credential_enrollment_commit",
+          envelope: await envelope(reply.challenge, "synthetic-resumed-value"),
+        });
+        const authorization = await native.authorize(reply.challenge.context.requestId);
+        native.enrollment.authorized({
+          ...authorization,
+          type: "credential_enrollment_authorized",
+          allowed: true,
+          reason: null,
+        });
+        await commit;
+        expect(native.result(reply.challenge.context.requestId)).toMatchObject({
+          kind: "stored",
+          available: true,
+        });
+        expect(await native.resolve("key", new AbortController().signal)).toBe(
+          "synthetic-resumed-value",
+        );
+      } finally {
+        native.close();
+      }
+    },
+  );
+
+  test("a channel retired during drain remains unproved after reattachment and resume", async () => {
+    const native = await fixture();
+    const retiredProof = { serverEpoch: "retired-epoch", ownerChallenge: "retired-proof" };
+    try {
+      native.setDraining(true);
+      native.disconnect();
+      native.enrollment.proved(retiredProof.serverEpoch, retiredProof.ownerChallenge);
+      native.reconnect();
+      native.setDraining(false);
+      expect(native.prepare(false, retiredProof).reply).toEqual({
+        kind: "refused",
+        reason: "credential_owner_unproved",
       });
     } finally {
       native.close();

@@ -58,6 +58,8 @@ export class JobCredentialEnrollment {
       ownerGeneration: number;
       sources: HeldServiceCredentialRegistry;
       key: ServiceCredentialEnrollmentKey;
+      /** Current live owner channel, independent of the enrollment admission latch. */
+      attached(): boolean;
       active(): boolean;
       emit(event: EnrollmentEvent): boolean;
       published(): void;
@@ -71,11 +73,16 @@ export class JobCredentialEnrollment {
   /** Records the exact latest full-owner proof context, never a caller-selected machine epoch. */
   proved(serverEpoch: string, ownerChallenge: string): void {
     this.invalidate("credential_owner_changed");
-    if (!this.closed && this.options.active()) this.authority = { serverEpoch, ownerChallenge };
+    if (!this.closed && this.options.attached()) this.authority = { serverEpoch, ownerChallenge };
   }
 
   invalidate(reason: ServiceCredentialEnrollmentRefusal): void {
     this.authority = null;
+    this.retirePending(reason);
+  }
+
+  /** Retires enrollment work without discarding the current channel's proof. */
+  retirePending(reason: ServiceCredentialEnrollmentRefusal): void {
     for (const pending of this.pending.values()) this.retire(pending, reason);
   }
 

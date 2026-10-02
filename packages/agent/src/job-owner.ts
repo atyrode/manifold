@@ -327,6 +327,7 @@ export class MachineJobOwner {
       ownerGeneration: options.journal.generation,
       sources: this.credentialSources,
       key: credentialEnrollmentKey,
+      attached: () => this.ready && this.sink !== null && !this.seatController.signal.aborted,
       active: () =>
         this.ready && !this.draining && this.sink !== null && !this.seatController.signal.aborted,
       emit: (event) => this.sink?.(event) ?? false,
@@ -417,7 +418,7 @@ export class MachineJobOwner {
     if (this.draining === draining) return;
     this.options.journal.append({ kind: "drain", draining });
     this.draining = draining;
-    if (draining) this.credentialEnrollment.invalidate("credential_owner_offline");
+    if (draining) this.credentialEnrollment.retirePending("credential_owner_offline");
     if (draining) for (const tunnel of this.serviceTunnels.values()) tunnel.controller.abort();
     if (draining) for (const job of this.jobs.values()) job.context?.abortAgentRuns();
   }

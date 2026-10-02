@@ -184,7 +184,7 @@ test.skipIf(!realBackend)(
           admissionPublicKey,
         });
       };
-      const prepare = async (replace: boolean): Promise<ServiceCredentialEnrollmentChallenge> => {
+      const preparation = async (replace: boolean) => {
         const requestId = randomUUID();
         await owner!.execute({
           type: "credential_enrollment_prepare",
@@ -200,9 +200,14 @@ test.skipIf(!realBackend)(
           (event) =>
             event.type === "credential_enrollment_prepared" && event.requestId === requestId,
         );
-        if (event?.type !== "credential_enrollment_prepared" || event.reply.kind !== "prepared")
-          throw new Error("native_entry_prepare_refused");
-        return event.reply.challenge;
+        if (event?.type !== "credential_enrollment_prepared")
+          throw new Error("native_entry_prepare_result_missing");
+        return event.reply;
+      };
+      const prepare = async (replace: boolean): Promise<ServiceCredentialEnrollmentChallenge> => {
+        const reply = await preparation(replace);
+        if (reply.kind !== "prepared") throw new Error("native_entry_prepare_refused");
+        return reply.challenge;
       };
       const seal = async (challenge: ServiceCredentialEnrollmentChallenge, value: string) => {
         const bytes = new TextEncoder().encode(value);
@@ -328,8 +333,33 @@ test.skipIf(!realBackend)(
       );
       expect(owner.identity.credentialEnrollment).toEqual(initialIdentity.credentialEnrollment);
 
-      // Real final-authorize races: cancel, current full-proof replacement and seat loss.
-      for (const fence of ["cancel", "proof", "detach"] as const) {
+      for (const timing of ["before-drain", "during-drain"] as const) {
+        const retired = await prepare(true);
+        const retiredEnvelope = await seal(retired, `synthetic-forbidden-${timing}`);
+        await owner.execute({ type: "drain", draining: true });
+        if (timing === "during-drain") await prove();
+        expect(await preparation(true)).toEqual({
+          kind: "refused",
+          reason: "credential_owner_offline",
+        });
+        await owner.execute({ type: "drain", draining: false });
+        await owner.execute({ type: "credential_enrollment_commit", envelope: retiredEnvelope });
+        expect(
+          events.findLast((event) => event.type === "credential_enrollment_result"),
+        ).toMatchObject({
+          requestId: retired.context.requestId,
+          reply: { kind: "refused", reason: "credential_owner_offline" },
+        });
+        const resumed = await prepare(true);
+        await owner.execute({
+          type: "credential_enrollment_cancel",
+          requestId: resumed.context.requestId,
+          nonce: resumed.context.nonce,
+        });
+      }
+
+      // Real final-authorize races: cancellation, proof replacement, drain and seat loss.
+      for (const fence of ["cancel", "proof", "drain", "detach"] as const) {
         const offered = await prepare(true);
         const final = Promise.withResolvers<Authorize>();
         holdAuthorization = final.resolve;
@@ -345,6 +375,10 @@ test.skipIf(!realBackend)(
             nonce: authorization.nonce,
           });
         if (fence === "proof") await prove();
+        if (fence === "drain") {
+          await owner.execute({ type: "drain", draining: true });
+          await owner.execute({ type: "drain", draining: false });
+        }
         if (fence === "detach") detach();
         await owner.execute({
           type: "credential_enrollment_authorized",
@@ -355,12 +389,38 @@ test.skipIf(!realBackend)(
         });
         await commit;
         holdAuthorization = undefined;
+        if (fence !== "detach")
+          expect(
+            events.findLast((event) => event.type === "credential_enrollment_result"),
+          ).toMatchObject({
+            requestId: offered.context.requestId,
+            reply: {
+              kind: "refused",
+              reason:
+                fence === "cancel"
+                  ? "credential_enrollment_cancelled"
+                  : fence === "proof"
+                    ? "credential_owner_changed"
+                    : "credential_owner_offline",
+            },
+          });
         if (fence === "detach") {
           detach = attach();
           await prove();
         }
         expect(readFileSync(join(root, "credentials", "key"), "utf8")).toBe("synthetic-native-two");
       }
+      await owner.execute({ type: "drain", draining: true });
+      detach();
+      await prove();
+      detach = attach();
+      await owner.execute({ type: "drain", draining: false });
+      expect(await preparation(true)).toEqual({
+        kind: "refused",
+        reason: "credential_owner_unproved",
+      });
+      await prove();
+
       const oldOffer = await prepare(true);
       const oldEnvelope = await seal(oldOffer, "synthetic-forbidden-restart");
       const oldFd = sources.at(-1)!.currentDescriptor("fixture-key")!;
