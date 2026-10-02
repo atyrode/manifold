@@ -18,30 +18,36 @@ import {
   type AuthoritySnapshot,
 } from "./authority-snapshot.ts";
 
-export const JOB_SCHEDULE_SCHEMA_SQL = `
+export const JOB_SCHEDULE_SCHEMA_STATEMENTS: readonly string[] = [
+  `
 CREATE TABLE IF NOT EXISTS job_schedules (
  schedule_id TEXT NOT NULL, revision TEXT NOT NULL, spec TEXT NOT NULL,
  next_nominal INTEGER NOT NULL, disabled_reason TEXT, audit_origin TEXT,
  PRIMARY KEY(schedule_id, revision)
-);
+);`,
+  `
 CREATE TABLE IF NOT EXISTS job_schedule_occurrences (
  schedule_id TEXT NOT NULL, revision TEXT NOT NULL, nominal INTEGER NOT NULL,
  job_id TEXT NOT NULL UNIQUE, request TEXT NOT NULL, deadline INTEGER NOT NULL,
  state TEXT NOT NULL, reason TEXT,
  PRIMARY KEY(schedule_id, revision, nominal)
-);
+);`,
+  `
 CREATE TABLE IF NOT EXISTS job_invocation_reservations (
  parent_job_id TEXT NOT NULL, invocation_id TEXT NOT NULL, job_id TEXT NOT NULL UNIQUE,
  root_job_id TEXT NOT NULL, depth INTEGER NOT NULL, request TEXT NOT NULL,
  edge TEXT NOT NULL, active INTEGER NOT NULL,
  PRIMARY KEY(parent_job_id, invocation_id)
-);
-CREATE INDEX IF NOT EXISTS job_invocation_root ON job_invocation_reservations(root_job_id);
+);`,
+  `
+CREATE INDEX IF NOT EXISTS job_invocation_root ON job_invocation_reservations(root_job_id);`,
+  `
 CREATE TABLE IF NOT EXISTS job_invocation_edges (
  caller TEXT NOT NULL, operation_id TEXT NOT NULL, edge TEXT NOT NULL, enabled INTEGER NOT NULL,
  PRIMARY KEY(caller, operation_id)
 );
-`;
+`,
+];
 
 export interface JobScheduleSpec extends JobScheduleTiming {
   request: JobRequest;

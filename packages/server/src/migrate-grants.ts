@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { CapSchema, MANIFOLD_ROOT_URI, formatManifoldUri, type Cap } from "@manifold/protocol";
+import { executeMigrationStatements } from "./migration-statements.ts";
 
 /**
  * Schema 13: the permission waterfall's substrate (ADR 0011).
@@ -72,8 +73,8 @@ function storedCaps(raw: string): readonly Cap[] | null {
   return caps.success ? caps.data : null;
 }
 
-const SCHEMA_SQL = `
-CREATE TABLE grants(
+const SCHEMA_STATEMENTS: readonly string[] = [
+  `CREATE TABLE grants(
   id TEXT PRIMARY KEY,
   -- 'principal' | 'any-human' | 'any-agent' | 'instance'. The kind selects what principal_id
   -- means: a principal id, an instance origin, or nothing at all for a class row.
@@ -87,19 +88,19 @@ CREATE TABLE grants(
   reach TEXT NOT NULL,
   created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL
-);
--- The evaluator's one query narrows by node and by principal together, so both arms of its
+);`,
+  `-- The evaluator's one query narrows by node and by principal together, so both arms of its
 -- WHERE get an index: a workspace where every token carries a root grant would otherwise hand
 -- the walk the whole table on every request.
-CREATE INDEX grants_by_principal ON grants(principal_kind, principal_id, node);
-CREATE INDEX grants_by_node ON grants(node);
-ALTER TABLE tokens ADD COLUMN grant_id TEXT;
-ALTER TABLE shares ADD COLUMN grant_id TEXT;
--- Read on every authority question: whether some token references this row, which is what
+CREATE INDEX grants_by_principal ON grants(principal_kind, principal_id, node);`,
+  "CREATE INDEX grants_by_node ON grants(node);",
+  "ALTER TABLE tokens ADD COLUMN grant_id TEXT;",
+  "ALTER TABLE shares ADD COLUMN grant_id TEXT;",
+  `-- Read on every authority question: whether some token references this row, which is what
 -- decides that a credential's synthesized authority applies to that credential alone.
-CREATE INDEX tokens_by_grant ON tokens(grant_id);
-INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '13');
-`;
+CREATE INDEX tokens_by_grant ON tokens(grant_id);`,
+  "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '13');",
+];
 
 interface TokenRow {
   id: string;
@@ -127,7 +128,7 @@ interface ShareRow {
  */
 export function migrateToGrantRows(db: Database, path: string): void {
   void path;
-  db.exec(SCHEMA_SQL);
+  executeMigrationStatements(db, SCHEMA_STATEMENTS);
 
   const insertGrant = db.query<
     void,

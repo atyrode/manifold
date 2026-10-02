@@ -5619,6 +5619,20 @@ synchronization makes the plugin-image journal durable before filesystem activat
 `packages/server/src/db.ts` remains the authoritative migration source; the handwritten
 inventory below records selected durable fields rather than acting as a second runner.
 
+Each schema version runs in one transaction. Static SQL and code-migration batches use
+source-authored lists of complete statements through `migration-statements.ts`; the runner
+prepares, runs and finalizes one statement at a time. Trigger bodies are single entries,
+not semicolon-split text. A failed statement stops that version and rolls back its earlier
+DDL, row changes and schema marker together. Declared pre-version backups are published
+before the transaction and remain available after failure; removing the underlying refusal
+allows the same version to be retried.
+
+This execution boundary avoids the supported Bun 1.4.2 `Database.exec` behavior that can
+lose an intermediate `sqlite_step` error in a multi-statement batch. It changes neither the
+schema revision nor historical SQL policy. Parameterized migration transformations remain
+individually prepared. Live application DML, plugin database batches and runtime table/index
+initialization are separate boundaries, not covered by this migration-only correction.
+
 Schema 49 adds `native_service_attempts` for bounded direct-service reservation identity,
 policy/model pins, original-owner fencing, maximum/settled cost and authorization/state.
 Startup conservatively changes remaining reservations to unresolved exposure. Policy
