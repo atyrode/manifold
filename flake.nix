@@ -33,14 +33,14 @@
       eachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       # Fixed-output hash of the vendored node_modules tree, per system (the
       # native optionalDependencies bun materializes differ per platform).
-      # Measured by each native lane with the pinned Bun's explicit target selectors:
-      # https://github.com/atyrode/manifold/actions/runs/36875402349
-      # Regenerate and independently rebuild these trees when their inputs change.
+      # Measured from the exact dependency fileset using pinned Bun's explicit target selectors.
+      # Each native CI lane independently builds and rebuilds its fixed-output tree;
+      # foreign-target materialization is not native compiled-package or VM evidence.
       depsHashes = {
-        x86_64-linux = "sha256-KrJEZwCMqAByzB5VD23QDTKHknBajNztfw59g/+jpY4=";
-        aarch64-linux = "sha256-h17ebzGFEV40LNzJQn/2UCNWzQgYofa9ZwlaNszRU4k=";
-        x86_64-darwin = "sha256-YAOdoFv/Aln7Jd//K1LC6ihzZY3xcEF2jHnvsXIwQk4=";
-        aarch64-darwin = "sha256-IrtqDQBglkD0ui0U5nlzbiiCiaqMykNvLseXLyYjLIw=";
+        x86_64-linux = "sha256-G5PGfMuskpP/1hBiMhlTOpySUoTQYTqR0tfQestspP0=";
+        aarch64-linux = "sha256-TNV7aarXFtw6iIEKW1JQYCtQnnkqAY3897C/iy/bOeE=";
+        x86_64-darwin = "sha256-fPSXBOP1QvVb3B6779DMYB9trZYNKr+LK/MNMIcY5f0=";
+        aarch64-darwin = "sha256-SVCuRZEdLvUzDQU+7MaoInBx+y2lyL6qweINc5mBErM=";
       };
 
       # Keep the dependency input independent of unrelated workspace sources.
