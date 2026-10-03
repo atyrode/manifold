@@ -154,7 +154,7 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
 
     const afterCapture = captureTerminal(homeAfterRestart, terminal.id);
     captures.push(afterCapture);
-    homeAfterRestart.attachTerminal(terminal.id);
+    homeAfterRestart.attachTerminal(terminal.id, "sdk");
     await waitFor(() => afterCapture.snapshotSeq !== null, 10_000, 20);
     expect(afterCapture.snapshotSeq).toBeGreaterThanOrEqual(preRestartWatermark);
     expect(afterCapture.snapshotText).toContain("SURVIVE_1");

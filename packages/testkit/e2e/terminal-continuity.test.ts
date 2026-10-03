@@ -129,7 +129,7 @@ test("a workload survives a transport crash and replacement with the same proces
 
     const afterCapture = captureTerminal(homeAfter, terminal.id);
     captures.push(afterCapture);
-    homeAfter.attachTerminal(terminal.id);
+    homeAfter.attachTerminal(terminal.id, "sdk");
     await waitFor(() => afterCapture.snapshotSeq !== null, 10_000, 20);
     // The no-gap invariant across the seam: the snapshot's watermark covers everything the
     // old transport streamed AND everything emitted while none existed.

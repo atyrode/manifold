@@ -97,10 +97,11 @@ class Capture {
     readonly label: string,
     client: SessionClient,
     terminalId: string,
+    viewportId: string,
   ) {
     this.offs = [
       client.on("terminal_snapshot", (message) => {
-        if (message.terminalId !== terminalId) return;
+        if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
         const bytes = Buffer.from(message.data, "base64");
         const atMs = now();
         this.lastSeq = message.seq;
@@ -118,9 +119,10 @@ class Capture {
           bytes: bytes.length,
           end: this.text.length,
         });
+        client.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
       }),
       client.on("terminal_output", (message) => {
-        if (message.terminalId !== terminalId) return;
+        if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
         const bytes = Buffer.from(message.data, "base64");
         if (this.text.length + bytes.length > 16 * 1024 * 1024 || this.frames.length >= 100_000) {
           fatal.push(`${label}: capture bound exceeded`);
@@ -141,6 +143,11 @@ class Capture {
           bytes: bytes.length,
           end: this.text.length,
         });
+        client.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
+      }),
+      client.on("terminal_geometry", (message) => {
+        if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
+        client.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
       }),
       client.on("terminal_event", (message) => {
         if (message.terminalId === terminalId && message.kind === "resized") {
@@ -317,8 +324,8 @@ async function run(): Promise<void> {
   if (pendingTerminalId === null) throw new Error("pending terminal tile disappeared before fit");
   a.resizeTerminal(pendingTerminalId, 80, 24, "transport-a");
   const terminal = await opening;
-  const ca = new Capture("A", a, terminal.id);
-  a.attachTerminal(terminal.id);
+  const ca = new Capture("A", a, terminal.id, "transport-a");
+  a.attachTerminal(terminal.id, "transport-a");
   await waitFor(() => ca.snapshots.length > 0, workload.timeoutMs, 2);
   // Explicit redraw after attachment makes setup independent of initial snapshot timing.
   a.sendTerminalInput(terminal.id, "draw\n");
@@ -332,8 +339,8 @@ async function run(): Promise<void> {
     a.transportId !== null && b.transportId !== null && a.transportId !== b.transportId;
   check(identity.samePrincipal, "viewers do not share principal");
   check(identity.distinctTransports, "viewers do not use distinct connections");
-  const cb = new Capture("B", b, terminal.id);
-  b.attachTerminal(terminal.id);
+  const cb = new Capture("B", b, terminal.id, "transport-b");
+  b.attachTerminal(terminal.id, "transport-b");
   await waitFor(() => cb.snapshots.length > 0, workload.timeoutMs, 2);
   const fresh = cb.snapshots[0];
   if (fresh === undefined) throw new Error("fresh snapshot missing");
@@ -397,7 +404,7 @@ async function run(): Promise<void> {
   }
   phase = "reattach-already-resized-viewer";
   const before = ca.snapshots.length;
-  a.attachTerminal(terminal.id);
+  a.attachTerminal(terminal.id, "transport-a");
   await waitFor(() => ca.snapshots.length > before, workload.timeoutMs, 2);
   const current = ca.snapshots.at(-1);
   const lastSize = resizeSamples.at(-1);

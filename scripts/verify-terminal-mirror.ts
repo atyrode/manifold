@@ -1514,23 +1514,32 @@ try {
       });
       geometryDrivers.push(driver);
       let attached = false;
+      const viewportId = index === 0 ? "geometry-a" : "geometry-b";
       driver.on("terminal_snapshot", (message) => {
-        if (message.terminalId !== geometryTerminal.id) return;
+        if (message.terminalId !== geometryTerminal.id || message.viewportId !== viewportId) return;
         attached = true;
         if (index === 0) {
           sourceText = Buffer.from(message.data, "base64").toString();
           lastSeq = message.seq;
           revisionedOwnerSnapshot = message.geometry.revision !== null;
         }
+        driver.ackTerminal(geometryTerminal.id, viewportId, message.deliveryId, message.deliverySeq);
       });
       driver.on("terminal_output", (message) => {
-        if (index !== 0 || message.terminalId !== geometryTerminal.id) return;
-        if (lastSeq !== null && message.seq !== lastSeq + 1) sequenceGap = true;
-        lastSeq = message.seq;
-        sourceText += Buffer.from(message.data, "base64").toString();
+        if (message.terminalId !== geometryTerminal.id || message.viewportId !== viewportId) return;
+        if (index === 0) {
+          if (lastSeq !== null && message.seq !== lastSeq + 1) sequenceGap = true;
+          lastSeq = message.seq;
+          sourceText += Buffer.from(message.data, "base64").toString();
+        }
+        driver.ackTerminal(geometryTerminal.id, viewportId, message.deliveryId, message.deliverySeq);
+      });
+      driver.on("terminal_geometry", (message) => {
+        if (message.terminalId !== geometryTerminal.id || message.viewportId !== viewportId) return;
+        driver.ackTerminal(geometryTerminal.id, viewportId, message.deliveryId, message.deliverySeq);
       });
       await driver.connect();
-      driver.attachTerminal(geometryTerminal.id);
+      driver.attachTerminal(geometryTerminal.id, viewportId);
       await until(() => attached, 10_000, "geometry driver snapshot handoff");
     }
     const firstDriver = geometryDrivers[0]!;

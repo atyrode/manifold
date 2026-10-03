@@ -358,15 +358,27 @@ try {
     await viewerB.connect();
     const seenA: string[] = [];
     const seenB: string[] = [];
-    for (const [viewer, sink] of [
-      [viewerA, seenA],
-      [viewerB, seenB],
+    for (const [viewer, sink, viewportId] of [
+      [viewerA, seenA, "public-a"],
+      [viewerB, seenB, "public-b"],
     ] as const) {
-      viewer.on("terminal_output", (m) => sink.push(base64ToText(m.data)));
-      viewer.on("terminal_snapshot", (m) => sink.push(base64ToText(m.data)));
+      viewer.on("terminal_output", (message) => {
+        if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
+        sink.push(base64ToText(message.data));
+        viewer.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
+      });
+      viewer.on("terminal_snapshot", (message) => {
+        if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
+        sink.push(base64ToText(message.data));
+        viewer.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
+      });
+      viewer.on("terminal_geometry", (message) => {
+        if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
+        viewer.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
+      });
     }
-    viewerA.attachTerminal(terminalId);
-    viewerB.attachTerminal(terminalId);
+    viewerA.attachTerminal(terminalId, "public-a");
+    viewerB.attachTerminal(terminalId, "public-b");
     await sleep(1500);
     viewerA.takeTerminal(terminalId);
     await sleep(600);
@@ -391,9 +403,21 @@ try {
       throw new Error("terminal did not survive viewer disconnect");
     }
     const seen: string[] = [];
-    rejoin.on("terminal_snapshot", (m) => seen.push(base64ToText(m.data)));
-    rejoin.on("terminal_output", (m) => seen.push(base64ToText(m.data)));
-    rejoin.attachTerminal(terminalId);
+    rejoin.on("terminal_snapshot", (message) => {
+      if (message.terminalId !== terminalId || message.viewportId !== "public-rejoin") return;
+      seen.push(base64ToText(message.data));
+      rejoin.ackTerminal(terminalId, "public-rejoin", message.deliveryId, message.deliverySeq);
+    });
+    rejoin.on("terminal_output", (message) => {
+      if (message.terminalId !== terminalId || message.viewportId !== "public-rejoin") return;
+      seen.push(base64ToText(message.data));
+      rejoin.ackTerminal(terminalId, "public-rejoin", message.deliveryId, message.deliverySeq);
+    });
+    rejoin.on("terminal_geometry", (message) => {
+      if (message.terminalId !== terminalId || message.viewportId !== "public-rejoin") return;
+      rejoin.ackTerminal(terminalId, "public-rejoin", message.deliveryId, message.deliverySeq);
+    });
+    rejoin.attachTerminal(terminalId, "public-rejoin");
     await until(
       () => seen.join("").includes(`${marker}_TWOVIEW`),
       20_000,
