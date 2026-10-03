@@ -3577,7 +3577,7 @@ the portal IS a real
 channel into another container, and counting that as membership faked occupant avatars. A
 spectator receives `init`/`resync`, `doc_update`, attendance/presence/cursor fan-out and
 terminal snapshots and output, and may send `leave`, `resync_request`, `pong`,
-`terminal_attach` and `terminal_detach`. Every other client frame is refused with
+`terminal_attach`, `terminal_detach` and completion-only `terminal_ack`. Every other client frame is refused with
 `error { code:"forbidden" }` — a preview never writes. Spectators appear in NO attendance and
 in NO `GET /api/attendance` entry; a room holding watchers alone still counts as resident
 for eviction. Engaging a portal swaps that channel to an occupant join, so watching versus
@@ -4141,11 +4141,12 @@ opaque literal validation deliberately remains at that effect boundary.
 - **Terminal frames travel over the home composition's channel.** A pending tiled terminal
   accepts only the first `terminal_resize` from a writable viewer of its home; that frame owns
   birth geometry and is not controller resize authority. Once running, every terminal frame
-  (`terminal_attach`, `terminal_input`, `terminal_resize`, `terminal_take`, `terminal_kill`)
-  resolves its terminal only when `terminal.containerId === channel.containerId`; anything else
-  is `error { code:"not_found" }`. A canvas showing a terminal through a portal therefore joins
-  the home's room on its own channel instead of streaming terminal bytes over the canvas's.
-- **Attach state machine (no-gap invariant).** On `terminal_attach { terminalId }`:
+  (`terminal_attach`, `terminal_detach`, `terminal_ack`, `terminal_input`, `terminal_resize`, `terminal_take`, `terminal_kill`)
+  resolves its terminal only when `terminal.containerId === channel.containerId`; inapplicable
+  completion ACKs are ignored and other misses receive `error { code:"not_found" }`. A canvas
+  showing a terminal through a portal therefore joins the home's room on its own channel instead
+  of streaming terminal bytes over the canvas's.
+- **Attach state machine (no-gap invariant).** On `terminal_attach { terminalId, viewportId }`:
   1. server registers the viewer as PENDING and queues live output and source geometry in
      one arrival-ordered FIFO (nothing is sent yet), bounded to 256 frames and 1MiB;
   2. for a capable owner through a protocol-56-or-newer transport, the server sends
@@ -4153,15 +4154,16 @@ opaque literal validation deliberately remains at that effect boundary.
   3. the host captures byte-sequence `S` and geometry revision `G` when placing its parser
      marker. Inside that marker it serializes the mirror's actual dimensions and bytes.
      A later requested resize must not alter that earlier snapshot or its history bound;
-  4. server sends `terminal_snapshot { terminalId, seq: S, data, geometry: { cols, rows,
-revision: G } }`, then filters the FIFO independently: retain outputs with `seq > S`
-     and geometry with `revision > G`, preserving their original mixed order. It then marks
-     the viewer LIVE. Sorting by byte seq is invalid: several idle geometry changes can
-     share one seq. LIVE delivery independently rejects already-covered bytes and geometry.
-     Failed delivery or queue overflow fails the handoff rather than silently losing a frame.
-     Viewer byte stream remains snapshot(S) + outputs(S+1…); geometry never consumes an
-     output sequence number, rewrites bytes or deduplicates equal output payloads.
-     e2e MUST assert mid-stream attach contiguity (counter test), repeated ≥10×.
+  4. server sends `terminal_snapshot { terminalId, viewportId, deliveryId, deliverySeq: 0,
+skipped, seq: S, data, geometry: { cols, rows, revision: G } }`, then filters the FIFO
+     independently: retain outputs with `seq > S` and geometry with `revision > G`, preserving
+     their original mixed order. It marks the view LIVE and drains only under parser credit.
+     Sorting by byte seq is invalid: several idle geometry changes can share one seq.
+     LIVE delivery independently rejects already-covered bytes and geometry. A failed initial
+     handoff is refused rather than silently losing a frame. Within each incarnation the stream
+     remains snapshot(S) + outputs(S+1…); geometry never consumes an output sequence number,
+     rewrites bytes or deduplicates equal output payloads. e2e MUST assert mid-stream attach
+     contiguity (counter test), repeated ≥10×.
      A known running terminal retains its channel attachment when its owner transport is
      unavailable, including a viewer first mounted offline or disconnected before its first
      snapshot. No snapshot deadline runs against an offline owner. Exact retained-owner
@@ -4185,16 +4187,37 @@ revision: G } }`, then filters the FIFO independently: retain outputs with `seq 
   The real-browser terminal-mirror proof compares full live and restored buffers during
   numbered output and relative redraw across concurrent resize, mid-stream attach, reload
   and physical reconnect. Application/reflow artifacts must agree, not be heuristically removed.
-- **Client-side viewer pairing.** The viewer registry above is **channel-scoped** (one
-  `Viewer` per room membership, which before v12 was one per socket). A client presenting
-  several renderers of one terminal on that channel sends `terminal_attach` on every mount:
-  the server replaces the channel's viewer and re-emits snapshot(S′)+outputs(S′+1…), which
-  is a late renderer's only path to existing screen state (frames fan out to all local
-  renderers;
-  each re-renders from the fresh snapshot). `terminal_detach` is refcounted and fires only
-  on the 1→0 transition — a raw detach from one renderer starves every other one on that
-  channel. The SDK owns this (plus re-attach after reconnect, since the registry dies with
-  the channel); components just pair attach/detach per mount. Guarded by SDK contract tests.
+- **Independent parser-credit delivery.** Each `(channel, terminalId, viewportId)` is a separate
+  viewer, bounded to64 views per terminal/channel. Mounts choose opaque ids (1–128 characters)
+  and pair `attachTerminal(id, viewportId)` / `detachTerminal(id, viewportId)`. The SDK refcounts
+  that exact pair and reattaches every held pair after reconnect or restart. A new snapshot
+  mints `deliveryId` and ordinal0; each delivered output or geometry takes the next
+  `deliverySeq`, independently of source byte seq and geometry revision. Filter every delivery
+  frame by terminal AND viewport. Only completed consumer work earns cumulative
+  `terminal_ack { terminalId, viewportId, deliveryId, deliverySeq }`: parsing, snapshot replay
+  and intervening resize must finish first. Socket receipt grants nothing. Duplicate, stale,
+  future or other-view acknowledgements grant nothing; acknowledgements never queue offline.
+  Each sent/unacknowledged lane, server unsent FIFO and browser parser queue is independently
+  bounded to1,048,576 encoded base64 data characters and256 frames. Geometry charges one frame,
+  zero data bytes; transport-envelope limits remain separate. Browser retirement does not erase
+  work already in xterm: at most one real write/barrier runs at a time, and old in-flight work
+  stays charged until completion. No parser bound is bypassed by reconnect or a fresh snapshot.
+  Exhausted credit holds ordered frames and announces `terminal_delivery` state `waiting`;
+  pending overflow discards the unsent lane as a whole, announces `recovering` with `skipped:
+true`, and stops further delivery to that view. Only after all already-sent frames complete
+  does it request one fresh sequenced snapshot. It never feeds an arbitrary tail after a gap,
+  coalesces VT bytes, retries snapshots over unpaid work, or backpressures another view/the PTY.
+  Owner re-adoption also re-anchors an attached view; it announces skipped history if held or
+  later output is omitted while recovering, not merely because ownership was re-adopted.
+  The browser exposes a persistent accessible skipped-history notice, including after recovery;
+  retained screen/history is not a complete recording. Deliberate Catch up replaces only this
+  view's parser and attachment to obtain the retained screen even if its old parser stopped.
+  A queued replacement snapshot also fences mode-derived input until its replay finishes;
+  retained old screen/input modes are not proof of coherence with the new delivery.
+  Initial pending overflow, owner refusal and the unchanged10-second online snapshot deadline
+  retire the attachment with a viewport-scoped `refused` notice and typed reason before the
+  generic error. There is no silent recovery/retry loop; offline-owner waiting has no deadline.
+  Delivery/credit/history state is transient and terminal bytes are never persisted.
 - `terminal_input { terminalId, data }` (data base64) — accepted only from the current
   **controller**; others receive `error { code:"not_controller" }`.
 - Controller lease: opener starts as controller; `terminal_take { terminalId }` dispatches
@@ -4209,8 +4232,9 @@ revision: G } }`, then filters the FIFO independently: retain outputs with `seq 
   connection's identity. At most64 registrations exist per runtime terminal; a further
   identity receives `conflict` without replacing an existing measurement.
   Only a running terminal's current controller principal with live `terminals:write` on its
-  home, on an attached LIVE occupant channel, is eligible. PENDING attachment may hold
-  desired intent but contributes only after snapshot/output handoff. The pending-tile birth
+  home, on an attached occupant view that has received its first snapshot, is eligible. PENDING
+  initial attachment may hold desired intent but contributes only after snapshot handoff;
+  later parser lag/recovery does not withdraw an otherwise-active view's measurement. The pending-tile birth
   rule above remains separate: its first real writable measurement starts the PTY.
   An eligible browser view has a foreground document, positive measured cell space and an
   on-screen layout intersection; input focus is irrelevant. Preview, hidden, off-screen,

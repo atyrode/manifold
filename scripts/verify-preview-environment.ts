@@ -449,12 +449,20 @@ async function terminalProbe(id: string, homeId: string, label: string): Promise
   const client = await session(homeId);
   let received = "";
   client.on("terminal_output", (message) => {
+    if (message.terminalId !== id || message.viewportId !== "sdk") return;
     received = (received + base64ToText(message.data)).slice(-64_000);
+    client.ackTerminal(id, "sdk", message.deliveryId, message.deliverySeq);
   });
   client.on("terminal_snapshot", (message) => {
+    if (message.terminalId !== id || message.viewportId !== "sdk") return;
     received = (received + base64ToText(message.data)).slice(-64_000);
+    client.ackTerminal(id, "sdk", message.deliveryId, message.deliverySeq);
   });
-  client.attachTerminal(id);
+  client.on("terminal_geometry", (message) => {
+    if (message.terminalId !== id || message.viewportId !== "sdk") return;
+    client.ackTerminal(id, "sdk", message.deliveryId, message.deliverySeq);
+  });
+  client.attachTerminal(id, "sdk");
   client.takeTerminal(id);
   await sleep(500);
   // The full marker never occurs in the echoed command: only executed printf produces it.
@@ -1090,9 +1098,21 @@ async function browserProof(): Promise<void> {
     if (enabled !== -1 || disabled !== -1) pasteReady = enabled > disabled;
     modeTail = modeTail.slice(-16);
   };
-  observer.on("terminal_output", (message) => observeMode(message.data));
-  observer.on("terminal_snapshot", (message) => observeMode(message.data));
-  observer.attachTerminal(opened.id);
+  observer.on("terminal_output", (message) => {
+    if (message.terminalId !== opened.id || message.viewportId !== "sdk") return;
+    observeMode(message.data);
+    observer.ackTerminal(opened.id, "sdk", message.deliveryId, message.deliverySeq);
+  });
+  observer.on("terminal_snapshot", (message) => {
+    if (message.terminalId !== opened.id || message.viewportId !== "sdk") return;
+    observeMode(message.data);
+    observer.ackTerminal(opened.id, "sdk", message.deliveryId, message.deliverySeq);
+  });
+  observer.on("terminal_geometry", (message) => {
+    if (message.terminalId !== opened.id || message.viewportId !== "sdk") return;
+    observer.ackTerminal(opened.id, "sdk", message.deliveryId, message.deliverySeq);
+  });
+  observer.attachTerminal(opened.id, "sdk");
   // Exercise the editor, not the upstream provider/setup wizard. Use OMP's supported
   // per-launch switch rather than manufacturing configuration or authentication state.
   // OMP 18.1.13/18.1.14's bare-launch fast prepaint misses enhanced-paste startup.

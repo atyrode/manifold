@@ -1,24 +1,15 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 56;
+export const PROTOCOL_VERSION = 57;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
- * Protocol 56 adds terminal stream geometry without changing prior plugin call signatures.
- * Private credential entry adds no plugin secret/value interface or hardened contract change.
- * Session authority, correlated scopes and subscription ordering require the current SDK.
+ * Protocol 57 requires independently identified terminal views and completion-only parser credit.
+ * The explicit-view attach/detach/ack SDK and plugin ABI requires rebuilt bundles; no shared-view
+ * fallback is safe. Machine/instance wires and independent native/enrollment floors are unchanged.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
-export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set([
-  "47",
-  "48",
-  "51",
-  "52",
-  "53",
-  "54",
-  "55",
-  "56",
-]);
+export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["57"]);
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -497,10 +488,18 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * Absent capability preserves legacy owners. IPC3 keeps every existing frame unchanged;
  * new-type support and geometry events are ignored by older transports. Instance wire and
  * native-owner RPC are unchanged; their supported peers do not require a fleet restart.
+ *
+ * v57: PARSER-COMPLETION TERMINAL DELIVERY (issue #880). Session attach/detach identify
+ * each mounted viewport; its stream carries an independent delivery incarnation and ordinal,
+ * and completed consumption cumulatively credits bounded delivery. Snapshot recovery discloses
+ * potentially skipped output/history. The trusted plugin/SDK terminal ABI changes: old bundles
+ * must rebuild rather than receive a shared-view or socket-receipt ACK shim. Plugin bundle
+ * acceptance resets to57. Machine, native-owner, hardened, terminal-host and instance messages
+ * are unchanged; machine and instance acceptance add57 without requiring a fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
-  56,
+  56, 57,
 ]);
 
 /**
@@ -565,7 +564,7 @@ export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
  * the instance set so old ambient-admission peers cannot resume through the new contract.
  * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56, 57]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

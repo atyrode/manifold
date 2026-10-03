@@ -196,9 +196,82 @@ const terminalGeometry = {
 export const TERMINAL_VIEWPORT_REFRESH_MS = 10_000;
 export const TERMINAL_VIEWPORT_LEASE_MS = 30_000;
 export const MAX_TERMINAL_VIEWPORTS = 64;
+/**
+ * One mounted view's opaque, client-chosen identity on its channel. It names both that view's
+ * terminal delivery (attach/detach/ack and every stream frame) and its desired-geometry lease.
+ */
+export const TerminalViewportIdSchema = z.string().min(1).max(128);
+/**
+ * A server-minted delivery incarnation of one view. Every `terminal_snapshot` starts a fresh
+ * one; a client only echoes it back, so a stale incarnation can never be credited.
+ */
+export const TerminalDeliveryIdSchema = z.string().min(1).max(128);
+/**
+ * One view's frame ordinal inside its incarnation: the snapshot is 0, then every output and
+ * geometry frame sent to that view takes the next integer in source arrival order. It is
+ * independent of the PTY byte `seq` and of the geometry revision.
+ */
+export const TerminalDeliverySeqSchema = z.number().int().nonnegative();
+/**
+ * Transient delivery state of one view (issue #880), never recording metadata. `waiting`: its
+ * completed-parse credit is exhausted and the server holds its ordered pending frames.
+ * `recovering`: a pending window overflowed or the owner was re-adopted while work remained.
+ * Once every sent frame completes, a fresh snapshot replaces this incarnation. `skipped`
+ * states whether any held or newer output was omitted; recovery alone does not imply loss.
+ * `live`: held frames drained again. A snapshot itself starts a live incarnation. `refused`:
+ * the server retired this attachment of the view, and only a deliberate re-attach continues it.
+ */
+export const TerminalDeliveryStateSchema = z.enum(["waiting", "recovering", "live", "refused"]);
+export type TerminalDeliveryState = z.infer<typeof TerminalDeliveryStateSchema>;
+/**
+ * Why a view's attachment was retired. `not_found`/`exited`/`view_limit` refuse the attach
+ * itself; `owner_unavailable` means its snapshot request could not reach the terminal's owner;
+ * `snapshot_timeout` that the owner did not answer within the finite snapshot deadline;
+ * `pending_overflow` that output outgrew the pending bound before the snapshot arrived, so no
+ * tail could follow it without a gap. None of these is retried by the server.
+ */
+export const TerminalDeliveryRefusalSchema = z.enum([
+  "not_found",
+  "exited",
+  "view_limit",
+  "owner_unavailable",
+  "snapshot_timeout",
+  "pending_overflow",
+]);
+export type TerminalDeliveryRefusal = z.infer<typeof TerminalDeliveryRefusalSchema>;
+
+/**
+ * Per-view parser-credit bounds (issue #880). The byte unit is {@link terminalDeliveryCharge}:
+ * the encoded ASCII base64 characters of a frame's `data`, i.e. its payload bytes on the wire
+ * and an upper bound on the decoded bytes a parser consumes. A geometry frame charges no payload
+ * bytes. Envelope metadata is bounded separately by the frame counts, so none of these claims an
+ * exact aggregate of serialized frame memory. Each window admits any single frame, because
+ * `MAX_SESSION_BASE64_CHARS` is below every byte bound.
+ *
+ * UNACKED: frames sent to one view's current incarnation and not yet acknowledged as completed.
+ * PENDING: ordered frames the server holds for one view, awaiting its snapshot or its credit.
+ * PARSER: a client's outstanding parser work for one view, active plus queued.
+ */
+export const MAX_TERMINAL_DELIVERY_UNACKED_BYTES = 1_048_576;
+export const MAX_TERMINAL_DELIVERY_UNACKED_FRAMES = 256;
+export const MAX_TERMINAL_DELIVERY_PENDING_BYTES = 1_048_576;
+export const MAX_TERMINAL_DELIVERY_PENDING_FRAMES = 256;
+export const MAX_TERMINAL_PARSER_BYTES = 1_048_576;
+export const MAX_TERMINAL_PARSER_FRAMES = 256;
+
+/**
+ * The one charge unit every terminal delivery bound counts: encoded payload characters. It
+ * takes any delivery frame, stamped for a view or not; a geometry frame has no payload.
+ */
+export function terminalDeliveryCharge(
+  frame: Pick<TerminalDeliveryFrame, "type"> & { readonly data?: string },
+): number {
+  return frame.data?.length ?? 0;
+}
+
 const TerminalViewportRefSchema = z.strictObject({
   connId: z.string().min(1).max(128),
-  viewportId: z.string().min(1).max(128),
+  viewportId: TerminalViewportIdSchema,
 });
 /** Ephemeral attribution only; names come from the recipient's existing visible presence. */
 export const TerminalSizingSchema = z.strictObject({
@@ -310,13 +383,32 @@ const CLIENT_BODIES = {
     /** Environment merged under the fixed `MANIFOLD_*` keys; absent ≡ nothing added. */
     env: TerminalEnvSchema.optional(),
   }),
+  /**
+   * Starts one view's delivery: a fresh snapshot incarnation, then its ordered tail. Re-attaching
+   * the same `(terminalId, viewportId)` retires that view's prior incarnation and its credit.
+   */
   terminal_attach: z.strictObject({
     type: z.literal("terminal_attach"),
     terminalId: z.string().min(1),
+    viewportId: TerminalViewportIdSchema,
   }),
+  /** Releases exactly one view; sibling views of the terminal on this channel keep streaming. */
   terminal_detach: z.strictObject({
     type: z.literal("terminal_detach"),
     terminalId: z.string().min(1),
+    viewportId: TerminalViewportIdSchema,
+  }),
+  /**
+   * Cumulative completion credit: this view's parser has FINISHED every frame of `deliveryId`
+   * up to and including `deliverySeq`. Receipt on the socket is not completion. A stale
+   * incarnation, a duplicate or an ordinal never sent grants nothing.
+   */
+  terminal_ack: z.strictObject({
+    type: z.literal("terminal_ack"),
+    terminalId: z.string().min(1),
+    viewportId: TerminalViewportIdSchema,
+    deliveryId: TerminalDeliveryIdSchema,
+    deliverySeq: TerminalDeliverySeqSchema,
   }),
   terminal_input: z.strictObject({
     type: z.literal("terminal_input"),
@@ -326,7 +418,8 @@ const CLIENT_BODIES = {
   terminal_resize: z.strictObject({
     type: z.literal("terminal_resize"),
     terminalId: z.string().min(1),
-    viewportId: z.string().min(1).max(128),
+    /** The attached view whose desired geometry this is, on this channel. */
+    viewportId: TerminalViewportIdSchema,
     /** null withdraws this view; desired dimensions are independent of the applied grid. */
     viewport: z.strictObject(terminalGeometry).nullable(),
   }),
@@ -419,6 +512,7 @@ export const ClientMessageBodySchema = z.discriminatedUnion("type", [
   CLIENT_BODIES.terminal_open,
   CLIENT_BODIES.terminal_attach,
   CLIENT_BODIES.terminal_detach,
+  CLIENT_BODIES.terminal_ack,
   CLIENT_BODIES.terminal_input,
   CLIENT_BODIES.terminal_resize,
   CLIENT_BODIES.terminal_take,
@@ -445,6 +539,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   channelized(CLIENT_BODIES.terminal_open),
   channelized(CLIENT_BODIES.terminal_attach),
   channelized(CLIENT_BODIES.terminal_detach),
+  channelized(CLIENT_BODIES.terminal_ack),
   channelized(CLIENT_BODIES.terminal_input),
   channelized(CLIENT_BODIES.terminal_resize),
   channelized(CLIENT_BODIES.terminal_take),
@@ -486,6 +581,17 @@ const stateFields = {
 const ViewerTerminalGeometrySchema = TerminalGeometrySchema.extend({
   revision: z.number().int().nonnegative().nullable(),
 });
+
+/**
+ * Which view a stream frame belongs to and its place in that view's current incarnation. Two
+ * views of one terminal on one channel are two independent deliveries, so a reader filters by
+ * `terminalId` AND `viewportId`, and acknowledges by `deliveryId` and `deliverySeq`.
+ */
+const terminalDeliveryFields = {
+  viewportId: TerminalViewportIdSchema,
+  deliveryId: TerminalDeliveryIdSchema,
+  deliverySeq: TerminalDeliverySeqSchema,
+};
 
 const SERVER_BODIES = {
   init: z.strictObject({ type: z.literal("init"), ...stateFields }),
@@ -549,22 +655,49 @@ const SERVER_BODIES = {
   terminal_snapshot: z.strictObject({
     type: z.literal("terminal_snapshot"),
     terminalId: z.string().min(1),
+    ...terminalDeliveryFields,
+    /** A snapshot starts a fresh incarnation at ordinal 0. */
+    deliverySeq: z.literal(0),
     /** Byte-sequence watermark: outputs with seq > this follow with no gap. */
     seq: z.number().int().nonnegative(),
     data: base64,
     geometry: ViewerTerminalGeometrySchema,
+    /**
+     * True when this view's server-held output was discarded before this snapshot replaced it:
+     * output and history may be missing from the view. It names no byte count and promises no
+     * recording; false only says this recovery discarded nothing for the view.
+     */
+    skipped: z.boolean(),
   }),
   terminal_output: z.strictObject({
     type: z.literal("terminal_output"),
     terminalId: z.string().min(1),
+    ...terminalDeliveryFields,
     seq: z.number().int().positive(),
     data: base64,
   }),
   terminal_geometry: z.strictObject({
     type: z.literal("terminal_geometry"),
     terminalId: z.string().min(1),
+    ...terminalDeliveryFields,
     seq: z.number().int().nonnegative(),
     geometry: ViewerTerminalGeometrySchema,
+  }),
+  /**
+   * One view's delivery-state TRANSITION, sent once per change and never repeated while the
+   * state holds. It is not a stream frame: no ordinal, no charge, never acknowledged.
+   * `skipped` is true only when this view's held output was discarded. `deliveryId` is null
+   * only on a refusal of a view that never received a snapshot in this attachment; `reason` is
+   * set exactly on `refused`.
+   */
+  terminal_delivery: z.strictObject({
+    type: z.literal("terminal_delivery"),
+    terminalId: z.string().min(1),
+    viewportId: TerminalViewportIdSchema,
+    deliveryId: TerminalDeliveryIdSchema.nullable(),
+    state: TerminalDeliveryStateSchema,
+    skipped: z.boolean(),
+    reason: TerminalDeliveryRefusalSchema.nullable(),
   }),
   terminal_event: z.strictObject({
     type: z.literal("terminal_event"),
@@ -720,6 +853,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.terminal_snapshot,
   SERVER_BODIES.terminal_output,
   SERVER_BODIES.terminal_geometry,
+  SERVER_BODIES.terminal_delivery,
   SERVER_BODIES.terminal_event,
   SERVER_BODIES.terminal_sizing,
   SERVER_BODIES.saved,
@@ -753,6 +887,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.terminal_snapshot),
   channelized(SERVER_BODIES.terminal_output),
   channelized(SERVER_BODIES.terminal_geometry),
+  channelized(SERVER_BODIES.terminal_delivery),
   channelized(SERVER_BODIES.terminal_event),
   channelized(SERVER_BODIES.terminal_sizing),
   channelized(SERVER_BODIES.saved),
@@ -789,6 +924,12 @@ export type ServerGesture = Extract<ServerMessageBody, { type: "gesture" }>;
  */
 export type ServerEvent = Extract<ServerMessageBody, { type: "event" }>;
 
+/** A view's parser-credited stream frames, as consumers see them. */
+export type TerminalDeliveryFrame = Extract<
+  ServerMessageBody,
+  { type: "terminal_snapshot" | "terminal_output" | "terminal_geometry" }
+>;
+
 // ---------------------------------------------------------------------------- type inventories
 
 /**
@@ -812,6 +953,7 @@ export const SERVER_MESSAGE_TYPES = [
   "terminal_snapshot",
   "terminal_output",
   "terminal_geometry",
+  "terminal_delivery",
   "terminal_event",
   "terminal_sizing",
   "saved",
@@ -841,6 +983,7 @@ export const CLIENT_MESSAGE_TYPES = [
   "terminal_open",
   "terminal_attach",
   "terminal_detach",
+  "terminal_ack",
   "terminal_input",
   "terminal_resize",
   "terminal_take",
