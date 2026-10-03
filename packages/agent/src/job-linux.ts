@@ -24,7 +24,7 @@ import {
   ownsWorkloadLoopbackConnection,
   ownsWorkloadLoopbackListener,
 } from "./job-listener-proof.ts";
-import type { HeldDirectory } from "./job-files.ts";
+import type { DirectoryAllocation, HeldDirectory } from "./job-files.ts";
 import {
   fdMountId,
   safeComponent,
@@ -567,30 +567,48 @@ function reclaimGroups(groups: GroupTree): void {
   removeEmptyCgroupTree(groups.parent, groups.name, groups.root, groups.removed);
   closeGroups(groups);
 }
-function startupGroupsRefusal(groups: GroupTree, error: unknown): LinuxJobRefusal {
+/** Failed attempts remain retryable; overlapping callers share closure and its outcome. */
+function retryableCleanup(attempt: () => Promise<void>): () => Promise<void> {
+  let outcome: Promise<void> | undefined;
+  return () => {
+    outcome ??= attempt().catch((error: unknown) => {
+      outcome = undefined;
+      throw error;
+    });
+    return outcome;
+  };
+}
+function startupGroupsRefusal(
+  ownership: GroupTree | (() => GroupTree),
+  error: unknown,
+): LinuxJobRefusal {
+  let groups = typeof ownership === "function" ? undefined : ownership;
+  const acquire = (): GroupTree => {
+    if (groups) return groups;
+    groups = typeof ownership === "function" ? ownership() : ownership;
+    return groups;
+  };
   let empty = false;
-  let cleaned = false;
-  const cleanup = async (): Promise<void> => {
-    if (cleaned) return;
+  const cleanup = retryableCleanup(async (): Promise<void> => {
     try {
+      const groups = acquire();
       groups.parent.assertDirectoryEntry(groups.name, groups.root);
       writeControl(groups.root, "cgroup.kill", "1");
       await awaitEmpty(groups.root);
       empty = true;
       reclaimGroups(groups);
-      cleaned = true;
     } catch (failure) {
       if (empty) throw cleanupRefusal(failure, true, cleanup);
       const code = failure instanceof LinuxJobRefusal ? failure.code : "startup-empty-unproven";
       throw new LinuxJobRefusal(code, code, false, cleanup);
     }
-  };
+  });
   try {
+    const groups = acquire();
     if (counter(readControl(groups.root, "cgroup.events"), "populated") !== 0)
       return new LinuxJobRefusal("cgroup-empty-unproven", "cgroup-empty-unproven", false, cleanup);
     empty = true;
     reclaimGroups(groups);
-    cleaned = true;
     return observedStartRefusal(error);
   } catch (failure) {
     return cleanupRefusal(failure, empty, cleanup);
@@ -599,21 +617,31 @@ function startupGroupsRefusal(groups: GroupTree, error: unknown): LinuxJobRefusa
 function createGroups(parent: HeldDirectory, limits: LinuxJobLimits): Groups {
   const heldParent = parent.reopen();
   const name = Buffer.from(`job-${randomUUID()}`);
-  let root: HeldDirectory;
+  let allocation: DirectoryAllocation;
   try {
-    root = heldParent.openChild(name.toString(), { create: true, exclusive: true });
+    allocation = heldParent.allocateChild(name.toString());
   } catch (error) {
     heldParent.close();
     if ((error as NodeJS.ErrnoException).code === "ENOSPC") refuse("cgroup-capacity-exhausted");
     throw error;
   }
-  const tree: GroupTree = {
-    parent: heldParent,
-    name,
-    root,
-    opened: [{ parent: heldParent, name, directory: root }],
-    removed: new Set(),
+  const acquire = (): GroupTree => {
+    const root = allocation.acquire();
+    return {
+      parent: heldParent,
+      name,
+      root,
+      opened: [{ parent: heldParent, name, directory: root }],
+      removed: new Set(),
+    };
   };
+  let tree: GroupTree;
+  try {
+    tree = acquire();
+  } catch (error) {
+    throw startupGroupsRefusal(acquire, error);
+  }
+  const { root } = tree;
   const openGroup = (above: HeldDirectory, name: string): HeldDirectory => {
     const directory = above.openChild(name, { create: true, exclusive: true });
     tree.opened.push({ parent: above, name: Buffer.from(name), directory });

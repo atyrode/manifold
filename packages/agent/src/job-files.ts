@@ -168,6 +168,11 @@ function heldIdentity(fd: number): string {
   return `${stat.dev}:${stat.ino}`;
 }
 
+/** Allocation ownership survives descriptor or mount-identity acquisition failure. */
+export interface DirectoryAllocation {
+  acquire(): HeldDirectory;
+}
+
 /** Owned Linux directory descriptor. All descendant opens use a single checked component. */
 export class HeldDirectory {
   readonly mountId: number;
@@ -214,6 +219,47 @@ export class HeldDirectory {
       closeSync(fd);
       throw error;
     }
+  }
+  /** Exclusive mkdir with retained identity; callers keep this obligation until reclamation. */
+  allocateChild(name: string, mode = 0o700): DirectoryAllocation {
+    safeComponent(name);
+    const path = `${this.procPath}/${name}`;
+    let identity: string | undefined;
+    let identityFailure: unknown;
+    let pendingFd: number | undefined;
+    let acquired: HeldDirectory | undefined;
+    const allocation: DirectoryAllocation = {
+      acquire: () => {
+        if (acquired) return acquired;
+        // An identity missed at allocation cannot later be inferred from the same pathname.
+        if (identity === undefined) throw identityFailure;
+        pendingFd ??= openSync(path, DIRECTORY_FLAGS);
+        if (heldIdentity(pendingFd) !== identity) {
+          closeSync(pendingFd);
+          pendingFd = undefined;
+          throw new Error("directory_tree_changed");
+        }
+        // Keep the raw descriptor if the mount probe fails: it still pins the allocated inode.
+        const child = new HeldDirectory(pendingFd);
+        if (child.mountId !== this.mountId) {
+          closeSync(pendingFd);
+          pendingFd = undefined;
+          throw new Error("mount_escape");
+        }
+        acquired = child;
+        pendingFd = undefined;
+        return child;
+      },
+    };
+    mkdirSync(path, { mode });
+    try {
+      const stat = lstatSync(path, { bigint: true });
+      if (!stat.isDirectory()) throw new Error("directory_tree_changed");
+      identity = `${stat.dev}:${stat.ino}`;
+    } catch (error) {
+      identityFailure = error;
+    }
+    return allocation;
   }
   openChild(
     name: string,

@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
+import * as fs from "node:fs";
 import {
   closeSync,
   constants,
@@ -655,6 +656,103 @@ test.skipIf(!realLinux)(
   },
 );
 
+test.skipIf(!realLinux).each(["open", "mount"] as const)(
+  "[real-linux] post-mkdir root %s acquisition failure retains exact cleanup ownership",
+  async (window) => {
+    await withLinux("printf must-not-run", async (spec) => {
+      const before = spec.delegatedCgroup.names().sort();
+      const moved = `acquisition-held-fixture-${randomUUID()}`;
+      const captured: { refusal?: LinuxJobRefusal } = {};
+      let rootName: string | undefined;
+      let rootPath: string | undefined;
+      let rootFd: number | undefined;
+      let blocked = true;
+      let replaced = false;
+      const originalOpen = fs.openSync;
+      const originalRead = fs.readFileSync;
+      const acquisitionFault = Object.assign(new Error("root-acquisition-unavailable"), {
+        code: "EMFILE",
+      });
+      const open = spyOn(fs, "openSync").mockImplementation((...args) => {
+        const path = args[0];
+        const match = typeof path === "string" && /\/(job-[0-9a-f-]{36})$/.exec(path);
+        if (match && typeof path === "string" && rootPath === undefined) {
+          rootName = match[1];
+          rootPath = path;
+        }
+        if (path === rootPath) {
+          if (window === "open" && blocked) throw acquisitionFault;
+          rootFd = originalOpen(...args);
+          return rootFd;
+        }
+        return originalOpen(...args);
+      });
+      const read = spyOn(fs, "readFileSync").mockImplementation((...args) => {
+        if (window === "mount" && blocked && args[0] === `/proc/self/fdinfo/${rootFd}`)
+          throw acquisitionFault;
+        return originalRead(...args);
+      });
+      try {
+        await startLinuxJob(spec).catch((error: unknown) => {
+          if (!(error instanceof LinuxJobRefusal)) throw error;
+          captured.refusal = error;
+        });
+        expect(captured.refusal).toMatchObject({
+          workloadEmpty: false,
+          cleanup: expect.any(Function),
+        });
+        expect(rootName).toMatch(/^job-/);
+        expect(spec.delegatedCgroup.names().filter((name) => !before.includes(name))).toEqual([
+          rootName!,
+        ]);
+        const cleanup = captured.refusal!.cleanup!;
+        await Promise.all([
+          expect(cleanup()).rejects.toMatchObject({ workloadEmpty: false }),
+          expect(cleanup()).rejects.toMatchObject({ workloadEmpty: false }),
+        ]);
+        expect(spec.delegatedCgroup.names()).toContain(rootName!);
+        blocked = false;
+        open.mockRestore();
+        read.mockRestore();
+        renameSync(
+          `${spec.delegatedCgroup.procPath}/${rootName}`,
+          `${spec.delegatedCgroup.procPath}/${moved}`,
+        );
+        spec.delegatedCgroup.openChild(rootName!, { create: true, exclusive: true }).close();
+        replaced = true;
+        await expect(cleanup()).rejects.toMatchObject({ workloadEmpty: false });
+        // Refused cleanup preserves both identities and their virtual control files.
+        for (const name of [rootName, moved]) {
+          expect(
+            readFileSync(`${spec.delegatedCgroup.procPath}/${name}/cgroup.events`, "utf8"),
+          ).toContain("populated 0");
+        }
+        rmdirSync(`${spec.delegatedCgroup.procPath}/${rootName}`);
+        renameSync(
+          `${spec.delegatedCgroup.procPath}/${moved}`,
+          `${spec.delegatedCgroup.procPath}/${rootName}`,
+        );
+        replaced = false;
+        await Promise.all([cleanup(), cleanup()]);
+        await cleanup();
+        expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+      } finally {
+        blocked = false;
+        open.mockRestore();
+        read.mockRestore();
+        if (replaced) {
+          rmdirSync(`${spec.delegatedCgroup.procPath}/${rootName}`);
+          renameSync(
+            `${spec.delegatedCgroup.procPath}/${moved}`,
+            `${spec.delegatedCgroup.procPath}/${rootName}`,
+          );
+        }
+        if (captured.refusal?.cleanup) await captured.refusal.cleanup();
+      }
+    });
+  },
+);
+
 test.skipIf(!realLinux)(
   "[real-linux] release rejects a replaced native root and succeeds after its held identity is restored",
   async () => {
@@ -760,7 +858,10 @@ test.skipIf(!realLinux)(
             `${spec.delegatedCgroup.procPath}/${name}`,
           );
         }
-        if (captured.refusal?.cleanup) await captured.refusal.cleanup();
+        if (captured.refusal?.cleanup) {
+          await Promise.all([captured.refusal.cleanup(), captured.refusal.cleanup()]);
+          await captured.refusal.cleanup();
+        }
       }
       expect(spec.delegatedCgroup.names().sort()).toEqual(before);
     });
