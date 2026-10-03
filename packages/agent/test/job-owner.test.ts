@@ -5545,6 +5545,7 @@ test.skipIf(!linux)(
   async () => {
     const f = temporaryOutputFixture();
     let reclaimable = false;
+    let host: TerminalHost | undefined;
     try {
       await f.open();
       await f.install();
@@ -5598,6 +5599,31 @@ test.skipIf(!linux)(
       expect(JSON.stringify(f.logs)).not.toContain("secret-token");
       expect(JSON.stringify(f.logs)).not.toContain("/private/cgroup/path");
       expect(f.owner.maintenanceReady).toBe(false);
+      host = new TerminalHost({ jobOwner: f.owner });
+      const terminalEvents: TerminalHostEvent[] = [];
+      const transport = host.open({
+        write(event) {
+          terminalEvents.push(event);
+          return true;
+        },
+        close() {},
+      });
+      transport.deliver({ type: "attach" });
+      transport.deliver({ type: "drain", requestId: "reopen-refused", draining: false });
+      expect(terminalEvents.at(-1)).toEqual({
+        type: "drain_status",
+        requestId: "reopen-refused",
+        terminalHostId: host.terminalHostId,
+        draining: true,
+        terminalIds: [],
+      });
+      expect(host.status().draining).toBe(true);
+      transport.deliver({ type: "shutdown_request" });
+      expect(terminalEvents.at(-1)).toEqual({
+        type: "shutdown_refused",
+        reason: "jobs_retained",
+        terminalIds: [],
+      });
       const inventoryBeforeReopen = f.owner.identity.inventoryDigest;
       await f.owner.execute({ type: "drain", draining: false });
       expect(f.events.at(-1)).toEqual({
@@ -5608,24 +5634,37 @@ test.skipIf(!linux)(
       expect(f.owner.identity.inventoryDigest).toBe(inventoryBeforeReopen);
       await f.start("blocked");
       expect(f.refusal("blocked")).toBe("start_permit_refused");
+      let responseStart = f.events.length;
       await f.owner.execute({ type: "status", jobId: "committed" });
-      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
       await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
       expect(f.owner.maintenanceReady).toBe(false);
+      responseStart = f.events.length;
       await f.owner.execute({ type: "status", jobId: "committed" });
-      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
       reclaimable = true;
       await f.owner.execute({ type: "cancel", jobId: "committed", reason: "requested" });
       expect(f.owner.maintenanceReady).toBe(true);
       await f.owner.execute({ type: "drain", draining: false });
+      transport.deliver({ type: "drain", requestId: "reopen-accepted", draining: false });
+      expect(terminalEvents.at(-1)).toEqual({
+        type: "drain_status",
+        requestId: "reopen-accepted",
+        terminalHostId: host.terminalHostId,
+        draining: false,
+        terminalIds: [],
+      });
+      expect(host.status().draining).toBe(false);
       await f.start("resumed");
       expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
       await f.shutdown();
       await f.open();
+      responseStart = f.events.length;
       await f.owner.execute({ type: "status", jobId: "committed" });
-      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
     } finally {
       reclaimable = true;
+      await host?.shutdown();
       await f.close();
     }
   },
@@ -5716,11 +5755,7 @@ test.skipIf(!linux)(
       mkdirSync(stale, { mode: 0o700 });
       writeFileSync(join(stale, "payload"), "earlier generation");
       f.recover.mockRejectedValueOnce(
-        new LinuxJobRefusal(
-          "cgroup-cleanup-failed",
-          "/private/cgroup/path secret-token",
-          true,
-        ),
+        new LinuxJobRefusal("cgroup-cleanup-failed", "/private/cgroup/path secret-token", true),
       );
       await expect(f.open()).rejects.toThrow();
       expect(() => f.owner).toThrow("fixture_owner_closed");

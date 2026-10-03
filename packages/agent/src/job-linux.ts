@@ -495,8 +495,7 @@ function cleanupRefusal(
   cleanup?: () => Promise<void>,
 ): LinuxJobRefusal {
   const identityChanged =
-    error instanceof Error &&
-    ["directory_tree_changed", "mount_escape"].includes(error.message);
+    error instanceof Error && ["directory_tree_changed", "mount_escape"].includes(error.message);
   const code = identityChanged ? "cgroup-cleanup-identity-changed" : "cgroup-cleanup-failed";
   return new LinuxJobRefusal(code, code, empty, cleanup);
 }
@@ -511,11 +510,9 @@ function removeEmptyCgroupTree(
   root: HeldDirectory,
   removed: Set<string>,
 ): void {
-  if (Number(statfsSync(root.procPath).type) !== CGROUP2_SUPER_MAGIC)
-    refuse("cgroup-v2-required");
+  if (Number(statfsSync(root.procPath).type) !== CGROUP2_SUPER_MAGIC) refuse("cgroup-v2-required");
   parent.assertDirectoryEntry(name, root);
-  if (counter(readControl(root, "cgroup.events"), "populated") !== 0)
-    refuse("job-still-active");
+  if (counter(readControl(root, "cgroup.events"), "populated") !== 0) refuse("job-still-active");
   const levels: Array<{
     parent: HeldDirectory;
     name: Buffer;

@@ -432,9 +432,14 @@ export class TerminalHost {
         void this.onSnapshotRequest(connection, command);
         return;
       case "drain":
-        this.jobOwner?.setDraining(command.draining);
-        this.draining = command.draining;
-        this.log("info", "drain", { draining: command.draining, requestId: command.requestId });
+        try {
+          this.jobOwner?.setDraining(command.draining);
+          this.draining = command.draining;
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "cgroup-cleanup-pending") throw error;
+          this.draining = true;
+        }
+        this.log("info", "drain", { draining: this.draining, requestId: command.requestId });
         connection.peer.write({
           type: "drain_status",
           requestId: command.requestId,

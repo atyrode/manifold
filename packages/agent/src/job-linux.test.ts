@@ -521,9 +521,9 @@ test.skipIf(!realLinux)(
             const result = await handle.result;
             expect(result.exitCode).toBe(0);
             expect(result.empty).toBe(true);
-            expect(spec.delegatedCgroup.names().filter((name) => !before.includes(name))).toHaveLength(
-              1,
-            );
+            expect(
+              spec.delegatedCgroup.names().filter((name) => !before.includes(name)),
+            ).toHaveLength(1);
             handle.release();
             handle.release();
             expect(spec.delegatedCgroup.names().sort()).toEqual(before);
@@ -592,7 +592,10 @@ test.skipIf(!realLinux)(
   async () => {
     await withLinux("printf ready; read finish; printf finished", async (spec) => {
       const siblingName = `unrelated-${randomUUID()}`;
-      const sibling = spec.delegatedCgroup.openChild(siblingName, { create: true, exclusive: true });
+      const sibling = spec.delegatedCgroup.openChild(siblingName, {
+        create: true,
+        exclusive: true,
+      });
       const before = spec.delegatedCgroup.names().sort();
       const ready = Promise.withResolvers<void>();
       const handle = await startLinuxJob({
