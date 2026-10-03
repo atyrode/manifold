@@ -94,16 +94,22 @@ try {
     browser.on(event, (params) => {
       const response = params["response"] as { payloadData?: string; opcode?: number } | undefined;
       if (response?.opcode !== 1 || response.payloadData === undefined) return;
-      let message: { type?: string };
+      let message: { type?: string; viewport?: unknown };
       try {
-        message = JSON.parse(response.payloadData) as { type?: string };
+        message = JSON.parse(response.payloadData) as { type?: string; viewport?: unknown };
       } catch {
         return;
       }
       if (message === null || typeof message !== "object") return;
       if (direction === "out" && message.type === "terminal_attach") rendererWire.attached++;
       if (direction === "out" && message.type === "terminal_detach") rendererWire.detached++;
-      if (direction === "out" && message.type === "terminal_resize") rendererGeometry++;
+      if (
+        direction === "out" &&
+        message.type === "terminal_resize" &&
+        typeof message.viewport === "object" &&
+        message.viewport !== null
+      )
+        rendererGeometry++;
       if (direction === "in" && message.type === "terminal_snapshot") rendererWire.snapshots++;
     });
   }
