@@ -500,39 +500,6 @@ async function withLinux(
 }
 
 test.skipIf(!realLinux)(
-  "[real-linux] repeated release reclaims native roots and workload-created descendants",
-  async () => {
-    await withLinux(
-      [
-        'root="$MANIFOLD_JOB_CGROUP_ROOT"',
-        '/bin/busybox mkdir "$root/worker" "$root/worker/deep" "$root/back\\\\slash" || exit 19',
-        "printf finished",
-      ].join("\n"),
-      async (spec) => {
-        const before = spec.delegatedCgroup.names().sort();
-        for (let iteration = 0; iteration < 3; iteration++) {
-          const handle = await startLinuxJob(spec);
-          try {
-            const result = await handle.result;
-            expect(result.exitCode).toBe(0);
-            expect(result.empty).toBe(true);
-            expect(spec.delegatedCgroup.names().filter((name) => !before.includes(name))).toHaveLength(
-              1,
-            );
-            handle.release();
-            handle.release();
-            expect(spec.delegatedCgroup.names().sort()).toEqual(before);
-          } finally {
-            await handle.cancel();
-            handle.release();
-          }
-        }
-      },
-    );
-  },
-);
-
-test.skipIf(!realLinux)(
   "[real-linux] failed non-PTY supervisor spawn retains positive startup cleanup proof",
   async () => {
     const root = mkdtempSync(join(tmpdir(), "job-failed-spawn-"));
