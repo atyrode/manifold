@@ -71,8 +71,12 @@ export function nextLayoutChange(
   return promise;
 }
 
-/** Records exactly one terminal's terminal stream, preserving raw emission sequence numbers. */
-export function captureTerminal(client: SessionClient, terminalId: string): TerminalCapture {
+/** Records one explicit fixture view, crediting only its synchronously decoded capture. */
+export function captureTerminal(
+  client: SessionClient,
+  terminalId: string,
+  viewportId = "sdk",
+): TerminalCapture {
   const capture: TerminalCapture = {
     snapshotSeq: null,
     snapshotText: "",
@@ -82,21 +86,29 @@ export function captureTerminal(client: SessionClient, terminalId: string): Term
     stop(): void {
       offSnapshot();
       offOutput();
+      offGeometry();
     },
   };
   const offSnapshot = client.on("terminal_snapshot", (message) => {
-    if (message.terminalId !== terminalId) return;
+    if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
     capture.snapshotSeq = message.seq;
     capture.snapshotText = base64ToText(message.data);
+    client.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
   });
   const offOutput = client.on("terminal_output", (message) => {
-    if (message.terminalId !== terminalId) return;
+    if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
     if (capture.snapshotSeq === null) {
       capture.pendingOutputCount += 1;
       return;
     }
     capture.outputSeqs.push(message.seq);
     capture.outputText += base64ToText(message.data);
+    client.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
+  });
+  // This text capture consumes geometry as metadata, not as an xterm resize command.
+  const offGeometry = client.on("terminal_geometry", (message) => {
+    if (message.terminalId !== terminalId || message.viewportId !== viewportId) return;
+    client.ackTerminal(terminalId, viewportId, message.deliveryId, message.deliverySeq);
   });
   return capture;
 }
@@ -117,7 +129,7 @@ export async function attachedCapture(
   timeoutMs = 10_000,
 ): Promise<TerminalCapture> {
   const capture = captureTerminal(client, terminalId);
-  client.attachTerminal(terminalId);
+  client.attachTerminal(terminalId, "sdk");
   try {
     await waitFor(() => capture.snapshotSeq !== null, timeoutMs, 20);
   } catch (error) {
