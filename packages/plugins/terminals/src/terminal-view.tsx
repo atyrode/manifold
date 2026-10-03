@@ -73,6 +73,11 @@ import {
   subscribeTerminalFontPreferences,
   terminalFontPreferences,
 } from "./terminal-font-preferences";
+import { installTerminalRenderer } from "./terminal-renderer";
+import {
+  subscribeTerminalRendererPreferences,
+  terminalRendererPreferences,
+} from "./terminal-renderer-preferences";
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
 export function TerminalView({
@@ -163,6 +168,23 @@ export function TerminalView({
           ? `Could not save terminal font size: ${error.message}`
           : "Could not save terminal font size",
         { key: `terminal-font-size:${terminalId}` },
+      );
+    }
+  };
+  const rendererMode = useSyncExternalStore(
+    subscribeTerminalRendererPreferences,
+    useCallback(() => terminalRendererPreferences.get(terminalId), [terminalId]),
+    () => "dom" as const,
+  );
+  const toggleRenderer = (): void => {
+    try {
+      terminalRendererPreferences.set(terminalId, rendererMode === "dom" ? "webgl" : "dom");
+    } catch (error: unknown) {
+      notify(
+        error instanceof Error
+          ? `Could not save terminal renderer choice: ${error.message}`
+          : "Could not save terminal renderer choice",
+        { key: `terminal-renderer-preference:${terminalId}` },
       );
     }
   };
@@ -326,9 +348,17 @@ export function TerminalView({
         selectionBackground: "#364fc766",
       },
     });
+    // Pinch belongs to the canvas; xterm must neither scroll history nor report it to the PTY.
+    terminal.attachCustomWheelEventHandler((event) => !event.ctrlKey);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);
+    const renderer = installTerminalRenderer(terminal, container, (message) =>
+      notifyRef.current(message, { key: `terminal-renderer:${terminalId}` }),
+    );
+    const syncRenderer = (): void => renderer.setMode(terminalRendererPreferences.get(terminalId));
+    const unsubscribeRenderer = subscribeTerminalRendererPreferences(syncRenderer);
+    syncRenderer();
     const graphics = installTerminalGraphics(terminal, (message) =>
       notifyRef.current(message, { key: `terminal-graphics:${terminalId}` }),
     );
@@ -570,6 +600,8 @@ export function TerminalView({
       pasteMode.dispose();
       pasteModeRef.current = null;
       clipboardLiveRef.current = false;
+      unsubscribeRenderer();
+      renderer.dispose();
       terminal.dispose();
       terminalRef.current = null;
       paintedRef.current = false;
@@ -1037,6 +1069,22 @@ export function TerminalView({
                 <ControlIcon kind="takeControl" size={12} />
               </button>
             ) : null}
+            <button
+              type="button"
+              className="node-titlebar__ctl terminal-renderer-control"
+              data-testid="terminal-renderer-toggle"
+              aria-label="Use WebGL terminal renderer on this device"
+              aria-pressed={rendererMode === "webgl"}
+              title={
+                rendererMode === "webgl"
+                  ? "WebGL requested for this terminal on this device; unsupported or lost contexts use DOM. Press to use DOM."
+                  : "Use experimental WebGL for this terminal on this device. DOM remains the default."
+              }
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={toggleRenderer}
+            >
+              GPU
+            </button>
             <button
               type="button"
               className="node-titlebar__ctl"

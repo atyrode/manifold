@@ -12,6 +12,11 @@
  * opting in through plugin settings copies and clears only after release. Selection
  * must never clear mid-drag, and its painted row must match the pointer at every zoom.
  *
+ * Issue #878 adds an explicitly selected renderer, not a new terminal/PTY. After
+ * the unchanged DOM gesture proofs, this gate checks real SwiftShader pixels,
+ * Unicode selection, renderer retirement, context-loss/refusal fallback, and
+ * retained history/input. Software-only evidence is not native GPU performance.
+ *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
  */
@@ -48,6 +53,9 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
 const failures: string[] = [];
 let browser: Browser | null = null;
 let wheelFixtureStarted = false;
+const rendererWire = { opened: 0, closed: 0, attached: 0, detached: 0, snapshots: 0 };
+const rendererScripts = new Set<string>();
+const rendererFinished = new Set<string>();
 
 try {
   await until(
@@ -74,7 +82,64 @@ try {
   const containerId = ContainerResponseSchema.parse(outcome.result).container.id;
 
   browser = new Browser();
-  await browser.launch();
+  await browser.launch({ softwareWebgl: true });
+  await browser.send("Network.enable", {});
+  browser.on("Network.webSocketCreated", () => rendererWire.opened++);
+  browser.on("Network.webSocketClosed", () => rendererWire.closed++);
+  for (const [event, direction] of [
+    ["Network.webSocketFrameSent", "out"],
+    ["Network.webSocketFrameReceived", "in"],
+  ] as const) {
+    browser.on(event, (params) => {
+      const response = params["response"] as { payloadData?: string; opcode?: number } | undefined;
+      if (response?.opcode !== 1 || response.payloadData === undefined) return;
+      let message: { type?: string };
+      try {
+        message = JSON.parse(response.payloadData) as { type?: string };
+      } catch {
+        return;
+      }
+      if (message === null || typeof message !== "object") return;
+      if (direction === "out" && message.type === "terminal_attach") rendererWire.attached++;
+      if (direction === "out" && message.type === "terminal_detach") rendererWire.detached++;
+      if (direction === "in" && message.type === "terminal_snapshot") rendererWire.snapshots++;
+    });
+  }
+  browser.on("Network.requestWillBeSent", (params) => {
+    const request = params["request"] as { url?: string } | undefined;
+    if (params["type"] === "Script" && request?.url !== undefined) rendererScripts.add(request.url);
+  });
+  browser.on("Network.loadingFinished", (params) => {
+    if (typeof params["requestId"] === "string") rendererFinished.add(params["requestId"]);
+  });
+  await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const original = HTMLCanvasElement.prototype.getContext;
+      const proof = window.__terminalWebglProof = {
+        attempts: 0, refused: 0, refuse: false, refuseShaders: false,
+        shaderRefusals: 0, contexts: []
+      };
+      HTMLCanvasElement.prototype.getContext = function(kind, ...args) {
+        const webgl = kind === 'webgl2' || kind === 'webgl' || kind === 'experimental-webgl';
+        if (webgl) {
+          proof.attempts++;
+          if (proof.refuse) { proof.refused++; return null; }
+        }
+        const context = Reflect.apply(original, this, [kind, ...args]);
+        if (webgl && context && !proof.contexts.some(entry => entry.gl === context))
+          proof.contexts.push({ canvas: this, gl: context });
+        return context;
+      };
+      const shaderParameter = WebGL2RenderingContext.prototype.getShaderParameter;
+      WebGL2RenderingContext.prototype.getShaderParameter = function(shader, parameter) {
+        if (proof.refuseShaders && parameter === this.COMPILE_STATUS) {
+          proof.shaderRefusals++;
+          return false;
+        }
+        return Reflect.apply(shaderParameter, this, [shader, parameter]);
+      };
+    })()`,
+  });
   await browser.send("Browser.grantPermissions", {
     origin,
     permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
@@ -110,6 +175,17 @@ try {
     20_000,
     "xterm rendered",
   );
+  if (
+    !(await browser.evaluate<boolean>(`(() => {
+      const host = document.querySelector('.xterm-host');
+      const toggle = document.querySelector('[data-testid="terminal-renderer-toggle"]');
+      return host?.dataset.terminalRenderer === 'dom'
+        && toggle?.getAttribute('aria-pressed') === 'false'
+        && window.__terminalWebglProof.attempts === 0;
+    })()`))
+  ) {
+    throw new Error("a fresh device must use DOM without attempting a WebGL context");
+  }
   // DOM-rendered rows can lie below the browser's viewport: native-scale terminals
   // are no longer shrunk into their portal. Move the canvas only when measured
   // clipping proves it necessary; never substitute easier rows for the fixed probes.
@@ -259,6 +335,19 @@ try {
     );
     await browser!.evaluate(
       "document.querySelector('[aria-label=\"Close the plugin manager\"]').click()",
+    );
+    // Let the closing dialog return focus before the next terminal gesture.
+    // Otherwise its queued return can steal Enter after a successful paste.
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`new Promise(resolve => {
+          requestAnimationFrame(() => setTimeout(() => resolve(
+            document.querySelector('[aria-label="Close the plugin manager"]') === null
+              && document.activeElement === document.querySelector('[data-testid="plugin-manager-open"]')
+          ), 0));
+        })`),
+      3000,
+      "plugin manager closes and returns keyboard focus",
     );
     await browser!.evaluate("document.querySelector('.xterm-helper-textarea').focus()");
   }
@@ -676,6 +765,104 @@ try {
     if(right<=left||bottom<=top)throw new Error('terminal has no visible wheel target');
     return {x:(left+right)/2,y:(top+bottom)/2};
   })()`);
+  const scrollbackPosition = () =>
+    browser!.evaluate<number | null>(`(() => {
+      const slider = document.querySelector('.xterm .scrollbar.vertical .slider');
+      if (!slider) return null;
+      const thumb = slider.getBoundingClientRect(), track = slider.parentElement.getBoundingClientRect();
+      const travel = track.height - thumb.height;
+      return thumb.height > 0 && travel > 1 ? (thumb.top - track.top) / travel : null;
+    })()`);
+  async function settleViewport(label: string): Promise<void> {
+    let previous = await viewport();
+    let previousScroll = await scrollbackPosition();
+    let stableFrames = 0;
+    await until(
+      async () => {
+        await browser!.evaluate(
+          "new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)))",
+        );
+        const current = await viewport();
+        const scroll = await scrollbackPosition();
+        stableFrames =
+          JSON.stringify(current) === JSON.stringify(previous) &&
+          scroll !== null &&
+          scroll === previousScroll
+            ? stableFrames + 1
+            : 0;
+        previous = current;
+        previousScroll = scroll;
+        return stableFrames >= 3;
+      },
+      5000,
+      label,
+    );
+  }
+  async function focusedScrollback(renderer: string): Promise<void> {
+    await until(
+      async () => {
+        const gap = await scrollbackBottomGap();
+        return gap !== null && Math.abs(gap) < 1;
+      },
+      5000,
+      `${renderer}: engaged terminal starts at the scrollback bottom`,
+    );
+    const before = await viewport();
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...(await terminalPoint()),
+      deltaX: 0,
+      deltaY: -120,
+    });
+    await until(
+      async () => {
+        const gap = await scrollbackBottomGap();
+        return gap !== null && gap >= 1;
+      },
+      5000,
+      `${renderer}: engaged terminal scrollback`,
+    );
+    const after = await viewport();
+    if (
+      after.scrollX !== before.scrollX ||
+      after.scrollY !== before.scrollY ||
+      after.zoom !== before.zoom
+    )
+      throw new Error(`${renderer}: engaged terminal scrollback moved the canvas`);
+    console.log(
+      `PASS  ${renderer} engaged terminal keeps ordinary scrollback without panning canvas`,
+    );
+  }
+  async function focusedPinch(deltaY: number, label: string): Promise<void> {
+    if (
+      !(await browser!.evaluate<boolean>(
+        "document.querySelector('.xterm-host:not(.xterm-host--inactive)')?.contains(document.activeElement) === true && document.activeElement?.matches('.xterm-helper-textarea') === true",
+      ))
+    )
+      throw new Error(`${label}: pinch witness is not a focused active terminal`);
+    await settleViewport(`${label}: preceding wheel and zoom settled`);
+    const before = await viewport();
+    const position = await scrollbackPosition();
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...(await terminalPoint()),
+      modifiers: 2,
+      deltaX: 0,
+      deltaY,
+    });
+    await until(
+      async () => {
+        const zoom = (await viewport()).zoom;
+        return deltaY < 0 ? zoom > before.zoom : zoom < before.zoom;
+      },
+      5000,
+      `${label}: focused terminal pinch reaches canvas zoom with populated scrollback`,
+    );
+    await settleViewport(`${label}: focused pinch settled`);
+    const after = await scrollbackPosition();
+    if (position === null || after === null || Math.abs(after - position) > 0.002)
+      throw new Error(`${label}: pinch changed terminal history position`);
+  }
 
   // Focus is not input readiness: returning to canvas creates a spectator, and a
   // click focuses xterm before the occupant join finishes. typeText only awaits
@@ -820,50 +1007,912 @@ try {
   );
   // Pinch animation can continue after its first visible zoom change and focus.
   // Measure the next gesture only after that preceding gesture has settled.
-  let previousViewport = await viewport();
-  let stableFrames = 0;
-  await until(
-    async () => {
-      const current = await viewport();
-      stableFrames =
-        JSON.stringify(current) === JSON.stringify(previousViewport) ? stableFrames + 1 : 0;
-      previousViewport = current;
-      return stableFrames >= 3;
-    },
-    5000,
-    "preceding pinch animation settled",
-  );
-  await until(
-    async () => {
-      const gap = await scrollbackBottomGap();
-      return gap !== null && Math.abs(gap) < 1;
-    },
-    5000,
-    "engaged terminal starts at the scrollback bottom",
-  );
-  const beforeScroll = await viewport();
-  await browser.send("Input.dispatchMouseEvent", {
-    type: "mouseWheel",
-    ...(await terminalPoint()),
-    deltaX: 0,
-    deltaY: -120,
-  });
-  await until(
-    async () => {
-      const gap = await scrollbackBottomGap();
-      return gap !== null && gap >= 1;
-    },
-    5000,
-    "engaged terminal scrollback",
-  );
-  const afterScroll = await viewport();
+  await settleViewport("preceding pinch animation settled");
+  await focusedScrollback("DOM");
+  await focusedPinch(-40, "DOM zoom in");
+  await focusedPinch(40, "DOM zoom out");
+  console.log("PASS  focused DOM pinch zooms in/out without scrolling populated terminal history");
+
+  // Renderer changes happen only after every existing DOM assertion above.
+  // Observers retain genuine platform contexts; only fresh refusal documents
+  // alter a platform result. No Terminal, addon, PTY or input API is replaced.
   if (
-    afterScroll.scrollX !== beforeScroll.scrollX ||
-    afterScroll.scrollY !== beforeScroll.scrollY ||
-    afterScroll.zoom !== beforeScroll.zoom
-  )
-    throw new Error("engaged terminal scrollback moved the canvas");
-  console.log("PASS  engaged terminal keeps ordinary scrollback without panning canvas");
+    !(await browser.evaluate<boolean>(`document.querySelector('.xterm-host')?.dataset.terminalRenderer === 'dom'
+      && document.querySelector('[data-testid="terminal-renderer-toggle"]')?.getAttribute('aria-pressed') === 'false'
+      && window.__terminalWebglProof.attempts === 0`))
+  ) {
+    throw new Error("the unchanged DOM selection/lifecycle branch attempted WebGL");
+  }
+  console.log(
+    "PASS  all original selection, clipboard, scaled-view and wheel cases use default DOM",
+  );
+
+  async function rendererZoom(scaled: boolean): Promise<void> {
+    let wheelMagnitude = 80;
+    let previousDecrease: boolean | undefined;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const zoom = (await viewport()).zoom;
+      if (scaled ? zoom >= 1.15 && zoom <= 1.3 : Math.abs(zoom - 1) < 0.06) {
+        await revealScreen();
+        return;
+      }
+      const decrease = zoom > (scaled ? 1.3 : 1);
+      // Adjust gesture size after crossing the target, never redispatch a failed gesture.
+      if (previousDecrease !== undefined && previousDecrease !== decrease) wheelMagnitude /= 2;
+      previousDecrease = decrease;
+      await focusedPinch(decrease ? wheelMagnitude : -wheelMagnitude, "renderer selection scale");
+    }
+    throw new Error(`renderer witness did not reach ${scaled ? "scaled" : "baseline"} canvas zoom`);
+  }
+
+  const rendererRows = () =>
+    browser!.evaluate<string[]>(
+      "[...document.querySelector('.xterm-rows').children].map(row => row.textContent.trimEnd())",
+    );
+  async function rendererState(
+    state: "dom" | "webgl" | "fallback",
+    optedIn: boolean,
+  ): Promise<void> {
+    await until(
+      () =>
+        browser!
+          .evaluate<boolean>(`document.querySelector('.xterm-host')?.dataset.terminalRenderer === ${JSON.stringify(state)}
+          && document.querySelector('[data-testid="terminal-renderer-toggle"]')?.getAttribute('aria-pressed') === ${JSON.stringify(String(optedIn))}`),
+      20_000,
+      `actual terminal host uses ${state} with device opt-in ${String(optedIn)}`,
+    );
+  }
+  async function rendererFocus(): Promise<void> {
+    const point = await browser!.evaluate<{ x: number; y: number }>(`(() => {
+      const screen = document.querySelector('.xterm-screen'), box = screen.getBoundingClientRect();
+      const host = screen.closest('.xterm-host').getBoundingClientRect();
+      const canvas = document.querySelector('.canvas')?.getBoundingClientRect();
+      const left = Math.max(box.left, host.left, canvas?.left ?? 0, 0), right = Math.min(box.right, host.right, canvas?.right ?? innerWidth, innerWidth);
+      const top = Math.max(box.top, host.top, canvas?.top ?? 0, 0), bottom = Math.min(box.bottom, host.bottom, canvas?.bottom ?? innerHeight, innerHeight);
+      if (right - left < 40 || bottom - top < 40) throw new Error('renderer has no visible input target');
+      return { x: (left + right) / 2, y: (top + bottom) / 2 };
+    })()`);
+    await browser!.drag([point], 30);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`(() => {
+          const host = document.querySelector('.xterm-host:not(.xterm-host--inactive)');
+          return host?.contains(document.activeElement)
+            && document.activeElement?.matches('.xterm-helper-textarea') === true
+            && host.closest('.terminal-frame')?.querySelector('.terminal-idle-veil--on') === null;
+        })()`),
+      20_000,
+      "renderer witness occupant and real input ready",
+    );
+  }
+  async function rendererCanvasReady(label: string): Promise<void> {
+    await rendererFocus();
+    // Until this canvas viewer engages, the PTY retains its last eligible fullscreen grid.
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`(() => {
+          const host = document.querySelector('.xterm-host');
+          const screen = host?.querySelector('.xterm-screen');
+          if (!host || !screen) return false;
+          const clip = host.getBoundingClientRect(), painted = screen.getBoundingClientRect();
+          return painted.width > 0 && painted.height > 0
+            && painted.width <= clip.width + 1 && painted.height <= clip.height + 1;
+        })()`),
+      20_000,
+      `${label}: engaged canvas viewer applies its eligible terminal grid`,
+    );
+    await revealScreen();
+  }
+  async function rendererScroll(edge: "top" | "bottom"): Promise<void> {
+    // xterm normalizes wheel deltas: one large wheel event is not scroll-to-edge.
+    // Drag the real scrollbar, then prove its endpoint geometrically. Press only a
+    // thumb that is current and hit-testable: xterm syncs its track to a resized
+    // screen on a later frame, and its auto-hidden slider ignores the pointer until
+    // hovered. A stale thumb can lie off the page, where the press lands outside
+    // the portal, disengages it, and leaves every later drag without a slider.
+    let points: { x: number; y: number }[] = [];
+    await until(
+      async () => {
+        const thumb = await browser!.evaluate<{
+          x: number;
+          y: number;
+          end: number;
+          grabbable: boolean;
+        } | null>(`(() => {
+          const slider = document.querySelector('.xterm .scrollbar.vertical .slider');
+          if (!slider) throw new Error('renderer witness lost its scrollback scrollbar');
+          const thumb = slider.getBoundingClientRect(), track = slider.parentElement.getBoundingClientRect();
+          const screen = slider.closest('.xterm').querySelector('.xterm-screen').getBoundingClientRect();
+          if (Math.abs(track.height - screen.height) >= 1) return null;
+          const x = thumb.left + thumb.width / 2, y = thumb.top + thumb.height / 2;
+          return {
+            x, y, end: ${edge === "top" ? "track.top + 1" : "track.bottom - 1"},
+            grabbable: document.elementFromPoint(x, y) === slider,
+          };
+        })()`);
+        if (thumb === null) return false;
+        if (!thumb.grabbable) {
+          await browser!.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: thumb.x,
+            y: thumb.y,
+          });
+          return false;
+        }
+        points = [
+          { x: thumb.x, y: thumb.y },
+          { x: thumb.x, y: thumb.end },
+        ];
+        return true;
+      },
+      20_000,
+      "renderer witness scrollbar thumb matches the current screen and accepts the pointer",
+    );
+    await browser!.drag(points, 30);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`(() => {
+          const slider = document.querySelector('.xterm .scrollbar.vertical .slider');
+          if (!slider) return false;
+          const thumb = slider.getBoundingClientRect(), track = slider.parentElement.getBoundingClientRect();
+          return thumb.height > 0 && track.height - thumb.height > 1
+            && Math.abs(${edge === "top" ? "thumb.top - track.top" : "track.bottom - thumb.bottom"}) < 1;
+        })()`),
+      20_000,
+      `renderer witness scrollback reaches ${edge} through the real scrollbar`,
+    );
+    await browser!.evaluate(
+      "(() => { const { promise, resolve } = Promise.withResolvers(); requestAnimationFrame(() => requestAnimationFrame(resolve)); return promise; })()",
+    );
+  }
+  async function rendererBuffer(): Promise<{ current: string[]; history: string[][] }> {
+    await rendererScroll("bottom");
+    const current = await rendererRows();
+    await rendererScroll("top");
+    const history: string[][] = [];
+    for (let page = 0; page < 512; page++) {
+      history.push(await rendererRows());
+      const gap = await scrollbackBottomGap();
+      if (gap === null) throw new Error("renderer witness lost its scrollback scrollbar");
+      if (Math.abs(gap) < 1) {
+        if (JSON.stringify(await rendererRows()) !== JSON.stringify(current))
+          throw new Error("traversing renderer history changed the current screen");
+        return { current, history };
+      }
+      await browser!.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        ...(await terminalPoint()),
+        deltaX: 0,
+        deltaY: await browser!.evaluate<number>(
+          "document.querySelector('.xterm-screen').getBoundingClientRect().height / 2",
+        ),
+      });
+      await browser!.evaluate(
+        "(() => { const { promise, resolve } = Promise.withResolvers(); requestAnimationFrame(() => requestAnimationFrame(resolve)); return promise; })()",
+      );
+    }
+    throw new Error("renderer witness history traversal did not reach the current screen");
+  }
+  async function rendererMount(): Promise<void> {
+    await browser!.evaluate(`(() => {
+      const host = document.querySelector('.xterm-host');
+      window.__terminalRendererMount = {
+        host, xterm: host.querySelector('.xterm'), textarea: host.querySelector('.xterm-helper-textarea'),
+        canvases: host.querySelectorAll('.xterm-screen > canvas').length,
+        notices: [...document.querySelectorAll('.notice-layer .notice')]
+      };
+    })()`);
+  }
+  async function rendererInPlace(beforeWire: string, label: string): Promise<void> {
+    if (
+      !(await browser!.evaluate<boolean>(`(() => {
+        const previous = window.__terminalRendererMount, host = document.querySelector('.xterm-host');
+        return previous.host === host && previous.xterm === host?.querySelector('.xterm')
+          && previous.textarea === host?.querySelector('.xterm-helper-textarea');
+      })()`)) ||
+      JSON.stringify(rendererWire) !== beforeWire
+    ) {
+      throw new Error(`${label} replaced xterm/input or reconnected/replayed the PTY`);
+    }
+  }
+  async function rendererNotice(): Promise<void> {
+    await until(
+      () =>
+        browser!
+          .evaluate<boolean>(`[...document.querySelectorAll('.notice-layer .notice')].some(notice => {
+          const box = notice.getBoundingClientRect(), style = getComputedStyle(notice);
+          return !window.__terminalRendererMount.notices.includes(notice)
+            && ['status', 'alert'].includes(notice.getAttribute('role'))
+            && notice.querySelector('.notice-message')?.textContent.trim()
+            && style.visibility === 'visible' && Number(style.opacity) > 0
+            && box.width > 0 && box.height > 0 && box.top >= 0 && box.bottom <= innerHeight;
+        })`),
+      3000,
+      "renderer fallback is visible in the existing notice surface",
+    );
+  }
+  async function rendererPixels(
+    label: string,
+    row?: { index: number; count: number },
+  ): Promise<{ blueGlyphs: number; selection: number; area: number }> {
+    const clip = await browser!.evaluate<{
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>(`(() => {
+      const screen = document.querySelector('.xterm-screen'), box = screen.getBoundingClientRect();
+      if (box.left < 0 || box.top < 0 || box.right > innerWidth || box.bottom > innerHeight)
+        throw new Error('renderer pixel witness is clipped');
+      const index = ${row?.index ?? 0}, count = ${row?.count ?? 1};
+      return { x: box.x, y: box.y + box.height * index / count,
+        width: box.width, height: ${row === undefined ? "box.height" : "box.height / count"} };
+    })()`);
+    const shot = await browser!.send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: false,
+      clip: { ...clip, scale: 1 },
+    });
+    const data = shot.result?.["data"];
+    if (shot.error !== undefined || typeof data !== "string")
+      throw new Error(`${label}: compositor screenshot failed`);
+    // Decode the compositor's PNG, not the canvas drawing buffer (which may
+    // legitimately clear after presentation). Colored glyphs and selection
+    // bands have separate witnesses; a merely nonempty canvas never passes.
+    const pixels = await browser!.evaluate<{
+      blueGlyphs: number;
+      selection: number;
+      area: number;
+    }>(`(async () => {
+      const bytes = Uint8Array.from(atob(${JSON.stringify(data)}), value => value.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext('2d');
+      context.drawImage(bitmap, 0, 0);
+      const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      bitmap.close();
+      let blueGlyphs = 0, selection = 0;
+      for (let index = 0; index < image.data.length; index += 4) {
+        const red = image.data[index], green = image.data[index + 1], blue = image.data[index + 2];
+        if (blue > 150 && blue > red + 70 && blue > green + 40) blueGlyphs++;
+        if (blue > 60 && blue < 160 && blue > red + 30 && blue > green + 25) selection++;
+      }
+      return { blueGlyphs, selection, area: image.width * image.height };
+    })()`);
+    console.log(`renderer pixels (${label}):`, JSON.stringify(pixels));
+    return pixels;
+  }
+
+  await rendererZoom(false);
+  await rendererFocus();
+  const rendererNonce = crypto.randomUUID().slice(0, 8);
+  const historyPrefix = `GPU-${rendererNonce}`;
+  const header = `${historyPrefix} BLUE 0123456789`;
+  const unicode = "BOX ┌─┐ WIDE 界 COMBINING é";
+  const rendererComplete = `GPU-COMPLETE-${rendererNonce}`;
+  const historyCount = (await rendererRows()).length * 3;
+  await browser.typeText(
+    `clear; renderer_pty=$$; seq 1 ${historyCount} | sed 's/.*/${historyPrefix}-& history/'; printf '\\033[38;2;0;120;255m%s\\033[0m\\n%s\\nPTY-${rendererNonce}-BASE %s\\n%s%s\\n' '${header}' '${unicode}' "$renderer_pty" 'GPU-COMPLETE-' '${rendererNonce}'`,
+  );
+  await browser.typeText("\r");
+  await until(
+    async () => {
+      const rows = await rendererRows(),
+        complete = rows.indexOf(rendererComplete);
+      return (
+        rows.includes(header) &&
+        rows.includes(unicode) &&
+        complete >= 0 &&
+        rows.slice(complete + 1).some((text) => text.trim().length > 0)
+      );
+    },
+    20_000,
+    "fresh renderer history, colored Unicode screen and returned PTY prompt painted",
+  );
+  const initialBuffer = await rendererBuffer();
+  const historyFixtures = Array.from(
+    { length: historyCount },
+    (_, index) => `${historyPrefix}-${index + 1} history`,
+  );
+  if (!historyFixtures.every((line) => initialBuffer.history.some((page) => page.includes(line))))
+    throw new Error("fresh renderer fixture did not paint every known history row");
+  const pidRow = initialBuffer.current.find((line) =>
+    line.startsWith(`PTY-${rendererNonce}-BASE `),
+  );
+  const pid = pidRow?.slice(`PTY-${rendererNonce}-BASE `.length);
+  if (pid === undefined || !/^[1-9][0-9]*$/.test(pid))
+    throw new Error("real shell did not return its renderer fixture PID");
+  if ((await rendererPixels("initial DOM blue header")).blueGlyphs < 50)
+    throw new Error("DOM renderer did not visibly paint the known blue header");
+  await rendererMount();
+  const scriptsBeforeOptIn = new Set(rendererScripts);
+  const beforeOptInWire = JSON.stringify(rendererWire);
+  await browser.clickTestId("terminal-renderer-toggle");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "['webgl', 'fallback'].includes(document.querySelector('.xterm-host')?.dataset.terminalRenderer)",
+      ),
+    20_000,
+    "explicit renderer opt-in settles on actual WebGL or usable fallback",
+  );
+  const deferredRendererScripts = new Set(
+    [...rendererScripts].filter((url) => !scriptsBeforeOptIn.has(url)),
+  );
+  if (deferredRendererScripts.size === 0)
+    throw new Error(
+      "explicit opt-in did not lazily fetch its renderer module from the fresh DOM document",
+    );
+  await rendererInPlace(beforeOptInWire, "explicit renderer opt-in");
+
+  async function rendererLive(): Promise<void> {
+    const driver = await browser!.evaluate<{ browser: string; renderer: string }>(`(() => {
+      const host = document.querySelector('.xterm-host');
+      const live = window.__terminalWebglProof.contexts.filter(entry =>
+        entry.canvas.isConnected && host.contains(entry.canvas) && !entry.gl.isContextLost());
+      if (live.length !== 1) throw new Error('WebGL state has no single genuine live terminal canvas');
+      if (host.querySelector('.xterm-rows'))
+        throw new Error('DOM rows remain under the supposed WebGL surface; pixels would not prove GPU rendering');
+      window.__terminalRendererLive = live[0];
+      const debug = live[0].gl.getExtension('WEBGL_debug_renderer_info');
+      return { browser: navigator.userAgent, renderer: String(live[0].gl.getParameter(
+        debug ? debug.UNMASKED_RENDERER_WEBGL : live[0].gl.RENDERER)) };
+    })()`);
+    console.log(
+      "renderer platform (software-only requested; no native performance claim):",
+      JSON.stringify(driver),
+    );
+    await until(
+      async () => (await rendererPixels("actual WebGL blue header")).blueGlyphs >= 50,
+      3000,
+      "real terminal WebGL canvas visibly paints the known colored text",
+    );
+  }
+  async function rendererSelect(
+    rowIndex: number,
+    rowCount: number,
+    autoCopy: boolean,
+  ): Promise<void> {
+    const point = await browser!.evaluate<{ x: number; y: number }>(`(() => {
+      const screen = document.querySelector('.xterm-screen'), box = screen.getBoundingClientRect();
+      const y = box.y + box.height * (${rowIndex} + 0.5) / ${rowCount};
+      for (const offset of [2, 140, 280, 352])
+        if (!screen.contains(document.elementFromPoint(box.x + offset, y)))
+          throw new Error('WebGL Unicode row is not pointer-reachable');
+      return { x: box.x + 2, y };
+    })()`);
+    await browser!.drag([{ x: point.x + 250, y: point.y }], 40);
+    await browser!.evaluate("navigator.clipboard.writeText('renderer selection sentinel')");
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: point.x + 350,
+      y: point.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    for (const offset of [280, 210, 140, 0]) {
+      await browser!.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x + offset,
+        y: point.y,
+        button: "left",
+        buttons: 1,
+      });
+      await Bun.sleep(40);
+    }
+    let held = { blueGlyphs: 0, selection: 0, area: 0 };
+    await until(
+      async () => {
+        held = await rendererPixels("WebGL held Unicode selection", {
+          index: rowIndex,
+          count: rowCount,
+        });
+        return held.area > 0 && held.selection > held.area * 0.08;
+      },
+      20_000,
+      "WebGL visibly paints selection on the dragged Unicode row",
+    );
+    if (
+      (await browser!.evaluate<string>("navigator.clipboard.readText()")) !==
+      "renderer selection sentinel"
+    )
+      throw new Error("WebGL selection copied before the real drag was released");
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      ...point,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    await until(
+      async () => {
+        const copied = await browser!.evaluate<string>("navigator.clipboard.readText()");
+        const painted = await rendererPixels("WebGL released Unicode selection", {
+          index: rowIndex,
+          count: rowCount,
+        });
+        return (
+          copied === (autoCopy ? unicode : "renderer selection sentinel") &&
+          (autoCopy
+            ? painted.selection < held.selection / 3
+            : painted.selection > painted.area * 0.08)
+        );
+      },
+      3000,
+      autoCopy
+        ? "WebGL Unicode copies exactly and clears after release"
+        : "WebGL default selection remains without copying",
+    );
+  }
+  async function rendererInput(label: string): Promise<void> {
+    await rendererFocus();
+    const marker = `PTY-${rendererNonce}-${label}`;
+    await browser!.typeText(`printf '%s %s\\n' '${marker}' "$renderer_pty"`);
+    await browser!.typeText("\r");
+    await until(
+      async () => (await rendererRows()).includes(`${marker} ${pid}`),
+      20_000,
+      `${label}: real input produces fresh output from the same shell`,
+    );
+  }
+
+  if (
+    await browser.evaluate<boolean>(
+      "document.querySelector('.xterm-host')?.dataset.terminalRenderer === 'webgl'",
+    )
+  ) {
+    await rendererState("webgl", true);
+    await rendererLive();
+    if ((await browser.evaluate<number>("window.__terminalWebglProof.attempts")) !== 1)
+      throw new Error("one explicit opt-in attempted more than one WebGL context");
+    const unicodeRow = initialBuffer.current.indexOf(unicode),
+      rowCount = initialBuffer.current.length;
+    await rendererSelect(unicodeRow, rowCount, false);
+    await setGesturePreference("copy-on-select", true);
+    await rendererSelect(unicodeRow, rowCount, true);
+    await focusedScrollback("WebGL");
+    await rendererScroll("bottom");
+    await rendererZoom(true);
+    await rendererSelect(unicodeRow, rowCount, true);
+    await rendererZoom(false);
+    await setGesturePreference("copy-on-select", false);
+    console.log(
+      "PASS  genuine software WebGL paints and selects/copies exact box, wide and combining Unicode at baseline/scaled zoom",
+    );
+
+    const dimensions = await browser.evaluate<{ width: number; height: number }>(
+      "({ width: window.__terminalRendererLive.canvas.width, height: window.__terminalRendererLive.canvas.height })",
+    );
+    await browser.evaluate(
+      "document.querySelector('[aria-label=\"Increase terminal font size\"]').click()",
+    );
+    await until(
+      () =>
+        browser!
+          .evaluate<boolean>(`window.__terminalRendererLive.canvas.width !== ${dimensions.width}
+          || window.__terminalRendererLive.canvas.height !== ${dimensions.height}`),
+      20_000,
+      "font control resizes the real WebGL surface through authoritative terminal geometry",
+    );
+    if ((await rendererPixels("resized WebGL blue header")).blueGlyphs < 50)
+      throw new Error("resized WebGL surface lost the colored current-screen witness");
+    await browser.evaluate(
+      "document.querySelector('[aria-label=\"Decrease terminal font size\"]').click()",
+    );
+    await until(
+      () =>
+        browser!
+          .evaluate<boolean>(`window.__terminalRendererLive.canvas.width === ${dimensions.width}
+          && window.__terminalRendererLive.canvas.height === ${dimensions.height}`),
+      20_000,
+      "WebGL terminal geometry returns after the font resize",
+    );
+
+    const beforeDisableWire = JSON.stringify(rendererWire);
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("dom", false);
+    await rendererInPlace(beforeDisableWire, "disabling WebGL");
+    if (
+      !(await browser.evaluate<boolean>(
+        "!window.__terminalRendererLive.canvas.isConnected && window.__terminalRendererLive.gl.isContextLost()",
+      ))
+    )
+      throw new Error("disabling WebGL did not detach and immediately retire its genuine context");
+    const beforeLossBuffer = await rendererBuffer();
+    await rendererMount();
+    const beforeLossWire = JSON.stringify(rendererWire);
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("webgl", true);
+    await rendererLive();
+    const lossAttempts = await browser.evaluate<number>("window.__terminalWebglProof.attempts");
+    await browser.evaluate(`(() => {
+      const live = window.__terminalRendererLive;
+      const extension = live.gl.getExtension('WEBGL_lose_context');
+      if (!extension) throw new Error('the real terminal canvas cannot inject context loss');
+      extension.loseContext();
+    })()`);
+    await rendererState("fallback", true);
+    await rendererNotice();
+    await rendererInPlace(beforeLossWire, "forced real WebGL context loss");
+    if (
+      !(await browser.evaluate<boolean>(`(() => {
+      const live = window.__terminalRendererLive, mount = window.__terminalRendererMount;
+      return !live.canvas.isConnected && live.gl.isContextLost()
+        && mount.host.querySelectorAll('.xterm-screen > canvas').length === mount.canvases;
+    })()`))
+    )
+      throw new Error("context-loss fallback left renderer canvases or a live context behind");
+    if (JSON.stringify(await rendererBuffer()) !== JSON.stringify(beforeLossBuffer))
+      throw new Error("forced context loss changed the current screen or traversable history");
+    if ((await rendererPixels("context-loss DOM fallback blue header")).blueGlyphs < 50)
+      throw new Error("context loss restored DOM bookkeeping without visible terminal paint");
+    await rendererInput("LOSS");
+    if ((await browser.evaluate<number>("window.__terminalWebglProof.attempts")) !== lossAttempts)
+      throw new Error("context-loss fallback retried WebGL without a new explicit opt-in");
+    console.log(
+      "PASS  WEBGL_lose_context restores visible DOM, identical history/current screen and same usable PTY/input without reconnect",
+    );
+
+    // An explicit off→on is the retry. A new mount inherits the device choice,
+    // but must retire the old canvas/context rather than leaking GPU ownership.
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("dom", false);
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("webgl", true);
+    await rendererLive();
+    await browser.evaluate("window.__terminalRendererRetiring = window.__terminalRendererLive");
+    await browser.evaluate(
+      "document.querySelector('[aria-label=\"Expand terminal to full view\"]').click()",
+    );
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "document.querySelector('[aria-label=\"Shrink view\"]') !== null",
+        ),
+      20_000,
+      "renderer opt-in remounts in the existing fullscreen lifecycle",
+    );
+    await rendererState("webgl", true);
+    await rendererFocus();
+    await rendererLive();
+    if (
+      !(await browser.evaluate<boolean>(
+        "!window.__terminalRendererRetiring.canvas.isConnected && window.__terminalRendererRetiring.gl.isContextLost()",
+      ))
+    )
+      throw new Error("fullscreen remount retained the disposed canvas or its WebGL context");
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("dom", false);
+    await rendererInput("REMOUNT");
+    await browser.evaluate("document.querySelector('[aria-label=\"Shrink view\"]').click()");
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "document.querySelector('.canvas') !== null && document.querySelector('.xterm-rows') !== null",
+        ),
+      20_000,
+      "renderer opt-out survives the return from fullscreen",
+    );
+    await rendererState("dom", false);
+    if (
+      !(await browser.evaluate<boolean>(
+        "window.__terminalWebglProof.contexts.every(entry => !entry.canvas.isConnected && entry.gl.isContextLost())",
+      ))
+    )
+      throw new Error("renderer toggle/remount churn left an owned canvas or live WebGL context");
+    console.log(
+      "PASS  explicit retry and fullscreen/canvas remount share the local preference and retire all disposed contexts",
+    );
+  } else {
+    await rendererState("fallback", true);
+    await rendererNotice();
+    if (JSON.stringify(await rendererBuffer()) !== JSON.stringify(initialBuffer))
+      throw new Error("unsupported WebGL initialization lost the current screen or history");
+    await rendererInput("UNSUPPORTED");
+    failures.push(
+      "software-only WebGL unavailable: real canvas, Unicode pixel selection and forced context-loss cases were NOT EXERCISED",
+    );
+    console.error(
+      "UNSUPPORTED  actual software-only browser refused WebGL; usable DOM fallback proved, not native GPU performance",
+    );
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("dom", false);
+  }
+
+  async function rendererFreshDom(label: string): Promise<void> {
+    await browser!.reload();
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "document.querySelector('.canvas') !== null && document.querySelector('.xterm-rows') !== null",
+        ),
+      20_000,
+      `${label}: fresh document replays the existing terminal in DOM`,
+    );
+    await rendererState("dom", false);
+    await rendererCanvasReady(label);
+    const marker = `PTY-${rendererNonce}-${label}`;
+    // Refresh only the visible witnesses, never the process or its history.
+    // The retained shell variable must still equal the original real PID.
+    await browser!.typeText(
+      `printf '\\033[38;2;0;120;255m%s\\033[0m\\n%s\\n%s %s\\n' '${header}' '${unicode}' '${marker}' "$renderer_pty"`,
+    );
+    await browser!.typeText("\r");
+    await until(
+      async () => {
+        const rows = await rendererRows(),
+          complete = rows.indexOf(`${marker} ${pid}`);
+        return (
+          rows.includes(header) &&
+          rows.includes(unicode) &&
+          complete >= 0 &&
+          rows.slice(complete + 1).some((text) => text.trim().length > 0)
+        );
+      },
+      20_000,
+      `${label}: same shell returns fresh colored Unicode output and its prompt`,
+    );
+    if ((await browser!.evaluate<number>("window.__terminalWebglProof.attempts")) !== 0)
+      throw new Error(
+        `${label}: a fresh DOM document tried to acquire WebGL before explicit opt-in`,
+      );
+  }
+
+  // Early platform refusal is separate from shader failure after acquiring a
+  // genuine context. Inject each in a new document, not into production APIs.
+  for (const refusal of ["context", "shader"] as const) {
+    const injection = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `window.__terminalWebglProof.${refusal === "context" ? "refuse" : "refuseShaders"} = true;`,
+    });
+    const identifier = injection.result?.["identifier"];
+    if (injection.error !== undefined || typeof identifier !== "string")
+      throw new Error(`could not install fresh ${refusal} platform refusal`);
+    try {
+      await rendererFreshDom(refusal.toUpperCase());
+      const beforeRefusalBuffer = await rendererBuffer();
+      await rendererMount();
+      const beforeRefusalWire = JSON.stringify(rendererWire);
+      await browser.clickTestId("terminal-renderer-toggle");
+      await rendererState("fallback", true);
+      await rendererNotice();
+      await rendererInPlace(beforeRefusalWire, `${refusal} initialization refusal`);
+      const ownership = await browser.evaluate<{
+        attempts: number;
+        refused: number;
+        shaderRefusals: number;
+        acquired: number;
+        retired: boolean;
+      }>(`(() => {
+        const proof = window.__terminalWebglProof, mount = window.__terminalRendererMount;
+        return {
+          attempts: proof.attempts, refused: proof.refused, shaderRefusals: proof.shaderRefusals,
+          acquired: proof.contexts.length,
+          retired: proof.contexts.every(entry => !entry.canvas.isConnected && entry.gl.isContextLost())
+            && mount.host.querySelectorAll('.xterm-screen > canvas').length === mount.canvases
+        };
+      })()`);
+      if (
+        ownership.attempts !== 1 ||
+        !ownership.retired ||
+        (refusal === "context"
+          ? ownership.refused !== 1 || ownership.acquired !== 0
+          : ownership.shaderRefusals < 1 || ownership.acquired !== 1)
+      ) {
+        throw new Error(
+          `${refusal} initialization refusal leaked ownership or retried: ${JSON.stringify(ownership)}`,
+        );
+      }
+      if (JSON.stringify(await rendererBuffer()) !== JSON.stringify(beforeRefusalBuffer))
+        throw new Error(
+          `${refusal} initialization refusal changed the current screen or complete traversable history`,
+        );
+      await until(
+        async () =>
+          (await rendererPixels(`${refusal} refusal visible DOM blue header`)).blueGlyphs >= 50,
+        3000,
+        `${refusal} refusal restores actual DOM paint, not just readable buffer text`,
+      );
+      await rendererInput(refusal.toUpperCase());
+      if ((await browser.evaluate<number>("window.__terminalWebglProof.attempts")) !== 1)
+        throw new Error(`${refusal} fallback retried WebGL while accepting ordinary PTY output`);
+      await browser.clickTestId("terminal-renderer-toggle");
+      await rendererState("dom", false);
+      if (refusal === "context") {
+        await rendererMount();
+        const beforeRetryBuffer = await rendererBuffer();
+        const beforeRetryWire = JSON.stringify(rendererWire);
+        await browser.clickTestId("terminal-renderer-toggle");
+        await rendererState("fallback", true);
+        await rendererInPlace(beforeRetryWire, "explicit retry after context refusal");
+        if (
+          (await browser.evaluate<number>("window.__terminalWebglProof.attempts")) !== 2 ||
+          JSON.stringify(await rendererBuffer()) !== JSON.stringify(beforeRetryBuffer)
+        )
+          throw new Error(
+            "off→on did not make exactly one fresh refusal attempt with the same screen/history",
+          );
+        await browser.clickTestId("terminal-renderer-toggle");
+        await rendererState("dom", false);
+      }
+      console.log(
+        `PASS  fresh ${refusal} refusal keeps visible DOM/current/history/input, one attempt and fully retired renderer ownership`,
+      );
+    } finally {
+      await browser.send("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+    }
+  }
+
+  // Hold the actual lazily discovered script requests, never guessed asset
+  // names or a mocked import/addon. This makes late import cancellation
+  // deterministic on both disable and disposal of the existing mount.
+  const heldRendererRequests = new Map<string, string>();
+  const fetchFailures: string[] = [];
+  const stopPausing = browser.on("Fetch.requestPaused", (params) => {
+    const request = params["request"] as { url?: string } | undefined;
+    const requestId = params["requestId"],
+      networkId = params["networkId"];
+    if (typeof requestId !== "string") {
+      fetchFailures.push("paused script request has no CDP identity");
+      return;
+    }
+    if (request?.url !== undefined && deferredRendererScripts.has(request.url)) {
+      if (typeof networkId !== "string") {
+        fetchFailures.push("paused renderer request has no network completion identity");
+      } else {
+        rendererFinished.delete(networkId);
+        heldRendererRequests.set(requestId, networkId);
+        return;
+      }
+    }
+    void browser!
+      .send("Fetch.continueRequest", { requestId })
+      .then((frame) => {
+        if (frame.error !== undefined)
+          fetchFailures.push("could not continue an unrelated script request");
+      })
+      .catch(() => fetchFailures.push("unrelated script continuation failed"));
+  });
+  async function releaseRendererRequests(): Promise<void> {
+    const deadline = Date.now() + 20_000;
+    do {
+      const requests = [...heldRendererRequests];
+      for (const [requestId] of requests) {
+        heldRendererRequests.delete(requestId);
+        const continued = await browser!.send("Fetch.continueRequest", { requestId });
+        if (continued.error !== undefined)
+          throw new Error("could not release the actual renderer script");
+      }
+      await until(
+        () => requests.every(([, networkId]) => rendererFinished.has(networkId)),
+        Math.max(1, deadline - Date.now()),
+        "released actual renderer module bytes finish loading",
+      );
+      await browser!.evaluate(
+        "(() => { const { promise, resolve } = Promise.withResolvers(); requestAnimationFrame(() => requestAnimationFrame(resolve)); return promise; })()",
+      );
+      if (heldRendererRequests.size === 0) return;
+    } while (Date.now() < deadline);
+    throw new Error("released renderer imports still have paused dependent modules");
+  }
+  try {
+    await browser.send("Network.setCacheDisabled", { cacheDisabled: true });
+    // A cached worker response does not cross the page's Fetch interception boundary.
+    const workerBypass = await browser.send("Network.setBypassServiceWorker", { bypass: true });
+    if (workerBypass.error !== undefined)
+      throw new Error(
+        "could not expose this fixture's real renderer requests at the network boundary",
+      );
+    const interception = await browser.send("Fetch.enable", {
+      patterns: [{ urlPattern: "*", resourceType: "Script", requestStage: "Request" }],
+    });
+    if (interception.error !== undefined) throw new Error("could not pause real renderer imports");
+    await rendererFreshDom("PENDING-DISABLE");
+    const beforePendingBuffer = await rendererBuffer();
+    await rendererMount();
+    const beforePendingWire = JSON.stringify(rendererWire);
+    await browser.clickTestId("terminal-renderer-toggle");
+    await until(
+      async () =>
+        heldRendererRequests.size > 0 &&
+        (await browser!.evaluate<boolean>(
+          "document.querySelector('.xterm-host')?.dataset.terminalRenderer === 'loading'",
+        )),
+      20_000,
+      "first renderer import is actually pending at the browser network boundary",
+    );
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("dom", false);
+    await releaseRendererRequests();
+    await rendererState("dom", false);
+    await rendererInPlace(beforePendingWire, "disable while the real renderer import is pending");
+    if (
+      (await browser.evaluate<number>("window.__terminalWebglProof.attempts")) !== 0 ||
+      JSON.stringify(await rendererBuffer()) !== JSON.stringify(beforePendingBuffer)
+    ) {
+      throw new Error(
+        "late import completion installed WebGL or altered the disabled DOM buffer/history",
+      );
+    }
+    if ((await rendererPixels("disabled pending import DOM witness")).blueGlyphs < 50)
+      throw new Error("cancelling a pending renderer import lost actual DOM paint");
+    console.log(
+      "PASS  disabling a genuinely pending renderer import prevents late installation without replacing xterm/PTY/history",
+    );
+
+    await rendererFreshDom("PENDING-REMOUNT");
+    await rendererMount();
+    await browser.evaluate<void>(
+      "void (window.__terminalRendererDisposedMount = window.__terminalRendererMount)",
+    );
+    await browser.clickTestId("terminal-renderer-toggle");
+    await until(
+      async () =>
+        heldRendererRequests.size > 0 &&
+        (await browser!.evaluate<boolean>(
+          "document.querySelector('.xterm-host')?.dataset.terminalRenderer === 'loading'",
+        )),
+      20_000,
+      "renderer import is pending before the existing fullscreen remount",
+    );
+    await browser.evaluate(
+      "document.querySelector('[aria-label=\"Expand terminal to full view\"]').click()",
+    );
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`document.querySelector('[aria-label="Shrink view"]') !== null
+        && !window.__terminalRendererDisposedMount.host.isConnected
+        && document.querySelector('.xterm-host')?.dataset.terminalRenderer === 'loading'`),
+      20_000,
+      "old terminal mount is disposed while the new mount still awaits the real import",
+    );
+    await rendererFocus();
+    await releaseRendererRequests();
+    await rendererState("webgl", true);
+    await rendererLive();
+    if (
+      !(await browser.evaluate<boolean>(`(() => {
+      const proof = window.__terminalWebglProof, previous = window.__terminalRendererDisposedMount;
+      return proof.attempts === 1 && !previous.host.isConnected
+        && proof.contexts.every(entry => entry.canvas.isConnected || entry.gl.isContextLost())
+        && !previous.host.contains(window.__terminalRendererLive.canvas);
+    })()`))
+    )
+      throw new Error("a disposed mount installed a stale addon when its pending import completed");
+    await browser.clickTestId("terminal-renderer-toggle");
+    await rendererState("dom", false);
+    await rendererInput("PENDING-REMOUNT");
+    await browser.evaluate("document.querySelector('[aria-label=\"Shrink view\"]').click()");
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "document.querySelector('.canvas') !== null && document.querySelector('.xterm-rows') !== null",
+        ),
+      20_000,
+      "pending-import remount returns through the existing canvas lifecycle",
+    );
+    await rendererState("dom", false);
+    await rendererCanvasReady("pending-import return");
+    const finalBuffer = await rendererBuffer();
+    if (
+      !historyFixtures.every((line) => finalBuffer.history.some((page) => page.includes(line))) ||
+      !(await browser.evaluate<boolean>(
+        "window.__terminalWebglProof.contexts.every(entry => !entry.canvas.isConnected && entry.gl.isContextLost())",
+      ))
+    )
+      throw new Error("pending-import remount lost history or leaked renderer contexts");
+    if (fetchFailures.length > 0) throw new Error(fetchFailures.join("; "));
+    console.log(
+      "PASS  disposal cancels the old pending import; only the new mount installs, PTY/history stay usable and all owned contexts retire",
+    );
+  } finally {
+    for (const requestId of heldRendererRequests.keys())
+      await browser.send("Fetch.continueRequest", { requestId });
+    stopPausing();
+    await browser.send("Fetch.disable", {});
+    await browser.send("Network.setCacheDisabled", { cacheDisabled: false });
+    await browser.send("Network.setBypassServiceWorker", { bypass: false });
+  }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
   if (wheelFixtureStarted && browser !== null) {

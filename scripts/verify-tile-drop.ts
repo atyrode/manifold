@@ -1621,9 +1621,10 @@ try {
     20_000,
     "portal remounted with its seams",
   );
-  const seamTile = await elementRect(browser, `${portalSelector} .portal__tile`);
+  const seamTile = await elementRect(browser, `${portalSelector} .portal__tile .xterm`);
   if (seamTile !== null) {
-    // One real click on a tile: watching becomes working, which is what arms the seams.
+    // Engage the actual terminal body, not the whole tile's geometric centre: responsive
+    // titlebar chrome can occupy that centre and deliberately does not engage the portal.
     await browser.drag(
       [{ x: seamTile.left + seamTile.width / 2, y: seamTile.top + seamTile.height / 2 }],
       0,

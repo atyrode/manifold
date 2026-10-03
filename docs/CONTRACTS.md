@@ -3861,6 +3861,15 @@ The mounted renderer owns its bar and forwards these slots rather than receiving
 host-drawn bar. `NodeTitleBar.dragProps: TitlebarDragProps` opts the whole bar into dragging;
 interactive descendants and rename input remain controls, never drag sources.
 
+Terminal middle labels (attendance, cwd and machine) yield to the fixed title and control
+cluster. Adding attendance when a control receives focus must not move that control between
+pointer press and release; excess middle content truncates with ellipsis instead of wrapping the
+controls out from under the pointer. Directory and machine labels are individually shrinkable
+text boxes with character-level ellipsis, not atomic labels hidden as a whole or hard-clipped.
+The middle reserves attendance and metadata cues before focus. Narrow bars can still wrap controls when those controls
+themselves cannot fit. The real mirror gate exercises this transition with a stable `runner`
+cwd label and checks the held Park target before completing the same pointer gesture.
+
 The frame rule is **rounded exterior windows, square internal tile seams with matching
 backing**. `frame` defaults to `window`; hosts pass `tile` for internal occupants. Terminals
 own their frame, body and xterm CSS in their plugin, not foreign selectors in a canvas or
@@ -3902,6 +3911,38 @@ share that local preference; other devices do not. This is local readability, no
 document edit or an action. Spectators can adjust their own font but cannot constrain the PTY.
 A controller's eligible view remeasures after font changes and snapshot replay; zoom updates
 the existing xterm instance, not the socket or terminal lifecycle.
+
+**DOM remains the default renderer.** The terminal titlebar's **GPU** toggle explicitly requests
+WebGL for this device and terminal ID, shared by its local mounted aliases, not other devices.
+`manifold:terminal-renderers` stores at most 128 WebGL opt-ins with oldest-updated eviction;
+malformed values are ignored and returning to DOM removes the entry. The pressed toggle is
+the request, not a guarantee of GPU availability. The actual xterm host reports `dom`, `loading`,
+`webgl` or `fallback` in `data-terminal-renderer`. The maintained, pinned addon is loaded only
+after opt-in; [the dependency decision](decisions/2026-10-02-xterm-webgl.md) owns its provenance
+and bounded upstream/local patch rationale. No parser, PTY, input, clipboard or buffer
+implementation is replaced.
+
+Initialization refusal and unresolved context loss dispose the addon and restore the same
+Terminal's DOM renderer, with a visible named notice. The upstream addon allows a bounded
+three-second context-restoration grace before reporting loss. There is no application retry
+loop: the stored request remains unchanged, and a person may toggle off/on to retry. A late
+module load cannot install after a changed request or view disposal. Retirement owns listeners,
+render layers and GPU resources, including partially constructed renderers; explicit immediate
+context loss uses the browser's `WEBGL_lose_context` extension. Renderer changes do not reset
+the current screen, retained history, terminal connection or shared sizing authority.
+
+The real terminal consumer proof covers software WebGL rendering and fallback without claiming
+native GPU performance. [The bounded Mac/PC A/B card](spikes/terminal-quality-investigation.md#bounded-opt-in-renderer-ab-card-878)
+records exact source, browser/GPU/display/workload conditions and unavailable device evidence.
+Native correctness/performance must support a separately recorded decision before any default
+renderer change; synthetic input is not native IME or assistive-technology qualification.
+
+**Ctrl-wheel pinch belongs to the canvas**, including over a focused DOM or WebGL terminal
+with populated scrollback or application mouse reporting. It changes canvas zoom without
+scrolling terminal history or emitting PTY input. Ordinary wheel input over an engaged terminal
+retains its existing scrollback/reporting behavior and must not pan the canvas. The public
+xterm wheel preflight owns that decision before scrolling or reporting; the bounded producer
+correction is recorded in the dependency decision above, not a competing capture-phase zoom path.
 
 The terminal's visual inset is outside the FitAddon measurement box, so the measured host
 is usable cell space rather than padding counted as rows. After snapshot replay, measurement

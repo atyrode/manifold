@@ -122,9 +122,42 @@
   min-width: 0;
 }
 
+/* Attendance, cwd and machine labels change under a held pointer: focusing any titlebar control
+   publishes this viewer's location, adding its own presence chip here. A zero basis keeps that
+   content out of line breaking, so it yields space instead of wrapping controls from under a
+   press. */
 .terminal-titlebar .node-titlebar__middle {
-  flex: 0 1 auto;
+  flex: 1 1 0;
+  /* Reserve attendance and metadata cues before focus adds its own presence chip. */
+  min-width: 5rem;
+  line-height: 1.15rem;
+  white-space: nowrap;
   max-width: 100%;
+}
+
+.terminal-titlebar .node-titlebar__middle > .terminal-cwd,
+.terminal-titlebar .node-titlebar__middle > .terminal-machine-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.terminal-titlebar .node-titlebar__middle > .terminal-cwd {
+  min-width: 1em;
+}
+
+.terminal-titlebar .node-titlebar__middle > .terminal-machine-badge {
+  display: block;
+  min-width: calc(0.75rem + 1em);
+  margin-inline-start: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-titlebar .terminal-machine-dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-inline-end: 0.3rem;
 }
 
 .terminal-titlebar .node-titlebar__actions {
@@ -214,6 +247,21 @@
 /* The disabled reset still reports the current size; information must remain legible. */
 .terminal-font-size:disabled {
   color: #adb5bd;
+}
+
+.terminal-renderer-control {
+  width: 2.15rem;
+  font-size: 0.65rem;
+}
+
+.terminal-renderer-control[aria-pressed="true"] {
+  color: #e6e9ef;
+  background: #364fc7;
+}
+
+.terminal-renderer-control:focus-visible {
+  outline: 2px solid #74c0fc;
+  outline-offset: 1px;
 }
 
 .xterm-host {

@@ -186,7 +186,9 @@ export class Browser {
    * the random picks that preceded this collided the moment two checkouts ran the gate at
    * once, and the driver is the one place that turns a port into a Chromium flag (#198).
    */
-  async launch(options: { readonly incognito?: boolean } = {}): Promise<void> {
+  async launch(
+    options: { readonly incognito?: boolean; readonly softwareWebgl?: boolean } = {},
+  ): Promise<void> {
     const binary = Browser.detect();
     const port = reserveLoopbackPort();
     const busAddress = await this.startPrivateBus(port);
@@ -208,7 +210,9 @@ export class Browser {
         `--user-data-dir=${profile}`,
         "--no-first-run",
         "--no-sandbox",
-        "--disable-gpu",
+        ...(options.softwareWebgl
+          ? ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+          : ["--disable-gpu"]),
         "--disable-dev-shm-usage",
         "--window-size=1440,900",
         "about:blank",

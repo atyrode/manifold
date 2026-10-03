@@ -272,6 +272,74 @@ Linux headless evidence cannot answer these; each is a short check on the operat
 5. **Flood responsiveness.** Run `seq 1 3000000` in a test terminal and type during it: roughly how long until the keystroke echoes, and does the tab stay responsive? Compare with Ghostty. This calibrates experiment 8's headless numbers.
 6. **GPU availability for a renderer A/B.** Report whether `chrome://gpu` (or the browser's equivalent) shows WebGL2 hardware-accelerated on each device, plus browser/OS versions, display refresh rate and scaling.
 
+#### Bounded opt-in renderer A/B card (#878)
+
+Run this card separately on a Mac and a PC, in a foreground browser against a disposable
+development terminal. Normal sign-in and an authorized test machine are prerequisites;
+production, existing work, provider calls and fleet changes are outside the card. Native
+Ghostty may be a separately labelled reference, never a replacement for the DOM/WebGL pair.
+
+1. **Record the exact conditions.** Retain the development URL without credentials, the full
+   build commit reported by `/healthz`, the pinned addon/patch from that source, OS/browser
+   versions, GPU/driver and whether WebGL2 is hardware-accelerated, display resolution/refresh,
+   OS scaling, browser zoom, DPR, viewport dimensions, font size and applied terminal grid.
+   Record the target machine, shell/program versions, local/remote network path and any
+   multiplexer. Do not compare different source builds, displays, grids or foreground workloads
+   as a renderer speedup. Software rendering is a separately labelled condition.
+2. **Change only the renderer.** Open one fresh test terminal with DOM, then use its titlebar
+   **GPU** toggle for explicit device-local WebGL opt-in. The pressed toggle records a request,
+   not proof of GPU availability: a refusal/loss notice means DOM fallback. In browser developer
+   tools, the selected terminal's `.xterm-host` has `data-terminal-renderer` equal to `dom`,
+   `loading`, `webgl` or `fallback`; only `webgl` qualifies as the WebGL half of an A/B pair.
+   Preserve the same PTY and history while switching. Other devices and fresh terminal IDs
+   remain DOM unless separately opted in.
+3. **Check correctness before timing.** Print generated ASCII, box drawing, wide text and
+   combining accents. Select and copy them at 100% and 120% canvas zoom; compare actual copied
+   Unicode, selection paint, cursor placement and rendered glyphs. With populated history and
+   the terminal focused, pinch in/out over its contents: the canvas must zoom without moving
+   through history. Ordinary terminal scrolling must still leave the canvas fixed. Exercise normal typing,
+   arrows, Backspace, paste, the device's real IME composition and cancellation, and the
+   configured screen reader's input label/focus/output behavior. Resize the same pane between
+   two recorded dimensions three times, scroll into retained history, then reload/remount.
+   Verify the same PTY, current screen and history survive. Record unavailable IME/assistive
+   technology separately rather than substituting synthetic keyboard events for native proof.
+4. **Use a bounded identical output workload.** In a POSIX shell on the disposable target, run
+   the following generated 40,000-row stream. Use the same command, grid, font, shell and
+   terminal contents for both halves; wait for its end marker before the next trial.
+
+   ```sh
+   i=1
+   while [ "$i" -le 40000 ]; do
+     printf '\033[3%smrow %05d | ASCII 0123456789 | BOX ┌─┐ | WIDE 界 | COMBINING é\033[0m\n' "$((i % 6 + 1))" "$i"
+     i=$((i + 1))
+   done
+   printf 'RENDERER_AB_END_40000\n'
+   ```
+
+   A warm-up is not a recorded sample. Record three paired trials in DOM/WebGL, WebGL/DOM,
+   DOM/WebGL order, with the same 15-second browser performance-recording window per half.
+   Report renderer state, command/end-marker outcome, main-thread task time, long-task count
+   and duration, observed frame gaps and responsive/unresponsive interaction. Name each
+   instrument and endpoint. Parser callbacks, shell completion and DOM observation are not
+   physical input-to-photon timing. For input response, use the same interactive program and
+   key action; a shell waiting for the flood command to exit is not a renderer-latency sample.
+   Preserve overruns, resnapshots, browser errors and invalid runs instead of retrying to green.
+
+5. **Exercise recovery, then retire the experiment.** The automated consumer proof forces a
+   real context loss and initialization refusals; on-device developer tooling may repeat those
+   only in this disposable browser. Confirm DOM fallback keeps input/screen/history usable,
+   not merely that the toggle remains pressed. Toggle off/on explicitly to retry, and close
+   and reopen the test view repeatedly while another witness terminal remains visible; report
+   any blank witness, retained context, crash or repeated automatic attempts. Finally return to
+   DOM, stop only the test workloads, remove only generated test resources and close the test
+   terminals.
+
+Post the environment, per-trial observations, safe screenshots and cleanup result on
+[#878](https://github.com/atyrode/manifold/issues/878). Native Mac/PC performance, native IME
+and assistive-technology results remain an explicit device-owner handoff until supplied;
+headless SwiftShader correctness evidence does not fill those cells. DOM remains the default.
+A default change requires a separately recorded decision based on those native results.
+
 ## Source findings and remaining causal hypotheses
 
 | Source finding                                                                                                                                                                                                                                               | What follows, and what remains unproven                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
