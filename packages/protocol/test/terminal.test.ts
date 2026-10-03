@@ -20,6 +20,7 @@ import {
   TerminalHostStatusSchema,
   TerminalInfoSchema,
   terminalDeliveryCharge,
+  type ServerMessageBody,
   type TerminalProgram,
 } from "@manifold/protocol";
 
@@ -341,7 +342,7 @@ describe("terminal parser-credit delivery", () => {
   const snapshot = {
     type: "terminal_snapshot" as const,
     ...view,
-    deliverySeq: 0,
+    deliverySeq: 0 as const,
     seq: 7,
     data: btoa("screen"),
     geometry: { cols: 80, rows: 24, revision: 3 },
@@ -422,15 +423,14 @@ describe("terminal parser-credit delivery", () => {
     };
     expect(ServerMessageBodySchema.safeParse(largest).success).toBe(true);
     expect(terminalDeliveryCharge(largest)).toBe(MAX_SESSION_BASE64_CHARS);
-    expect(
-      terminalDeliveryCharge({
-        type: "terminal_geometry",
-        ...view,
-        deliverySeq: 2,
-        seq: 1,
-        geometry: { cols: 80, rows: 24, revision: 1 },
-      }),
-    ).toBe(0);
+    const geometry: Extract<ServerMessageBody, { type: "terminal_geometry" }> = {
+      type: "terminal_geometry",
+      ...view,
+      deliverySeq: 2,
+      seq: 1,
+      geometry: { cols: 80, rows: 24, revision: 1 },
+    };
+    expect(terminalDeliveryCharge(geometry)).toBe(0);
     // A frame larger than an empty window could never be sent or parsed: a permanent stall.
     for (const bytes of [
       MAX_TERMINAL_DELIVERY_UNACKED_BYTES,

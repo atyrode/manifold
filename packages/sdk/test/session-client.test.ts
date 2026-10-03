@@ -2107,11 +2107,12 @@ describe("terminal attach refcounting", () => {
     // A second hold re-establishes the same view with a fresh snapshot incarnation.
     client.attachTerminal("s1", "view-a");
     client.attachTerminal("s1", "view-b");
-    expect(
-      framesOfType(socket, "terminal_attach").map((frame) => frame.viewportId),
-    ).toEqual(["view-a", "view-a", "view-b"]);
-    const detached = () =>
-      framesOfType(socket, "terminal_detach").map((frame) => frame.viewportId);
+    expect(framesOfType(socket, "terminal_attach").map((frame) => frame.viewportId)).toEqual([
+      "view-a",
+      "view-a",
+      "view-b",
+    ]);
+    const detached = () => framesOfType(socket, "terminal_detach").map((frame) => frame.viewportId);
     client.detachTerminal("s1", "view-a"); // one hold of view-a remains
     expect(detached()).toEqual([]);
     client.detachTerminal("s1", "view-b"); // a sibling's release never starves view-a
@@ -2302,14 +2303,15 @@ describe("terminal attach refcounting", () => {
       expect(client.terminalSizing.size).toBe(0);
       expect(framesOfType(second, "terminal_resize")).toEqual([]);
       // The server's views are connection-scoped: every held pair re-attaches exactly once.
-      expect(
-        framesOfType(second, "terminal_attach").map((frame) => frame.viewportId),
-      ).toEqual(["view-a", "view-b"]);
+      expect(framesOfType(second, "terminal_attach").map((frame) => frame.viewportId)).toEqual([
+        "view-a",
+        "view-b",
+      ]);
       // A single detach still fully releases its pair (refcount untouched by reconnect).
       client.detachTerminal("s1", "view-a");
-      expect(
-        framesOfType(second, "terminal_detach").map((frame) => frame.viewportId),
-      ).toEqual(["view-a"]);
+      expect(framesOfType(second, "terminal_detach").map((frame) => frame.viewportId)).toEqual([
+        "view-a",
+      ]);
     } finally {
       vi.useRealTimers();
     }
