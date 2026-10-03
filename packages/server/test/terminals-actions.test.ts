@@ -301,7 +301,11 @@ describe("core.terminals doors", () => {
       base.container.id,
       "later",
     );
-    base.broker.attach(later, { type: "terminal_attach", terminalId: create.terminalId });
+    base.broker.attach(later, {
+      type: "terminal_attach",
+      terminalId: create.terminalId,
+      viewportId: "later-view",
+    });
     expect(base.machine.sent).toEqual([
       { type: "snapshot_request", terminalId: create.terminalId },
     ]);
