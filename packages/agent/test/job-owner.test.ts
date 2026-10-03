@@ -5500,6 +5500,47 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
+  "ordinary drain reopening admits work without cancelling an existing active workload",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("active", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "retained while active");
+        },
+        settle: "cancel",
+      });
+      await f.start("active");
+      await f.owner.execute({ type: "drain", draining: true });
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "drain", draining: false });
+      await f.start("admitted");
+      expect(await f.settled("admitted")).toMatchObject({ state: "exited", exitCode: 0 });
+      expect(
+        f.events.some(
+          (event) =>
+            event.type === "result" &&
+            event.result.jobId === "active" &&
+            event.result.finishedAt !== null,
+        ),
+      ).toBe(false);
+      await f.owner.execute({ type: "cancel", jobId: "active", reason: "requested" });
+      expect(await f.settled("active")).toMatchObject({ state: "cancelled", reason: "cancelled" });
+      const extracted = f.extract("active", "material");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe("retained while active");
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
   "failed cgroup reclamation preserves terminal result, usage and sealed outputs through explicit retry",
   async () => {
     const f = temporaryOutputFixture();
@@ -5557,6 +5598,14 @@ test.skipIf(!linux)(
       expect(JSON.stringify(f.logs)).not.toContain("secret-token");
       expect(JSON.stringify(f.logs)).not.toContain("/private/cgroup/path");
       expect(f.owner.maintenanceReady).toBe(false);
+      const inventoryBeforeReopen = f.owner.identity.inventoryDigest;
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "cgroup-cleanup-pending",
+      });
+      expect(f.owner.identity.inventoryDigest).toBe(inventoryBeforeReopen);
       await f.start("blocked");
       expect(f.refusal("blocked")).toBe("start_permit_refused");
       await f.owner.execute({ type: "status", jobId: "committed" });
@@ -5568,6 +5617,9 @@ test.skipIf(!linux)(
       reclaimable = true;
       await f.owner.execute({ type: "cancel", jobId: "committed", reason: "requested" });
       expect(f.owner.maintenanceReady).toBe(true);
+      await f.owner.execute({ type: "drain", draining: false });
+      await f.start("resumed");
+      expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
       await f.shutdown();
       await f.open();
       await f.owner.execute({ type: "status", jobId: "committed" });
@@ -5617,6 +5669,12 @@ test.skipIf(!linux)(
       );
       expect(f.roots()).toEqual([]);
       expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "cgroup-cleanup-pending",
+      });
       await f.start("blocked");
       expect(f.refusal("blocked")).toBe("start_permit_refused");
       await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
@@ -5635,6 +5693,9 @@ test.skipIf(!linux)(
       reclaimable = true;
       await f.owner.execute({ type: "cancel", jobId: "refused", reason: "requested" });
       expect(f.owner.maintenanceReady).toBe(true);
+      await f.owner.execute({ type: "drain", draining: false });
+      await f.start("resumed");
+      expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
       await f.shutdown();
       await f.open();
       await f.owner.execute({ type: "status", jobId: "refused" });

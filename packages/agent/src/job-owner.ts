@@ -156,6 +156,8 @@ interface OwnedJob {
   result: JobResult;
   handle: LinuxJobHandle | null;
   startupCleanup: (() => Promise<void>) | undefined;
+  /** A cleanup fault, not an ordinary live handle; only successful reclamation clears it. */
+  cgroupCleanupPending: boolean;
   emptyObserved: boolean;
   context: JobContext | null;
   contextActive: boolean;
@@ -432,6 +434,9 @@ export class MachineJobOwner {
   }
 
   setDraining(draining: boolean): void {
+    if (!draining)
+      for (const job of this.jobs.values())
+        if (job.cgroupCleanupPending) throw new Error("cgroup-cleanup-pending");
     // Transport resynchronization must not change inventory for an unchanged admission latch.
     if (this.draining === draining) return;
     this.options.journal.append({ kind: "drain", draining });
@@ -2961,6 +2966,7 @@ export class MachineJobOwner {
         job.resolveEmpty();
       if (error instanceof LinuxJobRefusal && error.cleanup) {
         job.startupCleanup = error.cleanup;
+        job.cgroupCleanupPending = true;
         if (error.workloadEmpty) this.cgroupCleanupFailed("startup", error, request.jobId);
       }
       job.resolveLaunched();
@@ -3139,8 +3145,9 @@ export class MachineJobOwner {
         job.resolveEmpty();
         for (const release of job.releaseWriters) release();
         job.releaseWriters = [];
-      } catch {
-        /* No output sealing without empty proof. */
+      } catch (error) {
+        // Keep containment and the reopening fence when cancellation proves nothing.
+        this.cgroupCleanupFailed("release", error, job.request.jobId);
       }
     }
     this.releaseBoundInputs(job);
@@ -3187,15 +3194,21 @@ export class MachineJobOwner {
     await job.launched;
     for (const child of job.children) await this.cancel(child);
     if (job.handle) {
-      const observed = await job.handle.cancel();
-      if (observed.empty !== true) throw new Error("workload_empty_proof_required");
-      job.resolveEmpty();
-      for (const release of job.releaseWriters) release();
-      job.releaseWriters = [];
+      try {
+        const observed = await job.handle.cancel();
+        if (observed.empty !== true) throw new Error("workload_empty_proof_required");
+        job.resolveEmpty();
+        for (const release of job.releaseWriters) release();
+        job.releaseWriters = [];
+      } catch (error) {
+        this.cgroupCleanupFailed("release", error, job.request.jobId);
+        throw error;
+      }
     } else if (job.startupCleanup) {
       try {
         await job.startupCleanup();
         job.startupCleanup = undefined;
+        job.cgroupCleanupPending = false;
       } catch (error) {
         if (!(error instanceof LinuxJobRefusal) || !error.workloadEmpty) throw error;
         // Empty proof ends writers, not the retained reclamation obligation.
@@ -3268,6 +3281,7 @@ export class MachineJobOwner {
       },
       handle: null,
       startupCleanup: undefined,
+      cgroupCleanupPending: false,
       emptyObserved: false,
       context: null,
       contextActive: false,
@@ -3413,12 +3427,14 @@ export class MachineJobOwner {
       job.leases = [];
       job.stdio = {};
     } catch (error) {
+      job.cgroupCleanupPending = true;
       this.outputCleanupFailed(job.request.jobId, error);
       return;
     }
     try {
       job.handle.release();
       job.handle = null;
+      job.cgroupCleanupPending = false;
     } catch (error) {
       this.cgroupCleanupFailed(phase, error, job.request.jobId);
     }
@@ -3428,6 +3444,8 @@ export class MachineJobOwner {
     error: unknown,
     jobId?: string,
   ): void {
+    const job = jobId ? this.jobs.get(jobId) : undefined;
+    if (job) job.cgroupCleanupPending = true;
     this.draining = true;
     this.log("warn", "job_cgroup_cleanup_failed", {
       phase,
