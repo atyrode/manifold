@@ -81,13 +81,20 @@ The room stages both body-only and body/reference creation through a synchronous
 seam, measures against its ordinary document allowance plus fixed migration credit, and commits
 one canonical delta only if it fits. Refusal leaves content, attribution, history and snapshot
 scheduling untouched. Staging keeps deleted structs for conservative undo-history accounting.
+Each resident room reuses one staging-author identity across native writes, distinct from the
+canonical document's local author, so staging does not add a durable Yjs client per creation
+or trigger the canonical document's remote-client collision guard.
 Pending writes count immediately; socket accept-then-repair and the existing single-crossing
 update behavior are retained rather than silently changing that wire contract.
-Admission uses exact full-state encoding after intervening Yjs transactions. Delta lengths
+Native admission uses exact full-state encoding after intervening Yjs transactions. Delta lengths
 cannot safely bound encoded growth when old structs split. Transaction-cleanup invalidation
 also preserves pending structs/delete sets in snapshots and full-state delivery without changing
-pending-only revision or snapshot scheduling. This trades an O(document-size) serialization
-after a changed transaction for a sound capacity decision; unchanged state shares the cache.
+pending-only revision or snapshot scheduling. Native staging still measures the full current
+state before committing. Peer admission uses a conservative encoded-growth upper bound for the
+pinned V1 codec and measures full state only when capacity might be exceeded; uncertain foreign
+transactions invalidate that bound. Raw pending input and emitted repair/authorship deltas both
+count. This avoids full serialization per ordinary keystroke without weakening the existing
+single-crossing, pending-state or split-header capacity checks.
 
 The canvas child requests a body only (`reference: false`) before authoring its visual reference;
 subsequent prose edits use the existing document channel. Its borrowed renderer requests intrinsic
@@ -103,6 +110,9 @@ the representation changes: ids, payload, geometry, attribution and tile identit
 and the body remains in its authority home. The existing placement door and its source and
 destination checks own this conversion. Browser and server placement decisions use the same
 contribution data.
+Before changing either document, the converted payload must pass its active destination owner's
+schema. An invalid alternate receives the existing `not_accepted` refusal instead of a
+discriminator change that produces an invalid destination record.
 
 The native tool registry carries optional shortcut and point-authoring attachments keyed by
 manifest-declared tool ids; it does not mount a tool component. A canvas owns pointer coordinates

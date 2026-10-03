@@ -780,10 +780,11 @@ export class PlaceExecutor {
       this.lookup(),
     );
     if (!resolved.ok) return { denial: resolved.denial };
-    return {
-      element:
-        resolved.item.kind === element.type ? element : { ...element, type: resolved.item.kind },
-    };
+    const converted =
+      resolved.item.kind === element.type ? element : { ...element, type: resolved.item.kind };
+    if (converted !== element && this.rooms.elementPayloadRefusal(converted) !== null)
+      return { denial: { rule: "not_accepted", ref, container: resolved.container } };
+    return { element: converted };
   }
 
   /** An in-room conversion changes only the discriminator, not collaborative field identity. */

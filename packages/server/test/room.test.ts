@@ -941,6 +941,41 @@ describe("Room Yjs document consistency", () => {
     },
   );
 
+  test("pending-only input counts against the next admission without a revision or snapshot", () => {
+    const { room, peer, socket, store, container } = roomFixture();
+    const client = createSceneDoc();
+    try {
+      room.leave(peer);
+      room.doc.getMap("padding").set("bytes", new Uint8Array(DOC_BYTES_LIMIT - 2_000));
+      room.flushSnapshot();
+      expect(room.join(peer)).toBe(true);
+      const saved = store.latestDoc(container.id);
+      const revision = room.rev;
+      client.getMap("missing-clock").set("a", 1);
+      const beforePending = Y.encodeStateVector(client);
+      client.getMap("pending").set("bytes", new Uint8Array(8_192));
+      expect(
+        room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(client, beforePending))),
+      ).toBe(true);
+      expect(room.rev).toBe(revision);
+      const retained = Y.encodeStateAsUpdate(room.doc);
+      expect(retained.byteLength).toBeGreaterThan(DOC_BYTES_LIMIT);
+      socket.clear();
+      expect(room.applyDocUpdate(peer, encodedElements(note("refused")))).toBe(false);
+      expect(readElement(room.doc, "refused")).toBeNull();
+      expect(Y.encodeStateAsUpdate(room.doc)).toEqual(retained);
+      expect(store.latestDoc(container.id)).toEqual(saved);
+      expect(socket.messages()).toEqual([
+        { type: "error", code: "invalid", message: "scene too large" },
+      ]);
+    } finally {
+      client.destroy();
+      room.closeAll(1000, "test complete");
+      room.doc.destroy();
+      store.close();
+    }
+  });
+
   test("a crossing socket update blocks the next write before snapshot cadence", () => {
     const { room, peer, socket, store, container } = roomFixture();
     try {

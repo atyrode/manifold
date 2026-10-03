@@ -167,4 +167,47 @@ describe("native Text creation capacity", () => {
       store.close();
     }
   });
+
+  test("native writes reuse one author and still merge an older peer's concurrent edit", () => {
+    const runtime = new FakeRuntime();
+    const store = testStore();
+    const rooms = new RoomManager(
+      store,
+      runtime,
+      new FakeClock(runtime),
+      silentLogger,
+      testTileTrees,
+    );
+    store.createContainer({
+      id: "native-writes",
+      name: "Native",
+      createdAt: 0,
+      discipline: "text-home",
+    });
+    const room = rooms.get("native-writes")!;
+    const peer = createSceneDoc();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        expect(
+          room.transactDoc(
+            (doc) => doc.getMap("entries").set(`entry-${index}`, index),
+            LOCAL_ORIGIN,
+          ),
+        ).toBe(true);
+        if (index === 0) Y.applyUpdate(peer, Y.encodeStateAsUpdate(room.doc));
+      }
+      expect(Y.decodeStateVector(Y.encodeStateVector(room.doc)).size).toBe(1);
+      const beforePeer = Y.encodeStateVector(peer);
+      peer.getMap("entries").set("peer", "concurrent");
+      Y.applyUpdate(room.doc, Y.encodeStateAsUpdate(peer, beforePeer));
+      for (let index = 0; index < 20; index += 1)
+        expect(room.doc.getMap("entries").get(`entry-${index}`)).toBe(index);
+      expect(room.doc.getMap("entries").get("peer")).toBe("concurrent");
+    } finally {
+      peer.destroy();
+      room.closeAll(1000, "test complete");
+      room.doc.destroy();
+      store.close();
+    }
+  });
 });
