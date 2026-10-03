@@ -15,7 +15,7 @@ import {
   type TerminalHostStatus,
 } from "@manifold/protocol";
 import type { AgentLogRecord, AgentLogSink } from "./log.ts";
-import { PtyTerminal, type PtyOutput } from "./terminal.ts";
+import { PtyTerminal, type PtyGeometry, type PtyOutput } from "./terminal.ts";
 import type { MachineJobOwner } from "./job-owner.ts";
 import type { OomKillWatch } from "./oom-kills.ts";
 import { startLinuxJob, LinuxJobRefusal } from "./job-linux.ts";
@@ -79,7 +79,7 @@ interface LaunchRecipe {
 
 interface TerminalStartup {
   terminal: PtyTerminal;
-  publishOutput(): void;
+  publishStream(): void;
 }
 
 /** Construction inputs for a {@link TerminalHost}. */
@@ -289,6 +289,8 @@ export class TerminalHost {
   private handle(connection: Connection, command: TerminalHostCommand): void {
     switch (command.type) {
       case "status_request":
+        if (this.transport === connection)
+          connection.peer.write({ type: "terminal_geometry_supported" });
         connection.peer.write(this.status());
         return;
       case "attach":
@@ -303,6 +305,7 @@ export class TerminalHost {
       case "resize":
       case "kill":
       case "snapshot_request":
+      case "geometry_snapshot_request":
       case "drain":
         if (this.transport !== connection) {
           this.refuse(
@@ -425,7 +428,8 @@ export class TerminalHost {
         return;
       }
       case "snapshot_request":
-        void this.onSnapshotRequest(connection, command.terminalId);
+      case "geometry_snapshot_request":
+        void this.onSnapshotRequest(connection, command);
         return;
       case "drain":
         this.jobOwner?.setDraining(command.draining);
@@ -490,10 +494,10 @@ export class TerminalHost {
     this.pendingCreates.add(msg.terminalId);
     try {
       const spawned = this.spawnTerminal(msg);
-      const { terminal, publishOutput } = spawned instanceof Promise ? await spawned : spawned;
+      const { terminal, publishStream } = spawned instanceof Promise ? await spawned : spawned;
       this.rememberLaunch(msg, terminal);
       connection.peer.write({ type: "created", terminalId: msg.terminalId });
-      publishOutput();
+      publishStream();
       this.watchReadiness(msg.terminalId, terminal);
       void this.watchExit(msg.terminalId, terminal);
       this.log("info", "created", { terminalId: msg.terminalId, cols: msg.cols, rows: msg.rows });
@@ -527,19 +531,25 @@ export class TerminalHost {
   ): TerminalStartup | Promise<TerminalStartup> {
     let terminal: PtyTerminal | undefined;
     // Native admission may yield after the gated process has already written and exited.
-    // Keep its metered chunks until created/restarted establishes this generation's seq
-    // domain. The native output budget bounds this queue; the bytes are already owned by
-    // PtyTerminal, so staging does not copy them or depend on the ring's eviction window.
-    let pending: PtyOutput[] | undefined = [];
-    const publishOutput = (): void => {
+    // Keep its owned, metered chunks and sparse geometry in source order until created or
+    // restarted establishes the generation, using the existing startup staging only.
+    let pending: Array<PtyOutput | PtyGeometry> | undefined = [];
+    const publishStream = (): void => {
       const staged = pending;
       pending = undefined;
-      for (const output of staged ?? []) this.onOutput(msg.terminalId, output);
+      for (const record of staged ?? []) {
+        if ("bytes" in record) this.onOutput(msg.terminalId, record);
+        else this.onGeometry(msg.terminalId, record);
+      }
     };
     const callbacks = {
       onOutput: (output: PtyOutput) => {
         if (pending) pending.push(output);
         else this.onOutput(msg.terminalId, output);
+      },
+      onGeometry: (geometry: PtyGeometry) => {
+        if (pending) pending.push(geometry);
+        else this.onGeometry(msg.terminalId, geometry);
       },
       onCwd: (cwd: string) => {
         if (!this.restarting.has(msg.terminalId))
@@ -580,7 +590,7 @@ export class TerminalHost {
             await terminal?.kill();
             throw new Error("terminal_runtime_start_interrupted");
           }
-          return { terminal, publishOutput };
+          return { terminal, publishStream };
         } catch (error) {
           if (terminal) {
             await terminal.kill().catch(() => {});
@@ -621,7 +631,7 @@ export class TerminalHost {
       ...(environment ? { environment } : {}),
     });
     this.terminals.set(msg.terminalId, terminal);
-    return { terminal, publishOutput };
+    return { terminal, publishStream };
   }
 
   private async onRestart(
@@ -758,7 +768,7 @@ export class TerminalHost {
         ...(observed !== undefined ? { cwd: observed } : {}),
         ...(restartedFallback !== undefined ? { fallback: restartedFallback } : {}),
       });
-      started.publishOutput();
+      started.publishStream();
       this.watchReadiness(msg.terminalId, replacement);
       void this.watchExit(msg.terminalId, replacement);
     } catch (error) {
@@ -807,7 +817,18 @@ export class TerminalHost {
     });
   }
 
-  private async onSnapshotRequest(connection: Connection, terminalId: string): Promise<void> {
+  private onGeometry(terminalId: string, boundary: PtyGeometry): void {
+    this.transport?.peer.write({ type: "terminal_geometry", terminalId, ...boundary });
+  }
+
+  private async onSnapshotRequest(
+    connection: Connection,
+    command: Extract<
+      TerminalHostCommand,
+      { type: "snapshot_request" | "geometry_snapshot_request" }
+    >,
+  ): Promise<void> {
+    const { terminalId } = command;
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || this.restarting.has(terminalId)) return;
     try {
@@ -824,7 +845,17 @@ export class TerminalHost {
           snapshot.data.byteOffset,
           snapshot.data.byteLength,
         ).toString("base64");
-        connection.peer.write({ type: "snapshot", terminalId, seq: snapshot.seq, data });
+        connection.peer.write(
+          command.type === "geometry_snapshot_request"
+            ? {
+                type: "geometry_snapshot",
+                terminalId,
+                seq: snapshot.seq,
+                data,
+                geometry: snapshot.geometry,
+              }
+            : { type: "snapshot", terminalId, seq: snapshot.seq, data },
+        );
         this.log("info", "snapshot", { terminalId, seq: snapshot.seq });
       }
     } catch {

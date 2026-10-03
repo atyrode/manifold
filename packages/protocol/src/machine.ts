@@ -19,6 +19,13 @@ const geometry = {
   rows: z.number().int().positive().max(1000),
 };
 
+/** The owner's parser-queue grid; revisions advance on resize, independently of output seq. */
+export const TerminalGeometrySchema = z.strictObject({
+  ...geometry,
+  revision: z.number().int().nonnegative(),
+});
+export type TerminalGeometry = z.infer<typeof TerminalGeometrySchema>;
+
 /** Bounds for a caller-supplied PTY argv: enough for any launch line, never a payload channel. */
 export const MAX_TERMINAL_ARGV_ITEMS = 64;
 export const MAX_TERMINAL_ARG_CHARS = 4096;
@@ -214,6 +221,8 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     terminalExecution: TerminalExecutionSchema.optional(),
     /** Older retained owners omit this even when their transport speaks the current wire. */
     terminalRestart: z.boolean().optional(),
+    /** Only an owner that emits ordered geometry and geometry snapshots advertises this. */
+    terminalGeometry: z.boolean().optional(),
     jobOwner: JobOwnerSchema.optional(),
     /** Online OS-visible package/core identities; absent means unknown, never logical CPUs. */
     physicalCoreCount: z.number().int().positive().optional(),
@@ -248,6 +257,20 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     terminalId,
     seq: z.number().int().nonnegative(),
     data: base64,
+  }),
+  z.strictObject({
+    type: z.literal("terminal_geometry"),
+    terminalId,
+    /** Last output before this resize in the owner's parser queue. */
+    seq: z.number().int().nonnegative(),
+    geometry: TerminalGeometrySchema,
+  }),
+  z.strictObject({
+    type: z.literal("geometry_snapshot"),
+    terminalId,
+    seq: z.number().int().nonnegative(),
+    data: base64,
+    geometry: TerminalGeometrySchema,
   }),
   z.strictObject({
     type: z.literal("exited"),
@@ -332,6 +355,7 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("resize"), terminalId, ...geometry }),
   z.strictObject({ type: z.literal("kill"), terminalId }),
   z.strictObject({ type: z.literal("snapshot_request"), terminalId }),
+  z.strictObject({ type: z.literal("geometry_snapshot_request"), terminalId }),
   z.strictObject({ type: z.literal("ping") }),
   /**
    * v24+, and sent ONLY to an agent whose hello named a `terminalHostId`: a pre-v24 agent
@@ -380,6 +404,8 @@ export const AGENT_MESSAGE_TYPES = [
   "terminal_restart_error",
   "output",
   "snapshot",
+  "terminal_geometry",
+  "geometry_snapshot",
   "exited",
   "pong",
   "drain_status",
@@ -395,6 +421,7 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   "resize",
   "kill",
   "snapshot_request",
+  "geometry_snapshot_request",
   "ping",
   "drain",
   "repository_query",

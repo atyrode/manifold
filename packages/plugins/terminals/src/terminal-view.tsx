@@ -19,7 +19,6 @@ import {
   trackTerminalPrivateMode,
   type TerminalSizing,
 } from "@manifold/protocol";
-import { base64ToBytes } from "@manifold/sdk";
 import {
   TitlebarOutlet,
   currentVantage,
@@ -60,7 +59,8 @@ import {
 } from "./terminal-font";
 import { terminalsManifest } from "./index";
 import { installTerminalGestures } from "./terminal-gestures";
-import { installTerminalGraphics, type TerminalGraphics } from "./terminal-graphics";
+import { installTerminalGraphics } from "./terminal-graphics";
+import { TerminalStream } from "./terminal-stream";
 import {
   installTerminalClipboard,
   type TerminalClipboard,
@@ -73,8 +73,6 @@ import {
   subscribeTerminalFontPreferences,
   terminalFontPreferences,
 } from "./terminal-font-preferences";
-
-const EMPTY_SNAPSHOT = new Uint8Array(0);
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
 export function TerminalView({
@@ -113,7 +111,7 @@ export function TerminalView({
   const [sizingOpen, setSizingOpen] = useState(false);
   const terminalRef = useRef<Terminal | null>(null);
   const clipboardRef = useRef<TerminalClipboard | null>(null);
-  const graphicsRef = useRef<TerminalGraphics | null>(null);
+  const streamRef = useRef<TerminalStream | null>(null);
   const pasteModeRef = useRef<ReturnType<typeof trackTerminalPrivateMode> | null>(null);
   const clipboardLiveRef = useRef(false);
   const activeRef = useRef(active);
@@ -334,7 +332,8 @@ export function TerminalView({
     const graphics = installTerminalGraphics(terminal, (message) =>
       notifyRef.current(message, { key: `terminal-graphics:${terminalId}` }),
     );
-    graphicsRef.current = graphics;
+    const stream = new TerminalStream(terminal, graphics);
+    streamRef.current = stream;
     terminalRef.current = terminal;
     const canWrite = (): boolean => {
       const current = clientRef.current;
@@ -462,7 +461,7 @@ export function TerminalView({
       if (connId === null) return;
       // Desired geometry always comes from the host, never from the applied shared grid.
       // Only the unpainted birth placeholder is resized locally; LIVE viewers all adopt
-      // authoritative resize events without feeding their applied size back to the broker.
+      // authoritative stream geometry without feeding the applied size back to the broker.
       const proposal = fitAddon.proposeDimensions();
       if (
         proposal === undefined ||
@@ -565,8 +564,9 @@ export function TerminalView({
       disposeGestures();
       clipboard.dispose();
       clipboardRef.current = null;
+      stream.dispose();
+      streamRef.current = null;
       graphics.dispose();
-      graphicsRef.current = null;
       pasteMode.dispose();
       pasteModeRef.current = null;
       clipboardLiveRef.current = false;
@@ -575,17 +575,6 @@ export function TerminalView({
       paintedRef.current = false;
     };
   }, [terminalId, fontReady, viewportId]);
-
-  useEffect(() => {
-    const instance = terminalRef.current;
-    if (
-      instance === null ||
-      terminal === undefined ||
-      (instance.cols === terminal.cols && instance.rows === terminal.rows)
-    )
-      return;
-    instance.resize(terminal.cols, terminal.rows);
-  }, [terminal]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -618,67 +607,44 @@ export function TerminalView({
     if (!terminalReady || !fontReady) return;
     const terminal = terminalRef.current;
     if (terminal === null) return;
+    const stream = streamRef.current;
+    if (stream === null) return;
 
     let subscribed = true;
     clipboardLiveRef.current = false;
     syncViewportRef.current?.();
-    let snapshotSeq: number | null = null;
-    let lastWrittenSeq = 0;
-    let streamGeneration = 0;
-    const bufferedOutputs = new Map<number, string>();
-    const settle = (generation: number): void => {
-      if (!subscribed || generation !== streamGeneration) return;
+    const settle = (): void => {
+      if (!subscribed) return;
       clipboardLiveRef.current = true;
       settleRef.current?.();
     };
 
     const offSnapshot = client.on("terminal_snapshot", (message) => {
       if (message.terminalId !== terminalId) return;
-      const generation = ++streamGeneration;
-      const settled = (): void => settle(generation);
-      // A retained owner's unchanged watermark is already painted. Rewriting identical
-      // stream state on a transport handoff would clear the user's live selection.
-      const alreadyPainted =
-        snapshotSeq !== null && paintedRef.current && message.seq === lastWrittenSeq;
-      clipboardRef.current?.reset();
-      clipboardLiveRef.current = false;
-      syncViewportRef.current?.();
-      if (alreadyPainted) {
-        clipboardRef.current?.setPasteMode(pasteModeRef.current?.enabled ?? false);
-      } else {
-        pasteModeRef.current?.reset();
-      }
-      // Changed stream state replaces the screen; it is never appended to.
-      snapshotSeq = message.seq;
-      lastWrittenSeq = message.seq;
-      paintedRef.current = true;
-      const queued = [...bufferedOutputs.entries()]
-        .filter(([seq]) => seq > message.seq)
-        .sort(([left], [right]) => left - right);
-      bufferedOutputs.clear();
-      if (alreadyPainted) {
-        if (queued.length === 0) settled();
-      } else {
-        graphicsRef.current?.writeSnapshot(
-          base64ToBytes(message.data),
-          queued.length === 0 ? settled : undefined,
-        );
-      }
-      queued.forEach(([seq, data], index) => {
-        terminal.write(base64ToBytes(data), index === queued.length - 1 ? settled : undefined);
-        lastWrittenSeq = seq;
-      });
+      stream.snapshot(
+        message,
+        (preserved) => {
+          clipboardRef.current?.reset();
+          clipboardLiveRef.current = false;
+          syncViewportRef.current?.();
+          if (preserved) {
+            clipboardRef.current?.setPasteMode(pasteModeRef.current?.enabled ?? false);
+          } else {
+            pasteModeRef.current?.reset();
+          }
+          paintedRef.current = true;
+        },
+        settle,
+      );
     });
 
     const offOutput = client.on("terminal_output", (message) => {
       if (message.terminalId !== terminalId) return;
-      if (snapshotSeq === null) {
-        bufferedOutputs.set(message.seq, message.data);
-        return;
-      }
-      if (message.seq <= lastWrittenSeq) return;
-      terminal.write(base64ToBytes(message.data));
-      lastWrittenSeq = message.seq;
+      stream.append(message);
+    });
+    const offGeometry = client.on("terminal_geometry", (message) => {
+      if (message.terminalId !== terminalId) return;
+      stream.append(message);
     });
 
     const offTerminalEvent = client.on("terminal_event", (message) => {
@@ -686,16 +652,12 @@ export function TerminalView({
       if (message.kind === "restarted") {
         // This is a new byte stream under the same identity. The SDK re-attaches after
         // notifying every view; only its fresh snapshot may make input live again.
-        streamGeneration++;
+        stream.restart();
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
         syncViewportRef.current?.();
         pasteModeRef.current?.reset();
-        snapshotSeq = null;
-        lastWrittenSeq = 0;
-        bufferedOutputs.clear();
         paintedRef.current = false;
-        graphicsRef.current?.writeSnapshot(EMPTY_SNAPSHOT);
         setRestartArmed(false);
         if (message.fallback !== undefined) {
           notifyRef.current(
@@ -705,15 +667,11 @@ export function TerminalView({
         }
       }
       if (message.kind === "exited") {
-        streamGeneration++;
+        stream.suspend();
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
         syncViewportRef.current?.();
         setRestartArmed(false);
-      }
-      if (message.kind === "resized" && message.cols !== undefined && message.rows !== undefined) {
-        const { cols, rows } = message;
-        terminal.write("", () => terminal.resize(cols, rows));
       }
     });
 
@@ -731,24 +689,20 @@ export function TerminalView({
 
     const offStatus = client.on("status", (status) => {
       if (status === "open") return;
-      streamGeneration++;
+      stream.suspend();
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
-      pasteModeRef.current?.reset();
-      // Connection dropped: the next snapshot starts a fresh sequence.
-      snapshotSeq = null;
-      lastWrittenSeq = 0;
-      bufferedOutputs.clear();
     });
 
     return () => {
       subscribed = false;
+      stream.suspend();
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
       withdrawViewportRef.current?.();
-      pasteModeRef.current?.reset();
       offSnapshot();
       offOutput();
+      offGeometry();
       offTerminalEvent();
       offStatus();
       inputDisposable.dispose();

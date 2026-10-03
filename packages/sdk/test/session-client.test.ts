@@ -1813,26 +1813,70 @@ describe("frame policy", () => {
     expect(socket.closedWith).toBeNull();
   });
 
-  test("terminal data fast-path accepts structurally valid frames without base64 rescanning", () => {
-    const { client, socket } = connected();
-    const seen: string[] = [];
-    client.on("terminal_snapshot", (msg) => seen.push(`${msg.type}:${msg.seq}:${msg.data}`));
-    client.on("terminal_output", (msg) => seen.push(`${msg.type}:${msg.seq}:${msg.data}`));
+  test.each([0, null])(
+    "terminal data fast-path accepts geometry revision %s without base64 rescanning",
+    (revision) => {
+      const { client, socket } = connected();
+      const seen: string[] = [];
+      client.on("terminal_snapshot", (msg) => seen.push(`${msg.type}:${msg.seq}:${msg.data}`));
+      client.on("terminal_output", (msg) => seen.push(`${msg.type}:${msg.seq}:${msg.data}`));
 
-    // "%" is deliberately outside the base64 alphabet: the trusted-server fast path
-    // validates the frame shape and bounded payload rather than rescanning its contents.
-    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 0, data: "%" });
-    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 0, data: "%" });
+      // "%" is deliberately outside the base64 alphabet: the trusted-server fast path
+      // validates bounded bytes and geometry, rather than rescanning the payload.
+      socket.receive({
+        type: "terminal_snapshot",
+        terminalId: "s1",
+        seq: 0,
+        data: "%",
+        geometry: { cols: 80, rows: 24, revision },
+      });
+      socket.receive({ type: "terminal_output", terminalId: "s1", seq: 1, data: "%" });
 
-    expect(seen).toEqual(["terminal_snapshot:0:%", "terminal_output:0:%"]);
-    expect(socket.closedWith).toBeNull();
-  });
+      expect(seen).toEqual(["terminal_snapshot:0:%", "terminal_output:1:%"]);
+      expect(socket.closedWith).toBeNull();
+      client.close();
+    },
+  );
 
   test("malformed terminal data frame still closes 4002", () => {
     const { socket } = connected();
     socket.receive({ type: "terminal_output", terminalId: "s1", data: "" });
     expect(socket.closedWith?.code).toBe(4002);
   });
+
+  test.each(["terminal_snapshot", "terminal_geometry"] as const)(
+    "malformed known %s geometry closes 4002 before delivery",
+    (type) => {
+      const invalid = [
+        undefined,
+        null,
+        [],
+        { cols: 80, rows: 24 },
+        { cols: 0, rows: 24, revision: 0 },
+        { cols: 80, rows: 1001, revision: 0 },
+        { cols: 80, rows: 24, revision: -1 },
+        { cols: 80, rows: 24, revision: 1.5 },
+        { cols: 80, rows: 24, revision: Number.MAX_SAFE_INTEGER + 1 },
+        { cols: 80, rows: 24, revision: "0" },
+        { cols: 80, rows: 24, revision: null, unexpected: true },
+      ];
+      for (const geometry of invalid) {
+        const { client, socket } = connected();
+        const delivered: ServerMessageBody[] = [];
+        client.on("message", (message) => delivered.push(message));
+        socket.receive({
+          type,
+          terminalId: "s1",
+          seq: 0,
+          ...(type === "terminal_snapshot" ? { data: "" } : {}),
+          geometry,
+        });
+        expect(socket.closedWith?.code).toBe(4002);
+        expect(delivered).toEqual([]);
+        client.close();
+      }
+    },
+  );
 
   test("malformed KNOWN frame closes 4002", () => {
     const { socket } = connected();
@@ -2038,7 +2082,13 @@ describe("terminal attach refcounting", () => {
     client.on("terminal_output", (m) => seenA.push(`out:${m.seq}`));
     client.attachTerminal("s1");
     // A is live mid-stream before B even exists.
-    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 3, data: "" });
+    socket.receive({
+      type: "terminal_snapshot",
+      terminalId: "s1",
+      seq: 3,
+      data: "",
+      geometry: { cols: 80, rows: 24, revision: 0 },
+    });
     socket.receive({ type: "terminal_output", terminalId: "s1", seq: 4, data: "" });
     expect(seenA).toEqual(["snap:3", "out:4"]);
     // B (cloned element) subscribes late and attaches: the wire re-attach makes
@@ -2047,7 +2097,13 @@ describe("terminal attach refcounting", () => {
     client.on("terminal_output", (m) => seenB.push(`out:${m.seq}`));
     client.attachTerminal("s1");
     expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(2);
-    socket.receive({ type: "terminal_snapshot", terminalId: "s1", seq: 7, data: "" });
+    socket.receive({
+      type: "terminal_snapshot",
+      terminalId: "s1",
+      seq: 7,
+      data: "",
+      geometry: { cols: 80, rows: 24, revision: 0 },
+    });
     socket.receive({ type: "terminal_output", terminalId: "s1", seq: 8, data: "" });
     // B renders from the re-snapshot; A sees exactly one reset snapshot and no
     // duplicated output frames.

@@ -1207,6 +1207,8 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         let terminalRestarted = Promise.withResolvers<TerminalHostEvent>();
         let terminalRestartRefused = Promise.withResolvers<TerminalHostEvent>();
         let terminalRefused = Promise.withResolvers<void>();
+        let terminalSnapshot =
+          Promise.withResolvers<Extract<TerminalHostEvent, { type: "geometry_snapshot" }>>();
         const seat = host.open({
           write(event) {
             terminalEvents.push(event);
@@ -1214,6 +1216,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             if (event.type === "create_error") terminalRefused.resolve();
             if (event.type === "terminal_restarted") terminalRestarted.resolve(event);
             if (event.type === "terminal_restart_error") terminalRestartRefused.resolve(event);
+            if (event.type === "geometry_snapshot") terminalSnapshot.resolve(event);
             return true;
           },
           close() {},
@@ -1323,8 +1326,39 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           await terminalRefused.promise;
           expect(host.terminalCount).toBe(0);
           expect(outputs.recovered(boundRequest.jobId)).toEqual([]);
+          const startupBytes: Uint8Array[] = [];
+          // Hold real native startup until its output and an intervening resize have both
+          // reached the source. Neither may escape before created establishes the generation.
+          launchJob = async (spec) => {
+            const terminal = spec.terminal;
+            if (!terminal) throw new Error("expected native terminal handoff");
+            const emitted = Promise.withResolvers<void>();
+            const handle = await realLaunchJob({
+              ...spec,
+              terminal: {
+                ...terminal,
+                onOutput(bytes) {
+                  terminal.onOutput(bytes);
+                  startupBytes.push(new Uint8Array(bytes));
+                  if (startupBytes.length === 1) {
+                    seat.deliver({
+                      type: "resize",
+                      terminalId: "native-terminal",
+                      cols: 64,
+                      rows: 9,
+                    });
+                    emitted.resolve();
+                  }
+                },
+              },
+            });
+            await handle.result;
+            await emitted.promise;
+            return handle;
+          };
           seat.deliver(create);
           await terminalExit.promise;
+          launchJob = realLaunchJob;
           expect(terminalEvents).toContainEqual({ type: "created", terminalId: "native-terminal" });
           expect(terminalEvents).toContainEqual({
             type: "exited",
@@ -1338,6 +1372,26 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             .join("");
           expect(terminalText).toContain("private-once");
           expect(terminalText).toContain("diagnostic");
+          expect(terminalText).toBe(Buffer.concat(startupBytes).toString());
+          const createdAt = terminalEvents.findIndex((event) => event.type === "created");
+          const startupGeometryAt = terminalEvents.findIndex(
+            (event) => event.type === "terminal_geometry",
+          );
+          const startupOutputAt = terminalEvents.findIndex((event) => event.type === "output");
+          expect(startupOutputAt).toBeGreaterThan(createdAt);
+          expect(startupGeometryAt).toBeGreaterThan(startupOutputAt);
+          expect(terminalEvents[startupGeometryAt]).toEqual({
+            type: "terminal_geometry",
+            terminalId: "native-terminal",
+            seq: 1,
+            geometry: { cols: 64, rows: 9, revision: 1 },
+          });
+          seat.deliver({ type: "geometry_snapshot_request", terminalId: "native-terminal" });
+          expect((await terminalSnapshot.promise).geometry).toEqual({
+            cols: 64,
+            rows: 9,
+            revision: 1,
+          });
           expect(
             events.some((event) => event.type === "output" && event.jobId === boundRequest.jobId),
           ).toBe(false);
@@ -1402,6 +1456,14 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             cwd: "/home/job",
           });
           await terminalExit.promise;
+          terminalSnapshot =
+            Promise.withResolvers<Extract<TerminalHostEvent, { type: "geometry_snapshot" }>>();
+          seat.deliver({ type: "geometry_snapshot_request", terminalId: "native-terminal" });
+          expect((await terminalSnapshot.promise).geometry).toEqual({
+            cols: 64,
+            rows: 9,
+            revision: 0,
+          });
           // The harness's newly admitted argv and private environment replace the original
           // generation, while the terminal/run identity and the installed contract stay pinned.
           const harnessBody = {
@@ -1506,12 +1568,21 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             if (!terminal) throw new Error("expected native terminal handoff");
             const emitted = Promise.withResolvers<void>();
             let text = "";
+            let chunks = 0;
             const handle = await realLaunchJob({
               ...spec,
               terminal: {
                 ...terminal,
                 onOutput(bytes) {
                   terminal.onOutput(bytes);
+                  chunks += 1;
+                  if (chunks === 1)
+                    seat.deliver({
+                      type: "resize",
+                      terminalId: "harness-terminal",
+                      cols: 53,
+                      rows: 11,
+                    });
                   text += Buffer.from(bytes).toString();
                   if (text.includes("HARNESS:resumed")) emitted.resolve();
                 },
@@ -1536,6 +1607,24 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           const exitedAt = terminalEvents.findIndex((event) => event.type === "exited");
           expect(firstOutputAt).toBeGreaterThan(restartedAt);
           expect(exitedAt).toBeGreaterThan(lastOutputAt);
+          const restartedGeometryAt = terminalEvents.findIndex(
+            (event) => event.type === "terminal_geometry",
+          );
+          expect(restartedGeometryAt).toBeGreaterThan(firstOutputAt);
+          expect(terminalEvents[restartedGeometryAt]).toEqual({
+            type: "terminal_geometry",
+            terminalId: "harness-terminal",
+            seq: 1,
+            geometry: { cols: 53, rows: 11, revision: 1 },
+          });
+          terminalSnapshot =
+            Promise.withResolvers<Extract<TerminalHostEvent, { type: "geometry_snapshot" }>>();
+          seat.deliver({ type: "geometry_snapshot_request", terminalId: "harness-terminal" });
+          expect((await terminalSnapshot.promise).geometry).toEqual({
+            cols: 53,
+            rows: 11,
+            revision: 1,
+          });
           expect(host.status().terminals).toContainEqual(
             expect.objectContaining({ terminalId: "harness-terminal", alive: false, exitCode: 0 }),
           );

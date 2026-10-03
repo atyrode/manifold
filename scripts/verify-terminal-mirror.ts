@@ -191,6 +191,67 @@ async function clickAt(target: Browser, at: Point): Promise<void> {
   await releaseAt(target, at);
 }
 
+interface TerminalBufferState {
+  readonly cols: number;
+  readonly rows: number;
+  readonly cursorX: number;
+  readonly cursorY: number;
+  readonly baseY: number;
+  readonly lines: readonly { readonly text: string; readonly wrapped: boolean }[];
+}
+
+/** Observe the real mounted xterm, without adding a production inspection API. */
+async function observeTerminalBuffer(target: Browser): Promise<void> {
+  await target.evaluate(`(() => {
+    const element = document.querySelector(".terminal-frame");
+    const key = Object.getOwnPropertyNames(element).find(key => key.startsWith("__reactFiber$"));
+    let fiber = element[key], terminal;
+    for (let depth = 0; fiber && !terminal && depth < 32; depth++, fiber = fiber.return) {
+      let hook = fiber.memoizedState;
+      for (let index = 0; hook && index < 100; index++, hook = hook.next) {
+        const value = hook.memoizedState?.current;
+        if (value && typeof value.resize === "function" && typeof value.write === "function" && value._core) {
+          terminal = value;
+          break;
+        }
+      }
+    }
+    if (!terminal) throw new Error("mounted xterm reference not found");
+    let inParserCallback = false;
+    const outOfOrder = [];
+    const write = terminal.write.bind(terminal);
+    const resize = terminal.resize.bind(terminal);
+    terminal.write = (data, callback) => write(data, callback ? () => {
+      inParserCallback = true;
+      try { callback(); } finally { inParserCallback = false; }
+    } : undefined);
+    terminal.resize = (cols, rows) => {
+      if (!inParserCallback) outOfOrder.push({ cols, rows });
+      return resize(cols, rows);
+    };
+    window.__terminalGeometryProof = {
+      outOfOrder,
+      read() {
+        const buffer = terminal.buffer.active, lines = [];
+        for (let index = 0; index <= buffer.baseY + buffer.cursorY; index++) {
+          const line = buffer.getLine(index);
+          lines.push({ text: line.translateToString(true), wrapped: line.isWrapped });
+        }
+        return {
+          cols: terminal.cols, rows: terminal.rows, cursorX: buffer.cursorX,
+          cursorY: buffer.cursorY, baseY: buffer.baseY, lines
+        };
+      }
+    };
+  })()`);
+}
+
+const terminalBuffer = (target: Browser): Promise<TerminalBufferState> =>
+  target.evaluate("window.__terminalGeometryProof.read()");
+
+const terminalText = (state: TerminalBufferState): string =>
+  state.lines.map((line) => line.text).join("\n");
+
 interface NativeDragOutcome {
   /** Both ends of the gesture were found in the DOM. */
   readonly ok: boolean;
@@ -365,10 +426,10 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
+        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open' && document.querySelector('[aria-label^=\"New terminal on \"]')?.disabled === false",
       ),
     20_000,
-    "canvas connection open before terminal authoring",
+    "canvas connection and terminal action ready before authoring",
   );
   await browser.evaluate("document.querySelector('[aria-label^=\"New terminal on \"]').click()");
   await until(
@@ -1384,6 +1445,234 @@ try {
     );
   } finally {
     gridClient.close();
+  }
+
+  // Geometry is a stream operation, not a room-record effect. Two virtual controller
+  // viewports drive the real broker/PTY while both real browsers render as readers.
+  // This separates #877's size arbitration from the ordering being measured here.
+  const geometryCanvas = await createContainer("geometry-ordering-regression");
+  const geometryOpener = new SessionClient({
+    url: `${origin.replace(/^http/, "ws")}/ws/session`,
+    containerId: geometryCanvas,
+    token: ownerKey,
+    reconnect: false,
+  });
+  const geometryDrivers: SessionClient[] = [];
+  try {
+    await geometryOpener.connect();
+    const geometryTerminal = await geometryOpener.openTerminal({
+      elementId: crypto.randomUUID(),
+      cols: 100,
+      rows: 30,
+      program: { argv: ["bun", join(repoRoot, "packages/testkit/fixtures/terminal-geometry.ts")] },
+    });
+    let sourceText = "";
+    let lastSeq: number | null = null;
+    let sequenceGap = false;
+    let revisionedOwnerSnapshot = false;
+    for (let index = 0; index < 2; index++) {
+      const driver = new SessionClient({
+        url: `${origin.replace(/^http/, "ws")}/ws/session`,
+        containerId: geometryTerminal.containerId,
+        token: ownerKey,
+        reconnect: false,
+        // Distinct factories keep these genuine network clients off the same pooled socket.
+        webSocketFactory: (url) => new WebSocket(url),
+      });
+      geometryDrivers.push(driver);
+      let attached = false;
+      driver.on("terminal_snapshot", (message) => {
+        if (message.terminalId !== geometryTerminal.id) return;
+        attached = true;
+        if (index === 0) {
+          sourceText = Buffer.from(message.data, "base64").toString();
+          lastSeq = message.seq;
+          revisionedOwnerSnapshot = message.geometry.revision !== null;
+        }
+      });
+      driver.on("terminal_output", (message) => {
+        if (index !== 0 || message.terminalId !== geometryTerminal.id) return;
+        if (lastSeq !== null && message.seq !== lastSeq + 1) sequenceGap = true;
+        lastSeq = message.seq;
+        sourceText += Buffer.from(message.data, "base64").toString();
+      });
+      await driver.connect();
+      driver.attachTerminal(geometryTerminal.id);
+      await until(() => attached, 10_000, "geometry driver snapshot handoff");
+    }
+    const firstDriver = geometryDrivers[0]!;
+    const secondDriver = geometryDrivers[1]!;
+    if (
+      firstDriver.connectionId === null ||
+      firstDriver.connectionId === secondDriver.connectionId
+    ) {
+      throw new Error("the concurrent geometry drivers must own distinct physical connections");
+    }
+    check(
+      "the current owner supplies source-revisioned geometry, not a legacy metadata projection",
+      revisionedOwnerSnapshot,
+      "the real local owner advertises and answers the modern snapshot contract",
+    );
+    const viewport = (driver: SessionClient, id: string, cols: number, rows: number): void =>
+      driver.resizeTerminal(geometryTerminal.id, cols, rows, id);
+    viewport(firstDriver, "geometry-a", 100, 30);
+    viewport(secondDriver, "geometry-b", 120, 34);
+    const geometryUrl = `${origin}/p/${geometryTerminal.containerId}`;
+    await browser.goto(geometryUrl);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "document.querySelector('.xterm-rows')?.textContent.includes('GEOMETRY_READY') === true",
+        ),
+      15_000,
+      "geometry workload rendered",
+    );
+    await observeTerminalBuffer(browser);
+    const initialGeometry = await terminalBuffer(browser);
+    const pid = /GEOMETRY_READY:PID:(\d+)/.exec(terminalText(initialGeometry))?.[1];
+    if (pid === undefined) throw new Error("geometry fixture did not identify its real process");
+
+    // The replacement is still a real WebSocket. Closing only this page's owned socket
+    // exercises SDK reconnect; no server credential, timer or application handler is mocked.
+    await watcher.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `{
+        const NativeWebSocket = window.WebSocket;
+        window.__geometrySockets = [];
+        window.WebSocket = class extends NativeWebSocket {
+          constructor(url, protocols) {
+            super(url, protocols);
+            if (String(url).includes("/ws/session")) window.__geometrySockets.push(this);
+          }
+        };
+      }`,
+    });
+    const resizeWave = async (step: number): Promise<void> => {
+      const widths = [124, 84, 112, 92, 120, 88, 108, 96, 116, 100];
+      const columns = widths[step]!;
+      viewport(firstDriver, "geometry-a", columns, step % 2 === 0 ? 30 : 28);
+      viewport(secondDriver, "geometry-b", columns + (step % 3 === 0 ? -4 : 8), 32);
+      // Deliberately race real producer ticks, PTY signals and separate network channels.
+      await sleep(90);
+    };
+    const waitDone = async (mode: "numbered" | "relative"): Promise<void> => {
+      await until(() => sourceText.includes(`DONE:${mode}:`), 10_000, `${mode} PTY stopped`);
+      await until(
+        async () =>
+          [await terminalBuffer(browser!), await terminalBuffer(watcher!)].every((state) =>
+            terminalText(state).includes(`DONE:${mode}:`),
+          ),
+        10_000,
+        `${mode} stop rendered in both live views`,
+      );
+    };
+    const compareViews = async (label: string): Promise<void> => {
+      const live = await terminalBuffer(browser!);
+      const other = await terminalBuffer(watcher!);
+      check(
+        label,
+        JSON.stringify(live) === JSON.stringify(other),
+        `live ${live.cols}x${live.rows}/${live.lines.length} rows; peer ${other.cols}x${other.rows}/${other.lines.length} rows`,
+      );
+    };
+
+    firstDriver.sendTerminalInput(geometryTerminal.id, "numbered\n");
+    for (let step = 0; step < 3; step++) await resizeWave(step);
+    // Join in the middle of output and geometry changes, not after a quiescent snapshot.
+    await watcher.goto(geometryUrl);
+    await until(
+      () => watcher!.evaluate<boolean>("document.querySelector('.xterm-rows') !== null"),
+      15_000,
+      "mid-stream geometry viewer",
+    );
+    await observeTerminalBuffer(watcher);
+    for (let step = 3; step < 10; step++) await resizeWave(step);
+    firstDriver.sendTerminalInput(geometryTerminal.id, "stop\n");
+    await waitDone("numbered");
+    await compareViews(
+      "numbered live and mid-stream snapshot viewers agree across concurrent resize",
+    );
+    const numbered = await terminalBuffer(browser);
+    const count = Number(/DONE:numbered:(\d+):/.exec(sourceText)?.[1]);
+    const renderedNumbers = [...terminalText(numbered).matchAll(/NUMBER:(\d+):/g)].map((match) =>
+      Number(match[1]),
+    );
+    check(
+      "numbered history retains every distinct producer line exactly once",
+      Number.isInteger(count) &&
+        count > 0 &&
+        JSON.stringify(renderedNumbers) ===
+          JSON.stringify(Array.from({ length: count }, (_, index) => index)),
+      `${renderedNumbers.length} rendered producer lines, ${count} emitted`,
+    );
+    await watcher.reload();
+    await until(
+      () =>
+        watcher!.evaluate<boolean>(
+          "document.querySelector('.xterm-rows')?.textContent.includes('DONE:numbered:') === true",
+        ),
+      15_000,
+      "numbered owner snapshot after reload",
+    );
+    await observeTerminalBuffer(watcher);
+    await compareViews("a fresh reload replays the numbered owner snapshot at its own grid");
+
+    firstDriver.sendTerminalInput(geometryTerminal.id, "relative\n");
+    for (let step = 0; step < 3; step++) await resizeWave(step);
+    await watcher.evaluate(
+      "window.__geometrySockets.at(-1).close(4000, 'owned geometry reconnect proof')",
+    );
+    for (let step = 3; step < 10; step++) await resizeWave(step);
+    await until(
+      () =>
+        watcher!.evaluate<boolean>(
+          "window.__geometrySockets.length >= 2 && window.__geometrySockets.at(-1).readyState === WebSocket.OPEN",
+        ),
+      15_000,
+      "new physical session socket after geometry/output interruption",
+    );
+    firstDriver.sendTerminalInput(geometryTerminal.id, "stop\n");
+    await waitDone("relative");
+    await compareViews("relative-redraw history agrees after geometry races with reconnect");
+    for (const target of [browser, watcher]) {
+      const outOfOrder = await target.evaluate<unknown[]>(
+        "window.__terminalGeometryProof.outOfOrder",
+      );
+      check(
+        "every mounted live resize stays inside its parser callback",
+        outOfOrder.length === 0,
+        JSON.stringify(outOfOrder),
+      );
+    }
+    await watcher.reload();
+    await until(
+      () =>
+        watcher!.evaluate<boolean>(
+          "document.querySelector('.xterm-rows')?.textContent.includes('DONE:relative:') === true",
+        ),
+      15_000,
+      "relative owner snapshot after reload",
+    );
+    await observeTerminalBuffer(watcher);
+    await compareViews(
+      "fresh relative-redraw snapshot preserves the same application/reflow artifacts",
+    );
+    firstDriver.sendTerminalInput(geometryTerminal.id, "mark\n");
+    await until(
+      async () =>
+        [await terminalBuffer(browser!), await terminalBuffer(watcher!)].every((state) =>
+          terminalText(state).includes(`CONTINUITY:PID:${pid}`),
+        ),
+      10_000,
+      "same process accepts fresh input after resize, attach, reload and reconnect",
+    );
+    check(
+      "geometry never consumes an output sequence number or drops a byte frame",
+      !sequenceGap,
+      "real owner output remains contiguous through every geometry boundary",
+    );
+  } finally {
+    for (const driver of geometryDrivers) driver.close();
+    geometryOpener.close();
   }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));

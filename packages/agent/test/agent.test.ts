@@ -7,7 +7,9 @@ import {
   JOB_OWNER_PROTOCOL_VERSION,
   type AgentMessage,
   type JobCommand,
+  type TerminalHostCommand,
 } from "@manifold/protocol";
+import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import {
   Agent,
   MAX_SOCKET_BUFFERED_AMOUNT_BYTES,
@@ -15,7 +17,11 @@ import {
 } from "../src/agent.ts";
 import { TerminalHost } from "../src/terminal-host.ts";
 import { OomKillWatch } from "../src/oom-kills.ts";
-import type { TerminalHostDialer } from "../src/terminal-host-link.ts";
+import type {
+  TerminalHostDialer,
+  TerminalHostLink,
+  TerminalHostLinkHandlers,
+} from "../src/terminal-host-link.ts";
 import { PtyTerminal } from "../src/terminal.ts";
 import { unixJobOwnerDialer, type JobOwnerDialer } from "../src/job-owner-link.ts";
 
@@ -213,124 +219,130 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
   }
 }, 20000);
 
-test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejection", async () => {
-  const createdSeen = Promise.withResolvers<void>();
-  const exitedSeen = Promise.withResolvers<void>();
-  const pongSeen = Promise.withResolvers<void>();
-  const snapshotStarted = Promise.withResolvers<void>();
-  const snapshotOutcome = Promise.withResolvers<"abandoned" | "sent">();
-  let snapshotFrames = 0;
-  const sendToAgentReady = Promise.withResolvers<(message: string) => void>();
-  const stderrMessages: string[] = [];
-  const originalWarn = console.warn;
-  const originalError = console.error;
-  console.warn = (...values: unknown[]) => {
-    stderrMessages.push(values.map(String).join(" "));
-  };
-  console.error = (...values: unknown[]) => {
-    stderrMessages.push(values.map(String).join(" "));
-  };
-
-  const server = Bun.serve({
-    port: 0,
-    fetch(req, srv) {
-      if (srv.upgrade(req)) return undefined;
-      return new Response("expected websocket upgrade", { status: 400 });
-    },
-    websocket: {
-      open(ws) {
-        sendToAgentReady.resolve((message) => {
-          ws.send(message);
-        });
-      },
-      message(ws, raw) {
-        const msg = AgentMessageSchema.parse(JSON.parse(String(raw)));
-        switch (msg.type) {
-          case "hello":
-            ws.send(
-              JSON.stringify({ type: "welcome", machineId: "machine-1", serverEpoch: "epoch-1" }),
-            );
-            ws.send(
-              JSON.stringify({
-                type: "create",
-                terminalId: "dispose-race",
-                cols: 80,
-                rows: 24,
-                env: {},
-              }),
-            );
-            return;
-          case "created":
-            createdSeen.resolve();
-            return;
-          case "snapshot":
-            snapshotFrames += 1;
-            snapshotOutcome.resolve("sent");
-            return;
-          case "exited":
-            exitedSeen.resolve();
-            return;
-          case "pong":
-            pongSeen.resolve();
-            return;
-          default:
-            return;
-        }
-      },
-    },
-  });
-
-  const host = new TerminalHost({
-    shellCommand: [BASH, "--norc", "-i"],
-    sink(record) {
-      if (record.evt === "snapshot_abandoned") snapshotOutcome.resolve("abandoned");
-    },
-  });
-  const agent = new Agent({
-    serverUrl: `http://localhost:${server.port}`,
-    machineToken: "machine-token",
-    machineName: "test-machine",
-    backoff: { baseMs: 20, capMs: 200 },
-    dialTerminalHost: inMemoryDialer(host),
-  });
-
-  try {
-    await agent.connect();
-    await createdSeen.promise;
-    const terminal = terminalForTest(host, "dispose-race");
-    const originalSnapshot = terminal.snapshot.bind(terminal);
-    terminal.snapshot = () => {
-      const pending = originalSnapshot();
-      snapshotStarted.resolve();
-      return pending;
+test.each(["snapshot_request", "geometry_snapshot_request"] as const)(
+  "abandoning an in-flight %s on PTY disposal sends no frame or rejection",
+  async (requestType) => {
+    const createdSeen = Promise.withResolvers<void>();
+    const exitedSeen = Promise.withResolvers<void>();
+    const pongSeen = Promise.withResolvers<void>();
+    const snapshotStarted = Promise.withResolvers<void>();
+    const snapshotOutcome = Promise.withResolvers<"abandoned" | "sent">();
+    let snapshotFrames = 0;
+    const sendToAgentReady = Promise.withResolvers<(message: string) => void>();
+    const stderrMessages: string[] = [];
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    console.warn = (...values: unknown[]) => {
+      stderrMessages.push(values.map(String).join(" "));
+    };
+    console.error = (...values: unknown[]) => {
+      stderrMessages.push(values.map(String).join(" "));
     };
 
-    // Keep xterm parsing while the request queues its drain marker, then dispose only after
-    // snapshot() has actually returned its pending promise to the host's request handler.
-    const row = `${"x".repeat(79)}\r\n`;
-    injectPtyOutput(terminal, row.repeat(500));
-    const sendServerFrame = await sendToAgentReady.promise;
-    sendServerFrame(JSON.stringify({ type: "snapshot_request", terminalId: "dispose-race" }));
-    await snapshotStarted.promise;
-    terminal.dispose();
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response("expected websocket upgrade", { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          sendToAgentReady.resolve((message) => {
+            ws.send(message);
+          });
+        },
+        message(ws, raw) {
+          const msg = AgentMessageSchema.parse(JSON.parse(String(raw)));
+          switch (msg.type) {
+            case "hello":
+              ws.send(
+                JSON.stringify({ type: "welcome", machineId: "machine-1", serverEpoch: "epoch-1" }),
+              );
+              ws.send(
+                JSON.stringify({
+                  type: "create",
+                  terminalId: "dispose-race",
+                  cols: 80,
+                  rows: 24,
+                  env: {},
+                }),
+              );
+              return;
+            case "created":
+              createdSeen.resolve();
+              return;
+            case "snapshot":
+            case "geometry_snapshot":
+              snapshotFrames += 1;
+              snapshotOutcome.resolve("sent");
+              return;
+            case "exited":
+              exitedSeen.resolve();
+              return;
+            case "pong":
+              pongSeen.resolve();
+              return;
+            default:
+              return;
+          }
+        },
+      },
+    });
 
-    expect(await snapshotOutcome.promise).toBe("abandoned");
-    await exitedSeen.promise;
-    expect(snapshotFrames).toBe(0);
+    const host = new TerminalHost({
+      shellCommand: [BASH, "--norc", "-i"],
+      sink(record) {
+        if (record.evt === "snapshot_abandoned") snapshotOutcome.resolve("abandoned");
+      },
+    });
+    const agent = new Agent({
+      serverUrl: `http://localhost:${server.port}`,
+      machineToken: "machine-token",
+      machineName: "test-machine",
+      backoff: { baseMs: 20, capMs: 200 },
+      dialTerminalHost: inMemoryDialer(host),
+    });
 
-    // A ping after the rejected snapshot proves the void-dispatched handler did not leave an
-    // unhandled rejection that terminates Bun's process.
-    sendServerFrame(JSON.stringify({ type: "ping" }));
-    await pongSeen.promise;
-    expect(stderrMessages).toEqual([]);
-  } finally {
-    console.warn = originalWarn;
-    console.error = originalError;
-    await agent.shutdown();
-    await host.shutdown();
-    server.stop(true);
-  }
-}, 20000);
+    try {
+      await agent.connect();
+      await createdSeen.promise;
+      const terminal = terminalForTest(host, "dispose-race");
+      const originalSnapshot = terminal.snapshot.bind(terminal);
+      terminal.snapshot = () => {
+        const pending = originalSnapshot();
+        snapshotStarted.resolve();
+        return pending;
+      };
+
+      // Keep xterm parsing while the request queues its drain marker, then dispose only after
+      // snapshot() has actually returned its pending promise to the host's request handler.
+      const row = `${"x".repeat(79)}\r\n`;
+      injectPtyOutput(terminal, row.repeat(500));
+      const sendServerFrame = await sendToAgentReady.promise;
+      sendServerFrame(JSON.stringify({ type: requestType, terminalId: "dispose-race" }));
+      await snapshotStarted.promise;
+      terminal.resize(72, 18);
+      terminal.dispose();
+
+      expect(await snapshotOutcome.promise).toBe("abandoned");
+      await exitedSeen.promise;
+      expect(snapshotFrames).toBe(0);
+
+      // A ping after the rejected snapshot proves the void-dispatched handler did not leave an
+      // unhandled rejection that terminates Bun's process.
+      sendServerFrame(JSON.stringify({ type: "ping" }));
+      await pongSeen.promise;
+      expect(stderrMessages).toEqual([]);
+    } finally {
+      console.warn = originalWarn;
+      console.error = originalError;
+      await agent.shutdown();
+      await host.shutdown();
+      server.stop(true);
+    }
+  },
+  20000,
+);
 
 /**
  * Scripted in-memory socket (agent-side mirror of the server tests' FakeSocket):
@@ -398,6 +410,162 @@ function scriptedHub(
     return socket.asWebSocket();
   };
 }
+
+test("geometry capability follows the exact seat while legacy replacement retains input and snapshots", async () => {
+  const host = new TerminalHost({
+    shellCommand: [
+      BASH,
+      "--norc",
+      "-c",
+      'stty -echo; printf "OWNER_PID:%s\\n" "$$"; while IFS= read -r line; do printf "ACK:%s\\n" "$line"; done',
+    ],
+  });
+  const sockets: ScriptedSocket[] = [];
+  const links: TerminalHostLink[] = [];
+  const seatHandlers: TerminalHostLinkHandlers[] = [];
+  const commands: TerminalHostCommand[][] = [];
+  const dial = inMemoryDialer(host);
+  const created = Promise.withResolvers<void>();
+  const originalPid = Promise.withResolvers<string>();
+  const geometry = Promise.withResolvers<Extract<AgentMessage, { type: "terminal_geometry" }>>();
+  const modernSnapshot =
+    Promise.withResolvers<Extract<AgentMessage, { type: "geometry_snapshot" }>>();
+  const legacyHello = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
+  const legacySnapshot = Promise.withResolvers<Extract<AgentMessage, { type: "snapshot" }>>();
+  const acknowledged = Promise.withResolvers<void>();
+  let outputText = "";
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "geometry-seat-machine",
+    backoff: { baseMs: 5, capMs: 20 },
+    dialTerminalHost: async (handlers) => {
+      const index = seatHandlers.length;
+      seatHandlers.push(handlers);
+      const sent: TerminalHostCommand[] = [];
+      commands.push(sent);
+      const link = await dial({
+        ...handlers,
+        onEvent(event) {
+          if (index > 0) {
+            // A separately released host has only the original known frame inventory.
+            if (
+              event.type === "terminal_geometry_supported" ||
+              event.type === "terminal_geometry" ||
+              event.type === "geometry_snapshot"
+            )
+              return;
+            // Support arriving before attach must not confer a capability on the next seat.
+            if (event.type === "attached")
+              handlers.onEvent({ type: "terminal_geometry_supported" });
+          }
+          handlers.onEvent(event);
+        },
+      });
+      const wrapped: TerminalHostLink = {
+        send(command) {
+          sent.push(command);
+          link.send(command);
+        },
+        close: () => link.close(),
+      };
+      links.push(wrapped);
+      return wrapped;
+    },
+    createSocket: scriptedHub(sockets, (_socket, event) => {
+      if (event.type === "created") created.resolve();
+      if (event.type === "terminal_geometry") geometry.resolve(event);
+      if (event.type === "geometry_snapshot") modernSnapshot.resolve(event);
+      if (event.type === "snapshot") legacySnapshot.resolve(event);
+      if (event.type === "hello" && sockets.length === 2) legacyHello.resolve(event);
+      if (event.type === "output") {
+        outputText += Buffer.from(event.data, "base64").toString();
+        const pid = /OWNER_PID:(\d+)\r?\n/.exec(outputText)?.[1];
+        if (pid) originalPid.resolve(pid);
+        if (outputText.includes("ACK:after-replacement")) acknowledged.resolve();
+      }
+    }),
+  });
+  try {
+    await agent.connect();
+    const first = sockets[0];
+    if (!first) throw new Error("missing initial socket");
+    expect(first.sent.find((event) => event.type === "hello")).toHaveProperty(
+      "terminalGeometry",
+      true,
+    );
+    first.receive({ type: "create", terminalId: "retained-grid", cols: 40, rows: 6, env: {} });
+    await created.promise;
+    const pid = await originalPid.promise;
+    const retained = terminalForTest(host, "retained-grid");
+    first.receive({ type: "resize", terminalId: "retained-grid", cols: 32, rows: 8 });
+    const boundary = await geometry.promise;
+    expect(boundary.geometry).toEqual({ cols: 32, rows: 8, revision: 1 });
+    first.receive({ type: "geometry_snapshot_request", terminalId: "retained-grid" });
+    const initial = await modernSnapshot.promise;
+    expect(initial.geometry).toEqual(boundary.geometry);
+
+    links[0]?.close();
+    expect(first.closedByAgent?.code).toBe(TERMINAL_HOST_LOST_CLOSE_CODE);
+    const hello = await legacyHello.promise;
+    expect(hello).not.toHaveProperty("terminalGeometry");
+    expect(hello.terminals).toMatchObject([
+      { terminalId: "retained-grid", cols: 32, rows: 8, alive: true },
+    ]);
+    expect(terminalForTest(host, "retained-grid")).toBe(retained);
+
+    const second = sockets[1];
+    const stale = seatHandlers[0];
+    const current = seatHandlers[1];
+    if (!second || !stale || !current) throw new Error("missing replacement seat");
+    stale.onEvent({ type: "terminal_geometry_supported" });
+    stale.onEvent(boundary);
+    current.onEvent(boundary);
+    stale.onEvent(initial);
+    current.onEvent(initial);
+    second.receive({ type: "geometry_snapshot_request", terminalId: "retained-grid" });
+    expect(commands[1]?.some((command) => command.type === "geometry_snapshot_request")).toBe(
+      false,
+    );
+    expect(second.sent.some((event) => event.type === "terminal_geometry")).toBe(false);
+    expect(second.sent.some((event) => event.type === "geometry_snapshot")).toBe(false);
+    second.receive({ type: "future_terminal_command" });
+
+    second.receive({ type: "resize", terminalId: "retained-grid", cols: 44, rows: 10 });
+    second.receive({
+      type: "input",
+      terminalId: "retained-grid",
+      data: Buffer.from("after-replacement\n").toString("base64"),
+    });
+    await acknowledged.promise;
+    second.receive({ type: "snapshot_request", terminalId: "retained-grid" });
+    const snapshot = await legacySnapshot.promise;
+    expect(Object.keys(snapshot).sort()).toEqual(["data", "seq", "terminalId", "type"]);
+    expect(snapshot.seq).toBeGreaterThan(initial.seq);
+    const restored = new HeadlessTerminal({ cols: 44, rows: 10, allowProposedApi: true });
+    try {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      restored.write(Buffer.from(snapshot.data, "base64"), resolve);
+      await promise;
+      const screen = Array.from({ length: restored.buffer.active.length }, (_, index) =>
+        restored.buffer.active.getLine(index)?.translateToString(),
+      ).join("\n");
+      expect(screen).toContain(`OWNER_PID:${pid}`);
+      expect(screen).toContain("ACK:after-replacement");
+      expect(second.closedByAgent).toBeNull();
+      expect(retained.alive).toBe(true);
+    } finally {
+      restored.dispose();
+    }
+    second.receive({ type: "geometry_snapshot_request", terminalId: "" });
+    expect(second.closedByAgent?.code).toBe(4002);
+    expect(retained.alive).toBe(true);
+    expect(host.terminalCount).toBe(1);
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+  }
+}, 20000);
 
 test("each reconnect re-observes physical cores and omits a newly unavailable topology", async () => {
   const sockets: ScriptedSocket[] = [];

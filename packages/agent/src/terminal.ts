@@ -6,6 +6,7 @@ import {
   MAX_SESSION_BASE64_CHARS,
   trackTerminalPrivateMode,
   type AdvertisedTerminal,
+  type TerminalGeometry,
   type TerminalReadiness,
   type TrackedTerminalPrivateMode,
 } from "@manifold/protocol";
@@ -59,10 +60,17 @@ export interface PtyOutput {
   readonly bytes: Uint8Array;
 }
 
-/** A serialized mirror plus the seq watermark whose bytes it renders exactly. */
+/** A resize's parser-queue boundary, independent of the output-only sequence. */
+export interface PtyGeometry {
+  readonly seq: number;
+  readonly geometry: TerminalGeometry;
+}
+
+/** A serialized mirror plus its marker-local output watermark and geometry. */
 export interface PtySnapshot {
   readonly seq: number;
   readonly data: Uint8Array;
+  readonly geometry: TerminalGeometry;
 }
 
 /** Result of a PTY exiting: the process exit code, or `null` when terminated by signal. */
@@ -204,6 +212,8 @@ export interface PtyTerminalOptions {
   readonly restartCwd?: string;
   /** Invoked for every output chunk, in emission order, with its assigned seq. */
   readonly onOutput: (output: PtyOutput) => void;
+  /** Invoked synchronously when a changed grid is enqueued, in the same order as output. */
+  readonly onGeometry?: (geometry: PtyGeometry) => void;
   /** Ring cap in bytes; defaults to {@link DEFAULT_RING_CAP_BYTES}. Tests pass a tiny cap. */
   readonly ringCapBytes?: number;
   /**
@@ -243,6 +253,7 @@ export class PtyTerminal {
   private readonly continuation: TerminalParserContinuation;
   private readonly ring: OutputRing;
   private readonly onOutput: (output: PtyOutput) => void;
+  private readonly onGeometry: ((geometry: PtyGeometry) => void) | undefined;
   private readonly onCwd: ((cwd: string) => void) | undefined;
   private processId: number | undefined;
   private runtimeBootstrap: { dev: number; ino: number } | undefined;
@@ -254,6 +265,8 @@ export class PtyTerminal {
 
   /** Highest output seq emitted so far; assigned AT EMISSION and strictly monotonic. */
   private currentSeq = 0;
+  /** Advances at resize enqueue; snapshots read dimensions inside their parser marker. */
+  private geometryRevision = 0;
   private colsValue: number;
   private rowsValue: number;
   private aliveFlag = true;
@@ -275,6 +288,7 @@ export class PtyTerminal {
     this.colsValue = opts.cols;
     this.rowsValue = opts.rows;
     this.onOutput = opts.onOutput;
+    this.onGeometry = opts.onGeometry;
     this.onCwd = opts.onCwd;
     this.originalCommand = opts.runtime ? undefined : [...command];
     this.originalEnvironment = opts.runtime
@@ -507,12 +521,20 @@ export class PtyTerminal {
     this.pty.write(data);
   }
 
-  /** Resizes both the PTY and its mirror so serialized geometry tracks the live terminal. */
+  /** Enqueues the mirror's resize in source order and publishes that boundary synchronously. */
   resize(cols: number, rows: number): void {
+    if (this.disposed || (this.colsValue === cols && this.rowsValue === rows)) return;
+    this.pty?.resize(cols, rows);
     this.colsValue = cols;
     this.rowsValue = rows;
-    this.pty?.resize(cols, rows);
-    this.mirror.write("", () => this.mirror.resize(cols, rows));
+    this.geometryRevision += 1;
+    this.mirror.write("", () => {
+      if (!this.disposed) this.mirror.resize(cols, rows);
+    });
+    this.onGeometry?.({
+      seq: this.currentSeq,
+      geometry: { cols, rows, revision: this.geometryRevision },
+    });
   }
 
   /**
@@ -584,7 +606,7 @@ export class PtyTerminal {
       );
     }
 
-    const availableScrollback = Math.max(0, this.mirror.buffer.normal.length - this.rowsValue);
+    const availableScrollback = Math.max(0, this.mirror.buffer.normal.length - this.mirror.rows);
     let includedScrollback = 0;
     let nextScrollback = 1;
     while (includedScrollback < availableScrollback) {
@@ -619,16 +641,15 @@ export class PtyTerminal {
   }
 
   /**
-   * Serializes the mirror at the current seq watermark. Because xterm parses writes
-   * asynchronously, we FIRST capture `seq`, THEN drain the parser with a zero-length write
-   * whose callback fires only after every write for outputs ≤ `seq` is parsed. Serialization
-   * MUST happen synchronously inside that callback: xterm may continue parsing already-queued
-   * outputs before a promise continuation runs, which would leak seq > S bytes into
-   * snapshot(S). The bounded serializer may omit old scrollback, but it cannot observe a
-   * post-marker output.
+   * Serializes the mirror at the current seq and geometry-revision watermark. The zero-length
+   * marker drains every preceding output and resize. Serialization and the actual grid MUST
+   * be read synchronously inside its callback: xterm may parse later queued work before a
+   * promise continuation runs. The bounded serializer may omit old scrollback, but cannot
+   * observe post-marker output or dimensions.
    */
   snapshot(): Promise<PtySnapshot> {
     const seq = this.currentSeq;
+    const revision = this.geometryRevision;
     const { promise, resolve, reject } = Promise.withResolvers<PtySnapshot>();
     // Avoid touching xterm at all when a request races with an already-completed exit.
     if (this.disposed) {
@@ -646,7 +667,11 @@ export class PtyTerminal {
       try {
         const text = Buffer.from(this.serializeBoundedSnapshot(), "utf8");
         const pending = this.continuation.pendingUtf8();
-        resolve({ seq, data: pending.length ? Buffer.concat([text, pending]) : text });
+        resolve({
+          seq,
+          data: pending.length ? Buffer.concat([text, pending]) : text,
+          geometry: { cols: this.mirror.cols, rows: this.mirror.rows, revision },
+        });
       } catch (error) {
         reject(error);
       }

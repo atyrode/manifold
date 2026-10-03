@@ -5,6 +5,8 @@ import {
   ServerToAgentMessageSchema,
   MAX_TERMINAL_VIEWPORTS,
   TERMINAL_VIEWPORT_LEASE_MS,
+  TERMINAL_GEOMETRY_PROTOCOL_VERSION,
+  type TerminalGeometry,
   type Container,
   type ServerToAgentMessage,
 } from "@manifold/protocol";
@@ -26,13 +28,14 @@ import {
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
   readonly terminalRestart = true;
-  readonly protocolVersion = PROTOCOL_VERSION;
   acceptResize = true;
 
   constructor(
     readonly machineId: string,
     readonly terminalHostId: string | null = null,
     readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined",
+    readonly terminalGeometry = false,
+    readonly protocolVersion = PROTOCOL_VERSION,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -53,7 +56,11 @@ class FakeMachine implements MachineChannel {
  * the right room. A canvas opener would be homed in a solo composition it is not joined to,
  * which is the lifecycle rule under test elsewhere, not the plumbing under test here.
  */
-function brokerSetup(terminalExecution: MachineChannel["terminalExecution"] = "unconfined") {
+function brokerSetup(
+  terminalExecution: MachineChannel["terminalExecution"] = "unconfined",
+  terminalGeometry = false,
+  protocolVersion = PROTOCOL_VERSION,
+) {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -93,7 +100,13 @@ function brokerSetup(terminalExecution: MachineChannel["terminalExecution"] = "u
     ),
   );
   const enrollment = auth.enrollMachine("fake", root);
-  const machine = new FakeMachine(enrollment.machine.id, null, terminalExecution);
+  const machine = new FakeMachine(
+    enrollment.machine.id,
+    null,
+    terminalExecution,
+    terminalGeometry,
+    protocolVersion,
+  );
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
   const opener = new SessionChannel(runtime.newId(), socket, root, container.id, "c1");
@@ -124,8 +137,8 @@ function fitPending(setup: ReturnType<typeof brokerSetup>, cols = 80, rows = 24)
 }
 
 /** {@link brokerSetup} plus the opener's first `terminal_open`, with the `create` it produced. */
-function openingFixture() {
-  const setup = brokerSetup();
+function openingFixture(terminalGeometry = false, protocolVersion = PROTOCOL_VERSION) {
+  const setup = brokerSetup("unconfined", terminalGeometry, protocolVersion);
   setup.broker.open(setup.opener, {
     type: "terminal_open",
     elementId: "terminal-1",
@@ -137,8 +150,8 @@ function openingFixture() {
   return { ...setup, create };
 }
 
-function brokerFixture() {
-  const fixture = openingFixture();
+function brokerFixture(terminalGeometry = false, protocolVersion = PROTOCOL_VERSION) {
+  const fixture = openingFixture(terminalGeometry, protocolVersion);
   fixture.broker.onCreated(fixture.machine.machineId, fixture.create.terminalId);
   fixture.socket.clear();
   fixture.machine.clear();
@@ -207,6 +220,55 @@ function withdrawViewport(
   });
 }
 
+function sourceGeometry(fixture: TerminalFixture, seq: number, geometry: TerminalGeometry): void {
+  fixture.broker.onGeometry(fixture.machine.machineId, {
+    type: "terminal_geometry",
+    terminalId: fixture.create.terminalId,
+    seq,
+    geometry,
+  });
+}
+
+function geometrySnapshot(
+  fixture: TerminalFixture,
+  seq: number,
+  geometry: TerminalGeometry,
+  data: string,
+): void {
+  fixture.broker.onSnapshot(fixture.machine.machineId, {
+    type: "geometry_snapshot",
+    terminalId: fixture.create.terminalId,
+    seq,
+    geometry,
+    data: encoded(data),
+  });
+}
+
+function terminalStream(socket: FakeSocket) {
+  return socket
+    .messages()
+    .filter(
+      (frame) =>
+        frame.type === "terminal_snapshot" ||
+        frame.type === "terminal_geometry" ||
+        frame.type === "terminal_output",
+    );
+}
+
+function geometryViewportFixture() {
+  const fixture = brokerFixture(true);
+  fixture.rooms.get(fixture.container.id)?.join(fixture.opener);
+  fixture.broker.attach(fixture.opener, {
+    type: "terminal_attach",
+    terminalId: fixture.create.terminalId,
+  });
+  geometrySnapshot(fixture, 0, { cols: 80, rows: 24, revision: 0 }, "initial");
+  fixture.clock.advance(5_000);
+  fixture.socket.clear();
+  fixture.machine.clear();
+  return fixture;
+}
+
 function sessionToken(create: Extract<ServerToAgentMessage, { type: "create" }>): string {
   const token = create.env.MANIFOLD_TOKEN;
   if (token === undefined) throw new Error("missing session token");
@@ -265,6 +327,544 @@ describe("TerminalBroker attach handoff", () => {
     expect(outputSeqs.some((seq) => seq <= 6)).toBe(false);
     fixture.store.close();
   });
+});
+
+describe("TerminalBroker owner-ordered geometry", () => {
+  test("PENDING handoff preserves mixed arrival order and independent output/geometry watermarks", () => {
+    const fixture = brokerFixture(true);
+    const terminalId = fixture.create.terminalId;
+    fixture.rooms.get(fixture.container.id)?.join(fixture.opener);
+    fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+    expect(fixture.machine.sent).toEqual([{ type: "geometry_snapshot_request", terminalId }]);
+    fixture.broker.onSnapshot(fixture.machine.machineId, {
+      type: "snapshot",
+      terminalId,
+      seq: 0,
+      data: encoded("wrong legacy response"),
+    });
+    expect(terminalStream(fixture.socket)).toEqual([]);
+    const output = (seq: number, data: string) =>
+      fixture.broker.onOutput(fixture.machine.machineId, {
+        type: "output",
+        terminalId,
+        seq,
+        data: encoded(data),
+      });
+    output(1, "covered");
+    sourceGeometry(fixture, 1, { cols: 60, rows: 18, revision: 1 });
+    output(2, "distinct bytes even when text repeats");
+    sourceGeometry(fixture, 2, { cols: 70, rows: 20, revision: 2 });
+    sourceGeometry(fixture, 2, { cols: 90, rows: 30, revision: 3 });
+    output(3, "distinct bytes even when text repeats");
+    sourceGeometry(fixture, 3, { cols: 100, rows: 35, revision: 4 });
+    output(4, "last tail");
+    expect(terminalStream(fixture.socket)).toEqual([]);
+    geometrySnapshot(fixture, 1, { cols: 60, rows: 18, revision: 1 }, "covered snapshot");
+    expect(terminalStream(fixture.socket)).toEqual([
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 1,
+        data: encoded("covered snapshot"),
+        geometry: { cols: 60, rows: 18, revision: 1 },
+      },
+      {
+        type: "terminal_output",
+        terminalId,
+        seq: 2,
+        data: encoded("distinct bytes even when text repeats"),
+      },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 2,
+        geometry: { cols: 70, rows: 20, revision: 2 },
+      },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 2,
+        geometry: { cols: 90, rows: 30, revision: 3 },
+      },
+      {
+        type: "terminal_output",
+        terminalId,
+        seq: 3,
+        data: encoded("distinct bytes even when text repeats"),
+      },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 3,
+        geometry: { cols: 100, rows: 35, revision: 4 },
+      },
+      { type: "terminal_output", terminalId, seq: 4, data: encoded("last tail") },
+    ]);
+    // The attaching snapshot is older than the room record, but neither replaces the other.
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { cols: 100, rows: 35 },
+    ]);
+    fixture.socket.clear();
+    for (const seq of [4, 3, 2]) output(seq, "late duplicate");
+    for (const revision of [4, 2, 1]) sourceGeometry(fixture, 3, { cols: 10, rows: 10, revision });
+    geometrySnapshot(fixture, 0, { cols: 80, rows: 24, revision: 0 }, "unsolicited old snapshot");
+    output(5, "new tail");
+    sourceGeometry(fixture, 5, { cols: 110, rows: 40, revision: 5 });
+    expect(terminalStream(fixture.socket)).toEqual([
+      { type: "terminal_output", terminalId, seq: 5, data: encoded("new tail") },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 5,
+        geometry: { cols: 110, rows: 40, revision: 5 },
+      },
+    ]);
+    fixture.store.close();
+  });
+
+  test("rapid desired changes do not publish admission or resend intermediate owner acknowledgements", () => {
+    const fixture = geometryViewportFixture();
+    const terminalId = fixture.create.terminalId;
+    const metadataSocket = new FakeSocket();
+    const metadata = new SessionChannel(
+      fixture.runtime.newId(),
+      metadataSocket,
+      fixture.root,
+      fixture.container.id,
+      "record-only",
+    );
+    fixture.rooms.get(fixture.container.id)?.join(metadata);
+    measureViewport(fixture, fixture.opener, "view", 40, 10);
+    measureViewport(fixture, fixture.opener, "view", 45, 11);
+    // Returning to the still-applied birth grid must cancel the newer requested target.
+    measureViewport(fixture, fixture.opener, "view", 80, 24);
+    expect(fixture.machine.sent).toEqual([
+      { type: "resize", terminalId, cols: 40, rows: 10 },
+      { type: "resize", terminalId, cols: 45, rows: 11 },
+      { type: "resize", terminalId, cols: 80, rows: 24 },
+    ]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { cols: 80, rows: 24 },
+    ]);
+    expect(fixture.socket.messages().filter((frame) => frame.type === "terminal_event")).toEqual(
+      [],
+    );
+    fixture.machine.clear();
+    for (const geometry of [
+      { cols: 40, rows: 10, revision: 1 },
+      { cols: 45, rows: 11, revision: 2 },
+      { cols: 80, rows: 24, revision: 3 },
+    ]) {
+      sourceGeometry(fixture, 0, geometry);
+      measureViewport(fixture, fixture.opener, "view", 80, 24);
+      expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+        { cols: geometry.cols, rows: geometry.rows },
+      ]);
+    }
+    expect(fixture.machine.sent).toEqual([]);
+    expect(
+      terminalStream(fixture.socket).map((frame) =>
+        frame.type === "terminal_geometry" ? [frame.seq, frame.geometry.revision] : frame.type,
+      ),
+    ).toEqual([
+      [0, 1],
+      [0, 2],
+      [0, 3],
+    ]);
+    expect(terminalStream(metadataSocket)).toEqual([]);
+    expect(metadataSocket.messages().filter((frame) => frame.type === "terminal_event")).toEqual([
+      { type: "terminal_event", terminalId, kind: "resized", cols: 40, rows: 10 },
+      { type: "terminal_event", terminalId, kind: "resized", cols: 45, rows: 11 },
+      { type: "terminal_event", terminalId, kind: "resized", cols: 80, rows: 24 },
+    ]);
+    fixture.store.close();
+  });
+
+  test("LIVE snapshot geometry filters late source duplicates without conflating its output seq", () => {
+    const fixture = brokerFixture(true);
+    const terminalId = fixture.create.terminalId;
+    fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+    geometrySnapshot(fixture, 10, { cols: 100, rows: 30, revision: 8 }, "snapshot ahead");
+    fixture.socket.clear();
+    sourceGeometry(fixture, 10, { cols: 10, rows: 10, revision: 8 });
+    sourceGeometry(fixture, 10, { cols: 50, rows: 12, revision: 9 });
+    sourceGeometry(fixture, 10, { cols: 80, rows: 24, revision: 10 });
+    for (const seq of [9, 10, 11, 11]) {
+      fixture.broker.onOutput(fixture.machine.machineId, {
+        type: "output",
+        terminalId,
+        seq,
+        data: encoded(`tail-${seq}`),
+      });
+    }
+    expect(terminalStream(fixture.socket)).toEqual([
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 10,
+        geometry: { cols: 50, rows: 12, revision: 9 },
+      },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 10,
+        geometry: { cols: 80, rows: 24, revision: 10 },
+      },
+      { type: "terminal_output", terminalId, seq: 11, data: encoded("tail-11") },
+    ]);
+    fixture.store.close();
+  });
+
+  for (const bound of ["frames", "bytes"] as const) {
+    test(`mixed PENDING ${bound} overflow retires the viewer and its viewport before a late snapshot`, () => {
+      const fixture = brokerFixture(true);
+      const terminalId = fixture.create.terminalId;
+      fixture.clock.advance(5_000);
+      const baselineJobs = fixture.clock.pendingJobs;
+      fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+      measureViewport(fixture, fixture.opener, "pending", 40, 10);
+      fixture.machine.clear();
+      if (bound === "frames") {
+        for (let seq = 1; seq <= 128; seq += 1) {
+          fixture.broker.onOutput(fixture.machine.machineId, {
+            type: "output",
+            terminalId,
+            seq,
+            data: encoded(`tail-${seq}`),
+          });
+          sourceGeometry(fixture, seq, { cols: 80 + (seq % 2), rows: 24, revision: seq });
+        }
+        expect(fixture.socket.messages().filter((frame) => frame.type === "error")).toEqual([]);
+        sourceGeometry(fixture, 128, { cols: 90, rows: 30, revision: 129 });
+      } else {
+        fixture.broker.onOutput(fixture.machine.machineId, {
+          type: "output",
+          terminalId,
+          seq: 1,
+          data: "YWFh".repeat((1_048_576 - 4) / 4),
+        });
+        expect(fixture.socket.messages().filter((frame) => frame.type === "error")).toEqual([]);
+        sourceGeometry(fixture, 1, { cols: 90, rows: 30, revision: 1 });
+      }
+      expect(fixture.socket.messages().at(-1)).toMatchObject({
+        type: "error",
+        code: "conflict",
+        ref: terminalId,
+      });
+      expect(fixture.clock.pendingJobs).toBe(baselineJobs);
+      geometrySnapshot(fixture, 0, { cols: 80, rows: 24, revision: 0 }, "too late");
+      expect(terminalStream(fixture.socket)).toEqual([]);
+      expect(fixture.machine.sent).toEqual([]);
+      fixture.store.close();
+    });
+  }
+
+  for (const failure of ["snapshot", "queued-geometry", "live-geometry"] as const) {
+    test(`failed ${failure} reliable delivery releases only the failing viewer`, () => {
+      const fixture = geometryViewportFixture();
+      const terminalId = fixture.create.terminalId;
+      measureViewport(fixture, fixture.opener, "survivor", 120, 40);
+      sourceGeometry(fixture, 0, { cols: 120, rows: 40, revision: 1 });
+      class DroppingGeometrySocket extends FakeSocket {
+        dropType: string | null = null;
+
+        override send(data: string): number {
+          const frame = JSON.parse(data) as { type: string };
+          return frame.type === this.dropType ? 0 : super.send(data);
+        }
+      }
+      const socket = new DroppingGeometrySocket();
+      const failed = new SessionChannel(
+        fixture.runtime.newId(),
+        socket,
+        fixture.root,
+        fixture.container.id,
+        "geometry-failure",
+        false,
+        (closing) => {
+          fixture.broker.detachAll(closing);
+          fixture.rooms.get(fixture.container.id)?.leave(closing);
+        },
+      );
+      fixture.rooms.get(fixture.container.id)?.join(failed);
+      fixture.broker.attach(failed, { type: "terminal_attach", terminalId });
+      if (failure === "live-geometry")
+        geometrySnapshot(fixture, 0, { cols: 120, rows: 40, revision: 1 }, "attached");
+      measureViewport(fixture, failed, "retiring", 60, 18);
+      socket.dropType = failure === "snapshot" ? "terminal_snapshot" : "terminal_geometry";
+      fixture.machine.clear();
+      if (failure === "live-geometry") {
+        sourceGeometry(fixture, 0, { cols: 60, rows: 18, revision: 2 });
+        expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 120, rows: 40 }]);
+        // Even failure cleanup cannot advertise the recovery request as applied.
+        expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+          { cols: 60, rows: 18 },
+        ]);
+        sourceGeometry(fixture, 0, { cols: 120, rows: 40, revision: 3 });
+      } else {
+        if (failure === "queued-geometry")
+          sourceGeometry(fixture, 0, { cols: 100, rows: 30, revision: 2 });
+        geometrySnapshot(fixture, 0, { cols: 120, rows: 40, revision: 1 }, "handoff");
+      }
+      expect(failed.isClosed).toBe(true);
+      expect(fixture.clock.pendingJobs).toBe(1);
+      fixture.machine.clear();
+      measureViewport(fixture, fixture.opener, "survivor", 125, 42);
+      expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 125, rows: 42 }]);
+      withdrawViewport(fixture, fixture.opener, "survivor");
+      expect(fixture.clock.pendingJobs).toBe(0);
+      fixture.store.close();
+    });
+  }
+
+  test("re-adoption discards the offline pending generation and keeps the owner's independent revision", () => {
+    const fixture = geometryViewportFixture();
+    const terminalId = fixture.create.terminalId;
+    sourceGeometry(fixture, 0, { cols: 60, rows: 18, revision: 1 });
+    fixture.broker.onOutput(fixture.machine.machineId, {
+      type: "output",
+      terminalId,
+      seq: 1,
+      data: encoded("before replacement attachment"),
+    });
+    fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+    sourceGeometry(fixture, 1, { cols: 80, rows: 16, revision: 2 });
+    fixture.broker.onOutput(fixture.machine.machineId, {
+      type: "output",
+      terminalId,
+      seq: 2,
+      data: encoded("old queued tail"),
+    });
+    fixture.broker.setMachineOffline(fixture.machine);
+    fixture.socket.clear();
+    sourceGeometry(fixture, 2, { cols: 10, rows: 10, revision: 99 });
+    geometrySnapshot(fixture, 2, { cols: 10, rows: 10, revision: 99 }, "offline old snapshot");
+    expect(terminalStream(fixture.socket)).toEqual([]);
+    const replacement = new FakeMachine(fixture.machine.machineId, null, "unconfined", true);
+    fixture.broker.setMachineOnline(replacement);
+    expect(
+      fixture.broker.adoptTerminal(replacement.machineId, {
+        terminalId,
+        alive: true,
+        cols: 80,
+        rows: 16,
+        seq: 2,
+      }),
+    ).toBe(true);
+    expect(replacement.sent).toEqual([{ type: "geometry_snapshot_request", terminalId }]);
+    sourceGeometry(fixture, 2, { cols: 100, rows: 30, revision: 3 });
+    fixture.broker.onOutput(replacement.machineId, {
+      type: "output",
+      terminalId,
+      seq: 3,
+      data: encoded("fresh adopted tail"),
+    });
+    geometrySnapshot(fixture, 2, { cols: 80, rows: 16, revision: 2 }, "adopted snapshot");
+    expect(terminalStream(fixture.socket)).toEqual([
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 2,
+        data: encoded("adopted snapshot"),
+        geometry: { cols: 80, rows: 16, revision: 2 },
+      },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 2,
+        geometry: { cols: 100, rows: 30, revision: 3 },
+      },
+      { type: "terminal_output", terminalId, seq: 3, data: encoded("fresh adopted tail") },
+    ]);
+    fixture.socket.clear();
+    sourceGeometry(fixture, 2, { cols: 10, rows: 10, revision: 2 });
+    expect(terminalStream(fixture.socket)).toEqual([]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { cols: 100, rows: 30 },
+    ]);
+    fixture.store.close();
+  });
+
+  test("replacement attach and process restart never replay geometry from the previous pending generation", async () => {
+    const fixture = geometryViewportFixture();
+    const terminalId = fixture.create.terminalId;
+    sourceGeometry(fixture, 0, { cols: 100, rows: 30, revision: 8 });
+    fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+    fixture.broker.onOutput(fixture.machine.machineId, {
+      type: "output",
+      terminalId,
+      seq: 1,
+      data: encoded("discarded by replacement snapshot"),
+    });
+    sourceGeometry(fixture, 1, { cols: 90, rows: 28, revision: 9 });
+    fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+    fixture.socket.clear();
+    geometrySnapshot(fixture, 1, { cols: 90, rows: 28, revision: 9 }, "old request");
+    expect(terminalStream(fixture.socket)).toEqual([]);
+    geometrySnapshot(fixture, 1, { cols: 90, rows: 28, revision: 9 }, "replacement snapshot");
+    expect(terminalStream(fixture.socket)).toEqual([
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 1,
+        data: encoded("replacement snapshot"),
+        geometry: { cols: 90, rows: 28, revision: 9 },
+      },
+    ]);
+    fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+    sourceGeometry(fixture, 1, { cols: 100, rows: 30, revision: 10 });
+    const restarted = fixture.broker.restartById(
+      terminalId,
+      fixture.root.principal.id,
+      fixture.auth.credentialReference(fixture.root),
+    );
+    fixture.broker.onRestarted(fixture.machine.machineId, {
+      type: "terminal_restarted",
+      terminalId,
+    });
+    expect(await restarted).toBe("ok");
+    fixture.socket.clear();
+    sourceGeometry(fixture, 0, { cols: 70, rows: 20, revision: 1 });
+    fixture.broker.onOutput(fixture.machine.machineId, {
+      type: "output",
+      terminalId,
+      seq: 1,
+      data: encoded("new process first bytes"),
+    });
+    geometrySnapshot(fixture, 0, { cols: 100, rows: 30, revision: 0 }, "new process snapshot");
+    expect(terminalStream(fixture.socket)).toEqual([
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("new process snapshot"),
+        geometry: { cols: 100, rows: 30, revision: 0 },
+      },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 0,
+        geometry: { cols: 70, rows: 20, revision: 1 },
+      },
+      { type: "terminal_output", terminalId, seq: 1, data: encoded("new process first bytes") },
+    ]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { cols: 70, rows: 20 },
+    ]);
+    fixture.store.close();
+  });
+
+  test("a restarted owner's revision-zero snapshot replaces retained metadata with its actual birth grid", async () => {
+    const fixture = geometryViewportFixture();
+    const terminalId = fixture.create.terminalId;
+    sourceGeometry(fixture, 0, { cols: 100, rows: 30, revision: 8 });
+    const restarted = fixture.broker.restartById(
+      terminalId,
+      fixture.root.principal.id,
+      fixture.auth.credentialReference(fixture.root),
+    );
+    fixture.broker.onRestarted(fixture.machine.machineId, {
+      type: "terminal_restarted",
+      terminalId,
+    });
+    expect(await restarted).toBe("ok");
+    fixture.socket.clear();
+    geometrySnapshot(fixture, 0, { cols: 80, rows: 24, revision: 0 }, "fresh birth");
+    expect(terminalStream(fixture.socket)).toEqual([
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("fresh birth"),
+        geometry: { cols: 80, rows: 24, revision: 0 },
+      },
+    ]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { cols: 80, rows: 24 },
+    ]);
+    fixture.socket.clear();
+    sourceGeometry(fixture, 0, { cols: 70, rows: 20, revision: 1 });
+    expect(terminalStream(fixture.socket)).toEqual([
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 0,
+        geometry: { cols: 70, rows: 20, revision: 1 },
+      },
+    ]);
+    fixture.store.close();
+  });
+
+  for (const capability of [
+    { supported: false, protocolVersion: PROTOCOL_VERSION },
+    { supported: true, protocolVersion: TERMINAL_GEOMETRY_PROTOCOL_VERSION - 1 },
+  ]) {
+    test(`legacy projection remains explicit for support=${capability.supported}, version=${capability.protocolVersion}`, () => {
+      const fixture = brokerFixture(capability.supported, capability.protocolVersion);
+      const terminalId = fixture.create.terminalId;
+      fixture.rooms.get(fixture.container.id)?.join(fixture.opener);
+      fixture.broker.attach(fixture.opener, { type: "terminal_attach", terminalId });
+      expect(fixture.machine.sent).toEqual([{ type: "snapshot_request", terminalId }]);
+      sourceGeometry(fixture, 0, { cols: 10, rows: 10, revision: 1 });
+      geometrySnapshot(fixture, 0, { cols: 10, rows: 10, revision: 1 }, "unsupported response");
+      expect(terminalStream(fixture.socket)).toEqual([]);
+      fixture.broker.onSnapshot(fixture.machine.machineId, {
+        type: "snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("legacy"),
+      });
+      expect(terminalStream(fixture.socket)).toEqual([
+        {
+          type: "terminal_snapshot",
+          terminalId,
+          seq: 0,
+          data: encoded("legacy"),
+          geometry: { cols: 80, rows: 24, revision: null },
+        },
+      ]);
+      fixture.socket.clear();
+      measureViewport(fixture, fixture.opener, "legacy-view", 55, 17);
+      expect(terminalStream(fixture.socket)).toEqual([
+        {
+          type: "terminal_geometry",
+          terminalId,
+          seq: 0,
+          geometry: { cols: 55, rows: 17, revision: null },
+        },
+      ]);
+      const pendingSocket = new FakeSocket();
+      const pending = new SessionChannel(
+        fixture.runtime.newId(),
+        pendingSocket,
+        fixture.root,
+        fixture.container.id,
+        "legacy-pending",
+      );
+      fixture.broker.attach(pending, { type: "terminal_attach", terminalId });
+      measureViewport(fixture, fixture.opener, "legacy-view", 60, 20);
+      expect(terminalStream(pendingSocket)).toEqual([]);
+      fixture.broker.onSnapshot(fixture.machine.machineId, {
+        type: "snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("legacy pending snapshot"),
+      });
+      expect(terminalStream(pendingSocket)).toEqual([
+        {
+          type: "terminal_snapshot",
+          terminalId,
+          seq: 0,
+          data: encoded("legacy pending snapshot"),
+          geometry: { cols: 60, rows: 20, revision: null },
+        },
+      ]);
+      expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+        { cols: 60, rows: 20 },
+      ]);
+      fixture.store.close();
+    });
+  }
 });
 
 describe("TerminalBroker viewport arbitration", () => {
@@ -384,6 +984,12 @@ describe("TerminalBroker viewport arbitration", () => {
     expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 130, rows: 45 }]);
     expect(fixture.socket.messages()).toEqual([
       { type: "terminal_event", terminalId, kind: "resized", cols: 130, rows: 45 },
+      {
+        type: "terminal_geometry",
+        terminalId,
+        seq: 0,
+        geometry: { cols: 130, rows: 45, revision: null },
+      },
       {
         type: "terminal_sizing",
         terminalId,
@@ -520,6 +1126,7 @@ describe("TerminalBroker viewport arbitration", () => {
       "terminal_snapshot",
       "terminal_output",
       "terminal_event",
+      "terminal_geometry",
       "terminal_sizing",
     ]);
     expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 70, rows: 18 }]);
@@ -913,7 +1520,13 @@ describe("TerminalBroker viewport arbitration", () => {
           (message) => message.type === "terminal_snapshot" || message.type === "terminal_output",
         ),
     ).toEqual([
-      { type: "terminal_snapshot", terminalId, seq: 0, data: encoded("replacement") },
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("replacement"),
+        geometry: { cols: 60, rows: 18, revision: null },
+      },
       { type: "terminal_output", terminalId, seq: 1, data: encoded("between-mounts") },
     ]);
     expect(fixture.clock.pendingJobs).toBe(0);
@@ -2685,7 +3298,13 @@ describe("TerminalBroker restart in place", () => {
         cwd: "/original",
         fallback: "original",
       },
-      { type: "terminal_snapshot", terminalId, seq: 0, data: encoded("fresh") },
+      {
+        type: "terminal_snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("fresh"),
+        geometry: { cols: 80, rows: 24, revision: null },
+      },
       { type: "terminal_output", terminalId, seq: 1, data: encoded("new") },
     ]);
     f.store.close();

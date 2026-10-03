@@ -50,9 +50,12 @@ in the same change. `@manifold/protocol` is the only place wire types exist; no 
 types outside it. No package imports another package's internals — only workspace package roots.
 
 Every message handler validates with the zod schema before acting, except that the SDK
-MAY structurally validate inbound `terminal_output`/`terminal_snapshot` (type tag,
-nonempty `terminalId`, nonnegative integer `seq`, and string `data` bounded to 700,000
-characters) instead of rerunning zod's base64-alphabet check. The SDK MAY likewise skip
+MAY structurally validate inbound `terminal_output`/`terminal_snapshot`/`terminal_geometry`
+(type tag, nonempty channel and `terminalId`, nonnegative safe-integer `seq`) instead of
+rerunning zod. Output and snapshot `data` must be a string bounded to 700,000 characters,
+without rescanning its base64 alphabet. Snapshot and geometry frames also require bounded
+positive integer `cols`/`rows` and a nonnegative safe-integer or explicit `null` geometry
+revision. The SDK MAY likewise skip
 full zod parsing for the SDK-constructed outbound `cursor` and `terminal_input` hot
 paths. The server still performs full schema validation at the untrusted boundary, and
 every other frame keeps full schema validation on both sides. Unknown message types are
@@ -2723,9 +2726,9 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 53 admits bundle stamps 47, 48, 51, 52 and 53 because the
-shared plugin ABI is preserved; remote recipient admission changes the instance wire, while
-direct-service accounting remains optional call/result metadata. A prior stamp
+the current wire version. Protocol 56 admits bundle stamps 47, 48, 51, 52, 53, 54, 55 and 56:
+terminal geometry adds a subscription without changing existing plugin call signatures, and
+portable Worker projections expose no terminal byte/snapshot subscriptions. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -4143,27 +4146,45 @@ opaque literal validation deliberately remains at that effect boundary.
   is `error { code:"not_found" }`. A canvas showing a terminal through a portal therefore joins
   the home's room on its own channel instead of streaming terminal bytes over the canvas's.
 - **Attach state machine (no-gap invariant).** On `terminal_attach { terminalId }`:
-  1. server registers the viewer as PENDING and starts queueing that terminal's live
-     `output` frames for it (nothing is sent yet);
-  2. server sends the agent `snapshot_request`, forwarded to the terminal host;
-  3. terminal host serializes its headless mirror at its current byte-sequence `S` (same ordered
-     pipeline as output emission — an output emitted before the snapshot has seq ≤ S);
-  4. server sends the viewer `terminal_snapshot { terminalId, seq: S, data }`, flushes
-     queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
-     Viewer byte stream ≡ snapshot(S) + outputs(S+1…). e2e MUST assert mid-stream attach
-     contiguity (counter test), repeated ≥10×.
+  1. server registers the viewer as PENDING and queues live output and source geometry in
+     one arrival-ordered FIFO (nothing is sent yet), bounded to 256 frames and 1MiB;
+  2. for a capable owner through a protocol-56-or-newer transport, the server sends
+     `geometry_snapshot_request`, forwarded to the terminal host;
+  3. the host captures byte-sequence `S` and geometry revision `G` when placing its parser
+     marker. Inside that marker it serializes the mirror's actual dimensions and bytes.
+     A later requested resize must not alter that earlier snapshot or its history bound;
+  4. server sends `terminal_snapshot { terminalId, seq: S, data, geometry: { cols, rows,
+revision: G } }`, then filters the FIFO independently: retain outputs with `seq > S`
+     and geometry with `revision > G`, preserving their original mixed order. It then marks
+     the viewer LIVE. Sorting by byte seq is invalid: several idle geometry changes can
+     share one seq. LIVE delivery independently rejects already-covered bytes and geometry.
+     Failed delivery or queue overflow fails the handoff rather than silently losing a frame.
+     Viewer byte stream remains snapshot(S) + outputs(S+1…); geometry never consumes an
+     output sequence number, rewrites bytes or deduplicates equal output payloads.
+     e2e MUST assert mid-stream attach contiguity (counter test), repeated ≥10×.
      A known running terminal retains its channel attachment when its owner transport is
      unavailable, including a viewer first mounted offline or disconnected before its first
      snapshot. No snapshot deadline runs against an offline owner. Exact retained-owner
      adoption re-pends the same viewers and heals their ordered stream without another mount
      or room reconnect; detach, channel closure and authority withdrawal retain their bounds.
+- **Source-ordered geometry.** The owner begins at geometry revision zero and advances it
+  synchronously when a changed resize is enqueued, emitting
+  `terminal_geometry { terminalId, seq, geometry: { cols, rows, revision } }` at that same
+  source boundary. Its mirror and current viewers enqueue the same bytes and resizes in
+  that order; their parser clocks need not run together. This is not output backpressure.
+  A process restart resets the counters and fences the old process's queued work.
 - **Snapshot geometry.** Before a tiled PTY exists, a viewer MAY construct an unpainted local
-  xterm grid solely to measure its host; that placeholder is never process geometry. The winning
-  fit becomes the advertised terminal `cols`/`rows`. After birth, a viewer MUST construct or
-  synchronize xterm to those advertised dimensions and replay the serialized snapshot before
-  fitting to its canvas element. Serialized cursor movement is geometry-dependent; fitting first
-  can corrupt wrapping after a container switch or reload. After replay, the viewer fits once
-  rendering settles and an eligible controller view reports its desired geometry.
+  xterm solely to measure its host; that placeholder is never process geometry. After birth,
+  only a snapshot or source geometry frame resizes the painted parser, through its write
+  queue. `terminal_event { kind: "resized" }` and React terminal-record updates are metadata,
+  never a second rendering command. A snapshot's CAN/reset barrier installs its own grid
+  before replay, not the possibly newer room record's grid; asynchronous image cancellation
+  remains part of that barrier. A same-byte-watermark handoff may preserve the existing
+  buffer, selection and modes only when geometry revision AND dimensions also match.
+  After replay settles, an eligible controller view may report its desired viewport.
+  The real-browser terminal-mirror proof compares full live and restored buffers during
+  numbered output and relative redraw across concurrent resize, mid-stream attach, reload
+  and physical reconnect. Application/reflow artifacts must agree, not be heuristically removed.
 - **Client-side viewer pairing.** The viewer registry above is **channel-scoped** (one
   `Viewer` per room membership, which before v12 was one per socket). A client presenting
   several renderers of one terminal on that channel sends `terminal_attach` on every mount:
@@ -4204,9 +4225,11 @@ opaque literal validation deliberately remains at that effect boundary.
   If the native owner refuses a changed grid, retire the current sizing intents and their
   expiry timer, retain the last successful grid and publish retained/empty attribution.
   A fresh measurement must re-enter admission; desired geometry never explains an unapplied grid.
-  Changed grids send the existing machine resize and home-room
-  `terminal_event { kind:"resized", cols, rows }`; unchanged grids send no duplicate native
-  resize. Attribution changes still publish `terminal_sizing { terminalId, sizing }`,
+  Changed desired grids send the machine resize; the last successfully sent request is tracked
+  separately from owner-applied metadata so delayed acknowledgements cannot resend stale grids.
+  Source geometry updates the applied grid and home-room `terminal_event { kind:"resized",
+cols, rows }`; unchanged desired grids send no duplicate native resize. Attribution changes
+  still publish `terminal_sizing { terminalId, sizing }`,
   including on attachment: `{ mode: "smallest" | "retained", columns, rows }`, where each
   array contains only `{ connId, viewportId }`. Retained mode has no limiting references.
   This state is ephemeral, absent from retained TerminalInfo/scene/HTTP records.
@@ -4320,7 +4343,7 @@ opaque literal validation deliberately remains at that effect boundary.
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
 Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals,
-terminalHostId?, terminalExecution?, terminalRestart?, jobOwner?, physicalCoreCount? }`, where `terminals` advertises retained PTYs
+terminalHostId?, terminalExecution?, terminalRestart?, terminalGeometry?, jobOwner?, physicalCoreCount? }`, where `terminals` advertises retained PTYs
 `{ terminalId, cols, rows, alive, seq, exitCode?, cwd?, readiness? }` (server-restart adoption).
 `terminalHostId` identifies the terminal host PROCESS, stable across transport replacements
 and fresh on host restart; it is not the machine token or a durable terminal checkpoint. An
@@ -4334,8 +4357,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}`; session/browser joins remain strictly
-current at protocol 53. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56}`; session/browser joins remain strictly
+current at protocol 56. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -4346,6 +4369,18 @@ Protocol 52's monetary service policies, invocation context and native charge re
 both machine transport 52 and owner RPC 44. An older admitted transport keeps its ordinary
 work, receives no incompatible monetary policy, and cannot admit a bounded direct call.
 Owner capability alone does not attest the intervening strict parser.
+
+**Ordered terminal geometry (protocol 56).** `terminalGeometry: true` attests support from
+the currently seated retained owner, not merely from its new transport. The hub requires
+both that capability and transport protocol56 before sending `geometry_snapshot_request`
+or accepting source geometry. Older admitted transports and owners retain their exact
+`snapshot_request`/`snapshot` path, bytes, process continuity and broker-admitted resizing.
+Their current viewer snapshots and live resize projections carry `geometry.revision: null`;
+pending legacy geometry is covered by the latest broker grid rather than a fictitious source
+revision. This deliberately weaker contract cannot prove resize/output/snapshot agreement.
+Transport replacement alone cannot upgrade an old owner. The stronger guarantee requires a
+capable owner through independently authorized normal maintenance; no fleet restart, owner
+stop or activation authority follows from this source change.
 
 **Live physical topology (#939, protocol 48).** The transport observes `physicalCoreCount`
 afresh while constructing each hello, including every reconnect. On Linux it reads
@@ -4494,7 +4529,8 @@ The downstream pin cron independently holds candidates newer than the deployed p
 protocol, so a development-only release does not silently upgrade production or its agents.
 
 Server→agent: `create { terminalId, cols, rows, cwd?, env, program? }`, `input { terminalId,
-data }`, `resize`, `kill`, `snapshot_request { terminalId }`, `ping`,
+data }`, `resize`, `kill`, `snapshot_request { terminalId }`,
+`geometry_snapshot_request { terminalId }` (capable protocol55 owners only), `ping`,
 `drain { requestId, draining }` (terminal-host-capable agents only),
 `repository_query { requestId, path }` (protocol-31 agents only; an older transport is refused
 at the door instead, because it would ignore the frame as an unknown type). `create.env` is the
@@ -4505,7 +4541,10 @@ unrunnable `argv[0]` or missing launch path is a bounded machine-local `create_e
 `ENOENT` names both possible causes, never a shell standing in for the program.
 Agent→server: `created { terminalId }` | `create_error { terminalId, message }`,
 `output { terminalId, seq, data }` (seq: monotonic per terminal, assigned at emission),
-`snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode, exitReason? }`, `pong`,
+`snapshot { terminalId, seq, data }`,
+`geometry_snapshot { terminalId, seq, data, geometry }`,
+`terminal_geometry { terminalId, seq, geometry }` (the last two require negotiated geometry),
+`exited { terminalId, exitCode, exitReason? }`, `pong`,
 `drain_status { requestId, terminalHostId, draining, terminalIds }`,
 `repository_fact { requestId, fact }` — exactly one per `repository_query`, correlated by id;
 an answer whose id nobody holds is dropped and logged, never believed.
@@ -5555,6 +5594,14 @@ Known malformed frames close the connection; unknown types are ignored for build
 Frames are bounded to 1MiB and the write queue to 8MiB; overflow disconnects rather than
 growing memory without bound.
 
+Ordered geometry keeps IPC version3 and every pre-existing known frame byte-identical.
+Only a seated transport receives the new `terminal_geometry_supported` event immediately
+before its unchanged `status` reply; observers and maintenance clients receive no capability
+event. Capability belongs to that seat and is cleared on replacement; stale seats cannot
+establish it. New transports never send a geometry snapshot command to an owner that has not
+advertised support. Older transports ignore the new event types and continue using legacy
+snapshot commands and replies; the status inventory itself asserts no initial geometry revision.
+
 An observer can send `status_request` and receives
 `status { terminalHostId, terminalHostProtocolVersion, build, pid, draining,
 terminalExecution?, terminalRestart?, transportAttached, terminals }`, including exited-but-retained terminals.
@@ -5627,12 +5674,12 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
-Governed jobs and streams expand the closed capability and reference vocabularies, so protocol 27
-independently resets instance acceptance; older instances cannot decode that governed wire.
-Federation peers require a coordinated upgrade, independently of the machine channel's retained
-terminal-agent compatibility. This is not an implicit live rollout or authorization to install
+Protocol53 reset instance acceptance for explicit host-recipient admission and finite
+ticket subset/expiry. Protocols 54, 55 and 56 leave that instance wire unchanged and add their
+versions without another peer reset. Federation compatibility remains independent of
+retained terminal-agent compatibility. This is not an implicit live rollout or authorization to install
 newer agents ahead of their hub.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal

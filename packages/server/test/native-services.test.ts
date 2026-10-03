@@ -13,6 +13,7 @@ import {
   IsolateCtxMethodSchema,
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
   CREDENTIAL_ENROLLMENT_TTL_MS,
   CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
@@ -350,7 +351,8 @@ test.each([
       if (failure === "old-owner") f.prove();
       else f.service.online(f.channel, f.owner, "epoch");
     }
-    if (failure === "old-transport") f.channel.protocolVersion = PROTOCOL_VERSION - 1;
+    if (failure === "old-transport")
+      f.channel.protocolVersion = MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION - 1;
     if (failure === "unknown-transport") f.channel.protocolVersion = PROTOCOL_VERSION + 1;
     if (failure === "no-transport") delete f.channel.protocolVersion;
     if (failure === "missing-key") delete f.owner.credentialEnrollment;

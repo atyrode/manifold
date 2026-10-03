@@ -263,3 +263,61 @@ describe("terminal owner exit reasons", () => {
     expect(TerminalInfoSchema.safeParse(withoutReason).success).toBe(false);
   });
 });
+
+describe("terminal geometry boundaries", () => {
+  test("owner geometry is bounded and never claims the legacy null revision", () => {
+    const boundary = {
+      type: "terminal_geometry",
+      terminalId: "t1",
+      seq: 0,
+      geometry: { cols: 1, rows: 1000, revision: 0 },
+    };
+    expect(AgentMessageSchema.safeParse(boundary).success).toBe(true);
+    for (const geometry of [
+      { cols: 0, rows: 24, revision: 0 },
+      { cols: 80, rows: 1001, revision: 0 },
+      { cols: 1.5, rows: 24, revision: 0 },
+      { cols: 80, rows: 24, revision: -1 },
+      { cols: 80, rows: 24, revision: 1.5 },
+      { cols: 80, rows: 24, revision: null },
+      { cols: 80, rows: 24 },
+    ]) {
+      expect(AgentMessageSchema.safeParse({ ...boundary, geometry }).success).toBe(false);
+      expect(
+        AgentMessageSchema.safeParse({
+          ...boundary,
+          type: "geometry_snapshot",
+          data: btoa("screen"),
+          geometry,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  test("current viewers require snapshot geometry and distinguish retained legacy owners", () => {
+    const snapshot = { type: "terminal_snapshot", terminalId: "t1", seq: 7, data: btoa("screen") };
+    expect(ServerMessageBodySchema.safeParse(snapshot).success).toBe(false);
+    for (const revision of [0, 8, null]) {
+      expect(
+        ServerMessageBodySchema.safeParse({
+          ...snapshot,
+          geometry: { cols: 80, rows: 24, revision },
+        }).success,
+      ).toBe(true);
+    }
+    for (const revision of [-1, 0.5, "8", undefined]) {
+      expect(
+        ServerMessageBodySchema.safeParse({
+          ...snapshot,
+          geometry: { cols: 80, rows: 24, revision },
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      ServerMessageBodySchema.safeParse({
+        ...snapshot,
+        geometry: { cols: 80, rows: 0, revision: null },
+      }).success,
+    ).toBe(false);
+  });
+});
