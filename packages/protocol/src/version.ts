@@ -1,12 +1,12 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 56;
+export const PROTOCOL_VERSION = 57;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
  * Protocol 56 adds terminal stream geometry without changing prior plugin call signatures.
  * Private credential entry adds no plugin secret/value interface or hardened contract change.
  * Session authority, correlated scopes and subscription ordering require the current SDK.
- * Protocol 56 changes session document representation, not the admitted plugin ABI.
+ * Protocol 57 changes session document representation, not the admitted plugin ABI.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
@@ -19,6 +19,7 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
   "54",
   "55",
   "56",
+  "57",
 ]);
 
 /**
@@ -499,15 +500,15 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * new-type support and geometry events are ignored by older transports. Instance wire and
  * native-owner RPC are unchanged; their supported peers do not require a fleet restart.
  *
- * v56: independently retained collaborative text records and declared element
+ * v57: independently retained collaborative text records and declared element
  * representations replace inline note bodies (issue #263). Strict session admission fences
  * pre-cutover document replicas; historical room epochs remain unchanged. Machine, instance,
  * native-owner and terminal-host frames and adoption are unchanged, so machine and instance
- * compatibility sets add 56.
+ * compatibility sets add 57.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
-  56,
+  56, 57,
 ]);
 
 /**
@@ -571,9 +572,9 @@ export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
  * v53 requires explicit host-recipient admission and ticket subset/expiry fields; reset
  * the instance set so old ambient-admission peers cannot resume through the new contract.
  * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
- * v56 changes only session document representation; the instance wire is unchanged.
+ * v57 changes only session document representation; the instance wire is unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56, 57]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
