@@ -365,7 +365,7 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
     clients.push(narrowRemote);
     if (narrowRemote.self === null) throw new Error("narrowed viewer has no self");
     const narrowSelf = narrowRemote.self;
-    canvas.transact((tx) => tx.create(textElement("el-after-narrowing", "still readable")));
+    canvas.transact((tx) => tx.create(drawElement("el-after-narrowing", [0, 0, 60, 40])));
     await waitFor(() => narrowRemote.elements.has("el-after-narrowing"), 10_000, 20);
     expect(remotePty.self?.origin).toBe(instanceOrigin(guest));
     const independentAfterNarrowing = await remotePty.terminalsByContainer();
@@ -403,7 +403,7 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
       reconnect: false,
     });
     clients.push(restored);
-    restored.transact((tx) => tx.create(textElement("el-reapproved", "explicitly reapproved")));
+    restored.transact((tx) => tx.create(drawElement("el-reapproved", [10, 20, 40, 60])));
     await waitFor(() => canvas.elements.has("el-reapproved"), 10_000, 20);
     await expect(openDial(guest, deniedVisitor.token, dial.id)).rejects.toThrow(
       "recipient_unapproved",
