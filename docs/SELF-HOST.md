@@ -974,6 +974,12 @@ works today with no code (mechanics in the section below). Be exact about what i
 buys: it authenticates the EDGE. Behind it manifold still sees one owner and still
 cannot distinguish two humans holding the same key.
 
+Proposed design only, not implemented: manifold has no built-in OIDC sign-in, and no
+`MANIFOLD_OIDC_*` setting exists. [ADR 0060](decisions/0060-oidc-human-admission.md) proposes a
+relying party with an external Keycloak reference setup; until it ships and is documented here,
+the proxy mode above is the supported way to put authentication in front of manifold, and the
+owner key stays the recovery path.
+
 The reasoning is recorded in `docs/decisions/0019-identity-posture.md`.
 
 ### HTTP response hardening
