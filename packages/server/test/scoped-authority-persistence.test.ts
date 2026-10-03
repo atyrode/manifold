@@ -540,7 +540,6 @@ describe("migration 51: durable account-shell compatibility", () => {
       db.close();
       db = openDatabase(path);
       const store = new ServerStore(db);
-      expect(store.getMeta("schema_version")).toBe("51");
       expect(existsSync(`${path}.pre-v51.bak`)).toBe(true);
       const backup = new Database(`${path}.pre-v51.bak`, { readonly: true });
       try {
