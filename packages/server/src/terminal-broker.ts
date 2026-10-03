@@ -4,10 +4,16 @@ import {
   canonicalJobJson,
   TERMINAL_RESTART_PROTOCOL_VERSION,
   TERMINAL_GEOMETRY_PROTOCOL_VERSION,
+  MAX_TERMINAL_DELIVERY_PENDING_BYTES,
+  MAX_TERMINAL_DELIVERY_PENDING_FRAMES,
+  MAX_TERMINAL_DELIVERY_UNACKED_BYTES,
+  MAX_TERMINAL_DELIVERY_UNACKED_FRAMES,
   MAX_TERMINAL_VIEWPORTS,
   TERMINAL_VIEWPORT_LEASE_MS,
   MANIFOLD_ROOT_URI,
+  ServerMessageBodySchema,
   formatManifoldUri,
+  terminalDeliveryCharge,
   type LaunchRunRequest,
   type LaunchRunResult,
   type TerminalRuntime,
@@ -21,6 +27,9 @@ import {
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalInfo,
+  type TerminalDeliveryFrame,
+  type TerminalDeliveryRefusal,
+  type TerminalDeliveryState,
   type TerminalGeometry,
   type TerminalReadiness,
   type TerminalExecution,
@@ -39,12 +48,7 @@ import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PlaceExecutor, TerminalPlacementPort } from "./placement.ts";
 import type { RoomManager, RoomTimers, TileTreeDisciplines } from "./room.ts";
-import {
-  serializeServerMessage,
-  type SerializedServerMessage,
-  type ChannelMessage,
-  type SessionChannel,
-} from "./session-channel.ts";
+import type { SerializedServerMessage, SessionChannel } from "./session-channel.ts";
 import type { ServerStore, TerminalLaunchRecipe } from "./stores.ts";
 import type { JobService } from "./job-service.ts";
 import {
@@ -61,17 +65,23 @@ import { requireActionEffects } from "./action-preparation-phase.ts";
 type TerminalOpen = Extract<ClientMessageBody, { type: "terminal_open" }>;
 type TerminalAttach = Extract<ClientMessageBody, { type: "terminal_attach" }>;
 type TerminalDetach = Extract<ClientMessageBody, { type: "terminal_detach" }>;
+type TerminalAck = Extract<ClientMessageBody, { type: "terminal_ack" }>;
 type TerminalInput = Extract<ClientMessageBody, { type: "terminal_input" }>;
 type TerminalResize = Extract<ClientMessageBody, { type: "terminal_resize" }>;
 type TerminalTake = Extract<ClientMessageBody, { type: "terminal_take" }>;
 type OutputFrame = Extract<AgentMessage, { type: "output" }>;
 type SnapshotFrame = Extract<AgentMessage, { type: "snapshot" | "geometry_snapshot" }>;
 type OwnerGeometryFrame = Extract<AgentMessage, { type: "terminal_geometry" }>;
-type GeometryFrame = Extract<ChannelMessage, { type: "terminal_geometry" }>;
-type StreamFrame = OutputFrame | GeometryFrame;
+/** The view-independent part of a delivery frame; each view stamps its own delivery fields. */
+type Unstamped<T extends TerminalDeliveryFrame["type"]> = Omit<
+  Extract<TerminalDeliveryFrame, { type: T }>,
+  "viewportId" | "deliveryId" | "deliverySeq" | "skipped"
+>;
+type StreamFrame = Unstamped<"terminal_output"> | Unstamped<"terminal_geometry">;
+type DeliveryStamp = Pick<TerminalDeliveryFrame, "viewportId" | "deliveryId" | "deliverySeq"> & {
+  readonly skipped?: boolean;
+};
 
-const PENDING_STREAM_FRAMES = 256;
-const PENDING_STREAM_BYTES = 1_048_576;
 const CREATE_DEADLINE_MS = 10_000;
 const SNAPSHOT_DEADLINE_MS = 10_000;
 const DRAIN_DEADLINE_MS = 10_000;
@@ -109,21 +119,52 @@ interface PendingDrain {
   cancelDeadline: (() => void) | null;
 }
 
+/**
+ * One incarnation of a view's delivery, minted with its snapshot. `unacked` holds the charge of
+ * every sent, unacknowledged frame in ordinal order, so entry 0 is ordinal
+ * `nextSeq - unacked.length`; that bounded list is all a cumulative acknowledgement needs.
+ */
+interface Delivery {
+  readonly id: string;
+  nextSeq: number;
+  readonly unacked: number[];
+  unackedBytes: number;
+  /** The last state this view was told; a snapshot itself announces `live`. */
+  notice: Exclude<TerminalDeliveryState, "refused">;
+}
+
+/**
+ * One attached view: `(channel, viewportId)`. Views of one terminal on one channel are
+ * independent deliveries, so a parser that stalls one never holds back its sibling.
+ *
+ * PENDING awaits a snapshot generation and queues the post-request tail. LIVE sends its
+ * ordered lane under completed-parse credit and holds the rest in `queue`. RECOVERING has
+ * discarded that held output and waits for every frame already sent to complete before it
+ * asks for a fresh snapshot, so a new snapshot can never be used to evade outstanding credit.
+ */
 interface Viewer {
-  state: "PENDING" | "LIVE";
+  readonly viewportId: string;
+  state: "PENDING" | "LIVE" | "RECOVERING";
+  /** Ordered unsent frames, bounded by the pending window in charge units and frames. */
   queue: StreamFrame[];
   queuedBytes: number;
   cancelSnapshotDeadline: (() => void) | null;
   snapshotGeneration: number;
+  /** Source watermarks already admitted to this view's lane, sent or held. */
   lastDeliveredSeq: number;
   lastDeliveredGeometryRevision: number;
   credential: CredentialReference;
-  viewports: Map<string, { cols: number; rows: number; expiresAt: number }>;
+  /** This view's desired-geometry lease; null while unmeasured or withdrawn. */
+  viewport: { cols: number; rows: number; expiresAt: number } | null;
+  /** Null until this attachment's first snapshot; a replaced incarnation is never credited. */
+  delivery: Delivery | null;
+  /** Held output was discarded since this view's last snapshot, which must say so. */
+  skipped: boolean;
 }
 
 interface RuntimeTerminal {
   info: TerminalInfo;
-  viewers: Map<SessionChannel, Viewer>;
+  viewers: Map<SessionChannel, Map<string, Viewer>>;
   lastReceivedOutputSeq: number;
   /** -1 means the adopted or restarted owner's current revision has not been observed yet. */
   lastReceivedGeometryRevision: number;
@@ -216,6 +257,14 @@ export class TerminalBroker implements TerminalPlacementPort {
    */
   private readonly draining = new Set<string>();
   private readonly pendingDrains = new Map<string, PendingDrain>();
+  /**
+   * Each source delivery frame's validated JSON without view fields, kept only while some
+   * view still holds the frame: N views cost N string splices, never N serializations.
+   */
+  private readonly deliveryBodies = new WeakMap<
+    object,
+    { readonly type: TerminalDeliveryFrame["type"]; readonly body: string; readonly bytes: number }
+  >();
   /**
    * Circular startup wiring, same shape as `RoomManager`'s providers: a terminal born
    * directly into a composition hardens the container it composed, and that rule lives
@@ -540,7 +589,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       // Adoption will heal both with a fresh snapshot; an offline owner has no
       // snapshot deadline, and transport withdrawal must not erase attachment.
       this.clearViewportIntents(terminal);
-      for (const viewer of terminal.viewers.values()) {
+      for (const [, viewer] of this.viewersOf(terminal)) {
         viewer.cancelSnapshotDeadline?.();
         viewer.cancelSnapshotDeadline = null;
       }
@@ -697,30 +746,40 @@ export class TerminalBroker implements TerminalPlacementPort {
     return current !== null && this.auth.allows(current, "terminals:write", homeId);
   }
 
+  /** Every attached view of a terminal with its channel; removal while iterating is safe. */
+  private *viewersOf(terminal: RuntimeTerminal): Generator<[SessionChannel, Viewer]> {
+    for (const [channel, views] of terminal.viewers) {
+      for (const viewer of views.values()) yield [channel, viewer];
+    }
+  }
+
+  private isCurrentViewer(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    viewer: Viewer,
+  ): boolean {
+    return terminal.viewers.get(channel)?.get(viewer.viewportId) === viewer;
+  }
+
   /** Retire stale authority as well as expired measurements before deriving a shared grid. */
   private pruneViewports(terminal: RuntimeTerminal): { count: number; expiresAt: number | null } {
     const now = this.runtime.now();
     let count = 0;
     let expiresAt: number | null = null;
-    for (const [channel, viewer] of terminal.viewers) {
-      if (viewer.viewports.size === 0) continue;
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
+      const viewport = viewer.viewport;
+      if (viewport === null) continue;
       if (
         terminal.info.status !== "running" ||
         terminal.info.controllerId !== channel.auth.principal.id ||
-        !this.viewportAuthority(channel, terminal.info.containerId, viewer.credential)
+        !this.viewportAuthority(channel, terminal.info.containerId, viewer.credential) ||
+        viewport.expiresAt <= now
       ) {
-        viewer.viewports.clear();
+        viewer.viewport = null;
         continue;
       }
-      for (const [viewportId, viewport] of viewer.viewports) {
-        if (viewport.expiresAt <= now) {
-          viewer.viewports.delete(viewportId);
-          continue;
-        }
-        count += 1;
-        expiresAt =
-          expiresAt === null ? viewport.expiresAt : Math.min(expiresAt, viewport.expiresAt);
-      }
+      count += 1;
+      expiresAt = expiresAt === null ? viewport.expiresAt : Math.min(expiresAt, viewport.expiresAt);
     }
     return { count, expiresAt };
   }
@@ -760,20 +819,22 @@ export class TerminalBroker implements TerminalPlacementPort {
     let rows: number | null = null;
     const columns: TerminalSizing["columns"] = [];
     const rowLimiters: TerminalSizing["rows"] = [];
-    for (const [channel, viewer] of terminal.viewers) {
-      if (viewer.state !== "LIVE") continue;
-      for (const [viewportId, viewport] of viewer.viewports) {
-        if (cols === null || viewport.cols < cols) {
-          cols = viewport.cols;
-          columns.length = 0;
-        }
-        if (viewport.cols === cols) columns.push({ connId: channel.id, viewportId });
-        if (rows === null || viewport.rows < rows) {
-          rows = viewport.rows;
-          rowLimiters.length = 0;
-        }
-        if (viewport.rows === rows) rowLimiters.push({ connId: channel.id, viewportId });
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
+      // A view contributes once it painted a snapshot of this attachment. Parser lag does not
+      // withdraw it: a delayed view's box is still the box it shows.
+      const viewport = viewer.viewport;
+      if (viewer.delivery === null || viewport === null) continue;
+      const viewportId = viewer.viewportId;
+      if (cols === null || viewport.cols < cols) {
+        cols = viewport.cols;
+        columns.length = 0;
       }
+      if (viewport.cols === cols) columns.push({ connId: channel.id, viewportId });
+      if (rows === null || viewport.rows < rows) {
+        rows = viewport.rows;
+        rowLimiters.length = 0;
+      }
+      if (viewport.rows === rows) rowLimiters.push({ connId: channel.id, viewportId });
     }
     const requestedGrid = terminal.lastRequestedGrid ?? terminal.info;
     if (
@@ -833,18 +894,22 @@ export class TerminalBroker implements TerminalPlacementPort {
     });
   }
 
+  /** Retires exactly one view, fencing its incarnation and any credit it still held. */
   private removeViewer(
     terminal: RuntimeTerminal,
     channel: SessionChannel,
+    viewer: Viewer,
     arbitrate = true,
-    expected?: Viewer,
   ): void {
-    const viewer = terminal.viewers.get(channel);
-    if (viewer === undefined || (expected !== undefined && viewer !== expected)) return;
+    const views = terminal.viewers.get(channel);
+    if (views?.get(viewer.viewportId) !== viewer) return;
     viewer.cancelSnapshotDeadline?.();
     viewer.cancelSnapshotDeadline = null;
-    viewer.viewports.clear();
-    terminal.viewers.delete(channel);
+    viewer.viewport = null;
+    viewer.queue = [];
+    viewer.queuedBytes = 0;
+    views.delete(viewer.viewportId);
+    if (views.size === 0) terminal.viewers.delete(channel);
     if (arbitrate) this.arbitrateViewports(terminal);
   }
 
@@ -852,25 +917,58 @@ export class TerminalBroker implements TerminalPlacementPort {
     terminal.cancelViewportExpiry?.();
     terminal.cancelViewportExpiry = null;
     terminal.viewportExpiryAt = null;
-    for (const viewer of terminal.viewers.values()) viewer.viewports.clear();
+    for (const [, viewer] of this.viewersOf(terminal)) viewer.viewport = null;
   }
 
   private clearViewers(terminal: RuntimeTerminal): void {
     this.clearViewportIntents(terminal);
-    for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
+    for (const [, viewer] of this.viewersOf(terminal)) viewer.cancelSnapshotDeadline?.();
     terminal.viewers.clear();
   }
 
+  /**
+   * The scoped half of every refusal that retires or refuses a view: its own `refused` notice,
+   * so a reader learns which view stopped and why without matching any error wording.
+   */
+  private sendRefusal(
+    channel: SessionChannel,
+    terminalId: string,
+    viewportId: string,
+    deliveryId: string | null,
+    skipped: boolean,
+    reason: TerminalDeliveryRefusal,
+  ): void {
+    channel.send({
+      type: "terminal_delivery",
+      terminalId,
+      viewportId,
+      deliveryId,
+      state: "refused",
+      skipped,
+      reason,
+    });
+  }
+
+  /** Refuses one attached view: its scoped notice, its retirement, then the generic error. */
   private failViewer(
     terminal: RuntimeTerminal,
     channel: SessionChannel,
     viewer: Viewer,
+    reason: TerminalDeliveryRefusal,
     code: "conflict" | "no_machine",
     message: string,
     arbitrate = true,
   ): void {
-    if (terminal.viewers.get(channel) !== viewer) return;
-    this.removeViewer(terminal, channel, arbitrate);
+    if (!this.isCurrentViewer(terminal, channel, viewer)) return;
+    this.sendRefusal(
+      channel,
+      terminal.info.id,
+      viewer.viewportId,
+      viewer.delivery?.id ?? null,
+      viewer.skipped,
+      reason,
+    );
+    this.removeViewer(terminal, channel, viewer, arbitrate);
     channel.send({ type: "error", code, message, ref: terminal.info.id });
   }
 
@@ -884,16 +982,17 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (!this.machines.has(terminal.info.machineId)) return;
     viewer.cancelSnapshotDeadline = this.timers.schedule(() => {
       viewer.cancelSnapshotDeadline = null;
-      if (terminal.viewers.get(channel) !== viewer || viewer.state !== "PENDING") return;
+      if (!this.isCurrentViewer(terminal, channel, viewer) || viewer.state !== "PENDING") return;
       const requestTimedOut = terminal.snapshotRequestOutstanding;
       if (requestTimedOut) terminal.snapshotRequestOutstanding = false;
-      this.removeViewer(terminal, channel);
-      channel.send({
-        type: "error",
-        code: "conflict",
-        message: "terminal snapshot timed out",
-        ref: terminal.info.id,
-      });
+      this.failViewer(
+        terminal,
+        channel,
+        viewer,
+        "snapshot_timeout",
+        "conflict",
+        "terminal snapshot timed out",
+      );
       this.logger.warn("terminal_snapshot_timeout", {
         terminalId: terminal.info.id,
         machineId: terminal.info.machineId,
@@ -902,11 +1001,76 @@ export class TerminalBroker implements TerminalPlacementPort {
     }, SNAPSHOT_DEADLINE_MS);
   }
 
+  /** Joins the next snapshot generation under the one finite snapshot deadline. */
+  private awaitSnapshot(terminal: RuntimeTerminal, channel: SessionChannel, viewer: Viewer): void {
+    viewer.state = "PENDING";
+    viewer.snapshotGeneration = terminal.snapshotGeneration + 1;
+    this.armSnapshotDeadline(terminal, channel, viewer);
+  }
+
+  /**
+   * Supersedes a view's incarnation with a fresh authoritative snapshot, but never ahead of
+   * its parser: while any frame already sent is unacknowledged the view is RECOVERING, and
+   * only the last completion asks for the snapshot. Held output is discarded rather than fed
+   * to a parser after a gap; `skipped` records that it was. The caller requests the snapshot.
+   * Returns whether the view is still attached.
+   */
+  private recoverViewer(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    viewer: Viewer,
+    skipped: boolean,
+  ): boolean {
+    viewer.queue = [];
+    viewer.queuedBytes = 0;
+    viewer.lastDeliveredSeq = 0;
+    viewer.lastDeliveredGeometryRevision = -1;
+    viewer.skipped ||= skipped;
+    const delivery = viewer.delivery;
+    if (delivery === null || delivery.unacked.length === 0) {
+      this.awaitSnapshot(terminal, channel, viewer);
+      return true;
+    }
+    viewer.state = "RECOVERING";
+    viewer.cancelSnapshotDeadline?.();
+    viewer.cancelSnapshotDeadline = null;
+    return (
+      delivery.notice === "recovering" ||
+      this.announceDelivery(terminal, channel, viewer, delivery, "recovering")
+    );
+  }
+
+  /** One state transition, sent once; returns whether the view is still attached. */
+  private announceDelivery(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    viewer: Viewer,
+    delivery: Delivery,
+    state: Exclude<TerminalDeliveryState, "refused">,
+  ): boolean {
+    delivery.notice = state;
+    if (
+      !channel.send({
+        type: "terminal_delivery",
+        terminalId: terminal.info.id,
+        viewportId: viewer.viewportId,
+        deliveryId: delivery.id,
+        state,
+        skipped: state === "recovering" && viewer.skipped,
+        reason: null,
+      })
+    ) {
+      this.removeViewer(terminal, channel, viewer, false);
+      return false;
+    }
+    return this.isCurrentViewer(terminal, channel, viewer);
+  }
+
   /** Sends at most one snapshot request and binds its generation to current PENDING viewers. */
   private requestSnapshotForPending(terminal: RuntimeTerminal): void {
     if (terminal.snapshotRequestOutstanding || terminal.info.status !== "running") return;
     let hasPending = false;
-    for (const viewer of terminal.viewers.values()) {
+    for (const [, viewer] of this.viewersOf(terminal)) {
       if (viewer.state === "PENDING") {
         hasPending = true;
         break;
@@ -919,7 +1083,7 @@ export class TerminalBroker implements TerminalPlacementPort {
 
     terminal.snapshotGeneration += 1;
     const generation = terminal.snapshotGeneration;
-    for (const viewer of terminal.viewers.values()) {
+    for (const [, viewer] of this.viewersOf(terminal)) {
       if (viewer.state === "PENDING") viewer.snapshotGeneration = generation;
     }
     terminal.snapshotRequestOutstanding = true;
@@ -934,9 +1098,16 @@ export class TerminalBroker implements TerminalPlacementPort {
       return;
 
     terminal.snapshotRequestOutstanding = false;
-    for (const [channel, viewer] of terminal.viewers) {
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
       if (viewer.state === "PENDING" && viewer.snapshotGeneration === generation) {
-        this.failViewer(terminal, channel, viewer, "no_machine", "terminal machine is unavailable");
+        this.failViewer(
+          terminal,
+          channel,
+          viewer,
+          "owner_unavailable",
+          "no_machine",
+          "terminal machine is unavailable",
+        );
       }
     }
   }
@@ -1018,18 +1189,11 @@ export class TerminalBroker implements TerminalPlacementPort {
         });
       }
     }
-    if (terminal.viewers.size > 0) {
-      for (const [channel, viewer] of terminal.viewers) {
-        viewer.state = "PENDING";
-        viewer.queue = [];
-        viewer.queuedBytes = 0;
-        viewer.lastDeliveredSeq = 0;
-        viewer.lastDeliveredGeometryRevision = -1;
-        viewer.snapshotGeneration = terminal.snapshotGeneration + 1;
-        this.armSnapshotDeadline(terminal, channel, viewer);
-      }
-      this.requestSnapshotForPending(terminal);
+    // The adopted owner re-anchors every view, but only after work already sent completes.
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
+      this.recoverViewer(terminal, channel, viewer, false);
     }
+    this.requestSnapshotForPending(terminal);
     this.arbitrateViewports(terminal);
     return true;
   }
@@ -1767,11 +1931,26 @@ export class TerminalBroker implements TerminalPlacementPort {
     return terminal;
   }
 
-  /** Begins PENDING attachment before requesting the agent's ordered snapshot watermark. */
+  /**
+   * Begins one view's PENDING attachment before requesting the agent's ordered snapshot
+   * watermark. Re-attaching the same view retires its previous incarnation and credit; a
+   * sibling view of the terminal on this channel is untouched.
+   */
   attach(channel: SessionChannel, message: TerminalAttach): void {
-    const terminal = this.terminalFor(channel, message.terminalId);
-    if (terminal === null) return;
+    const terminal = this.terminals.get(message.terminalId);
+    // Each refusal is scoped to the view that asked, then answered with the generic error.
+    if (terminal === undefined || terminal.info.containerId !== channel.containerId) {
+      this.sendRefusal(channel, message.terminalId, message.viewportId, null, false, "not_found");
+      channel.send({
+        type: "error",
+        code: "not_found",
+        message: "terminal not found",
+        ref: message.terminalId,
+      });
+      return;
+    }
     if (terminal.info.status !== "running") {
+      this.sendRefusal(channel, message.terminalId, message.viewportId, null, false, "exited");
       channel.send({
         type: "error",
         code: "conflict",
@@ -1780,8 +1959,22 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       return;
     }
-    this.removeViewer(terminal, channel, false);
+    const previous = terminal.viewers.get(channel)?.get(message.viewportId);
+    if (previous !== undefined) {
+      this.removeViewer(terminal, channel, previous, false);
+    } else if ((terminal.viewers.get(channel)?.size ?? 0) >= MAX_TERMINAL_VIEWPORTS) {
+      // Views fan out per frame, so one channel's attachments to one terminal are bounded.
+      this.sendRefusal(channel, message.terminalId, message.viewportId, null, false, "view_limit");
+      channel.send({
+        type: "error",
+        code: "conflict",
+        message: "terminal view limit reached",
+        ref: message.terminalId,
+      });
+      return;
+    }
     const viewer: Viewer = {
+      viewportId: message.viewportId,
       state: "PENDING",
       queue: [],
       queuedBytes: 0,
@@ -1790,9 +1983,16 @@ export class TerminalBroker implements TerminalPlacementPort {
       lastDeliveredSeq: 0,
       lastDeliveredGeometryRevision: -1,
       credential: this.auth.credentialReference(channel.auth),
-      viewports: new Map(),
+      viewport: null,
+      delivery: null,
+      skipped: false,
     };
-    terminal.viewers.set(channel, viewer);
+    let views = terminal.viewers.get(channel);
+    if (views === undefined) {
+      views = new Map();
+      terminal.viewers.set(channel, views);
+    }
+    views.set(viewer.viewportId, viewer);
     this.arbitrateViewports(terminal);
     if (
       !channel.send({
@@ -1801,24 +2001,181 @@ export class TerminalBroker implements TerminalPlacementPort {
         sizing: terminal.sizing,
       })
     ) {
-      this.removeViewer(terminal, channel);
+      this.removeViewer(terminal, channel, viewer);
       return;
     }
     this.armSnapshotDeadline(terminal, channel, viewer);
     this.requestSnapshotForPending(terminal);
   }
 
-  /** Stops routing one terminal's bytes to a viewer. */
+  /** Stops routing one terminal's bytes to exactly one view of this channel. */
   detach(channel: SessionChannel, message: TerminalDetach): void {
     const terminal = this.terminals.get(message.terminalId);
-    if (terminal !== undefined) this.removeViewer(terminal, channel);
+    const viewer = terminal?.viewers.get(channel)?.get(message.viewportId);
+    if (terminal !== undefined && viewer !== undefined) this.removeViewer(terminal, channel, viewer);
   }
 
   /** Removes a closing socket from every terminal's viewer registry. */
   detachAll(channel: SessionChannel): void {
     for (const terminal of this.terminals.values()) {
-      this.removeViewer(terminal, channel);
+      const views = terminal.viewers.get(channel);
+      if (views === undefined) continue;
+      for (const viewer of views.values()) this.removeViewer(terminal, channel, viewer, false);
+      this.arbitrateViewports(terminal);
     }
+  }
+
+  /**
+   * Credits one view's COMPLETED parsing, cumulatively through `deliverySeq`. Only ordinals
+   * actually sent in the view's current incarnation count: a stale incarnation, a duplicate
+   * and an ordinal never sent are each ignored without reply, because each is either an
+   * ordinary race with a newer snapshot or a client defect, and neither may grant credit or
+   * reach any other view. Freed credit drains held frames in order; a recovering view whose
+   * last sent frame completed asks for its fresh snapshot.
+   */
+  ack(channel: SessionChannel, message: TerminalAck): void {
+    const terminal = this.terminals.get(message.terminalId);
+    if (terminal === undefined || terminal.info.containerId !== channel.containerId) return;
+    const viewer = terminal.viewers.get(channel)?.get(message.viewportId);
+    if (viewer === undefined) return;
+    const delivery = viewer.delivery;
+    if (delivery === null || delivery.id !== message.deliveryId) return;
+    const credited = message.deliverySeq - (delivery.nextSeq - delivery.unacked.length) + 1;
+    if (credited <= 0 || message.deliverySeq >= delivery.nextSeq) return;
+    for (const charge of delivery.unacked.splice(0, credited)) delivery.unackedBytes -= charge;
+    if (viewer.state === "LIVE") {
+      if (!this.drainViewer(terminal, channel, viewer, delivery)) this.arbitrateViewports(terminal);
+      return;
+    }
+    if (viewer.state === "RECOVERING" && delivery.unacked.length === 0) {
+      this.awaitSnapshot(terminal, channel, viewer);
+      this.requestSnapshotForPending(terminal);
+    }
+  }
+
+  /** Whether one more frame of `charge` fits this incarnation's completed-parse credit. */
+  private hasCredit(delivery: Delivery, charge: number): boolean {
+    return (
+      delivery.unacked.length < MAX_TERMINAL_DELIVERY_UNACKED_FRAMES &&
+      delivery.unackedBytes + charge <= MAX_TERMINAL_DELIVERY_UNACKED_BYTES
+    );
+  }
+
+  /**
+   * Sends a LIVE view's held frames in order while its credit allows, then announces `live`
+   * once the hold is empty and at most half of either window is outstanding. The hysteresis
+   * bounds notices to one pair per half window of completed work, never one per frame.
+   */
+  private drainViewer(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    viewer: Viewer,
+    delivery: Delivery,
+  ): boolean {
+    for (let frame = viewer.queue[0]; frame !== undefined; frame = viewer.queue[0]) {
+      const charge = terminalDeliveryCharge(frame);
+      if (!this.hasCredit(delivery, charge)) return true;
+      viewer.queue.shift();
+      viewer.queuedBytes -= charge;
+      if (!this.sendDeliveryFrame(terminal, channel, viewer, delivery, frame, charge)) return false;
+    }
+    if (
+      delivery.notice !== "waiting" ||
+      delivery.unackedBytes * 2 > MAX_TERMINAL_DELIVERY_UNACKED_BYTES ||
+      delivery.unacked.length * 2 > MAX_TERMINAL_DELIVERY_UNACKED_FRAMES
+    )
+      return true;
+    return this.announceDelivery(terminal, channel, viewer, delivery, "live");
+  }
+
+  /**
+   * One source frame into a LIVE view's ordered lane: sent under credit, else held behind the
+   * frames already held, else — the pending window being full — discarded with that hold for
+   * a sequenced snapshot. Never sorted, never coalesced. Returns whether the view is attached.
+   */
+  private admitLive(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    viewer: Viewer,
+    delivery: Delivery,
+    frame: StreamFrame,
+  ): boolean {
+    if (frame.type === "terminal_output") {
+      if (frame.seq <= viewer.lastDeliveredSeq) return true;
+      viewer.lastDeliveredSeq = frame.seq;
+    } else {
+      const revision = frame.geometry.revision;
+      if (revision !== null && revision <= viewer.lastDeliveredGeometryRevision) return true;
+      viewer.lastDeliveredGeometryRevision = revision ?? -1;
+    }
+    const charge = terminalDeliveryCharge(frame);
+    if (viewer.queue.length === 0 && this.hasCredit(delivery, charge))
+      return this.sendDeliveryFrame(terminal, channel, viewer, delivery, frame, charge);
+    if (
+      viewer.queue.length >= MAX_TERMINAL_DELIVERY_PENDING_FRAMES ||
+      viewer.queuedBytes + charge > MAX_TERMINAL_DELIVERY_PENDING_BYTES
+    )
+      return this.recoverViewer(terminal, channel, viewer, true);
+    viewer.queue.push(frame);
+    viewer.queuedBytes += charge;
+    return (
+      delivery.notice !== "live" ||
+      this.announceDelivery(terminal, channel, viewer, delivery, "waiting")
+    );
+  }
+
+  /** Stamps one frame with the view's next ordinal and charges it; false once it is gone. */
+  private sendDeliveryFrame(
+    terminal: RuntimeTerminal,
+    channel: SessionChannel,
+    viewer: Viewer,
+    delivery: Delivery,
+    frame: StreamFrame,
+    charge: number,
+  ): boolean {
+    const deliverySeq = delivery.nextSeq;
+    const stamped = this.stampDeliveryFrame(frame, {
+      viewportId: viewer.viewportId,
+      deliveryId: delivery.id,
+      deliverySeq,
+    });
+    if (!channel.sendSerialized(stamped)) {
+      this.removeViewer(terminal, channel, viewer, false);
+      return false;
+    }
+    delivery.nextSeq = deliverySeq + 1;
+    delivery.unacked.push(charge);
+    delivery.unackedBytes += charge;
+    return this.isCurrentViewer(terminal, channel, viewer);
+  }
+
+  /**
+   * Validates a source frame once, with its first view's stamp, and caches its JSON without
+   * view fields; each view then splices its own delivery head in front — the same prefix
+   * splice a channel applies for routing. Every spliced field was validated on its way in:
+   * `viewportId` by the attach frame, the rest minted here.
+   */
+  private stampDeliveryFrame(
+    frame: StreamFrame | Unstamped<"terminal_snapshot">,
+    stamp: DeliveryStamp,
+  ): SerializedServerMessage {
+    let shared = this.deliveryBodies.get(frame);
+    if (shared === undefined) {
+      ServerMessageBodySchema.parse({ ...frame, ...stamp });
+      const body = JSON.stringify(frame);
+      shared = { type: frame.type, body, bytes: Buffer.byteLength(body) };
+      this.deliveryBodies.set(frame, shared);
+    }
+    const head =
+      `{"viewportId":${JSON.stringify(stamp.viewportId)},` +
+      `"deliveryId":${JSON.stringify(stamp.deliveryId)},"deliverySeq":${stamp.deliverySeq},` +
+      (stamp.skipped === undefined ? "" : `"skipped":${stamp.skipped},`);
+    return {
+      type: shared.type,
+      body: head + shared.body.slice(1),
+      bytes: Buffer.byteLength(head) - 1 + shared.bytes,
+      authoritative: false,
+    };
   }
 
   private supportsTerminalGeometry(machine: MachineChannel | undefined): boolean {
@@ -1839,65 +2196,42 @@ export class TerminalBroker implements TerminalPlacementPort {
     });
   }
 
-  private serializeStreamFrame(frame: StreamFrame): SerializedServerMessage {
-    return serializeServerMessage(
-      frame.type === "output"
-        ? {
-            type: "terminal_output",
-            terminalId: frame.terminalId,
-            seq: frame.seq,
-            data: frame.data,
-          }
-        : frame,
-    );
-  }
-
-  /** One bounded, arrival-ordered lane; output and geometry have independent watermarks. */
+  /**
+   * One arrival-ordered source lane fanned out to every view; output and geometry keep
+   * independent watermarks. A PENDING view queues the post-request tail under the pending
+   * bound and is refused on overflow as before; a LIVE view admits under its own credit; a
+   * RECOVERING view takes nothing, because its fresh snapshot will cover this frame.
+   */
   private relayStreamFrame(
     terminal: RuntimeTerminal,
     frame: StreamFrame,
     queuePending = true,
   ): void {
-    let serialized: SerializedServerMessage | null = null;
-    let queuedBytes: number | null = null;
+    const charge = terminalDeliveryCharge(frame);
     let retiredViewer = false;
-    for (const [channel, viewer] of terminal.viewers) {
-      if (viewer.state === "LIVE") {
-        if (frame.type === "output") {
-          if (frame.seq <= viewer.lastDeliveredSeq) continue;
-        } else if (
-          frame.geometry.revision !== null &&
-          frame.geometry.revision <= viewer.lastDeliveredGeometryRevision
-        ) {
-          continue;
-        }
-        serialized ??= this.serializeStreamFrame(frame);
-        if (!channel.sendSerialized(serialized)) {
-          this.removeViewer(terminal, channel, false, viewer);
-          retiredViewer = true;
-          continue;
-        }
-        if (terminal.viewers.get(channel) !== viewer) continue;
-        if (frame.type === "output") viewer.lastDeliveredSeq = frame.seq;
-        else viewer.lastDeliveredGeometryRevision = frame.geometry.revision ?? -1;
+    let awaitsSnapshot = false;
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
+      const state = viewer.state;
+      if (state === "RECOVERING") continue;
+      if (state === "LIVE") {
+        const delivery = viewer.delivery;
+        if (delivery === null) continue;
+        if (!this.admitLive(terminal, channel, viewer, delivery, frame)) retiredViewer = true;
+        else if (viewer.state === "PENDING") awaitsSnapshot = true;
         continue;
       }
       if (!queuePending) continue;
-      if (queuedBytes === null) {
-        if (frame.type === "output") queuedBytes = Buffer.byteLength(frame.data);
-        else {
-          serialized ??= this.serializeStreamFrame(frame);
-          queuedBytes = serialized.bytes;
-        }
-      }
       if (
-        viewer.queue.length >= PENDING_STREAM_FRAMES ||
-        viewer.queuedBytes + queuedBytes > PENDING_STREAM_BYTES
+        viewer.queue.length >= MAX_TERMINAL_DELIVERY_PENDING_FRAMES ||
+        viewer.queuedBytes + charge > MAX_TERMINAL_DELIVERY_PENDING_BYTES
       ) {
+        // The snapshot request has a finite deadline and no retry: a tail that outgrew the
+        // bound before its snapshot arrived would leave a gap, so the attachment is refused.
         this.failViewer(
           terminal,
           channel,
           viewer,
+          "pending_overflow",
           "conflict",
           "terminal attach queue overflow",
           false,
@@ -1906,8 +2240,9 @@ export class TerminalBroker implements TerminalPlacementPort {
         continue;
       }
       viewer.queue.push(frame);
-      viewer.queuedBytes += queuedBytes;
+      viewer.queuedBytes += charge;
     }
+    if (awaitsSnapshot) this.requestSnapshotForPending(terminal);
     if (retiredViewer) this.arbitrateViewports(terminal);
   }
 
@@ -1923,7 +2258,12 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
     if (output.seq <= terminal.lastReceivedOutputSeq) return;
     terminal.lastReceivedOutputSeq = output.seq;
-    this.relayStreamFrame(terminal, output);
+    this.relayStreamFrame(terminal, {
+      type: "terminal_output",
+      terminalId: output.terminalId,
+      seq: output.seq,
+      data: output.data,
+    });
   }
 
   /** Only the capable owner publishes applied geometry, never resize command admission. */
@@ -1939,7 +2279,12 @@ export class TerminalBroker implements TerminalPlacementPort {
       return;
     terminal.lastReceivedGeometryRevision = frame.geometry.revision;
     this.publishGeometryState(terminal, frame.geometry.cols, frame.geometry.rows);
-    this.relayStreamFrame(terminal, frame);
+    this.relayStreamFrame(terminal, {
+      type: "terminal_geometry",
+      terminalId: frame.terminalId,
+      seq: frame.seq,
+      geometry: frame.geometry,
+    });
   }
 
   private isCurrentSnapshotViewer(
@@ -1949,13 +2294,16 @@ export class TerminalBroker implements TerminalPlacementPort {
     generation: number,
   ): boolean {
     return (
-      terminal.viewers.get(channel) === viewer &&
+      this.isCurrentViewer(terminal, channel, viewer) &&
       viewer.state === "PENDING" &&
       viewer.snapshotGeneration === generation
     );
   }
 
-  /** Snapshot(S,G), then outputs > S and geometry > G in their source arrival order. */
+  /**
+   * Snapshot(S,G) opens a fresh incarnation for every view of its generation, then outputs > S
+   * and geometry > G in their source arrival order under that view's own credit.
+   */
   onSnapshot(machineId: string, snapshot: SnapshotFrame): void {
     const terminal = this.terminals.get(snapshot.terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
@@ -1983,58 +2331,48 @@ export class TerminalBroker implements TerminalPlacementPort {
       )
         this.publishGeometryState(terminal, snapshot.geometry.cols, snapshot.geometry.rows);
     }
-    const snapshotFrame = serializeServerMessage({
+    const source: Unstamped<"terminal_snapshot"> = {
       type: "terminal_snapshot",
       terminalId: snapshot.terminalId,
       seq: snapshot.seq,
       data: snapshot.data,
       geometry,
-    });
-    const streamFrames = new Map<StreamFrame, SerializedServerMessage>();
-    for (const [channel, viewer] of terminal.viewers) {
+    };
+    const charge = terminalDeliveryCharge(source);
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
       if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) continue;
       viewer.cancelSnapshotDeadline?.();
       viewer.cancelSnapshotDeadline = null;
-      if (!channel.sendSerialized(snapshotFrame)) {
-        this.removeViewer(terminal, channel, false, viewer);
+      const delivery: Delivery = {
+        id: this.runtime.newId(),
+        nextSeq: 1,
+        unacked: [charge],
+        unackedBytes: charge,
+        notice: "live",
+      };
+      const stamped = this.stampDeliveryFrame(source, {
+        viewportId: viewer.viewportId,
+        deliveryId: delivery.id,
+        deliverySeq: 0,
+        skipped: viewer.skipped,
+      });
+      if (!channel.sendSerialized(stamped)) {
+        this.removeViewer(terminal, channel, viewer, false);
         continue;
       }
       if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) continue;
-      let lastSeq = snapshot.seq;
-      let lastRevision = geometry.revision ?? -1;
-      let live = true;
-      for (const frame of viewer.queue) {
-        if (frame.type === "output") {
-          if (frame.seq <= lastSeq) continue;
-        } else if (frame.geometry.revision !== null && frame.geometry.revision <= lastRevision) {
-          continue;
-        }
-        let serialized = streamFrames.get(frame);
-        if (serialized === undefined) {
-          serialized = this.serializeStreamFrame(frame);
-          streamFrames.set(frame, serialized);
-        }
-        if (!channel.sendSerialized(serialized)) {
-          live = false;
-          break;
-        }
-        if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) {
-          live = false;
-          break;
-        }
-        if (frame.type === "output") lastSeq = frame.seq;
-        else lastRevision = frame.geometry.revision ?? -1;
-      }
-      if (!this.isCurrentSnapshotViewer(terminal, channel, viewer, generation)) continue;
-      if (!live) {
-        this.removeViewer(terminal, channel, false, viewer);
-        continue;
-      }
+      const tail = viewer.queue;
       viewer.queue = [];
       viewer.queuedBytes = 0;
-      viewer.lastDeliveredSeq = lastSeq;
-      viewer.lastDeliveredGeometryRevision = lastRevision;
       viewer.state = "LIVE";
+      viewer.delivery = delivery;
+      viewer.skipped = false;
+      viewer.lastDeliveredSeq = snapshot.seq;
+      viewer.lastDeliveredGeometryRevision = geometry.revision ?? -1;
+      // The tail already fits the pending bound, so admitting it can hold but never overflow.
+      for (const frame of tail) {
+        if (!this.admitLive(terminal, channel, viewer, delivery, frame)) break;
+      }
     }
     this.requestSnapshotForPending(terminal);
     this.arbitrateViewports(terminal);
@@ -2119,7 +2457,8 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (message.viewport === null) {
       const terminal = this.terminalFor(channel, message.terminalId);
       if (terminal === null) return;
-      terminal.viewers.get(channel)?.viewports.delete(message.viewportId);
+      const viewer = terminal.viewers.get(channel)?.get(message.viewportId);
+      if (viewer !== undefined) viewer.viewport = null;
       this.arbitrateViewports(terminal);
       return;
     }
@@ -2137,7 +2476,8 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       return;
     }
-    const viewer = terminal.viewers.get(channel);
+    // A measurement belongs to exactly the attached view it names on this channel.
+    const viewer = terminal.viewers.get(channel)?.get(message.viewportId);
     const credential = viewer?.credential ?? this.auth.credentialReference(channel.auth);
     if (!this.viewportAuthority(channel, terminal.info.containerId, credential)) {
       this.arbitrateViewports(terminal);
@@ -2154,7 +2494,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       return;
     }
     const { count } = this.pruneViewports(terminal);
-    if (!viewer.viewports.has(message.viewportId) && count >= MAX_TERMINAL_VIEWPORTS) {
+    if (viewer.viewport === null && count >= MAX_TERMINAL_VIEWPORTS) {
       this.arbitrateViewports(terminal);
       channel.send({
         type: "error",
@@ -2164,10 +2504,10 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       return;
     }
-    viewer.viewports.set(message.viewportId, {
+    viewer.viewport = {
       ...message.viewport,
       expiresAt: this.runtime.now() + TERMINAL_VIEWPORT_LEASE_MS,
-    });
+    };
     this.arbitrateViewports(terminal, channel);
   }
 
@@ -2624,13 +2964,12 @@ export class TerminalBroker implements TerminalPlacementPort {
     terminal.lastReceivedGeometryRevision = -1;
     terminal.lastRequestedGrid = null;
     terminal.snapshotRequestOutstanding = false;
-    for (const [channel, viewer] of terminal.viewers) {
-      viewer.state = "PENDING";
-      viewer.queue = [];
-      viewer.queuedBytes = 0;
-      viewer.lastDeliveredSeq = 0;
-      viewer.lastDeliveredGeometryRevision = -1;
-      this.armSnapshotDeadline(terminal, channel, viewer);
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
+      // A restart is a new byte stream: the old incarnation and its credit end with the old
+      // process, so no late acknowledgement of it can credit the new one.
+      viewer.delivery = null;
+      viewer.skipped = false;
+      this.recoverViewer(terminal, channel, viewer, false);
     }
     const event = {
       type: "terminal_event" as const,

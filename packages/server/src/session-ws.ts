@@ -129,6 +129,8 @@ const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
   stream_close: true,
   terminal_attach: true,
   terminal_detach: true,
+  // Completion credit is part of reading: a watching portal paces its own delivery.
+  terminal_ack: true,
   doc_update: false,
   gesture: false,
   presence: false,
@@ -1160,6 +1162,9 @@ export class SessionGateway {
         return;
       case "terminal_detach":
         this.broker.detach(peer, message);
+        return;
+      case "terminal_ack":
+        this.broker.ack(peer, message);
         return;
       case "terminal_input":
         this.broker.input(peer, message);
