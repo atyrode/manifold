@@ -6442,6 +6442,12 @@ build target and nothing branches on which instance is being looked at.
   green does not prove the UI works. Gate green does not prove a surface feels finished:
   UI-touching changes require vision-model inspection of real screenshots from a real browser
   before shipping.
+- **Browser teardown** (#1032): the CDP driver waits for Chromium to exit, with its
+  existing five-second SIGKILL bound, before stopping the browser's private D-Bus.
+  This applies to transient incognito and retained non-incognito profiles: disconnecting
+  the bus while Chromium is alive can abort the browser and leave page WebSockets
+  connected during a core dump. Transient-profile deletion remains driver-owned;
+  non-incognito profile retention and cleanup remain the caller's responsibility.
 - **Risk-selected CI proof**: `bun run ci:plan` is the one impact classification for local work
   and pull requests. Agents inspect its changed files, risk and reasons before editing, run
   `bun run ci:check` for build/types/style/smoke/targeted baseline coverage, and add direct
