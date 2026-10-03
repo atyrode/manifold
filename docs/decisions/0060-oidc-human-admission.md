@@ -16,7 +16,7 @@ browser on an ordinary instance is told to "open its full pre-authenticated URL"
 [#324](https://github.com/atyrode/manifold/issues/324) selects configured OpenID Connect as the
 preferred human sign-in route for multi-human deployments, with external Keycloak as the reference
 provider. This record is that issue's **design milestone only**: a proposed architecture, its
-security controls, the decisions still owed by the operator and an implementation-ready
+security controls, selected session/admission/invitation policy and an implementation-ready
 acceptance map. It is **not implemented behavior**. No route, configuration, credential or
 dependency described here exists in the tree at `c905264c`; current behavior remains normative in
 [CONTRACTS §Identity](../CONTRACTS.md#identity-tokens-capabilities) until a ratified slice changes
@@ -25,17 +25,17 @@ paid provisioning or production activation, and #324 stays open until delivery.
 
 ## Current seams this design must respect
 
-| Seam                                                                                             | What the source does today                                                                                                                                                                                                                                         | Consequence for OIDC                                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `AuthService.bootstrapPrincipal` (`auth.ts:1912-1936`), published as `core.access.createPrincipal` with `caps: ["*"]` (`packages/plugins/access/src/index.ts:278-284`) | Requires `holdsRoot`, creates a fresh principal, mints a `*` credential and records `principal_bootstrapped`.                                                                                                                                                    | A login placed in front of this door gives every successful login root. Login never calls it. It stays the owner-key recovery door.                                                       |
-| `AuthService.acceptPreviewIdentity` (`auth.ts:1943-1979`) behind `/auth/preview/*` (`packages/server/src/http.ts:407-459`, `:890-964`) | After the HTTP boundary verifies an exact-audience, nonce-bound, single-use signed assertion, maps `(issuer, sourcePrincipalId)` deterministically to a local principal with `origin: issuer` and mints an interactive credential carrying the asserted caps. | Precedent for the boundary shape (verified external proof → ordinary principal/grant/token rows, journal events), not for its policy: it trusts production's authority snapshot.            |
-| `persistToken` (`auth.ts:1826-1901`) and `applicableRows` (`auth.ts:1726-1750`)                 | A credential's caps become grant rows owned by that token; evaluation sees the principal's untokened rows, its class rows and only this token's own rows. The same flat caps are a ceiling for governed, job and terminal-input paths.                             | A human who signs in on many devices needs a durable record each device credential is minted from, not authority living in one device's token.   |
-| `holdsRoot` (`auth.ts:997-1009`, `:1022-1045`)                                                   | Root class is the raw owner key or a live minted `*` token with no deciding administered deny.                                                                                                                                                                       | An administrator's sign-in credential must be minted with `*`; demotion must retire those credentials.                                                                                     |
-| `namesPrincipal` (`auth.ts:577-598`)                                                            | An `any-human` row matches every principal of kind `human`.                                                                                                                                                                                                         | Materializing a principal for every authenticated IdP account would silently widen every `any-human` grant.                                                                                |
-| Browser custody (`packages/web/src/identity-storage.ts:5-55`, `packages/web/src/api.ts:27-32`)  | The bearer lives in origin `localStorage` and travels as `Authorization: Bearer`; no API door reads cookies (`http.ts:327-340`).                                                                                                                                     | Keep bearer custody; cookies stay non-authoritative transaction state.                                                                                                                     |
-| Withdrawal (`auth.ts:4214-4279`, `:4282-4379`; `packages/protocol/src/http.ts:329-332`)         | Pause empties effective authority without revoking; `core.access.revoke` is principal-grouped and requires `tokens:mint`; revocation fences sockets with `4403 revoked` (`packages/server/src/session-ws.ts:277-282`, `:582-609`).                                   | Per-device sign-out and per-session administrator withdrawal need a credential-scoped path.                                                                                               |
-| Agent sponsorship (`auth.ts:1240-1254`, `:1446-1500`, `:2687-2698`)                             | An Agent's standing authority is restored from its exact authorizing credential; an expired or revoked sponsor credential restores nothing until the sponsor re-authorizes with `updateAgent`.                                                                     | A browser session ending (sign-out, IdP withdrawal, expiry) withdraws the authority of Agents it authorized. This is existing behavior; OIDC makes session ends more frequent.               |
-| Terminal-lifecycle credentials (`auth.ts:3888-3937`)                                             | An independent container-scoped agent principal, revoked when its terminal exits, not when the human's credential ends.                                                                                                                                             | Human sign-out or deprovisioning does not stop work already running in terminals.                                                                                                         |
+| Seam                                                                                                                                                                   | What the source does today                                                                                                                                                                                                                                    | Consequence for OIDC                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AuthService.bootstrapPrincipal` (`auth.ts:1912-1936`), published as `core.access.createPrincipal` with `caps: ["*"]` (`packages/plugins/access/src/index.ts:278-284`) | Requires `holdsRoot`, creates a fresh principal, mints a `*` credential and records `principal_bootstrapped`.                                                                                                                                                 | A login placed in front of this door gives every successful login root. Login never calls it. It stays the owner-key recovery door.                                              |
+| `AuthService.acceptPreviewIdentity` (`auth.ts:1943-1979`) behind `/auth/preview/*` (`packages/server/src/http.ts:407-459`, `:890-964`)                                 | After the HTTP boundary verifies an exact-audience, nonce-bound, single-use signed assertion, maps `(issuer, sourcePrincipalId)` deterministically to a local principal with `origin: issuer` and mints an interactive credential carrying the asserted caps. | Precedent for the boundary shape (verified external proof → ordinary principal/grant/token rows, journal events), not for its policy: it trusts production's authority snapshot. |
+| `persistToken` (`auth.ts:1826-1901`) and `applicableRows` (`auth.ts:1726-1750`)                                                                                        | A credential's caps become grant rows owned by that token; evaluation sees the principal's untokened rows, its class rows and only this token's own rows. The same flat caps are a ceiling for governed, job and terminal-input paths.                        | A human who signs in on many devices needs a durable record each device credential is minted from, not authority living in one device's token.                                   |
+| `holdsRoot` (`auth.ts:997-1009`, `:1022-1045`)                                                                                                                         | Root class is the raw owner key or a live minted `*` token with no deciding administered deny.                                                                                                                                                                | An administrator's sign-in credential must be minted with `*`; demotion must retire those credentials.                                                                           |
+| `namesPrincipal` (`auth.ts:577-598`)                                                                                                                                   | An `any-human` row matches every principal of kind `human`.                                                                                                                                                                                                   | Materializing a principal for every authenticated IdP account would silently widen every `any-human` grant.                                                                      |
+| Browser custody (`packages/web/src/identity-storage.ts:5-55`, `packages/web/src/api.ts:27-32`)                                                                         | The bearer lives in origin `localStorage` and travels as `Authorization: Bearer`; no API door reads cookies (`http.ts:327-340`).                                                                                                                              | Keep bearer custody; cookies stay non-authoritative transaction state.                                                                                                           |
+| Withdrawal (`auth.ts:4214-4279`, `:4282-4379`; `packages/protocol/src/http.ts:329-332`)                                                                                | Pause empties effective authority without revoking; `core.access.revoke` is principal-grouped and requires `tokens:mint`; revocation fences sockets with `4403 revoked` (`packages/server/src/session-ws.ts:277-282`, `:582-609`).                            | Per-device sign-out and per-session administrator withdrawal need a credential-scoped path.                                                                                      |
+| Agent sponsorship (`auth.ts:1240-1254`, `:1446-1500`, `:2687-2698`)                                                                                                    | An Agent's standing authority is restored from its exact authorizing credential; an expired or revoked sponsor credential restores nothing until the sponsor re-authorizes with `updateAgent`.                                                                | A browser session ending (sign-out, IdP withdrawal, expiry) withdraws the authority of Agents it authorized. This is existing behavior; OIDC makes session ends more frequent.   |
+| Terminal-lifecycle credentials (`auth.ts:3888-3937`)                                                                                                                   | An independent container-scoped agent principal, revoked when its terminal exits, not when the human's credential ends.                                                                                                                                       | Human sign-out or deprovisioning does not stop work already running in terminals.                                                                                                |
 
 ADR 0019 §6 placed the relying party "in front of `createPrincipal`". This record reads that as
 _in front of principal creation_: the login boundary creates or resolves a least-privilege human
@@ -59,9 +59,9 @@ principal through the existing stores, and the root bootstrap door is never on t
    delivered by a server-rendered callback exactly as the preview handoff delivers one. IdP tokens
    never reach the browser, a URL, a log, a trace, a preview or another instance, and no IdP token
    is ever accepted as a Manifold bearer.
-6. **Sessions are bound to the IdP session** (operator decision D1, recommended): the server keeps
-   the refresh token and revalidates every 15 minutes; a definitive refusal revokes exactly that
-   Manifold credential and fences its sockets.
+6. **Sessions use refresh-bound revalidation** (D1-B): the server keeps the refresh token and
+   checks every 15 minutes; a definitive refusal revokes exactly that Manifold credential and
+   fences its sockets. This detects provider withdrawal only when that provider refuses refresh.
 7. **Workloads stay non-interactive.** Machines, Agents, Runs, runners, native services and
    terminal-lifecycle identities keep their current credential lifecycles.
 8. **Previews and remote instances federate Manifold identities, not IdP identities.** The ADR
@@ -103,15 +103,15 @@ preview never talks to the IdP.
 
 ## Configuration and trusted boundaries
 
-| Key                                 | Meaning and validation                                                                                                                                                                                                                                                                           |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `MANIFOLD_OIDC_ISSUER`              | Exact issuer identifier. `https:` only; plain `http:` only for `localhost`, `*.localhost`, `127.0.0.1` or `::1` test fixtures.                                                                                                                                                                   |
-| `MANIFOLD_OIDC_CLIENT_ID`           | The confidential client registered for this instance.                                                                                                                                                                                                                                            |
-| `MANIFOLD_OIDC_CLIENT_SECRET`       | The client secret, delivered through the process environment like `MANIFOLD_OWNER_KEY` (`packages/server/src/config.ts:107-109`, `:276`); never echoed in errors, logs, traces, `/api/introspect`, `/healthz` or browser responses.                                                         |
-| `MANIFOLD_OIDC_LABEL`               | Optional button label (`Continue with …`); display only.                                                                                                                                                                                                                                          |
-| `MANIFOLD_OIDC_SCOPES`              | Default `openid profile`; must contain `openid`. `offline_access` is refused, because offline tokens can outlive IdP logout ([Keycloak offline access](https://www.keycloak.org/docs/latest/server_admin/index.html#_offline-access)) and would defeat D1.                                        |
-| `MANIFOLD_OIDC_ID_TOKEN_ALG`        | Default `RS256`; one of `RS256`, `PS256`, `ES256`, `EdDSA`. MAC (`HS*`) and `none` are refused.                                                                                                                                                                                                  |
-| `MANIFOLD_PUBLIC_URL` (existing)    | Must be explicit when OIDC is configured. The redirect URI is exactly `<public URL>/auth/oidc/callback` and the post-logout URI exactly `<public URL>/auth/oidc/signed-out`; neither is derived from `Host` or `X-Forwarded-*`.                                                                  |
+| Key                              | Meaning and validation                                                                                                                                                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MANIFOLD_OIDC_ISSUER`           | Exact issuer identifier. `https:` only; plain `http:` only for `localhost`, `*.localhost`, `127.0.0.1` or `::1` test fixtures.                                                                                                                             |
+| `MANIFOLD_OIDC_CLIENT_ID`        | The confidential client registered for this instance.                                                                                                                                                                                                      |
+| `MANIFOLD_OIDC_CLIENT_SECRET`    | The client secret, delivered through the process environment like `MANIFOLD_OWNER_KEY` (`packages/server/src/config.ts:107-109`, `:276`); never echoed in errors, logs, traces, `/api/introspect`, `/healthz` or browser responses.                        |
+| `MANIFOLD_OIDC_LABEL`            | Optional button label (`Continue with …`); display only.                                                                                                                                                                                                   |
+| `MANIFOLD_OIDC_SCOPES`           | Default `openid profile`; must contain `openid`. `offline_access` is refused, because offline tokens can outlive IdP logout ([Keycloak offline access](https://www.keycloak.org/docs/latest/server_admin/index.html#_offline-access)) and would defeat D1. |
+| `MANIFOLD_OIDC_ID_TOKEN_ALG`     | Default `RS256`; one of `RS256`, `PS256`, `ES256`, `EdDSA`. MAC (`HS*`) and `none` are refused.                                                                                                                                                            |
+| `MANIFOLD_PUBLIC_URL` (existing) | Must be explicit when OIDC is configured. The redirect URI is exactly `<public URL>/auth/oidc/callback` and the post-logout URI exactly `<public URL>/auth/oidc/signed-out`; neither is derived from `Host` or `X-Forwarded-*`.                            |
 
 Startup fails closed with a named error when the OIDC keys are partially present, when
 `MANIFOLD_PUBLIC_URL` is implicit or non-HTTPS outside the loopback exception, or when OIDC is
@@ -145,10 +145,22 @@ token endpoint, JWKS URI or logout endpoint. There is no dynamic client registra
    ([RFC 6265bis](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#name-the-__host-prefix)),
    so a sibling such as a numbered preview under the production domain cannot toss a cookie into
    production's callback. `SameSite=Lax` still accompanies the provider's top-level `GET` redirect.
+   Authentication transactions and pending confirmations together have a hard 1,000-entry limit.
+   Expired entries are removed before admission; a full store refuses a new start rather than
+   evicting a live transaction. A global start bucket permits a burst of 120 and refills at
+   120 per minute; it does not infer a trusted client address from forwarded headers. Behind
+   a reverse proxy the policy is unchanged. Exhaustion yields `sign_in_busy`; it cannot affect
+   the independent owner-key recovery path.
 3. **Authorization request.** `response_type=code`, query response mode, the exact redirect URI,
    configured scopes, `state`, `nonce`, `code_challenge` and `code_challenge_method=S256`
    ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636),
    [RFC 9700 §2.1.1](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1.1)).
+   For `link` and `link-administrator`, also request `max_age=0` and require a numeric `auth_time`
+   no earlier than transaction start, allowing the same 30-second clock skew. An existing SSO
+   session alone is insufficient for these binding intents.
+   Do not also pass the library's callback-time `maxAge` option: freshness is measured against
+   transaction start, so pausing at the IdP after authenticating does not create a new 30-second
+   callback deadline.
 4. **Callback.** `GET /auth/oidc/callback` reads and **deletes** the transaction before any network
    call, so a transaction is single-use. An `error` response renders a cancel/failure page with a
    retry; nothing falls back. Otherwise
@@ -177,6 +189,15 @@ token endpoint, JWKS URI or logout endpoint. There is no dynamic client registra
    from history. The code is already consumed and the provider expires unused codes (Keycloak's
    default authorization-code lifespan is 60 seconds, observed below).
 
+All `/auth/oidc/*` documents and the existing `/auth/preview/*` handoff documents must bypass
+`packages/web/sw.js` entirely, with network-only `cache: "no-store"` requests and no offline
+shell substitution. Cache API storage does not honor response `Cache-Control: no-store`:
+headers alone are insufficient. Neither a credential-bearing callback nor an invitation,
+confirmation, refusal or logout document may become the cached `/index.html` shell.
+HTML-escape every claim-derived display value. Encode identity data and `returnTo` as JSON,
+escaping `<`, U+2028 and U+2029 before embedding in an inline script, as the existing identity
+callback does; never interpolate either into HTML or a JavaScript string literal.
+
 **JWKS rotation.** `oauth4webapi` 3.8.8 refetches the JWKS every 300 seconds and, on an unknown
 `kid`, refetches only when the cached set is at least 60 seconds old; otherwise the exchange fails
 with `OAUTH_KEY_SELECTION_FAILED` (source `getPublicSigKeyFromIssuerJwksUri`; observed below). A
@@ -188,7 +209,7 @@ describes refetching on an unfamiliar `kid`;
 [Keycloak passive keys](https://www.keycloak.org/docs/latest/server_admin/index.html#making-keys-passive)).
 
 **Logging.** Library errors are mapped to a closed refusal vocabulary (`sign_in_cancelled`,
-`sign_in_expired`, `sign_in_invalid`, `provider_unavailable`, `provider_key_changed`,
+`sign_in_expired`, `sign_in_invalid`, `sign_in_busy`, `provider_unavailable`, `provider_key_changed`,
 `identity_already_linked`, `not_admitted`). Their `cause`, which can contain callback parameters
 or response bodies, is never logged. The existing failure log records only method and message
 (`http.ts:493-496`); callback query strings are never logged. Journal events carry binding,
@@ -215,15 +236,18 @@ root decision admits.
 - **Self-link.** A browser holding a live, unpaused, unscoped credential of a local human principal
   starts with `intent: "link"` and that bearer. The owner principal and remote-origin, preview,
   share-recipient, agent and service principals are refused, as is a principal already bound at
-  this issuer. At the callback the server re-checks that the linking credential is still live,
-  refuses a subject already bound anywhere (`identity_already_linked`), creates the binding and
-  records `external_identity_linked`. Linking confers neither authority nor sign-in: until a root
-  actor admits the principal, the subject sees the not-admitted page and the approver sees which
-  principal it proved control of. Requiring that decision means a stolen 14-day bearer cannot be
-  turned into a durable sign-in for another account.
+  this issuer. The callback requires fresh authentication and prepares the account-confirmation
+  state below, without creating a binding. Confirmation re-checks that the linking credential
+  is still live and eligible, refuses a subject already bound anywhere (`identity_already_linked`),
+  creates the binding and records `external_identity_linked`. Linking confers neither authority
+  nor sign-in: until a root actor admits the principal, the subject sees the not-admitted page and
+  the approver sees which principal it proved control of. Requiring that decision means a stolen
+  14-day bearer cannot be turned into a durable sign-in for another account.
 - **Administrator-asserted link.** When the person has no live credential, a root actor resolves
   their access request onto an existing principal (`core.access.admit` with
-  `existingPrincipalId`). The approver's judgment is the proof and is traced.
+  `existingPrincipalId`). The approver's judgment is the proof and is traced. The same owner,
+  remote-origin, preview, share-recipient, agent, service and already-bound refusal set applies;
+  administrator judgment never bypasses those principal-eligibility rules.
 - **Unlink** is root-only, removes one binding and revokes the credentials minted from it.
 
 Either way the principal id is unchanged, so grants, layouts, ownership tombstones, trace
@@ -239,24 +263,30 @@ name or the order of sign-ins, and no schema migration creates bindings or admis
 
 A new `principal_admissions` relation `{ principalId, template, admittedBy, admittedAt,
 revision }` decides whether a bound principal may sign in and what each sign-in credential
-carries. `template` is the existing `MintTokenRequest` authority shape, `{ caps, containerId? }`.
-Every sign-in mints through `persistToken` exactly the credential the approver could have minted
-for that principal with `core.access.mint`: token-owned rows at the anchor, the same flat caps.
-This matters because a credential's flat caps are not only rows but also the ceiling several paths
-read directly: governed admission (`auth.ts:1360-1369`, `:1673`), job admission
+carries. The stored template explicitly distinguishes administrator admission from correlated
+scoped admission; it is not an implicit grant inherited from the IdP.
+
+- An **administrator** template mints an ordinary `*` credential through the existing root-only
+  mint path, preserving `holdsRoot` and its administered deny, pause and expiry rules.
+- A **scoped collaborator** template stores the existing V2 `scope` and optional context anchor,
+  without subject or expiry. Each sign-in supplies the bound principal and the session expiry
+  to the same V2 mint/admission implementation used by `core.access.mintV2`. It retains the
+  correlated node/capability rows and their actual flat-cap ceiling; it never flattens them into
+  an authority cross-product.
+- The pending #402/#430 cutover excludes `plugins:load`, `plugins:read` and `layouts:read` from
+  V1 credentials. An OIDC browser requiring those doors therefore needs V2 from the first
+  delivery, not a legacy `{ caps, containerId }` template or silently upgraded old grants.
+  S1–S5 must prove a narrow V2 browser's exact container access and independently scoped shell
+  module/layout rights before admission is available.
+
+This matters because a credential's flat caps are not only rows but also the ceiling several
+paths read directly: governed admission (`auth.ts:1360-1369`, `:1673`), job admission
 (`packages/server/src/job-service.ts:5354`) and terminal input
 (`packages/server/src/terminal-broker.ts:2064`). A capless credential relying on untokened
 principal rows would be refused there; a ceiling-only token without rows would contradict A5's
 reading that a credential is a grant reference. Administered principal rows keep adding and
-denying through the waterfall exactly as they do for minted credentials today.
-
-- An **administrator** admission is the template `{ caps: ["*"] }`, so `holdsRoot` applies with its
-  existing deny, pause and expiry rules.
-- A **collaborator** on one container is, for example,
-  `{ caps: ["containers:read", "scenes:write"], containerId }`; the approver validates the template
-  with the existing mint attenuation ladder (`auth.ts:1982-2006`).
-- Templates use the V1 shape first. The correlated V2 `scope` shape, which can name several
-  containers, follows only after the browser shell is proved with V2-scoped human credentials.
+denying through the waterfall exactly as they do for minted credentials today. No separate
+OIDC mint implementation bypasses existing attenuation or authorization.
 
 Narrowing or replacing a template, removing an admission or unlinking revokes that principal's
 OIDC credentials in the same transaction, fencing their sockets; the next sign-in mints from the
@@ -270,10 +300,12 @@ recovery dialog with two actions: **Link an administrator sign-in** and **Create
 identity** (today's bootstrap). The first starts `intent: "link-administrator"` authenticated by
 the owner key, which is sent only as the bearer of that start request, exactly as bootstrap sends
 it today (`packages/web/src/api.ts:47-64`). The callback, bound to the same browser's transaction,
-refuses an already-bound subject, creates a new human principal admitted with the template
-`{ caps: ["*"] }` and records `external_identity_linked { byOwnerKey: true }` and
-`principal_admitted`. Proof is possession of the owner key plus authentication at the issuer in one
-transaction. No other intent creates an administrator outside a root door. The owner principal
+requires fresh authentication and prepares the account-confirmation state below. Confirmation
+re-checks the owner authorization and refuses an already-bound subject, then creates a new human
+principal admitted with `{ caps: ["*"] }` and records
+`external_identity_linked { byOwnerKey: true }` and `principal_admitted`.
+Proof is possession of the owner key, fresh issuer authentication and explicit account confirmation
+in one browser-bound flow. No other intent creates an administrator outside a root door. The owner principal
 itself is never bound, so the undeniable, unpausable break-glass identity stays a secret rather
 than an IdP account.
 
@@ -298,15 +330,68 @@ admissions and the current `any-human` rows together.
 **Deep links, forwarding, expiry and revocation.** An ordinary URL is a locator, never authority.
 Following it signs in and returns to it; an unadmitted account gets the page above, and an admitted
 account without the resource's `containers:read` gets an in-app refusal naming the signed-in
-identity and the resource with a sign-out action, never an empty workspace. Forwarding a link lets
-the recipient file a request and nothing more. There are no invitation secrets in the recommended
-form (decision D3). Requests expire; admission is withdrawn by `removeAdmission`, pause or grant
-revocation, which bite live through the existing epoch and socket fences.
+identity and the resource with a sign-out action, never an empty workspace. Forwarding an ordinary
+resource link lets the recipient file a request and nothing more. Requests expire; admission is
+withdrawn by `removeAdmission`, pause or grant revocation through the existing epoch and socket
+fences. Invitation links are a separate, explicitly authority-bearing path.
 
-**Anonymous and bearer-link access.** There is none today: every door refuses an unauthenticated
-caller ([SELF-HOST](../SELF-HOST.md#security-posture)) and the only URL carrier is `#key=`. OIDC
-adds none. Decision D2 records whether non-root holders of `tokens:mint` may still create new
-unbound human principals in OIDC mode.
+**Single-use invitations (D3-B).** Root-only traced `core.access.createInvitation` records a
+pre-approved admission template, display-name policy, validated resource `returnTo`, exact current
+`any-human` grant acknowledgement and a fixed expiry 72 hours after creation. An
+`admission_invitations` row holds `{ id, secretHash, template, returnTo, acknowledgedAnyHumanGrants,
+createdBy, createdAt, expiresAt, redeemedBindingId?, redeemedAt?, revokedAt? }`; only a digest of
+a cryptographically random 256-bit secret is persisted. At most 200 unexpired, unredeemed
+invitations exist. Root-only list/revoke doors expose metadata, never the secret; revocation is
+effective immediately.
+
+The create reply returns the secret once. An invitation fragment is consumed and removed by the
+host-owned entry document before navigating or loading plugin content. The browser sends it in
+the body of `POST /auth/oidc/start`; it is never a query parameter, referrer, log, trace, localStorage
+value or preview handoff. The transaction binds the invitation id to that browser's state/nonce
+and PKCE proof, not to an email address. The callback still authenticates the configured `(iss, sub)`
+and prepares the pending confirmation below, showing the exact signed-in account and proposed
+admission before confirmation redeems the invitation. Holding a link alone never creates a principal.
+
+Redemption atomically verifies the digest, unexpired/unrevoked/unredeemed state and unchanged
+`any-human` acknowledgement, then creates or resolves the binding, applies the exact template
+through the ordinary root-preapproved admission path, consumes the invitation and mints the
+browser credential. Concurrent redeemers cannot both succeed. If the acknowledged grant set
+changed, refuse without consuming the invitation or creating a human; a root actor must refresh
+the approval. An existing admitted identity is not silently promoted, demoted or rebound: refuse
+the invitation conflict and leave both the existing admission and invitation unchanged.
+
+The first authenticated confirming redeemer receives the invitation, even after forwarding;
+there is deliberately no verified-email restriction. The administrator's list records the
+redeeming binding/principal and time and offers ordinary admission withdrawal. Expiry, replay,
+revocation and malformed links yield named refusal without exposing other invitees. Revoking an
+already redeemed invitation does not undo its admission; the UI explicitly offers the separate
+`removeAdmission` action.
+
+**Account-confirmation state.** The callback's consumed authentication transaction is never
+reused. For an invitation, self-link or administrator link, create a new, server-held pending
+record containing a fresh random id and CSRF nonce, the verified issuer/subject and display
+claims, intent, invitation id and verified secret digest or exact linking actor, validated
+`returnTo`, and the provider refresh token needed if confirmation creates a session.
+This sensitive record stays in memory only and expires at the earlier of five minutes from
+callback or the original transaction deadline. It is single-use and counts against the bounded
+transaction store; it creates no principal, binding, admission or credential.
+
+Bind it with a fresh `__Host-manifold-oidc-confirm` cookie (`HttpOnly`, `Secure`, `SameSite=Lax`,
+`Path=/`, no `Domain`, no longer than the record's expiry). The network-only, frame-denied page
+shows the exact account, issuer host and resulting principal/admission and offers confirm/cancel.
+Its same-origin POST requires the cookie, the record's independent CSRF nonce and an exact
+configured-origin `Origin`; claims, actor, invitation and template are never taken from form
+fields. Atomically consume the pending record and re-check all live eligibility, invitation,
+grant-acknowledgement and authorization conditions before the binding/admission/mint transaction.
+Cancel, expiry, refusal and success clear the cookie and discard the sensitive record. A failed
+confirmation does not consume an otherwise valid invitation. Missing state, replay, a foreign
+cookie, changed actor authority or cross-origin confirmation refuses without creating authority.
+
+**Anonymous and bearer-link access.** Every API and socket door remains authenticated
+([SELF-HOST](../SELF-HOST.md#security-posture)); an invitation is only admission preapproval,
+never a Manifold API bearer. With OIDC configured, non-root `mint`/`mintV2` may mint for existing
+principals but cannot create new unbound humans (`human_admission_required`, D2-A). Root retains
+the explicit local recovery principal path.
 
 ## Sessions, renewal, logout and deprovisioning
 
@@ -331,21 +416,54 @@ other path that copies a production database into a less-trusted process must ex
 provider-held secret, or, on a hub whose data directory is ephemeral (ADR 0022), a regenerated
 key would sign everyone out on each deploy, while adding little beyond the client-secret binding.
 
-**Revalidation (recommended D1-B).** Every 15 minutes the server refreshes each live OIDC session,
+**Revalidation (D1-B).** Every 15 minutes the server refreshes each live OIDC session,
 at most four concurrently with a 10-second timeout each, stores a rotated refresh token, and checks
 that a returned ID token has the bound `iss` and `sub`; the library does not compare them on refresh.
 Outcome classes:
 
-| Token-endpoint outcome                                                                                                                                                                 | Manifold action                                                                                                                                                                  |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Success                                                                                                                                                                                | Record `revalidatedAt`.                                                                                                                                                          |
-| OAuth `invalid_grant` (user disabled, IdP session ended or expired, refresh token revoked) or a changed `iss`/`sub`                                                                    | Revoke exactly that credential and its token-owned rows; sockets close `4403 revoked`; record `oidc_session_ended { reason }`. Re-enabling the user at the IdP does not resurrect it. |
-| Timeout, network failure, `5xx`, `invalid_client`, unknown signing key or another non-definitive error                                                                                | Keep the session, record a rate-limited `oidc_revalidation_failed`, surface provider health to administrators.                                                                     |
-| No successful revalidation for 24 hours                                                                                                                                                | Revoke as above with reason `provider_unreachable`.                                                                                                                                |
+| Token-endpoint outcome                                                                                              | Manifold action                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Success                                                                                                             | Record `revalidatedAt`.                                                                                                                                                               |
+| OAuth `invalid_grant` (user disabled, IdP session ended or expired, refresh token revoked) or a changed `iss`/`sub` | Revoke exactly that credential and its token-owned rows; sockets close `4403 revoked`; record `oidc_session_ended { reason }`. Re-enabling the user at the IdP does not resurrect it. |
+| Timeout, network failure, `5xx`, `invalid_client`, unknown signing key or another non-definitive error              | Keep the session, record a rate-limited `oidc_revalidation_failed`, surface provider health to administrators.                                                                        |
+| No successful revalidation for 24 hours                                                                             | Revoke as above with reason `provider_unreachable`.                                                                                                                                   |
 
 `invalid_client` is classified as configuration, not deprovisioning, so a mistaken or rotated
 client secret cannot sign everyone out. Revalidation keeps the IdP's idle timer alive; the IdP's
-maximum session lifetime still ends the Manifold session at the next pass.
+maximum session lifetime ends access on the next definitive refresh refusal.
+
+The 24-hour maximum is an authorization deadline, not a promise that the refresh queue will
+run on time. Each OIDC credential carries a freshness deadline of the last successful
+revalidation plus 24 hours (initially its verified sign-in). Every authorization check refuses
+after that deadline independently of the revalidation worker. Extend the existing socket expiry
+fence to use the earlier of credential expiry and the engine's current freshness deadline.
+When its timer fires, re-read that deadline before closing: if a live session's successful refresh
+advanced it, re-arm the timer instead of issuing a spurious `4403`. Revocation still fences
+immediately. A queued attempt or non-definitive failure does not advance the deadline.
+The bounded-concurrency worker must not overlap passes or starve older due sessions.
+Measure the normal 15-minute cadence plus queue/request delay in V10; the hard withdrawal bound
+when the provider actually invalidates refresh is at most 24 hours, including overload or outage,
+because no subsequent successful check can extend that credential.
+
+Only one refresh may be in flight for a credential. Committing its response must atomically
+recheck that the same session, credential and admission are still live and that the freshness
+deadline has not passed. Logout, unlink, admission removal or expiry wins over a late successful
+response: discard that response rather than reinsert a deleted session or revive authority.
+Once a credential has ended, a new verified sign-in is required; refreshing an old provider token
+cannot resurrect it.
+
+Every local withdrawal of an OIDC browser credential (logout, explicit revoke, unlink,
+admission removal or replacement, freshness deadline or credential expiry) deletes its
+`oidc_sessions` row and refresh token in the same engine transaction. A rotated refresh token
+and an advanced freshness deadline are written together only against the same still-live
+session/token generation. No successful response writes after expiry or withdrawal.
+When the configured issuer advertises a revocation endpoint, make one bounded best-effort
+RFC 7009 request after local withdrawal, using only transient memory; local fencing and deletion
+never depend on that response, and no durable secret-bearing retry queue is created.
+The same best-effort disposal covers provider tokens that never yielded a session: unadmitted
+sign-ins, refused invitations and canceled, expired or refused confirmations. Provider qualification
+must prove that revocation does not end unrelated live browser grants; administrative withdrawal
+must not use provider-wide logout as a substitute for credential-scoped revocation.
 
 **Logout.**
 
@@ -364,19 +482,21 @@ maximum session lifetime still ends the Manifold session at the next pass.
   still selects eligibility, so one browser can be withdrawn without the others.
 - **Administrator, all devices:** existing `revoke`, `pause` and the new `removeAdmission`.
 
-**Deprovisioning bound (honest maximum lag)** under D1-B:
+**Withdrawal detection and evidence bounds** under D1-B:
 
-| Event                                                                 | Effect on Manifold                                                                                                                                                                                                         |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| IdP user disabled, IdP session ended (logout, admin sign-out, expiry) | That subject's credentials revoked at the next pass: **at most 15 minutes plus one pass** while the IdP answers; at most **24 hours plus one pass** while it does not.                                                       |
-| Manifold `pause`, `revoke`, `removeAdmission`, unlink                 | Immediate at the next authorization check; sockets fenced.                                                                                                                                                                |
-| Preview credentials already minted from that identity                  | Unchanged by ADR 0028: valid until their own 14-day expiry or revocation on the preview; a new or renewed preview admission is refused at once because production no longer issues assertions for a revoked credential.     |
-| Agents authorized by a revoked browser credential                      | Effective authority empties at once (`auth.ts:1240-1254`); the sponsor re-authorizes from a live credential with `updateAgent` (`auth.ts:2687-2698`). The sign-out confirmation names the affected Agents.                    |
-| Processes already running in that human's terminals                    | Unaffected: terminal-lifecycle identities are independent (`auth.ts:3888-3937`). Stopping them is an explicit `core.terminals` kill. Pause does not stop work (ADR 0046).                                                    |
-| Machine enrollment and native service credentials                      | Unaffected.                                                                                                                                                                                                                |
+| Event                                                 | Effect on Manifold                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| IdP withdrawal that actually invalidates refresh      | Normally revoke the affected credential on the next 15-minute validation plus measured queue/request delay. The independently enforced freshness deadline gives a hard maximum of 24 hours from its last successful check, including scheduler overload or provider outage. V10 measures provider-specific disable/logout behavior and scheduler delay. |
+| Manifold `pause`, `revoke`, `removeAdmission`, unlink | Immediate at the next authorization check; sockets fenced.                                                                                                                                                                                                                                                                                              |
+| Preview credentials already minted from that identity | Unchanged by ADR 0028: valid until their own 14-day expiry or revocation on the preview; a new or renewed preview admission is refused at once because production no longer issues assertions for a revoked credential.                                                                                                                                 |
+| Agents authorized by a revoked browser credential     | Effective authority empties at once (`auth.ts:1240-1254`); the sponsor re-authorizes from a live credential with `updateAgent` (`auth.ts:2687-2698`). The sign-out confirmation names the affected Agents.                                                                                                                                              |
+| Processes already running in that human's terminals   | Unaffected: terminal-lifecycle identities are independent (`auth.ts:3888-3937`). Stopping them is an explicit `core.terminals` kill. Pause does not stop work (ADR 0046).                                                                                                                                                                               |
+| Machine enrollment and native service credentials     | Unaffected.                                                                                                                                                                                                                                                                                                                                             |
 
-Under D1-A the first row becomes "no effect until the 14-day credential expires". Manifold never
-claims that IdP logout ends a Manifold credential unless D1-B or D1-C is the ratified answer.
+An IdP that continues to accept refresh after account disable/logout does not provide this
+withdrawal guarantee. Such access remains until an independently enforced Manifold expiry or
+administrator withdrawal. Provider qualification must expose this boundary, not claim that a
+successful refresh proves an enabled account or that OIDC universally revokes on logout.
 
 **Provider outage.** Sign-in renders `provider_unavailable` with a retry and a pointer to recovery.
 Existing sessions continue within the outage bound. The owner key still opens the recovery dialog.
@@ -384,17 +504,17 @@ Nothing degrades to root, to anonymous access or to a stored owner key.
 
 ## Coverage matrix
 
-| Credential path                                                  | Design                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Human browser and reconnect                                      | OIDC admission as above; reconnect presents the stored bearer on the session handshake (`session-ws.ts:582-609`); `revoked`/`expired` returns the gate to sign-in with the current location as `returnTo`.                                                                                                              |
-| HTTP, WebSocket and plugin actions                               | Unchanged: one bearer, one `AuthContext`, the same evaluator, `AUTH_REFUSALS`, epoch invalidation and socket fences. Plugins see a principal, never an issuer, subject or IdP token.                                                                                                                                    |
-| Human-operated CLI and SDK                                       | A signed-in human with `tokens:mint` mints a scoped, expiring credential for themselves through the existing automation panel (`packages/plugins/access/src/shell-automation.tsx:149-160`); no owner key. Device authorization ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628.html#section-1)) is not built until a human-login CLI consumer exists. |
-| Agents, Runs and action runners                                  | Unchanged ADR 0039/0042 lineage: sponsor-bound standing grants, exact policy acknowledgement, renewal through the runner, revocation by Run subtree. No borrowed human IdP token; an IdP access or ID token presented as a bearer is `unauthorized`.                                                                     |
-| Machines, terminal-lifecycle and native services                 | Unchanged internal lifecycles; no redirect, re-enrollment or revocation as a side effect of human sign-in or sign-out.                                                                                                                                                                                                   |
-| Cross-instance shares                                            | Unchanged [#412](https://github.com/atyrode/manifold/issues/412) contract: the host approves each `(guest origin, guest-local principal id)` and remote subset. The guest's OIDC is invisible to the host; no IdP credential crosses; a shared issuer between instances is not federation.                                  |
-| Production, integrated and numbered previews                     | Production may be an OIDC relying party and the preview identity authority at once. Previews are never OIDC relying parties, have no redirect URI registered at the IdP, and keep the ADR 0027 exact-audience, nonce-bound, single-use handoff and ADR 0028 lifetime. No additional preview consent prompt.                |
-| Offline, no-OIDC and recovery                                    | Unchanged: no configuration means today's owner-key bootstrap and tokens; an explicit `#key=` link remains the break-glass route in OIDC mode.                                                                                                                                                                          |
-| Foreign lens (`?instance=`)                                      | Not supported in the first delivery: the callback can deliver a credential only to the instance's own origin. The lens offers a link to sign in on that instance's origin; cross-origin delivery would need its own audience-bound design.                                                                                |
+| Credential path                                  | Design                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Human browser and reconnect                      | OIDC admission as above; reconnect presents the stored bearer on the session handshake (`session-ws.ts:582-609`); `revoked`/`expired` returns the gate to sign-in with the current location as `returnTo`.                                                                                                                                               |
+| HTTP, WebSocket and plugin actions               | Unchanged: one bearer, one `AuthContext`, the same evaluator, `AUTH_REFUSALS`, epoch invalidation and socket fences. Plugins see a principal, never an issuer, subject or IdP token.                                                                                                                                                                     |
+| Human-operated CLI and SDK                       | A signed-in human with `tokens:mint` mints a scoped, expiring credential for themselves through the existing automation panel (`packages/plugins/access/src/shell-automation.tsx:149-160`); no owner key. Device authorization ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628.html#section-1)) is not built until a human-login CLI consumer exists. |
+| Agents, Runs and action runners                  | Unchanged ADR 0039/0042 lineage: sponsor-bound standing grants, exact policy acknowledgement, renewal through the runner, revocation by Run subtree. No borrowed human IdP token; an IdP access or ID token presented as a bearer is `unauthorized`.                                                                                                     |
+| Machines, terminal-lifecycle and native services | Unchanged internal lifecycles; no redirect, re-enrollment or revocation as a side effect of human sign-in or sign-out.                                                                                                                                                                                                                                   |
+| Cross-instance shares                            | Unchanged [#412](https://github.com/atyrode/manifold/issues/412) contract: the host approves each `(guest origin, guest-local principal id)` and remote subset. The guest's OIDC is invisible to the host; no IdP credential crosses; a shared issuer between instances is not federation.                                                               |
+| Production, integrated and numbered previews     | Production may be an OIDC relying party and the preview identity authority at once. Previews are never OIDC relying parties, have no redirect URI registered at the IdP, and keep the ADR 0027 exact-audience, nonce-bound, single-use handoff and ADR 0028 lifetime. No additional preview consent prompt.                                              |
+| Offline, no-OIDC and recovery                    | Unchanged: no configuration means today's owner-key bootstrap and tokens; an explicit `#key=` link remains the break-glass route in OIDC mode.                                                                                                                                                                                                           |
+| Foreign lens (`?instance=`)                      | Not supported in the first delivery: the callback can deliver a credential only to the instance's own origin. The lens offers a link to sign in on that instance's origin; cross-origin delivery would need its own audience-bound design.                                                                                                               |
 
 Accepting an external JWT as a Manifold bearer, or federating workload identity, is not part of
 this design and would need its own decision.
@@ -462,56 +582,34 @@ localhost floor; agents never route through a human login), §2 (finite credenti
 and withdrawal) and §4 (bootstrap audit). It refines §6: #324 selects OIDC as the preferred
 configured human sign-in now, rather than waiting for its revisit trigger, the relying party sits
 in front of _principal creation_ and never the root bootstrap door, and this record supplies the
-dependency verdict §6 deferred. Until the decisions below are ratified, CONTRACTS records OIDC as
-proposed and unimplemented; ratification and the implementing slices edit
+dependency verdict §6 deferred. CONTRACTS continues to record OIDC as proposed and unimplemented;
+the selected policy does not enact authentication. The implementing slices update
 [CONTRACTS §Identity](../CONTRACTS.md#identity-tokens-capabilities), the HTTP API and runtime tables,
 `REGISTRY.md` and `docs/SELF-HOST.md` with the code.
 
-## Decisions for operator ratification
+## Selected policy
 
-### D1 — How long a Manifold browser session survives IdP withdrawal
+### D1 — Refresh-bound browser sessions
 
-**Question:** After OIDC sign-in, should the Manifold credential be bound to the IdP session?
+Use D1-B: server-held refresh tokens, 15-minute revalidation, exact-credential revocation on
+definitive refusal and a maximum 24-hour interval without a successful check. No back-channel
+logout receiver or short redirect-renewal path is included. Provider account-disable/logout
+propagation must be qualified against that provider's actual refresh behavior; OIDC by itself
+does not guarantee that either event invalidates a refresh token.
 
-- **A — Independent.** Today's 14-day credential; IdP disable or logout has no effect; withdrawal is
-  Manifold-only. Lag up to 14 days. No refresh token stored.
-- **B — IdP-bound revalidation.** Server-held refresh token checked every 15 minutes; a definitive
-  refusal revokes the exact credential and fences its sockets. Lag at most 15 minutes plus one pass,
-  or 24 hours plus one pass during an IdP outage. The provider's session maximum (14 days in the
-  recipe) governs re-sign-in. **Recommended.**
-- **C — B plus Back-Channel Logout.** Adds a logout-token receiver
-  ([OpenID Back-Channel Logout](https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken))
-  for near-immediate IdP logout propagation. More code and an inbound endpoint; disable still relies
-  on revalidation unless separately proved.
-- **D — Short credential renewed by browser redirect.** No server-held refresh token; lag equals the
-  short lifetime, but sockets are fenced and the page re-redirects at every renewal, the experience
-  ADR 0028 removed.
+### D2 — Root-only creation of new humans
 
-### D2 — Unbound human credentials in OIDC mode
+Use D2-A: in OIDC mode non-root `mint`/`mintV2` with an inline new human refuses
+`human_admission_required`. Minting for existing principals, including oneself, remains unchanged.
+Root may still create an explicitly labeled local recovery principal. No opt-out setting exists.
 
-**Question:** With OIDC configured, may non-root holders of `tokens:mint` keep creating new human
-principals through `core.access.mint` (`auth.ts:2146`)?
+### D3 — Pre-approved single-use invitations
 
-- **A — Root only.** Non-root `mint`/`mintV2` with an inline new `principal` refuses
-  `human_admission_required`; minting for an existing principal, including oneself, is unchanged;
-  root may still create an explicitly labeled local principal. **Recommended:** an unbound human is
-  otherwise a way around admission.
-- **B — Unchanged.** Any `tokens:mint` holder may create unbound humans, shown as local credentials.
-- **C — Per-instance opt-in.** A, unless the operator sets an explicit setting restoring B.
-
-### D3 — How an invitee reaches admission
-
-**Question:** Besides request-then-approve, should Manifold issue invitation links?
-
-- **A — Request and approve only.** No invitation secret exists; the deep link is the invitation and
-  approval names the exact subject. Forwarding yields only a request. Two steps for a new
-  collaborator. **Recommended** for the first delivery.
-- **B — Plus single-use pre-approved invitation links.** A root-created secret link, expiring after
-  72 hours, binds to whoever redeems it first while signed in; the redemption is shown and
-  revocable. One step, with a forwarding window until redemption.
-- **C — B with a required verified email.** Redemption also requires `email_verified` and an email
-  equal to the invitation's. Reduces forwarding, but depends on the issuer's email and linking
-  policy; the binding is still `(iss, sub)`.
+Use D3-B in addition to request/approve: root-created 72-hour invitations bind to the first
+authenticated confirming redeemer. There is no verified-email requirement. Forwarding before
+redemption transfers the opportunity to claim that exact pre-approved admission; ordinary resource
+links still grant nothing. The invitation lifecycle and verification requirements above are part
+of the first delivery, not deferred implementation.
 
 ## Keycloak reference integration
 
@@ -522,17 +620,21 @@ realm as one issuer, `https://<keycloak-host>/realms/<realm>`. Steps, with
 1. **Realm.** A dedicated realm such as `manifold`; never the `master` realm. The observed
    [session defaults](https://www.keycloak.org/docs/latest/server_admin/index.html#_timeouts) are
    SSO Session Idle 30 minutes and SSO Session Max 10 hours, which under D1-B means daily sign-in.
-   For today's 14-day experience set SSO Session Max to 14 days and keep SSO Session Idle above the
-   15-minute revalidation interval (the default qualifies). Leave Revoke Refresh Token off (the
-   realm default) unless you accept that a crash between rotation and persistence signs a browser
-   out. Keep self-registration off for a closed instance.
+   For today's 14-day experience set SSO Session Max to 14 days and allow substantially more idle
+   headroom than the 15-minute cadence: normally 2–4 hours plus the expected restart margin;
+   leave Client Session Idle unset. The 30-minute default leaves only about 15 minutes for delay.
+   Hub downtime, queue lag or an outage beyond the provider's idle window causes definitive
+   refresh refusal and signs the affected browsers out on resume, even before the local 24-hour
+   limit; their sponsor-bound Agents lose effective authority until reauthorization.
+   Leave Revoke Refresh Token off (the realm default) unless you accept that a crash between
+   rotation and persistence signs a browser out. Keep self-registration off for a closed instance.
 2. **Client** ([creating an OIDC client](https://www.keycloak.org/docs/latest/server_admin/index.html#proc-creating-oidc-client_server_administration_guide)):
    client id `manifold`; Client authentication on (confidential); Standard flow only, with Implicit,
    Direct access grants, Service accounts and Device grant off; Valid redirect URIs exactly
    `https://<manifold-host>/auth/oidc/callback`; Valid post logout redirect URIs exactly
    `https://<manifold-host>/auth/oidc/signed-out`; Web origins empty; no wildcards. Advanced:
    PKCE method `S256` ([PKCE setting](https://www.keycloak.org/docs/latest/server_admin/index.html#_proof-key-for-code-exchange)).
-   Front-channel and back-channel logout off unless D1-C is chosen. Optionally enforce HTTPS,
+   Front-channel and back-channel logout off (D1-B includes no logout receiver). Optionally enforce HTTPS,
    no-wildcard redirect URIs and PKCE with
    [client policies](https://www.keycloak.org/docs/latest/server_admin/index.html#securing-client-uris).
 3. **Scopes and claims.** Default client scopes `profile` (display claims); `email` optional for the
@@ -546,8 +648,9 @@ realm as one issuer, `https://<keycloak-host>/realms/<realm>`. Steps, with
    [client secret rotation policy](https://www.keycloak.org/docs/latest/server_admin/index.html#rules-for-client-secret-rotation),
    which keeps the previous secret valid for its rotated-secret expiry: regenerate, update the
    environment, restart the hub within that window. Without the policy, regeneration invalidates the
-   old secret immediately; sign-in and revalidation fail as `invalid_client` until the hub restarts,
-   and sessions are not revoked for it.
+   old secret immediately; sign-in and revalidation fail as `invalid_client` until the hub restarts.
+   That error does not immediately revoke sessions, but never extends their independent 24-hour
+   freshness deadline.
 5. **Signing keys.** RS256 is the realm default. Rotate by adding the new key passive, waiting at
    least five minutes, then making it active
    ([rotating keys](https://www.keycloak.org/docs/latest/server_admin/index.html#rotating-keys)).
@@ -662,43 +765,43 @@ social login or deployed evidence.
 
 ## Threats and controls
 
-| Threat                                                    | Control                                                                                                         | Verification |
-| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------ |
-| First public login becomes administrator                  | Admission is root-only; the first administrator needs the owner key in the same transaction                     | V4, V14      |
-| Login silently widens `any-human` grants                  | No principal before admission; `admit` requires the exact current `any-human` set                               | V4           |
-| Account merge by email or name                            | Lookup only by `(iss, sub)`; every link ends in a root admission decision                                       | V3, V15      |
-| Stolen bearer turned into a durable sign-in               | Self-link creates a binding only; a root actor must still admit                                                 | V15          |
-| Login CSRF or callback injection                          | `__Host-` transaction cookie, single-use transaction, exact state, nonce and PKCE                                | V8           |
-| Authorization code theft or replay                        | Exact redirect URI, PKCE `S256`, provider single use, `no-referrer`, history replacement                        | V8           |
-| IdP mix-up or attacker-selected endpoints                 | One configured issuer, exact discovery issuer, RFC 9207 check, no request-selected endpoints                    | V8           |
-| Forged or wrong-audience ID token                         | Signature on, pinned asymmetric algorithm, exact `iss`, `aud`, `azp`                                            | V8, V9       |
-| Open redirect through `returnTo`                          | Relative-path allowlist                                                                                         | V8           |
-| IdP token used as a Manifold bearer                       | Bearer lookup is hash-only; IdP tokens never leave the server                                                   | V16          |
-| Client secret or refresh token reaches a preview          | OIDC and identity-authority configuration are mutually exclusive; preview seeding empties the tables          | V17          |
-| Deprovisioned user keeps access                           | D1 revalidation, `removeAdmission`, pause, per-credential revoke                                                | V10, V11     |
-| IdP outage becomes privilege                              | No fallback; owner key only by explicit link                                                                    | V12, V13     |
-| Secrets or personal data in logs, traces or events        | Closed refusal vocabulary, id-only events, no `cause` logging                                                   | V19          |
+| Threat                                             | Control                                                                                              | Verification |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------ |
+| First public login becomes administrator           | Admission is root-only; the first administrator needs the owner key in the same transaction          | V4, V14      |
+| Login silently widens `any-human` grants           | No principal before admission; `admit` requires the exact current `any-human` set                    | V4           |
+| Account merge by email or name                     | Lookup only by `(iss, sub)`; every link ends in a root admission decision                            | V3, V15      |
+| Stolen bearer turned into a durable sign-in        | Self-link creates a binding only; a root actor must still admit                                      | V15          |
+| Login CSRF or callback injection                   | `__Host-` transaction cookie, single-use transaction, exact state, nonce and PKCE                    | V8           |
+| Authorization code theft or replay                 | Exact redirect URI, PKCE `S256`, provider single use, `no-referrer`, history replacement             | V8           |
+| IdP mix-up or attacker-selected endpoints          | One configured issuer, exact discovery issuer, RFC 9207 check, no request-selected endpoints         | V8           |
+| Forged or wrong-audience ID token                  | Signature on, pinned asymmetric algorithm, exact `iss`, `aud`, `azp`                                 | V8, V9       |
+| Open redirect through `returnTo`                   | Relative-path allowlist                                                                              | V8           |
+| IdP token used as a Manifold bearer                | Bearer lookup is hash-only; IdP tokens never leave the server                                        | V16          |
+| Client secret or refresh token reaches a preview   | OIDC and identity-authority configuration are mutually exclusive; preview seeding empties the tables | V17          |
+| Deprovisioned user keeps access                    | D1 revalidation, `removeAdmission`, pause, per-credential revoke                                     | V10, V11     |
+| IdP outage becomes privilege                       | No fallback; owner key only by explicit link                                                         | V12, V13     |
+| Secrets or personal data in logs, traces or events | Closed refusal vocabulary, id-only events, no `cause` logging                                        | V19          |
 
 ## Implementation slices and dependencies
 
 Each slice is separately claimable after ratification and before its own triage; none is authorized
 by this record.
 
-| #   | Slice                                                                                                                                                                                                                                                                                                                      | Depends on        |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| S0  | Ratify D1-D3 and this record; edit the CONTRACTS identity text and REGISTRY plan to the ratified answers.                                                                                                                                                                                                                 | —                 |
-| S1  | Protocol schemas (identity configuration, admission doors, revoke credential id) and the persistence migration with store accessors; registry rows; preview projection test.                                                                                                                                             | S0                |
-| S2  | `oidc.ts`: configuration and fail-closed validation, discovery cache, transaction store, start/callback routes, ID-token checks, resolution, credential and session minting, callback document, events; exact `openid-client` pin.                                                                                       | S1                |
-| S3  | `core.access` admission doors, `any-human` acknowledgement, D2 rule, owner-key administrator link, self-link.                                                                                                                                                                                                               | S1; S2 end to end |
-| S4  | Logout routes, RP-initiated logout, sign-out everywhere, per-credential revoke, D1 revalidation loop and outcome classes.                                                                                                                                                                                                  | S2                |
-| S5  | Web: sign-in gate, deep-link `returnTo`, recovery dialog, not-admitted and resource-refusal views, sign-out controls, Access UI for requests, bindings and admissions. Real-browser screenshots inspected.                                                                                                                 | S2-S4             |
-| S6  | CONTRACTS, HTTP and runtime tables, SELF-HOST setup with the Keycloak and Clever Cloud recipes, change fragment.                                                                                                                                                                                                           | S2-S5             |
-| S7  | Disposable verification harness (V1-V20) and its CI selection.                                                                                                                                                                                                                                                             | S2-S5             |
+| #   | Slice                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Depends on                        |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| S0  | Review this proposed architecture with selected D1-B/D2-A/D3-B; keep current identity behavior normative until implementing slices land.                                                                                                                                                                                                                                                                                                                                            | —                                 |
+| S1  | Protocol schemas for identity, admission templates, invitation lifecycle and credential-scoped revoke; persistence migration for external identities, admissions, requests, invitations and sessions; registry rows; preview projection.                                                                                                                                                                                                                                            | S0; #402/#430 credential contract |
+| S2  | `oidc.ts`: configuration and fail-closed validation, discovery cache, bounded/rate-limited transaction and pending-confirmation stores, start/callback routes, ID-token checks, resolution, credential/session minting, callback encoding and network-only `/auth/oidc/*` and `/auth/preview/*` worker exclusion; trusted preview launchers deny `MANIFOLD_OIDC_*` in image, compose and inherited environments (`infra/previews/environment.sh`, `preview.sh`); exact library pin. | S1                                |
+| S3  | `core.access` admission and invitation create/list/revoke/redemption, atomic single-use preapproval, stale `any-human` acknowledgement, D2-A mint rule, fresh-authenticated and confirmed owner-key administrator link/self-link, consistent existing-principal eligibility.                                                                                                                                                                                                        | S1; S2 end to end                 |
+| S4  | Logout routes, RP-initiated logout, sign-out everywhere, credential-scoped revoke and atomic session-secret deletion, conditional refresh write-back, D1 revalidation loop/outcomes, independent authorization deadlines and current-deadline socket timer re-arming.                                                                                                                                                                                                               | S2                                |
+| S5  | Web sign-in gate, resource deep-link return, private invitation entry and server-bound account confirmation for invitation/link intents, recovery dialog, refusal views, sign-out controls and Access UI; inspected real-browser screenshots and worker-cache proof.                                                                                                                                                                                                                | S2–S4                             |
+| S6  | CONTRACTS, HTTP and runtime tables, SELF-HOST setup with the Keycloak and Clever Cloud recipes, change fragment.                                                                                                                                                                                                                                                                                                                                                                    | S2-S5                             |
+| S7  | Disposable verification harness V1–V24 and impact-selected CI.                                                                                                                                                                                                                                                                                                                                                                                                                      | S2–S5                             |
 
 Already delivered and only regression-checked: #412 host-approved recipients (closed 2026-10-01).
 Preserved, not closed by this work: #468 preview recovery and its separately owned deployed-origin
-receipt. Independent: the in-flight capability migration touching `auth.ts` is a merge-order
-concern for S2-S4, not a design dependency. Any delegated admission depends on ADR 0011 §8's
+receipt. The #402/#430 credential migration is an explicit admission-template dependency for
+S1–S5, not a reason to widen legacy grants. Any delegated admission depends on ADR 0011 §8's
 deny-attenuation decision.
 
 ## Verification plan
@@ -709,29 +812,32 @@ prove that Chromium accepts the `__Host-` cookie on `http://localhost`; otherwis
 local TLS. Deterministic `RuntimeDeps` clocks cover the 15-minute and 24-hour bounds, and one
 real-time run measures the 15-minute bound.
 
-| Id  | Proves                                                                                                                                                                       |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| V1  | A fresh browser follows a deep link, signs in and reaches exactly that resource; screenshots of each transition inspected.                                                  |
-| V2  | Two browsers, one subject: one principal, two credentials; revoking one leaves the other.                                                                                     |
-| V3  | Two subjects with identical names and emails remain two principals.                                                                                                          |
-| V4  | An unadmitted account gets no credential and no API or socket access; a request appears; a stale `any-human` acknowledgement is refused; the first login is not an administrator. |
-| V5  | A collaborator admitted to one container cannot read other containers, spawn or control a terminal beyond its template, or call root doors, over HTTP and sockets.        |
-| V6  | Grant and grant revocation, template narrowing and `removeAdmission` bite live over HTTP and sockets.                                                                        |
-| V7  | A forwarded link yields only a request for the second account.                                                                                                              |
-| V8  | Cancellation, provider error, state, nonce, PKCE and `iss` mismatch, code replay, wrong audience (second client), redirect variants, `returnTo` attacks, missing or foreign transaction cookie and a tossed `Domain` cookie all refuse with no credential. |
-| V9  | Passive-first key rotation succeeds; immediate rotation fails once within the 60-second window and then succeeds; wrong algorithm refused.                                 |
-| V10 | Disable, admin sign-out and session expiry at the IdP revoke the Manifold credential within the bound; re-enabling does not resurrect it.                                  |
-| V11 | Sign out of this browser and everywhere revoke the right credentials and end the IdP session; Agents, Runs, machines and services untouched; affected Agents named.           |
-| V12 | IdP outage: sessions continue, sign-in shows `provider_unavailable`, revocation after 24 hours, nothing falls back.                                                         |
-| V13 | Owner-key recovery with the IdP down; no-OIDC offline startup unchanged.                                                                                                    |
-| V14 | Owner-key administrator link; a second link of the same subject refused; link without the owner key refused.                                                                  |
-| V15 | Self-link preserves principal id, grants, layout and trace attribution and signs in only after a root `admit`; owner, scoped, remote and already-bound cases refused.          |
-| V16 | Machine, Agent, Run, runner, native-service and terminal-lifecycle credentials keep their lifecycles; IdP tokens presented as bearers are `unauthorized`.                  |
-| V17 | Production-to-preview handoff from an OIDC identity unchanged, including #468's revoked/expired readmission without owner-key fallback; OIDC plus identity authority refuses to start; no client secret or IdP token in preview environment, bundle or database. |
-| V18 | Two disposable instances: an OIDC host shares with a guest under #412 approval; no IdP credential crosses; origins are instance origins.                                     |
-| V19 | Logs, events and traces contain no code, token, refresh token, subject string or claim set.                                                                                  |
-| V20 | A signed-in human mints a scoped CLI credential; D2's answer holds for non-root new-human mints.                                                                             |
-| V21 | A second disposable realm brokered as an upstream OIDC provider reaches Manifold as the brokering realm's `sub`, with no provider-specific Manifold code.                      |
+| Id  | Proves                                                                                                                                                                                                                                                                                                                                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| V1  | A fresh browser follows a deep link, signs in and reaches exactly that resource; screenshots of each transition inspected.                                                                                                                                                                                                                                 |
+| V2  | Two browsers, one subject: one principal, two credentials; revoking one leaves the other.                                                                                                                                                                                                                                                                  |
+| V3  | Two subjects with identical names and emails remain two principals.                                                                                                                                                                                                                                                                                        |
+| V4  | An unadmitted account gets no credential and no API or socket access; a request appears; a stale `any-human` acknowledgement is refused; the first login is not an administrator.                                                                                                                                                                          |
+| V5  | A collaborator admitted to one container cannot read other containers, spawn or control a terminal beyond its template, or call root doors, over HTTP and sockets.                                                                                                                                                                                         |
+| V6  | Grant and grant revocation, template narrowing and `removeAdmission` bite live over HTTP and sockets.                                                                                                                                                                                                                                                      |
+| V7  | A forwarded ordinary resource link yields only an access request; it is not an invitation.                                                                                                                                                                                                                                                                 |
+| V8  | Cancellation, provider error, state, nonce, PKCE and `iss` mismatch, code replay, wrong audience (second client), redirect variants, `returnTo` attacks, missing or foreign transaction cookie and a tossed `Domain` cookie all refuse with no credential.                                                                                                 |
+| V9  | Passive-first key rotation succeeds; immediate rotation fails once within the 60-second window and then succeeds; wrong algorithm refused.                                                                                                                                                                                                                 |
+| V10 | Measure actual provider disable/admin-sign-out/expiry refusal and scheduler delay; document providers that still accept refresh. With a stalled or saturated worker, HTTP and live sockets enforce the independent 24-hour deadline. Re-enabling or a successful refresh racing logout, unlink, admission removal or expiry never resurrects a credential. |
+| V11 | Sign out of this browser and everywhere revoke the right browser credentials and end the IdP session; sponsor-bound Agent authority is fenced and affected Agents are named. Independent Agent/Run/machine/service/terminal-lifecycle credentials remain unchanged.                                                                                        |
+| V12 | IdP outage: sessions continue only within their freshness deadline, sign-in shows `provider_unavailable`, withdrawal at 24 hours, no fallback. A continuously refreshed socket is not closed at its obsolete handshake-time deadline. Hub downtime beyond the provider idle window causes definitive refusal on resume and fences sponsorship.             |
+| V13 | Owner-key recovery with the IdP down; no-OIDC offline startup unchanged.                                                                                                                                                                                                                                                                                   |
+| V14 | Owner-key administrator link requires fresh `auth_time` and explicit exact-account confirmation; wrong/stale state, a second link of the same subject and a link without live owner authorization refuse.                                                                                                                                                  |
+| V15 | Self-link preserves principal id, grants, layout and trace attribution and signs in only after root admission; confirmation races and all ineligible principal cases refuse for both self-link and administrator-asserted linking.                                                                                                                         |
+| V16 | Machine, Agent, Run, runner, native-service and terminal-lifecycle credentials keep their independent lifecycles; sponsor-bound Agent authority follows its exact human credential; IdP tokens used as bearers are `unauthorized`.                                                                                                                         |
+| V17 | Production-to-preview handoff and #468 readmission unchanged; no owner-key fallback. Runtime OIDC/identity-authority coexistence refuses, and trusted preview-launcher checks reject every `MANIFOLD_OIDC_*` source, even when PR code removes the runtime guard. No client secret or IdP token reaches previews.                                          |
+| V18 | Two disposable instances: an OIDC host shares with a guest under #412 approval; no IdP credential crosses; origins are instance origins.                                                                                                                                                                                                                   |
+| V19 | Logs, events and traces contain no code, token, refresh token, subject string or claim set. Malicious claims/return paths remain inert in encoded server documents. Ended sessions and canceled/expired confirmations retain no refresh token; withdrawal does not await provider revocation.                                                              |
+| V20 | A signed-in human mints a scoped CLI credential; D2's answer holds for non-root new-human mints.                                                                                                                                                                                                                                                           |
+| V21 | A second disposable realm brokered as an upstream OIDC provider reaches Manifold as the brokering realm's `sub`, with no provider-specific Manifold code.                                                                                                                                                                                                  |
+| V22 | Invitation expiry, revoke, replay, simultaneous redemption, stale any-human acknowledgement and existing-admission conflict are atomic; first authenticated confirming redeemer receives exactly the template, including after forwarding; root-only creation/list/revoke.                                                                                 |
+| V23 | Invitation secret never reaches query/referrer/log/trace/storage/plugins/previews. Fresh, expiring, single-use server confirmation state rejects replay, wrong cookies, CSRF and changed actor authority; fragment removal and exact-account display hold; V2 shell rights stay independent.                                                               |
+| V24 | With the actual service worker controlling the browser, complete OIDC sign-in and preview handoff, inspect Cache Storage and go offline: no private auth document or bearer becomes the shell, and no auth navigation replays a callback. Saturated start/confirmation state is bounded and refuses new starts without evicting live transactions.         |
 
 **Separately authorized, not part of S7.** Hosted Keycloak on Clever Cloud (spend); real Google and
 GitHub OAuth applications (provider accounts); Manifold on its real public origin with real TLS;
