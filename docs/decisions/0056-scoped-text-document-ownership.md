@@ -133,7 +133,7 @@ contexts and bearers do not cross that boundary. In-realm installation remains c
 neither a structural TypeScript interface nor withholding one property confines such code.
 
 Read admission remains `containers:read` at the home; edits remain `scenes:write` there.
-Protocol 56's `sceneWriteAllowed` is the server-evaluated home write decision, refreshed through
+The session's `sceneWriteAllowed` is the server-evaluated home write decision, refreshed through
 full-state frames when grants change. `selfCaps()` remains the credential's raw ceiling:
 a wildcard there is not effective authority. Native `canWrite` also requires open, occupant
 access; spectator previews never acquire edit permission just by sharing a promoted entry.
@@ -207,7 +207,7 @@ on; when it must be off, preserve the attribution of the existing state that req
 outcome rather than inventing a fresh actor/time. A disabled text/canvas combination must not
 be re-enabled by migration, nor make the independently enabled text plugin depend on canvas.
 
-Protocol 56, allocated after integrated private-entry revision 55, fences old session clients from
+Protocol 57, allocated after integrated ordered-geometry revision 56, fences old session clients from
 replaying the inline-body representation. Keep historical epoch identities; do not claim that
 an epoch rewrite is identity preservation.
 The machine wire is unchanged, so compatible agent versions remain admitted. A compatible

@@ -2764,7 +2764,7 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 56 admits bundle stamps 47, 48, 51, 52, 53, 54, 55 and 56:
+the current wire version. Protocol 57 admits bundle stamps 47, 48, 51, 52, 53, 54, 55, 56 and 57:
 terminal geometry adds a subscription without changing existing plugin call signatures, and
 portable Worker projections expose no terminal byte/snapshot subscriptions. The Text session
 document cutover retains the plugin ABI. A prior stamp
@@ -3735,7 +3735,7 @@ depends on it.
   Correlated token, Run and Agent authority scopes, Run targets, Agent grant targets and native
   authority snapshots stay verbatim lineage evidence: no Text operation, event or stream is
   admitted at either plugin node. Schema 52's DDL runs through the prepared migration runner.
-  Protocol 56 fences the old inline-body session format; machine/instance compatibility remains
+  Protocol 57 fences the old inline-body session format; machine/instance compatibility remains
   additive. Rollback uses the complete pre-version image with a compatible old binary, not an
   old binary pointed at the migrated database. Disposable proof does not claim live activation.
   Migration records the maximum positive encoding growth across retained revisions as a fixed
@@ -4502,8 +4502,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56}`; session/browser joins remain strictly
-current at protocol 56. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57}`; session/browser joins remain strictly
+current at protocol 57. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -4644,7 +4644,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{53, 54, 55, 56}`; these session/machine changes leave its
+The independent federation set is `{53, 54, 55, 56, 57}`; these session/machine changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -5822,10 +5822,10 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56, 57}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Protocol53 reset instance acceptance for explicit host-recipient admission and finite
-ticket subset/expiry. Protocols 54, 55 and 56 leave that instance wire unchanged and add their
+ticket subset/expiry. Protocols 54, 55, 56 and 57 leave that instance wire unchanged and add their
 versions without another peer reset. Federation compatibility remains independent of
 retained terminal-agent compatibility. This is not an implicit live rollout or authorization to install
 newer agents ahead of their hub.
