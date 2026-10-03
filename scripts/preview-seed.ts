@@ -8,6 +8,10 @@ interface VersionRow {
 interface TableRow {
   name: string;
 }
+interface TriggerRow {
+  name: string;
+  sql: string;
+}
 interface FolderRow {
   id: string;
   name: string;
@@ -30,6 +34,11 @@ interface SceneRow {
   ts: number;
   hash: string;
   doc: Uint8Array;
+}
+interface SceneCapacityRow {
+  container_id: string;
+  epoch: string;
+  migration_bytes: number;
 }
 interface CheckRow {
   integrity_check: string;
@@ -79,9 +88,26 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
         "SELECT container_id, epoch, rev, ts, hash, doc FROM scene_docs ORDER BY container_id, epoch, rev",
       )
       .all();
+    // This is document format metadata, not authority. Older source schemas have no credit.
+    const capacities =
+      Number(version.value) >= 52
+        ? destination
+            .query<SceneCapacityRow, []>(
+              `SELECT container_id, epoch, migration_bytes FROM scene_doc_capacity
+         WHERE EXISTS (SELECT 1 FROM scene_docs
+           WHERE scene_docs.container_id = scene_doc_capacity.container_id
+             AND scene_docs.epoch = scene_doc_capacity.epoch)`,
+            )
+            .all()
+        : [];
     const tables = destination
       .query<TableRow, []>(
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
+      .all();
+    const triggers = destination
+      .query<TriggerRow, []>(
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' ORDER BY name",
       )
       .all();
 
@@ -100,6 +126,10 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
       [string, string, number, number, string, Uint8Array]
     >("INSERT INTO scene_docs(container_id, epoch, rev, ts, hash, doc) VALUES (?, ?, ?, ?, ?, ?)");
     destination.transaction(() => {
+      // Projection must not run live mutation observers: DELETE can recreate authority
+      // metadata, and restoring representative rows can populate non-allowlisted tables.
+      for (const trigger of triggers)
+        destination.exec(`DROP TRIGGER ${quotedIdentifier(trigger.name)}`);
       for (const table of tables) destination.exec(`DELETE FROM ${quotedIdentifier(table.name)}`);
       destination
         .query("INSERT INTO meta(key, value) VALUES ('schema_version', ?)")
@@ -117,6 +147,14 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
         );
       for (const row of scenes)
         insertScene.run(row.container_id, row.epoch, row.rev, row.ts, row.hash, row.doc);
+      if (capacities.length > 0) {
+        const insertCapacity = destination.query<void, [string, string, number]>(
+          "INSERT INTO scene_doc_capacity(container_id, epoch, migration_bytes) VALUES (?, ?, ?)",
+        );
+        for (const row of capacities)
+          insertCapacity.run(row.container_id, row.epoch, row.migration_bytes);
+      }
+      for (const trigger of triggers) destination.exec(trigger.sql);
     })();
 
     const integrity = destination.query<CheckRow, []>("PRAGMA integrity_check").get();
@@ -141,5 +179,7 @@ if (import.meta.main) {
     throw new Error("usage: preview-seed.ts <source-database> <destination-database>");
   }
   createPreviewSeed(source, destination);
-  console.log("preview-seed: containers, container_folders and scene_docs only");
+  console.log(
+    "preview-seed: containers, container_folders, scene_docs and scene_doc_capacity only",
+  );
 }

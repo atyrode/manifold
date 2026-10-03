@@ -14,6 +14,7 @@ import { AuthService, ServiceError, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
+import { seedHistoricalSceneTables } from "./migration-fixtures.ts";
 
 /**
  * THE PARITY MATRIX — the inviolable contract of the permission waterfall (#77, ADR 0011).
@@ -187,14 +188,11 @@ function expectedMatrix(credentials: readonly Credential[]): Record<string, bool
  */
 function seedPreV13(path: string): void {
   const db = new Database(path, { create: true, strict: true });
+  seedHistoricalSceneTables(db);
   db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
-  PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
   created_at INTEGER, origin TEXT);
-CREATE TABLE containers(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER, sort_order INTEGER,
-  folder_id TEXT, discipline TEXT NOT NULL DEFAULT 'canvas');
 CREATE TABLE tokens(id TEXT PRIMARY KEY, hash TEXT UNIQUE, principal_id TEXT, caps TEXT,
   container_id TEXT, created_at INTEGER, revoked_at INTEGER, minted_by TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
@@ -209,9 +207,6 @@ CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id
 CREATE TABLE share_tickets(share_id TEXT NOT NULL, guest_principal_id TEXT NOT NULL,
   principal_id TEXT NOT NULL, created_at INTEGER NOT NULL,
   PRIMARY KEY (share_id, guest_principal_id)) WITHOUT ROWID;
-CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
-  ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
-  PRIMARY KEY (container_id, epoch, rev));
 INSERT INTO meta(key, value) VALUES ('schema_version', '12');
 INSERT INTO meta(key, value) VALUES ('owner_principal_id', 'p-owner');
 

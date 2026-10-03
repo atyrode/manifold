@@ -83,6 +83,13 @@ Session revision 34 adds the required event-frame `plugin` origin (#601, ADR 004
 kind must qualify it by its declaring origin. Topics and machine/instance frames are unchanged;
 their compatibility sets only add the shared revision, retaining previously admitted versions.
 
+Session revision **56**, after integrated private-entry revision 55, carries independently
+retained named collaborative texts and requires `sceneWriteAllowed` on room full-state frames.
+It fences clients that could replay legacy inline note bodies; `selfCaps` remains the raw
+credential ceiling, not effective authority at a home. Machine, instance, native-owner and
+terminal-host wires are unchanged; machine and instance compatibility sets add 56 while
+retaining their integrated members. Former held Text/Files candidates are not admitted.
+
 ### Producer-neutral behavior
 
 **Identity is data, never a branch** (multiplayer-first, operator-ratified 2026-08-30).
@@ -166,6 +173,14 @@ action-response ceiling and 16,384-byte credential-value limit.
 No new runtime dependency without a dated entry in `docs/decisions/` justifying it against
 "boring, small, pinned". The converse duty to evaluate a named library before hand-rolling a
 non-manifold-specific pattern remains owned by [AXIOMS.md §Change control](../AXIOMS.md#change-control).
+
+The `core.text` collaborative editor uses CodeMirror 6 bound to the existing authorized
+`Y.Text`, with one editor implementation shared by standalone documents and canvas notes.
+Its direct pins are `@codemirror/state` 6.7.6, `@codemirror/view` 6.43.13,
+`@codemirror/commands` 6.11.1 and `y-codemirror.next` 0.3.6, sharing the scene engine's
+Yjs 13.6.32. No second synchronization provider or canonical text store is introduced by
+the editor binding. [ADR 0055](decisions/0055-codemirror-editor.md) records the dependency
+evaluation; the text ownership and persisted-data migration remain separate obligations.
 
 Bun remains the server, agent and tooling runtime. The minimum is **1.4.2**, and current
 Docker and CI/release pins use that exact version: borrowed numeric descriptors passed
@@ -909,10 +924,15 @@ Agent and machine credentials never enter this browser flow.
 Numbered-preview seeding is a one-way representative-data projection, not restore. Stable tooling
 may read a sensitive full-data archive, but the preview receives only the current schema plus
 `container_folders(id,name,created_at,parent_folder_id,sort_order)`,
-`containers(id,name,created_at,sort_order,folder_id,discipline)` and
-`scene_docs(container_id,epoch,rev,ts,hash,doc)`. Every other table is emptied, no adjacent file is
-copied, and the projected database is vacuumed so deleted authority bytes do not remain in free
-pages. Startup mints fresh owner, preview-signing and machine authority. Real boundary verification
+`containers(id,name,created_at,sort_order,folder_id,discipline)`,
+`scene_docs(container_id,epoch,rev,ts,hash,doc)` and, from schema 52,
+`scene_doc_capacity(container_id,epoch,migration_bytes)` for retained scene lineages. The latter
+is fixed document-format overhead, not a credential or grant. Every other table is emptied.
+Projection temporarily removes the copied schema's mutation triggers inside the transaction,
+then restores them after the allowlisted rows: deletion observers must not recreate token
+metadata, nor may restoration populate other tables. Normal preview writes retain those triggers.
+No adjacent file is copied, and the projected database is vacuumed so deleted authority bytes
+do not remain in free pages. Startup mints fresh owner, preview-signing and machine authority. Real boundary verification
 must prove representative data remains usable while the source owner key and reusable bearer are
 refused and source signing, dial, plugin and arbitrary file state is absent.
 Each numbered preview owns one build-aligned `pr-N` execution node. A healthy request for the exact
@@ -1293,7 +1313,7 @@ shape a contribution uses. The fusion has landed: `ITEM_KINDS` and `CANVAS_OPS` 
 only (`terminal`, `canvas`, `composition`, `tile`, `panel` — the `text` and `draw` rows are
 deleted),
 `PlacementItem.kind` and `CensusItem.kind` are open strings, and resolution reads
-`ITEM_KINDS[kind] ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS`. A non-floor
+`ITEM_KINDS[kind] ?? lookup.discipline(kind)?.item ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS`. A non-floor
 kind's canvas op is `move_element`, decided by `canvasOpFor` — the canvas operation stays a floor
 table, never manifest data. Every closed wire literal here is `snake_case`, which is the whole
 casing rule: `canvas_item`, `no_self_embed`, `on_claim`, `add_tile`.
@@ -1303,7 +1323,8 @@ casing rule: `canvas_item`, `no_self_embed`, `on_claim`, `add_tile`.
 | `terminal`    | tileable, unplaceable, canvas_item_as_portal             | —                        | eager    |
 | `canvas`      | tileable, embeddable, unplaceable, canvas_item_as_portal | no_self_embed            | inline   |
 | `composition` | mergeable, unplaceable, canvas_item_as_portal            | no_self_embed, solo_only | inline   |
-| `text`        | tileable, canvas_item                                    | —                        | on_claim |
+| `text`        | tileable                                                 | —                        | on_claim |
+| `canvas_note` | canvas_item                                              | —                        | on_claim |
 | `draw`        | tileable, canvas_item                                    | —                        | on_claim |
 | `tile`        | extractable                                              | —                        | inline   |
 | `panel`       | tileable                                                 | —                        | none     |
@@ -1313,17 +1334,27 @@ accepts tileable, mergeable; `unplaced` accepts unplaceable — "nowhere" is lis
 so that releasing an item is a named op the algebra can refuse, not a request that quietly does
 nothing. Both real containers carry the `discipline_match` guard. Destination forms name the
 container kind that admits them and the discipline it requires: `canvas`→canvas,
-`tile`→a composition, `compose`→a composition born on a CANVAS, `unplaced`→neither. `text` and
-`draw` are CONTRIBUTED kinds shown here for reading only: their traits live in
-`core.notes`' and `core.canvas.draw`' manifests, not in `ITEM_KINDS`.
+`tile`→a composition, `compose`→a composition born on a CANVAS, `unplaced`→neither. `text`,
+`canvas_note` and `draw` are CONTRIBUTED kinds shown here for reading only: their traits live
+in the `core.text`, `core.canvas.note` and `core.canvas.draw` manifests, not in `ITEM_KINDS`.
+
+An element contribution's `representationOf` names its canonical element kind. The base must
+exist, cannot itself be a representation, and must belong to the same owner or a declared
+required peer. Assembly rejects missing bases, chains/cycles and unproved ownership edges.
+Placement first keeps a kind the destination already accepts. Otherwise it chooses the accepted
+canonical kind or a unique accepted alternate; ambiguity refuses `not_accepted`, never selects
+by registration order. Only the type changes: payload, element/tile identity, geometry and
+attribution survive. Source/destination authority and legality are checked before mutation.
+Browser planning and server execution read the same declarations; neither names text plugins.
+Container-backed leaves likewise follow discipline traits rather than a canvas-only case.
 
 **Homing** is how an item acquires the composition it LIVES in, and it is a property of the
 KIND, never of a gesture: `eager` — the server births the home with the item, so a terminal
 has one before its first byte of output and "where does this live" never has two answers;
-`on_claim` — the item is born inline in whatever document created it (CRDT-instant, no round
-trip) and its home row materialises inside the first placement op that needs one; `inline` —
-the item needs no home, which covers canvas furniture and containers, a container BEING a
-home.
+`on_claim` — the visual item starts in the room document that created it, and a placement home
+row materialises inside the first placement op that needs one; `inline` — the item needs no
+separate placement home, which covers canvas furniture and containers, a container BEING a home.
+A reference's placement home is not the immutable authority home of independently retained content.
 
 **Wire shapes.** `PlaceRequest { ref, destination }`:
 
@@ -1333,9 +1364,10 @@ home.
   becomes addressable. `PlacementRef` and `TileRef` are the same addressing concept in two
   shapes — a placement subject and a leaf's occupant — and both are bijective with a
   `manifold://` URI (`ManifoldRef`), which is why the names rhyme. They are deliberately not
-  interchangeable in storage: a contributed element has no identity outside the document
-  holding it. Its placement includes `containerId`; its leaf ref is `{kind:"element",elementId}`
-  local to that composition's document. Notes remain `type:"text"`; drawings remain `type:"draw"`.
+  interchangeable in storage: the visual element's identity is local to the document holding it.
+  Its placement includes `containerId`; its leaf ref is `{kind:"element",elementId}` local to that
+  document. A text body has a separate stable home/id: its visual reference is `type:"text"` in
+  tileable form or `type:"canvas_note"` on canvas; drawings remain `type:"draw"`.
 - `destination` — four forms: `{kind:"canvas", containerId, x, y}`;
   `{kind:"tile", containerId, targetTileId, edge}`, where a null target fills the first empty leaf
   else splits the root and a null edge fills an empty target else splits it;
@@ -1404,6 +1436,12 @@ this?". `censusSolo(census)` — the item a container of ONE holds, else null �
 rather than inlined because that one line IS the paradigm: chrome, merging, and the index all
 read it, and three subsystems deciding it separately is how they would come to disagree.
 
+Independent shared-text records are retained content, not census items. They neither increase
+the visual count nor change `censusSolo`. Every implicit home retirement or absorption checks
+`hasRetainedContent()` as well as visual emptiness; a surviving body keeps its home and existing
+references to that home, even when the last visual reference moves elsewhere. Ordinary idle-room
+eviction still flushes state and releases cache residency; it is not home deletion.
+
 Census cost model: ONE route rather than a field on each container read, because the visibility
 rule needs the containment GRAPH and a graph cannot be assembled from rows fetched one at a
 time. Resident rooms answer from their live document (and drop their cache entry as they do);
@@ -1423,18 +1461,18 @@ anybody.
   item as far as placement is concerned, so it is absorbed as its occupant; a composition
   holding several (or none) that still reaches a tile destination is refused by name
   (`not_solo`). A canvas merge (`compose`) births ONE composition named `"<A> + <B>"` from
-  the two refs' labels, repoints the target's portal element at it IN PLACE — same
-  element id, same geometry, so no collaborator's portal jumps and no selection is lost —
-  moves both occupants in, repoints every other reference that pointed at an absorbed home,
-  and retires each emptied home. Dropping onto a reference to a MULTI-item composition is not
-  a merge at all: the ref joins it as a plain tile.
+  the two refs' labels, repoints a retiring target home's portal element at it IN PLACE — same
+  element id and geometry — moves both occupants in, and repoints other references only for homes
+  actually absorbed and retired. Retained content prevents both implicit retirement and that
+  retargeting; the visual occupant may move while its original authority home survives. Dropping
+  onto a reference to a MULTI-item composition is not a merge: the ref joins it as a plain tile.
 - **Extract.** Dragging a leaf onto a canvas RE-HOMES its terminal into a fresh solo
   composition and authors a portal onto that, because a terminal always lives in a
   composition and the one it was sharing is not it any more. The new home is built BEFORE the
   old leaf goes, so a tree that refuses the write leaves the terminal where it was rather
   than nowhere. Extracting from an already-solo composition churns no ids: that composition
-  IS the item, so the drop simply authors a reference to it. A note travels as its own
-  element; an embedded canvas as a reference.
+  IS the item, so the drop simply authors a reference to it. A text reference travels as an element
+  with the accepted representation, never with its body; an embedded canvas travels as a reference.
 - **Unplace.** Every reference to the item goes and the item stays where it lives — a
   terminal in its home, a container in the index. A gesture that grabbed ONE reference
   releases that one; naming the item by identity releases all of them. Nothing is destroyed,
@@ -1446,18 +1484,17 @@ anybody.
     `core.terminals.kill { terminalId }`, or `core.space.removeTile { containerId, tileId }` on
     its last
     leaf. All three are one write: the PTY, the terminal row, every leaf its home held for it,
-    and — when the terminal was the last thing its home held — the home itself plus EVERY
-    portal onto that home, on every canvas, whether or not anybody has it open. Nothing
-    lingers, so there is no exited row to find afterwards and no exit code to report, because
-    nothing is left to report it on. The tile door is the one tile gesture that is NOT a
-    placement (nothing accepts "nowhere" as a destination for a LEAF); a note's leaf is its
-    only placement, so its element goes with it.
+    and — when the terminal was the last visual occupant and no independently retained content
+    remains — the home itself plus EVERY portal onto that home, on every canvas, whether or not
+    anybody has it open. There is no exited terminal row to find afterwards. The tile door is the
+    one tile gesture that is NOT a placement (nothing accepts "nowhere" as a destination for a LEAF);
+    removing a text leaf removes its visual element, not the independently retained body.
   - **ROOT PTY EXIT** — the terminal's root process stopped, with code zero, a nonzero code,
     or a signal/unknown code (`null`). Operator-ratified 2026-09-07: it uses the SAME canonical
     removal as a kill — every terminal leaf and row disappears for every viewer, its credential
-    is revoked, and an emptied home plus every reference to it retires. Other occupants of a
-    shared composition and references to that surviving composition remain. No retained exit
-    row or client-side hiding is involved. Ctrl+D remains ordinary PTY input; exiting a nested
+    is revoked, and a visually emptied home with no retained content plus every reference to it
+    retires. Other occupants, retained bodies and references to a surviving home remain. No retained
+    terminal exit row or client-side hiding is involved. Ctrl+D remains ordinary PTY input; exiting a nested
     app while its parent shell remains alive does not close the terminal.
     One durable `terminal_exited` event records the real code after the removal sweep, with
     the former home identity, so retiring an empty home does not erase the outcome. It does
@@ -1473,12 +1510,12 @@ anybody.
   (machine offline) still removes everything; a PTY that outlived it is killed by `hello`
   reconciliation, which finds no row to adopt it against. Machine-owner admission is unchanged.
 
-- **Emptying and deletion.** A composition that just lost its last occupant retires: it is
-  the DEPARTURE, not the emptiness, that retires a container, so a deliberately empty
-  composition ("New composition", or one whose tiles were never filled) stays. Deleting a
-  container (`core.index.deleteContainer`) removes every reference to it FIRST, then kills every
-  PTY still homed in it, then drops its room and row. A reference never outlives what it
-  references, which is why a portal pointing at nothing is not a state this server can reach.
+- **Emptying and deletion.** A composition that just lost its last visual occupant retires only
+  when it has no independently retained content. It is the DEPARTURE, not emptiness alone, that
+  triggers this check, so a deliberately empty composition stays. Explicit authorized deletion
+  (`core.index.deleteContainer`) removes containment references, kills PTYs homed there and drops
+  the room and row, including independent bodies. Opaque text references elsewhere then report a
+  missing home/body; they neither manufacture a replacement nor silently move its authority.
 
 ## Reference nodes
 
@@ -2044,9 +2081,10 @@ and leave the other. The route's two statuses are now `refused` denials carrying
 sentences — `not_found: tile not found`, `conflict: tile is not removable` — which is the
 `core.space.place` move again: a refusal is data, so every outcome answers 200. What did not
 change: removal is still NOT a placement (nothing accepts "nowhere" for a leaf), a terminal's
-last leaf still reaps the terminal, and a composition emptied BY a departure still retires
-while an empty root stays put. The commit announces `tile_removed` on the container that held
-the leaf — `item_placed`'s mirror.
+last leaf still reaps the terminal, and a composition emptied BY a departure retires only
+when it also has no independently retained document content. An empty root stays put.
+Retention is checked before absorption retargets references, not only before deletion.
+The commit announces `tile_removed` on the container that held the leaf — `item_placed`'s mirror.
 
 **Terminal administration (`core.terminals`).** `PATCH /api/terminals/:id`,
 `DELETE /api/terminals/:id`, `GET /api/terminals` and `GET /api/container-terminals` are deleted,
@@ -2726,9 +2764,10 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 56 admits bundle stamps 47, 48, 51, 52, 53, 54, 55 and 56:
+the current wire version. Protocol 57 admits bundle stamps 47, 48, 51, 52, 53, 54, 55, 56 and 57:
 terminal geometry adds a subscription without changing existing plugin call signatures, and
-portable Worker projections expose no terminal byte/snapshot subscriptions. A prior stamp
+portable Worker projections expose no terminal byte/snapshot subscriptions. The Text session
+document cutover retains the plugin ABI. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -3476,7 +3515,7 @@ Handshake: the FIRST client frame on a connection MUST be either
 `join { ch, containerId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }` or
 `observe { token, protocolVersion }`. A join answers
 `init { ch, protocolVersion, epoch, rev, doc, attendance, terminals, self, selfCaps,
-selfConnId }` on that channel; a roomless observer answers `observed` at connection scope. Both
+sceneWriteAllowed, selfConnId }` on that channel; a roomless observer answers `observed` at connection scope. Both
 authenticate the socket, seat event/stream subscriptions, arm credential expiry and start the
 same liveness watchdog. The ten-second deadline applies until one handshake survives. After an
 observer releases, the socket stays admitted while any room channel remains; after its last room
@@ -3489,10 +3528,14 @@ socket and re-establishes every observer and channel; a mismatch simply yields a
 `selfConnId` identifies a CHANNEL and changes on every join (a role swap is `leave`+`join` on one
 socket, never TCP churn); attendance keying, cursor echo-suppression, and the terminal viewer
 registry hang off it exactly as they hung off a socket before v12. `doc` is the base64-encoded
-full Yjs state update for the room. `selfCaps` mirrors the joining principal's granted caps so
-room clients can gate UI affordances without a separate introspection round-trip; an observer has
-no room and therefore exposes empty `selfCaps()`. Presence is carried by `attendance`, whose
-entries are `PresenceState`; there is no separate `presences` field.
+full Yjs state update for the room. `selfCaps` carries the credential's raw capability ceiling;
+neither `*` nor `scenes:write` there proves an effective grant at this or another home.
+`sceneWriteAllowed` is the server's evaluated `scenes:write` decision at this channel's home,
+carried by both `init` and `resync`; a spectator still cannot write. Grant changes refresh that
+decision through the existing full-state path. The SDK exposes the bit and
+`scene_authority_changed`; the native document port combines it with open/occupant state to
+derive `canWrite`. An observer has no room and exposes empty `selfCaps()`. Presence is carried
+by `attendance`, whose entries are `PresenceState`; there is no separate `presences` field.
 Workspace controls instead read live `workspaceCaps()` and subscribe with `onAuthorityChange`;
 an observer receives those facts without acquiring a room. Unknown transport authority must
 not be described as a proven credential withdrawal.
@@ -3539,7 +3582,7 @@ untouched — when it concerns one room:
 | 4008      | socket  | liveness timeout: the server's `ping` still unanswered as the next fires, or the client's silence deadline elapsing     |
 | 4404      | channel | unknown container at join; a DELETED container closes every channel of its room with the same code                      |
 | 4429      | channel | `MAX_SESSION_CHANNELS_PER_CONNECTION` (64) already held                                                                 |
-| 1009      | channel | that room's `init`/`resync` state exceeding the 16 MiB transport payload ceiling                                        |
+| 1009      | channel | that room's `init`/`resync` exceeding its certified document or bounded state-envelope allowance                        |
 | 1013      | channel | that channel's outbound queue overflowing (256 frames or 1 MiB, per channel)                                            |
 | 1009/1013 | socket  | one frame exceeding the transport ceiling, or the socket refusing a write — transport failures no single room can heal  |
 
@@ -3588,8 +3631,8 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 Yjs is the floor's document-plane engine because scene edits need commutative field and
 collaborative-text merges across browser, SDK, and server; [ADR 0008](decisions/0008-yjs-scene-engine.md)
 and its 2026-09-15 ratification addendum own that dependency decision. `scene` means the room
-document containing elements (including nested text) and layout, not a canvas renderer. React Flow
-is only `core.canvas`'s plugin-local web renderer under
+document containing elements, independently retained named texts and layout, not a canvas renderer.
+React Flow is only `core.canvas`'s plugin-local web renderer under
 [ADR 0007](decisions/0007-react-flow-renderer.md); no floor document or non-canvas discipline
 depends on it.
 
@@ -3612,10 +3655,111 @@ depends on it.
   types round-trip under these bounds; a known type's payload must also satisfy its owner's
   registered schema at the element-host/scene boundary. Plugin payload schemas belong to
   element registrations, never inert manifests.
+- **Independent collaborative texts** ([ADR 0056](decisions/0056-scoped-text-document-ownership.md)).
+  The same room document's `texts` root holds record maps keyed by `namespace + ":" + id`.
+  `SharedTextRecordSchema` is strict: namespace matches `[A-Za-z0-9][A-Za-z0-9._-]*` and is
+  at most 128 characters, id is opaque and 1–128 characters, and text is at most 20,000 UTF-16
+  units, with optional element-equivalent attribution. Split keys at the first colon; an id
+  may itself contain colons. The canonical body is a live `Y.Text`, not the string projection.
+  Key/record consistency and body shape are validated, embedded non-text values are refused,
+  and formatting attributes survive. Existing document/update bounds apply; malformed records
+  are removed through accept-then-repair. Server acceptance stamps changed surviving records.
+  Namespace ownership does not introduce another authority root: reads require `containers:read`
+  and edits require `scenes:write` at the containing room. Missing/disabled namespace owners do
+  not erase stored data.
+- The SDK exposes `sharedText(namespace, id)`, projected `sharedTexts(namespace)`,
+  `shared_texts_changed(refs, origin)` and `scene_reset`. `SceneTx` exposes neutral shared-text
+  creation/read/removal; ordinary `elementText`/`SceneTx.text` remain generic APIs, not the
+  native text owner's storage. Native binding edits retain local provenance, remote application
+  remains remote, and collaborative history reports undo provenance. One editor-owned
+  `Y.UndoManager` tracks only its binding, not peer/SDK edits or a second CodeMirror history.
+  Local edits and undo/redo must respect the text bound without truncation; a refused history
+  operation leaves the live body and history intact. Focus/read-only configuration changes
+  preserve a healthy editor's history; retiring its body/view destroys the binding and history.
+  A retired view's teardown blur is not a user disengagement: home-role promotion preserves the
+  requested editing state so the replacement view accepts the original activation.
+- Native panels/elements acquire documents through host-owned `useDocumentAccess`, available
+  above both workspace and plugin routes. A matching same-identity document of sufficient role
+  is borrowed; otherwise bounded, shared leases open the home through the existing SDK pool.
+  Resting previews request spectator mode; editing requests occupant mode. Promotion replaces
+  the provider-owned spectator before opening the occupant, not a competing writer. An engaged
+  entry is not downgraded while retained; final release, identity/origin change or host retirement
+  cleans it up. Borrowed clients remain their original owner's responsibility. Readiness/revision
+  changes update projections without remounting the editor for each text edit. Missing, forbidden,
+  capacity and disconnected outcomes remain explicit. A room-scoped admission refusal closes only
+  that channel; invalid credentials/protocol still fail the connection.
+  A container owner supplied a mount-owned pipe uses `binding: "mounted"`: it observes that
+  exact same-identity home without independent promotion, pooling a replacement or reopening
+  after retirement. The mount owns role changes and final close; requested mode and effective
+  authority still bound editing. Generic non-tile-tree canvas portals use this owner renderer,
+  preserving spectator previews, admitted engagement and retained bodies after unplacement.
+  Nested native element consumers inherit that binding only for the matching mounted home;
+  foreign-body references keep their independent home-scoped leases and authority.
+- This is a trusted in-realm native port, not a serialized isolated-plugin API or a sandbox around
+  a live `Y.Text`. The host owns credentials, client construction and channel lifetime. Panels and
+  elements neither construct bearer-backed clients nor receive a shared bearer through this port.
+  Isolated consumers retain their bounded serialized host methods; no raw Yjs object, credential
+  or native point-tool attachment crosses that boundary. The server remains the authority boundary.
+- `core.text` owns standalone documents, the text panel/route, its named text storage and the
+  tileable `text` representation and distinct `text-home` container discipline. `core.canvas.note` owns `canvas_note` and the canvas text tool,
+  requires both its canvas parent and the text peer, and borrows the one editor through the
+  registered element outlet. Text remains independently usable with canvas disabled. A reference
+  stores an opaque `document` string encoded by `core.text` as `[homeContainerId, documentId]`;
+  its standalone route encodes that tuple in one path segment. `core.text.create` targets a
+  structured `home` with `scenes:write` authority there, creates the body, and by default a text
+  reference; `reference: false` creates only the body. Both forms use the room's synchronous
+  trusted-native `transactDoc` preflight against its document allowance, including fixed migration
+  credit. A capacity refusal changes neither body/reference nor history, attribution or snapshot
+  scheduling. Staging retains deleted structs conservatively so undo-retained history cannot be
+  omitted from the size check. The canvas child uses that action, then authors its own visual
+  reference and geometry without decoding, copying or moving the body.
+  Resting notes retain their spatial frame and scroll overflow locally, including after edits
+  from a standalone document; reading a longer body does not pan the canvas or rewrite geometry.
+  Removing/moving a reference does not remove/move its body. The text panel/route discovers
+  retained bodies without a canvas or surviving reference. Explicit home deletion is still
+  deletion of that home's contents; foreign references then report a missing document.
+- Representation conversion, visual census and retained-home retirement obey
+  [Containers, placement, and the index](#containers-placement-and-the-index). A text body is
+  never moved by changing which surface displays its reference.
+- The text cutover uses the global backed-up migration ledger. Every retained hash-valid,
+  decodable scene revision is converted independently, preserving home/document identity,
+  text deltas/formatting, attribution, references/grants, epoch/revision/time and unrelated state.
+  Same-epoch history must preserve the existing Y.Text/content Item identities and merge
+  behavior, including concurrent legacy edits, not merely equal strings or deltas reconstructed
+  under fresh identities. Synthetic record/metadata identities must be stable per lineage and
+  collision-free against all retained source client ids; plain strings require a stable conversion.
+  Corrupt rows remain corrupt rather than being laundered; target collisions or unsupported
+  legacy shapes refuse the transaction. Notes state/storage and ownership reservations are
+  explicitly reconciled, including all disabled combinations without fabricated attribution.
+  Grant rows and dial references naming the retired `core.notes` plugin node move to `core.text`.
+  Correlated token, Run and Agent authority scopes, Run targets, Agent grant targets and native
+  authority snapshots stay verbatim lineage evidence: no Text operation, event or stream is
+  admitted at either plugin node. Schema 52's DDL runs through the prepared migration runner.
+  Protocol 57 fences the old inline-body session format; machine/instance compatibility remains
+  additive. Rollback uses the complete pre-version image with a compatible old binary, not an
+  old binary pointed at the migrated database. Disposable proof does not claim live activation.
+  Migration records the maximum positive encoding growth across retained revisions as a fixed
+  server-owned `(home, epoch)` allowance in `scene_doc_capacity`. Ordinary updates cannot increase
+  it; a new epoch cannot inherit it, and deleting the last retained row retires it. The ordinary
+  12 MiB document bound remains, plus this certified allowance for a migrated lineage. Credit is
+  finite but fungible: subsequent GC can free some of it for other content in the same epoch.
+  Pending writes count immediately, not only after snapshot flush. Socket updates retain their
+  existing accept-then-repair/authorship semantics and single-crossing-update behavior; once over
+  capacity, subsequent writes refuse. Native creation instead refuses before crossing the bound.
+  Admission measures the exact current full encoding, not accumulated delta lengths: splitting
+  old Yjs structs can grow the document by more than the update. Transaction cleanup invalidates
+  cached full state even for pending structs/delete sets without an integrated update event.
+  Pending-only operations retain the existing revision and snapshot-scheduling semantics.
+  `init`/`resync` egress separately bounds the base64 document to
+  `4 * ceil((12 MiB + allowance) / 3)` bytes and its JSON/routing/attendance/terminal envelope to
+  4 MiB. Ordinary frames and client ingress retain the 16 MiB transport ceiling. Conversion
+  streams retained revisions through one source graph and a validation probe; identity indexes
+  remain proportional to retained identities rather than retaining every full decoded history.
 - The SDK applies edits optimistically with `client.transact(tx => ...)`. Field patches are
-  independent CRDT writes, text content is a nested `Y.Text`, and one local undo manager
-  tracks local create/patch/text/remove transactions. Consumers project the SDK's
-  read-only `client.elements` map instead of mutating document-owned objects.
+  independent CRDT writes; ordinary element text remains a nested `Y.Text`. The SDK's local scene
+  undo tracks its own create/patch/text/remove transactions, not native editor binding edits or
+  independent body history. Consumers project the SDK's read-only `client.elements` map instead
+  of mutating document-owned objects.
 - A client sends `doc_update { update }`, where `update` is a base64 Yjs update capped at
   512 KiB decoded. Updates are idempotent and commutative; disconnected clients may queue
   document updates and merge them after reconnect.
@@ -3875,11 +4019,12 @@ not the last proposal. Keyboard focus does not determine whether a visible view 
 
 Element `presentation?: Record<discipline, "body" | "titlebar">` is inert contribution data,
 preserved through `RegisteredElement`. Canvas reads the declaration for `canvas`, defaulting
-to `titlebar`; its builtin portal keeps shared titlebar policy. Notes and Draw explicitly
-declare `{ canvas: "body", composition: "titlebar" }`: inline text/ink has no imposed bar,
-while a composition always titles its occupant. Unknown/unavailable contributions get a
-sensible titled placeholder, not an unlabelled hole. Draw is tileable with `on_claim` homing
-and uses the same generic `element` tile ref as Notes, not an address named after its payload.
+to `titlebar`; its builtin portal keeps shared titlebar policy. The text, canvas-note and draw
+contributions declare `{ canvas: "body", composition: "titlebar" }`: inline content has no
+imposed bar, while a composition titles its occupant. Unknown/unavailable contributions get a
+sensible titled placeholder, not an unlabelled hole. Tileable text and draw elements use the
+generic `element` tile ref, not an address named after a payload field; canvas notes convert
+through their declared representation edge when placed into a composition.
 
 The terminal bundles **Manifold Terminal Mono**, derived from pinned Fira Code 6.002 / Nerd
 Fonts v3.4.0. It is an audited licensed Nerd glyph subset, not the complete Nerd set or a
@@ -4357,8 +4502,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56}`; session/browser joins remain strictly
-current at protocol 56. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57}`; session/browser joins remain strictly
+current at protocol 57. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -4499,7 +4644,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48}`; these session/machine changes leave its
+The independent federation set is `{53, 54, 55, 56, 57}`; these session/machine changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -5677,10 +5822,10 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56, 57}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Protocol53 reset instance acceptance for explicit host-recipient admission and finite
-ticket subset/expiry. Protocols 54, 55 and 56 leave that instance wire unchanged and add their
+ticket subset/expiry. Protocols 54, 55, 56 and 57 leave that instance wire unchanged and add their
 versions without another peer reset. Federation compatibility remains independent of
 retained terminal-agent compatibility. This is not an implicit live rollout or authorization to install
 newer agents ahead of their hub.
@@ -5789,11 +5934,13 @@ neither take the lock nor record an epoch; they ignore the `writer-epoch` row.
 
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
-     discipline TEXT NOT NULL DEFAULT 'canvas')        -- canvas | composition
+     discipline TEXT NOT NULL DEFAULT 'canvas')        -- contributed discipline id
 container_folders(id TEXT PK, name TEXT, created_at INTEGER, parent_folder_id TEXT,
             sort_order INTEGER)
 scene_docs(container_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, doc BLOB,
            PRIMARY KEY (container_id, epoch, rev))     -- keep newest 30 valid docs each
+scene_doc_capacity(container_id TEXT, epoch TEXT, migration_bytes INTEGER CHECK(migration_bytes >= 0),
+                   PRIMARY KEY (container_id, epoch)) -- fixed migration overhead; retired with last lineage row
 events(id INTEGER PK AUTOINCREMENT, container_id TEXT, ts INTEGER, principal_id TEXT,
        type TEXT, payload TEXT, door TEXT, authority TEXT, targets TEXT, outcome TEXT,
        session TEXT, run_id TEXT, credential_id TEXT)

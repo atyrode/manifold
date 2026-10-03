@@ -17,6 +17,7 @@ import {
   type Principal,
   type RuntimeDeps,
   type SceneElement,
+  type SharedTextRef,
   type Structure,
   type TerminalInfo,
   type TileEdge,
@@ -31,14 +32,18 @@ import {
   SERVER_PLACE_ORIGIN,
   Y,
   changedElementIds,
+  changedSharedTextKeys,
   collaborativeTextFields,
   createSceneDoc,
   decodeUpdate,
   elementsMap,
   encodeUpdate,
+  hasRetainedContent,
   initCompositionLayout,
   nextZIndex,
   patchElement,
+  parseSharedTextKey,
+  readSharedText,
   readElement,
   readElements,
   readTileLayout,
@@ -46,6 +51,8 @@ import {
   removeTileLeaf,
   swapTileLeaves,
   stampElementAuthorship,
+  sharedTextsMap,
+  stampSharedTextAuthorship,
   writeElement,
   writeTileLeaf,
   writeTileLeafRef,
@@ -55,7 +62,7 @@ import type { ElementPayloadRefusal } from "@manifold/plugin";
 import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import {
-  SESSION_TRANSPORT_PAYLOAD_BYTES,
+  SESSION_STATE_ENVELOPE_BYTES,
   serializeServerMessage,
   type ChannelMessage,
   type SerializedServerMessage,
@@ -123,13 +130,17 @@ export function censusFor(
   return { containerId, discipline, items, references };
 }
 
-/**
- * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, attendance, and
- * terminals while allowing canonical documents substantially larger than one client update.
- */
+/** Ordinary user-content capacity; migration growth is certified separately per epoch. */
 export const DOC_BYTES_LIMIT = 12 * 1_048_576;
 const DOC_UPDATES_PER_SECOND = 120;
 const DOC_UPDATE_BURST = 240;
+/**
+ * Conservative V1 growth bound for pinned Yjs 13.6.32: input boundaries can split retained
+ * Items; each new header uses safe-int IDs (at most eight bytes each), not a copy of a
+ * root/map name. 256 bytes per input byte covers those headers and UTF-8 split expansion.
+ * This only permits a cheap acceptance; potential overflow still measures the full state.
+ */
+const DOC_UPDATE_GROWTH_BOUND = 256;
 /** Only congested delivery is paced; healthy recipients retain immediate deltas. */
 const RECIPIENT_STATE_MIN_INTERVAL_MS = 100;
 const RECIPIENT_FULL_RESYNC_MIN_INTERVAL_MS = 1_000;
@@ -218,6 +229,7 @@ export class Room {
   private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
   private readonly recipientDeliveries = new Map<SessionChannel, RecipientDelivery>();
   private encodedDoc: string | null = null;
+  private docState: Uint8Array | null = null;
   private beforeUpdateCheckpoint: Uint8Array | null = null;
   private recoveryDelta: {
     checkpoint: Uint8Array;
@@ -227,8 +239,13 @@ export class Room {
   private cancelQuiet: (() => void) | null = null;
   private cancelMax: (() => void) | null = null;
   private collectingIds: Set<string> | null = null;
+  private collectingTextKeys: Set<string> | null = null;
   private docBytes = 0;
-  private overLimit = false;
+  private readonly docBytesLimit: number;
+  /** One staging author per resident room, not one durable client entry per native write. */
+  private nativeWriteClientId: number | null = null;
+  private docBytesUpperBound: number | null = null;
+  private accountedDocUpdates = 0;
 
   constructor(
     readonly containerId: string,
@@ -276,10 +293,10 @@ export class Room {
       });
     });
     this.epoch = record?.epoch ?? runtime.newId();
+    this.docBytesLimit = DOC_BYTES_LIMIT + store.docMigrationBytes(containerId, this.epoch);
     this.rev = record?.rev ?? 0;
     if (record !== null) Y.applyUpdate(this.doc, record.doc);
-    this.docBytes = Y.encodeStateAsUpdate(this.doc).byteLength;
-    this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
+    this.docBytes = this.snapshotDoc().byteLength;
 
     let loading = true;
     elementsMap(this.doc).observeDeep((events) => {
@@ -288,11 +305,26 @@ export class Room {
         this.collectingIds.add(id);
       }
     });
-    this.doc.on("update", (update, origin) => {
-      this.rev += 1;
+    sharedTextsMap(this.doc).observeDeep((events) => {
+      if (this.collectingTextKeys === null) return;
+      for (const key of changedSharedTextKeys(events as unknown as readonly Y.YEvent<never>[])) {
+        this.collectingTextKeys.add(key);
+      }
+    });
+    // Pending structs/delete sets change full encodings without emitting an update.
+    // Invalidate after every transaction's GC/merge cleanup, before update fanout.
+    this.doc.on("afterTransactionCleanup", (transaction: Y.Transaction) => {
       this.encodedDoc = null;
+      this.docState = null;
+      // Untracked foreign application may retain pending data absent from its update event.
+      if (!transaction.local && this.accountedDocUpdates === 0) this.docBytesUpperBound = null;
       this.beforeUpdateCheckpoint = null;
       this.recoveryDelta = null;
+    });
+    this.doc.on("update", (update, origin) => {
+      if (this.docBytesUpperBound !== null)
+        this.docBytesUpperBound += update.byteLength * DOC_UPDATE_GROWTH_BOUND;
+      this.rev += 1;
       // A lazy read may seed the cached tile root, but owns no broadcast or persistence timer.
       if (loading && isActionPreparation()) {
         this.dirty = true;
@@ -345,15 +377,19 @@ export class Room {
     return result.sort((left, right) => left.principal.id.localeCompare(right.principal.id));
   }
 
-  private stateMessage(type: "init" | "resync", peer: SessionChannel): ChannelMessage {
+  private stateMessage(
+    type: "init" | "resync",
+    peer: SessionChannel,
+  ): Extract<ChannelMessage, { type: "init" | "resync" }> {
     return {
       type,
       protocolVersion: PROTOCOL_VERSION,
       epoch: this.epoch,
       rev: this.rev,
-      doc: (this.encodedDoc ??= encodeUpdate(Y.encodeStateAsUpdate(this.doc))),
+      doc: (this.encodedDoc ??= encodeUpdate(this.snapshotDoc())),
       self: peer.auth.principal,
       selfCaps: [...peer.auth.caps],
+      sceneWriteAllowed: peer.sceneWriteAllowed,
       selfConnId: peer.id,
       attendance: this.attendance(),
       terminals: [...this.terminals()],
@@ -361,13 +397,20 @@ export class Room {
   }
 
   private sendState(type: "init" | "resync", peer: SessionChannel): boolean {
-    const frame = serializeServerMessage(this.stateMessage(type, peer));
-    if (frame.bytes > SESSION_TRANSPORT_PAYLOAD_BYTES) {
+    const message = this.stateMessage(type, peer);
+    const frame = serializeServerMessage(message);
+    const bytes = peer.wireBytes(frame);
+    const documentLimit = Math.ceil(this.docBytesLimit / 3) * 4;
+    const stateLimit = documentLimit + SESSION_STATE_ENVELOPE_BYTES;
+    if (
+      message.doc.length > documentLimit ||
+      bytes - message.doc.length > SESSION_STATE_ENVELOPE_BYTES
+    ) {
       this.logger.error("scene_state_exceeds_transport", {
         containerId: this.containerId,
         type,
-        bytes: frame.bytes,
-        limit: SESSION_TRANSPORT_PAYLOAD_BYTES,
+        bytes,
+        limit: stateLimit,
       });
       peer.send({
         type: "error",
@@ -377,7 +420,7 @@ export class Room {
       peer.close(1009, "initial state exceeds transport limit");
       return false;
     }
-    return peer.sendSerialized(frame);
+    return peer.sendSerialized(frame, false, stateLimit);
   }
 
   /** Registers a tab, sends init first, then publishes principal-level attendance deltas. */
@@ -517,7 +560,59 @@ export class Room {
     return true;
   }
 
-  /** Applies one bounded update, then repairs schema-invalid element projections. */
+  private snapshotDoc(): Uint8Array {
+    this.docState ??= Y.encodeStateAsUpdate(this.doc);
+    this.docBytesUpperBound = this.docState.byteLength;
+    return this.docState;
+  }
+
+  private isDocOverLimit(): boolean {
+    if (this.docBytesUpperBound !== null && this.docBytesUpperBound <= this.docBytesLimit)
+      return false;
+    return this.snapshotDoc().byteLength > this.docBytesLimit;
+  }
+
+  private applyAccountedDocUpdate(update: Uint8Array, origin: unknown): void {
+    // Charge raw bytes even if missing-clock structs produce no update event. Emitted
+    // deltas are charged separately, including repairs/authorship and local native writes.
+    if (this.docBytesUpperBound !== null)
+      this.docBytesUpperBound += update.byteLength * DOC_UPDATE_GROWTH_BOUND;
+    this.accountedDocUpdates += 1;
+    try {
+      Y.applyUpdate(this.doc, update, origin);
+    } finally {
+      this.accountedDocUpdates -= 1;
+    }
+  }
+
+  /**
+   * Stages a synchronous native write before committing one atomic delta. A refused write
+   * never touches canonical state, observers, authorship, undo history or snapshot timers.
+   * Unlike socket accept-then-repair, native writes must fit before either half is visible.
+   */
+  transactDoc(write: (doc: Y.Doc) => void, origin: unknown): boolean {
+    requireActionEffects();
+    if (this.isDocOverLimit()) return false;
+    const staged = createSceneDoc();
+    // Keep deleted structs during preflight: canonical undo observers may retain them too.
+    staged.gc = false;
+    try {
+      Y.applyUpdate(staged, this.snapshotDoc());
+      // A separate stable author avoids Yjs's remote-client collision guard when
+      // the staged delta is applied to the canonical document.
+      this.nativeWriteClientId ??= staged.clientID;
+      staged.clientID = this.nativeWriteClientId;
+      const before = Y.encodeStateVector(staged);
+      staged.transact(() => write(staged), origin);
+      if (Y.encodeStateAsUpdate(staged).byteLength > this.docBytesLimit) return false;
+      this.applyAccountedDocUpdate(Y.encodeStateAsUpdate(staged, before), origin);
+      return true;
+    } finally {
+      staged.destroy();
+    }
+  }
+
+  /** Applies one bounded update, then repairs schema-invalid element and text records. */
   applyDocUpdate(peer: SessionChannel, encoded: DocUpdate["update"]): boolean {
     requireActionEffects();
     let update: Uint8Array;
@@ -535,20 +630,23 @@ export class Room {
       peer.send({ type: "error", code: "rate_limited", message: "doc update rate limit exceeded" });
       return false;
     }
-    if (this.overLimit) {
+    if (this.isDocOverLimit()) {
       peer.send({ type: "error", code: "invalid", message: "scene too large" });
       return false;
     }
 
     const changed = new Set<string>();
+    const changedTexts = new Set<string>();
+    this.collectingTextKeys = changedTexts;
     this.collectingIds = changed;
     try {
-      Y.applyUpdate(this.doc, update, peer.auth.principal.id);
+      this.applyAccountedDocUpdate(update, peer.auth.principal.id);
     } catch {
       peer.send({ type: "error", code: "invalid", message: "invalid doc update" });
       return false;
     } finally {
       this.collectingIds = null;
+      this.collectingTextKeys = null;
     }
 
     /*
@@ -579,19 +677,41 @@ export class Room {
           : { type: refusal.type, plugin: refusal.plugin, problems: refusal.problems.join("; ") }),
       });
     }
+    const survivingTexts: SharedTextRef[] = [];
+    const texts = sharedTextsMap(this.doc);
+    for (const key of changedTexts) {
+      const ref = parseSharedTextKey(key);
+      if (ref !== null && readSharedText(this.doc, ref.namespace, ref.id) !== null) {
+        survivingTexts.push(ref);
+        continue;
+      }
+      if (!texts.has(key)) continue;
+      this.doc.transact(() => texts.delete(key), REPAIR_ORIGIN);
+      this.logger.warn("scene_text_repaired", { containerId: this.containerId, key });
+    }
     /*
       Authorship is a SUMMARY of server acceptance order, not field-level causality. One
       accepted update may change several elements, so they share one server clock reading and
       one stamping transaction. Repairs and deletions are absent from `surviving`, and server
       placement paths never call this seam, preserving prior stamps without inventing a person.
     */
-    stampElementAuthorship(
-      this.doc,
-      surviving,
-      peer.auth.principal.id,
-      this.runtime.now(),
-      SERVER_AUTHORSHIP_ORIGIN,
-    );
+    const editedAt = this.runtime.now();
+    this.doc.transact(() => {
+      stampElementAuthorship(
+        this.doc,
+        surviving,
+        peer.auth.principal.id,
+        editedAt,
+        SERVER_AUTHORSHIP_ORIGIN,
+      );
+      stampSharedTextAuthorship(
+        this.doc,
+        survivingTexts,
+        peer.auth.principal.id,
+        editedAt,
+        SERVER_AUTHORSHIP_ORIGIN,
+      );
+    }, SERVER_AUTHORSHIP_ORIGIN);
     return true;
   }
 
@@ -972,14 +1092,13 @@ export class Room {
     requireActionEffects();
     if (!this.dirty) return false;
     const at = this.runtime.now();
-    const doc = Y.encodeStateAsUpdate(this.doc);
+    const doc = this.snapshotDoc();
     this.docBytes = doc.byteLength;
-    this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
-    if (this.overLimit) {
+    if (this.docBytes > this.docBytesLimit) {
       this.logger.warn("scene_doc_over_limit", {
         containerId: this.containerId,
         bytes: this.docBytes,
-        limit: DOC_BYTES_LIMIT,
+        limit: this.docBytesLimit,
       });
     }
     this.store.saveDoc(this.containerId, this.epoch, this.rev, at, doc);
@@ -1350,6 +1469,11 @@ export class Room {
     return censusFor(this.containerId, this.discipline, this.tileLayout(), this.elements());
   }
 
+  /** Independently retained records do not contribute visual census items. */
+  hasRetainedContent(): boolean {
+    return hasRetainedContent(this.doc);
+  }
+
   /** Returns the principal-level live attendance without cursor or viewport payloads. */
   livePrincipals(): Principal[] {
     const principals: Principal[] = [];
@@ -1447,6 +1571,11 @@ export class RoomManager {
   setElementPayloadGuard(guard: (element: SceneElement) => ElementPayloadRefusal | null): void {
     requireActionEffects();
     this.payloadGuard = guard;
+  }
+
+  /** Validates a carried payload against the active owner's schema before placement writes. */
+  elementPayloadRefusal(element: SceneElement): ElementPayloadRefusal | null {
+    return this.payloadGuard(element);
   }
 
   /** Installs the broker's in-flight create view for residency decisions. */

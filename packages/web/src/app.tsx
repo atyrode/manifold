@@ -12,6 +12,7 @@ import {
   useHostServices,
 } from "./plugin-host.tsx";
 import { NoticeProvider } from "./notice.tsx";
+import { NativeDocumentAccessProvider } from "./document-access.tsx";
 
 type Route =
   | {
@@ -39,7 +40,7 @@ type Route =
   one rule is how a path a manifest may legally claim becomes a path the browser answers 404
   for (docs/CONTRACTS.md §One authoritative implementation).
  */
-const PLUGIN_ROUTE = /^\/([^/]+)\/(.+)$/;
+const PLUGIN_ROUTE = /^\/([^/]+)\/(.*)$/;
 
 /**
  * The requested address, parsed off the query — or null, which covers "no parameter", "not a
@@ -142,10 +143,12 @@ export function App({ identity }: AppProps) {
         containerId={route.kind === "browser" ? route.containerId : null}
         requestedRef={route.kind === "browser" ? route.requestedRef : null}
       >
-        <RosterGate>
-          {renderRoute(route, identity, navigate)}
-          <WorkspaceOverlays />
-        </RosterGate>
+        <NativeDocumentAccessProvider identity={identity}>
+          <RosterGate>
+            {renderRoute(route, identity, navigate)}
+            <WorkspaceOverlays />
+          </RosterGate>
+        </NativeDocumentAccessProvider>
       </HostServicesGate>
     </NoticeProvider>
   );

@@ -3,6 +3,7 @@ import {
   censusSolo,
   elementString,
   itemTraitsFor,
+  resolveCarriedPlacement,
   resolvePlacement,
   rosterDisciplines,
   type ContainerDiscipline,
@@ -10,6 +11,7 @@ import {
   type PlaceRequest,
   type PlaceResponse,
   type PlacementDenial,
+  type PlacementDestination,
   type PlacementItem,
   type PlacementLookup,
   type PlacementRef,
@@ -21,7 +23,13 @@ import {
   type TileLayout,
   type TileRef,
 } from "@manifold/protocol";
-import { sameTileRef, tileIdForRef, tileLeafIds } from "@manifold/scene";
+import {
+  SERVER_PLACE_ORIGIN,
+  elementsMap,
+  sameTileRef,
+  tileIdForRef,
+  tileLeafIds,
+} from "@manifold/scene";
 import type { Room, RoomManager, TileTreeDisciplines } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 import { requireActionEffects } from "./action-preparation-phase.ts";
@@ -274,6 +282,26 @@ export class PlaceExecutor {
     if (!resolution.ok) return { status: "denied", denial: resolution.denial };
     const source = this.locate(ref);
     if (source === "not_found") return { status: "failed", failure: "not_found" };
+    const carriedRef =
+      ref.kind === "tile" ? this.rooms.get(ref.containerId)?.tileLayout()?.[ref.tileId]?.ref : null;
+    const carried =
+      ref.kind === "element"
+        ? this.elementAt(ref.containerId, ref.elementId)
+        : ref.kind === "tile" && carriedRef?.kind === "element"
+          ? this.elementAt(ref.containerId, carriedRef.elementId)
+          : null;
+    let element: SceneElement | null = null;
+    if (carried !== null && carried.type !== "portal") {
+      const prepared = this.prepareElement(carried, ref, destination);
+      if ("denial" in prepared) return { status: "denied", denial: prepared.denial };
+      element = prepared.element;
+      if (
+        (destination.kind === "canvas" || destination.kind === "tile") &&
+        source.containerId !== destination.containerId &&
+        this.elementAt(destination.containerId, element.id) !== null
+      )
+        return { status: "failed", failure: "conflict" };
+    }
 
     let outcome: PlaceOutcome;
     switch (destination.kind) {
@@ -289,10 +317,10 @@ export class PlaceExecutor {
             );
             break;
           case "move_element":
-            outcome = this.executeMoveElement(ref, destination, source, traceContainerIds);
+            outcome = this.executeMoveElement(ref, destination, source, traceContainerIds, element);
             break;
           case "extract":
-            outcome = this.executeExtract(ref, destination, source, traceContainerIds);
+            outcome = this.executeExtract(ref, destination, source, traceContainerIds, element);
             break;
           default:
             // Unreachable: `canvasOpFor` maps every kind to one of the three above.
@@ -309,10 +337,18 @@ export class PlaceExecutor {
           destination.between ?? false,
           source,
           traceContainerIds,
+          element,
         );
         break;
       case "compose":
-        outcome = this.executeCompose(ref, resolution.item, destination, source, traceContainerIds);
+        outcome = this.executeCompose(
+          ref,
+          resolution.item,
+          destination,
+          source,
+          traceContainerIds,
+          element,
+        );
         break;
       case "unplaced":
         outcome = this.executeUnplace(ref, resolution.item, source, traceContainerIds);
@@ -372,7 +408,9 @@ export class PlaceExecutor {
    * gets both rules without either of them learning its name.
    */
   private bornUnhomed(kind: string): boolean {
-    return itemTraitsFor(kind, this.lookup()).homed === "on_claim";
+    return (
+      (this.vocabulary.itemTraits(kind) ?? itemTraitsFor(kind, this.lookup())).homed === "on_claim"
+    );
   }
 
   /** Whether a persisted discipline declares containers addressable as tile trees. */
@@ -543,6 +581,7 @@ export class PlaceExecutor {
     toId: string,
     traceContainerIds: Set<string> | null = null,
   ): void {
+    if (this.rooms.get(fromId)?.hasRetainedContent()) return;
     for (const referrerId of this.referrers(fromId)) {
       const room = this.rooms.get(referrerId);
       if (room === null) continue;
@@ -581,7 +620,7 @@ export class PlaceExecutor {
     const container = this.store.getContainer(containerId);
     if (container === null || !this.holdsTileTree(container.discipline)) return;
     const room = this.rooms.get(containerId);
-    if (room === null || room.census().items.length > 0) return;
+    if (room === null || room.hasRetainedContent() || room.census().items.length > 0) return;
     this.deleteContainer(containerId);
   }
 
@@ -592,7 +631,10 @@ export class PlaceExecutor {
         ? null
         : { kind: "terminal", terminalId: source.terminalId };
     }
-    if (item.kind === "canvas" && item.containerId !== null) {
+    if (
+      item.containerId !== null &&
+      this.vocabulary.discipline(item.kind)?.item.groups.includes("tileable")
+    ) {
       return { kind: "container", containerId: item.containerId };
     }
     if (item.kind === "tile" && source.containerId !== null && source.addressed !== null) {
@@ -608,7 +650,7 @@ export class PlaceExecutor {
       item.containerId === null &&
       source.containerId !== null &&
       source.addressed !== null &&
-      this.rooms.get(source.containerId)?.element(source.addressed)?.type === item.kind
+      this.elementAt(source.containerId, source.addressed) !== null
     ) {
       // The wire address names the contributed element independently of its payload type.
       // Legality comes from the element's declared traits; identity survives the move.
@@ -720,6 +762,39 @@ export class PlaceExecutor {
     return this.rooms.get(containerId)?.element(elementId) ?? null;
   }
 
+  /** Resolve a payload's destination representation before either document is changed. */
+  private prepareElement(
+    element: SceneElement,
+    ref: PlacementRef,
+    destination: PlacementDestination,
+  ): { readonly element: SceneElement } | { readonly denial: PlacementDenial } {
+    // A canvas center exchange moves geometry, never the representation or its home.
+    if (
+      destination.kind === "unplaced" ||
+      (destination.kind === "compose" && destination.edge === "center")
+    )
+      return { element };
+    const resolved = resolveCarriedPlacement(
+      { ref, item: { kind: element.type, containerId: null } },
+      destination,
+      this.lookup(),
+    );
+    if (!resolved.ok) return { denial: resolved.denial };
+    const converted =
+      resolved.item.kind === element.type ? element : { ...element, type: resolved.item.kind };
+    if (converted !== element && this.rooms.elementPayloadRefusal(converted) !== null)
+      return { denial: { rule: "not_accepted", ref, container: resolved.container } };
+    return { element: converted };
+  }
+
+  /** An in-room conversion changes only the discriminator, not collaborative field identity. */
+  private setRepresentation(room: Room, element: SceneElement | null): void {
+    if (element === null) return;
+    const record = elementsMap(room.doc).get(element.id);
+    if (record === undefined || record.get("type") === element.type) return;
+    room.doc.transact(() => record.set("type", element.type), SERVER_PLACE_ORIGIN);
+  }
+
   /**
    * Moves a contributed element into the container that now holds its leaf. A composition
    * owns its element payloads in the same document its viewers already share, with no
@@ -813,12 +888,18 @@ export class PlaceExecutor {
     destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): PlaceOutcome {
     if (ref.kind !== "element" || source.containerId === null) {
       // Only an addressed element places text or ink: there is no other way to name one.
       return { status: "failed", failure: "conflict" };
     }
-    const moved = this.moveElementPlacement(source.containerId, ref.elementId, destination);
+    const moved = this.moveElementPlacement(
+      source.containerId,
+      ref.elementId,
+      destination,
+      element,
+    );
     if (moved !== "ok") return { status: "failed", failure: moved };
     traceContainerIds?.add(source.containerId);
     traceContainerIds?.add(destination.containerId);
@@ -834,15 +915,17 @@ export class PlaceExecutor {
     containerId: string,
     elementId: string,
     destination: { readonly containerId: string; readonly x: number; readonly y: number },
+    prepared: SceneElement | null = null,
   ): "ok" | PlaceFailure {
     const source = this.rooms.get(containerId);
     const target = this.rooms.get(destination.containerId);
     if (source === null || target === null) return "not_found";
+    const element = prepared ?? source.element(elementId);
+    if (element === null) return "not_found";
     if (containerId === destination.containerId) {
+      this.setRepresentation(source, element);
       return source.moveElement(elementId, destination.x, destination.y) ? "ok" : "not_found";
     }
-    const element = source.element(elementId);
-    if (element === null) return "not_found";
     const carried = source.collaborativeFields(elementId);
     source.removeElementById(elementId);
     target.adoptElement(element, destination.x, destination.y, carried);
@@ -962,6 +1045,7 @@ export class PlaceExecutor {
     between: boolean,
     source: SourceLocation,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): PlaceOutcome {
     const composition = this.rooms.get(containerId);
     if (composition === null) return { status: "failed", failure: "not_found" };
@@ -973,6 +1057,9 @@ export class PlaceExecutor {
     }
     const dragged = this.tileRefFor(item, source);
     if (dragged === null) return { status: "failed", failure: "conflict" };
+    if (dragged.kind === "element" && element === null) {
+      return { status: "failed", failure: "not_found" };
+    }
     const fromLeaf = ref.kind === "tile" ? source.addressed : null;
     // A leaf placed beside itself is the silent no-op the algebra refuses to have.
     if (fromLeaf !== null && source.containerId === containerId && fromLeaf === targetTileId) {
@@ -1006,6 +1093,7 @@ export class PlaceExecutor {
             targetTileId,
             source,
             traceContainerIds,
+            element,
           );
         }
         const homeSeat = this.elementHomeSeat(ref, source);
@@ -1018,6 +1106,7 @@ export class PlaceExecutor {
             targetTileId,
             homeSeat,
             traceContainerIds,
+            element,
           );
         }
         return this.executeReplace(
@@ -1028,17 +1117,9 @@ export class PlaceExecutor {
           targetTileId,
           source,
           traceContainerIds,
+          element,
         );
       }
-    }
-    // A contributed ELEMENT is read before the write, so a placement that cannot be
-    // carried out mutates neither document. One carried as a LEAF travels with the leaf.
-    const element =
-      fromLeaf === null && dragged.kind === "element"
-        ? this.elementAt(source.containerId, dragged.elementId)
-        : null;
-    if (fromLeaf === null && dragged.kind === "element" && element === null) {
-      return { status: "failed", failure: "not_found" };
     }
     const tileId = composition.placeTile(dragged, targetTileId, edge, between);
     if (tileId === null) return { status: "failed", failure: "conflict" };
@@ -1051,6 +1132,7 @@ export class PlaceExecutor {
         containerId,
         tileId,
         traceContainerIds,
+        element,
       );
       if (moved === null) return { status: "failed", failure: "conflict" };
       if (source.containerId !== null) traceContainerIds?.add(source.containerId);
@@ -1119,6 +1201,7 @@ export class PlaceExecutor {
     containerId: string,
     tileId: string,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): string | null {
     const fromContainerId = source.containerId;
     const fromTileId = source.addressed;
@@ -1126,7 +1209,8 @@ export class PlaceExecutor {
     const from = this.rooms.get(fromContainerId);
     if (from === null) return null;
     from.removeTileLeafById(fromTileId);
-    if (fromContainerId !== containerId) this.handOverOccupant(dragged, from, composition);
+    if (fromContainerId !== containerId) this.handOverOccupant(dragged, from, composition, element);
+    else this.setRepresentation(composition, element);
     // The read-back is why `tileId` is not simply returned: see the doc comment above.
     const placementId = tileIdForRef(composition.tileLayout(), dragged) ?? tileId;
     if (fromContainerId !== containerId) {
@@ -1157,7 +1241,7 @@ export class PlaceExecutor {
     traceContainerIds: Set<string> | null,
   ): void {
     const room = this.rooms.get(fromContainerId);
-    if (room === null || room.census().items.length > 0) return;
+    if (room === null || room.hasRetainedContent() || room.census().items.length > 0) return;
     this.retargetReferences(fromContainerId, toContainerId, traceContainerIds);
     this.deleteIfEmptied(fromContainerId);
   }
@@ -1182,6 +1266,7 @@ export class PlaceExecutor {
     targetTileId: string,
     source: SourceLocation,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): PlaceOutcome {
     const fromContainerId = source.containerId;
     const fromTileId = source.addressed;
@@ -1198,18 +1283,38 @@ export class PlaceExecutor {
     const target = this.rooms.get(containerId);
     const from = this.rooms.get(fromContainerId);
     if (target === null || from === null) return { status: "failed", failure: "not_found" };
+    let displaced: SceneElement | null = null;
+    if (occupant.kind === "element") {
+      const current = target.element(occupant.elementId);
+      if (current === null) return { status: "failed", failure: "not_found" };
+      const prepared = this.prepareElement(current, ref, {
+        kind: "tile",
+        containerId: fromContainerId,
+        targetTileId: fromTileId,
+        edge: "center",
+      });
+      if ("denial" in prepared) return { status: "denied", denial: prepared.denial };
+      displaced = prepared.element;
+    }
     if (fromContainerId === containerId) {
       // One tree, one transaction: neither item changed the container it lives in, so
       // there is no terminal to rebind and no note to move between documents.
       if (!target.swapTileLeavesById(fromTileId, targetTileId)) {
         return { status: "failed", failure: "conflict" };
       }
+      this.setRepresentation(target, element);
+      this.setRepresentation(target, displaced);
       traceContainerIds?.add(containerId);
       return {
         status: "placed",
         result: { op: "swap", placementId: targetTileId, withPlacementId: fromTileId },
       };
     }
+    if (
+      (element !== null && target.element(element.id) !== null) ||
+      (displaced !== null && from.element(displaced.id) !== null)
+    )
+      return { status: "failed", failure: "conflict" };
 
     /*
       Two trees. They cannot share a transaction, so each side is written on its own and
@@ -1226,8 +1331,8 @@ export class PlaceExecutor {
     // Both items changed the container they live in, so both are handed over before any id
     // is read back: pruning a stale mirror can collapse a split and promote its survivor
     // into the root id, which would make an id remembered from before the write a lie.
-    this.handOverOccupant(dragged, from, target);
-    this.handOverOccupant(occupant, target, from);
+    this.handOverOccupant(dragged, from, target, element);
+    this.handOverOccupant(occupant, target, from, displaced);
     const placementId = tileIdForRef(target.tileLayout(), dragged) ?? targetTileId;
     const withPlacementId = tileIdForRef(from.tileLayout(), occupant) ?? fromTileId;
     if (dragged.kind === "terminal") {
@@ -1277,17 +1382,14 @@ export class PlaceExecutor {
     targetTileId: string,
     source: SourceLocation,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): PlaceOutcome {
     const composition = this.rooms.get(containerId);
     if (composition === null) return { status: "failed", failure: "not_found" };
     // A contributed ELEMENT is read before anything is written, so a placement that
     // cannot be carried out mutates neither document. One carried as a LEAF travels with it.
     const fromLeaf = ref.kind === "tile" ? source.addressed : null;
-    const element =
-      fromLeaf === null && dragged.kind === "element"
-        ? this.elementAt(source.containerId, dragged.elementId)
-        : null;
-    if (fromLeaf === null && dragged.kind === "element" && element === null) {
+    if (dragged.kind === "element" && element === null) {
       return { status: "failed", failure: "not_found" };
     }
     const evicted = this.evictLeaf(composition, containerId, targetTileId, ref);
@@ -1319,6 +1421,7 @@ export class PlaceExecutor {
         containerId,
         targetTileId,
         traceContainerIds,
+        element,
       );
       if (moved === null) return { status: "failed", failure: "conflict" };
       tileId = moved;
@@ -1330,7 +1433,8 @@ export class PlaceExecutor {
       this.absorbHome(dragged.terminalId, source, containerId, targetTileId, traceContainerIds);
       traceContainerIds?.add(source.homeId);
     }
-    if (element !== null) this.adoptCarriedElement(source, element, composition);
+    if (fromLeaf === null && element !== null)
+      this.adoptCarriedElement(source, element, composition);
     if (
       source.containerId !== null &&
       (fromLeaf !== null ||
@@ -1363,7 +1467,7 @@ export class PlaceExecutor {
    * still has something to show, and `retireEmptiedInto` is what handles the one that does
    * not. An exchange always leaves both alive, which is why it never repoints at all.
    */
-  private handOverOccupant(ref: TileRef, from: Room, to: Room): void {
+  private handOverOccupant(ref: TileRef, from: Room, to: Room, element: SceneElement | null): void {
     if (ref.kind === "terminal") {
       for (const leafId of terminalLeafIds(from.tileLayout(), ref.terminalId)) {
         from.removeTileLeafById(leafId);
@@ -1371,7 +1475,6 @@ export class PlaceExecutor {
       return;
     }
     if (ref.kind === "element") {
-      const element = from.element(ref.elementId);
       if (element === null) return;
       const carried = from.collaborativeFields(ref.elementId);
       from.removeElementById(ref.elementId);
@@ -1409,8 +1512,7 @@ export class PlaceExecutor {
       this.rooms.get(source.containerId)?.removeElementById(source.addressed);
       this.afterLeaving(source.containerId);
     }
-    this.retargetReferences(homeId, toContainerId, traceContainerIds);
-    this.deleteIfEmptied(homeId);
+    this.retireEmptiedInto(homeId, toContainerId, traceContainerIds);
     this.afterLeaving(homeId);
   }
 
@@ -1442,6 +1544,7 @@ export class PlaceExecutor {
     },
     source: SourceLocation,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): PlaceOutcome {
     const room = this.rooms.get(destination.containerId);
     if (room === null) return { status: "failed", failure: "not_found" };
@@ -1502,16 +1605,26 @@ export class PlaceExecutor {
     // A contributed ELEMENT is read before the write; one carried as a LEAF travels
     // with the leaf, so the same `fromLeaf` split the tile destination makes applies here.
     const fromLeaf = ref.kind === "tile" ? source.addressed : null;
-    const element =
-      fromLeaf === null && dragged.kind === "element"
-        ? this.elementAt(source.containerId, dragged.elementId)
-        : null;
-    if (fromLeaf === null && dragged.kind === "element" && element === null) {
+    if (dragged.kind === "element" && element === null) {
       return { status: "failed", failure: "not_found" };
     }
 
     const discipline = this.store.getContainer(targetHomeId)?.discipline ?? null;
     if (!this.holdsTileTree(discipline)) return { status: "failed", failure: "conflict" };
+    let targetElement: SceneElement | null = null;
+    if (targetRef.kind === "element") {
+      const current = this.elementAt(targetHomeId, targetRef.elementId);
+      if (current === null) return { status: "failed", failure: "not_found" };
+      const prepared = this.prepareElement(current, ref, {
+        kind: "tile",
+        containerId: targetHomeId,
+        targetTileId: null,
+        edge: null,
+      });
+      if ("denial" in prepared) return { status: "denied", denial: prepared.denial };
+      targetElement = prepared.element;
+      if (element?.id === targetElement.id) return { status: "failed", failure: "conflict" };
+    }
     const compositionId = this.runtime.newId();
     const name = `${this.refLabel(targetSolo.item, {
       ...NO_SOURCE,
@@ -1539,11 +1652,14 @@ export class PlaceExecutor {
 
     // Read and transfer collaborative fields before absorbing the target home: a distinct
     // unseated source element may live in that same document, which the merge will retire.
-    if (element !== null) this.adoptCarriedElement(source, element, composition);
+    if (fromLeaf === null && element !== null)
+      this.adoptCarriedElement(source, element, composition);
 
     // The target's reference becomes a reference to the newborn IN PLACE, before its old
     // home retires — otherwise retiring the home would take this element with it.
-    room.repointPortal(destination.targetElementId, compositionId);
+    if (!this.rooms.get(targetHomeId)?.hasRetainedContent()) {
+      room.repointPortal(destination.targetElementId, compositionId);
+    }
     if (targetSolo.terminalId !== null) {
       /*
         The target went in FIRST, filling the root — and the dragged ref then SPLIT that
@@ -1560,7 +1676,13 @@ export class PlaceExecutor {
         traceContainerIds,
       );
     } else {
-      this.moveNonTerminalLeaf(targetHomeId, composition, compositionId, traceContainerIds);
+      this.moveNonTerminalLeaf(
+        targetHomeId,
+        composition,
+        compositionId,
+        traceContainerIds,
+        targetElement,
+      );
     }
     const placedTileId =
       fromLeaf === null
@@ -1576,6 +1698,7 @@ export class PlaceExecutor {
             compositionId,
             addedTileId,
             traceContainerIds,
+            element,
           );
     if (placedTileId === null) return { status: "failed", failure: "conflict" };
     if (fromLeaf === null && dragged.kind === "terminal") {
@@ -1671,6 +1794,7 @@ export class PlaceExecutor {
     target: Room,
     toContainerId: string,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): void {
     const from = this.rooms.get(fromContainerId);
     if (from !== null) {
@@ -1679,7 +1803,6 @@ export class PlaceExecutor {
         const occupant = layout?.[leafId]?.ref ?? null;
         if (occupant === null) continue;
         if (occupant.kind === "element") {
-          const element = from.element(occupant.elementId);
           if (element !== null) {
             const carried = from.collaborativeFields(occupant.elementId);
             from.removeElementById(occupant.elementId);
@@ -1689,8 +1812,7 @@ export class PlaceExecutor {
         from.removeTileLeafById(leafId);
       }
     }
-    this.retargetReferences(fromContainerId, toContainerId, traceContainerIds);
-    this.deleteIfEmptied(fromContainerId);
+    this.retireEmptiedInto(fromContainerId, toContainerId, traceContainerIds);
     this.afterLeaving(fromContainerId);
   }
 
@@ -1710,6 +1832,7 @@ export class PlaceExecutor {
     destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
     traceContainerIds: Set<string> | null,
+    element: SceneElement | null,
   ): PlaceOutcome {
     const containerId = source.containerId;
     const tileId = source.addressed;
@@ -1763,7 +1886,6 @@ export class PlaceExecutor {
 
     if (occupant.kind === "element") {
       // Validate the payload before removing its leaf: a stale ref must not destroy a seat.
-      const element = this.elementAt(containerId, occupant.elementId);
       if (element === null) return { status: "failed", failure: "not_found" };
       if (!composition.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
       const carried = composition.collaborativeFields(occupant.elementId);
@@ -1900,7 +2022,7 @@ export class PlaceExecutor {
     const container = this.store.getContainer(containerId);
     if (container === null || !this.holdsTileTree(container.discipline)) return;
     const room = this.rooms.get(containerId);
-    if (room === null || room.census().items.length > 0) return;
+    if (room === null || room.hasRetainedContent() || room.census().items.length > 0) return;
     this.deleteContainer(containerId);
   }
 }

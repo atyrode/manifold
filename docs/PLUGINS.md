@@ -120,11 +120,11 @@ package budget nor the platform-free parent/part-contract budget changes.
 
 `@manifold/plugin` has three entries, and which one you reach for is a real distinction:
 
-| entry                    | what it holds                                                                                                                                                                                               |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                                                             |
-| `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`, the one tile tree, `useNotice`, the published vantage store (`setVantage`), `requestRebind`, `keyCapLabel`. |
-| `@manifold/plugin/ui`    | the browser-only generated `DoorForm`: give it an action name and `HostServices`; it resolves the current published schema and dispatches through the same host. Its rjsf engine loads lazily.              |
+| entry                    | what it holds                                                                                                                                                                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                                                                                                           |
+| `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `useDocumentAccess`, native point-tool types, `usePolledResource`, the one tile tree, `useNotice`, the published vantage store (`setVantage`), `requestRebind`, `keyCapLabel`. |
+| `@manifold/plugin/ui`    | the browser-only generated `DoorForm`: give it an action name and `HostServices`; it resolves the current published schema and dispatches through the same host. Its rjsf engine loads lazily.                                                            |
 
 `@manifold/ui` is the third layer and its own package: `ItemIcon`/`ControlIcon`, `NodeTitleBar`,
 the layout algebra (§7b), `Disclosure`, `ScrollRegion`, `Popover`, `Chip`, `KeyValueList`,
@@ -173,6 +173,12 @@ ceiling, your own `ctx.storage` namespace, your own purge, your own toggle. The 
 down no capability and no data, and no toggle cascades either way: the parent cannot be turned
 off while you are on (`missing_dependency`, naming you), and while it is off your row reads
 `dependency_disabled`, exactly as any dependent of an off plugin does (§2, `dependencies`; §4).
+
+`core.text` and `core.canvas.note` illustrate both directions: text owns documents independently
+of canvas; the canvas child owns a visual representation and requires BOTH `core.canvas` (its
+existence) and `core.text` (the noun/editor it borrows). Disabling canvas does not disable the
+independent text owner. Disable the child first when changing either required dependency; no
+parent/peer toggle silently changes another row's administrative state.
 
 A part is a DIRECTORY inside its parent's package, never a package of its own:
 
@@ -426,23 +432,29 @@ Rules worth knowing before you write one:
   `placement` is optional, and omitting it means `DEFAULT_ELEMENT_PLACEMENT_TRAITS`
   (`{ groups: ["canvas_item"], guards: [], homed: "inline" }`, exported from the protocol — the
   default). When you DO declare it, all three fields are required: `homed: null` is how
-  you say "no home", not omission. Draw and Notes instead declare `tileable` plus `canvas_item`
-  with `on_claim` homing, so placement can move their element into a composition. There is no
-  canvas-operation key — the op is derived by the
-  algebra, which is the half that stays engine (ADR 0013 §12). The container-site-only guard
-  `discipline_match` is refused on an element. Every closed wire literal is `snake_case`.
+  you say "no home", not omission. Draw declares `tileable` plus `canvas_item` with `on_claim`
+  homing. Text instead separates representations: `core.text`'s `text` is `tileable`, while
+  `core.canvas.note`'s `canvas_note` is `canvas_item`, both with `on_claim` homing. The child
+  declares `representationOf: "text"` alongside its traits and a required dependency on the
+  base owner. Assembly proves that edge; the placement door chooses an accepted representation
+  without copying a body or changing its authority home. Missing bases, representation chains
+  and unproved peer edges are refused. The shared selection/ambiguity rules belong to
+  [Containers, placement, and the index](CONTRACTS.md#containers-placement-and-the-index).
+  There is no canvas-operation key — the op is derived by the algebra (ADR 0013 §12).
+  The container-site-only guard `discipline_match` is refused on an element. Every closed wire
+  literal is `snake_case`.
 
 - **Element presentation is declared per discipline**, independently of placement:
   `presentation?: Record<ContainerDiscipline, "body" | "titlebar">`. The map uses discipline
   names (at most 32 entries) and stays optional through `RegisteredElement`; omitting a
   declaration does not manufacture one in the manifest. Canvas reads
   `projection.element(type)?.presentation?.["canvas"] ?? "titlebar"` rather than branching on
-  plugin/type names. Its own builtin portal uses shared titlebar policy. Notes and Draw declare
-  `{ canvas: "body", composition: "titlebar" }`: inline content keeps its natural text/ink
-  presentation while a composition always titles its occupant. Unknown/unavailable elements
-  get a sensible titled placeholder; no declaration may make missing work an unlabelled hole.
-  Draw and Notes use the same `{ kind: "element", elementId }` tile reference. Its scene
-  record lives in the composition's document; the contributed type selects its renderer.
+  plugin/type names. Its own builtin portal uses shared titlebar policy. Text, canvas notes and
+  draw declare `{ canvas: "body", composition: "titlebar" }`: inline content keeps its natural
+  presentation while a composition titles its occupant. Unknown/unavailable elements get a
+  sensible titled placeholder; no declaration may make missing work an unlabelled hole.
+  Tileable text and draw use `{ kind: "element", elementId }` refs into the composition's scene.
+  The text reference's `document` field points separately to the body at its immutable home.
 
 - **`purges` is a declaration for audit, never a trigger.** It says which of the closed purge
   targets (`storage`, `elements`, `ownership`) you hold, so a human can see what
@@ -520,6 +532,7 @@ Your component receives
 | `presence`           | Required `readonly Attendance[]`: attendance supplied by the mount site.                                                              |
 | `soloOccupants?`     | `ReadonlyMap<string, PlacementItem>`: the index's single-occupant composition fold, which an embedded renderer cannot compute itself. |
 | `navigate`           | Required `(path: string) => void` navigation callback.                                                                                |
+| `client?`            | Optional mount-owned `SessionClient`: borrow without connecting/closing it. Omission leaves session ownership with the renderer.      |
 | `depth?`             | Container nesting depth: 1 at the root (routed, or a workspace container leaf), 2 when embedded one level down.                       |
 | `routed?`            | Whether this mount is the route (publishes view state and location, owns the viewport, answers Escape). Absent ≡ `depth === 1`.       |
 | `projectionScope?`   | `ProjectionScope \| null`: mounted ancestry and its root attendance client (§6 Mounted location and shared titlebars).                |
@@ -535,6 +548,12 @@ renderer props. The [`ContainerRenderer` outlet](../packages/plugin/src/projecti
 `layout={container.discipline}` and forwards the props above. A missing registration paints
 `unknown`, a disabled registrant paints `disabled`, and a registered row with no component paints
 `unavailable`, using the engine's placeholder rather than asking your component to draw its absence.
+
+Canvas portals keep the existing tile-tree/terminal preview for tile-tree disciplines. Other
+disciplines render through this same outlet with the portal's `client`: the portal owns
+spectator/occupant transitions and final release, while the owner renders its own content.
+Thus a Text-home portal exposes the native document browser/editor rather than an empty tile
+tree. Unplacement removes the representation, not the home or its retained documents.
 
 **Create and place through the existing doors.** `core.index.createContainer` takes
 `{ name, discipline }` ([action declaration](../packages/plugins/index/src/index.ts),
@@ -1333,52 +1352,94 @@ Canvas owns the package manifest and typecheck; the child's source and tests are
 by `packages/plugins/canvas/tsconfig.json`. Any import of the parent's vocabulary uses
 `@manifold-plugin/canvas/contract`, never its runtime; the parent never imports the child.
 
-The web half exports the renderers, keyed by the ids the manifest declared; the shape is the
-one `packages/web/src/assembly.ts` registers, so let inference type it rather than naming a
-type you have not read (a maintainer-only exception to the opening promise: the shape lives in
-the engine's source while the only authoring channel is in-tree, #151/#152):
+The native web half registers renderers and optional tool behavior keyed by manifest-declared
+ids. `WebPluginDef` uses `id`, not a second manifest; the composition root joins it to the
+server's roster:
 
 ```tsx
 // packages/plugins/canvas/draw/src/web.tsx
-import { manifest } from "./index";
-
-export const webDef = {
-  manifest,
-  elements: { draw: DrawNode }, // keyed by the element `type` from contributes.elements
-  tools: { draw: DrawTool }, // keyed by the tool id
+export const drawWebPlugin = {
+  id: "core.canvas.draw",
+  elements: { draw: DrawStrokeNode },
+  tools: { draw: { shortcut: "d" } },
 };
 ```
 
-The engine merges your element renderers into the canvas node-type map and your tools into the
-toolbar each one NAMED (`contributes.tools[].toolbar`, defaulting to `canvas`). Nothing in the
-engine mentions "draw"; disable the plugin and the tool button disappears and existing strokes
-render as placeholders, live, without a reload.
+The host merges element renderers into the projection registry and tool metadata into the bar
+named by `contributes.tools[].toolbar` (default `canvas`). A tool attachment is behavior, not a
+React component: `tools[id]` is `{ shortcut?, point?: { doubleClick?, createAt(context) } }`.
+Undeclared keys contribute nothing. Shortcuts are claimed case-insensitively within a toolbar,
+and at most one point tool per toolbar claims double-click activation; collisions name their
+claimants rather than depending on registration order. Disable draw and its tool disappears
+while stored strokes render as placeholders, live, without a reload.
+
+For a point-authoring tool, the types from `@manifold/plugin/hooks` are:
+
+```ts
+interface PointToolContext {
+  readonly client: SessionClient; // the mounted native room, not a constructor or bearer
+  readonly containerId: string;
+  readonly principal: Principal;
+  readonly point: Readonly<{ x: number; y: number }>; // host-projected document coordinates
+  readonly signal: AbortSignal;
+}
+type PointToolOutcome =
+  | { readonly ok: true; readonly elementId: string }
+  | { readonly ok: false; readonly reason: string };
+interface PointTool {
+  readonly doubleClick?: boolean;
+  createAt(context: PointToolContext): Promise<PointToolOutcome>;
+}
+```
+
+The canvas owns coordinate projection, selection/edit focus and refusal feedback; the registered
+tool owns what gets authored. Respect `signal` before a late visual write: a cancelled gesture
+does not undo an already committed owner action. `core.canvas` declares only its own select tool.
+The canvas-note child registers `text` with shortcut `t` and a double-click point attachment.
+No parent text factory, hardcoded T handler or hidden double-click note path remains. Continuous
+draw gestures retain their existing canvas interaction policy; this point API is not a replacement
+for a continuous gesture stream. Native attachments receive trusted in-realm objects and are not
+available through the isolated Worker API.
 
 ### What an element renderer receives
 
-`draw` needs nothing from its host, which makes it the smallest example and a misleading one.
-`core.notes` is the sharper case — a note is edited character by character by several people at
-once — and it is why the element contract is explicit rather than "whatever the canvas node happens
-to pass". There are already two mount sites (a canvas node type and `ElementOutlet` for a tile
-leaf), so one frame's props are deliberately NOT the contract. All three types come from
-`@manifold/plugin`:
+Text is the worked ownership example: the same editor serves a standalone document, a tileable
+reference and a borrowed canvas note. A renderer gets identity and data from `ElementProps`,
+and obtains its mounted reference's context with `useElementHost()` from
+`@manifold/plugin/hooks`. The mount site provides `ElementHostProvider`; missing it throws
+rather than inventing an unowned edit target. These interfaces come from `@manifold/plugin`:
 
 ```ts
 interface ElementProps {
   readonly id: string;
-  readonly data: Readonly<Record<string, unknown>>; // your stored record
+  readonly data: Readonly<Record<string, unknown>>;
   readonly selected?: boolean | undefined;
-} // identity and record only — geometry stays engine business
-
-interface ElementHost {
-  readonly doc: ElementDocument;
-  readonly editingElementId: string | null; // the host owns edit focus…
-  beginEditing(elementId: string): void; // …a renderer ASKS to enter…
-  endEditing(elementId: string): void; // …and asks to leave
-  readonly removeWhenEmpty: boolean; // canvas: an emptied note is litter; tile leaf: it IS the occupant
 }
-
+interface ElementHost {
+  readonly doc: ElementDocument; // the visual reference's room, not necessarily the body's home
+  readonly documentBinding?: "mounted" | undefined; // propagate only to a matching body home
+  readonly editingElementId: string | null;
+  beginEditing(elementId: string): void;
+  endEditing(elementId: string): void;
+  readonly removeWhenEmpty: boolean; // mount policy, never permission to delete a retained body
+}
 interface ElementDocument {
+  readonly containerId: string | null;
+  readonly spectator: boolean;
+  readonly sceneWriteAllowed: boolean;
+  readonly status: SessionStatus;
+  readonly epoch: string;
+  readonly connectionError: { readonly code: number; readonly reason: string } | null;
+  selfCaps(): readonly Cap[];
+  sharedText(namespace: string, id: string): Y.Text | null;
+  sharedTexts(namespace: string): ReadonlyMap<string, SharedTextRecord>;
+  on(type: "status", listener: (status: SessionStatus) => void): () => void;
+  on(type: "scene_reset", listener: () => void): () => void;
+  on(type: "scene_authority_changed", listener: (allowed: boolean) => void): () => void;
+  on(
+    type: "shared_texts_changed",
+    listener: (refs: readonly SharedTextRef[], origin: "local" | "remote" | "undo") => void,
+  ): () => void;
   elementText(elementId: string): Y.Text | null;
   transact(fn: (tx: ElementTx) => void): void;
 }
@@ -1389,18 +1450,79 @@ interface ElementTx {
 }
 ```
 
-Reach the host with `useElementHost()` from `@manifold/plugin/hooks`; the mount site provides it
-through `ElementHostProvider`, and the hook THROWS rather than degrading, because an element with no
-mount site has nowhere to commit an edit. Edit focus is host-owned because the host publishes it as
-presence `view.editingElementId` (A2: what you are editing is observable), and `removeWhenEmpty` is
-the one genuine disagreement between the two disciplines rather than a preference.
+This is the document plane restated structurally, not web internals or another transport.
+`elementText`/`ElementTx.text` remain ordinary generic element APIs; native text documents no
+longer store their prose there. Their canonical body is a `Y.Text` in the home room's named
+`texts` collection, namespace `core.text`, with a stable document id. A visual reference stores
+an opaque `document` string. The text owner alone decodes it as the JSON tuple
+`[homeContainerId, documentId]`; its `/text/<reference>` route encodes the whole tuple as one
+path segment. Borrowers carry the string unchanged, not a private codec or body copy.
 
-`ElementDocument`/`ElementTx` are the **document plane restated structurally** — the same technique
-`HostServices.client` uses, so the SDK's `SessionClient` satisfies the interface without a plugin
-ever importing web internals. The load-bearing point: **an element renderer edits its document
-directly and declares no action at all.** A per-element edit whose worst-case merge a human accepts
-is document traffic (§5), so `core.notes` and `core.canvas.draw` both ship with zero actions. If you find
-yourself wanting an action for a keystroke, re-read the plane table.
+**Creation is an owner action; prose editing is document traffic.** Call `core.text.create`
+with `{ home: { kind: "container", containerId }, documentId?, text?, reference? }`. The
+structured `home` is its `scenes:write` target. Omitted `text` means empty; omitted `reference`
+means true, creating both a retained body and a tileable text element. The result is
+`{ containerId, documentId, reference }`. Canvas notes pass `reference: false`, then author a
+`canvas_note` element carrying the returned reference and their own presentation/geometry.
+They do not birth another body. Failure or cancellation after body creation may leave a
+discoverable unplaced body; it is not silently deleted as visual cleanup.
+
+The canvas-note renderer borrows the registered text renderer through `ElementOutlet`,
+requesting `fitContent: true`; it does not import its peer. The child measures its own wrapper
+and writes only its visual height. The editor neither resizes a canvas record nor removes its
+body when prose is empty. Removing/moving a reference leaves the body and its home untouched.
+The text panel/route enumerates retained bodies even without references or an enabled canvas.
+Placement conversion and implicit-home retention obey
+[the integration contract](CONTRACTS.md#containers-placement-and-the-index); explicit home
+deletion makes a surviving borrowed reference report a missing document.
+
+**Acquire the body at its own home.** A native element can call:
+
+```ts
+const access = useDocumentAccess(homeContainerId, {
+  document: host.doc,
+  mode: host.editingElementId === id ? "occupant" : "spectator",
+  binding: homeContainerId === host.doc.containerId ? host.documentBinding : undefined,
+});
+```
+
+A standalone panel/route omits `document` and requests `"occupant"`; it does not need
+`useContainerRoute()`. The host provider sits above both workspace and plugin routes.
+`homeContainerId: null` is idle; otherwise the hook returns loading, unavailable with a reason,
+or ready with `{ doc, canWrite, revision }`. Use the ready `doc.sharedText(namespace, id)`;
+missing body is a noneditable state, not permission to create a replacement. `revision` refreshes
+projections after document changes/reset without remounting a healthy editor for every keystroke.
+The host reuses a suitable mounted document or a bounded shared home lease, owns promotion and
+release, and reports missing/forbidden/limit outcomes. Consumers never close the borrowed client.
+The lifecycle and authority rules are [Scene sync](CONTRACTS.md#scene-sync-yjs-crdt).
+
+A container owner receiving a mount-owned `client` passes that document with
+`binding: "mounted"`. This observes exactly the supplied same-identity home pipe: it cannot
+promote, reopen or retain a replacement session when the portal disengages or disappears.
+Nested native element outlets propagate that binding through `ElementHost.documentBinding`.
+A body consumer applies it only when its authority home matches `host.doc.containerId`;
+foreign-home references retain their separate home-scoped leases, not the mount's authority.
+The mount alone changes roles and closes its pipe. Requested mode and effective home authority
+still constrain `canWrite`; requesting `"occupant"` cannot make a spectator or read-only grant
+writable. A renderer without a supplied client keeps the ordinary shared-home lease behavior.
+
+Use `canWrite` to enable editing. Raw `selfCaps()` remains the credential ceiling:
+`*` or `scenes:write` there does not prove effective authority at the body home.
+`sceneWriteAllowed` is the server's home-effective decision, and readiness, requested role and
+spectator status still constrain writing. A writable destination canvas does not grant write
+access to a foreign body.
+
+The same CodeMirror 6 editor binds this live body through `y-codemirror.next`. It owns one local
+Yjs undo history for its binding; no textarea diff, CodeMirror history or extra synchronization
+provider competes with it. Local edits and undo/redo enforce the text bound without truncation,
+and focus/read-only changes preserve the healthy editor's history. Keystrokes are never actions.
+The pins and dependency rationale belong to [Dependency decisions](CONTRACTS.md#dependency-decisions).
+
+This port is for trusted native in-realm code, not an isolated-plugin authority membrane around
+mutable Yjs handles. It carries no bearer, client constructor or connection lifecycle mutator.
+Panels/elements must not construct clients from `HostServices.token`; isolated consumers keep
+their bounded serialized host methods and cannot receive this native port or point-tool context.
+Server admission and receiving-boundary checks remain authoritative in either execution mode.
 
 The neutral element envelope also reserves optional `lastEditedBy` and `lastEditedAt` fields. The
 server writes the pair after each accepted peer update for every surviving changed element; plugin
@@ -1413,13 +1535,13 @@ without inventing an editor.
 your component is ever constructed, asking the same three questions in the same order: unknown
 element type → placeholder `state="unknown"`, owning plugin disabled → `"disabled"`, type declared
 but no renderer registered → `"unavailable"`. Only past all three does a mount site reach your
-component. So a disabled `core.notes` leaves the note's record untouched in the document and paints
-the engine's named placeholder in a canvas node and a tile leaf alike — the state is also mirrored
-to `data-plugin-state` for gates to assert on.
+component. A disabled `core.text` leaves bodies and references untouched and paints the named
+placeholder; a disabled canvas-note child similarly leaves its visual records intact. The
+state is mirrored to `data-plugin-state`. A body is never deleted by renderer dormancy.
 
 The only dormancy lever a plugin has is manifest DATA: `dormant.mode` and `dormant.label`. Silence
 is a real declaration — absent ≡ `ghost`, the named placeholder — and it is the right declaration for
-anything holding a user's work; `core.notes` deliberately declares no `dormant` field at all. Reach
+anything holding a user's work; text and canvas notes declare no `dormant` field. Reach
 for `hide` only for chrome, never for a node holding work: hiding a record a person typed into makes
 their work invisible without deleting it, which is the one outcome worse than a placeholder.
 
@@ -1501,6 +1623,8 @@ default: "local", scope: "workspace" }`.
   draws the bar. There is no manifest field for it and there is not going to be one: a bar's
   owner already decides how the rows that named it are painted, exactly as the canvas bar
   decides its rows are mode buttons.
+  Native executable shortcuts/point-authoring attachments live in `WebPluginDef.tools`, not
+  the inert manifest; see the worked example above.
 - **`events`** are the event kinds you originate — the vocabulary half of the event plane, whose
   authoring rules are §6b.
 - **`routes`** are the URL spaces you claim, one bare path segment each: `{ segment: "uri",
@@ -1537,7 +1661,7 @@ interface HostServices {
   // And the terminal surface — see "Terminals through the handle" below.
   readonly principal: Principal; // who this device is — paint in this principal's colour
   readonly token: string; // this device's bearer: the grant a CONTAINER RENDERER opens its own
-  // room pipe with, and nothing else — never a client minted in a panel (#196)
+  // room pipe with, never client construction in a panel/element; useDocumentAccess borrows homes
   readonly containerId: string | null; // the container the route is showing, null at the root
   navigate(uri: string): void; // a manifold:// URI, or an app path
   readonly viewport: ViewportHandle | null; // null until a container renderer is mounted
@@ -1661,9 +1785,10 @@ for (const row of host.assembly.sections.filter((row) => row.enabled)) {
 
 This is the **in-realm browser** contract; a portable panel or section uses the bounded
 `PortableHostServices` and `PortableSessionHandle` described in §9 in both execution modes.
-A panel, section, overlay or element renderer uses `host.client` (`SessionHandle`, exported
-from `@manifold/plugin`). It never opens its own socket or constructs a client from
-`host.token`. [Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility) requires
+A panel, section or overlay uses `host.client` (`SessionHandle`, exported from
+`@manifold/plugin`); an element uses its structural document port. Native contributions that
+need another document use `useDocumentAccess`, never their own socket or a client constructed
+from `host.token`. [Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility) requires
 one WebSocket implementation, the SDK's; [the plane rule](../AXIOMS.md#the-plane-rule) keeps
 continuous PTY I/O, cursor motion and live drags on their existing channels, with discrete
 authority-bearing mutations through actions at the commit point (§5). Event subscriptions
@@ -1676,8 +1801,9 @@ There are three different lifetimes here, not three sockets:
   with `spectator: true` for a read-only projection. It carries the document, attendance,
   presence and terminal frames. `connect(): Promise<void>` joins and resolves on the first
   `init`; `close(): void` leaves that handle's channel. The SDK pools channels sharing the
-  same URL and token on one connection and owns reconnect/rejoin. Only a container renderer
-  opens its own room handle; ordinary contributions borrow the host's and do not close it.
+  same URL and token on one connection and owns reconnect/rejoin. Container renderers and the
+  host-owned document-access provider open room handles; ordinary contributions borrow a host
+  handle or lease and do not close its client. A lease release is not ownership of its transport.
   Source: [`session-client.ts`](../packages/sdk/src/session-client.ts), `SessionClientOptions`,
   `connect`, `close`; transport: [`connection-pool.ts`](../packages/sdk/src/connection-pool.ts).
 - **Terminal attachment:** not a separate endpoint or `SessionClient`. Subscribe with
@@ -3326,7 +3452,7 @@ Read the rows the other way round and each one names a squat it refuses:
   new one is a row in that table and nothing else.
 - **Your own namespace is yours.** `example.notes` needs no registration anywhere, collides with
   nobody, and gets exactly the same dispatch, authority, disable, dormancy and purge treatment
-  `core.notes` gets. If you find a rule that treats a `core.` row better, that is a bug worth an
+  `core.text` gets. If you find a rule that treats a `core.` row better, that is a bug worth an
   issue: it is the claim this table exists to keep checkable.
 
 `GET /api/protocol` publishes both prefixes (`engineNamespace`, `coreNamespace`), so an author
@@ -4686,8 +4812,9 @@ import (`zod` above) is inlined into your member, which is why your directory ne
 floor resolves from your directory first and from the checkout the kit runs in otherwise. The
 bundle records the version of each shared package and the protocol wire version it was built
 against (`builtAgainst`, copied to `install.builtAgainst` on your row). On every boot and
-admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47 and 48
-on protocol 48) and the React major; session joins still require the exact current protocol.
+admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47, 48, 51,
+52, 53, 54, 55, 56 and 57 on protocol 57) and the React major; session joins still require the exact
+current protocol.
 A known incompatibility holds the row before code loads, and the manager names the
 built/current versions. Hardened-contract and digest checks are not relaxed. Legacy missing
 metadata remains visibly unknown. Outside the shell and hub the registry does not exist, and

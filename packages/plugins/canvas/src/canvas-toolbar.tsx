@@ -12,15 +12,12 @@ interface CanvasToolbarProps {
 interface ToolbarItem {
   readonly id: CanvasTool;
   readonly title: string;
+  readonly shortcut: string | undefined;
 }
 
 /**
- * The tool strip, composed — and composed ALL the way down now that the canvas is a plugin
- * itself. Every button comes from the one tool registry the engine builds from the roster;
- * this ref contributes no literal naming any tool, including its own two. `select` and
- * `text` are `core.canvas`'s manifest rows, so they arrive through exactly the door
- * `core.canvas.draw`'s tool arrives through, and disabling `core.canvas.draw` removes its button live with
- * no reload (R3).
+ * Every button comes from the tool registry. Canvas owns selection, while its note and
+ * drawing children contribute their own modes and disappear independently when disabled.
  *
  * The only judgement left here is ORDER, which is this ref's to make: the canvas's own
  * modes first (in {@link CANVAS_TOOLS} order), then every other plugin's in roster order.
@@ -38,7 +35,11 @@ export function CanvasToolbar({ tool, onChange }: CanvasToolbarProps): React.Rea
     return enabled
       .map((candidate, index) => ({ candidate, index }))
       .sort((a, b) => rank(a.candidate.id) - rank(b.candidate.id) || a.index - b.index)
-      .map(({ candidate }) => ({ id: candidate.id, title: candidate.title }));
+      .map(({ candidate }) => ({
+        id: candidate.id,
+        title: candidate.title,
+        shortcut: candidate.shortcut,
+      }));
   }, [projection.tools]);
 
   return (
@@ -58,6 +59,12 @@ export function CanvasToolbar({ tool, onChange }: CanvasToolbarProps): React.Rea
             className={`canvas-toolbar__button${active ? " canvas-toolbar__button--active" : ""}`}
             data-testid={`toolbar-${item.id}`}
             aria-pressed={active}
+            aria-keyshortcuts={item.shortcut}
+            title={
+              item.shortcut === undefined
+                ? item.title
+                : `${item.title} (${item.shortcut.toUpperCase()})`
+            }
             onClick={() => onChange(item.id)}
           >
             {item.title}

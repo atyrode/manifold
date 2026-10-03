@@ -1,16 +1,23 @@
 {
-  "name": "@manifold-plugin/notes",
+  "name": "@manifold-plugin/text",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./server": "./src/server.ts",
     "./web": "./src/web.tsx"
   },
   "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.13",
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
+    "@manifold/ui": "workspace:*",
     "react": "19.2.8",
+    "y-codemirror.next": "0.3.6",
+    "yjs": "13.6.32",
     "zod": "4.4.3"
   },
   "devDependencies": {

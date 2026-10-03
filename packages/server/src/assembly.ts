@@ -3,6 +3,7 @@ import { accessHandlers } from "@manifold-plugin/access/server";
 import { arrangeManifest } from "@manifold-plugin/arrange";
 import { brandManifest } from "@manifold-plugin/brand";
 import { canvasManifest } from "@manifold-plugin/canvas";
+import { canvasNoteElements, canvasNoteManifest } from "@manifold-plugin/canvas/note";
 import { commandsManifest } from "@manifold-plugin/commands";
 import { compositionsManifest } from "@manifold-plugin/compositions";
 import { drawElements, drawManifest } from "@manifold-plugin/canvas/draw";
@@ -12,7 +13,8 @@ import { keysActions, keysManifest } from "@manifold-plugin/keys";
 import { keysHandlers } from "@manifold-plugin/keys/server";
 import { machinesActions, machinesManifest } from "@manifold-plugin/machines";
 import { machinesHandlers } from "@manifold-plugin/machines/server";
-import { notesElements, notesManifest } from "@manifold-plugin/notes";
+import { textActions, textElements, textManifest } from "@manifold-plugin/text";
+import { textHandlers } from "@manifold-plugin/text/server";
 import { pluginManagerManifest } from "@manifold-plugin/plugin-manager";
 import { presenceActions, presenceManifest } from "@manifold-plugin/presence";
 import { presenceHandlers } from "@manifold-plugin/presence/server";
@@ -121,6 +123,7 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   // The fleet owns both halves too: the section that lists it, and the doors that read the
   // inventory and enroll into it.
   { manifest: machinesManifest, actions: machinesActions, handlers: machinesHandlers },
+  { manifest: textManifest, actions: textActions, handlers: textHandlers, elements: textElements },
   /*
     Browser-only plugins, registered here all the same: the ROSTER is what publishes a
     plugin's existence, its title and its contributions, and what an administrator toggles.
@@ -128,15 +131,15 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
     and its element type would read as "unknown plugin" on every canvas.
   */
   /*
-    `elements` carries these two plugins' PER-TYPE PAYLOAD SCHEMAS (ADR 0013 §16). The protocol's
+    `elements` carries the owners' PER-TYPE PAYLOAD SCHEMAS (ADR 0013 §16). The protocol's
     element schema is a neutral envelope — it holds the geometry and bounds the payload, and names
-    no element type — so what a `draw` or a `text` record must actually contain is declared by
+    no element type — so what a contributed record must actually contain is declared by
     whoever declared the type, and this row is where that declaration reaches the assembly. It
     sits on the DEFINITION rather than in the manifest for the same reason handlers do: a schema
     is code, and manifests stay inert data (ADR 0010 rule 2).
   */
   { manifest: drawManifest, actions: [], handlers: {}, elements: drawElements },
-  { manifest: notesManifest, actions: [], handlers: {}, elements: notesElements },
+  { manifest: canvasNoteManifest, actions: [], handlers: {}, elements: canvasNoteElements },
   { manifest: uriManifest, actions: [], handlers: {} },
   /*
     The diagnostic seat: browser-only, door-less, and registered here for the reason every

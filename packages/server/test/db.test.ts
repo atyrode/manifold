@@ -17,13 +17,14 @@ import { AuthService, ServiceError } from "../src/auth.ts";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
 import { JOB_SCHEDULE_SCHEMA_STATEMENTS } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
-import { migrateToCanonLexicon } from "../src/migrate-lexicon.ts";
+import { migrateToCanonLexicon, migrateToElementRefs } from "../src/migrate-lexicon.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 import {
   AUTHORITY_V37_FIXTURE_SQL,
   removeScopedAuthority,
 } from "./authority-migration-fixtures.ts";
+import { seedHistoricalSceneTables } from "./migration-fixtures.ts";
 
 const LEGACY_TOKEN_COLUMNS =
   "id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at";
@@ -584,12 +585,24 @@ describe("migration 9: solo compositions", () => {
       expect(rawTypes(canvas)).toEqual({
         "el-terminal": "portal",
         "el-mirror": "portal",
-        "el-note": "text",
+        "el-note": "canvas_note",
       });
       // An element naming a session with no row has nothing to reference, so it goes.
       expect(readElement(canvas, "el-stale")).toBeNull();
-      // Furniture is not touched at all: same fields, same text, same z-order.
-      expect(readElement(canvas, NOTE_ELEMENT.id)).toEqual(NOTE_ELEMENT);
+      // The later text ownership migration keeps presentation and body in this same home.
+      const { text: noteText, ...notePresentation } = NOTE_ELEMENT;
+      expect(readElement(canvas, NOTE_ELEMENT.id)).toEqual({
+        ...notePresentation,
+        type: "canvas_note",
+        document: JSON.stringify([CANVAS_CONTAINER, NOTE_ELEMENT.id]),
+      });
+      expect(
+        canvas
+          .getMap<Y.Map<unknown>>("texts")
+          .get(`core.text:${NOTE_ELEMENT.id}`)
+          ?.get("text")
+          ?.toString(),
+      ).toBe(noteText);
 
       // A new revision on the SAME epoch: a client resuming from a pre-migration revision
       // resyncs against this instead of silently disagreeing with the server.
@@ -1457,6 +1470,7 @@ function seedPostV16Authority(db: Database, path: string): void {
     .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'")
     .get();
   if (version === null) throw new Error("fixture lacks its historical schema version");
+  seedHistoricalSceneTables(db);
   db.exec(`
 CREATE TABLE IF NOT EXISTS principals(id TEXT PRIMARY KEY,kind TEXT,name TEXT,color TEXT,
   created_at INTEGER,origin TEXT);
@@ -1627,6 +1641,16 @@ CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   seedPostV16Authority(db, path);
+  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)").run(
+    "composition-16",
+    "Composition",
+    "composition",
+  );
+  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)").run(
+    "canvas-16",
+    "Canvas",
+    "canvas",
+  );
   const doc = createSceneDoc();
   doc.clientID = 1601;
   const refs = [
@@ -1774,9 +1798,16 @@ describe("migration 19: contributed element refs", () => {
         expected["leaf-0"].ref = { kind: "element", elementId: "el-note" };
         expected["leaf-1"].ref = { kind: "element", elementId: "el-draw" };
         expect(readTileLayout(migrated, before.container_id)).toEqual(expected);
-        expect(migrated.getMap(ELEMENTS_KEY).toJSON()).toEqual(
-          original.getMap(ELEMENTS_KEY).toJSON(),
-        );
+        const originalElements = original.getMap<Y.Map<unknown>>(ELEMENTS_KEY).toJSON();
+        const notePresentation: Record<string, unknown> = { ...originalElements["el-note"] };
+        delete notePresentation["text"];
+        expect(migrated.getMap(ELEMENTS_KEY).toJSON()).toEqual({
+          ...originalElements,
+          "el-note": {
+            ...notePresentation,
+            document: JSON.stringify([before.container_id, "el-note"]),
+          },
+        });
         expect(migrated.getMap("plugin-state").toJSON()).toEqual(
           original.getMap("plugin-state").toJSON(),
         );
@@ -1787,7 +1818,10 @@ describe("migration 19: contributed element refs", () => {
         const noteAfter = migrated.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get("el-note");
         for (const field of ["text", "caption"]) {
           const textBefore = noteBefore?.get(field);
-          const textAfter = noteAfter?.get(field);
+          const textAfter =
+            field === "text"
+              ? migrated.getMap<Y.Map<unknown>>("texts").get("core.text:el-note")?.get("text")
+              : noteAfter?.get(field);
           if (!(textBefore instanceof Y.Text) || !(textAfter instanceof Y.Text)) {
             throw new Error("migration replaced collaborative text");
           }
@@ -1817,8 +1851,8 @@ describe("migration 19: contributed element refs", () => {
       const upgradedMetadata = db
         .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
         .all();
-      // Retry from a valid historical schema carrying the already-converted bytes.
-      // Rewinding only schema_version would leave successor migrations' tables behind.
+      // Reopening the current schema must preserve every converted byte. Migration 19's
+      // own retry is checked separately before any successor can rewrite text ownership.
       db.close();
       const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
       expect(
@@ -1847,18 +1881,20 @@ describe("migration 19: contributed element refs", () => {
       const retryPath = join(dir, "retry.db");
       seedPreV19(retryPath);
       const retryFixture = new Database(retryPath, { strict: true });
-      const replaceDoc = retryFixture.query(
-        "UPDATE scene_docs SET hash=?, doc=? WHERE container_id=? AND epoch=? AND rev=?",
+      migrateToElementRefs(retryFixture, retryPath);
+      const readRetryDocs = retryFixture.query<DocRow, []>(
+        "SELECT container_id, epoch, rev, hash, doc FROM scene_docs ORDER BY container_id, epoch, rev",
       );
-      for (const row of upgraded) {
-        replaceDoc.run(row.hash, row.doc, row.container_id, row.epoch, row.rev);
-      }
-      const replaceMeta = retryFixture.query("INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)");
-      for (const row of upgradedMetadata) {
-        if (row.key !== "schema_version") replaceMeta.run(row.key, row.value);
-      }
+      const readRetryMetadata = retryFixture.query<{ key: string; value: string }, []>(
+        "SELECT key, value FROM meta ORDER BY key",
+      );
+      const refDocs = readRetryDocs.all();
+      const refMetadata = readRetryMetadata.all();
+      migrateToElementRefs(retryFixture, retryPath);
+      expect(readRetryDocs.all()).toEqual(refDocs);
+      expect(readRetryMetadata.all()).toEqual(refMetadata);
       retryFixture.close();
-      const retried = openDatabase(retryPath);
+      const retried = openDatabase(path);
       for (const row of upgraded) {
         expect(
           retried
@@ -2847,6 +2883,7 @@ INSERT INTO machine_jobs VALUES
   ('foreign-job','other-machine',2,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"foreign-run"}}'),
   ('foreign-home','machine',3,'{"terminal":{"terminalId":"legacy","containerId":"other-home","runId":"foreign-run"}}');
 `);
+    seedHistoricalSceneTables(db);
     db.close();
     db = openDatabase(path);
     const store = new ServerStore(db);

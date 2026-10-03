@@ -37,10 +37,10 @@
       # Each native CI lane independently builds and rebuilds its fixed-output tree;
       # foreign-target materialization is not native compiled-package or VM evidence.
       depsHashes = {
-        x86_64-linux = "sha256-G5PGfMuskpP/1hBiMhlTOpySUoTQYTqR0tfQestspP0=";
-        aarch64-linux = "sha256-TNV7aarXFtw6iIEKW1JQYCtQnnkqAY3897C/iy/bOeE=";
-        x86_64-darwin = "sha256-fPSXBOP1QvVb3B6779DMYB9trZYNKr+LK/MNMIcY5f0=";
-        aarch64-darwin = "sha256-SVCuRZEdLvUzDQU+7MaoInBx+y2lyL6qweINc5mBErM=";
+        x86_64-linux = "sha256-cns1nWZ3+nIBVwg8FoQy3+fTomXZ8poQbaCuCdiYSy4=";
+        aarch64-linux = "sha256-ApHo+lgOh08xZpiLHRPDDfenDI5T6O6Xqt5alZPGBzk=";
+        x86_64-darwin = "sha256-fYN6yLrLuK5y40vxdCBfBlpvoEmq81OzZidKGuM6jeM=";
+        aarch64-darwin = "sha256-8+Dt0a28n0FV3VdGtb593wGYi0VHdmlsGpBdgaLr7RQ=";
       };
 
       # Keep the dependency input independent of unrelated workspace sources.

@@ -18,11 +18,11 @@ import {
 import {
   attachedCapture,
   closeClients,
+  drawElement,
   e2eFailure,
   nextMessage,
   openTerminalAt,
   stopProcesses,
-  textElement,
   waitForTerminalText,
   type TerminalCapture,
 } from "./helpers.ts";
@@ -280,10 +280,16 @@ test("a fenced handoff keeps one writer, acknowledged writes, sessions and the P
       // A browser session resumes and its next edit is durable on the successor.
       const savedRev = canvas.rev + 1;
       const saved = nextMessage(canvas, "saved", 10_000, (message) => message.rev >= savedRev);
-      canvas.transact((tx) =>
-        tx.create(textElement(`el-after-${direction}`, `after ${direction}`)),
-      );
+      canvas.transact((tx) => tx.create(drawElement(`el-after-${direction}`, [0, 0, 40, 20])));
       await saved;
+      const resynced = nextMessage(canvas, "resync", 10_000);
+      canvas.requestResync();
+      await resynced;
+      expect(canvas.elements.get(`el-after-${direction}`)).toEqual({
+        ...drawElement(`el-after-${direction}`, [0, 0, 40, 20]),
+        lastEditedBy: canvas.self?.id,
+        lastEditedAt: expect.any(Number),
+      });
 
       // The PTY is the same process, still running, and nothing it wrote was lost.
       await waitFor(() => homeClient.terminals.get(terminal.id)?.status === "running", 10_000, 20);

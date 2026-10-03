@@ -7,6 +7,7 @@ import {
   MANIFOLD_ROOT_URI,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   PROTOCOL_VERSION,
+  formatManifoldUri,
   CreateRunCredentialResultSchema,
   type Container,
 } from "@manifold/protocol";
@@ -681,10 +682,67 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
+  test("a forbidden foreign home refuses only its channel and preserves admitted document traffic", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const foreign = fixture.secondContainer("forbidden document home");
+      const token = fixture.auth.mintToken(
+        {
+          principal: { name: "scoped document editor", kind: "human" },
+          caps: ["containers:read", "scenes:write"],
+          containerId: fixture.container.id,
+        },
+        fixture.auth.authenticate(fixture.ownerKey),
+      ).token;
+      expect(
+        fixture.auth.allows(fixture.auth.authenticate(token), "containers:read", foreign.id),
+      ).toBe(false);
+      const socket = new FakeSocket();
+      const witness = new FakeSocket();
+      join(fixture.gateway, "witness", witness, fixture.container.id, fixture.ownerKey);
+      fixture.gateway.open("editor", socket);
+      joinChannel(fixture, "editor", socket, { ch: "admitted", token });
+      socket.clear();
+      witness.clear();
+
+      send(fixture.gateway, "editor", "foreign", {
+        type: "join",
+        containerId: foreign.id,
+        token,
+        protocolVersion: PROTOCOL_VERSION,
+        spectator: true,
+      });
+      expect(socket.frames()).toEqual([
+        { type: "channel_closed", ch: "foreign", code: 4403, reason: "forbidden" },
+      ]);
+      expect(socket.closed).toBeNull();
+
+      socket.clear();
+      send(fixture.gateway, "editor", "admitted", { type: "resync_request" });
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({ type: "resync", ch: "admitted" }),
+      ]);
+      send(fixture.gateway, "editor", "admitted", {
+        type: "doc_update",
+        update: docUpdateFor("survives-foreign-refusal"),
+      });
+      expect(fixture.rooms.get(fixture.container.id)?.element("survives-foreign-refusal")).toEqual(
+        expect.objectContaining({ id: "survives-foreign-refusal", type: "portal" }),
+      );
+      expect(witness.messages().some((message) => message.type === "doc_update")).toBe(true);
+      expect(socket.closed).toBeNull();
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("a stale protocol version still closes the whole socket", async () => {
     const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "admitted" });
+    socket.clear();
     send(fixture.gateway, "tab", "a", {
       type: "join",
       containerId: fixture.container.id,
@@ -695,6 +753,26 @@ describe("SessionGateway channel multiplexing", () => {
 
     fixture.gateway.shutdown();
     fixture.store.close();
+  });
+
+  test("invalid credentials on a second join still close the whole socket", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const socket = new FakeSocket();
+      fixture.gateway.open("tab", socket);
+      joinChannel(fixture, "tab", socket, { ch: "admitted" });
+      socket.clear();
+      send(fixture.gateway, "tab", "invalid", {
+        type: "join",
+        containerId: fixture.container.id,
+        token: "not-a-credential",
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      expect(socket.closed).toEqual({ code: 4401, reason: "unauthorized" });
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
   });
 
   test("liveness is a socket property: the pair carries no channel", async () => {
@@ -853,13 +931,18 @@ describe("SessionGateway live workspace authority", () => {
         },
         owner,
       );
-      expect(socket.frames()).toEqual([
+      expect(socket.frames().filter((frame) => frame.type === "authority_context")).toEqual([
         {
           type: "authority_context",
           workspaceCaps: CAPS.filter((cap) => cap !== "*"),
           workspaceEvents: true,
         },
       ]);
+      expect(socket.frames().find((frame) => frame.type === "resync")).toMatchObject({
+        ch: CH,
+        sceneWriteAllowed: false,
+      });
+      expect(socket.frames().some((frame) => frame.type === "init")).toBe(false);
       socket.clear();
       const workspaceDenial = fixture.auth.grant(
         {
@@ -882,8 +965,13 @@ describe("SessionGateway live workspace authority", () => {
       ]);
       socket.clear();
       fixture.auth.revokeGrant(descendantDenial.id, owner);
-      expect(socket.frames()).toEqual([]);
+      expect(socket.frames().filter((frame) => frame.type === "authority_context")).toEqual([]);
+      expect(socket.frames().find((frame) => frame.type === "resync")).toMatchObject({
+        ch: CH,
+        sceneWriteAllowed: true,
+      });
       expect(socket.closed).toBeNull();
+      socket.clear();
       send(fixture.gateway, "fleet", CH, { type: "resync_request" });
       expect(socket.frames().map((frame) => frame.type)).toEqual(["resync"]);
       socket.clear();
@@ -1801,6 +1889,102 @@ describe("SessionGateway spectator sockets", () => {
 });
 
 describe("SessionGateway scene writes", () => {
+  test("home grant changes publish evaluated authority without interrupting admitted rooms", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const other = fixture.secondContainer("unaffected home");
+      const root = fixture.auth.authenticate(fixture.ownerKey);
+      const grant = fixture.auth.mintToken(
+        {
+          principal: { name: "home authority editor", kind: "human" },
+          caps: ["containers:read", "scenes:write"],
+        },
+        root,
+      );
+      const owner = new FakeSocket();
+      fixture.gateway.open("owner", owner);
+      joinChannel(fixture, "owner", owner);
+      expect(owner.frames().find((frame) => frame.type === "init")).toMatchObject({
+        selfCaps: ["*"],
+        sceneWriteAllowed: true,
+      });
+      const socket = new FakeSocket();
+      fixture.gateway.open("editor", socket);
+      joinChannel(fixture, "editor", socket, { ch: "home", token: grant.token });
+      joinChannel(fixture, "editor", socket, {
+        ch: "other",
+        containerId: other.id,
+        token: grant.token,
+      });
+      expect(socket.frames().filter((frame) => frame.type === "init")).toEqual([
+        expect.objectContaining({ ch: "home", sceneWriteAllowed: true }),
+        expect.objectContaining({ ch: "other", sceneWriteAllowed: true }),
+      ]);
+      socket.clear();
+      owner.clear();
+      const deny = fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: grant.principal.id },
+          node: formatManifoldUri({ kind: "container", containerId: fixture.container.id }),
+          caps: ["scenes:write"],
+          effect: "deny",
+          reach: "node",
+        },
+        root,
+      );
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({
+          type: "resync",
+          ch: "home",
+          selfCaps: ["containers:read", "scenes:write"],
+          sceneWriteAllowed: false,
+        }),
+      ]);
+      expect(owner.frames()).toEqual([]);
+      expect(socket.closed).toBeNull();
+      socket.clear();
+      fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: grant.principal.id },
+          node: formatManifoldUri({ kind: "container", containerId: fixture.container.id }),
+          caps: ["containers:write"],
+          effect: "deny",
+          reach: "node",
+        },
+        root,
+      );
+      expect(socket.frames()).toEqual([]);
+      send(fixture.gateway, "editor", "home", {
+        type: "doc_update",
+        update: docUpdateFor("refused-by-home"),
+      });
+      expect(fixture.rooms.get(fixture.container.id)?.element("refused-by-home")).toBeNull();
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({ type: "error", ch: "home", code: "forbidden" }),
+        expect.objectContaining({ type: "resync", ch: "home", sceneWriteAllowed: false }),
+      ]);
+      socket.clear();
+      fixture.auth.revokeGrant(deny.id, root);
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({ type: "resync", ch: "home", sceneWriteAllowed: true }),
+      ]);
+      send(fixture.gateway, "editor", "home", {
+        type: "doc_update",
+        update: docUpdateFor("restored-at-home"),
+      });
+      send(fixture.gateway, "editor", "other", {
+        type: "doc_update",
+        update: docUpdateFor("uninterrupted-other-home"),
+      });
+      expect(fixture.rooms.get(fixture.container.id)?.element("restored-at-home")).not.toBeNull();
+      expect(fixture.rooms.get(other.id)?.element("uninterrupted-other-home")).not.toBeNull();
+      expect(socket.closed).toBeNull();
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("a reader in the room is refused both scene writes and nothing else it sends", async () => {
     /*
       `doc_update` and `gesture` are ONE authorization question — may this principal change what
@@ -1830,15 +2014,23 @@ describe("SessionGateway scene writes", () => {
       readerSocket.clear();
       writerSocket.clear();
       send(fixture.gateway, "reader", CH, write);
-      expect(readerSocket.messages()).toEqual([
-        { type: "error", code: "forbidden", message: "scenes:write capability required" },
-      ]);
+      const refusal = {
+        type: "error",
+        code: "forbidden",
+        message: "scenes:write capability required",
+      };
+      expect(readerSocket.messages()).toEqual(
+        write["type"] === "doc_update"
+          ? [refusal, expect.objectContaining({ type: "resync", sceneWriteAllowed: false })]
+          : [refusal],
+      );
       // Refused means refused: neither the update nor the gesture ever reached the room.
       expect(writerSocket.messages()).toEqual([]);
     }
 
     // A reader is not a spectator: recovery still answers, because a token that may READ the
     // scene must be able to catch up on it.
+    fixture.clock.advance(1_000);
     readerSocket.clear();
     send(fixture.gateway, "reader", CH, { type: "resync_request" });
     expect(readerSocket.messages().map((message) => message.type)).toEqual(["resync"]);

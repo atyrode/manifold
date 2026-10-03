@@ -278,7 +278,16 @@ export class SessionGateway {
       this.revokePrincipal(principalId, containerId);
     });
     this.removeAuthorityListener = auth.onAuthorityChanged(() => {
-      for (const connection of this.connections.values()) this.sendAuthorityContext(connection);
+      for (const connection of this.connections.values()) {
+        if (connection.closed) continue;
+        this.sendAuthorityContext(connection);
+        for (const { peer, room } of connection.channels.values()) {
+          const allowed = auth.allows(peer.auth, "scenes:write", peer.containerId);
+          if (allowed === peer.sceneWriteAllowed) continue;
+          peer.sceneWriteAllowed = allowed;
+          room.sendResync(peer);
+        }
+      }
     });
     this.removeRosterListener = plugins.onRosterChange((roster, developerMode) => {
       const frame = JSON.stringify(
@@ -715,7 +724,7 @@ export class SessionGateway {
     const context = this.authenticateHandshake(connection, message.token, message.protocolVersion);
     if (context === null) return;
     if (!this.auth.allows(context, "containers:read", message.containerId)) {
-      this.closeSocket(connection, 4403, "forbidden", "authorization_refused");
+      this.refuseChannel(connection, message.ch, message.containerId, 4403, "forbidden");
       return;
     }
     if (connection.channels.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) {
@@ -748,6 +757,7 @@ export class SessionGateway {
         this.retireChannel(connection, closing, code, reason, connectionClosed);
       },
     );
+    peer.sceneWriteAllowed = this.auth.allows(context, "scenes:write", message.containerId);
     const channel: ChannelState = {
       peer,
       room,
@@ -1076,7 +1086,12 @@ export class SessionGateway {
         this.releaseChannel(connection, message.ch);
         return;
       case "doc_update":
-        if (!this.mayWriteScene(peer)) return;
+        if (!this.mayWriteScene(peer)) {
+          // A stale native binding may already have applied the rejected edit locally.
+          // The bounded authoritative state retires that optimistic graph, not its socket.
+          this.sendResyncIfDue(connection, channel);
+          return;
+        }
         room.applyDocUpdate(peer, message.update);
         return;
       case "gesture":

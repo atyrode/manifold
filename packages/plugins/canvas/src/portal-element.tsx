@@ -4,6 +4,7 @@ import {
   elementPayload,
   locationPathContains,
   soloLeaf,
+  type Container,
   type TileLayout,
   type Tile,
   type TileRef,
@@ -16,6 +17,7 @@ import {
   PORTAL_TREE_CLASSES,
   TerminalRenderer,
   ElementOutlet,
+  ContainerRenderer,
   ProjectionScopeProvider,
   TilePreviewOverlay,
   TileTree,
@@ -52,10 +54,10 @@ import {
 } from "./portal-engagement.ts";
 
 /**
- * The canvas face of a composition. A view and a container are one object, so a
+ * The canvas face of a container. A view and a container are one object, so a
  * container sitting inside a canvas is a plain scene element (`type: "portal"`)
- * that renders as a live portal: the container's own tiles, its occupants, and a
- * double-click that navigates into it.
+ * that renders as a live portal: a tile-tree preview or the discipline owner's surface,
+ * its occupants, and a double-click on its chrome that navigates into it.
  *
  * A portal has two states, and the difference between them is a socket discipline
  * rather than a mode switch anyone has to learn:
@@ -108,16 +110,16 @@ export const MIN_PORTAL_HEIGHT = 160;
  */
 export const MAX_LIVE_DEPTH = 2;
 
-/** Container names live in the container's row, not its room, so the portal reads its own. */
-function useContainerName(host: HostServices, containerId: string): string | null {
-  const [name, setName] = useState<string | null>(null);
+/** Container metadata lives in the index, not the room being previewed. */
+function usePortalContainer(host: HostServices, containerId: string): Container | null {
+  const [record, setRecord] = useState<Container | null>(null);
   useEffect(() => {
     if (containerId === "") return;
     let cancelled = false;
     void host.client
       .getContainer(containerId)
       .then((container) => {
-        if (!cancelled) setName(container.name);
+        if (!cancelled) setRecord(container);
       })
       .catch((reason: unknown) => {
         // DELIBERATELY console-only, unlike every other failure in this app: nobody asked
@@ -129,7 +131,7 @@ function useContainerName(host: HostServices, containerId: string): string | nul
       cancelled = true;
     };
   }, [host.client, containerId]);
-  return name;
+  return record?.id === containerId ? record : null;
 }
 
 /**
@@ -317,14 +319,15 @@ function PortalContainerTile({
   readonly containerId: string;
 }): React.ReactElement {
   const container = useCanvas();
-  const name = useContainerName(container.host, containerId);
+  const record = usePortalContainer(container.host, containerId);
+  const kind = record?.discipline ?? "container";
   return (
     <Cover className="portal__container-card">
       <Stack gap="0.3rem" align="center">
         <span className="portal__card-glyph" aria-hidden="true">
-          <ItemIcon kind="canvas" size={22} />
+          <ItemIcon kind={kind} size={22} />
         </span>
-        <strong>{name ?? itemNoun("canvas", container.host.assembly.roster())}</strong>
+        <strong>{record?.name ?? itemNoun(kind, container.host.assembly.roster())}</strong>
         <button
           type="button"
           className="portal__enter"
@@ -494,6 +497,7 @@ function PortalLeaf({
                 elementId={ref.elementId}
                 data={element === undefined ? {} : elementPayload(element)}
                 doc={client}
+                documentBinding="mounted"
                 editingElementId={interactive ? editingId : null}
                 onBeginEditing={(id) => {
                   onEngage(node.id);
@@ -559,6 +563,18 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   countRender("portal-node");
   const containerId = typeof data["containerId"] === "string" ? data["containerId"] : "";
   const container = useCanvas();
+  const fetchedContainer = usePortalContainer(container.host, containerId);
+  const target = container.containers.find((entry) => entry.id === containerId) ?? fetchedContainer;
+  const kind = target?.discipline ?? "";
+  const roster = container.host.assembly.roster();
+  const noun = itemNoun(kind, roster);
+  const hasTileTree = roster.some(
+    (entry) =>
+      entry.held === undefined &&
+      entry.manifest.contributes.disciplines?.some(
+        (discipline) => discipline.id === kind && discipline.destinations.includes("tile"),
+      ),
+  );
   const inheritedScope = useProjectionScope();
   const scope = useMemo(
     () =>
@@ -601,7 +617,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       setEngagement(null);
       notify(
         failedRole === "occupant"
-          ? "Could not open this composition for editing."
+          ? "Could not open this container for editing."
           : "Could not open this assembly.",
       );
     },
@@ -618,9 +634,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   /** Engagement is only real once the occupant socket is the one being painted. */
   const interactive = slot !== null && slot.role === "occupant";
   const layout = usePreviewLayout(client);
-  const name = useContainerName(container.host, containerId);
-  /** Stable per roster change: what to CALL a kind whose word is not the floor's. */
-  const roster = container.host.assembly.roster();
+  const name = target?.name ?? null;
 
   useEffect(() => {
     if (!engaged) return;
@@ -692,6 +706,20 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     };
   }, [containerId, engaged]);
 
+  // A resting portal's chrome also publishes its location. Removing that reference must
+  // release the location even if its document was never engaged.
+  useEffect(
+    () => () => {
+      if (
+        locationPathContains(currentVantage().locationPath, engagementScope.current?.locationPath)
+      ) {
+        setVantage({ focusedContainerId: null });
+        publishLocation(enclosingScope.current?.locationPath ?? null);
+      }
+    },
+    [containerId],
+  );
+
   const enter = (): void => {
     if (containerId === "") return;
     container.navigate(`/p/${encodeURIComponent(containerId)}`);
@@ -702,7 +730,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
    * that terminal: no portal name strip, the terminal's own titlebar carrying this
    * element's verbs. Other occupants wear composition chrome at the same native scale.
    */
-  const solo = client === null || layout === null ? null : soloTerminal(layout);
+  const solo = !hasTileTree || client === null || layout === null ? null : soloTerminal(layout);
   const mono: PortalMonoChrome | null =
     solo === null
       ? null
@@ -877,34 +905,71 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         {mono !== null ? null : (
           <NodeTitleBar
             className="portal__strip"
-            icon={<ItemIcon kind="composition" size={13} />}
+            icon={<ItemIcon kind={kind} size={13} />}
             title={name}
-            defaultTitle={itemNoun("composition", roster)}
+            defaultTitle={noun}
             middle={<TitlebarOutlet scope={scope} />}
             dragProps={{ draggable: false }}
             onMinimize={() => container.unplaceElement(id)}
-            minimizeLabel={`Put away composition ${name ?? containerId}`}
-            minimizeTooltip="Remove this portal from the canvas (the composition keeps running)"
+            minimizeLabel={`Put away ${noun} ${name ?? containerId}`}
+            minimizeTooltip={
+              hasTileTree
+                ? `Remove this portal from the canvas (the ${noun} keeps running)`
+                : "Remove this portal from the canvas (its content is retained)"
+            }
             onMaximize={enter}
-            maximizeLabel={`Open composition ${name ?? containerId}`}
-            maximizeTooltip="Open this composition"
+            maximizeLabel={`Open ${noun} ${name ?? containerId}`}
+            maximizeTooltip={hasTileTree ? `Open this ${noun}` : "Open this container"}
             onClose={() => container.onDeleteContainer(containerId, id)}
-            closeLabel={`Delete composition ${name ?? containerId}`}
-            closeTooltip="Delete this composition for everyone"
+            closeLabel={`Delete ${noun} ${name ?? containerId}`}
+            closeTooltip={
+              hasTileTree
+                ? `Delete this ${noun} for everyone`
+                : "Delete this container for everyone"
+            }
           />
         )}
         <div className="portal__viewport">
           {client !== null ? (
             <div className="portal__preview">
               <div className="tile-area" ref={areaRef}>
-                <TileTree
-                  layout={layout ?? {}}
-                  classes={PORTAL_TREE_CLASSES}
-                  interactive={interactive}
-                  onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
-                  renderLeaf={renderLeaf(client)}
-                />
-                {overlay}
+                {hasTileTree ? (
+                  <TileTree
+                    layout={layout ?? {}}
+                    classes={PORTAL_TREE_CLASSES}
+                    interactive={interactive}
+                    onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
+                    renderLeaf={renderLeaf(client)}
+                  />
+                ) : (
+                  <div
+                    className="portal__renderer nodrag nowheel"
+                    onClickCapture={() => {
+                      setEngagement({ containerId, tileId: id });
+                      publishHere();
+                    }}
+                    onFocusCapture={() => {
+                      setEngagement({ containerId, tileId: id });
+                      publishHere();
+                    }}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <ContainerRenderer
+                      layout={kind}
+                      host={container.host}
+                      client={client}
+                      containerId={containerId}
+                      containers={container.containers}
+                      presence={container.presence}
+                      navigate={container.navigate}
+                      depth={container.depth + 1}
+                      routed={false}
+                      frame="tile"
+                      projectionScope={scope}
+                    />
+                  </div>
+                )}
+                {hasTileTree ? overlay : null}
               </div>
             </div>
           ) : (
@@ -914,14 +979,14 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
               <Cover className="portal__card">
                 <Stack gap="0.3rem" align="center">
                   <span className="portal__card-glyph" aria-hidden="true">
-                    <ItemIcon kind="composition" size={22} />
+                    <ItemIcon kind={kind} size={22} />
                   </span>
                   <span className="portal__card-hint">
-                    {live ? "opening composition…" : "nested composition — open it to work inside"}
+                    {live ? `opening ${noun}…` : `nested ${noun} — open it to work inside`}
                   </span>
                 </Stack>
               </Cover>
-              {overlay}
+              {hasTileTree ? overlay : null}
             </div>
           )}
         </div>

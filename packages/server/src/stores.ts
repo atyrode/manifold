@@ -105,7 +105,7 @@ const PLUGINS_ATTRIBUTION_META = "plugins:attribution";
 const ELEMENT_OWNERS_META = "plugins:element-owners";
 /** The workspace's developer-mode switch (ADR 0025 §4): `"1"` on, anything else off. */
 const DEVELOPER_MODE_META = "plugins:developer-mode";
-const DisabledPluginsSchema = z.array(z.string().min(1)).max(256);
+const DisabledPluginsSchema = z.array(z.string().min(1));
 const AttributionSchema = z.record(
   z.string().min(1),
   z.strictObject({ by: z.string().min(1), at: z.number().int() }),
@@ -2220,6 +2220,17 @@ export class ServerStore {
     })();
   }
 
+  /** Fixed server-certified migration growth; ordinary saves never increase this credit. */
+  docMigrationBytes(containerId: string, epoch: string): number {
+    return (
+      this.db
+        .query<{ migration_bytes: number }, [string, string]>(
+          "SELECT migration_bytes FROM scene_doc_capacity WHERE container_id = ? AND epoch = ?",
+        )
+        .get(containerId, epoch)?.migration_bytes ?? 0
+    );
+  }
+
   latestDoc(
     containerId: string,
     onInvalid?: (error: Error, record: InvalidDoc) => void,
@@ -2260,8 +2271,10 @@ export class ServerStore {
     const save = this.db.transaction(() => {
       this.db
         .query<void, [string, string, number, number, string, Uint8Array]>(
-          `INSERT OR REPLACE INTO scene_docs(container_id, epoch, rev, ts, hash, doc)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO scene_docs(container_id, epoch, rev, ts, hash, doc)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(container_id, epoch, rev) DO UPDATE SET
+             ts = excluded.ts, hash = excluded.hash, doc = excluded.doc`,
         )
         .run(containerId, epoch, rev, ts, hash, doc);
       this.db

@@ -55,6 +55,8 @@ import {
   type RevokeResult,
   type ResolveResponse,
   type SceneElement,
+  type SharedTextRecord,
+  type SharedTextRef,
   type ServerEvent,
   type ServerMessageBody,
   type TerminalEnv,
@@ -71,6 +73,8 @@ import {
   Y,
   REMOTE_ORIGIN,
   changedElementIds,
+  changedSharedTextKeys,
+  createSharedText,
   createSceneDoc,
   decodeUpdate,
   elementText as sceneElementText,
@@ -79,6 +83,11 @@ import {
   layoutMap,
   nextZIndex,
   patchElement,
+  parseSharedTextKey,
+  readSharedText,
+  removeSharedText,
+  sharedText as sceneSharedText,
+  sharedTextsMap,
   readElement,
   readTileLayout,
   removeElement,
@@ -163,13 +172,16 @@ export interface SceneTx {
    * Authors one element. `collaborative` names the PAYLOAD fields the document should hold as
    * shared text rather than as plain values, and the author is the only party that knows: the
    * protocol's element schema is a neutral envelope (ADR 0013 §16), so the SDK carries a record
-   * it does not interpret. Omitting it means "this record has no collaborative field", which is
-   * the truth for every kind but one.
+   * it does not interpret. Omitting it means "this record has no collaborative field";
+   * the element kind never implies a field's storage.
    */
   create(element: SceneElement, collaborative?: readonly string[]): void;
   patch(id: string, patch: ScenePatch): boolean;
   remove(id: string): boolean;
   text(id: string): Y.Text | null;
+  createSharedText(record: SharedTextRecord): Y.Text;
+  sharedText(namespace: string, id: string): Y.Text | null;
+  removeSharedText(namespace: string, id: string): boolean;
   nextZIndex(): number;
 }
 
@@ -179,8 +191,15 @@ export interface SessionEvents {
   status: (status: ConnectionStatus) => void;
   /** Scene document was replaced after an epoch change or full state adoption. */
   scene_reset: () => void;
+  /** The server's evaluated write authority at this home changed. */
+  scene_authority_changed: (allowed: boolean) => void;
   /** Validated element projections changed inside the Yjs document. */
   elements_changed: (ids: readonly string[], origin: "local" | "remote" | "undo") => void;
+  /** Validated independent text records changed, including nested edits and removals. */
+  shared_texts_changed: (
+    refs: readonly SharedTextRef[],
+    origin: "local" | "remote" | "undo",
+  ) => void;
   /**
    * A composition's layout tree changed. The tree is small and read whole, so
    * subscribers re-read `layout()` rather than diffing tile ids.
@@ -279,6 +298,10 @@ export class SessionClient {
   readonly terminalSizing = new Map<string, TerminalSizing>();
   private readonly elementsState = new Map<string, SceneElement>();
   readonly elements: ReadonlyMap<string, SceneElement> = this.elementsState;
+  private readonly sharedTextsState = new Map<
+    string,
+    { records: Map<string, SharedTextRecord>; handles: Map<string, Y.Text> }
+  >();
   /** Live view refcounts per attached terminal (see attachTerminal). */
   private readonly attachCounts = new Map<string, number>();
   epoch = "";
@@ -288,6 +311,7 @@ export class SessionClient {
   private selfCapsState: readonly Cap[] = [];
   private workspaceAuthority: WorkspaceAuthorityState | null = null;
   private readonly subscriptionSyncWaits = new Set<() => void>();
+  private sceneWriteAllowedState = false;
   status: ConnectionStatus = "idle";
   private connectionIdState: string | null = null;
 
@@ -318,8 +342,26 @@ export class SessionClient {
   private hasLocalEdits = false;
 
   constructor(opts: SessionClientOptions) {
-    this.opts = opts;
+    this.opts = { ...opts };
     this.installDoc(this.currentDoc);
+  }
+
+  /** Host-only identity check; credentials remain private and fixed for this client lifetime. */
+  matchesConnectionIdentity(url: string, token: string): boolean {
+    return this.opts.url === url && this.opts.token === token;
+  }
+
+  get containerId(): string | null {
+    return this.opts.containerId;
+  }
+
+  get spectator(): boolean {
+    return this.opts.spectator === true;
+  }
+
+  /** Home-effective authority, not the credential's raw capability ceiling. */
+  get sceneWriteAllowed(): boolean {
+    return this.sceneWriteAllowedState;
   }
 
   /**
@@ -347,10 +389,10 @@ export class SessionClient {
   }
 
   /**
-   * The joining principal's granted caps, as the last init/resync reported them — empty
-   * until the first one lands. A method rather than a field because it is an ANSWER a
-   * caller may hold across reconnects (a plugin gating its affordances asks again), and
-   * because the plugin engine's `SessionHandle` is a method-only ref.
+   * The credential's raw granted caps, as the last init/resync reported them — empty until
+   * admission. These are not an evaluated decision at this room or another target; native
+   * document editors use `sceneWriteAllowed`. Other target-specific doors still evaluate
+   * their own authority.
    */
   selfCaps(): readonly Cap[] {
     return this.selfCapsState;
@@ -431,29 +473,59 @@ export class SessionClient {
       }
       if (ids.length > 0) this.emit("elements_changed", ids, this.classifyOrigin(transaction));
     });
+    sharedTextsMap(doc).observeDeep((events, transaction) => {
+      if (doc !== this.currentDoc) return;
+      const refs: SharedTextRef[] = [];
+      for (const key of changedSharedTextKeys(events as unknown as readonly Y.YEvent<never>[])) {
+        const ref = parseSharedTextKey(key);
+        if (ref === null) continue;
+        const record = readSharedText(doc, ref.namespace, ref.id);
+        const text = record === null ? null : sharedTextsMap(doc).get(key)?.get("text");
+        let collection = this.sharedTextsState.get(ref.namespace);
+        if (record === null || !(text instanceof Y.Text)) {
+          collection?.records.delete(ref.id);
+          collection?.handles.delete(ref.id);
+        } else {
+          if (collection === undefined) {
+            collection = { records: new Map(), handles: new Map() };
+            this.sharedTextsState.set(ref.namespace, collection);
+          }
+          collection.records.set(ref.id, record);
+          collection.handles.set(ref.id, text);
+        }
+        refs.push(ref);
+      }
+      if (refs.length > 0)
+        this.emit("shared_texts_changed", refs, this.classifyOrigin(transaction));
+    });
     // Canvas containers never write tiles, so this observer stays silent for them and
     // a composition needs no second subscription path.
     layoutMap(doc).observeDeep((_events, transaction) => {
       this.emit("layout_changed", this.classifyOrigin(transaction));
     });
-    doc.on("update", (update, origin) => {
-      if (origin === REMOTE_ORIGIN) return;
+    doc.on("update", (update, origin, _doc, transaction) => {
+      if (!transaction.local || origin === REMOTE_ORIGIN) return;
       this.hasLocalEdits = true;
       this.send({ type: "doc_update", update: encodeUpdate(update) });
     });
   }
 
-  /** Both projection observers report provenance the same way. */
+  /** All document projections preserve native bindings' actual Yjs provenance. */
   private classifyOrigin(transaction: Y.Transaction): "local" | "remote" | "undo" {
-    if (transaction.origin === LOCAL_ORIGIN) return "local";
-    if (transaction.origin === this.undoManager) return "undo";
-    return "remote";
+    if (!transaction.local || transaction.origin === REMOTE_ORIGIN) return "remote";
+    if (transaction.origin instanceof Y.UndoManager) return "undo";
+    return "local";
   }
 
   private replaceDoc(): void {
     this.currentDoc.destroy();
     this.elementsState.clear();
+    for (const collection of this.sharedTextsState.values()) {
+      collection.records.clear();
+      collection.handles.clear();
+    }
     this.currentDoc = createSceneDoc();
+    this.hasLocalEdits = false;
     this.installDoc(this.currentDoc);
   }
 
@@ -803,12 +875,31 @@ export class SessionClient {
       case "init":
       case "resync": {
         const previousSelfConnId = this.selfConnId;
+        const authorityChanged = this.sceneWriteAllowedState !== msg.sceneWriteAllowed;
         const lineageChanged = this.epoch !== "" && this.epoch !== msg.epoch;
-        if (lineageChanged) {
+        const checkOptimistic = !msg.sceneWriteAllowed && this.hasLocalEdits && !lineageChanged;
+        if (lineageChanged || !msg.sceneWriteAllowed) {
           this.outbox = this.outbox.filter((queued) => queued.type !== "doc_update");
-          this.replaceDoc();
         }
-        Y.applyUpdate(this.currentDoc, decodeUpdate(msg.doc), REMOTE_ORIGIN);
+        if (lineageChanged) this.replaceDoc();
+        this.sceneWriteAllowedState = msg.sceneWriteAllowed;
+        const update = decodeUpdate(msg.doc);
+        Y.applyUpdate(this.currentDoc, update, REMOTE_ORIGIN);
+        if (checkOptimistic) {
+          const canonical = createSceneDoc();
+          try {
+            Y.applyUpdate(canonical, update, REMOTE_ORIGIN);
+            // A revoked writer may hold unacknowledged inserts OR deletions. Snapshot
+            // equality checks both; already-accepted edits retain their live text/history.
+            if (!Y.equalSnapshots(Y.snapshot(this.currentDoc), Y.snapshot(canonical))) {
+              this.replaceDoc();
+              Y.applyUpdate(this.currentDoc, update, REMOTE_ORIGIN);
+            }
+          } finally {
+            canonical.destroy();
+          }
+        }
+        if (!msg.sceneWriteAllowed) this.hasLocalEdits = false;
         this.epoch = msg.epoch;
         this.rev = msg.rev;
         this.self = msg.self;
@@ -848,6 +939,7 @@ export class SessionClient {
           }
         }
         this.emit(msg.type, msg);
+        if (authorityChanged) this.emit("scene_authority_changed", msg.sceneWriteAllowed);
         this.emit("scene_reset");
         this.emit("attendance_changed");
         this.emit("terminals_changed");
@@ -1020,6 +1112,10 @@ export class SessionClient {
         patch: (id, patch) => patchElement(this.currentDoc, id, patch, LOCAL_ORIGIN),
         remove: (id) => removeElement(this.currentDoc, id, LOCAL_ORIGIN),
         text: (id) => sceneElementText(this.currentDoc, id),
+        createSharedText: (record) => createSharedText(this.currentDoc, record, LOCAL_ORIGIN),
+        sharedText: (namespace, id) => sceneSharedText(this.currentDoc, namespace, id),
+        removeSharedText: (namespace, id) =>
+          removeSharedText(this.currentDoc, namespace, id, LOCAL_ORIGIN),
         nextZIndex: () => nextZIndex(this.currentDoc),
       });
     }, LOCAL_ORIGIN);
@@ -1035,6 +1131,20 @@ export class SessionClient {
 
   elementText(id: string): Y.Text | null {
     return sceneElementText(this.currentDoc, id);
+  }
+
+  sharedText(namespace: string, id: string): Y.Text | null {
+    return this.sharedTextsState.get(namespace)?.handles.get(id) ?? null;
+  }
+
+  /** Stable live projection, maintained by changed record rather than rescanned on reads. */
+  sharedTexts(namespace: string): ReadonlyMap<string, SharedTextRecord> {
+    let collection = this.sharedTextsState.get(namespace);
+    if (collection === undefined) {
+      collection = { records: new Map(), handles: new Map() };
+      this.sharedTextsState.set(namespace, collection);
+    }
+    return collection.records;
   }
 
   /**

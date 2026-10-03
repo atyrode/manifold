@@ -344,9 +344,11 @@ The CLI also reads this file; file values override inherited environment values.
 - `PREVIEW_SEED`: optional absolute path to a full `/data` backup `.tgz`; new PR volumes only.
   Stable tooling reads only its canonical `data/manifold.db{,-wal,-shm}` members and projects
   the explicit representative allowlist: `container_folders(id,name,created_at,parent_folder_id,sort_order)`,
-  `containers(id,name,created_at,sort_order,folder_id,discipline)` and
-  `scene_docs(container_id,epoch,rev,ts,hash,doc)`. Every other table starts empty and no
-  adjacent file crosses. The sanitized database is vacuumed before it enters the volume;
+  `containers(id,name,created_at,sort_order,folder_id,discipline)`,
+  `scene_docs(container_id,epoch,rev,ts,hash,doc)` and schema-52
+  `scene_doc_capacity(container_id,epoch,migration_bytes)` for retained lineages. Fixed format-growth
+  allowances keep migrated documents usable; they carry no credential or grant. Every other
+  table starts empty and no adjacent file crosses. The sanitized database is vacuumed before it enters the volume;
   startup generates fresh owner, preview-signing and machine authority for that preview.
 - `PREVIEW_PORT_RANGE`: default `7920-7999`; live servers use routed port + 1000.
 - `PREVIEW_ROUTER_PORT`: default `7900`; change the public proxy and ask URL to match.

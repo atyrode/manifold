@@ -350,9 +350,9 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     },
   });
 
-  /** Where a release on a container's row lands, decided by that row's own discipline. */
+  /** Prefer a declared tile surface; the resolver refuses unsupported canvas drops. */
   const rowDestination = (container: Container): PlacementDestination =>
-    container.discipline === "composition"
+    lookup.discipline(container.discipline)?.destinations.includes("tile") === true
       ? { kind: "tile", containerId: container.id, targetTileId: null, edge: null }
       : {
           kind: "canvas",
@@ -649,9 +649,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
   const rowNoun = (container: Container): string =>
     terminalByHome.has(container.id)
       ? "terminal"
-      : container.discipline === "composition"
-        ? "composition"
-        : "canvas";
+      : (lookup.discipline(container.discipline)?.title ?? "container");
 
   const openRename = (container: Container): void => {
     setActionContainerId(null);

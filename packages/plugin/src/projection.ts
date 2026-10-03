@@ -17,6 +17,7 @@ import type {
   Toolbar,
   LocationPath,
   ManifoldRef,
+  Principal,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 
@@ -26,6 +27,7 @@ import type { TitlebarDragProps } from "@manifold/ui";
 import { publishLocation } from "./vantage.ts";
 import type {
   ElementDocument,
+  ElementHost,
   ElementProps,
   HostServices,
   SectionProps,
@@ -104,15 +106,30 @@ export interface RegisteredElement {
   readonly Component: ComponentType<never> | null;
 }
 
+/** A native point tool receives the mounted room, never a bearer-backed host constructor. */
+export interface PointToolContext {
+  readonly containerId: string;
+  readonly client: SessionClient;
+  readonly principal: Principal;
+  readonly point: Readonly<{ x: number; y: number }>;
+  /** A retired mount or superseded gesture must not author a late visual reference. */
+  readonly signal: AbortSignal;
+}
+
+export type PointToolOutcome =
+  | { readonly ok: true; readonly elementId: string }
+  | { readonly ok: false; readonly reason: string };
+
+/** Native authoring attachment; the mount site owns coordinates, selection and feedback. */
+export interface PointTool {
+  readonly doubleClick?: boolean;
+  createAt(context: PointToolContext): Promise<PointToolOutcome>;
+}
+
 /**
- * A contributed toolbar mode. Modes carry no component — a tool is a NAME the ref that
- * owns the toolbar switches on — so the registry publishes the vocabulary and nothing else.
- * A disabled tool stays in the list, `enabled: false`, so the strip that draws it can leave
- * it out while the composition still explains why (ADR 0013 §4: chrome hides, data never).
- *
- * `toolbar` is which strip this tool belongs to (`Toolbar`, `@manifold/protocol`) — the
- * composed, defaulted form of the manifest row's optional field, so every reader filters on
- * one closed value instead of re-applying the "absent means canvas" rule itself.
+ * A contributed toolbar mode. Disabled modes remain discoverable but leave the strip.
+ * Native point tools attach their authoring behavior here; continuous gestures retain
+ * their existing mount-site interaction policy.
  */
 export interface RegisteredTool {
   readonly id: string;
@@ -120,6 +137,8 @@ export interface RegisteredTool {
   readonly title: string;
   readonly toolbar: Toolbar;
   readonly enabled: boolean;
+  readonly shortcut?: string;
+  readonly point?: PointTool;
 }
 
 /**
@@ -192,9 +211,9 @@ export interface TerminalFacet {
  * {@link ContainerRoute} itself.
  *
  * `host` arrives as a PROP, exactly as it does for a panel or a section: a renderer dials
- * its own room pipe with the host's token (A4) and paints in the host's principal colour,
- * and every mount site must therefore hand its own host down rather than let a renderer
- * discover one.
+ * its own room pipe with the host's token (A4), unless its mount lends one through `client`,
+ * and paints in the host's principal colour. Every mount site therefore hands its own
+ * host down rather than letting a renderer discover one.
  */
 export interface ContainerRendererProps {
   readonly host: HostServices;
@@ -205,6 +224,12 @@ export interface ContainerRendererProps {
   /** The index's solo-composition fold; an embedded renderer cannot compute it. */
   readonly soloOccupants?: ReadonlyMap<string, PlacementItem>;
   readonly navigate: (path: string) => void;
+  /**
+   * A portal lends its current room pipe rather than asking the owner to open another.
+   * The mount owns connection, role changes and cleanup; the renderer must not close it.
+   * An absent pipe leaves that lifetime with the renderer.
+   */
+  readonly client?: SessionClient;
   /**
    * Container nesting depth: 1 at the root — the routed mount, or a workspace container leaf
    * beside it — and 2 when embedded in another container. It budgets what renders live below
@@ -676,6 +701,7 @@ export interface ElementOutletProps {
   /** The element's record, as this ref projected it; `{}` while the record is in flight. */
   readonly data: Readonly<Record<string, unknown>>;
   readonly doc: ElementDocument;
+  readonly documentBinding?: ElementHost["documentBinding"];
   /** This ref's editing focus — one occupant of it is in its editor at a time. */
   readonly editingElementId: string | null;
   readonly onBeginEditing: (elementId: string) => void;
@@ -695,6 +721,7 @@ export function ElementOutlet({
   elementId,
   data,
   doc,
+  documentBinding,
   editingElementId,
   onBeginEditing,
   onEndEditing,
@@ -718,6 +745,7 @@ export function ElementOutlet({
   return createElement(ElementHostProvider, {
     value: {
       doc,
+      documentBinding,
       editingElementId,
       beginEditing: onBeginEditing,
       endEditing: onEndEditing,

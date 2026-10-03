@@ -1,12 +1,7 @@
 import type { CanvasTool } from "./contract.ts";
 
-/**
- * The two modes this plugin owns, in strip order. They are declared in `canvasManifest` like
- * any contributed tool — so the published vocabulary is complete — and listed again here
- * because ORDER is this ref's business: its own modes come first, then everybody else's
- * in roster order. Membership is also what {@link toolFlags} switches on.
- */
-export const CANVAS_TOOLS: readonly CanvasTool[] = ["select", "text"];
+/** Canvas-owned modes precede contributed modes in the strip. */
+export const CANVAS_TOOLS: readonly CanvasTool[] = ["select"];
 
 export interface CanvasToolFlags {
   readonly nodesDraggable: boolean;
@@ -14,37 +9,12 @@ export interface CanvasToolFlags {
   readonly elementsSelectable: boolean;
 }
 
-/**
- * React Flow's interaction policy per tool. A tool this plugin does NOT own takes the
- * pointer: it is holding a gesture of its own, so nodes neither drag nor select and the pane
- * does not pan under it. That is the whole tool-behaviour contract — a contributed tool names
- * itself and gets a button, while the canvas still implements what a held pointer DOES.
- */
-export function toolFlags(tool: CanvasTool): CanvasToolFlags {
+/** Point tools allow idle panning; continuous gestures own the held pointer. */
+export function toolFlags(tool: CanvasTool, point = false): CanvasToolFlags {
   switch (tool) {
     case "select":
       return { nodesDraggable: true, panOnDrag: true, elementsSelectable: true };
-    case "text":
-      return { nodesDraggable: false, panOnDrag: true, elementsSelectable: false };
     default:
-      return { nodesDraggable: false, panOnDrag: false, elementsSelectable: false };
-  }
-}
-
-/**
- * Keyboard shortcuts. `d` names the draw tool from here because no manifest declares a key
- * binding yet; that is DATA, not an import, and the caller checks the answer against the live
- * composition, so pressing it with `core.canvas.draw` disabled selects nothing.
- */
-export function toolForKey(key: string): CanvasTool | null {
-  switch (key.toLowerCase()) {
-    case "v":
-      return "select";
-    case "d":
-      return "draw";
-    case "t":
-      return "text";
-    default:
-      return null;
+      return { nodesDraggable: false, panOnDrag: point, elementsSelectable: false };
   }
 }

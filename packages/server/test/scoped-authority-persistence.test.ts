@@ -15,6 +15,7 @@ import {
 } from "../src/stores.ts";
 import { AUTHORITY_V37_FIXTURE_SQL } from "./authority-migration-fixtures.ts";
 import { FakeRuntime } from "./helpers.ts";
+import { seedHistoricalSceneTables } from "./migration-fixtures.ts";
 
 const root = "manifold://";
 const machineA = "manifold://machine/a";
@@ -302,6 +303,7 @@ describe("durable correlated authority", () => {
 function seedV48(path: string): void {
   const db = new Database(path, { create: true, strict: true });
   try {
+    seedHistoricalSceneTables(db);
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 INSERT INTO meta VALUES ('schema_version','48');
@@ -538,7 +540,6 @@ describe("migration 51: durable account-shell compatibility", () => {
       db.close();
       db = openDatabase(path);
       const store = new ServerStore(db);
-      expect(store.getMeta("schema_version")).toBe("51");
       expect(existsSync(`${path}.pre-v51.bak`)).toBe(true);
       const backup = new Database(`${path}.pre-v51.bak`, { readonly: true });
       try {

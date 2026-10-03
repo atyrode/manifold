@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { openDatabase, SCHEMA_VERSION } from "../packages/server/src/db.ts";
+import { ServerStore } from "../packages/server/src/stores.ts";
 import { createPreviewSeed } from "./preview-seed.ts";
 
 test("preview seed projects representative data without durable authority", () => {
@@ -19,6 +20,8 @@ test("preview seed projects representative data without durable authority", () =
         VALUES ('canvas','Representative canvas',2,0,'folder','canvas');
       INSERT INTO scene_docs(container_id,epoch,rev,ts,hash,doc)
         VALUES ('canvas','epoch',1,3,'scene-hash',X'010203');
+      INSERT INTO scene_doc_capacity(container_id,epoch,migration_bytes)
+        VALUES ('canvas','epoch',725);
       INSERT INTO principals(id,kind,name,color,created_at,origin)
         VALUES ('development-human','human','Development human','#000000',4,NULL);
       INSERT INTO grants(id,principal_kind,principal_id,node,caps,effect,reach,created_by,created_at)
@@ -34,6 +37,11 @@ test("preview seed projects representative data without durable authority", () =
       INSERT INTO future_authority(secret) VALUES ('future-table-authority-sentinel');
       ALTER TABLE containers ADD COLUMN future_authority TEXT;
       UPDATE containers SET future_authority = 'future-column-authority-sentinel';
+      ALTER TABLE scene_doc_capacity ADD COLUMN future_authority TEXT;
+      UPDATE scene_doc_capacity SET future_authority = 'future-capacity-authority-sentinel';
+      CREATE TRIGGER observe_container_creation AFTER INSERT ON containers BEGIN
+        INSERT INTO future_authority(secret) VALUES (NEW.id);
+      END;
     `);
     source.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     source.close();
@@ -73,7 +81,11 @@ test("preview seed projects representative data without durable authority", () =
     ).toEqual([
       { container_id: "canvas", epoch: "epoch", rev: 1, ts: 3, hash: "scene-hash", doc: "010203" },
     ]);
-    for (const table of ["principals", "tokens", "grants", "dials"])
+    expect(new ServerStore(preview).docMigrationBytes("canvas", "epoch")).toBe(725);
+    expect(preview.query("SELECT future_authority FROM scene_doc_capacity").all()).toEqual([
+      { future_authority: null },
+    ]);
+    for (const table of ["principals", "tokens", "grants", "dials", "machine_job_revisions"])
       expect(
         preview.query<{ total: number }, []>(`SELECT COUNT(*) AS total FROM ${table}`).get()?.total,
       ).toBe(0);
@@ -104,6 +116,21 @@ test("preview seed projects representative data without durable authority", () =
     expect(bytes.includes(Buffer.from("development-signing-key"))).toBeFalse();
     expect(bytes.includes(Buffer.from("future-table-authority-sentinel"))).toBeFalse();
     expect(bytes.includes(Buffer.from("future-column-authority-sentinel"))).toBeFalse();
+    expect(bytes.includes(Buffer.from("future-capacity-authority-sentinel"))).toBeFalse();
+    const continued = new Database(destinationPath, { strict: true });
+    try {
+      new ServerStore(continued).createContainer({
+        id: "fresh-preview-container",
+        name: "Fresh preview container",
+        createdAt: 5,
+        discipline: "canvas",
+      });
+      expect(continued.query("SELECT secret FROM future_authority").all()).toEqual([
+        { secret: "fresh-preview-container" },
+      ]);
+    } finally {
+      continued.close();
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

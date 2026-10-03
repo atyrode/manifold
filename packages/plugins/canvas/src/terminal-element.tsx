@@ -1,4 +1,10 @@
-import type { CarriedItem, MachineSummary, PlacementDestination } from "@manifold/protocol";
+import type {
+  Attendance,
+  CarriedItem,
+  Container,
+  MachineSummary,
+  PlacementDestination,
+} from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { createContext, useContext, useMemo } from "react";
 import type { CanvasTool } from "./contract.ts";
@@ -109,6 +115,8 @@ export interface CanvasContextValue {
   readonly notify: (message: string) => void;
   /** The canvas's own container id: the container these nodes are elements OF. */
   readonly containerId: string;
+  readonly containers: readonly Container[];
+  readonly presence: readonly Attendance[];
   /**
    * Names a container from the index the sidebar fetched. A portal's tree can hold a
    * canvas or a composition, and naming one is not knowledge the portal's own room has
@@ -172,6 +180,7 @@ export function CanvasProviders({
   const elementHost = useMemo<ElementHost>(
     () => ({
       doc: value.client,
+      documentBinding: "mounted",
       editingElementId: value.editingId,
       beginEditing: value.beginTextEditing,
       endEditing: value.endTextEditing,

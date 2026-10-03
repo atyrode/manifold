@@ -7,6 +7,7 @@ import {
   type SceneElement,
   type ServerMessageBody,
   type TerminalSizing,
+  type SharedTextRef,
   type TileRef,
 } from "@manifold/protocol";
 import {
@@ -14,10 +15,15 @@ import {
   SERVER_PLACE_ORIGIN,
   Y,
   createSceneDoc,
+  createSharedText,
   decodeUpdate,
   encodeUpdate,
   initCompositionLayout,
   readElements,
+  readSharedText,
+  sharedText,
+  sharedTextKey,
+  sharedTextsMap,
   readTileLayout,
   writeElement,
   writeTileLeaf,
@@ -180,6 +186,7 @@ const INIT: InitFrame = {
   self: { id: "me", kind: "human", name: "alex", color: "#112233" },
   selfConnId: "conn-me",
   selfCaps: ["*"],
+  sceneWriteAllowed: true,
   attendance: [],
   terminals: [],
 };
@@ -229,6 +236,138 @@ function connected(options: ClientHarnessOptions = {}): ClientHarness {
   harness.socket.receive(INIT);
   return harness;
 }
+
+test("connection identity cannot be relabeled by later caller option mutations", () => {
+  const options = { url: "ws://first/ws/session", containerId: "home", token: "first-token" };
+  const client = new SessionClient(options);
+  try {
+    expect(client.matchesConnectionIdentity(options.url, options.token)).toBe(true);
+    expect(client.matchesConnectionIdentity("ws://other/ws/session", options.token)).toBe(false);
+    expect(client.matchesConnectionIdentity(options.url, "other-token")).toBe(false);
+    options.url = "ws://other/ws/session";
+    options.token = "other-token";
+    expect(client.matchesConnectionIdentity("ws://first/ws/session", "first-token")).toBe(true);
+    expect(client.matchesConnectionIdentity(options.url, options.token)).toBe(false);
+  } finally {
+    client.close();
+  }
+});
+
+describe("home-effective scene authority", () => {
+  test("uses the server decision rather than raw wildcard or literal capability membership", () => {
+    const { client, socket } = connected();
+    try {
+      expect(client.selfCaps()).toEqual(["*"]);
+      expect(client.sceneWriteAllowed).toBe(true);
+      const changes: boolean[] = [];
+      client.on("scene_authority_changed", (allowed) => changes.push(allowed));
+      socket.receive({
+        ...INIT,
+        type: "resync",
+        selfCaps: ["containers:read", "scenes:write"],
+        sceneWriteAllowed: false,
+      });
+      expect(client.selfCaps()).toContain("scenes:write");
+      expect(client.sceneWriteAllowed).toBe(false);
+      expect(client.status).toBe("open");
+      socket.receive({ ...INIT, type: "resync", sceneWriteAllowed: false });
+      expect(changes).toEqual([false]);
+      socket.receive({ ...INIT, type: "resync", sceneWriteAllowed: true });
+      expect(changes).toEqual([false, true]);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("read-only admission discards optimistic offline updates instead of replaying them", () => {
+    const { client, socket } = dialing();
+    try {
+      client.transact((tx) =>
+        tx.createSharedText({ namespace: "core.text", id: "offline", text: "never admitted" }),
+      );
+      socket.open();
+      socket.receive({ ...INIT, sceneWriteAllowed: false });
+      expect(client.sharedText("core.text", "offline")).toBeNull();
+      expect(docUpdateFrames(socket)).toEqual([]);
+      socket.receive({ ...INIT, type: "resync", sceneWriteAllowed: true });
+      expect(client.sharedText("core.text", "offline")).toBeNull();
+      expect(docUpdateFrames(socket)).toEqual([]);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("write revocation preserves already-accepted text identity and editor history", () => {
+    const canonical = createSceneDoc();
+    createSharedText(canonical, { namespace: "core.text", id: "body", text: "accepted" });
+    const { client, socket } = dialing();
+    let history: Y.UndoManager | undefined;
+    try {
+      socket.open();
+      socket.receive({ ...INIT, doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)) });
+      const text = client.sharedText("core.text", "body");
+      if (text === null) throw new Error("body missing after admission");
+      history = new Y.UndoManager(text);
+      text.insert(text.length, " committed");
+      const sent = docUpdateFrames(socket);
+      const update = sent.at(-1);
+      if (update === undefined) throw new Error("local edit was not sent");
+      Y.applyUpdate(canonical, decodeUpdate(update.update));
+      socket.receive({
+        ...INIT,
+        type: "resync",
+        doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)),
+        sceneWriteAllowed: false,
+      });
+      expect(client.sharedText("core.text", "body")).toBe(text);
+      expect(text.toString()).toBe("accepted committed");
+      expect(history.canUndo()).toBe(true);
+      expect(docUpdateFrames(socket)).toEqual(sent);
+    } finally {
+      history?.destroy();
+      client.close();
+      canonical.destroy();
+    }
+  });
+
+  test.each(["insert", "delete"] as const)(
+    "write revocation retires an unacknowledged %s without inventing an epoch",
+    (edit) => {
+      const canonical = createSceneDoc();
+      createSharedText(canonical, { namespace: "core.text", id: "body", text: "accepted" });
+      const frame = { ...INIT, doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)) };
+      const { client, socket } = dialing();
+      try {
+        socket.open();
+        socket.receive(frame);
+        const oldText = client.sharedText("core.text", "body");
+        if (oldText === null) throw new Error("body missing after admission");
+        if (edit === "insert") oldText.insert(oldText.length, " optimistic");
+        else oldText.delete(0, oldText.length);
+        const sentBeforeRevocation = docUpdateFrames(socket).length;
+        const observed: { allowed: boolean; text: string | undefined }[] = [];
+        client.on("scene_authority_changed", (allowed) => {
+          observed.push({ allowed, text: client.sharedText("core.text", "body")?.toString() });
+        });
+        socket.receive({ ...frame, type: "resync", sceneWriteAllowed: false });
+        expect(client.epoch).toBe(frame.epoch);
+        expect(client.status).toBe("open");
+        expect(client.sharedText("core.text", "body")?.toString()).toBe("accepted");
+        expect(client.sharedText("core.text", "body")).not.toBe(oldText);
+        expect(docUpdateFrames(socket)).toHaveLength(sentBeforeRevocation);
+        expect(observed).toEqual([{ allowed: false, text: "accepted" }]);
+        const acceptedText = client.sharedText("core.text", "body");
+        socket.receive({ ...frame, type: "resync", sceneWriteAllowed: true });
+        expect(client.sharedText("core.text", "body")).toBe(acceptedText);
+        expect(client.sharedText("core.text", "body")?.toString()).toBe("accepted");
+        expect(docUpdateFrames(socket)).toHaveLength(sentBeforeRevocation);
+      } finally {
+        client.close();
+        canonical.destroy();
+      }
+    },
+  );
+});
 
 describe("handshake", () => {
   test("first frame is a valid join carrying the protocol version", () => {
@@ -1502,6 +1641,7 @@ describe("connection lifecycle", () => {
     */
     vi.useFakeTimers();
     const stage = new EventTarget();
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
     Object.defineProperty(globalThis, "window", { value: stage, configurable: true });
     try {
       const { client, socket } = connected({ reconnect: true, backoffCapMs: 60_000 });
@@ -1516,7 +1656,8 @@ describe("connection lifecycle", () => {
       stage.dispatchEvent(new Event("pagehide"));
       expect(FakeSocket.instances).toHaveLength(2);
     } finally {
-      Reflect.deleteProperty(globalThis, "window");
+      if (windowDescriptor === undefined) Reflect.deleteProperty(globalThis, "window");
+      else Object.defineProperty(globalThis, "window", windowDescriptor);
     }
   });
 
@@ -1595,38 +1736,83 @@ describe("scene flow", () => {
     expect(changed).toContainEqual({ ids: ["peer"], origin: "remote" });
   });
 
-  test("new-epoch resync replaces local history", () => {
+  test.each(["undo", "redo"] as const)(
+    "new-epoch resync retires offline writes and the previous %s history",
+    (history) => {
+      const { client, socket } = connected();
+      const canonical = createSceneDoc();
+      try {
+        socket.readyState = 0;
+        client.transact((tx) => tx.create(element("mine")));
+        if (history === "redo") client.undo();
+        expect(client.outboxSize()).toBeGreaterThan(0);
+        writeElement(canonical, element("replacement"), LOCAL_ORIGIN);
+        const updatesBeforeResync = docUpdateFrames(socket).length;
+        socket.readyState = 1;
+        socket.receive({
+          ...INIT,
+          type: "resync",
+          epoch: "e2",
+          rev: 1,
+          doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)),
+        });
+
+        expect(client.epoch).toBe("e2");
+        expect([...client.elements.values()]).toEqual([element("replacement")]);
+        expect(client.outboxSize()).toBe(0);
+        client[history]();
+        expect([...client.elements.values()]).toEqual([element("replacement")]);
+        // Decode everything published after replacement: an old queued write must not
+        // contaminate the new server lineage, regardless of packet batching.
+        for (const frame of docUpdateFrames(socket).slice(updatesBeforeResync)) {
+          Y.applyUpdate(canonical, decodeUpdate(frame.update));
+        }
+        expect([...readElements(canonical).values()]).toEqual([element("replacement")]);
+
+        client.transact((tx) => tx.create(element("fresh")));
+        client.undo();
+        expect([...client.elements.values()]).toEqual([element("replacement")]);
+        client.redo();
+        expect(client.elements.get("fresh")).toEqual(element("fresh"));
+        for (const frame of docUpdateFrames(socket).slice(updatesBeforeResync)) {
+          Y.applyUpdate(canonical, decodeUpdate(frame.update));
+        }
+        expect(client.elements).toEqual(readElements(canonical));
+      } finally {
+        canonical.destroy();
+        client.close();
+      }
+    },
+  );
+
+  test("same-epoch resync converges offline edits with the server's intervening writes", () => {
     const { client, socket } = connected();
-    client.transact((tx) => tx.create(element("mine")));
-    const updatesBeforeResync = docUpdateFrames(socket).length;
+    const canonical = createSceneDoc();
+    try {
+      Y.applyUpdate(canonical, decodeUpdate(INIT.doc));
+      socket.readyState = 0;
+      client.transact((tx) => tx.create(element("mine")));
+      expect(client.outboxSize()).toBe(1);
+      writeElement(canonical, element("peer"), LOCAL_ORIGIN);
+      socket.readyState = 1;
 
-    socket.receive({
-      ...INIT,
-      type: "resync",
-      epoch: "e2",
-      rev: 1,
-      doc: encodedDoc(element("replacement")),
-    });
-
-    expect(client.epoch).toBe("e2");
-    expect(client.elements.has("mine")).toBe(false);
-    expect(client.elements.has("replacement")).toBe(true);
-    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 1);
-  });
-
-  test("same-epoch resync replays an offline local edit", () => {
-    const { client, socket } = connected();
-    socket.readyState = 0;
-    client.transact((tx) => tx.create(element("mine")));
-    expect(client.outboxSize()).toBe(1);
-    socket.readyState = 1;
-
-    const updatesBeforeResync = docUpdateFrames(socket).length;
-    socket.receive({ ...INIT, type: "resync", rev: 6 });
-
-    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 2);
-    expect(client.elements.has("mine")).toBe(true);
-    expect(client.outboxSize()).toBe(0);
+      const updatesBeforeResync = docUpdateFrames(socket).length;
+      socket.receive({
+        ...INIT,
+        type: "resync",
+        rev: 6,
+        doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)),
+      });
+      for (const frame of docUpdateFrames(socket).slice(updatesBeforeResync)) {
+        Y.applyUpdate(canonical, decodeUpdate(frame.update));
+      }
+      expect([...client.elements.keys()].sort()).toEqual(["mine", "peer", "srv"]);
+      expect(client.elements).toEqual(readElements(canonical));
+      expect(client.outboxSize()).toBe(0);
+    } finally {
+      canonical.destroy();
+      client.close();
+    }
   });
 
   test("undo and redo track local edits without tracking remote state", () => {
@@ -1654,7 +1840,7 @@ describe("scene flow", () => {
       tx.create(
         {
           id: "note",
-          type: "text",
+          type: "example.note",
           text: "hello",
           x: 0,
           y: 0,
@@ -1684,6 +1870,231 @@ describe("scene flow", () => {
     });
     expect(sentTypes(socket).at(-1)).toBe("gesture");
     expect(client.elements.get("srv")).toEqual(element("srv"));
+  });
+});
+
+describe("independent shared texts", () => {
+  const namespace = "example.documents";
+
+  test("namespace projections follow edits, metadata and removal without owning visual elements", () => {
+    const { client, socket } = connected();
+    const records = client.sharedTexts(namespace);
+    const changes: Array<{ refs: readonly SharedTextRef[]; origin: string }> = [];
+    const off = client.on("shared_texts_changed", (refs, origin) => changes.push({ refs, origin }));
+    const replica = createSceneDoc();
+    try {
+      const record = { namespace, id: "opaque:雪", text: "hello" };
+      client.transact((tx) => {
+        tx.createSharedText(record);
+        tx.createSharedText({ namespace: "another.owner", id: record.id, text: "other" });
+        tx.sharedText(namespace, record.id)?.insert(5, " world");
+      });
+      expect(records.get(record.id)).toEqual({ ...record, text: "hello world" });
+      expect(client.sharedTexts("another.owner").get(record.id)?.text).toBe("other");
+      expect(client.elements.has(record.id)).toBe(false);
+      for (const frame of docUpdateFrames(socket))
+        Y.applyUpdate(replica, decodeUpdate(frame.update));
+      expect(readSharedText(replica, namespace, record.id)).toEqual(records.get(record.id)!);
+      const map = sharedTextsMap(replica).get(sharedTextKey(namespace, record.id));
+      if (map === undefined) throw new Error("missing remote record");
+      replica.transact(() => {
+        map.set("lastEditedBy", "peer");
+        map.set("lastEditedAt", 25);
+      });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(replica)),
+        by: "peer",
+      });
+      expect(records.get(record.id)).toEqual({
+        ...record,
+        text: "hello world",
+        lastEditedBy: "peer",
+        lastEditedAt: 25,
+      });
+      client.transact((tx) => tx.removeSharedText(namespace, record.id));
+      expect(records.has(record.id)).toBe(false);
+      expect(client.sharedText(namespace, record.id)).toBeNull();
+      expect(client.sharedTexts("another.owner").get(record.id)?.text).toBe("other");
+      expect(changes).toEqual([
+        {
+          refs: [
+            { namespace, id: record.id },
+            { namespace: "another.owner", id: record.id },
+          ],
+          origin: "local",
+        },
+        { refs: [{ namespace, id: record.id }], origin: "remote" },
+        { refs: [{ namespace, id: record.id }], origin: "local" },
+      ]);
+    } finally {
+      off();
+      replica.destroy();
+      client.close();
+    }
+  });
+
+  test("native edits transmit once and editor undo preserves remote prose and visual-reference independence", () => {
+    const { client, socket } = connected();
+    const remote = createSceneDoc();
+    const binding = {};
+    let history: Y.UndoManager | undefined;
+    try {
+      client.transact((tx) => {
+        tx.createSharedText({ namespace, id: "document", text: "base" });
+        tx.create({ ...element("reference"), document: "opaque-owner-reference" });
+      });
+      const text = client.sharedText(namespace, "document");
+      if (text === null || text.doc === null) throw new Error("missing local text");
+      history = new Y.UndoManager(text, { trackedOrigins: new Set([binding]) });
+      const origins: string[] = [];
+      client.on("shared_texts_changed", (_refs, origin) => origins.push(origin));
+      const sentBefore = docUpdateFrames(socket).length;
+      text.doc.transact(() => text.insert(0, "local "), binding);
+      expect(docUpdateFrames(socket)).toHaveLength(sentBefore + 1);
+      for (const frame of docUpdateFrames(socket))
+        Y.applyUpdate(remote, decodeUpdate(frame.update));
+      const peerText = sharedText(remote, namespace, "document");
+      if (peerText === null) throw new Error("missing remote text");
+      peerText.insert(peerText.length, " peer");
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(remote)),
+        by: "peer",
+      });
+      expect(docUpdateFrames(socket)).toHaveLength(sentBefore + 1);
+      expect(text.toString()).toBe("local base peer");
+
+      // Birth of the visual reference never makes the independently retained body undoable.
+      client.undo();
+      expect(client.elements.has("reference")).toBe(false);
+      expect(client.sharedText(namespace, "document")).toBe(text);
+      expect(text.toString()).toBe("local base peer");
+      history.undo();
+      expect(text.toString()).toBe("base peer");
+      expect(origins).toEqual(["local", "remote", "undo"]);
+      client.redo();
+      history.redo();
+      expect(client.elements.has("reference")).toBe(true);
+      expect(text.toString()).toBe("local base peer");
+      expect(origins).toEqual(["local", "remote", "undo", "undo"]);
+      for (const frame of docUpdateFrames(socket))
+        Y.applyUpdate(remote, decodeUpdate(frame.update));
+      expect(peerText.toString()).toBe(text.toString());
+    } finally {
+      history?.destroy();
+      remote.destroy();
+      client.close();
+    }
+  });
+
+  test("remote Yjs application without an SDK origin is remote and is never echoed", () => {
+    const { client, socket } = connected();
+    const peer = createSceneDoc();
+    try {
+      client.transact((tx) => tx.createSharedText({ namespace, id: "direct", text: "base" }));
+      const text = client.sharedText(namespace, "direct");
+      if (text === null || text.doc === null) throw new Error("missing local document");
+      Y.applyUpdate(peer, Y.encodeStateAsUpdate(text.doc));
+      sharedText(peer, namespace, "direct")?.insert(0, "remote ");
+      const origins: string[] = [];
+      client.on("shared_texts_changed", (_refs, origin) => origins.push(origin));
+      const sentBefore = docUpdateFrames(socket).length;
+      Y.applyUpdate(text.doc, Y.encodeStateAsUpdate(peer));
+      expect(text.toString()).toBe("remote base");
+      expect(origins).toEqual(["remote"]);
+      expect(docUpdateFrames(socket)).toHaveLength(sentBefore);
+    } finally {
+      peer.destroy();
+      client.close();
+    }
+  });
+
+  test("same-epoch recovery merges offline edits while a new epoch replaces text handles and projections", () => {
+    const { client, socket } = connected();
+    const seed = createSceneDoc();
+    const replacement = createSceneDoc();
+    try {
+      createSharedText(seed, { namespace, id: "document", text: "base" });
+      socket.receive({ ...INIT, type: "resync", doc: encodeUpdate(Y.encodeStateAsUpdate(seed)) });
+      const records = client.sharedTexts(namespace);
+      const text = client.sharedText(namespace, "document");
+      if (text === null) throw new Error("missing text");
+      let resets = 0;
+      client.on("scene_reset", () => (resets += 1));
+      socket.readyState = 0;
+      text.insert(0, "offline ");
+      sharedText(seed, namespace, "document")?.insert(4, " peer");
+      socket.readyState = 1;
+      socket.receive({ ...INIT, type: "resync", doc: encodeUpdate(Y.encodeStateAsUpdate(seed)) });
+      expect(client.sharedText(namespace, "document")).toBe(text);
+      expect(records.get("document")?.text).toBe("offline base peer");
+      expect(resets).toBe(1);
+      createSharedText(replacement, { namespace, id: "next", text: "new lineage" });
+      socket.receive({
+        ...INIT,
+        type: "resync",
+        epoch: "e2",
+        doc: encodeUpdate(Y.encodeStateAsUpdate(replacement)),
+      });
+      expect(records.has("document")).toBe(false);
+      expect(records.get("next")?.text).toBe("new lineage");
+      expect(client.sharedText(namespace, "document")).toBeNull();
+      expect(client.sharedText(namespace, "next")?.toString()).toBe("new lineage");
+      expect(resets).toBe(2);
+      text.insert(0, "retired editor ");
+      expect(records.has("document")).toBe(false);
+      expect(client.sharedText(namespace, "document")).toBeNull();
+      client.undo();
+      expect(records.get("next")?.text).toBe("new lineage");
+    } finally {
+      seed.destroy();
+      replacement.destroy();
+      client.close();
+    }
+  });
+
+  test("invalid raw text or metadata never becomes an editable SDK projection", () => {
+    const { client, socket } = connected();
+    const peer = createSceneDoc();
+    try {
+      createSharedText(peer, { namespace, id: "document", text: "body" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
+      const records = client.sharedTexts(namespace);
+      expect(records.get("document")?.text).toBe("body");
+      const record = sharedTextsMap(peer).get(sharedTextKey(namespace, "document"));
+      if (record === undefined) throw new Error("missing peer record");
+      record.set("lastEditedAt", "not a timestamp");
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
+      expect(records.has("document")).toBe(false);
+      expect(client.sharedText(namespace, "document")).toBeNull();
+      record.delete("lastEditedAt");
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
+      expect(records.get("document")?.text).toBe("body");
+      sharedText(peer, namespace, "document")?.insertEmbed(0, { image: "unsupported" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
+      expect(records.has("document")).toBe(false);
+      expect(client.sharedText(namespace, "document")).toBeNull();
+    } finally {
+      peer.destroy();
+      client.close();
+    }
   });
 });
 

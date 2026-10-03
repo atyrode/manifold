@@ -76,11 +76,11 @@ export const DrawStrokeNode = memo(DrawStrokeNodeImpl);
  * inert data: `packages/web/src/assembly.ts` is the one file that reads it, and the host
  * joins it against the server's roster before anything renders.
  *
- * The tool needs no registration: a tool is a NAME the ref owning the toolbar switches
- * on, and the strip reads that name — with its title and its enabled state — off the
- * composition's tool registry, which the manifest already fills.
+ * Its shortcut belongs to the same declared tool; the existing canvas gesture policy
+ * still owns the continuous pointer stream.
  */
 export const drawWebPlugin = {
   id: "core.canvas.draw",
   elements: { draw: DrawStrokeNode },
+  tools: { draw: { shortcut: "d" } },
 };

@@ -8,6 +8,9 @@ import {
   TerminalGraphicsSnapshotSchema,
   TERMINAL_GRAPHICS_PREFIX,
 } from "@manifold/protocol";
+import { isolateGraphicsPlatform } from "./graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 async function write(terminal: Terminal, data: Uint8Array): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();

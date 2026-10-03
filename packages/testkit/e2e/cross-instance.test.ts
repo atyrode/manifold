@@ -26,10 +26,10 @@ import {
 import {
   captureTerminal,
   closeClients,
+  drawElement,
   e2eFailure,
   openTerminalAt,
   stopProcesses,
-  textElement,
   waitForTerminalText,
   type TerminalCapture,
 } from "./helpers.ts";
@@ -242,13 +242,35 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
 
     // Both ways, through the one Yjs document the host already owned.
     canvas.transact((tx) => {
-      tx.create(textElement("el-from-host", "written on the host"));
+      tx.create(drawElement("el-from-host", [0, 0, 40, 20]));
     });
     await waitFor(() => remote.elements.get("el-from-host")?.id === "el-from-host", 10_000, 20);
     remote.transact((tx) => {
-      tx.create(textElement("el-from-guest", "written from the guest instance"));
+      tx.create(drawElement("el-from-guest", [5, 10, 30, 50]));
     });
     await waitFor(() => canvas.elements.get("el-from-guest")?.id === "el-from-guest", 10_000, 20);
+    remote.transact((tx) => tx.patch("el-from-host", { x: 125 }));
+    canvas.transact((tx) => tx.patch("el-from-guest", { y: 75 }));
+    await waitFor(
+      () => {
+        const hostElement = canvas.elements.get("el-from-host");
+        const guestElement = remote.elements.get("el-from-guest");
+        return (
+          hostElement?.x === 125 &&
+          guestElement?.y === 75 &&
+          remote.self !== null &&
+          canvas.self !== null &&
+          hostElement.lastEditedBy === remote.self.id &&
+          guestElement.lastEditedBy === canvas.self.id &&
+          Bun.deepEquals(hostElement, remote.elements.get("el-from-host"), true) &&
+          Bun.deepEquals(guestElement, canvas.elements.get("el-from-guest"), true)
+        );
+      },
+      10_000,
+      20,
+    );
+    expect(remote.elements.get("el-from-host")).toEqual(canvas.elements.get("el-from-host"));
+    expect(canvas.elements.get("el-from-guest")).toEqual(remote.elements.get("el-from-guest"));
     // The portal the host authored onto the terminal's home is in the remote's scene too: a
     // reference crosses the pipe as data, which is what makes the second share meaningful
     // rather than incidental.
@@ -343,7 +365,7 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
     clients.push(narrowRemote);
     if (narrowRemote.self === null) throw new Error("narrowed viewer has no self");
     const narrowSelf = narrowRemote.self;
-    canvas.transact((tx) => tx.create(textElement("el-after-narrowing", "still readable")));
+    canvas.transact((tx) => tx.create(drawElement("el-after-narrowing", [0, 0, 60, 40])));
     await waitFor(() => narrowRemote.elements.has("el-after-narrowing"), 10_000, 20);
     expect(remotePty.self?.origin).toBe(instanceOrigin(guest));
     const independentAfterNarrowing = await remotePty.terminalsByContainer();
@@ -381,7 +403,7 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
       reconnect: false,
     });
     clients.push(restored);
-    restored.transact((tx) => tx.create(textElement("el-reapproved", "explicitly reapproved")));
+    restored.transact((tx) => tx.create(drawElement("el-reapproved", [10, 20, 40, 60])));
     await waitFor(() => canvas.elements.has("el-reapproved"), 10_000, 20);
     await expect(openDial(guest, deniedVisitor.token, dial.id)).rejects.toThrow(
       "recipient_unapproved",
