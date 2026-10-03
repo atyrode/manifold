@@ -1624,7 +1624,6 @@ try {
   }
 
   async function rendererFreshDom(label: string): Promise<void> {
-    const previousGeometry = rendererGeometry;
     await browser!.reload();
     await until(
       () =>
@@ -1635,6 +1634,8 @@ try {
       `${label}: fresh document replays the existing terminal in DOM`,
     );
     await rendererState("dom", false);
+    // Ignore the retired document's final lease publication during navigation.
+    const previousGeometry = rendererGeometry;
     // A focused retained grid can still belong to the closed spectator socket. Only the
     // writable occupant publishes geometry after its current snapshot replay has completed.
     await rendererCanvasReady(label, previousGeometry);
