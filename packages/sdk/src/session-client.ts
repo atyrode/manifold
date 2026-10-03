@@ -279,8 +279,8 @@ export class SessionClient {
   readonly terminalSizing = new Map<string, TerminalSizing>();
   private readonly elementsState = new Map<string, SceneElement>();
   readonly elements: ReadonlyMap<string, SceneElement> = this.elementsState;
-  /** Live view refcounts per attached terminal (see attachTerminal). */
-  private readonly attachCounts = new Map<string, number>();
+  /** Held view refcounts per terminal, by exact `viewportId` (see attachTerminal). */
+  private readonly attachCounts = new Map<string, Map<string, number>>();
   epoch = "";
   rev = 0;
   self: Principal | null = null;
@@ -840,10 +840,12 @@ export class SessionClient {
         }
         // Re-subscribe views only after a real reconnect: the server's viewer registry is
         // connection-scoped, while a same-connection resync preserves those subscriptions.
+        // Every held pair attaches again; each answers with its own fresh incarnation.
         if (previousSelfConnId !== null && previousSelfConnId !== msg.selfConnId) {
-          for (const attachedId of this.attachCounts.keys()) {
-            if (this.terminals.get(attachedId)?.status === "running") {
-              this.send({ type: "terminal_attach", terminalId: attachedId });
+          for (const [attachedId, views] of this.attachCounts) {
+            if (this.terminals.get(attachedId)?.status !== "running") continue;
+            for (const viewportId of views.keys()) {
+              this.send({ type: "terminal_attach", terminalId: attachedId, viewportId });
             }
           }
         }
@@ -940,10 +942,12 @@ export class SessionClient {
         }
         this.emit(msg.type, msg);
         this.emit("terminals_changed");
-        if (msg.kind === "restarted" && this.attachCounts.has(msg.terminalId)) {
-          // Exit detaches the server's viewer, not our mounted refs. Notify every
-          // local view before acquiring the replacement stream's fresh snapshot.
-          this.send({ type: "terminal_attach", terminalId: msg.terminalId });
+        const restartedViews =
+          msg.kind === "restarted" ? this.attachCounts.get(msg.terminalId) : undefined;
+        // Exit detaches the server's viewers, not our mounted refs. Notify every local view
+        // before acquiring each held view's fresh snapshot of the replacement stream.
+        for (const viewportId of restartedViews?.keys() ?? []) {
+          this.send({ type: "terminal_attach", terminalId: msg.terminalId, viewportId });
         }
         break;
       }
@@ -963,7 +967,8 @@ export class SessionClient {
       case "gesture":
       case "terminal_snapshot":
       case "terminal_output":
-      case "terminal_geometry": {
+      case "terminal_geometry":
+      case "terminal_delivery": {
         this.emit(msg.type, msg);
         break;
       }
@@ -999,9 +1004,16 @@ export class SessionClient {
       channel.send(msg);
       return;
     }
-    // Connection-scoped ephemera must never replay: active views republish current intent.
+    // Connection-scoped ephemera must never replay: active views republish current intent,
+    // and an acknowledgement names an incarnation no later connection can hold.
     // Liveness is not here at all — the pooled connection owns the socket's ping.
-    if (msg.type === "cursor" || msg.type === "gesture" || msg.type === "terminal_resize") return;
+    if (
+      msg.type === "cursor" ||
+      msg.type === "gesture" ||
+      msg.type === "terminal_resize" ||
+      msg.type === "terminal_ack"
+    )
+      return;
     if (this.outbox.length >= OUTBOX_LIMIT) this.outbox.shift();
     this.outbox.push(msg);
   }
@@ -1502,28 +1514,53 @@ export class SessionClient {
   }
 
   /**
-   * Every view-attach sends a wire `terminal_attach`: the server replaces this
-   * connection's viewer and emits a fresh snapshot(S)+outputs(S+1…), so EVERY
-   * local view (old and new) re-renders from a coherent stream — a view that
-   * subscribes late (cloned terminal element, mount race after refresh) would
-   * otherwise never receive screen state and stay blank. Detach stays
-   * refcounted because the server keys viewers by connection: a raw detach
-   * from one view would starve every other view on this client.
+   * Starts one view's delivery: the server answers with a fresh `terminal_snapshot` for this
+   * exact `(terminalId, viewportId)` and then that view's ordered tail, every frame carrying
+   * `viewportId`, `deliveryId` and `deliverySeq`. Two views of one terminal on this client are
+   * independent deliveries, so each mounted parser names its own `viewportId`; there is no
+   * shared default. Every attach re-establishes the view with a fresh snapshot, and the
+   * refcount is per exact pair, so the last `detachTerminal` of that pair releases it. Held
+   * pairs re-attach by themselves after a reconnect and after a restart.
    */
-  attachTerminal(terminalId: string): void {
-    const next = (this.attachCounts.get(terminalId) ?? 0) + 1;
-    this.attachCounts.set(terminalId, next);
-    this.send({ type: "terminal_attach", terminalId });
+  attachTerminal(terminalId: string, viewportId: string): void {
+    let views = this.attachCounts.get(terminalId);
+    if (views === undefined) {
+      views = new Map();
+      this.attachCounts.set(terminalId, views);
+    }
+    views.set(viewportId, (views.get(viewportId) ?? 0) + 1);
+    this.send({ type: "terminal_attach", terminalId, viewportId });
   }
 
-  detachTerminal(terminalId: string): void {
-    const current = this.attachCounts.get(terminalId) ?? 0;
+  /** Releases one hold of exactly this view; sibling views keep streaming. */
+  detachTerminal(terminalId: string, viewportId: string): void {
+    const views = this.attachCounts.get(terminalId);
+    const current = views?.get(viewportId) ?? 0;
+    if (views === undefined || current === 0) return;
     if (current > 1) {
-      this.attachCounts.set(terminalId, current - 1);
+      views.set(viewportId, current - 1);
       return;
     }
-    this.attachCounts.delete(terminalId);
-    if (current === 1) this.send({ type: "terminal_detach", terminalId });
+    views.delete(viewportId);
+    if (views.size === 0) this.attachCounts.delete(terminalId);
+    this.send({ type: "terminal_detach", terminalId, viewportId });
+  }
+
+  /**
+   * Credits this view's parser with having COMPLETED every frame of `deliveryId` through
+   * `deliverySeq` — the snapshot's replay included. Call it from the parser's own completion,
+   * never on receipt: the server paces this view by these acknowledgements alone. It is
+   * cumulative, sent only while open and never replayed, since an incarnation never outlives
+   * its connection; a stale, duplicate or future acknowledgement grants nothing.
+   */
+  ackTerminal(
+    terminalId: string,
+    viewportId: string,
+    deliveryId: string,
+    deliverySeq: number,
+  ): void {
+    if (this.status !== "open") return;
+    this.send({ type: "terminal_ack", terminalId, viewportId, deliveryId, deliverySeq });
   }
 
   sendTerminalInput(terminalId: string, data: string | Uint8Array): void {
@@ -1535,7 +1572,9 @@ export class SessionClient {
    * Publishes desired geometry for one active attached view, not the applied shared grid.
    * Renew at TERMINAL_VIEWPORT_REFRESH_MS while foreground and visible; an unrenewed
    * measurement expires after TERMINAL_VIEWPORT_LEASE_MS. The three-argument public call
-   * represents this client's single virtual "sdk" viewport; mounted views supply their id.
+   * represents this client's single virtual "sdk" viewport, which the server accepts only
+   * while that exact view is attached: pair it with `attachTerminal(terminalId, "sdk")`.
+   * Mounted views supply the id they attached.
    */
   resizeTerminal(terminalId: string, cols: number, rows: number, viewportId = "sdk"): void {
     if (this.status !== "open") return;
