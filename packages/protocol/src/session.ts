@@ -217,10 +217,27 @@ export const TerminalDeliverySeqSchema = z.number().int().nonnegative();
  * completed-parse credit is exhausted and the server holds its ordered pending frames.
  * `recovering`: that pending window overflowed and was discarded, so no tail can follow; once
  * every frame already sent to the incarnation is acknowledged, a fresh snapshot replaces it.
- * `live`: held frames drained again. A snapshot itself starts a live incarnation.
+ * `live`: held frames drained again. A snapshot itself starts a live incarnation. `refused`:
+ * the server retired this attachment of the view, and only a deliberate re-attach continues it.
  */
-export const TerminalDeliveryStateSchema = z.enum(["waiting", "recovering", "live"]);
+export const TerminalDeliveryStateSchema = z.enum(["waiting", "recovering", "live", "refused"]);
 export type TerminalDeliveryState = z.infer<typeof TerminalDeliveryStateSchema>;
+/**
+ * Why a view's attachment was retired. `not_found`/`exited`/`view_limit` refuse the attach
+ * itself; `owner_unavailable` means its snapshot request could not reach the terminal's owner;
+ * `snapshot_timeout` that the owner did not answer within the finite snapshot deadline;
+ * `pending_overflow` that output outgrew the pending bound before the snapshot arrived, so no
+ * tail could follow it without a gap. None of these is retried by the server.
+ */
+export const TerminalDeliveryRefusalSchema = z.enum([
+  "not_found",
+  "exited",
+  "view_limit",
+  "owner_unavailable",
+  "snapshot_timeout",
+  "pending_overflow",
+]);
+export type TerminalDeliveryRefusal = z.infer<typeof TerminalDeliveryRefusalSchema>;
 
 /**
  * Per-view parser-credit bounds (issue #880). The byte unit is {@link terminalDeliveryCharge}:
@@ -668,15 +685,18 @@ const SERVER_BODIES = {
   /**
    * One view's delivery-state TRANSITION, sent once per change and never repeated while the
    * state holds. It is not a stream frame: no ordinal, no charge, never acknowledged.
-   * `skipped` is true only on `recovering` after this view's pending output was discarded.
+   * `skipped` is true only when this view's held output was discarded. `deliveryId` is null
+   * only on a refusal of a view that never received a snapshot in this attachment; `reason` is
+   * set exactly on `refused`.
    */
   terminal_delivery: z.strictObject({
     type: z.literal("terminal_delivery"),
     terminalId: z.string().min(1),
     viewportId: TerminalViewportIdSchema,
-    deliveryId: TerminalDeliveryIdSchema,
+    deliveryId: TerminalDeliveryIdSchema.nullable(),
     state: TerminalDeliveryStateSchema,
     skipped: z.boolean(),
+    reason: TerminalDeliveryRefusalSchema.nullable(),
   }),
   terminal_event: z.strictObject({
     type: z.literal("terminal_event"),

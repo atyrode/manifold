@@ -386,10 +386,30 @@ describe("terminal parser-credit delivery", () => {
       ...view,
       state: "recovering" as const,
       skipped: true,
+      reason: null,
     };
     expect(ServerMessageBodySchema.parse(notice)).toEqual(notice);
     expect(ServerMessageBodySchema.safeParse({ ...notice, deliverySeq: 2 }).success).toBe(false);
     expect(ServerMessageBodySchema.safeParse({ ...notice, state: "stalled" }).success).toBe(false);
+  });
+
+  test("a refusal is scoped to its view even before that view ever had an incarnation", () => {
+    const refusal = {
+      type: "terminal_delivery" as const,
+      terminalId: "t1",
+      viewportId: "view-a",
+      deliveryId: null,
+      state: "refused" as const,
+      skipped: false,
+      reason: "snapshot_timeout" as const,
+    };
+    expect(ServerMessageBodySchema.parse(refusal)).toEqual(refusal);
+    const unscoped: Record<string, unknown> = { ...refusal };
+    delete unscoped["viewportId"];
+    expect(ServerMessageBodySchema.safeParse(unscoped).success).toBe(false);
+    expect(ServerMessageBodySchema.safeParse({ ...refusal, reason: "timeout" }).success).toBe(
+      false,
+    );
   });
 
   test("every window admits the largest single frame, charged in encoded payload characters", () => {
