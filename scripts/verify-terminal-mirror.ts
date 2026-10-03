@@ -37,7 +37,7 @@
  * Self-contained: builds the web bundle to a temp dir, spawns its own server +
  * agent, cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
  */
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -65,6 +65,9 @@ import {
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-mir-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-mir-data-"));
+// A stable, nontrivial cwd label exposes attendance-driven relayout under a held pointer.
+const agentHome = join(dataDir, "runner");
+mkdirSync(agentHome);
 const port = reserveLoopbackPort();
 const origin = `http://127.0.0.1:${String(port)}`;
 
@@ -73,6 +76,8 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
   env: {
     ...process.env,
     MANIFOLD_PORT: String(port),
+    HOME: agentHome,
+    SHELL: Bun.which("bash") ?? "/bin/sh",
     MANIFOLD_DATA_DIR: dataDir,
     MANIFOLD_WEB_DIST: distDir,
     MANIFOLD_SPAWN_AGENT: "1",
@@ -672,7 +677,35 @@ try {
   const unplaceControl = `.react-flow__node[data-id="${clone.id}"] .terminal-titlebar [aria-label="Park terminal to sidebar"]`;
   const unplaceAt = await pointIn(browser, unplaceControl, 0.5, 0.5);
   if (unplaceAt === null) throw new Error("clone node has no unplace control");
-  await clickAt(browser, unplaceAt);
+  await pressAt(browser, unplaceAt);
+  const heldUnplaceAt = await pointIn(browser, unplaceControl, 0.5, 0.5);
+  const heldMiddle = await browser.evaluate<{
+    readonly selfPresent: boolean;
+    readonly crowded: boolean;
+  }>(
+    `(() => {
+      const middle = document.querySelector(${JSON.stringify(`.react-flow__node[data-id="${clone.id}"] .terminal-titlebar .node-titlebar__middle`)});
+      const cwd = middle?.querySelector(".terminal-cwd") ?? null;
+      return {
+        selfPresent: middle !== null && middle.querySelector(".presence-avatar.is-self") !== null,
+        crowded: middle !== null && (middle.scrollWidth > middle.clientWidth ||
+          (cwd !== null && cwd.scrollWidth > cwd.clientWidth)),
+      };
+    })()`,
+  );
+  check(
+    "held Park exercises focus-added attendance in a crowded middle slot",
+    heldMiddle.selfPresent && heldMiddle.crowded,
+    JSON.stringify(heldMiddle),
+  );
+  check(
+    "attendance added on focus does not move Park out from under a held pointer",
+    heldUnplaceAt !== null &&
+      Math.abs(heldUnplaceAt.x - unplaceAt.x) < 1 &&
+      Math.abs(heldUnplaceAt.y - unplaceAt.y) < 1,
+    `before=${JSON.stringify(unplaceAt)} held=${JSON.stringify(heldUnplaceAt)}`,
+  );
+  await releaseAt(browser, unplaceAt);
   await until(async () => (await termCount()) === 1, 10_000, "mirror unplaced");
   await sleep(600);
   const cloneGone = await browser.evaluate<boolean>(

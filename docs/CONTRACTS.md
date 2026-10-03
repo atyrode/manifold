@@ -3861,6 +3861,13 @@ The mounted renderer owns its bar and forwards these slots rather than receiving
 host-drawn bar. `NodeTitleBar.dragProps: TitlebarDragProps` opts the whole bar into dragging;
 interactive descendants and rename input remain controls, never drag sources.
 
+Terminal middle labels (attendance, cwd and machine) yield to the fixed title and control
+cluster. Adding attendance when a control receives focus must not move that control between
+pointer press and release; excess middle content truncates or clips instead of wrapping the
+controls out from under the pointer. Narrow bars can still wrap controls when those controls
+themselves cannot fit. The real mirror gate exercises this transition with a stable `runner`
+cwd label and checks the held Park target before completing the same pointer gesture.
+
 The frame rule is **rounded exterior windows, square internal tile seams with matching
 backing**. `frame` defaults to `window`; hosts pass `tile` for internal occupants. Terminals
 own their frame, body and xterm CSS in their plugin, not foreign selectors in a canvas or

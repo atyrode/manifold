@@ -965,7 +965,7 @@ export function TerminalView({
                     style={{ backgroundColor: machine.color }}
                   />
                 )}
-                {machine.name}
+                <span className="terminal-machine-name">{machine.name}</span>
               </span>
             )}
           </>
