@@ -1730,7 +1730,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
                   "cgroup-empty-unproven",
                   undefined,
                   failure === "empty-startup",
-                  cleanup,
+                  failure === "empty-startup" ? undefined : cleanup,
                 );
               return {
                 result: Promise.reject(new LinuxJobRefusal("cgroup-empty-unproven")),
@@ -4737,6 +4737,7 @@ test
 interface ScratchWorkload {
   write?(leases: Readonly<Record<string, string>>, label: string): void;
   settle?: { exitCode: number } | "cancel" | "lost" | LinuxJobRefusal;
+  release?(): void;
 }
 const SCRATCH_LOCATION = "fixture.scratch.run";
 const scratchOutputs = (locationId = SCRATCH_LOCATION): JobRequest["outputs"] => [
@@ -4828,7 +4829,9 @@ function temporaryOutputFixture() {
       ownsLoopbackConnection: () => false,
       input: async () => {},
       endInput() {},
-      release() {},
+      release() {
+        workload.release?.();
+      },
       async cancel() {
         settle(null, "cancelled");
         return exited.promise;
@@ -5497,6 +5500,187 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
+  "failed cgroup reclamation preserves terminal result, usage and sealed outputs through explicit retry",
+  async () => {
+    const f = temporaryOutputFixture();
+    let reclaimable = false;
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("committed", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "sealed before cgroup reclamation");
+        },
+        settle: { exitCode: 3 },
+        release() {
+          if (!reclaimable)
+            throw new LinuxJobRefusal(
+              "cgroup-cleanup-failed",
+              "/private/cgroup/path secret-token",
+              true,
+            );
+        },
+      });
+      await f.start("committed");
+      const result = await f.settled("committed");
+      // Let a rejected finish continuation run: it used to append an interrupted result here.
+      const turn = Promise.withResolvers<void>();
+      setImmediate(turn.resolve);
+      await turn.promise;
+      expect(result).toMatchObject({
+        state: "exited",
+        exitCode: 3,
+        reason: null,
+        usage: { elapsedMs: 0, memoryBytes: 0, processes: 0, outputBytes: 0 },
+      });
+      expect(
+        f.events
+          .filter((event) => event.type === "result" && event.result.jobId === "committed")
+          .map((event) => (event as Extract<JobEvent, { type: "result" }>).result),
+      ).toEqual([result]);
+      expect(f.roots()).toEqual([]);
+      const extracted = f.extract("committed", "material");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe(
+          "sealed before cgroup reclamation",
+        );
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+      }
+      expect(f.logs).toContainEqual({
+        level: "warn",
+        evt: "job_cgroup_cleanup_failed",
+        phase: "release",
+        jobId: "committed",
+        code: "cgroup-cleanup-failed",
+      });
+      expect(JSON.stringify(f.logs)).not.toContain("secret-token");
+      expect(JSON.stringify(f.logs)).not.toContain("/private/cgroup/path");
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      reclaimable = true;
+      await f.owner.execute({ type: "cancel", jobId: "committed", reason: "requested" });
+      expect(f.owner.maintenanceReady).toBe(true);
+      await f.shutdown();
+      await f.open();
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.at(-1)).toEqual({ type: "result", result });
+    } finally {
+      reclaimable = true;
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a positively empty refused startup retains reclamation until explicit cleanup succeeds",
+  async () => {
+    const f = temporaryOutputFixture();
+    let reclaimable = false;
+    const cleanup = async () => {
+      if (!reclaimable)
+        throw new LinuxJobRefusal(
+          "cgroup-cleanup-identity-changed",
+          "/private/cgroup/path secret-token",
+          true,
+          cleanup,
+        );
+    };
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("refused", {
+        settle: new LinuxJobRefusal(
+          "cgroup-cleanup-identity-changed",
+          "/private/cgroup/path secret-token",
+          true,
+          cleanup,
+        ),
+      });
+      await f.start("refused");
+      const result = await f.settled("refused");
+      expect(result).toMatchObject({
+        state: "refused",
+        reason: "cgroup-cleanup-identity-changed",
+        usage: null,
+        outputs: [],
+      });
+      expect(f.events).toContainEqual(
+        expect.objectContaining({ type: "workload_empty", jobId: "refused" }),
+      );
+      expect(f.roots()).toEqual([]);
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+      await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "status", jobId: "refused" });
+      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      expect(f.logs).toContainEqual({
+        level: "warn",
+        evt: "job_cgroup_cleanup_failed",
+        phase: "startup",
+        jobId: "refused",
+        code: "cgroup-cleanup-identity-changed",
+      });
+      expect(JSON.stringify(f.logs)).not.toContain("secret-token");
+      expect(JSON.stringify(f.logs)).not.toContain("/private/cgroup/path");
+      reclaimable = true;
+      await f.owner.execute({ type: "cancel", jobId: "refused", reason: "requested" });
+      expect(f.owner.maintenanceReady).toBe(true);
+      await f.shutdown();
+      await f.open();
+      await f.owner.execute({ type: "status", jobId: "refused" });
+      expect(f.events.at(-1)).toEqual({ type: "result", result });
+    } finally {
+      reclaimable = true;
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "failed recovery reclamation opens no owner and leaves earlier output bytes untouched",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      const stale = join(f.scratchPath, "stale");
+      mkdirSync(stale, { mode: 0o700 });
+      writeFileSync(join(stale, "payload"), "earlier generation");
+      f.recover.mockRejectedValueOnce(
+        new LinuxJobRefusal(
+          "cgroup-cleanup-failed",
+          "/private/cgroup/path secret-token",
+          true,
+        ),
+      );
+      await expect(f.open()).rejects.toThrow();
+      expect(() => f.owner).toThrow("fixture_owner_closed");
+      expect(readFileSync(join(stale, "payload"), "utf8")).toBe("earlier generation");
+      expect(f.logs).toEqual([
+        {
+          level: "warn",
+          evt: "job_cgroup_cleanup_failed",
+          phase: "recovery",
+          code: "cgroup-cleanup-failed",
+        },
+      ]);
+      await f.open();
+      expect(f.roots()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
   "a failed raw removal keeps the committed result and archives and closes admission",
   async () => {
     const f = temporaryOutputFixture();
@@ -5574,7 +5758,6 @@ test.skipIf(!linux)(
       await opening;
       expect(f.roots()).toEqual([]);
       expect(readFileSync(join(f.runtimePath, "keep", "sentinel"), "utf8")).toBe("kept");
-      expect(f.logs).toEqual([]);
     } finally {
       await f.close();
     }

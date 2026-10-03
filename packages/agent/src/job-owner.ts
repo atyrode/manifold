@@ -252,6 +252,17 @@ function outputCleanupCode(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   return Object.hasOwn(OUTPUT_CLEANUP_CODES, message) ? message : "unknown";
 }
+function cgroupCleanupCode(error: unknown): string {
+  return error instanceof LinuxJobRefusal &&
+    (error.code === "cgroup-cleanup-failed" || error.code === "cgroup-cleanup-identity-changed")
+    ? error.code
+    : "unknown";
+}
+function preparationRefusalCode(error: unknown): string {
+  const code =
+    error instanceof LinuxJobRefusal ? error.code : error instanceof Error ? error.message : "";
+  return /^[a-zA-Z0-9_-]{1,128}$/.test(code) ? code : "job_preparation_refused";
+}
 
 /** Independently supervised machine authority. No workload is owned by the websocket transport. */
 export class MachineJobOwner {
@@ -358,7 +369,12 @@ export class MachineJobOwner {
       key = await createServiceCredentialEnrollmentKey();
       const owner = new MachineJobOwner(options, key);
       // Recovery proves no old descendants retain output writers before a new generation admits.
-      await recoverLinuxJobs(options.delegatedCgroup);
+      try {
+        await recoverLinuxJobs(options.delegatedCgroup);
+      } catch (error) {
+        owner.cgroupCleanupFailed("recovery", error);
+        throw error;
+      }
       const journal = options.journal;
       owner.draining = journal.draining;
       for (const command of journal.installations()) {
@@ -409,7 +425,9 @@ export class MachineJobOwner {
     return (
       this.draining &&
       this.directServiceCalls.size === 0 &&
-      [...this.jobs.values()].every((job) => job.emptyObserved)
+      [...this.jobs.values()].every(
+        (job) => job.emptyObserved && !job.handle && !job.startupCleanup,
+      )
     );
   }
 
@@ -2420,7 +2438,7 @@ export class MachineJobOwner {
       this.log("warn", "start_preparation_failed", {
         jobId: command.request.jobId,
         permitId: command.permit.permitId,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: preparationRefusalCode(error),
       });
       if (!this.options.journal.job(command.request.jobId)) {
         try {
@@ -2941,8 +2959,10 @@ export class MachineJobOwner {
           : caught;
       if (!spawnAttempted || (error instanceof LinuxJobRefusal && error.workloadEmpty))
         job.resolveEmpty();
-      if (error instanceof LinuxJobRefusal && !error.workloadEmpty)
+      if (error instanceof LinuxJobRefusal && error.cleanup) {
         job.startupCleanup = error.cleanup;
+        if (error.workloadEmpty) this.cgroupCleanupFailed("startup", error, request.jobId);
+      }
       job.resolveLaunched();
       await this.closeServices(job);
       job.context?.close();
@@ -2964,10 +2984,7 @@ export class MachineJobOwner {
           job.result = {
             ...job.result,
             state: job.cancelRequested || job.retirement?.signal.aborted ? "cancelled" : "refused",
-            reason:
-              error instanceof Error && /^[a-zA-Z0-9_-]{1,128}$/.test(error.message)
-                ? error.message
-                : "job_preparation_refused",
+            reason: preparationRefusalCode(error),
             finishedAt: Date.now(),
           };
           this.options.journal.append({ kind: "result", result: job.result });
@@ -2987,7 +3004,6 @@ export class MachineJobOwner {
   private async finish(job: OwnedJob, observed: LinuxJobResult, parent?: OwnedJob): Promise<void> {
     if (observed.empty !== true) throw new Error("workload_empty_proof_required");
     await this.closeServices(job);
-    const handle = job.handle;
     for (const childId of job.children) await this.cancel(childId);
     job.resolveEmpty();
     this.closeInputFiles(job);
@@ -3091,19 +3107,25 @@ export class MachineJobOwner {
     this.options.journal.append({ kind: "result", result: final });
     job.result = final;
     this.emit({ type: "result", result: final }, job);
-    job.resolveFinalized();
-    handle?.release();
-    job.handle = null;
-    job.context?.close();
-    job.progress.close();
-    for (const location of job.locations.values()) location.close();
-    job.locations.clear();
-    // Every archive sealed or was refused before that durable result: the raw tree is spent.
-    this.disposeOutputScratch(job);
+    try {
+      // Child output finalization must finish before removing the native ancestor it borrowed.
+      for (const childId of job.children) await this.requireJob(childId).finalized;
+      this.disposeLinuxHandle(job, "release");
+      job.context?.close();
+      job.progress.close();
+      for (const location of job.locations.values()) location.close();
+      job.locations.clear();
+      // Every archive sealed or was refused before that durable result: the raw tree is spent.
+      this.disposeOutputScratch(job);
+    } finally {
+      job.resolveFinalized();
+    }
   }
 
   private async interrupt(job: OwnedJob): Promise<void> {
     this.draining = true;
+    // A cleanup refusal after publication cannot turn a known terminal result into unknown effects.
+    if (!ACTIVE[job.result.state]) return;
     await this.closeServices(job);
     // Immutable inputs have no output-writer authority. Child mounts retain their own kernel
     // references; releasing our transport copies is safe even if empty proof is unavailable.
@@ -3133,10 +3155,11 @@ export class MachineJobOwner {
     };
     this.options.journal.append({ kind: "result", result: job.result });
     this.emit({ type: "result", result: job.result }, job);
-    job.resolveFinalized();
     job.progress.close();
     // Kept, like the admission latch above, whenever the cancel attempt proved nothing.
     this.disposeOutputScratch(job);
+    this.disposeLinuxHandle(job, "release");
+    job.resolveFinalized();
   }
 
   private closeRetiredContext(job: OwnedJob): void {
@@ -3170,8 +3193,14 @@ export class MachineJobOwner {
       for (const release of job.releaseWriters) release();
       job.releaseWriters = [];
     } else if (job.startupCleanup) {
-      await job.startupCleanup();
-      job.startupCleanup = undefined;
+      try {
+        await job.startupCleanup();
+        job.startupCleanup = undefined;
+      } catch (error) {
+        if (!(error instanceof LinuxJobRefusal) || !error.workloadEmpty) throw error;
+        // Empty proof ends writers, not the retained reclamation obligation.
+        this.cgroupCleanupFailed("startup", error, job.request.jobId);
+      }
       job.resolveEmpty();
       for (const release of job.releaseWriters) release();
       job.releaseWriters = [];
@@ -3179,6 +3208,7 @@ export class MachineJobOwner {
     // An interrupted result was durable before its emptiness was proven; this proof completes
     // it. A job still running is instead disposed by `finish`, after it seals.
     this.disposeOutputScratch(job);
+    this.disposeLinuxHandle(job, "release");
     this.emitEmpty(job);
   }
 
@@ -3366,6 +3396,44 @@ export class MachineJobOwner {
   private releaseBoundInputs(job: OwnedJob): void {
     for (const input of job.boundInputs) this.options.boundInputs?.release(input);
     job.boundInputs = [];
+  }
+  /** Reclamation follows durable output finalization, never just an empty workload event.
+   * A refused release retains the exact handle for a later explicit cancel or shutdown. */
+  private disposeLinuxHandle(job: OwnedJob, phase: "release" | "shutdown"): void {
+    if (!job.handle || !job.emptyObserved || ACTIVE[job.result.state]) return;
+    for (const childId of job.children) {
+      const child = this.requireJob(childId);
+      if (child.handle || child.startupCleanup || ACTIVE[child.result.state]) return;
+    }
+    try {
+      // An interrupted job publishes no outputs. End those unsealed lifetimes before its
+      // cgroup identity, just as successful finalization seals them before release.
+      for (const lease of job.leases) this.options.outputs.abort(lease);
+      for (const stream of Object.values(job.stdio)) stream.abort();
+      job.leases = [];
+      job.stdio = {};
+    } catch (error) {
+      this.outputCleanupFailed(job.request.jobId, error);
+      return;
+    }
+    try {
+      job.handle.release();
+      job.handle = null;
+    } catch (error) {
+      this.cgroupCleanupFailed(phase, error, job.request.jobId);
+    }
+  }
+  private cgroupCleanupFailed(
+    phase: "release" | "startup" | "recovery" | "shutdown",
+    error: unknown,
+    jobId?: string,
+  ): void {
+    this.draining = true;
+    this.log("warn", "job_cgroup_cleanup_failed", {
+      phase,
+      ...(jobId ? { jobId } : {}),
+      code: cgroupCleanupCode(error),
+    });
   }
   /** One exclusive temporary root, the job's from the moment it exists. */
   private provisionOutputScratch(job: OwnedJob): HeldDirectory {
@@ -3604,10 +3672,12 @@ export class MachineJobOwner {
     await Promise.all([...this.jobs.values()].map((job) => job.finalized));
     if (![...this.jobs.values()].every((job) => job.emptyObserved))
       throw new Error("workload_empty_unproven");
+    // Descendants were admitted after their parents; release their identities first.
+    for (const job of [...this.jobs.values()].reverse()) this.disposeLinuxHandle(job, "shutdown");
+    if ([...this.jobs.values()].some((job) => job.handle || job.startupCleanup))
+      throw new Error("cgroup-cleanup-failed");
     this.ready = false;
     for (const job of this.jobs.values()) {
-      job.handle?.release();
-      job.handle = null;
       job.context?.close();
       for (const lease of job.leases) this.options.outputs.abort(lease);
       for (const stream of Object.values(job.stdio)) stream.abort();
