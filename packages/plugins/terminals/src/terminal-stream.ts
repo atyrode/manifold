@@ -152,6 +152,15 @@ export class TerminalStream {
     this.retire(false);
   }
 
+  /**
+   * The server retired this view's attachment. Accepted frames still parse without credit, but
+   * nothing newer will arrive, so input waits for a fresh snapshot's replay.
+   */
+  refuse(): void {
+    this.retire(false);
+    this.replayed = false;
+  }
+
   /** A new PTY owns fresh byte and geometry counters; old parser work cannot resize it. */
   restart(): void {
     if (this.disposed) return;
