@@ -392,7 +392,9 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     );
     await waitFor(() => viewer.frames.find((frame) => frame.type === "init"), 5_000, 20);
     const firstSnapshotRequestStart = machine.frames.length;
-    viewer.sendRaw(sessionFrame({ type: "terminal_attach", terminalId: terminal.id }));
+    viewer.sendRaw(
+      sessionFrame({ type: "terminal_attach", terminalId: terminal.id, viewportId: "sdk" }),
+    );
     const firstSnapshotRequest = await waitFor(
       () =>
         machine.frames
@@ -434,7 +436,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       seq: 1,
       data: textToBase64("AFTER_REVOKE_1"),
     });
-    openerHome.attachTerminal(terminal.id);
+    openerHome.attachTerminal(terminal.id, "sdk");
     const secondSnapshotRequest = await waitFor(
       () =>
         machine.frames

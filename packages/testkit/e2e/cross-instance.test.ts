@@ -284,7 +284,7 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
     const capture = captureTerminal(remotePty, terminal.id);
     captures.push(capture);
     await waitFor(() => remotePty.terminals.get(terminal.id)?.status === "running", 10_000, 20);
-    remotePty.attachTerminal(terminal.id);
+    remotePty.attachTerminal(terminal.id, "sdk");
     /*
       The HOST drives the PTY and the REMOTE has to see it. That direction is the claim:
       "renders" means the guest's viewer receives the same snapshot-then-output stream a
@@ -293,7 +293,7 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
       sharing — a ticket is an ordinary token, so it wins or loses the controller exactly as
       any other principal does.
     */
-    homeClient.attachTerminal(terminal.id);
+    homeClient.attachTerminal(terminal.id, "sdk");
     homeClient.sendTerminalInput(terminal.id, "printf 'HELLO-FROM-THE-HOST\\n'\n");
     await waitForTerminalText(capture, "HELLO-FROM-THE-HOST");
 

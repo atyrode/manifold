@@ -125,7 +125,7 @@ test("terminal readiness follows opened and identifies an application declaratio
 
     const capture = captureTerminal(client, terminal.id);
     captures.push(capture);
-    client.attachTerminal(terminal.id);
+    client.attachTerminal(terminal.id, "sdk");
     await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
     client.sendTerminalInput(terminal.id, "hello\n");
     await waitForTerminalText(capture, "READ:hello", 10_000);
@@ -234,8 +234,8 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
     const captureA = captureTerminal(clientA, terminal.id);
     const captureB = captureTerminal(clientB, terminal.id);
     captures.push(captureA, captureB);
-    clientA.attachTerminal(terminal.id);
-    clientB.attachTerminal(terminal.id);
+    clientA.attachTerminal(terminal.id, "sdk");
+    clientB.attachTerminal(terminal.id, "sdk");
     await waitFor(() => captureA.snapshotSeq !== null && captureB.snapshotSeq !== null, 10_000, 20);
     expect(captureA.pendingOutputCount).toBe(0);
     expect(captureB.pendingOutputCount).toBe(0);
@@ -264,7 +264,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
         // against snapshot handoff; fake timers cannot drive independent child processes.
         const delayMs = 5 + ((index * 29 + 17) % 46);
         await Bun.sleep(delayMs);
-        viewer.attachTerminal(terminal.id);
+        viewer.attachTerminal(terminal.id, "sdk");
       }),
     );
     await Promise.all(
@@ -483,7 +483,7 @@ test("controller lease accepts input from a second connection of the same princi
     secondConnection.on("error", (message) => errors.push(message.code));
     const capture = captureTerminal(secondConnection, terminal.id);
     captures.push(capture);
-    secondConnection.attachTerminal(terminal.id);
+    secondConnection.attachTerminal(terminal.id, "sdk");
     await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
     secondConnection.sendTerminalInput(terminal.id, "printf 'SAME_PRINCIPAL_OK\\n'\n");
     await waitForTerminalText(capture, "SAME_PRINCIPAL_OK", 10_000);
@@ -558,7 +558,7 @@ test("nested exit preserves the shell; root failure retains the terminal for eve
     clients.push(observer);
     const capture = captureTerminal(client, terminal.id);
     captures.push(capture);
-    client.attachTerminal(terminal.id);
+    client.attachTerminal(terminal.id, "sdk");
     await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
 
     // The marker is split in the input so terminal echo cannot satisfy the output check.
@@ -838,7 +838,7 @@ test("the Machines + on a view births a terminal the server places as a tile, an
 
     const capture = captureTerminal(client, terminal.id);
     captures.push(capture);
-    client.attachTerminal(terminal.id);
+    client.attachTerminal(terminal.id, "sdk");
     await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
     client.sendTerminalInput(terminal.id, "printf 'TILE_%s\\n' ok\n");
     await waitForTerminalText(capture, "TILE_ok", 10_000);
