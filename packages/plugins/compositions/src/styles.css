@@ -73,6 +73,27 @@
   text-align: center;
 }
 
+/* A stopped session outranks the muted progress wording; its reason reads as a sentence under
+   it, like an exited terminal's status and owner reason. */
+.composition-placeholder__status {
+  color: #ced4da;
+  font-weight: 700;
+}
+
+.composition-placeholder__reason {
+  max-width: 34ch;
+  margin: 0;
+  color: #adb5bd;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+/* The one control on an otherwise inert cover. */
+.composition-placeholder__action {
+  pointer-events: auto;
+}
+
 .composition-leaf {
   position: relative;
   display: flex;

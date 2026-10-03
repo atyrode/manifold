@@ -87,6 +87,7 @@ import {
   type TileDropHost,
   type GestureOverride,
 } from "@manifold/plugin/hooks";
+import { EmptyCompositionStatus } from "./empty-composition-status";
 
 /**
  * The composition discipline's renderer — `core.compositions`'s whole browser half. A canvas and a
@@ -1260,8 +1261,14 @@ export function CompositionView({
           <div className="tile-area" ref={areaRef} {...areaDropProps}>
             {body}
             {layout === null ? (
-              <Cover className="composition-placeholder">
-                {status === "open" ? "Drop an item here" : "Connecting to this view…"}
+              <Cover className="composition-placeholder" role="status">
+                <Stack gap="0.6rem" align="center">
+                  <EmptyCompositionStatus
+                    status={status}
+                    connectionError={client.connectionError}
+                    onReload={() => window.location.reload()}
+                  />
+                </Stack>
               </Cover>
             ) : null}
             <CompositionMotionOverlay

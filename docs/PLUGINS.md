@@ -1718,6 +1718,10 @@ Publish it in an effect through the callback returned by `useRoomPipeRegistratio
 `registerRoomPipe(containerId, client)` returns the registration's cleanup. This registers
 the occupant pipe for host terminal routing; it does not open another socket. Do not call
 `connect()` on each render: on an already-connected handle it redials the shared transport.
+Render `idle`, `connecting` and `reconnecting` as progress the SDK is still making, and
+`closed` as stopped: no automatic attempt follows it. A closed room names
+`connectionError.reason` when one exists — the same reason as its sticky connection notice —
+and offers a reload rather than a spinner, as the composition's empty cover does (#870).
 `sessionUrl()` derives the selected instance's `ws(s)://…/ws/session` URL, not necessarily
 the page's origin ([`instance.ts`](../packages/plugin/src/instance.ts)).
 
