@@ -331,6 +331,43 @@
   overflow-wrap: anywhere;
 }
 
+/* Delivery notices overlay the screen's foot: reserving layout would change the measured grid.
+   The empty live region stays mounted and inert; only a notice takes pointer input. */
+.terminal-delivery {
+  position: absolute;
+  grid-area: 2 / 1;
+  inset: auto 0 0;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  padding: 0 0.5rem 0.5rem;
+  pointer-events: none;
+}
+
+.terminal-delivery__notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem 0.75rem;
+  box-sizing: border-box;
+  max-width: 100%;
+  border: 1px solid #495057;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  color: #e6e9ef;
+  background: rgb(11 13 16 / 94%);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+
+.terminal-delivery__action {
+  flex: none;
+}
+
 /* Centering and rhythm are the layout Cover+Stack's; this is the veil itself. */
 .terminal-exited {
   position: absolute;
