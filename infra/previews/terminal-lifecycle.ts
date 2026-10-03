@@ -110,14 +110,40 @@ if (mode === "prepare" || mode === "reopen") {
       containerId: opened.containerId,
       token: owner,
     });
-    let output = "";
-    const observe = (message: { data: string }): void => {
-      output = (output + base64ToText(message.data)).slice(-32_000);
+    // One raw transcript sink owns exactly this view; frames of any other terminal or view on
+    // the channel are not its delivery and are neither consumed nor acknowledged.
+    const sink = terminal;
+    const viewportId = "preview-terminal-lifecycle";
+    type Frame = { terminalId: string; viewportId: string; deliveryId: string; deliverySeq: number };
+    type Geometry = { cols: number; rows: number; revision: number | null };
+    const view: { deliveryId: string | undefined; geometry: Geometry | undefined } = {
+      deliveryId: undefined,
+      geometry: undefined,
     };
-    terminal.on("terminal_output", observe);
-    terminal.on("terminal_snapshot", observe);
+    let output = "";
+    // An acknowledgement credits only frames this sink has already finished consuming.
+    const consumed = (frame: Frame): void =>
+      sink.ackTerminal(opened.id, viewportId, frame.deliveryId, frame.deliverySeq);
+    const mine = (frame: Frame): boolean =>
+      frame.terminalId === opened.id && frame.viewportId === viewportId;
+    sink.on("terminal_snapshot", (message: Frame & { data: string }) => {
+      if (!mine(message)) return;
+      view.deliveryId = message.deliveryId;
+      output = (output + base64ToText(message.data)).slice(-32_000);
+      consumed(message);
+    });
+    sink.on("terminal_output", (message: Frame & { data: string }) => {
+      if (!mine(message) || message.deliveryId !== view.deliveryId) return;
+      output = (output + base64ToText(message.data)).slice(-32_000);
+      consumed(message);
+    });
+    sink.on("terminal_geometry", (message: Frame & { geometry: Geometry }) => {
+      if (!mine(message) || message.deliveryId !== view.deliveryId) return;
+      view.geometry = message.geometry;
+      consumed(message);
+    });
     await terminal.connect();
-    terminal.attachTerminal(opened.id);
+    terminal.attachTerminal(opened.id, viewportId);
     terminal.takeTerminal(opened.id);
     await Bun.sleep(300);
     const marker = `preview-terminal-${crypto.randomUUID()}`;
