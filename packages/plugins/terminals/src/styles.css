@@ -10,19 +10,11 @@
 /* Machine badge in the terminal title bar. */
 .terminal-machine-badge {
   display: inline-flex;
-  min-width: 0;
   align-items: center;
   gap: 0.3rem;
   margin-left: 0.5rem;
   color: #868e96;
   font-size: 0.68rem;
-}
-
-.terminal-machine-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .terminal-machine-dot {
@@ -136,7 +128,26 @@
    press. */
 .terminal-titlebar .node-titlebar__middle {
   flex: 1 1 0;
+  display: block;
+  /* Reserve a visible ellipsis and the native control height before attendance appears. */
+  min-width: 2ch;
+  line-height: 1.15rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   max-width: 100%;
+}
+
+.terminal-titlebar .node-titlebar__middle > * {
+  display: inline-block;
+  vertical-align: top;
+}
+
+.terminal-titlebar .node-titlebar__middle > .terminal-machine-badge {
+  display: inline-flex;
+}
+
+.terminal-titlebar .node-titlebar__middle > * + * {
+  margin-inline-start: 0.35rem;
 }
 
 .terminal-titlebar .node-titlebar__actions {
