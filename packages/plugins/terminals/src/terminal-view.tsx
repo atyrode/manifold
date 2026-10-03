@@ -122,8 +122,9 @@ function deliveryNotice(delivery: ViewDelivery): { message: string; catchUp: boo
       };
     case "recovering":
       return {
-        message:
-          "This view fell too far behind, so output held for it was skipped. It switches to the terminal's retained screen once it finishes the output already sent.",
+        message: delivery.skipped
+          ? "Output was skipped for this view. It will load the terminal's retained screen after parsing already-delivered output."
+          : "This view is waiting to synchronize with the terminal's retained screen after parsing already-delivered output.",
         catchUp: true,
       };
     case "refused": {
@@ -361,7 +362,7 @@ export function TerminalView({
         (focused.tagName === "INPUT" ||
           focused.tagName === "TEXTAREA" ||
           focused.isContentEditable ||
-          focused.closest(".node-titlebar, .popover__content") !== null);
+          focused.closest(".node-titlebar, .popover__content, .terminal-delivery") !== null);
       if (interactiveElsewhere) return; // user chose another control: stop wrestling
       if (!settled) terminal.focus();
       // Keep watching through the whole activation transition: browser refocus
@@ -770,6 +771,11 @@ export function TerminalView({
       },
       settled: () => {
         if (!subscribed) return;
+        setDelivery((current) =>
+          current.terminalId === terminalId && current.state === "catching_up"
+            ? { ...current, state: "live" }
+            : current,
+        );
         clipboardLiveRef.current = true;
         settleRef.current?.();
       },
@@ -786,14 +792,15 @@ export function TerminalView({
 
     const offSnapshot = client.on("terminal_snapshot", (message) => {
       if (!ours(message) || !stream.snapshot(message, handlers)) return;
-      // A snapshot is live under its new delivery; a recovery snapshot discloses skipped output.
+      // Retained-screen recovery is complete only after replay, not on socket receipt.
+      const state = stream.coherent ? "live" : "catching_up";
       setDelivery((current) => {
         const skipped = message.skipped || (current.terminalId === terminalId && current.skipped);
         return current.terminalId === terminalId &&
-          current.state === "live" &&
+          current.state === state &&
           current.skipped === skipped
           ? current
-          : { terminalId, state: "live", reason: null, skipped, noticed: false };
+          : { terminalId, state, reason: null, skipped, noticed: false };
       });
     });
 
@@ -1100,7 +1107,7 @@ export function TerminalView({
       onWheel={stopFocusedWheel}
       onKeyDown={(event) => event.stopPropagation()}
       onFocus={(event) => {
-        if (event.target.closest(".node-titlebar") !== null) {
+        if (event.target.closest(".node-titlebar, .terminal-delivery") !== null) {
           publishLocation();
           return;
         }

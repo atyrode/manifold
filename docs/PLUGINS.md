@@ -760,7 +760,8 @@ const { outcome } = await invokeAction(
 
 `create` does not turn PTY output into HTTP. Poll `core.terminals.listAll` or
 `core.terminals.listByContainer`, or observe terminal lifecycle events, using the returned id;
-open a `SessionClient` later and call `attachTerminal(id)` for snapshot-plus-tail bytes. The
+open a `SessionClient` later and call `attachTerminal(id, viewportId)` for parser-credited
+snapshot-plus-tail bytes, acknowledging only completed consumption as described below. The
 broker bounds an unacknowledged create at ten seconds. Timeout, machine disconnect, owner create
 error, or home-placement failure kills any possibly-created PTY, revokes its minted terminal
 principal, cancels its admitted terminal job when present, and leaves no terminal/home row.
@@ -1681,11 +1682,14 @@ There are three different lifetimes here, not three sockets:
   Source: [`session-client.ts`](../packages/sdk/src/session-client.ts), `SessionClientOptions`,
   `connect`, `close`; transport: [`connection-pool.ts`](../packages/sdk/src/connection-pool.ts).
 - **Terminal attachment:** not a separate endpoint or `SessionClient`. Subscribe with
-  `on("terminal_snapshot", ...)`, `on("terminal_output", ...)` and `on("terminal_event", ...)`,
-  then `attachTerminal(id)`; release listeners with their returned functions and balance the
-  attachment with `detachTerminal(id)`. Last detach releases the wire subscription; reconnect
-  reattaches. Filter frames by `terminalId`. The host's reads concern the routed room; its
-  mutation routing and controller rules are in “Terminals through the handle” below.
+  snapshot, output, geometry, delivery-state and lifecycle listeners before
+  `attachTerminal(id, viewportId)`; release every listener and balance the attachment with
+  `detachTerminal(id, viewportId)`. Last detach releases that exact pair; reconnect reattaches
+  every held view independently. Filter delivery frames by terminal AND viewport; cumulatively
+  `ackTerminal(id, viewportId, deliveryId, deliverySeq)` only after parsing/replay and geometry
+  complete, never on socket receipt. A recovery snapshot with `skipped: true` requires a truthful
+  accessible incomplete-history notice. The host's reads concern the routed room; its mutation
+  routing and controller rules are in “Terminals through the handle” below.
   Sources: [`host.ts`](../packages/plugin/src/host.ts), `SessionHandle`, and
   [`session-client.ts`](../packages/sdk/src/session-client.ts), `attachTerminal` / `detachTerminal`.
 - **Event topics:** `host.client.subscribe(topics, handler)` takes `readonly ManifoldRef[]`
@@ -2884,8 +2888,14 @@ interface SessionHandle {
     env?: TerminalEnv; // merged under the fixed MANIFOLD_* keys
     timeoutMs?: number;
   }): Promise<TerminalInfo>;
-  attachTerminal(terminalId: string): void; // snapshot + gap-free outputs; refcounted
-  detachTerminal(terminalId: string): void;
+  attachTerminal(terminalId: string, viewportId: string): void; // refcounted exact view
+  detachTerminal(terminalId: string, viewportId: string): void;
+  ackTerminal(
+    terminalId: string,
+    viewportId: string,
+    deliveryId: string,
+    deliverySeq: number,
+  ): void;
   sendTerminalInput(terminalId: string, data: string | Uint8Array): void; // controller only
   resizeTerminal(terminalId: string, cols: number, rows: number, viewportId?: string): void; // eligible LIVE desired viewport
   releaseTerminalViewport(terminalId: string, viewportId?: string): void;
@@ -2894,6 +2904,8 @@ interface SessionHandle {
   on(event: "terminals_changed", fn: () => void): () => void;
   on(event: "terminal_snapshot", fn: (message: TerminalSnapshot) => void): () => void;
   on(event: "terminal_output", fn: (message: TerminalOutput) => void): () => void;
+  on(event: "terminal_geometry", fn: (message: TerminalGeometry) => void): () => void;
+  on(event: "terminal_delivery", fn: (message: TerminalDelivery) => void): () => void;
   on(event: "terminal_event", fn: (message: TerminalEvent) => void): () => void;
   on(event: "error", fn: (message: ErrorMessage) => void): () => void; // `not_controller` lands here
 }
@@ -2945,16 +2957,19 @@ shipped canvas and composition renderers are the worked examples.
 **Worked terminal subscription: the shipped viewer.**
 [`terminal-view.tsx`](../packages/plugins/terminals/src/terminal-view.tsx) takes the room
 client supplied by its mount site; it constructs no client. Its effect installs snapshot,
-output, lifecycle and error listeners **before** `attachTerminal(terminalId)`, filtering
-each terminal frame by id. A snapshot replaces the screen and sets the sequence watermark;
-outputs received before it are buffered, then only those above its watermark are written
-in sequence. Later duplicate/older outputs are ignored. It decodes `message.data` with
-the SDK export `base64ToBytes`, not a string decoder that could damage binary data.
-`terminal_event` with `kind: "resized"` updates the viewer's geometry. Keyboard data goes
-through `sendTerminalInput` only when the viewer is not read-only; a `not_controller`
-error paints the refusal. Leaving the open connection state resets sequence bookkeeping
-for the next snapshot. Cleanup releases every listener, disposes the keyboard subscription
-and calls `detachTerminal`, **not** `close()` on the borrowed client.
+output, geometry, delivery-state and lifecycle listeners **before**
+`attachTerminal(terminalId, viewportId)`, filtering delivery frames by both ids.
+[`terminal-stream.ts`](../packages/plugins/terminals/src/terminal-stream.ts) bounds accepted
+work, including retired work still in xterm, and serializes one real parser operation at a time.
+A snapshot sets the source byte/geometry watermarks; ordered newer output and geometry follow.
+Only xterm completion and applied resize earn cumulative delivery ACKs. The graphics
+CAN/reset barrier completes before snapshot replay; source geometry, not `resized` metadata,
+resizes the parser. It decodes `message.data` with `base64ToBytes`, preserving binary bytes.
+Skipped-history recovery retains an accessible notice; deliberate Catch up replaces only this
+view's parser and attachment with a retained-screen snapshot, never a recording guarantee.
+Keyboard data goes through `sendTerminalInput` only when the view is writable and has coherent
+parsed modes. Cleanup releases every listener, retires credit, disposes the keyboard subscription
+and calls `detachTerminal(terminalId, viewportId)`, **not** `close()` on the borrowed client.
 
 That sequence preserves the snapshot-plus-output contract (`docs/CONTRACTS.md` §attach);
 an output frame or `terminal_opened` is not a shell-readiness signal. Use `program` when

@@ -97,20 +97,42 @@ loaded context; verify a fresh session through the actual harness loader.
 From a development checkout, the equivalent entrypoint is
 `bun packages/plugins/terminals/cli/main.ts`; it consumes only public SDK exports.
 
+## Parser-credited terminal delivery
+
+Give each mounted reader an opaque `viewportId` and pair `attachTerminal(id, viewportId)` /
+`detachTerminal(id, viewportId)`. Subscribe before attaching; filter snapshot, output, geometry
+and delivery-state frames by BOTH terminal and viewport. Each snapshot starts a new server-owned
+`deliveryId`, ordinal0; output and geometry follow in consecutive `deliverySeq` order.
+Call `ackTerminal(id, viewportId, deliveryId, deliverySeq)` cumulatively only AFTER the consumer
+has completed snapshot replay/output parsing and applied intervening geometry. Receiving bytes
+on the socket is not consumption. ACKs never queue or replay offline; every held attachment
+reattaches after reconnect/restart.
+
+Each delivery's unacknowledged window, server unsent FIFO and browser parser queue is bounded
+to1,048,576 base64 data characters and256 frames; geometry costs one frame and no data bytes.
+`terminal_delivery` reports `waiting`, `recovering`, `live` or viewport-scoped `refused` with a
+typed reason. Overflow recovery waits for all sent frames to complete before a fresh sequenced
+snapshot; `skipped: true` means earlier output/scrollback may be incomplete. Consumers must
+disclose this, not claim a full recording. A stopped browser parser can deliberately retire that
+view and recreate it to load the retained screen. Completion of an old incarnation grants no
+credit to its replacement. Protocol57 requires matching SDK/plugin bundles; legacy terminal
+attach signatures and receipt-based ACK shims are not supported.
+
 ## Active terminal viewport measurements
 
-After `attachTerminal` and the ordered snapshot handoff, an eligible controller-principal
-view publishes **desired** cell space with `resizeTerminal(terminalId, cols, rows, viewportId)`.
-Each mount owns a unique opaque id. The public three-argument form uses the client's single
-virtual `sdk` viewport. Renew only foreground visible intent every
+After `attachTerminal(terminalId, viewportId)` and the ordered snapshot handoff, an eligible
+controller-principal view publishes **desired** cell space with
+`resizeTerminal(terminalId, cols, rows, viewportId)`. Use the same unique opaque id for its
+attachment and measurement. The three-argument resize form requires attachment on `"sdk"`. Renew only foreground visible intent every
 `TERMINAL_VIEWPORT_REFRESH_MS` (10 seconds); stale measurements expire after
 `TERMINAL_VIEWPORT_LEASE_MS` (30 seconds). Call
 `releaseTerminalViewport(terminalId, viewportId)` on hiding or disposal, separately from
 refcounted `detachTerminal`. Offline measurements and withdrawals are not queued for replay.
 The pending tiled terminal's first writable measured view still supplies birth geometry.
 
-The server derives the minimum desired columns and rows independently over eligible LIVE
-occupant views. Read-only, non-controller and preview views cannot constrain the grid.
+The server derives the minimum desired columns and rows independently over eligible occupant
+views that received their first snapshot; later parser lag does not withdraw active sizing.
+Read-only, non-controller and preview views cannot constrain the grid.
 With no eligible view, the server retains the last applied grid. `terminalSizing` holds ephemeral
 `terminal_sizing` attribution (`mode`, column/row connection+viewport references), while
 `terminals` and `resized` events remain the authoritative applied geometry. Attribution

@@ -348,7 +348,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/terminal-broker.ts",
-      "why": "the PTY broker: bounded arrival-ordered byte/geometry attach handoff, viewer registry, no-gap invariant, explicit legacy-owner projection and ephemeral controller-authorized smallest active viewport arbitration"
+      "why": "the PTY broker: bounded arrival-ordered byte/geometry attach handoff, independently parser-credited viewport delivery and explicit sequenced skipped-history recovery, no-gap invariant, legacy-owner projection and ephemeral controller-authorized smallest active viewport arbitration"
     },
     {
       "glob": "packages/server/src/placement.ts",

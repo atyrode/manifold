@@ -298,12 +298,19 @@ function geometrySnapshot(
   });
 }
 
+type SourceFrame = {
+  [T in DeliveryFrame["type"]]: Omit<
+    Extract<DeliveryFrame, { type: T }>,
+    "ch" | "viewportId" | "deliveryId" | "deliverySeq" | "skipped"
+  >;
+}[DeliveryFrame["type"]];
+
 /**
  * The view-independent stream a socket carried, in order. Delivery stamps are left out because
  * these tests are about source ordering; the per-view credit tests assert the stamps.
  */
 function terminalStream(socket: FakeSocket) {
-  return socket.messages().flatMap((frame) => {
+  return socket.messages().flatMap<SourceFrame>((frame) => {
     switch (frame.type) {
       case "terminal_snapshot": {
         const { type, terminalId, seq, data, geometry } = frame;
@@ -1845,6 +1852,7 @@ describe("TerminalBroker viewport arbitration", () => {
       const fixture = viewportFixture("process");
       const terminalId = fixture.create.terminalId;
       measureViewport(fixture, fixture.opener, "process", 60, 18);
+      ackCompleted(fixture, fixture.opener, "process");
       fixture.machine.clear();
       if (lifecycle === "adoption") {
         expect(
@@ -1868,7 +1876,6 @@ describe("TerminalBroker viewport arbitration", () => {
         });
         expect(await outcome).toBe("ok");
       }
-      expect(fixture.clock.pendingJobs).toBe(1);
       expect(fixture.socket.messages().at(-1)).toEqual({
         type: "terminal_sizing",
         terminalId,
@@ -1882,12 +1889,59 @@ describe("TerminalBroker viewport arbitration", () => {
         data: encoded("new-process"),
       });
       expect(fixture.machine.sent).toEqual([]);
-      expect(fixture.clock.pendingJobs).toBe(0);
       expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
         { cols: 60, rows: 18 },
       ]);
       measureViewport(fixture, fixture.opener, "process", 100, 32);
       expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 100, rows: 32 }]);
+      fixture.store.close();
+    });
+
+    test(`${lifecycle} refuses a re-anchoring view when its online snapshot never arrives`, async () => {
+      const fixture = viewportFixture("process");
+      const terminalId = fixture.create.terminalId;
+      measureViewport(fixture, fixture.opener, "process", 60, 18);
+      ackCompleted(fixture, fixture.opener, "process");
+      fixture.socket.clear();
+      if (lifecycle === "adoption") {
+        expect(
+          fixture.broker.adoptTerminal(fixture.machine.machineId, {
+            terminalId,
+            cols: 60,
+            rows: 18,
+            seq: 0,
+            alive: true,
+          }),
+        ).toBeTrue();
+      } else {
+        const outcome = fixture.broker.restartById(
+          terminalId,
+          fixture.root.principal.id,
+          fixture.auth.credentialReference(fixture.root),
+        );
+        fixture.broker.onRestarted(fixture.machine.machineId, {
+          type: "terminal_restarted",
+          terminalId,
+        });
+        expect(await outcome).toBe("ok");
+      }
+      fixture.clock.advance(10_000);
+      expect(fixture.socket.messages()).toContainEqual(
+        expect.objectContaining({
+          type: "terminal_delivery",
+          terminalId,
+          viewportId: "process",
+          state: "refused",
+          reason: "snapshot_timeout",
+        }),
+      );
+      fixture.broker.onSnapshot(fixture.machine.machineId, {
+        type: "snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("too-late"),
+      });
+      expect(deliveredTo(fixture.opener, "process")).toEqual([]);
       fixture.store.close();
     });
   }
@@ -2255,6 +2309,75 @@ describe("TerminalBroker controller lease", () => {
     ]);
     fixture.store.close();
   });
+
+  test.each(["held", "recovering"] as const)(
+    "owner re-adoption discloses output omitted while %s",
+    (timing) => {
+      const fixture = brokerFixture();
+      const terminalId = fixture.create.terminalId;
+      attachView(fixture, fixture.opener);
+      fixture.broker.onSnapshot(fixture.machine.machineId, {
+        type: "snapshot",
+        terminalId,
+        seq: 0,
+        data: encoded("initial"),
+      });
+      if (timing === "held") {
+        for (let seq = 1; seq <= MAX_TERMINAL_DELIVERY_UNACKED_FRAMES; seq++) {
+          fixture.broker.onOutput(fixture.machine.machineId, {
+            type: "output",
+            terminalId,
+            seq,
+            data: encoded("byte"),
+          });
+        }
+      }
+      const before = deliveredTo(fixture.opener).length;
+      const sourceSeq = timing === "held" ? MAX_TERMINAL_DELIVERY_UNACKED_FRAMES : 10;
+      fixture.machine.clear();
+      expect(
+        fixture.broker.adoptTerminal(fixture.machine.machineId, {
+          terminalId,
+          cols: 100,
+          rows: 30,
+          alive: true,
+          seq: sourceSeq,
+        }),
+      ).toBeTrue();
+      if (timing === "recovering") {
+        for (const seq of [11, 12]) {
+          fixture.broker.onOutput(fixture.machine.machineId, {
+            type: "output",
+            terminalId,
+            seq,
+            data: encoded("omitted"),
+          });
+        }
+      }
+      expect(
+        fixture.socket
+          .messages()
+          .filter((frame) => frame.type === "terminal_delivery" && frame.state === "recovering")
+          .map((frame) => frame.type === "terminal_delivery" && frame.skipped),
+      ).toEqual(timing === "held" ? [true] : [false, true]);
+      expect(deliveredTo(fixture.opener)).toHaveLength(before);
+      expect(fixture.machine.sent).toEqual([]);
+      ackCompleted(fixture, fixture.opener);
+      expect(fixture.machine.sent).toEqual([{ type: "snapshot_request", terminalId }]);
+      fixture.broker.onSnapshot(fixture.machine.machineId, {
+        type: "snapshot",
+        terminalId,
+        seq: timing === "held" ? sourceSeq : 12,
+        data: encoded("retained"),
+      });
+      expect(deliveredTo(fixture.opener).at(-1)).toMatchObject({
+        type: "terminal_snapshot",
+        skipped: true,
+        data: encoded("retained"),
+      });
+      fixture.store.close();
+    },
+  );
 });
 
 describe("TerminalBroker bounded pending work", () => {
@@ -2347,6 +2470,8 @@ describe("TerminalBroker per-view parser credit", () => {
     expect(healthy.map((frame) => frame.seq)).toEqual(range(1, frames + 44));
     expect(healthy.map((frame) => frame.deliverySeq)).toEqual(range(1, frames + 44));
     const slow = deliveredTo(fixture.opener, "slow");
+    const deliveryId = slow[0]?.deliveryId;
+    if (deliveryId === undefined) throw new Error("stalled viewer received no delivery");
     expect(slow.map((frame) => frame.seq)).toEqual(range(1, frames));
     // One transition while waiting, never a notice per held frame.
     expect(notices(fixture.socket)).toEqual([
@@ -2354,7 +2479,7 @@ describe("TerminalBroker per-view parser credit", () => {
         type: "terminal_delivery",
         terminalId: fixture.create.terminalId,
         viewportId: "slow",
-        deliveryId: slow[0]?.deliveryId,
+        deliveryId,
         state: "waiting",
         skipped: false,
         reason: null,
@@ -2381,9 +2506,11 @@ describe("TerminalBroker per-view parser credit", () => {
     ack(deliveryId, 9, "other");
     expect(sent()).toHaveLength(frames);
     ack(deliveryId, 9);
-    expect(sent().slice(frames).map((frame) => frame.deliverySeq)).toEqual(
-      range(frames + 1, frames + 9),
-    );
+    expect(
+      sent()
+        .slice(frames)
+        .map((frame) => frame.deliverySeq),
+    ).toEqual(range(frames + 1, frames + 9));
     ack(deliveryId, 9);
     ack(deliveryId, 4);
     expect(sent()).toHaveLength(frames + 9);

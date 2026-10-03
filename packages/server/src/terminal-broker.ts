@@ -1021,11 +1021,11 @@ export class TerminalBroker implements TerminalPlacementPort {
     viewer: Viewer,
     skipped: boolean,
   ): boolean {
+    viewer.skipped ||= skipped || viewer.queue.some((frame) => frame.type === "terminal_output");
     viewer.queue = [];
     viewer.queuedBytes = 0;
     viewer.lastDeliveredSeq = 0;
     viewer.lastDeliveredGeometryRevision = -1;
-    viewer.skipped ||= skipped;
     const delivery = viewer.delivery;
     if (delivery === null || delivery.unacked.length === 0) {
       this.awaitSnapshot(terminal, channel, viewer);
@@ -2012,7 +2012,8 @@ export class TerminalBroker implements TerminalPlacementPort {
   detach(channel: SessionChannel, message: TerminalDetach): void {
     const terminal = this.terminals.get(message.terminalId);
     const viewer = terminal?.viewers.get(channel)?.get(message.viewportId);
-    if (terminal !== undefined && viewer !== undefined) this.removeViewer(terminal, channel, viewer);
+    if (terminal !== undefined && viewer !== undefined)
+      this.removeViewer(terminal, channel, viewer);
   }
 
   /** Removes a closing socket from every terminal's viewer registry. */
@@ -2212,7 +2213,20 @@ export class TerminalBroker implements TerminalPlacementPort {
     let awaitsSnapshot = false;
     for (const [channel, viewer] of this.viewersOf(terminal)) {
       const state = viewer.state;
-      if (state === "RECOVERING") continue;
+      if (state === "RECOVERING") {
+        // Owner re-adoption can start recovery without a gap. Its first omitted byte frame
+        // changes that truth: disclose once, then keep this lane silent until re-anchored.
+        if (frame.type === "terminal_output" && !viewer.skipped) {
+          viewer.skipped = true;
+          const delivery = viewer.delivery;
+          if (
+            delivery !== null &&
+            !this.announceDelivery(terminal, channel, viewer, delivery, "recovering")
+          )
+            retiredViewer = true;
+        }
+        continue;
+      }
       if (state === "LIVE") {
         const delivery = viewer.delivery;
         if (delivery === null) continue;

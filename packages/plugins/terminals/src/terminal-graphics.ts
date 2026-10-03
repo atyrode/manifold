@@ -540,11 +540,12 @@ export function installTerminalGraphics(
         addon.reset();
         terminal.resize(geometry.cols, geometry.rows);
         restoring = true;
-      });
-      terminal.write(data, () => {
-        if (disposed) return;
-        restoring = false;
-        callback?.();
+        // Submit replay only once CAN has parsed: the delivery owns one parser operation.
+        terminal.write(data, () => {
+          if (disposed) return;
+          restoring = false;
+          callback?.();
+        });
       });
     },
     dispose: () => {

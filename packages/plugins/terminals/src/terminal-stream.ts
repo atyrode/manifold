@@ -55,10 +55,10 @@ type Work =
  * One xterm parser, fed by at most one real write or barrier at a time and retained with the
  * view rather than with any socket seat. Credited work is charged with the wire unit of
  * `terminalDeliveryCharge` (base64 `data` characters; geometry is one frame of zero bytes):
- * the active and queued frames of the current delivery never exceed MAX_TERMINAL_PARSER_BYTES
- * or MAX_TERMINAL_PARSER_FRAMES. A frame is acknowledged only after xterm completed it,
- * including a snapshot's replay and every applied resize. A retired delivery is never credited:
- * at most its one in-flight operation finishes ahead of the next delivery.
+ * the active and queued frames, including retired work still in xterm, never exceed
+ * MAX_TERMINAL_PARSER_BYTES or MAX_TERMINAL_PARSER_FRAMES. A frame is acknowledged only after
+ * xterm completed it, including a snapshot's replay and every applied resize. A retired
+ * delivery is never credited: at most its one in-flight operation finishes before a replay.
  */
 export class TerminalStream {
   private painted = false;
@@ -100,10 +100,19 @@ export class TerminalStream {
     this.retire(true);
     const delivery: Delivery = { id: frame.deliveryId, handlers, received: frame.deliverySeq };
     this.delivery = delivery;
-    // A snapshot's data ceiling is below the byte bound, and retirement emptied the charge.
     const charge = terminalDeliveryCharge(frame);
-    this.chargedBytes = charge;
-    this.chargedFrames = 1;
+    if (
+      this.chargedBytes + charge > MAX_TERMINAL_PARSER_BYTES ||
+      this.chargedFrames + 1 > MAX_TERMINAL_PARSER_FRAMES
+    ) {
+      // A handoff cannot erase work already in xterm to admit an oversized new lane.
+      this.delivery = null;
+      this.replayed = false;
+      handlers.stalled();
+      return false;
+    }
+    this.chargedBytes += charge;
+    this.chargedFrames += 1;
     this.queue.push({ kind: "snapshot", frame, delivery, charge });
     this.pump();
     return true;
@@ -178,15 +187,22 @@ export class TerminalStream {
     this.retire(false);
     this.queue = [];
     this.active = null;
+    this.chargedBytes = 0;
+    this.chargedFrames = 0;
   }
 
   private retire(discard: boolean): void {
     this.delivery = null;
-    this.chargedBytes = 0;
-    this.chargedFrames = 0;
     this.acknowledgement = null;
     if (discard) {
-      this.queue = this.queue.filter((work) => work.kind === "reset" || work.kind === "barrier");
+      this.queue = this.queue.filter((work) => {
+        if (work.kind === "snapshot" || work.kind === "tail") {
+          this.chargedBytes -= work.charge;
+          this.chargedFrames -= 1;
+          return false;
+        }
+        return true;
+      });
     }
   }
 
@@ -241,10 +257,10 @@ export class TerminalStream {
 
   private complete(work: Work): void {
     if (work.kind !== "snapshot" && work.kind !== "tail") return;
-    const delivery = work.delivery;
-    if (delivery !== this.delivery) return;
     this.chargedBytes -= work.charge;
     this.chargedFrames -= 1;
+    const delivery = work.delivery;
+    if (delivery !== this.delivery) return;
     this.acknowledgement = { delivery, deliverySeq: work.frame.deliverySeq };
     if (work.kind === "snapshot") {
       this.replayed = true;
@@ -266,6 +282,7 @@ export class TerminalStream {
     this.appliedSeq = frame.seq;
     this.geometry = frame.geometry;
     if (preserved) return true;
+    this.replayed = false;
     this.graphics.writeSnapshot(base64ToBytes(frame.data), frame.geometry, done);
     return false;
   }
