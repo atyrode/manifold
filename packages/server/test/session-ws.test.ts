@@ -931,13 +931,18 @@ describe("SessionGateway live workspace authority", () => {
         },
         owner,
       );
-      expect(socket.frames()).toEqual([
+      expect(socket.frames().filter((frame) => frame.type === "authority_context")).toEqual([
         {
           type: "authority_context",
           workspaceCaps: CAPS.filter((cap) => cap !== "*"),
           workspaceEvents: true,
         },
       ]);
+      expect(socket.frames().find((frame) => frame.type === "resync")).toMatchObject({
+        ch: CH,
+        sceneWriteAllowed: false,
+      });
+      expect(socket.frames().some((frame) => frame.type === "init")).toBe(false);
       socket.clear();
       const workspaceDenial = fixture.auth.grant(
         {
@@ -960,8 +965,13 @@ describe("SessionGateway live workspace authority", () => {
       ]);
       socket.clear();
       fixture.auth.revokeGrant(descendantDenial.id, owner);
-      expect(socket.frames()).toEqual([]);
+      expect(socket.frames().filter((frame) => frame.type === "authority_context")).toEqual([]);
+      expect(socket.frames().find((frame) => frame.type === "resync")).toMatchObject({
+        ch: CH,
+        sceneWriteAllowed: true,
+      });
       expect(socket.closed).toBeNull();
+      socket.clear();
       send(fixture.gateway, "fleet", CH, { type: "resync_request" });
       expect(socket.frames().map((frame) => frame.type)).toEqual(["resync"]);
       socket.clear();
