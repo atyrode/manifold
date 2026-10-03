@@ -286,7 +286,7 @@ describe("machine hello reconciliation", () => {
     );
     const viewerSocket = new FakeSocket();
     const viewer = new SessionChannel(runtime.newId(), viewerSocket, root, container.id, "viewer");
-    broker.attach(viewer, { type: "terminal_attach", terminalId });
+    broker.attach(viewer, { type: "terminal_attach", terminalId, viewportId: "view" });
     expect(machineMessages(ownerSocket).at(-1)).toEqual({
       type: "geometry_snapshot_request",
       terminalId,
@@ -310,14 +310,28 @@ describe("machine hello reconciliation", () => {
         geometry: { cols: 60, rows: 18, revision: 1 },
       }),
     );
-    expect(viewerSocket.messages().filter((frame) => frame.type === "terminal_geometry")).toEqual([
+    const geometry = viewerSocket.messages().filter((frame) => frame.type === "terminal_geometry");
+    expect(geometry).toEqual([
       {
         type: "terminal_geometry",
         terminalId,
+        viewportId: "view",
+        deliveryId: expect.any(String),
+        deliverySeq: 1,
         seq: 0,
         geometry: { cols: 60, rows: 18, revision: 1 },
       },
     ]);
+    // The view's parser completed both frames, so a replacement owner may re-anchor it at once.
+    const completed = geometry[0];
+    if (completed === undefined) throw new Error("missing geometry delivery");
+    broker.ack(viewer, {
+      type: "terminal_ack",
+      terminalId,
+      viewportId: "view",
+      deliveryId: completed.deliveryId,
+      deliverySeq: completed.deliverySeq,
+    });
     const replacement = new FakeSocket();
     gateway.open("legacy-replacement", replacement);
     gateway.message(
@@ -358,9 +372,13 @@ describe("machine hello reconciliation", () => {
       {
         type: "terminal_snapshot",
         terminalId,
+        viewportId: "view",
+        deliveryId: expect.any(String),
+        deliverySeq: 0,
         seq: 0,
         data: Buffer.from("retained process").toString("base64"),
         geometry: { cols: 60, rows: 18, revision: null },
+        skipped: false,
       },
     ]);
     expect(broker.listForContainer(container.id)).toMatchObject([{ cols: 60, rows: 18 }]);
