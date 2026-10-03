@@ -83,11 +83,12 @@ Session revision 34 adds the required event-frame `plugin` origin (#601, ADR 004
 kind must qualify it by its declaring origin. Topics and machine/instance frames are unchanged;
 their compatibility sets only add the shared revision, retaining previously admitted versions.
 
-Session revision **52**, after integrated viewport revision 51, carries independently retained
-named collaborative texts and requires `sceneWriteAllowed` on room full-state frames. It fences
-clients that could replay legacy inline note bodies; `selfCaps` remains the raw credential
-ceiling, not effective authority at a home. Machine and instance wires are unchanged and their
-compatibility sets add 52 while retaining integrated 51; former held candidates 49/50 are not admitted.
+Session revision **56**, after integrated private-entry revision 55, carries independently
+retained named collaborative texts and requires `sceneWriteAllowed` on room full-state frames.
+It fences clients that could replay legacy inline note bodies; `selfCaps` remains the raw
+credential ceiling, not effective authority at a home. Machine, instance, native-owner and
+terminal-host wires are unchanged; machine and instance compatibility sets add 56 while
+retaining their integrated members. Former held Text/Files candidates are not admitted.
 
 ### Producer-neutral behavior
 
@@ -924,7 +925,7 @@ Numbered-preview seeding is a one-way representative-data projection, not restor
 may read a sensitive full-data archive, but the preview receives only the current schema plus
 `container_folders(id,name,created_at,parent_folder_id,sort_order)`,
 `containers(id,name,created_at,sort_order,folder_id,discipline)`,
-`scene_docs(container_id,epoch,rev,ts,hash,doc)` and, from schema 49,
+`scene_docs(container_id,epoch,rev,ts,hash,doc)` and, from schema 52,
 `scene_doc_capacity(container_id,epoch,migration_bytes)` for retained scene lineages. The latter
 is fixed document-format overhead, not a credential or grant. Every other table is emptied.
 Projection temporarily removes the copied schema's mutation triggers inside the transaction,
@@ -3730,7 +3731,11 @@ depends on it.
   Corrupt rows remain corrupt rather than being laundered; target collisions or unsupported
   legacy shapes refuse the transaction. Notes state/storage and ownership reservations are
   explicitly reconciled, including all disabled combinations without fabricated attribution.
-  Protocol 52 fences the old inline-body session format; machine/instance compatibility remains
+  Grant rows and dial references naming the retired `core.notes` plugin node move to `core.text`.
+  Correlated token, Run and Agent authority scopes, Run targets, Agent grant targets and native
+  authority snapshots stay verbatim lineage evidence: no Text operation, event or stream is
+  admitted at either plugin node. Schema 52's DDL runs through the prepared migration runner.
+  Protocol 56 fences the old inline-body session format; machine/instance compatibility remains
   additive. Rollback uses the complete pre-version image with a compatible old binary, not an
   old binary pointed at the migrated database. Disposable proof does not claim live activation.
   Migration records the maximum positive encoding growth across retained revisions as a fixed
