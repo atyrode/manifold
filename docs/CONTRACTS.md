@@ -3864,7 +3864,9 @@ interactive descendants and rename input remain controls, never drag sources.
 Terminal middle labels (attendance, cwd and machine) yield to the fixed title and control
 cluster. Adding attendance when a control receives focus must not move that control between
 pointer press and release; excess middle content truncates with ellipsis instead of wrapping the
-controls out from under the pointer. Narrow bars can still wrap controls when those controls
+controls out from under the pointer. Directory and machine labels are individually shrinkable
+text boxes with character-level ellipsis, not atomic labels hidden as a whole or hard-clipped.
+The middle reserves attendance and metadata cues before focus. Narrow bars can still wrap controls when those controls
 themselves cannot fit. The real mirror gate exercises this transition with a stable `runner`
 cwd label and checks the held Park target before completing the same pointer gesture.
 

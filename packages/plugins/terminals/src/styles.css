@@ -128,26 +128,36 @@
    press. */
 .terminal-titlebar .node-titlebar__middle {
   flex: 1 1 0;
-  display: block;
-  /* Reserve a visible ellipsis and the native control height before attendance appears. */
-  min-width: 2ch;
+  /* Reserve attendance and metadata cues before focus adds its own presence chip. */
+  min-width: 5rem;
   line-height: 1.15rem;
-  text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
 }
 
-.terminal-titlebar .node-titlebar__middle > * {
-  display: inline-block;
-  vertical-align: top;
+.terminal-titlebar .node-titlebar__middle > .terminal-cwd,
+.terminal-titlebar .node-titlebar__middle > .terminal-machine-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.terminal-titlebar .node-titlebar__middle > .terminal-cwd {
+  min-width: 1em;
 }
 
 .terminal-titlebar .node-titlebar__middle > .terminal-machine-badge {
-  display: inline-flex;
+  display: block;
+  min-width: calc(0.75rem + 1em);
+  margin-inline-start: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.terminal-titlebar .node-titlebar__middle > * + * {
-  margin-inline-start: 0.35rem;
+.terminal-titlebar .terminal-machine-dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-inline-end: 0.3rem;
 }
 
 .terminal-titlebar .node-titlebar__actions {
