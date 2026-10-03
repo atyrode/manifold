@@ -675,7 +675,7 @@ export class Browser {
     proc?.kill();
     // The private bus must outlive its Chromium client. Stopping it first can
     // abort a still-running browser and keep the page's sockets alive during
-    // the core dump, including for callers that own an explicit profile.
+    // the core dump, including for ordinary non-incognito launches.
     if (proc !== null) {
       const timer = setTimeout(() => proc.kill("SIGKILL"), 5_000);
       try {
