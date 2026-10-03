@@ -115,11 +115,7 @@ if (mode === "prepare" || mode === "reopen") {
     const sink = terminal;
     const viewportId = "preview-terminal-lifecycle";
     type Frame = { terminalId: string; viewportId: string; deliveryId: string; deliverySeq: number };
-    type Geometry = { cols: number; rows: number; revision: number | null };
-    const view: { deliveryId: string | undefined; geometry: Geometry | undefined } = {
-      deliveryId: undefined,
-      geometry: undefined,
-    };
+    let deliveryId: string | undefined;
     let output = "";
     // An acknowledgement credits only frames this sink has already finished consuming.
     const consumed = (frame: Frame): void =>
@@ -128,18 +124,18 @@ if (mode === "prepare" || mode === "reopen") {
       frame.terminalId === opened.id && frame.viewportId === viewportId;
     sink.on("terminal_snapshot", (message: Frame & { data: string }) => {
       if (!mine(message)) return;
-      view.deliveryId = message.deliveryId;
+      deliveryId = message.deliveryId;
       output = (output + base64ToText(message.data)).slice(-32_000);
       consumed(message);
     });
     sink.on("terminal_output", (message: Frame & { data: string }) => {
-      if (!mine(message) || message.deliveryId !== view.deliveryId) return;
+      if (!mine(message) || message.deliveryId !== deliveryId) return;
       output = (output + base64ToText(message.data)).slice(-32_000);
       consumed(message);
     });
-    sink.on("terminal_geometry", (message: Frame & { geometry: Geometry }) => {
-      if (!mine(message) || message.deliveryId !== view.deliveryId) return;
-      view.geometry = message.geometry;
+    sink.on("terminal_geometry", (message: Frame) => {
+      if (!mine(message) || message.deliveryId !== deliveryId) return;
+      // This raw transcript has no geometry projection to update.
       consumed(message);
     });
     await terminal.connect();

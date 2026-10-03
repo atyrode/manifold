@@ -162,27 +162,26 @@ let
         // of any other terminal or view are neither consumed nor acknowledged, and each
         // acknowledgement follows the sink's completed consumption of that frame.
         const viewportId = "shell-fixture-client";
-        const view: { deliveryId?: string; geometry?: unknown } = {};
+        let deliveryId: string | undefined;
         let snapshot = false;
         let text = "";
         client.on("terminal_snapshot", (message) => {
           if (message.terminalId !== state.terminalId || message.viewportId !== viewportId) return;
-          view.deliveryId = message.deliveryId;
-          view.geometry = message.geometry;
+          deliveryId = message.deliveryId;
           text = Buffer.from(message.data, "base64").toString();
           snapshot = true;
           client.ackTerminal(state.terminalId, viewportId, message.deliveryId, message.deliverySeq);
         });
         client.on("terminal_output", (message) => {
           if (message.terminalId !== state.terminalId || message.viewportId !== viewportId ||
-            message.deliveryId !== view.deliveryId) return;
+            message.deliveryId !== deliveryId) return;
           text += Buffer.from(message.data, "base64").toString();
           client.ackTerminal(state.terminalId, viewportId, message.deliveryId, message.deliverySeq);
         });
         client.on("terminal_geometry", (message) => {
           if (message.terminalId !== state.terminalId || message.viewportId !== viewportId ||
-            message.deliveryId !== view.deliveryId) return;
-          view.geometry = message.geometry;
+            message.deliveryId !== deliveryId) return;
+          // The raw transcript has no geometry projection to update.
           client.ackTerminal(state.terminalId, viewportId, message.deliveryId, message.deliverySeq);
         });
         client.attachTerminal(state.terminalId, viewportId);
