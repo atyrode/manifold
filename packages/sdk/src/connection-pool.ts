@@ -254,7 +254,7 @@ function isTerminalGeometry(
 }
 
 function isTerminalStreamFrame(raw: object): raw is TerminalStreamFrame {
-  const type = Reflect.get(raw, "type");
+  const type: unknown = Reflect.get(raw, "type");
   const ch = Reflect.get(raw, "ch");
   const terminalId = Reflect.get(raw, "terminalId");
   const seq = Reflect.get(raw, "seq");
