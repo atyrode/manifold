@@ -671,17 +671,20 @@ export class Browser {
 
   async close(): Promise<void> {
     this.socket?.close();
-    this.proc?.kill();
-    if (this.transientProfile !== null) {
-      const proc = this.proc;
-      if (proc !== null) {
-        const timer = setTimeout(() => proc.kill("SIGKILL"), 5_000);
-        try {
-          await proc.exited;
-        } finally {
-          clearTimeout(timer);
-        }
+    const proc = this.proc;
+    proc?.kill();
+    // The private bus must outlive its Chromium client. Stopping it first can
+    // abort a still-running browser and keep the page's sockets alive during
+    // the core dump, including for callers that own an explicit profile.
+    if (proc !== null) {
+      const timer = setTimeout(() => proc.kill("SIGKILL"), 5_000);
+      try {
+        await proc.exited;
+      } finally {
+        clearTimeout(timer);
       }
+    }
+    if (this.transientProfile !== null) {
       rmSync(this.transientProfile, { recursive: true, force: true });
       this.transientProfile = null;
     }
