@@ -2,7 +2,7 @@
  * Real titlebar restart regression: cwd publication, destructive confirmation, exited
  * recovery, stable terminal/leaf identity, and a clean replacement byte stream.
  * Uses the shared gate bundle when MANIFOLD_GATE_DIST is set; otherwise builds its own.
- * MANIFOLD_RESTART_SCREENSHOT optionally retains the final rendered browser screenshot.
+ * MANIFOLD_RESTART_SCREENSHOT optionally retains the final or failed rendered browser surface.
  */
 import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync } from "node:fs";
@@ -82,12 +82,16 @@ try {
   // A mounted view acknowledges a delivery only after xterm replayed its snapshot, and only a
   // replayed screen accepts keys (#880): keys typed earlier are dropped, not delivered. The
   // page's own outgoing completion credit is therefore the screen's readiness for a typist.
-  const acknowledged: { terminalId: string; viewportId: string; deliveryId: string }[] = [];
+  const acknowledged = new Map<
+    string,
+    { terminalId: string; viewportId: string; deliveryId: string }
+  >();
   target.on("Network.webSocketFrameSent", (params) => {
     const payload = (params["response"] as { payloadData?: unknown } | undefined)?.payloadData;
     if (typeof payload !== "string" || !payload.includes('"terminal_ack"')) return;
     const frame = ClientMessageSchema.safeParse(JSON.parse(payload));
-    if (frame.success && frame.data.type === "terminal_ack") acknowledged.push(frame.data);
+    if (frame.success && frame.data.type === "terminal_ack" && frame.data.deliverySeq === 0)
+      acknowledged.set(frame.data.terminalId, frame.data);
   });
   await target.send("Network.enable", {});
   await target.goto(`${origin}/#key=${ownerKey}`);
@@ -173,19 +177,21 @@ try {
   });
   await target.evaluate("void (window.__restartFrame = document.querySelector('.terminal-frame'))");
   await until(
-    () => acknowledged.some((ack) => ack.terminalId === original.id),
+    () => acknowledged.has(original.id),
     10_000,
     "new terminal screen replayed",
   );
-  const viewportId = acknowledged.find((ack) => ack.terminalId === original.id)?.viewportId;
+  const viewportId = acknowledged.get(original.id)?.viewportId;
   assert.ok(viewportId);
-  /** Distinct deliveries this mounted view has completed: one per replayed snapshot. */
-  const replayed = (): number =>
-    new Set(
-      acknowledged
-        .filter((ack) => ack.terminalId === original.id && ack.viewportId === viewportId)
-        .map((ack) => ack.deliveryId),
-    ).size;
+  /** Latest snapshot this same mounted view has actually finished replaying. */
+  const replayed = (): string | undefined => {
+    const ack = acknowledged.get(original.id);
+    return ack?.viewportId === viewportId ? ack.deliveryId : undefined;
+  };
+  const hasReplayedSince = (previous: string | undefined): boolean => {
+    const current = replayed();
+    return current !== undefined && current !== previous;
+  };
   const command = async (text: string): Promise<void> => {
     await click(".xterm-host");
     await target.typeText(text);
@@ -236,7 +242,7 @@ try {
     10_000,
     "old byte stream cleared",
   );
-  await until(() => replayed() > beforeRunningRestart, 10_000, "replacement screen replayed");
+  await until(() => hasReplayedSince(beforeRunningRestart), 10_000, "replacement screen replayed");
   await command("printf '\\n%s%s\\n' RUNNING_RESTART_ READY; pwd");
   await until(
     () => screenContains("RUNNING_RESTART_READY"),
@@ -259,7 +265,7 @@ try {
     10_000,
     "exited tile becomes live",
   );
-  await until(() => replayed() > beforeExitedRestart, 10_000, "restarted screen replayed");
+  await until(() => hasReplayedSince(beforeExitedRestart), 10_000, "restarted screen replayed");
   await command("printf '\\n%s%s\\n' EXITED_RESTART_ READY; pwd");
   await until(
     () => screenContains("EXITED_RESTART_READY"),
@@ -287,25 +293,34 @@ try {
     true,
     "same mounted terminal tile across both restarts",
   );
-  const screenshot = process.env["MANIFOLD_RESTART_SCREENSHOT"];
-  if (screenshot !== undefined) {
-    const frame = await target.send("Page.captureScreenshot", { format: "png" });
-    const data = frame.result?.["data"];
-    assert.ok(typeof data === "string");
-    await Bun.write(screenshot, Buffer.from(data, "base64"));
-  }
-  console.log(
-    "terminal-restart browser: GREEN (running confirmation, exited recovery, cwd, same tile, fresh output)",
-  );
 } catch (error: unknown) {
   failed = true;
   console.error(
     `terminal-restart browser: RED: ${error instanceof Error ? error.message : String(error)}`,
   );
 } finally {
+  const screenshot = process.env["MANIFOLD_RESTART_SCREENSHOT"];
+  if (screenshot !== undefined && browser !== null) {
+    try {
+      const frame = await browser.send("Page.captureScreenshot", { format: "png" });
+      const data = frame.result?.["data"];
+      assert.ok(typeof data === "string");
+      await Bun.write(screenshot, Buffer.from(data, "base64"));
+    } catch (error: unknown) {
+      failed = true;
+      console.error(
+        `terminal-restart screenshot: RED: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   observer?.close();
   await browser?.close();
   await teardownServer(server, dataDir);
   cleanupDist();
+}
+if (!failed) {
+  console.log(
+    "terminal-restart browser: GREEN (running confirmation, exited recovery, cwd, same tile, fresh output)",
+  );
 }
 process.exit(failed ? 1 : 0);
