@@ -561,6 +561,7 @@ export class Room {
    * Unlike socket accept-then-repair, native writes must fit before either half is visible.
    */
   transactDoc(write: (doc: Y.Doc) => void, origin: unknown): boolean {
+    requireActionEffects();
     if (this.isDocOverLimit()) return false;
     const staged = createSceneDoc();
     // Keep deleted structs during preflight: canonical undo observers may retain them too.

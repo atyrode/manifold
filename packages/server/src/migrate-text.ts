@@ -2,12 +2,30 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { SharedTextRecordSchema, formatManifoldUri } from "@manifold/protocol";
 import { ELEMENTS_KEY, Y } from "@manifold/scene";
+import { executeMigrationStatements } from "./migration-statements.ts";
 
 const OLD_OWNER = "core.notes";
 const TEXT_OWNER = "core.text";
 const NOTE_OWNER = "core.canvas.note";
 const TEXTS = "texts";
 const AUTHORSHIP = ["lastEditedBy", "lastEditedAt"] as const;
+
+/** Whole capacity DDL statements, including the trigger body, for the prepared runner. */
+const CAPACITY_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS scene_doc_capacity(
+      container_id TEXT NOT NULL REFERENCES containers(id) ON DELETE CASCADE,
+      epoch TEXT NOT NULL,
+      migration_bytes INTEGER NOT NULL CHECK(migration_bytes >= 0),
+      PRIMARY KEY(container_id, epoch)
+    )`,
+  `CREATE TRIGGER IF NOT EXISTS scene_doc_capacity_retire
+      AFTER DELETE ON scene_docs
+      WHEN NOT EXISTS (SELECT 1 FROM scene_docs
+        WHERE container_id = OLD.container_id AND epoch = OLD.epoch)
+      BEGIN
+        DELETE FROM scene_doc_capacity WHERE container_id = OLD.container_id AND epoch = OLD.epoch;
+      END`,
+];
 
 interface SceneRow {
   container_id: string;
@@ -238,7 +256,7 @@ function append(doc: Y.Doc, item: Y.Item, clients: SyntheticClients): void {
  * transactions, observers, or alternative sync implementation use the temporary graph.
  */
 function convert(lineage: Lineage, doc: Y.Doc, clients: SyntheticClients): Uint8Array {
-  const prefix = JSON.stringify(["schema49", lineage.home, lineage.epoch]);
+  const prefix = JSON.stringify(["schema52", lineage.home, lineage.epoch]);
   const mappedId = (kind: string, id: Y.ID): Y.ID =>
     Y.createID(clients.get(`${prefix}/${kind}/${id.client}`), id.clock);
   const elements = doc.getMap<unknown>(ELEMENTS_KEY);
@@ -553,7 +571,7 @@ function metadataPlan(db: Database, hasText: boolean): MetadataPlan {
   };
 }
 
-/** Schema 49; the global runner supplies the complete backup and enclosing transaction. */
+/** Schema 52; the global runner supplies the complete backup and enclosing transaction. */
 export function migrateToOwnedText(db: Database, _path: string): void {
   const clients = new Set<number>();
   const lineages = readLineages(db, clients);
@@ -563,22 +581,10 @@ export function migrateToOwnedText(db: Database, _path: string): void {
   );
   // A server-owned capacity fact, never a client-writable CRDT field. Updates cannot
   // mint credit, and another epoch cannot inherit it.
-  db.exec(`CREATE TABLE IF NOT EXISTS scene_doc_capacity(
-      container_id TEXT NOT NULL REFERENCES containers(id) ON DELETE CASCADE,
-      epoch TEXT NOT NULL,
-      migration_bytes INTEGER NOT NULL CHECK(migration_bytes >= 0),
-      PRIMARY KEY(container_id, epoch)
-    )`);
-  db.exec(`CREATE TRIGGER IF NOT EXISTS scene_doc_capacity_retire
-      AFTER DELETE ON scene_docs
-      WHEN NOT EXISTS (SELECT 1 FROM scene_docs
-        WHERE container_id = OLD.container_id AND epoch = OLD.epoch)
-      BEGIN
-        DELETE FROM scene_doc_capacity WHERE container_id = OLD.container_id AND epoch = OLD.epoch;
-      END`);
+  executeMigrationStatements(db, CAPACITY_STATEMENTS);
   const allocator = new SyntheticClients(clients);
   for (const lineage of lineages) {
-    const prefix = JSON.stringify(["schema49", lineage.home, lineage.epoch]);
+    const prefix = JSON.stringify(["schema52", lineage.home, lineage.epoch]);
     for (const client of [...lineage.authors].sort((left, right) => left - right)) {
       for (const kind of ["roots", ...AUTHORSHIP]) allocator.get(`${prefix}/${kind}/${client}`);
     }
@@ -650,5 +656,5 @@ export function migrateToOwnedText(db: Database, _path: string): void {
       db.query("UPDATE dials SET ref = ? WHERE id = ?").run(JSON.stringify(newNode), row.id);
     }
   }
-  db.query("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '49')").run();
+  db.query("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '52')").run();
 }

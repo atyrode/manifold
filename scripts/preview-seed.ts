@@ -90,7 +90,7 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
       .all();
     // This is document format metadata, not authority. Older source schemas have no credit.
     const capacities =
-      Number(version.value) >= 49
+      Number(version.value) >= 52
         ? destination
             .query<SceneCapacityRow, []>(
               `SELECT container_id, epoch, migration_bytes FROM scene_doc_capacity
