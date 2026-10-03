@@ -10,7 +10,7 @@ import {
 import { CHANNEL_LIMIT_CLOSE_CODE, MAX_SESSION_CHANNELS_PER_CONNECTION } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
 import { useLayoutEffect, useMemo, useRef, type ReactElement, type ReactNode } from "react";
-import type { StoredIdentity } from "./api.ts";
+import type { StoredIdentity } from "./identity-storage.ts";
 
 const IDLE: DocumentAccessState = { state: "idle" };
 const LOADING: DocumentAccessState = { state: "loading" };
