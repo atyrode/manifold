@@ -5859,3 +5859,141 @@ test.skipIf(!linux)(
     }
   },
 );
+
+test.skipIf(!linux)(
+  "overlapping cancellation and shutdown share retained startup cleanup without reopening a closed fault",
+  async () => {
+    const f = temporaryOutputFixture();
+    let reclaimable = false;
+    let reclaimed = false;
+    let heldJobReclaimable = false;
+    let entered = Promise.withResolvers<void>();
+    let gate = Promise.withResolvers<void>();
+    let overlapping: Promise<PromiseSettledResult<void>[]> | undefined;
+    const cleanup = async () => {
+      if (reclaimed) return;
+      entered.resolve();
+      await gate.promise;
+      // Like retained native directory authority, a second in-flight caller cannot reclaim
+      // it after the first has closed it. Calls entering after closure are already safe.
+      if (!reclaimable || reclaimed)
+        throw new LinuxJobRefusal("cgroup-cleanup-identity-changed", undefined, true, cleanup);
+      reclaimed = true;
+    };
+    try {
+      await f.open();
+      await f.install();
+      // Keep shutdown retryable even after the startup obligation succeeds, so reopening
+      // exercises this same owner rather than losing a stale fault flag through recovery.
+      f.workloads.set("held", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "sealed during refused shutdown");
+        },
+        settle: "cancel",
+        release() {
+          if (!heldJobReclaimable)
+            throw new LinuxJobRefusal("cgroup-cleanup-failed", undefined, true);
+        },
+      });
+      await f.start("held");
+      f.workloads.set("refused", {
+        settle: new LinuxJobRefusal(
+          "cgroup-cleanup-identity-changed",
+          undefined,
+          true,
+          cleanup,
+        ),
+      });
+      await f.start("refused");
+      const refused = await f.settled("refused");
+      expect(refused).toMatchObject({
+        state: "refused",
+        reason: "cgroup-cleanup-identity-changed",
+        usage: null,
+        outputs: [],
+      });
+
+      const cancelling = f.owner.execute({
+        type: "cancel",
+        jobId: "refused",
+        reason: "requested",
+      });
+      await entered.promise;
+      overlapping = Promise.allSettled([cancelling, f.owner.shutdown()]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      gate.resolve();
+      expect(await overlapping).toEqual([
+        { status: "fulfilled", value: undefined },
+        {
+          status: "rejected",
+          reason: expect.objectContaining({ message: "cgroup-cleanup-failed" }),
+        },
+      ]);
+      const held = await f.settled("held");
+      expect(held).toMatchObject({ state: "cancelled", reason: "cancelled" });
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "cgroup-cleanup-pending",
+      });
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+
+      reclaimable = true;
+      entered = Promise.withResolvers<void>();
+      gate = Promise.withResolvers<void>();
+      const retrying = f.owner.execute({
+        type: "cancel",
+        jobId: "refused",
+        reason: "requested",
+      });
+      await entered.promise;
+      overlapping = Promise.allSettled([retrying, f.owner.shutdown()]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      gate.resolve();
+      expect(await overlapping).toEqual([
+        { status: "fulfilled", value: undefined },
+        {
+          status: "rejected",
+          reason: expect.objectContaining({ message: "cgroup-cleanup-failed" }),
+        },
+      ]);
+      heldJobReclaimable = true;
+      await f.owner.execute({ type: "cancel", jobId: "held", reason: "requested" });
+      expect(f.owner.maintenanceReady).toBe(true);
+      expect(f.roots()).toEqual([]);
+      for (const result of [refused, held]) {
+        const before = f.events.length;
+        await f.owner.execute({ type: "status", jobId: result.jobId });
+        expect(f.events.slice(before)).toContainEqual({ type: "result", result });
+      }
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.start("resumed");
+      expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
+      const extracted = f.extract("held", "material");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe(
+          "sealed during refused shutdown",
+        );
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+      }
+      await f.shutdown();
+      await f.open();
+      for (const result of [refused, held]) {
+        const before = f.events.length;
+        await f.owner.execute({ type: "status", jobId: result.jobId });
+        expect(f.events.slice(before)).toContainEqual({ type: "result", result });
+      }
+    } finally {
+      reclaimable = true;
+      heldJobReclaimable = true;
+      gate.resolve();
+      await overlapping;
+      await f.close();
+    }
+  },
+);

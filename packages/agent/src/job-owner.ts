@@ -156,6 +156,7 @@ interface OwnedJob {
   result: JobResult;
   handle: LinuxJobHandle | null;
   startupCleanup: (() => Promise<void>) | undefined;
+  startupCleanupAttempt: Promise<void> | undefined;
   /** A cleanup fault, not an ordinary live handle; only successful reclamation clears it. */
   cgroupCleanupPending: boolean;
   emptyObserved: boolean;
@@ -3187,6 +3188,29 @@ export class MachineJobOwner {
     // In particular, no timeout and no wait for job.empty may block a later cancel.
   }
 
+  /** Explicit cancellation and shutdown share one attempt, including its fault latch.
+   * Failure retains the callback for a later explicit retry; success closes ownership once. */
+  private retryStartupCleanup(job: OwnedJob, cleanup: () => Promise<void>): Promise<void> {
+    if (job.startupCleanupAttempt) return job.startupCleanupAttempt;
+    job.startupCleanupAttempt = Promise.resolve()
+      .then(cleanup)
+      .then(
+        () => {
+          job.startupCleanup = undefined;
+          job.cgroupCleanupPending = false;
+        },
+        (error: unknown) => {
+          if (!(error instanceof LinuxJobRefusal) || !error.workloadEmpty) throw error;
+          // Empty proof ends writers, not the retained reclamation obligation.
+          this.cgroupCleanupFailed("startup", error, job.request.jobId);
+        },
+      )
+      .finally(() => {
+        job.startupCleanupAttempt = undefined;
+      });
+    return job.startupCleanupAttempt;
+  }
+
   private async cancel(jobId: string): Promise<void> {
     const job = this.requireJob(jobId);
     job.cancelRequested = true;
@@ -3205,15 +3229,7 @@ export class MachineJobOwner {
         throw error;
       }
     } else if (job.startupCleanup) {
-      try {
-        await job.startupCleanup();
-        job.startupCleanup = undefined;
-        job.cgroupCleanupPending = false;
-      } catch (error) {
-        if (!(error instanceof LinuxJobRefusal) || !error.workloadEmpty) throw error;
-        // Empty proof ends writers, not the retained reclamation obligation.
-        this.cgroupCleanupFailed("startup", error, job.request.jobId);
-      }
+      await this.retryStartupCleanup(job, job.startupCleanup);
       job.resolveEmpty();
       for (const release of job.releaseWriters) release();
       job.releaseWriters = [];
@@ -3281,6 +3297,7 @@ export class MachineJobOwner {
       },
       handle: null,
       startupCleanup: undefined,
+      startupCleanupAttempt: undefined,
       cgroupCleanupPending: false,
       emptyObserved: false,
       context: null,
