@@ -38,10 +38,10 @@
       # foreign-target materialization is not native compiled-package or VM evidence.
       # Regenerate and requalify these hashes whenever their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-XVv39gbFgX2iCVSQP0ZHyu67AbzxXEcCUtdwk2J8ZoQ=";
-        aarch64-linux = "sha256-AouHooIL8bJTcQTOWyqJkivysiDIjePz9uG1sAf985s=";
-        x86_64-darwin = "sha256-VrLZy1iMWOcl26LE6kScXZTkvSCtVvNW9xn0/uxEuxE=";
-        aarch64-darwin = "sha256-LBHf1hUHUir0UDXEECtQ0na4X9A9yxzjgx3yA23rlUs=";
+        x86_64-linux = "sha256-99g6hxP00V5A7dUikkbmMhGYsBys8VXAdc7jH+x/q9I=";
+        aarch64-linux = "sha256-N1fbdAHxEpBm9DPm5H15R9vVpo8AruIZvZNVxLCuhwY=";
+        x86_64-darwin = "sha256-sJW1ZVqbI0PRBvo6fxPHcVG1Qu3DZCZfndz3C68rTEI=";
+        aarch64-darwin = "sha256-3+k/hrkuStgUqJa7PYtBxfhZdA8ctVsESFhxOQV+qeo=";
       };
 
       # Keep the dependency input independent of unrelated workspace sources.
