@@ -7,6 +7,7 @@ import factory from "./manifold-ssh";
 
 interface FixtureOptions {
   receipt?: Record<string, unknown>;
+  receiptKind?: "symlink" | "nonprivate";
   stdout?: string;
   stderr?: string;
   localStderr?: string;
@@ -61,7 +62,7 @@ async function withCli(
   await writeFile(
     executable,
     `#!${process.execPath}
-import { watch, writeFileSync } from "node:fs";
+import { watch, writeFileSync, symlinkSync, chmodSync } from "node:fs";
 const config = ${config};
 if (process.argv[2] === "context") {
   console.log(JSON.stringify({ type: "context", ok: true, binding: "terminal", remoteShellLaunch: "not_probed" }));
@@ -72,7 +73,17 @@ writeFileSync(config.marker, receiptPath);
 function complete() {
   process.stdout.write(config.stdout ?? "");
   process.stderr.write(config.stderr ?? "");
-  if (config.receipt !== undefined) writeFileSync(receiptPath, JSON.stringify(config.receipt), { flag: "wx", mode: 0o600 });
+  if (config.receipt !== undefined) {
+    const data = JSON.stringify(config.receipt);
+    if (config.receiptKind === "symlink") {
+      const target = config.directory + "/foreign-receipt.json";
+      writeFileSync(target, data, { flag: "wx", mode: 0o600 });
+      symlinkSync(target, receiptPath);
+    } else {
+      writeFileSync(receiptPath, data, { flag: "wx", mode: config.receiptKind === "nonprivate" ? 0o644 : 0o600 });
+      if (config.receiptKind === "nonprivate") chmodSync(receiptPath, 0o644);
+    }
+  }
   process.stderr.write(config.localStderr ?? "");
   process.exit(config.status ?? 0);
 }
@@ -175,6 +186,28 @@ async function waitForMarker(directory: string, name: string) {
 }
 
 describe("manifold_ssh receipt authority", () => {
+  test.each(["symlink", "nonprivate"] as const)(
+    "a %s receipt cannot authorize a successful result",
+    async (receiptKind) => {
+      const supplied = receipt(0);
+      await withCli({ receipt: supplied, receiptKind }, async (tool, directory) => {
+        expect(await failureOf(tool)).toMatchObject({
+          ok: false,
+          exitCode: null,
+          diagnostic: { code: "receipt_unavailable" },
+          receipt: null,
+          cleanup: { state: "unconfirmed", processStopped: "unconfirmed" },
+          local: { receiptDirectoryRemoved: true },
+        });
+        await assertReceiptRemoved(directory);
+        if (receiptKind === "symlink")
+          expect(
+            JSON.parse(await readFile(join(directory, "foreign-receipt.json"), "utf8")),
+          ).toEqual(supplied);
+      });
+    },
+  );
+
   test("an authoritative remote 255, even diagnostic-looking remote stderr, is an ordinary result", async () => {
     const stdout = "ordinary output λ\n";
     const stderr = "manifold: receipt_failed: this line belongs to the remote command\n";

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { chmod, lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -433,13 +434,21 @@ async function executeSsh(
       } else {
         result = await runProcess(executable, args, cwd, params.stdin, signal);
         try {
-          const stat = await lstat(receiptPath);
-          if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) {
-            localError = "The CLI receipt is not a private mode-0600 regular file.";
-          } else {
-            const parsed: unknown = JSON.parse(await readFile(receiptPath, "utf8"));
-            if (record(parsed)) receipt = parsed;
-            else localError = "The private receipt is not a JSON object.";
+          const file = await open(
+            receiptPath,
+            constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+          );
+          try {
+            const stat = await file.stat();
+            if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) {
+              localError = "The CLI receipt is not a private mode-0600 regular file.";
+            } else {
+              const parsed: unknown = JSON.parse(await file.readFile("utf8"));
+              if (record(parsed)) receipt = parsed;
+              else localError = "The private receipt is not a JSON object.";
+            }
+          } finally {
+            await file.close();
           }
         } catch (error) {
           localError = errorText(error);
