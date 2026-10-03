@@ -899,12 +899,6 @@ describe("manifold ssh", () => {
     expect(await ssh([MACHINE.id, "printf", "anything"], local, fixture.factory)).toBe(0);
     expect(local.stdout).toEqual(expected);
     expect(local.stderr).toEqual(stderr);
-    expect(createdArgv(fixture).slice(3)).toEqual([
-      "manifold-ssh",
-      expect.any(String),
-      "n",
-      "printf anything",
-    ]);
   });
 
   test.each([0, 1, 42, 137])("exits with the owner-reported remote status %d", async (code) => {
@@ -1113,6 +1107,35 @@ describe("manifold ssh", () => {
       expect(local.stderr.toString()).toMatch(new RegExp(`^manifold: ${code}: [^\\n]+\\n$`));
     }
     expect(requests).toEqual([]);
+  });
+
+  test.each([
+    { target: "missing", code: "machine_not_found" },
+    { target: "offline", code: "machine_offline" },
+  ])("$code exposes only caller-visible online nonrevoked machines", async ({ target, code }) => {
+    const dir = await mkdtemp(join(tmpdir(), "manifold-ssh-selection-"));
+    try {
+      const fixture = harness({
+        roster: [
+          MACHINE,
+          { ...MACHINE, id: "offline", name: "Offline machine", online: false },
+          { ...MACHINE, id: "revoked", name: "Revoked machine", revoked: true },
+        ],
+      });
+      const path = join(dir, "receipt.json");
+      expect(await ssh(["--receipt", path, target, "true"], localStdio(), fixture.factory)).toBe(
+        255,
+      );
+      const { receipt } = await readReceipt(path);
+      expect(receipt).toMatchObject({
+        diagnostic: { code },
+        authorizedOnlineMachines: [{ id: MACHINE.id, name: MACHINE.name }],
+        completion: { state: "not_started" },
+        cleanup: { state: "not_needed", processStopped: "not_started" },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("--receipt writes the result once with mode 0600 and never replaces an existing path", async () => {

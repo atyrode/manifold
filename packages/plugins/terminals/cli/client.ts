@@ -57,7 +57,7 @@ const HELP = `manifold — terminal-local, scoped SDK client
 
 Usage:
   manifold doctor
-  manifold context
+  manifold context [--json]
   manifold actions
   manifold machines
   manifold ssh [-n] [-t] [--timeout-ms <n>] [--max-output-bytes <n>]
@@ -104,8 +104,9 @@ exec takes direct argv, not a shell expression; use /bin/sh -c explicitly if she
 syntax is wanted. No stdin is forwarded. For a leading-hyphen executable, use an
 explicit path such as ./-name.
 
-context is plain text and local-only. Other commands except ssh return one JSON
-object. actions returns discovered action schemas. doctor checks discovery,
+context is local-only and defaults to plain text. context --json reports the
+inherited binding without a network or shell-authority probe. Other commands except
+ssh return one JSON object. actions returns discovered action schemas. doctor checks discovery,
 required core doors, scoped machine access and session admission, without creating
 a terminal. Remote shell launch is not probed: it needs terminals:spawn at the
 placement and machines:shell at the exact machine/account. exec returns owned-command PTY output as base64 (stdout/stderr merged,
@@ -230,7 +231,10 @@ const DIAGNOSTICS = {
 type FailureCode = keyof typeof DIAGNOSTICS;
 
 class ClientFailure extends Error {
-  constructor(readonly code: FailureCode) {
+  constructor(
+    readonly code: FailureCode,
+    readonly authorizedOnlineMachines?: readonly Pick<MachineSummary, "id" | "name">[],
+  ) {
     super(code);
   }
 }
@@ -291,7 +295,8 @@ function binding(environment: Record<string, string | undefined>): Binding {
 }
 
 type Command =
-  | { name: "help" | "context" | "doctor" | "actions" | "machines" }
+  | { name: "help" | "doctor" | "actions" | "machines" }
+  | { name: "context"; json: boolean }
   | {
       name: "exec";
       machine: string;
@@ -305,10 +310,9 @@ function parse(args: readonly string[]): Command {
   if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] === "-h")))
     return { name: "help" };
   const name = args[0];
-  if (
-    args.length === 1 &&
-    (name === "context" || name === "doctor" || name === "actions" || name === "machines")
-  )
+  if (name === "context" && (args.length === 1 || (args.length === 2 && args[1] === "--json")))
+    return { name, json: args.length === 2 };
+  if (args.length === 1 && (name === "doctor" || name === "actions" || name === "machines"))
     return { name };
   if (name !== "exec") throw new ClientFailure("invalid_arguments");
   const flags = new Map<string, string>();
@@ -506,13 +510,25 @@ async function machines(
   return parsed.data.machines;
 }
 
+function machineSelectionFailure(
+  code: "machine_not_found" | "machine_offline",
+  roster: readonly MachineSummary[],
+): ClientFailure {
+  const authorizedOnlineMachines: Pick<MachineSummary, "id" | "name">[] = [];
+  for (const machine of roster) {
+    if (machine.online && !machine.revoked)
+      authorizedOnlineMachines.push({ id: machine.id, name: machine.name });
+  }
+  return new ClientFailure(code, authorizedOnlineMachines);
+}
+
 function selectMachine(roster: readonly MachineSummary[], selector: string): MachineSummary {
   const byId = roster.filter((machine) => machine.id === selector);
   const matches = byId.length === 0 ? roster.filter((machine) => machine.name === selector) : byId;
-  if (matches.length === 0) throw new ClientFailure("machine_not_found");
+  if (matches.length === 0) throw machineSelectionFailure("machine_not_found", roster);
   if (matches.length !== 1) throw new ClientFailure("machine_ambiguous");
   const machine = matches[0]!;
-  if (!machine.online || machine.revoked) throw new ClientFailure("machine_offline");
+  if (!machine.online || machine.revoked) throw machineSelectionFailure("machine_offline", roster);
   if (machine.draining) throw new ClientFailure("machine_draining");
   if (machine.terminalExecution === "governed") throw new ClientFailure("machine_governed");
   if (machine.terminalExecution !== "unconfined") throw new ClientFailure("machine_unsupported");
@@ -1449,6 +1465,8 @@ async function runSsh(args: readonly string[], options: TerminalClientOptions): 
           : { mode: "pipes", bytes: 0, stdoutBytes: 0, stderrBytes: 0, complete: false },
       ),
     };
+    if (error instanceof ClientFailure && error.authorizedOnlineMachines !== undefined)
+      result["authorizedOnlineMachines"] = error.authorizedOnlineMachines;
   } finally {
     clock?.close();
   }
@@ -1516,7 +1534,13 @@ export async function runTerminalClient(
     if (command.name === "help") text = HELP;
     else if (command.name === "context") {
       const code = config === null ? failure(bindingError) : null;
-      text = `${CONTEXT}\nBinding: ${code === null ? "present (not yet verified; run manifold doctor)." : DIAGNOSTICS[code]}\n`;
+      text = command.json
+        ? `${JSON.stringify(
+            code === null
+              ? { type: "context", ok: true, binding: "terminal", remoteShellLaunch: "not_probed" }
+              : { type: "context", ok: false, diagnostic: diagnostic(code) },
+          )}\n`
+        : `${CONTEXT}\nBinding: ${code === null ? "present (not yet verified; run manifold doctor)." : DIAGNOSTICS[code]}\n`;
       exitCode = code === null ? 0 : 1;
     } else {
       if (config === null) throw bindingError;
