@@ -233,20 +233,36 @@ export interface SessionHandle {
       ),
   ): Promise<TerminalInfo>;
   /**
-   * Declares a view on a terminal: the server answers with a fresh `terminal_snapshot` and
-   * every `terminal_output` and applied `terminal_geometry` after it, in stream order.
-   * Refcounted per handle, so two views of one terminal share one wire subscription and the
-   * last `detachTerminal` releases it; the handle re-attaches by itself after a reconnect.
+   * Declares one view on a terminal, by an opaque `viewportId` unique to that parser on this
+   * handle. The server answers with a fresh `terminal_snapshot` for exactly that view and then
+   * its own `terminal_output` and applied `terminal_geometry` frames in stream order; listeners
+   * filter by `terminalId` AND `viewportId`. Two views are independent deliveries, so a stalled
+   * view never holds back another. Refcounted per exact pair; the handle re-attaches every
+   * held pair by itself after a reconnect or a restart.
    */
-  attachTerminal(terminalId: string): void;
-  /** Releases one view; the wire subscription ends with the last one. */
-  detachTerminal(terminalId: string): void;
+  attachTerminal(terminalId: string, viewportId: string): void;
+  /** Releases one hold of exactly this view; the view's delivery ends with its last hold. */
+  detachTerminal(terminalId: string, viewportId: string): void;
+  /**
+   * Credits this view's parser with having COMPLETED every frame of `deliveryId` through
+   * `deliverySeq`, snapshot replay included — never mere receipt. Delivery to the view pauses
+   * once its bounded unacknowledged window is spent; a stale or impossible ack grants nothing.
+   */
+  ackTerminal(
+    terminalId: string,
+    viewportId: string,
+    deliveryId: string,
+    deliverySeq: number,
+  ): void;
   /**
    * Types into a terminal. Only the controller principal's input is forwarded; anyone else
    * hears an `error` frame with code `not_controller` and `ref` naming the terminal.
    */
   sendTerminalInput(terminalId: string, data: string | Uint8Array): void;
-  /** Publishes one active attached viewport's desired geometry under the controller lease. */
+  /**
+   * Publishes one attached view's desired geometry under the controller lease. Omitting
+   * `viewportId` addresses the virtual `"sdk"` view, which must itself be attached.
+   */
   resizeTerminal(terminalId: string, cols: number, rows: number, viewportId?: string): void;
   /** Withdraws one viewport's geometry without releasing sibling stream subscriptions. */
   releaseTerminalViewport(terminalId: string, viewportId?: string): void;
@@ -256,12 +272,16 @@ export interface SessionHandle {
   killTerminal(terminalId: string): void;
   /** The terminal table changed: a birth, an exit, a rename, a lease transfer. */
   on(event: "terminals_changed", fn: () => void): () => void;
-  /** A complete screen with its own applied geometry and byte watermark; the ordered tail follows. */
+  /**
+   * A complete screen with its own applied geometry and byte watermark, opening a fresh
+   * delivery incarnation at ordinal 0; the view's ordered tail follows. `skipped` is true when
+   * this view's held output was discarded before it, so history may be missing.
+   */
   on(
     event: "terminal_snapshot",
     fn: (message: ServerMessageOf<"terminal_snapshot">) => void,
   ): () => void;
-  /** One chunk of an attached terminal's output, base64, in `seq` order. */
+  /** One chunk of an attached view's output, base64, in `seq` order. */
   on(
     event: "terminal_output",
     fn: (message: ServerMessageOf<"terminal_output">) => void,
@@ -273,6 +293,11 @@ export interface SessionHandle {
   on(
     event: "terminal_geometry",
     fn: (message: ServerMessageOf<"terminal_geometry">) => void,
+  ): () => void;
+  /** One view's transient delivery-state transition: `waiting`, `recovering` or `live`. */
+  on(
+    event: "terminal_delivery",
+    fn: (message: ServerMessageOf<"terminal_delivery">) => void,
   ): () => void;
   /** A terminal's lifecycle, including truthful application/bracketed-paste `ready` evidence. */
   on(event: "terminal_event", fn: (message: ServerMessageOf<"terminal_event">) => void): () => void;
