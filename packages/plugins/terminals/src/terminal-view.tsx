@@ -17,6 +17,7 @@ import { settingValue } from "@manifold/plugin";
 import {
   TERMINAL_VIEWPORT_REFRESH_MS,
   trackTerminalPrivateMode,
+  type TerminalDeliveryState,
   type TerminalSizing,
 } from "@manifold/protocol";
 import {
@@ -60,7 +61,7 @@ import {
 import { terminalsManifest } from "./index";
 import { installTerminalGestures } from "./terminal-gestures";
 import { installTerminalGraphics } from "./terminal-graphics";
-import { TerminalStream } from "./terminal-stream";
+import { TerminalStream, type TerminalDeliveryHandlers } from "./terminal-stream";
 import {
   installTerminalClipboard,
   type TerminalClipboard,
@@ -73,6 +74,58 @@ import {
   subscribeTerminalFontPreferences,
   terminalFontPreferences,
 } from "./terminal-font-preferences";
+
+/** This view's delivery as the reader is told it; `skipped` stays until the reader dismisses it. */
+interface ViewDelivery {
+  readonly terminalId: string;
+  readonly state: TerminalDeliveryState | "stalled" | "catching_up";
+  readonly skipped: boolean;
+  /** A waiting delivery outlasted DELIVERY_WAITING_NOTICE_MS. */
+  readonly noticed: boolean;
+}
+
+/** Ordinary output bursts briefly exhaust credit; only a reader still behind is told. */
+const DELIVERY_WAITING_NOTICE_MS = 1_000;
+
+/** The truthful delivery notice, if any, and whether it offers the deliberate catch-up. */
+function deliveryNotice(delivery: ViewDelivery): { message: string; catchUp: boolean } | null {
+  switch (delivery.state) {
+    case "catching_up":
+      return { message: "Loading the terminal's retained screen…", catchUp: true };
+    case "stalled":
+      return {
+        message:
+          "This view exceeded its browser parser limit; output after this point was skipped.",
+        catchUp: true,
+      };
+    case "recovering":
+      return {
+        message:
+          "This view fell too far behind, so output held for it was skipped. It switches to the terminal's retained screen once it finishes the output already sent.",
+        catchUp: true,
+      };
+    case "waiting":
+      if (!delivery.noticed) break;
+      return {
+        message:
+          "This view is behind the terminal's output; newer output is held until it catches up.",
+        catchUp: true,
+      };
+    case "live":
+      break;
+    default: {
+      const unreachable: never = delivery.state;
+      return unreachable;
+    }
+  }
+  return delivery.skipped
+    ? {
+        message:
+          "Output was skipped while this view was behind. It shows the terminal's retained screen; earlier output and scrollback may be incomplete.",
+        catchUp: false,
+      }
+    : null;
+}
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
 export function TerminalView({
@@ -134,6 +187,25 @@ export function TerminalView({
     readonly terminalId: string;
   } | null>(null);
   const pendingTakeRef = useRef<{ terminalId: string; elementId: string } | null>(null);
+  /**
+   * A deliberate catch-up retires this view's whole xterm/parser incarnation: xterm.reset()
+   * cannot cancel parser work already queued, so the old instance and every callback bound to
+   * it are disposed, and the same opaque viewport detaches and attaches anew.
+   */
+  const [incarnation, setIncarnation] = useState(0);
+  const [delivery, setDelivery] = useState<ViewDelivery>(() => ({
+    terminalId,
+    state: "live",
+    skipped: false,
+    noticed: false,
+  }));
+  useEffect(() => {
+    if (delivery.state !== "waiting" || delivery.noticed) return;
+    const timer = window.setTimeout(() => {
+      setDelivery((current) => (current === delivery ? { ...current, noticed: true } : current));
+    }, DELIVERY_WAITING_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [delivery]);
   const fontState = useSyncExternalStore(
     subscribeTerminalFont,
     getTerminalFontState,
@@ -302,7 +374,8 @@ export function TerminalView({
    * component a DIFFERENT `SessionClient` for the same tile; a terminal disposed and
    * re-opened on that swap is a visible refresh — new DOM node, buffer repainted from zero,
    * selection and mouse-mode TUIs losing their host mid-gesture. So creation depends on the
-   * tile alone, and the socket wiring below re-runs against the SAME terminal.
+   * tile alone, and the socket wiring below re-runs against the SAME terminal. Only the
+   * reader's deliberate catch-up replaces it, in the same DOM host, with a new incarnation.
    */
   useEffect(() => {
     if (!fontReady) return;
@@ -574,16 +647,16 @@ export function TerminalView({
       terminalRef.current = null;
       paintedRef.current = false;
     };
-  }, [terminalId, fontReady, viewportId]);
+  }, [terminalId, fontReady, viewportId, incarnation]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     if (terminal === null || terminal.options.fontSize === fontSize) return;
     terminal.options.fontSize = fontSize;
-    // Queue behind pending snapshot writes, using the existing post-replay measurement.
+    // Queue behind pending snapshot replay, using the existing post-replay measurement.
     // Its geometry publication remains controller-only and forbidden in previews.
     if (paintedRef.current) {
-      terminal.write("", () => {
+      streamRef.current?.barrier(() => {
         if (terminalRef.current === terminal) settleRef.current?.();
       });
     } else {
@@ -598,7 +671,8 @@ export function TerminalView({
    * snapshot lands in the existing terminal as a single-frame `reset()` + replay.
    * That is lossless because the server's snapshot is a complete, seq-anchored picture
    * of the PTY (the no-gap invariant): the replay paints what was already on screen,
-   * plus whatever the swap would otherwise have missed.
+   * plus whatever the swap would otherwise have missed. Every frame is this mount's own:
+   * sibling views on the same client hold independent deliveries and credit.
    *
    * Declared AFTER the terminal effect so `terminalRef` is populated in the commit that
    * creates it; React runs setups in declaration order.
@@ -613,38 +687,74 @@ export function TerminalView({
     let subscribed = true;
     clipboardLiveRef.current = false;
     syncViewportRef.current?.();
-    const settle = (): void => {
-      if (!subscribed) return;
-      clipboardLiveRef.current = true;
-      settleRef.current?.();
+    const ours = (message: { readonly terminalId: string; readonly viewportId: string }) =>
+      message.terminalId === terminalId && message.viewportId === viewportId;
+    // A retired delivery's waiting or recovery state no longer describes this view.
+    const retireDelivery = (): void => {
+      setDelivery((current) =>
+        current.terminalId === terminalId &&
+        (current.state === "waiting" ||
+          current.state === "recovering" ||
+          current.state === "stalled")
+          ? { ...current, state: "live", noticed: false }
+          : current,
+      );
+    };
+    const handlers: TerminalDeliveryHandlers = {
+      prepare: (preserved) => {
+        clipboardRef.current?.reset();
+        clipboardLiveRef.current = false;
+        syncViewportRef.current?.();
+        if (preserved) {
+          clipboardRef.current?.setPasteMode(pasteModeRef.current?.enabled ?? false);
+        } else {
+          pasteModeRef.current?.reset();
+        }
+        paintedRef.current = true;
+      },
+      settled: () => {
+        if (!subscribed) return;
+        clipboardLiveRef.current = true;
+        settleRef.current?.();
+      },
+      acknowledge: (deliveryId, deliverySeq) => {
+        client.ackTerminal(terminalId, viewportId, deliveryId, deliverySeq);
+      },
+      stalled: () => {
+        clipboardRef.current?.reset();
+        clipboardLiveRef.current = false;
+        syncViewportRef.current?.();
+        setDelivery({ terminalId, state: "stalled", skipped: true, noticed: false });
+      },
     };
 
     const offSnapshot = client.on("terminal_snapshot", (message) => {
-      if (message.terminalId !== terminalId) return;
-      stream.snapshot(
-        message,
-        (preserved) => {
-          clipboardRef.current?.reset();
-          clipboardLiveRef.current = false;
-          syncViewportRef.current?.();
-          if (preserved) {
-            clipboardRef.current?.setPasteMode(pasteModeRef.current?.enabled ?? false);
-          } else {
-            pasteModeRef.current?.reset();
-          }
-          paintedRef.current = true;
-        },
-        settle,
-      );
+      if (!ours(message) || !stream.snapshot(message, handlers)) return;
+      // A snapshot is live under its new delivery; a recovery snapshot discloses skipped output.
+      setDelivery((current) => {
+        const skipped = message.skipped || (current.terminalId === terminalId && current.skipped);
+        return current.terminalId === terminalId &&
+          current.state === "live" &&
+          current.skipped === skipped
+          ? current
+          : { terminalId, state: "live", skipped, noticed: false };
+      });
     });
 
     const offOutput = client.on("terminal_output", (message) => {
-      if (message.terminalId !== terminalId) return;
-      stream.append(message);
+      if (ours(message)) stream.append(message);
     });
     const offGeometry = client.on("terminal_geometry", (message) => {
-      if (message.terminalId !== terminalId) return;
-      stream.append(message);
+      if (ours(message)) stream.append(message);
+    });
+    const offDelivery = client.on("terminal_delivery", (message) => {
+      if (!ours(message) || message.deliveryId !== stream.deliveryId) return;
+      setDelivery((current) => ({
+        terminalId,
+        state: message.state,
+        skipped: message.skipped || (current.terminalId === terminalId && current.skipped),
+        noticed: false,
+      }));
     });
 
     const offTerminalEvent = client.on("terminal_event", (message) => {
@@ -659,6 +769,12 @@ export function TerminalView({
         pasteModeRef.current?.reset();
         paintedRef.current = false;
         setRestartArmed(false);
+        // The old process's screen, and any notice about its skipped output, are gone.
+        setDelivery((current) =>
+          current.terminalId === terminalId && current.state === "catching_up"
+            ? { ...current, skipped: false }
+            : { terminalId, state: "live", skipped: false, noticed: false },
+        );
         if (message.fallback !== undefined) {
           notifyRef.current(
             `${message.fallback === "no_recipe" ? "Terminal restored as a plain shell" : `Terminal restarted in ${message.fallback === "original" ? "its original directory" : "the home directory"}`}${message.cwd === undefined ? "" : `: ${message.cwd}`}`,
@@ -668,6 +784,7 @@ export function TerminalView({
       }
       if (message.kind === "exited") {
         stream.suspend();
+        retireDelivery();
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
         syncViewportRef.current?.();
@@ -677,19 +794,21 @@ export function TerminalView({
 
     // A watched portal may receive browser focus before its occupant socket is ready.
     // Keep keystrokes off the spectator socket throughout that transition; host-owned
-    // titlebar controls never lift this PTY input guard.
+    // titlebar controls never lift this PTY input guard. A fresh, restarted or stalled
+    // parser has no coherent modes yet, so keys and its replies cannot encode against them.
     const inputDisposable = terminal.onData((data) => {
-      if (readOnlyRef.current) return;
+      if (readOnlyRef.current || !stream.coherent) return;
       client.sendTerminalInput(terminalId, data);
     });
 
-    // The SDK refcounts attach/detach per terminal (clones share one wire
-    // subscription) and re-subscribes by itself after a reconnect.
-    client.attachTerminal(terminalId);
+    // The SDK refcounts each exact (terminal, viewport) pair and re-attaches every held
+    // pair by itself after a reconnect or restart.
+    client.attachTerminal(terminalId, viewportId);
 
     const offStatus = client.on("status", (status) => {
       if (status === "open") return;
       stream.suspend();
+      retireDelivery();
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
     });
@@ -697,18 +816,20 @@ export function TerminalView({
     return () => {
       subscribed = false;
       stream.suspend();
+      retireDelivery();
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
       withdrawViewportRef.current?.();
       offSnapshot();
       offOutput();
       offGeometry();
+      offDelivery();
       offTerminalEvent();
       offStatus();
       inputDisposable.dispose();
-      client.detachTerminal(terminalId);
+      client.detachTerminal(terminalId, viewportId);
     };
-  }, [client, terminalId, terminalReady, fontReady]);
+  }, [client, terminalId, terminalReady, fontReady, viewportId, incarnation]);
 
   const caps = client.selfCaps();
   const canTake =
@@ -771,6 +892,17 @@ export function TerminalView({
         });
       })
       .finally(() => setIsRestarting(false));
+  };
+
+  const notice = delivery.terminalId === terminalId ? deliveryNotice(delivery) : null;
+  // Only this view is replaced: its old parser, xterm and credit retire with the incarnation.
+  const handleCatchUp = (): void => {
+    setDelivery({ terminalId, state: "catching_up", skipped: true, noticed: false });
+    setIncarnation((value) => value + 1);
+  };
+  const handleDismissSkipped = (): void => {
+    setDelivery((current) => ({ ...current, skipped: false }));
+    if (active && !readOnly) terminalRef.current?.focus();
   };
 
   // The preview's input remains read-only even when its host permits titlebar placement
@@ -1120,6 +1252,24 @@ export function TerminalView({
         className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
         aria-hidden="true"
       />
+      {/*
+        The live region stays mounted so each delivery change is announced. One action
+        element keeps focus from the catch-up through the retained-history notice.
+      */}
+      <div className="terminal-delivery" role="status" aria-label="Terminal output delivery">
+        {notice === null ? null : (
+          <div className="terminal-delivery__notice">
+            <span>{notice.message}</span>
+            <Chip
+              className="terminal-delivery__action"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={notice.catchUp ? handleCatchUp : handleDismissSkipped}
+            >
+              {notice.catchUp ? "Catch up to retained screen" : "Dismiss notice"}
+            </Chip>
+          </div>
+        )}
+      </div>
       {clipboardCopy === null ? null : (
         <Cover
           className="terminal-clipboard-request"
