@@ -28,7 +28,8 @@ exit "$VERIFY_RUNTIME_WORKLOAD_STATUS"`,
     state=$VERIFY_RUNTIME_INITIAL_STATE
     if [ -e "$VERIFY_RUNTIME_STOPPED" ]; then state=$VERIFY_RUNTIME_AFTER_STATE; fi
     case "$state" in
-      error) exit 1 ;;
+      # Partial output never makes a failed inspection authoritative.
+      error) printf 'not-found\\n'; exit 1 ;;
       empty) printf '\\n' ;;
       *) printf '%s\\n' "$state" ;;
     esac ;;
