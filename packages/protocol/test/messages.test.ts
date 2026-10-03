@@ -192,8 +192,15 @@ describe("session channel schemas", () => {
   test("every channel-level frame type round-trips through body and wire unions", () => {
     const bodies = [
       { type: "resync_request" as const },
-      { type: "terminal_attach" as const, terminalId: "s1" },
-      { type: "terminal_detach" as const, terminalId: "s1" },
+      { type: "terminal_attach" as const, terminalId: "s1", viewportId: "view-a" },
+      { type: "terminal_detach" as const, terminalId: "s1", viewportId: "view-a" },
+      {
+        type: "terminal_ack" as const,
+        terminalId: "s1",
+        viewportId: "view-a",
+        deliveryId: "delivery-1",
+        deliverySeq: 3,
+      },
       {
         type: "terminal_resize" as const,
         terminalId: "s1",
@@ -681,6 +688,9 @@ describe("the base64 wire cap", () => {
             ch: "c1",
             type: "terminal_output",
             terminalId: "t",
+            viewportId: "v",
+            deliveryId: "d",
+            deliverySeq: 1,
             seq: 1,
             data,
           }).success,
