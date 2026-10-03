@@ -4212,6 +4212,8 @@ true`, and stops further delivery to that view. Only after all already-sent fram
   The browser exposes a persistent accessible skipped-history notice, including after recovery;
   retained screen/history is not a complete recording. Deliberate Catch up replaces only this
   view's parser and attachment to obtain the retained screen even if its old parser stopped.
+  A queued replacement snapshot also fences mode-derived input until its replay finishes;
+  retained old screen/input modes are not proof of coherence with the new delivery.
   Initial pending overflow, owner refusal and the unchanged10-second online snapshot deadline
   retire the attachment with a viewport-scoped `refused` notice and typed reason before the
   generic error. There is no silent recovery/retry loop; offline-owner waiting has no deadline.
