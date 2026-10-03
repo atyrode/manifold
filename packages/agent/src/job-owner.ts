@@ -1615,7 +1615,8 @@ export class MachineJobOwner {
     this.serviceTunnels.set(channelId, tunnel);
     wire.stream.on("error", () => controller.abort());
     wire.stream.once("close", () => {
-      controller.abort();
+      // The HTTP Agent normally destroys its one-use stream after a complete response.
+      // Only an error or the existing request/authority signals cancel the call.
       tunnel.ready?.(null);
       if (this.serviceTunnels.get(channelId) === tunnel) this.serviceTunnels.delete(channelId);
     });

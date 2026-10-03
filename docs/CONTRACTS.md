@@ -5224,6 +5224,9 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   the call while those bounds remain live. Request expiry reports retryable `service_timeout`;
   withdrawal reports `service_cancelled`. An explicit remote refusal keeps its precise owner/hub
   reason and the existing coarser workload projection; a failed local enqueue is owner unavailability.
+  An error-free one-use stream close after a complete HTTP response is transport cleanup,
+  not `service_cancelled` (#1028). Real tunnel errors and the existing request/authority
+  lifetimes still abort the call and retain bounded channel/resource cleanup.
 - **Metered inference** ([ADR 0038](decisions/0038-brokered-inference.md)). A job that drives a
   model never holds the model's credential: inference is an Instance Service whose origin is a
   provider and whose credential only the machine owner resolves, and the job is handed a loopback
