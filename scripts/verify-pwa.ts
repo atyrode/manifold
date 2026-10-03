@@ -78,7 +78,7 @@ function spawnInstance(port: number, dataDir: string): Bun.Subprocess {
 }
 
 const serverA = spawnInstance(portA, dataDirA);
-const serverB = spawnInstance(portB, dataDirB);
+let serverB = spawnInstance(portB, dataDirB);
 
 const failures: string[] = [];
 let browser: Browser | null = null;
@@ -309,6 +309,14 @@ try {
   );
   await darkCanvas(driver, "preview refusal");
   await driver.goto(`${previewOrigin}/`);
+  await driver.evaluate(
+    "navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(() => null)",
+  );
+  await until(
+    () => driver.evaluate<boolean>("navigator.serviceWorker.controller !== null"),
+    20_000,
+    "the actual preview worker to control the authentication navigation",
+  );
   const nonce = PreviewIdentityNonceResponseSchema.parse(
     await driver.evaluate<unknown>(
       "fetch('/api/identity/preview-start', {method: 'POST'}).then(response => response.json())",
@@ -352,10 +360,97 @@ try {
     authStatuses.get("/auth/preview/finalize") === 200,
   );
   await darkCanvas(driver, "preview finalize");
+  const hasCachedAuthenticationDocument = (): Promise<boolean> =>
+    driver.evaluate<boolean>(`(async () => {
+      for (const name of await caches.keys()) {
+        const cache = await caches.open(name);
+        for (const request of await cache.keys()) {
+          const response = await cache.match(request);
+          if (response?.url && new URL(response.url).pathname.startsWith('/auth/')) return true;
+        }
+      }
+      return false;
+    })()`);
+  assert(
+    "authentication delivery documents never enter Cache Storage",
+    !(await hasCachedAuthenticationDocument()),
+  );
+  await driver.evaluate("localStorage.removeItem('manifold.identity')");
+  serverB.kill();
+  await serverB.exited;
+  await driver.send("Emulation.setScriptExecutionDisabled", { value: false });
+  for (const path of [
+    "/auth/preview/finalize",
+    "/%61uth/preview/finalize",
+    "/%2561uth%252fpreview%252ffinalize",
+    "/AUTH/preview/finalize",
+    "/auth%5cpreview%5cfinalize",
+  ]) {
+    await driver.goto(`${previewOrigin}${path}`);
+    const offlineIdentityReplay = await driver.evaluate<boolean>(
+      `location.origin === ${JSON.stringify(previewOrigin)} &&
+        localStorage.getItem('manifold.identity') !== null`,
+    );
+    assert(
+      `offline private navigation ${path} cannot restore a cached identity`,
+      !offlineIdentityReplay,
+    );
+    assert(
+      `offline private navigation ${path} receives no app-shell substitution`,
+      !(await driver.evaluate<boolean>(`location.origin === ${JSON.stringify(previewOrigin)}`)),
+    );
+  }
+  await driver.send("Page.stopLoading", {});
+  await driver.send("Emulation.setScriptExecutionDisabled", { value: true });
+  serverB = spawnInstance(portB, dataDirB);
+  await until(
+    async () => {
+      try {
+        return (await fetch(`${originB}/healthz`)).ok;
+      } catch {
+        return false;
+      }
+    },
+    20_000,
+    "the disposable preview after offline verification",
+  );
   await driver.goto(`${previewOrigin}/`);
   await darkCanvas(driver, "preview SPA entry");
   await driver.send("Emulation.setScriptExecutionDisabled", { value: false });
   await driver.send("Network.setBlockedURLs", { urls: [] });
+  await driver.goto(`${authorityOrigin}/#key=${ownerA}`);
+  await enterIdentity(driver, "pwa-authority", "manifold.identity");
+  await driver.goto(`${previewOrigin}/`);
+  await until(
+    () =>
+      driver.evaluate<boolean>(
+        `location.origin === ${JSON.stringify(previewOrigin)} &&
+        localStorage.getItem('manifold.identity') !== null &&
+        navigator.serviceWorker.controller !== null`,
+      ),
+    20_000,
+    "ordinary authority-to-preview admission under the controlling worker",
+  );
+  const previewPrincipal = await driver.evaluate<string>(
+    "JSON.parse(localStorage.getItem('manifold.identity')).principal.id",
+  );
+  await driver.evaluate("localStorage.removeItem('manifold.identity')");
+  await driver.goto(`${previewOrigin}/`);
+  await until(
+    () =>
+      driver.evaluate<boolean>(
+        `location.origin === ${JSON.stringify(previewOrigin)} &&
+        JSON.parse(localStorage.getItem('manifold.identity') ?? 'null')?.principal.id ===
+          ${JSON.stringify(previewPrincipal)} &&
+        navigator.serviceWorker.controller !== null`,
+      ),
+    20_000,
+    "ordinary preview readmission preserves the principal without an owner-key fallback",
+  );
+  assert(
+    "normal preview admission and readmission never cache an authentication document",
+    !(await hasCachedAuthenticationDocument()),
+  );
   await driver.goto(`${originA}/`);
 
   // ─────────────────────────────────────────── 2. a deploy cannot pin a browser

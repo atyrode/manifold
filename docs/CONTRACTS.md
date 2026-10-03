@@ -6423,11 +6423,17 @@ build target and nothing branches on which instance is being looked at.
   `document.title` unless `VITE_MANIFOLD_SITE_TITLE` was chosen (the default handed back
   explicitly is not a choice).
 - **Shell cache**: `packages/web/sw.js`, emitted to `dist/sw.js` by the build with the shipped
-  asset list and a cache name of `manifold-shell-<build>-<digest of emitted asset names and bytes>`.
+  asset list and a cache name of `manifold-shell-<build>-<digest of worker policy and emitted asset names and bytes>`.
   Registered by `packages/web/src/lens.tsx` in a built app. It caches the document, the build's
   hashed assets, the icon and the manifest — and passes through `/api`, `/ws`, `/healthz`, every
   non-GET and every CROSS-ORIGIN request untouched, so no scene state is ever served from a
   cache and no API origin is baked into a worker.
+  Private credential-entry documents/assets and the entire `/auth` document namespace, including
+  preview callbacks and encoded/physical aliases, are network-only with `cache: "no-store"`
+  before every navigation/asset-cache branch. They never enter Cache Storage or receive an
+  offline shell substitution; response `Cache-Control: no-store` alone cannot prohibit Cache
+  API writes. Worker-policy-only changes receive a distinct generation through the existing
+  source-byte digest, and accepted activation sweeps every superseded shell cache.
 - **Update flow**: navigations are network-first (so the load after a deploy fetches the new
   document even under the old worker), a new generation installs and WAITS rather than swapping a
   running page, `activate` deletes every older `manifold-shell-*`, and the waiting generation is
