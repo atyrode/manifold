@@ -5718,8 +5718,9 @@ test.skipIf(!linux)(
       expect(f.refusal("blocked")).toBe("start_permit_refused");
       await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
       expect(f.owner.maintenanceReady).toBe(false);
+      let responseStart = f.events.length;
       await f.owner.execute({ type: "status", jobId: "refused" });
-      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
       expect(f.logs).toContainEqual({
         level: "warn",
         evt: "job_cgroup_cleanup_failed",
@@ -5737,8 +5738,9 @@ test.skipIf(!linux)(
       expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
       await f.shutdown();
       await f.open();
+      responseStart = f.events.length;
       await f.owner.execute({ type: "status", jobId: "refused" });
-      expect(f.events.at(-1)).toEqual({ type: "result", result });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
     } finally {
       reclaimable = true;
       await f.close();
@@ -5897,12 +5899,7 @@ test.skipIf(!linux)(
       });
       await f.start("held");
       f.workloads.set("refused", {
-        settle: new LinuxJobRefusal(
-          "cgroup-cleanup-identity-changed",
-          undefined,
-          true,
-          cleanup,
-        ),
+        settle: new LinuxJobRefusal("cgroup-cleanup-identity-changed", undefined, true, cleanup),
       });
       await f.start("refused");
       const refused = await f.settled("refused");
