@@ -1387,7 +1387,6 @@ describe("pre-migration snapshot retention", () => {
       seedPreV9(path);
       openDatabase(path).close();
 
-
       // Each image is PRE its own migration, not a copy of the finished database — which is
       // the only property that makes it worth keeping.
       expect(snapshotVersion(`${path}.pre-v9.bak`)).toBe("8");
@@ -1433,7 +1432,6 @@ describe("pre-migration snapshot retention", () => {
           ?.value,
       ).toBe(String(SCHEMA_VERSION));
       db.close();
-
 
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
       // first attempt tripped over is absent from it.
