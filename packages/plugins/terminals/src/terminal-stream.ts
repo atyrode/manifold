@@ -98,6 +98,7 @@ export class TerminalStream {
   snapshot(frame: SnapshotFrame, handlers: TerminalDeliveryHandlers): boolean {
     if (this.disposed || frame.deliveryId === this.delivery?.id) return false;
     this.retire(true);
+    this.replayed = false;
     const delivery: Delivery = { id: frame.deliveryId, handlers, received: frame.deliverySeq };
     this.delivery = delivery;
     const charge = terminalDeliveryCharge(frame);
@@ -282,7 +283,6 @@ export class TerminalStream {
     this.appliedSeq = frame.seq;
     this.geometry = frame.geometry;
     if (preserved) return true;
-    this.replayed = false;
     this.graphics.writeSnapshot(base64ToBytes(frame.data), frame.geometry, done);
     return false;
   }

@@ -390,6 +390,25 @@ test("a replacement snapshot cannot accept input against modes while its replay 
   expect(lines(terminal)).toEqual(["new", "", "", ""]);
 });
 
+test("a queued replacement snapshot fences input until its current modes are parsed", async () => {
+  const { terminal, stream } = viewer(8, 4);
+  const old = deliver(stream, "old", 0, { cols: 8, rows: 4, revision: 0 }, "old");
+  await old.settled;
+  const parser = blockParser(terminal, 905);
+  old.output(1, "\x1b]905;wait\x07old-tail");
+  await parser.entered;
+  const fresh = deliver(stream, "fresh", 2, { cols: 8, rows: 4, revision: 0 }, "\x1b[?2004hnew");
+  expect(terminal.modes.bracketedPasteMode).toBe(false);
+  expect(stream.coherent).toBe(false);
+  expect(fresh.acks).toEqual([]);
+  parser.release();
+  await fresh.settled;
+  expect(stream.coherent).toBe(true);
+  expect(terminal.modes.bracketedPasteMode).toBe(true);
+  expect(fresh.acks).toEqual([0]);
+  expect(lines(terminal)).toEqual(["new", "", "", ""]);
+});
+
 test("restart fences old geometry, settlement and credit while accepting fresh counters", async () => {
   const { terminal, stream } = viewer(8, 4);
   const old = deliver(stream, "d1", 0, { cols: 8, rows: 4, revision: 0 }, "old");
