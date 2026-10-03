@@ -176,11 +176,7 @@ try {
     if (event.terminalId === original.id && event.kind === "restarted") restarts++;
   });
   await target.evaluate("void (window.__restartFrame = document.querySelector('.terminal-frame'))");
-  await until(
-    () => acknowledged.has(original.id),
-    10_000,
-    "new terminal screen replayed",
-  );
+  await until(() => acknowledged.has(original.id), 10_000, "new terminal screen replayed");
   const viewportId = acknowledged.get(original.id)?.viewportId;
   assert.ok(viewportId);
   /** Latest snapshot this same mounted view has actually finished replaying. */

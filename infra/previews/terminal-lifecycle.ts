@@ -114,7 +114,12 @@ if (mode === "prepare" || mode === "reopen") {
     // the channel are not its delivery and are neither consumed nor acknowledged.
     const sink = terminal;
     const viewportId = "preview-terminal-lifecycle";
-    type Frame = { terminalId: string; viewportId: string; deliveryId: string; deliverySeq: number };
+    type Frame = {
+      terminalId: string;
+      viewportId: string;
+      deliveryId: string;
+      deliverySeq: number;
+    };
     let deliveryId: string | undefined;
     let output = "";
     // An acknowledgement credits only frames this sink has already finished consuming.
