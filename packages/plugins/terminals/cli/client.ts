@@ -1130,7 +1130,8 @@ async function execute(
     session.on("terminal_delivery", (message) => {
       if (message.terminalId !== terminalId || message.viewportId !== viewportId || cleaning)
         return;
-      // Held output still arrives in order; skipped output can never complete a capture.
+      // Held output still arrives in order; skipped output can never complete a capture. A
+      // refusal that skipped nothing keeps the following generic error frame's diagnosis.
       if (message.skipped || message.state === "recovering") fail("output_missing");
     }),
     session.on("terminal_event", (message) => {

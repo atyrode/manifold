@@ -522,6 +522,7 @@ describe("terminal-local client boundaries", () => {
           deliveryId: socket.deliveryId,
           state: "recovering",
           skipped: true,
+          reason: null,
         }),
     },
     {
