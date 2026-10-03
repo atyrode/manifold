@@ -133,7 +133,7 @@ contexts and bearers do not cross that boundary. In-realm installation remains c
 neither a structural TypeScript interface nor withholding one property confines such code.
 
 Read admission remains `containers:read` at the home; edits remain `scenes:write` there.
-Protocol 52's `sceneWriteAllowed` is the server-evaluated home write decision, refreshed through
+Protocol 56's `sceneWriteAllowed` is the server-evaluated home write decision, refreshed through
 full-state frames when grants change. `selfCaps()` remains the credential's raw ceiling:
 a wildcard there is not effective authority. Native `canWrite` also requires open, occupant
 access; spectator previews never acquire edit permission just by sharing a promoted entry.
@@ -197,7 +197,9 @@ Preserve existing element/container references and their grants. Reconcile persi
 identity references and ownership reservations explicitly, including the transfer of `text`
 from `core.notes` and collision-free reservation of `canvas_note`. Preserve opaque legacy
 plugin storage and migration/attribution facts; do not erase them because current notes do
-not ordinarily use private KV.
+not ordinarily use private KV. Correlated authority scopes, Run targets and Agent grant targets
+are lineage evidence, not product references: they stay verbatim even when they name the
+retired plugin node, because Text authority is evaluated at its home, never at that node.
 
 Administrative enablement has no hidden derived cascade. `core.text` inherits the legacy
 notes state and attribution. The new child is on only when both legacy notes and canvas are
@@ -205,7 +207,7 @@ on; when it must be off, preserve the attribution of the existing state that req
 outcome rather than inventing a fresh actor/time. A disabled text/canvas combination must not
 be re-enabled by migration, nor make the independently enabled text plugin depend on canvas.
 
-Protocol 52, allocated after integrated viewport revision 51, fences old session clients from
+Protocol 56, allocated after integrated private-entry revision 55, fences old session clients from
 replaying the inline-body representation. Keep historical epoch identities; do not claim that
 an epoch rewrite is identity preservation.
 The machine wire is unchanged, so compatible agent versions remain admitted. A compatible

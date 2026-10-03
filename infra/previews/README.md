@@ -345,7 +345,7 @@ The CLI also reads this file; file values override inherited environment values.
   Stable tooling reads only its canonical `data/manifold.db{,-wal,-shm}` members and projects
   the explicit representative allowlist: `container_folders(id,name,created_at,parent_folder_id,sort_order)`,
   `containers(id,name,created_at,sort_order,folder_id,discipline)`,
-  `scene_docs(container_id,epoch,rev,ts,hash,doc)` and schema-49
+  `scene_docs(container_id,epoch,rev,ts,hash,doc)` and schema-52
   `scene_doc_capacity(container_id,epoch,migration_bytes)` for retained lineages. Fixed format-growth
   allowances keep migrated documents usable; they carry no credential or grant. Every other
   table starts empty and no adjacent file crosses. The sanitized database is vacuumed before it enters the volume;
