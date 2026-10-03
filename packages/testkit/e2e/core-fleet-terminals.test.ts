@@ -157,6 +157,29 @@ for (const hardened of [false, true]) {
       { readonly containerId: string; readonly spectator: boolean }
     >();
     const readyContainers = new Set<string>();
+    const terminalWire: {
+      direction: "sent" | "received";
+      type: string;
+      channel: string | null;
+      terminalId: string | null;
+      encodedCharacters: number | null;
+      seq: number | null;
+    }[] = [];
+    const observeTerminalWire = (
+      direction: "sent" | "received",
+      message: Record<string, unknown>,
+    ): void => {
+      if (typeof message.type !== "string" || !message.type.startsWith("terminal_")) return;
+      terminalWire.push({
+        direction,
+        type: message.type,
+        channel: typeof message.ch === "string" ? message.ch : null,
+        terminalId: typeof message.terminalId === "string" ? message.terminalId : null,
+        encodedCharacters: typeof message.data === "string" ? message.data.length : null,
+        seq: typeof message.seq === "number" ? message.seq : null,
+      });
+      if (terminalWire.length > 32) terminalWire.shift();
+    };
     let server: TestServer | undefined;
     const agents: TestAgent[] = [];
     const serverEnv = {
@@ -192,6 +215,7 @@ for (const hardened of [false, true]) {
             readonly spectator?: unknown;
             readonly type?: unknown;
           };
+          observeTerminalWire("sent", message);
           if (
             message.type !== "join" ||
             typeof message.ch !== "string" ||
@@ -214,6 +238,7 @@ for (const hardened of [false, true]) {
             readonly ch?: unknown;
             readonly type?: unknown;
           };
+          observeTerminalWire("received", message);
           if (
             (message.type !== "init" && message.type !== "resync") ||
             typeof message.ch !== "string"
@@ -406,7 +431,40 @@ for (const hardened of [false, true]) {
         await engageTerminal(browser);
         const collapsed = `${marker}-COLLAPSED`;
         await terminalCommand(browser, `printf '%s%s\\n' '${marker}-' 'COLLAPSED'`);
-        await waitFor(() => rowPresent(browser, collapsed), 10_000, 50);
+        try {
+          await waitFor(() => rowPresent(browser, collapsed), 10_000, 50);
+        } catch (error) {
+          const page = await browser.evaluate<unknown>(`(() => {
+            const frame = document.querySelector(".terminal-frame");
+            const helper = frame?.querySelector(".xterm-helper-textarea");
+            const key = Object.keys(frame ?? {}).find(key => key.startsWith("__reactFiber$"));
+            let fiber = key ? frame[key] : null;
+            const clients = [];
+            for (let i = 0; fiber && i < 40; i++, fiber = fiber.return) {
+              const props = fiber.memoizedProps;
+              const client = props?.client;
+              if (!client || typeof client.sendTerminalInput !== "function") continue;
+              const terminal = client.terminals.get(props.terminalId);
+              clients.push({ status: client.status, chrome: props.chrome, active: props.active,
+                terminalStatus: terminal?.status,
+                controller: client.self !== null && terminal?.controllerId === client.self.id });
+            }
+            return { clients, focused: document.activeElement === helper,
+              helperDisabled: helper?.disabled,
+              engaged: frame?.closest(".portal")?.classList.contains("portal--engaged") ?? false,
+              hostClass: frame?.querySelector(".xterm-host")?.className,
+              rows: Array.from(frame?.querySelectorAll(".xterm-rows > div") ?? []).map(row => ({
+                characters: row.textContent.length,
+                original: row.textContent.trim() === ${JSON.stringify(marker)},
+                collapsed: row.textContent.trim() === ${JSON.stringify(collapsed)},
+                suffix: row.textContent.includes("COLLAPSED"),
+              })) };
+          })()`);
+          throw new Error(
+            `fleet sidebar-collapse input facts: ${JSON.stringify({ terminalWire, page })}`,
+            { cause: error },
+          );
+        }
         await browser.evaluate<void>(`(() => {
           const frame = document.querySelector('.terminal-frame');
           const xterm = frame.querySelector('.xterm');
