@@ -4,8 +4,8 @@ export const PROTOCOL_VERSION = 57;
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
  * Protocol 57 requires independently identified terminal views and completion-only parser credit.
- * Private credential entry adds no plugin secret/value interface or hardened contract change.
- * Session authority, correlated scopes and subscription ordering require the current SDK.
+ * The explicit-view attach/detach/ack SDK and plugin ABI requires rebuilt bundles; no shared-view
+ * fallback is safe. Machine/instance wires and independent native/enrollment floors are unchanged.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
