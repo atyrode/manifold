@@ -41,7 +41,7 @@ function fixture(): { dir: string; path: string; db: Database } {
   const dir = mkdtempSync(join(tmpdir(), "manifold-text-history-"));
   const path = join(dir, "manifold.db");
   const db = openDatabase(path);
-  db.query("UPDATE meta SET value = '48' WHERE key = 'schema_version'").run();
+  db.query("UPDATE meta SET value = '51' WHERE key = 'schema_version'").run();
   db.query(
     "INSERT INTO containers(id, name, created_at, sort_order, discipline) VALUES (?, 'Historical home', 17, 0, 'canvas')",
   ).run(HOME);
@@ -123,7 +123,7 @@ function image(db: Database): Record<string, unknown[]> {
   );
 }
 
-describe("migration 49: retained text ownership", () => {
+describe("migration 52: retained text ownership", () => {
   test("all history keeps type/character identity, formatting and concurrent legacy edit merge semantics", () => {
     const f = fixture();
     let db = f.db;
@@ -515,7 +515,7 @@ describe("migration 49: retained text ownership", () => {
       // Direct reset of retained rows must also remove credit, not just the store's
       // pruning door. Recreate a migrated lineage through the actual migration.
       db.query("DELETE FROM scene_docs").run();
-      db.query("UPDATE meta SET value = '48' WHERE key = 'schema_version'").run();
+      db.query("UPDATE meta SET value = '51' WHERE key = 'schema_version'").run();
       db.query("DELETE FROM meta WHERE key LIKE 'plugins:%'").run();
       db.query("DELETE FROM plugin_kv").run();
       save(db, source, 1);
@@ -690,10 +690,10 @@ describe("migration 49: retained text ownership", () => {
       // Restore the COMPLETE image, not only scene_docs: schema, storage, authority and
       // administration must all roll back together. Actual old-binary proof is external.
       const restoredPath = join(f.dir, "restored.db");
-      copyFileSync(`${f.path}.pre-v49.bak`, restoredPath);
+      copyFileSync(`${f.path}.pre-v52.bak`, restoredPath);
       const restored = new Database(restoredPath, { strict: true });
       expect(image(restored)).toEqual(before);
-      expect(new ServerStore(restored).getMeta("schema_version")).toBe("48");
+      expect(new ServerStore(restored).getMeta("schema_version")).toBe("51");
       restored.close();
     } finally {
       source.destroy();
@@ -950,7 +950,7 @@ describe("migration 49: retained text ownership", () => {
         if (collision === "embed") body(source, false).insertEmbed(0, { image: "unsupported" });
         if (collision === "late-write-failure")
           db.exec(
-            "CREATE TRIGGER refuse_text_version BEFORE INSERT ON meta WHEN NEW.key = 'schema_version' AND NEW.value = '49' BEGIN SELECT RAISE(ABORT, 'fixture final ledger failure'); END",
+            "CREATE TRIGGER refuse_text_version BEFORE INSERT ON meta WHEN NEW.key = 'schema_version' AND NEW.value = '52' BEGIN SELECT RAISE(ABORT, 'fixture final ledger failure'); END",
           );
         if (collision === "scalar-id-reuse") {
           const conflicting = legacy("two");
@@ -964,7 +964,7 @@ describe("migration 49: retained text ownership", () => {
         expect(() => openDatabase(f.path)).toThrow();
         db = new Database(f.path, { strict: true });
         expect(image(db)).toEqual(before);
-        const backup = new Database(`${f.path}.pre-v49.bak`, { strict: true });
+        const backup = new Database(`${f.path}.pre-v52.bak`, { strict: true });
         expect(image(backup)).toEqual(before);
         backup.close();
       } finally {
