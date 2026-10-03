@@ -17,6 +17,7 @@ import { settingValue } from "@manifold/plugin";
 import {
   TERMINAL_VIEWPORT_REFRESH_MS,
   trackTerminalPrivateMode,
+  type TerminalDeliveryRefusal,
   type TerminalDeliveryState,
   type TerminalSizing,
 } from "@manifold/protocol";
@@ -84,6 +85,8 @@ import {
 interface ViewDelivery {
   readonly terminalId: string;
   readonly state: TerminalDeliveryState | "stalled" | "catching_up";
+  /** Why the server retired a `refused` attachment. */
+  readonly reason: TerminalDeliveryRefusal | null;
   readonly skipped: boolean;
   /** A waiting delivery outlasted DELIVERY_WAITING_NOTICE_MS. */
   readonly noticed: boolean;
@@ -91,6 +94,20 @@ interface ViewDelivery {
 
 /** Ordinary output bursts briefly exhaust credit; only a reader still behind is told. */
 const DELIVERY_WAITING_NOTICE_MS = 1_000;
+
+/** A refused view receives nothing more; exits and removals already show their own state. */
+const REFUSAL_MESSAGES: Record<TerminalDeliveryRefusal, string | null> = {
+  exited: null,
+  not_found: null,
+  view_limit:
+    "Too many views of this terminal are open on this connection, so this one receives no output.",
+  owner_unavailable:
+    "The terminal's machine could not send its screen to this view, so it receives no output.",
+  snapshot_timeout:
+    "The terminal's screen did not arrive in time, so this view receives no output.",
+  pending_overflow:
+    "Output outran this view while its screen was loading, so it receives no output.",
+};
 
 /** The truthful delivery notice, if any, and whether it offers the deliberate catch-up. */
 function deliveryNotice(delivery: ViewDelivery): { message: string; catchUp: boolean } | null {
@@ -109,6 +126,11 @@ function deliveryNotice(delivery: ViewDelivery): { message: string; catchUp: boo
           "This view fell too far behind, so output held for it was skipped. It switches to the terminal's retained screen once it finishes the output already sent.",
         catchUp: true,
       };
+    case "refused": {
+      const message = delivery.reason === null ? null : REFUSAL_MESSAGES[delivery.reason];
+      if (message === null) break;
+      return { message, catchUp: true };
+    }
     case "waiting":
       if (!delivery.noticed) break;
       return {
@@ -201,6 +223,7 @@ export function TerminalView({
   const [delivery, setDelivery] = useState<ViewDelivery>(() => ({
     terminalId,
     state: "live",
+    reason: null,
     skipped: false,
     noticed: false,
   }));
@@ -721,14 +744,15 @@ export function TerminalView({
     syncViewportRef.current?.();
     const ours = (message: { readonly terminalId: string; readonly viewportId: string }) =>
       message.terminalId === terminalId && message.viewportId === viewportId;
-    // A retired delivery's waiting or recovery state no longer describes this view.
+    // A retired delivery's waiting, recovery or refusal no longer describes this view.
     const retireDelivery = (): void => {
       setDelivery((current) =>
         current.terminalId === terminalId &&
         (current.state === "waiting" ||
           current.state === "recovering" ||
+          current.state === "refused" ||
           current.state === "stalled")
-          ? { ...current, state: "live", noticed: false }
+          ? { ...current, state: "live", reason: null, noticed: false }
           : current,
       );
     };
@@ -756,7 +780,7 @@ export function TerminalView({
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
         syncViewportRef.current?.();
-        setDelivery({ terminalId, state: "stalled", skipped: true, noticed: false });
+        setDelivery({ terminalId, state: "stalled", reason: null, skipped: true, noticed: false });
       },
     };
 
@@ -769,7 +793,7 @@ export function TerminalView({
           current.state === "live" &&
           current.skipped === skipped
           ? current
-          : { terminalId, state: "live", skipped, noticed: false };
+          : { terminalId, state: "live", reason: null, skipped, noticed: false };
       });
     });
 
@@ -780,10 +804,23 @@ export function TerminalView({
       if (ours(message)) stream.append(message);
     });
     const offDelivery = client.on("terminal_delivery", (message) => {
-      if (!ours(message) || message.deliveryId !== stream.deliveryId) return;
+      // Only a refusal may precede its attachment's first snapshot, with a null delivery.
+      if (
+        !ours(message) ||
+        (message.deliveryId !== null && message.deliveryId !== stream.deliveryId)
+      )
+        return;
+      if (message.state === "refused") {
+        // The server retired this attachment: no credit, no viewport, no input until replay.
+        stream.refuse();
+        clipboardRef.current?.reset();
+        clipboardLiveRef.current = false;
+        syncViewportRef.current?.();
+      }
       setDelivery((current) => ({
         terminalId,
         state: message.state,
+        reason: message.reason,
         skipped: message.skipped || (current.terminalId === terminalId && current.skipped),
         noticed: false,
       }));
@@ -805,7 +842,7 @@ export function TerminalView({
         setDelivery((current) =>
           current.terminalId === terminalId && current.state === "catching_up"
             ? { ...current, skipped: false }
-            : { terminalId, state: "live", skipped: false, noticed: false },
+            : { terminalId, state: "live", reason: null, skipped: false, noticed: false },
         );
         if (message.fallback !== undefined) {
           notifyRef.current(
@@ -929,7 +966,7 @@ export function TerminalView({
   const notice = delivery.terminalId === terminalId ? deliveryNotice(delivery) : null;
   // Only this view is replaced: its old parser, xterm and credit retire with the incarnation.
   const handleCatchUp = (): void => {
-    setDelivery({ terminalId, state: "catching_up", skipped: true, noticed: false });
+    setDelivery({ terminalId, state: "catching_up", reason: null, skipped: true, noticed: false });
     setIncarnation((value) => value + 1);
   };
   const handleDismissSkipped = (): void => {

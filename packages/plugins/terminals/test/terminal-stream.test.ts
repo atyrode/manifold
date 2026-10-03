@@ -376,7 +376,12 @@ test("restart fences old geometry, settlement and credit while accepting fresh c
   expect(stream.coherent).toBe(true);
 });
 
-test("suspension retires credit but still parses accepted output in order", async () => {
+test.each<{ name: string; retire: (stream: TerminalStream) => void; coherent: boolean }>([
+  // A handoff keeps the coherent screen and its input until the next snapshot.
+  { name: "a handoff", retire: (stream) => stream.suspend(), coherent: true },
+  // A refused attachment receives nothing newer, so input waits for a fresh replay.
+  { name: "a server refusal", retire: (stream) => stream.refuse(), coherent: false },
+])("$name retires credit but still parses accepted output in order", async (scenario) => {
   const { terminal, stream } = viewer(8, 4);
   const feed = deliver(stream, "d1", 0, { cols: 8, rows: 4, revision: 0 }, "");
   await feed.settled;
@@ -385,13 +390,17 @@ test("suspension retires credit but still parses accepted output in order", asyn
   await parser.entered;
   feed.output(2, "b");
   feed.output(3, "c");
-  stream.suspend();
+  scenario.retire(stream);
   feed.output(4, "d");
   parser.release();
   await drained(stream);
   expect(lines(terminal)[0]).toBe("abc");
   expect(feed.acks).toEqual([0]);
-  // A handoff keeps the coherent screen and its input until the next snapshot.
+  expect(stream.coherent).toBe(scenario.coherent);
+  const next = deliver(stream, "d2", 3, { cols: 8, rows: 4, revision: 0 }, "unused");
+  await next.settled;
+  expect(next.prepared).toEqual([true]);
+  expect(lines(terminal)[0]).toBe("abc");
   expect(stream.coherent).toBe(true);
 });
 
