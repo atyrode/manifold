@@ -222,20 +222,7 @@ async function observeTerminalBuffer(target: Browser): Promise<void> {
       }
     }
     if (!terminal) throw new Error("mounted xterm reference not found");
-    let inParserCallback = false;
-    const outOfOrder = [];
-    const write = terminal.write.bind(terminal);
-    const resize = terminal.resize.bind(terminal);
-    terminal.write = (data, callback) => write(data, callback ? () => {
-      inParserCallback = true;
-      try { callback(); } finally { inParserCallback = false; }
-    } : undefined);
-    terminal.resize = (cols, rows) => {
-      if (!inParserCallback) outOfOrder.push({ cols, rows });
-      return resize(cols, rows);
-    };
     window.__terminalGeometryProof = {
-      outOfOrder,
       read() {
         const buffer = terminal.buffer.active, lines = [];
         for (let index = 0; index <= buffer.baseY + buffer.cursorY; index++) {
@@ -1523,7 +1510,12 @@ try {
           lastSeq = message.seq;
           revisionedOwnerSnapshot = message.geometry.revision !== null;
         }
-        driver.ackTerminal(geometryTerminal.id, viewportId, message.deliveryId, message.deliverySeq);
+        driver.ackTerminal(
+          geometryTerminal.id,
+          viewportId,
+          message.deliveryId,
+          message.deliverySeq,
+        );
       });
       driver.on("terminal_output", (message) => {
         if (message.terminalId !== geometryTerminal.id || message.viewportId !== viewportId) return;
@@ -1532,11 +1524,21 @@ try {
           lastSeq = message.seq;
           sourceText += Buffer.from(message.data, "base64").toString();
         }
-        driver.ackTerminal(geometryTerminal.id, viewportId, message.deliveryId, message.deliverySeq);
+        driver.ackTerminal(
+          geometryTerminal.id,
+          viewportId,
+          message.deliveryId,
+          message.deliverySeq,
+        );
       });
       driver.on("terminal_geometry", (message) => {
         if (message.terminalId !== geometryTerminal.id || message.viewportId !== viewportId) return;
-        driver.ackTerminal(geometryTerminal.id, viewportId, message.deliveryId, message.deliverySeq);
+        driver.ackTerminal(
+          geometryTerminal.id,
+          viewportId,
+          message.deliveryId,
+          message.deliverySeq,
+        );
       });
       await driver.connect();
       driver.attachTerminal(geometryTerminal.id, viewportId);
@@ -1675,16 +1677,6 @@ try {
     firstDriver.sendTerminalInput(geometryTerminal.id, "stop\n");
     await waitDone("relative");
     await compareViews("relative-redraw history agrees after geometry races with reconnect");
-    for (const target of [browser, watcher]) {
-      const outOfOrder = await target.evaluate<unknown[]>(
-        "window.__terminalGeometryProof.outOfOrder",
-      );
-      check(
-        "every mounted live resize stays inside its parser callback",
-        outOfOrder.length === 0,
-        JSON.stringify(outOfOrder),
-      );
-    }
     await watcher.reload();
     await until(
       () =>

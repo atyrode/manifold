@@ -217,6 +217,34 @@ test("one parser write is in flight and credit waits for its completion", async 
   expect(lines(terminal).join("")).toBe(`a${"b".repeat(49)}`);
 });
 
+test("a handoff still charges the retired parser operation against the new delivery", async () => {
+  const { terminal, stream } = viewer(8, 4);
+  const old = deliver(stream, "old", 0, { cols: 8, rows: 4, revision: 0 }, "");
+  await old.settled;
+  const parser = blockParser(terminal, 903);
+  old.output(1, `\x1b]903;${"p".repeat(500_000)}\x07`);
+  await parser.entered;
+  stream.suspend();
+  const rejected = deliver(
+    stream,
+    "over-bound",
+    1,
+    { cols: 8, rows: 4, revision: 0 },
+    "q".repeat(300_000),
+  );
+  expect(rejected.stalled).toBe(true);
+  expect(stream.deliveryId).toBeNull();
+  expect(stream.coherent).toBe(false);
+  parser.release();
+  await drained(stream);
+  expect(old.acks).toEqual([0]);
+  expect(rejected.acks).toEqual([]);
+  const recovered = deliver(stream, "recovered", 2, { cols: 8, rows: 4, revision: 0 }, "retained");
+  await recovered.settled;
+  expect(recovered.acks).toEqual([0]);
+  expect(lines(terminal)).toEqual(["retained", "", "", ""]);
+});
+
 test.each<{ name: string; overflow: (feed: Feed) => void }>([
   {
     name: "the frame bound",
@@ -339,6 +367,27 @@ test("a fresh snapshot replays behind the in-flight parse and CAN cancels its un
   await drained(stream);
   expect(lines(terminal)).toEqual(["ABCD", "E", "tail", ""]);
   expect(replaced.acks.at(-1)).toBe(1);
+});
+
+test("a replacement snapshot cannot accept input against modes while its replay is incomplete", async () => {
+  const { terminal, stream } = viewer(8, 4);
+  await deliver(stream, "old", 0, { cols: 8, rows: 4, revision: 0 }, "old").settled;
+  const parser = blockParser(terminal, 904);
+  const fresh = deliver(
+    stream,
+    "fresh",
+    1,
+    { cols: 8, rows: 4, revision: 0 },
+    "\x1b]904;wait\x07new",
+  );
+  await parser.entered;
+  expect(stream.coherent).toBe(false);
+  expect(fresh.acks).toEqual([]);
+  parser.release();
+  await fresh.settled;
+  expect(stream.coherent).toBe(true);
+  expect(fresh.acks).toEqual([0]);
+  expect(lines(terminal)).toEqual(["new", "", "", ""]);
 });
 
 test("restart fences old geometry, settlement and credit while accepting fresh counters", async () => {

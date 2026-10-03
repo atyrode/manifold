@@ -215,8 +215,9 @@ export const TerminalDeliverySeqSchema = z.number().int().nonnegative();
 /**
  * Transient delivery state of one view (issue #880), never recording metadata. `waiting`: its
  * completed-parse credit is exhausted and the server holds its ordered pending frames.
- * `recovering`: that pending window overflowed and was discarded, so no tail can follow; once
- * every frame already sent to the incarnation is acknowledged, a fresh snapshot replaces it.
+ * `recovering`: a pending window overflowed or the owner was re-adopted while work remained.
+ * Once every sent frame completes, a fresh snapshot replaces this incarnation. `skipped`
+ * states whether any held or newer output was omitted; recovery alone does not imply loss.
  * `live`: held frames drained again. A snapshot itself starts a live incarnation. `refused`:
  * the server retired this attachment of the view, and only a deliberate re-attach continues it.
  */
