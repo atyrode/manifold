@@ -31,11 +31,17 @@ import {
   type ServerToAgentMessage,
   type TileRef,
 } from "@manifold/protocol";
-import { assembleRoster, rosterElementTraits, type PluginDef } from "@manifold/plugin";
+import {
+  assembleRoster,
+  elementPayloadGuard,
+  rosterElementTraits,
+  type PluginDef,
+} from "@manifold/plugin";
 import {
   DEFAULT_TERMINAL_HEIGHT,
   DEFAULT_TERMINAL_WIDTH,
   LOCAL_ORIGIN,
+  Y,
   createSharedText,
   readSharedText,
   sharedText,
@@ -218,6 +224,7 @@ async function placementFixture(): Promise<PlacementFixture> {
     declaration. The roster arrives as a thunk, exactly as production wires it.
    */
   const plugins = await testPluginHost(store, auth, rooms, broker, runtime);
+  rooms.setElementPayloadGuard(elementPayloadGuard(() => plugins.assembly()));
   const placement = new PlaceExecutor(
     store,
     rooms,
@@ -2439,6 +2446,39 @@ describe("representation placement retains independent authority homes", () => {
     );
     return room;
   }
+
+  test("an invalid alternate payload refuses placement before either document changes", async () => {
+    const fixture = await placementFixture();
+    const source = roomFor(fixture, fixture.canvas.id);
+    const destination = roomFor(fixture, fixture.composition.id);
+    const original = element({
+      id: "opaque-but-not-a-document-reference",
+      type: "canvas_note",
+      document: "opaque non-tuple reference",
+    });
+    writeElement(source.doc, original, LOCAL_ORIGIN);
+    const beforeSource = Y.encodeStateAsUpdate(source.doc);
+    const beforeDestination = Y.encodeStateAsUpdate(destination.doc);
+    const outcome = ActionOutcomeSchema.parse(
+      (
+        await call(fixture, "POST", "/api/actions/core.space.place", OWNER_KEY, {
+          ref: { kind: "element", containerId: source.containerId, elementId: original.id },
+          destination: {
+            kind: "tile",
+            containerId: destination.containerId,
+            targetTileId: null,
+            edge: null,
+          },
+        })
+      ).payload,
+    );
+    expect(outcome).toMatchObject({ ok: false, denial: { rule: "refused" } });
+    if (outcome.ok) throw new Error("invalid alternate was admitted");
+    expect(placementRefusalRule(outcome.denial.message)).toBe("not_accepted");
+    expect(Y.encodeStateAsUpdate(source.doc)).toEqual(beforeSource);
+    expect(Y.encodeStateAsUpdate(destination.doc)).toEqual(beforeDestination);
+    expect(source.element(original.id)).toEqual(original);
+  });
 
   test("canvas note to tile and back preserves the reference, body identity, grants and retained home portal", async () => {
     const fixture = await placementFixture();

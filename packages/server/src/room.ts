@@ -134,6 +134,13 @@ export function censusFor(
 export const DOC_BYTES_LIMIT = 12 * 1_048_576;
 const DOC_UPDATES_PER_SECOND = 120;
 const DOC_UPDATE_BURST = 240;
+/**
+ * Conservative V1 growth bound for pinned Yjs 13.6.32: input boundaries can split retained
+ * Items; each new header uses safe-int IDs (at most eight bytes each), not a copy of a
+ * root/map name. 256 bytes per input byte covers those headers and UTF-8 split expansion.
+ * This only permits a cheap acceptance; potential overflow still measures the full state.
+ */
+const DOC_UPDATE_GROWTH_BOUND = 256;
 /** Only congested delivery is paced; healthy recipients retain immediate deltas. */
 const RECIPIENT_STATE_MIN_INTERVAL_MS = 100;
 const RECIPIENT_FULL_RESYNC_MIN_INTERVAL_MS = 1_000;
@@ -235,6 +242,10 @@ export class Room {
   private collectingTextKeys: Set<string> | null = null;
   private docBytes = 0;
   private readonly docBytesLimit: number;
+  /** One staging author per resident room, not one durable client entry per native write. */
+  private nativeWriteClientId: number | null = null;
+  private docBytesUpperBound: number | null = null;
+  private accountedDocUpdates = 0;
 
   constructor(
     readonly containerId: string,
@@ -302,13 +313,17 @@ export class Room {
     });
     // Pending structs/delete sets change full encodings without emitting an update.
     // Invalidate after every transaction's GC/merge cleanup, before update fanout.
-    this.doc.on("afterTransactionCleanup", () => {
+    this.doc.on("afterTransactionCleanup", (transaction: Y.Transaction) => {
       this.encodedDoc = null;
       this.docState = null;
+      // Untracked foreign application may retain pending data absent from its update event.
+      if (!transaction.local && this.accountedDocUpdates === 0) this.docBytesUpperBound = null;
       this.beforeUpdateCheckpoint = null;
       this.recoveryDelta = null;
     });
     this.doc.on("update", (update, origin) => {
+      if (this.docBytesUpperBound !== null)
+        this.docBytesUpperBound += update.byteLength * DOC_UPDATE_GROWTH_BOUND;
       this.rev += 1;
       // A lazy read may seed the cached tile root, but owns no broadcast or persistence timer.
       if (loading && isActionPreparation()) {
@@ -546,13 +561,28 @@ export class Room {
   }
 
   private snapshotDoc(): Uint8Array {
-    return (this.docState ??= Y.encodeStateAsUpdate(this.doc));
+    this.docState ??= Y.encodeStateAsUpdate(this.doc);
+    this.docBytesUpperBound = this.docState.byteLength;
+    return this.docState;
   }
 
   private isDocOverLimit(): boolean {
-    // Deltas omit the extra headers produced when old Items split. Only the full
-    // current encoding (including pending state) measures capacity soundly.
+    if (this.docBytesUpperBound !== null && this.docBytesUpperBound <= this.docBytesLimit)
+      return false;
     return this.snapshotDoc().byteLength > this.docBytesLimit;
+  }
+
+  private applyAccountedDocUpdate(update: Uint8Array, origin: unknown): void {
+    // Charge raw bytes even if missing-clock structs produce no update event. Emitted
+    // deltas are charged separately, including repairs/authorship and local native writes.
+    if (this.docBytesUpperBound !== null)
+      this.docBytesUpperBound += update.byteLength * DOC_UPDATE_GROWTH_BOUND;
+    this.accountedDocUpdates += 1;
+    try {
+      Y.applyUpdate(this.doc, update, origin);
+    } finally {
+      this.accountedDocUpdates -= 1;
+    }
   }
 
   /**
@@ -568,10 +598,14 @@ export class Room {
     staged.gc = false;
     try {
       Y.applyUpdate(staged, this.snapshotDoc());
+      // A separate stable author avoids Yjs's remote-client collision guard when
+      // the staged delta is applied to the canonical document.
+      this.nativeWriteClientId ??= staged.clientID;
+      staged.clientID = this.nativeWriteClientId;
       const before = Y.encodeStateVector(staged);
       staged.transact(() => write(staged), origin);
       if (Y.encodeStateAsUpdate(staged).byteLength > this.docBytesLimit) return false;
-      Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(staged, before), origin);
+      this.applyAccountedDocUpdate(Y.encodeStateAsUpdate(staged, before), origin);
       return true;
     } finally {
       staged.destroy();
@@ -606,7 +640,7 @@ export class Room {
     this.collectingTextKeys = changedTexts;
     this.collectingIds = changed;
     try {
-      Y.applyUpdate(this.doc, update, peer.auth.principal.id);
+      this.applyAccountedDocUpdate(update, peer.auth.principal.id);
     } catch {
       peer.send({ type: "error", code: "invalid", message: "invalid doc update" });
       return false;
@@ -1537,6 +1571,11 @@ export class RoomManager {
   setElementPayloadGuard(guard: (element: SceneElement) => ElementPayloadRefusal | null): void {
     requireActionEffects();
     this.payloadGuard = guard;
+  }
+
+  /** Validates a carried payload against the active owner's schema before placement writes. */
+  elementPayloadRefusal(element: SceneElement): ElementPayloadRefusal | null {
+    return this.payloadGuard(element);
   }
 
   /** Installs the broker's in-flight create view for residency decisions. */
