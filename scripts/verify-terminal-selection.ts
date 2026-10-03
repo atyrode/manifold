@@ -1105,17 +1105,49 @@ try {
   }
   async function rendererScroll(edge: "top" | "bottom"): Promise<void> {
     // xterm normalizes wheel deltas: one large wheel event is not scroll-to-edge.
-    // Drag the real scrollbar, then prove its endpoint geometrically.
-    const points = await browser!.evaluate<{ x: number; y: number }[]>(`(() => {
-      const slider = document.querySelector('.xterm .scrollbar.vertical .slider');
-      if (!slider) throw new Error('renderer witness lost its scrollback scrollbar');
-      const thumb = slider.getBoundingClientRect(), track = slider.parentElement.getBoundingClientRect();
-      const x = thumb.left + thumb.width / 2;
-      return [
-        { x, y: thumb.top + thumb.height / 2 },
-        { x, y: ${edge === "top" ? "track.top + 1" : "track.bottom - 1"} },
-      ];
-    })()`);
+    // Drag the real scrollbar, then prove its endpoint geometrically. Press only a
+    // thumb that is current and hit-testable: xterm syncs its track to a resized
+    // screen on a later frame, and its auto-hidden slider ignores the pointer until
+    // hovered. A stale thumb can lie off the page, where the press lands outside
+    // the portal, disengages it, and leaves every later drag without a slider.
+    let points: { x: number; y: number }[] = [];
+    await until(
+      async () => {
+        const thumb = await browser!.evaluate<{
+          x: number;
+          y: number;
+          end: number;
+          grabbable: boolean;
+        } | null>(`(() => {
+          const slider = document.querySelector('.xterm .scrollbar.vertical .slider');
+          if (!slider) throw new Error('renderer witness lost its scrollback scrollbar');
+          const thumb = slider.getBoundingClientRect(), track = slider.parentElement.getBoundingClientRect();
+          const screen = slider.closest('.xterm').querySelector('.xterm-screen').getBoundingClientRect();
+          if (Math.abs(track.height - screen.height) >= 1) return null;
+          const x = thumb.left + thumb.width / 2, y = thumb.top + thumb.height / 2;
+          return {
+            x, y, end: ${edge === "top" ? "track.top + 1" : "track.bottom - 1"},
+            grabbable: document.elementFromPoint(x, y) === slider,
+          };
+        })()`);
+        if (thumb === null) return false;
+        if (!thumb.grabbable) {
+          await browser!.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: thumb.x,
+            y: thumb.y,
+          });
+          return false;
+        }
+        points = [
+          { x: thumb.x, y: thumb.y },
+          { x: thumb.x, y: thumb.end },
+        ];
+        return true;
+      },
+      20_000,
+      "renderer witness scrollbar thumb matches the current screen and accepts the pointer",
+    );
     await browser!.drag(points, 30);
     await until(
       () =>
