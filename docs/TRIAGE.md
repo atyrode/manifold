@@ -266,6 +266,12 @@ rebuilds the fixed-output dependencies before building and smoking both native c
 cached availability alone is insufficient. The full local gate therefore requires native Nix,
 unlike the ordinary local baseline. Package proof does not authorize live owner activation.
 
+Native qualification includes retirement of its exact disposable unit and temporary root, not
+only successful workload exit. `--collect` can unload a completed unit between inspection and
+stop; a failed stop is accepted only when a bounded subsequent inspection positively reports
+that exact unit `not-found`. A loaded or unknown unit, failed inspection, or failed root removal
+remains a cleanup failure. Confirmed retirement never erases an already-failing workload.
+
 Fast pull-request feedback targets **1–2 minutes**. Separately, the complete suite operates to
 **under 7 minutes p95** execution wall clock over at least ten recent clean runs with sufficient
 hosted-runner concurrency. Record wall clock and queue delay separately with revision, event,

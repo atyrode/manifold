@@ -69,8 +69,11 @@ cleanup() {
     if state=$("$timeout" --kill-after=5s 20s "${control[@]}" show "$unit.service" --property=LoadState --value); then
       if [[ $state != not-found ]]; then
         if ! "$timeout" --kill-after=5s 20s "${control[@]}" stop "$unit.service"; then
-          printf 'verify-runtime: failed to stop owned unit %s\n' "$unit" >&2
-          if [[ $status == 0 ]]; then status=1; fi
+          # Collection can race stop; only positive absence confirms retirement.
+          if ! state=$("$timeout" --kill-after=5s 20s "${control[@]}" show "$unit.service" --property=LoadState --value) || [[ $state != not-found ]]; then
+            printf 'verify-runtime: failed to stop owned unit %s\n' "$unit" >&2
+            if [[ $status == 0 ]]; then status=1; fi
+          fi
         fi
       fi
     else
