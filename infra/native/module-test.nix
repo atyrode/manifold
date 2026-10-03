@@ -158,17 +158,34 @@ let
       try {
         const terminal = client.terminals.get(state.terminalId);
         require(terminal?.status === "running", "retained terminal is no longer running");
+        // This client's one raw transcript sink owns exactly one view of the terminal; frames
+        // of any other terminal or view are neither consumed nor acknowledged, and each
+        // acknowledgement follows the sink's completed consumption of that frame.
+        const viewportId = "shell-fixture-client";
+        const view: { deliveryId?: string; geometry?: unknown } = {};
         let snapshot = false;
         let text = "";
         client.on("terminal_snapshot", (message) => {
-          if (message.terminalId !== state.terminalId) return;
+          if (message.terminalId !== state.terminalId || message.viewportId !== viewportId) return;
+          view.deliveryId = message.deliveryId;
+          view.geometry = message.geometry;
           text = Buffer.from(message.data, "base64").toString();
           snapshot = true;
+          client.ackTerminal(state.terminalId, viewportId, message.deliveryId, message.deliverySeq);
         });
         client.on("terminal_output", (message) => {
-          if (message.terminalId === state.terminalId) text += Buffer.from(message.data, "base64").toString();
+          if (message.terminalId !== state.terminalId || message.viewportId !== viewportId ||
+            message.deliveryId !== view.deliveryId) return;
+          text += Buffer.from(message.data, "base64").toString();
+          client.ackTerminal(state.terminalId, viewportId, message.deliveryId, message.deliverySeq);
         });
-        client.attachTerminal(state.terminalId);
+        client.on("terminal_geometry", (message) => {
+          if (message.terminalId !== state.terminalId || message.viewportId !== viewportId ||
+            message.deliveryId !== view.deliveryId) return;
+          view.geometry = message.geometry;
+          client.ackTerminal(state.terminalId, viewportId, message.deliveryId, message.deliverySeq);
+        });
+        client.attachTerminal(state.terminalId, viewportId);
         await waitFor(() => snapshot, "retained PTY snapshot missing");
         client.takeTerminal(state.terminalId);
         await waitFor(() => client.terminals.get(state.terminalId)?.controllerId === client.self?.id,
