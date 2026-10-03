@@ -1210,9 +1210,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     }
     child.kill("SIGKILL");
     let empty = false;
-    let cleaned = false;
-    const cleanup = async (): Promise<void> => {
-      if (cleaned) return;
+    const cleanup = retryableCleanup(async (): Promise<void> => {
       writeControl(groups.root, "cgroup.kill", "1");
       child.kill("SIGKILL");
       await awaitEmpty(groups.root);
@@ -1223,15 +1221,13 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
         await exited;
         await drained;
       }
-      if (cleaned) return;
       // Reclamation may refuse after empty proof. Keep the callback and held containment
       // usable until the complete cleanup succeeds, including on an explicit later retry.
       terminalProcess?.terminal?.close();
       gate.destroy();
       metadata.destroy();
       reclaimGroups(groups);
-      cleaned = true;
-    };
+    });
     try {
       await cleanup();
     } catch (failure) {
