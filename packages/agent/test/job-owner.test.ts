@@ -3468,6 +3468,11 @@ test.skipIf(!linux)(
       expect(served.status).toBe(200);
       expect(await served.json()).toEqual({ received: "after five seconds" });
       expect(f.requests).toEqual(["/delayed/stream"]);
+      expect(
+        f.events.filter(
+          (event) => event.type === "service_refused" && event.serviceId === remote.serviceId,
+        ),
+      ).toEqual([]);
     } finally {
       lifetime.abort();
       peer?.close();
@@ -3480,9 +3485,9 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "remote tunnel admission preserves the call deadline, authority withdrawal and explicit refusal",
+  "remote tunnel admission preserves the call deadline, authority withdrawal, peer closure and explicit refusal",
   async () => {
-    for (const mode of ["deadline", "withdrawal", "refusal"] as const) {
+    for (const mode of ["deadline", "withdrawal", "peer-close", "refusal"] as const) {
       const f = await reconfiguredServiceOwner();
       const opened = Promise.withResolvers<Extract<JobEvent, { type: "service_tunnel_open" }>>();
       f.detach();
@@ -3528,16 +3533,23 @@ test.skipIf(!linux)(
             channelId: request.channelId,
             endpoint: null,
           });
+        if (mode === "peer-close")
+          await f.owner.execute({
+            type: "service_tunnel_frame",
+            frame: { type: "close", channelId: request.channelId },
+          });
         const reason =
           mode === "deadline"
             ? "service_timeout"
             : mode === "withdrawal"
               ? "service_cancelled"
-              : "service_remote_refused";
+              : mode === "peer-close"
+                ? "service_tunnel_closed"
+                : "service_remote_refused";
         const refused = await response;
         expect(refused.status).toBe(503);
         expect(await refused.json()).toEqual({
-          error: mode === "refusal" ? "service_unavailable" : reason,
+          error: mode === "refusal" || mode === "peer-close" ? "service_unavailable" : reason,
         });
         expect(
           f.events.filter(

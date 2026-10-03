@@ -29,6 +29,7 @@ import {
   type ManifoldRef,
   type ServicePolicy,
 } from "@manifold/protocol";
+import { z } from "zod";
 import {
   callAction,
   enrollMachine,
@@ -63,6 +64,16 @@ const required = [
 ];
 const realBackend = process.platform === "linux" && required.every((name) => process.env[name]);
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+const EventRows = z.object({
+  events: z.array(
+    z.object({
+      door: z.string().nullable(),
+      outcome: z.string().nullable(),
+      payload: z.string(),
+    }),
+  ),
+});
+const TracePayload = z.record(z.string(), z.unknown());
 
 // This proof installs real immutable bundles and uses only public doors and authenticated
 // machine transports. Its two owners have disjoint state and delegated workload trees.
@@ -664,8 +675,20 @@ test.skipIf(!realBackend)(
         );
         if (output.type !== "output") throw new Error("missing consumer output");
         const body = Buffer.from(output.data, "base64").toString();
-        if (allowed) expect(JSON.parse(body)).toEqual({ starts, shutdowns, setting: "reviewed" });
-        else expect(body).toBe("");
+        if (allowed) {
+          expect(JSON.parse(body)).toEqual({ starts, shutdowns, setting: "reviewed" });
+          const traces = EventRows.parse(
+            await ownerAction(hub(), "core.events.list", { kind: "trace", limit: 500 }),
+          )
+            .events.filter((row) => row.door === "engine.services.invoke")
+            .map((row) => ({
+              outcome: row.outcome,
+              payload: TracePayload.parse(JSON.parse(row.payload)),
+            }))
+            .filter((row) => row.payload.jobId === jobId && row.payload.serviceId === SERVICE);
+          expect(traces).toContainEqual(expect.objectContaining({ outcome: "ok" }));
+          expect(traces.filter((row) => row.payload.ownerRefusal !== undefined)).toEqual([]);
+        } else expect(body).toBe("");
       };
       await run("cross-owner");
       source.agent.proc.kill("SIGKILL");
