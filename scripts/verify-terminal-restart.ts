@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ActionOutcomeSchema,
+  ClientMessageSchema,
   ContainerResponseSchema,
   TerminalsResponseSchema,
   type TerminalSummary,
@@ -78,6 +79,17 @@ try {
   browser = new Browser();
   await browser.launch({ incognito: true });
   const target = browser;
+  // A mounted view acknowledges a delivery only after xterm replayed its snapshot, and only a
+  // replayed screen accepts keys (#880): keys typed earlier are dropped, not delivered. The
+  // page's own outgoing completion credit is therefore the screen's readiness for a typist.
+  const acknowledged: { terminalId: string; viewportId: string; deliveryId: string }[] = [];
+  target.on("Network.webSocketFrameSent", (params) => {
+    const payload = (params["response"] as { payloadData?: unknown } | undefined)?.payloadData;
+    if (typeof payload !== "string" || !payload.includes('"terminal_ack"')) return;
+    const frame = ClientMessageSchema.safeParse(JSON.parse(payload));
+    if (frame.success && frame.data.type === "terminal_ack") acknowledged.push(frame.data);
+  });
+  await target.send("Network.enable", {});
   await target.goto(`${origin}/#key=${ownerKey}`);
   const hasIdentity = "localStorage.getItem('manifold.identity') !== null";
   await until(
@@ -160,6 +172,20 @@ try {
     if (event.terminalId === original.id && event.kind === "restarted") restarts++;
   });
   await target.evaluate("void (window.__restartFrame = document.querySelector('.terminal-frame'))");
+  await until(
+    () => acknowledged.some((ack) => ack.terminalId === original.id),
+    10_000,
+    "new terminal screen replayed",
+  );
+  const viewportId = acknowledged.find((ack) => ack.terminalId === original.id)?.viewportId;
+  assert.ok(viewportId);
+  /** Distinct deliveries this mounted view has completed: one per replayed snapshot. */
+  const replayed = (): number =>
+    new Set(
+      acknowledged
+        .filter((ack) => ack.terminalId === original.id && ack.viewportId === viewportId)
+        .map((ack) => ack.deliveryId),
+    ).size;
   const command = async (text: string): Promise<void> => {
     await click(".xterm-host");
     await target.typeText(text);
@@ -202,6 +228,7 @@ try {
   await sleep(250);
   assert.equal(restarts, 0, "first press must not restart the live process");
   assert.equal(await screenContains("BEFORE_RESTART_MARKER"), true);
+  const beforeRunningRestart = replayed();
   await click(restartControl);
   await until(() => restarts === 1, 10_000, "confirmed running restart");
   await until(
@@ -209,6 +236,7 @@ try {
     10_000,
     "old byte stream cleared",
   );
+  await until(() => replayed() > beforeRunningRestart, 10_000, "replacement screen replayed");
   await command("printf '\\n%s%s\\n' RUNNING_RESTART_ READY; pwd");
   await until(
     () => screenContains("RUNNING_RESTART_READY"),
@@ -223,6 +251,7 @@ try {
     10_000,
     "retained nonzero exit",
   );
+  const beforeExitedRestart = replayed();
   await click(restartControl);
   await until(() => restarts === 2, 10_000, "exited restart needs one press");
   await until(
@@ -230,6 +259,7 @@ try {
     10_000,
     "exited tile becomes live",
   );
+  await until(() => replayed() > beforeExitedRestart, 10_000, "restarted screen replayed");
   await command("printf '\\n%s%s\\n' EXITED_RESTART_ READY; pwd");
   await until(
     () => screenContains("EXITED_RESTART_READY"),
