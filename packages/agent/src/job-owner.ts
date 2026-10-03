@@ -279,6 +279,8 @@ export class MachineJobOwner {
   private sink: ((event: JobEvent) => boolean) | null = null;
   private draining = false;
   private ready = false;
+  /** Reopening waits for the current quiesce/reclamation attempt to settle. */
+  private shutdownAttempt: Promise<void> | undefined;
   private terminalHostId: string | undefined;
   private readonly inputAuthorizations = new Map<
     string,
@@ -435,6 +437,7 @@ export class MachineJobOwner {
   }
 
   setDraining(draining: boolean): void {
+    if (!draining && this.shutdownAttempt) throw new Error("owner_draining");
     if (!draining)
       for (const job of this.jobs.values())
         if (job.cgroupCleanupPending) throw new Error("cgroup-cleanup-pending");
@@ -3692,15 +3695,34 @@ export class MachineJobOwner {
       throw new Error("unsupported_job_platform");
     return `linux-${process.arch}`;
   }
-  async shutdown(): Promise<void> {
-    if (!this.ready) return;
+  shutdown(): Promise<void> {
+    if (this.shutdownAttempt) return this.shutdownAttempt;
+    if (!this.ready) return Promise.resolve();
+    const attempt = Promise.withResolvers<void>();
+    this.shutdownAttempt = attempt.promise;
+    void this.finishShutdown().then(
+      () => {
+        this.shutdownAttempt = undefined;
+        attempt.resolve();
+      },
+      (error: unknown) => {
+        this.shutdownAttempt = undefined;
+        attempt.reject(error);
+      },
+    );
+    return attempt.promise;
+  }
+
+  private async finishShutdown(): Promise<void> {
     this.draining = true;
-    this.seatController.abort();
-    this.credentialEnrollment.close();
-    for (const authority of this.serviceAuthorities.values()) authority.abort();
-    this.unconfiguredServices.abort();
-    this.serviceRunner.close();
-    this.credentialSources.close();
+    // Quiesce individual effects, not the held seat, policies or credentials: a refused
+    // reclamation leaves this same owner available for explicit cleanup and reopening.
+    this.credentialEnrollment.retirePending("credential_owner_offline");
+    for (const tunnel of this.serviceTunnels.values()) tunnel.controller.abort();
+    for (const job of this.jobs.values()) {
+      job.context?.abortAgentRuns();
+      job.serviceController.abort();
+    }
     for (const pending of this.directServiceCalls.values()) pending.controller.abort();
     this.options.journal.append({ kind: "drain", draining: true });
     await Promise.all([...this.jobs.values()].map((job) => this.cancel(job.request.jobId)));
@@ -3712,6 +3734,12 @@ export class MachineJobOwner {
     if ([...this.jobs.values()].some((job) => job.handle || job.startupCleanup))
       throw new Error("cgroup-cleanup-failed");
     this.ready = false;
+    this.seatController.abort();
+    this.credentialEnrollment.close();
+    for (const authority of this.serviceAuthorities.values()) authority.abort();
+    this.unconfiguredServices.abort();
+    this.serviceRunner.close();
+    this.credentialSources.close();
     for (const job of this.jobs.values()) {
       job.context?.close();
       for (const lease of job.leases) this.options.outputs.abort(lease);

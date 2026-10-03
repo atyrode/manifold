@@ -4944,7 +4944,12 @@ function temporaryOutputFixture() {
       }
       return held.sort();
     },
-    async open(): Promise<MachineJobOwner> {
+    async open(
+      options: {
+        credentialSources?: HeldServiceCredentialRegistry;
+        onEvent?(event: JobEvent): void;
+      } = {},
+    ): Promise<MachineJobOwner> {
       const journal = new JobJournal(protectedRoot.openChild("journal", { create: true }));
       try {
         owner = await MachineJobOwner.open({
@@ -4957,6 +4962,7 @@ function temporaryOutputFixture() {
           outputScratch: JobOutputScratchStore.open(namespace),
           delegatedCgroup,
           protectedDirectories: [protectedRoot, namespace],
+          ...(options.credentialSources ? { credentialSources: options.credentialSources } : {}),
           bubblewrapFd: -1,
           anchors: { runtime },
           runtimeTools: {},
@@ -4968,7 +4974,9 @@ function temporaryOutputFixture() {
         throw error;
       }
       detach = owner.attach((raw) => {
-        events.push(JobEventSchema.parse(raw));
+        const event = JobEventSchema.parse(raw);
+        events.push(event);
+        options.onEvent?.(event);
         changed.resolve();
         changed = Promise.withResolvers<void>();
         return true;
@@ -5541,13 +5549,93 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "failed cgroup reclamation preserves terminal result, usage and sealed outputs through explicit retry",
+  "failed cgroup reclamation preserves service authority, terminal result, usage and sealed outputs through explicit retry",
   async () => {
     const f = temporaryOutputFixture();
     let reclaimable = false;
     let host: TerminalHost | undefined;
+    const credentialRoot = mkdtempSync(join(tmpdir(), "owner-shutdown-credential-"));
+    const credentialSources = new HeldServiceCredentialRegistry();
+    const credential = "held-shutdown-credential";
+    const requests: Array<{ method: string; path: string; authorization: string | null }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        requests.push({
+          method: request.method,
+          path: new URL(request.url).pathname,
+          authorization: request.headers.get("authorization"),
+        });
+        return Response.json({ status: "readable", private: "never-disclose" });
+      },
+    });
+    const policy: ServicePolicy = {
+      serviceId: "fixture.shutdown",
+      revision: "r1",
+      origin: server.url.origin,
+      allowLoopbackHttp: true,
+      maxConcurrent: 1,
+      credential: { ref: "fixture-key", header: "Authorization", prefix: "Bearer " },
+      operations: {
+        read: {
+          method: "GET",
+          readable: true,
+          path: "/metadata",
+          input: {},
+          query: {},
+          body: [],
+          timeoutMs: 5000,
+          maxRequestBytes: 1024,
+          maxResponseBytes: 1024,
+          maxResultBytes: 1024,
+          response: { kind: "projected-json", fields: [["status"]], maxArrayItems: 1 },
+        },
+      },
+    };
+    const read = async (requestId: string) => {
+      await f.owner.execute({
+        type: "service_read",
+        requestId,
+        machineId: "machine",
+        serviceId: policy.serviceId,
+        revision: policy.revision,
+        policySha256: jobDigest(policy),
+        operationId: "read",
+        input: {},
+      });
+      return f.events.findLast(
+        (event) => event.type === "service_read_result" && event.requestId === requestId,
+      );
+    };
     try {
-      await f.open();
+      writeFileSync(join(credentialRoot, "key"), credential, { mode: 0o600 });
+      credentialSources.declare(
+        "fixture-key",
+        HeldDirectory.openAbsolute(credentialRoot, { private: true }),
+        "key",
+        [server.url.origin],
+      );
+      const owner = await f.open({
+        credentialSources,
+        onEvent(event) {
+          if (event.type === "service_authorize")
+            void f.owner.execute({
+              type: "service_authorized",
+              subject: event.subject,
+              authorizationId: event.authorizationId,
+              allowed: true,
+            });
+        },
+      });
+      await owner.execute({
+        type: "configure_services",
+        configuration: { revision: jobDigest([policy]), policies: [policy] },
+      });
+      expect(await read("before-shutdown")).toMatchObject({
+        reply: { ok: true, result: { status: "readable" } },
+      });
+      const credentialFd = credentialSources.currentDescriptor("fixture-key")!;
       await f.install();
       f.workloads.set("committed", {
         write(leases) {
@@ -5581,6 +5669,8 @@ test.skipIf(!linux)(
           .map((event) => (event as Extract<JobEvent, { type: "result" }>).result),
       ).toEqual([result]);
       expect(f.roots()).toEqual([]);
+      const material = result.outputs.find((output) => output.name === "material")!;
+      const archive = f.outputs.read("committed", material.outputId, 0, 65536).data;
       const extracted = f.extract("committed", "material");
       try {
         expect(readFileSync(join(extracted, "payload"), "utf8")).toBe(
@@ -5639,6 +5729,12 @@ test.skipIf(!linux)(
       expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
       await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
       expect(f.owner.maintenanceReady).toBe(false);
+      expect(await read("during-refused-shutdown")).toMatchObject({
+        reply: { ok: false, refusal: "service_owner_draining" },
+      });
+      expect(requests).toEqual([
+        { method: "GET", path: "/metadata", authorization: `Bearer ${credential}` },
+      ]);
       responseStart = f.events.length;
       await f.owner.execute({ type: "status", jobId: "committed" });
       expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
@@ -5655,9 +5751,31 @@ test.skipIf(!linux)(
         terminalIds: [],
       });
       expect(host.status().draining).toBe(false);
+      // No replacement owner, reattachment, credential recreation or service reconfiguration:
+      // reopening must use the exact runner, held credential and seat that refused shutdown.
+      expect(f.owner).toBe(owner);
+      expect(await read("after-reopen")).toEqual({
+        type: "service_read_result",
+        requestId: "after-reopen",
+        reply: {
+          type: "service_result",
+          requestId: "after-reopen",
+          ok: true,
+          result: { status: "readable" },
+        },
+      });
+      expect(requests).toEqual([
+        { method: "GET", path: "/metadata", authorization: `Bearer ${credential}` },
+        { method: "GET", path: "/metadata", authorization: `Bearer ${credential}` },
+      ]);
+      responseStart = f.events.length;
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
+      expect(f.outputs.read("committed", material.outputId, 0, 65536).data).toEqual(archive);
       await f.start("resumed");
       expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
       await f.shutdown();
+      expect(() => fstatSync(credentialFd)).toThrow();
       await f.open();
       responseStart = f.events.length;
       await f.owner.execute({ type: "status", jobId: "committed" });
@@ -5666,6 +5784,9 @@ test.skipIf(!linux)(
       reclaimable = true;
       await host?.shutdown();
       await f.close();
+      credentialSources.close();
+      await server.stop(true);
+      rmSync(credentialRoot, { recursive: true, force: true });
     }
   },
 );
@@ -5918,6 +6039,15 @@ test.skipIf(!linux)(
       await entered.promise;
       overlapping = Promise.allSettled([cancelling, f.owner.shutdown()]);
       await new Promise<void>((resolve) => setImmediate(resolve));
+      // Even before this attempt has settled, an explicit reopen cannot admit new effects.
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "owner_draining",
+      });
+      await f.start("during-shutdown");
+      expect(f.refusal("during-shutdown")).toBe("start_permit_refused");
       gate.resolve();
       expect(await overlapping).toEqual([
         { status: "fulfilled", value: undefined },
