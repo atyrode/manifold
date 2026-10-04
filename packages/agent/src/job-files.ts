@@ -79,7 +79,7 @@ function directoryEnumerationFailure(errno: number): Error {
 }
 /** Own the native stream explicitly so read failures never lose a failed close. */
 class NativeDirectoryEntries implements IterableIterator<Buffer> {
-  private readonly stream: Pointer;
+  private readonly stream: Pointer | bigint;
   private readonly errno: Int32Array;
   private closed = false;
   constructor(
