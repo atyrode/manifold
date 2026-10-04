@@ -320,9 +320,9 @@ export class HeldDirectory {
   }
   /** Byte-exact directory names; callers decide whether non-directory entries are removable. */
   directoryNames(): Buffer[] {
-    return readdirSync(this.procPath, { withFileTypes: true, encoding: "buffer" })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
+    return readdirSync(this.procPath, { encoding: "buffer" }).filter((name) =>
+      lstatSync(this.entryPath(name)).isDirectory(),
+    );
   }
   /** Open a byte-named directory without changing its permissions or crossing this mount. */
   openDirectoryEntry(name: Buffer): HeldDirectory {

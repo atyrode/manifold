@@ -436,7 +436,11 @@ export class TerminalHost {
           this.jobOwner?.setDraining(command.draining);
           this.draining = command.draining;
         } catch (error) {
-          if (!(error instanceof Error) || error.message !== "cgroup-cleanup-pending") throw error;
+          if (
+            !(error instanceof Error) ||
+            (error.message !== "cgroup-cleanup-pending" && error.message !== "owner_draining")
+          )
+            throw error;
           this.draining = true;
         }
         this.log("info", "drain", { draining: this.draining, requestId: command.requestId });

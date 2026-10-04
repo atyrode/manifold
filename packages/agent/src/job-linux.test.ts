@@ -688,11 +688,13 @@ test.skipIf(!realLinux).each(["open", "mount"] as const)(
         }
         return originalOpen(...args);
       });
-      const read = spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      const read = spyOn(fs, "readFileSync").mockImplementation(((
+        ...args: Parameters<typeof fs.readFileSync>
+      ) => {
         if (window === "mount" && blocked && args[0] === `/proc/self/fdinfo/${rootFd}`)
           throw acquisitionFault;
         return originalRead(...args);
-      });
+      }) as typeof fs.readFileSync);
       try {
         await startLinuxJob(spec).catch((error: unknown) => {
           if (!(error instanceof LinuxJobRefusal)) throw error;
@@ -1026,7 +1028,7 @@ test.skipIf(!realLinux)(
           return fd;
         });
         const write = spyOn(fs, "writeSync").mockImplementation((...args) => {
-          const written = originalWrite(...args);
+          const written = Reflect.apply(originalWrite, fs, args) as number;
           if (populateRetry && args[0] === killFd) {
             // Perform the real kill, then admit another fixture process before the real
             // empty probe. No fabricated cgroup counters or cleanup callback are involved.
@@ -1036,7 +1038,9 @@ test.skipIf(!realLinux)(
           }
           return written;
         });
-        const timer = spyOn(timers, "setTimeout").mockImplementation(async (...args) => {
+        const timer = spyOn(timers, "setTimeout").mockImplementation((async (
+          ...args: Parameters<typeof timers.setTimeout>
+        ) => {
           if (pauseRetry && args[0] === 10) {
             // Hold A's actual populated probe while B is given an event-loop turn.
             pauseRetry = false;
@@ -1045,7 +1049,7 @@ test.skipIf(!realLinux)(
             return args[1];
           }
           return originalDelay(...args);
-        });
+        }) as typeof timers.setTimeout);
         restoreFaults = () => {
           open.mockRestore();
           write.mockRestore();

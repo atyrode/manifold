@@ -5993,6 +5993,7 @@ test.skipIf(!linux)(
     let entered = Promise.withResolvers<void>();
     let gate = Promise.withResolvers<void>();
     let overlapping: Promise<PromiseSettledResult<void>[]> | undefined;
+    let host: TerminalHost | undefined;
     const cleanup = async () => {
       if (reclaimed) return;
       entered.resolve();
@@ -6039,6 +6040,25 @@ test.skipIf(!linux)(
       await entered.promise;
       overlapping = Promise.allSettled([cancelling, f.owner.shutdown()]);
       await new Promise<void>((resolve) => setImmediate(resolve));
+      host = new TerminalHost({ jobOwner: f.owner });
+      const transportEvents: TerminalHostEvent[] = [];
+      const transport = host.open({
+        write(event) {
+          transportEvents.push(event);
+          return true;
+        },
+        close() {},
+      });
+      transport.deliver({ type: "attach" });
+      transport.deliver({ type: "drain", requestId: "shutdown-active", draining: false });
+      expect(transportEvents.at(-1)).toEqual({
+        type: "drain_status",
+        requestId: "shutdown-active",
+        terminalHostId: host.terminalHostId,
+        draining: true,
+        terminalIds: [],
+      });
+      expect(host.status().draining).toBe(true);
       // Even before this attempt has settled, an explicit reopen cannot admit new effects.
       await f.owner.execute({ type: "drain", draining: false });
       expect(f.events.at(-1)).toEqual({
@@ -6120,6 +6140,7 @@ test.skipIf(!linux)(
       heldJobReclaimable = true;
       gate.resolve();
       await overlapping;
+      await host?.shutdown();
       await f.close();
     }
   },
