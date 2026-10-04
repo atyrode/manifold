@@ -17,7 +17,15 @@ import {
   type Stats,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dlopen, FFIType, ptr, read as readNative, toArrayBuffer, type Library } from "bun:ffi";
+import {
+  dlopen,
+  FFIType,
+  ptr,
+  read as readNative,
+  toArrayBuffer,
+  type Library,
+  type Pointer,
+} from "bun:ffi";
 import { connect, type Socket } from "node:net";
 import { getSystemErrorName } from "node:util";
 
@@ -68,6 +76,76 @@ function directoryEnumerationFailure(errno: number): Error {
   return Object.assign(new Error("directory_enumeration_failed"), {
     code: getSystemErrorName(-errno),
   });
+}
+/** Own the native stream explicitly so read failures never lose a failed close. */
+class NativeDirectoryEntries implements IterableIterator<Buffer> {
+  private readonly stream: Pointer;
+  private readonly errno: Int32Array;
+  private closed = false;
+  constructor(
+    private readonly library: Library<typeof FILE_SYMBOLS>,
+    private readonly procPath: string,
+  ) {
+    const errnoAddress = library.symbols.__errno_location();
+    if (errnoAddress === null) throw new Error("directory_enumeration_unavailable");
+    this.errno = new Int32Array(toArrayBuffer(errnoAddress, 0, 4));
+    const path = Buffer.from(`${procPath}\0`);
+    const stream = library.symbols.opendir(ptr(path));
+    if (stream === null) throw directoryEnumerationFailure(this.errno[0]!);
+    this.stream = stream;
+  }
+  [Symbol.iterator](): IterableIterator<Buffer> {
+    return this;
+  }
+  next(): IteratorResult<Buffer, void> {
+    if (this.closed) return { done: true, value: undefined };
+    try {
+      while (true) {
+        this.errno[0] = 0;
+        const entry = this.library.symbols.readdir64(this.stream);
+        if (entry === null) {
+          if (this.errno[0] !== 0) throw directoryEnumerationFailure(this.errno[0]!);
+          this.close();
+          return { done: true, value: undefined };
+        }
+        // Linux dirent64: ino/off (8 bytes each), reclen (2), d_type (1), then the NUL name.
+        const type = readNative.u8(entry, 18);
+        // Known non-directories, including virtual cgroup controls, need no name or stat allocation.
+        if (type !== 4 && type !== 0) continue;
+        if (
+          readNative.u8(entry, 19) === 0x2e &&
+          (readNative.u8(entry, 20) === 0 ||
+            (readNative.u8(entry, 20) === 0x2e && readNative.u8(entry, 21) === 0))
+        )
+          continue;
+        const bytes = new Uint8Array(toArrayBuffer(entry, 19, readNative.u16(entry, 16) - 19));
+        // readdir reuses its storage; retain a copy without a UTF-8 decoding round trip.
+        const name = Buffer.from(bytes.subarray(0, bytes.indexOf(0)));
+        if (
+          type === 4 ||
+          lstatSync(Buffer.concat([Buffer.from(`${this.procPath}/`), name])).isDirectory()
+        )
+          return { done: false, value: name };
+      }
+    } catch (error) {
+      try {
+        this.close();
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], "directory_enumeration_failed");
+      }
+      throw error;
+    }
+  }
+  return(): IteratorResult<Buffer, void> {
+    this.close();
+    return { done: true, value: undefined };
+  }
+  private close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.library.symbols.closedir(this.stream) !== 0)
+      throw directoryEnumerationFailure(this.errno[0]!);
+  }
 }
 /** Lock remains owned by the open description until the caller closes it. */
 export function lockExclusive(fd: number): void {
@@ -327,41 +405,10 @@ export class HeldDirectory {
     return this.names();
   }
   /** Incremental, byte-exact directory names; stopping iteration closes the native stream. */
-  *directoryNames(): Generator<Buffer, void, unknown> {
+  directoryNames(): IterableIterator<Buffer> {
     // Bun 1.4.2's node:fs Dir.readSync caches a whole readdir result even with bufferSize=1.
     libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
-    const errnoAddress = libc.symbols.__errno_location();
-    if (errnoAddress === null) throw new Error("directory_enumeration_unavailable");
-    const errno = new Int32Array(toArrayBuffer(errnoAddress, 0, 4));
-    const path = Buffer.from(`${this.procPath}\0`);
-    const stream = libc.symbols.opendir(ptr(path));
-    if (stream === null) throw directoryEnumerationFailure(errno[0]!);
-    try {
-      while (true) {
-        errno[0] = 0;
-        const entry = libc.symbols.readdir64(stream);
-        if (entry === null) {
-          if (errno[0] !== 0) throw directoryEnumerationFailure(errno[0]!);
-          return;
-        }
-        // Linux dirent64: ino/off (8 bytes each), reclen (2), d_type (1), then the NUL name.
-        const type = readNative.u8(entry, 18);
-        // Known non-directories, including virtual cgroup controls, need no name or stat allocation.
-        if (type !== 4 && type !== 0) continue;
-        if (
-          readNative.u8(entry, 19) === 0x2e &&
-          (readNative.u8(entry, 20) === 0 ||
-            (readNative.u8(entry, 20) === 0x2e && readNative.u8(entry, 21) === 0))
-        )
-          continue;
-        const bytes = new Uint8Array(toArrayBuffer(entry, 19, readNative.u16(entry, 16) - 19));
-        // readdir reuses its storage; retain a copy without a UTF-8 decoding round trip.
-        const name = Buffer.from(bytes.subarray(0, bytes.indexOf(0)));
-        if (type === 4 || lstatSync(this.entryPath(name)).isDirectory()) yield name;
-      }
-    } finally {
-      if (libc.symbols.closedir(stream) !== 0) throw directoryEnumerationFailure(errno[0]!);
-    }
+    return new NativeDirectoryEntries(libc, this.procPath);
   }
   /** Open a byte-named directory without changing its permissions or crossing this mount. */
   openDirectoryEntry(name: Buffer): HeldDirectory {
