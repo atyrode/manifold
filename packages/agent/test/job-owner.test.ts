@@ -1911,6 +1911,18 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         expect(recovered.result.reason).toBe("owner_restart_effects_unknown");
         expect(recovered.result.usage).toBeNull();
         expect(recovered.result.outputs).toEqual([]);
+        events.length = 0;
+        await owner.execute({
+          type: "cancel",
+          jobId: interruptedRequest.jobId,
+          reason: "credential_revoked",
+        });
+        // The hub may still lack this settled result; a cancellation must not withhold it.
+        expect(
+          events.findLast(
+            (event) => event.type === "result" && event.result.jobId === interruptedRequest.jobId,
+          ),
+        ).toEqual({ type: "result", result: recovered.result });
         const changed = { ...requestBody, input: { changed: true } };
         const changedRequest = { ...changed, requestDigest: jobDigest(changed) };
         const changedPermit = { ...permitBody, requestDigest: changedRequest.requestDigest };
