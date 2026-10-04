@@ -53,7 +53,12 @@ import { JobOutputScratchStore, JobOutputStore } from "../src/job-outputs.ts";
 import { JobResources } from "../src/job-resources.ts";
 import { JobBoundInputStore } from "../src/job-bound-inputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
-import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
+import {
+  LinuxJobRefusal,
+  startLinuxJob,
+  type LinuxJobHandle,
+  type LinuxJobResult,
+} from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
 import { createServiceTunnel } from "../src/job-service-tunnel.ts";
 import { HeldServiceCredentialRegistry } from "../src/job-credentials.ts";
@@ -1730,7 +1735,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
                   "cgroup-empty-unproven",
                   undefined,
                   failure === "empty-startup",
-                  cleanup,
+                  failure === "empty-startup" ? undefined : cleanup,
                 );
               return {
                 result: Promise.reject(new LinuxJobRefusal("cgroup-empty-unproven")),
@@ -1959,6 +1964,380 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
     30000,
   );
 });
+
+test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const)(
+  "[real-linux] deferred child reclamation preserves the %s reopening fence and releases nested authority",
+  async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), "owner-ancestor-cleanup-"));
+    const keys = generateKeyPairSync("ed25519");
+    const bytes = Buffer.from(
+      [
+        "#!/bin/busybox sh",
+        "set -eu",
+        "IFS= read -r context <&3",
+        'if test "$2" != leaf; then',
+        '  if test "$2" = parent; then next=child; else next=leaf; fi',
+        '  printf \'{"type":"invoke","operationId":"fixture.jobs.run","input":{"label":"%s","next":"%s"},"outputs":[]}\\n\' "$2" "$next" >&3',
+        "fi",
+        'printf "ready:%s\\n" "$1"',
+        "IFS= read -r command",
+        'test "$command" = finish',
+        'printf "sealed:%s\\n" "$1"',
+        "",
+      ].join("\n"),
+    );
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const limits = {
+      timeoutMs: 60_000,
+      memoryBytes: 128 * 1024 * 1024,
+      processes: 32,
+      outputBytes: 65536,
+    };
+    const install: Extract<JobCommand, { type: "install" }> = {
+      type: "install",
+      pluginId: "fixture.jobs",
+      installationRevision: "ancestor-cleanup",
+      artifactSha256: sha256,
+      artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+      machine: {
+        artifacts: {
+          [`linux-${process.arch}`]: {
+            bundleFile: "worker",
+            sha256,
+            format: "raw",
+            entry: ["fixture"],
+            entrySha256: sha256,
+            maxBytes: bytes.length,
+            maxExpandedBytes: bytes.length,
+            maxMembers: 1,
+          },
+        },
+        locations: {},
+        operations: {
+          "fixture.jobs.run": {
+            argv: [{ input: "label" }, { input: "next" }],
+            input: {
+              label: { type: "string", required: true, maxLength: 32 },
+              next: { type: "string", required: true, maxLength: 32 },
+            },
+            runtimeTools: ["busybox"],
+            locations: [],
+            outputs: [],
+            network: "none",
+            limits,
+            stdin: true,
+          },
+        },
+      },
+    };
+    const held: HeldDirectory[] = [];
+    const handles = new Map<string, LinuxJobHandle>();
+    const subtrees = new Map<string, string>();
+    const blocked = new Set(["child"]);
+    const events: JobEvent[] = [];
+    const results = new Map<string, JobResult>();
+    const committed = new Map<string, string>();
+    const stdout = new Map<string, string>();
+    const stderr = new Map<string, string>();
+    const cleanupFailures = new Set<string>();
+    let changed = Promise.withResolvers<void>();
+    const notify = () => {
+      changed.resolve();
+      changed = Promise.withResolvers<void>();
+    };
+    let owner: MachineJobOwner | undefined;
+    let outputs: JobOutputStore | undefined;
+    let bwrapFd = -1;
+    let busyboxFd = -1;
+    let detach: (() => void) | undefined;
+    const launch = startLinuxJob;
+    const nativeLaunch = spyOn(nativeRuntime, "startLinuxJob").mockImplementation(async (spec) => {
+      const label = spec.argv[0]!;
+      const onOutput = spec.onOutput;
+      const handle = await launch({
+        ...spec,
+        onOutput: (output) => {
+          // Nested output goes to the worker's parent context, not the attached owner sink.
+          // Observe actual native bytes while preserving the owner's normal output path.
+          const stream = output.channel === "stdout" ? stdout : stderr;
+          stream.set(label, (stream.get(label) ?? "") + Buffer.from(output.bytes).toString());
+          onOutput?.(output);
+          notify();
+        },
+      });
+      handles.set(label, handle);
+      subtrees.set(label, dirname(readlinkSync(handle.childDelegation.procPath)));
+      const release = handle.release;
+      handle.release = () => {
+        if (blocked.has(label)) throw new LinuxJobRefusal("cgroup-cleanup-failed", undefined, true);
+        release();
+      };
+      return handle;
+    });
+    const descriptors = (subtree: string): string[] => {
+      const targets: string[] = [];
+      for (const fd of readdirSync("/proc/self/fd")) {
+        let target: string;
+        try {
+          target = readlinkSync(`/proc/self/fd/${fd}`);
+        } catch {
+          continue; // The directory listing's own descriptor has closed.
+        }
+        if (
+          target === subtree ||
+          target.startsWith(`${subtree}/`) ||
+          target === `${subtree} (deleted)`
+        )
+          targets.push(target);
+      }
+      return targets;
+    };
+    try {
+      for (const name of ["journal", "cache", "outputs", "locations"])
+        mkdirSync(join(root, name), { mode: 0o700 });
+      const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
+      try {
+        bwrapFd = executableParent.openRuntimeFile(basename(bwrap!));
+      } finally {
+        executableParent.close();
+      }
+      const runtimeParent = HeldDirectory.openAbsolute(dirname(busybox!));
+      try {
+        busyboxFd = runtimeParent.openRuntimeFile(basename(busybox!));
+      } finally {
+        runtimeParent.close();
+      }
+      const cache = HeldDirectory.openAbsolute(join(root, "cache"), { private: true });
+      const outputDirectory = HeldDirectory.openAbsolute(join(root, "outputs"), { private: true });
+      const managedState = HeldDirectory.openAbsolute(join(root, "locations"), { private: true });
+      const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+      const protectedRoot = HeldDirectory.openAbsolute(root, { private: true });
+      held.push(cache, outputDirectory, managedState, delegatedCgroup, protectedRoot);
+      outputs = JobOutputStore.open(outputDirectory);
+      owner = await MachineJobOwner.open({
+        machineId: "machine",
+        admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        journal: new JobJournal(
+          HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
+        ),
+        cache,
+        managedState,
+        outputs,
+        delegatedCgroup,
+        bubblewrapFd: bwrapFd,
+        anchors: {},
+        protectedDirectories: [protectedRoot],
+        runtimeTools: {
+          busybox: [{ fd: busyboxFd, target: "/bin/busybox", writable: false }],
+        },
+        artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+        log: (_level, evt, fields) => {
+          if (evt === "job_cgroup_cleanup_failed" && typeof fields?.jobId === "string")
+            cleanupFailures.add(fields.jobId);
+          notify();
+        },
+      });
+      detach = owner.attach((event) => {
+        events.push(event);
+        if (
+          event.type === "result" &&
+          ["exited", "interrupted", "cancelled", "refused"].includes(event.result.state)
+        ) {
+          if (!committed.has(event.result.jobId))
+            committed.set(event.result.jobId, canonicalJobJson(event.result));
+          results.set(event.result.jobId, event.result);
+        }
+        notify();
+        return true;
+      });
+      const waitFor = async (jobId: string, observation: string, ready: () => boolean) => {
+        while (!ready()) {
+          const refusal = events.find(
+            (event) =>
+              event.type === "refusal" && (event.jobId === jobId || event.jobId === "owner"),
+          );
+          const result = results.get(jobId);
+          if (refusal || result)
+            throw new Error(
+              `${jobId}: missing ${observation}; ${JSON.stringify(refusal ?? result)}; stdout=${stdout.get(jobId) ?? ""}; stderr=${stderr.get(jobId) ?? ""}`,
+            );
+          await changed.promise;
+        }
+      };
+      const start = async (jobId: string, next: string, timeoutMs: number, parentId?: string) => {
+        const invocation = parentId
+          ? events.find(
+              (event) =>
+                event.type === "invocation" &&
+                event.parentJobId === parentId &&
+                event.input.label === jobId,
+            )
+          : undefined;
+        if (parentId) expect(invocation?.type).toBe("invocation");
+        const body: Omit<JobRequest, "requestDigest"> = {
+          jobId,
+          machineId: "machine",
+          pluginId: install.pluginId,
+          operationId: "fixture.jobs.run",
+          installationRevision: install.installationRevision,
+          artifactSha256: sha256,
+          input: { label: jobId, next },
+          limits: { ...limits, timeoutMs },
+          outputs: [],
+          parent:
+            invocation?.type === "invocation"
+              ? { parentJobId: invocation.parentJobId, invocationId: invocation.invocationId }
+              : null,
+          credential: {
+            principalId: "actor",
+            tokenId: "token",
+            grantId: "grant",
+            caps: [],
+            containerScope: null,
+          },
+          traceId: "ancestor-cleanup",
+        };
+        const request = { ...body, requestDigest: jobDigest(body) };
+        const now = Date.now();
+        const permit = {
+          permitId: `${jobId}-permit`,
+          jobId,
+          requestDigest: request.requestDigest,
+          ownerId: owner!.identity.ownerId,
+          ownerGeneration: owner!.identity.generation,
+          decisionId: "decision",
+          policyRevision: "policy",
+          issuedAt: now,
+          expiresAt: now + 30_000,
+        };
+        await owner!.execute({
+          type: "start",
+          request,
+          permit: {
+            ...permit,
+            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString(
+              "base64",
+            ),
+          },
+        });
+        await waitFor(jobId, "native readiness", () =>
+          (stdout.get(jobId) ?? "").includes(`ready:${jobId}\n`),
+        );
+      };
+      const finish = async (jobId: string) => {
+        const requestId = `${jobId}-finish`;
+        const sending = owner!.execute({
+          type: "input",
+          jobId,
+          requestId,
+          seq: 0,
+          data: Buffer.from("finish\n").toString("base64"),
+          eof: false,
+        });
+        await owner!.execute({ type: "input_authorized", jobId, requestId, allowed: true });
+        await sending;
+        expect(events).toContainEqual(
+          expect.objectContaining({ type: "input_result", requestId, accepted: true }),
+        );
+        await waitFor(jobId, "sealed result", () => results.has(jobId));
+        // All descendants have already finalized. Let finish's child-finalization await resume.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(results.get(jobId)).toMatchObject({ state: "exited", exitCode: 0, reason: null });
+      };
+      await owner.execute(install);
+      await start("root", "parent", 60_000);
+      await waitFor("root", "parent invocation", () =>
+        events.some((event) => event.type === "invocation" && event.parentJobId === "root"),
+      );
+      await start("parent", "child", 40_000, "root");
+      await waitFor("parent", "child invocation", () =>
+        events.some((event) => event.type === "invocation" && event.parentJobId === "parent"),
+      );
+      await start("child", "leaf", 20_000, "parent");
+      const rootSubtree = subtrees.get("root")!;
+      const parentSubtree = subtrees.get("parent")!;
+      const childSubtree = subtrees.get("child")!;
+      expect(dirname(parentSubtree)).toBe(
+        readlinkSync(handles.get("root")!.childDelegation.procPath),
+      );
+      expect(dirname(childSubtree)).toBe(
+        readlinkSync(handles.get("parent")!.childDelegation.procPath),
+      );
+      for (const subtree of [rootSubtree, parentSubtree, childSubtree]) {
+        expect(existsSync(subtree)).toBe(true);
+        expect(descriptors(subtree)).not.toEqual([]);
+      }
+      await finish("child");
+      await waitFor("child", "refused native release", () => cleanupFailures.has("child"));
+      expect(owner.maintenanceReady).toBe(false);
+      expect(() => owner!.setDraining(false)).toThrow("cgroup-cleanup-pending");
+
+      if (mode === "terminal-ancestors") {
+        // Both ancestors finalize while a descendant still retains real native authority.
+        blocked.add("parent");
+        await finish("parent");
+        await finish("root");
+      }
+      blocked.delete("child");
+      await owner.execute({ type: "cancel", jobId: "child", reason: "fixture-cleanup" });
+      expect(existsSync(childSubtree)).toBe(false);
+      expect(descriptors(childSubtree)).toEqual([]);
+      expect(existsSync(parentSubtree)).toBe(true);
+      expect(existsSync(rootSubtree)).toBe(true);
+      expect(owner.maintenanceReady).toBe(false);
+      if (mode === "terminal-ancestors") {
+        // Child success must expose the refused ancestor obligation, not silently reopen.
+        expect(() => owner!.setDraining(false)).toThrow("cgroup-cleanup-pending");
+        expect(cleanupFailures.has("parent")).toBe(true);
+        blocked.delete("parent");
+        // Retrying the already-reclaimed child must also retry every terminal ancestor.
+        await owner.execute({ type: "cancel", jobId: "child", reason: "fixture-cleanup" });
+      } else {
+        // A still-running ancestor is not a cleanup fault and must not be reclaimed or fenced.
+        owner.setDraining(false);
+        expect(results.has("parent")).toBe(false);
+        expect(results.has("root")).toBe(false);
+        expect(descriptors(parentSubtree)).not.toEqual([]);
+        expect(descriptors(rootSubtree)).not.toEqual([]);
+        await finish("parent");
+        await finish("root");
+        owner.setDraining(true);
+      }
+      expect(existsSync(rootSubtree)).toBe(false);
+      expect(descriptors(rootSubtree)).toEqual([]);
+      expect(owner.maintenanceReady).toBe(true);
+      for (const jobId of ["root", "parent", "child"]) {
+        const result = results.get(jobId)!;
+        expect(result.usage).not.toBeNull();
+        const output = result.outputs.find((entry) => entry.name === "stdout")!;
+        expect(outputs.read(jobId, output.outputId, 0, limits.outputBytes).data.toString()).toBe(
+          `ready:${jobId}\nsealed:${jobId}\n`,
+        );
+        const before = events.length;
+        await owner.execute({ type: "status", jobId });
+        const status = events.slice(before).find((event) => event.type === "result");
+        expect(status?.type).toBe("result");
+        if (status?.type === "result")
+          expect(canonicalJobJson(status.result)).toBe(committed.get(jobId)!);
+      }
+      owner.setDraining(false);
+    } finally {
+      blocked.clear();
+      detach?.();
+      try {
+        await owner?.shutdown();
+      } finally {
+        nativeLaunch.mockRestore();
+        outputs?.close();
+        if (bwrapFd >= 0) closeSync(bwrapFd);
+        if (busyboxFd >= 0) closeSync(busyboxFd);
+        for (const directory of held.reverse()) directory.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  },
+  90000,
+);
 
 const outputRoot = process.env.MANIFOLD_TEST_OUTPUT_ROOT;
 // Included by verify-jobs.ts's [real-linux] selector. verify-runtime.sh jobs supplies the
@@ -4749,6 +5128,7 @@ test
 interface ScratchWorkload {
   write?(leases: Readonly<Record<string, string>>, label: string): void;
   settle?: { exitCode: number } | "cancel" | "lost" | LinuxJobRefusal;
+  release?(): void;
 }
 const SCRATCH_LOCATION = "fixture.scratch.run";
 const scratchOutputs = (locationId = SCRATCH_LOCATION): JobRequest["outputs"] => [
@@ -4840,7 +5220,9 @@ function temporaryOutputFixture() {
       ownsLoopbackConnection: () => false,
       input: async () => {},
       endInput() {},
-      release() {},
+      release() {
+        workload.release?.();
+      },
       async cancel() {
         settle(null, "cancelled");
         return exited.promise;
@@ -4953,7 +5335,12 @@ function temporaryOutputFixture() {
       }
       return held.sort();
     },
-    async open(): Promise<MachineJobOwner> {
+    async open(
+      options: {
+        credentialSources?: HeldServiceCredentialRegistry;
+        onEvent?(event: JobEvent): void;
+      } = {},
+    ): Promise<MachineJobOwner> {
       const journal = new JobJournal(protectedRoot.openChild("journal", { create: true }));
       try {
         owner = await MachineJobOwner.open({
@@ -4966,6 +5353,7 @@ function temporaryOutputFixture() {
           outputScratch: JobOutputScratchStore.open(namespace),
           delegatedCgroup,
           protectedDirectories: [protectedRoot, namespace],
+          ...(options.credentialSources ? { credentialSources: options.credentialSources } : {}),
           bubblewrapFd: -1,
           anchors: { runtime },
           runtimeTools: {},
@@ -4977,7 +5365,9 @@ function temporaryOutputFixture() {
         throw error;
       }
       detach = owner.attach((raw) => {
-        events.push(JobEventSchema.parse(raw));
+        const event = JobEventSchema.parse(raw);
+        events.push(event);
+        options.onEvent?.(event);
         changed.resolve();
         changed = Promise.withResolvers<void>();
         return true;
@@ -5509,6 +5899,398 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
+  "ordinary drain reopening admits work without cancelling an existing active workload",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("active", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "retained while active");
+        },
+        settle: "cancel",
+      });
+      await f.start("active");
+      await f.owner.execute({ type: "drain", draining: true });
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "drain", draining: false });
+      await f.start("admitted");
+      expect(await f.settled("admitted")).toMatchObject({ state: "exited", exitCode: 0 });
+      expect(
+        f.events.some(
+          (event) =>
+            event.type === "result" &&
+            event.result.jobId === "active" &&
+            event.result.finishedAt !== null,
+        ),
+      ).toBe(false);
+      await f.owner.execute({ type: "cancel", jobId: "active", reason: "requested" });
+      expect(await f.settled("active")).toMatchObject({ state: "cancelled", reason: "cancelled" });
+      const extracted = f.extract("active", "material");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe("retained while active");
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "failed cgroup reclamation preserves service authority, terminal result, usage and sealed outputs through explicit retry",
+  async () => {
+    const f = temporaryOutputFixture();
+    let reclaimable = false;
+    let host: TerminalHost | undefined;
+    const credentialRoot = mkdtempSync(join(tmpdir(), "owner-shutdown-credential-"));
+    const credentialSources = new HeldServiceCredentialRegistry();
+    const credential = "held-shutdown-credential";
+    const requests: Array<{ method: string; path: string; authorization: string | null }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        requests.push({
+          method: request.method,
+          path: new URL(request.url).pathname,
+          authorization: request.headers.get("authorization"),
+        });
+        return Response.json({ status: "readable", private: "never-disclose" });
+      },
+    });
+    const policy: ServicePolicy = {
+      serviceId: "fixture.shutdown",
+      revision: "r1",
+      origin: server.url.origin,
+      allowLoopbackHttp: true,
+      maxConcurrent: 1,
+      credential: { ref: "fixture-key", header: "Authorization", prefix: "Bearer " },
+      operations: {
+        read: {
+          method: "GET",
+          readable: true,
+          path: "/metadata",
+          input: {},
+          query: {},
+          body: [],
+          timeoutMs: 5000,
+          maxRequestBytes: 1024,
+          maxResponseBytes: 1024,
+          maxResultBytes: 1024,
+          response: { kind: "projected-json", fields: [["status"]], maxArrayItems: 1 },
+        },
+      },
+    };
+    const read = async (requestId: string) => {
+      await f.owner.execute({
+        type: "service_read",
+        requestId,
+        machineId: "machine",
+        serviceId: policy.serviceId,
+        revision: policy.revision,
+        policySha256: jobDigest(policy),
+        operationId: "read",
+        input: {},
+      });
+      return f.events.findLast(
+        (event) => event.type === "service_read_result" && event.requestId === requestId,
+      );
+    };
+    try {
+      writeFileSync(join(credentialRoot, "key"), credential, { mode: 0o600 });
+      credentialSources.declare(
+        "fixture-key",
+        HeldDirectory.openAbsolute(credentialRoot, { private: true }),
+        "key",
+        [server.url.origin],
+      );
+      const owner = await f.open({
+        credentialSources,
+        onEvent(event) {
+          if (event.type === "service_authorize")
+            void f.owner.execute({
+              type: "service_authorized",
+              subject: event.subject,
+              authorizationId: event.authorizationId,
+              allowed: true,
+            });
+        },
+      });
+      await owner.execute({
+        type: "configure_services",
+        configuration: { revision: jobDigest([policy]), policies: [policy] },
+      });
+      expect(await read("before-shutdown")).toMatchObject({
+        reply: { ok: true, result: { status: "readable" } },
+      });
+      const credentialFd = credentialSources.currentDescriptor("fixture-key")!;
+      await f.install();
+      f.workloads.set("committed", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "sealed before cgroup reclamation");
+        },
+        settle: { exitCode: 3 },
+        release() {
+          if (!reclaimable)
+            throw new LinuxJobRefusal(
+              "cgroup-cleanup-failed",
+              "/private/cgroup/path secret-token",
+              true,
+            );
+        },
+      });
+      await f.start("committed");
+      const result = await f.settled("committed");
+      // Let a rejected finish continuation run: it used to append an interrupted result here.
+      const turn = Promise.withResolvers<void>();
+      setImmediate(turn.resolve);
+      await turn.promise;
+      expect(result).toMatchObject({
+        state: "exited",
+        exitCode: 3,
+        reason: null,
+        usage: { elapsedMs: 0, memoryBytes: 0, processes: 0, outputBytes: 0 },
+      });
+      expect(
+        f.events
+          .filter((event) => event.type === "result" && event.result.jobId === "committed")
+          .map((event) => (event as Extract<JobEvent, { type: "result" }>).result),
+      ).toEqual([result]);
+      expect(f.roots()).toEqual([]);
+      const material = result.outputs.find((output) => output.name === "material")!;
+      const archive = f.outputs.read("committed", material.outputId, 0, 65536).data;
+      const extracted = f.extract("committed", "material");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe(
+          "sealed before cgroup reclamation",
+        );
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+      }
+      expect(f.logs).toContainEqual({
+        level: "warn",
+        evt: "job_cgroup_cleanup_failed",
+        phase: "release",
+        jobId: "committed",
+        code: "cgroup-cleanup-failed",
+      });
+      expect(JSON.stringify(f.logs)).not.toContain("secret-token");
+      expect(JSON.stringify(f.logs)).not.toContain("/private/cgroup/path");
+      expect(f.owner.maintenanceReady).toBe(false);
+      host = new TerminalHost({ jobOwner: f.owner });
+      const terminalEvents: TerminalHostEvent[] = [];
+      const transport = host.open({
+        write(event) {
+          terminalEvents.push(event);
+          return true;
+        },
+        close() {},
+      });
+      transport.deliver({ type: "attach" });
+      transport.deliver({ type: "drain", requestId: "reopen-refused", draining: false });
+      expect(terminalEvents.at(-1)).toEqual({
+        type: "drain_status",
+        requestId: "reopen-refused",
+        terminalHostId: host.terminalHostId,
+        draining: true,
+        terminalIds: [],
+      });
+      expect(host.status().draining).toBe(true);
+      transport.deliver({ type: "shutdown_request" });
+      expect(terminalEvents.at(-1)).toEqual({
+        type: "shutdown_refused",
+        reason: "jobs_retained",
+        terminalIds: [],
+      });
+      const inventoryBeforeReopen = f.owner.identity.inventoryDigest;
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "cgroup-cleanup-pending",
+      });
+      expect(f.owner.identity.inventoryDigest).toBe(inventoryBeforeReopen);
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+      let responseStart = f.events.length;
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
+      await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
+      expect(f.owner.maintenanceReady).toBe(false);
+      expect(await read("during-refused-shutdown")).toMatchObject({
+        reply: { ok: false, refusal: "service_owner_draining" },
+      });
+      expect(requests).toEqual([
+        { method: "GET", path: "/metadata", authorization: `Bearer ${credential}` },
+      ]);
+      responseStart = f.events.length;
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
+      reclaimable = true;
+      await f.owner.execute({ type: "cancel", jobId: "committed", reason: "requested" });
+      expect(f.owner.maintenanceReady).toBe(true);
+      await f.owner.execute({ type: "drain", draining: false });
+      transport.deliver({ type: "drain", requestId: "reopen-accepted", draining: false });
+      expect(terminalEvents.at(-1)).toEqual({
+        type: "drain_status",
+        requestId: "reopen-accepted",
+        terminalHostId: host.terminalHostId,
+        draining: false,
+        terminalIds: [],
+      });
+      expect(host.status().draining).toBe(false);
+      // No replacement owner, reattachment, credential recreation or service reconfiguration:
+      // reopening must use the exact runner, held credential and seat that refused shutdown.
+      expect(f.owner).toBe(owner);
+      expect(await read("after-reopen")).toEqual({
+        type: "service_read_result",
+        requestId: "after-reopen",
+        reply: {
+          type: "service_result",
+          requestId: "after-reopen",
+          ok: true,
+          result: { status: "readable" },
+        },
+      });
+      expect(requests).toEqual([
+        { method: "GET", path: "/metadata", authorization: `Bearer ${credential}` },
+        { method: "GET", path: "/metadata", authorization: `Bearer ${credential}` },
+      ]);
+      responseStart = f.events.length;
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
+      expect(f.outputs.read("committed", material.outputId, 0, 65536).data).toEqual(archive);
+      await f.start("resumed");
+      expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
+      await f.shutdown();
+      expect(() => fstatSync(credentialFd)).toThrow();
+      await f.open();
+      responseStart = f.events.length;
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
+    } finally {
+      reclaimable = true;
+      await host?.shutdown();
+      await f.close();
+      credentialSources.close();
+      await server.stop(true);
+      rmSync(credentialRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a positively empty refused startup retains reclamation until explicit cleanup succeeds",
+  async () => {
+    const f = temporaryOutputFixture();
+    let reclaimable = false;
+    const cleanup = async () => {
+      if (!reclaimable)
+        throw new LinuxJobRefusal(
+          "cgroup-cleanup-identity-changed",
+          "/private/cgroup/path secret-token",
+          true,
+          cleanup,
+        );
+    };
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("refused", {
+        settle: new LinuxJobRefusal(
+          "cgroup-cleanup-identity-changed",
+          "/private/cgroup/path secret-token",
+          true,
+          cleanup,
+        ),
+      });
+      await f.start("refused");
+      const result = await f.settled("refused");
+      expect(result).toMatchObject({
+        state: "refused",
+        reason: "cgroup-cleanup-identity-changed",
+        usage: null,
+        outputs: [],
+      });
+      expect(f.events).toContainEqual(
+        expect.objectContaining({ type: "workload_empty", jobId: "refused" }),
+      );
+      expect(f.roots()).toEqual([]);
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "cgroup-cleanup-pending",
+      });
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+      await expect(f.owner.shutdown()).rejects.toThrow("cgroup-cleanup-failed");
+      expect(f.owner.maintenanceReady).toBe(false);
+      let responseStart = f.events.length;
+      await f.owner.execute({ type: "status", jobId: "refused" });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
+      expect(f.logs).toContainEqual({
+        level: "warn",
+        evt: "job_cgroup_cleanup_failed",
+        phase: "startup",
+        jobId: "refused",
+        code: "cgroup-cleanup-identity-changed",
+      });
+      expect(JSON.stringify(f.logs)).not.toContain("secret-token");
+      expect(JSON.stringify(f.logs)).not.toContain("/private/cgroup/path");
+      reclaimable = true;
+      await f.owner.execute({ type: "cancel", jobId: "refused", reason: "requested" });
+      expect(f.owner.maintenanceReady).toBe(true);
+      await f.owner.execute({ type: "drain", draining: false });
+      await f.start("resumed");
+      expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
+      await f.shutdown();
+      await f.open();
+      responseStart = f.events.length;
+      await f.owner.execute({ type: "status", jobId: "refused" });
+      expect(f.events.slice(responseStart)).toContainEqual({ type: "result", result });
+    } finally {
+      reclaimable = true;
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "failed recovery reclamation opens no owner and leaves earlier output bytes untouched",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      const stale = join(f.scratchPath, "stale");
+      mkdirSync(stale, { mode: 0o700 });
+      writeFileSync(join(stale, "payload"), "earlier generation");
+      f.recover.mockRejectedValueOnce(
+        new LinuxJobRefusal("cgroup-cleanup-failed", "/private/cgroup/path secret-token", true),
+      );
+      await expect(f.open()).rejects.toThrow();
+      expect(() => f.owner).toThrow("fixture_owner_closed");
+      expect(readFileSync(join(stale, "payload"), "utf8")).toBe("earlier generation");
+      expect(f.logs).toEqual([
+        {
+          level: "warn",
+          evt: "job_cgroup_cleanup_failed",
+          phase: "recovery",
+          code: "cgroup-cleanup-failed",
+        },
+      ]);
+      await f.open();
+      expect(f.roots()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
   "a failed raw removal keeps the committed result and archives and closes admission",
   async () => {
     const f = temporaryOutputFixture();
@@ -5586,8 +6368,170 @@ test.skipIf(!linux)(
       await opening;
       expect(f.roots()).toEqual([]);
       expect(readFileSync(join(f.runtimePath, "keep", "sentinel"), "utf8")).toBe("kept");
-      expect(f.logs).toEqual([]);
     } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "overlapping cancellation and shutdown share retained startup cleanup without reopening a closed fault",
+  async () => {
+    const f = temporaryOutputFixture();
+    let reclaimable = false;
+    let reclaimed = false;
+    let heldJobReclaimable = false;
+    let entered = Promise.withResolvers<void>();
+    let gate = Promise.withResolvers<void>();
+    let overlapping: Promise<PromiseSettledResult<void>[]> | undefined;
+    let host: TerminalHost | undefined;
+    const cleanup = async () => {
+      if (reclaimed) return;
+      entered.resolve();
+      await gate.promise;
+      // Like retained native directory authority, a second in-flight caller cannot reclaim
+      // it after the first has closed it. Calls entering after closure are already safe.
+      if (!reclaimable || reclaimed)
+        throw new LinuxJobRefusal("cgroup-cleanup-identity-changed", undefined, true, cleanup);
+      reclaimed = true;
+    };
+    try {
+      await f.open();
+      await f.install();
+      // Keep shutdown retryable even after the startup obligation succeeds, so reopening
+      // exercises this same owner rather than losing a stale fault flag through recovery.
+      f.workloads.set("held", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "sealed during refused shutdown");
+        },
+        settle: "cancel",
+        release() {
+          if (!heldJobReclaimable)
+            throw new LinuxJobRefusal("cgroup-cleanup-failed", undefined, true);
+        },
+      });
+      await f.start("held");
+      f.workloads.set("refused", {
+        settle: new LinuxJobRefusal("cgroup-cleanup-identity-changed", undefined, true, cleanup),
+      });
+      await f.start("refused");
+      const refused = await f.settled("refused");
+      expect(refused).toMatchObject({
+        state: "refused",
+        reason: "cgroup-cleanup-identity-changed",
+        usage: null,
+        outputs: [],
+      });
+
+      const cancelling = f.owner.execute({
+        type: "cancel",
+        jobId: "refused",
+        reason: "requested",
+      });
+      await entered.promise;
+      overlapping = Promise.allSettled([cancelling, f.owner.shutdown()]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      host = new TerminalHost({ jobOwner: f.owner });
+      const transportEvents: TerminalHostEvent[] = [];
+      const transport = host.open({
+        write(event) {
+          transportEvents.push(event);
+          return true;
+        },
+        close() {},
+      });
+      transport.deliver({ type: "attach" });
+      transport.deliver({ type: "drain", requestId: "shutdown-active", draining: false });
+      expect(transportEvents.at(-1)).toEqual({
+        type: "drain_status",
+        requestId: "shutdown-active",
+        terminalHostId: host.terminalHostId,
+        draining: true,
+        terminalIds: [],
+      });
+      expect(host.status().draining).toBe(true);
+      // Even before this attempt has settled, an explicit reopen cannot admit new effects.
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "owner_draining",
+      });
+      await f.start("during-shutdown");
+      expect(f.refusal("during-shutdown")).toBe("start_permit_refused");
+      gate.resolve();
+      expect(await overlapping).toEqual([
+        { status: "fulfilled", value: undefined },
+        {
+          status: "rejected",
+          reason: expect.objectContaining({ message: "cgroup-cleanup-failed" }),
+        },
+      ]);
+      const held = await f.settled("held");
+      expect(held).toMatchObject({ state: "cancelled", reason: "cancelled" });
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.events.at(-1)).toEqual({
+        type: "refusal",
+        jobId: "owner",
+        reason: "cgroup-cleanup-pending",
+      });
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+
+      reclaimable = true;
+      entered = Promise.withResolvers<void>();
+      gate = Promise.withResolvers<void>();
+      const retrying = f.owner.execute({
+        type: "cancel",
+        jobId: "refused",
+        reason: "requested",
+      });
+      await entered.promise;
+      overlapping = Promise.allSettled([retrying, f.owner.shutdown()]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      gate.resolve();
+      expect(await overlapping).toEqual([
+        { status: "fulfilled", value: undefined },
+        {
+          status: "rejected",
+          reason: expect.objectContaining({ message: "cgroup-cleanup-failed" }),
+        },
+      ]);
+      heldJobReclaimable = true;
+      await f.owner.execute({ type: "cancel", jobId: "held", reason: "requested" });
+      expect(f.owner.maintenanceReady).toBe(true);
+      expect(f.roots()).toEqual([]);
+      for (const result of [refused, held]) {
+        const before = f.events.length;
+        await f.owner.execute({ type: "status", jobId: result.jobId });
+        expect(f.events.slice(before)).toContainEqual({ type: "result", result });
+      }
+      await f.owner.execute({ type: "drain", draining: false });
+      expect(f.owner.maintenanceReady).toBe(false);
+      await f.start("resumed");
+      expect(await f.settled("resumed")).toMatchObject({ state: "exited", exitCode: 0 });
+      const extracted = f.extract("held", "material");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe(
+          "sealed during refused shutdown",
+        );
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+      }
+      await f.shutdown();
+      await f.open();
+      for (const result of [refused, held]) {
+        const before = f.events.length;
+        await f.owner.execute({ type: "status", jobId: result.jobId });
+        expect(f.events.slice(before)).toContainEqual({ type: "result", result });
+      }
+    } finally {
+      reclaimable = true;
+      heldJobReclaimable = true;
+      gate.resolve();
+      await overlapping;
+      await host?.shutdown();
       await f.close();
     }
   },
