@@ -2026,6 +2026,7 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
     const results = new Map<string, JobResult>();
     const committed = new Map<string, string>();
     const stdout = new Map<string, string>();
+    const stderr = new Map<string, string>();
     const cleanupFailures = new Set<string>();
     let changed = Promise.withResolvers<void>();
     const notify = () => {
@@ -2039,8 +2040,19 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
     let detach: (() => void) | undefined;
     const launch = startLinuxJob;
     const nativeLaunch = spyOn(nativeRuntime, "startLinuxJob").mockImplementation(async (spec) => {
-      const handle = await launch(spec);
       const label = spec.argv[0]!;
+      const onOutput = spec.onOutput;
+      const handle = await launch({
+        ...spec,
+        onOutput: (output) => {
+          // Nested output goes to the worker's parent context, not the attached owner sink.
+          // Observe actual native bytes while preserving the owner's normal output path.
+          const stream = output.channel === "stdout" ? stdout : stderr;
+          stream.set(label, (stream.get(label) ?? "") + Buffer.from(output.bytes).toString());
+          onOutput?.(output);
+          notify();
+        },
+      });
       handles.set(label, handle);
       subtrees.set(label, dirname(readlinkSync(handle.childDelegation.procPath)));
       const release = handle.release;
@@ -2115,11 +2127,6 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
       });
       detach = owner.attach((event) => {
         events.push(event);
-        if (event.type === "output" && event.outputId === "stdout")
-          stdout.set(
-            event.jobId,
-            (stdout.get(event.jobId) ?? "") + Buffer.from(event.data, "base64").toString(),
-          );
         if (
           event.type === "result" &&
           ["exited", "interrupted", "cancelled", "refused"].includes(event.result.state)
@@ -2131,10 +2138,17 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
         notify();
         return true;
       });
-      const waitFor = async (ready: () => boolean) => {
+      const waitFor = async (jobId: string, observation: string, ready: () => boolean) => {
         while (!ready()) {
-          const refusal = events.find((event) => event.type === "refusal");
-          if (refusal) throw new Error(JSON.stringify(refusal));
+          const refusal = events.find(
+            (event) =>
+              event.type === "refusal" && (event.jobId === jobId || event.jobId === "owner"),
+          );
+          const result = results.get(jobId);
+          if (refusal || result)
+            throw new Error(
+              `${jobId}: missing ${observation}; ${JSON.stringify(refusal ?? result)}; stdout=${stdout.get(jobId) ?? ""}; stderr=${stderr.get(jobId) ?? ""}`,
+            );
           await changed.promise;
         }
       };
@@ -2194,7 +2208,9 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
             ),
           },
         });
-        await waitFor(() => (stdout.get(jobId) ?? "").includes(`ready:${jobId}\n`));
+        await waitFor(jobId, "native readiness", () =>
+          (stdout.get(jobId) ?? "").includes(`ready:${jobId}\n`),
+        );
       };
       const finish = async (jobId: string) => {
         const requestId = `${jobId}-finish`;
@@ -2208,18 +2224,21 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
         });
         await owner!.execute({ type: "input_authorized", jobId, requestId, allowed: true });
         await sending;
-        await waitFor(() => results.has(jobId));
+        expect(events).toContainEqual(
+          expect.objectContaining({ type: "input_result", requestId, accepted: true }),
+        );
+        await waitFor(jobId, "sealed result", () => results.has(jobId));
         // All descendants have already finalized. Let finish's child-finalization await resume.
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(results.get(jobId)).toMatchObject({ state: "exited", exitCode: 0, reason: null });
       };
       await owner.execute(install);
       await start("root", "parent", 60_000);
-      await waitFor(() =>
+      await waitFor("root", "parent invocation", () =>
         events.some((event) => event.type === "invocation" && event.parentJobId === "root"),
       );
       await start("parent", "child", 40_000, "root");
-      await waitFor(() =>
+      await waitFor("parent", "child invocation", () =>
         events.some((event) => event.type === "invocation" && event.parentJobId === "parent"),
       );
       await start("child", "leaf", 20_000, "parent");
@@ -2237,7 +2256,7 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
         expect(descriptors(subtree)).not.toEqual([]);
       }
       await finish("child");
-      await waitFor(() => cleanupFailures.has("child"));
+      await waitFor("child", "refused native release", () => cleanupFailures.has("child"));
       expect(owner.maintenanceReady).toBe(false);
       expect(() => owner!.setDraining(false)).toThrow("cgroup-cleanup-pending");
 

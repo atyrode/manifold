@@ -17,7 +17,7 @@ import {
   type Stats,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dlopen, FFIType, ptr, read as readNative, type Library } from "bun:ffi";
+import { dlopen, FFIType, ptr, read as readNative, toArrayBuffer, type Library } from "bun:ffi";
 import { connect, type Socket } from "node:net";
 import { getSystemErrorName } from "node:util";
 
@@ -58,9 +58,17 @@ const FILE_SYMBOLS = {
     args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
     returns: FFIType.i32,
   },
+  opendir: { args: [FFIType.ptr], returns: FFIType.ptr },
+  readdir64: { args: [FFIType.ptr], returns: FFIType.ptr },
+  closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
   __errno_location: { args: [], returns: FFIType.ptr },
 } as const;
 let libc: Library<typeof FILE_SYMBOLS> | undefined;
+function directoryEnumerationFailure(errno: number): Error {
+  return Object.assign(new Error("directory_enumeration_failed"), {
+    code: getSystemErrorName(-errno),
+  });
+}
 /** Lock remains owned by the open description until the caller closes it. */
 export function lockExclusive(fd: number): void {
   libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
@@ -318,11 +326,42 @@ export class HeldDirectory {
   readDir(): string[] {
     return this.names();
   }
-  /** Byte-exact directory names; callers decide whether non-directory entries are removable. */
-  directoryNames(): Buffer[] {
-    return readdirSync(this.procPath, { encoding: "buffer" }).filter((name) =>
-      lstatSync(this.entryPath(name)).isDirectory(),
-    );
+  /** Incremental, byte-exact directory names; stopping iteration closes the native stream. */
+  *directoryNames(): Generator<Buffer, void, unknown> {
+    // Bun 1.4.2's node:fs Dir.readSync caches a whole readdir result even with bufferSize=1.
+    libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+    const errnoAddress = libc.symbols.__errno_location();
+    if (errnoAddress === null) throw new Error("directory_enumeration_unavailable");
+    const errno = new Int32Array(toArrayBuffer(errnoAddress, 0, 4));
+    const path = Buffer.from(`${this.procPath}\0`);
+    const stream = libc.symbols.opendir(ptr(path));
+    if (stream === null) throw directoryEnumerationFailure(errno[0]!);
+    try {
+      while (true) {
+        errno[0] = 0;
+        const entry = libc.symbols.readdir64(stream);
+        if (entry === null) {
+          if (errno[0] !== 0) throw directoryEnumerationFailure(errno[0]!);
+          return;
+        }
+        // Linux dirent64: ino/off (8 bytes each), reclen (2), d_type (1), then the NUL name.
+        const type = readNative.u8(entry, 18);
+        // Known non-directories, including virtual cgroup controls, need no name or stat allocation.
+        if (type !== 4 && type !== 0) continue;
+        if (
+          readNative.u8(entry, 19) === 0x2e &&
+          (readNative.u8(entry, 20) === 0 ||
+            (readNative.u8(entry, 20) === 0x2e && readNative.u8(entry, 21) === 0))
+        )
+          continue;
+        const bytes = new Uint8Array(toArrayBuffer(entry, 19, readNative.u16(entry, 16) - 19));
+        // readdir reuses its storage; retain a copy without a UTF-8 decoding round trip.
+        const name = Buffer.from(bytes.subarray(0, bytes.indexOf(0)));
+        if (type === 4 || lstatSync(this.entryPath(name)).isDirectory()) yield name;
+      }
+    } finally {
+      if (libc.symbols.closedir(stream) !== 0) throw directoryEnumerationFailure(errno[0]!);
+    }
   }
   /** Open a byte-named directory without changing its permissions or crossing this mount. */
   openDirectoryEntry(name: Buffer): HeldDirectory {

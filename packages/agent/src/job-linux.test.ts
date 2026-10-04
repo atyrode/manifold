@@ -599,8 +599,7 @@ test.skipIf(!realLinux)(
           expect(error).toBeInstanceOf(LinuxJobRefusal);
           expect(error).toMatchObject({ code: "cgroup-cleanup-failed", workloadEmpty: true });
         }
-        // Count actual yielded directories, not elapsed time. Also catch an eager
-        // readdir hidden behind a nominally incremental directory API.
+        // Count returned/yielded directory names and whole readdir snapshots, not elapsed time.
         expect(visitedDirectories).toBeLessThanOrEqual(traversalLimit + 1);
         expect(materializedEntries).toBeLessThanOrEqual(traversalLimit + 1);
         enumerate.mockRestore();

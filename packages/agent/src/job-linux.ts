@@ -522,12 +522,15 @@ function removeEmptyCgroupTree(
   let entries = 0;
   const enter = (above: HeldDirectory, entry: Buffer, directory: HeldDirectory): void => {
     try {
+      if (levels.length >= 256) refuse("cgroup-cleanup-limit");
       above.assertDirectoryEntry(entry, directory);
       if (counter(readControl(directory, "cgroup.events"), "populated") !== 0)
         refuse("job-still-active");
-      const pending = directory.directoryNames();
-      entries += pending.length;
-      if (levels.length >= 256 || entries > 65_536) refuse("cgroup-cleanup-limit");
+      const pending: Buffer[] = [];
+      for (const child of directory.directoryNames()) {
+        if (++entries > 65_536) refuse("cgroup-cleanup-limit");
+        pending.push(child);
+      }
       levels.push({ parent: above, name: entry, directory, pending });
     } catch (error) {
       directory.close();
