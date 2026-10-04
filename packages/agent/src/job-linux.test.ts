@@ -12,7 +12,6 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
-  renameSync,
   rmdirSync,
   rmSync,
   symlinkSync,
@@ -657,18 +656,47 @@ test.skipIf(!realLinux)(
   },
 );
 
+interface CgroupReplacement {
+  name: string;
+  restore(): void;
+}
+function replaceCgroupRoot(parent: HeldDirectory, rootName: string): CgroupReplacement {
+  // cgroup v2 forbids rename. Mask the allocated root with another real cgroup;
+  // unmounting restores its original inode and held descriptors without deleting either tree.
+  const name = `replacement-fixture-${randomUUID()}`;
+  const source = parent.openChild(name, { create: true, exclusive: true });
+  const target = `/proc/${process.pid}/fd/${parent.fd}/${rootName}`;
+  const mount = spawnSync(
+    busyboxPath!,
+    ["mount", "--bind", `/proc/${process.pid}/fd/${source.fd}`, target],
+    { encoding: "utf8" },
+  );
+  source.close();
+  if (mount.status !== 0) {
+    rmdirSync(`${parent.procPath}/${name}`);
+    throw new Error(`cgroup replacement mount failed: ${mount.stderr}`);
+  }
+  return {
+    name,
+    restore() {
+      const unmount = spawnSync(busyboxPath!, ["umount", target], { encoding: "utf8" });
+      expect(unmount.status).toBe(0);
+      rmdirSync(`${parent.procPath}/${name}`);
+    },
+  };
+}
+
 test.skipIf(!realLinux).each(["open", "mount"] as const)(
   "[real-linux] post-mkdir root %s acquisition failure retains exact cleanup ownership",
   async (window) => {
     await withLinux("printf must-not-run", async (spec) => {
       const before = spec.delegatedCgroup.names().sort();
-      const moved = `acquisition-held-fixture-${randomUUID()}`;
+      let replacement: CgroupReplacement | undefined;
       const captured: { refusal?: LinuxJobRefusal } = {};
       let rootName: string | undefined;
       let rootPath: string | undefined;
       let rootFd: number | undefined;
       let blocked = true;
-      let replaced = false;
       const originalOpen = fs.openSync;
       const originalRead = fs.readFileSync;
       const acquisitionFault = Object.assign(new Error("root-acquisition-unavailable"), {
@@ -700,10 +728,8 @@ test.skipIf(!realLinux).each(["open", "mount"] as const)(
           if (!(error instanceof LinuxJobRefusal)) throw error;
           captured.refusal = error;
         });
-        expect(captured.refusal).toMatchObject({
-          workloadEmpty: false,
-          cleanup: expect.any(Function),
-        });
+        expect(captured.refusal).toMatchObject({ workloadEmpty: false });
+        expect(captured.refusal!.cleanup).toBeInstanceOf(Function);
         expect(rootName).toMatch(/^job-/);
         expect(spec.delegatedCgroup.names().filter((name) => !before.includes(name))).toEqual([
           rootName!,
@@ -717,25 +743,16 @@ test.skipIf(!realLinux).each(["open", "mount"] as const)(
         blocked = false;
         open.mockRestore();
         read.mockRestore();
-        renameSync(
-          `${spec.delegatedCgroup.procPath}/${rootName}`,
-          `${spec.delegatedCgroup.procPath}/${moved}`,
-        );
-        spec.delegatedCgroup.openChild(rootName!, { create: true, exclusive: true }).close();
-        replaced = true;
+        replacement = replaceCgroupRoot(spec.delegatedCgroup, rootName!);
         await expect(cleanup()).rejects.toMatchObject({ workloadEmpty: false });
         // Refused cleanup preserves both identities and their virtual control files.
-        for (const name of [rootName, moved]) {
+        for (const name of [rootName, replacement.name]) {
           expect(
             readFileSync(`${spec.delegatedCgroup.procPath}/${name}/cgroup.events`, "utf8"),
           ).toContain("populated 0");
         }
-        rmdirSync(`${spec.delegatedCgroup.procPath}/${rootName}`);
-        renameSync(
-          `${spec.delegatedCgroup.procPath}/${moved}`,
-          `${spec.delegatedCgroup.procPath}/${rootName}`,
-        );
-        replaced = false;
+        replacement.restore();
+        replacement = undefined;
         await Promise.all([cleanup(), cleanup()]);
         await cleanup();
         expect(spec.delegatedCgroup.names().sort()).toEqual(before);
@@ -743,13 +760,7 @@ test.skipIf(!realLinux).each(["open", "mount"] as const)(
         blocked = false;
         open.mockRestore();
         read.mockRestore();
-        if (replaced) {
-          rmdirSync(`${spec.delegatedCgroup.procPath}/${rootName}`);
-          renameSync(
-            `${spec.delegatedCgroup.procPath}/${moved}`,
-            `${spec.delegatedCgroup.procPath}/${rootName}`,
-          );
-        }
+        replacement?.restore();
         if (captured.refusal?.cleanup) await captured.refusal.cleanup();
       }
     });
@@ -763,18 +774,12 @@ test.skipIf(!realLinux)(
       const before = spec.delegatedCgroup.names().sort();
       const handle = await startLinuxJob(spec);
       let name: string | undefined;
-      const moved = `held-fixture-${randomUUID()}`;
-      let replaced = false;
+      let replacement: CgroupReplacement | undefined;
       try {
         expect((await handle.result).exitCode).toBe(0);
         name = spec.delegatedCgroup.names().find((entry) => !before.includes(entry))!;
         expect(name).toMatch(/^job-/);
-        renameSync(
-          `${spec.delegatedCgroup.procPath}/${name}`,
-          `${spec.delegatedCgroup.procPath}/${moved}`,
-        );
-        spec.delegatedCgroup.openChild(name, { create: true, exclusive: true }).close();
-        replaced = true;
+        replacement = replaceCgroupRoot(spec.delegatedCgroup, name);
         try {
           handle.release();
           throw new Error("replaced root was released");
@@ -786,23 +791,16 @@ test.skipIf(!realLinux)(
           });
         }
         expect(spec.delegatedCgroup.names()).toContain(name);
-        expect(spec.delegatedCgroup.names()).toContain(moved);
-        rmdirSync(`${spec.delegatedCgroup.procPath}/${name}`);
-        renameSync(
-          `${spec.delegatedCgroup.procPath}/${moved}`,
-          `${spec.delegatedCgroup.procPath}/${name}`,
-        );
-        replaced = false;
+        expect(spec.delegatedCgroup.names()).toContain(replacement.name);
+        expect(
+          readFileSync(`${spec.delegatedCgroup.procPath}/${replacement.name}/cgroup.events`, "utf8"),
+        ).toContain("populated 0");
+        replacement.restore();
+        replacement = undefined;
         handle.release();
         expect(spec.delegatedCgroup.names().sort()).toEqual(before);
       } finally {
-        if (replaced) {
-          rmdirSync(`${spec.delegatedCgroup.procPath}/${name}`);
-          renameSync(
-            `${spec.delegatedCgroup.procPath}/${moved}`,
-            `${spec.delegatedCgroup.procPath}/${name}`,
-          );
-        }
+        replacement?.restore();
         await handle.cancel();
         handle.release();
       }
@@ -815,9 +813,8 @@ test.skipIf(!realLinux)(
   async () => {
     await withLinux("printf must-not-run", async (spec) => {
       const before = spec.delegatedCgroup.names().sort();
-      const moved = `startup-held-fixture-${randomUUID()}`;
+      let replacement: CgroupReplacement | undefined;
       let name: string | undefined;
-      let replaced = false;
       const captured: { refusal?: LinuxJobRefusal } = {};
       try {
         await startLinuxJob({
@@ -833,12 +830,7 @@ test.skipIf(!realLinux)(
             },
             setWorkingDirectory: () => {
               name = spec.delegatedCgroup.names().find((entry) => !before.includes(entry))!;
-              renameSync(
-                `${spec.delegatedCgroup.procPath}/${name}`,
-                `${spec.delegatedCgroup.procPath}/${moved}`,
-              );
-              spec.delegatedCgroup.openChild(name, { create: true, exclusive: true }).close();
-              replaced = true;
+              replacement = replaceCgroupRoot(spec.delegatedCgroup, name);
               throw new Error("consumer refused startup");
             },
           },
@@ -849,18 +841,15 @@ test.skipIf(!realLinux)(
         expect(captured.refusal).toMatchObject({
           code: "cgroup-cleanup-identity-changed",
           workloadEmpty: true,
-          cleanup: expect.any(Function),
         });
+        expect(captured.refusal!.cleanup).toBeInstanceOf(Function);
         expect(spec.delegatedCgroup.names()).toContain(name!);
-        expect(spec.delegatedCgroup.names()).toContain(moved);
+        expect(spec.delegatedCgroup.names()).toContain(replacement!.name);
+        expect(
+          readFileSync(`${spec.delegatedCgroup.procPath}/${replacement!.name}/cgroup.events`, "utf8"),
+        ).toContain("populated 0");
       } finally {
-        if (replaced) {
-          rmdirSync(`${spec.delegatedCgroup.procPath}/${name}`);
-          renameSync(
-            `${spec.delegatedCgroup.procPath}/${moved}`,
-            `${spec.delegatedCgroup.procPath}/${name}`,
-          );
-        }
+        replacement?.restore();
         if (captured.refusal?.cleanup) {
           await Promise.all([captured.refusal.cleanup(), captured.refusal.cleanup()]);
           await captured.refusal.cleanup();
@@ -1062,8 +1051,8 @@ test.skipIf(!realLinux)(
         expect(captured.refusal).toMatchObject({
           code: "startup-empty-unproven",
           workloadEmpty: false,
-          cleanup: expect.any(Function),
         });
+        expect(captured.refusal!.cleanup).toBeInstanceOf(Function);
         expect(spec.delegatedCgroup.names().filter((name) => !before.includes(name))).toEqual([
           rootName!,
         ]);
