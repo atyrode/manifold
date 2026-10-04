@@ -589,7 +589,9 @@ export class MachineJobOwner {
         case "cancel": {
           const job = await this.reconcileStart(command);
           if (!("request" in job)) {
+            // Nothing is left to stop, but the hub may still lack the settled result.
             this.emitRetainedEmpty(job);
+            this.emit({ type: "result", result: job.result });
             return;
           }
           this.emitEmpty(job);
