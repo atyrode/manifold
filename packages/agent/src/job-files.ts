@@ -168,6 +168,11 @@ function heldIdentity(fd: number): string {
   return `${stat.dev}:${stat.ino}`;
 }
 
+/** Allocation ownership survives descriptor or mount-identity acquisition failure. */
+export interface DirectoryAllocation {
+  acquire(): HeldDirectory;
+}
+
 /** Owned Linux directory descriptor. All descendant opens use a single checked component. */
 export class HeldDirectory {
   readonly mountId: number;
@@ -214,6 +219,47 @@ export class HeldDirectory {
       closeSync(fd);
       throw error;
     }
+  }
+  /** Exclusive mkdir with retained identity; callers keep this obligation until reclamation. */
+  allocateChild(name: string, mode = 0o700): DirectoryAllocation {
+    safeComponent(name);
+    const path = `${this.procPath}/${name}`;
+    let identity: string | undefined;
+    let identityFailure: unknown;
+    let pendingFd: number | undefined;
+    let acquired: HeldDirectory | undefined;
+    const allocation: DirectoryAllocation = {
+      acquire: () => {
+        if (acquired) return acquired;
+        // An identity missed at allocation cannot later be inferred from the same pathname.
+        if (identity === undefined) throw identityFailure;
+        pendingFd ??= openSync(path, DIRECTORY_FLAGS);
+        if (heldIdentity(pendingFd) !== identity) {
+          closeSync(pendingFd);
+          pendingFd = undefined;
+          throw new Error("directory_tree_changed");
+        }
+        // Keep the raw descriptor if the mount probe fails: it still pins the allocated inode.
+        const child = new HeldDirectory(pendingFd);
+        if (child.mountId !== this.mountId) {
+          closeSync(pendingFd);
+          pendingFd = undefined;
+          throw new Error("mount_escape");
+        }
+        acquired = child;
+        pendingFd = undefined;
+        return child;
+      },
+    };
+    mkdirSync(path, { mode });
+    try {
+      const stat = lstatSync(path, { bigint: true });
+      if (!stat.isDirectory()) throw new Error("directory_tree_changed");
+      identity = `${stat.dev}:${stat.ino}`;
+    } catch (error) {
+      identityFailure = error;
+    }
+    return allocation;
   }
   openChild(
     name: string,
@@ -271,6 +317,45 @@ export class HeldDirectory {
   }
   readDir(): string[] {
     return this.names();
+  }
+  /** Byte-exact directory names; callers decide whether non-directory entries are removable. */
+  directoryNames(): Buffer[] {
+    return readdirSync(this.procPath, { encoding: "buffer" }).filter((name) =>
+      lstatSync(this.entryPath(name)).isDirectory(),
+    );
+  }
+  /** Open a byte-named directory without changing its permissions or crossing this mount. */
+  openDirectoryEntry(name: Buffer): HeldDirectory {
+    this.checkedEntry(name);
+    return this.openEntryDirectory(name, false);
+  }
+  /** Recheck the name against the retained directory, including its mount identity. */
+  assertDirectoryEntry(name: Buffer, directory: HeldDirectory): void {
+    this.checkedEntry(name);
+    if (directory.mountId !== this.mountId) throw new Error("mount_escape");
+    const named = this.openDirectoryEntry(name);
+    try {
+      if (heldIdentity(named.fd) !== heldIdentity(directory.fd))
+        throw new Error("directory_tree_changed");
+    } finally {
+      named.close();
+    }
+  }
+  /** Remove only this still-named held directory. Never unlink files or recurse. */
+  removeDirectoryEntry(name: Buffer, directory: HeldDirectory): void {
+    this.assertDirectoryEntry(name, directory);
+    rmdirSync(this.entryPath(name));
+  }
+  private checkedEntry(name: Buffer): void {
+    if (
+      name.length === 0 ||
+      name.length > 255 ||
+      (name.length === 1 && name[0] === 0x2e) ||
+      (name.length === 2 && name[0] === 0x2e && name[1] === 0x2e) ||
+      name.includes(0) ||
+      name.includes(0x2f)
+    )
+      throw new Error("unsafe_file_component");
   }
   unlink(name: string): void {
     safeComponent(name);
@@ -469,7 +554,7 @@ export class HeldDirectory {
     return Buffer.concat([Buffer.from(`${this.procPath}/`), name]);
   }
   /** A byte-named subdirectory entry, never through a link or onto another mount. */
-  private openEntryDirectory(name: Buffer): HeldDirectory {
+  private openEntryDirectory(name: Buffer, restorePermissions = true): HeldDirectory {
     const path = this.entryPath(name);
     const before = lstatSync(path, { bigint: true });
     const fd = openSync(path, DIRECTORY_FLAGS);
@@ -480,7 +565,8 @@ export class HeldDirectory {
       if (held.dev !== before.dev || held.ino !== before.ino)
         throw new Error("directory_tree_changed");
       // A workload may clear its own directory's bits; only their owner may restore them.
-      if ((Number(held.mode) & 0o700) !== 0o700) chmodSync(child.procPath, 0o700);
+      if (restorePermissions && (Number(held.mode) & 0o700) !== 0o700)
+        chmodSync(child.procPath, 0o700);
       return child;
     } catch (error) {
       closeSync(fd);
