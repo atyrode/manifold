@@ -793,7 +793,10 @@ test.skipIf(!realLinux)(
         expect(spec.delegatedCgroup.names()).toContain(name);
         expect(spec.delegatedCgroup.names()).toContain(replacement.name);
         expect(
-          readFileSync(`${spec.delegatedCgroup.procPath}/${replacement.name}/cgroup.events`, "utf8"),
+          readFileSync(
+            `${spec.delegatedCgroup.procPath}/${replacement.name}/cgroup.events`,
+            "utf8",
+          ),
         ).toContain("populated 0");
         replacement.restore();
         replacement = undefined;
@@ -846,7 +849,10 @@ test.skipIf(!realLinux)(
         expect(spec.delegatedCgroup.names()).toContain(name!);
         expect(spec.delegatedCgroup.names()).toContain(replacement!.name);
         expect(
-          readFileSync(`${spec.delegatedCgroup.procPath}/${replacement!.name}/cgroup.events`, "utf8"),
+          readFileSync(
+            `${spec.delegatedCgroup.procPath}/${replacement!.name}/cgroup.events`,
+            "utf8",
+          ),
         ).toContain("populated 0");
       } finally {
         replacement?.restore();
