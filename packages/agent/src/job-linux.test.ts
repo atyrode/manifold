@@ -539,6 +539,99 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
+  "[real-linux] wide native cgroup cleanup stops enumeration at its budget and retains retry authority",
+  async () => {
+    await withLinux("printf finished", async (spec) => {
+      const before = spec.delegatedCgroup.names().sort();
+      const handle = await startLinuxJob(spec);
+      let root: HeldDirectory | undefined;
+      let wide: HeldDirectory | undefined;
+      let created = 0;
+      let visitedDirectories = 0;
+      let materializedEntries = 0;
+      const traversalLimit = 65_536;
+      const width = traversalLimit + 1024;
+      const originalDirectoryNames = HeldDirectory.prototype.directoryNames;
+      const originalReadDir = fs.readdirSync;
+      let enumerate: { mockRestore(): void } | undefined;
+      let readDir: { mockRestore(): void } | undefined;
+      try {
+        const result = await handle.result;
+        expect(result.exitCode).toBe(0);
+        expect(result.empty).toBe(true);
+        const name = spec.delegatedCgroup.names().find((entry) => !before.includes(entry))!;
+        root = spec.delegatedCgroup.openChild(name);
+        const identity = fstatSync(root.fd, { bigint: true });
+        wide = root.openChild("wide", { create: true, exclusive: true });
+        // Descendants need no controllers: allocating >65K memory-cgroup IDs would
+        // fail fixture setup at the kernel's unrelated memory-controller ID limit.
+        writeFileSync(`${wide.procPath}/cgroup.subtree_control`, "-cpu -memory -pids");
+        expect(readFileSync(`${wide.procPath}/cgroup.subtree_control`, "utf8").trim()).toBe("");
+        for (; created < width; created++) mkdirSync(`${wide.procPath}/leaf-${created}`);
+        expect(readFileSync(`${wide.procPath}/leaf-0/cgroup.controllers`, "utf8").trim()).toBe("");
+        const observeDirectoryNames = function (this: HeldDirectory): Iterable<Buffer> {
+          const names: Iterable<Buffer> = originalDirectoryNames.call(this);
+          if (Array.isArray(names)) {
+            visitedDirectories += names.length;
+            return names;
+          }
+          return (function* () {
+            for (const entry of names) {
+              visitedDirectories++;
+              yield entry;
+            }
+          })();
+        };
+        enumerate = spyOn(HeldDirectory.prototype, "directoryNames").mockImplementation(
+          observeDirectoryNames as typeof originalDirectoryNames,
+        );
+        readDir = spyOn(fs, "readdirSync").mockImplementation(((
+          ...args: Parameters<typeof fs.readdirSync>
+        ) => {
+          const entries = originalReadDir(...args);
+          materializedEntries += entries.length;
+          return entries;
+        }) as typeof fs.readdirSync);
+        try {
+          handle.release();
+          throw new Error("over-budget native tree was released");
+        } catch (error) {
+          expect(error).toBeInstanceOf(LinuxJobRefusal);
+          expect(error).toMatchObject({ code: "cgroup-cleanup-failed", workloadEmpty: true });
+        }
+        // Count actual yielded directories, not elapsed time. Also catch an eager
+        // readdir hidden behind a nominally incremental directory API.
+        expect(visitedDirectories).toBeLessThanOrEqual(traversalLimit + 1);
+        expect(materializedEntries).toBeLessThanOrEqual(traversalLimit + 1);
+        enumerate.mockRestore();
+        readDir.mockRestore();
+        spec.delegatedCgroup.assertDirectoryEntry(Buffer.from(name), root);
+        root.assertDirectoryEntry(Buffer.from("wide"), wide);
+        expect(fstatSync(root.fd, { bigint: true })).toMatchObject({
+          dev: identity.dev,
+          ino: identity.ino,
+        });
+        expect(await handle.result).toEqual(result);
+        expect(readFileSync(`${wide.procPath}/cgroup.events`, "utf8")).toContain("populated 0");
+      } finally {
+        enumerate?.mockRestore();
+        readDir?.mockRestore();
+        if (wide) {
+          for (let index = 0; index < created; index++) rmdirSync(`${wide.procPath}/leaf-${index}`);
+          wide.close();
+        }
+        root?.close();
+        await handle.cancel();
+        handle.release();
+        handle.release();
+      }
+      expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+    });
+  },
+  120_000,
+);
+
+test.skipIf(!realLinux)(
   "[real-linux] exclusive recovery reclaims nested native roots and preserves an active unknown sibling",
   async () => {
     await withLinux("printf unused", async (spec) => {

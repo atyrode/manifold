@@ -53,7 +53,12 @@ import { JobOutputScratchStore, JobOutputStore } from "../src/job-outputs.ts";
 import { JobResources } from "../src/job-resources.ts";
 import { JobBoundInputStore } from "../src/job-bound-inputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
-import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
+import {
+  LinuxJobRefusal,
+  startLinuxJob,
+  type LinuxJobHandle,
+  type LinuxJobResult,
+} from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
 import { createServiceTunnel } from "../src/job-service-tunnel.ts";
 import { HeldServiceCredentialRegistry } from "../src/job-credentials.ts";
@@ -1947,6 +1952,361 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
     30000,
   );
 });
+
+test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const)(
+  "[real-linux] deferred child reclamation preserves the %s reopening fence and releases nested authority",
+  async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), "owner-ancestor-cleanup-"));
+    const keys = generateKeyPairSync("ed25519");
+    const bytes = Buffer.from(
+      [
+        "#!/bin/busybox sh",
+        "set -eu",
+        "IFS= read -r context <&3",
+        'if test "$2" != leaf; then',
+        '  if test "$2" = parent; then next=child; else next=leaf; fi',
+        '  printf \'{"type":"invoke","operationId":"fixture.jobs.run","input":{"label":"%s","next":"%s"},"outputs":[]}\\n\' "$2" "$next" >&3',
+        "fi",
+        'printf "ready:%s\\n" "$1"',
+        "IFS= read -r command",
+        'test "$command" = finish',
+        'printf "sealed:%s\\n" "$1"',
+        "",
+      ].join("\n"),
+    );
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const limits = {
+      timeoutMs: 60_000,
+      memoryBytes: 128 * 1024 * 1024,
+      processes: 32,
+      outputBytes: 65536,
+    };
+    const install: Extract<JobCommand, { type: "install" }> = {
+      type: "install",
+      pluginId: "fixture.jobs",
+      installationRevision: "ancestor-cleanup",
+      artifactSha256: sha256,
+      artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+      machine: {
+        artifacts: {
+          [`linux-${process.arch}`]: {
+            bundleFile: "worker",
+            sha256,
+            format: "raw",
+            entry: ["fixture"],
+            entrySha256: sha256,
+            maxBytes: bytes.length,
+            maxExpandedBytes: bytes.length,
+            maxMembers: 1,
+          },
+        },
+        locations: {},
+        operations: {
+          "fixture.jobs.run": {
+            argv: [{ input: "label" }, { input: "next" }],
+            input: {
+              label: { type: "string", required: true, maxLength: 32 },
+              next: { type: "string", required: true, maxLength: 32 },
+            },
+            runtimeTools: ["busybox"],
+            locations: [],
+            outputs: [],
+            network: "none",
+            limits,
+            stdin: true,
+          },
+        },
+      },
+    };
+    const held: HeldDirectory[] = [];
+    const handles = new Map<string, LinuxJobHandle>();
+    const subtrees = new Map<string, string>();
+    const blocked = new Set(["child"]);
+    const events: JobEvent[] = [];
+    const results = new Map<string, JobResult>();
+    const committed = new Map<string, string>();
+    const stdout = new Map<string, string>();
+    const cleanupFailures = new Set<string>();
+    let changed = Promise.withResolvers<void>();
+    const notify = () => {
+      changed.resolve();
+      changed = Promise.withResolvers<void>();
+    };
+    let owner: MachineJobOwner | undefined;
+    let outputs: JobOutputStore | undefined;
+    let bwrapFd = -1;
+    let busyboxFd = -1;
+    let detach: (() => void) | undefined;
+    const launch = startLinuxJob;
+    const nativeLaunch = spyOn(nativeRuntime, "startLinuxJob").mockImplementation(async (spec) => {
+      const handle = await launch(spec);
+      const label = spec.argv[0]!;
+      handles.set(label, handle);
+      subtrees.set(label, dirname(readlinkSync(handle.childDelegation.procPath)));
+      const release = handle.release;
+      handle.release = () => {
+        if (blocked.has(label)) throw new LinuxJobRefusal("cgroup-cleanup-failed", undefined, true);
+        release();
+      };
+      return handle;
+    });
+    const descriptors = (subtree: string): string[] => {
+      const targets: string[] = [];
+      for (const fd of readdirSync("/proc/self/fd")) {
+        let target: string;
+        try {
+          target = readlinkSync(`/proc/self/fd/${fd}`);
+        } catch {
+          continue; // The directory listing's own descriptor has closed.
+        }
+        if (
+          target === subtree ||
+          target.startsWith(`${subtree}/`) ||
+          target === `${subtree} (deleted)`
+        )
+          targets.push(target);
+      }
+      return targets;
+    };
+    try {
+      for (const name of ["journal", "cache", "outputs", "locations"])
+        mkdirSync(join(root, name), { mode: 0o700 });
+      const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
+      try {
+        bwrapFd = executableParent.openRuntimeFile(basename(bwrap!));
+      } finally {
+        executableParent.close();
+      }
+      const runtimeParent = HeldDirectory.openAbsolute(dirname(busybox!));
+      try {
+        busyboxFd = runtimeParent.openRuntimeFile(basename(busybox!));
+      } finally {
+        runtimeParent.close();
+      }
+      const cache = HeldDirectory.openAbsolute(join(root, "cache"), { private: true });
+      const outputDirectory = HeldDirectory.openAbsolute(join(root, "outputs"), { private: true });
+      const managedState = HeldDirectory.openAbsolute(join(root, "locations"), { private: true });
+      const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+      const protectedRoot = HeldDirectory.openAbsolute(root, { private: true });
+      held.push(cache, outputDirectory, managedState, delegatedCgroup, protectedRoot);
+      outputs = JobOutputStore.open(outputDirectory);
+      owner = await MachineJobOwner.open({
+        machineId: "machine",
+        admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        journal: new JobJournal(
+          HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
+        ),
+        cache,
+        managedState,
+        outputs,
+        delegatedCgroup,
+        bubblewrapFd: bwrapFd,
+        anchors: {},
+        protectedDirectories: [protectedRoot],
+        runtimeTools: {
+          busybox: [{ fd: busyboxFd, target: "/bin/busybox", writable: false }],
+        },
+        artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+        log: (_level, evt, fields) => {
+          if (evt === "job_cgroup_cleanup_failed" && typeof fields?.jobId === "string")
+            cleanupFailures.add(fields.jobId);
+          notify();
+        },
+      });
+      detach = owner.attach((event) => {
+        events.push(event);
+        if (event.type === "output" && event.outputId === "stdout")
+          stdout.set(
+            event.jobId,
+            (stdout.get(event.jobId) ?? "") + Buffer.from(event.data, "base64").toString(),
+          );
+        if (
+          event.type === "result" &&
+          ["exited", "interrupted", "cancelled", "refused"].includes(event.result.state)
+        ) {
+          if (!committed.has(event.result.jobId))
+            committed.set(event.result.jobId, canonicalJobJson(event.result));
+          results.set(event.result.jobId, event.result);
+        }
+        notify();
+        return true;
+      });
+      const waitFor = async (ready: () => boolean) => {
+        while (!ready()) {
+          const refusal = events.find((event) => event.type === "refusal");
+          if (refusal) throw new Error(JSON.stringify(refusal));
+          await changed.promise;
+        }
+      };
+      const start = async (jobId: string, next: string, timeoutMs: number, parentId?: string) => {
+        const invocation = parentId
+          ? events.find(
+              (event) =>
+                event.type === "invocation" &&
+                event.parentJobId === parentId &&
+                event.input.label === jobId,
+            )
+          : undefined;
+        if (parentId) expect(invocation?.type).toBe("invocation");
+        const body: Omit<JobRequest, "requestDigest"> = {
+          jobId,
+          machineId: "machine",
+          pluginId: install.pluginId,
+          operationId: "fixture.jobs.run",
+          installationRevision: install.installationRevision,
+          artifactSha256: sha256,
+          input: { label: jobId, next },
+          limits: { ...limits, timeoutMs },
+          outputs: [],
+          parent:
+            invocation?.type === "invocation"
+              ? { parentJobId: invocation.parentJobId, invocationId: invocation.invocationId }
+              : null,
+          credential: {
+            principalId: "actor",
+            tokenId: "token",
+            grantId: "grant",
+            caps: [],
+            containerScope: null,
+          },
+          traceId: "ancestor-cleanup",
+        };
+        const request = { ...body, requestDigest: jobDigest(body) };
+        const now = Date.now();
+        const permit = {
+          permitId: `${jobId}-permit`,
+          jobId,
+          requestDigest: request.requestDigest,
+          ownerId: owner!.identity.ownerId,
+          ownerGeneration: owner!.identity.generation,
+          decisionId: "decision",
+          policyRevision: "policy",
+          issuedAt: now,
+          expiresAt: now + 30_000,
+        };
+        await owner!.execute({
+          type: "start",
+          request,
+          permit: {
+            ...permit,
+            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString(
+              "base64",
+            ),
+          },
+        });
+        await waitFor(() => (stdout.get(jobId) ?? "").includes(`ready:${jobId}\n`));
+      };
+      const finish = async (jobId: string) => {
+        const requestId = `${jobId}-finish`;
+        const sending = owner!.execute({
+          type: "input",
+          jobId,
+          requestId,
+          seq: 0,
+          data: Buffer.from("finish\n").toString("base64"),
+          eof: false,
+        });
+        await owner!.execute({ type: "input_authorized", jobId, requestId, allowed: true });
+        await sending;
+        await waitFor(() => results.has(jobId));
+        // All descendants have already finalized. Let finish's child-finalization await resume.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(results.get(jobId)).toMatchObject({ state: "exited", exitCode: 0, reason: null });
+      };
+      await owner.execute(install);
+      await start("root", "parent", 60_000);
+      await waitFor(() =>
+        events.some((event) => event.type === "invocation" && event.parentJobId === "root"),
+      );
+      await start("parent", "child", 40_000, "root");
+      await waitFor(() =>
+        events.some((event) => event.type === "invocation" && event.parentJobId === "parent"),
+      );
+      await start("child", "leaf", 20_000, "parent");
+      const rootSubtree = subtrees.get("root")!;
+      const parentSubtree = subtrees.get("parent")!;
+      const childSubtree = subtrees.get("child")!;
+      expect(dirname(parentSubtree)).toBe(
+        readlinkSync(handles.get("root")!.childDelegation.procPath),
+      );
+      expect(dirname(childSubtree)).toBe(
+        readlinkSync(handles.get("parent")!.childDelegation.procPath),
+      );
+      for (const subtree of [rootSubtree, parentSubtree, childSubtree]) {
+        expect(existsSync(subtree)).toBe(true);
+        expect(descriptors(subtree)).not.toEqual([]);
+      }
+      await finish("child");
+      await waitFor(() => cleanupFailures.has("child"));
+      expect(owner.maintenanceReady).toBe(false);
+      expect(() => owner!.setDraining(false)).toThrow("cgroup-cleanup-pending");
+
+      if (mode === "terminal-ancestors") {
+        // Both ancestors finalize while a descendant still retains real native authority.
+        blocked.add("parent");
+        await finish("parent");
+        await finish("root");
+      }
+      blocked.delete("child");
+      await owner.execute({ type: "cancel", jobId: "child", reason: "fixture-cleanup" });
+      expect(existsSync(childSubtree)).toBe(false);
+      expect(descriptors(childSubtree)).toEqual([]);
+      expect(existsSync(parentSubtree)).toBe(true);
+      expect(existsSync(rootSubtree)).toBe(true);
+      expect(owner.maintenanceReady).toBe(false);
+      if (mode === "terminal-ancestors") {
+        // Child success must expose the refused ancestor obligation, not silently reopen.
+        expect(() => owner!.setDraining(false)).toThrow("cgroup-cleanup-pending");
+        expect(cleanupFailures.has("parent")).toBe(true);
+        blocked.delete("parent");
+        // Retrying the already-reclaimed child must also retry every terminal ancestor.
+        await owner.execute({ type: "cancel", jobId: "child", reason: "fixture-cleanup" });
+      } else {
+        // A still-running ancestor is not a cleanup fault and must not be reclaimed or fenced.
+        owner.setDraining(false);
+        expect(results.has("parent")).toBe(false);
+        expect(results.has("root")).toBe(false);
+        expect(descriptors(parentSubtree)).not.toEqual([]);
+        expect(descriptors(rootSubtree)).not.toEqual([]);
+        await finish("parent");
+        await finish("root");
+        owner.setDraining(true);
+      }
+      expect(existsSync(rootSubtree)).toBe(false);
+      expect(descriptors(rootSubtree)).toEqual([]);
+      expect(owner.maintenanceReady).toBe(true);
+      for (const jobId of ["root", "parent", "child"]) {
+        const result = results.get(jobId)!;
+        expect(result.usage).not.toBeNull();
+        const output = result.outputs.find((entry) => entry.name === "stdout")!;
+        expect(outputs.read(jobId, output.outputId, 0, limits.outputBytes).data.toString()).toBe(
+          `ready:${jobId}\nsealed:${jobId}\n`,
+        );
+        const before = events.length;
+        await owner.execute({ type: "status", jobId });
+        const status = events.slice(before).find((event) => event.type === "result");
+        expect(status?.type).toBe("result");
+        if (status?.type === "result")
+          expect(canonicalJobJson(status.result)).toBe(committed.get(jobId));
+      }
+      owner.setDraining(false);
+    } finally {
+      blocked.clear();
+      detach?.();
+      try {
+        await owner?.shutdown();
+      } finally {
+        nativeLaunch.mockRestore();
+        outputs?.close();
+        if (bwrapFd >= 0) closeSync(bwrapFd);
+        if (busyboxFd >= 0) closeSync(busyboxFd);
+        for (const directory of held.reverse()) directory.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  },
+  90000,
+);
 
 const outputRoot = process.env.MANIFOLD_TEST_OUTPUT_ROOT;
 // Included by verify-jobs.ts's [real-linux] selector. verify-runtime.sh jobs supplies the
