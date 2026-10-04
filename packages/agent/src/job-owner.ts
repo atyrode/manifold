@@ -157,7 +157,8 @@ interface OwnedJob {
   handle: LinuxJobHandle | null;
   startupCleanup: (() => Promise<void>) | undefined;
   startupCleanupAttempt: Promise<void> | undefined;
-  /** A cleanup fault, not an ordinary live handle; only successful reclamation clears it. */
+  /** A cleanup fault or deferred terminal reclamation, not an ordinary live handle;
+   * only successful reclamation clears the obligation. */
   cgroupCleanupPending: boolean;
   emptyObserved: boolean;
   context: JobContext | null;
@@ -3241,6 +3242,17 @@ export class MachineJobOwner {
     // it. A job still running is instead disposed by `finish`, after it seals.
     this.disposeOutputScratch(job);
     this.disposeLinuxHandle(job, "release");
+    if (!job.handle && !job.startupCleanup) {
+      // Child success can unblock terminal ancestors, including after an earlier retry failed.
+      // Live ancestors keep their handles; historical parents are not owned by this generation.
+      let parent = job.request.parent;
+      while (parent) {
+        const ancestor = this.jobs.get(parent.parentJobId);
+        if (!ancestor) break;
+        this.disposeLinuxHandle(ancestor, "release");
+        parent = ancestor.request.parent;
+      }
+    }
     this.emitEmpty(job);
   }
 
@@ -3437,7 +3449,10 @@ export class MachineJobOwner {
     if (!job.handle || !job.emptyObserved || ACTIVE[job.result.state]) return;
     for (const childId of job.children) {
       const child = this.requireJob(childId);
-      if (child.handle || child.startupCleanup || ACTIVE[child.result.state]) return;
+      if (child.handle || child.startupCleanup || ACTIVE[child.result.state]) {
+        job.cgroupCleanupPending = true;
+        return;
+      }
     }
     try {
       // An interrupted job publishes no outputs. End those unsealed lifetimes before its

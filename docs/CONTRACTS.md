@@ -5200,6 +5200,12 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   one attempt. A refused shutdown quiesces effects but retains global service, seat and
   credential authority until reclamation succeeds, so explicit cleanup and reopening can
   restore the same owner without replacing its process.
+  Empty terminal ancestors deferred behind retained children remain reclamation obligations:
+  successful explicit child cleanup retries terminal ancestors child-first, including retries
+  of an already-reclaimed child. Reopening stays fenced until those obligations succeed;
+  ordinary live ancestors are not reclamation faults. Traversal checks its 256-level depth
+  limit before enumeration and consumes its 65,536-descendant-directory budget incrementally,
+  refusing an over-budget tree without enumerating it in full.
   Temporary transport unavailability does not itself revoke a retained run's grants.
   Birth/restart readiness and exact transport guards retire only after the owner's
   acknowledgement. Current credential and sponsor authority, consent, code, exact

@@ -2306,7 +2306,7 @@ test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const
         const status = events.slice(before).find((event) => event.type === "result");
         expect(status?.type).toBe("result");
         if (status?.type === "result")
-          expect(canonicalJobJson(status.result)).toBe(committed.get(jobId));
+          expect(canonicalJobJson(status.result)).toBe(committed.get(jobId)!);
       }
       owner.setDraining(false);
     } finally {
