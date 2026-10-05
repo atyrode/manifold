@@ -225,7 +225,9 @@ export const TerminalDeliveryStateSchema = z.enum(["waiting", "recovering", "liv
 export type TerminalDeliveryState = z.infer<typeof TerminalDeliveryStateSchema>;
 /**
  * Why a view's attachment was retired. `not_found`/`exited`/`view_limit` refuse the attach
- * itself; `owner_unavailable` means its snapshot request could not reach the terminal's owner;
+ * itself; `exited` with `skipped: true` also ends a live view whose held output the stream's
+ * end discarded, sent before the exit; `owner_unavailable` means its snapshot request could
+ * not reach the terminal's owner;
  * `snapshot_timeout` that the owner did not answer within the finite snapshot deadline;
  * `pending_overflow` that output outgrew the pending bound before the snapshot arrived, so no
  * tail could follow it without a gap. None of these is retried by the server.

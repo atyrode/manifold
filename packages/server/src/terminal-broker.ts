@@ -927,6 +927,30 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
+   * A stream that ends — exit, owner loss, removal — can never deliver output still held behind
+   * a view's credit or snapshot. Each such view is told, before the end is announced, that its
+   * attachment ended with output skipped, so no reader treats its parsed bytes as complete.
+   * Views that were sent everything keep their silent, ordered end. Idempotent per held lane.
+   * A rebind is not an end: its readers reattach in the new home for a fresh snapshot.
+   */
+  private discloseHeldOutput(terminal: RuntimeTerminal): void {
+    for (const [channel, viewer] of this.viewersOf(terminal)) {
+      if (!viewer.queue.some((frame) => frame.type === "terminal_output")) continue;
+      viewer.queue = [];
+      viewer.queuedBytes = 0;
+      viewer.skipped = true;
+      this.sendRefusal(
+        channel,
+        terminal.info.id,
+        viewer.viewportId,
+        viewer.delivery?.id ?? null,
+        true,
+        "exited",
+      );
+    }
+  }
+
+  /**
    * The scoped half of every refusal that retires or refuses a view: its own `refused` notice,
    * so a reader learns which view stopped and why without matching any error wording.
    */
@@ -3048,6 +3072,8 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (!terminal || terminal.info.machineId !== machineId || terminal.info.status === "exited")
         return;
       terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
+      // Held output can never follow the exit: disclose it ahead of the outcome.
+      this.discloseHeldOutput(terminal);
       // Home-scoped clients need the outcome before removal makes the terminal unavailable.
       this.rooms.live(terminal.info.containerId)?.broadcast({
         type: "terminal_event",
@@ -3080,6 +3106,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
     if (terminal.info.status === "exited") return;
+    this.discloseHeldOutput(terminal);
     this.clearViewers(terminal);
     terminal.info = {
       ...terminal.info,
@@ -3225,6 +3252,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (terminal === undefined) return;
     this.finishRestart(terminalId, "not_found");
     if (terminal.info.status === "running") this.sendPtyStop(terminal);
+    this.discloseHeldOutput(terminal);
     this.clearViewers(terminal);
     this.terminals.delete(terminalId);
     this.rooms
@@ -3276,6 +3304,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       ) {
         continue;
       }
+      this.discloseHeldOutput(terminal);
       this.clearViewers(terminal);
       this.terminals.delete(terminalId);
       this.store.deleteTerminal(terminalId);
@@ -3315,6 +3344,7 @@ export class TerminalBroker implements TerminalPlacementPort {
           .get(terminal.info.machineId)
           ?.send({ type: "kill", terminalId: terminal.info.id });
       }
+      this.discloseHeldOutput(terminal);
       this.clearViewers(terminal);
       const stored = this.store.getTerminal(terminalId);
       if (stored !== null && stored.agentPrincipalId !== null) {

@@ -2607,6 +2607,38 @@ describe("TerminalBroker per-view parser credit", () => {
     fixture.store.close();
   });
 
+  for (const exitCode of [0, 7]) {
+    test(`exit ${String(exitCode)} discloses held output before the exit instead of dropping it silently`, () => {
+      const fixture = viewportFixture("slow", "healthy");
+      for (const seq of range(1, frames + 3)) {
+        emit(fixture, seq);
+        ackCompleted(fixture, fixture.opener, "healthy");
+      }
+      const deliveryId = deliveredTo(fixture.opener, "slow")[0]?.deliveryId;
+      if (deliveryId === undefined) throw new Error("slow viewer received no delivery");
+      fixture.socket.sent.length = 0;
+      fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, exitCode);
+      const ended = fixture.socket
+        .messages()
+        .filter(
+          (message) => message.type === "terminal_delivery" || message.type === "terminal_event",
+        )
+        .filter((message) => message.type !== "terminal_event" || message.kind === "exited");
+      // Only the view that was still owed output hears it; the caught-up sibling ends silently.
+      expect(ended.map((message) => message.type)).toEqual(["terminal_delivery", "terminal_event"]);
+      expect(ended[0]).toEqual({
+        type: "terminal_delivery",
+        terminalId: fixture.create.terminalId,
+        viewportId: "slow",
+        deliveryId,
+        state: "refused",
+        skipped: true,
+        reason: "exited",
+      });
+      fixture.store.close();
+    });
+  }
+
   test("detach fences one view's incarnation and a rejoin starts fresh beside its sibling", () => {
     const fixture = viewportFixture("leaving", "kept");
     for (const seq of range(1, frames + 4)) {

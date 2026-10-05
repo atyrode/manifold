@@ -526,6 +526,20 @@ describe("terminal-local client boundaries", () => {
         }),
     },
     {
+      // The broker's disclosure when an exit ends a stream with output still held for this view.
+      name: "output still held behind credit at exit",
+      interrupt: (socket) =>
+        socket.receive({
+          type: "terminal_delivery",
+          terminalId: TERMINAL.id,
+          viewportId: socket.viewportId,
+          deliveryId: socket.deliveryId,
+          state: "refused",
+          skipped: true,
+          reason: "exited",
+        }),
+    },
+    {
       name: "a delivery ordinal gap",
       interrupt: (socket) => {
         socket.deliverySeq++;
