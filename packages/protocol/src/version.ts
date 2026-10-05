@@ -494,8 +494,8 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * and completed consumption cumulatively credits bounded delivery. Snapshot recovery discloses
  * potentially skipped output/history. The trusted plugin/SDK terminal ABI changes: old bundles
  * must rebuild rather than receive a shared-view or socket-receipt ACK shim. Plugin bundle
- * acceptance resets to57. Machine, native-owner, hardened, terminal-host and instance messages
- * are unchanged; machine and instance acceptance add57 without requiring a fleet restart.
+ * acceptance resets to 57. Machine, native-owner, hardened, terminal-host and instance messages
+ * are unchanged; machine and instance acceptance add 57 without requiring a fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
