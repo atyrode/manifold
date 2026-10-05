@@ -7903,12 +7903,17 @@ export class JobService {
     if (live?.proved)
       return live.channel.send({
         type: "job_command",
-        command: {
-          type: cancellation.mode,
-          jobId: job.request.jobId,
-          reason: cancellation.reason,
-          ...this.ownerAdmission(live, job),
-        },
+        // A workload its owner already closed has nothing left to stop, and an owner answers
+        // such a cancellation without the result it retained. Only that result is missing:
+        // without it the record stays active and holds its installation busy indefinitely.
+        command: job.ownerClosed
+          ? { type: "status", jobId: job.request.jobId, ...this.ownerAdmission(live, job) }
+          : {
+              type: cancellation.mode,
+              jobId: job.request.jobId,
+              reason: cancellation.reason,
+              ...this.ownerAdmission(live, job),
+            },
       });
     if (live && !job.ownerClosed && this.retirementJob(live, job, cancellation))
       return live.channel.send({

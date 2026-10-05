@@ -17,7 +17,15 @@ import {
   type Stats,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dlopen, FFIType, ptr, read as readNative, type Library } from "bun:ffi";
+import {
+  dlopen,
+  FFIType,
+  ptr,
+  read as readNative,
+  toArrayBuffer,
+  type Library,
+  type Pointer,
+} from "bun:ffi";
 import { connect, type Socket } from "node:net";
 import { getSystemErrorName } from "node:util";
 
@@ -58,9 +66,87 @@ const FILE_SYMBOLS = {
     args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
     returns: FFIType.i32,
   },
+  opendir: { args: [FFIType.ptr], returns: FFIType.ptr },
+  readdir64: { args: [FFIType.ptr], returns: FFIType.ptr },
+  closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
   __errno_location: { args: [], returns: FFIType.ptr },
 } as const;
 let libc: Library<typeof FILE_SYMBOLS> | undefined;
+function directoryEnumerationFailure(errno: number): Error {
+  return Object.assign(new Error("directory_enumeration_failed"), {
+    code: getSystemErrorName(-errno),
+  });
+}
+/** Own the native stream explicitly so read failures never lose a failed close. */
+class NativeDirectoryEntries implements IterableIterator<Buffer> {
+  private readonly stream: Pointer | bigint;
+  private readonly errno: Int32Array;
+  private closed = false;
+  constructor(
+    private readonly library: Library<typeof FILE_SYMBOLS>,
+    private readonly procPath: string,
+  ) {
+    const errnoAddress = library.symbols.__errno_location();
+    if (errnoAddress === null) throw new Error("directory_enumeration_unavailable");
+    this.errno = new Int32Array(toArrayBuffer(errnoAddress, 0, 4));
+    const path = Buffer.from(`${procPath}\0`);
+    const stream = library.symbols.opendir(ptr(path));
+    if (stream === null) throw directoryEnumerationFailure(this.errno[0]!);
+    this.stream = stream;
+  }
+  [Symbol.iterator](): IterableIterator<Buffer> {
+    return this;
+  }
+  next(): IteratorResult<Buffer, void> {
+    if (this.closed) return { done: true, value: undefined };
+    try {
+      while (true) {
+        this.errno[0] = 0;
+        const entry = this.library.symbols.readdir64(this.stream);
+        if (entry === null) {
+          if (this.errno[0] !== 0) throw directoryEnumerationFailure(this.errno[0]!);
+          this.close();
+          return { done: true, value: undefined };
+        }
+        // Linux dirent64: ino/off (8 bytes each), reclen (2), d_type (1), then the NUL name.
+        const type = readNative.u8(entry, 18);
+        // Known non-directories, including virtual cgroup controls, need no name or stat allocation.
+        if (type !== 4 && type !== 0) continue;
+        if (
+          readNative.u8(entry, 19) === 0x2e &&
+          (readNative.u8(entry, 20) === 0 ||
+            (readNative.u8(entry, 20) === 0x2e && readNative.u8(entry, 21) === 0))
+        )
+          continue;
+        const bytes = new Uint8Array(toArrayBuffer(entry, 19, readNative.u16(entry, 16) - 19));
+        // readdir reuses its storage; retain a copy without a UTF-8 decoding round trip.
+        const name = Buffer.from(bytes.subarray(0, bytes.indexOf(0)));
+        if (
+          type === 4 ||
+          lstatSync(Buffer.concat([Buffer.from(`${this.procPath}/`), name])).isDirectory()
+        )
+          return { done: false, value: name };
+      }
+    } catch (error) {
+      try {
+        this.close();
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], "directory_enumeration_failed");
+      }
+      throw error;
+    }
+  }
+  return(): IteratorResult<Buffer, void> {
+    this.close();
+    return { done: true, value: undefined };
+  }
+  private close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.library.symbols.closedir(this.stream) !== 0)
+      throw directoryEnumerationFailure(this.errno[0]!);
+  }
+}
 /** Lock remains owned by the open description until the caller closes it. */
 export function lockExclusive(fd: number): void {
   libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
@@ -168,6 +254,11 @@ function heldIdentity(fd: number): string {
   return `${stat.dev}:${stat.ino}`;
 }
 
+/** Allocation ownership survives descriptor or mount-identity acquisition failure. */
+export interface DirectoryAllocation {
+  acquire(): HeldDirectory;
+}
+
 /** Owned Linux directory descriptor. All descendant opens use a single checked component. */
 export class HeldDirectory {
   readonly mountId: number;
@@ -214,6 +305,47 @@ export class HeldDirectory {
       closeSync(fd);
       throw error;
     }
+  }
+  /** Exclusive mkdir with retained identity; callers keep this obligation until reclamation. */
+  allocateChild(name: string, mode = 0o700): DirectoryAllocation {
+    safeComponent(name);
+    const path = `${this.procPath}/${name}`;
+    let identity: string | undefined;
+    let identityFailure: unknown;
+    let pendingFd: number | undefined;
+    let acquired: HeldDirectory | undefined;
+    const allocation: DirectoryAllocation = {
+      acquire: () => {
+        if (acquired) return acquired;
+        // An identity missed at allocation cannot later be inferred from the same pathname.
+        if (identity === undefined) throw identityFailure;
+        pendingFd ??= openSync(path, DIRECTORY_FLAGS);
+        if (heldIdentity(pendingFd) !== identity) {
+          closeSync(pendingFd);
+          pendingFd = undefined;
+          throw new Error("directory_tree_changed");
+        }
+        // Keep the raw descriptor if the mount probe fails: it still pins the allocated inode.
+        const child = new HeldDirectory(pendingFd);
+        if (child.mountId !== this.mountId) {
+          closeSync(pendingFd);
+          pendingFd = undefined;
+          throw new Error("mount_escape");
+        }
+        acquired = child;
+        pendingFd = undefined;
+        return child;
+      },
+    };
+    mkdirSync(path, { mode });
+    try {
+      const stat = lstatSync(path, { bigint: true });
+      if (!stat.isDirectory()) throw new Error("directory_tree_changed");
+      identity = `${stat.dev}:${stat.ino}`;
+    } catch (error) {
+      identityFailure = error;
+    }
+    return allocation;
   }
   openChild(
     name: string,
@@ -271,6 +403,45 @@ export class HeldDirectory {
   }
   readDir(): string[] {
     return this.names();
+  }
+  /** Incremental, byte-exact directory names; stopping iteration closes the native stream. */
+  directoryNames(): IterableIterator<Buffer> {
+    // Bun 1.4.2's node:fs Dir.readSync caches a whole readdir result even with bufferSize=1.
+    libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+    return new NativeDirectoryEntries(libc, this.procPath);
+  }
+  /** Open a byte-named directory without changing its permissions or crossing this mount. */
+  openDirectoryEntry(name: Buffer): HeldDirectory {
+    this.checkedEntry(name);
+    return this.openEntryDirectory(name, false);
+  }
+  /** Recheck the name against the retained directory, including its mount identity. */
+  assertDirectoryEntry(name: Buffer, directory: HeldDirectory): void {
+    this.checkedEntry(name);
+    if (directory.mountId !== this.mountId) throw new Error("mount_escape");
+    const named = this.openDirectoryEntry(name);
+    try {
+      if (heldIdentity(named.fd) !== heldIdentity(directory.fd))
+        throw new Error("directory_tree_changed");
+    } finally {
+      named.close();
+    }
+  }
+  /** Remove only this still-named held directory. Never unlink files or recurse. */
+  removeDirectoryEntry(name: Buffer, directory: HeldDirectory): void {
+    this.assertDirectoryEntry(name, directory);
+    rmdirSync(this.entryPath(name));
+  }
+  private checkedEntry(name: Buffer): void {
+    if (
+      name.length === 0 ||
+      name.length > 255 ||
+      (name.length === 1 && name[0] === 0x2e) ||
+      (name.length === 2 && name[0] === 0x2e && name[1] === 0x2e) ||
+      name.includes(0) ||
+      name.includes(0x2f)
+    )
+      throw new Error("unsafe_file_component");
   }
   unlink(name: string): void {
     safeComponent(name);
@@ -469,7 +640,7 @@ export class HeldDirectory {
     return Buffer.concat([Buffer.from(`${this.procPath}/`), name]);
   }
   /** A byte-named subdirectory entry, never through a link or onto another mount. */
-  private openEntryDirectory(name: Buffer): HeldDirectory {
+  private openEntryDirectory(name: Buffer, restorePermissions = true): HeldDirectory {
     const path = this.entryPath(name);
     const before = lstatSync(path, { bigint: true });
     const fd = openSync(path, DIRECTORY_FLAGS);
@@ -480,7 +651,8 @@ export class HeldDirectory {
       if (held.dev !== before.dev || held.ino !== before.ino)
         throw new Error("directory_tree_changed");
       // A workload may clear its own directory's bits; only their owner may restore them.
-      if ((Number(held.mode) & 0o700) !== 0o700) chmodSync(child.procPath, 0o700);
+      if (restorePermissions && (Number(held.mode) & 0o700) !== 0o700)
+        chmodSync(child.procPath, 0o700);
       return child;
     } catch (error) {
       closeSync(fd);

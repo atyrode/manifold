@@ -3512,6 +3512,62 @@ test("same-generation reconnect recovers a lost started notification without rev
   }
 });
 
+test("reconnect recovers the retained result of a cancelled job its owner already closed", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    consent(f, "jobs:cancel");
+    prove(f);
+    const job = execute(f, "closed-before-result");
+    const fact = {
+      jobId: job.request.jobId,
+      requestDigest: job.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    f.service.event(f.channel, { type: "state", ...fact, state: "started" });
+    f.service.cancel(f.root, {
+      kind: "job",
+      machineId: f.machineId,
+      operationId,
+      jobId: job.request.jobId,
+    });
+    // The owner closes the workload; its result is lost before the hub records it.
+    f.service.event(f.channel, { type: "workload_empty", ...fact });
+    expect(f.service.jobs.get(job.request.jobId)).toMatchObject({
+      state: "started",
+      ownerClosed: true,
+    });
+
+    f.service.offline(f.channel);
+    f.commands.length = 0;
+    prove(f);
+    // Re-sending the cancellation would leave the record active forever.
+    const replayed = f.commands
+      .filter((command) => "jobId" in command && command.jobId === job.request.jobId)
+      .map((command) => command.type);
+    expect(replayed).toContain("status");
+    expect(replayed).not.toContain("cancel");
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...fact,
+        state: "cancelled",
+        exitCode: null,
+        reason: "cancelled",
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: job.request.limits,
+        outputs: [],
+      },
+    });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("cancelled");
+  } finally {
+    f.store.close();
+  }
+});
+
 function inputFixture() {
   const f = fixture();
   consent(f, "machines:run");
