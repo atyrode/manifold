@@ -2726,9 +2726,10 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 56 admits bundle stamps 47, 48, 51, 52, 53, 54, 55 and 56:
-terminal geometry adds a subscription without changing existing plugin call signatures, and
-portable Worker projections expose no terminal byte/snapshot subscriptions. A prior stamp
+the current wire version. Protocol 57 admits only bundle stamp 57: explicit per-viewport
+terminal attach/detach and completion acknowledgement changed the trusted plugin/SDK terminal
+ABI, so earlier stamps require a rebuild. Portable Worker projections still expose no terminal
+byte/snapshot subscriptions. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -4243,6 +4244,10 @@ skipped, seq: S, data, geometry: { cols, rows, revision: G } }`, then filters th
   zero data bytes; transport-envelope limits remain separate. Browser retirement does not erase
   work already in xterm: at most one real write/barrier runs at a time, and old in-flight work
   stays charged until completion. No parser bound is bypassed by reconnect or a fresh snapshot.
+  Because frames are counted as well as bytes, a burst of many small frames — for example one
+  echoed keystroke per frame from automation typing hundreds of characters faster than one
+  acknowledgement round trip — can exhaust both 256-frame windows and recover with skipped
+  history even though its bytes are tiny; interactive human typing does not approach it.
   Exhausted credit holds ordered frames and announces `terminal_delivery` state `waiting`;
   pending overflow discards the unsent lane as a whole, announces `recovering` with
   `skipped: true`, and stops further delivery to that view. Only after all already-sent
@@ -4257,6 +4262,11 @@ skipped, seq: S, data, geometry: { cols, rows, revision: G } }`, then filters th
   A `recovering` notice or a queued replacement snapshot fences mode-derived input until the
   fresh snapshot's replay finishes: work already accepted still parses and earns credit, but
   parsed old screen/input modes are not proof of coherence with the bytes recovery skipped.
+  The fence is input only: a recovering or repainting view stays mounted at the same size, so
+  its measured viewport lease keeps sizing a shared PTY until the view is actually retired.
+  A stream that ends (exit, owner loss or removal) while output is still held for a view
+  first sends that view `refused` with reason `exited` and `skipped: true`, ahead of the exit,
+  so a reader never treats its parsed bytes as complete; fully sent views end silently.
   Initial pending overflow, owner refusal and the unchanged 10-second online snapshot deadline
   retire the attachment with a viewport-scoped `refused` notice and typed reason before the
   generic error. There is no silent recovery/retry loop; offline-owner waiting has no deadline.
