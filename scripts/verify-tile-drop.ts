@@ -1613,13 +1613,19 @@ try {
     pixels, drags, and reads ratios back off the SERVER rather than trusting the paint.
   */
   await browser.goto(`${origin}/p/${canvasContainerId}`);
+  /*
+    The seams paint with the spectator layout, a few hundred milliseconds before a tile's
+    terminal mounts the body the engaging click aims at. A click taken in that gap is never
+    sent, and the round would then read an unengaged portal's inert seams.
+  */
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `document.querySelector('${portalSelector} .portal-divider') !== null`,
+        `document.querySelector('${portalSelector} .portal-divider') !== null &&
+          document.querySelector('${portalSelector} .portal__tile .xterm') !== null`,
       ),
     20_000,
-    "portal remounted with its seams",
+    "portal remounted with its seams and a terminal body to engage",
   );
   const seamTile = await elementRect(browser, `${portalSelector} .portal__tile .xterm`);
   if (seamTile !== null) {
@@ -1759,7 +1765,7 @@ try {
     seamEngaged && seam !== null && !seam.inert && seamMoved && seam.band >= SEAM_BAND_FLOOR,
     seam === null
       ? `no seam found in the portal (engaged: ${String(seamEngaged)})`
-      : `${seamSplit} ${seam.column ? "column" : "row"} shares ${shareStory(sharesBefore)} -> ${shareStory(sharesAfter)} from a 40px press on the seam's visible line; ${seam.band.toFixed(1)}px grab band (≥${String(SEAM_BAND_FLOOR)}) across a ${seam.extent.toFixed(0)}px split, inert ${String(seam.inert)}`,
+      : `${seamSplit} ${seam.column ? "column" : "row"} shares ${shareStory(sharesBefore)} -> ${shareStory(sharesAfter)} from a 40px press on the seam's visible line; ${seam.band.toFixed(1)}px grab band (≥${String(SEAM_BAND_FLOOR)}) across a ${seam.extent.toFixed(0)}px split, engaged ${String(seamEngaged)}, inert ${String(seam.inert)}`,
   );
 
   /* ── #372: carry B from A | (B/C), keeping C targetable until commit ── */

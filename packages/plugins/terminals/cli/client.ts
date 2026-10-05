@@ -1022,6 +1022,10 @@ async function execute(
   let connected = false;
   let controller: "not_acquired" | "acquired" | "refused" | "lost" = "not_acquired";
   let lastSeq: number | null = null;
+  /** This run's own view: its delivery is never shared with another consumer. */
+  const viewportId = randomUUID();
+  let deliveryId: string | null = null;
+  let deliverySeq = 0;
   let released = false;
   let removed = false;
   let completion: { exitCode: number | null; reason: TerminalExitReason | null } | null = null;
@@ -1053,31 +1057,82 @@ async function execute(
     }),
     session.on("resync", () => fail("connection_lost")),
     session.on("terminal_snapshot", (message) => {
-      if (message.terminalId !== terminalId || cleaning) return;
+      if (message.terminalId !== terminalId || message.viewportId !== viewportId || cleaning)
+        return;
       if (lastSeq !== null || released) {
         fail("output_missing");
         return;
       }
       lastSeq = message.seq;
+      deliveryId = message.deliveryId;
+      deliverySeq = message.deliverySeq;
+      // Consumed as a watermark only: snapshot history is never command output.
+      session.ackTerminal(message.terminalId, viewportId, message.deliveryId, message.deliverySeq);
       snapshot.resolve();
     }),
     session.on("terminal_output", (message) => {
-      if (message.terminalId !== terminalId || cleaning || problem !== null) return;
-      if (lastSeq === null || message.seq !== lastSeq + 1) {
+      if (
+        message.terminalId !== terminalId ||
+        message.viewportId !== viewportId ||
+        cleaning ||
+        problem !== null
+      )
+        return;
+      // The broker numbers this view's frames consecutively: anything else is a gap or stale.
+      if (
+        lastSeq === null ||
+        message.seq !== lastSeq + 1 ||
+        message.deliveryId !== deliveryId ||
+        message.deliverySeq !== deliverySeq + 1
+      ) {
         fail("output_missing");
         return;
       }
       lastSeq = message.seq;
-      // Before release there can only be wrapper setup. Even a forged early marker must
-      // not become command output; the nonce is meaningful only after our own input.
-      if (!released) return;
+      deliverySeq = message.deliverySeq;
       try {
-        const input = stream.accept(Buffer.from(message.data, "base64"));
+        // Before release there can only be wrapper setup. Even a forged early marker must
+        // not become command output; the nonce is meaningful only after our own input.
+        const input = released ? stream.accept(Buffer.from(message.data, "base64")) : null;
+        // Credit only what this run consumed: discarded setup or accepted command output.
+        session.ackTerminal(
+          message.terminalId,
+          viewportId,
+          message.deliveryId,
+          message.deliverySeq,
+        );
         // Sent after accept returns: an echo of this input re-enters a settled stream.
         if (input !== null) session.sendTerminalInput(message.terminalId, input);
       } catch (error) {
         fail(failure(error));
       }
+    }),
+    session.on("terminal_geometry", (message) => {
+      if (
+        message.terminalId !== terminalId ||
+        message.viewportId !== viewportId ||
+        cleaning ||
+        problem !== null
+      )
+        return;
+      if (
+        lastSeq === null ||
+        message.deliveryId !== deliveryId ||
+        message.deliverySeq !== deliverySeq + 1
+      ) {
+        fail("output_missing");
+        return;
+      }
+      deliverySeq = message.deliverySeq;
+      // Geometry is never command output; observing it in order consumes it.
+      session.ackTerminal(message.terminalId, viewportId, message.deliveryId, message.deliverySeq);
+    }),
+    session.on("terminal_delivery", (message) => {
+      if (message.terminalId !== terminalId || message.viewportId !== viewportId || cleaning)
+        return;
+      // Held output still arrives in order; skipped output can never complete a capture. A
+      // refusal that skipped nothing keeps the following generic error frame's diagnosis.
+      if (message.skipped || message.state === "recovering") fail("output_missing");
     }),
     session.on("terminal_event", (message) => {
       if (message.terminalId !== terminalId) return;
@@ -1158,7 +1213,7 @@ async function execute(
     terminalId = parsed.data.id;
     check();
     if (parsed.data.status !== "running") throw new ClientFailure("output_missing");
-    session.attachTerminal(terminalId);
+    session.attachTerminal(terminalId, viewportId);
     await wait(snapshot.promise);
     check();
     // This transport verb dispatches the discovered take door; its trace is server-side.
@@ -1225,7 +1280,8 @@ async function execute(
       if (birth?.ok !== false) cleanup = { state: "unconfirmed", via: null, traceId: null };
     }
     for (const unsubscribe of off) unsubscribe();
-    if (terminalId !== null && session.status === "open") session.detachTerminal(terminalId);
+    if (terminalId !== null && session.status === "open")
+      session.detachTerminal(terminalId, viewportId);
     session.close();
   }
   const observed = completion as {

@@ -82,6 +82,10 @@ class Socket {
   controlled = false;
   inputCount = 0;
   sequence = 7;
+  viewportId = "";
+  readonly deliveryId = "owned-delivery";
+  deliverySeq = 0;
+  readonly acks: Array<{ viewportId: string; deliveryId: string; deliverySeq: number }> = [];
   onInput: (text: string, raw: Buffer) => void = () => {};
 
   constructor() {
@@ -122,18 +126,32 @@ class Socket {
       } as MessageEvent);
     } else if (frame["type"] === "terminal_attach") {
       this.attached = true;
+      this.viewportId = String(frame["viewportId"]);
       this.receive({
         type: "terminal_snapshot",
         terminalId: TERMINAL.id,
+        viewportId: this.viewportId,
+        deliveryId: this.deliveryId,
+        deliverySeq: this.deliverySeq,
         seq: this.sequence,
         data: Buffer.from("NEVER RETURN SNAPSHOT HISTORY").toString("base64"),
         geometry: { cols: TERMINAL.cols, rows: TERMINAL.rows, revision: null },
+        skipped: false,
       });
       this.receive({
         type: "terminal_output",
         terminalId: "unrelated-terminal",
+        viewportId: this.viewportId,
+        deliveryId: "unrelated-delivery",
+        deliverySeq: 1,
         seq: 1,
         data: Buffer.from("NEVER RETURN ANOTHER TERMINAL").toString("base64"),
+      });
+    } else if (frame["type"] === "terminal_ack") {
+      this.acks.push({
+        viewportId: String(frame["viewportId"]),
+        deliveryId: String(frame["deliveryId"]),
+        deliverySeq: Number(frame["deliverySeq"]),
       });
     } else if (frame["type"] === "terminal_take") {
       this.controlled = true;
@@ -160,8 +178,23 @@ class Socket {
     this.receive({
       type: "terminal_output",
       terminalId: TERMINAL.id,
+      viewportId: this.viewportId,
+      deliveryId: this.deliveryId,
+      deliverySeq: ++this.deliverySeq,
       seq: ++this.sequence,
       data: (typeof data === "string" ? Buffer.from(data) : Buffer.from(data)).toString("base64"),
+    });
+  }
+
+  geometry(cols: number) {
+    this.receive({
+      type: "terminal_geometry",
+      terminalId: TERMINAL.id,
+      viewportId: this.viewportId,
+      deliveryId: this.deliveryId,
+      deliverySeq: ++this.deliverySeq,
+      seq: this.sequence,
+      geometry: { cols, rows: TERMINAL.rows, revision: null },
     });
   }
 
@@ -433,6 +466,109 @@ describe("terminal-local client boundaries", () => {
     expect(reply.completion.exitCode).toBe(0);
     expect(reply.diagnostic.code).toBe("output_limit");
     expect(reply.cleanup.state).toBe("confirmed");
+    // The refused frame was never consumed, so only the snapshot watermark is credited.
+    expect(fixture.socket?.acks.map((ack) => ack.deliverySeq)).toEqual([0]);
+  });
+
+  test("credits exactly the frames its own view consumed, never a sibling view's", async () => {
+    const fixture = harness({
+      input: (socket, nonce) => {
+        socket.output(`${nonce}\r\n`);
+        socket.geometry(100);
+        socket.receive({
+          type: "terminal_output",
+          terminalId: TERMINAL.id,
+          viewportId: "sibling-view",
+          deliveryId: "sibling-delivery",
+          deliverySeq: 1,
+          seq: socket.sequence + 1,
+          data: Buffer.from("NEVER RETURN A SIBLING VIEW").toString("base64"),
+        });
+        socket.output(`\x1emanifold-exec:${nonce}\x1fowned`);
+        exited(socket, 0);
+      },
+    });
+    let text = "";
+    const status = await runTerminalClient(["exec", "--machine", MACHINE.id, "--", "/bin/true"], {
+      environment: environment(),
+      output: (value) => {
+        text = value;
+      },
+      webSocketFactory: fixture.factory,
+    });
+    const reply = JSON.parse(text);
+    expect(status).toBe(0);
+    expect(Buffer.from(reply.output.data, "base64").toString()).toBe("owned");
+    const socket = fixture.socket!;
+    expect(socket.viewportId).not.toBe("");
+    for (const ack of socket.acks) {
+      expect(ack).toMatchObject({ viewportId: socket.viewportId, deliveryId: socket.deliveryId });
+    }
+    const credited = socket.acks.map((ack) => ack.deliverySeq);
+    expect(credited[0]).toBe(0);
+    expect(credited.at(-1)).toBe(socket.deliverySeq);
+    expect(credited).toEqual([...credited].sort((left, right) => left - right));
+    expect(new Set(credited).size).toBe(credited.length);
+  });
+
+  test.each<{ name: string; interrupt: (socket: Socket) => void }>([
+    {
+      name: "a skipped-output recovery",
+      interrupt: (socket) =>
+        socket.receive({
+          type: "terminal_delivery",
+          terminalId: TERMINAL.id,
+          viewportId: socket.viewportId,
+          deliveryId: socket.deliveryId,
+          state: "recovering",
+          skipped: true,
+          reason: null,
+        }),
+    },
+    {
+      // The broker's disclosure when an exit ends a stream with output still held for this view.
+      name: "output still held behind credit at exit",
+      interrupt: (socket) =>
+        socket.receive({
+          type: "terminal_delivery",
+          terminalId: TERMINAL.id,
+          viewportId: socket.viewportId,
+          deliveryId: socket.deliveryId,
+          state: "refused",
+          skipped: true,
+          reason: "exited",
+        }),
+    },
+    {
+      name: "a delivery ordinal gap",
+      interrupt: (socket) => {
+        socket.deliverySeq++;
+        socket.output("after the gap");
+      },
+    },
+  ])("$name cannot certify command output even if a zero exit follows", async ({ interrupt }) => {
+    const fixture = harness({
+      input: (socket, nonce) => {
+        socket.output(`\x1emanifold-exec:${nonce}\x1fpartial`);
+        interrupt(socket);
+        exited(socket, 0);
+      },
+    });
+    let text = "";
+    const status = await runTerminalClient(["exec", "--machine", MACHINE.id, "--", "/bin/true"], {
+      environment: environment(),
+      output: (value) => {
+        text = value;
+      },
+      webSocketFactory: fixture.factory,
+    });
+    const reply = JSON.parse(text);
+    expect(status).toBe(1);
+    expect(reply.ok).toBe(false);
+    expect(reply.diagnostic.code).toBe("output_missing");
+    expect(Buffer.from(reply.output.data, "base64").toString()).toBe("partial");
+    expect(reply.output.complete).toBe(false);
+    expect(reply.completion.exitCode).toBe(0);
   });
 
   test("interruption during birth waits for ownership then kills only the returned terminal without releasing argv", async () => {

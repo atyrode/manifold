@@ -57,9 +57,13 @@ export function createRoomPipeRegistry(): RoomPipeRegistry {
 
 /**
  * THE HANDLE A PANEL HOLDS: the host's watching client for every read — the doors, the
- * subscriptions, terminal table and read attachments — and the registry's occupant pipes for
- * terminal mutations. Geometry pairs each read attachment with an acquired occupant viewer.
- * `openTerminal` is born in the container the viewer is looking
+ * subscriptions, terminal table, read attachments and their completion acknowledgements — and
+ * the registry's occupant pipes for terminal mutations. Geometry pairs each read view with the
+ * SAME `viewportId` attached on the occupant pipe, because the server accepts a measurement
+ * only for an attached view of exactly that id under the controller lease. That occupant view
+ * exists to hold the measurement: its own stream is never parsed here, so it is never
+ * acknowledged and the server stops it after one bounded window while the measurement still
+ * counts. `openTerminal` is born in the container the viewer is looking
  * at (`HostServices.containerId`), and a terminal-keyed verb rides the pipe of the room whose
  * table holds it. Exactly the {@link SessionHandle} surface and nothing more: the object a
  * plugin receives no longer IS the SDK client, so what the contract omits is now absent at
@@ -70,30 +74,33 @@ export function panelSessionHandle(
   pipes: RoomPipeRegistry,
   containerId: string | null,
 ): SessionHandle {
+  /** One read view's holds, and the occupant pipe its measurement is attached on. */
   type Attachment = {
     count: number;
     pipe: RoomPipe | null;
-    viewports: Set<string>;
   };
-  const attachments = new Map<string, Attachment>();
-  const retireViewportPipe = (terminalId: string, attachment: Attachment): void => {
+  const attachments = new Map<string, Map<string, Attachment>>();
+  const retireViewportPipe = (
+    terminalId: string,
+    viewportId: string,
+    attachment: Attachment,
+  ): void => {
     const pipe = attachment.pipe;
     if (pipe === null) return;
-    for (const viewportId of attachment.viewports) {
-      pipe.releaseTerminalViewport(terminalId, viewportId);
-    }
-    attachment.viewports.clear();
-    if (pipe !== watch) pipe.detachTerminal(terminalId);
+    // On the watching pipe the read hold keeps the view; elsewhere the view existed only for
+    // its measurement, and detaching it retires that measurement with it.
+    if (pipe === watch) pipe.releaseTerminalViewport(terminalId, viewportId);
+    else pipe.detachTerminal(terminalId, viewportId);
     attachment.pipe = null;
   };
-  const viewportPipe = (terminalId: string): RoomPipe => {
+  const viewportPipe = (terminalId: string, viewportId: string): RoomPipe => {
     const pipe = pipes.pipeHolding(terminalId);
-    const attachment = attachments.get(terminalId);
+    const attachment = attachments.get(terminalId)?.get(viewportId);
     if (attachment !== undefined && attachment.pipe !== pipe) {
-      // Read-only panels still attach only to watch. Acquire the writable viewer at first
+      // Read-only panels still attach only to watch. Acquire the writable view at first
       // measurement; on a remount a fresh intent binds the new pipe, never an old one.
-      retireViewportPipe(terminalId, attachment);
-      if (pipe !== watch) pipe.attachTerminal(terminalId);
+      retireViewportPipe(terminalId, viewportId, attachment);
+      if (pipe !== watch) pipe.attachTerminal(terminalId, viewportId);
       attachment.pipe = pipe;
     }
     return pipe;
@@ -135,38 +142,46 @@ export function panelSessionHandle(
       return watch.terminals;
     },
     openTerminal: async (opts) => pipes.pipeOf(containerId).openTerminal(opts),
-    attachTerminal: (terminalId) => {
-      const attachment = attachments.get(terminalId);
-      if (attachment === undefined) {
-        attachments.set(terminalId, { count: 1, pipe: null, viewports: new Set() });
-      } else {
-        attachment.count++;
+    attachTerminal: (terminalId, viewportId) => {
+      let views = attachments.get(terminalId);
+      if (views === undefined) {
+        views = new Map();
+        attachments.set(terminalId, views);
       }
-      watch.attachTerminal(terminalId);
+      const attachment = views.get(viewportId);
+      if (attachment === undefined) views.set(viewportId, { count: 1, pipe: null });
+      else attachment.count++;
+      watch.attachTerminal(terminalId, viewportId);
     },
-    detachTerminal: (terminalId) => {
-      const attachment = attachments.get(terminalId);
-      if (attachment === undefined) return;
+    detachTerminal: (terminalId, viewportId) => {
+      const views = attachments.get(terminalId);
+      const attachment = views?.get(viewportId);
+      if (views === undefined || attachment === undefined) return;
       if (--attachment.count === 0) {
-        retireViewportPipe(terminalId, attachment);
-        attachments.delete(terminalId);
+        retireViewportPipe(terminalId, viewportId, attachment);
+        views.delete(viewportId);
+        if (views.size === 0) attachments.delete(terminalId);
       }
-      watch.detachTerminal(terminalId);
+      watch.detachTerminal(terminalId, viewportId);
     },
+    ackTerminal: (terminalId, viewportId, deliveryId, deliverySeq) =>
+      watch.ackTerminal(terminalId, viewportId, deliveryId, deliverySeq),
     sendTerminalInput: (terminalId, data) =>
       pipes.pipeHolding(terminalId).sendTerminalInput(terminalId, data),
-    resizeTerminal: (terminalId, cols, rows, viewportId) => {
-      viewportPipe(terminalId).resizeTerminal(terminalId, cols, rows, viewportId);
-      attachments.get(terminalId)?.viewports.add(viewportId ?? "sdk");
-    },
+    resizeTerminal: (terminalId, cols, rows, viewportId) =>
+      viewportPipe(terminalId, viewportId ?? "sdk").resizeTerminal(
+        terminalId,
+        cols,
+        rows,
+        viewportId,
+      ),
     releaseTerminalViewport: (terminalId, viewportId) => {
-      const attachment = attachments.get(terminalId);
+      const attachment = attachments.get(terminalId)?.get(viewportId ?? "sdk");
       if (attachment !== undefined && attachment.pipe === null) return;
       (attachment?.pipe ?? pipes.pipeHolding(terminalId)).releaseTerminalViewport(
         terminalId,
         viewportId,
       );
-      attachment?.viewports.delete(viewportId ?? "sdk");
     },
     takeTerminal: (terminalId) => pipes.pipeHolding(terminalId).takeTerminal(terminalId),
     killTerminal: (terminalId) => pipes.pipeHolding(terminalId).killTerminal(terminalId),

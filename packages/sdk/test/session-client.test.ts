@@ -1823,14 +1823,25 @@ describe("frame policy", () => {
 
       // "%" is deliberately outside the base64 alphabet: the trusted-server fast path
       // validates bounded bytes and geometry, rather than rescanning the payload.
+      const stamp = { viewportId: "view-a", deliveryId: "d1" };
       socket.receive({
         type: "terminal_snapshot",
         terminalId: "s1",
+        ...stamp,
+        deliverySeq: 0,
         seq: 0,
         data: "%",
         geometry: { cols: 80, rows: 24, revision },
+        skipped: false,
       });
-      socket.receive({ type: "terminal_output", terminalId: "s1", seq: 1, data: "%" });
+      socket.receive({
+        type: "terminal_output",
+        terminalId: "s1",
+        ...stamp,
+        deliverySeq: 1,
+        seq: 1,
+        data: "%",
+      });
 
       expect(seen).toEqual(["terminal_snapshot:0:%", "terminal_output:1:%"]);
       expect(socket.closedWith).toBeNull();
@@ -1842,6 +1853,35 @@ describe("frame policy", () => {
     const { socket } = connected();
     socket.receive({ type: "terminal_output", terminalId: "s1", data: "" });
     expect(socket.closedWith?.code).toBe(4002);
+  });
+
+  test.each([
+    { deliverySeq: 1 },
+    { skipped: undefined },
+    { viewportId: "" },
+    { viewportId: "v".repeat(129) },
+    { deliveryId: undefined },
+    { deliverySeq: -1 },
+    { unexpected: true },
+  ])("a snapshot with an invalid delivery stamp %o closes 4002 before delivery", (change) => {
+    const { client, socket } = connected();
+    const delivered: ServerMessageBody[] = [];
+    client.on("message", (message) => delivered.push(message));
+    socket.receive({
+      type: "terminal_snapshot",
+      terminalId: "s1",
+      viewportId: "view-a",
+      deliveryId: "d1",
+      deliverySeq: 0,
+      seq: 0,
+      data: "",
+      geometry: { cols: 80, rows: 24, revision: 0 },
+      skipped: false,
+      ...change,
+    });
+    expect(socket.closedWith?.code).toBe(4002);
+    expect(delivered).toEqual([]);
+    client.close();
   });
 
   test.each(["terminal_snapshot", "terminal_geometry"] as const)(
@@ -1867,8 +1907,11 @@ describe("frame policy", () => {
         socket.receive({
           type,
           terminalId: "s1",
+          viewportId: "view-a",
+          deliveryId: "d1",
+          deliverySeq: 0,
           seq: 0,
-          ...(type === "terminal_snapshot" ? { data: "" } : {}),
+          ...(type === "terminal_snapshot" ? { data: "", skipped: false } : {}),
           geometry,
         });
         expect(socket.closedWith?.code).toBe(4002);
@@ -2058,73 +2101,88 @@ describe("terminal attach refcounting", () => {
     rows: [{ connId: "conn-original", viewportId: "view-b" }],
   };
 
-  test("every view-attach re-subscribes on the wire; only the last detach unsubscribes", () => {
+  test("views refcount by exact pair; only a pair's last detach unsubscribes that view", () => {
     const { client, socket } = connected();
-    client.attachTerminal("s1");
-    // A late view (cloned terminal element) MUST trigger a fresh server
-    // snapshot, or it renders nothing: attach always sends on the wire.
-    client.attachTerminal("s1");
-    expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(2);
-    client.detachTerminal("s1"); // closing one view must NOT starve the other
-    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(0);
-    client.detachTerminal("s1"); // last view gone -> unsubscribe on the wire
-    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
-    client.detachTerminal("s1"); // over-detach stays a no-op
-    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
+    client.attachTerminal("s1", "view-a");
+    // A second hold re-establishes the same view with a fresh snapshot incarnation.
+    client.attachTerminal("s1", "view-a");
+    client.attachTerminal("s1", "view-b");
+    expect(framesOfType(socket, "terminal_attach").map((frame) => frame.viewportId)).toEqual([
+      "view-a",
+      "view-a",
+      "view-b",
+    ]);
+    const detached = () => framesOfType(socket, "terminal_detach").map((frame) => frame.viewportId);
+    client.detachTerminal("s1", "view-a"); // one hold of view-a remains
+    expect(detached()).toEqual([]);
+    client.detachTerminal("s1", "view-b"); // a sibling's release never starves view-a
+    expect(detached()).toEqual(["view-b"]);
+    client.detachTerminal("s1", "view-a");
+    expect(detached()).toEqual(["view-b", "view-a"]);
+    client.detachTerminal("s1", "view-a"); // over-detach stays a no-op
+    expect(detached()).toEqual(["view-b", "view-a"]);
   });
 
-  test("a late view attaching mid-stream receives the re-snapshot; no duplicates", () => {
+  test("receipt never acknowledges: only an explicit completed ordinal is sent, and never replayed", () => {
     const { client, socket } = connected();
     socket.receive(INIT_WITH_TERMINAL);
-    const seenA: string[] = [];
-    const seenB: string[] = [];
-    client.on("terminal_snapshot", (m) => seenA.push(`snap:${m.seq}`));
-    client.on("terminal_output", (m) => seenA.push(`out:${m.seq}`));
-    client.attachTerminal("s1");
-    // A is live mid-stream before B even exists.
+    const deliveries: string[] = [];
+    client.on("terminal_delivery", (notice) =>
+      deliveries.push(`${notice.viewportId}:${notice.state}`),
+    );
+    client.attachTerminal("s1", "view-a");
     socket.receive({
       type: "terminal_snapshot",
       terminalId: "s1",
+      viewportId: "view-a",
+      deliveryId: "d1",
+      deliverySeq: 0,
       seq: 3,
       data: "",
       geometry: { cols: 80, rows: 24, revision: 0 },
+      skipped: false,
     });
-    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 4, data: "" });
-    expect(seenA).toEqual(["snap:3", "out:4"]);
-    // B (cloned element) subscribes late and attaches: the wire re-attach makes
-    // the server emit a fresh snapshot, which is B's ONLY path to screen state.
-    client.on("terminal_snapshot", (m) => seenB.push(`snap:${m.seq}`));
-    client.on("terminal_output", (m) => seenB.push(`out:${m.seq}`));
-    client.attachTerminal("s1");
-    expect(sentTypes(socket).filter((t) => t === "terminal_attach")).toHaveLength(2);
     socket.receive({
-      type: "terminal_snapshot",
+      type: "terminal_output",
       terminalId: "s1",
-      seq: 7,
+      viewportId: "view-a",
+      deliveryId: "d1",
+      deliverySeq: 1,
+      seq: 4,
       data: "",
-      geometry: { cols: 80, rows: 24, revision: 0 },
     });
-    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 8, data: "" });
-    // B renders from the re-snapshot; A sees exactly one reset snapshot and no
-    // duplicated output frames.
-    expect(seenB).toEqual(["snap:7", "out:8"]);
-    expect(seenA).toEqual(["snap:3", "out:4", "snap:7", "out:8"]);
-    // Detaching one view keeps the shared wire viewer alive: outputs still flow.
-    client.detachTerminal("s1");
-    socket.receive({ type: "terminal_output", terminalId: "s1", seq: 9, data: "" });
-    expect(seenA.at(-1)).toBe("out:9");
-    expect(seenB.at(-1)).toBe("out:9");
-    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(0);
-    // The last view leaving is what unsubscribes on the wire.
-    client.detachTerminal("s1");
-    expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
+    socket.receive({
+      type: "terminal_delivery",
+      terminalId: "s1",
+      viewportId: "view-a",
+      deliveryId: "d1",
+      state: "waiting",
+      skipped: false,
+      reason: null,
+    });
+    expect(deliveries).toEqual(["view-a:waiting"]);
+    expect(framesOfType(socket, "terminal_ack")).toEqual([]);
+    client.ackTerminal("s1", "view-a", "d1", 1);
+    expect(framesOfType(socket, "terminal_ack")).toEqual([
+      {
+        type: "terminal_ack",
+        ch: channelOf(client),
+        terminalId: "s1",
+        viewportId: "view-a",
+        deliveryId: "d1",
+        deliverySeq: 1,
+      },
+    ]);
+    socket.close(1006, "network");
+    client.ackTerminal("s1", "view-a", "d1", 2);
+    expect(client.outboxSize()).toBe(0);
   });
 
-  test("restart restores exited refs before observers reacquire the replacement stream", () => {
+  test("restart restores exited refs before every held view reacquires the replacement stream", () => {
     const { client, socket } = connected();
     socket.receive(INIT_WITH_TERMINAL);
-    client.attachTerminal("s1");
-    client.attachTerminal("s1");
+    client.attachTerminal("s1", "view-a");
+    client.attachTerminal("s1", "view-b");
     socket.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
     const sizingAtExit: (TerminalSizing | undefined)[] = [];
     client.on("terminal_event", (event) => {
@@ -2163,10 +2221,10 @@ describe("terminal attach refcounting", () => {
         controllerId: "other",
         readiness: null,
       });
-      // One mirror disappears while observing restart; the remaining ref must still
-      // reacquire a stream. Restart must not increment the surviving view's refcount.
-      client.detachTerminal("s1");
+      // One view disappears while observing restart; only the remaining view reacquires.
+      client.detachTerminal("s1", "view-b");
     });
+    const before = framesOfType(socket, "terminal_attach").length;
     socket.receive({
       type: "terminal_event",
       terminalId: "s1",
@@ -2175,9 +2233,13 @@ describe("terminal attach refcounting", () => {
       controllerId: "other",
       fallback: "original",
     });
-    expect(sentTypes(socket).at(-1)).toBe("terminal_attach");
-    client.detachTerminal("s1");
-    expect(sentTypes(socket).at(-1)).toBe("terminal_detach");
+    expect(
+      framesOfType(socket, "terminal_attach")
+        .slice(before)
+        .map((frame) => frame.viewportId),
+    ).toEqual(["view-a"]);
+    client.detachTerminal("s1", "view-a");
+    expect(framesOfType(socket, "terminal_detach").at(-1)?.viewportId).toBe("view-a");
   });
 
   test("same-connection resync preserves live subscriptions but retires absent or exited sizing", () => {
@@ -2186,7 +2248,7 @@ describe("terminal attach refcounting", () => {
       ...INIT_WITH_TERMINAL,
       terminals: [TERMINAL, { ...TERMINAL, id: "s2" }],
     });
-    client.attachTerminal("s1");
+    client.attachTerminal("s1", "view-a");
     socket.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
     socket.receive({ type: "terminal_sizing", terminalId: "s2", sizing: SIZING });
     const visibleSizing: string[][] = [];
@@ -2223,8 +2285,9 @@ describe("terminal attach refcounting", () => {
     const visibleSizing: number[] = [];
     client.on("terminals_changed", () => visibleSizing.push(client.terminalSizing.size));
     first.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
-    client.attachTerminal("s1");
-    expect(sentTypes(first).filter((t) => t === "terminal_attach")).toHaveLength(1);
+    client.attachTerminal("s1", "view-a");
+    client.attachTerminal("s1", "view-b");
+    expect(sentTypes(first).filter((t) => t === "terminal_attach")).toHaveLength(2);
 
     vi.useFakeTimers();
     try {
@@ -2239,11 +2302,16 @@ describe("terminal attach refcounting", () => {
       second.receive({ ...INIT_WITH_TERMINAL, selfConnId: "conn-reconnected" });
       expect(client.terminalSizing.size).toBe(0);
       expect(framesOfType(second, "terminal_resize")).toEqual([]);
-      // server viewer registry is connection-scoped: SDK must re-attach exactly once
-      expect(sentTypes(second).filter((t) => t === "terminal_attach")).toHaveLength(1);
-      // a single detach still fully unsubscribes (refcount untouched by reconnect)
-      client.detachTerminal("s1");
-      expect(sentTypes(second).filter((t) => t === "terminal_detach")).toHaveLength(1);
+      // The server's views are connection-scoped: every held pair re-attaches exactly once.
+      expect(framesOfType(second, "terminal_attach").map((frame) => frame.viewportId)).toEqual([
+        "view-a",
+        "view-b",
+      ]);
+      // A single detach still fully releases its pair (refcount untouched by reconnect).
+      client.detachTerminal("s1", "view-a");
+      expect(framesOfType(second, "terminal_detach").map((frame) => frame.viewportId)).toEqual([
+        "view-a",
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -2264,7 +2332,7 @@ describe("terminal attach refcounting", () => {
         terminalId: "pending-birth",
       });
       expect(client.terminals.has("pending-birth")).toBe(false);
-      client.attachTerminal("s1");
+      client.attachTerminal("s1", "withdrawn-on-close");
       client.resizeTerminal("s1", 80, 24, "withdrawn-on-close");
       first.sent.length = 0;
 
@@ -2291,7 +2359,12 @@ describe("terminal attach refcounting", () => {
       // Neither obsolete geometry nor a closing-window withdrawal may cross the new channel.
       expect(framesOfType(second, "terminal_resize")).toEqual([]);
       expect(framesOfType(second, "terminal_attach")).toEqual([
-        { type: "terminal_attach", ch: channelOf(client), terminalId: "s1" },
+        {
+          type: "terminal_attach",
+          ch: channelOf(client),
+          terminalId: "s1",
+          viewportId: "withdrawn-on-close",
+        },
       ]);
       const replica = createSceneDoc();
       for (const update of docUpdateFrames(second)) {

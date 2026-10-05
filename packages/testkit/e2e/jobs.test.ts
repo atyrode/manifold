@@ -551,7 +551,7 @@ test.skipIf(!realBackend)(
           `${phase}_NESTED:${Buffer.from("nested selection\n").toString("base64")}`,
         );
         capture.stop();
-        terminalHome.detachTerminal(terminal.id);
+        terminalHome.detachTerminal(terminal.id, "sdk");
       };
       await inspectMaterial("FIRST");
       const firstJobs = await terminalJobs();

@@ -4,9 +4,13 @@ import {
   AgentMessageSchema,
   ClientMessageBodySchema,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
+  MAX_SESSION_BASE64_CHARS,
   MAX_TERMINAL_ARGV_ITEMS,
   MAX_TERMINAL_CWD_CHARS,
+  MAX_TERMINAL_DELIVERY_PENDING_BYTES,
+  MAX_TERMINAL_DELIVERY_UNACKED_BYTES,
   MAX_TERMINAL_ENV_KEYS,
+  MAX_TERMINAL_PARSER_BYTES,
   PROTOCOL_VERSION,
   ServerMessageBodySchema,
   ServerToAgentMessageSchema,
@@ -15,6 +19,8 @@ import {
   TerminalHostEventSchema,
   TerminalHostStatusSchema,
   TerminalInfoSchema,
+  terminalDeliveryCharge,
+  type ServerMessageBody,
   type TerminalProgram,
 } from "@manifold/protocol";
 
@@ -295,7 +301,16 @@ describe("terminal geometry boundaries", () => {
   });
 
   test("current viewers require snapshot geometry and distinguish retained legacy owners", () => {
-    const snapshot = { type: "terminal_snapshot", terminalId: "t1", seq: 7, data: btoa("screen") };
+    const snapshot = {
+      type: "terminal_snapshot",
+      terminalId: "t1",
+      viewportId: "view-a",
+      deliveryId: "delivery-1",
+      deliverySeq: 0,
+      seq: 7,
+      data: btoa("screen"),
+      skipped: false,
+    };
     expect(ServerMessageBodySchema.safeParse(snapshot).success).toBe(false);
     for (const revision of [0, 8, null]) {
       expect(
@@ -319,5 +334,110 @@ describe("terminal geometry boundaries", () => {
         geometry: { cols: 80, rows: 0, revision: null },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("terminal parser-credit delivery", () => {
+  const view = { terminalId: "t1", viewportId: "view-a", deliveryId: "delivery-1" };
+  const snapshot = {
+    type: "terminal_snapshot" as const,
+    ...view,
+    deliverySeq: 0 as const,
+    seq: 7,
+    data: btoa("screen"),
+    geometry: { cols: 80, rows: 24, revision: 3 },
+    skipped: true,
+  };
+
+  test("a snapshot opens one view's incarnation at ordinal 0 and states whether it skipped", () => {
+    expect(ServerMessageBodySchema.parse(snapshot)).toEqual(snapshot);
+    for (const key of ["skipped", "viewportId", "deliveryId"]) {
+      const broken: Record<string, unknown> = { ...snapshot };
+      delete broken[key];
+      expect(ServerMessageBodySchema.safeParse(broken).success).toBe(false);
+    }
+    expect(ServerMessageBodySchema.safeParse({ ...snapshot, deliverySeq: 1 }).success).toBe(false);
+    const output = { type: "terminal_output", ...view, deliverySeq: 1, seq: 8, data: btoa("x") };
+    expect(ServerMessageBodySchema.safeParse(output).success).toBe(true);
+    // Only a snapshot may say it skipped: a tail frame never claims a gap of its own.
+    expect(ServerMessageBodySchema.safeParse({ ...output, skipped: false }).success).toBe(false);
+  });
+
+  test("acknowledgements and attachments name one exact view, never a default", () => {
+    const ack = { type: "terminal_ack" as const, ...view, deliverySeq: 4 };
+    expect(ClientMessageBodySchema.parse(ack)).toEqual(ack);
+    for (const deliverySeq of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, "4"]) {
+      expect(ClientMessageBodySchema.safeParse({ ...ack, deliverySeq }).success).toBe(false);
+    }
+    for (const viewportId of ["", "v".repeat(129)]) {
+      expect(ClientMessageBodySchema.safeParse({ ...ack, viewportId }).success).toBe(false);
+    }
+    expect(ClientMessageBodySchema.safeParse({ ...ack, deliveryId: "" }).success).toBe(false);
+    for (const type of ["terminal_attach", "terminal_detach"] as const) {
+      expect(ClientMessageBodySchema.safeParse({ type, terminalId: "t1" }).success).toBe(false);
+      expect(
+        ClientMessageBodySchema.safeParse({ type, terminalId: "t1", viewportId: "view-a" }).success,
+      ).toBe(true);
+    }
+  });
+
+  test("a delivery notice is a state transition: no ordinal, so it can never be credited", () => {
+    const notice = {
+      type: "terminal_delivery" as const,
+      ...view,
+      state: "recovering" as const,
+      skipped: true,
+      reason: null,
+    };
+    expect(ServerMessageBodySchema.parse(notice)).toEqual(notice);
+    expect(ServerMessageBodySchema.safeParse({ ...notice, deliverySeq: 2 }).success).toBe(false);
+    expect(ServerMessageBodySchema.safeParse({ ...notice, state: "stalled" }).success).toBe(false);
+  });
+
+  test("a refusal is scoped to its view even before that view ever had an incarnation", () => {
+    const refusal = {
+      type: "terminal_delivery" as const,
+      terminalId: "t1",
+      viewportId: "view-a",
+      deliveryId: null,
+      state: "refused" as const,
+      skipped: false,
+      reason: "snapshot_timeout" as const,
+    };
+    expect(ServerMessageBodySchema.parse(refusal)).toEqual(refusal);
+    const unscoped: Record<string, unknown> = { ...refusal };
+    delete unscoped["viewportId"];
+    expect(ServerMessageBodySchema.safeParse(unscoped).success).toBe(false);
+    expect(ServerMessageBodySchema.safeParse({ ...refusal, reason: "timeout" }).success).toBe(
+      false,
+    );
+  });
+
+  test("every window admits the largest single frame, charged in encoded payload characters", () => {
+    const largest = {
+      type: "terminal_output" as const,
+      ...view,
+      deliverySeq: 1,
+      seq: 1,
+      data: "A".repeat(MAX_SESSION_BASE64_CHARS),
+    };
+    expect(ServerMessageBodySchema.safeParse(largest).success).toBe(true);
+    expect(terminalDeliveryCharge(largest)).toBe(MAX_SESSION_BASE64_CHARS);
+    const geometry: Extract<ServerMessageBody, { type: "terminal_geometry" }> = {
+      type: "terminal_geometry",
+      ...view,
+      deliverySeq: 2,
+      seq: 1,
+      geometry: { cols: 80, rows: 24, revision: 1 },
+    };
+    expect(terminalDeliveryCharge(geometry)).toBe(0);
+    // A frame larger than an empty window could never be sent or parsed: a permanent stall.
+    for (const bytes of [
+      MAX_TERMINAL_DELIVERY_UNACKED_BYTES,
+      MAX_TERMINAL_DELIVERY_PENDING_BYTES,
+      MAX_TERMINAL_PARSER_BYTES,
+    ]) {
+      expect(terminalDeliveryCharge(largest)).toBeLessThanOrEqual(bytes);
+    }
   });
 });

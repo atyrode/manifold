@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test, vi } from "bun:test";
 import type { Terminal } from "@xterm/xterm";
 import { installTerminalClipboard, type TerminalClipboardCopy } from "../src/terminal-clipboard.ts";
 
@@ -188,6 +188,36 @@ describe("terminal clipboard consent and MIME transport", () => {
     } finally {
       source.clipboard.dispose();
       viewer.clipboard.dispose();
+    }
+  });
+
+  test("losing write coherence mid-delivery aborts the exchange without sending another frame", async () => {
+    vi.useFakeTimers();
+    // More than one 16-frame burst, so delivery yields between bursts like a real large paste.
+    const f = fixture({ "text/plain": new Blob(["x".repeat(100_000)]) });
+    try {
+      await f.clipboard.pasteFromClipboard();
+      const token = f.token();
+      f.sent.length = 0;
+      f.osc(5522, request(token));
+      const data = () => f.sent.filter((frame) => frame.includes("status=DATA")).length;
+      // The sixteenth frame parks delivery on its between-burst pause.
+      await f.until(() => data() >= 16);
+      const delivered = f.sent.length;
+      // The view's recovery: modes are no longer coherent, so no reply may encode against them.
+      f.setAllowed(false);
+      f.clipboard.reset();
+      vi.advanceTimersByTime(1);
+      for (let turn = 0; turn < 4; turn++) await Promise.resolve();
+      expect(f.sent).toHaveLength(delivered);
+      expect(f.sent.some((frame) => /status=(DONE|EPERM)/.test(frame))).toBe(false);
+      // The aborted grant is gone for good: a later request cannot resume the old paste.
+      f.setAllowed(true);
+      f.osc(5522, request(token));
+      expect(f.sent.slice(delivered).some((frame) => frame.includes("status=DATA"))).toBe(false);
+    } finally {
+      f.clipboard.dispose();
+      vi.useRealTimers();
     }
   });
 

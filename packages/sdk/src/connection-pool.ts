@@ -181,6 +181,44 @@ type TerminalStreamFrame = Extract<
   { type: "terminal_output" | "terminal_snapshot" | "terminal_geometry" }
 >;
 
+/** Every key a stream frame may carry, by type; the full schema is strict in the same way. */
+const TERMINAL_STREAM_KEYS: Readonly<
+  Record<TerminalStreamFrame["type"], Readonly<Record<string, true>>>
+> = {
+  terminal_output: {
+    type: true,
+    ch: true,
+    terminalId: true,
+    viewportId: true,
+    deliveryId: true,
+    deliverySeq: true,
+    seq: true,
+    data: true,
+  },
+  terminal_snapshot: {
+    type: true,
+    ch: true,
+    terminalId: true,
+    viewportId: true,
+    deliveryId: true,
+    deliverySeq: true,
+    seq: true,
+    data: true,
+    geometry: true,
+    skipped: true,
+  },
+  terminal_geometry: {
+    type: true,
+    ch: true,
+    terminalId: true,
+    viewportId: true,
+    deliveryId: true,
+    deliverySeq: true,
+    seq: true,
+    geometry: true,
+  },
+};
+
 /**
  * Frame policy (CONTRACTS.md): unknown `type` values are ignored for forward
  * compatibility; malformed frames of KNOWN types (or non-JSON) are protocol errors — the
@@ -216,11 +254,14 @@ function isTerminalGeometry(
 }
 
 function isTerminalStreamFrame(raw: object): raw is TerminalStreamFrame {
-  const type = Reflect.get(raw, "type");
+  const type: unknown = Reflect.get(raw, "type");
   const ch = Reflect.get(raw, "ch");
   const terminalId = Reflect.get(raw, "terminalId");
   const seq = Reflect.get(raw, "seq");
   const data = Reflect.get(raw, "data");
+  const viewportId = Reflect.get(raw, "viewportId");
+  const deliveryId = Reflect.get(raw, "deliveryId");
+  const deliverySeq = Reflect.get(raw, "deliverySeq");
   if (
     (type !== "terminal_output" && type !== "terminal_snapshot" && type !== "terminal_geometry") ||
     typeof ch !== "string" ||
@@ -229,27 +270,31 @@ function isTerminalStreamFrame(raw: object): raw is TerminalStreamFrame {
     terminalId.length === 0 ||
     typeof seq !== "number" ||
     !Number.isSafeInteger(seq) ||
-    seq < 0
+    seq < 0 ||
+    typeof viewportId !== "string" ||
+    viewportId.length === 0 ||
+    viewportId.length > 128 ||
+    typeof deliveryId !== "string" ||
+    deliveryId.length === 0 ||
+    deliveryId.length > 128 ||
+    typeof deliverySeq !== "number" ||
+    !Number.isSafeInteger(deliverySeq) ||
+    deliverySeq < 0
   ) {
     return false;
+  }
+  const keys = TERMINAL_STREAM_KEYS[type];
+  for (const key in raw) {
+    if (keys[key] !== true) return false;
+  }
+  if (type === "terminal_snapshot") {
+    // A snapshot opens a fresh incarnation at ordinal 0 and says whether it skipped output.
+    if (deliverySeq !== 0 || typeof Reflect.get(raw, "skipped") !== "boolean") return false;
   }
   if (type !== "terminal_output" && !isTerminalGeometry(Reflect.get(raw, "geometry"))) {
     return false;
   }
-  if (type === "terminal_geometry") {
-    for (const key in raw) {
-      if (
-        key !== "type" &&
-        key !== "ch" &&
-        key !== "terminalId" &&
-        key !== "seq" &&
-        key !== "geometry"
-      ) {
-        return false;
-      }
-    }
-    return true;
-  }
+  if (type === "terminal_geometry") return true;
   return typeof data === "string" && data.length <= MAX_SESSION_BASE64_CHARS;
 }
 
