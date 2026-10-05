@@ -6554,6 +6554,11 @@ build target and nothing branches on which instance is being looked at.
   Input witnesses wait for the page's genuine post-replay eligibility evidence, such as that
   occupant's viewport publication, within the existing initialization deadline. They do not
   manufacture readiness or weaken the original output, prompt and retained-process assertions.
+- **Portal engagement press** (#1051): a portal's seams paint with its spectator layout before
+  its tiles' terminals mount, so seams alone do not prove the terminal body an engaging press
+  aims at exists. Witnesses wait for that body within the existing remount deadline, then press
+  once; the occupant-painted engagement and live seams are still asserted, never retried into
+  existence.
 - **Browser teardown** (#1032): the CDP driver waits for Chromium to exit, with its
   existing five-second SIGKILL bound, before stopping the browser's private D-Bus.
   This applies to transient incognito and retained non-incognito profiles: disconnecting
