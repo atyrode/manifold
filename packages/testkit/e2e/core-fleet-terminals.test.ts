@@ -126,9 +126,18 @@ async function terminalCommand(browser: Browser, command: string): Promise<void>
   });
 }
 
-async function engageTerminal(browser: Browser): Promise<void> {
+/**
+ * A click makes the host active at once, but an engaging portal still paints its read-only
+ * spectator until the occupant join replays. Typing also waits for that writable occupant.
+ */
+async function engageTerminal(browser: Browser, occupantReady: () => boolean): Promise<void> {
   await click(browser, ".terminal-frame");
-  await waitFor(() => visible(browser, ".xterm-host:not(.xterm-host--inactive)"), 10_000, 50);
+  await waitFor(
+    async () =>
+      occupantReady() && (await visible(browser, ".xterm-host:not(.xterm-host--inactive)")),
+    10_000,
+    50,
+  );
   await browser.evaluate(
     "(() => { const {promise,resolve}=Promise.withResolvers(); requestAnimationFrame(()=>requestAnimationFrame(resolve)); return promise; })()",
   );
@@ -157,6 +166,18 @@ for (const hardened of [false, true]) {
       { readonly containerId: string; readonly spectator: boolean }
     >();
     const readyContainers = new Set<string>();
+    /** The channel that last attached each terminal, and whether it has published since. */
+    const terminalViews = new Map<string, { readonly channel: string; published: boolean }>();
+    // Only a writable controller publishes a non-null viewport, and only after its current
+    // snapshot replay; focus, an active host and the null clearance prove neither.
+    const occupantReady = (terminalId: string): boolean => {
+      const view = terminalViews.get(terminalId);
+      return (
+        view !== undefined &&
+        view.published &&
+        sessionChannels.get(view.channel)?.spectator === false
+      );
+    };
     const terminalWire: {
       direction: "sent" | "received";
       type: string;
@@ -213,9 +234,31 @@ for (const hardened of [false, true]) {
             readonly ch?: unknown;
             readonly containerId?: unknown;
             readonly spectator?: unknown;
+            readonly terminalId?: unknown;
             readonly type?: unknown;
+            readonly viewport?: unknown;
           };
           observeTerminalWire("sent", message);
+          if (typeof message.ch === "string") {
+            if (message.type === "leave") sessionChannels.delete(message.ch);
+            const terminalId = typeof message.terminalId === "string" ? message.terminalId : null;
+            const view = terminalId === null ? undefined : terminalViews.get(terminalId);
+            if (message.type === "terminal_attach" && terminalId !== null)
+              terminalViews.set(terminalId, { channel: message.ch, published: false });
+            if (
+              message.type === "terminal_detach" &&
+              terminalId !== null &&
+              view?.channel === message.ch
+            )
+              terminalViews.delete(terminalId);
+            if (
+              message.type === "terminal_resize" &&
+              typeof message.viewport === "object" &&
+              message.viewport !== null &&
+              view?.channel === message.ch
+            )
+              view.published = true;
+          }
           if (
             message.type !== "join" ||
             typeof message.ch !== "string" ||
@@ -311,6 +354,7 @@ for (const hardened of [false, true]) {
       await hub.stop();
       sessionChannels.clear();
       readyContainers.clear();
+      terminalViews.clear();
       await waitFor(async () => !(await visible(browser, editor)), 10_000, 50);
       server = await startServer({
         dataDir: hub.dataDir,
@@ -376,6 +420,7 @@ for (const hardened of [false, true]) {
         const existing = new Set((await listTerminals(hub)).map((terminal) => terminal.id));
         sessionChannels.clear();
         readyContainers.clear();
+        terminalViews.clear();
         await browser.goto(`${hub.httpUrl}/p/${container.id}`);
         await waitFor(() => readyContainers.has(container.id), 15_000, 50);
         await openSidebar(browser);
@@ -415,7 +460,8 @@ for (const hardened of [false, true]) {
           50,
         );
         const marker = `CORE-FLEET-${hardened ? "PACKED" : "NATIVE"}-${container.discipline.toUpperCase()}`;
-        await engageTerminal(browser);
+        const terminalId = terminal.id;
+        await engageTerminal(browser, () => occupantReady(terminalId));
         await terminalCommand(
           browser,
           `printf '%s%s\\n' 'CORE-' 'FLEET-${hardened ? "PACKED" : "NATIVE"}-${container.discipline.toUpperCase()}'`,
@@ -428,7 +474,7 @@ for (const hardened of [false, true]) {
           10_000,
           50,
         );
-        await engageTerminal(browser);
+        await engageTerminal(browser, () => occupantReady(terminalId));
         const collapsed = `${marker}-COLLAPSED`;
         await terminalCommand(browser, `printf '%s%s\\n' '${marker}-' 'COLLAPSED'`);
         try {
