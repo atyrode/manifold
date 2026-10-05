@@ -54,6 +54,7 @@ const failures: string[] = [];
 let browser: Browser | null = null;
 let wheelFixtureStarted = false;
 const rendererWire = { opened: 0, closed: 0, attached: 0, detached: 0, snapshots: 0 };
+let rendererGeometry = 0;
 const rendererScripts = new Set<string>();
 const rendererFinished = new Set<string>();
 
@@ -93,15 +94,22 @@ try {
     browser.on(event, (params) => {
       const response = params["response"] as { payloadData?: string; opcode?: number } | undefined;
       if (response?.opcode !== 1 || response.payloadData === undefined) return;
-      let message: { type?: string };
+      let message: { type?: string; viewport?: unknown };
       try {
-        message = JSON.parse(response.payloadData) as { type?: string };
+        message = JSON.parse(response.payloadData) as { type?: string; viewport?: unknown };
       } catch {
         return;
       }
       if (message === null || typeof message !== "object") return;
       if (direction === "out" && message.type === "terminal_attach") rendererWire.attached++;
       if (direction === "out" && message.type === "terminal_detach") rendererWire.detached++;
+      if (
+        direction === "out" &&
+        message.type === "terminal_resize" &&
+        typeof message.viewport === "object" &&
+        message.viewport !== null
+      )
+        rendererGeometry++;
       if (direction === "in" && message.type === "terminal_snapshot") rendererWire.snapshots++;
     });
   }
@@ -1085,11 +1093,12 @@ try {
       "renderer witness occupant and real input ready",
     );
   }
-  async function rendererCanvasReady(label: string): Promise<void> {
+  async function rendererCanvasReady(label: string, afterGeometry?: number): Promise<void> {
     await rendererFocus();
     // Until this canvas viewer engages, the PTY retains its last eligible fullscreen grid.
     await until(
       () =>
+        (afterGeometry === undefined || rendererGeometry > afterGeometry) &&
         browser!.evaluate<boolean>(`(() => {
           const host = document.querySelector('.xterm-host');
           const screen = host?.querySelector('.xterm-screen');
@@ -1631,7 +1640,11 @@ try {
       `${label}: fresh document replays the existing terminal in DOM`,
     );
     await rendererState("dom", false);
-    await rendererCanvasReady(label);
+    // Ignore the retired document's final lease publication during navigation.
+    const previousGeometry = rendererGeometry;
+    // A focused retained grid can still belong to the closed spectator socket. Only the
+    // writable occupant publishes geometry after its current snapshot replay has completed.
+    await rendererCanvasReady(label, previousGeometry);
     const marker = `PTY-${rendererNonce}-${label}`;
     // Refresh only the visible witnesses, never the process or its history.
     // The retained shell variable must still equal the original real PID.

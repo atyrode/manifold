@@ -721,6 +721,12 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   removing the owner-key bypass. No OIDC implementation is owed before that trigger;
   its dependency verdict belongs to its implementing ADR. First-party accounts and a
   bundled identity provider are not part of this posture.
+  **Current source implements none of it:** no route, configuration or credential accepts an
+  external identity, and `core.access.createPrincipal` remains the root-only bootstrap door that
+  mints `*`. Issue #324 has selected configured OIDC as the preferred multi-human sign-in
+  direction; [ADR 0060](decisions/0060-oidc-human-admission.md) is its **proposed** design. It
+  reads "in front of `createPrincipal`" as in front of principal creation, never through that
+  bootstrap door, and changes nothing in this section until its decisions are ratified.
 
 - `Principal { id, kind: "human" | "agent" | "service", name, color, origin? }`. Stable;
   stored in SQLite. Native/instance-service credentials are `service`, not human sessions
@@ -6474,11 +6480,17 @@ build target and nothing branches on which instance is being looked at.
   `document.title` unless `VITE_MANIFOLD_SITE_TITLE` was chosen (the default handed back
   explicitly is not a choice).
 - **Shell cache**: `packages/web/sw.js`, emitted to `dist/sw.js` by the build with the shipped
-  asset list and a cache name of `manifold-shell-<build>-<digest of emitted asset names and bytes>`.
+  asset list and a cache name of `manifold-shell-<build>-<digest of worker policy and emitted asset names and bytes>`.
   Registered by `packages/web/src/lens.tsx` in a built app. It caches the document, the build's
   hashed assets, the icon and the manifest — and passes through `/api`, `/ws`, `/healthz`, every
   non-GET and every CROSS-ORIGIN request untouched, so no scene state is ever served from a
   cache and no API origin is baked into a worker.
+  Private credential-entry documents/assets and the entire `/auth` document namespace, including
+  preview callbacks and encoded/physical aliases, are network-only with `cache: "no-store"`
+  before every navigation/asset-cache branch. They never enter Cache Storage or receive an
+  offline shell substitution; response `Cache-Control: no-store` alone cannot prohibit Cache
+  API writes. Worker-policy-only changes receive a distinct generation through the existing
+  source-byte digest, and accepted activation sweeps every superseded shell cache.
 - **Update flow**: navigations are network-first (so the load after a deploy fetches the new
   document even under the old worker), a new generation installs and WAITS rather than swapping a
   running page, `activate` deletes every older `manifold-shell-*`, and the waiting generation is
@@ -6537,6 +6549,11 @@ build target and nothing branches on which instance is being looked at.
   green does not prove the UI works. Gate green does not prove a surface feels finished:
   UI-touching changes require vision-model inspection of real screenshots from a real browser
   before shipping.
+- **Remounted terminal input** (#1039): browser focus, an engaged portal and a fitted retained
+  grid do not prove that the writable occupant socket has replayed its current snapshot.
+  Input witnesses wait for the page's genuine post-replay eligibility evidence, such as that
+  occupant's viewport publication, within the existing initialization deadline. They do not
+  manufacture readiness or weaken the original output, prompt and retained-process assertions.
 - **Browser teardown** (#1032): the CDP driver waits for Chromium to exit, with its
   existing five-second SIGKILL bound, before stopping the browser's private D-Bus.
   This applies to transient incognito and retained non-incognito profiles: disconnecting
