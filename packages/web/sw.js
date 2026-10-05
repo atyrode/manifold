@@ -64,11 +64,14 @@ const ASSETS = new Set(SHELL.assets);
 
 /** Reserved private document and physical/encoded aliases never enter a shell cache path. */
 function privateCredentialPath(pathname) {
-  // The server rejects these spellings; offline they must not become shell navigations either.
+  // Decode rejected aliases too: offline they must not become shell navigations either.
   const decoded = pathname.replace(/%(?:25)*([0-9a-f]{2})/gi, (_escape, hex) =>
     String.fromCharCode(Number.parseInt(hex, 16)),
   );
-  return decoded.split(/[/\\]+/).some((part) => part.toLowerCase().startsWith("credential-entry"));
+  return (
+    /^[/\\]+auth(?:[/\\]|$)/i.test(decoded) ||
+    decoded.split(/[/\\]+/).some((part) => part.toLowerCase().startsWith("credential-entry"))
+  );
 }
 
 self.addEventListener("install", (event) => {
