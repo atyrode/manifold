@@ -146,6 +146,14 @@ try {
     20_000,
     "online machine",
   );
+  // The view's New terminal action opens only through its own admitted session: a press
+  // before that init merely reports "Waiting for the composition connection" and births nothing.
+  await until(
+    () =>
+      target.evaluate<boolean>("document.querySelector('.composition-status.is-open') !== null"),
+    20_000,
+    "composition connection open",
+  );
   await click('[data-action="core.terminals.open"]');
   await until(
     () => target.evaluate<boolean>("document.querySelector('.xterm-rows') !== null"),
