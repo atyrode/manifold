@@ -13,7 +13,7 @@ drained. Otherwise claim before the first substantive commit, work in your own w
 
 Read the issue's latest follow-through first. An already-merged implementation needs its recorded
 operational action, not a duplicate implementation PR; defects follow the runbook's repair path.
-Check a pending trigger once, keep its receipt and owner
+Check a pending trigger once, keep its handoff and owner
 current, release the execution claim when handing off, and continue other ready work rather than
 polling or inventing an operator hold.
 

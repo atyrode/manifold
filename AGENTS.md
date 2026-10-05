@@ -289,6 +289,9 @@ native-owner disruption, production promotion or browser-credential transfer.
 
 ## Delivery
 
+- Write issues, pull requests and comments for a reader who has not followed the work: open with
+  a plain summary, use the [TRIAGE.md §Plain words](docs/TRIAGE.md#plain-words) terms, link
+  evidence instead of restating it, and edit an existing comment rather than adding another.
 - User-visible changes need a fragment under `changes/`; follow [its schema and exemptions](changes/README.md).
   Keep commits small and coherent, using `scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
   `sdk:`, `plugin:`, `e2e:`, `docs:` or `release:` as appropriate. Do not reformat unrelated text.

@@ -28,6 +28,25 @@ bounded CI run incident from public metadata and close it on exact-revision reco
 It executes no artifacts, copies no raw logs, writes no other resource and cannot close arbitrary
 issues.
 
+## Plain words
+
+Write for a reader who has not followed the work. Every issue, pull request and verdict opens
+with two or three plain sentences: what changes for users or the operator, and what, if anything,
+someone must do. Avoid internal terms in that summary; elsewhere, use only the terms below.
+Link evidence rather than restating it, and prefer editing one comment over adding another.
+
+| Term                       | Meaning                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| Claim / Release            | A comment saying who is working on an issue, and later that they stopped.         |
+| Hold (`needs-operator`)    | Work paused until the operator answers one written question.                      |
+| Verdict                    | The single review comment on a pull request's current commit: pass or fail.       |
+| PR `gate`                  | The required check on a pull request; green means it may merge.                   |
+| Full-main CI               | The complete test suite, run again after each merge to `main`.                    |
+| Run incident               | An issue opened automatically when full-main CI fails.                            |
+| Integration lane           | Approved pull requests with auto-merge on, merged one at a time.                  |
+| Handoff                    | The one issue comment tracking what a `Refs` pull request left to do after merge. |
+| Release / Deploy / Promote | Publish a version / put it on the development server / put it on production.      |
+
 ## Label model
 
 Four dimensions and one signal. [`.github/labels.yml`](../.github/labels.yml) is the inventory;
@@ -178,6 +197,7 @@ readiness. A complete implementation may be ready while its operational acceptan
 follows merge; this does not permit deferring unfinished implementation or pre-merge verification.
 Include these sections:
 
+- `## Summary` — two or three plain sentences, per §Plain words.
 - `## Problem` — what is wrong, in the issue's terms.
 - `## Change` — what this does about it.
 - `## Dependencies` — exactly `- None`, or `- Depends-on: #N` for its actual Git base.
@@ -210,7 +230,9 @@ Review posts exactly one comment per reviewed head, beginning `## Verdict: pass`
 fail, the blocking findings. Distinguish satisfied implementation/pre-merge criteria from explicitly
 pending post-merge operational criteria. A pass certifies the PR's complete approved implementation
 and merge eligibility, not unperformed deployment or issue completion; each pending criterion must
-have the follow-through required below. A new push invalidates every earlier verdict.
+have the follow-through required below. A new push invalidates every earlier verdict. Keep a
+verdict short: open with the plain result, then give each criterion one line pointing to its
+evidence in the PR or CI rather than restating it.
 
 ## CI evidence and performance
 
@@ -328,23 +350,25 @@ Merge, full `main` proof, deployment and operational acceptance are separate tra
 stays open until every acceptance criterion is evidenced; neither a green run nor a merged PR
 closes unmet operational work. Do not manufacture a second issue just to satisfy a closing link.
 
-Before merging a `Refs` PR, record the following in the owning issue and link it from the PR:
+A `Closes #N` pull request is its own record: once merged, it needs no further issue comment.
+Before merging a `Refs` PR, post one handoff comment in the owning issue and link it from the PR:
 
 - Completed acceptance and its evidence, plus the exact PR head; add the merge SHA after integration.
 - Each remaining criterion, its required environment/revision and what observation will satisfy it.
 - The accountable contributor or agent, the applicable authorization and excluded actions.
 - The next safe action or external trigger, a bounded check/wait, and any blocker with its owner.
 
-After merge, update that receipt with exact full-CI, deployment and runtime results separately.
+After merge, edit that same comment with exact full-CI, deployment and runtime results, each
+stated separately; add a new comment only to hand the work to someone else.
 Waiting for a known CI/deployment trigger does not need `needs-operator`. Keep the settled issue
 `agent-ready` so dispatch can resume it; use `blocked` only for the named issue/PR dependencies in
 §Label model. A failed check remains visible and owned, not retried until green or called complete.
 
 An agent may continue independent work while a trigger is pending. Before ending its execution
-pass, record the latest receipt and an explicit `Release:` for another agent to resume, unless an
+pass, update the handoff and post an explicit `Release:` for another agent to resume, unless an
 active agent has accepted ownership. The accountable contributor still owns routing until the next
 claim; an open issue must not depend on a vanished session or an unpublished promise to monitor.
-Dispatch reads this receipt before choosing the next action, not another implementation PR.
+Dispatch reads this handoff before choosing the next action, not another implementation PR.
 Close the original issue only after recording evidence for all remaining acceptance.
 
 ### Release checkpoint
@@ -376,12 +400,13 @@ changes increment major. Review fragment classifications before using the tool's
 Do not force `patch` over an accumulated incompatible change, fabricate retrospective releases,
 or rewrite published tags/changelogs. Development builds retain their commit-distance identity.
 
-Record the release tag, exact source SHA, publication receipt and any remaining operational
-acceptance on the owning issue. Release, development deployment, runtime acceptance and production
-promotion remain separate facts. A technical/compatibility failure blocks publication, not its
-checks: diagnose it and record the accountable next action. Independent work may proceed while
-full CI or publication runs, but a handoff must name the pending release and its blocker rather
-than call unreleased user-visible work complete.
+The published release and its changelog are the record of what shipped; do not comment on every
+issue it includes. Edit an issue's handoff only while that issue still has remaining acceptance,
+such as deployment or runtime checks. Release, development deployment, runtime acceptance and
+production promotion remain separate facts. A technical/compatibility failure blocks publication,
+not its checks: diagnose it and record the accountable next action on the issue it delays.
+Independent work may proceed while full CI or publication runs, but a handoff must name the
+pending release and its blocker rather than call unreleased user-visible work complete.
 
 ## Exit
 
@@ -448,7 +473,7 @@ supports skills, or by saying "follow docs/TRIAGE.md §Runbooks › <name>".
    recorded trigger once and resume the authorized operational action; do not duplicate the merged
    implementation. If operational proof exposes a defect, a scoped repair PR may `Refs` the same
    issue, or link a separate repair issue; normal ownership, review and verification still apply.
-   If the trigger is pending, update the receipt, release the execution claim and consider other
+   If the trigger is pending, update the handoff, release the execution claim and consider other
    ready work in this pass rather than polling or requesting approval.
    For implementation work, create a worktree from `origin/main` — or the declared
    dependency PR's head for a real stack — inspect `bun run ci:plan`, implement to the acceptance
@@ -501,9 +526,9 @@ The release command's rebase-auto-merged pull request is not a lane member and b
 until it lands.
 
 Lane merges land asynchronously, so each ship pass first reconciles pull requests merged since the
-last one. For each merge, update the owning issue's §Post-merge follow-through with the merge SHA
-and let full `main` CI continue asynchronously; do not block independent safe work on it. Trusted
-feedback assigns any failed full run to its repair owner. Deployment or release operators must
+last one. For each merged `Refs` PR, edit the owning issue's handoff with the merge SHA; a merged
+`Closes` PR needs nothing more. Let full `main` CI continue asynchronously; do not block
+independent safe work on it. Trusted feedback assigns any failed full run to its repair owner. Deployment or release operators must
 query that exact SHA and wait for its successful full proof. Then list dependent open PRs. Rebase
 and reverify branches you own; for another owner, comment the merged revision and required base
 update. Close an empty or superseded draft only after preserving unique work and recording its
