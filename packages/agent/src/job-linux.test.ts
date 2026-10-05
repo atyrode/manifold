@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
+import * as fs from "node:fs";
 import {
   closeSync,
   constants,
@@ -10,6 +11,8 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readFileSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -18,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { request as httpRequest } from "node:http";
+import * as timers from "node:timers/promises";
 import { connectWorkloadLoopback } from "./job-listener-proof.ts";
 import { createJobServiceProxy, type JobServiceProxy } from "./job-service-proxy.ts";
 import {
@@ -30,6 +34,8 @@ import { JobOutputStore } from "./job-outputs.ts";
 import {
   preflightLinuxJob,
   startLinuxJob,
+  recoverLinuxJobs,
+  LinuxJobRefusal,
   resolveTerminalWorkingDirectory,
   type LinuxJobHandle,
   type LinuxJobSpec,
@@ -500,6 +506,518 @@ async function withLinux(
 }
 
 test.skipIf(!realLinux)(
+  "[real-linux] repeated release reclaims native roots and workload-created descendants",
+  async () => {
+    await withLinux(
+      [
+        'root="$MANIFOLD_JOB_CGROUP_ROOT"',
+        '/bin/busybox mkdir "$root/worker" "$root/worker/deep" "$root/back\\\\slash" || exit 19',
+        "printf finished",
+      ].join("\n"),
+      async (spec) => {
+        const before = spec.delegatedCgroup.names().sort();
+        for (let iteration = 0; iteration < 3; iteration++) {
+          const handle = await startLinuxJob(spec);
+          try {
+            const result = await handle.result;
+            expect(result.exitCode).toBe(0);
+            expect(result.empty).toBe(true);
+            expect(
+              spec.delegatedCgroup.names().filter((name) => !before.includes(name)),
+            ).toHaveLength(1);
+            handle.release();
+            handle.release();
+            expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+          } finally {
+            await handle.cancel();
+            handle.release();
+          }
+        }
+      },
+    );
+  },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] wide native cgroup cleanup stops enumeration at its budget and retains retry authority",
+  async () => {
+    await withLinux("printf finished", async (spec) => {
+      const before = spec.delegatedCgroup.names().sort();
+      const handle = await startLinuxJob(spec);
+      let root: HeldDirectory | undefined;
+      let wide: HeldDirectory | undefined;
+      let created = 0;
+      let visitedDirectories = 0;
+      let materializedEntries = 0;
+      const traversalLimit = 65_536;
+      const width = traversalLimit + 1024;
+      const originalDirectoryNames = HeldDirectory.prototype.directoryNames;
+      const originalReadDir = fs.readdirSync;
+      let enumerate: { mockRestore(): void } | undefined;
+      let readDir: { mockRestore(): void } | undefined;
+      try {
+        const result = await handle.result;
+        expect(result.exitCode).toBe(0);
+        expect(result.empty).toBe(true);
+        const name = spec.delegatedCgroup.names().find((entry) => !before.includes(entry))!;
+        root = spec.delegatedCgroup.openChild(name);
+        const identity = fstatSync(root.fd, { bigint: true });
+        wide = root.openChild("wide", { create: true, exclusive: true });
+        // Descendants need no controllers: allocating >65K memory-cgroup IDs would
+        // fail fixture setup at the kernel's unrelated memory-controller ID limit.
+        writeFileSync(`${wide.procPath}/cgroup.subtree_control`, "-cpu -memory -pids");
+        expect(readFileSync(`${wide.procPath}/cgroup.subtree_control`, "utf8").trim()).toBe("");
+        for (; created < width; created++) mkdirSync(`${wide.procPath}/leaf-${created}`);
+        expect(readFileSync(`${wide.procPath}/leaf-0/cgroup.controllers`, "utf8").trim()).toBe("");
+        const observeDirectoryNames = function (this: HeldDirectory): Iterable<Buffer> {
+          const names: Iterable<Buffer> = originalDirectoryNames.call(this);
+          if (Array.isArray(names)) {
+            visitedDirectories += names.length;
+            return names;
+          }
+          return (function* () {
+            for (const entry of names) {
+              visitedDirectories++;
+              yield entry;
+            }
+          })();
+        };
+        enumerate = spyOn(HeldDirectory.prototype, "directoryNames").mockImplementation(
+          observeDirectoryNames as typeof originalDirectoryNames,
+        );
+        readDir = spyOn(fs, "readdirSync").mockImplementation(((
+          ...args: Parameters<typeof fs.readdirSync>
+        ) => {
+          const entries = originalReadDir(...args);
+          materializedEntries += entries.length;
+          return entries;
+        }) as typeof fs.readdirSync);
+        try {
+          handle.release();
+          throw new Error("over-budget native tree was released");
+        } catch (error) {
+          expect(error).toBeInstanceOf(LinuxJobRefusal);
+          expect(error).toMatchObject({ code: "cgroup-cleanup-failed", workloadEmpty: true });
+        }
+        // Count returned/yielded directory names and whole readdir snapshots, not elapsed time.
+        expect(visitedDirectories).toBeLessThanOrEqual(traversalLimit + 1);
+        expect(materializedEntries).toBeLessThanOrEqual(traversalLimit + 1);
+        enumerate.mockRestore();
+        readDir.mockRestore();
+        spec.delegatedCgroup.assertDirectoryEntry(Buffer.from(name), root);
+        root.assertDirectoryEntry(Buffer.from("wide"), wide);
+        expect(fstatSync(root.fd, { bigint: true })).toMatchObject({
+          dev: identity.dev,
+          ino: identity.ino,
+        });
+        expect(await handle.result).toEqual(result);
+        expect(readFileSync(`${wide.procPath}/cgroup.events`, "utf8")).toContain("populated 0");
+      } finally {
+        enumerate?.mockRestore();
+        readDir?.mockRestore();
+        if (wide) {
+          for (let index = 0; index < created; index++) rmdirSync(`${wide.procPath}/leaf-${index}`);
+          wide.close();
+        }
+        root?.close();
+        await handle.cancel();
+        handle.release();
+        handle.release();
+      }
+      expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+    });
+  },
+  120_000,
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] exclusive recovery reclaims nested native roots and preserves an active unknown sibling",
+  async () => {
+    await withLinux("printf unused", async (spec) => {
+      const name = `recovery-fixture-${randomUUID()}`;
+      const delegation = spec.delegatedCgroup.openChild(name, { create: true, exclusive: true });
+      const unknown = delegation.openChild("unknown-sibling", { create: true, exclusive: true });
+      const process = Bun.spawn([busyboxPath!, "sleep", "30"], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      try {
+        writeFileSync(`${unknown.procPath}/cgroup.procs`, String(process.pid));
+        expect(readFileSync(`${unknown.procPath}/cgroup.procs`, "utf8").trim()).toBe(
+          String(process.pid),
+        );
+        for (let iteration = 0; iteration < 3; iteration++) {
+          const root = delegation.openChild(`job-${randomUUID()}`, {
+            create: true,
+            exclusive: true,
+          });
+          const children = root.openChild("children", { create: true });
+          const nested = children.openChild(`job-${randomUUID()}`, { create: true });
+          const workloads = nested.openChild("workloads", { create: true });
+          workloads.openChild("child-created", { create: true }).close();
+          workloads.close();
+          nested.close();
+          children.close();
+          root.close();
+          await recoverLinuxJobs(delegation);
+          expect(delegation.names().filter((entry) => entry.startsWith("job-"))).toEqual([]);
+          expect(readFileSync(`${unknown.procPath}/cgroup.procs`, "utf8").trim()).toBe(
+            String(process.pid),
+          );
+          expect(process.exitCode).toBeNull();
+        }
+      } finally {
+        process.kill("SIGKILL");
+        await process.exited;
+        unknown.close();
+        rmdirSync(`${delegation.procPath}/unknown-sibling`);
+        await recoverLinuxJobs(delegation);
+        delegation.close();
+        rmdirSync(`${spec.delegatedCgroup.procPath}/${name}`);
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] release refuses an active native root and leaves unrelated cgroups intact",
+  async () => {
+    await withLinux("printf ready; read finish; printf finished", async (spec) => {
+      const siblingName = `unrelated-${randomUUID()}`;
+      const sibling = spec.delegatedCgroup.openChild(siblingName, {
+        create: true,
+        exclusive: true,
+      });
+      const before = spec.delegatedCgroup.names().sort();
+      const ready = Promise.withResolvers<void>();
+      const handle = await startLinuxJob({
+        ...spec,
+        onOutput: (frame) => {
+          if (Buffer.from(frame.bytes).toString().includes("ready")) ready.resolve();
+        },
+      });
+      try {
+        await Promise.race([
+          ready.promise,
+          handle.result.then(() => {
+            throw new Error("workload exited before ready");
+          }),
+        ]);
+        const activeNames = spec.delegatedCgroup.names().sort();
+        expect(() => handle.release()).toThrow("job-still-active");
+        expect(spec.delegatedCgroup.names().sort()).toEqual(activeNames);
+        await handle.input(Buffer.from("finish\n"));
+        expect((await handle.result).exitCode).toBe(0);
+        handle.release();
+        expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+        expect(readFileSync(`${sibling.procPath}/cgroup.events`, "utf8")).toContain("populated 0");
+      } finally {
+        await handle.cancel();
+        handle.release();
+        sibling.close();
+        rmdirSync(`${spec.delegatedCgroup.procPath}/${siblingName}`);
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] partial cgroup construction refusal reclaims the positively empty job root",
+  async () => {
+    await withLinux("printf must-not-run", async (spec) => {
+      const name = `construction-fixture-${randomUUID()}`;
+      const delegation = spec.delegatedCgroup.openChild(name, { create: true, exclusive: true });
+      try {
+        writeFileSync(`${delegation.procPath}/cgroup.subtree_control`, "+cpu +memory +pids");
+        // The job root fits; its supervisor cannot. This fails after root allocation,
+        // not during preflight or before the cleanup path has anything to reclaim.
+        writeFileSync(`${delegation.procPath}/cgroup.max.depth`, "1");
+        const bounded = { ...spec, delegatedCgroup: delegation };
+        preflightLinuxJob(bounded);
+        const before = delegation.names().sort();
+        await expect(startLinuxJob(bounded)).rejects.toMatchObject({ workloadEmpty: true });
+        expect(delegation.names().sort()).toEqual(before);
+      } finally {
+        writeFileSync(`${delegation.procPath}/cgroup.max.depth`, "max");
+        await recoverLinuxJobs(delegation);
+        delegation.close();
+        rmdirSync(`${spec.delegatedCgroup.procPath}/${name}`);
+      }
+    });
+  },
+);
+
+interface CgroupReplacement {
+  name: string;
+  restore(): void;
+}
+function replaceCgroupRoot(parent: HeldDirectory, rootName: string): CgroupReplacement {
+  // cgroup v2 forbids rename. Mask the allocated root with another real cgroup;
+  // unmounting restores its original inode and held descriptors without deleting either tree.
+  const name = `replacement-fixture-${randomUUID()}`;
+  const source = parent.openChild(name, { create: true, exclusive: true });
+  const target = `/proc/${process.pid}/fd/${parent.fd}/${rootName}`;
+  const mount = spawnSync(
+    busyboxPath!,
+    ["mount", "--bind", `/proc/${process.pid}/fd/${source.fd}`, target],
+    { encoding: "utf8" },
+  );
+  source.close();
+  if (mount.status !== 0) {
+    rmdirSync(`${parent.procPath}/${name}`);
+    throw new Error(`cgroup replacement mount failed: ${mount.stderr}`);
+  }
+  return {
+    name,
+    restore() {
+      const unmount = spawnSync(busyboxPath!, ["umount", target], { encoding: "utf8" });
+      expect(unmount.status).toBe(0);
+      rmdirSync(`${parent.procPath}/${name}`);
+    },
+  };
+}
+
+test.skipIf(!realLinux).each(["open", "mount"] as const)(
+  "[real-linux] post-mkdir root %s acquisition failure retains exact cleanup ownership",
+  async (window) => {
+    await withLinux("printf must-not-run", async (spec) => {
+      const before = spec.delegatedCgroup.names().sort();
+      let replacement: CgroupReplacement | undefined;
+      const captured: { refusal?: LinuxJobRefusal } = {};
+      let rootName: string | undefined;
+      let rootPath: string | undefined;
+      let rootFd: number | undefined;
+      let blocked = true;
+      const originalOpen = fs.openSync;
+      const originalRead = fs.readFileSync;
+      const acquisitionFault = Object.assign(new Error("root-acquisition-unavailable"), {
+        code: "EMFILE",
+      });
+      const open = spyOn(fs, "openSync").mockImplementation((...args) => {
+        const path = args[0];
+        const match = typeof path === "string" && /\/(job-[0-9a-f-]{36})$/.exec(path);
+        if (match && typeof path === "string" && rootPath === undefined) {
+          rootName = match[1];
+          rootPath = path;
+        }
+        if (path === rootPath) {
+          if (window === "open" && blocked) throw acquisitionFault;
+          rootFd = originalOpen(...args);
+          return rootFd;
+        }
+        return originalOpen(...args);
+      });
+      const read = spyOn(fs, "readFileSync").mockImplementation(((
+        ...args: Parameters<typeof fs.readFileSync>
+      ) => {
+        if (window === "mount" && blocked && args[0] === `/proc/self/fdinfo/${rootFd}`)
+          throw acquisitionFault;
+        return originalRead(...args);
+      }) as typeof fs.readFileSync);
+      try {
+        await startLinuxJob(spec).catch((error: unknown) => {
+          if (!(error instanceof LinuxJobRefusal)) throw error;
+          captured.refusal = error;
+        });
+        expect(captured.refusal).toMatchObject({ workloadEmpty: false });
+        expect(captured.refusal!.cleanup).toBeInstanceOf(Function);
+        expect(rootName).toMatch(/^job-/);
+        expect(spec.delegatedCgroup.names().filter((name) => !before.includes(name))).toEqual([
+          rootName!,
+        ]);
+        const cleanup = captured.refusal!.cleanup!;
+        await Promise.all([
+          expect(cleanup()).rejects.toMatchObject({ workloadEmpty: false }),
+          expect(cleanup()).rejects.toMatchObject({ workloadEmpty: false }),
+        ]);
+        expect(spec.delegatedCgroup.names()).toContain(rootName!);
+        blocked = false;
+        open.mockRestore();
+        read.mockRestore();
+        replacement = replaceCgroupRoot(spec.delegatedCgroup, rootName!);
+        await expect(cleanup()).rejects.toMatchObject({ workloadEmpty: false });
+        // Refused cleanup preserves both identities and their virtual control files.
+        for (const name of [rootName, replacement.name]) {
+          expect(
+            readFileSync(`${spec.delegatedCgroup.procPath}/${name}/cgroup.events`, "utf8"),
+          ).toContain("populated 0");
+        }
+        replacement.restore();
+        replacement = undefined;
+        await Promise.all([cleanup(), cleanup()]);
+        await cleanup();
+        expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+      } finally {
+        blocked = false;
+        open.mockRestore();
+        read.mockRestore();
+        replacement?.restore();
+        if (captured.refusal?.cleanup) await captured.refusal.cleanup();
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] release rejects a replaced native root and succeeds after its held identity is restored",
+  async () => {
+    await withLinux("printf finished", async (spec) => {
+      const before = spec.delegatedCgroup.names().sort();
+      const handle = await startLinuxJob(spec);
+      let name: string | undefined;
+      let replacement: CgroupReplacement | undefined;
+      try {
+        expect((await handle.result).exitCode).toBe(0);
+        name = spec.delegatedCgroup.names().find((entry) => !before.includes(entry))!;
+        expect(name).toMatch(/^job-/);
+        replacement = replaceCgroupRoot(spec.delegatedCgroup, name);
+        try {
+          handle.release();
+          throw new Error("replaced root was released");
+        } catch (error) {
+          expect(error).toBeInstanceOf(LinuxJobRefusal);
+          expect(error).toMatchObject({
+            code: "cgroup-cleanup-identity-changed",
+            workloadEmpty: true,
+          });
+        }
+        expect(spec.delegatedCgroup.names()).toContain(name);
+        expect(spec.delegatedCgroup.names()).toContain(replacement.name);
+        expect(
+          readFileSync(
+            `${spec.delegatedCgroup.procPath}/${replacement.name}/cgroup.events`,
+            "utf8",
+          ),
+        ).toContain("populated 0");
+        replacement.restore();
+        replacement = undefined;
+        handle.release();
+        expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+      } finally {
+        replacement?.restore();
+        await handle.cancel();
+        handle.release();
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] empty startup reclamation refusal retains an identity-fenced cleanup callback",
+  async () => {
+    await withLinux("printf must-not-run", async (spec) => {
+      const before = spec.delegatedCgroup.names().sort();
+      let replacement: CgroupReplacement | undefined;
+      let name: string | undefined;
+      const captured: { refusal?: LinuxJobRefusal } = {};
+      try {
+        await startLinuxJob({
+          ...spec,
+          terminal: {
+            cols: 80,
+            rows: 24,
+            onOutput: () => {
+              throw new Error("workload unexpectedly ran");
+            },
+            setTerminal: () => {
+              throw new Error("supervisor unexpectedly spawned");
+            },
+            setWorkingDirectory: () => {
+              name = spec.delegatedCgroup.names().find((entry) => !before.includes(entry))!;
+              replacement = replaceCgroupRoot(spec.delegatedCgroup, name);
+              throw new Error("consumer refused startup");
+            },
+          },
+        }).catch((error: unknown) => {
+          if (!(error instanceof LinuxJobRefusal)) throw error;
+          captured.refusal = error;
+        });
+        expect(captured.refusal).toMatchObject({
+          code: "cgroup-cleanup-identity-changed",
+          workloadEmpty: true,
+        });
+        expect(captured.refusal!.cleanup).toBeInstanceOf(Function);
+        expect(spec.delegatedCgroup.names()).toContain(name!);
+        expect(spec.delegatedCgroup.names()).toContain(replacement!.name);
+        expect(
+          readFileSync(
+            `${spec.delegatedCgroup.procPath}/${replacement!.name}/cgroup.events`,
+            "utf8",
+          ),
+        ).toContain("populated 0");
+      } finally {
+        replacement?.restore();
+        if (captured.refusal?.cleanup) {
+          await Promise.all([captured.refusal.cleanup(), captured.refusal.cleanup()]);
+          await captured.refusal.cleanup();
+        }
+      }
+      expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+    });
+  },
+);
+
+test.skipIf(!realLinux || !outputRoot).each(["root", "descendant"] as const)(
+  "[real-linux] reclamation refuses a foreign %s mount and remains retryable after unmount",
+  async (boundary) => {
+    const source = mkdtempSync(join(outputRoot!, "foreign-cgroup-"));
+    writeFileSync(join(source, "marker"), "foreign bytes");
+    try {
+      await withLinux("printf finished", async (spec) => {
+        const before = spec.delegatedCgroup.names().sort();
+        const handle = await startLinuxJob(spec);
+        let target: string | undefined;
+        let mounted = false;
+        try {
+          expect((await handle.result).exitCode).toBe(0);
+          const name = spec.delegatedCgroup.names().find((entry) => !before.includes(entry))!;
+          // The mount utility is a different process; /proc/self would name its own FDs.
+          target = `/proc/${process.pid}/fd/${spec.delegatedCgroup.fd}/${name}`;
+          if (boundary === "descendant") {
+            target += "/scope/workloads/foreign";
+            mkdirSync(target);
+          }
+          const mount = spawnSync(busyboxPath!, ["mount", "--bind", source, target], {
+            encoding: "utf8",
+          });
+          expect(mount.status).toBe(0);
+          mounted = true;
+          try {
+            handle.release();
+            throw new Error("foreign mount was released");
+          } catch (error) {
+            expect(error).toBeInstanceOf(LinuxJobRefusal);
+            expect(error).toMatchObject({
+              code: "cgroup-cleanup-identity-changed",
+              workloadEmpty: true,
+            });
+          }
+          expect(spec.delegatedCgroup.names()).toContain(name);
+          expect(readFileSync(join(source, "marker"), "utf8")).toBe("foreign bytes");
+          const unmount = spawnSync(busyboxPath!, ["umount", target], { encoding: "utf8" });
+          expect(unmount.status).toBe(0);
+          mounted = false;
+          handle.release();
+          handle.release();
+          expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+          expect(readFileSync(join(source, "marker"), "utf8")).toBe("foreign bytes");
+        } finally {
+          if (mounted) {
+            const unmount = spawnSync(busyboxPath!, ["umount", target!], { encoding: "utf8" });
+            expect(unmount.status).toBe(0);
+          }
+          await handle.cancel();
+          handle.release();
+        }
+      });
+    } finally {
+      rmSync(source, { recursive: true });
+    }
+  },
+);
+
+test.skipIf(!realLinux)(
   "[real-linux] failed non-PTY supervisor spawn retains positive startup cleanup proof",
   async () => {
     const root = mkdtempSync(join(tmpdir(), "job-failed-spawn-"));
@@ -508,15 +1026,193 @@ test.skipIf(!realLinux)(
     const fd = openSync(executable, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       await withLinux("printf ready", async (spec) => {
+        const before = spec.delegatedCgroup.names().filter((name) => name.startsWith("job-"));
         await expect(startLinuxJob({ ...spec, bubblewrapFd: fd })).rejects.toMatchObject({
           workloadEmpty: true,
         });
+        expect(spec.delegatedCgroup.names().filter((name) => name.startsWith("job-"))).toEqual(
+          before,
+        );
       });
     } finally {
       closeSync(fd);
       rmSync(root, { recursive: true });
     }
   },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] post-spawn cleanup retries share reclamation across a populated-to-empty transition",
+  async () => {
+    await withLinux("printf ready; read finish; printf finished", async (spec) => {
+      const originalNames = spec.delegatedCgroup.names().sort();
+      const siblingName = `unrelated-${randomUUID()}`;
+      const sibling = spec.delegatedCgroup.openChild(siblingName, {
+        create: true,
+        exclusive: true,
+      });
+      const sleep = () =>
+        Bun.spawn([busyboxPath!, "sleep", "30"], {
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      const foreign = sleep();
+      const initialBlocker = sleep();
+      const retryBlocker = sleep();
+      const ready = Promise.withResolvers<void>();
+      const paused = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const captured: { refusal?: LinuxJobRefusal } = {};
+      let active: LinuxJobHandle | undefined;
+      let retries: Promise<void>[] = [];
+      let restoreFaults: (() => void) | undefined;
+      try {
+        writeFileSync(`${sibling.procPath}/cgroup.procs`, String(foreign.pid));
+        active = await startLinuxJob({
+          ...spec,
+          onOutput: (frame) => {
+            if (Buffer.from(frame.bytes).toString().includes("ready")) ready.resolve();
+          },
+        });
+        await Promise.race([
+          ready.promise,
+          active.result.then(() => {
+            throw new Error("unrelated active workload exited before ready");
+          }),
+        ]);
+        const before = spec.delegatedCgroup.names().sort();
+        let rootName: string | undefined;
+        let rootPath: string | undefined;
+        let killFd: number | undefined;
+        let blocked = false;
+        let populateRetry = false;
+        let pauseRetry = false;
+        const originalOpen = HeldDirectory.prototype.openFile;
+        const originalWrite = fs.writeSync;
+        const originalDelay = timers.setTimeout;
+        const ioFailure = Object.assign(new Error("startup-control-unavailable"), { code: "EIO" });
+        const open = spyOn(HeldDirectory.prototype, "openFile").mockImplementation(function (
+          this: HeldDirectory,
+          name,
+          flags,
+          mode,
+        ) {
+          const path = fs.readlinkSync(this.procPath);
+          const supervisor = /\/(job-[0-9a-f-]{36})\/supervisor$/.exec(path);
+          if (rootName === undefined && supervisor && name === "cgroup.procs") {
+            // This migration is attempted only after the real non-PTY supervisor spawned.
+            // Keep an independent live process contained when its startup attachment fails.
+            rootName = supervisor[1]!;
+            rootPath = path.slice(0, -"/supervisor".length);
+            writeFileSync(`${rootPath}/scope/main/cgroup.procs`, String(initialBlocker.pid));
+            blocked = true;
+            throw ioFailure;
+          }
+          if (path === rootPath && name === "cgroup.kill" && blocked) throw ioFailure;
+          const fd = originalOpen.call(this, name, flags, mode);
+          if (path === rootPath && name === "cgroup.kill") killFd = fd;
+          return fd;
+        });
+        const write = spyOn(fs, "writeSync").mockImplementation((...args) => {
+          const written = Reflect.apply(originalWrite, fs, args) as number;
+          if (populateRetry && args[0] === killFd) {
+            // Perform the real kill, then admit another fixture process before the real
+            // empty probe. No fabricated cgroup counters or cleanup callback are involved.
+            populateRetry = false;
+            writeFileSync(`${rootPath}/scope/main/cgroup.procs`, String(retryBlocker.pid));
+            pauseRetry = true;
+          }
+          return written;
+        });
+        const timer = spyOn(timers, "setTimeout").mockImplementation((async (
+          ...args: Parameters<typeof timers.setTimeout>
+        ) => {
+          if (pauseRetry && args[0] === 10) {
+            // Hold A's actual populated probe while B is given an event-loop turn.
+            pauseRetry = false;
+            paused.resolve();
+            await resume.promise;
+            return args[1];
+          }
+          return originalDelay(...args);
+        }) as typeof timers.setTimeout);
+        restoreFaults = () => {
+          open.mockRestore();
+          write.mockRestore();
+          timer.mockRestore();
+        };
+        await startLinuxJob(spec).catch((error: unknown) => {
+          if (!(error instanceof LinuxJobRefusal)) throw error;
+          captured.refusal = error;
+        });
+        expect(captured.refusal).toMatchObject({
+          code: "startup-empty-unproven",
+          workloadEmpty: false,
+        });
+        expect(captured.refusal!.cleanup).toBeInstanceOf(Function);
+        expect(spec.delegatedCgroup.names().filter((name) => !before.includes(name))).toEqual([
+          rootName!,
+        ]);
+        expect(readFileSync(`${rootPath}/cgroup.events`, "utf8")).toContain("populated 1");
+        expect(readFileSync(`${rootPath}/scope/main/cgroup.procs`, "utf8").trim()).toBe(
+          String(initialBlocker.pid),
+        );
+        const cleanup = captured.refusal!.cleanup!;
+        blocked = false;
+        populateRetry = true;
+        retries = [cleanup()];
+        await Promise.race([
+          paused.promise,
+          retries[0]!.then(() => {
+            throw new Error("cleanup completed before the populated probe");
+          }),
+        ]);
+        expect(readFileSync(`${rootPath}/cgroup.events`, "utf8")).toContain("populated 1");
+        retryBlocker.kill("SIGKILL");
+        await Promise.all([initialBlocker.exited, retryBlocker.exited]);
+        expect(readFileSync(`${rootPath}/cgroup.events`, "utf8")).toContain("populated 0");
+        retries.push(cleanup());
+        const reclaimed = Promise.all(retries);
+        // Without coalescing, B closes the held descriptors before this turn ends;
+        // releasing A then makes its next real cgroup.events read fail directory_closed.
+        await originalDelay(0);
+        resume.resolve();
+        await reclaimed;
+        await cleanup();
+        expect(spec.delegatedCgroup.names().sort()).toEqual(before);
+        expect(readFileSync(`${sibling.procPath}/cgroup.procs`, "utf8").trim()).toBe(
+          String(foreign.pid),
+        );
+        expect(foreign.exitCode).toBeNull();
+        await active.input(Buffer.from("finish\n"));
+        expect(await active.result).toMatchObject({ exitCode: 0, reason: "exited", empty: true });
+        active.release();
+      } finally {
+        resume.resolve();
+        restoreFaults?.();
+        initialBlocker.kill("SIGKILL");
+        retryBlocker.kill("SIGKILL");
+        await Promise.all([initialBlocker.exited, retryBlocker.exited]);
+        await Promise.allSettled(retries);
+        try {
+          await captured.refusal?.cleanup?.();
+        } finally {
+          try {
+            await active?.cancel();
+            active?.release();
+          } finally {
+            foreign.kill("SIGKILL");
+            await foreign.exited;
+            sibling.close();
+            rmdirSync(`${spec.delegatedCgroup.procPath}/${siblingName}`);
+          }
+        }
+      }
+      expect(spec.delegatedCgroup.names().sort()).toEqual(originalNames);
+    });
+  },
+  15000,
 );
 
 test.skipIf(!realLinux)(
@@ -1389,6 +2085,7 @@ test.skipIf(!realLinux)(
   "[real-linux] parent cancellation contains separately admitted child jobs under its aggregate group",
   async () => {
     await withLinux("printf ready; while :; do :; done", async (spec) => {
+      const before = spec.delegatedCgroup.names().sort();
       const parentReady = Promise.withResolvers<void>();
       const childReady = Promise.withResolvers<void>();
       const parent = await startLinuxJob({ ...spec, onOutput: () => parentReady.resolve() });
@@ -1421,7 +2118,11 @@ test.skipIf(!realLinux)(
           await child.cancel();
           child.release();
         }
+        expect(parent.childDelegation.names().filter((name) => name.startsWith("job-"))).toEqual(
+          [],
+        );
         parent.release();
+        expect(spec.delegatedCgroup.names().sort()).toEqual(before);
       }
     });
   },
