@@ -721,6 +721,12 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   removing the owner-key bypass. No OIDC implementation is owed before that trigger;
   its dependency verdict belongs to its implementing ADR. First-party accounts and a
   bundled identity provider are not part of this posture.
+  **Current source implements none of it:** no route, configuration or credential accepts an
+  external identity, and `core.access.createPrincipal` remains the root-only bootstrap door that
+  mints `*`. Issue #324 has selected configured OIDC as the preferred multi-human sign-in
+  direction; [ADR 0060](decisions/0060-oidc-human-admission.md) is its **proposed** design. It
+  reads "in front of `createPrincipal`" as in front of principal creation, never through that
+  bootstrap door, and changes nothing in this section until its decisions are ratified.
 
 - `Principal { id, kind: "human" | "agent" | "service", name, color, origin? }`. Stable;
   stored in SQLite. Native/instance-service credentials are `service`, not human sessions
