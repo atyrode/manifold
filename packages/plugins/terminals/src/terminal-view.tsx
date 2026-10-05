@@ -472,6 +472,8 @@ export function TerminalView({
       const current = clientRef.current;
       return (
         terminalRef.current === terminal &&
+        // Clipboard replies are PTY input: none may encode against modes not yet coherent.
+        stream.coherent &&
         clipboardLiveRef.current &&
         activeRef.current &&
         !readOnlyRef.current &&
@@ -829,9 +831,12 @@ export function TerminalView({
         return;
       if (message.state === "recovering") {
         // Drain and credit accepted work, without trusting modes after the server skipped bytes.
-        // Only input is fenced: the view stays mounted and measured, so its geometry lease (and
-        // the clipboard of the in-order bytes it still parses) must not change a shared PTY.
+        // Every input path is fenced, the clipboard included: an exchange already in progress is
+        // aborted rather than finished against stale modes. The view stays mounted and measured,
+        // so its geometry lease is untouched and a shared PTY keeps its size.
         stream.recover();
+        clipboardRef.current?.reset();
+        clipboardLiveRef.current = false;
       }
       if (message.state === "refused") {
         // The server retired this attachment: no credit, no viewport, no input until replay.
