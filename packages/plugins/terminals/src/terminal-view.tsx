@@ -149,7 +149,7 @@ function deliveryNotice(delivery: ViewDelivery): { message: string; catchUp: boo
   return delivery.skipped
     ? {
         message:
-          "Output was skipped while this view was behind. It shows the terminal's retained screen; earlier output and scrollback may be incomplete.",
+          "Output was skipped while this view was behind, so its output and scrollback may be incomplete.",
         catchUp: false,
       }
     : null;
@@ -195,6 +195,12 @@ export function TerminalView({
   const streamRef = useRef<TerminalStream | null>(null);
   const pasteModeRef = useRef<ReturnType<typeof trackTerminalPrivateMode> | null>(null);
   const clipboardLiveRef = useRef(false);
+  /**
+   * The mounted view replayed the current PTY's stream and is not retired, so its measurement
+   * may size it. Unlike clipboard liveness, a replacement replay of the same stream keeps it:
+   * the view is still on screen at the same size while it repaints.
+   */
+  const viewportLiveRef = useRef(false);
   const activeRef = useRef(active);
   const [clipboardCopy, setClipboardCopy] = useState<TerminalClipboardCopy | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
@@ -563,7 +569,7 @@ export function TerminalView({
           : info.status === "running" &&
             info.controllerId === self.id &&
             paintedRef.current &&
-            clipboardLiveRef.current)
+            viewportLiveRef.current)
       );
     };
 
@@ -697,6 +703,7 @@ export function TerminalView({
       pasteMode.dispose();
       pasteModeRef.current = null;
       clipboardLiveRef.current = false;
+      viewportLiveRef.current = false;
       unsubscribeRenderer();
       renderer.dispose();
       terminal.dispose();
@@ -742,6 +749,7 @@ export function TerminalView({
 
     let subscribed = true;
     clipboardLiveRef.current = false;
+    viewportLiveRef.current = false;
     syncViewportRef.current?.();
     const ours = (message: { readonly terminalId: string; readonly viewportId: string }) =>
       message.terminalId === terminalId && message.viewportId === viewportId;
@@ -777,6 +785,7 @@ export function TerminalView({
             : current,
         );
         clipboardLiveRef.current = true;
+        viewportLiveRef.current = true;
         settleRef.current?.();
       },
       acknowledge: (deliveryId, deliverySeq) => {
@@ -785,6 +794,7 @@ export function TerminalView({
       stalled: () => {
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
+        viewportLiveRef.current = false;
         syncViewportRef.current?.();
         setDelivery({ terminalId, state: "stalled", reason: null, skipped: true, noticed: false });
       },
@@ -819,16 +829,16 @@ export function TerminalView({
         return;
       if (message.state === "recovering") {
         // Drain and credit accepted work, without trusting modes after the server skipped bytes.
+        // Only input is fenced: the view stays mounted and measured, so its geometry lease (and
+        // the clipboard of the in-order bytes it still parses) must not change a shared PTY.
         stream.recover();
-        clipboardRef.current?.reset();
-        clipboardLiveRef.current = false;
-        syncViewportRef.current?.();
       }
       if (message.state === "refused") {
         // The server retired this attachment: no credit, no viewport, no input until replay.
         stream.refuse();
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
+        viewportLiveRef.current = false;
         syncViewportRef.current?.();
       }
       setDelivery((current) => ({
@@ -848,6 +858,7 @@ export function TerminalView({
         stream.restart();
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
+        viewportLiveRef.current = false;
         syncViewportRef.current?.();
         pasteModeRef.current?.reset();
         paintedRef.current = false;
@@ -870,6 +881,7 @@ export function TerminalView({
         retireDelivery();
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
+        viewportLiveRef.current = false;
         syncViewportRef.current?.();
         setRestartArmed(false);
       }
@@ -894,6 +906,7 @@ export function TerminalView({
       retireDelivery();
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
+      viewportLiveRef.current = false;
     });
 
     return () => {
@@ -902,6 +915,7 @@ export function TerminalView({
       retireDelivery();
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
+      viewportLiveRef.current = false;
       withdrawViewportRef.current?.();
       offSnapshot();
       offOutput();
