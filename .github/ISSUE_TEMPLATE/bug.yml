@@ -12,7 +12,7 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What is wrong, where, on which revision
+      description: Start with two plain sentences anyone can follow; then what is wrong, where, on which revision
       placeholder: On <origin or local>, at <commit or version>, <action> produces <result>.
     validations:
       required: true
