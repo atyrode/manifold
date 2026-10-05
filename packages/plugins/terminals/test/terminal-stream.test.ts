@@ -409,6 +409,55 @@ test("a queued replacement snapshot fences input until its current modes are par
   expect(lines(terminal)).toEqual(["new", "", "", ""]);
 });
 
+test("recovery drains accepted mode changes and credit without restoring input before a fresh snapshot", async () => {
+  const { terminal, stream } = viewer(8, 4);
+  const old = deliver(stream, "old", 0, { cols: 8, rows: 4, revision: 0 }, "\x1b[?2004hold");
+  await old.settled;
+  const parser = blockParser(terminal, 907);
+  old.output(1, "\x1b]907;wait\x07\x1b[?2004l-tail");
+  await parser.entered;
+  stream.recover();
+  expect(stream.coherent).toBe(false);
+  expect(terminal.modes.bracketedPasteMode).toBe(true);
+  parser.release();
+  await drained(stream);
+  expect(old.acks.at(-1)).toBe(1);
+  expect(terminal.modes.bracketedPasteMode).toBe(false);
+  expect(stream.coherent).toBe(false);
+  const fresh = deliver(stream, "fresh", 2, { cols: 8, rows: 4, revision: 0 }, "current");
+  await fresh.settled;
+  expect(stream.coherent).toBe(true);
+  expect(lines(terminal)).toEqual(["current", "", "", ""]);
+});
+
+test("an initial snapshot completing during recovery pays its debt without settling stale input modes", async () => {
+  const { terminal, stream } = viewer(8, 4);
+  const parser = blockParser(terminal, 908);
+  const old = deliver(stream, "old", 0, { cols: 8, rows: 4, revision: 0 }, "\x1b]908;wait\x07old");
+  let oldSettled = false;
+  void old.settled.then(() => {
+    oldSettled = true;
+  });
+  await parser.entered;
+  stream.recover();
+  parser.release();
+  await drained(stream);
+  expect(old.acks).toEqual([0]);
+  expect(oldSettled).toBe(false);
+  expect(stream.coherent).toBe(false);
+  const fresh = deliver(
+    stream,
+    "fresh",
+    1,
+    { cols: 8, rows: 4, revision: 0 },
+    "\x1b[?2004hcurrent",
+  );
+  await fresh.settled;
+  expect(stream.coherent).toBe(true);
+  expect(terminal.modes.bracketedPasteMode).toBe(true);
+  expect(lines(terminal)).toEqual(["current", "", "", ""]);
+});
+
 test("restart fences old geometry, settlement and credit while accepting fresh counters", async () => {
   const { terminal, stream } = viewer(8, 4);
   const old = deliver(stream, "d1", 0, { cols: 8, rows: 4, revision: 0 }, "old");

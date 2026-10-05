@@ -4254,8 +4254,9 @@ skipped, seq: S, data, geometry: { cols, rows, revision: G } }`, then filters th
   The browser exposes a persistent accessible skipped-history notice, including after recovery;
   retained screen/history is not a complete recording. Deliberate Catch up replaces only this
   view's parser and attachment to obtain the retained screen even if its old parser stopped.
-  A queued replacement snapshot also fences mode-derived input until its replay finishes;
-  retained old screen/input modes are not proof of coherence with the new delivery.
+  A `recovering` notice or a queued replacement snapshot fences mode-derived input until the
+  fresh snapshot's replay finishes: work already accepted still parses and earns credit, but
+  parsed old screen/input modes are not proof of coherence with the bytes recovery skipped.
   Initial pending overflow, owner refusal and the unchanged 10-second online snapshot deadline
   retire the attachment with a viewport-scoped `refused` notice and typed reason before the
   generic error. There is no silent recovery/retry loop; offline-owner waiting has no deadline.

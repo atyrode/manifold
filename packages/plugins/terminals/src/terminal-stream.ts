@@ -33,6 +33,7 @@ interface Delivery {
   readonly handlers: TerminalDeliveryHandlers;
   /** Last accepted ordinal; the snapshot is 0 and its tail is consecutive. */
   received: number;
+  recovering: boolean;
 }
 
 type Work =
@@ -99,7 +100,12 @@ export class TerminalStream {
     if (this.disposed || frame.deliveryId === this.delivery?.id) return false;
     this.retire(true);
     this.replayed = false;
-    const delivery: Delivery = { id: frame.deliveryId, handlers, received: frame.deliverySeq };
+    const delivery: Delivery = {
+      id: frame.deliveryId,
+      handlers,
+      received: frame.deliverySeq,
+      recovering: false,
+    };
     this.delivery = delivery;
     const charge = terminalDeliveryCharge(frame);
     if (
@@ -160,6 +166,12 @@ export class TerminalStream {
    */
   suspend(): void {
     this.retire(false);
+  }
+
+  /** Keep accepted parser debt payable, but only a new delivery can restore input coherence. */
+  recover(): void {
+    this.replayed = false;
+    if (this.delivery !== null) this.delivery.recovering = true;
   }
 
   /**
@@ -263,7 +275,7 @@ export class TerminalStream {
     const delivery = work.delivery;
     if (delivery !== this.delivery) return;
     this.acknowledgement = { delivery, deliverySeq: work.frame.deliverySeq };
-    if (work.kind === "snapshot") {
+    if (work.kind === "snapshot" && !delivery.recovering) {
       this.replayed = true;
       delivery.handlers.settled();
     }

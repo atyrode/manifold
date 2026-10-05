@@ -817,6 +817,13 @@ export function TerminalView({
         (message.deliveryId !== null && message.deliveryId !== stream.deliveryId)
       )
         return;
+      if (message.state === "recovering") {
+        // Drain and credit accepted work, without trusting modes after the server skipped bytes.
+        stream.recover();
+        clipboardRef.current?.reset();
+        clipboardLiveRef.current = false;
+        syncViewportRef.current?.();
+      }
       if (message.state === "refused") {
         // The server retired this attachment: no credit, no viewport, no input until replay.
         stream.refuse();
