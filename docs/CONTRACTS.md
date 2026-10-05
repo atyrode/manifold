@@ -721,6 +721,12 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   removing the owner-key bypass. No OIDC implementation is owed before that trigger;
   its dependency verdict belongs to its implementing ADR. First-party accounts and a
   bundled identity provider are not part of this posture.
+  **Current source implements none of it:** no route, configuration or credential accepts an
+  external identity, and `core.access.createPrincipal` remains the root-only bootstrap door that
+  mints `*`. Issue #324 has selected configured OIDC as the preferred multi-human sign-in
+  direction; [ADR 0060](decisions/0060-oidc-human-admission.md) is its **proposed** design. It
+  reads "in front of `createPrincipal`" as in front of principal creation, never through that
+  bootstrap door, and changes nothing in this section until its decisions are ratified.
 
 - `Principal { id, kind: "human" | "agent" | "service", name, color, origin? }`. Stable;
   stored in SQLite. Native/instance-service credentials are `service`, not human sessions
@@ -5191,6 +5197,21 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   results precede acknowledgement. Transport/hub recovery reconciles existing jobs rather
   than executing them again; owner recovery clears old descendants before a new generation
   admits work. An unobserved reserved execution is `interrupted`/unknown, not safe to retry.
+  Positive containment-empty proof also permits reclaiming the owned cgroup subtree:
+  directories are removed child-first through held, byte-exact names with mount and ancestry
+  checks; virtual control files are never unlinked. Release, partial startup failure and
+  exclusive owner recovery use the same boundary. Failed reclamation retains its ownership
+  obligation and keeps admission drained and maintenance unavailable, without rewriting a
+  committed result, accounting or sealed output. Concurrent explicit cleanup requests share
+  one attempt. A refused shutdown quiesces effects but retains global service, seat and
+  credential authority until reclamation succeeds, so explicit cleanup and reopening can
+  restore the same owner without replacing its process.
+  Empty terminal ancestors deferred behind retained children remain reclamation obligations:
+  successful explicit child cleanup retries terminal ancestors child-first, including retries
+  of an already-reclaimed child. Reopening stays fenced until those obligations succeed;
+  ordinary live ancestors are not reclamation faults. Traversal checks its 256-level depth
+  limit before enumeration and consumes its 65,536-descendant-directory budget incrementally,
+  refusing an over-budget tree without enumerating it in full.
   Temporary transport unavailability does not itself revoke a retained run's grants.
   Birth/restart readiness and exact transport guards retire only after the owner's
   acknowledgement. Current credential and sponsor authority, consent, code, exact
@@ -6492,6 +6513,11 @@ build target and nothing branches on which instance is being looked at.
   green does not prove the UI works. Gate green does not prove a surface feels finished:
   UI-touching changes require vision-model inspection of real screenshots from a real browser
   before shipping.
+- **Remounted terminal input** (#1039): browser focus, an engaged portal and a fitted retained
+  grid do not prove that the writable occupant socket has replayed its current snapshot.
+  Input witnesses wait for the page's genuine post-replay eligibility evidence, such as that
+  occupant's viewport publication, within the existing initialization deadline. They do not
+  manufacture readiness or weaken the original output, prompt and retained-process assertions.
 - **Browser teardown** (#1032): the CDP driver waits for Chromium to exit, with its
   existing five-second SIGKILL bound, before stopping the browser's private D-Bus.
   This applies to transient incognito and retained non-incognito profiles: disconnecting

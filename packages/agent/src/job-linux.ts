@@ -24,7 +24,7 @@ import {
   ownsWorkloadLoopbackConnection,
   ownsWorkloadLoopbackListener,
 } from "./job-listener-proof.ts";
-import type { HeldDirectory } from "./job-files.ts";
+import type { DirectoryAllocation, HeldDirectory } from "./job-files.ts";
 import {
   fdMountId,
   safeComponent,
@@ -160,7 +160,7 @@ export interface LinuxJobHandle {
   ownsLoopbackListener(port: number): boolean;
   /** Exact retained TCP peer, including accepted socket ownership in this workload. */
   ownsLoopbackConnection(socket: Socket): boolean;
-  /** Close retained group handles after result and child/output sealing; idempotent. */
+  /** Reclaim empty groups after result and child/output sealing; success is idempotent. */
   release(): void;
   input(bytes: Uint8Array): Promise<void>;
   endInput(): void;
@@ -193,6 +193,7 @@ export function inspectJobOutputStorage(fd: number): BigIntStatsFs {
 
 /** Called only before spawn or after positively observing an empty execution cgroup. */
 function observedStartRefusal(error: unknown): LinuxJobRefusal {
+  if (error instanceof LinuxJobRefusal && error.cleanup) return error;
   const code = error instanceof LinuxJobRefusal ? error.code : "sandbox-start-failed";
   return new LinuxJobRefusal(code, code, true);
 }
@@ -470,17 +471,185 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
   return Number(outputCapacity);
 }
 
-interface Groups {
+interface GroupTree {
+  parent: HeldDirectory;
+  name: Buffer;
   root: HeldDirectory;
+  opened: Array<{ parent: HeldDirectory; name: Buffer; directory: HeldDirectory }>;
+  removed: Set<string>;
+}
+interface Groups extends GroupTree {
   supervisor: HeldDirectory;
   scope: HeldDirectory;
   workloads: HeldDirectory;
   main: HeldDirectory;
   children: HeldDirectory;
 }
+function cgroupIdentity(directory: HeldDirectory): string {
+  const stat = fstatSync(directory.fd, { bigint: true });
+  return `${stat.dev}:${stat.ino}`;
+}
+function cleanupRefusal(
+  error: unknown,
+  empty: boolean,
+  cleanup?: () => Promise<void>,
+): LinuxJobRefusal {
+  const identityChanged =
+    error instanceof Error && ["directory_tree_changed", "mount_escape"].includes(error.message);
+  const code = identityChanged ? "cgroup-cleanup-identity-changed" : "cgroup-cleanup-failed";
+  return new LinuxJobRefusal(code, code, empty, cleanup);
+}
+/**
+ * Only cgroup directories are removed: virtual control files are never unlinked. Empty proof
+ * covers the whole held subtree; every descent and rmdir additionally checks the named identity.
+ * Bounded traversal refuses rather than escaping a mount or following an altered ancestry.
+ */
+function removeEmptyCgroupTree(
+  parent: HeldDirectory,
+  name: Buffer,
+  root: HeldDirectory,
+  removed: Set<string>,
+): void {
+  if (Number(statfsSync(root.procPath).type) !== CGROUP2_SUPER_MAGIC) refuse("cgroup-v2-required");
+  parent.assertDirectoryEntry(name, root);
+  if (counter(readControl(root, "cgroup.events"), "populated") !== 0) refuse("job-still-active");
+  const levels: Array<{
+    parent: HeldDirectory;
+    name: Buffer;
+    directory: HeldDirectory;
+    pending: Buffer[];
+  }> = [];
+  let entries = 0;
+  const enter = (above: HeldDirectory, entry: Buffer, directory: HeldDirectory): void => {
+    try {
+      if (levels.length >= 256) refuse("cgroup-cleanup-limit");
+      above.assertDirectoryEntry(entry, directory);
+      if (counter(readControl(directory, "cgroup.events"), "populated") !== 0)
+        refuse("job-still-active");
+      const pending: Buffer[] = [];
+      for (const child of directory.directoryNames()) {
+        if (++entries > 65_536) refuse("cgroup-cleanup-limit");
+        pending.push(child);
+      }
+      levels.push({ parent: above, name: entry, directory, pending });
+    } catch (error) {
+      directory.close();
+      throw error;
+    }
+  };
+  try {
+    enter(parent, name, root.reopen());
+    while (levels.length) {
+      // A renamed intermediate must not redirect removal outside the held native root.
+      for (const ancestor of levels)
+        ancestor.parent.assertDirectoryEntry(ancestor.name, ancestor.directory);
+      const level = levels.at(-1)!;
+      const next = level.pending.pop();
+      if (next !== undefined) {
+        enter(level.directory, next, level.directory.openDirectoryEntry(next));
+        continue;
+      }
+      if (counter(readControl(level.directory, "cgroup.events"), "populated") !== 0)
+        refuse("job-still-active");
+      const identity = cgroupIdentity(level.directory);
+      level.parent.removeDirectoryEntry(level.name, level.directory);
+      removed.add(identity);
+      levels.pop();
+      level.directory.close();
+    }
+  } finally {
+    for (const level of levels.reverse()) level.directory.close();
+  }
+}
+function reclaimGroups(groups: GroupTree): void {
+  for (const entry of groups.opened) {
+    // Only removals made by an earlier partial attempt are accepted as already gone.
+    if (!groups.removed.has(cgroupIdentity(entry.directory)))
+      entry.parent.assertDirectoryEntry(entry.name, entry.directory);
+  }
+  removeEmptyCgroupTree(groups.parent, groups.name, groups.root, groups.removed);
+  closeGroups(groups);
+}
+/** Failed attempts remain retryable; overlapping callers share closure and its outcome. */
+function retryableCleanup(attempt: () => Promise<void>): () => Promise<void> {
+  let outcome: Promise<void> | undefined;
+  return () => {
+    outcome ??= attempt().catch((error: unknown) => {
+      outcome = undefined;
+      throw error;
+    });
+    return outcome;
+  };
+}
+function startupGroupsRefusal(
+  ownership: GroupTree | (() => GroupTree),
+  error: unknown,
+): LinuxJobRefusal {
+  let groups = typeof ownership === "function" ? undefined : ownership;
+  const acquire = (): GroupTree => {
+    if (groups) return groups;
+    groups = typeof ownership === "function" ? ownership() : ownership;
+    return groups;
+  };
+  let empty = false;
+  const cleanup = retryableCleanup(async (): Promise<void> => {
+    try {
+      const groups = acquire();
+      groups.parent.assertDirectoryEntry(groups.name, groups.root);
+      writeControl(groups.root, "cgroup.kill", "1");
+      await awaitEmpty(groups.root);
+      empty = true;
+      reclaimGroups(groups);
+    } catch (failure) {
+      if (empty) throw cleanupRefusal(failure, true, cleanup);
+      const code = failure instanceof LinuxJobRefusal ? failure.code : "startup-empty-unproven";
+      throw new LinuxJobRefusal(code, code, false, cleanup);
+    }
+  });
+  try {
+    const groups = acquire();
+    if (counter(readControl(groups.root, "cgroup.events"), "populated") !== 0)
+      return new LinuxJobRefusal("cgroup-empty-unproven", "cgroup-empty-unproven", false, cleanup);
+    empty = true;
+    reclaimGroups(groups);
+    return observedStartRefusal(error);
+  } catch (failure) {
+    return cleanupRefusal(failure, empty, cleanup);
+  }
+}
 function createGroups(parent: HeldDirectory, limits: LinuxJobLimits): Groups {
-  const root = parent.openChild(`job-${randomUUID()}`, { create: true });
-  const opened = [root];
+  const heldParent = parent.reopen();
+  const name = Buffer.from(`job-${randomUUID()}`);
+  let allocation: DirectoryAllocation;
+  try {
+    allocation = heldParent.allocateChild(name.toString());
+  } catch (error) {
+    heldParent.close();
+    if ((error as NodeJS.ErrnoException).code === "ENOSPC") refuse("cgroup-capacity-exhausted");
+    throw error;
+  }
+  const acquire = (): GroupTree => {
+    const root = allocation.acquire();
+    return {
+      parent: heldParent,
+      name,
+      root,
+      opened: [{ parent: heldParent, name, directory: root }],
+      removed: new Set(),
+    };
+  };
+  let tree: GroupTree;
+  try {
+    tree = acquire();
+  } catch (error) {
+    throw startupGroupsRefusal(acquire, error);
+  }
+  const { root } = tree;
+  const openGroup = (above: HeldDirectory, name: string): HeldDirectory => {
+    const directory = above.openChild(name, { create: true, exclusive: true });
+    tree.opened.push({ parent: above, name: Buffer.from(name), directory });
+    return directory;
+  };
   try {
     // Bounds live above the subtree the child can alter. No workload runs in this ancestor.
     writeControl(root, "memory.max", String(limits.memoryBytes));
@@ -489,21 +658,16 @@ function createGroups(parent: HeldDirectory, limits: LinuxJobLimits): Groups {
     // One extra slot is reserved for the trusted bubblewrap supervisor.
     writeControl(root, "pids.max", String(limits.processes + 1));
     writeControl(root, "cgroup.subtree_control", "+cpu +memory +pids");
-    const supervisor = root.openChild("supervisor", { create: true });
-    opened.push(supervisor);
-    const scope = root.openChild("scope", { create: true });
-    opened.push(scope);
+    const supervisor = openGroup(root, "supervisor");
+    const scope = openGroup(root, "scope");
     writeControl(scope, "pids.max", String(limits.processes));
     writeControl(scope, "cgroup.subtree_control", "+cpu +memory +pids");
-    const main = scope.openChild("main", { create: true });
-    opened.push(main);
+    const main = openGroup(scope, "main");
     // The contained engine is outside the delegated root. Its own controller can
     // require both an empty cgroup.procs and no pre-existing child cgroups.
-    const workloads = scope.openChild("workloads", { create: true });
-    opened.push(workloads);
+    const workloads = openGroup(scope, "workloads");
     writeControl(workloads, "cgroup.subtree_control", "+cpu +memory +pids");
-    const children = root.openChild("children", { create: true });
-    opened.push(children);
+    const children = openGroup(root, "children");
     writeControl(children, "cgroup.subtree_control", "+cpu +memory +pids");
     // Migration/CLONE_INTO_CGROUP checks the common ancestor's cgroup.procs
     // inode permissions, not whether its pathname is mounted in the child.
@@ -529,21 +693,19 @@ function createGroups(parent: HeldDirectory, limits: LinuxJobLimits): Groups {
         refuse("cgroup-not-empty");
       writeControl(group, "cgroup.kill", "1");
     }
-    return { root, supervisor, scope, workloads, main, children };
+    return { ...tree, supervisor, scope, workloads, main, children };
   } catch (error) {
-    for (const directory of opened.reverse()) directory.close();
-    throw error;
+    const refusal =
+      (error as NodeJS.ErrnoException).code === "ENOSPC"
+        ? new LinuxJobRefusal("cgroup-capacity-exhausted")
+        : error;
+    throw startupGroupsRefusal(tree, refusal);
   }
 }
-function closeGroups(groups: Groups): void {
-  // Deliberately retain the empty directories for owner reconciliation; do not recursively
-  // delete attacker-created paths. The owner may remove held, proven-empty cgroups later.
-  groups.children.close();
-  groups.main.close();
-  groups.workloads.close();
-  groups.scope.close();
-  groups.supervisor.close();
-  groups.root.close();
+function closeGroups(groups: GroupTree): void {
+  for (let index = groups.opened.length - 1; index >= 0; index--)
+    groups.opened[index]!.directory.close();
+  groups.parent.close();
 }
 async function awaitEmpty(group: HeldDirectory): Promise<void> {
   const deadline = performance.now() + 10_000;
@@ -654,10 +816,21 @@ export async function recoverLinuxJobs(delegatedRoot: HeldDirectory): Promise<vo
     refuse("cgroup-v2-required");
   for (const name of delegatedRoot.names()) {
     if (!/^job-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(name)) continue;
-    const group = delegatedRoot.openChild(name);
+    let group: HeldDirectory;
     try {
+      group = delegatedRoot.openChild(name);
+    } catch (error) {
+      throw cleanupRefusal(error, false);
+    }
+    try {
+      delegatedRoot.assertDirectoryEntry(Buffer.from(name), group);
       writeControl(group, "cgroup.kill", "1");
       await awaitEmpty(group);
+      try {
+        removeEmptyCgroupTree(delegatedRoot, Buffer.from(name), group, new Set());
+      } catch (error) {
+        throw cleanupRefusal(error, true);
+      }
     } finally {
       group.close();
     }
@@ -695,8 +868,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     }
   } catch (error) {
     closeSync(seccompFd);
-    closeGroups(groups);
-    throw observedStartRefusal(error);
+    throw startupGroupsRefusal(groups, error);
   }
   const gate = control.socket;
   const metadata = report.socket;
@@ -960,8 +1132,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     gate.destroy();
     harnessControl?.socket.destroy();
     metadata.destroy();
-    closeGroups(groups);
-    throw observedStartRefusal(error);
+    throw startupGroupsRefusal(groups, error);
   } finally {
     closeSync(control.childFd);
     closeSync(report.childFd);
@@ -1041,28 +1212,29 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       /* Still kill the namespace owner below. */
     }
     child.kill("SIGKILL");
-    let cleaned = false;
-    const cleanup = async (): Promise<void> => {
-      if (cleaned) return;
+    let empty = false;
+    const cleanup = retryableCleanup(async (): Promise<void> => {
       writeControl(groups.root, "cgroup.kill", "1");
       child.kill("SIGKILL");
       await awaitEmpty(groups.root);
+      empty = true;
       if (terminalDrained) {
         // Empty cgroups do not imply that the event loop delivered the last PTY bytes.
         // Reap the inline owner so Bun releases its slave, then retain the reader to EOF.
         await exited;
         await drained;
       }
-      if (cleaned) return;
-      cleaned = true;
+      // Reclamation may refuse after empty proof. Keep the callback and held containment
+      // usable until the complete cleanup succeeds, including on an explicit later retry.
       terminalProcess?.terminal?.close();
       gate.destroy();
       metadata.destroy();
-      closeGroups(groups);
-    };
+      reclaimGroups(groups);
+    });
     try {
       await cleanup();
     } catch (failure) {
+      if (empty) throw cleanupRefusal(failure, true, cleanup);
       const code = failure instanceof LinuxJobRefusal ? failure.code : "startup-empty-unproven";
       throw new LinuxJobRefusal(code, code, false, cleanup);
     }
@@ -1150,8 +1322,12 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       if (released) return;
       if (!settled || counter(readControl(groups.root, "cgroup.events"), "populated") !== 0)
         refuse("job-still-active");
+      try {
+        reclaimGroups(groups);
+      } catch (error) {
+        throw cleanupRefusal(error, true);
+      }
       released = true;
-      closeGroups(groups);
     },
     input(bytes) {
       if (!stdin || !spec.bidirectional || settled || stdin.destroyed || stdin.writableEnded)
