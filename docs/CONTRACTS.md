@@ -6549,11 +6549,13 @@ build target and nothing branches on which instance is being looked at.
   green does not prove the UI works. Gate green does not prove a surface feels finished:
   UI-touching changes require vision-model inspection of real screenshots from a real browser
   before shipping.
-- **Remounted terminal input** (#1039): browser focus, an engaged portal and a fitted retained
-  grid do not prove that the writable occupant socket has replayed its current snapshot.
+- **Remounted terminal input** (#1039, #1055): browser focus, an active or engaged portal and
+  a fitted retained grid do not prove that the writable occupant socket has replayed its current
+  snapshot, after a document remount or while an engaging portal still paints its spectator.
   Input witnesses wait for the page's genuine post-replay eligibility evidence, such as that
-  occupant's viewport publication, within the existing initialization deadline. They do not
-  manufacture readiness or weaken the original output, prompt and retained-process assertions.
+  occupant's non-null viewport publication, within the existing deadline. They do not
+  manufacture readiness or weaken the original output, marker, prompt and retained-process
+  assertions.
 - **Portal engagement press** (#1051): a portal's seams paint with its spectator layout before
   its tiles' terminals mount, so seams alone do not prove the terminal body an engaging press
   aims at exists. Witnesses wait for that body within the existing remount deadline, then press
