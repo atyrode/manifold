@@ -26,9 +26,11 @@ import { listenTerminalHost } from "../src/terminal-host-listener.ts";
  * `owner_proof` only when the identity it signs is byte-identical to the `jobOwner` that
  * connection's hello named, and drops any other in silence (server `JobService.event`). The
  * owner signs its CURRENT identity, whose `inventoryDigest` is its journal head, and a drain
- * latch moves that head without an owner event. These cases run the production split — a real
- * MachineJobOwner and TerminalHost behind their Unix sockets as one owner process, and a real
- * transport — against a hub that applies exactly that acceptance rule.
+ * latch moves that head without an owner event. These cases run the production components — a
+ * real MachineJobOwner and TerminalHost served on real Unix sockets, and a real transport dialing
+ * them — all inside the test process, against a hub model that applies exactly that acceptance
+ * rule. The liveness close is injected rather than timed, and the owner "restart" reopens the
+ * same state in this process; neither the hub nor the owner is a separately spawned process.
  */
 
 const MACHINE_ID = "machine-1050";
