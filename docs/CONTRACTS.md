@@ -4448,6 +4448,18 @@ reset the set and require a coordinated hub/transport upgrade. An admission boun
 identically at every accepted version, leaving compliant frames byte-identical, changes
 neither the version nor the set.
 
+**Native owner proof on every connection (#1050).** After `welcome`, a hub that admits the
+hello's `jobOwner` challenges it with `owner_challenge` and accepts `owner_proof` only when the
+identity it signs is byte-identical to that `jobOwner`. Any other proof is dropped without a
+reply, leaving the owner's natives disconnected on a healthy socket. The owner signs its current
+identity, and its `inventoryDigest` (the journal head) can move without an owner event, including
+through the `drain` the hub re-latches on that same hello. The transport therefore compares every
+proof with the identity its hello named. On a difference it does not forward the proof: it logs
+`job_owner_unproved` (warn) with the changed field names, closes with 4011
+`job owner identity changed` and re-dials naming the identity the proof carried. Consecutive
+mismatches back off like failed dials. Gaining or losing the owner seat likewise re-dials with
+code 4011. Re-dialling cannot obtain a challenge the hub withholds, such as for a fenced owner.
+
 Protocol 52's monetary service policies, invocation context and native charge replies require
 both machine transport 52 and owner RPC 44. An older admitted transport keeps its ordinary
 work, receives no incompatible monetary policy, and cannot admit a bounded direct call.

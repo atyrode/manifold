@@ -206,6 +206,10 @@ export const LOG_EVENTS = [
   "terminal_host_unreachable",
   "terminal_host_lost",
 
+  // Transport (issue #1050): a native owner proof the hub would drop, because the identity the
+  // owner signed is no longer the one this connection's hello named; the transport re-dials.
+  "job_owner_unproved",
+
   // Server: supervision of the co-located terminal host (the local machine's PTY owner).
   "local_terminal_host_reused",
   "local_terminal_host_spawned",
