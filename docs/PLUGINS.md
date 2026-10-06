@@ -2274,6 +2274,11 @@ to its own plugin. Configuration uses `expectedRevision` compare-and-set.
 
 A per-invocation service runtime names an exact independently installed provider operation
 plus bounded input mappings. It starts as an owned nested job, never as a private daemon.
+Its timeout is the provider operation's declared `timeoutMs` lowered to what the invoking job
+has left, because one job's nested jobs together never hold more than its own timeout: a job
+declared for ten minutes can use a provider declared for a day. A runtime can therefore take
+all that remains, leaving nothing for the same job's later nested jobs; starting a runtime with
+nothing left is refused as `invocation_timeout_budget_exhausted`.
 Native Plugins inspects candidate invocation edges through `engine.jobs.inspectInvocations`;
 an owner explicitly reviews depth, concurrency, aggregate and output ceilings before
 `setInvocationEdge`. Source policy/runtime pins must still match at approval. Stale edges

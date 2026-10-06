@@ -2397,6 +2397,7 @@ test("native invocation replies distinguish admission checks and reservation cei
       operationId,
       input: { value: "parent" },
       outputs: [],
+      limits: { ...limits, timeoutMs: 400 },
     });
     expect(parent.state).toBe("start-committed");
     const invoke = (invocationId: string, parentJobId = parent.request.jobId) => {
@@ -2444,9 +2445,12 @@ test("native invocation replies distinguish admission checks and reservation cei
       type: "invocation_reply",
       reason: null,
     });
+    // A workload's explicit invocation keeps its callee's declared timeout, here more than the
+    // parent's whole 400 ms, so the native owner refuses it. Only a service runtime is fitted to
+    // what its parent has left (#1064).
     expect(
       f.service.jobs.active().filter((job) => job.request.parent?.parentJobId === "parent"),
-    ).toMatchObject([{ state: "start-committed" }]);
+    ).toMatchObject([{ state: "start-committed", request: { limits } }]);
     expect(invoke("over-ceiling")).toMatchObject({
       type: "invocation_reply",
       jobId: null,
@@ -6637,7 +6641,7 @@ describe("reviewed native deployment approvals", () => {
     return { f, bound };
   }
 
-  function runtimeDeploymentFixture() {
+  function runtimeDeploymentFixture(providerLimits = limits) {
     const locationId = `${pluginId}.data`;
     const provider: MachineHalf = {
       ...machine,
@@ -6648,6 +6652,7 @@ describe("reviewed native deployment approvals", () => {
         [operationId]: {
           ...machine.operations[operationId]!,
           providesService: true,
+          limits: providerLimits,
           locations: [{ locationId, access: "read" }],
         },
       },
@@ -7245,6 +7250,69 @@ describe("reviewed native deployment approvals", () => {
         outputs: [],
         parent: { parentJobId: parent.request.jobId, invocationId: "runtime-child" },
       });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a job shorter than its service runtime's declared timeout starts it within what it has left (#1064)", () => {
+    // The incident's shape: a provider declared for a whole day, bound by a one-second job.
+    const provided = { ...limits, timeoutMs: 86_400_000 };
+    const { f, value, callerPlugin, selectedOperation, acknowledge } =
+      runtimeDeploymentFixture(provided);
+    try {
+      const review = f.service.reviewDeployment(f.root, value);
+      expect(review.approvable).toBe(true);
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "short-parent",
+      );
+      acknowledge();
+      const parent = f.service.execute(f.root, callerPlugin, "short-parent", {
+        jobId: "short-parent",
+        machineId: f.machineId,
+        operationId: selectedOperation,
+        input: { value: "safe" },
+        outputs: [],
+      });
+      expect(parent.request.limits.timeoutMs).toBe(limits.timeoutMs);
+      f.service.jobs.state(parent.request.jobId, "started");
+      const invoke = (invocationId: string) => {
+        f.service.event(f.channel, {
+          type: "invocation",
+          parentJobId: parent.request.jobId,
+          invocationId,
+          operationId,
+          input: { value: "serve" },
+          outputs: [],
+        });
+        return JobCommandSchema.parse(f.commands.at(-1));
+      };
+      expect(invoke("runtime")).toMatchObject({ type: "invocation_reply", reason: null });
+      const child = f.service.jobs
+        .active()
+        .find((job) => job.request.parent?.parentJobId === parent.request.jobId)!;
+      // The owner admits a child only while its parent's children together hold no more than the
+      // parent's own timeout, so the provider's whole day could never start under this parent.
+      expect(child.request.limits).toEqual({ ...provided, timeoutMs: limits.timeoutMs });
+      expect(child.state).toBe("start-committed");
+      expect(f.commands).toContainEqual(
+        expect.objectContaining({ type: "start", request: child.request }),
+      );
+      // A replayed invocation rebuilds the identical digest-bound child.
+      expect(invoke("runtime")).toMatchObject({ reason: null, jobId: child.request.jobId });
+      // That child holds the parent's whole budget: a further one is refused by name, unreserved.
+      expect(invoke("another")).toMatchObject({
+        type: "invocation_reply",
+        jobId: null,
+        reason: "invocation_timeout_budget_exhausted",
+      });
+      expect(
+        f.service.jobs
+          .active()
+          .filter((job) => job.request.parent?.parentJobId === parent.request.jobId),
+      ).toEqual([child]);
     } finally {
       f.store.close();
     }
