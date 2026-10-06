@@ -286,6 +286,38 @@ describe("nested invocation reservations", () => {
     );
     expect(f.requests().map((request) => request.jobId)).toEqual(["child"]);
   });
+  test("a child's timeout budget is its parent's less every earlier child's, fixed on replay (#1064)", () => {
+    const f = fixture();
+    const spec = invocation();
+    const parent = spec.parent.request;
+    expect(f.jobs.childTimeoutBudget(parent, "invoke-1")).toBe(100);
+    f.jobs.reserveInvocation(
+      {
+        ...spec,
+        child: signed({ ...spec.child, limits: { ...spec.child.limits, timeoutMs: 30 } }),
+      },
+      f.callbacks,
+    );
+    // A settled child keeps its share: the owner never returns budget to the parent.
+    f.jobs.finishInvocation("child");
+    expect(f.jobs.childTimeoutBudget(parent, "invoke-2")).toBe(70);
+    f.jobs.reserveInvocation(
+      {
+        ...spec,
+        child: signed({
+          jobId: "second",
+          parent: { parentJobId: "parent", invocationId: "invoke-2" },
+          limits: { ...spec.child.limits, timeoutMs: 70 },
+        }),
+      },
+      f.callbacks,
+    );
+    f.restart();
+    expect(f.jobs.childTimeoutBudget(parent, "invoke-3")).toBe(0);
+    // A replay keeps its own recorded timeout, whatever later siblings took.
+    expect(f.jobs.childTimeoutBudget(parent, "invoke-1")).toBe(30);
+    expect(f.jobs.childTimeoutBudget(signed({ jobId: "other" }), "invoke-3")).toBe(100);
+  });
   test("failed enqueue rolls back aggregate and invocation identity", () => {
     const f = fixture();
     const spec = invocation();

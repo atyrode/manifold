@@ -4605,6 +4605,19 @@ export class JobService {
     // A child is the parent's lineage, confinement included (ADR 0051).
     const context = this.restoreJob(parent);
     if (!context) fail("invocation_credential_revoked");
+    const callee = this.jobs.installation(machineId, edge.callee.pluginId);
+    const provider = callee?.machine.operations[event.operationId];
+    if (!callee || !provider) fail("unknown_operation");
+    // A job-scoped service runtime is started by the owner on a workload's first call to the
+    // service and lives no longer than its parent. Its provider's declared timeout is only a
+    // ceiling, so the child gets what the parent has left, and nothing left refuses here (#1064).
+    let limits: JobRequest["limits"] | undefined;
+    if (provider.providesService) {
+      const budget = this.jobSchedules.childTimeoutBudget(parent.request, event.invocationId);
+      if (budget < 1) fail("invocation_timeout_budget_exhausted");
+      const ceiling = jobLimits(provider.limits);
+      limits = { ...ceiling, timeoutMs: Math.min(ceiling.timeoutMs, budget) };
+    }
     const template = this.build(
       context,
       edge.callee.pluginId,
@@ -4615,6 +4628,7 @@ export class JobService {
         operationId: event.operationId,
         input: event.input,
         outputs: event.outputs,
+        ...(limits ? { limits } : {}),
       },
       parent.request,
     );
@@ -4625,8 +4639,7 @@ export class JobService {
     };
     delete unsigned.requestDigest;
     const child = { ...unsigned, requestDigest: digest(unsigned) };
-    const callee = this.jobs.installation(machineId, edge.callee.pluginId)!;
-    const resources = callee.machine.operations[event.operationId]!.locations.map((resource) => ({
+    const resources = provider.locations.map((resource) => ({
       ...resource,
       revision: callee.machine.locations[resource.locationId]!.revision,
     }));
