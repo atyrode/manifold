@@ -292,7 +292,10 @@ describe("nested invocation reservations", () => {
     const parent = spec.parent.request;
     expect(f.jobs.childTimeoutBudget(parent, "invoke-1")).toBe(100);
     f.jobs.reserveInvocation(
-      { ...spec, child: signed({ ...spec.child, limits: { ...spec.child.limits, timeoutMs: 30 } }) },
+      {
+        ...spec,
+        child: signed({ ...spec.child, limits: { ...spec.child.limits, timeoutMs: 30 } }),
+      },
       f.callbacks,
     );
     // A settled child keeps its share: the owner never returns budget to the parent.

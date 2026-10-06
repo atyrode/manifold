@@ -5224,12 +5224,13 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   declaration of that ID: edge approval and admission refuse
   `temporary_output_invocation_unsupported` before reservation or spawn, and the native owner
   refuses the same start independently. Retained parent-owned output paths are unchanged.
-  A parent's children together hold at most its own `timeoutMs`, counted over the parent's
-  life: the native owner refuses a child past that budget (`parent_invocation_refused`). A
-  job-scoped service runtime is not requested by the workload, so the host lowers its
-  provider's declared timeout to what the parent has left after its earlier reserved children
-  (#1064), and refuses `invocation_timeout_budget_exhausted` before reservation when nothing is
-  left. An explicit workload invocation keeps its callee's declared limits.
+  A parent's children together hold at most its admitted request's `timeoutMs` (a Run-bound
+  job's is already clamped to its Run), counted over the parent's life: the native owner
+  refuses a child past that budget (`parent_invocation_refused`). A job-scoped service runtime
+  is not requested by the workload, so the host lowers its provider's declared timeout to what
+  the parent has left after its earlier reserved children (#1064), and refuses
+  `invocation_timeout_budget_exhausted` before reservation when nothing is left. An explicit
+  workload invocation keeps its callee's declared limits.
 - **Owner recovery and dedupe.** The supervised job owner is independent of the terminal
   host and transport. Its durable signing identity, generation, nonce proof and journal
   fence ownership. Request ID and canonical digest bind immutable content; exact replay

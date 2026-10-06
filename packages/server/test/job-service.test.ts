@@ -6641,7 +6641,7 @@ describe("reviewed native deployment approvals", () => {
     return { f, bound };
   }
 
-  function runtimeDeploymentFixture(providerLimits = limits) {
+  function runtimeDeploymentFixture(providerLimits = limits, callerLimits = limits) {
     const locationId = `${pluginId}.data`;
     const provider: MachineHalf = {
       ...machine,
@@ -6693,6 +6693,7 @@ describe("reviewed native deployment approvals", () => {
     };
     const callerOperation = {
       ...machine.operations[operationId]!,
+      limits: callerLimits,
       services: [
         { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["inspect"] },
       ],
@@ -7313,6 +7314,85 @@ describe("reviewed native deployment approvals", () => {
           .active()
           .filter((job) => job.request.parent?.parentJobId === parent.request.jobId),
       ).toEqual([child]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a Run-bound job clamped below its declared timeout still starts a longer service runtime (#1064)", async () => {
+    // Both operations declare a day, but a Run-bound job may run only for what its Run has left.
+    const day = { ...limits, timeoutMs: 86_400_000 };
+    const { f, value, callerPlugin, selectedOperation, acknowledge } = runtimeDeploymentFixture(
+      day,
+      day,
+    );
+    try {
+      const review = f.service.reviewDeployment(f.root, value);
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "run-parent",
+      );
+      acknowledge();
+      f.service.setAgentTools({
+        harnessPlugin: () => callerPlugin,
+        call: async () => {
+          throw new Error("no action was admitted");
+        },
+      });
+      f.channel.protocolVersion = MACHINE_AGENT_TOOLS_PROTOCOL_VERSION;
+      const registered = await f.auth.registerAgent(
+        {
+          name: "service runtime caller",
+          purpose: "Call a bound service",
+          harness: "external",
+          context: { profile: {} },
+          grant: {
+            caps: ["containers:read"],
+            targets: ["manifold://"],
+            reach: "subtree",
+            maxRunLifetimeMs: 60_000,
+            delegation: { maxDepth: 0, maxDescendants: 0 },
+            expiresAt: f.runtime.now() + 120_000,
+          },
+        },
+        f.root,
+      );
+      const created = f.auth.createRun(
+        { agentId: registered.agent.agentId, target: { machineId: f.machineId } },
+        f.root,
+      );
+      const parent = f.service.execute(f.root, callerPlugin, "run-parent", {
+        jobId: "run-parent",
+        machineId: f.machineId,
+        operationId: selectedOperation,
+        input: { value: "safe" },
+        outputs: [],
+        agentRun: {
+          runId: created.run.id,
+          sessionId: "run-session",
+          target: { machineId: f.machineId },
+        },
+      });
+      const clamped = created.run.expiresAt - f.runtime.now();
+      expect(clamped).toBeLessThan(day.timeoutMs);
+      expect(parent.request.limits.timeoutMs).toBe(clamped);
+      f.service.jobs.state(parent.request.jobId, "started");
+      f.service.event(f.channel, {
+        type: "invocation",
+        parentJobId: parent.request.jobId,
+        invocationId: "runtime",
+        operationId,
+        input: { value: "serve" },
+        outputs: [],
+      });
+      expect(f.commands.at(-1)).toMatchObject({ type: "invocation_reply", reason: null });
+      const child = f.service.jobs
+        .active()
+        .find((job) => job.request.parent?.parentJobId === parent.request.jobId);
+      // The budget is the parent's admitted request, not its declaration.
+      expect(child?.request.limits).toEqual({ ...day, timeoutMs: clamped });
+      expect(child?.state).toBe("start-committed");
     } finally {
       f.store.close();
     }
