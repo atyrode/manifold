@@ -494,6 +494,14 @@ export function restorePlanDigest(crossings: readonly RestorePlanCrossing[]): st
   );
 }
 
+/** The bundle a member crossed to: the row its group committed, or where the group writes it. */
+function crossedBundlePath(dataDir: string, member: ReplacementRecord["members"][number]) {
+  return resolve(
+    member.committed?.bundlePath ??
+      installLayout(dataDir, member.previous.pluginId, member.sha256).bundlePath,
+  );
+}
+
 /**
  * THE ROLLBACK HALF. Restores the newest journal records, newest first and named exactly, so the
  * previous hub boots its previous bundles: each plugin returns to the previous row of the oldest
@@ -507,7 +515,9 @@ export function restorePlanDigest(crossings: readonly RestorePlanCrossing[]): st
  * written by anything else, even a reinstall of the same digest with other grants, hardening or
  * installer, or an installation that moved since, refuses the whole restore: restoring over it
  * would discard a later decision. Rows and native installations change in one transaction;
- * the journal is truncated only after it commits.
+ * the journal is truncated only after it commits. A restored crossing's bundle file goes only
+ * once neither an installed row nor a remaining record names it, so a later restore of an
+ * earlier crossing still reads its bytes when a newer crossing returned to the same digest.
  */
 export function restoreReplacements(
   store: ServerStore,
@@ -596,15 +606,21 @@ export function restoreReplacements(
           );
       }
   });
-  writeReplacementJournal(dataDir, journal.slice(0, journal.length - revisions.length));
-  // The crossings' bundle files, once no installed row names them.
-  const kept = new Set(store.pluginInstalls().map((row) => resolve(row.bundlePath)));
+  const remaining = journal.slice(0, journal.length - revisions.length);
+  writeReplacementJournal(dataDir, remaining);
+  const kept = new Set([
+    ...store.pluginInstalls().map((row) => resolve(row.bundlePath)),
+    ...remaining.flatMap((record) =>
+      record.members.flatMap((member) => [
+        resolve(member.previous.bundlePath),
+        crossedBundlePath(dataDir, member),
+      ]),
+    ),
+  ]);
   for (const record of newest)
     for (const member of record.members) {
-      const bundlePath =
-        member.committed?.bundlePath ??
-        installLayout(dataDir, member.previous.pluginId, member.sha256).bundlePath;
-      if (!kept.has(resolve(bundlePath))) removeInstall({ bundlePath });
+      const bundlePath = crossedBundlePath(dataDir, member);
+      if (!kept.has(bundlePath)) removeInstall({ bundlePath });
     }
   clearStagedReplacement(dataDir);
   return newest;

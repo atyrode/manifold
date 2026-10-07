@@ -6235,6 +6235,61 @@ describe("staged crossing replaces a held closure with its hub (#1068)", () => {
     }
   });
 
+  test("a restore keeps every bundle a remaining crossing names, so A→B→C→B still restores B→C", async () => {
+    const f = await retainedServiceFixture({ major: 1, minor: 0 });
+    try {
+      const a = installPreviousBuild(f.fixture, f.manifest, ["containers:read"]);
+      const [toB, toC, backToB] = ["c".repeat(40), "d".repeat(40), "e".repeat(40)];
+      for (const [version, revision] of [
+        ["2.0.0", toB],
+        ["3.0.0", toC],
+        ["2.0.0", backToB],
+      ] as const) {
+        const host = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+        expect(
+          await host.applyStagedReplacement(
+            await stageCrossing(f.fixture, [{ manifest: { ...f.manifest, version } }], revision),
+          ),
+        ).toEqual({ ok: true });
+        host.setJobs(f.jobs);
+        host.close();
+      }
+      const journal = readReplacementJournal(f.fixture.dataDir);
+      const b = journal[0]!.members[0]!.committed!;
+      const c = journal[1]!.members[0]!.committed!;
+      // The last crossing returned to B's exact bytes, at the path the first crossing wrote.
+      expect(journal[2]!.members[0]!.committed).toMatchObject({
+        sha256: b.sha256,
+        bundlePath: b.bundlePath,
+      });
+
+      // Recovery undoes the newest crossing. B's file stays: the first crossing committed it
+      // and the second replaced it, and both remain journaled.
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [backToB]);
+      expect(f.fixture.store.pluginInstalls()).toEqual([c]);
+      for (const row of [a, b, c]) expect(sha256Hex(readFileSync(row.bundlePath))).toBe(row.sha256);
+
+      // The earlier crossing then restores onto B's retained bytes, which its hub serves.
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [toC]);
+      expect(f.fixture.store.pluginInstalls()).toEqual([b]);
+      expect(readReplacementJournal(f.fixture.dataDir).map(({ revision }) => revision)).toEqual([
+        toB,
+      ]);
+      expect(existsSync(c.bundlePath)).toBe(false);
+      for (const row of [a, b]) expect(sha256Hex(readFileSync(row.bundlePath))).toBe(row.sha256);
+      const restored = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      const row = installedRow(restored, SAMPLE_ID);
+      expect(row.held).toBeUndefined();
+      expect(row.manifest.version).toBe("2.0.0");
+      expect((await restored.exportInstalled()).plugins.map(({ row }) => row.sha256)).toEqual([
+        b.sha256,
+      ]);
+      restored.close();
+    } finally {
+      f.close();
+    }
+  });
+
   test("an interrupted native half resumes once; a replayed completed crossing keeps the reviewed deployment", async () => {
     const f = await retainedServiceFixture();
     try {
