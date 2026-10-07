@@ -1,8 +1,11 @@
 import {
+  closeSync,
   copyFileSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -58,6 +61,26 @@ export function replacementSetSha256(set: PluginReplacementSet): string {
 
 export function stagedReplacementDir(dataDir: string): string {
   return join(dataDir, PLUGIN_REPLACEMENT_DIR, "staged");
+}
+
+/** fsync one file or directory: a rename or unlink is durable once its directory is. */
+function syncPath(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The replacement directory, whose own entry in the data directory is durable too. */
+function durableReplacementRoot(dataDir: string): string {
+  const root = join(dataDir, PLUGIN_REPLACEMENT_DIR);
+  if (!existsSync(root)) {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    syncPath(dataDir);
+  }
+  return root;
 }
 
 export interface VerifiedReplacementSet {
@@ -156,7 +179,8 @@ export async function stageReplacementSet(
 
 /**
  * The deployment's hand-off into the stopped hub's data directory: re-verify the staged set by
- * digest, then replace any previously staged set whole. `revision` is the deploying commit.
+ * digest, then replace any previously staged set whole and durably. `revision` is the
+ * deploying commit.
  */
 export async function receiveReplacementSet(
   source: string,
@@ -167,23 +191,30 @@ export async function receiveReplacementSet(
   if (!REVISION.test(revision)) throw new Error("replacement revision must be a full commit SHA");
   const verified = await readReplacementDirectory(source, setSha256);
   const staged = stagedReplacementDir(dataDir);
-  mkdirSync(join(dataDir, PLUGIN_REPLACEMENT_DIR), { recursive: true, mode: 0o700 });
-  const incoming = mkdtempSync(join(dataDir, PLUGIN_REPLACEMENT_DIR, ".incoming-"));
+  const root = durableReplacementRoot(dataDir);
+  const incoming = mkdtempSync(join(root, ".incoming-"));
   try {
     for (const name of [SET_FILE, ...verified.set.members.map((m) => m.sha256 + BUNDLE_SUFFIX)])
       copyFileSync(join(source, name), join(incoming, name));
     writeFileSync(join(incoming, REVISION_FILE), revision, { mode: 0o600 });
     await readReplacementDirectory(incoming, setSha256);
+    for (const name of readdirSync(incoming)) syncPath(join(incoming, name));
+    syncPath(incoming);
     rmSync(staged, { recursive: true, force: true });
     renameSync(incoming, staged);
+    syncPath(root);
   } finally {
     rmSync(incoming, { recursive: true, force: true });
   }
   return verified;
 }
 
+/** Removes a staged set durably: a completed crossing's set never reappears after a crash. */
 export function clearStagedReplacement(dataDir: string): void {
-  rmSync(stagedReplacementDir(dataDir), { recursive: true, force: true });
+  const staged = stagedReplacementDir(dataDir);
+  if (!existsSync(staged)) return;
+  rmSync(staged, { recursive: true, force: true });
+  syncPath(join(dataDir, PLUGIN_REPLACEMENT_DIR));
 }
 
 export interface StagedReplacement extends VerifiedReplacementSet {
@@ -327,21 +358,36 @@ export function readReplacementJournal(dataDir: string): ReplacementRecord[] {
   return JournalSchema.parse(JSON.parse(readFileSync(path, "utf8")));
 }
 
-/** Atomic: a crash leaves either the previous journal or this one. */
+/**
+ * Durable before any effect it describes, as the plugin database journal is: the next journal is
+ * written and fsynced under a temporary name, renamed over the journal, and the directory is
+ * fsynced. A host crash leaves the previous journal or this one, never an applied crossing or a
+ * restore without its record. An empty journal is an unlinked one, made durable the same way.
+ */
 export function writeReplacementJournal(
   dataDir: string,
   records: readonly ReplacementRecord[],
 ): void {
-  const path = join(dataDir, PLUGIN_REPLACEMENT_DIR, JOURNAL_FILE);
   const parsed = JournalSchema.parse(records);
+  const root = join(dataDir, PLUGIN_REPLACEMENT_DIR);
+  const path = join(root, JOURNAL_FILE);
   if (parsed.length === 0) {
-    rmSync(path, { force: true });
+    if (!existsSync(path)) return;
+    rmSync(path);
+    syncPath(root);
     return;
   }
-  mkdirSync(join(dataDir, PLUGIN_REPLACEMENT_DIR), { recursive: true, mode: 0o700 });
+  durableReplacementRoot(dataDir);
   const next = `${path}.next`;
-  writeFileSync(next, `${JSON.stringify(parsed)}\n`, { mode: 0o600 });
+  const fd = openSync(next, "w", 0o600);
+  try {
+    writeFileSync(fd, `${JSON.stringify(parsed)}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(next, path);
+  syncPath(root);
 }
 
 /**
