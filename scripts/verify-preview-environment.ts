@@ -331,10 +331,7 @@ async function rememberImages(): Promise<void> {
     if (result.code === 0) ownedImages.add(result.out.trim());
   }
 }
-/**
- * One receiver request. `last` is its optional final argument: a forward crossing's staged set
- * digest, or a manual rollback's restore plan.
- */
+/** One receiver request. `last` is a forward crossing's optional staged set digest. */
 async function up(
   options: CommandOptions = {},
   rollbackFrom?: string,
@@ -1754,8 +1751,11 @@ async function verifyLive(
     maintenance: /^maintenance_required=(\w+)$/m.exec(readFileSync(output, "utf8"))?.[1] ?? null,
   };
 }
-/** The manual rollback's installed-bundles gate: the restore plan the switch must name. */
-async function rollbackGate(image: string, target: string): Promise<{ plan: string; out: string }> {
+/** The manual rollback's installed-bundles gate, as deploy-dev.yml runs it from trusted tooling. */
+async function manualRollbackGate(
+  image: string,
+  target: string,
+): Promise<{ code: number; out: string; output: string }> {
   const output = join(directory, `installed-bundles-${crypto.randomUUID()}.out`);
   writeFileSync(output, "", { mode: 0o600 });
   const result = await command(["bun", join(repo, "scripts/installed-bundles.ts"), image], {
@@ -1769,10 +1769,13 @@ async function rollbackGate(image: string, target: string): Promise<{ plan: stri
       GITHUB_OUTPUT: output,
     },
     timeoutMs: 6 * 60_000,
+    allowFailure: true,
   });
-  const plan = /^restore_plan=([0-9a-f]{64}|none)$/m.exec(readFileSync(output, "utf8"))?.[1];
-  requireThat(plan !== undefined, "the rollback gate named no restore plan");
-  return { plan, out: `${result.out}${result.err}` };
+  return {
+    code: result.code,
+    out: `${result.out}${result.err}`,
+    output: readFileSync(output, "utf8"),
+  };
 }
 async function pluginRoster() {
   const response = await fetch(`${origin}/api/plugins`, {
@@ -1937,6 +1940,7 @@ try {
     expectedBuild = earlierIdentity.build;
     const r2 = await fixtureChild(r0, `crossing-${crypto.randomUUID()}`, application);
     const r3 = await fixtureChild(r2, `stacked-${crypto.randomUUID()}`);
+    const r4 = await fixtureChild(r3, `returned-${crypto.randomUUID()}`);
     const images = new Map<string, string>();
     const deployTo = (target: string): void => {
       revision = target;
@@ -1964,8 +1968,9 @@ try {
     const snapshot = join(directory, "verify-live-before.json");
     let counter: { bytes: Buffer; sha256: string } = { bytes: Buffer.alloc(0), sha256: "" };
     let primary: StagedSet | undefined;
-    /** The plan the stacked crossings' restore was proved under: stale once that restore ran. */
-    let stackedPlan = "";
+    /** The stacked crossings: the counter to other bytes at r3, then back to the first's at r4. */
+    let third: StagedSet | undefined;
+    let returned: StagedSet | undefined;
     let seeded: CrossingRow[] = [];
     let crossedRows: CrossingRow[] = [];
     let consents: unknown[] = [];
@@ -2211,7 +2216,7 @@ try {
       },
     );
     await step(
-      "crossing: killed between its bundle commit and native completion, the crossing resumes on restart",
+      "crossing: a crossing applied and then failing verify-live is restored, with the outgoing hub, by the automatic recovery",
       async () => {
         writeFileSync(
           join(nativeSource, "manifest.json"),
@@ -2223,6 +2228,127 @@ try {
           { pluginId: CROSSING_NATIVE, bytes: next.bytes, nativeReview: true },
         ]);
         const set = primary;
+        const crossedFiles = set.set.members.map(({ pluginId, sha256 }) =>
+          bundleFile(pluginId, sha256),
+        );
+        deployTo(r2);
+        await up({}, undefined, set.sha256);
+        await ready();
+        await served();
+        const crossed = await state(crossedFiles);
+        requireThat(
+          set.set.members.every(
+            (member) =>
+              crossed.rows.find((row) => row.pluginId === member.pluginId)?.sha256 ===
+                member.sha256 &&
+              crossed.files[bundleFile(member.pluginId, member.sha256)] === member.sha256,
+          ) &&
+            crossed.journal?.length === 1 &&
+            crossed.journal[0]?.revision === r2 &&
+            crossed.journal[0].phase === "completed",
+          `the crossing was not applied before its verification: ${JSON.stringify(crossed.journal)}`,
+        );
+        nativeAt(crossed, { enabled: 0 }, "applied crossing");
+        // verify-live as the workflow runs it, with the staged set, but expecting the build that
+        // served before the switch: the crossed hub's /healthz diverges until the deadline, and
+        // the live verification of the applied crossing fails.
+        const unexpected = deriveBuildIdentity(fixtureRepo, r0).build;
+        const verified = await verifyLive(["verify", snapshot, unexpected], set.file);
+        requireThat(
+          verified.code !== 0 && verified.maintenance === null && verified.out.includes(unexpected),
+          `verify-live accepted the crossed hub against another build:\n${redact(verified.out)}`,
+        );
+        // The workflow's recovery: the three-argument rollback to the revision serving before the
+        // switch, which restores the journaled crossing with the outgoing image's own code.
+        owner().acknowledges = true;
+        const commands = owner().commands.length;
+        deployTo(r0);
+        const recovery = await up({}, r2);
+        await ready();
+        await served();
+        const restored = await state(crossedFiles);
+        requireThat(
+          isDeepStrictEqual(restored.rows, seeded) &&
+            seeded.every((row) => restored.files[row.bundlePath] === row.sha256) &&
+            crossedFiles.every((path) => restored.files[path] === null) &&
+            restored.journal === null &&
+            !restored.staged,
+          "the automatic recovery did not restore the earlier rows and files exactly",
+        );
+        nativeAt(restored, { enabled: 1 }, "automatic recovery");
+        dataRetained(restored, "automatic recovery");
+        // The outgoing hub serves its closure again, and the approval the crossing stopped is live
+        // again on its owner at the journaled revision.
+        const roster = await pluginRoster();
+        for (const row of seeded) {
+          const entry = roster.find((candidate) => candidate.manifest.id === row.pluginId);
+          requireThat(
+            entry?.held === undefined && entry?.install?.sha256 === row.sha256,
+            `${row.pluginId}: the outgoing hub does not serve its restored digest`,
+          );
+        }
+        requireThat(
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 42,
+          "the restored counter lost its stored count",
+        );
+        await until(
+          async () => {
+            const installation = await describeNative();
+            return (
+              installation?.revision === approved.revision &&
+              installation.artifactSha256 === approved.artifact &&
+              installation.enabled &&
+              installation.ready
+            );
+          },
+          30_000,
+          "the restored native approval ready on its owner again",
+        );
+        requireThat(
+          owner()
+            .commands.slice(commands)
+            .some(
+              (command) =>
+                command.pluginId === CROSSING_NATIVE &&
+                command.installationRevision === approved.revision &&
+                command.action === undefined,
+            ),
+          "the owner was never told to run the restored native revision again",
+        );
+        // The next crossing starts from an enabled provider that is not ready, as before.
+        owner().acknowledges = false;
+        receipts["recovery"] = {
+          revision: r2,
+          set: set.sha256,
+          applied: crossed.journal?.map(({ revision, phase }) => ({ revision, phase })),
+          verifyLive: redact(
+            verified.out
+              .trim()
+              .split("\n")
+              .filter((line) => line.startsWith("verify-live:"))
+              .slice(-2)
+              .join("\n"),
+          ),
+          request: `dev-rollback ${r2} ${r0}`,
+          restored: redact(
+            recovery.out
+              .split("\n")
+              .filter((line) => line.includes("restor"))
+              .join("\n"),
+          ),
+          rows: restored.rows.map(({ pluginId, sha256, grantedCaps }) => ({
+            pluginId,
+            sha256,
+            grantedCaps,
+          })),
+          native: restored.native,
+        };
+      },
+    );
+    await step(
+      "crossing: killed between its bundle commit and native completion, the crossing resumes on restart",
+      async () => {
+        const set = primary!;
         const helper = images.get(r0)!;
         deployTo(r2);
         const deploying = up({}, undefined, set.sha256);
@@ -2342,7 +2468,7 @@ try {
           "the owner was never told to stop the approved native revision",
         );
         requireThat(
-          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 42,
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 43,
           "the crossed counter lost its stored count",
         );
         crossedRows = crossed.rows;
@@ -2371,62 +2497,134 @@ try {
         };
       },
     );
-    await step("crossing: two further crossings stack in the journal", async () => {
-      const third = stageSet([
-        {
-          pluginId: CROSSING_COUNTER,
-          bytes: bundleVariant(counter.bytes, String(PROTOCOL_VERSION), 1),
-        },
-      ]);
-      deployTo(r3);
-      await up({}, undefined, third.sha256);
-      await ready();
-      await served();
-      const fourth = stageSet([
-        {
-          pluginId: CROSSING_COUNTER,
-          bytes: bundleVariant(counter.bytes, String(PROTOCOL_VERSION), 2),
-        },
-      ]);
-      await up({}, undefined, fourth.sha256);
-      await ready();
-      const stacked = await state();
-      requireThat(
-        stacked.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256 ===
-          fourth.set.members[0]!.sha256 &&
-          isDeepStrictEqual(
-            stacked.journal?.map(({ setSha256, revision, phase }) => [setSha256, revision, phase]),
-            [
-              [primary!.sha256, r2, "completed"],
-              [third.sha256, r3, "completed"],
-              [fourth.sha256, r3, "completed"],
-            ],
-          ),
-        `the stacked crossings are not journaled oldest first: ${JSON.stringify(stacked.journal)}`,
-      );
-      nativeAt(stacked, { enabled: 0 }, "stacked crossings");
-      dataRetained(stacked, "stacked crossings");
-      receipts["stacked"] = {
-        revisions: [r3, r3],
-        sets: [third.sha256, fourth.sha256],
-        counter: [third.set.members[0]!.sha256, fourth.set.members[0]!.sha256],
-      };
-    });
     await step(
-      "crossing: a manual rollback killed between its restore commit and journal completion converges on retry",
+      "crossing: two further crossings stack in the journal, the second returning to the first's bytes",
       async () => {
-        const stackedFiles = (await state())
-          .journal!.slice(1)
-          .map((record) => bundleFile(CROSSING_COUNTER, record.members[0]!.sha256));
-        const gate = await rollbackGate(images.get(r2)!, r2);
-        requireThat(gate.plan !== "none", "the rollback gate projected no restore");
-        stackedPlan = gate.plan;
+        third = stageSet([
+          {
+            pluginId: CROSSING_COUNTER,
+            bytes: bundleVariant(counter.bytes, String(PROTOCOL_VERSION), 1),
+          },
+        ]);
+        deployTo(r3);
+        await up({}, undefined, third.sha256);
+        await ready();
+        await served();
+        // The counter returns to the first crossing's exact bytes at a later revision: the same
+        // digest, at the same path, now named by three journal records.
+        returned = stageSet([{ pluginId: CROSSING_COUNTER, bytes: counter.bytes }]);
+        deployTo(r4);
+        await up({}, undefined, returned.sha256);
+        await ready();
+        await served();
+        const stacked = await state([bundleFile(CROSSING_COUNTER, third.set.members[0]!.sha256)]);
+        requireThat(
+          stacked.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256 ===
+            primaryMember(CROSSING_COUNTER).sha256 &&
+            isDeepStrictEqual(
+              stacked.journal?.map(({ setSha256, revision, phase }) => [
+                setSha256,
+                revision,
+                phase,
+              ]),
+              [
+                [primary!.sha256, r2, "completed"],
+                [third.sha256, r3, "completed"],
+                [returned.sha256, r4, "completed"],
+              ],
+            ),
+          `the stacked crossings are not journaled oldest first: ${JSON.stringify(stacked.journal)}`,
+        );
+        nativeAt(stacked, { enabled: 0 }, "stacked crossings");
+        dataRetained(stacked, "stacked crossings");
+        receipts["stacked"] = {
+          revisions: [r3, r4],
+          sets: [third.sha256, returned.sha256],
+          counter: [third.set.members[0]!.sha256, returned.set.members[0]!.sha256],
+        };
+      },
+    );
+    /** The counter's bytes along the stack: the first crossing's, then the third set's. */
+    const stackFiles = () => [
+      bundleFile(CROSSING_COUNTER, primaryMember(CROSSING_COUNTER).sha256),
+      bundleFile(CROSSING_COUNTER, third!.set.members[0]!.sha256),
+    ];
+    const forward = "recovery after a completed crossing is a forward deployment";
+    await step(
+      "crossing: a manual rollback behind a completed crossing refuses before anything stops, changing nothing",
+      async () => {
+        const incumbent = await inspectContainer();
+        const before = await state(stackFiles());
+        // The gate, from the trusted tooling, refuses the one target the host cannot tell from
+        // the automatic recovery: the newest crossing is the outgoing revision's own.
+        const gate = await manualRollbackGate(images.get(r3)!, r3);
+        requireThat(
+          gate.code !== 0 &&
+            gate.out.includes(`rollback to ${r3} refused`) &&
+            gate.out.includes(`${r4} (set ${returned!.sha256})`) &&
+            gate.out.includes(forward) &&
+            gate.output === "",
+          `the manual rollback gate did not refuse a target behind a crossing:\n${redact(gate.out.slice(-2_000))}`,
+        );
+        // The host refuses a rollback behind a crossing its outgoing revision did not apply,
+        // before it builds or stops anything.
+        deployTo(r2);
+        const refused = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r4);
+        const text = `${refused.out}${refused.err}`;
+        requireThat(
+          refused.code !== 0 &&
+            text.includes(`rollback to ${r2} refused`) &&
+            text.includes(forward),
+          `a rollback behind completed crossings did not refuse:\n${redact(text.slice(-2_000))}`,
+        );
+        deployTo(r4);
+        const after = await inspectContainer();
+        requireThat(
+          after.Id === incumbent.Id &&
+            after.Image === incumbent.Image &&
+            after.State.Status === "running" &&
+            after.State.StartedAt === incumbent.State.StartedAt &&
+            (await health()).build === expectedBuild,
+          "a refused manual rollback stopped, restarted or replaced the incumbent",
+        );
+        const kept = await state(stackFiles());
+        requireThat(
+          isDeepStrictEqual(kept.rows, before.rows) &&
+            isDeepStrictEqual(kept.journal, before.journal) &&
+            isDeepStrictEqual(kept.files, before.files) &&
+            kept.staged === before.staged,
+          "a refused manual rollback changed a row, the journal or a bundle file",
+        );
+        nativeAt(kept, { enabled: 0 }, "refused manual rollback");
+        dataRetained(kept, "refused manual rollback");
+        receipts["manualRollbackRefused"] = {
+          journal: before.journal?.map(({ revision }) => revision),
+          gate: redact(
+            gate.out
+              .split("\n")
+              .filter((line) => line.includes("refused"))
+              .join("\n"),
+          ),
+          host: redact(
+            text
+              .split("\n")
+              .filter((line) => line.includes("refused"))
+              .join("\n"),
+          ),
+          incumbent: { id: incumbent.Id, startedAt: incumbent.State.StartedAt },
+        };
+      },
+    );
+    await step(
+      "crossing: the automatic recovery of the crossing back to earlier bytes, killed before its journal truncation, converges on retry and keeps every file the journal names",
+      async () => {
+        const [firstBytes, thirdBytes] = stackFiles();
         const incumbent = await inspectContainer();
         // A steady hub writes no journal: the next journal write is the restore's truncation,
         // after its one SQLite transaction committed.
         await plantJournalFifo(incumbent.Image, "true");
-        deployTo(r2);
-        const rolling = up({ allowFailure: true }, r3, gate.plan);
+        deployTo(r3);
+        const recovering = up({ allowFailure: true }, r4);
         let oneShot = "";
         await until(
           async () => {
@@ -2450,164 +2648,129 @@ try {
           "the restore one-shot started",
         );
         await awaitBlockedWriter(oneShot, "bundle-replacement.ts");
-        const midway = await crossingState([...stackedFiles], owner().machineId, (source) =>
+        const midway = await crossingState(stackFiles(), owner().machineId, (source) =>
           volumeScript(incumbent.Image, source),
         );
         requireThat(
-          isDeepStrictEqual(midway.rows, crossedRows) && midway.journal?.length === 3,
-          `the interruption did not land between the restore commit and journal completion: ${JSON.stringify(midway.journal?.map((record) => record.revision))}`,
+          midway.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256 ===
+            third!.set.members[0]!.sha256 && midway.journal?.length === 3,
+          `the interruption did not land between the restore commit and journal truncation: ${JSON.stringify(midway.journal?.map((record) => record.revision))}`,
         );
         await removeJournalFifo(incumbent.Image);
         await docker(["kill", oneShot], { allowFailure: true });
-        const interrupted = await rolling;
+        const interrupted = await recovering;
         requireThat(
           interrupted.code !== 0 &&
             `${interrupted.out}${interrupted.err}`.includes("plugin transition refused"),
-          "a killed restore did not hold the rollback",
+          "a killed restore did not hold the recovery",
         );
-        // deploy-dev.sh restarted its incumbent over the committed restore.
-        deployTo(r3);
+        // deploy-dev.sh restarted its incumbent over the committed restore; the retry converges.
+        deployTo(r4);
         await ready();
-        const retry = await rollbackGate(images.get(r2)!, r2);
-        deployTo(r2);
-        const rolledBack = await up({}, r3, retry.plan);
+        deployTo(r3);
+        const retried = await up({}, r4);
         await ready();
         await served();
-        const converged = await state(stackedFiles);
+        const converged = await state(stackFiles());
         requireThat(
-          isDeepStrictEqual(converged.rows, crossedRows) &&
+          converged.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256 ===
+            third!.set.members[0]!.sha256 &&
             isDeepStrictEqual(
               converged.journal?.map(({ setSha256, revision }) => [setSha256, revision]),
-              [[primary!.sha256, r2]],
+              [
+                [primary!.sha256, r2],
+                [third!.sha256, r3],
+              ],
             ) &&
-            stackedFiles.every((path) => converged.files[path] === null) &&
-            crossedRows.every((row) => converged.files[row.bundlePath] === row.sha256) &&
             !converged.staged,
-          `the retried rollback did not converge on the first crossing: ${JSON.stringify(converged.journal)}`,
+          `the retried recovery did not converge on the earlier crossings: ${JSON.stringify(converged.journal)}`,
         );
-        nativeAt(converged, { enabled: 0 }, "converged rollback");
-        dataRetained(converged, "converged rollback");
-        receipts["interruptedRestore"] = {
-          gate: redact(gate.out.trim()),
-          plan: gate.plan,
-          interrupted: redact(
-            `${interrupted.out}${interrupted.err}`.trim().split("\n").slice(-3).join("\n"),
-          ),
-          retryPlan: retry.plan,
+        // The newest crossing committed the first crossing's path again. Both remaining records
+        // still name it, so its bytes stay, beside the earlier closure's.
+        requireThat(
+          converged.files[firstBytes!] === primaryMember(CROSSING_COUNTER).sha256 &&
+            converged.files[thirdBytes!] === third!.set.members[0]!.sha256 &&
+            seeded.every((row) => converged.files[row.bundlePath] === row.sha256),
+          `the recovery removed bytes a remaining crossing names: ${JSON.stringify(converged.files)}`,
+        );
+        nativeAt(converged, { enabled: 0 }, "converged recovery");
+        dataRetained(converged, "converged recovery");
+        receipts["repeatedDigest"] = {
+          interrupted: {
+            journal: midway.journal?.map(({ revision }) => revision),
+            hold: redact(
+              `${interrupted.out}${interrupted.err}`.trim().split("\n").slice(-2).join("\n"),
+            ),
+          },
           restored: redact(
-            rolledBack.out
+            retried.out
               .split("\n")
-              .filter((line) => line.includes("restored"))
+              .filter((line) => line.includes("restor"))
               .join("\n"),
           ),
+          files: converged.files,
         };
       },
     );
     await step(
-      "crossing: a manual rollback restores the earlier closure with the outgoing image",
+      "crossing: the earlier crossing then restores onto the bytes the later recovery kept",
       async () => {
-        // A plan proved for another restore binds nothing here: the host refuses it before any
-        // row moves, and deploy-dev.sh restarts the incumbent unchanged.
-        const serving = (await inspectContainer()).Image;
-        const unrestored = await state();
-        deployTo(r0);
-        const stale = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r2, stackedPlan);
-        const staleText = `${stale.out}${stale.err}`;
-        requireThat(
-          stale.code !== 0 &&
-            staleText.includes(
-              `restore plan ${stackedPlan} is not the journaled crossings ${r2}; restore refused`,
-            ),
-          `a rollback naming a stale restore plan did not refuse:\n${redact(staleText.slice(-2_000))}`,
-        );
+        const [firstBytes, thirdBytes] = stackFiles();
         deployTo(r2);
+        const rolledBack = await up({}, r3);
         await ready();
-        const kept = await state();
+        await served();
+        const restored = await state(stackFiles());
         requireThat(
-          (await inspectContainer()).Image === serving &&
-            isDeepStrictEqual(kept.rows, unrestored.rows) &&
-            isDeepStrictEqual(kept.journal, unrestored.journal) &&
-            isDeepStrictEqual(kept.files, unrestored.files),
-          "a refused stale plan changed the incumbent, its rows, journal or files",
-        );
-        nativeAt(kept, { enabled: 0 }, "stale restore plan");
-        dataRetained(kept, "stale restore plan");
-        const gate = await rollbackGate(images.get(r0)!, r0);
-        requireThat(gate.plan !== stackedPlan, "the rollback gate re-proved the stale plan");
-        deployTo(r0);
-        const rolledBack = await up({}, r2, gate.plan);
-        await ready();
-        const restored = await state();
-        requireThat(
-          isDeepStrictEqual(restored.rows, seeded) &&
+          isDeepStrictEqual(restored.rows, crossedRows) &&
+            crossedRows.every((row) => restored.files[row.bundlePath] === row.sha256) &&
+            restored.files[firstBytes!] === primaryMember(CROSSING_COUNTER).sha256 &&
+            restored.files[thirdBytes!] === null &&
             seeded.every((row) => restored.files[row.bundlePath] === row.sha256) &&
-            crossedRows.every((row) => restored.files[row.bundlePath] === null) &&
-            restored.journal === null &&
-            !restored.staged &&
-            restored.storage[CROSSING_COUNTER]?.count === "42",
-          "the manual rollback did not restore the earlier rows, files and plugin data",
+            isDeepStrictEqual(
+              restored.journal?.map(({ setSha256, revision }) => [setSha256, revision]),
+              [[primary!.sha256, r2]],
+            ) &&
+            !restored.staged,
+          `restoring the earlier crossing did not return the first crossing's rows onto its bytes: ${JSON.stringify(restored.files)}`,
         );
-        nativeAt(restored, { enabled: 1 }, "manual rollback");
-        dataRetained(restored, "manual rollback");
-        // The earlier hub serves the restored closure with its data, and the approval the
-        // crossing disabled is live again on its owner.
         const roster = await pluginRoster();
-        for (const row of seeded) {
+        for (const row of crossedRows) {
           const entry = roster.find((candidate) => candidate.manifest.id === row.pluginId);
           requireThat(
             entry?.held === undefined && entry?.install?.sha256 === row.sha256,
-            `${row.pluginId}: the earlier hub does not serve the restored digest`,
+            `${row.pluginId}: the hub does not serve the restored digest`,
           );
         }
         requireThat(
-          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 43,
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 44,
           "the restored counter lost its stored count",
         );
-        await until(
-          async () => {
-            const installation = await describeNative();
-            return (
-              installation?.revision === approved.revision &&
-              installation.enabled &&
-              installation.ready
-            );
-          },
-          30_000,
-          "the restored native approval ready on its owner again",
-        );
-        receipts["rollback"] = {
-          staleRefusal: redact(
-            staleText
-              .split("\n")
-              .filter((line) => line.includes("restore refused"))
-              .join("\n"),
-          ),
-          gate: redact(gate.out.trim()),
-          plan: gate.plan,
+        nativeAt(restored, { enabled: 0 }, "earlier crossing restore");
+        dataRetained(restored, "earlier crossing restore");
+        receipts["earlierRestore"] = {
+          request: `dev-rollback ${r3} ${r2}`,
           restored: redact(
             rolledBack.out
               .split("\n")
-              .filter((line) => line.includes("restored"))
+              .filter((line) => line.includes("restor"))
               .join("\n"),
           ),
-          native: restored.native,
+          counter: restored.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256,
         };
       },
     );
     await step(
-      "crossing: a same-digest reinstall after a crossing makes its rollback refuse",
+      "crossing: a same-digest reinstall after a crossing makes its automatic recovery refuse",
       async () => {
-        const set = primary!;
-        deployTo(r2);
-        await up({}, undefined, set.sha256);
-        await ready();
-        await served();
         const crossed = await state();
         requireThat(
-          crossed.journal?.length === 1 && crossed.journal[0]?.phase === "completed",
-          "the repeated crossing did not complete",
+          crossed.journal?.length === 1 &&
+            crossed.journal[0]?.revision === r2 &&
+            crossed.journal[0].phase === "completed",
+          "the outgoing revision's own crossing is not the only one journaled",
         );
-        nativeAt(crossed, { enabled: 0 }, "repeated crossing");
+        nativeAt(crossed, { enabled: 0 }, "crossing before the reinstall");
         // An authority decision after the crossing: the same digest, reinstalled through the real
         // door with replacement consent and the default grant, which withdraws the withheld
         // capability the crossing kept. Restoring the earlier row would grant it again.
@@ -2633,49 +2796,38 @@ try {
           "the same-digest reinstall did not withdraw the granted capability",
         );
         const serving = (await inspectContainer()).Image;
-        // The gate proves only the closure a restore yields; the host's exact-row check refuses
-        // both the gated manual rollback and the automatic recovery no gate precedes.
-        const gate = await rollbackGate(images.get(r0)!, r0);
-        requireThat(gate.plan !== "none", "the rollback gate projected no restore");
-        const refusals: Record<string, string> = {};
-        for (const [label, plan] of [
-          [`dev-rollback ${r2} ${r0} ${gate.plan}`, gate.plan],
-          [`dev-rollback ${r2} ${r0}`, undefined],
-        ] as const) {
-          deployTo(r0);
-          const refused = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r2, plan);
-          const text = `${refused.out}${refused.err}`;
-          requireThat(
-            refused.code !== 0 &&
-              text.includes(
-                `${CROSSING_NATIVE}: the installed row changed since crossing ${r2}; restore refused`,
-              ),
-            `${label} over a later authority decision did not refuse:\n${redact(text.slice(-2_000))}`,
-          );
-          deployTo(r2);
-          await ready();
-          const after = await state();
-          requireThat(
-            (await inspectContainer()).Image === serving &&
-              isDeepStrictEqual(after.rows, decided.rows) &&
-              isDeepStrictEqual(after.journal, decided.journal) &&
-              isDeepStrictEqual(after.files, decided.files),
-            `${label}: a refused restore changed the incumbent, its rows, journal or files`,
-          );
-          nativeAt(after, { enabled: 0 }, `${label} refused`);
-          dataRetained(after, `${label} refused`);
-          refusals[label] = redact(
+        // The host's exact-row check refuses the recovery no gate precedes.
+        deployTo(r0);
+        const refused = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r2);
+        const text = `${refused.out}${refused.err}`;
+        requireThat(
+          refused.code !== 0 &&
+            text.includes(
+              `${CROSSING_NATIVE}: the installed row changed since crossing ${r2}; restore refused`,
+            ),
+          `the automatic recovery over a later authority decision did not refuse:\n${redact(text.slice(-2_000))}`,
+        );
+        deployTo(r2);
+        await ready();
+        const after = await state();
+        requireThat(
+          (await inspectContainer()).Image === serving &&
+            isDeepStrictEqual(after.rows, decided.rows) &&
+            isDeepStrictEqual(after.journal, decided.journal) &&
+            isDeepStrictEqual(after.files, decided.files),
+          "a refused restore changed the incumbent, its rows, journal or files",
+        );
+        nativeAt(after, { enabled: 0 }, "refused recovery");
+        dataRetained(after, "refused recovery");
+        receipts["authorityChange"] = {
+          revision: r2,
+          grant: { crossed: kept.grantedCaps, decided: nativeRow.grantedCaps },
+          refusal: redact(
             text
               .split("\n")
               .filter((line) => line.includes("restore refused") || line.includes("HOLD"))
               .join("\n"),
-          );
-        }
-        receipts["authorityChange"] = {
-          revision: r2,
-          grant: { crossed: kept.grantedCaps, decided: nativeRow.grantedCaps },
-          plan: gate.plan,
-          refusals,
+          ),
         };
       },
     );
@@ -4083,7 +4235,7 @@ if (failure !== undefined) {
 } else
   console.log(
     crossing
-      ? "preview-environment: PASS (staged bundle crossing, interruption and rollback through the integrated receiver)"
+      ? "preview-environment: PASS (staged bundle crossing, interruption, automatic recovery and refused manual rollback through the integrated receiver)"
       : integrated
         ? "preview-environment: PASS (retained server-only topology and state preservation)"
         : "preview-environment: PASS (screenshots require visual inspection)",
