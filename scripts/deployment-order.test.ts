@@ -59,6 +59,22 @@ function order(current: string, target: string, mode = "forward", expected = "")
   ]);
 }
 
+/** `rollback_crossing` over a journal of revisions, newest first. */
+function crossing(current: string, target: string, ...journal: string[]) {
+  return command([
+    "bash",
+    "-c",
+    'set -euo pipefail; source "$1"; source "$2"; rollback_crossing "$3" "$4" "$5" "$6"',
+    "test",
+    join(root, "infra/previews/common.sh"),
+    join(root, "infra/previews/deployment-order.sh"),
+    repository,
+    current,
+    target,
+    journal.join("\n"),
+  ]);
+}
+
 function provenance(
   revision: string,
   builds: string[] = [],
@@ -146,6 +162,41 @@ describe("development deployment ordering", () => {
     expect(order(second, first, "rollback", first)).toMatchObject({ code: 2 });
     expect(order(second, divergent, "rollback", second)).toMatchObject({ code: 2 });
     expect(order(first, first, "rollback", second).code).toBe(0);
+  });
+});
+
+describe("staged crossings a rollback may restore (#1068)", () => {
+  const reason = "recovery after a completed crossing is a forward deployment";
+
+  test("a rollback restores only the newest crossing, which the outgoing revision applied", () => {
+    expect(crossing(second, first)).toEqual({ code: 0, out: "", err: "" });
+    // The automatic recovery of the switch to `second` that crossed.
+    expect(crossing(second, first, second, first)).toEqual({ code: 0, out: second, err: "" });
+    // A same-target retry, or a target containing every crossing, restores nothing.
+    expect(crossing(second, second, second, first)).toMatchObject({ code: 0, out: "" });
+  });
+
+  test("a rollback behind a completed crossing refuses and names why", () => {
+    for (const refused of [
+      // Behind two crossings.
+      crossing(second, base, second, first),
+      // Behind a crossing an earlier revision applied.
+      crossing(second, base, first),
+      // Behind two crossings the outgoing revision applied, one deployed after the other.
+      crossing(second, first, second, second),
+    ]) {
+      expect(refused).toMatchObject({ code: 2, out: "" });
+      expect(refused.err).toContain(reason);
+    }
+    expect(crossing(second, base, first).err).toContain(`behind staged crossing(s) ${first}`);
+  });
+
+  test("a malformed or unknown journaled revision holds", () => {
+    expect(crossing(second, first, second.slice(0, 12))).toMatchObject({ code: 2 });
+    expect(crossing(second, first, "f".repeat(40))).toMatchObject({
+      code: 2,
+      err: expect.stringContaining("cannot order staged crossing"),
+    });
   });
 });
 
@@ -248,7 +299,7 @@ describe("forced-command rollback grammar", () => {
     expect(accepted.out).toBe(`${first}|--replacement-set|${digest}|`);
   });
 
-  test("a manual rollback names the restore plan its installed-bundles gate proved (#1068)", () => {
+  test("a rollback names no restore plan: a crossing is forward-only (#1068)", () => {
     const receiverDir = join(directory, "plan-receiver");
     const home = join(directory, "plan-receiver-home");
     mkdirSync(receiverDir);
@@ -264,26 +315,26 @@ describe("forced-command rollback grammar", () => {
         PREVIEW_HOME: home,
         SSH_ORIGINAL_COMMAND: request,
       });
-    const plan = "e".repeat(64);
-    for (const bound of [plan, "none"])
+    expect(receive(`dev-rollback ${second} ${first}`)).toMatchObject({
+      code: 0,
+      out: `${first}|--rollback-from|${second}|`,
+    });
+    for (const bound of ["e".repeat(64), "none"])
       expect(receive(`dev-rollback ${second} ${first} ${bound}`)).toMatchObject({
-        code: 0,
-        out: `${first}|--rollback-from|${second}|--restore-plan|${bound}|`,
+        code: 2,
+        out: "",
+        err: expect.stringContaining("usage"),
       });
-    expect(receive(`dev-rollback ${second} ${first} ${plan.slice(0, 40)}`).code).toBe(2);
-    expect(receive(`dev-rollback ${second} ${first} ${plan} extra`).code).toBe(2);
-    // The real deployment script parses the same binding before it touches anything.
+    // The real deployment script refuses the retired binding before it touches anything.
     const deploy = (...args: string[]) =>
       command(["bash", join(root, "infra/previews/deploy-dev.sh"), ...args], root, {
         PREVIEW_HOME: home,
         MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID: "",
       });
-    for (const refused of [
-      [first, "--rollback-from", second, "--restore-plan", plan.slice(0, 40)],
-      [first, "--rollback-from", second, "--plan", plan],
-    ])
-      expect(deploy(...refused)).toMatchObject({ code: 2, err: expect.stringContaining("usage") });
-    expect(deploy(first, "--rollback-from", second, "--restore-plan", plan)).toMatchObject({
+    expect(
+      deploy(first, "--rollback-from", second, "--restore-plan", "e".repeat(64)),
+    ).toMatchObject({ code: 2, err: expect.stringContaining("usage") });
+    expect(deploy(first, "--rollback-from", second)).toMatchObject({
       code: 2,
       err: expect.stringContaining("MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"),
     });

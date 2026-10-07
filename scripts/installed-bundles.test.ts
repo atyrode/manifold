@@ -15,8 +15,7 @@ import {
   crossingReview,
   installedBundleFailures,
 } from "./installed-bundles-candidate.ts";
-import { restorePlanDigest } from "../packages/server/src/index.ts";
-import { containedIn, fetchReplacement, rollbackProjection } from "./installed-bundles.ts";
+import { containedIn, fetchReplacement, rollbackRefusal } from "./installed-bundles.ts";
 
 function snapshot(source: string, contract = HARDENED_CONTRACT_VERSION): InstalledPluginsSnapshot {
   const pluginId = "example.candidate";
@@ -118,21 +117,24 @@ async function exportGateAttempt(
   reply: unknown,
   status = 200,
   candidateExitCode?: number,
+  env: Record<string, string> = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "installed-bootstrap-"));
   const summaryPath = join(root, "summary");
   const outputPath = join(root, "output");
+  const candidatePath = join(root, "candidate.json");
   if (candidateExitCode !== undefined) {
     writeFileSync(
       join(root, "docker"),
-      `#!/bin/sh\nif [ "$1" = run ]; then exit ${candidateExitCode}; fi\nexit 0\n`,
+      `#!/bin/sh\nif [ "$1" = run ]; then cat > '${candidatePath}'; exit ${candidateExitCode}; fi\nexit 0\n`,
       { mode: 0o700 },
     );
   }
+  const requests: unknown[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    async fetch(request) {
       if (request.headers.get("authorization") !== "Bearer test-only-token")
         return Response.json(
           { error: { code: "forbidden", message: "fixture credential required" } },
@@ -143,6 +145,7 @@ async function exportGateAttempt(
         new URL(request.url).pathname !== "/api/actions/engine.plugins.exportInstalled"
       )
         return new Response(null, { status: 404 });
+      requests.push(await request.json());
       return Response.json(reply, { status });
     },
   });
@@ -162,6 +165,7 @@ async function exportGateAttempt(
           INSTALLED_BUNDLES_BOOTSTRAP_GATE: String(bootstrap),
           GITHUB_STEP_SUMMARY: summaryPath,
           GITHUB_OUTPUT: outputPath,
+          ...env,
         },
         stdout: "pipe",
         stderr: "pipe",
@@ -178,6 +182,10 @@ async function exportGateAttempt(
       summary: existsSync(summaryPath) ? readFileSync(summaryPath, "utf8") : "",
       jobOutput: existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "",
       target: server.url.origin,
+      requests,
+      candidate: existsSync(candidatePath)
+        ? (JSON.parse(readFileSync(candidatePath, "utf8")) as unknown)
+        : null,
     };
   } finally {
     await server.stop(true);
@@ -207,7 +215,7 @@ test("explicit bootstrap passes only an unknown export door and records target a
   expect(attempt.summary).toContain(attempt.target);
   expect(attempt.summary).toContain("unknown_action");
   expect(attempt.summary).toContain("bootstrap_gate=true");
-  expect(attempt.jobOutput).toBe("bootstrap_required=true\nreplacement_set=\nrestore_plan=\n");
+  expect(attempt.jobOutput).toBe("bootstrap_required=true\nreplacement_set=\n");
 });
 
 test("bootstrap does not bypass candidate validation when the export door exists", async () => {
@@ -233,7 +241,7 @@ test("an export-capable hub emits ordinary verification only after its candidate
 
   const passed = await exportGateAttempt(true, reply, 200, 0);
   expect(passed.code).toBe(0);
-  expect(passed.jobOutput).toBe("bootstrap_required=false\nreplacement_set=\nrestore_plan=\n");
+  expect(passed.jobOutput).toBe("bootstrap_required=false\nreplacement_set=\n");
   expect(passed.summary).toBe("");
 });
 
@@ -386,109 +394,83 @@ test("a staged set already installed is a completed crossing, refused before the
   });
 });
 
-test("a manual rollback gate boots the target on the closure its restore yields (#1068)", async () => {
-  // From the target's view, the crossed bundles are protocols it would hold.
-  const current = stampedBundle("999", "3.0.0");
-  const middle = stampedBundle("998", "2.0.0");
-  const previous = stampedBundle(String(PROTOCOL_VERSION), "1.0.0");
-  const [first, second] = ["1".repeat(40), "2".repeat(40)];
-  const exported: InstalledPluginsSnapshot = {
-    format: 1,
-    developerMode: false,
-    plugins: [{ ...installedEntry(current), enabled: false }],
-    crossings: [
-      {
-        revision: first,
-        setSha256: "a".repeat(64),
-        members: [
-          {
-            pluginId: "example.candidate",
-            sha256: middle.sha256,
-            previous: installedEntry(previous),
-          },
-        ],
+/** A private repository of two empty commits, `one` and its child `two`. */
+function twoCommits(): { readonly repository: string; readonly one: string; readonly two: string } {
+  const repository = mkdtempSync(join(tmpdir(), "installed-bundles-ancestry-"));
+  const git = (...args: string[]) => {
+    const run = Bun.spawnSync(["git", "-C", repository, "-c", "commit.gpgsign=false", ...args], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "fixture",
+        GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+        GIT_COMMITTER_NAME: "fixture",
+        GIT_COMMITTER_EMAIL: "fixture@example.invalid",
       },
-      {
-        revision: second,
-        setSha256: "b".repeat(64),
-        members: [
-          {
-            pluginId: "example.candidate",
-            sha256: current.sha256,
-            previous: installedEntry(middle),
-          },
-        ],
-      },
-    ],
+    });
+    if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+    return run.stdout.toString().trim();
   };
-  // Neither crossing is in the target: both restore, newest first, to the oldest bundle, with
-  // its enablement kept, and the switch binds exactly that plan.
-  const both = rollbackProjection(exported, () => false);
-  expect(both.restored).toEqual([second, first]);
-  expect(both.snapshot).toEqual({
-    format: 1,
-    developerMode: false,
-    plugins: [{ ...installedEntry(previous), enabled: false }],
-  });
-  expect(both.plan).toBe(
-    restorePlanDigest([
-      {
-        revision: second,
-        setSha256: "b".repeat(64),
-        members: [
-          { pluginId: "example.candidate", sha256: current.sha256, previousSha256: middle.sha256 },
-        ],
-      },
-      {
-        revision: first,
-        setSha256: "a".repeat(64),
-        members: [
-          { pluginId: "example.candidate", sha256: middle.sha256, previousSha256: previous.sha256 },
-        ],
-      },
-    ]),
-  );
-  const one = rollbackProjection(exported, (revision) => revision === first);
-  expect(one.restored).toEqual([second]);
-  expect(one.snapshot.plugins[0]!.row.sha256).toBe(middle.sha256);
-  expect(one.plan).not.toBe(both.plan);
-  expect(rollbackProjection(exported, () => true)).toMatchObject({
-    restored: [],
-    plan: "none",
-    snapshot: { plugins: [{ row: { sha256: current.sha256 } }] },
-  });
-  // The target candidate holds the installed closure, and loads the one its rollback restores.
-  await expect(
-    checkInstalledCandidate({ format: 1, developerMode: false, plugins: exported.plugins }),
-  ).rejects.toThrow(/example\.candidate: held/);
-  await checkInstalledCandidate(both.snapshot);
-}, 60_000);
+  git("init", "-q");
+  git("commit", "-q", "--allow-empty", "-m", "one");
+  const one = git("rev-parse", "HEAD");
+  git("commit", "-q", "--allow-empty", "-m", "two");
+  return { repository, one, two: git("rev-parse", "HEAD") };
+}
 
 test("rollback ancestry follows git as the host receiver does, and an unknown crossing refuses", () => {
-  const repository = mkdtempSync(join(tmpdir(), "installed-bundles-ancestry-"));
+  const { repository, one, two } = twoCommits();
   try {
-    const git = (...args: string[]) => {
-      const run = Bun.spawnSync(["git", "-C", repository, "-c", "commit.gpgsign=false", ...args], {
-        env: {
-          ...process.env,
-          GIT_AUTHOR_NAME: "fixture",
-          GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-          GIT_COMMITTER_NAME: "fixture",
-          GIT_COMMITTER_EMAIL: "fixture@example.invalid",
-        },
-      });
-      if (run.exitCode !== 0) throw new Error(run.stderr.toString());
-      return run.stdout.toString().trim();
-    };
-    git("init", "-q");
-    git("commit", "-q", "--allow-empty", "-m", "one");
-    const one = git("rev-parse", "HEAD");
-    git("commit", "-q", "--allow-empty", "-m", "two");
-    const two = git("rev-parse", "HEAD");
     expect(containedIn(repository, two)(one)).toBe(true);
     expect(containedIn(repository, two)(two)).toBe(true);
     expect(containedIn(repository, one)(two)).toBe(false);
     expect(() => containedIn(repository, two)("f".repeat(40))).toThrow(/cannot order/);
+  } finally {
+    rmSync(repository, { recursive: true, force: true });
+  }
+});
+
+test("a manual rollback behind a journaled crossing refuses before its candidate, naming why (#1068)", async () => {
+  const { repository, one, two } = twoCommits();
+  try {
+    const crossings = [
+      { revision: one, setSha256: "a".repeat(64) },
+      { revision: two, setSha256: "b".repeat(64) },
+    ];
+    const reason = "recovery after a completed crossing is a forward deployment";
+    expect(rollbackRefusal(crossings, two, containedIn(repository, two))).toBeNull();
+    const behind = rollbackRefusal(crossings, one, containedIn(repository, one));
+    expect(behind).toContain(`${two} (set ${"b".repeat(64)})`);
+    expect(behind).not.toContain(`${one} (set`);
+    expect(behind).toContain(reason);
+
+    // The gate asks the running hub for its journal, refuses without booting the candidate and
+    // proves nothing the switch could use.
+    const plugins = [
+      { ...installedEntry(stampedBundle(String(PROTOCOL_VERSION), "2.0.0")), enabled: true },
+    ];
+    const exported = { format: 1, developerMode: false, plugins, crossings };
+    const rollback = (target: string) =>
+      exportGateAttempt(false, { ok: true, result: exported }, 200, 0, {
+        INSTALLED_BUNDLES_ROLLBACK_REPOSITORY: repository,
+        INSTALLED_BUNDLES_REVISION: target,
+      });
+    const refused = await rollback(one);
+    expect(refused).toMatchObject({
+      code: 1,
+      requests: [{ crossings: true }],
+      candidate: null,
+      jobOutput: "",
+    });
+    expect(refused.output).toContain(`rollback to ${one} refused`);
+    expect(refused.output).toContain(reason);
+    // A target containing every crossing boots on the bare closure, as ever.
+    const passed = await rollback(two);
+    expect(passed).toMatchObject({
+      code: 0,
+      candidate: { format: 1, developerMode: false, plugins },
+      jobOutput: "bootstrap_required=false\nreplacement_set=\n",
+    });
+    expect(passed.candidate).not.toHaveProperty("crossings");
   } finally {
     rmSync(repository, { recursive: true, force: true });
   }

@@ -76,29 +76,14 @@ function isCanonicalBase64(value: string, maxBytes: number): boolean {
   );
 }
 
-/** Original file bytes, not reserialized bundle JSON, within the export's artifact cap. */
-const BundleBytesSchema = z
-  .string()
-  .refine((bytes) => isCanonicalBase64(bytes, ISOLATE_MAX_ARTIFACT_BYTES), {
-    message: "bundle bytes must be canonical base64 within the artifact cap",
-  });
-
 /**
- * A journaled staged crossing (#1068) as `exportInstalled { crossings: true }` carries it for a
- * rollback gate: which bundle each member replaced, with that retained bundle's row and bytes.
+ * A journaled staged crossing (#1068) as `exportInstalled { crossings: true }` names it: the
+ * revision that applied it and its set digest. A manual rollback gate refuses a target that does
+ * not contain one, because recovery after a completed crossing is a forward deployment.
  */
 export const InstalledCrossingSchema = z.strictObject({
   revision: z.string().regex(/^[0-9a-f]{40}$/),
   setSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  members: z
-    .array(
-      z.strictObject({
-        pluginId: PluginIdSchema,
-        sha256: z.string().regex(/^[a-f0-9]{64}$/),
-        previous: z.strictObject({ row: InstalledPluginRowSchema, bytes: BundleBytesSchema }),
-      }),
-    )
-    .min(1),
 });
 export type InstalledCrossing = z.infer<typeof InstalledCrossingSchema>;
 
@@ -111,7 +96,10 @@ export const InstalledPluginsSnapshotSchema = z.strictObject({
       z.strictObject({
         row: InstalledPluginRowSchema,
         enabled: z.boolean(),
-        bytes: BundleBytesSchema,
+        /** Original file bytes, not reserialized bundle JSON, within the export's artifact cap. */
+        bytes: z.string().refine((bytes) => isCanonicalBase64(bytes, ISOLATE_MAX_ARTIFACT_BYTES), {
+          message: "bundle bytes must be canonical base64 within the artifact cap",
+        }),
       }),
     )
     .refine((plugins) => new Set(plugins.map(({ row }) => row.pluginId)).size === plugins.length, {

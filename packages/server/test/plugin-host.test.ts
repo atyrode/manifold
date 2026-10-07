@@ -95,8 +95,6 @@ import {
   readReplacementJournal,
   receiveReplacementSet,
   replacementSetSha256,
-  restorePlanCrossing,
-  restorePlanDigest,
   restoreReplacements,
   stagedReplacementDir,
   type StagedReplacement,
@@ -6035,40 +6033,15 @@ describe("staged crossing replaces a held closure with its hub (#1068)", () => {
           disabledInstallations: [],
         }),
       ]);
-      // A rollback gate reads the journaled crossing with the retained previous bundle.
+      // A manual rollback gate reads only the journaled crossing's identity, which it refuses.
       expect((await crossed.exportInstalled(true)).crossings).toEqual([
-        {
-          revision: CROSSING_REVISION,
-          setSha256: staged.setSha256,
-          members: [
-            {
-              pluginId: SAMPLE_ID,
-              sha256: replaced.sha256,
-              previous: {
-                row: expect.objectContaining({
-                  sha256: previous.sha256,
-                  grantedCaps: previous.grantedCaps,
-                }),
-                bytes: readFileSync(previous.bundlePath).toString("base64"),
-              },
-            },
-          ],
-        },
+        { revision: CROSSING_REVISION, setSha256: staged.setSha256 },
       ]);
       expect((await crossed.exportInstalled()).crossings).toBeUndefined();
       crossed.close();
 
-      // A manual rollback restores only the plan its gate proved.
-      const plan = restorePlanDigest(
-        readReplacementJournal(f.fixture.dataDir).map(restorePlanCrossing),
-      );
-      expect(plan).toMatch(/^[0-9a-f]{64}$/);
-      for (const wrong of ["none", "e".repeat(64)])
-        expect(() =>
-          restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION], wrong),
-        ).toThrow(/is not the journaled crossings/);
-      expect(f.fixture.store.pluginInstalls()).toEqual([replaced]);
-      restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION], plan);
+      // The automatic recovery of this crossing restores the previous build.
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION]);
       expect(f.fixture.store.pluginInstalls()).toEqual([previous]);
       expect(readReplacementJournal(f.fixture.dataDir)).toEqual([]);
       expect(existsSync(replaced.bundlePath)).toBe(false);

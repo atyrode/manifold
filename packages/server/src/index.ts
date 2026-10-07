@@ -22,7 +22,6 @@ export {
   receiveReplacementSet,
   replacementRefusals,
   replacementSetSha256,
-  restorePlanDigest,
   restoreReplacements,
   stageReplacementSet,
   type ReplacementRecord,

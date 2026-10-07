@@ -449,51 +449,6 @@ export function writeReplacementJournal(
   syncPath(root);
 }
 
-/** What a rollback gate proves and its switch binds: the crossings one restore undoes. */
-export interface RestorePlanCrossing {
-  readonly revision: string;
-  readonly setSha256: string;
-  readonly members: readonly {
-    readonly pluginId: string;
-    readonly sha256: string;
-    readonly previousSha256: string;
-  }[];
-}
-
-export function restorePlanCrossing(record: ReplacementRecord): RestorePlanCrossing {
-  return {
-    revision: record.revision,
-    setSha256: record.setSha256,
-    members: record.members.map(({ previous, sha256 }) => ({
-      pluginId: previous.pluginId,
-      sha256,
-      previousSha256: previous.sha256,
-    })),
-  };
-}
-
-/**
- * A restore plan's identity, newest crossing first: the sha256 of its canonical JSON, or
- * `none` when the rollback restores nothing. The installed-bundles gate computes it from the
- * export it proved, and the host's restore refuses any other.
- */
-export function restorePlanDigest(crossings: readonly RestorePlanCrossing[]): string {
-  if (crossings.length === 0) return "none";
-  return sha256Hex(
-    canonicalJobJson(
-      crossings.map(({ revision, setSha256, members }) => ({
-        revision,
-        setSha256,
-        members: members.map(({ pluginId, sha256, previousSha256 }) => ({
-          pluginId,
-          sha256,
-          previousSha256,
-        })),
-      })),
-    ),
-  );
-}
-
 /** The bundle a member crossed to: the row its group committed, or where the group writes it. */
 function crossedBundlePath(dataDir: string, member: ReplacementRecord["members"][number]) {
   return resolve(
@@ -503,11 +458,11 @@ function crossedBundlePath(dataDir: string, member: ReplacementRecord["members"]
 }
 
 /**
- * THE ROLLBACK HALF. Restores the newest journal records, newest first and named exactly, so the
- * previous hub boots its previous bundles: each plugin returns to the previous row of the oldest
- * restored crossing that replaced it, and each native installation a crossing disabled is
- * re-enabled at the same revision and artifact, the approval it held before. When `plan` is
- * given it must be the digest of exactly these crossings.
+ * THE ROLLBACK HALF, which the deployment's automatic recovery runs for a crossing whose switch
+ * or live verification failed. Restores the newest journal records, newest first and named
+ * exactly, so the previous hub boots its previous bundles: each plugin returns to the previous
+ * row of the oldest restored crossing that replaced it, and each native installation a crossing
+ * disabled is re-enabled at the same revision and artifact, the approval it held before.
  *
  * A row is restored only if it is EXACTLY one the journal recorded for it: a crossing's
  * committed row, or a previous row along the restored chain (a crossing never committed, or a
@@ -523,7 +478,6 @@ export function restoreReplacements(
   store: ServerStore,
   dataDir: string,
   revisions: readonly string[],
-  plan?: string,
 ): ReplacementRecord[] {
   const journal = readReplacementJournal(dataDir);
   const newest = journal.slice(journal.length - revisions.length).reverse();
@@ -534,10 +488,6 @@ export function restoreReplacements(
   )
     throw new Error(
       `restore must name the newest crossings newest first; journal holds ${journal.map((record) => record.revision).join(", ") || "none"}`,
-    );
-  if (plan !== undefined && restorePlanDigest(newest.map(restorePlanCrossing)) !== plan)
-    throw new Error(
-      `restore plan ${plan} is not the journaled crossings ${revisions.join(", ")}; restore refused`,
     );
   // Each plugin's journaled chain, newest crossing first: the rows it may hold now, and the
   // previous row of the oldest restored crossing, which it gets.

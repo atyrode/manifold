@@ -22,7 +22,7 @@ const USAGE = `usage:
   bun scripts/bundle-replacement.ts verify DIR SET_SHA256
   bun scripts/bundle-replacement.ts receive DIR SET_SHA256 REVISION DATA_DIR
   bun scripts/bundle-replacement.ts journal DATA_DIR
-  bun scripts/bundle-replacement.ts restore DATA_DIR [--plan RESTORE_PLAN_SHA256] REVISION...`;
+  bun scripts/bundle-replacement.ts restore DATA_DIR REVISION...`;
 
 export async function main(argv: readonly string[]): Promise<string[]> {
   const [command, ...args] = argv;
@@ -61,14 +61,11 @@ export async function main(argv: readonly string[]): Promise<string[]> {
         .reverse();
     }
     case "restore": {
-      const [dataDir, ...rest] = args;
-      // A manual rollback binds the plan its installed-bundles gate proved; recovery does not.
-      const plan = rest[0] === "--plan" ? rest[1] : undefined;
-      const revisions = rest[0] === "--plan" ? rest.slice(2) : rest;
-      if (!dataDir || revisions.length === 0 || (rest[0] === "--plan" && !plan)) break;
+      const [dataDir, ...revisions] = args;
+      if (!dataDir || revisions.length === 0) break;
       const store = new ServerStore(openDatabase(join(dataDir, "manifold.db")));
       try {
-        return restoreReplacements(store, dataDir, revisions, plan).map(
+        return restoreReplacements(store, dataDir, revisions).map(
           (record) =>
             `restored ${record.revision}: ${record.members.map((member) => `${member.previous.pluginId}@${member.previous.sha256}`).join(", ")}; re-enabled ${String(record.disabledInstallations.length)} native installation(s)`,
         );

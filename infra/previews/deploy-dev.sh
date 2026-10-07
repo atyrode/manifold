@@ -11,18 +11,12 @@ require_domain
 mode=forward
 expected_current=
 replacement_set=
-restore_plan=
-usage='usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA [--restore-plan none|PLAN_SHA256] | --replacement-set SET_SHA256]'
+usage='usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA | --replacement-set SET_SHA256]'
 case "$#:${2:-}" in
   1:) sha_arg "$1"; target_arg=$1 ;;
-  3:--rollback-from | 5:--rollback-from)
+  3:--rollback-from)
     [[ $1 =~ ^[0-9a-f]{40}$ && $3 =~ ^[0-9a-f]{40}$ ]] ||
       fail 'rollback target and expected current revision must be full commit SHAs'
-    # A manual rollback binds the restore its installed-bundles gate proved (#1068).
-    if (($# == 5)); then
-      [[ $4 == --restore-plan ]] && [[ $5 == none || $5 =~ ^[0-9a-f]{64}$ ]] || fail "$usage"
-      restore_plan=$5
-    fi
     target_arg=$1
     expected_current=$3
     mode=rollback
@@ -128,16 +122,6 @@ dev_compose() {
 incumbent_image=$(installed_development_image "$project")
 incumbent_revision=$(development_image_revision "$incumbent_image" "$checkout")
 require_development_order "$checkout" "$incumbent_revision" "$revision" "$mode" "$expected_current"
-# Keep the incumbent's image record reachable even on containerd image stores.
-# A failed activation may leave it referenced only by the previous candidate tag.
-docker image tag "$incumbent_image" "$project:local" ||
-  fail 'HOLD: cannot preserve incumbent image provenance'
-candidate_image="$project:candidate"
-# Build separately: replacing the incumbent's sole tag can discard its metadata.
-build_retained_hub "$final_configuration" "$checkout" "$candidate_image" "$revision"
-final_image=$(docker image inspect --format '{{.Id}}' "$candidate_image")
-[[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'
-seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
 # Retained data must already exist: a typo must not silently create a fresh identity.
 docker volume inspect "$volume" >/dev/null 2>&1 || fail 'retained development data volume is missing'
 # Run one plugin-format step in a disposable, network-less container of IMAGE over the stopped
@@ -157,14 +141,36 @@ volume_step() {
     --label "com.docker.compose.project=$project" \
     --mount "type=volume,src=$volume,dst=/data" "${options[@]}" "$image" "$@"
 }
+# The staged-crossing journal (#1068), newest first, read without writing by the image that wrote it.
+journal_revisions() {
+  docker run --rm --network none --security-opt no-new-privileges \
+    --label "com.docker.compose.project=$project" \
+    --mount "type=volume,src=$volume,dst=/data,readonly" --entrypoint /bin/sh "$incumbent_image" -c \
+    'if [ -e /data/plugin-replacement/journal.json ]; then exec bun scripts/bundle-replacement.ts journal /data; fi'
+}
+# A rollback behind a completed staged crossing refuses here, before anything is built or
+# stopped; the transition decides again over the stopped volume.
+if [[ $mode == rollback ]]; then
+  journal=$(journal_revisions) || fail 'HOLD: cannot read the staged-crossing journal'
+  restore=$(rollback_crossing "$checkout" "$incumbent_revision" "$revision" "$journal") || exit 2
+  [[ -z $restore ]] || log "rollback restores staged crossing $restore, which the outgoing revision applied"
+fi
+# Keep the incumbent's image record reachable even on containerd image stores.
+# A failed activation may leave it referenced only by the previous candidate tag.
+docker image tag "$incumbent_image" "$project:local" ||
+  fail 'HOLD: cannot preserve incumbent image provenance'
+candidate_image="$project:candidate"
+# Build separately: replacing the incumbent's sole tag can discard its metadata.
+build_retained_hub "$final_configuration" "$checkout" "$candidate_image" "$revision"
+final_image=$(docker image inspect --format '{{.Id}}' "$candidate_image")
+[[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'
+seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
 # Bundles cross with the hub (#1068), between stopping the incumbent and starting its successor.
-# Forward: hand the successor the staged set, or clear any stale one. Rollback: restore every
-# journaled crossing the target revision does not contain, newest first, with the outgoing
-# image's own code, then clear any staged set the target would not understand. A manual
-# rollback restores only the plan its installed-bundles gate proved on the target candidate.
+# Forward: hand the successor the staged set, or clear any stale one. Rollback: restore the
+# in-flight crossing, the only one `rollback_crossing` admits, with the outgoing image's own
+# code, then clear any staged set the target would not understand.
 retained_transition() {
-  local journal status entry
-  local -a undo=() plan=()
+  local journal restore
   if [[ $mode == forward ]]; then
     if [[ -n $replacement_set ]]; then
       volume_step "$final_image" \
@@ -175,29 +181,12 @@ retained_transition() {
     fi
     return
   fi
-  journal=$(volume_step "$incumbent_image" --entrypoint /bin/sh -- -c \
-    'if [ -e /data/plugin-replacement/journal.json ]; then exec bun scripts/bundle-replacement.ts journal /data; fi') ||
-    return 1
-  while IFS= read -r entry; do
-    [[ -n $entry ]] || continue
-    [[ $entry =~ ^[0-9a-f]{40}$ ]] || return 1
-    status=0
-    git -C "$checkout" merge-base --is-ancestor "$entry" "$revision" || status=$?
-    ((status == 0)) && break
-    ((status == 1)) || return 1
-    undo+=("$entry")
-  done <<<"$journal"
-  if [[ -n $restore_plan ]]; then
-    if ((${#undo[@]} == 0)) && [[ $restore_plan != none ]]; then
-      log "restore plan $restore_plan was proved, but no journaled crossing remains to restore"
-      return 1
-    fi
-    plan=(--plan "$restore_plan")
-  fi
-  if ((${#undo[@]} > 0)); then
-    log "restoring the bundles staged crossings ${undo[*]} replaced"
+  journal=$(journal_revisions) || return 1
+  restore=$(rollback_crossing "$checkout" "$incumbent_revision" "$revision" "$journal") || return 1
+  if [[ -n $restore ]]; then
+    log "restoring the bundles staged crossing $restore replaced"
     volume_step "$incumbent_image" --entrypoint bun -- \
-      scripts/bundle-replacement.ts restore /data "${plan[@]}" "${undo[@]}" || return 1
+      scripts/bundle-replacement.ts restore /data "$restore" || return 1
   fi
   volume_step "$incumbent_image" --entrypoint /bin/rm -- -rf -- /data/plugin-replacement/staged
 }

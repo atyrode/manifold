@@ -10,7 +10,7 @@ import {
   type PluginReplacementSet,
 } from "../packages/protocol/src/index.ts";
 import { invokeAction } from "../packages/sdk/src/index.ts";
-import { readArtifact, restorePlanDigest } from "../packages/server/src/index.ts";
+import { readArtifact } from "../packages/server/src/index.ts";
 
 const EXPORT_DOOR = "engine.plugins.exportInstalled";
 
@@ -22,7 +22,7 @@ export interface GateReplacement {
   readonly bundles: Readonly<Record<string, string>>;
 }
 
-/** `crossings` also exports the staged-crossing journal a rollback gate projects (#1068). */
+/** `crossings` also exports the journaled staged crossings a manual rollback refuses (#1068). */
 export async function fetchInstalledSnapshot(
   origin: string,
   token: string,
@@ -57,7 +57,7 @@ export async function fetchInstalledSnapshot(
     EXPORT_DOOR,
     crossings ? { crossings } : {},
   );
-  // A hub predating the crossing journal refuses the argument: it has no crossing to restore.
+  // A hub predating the crossing journal refuses the argument: it journals no crossing.
   if (crossings && !outcome.ok && outcome.denial.rule === "invalid_args")
     ({ outcome, traceId } = await invokeAction(options, EXPORT_DOOR, {}));
   if (!outcome.ok) {
@@ -128,52 +128,21 @@ export async function fetchReplacement(
 }
 
 /**
- * A ROLLBACK'S CLOSURE (#1068). The previous hub never boots the bundles installed now: the
- * deployment first restores every journaled crossing the target revision does not contain,
- * newest first, stopping at the first one it does (`contains`, the host's own ancestry rule).
- * This is that restore applied to the export: each restored member's retained previous row and
- * bytes, with its current enablement, which is what the target candidate must load. `plan` is
- * the restore's digest (or `none`), which the switch hands the host to restore exactly that.
+ * A MANUAL ROLLBACK ACROSS A STAGED CROSSING (#1068) refuses here, before anything stops. The
+ * crossing is forward-only: only the automatic recovery of the run that applied it restores its
+ * bundles, and recovery after a completed crossing is a forward deployment. `contains` is the
+ * host's own ancestry rule; every journaled crossing the target does not contain is named.
  */
-export function rollbackProjection(
-  snapshot: InstalledPluginsSnapshot,
+export function rollbackRefusal(
+  crossings: readonly InstalledCrossing[],
+  target: string,
   contains: (revision: string) => boolean,
-): {
-  readonly snapshot: InstalledPluginsSnapshot;
-  readonly restored: readonly string[];
-  readonly plan: string;
-} {
-  const { crossings = [], ...installed } = InstalledPluginsSnapshotSchema.parse(snapshot);
-  const undo: InstalledCrossing[] = [];
-  for (const crossing of [...crossings].reverse()) {
-    if (contains(crossing.revision)) break;
-    undo.push(crossing);
-  }
-  const plugins = new Map(installed.plugins.map((plugin) => [plugin.row.pluginId, plugin]));
-  for (const crossing of undo)
-    for (const member of crossing.members) {
-      const current = plugins.get(member.pluginId);
-      if (current === undefined)
-        throw new Error(
-          `${member.pluginId}: not installed; restoring crossing ${crossing.revision} would refuse`,
-        );
-      plugins.set(member.pluginId, { ...member.previous, enabled: current.enabled });
-    }
-  return {
-    snapshot: { ...installed, plugins: [...plugins.values()] },
-    restored: undo.map((crossing) => crossing.revision),
-    plan: restorePlanDigest(
-      undo.map(({ revision, setSha256, members }) => ({
-        revision,
-        setSha256,
-        members: members.map(({ pluginId, sha256, previous }) => ({
-          pluginId,
-          sha256,
-          previousSha256: previous.row.sha256,
-        })),
-      })),
-    ),
-  };
+): string | null {
+  const behind = crossings
+    .filter((crossing) => !contains(crossing.revision))
+    .map(({ revision, setSha256 }) => `${revision} (set ${setSha256})`);
+  if (behind.length === 0) return null;
+  return `rollback to ${target} refused: the running instance journals staged crossing ${behind.join(", ")}, which the target does not contain; recovery after a completed crossing is a forward deployment`;
 }
 
 /** `git merge-base --is-ancestor`, as deploy-dev.sh decides which crossings a target contains. */
@@ -197,10 +166,7 @@ export async function runInstalledBundleGate(
   replacement?: GateReplacement,
 ): Promise<void> {
   if (!image || image.startsWith("-")) throw new Error("a candidate image reference is required");
-  const { format, developerMode, plugins, crossings } =
-    InstalledPluginsSnapshotSchema.parse(snapshot);
-  if (crossings !== undefined)
-    throw new Error("project a rollback's crossings before its candidate");
+  const { format, developerMode, plugins } = InstalledPluginsSnapshotSchema.parse(snapshot);
   const parsed = { format, developerMode, plugins };
   const name = `manifold-installed-bundles-${crypto.randomUUID()}`;
   let timedOut = false;
@@ -287,8 +253,7 @@ if (import.meta.main) {
     const revision = process.env.INSTALLED_BUNDLES_REVISION ?? "";
     if (setPath && bootstrap)
       throw new Error("a staged replacement needs the export door; it cannot use bootstrap_gate");
-    if (setPath && rollbackRepository)
-      throw new Error("a rollback restores journaled crossings; it stages no replacement set");
+    if (setPath && rollbackRepository) throw new Error("a rollback stages no replacement set");
     if (rollbackRepository && !/^[0-9a-f]{40}$/.test(revision))
       throw new Error("a rollback gate needs the exact target commit");
     const replacement = setPath
@@ -301,21 +266,16 @@ if (import.meta.main) {
       process.env.GITHUB_STEP_SUMMARY,
       rollbackRepository !== "",
     );
-    let snapshot = exported;
-    let plan = "";
-    if (rollbackRepository) {
-      // A target predating the export door predates the journal too: nothing to restore.
-      plan = "none";
-      if (exported !== null) {
-        const projection = rollbackProjection(exported, containedIn(rollbackRepository, revision));
-        snapshot = projection.snapshot;
-        plan = projection.plan;
-        console.log(
-          `installed-bundles: rollback to ${revision} restores ${projection.restored.join(", ") || "no staged crossing"}; restore plan ${plan}`,
-        );
-      }
+    // A target predating the export door predates the journal too: it has no crossing to refuse.
+    if (rollbackRepository && exported !== null) {
+      const refusal = rollbackRefusal(
+        exported.crossings ?? [],
+        revision,
+        containedIn(rollbackRepository, revision),
+      );
+      if (refusal !== null) throw new Error(refusal);
     }
-    if (snapshot !== null) await runInstalledBundleGate(image, snapshot, replacement);
+    if (exported !== null) await runInstalledBundleGate(image, exported, replacement);
     if (replacement !== undefined && process.env.GITHUB_STEP_SUMMARY) {
       appendFileSync(
         process.env.GITHUB_STEP_SUMMARY,
@@ -327,16 +287,10 @@ if (import.meta.main) {
           .join("\n")}\n\n`,
       );
     }
-    if (rollbackRepository && plan !== "none" && process.env.GITHUB_STEP_SUMMARY) {
-      appendFileSync(
-        process.env.GITHUB_STEP_SUMMARY,
-        `### Rollback restore\n\nThe candidate passed on the closure that restoring the staged crossings the target does not contain yields. The switch binds restore plan <code>${plan}</code>.\n\n`,
-      );
-    }
     if (process.env.GITHUB_OUTPUT) {
       appendFileSync(
         process.env.GITHUB_OUTPUT,
-        `bootstrap_required=${exported === null}\nreplacement_set=${replacement?.setSha256 ?? ""}\nrestore_plan=${plan}\n`,
+        `bootstrap_required=${exported === null}\nreplacement_set=${replacement?.setSha256 ?? ""}\n`,
       );
     }
   } catch (error) {
