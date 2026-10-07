@@ -3,12 +3,17 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AGENT_RUN_MAX_LIFETIME_MS,
+  AGENT_RUN_MAX_RENEWALS,
   AgentPolicyChallengeSchema,
   AcknowledgeAgentPolicyResultSchema,
+  AcknowledgeAgentPolicyV2ResultSchema,
   CreateRunCredentialResultSchema,
   FinishAgentRunResultSchema,
   ReloadAgentPolicyResultSchema,
   RenewAgentRunResultSchema,
+  RenewAgentRunV2ResultSchema,
+  ReportRunActivityV2ResultSchema,
   formatManifoldUri,
   type ActionOutcome,
 } from "@manifold/protocol";
@@ -16,7 +21,7 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
-import type { ServerStore } from "../src/stores.ts";
+import { TRACE_ROW_TYPE, type ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
@@ -499,5 +504,238 @@ describe("sponsor-bound agent runs", () => {
       fix.store.close();
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+});
+
+const REPORT_ACTIVITY = "core.access.reportRunActivityV2";
+const RENEW = "core.access.renewAgentRunV2";
+const KEEP_OPEN = {
+  agentJustification: "Keep the harness Run open until its model acknowledges policy.",
+};
+
+/** One V2 Agent whose runner admits sibling Runs, each pending until its own acknowledgement. */
+async function pendingHarness(fix: Fixture) {
+  const registered = await fix.auth.registerAgentV2(
+    {
+      name: "pending harness",
+      purpose: "Hold a harness Run open before its model acknowledges policy.",
+      harness: "external",
+      context: { profile: {} },
+      grant: {
+        scope: [{ target: "manifold://", reach: "subtree", caps: ["containers:read"] }],
+        maxRunLifetimeMs: 120_000,
+        delegation: { maxDepth: 1, maxDescendants: 1 },
+        expiresAt: fix.runtime.now() + AGENT_RUN_MAX_LIFETIME_MS,
+      },
+    },
+    fix.owner,
+  );
+  if (registered.credential === undefined) throw new Error("fixture Agent must be new");
+  const runner = fix.auth.authenticate(registered.credential.token);
+  const admit = () => {
+    const created = fix.auth.createRunV2(
+      { agentId: registered.agent.agentId, lifetimeMs: 60_000 },
+      runner,
+    );
+    if (created.credential === undefined) throw new Error("runner admission returned no bearer");
+    const token = created.credential.token;
+    return { run: created.run, token, actor: fix.auth.authenticate(token) };
+  };
+  return { runner, admit };
+}
+
+async function acknowledgeV2(fix: Fixture, actor: AuthContext) {
+  const challenge = AgentPolicyChallengeSchema.parse(
+    value(await fix.host.dispatch(actor, "core.access.getAgentPolicy", {})),
+  );
+  return AcknowledgeAgentPolicyV2ResultSchema.parse(
+    value(
+      await fix.host.dispatch(actor, "core.access.acknowledgeAgentPolicyV2", {
+        revision: challenge.revision,
+        acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+      }),
+    ),
+  );
+}
+
+function latestTrace(fix: Fixture) {
+  const row = fix.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+  if (row === undefined) throw new Error("dispatch left no trace");
+  return row;
+}
+
+describe("a Run awaiting policy acknowledgement", () => {
+  test("its own credential reports activity and renews within the justification, lease and ceiling", async () => {
+    const fix = await fixture();
+    const { admit } = await pendingHarness(fix);
+    const pending = admit();
+    expect(pending.run.state).toBe("pending_policy");
+    const reported = ReportRunActivityV2ResultSchema.parse(
+      value(
+        await fix.host.dispatch(pending.actor, REPORT_ACTIVITY, {
+          runId: pending.run.id,
+          activity: "working",
+        }),
+      ),
+    );
+    expect(reported.run).toMatchObject({ state: "pending_policy", activity: "working" });
+
+    const renew = (actor: AuthContext, lifetimeMs: number, options?: typeof KEEP_OPEN) =>
+      fix.host.dispatch(actor, RENEW, { runId: pending.run.id, lifetimeMs }, null, options);
+    expect(denial(await renew(pending.actor, 120_000)).rule).toBe("justification_required");
+    expect(denial(await renew(pending.actor, 120_000, { agentJustification: " " })).rule).toBe(
+      "invalid_justification",
+    );
+    expect(denial(await renew(pending.actor, AGENT_RUN_MAX_LIFETIME_MS + 1, KEEP_OPEN)).rule).toBe(
+      "invalid_args",
+    );
+    expect(denial(await renew(pending.actor, 180_000, KEEP_OPEN))).toEqual({
+      rule: "refused",
+      message: "lifetime_exceeds_grant",
+    });
+    expect(denial(await renew(pending.actor, 60_000, KEEP_OPEN))).toEqual({
+      rule: "refused",
+      message: "agent run renewal must extend its expiry",
+    });
+    expect(fix.store.getAgentRun(pending.run.id)).toMatchObject({
+      renewals: 0,
+      expiresAt: pending.run.expiresAt,
+    });
+    expect(fix.auth.authenticate(pending.token).agentRunId).toBe(pending.run.id);
+
+    let { actor, token } = pending;
+    for (let renewal = 1; renewal <= AGENT_RUN_MAX_RENEWALS; renewal += 1) {
+      fix.runtime.time += 1_000;
+      const renewed = RenewAgentRunV2ResultSchema.parse(
+        value(await renew(actor, 120_000, KEEP_OPEN)),
+      );
+      expect(renewed.run).toMatchObject({
+        state: "pending_policy",
+        renewals: renewal,
+        expiresAt: fix.runtime.now() + 120_000,
+      });
+      expect(renewed.revokedCredentials).toBe(1);
+      expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBe(
+        KEEP_OPEN.agentJustification,
+      );
+      expect(() => fix.auth.authenticate(token)).toThrow("revoked");
+      token = renewed.credential.token;
+      actor = fix.auth.authenticate(token);
+      expect(actor.agentRunId).toBe(pending.run.id);
+    }
+    fix.runtime.time += 1_000;
+    expect(denial(await renew(actor, 120_000, KEEP_OPEN))).toEqual({
+      rule: "refused",
+      message: "agent run renewal budget exhausted",
+    });
+    expect(
+      value(
+        await fix.host.dispatch(actor, REPORT_ACTIVITY, {
+          runId: pending.run.id,
+          activity: "idle",
+        }),
+      ),
+    ).toMatchObject({ run: { state: "pending_policy", activity: "idle" } });
+    expect(fix.store.getAgentRun(pending.run.id)).toMatchObject({
+      state: "pending_policy",
+      renewals: AGENT_RUN_MAX_RENEWALS,
+    });
+    fix.store.close();
+  });
+
+  test("every other door, and so every authority-bearing action, still requires acknowledgement", async () => {
+    const fix = await fixture();
+    const { admit } = await pendingHarness(fix);
+    const pending = admit();
+    const refused: string[] = [];
+    for (const action of fix.host.roster().flatMap((entry) => entry.actions)) {
+      const policyFree =
+        action.name.startsWith("core.access.") &&
+        (action.runAccess === "policy" ||
+          action.runAccess === "teardown" ||
+          action.runAccess === "inspect");
+      if (policyFree || action.name === REPORT_ACTIVITY || action.name === RENEW) continue;
+      const outcome = await fix.host.dispatch(pending.actor, action.name, {});
+      expect({ door: action.name, rule: outcome.ok ? "ok" : outcome.denial.rule }).toEqual({
+        door: action.name,
+        rule: "policy_required",
+      });
+      refused.push(action.name);
+    }
+    expect(refused).toEqual(
+      expect.arrayContaining([
+        "core.machines.list",
+        "core.access.createRunV2",
+        "core.access.createChildRunV2",
+        "core.access.launchRun",
+        "core.access.sendRunInput",
+        "core.access.reportRunActivity",
+        "core.access.renewAgentRun",
+      ]),
+    );
+    expect((await acknowledgeV2(fix, pending.actor)).run.state).toBe("active");
+    expect((await fix.host.dispatch(pending.actor, "core.machines.list", {})).ok).toBe(true);
+    fix.store.close();
+  });
+
+  test("no other Run's credential, nor its Agent runner's renewal, acts for it", async () => {
+    const fix = await fixture();
+    const { runner, admit } = await pendingHarness(fix);
+    const pending = admit();
+    const pendingSibling = admit();
+    const activeSibling = admit();
+    await acknowledgeV2(fix, activeSibling.actor);
+    for (const other of [pendingSibling.actor, activeSibling.actor]) {
+      expect(other.principal.id).toBe(pending.actor.principal.id);
+      expect(
+        denial(
+          await fix.host.dispatch(
+            other,
+            RENEW,
+            { runId: pending.run.id, lifetimeMs: 120_000 },
+            null,
+            KEEP_OPEN,
+          ),
+        ),
+      ).toEqual({ rule: "refused", message: "agent_unavailable" });
+      expect(
+        denial(
+          await fix.host.dispatch(other, REPORT_ACTIVITY, {
+            runId: pending.run.id,
+            activity: "blocked",
+          }),
+        ),
+      ).toEqual({ rule: "refused", message: "harness_credential_required" });
+    }
+    expect(
+      denial(
+        await fix.host.dispatch(
+          runner,
+          RENEW,
+          { runId: pending.run.id, lifetimeMs: 120_000 },
+          null,
+          KEEP_OPEN,
+        ),
+      ),
+    ).toEqual({ rule: "refused", message: "only an active policy-current run may be renewed" });
+    expect(fix.store.getAgentRun(pending.run.id)).toMatchObject({
+      state: "pending_policy",
+      activity: pending.run.activity,
+      renewals: 0,
+      expiresAt: pending.run.expiresAt,
+    });
+    expect(fix.auth.authenticate(pending.token).agentRunId).toBe(pending.run.id);
+
+    // Admission is for a Run that has not yet acknowledged; a stale one regains neither door.
+    fix.store.updateAgentRunPolicy(activeSibling.run.id, "0".repeat(64), "policy_stale");
+    for (const [door, args] of [
+      [RENEW, { runId: activeSibling.run.id, lifetimeMs: 120_000 }],
+      [REPORT_ACTIVITY, { runId: activeSibling.run.id, activity: "idle" }],
+    ] as const) {
+      expect(
+        denial(await fix.host.dispatch(activeSibling.actor, door, args, null, KEEP_OPEN)).rule,
+      ).toBe("policy_stale");
+    }
+    fix.store.close();
   });
 });

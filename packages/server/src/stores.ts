@@ -2838,7 +2838,7 @@ export class ServerStore {
            SET expires_at=?,renewals=renewals+1,authorizer_token_id=?,authorizer_grant_id=?,
                authorizer_caps=?,authorizer_container_scope=?,authorizer_expires_at=?,
                authorizer_authority_scope=?
-           WHERE id=? AND state='active'`,
+           WHERE id=? AND state IN ('pending_policy','active')`,
         )
         .run(
           expiresAt,

@@ -286,6 +286,10 @@ still enforces attenuation, depth/descendant budgets, renewal ceilings and live 
 Renew parent and child deliberately: changing a sponsor credential changes live lineage and may
 require renewed child authorization. A `policy_stale` refusal includes its trace id and is followed
 by the new exact challenge; explicitly acknowledge it before retrying, with no auto-assent.
+A Run-mode root may `renew` before its `ack`, on its own bearer, so a harness can keep its Run
+alive before the model acknowledges; the justification, lease bounds and renewal ceiling still
+apply. An Agent-mode root renews on the runner credential and a child on its parent's, so both
+still require acknowledgement first.
 
 A child declaration may narrow `caps`, `target`, `reach`, `lifetimeMs` and `delegation`, or
 supply the external harness's `taskRef`. It cannot name `agentId`, `session` or `model`; those
@@ -293,7 +297,8 @@ bindings belong to the launcher, never a model frame.
 
 The trusted harness writes `{runId,activity:"working"|"blocked"|"done"|"idle"}` JSONL to the
 separate activity pipe, or calls `ActionRunner.reportActivity` in-process. Reports invoke
-`core.access.reportRunActivity` with the owned run's credential. The pipe uses the same 64-KiB
+`core.access.reportRunActivityV2` with the owned run's credential, including before the policy
+is acknowledged. The pipe uses the same 64-KiB
 UTF-8 framing, has its own 1024-frame limit, and shares the serialized executor and process
 lifetime. Closing only the activity pipe does not finish work; model stdin EOF does. Activity
 does not acknowledge policy or settle a run, and is never inferred from terminal output.
