@@ -13,6 +13,8 @@ import {
   InspectRunV2ResultSchema,
   ListRunsV2ResultSchema,
   ReportRunActivityV2ResultSchema,
+  ReportRunModelRequestSchema,
+  ReportRunModelV2ResultSchema,
   AcknowledgeAgentPolicyV2ResultSchema,
   RenewAgentRunV2ResultSchema,
   FinishAgentRunV2ResultSchema,
@@ -247,6 +249,7 @@ export const ACCESS_INSPECT_RUN_V2_ACTION = `${accessManifest.id}.inspectRunV2`;
 export const ACCESS_FINISH_AGENT_RUN_V2_ACTION = `${accessManifest.id}.finishAgentRunV2`;
 export const ACCESS_RENEW_AGENT_RUN_V2_ACTION = `${accessManifest.id}.renewAgentRunV2`;
 export const ACCESS_REPORT_RUN_ACTIVITY_V2_ACTION = `${accessManifest.id}.reportRunActivityV2`;
+export const ACCESS_REPORT_RUN_MODEL_V2_ACTION = `${accessManifest.id}.reportRunModelV2`;
 export const ACCESS_ACKNOWLEDGE_AGENT_POLICY_V2_ACTION = `${accessManifest.id}.acknowledgeAgentPolicyV2`;
 
 /**
@@ -409,6 +412,14 @@ export const accessActions = [
     runAccess: "runner",
     input: ReportRunActivityRequestSchema,
     result: ReportRunActivityV2ResultSchema,
+  }),
+  defineAction({
+    name: "reportRunModelV2",
+    title: "Report the current model serving a Run",
+    caps: [],
+    runAccess: "runner",
+    input: ReportRunModelRequestSchema,
+    result: ReportRunModelV2ResultSchema,
   }),
   defineAction({
     name: "acknowledgeAgentPolicyV2",

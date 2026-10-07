@@ -13,6 +13,8 @@ import {
   JsonProjectionError,
   MANIFOLD_ROOT_URI,
   RenewAgentRunV2ResultSchema,
+  ReportRunModelV2ResultSchema,
+  ReportRunModelRequestSchema,
   actionResultProjectionDigest,
   compileJsonProjection,
   projectJson,
@@ -73,6 +75,7 @@ const LIFECYCLE = {
   ack: "core.access.acknowledgeAgentPolicyV2",
   renew: "core.access.renewAgentRunV2",
   finish: "core.access.finishAgentRunV2",
+  model: "core.access.reportRunModelV2",
 } as const;
 
 /** The sole sequence executor. No bearer-bearing value is returned by its public methods. */
@@ -92,7 +95,6 @@ export class ActionRunner {
   #protocol: ActionProtocol | null = null;
   #root: OwnedRun | null = null;
   #admissionUncertain = false;
-  #activityFrames = 0;
   #closed = false;
   #cleanupConfirmed = false;
   #terminalOutcome: AgentRunTerminalOutcome | null = null;
@@ -422,7 +424,9 @@ export class ActionRunner {
         throw new ActionRunnerError("invalid_response", invocation.traceId);
       this.#root = this.#retain(parsed.data.run, this.#launcherToken);
       this.#admissionUncertain = false;
-      this.#result(null, this.#root, LIFECYCLE.inspect, this.#root.run.target, invocation);
+      this.#result(null, this.#root, LIFECYCLE.inspect, this.#root.run.target, invocation, {
+        expiresAt: this.#root.run.expiresAt,
+      });
       await this.#policy(null, this.#root);
       return;
     }
@@ -479,15 +483,34 @@ export class ActionRunner {
 
   /** Only a trusted harness calls this API or writes the separate inherited activity pipe. */
   async reportActivity(input: unknown): Promise<void> {
+    if (ReportRunModelRequestSchema.safeParse(input).success) {
+      await this.reportModel(input);
+      return;
+    }
     if (this.#closed || this.#root === null) throw new ActionRunnerError("invalid_state");
     const parsed = ActionRunnerActivitySchema.safeParse(input);
     if (!parsed.success) throw new ActionRunnerError("invalid_frame");
     this.#checkInput(parsed.data);
-    if (++this.#activityFrames > ACTION_RUNNER_MAX_FRAMES)
-      throw new ActionRunnerError("limit_exceeded");
     const run = this.#owned(parsed.data.runId);
     const invocation = await this.#call(run, LIFECYCLE.activity, parsed.data);
     this.#result(null, run, LIFECYCLE.activity, run.run.target, invocation);
+  }
+
+  /** Only a trusted harness calls this API to publish the model currently serving its Run. */
+  async reportModel(input: unknown): Promise<void> {
+    if (this.#closed || this.#root === null) throw new ActionRunnerError("invalid_state");
+    const parsed = ReportRunModelRequestSchema.safeParse(input);
+    if (!parsed.success) throw new ActionRunnerError("invalid_frame");
+    this.#checkInput(parsed.data);
+    const run = this.#owned(parsed.data.runId);
+    const invocation = await this.#call(run, LIFECYCLE.model, parsed.data);
+    if (invocation.outcome.ok) {
+      const result = ReportRunModelV2ResultSchema.safeParse(invocation.outcome.result);
+      if (!result.success || result.data.run.id !== run.run.id)
+        throw new ActionRunnerError("invalid_response", invocation.traceId);
+      run.run = result.data.run;
+    }
+    this.#result(null, run, LIFECYCLE.model, run.run.target, invocation);
   }
 
   /** Sequential frames only. A host must close on any thrown error (runActionStdio does). */

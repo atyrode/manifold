@@ -673,6 +673,30 @@ describe("external action runner over real doors", () => {
     try {
       await runner.bind();
       expect(policyFrame(frames).runId).toBe(admission.run.id);
+      expect(
+        frames.find(
+          (frame) => frame.type === "result" && frame.door === "core.access.inspectRunV2",
+        ),
+      ).toMatchObject({
+        runId: admission.run.id,
+        expiresAt: admission.run.expiresAt,
+      });
+      await runner.reportActivity({
+        runId: admission.run.id,
+        model: { provider: "switched-provider", model: "switched-model" },
+      });
+      const modelInspection = await invokeAction(
+        { origin: server.publicUrl, token: SPONSOR },
+        "core.access.inspectRun",
+        { runId: admission.run.id },
+      );
+      if (!modelInspection.outcome.ok) throw new Error("run model inspection refused");
+      expect(InspectRunResultSchema.parse(modelInspection.outcome.result).run.model).toEqual({
+        provider: "switched-provider",
+        model: "switched-model",
+      });
+      for (let report = 0; report < 1_025; report += 1)
+        await runner.reportActivity({ runId: admission.run.id, activity: "working" });
       await expect(
         runner.accept({
           type: "start",
@@ -712,7 +736,7 @@ describe("external action runner over real doors", () => {
     } finally {
       await runner.close("failed");
     }
-  });
+  }, 30_000);
 
   test("an adopted Run reports activity and renews itself before acknowledgement, and nothing else", async () => {
     const { server, agentId, token, elapse } = await fixture();

@@ -137,6 +137,8 @@ import type {
   CreateChildRunRequest,
   CreateRunResult,
   ReportRunActivityRequest,
+  ReportRunModelRequest,
+  ReportRunModelV2Result,
   CreateGrantRequest,
   Dial,
   DialShareRequest,
@@ -352,6 +354,7 @@ export interface IdentityDoor {
   inspectRunV2(input: InspectRunRequest): IdentityResult<InspectRunV2Result>;
   listRunsV2(input: ListRunsRequest): IdentityResult<ListRunsV2Result>;
   reportRunActivityV2(input: ReportRunActivityRequest): IdentityResult<ReportRunActivityV2Result>;
+  reportRunModelV2(input: ReportRunModelRequest): IdentityResult<ReportRunModelV2Result>;
   acknowledgeAgentPolicyV2(
     input: AcknowledgeAgentPolicyRequest,
   ): IdentityResult<AcknowledgeAgentPolicyV2Result>;
@@ -5879,6 +5882,7 @@ export class PluginHost {
     const pendingLifecycle =
       runPolicyState === "pending_policy" &&
       (fullName === "core.access.reportRunActivityV2" ||
+        fullName === "core.access.reportRunModelV2" ||
         fullName === "core.access.renewAgentRunV2");
     const declaration = options?.agentJustification;
     const declaringRun =
@@ -6976,6 +6980,8 @@ export class PluginHost {
         listRunsV2: (input) => identityCall(() => this.authService.listRunsV2(input, auth)),
         reportRunActivityV2: (input) =>
           identityCall(() => this.authService.reportRunActivityV2(input, auth)),
+        reportRunModelV2: (input) =>
+          identityCall(() => this.authService.reportRunModelV2(input, auth)),
         acknowledgeAgentPolicyV2: (input) =>
           identityCall(() => this.authService.acknowledgeAgentPolicyV2(input, auth)),
         renewAgentRunV2: (input) =>

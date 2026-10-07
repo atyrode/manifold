@@ -29,6 +29,8 @@ import {
   FinishAgentRunV2ResultSchema,
   ReportRunActivityV2RequestSchema,
   ReportRunActivityV2ResultSchema,
+  ReportRunModelRequestSchema,
+  ReportRunModelV2ResultSchema,
   AcknowledgeAgentPolicyV2RequestSchema,
   AcknowledgeAgentPolicyV2ResultSchema,
   PrincipalCredentialsV2Schema,
@@ -68,6 +70,10 @@ export const IdentityV2BridgeSchemas = {
   reportRunActivityV2: {
     args: z.tuple([ReportRunActivityV2RequestSchema]),
     result: ReportRunActivityV2ResultSchema,
+  },
+  reportRunModelV2: {
+    args: z.tuple([ReportRunModelRequestSchema]),
+    result: ReportRunModelV2ResultSchema,
   },
   acknowledgeAgentPolicyV2: {
     args: z.tuple([AcknowledgeAgentPolicyV2RequestSchema]),

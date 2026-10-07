@@ -2597,6 +2597,13 @@ export class ServerStore {
     });
   }
 
+  updateAgentRunModel(runId: string, model: RunModel): void {
+    requireActionEffects();
+    this.db
+      .query<void, [string, string]>("UPDATE agent_runs SET model=? WHERE id=?")
+      .run(JSON.stringify(RunModelSchema.parse(model)), runId);
+  }
+
   updateAgentRunActivity(runId: string, activity: RunActivity): void {
     requireActionEffects();
     this.db

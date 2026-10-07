@@ -446,6 +446,13 @@ export const ReportRunActivityV2ResultSchema = ReportRunActivityResultSchema.ext
   run: AgentRunV2Schema,
 });
 export type ReportRunActivityV2Result = z.infer<typeof ReportRunActivityV2ResultSchema>;
+export const ReportRunModelRequestSchema = z.strictObject({
+  runId: AgentRunIdSchema,
+  model: RunModelSchema,
+});
+export type ReportRunModelRequest = z.infer<typeof ReportRunModelRequestSchema>;
+export const ReportRunModelV2ResultSchema = z.strictObject({ run: AgentRunV2Schema });
+export type ReportRunModelV2Result = z.infer<typeof ReportRunModelV2ResultSchema>;
 export const AcknowledgeAgentPolicyV2RequestSchema = AcknowledgeAgentPolicyRequestSchema;
 export type AcknowledgeAgentPolicyV2Request = z.infer<typeof AcknowledgeAgentPolicyV2RequestSchema>;
 export const AcknowledgeAgentPolicyV2ResultSchema = AcknowledgeAgentPolicyResultSchema.extend({

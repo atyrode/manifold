@@ -251,8 +251,8 @@ projections are emitted, marked trust:"untrusted"; model frames cannot enable th
 Each projection is bounded to 1 MiB or the narrower declaration/launcher limit.
 
 A trusted harness may inherit a separate pipe at MANIFOLD_ACTIVITY_FD (>=3).
-It carries {runId,activity:"working"|"blocked"|"done"|"idle"} JSONL, never model stdin.
-Both pipes are UTF-8 JSONL <=64 KiB/frame and <=1024 frames each. Model idle limit:
+It carries {runId,activity:"working"|"blocked"|"done"|"idle"} or {runId,model:{provider,model}} JSONL, never model stdin.
+Both pipes are UTF-8 JSONL <=64 KiB/frame. The model pipe is limited to 1024 frames; the trusted activity pipe is not frame-budgeted, so long-lived Runs may keep reporting activity.
 five minutes; total lifetime: one hour; each HTTP request: 30 seconds. Stdout: JSONL,
 at most 16 MiB per response including framing. No action is automatically retried.
 EOF abandons; malformed input fails; SIGINT/SIGTERM/SIGHUP cancel. Every exit attempts

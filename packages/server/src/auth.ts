@@ -33,6 +33,8 @@ import {
   type RenewAgentRunV2Result,
   type FinishAgentRunV2Result,
   type ReportRunActivityV2Result,
+  type ReportRunModelV2Result,
+  type ReportRunModelRequest,
   type AcknowledgeAgentPolicyV2Result,
   type PrincipalCredentialsV2,
   type InspectRunV2Result,
@@ -46,6 +48,7 @@ import {
   CreateRunRequestSchema,
   CreateChildRunRequestSchema,
   ReportRunActivityRequestSchema,
+  ReportRunModelRequestSchema,
   InspectRunRequestSchema,
   type InspectRunRequest,
   type InspectRunResult,
@@ -3456,6 +3459,18 @@ export class AuthService {
     this.store.updateAgentRunActivity(run.id, parsed.activity);
     if (run.activity !== parsed.activity) this.agentChanged(run.agentId, run.id);
     return { run: this.presentAgentRun(this.store.getAgentRun(run.id)!) };
+  }
+
+  reportRunModelV2(input: ReportRunModelRequest, actor: AuthContext): ReportRunModelV2Result {
+    const parsed = ReportRunModelRequestSchema.parse(input);
+    const current = this.requireCurrentActor(actor);
+    const run = this.store.getAgentRun(parsed.runId);
+    if (run === null || (current.agentRunId !== run.id && current.agentRunnerId !== run.agentId))
+      throw new ServiceError("forbidden", "harness_credential_required");
+    this.authorizeRunInput(run.id, current);
+    this.store.updateAgentRunModel(run.id, parsed.model);
+    this.agentChanged(run.agentId, run.id);
+    return { run: projectRunV2(this.presentAgentRun(this.store.getAgentRun(run.id)!)) };
   }
 
   agentPolicyChallenge(actor: AuthContext): AgentPolicyChallenge {

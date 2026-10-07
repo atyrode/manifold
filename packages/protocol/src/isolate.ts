@@ -507,6 +507,7 @@ export const ISOLATE_CTX_METHODS = [
   "identity.renewAgentRunV2",
   "identity.finishAgentRunV2",
   "identity.reportRunActivityV2",
+  "identity.reportRunModelV2",
   "identity.acknowledgeAgentPolicyV2",
   "identity.listCredentialsV2",
   "placement.place",

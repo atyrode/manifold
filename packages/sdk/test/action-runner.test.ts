@@ -142,6 +142,7 @@ test("trusted pipes admit before input, keep children on the Agent, and report a
     "acknowledgeAgentPolicyV2",
     "renewAgentRunV2",
     "finishAgentRunV2",
+    "reportRunModelV2",
   ];
   const server = Bun.serve({
     port: 0,
@@ -404,6 +405,7 @@ async function readResultScenario(options: {
               "acknowledgeAgentPolicyV2",
               "renewAgentRunV2",
               "finishAgentRunV2",
+              "reportRunModelV2",
             ].map((name) => summary(`core.access.${name}`)),
             {
               ...summary(readDoor),
