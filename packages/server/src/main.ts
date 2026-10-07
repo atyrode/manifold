@@ -397,8 +397,9 @@ async function startAsWriter({
   /*
     A STAGED CROSSING (#1068): replacement bundles a stopped deployment handed this data
     directory install now, after the boot assembly and before native execution is wired or
-    anything serves. A refusal changes nothing: this hub serves its held roster, live
-    verification refuses it, and the deployment restores its predecessor.
+    anything serves, and a crossing a crash interrupted resumes from its journal whether or
+    not anything is still staged. A refusal changes nothing: this hub serves its held roster,
+    live verification refuses it, and the deployment restores its predecessor.
   */
   let staged: StagedReplacement | null = null;
   let refusals: string[] = [];
@@ -407,10 +408,8 @@ async function startAsWriter({
   } catch (error) {
     refusals = [error instanceof Error ? error.message : "staged replacement unreadable"];
   }
-  if (staged !== null) {
-    const outcome = await plugins.applyStagedReplacement(staged);
-    if (!outcome.ok) refusals = outcome.refusals;
-  }
+  const crossing = await plugins.applyStagedReplacement(staged);
+  if (!crossing.ok) refusals = crossing.refusals;
   if (refusals.length > 0)
     logger.error("plugin_replacement_refused", {
       set: staged?.setSha256 ?? null,

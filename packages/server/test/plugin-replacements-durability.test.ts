@@ -64,7 +64,8 @@ const record = {
   setSha256: "b".repeat(64),
   revision: "c".repeat(40),
   appliedAt: 2,
-  members: [{ sha256: "d".repeat(64), previous: row, nativeReview: false }],
+  phase: "prepared" as const,
+  members: [{ sha256: "d".repeat(64), previous: row, committed: null, nativeReview: false }],
   disabledInstallations: [],
 };
 

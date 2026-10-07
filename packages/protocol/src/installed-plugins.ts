@@ -76,6 +76,32 @@ function isCanonicalBase64(value: string, maxBytes: number): boolean {
   );
 }
 
+/** Original file bytes, not reserialized bundle JSON, within the export's artifact cap. */
+const BundleBytesSchema = z
+  .string()
+  .refine((bytes) => isCanonicalBase64(bytes, ISOLATE_MAX_ARTIFACT_BYTES), {
+    message: "bundle bytes must be canonical base64 within the artifact cap",
+  });
+
+/**
+ * A journaled staged crossing (#1068) as `exportInstalled { crossings: true }` carries it for a
+ * rollback gate: which bundle each member replaced, with that retained bundle's row and bytes.
+ */
+export const InstalledCrossingSchema = z.strictObject({
+  revision: z.string().regex(/^[0-9a-f]{40}$/),
+  setSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  members: z
+    .array(
+      z.strictObject({
+        pluginId: PluginIdSchema,
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        previous: z.strictObject({ row: InstalledPluginRowSchema, bytes: BundleBytesSchema }),
+      }),
+    )
+    .min(1),
+});
+export type InstalledCrossing = z.infer<typeof InstalledCrossingSchema>;
+
 /** An explicit empty inventory is valid; a missing door or malformed response never is. */
 export const InstalledPluginsSnapshotSchema = z.strictObject({
   format: z.literal(1),
@@ -85,15 +111,14 @@ export const InstalledPluginsSnapshotSchema = z.strictObject({
       z.strictObject({
         row: InstalledPluginRowSchema,
         enabled: z.boolean(),
-        /** Original file bytes, not reserialized bundle JSON, within the export's artifact cap. */
-        bytes: z.string().refine((bytes) => isCanonicalBase64(bytes, ISOLATE_MAX_ARTIFACT_BYTES), {
-          message: "bundle bytes must be canonical base64 within the artifact cap",
-        }),
+        bytes: BundleBytesSchema,
       }),
     )
     .refine((plugins) => new Set(plugins.map(({ row }) => row.pluginId)).size === plugins.length, {
       message: "duplicate installed plugin",
     }),
+  /** Only when asked for: the journal's crossings, oldest first. */
+  crossings: InstalledCrossingSchema.array().optional(),
 });
 export type InstalledPluginsSnapshot = z.infer<typeof InstalledPluginsSnapshotSchema>;
 

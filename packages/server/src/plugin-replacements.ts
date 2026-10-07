@@ -12,7 +12,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
   ActionSummarySchema,
@@ -27,7 +27,12 @@ import {
   type PluginReplacementSet,
 } from "@manifold/protocol";
 import { CredentialReferenceSchema } from "./authority-snapshot.ts";
-import { inspectArtifact, removeInstall, type VerifiedPluginArtifact } from "./plugin-installs.ts";
+import {
+  inspectArtifact,
+  installLayout,
+  removeInstall,
+  type VerifiedPluginArtifact,
+} from "./plugin-installs.ts";
 import { covers, pluginBuildCompatibility } from "./plugin-updates.ts";
 import { sha256Hex, type PluginInstallRow, type ServerStore } from "./stores.ts";
 
@@ -43,7 +48,8 @@ import { sha256Hex, type PluginInstallRow, type ServerStore } from "./stores.ts"
     plugin-replacement/staged/set.json                       canonical replacement set
     plugin-replacement/staged/revision                       deploying commit, receipt only
     plugin-replacement/staged/<sha256>.manifold-plugin.json  each member's exact bytes
-    plugin-replacement/journal.json                          applied crossings, oldest first
+    plugin-replacement/journal.json                          crossings, oldest first, each
+                                                             prepared → committed → completed
 */
 
 export const PLUGIN_REPLACEMENT_DIR = "plugin-replacement";
@@ -330,6 +336,32 @@ const InstallRowSchema = z
     ...(installer === undefined ? {} : { installer }),
   }));
 
+/**
+ * A row as `plugin_installs` persists it, canonically: every column the installer writes,
+ * including grants, hardening, installer lineage and the installation time. Rows that persist
+ * alike carry the same installation decision; any later install writes its own.
+ */
+function persistedRow(row: PluginInstallRow): string {
+  return canonicalJobJson({
+    pluginId: row.pluginId,
+    sha256: row.sha256,
+    source: row.source,
+    grantedCaps: row.grantedCaps,
+    installedBy: row.installedBy,
+    installedAt: row.installedAt,
+    bundlePath: row.bundlePath,
+    actions: row.actions,
+    hardened: row.hardened === true,
+    builtAgainst: row.builtAgainst ?? null,
+    mode: row.mode ?? "bundle",
+    installer: row.installer ?? null,
+  });
+}
+
+export function sameInstallRow(row: PluginInstallRow | undefined, expected: PluginInstallRow) {
+  return row !== undefined && persistedRow(row) === persistedRow(expected);
+}
+
 const NativeInstallationSchema = z.strictObject({
   machineId: z.string().min(1),
   pluginId: z.string().min(1),
@@ -338,19 +370,46 @@ const NativeInstallationSchema = z.strictObject({
 });
 export type ReplacedNativeInstallation = z.infer<typeof NativeInstallationSchema>;
 
-const ReplacementRecordSchema = z.strictObject({
-  format: z.literal(1),
-  setSha256: hash,
-  revision: z.string().regex(REVISION),
-  appliedAt: z.number().int().nonnegative(),
-  members: z
-    .array(z.strictObject({ sha256: hash, previous: InstallRowSchema, nativeReview: z.boolean() }))
-    .min(1),
-  /** Enabled native installations the crossing disabled, recorded before it disabled them. */
-  disabledInstallations: NativeInstallationSchema.array(),
-});
+const ReplacementRecordSchema = z
+  .strictObject({
+    format: z.literal(1),
+    setSha256: hash,
+    revision: z.string().regex(REVISION),
+    appliedAt: z.number().int().nonnegative(),
+    /**
+     * `prepared`: journaled before the installer group ran. `committed`: the group committed,
+     * and each member's `committed` is the exact row it wrote. `completed`: the native half
+     * finished as well, so nothing of this crossing is ever resumed or re-applied.
+     */
+    phase: z.enum(["prepared", "committed", "completed"]),
+    members: z
+      .array(
+        z.strictObject({
+          sha256: hash,
+          previous: InstallRowSchema,
+          committed: InstallRowSchema.nullable(),
+          nativeReview: z.boolean(),
+        }),
+      )
+      .min(1),
+    /** Enabled native installations the crossing disabled, recorded before it disabled them. */
+    disabledInstallations: NativeInstallationSchema.array(),
+  })
+  .refine(
+    ({ phase, members }) =>
+      members.every(({ sha256, previous, committed }) =>
+        phase === "prepared"
+          ? committed === null
+          : committed?.sha256 === sha256 && committed.pluginId === previous.pluginId,
+      ),
+    { message: "replacement record rows do not match its phase" },
+  );
 export type ReplacementRecord = z.infer<typeof ReplacementRecordSchema>;
-const JournalSchema = ReplacementRecordSchema.array();
+/** Each crossing completes or is dropped before the next applies: only the newest may not. */
+const JournalSchema = ReplacementRecordSchema.array().refine(
+  (records) => records.slice(0, -1).every((record) => record.phase === "completed"),
+  { message: "only the newest replacement record may be unfinished" },
+);
 
 export function readReplacementJournal(dataDir: string): ReplacementRecord[] {
   const path = join(dataDir, PLUGIN_REPLACEMENT_DIR, JOURNAL_FILE);
@@ -390,18 +449,71 @@ export function writeReplacementJournal(
   syncPath(root);
 }
 
+/** What a rollback gate proves and its switch binds: the crossings one restore undoes. */
+export interface RestorePlanCrossing {
+  readonly revision: string;
+  readonly setSha256: string;
+  readonly members: readonly {
+    readonly pluginId: string;
+    readonly sha256: string;
+    readonly previousSha256: string;
+  }[];
+}
+
+export function restorePlanCrossing(record: ReplacementRecord): RestorePlanCrossing {
+  return {
+    revision: record.revision,
+    setSha256: record.setSha256,
+    members: record.members.map(({ previous, sha256 }) => ({
+      pluginId: previous.pluginId,
+      sha256,
+      previousSha256: previous.sha256,
+    })),
+  };
+}
+
+/**
+ * A restore plan's identity, newest crossing first: the sha256 of its canonical JSON, or
+ * `none` when the rollback restores nothing. The installed-bundles gate computes it from the
+ * export it proved, and the host's restore refuses any other.
+ */
+export function restorePlanDigest(crossings: readonly RestorePlanCrossing[]): string {
+  if (crossings.length === 0) return "none";
+  return sha256Hex(
+    canonicalJobJson(
+      crossings.map(({ revision, setSha256, members }) => ({
+        revision,
+        setSha256,
+        members: members.map(({ pluginId, sha256, previousSha256 }) => ({
+          pluginId,
+          sha256,
+          previousSha256,
+        })),
+      })),
+    ),
+  );
+}
+
 /**
  * THE ROLLBACK HALF. Restores the newest journal records, newest first and named exactly, so the
- * previous hub boots its previous bundles: each row goes back to its recorded previous row, and
- * each native installation the crossing disabled is re-enabled at the same revision and artifact,
- * the approval it held before. A row that is already the previous one was never committed. Any
- * other row, or an installation that moved since, refuses the whole restore: its change was not
- * this crossing's, and restoring over it would discard a later decision.
+ * previous hub boots its previous bundles: each plugin returns to the previous row of the oldest
+ * restored crossing that replaced it, and each native installation a crossing disabled is
+ * re-enabled at the same revision and artifact, the approval it held before. When `plan` is
+ * given it must be the digest of exactly these crossings.
+ *
+ * A row is restored only if it is EXACTLY one the journal recorded for it: a crossing's
+ * committed row, or a previous row along the restored chain (a crossing never committed, or a
+ * restore that committed before its journal was truncated, which a retry completes). A row
+ * written by anything else, even a reinstall of the same digest with other grants, hardening or
+ * installer, or an installation that moved since, refuses the whole restore: restoring over it
+ * would discard a later decision. Rows and native installations change in one transaction;
+ * the journal is truncated only after it commits.
  */
 export function restoreReplacements(
   store: ServerStore,
   dataDir: string,
   revisions: readonly string[],
+  plan?: string,
 ): ReplacementRecord[] {
   const journal = readReplacementJournal(dataDir);
   const newest = journal.slice(journal.length - revisions.length).reverse();
@@ -413,8 +525,47 @@ export function restoreReplacements(
     throw new Error(
       `restore must name the newest crossings newest first; journal holds ${journal.map((record) => record.revision).join(", ") || "none"}`,
     );
-  const removed: string[] = [];
+  if (plan !== undefined && restorePlanDigest(newest.map(restorePlanCrossing)) !== plan)
+    throw new Error(
+      `restore plan ${plan} is not the journaled crossings ${revisions.join(", ")}; restore refused`,
+    );
+  // Each plugin's journaled chain, newest crossing first: the rows it may hold now, and the
+  // previous row of the oldest restored crossing, which it gets.
+  const chains = new Map<
+    string,
+    { readonly revision: string; readonly accepts: PluginInstallRow[]; target: PluginInstallRow }
+  >();
+  // A prepared record's group may have committed just before a crash, with no hub serving it
+  // since: every boot resolves a prepared record before it serves.
+  const prepared = new Map<string, string>();
+  for (const record of newest)
+    for (const member of record.members) {
+      const pluginId = member.previous.pluginId;
+      const chain = chains.get(pluginId) ?? {
+        revision: record.revision,
+        accepts: [],
+        target: member.previous,
+      };
+      if (member.committed !== null) chain.accepts.push(member.committed);
+      else prepared.set(pluginId, member.sha256);
+      chain.accepts.push(member.previous);
+      chain.target = member.previous;
+      chains.set(pluginId, chain);
+    }
   store.transaction(() => {
+    const rows = new Map(store.pluginInstalls().map((row) => [row.pluginId, row]));
+    for (const [pluginId, chain] of chains) {
+      const row = rows.get(pluginId);
+      if (
+        row === undefined ||
+        (row.sha256 !== prepared.get(pluginId) &&
+          !chain.accepts.some((accepted) => sameInstallRow(row, accepted)))
+      )
+        throw new Error(
+          `${pluginId}: the installed row changed since crossing ${chain.revision}; restore refused`,
+        );
+      if (!sameInstallRow(row, chain.target)) store.putPluginInstall(chain.target);
+    }
     const reenable = store.db.query<void, [string, string, string, string]>(
       "UPDATE machine_job_installs SET enabled=1, ready=0 WHERE machine_id=? AND plugin_id=? AND revision=? AND artifact=? AND enabled=0 AND purge_requested=0",
     );
@@ -424,18 +575,7 @@ export function restoreReplacements(
     >(
       "SELECT revision, artifact, enabled, purge_requested FROM machine_job_installs WHERE machine_id=? AND plugin_id=?",
     );
-    for (const record of newest) {
-      const rows = new Map(store.pluginInstalls().map((row) => [row.pluginId, row]));
-      for (const member of record.members) {
-        const row = rows.get(member.previous.pluginId);
-        if (row?.sha256 === member.previous.sha256) continue;
-        if (row?.sha256 !== member.sha256)
-          throw new Error(
-            `${member.previous.pluginId}: installed ${row?.sha256 ?? "nothing"}, not the crossing's ${member.sha256}; restore refused`,
-          );
-        store.putPluginInstall(member.previous);
-        removed.push(row.bundlePath);
-      }
+    for (const record of newest)
       for (const installation of record.disabledInstallations) {
         const now = current.get(installation.machineId, installation.pluginId);
         if (
@@ -455,10 +595,17 @@ export function restoreReplacements(
             installation.artifact,
           );
       }
-    }
   });
   writeReplacementJournal(dataDir, journal.slice(0, journal.length - revisions.length));
-  for (const bundlePath of removed) removeInstall({ bundlePath });
+  // The crossings' bundle files, once no installed row names them.
+  const kept = new Set(store.pluginInstalls().map((row) => resolve(row.bundlePath)));
+  for (const record of newest)
+    for (const member of record.members) {
+      const bundlePath =
+        member.committed?.bundlePath ??
+        installLayout(dataDir, member.previous.pluginId, member.sha256).bundlePath;
+      if (!kept.has(resolve(bundlePath))) removeInstall({ bundlePath });
+    }
   clearStagedReplacement(dataDir);
   return newest;
 }

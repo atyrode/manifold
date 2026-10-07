@@ -1502,10 +1502,12 @@ export {
   type TerminalsResponse,
 } from "./http.ts";
 export {
+  InstalledCrossingSchema,
   InstalledPluginRowSchema,
   InstalledPluginStatesSchema,
   InstalledPluginsSnapshotSchema,
   PluginReplacementSetSchema,
+  type InstalledCrossing,
   type InstalledPluginRow,
   type InstalledPluginStates,
   type InstalledPluginsSnapshot,

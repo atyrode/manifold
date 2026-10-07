@@ -266,6 +266,7 @@ import {
   clearStagedReplacement,
   readReplacementJournal,
   replacementRefusals,
+  sameInstallRow,
   writeReplacementJournal,
   type ReplacementRecord,
   type StagedReplacement,
@@ -736,7 +737,7 @@ export interface HostControl {
   ): Promise<ActionRefused | PluginInstallResult>;
   uninstall(id: string, removedBy: string, purge: boolean): Promise<ActionRefused | { ok: true }>;
   listInstalled(): Promise<InstalledPluginStates>;
-  exportInstalled(): Promise<InstalledPluginsSnapshot>;
+  exportInstalled(crossings?: boolean): Promise<InstalledPluginsSnapshot>;
   setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }>;
   author(
     request: PluginAuthorRequest,
@@ -1305,8 +1306,11 @@ function engineBuiltinDefs(
         async listInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginStates> {
           return ctx.host.listInstalled();
         },
-        async exportInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginsSnapshot> {
-          return ctx.host.exportInstalled();
+        async exportInstalled(
+          ctx: EngineDoorCtx,
+          args: { crossings?: true },
+        ): Promise<InstalledPluginsSnapshot> {
+          return ctx.host.exportInstalled(args.crossings === true);
         },
         async uninstall(
           ctx: EngineDoorCtx,
@@ -2235,7 +2239,9 @@ export class PluginHost {
    * native installations are disabled at their current revision — consents, resource bindings,
    * instance-service records and owner-side data retained — until the deployment review admits
    * the new declaration as a new revision. Each one is journaled BEFORE it is disabled, so the
-   * deployment's rollback re-enables exactly the installations this crossing stopped.
+   * deployment's rollback re-enables exactly the installations this crossing stopped. Then the
+   * crossing is journaled `completed`: no restart or replayed request runs this half again, so
+   * an installation the operator reviewed and re-admitted afterwards stays as reviewed.
    */
   private finishReplacement(
     jobs: JobService,
@@ -2267,13 +2273,21 @@ export class PluginHost {
     ];
     const journal = readReplacementJournal(dataDir);
     const last = journal.at(-1);
-    if (last?.setSha256 !== record.setSha256 || last.revision !== record.revision)
+    if (
+      last?.setSha256 !== record.setSha256 ||
+      last.revision !== record.revision ||
+      last.phase !== "committed"
+    )
       throw new Error("plugin replacement journal changed before its native half completed");
+    const earlier = journal.slice(0, -1);
+    if (review.size > 0) {
+      writeReplacementJournal(dataDir, [...earlier, { ...last, disabledInstallations: disabled }]);
+      for (const pluginId of review) jobs.disablePlugin(pluginId);
+    }
     writeReplacementJournal(dataDir, [
-      ...journal.slice(0, -1),
-      { ...last, disabledInstallations: disabled },
+      ...earlier,
+      { ...last, phase: "completed", disabledInstallations: disabled },
     ]);
-    for (const pluginId of review) jobs.disablePlugin(pluginId);
     clearStagedReplacement(dataDir);
     this.crossing = null;
     this.logger.info("plugin_replacement_applied", {
@@ -2660,46 +2674,76 @@ export class PluginHost {
   }
 
   /**
-   * A STAGED CROSSING (#1068), called by the composition root between `boot` and `setJobs`.
-   * The deployment that switched this hub handed it whole replacement bundles for installed
-   * ids. They install as ONE group through `installGroup`, after the boot assembly (which held
+   * A STAGED CROSSING (#1068), called by the composition root between `boot` and `setJobs`, with
+   * the set a stopped deployment staged or null. It first resolves the journal's newest crossing
+   * if a crash interrupted it, whether or not its set is still staged: a `prepared` record whose
+   * rows never committed is dropped, one whose group committed records the rows it wrote, and a
+   * `committed` crossing resumes its native half when native execution is wired. A `completed`
+   * crossing is never resumed: replaying its set changes nothing and only removes the staging.
+   *
+   * A new set installs as ONE group through `installGroup`, after the boot assembly (which held
    * the old builds) and before native execution is wired or a socket is bound, so no request,
    * owner or service ever observes the hold. Every member must pass `replacementRefusals`
    * against its incumbent, and no installed bundle may remain held for want of a replacement.
    * A refusal names every reason and changes nothing: the hub serves its held roster, live
    * verification refuses it, and the deployment restores its predecessor. Rows keep their
    * grants (narrowed only to what a member still declares), installer lineage, hardening and
-   * enablement. The previous rows are journaled first and their files retained, which is what
-   * lets the deployment restore the previous bundles with the previous hub.
+   * enablement. The previous rows are journaled durably first and their files retained, which
+   * is what lets the deployment restore the previous bundles with the previous hub.
    */
   async applyStagedReplacement(
-    staged: StagedReplacement,
+    staged: StagedReplacement | null,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusals: string[] }> {
     if (this.jobs !== null)
       throw new Error("a staged plugin replacement applies before native execution is wired");
     const dataDir = this.isolates?.dataDir;
-    if (dataDir === undefined)
+    if (dataDir === undefined) {
+      if (staged === null) return { ok: true };
       throw new Error("a staged plugin replacement requires a host that admits bundles");
+    }
     return this.changeAssembly(async () => {
       const journal = readReplacementJournal(dataDir);
-      const last = journal.at(-1);
-      const installedSha = (pluginId: string) => this.installed.get(pluginId)?.row.sha256;
-      if (last?.setSha256 === staged.setSha256 && last.revision === staged.revision) {
-        // A restart between this set's commit and its native half resumes; it never re-applies.
-        if (
-          last.members.every((member) => installedSha(member.previous.pluginId) === member.sha256)
-        ) {
-          this.crossing = { record: last, dataDir };
-          return { ok: true } as const;
-        }
-        if (
-          !last.members.every(
-            (member) => installedSha(member.previous.pluginId) === member.previous.sha256,
-          )
-        )
-          throw new Error("staged plugin replacement is partially applied; restore it first");
-        journal.pop();
+      const rows = () => new Map(this.store.pluginInstalls().map((row) => [row.pluginId, row]));
+      let last = journal.at(-1);
+      if (last?.phase === "prepared") {
+        const current = rows();
+        if (last.members.every((m) => sameInstallRow(current.get(m.previous.pluginId), m.previous)))
+          journal.pop();
+        else if (last.members.every((m) => current.get(m.previous.pluginId)?.sha256 === m.sha256))
+          journal[journal.length - 1] = {
+            ...last,
+            phase: "committed",
+            members: last.members.map((m) => ({
+              ...m,
+              committed: current.get(m.previous.pluginId)!,
+            })),
+          };
+        else throw new Error("staged plugin replacement is partially applied; restore it first");
         writeReplacementJournal(dataDir, journal);
+        last = journal.at(-1);
+      }
+      const same =
+        staged !== null &&
+        last?.setSha256 === staged.setSha256 &&
+        last.revision === staged.revision;
+      if (last?.phase === "committed") {
+        this.crossing = { record: last, dataDir };
+        if (staged === null || same) return { ok: true } as const;
+        return {
+          ok: false,
+          refusals: [
+            `crossing ${last.revision} has not completed its native half; set ${staged.setSha256} was not applied`,
+          ],
+        } as const;
+      }
+      if (staged === null) return { ok: true } as const;
+      if (same) {
+        clearStagedReplacement(dataDir);
+        this.logger.info("plugin_replacement_replayed", {
+          set: staged.setSha256,
+          revision: staged.revision,
+        });
+        return { ok: true } as const;
       }
       const refusals = staged.members.flatMap(({ member, artifact }) =>
         replacementRefusals(
@@ -2717,19 +2761,29 @@ export class PluginHost {
         );
       if (refusals.length > 0) return { ok: false, refusals } as const;
       const incumbents = staged.members.map(({ member }) => this.installed.get(member.pluginId)!);
+      // The persisted rows, exactly: a restore compares the rows it finds with these.
+      const before = rows();
       const record: ReplacementRecord = {
         format: 1,
         setSha256: staged.setSha256,
         revision: staged.revision,
         appliedAt: this.runtime.now(),
-        members: staged.members.map(({ member }, index) => ({
+        phase: "prepared",
+        members: staged.members.map(({ member }) => ({
           sha256: member.sha256,
-          previous: incumbents[index]!.row,
+          previous: before.get(member.pluginId)!,
+          committed: null,
           nativeReview: member.nativeReview === true,
         })),
         disabledInstallations: [],
       };
       writeReplacementJournal(dataDir, [...journal, record]);
+      const unchanged = () => {
+        const current = rows();
+        return record.members.every((m) =>
+          sameInstallRow(current.get(m.previous.pluginId), m.previous),
+        );
+      };
       let outcome: ActionRefused | readonly PluginInstallResult[];
       try {
         outcome = await this.installGroup(
@@ -2746,15 +2800,24 @@ export class PluginHost {
           { installedBy: enginePluginsManifest.id, installer: null, retainPrevious: true },
         );
       } catch (error) {
-        if (record.members.every((m) => installedSha(m.previous.pluginId) === m.previous.sha256))
-          writeReplacementJournal(dataDir, journal);
+        if (unchanged()) writeReplacementJournal(dataDir, journal);
         throw error;
       }
       if ("refused" in outcome) {
-        writeReplacementJournal(dataDir, journal);
+        if (unchanged()) writeReplacementJournal(dataDir, journal);
         return { ok: false, refusals: [outcome.refused] } as const;
       }
-      this.crossing = { record, dataDir };
+      const current = rows();
+      const committed: ReplacementRecord = {
+        ...record,
+        phase: "committed",
+        members: record.members.map((m) => ({
+          ...m,
+          committed: current.get(m.previous.pluginId)!,
+        })),
+      };
+      writeReplacementJournal(dataDir, [...journal, committed]);
+      this.crossing = { record: committed, dataDir };
       return { ok: true } as const;
     });
   }
@@ -3595,8 +3658,10 @@ export class PluginHost {
   }
 
   /** Serialize with install/uninstall so rows and their exact bytes describe one inventory. */
-  async exportInstalled(): Promise<InstalledPluginsSnapshot> {
-    return this.changeAssembly(async () => exportInstalledPlugins(this.store, this.dataDir));
+  async exportInstalled(crossings = false): Promise<InstalledPluginsSnapshot> {
+    return this.changeAssembly(async () =>
+      exportInstalledPlugins(this.store, this.dataDir, crossings),
+    );
   }
 
   /** The workspace's developer-mode switch (ADR 0025 §4), published beside every roster. */

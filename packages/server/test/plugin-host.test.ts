@@ -95,6 +95,8 @@ import {
   readReplacementJournal,
   receiveReplacementSet,
   replacementSetSha256,
+  restorePlanCrossing,
+  restorePlanDigest,
   restoreReplacements,
   stagedReplacementDir,
   type StagedReplacement,
@@ -5947,6 +5949,7 @@ async function stageCrossing(
     readonly hardenedContract?: number;
     readonly nativeReview?: true;
   }[],
+  revision = CROSSING_REVISION,
 ): Promise<StagedReplacement> {
   const source = mkdtempSync(join(tmpdir(), "manifold-crossing-source-"));
   try {
@@ -5969,12 +5972,7 @@ async function stageCrossing(
       }),
     };
     writeFileSync(join(source, "set.json"), canonicalJobJson(set));
-    await receiveReplacementSet(
-      source,
-      fixture.dataDir,
-      replacementSetSha256(set),
-      CROSSING_REVISION,
-    );
+    await receiveReplacementSet(source, fixture.dataDir, replacementSetSha256(set), revision);
     return (await loadStagedReplacement(fixture.dataDir))!;
   } finally {
     rmSync(source, { recursive: true, force: true });
@@ -6030,13 +6028,47 @@ describe("staged crossing replaces a held closure with its hub (#1068)", () => {
         expect.objectContaining({
           setSha256: staged.setSha256,
           revision: CROSSING_REVISION,
-          members: [{ sha256: replaced.sha256, previous, nativeReview: false }],
+          phase: "completed",
+          members: [
+            { sha256: replaced.sha256, previous, committed: replaced, nativeReview: false },
+          ],
           disabledInstallations: [],
         }),
       ]);
+      // A rollback gate reads the journaled crossing with the retained previous bundle.
+      expect((await crossed.exportInstalled(true)).crossings).toEqual([
+        {
+          revision: CROSSING_REVISION,
+          setSha256: staged.setSha256,
+          members: [
+            {
+              pluginId: SAMPLE_ID,
+              sha256: replaced.sha256,
+              previous: {
+                row: expect.objectContaining({
+                  sha256: previous.sha256,
+                  grantedCaps: previous.grantedCaps,
+                }),
+                bytes: readFileSync(previous.bundlePath).toString("base64"),
+              },
+            },
+          ],
+        },
+      ]);
+      expect((await crossed.exportInstalled()).crossings).toBeUndefined();
       crossed.close();
 
-      restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION]);
+      // A manual rollback restores only the plan its gate proved.
+      const plan = restorePlanDigest(
+        readReplacementJournal(f.fixture.dataDir).map(restorePlanCrossing),
+      );
+      expect(plan).toMatch(/^[0-9a-f]{64}$/);
+      for (const wrong of ["none", "e".repeat(64)])
+        expect(() =>
+          restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION], wrong),
+        ).toThrow(/is not the journaled crossings/);
+      expect(f.fixture.store.pluginInstalls()).toEqual([replaced]);
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION], plan);
       expect(f.fixture.store.pluginInstalls()).toEqual([previous]);
       expect(readReplacementJournal(f.fixture.dataDir)).toEqual([]);
       expect(existsSync(replaced.bundlePath)).toBe(false);
@@ -6117,6 +6149,160 @@ describe("staged crossing replaces a held closure with its hub (#1068)", () => {
       expect(f.fixture.store.pluginInstalls()).toEqual([previous]);
       expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual({ ...native, ready: false });
       expect(consents()).toBe(consented);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("rollback refuses to restore over a later installation decision for the same digest", async () => {
+    const f = await retainedServiceFixture({ major: 1, minor: 0 });
+    try {
+      const previous = installPreviousBuild(f.fixture, f.manifest, [
+        "containers:read",
+        "tokens:mint",
+      ]);
+      const crossed = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(
+        await crossed.applyStagedReplacement(
+          await stageCrossing(f.fixture, [{ manifest: { ...f.manifest, version: "2.0.0" } }]),
+        ),
+      ).toEqual({ ok: true });
+      crossed.setJobs(f.jobs);
+      crossed.close();
+      const replaced = f.fixture.store.pluginInstalls()[0]!;
+      const journal = readReplacementJournal(f.fixture.dataDir);
+      // A reinstall of the very same bytes that withdrew a grant, the hardening or the lineage.
+      for (const later of [
+        { ...replaced, grantedCaps: ["containers:read"], installedAt: replaced.installedAt + 1 },
+        { ...replaced, hardened: false },
+        { ...replaced, installedBy: "another-installer" },
+      ] satisfies PluginInstallRow[]) {
+        f.fixture.store.putPluginInstall(later);
+        expect(() =>
+          restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION]),
+        ).toThrow(
+          `${SAMPLE_ID}: the installed row changed since crossing ${CROSSING_REVISION}; restore refused`,
+        );
+        expect(f.fixture.store.pluginInstalls()).toEqual([later]);
+        expect(readReplacementJournal(f.fixture.dataDir)).toEqual(journal);
+        expect(existsSync(replaced.bundlePath)).toBe(true);
+      }
+      // Only the exact row the crossing committed is its to undo.
+      f.fixture.store.putPluginInstall(replaced);
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION]);
+      expect(f.fixture.store.pluginInstalls()).toEqual([previous]);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("a multi-crossing restore interrupted before its journal is truncated completes on retry", async () => {
+    const f = await retainedServiceFixture({ major: 1, minor: 0 });
+    try {
+      const first = installPreviousBuild(f.fixture, f.manifest, ["containers:read"]);
+      const later = "d".repeat(40);
+      for (const [version, revision] of [
+        ["2.0.0", CROSSING_REVISION],
+        ["3.0.0", later],
+      ] as const) {
+        const host = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+        expect(
+          await host.applyStagedReplacement(
+            await stageCrossing(f.fixture, [{ manifest: { ...f.manifest, version } }], revision),
+          ),
+        ).toEqual({ ok: true });
+        host.setJobs(f.jobs);
+        host.close();
+      }
+      const journal = readReplacementJournal(f.fixture.dataDir);
+      expect(journal.map(({ revision, phase }) => [revision, phase])).toEqual([
+        [CROSSING_REVISION, "completed"],
+        [later, "completed"],
+      ]);
+      const second = journal[0]!.members[0]!.committed!;
+      const third = journal[1]!.members[0]!.committed!;
+      expect(f.fixture.store.pluginInstalls()).toEqual([third]);
+      // The restore's one transaction committed the oldest row; the journal write never landed.
+      f.fixture.store.putPluginInstall(first);
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [later, CROSSING_REVISION]);
+      expect(f.fixture.store.pluginInstalls()).toEqual([first]);
+      expect(readReplacementJournal(f.fixture.dataDir)).toEqual([]);
+      expect(existsSync(first.bundlePath)).toBe(true);
+      expect(existsSync(second.bundlePath)).toBe(false);
+      expect(existsSync(third.bundlePath)).toBe(false);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("an interrupted native half resumes once; a replayed completed crossing keeps the reviewed deployment", async () => {
+    const f = await retainedServiceFixture();
+    try {
+      installPreviousBuild(f.fixture, f.manifest, ["containers:read"]);
+      const native = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+      const artifact = f.machine.artifacts["linux-x64"]!;
+      const rebuilt: PluginManifest = {
+        ...f.manifest,
+        version: "2.0.0",
+        machine: {
+          ...f.machine,
+          artifacts: {
+            "linux-x64": { ...artifact, sha256: "d".repeat(64), entrySha256: "d".repeat(64) },
+          },
+        },
+      };
+      const members = [{ manifest: rebuilt, nativeReview: true }] as const;
+      // The hub committed the group and stopped before wiring native execution; the next
+      // deployment cleared the staging. The journal alone resumes the native half.
+      const interrupted = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(
+        await interrupted.applyStagedReplacement(await stageCrossing(f.fixture, members)),
+      ).toEqual({ ok: true });
+      interrupted.close();
+      expect(readReplacementJournal(f.fixture.dataDir)[0]?.phase).toBe("committed");
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(native);
+      rmSync(stagedReplacementDir(f.fixture.dataDir), { recursive: true });
+      const resumed = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(await resumed.applyStagedReplacement(null)).toEqual({ ok: true });
+      resumed.setJobs(f.jobs);
+      resumed.close();
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual({
+        ...native,
+        enabled: false,
+      });
+      const completed = readReplacementJournal(f.fixture.dataDir);
+      expect(completed).toEqual([
+        expect.objectContaining({
+          phase: "completed",
+          disabledInstallations: [
+            {
+              machineId: f.machineId,
+              pluginId: SAMPLE_ID,
+              revision: native.revision,
+              artifact: native.artifact,
+            },
+          ],
+        }),
+      ]);
+      // The operator's deployment review re-admits it (modelled as its enablement here).
+      f.fixture.store.db
+        .query<void, [string, string]>(
+          "UPDATE machine_job_installs SET enabled=1 WHERE machine_id=? AND plugin_id=?",
+        )
+        .run(f.machineId, SAMPLE_ID);
+      const reviewed = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+      expect(reviewed.enabled).toBe(true);
+      // Replaying the same `dev SHA SET_SHA256` stages the same set again; nothing re-runs.
+      const replayed = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(
+        await replayed.applyStagedReplacement(await stageCrossing(f.fixture, members)),
+      ).toEqual({ ok: true });
+      replayed.setJobs(f.jobs);
+      expect(installedRow(replayed, SAMPLE_ID).held).toBeUndefined();
+      replayed.close();
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(reviewed);
+      expect(readReplacementJournal(f.fixture.dataDir)).toEqual(completed);
+      expect(existsSync(stagedReplacementDir(f.fixture.dataDir))).toBe(false);
     } finally {
       f.close();
     }

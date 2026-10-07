@@ -49,10 +49,12 @@ export const LOG_EVENTS = [
   // bundle refused at boot is a `plugin_lifecycle` line: it is why the row cannot serve.
   "plugin_installed",
   "plugin_uninstalled",
-  // A staged crossing (#1068): committed with its hub and its native half completed, or refused
-  // with every reason and nothing changed.
+  // A staged crossing (#1068): committed with its hub and its native half completed, refused
+  // with every reason and nothing changed, or a completed crossing's set staged again and only
+  // removed.
   "plugin_replacement_applied",
   "plugin_replacement_refused",
+  "plugin_replacement_replayed",
 
   // Server: the unpacked directory (ADR 0025 §4, #257) — files written through the authoring
   // door, a rebuild that could not become a row (a build error, an assembly refusal), and the
