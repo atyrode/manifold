@@ -393,7 +393,7 @@ async function act(name: string, args: unknown): Promise<unknown> {
   });
   requireThat(response.ok, `action ${name}: HTTP ${response.status}`);
   const result = ActionOutcomeSchema.parse(await response.json());
-  requireThat(result.ok, `action ${name} refused`);
+  if (!result.ok) throw new Error(`action ${name} refused: ${JSON.stringify(result.denial)}`);
   return result.result;
 }
 async function session(id: string): Promise<SessionClient> {
@@ -678,11 +678,11 @@ async function fixtureRevision(marker: string): Promise<string> {
   await command(["git", "checkout", "--detach", sha], { cwd: fixtureRepo });
   return sha;
 }
-async function fixtureChild(parent: string, marker: string): Promise<string> {
-  // Create a new commit object over the identical application tree. Objects and
-  // refs remain in this run's private repositories; source and main refs are untouched.
+async function fixtureChild(parent: string, marker: string, treeOf = parent): Promise<string> {
+  // Create a new commit object over TREEOF's application tree, by default the parent's own.
+  // Objects and refs remain in this run's private repositories; source and main are untouched.
   const tree = (
-    await command(["git", "rev-parse", `${parent}^{tree}`], { cwd: fixtureRepo })
+    await command(["git", "rev-parse", `${treeOf}^{tree}`], { cwd: fixtureRepo })
   ).out.trim();
   const sha = (
     await command(["git", "commit-tree", tree, "-p", parent], {
@@ -1302,17 +1302,20 @@ async function preserveLive(
 
 /*
   A STAGED CROSSING (#1068), rehearsed through the integrated fixture's real receiver grammar,
-  Docker volume steps and retained data volume (`--crossing`). The incumbent holds a closure built
-  for an earlier protocol: a hardened server plugin with stored data, and a machine-half plugin
-  whose native deployment a proved owner admitted through the real review door. Fixture plugins
-  and a fixture owner only: no workload runs, no artifact URL is fetched, and the only keys are
-  this run's own.
+  Docker volume steps and retained data volume (`--crossing`). The incumbent is a hub of the
+  earlier protocol: the same application, its bundle window the earlier stamp alone. It serves a
+  closure built for that protocol: a hardened server plugin with stored data, and a machine-half
+  plugin whose native deployment a proved owner admitted through the real review door. Fixture
+  plugins and a fixture owner only: no workload runs, no artifact URL is fetched, and the only keys
+  are this run's own.
 */
 const CROSSING_COUNTER = "example.counter";
 const CROSSING_NATIVE = "example.native";
 const CROSSING_OPERATION = `${CROSSING_NATIVE}.serve`;
 /** A plugin-storage key no transition may touch, beside the count the plugin itself keeps. */
 const CROSSING_SENTINEL = "crossing-sentinel";
+/** A capability the install door withholds by default: only an explicit grant confers it. */
+const CROSSING_WITHHELD_CAP = "tokens:mint";
 const BUNDLE_SUFFIX = ".manifold-plugin.json";
 const CROSSING_JOURNAL = "/data/plugin-replacement/journal.json";
 const CrossingRowSchema = z.looseObject({
@@ -1366,14 +1369,17 @@ const CrossingStateSchema = z.strictObject({
 type CrossingState = z.infer<typeof CrossingStateSchema>;
 const CounterSchema = z.object({ count: z.number() });
 
-/** A machine half alone, whose one URL artifact no owner ever fetches. */
+/**
+ * A machine half alone, whose one URL artifact no owner ever fetches. It declares one capability
+ * the door withholds by default, so its installer's grant is an authority decision of its own.
+ */
 function nativeFixture(version: string, artifact: string): PluginManifest {
   return {
     id: CROSSING_NATIVE,
     version,
     title: "Crossing native fixture",
     description: "A machine half alone: a crossing that changes it stops its native installation.",
-    capabilities: [],
+    capabilities: [CROSSING_WITHHELD_CAP],
     entry: {},
     contributes: {
       settings: [],
@@ -1443,38 +1449,15 @@ function bundleVariant(bytes: Buffer, protocol: string, indent = 0): Buffer {
   );
 }
 /**
- * The disposable one-shot that leaves the door-installed closure where a hub of the earlier
- * protocol would have, as `installed-bundles-candidate.ts` restores a snapshot: each row keeps its
- * grants, installer lineage, hardening and enablement but names the earlier build's bytes. Each
- * plugin's storage also gains a sentinel. Prints the rows a crossing journals as `previous`.
+ * The disposable one-shot that gives each plugin's storage a sentinel beside the data the plugin
+ * keeps itself, written over the stopped volume in the incumbent's image.
  */
-function earlierClosureSeed(
-  builds: readonly { readonly pluginId: string; readonly bytes: Buffer }[],
-  sentinels: Readonly<Record<string, string>>,
-): string {
-  return `import { createHash } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
-import { PluginBundleSchema } from "./packages/protocol/src/index.ts";
-import { openDatabase, ServerStore } from "./packages/server/src/index.ts";
-const builds = ${JSON.stringify(builds.map(({ pluginId, bytes }) => ({ pluginId, bytes: bytes.toString("base64") })))};
-const sentinels = ${JSON.stringify(sentinels)};
-const suffix = ${JSON.stringify(BUNDLE_SUFFIX)};
+function pluginDataSentinels(sentinels: Readonly<Record<string, string>>): string {
+  return `import { openDatabase, ServerStore } from "./packages/server/src/index.ts";
 const store = new ServerStore(openDatabase("/data/manifold.db"));
 try {
-  for (const build of builds) {
-    const row = store.pluginInstalls().find((candidate) => candidate.pluginId === build.pluginId);
-    if (row === undefined) throw new Error(build.pluginId + " is not installed");
-    const bytes = Buffer.from(build.bytes, "base64");
-    const bundle = PluginBundleSchema.parse(JSON.parse(bytes.toString("utf8")));
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const bundlePath = "/data/plugins/" + build.pluginId + "/" + sha256 + suffix;
-    writeFileSync(bundlePath, bytes, { flag: "wx", mode: 0o600 });
-    store.putPluginInstall({ ...row, sha256, bundlePath, source: bundlePath, builtAgainst: bundle.builtAgainst });
-    rmSync(row.bundlePath);
-    rmSync(row.bundlePath.slice(0, -suffix.length), { recursive: true, force: true });
-    await store.pluginStorage(build.pluginId).set(${JSON.stringify(CROSSING_SENTINEL)}, sentinels[build.pluginId]);
-  }
-  console.log(JSON.stringify(store.pluginInstalls().filter((row) => builds.some((build) => build.pluginId === row.pluginId))));
+  for (const [pluginId, sentinel] of Object.entries(${JSON.stringify(sentinels)}))
+    await store.pluginStorage(pluginId).set(${JSON.stringify(CROSSING_SENTINEL)}, sentinel);
 } finally {
   store.close();
 }
@@ -1641,12 +1624,15 @@ function stageSet(
 }
 /**
  * A proved native owner on the real machine socket: it answers the owner challenge with its own
- * key, reports each enabled installation installed, and keeps a managed-store sentinel that only a
- * purge command may delete, as a real owner's retained state. It runs no workload.
+ * key, reports each enabled installation installed unless it withholds readiness, and keeps a
+ * managed-store sentinel that only a purge command may delete, as a real owner's retained state.
+ * It runs no workload.
  */
 class NativeOwner {
   readonly commands: Extract<JobCommand, { type: "install" }>[] = [];
   proofs = 0;
+  /** False while the owner withholds its installed reports, as an owner not yet ready does. */
+  acknowledges = true;
   private socket: WebSocket | null = null;
   private stopped = false;
   private readonly key = generateKeyPairSync("ed25519");
@@ -1720,7 +1706,7 @@ class NativeOwner {
     else if (command.type === "install") {
       this.commands.push(command);
       if (command.action === "purge") rmSync(join(this.store, "broker.store"), { force: true });
-      if (command.action === undefined)
+      if (command.action === undefined && this.acknowledges)
         socket.send(
           JSON.stringify({
             type: "job_event",
@@ -1915,6 +1901,8 @@ try {
   if (crossing) {
     const fixtures = join(directory, "crossing-fixtures");
     const nativeSource = join(fixtures, "native");
+    /** The replacement set's native build, its declaration changed. */
+    const nativeNextFile = join(fixtures, `native-2.0.0${BUNDLE_SUFFIX}`);
     const ownerStore = join(directory, "native-owner-store");
     const brokerStore = join(ownerStore, "broker.store");
     mkdirSync(nativeSource, { recursive: true, mode: 0o700 });
@@ -1924,8 +1912,30 @@ try {
     while (PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS.has(String(earlierStamp))) earlierStamp -= 1;
     const receipts: Record<string, unknown> = { earlierStamp: String(earlierStamp) };
     metrics["crossing"] = receipts;
-    const r0 = revision;
-    const r2 = await fixtureChild(r0, `crossing-${crypto.randomUUID()}`);
+    // The earlier hub: this application with its bundle window narrowed to the earlier stamp, as
+    // the deployed hub of the earlier protocol admits its own closure and no later build. Every
+    // later revision is this application unchanged.
+    const application = revision;
+    const windowFile = join(fixtureRepo, "packages/protocol/src/version.ts");
+    const bundleWindow =
+      /(PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set\()\[[^\]]*\]\)/;
+    const windowSource = readFileSync(windowFile, "utf8");
+    requireThat(
+      bundleWindow.test(windowSource),
+      "the fixture cannot find the bundle protocol window it narrows for the earlier hub",
+    );
+    writeFileSync(
+      windowFile,
+      windowSource.replace(bundleWindow, `$1[${JSON.stringify(String(earlierStamp))}])`),
+    );
+    await command(["git", "add", "packages/protocol/src/version.ts"], { cwd: fixtureRepo });
+    const r0 = await fixtureRevision(`earlier-hub-${crypto.randomUUID()}`);
+    const earlierIdentity = deriveBuildIdentity(fixtureRepo, r0);
+    baseIdentity["MANIFOLD_VERSION"] = earlierIdentity.version;
+    baseIdentity["MANIFOLD_BUILD"] = earlierIdentity.build;
+    revision = r0;
+    expectedBuild = earlierIdentity.build;
+    const r2 = await fixtureChild(r0, `crossing-${crypto.randomUUID()}`, application);
     const r3 = await fixtureChild(r2, `stacked-${crypto.randomUUID()}`);
     const images = new Map<string, string>();
     const deployTo = (target: string): void => {
@@ -1954,6 +1964,8 @@ try {
     const snapshot = join(directory, "verify-live-before.json");
     let counter: { bytes: Buffer; sha256: string } = { bytes: Buffer.alloc(0), sha256: "" };
     let primary: StagedSet | undefined;
+    /** The plan the stacked crossings' restore was proved under: stale once that restore ran. */
+    let stackedPlan = "";
     let seeded: CrossingRow[] = [];
     let crossedRows: CrossingRow[] = [];
     let consents: unknown[] = [];
@@ -2011,7 +2023,7 @@ try {
       (await docker(["logs", await containerId()], { confidential: true })).out;
 
     await step(
-      "crossing: the incumbent holds an earlier-protocol closure beside its reviewed native deployment",
+      "crossing: the earlier hub serves its protocol closure beside its reviewed native deployment",
       async () => {
         appUid = 0;
         await compose(finalImage(), ["up", "-d", "--build", "--no-deps", "manifold"], {
@@ -2043,27 +2055,35 @@ try {
           join(repo, "packages/plugin-kit/test/fixtures/sample"),
           counterFile,
         );
-        const nativeFile = join(fixtures, `native-1.0.0${BUNDLE_SUFFIX}`);
         writeFileSync(
           join(nativeSource, "manifest.json"),
           JSON.stringify(nativeFixture("1.0.0", "a".repeat(64))),
         );
-        const native = await packFixture(nativeSource, nativeFile);
+        const native = await packFixture(
+          nativeSource,
+          join(fixtures, `native-1.0.0${BUNDLE_SUFFIX}`),
+        );
         const uploads = "/data/plugin-uploads";
         await execBun(
           `import { mkdirSync } from "node:fs"; mkdirSync(${JSON.stringify(uploads)}, { recursive: true, mode: 0o700 });`,
         );
-        // The real install door writes each row: grants, installer lineage and hardening.
-        for (const [file, build] of [
-          [counterFile, counter],
-          [nativeFile, native],
+        // The real install door writes each row of the earlier SDK's builds: grants, installer
+        // lineage and hardening. The native fixture's installer grants its withheld capability.
+        for (const [build, grant] of [
+          [counter, undefined],
+          [native, [CROSSING_WITHHELD_CAP]],
         ] as const) {
-          const upload = `${uploads}/${build.sha256}${BUNDLE_SUFFIX}`;
+          const bytes = bundleVariant(build.bytes, String(earlierStamp));
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          const file = join(fixtures, `${sha256}${BUNDLE_SUFFIX}`);
+          writeFileSync(file, bytes, { mode: 0o600 });
+          const upload = `${uploads}/${sha256}${BUNDLE_SUFFIX}`;
           await docker(["cp", file, `${await containerId()}:${upload}`]);
           await act("engine.plugins.install", {
             source: upload,
-            sha256: build.sha256,
+            sha256,
             hardened: true,
+            ...(grant === undefined ? {} : { grant }),
           });
         }
         // The real review door admits the native deployment on the proved owner.
@@ -2094,57 +2114,50 @@ try {
           CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 41 })).count === 41,
           "the counter fixture did not answer on the incumbent",
         );
-        // Leave the closure where a hub of the earlier protocol would have, in the incumbent image
-        // over its stopped volume.
+        // Plugin-storage sentinels go in over the stopped volume, in the incumbent's image. The
+        // owner then withholds readiness: an enabled provider not ready before the switch.
         const incumbent = await inspectContainer();
         await docker(["stop", "--time", "120", incumbent.Id], { timeoutMs: 180_000 });
-        seeded = z.array(CrossingRowSchema).parse(
-          JSON.parse(
-            await volumeScript(
-              incumbent.Image,
-              earlierClosureSeed(
-                [
-                  {
-                    pluginId: CROSSING_COUNTER,
-                    bytes: bundleVariant(counter.bytes, String(earlierStamp)),
-                  },
-                  {
-                    pluginId: CROSSING_NATIVE,
-                    bytes: bundleVariant(native.bytes, String(earlierStamp)),
-                  },
-                ],
-                sentinels,
-              ),
-            ),
-          ),
-        );
+        await volumeScript(incumbent.Image, pluginDataSentinels(sentinels));
+        owner().acknowledges = false;
         await docker(["start", incumbent.Id]);
         await ready();
         await owner().proved(2);
+        seeded = (await state()).rows;
         const roster = await pluginRoster();
-        for (const row of seeded) {
-          const entry = roster.find((candidate) => candidate.manifest.id === row.pluginId);
+        for (const pluginId of [CROSSING_COUNTER, CROSSING_NATIVE]) {
+          const row = seeded.find((candidate) => candidate.pluginId === pluginId);
+          const entry = roster.find((candidate) => candidate.manifest.id === pluginId);
           requireThat(
-            entry?.held?.reason === "repack_required" &&
-              entry.install?.sha256 === row.sha256 &&
-              row.builtAgainst?.[BUILT_AGAINST_PROTOCOL] === String(earlierStamp),
-            `${row.pluginId}: the incumbent does not hold its protocol ${earlierStamp} build`,
+            row?.builtAgainst?.[BUILT_AGAINST_PROTOCOL] === String(earlierStamp) &&
+              entry?.held === undefined &&
+              entry?.install?.sha256 === row.sha256,
+            `${pluginId}: the earlier hub does not serve its protocol ${earlierStamp} build`,
           );
         }
         const closure = await state();
         consents = closure.consents;
         requireThat(consents.length > 0, "the native review recorded no consents");
-        nativeAt(closure, { enabled: 1 }, "earlier closure");
+        nativeAt(closure, { enabled: 1, ready: 0 }, "earlier closure");
         requireThat(
-          closure.storage[CROSSING_COUNTER]?.count === "41" && closure.journal === null,
-          "the earlier closure lost its plugin data or already holds a crossing",
+          seeded.every((row) => closure.files[row.bundlePath] === row.sha256) &&
+            seeded
+              .find((row) => row.pluginId === CROSSING_NATIVE)
+              ?.grantedCaps.includes(CROSSING_WITHHELD_CAP) === true &&
+            closure.storage[CROSSING_COUNTER]?.count === "41" &&
+            closure.journal === null,
+          "the earlier closure lost its bundles, grant or plugin data, or already holds a crossing",
         );
         dataRetained(closure, "earlier closure");
         const before = await verifyLive(["snapshot", snapshot]);
         requireThat(before.code === 0, `verify-live snapshot failed:\n${redact(before.out)}`);
         receipts["closure"] = {
           revision: r0,
-          rows: seeded.map(({ pluginId, sha256 }) => ({ pluginId, sha256 })),
+          rows: seeded.map(({ pluginId, sha256, grantedCaps }) => ({
+            pluginId,
+            sha256,
+            grantedCaps,
+          })),
           native: approved,
           consents: consents.length,
           snapshot: redact(before.out.trim()),
@@ -2200,12 +2213,11 @@ try {
     await step(
       "crossing: killed between its bundle commit and native completion, the crossing resumes on restart",
       async () => {
-        const nextFile = join(fixtures, `native-2.0.0${BUNDLE_SUFFIX}`);
         writeFileSync(
           join(nativeSource, "manifest.json"),
           JSON.stringify(nativeFixture("2.0.0", "b".repeat(64))),
         );
-        const next = await packFixture(nativeSource, nextFile);
+        const next = await packFixture(nativeSource, nativeNextFile);
         primary = stageSet([
           { pluginId: CROSSING_COUNTER, bytes: counter.bytes },
           { pluginId: CROSSING_NATIVE, bytes: next.bytes, nativeReview: true },
@@ -2334,8 +2346,8 @@ try {
           "the crossed counter lost its stored count",
         );
         crossedRows = crossed.rows;
-        // The enabled provider was never ready on the incumbent, which held its plugin: the
-        // owner pin must still wait for its native review.
+        // The enabled provider was not ready in the pre-switch snapshot, its owner withholding
+        // readiness: the owner pin must still wait for its native review.
         const verified = await verifyLive(["verify", snapshot, expectedBuild], set.file);
         requireThat(
           verified.code === 0 &&
@@ -2343,6 +2355,7 @@ try {
             verified.out.includes(`installation ${approved.machineId}/${CROSSING_NATIVE}`),
           `verify-live released the owner pin while the crossed provider awaits its native review:\n${redact(verified.out)}`,
         );
+        owner().acknowledges = true;
         receipts["forward"] = {
           revision: r2,
           set: set.sha256,
@@ -2407,6 +2420,7 @@ try {
           .map((record) => bundleFile(CROSSING_COUNTER, record.members[0]!.sha256));
         const gate = await rollbackGate(images.get(r2)!, r2);
         requireThat(gate.plan !== "none", "the rollback gate projected no restore");
+        stackedPlan = gate.plan;
         const incumbent = await inspectContainer();
         // A steady hub writes no journal: the next journal write is the restore's truncation,
         // after its one SQLite transaction committed.
@@ -2492,7 +2506,34 @@ try {
     await step(
       "crossing: a manual rollback restores the earlier closure with the outgoing image",
       async () => {
+        // A plan proved for another restore binds nothing here: the host refuses it before any
+        // row moves, and deploy-dev.sh restarts the incumbent unchanged.
+        const serving = (await inspectContainer()).Image;
+        const unrestored = await state();
+        deployTo(r0);
+        const stale = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r2, stackedPlan);
+        const staleText = `${stale.out}${stale.err}`;
+        requireThat(
+          stale.code !== 0 &&
+            staleText.includes(
+              `restore plan ${stackedPlan} is not the journaled crossings ${r2}; restore refused`,
+            ),
+          `a rollback naming a stale restore plan did not refuse:\n${redact(staleText.slice(-2_000))}`,
+        );
+        deployTo(r2);
+        await ready();
+        const kept = await state();
+        requireThat(
+          (await inspectContainer()).Image === serving &&
+            isDeepStrictEqual(kept.rows, unrestored.rows) &&
+            isDeepStrictEqual(kept.journal, unrestored.journal) &&
+            isDeepStrictEqual(kept.files, unrestored.files),
+          "a refused stale plan changed the incumbent, its rows, journal or files",
+        );
+        nativeAt(kept, { enabled: 0 }, "stale restore plan");
+        dataRetained(kept, "stale restore plan");
         const gate = await rollbackGate(images.get(r0)!, r0);
+        requireThat(gate.plan !== stackedPlan, "the rollback gate re-proved the stale plan");
         deployTo(r0);
         const rolledBack = await up({}, r2, gate.plan);
         await ready();
@@ -2506,16 +2547,41 @@ try {
             restored.storage[CROSSING_COUNTER]?.count === "42",
           "the manual rollback did not restore the earlier rows, files and plugin data",
         );
-        nativeAt(restored, { enabled: 1, ready: 0 }, "manual rollback");
+        nativeAt(restored, { enabled: 1 }, "manual rollback");
         dataRetained(restored, "manual rollback");
+        // The earlier hub serves the restored closure with its data, and the approval the
+        // crossing disabled is live again on its owner.
         const roster = await pluginRoster();
-        for (const row of seeded)
+        for (const row of seeded) {
+          const entry = roster.find((candidate) => candidate.manifest.id === row.pluginId);
           requireThat(
-            roster.find((entry) => entry.manifest.id === row.pluginId)?.install?.sha256 ===
-              row.sha256,
-            `${row.pluginId}: the previous hub does not serve the restored digest`,
+            entry?.held === undefined && entry?.install?.sha256 === row.sha256,
+            `${row.pluginId}: the earlier hub does not serve the restored digest`,
           );
+        }
+        requireThat(
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 43,
+          "the restored counter lost its stored count",
+        );
+        await until(
+          async () => {
+            const installation = await describeNative();
+            return (
+              installation?.revision === approved.revision &&
+              installation.enabled &&
+              installation.ready
+            );
+          },
+          30_000,
+          "the restored native approval ready on its owner again",
+        );
         receipts["rollback"] = {
+          staleRefusal: redact(
+            staleText
+              .split("\n")
+              .filter((line) => line.includes("restore refused"))
+              .join("\n"),
+          ),
           gate: redact(gate.out.trim()),
           plan: gate.plan,
           restored: redact(
@@ -2543,52 +2609,73 @@ try {
         );
         nativeAt(crossed, { enabled: 0 }, "repeated crossing");
         // An authority decision after the crossing: the same digest, reinstalled through the real
-        // door with a narrower grant.
-        const upload = `/data/plugin-uploads/${counter.sha256}${BUNDLE_SUFFIX}`;
+        // door with replacement consent and the default grant, which withdraws the withheld
+        // capability the crossing kept. Restoring the earlier row would grant it again.
+        const nativeMember = primaryMember(CROSSING_NATIVE);
+        const upload = `/data/plugin-uploads/${nativeMember.sha256}${BUNDLE_SUFFIX}`;
+        await docker(["cp", nativeNextFile, `${await containerId()}:${upload}`]);
+        const kept = crossed.rows.find((row) => row.pluginId === CROSSING_NATIVE);
+        requireThat(
+          kept?.grantedCaps.includes(CROSSING_WITHHELD_CAP) === true,
+          "the crossing did not keep the native fixture's granted capability",
+        );
         await act("engine.plugins.install", {
           source: upload,
-          sha256: counter.sha256,
+          sha256: nativeMember.sha256,
           hardened: true,
-          grant: [],
+          replace: true,
         });
-        const narrowed = await state();
-        const counterRow = narrowed.rows.find((row) => row.pluginId === CROSSING_COUNTER);
+        const decided = await state();
+        const nativeRow = decided.rows.find((row) => row.pluginId === CROSSING_NATIVE);
         requireThat(
-          counterRow?.sha256 === counter.sha256 && counterRow.grantedCaps.length === 0,
-          "the same-digest reinstall did not narrow the grant",
+          nativeRow?.sha256 === nativeMember.sha256 &&
+            !nativeRow.grantedCaps.includes(CROSSING_WITHHELD_CAP),
+          "the same-digest reinstall did not withdraw the granted capability",
         );
         const serving = (await inspectContainer()).Image;
-        deployTo(r0);
-        const refused = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r2);
-        const text = `${refused.out}${refused.err}`;
-        requireThat(
-          refused.code !== 0 &&
-            text.includes(
-              `${CROSSING_COUNTER}: the installed row changed since crossing ${r2}; restore refused`,
-            ),
-          `rollback over a later authority decision did not refuse:\n${redact(text.slice(-2_000))}`,
-        );
-        deployTo(r2);
-        await ready();
-        const after = await state();
-        requireThat(
-          (await inspectContainer()).Image === serving &&
-            isDeepStrictEqual(after.rows, narrowed.rows) &&
-            isDeepStrictEqual(after.journal, narrowed.journal) &&
-            isDeepStrictEqual(after.files, narrowed.files),
-          "a refused restore changed the incumbent, its rows, journal or files",
-        );
-        nativeAt(after, { enabled: 0 }, "refused restore");
-        dataRetained(after, "refused restore");
-        receipts["authorityChange"] = {
-          revision: r2,
-          grant: counterRow.grantedCaps,
-          refusal: redact(
+        // The gate proves only the closure a restore yields; the host's exact-row check refuses
+        // both the gated manual rollback and the automatic recovery no gate precedes.
+        const gate = await rollbackGate(images.get(r0)!, r0);
+        requireThat(gate.plan !== "none", "the rollback gate projected no restore");
+        const refusals: Record<string, string> = {};
+        for (const [label, plan] of [
+          [`dev-rollback ${r2} ${r0} ${gate.plan}`, gate.plan],
+          [`dev-rollback ${r2} ${r0}`, undefined],
+        ] as const) {
+          deployTo(r0);
+          const refused = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r2, plan);
+          const text = `${refused.out}${refused.err}`;
+          requireThat(
+            refused.code !== 0 &&
+              text.includes(
+                `${CROSSING_NATIVE}: the installed row changed since crossing ${r2}; restore refused`,
+              ),
+            `${label} over a later authority decision did not refuse:\n${redact(text.slice(-2_000))}`,
+          );
+          deployTo(r2);
+          await ready();
+          const after = await state();
+          requireThat(
+            (await inspectContainer()).Image === serving &&
+              isDeepStrictEqual(after.rows, decided.rows) &&
+              isDeepStrictEqual(after.journal, decided.journal) &&
+              isDeepStrictEqual(after.files, decided.files),
+            `${label}: a refused restore changed the incumbent, its rows, journal or files`,
+          );
+          nativeAt(after, { enabled: 0 }, `${label} refused`);
+          dataRetained(after, `${label} refused`);
+          refusals[label] = redact(
             text
               .split("\n")
               .filter((line) => line.includes("restore refused") || line.includes("HOLD"))
               .join("\n"),
-          ),
+          );
+        }
+        receipts["authorityChange"] = {
+          revision: r2,
+          grant: { crossed: kept.grantedCaps, decided: nativeRow.grantedCaps },
+          plan: gate.plan,
+          refusals,
         };
       },
     );

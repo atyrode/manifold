@@ -241,15 +241,19 @@ generation, identity and working terminals. No existing development stack is sel
 host-service calls to Caddy/systemd are shimmed.
 Pass `--crossing` to rehearse a staged bundle crossing (#1068) on the same disposable topology,
 through the real receiver grammar, `deploy-dev.sh` volume steps and retained volume. The incumbent
-holds an installed closure re-stamped for the previous protocol: a hardened server plugin with
-stored data and a machine-half plugin whose native deployment a proved fixture owner admitted
-through the real review door. The proof covers a refused set changing nothing, with the automatic
-three-argument rollback; a crossing killed between its bundle commit and native completion,
-resuming on restart; `verify-live` withholding the owner pin while a not-ready provider awaits its
-native review; stacked crossings; a manual rollback killed between its restore commit and journal
-completion, converging on retry; the manual rollback to the earlier closure; refusal after a
-same-digest reinstall changes authority; and a no-op replay after the native review. Kill points
-are deterministic: a FIFO at the journal's next-write path blocks the real write until the kill.
+is a hub of the previous protocol, the same application with its bundle window narrowed to the
+previous stamp. It serves a closure of previous-protocol builds installed through the real door: a
+hardened server plugin with stored data and a machine-half plugin whose native deployment a proved
+fixture owner admitted through the real review door. The proof covers a refused set changing
+nothing, with the automatic three-argument rollback; a crossing killed between its bundle commit
+and native completion, resuming on restart; `verify-live` withholding the owner pin while a
+provider not ready before the switch awaits its native review; stacked crossings; a manual
+rollback killed between its restore commit and journal completion, converging on retry; a stale
+restore plan refused; the gated manual rollback to the earlier closure, which the earlier hub
+serves again with its native approval; refusal of both the gated and the automatic rollback
+after a same-digest reinstall withdraws a granted capability the crossing kept; and a no-op
+replay after the native review. Kill points are deterministic: a FIFO at the journal's
+next-write path blocks the real write until the kill.
 Plugin data and the owner-managed store stay byte-identical, the approved consents survive until
 the review, and no purge may reach the owner. The artifact egress policy refuses loopback
 destinations, so the proof writes the layout `bundle-replacement.ts stage` produces from local
