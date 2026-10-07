@@ -1614,17 +1614,20 @@ services they provide may be `installation_disabled`. Any such installation or s
 `maintenance_required=true`, which withholds the owner pin until the deployment reviews are
 applied and the same verification passes.
 
-A rollback to a revision that does not contain a journaled crossing restores it first, newest
-first, in the outgoing image. The restore refuses, changing nothing, if a crossed plugin's row is
-not exactly one the journal recorded (a later install of the same digest with other grants,
-hardening or installer included) or a disabled installation moved since. A manual `rollback`
-dispatch gates that restore: `installed-bundles` exports the journal
-(`exportInstalled { crossings: true }`), applies the restore of every crossing the target does
-not contain to the export, boots the target candidate on that closure, and outputs its digest as
-`restore_plan` (`none` when nothing is restored). The switch sends
-`dev-rollback EXPECTED TARGET PLAN`, and the host restores only a journal whose plan has that
-digest. The automatic recovery after a failed switch or verification sends the three-argument
-form and restores without a gate, as it returns to the image that was just serving.
+A crossing is forward-only. The automatic recovery after a failed switch or verification sends
+`dev-rollback CANDIDATE PREVIOUS`, which restores the crossing the candidate applied, in the
+outgoing image, before the previous hub starts: the previous rows and bundle files, and the
+native installations the crossing stopped, re-enabled at their journaled revision. The restore
+refuses, changing nothing, if a crossed plugin's row is not exactly one the journal recorded (a
+later install of the same digest with other grants, hardening or installer included) or a
+disabled installation moved since; a restore interrupted after its commit completes when
+retried. A bundle file is removed only once no installed row and no remaining journal record
+names it. A manual `rollback` dispatch to a revision behind a journaled crossing refuses before
+anything stops, changing nothing: `installed-bundles` reads the journal
+(`exportInstalled { crossings: true }`) and names each crossing the target does not contain.
+Recovery after a completed crossing is a forward deployment. `deploy-dev.sh` also refuses, before
+it builds or stops anything, any rollback that would restore more than the newest crossing or one
+the outgoing revision did not apply.
 
 Container health is only the switch's transport check, not a successful deployment. Both
 workflows snapshot the running target immediately before switching and require the separate
@@ -2097,7 +2100,8 @@ the actual incumbent and requires the target to be a strict ancestor. The acknow
 means the operator reviewed application and retained-data compatibility. It does **not**
 restore a database or other shared data, pin the instance at that revision, suppress the next
 green forward deployment, promote production, update a fleet, or authorize native-owner
-restart.
+restart. A target behind a journaled staged crossing (#1068) is refused before anything stops;
+recovery after a completed crossing is a forward deployment.
 
 The host enforces this ordering for both new and older workflow callers under its existing
 deployment lock, before build or live mutation. Newly retained images carry an application

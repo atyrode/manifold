@@ -2763,11 +2763,16 @@ including the removal of an empty journal. A hub interrupted mid-crossing resume
 journal at its next boot, even without the staged set: an uncommitted record is dropped and a
 committed one finishes its native half once. A completed crossing is never resumed, so staging
 its set again only discards the staging; native installations reviewed since stay as reviewed.
-The deployment's rollback restores, in one database transaction, the previous rows and
-re-enables exactly the installations the crossing stopped, at the same revision and artifact.
+A crossing is forward-only. Only the deployment's automatic recovery of a crossing whose switch or
+live verification failed restores it, in one database transaction: the previous rows, and
+exactly the installations the crossing stopped, re-enabled at the same revision and artifact.
 It restores a row only if the row is exactly one the journal recorded, so a later install of the
 same digest with other grants, hardening or installer refuses the whole restore. A restore that
-committed before its journal was truncated completes when retried.
+committed before its journal was truncated completes when retried. A restored crossing's bundle
+files are removed only once no installed row and no remaining journal record names them, so an
+earlier crossing still restores after a later one returned to its digest. A manual rollback
+behind a journaled crossing is refused before anything stops and changes nothing: recovery
+after a completed crossing is a forward deployment.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the
@@ -2976,9 +2981,8 @@ image with this snapshot in disposable data directories before replacing the tar
 explicit, default-off one-time bootstrap exception for an authenticated `unknown_action`
 response from a target predating the export door. The exception emits a target/reason warning
 and step-summary receipt; an existing door always runs the normal gate. With `{ crossings: true }`
-the snapshot also carries the staged-crossing journal (#1068), oldest first: each crossing's
-revision, set digest and, per member, the replaced row's same safe projection and its retained
-bytes. A rollback gate uses it to boot the target candidate on the closure the restore yields.
+the snapshot also names the journaled staged crossings (#1068), oldest first, by revision and set
+digest; a manual rollback gate refuses a target that does not contain one.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set

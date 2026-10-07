@@ -245,15 +245,18 @@ is a hub of the previous protocol, the same application with its bundle window n
 previous stamp. It serves a closure of previous-protocol builds installed through the real door: a
 hardened server plugin with stored data and a machine-half plugin whose native deployment a proved
 fixture owner admitted through the real review door. The proof covers a refused set changing
-nothing, with the automatic three-argument rollback; a crossing killed between its bundle commit
-and native completion, resuming on restart; `verify-live` withholding the owner pin while a
-provider not ready before the switch awaits its native review; stacked crossings; a manual
-rollback killed between its restore commit and journal completion, converging on retry; a stale
-restore plan refused; the gated manual rollback to the earlier closure, which the earlier hub
-serves again with its native approval; refusal of both the gated and the automatic rollback
-after a same-digest reinstall withdraws a granted capability the crossing kept; and a no-op
-replay after the native review. Kill points are deterministic: a FIFO at the journal's
-next-write path blocks the real write until the kill.
+nothing, with the automatic three-argument rollback; a crossing applied and then failing
+`verify-live`, which the automatic recovery restores with the outgoing hub, its rows, files and
+native approval; a crossing killed between its bundle commit and native completion, resuming on
+restart; `verify-live` withholding the owner pin while a provider not ready before the switch
+awaits its native review; stacked crossings, the last returning to the first's bytes; a manual
+rollback behind them refused by the trusted `installed-bundles` gate and by `deploy-dev.sh`
+before anything stops, changing nothing; the automatic recovery of the last crossing, killed
+between its restore commit and journal truncation and converging on retry while every file the
+remaining journal names stays; the earlier crossing then restoring onto those bytes; refusal of
+the automatic recovery after a same-digest reinstall withdraws a granted capability the crossing
+kept; and a no-op replay after the native review. Kill points are deterministic: a FIFO at the
+journal's next-write path blocks the real write until the kill.
 Plugin data and the owner-managed store stay byte-identical, the approved consents survive until
 the review, and no purge may reach the owner. The artifact egress policy refuses loopback
 destinations, so the proof writes the layout `bundle-replacement.ts stage` produces from local
@@ -448,7 +451,7 @@ Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`
 checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
 The receiver accepts `dev <sha>`, `dev <full-sha> <set-sha256>`,
-`dev-rollback <expected-current-full-sha> <target-full-sha> [none|<restore-plan-sha256>]`,
+`dev-rollback <expected-current-full-sha> <target-full-sha>`,
 `preview up 123 <sha>`, `preview down 123`, `plugin <https-url> <sha256> [--hardened|--in-realm]`,
 or a bare `<sha>` (legacy dev deployment). Other commands are refused.
 
@@ -462,13 +465,15 @@ network-less container of the candidate image copies the set into the data volum
 installs it at boot, resuming from `plugin-replacement/journal.json` if a crash interrupted it.
 Sending the same request again after the crossing completed changes nothing: the hub discards
 the staged set and logs `plugin_replacement_replayed`. An ordinary forward deployment clears any
-staged set instead. A rollback to a revision that does not contain a journaled crossing restores
-those crossings first, newest first, with the outgoing image (`bundle-replacement.ts restore`).
-The restore refuses, and changes nothing, unless each crossed row is exactly one the journal
-recorded; a restore interrupted after its commit completes when the rollback is retried. With a
-third argument, sent by a manual `rollback` dispatch, the host restores only crossings whose
-restore plan has that digest (`none`: no crossing may be restored), the plan `installed-bundles`
-proved on the target candidate. A refused transition restarts the unchanged incumbent and holds.
+staged set instead. A crossing is forward-only. A rollback restores only the newest journaled
+crossing, and only when its outgoing revision applied it, as the automatic recovery of a failed
+switch or verification does: with the outgoing image (`bundle-replacement.ts restore`), before
+the previous hub starts. Any rollback behind another crossing refuses before anything is built
+or stopped, because recovery after a completed crossing is a forward deployment; a manual
+`rollback` dispatch is refused earlier still by `installed-bundles`. The restore refuses, and
+changes nothing, unless each crossed row is exactly one the journal recorded; a restore
+interrupted after its commit completes when the rollback is retried. A refused transition
+restarts the unchanged incumbent and holds.
 
 `plugin <url> <sha256>` installs a published plugin bundle on the integrated preview: it runs
 `packages/plugin-kit/src/install.ts` from this stable checkout against `http://127.0.0.1:$PREVIEW_DEV_PORT`
