@@ -238,11 +238,28 @@ container generation, identity, data ownership and canvas state unchanged. The s
 covers an actual incumbent mounted on a volume subpath. It also creates an incumbent local owner
 with live PTYs, requests server-only replacement, and requires refusal to preserve its process
 generation, identity and working terminals. No existing development stack is selected. Only fixed
-host-service calls to Caddy/systemd are shimmed. Run both modes before shipping composition changes:
+host-service calls to Caddy/systemd are shimmed.
+Pass `--crossing` to rehearse a staged bundle crossing (#1068) on the same disposable topology,
+through the real receiver grammar, `deploy-dev.sh` volume steps and retained volume. The incumbent
+holds an installed closure re-stamped for the previous protocol: a hardened server plugin with
+stored data and a machine-half plugin whose native deployment a proved fixture owner admitted
+through the real review door. The proof covers a refused set changing nothing, with the automatic
+three-argument rollback; a crossing killed between its bundle commit and native completion,
+resuming on restart; `verify-live` withholding the owner pin while a not-ready provider awaits its
+native review; stacked crossings; a manual rollback killed between its restore commit and journal
+completion, converging on retry; the manual rollback to the earlier closure; refusal after a
+same-digest reinstall changes authority; and a no-op replay after the native review. Kill points
+are deterministic: a FIFO at the journal's next-write path blocks the real write until the kill.
+Plugin data and the owner-managed store stay byte-identical, the approved consents survive until
+the review, and no purge may reach the owner. The artifact egress policy refuses loopback
+destinations, so the proof writes the layout `bundle-replacement.ts stage` produces from local
+bytes; `deploy-dev.sh` verifies it with the installed tooling as on the host. Run all modes before
+shipping composition changes:
 
 ```sh
 bun scripts/verify-preview-environment.ts
 bun scripts/verify-preview-environment.ts --integrated
+bun scripts/verify-preview-environment.ts --crossing
 ```
 
 Add `--measure-storage` locally to build two distinct application bases and record

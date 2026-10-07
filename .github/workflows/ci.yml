@@ -529,11 +529,12 @@ jobs:
     needs: plan
     if: contains(fromJSON(needs.plan.outputs.checks), 'preview-environment')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The staged crossing (#1068) deploys, interrupts and rolls back many times through the receiver.
+    timeout-minutes: ${{ matrix.mode == 'crossing' && 35 || 15 }}
     strategy:
       fail-fast: false
       matrix:
-        mode: [plain, integrated]
+        mode: [plain, integrated, crossing]
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -546,11 +547,12 @@ jobs:
         env:
           PREVIEW_MODE: ${{ matrix.mode }}
         run: |
-          if [[ $PREVIEW_MODE == integrated ]]; then
-            bun scripts/verify-preview-environment.ts --integrated
-          else
-            bun scripts/verify-preview-environment.ts
-          fi
+          case $PREVIEW_MODE in
+            integrated) bun scripts/verify-preview-environment.ts --integrated ;;
+            crossing) bun scripts/verify-preview-environment.ts --crossing ;;
+            plain) bun scripts/verify-preview-environment.ts ;;
+            *) echo "unknown preview mode $PREVIEW_MODE" >&2; exit 2 ;;
+          esac
       - name: Retain preview evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
