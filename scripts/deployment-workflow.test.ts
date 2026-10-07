@@ -216,6 +216,94 @@ test("a staged replacement set applies only to a forward deploy (#1068)", async 
   ).toMatchObject({ sha: target, rollback: "false" });
 });
 
+test("a manual rollback gates the closure its restore yields and binds that plan to the switch (#1068)", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-dev.yml", import.meta.url)).text(),
+  ) as {
+    jobs: Record<
+      string,
+      {
+        outputs?: Record<string, string>;
+        steps: {
+          name?: string;
+          env?: Record<string, string>;
+          run?: string;
+          with?: Record<string, unknown>;
+        }[];
+      }
+    >;
+  };
+  const gate = source.jobs["installed-bundles"]!;
+  // The trusted workflow tooling projects the restore; the target is only built.
+  expect(gate.steps[0]?.with).toMatchObject({ ref: "${{ github.sha }}" });
+  expect(gate.steps[1]?.with).toMatchObject({
+    ref: "${{ needs.request.outputs.sha }}",
+    path: "target",
+  });
+  expect(
+    gate.steps.find(
+      (step) => step.name === "Check the running instance's installed bundles without changing it",
+    )?.env?.INSTALLED_BUNDLES_ROLLBACK_REPOSITORY,
+  ).toBe("${{ needs.request.outputs.rollback == 'true' && 'target' || '' }}");
+  expect(gate.outputs?.restore_plan).toBe("${{ steps.installed.outputs.restore_plan }}");
+  const handOff = source.jobs.deploy!.steps.find(
+    (step) => step.name === "Hand the guarded request to the host",
+  );
+  if (!handOff?.run) throw new Error("deploy-dev.yml has no switch step");
+  expect(handOff.env?.RESTORE_PLAN).toBe("${{ needs.installed-bundles.outputs.restore_plan }}");
+  const root = mkdtempSync(join(tmpdir(), "deploy-dev-rollback-plan-"));
+  try {
+    mkdirSync(join(root, "bin"));
+    writeFileSync(
+      join(root, "bin", "ssh"),
+      '#!/usr/bin/env bash\nprintf "%s\\n" "${!#}" > "$SSH_REQUEST"\n',
+      {
+        mode: 0o700,
+      },
+    );
+    const handOver = (plan: string) => {
+      for (const file of ["output", "request"]) rmSync(join(root, file), { force: true });
+      const child = Bun.spawnSync(["bash", "-e", "-c", handOff.run!], {
+        env: {
+          ...process.env,
+          PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`,
+          SHA: target,
+          EXPECTED_CURRENT_SHA: incumbent,
+          ROLLBACK: "true",
+          REPLACEMENT_SET_SHA256: "",
+          RESTORE_PLAN: plan,
+          DEV_DEPLOY_SSH_KEY: "fixture-only-key",
+          DEV_DEPLOY_USER: "fixture",
+          DEV_DEPLOY_HOST: "fixture.invalid",
+          GITHUB_OUTPUT: join(root, "output"),
+          SSH_REQUEST: join(root, "request"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const read = (file: string) => {
+        try {
+          return readFileSync(join(root, file), "utf8");
+        } catch {
+          return "";
+        }
+      };
+      return { code: child.exitCode, output: read("output"), request: read("request").trim() };
+    };
+    const plan = "e".repeat(64);
+    expect(handOver(plan)).toEqual({
+      code: 0,
+      output: "started=true\n",
+      request: `dev-rollback ${incumbent} ${target} ${plan}`,
+    });
+    expect(handOver("none").request).toBe(`dev-rollback ${incumbent} ${target} none`);
+    // Without a proved plan nothing is switched, so nothing needs recovering either.
+    expect(handOver("")).toEqual({ code: 1, output: "", request: "" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("deployment completion requires successful verification with an explicit maintenance result", async () => {
   for (const [file, job] of [
     ["deploy-dev.yml", "owner-pin"],

@@ -6,7 +6,7 @@ export PREVIEW_HOME="${PREVIEW_HOME:-$HOME/manifold-previews}"
 # shellcheck source=infra/previews/common.sh
 source "$here/common.sh"
 require_domain
-usage() { fail 'usage: dev SHA [REPLACEMENT_SET_SHA256] | dev-rollback EXPECTED_CURRENT_FULL_SHA TARGET_FULL_SHA | preview up N SHA | preview down N | plugin URL SHA256 [--hardened|--in-realm] (bare SHA also means dev SHA)'; }
+usage() { fail 'usage: dev SHA [REPLACEMENT_SET_SHA256] | dev-rollback EXPECTED_CURRENT_FULL_SHA TARGET_FULL_SHA [none|RESTORE_PLAN_SHA256] | preview up N SHA | preview down N | plugin URL SHA256 [--hardened|--in-realm] (bare SHA also means dev SHA)'; }
 if [[ -v SSH_ORIGINAL_COMMAND ]]; then
   [[ $SSH_ORIGINAL_COMMAND != *$'\n'* && $SSH_ORIGINAL_COMMAND != *$'\r'* ]] || usage
   read -r -a args <<<"$SSH_ORIGINAL_COMMAND"
@@ -23,6 +23,12 @@ case "${1:-}:$#" in
   dev-rollback:3)
     [[ $2 =~ ^[0-9a-f]{40}$ && $3 =~ ^[0-9a-f]{40}$ ]] || usage
     exec "$here/deploy-dev.sh" "$3" --rollback-from "$2"
+    ;;
+  # A manual rollback (#1068): restore only the staged crossings its installed-bundles gate proved.
+  dev-rollback:4)
+    [[ $2 =~ ^[0-9a-f]{40}$ && $3 =~ ^[0-9a-f]{40}$ ]] || usage
+    [[ $4 == none || $4 =~ ^[0-9a-f]{64}$ ]] || usage
+    exec "$here/deploy-dev.sh" "$3" --rollback-from "$2" --restore-plan "$4"
     ;;
   preview:4) [[ $2 == up ]] || usage; pr_name "$3"; sha_arg "$4"; exec "$here/preview.sh" up "$3" "$4" ;;
   preview:3) [[ $2 == down ]] || usage; pr_name "$3"; exec "$here/preview.sh" down "$3" ;;

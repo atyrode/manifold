@@ -247,4 +247,45 @@ describe("forced-command rollback grammar", () => {
     expect(accepted.code).toBe(0);
     expect(accepted.out).toBe(`${first}|--replacement-set|${digest}|`);
   });
+
+  test("a manual rollback names the restore plan its installed-bundles gate proved (#1068)", () => {
+    const receiverDir = join(directory, "plan-receiver");
+    const home = join(directory, "plan-receiver-home");
+    mkdirSync(receiverDir);
+    mkdirSync(home);
+    cpSync(join(root, "infra/previews/receiver.sh"), join(receiverDir, "receiver.sh"));
+    cpSync(join(root, "infra/previews/common.sh"), join(receiverDir, "common.sh"));
+    writeFileSync(join(receiverDir, "deploy-dev.sh"), '#!/usr/bin/env bash\nprintf "%s|" "$@"\n', {
+      mode: 0o755,
+    });
+    writeFileSync(join(home, "env"), "PREVIEW_DOMAIN=preview.invalid\n");
+    const receive = (request: string) =>
+      command(["bash", join(receiverDir, "receiver.sh")], receiverDir, {
+        PREVIEW_HOME: home,
+        SSH_ORIGINAL_COMMAND: request,
+      });
+    const plan = "e".repeat(64);
+    for (const bound of [plan, "none"])
+      expect(receive(`dev-rollback ${second} ${first} ${bound}`)).toMatchObject({
+        code: 0,
+        out: `${first}|--rollback-from|${second}|--restore-plan|${bound}|`,
+      });
+    expect(receive(`dev-rollback ${second} ${first} ${plan.slice(0, 40)}`).code).toBe(2);
+    expect(receive(`dev-rollback ${second} ${first} ${plan} extra`).code).toBe(2);
+    // The real deployment script parses the same binding before it touches anything.
+    const deploy = (...args: string[]) =>
+      command(["bash", join(root, "infra/previews/deploy-dev.sh"), ...args], root, {
+        PREVIEW_HOME: home,
+        MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID: "",
+      });
+    for (const refused of [
+      [first, "--rollback-from", second, "--restore-plan", plan.slice(0, 40)],
+      [first, "--rollback-from", second, "--plan", plan],
+    ])
+      expect(deploy(...refused)).toMatchObject({ code: 2, err: expect.stringContaining("usage") });
+    expect(deploy(first, "--rollback-from", second, "--restore-plan", plan)).toMatchObject({
+      code: 2,
+      err: expect.stringContaining("MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"),
+    });
+  });
 });

@@ -109,13 +109,26 @@ export function installedBundleFailures(
 /**
  * What the operator reviews before the switch, and why a member cannot cross: the same
  * `replacementRefusals` the candidate hub applies at boot, against the exported incumbents.
- * Stored plugin data is not exported, so the hub repeats the data-major rule against it.
+ * Stored plugin data is not exported, so the hub repeats the data-major rule against it. A set
+ * every member of which already serves its staged digest is a completed crossing; the hub would
+ * only discard it, so the request is refused here before anything stops.
  */
 export function crossingReview(
   snapshot: InstalledPluginsSnapshot,
   replacement: CandidateReplacement,
 ): { readonly lines: string[]; readonly refusals: string[] } {
   const incumbents = new Map(snapshot.plugins.map((plugin) => [plugin.row.pluginId, plugin]));
+  if (
+    replacement.set.members.every(
+      (member) => incumbents.get(member.pluginId)?.row.sha256 === member.sha256,
+    )
+  )
+    return {
+      lines: [],
+      refusals: [
+        `staged set ${replacementSetSha256(replacement.set)} is already installed; deploy without replacement_set`,
+      ],
+    };
   const lines: string[] = [];
   const refusals: string[] = [];
   for (const member of replacement.set.members) {
@@ -297,8 +310,17 @@ if (import.meta.main) {
   if (process.argv.length !== 2)
     throw new Error("usage: bun scripts/installed-bundles-candidate.ts < INPUT.json");
   try {
-    const input = CandidateInputSchema.parse(await Bun.stdin.json());
-    await checkInstalledCandidate(input.snapshot, input.replacement);
+    // A bare snapshot, or a snapshot with the staged crossing it boots with.
+    const input = z
+      .union([
+        CandidateInputSchema,
+        InstalledPluginsSnapshotSchema.transform((snapshot) => ({ snapshot })),
+      ])
+      .parse(await Bun.stdin.json());
+    await checkInstalledCandidate(
+      input.snapshot,
+      "replacement" in input ? input.replacement : undefined,
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : "installed-bundles candidate failed");
     process.exit(1);

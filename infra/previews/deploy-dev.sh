@@ -11,12 +11,18 @@ require_domain
 mode=forward
 expected_current=
 replacement_set=
-usage='usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA | --replacement-set SET_SHA256]'
+restore_plan=
+usage='usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA [--restore-plan none|PLAN_SHA256] | --replacement-set SET_SHA256]'
 case "$#:${2:-}" in
   1:) sha_arg "$1"; target_arg=$1 ;;
-  3:--rollback-from)
+  3:--rollback-from | 5:--rollback-from)
     [[ $1 =~ ^[0-9a-f]{40}$ && $3 =~ ^[0-9a-f]{40}$ ]] ||
       fail 'rollback target and expected current revision must be full commit SHAs'
+    # A manual rollback binds the restore its installed-bundles gate proved (#1068).
+    if (($# == 5)); then
+      [[ $4 == --restore-plan ]] && [[ $5 == none || $5 =~ ^[0-9a-f]{64}$ ]] || fail "$usage"
+      restore_plan=$5
+    fi
     target_arg=$1
     expected_current=$3
     mode=rollback
@@ -154,10 +160,11 @@ volume_step() {
 # Bundles cross with the hub (#1068), between stopping the incumbent and starting its successor.
 # Forward: hand the successor the staged set, or clear any stale one. Rollback: restore every
 # journaled crossing the target revision does not contain, newest first, with the outgoing
-# image's own code, then clear any staged set the target would not understand.
+# image's own code, then clear any staged set the target would not understand. A manual
+# rollback restores only the plan its installed-bundles gate proved on the target candidate.
 retained_transition() {
   local journal status entry
-  local -a undo=()
+  local -a undo=() plan=()
   if [[ $mode == forward ]]; then
     if [[ -n $replacement_set ]]; then
       volume_step "$final_image" \
@@ -180,10 +187,17 @@ retained_transition() {
     ((status == 1)) || return 1
     undo+=("$entry")
   done <<<"$journal"
+  if [[ -n $restore_plan ]]; then
+    if ((${#undo[@]} == 0)) && [[ $restore_plan != none ]]; then
+      log "restore plan $restore_plan was proved, but no journaled crossing remains to restore"
+      return 1
+    fi
+    plan=(--plan "$restore_plan")
+  fi
   if ((${#undo[@]} > 0)); then
     log "restoring the bundles staged crossings ${undo[*]} replaced"
     volume_step "$incumbent_image" --entrypoint bun -- \
-      scripts/bundle-replacement.ts restore /data "${undo[@]}" || return 1
+      scripts/bundle-replacement.ts restore /data "${plan[@]}" "${undo[@]}" || return 1
   fi
   volume_step "$incumbent_image" --entrypoint /bin/rm -- -rf -- /data/plugin-replacement/staged
 }

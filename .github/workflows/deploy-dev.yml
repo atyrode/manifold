@@ -187,21 +187,29 @@ jobs:
     outputs:
       bootstrap_required: ${{ steps.installed.outputs.bootstrap_required }}
       replacement_set: ${{ steps.installed.outputs.replacement_set }}
+      restore_plan: ${{ steps.installed.outputs.restore_plan }}
     env:
       SHA: ${{ needs.request.outputs.sha }}
     steps:
+      # The gate runs the trusted workflow tooling, which drives any target's candidate and
+      # projects a rollback's restore (#1068); the candidate is built from the exact target.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.request.outputs.sha }}
+          path: target
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
       - name: Build the exact candidate
         run: |
-          [[ $(git rev-parse HEAD) == "$SHA" ]]
-          eval "$(bun scripts/build-identity.ts --env)"
+          [[ $(git -C target rev-parse HEAD) == "$SHA" ]]
+          eval "$(bun scripts/build-identity.ts --repository target --revision "$SHA" --env)"
           docker build --tag "installed-bundles:$SHA" \
-            --build-arg MANIFOLD_VERSION --build-arg MANIFOLD_BUILD --build-arg MANIFOLD_CHANNEL .
+            --build-arg MANIFOLD_VERSION --build-arg MANIFOLD_BUILD --build-arg MANIFOLD_CHANNEL target
       - name: Check the running instance's installed bundles without changing it
         id: installed
         env:
@@ -209,6 +217,8 @@ jobs:
           INSTALLED_BUNDLES_TOKEN: ${{ secrets.DEV_INSTALLED_BUNDLES_TOKEN }}
           INSTALLED_BUNDLES_BOOTSTRAP_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_gate }}
           INSTALLED_BUNDLES_REVISION: ${{ needs.request.outputs.sha }}
+          # A manual rollback boots the target candidate on the closure its restore yields.
+          INSTALLED_BUNDLES_ROLLBACK_REPOSITORY: ${{ needs.request.outputs.rollback == 'true' && 'target' || '' }}
           REPLACEMENT_SET: ${{ github.event_name == 'workflow_dispatch' && needs.request.outputs.rollback == 'false' && inputs.replacement_set || '' }}
         run: |
           if [ -n "$REPLACEMENT_SET" ]; then
@@ -307,23 +317,29 @@ jobs:
           EXPECTED_CURRENT_SHA: ${{ needs.request.outputs.expected_current_sha }}
           ROLLBACK: ${{ needs.request.outputs.rollback }}
           REPLACEMENT_SET_SHA256: ${{ needs.installed-bundles.outputs.replacement_set }}
+          RESTORE_PLAN: ${{ needs.installed-bundles.outputs.restore_plan }}
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
           DEV_DEPLOY_USER: ${{ vars.DEV_DEPLOY_USER }}
           DEV_DEPLOY_HOST: ${{ vars.DEV_DEPLOY_HOST }}
         run: |
-          echo 'started=true' >> "$GITHUB_OUTPUT"
-          umask 077
-          key="$(mktemp)"
-          trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
           if [ "$ROLLBACK" = true ]; then
-            request="dev-rollback $EXPECTED_CURRENT_SHA $SHA"
+            # The host restores exactly the staged crossings the candidate gate proved (#1068).
+            if [[ $RESTORE_PLAN != none && ! $RESTORE_PLAN =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::installed-bundles proved no restore plan for this rollback"
+              exit 1
+            fi
+            request="dev-rollback $EXPECTED_CURRENT_SHA $SHA $RESTORE_PLAN"
           elif [ -n "$REPLACEMENT_SET_SHA256" ]; then
             # The host installs exactly the staged set the candidate gate proved, by digest (#1068).
             request="dev $SHA $REPLACEMENT_SET_SHA256"
           else
             request="dev $SHA"
           fi
+          echo 'started=true' >> "$GITHUB_OUTPUT"
+          umask 077
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
             "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "$request"
 
