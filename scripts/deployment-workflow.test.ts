@@ -200,6 +200,22 @@ test("an unrecognized manual operation is not treated as a rollback or deploymen
   ).rejects.toThrow();
 });
 
+test("a staged replacement set applies only to a forward deploy (#1068)", async () => {
+  await expect(
+    admit({ dispatch: true, inputs: { DISPATCH_REPLACEMENT_SET: '{"format":1}' } }),
+  ).rejects.toThrow(/only to a forward deploy/);
+  expect(
+    await admit({
+      dispatch: true,
+      inputs: {
+        DISPATCH_OPERATION: "deploy",
+        DISPATCH_EXPECTED_CURRENT_SHA: "",
+        DISPATCH_REPLACEMENT_SET: '{"format":1}',
+      },
+    }),
+  ).toMatchObject({ sha: target, rollback: "false" });
+});
+
 test("deployment completion requires successful verification with an explicit maintenance result", async () => {
   for (const [file, job] of [
     ["deploy-dev.yml", "owner-pin"],

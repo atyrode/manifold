@@ -222,4 +222,29 @@ describe("forced-command rollback grammar", () => {
     });
     expect(refused.code).toBe(2);
   });
+
+  test("a staged crossing names an exact target and a full set digest (#1068)", () => {
+    const receiverDir = join(directory, "crossing-receiver");
+    const home = join(directory, "crossing-receiver-home");
+    mkdirSync(receiverDir);
+    mkdirSync(home);
+    cpSync(join(root, "infra/previews/receiver.sh"), join(receiverDir, "receiver.sh"));
+    cpSync(join(root, "infra/previews/common.sh"), join(receiverDir, "common.sh"));
+    writeFileSync(join(receiverDir, "deploy-dev.sh"), '#!/usr/bin/env bash\nprintf "%s|" "$@"\n', {
+      mode: 0o755,
+    });
+    writeFileSync(join(home, "env"), "PREVIEW_DOMAIN=preview.invalid\n");
+    const receive = (request: string) =>
+      command(["bash", join(receiverDir, "receiver.sh")], receiverDir, {
+        PREVIEW_HOME: home,
+        SSH_ORIGINAL_COMMAND: request,
+      });
+    const digest = "d".repeat(64);
+    expect(receive(`dev ${first.slice(0, 12)} ${digest}`).code).toBe(2);
+    expect(receive(`dev ${first} ${digest.slice(0, 40)}`).code).toBe(2);
+    expect(receive(`dev ${first} ${digest} extra`).code).toBe(2);
+    const accepted = receive(`dev ${first} ${digest}`);
+    expect(accepted.code).toBe(0);
+    expect(accepted.out).toBe(`${first}|--replacement-set|${digest}|`);
+  });
 });

@@ -2744,6 +2744,20 @@ Missing legacy metadata is `unknown`, never falsely called compatible. The harde
 React-major, digest and ordinary authorization checks remain independent requirements.
 `install.compatibility` exposes the component, built/current values and classification, and
 the manager names that difference.
+A hub whose installed closure the next protocol would hold crosses it forward with a **staged
+replacement set** (#1068), never a compatibility window: whole bundles for the same installed ids,
+each pinned by the sha256 of its published bytes, identified by the sha256 of the set's canonical
+JSON. The candidate hub installs the set as one installer group after its boot assembly and
+before native execution is wired or anything serves. Each member must be exactly compatible
+(no unknown or future stamp, accepted hardened contract, same React major), may not widen the
+capability ceiling or change the data major, and no installed bundle may stay held. Rows keep
+their grants (narrowed only to what is still declared), installer lineage, hardening and
+enablement. A changed native declaration needs the member's explicit `nativeReview`; that
+plugin's native installations are then disabled at their approved revision, with consents,
+resource bindings, service records and owner-side data kept, until the existing deployment
+review admits a new revision. Nothing is approved automatically. A refusal changes nothing.
+Previous rows and files are journaled, so the deployment's rollback restores them and
+re-enables exactly the installations the crossing stopped.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the

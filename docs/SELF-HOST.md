@@ -1592,6 +1592,22 @@ cannot hide a load failure. No production data volume, network, installer creden
 key is mounted into the candidate. Any held, missing, unverified or load-failed bundle refuses
 deployment by plugin id with the candidate's minimum SDK contract.
 
+A protocol crossing whose installed closure the candidate would hold uses a **staged replacement
+set** (#1068, docs/CONTRACTS.md). The operator stages it on the deployment host with
+`bun scripts/bundle-replacement.ts stage SET.json "$PREVIEW_HOME/bundle-replacements"`. That
+fetches and verifies every member and prints the set sha256. A forward `deploy` dispatch then
+passes the same canonical JSON as `replacement_set`. `installed-bundles` fetches and pins every
+member, prints each member's review (versions, digests, grants kept or narrowed, native unchanged
+or under review), and boots the candidate with the set staged. The switch request becomes
+`dev SHA SET_SHA256`. The receiver re-verifies the host copy before building, hands it to the
+stopped volume, and the candidate installs it at boot. `verify-live` with
+`VERIFY_LIVE_REPLACEMENT_SET` requires every member to serve its staged digest. Only a
+`nativeReview` member's previously ready installations may be disabled at their approved revision,
+and services they provide may be `installation_disabled`. Those make `maintenance_required=true`,
+which withholds the owner pin until the deployment reviews are applied and the same verification
+passes. A rollback to a revision that does not contain the crossing restores the journaled
+bundles first.
+
 Container health is only the switch's transport check, not a successful deployment. Both
 workflows snapshot the running target immediately before switching and require the separate
 **`verify-live`** job afterwards. The safe, one-day Actions artifact contains build identity,

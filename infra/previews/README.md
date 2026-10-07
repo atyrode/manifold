@@ -426,10 +426,21 @@ Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`
 `down` destroys the container, volume, checkout and per-PR image (including an image whose
 checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
-The receiver accepts `dev <sha>`, `dev-rollback <expected-current-full-sha> <target-full-sha>`,
-`preview up 123 <sha>`, `preview down 123`,
-`plugin <https-url> <sha256> [--hardened|--in-realm]`, or a bare `<sha>` (legacy dev deployment).
-Other commands are refused.
+The receiver accepts `dev <sha>`, `dev <full-sha> <set-sha256>`,
+`dev-rollback <expected-current-full-sha> <target-full-sha>`, `preview up 123 <sha>`,
+`preview down 123`, `plugin <https-url> <sha256> [--hardened|--in-realm]`, or a bare `<sha>`
+(legacy dev deployment). Other commands are refused.
+
+`dev <full-sha> <set-sha256>` is a staged crossing (#1068, docs/SELF-HOST.md §Environments).
+Stage the set first on this host with this stable checkout:
+`bun scripts/bundle-replacement.ts stage SET.json "$PREVIEW_HOME/bundle-replacements"`. It
+fetches every member over HTTPS, verifies its pin and bundle, writes
+`$PREVIEW_HOME/bundle-replacements/<set-sha256>/`, and prints the digest last. Before building,
+`deploy-dev.sh` re-verifies that directory by digest. After it stops the incumbent, a
+network-less container of the candidate image copies the set into the data volume, and the hub
+installs it at boot. An ordinary forward deployment clears any staged set instead. A rollback to
+a revision that does not contain a journaled crossing restores those crossings first, newest
+first, with the outgoing image. A refused transition restarts the unchanged incumbent and holds.
 
 `plugin <url> <sha256>` installs a published plugin bundle on the integrated preview: it runs
 `packages/plugin-kit/src/install.ts` from this stable checkout against `http://127.0.0.1:$PREVIEW_DEV_PORT`
