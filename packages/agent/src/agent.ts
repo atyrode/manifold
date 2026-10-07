@@ -7,9 +7,11 @@ import {
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
   MAX_JOB_INSTALL_FRAME_BYTES,
+  canonicalJobJson,
   defaultRuntime,
   reconnectDelayMs,
   type AgentMessage,
+  type JobOwner,
   type LogEvent,
   type RuntimeDeps,
   type ServerToAgentMessage,
@@ -189,6 +191,10 @@ export class Agent {
   private helloPending: WebSocket | null = null;
   /** The socket a hello went out on; host events are bridged only once this is set. */
   private helloSent: WebSocket | null = null;
+  /** The job owner that hello named; the hub refuses any proof of a different identity. */
+  private helloJobOwner: JobOwner | null = null;
+  /** Consecutive proofs of an identity the hello did not name; backs off their re-dials. */
+  private staleOwnerProofs = 0;
   private machineId: string | null = null;
   private serverEpochValue: string | null = null;
   private attempts = 0;
@@ -279,6 +285,7 @@ export class Agent {
     this.socket = null;
     this.helloPending = null;
     this.helloSent = null;
+    this.helloJobOwner = null;
     if (socket !== null) socket.close(1000, "shutdown");
     const seat = this.seat;
     this.seat = null;
@@ -687,6 +694,29 @@ export class Agent {
       if (event.type === "output") this.jobOutputGaps.add(event.jobId);
       return;
     }
+    if (event.type === "owner_proof") {
+      // The hub accepts a proof only of the exact identity this hello named, and drops any other
+      // without a word: the owner would stay unproved on a healthy socket (#1050). The owner signs
+      // its identity as it is NOW, and its journal head moves without an owner event (this
+      // welcome's own `drain` can flip the latch), so the hello may have named a stale snapshot.
+      // The identity frame ahead of this proof refreshed the link: the next hello names it.
+      const named = this.helloJobOwner ?? {};
+      const changed = Object.keys({ ...named, ...event.owner })
+        .filter(
+          (field) =>
+            canonicalJobJson(Reflect.get(named, field)) !==
+            canonicalJobJson(Reflect.get(event.owner, field)),
+        )
+        .sort();
+      if (changed.length > 0) {
+        this.log("warn", "job_owner_unproved", { changed });
+        // The welcome reset the hub backoff; an identity that keeps moving must not re-dial hot.
+        this.attempts = this.staleOwnerProofs++;
+        socket.close(4011, "job owner identity changed");
+        return;
+      }
+      this.staleOwnerProofs = 0;
+    }
     if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT_BYTES) {
       if (event.type === "output") this.jobOutputGaps.add(event.jobId);
       socket.close(4009, "outbound buffer exceeded");
@@ -759,6 +789,7 @@ export class Agent {
       if (!terminal.alive) this.advertisedDeadTerminalIds.push(terminal.terminalId);
     }
     const physicalCoreCount = readPhysicalCoreCount(this.topology);
+    const jobOwner = this.jobOwnerLink?.identity ?? null;
     this.send(socket, {
       type: "hello",
       token: this.machineToken,
@@ -772,10 +803,11 @@ export class Agent {
         : { terminalExecution: status.terminalExecution }),
       ...(status.terminalRestart !== undefined ? { terminalRestart: status.terminalRestart } : {}),
       ...(seat.terminalGeometry ? { terminalGeometry: true } : {}),
-      ...(this.jobOwnerLink ? { jobOwner: this.jobOwnerLink.identity } : {}),
+      ...(jobOwner ? { jobOwner } : {}),
       ...(physicalCoreCount === undefined ? {} : { physicalCoreCount }),
     });
     this.helloSent = socket;
+    this.helloJobOwner = jobOwner;
     this.log("info", "hello", {
       terminals: status.terminals.length,
       terminalHostId: seat.terminalHostId,
@@ -1012,7 +1044,10 @@ export class Agent {
       });
     }
     if (this.helloPending === socket) this.helloPending = null;
-    if (this.helloSent === socket) this.helloSent = null;
+    if (this.helloSent === socket) {
+      this.helloSent = null;
+      this.helloJobOwner = null;
+    }
     this.machineId = null;
     this.serverEpochValue = null;
     this.advertisedDeadTerminalIds = [];
