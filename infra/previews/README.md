@@ -427,9 +427,9 @@ Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`
 checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
 The receiver accepts `dev <sha>`, `dev <full-sha> <set-sha256>`,
-`dev-rollback <expected-current-full-sha> <target-full-sha>`, `preview up 123 <sha>`,
-`preview down 123`, `plugin <https-url> <sha256> [--hardened|--in-realm]`, or a bare `<sha>`
-(legacy dev deployment). Other commands are refused.
+`dev-rollback <expected-current-full-sha> <target-full-sha> [none|<restore-plan-sha256>]`,
+`preview up 123 <sha>`, `preview down 123`, `plugin <https-url> <sha256> [--hardened|--in-realm]`,
+or a bare `<sha>` (legacy dev deployment). Other commands are refused.
 
 `dev <full-sha> <set-sha256>` is a staged crossing (#1068, docs/SELF-HOST.md §Environments).
 Stage the set first on this host with this stable checkout:
@@ -438,9 +438,16 @@ fetches every member over HTTPS, verifies its pin and bundle, writes
 `$PREVIEW_HOME/bundle-replacements/<set-sha256>/`, and prints the digest last. Before building,
 `deploy-dev.sh` re-verifies that directory by digest. After it stops the incumbent, a
 network-less container of the candidate image copies the set into the data volume, and the hub
-installs it at boot. An ordinary forward deployment clears any staged set instead. A rollback to
-a revision that does not contain a journaled crossing restores those crossings first, newest
-first, with the outgoing image. A refused transition restarts the unchanged incumbent and holds.
+installs it at boot, resuming from `plugin-replacement/journal.json` if a crash interrupted it.
+Sending the same request again after the crossing completed changes nothing: the hub discards
+the staged set and logs `plugin_replacement_replayed`. An ordinary forward deployment clears any
+staged set instead. A rollback to a revision that does not contain a journaled crossing restores
+those crossings first, newest first, with the outgoing image (`bundle-replacement.ts restore`).
+The restore refuses, and changes nothing, unless each crossed row is exactly one the journal
+recorded; a restore interrupted after its commit completes when the rollback is retried. With a
+third argument, sent by a manual `rollback` dispatch, the host restores only crossings whose
+restore plan has that digest (`none`: no crossing may be restored), the plan `installed-bundles`
+proved on the target candidate. A refused transition restarts the unchanged incumbent and holds.
 
 `plugin <url> <sha256>` installs a published plugin bundle on the integrated preview: it runs
 `packages/plugin-kit/src/install.ts` from this stable checkout against `http://127.0.0.1:$PREVIEW_DEV_PORT`

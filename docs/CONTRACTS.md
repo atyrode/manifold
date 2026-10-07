@@ -2756,8 +2756,18 @@ enablement. A changed native declaration needs the member's explicit `nativeRevi
 plugin's native installations are then disabled at their approved revision, with consents,
 resource bindings, service records and owner-side data kept, until the existing deployment
 review admits a new revision. Nothing is approved automatically. A refusal changes nothing.
-Previous rows and files are journaled, so the deployment's rollback restores them and
-re-enables exactly the installations the crossing stopped.
+A crossing is journaled durably before each effect: `prepared` (the previous rows) before the
+group commits, `committed` (the exact rows the group wrote), the native installations before
+they are disabled, then `completed`. Every write fsyncs the journal file and its directory,
+including the removal of an empty journal. A hub interrupted mid-crossing resumes from the
+journal at its next boot, even without the staged set: an uncommitted record is dropped and a
+committed one finishes its native half once. A completed crossing is never resumed, so staging
+its set again only discards the staging; native installations reviewed since stay as reviewed.
+The deployment's rollback restores, in one database transaction, the previous rows and
+re-enables exactly the installations the crossing stopped, at the same revision and artifact.
+It restores a row only if the row is exactly one the journal recorded, so a later install of the
+same digest with other grants, hardening or installer refuses the whole restore. A restore that
+committed before its journal was truncated completes when retried.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the
@@ -2965,7 +2975,10 @@ image with this snapshot in disposable data directories before replacing the tar
 [SELF-HOST.md §Environments](SELF-HOST.md#environments) owns this mandatory gate and its
 explicit, default-off one-time bootstrap exception for an authenticated `unknown_action`
 response from a target predating the export door. The exception emits a target/reason warning
-and step-summary receipt; an existing door always runs the normal gate.
+and step-summary receipt; an existing door always runs the normal gate. With `{ crossings: true }`
+the snapshot also carries the staged-crossing journal (#1068), oldest first: each crossing's
+revision, set digest and, per member, the replaced row's same safe projection and its retained
+bytes. A rollback gate uses it to boot the target candidate on the closure the restore yields.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set

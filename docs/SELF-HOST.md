@@ -1581,7 +1581,9 @@ cross these boundaries.
 
 Both `deploy-dev.yml` and `deploy-hub.yml` also require the `installed-bundles` job before
 the switch. Development builds the candidate image for that exact revision; production pulls
-the provenance-verified immutable release image instead of rebuilding application source.
+the provenance-verified immutable release image instead of rebuilding application source. In
+both, the gate itself runs from the trusted workflow checkout, so it can drive a candidate of any
+revision.
 The gate invokes the running target's root-only `engine.plugins.exportInstalled` door, then
 boots that candidate against copies of the returned bundles and safe install rows in temporary
 data directories.
@@ -1597,16 +1599,32 @@ set** (#1068, docs/CONTRACTS.md). The operator stages it on the deployment host 
 `bun scripts/bundle-replacement.ts stage SET.json "$PREVIEW_HOME/bundle-replacements"`. That
 fetches and verifies every member and prints the set sha256. A forward `deploy` dispatch then
 passes the same canonical JSON as `replacement_set`. `installed-bundles` fetches and pins every
-member, prints each member's review (versions, digests, grants kept or narrowed, native unchanged
-or under review), and boots the candidate with the set staged. The switch request becomes
-`dev SHA SET_SHA256`. The receiver re-verifies the host copy before building, hands it to the
-stopped volume, and the candidate installs it at boot. `verify-live` with
-`VERIFY_LIVE_REPLACEMENT_SET` requires every member to serve its staged digest. Only a
-`nativeReview` member's previously ready installations may be disabled at their approved revision,
-and services they provide may be `installation_disabled`. Those make `maintenance_required=true`,
-which withholds the owner pin until the deployment reviews are applied and the same verification
-passes. A rollback to a revision that does not contain the crossing restores the journaled
-bundles first.
+member through the install door's artifact reader (HTTPS to a public address at every redirect
+hop, the artifact cap enforced while the body streams), prints each member's review (versions,
+digests, grants kept or narrowed, native unchanged or under review), and boots the candidate
+with the set staged. A set already installed is refused there, before anything stops. The
+switch request becomes `dev SHA SET_SHA256`. The receiver re-verifies the host copy before
+building, hands it to the stopped volume, and the candidate installs it at boot. A hub
+interrupted mid-crossing resumes from its journal at the next boot; a set whose crossing has
+completed is only discarded if it is staged again (`plugin_replacement_replayed`), and natives
+reviewed since stay as reviewed. `verify-live` with `VERIFY_LIVE_REPLACEMENT_SET` requires every
+member to serve its staged digest. Only a `nativeReview` member's enabled installations may be
+disabled at their approved revision, including ones that were not ready before the switch, and
+services they provide may be `installation_disabled`. Any such installation or service makes
+`maintenance_required=true`, which withholds the owner pin until the deployment reviews are
+applied and the same verification passes.
+
+A rollback to a revision that does not contain a journaled crossing restores it first, newest
+first, in the outgoing image. The restore refuses, changing nothing, if a crossed plugin's row is
+not exactly one the journal recorded (a later install of the same digest with other grants,
+hardening or installer included) or a disabled installation moved since. A manual `rollback`
+dispatch gates that restore: `installed-bundles` exports the journal
+(`exportInstalled { crossings: true }`), applies the restore of every crossing the target does
+not contain to the export, boots the target candidate on that closure, and outputs its digest as
+`restore_plan` (`none` when nothing is restored). The switch sends
+`dev-rollback EXPECTED TARGET PLAN`, and the host restores only a journal whose plan has that
+digest. The automatic recovery after a failed switch or verification sends the three-argument
+form and restores without a gate, as it returns to the image that was just serving.
 
 Container health is only the switch's transport check, not a successful deployment. Both
 workflows snapshot the running target immediately before switching and require the separate
