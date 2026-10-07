@@ -547,7 +547,11 @@ async function parity(
     }
     reader.resolved.add(item);
   }
-  for (const installation of before.installations.filter((row) => row.ready)) {
+  // A crossing disables every enabled installation of a `nativeReview` member, including one
+  // that was not ready before the switch: each is a pending review, never silently absent.
+  for (const installation of before.installations.filter(
+    (row) => row.ready || (review.has(row.pluginId) && row.enabled),
+  )) {
     const { machineId, pluginId } = installation;
     const item = `installation ${machineId}/${pluginId}`;
     const machine = machines.find((row) => row.id === machineId);
@@ -566,7 +570,8 @@ async function parity(
     if (!current) fail(item, "installation missing");
     if (review.has(pluginId)) {
       // Disabled at its approved revision until the deployment review admits the replacement's
-      // declaration, or already re-admitted at a new revision serving a declared artifact.
+      // declaration, or already re-admitted at a new revision serving a declared artifact
+      // (ready, when it was ready before the switch).
       const declared = Object.values(
         plugins.find((row) => row.manifest.id === pluginId)?.manifest.machine?.artifacts ?? {},
       ).map((artifact) => artifact.sha256);
@@ -581,7 +586,7 @@ async function parity(
       if (
         current.revision !== installation.revision &&
         current.enabled &&
-        current.ready &&
+        (current.ready || !installation.ready) &&
         declared.includes(current.artifactSha256)
       )
         continue;
@@ -664,6 +669,19 @@ async function parity(
     deferredInstallations,
     pendingNativeReviews,
   };
+}
+/**
+ * Whether anything this verification accepted is still unavailable: a held plugin, a deferred
+ * installation or service, or a crossing's native review. Only a result with none of them is
+ * full health, which alone ends maintenance and permits the owner pin.
+ */
+export function maintenanceRequired(result: LiveVerificationResult): boolean {
+  return (
+    result.heldPlugins.length > 0 ||
+    result.deferredInstallations.length > 0 ||
+    result.deferredServices.length > 0 ||
+    result.pendingNativeReviews.length > 0
+  );
 }
 /** One monotonic deadline includes discovery, all SDK calls, body reads and retry sleeps. */
 export async function pollLive(
@@ -760,10 +778,9 @@ if (import.meta.main) {
         ...(replacement === undefined ? {} : { replacement }),
         onDivergence: (failure) => report(failure.message, target.token, true),
       });
-      const maintenanceRequired =
-        result.heldPlugins.length > 0 || result.pendingNativeReviews.length > 0;
+      const maintenance = maintenanceRequired(result);
       if (process.env.GITHUB_OUTPUT)
-        appendFileSync(process.env.GITHUB_OUTPUT, `maintenance_required=${maintenanceRequired}\n`);
+        appendFileSync(process.env.GITHUB_OUTPUT, `maintenance_required=${maintenance}\n`);
       if (result.heldPlugins.length > 0) {
         report(
           `MAINTENANCE REQUIRED on ${target.origin}, build ${expectedBuild}: temporary repack holds accepted for this deployment only; plugin and native workload health is NOT verified`,
@@ -793,9 +810,9 @@ if (import.meta.main) {
           target.token,
           false,
         );
-      } else if (result.pendingNativeReviews.length > 0) {
+      } else if (maintenance) {
         report(
-          `NATIVE REVIEW REQUIRED on ${target.origin}, build ${expectedBuild}: the staged crossing is installed and every other check passed; the native deployments below are disabled at their approved revisions until the deployment review admits the replacement's declaration`,
+          `NATIVE REVIEW REQUIRED on ${target.origin}, build ${expectedBuild}: the staged crossing is installed and every other check passed; the native deployments below are disabled at their approved revisions until the deployment review admits the replacement's declaration, and the services below wait for them`,
           target.token,
           false,
         );
