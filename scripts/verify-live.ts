@@ -9,11 +9,13 @@ import {
   JobDescriptionSchema,
   MachinesResponseSchema,
   PluginsResponseSchema,
+  PluginReplacementSetSchema,
   PROTOCOL_VERSION,
   type ActionProtocol,
   type ActionSummary,
   type InstanceServiceDescription,
   type PluginRosterEntry,
+  type PluginReplacementSet,
 } from "../packages/protocol/src/index.ts";
 import {
   ActionHttpError,
@@ -73,11 +75,19 @@ export interface LivePollOptions {
   onDivergence?: (failure: LiveVerificationError) => void;
   /** Only the explicit first-upgrade receipt permits temporary repack holds. */
   bootstrapGate?: boolean;
+  /**
+   * The staged crossing this deployment installed (#1068). Its members must serve their staged
+   * digests; a `nativeReview` member's previously ready installations may be disabled at their
+   * approved revision pending the deployment review, or already re-admitted at a new revision
+   * whose artifact the replacement declares. Nothing else is relaxed.
+   */
+  replacement?: PluginReplacementSet;
 }
 export interface LiveVerificationResult {
   heldPlugins: { pluginId: string; minimum: number }[];
   deferredServices: string[];
   deferredInstallations: { machineId: string; pluginId: string; revision: string }[];
+  pendingNativeReviews: { machineId: string; pluginId: string; revision: string }[];
 }
 export class LiveVerificationError extends Error {
   constructor(
@@ -458,6 +468,7 @@ async function parity(
   before: LiveSnapshot,
   expectedBuild: string,
   bootstrapGate: boolean,
+  replacement: PluginReplacementSet | undefined,
 ): Promise<LiveVerificationResult> {
   const build = await reader.build();
   if (build !== expectedBuild)
@@ -470,6 +481,19 @@ async function parity(
   const heldPlugins = new Map<string, number>();
   const deferredServices: string[] = [];
   const deferredInstallations: LiveVerificationResult["deferredInstallations"] = [];
+  const pendingNativeReviews: LiveVerificationResult["pendingNativeReviews"] = [];
+  // A crossing's members serve their staged digests; only `nativeReview` members' native
+  // deployments may wait for the deployment review, at their approved revision.
+  const review = new Set<string>();
+  for (const member of replacement?.members ?? []) {
+    const observed = plugins.find((row) => row.manifest.id === member.pluginId)?.install?.sha256;
+    if (observed !== member.sha256)
+      fail(
+        `plugin ${member.pluginId} staged replacement`,
+        `expected ${member.sha256}; observed ${observed ?? "no installation"}`,
+      );
+    if (member.nativeReview) review.add(member.pluginId);
+  }
   if (bootstrapGate) {
     for (const plugin of plugins) {
       const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
@@ -501,11 +525,7 @@ async function parity(
     )
       fail(item, "service owner or plugin changed");
     if (current.state !== "ready") {
-      if (
-        service.pluginId !== null &&
-        heldPlugins.has(service.pluginId) &&
-        current.state === "unavailable" &&
-        current.reason === "plugin_held" &&
+      const live =
         current.connected &&
         current.owner?.online &&
         machines.some(
@@ -514,7 +534,13 @@ async function parity(
             machine.online &&
             !machine.draining &&
             !machine.revoked,
-        )
+        );
+      if (
+        service.pluginId !== null &&
+        current.state === "unavailable" &&
+        live &&
+        ((heldPlugins.has(service.pluginId) && current.reason === "plugin_held") ||
+          (review.has(service.pluginId) && current.reason === "installation_disabled"))
       )
         deferredServices.push(service.serviceId);
       else fail(item, `expected ready; observed ${current.state}`);
@@ -538,6 +564,34 @@ async function parity(
       fail(item, "description identity mismatch");
     const current = description.installation;
     if (!current) fail(item, "installation missing");
+    if (review.has(pluginId)) {
+      // Disabled at its approved revision until the deployment review admits the replacement's
+      // declaration, or already re-admitted at a new revision serving a declared artifact.
+      const declared = Object.values(
+        plugins.find((row) => row.manifest.id === pluginId)?.manifest.machine?.artifacts ?? {},
+      ).map((artifact) => artifact.sha256);
+      if (
+        current.revision === installation.revision &&
+        !current.enabled &&
+        !current.purgeRequested
+      ) {
+        pendingNativeReviews.push({ machineId, pluginId, revision: current.revision });
+        continue;
+      }
+      if (
+        current.revision !== installation.revision &&
+        current.enabled &&
+        current.ready &&
+        declared.includes(current.artifactSha256)
+      )
+        continue;
+      fail(
+        item,
+        current.revision === installation.revision
+          ? "expected disabled at its approved revision pending the native deployment review"
+          : "re-reviewed installation must be enabled, ready and declared by the replacement",
+      );
+    }
     if (current.revision !== installation.revision)
       fail(
         item,
@@ -608,6 +662,7 @@ async function parity(
     heldPlugins: Array.from(heldPlugins, ([pluginId, minimum]) => ({ pluginId, minimum })),
     deferredServices,
     deferredInstallations,
+    pendingNativeReviews,
   };
 }
 /** One monotonic deadline includes discovery, all SDK calls, body reads and retry sleeps. */
@@ -626,7 +681,13 @@ export async function pollLive(
   while (reader.remaining() > 0) {
     reader.resolved.clear();
     try {
-      const result = await parity(reader, before, expectedBuild, options.bootstrapGate === true);
+      const result = await parity(
+        reader,
+        before,
+        expectedBuild,
+        options.bootstrapGate === true,
+        options.replacement,
+      );
       if (!reader.remaining()) fail("deadline", "whole verification deadline exhausted");
       return result;
     } catch (error) {
@@ -682,14 +743,28 @@ if (import.meta.main) {
       );
     } else {
       const before = readLiveSnapshot(path);
+      const bootstrapGate = process.env.VERIFY_LIVE_BOOTSTRAP_GATE === "true";
+      const setPath = process.env.VERIFY_LIVE_REPLACEMENT_SET ?? "";
+      if (setPath && bootstrapGate)
+        fail("usage", "a staged replacement and the bootstrap gate are exclusive");
+      let replacement: PluginReplacementSet | undefined;
+      if (setPath) {
+        try {
+          replacement = PluginReplacementSetSchema.parse(JSON.parse(readFileSync(setPath, "utf8")));
+        } catch {
+          fail("replacement set", "VERIFY_LIVE_REPLACEMENT_SET is missing or invalid");
+        }
+      }
       const result = await pollLive(target, before, expectedBuild!, {
-        bootstrapGate: process.env.VERIFY_LIVE_BOOTSTRAP_GATE === "true",
+        bootstrapGate,
+        ...(replacement === undefined ? {} : { replacement }),
         onDivergence: (failure) => report(failure.message, target.token, true),
       });
-      const maintenanceRequired = result.heldPlugins.length > 0;
+      const maintenanceRequired =
+        result.heldPlugins.length > 0 || result.pendingNativeReviews.length > 0;
       if (process.env.GITHUB_OUTPUT)
         appendFileSync(process.env.GITHUB_OUTPUT, `maintenance_required=${maintenanceRequired}\n`);
-      if (maintenanceRequired) {
+      if (result.heldPlugins.length > 0) {
         report(
           `MAINTENANCE REQUIRED on ${target.origin}, build ${expectedBuild}: temporary repack holds accepted for this deployment only; plugin and native workload health is NOT verified`,
           target.token,
@@ -718,9 +793,32 @@ if (import.meta.main) {
           target.token,
           false,
         );
+      } else if (result.pendingNativeReviews.length > 0) {
+        report(
+          `NATIVE REVIEW REQUIRED on ${target.origin}, build ${expectedBuild}: the staged crossing is installed and every other check passed; the native deployments below are disabled at their approved revisions until the deployment review admits the replacement's declaration`,
+          target.token,
+          false,
+        );
+        for (const installation of result.pendingNativeReviews)
+          report(
+            `installation ${installation.machineId}/${installation.pluginId} (${installation.revision}): review and apply its deployment for the replacement's native declaration`,
+            target.token,
+            false,
+          );
+        for (const serviceId of result.deferredServices)
+          report(
+            `service ${serviceId}: unavailable until its provider's deployment is re-admitted`,
+            target.token,
+            false,
+          );
+        report(
+          "After the reviews, rerun verification against the same snapshot with the same VERIFY_LIVE_REPLACEMENT_SET; it completes when no native review remains, and only then pin the preview owner.",
+          target.token,
+          false,
+        );
       } else {
         report(
-          `verified build ${expectedBuild}: retained inventory and required product checks passed`,
+          `verified build ${expectedBuild}: retained inventory and required product checks passed${replacement === undefined ? "" : ` with staged crossing of ${String(replacement.members.length)} plugin(s)`}`,
           target.token,
           false,
         );

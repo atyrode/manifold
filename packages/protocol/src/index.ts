@@ -1505,7 +1505,10 @@ export {
   InstalledPluginRowSchema,
   InstalledPluginStatesSchema,
   InstalledPluginsSnapshotSchema,
+  PluginReplacementSetSchema,
   type InstalledPluginRow,
   type InstalledPluginStates,
   type InstalledPluginsSnapshot,
+  type PluginReplacementMember,
+  type PluginReplacementSet,
 } from "./installed-plugins.ts";

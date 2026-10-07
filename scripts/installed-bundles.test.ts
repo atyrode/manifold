@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   HARDENED_CONTRACT_VERSION,
   PluginBundleSchema,
+  PROTOCOL_VERSION,
   type InstalledPluginsSnapshot,
 } from "../packages/protocol/src/index.ts";
 import { checkInstalledCandidate, installedBundleFailures } from "./installed-bundles-candidate.ts";
@@ -199,7 +200,7 @@ test("explicit bootstrap passes only an unknown export door and records target a
   expect(attempt.summary).toContain(attempt.target);
   expect(attempt.summary).toContain("unknown_action");
   expect(attempt.summary).toContain("bootstrap_gate=true");
-  expect(attempt.jobOutput).toBe("bootstrap_required=true\n");
+  expect(attempt.jobOutput).toBe("bootstrap_required=true\nreplacement_set=\n");
 });
 
 test("bootstrap does not bypass candidate validation when the export door exists", async () => {
@@ -225,9 +226,103 @@ test("an export-capable hub emits ordinary verification only after its candidate
 
   const passed = await exportGateAttempt(true, reply, 200, 0);
   expect(passed.code).toBe(0);
-  expect(passed.jobOutput).toBe("bootstrap_required=false\n");
+  expect(passed.jobOutput).toBe("bootstrap_required=false\nreplacement_set=\n");
   expect(passed.summary).toBe("");
 });
+
+/** A bundle as one SDK stamped it, so the candidate's admission judges the protocol alone. */
+function stampedBundle(protocol: string, version: string): { bytes: Buffer; sha256: string } {
+  const bytes = Buffer.from(
+    JSON.stringify({
+      format: 1,
+      hardenedContract: HARDENED_CONTRACT_VERSION,
+      builtAgainst: { "manifold:protocol": protocol },
+      manifest: {
+        id: "example.candidate",
+        version,
+        title: "Candidate",
+        description: "Crossing proof",
+        capabilities: [],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+        entry: { server: true },
+      },
+      files: {
+        "server.js": Buffer.from("export default { actions: [], handlers: {} };").toString(
+          "base64",
+        ),
+      },
+    }),
+  );
+  return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+function previousClosure(): InstalledPluginsSnapshot {
+  const installed = snapshot("export default { actions: [], handlers: {} };");
+  const { bytes, sha256 } = stampedBundle("56", "1.0.0");
+  const bundlePath = `plugins/example.candidate/${sha256}.manifold-plugin.json`;
+  const plugin = installed.plugins[0]!;
+  return {
+    ...installed,
+    plugins: [
+      {
+        ...plugin,
+        enabled: true,
+        row: { ...plugin.row, sha256, bundlePath, source: bundlePath },
+        bytes: bytes.toString("base64"),
+      },
+    ],
+  };
+}
+
+test("a protocol-56 closure crosses with a staged replacement set on the disposable candidate (#1068)", async () => {
+  const installed = previousClosure();
+  await expect(checkInstalledCandidate(installed)).rejects.toThrow(
+    /example\.candidate: held: repack_required/,
+  );
+  const next = stampedBundle(String(PROTOCOL_VERSION), "2.0.0");
+  await checkInstalledCandidate(installed, {
+    set: {
+      format: 1,
+      members: [
+        {
+          pluginId: "example.candidate",
+          sha256: next.sha256,
+          url: "https://plugins.example.invalid/example.candidate.manifold-plugin.json",
+        },
+      ],
+    },
+    revision: "c".repeat(40),
+    bundles: { [next.sha256]: next.bytes.toString("base64") },
+  });
+}, 60_000);
+
+test("a missing or mismatched staged replacement refuses the crossing (#1068)", async () => {
+  const installed = previousClosure();
+  const next = stampedBundle(String(PROTOCOL_VERSION), "2.0.0");
+  const url = "https://plugins.example.invalid/example.candidate.manifold-plugin.json";
+  await expect(
+    checkInstalledCandidate(installed, {
+      set: { format: 1, members: [{ pluginId: "example.absent", sha256: next.sha256, url }] },
+      revision: "c".repeat(40),
+      bundles: { [next.sha256]: next.bytes.toString("base64") },
+    }),
+  ).rejects.toThrow(/example\.absent: not installed/);
+  const future = stampedBundle("999", "2.0.0");
+  await expect(
+    checkInstalledCandidate(installed, {
+      set: { format: 1, members: [{ pluginId: "example.candidate", sha256: future.sha256, url }] },
+      revision: "c".repeat(40),
+      bundles: { [future.sha256]: future.bytes.toString("base64") },
+    }),
+  ).rejects.toThrow(/example\.candidate: repack_required; manifold:protocol built against 999/);
+  await expect(
+    checkInstalledCandidate(installed, {
+      set: { format: 1, members: [{ pluginId: "example.candidate", sha256: "e".repeat(64), url }] },
+      revision: "c".repeat(40),
+      bundles: { ["e".repeat(64)]: next.bytes.toString("base64") },
+    }),
+  ).rejects.toThrow(/staged bytes do not hash/);
+}, 60_000);
 
 test("bootstrap never turns authorization or HTTP failures into a missing-door exception", async () => {
   for (const [reply, status] of [

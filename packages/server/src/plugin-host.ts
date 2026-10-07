@@ -263,8 +263,17 @@ import {
   type VerifiedPluginArtifact,
 } from "./plugin-installs.ts";
 import {
+  clearStagedReplacement,
+  readReplacementJournal,
+  replacementRefusals,
+  writeReplacementJournal,
+  type ReplacementRecord,
+  type StagedReplacement,
+} from "./plugin-replacements.ts";
+import {
   PluginUpdates,
   pluginBuildCompatibility,
+  prospectiveGrant,
   type PluginUpdateAuthority,
   type PreparedPluginUpdate,
 } from "./plugin-updates.ts";
@@ -810,6 +819,9 @@ interface InstallCandidate {
   readonly grantedCaps: readonly AuthoredCap[];
   readonly hardened: boolean;
   readonly retainInstallation?: string;
+  /** A staged crossing keeps each incumbent's own attribution and installer lineage (#1068). */
+  readonly installedBy?: string;
+  readonly installer?: CredentialReference | null;
 }
 
 /** Who an installation is attributed to, and what it must keep proving until it commits. */
@@ -824,6 +836,8 @@ interface InstallAttribution {
    * and before the one roster publication; never for a refusal or rollback.
    */
   readonly committed?: () => void;
+  /** Keep the replaced bundles' files: a staged crossing's rollback restores their rows. */
+  readonly retainPrevious?: boolean;
 }
 
 /**
@@ -1856,6 +1870,8 @@ export class PluginHost {
     (plugin, node) => this.ownsStreamNode(plugin, node),
   );
   private jobs: JobService | null = null;
+  /** A committed staged crossing whose native half completes when native execution is wired. */
+  private crossing: { readonly record: ReplacementRecord; readonly dataDir: string } | null = null;
 
   private harnessProblems(defs: readonly ServerPluginDef[]): readonly AssemblyProblem[] {
     const problems: AssemblyProblem[] = [];
@@ -2209,6 +2225,64 @@ export class PluginHost {
         .map((entry) => entry.manifest.id),
     );
     this.streams.reconcile();
+    if (this.crossing !== null) this.finishReplacement(jobs, this.crossing);
+  }
+
+  /**
+   * A STAGED CROSSING'S NATIVE HALF (#1068), at the moment native execution is wired and before
+   * anything serves. A member acknowledged with `nativeReview` declares a different machine half,
+   * and the installer's rule for a changed declaration applies: no consent is copied, so its
+   * native installations are disabled at their current revision — consents, resource bindings,
+   * instance-service records and owner-side data retained — until the deployment review admits
+   * the new declaration as a new revision. Each one is journaled BEFORE it is disabled, so the
+   * deployment's rollback re-enables exactly the installations this crossing stopped.
+   */
+  private finishReplacement(
+    jobs: JobService,
+    { record, dataDir }: { readonly record: ReplacementRecord; readonly dataDir: string },
+  ): void {
+    const review = new Set(
+      record.members.filter((member) => member.nativeReview).map((m) => m.previous.pluginId),
+    );
+    const recorded = new Set(
+      record.disabledInstallations.map((native) => `${native.machineId}\0${native.pluginId}`),
+    );
+    const disabled = [
+      ...record.disabledInstallations,
+      ...jobs.jobs
+        .installations()
+        .filter(
+          (native) =>
+            review.has(native.pluginId) &&
+            native.enabled &&
+            !native.purgeRequested &&
+            !recorded.has(`${native.machineId}\0${native.pluginId}`),
+        )
+        .map(({ machineId, pluginId, revision, artifact }) => ({
+          machineId,
+          pluginId,
+          revision,
+          artifact,
+        })),
+    ];
+    const journal = readReplacementJournal(dataDir);
+    const last = journal.at(-1);
+    if (last?.setSha256 !== record.setSha256 || last.revision !== record.revision)
+      throw new Error("plugin replacement journal changed before its native half completed");
+    writeReplacementJournal(dataDir, [
+      ...journal.slice(0, -1),
+      { ...last, disabledInstallations: disabled },
+    ]);
+    for (const pluginId of review) jobs.disablePlugin(pluginId);
+    clearStagedReplacement(dataDir);
+    this.crossing = null;
+    this.logger.info("plugin_replacement_applied", {
+      set: record.setSha256,
+      revision: record.revision,
+      plugins: record.members.map((member) => member.previous.pluginId),
+      nativeReview: [...review],
+      disabledInstallations: disabled.length,
+    });
   }
 
   private async selectedAgentTool(authority: NativeRunAuthority, door: string) {
@@ -2583,6 +2657,106 @@ export class PluginHost {
       });
     });
     return host;
+  }
+
+  /**
+   * A STAGED CROSSING (#1068), called by the composition root between `boot` and `setJobs`.
+   * The deployment that switched this hub handed it whole replacement bundles for installed
+   * ids. They install as ONE group through `installGroup`, after the boot assembly (which held
+   * the old builds) and before native execution is wired or a socket is bound, so no request,
+   * owner or service ever observes the hold. Every member must pass `replacementRefusals`
+   * against its incumbent, and no installed bundle may remain held for want of a replacement.
+   * A refusal names every reason and changes nothing: the hub serves its held roster, live
+   * verification refuses it, and the deployment restores its predecessor. Rows keep their
+   * grants (narrowed only to what a member still declares), installer lineage, hardening and
+   * enablement. The previous rows are journaled first and their files retained, which is what
+   * lets the deployment restore the previous bundles with the previous hub.
+   */
+  async applyStagedReplacement(
+    staged: StagedReplacement,
+  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly refusals: string[] }> {
+    if (this.jobs !== null)
+      throw new Error("a staged plugin replacement applies before native execution is wired");
+    const dataDir = this.isolates?.dataDir;
+    if (dataDir === undefined)
+      throw new Error("a staged plugin replacement requires a host that admits bundles");
+    return this.changeAssembly(async () => {
+      const journal = readReplacementJournal(dataDir);
+      const last = journal.at(-1);
+      const installedSha = (pluginId: string) => this.installed.get(pluginId)?.row.sha256;
+      if (last?.setSha256 === staged.setSha256 && last.revision === staged.revision) {
+        // A restart between this set's commit and its native half resumes; it never re-applies.
+        if (
+          last.members.every((member) => installedSha(member.previous.pluginId) === member.sha256)
+        ) {
+          this.crossing = { record: last, dataDir };
+          return { ok: true } as const;
+        }
+        if (
+          !last.members.every(
+            (member) => installedSha(member.previous.pluginId) === member.previous.sha256,
+          )
+        )
+          throw new Error("staged plugin replacement is partially applied; restore it first");
+        journal.pop();
+        writeReplacementJournal(dataDir, journal);
+      }
+      const refusals = staged.members.flatMap(({ member, artifact }) =>
+        replacementRefusals(
+          member,
+          artifact.bundle,
+          this.installed.get(member.pluginId),
+          this.store.pluginDataVersion(member.pluginId),
+        ),
+      );
+      for (const problem of this.bundleProblems(
+        new Set(staged.members.map(({ member }) => member.pluginId)),
+      ))
+        refusals.push(
+          `${problem.plugins.join(", ")}: held ${problem.reason}; no replacement staged`,
+        );
+      if (refusals.length > 0) return { ok: false, refusals } as const;
+      const incumbents = staged.members.map(({ member }) => this.installed.get(member.pluginId)!);
+      const record: ReplacementRecord = {
+        format: 1,
+        setSha256: staged.setSha256,
+        revision: staged.revision,
+        appliedAt: this.runtime.now(),
+        members: staged.members.map(({ member }, index) => ({
+          sha256: member.sha256,
+          previous: incumbents[index]!.row,
+          nativeReview: member.nativeReview === true,
+        })),
+        disabledInstallations: [],
+      };
+      writeReplacementJournal(dataDir, [...journal, record]);
+      let outcome: ActionRefused | readonly PluginInstallResult[];
+      try {
+        outcome = await this.installGroup(
+          staged.members.map(({ artifact }, index) => {
+            const incumbent = incumbents[index]!;
+            return {
+              artifact,
+              grantedCaps: prospectiveGrant(incumbent, artifact.bundle.manifest.capabilities),
+              hardened: incumbent.row.hardened === true,
+              installedBy: incumbent.row.installedBy,
+              installer: incumbent.row.installer ?? null,
+            };
+          }),
+          { installedBy: enginePluginsManifest.id, installer: null, retainPrevious: true },
+        );
+      } catch (error) {
+        if (record.members.every((m) => installedSha(m.previous.pluginId) === m.previous.sha256))
+          writeReplacementJournal(dataDir, journal);
+        throw error;
+      }
+      if ("refused" in outcome) {
+        writeReplacementJournal(dataDir, journal);
+        return { ok: false, refusals: [outcome.refused] } as const;
+      }
+      this.crossing = { record, dataDir };
+      return { ok: true } as const;
+    });
   }
 
   /**
@@ -4058,6 +4232,8 @@ export class PluginHost {
           isolates.dataDir,
           this.lifetime.signal,
         );
+        const installer =
+          candidate.installer === undefined ? attribution.installer : candidate.installer;
         members.push({
           id,
           bundle,
@@ -4082,14 +4258,14 @@ export class PluginHost {
             sha256: artifact.sha256,
             source: candidate.artifact.source,
             grantedCaps: [...candidate.grantedCaps],
-            installedBy: attribution.installedBy,
+            installedBy: candidate.installedBy ?? attribution.installedBy,
             installedAt,
             bundlePath: artifact.bundlePath,
             actions: [],
             hardened: candidate.hardened,
             ...(bundle.builtAgainst === undefined ? {} : { builtAgainst: bundle.builtAgainst }),
             ...(attribution.unpacked === undefined ? {} : { mode: "unpacked" as const }),
-            ...(attribution.installer === null ? {} : { installer: attribution.installer }),
+            ...(installer === null ? {} : { installer }),
           },
           def: undefined,
           staged: undefined,
@@ -4364,7 +4540,8 @@ export class PluginHost {
           // the changed native declaration, artifact and resources.
           this.jobs?.disablePlugin(member.id);
         }
-        if (previous.row.sha256 !== member.row.sha256) removeInstall(previous.row);
+        if (previous.row.sha256 !== member.row.sha256 && attribution.retainPrevious !== true)
+          removeInstall(previous.row);
         wasEnabled.delete(member.id);
       }
       const delta: AssemblyDelta = {

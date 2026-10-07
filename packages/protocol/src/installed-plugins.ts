@@ -96,3 +96,34 @@ export const InstalledPluginsSnapshotSchema = z.strictObject({
     }),
 });
 export type InstalledPluginsSnapshot = z.infer<typeof InstalledPluginsSnapshotSchema>;
+
+/**
+ * A staged protocol crossing (#1068): whole replacement bundles for installed plugin ids, each
+ * pinned by the sha256 of its published bytes. `nativeReview` is the operator's explicit
+ * acknowledgement that the replacement declares a different native machine half, so the hub
+ * disables that plugin's native installations until the deployment review admits the new one.
+ */
+export const PluginReplacementSetSchema = z.strictObject({
+  format: z.literal(1),
+  members: z
+    .array(
+      z.strictObject({
+        pluginId: PluginIdSchema,
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        url: z
+          .string()
+          .max(2048)
+          .regex(
+            /^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?\/[A-Za-z0-9._~%/+-]+\.manifold-plugin\.json$/,
+          ),
+        nativeReview: z.literal(true).optional(),
+      }),
+    )
+    .min(1)
+    .max(64)
+    .refine((members) => new Set(members.map(({ pluginId }) => pluginId)).size === members.length, {
+      message: "duplicate replacement plugin",
+    }),
+});
+export type PluginReplacementSet = z.infer<typeof PluginReplacementSetSchema>;
+export type PluginReplacementMember = PluginReplacementSet["members"][number];

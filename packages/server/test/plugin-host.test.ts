@@ -10,11 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { installBundle } from "@manifold/plugin-kit/install";
-import { packPlugin } from "@manifold/plugin-kit/pack";
+import { BUILT_AGAINST_PROTOCOL, packPlugin } from "@manifold/plugin-kit/pack";
 import {
   canonicalJobJson,
   actionResultProjectionDigest,
@@ -25,6 +25,8 @@ import {
   formatManifoldUri,
   PluginUpdateApplyResultSchema,
   PluginUpdateReviewResultSchema,
+  PROTOCOL_VERSION,
+  type PluginReplacementSet,
 } from "@manifold/protocol";
 import {
   ENGINE_APPLY_UPDATE_ACTION,
@@ -88,7 +90,16 @@ import {
   type ServerPluginDef,
 } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
-import { TRACE_ROW_TYPE, sha256Hex, ServerStore } from "../src/stores.ts";
+import {
+  loadStagedReplacement,
+  readReplacementJournal,
+  receiveReplacementSet,
+  replacementSetSha256,
+  restoreReplacements,
+  stagedReplacementDir,
+  type StagedReplacement,
+} from "../src/plugin-replacements.ts";
+import { TRACE_ROW_TYPE, sha256Hex, ServerStore, type PluginInstallRow } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import type { PluginDatabase, PluginStorage, StreamProducer } from "@manifold/plugin";
 import {
@@ -5874,6 +5885,335 @@ describe("enabled bundle replacement retains native execution", () => {
         f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
       ).toEqual(before);
       expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+    } finally {
+      f.close();
+    }
+  });
+});
+
+/**
+ * A STAGED CROSSING (#1068): the deployment hands a stopped hub whole replacement bundles for its
+ * installed ids, built for the protocol the old builds can no longer be admitted under. The
+ * real native installation, consent, instance service and running workload from
+ * `retainedServiceFixture` are the deployments that must survive it.
+ */
+const CROSSING_REVISION = "c".repeat(40);
+const PREVIOUS_STAMP = "56";
+
+function stampedBundle(manifest: PluginManifest, protocol: string, hardenedContract = 2): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      format: 1,
+      hardenedContract,
+      builtAgainst: { [BUILT_AGAINST_PROTOCOL]: protocol },
+      manifest,
+      files: {
+        "server.js": Buffer.from("export {};").toString("base64"),
+        "web.js": Buffer.from(`export const web = ${JSON.stringify(protocol)};`).toString("base64"),
+      },
+    }),
+  );
+}
+
+/** Rewrites an installed row as the previous SDK built it: the hub now holds that build. */
+function installPreviousBuild(
+  fixture: InstallFixture,
+  manifest: PluginManifest,
+  grantedCaps: PluginManifest["capabilities"],
+): PluginInstallRow {
+  const installed = fixture.store.pluginInstalls().find((row) => row.pluginId === manifest.id)!;
+  const bytes = stampedBundle(manifest, PREVIOUS_STAMP);
+  const sha256 = sha256Hex(bytes);
+  const { bundlePath } = installLayout(fixture.dataDir, manifest.id, sha256);
+  mkdirSync(dirname(bundlePath), { recursive: true });
+  writeFileSync(bundlePath, bytes);
+  fixture.store.putPluginInstall({
+    ...installed,
+    sha256,
+    bundlePath,
+    source: bundlePath,
+    grantedCaps,
+    builtAgainst: { [BUILT_AGAINST_PROTOCOL]: PREVIOUS_STAMP },
+  });
+  return fixture.store.pluginInstalls().find((row) => row.pluginId === manifest.id)!;
+}
+
+/** What the deployment's receiver does: a verified set, handed to the stopped data directory. */
+async function stageCrossing(
+  fixture: InstallFixture,
+  members: readonly {
+    readonly manifest: PluginManifest;
+    readonly protocol?: string;
+    readonly hardenedContract?: number;
+    readonly nativeReview?: true;
+  }[],
+): Promise<StagedReplacement> {
+  const source = mkdtempSync(join(tmpdir(), "manifold-crossing-source-"));
+  try {
+    const set: PluginReplacementSet = {
+      format: 1,
+      members: members.map(({ manifest, protocol, hardenedContract, nativeReview }) => {
+        const bytes = stampedBundle(
+          manifest,
+          protocol ?? String(PROTOCOL_VERSION),
+          hardenedContract,
+        );
+        const sha256 = sha256Hex(bytes);
+        writeFileSync(join(source, `${sha256}.manifold-plugin.json`), bytes);
+        return {
+          pluginId: manifest.id,
+          sha256,
+          url: `https://plugins.example.invalid/${manifest.id}.manifold-plugin.json`,
+          ...(nativeReview === undefined ? {} : { nativeReview }),
+        };
+      }),
+    };
+    writeFileSync(join(source, "set.json"), canonicalJobJson(set));
+    await receiveReplacementSet(
+      source,
+      fixture.dataDir,
+      replacementSetSha256(set),
+      CROSSING_REVISION,
+    );
+    return (await loadStagedReplacement(fixture.dataDir))!;
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+  }
+}
+
+describe("staged crossing replaces a held closure with its hub (#1068)", () => {
+  test("grants, data, lineage and an unchanged native deployment survive; rollback restores the previous build", async () => {
+    const f = await retainedServiceFixture({ major: 1, minor: 0 });
+    try {
+      const previous = installPreviousBuild(f.fixture, f.manifest, [
+        "containers:read",
+        "tokens:mint",
+      ]);
+      await f.fixture.store.pluginStorage(SAMPLE_ID).set("kept", "yes");
+      const native = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+      const service = f.jobs.describeInstanceService(f.fixture.owner, {
+        serviceId: f.policy.serviceId,
+      });
+      expect(service.state).toBe("ready");
+      const held = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(installedRow(held, SAMPLE_ID).held?.reason).toBe("repack_required");
+      held.close();
+
+      const staged = await stageCrossing(f.fixture, [
+        { manifest: { ...f.manifest, version: "2.0.0" } },
+      ]);
+      const crossed = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(await crossed.applyStagedReplacement(staged)).toEqual({ ok: true });
+      crossed.setJobs(f.jobs);
+      const row = installedRow(crossed, SAMPLE_ID);
+      expect(row.held).toBeUndefined();
+      expect(row.manifest.version).toBe("2.0.0");
+      const replaced = f.fixture.store.pluginInstalls()[0]!;
+      expect(replaced).toMatchObject({
+        sha256: staged.members[0]!.member.sha256,
+        grantedCaps: ["containers:read", "tokens:mint"],
+        installedBy: previous.installedBy,
+        hardened: true,
+        builtAgainst: { [BUILT_AGAINST_PROTOCOL]: String(PROTOCOL_VERSION) },
+      });
+      expect(replaced.installer).toEqual(previous.installer);
+      expect(await f.fixture.store.pluginStorage(SAMPLE_ID).get("kept")).toBe("yes");
+      // The deployment, its consent and the running service workload never saw a hold.
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(native);
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+      expect(
+        f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }),
+      ).toMatchObject({ state: "ready", configuration: service.configuration });
+      expect(existsSync(previous.bundlePath)).toBe(true);
+      expect(existsSync(stagedReplacementDir(f.fixture.dataDir))).toBe(false);
+      expect(readReplacementJournal(f.fixture.dataDir)).toEqual([
+        expect.objectContaining({
+          setSha256: staged.setSha256,
+          revision: CROSSING_REVISION,
+          members: [{ sha256: replaced.sha256, previous, nativeReview: false }],
+          disabledInstallations: [],
+        }),
+      ]);
+      crossed.close();
+
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION]);
+      expect(f.fixture.store.pluginInstalls()).toEqual([previous]);
+      expect(readReplacementJournal(f.fixture.dataDir)).toEqual([]);
+      expect(existsSync(replaced.bundlePath)).toBe(false);
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(native);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("a changed native declaration is disabled pending deployment review and re-enabled by rollback", async () => {
+    const f = await retainedServiceFixture();
+    try {
+      const previous = installPreviousBuild(f.fixture, f.manifest, ["containers:read"]);
+      const native = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+      const consents = () =>
+        f.fixture.store.db
+          .query<{ count: number }, [string]>(
+            "SELECT COUNT(*) AS count FROM machine_job_consents WHERE plugin_id=?",
+          )
+          .get(SAMPLE_ID)!.count;
+      const consented = consents();
+      const configuration = f.jobs.describeInstanceService(f.fixture.owner, {
+        serviceId: f.policy.serviceId,
+      }).configuration;
+      const artifact = f.machine.artifacts["linux-x64"]!;
+      const rebuilt: PluginManifest = {
+        ...f.manifest,
+        version: "2.0.0",
+        machine: {
+          ...f.machine,
+          artifacts: {
+            "linux-x64": { ...artifact, sha256: "d".repeat(64), entrySha256: "d".repeat(64) },
+          },
+        },
+      };
+      const refusedHost = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(
+        await refusedHost.applyStagedReplacement(
+          await stageCrossing(f.fixture, [{ manifest: rebuilt }]),
+        ),
+      ).toEqual({
+        ok: false,
+        refusals: [expect.stringMatching(/native declaration changed; set nativeReview/)],
+      });
+      // A refused crossing changes nothing: the previous build stays held for rollback.
+      expect(installedRow(refusedHost, SAMPLE_ID).held?.reason).toBe("repack_required");
+      refusedHost.close();
+      expect(f.fixture.store.pluginInstalls()).toEqual([previous]);
+
+      const staged = await stageCrossing(f.fixture, [{ manifest: rebuilt, nativeReview: true }]);
+      const crossed = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      expect(await crossed.applyStagedReplacement(staged)).toEqual({ ok: true });
+      crossed.setJobs(f.jobs);
+      expect(installedRow(crossed, SAMPLE_ID).held).toBeUndefined();
+      // Stopped at its approved revision, never moved to the new artifact without a review.
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual({
+        ...native,
+        enabled: false,
+      });
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)?.reason).toBe("plugin_disabled");
+      expect(consents()).toBe(consented);
+      const pending = f.jobs.describeInstanceService(f.fixture.owner, {
+        serviceId: f.policy.serviceId,
+      });
+      expect(pending.configuration).toEqual(configuration);
+      expect(pending.state).not.toBe("ready");
+      expect(readReplacementJournal(f.fixture.dataDir)[0]?.disabledInstallations).toEqual([
+        {
+          machineId: f.machineId,
+          pluginId: SAMPLE_ID,
+          revision: native.revision,
+          artifact: native.artifact,
+        },
+      ]);
+      crossed.close();
+
+      restoreReplacements(f.fixture.store, f.fixture.dataDir, [CROSSING_REVISION]);
+      expect(f.fixture.store.pluginInstalls()).toEqual([previous]);
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual({ ...native, ready: false });
+      expect(consents()).toBe(consented);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("missing, mismatched, widened, unknown, future and unsupported replacements refuse without changing a row", async () => {
+    const f = await retainedServiceFixture({ major: 1, minor: 0 });
+    try {
+      const previous = installPreviousBuild(f.fixture, f.manifest, ["containers:read"]);
+      const other: PluginManifest = { ...SAMPLE_MANIFEST, id: "vendor.other" };
+      expect(
+        (await f.host.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, f.fixture.drop(other))).ok,
+      ).toBe(true);
+      const otherPrevious = installPreviousBuild(f.fixture, other, []);
+      const rows = f.fixture.store.pluginInstalls();
+      const next = { ...f.manifest, version: "2.0.0" };
+      const refused = async (
+        members: Parameters<typeof stageCrossing>[1],
+        reason: RegExp,
+      ): Promise<void> => {
+        const host = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+        const outcome = await host.applyStagedReplacement(await stageCrossing(f.fixture, members));
+        host.close();
+        expect(outcome.ok ? "" : outcome.refusals.join("\n")).toMatch(reason);
+        expect(f.fixture.store.pluginInstalls()).toEqual(rows);
+        expect(readReplacementJournal(f.fixture.dataDir)).toEqual([]);
+      };
+      const crossedOther = { manifest: { ...other, version: "2.0.0" } };
+      await refused(
+        [{ manifest: next }],
+        /vendor\.other: held repack_required; no replacement staged/,
+      );
+      await refused(
+        [{ manifest: { ...next, id: "vendor.absent" } }, crossedOther],
+        /vendor\.absent: not installed/,
+      );
+      await refused(
+        [
+          { manifest: { ...next, capabilities: [...next.capabilities, "machines:mint"] } },
+          crossedOther,
+        ],
+        /vendor\.sample: consent_required; .*machines:mint/,
+      );
+      await refused(
+        [{ manifest: next, protocol: "999" }, crossedOther],
+        /vendor\.sample: repack_required; manifold:protocol built against 999 \(incompatible\)/,
+      );
+      await refused(
+        [{ manifest: next, protocol: PREVIOUS_STAMP }, crossedOther],
+        /vendor\.sample: repack_required; manifold:protocol built against 56/,
+      );
+      await refused(
+        [{ manifest: next, hardenedContract: 999 }, crossedOther],
+        /vendor\.sample: repack_required; hardened contract 999 is not accepted/,
+      );
+      await refused(
+        [{ manifest: { ...next, dataVersion: { major: 2, minor: 0 } } }, crossedOther],
+        /vendor\.sample: data_major_changed/,
+      );
+      await refused(
+        [{ manifest: next, nativeReview: true }, crossedOther],
+        /vendor\.sample: nativeReview is set but the native declaration is unchanged/,
+      );
+      // A set whose bytes do not hash to its pins never reaches the data directory.
+      const source = mkdtempSync(join(tmpdir(), "manifold-crossing-mismatch-"));
+      try {
+        const bytes = stampedBundle(next, String(PROTOCOL_VERSION));
+        const set: PluginReplacementSet = {
+          format: 1,
+          members: [
+            {
+              pluginId: SAMPLE_ID,
+              sha256: "e".repeat(64),
+              url: "https://plugins.example.invalid/vendor.sample.manifold-plugin.json",
+            },
+          ],
+        };
+        writeFileSync(join(source, `${"e".repeat(64)}.manifold-plugin.json`), bytes);
+        writeFileSync(join(source, "set.json"), canonicalJobJson(set));
+        await expect(
+          receiveReplacementSet(
+            source,
+            f.fixture.dataDir,
+            replacementSetSha256(set),
+            CROSSING_REVISION,
+          ),
+        ).rejects.toThrow(/hash_mismatch/);
+        await expect(
+          receiveReplacementSet(source, f.fixture.dataDir, "f".repeat(64), CROSSING_REVISION),
+        ).rejects.toThrow(/replacement set hashes to/);
+      } finally {
+        rmSync(source, { recursive: true, force: true });
+      }
+      expect(f.fixture.store.pluginInstalls().map((row) => row.sha256)).toEqual([
+        otherPrevious.sha256,
+        previous.sha256,
+      ]);
     } finally {
       f.close();
     }

@@ -381,6 +381,7 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     const native = await snapshotLive(fixture.target);
     fixture.state.build = "1.0.0";
@@ -391,6 +392,7 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     await expect(pollLive(fixture.target, native, "1.0.0", shortPoll)).rejects.toBeInstanceOf(
       LiveVerificationError,
@@ -426,11 +428,65 @@ test("a healthy disabled legacy plugin keeps its configured intent across upgrad
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     fixture.state.pluginEnabled = true;
     await expect(pollLive(fixture.target, before, "1.1.0", shortPoll)).rejects.toThrow(
       /plugin example.live: enablement changed; expected false; observed true/,
     );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a staged crossing defers only acknowledged native reviews at their approved revision (#1068)", async () => {
+  const fixture = liveFixture();
+  try {
+    const before = await snapshotLive(fixture.target);
+    const member = {
+      pluginId,
+      sha256: hash,
+      url: "https://plugins.example.invalid/example.live.manifold-plugin.json",
+    };
+    Object.assign(fixture.state, {
+      build: "1.1.0",
+      installationEnabled: false,
+      installationReady: false,
+      serviceState: "unavailable",
+      serviceReason: "installation_disabled",
+    });
+    expect(
+      await pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [{ ...member, nativeReview: true }] },
+      }),
+    ).toEqual({
+      heldPlugins: [],
+      deferredServices: [serviceId],
+      deferredInstallations: [],
+      pendingNativeReviews: [{ machineId, pluginId, revision: "deployment-before" }],
+    });
+    // Without the acknowledgement, or once the staged digest is not the one serving, it refuses.
+    await expect(
+      pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [member] },
+      }),
+    ).rejects.toThrow(/expected ready; observed unavailable/);
+    await expect(
+      pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [{ ...member, sha256: "b".repeat(64) }] },
+      }),
+    ).rejects.toThrow(/staged replacement: expected b{64}; observed a{64}/);
+    // A purge is not a pending review.
+    fixture.state.installationPurgeRequested = true;
+    await expect(
+      pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [{ ...member, nativeReview: true }] },
+      }),
+    ).rejects.toThrow(/pending the native deployment review/);
   } finally {
     await fixture.close();
   }
@@ -640,6 +696,7 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
       heldPlugins: [{ pluginId, minimum: 2 }],
       deferredServices: [serviceId],
       deferredInstallations: [{ machineId, pluginId, revision: "deployment-before" }],
+      pendingNativeReviews: [],
     });
     fixture.state.pluginHeld = null;
     fixture.state.readDoorPresent = true;
@@ -656,6 +713,7 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
   } finally {
     await fixture.close();
@@ -675,6 +733,7 @@ test("a snapshot taken during a repack hold records configured enablement", asyn
       heldPlugins: [{ pluginId, minimum: 2 }],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     fixture.state.pluginEnabled = false;
     await expect(
