@@ -542,9 +542,9 @@ export class ActionRunner {
         await this.#create(frame.id, frame.declaration, run, frame.justification);
         return;
       case "renew": {
-        if (!run.acknowledged) throw new ActionRunnerError("invalid_state");
         const parent = this.#sponsor(run);
-        if (parent !== undefined && !parent.acknowledged)
+        // Only an adopted Run renewing itself on its own bearer may precede acknowledgement.
+        if (parent !== run && (!run.acknowledged || (parent !== undefined && !parent.acknowledged)))
           throw new ActionRunnerError("invalid_state");
         const invocation = await this.#call(
           parent,

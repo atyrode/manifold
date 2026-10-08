@@ -6112,12 +6112,25 @@ export class PluginHost {
       return refuse("forbidden", "agent runner credentials cannot invoke ordinary actions");
     }
     const runPolicyState = this.authService.agentRunPolicyState(auth);
+    /*
+      A Run awaiting its first acknowledgement may still keep its lease and report harness
+      activity, so a harness whose model has no Manifold tool can hold the Run open. Exactly these
+      two lifecycle doors, and the identity mechanism accepts the credential only for its own Run.
+      They carry its declaration, so renewal still owes its justification.
+    */
+    const pendingLifecycle =
+      runPolicyState === "pending_policy" &&
+      (fullName === "core.access.reportRunActivityV2" ||
+        fullName === "core.access.renewAgentRunV2");
     const declaration = options?.agentJustification;
-    const activeRun = auth.agentRunId !== undefined && runPolicyState === "active";
+    const declaringRun =
+      auth.agentRunId !== undefined && (runPolicyState === "active" || pendingLifecycle);
     const normalizedDeclaration =
-      activeRun && typeof declaration === "string" ? normalizeAgentDeclaration(declaration) : null;
+      declaringRun && typeof declaration === "string"
+        ? normalizeAgentDeclaration(declaration)
+        : null;
     if (normalizedDeclaration !== null) payload.agentDeclaration = normalizedDeclaration;
-    const declarationDenial = !activeRun
+    const declarationDenial = !declaringRun
       ? null
       : declaration === undefined
         ? entry.def.agentJustification === "required"
@@ -6146,7 +6159,8 @@ export class PluginHost {
       runPolicyState === "pending_policy" &&
       runAccess !== "policy" &&
       runAccess !== "teardown" &&
-      runAccess !== "inspect"
+      runAccess !== "inspect" &&
+      !pendingLifecycle
     ) {
       return refuse("policy_required", "agent policy acknowledgement required");
     }

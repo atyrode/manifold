@@ -714,6 +714,140 @@ describe("external action runner over real doors", () => {
     }
   });
 
+  test("an adopted Run reports activity and renews itself before acknowledgement, and nothing else", async () => {
+    const { server, agentId, token, elapse } = await fixture();
+    const created = await invokeAction(
+      { origin: server.publicUrl, token },
+      "core.access.createRun",
+      { agentId },
+    );
+    if (!created.outcome.ok) throw new Error("run admission refused");
+    const admission = CreateRunCredentialResultSchema.parse(created.outcome.result);
+    const runId = admission.run.id;
+    const frames: ActionRunnerResponse[] = [];
+    const runner = new ActionRunner({
+      origin: server.publicUrl,
+      token: admission.credential.token,
+      bind: { runId },
+      emit: (frame) => frames.push(frame),
+    });
+    try {
+      await runner.bind();
+      await runner.reportActivity({ runId, activity: "working" });
+      expect(frames.at(-1)).toMatchObject({
+        type: "result",
+        door: "core.access.reportRunActivityV2",
+        runId,
+        outcome: { ok: true },
+      });
+      elapse(180_000);
+      await runner.accept({ type: "renew", id: "unjustified", runId, lifetimeMs: 90_000 });
+      expect(frames.at(-1)).toMatchObject({
+        type: "result",
+        id: "unjustified",
+        outcome: { ok: false, denial: { rule: "justification_required" } },
+      });
+      await runner.accept({
+        type: "renew",
+        id: "renew",
+        runId,
+        lifetimeMs: 90_000,
+        justification: "Keep this harness Run open until its model acknowledges policy.",
+      });
+      expect(frames.at(-1)).toMatchObject({
+        type: "result",
+        id: "renew",
+        outcome: { ok: true },
+        expiresAt: 280_000,
+      });
+      // The replaced bearer still reports, and still reaches no ordinary door.
+      await runner.reportActivity({ runId, activity: "blocked" });
+      expect(frames.at(-1)).toMatchObject({ type: "result", outcome: { ok: true } });
+      await expect(
+        runner.accept({
+          type: "invoke",
+          id: "before",
+          runId,
+          door: "core.machines.list",
+          target: "manifold://",
+          args: {},
+        }),
+      ).rejects.toMatchObject({ code: "invalid_state" });
+      const inspection = await invokeAction(
+        { origin: server.publicUrl, token: SPONSOR },
+        "core.access.inspectRun",
+        { runId },
+      );
+      if (!inspection.outcome.ok) throw new Error("run inspection refused");
+      expect(InspectRunResultSchema.parse(inspection.outcome.result).run).toMatchObject({
+        state: "pending_policy",
+        activity: "blocked",
+        renewals: 1,
+        expiresAt: 280_000,
+      });
+      await runner.accept(ack("ack", policyFrame(frames)));
+      await runner.accept({ type: "finish", id: "finish", runId, outcome: "completed" });
+      expect(runner.successful).toBe(true);
+      const traces = await ledger(server.publicUrl);
+      for (const frame of frames) {
+        if (frame.type !== "result") continue;
+        expect(traces.find((row) => row.id === frame.traceId)).toMatchObject({
+          door: frame.door,
+          outcome: frame.outcome.ok ? "ok" : frame.outcome.denial.rule,
+        });
+      }
+      expect(JSON.stringify(frames)).not.toContain(admission.credential.token);
+    } finally {
+      await runner.close("failed");
+    }
+  });
+
+  test("an Agent-mode root reports activity before acknowledgement, but its runner renews only after it", async () => {
+    const { server, agentId, token, elapse } = await fixture();
+    const frames: ActionRunnerResponse[] = [];
+    const runner = new ActionRunner({
+      origin: server.publicUrl,
+      token,
+      bind: { agentId },
+      emit: (frame) => frames.push(frame),
+    });
+    try {
+      await runner.bind();
+      const policy = policyFrame(frames);
+      await runner.reportActivity({ runId: policy.runId, activity: "idle" });
+      expect(frames.at(-1)).toMatchObject({
+        type: "result",
+        door: "core.access.reportRunActivityV2",
+        outcome: { ok: true },
+      });
+      elapse(180_000);
+      const renewal = {
+        type: "renew",
+        runId: policy.runId,
+        lifetimeMs: 90_000,
+        justification: "Extend the approved reader's bounded task.",
+      };
+      await expect(runner.accept({ ...renewal, id: "early" })).rejects.toMatchObject({
+        code: "invalid_state",
+      });
+      expect(
+        (await ledger(server.publicUrl)).filter(
+          (row) => row.door === "core.access.renewAgentRunV2",
+        ),
+      ).toEqual([]);
+      await runner.accept(ack("ack", policy));
+      await runner.accept({ ...renewal, id: "renew" });
+      expect(frames.at(-1)).toMatchObject({
+        type: "result",
+        id: "renew",
+        outcome: { ok: true },
+        expiresAt: 280_000,
+      });
+    } finally {
+      expect(await runner.close("completed")).toBe(true);
+    }
+  });
+
   for (const terminal of [
     "completed",
     "failed",

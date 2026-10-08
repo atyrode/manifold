@@ -3579,9 +3579,13 @@ export class AuthService {
       throw new ServiceError("forbidden", "grant_expired");
     if (parsed.lifetimeMs > agent.grant.maxRunLifetimeMs)
       throw new ServiceError("forbidden", "lifetime_exceeds_grant");
+    // Before its first acknowledgement a Run may renew only itself, on its own credential.
+    const renewable =
+      initial.state === "active"
+        ? initial.acknowledgedPolicyRevision === initial.policyRevision
+        : initial.state === "pending_policy" && currentActor.agentRunId === initial.id;
     if (
-      initial.state !== "active" ||
-      initial.acknowledgedPolicyRevision !== initial.policyRevision ||
+      !renewable ||
       initial.policyRevision !== this.agentPolicy.revision ||
       initial.expiresAt <= this.runtime.now()
     )

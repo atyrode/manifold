@@ -251,8 +251,14 @@ reporting `done` does not finish a Run.
 A run authenticates immediately but begins `pending_policy`. Until it fetches
 `core.access.getAgentPolicy` and sends every exact bundle id and digest to
 `core.access.acknowledgeAgentPolicy`, the dispatch ladder permits only policy and teardown
-doors, scoped inspection and explicitly admitted runner lifecycle operations; none bypasses
-the identity mechanism's current-Run checks. The required bytes are the built-in action-plane contract plus the optional operator
+doors, scoped inspection and exactly two runner lifecycle operations,
+`core.access.reportRunActivityV2` and `core.access.renewAgentRunV2`. None bypasses the identity
+mechanism's current-Run checks, which accept a Run credential for those two only on its own Run.
+A harness can therefore report activity and keep its Run's lease before the model acknowledges;
+renewal keeps its required justification, lease bounds and renewal ceiling. Every other door,
+including the V1 `reportRunActivity` and `renewAgentRun`, and so every authority-bearing action,
+refuses with `policy_required`. A `policy_stale` Run admits neither lifecycle operation.
+The required bytes are the built-in action-plane contract plus the optional operator
 file selected by `MANIFOLD_AGENT_POLICY_FILE`. A changed revision moves active runs to
 `policy_stale`; startup and the root-only `core.access.reloadAgentPolicy` apply the same
 reconciliation, and only exact re-acknowledgement restores ordinary actions.
@@ -268,7 +274,9 @@ parent and standing grant: maximum depth four, at most 32 descendants under a ro
 lower ancestor budget still applies. Browser/root child admission also returns no bearer.
 
 `core.access.renewAgentRun` permits only the Run's own credential or its matching Agent runner
-to renew an active policy-current Run within the current Agent grant. Browser sponsors and root
+to renew an active policy-current Run within the current Agent grant. Before its first
+acknowledgement, only the Run's own credential renews it, through `renewAgentRunV2`.
+Browser sponsors and root
 are refused with `run_renewal_requires_harness` without minting or revoking credentials; a parent
 Run has no renewal authority over its child merely by being its parent. The door declares `caps: []`
 and `runAccess: "runner"` because the identity mechanism evaluates actual Run and grant authority,
@@ -310,7 +318,9 @@ prompts or logs. Mixed modes and the former sponsor-token carrier are refused.
 
 Admission delivers live schemas and exact server-selected policy before model input. There is
 no `start` or `bind` model frame. Explicit exact acknowledgement remains required; `child`,
-`renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name owned run ids. Children narrow
+`renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name owned run ids. Only a Run-mode
+root may `renew` before acknowledgement, on its own bearer: an Agent-mode root renews on the
+runner credential and a child on its parent's, so both wait for acknowledgement. Children narrow
 the same Agent and cannot bind a session or model through their declaration. Every child and
 replacement bearer remains private. An ordinary `invoke` cannot impersonate a lifecycle or
 activity frame. A policy-stale refusal is followed by fresh policy, never automatic assent.
@@ -319,8 +329,9 @@ The server remains the one argument validator and authority decision.
 A trusted harness reports activity through `ActionRunner.reportActivity` or a separate inherited
 `MANIFOLD_ACTIVITY_FD` pipe (descriptor at least 3), using `{runId,activity}` with
 `working | blocked | done | idle`. It cannot share model stdin. Reports use the same
-`core.access.reportRunActivity` door and owned run credential, not terminal-output inference;
-both pipes share the serialized executor and process lifetime.
+`core.access.reportRunActivityV2` door and owned run credential, including while the run is
+pending policy, not terminal-output inference; both pipes share the serialized executor and
+process lifetime.
 
 By default JSONL results publish only mechanical success or the server's refusal rule, door,
 caller-declared target, run id, trace id and bounded lifecycle facts. Raw action results,
