@@ -4502,6 +4502,20 @@ proof with the identity its hello named. On a difference it does not forward the
 mismatches back off like failed dials. Gaining or losing the owner seat likewise re-dials with
 code 4011. Re-dialling cannot obtain a challenge the hub withholds, such as for a fenced owner.
 
+**One disable per owner incarnation (#1068).** Every accepted `owner_proof` makes the hub
+send each of the machine's installations as an `install` job command again. A disabled or held
+installation carries `action: "disable"`, and the hub sends an unchanged disable (the same
+command bytes) once to each owner incarnation (`ownerId`, `publicKey`, `generation`), not on
+its later proofs. The owner journals an installation action before acting on it, so a repeat
+adds nothing, yet current and released owners answer every disable by replaying each retained
+job of the plugin as an identity-prefixed event in one synchronous burst. Past the owner seat's
+outbound bound of two install frames that burst drops the seat, the transport re-dials with
+4011, and a disable re-sent on every proof kept the owner from staying proved. An enable or a
+purge is sent as before and clears that record, and a changed disable is sent once more. A new
+owner generation or identity, or a restarted hub, is sent the disable again, once. Tradeoff: a
+disable lost together with its channel is sent again only after the owner or the hub restarts.
+Until then the hub's disabled row still refuses new work, and its cancellations persist.
+
 Protocol 52's monetary service policies, invocation context and native charge replies require
 both machine transport 52 and owner RPC 44. An older admitted transport keeps its ordinary
 work, receives no incompatible monetary policy, and cannot admit a bounded direct call.

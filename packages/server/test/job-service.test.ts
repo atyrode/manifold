@@ -3157,6 +3157,53 @@ test("installation acknowledgement requires proof on both initial connection and
   }
 });
 
+test("an owner incarnation is sent an unchanged disable once, not on every proof", () => {
+  const f = fixture();
+  try {
+    const actions = () =>
+      f.commands.flatMap((command) => (command.type === "install" ? [command.action] : []));
+    const reprove = () => {
+      f.service.offline(f.channel);
+      f.commands.length = 0;
+      prove(f);
+      expect(f.commands.map((command) => command.type)).toContain("drain");
+    };
+    prove(f);
+    expect(actions()).toEqual([undefined]);
+    // A crossing's native review or an operator disable tells the proved owner once.
+    f.commands.length = 0;
+    f.service.disablePlugin(pluginId);
+    expect(actions()).toEqual(["disable"]);
+    // The owner journaled it. Re-proving that incarnation, as its transport does after every
+    // dropped seat, must not make it replay its retained jobs again (#1068).
+    for (let attempt = 0; attempt < 3; attempt++) {
+      reprove();
+      expect(actions()).toEqual([]);
+    }
+    // A restarted owner is a new incarnation: it is told again, once.
+    f.owner.generation = 2;
+    reprove();
+    expect(actions()).toEqual(["disable"]);
+    reprove();
+    expect(actions()).toEqual([]);
+    // Re-enabling sends the installation; a later disable is a new fact again.
+    f.commands.length = 0;
+    f.service.install(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      machine,
+    });
+    f.service.disablePlugin(pluginId);
+    expect(actions()).toEqual([undefined, "disable"]);
+    reprove();
+    expect(actions()).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
+
 test("polling a queued job cannot interrupt its later admitted start", () => {
   const f = fixture();
   try {
