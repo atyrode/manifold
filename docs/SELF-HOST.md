@@ -1581,7 +1581,9 @@ cross these boundaries.
 
 Both `deploy-dev.yml` and `deploy-hub.yml` also require the `installed-bundles` job before
 the switch. Development builds the candidate image for that exact revision; production pulls
-the provenance-verified immutable release image instead of rebuilding application source.
+the provenance-verified immutable release image instead of rebuilding application source. In
+both, the gate itself runs from the trusted workflow checkout, so it can drive a candidate of any
+revision.
 The gate invokes the running target's root-only `engine.plugins.exportInstalled` door, then
 boots that candidate against copies of the returned bundles and safe install rows in temporary
 data directories.
@@ -1591,6 +1593,41 @@ It checks original enablement and a second disposable all-enabled copy so a disa
 cannot hide a load failure. No production data volume, network, installer credential or owner
 key is mounted into the candidate. Any held, missing, unverified or load-failed bundle refuses
 deployment by plugin id with the candidate's minimum SDK contract.
+
+A protocol crossing whose installed closure the candidate would hold uses a **staged replacement
+set** (#1068, docs/CONTRACTS.md). The operator stages it on the deployment host with
+`bun scripts/bundle-replacement.ts stage SET.json "$PREVIEW_HOME/bundle-replacements"`. That
+fetches and verifies every member and prints the set sha256. A forward `deploy` dispatch then
+passes the same canonical JSON as `replacement_set`. `installed-bundles` fetches and pins every
+member through the install door's artifact reader (HTTPS to a public address at every redirect
+hop, the artifact cap enforced while the body streams), prints each member's review (versions,
+digests, grants kept or narrowed, native unchanged or under review), and boots the candidate
+with the set staged. A set already installed is refused there, before anything stops. The
+switch request becomes `dev SHA SET_SHA256`. The receiver re-verifies the host copy before
+building, hands it to the stopped volume, and the candidate installs it at boot. A hub
+interrupted mid-crossing resumes from its journal at the next boot; a set whose crossing has
+completed is only discarded if it is staged again (`plugin_replacement_replayed`), and natives
+reviewed since stay as reviewed. `verify-live` with `VERIFY_LIVE_REPLACEMENT_SET` requires every
+member to serve its staged digest. Only a `nativeReview` member's enabled installations may be
+disabled at their approved revision, including ones that were not ready before the switch, and
+services they provide may be `installation_disabled`. Any such installation or service makes
+`maintenance_required=true`, which withholds the owner pin until the deployment reviews are
+applied and the same verification passes.
+
+A crossing is forward-only. The automatic recovery after a failed switch or verification sends
+`dev-rollback CANDIDATE PREVIOUS`, which restores the crossing the candidate applied, in the
+outgoing image, before the previous hub starts: the previous rows and bundle files, and the
+native installations the crossing stopped, re-enabled at their journaled revision. The restore
+refuses, changing nothing, if a crossed plugin's row is not exactly one the journal recorded (a
+later install of the same digest with other grants, hardening or installer included) or a
+disabled installation moved since; a restore interrupted after its commit completes when
+retried. A bundle file is removed only once no installed row and no remaining journal record
+names it. A manual `rollback` dispatch to a revision behind a journaled crossing refuses before
+anything stops, changing nothing: `installed-bundles` reads the journal
+(`exportInstalled { crossings: true }`) and names each crossing the target does not contain.
+Recovery after a completed crossing is a forward deployment. `deploy-dev.sh` also refuses, before
+it builds or stops anything, any rollback that would restore more than the newest crossing or one
+the outgoing revision did not apply.
 
 Container health is only the switch's transport check, not a successful deployment. Both
 workflows snapshot the running target immediately before switching and require the separate
@@ -2063,7 +2100,8 @@ the actual incumbent and requires the target to be a strict ancestor. The acknow
 means the operator reviewed application and retained-data compatibility. It does **not**
 restore a database or other shared data, pin the instance at that revision, suppress the next
 green forward deployment, promote production, update a fleet, or authorize native-owner
-restart.
+restart. A target behind a journaled staged crossing (#1068) is refused before anything stops;
+recovery after a completed crossing is a forward deployment.
 
 The host enforces this ordering for both new and older workflow callers under its existing
 deployment lock, before build or live mutation. Newly retained images carry an application

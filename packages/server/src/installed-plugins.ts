@@ -8,6 +8,7 @@ import {
   type InstalledPluginsSnapshot,
 } from "@manifold/protocol";
 import { installLayout, parseBundle } from "./plugin-installs.ts";
+import { readReplacementJournal } from "./plugin-replacements.ts";
 import { sha256Hex, type ServerStore } from "./stores.ts";
 
 /** Configured intent remains inspectable even when bundle loading is held or broken. */
@@ -22,10 +23,15 @@ export function listInstalledPlugins(store: ServerStore): InstalledPluginStates 
   };
 }
 
-/** Read only the installed bundle inventory, with an allowlisted persistence projection. */
+/**
+ * Read only the installed bundle inventory, with an allowlisted persistence projection. With
+ * `crossings`, also the identities of the journaled staged crossings (#1068), which a manual
+ * rollback gate refuses to cross.
+ */
 export function exportInstalledPlugins(
   store: ServerStore,
   dataDir: string | null,
+  crossings = false,
 ): InstalledPluginsSnapshot {
   const disabled = store.disabledPlugins();
   const plugins = store.pluginInstalls().map((row) => {
@@ -84,5 +90,13 @@ export function exportInstalledPlugins(
       bytes: bytes.toString("base64"),
     };
   });
-  return { format: 1, developerMode: store.developerMode(), plugins };
+  const snapshot = { format: 1 as const, developerMode: store.developerMode(), plugins };
+  if (!crossings || dataDir === null) return snapshot;
+  return {
+    ...snapshot,
+    crossings: readReplacementJournal(dataDir).map(({ revision, setSha256 }) => ({
+      revision,
+      setSha256,
+    })),
+  };
 }

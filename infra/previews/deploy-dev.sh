@@ -10,17 +10,24 @@ source "$here/deployment-order.sh"
 require_domain
 mode=forward
 expected_current=
-case "$#" in
-  1) sha_arg "$1"; target_arg=$1 ;;
-  3)
-    [[ $2 == --rollback-from ]] || fail 'usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA]'
+replacement_set=
+usage='usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA | --replacement-set SET_SHA256]'
+case "$#:${2:-}" in
+  1:) sha_arg "$1"; target_arg=$1 ;;
+  3:--rollback-from)
     [[ $1 =~ ^[0-9a-f]{40}$ && $3 =~ ^[0-9a-f]{40}$ ]] ||
       fail 'rollback target and expected current revision must be full commit SHAs'
     target_arg=$1
     expected_current=$3
     mode=rollback
     ;;
-  *) fail 'usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA]' ;;
+  3:--replacement-set)
+    [[ $1 =~ ^[0-9a-f]{40}$ ]] || fail 'a staged crossing names its exact target commit'
+    sha256_arg "$3"
+    target_arg=$1
+    replacement_set=$3
+    ;;
+  *) fail "$usage" ;;
 esac
 umask 077
 mkdir -p "$PREVIEW_HOME"
@@ -41,6 +48,14 @@ git -C "$checkout" fetch -q --tags origin
 revision=$(full_commit "$checkout" "$target_arg")
 if [[ $mode == rollback && $revision != "$target_arg" ]]; then
   fail 'rollback target must identify an exact commit'
+fi
+# A staged crossing (#1068) installs exactly the set staged here under its digest, verified by
+# this trusted tooling before anything is built or stopped.
+replacement_dir=
+if [[ -n $replacement_set ]]; then
+  replacement_dir="$PREVIEW_HOME/bundle-replacements/$replacement_set"
+  bun "$here/../../scripts/bundle-replacement.ts" verify "$replacement_dir" "$replacement_set" ||
+    fail "HOLD: staged replacement set $replacement_set is missing or does not verify"
 fi
 unset MANIFOLD_VERSION MANIFOLD_BUILD MANIFOLD_CHANNEL
 identity_output=$(bun "$here/../../scripts/build-identity.ts" --repository "$checkout" --revision "$revision" --env) ||
@@ -107,6 +122,39 @@ dev_compose() {
 incumbent_image=$(installed_development_image "$project")
 incumbent_revision=$(development_image_revision "$incumbent_image" "$checkout")
 require_development_order "$checkout" "$incumbent_revision" "$revision" "$mode" "$expected_current"
+# Retained data must already exist: a typo must not silently create a fresh identity.
+docker volume inspect "$volume" >/dev/null 2>&1 || fail 'retained development data volume is missing'
+# Run one plugin-format step in a disposable, network-less container of IMAGE over the stopped
+# data volume: the image that wrote or will read the format is the one that touches it.
+# Usage: volume_step IMAGE [DOCKER_RUN_OPTION...] -- [COMMAND_ARGUMENT...]
+volume_step() {
+  local image=$1
+  local -a options=()
+  shift
+  while (($# > 0)) && [[ $1 != -- ]]; do
+    options+=("$1")
+    shift
+  done
+  (($# > 0)) || return 1
+  shift
+  docker run --rm --network none --security-opt no-new-privileges \
+    --label "com.docker.compose.project=$project" \
+    --mount "type=volume,src=$volume,dst=/data" "${options[@]}" "$image" "$@"
+}
+# The staged-crossing journal (#1068), newest first, read without writing by the image that wrote it.
+journal_revisions() {
+  docker run --rm --network none --security-opt no-new-privileges \
+    --label "com.docker.compose.project=$project" \
+    --mount "type=volume,src=$volume,dst=/data,readonly" --entrypoint /bin/sh "$incumbent_image" -c \
+    'if [ -e /data/plugin-replacement/journal.json ]; then exec bun scripts/bundle-replacement.ts journal /data; fi'
+}
+# A rollback behind a completed staged crossing refuses here, before anything is built or
+# stopped; the transition decides again over the stopped volume.
+if [[ $mode == rollback ]]; then
+  journal=$(journal_revisions) || fail 'HOLD: cannot read the staged-crossing journal'
+  restore=$(rollback_crossing "$checkout" "$incumbent_revision" "$revision" "$journal") || exit 2
+  [[ -z $restore ]] || log "rollback restores staged crossing $restore, which the outgoing revision applied"
+fi
 # Keep the incumbent's image record reachable even on containerd image stores.
 # A failed activation may leave it referenced only by the previous candidate tag.
 docker image tag "$incumbent_image" "$project:local" ||
@@ -117,8 +165,31 @@ build_retained_hub "$final_configuration" "$checkout" "$candidate_image" "$revis
 final_image=$(docker image inspect --format '{{.Id}}' "$candidate_image")
 [[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'
 seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
-# Retained data must already exist: a typo must not silently create a fresh identity.
-docker volume inspect "$volume" >/dev/null 2>&1 || fail 'retained development data volume is missing'
+# Bundles cross with the hub (#1068), between stopping the incumbent and starting its successor.
+# Forward: hand the successor the staged set, or clear any stale one. Rollback: restore the
+# in-flight crossing, the only one `rollback_crossing` admits, with the outgoing image's own
+# code, then clear any staged set the target would not understand.
+retained_transition() {
+  local journal restore
+  if [[ $mode == forward ]]; then
+    if [[ -n $replacement_set ]]; then
+      volume_step "$final_image" \
+        --mount "type=bind,src=$replacement_dir,dst=/staged,readonly" --entrypoint bun -- \
+        scripts/bundle-replacement.ts receive /staged "$replacement_set" "$revision" /data
+    else
+      volume_step "$final_image" --entrypoint /bin/rm -- -rf -- /data/plugin-replacement/staged
+    fi
+    return
+  fi
+  journal=$(journal_revisions) || return 1
+  restore=$(rollback_crossing "$checkout" "$incumbent_revision" "$revision" "$journal") || return 1
+  if [[ -n $restore ]]; then
+    log "restoring the bundles staged crossing $restore replaced"
+    volume_step "$incumbent_image" --entrypoint bun -- \
+      scripts/bundle-replacement.ts restore /data "$restore" || return 1
+  fi
+  volume_step "$incumbent_image" --entrypoint /bin/rm -- -rf -- /data/plugin-replacement/staged
+}
 replace_environment retained "$volume" "$final_image" "$project" "$public_url" dev_compose
 docker image tag "$final_image" "$project:local" ||
   fail 'retained hub is healthy but its current image reference could not be promoted'

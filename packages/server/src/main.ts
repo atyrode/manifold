@@ -41,6 +41,7 @@ import {
   PlaceExecutor,
 } from "./placement.ts";
 import { PluginHost } from "./plugin-host.ts";
+import { loadStagedReplacement, type StagedReplacement } from "./plugin-replacements.ts";
 import { defaultRoomTimers, RoomManager, type RoomTimers } from "./room.ts";
 import { SESSION_TRANSPORT_PAYLOAD_BYTES, type RawSocket } from "./session-channel.ts";
 import { SessionGateway } from "./session-ws.ts";
@@ -393,6 +394,28 @@ async function startAsWriter({
     },
   );
   opened.push(() => plugins.close());
+  /*
+    A STAGED CROSSING (#1068): replacement bundles a stopped deployment handed this data
+    directory install now, after the boot assembly and before native execution is wired or
+    anything serves, and a crossing a crash interrupted resumes from its journal whether or
+    not anything is still staged. A refusal changes nothing: this hub serves its held roster,
+    live verification refuses it, and the deployment restores its predecessor.
+  */
+  let staged: StagedReplacement | null = null;
+  let refusals: string[] = [];
+  try {
+    staged = await loadStagedReplacement(config.dataDir);
+  } catch (error) {
+    refusals = [error instanceof Error ? error.message : "staged replacement unreadable"];
+  }
+  const crossing = await plugins.applyStagedReplacement(staged);
+  if (!crossing.ok) refusals = crossing.refusals;
+  if (refusals.length > 0)
+    logger.error("plugin_replacement_refused", {
+      set: staged?.setSha256 ?? null,
+      revision: staged?.revision ?? null,
+      refusals,
+    });
   plugins.setJobs(jobs);
   jobs.setChangeNotifier({
     run: (node, actor) => events.emit(FLOOR_EVENT_OWNERS.jobs, node, "job_changed", actor),

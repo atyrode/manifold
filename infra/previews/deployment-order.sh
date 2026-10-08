@@ -108,3 +108,28 @@ require_development_order() {
     *) fail 'HOLD: deployment ordering mode is invalid' ;;
   esac
 }
+
+# The staged crossing (#1068) a rollback to TARGET restores: the journaled crossings TARGET does
+# not contain, read newest first from JOURNAL (one revision per line) up to the first it does. A
+# crossing is forward-only. A rollback, which is how the deployment recovers a failed switch or
+# verification, restores only the in-flight crossing: the newest, applied by the outgoing
+# revision CURRENT itself. Any other is completed and refuses before anything stops. Prints the
+# revision to restore, or nothing.
+rollback_crossing() {
+  local checkout=$1 current=$2 target=$3 journal=$4 entry status
+  local -a undo=()
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    [[ $entry =~ ^[0-9a-f]{40}$ ]] || fail 'HOLD: the staged-crossing journal names a malformed revision'
+    status=0
+    git -C "$checkout" merge-base --is-ancestor "$entry" "$target" 2>/dev/null || status=$?
+    ((status == 0)) && break
+    ((status == 1)) || fail "HOLD: cannot order staged crossing $entry against the rollback target"
+    undo+=("$entry")
+  done <<<"$journal"
+  ((${#undo[@]} > 0)) || return 0
+  if ((${#undo[@]} > 1)) || [[ ${undo[0]} != "$current" ]]; then
+    fail "HOLD: rollback to $target refused: it is behind staged crossing(s) ${undo[*]}, and a rollback restores only the newest crossing, when the outgoing revision $current applied it; recovery after a completed crossing is a forward deployment"
+  fi
+  printf '%s' "${undo[0]}"
+}

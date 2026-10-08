@@ -6,7 +6,7 @@ export PREVIEW_HOME="${PREVIEW_HOME:-$HOME/manifold-previews}"
 # shellcheck source=infra/previews/common.sh
 source "$here/common.sh"
 require_domain
-usage() { fail 'usage: dev SHA | dev-rollback EXPECTED_CURRENT_FULL_SHA TARGET_FULL_SHA | preview up N SHA | preview down N | plugin URL SHA256 [--hardened|--in-realm] (bare SHA also means dev SHA)'; }
+usage() { fail 'usage: dev SHA [REPLACEMENT_SET_SHA256] | dev-rollback EXPECTED_CURRENT_FULL_SHA TARGET_FULL_SHA | preview up N SHA | preview down N | plugin URL SHA256 [--hardened|--in-realm] (bare SHA also means dev SHA)'; }
 if [[ -v SSH_ORIGINAL_COMMAND ]]; then
   [[ $SSH_ORIGINAL_COMMAND != *$'\n'* && $SSH_ORIGINAL_COMMAND != *$'\r'* ]] || usage
   read -r -a args <<<"$SSH_ORIGINAL_COMMAND"
@@ -14,6 +14,14 @@ if [[ -v SSH_ORIGINAL_COMMAND ]]; then
 fi
 case "${1:-}:$#" in
   dev:2) sha_arg "$2"; exec "$here/deploy-dev.sh" "$2" ;;
+  # A staged crossing (#1068): install the replacement set staged on this host under that digest.
+  dev:3)
+    [[ $2 =~ ^[0-9a-f]{40}$ ]] || usage
+    sha256_arg "$3"
+    exec "$here/deploy-dev.sh" "$2" --replacement-set "$3"
+    ;;
+  # A rollback restores at most the in-flight staged crossing its outgoing revision applied;
+  # deploy-dev.sh refuses any other before anything stops (#1068).
   dev-rollback:3)
     [[ $2 =~ ^[0-9a-f]{40}$ && $3 =~ ^[0-9a-f]{40}$ ]] || usage
     exec "$here/deploy-dev.sh" "$3" --rollback-from "$2"

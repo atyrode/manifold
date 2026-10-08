@@ -2755,6 +2755,35 @@ Missing legacy metadata is `unknown`, never falsely called compatible. The harde
 React-major, digest and ordinary authorization checks remain independent requirements.
 `install.compatibility` exposes the component, built/current values and classification, and
 the manager names that difference.
+A hub whose installed closure the next protocol would hold crosses it forward with a **staged
+replacement set** (#1068), never a compatibility window: whole bundles for the same installed ids,
+each pinned by the sha256 of its published bytes, identified by the sha256 of the set's canonical
+JSON. The candidate hub installs the set as one installer group after its boot assembly and
+before native execution is wired or anything serves. Each member must be exactly compatible
+(no unknown or future stamp, accepted hardened contract, same React major), may not widen the
+capability ceiling or change the data major, and no installed bundle may stay held. Rows keep
+their grants (narrowed only to what is still declared), installer lineage, hardening and
+enablement. A changed native declaration needs the member's explicit `nativeReview`; that
+plugin's native installations are then disabled at their approved revision, with consents,
+resource bindings, service records and owner-side data kept, until the existing deployment
+review admits a new revision. Nothing is approved automatically. A refusal changes nothing.
+A crossing is journaled durably before each effect: `prepared` (the previous rows) before the
+group commits, `committed` (the exact rows the group wrote), the native installations before
+they are disabled, then `completed`. Every write fsyncs the journal file and its directory,
+including the removal of an empty journal. A hub interrupted mid-crossing resumes from the
+journal at its next boot, even without the staged set: an uncommitted record is dropped and a
+committed one finishes its native half once. A completed crossing is never resumed, so staging
+its set again only discards the staging; native installations reviewed since stay as reviewed.
+A crossing is forward-only. Only the deployment's automatic recovery of a crossing whose switch or
+live verification failed restores it, in one database transaction: the previous rows, and
+exactly the installations the crossing stopped, re-enabled at the same revision and artifact.
+It restores a row only if the row is exactly one the journal recorded, so a later install of the
+same digest with other grants, hardening or installer refuses the whole restore. A restore that
+committed before its journal was truncated completes when retried. A restored crossing's bundle
+files are removed only once no installed row and no remaining journal record names them, so an
+earlier crossing still restores after a later one returned to its digest. A manual rollback
+behind a journaled crossing is refused before anything stops and changes nothing: recovery
+after a completed crossing is a forward deployment.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the
@@ -2962,7 +2991,9 @@ image with this snapshot in disposable data directories before replacing the tar
 [SELF-HOST.md §Environments](SELF-HOST.md#environments) owns this mandatory gate and its
 explicit, default-off one-time bootstrap exception for an authenticated `unknown_action`
 response from a target predating the export door. The exception emits a target/reason warning
-and step-summary receipt; an existing door always runs the normal gate.
+and step-summary receipt; an existing door always runs the normal gate. With `{ crossings: true }`
+the snapshot also names the journaled staged crossings (#1068), oldest first, by revision and set
+digest; a manual rollback gate refuses a target that does not contain one.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set
