@@ -4942,6 +4942,19 @@ export class JobService {
   readonly admissionPublicKey: string;
   private readonly signingKey: string;
   private readonly channels = new Map<string, LiveJobOwner>();
+  /**
+   * The disable each machine's owner incarnation was last sent, by plugin (#1068). An owner
+   * journals an installation action before acting on it, so the same disable re-sent on every
+   * proof only repeats its work, and every owner release to date repeats it expensively: it
+   * replays each retained job of the plugin as an identity-prefixed event, and a burst past its
+   * seat's queue drops the seat, the transport re-dials, and the next proof re-sends the disable.
+   * A new incarnation or hub process is told again. A disable lost with its channel converges
+   * there, while the hub's disabled row already refuses new work and its cancellations persist.
+   */
+  private readonly ownerDisables = new Map<
+    string,
+    { readonly incarnation: string; readonly plugins: Map<string, string> }
+  >();
   private readonly reads = new Map<
     string,
     {
@@ -6935,31 +6948,40 @@ export class JobService {
     const machine = jobOwnerMachine(live.owner.protocolVersion, install.machine);
     if (!machine) return;
     const enabled = install.enabled && !this.heldPlugins.has(install.pluginId);
-    live.channel.send({
-      type: "job_command",
-      command: JobCommandSchema.parse({
-        type: "install",
-        pluginId: install.pluginId,
-        installationRevision: install.revision,
-        artifactSha256: install.artifact,
-        machine,
-        ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
-        ...(enabled && !install.purgeRequested
-          ? // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
-            (this.artifactDelivery(
-              install.pluginId,
-              install.machine,
-              install.artifact,
-              live.owner.platforms,
-            ) ?? {})
-          : {}),
-        ...(install.purgeRequested
-          ? { action: "purge" as const }
-          : enabled
-            ? {}
-            : { action: "disable" as const }),
-      }),
+    const command = JobCommandSchema.parse({
+      type: "install",
+      pluginId: install.pluginId,
+      installationRevision: install.revision,
+      artifactSha256: install.artifact,
+      machine,
+      ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
+      ...(enabled && !install.purgeRequested
+        ? // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
+          (this.artifactDelivery(
+            install.pluginId,
+            install.machine,
+            install.artifact,
+            live.owner.platforms,
+          ) ?? {})
+        : {}),
+      ...(install.purgeRequested
+        ? { action: "purge" as const }
+        : enabled
+          ? {}
+          : { action: "disable" as const }),
     });
+    const { ownerId, publicKey, generation } = live.owner;
+    const incarnation = canonicalJobJson([ownerId, publicKey, generation]);
+    let sent = this.ownerDisables.get(install.machineId);
+    if (sent?.incarnation !== incarnation) {
+      sent = { incarnation, plugins: new Map() };
+      this.ownerDisables.set(install.machineId, sent);
+    }
+    const disable = !enabled && !install.purgeRequested ? digest(command) : null;
+    if (disable !== null && sent.plugins.get(install.pluginId) === disable) return;
+    sent.plugins.delete(install.pluginId);
+    if (live.channel.send({ type: "job_command", command }) && disable !== null)
+      sent.plugins.set(install.pluginId, disable);
   }
   event(channel: JobChannel, event: JobEvent): void {
     const live = this.channels.get(channel.machineId);
