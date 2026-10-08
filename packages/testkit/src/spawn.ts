@@ -118,6 +118,8 @@ export interface StartAgentOptions {
   readonly env?: Readonly<Record<string, string>>;
   /** Borrow a separately provisioned native host; its caller retains shutdown ownership. */
   readonly existingHost?: { readonly process: Bun.Subprocess; readonly socketPath: string };
+  /** Another checkout whose agent runs instead of this tree's, such as a deployed release. */
+  readonly agentRoot?: string;
 }
 
 /** Resume hints let a fresh SDK instance exercise the documented returning-client join path. */
@@ -824,6 +826,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
   const socketDir = await mkdtemp(join(tmpdir(), "manifold-terminal-host-"));
   const socketPath = options.existingHost?.socketPath ?? join(socketDir, "host.sock");
   const rings = { stdout: new LineRing(), stderr: new LineRing() };
+  const agent = join(options.agentRoot ?? REPO_ROOT, "packages/agent/src/main.ts");
 
   const hostEnv = mergedEnvironment(options.env);
   hostEnv.MANIFOLD_TERMINAL_HOST_SOCKET = socketPath;
@@ -850,7 +853,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
   try {
     if (!options.existingHost) {
       const observedHost = observeProcess(
-        ["bun", "packages/agent/src/main.ts", "--terminal-host"],
+        ["bun", agent, "--terminal-host"],
         hostEnv,
         undefined,
         rings,
@@ -873,12 +876,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
     if (options.name === undefined) delete transportEnv.MANIFOLD_MACHINE_NAME;
     else transportEnv.MANIFOLD_MACHINE_NAME = options.name;
 
-    let current = observeProcess(
-      ["bun", "packages/agent/src/main.ts"],
-      transportEnv,
-      undefined,
-      rings,
-    );
+    let current = observeProcess(["bun", agent], transportEnv, undefined, rings);
     transport = current;
     const machineId = await waitFor(
       async () => {
@@ -912,7 +910,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
         try {
           let welcomed = false;
           replacement = observeProcess(
-            ["bun", "packages/agent/src/main.ts"],
+            ["bun", agent],
             transportEnv,
             (line) => {
               if (line.includes('"evt":"welcome"')) welcomed = true;
