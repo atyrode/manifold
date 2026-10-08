@@ -1,4 +1,5 @@
 import {
+  ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE,
   ACTION_RUNNER_MAX_FRAMES,
   AcknowledgeAgentPolicyV2ResultSchema,
   ActionRunnerActivitySchema,
@@ -53,6 +54,8 @@ interface OwnedRun {
   policy: AgentPolicyChallenge | null;
   acknowledged: boolean;
   finished: boolean;
+  /** Activity reports since this Run's lease began: admission, adoption or its last renewal. */
+  activityReports: number;
 }
 
 interface ReadResultContract {
@@ -92,7 +95,6 @@ export class ActionRunner {
   #protocol: ActionProtocol | null = null;
   #root: OwnedRun | null = null;
   #admissionUncertain = false;
-  #activityFrames = 0;
   #closed = false;
   #cleanupConfirmed = false;
   #terminalOutcome: AgentRunTerminalOutcome | null = null;
@@ -384,7 +386,14 @@ export class ActionRunner {
   }
 
   #retain(run: OwnedRun["run"], token: string): OwnedRun {
-    const owned: OwnedRun = { run, token, policy: null, acknowledged: false, finished: false };
+    const owned: OwnedRun = {
+      run,
+      token,
+      policy: null,
+      acknowledged: false,
+      finished: false,
+      activityReports: 0,
+    };
     this.#secrets.add(token);
     this.#runs.set(run.id, owned);
     return owned;
@@ -422,7 +431,10 @@ export class ActionRunner {
         throw new ActionRunnerError("invalid_response", invocation.traceId);
       this.#root = this.#retain(parsed.data.run, this.#launcherToken);
       this.#admissionUncertain = false;
-      this.#result(null, this.#root, LIFECYCLE.inspect, this.#root.run.target, invocation);
+      // The adopted Run's current expiry, as Agent-mode admission and every renewal report it.
+      this.#result(null, this.#root, LIFECYCLE.inspect, this.#root.run.target, invocation, {
+        expiresAt: this.#root.run.expiresAt,
+      });
       await this.#policy(null, this.#root);
       return;
     }
@@ -477,15 +489,19 @@ export class ActionRunner {
     await this.#policy(id, owned);
   }
 
-  /** Only a trusted harness calls this API or writes the separate inherited activity pipe. */
+  /**
+   * Only a trusted harness calls this API or writes the separate inherited activity pipe. Each
+   * owned Run's lease admits `ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE` reports, and a
+   * successful renewal starts the next lease, so a Run that keeps renewing keeps reporting.
+   */
   async reportActivity(input: unknown): Promise<void> {
     if (this.#closed || this.#root === null) throw new ActionRunnerError("invalid_state");
     const parsed = ActionRunnerActivitySchema.safeParse(input);
     if (!parsed.success) throw new ActionRunnerError("invalid_frame");
     this.#checkInput(parsed.data);
-    if (++this.#activityFrames > ACTION_RUNNER_MAX_FRAMES)
-      throw new ActionRunnerError("limit_exceeded");
     const run = this.#owned(parsed.data.runId);
+    if (++run.activityReports > ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE)
+      throw new ActionRunnerError("limit_exceeded");
     const invocation = await this.#call(run, LIFECYCLE.activity, parsed.data);
     this.#result(null, run, LIFECYCLE.activity, run.run.target, invocation);
   }
@@ -562,6 +578,8 @@ export class ActionRunner {
           run.token = result.data.credential.token;
           this.#secrets.add(run.token);
           if (run === this.#root && "runId" in this.#binding) this.#launcherToken = run.token;
+          // A new lease is a new activity budget; the server still bounds the renewals.
+          run.activityReports = 0;
         }
         this.#result(frame.id, run, LIFECYCLE.renew, run.run.target, invocation, {
           expiresAt: run.run.expiresAt,

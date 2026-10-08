@@ -12,6 +12,7 @@ import type {
   PluginManifest,
   SettledJob,
 } from "@manifold/protocol";
+import { AgentRunSchema } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateState } from "../src/isolate/contract.ts";
 import { IsolateSupervisor, type IsolateSupervisorDeps } from "../src/isolate/supervisor.ts";
@@ -329,6 +330,71 @@ describe("IsolateSupervisor", () => {
     const ref = { harness: "test", machineId: "m1", sessionId: "s1" };
     expect(await def.harness.resolveSession(ctx, ref)).toEqual(ref);
     expect((await def.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+  });
+
+  test("model resolution reaches only a contract 13 guest that announced it, and never emits", async () => {
+    const { supervisor, runtime, storage } = fixture();
+    const declared: PluginManifest = {
+      ...manifest,
+      contributes: {
+        ...manifest.contributes,
+        harness: { id: "test", title: "Test", profileSchema: {}, sessionRef: "typed" },
+      },
+    };
+    const run = AgentRunSchema.parse({
+      id: "r1",
+      agentId: "a1",
+      session: null,
+      activity: "idle",
+      principal: { ...principal, kind: "agent" },
+      rootRunId: "r1",
+      parentRunId: null,
+      authorizedByPrincipalId: principal.id,
+      authorizationPath: "principal",
+      authorizationCredential: {
+        tokenId: null,
+        grantId: null,
+        caps: ["scenes:write"],
+        containerScope: null,
+      },
+      purpose: "test",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["scenes:write"],
+      createdAt: 1,
+      expiresAt: 1000,
+      renewals: 0,
+      maxDepth: 0,
+      maxDescendants: 0,
+      depth: 0,
+      cleanupOwnerPrincipalId: principal.id,
+      state: "pending_policy",
+      policyRevision: "a".repeat(64),
+      cleanup: { revokedCredentials: 0, revokedGrants: 0 },
+    });
+    const older = await fixture().supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest: declared,
+      dir: GUEST_DIR,
+      hardenedContract: 12,
+    });
+    expect(older.def.harness?.resolveModel).toBeUndefined();
+    const { def } = await supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest: declared,
+      dir: GUEST_DIR,
+      hardenedContract: 13,
+    });
+    const resolveModel = def.harness?.resolveModel;
+    if (resolveModel === undefined) throw new Error("announced resolver missing");
+    const { ctx, emitted } = actionCtx(storage, runtime);
+    const served = { provider: "fixture", model: "served" };
+    expect(await resolveModel(ctx, run, served)).toEqual(served);
+    expect(await resolveModel(ctx, run, { provider: "fixture", model: "unserved" })).toBeNull();
+    await expect(resolveModel(ctx, run, { provider: "fixture", model: "emit" })).rejects.toThrow(
+      "harness answered out of protocol",
+    );
+    expect(emitted).toEqual([]);
   });
 
   test.each(["side-effect", "emit", "wrong-kind", "wrong-id", "invalid-result", "hang", "boom"])(

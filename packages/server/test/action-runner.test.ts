@@ -733,6 +733,12 @@ describe("external action runner over real doors", () => {
     });
     try {
       await runner.bind();
+      // Binding exposes the adopted Run's current expiry; renewal below reports the next one.
+      expect(
+        frames.find(
+          (frame) => frame.type === "result" && frame.door === "core.access.inspectRunV2",
+        ),
+      ).toMatchObject({ runId, outcome: { ok: true }, expiresAt: admission.run.expiresAt });
       await runner.reportActivity({ runId, activity: "working" });
       expect(frames.at(-1)).toMatchObject({
         type: "result",

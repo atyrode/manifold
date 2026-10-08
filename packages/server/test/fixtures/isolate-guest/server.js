@@ -192,6 +192,9 @@ onFrame(async (frame) => {
         ...(frame.hardenedContract >= 7 && frame.manifest.contributes.harness !== undefined
           ? { harness: frame.manifest.contributes.harness }
           : {}),
+        ...(frame.hardenedContract >= 13 && frame.manifest.contributes.harness !== undefined
+          ? { harnessResolvesModel: true }
+          : {}),
       });
       return;
     case "dispatch": {
@@ -307,6 +310,16 @@ onFrame(async (frame) => {
           payload: { caller: frame.ctx.principal.id },
         });
       } else if (request.method === "resolveSession") result = request.ref;
+      else if (request.method === "resolveModel") {
+        // Serves every model but "unserved"; "emit" stages an event a resolver must not.
+        result = request.model.model === "unserved" ? null : request.model;
+        if (request.model.model === "emit")
+          emits.push({
+            ref: { kind: "plugin", pluginId: "test.guest" },
+            kind: "echoed",
+            payload: {},
+          });
+      }
       send({ t: "harnessed", id: frame.id, outcome: { ok: true, result, emits } });
       return;
     }

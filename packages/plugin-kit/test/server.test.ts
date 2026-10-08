@@ -1735,7 +1735,7 @@ describe("sealed action preparation", () => {
       pluginId: manifest.id,
       manifest: preparedManifest,
       dir: ".",
-      hardenedContract: 12,
+      hardenedContract: HARDENED_CONTRACT_VERSION,
     });
     expect(await fake.next()).toMatchObject({
       t: "loaded",
@@ -1837,7 +1837,7 @@ describe("sealed action preparation", () => {
         pluginId: manifest.id,
         manifest: preparedManifest,
         dir: ".",
-        hardenedContract: 12,
+        hardenedContract: HARDENED_CONTRACT_VERSION,
       });
       await fake.next();
       fake.send({

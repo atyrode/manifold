@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ACTION_RESULT_PROJECTION_HEADER,
+  ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE,
   ACTION_TRACE_ID_HEADER,
   ActionRunnerRequestSchema,
   ActionRunnerResponseSchema,
@@ -8,6 +9,7 @@ import {
   CreateRunV2RequestSchema,
   FinishAgentRunRequestSchema,
   ReportRunActivityRequestSchema,
+  ReportRunActivityV2RequestSchema,
   PROTOCOL_VERSION,
   actionResultProjectionDigest,
   type ActionResultProjection,
@@ -1013,3 +1015,158 @@ describe("trusted bounded read results", () => {
     expect(scenario.calls).toEqual([]);
   });
 });
+
+test("activity is budgeted per Run lease, carries the session model, and renewal reports the next expiry", async () => {
+  const policyBody = "Lease budget policy.";
+  const digest = new Bun.CryptoHasher("sha256").update(policyBody).digest("hex");
+  const doors = [
+    "createRunV2",
+    "createChildRunV2",
+    "inspectRunV2",
+    "reportRunActivityV2",
+    "getAgentPolicy",
+    "acknowledgeAgentPolicyV2",
+    "renewAgentRunV2",
+    "finishAgentRunV2",
+  ];
+  const run: AgentRunV2 = {
+    id: "run-1",
+    agentId: "durable",
+    session: null,
+    activity: "unknown",
+    principal: { id: "principal", name: "harness", kind: "agent", color: "#123456" },
+    rootRunId: "run-1",
+    parentRunId: null,
+    authorizedByPrincipalId: "sponsor",
+    authorizationPath: "principal",
+    authorizationCredential: { tokenId: null, grantId: null, caps: [], containerScope: null },
+    purpose: "Hold a long harness session",
+    target: "manifold://",
+    reach: "subtree",
+    caps: ["containers:read"],
+    scope: [{ target: "manifold://", reach: "subtree", caps: ["containers:read"] }],
+    createdAt: 1,
+    expiresAt: 60_001,
+    renewals: 0,
+    maxDepth: 0,
+    maxDescendants: 0,
+    depth: 0,
+    cleanupOwnerPrincipalId: "sponsor",
+    state: "pending_policy",
+    policyRevision: digest,
+    cleanup: { revokedCredentials: 0, revokedGrants: 0 },
+  };
+  const reports: { activity: string; model?: unknown }[] = [];
+  let traceId = 0;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      if (new URL(request.url).pathname === "/api/protocol")
+        return Response.json({
+          protocolVersion: PROTOCOL_VERSION,
+          actions: doors.map((name) => ({
+            name: `core.access.${name}`,
+            title: name,
+            caps: [],
+            scope: "workspace",
+            input: { type: "object" },
+            result: { type: "object" },
+          })),
+        });
+      const door = new URL(request.url).pathname.split(".").at(-1);
+      const input: unknown = await request.json();
+      let result: unknown;
+      if (door === "createRunV2")
+        result = { run, credential: { token: "1".repeat(64), expiresAt: run.expiresAt } };
+      else if (door === "getAgentPolicy")
+        result = {
+          runId: run.id,
+          revision: digest,
+          issuedAt: 1,
+          required: [{ id: "policy", source: "builtin", body: policyBody, digest }],
+        };
+      else if (door === "acknowledgeAgentPolicyV2") {
+        run.state = "active";
+        result = { run };
+      } else if (door === "reportRunActivityV2") {
+        const report = ReportRunActivityV2RequestSchema.parse(input);
+        reports.push({
+          activity: report.activity,
+          ...(report.model === undefined ? {} : { model: report.model }),
+        });
+        result = { run };
+      } else if (door === "renewAgentRunV2") {
+        run.expiresAt = 120_001;
+        run.renewals = 1;
+        result = {
+          run,
+          credential: { token: "2".repeat(64), expiresAt: run.expiresAt },
+          revokedCredentials: 1,
+        };
+      } else if (door === "finishAgentRunV2") {
+        run.state = "completed";
+        run.cleanup = { finishedAt: 2, revokedCredentials: 1, revokedGrants: 1 };
+        result = { run, finishedRuns: 1, revokedCredentials: 1, revokedGrants: 1 };
+      } else throw new Error("unexpected runner door");
+      return Response.json(
+        { ok: true, result },
+        { headers: { [ACTION_TRACE_ID_HEADER]: String(++traceId) } },
+      );
+    },
+  });
+  const frames: ActionRunnerResponse[] = [];
+  const runner = new ActionRunner({
+    origin: server.url.origin,
+    token: credential,
+    bind: { agentId: "durable" },
+    emit: (frame) => frames.push(frame),
+  });
+  try {
+    await runner.bind();
+    const policy = frames.findLast((frame) => frame.type === "policy");
+    if (policy?.type !== "policy") throw new Error("missing policy");
+    await runner.accept({
+      type: "ack",
+      id: "ack",
+      runId: run.id,
+      policy: { revision: digest, acknowledgements: [{ id: "policy", digest }] },
+    });
+    const model = { provider: "fixture", model: "switched" };
+    await runner.reportActivity({ runId: run.id, activity: "working", model });
+    expect(reports).toEqual([{ activity: "working", model }]);
+    for (let report = 1; report < ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE; report += 1)
+      await runner.reportActivity({
+        runId: run.id,
+        activity: report % 2 === 0 ? "working" : "done",
+      });
+    await expect(runner.reportActivity({ runId: run.id, activity: "idle" })).rejects.toMatchObject({
+      code: "limit_exceeded",
+    });
+    expect(reports).toHaveLength(ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE);
+
+    await runner.accept({
+      type: "renew",
+      id: "renew",
+      runId: run.id,
+      lifetimeMs: 60_000,
+      justification: "Keep the open harness session attributed.",
+    });
+    expect(frames.findLast((frame) => frame.type === "result")).toMatchObject({
+      id: "renew",
+      outcome: { ok: true },
+      expiresAt: 120_001,
+    });
+    // The renewed lease is a fresh budget; the server still bounds how often a Run renews.
+    await runner.reportActivity({ runId: run.id, activity: "idle" });
+    expect(reports).toHaveLength(ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE + 1);
+    expect(frames.at(-1)).toMatchObject({
+      door: "core.access.reportRunActivityV2",
+      outcome: { ok: true },
+    });
+    await runner.accept({ type: "finish", id: "finish", runId: run.id, outcome: "completed" });
+    expect(runner.successful).toBe(true);
+  } finally {
+    await runner.close("failed");
+    await server.stop(true);
+  }
+}, 30_000);

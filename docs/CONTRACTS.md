@@ -248,13 +248,37 @@ with an opaque trace; `reportRunActivity` accepts trusted runner/own-Run reports
 `blocked`, `done`, `idle` or `unknown`. Activity is observation, not authority or settlement:
 reporting `done` does not finish a Run.
 
+`reportRunActivityV2` also accepts an optional `model: {provider,model}`, the model the
+harness session currently serves (#1071). It is the same observation, from the same callers:
+the Run's own credential or its Agent runner, on a live Run. The V1 door refuses the field.
+The identity mechanism authorizes the reporter before any harness code runs. The host then asks
+the Run's own harness `ServerHarness.resolveModel(ctx, run, model)` under the Run's credential.
+Only that exact answer replaces `Run.model`, and the Run is authorized again when the answer is
+recorded. Activity and model are written together, and the trace records the outcome.
+Inspection and `listRuns` then show it. A report without `model` never calls the harness.
+Refusals change neither field. `harness_credential_required` is any other caller.
+`run_model_unverifiable` is the `external` harness, a harness without `resolveModel`, or a
+hardened guest that did not announce it (contract 13). `run_model_unavailable` is a `null`
+answer. `harness model reference mismatch` is an answer naming another model, and
+`harness model resolution is read-only` is an attempt to emit an event.
+
+A harness that implements `resolveModel` guarantees three things. It is **deterministic**:
+the same Run, reviewed launch and model always get the same answer. It is **read-only**: it
+writes no storage, starts no job or action and emits no event. It **refuses the unknown**: it
+answers `null` for every model its reviewed launch does not serve, including a model whose
+serving it cannot establish, and never broadens accounts, providers or the reviewed profile.
+The host refuses emitted events. The other two guarantees are the harness's own, and `Run.model`
+is only as truthful as they are. An accepted model is attribution, never authority, credit or
+evidence of a provider response.
+
 A run authenticates immediately but begins `pending_policy`. Until it fetches
 `core.access.getAgentPolicy` and sends every exact bundle id and digest to
 `core.access.acknowledgeAgentPolicy`, the dispatch ladder permits only policy and teardown
 doors, scoped inspection and exactly two runner lifecycle operations,
 `core.access.reportRunActivityV2` and `core.access.renewAgentRunV2`. None bypasses the identity
 mechanism's current-Run checks, which accept a Run credential for those two only on its own Run.
-A harness can therefore report activity and keep its Run's lease before the model acknowledges;
+A harness can therefore report activity and its model, and keep its Run's lease, before the
+model acknowledges;
 renewal keeps its required justification, lease bounds and renewal ceiling. Every other door,
 including the V1 `reportRunActivity` and `renewAgentRun`, and so every authority-bearing action,
 refuses with `policy_required`. A `policy_stale` Run admits neither lifecycle operation.
@@ -316,22 +340,28 @@ accepts trusted `MANIFOLD_AGENT_SESSION` and `MANIFOLD_AGENT_MODEL` JSON. Every 
 is withdrawn before either input pipe is read; credentials never travel in argv, model JSONL,
 prompts or logs. Mixed modes and the former sponsor-token carrier are refused.
 
-Admission delivers live schemas and exact server-selected policy before model input. There is
-no `start` or `bind` model frame. Explicit exact acknowledgement remains required; `child`,
-`renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name owned run ids. Only a Run-mode
-root may `renew` before acknowledgement, on its own bearer: an Agent-mode root renews on the
-runner credential and a child on its parent's, so both wait for acknowledgement. Children narrow
+Admission delivers live schemas and exact server-selected policy before model input. Its
+`createRun` (Agent mode) or `inspectRun` (Run mode) result carries the Run's current `expiresAt`,
+and every `renew` result carries the expiry it leaves, so a harness needs no out-of-band lease
+to renew in time. There is no `start` or `bind` model frame. Explicit exact acknowledgement
+remains required; `child`, `renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name
+owned run ids. Only a Run-mode root may `renew` before acknowledgement, on its own bearer: an
+Agent-mode root renews on the runner credential and a child on its parent's, so both wait for
+acknowledgement. Children narrow
 the same Agent and cannot bind a session or model through their declaration. Every child and
 replacement bearer remains private. An ordinary `invoke` cannot impersonate a lifecycle or
 activity frame. A policy-stale refusal is followed by fresh policy, never automatic assent.
 The server remains the one argument validator and authority decision.
 
 A trusted harness reports activity through `ActionRunner.reportActivity` or a separate inherited
-`MANIFOLD_ACTIVITY_FD` pipe (descriptor at least 3), using `{runId,activity}` with
-`working | blocked | done | idle`. It cannot share model stdin. Reports use the same
-`core.access.reportRunActivityV2` door and owned run credential, including while the run is
-pending policy, not terminal-output inference; both pipes share the serialized executor and
-process lifetime.
+`MANIFOLD_ACTIVITY_FD` pipe (descriptor at least 3), using `{runId,activity,model?}` with
+`working | blocked | done | idle` and the optional harness-resolved session model above. It
+cannot share model stdin. Reports use the same `core.access.reportRunActivityV2` door and owned
+run credential, including while the run is pending policy, not terminal-output inference; both
+pipes share the serialized executor and process lifetime. Each owned Run's lease admits
+`ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE` (1024) reports, and its successful renewal starts
+the next lease and budget. A Run that keeps renewing keeps reporting within the server's renewal
+ceiling; one that stops has only its current lease's budget before it expires.
 
 By default JSONL results publish only mechanical success or the server's refusal rule, door,
 caller-declared target, run id, trace id and bounded lifecycle facts. Raw action results,
@@ -339,7 +369,7 @@ free-form refusal messages, arguments, credential values and credential hashes n
 interface. Policy digests are public acknowledgement identifiers, not credential hashes.
 The target is a declaration, not a claim that the caller has reconstructed resolved ledger targets.
 Frames reject credential fields and bearer-shaped input even inside opaque action arguments.
-The runner bounds each pipe's frames to 64 KiB and frame count to 1024, model idle time to
+The runner bounds each pipe's frames to 64 KiB and model stdin to 1024 frames, model idle time to
 five minutes, process lifetime to one hour and each HTTP request to 30 seconds. Model EOF
 abandons unfinished work; malformed input fails it; interruption cancels it. Closing only the
 activity pipe does not finish the run. Teardown attempts the same finish door: Agent mode
@@ -2841,7 +2871,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
 at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
-`format: 1`, `hardenedContract: 12`, the validated `PluginManifest`
+`format: 1`, `hardenedContract: 13`, the validated `PluginManifest`
 ([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
 `entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
 and base64 `files["server.js"]`, `files["web.js"]`,

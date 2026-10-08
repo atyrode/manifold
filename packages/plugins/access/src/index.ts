@@ -12,6 +12,7 @@ import {
   CreateRunV2ResultSchema,
   InspectRunV2ResultSchema,
   ListRunsV2ResultSchema,
+  ReportRunActivityV2RequestSchema,
   ReportRunActivityV2ResultSchema,
   AcknowledgeAgentPolicyV2ResultSchema,
   RenewAgentRunV2ResultSchema,
@@ -404,10 +405,10 @@ export const accessActions = [
   }),
   defineAction({
     name: "reportRunActivityV2",
-    title: "Report harness-observed Run activity",
+    title: "Report harness-observed Run activity and model",
     caps: [],
     runAccess: "runner",
-    input: ReportRunActivityRequestSchema,
+    input: ReportRunActivityV2RequestSchema,
     result: ReportRunActivityV2ResultSchema,
   }),
   defineAction({

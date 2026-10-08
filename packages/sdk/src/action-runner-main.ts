@@ -239,7 +239,7 @@ Run:   MANIFOLD_RUN_TOKEN + MANIFOLD_RUN_ID. Adopts an already admitted harness 
 Every carrier is deleted before input is read. Credentials never belong in argv,
 JSONL, prompts, logs or files. No command arguments are accepted except --help.
 
-Admission delivers discovery, a result with runId, and exact policy automatically.
+Admission delivers discovery, a result with runId and expiresAt, and exact policy.
 There is no start or bind model frame. Ack the exact delivered policy before invoke.
 Model frames: discover, policy, ack, invoke, child, renew, finish; each needs a unique
 id and an owned runId. Child declarations narrow the same Agent, never bind a session.
@@ -251,8 +251,10 @@ projections are emitted, marked trust:"untrusted"; model frames cannot enable th
 Each projection is bounded to 1 MiB or the narrower declaration/launcher limit.
 
 A trusted harness may inherit a separate pipe at MANIFOLD_ACTIVITY_FD (>=3).
-It carries {runId,activity:"working"|"blocked"|"done"|"idle"} JSONL, never model stdin.
-Both pipes are UTF-8 JSONL <=64 KiB/frame and <=1024 frames each. Model idle limit:
+It carries {runId,activity:"working"|"blocked"|"done"|"idle",model?:{provider,model}}
+JSONL, never model stdin; the Run's harness must resolve a reported model. Both pipes
+are UTF-8 JSONL <=64 KiB/frame. Stdin admits <=1024 frames; activity admits <=1024
+reports per Run lease, and each successful renew starts the next. Model idle limit:
 five minutes; total lifetime: one hour; each HTTP request: 30 seconds. Stdout: JSONL,
 at most 16 MiB per response including framing. No action is automatically retried.
 EOF abandons; malformed input fails; SIGINT/SIGTERM/SIGHUP cancel. Every exit attempts
