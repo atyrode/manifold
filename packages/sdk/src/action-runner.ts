@@ -54,7 +54,7 @@ interface OwnedRun {
   policy: AgentPolicyChallenge | null;
   acknowledged: boolean;
   finished: boolean;
-  /** Activity reports since this Run's lease began: admission, adoption or its last renewal. */
+  /** This runner's own activity bound for the Run, restarted only by a successful renewal. */
   activityReports: number;
 }
 

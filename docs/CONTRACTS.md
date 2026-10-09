@@ -256,19 +256,23 @@ the Run's own harness `ServerHarness.resolveModel(ctx, run, model)` under the Ru
 Only that exact answer replaces `Run.model`, and the Run is authorized again when the answer is
 recorded. Activity and model are written together, and the trace records the outcome.
 Inspection and `listRuns` then show it. A report without `model` never calls the harness.
-Refusals change neither field. `harness_credential_required` is any other caller.
-`run_model_unverifiable` is the `external` harness, a harness without `resolveModel`, or a
-hardened guest that did not announce it (contract 13). `run_model_unavailable` is a `null`
-answer. `harness model reference mismatch` is an answer naming another model, and
-`harness model resolution is read-only` is an attempt to emit an event.
+A refused model refuses the whole report, so neither field changes and that report's activity is
+not recorded. `harness_credential_required` is any other caller. `run_model_unverifiable` is the
+`external` harness, a harness without `resolveModel`, or a hardened guest that did not announce
+it (contract 13). `run_model_unavailable` is a `null` answer. `harness model reference mismatch`
+is an answer naming another model. An in-realm harness that emits an event while resolving is
+refused with `harness model resolution is read-only`; a hardened guest's emission refuses as
+`unavailable` (`harness answered out of protocol`).
 
 A harness that implements `resolveModel` guarantees three things. It is **deterministic**:
 the same Run, reviewed launch and model always get the same answer. It is **read-only**: it
 writes no storage, starts no job or action and emits no event. It **refuses the unknown**: it
 answers `null` for every model its reviewed launch does not serve, including a model whose
 serving it cannot establish, and never broadens accounts, providers or the reviewed profile.
-The host refuses emitted events. The other two guarantees are the harness's own, and `Run.model`
-is only as truthful as they are. An accepted model is attribution, never authority, credit or
+The host enforces only the absence of emitted events. The resolver's context still carries the
+harness's ordinary storage, database, action, job and service slices, so writing nothing through
+them, determinism and refusing the unknown are the harness's own guarantees, and `Run.model` is
+only as truthful as they are. An accepted model is attribution, never authority, credit or
 evidence of a provider response.
 
 A run authenticates immediately but begins `pending_policy`. Until it fetches
@@ -358,10 +362,13 @@ A trusted harness reports activity through `ActionRunner.reportActivity` or a se
 `working | blocked | done | idle` and the optional harness-resolved session model above. It
 cannot share model stdin. Reports use the same `core.access.reportRunActivityV2` door and owned
 run credential, including while the run is pending policy, not terminal-output inference; both
-pipes share the serialized executor and process lifetime. Each owned Run's lease admits
-`ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE` (1024) reports, and its successful renewal starts
-the next lease and budget. A Run that keeps renewing keeps reporting within the server's renewal
-ceiling; one that stops has only its current lease's budget before it expires.
+pipes share the serialized executor and process lifetime. The runner limits itself to
+`ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE` (1024) reports per owned Run from its adoption,
+admission or last successful renewal; the hub enforces no such bound. A refused renewal starts
+nothing. A Run that keeps renewing keeps reporting within the server's renewal ceiling. The
+report past a spent budget is `limit_exceeded`; on the activity pipe that ends
+`manifold-action-runner` and finishes the Run `failed`, so a harness that stops renewing must
+also stop reporting.
 
 By default JSONL results publish only mechanical success or the server's refusal rule, door,
 caller-declared target, run id, trace id and bounded lifecycle facts. Raw action results,
@@ -2934,8 +2941,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 12; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 13; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2973,6 +2980,13 @@ and pending replies, and supplies a new portable client without remounting React
 Contract 12 also admits optional readonly inputs and expanded buttons. Unused/false
 readonly is omitted from frames; true prevents edits but preserves text selection and
 focused controlled updates. A pre-12 declaration of either feature faults only its instance.
+Contract 13 adds the optional harness `resolveModel` (#1071), announced by
+`loaded.harnessResolvesModel`, and an optional `model` on `identity.reportRunActivityV2`. The
+host sends the verb only to a contract-13 guest that announced it, refuses an announcement below
+13 at load and a respawn that changes it, and refuses any event the guest emits while resolving.
+Older guests and non-announcing harnesses keep their harness fingerprints and have every
+reported Run model refused as `run_model_unverifiable`. Every pack from a contract-13 kit stamps
+13, so its bundles need a hub from the same release or later.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 

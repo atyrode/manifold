@@ -1058,6 +1058,7 @@ test("activity is budgeted per Run lease, carries the session model, and renewal
   };
   const reports: { activity: string; model?: unknown }[] = [];
   let traceId = 0;
+  let renewAttempts = 0;
   const server = Bun.serve({
     port: 0,
     async fetch(request) {
@@ -1095,6 +1096,11 @@ test("activity is budgeted per Run lease, carries the session model, and renewal
           ...(report.model === undefined ? {} : { model: report.model }),
         });
         result = { run };
+      } else if (door === "renewAgentRunV2" && ++renewAttempts === 1) {
+        return Response.json(
+          { ok: false, denial: { rule: "refused", message: "lifetime_exceeds_grant" } },
+          { headers: { [ACTION_TRACE_ID_HEADER]: String(++traceId) } },
+        );
       } else if (door === "renewAgentRunV2") {
         run.expiresAt = 120_001;
         run.renewals = 1;
@@ -1139,6 +1145,24 @@ test("activity is budgeted per Run lease, carries the session model, and renewal
         runId: run.id,
         activity: report % 2 === 0 ? "working" : "done",
       });
+    await expect(runner.reportActivity({ runId: run.id, activity: "idle" })).rejects.toMatchObject({
+      code: "limit_exceeded",
+    });
+    expect(reports).toHaveLength(ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE);
+
+    // A refused renewal leaves the lease, and so its exhausted budget, unchanged.
+    await runner.accept({
+      type: "renew",
+      id: "refused",
+      runId: run.id,
+      lifetimeMs: 60_000,
+      justification: "Keep the open harness session attributed.",
+    });
+    expect(frames.findLast((frame) => frame.type === "result")).toMatchObject({
+      id: "refused",
+      outcome: { ok: false, denial: { rule: "refused" } },
+      expiresAt: 60_001,
+    });
     await expect(runner.reportActivity({ runId: run.id, activity: "idle" })).rejects.toMatchObject({
       code: "limit_exceeded",
     });

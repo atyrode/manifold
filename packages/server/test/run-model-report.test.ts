@@ -91,17 +91,22 @@ async function fixture() {
     () => "http://localhost:7777",
     testTileTrees,
   );
-  const calls: { runId: string; principalId: string; model: RunModel }[] = [];
+  const calls: { runId: string; tokenId: string | null; model: RunModel }[] = [];
   const serves: Resolve = async (_ctx, _run, model) => (model.model === "unserved" ? null : model);
   let answer = serves;
   const host = await testPluginHost(store, auth, rooms, broker, runtime, {
     settingsPlugins: [
       harnessPlugin("test.model-harness", "model-harness", (ctx, run, model) => {
-        calls.push({ runId: run.id, principalId: ctx.principal.id, model });
+        calls.push({ runId: run.id, tokenId: ctx.credential.tokenId, model });
         return answer(ctx, run, model);
       }),
       harnessPlugin("test.silent-harness", "silent-harness"),
     ],
+  });
+  // Replaces the host's event publisher: these cases count notifications, not deliveries.
+  const changes: string[] = [];
+  auth.setAgentChangeListener((_agentId, runId) => {
+    if (runId !== undefined) changes.push(runId);
   });
   const owner = auth.authenticate(OWNER_KEY);
   const register = async (harness: string) => {
@@ -139,6 +144,7 @@ async function fixture() {
     host,
     owner,
     calls,
+    changes,
     register,
     answerWith(next: Resolve) {
       answer = next;
@@ -180,8 +186,9 @@ describe("a harness-reported Run model", () => {
       activity: "working",
       model: SERVED,
     });
+    // The harness answers under the Run's own credential, not merely its shared Agent principal.
     expect(fix.calls).toEqual([
-      { runId: pending.run.id, principalId: pending.actor.principal.id, model: SERVED },
+      { runId: pending.run.id, tokenId: pending.actor.tokenId, model: SERVED },
     ]);
     const inspection = InspectRunV2ResultSchema.parse(
       value(
@@ -194,13 +201,15 @@ describe("a harness-reported Run model", () => {
     );
     expect(inventory.runs.find((run) => run.id === pending.run.id)?.model).toEqual(SERVED);
 
-    // Its Agent runner reports for it as for activity; the harness answers on the Run's behalf.
+    // Its Agent runner reports for it as for activity, and the harness still answers under the
+    // Run's credential rather than the runner's.
+    expect(runner.tokenId).not.toBe(pending.actor.tokenId);
     expect(
       value(await fix.report(runner, { runId: pending.run.id, activity: "idle", model: SWITCHED })),
     ).toMatchObject({ run: { activity: "idle", model: SWITCHED } });
-    expect(fix.calls.map((call) => [call.runId, call.model])).toEqual([
-      [pending.run.id, SERVED],
-      [pending.run.id, SWITCHED],
+    expect(fix.calls.map((call) => [call.runId, call.tokenId, call.model])).toEqual([
+      [pending.run.id, pending.actor.tokenId, SERVED],
+      [pending.run.id, pending.actor.tokenId, SWITCHED],
     ]);
     // Activity alone never asks the harness and keeps the reported model.
     expect(
@@ -212,6 +221,37 @@ describe("a harness-reported Run model", () => {
       activity: "done",
       model: SWITCHED,
     });
+    fix.store.close();
+  });
+
+  test("a change of model alone notifies once, and the identity mechanism records only a resolved model", async () => {
+    const fix = await fixture();
+    const { admit } = await fix.register("model-harness");
+    const pending = admit();
+    const report = (model: RunModel) =>
+      fix.report(pending.actor, { runId: pending.run.id, activity: "working", model });
+    value(await report(SERVED));
+    const before = fix.changes.length;
+    value(await report(SWITCHED));
+    expect(fix.changes.slice(before)).toEqual([pending.run.id]);
+    value(await report(SWITCHED));
+    expect(fix.changes.slice(before)).toEqual([pending.run.id]);
+
+    // A future door that skips the harness, or passes another answer, still writes nothing.
+    for (const resolved of [undefined, SERVED]) {
+      expect(() =>
+        fix.auth.reportRunActivityV2(
+          { runId: pending.run.id, activity: "blocked", model: UNSERVED },
+          pending.actor,
+          resolved,
+        ),
+      ).toThrow("run_model_unverifiable");
+    }
+    expect(fix.store.getAgentRun(pending.run.id)).toMatchObject({
+      activity: "working",
+      model: SWITCHED,
+    });
+    expect(fix.changes.slice(before)).toEqual([pending.run.id]);
     fix.store.close();
   });
 

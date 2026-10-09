@@ -192,7 +192,11 @@ onFrame(async (frame) => {
         ...(frame.hardenedContract >= 7 && frame.manifest.contributes.harness !== undefined
           ? { harness: frame.manifest.contributes.harness }
           : {}),
-        ...(frame.hardenedContract >= 13 && frame.manifest.contributes.harness !== undefined
+        // Harness id `eager` announces model resolution at any contract, `silent` never does;
+        // every other harness follows the kit and announces only at contract 13 or later.
+        ...(frame.manifest.contributes.harness !== undefined &&
+        frame.manifest.contributes.harness.id !== "silent" &&
+        (frame.hardenedContract >= 13 || frame.manifest.contributes.harness.id === "eager")
           ? { harnessResolvesModel: true }
           : {}),
       });

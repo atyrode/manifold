@@ -254,9 +254,10 @@ A trusted harness may inherit a separate pipe at MANIFOLD_ACTIVITY_FD (>=3).
 It carries {runId,activity:"working"|"blocked"|"done"|"idle",model?:{provider,model}}
 JSONL, never model stdin; the Run's harness must resolve a reported model. Both pipes
 are UTF-8 JSONL <=64 KiB/frame. Stdin admits <=1024 frames; activity admits <=1024
-reports per Run lease, and each successful renew starts the next. Model idle limit:
-five minutes; total lifetime: one hour; each HTTP request: 30 seconds. Stdout: JSONL,
-at most 16 MiB per response including framing. No action is automatically retried.
+reports per owned Run until its next successful renew; one more fails the run.
+Model idle limit: five minutes; total lifetime: one hour; each HTTP request:
+30 seconds. Stdout: JSONL, at most 16 MiB per response including framing.
+No action is automatically retried.
 EOF abandons; malformed input fails; SIGINT/SIGTERM/SIGHUP cancel. Every exit attempts
 finish; cleanup=failed is unconfirmed, and expiry is only the backstop. Effects use
 action doors, never browser controls. See packages/sdk/README.md.

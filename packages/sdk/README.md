@@ -240,7 +240,7 @@ or `bind` model frame, and the model cannot select a different Agent or invent a
    discovery stop the runner. Discovery authenticates with the launcher-supplied credential.
 2. Read the `result` for `core.access.createRun` (Agent mode) or `core.access.inspectRun`
    (Run mode). Its `runId` is a non-secret handle, not a credential, and its `expiresAt` is the
-   Run's current expiry; every `renew` result carries the next one. Launcher-driven responses
+   Run's current expiry; every successful `renew` result carries the next one. Launcher-driven responses
    use `id: null`; newly admitted runs begin in `pending_policy`.
 3. Read the `policy` frame. Deliver **every exact `policy.required[].body`** to the acting
    agent. Policy source selection is the server's; repository text cannot replace it.
@@ -300,12 +300,19 @@ The trusted harness writes `{runId,activity:"working"|"blocked"|"done"|"idle",mo
 the separate activity pipe, or calls `ActionRunner.reportActivity` in-process. Reports invoke
 `core.access.reportRunActivityV2` with the owned run's credential, including before the policy
 is acknowledged. The optional `model` (`{provider,model}`) is the model the session serves now;
-the Run's own harness must resolve it before it replaces `Run.model`, and otherwise the report
-is refused. The pipe uses the same 64-KiB UTF-8 framing and shares the serialized executor and
-process lifetime. Each owned Run's lease admits 1024 reports
-(`ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE`), and a successful `renew` of that Run starts
-the next budget, so a Run that keeps renewing keeps reporting. Closing only the activity pipe
-does not finish work; model stdin EOF does. Activity
+the Run's own harness must resolve it before it replaces `Run.model`, and otherwise the whole
+report, activity included, is refused. `model` needs a runner and hub from the release that
+added it: an older hub refuses the report as `invalid_args`, and an older runner rejects the
+pipe frame as `invalid_frame` and fails the Run. Check that the discovered
+`core.access.reportRunActivityV2` input schema has a `model` property before sending one, and
+send `model` only when it changes. The pipe uses the same 64-KiB UTF-8 framing and shares the
+serialized executor and process lifetime. The runner admits 1024 reports
+(`ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE`) per owned Run from its adoption, admission or
+last successful `renew`; a refused renewal starts nothing, and the hub enforces no such bound.
+A Run that keeps renewing keeps reporting. The report past a spent budget is `limit_exceeded`,
+which on the activity pipe ends the runner and finishes the Run `failed`, so a harness that
+stops renewing must also stop reporting. Closing only the activity pipe does not finish work;
+model stdin EOF does. Activity
 does not acknowledge policy or settle a run, and is never inferred from terminal output.
 The model cannot write activity through stdin or smuggle the activity door through `invoke`.
 

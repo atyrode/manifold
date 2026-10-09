@@ -334,13 +334,14 @@ describe("IsolateSupervisor", () => {
 
   test("model resolution reaches only a contract 13 guest that announced it, and never emits", async () => {
     const { supervisor, runtime, storage } = fixture();
-    const declared: PluginManifest = {
+    // The fixture guest's harness id selects its announcement: see `fixtures/isolate-guest`.
+    const declared = (id: string): PluginManifest => ({
       ...manifest,
       contributes: {
         ...manifest.contributes,
-        harness: { id: "test", title: "Test", profileSchema: {}, sessionRef: "typed" },
+        harness: { id, title: "Test", profileSchema: {}, sessionRef: "typed" },
       },
-    };
+    });
     const run = AgentRunSchema.parse({
       id: "r1",
       agentId: "a1",
@@ -372,19 +373,24 @@ describe("IsolateSupervisor", () => {
       policyRevision: "a".repeat(64),
       cleanup: { revokedCredentials: 0, revokedGrants: 0 },
     });
-    const older = await fixture().supervisor.load({
-      pluginId: PLUGIN_ID,
-      manifest: declared,
-      dir: GUEST_DIR,
-      hardenedContract: 12,
-    });
-    expect(older.def.harness?.resolveModel).toBeUndefined();
-    const { def } = await supervisor.load({
-      pluginId: PLUGIN_ID,
-      manifest: declared,
-      dir: GUEST_DIR,
-      hardenedContract: 13,
-    });
+    const load = (target: IsolateSupervisor, id: string, hardenedContract: number) =>
+      target.load({
+        pluginId: PLUGIN_ID,
+        manifest: declared(id),
+        dir: GUEST_DIR,
+        hardenedContract,
+      });
+    expect(
+      (await load(fixture().supervisor, "test", 12)).def.harness?.resolveModel,
+    ).toBeUndefined();
+    // The host, not the guest's own reading of its contract, keeps the verb off older guests.
+    await expect(load(fixture().supervisor, "eager", 12)).rejects.toThrow(
+      "harness model resolution requires hardened contract 13",
+    );
+    expect(
+      (await load(fixture().supervisor, "silent", 13)).def.harness?.resolveModel,
+    ).toBeUndefined();
+    const { def } = await load(supervisor, "test", 13);
     const resolveModel = def.harness?.resolveModel;
     if (resolveModel === undefined) throw new Error("announced resolver missing");
     const { ctx, emitted } = actionCtx(storage, runtime);
