@@ -91,6 +91,7 @@ import {
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
   SessionRefSchema,
+  RunModelSchema,
   type TerminalRuntime,
   TerminalRuntimeSchema,
   projectNativePreparationDemand,
@@ -184,7 +185,9 @@ import type {
   CreateRunV2Result,
   InspectRunV2Result,
   ListRunsV2Result,
+  ReportRunActivityV2Request,
   ReportRunActivityV2Result,
+  RunModel,
   AcknowledgeAgentPolicyV2Result,
   RenewAgentRunV2Result,
   FinishAgentRunV2Result,
@@ -361,7 +364,10 @@ export interface IdentityDoor {
   createChildRunV2(input: CreateChildRunV2Request): IdentityResult<CreateRunV2Result>;
   inspectRunV2(input: InspectRunRequest): IdentityResult<InspectRunV2Result>;
   listRunsV2(input: ListRunsRequest): IdentityResult<ListRunsV2Result>;
-  reportRunActivityV2(input: ReportRunActivityRequest): IdentityResult<ReportRunActivityV2Result>;
+  /** A reported `model` is first resolved by the Run's harness (`ServerHarness.resolveModel`). */
+  reportRunActivityV2(
+    input: ReportRunActivityV2Request,
+  ): Promise<IdentityResult<ReportRunActivityV2Result>>;
   acknowledgeAgentPolicyV2(
     input: AcknowledgeAgentPolicyRequest,
   ): IdentityResult<AcknowledgeAgentPolicyV2Result>;
@@ -1135,6 +1141,7 @@ interface CachedHarnessBinding {
   readonly sessions: NonNullable<ServerPluginDef["harness"]>["sessions"];
   readonly resolveSession: NonNullable<ServerPluginDef["harness"]>["resolveSession"];
   readonly send: NonNullable<ServerPluginDef["harness"]>["send"];
+  readonly resolveModel: NonNullable<ServerPluginDef["harness"]>["resolveModel"];
 }
 
 interface CachedActionBinding {
@@ -1895,7 +1902,9 @@ export class PluginHost {
           typeof def.harness.launch !== "function" ||
           typeof def.harness.sessions !== "function" ||
           typeof def.harness.resolveSession !== "function" ||
-          typeof def.harness.send !== "function")
+          typeof def.harness.send !== "function" ||
+          (def.harness.resolveModel !== undefined &&
+            typeof def.harness.resolveModel !== "function"))
       )
         problems.push({
           reason: `${def.manifest.id}: invalid harness implementation`,
@@ -2078,6 +2087,51 @@ export class PluginHost {
       active.delete(settled.promise);
       if (active.size === 0) this.activeDispatches.delete(pluginId);
     }
+  }
+
+  /**
+   * Only the Run's own harness knows which models its reviewed launch serves, so it alone
+   * accepts a reported model. The reporter is authorized before any harness code runs, and the
+   * identity mechanism re-authorizes the Run when it records the answer.
+   */
+  private async resolveRunModel(
+    base: ActionCtx,
+    actor: AuthContext,
+    report: ReportRunActivityV2Request,
+    session: string | null,
+    stack: readonly string[],
+  ): Promise<RunModel> {
+    const model = RunModelSchema.parse(report.model);
+    const { run, agent } = this.authService.authorizeRunActivityReport(report.runId, actor);
+    // The bring-your-own `external` harness has no adapter to answer for its sessions.
+    if (agent.harness === "external") throw new ServiceError("forbidden", "run_model_unverifiable");
+    return this.withHarness(
+      base,
+      this.authService.runHarnessActor(run.id, actor),
+      agent.harness,
+      session,
+      stack,
+      async (harness, bound, pluginId) => {
+        if (harness.resolveModel === undefined)
+          throw new ServiceError("forbidden", "run_model_unverifiable");
+        const readOnly: ActionCtx = {
+          ...bound,
+          emit: () => {
+            throw new ServiceError("forbidden", "harness model resolution is read-only");
+          },
+        };
+        const answer = await harness.resolveModel(
+          readOnly,
+          this.guestInputPlugins.has(pluginId) ? run : projectLegacyRun(run),
+          model,
+        );
+        if (answer === null) throw new ServiceError("forbidden", "run_model_unavailable");
+        const resolved = RunModelSchema.parse(answer);
+        if (!isDeepStrictEqual(resolved, model))
+          throw new ServiceError("forbidden", "harness model reference mismatch");
+        return resolved;
+      },
+    );
   }
 
   private readonly launchingRuns = new Set<string>();
@@ -5822,7 +5876,8 @@ export class PluginHost {
       cached.launch === harness.launch &&
       cached.sessions === harness.sessions &&
       cached.resolveSession === harness.resolveSession &&
-      cached.send === harness.send
+      cached.send === harness.send &&
+      cached.resolveModel === harness.resolveModel
     )
       return cached;
     const revision = history === undefined ? 0 : history.revision + 1;
@@ -5839,6 +5894,10 @@ export class PluginHost {
             sessions: String(harness.sessions),
             resolveSession: String(harness.resolveSession),
             send: String(harness.send),
+            // Absent on harnesses that predate it, so their cold fingerprints are unchanged.
+            ...(harness.resolveModel === undefined
+              ? {}
+              : { resolveModel: String(harness.resolveModel) }),
           }),
         )
         .digest("hex"),
@@ -5855,6 +5914,7 @@ export class PluginHost {
       sessions: harness.sessions,
       resolveSession: harness.resolveSession,
       send: harness.send,
+      resolveModel: harness.resolveModel,
     };
     this.harnessFingerprints.set(pluginId, { pluginId, revision, current: binding });
     return binding;
@@ -7217,7 +7277,13 @@ export class PluginHost {
         inspectRunV2: (input) => identityCall(() => this.authService.inspectRunV2(input, auth)),
         listRunsV2: (input) => identityCall(() => this.authService.listRunsV2(input, auth)),
         reportRunActivityV2: (input) =>
-          identityCall(() => this.authService.reportRunActivityV2(input, auth)),
+          identityCallAsync(async () => {
+            const model =
+              input.model === undefined
+                ? undefined
+                : await this.resolveRunModel(ctx, auth, input, session, actionStack);
+            return this.authService.reportRunActivityV2(input, auth, model);
+          }),
         acknowledgeAgentPolicyV2: (input) =>
           identityCall(() => this.authService.acknowledgeAgentPolicyV2(input, auth)),
         renewAgentRunV2: (input) =>

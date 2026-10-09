@@ -339,7 +339,9 @@ export class IsolateSupervisor implements IsolateRunner {
     if (
       this.isolates.get(pluginId) !== isolate ||
       (isolate.ref.hardenedContract ?? 1) < 7 ||
-      isolate.loaded?.harness === undefined
+      isolate.loaded?.harness === undefined ||
+      (request.method === "resolveModel" &&
+        ((isolate.ref.hardenedContract ?? 1) < 13 || isolate.loaded.harnessResolvesModel !== true))
     )
       throw new IsolateDenial("unavailable", "harness unavailable");
     // The released harness lane remains V1; never parse away scope before projection.
@@ -350,7 +352,7 @@ export class IsolateSupervisor implements IsolateRunner {
             run: projectLegacyRun(request.run),
             agent: projectLegacyAgent(request.agent),
           }
-        : request.method === "send"
+        : request.method === "send" || request.method === "resolveModel"
           ? { ...request, run: projectLegacyRun(request.run) }
           : request;
     const parsed = IsolateHarnessRequestSchema.parse(projected);
@@ -366,11 +368,13 @@ export class IsolateSupervisor implements IsolateRunner {
       }),
       ctx === undefined ? null : { kind: "dispatch", ctx },
     );
+    // Profile validation has no caller context and model resolution is read-only: neither emits.
     if (
       frame.t !== "harnessed" ||
       (frame.outcome.ok &&
         (!IsolateHarnessResultSchemas[parsed.method].safeParse(frame.outcome.result).success ||
-          (ctx === undefined && frame.outcome.emits.length !== 0)))
+          ((ctx === undefined || parsed.method === "resolveModel") &&
+            frame.outcome.emits.length !== 0)))
     )
       throw new IsolateDenial("unavailable", "harness answered out of protocol");
     return frame.outcome;
@@ -632,7 +636,16 @@ export class IsolateSupervisor implements IsolateRunner {
         loaded.harness === undefined
       )
         throw new IsolateLoadError("declared harness was not loaded");
-      if (isolate.loaded !== null && !isDeepStrictEqual(isolate.loaded.harness, loaded.harness))
+      if (
+        loaded.harnessResolvesModel !== undefined &&
+        ((isolate.ref.hardenedContract ?? 1) < 13 || loaded.harness === undefined)
+      )
+        throw new IsolateLoadError("harness model resolution requires hardened contract 13");
+      if (
+        isolate.loaded !== null &&
+        (!isDeepStrictEqual(isolate.loaded.harness, loaded.harness) ||
+          isolate.loaded.harnessResolvesModel !== loaded.harnessResolvesModel)
+      )
         throw new IsolateLoadError("respawn changed harness metadata");
       if (isolate.loaded === null) isolate.loaded = loaded;
     } catch (error) {

@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   AgentAuthoritySchema,
@@ -32,7 +33,10 @@ import {
   type CreateRunV2Result,
   type RenewAgentRunV2Result,
   type FinishAgentRunV2Result,
+  type ReportRunActivityV2Request,
   type ReportRunActivityV2Result,
+  type RunModel,
+  ReportRunActivityV2RequestSchema,
   type AcknowledgeAgentPolicyV2Result,
   type PrincipalCredentialsV2,
   type InspectRunV2Result,
@@ -3432,29 +3436,47 @@ export class AuthService {
 
   reportRunActivity(input: ReportRunActivityRequest, actor: AuthContext): ReportRunActivityResult {
     this.legacyRunResult(this.authorizeRunInput(input.runId, actor));
-    return this.legacyRunResult(this.reportRunActivityAuthority(input, actor));
+    return this.legacyRunResult(
+      this.reportRunActivityAuthority(ReportRunActivityRequestSchema.parse(input), actor),
+    );
   }
 
+  /**
+   * `resolvedModel` is the Run's harness answer for `input.model`, which `PluginHost` asks
+   * before calling; a reported model without that exact answer never replaces `Run.model`.
+   */
   reportRunActivityV2(
-    input: ReportRunActivityRequest,
+    input: ReportRunActivityV2Request,
     actor: AuthContext,
+    resolvedModel?: RunModel,
   ): ReportRunActivityV2Result {
-    const result = this.reportRunActivityAuthority(input, actor);
+    const parsed = ReportRunActivityV2RequestSchema.parse(input);
+    if (parsed.model !== undefined && !isDeepStrictEqual(parsed.model, resolvedModel))
+      throw new ServiceError("forbidden", "run_model_unverifiable");
+    const result = this.reportRunActivityAuthority(parsed, actor);
     return { run: projectRunV2(result.run) };
   }
 
-  private reportRunActivityAuthority(
-    input: ReportRunActivityRequest,
-    actor: AuthContext,
-  ): { run: AgentRun } {
-    const parsed = ReportRunActivityRequestSchema.parse(input);
+  /** A harness reports for its own Run, or as that Run's Agent runner, while the Run is live. */
+  authorizeRunActivityReport(runId: string, actor: AuthContext): { run: AgentRun; agent: Agent } {
     const current = this.requireCurrentActor(actor);
-    const run = this.store.getAgentRun(parsed.runId);
+    const run = this.store.getAgentRun(runId);
     if (run === null || (current.agentRunId !== run.id && current.agentRunnerId !== run.agentId))
       throw new ServiceError("forbidden", "harness_credential_required");
-    this.authorizeRunInput(run.id, current);
-    this.store.updateAgentRunActivity(run.id, parsed.activity);
-    if (run.activity !== parsed.activity) this.agentChanged(run.agentId, run.id);
+    return this.authorizeRunInput(run.id, current);
+  }
+
+  private reportRunActivityAuthority(
+    report: ReportRunActivityV2Request,
+    actor: AuthContext,
+  ): { run: AgentRun } {
+    const { run } = this.authorizeRunActivityReport(report.runId, actor);
+    this.store.updateAgentRunActivity(run.id, report.activity, report.model);
+    if (
+      run.activity !== report.activity ||
+      (report.model !== undefined && !isDeepStrictEqual(run.model, report.model))
+    )
+      this.agentChanged(run.agentId, run.id);
     return { run: this.presentAgentRun(this.store.getAgentRun(run.id)!) };
   }
 

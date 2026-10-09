@@ -3970,7 +3970,9 @@ and `ctx.services` read-only lifecycle metadata on those same authority terms (�
 machine/service effects and configuration methods remain unavailable on every hook.
 
 A declared `ServerHarness` is available in a hardened server from contract 7. Export its complete
-`profileSchema`, `launch`, `sessions`, `resolveSession` and `send` implementation. The loaded
+`profileSchema`, `launch`, `sessions`, `resolveSession` and `send` implementation, and from
+contract 13 optionally `resolveModel` (§Automation credential lifecycle in
+[CONTRACTS.md](CONTRACTS.md#automation-credential-lifecycle)). The loaded
 metadata must match `manifest.contributes.harness`; publish the profile shape with
 `z.toJSONSchema(profileSchema, { io: "input" })`. Metadata is not a replacement validator: the
 guest runs the original schema with `safeParseAsync`, including refinements. Profile validation
@@ -4295,7 +4297,7 @@ isolated Bun child, `web.js` linked to the page's React/design system, and a
 web definition and attaches the guest runtime; authors do not write a separate
 Worker or add `--self-contained` (that flag conflicts with a page-linked portable
 entry). The JSON artifact carries exact-byte SHA-256, base64 members,
-`format: 1`, `hardenedContract: 12` and a protocol stamp. The host serves the
+`format: 1`, `hardenedContract: 13` and a protocol stamp. The host serves the
 declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
 with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
 page's engine objects; unsupported imports/JSX refuse by name. Hardening
@@ -4303,7 +4305,7 @@ selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
 exercise the panel in a browser too. The install door and grant remain §7.
 
-Current packs stamp contract 12; the hub admits stamped contracts 1–12 using
+Current packs stamp contract 13; the hub admits stamped contracts 1–13 using
 each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
 contract 9 adds React frame roots, mounted context/sections, generated portable
 Worker member, event invalidations, authoring and narrow machine bridges. Portable Workers
@@ -4315,7 +4317,10 @@ subscription ordering, explicit client-binding retirement, readonly inputs, disc
 and sealed pure action preparation; older strict Workers and server isolates retain their
 original contexts and truthful legacy authority projections. An unrepresentable correlated
 Agent/Run snapshot refuses as `scoped_authority_requires_v2` before posting; a coarse hint is
-never used to restore hub authority. Older admitted artifacts do not acquire new facilities.
+never used to restore hub authority. Contract 13 adds the optional harness `resolveModel`
+and a `model` on `identity.reportRunActivityV2`; the host sends the verb only to a guest that
+announced it, and a Run whose harness never resolves models has every reported model refused.
+Older admitted artifacts do not acquire new facilities.
 Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 
