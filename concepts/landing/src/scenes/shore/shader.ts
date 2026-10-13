@@ -1,11 +1,17 @@
-// The shore scene's picture: a beach at night, surf rolling in, plankton flashing blue.
+// The shore scene's picture: a beach by moonlight, surf rolling in, plankton flashing blue.
 //
 // World units are metres: x right, y up, z ahead of the viewer, still water at y = 0 and the eye
 // SHORE_EYE above it. The surf is a train of crest lines parallel to the beach. Each wave's whole
 // life (shoaling, breaking, the bore, the swash up the sand and the backwash) is a closed-form
-// function of time, so every frame is drawn on its own with no state. Plankton light (Noctiluca
-// scintillans, the accent) gathers wherever that water is agitated, and where the pointer stirs it
-// (uSim0.r, see sim.ts).
+// function of time, so every frame is drawn on its own with no state. Open water carries only the
+// swell, wind ripples and the glitter of the moon (or the sun); foam belongs to the surf: the lip
+// and the spray it throws up as it lands, the bore and the foam it leaves lying behind, and the
+// swash. Plankton light (Noctiluca scintillans, the accent) gathers wherever that water is
+// agitated, and where the pointer stirs it (uSim0.r, see sim.ts).
+//
+// Nothing changes from one frame to the next by chance: glints and sparks swell and fade over a
+// quarter of a second or more, and textures that travel keep their features a few cells wide, so
+// the dither steps through them instead of blinking. For the same reason the scene sets no shimmer.
 //
 // Knobs: K_size, K_period (surf); K_glow, K_sparkles, K_stir, K_fish (bioluminescence; fish fire
 // on trigger 0); K_time, K_cycle (sky); K_rain, K_fog, K_wind, K_lightning (weather; lightning on
@@ -19,9 +25,20 @@ const float SHORE_LINE = 9.0;     // the still-water line, metres ahead
 const float SHORE_FAR = 72.0;     // where each swell line comes into view
 const float SHORE_TRAVEL = 22.0;  // seconds from SHORE_FAR to the still-water line
 const int SHORE_WAVES = 9;        // waves tracked at once, from new swell to drained backwash
+// The beach faces 29 degrees further round than the sky library's view, toward moonrise: at the
+// default hour (K_time 0.82) the moon stands 6 degrees up a little right of ahead with its path
+// lying across the breakers, and at dawn the sun comes up at the right edge of the frame.
+const float SHORE_FACING = 0.506;
 const vec2 SHORE_MARK = vec2(2.0, 7.5);       // the M's centre on the sand (x, z)
 const vec2 SHORE_MARK_SIZE = vec2(1.3, 3.0);  // drawn long, like road lettering, so it reads from here
 const vec3 SHORE_BIO = vec3(0.16, 0.9, 1.0);  // Noctiluca blue
+
+// The sky library's sun or moon direction, turned about the vertical by SHORE_FACING.
+vec3 shoreTurn(vec3 v) {
+  float c = cos(SHORE_FACING);
+  float s = sin(SHORE_FACING);
+  return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
+}
 
 struct ShoreWave {
   float zc;     // crest, or the bore's front once broken (metres ahead)
@@ -55,8 +72,9 @@ ShoreWave shoreWave(float k, float camX, float slopeX, float tm, float period, f
   w.height = min(size * (0.6 + 0.25 * set + 0.3 * w.seed) * peaks, 1.45);
   // Bigger waves feel the bottom sooner and break further out (a wave breaks once the depth is
   // about 1.3 times its height, McCowan's limit), so the peaks go first and the break peels
-  // sideways along the crest.
-  float breakAt = SHORE_LINE + 3.0 + 8.5 * w.height;
+  // sideways along the crest. The peel is kept quick (the peaks count for only part of it) so most
+  // of a crest breaks within a second and its flash reads as one long line.
+  float breakAt = SHORE_LINE + 3.0 + 8.5 * w.height / (1.0 + 0.6 * (peaks - 1.0));
   w.broken = max(breakAt - w.zc, 0.0);
   float shoal = clamp((SHORE_FAR - w.zc) / (SHORE_FAR - breakAt), 0.0, 1.0);
   w.steep = shoal * shoal * shoal * shoal;
@@ -122,20 +140,24 @@ float shoreDrained(ShoreWave w, float runup, float e) {
 }
 
 // Wind ripples as a few travelling trains with deep-water dispersion (omega^2 = g k). Returns the
-// resolved surface slope (dh/dx, dh/dz) and, in z, the slope variance of the trains too fine for
-// this cell, which the glitter takes as roughness instead (as LEAN mapping does, Olano & Baker 2010).
-vec3 shoreRipples(vec2 p, float tm, vec2 cellSize, float rough) {
+// slope (dh/dx, dh/dz) of the trains these cells resolve and, in z, the slope variance of the ones
+// too fine to draw, which the glitter takes as roughness instead (as LEAN mapping does, Olano &
+// Baker 2010). A train is only drawn once its wavelength spans a dozen cells across its crests:
+// finer ones would sweep over the dither as flickering stripes. Their slopes stay small beside the
+// glitter's own roughness, so they ruffle the moon's path rather than chop it into flashing bands.
+// wind scales the slopes.
+vec3 shoreRipples(vec2 p, float tm, vec2 cellSize, float wind) {
   vec2 slope = vec2(0.0);
   float hidden = 0.0;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 4; i++) {
     float fi = float(i);
-    float wavelength = 3.2 * pow(0.58, fi);
+    float wavelength = 3.2 * pow(0.55, fi);
     float a = 1.7 + fi * 2.4; // golden-angle spread of directions
     vec2 along = vec2(sin(a), cos(a));
     float k = TAU / wavelength;
-    float s = (0.11 - 0.008 * fi) * rough; // steepest slope of this train
-    float footprint = mix(cellSize.x, cellSize.y, abs(along.y));
-    float seen = smoothstep(3.0, 6.0, wavelength / footprint);
+    float s = (0.025 - 0.003 * fi) * wind; // steepest slope of this train
+    float cells = wavelength / max(length(along * cellSize), 1e-6);
+    float seen = smoothstep(8.0, 16.0, cells);
     float phase = k * dot(along, p) - sqrt(9.81 * k) * tm + fi * 1.7;
     slope += along * cos(phase) * s * seen;
     hidden += 0.5 * s * s * (1.0 - seen);
@@ -145,45 +167,79 @@ vec3 shoreRipples(vec2 p, float tm, vec2 cellSize, float rough) {
 
 // Moon or sun glitter: the share of surface facets tilted to mirror the light into the eye, for
 // facet slopes spread with variance s2 (a Beckmann distribution, after Cox & Munk's 1954 sea-slope
-// measurements). A narrow bright path on calm water, a broad shimmering one in a chop.
+// measurements). Normalised to 1 at the heart of the path, so a choppy sea draws a wider path
+// rather than a dimmer one, and the path never burns out into a solid block.
 float shoreGlitter(vec3 n, vec3 view, vec3 light, float s2) {
   if (light.y <= 0.0) return 0.0;
   vec3 h = normalize(view + light);
   float c = max(dot(n, h), 1e-3);
   float tan2 = (1.0 - c * c) / (c * c);
-  return exp(-tan2 / s2) * clamp(0.06 / s2, 0.4, 12.0);
+  return exp(-tan2 / s2);
 }
 
-// Foam lace: bright where neighbouring Voronoi cells meet (F2 - F1 small, after Worley 1996); the
-// cell centres wander so the net keeps tearing and re-forming.
-float shoreLace(vec2 x, float t) {
-  vec2 i = floor(x);
-  vec2 f = fract(x);
-  float f1 = 8.0;
-  float f2 = 8.0;
-  for (int y = -1; y <= 1; y++) {
-    for (int k = -1; k <= 1; k++) {
-      vec2 g = vec2(float(k), float(y));
-      vec2 o = vec2(hash12(i + g + 0.7), hash12(i + g + 13.9));
-      o = 0.5 + 0.42 * sin(t + TAU * o);
-      float d = length(g + o - f);
-      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
-    }
+// Glints in the glitter: single wave facets catching the light for a moment. They live on a grid
+// fixed to the water, gp = (x / z, eye / z) scaled to cells, so each grid cell is 9 x 4 dither cells
+// wherever it lies and a glint is never thinner than two; each one swells and fades over a second
+// or two, never from one frame to the next. Returns 0..1.
+float shoreGlints(vec2 gp, float tm) {
+  vec2 g = gp / vec2(9.0, 4.0);
+  vec2 id = floor(g);
+  float h = hash12(id + 0.37);
+  float age = tm / (0.9 + 0.9 * h) + fract(h * 7.31);
+  float turn = floor(age);
+  vec2 seed = id + turn * vec2(0.73, 1.37); // a fresh place and chance for each glint
+  if (hash12(seed + 5.3) > 0.55) return 0.0;
+  vec2 at = 0.3 + 0.4 * vec2(hash12(seed + 1.1), hash12(seed + 2.9));
+  vec2 r = (fract(g) - at) * vec2(9.0 / 2.6, 4.0 / 1.2); // in glint radii: 2.6 x 1.2 cells
+  float swell = sin(3.14159265 * (age - turn));
+  return swell * swell * (1.0 - smoothstep(0.35, 1.0, dot(r, r)));
+}
+
+// Foam texture: value noise in four octaves, each faded to its mean before its features shrink
+// below a few cells (cell: one cell's size in texture units; callers whose texture travels fast
+// pass it scaled up), so moving foam never crawls through the dither. Returns the noise (0..1,
+// mean 0.5) and how much of its detail survives (1 up close, 0 where it is all finer than a cell).
+vec2 shoreFoamNoise(vec2 p, vec2 cell) {
+  float c = max(cell.x, cell.y);
+  float s = 0.0;
+  float kept = 0.0;
+  float a = 0.5;
+  float f = 1.0;
+  for (int i = 0; i < 4; i++) {
+    float keep = 1.0 - smoothstep(0.25, 0.5, c * f);
+    s += a * (keep > 0.0 ? mix(0.5, vnoise(p * f + float(i) * vec2(17.1, 9.2)), keep) : 0.5);
+    kept += a * keep;
+    f *= 2.03;
+    a *= 0.5;
   }
-  return 1.0 - smoothstep(0.04, 0.16, f2 - f1);
+  return vec2(s, kept) / 0.9375;
 }
 
-// Foam bubbles bursting on freshly drained sand, each a brief spark: Noctiluca flashes for a
-// tenth of a second or so when its membrane is stressed. Cells are long in z so the sparks come
-// out round once perspective squashes the beach.
+// How much of the surface a foam texture covers for a given amount of foam (0..1): patches with
+// holes when there is plenty, a few torn streaks as it thins. Where the cells no longer resolve the
+// texture the edges soften into its mean cover instead of snapping on and off.
+float shoreFoamCover(vec2 noise, float amount) {
+  float th = 0.8 - 0.35 * amount;
+  float w = mix(0.3, 0.05, noise.y);
+  return smoothstep(th - w, th + w, noise.x) * smoothstep(0.0, 0.15, amount);
+}
+
+// Foam bubbles bursting on freshly drained sand, each a spark: Noctiluca lights when its membrane
+// is stressed. Each spark swells over a fifth of a second or more and fades over a second, so the
+// dither steps through it rather than blinking, and moves to a new place for its next burst. Cells
+// are long in z so the sparks come out round once perspective squashes the beach.
 float shoreSparks(vec2 p, float tm, float density) {
-  vec2 g = p / vec2(0.16, 0.5);
+  vec2 g = p / vec2(0.3, 0.9);
   vec2 id = floor(g);
   if (hash12(id + 17.0) > density) return 0.0;
-  vec2 at = 0.2 + 0.6 * vec2(hash12(id + 3.1), hash12(id + 5.7));
-  float phase = fract(tm * (0.35 + 0.5 * hash12(id + 9.2)) + hash12(id + 1.9));
+  float age = tm * (0.35 + 0.4 * hash12(id + 9.2)) + hash12(id + 1.9);
+  float turn = floor(age);
+  float phase = age - turn;
+  vec2 seed = id + turn * vec2(1.31, 0.71);
+  vec2 at = 0.3 + 0.4 * vec2(hash12(seed + 3.1), hash12(seed + 5.7));
   float r = length(fract(g) - at);
-  return exp(-phase * 14.0) * (1.0 - smoothstep(0.1, 0.32, r));
+  float env = smoothstep(0.0, 0.15, phase) * (1.0 - smoothstep(0.15, 0.75, phase));
+  return env * (1.0 - smoothstep(0.08, 0.28, r));
 }
 
 // The storm out at sea: a bank of cloud standing on the horizon right of ahead. az, el: the view
@@ -236,6 +292,13 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
   vec2 sp = (uv - 0.5) * vec2(aspect, 1.0); // screen-height units, for the lightning
 
   Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  sky.sun = shoreTurn(sky.sun);
+  sky.moon = shoreTurn(sky.moon);
+  // For mirrors (the sea, the wet sand, fog): the same sky with the moon swung round behind the
+  // viewer, so no reflection shows a broken sliver of its disc. The moon on the water is the
+  // glitter's alone.
+  Sky skyM = sky;
+  skyM.moon = vec3(-sky.moon.x, sky.moon.y, -sky.moon.z);
   // The plankton only shows in the dark: full at night, fading through dawn, gone by day.
   float dark = 1.0 - smoothstep(0.05, 0.5, sky.day);
   float bio = K_glow * 1.5 * dark;
@@ -248,13 +311,18 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
   vec2 boltFoot = vec2(boltTop.x + (fract(boltSeed * 3.17) - 0.5) * 0.06, SHORE_HORIZON - 0.5);
   // The bank stands while lightning is on; a strike fired with lightning off brings it only briefly.
   float storm = K_lightning > 0.0 ? 1.0 : 1.0 - smoothstep(1.0, 3.0, boltAge);
-  // Light on a level surface. The moon is held back so the night stays dark around the plankton.
-  vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + sky.moonColor * max(sky.moon.y, 0.0) * 0.6 + vec3(0.3, 0.33, 0.42) * flash;
+  // Light on a level surface. Moonlight is played up the lower the moon stands, so foam and sand
+  // keep their shape under a moon near the horizon.
+  vec3 moonLight = sky.moonColor * (0.3 + 0.6 * sqrt(max(sky.moon.y, 0.0)));
+  vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + moonLight + vec3(0.3, 0.33, 0.42) * flash;
+  // How far the moon or the sun stands out over the sea ahead: then it shines through thin crests
+  // and spray.
+  float backMoon = max(sky.moon.z, 0.0);
+  float backSun = 0.5 + 0.5 * max(sky.sun.z, 0.0);
 
   vec3 col = vec3(0.0);
   float glow = 0.0;    // plankton light, before the strength knob and the dark
   float mark = 0.0;    // the M's own glow, independent of the plankton knob
-  float sparkle = 0.0; // dither jitter: glitter and sparks
 
   if (dir.y >= 0.0) {
     float az = dir.x / dir.z;
@@ -268,7 +336,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     float bolt = boltAge < 1.5 ? lightningBolt(sp, boltTop, boltFoot, boltSeed, boltAge) : 0.0;
     col += mix(vec3(0.55, 0.45, 1.0), vec3(1.0), smoothstep(0.45, 0.75, bolt)) * min(bolt, 1.5);
     col += vec3(0.1, 0.11, 0.16) * flash * exp(-el * 6.0);
-    if (K_fog > 0.0) col = mix(col, skyColor(sky, normalize(vec3(dir.x, 0.03, dir.z))), fogAmount(K_fog, 1.0, clamp(el * 5.0, 0.0, 1.0)));
+    if (K_fog > 0.0) col = mix(col, skyColor(skyM, normalize(vec3(dir.x, 0.03, dir.z))), fogAmount(K_fog, 1.0, clamp(el * 5.0, 0.0, 1.0)));
   } else {
     float q = -dir.y / dir.z; // tangent of the angle below the horizon
     float slopeX = dir.x / dir.z;
@@ -319,16 +387,30 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     float cellX = hz / (focal * uRes.y);
     float e = SHORE_LINE - hz; // metres up the beach from the still-water line
 
-    // The waterline is the most advanced of the bores coming in and the swashes running up.
+    // The waterline is the most advanced of the bores coming in and the swashes running up. Each
+    // swash also leaves a thin line of foam at the top of its run, until a later one washes over it,
+    // and the plankton stranded along that line glows for a couple of seconds as the water draws back.
     float reach = -1e4;
     float topSwash = -1.0;
     float topRunup = 1.0;
     float drained = 1e4; // seconds since a backwash last uncovered this spot
+    float strand = 0.0;  // the line of foam at a swash's highest reach
+    float strandGlow = 0.0;
     for (int i = 0; i < SHORE_WAVES; i++) {
       float runup = shoreRunup(waves[i], hx);
       float r = shoreReach(waves[i], runup);
       if (r > reach) { reach = r; topSwash = waves[i].swash; topRunup = runup; }
       drained = min(drained, shoreDrained(waves[i], runup, e));
+      if (waves[i].swash >= 0.0) {
+        float since = waves[i].swash - 0.38 * shoreSwashTime(runup); // seconds since it stopped
+        if ((since > 0.0 ? runup : r) > e) { strand = 0.0; strandGlow = 0.0; }
+        if (since > 0.0) {
+          float across = (e - runup) / max(0.05, 0.8 * cellZ);
+          strand = max(strand, exp(-across * across) * exp(-since / 15.0));
+          float wide = (e - runup + 0.1) / max(0.12, 1.6 * cellZ);
+          strandGlow = max(strandGlow, exp(-wide * wide) * smoothstep(0.0, 0.3, since) * exp(-since / 1.8));
+        }
+      }
     }
     bool water = e < reach;
     float edge = reach - e; // metres inside the water from its leading edge
@@ -351,46 +433,70 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
         if (waves[i].amp < 0.02) continue;
         slopeZ += (shoreWaveHeight(waves[i], hz + eps) - shoreWaveHeight(waves[i], hz - eps)) / (2.0 * eps);
       }
-      vec3 rip = shoreRipples(g, tm, vec2(cellX, cellZ), 0.6 + 0.9 * abs(K_wind));
-      vec2 tilt = rip.xy + drops.xy * 0.5;
+      // The swash is a thin sheet sliding over the sand, smoother than the open water.
+      float sheet = topSwash >= 0.0 ? 1.0 - smoothstep(0.5, 3.0, edge) : 0.0;
+      float choppy = 1.0 - 0.6 * sheet;
+      float windy = 0.6 + 0.9 * abs(K_wind);
+      vec3 rip = shoreRipples(g, tm, vec2(cellX, cellZ), windy);
+      vec2 tilt = rip.xy * choppy + drops.xy * 0.5;
       vec3 n = normalize(vec3(-tilt.x, 1.0, -(slopeZ + tilt.y)));
       // Facets too fine to draw still lean toward the eye: at a grazing view the sea mirrors sky
       // from higher up, and less of it, so it stays darker than the sky at the horizon.
-      float rough = 0.006 + rip.z + 0.004 * K_rain;
+      float rough = 0.002 + 0.0015 * windy + rip.z * choppy + 0.004 * K_rain;
       float spread = sqrt(rough);
       float fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, view), spread * 0.8), 5.0);
       vec3 refl = reflect(dir, n);
-      mirror = skyColor(sky, normalize(vec3(refl.x, max(refl.y, 0.0) + spread * 1.5, refl.z))) + vec3(0.1, 0.11, 0.16) * flash;
-      // Glitter of the moon (and the sun by day), its facets spread by ripples too fine to draw.
-      // Moonlight on water is played up: it is the brightest thing on a dark sea.
-      vec3 shine = sky.moonColor * shoreGlitter(n, view, sky.moon, rough) * 2.5 + sky.sunColor * shoreGlitter(n, view, sky.sun, rough);
+      mirror = skyColor(skyM, normalize(vec3(refl.x, max(refl.y, 0.0) + spread * 1.5, refl.z))) + vec3(0.1, 0.11, 0.16) * flash;
+      // The moon's path on the water (the sun's by day), broken by the swell into rows, and glints
+      // in it: single facets catching the light for a moment. Around it a wide moonlit sheen, the
+      // tail of the same glitter on a rougher scale: it lights the backs and troughs of the swell
+      // well out to either side and leaves the faces turned to the viewer dark, so every row reads.
+      float moonPath = shoreGlitter(n, view, sky.moon, rough);
+      float sunPath = shoreGlitter(n, view, sky.sun, rough);
+      float glint = shoreGlints(vec2(hx, SHORE_EYE) / hz * focal * uRes.y, tm);
+      float sheen = shoreGlitter(n, view, sky.moon, 0.03);
+      vec3 shine = sky.moonColor * (moonPath * (1.8 + 4.0 * glint) + sheen * 0.35) + sky.sunColor * sunPath * (0.8 + 2.0 * glint);
+      // How strongly the moon lights rough white water here: brightest along its path.
+      float moonOnFoam = shoreGlitter(vec3(0.0, 1.0, 0.0), view, sky.moon, 0.03);
 
-      // Water: dark blue offshore, turquoise over the sand in the shallows, the sand itself showing
-      // through the thin sheet of the swash.
-      float shallow = 1.0 - smoothstep(SHORE_LINE, SHORE_LINE + 14.0, hz);
-      vec3 body = mix(vec3(0.01, 0.07, 0.13), vec3(0.04, 0.38, 0.38), shallow) * lit;
+      // Water: dark blue offshore, turquoise over the sand in the shallows (muted at night), the
+      // sand itself showing through the thin sheet of the swash.
+      float shallow = (1.0 - smoothstep(SHORE_LINE, SHORE_LINE + 14.0, hz)) * mix(0.35, 1.0, sky.day);
+      vec3 body = mix(vec3(0.01, 0.06, 0.12), vec3(0.04, 0.38, 0.38), shallow) * lit;
       body = mix(body, vec3(0.36, 0.3, 0.23) * lit, (1.0 - clamp(edge / 2.2, 0.0, 1.0)) * 0.85);
-      vec3 sea = mix(body, mirror, fres) + shine * 0.7;
+      vec3 sea = mix(body, mirror, fres) + shine;
 
       if (onWave) {
         float hr = clamp(hy / max(hit.amp, 1e-3), 0.0, 1.0);
         float face = 1.0 - smoothstep(-0.2, 0.3, hz - hit.zc); // the side toward the beach
-        // Light through the thin top of a steep wave, turquoise in the sun; a paler lip as it curls.
-        float thin = smoothstep(0.45, 0.95, hr) * face * hit.steep * (1.0 - smoothstep(0.0, 2.0, hit.broken));
-        sea += vec3(0.06, 0.45, 0.38) * thin * (sky.sunColor * 0.6 + sky.moonColor * 0.3 + sky.ambient * 0.4);
-        float lip = smoothstep(0.86, 0.98, hr) * smoothstep(0.5, 1.0, hit.steep);
-        sea = mix(sea, vec3(0.75, 0.85, 0.88) * lit, lip * 0.45);
+        float whole = 1.0 - smoothstep(0.0, 2.0, hit.broken);  // 1 until the lip falls
+        float shoal = sqrt(sqrt(hit.steep));                    // 0 newly in view .. 1 at the break
+        float below = (hit.amp - hy) / hz * focal * uRes.y;     // cells below the crest's top
+        // Light through the thin top of a steep wave from the sun out over the sea behind it.
+        float thin = smoothstep(0.45, 0.95, hr) * face * hit.steep * whole;
+        sea += vec3(0.05, 0.42, 0.36) * thin * (sky.sunColor * 0.6 * backSun + sky.ambient * 0.4);
+        // Below its crest, the face turned to the viewer stands dark at night against the moonlit
+        // water around it.
+        float wall = face * smoothstep(0.3, 0.8, shoal) * smoothstep(1.5, 4.0, below) * whole;
+        sea *= 1.0 - 0.7 * wall * dark;
+        // The crest line: a band a couple of cells deep along the top of every wave from about 50
+        // metres in, catching the moon and brightest in its path, so the rows of surf keep their
+        // rhythm all the way out.
+        float crest = (1.0 - smoothstep(0.8, 2.6, below)) * smoothstep(0.25, 0.7, shoal) * (0.4 + 0.6 * whole);
+        crest *= 0.8 + 0.2 * vnoise(vec2(hx * 0.5, hit.seed * 7.0));
+        vec3 crestCol = lit * 0.6 + moonLight * 1.6 + sky.moonColor * 1.5 * moonOnFoam;
+        sea = mix(sea, crestCol, crest * mix(0.85, 0.35, sky.day));
         // As it plunges, the curl's shadow: a dark tube under the falling lip.
-        float plunge = smoothstep(0.0, 0.3, hit.broken) * (1.0 - smoothstep(0.8, 2.5, hit.broken));
+        float plunge = smoothstep(0.0, 0.4, hit.broken) * (1.0 - smoothstep(0.8, 2.5, hit.broken));
         sea *= 1.0 - 0.6 * plunge * face * smoothstep(0.3, 0.55, hr) * (1.0 - smoothstep(0.72, 0.86, hr));
       }
 
       // White water and the light in it, wave by wave.
-      float dens = 0.0;       // white water
-      float rel = 0.0;        // position behind the densest front, for the foam's texture
-      float foamSeed = 0.0;
-      float laceAmount = 0.0; // old foam left lying on the surface
-      float surf = 0.0;       // plankton light from the surf
+      float dens = 0.0;   // the roller: churning white water at each bore's front
+      float rel = 0.0;    // position behind the densest front, for the roller's texture
+      float trail = 0.0;  // foam the bores leave lying on the water behind them
+      float spray = 0.0;  // the burst thrown up over the crest as the lip lands
+      float surf = 0.0;   // plankton light from the surf
       for (int i = 0; i < SHORE_WAVES; i++) {
         ShoreWave w = waves[i];
         float d = hz - w.zc;
@@ -403,50 +509,82 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
           float poured = 1.0 - w.broken / 1.2;
           float cascade = d < 0.0 ? smoothstep(poured - 0.15, poured, level) : 1.0;
           float lead = w.front * 1.5 + 0.6 * (1.0 - smoothstep(0.0, 3.0, w.broken));
-          float band = 1.0 + min(w.broken * 0.6, 7.0);
-          float wd = smoothstep(-lead, -0.1, d) * exp(-max(d, 0.0) / band) * smoothstep(0.0, 0.6, w.broken) * cascade * linger;
-          if (wd > dens) { dens = wd; rel = d; foamSeed = w.seed; }
-          laceAmount = max(laceAmount, smoothstep(-0.2, 0.6, d) * exp(-max(d, 0.0) / 14.0) * smoothstep(0.0, 4.0, w.broken) * (w.swash < 0.0 ? 1.0 : exp(-w.swash / 5.0)));
-          // The lip lights up as it pitches, the light pours down the face with the white water, and
-          // the flash runs along the crest as the break peels.
-          float burst = smoothstep(0.0, 0.5, w.broken) * exp(-w.broken / 3.0) * linger;
-          float atLip = (d + 0.4 * w.front) / (w.front + 0.8);
-          surf += burst * exp(-atLip * atLip) * cascade * 1.4;
-          // The bore stays lit, brightest in the churn at its front.
-          surf += wd * (0.3 + 0.7 * exp(-w.broken / 9.0)) * mix(0.45, 1.0, exp(-max(d, 0.0) / 1.2));
+          float band = 1.2 + min(w.broken * 0.45, 4.5);
+          // No white water seaward of where the lip fell (the break point is w.broken behind the front).
+          float inside = 1.0 - smoothstep(w.broken + 0.5, w.broken + 2.0, d);
+          float wd = smoothstep(-lead, -0.1, d) * exp(-max(d, 0.0) / band) * smoothstep(0.0, 1.0, w.broken) * cascade * linger * inside;
+          if (wd > dens) { dens = wd; rel = d; }
+          // Behind the roller the foam is left lying where the bore has passed, thinning over the ten
+          // metres or so behind it.
+          float behind = smoothstep(-0.3, 1.0, d) * (1.0 - smoothstep(w.broken - 1.0, w.broken + 1.0, d)) * exp(-max(d, 0.0) / (3.0 + 0.6 * min(w.broken, 12.0)));
+          trail = max(trail, behind * smoothstep(0.5, 3.0, w.broken) * (w.swash < 0.0 ? 1.0 : exp(-w.swash / 4.0)));
+          // The flare: as the lip pitches, the plankton in it lights the crest from end to end, a long
+          // line of electric blue over the face and the falling lip, fading over a second and a half
+          // or so as the bore gets going.
+          float burst = smoothstep(0.0, 0.8, w.broken) * exp(-w.broken / 3.0) * linger;
+          float lip = smoothstep(-lead - 0.3, -0.2 * w.front, d) * (1.0 - smoothstep(0.4, 1.6, d));
+          surf += burst * lip * max(cascade, 0.6) * 2.2;
+          // Then the bore glows from inside as it rolls in, strongest just after the break.
+          surf += wd * (0.25 + 1.3 * exp(-w.broken / 3.0)) * mix(0.5, 1.0, exp(-max(d, 0.0) / 1.5));
+          // The explosion: spray thrown up over the crest where the lip lands, rising and thinning
+          // over a couple of seconds; seen over the upper face and against the water behind.
+          float thrown = smoothstep(0.0, 0.8, w.broken) * (1.0 - smoothstep(1.5, 5.0, w.broken)) * linger;
+          if (thrown > 0.0 && d > -0.8) {
+            float yAt = SHORE_EYE - q * w.zc; // the ray's height as it passes over the crest
+            float base = w.amp * 0.55;
+            float crown = min(w.amp * (1.15 + 1.2 * smoothstep(0.0, 3.0, w.broken)), SHORE_EYE - 0.25);
+            float hs = (yAt - base) / max(crown - base, 0.05); // 0 at the base .. 1 at the crown
+            if (hs > -0.2 && hs < 1.4) {
+              float sc = w.zc / (focal * uRes.y); // metres per cell at the crest
+              vec2 pn = shoreFoamNoise(vec2(hx * 1.1 + w.seed * 9.0, yAt * 2.2 - tm * 0.9), vec2(1.1, 2.2) * sc);
+              float puff = smoothstep(-0.2, 0.05, hs) * (1.0 - smoothstep(0.3, 1.0, hs + (pn.x - 0.5) * 0.8)) * thrown;
+              spray = max(spray, puff);
+              surf += puff * (0.4 + 2.0 * burst);
+            }
+          }
         } else if (w.steep > 0.6) {
           // Just before the break the crest begins to spill: flecks of white, and of light.
           float atTop = (d + 0.15) / 0.45;
           float top = exp(-atTop * atTop) * smoothstep(0.6, 1.0, w.steep);
           float flecks = top * smoothstep(0.55, 0.85, vnoise(vec2(hx * 1.3 - tm * 0.6, w.seed * 19.0)));
-          if (flecks * 0.6 > dens) { dens = flecks * 0.6; rel = d; foamSeed = w.seed; }
+          if (flecks * 0.6 > dens) { dens = flecks * 0.6; rel = d; }
           surf += flecks * 0.6;
         }
       }
-      // Turbulent white water, its texture carried along with the front that made it.
-      float churn = fbm(vec2(hx * 1.4 + K_wind * tm * 0.3, rel * 0.9) + vec2(foamSeed * 37.0, -tm * 0.4));
-      float white = smoothstep(0.38, 0.62, dens + (churn - 0.5) * 0.9);
-      // Old foam: a lace drifting shoreward on the open water.
-      float lace = laceAmount > 0.01 ? shoreLace(vec2(hx * 1.5, hz * 0.55 + tm * 0.25), tm * 0.3) * laceAmount : 0.0;
-      surf += lace * 0.15;
-
-      // The swash: a rim of foam pushed ahead of the sheet, and behind it a net of foam carried
-      // with the flow, thinning as the sheet slows and drains.
-      float rim = 0.0;
-      if (topSwash >= 0.0 && edge < 5.0) {
-        float young = exp(-topSwash / 2.0);
-        float rising = topSwash < 0.38 * shoreSwashTime(topRunup) ? 1.0 : 0.0;
-        float net = exp(-edge / (0.5 + 1.5 * young)) * (0.35 + 0.65 * young);
-        float web = shoreLace(vec2(hx * 2.4, (e - reach * 0.85) * 1.1), tm * 0.3);
-        rim = exp(-edge / 0.12) * (0.3 + 0.7 * young) * (0.75 + 0.25 * web);
-        lace = max(lace, web * net);
-        surf += rim * mix(0.45, 1.0, rising) * (0.4 + 0.6 * young) + web * net * young * 0.5;
+      // The roller's churn, carried along with the front that made it; it travels with the bore, so
+      // its finest features are held to twice the usual size.
+      float churn = shoreFoamNoise(vec2(hx * 0.9 + K_wind * tm * 0.2, rel * 1.4 - tm * 0.25), vec2(cellX * 0.9, cellZ * 1.4) * 2.0).x;
+      float white = smoothstep(0.3, 0.55, dens + (churn - 0.5) * 0.8);
+      // The foam left lying: patches drawn out along the crests, drifting in more slowly than the
+      // bores, tearing into streaks as they age.
+      float trailFoam = 0.0;
+      if (trail > 0.01) {
+        trailFoam = shoreFoamCover(shoreFoamNoise(vec2(hx * 0.45, (hz + 0.6 * tm) * 1.4), vec2(cellX * 0.45, cellZ * 1.4)), trail);
+        surf += trailFoam * 0.12;
       }
-      float foam = clamp(max(max(white, lace), rim), 0.0, 1.0);
-      vec3 foamCol = vec3(0.9, 0.94, 0.96) * (lit * 1.1 + sky.moonColor * 0.15);
-      col = mix(sea, foamCol, foam);
+
+      // The swash: a rim of foam pushed ahead of the sheet, and behind it lace carried up and back
+      // with the flow, thinning as the sheet slows and drains. Its edge draws a line of plankton
+      // light up the sand on every run-up: sharp at the front, trailing off behind it.
+      float rim = 0.0;
+      float lace = 0.0;
+      if (topSwash >= 0.0 && edge < 6.0) {
+        float young = exp(-topSwash / 2.0);
+        float rising = 1.0 - smoothstep(0.3, 0.45, topSwash / shoreSwashTime(topRunup));
+        float net = exp(-edge / (0.6 + 1.6 * young)) * (0.35 + 0.65 * young) * (1.0 - smoothstep(3.5, 5.5, edge));
+        rim = exp(-edge / max(0.14, 1.5 * cellZ)) * (0.35 + 0.65 * young) * (0.7 + 0.3 * vnoise(vec2(hx * 1.3, e * 0.8)));
+        // The sheet's texture rides up with seven tenths of the front's run, and back down with it.
+        lace = shoreFoamCover(shoreFoamNoise(vec2(hx * 1.1, (e - 0.7 * reach) * 1.1), vec2(cellX, cellZ) * 2.2), net) * 0.9;
+        float rimGlow = exp(-edge / max(0.3, 2.5 * cellZ));
+        surf += rimGlow * mix(0.6, 1.5, rising) * (0.5 + 0.5 * young) + lace * young * 0.4;
+      }
+      float foam = clamp(max(max(white, trailFoam), max(lace, rim)), 0.0, 1.0);
+      // Moonlit white water: about 0.4 away from the moon, up to 0.8 in its path.
+      vec3 foamCol = vec3(0.92, 0.95, 0.97) * (lit * 1.4 + sky.moonColor * 1.4 * moonOnFoam) * (0.85 + 0.3 * churn);
+      // Spray is thin enough to glow with the light behind it.
+      vec3 sprayCol = vec3(0.95, 0.97, 1.0) * (lit * 1.5 + sky.moonColor * 1.6 * moonOnFoam + moonLight * backMoon + sky.sunColor * 0.3 * backSun);
+      col = mix(mix(sea, foamCol, foam), sprayCol, clamp(spray, 0.0, 1.0));
       col += drops.z * 0.25 * (mirror + lit * 0.3);
-      sparkle = min(dot(shine, LUMA), 1.0) * (1.0 - foam);
       glow = surf * (0.55 + 0.7 * churn) + drops.z * 0.5;
 
       // Lightning mirrored in the sea near the horizon, broken up by the ripples.
@@ -461,33 +599,44 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       float soaked = 1.0 - smoothstep(0.4, 1.0, e / usual);
       float film = exp(-drained / 2.5);
       wet = max(soaked * 0.55, exp(-drained / 6.0));
-      float grain = fbm(g * vec2(1.3, 0.45));
-      // Wind ripples on the dry sand, faded before they get finer than the cells.
-      float ripples = (0.5 + 0.5 * sin(hz * 7.0 + hx * 0.9 + 3.0 * vnoise(g * vec2(0.6, 0.3)))) * (1.0 - smoothstep(0.08, 0.2, cellZ));
-      vec3 dry = vec3(0.76, 0.67, 0.5) * (0.82 + 0.3 * grain) * (1.0 - 0.16 * ripples);
-      vec3 damp = vec3(0.36, 0.3, 0.23) * (0.9 + 0.2 * grain);
+      // Dry sand: soft wind ripples that bend, wander and change their spacing, shaded a little by
+      // the moon or sun when it is low over the sea in front, and faded out before they get finer
+      // than a few cells.
+      vec3 key = sky.sun.y > 0.0 ? sky.sun : sky.moon;
+      float side = clamp(key.z / max(key.y, 0.1), 0.0, 3.0) / 3.0;
+      vec2 bend = vec2(vnoise(g * vec2(0.55, 0.4)), vnoise(g * vec2(0.55, 0.4) + 4.1)) - 0.5;
+      float rp = (hz + 0.5 * bend.x + 0.22 * sin(hx * 1.6 + 3.0 * bend.y)) / 0.5 + 1.4 * vnoise(g * vec2(0.3, 0.22) + 9.0);
+      float ripple = cos(TAU * rp) * smoothstep(5.0, 10.0, 0.5 / cellZ) * (1.0 - wet);
+      float tone = vnoise(g * vec2(0.7, 0.4));
+      vec3 dry = vec3(0.76, 0.67, 0.5) * (0.95 + 0.08 * tone) * (1.0 - 0.14 * ripple * (0.4 + 0.6 * side));
+      vec3 damp = vec3(0.34, 0.28, 0.21) * (0.95 + 0.1 * tone);
       vec3 sand = mix(dry, damp, wet) * lit;
-      // The wrack line: dark strands of weed where the highest waves leave them.
-      float wrackAt = usual * 1.25 + 0.3 * sin(hx * 0.4) + 0.15 * sin(hx * 1.1);
-      float wrack = (1.0 - smoothstep(0.06, 0.16 + cellZ, abs(e - wrackAt))) * smoothstep(0.45, 0.6, vnoise(vec2(hx * 2.5, 3.0)));
-      sand *= 1.0 - 0.6 * wrack;
+      // The thin lines of foam the last swashes left at the top of their run.
+      sand = mix(sand, vec3(0.8, 0.8, 0.78) * lit, strand * 0.3);
+      // By moonlight the sand loses its warmth to the eye and goes a dim, cool grey-blue.
+      sand = mix(sand, vec3(dot(sand, LUMA)) * vec3(0.78, 0.88, 1.12), 0.65 * dark) * mix(1.0, 0.62, dark);
 
-      vec2 grit = (vec2(vnoise(g * vec2(9.0, 3.0)), vnoise(g * vec2(9.0, 3.0) + 5.0)) - 0.5) * 0.06 * (1.0 - film);
-      vec2 tilt = grit + drops.xy * 0.4 * wet;
+      // Only the band the backwash has just left, and the saturated sand right at the water's edge,
+      // is wet enough to mirror: sharp while a film drains off it, dull again as it soaks in.
+      // Gentle undulations draw the moon out into a streak.
+      float gloss = max(film, 0.6 * (1.0 - smoothstep(0.2, 1.0, e)));
+      vec2 swell = vec2(vnoise(g * vec2(1.2, 0.6)), vnoise(g * vec2(1.2, 0.6) + 7.3)) - 0.5;
+      vec2 tilt = swell * 0.05 + drops.xy * 0.4 * wet;
       vec3 n = normalize(vec3(-tilt.x, 1.0, -tilt.y));
       float fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, view), 0.0), 5.0);
       vec3 refl = reflect(dir, n);
       refl = normalize(vec3(refl.x, max(refl.y, 0.01), refl.z));
-      mirror = skyColor(sky, refl) + vec3(0.9, 0.95, 1.0) * skyStars(sky, refl, 0.6) * film + vec3(0.1, 0.11, 0.16) * flash;
-      float rough = 0.003 + 0.02 * (1.0 - film);
-      vec3 shine = (sky.moonColor * shoreGlitter(n, view, sky.moon, rough) * 2.5 + sky.sunColor * shoreGlitter(n, view, sky.sun, rough)) * (wet * 0.4 + film);
-      col = mix(sand, mirror, clamp(fres * (wet * 0.6 + film * 1.3), 0.0, 1.0)) + shine * 0.6 + drops.z * 0.2 * mirror * wet;
-      sparkle = min(dot(shine, LUMA), 1.0);
+      mirror = skyColor(skyM, refl) + vec3(0.9, 0.95, 1.0) * skyStars(sky, refl, 0.6) * gloss + vec3(0.1, 0.11, 0.16) * flash;
+      float rough = 0.002 + 0.012 * (1.0 - gloss);
+      // By day damp sand keeps a soft sheen of the bright sky; by night only the glossy band shows.
+      float soak = wet * mix(1.0, 0.2, dark);
+      vec3 shine = (sky.moonColor * shoreGlitter(n, view, sky.moon, rough) * 1.6 + sky.sunColor * shoreGlitter(n, view, sky.sun, rough) * 0.8) * (soak * 0.3 + gloss * 0.9);
+      col = mix(sand, mirror, clamp(fres * (soak * 0.7 + gloss * 1.4), 0.0, 1.0)) + shine + drops.z * 0.2 * mirror * wet;
+      // The line of light each swash leaves at the top of its run.
+      glow += strandGlow * 1.4;
       // Bubbles bursting in the foam the backwash leaves behind.
       if (K_sparkles > 0.0) {
-        float sparks = shoreSparks(g, tm, K_sparkles * 0.7) * exp(-drained / 4.0);
-        glow += sparks * 1.3;
-        sparkle = max(sparkle, sparks * 0.5);
+        glow += shoreSparks(g, tm, K_sparkles * 0.9) * exp(-drained / 4.0) * 1.3;
       }
       glow += drops.z * 0.4 * wet;
     }
@@ -539,7 +688,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
 
     if (K_fog > 0.0) {
       float f = fogAmount(K_fog, 1.0 - exp(-hz / 45.0), clamp(hy / 3.0, 0.0, 1.0));
-      col = mix(col, skyColor(sky, normalize(vec3(dir.x, 0.03, dir.z))), f);
+      col = mix(col, skyColor(skyM, normalize(vec3(dir.x, 0.03, dir.z))), f);
       glow *= 1.0 - f;
       mark *= 1.0 - f;
     }
@@ -550,17 +699,18 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     col = mix(col, lit * 0.8 + vec3(0.05, 0.06, 0.08), streak * 0.5);
   }
 
-  // Ink is the picture's light without the plankton; the plankton and the M are the accent, and in
-  // full colour they add their blue on top, burning toward white where they are brightest. A sunlit
-  // beach puts the page in its paper theme (index.ts), where ink is dark on a light ground.
+  // Ink is the picture's light without the plankton; the plankton and the M are the accent. In full
+  // colour their light is a colour of its own: where it is strong it outshines the foam it is in,
+  // so the surf reads electric blue rather than washing out to white or teal. A sunlit beach puts
+  // the page in its paper theme (index.ts), where ink is dark on a light ground.
   float light = clamp(glow * bio, 0.0, 1.5);
   float lum = dot(col, LUMA);
   bool paper = K_cycle <= 0.0 && K_time > 0.33 && K_time < 0.67;
   Shade o = blankShade();
   o.ink = paper ? clamp((0.9 - lum) / 0.8, 0.0, 1.0) : clamp(pow(lum, 0.8) * 1.3, 0.0, 1.0);
   o.accent = clamp(max(light, mark), 0.0, 1.0);
-  o.shimmer = clamp(sparkle, 0.0, 1.0) * 0.35 * m;
-  col += SHORE_BIO * (light + mark) * 1.1;
+  float hot = light + mark;
+  col = mix(col, SHORE_BIO * 1.1, smoothstep(0.15, 1.2, hot) * 0.55) + SHORE_BIO * hot * 0.8;
   o.rgb = col;
   o.source = col;
   return o;

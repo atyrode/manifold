@@ -1,6 +1,7 @@
-// A beach at night, looking out to sea: surf rolls in, breaks and runs up the sand, and plankton
-// (Noctiluca scintillans) flashes electric blue wherever the water is disturbed. By day it is an
-// ordinary turquoise seaside. The pointer's wake is tracked on the CPU (sim.ts) and read as uSim0.
+// A beach by moonlight, looking out to sea: surf rolls in, breaks and runs up the sand, and plankton
+// (Noctiluca scintillans) flashes electric blue wherever the water is disturbed. By default the moon
+// has just risen over the sea, right of ahead, and lays its path across the breakers. By day it is
+// an ordinary turquoise seaside. The pointer's wake is tracked on the CPU (sim.ts) and read as uSim0.
 import { feature, range, toggle } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -21,7 +22,8 @@ export const shoreScene: SceneDef = {
     range("glow", "sparkles", "sparkles", 0.5, "Foam bubbles bursting on the wet sand as the water drains, each with a spark of light.", { when: "glow" }),
     toggle("glow", "stir", "stir with pointer", true, "Moving the pointer over the water or the wet sand stirs the plankton into glowing swirls.", { when: "glow" }),
     feature("glow", "fish", "fish", false, "frequency", 0.3, "Now and then a school of fish darts through the shallows, leaving trails of light behind it at night.", { trigger: 0 }),
-    ...skyKnobs({ time: 0.02 }),
+    // 0.82: the evening moon six degrees up, in frame (the shader turns the sky to face moonrise).
+    ...skyKnobs({ time: 0.82 }),
     ...weatherKnobs({ rain: true, fog: true, wind: true, lightning: 1 }),
     toggle("manifold", "mark", "M in the sand", false, "An M drawn in the wet sand: every wave that washes over it lights it up blue, then it fades until the next."),
   ],
@@ -40,7 +42,7 @@ export const shoreScene: SceneDef = {
   // cycle running the light keeps changing, so the page stays on the night theme. The shader repeats
   // this test to turn its ink dark on the paper theme: keep the two in step.
   theme: (params) => {
-    const time = params.time ?? 0.02;
+    const time = params.time ?? 0.82;
     const cycling = (params.cycle ?? 0) > 0.5;
     return !cycling && time > 0.33 && time < 0.67 ? "paper" : "night";
   },
