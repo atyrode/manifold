@@ -99,20 +99,27 @@ const LANE_WIDTH = 6;
 const LANE_SLACK = 0.5;
 /** The stream's pace along the lane grows with the lane's distance: it runs at the knob's speed
  *  LANE_PACE metres out, slower in the shallows toward our bank, faster in the channel along the
- *  far side (within these bounds). On screen the procession then moves at much the same pace near
- *  and far, so it is spread evenly along its path instead of piling up in the distance. */
+ *  far side, as (distance / LANE_PACE)^PACE_POWER within these bounds. Seen in perspective the
+ *  procession then moves at much the same pace near and far (a little faster than in proportion,
+ *  where the lane runs away into depth), so it is spread evenly along its path on screen instead
+ *  of piling up in the distance. */
 const LANE_PACE = 25;
-const PACE_MIN = 0.35;
-const PACE_MAX = 2.6;
-/** Lanterns keep between these distances (soft walls, m); along our bank the stream turns to run
- *  beside it over BANK_TURN metres. */
+const PACE_POWER = 1.4;
+const PACE_MIN = 0.55;
+const PACE_MAX = 3;
+/** Lanterns keep between these distances (soft walls, m). Between the lane and our bank the stream
+ *  flattens out to run beside the bank (over at least BANK_TURN metres), so lanterns there drift
+ *  in toward the lane as it comes near instead of being pressed against the bank. */
 const LANE_NEAR = 7.6;
 const LANE_FAR = 72;
 const BANK_PUSH = 1.5;
 const BANK_TURN = 6;
 /** The drift out from our bank (m/s at LANE_NEAR) and how far out it reaches (m). */
-const OUTFLOW = 0.06;
-const OUTFLOW_REACH = 2.5;
+const OUTFLOW = 0.1;
+const OUTFLOW_REACH = 4;
+/** Right along our bank a little of the stream runs on regardless of the shallows (share of the
+ *  knob's speed), so lanterns set down there glide out of view instead of lingering. */
+const BANK_DRIFT = 0.35;
 /** Eddies: modes, each's speed (m/s), the share left mid-river, how far from our bank they are strong, how fast they ride the stream. */
 const EDDY_MODES = 3;
 const EDDY_SPEED = 0.025;
@@ -155,19 +162,19 @@ const AGE_KEPT = 60;
  *  share of them stray anywhere between these offsets. */
 const LANE_SPREAD = 2.2;
 const STRAY_SHARE = 0.18;
-const STRAY_NEAR = -7;
+const STRAY_NEAR = -4;
 const STRAY_FAR = 18;
-/** New lanterns come in this far beyond the frame's right edge, and leave this far beyond its left (m). */
-const SPAWN_MARGIN = 2.2;
-const EXIT_MARGIN = 2.4;
+/** New lanterns come in this far beyond the frame's right edge, and leave this far beyond its left
+ *  (m: past their halo, which is all that shows of them by then). */
+const SPAWN_MARGIN = 1.2;
+const EXIT_MARGIN = 1.2;
 /** A lantern blown this far upstream of the spawn line is let go. */
 const STRAY = 6;
-/** Seconds between arrivals while the river is short of lanterns; the chance one brings a companion. */
-const SPAWN_GAP_MIN = 0.6;
-const SPAWN_GAP_MAX = 5;
-const PAIR_CHANCE = 0.4;
+/** Arrivals keep the count in view: one crossing of the view shared among the lanterns, varied by
+ *  ±50%, sooner when short and later when over; the chance one brings one or two companions. */
+const PAIR_CHANCE = 0.35;
 /** Short by more than this (the count went up): set lanterns down from our bank, this often (s). */
-const CATCH_UP = 3;
+const CATCH_UP = 5;
 const CATCH_UP_GAP = 0.7;
 /** Released from our bank: where (m ahead, just below the frame), how hard they are pushed off (m/s), how far apart. */
 const RELEASE_Z = 6.3;
@@ -199,7 +206,7 @@ const ROCK_GLOW_REACH = 0.9;
 
 const STEP = 1 / 60;
 const MAX_STEPS = 8;
-const PREWARM = 30;
+const PREWARM = 20;
 const SEED_BASE = 0x70a0a6;
 
 type KnobKey = "lanterns" | "current" | "flotilla" | "lanternSeed" | "wind" | "mark";
@@ -221,6 +228,11 @@ function laneZ(x: number): number {
   return LANE_OUTER - LANE_BEND * (t > 30 ? t : Math.log1p(Math.exp(t)));
 }
 
+/** The stream's pace (share of the knob's speed) on a lane `centre` metres out. */
+function paceAt(centre: number): number {
+  return clamp(Math.pow(Math.max(centre, 0) / LANE_PACE, PACE_POWER), PACE_MIN, PACE_MAX);
+}
+
 /** How much nearer the lane comes per metre downstream at x: dz/dx of laneZ. */
 function laneSlope(x: number): number {
   return LANE_SLOPE / (1 + Math.exp(-(LANE_OUTER - LANE_Z0 - LANE_SLOPE * x) / LANE_BEND));
@@ -230,8 +242,9 @@ function laneSlope(x: number): number {
 const ROCK_STREAM = ROCKS.map((rock) => {
   const centre = laneZ(rock.x);
   const off = (rock.z - centre) / LANE_WIDTH;
-  const speed = (LANE_SLACK + (1 - LANE_SLACK) * Math.exp(-off * off)) * clamp(centre / LANE_PACE, PACE_MIN, PACE_MAX);
-  return { x: -speed, z: -speed * laneSlope(rock.x) * smoothstep(LANE_NEAR, LANE_NEAR + BANK_TURN, rock.z) };
+  const speed = (LANE_SLACK + (1 - LANE_SLACK) * Math.exp(-off * off)) * paceAt(centre);
+  const turn = smoothstep(LANE_NEAR, LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN), rock.z);
+  return { x: -speed, z: -speed * laneSlope(rock.x) * turn };
 });
 
 /** The unit vector downstream from each rock (x, z), for the wakes the shader draws. */
@@ -260,6 +273,8 @@ class Random {
 class Lantern {
   alive = false;
   mark = false;
+  /** Set down by hand or in a flotilla: on top of the procession's count, not part of it. */
+  extra = false;
   x = 0;
   z = 0;
   vx = 0;
@@ -320,6 +335,10 @@ class LanternRiver implements SceneSim {
   #nextSpawn = 0;
   #nextFlotilla = Number.POSITIVE_INFINITY;
   #nextMark = Number.POSITIVE_INFINITY;
+  /** Seconds a lantern on the lane takes to cross the view (see #refreshCrossing), and what it was
+   *  worked out for. */
+  #crossing = 120;
+  #crossingKey = Number.NaN;
 
   #primed = false;
   #seenFlotilla = 0;
@@ -360,6 +379,7 @@ class LanternRiver implements SceneSim {
     this.#markOn = (values[index.mark] ?? 0) > 0.5;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
 
+    this.#refreshCrossing();
     const seed = Math.round(values[index.lanternSeed] ?? 0);
     if (seed !== this.#seed) this.#reset(seed);
 
@@ -493,14 +513,13 @@ class LanternRiver implements SceneSim {
     this.#markWasOn = this.#markOn;
   }
 
-  /** Put a lantern somewhere on its streamline in view (laying the river out). */
+  /** Put a lantern somewhere on its streamline in view, evenly across the screen as the stream's
+   *  pace spreads them in the steady state (laying the river out). */
   #scatter(): void {
     const random = this.#random;
     for (let tries = 0; tries < 6; tries++) {
       const offset = this.#sampleOffset();
-      const left = this.#edge(offset, -1, 0);
-      const right = this.#edge(offset, 1, 1);
-      const x = left + (right - left) * random.next();
+      const x = this.#seenAt(offset, 2.1 * random.next() - 1, 0);
       const z = clamp(laneZ(x) + offset, LANE_NEAR + 0.3, LANE_FAR);
       const onRock = ROCKS.some((rock) => Math.hypot(x - rock.x, z - rock.z) < rock.radius + RADIUS + 0.2);
       if (onRock || this.#crowded(x, z, 0.6)) continue;
@@ -520,15 +539,16 @@ class LanternRiver implements SceneSim {
     return 2 * LANE_SPREAD * g;
   }
 
-  /** Where the streamline `offset` off the lane crosses the right (side 1) or left (side -1) edge
-   *  of the view, `margin` metres beyond it: bisection between the middle of the view and 200 m
-   *  out, beyond which the streamline is always out of view. */
-  #edge(offset: number, side: number, margin: number): number {
+  /** Where the streamline `offset` off the lane is seen `frac` of the way from the middle of the
+   *  view to its right (1) or left (-1) edge, `margin` metres further out: bisection between the
+   *  middle and 200 m out, beyond which the streamline is always out of view. */
+  #seenAt(offset: number, frac: number, margin: number): number {
+    const side = frac < 0 ? -1 : 1;
     let inside = 0;
     let outside = 200 * side;
     for (let i = 0; i < 24; i++) {
       const x = 0.5 * (inside + outside);
-      if (side * x - this.#halfWidth(Math.max(laneZ(x) + offset, LANE_NEAR)) - margin > 0) outside = x;
+      if (side * (x - frac * this.#halfWidth(Math.max(laneZ(x) + offset, LANE_NEAR))) - margin > 0) outside = x;
       else inside = x;
     }
     return outside;
@@ -564,9 +584,10 @@ class LanternRiver implements SceneSim {
     return best;
   }
 
+  /** Lanterns in the procession (not the M lantern, flotillas or ones set down by hand). */
   #count(): number {
     let n = 0;
-    for (const lantern of this.#regular) if (lantern.alive) n++;
+    for (const lantern of this.#regular) if (lantern.alive && !lantern.extra) n++;
     return n;
   }
 
@@ -586,36 +607,42 @@ class LanternRiver implements SceneSim {
     lantern.spin = lantern.ownSpin;
     lantern.light = light;
     lantern.age = age;
+    lantern.extra = false;
   }
 
   /** A lantern coming round the bend upstream on its streamline, now and then with one or two
-   *  companions just behind it. */
-  #spawnUpstream(): void {
+   *  companions just behind it. Returns how many came. */
+  #spawnUpstream(): number {
     const random = this.#random;
     for (let tries = 0; tries < 4; tries++) {
       const offset = this.#sampleOffset();
-      const x = this.#edge(offset, 1, SPAWN_MARGIN) + 1.5 * random.next();
+      const x = this.#seenAt(offset, 1, SPAWN_MARGIN) + 1.5 * random.next();
       const z = clamp(laneZ(x) + offset, LANE_NEAR + 0.3, LANE_FAR);
       if (this.#crowded(x, z, 0.6)) continue;
       const lantern = this.#freeSlot();
-      if (!lantern) return;
+      if (!lantern) return 0;
       this.#flow(x, z);
       const vx = this.#water[0] ?? 0;
       const vz = this.#water[1] ?? 0;
       this.#launch(lantern, x, z, vx, vz, 1, AGE_KEPT);
+      let arrived = 1;
       const companions = random.next() < PAIR_CHANCE ? 1 + Math.floor(2 * random.next()) : 0;
-      for (let k = 1; k <= companions && this.#count() < this.#target; k++) {
+      for (let k = 1; k <= companions && this.#count() <= this.#target; k++) {
         const x2 = x + k * (0.5 + 0.4 * random.next());
         const z2 = clamp(laneZ(x2) + offset + (random.next() - 0.5) * 1.2, LANE_NEAR + 0.3, LANE_FAR);
         const companion = this.#freeSlot();
-        if (companion && !this.#crowded(x2, z2, 0.5)) this.#launch(companion, x2, z2, vx, vz, 1, AGE_KEPT);
+        if (!companion || this.#crowded(x2, z2, 0.5)) continue;
+        this.#launch(companion, x2, z2, vx, vz, 1, AGE_KEPT);
+        arrived++;
       }
-      return;
+      return arrived;
     }
+    return 0;
   }
 
-  /** Lanterns pushed off from our bank, just below the frame, side by side around x = centre. */
-  #release(count: number, centre: number): void {
+  /** Lanterns pushed off from our bank, just below the frame, side by side around x = centre;
+   *  `extra` ones are on top of the procession's count. */
+  #release(count: number, centre: number, extra: boolean): void {
     const random = this.#random;
     for (let k = 0; k < count; k++) {
       const lantern = this.#slotForExtra();
@@ -623,14 +650,15 @@ class LanternRiver implements SceneSim {
       const z = RELEASE_Z + 0.35 * random.next();
       this.#flow(x, z);
       this.#launch(lantern, x, z, 0.5 * (this.#water[0] ?? 0), RELEASE_PUSH * (0.8 + 0.4 * random.next()), 1, AGE_KEPT);
+      lantern.extra = extra;
     }
   }
 
   /** A flotilla pushed off from our bank right of centre: it glides out and along the front. */
   #releaseFlotilla(): void {
     const random = this.#random;
-    const count = 4 + Math.floor(3 * random.next());
-    this.#release(count, (0.1 + 0.35 * random.next()) * this.#halfWidth(RELEASE_Z + 1));
+    const count = 3 + Math.floor(3 * random.next());
+    this.#release(count, (0.1 + 0.35 * random.next()) * this.#halfWidth(RELEASE_Z + 1), true);
   }
 
   /** The M lantern pushed off from our bank, right of centre so it crosses the whole view. */
@@ -647,6 +675,7 @@ class LanternRiver implements SceneSim {
     const at = clamp(z, RELEASE_Z, CLICK_FAR);
     this.#flow(x, at);
     this.#launch(lantern, x, at, this.#water[0] ?? 0, this.#water[1] ?? 0, 0, 0);
+    lantern.extra = true;
   }
 
   /** The water's velocity at (x, z) into #water[0..1] (m/s) and its vorticity into #water[2] (1/s). */
@@ -657,7 +686,9 @@ class LanternRiver implements SceneSim {
     // across the river: u = -U p(x) s(o), w = -U p(x) s(o) z'(x) with o = z - laneZ(x) and p the
     // pace. Its vorticity is U (p (s'(o) (1 + z'²) - s(o) z'') - s(o) p' z'); where the pace falls
     // downstream the stream converges along the lane, so the lanterns close up as they come near.
-    // Along our bank the stream turns to run beside the bank (that part's vorticity is left out).
+    // Between the lane and our bank the stream flattens out to run beside the bank, so lanterns
+    // there drift in toward the lane as it comes near; right along the bank a little of the stream
+    // runs on regardless of the shallows (the vorticity of both is left out).
     const centre = laneZ(x);
     const slope = laneSlope(x);
     const curve = (-slope * (LANE_SLOPE - slope)) / LANE_BEND;
@@ -665,11 +696,10 @@ class LanternRiver implements SceneSim {
     const lane = Math.exp(-off * off);
     const speed = LANE_SLACK + (1 - LANE_SLACK) * lane;
     const dSpeed = (-(1 - LANE_SLACK) * 2 * off * lane) / LANE_WIDTH;
-    const paceFree = centre / LANE_PACE;
-    const pace = clamp(paceFree, PACE_MIN, PACE_MAX);
-    const dPace = paceFree > PACE_MIN && paceFree < PACE_MAX ? slope / LANE_PACE : 0;
-    const turn = smoothstep(LANE_NEAR, LANE_NEAR + BANK_TURN, z);
-    let u = -stream * speed * pace;
+    const pace = paceAt(centre);
+    const dPace = pace > PACE_MIN && pace < PACE_MAX ? (PACE_POWER * pace * slope) / Math.max(centre, 1) : 0;
+    const turn = smoothstep(LANE_NEAR, LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN), z);
+    let u = -stream * (speed * pace + BANK_DRIFT * (1 - smoothstep(LANE_NEAR + 1, LANE_NEAR + 4.5, z)));
     let w = -stream * speed * pace * slope * turn + OUTFLOW * Math.exp(-(z - LANE_NEAR) / OUTFLOW_REACH);
     let vorticity = stream * (pace * (dSpeed * (1 + slope * slope) - speed * curve) - speed * dPace * slope);
 
@@ -845,7 +875,7 @@ class LanternRiver implements SceneSim {
     this.#spawn();
     if (this.#markOn && !this.#mark.alive && this.#clock >= this.#nextMark) {
       const offset = MARK_OFFSET_NEAR + (MARK_OFFSET_FAR - MARK_OFFSET_NEAR) * this.#random.next();
-      const x = this.#edge(offset, 1, SPAWN_MARGIN);
+      const x = this.#seenAt(offset, 1, SPAWN_MARGIN);
       const z = clamp(laneZ(x) + offset, LANE_NEAR + 0.3, LANE_FAR);
       this.#flow(x, z);
       this.#launch(this.#mark, x, z, this.#water[0] ?? 0, this.#water[1] ?? 0, 1, AGE_KEPT);
@@ -858,19 +888,42 @@ class LanternRiver implements SceneSim {
     }
   }
 
-  /** Keep the river at its count: new lanterns round the bend, or from our bank when far short. */
+  /** Keep the river at its count. Lanterns come round the bend at the rate that keeps that many in
+   *  view (one crossing of the view shared among them, varied ±50%), sooner when short and later
+   *  when over, so the procession has lanterns at every distance rather than in waves; when far
+   *  short (the count went up) they are set down from our bank instead. */
   #spawn(): void {
-    if (this.#clock < this.#nextSpawn) return;
-    const deficit = this.#target - this.#count();
-    if (deficit <= 0) return;
+    if (this.#clock < this.#nextSpawn || this.#target <= 0) return;
     const random = this.#random;
-    if (deficit > CATCH_UP) {
-      this.#release(1, (random.next() * 2 - 1) * 0.5 * this.#halfWidth(RELEASE_Z + 1));
+    const count = this.#count();
+    const gap = this.#crossing / this.#target;
+    if (this.#target - count > CATCH_UP) {
+      this.#release(1, (random.next() * 2 - 1) * 0.5 * this.#halfWidth(RELEASE_Z + 1), false);
       this.#nextSpawn = this.#clock + CATCH_UP_GAP * (0.7 + 0.6 * random.next());
+    } else if (count > this.#target) {
+      this.#nextSpawn = this.#clock + 0.5 * gap;
     } else {
-      this.#spawnUpstream();
-      this.#nextSpawn = this.#clock + SPAWN_GAP_MIN + (SPAWN_GAP_MAX - SPAWN_GAP_MIN) * random.next();
+      const arrived = this.#spawnUpstream();
+      const lean = count < this.#target - 1 ? 0.7 : 1.2;
+      this.#nextSpawn = this.#clock + gap * Math.max(arrived, 1) * lean * (0.7 + 0.6 * random.next());
     }
+  }
+
+  /** Seconds a lantern on the lane takes to cross the view, from coming in to leaving, at this
+   *  current and aspect (worked out again when either changes). */
+  #refreshCrossing(): void {
+    const key = this.#aspect * 1000 + this.#current;
+    if (key === this.#crossingKey) return;
+    this.#crossingKey = key;
+    const from = this.#seenAt(0, -1, EXIT_MARGIN);
+    const to = this.#seenAt(0, 1, SPAWN_MARGIN);
+    const steps = 32;
+    const dx = (to - from) / steps;
+    let time = 0;
+    for (let i = 0; i < steps; i++) {
+      time += dx / (this.#current * paceAt(laneZ(from + (i + 0.5) * dx)));
+    }
+    this.#crossing = Math.max(time, 1);
   }
 
   #upload(alpha: number): void {
