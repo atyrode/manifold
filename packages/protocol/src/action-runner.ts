@@ -7,7 +7,7 @@ import {
   CreateRunV2RequestSchema,
   RenewAgentRunRequestSchema,
 } from "./agent-runs.ts";
-import { ReportRunActivityRequestSchema } from "./agents.ts";
+import { ReportRunActivityV2RequestSchema } from "./agents.ts";
 import { GrantNodeSchema } from "./grants.ts";
 import {
   ActionResultApprovalsSchema,
@@ -18,6 +18,11 @@ import {
 
 export const ACTION_RUNNER_MAX_FRAME_BYTES = 65_536;
 export const ACTION_RUNNER_MAX_FRAMES = 1_024;
+/**
+ * Activity reports per owned Run lease. A successful renewal starts a new lease and a new
+ * budget, so a Run that keeps renewing keeps reporting; one that stops expires within a lease.
+ */
+export const ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE = 1_024;
 export const ACTION_RUNNER_IDLE_TIMEOUT_MS = 5 * 60_000;
 
 /** Only the live, server-authored action vocabulary is needed by an HTTP caller. */
@@ -59,8 +64,8 @@ const RunnerProjectionSchema = z.discriminatedUnion("ok", [
   ActionProjectedResultSchema.options[1].extend({ trust: z.literal("untrusted") }),
 ]);
 
-/** Only the trusted inherited activity pipe accepts this frame. */
-export const ActionRunnerActivitySchema = ReportRunActivityRequestSchema.extend({
+/** Only the trusted inherited activity pipe accepts this frame; `model` is the session's model. */
+export const ActionRunnerActivitySchema = ReportRunActivityV2RequestSchema.extend({
   activity: z.enum(["working", "blocked", "done", "idle"]),
 });
 export type ActionRunnerActivity = z.infer<typeof ActionRunnerActivitySchema>;

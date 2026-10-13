@@ -69,6 +69,7 @@ const child = Bun.spawn(
     "packages/agent/test/job-runtime.test.ts",
     "packages/testkit/e2e/jobs.test.ts",
     "packages/testkit/e2e/instance-services.test.ts",
+    "packages/testkit/e2e/native-crossing.test.ts",
     "--test-name-pattern",
     fixtureTestPattern,
     "--timeout",

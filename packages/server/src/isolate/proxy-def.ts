@@ -43,6 +43,7 @@ import {
   type IsolateCtxMethod,
   type IsolateHook,
   type PluginManifest,
+  type RunModel,
   type SettledJob,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -72,12 +73,15 @@ export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched
 
 /** Host-only snapshots stay faithful until the supervisor builds the guest's wire frame. */
 export type IsolateHarnessInput =
-  | Exclude<IsolateHarnessRequest, { method: "launch" | "send" }>
+  | Exclude<IsolateHarnessRequest, { method: "launch" | "send" | "resolveModel" }>
   | (Omit<Extract<IsolateHarnessRequest, { method: "launch" }>, "run" | "agent"> & {
       readonly run: AgentRunAuthority;
       readonly agent: AgentAuthority;
     })
   | (Omit<Extract<IsolateHarnessRequest, { method: "send" }>, "run"> & {
+      readonly run: AgentRunAuthority;
+    })
+  | (Omit<Extract<IsolateHarnessRequest, { method: "resolveModel" }>, "run"> & {
       readonly run: AgentRunAuthority;
     });
 
@@ -235,6 +239,13 @@ export function buildIsolateDef(
       send: async (ctx, run, input) => {
         await invoke({ method: "send", run, input }, ctx);
       },
+      // Only a guest that announced the verb has it, exactly as an in-realm harness omits it.
+      ...(loaded.harnessResolvesModel === true
+        ? {
+            resolveModel: (ctx: ActionCtx, run: AgentRunAuthority, model: RunModel) =>
+              invoke({ method: "resolveModel", run, model }, ctx),
+          }
+        : {}),
     };
   }
   return {

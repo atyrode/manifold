@@ -623,6 +623,58 @@ describe("isolated harness", () => {
       expect(await fake.next()).toMatchObject({ t: "load_failed" });
     }
   });
+
+  test("a harness announces and answers model resolution only when it implements it", async () => {
+    const def = harnessDef(z.string());
+    if (def.harness === undefined) throw new Error("missing harness");
+    const served = { provider: "fixture", model: "served" };
+    const load = async (candidate: ServerPluginDef) => {
+      const fake = host(candidate);
+      fake.send({
+        t: "load",
+        pluginId: manifest.id,
+        manifest: candidate.manifest,
+        dir: "/nowhere",
+        hardenedContract: HARDENED_CONTRACT_VERSION,
+      });
+      return { fake, loaded: await fake.next() };
+    };
+    expect((await load(def)).loaded).not.toHaveProperty("harnessResolvesModel");
+    const resolving: ServerPluginDef = {
+      ...def,
+      harness: {
+        ...def.harness,
+        resolveModel: async (_ctx, receivedRun, model) =>
+          receivedRun.id === run.id && model.model === served.model ? model : null,
+      },
+    };
+    const { fake, loaded } = await load(resolving);
+    expect(loaded).toMatchObject({ t: "loaded", harnessResolvesModel: true });
+    for (const [model, answer] of [
+      [served, served],
+      [{ provider: "fixture", model: "unserved" }, null],
+    ] as const) {
+      fake.send({
+        t: "harness",
+        id: model.model,
+        request: { method: "resolveModel", run, model },
+        ctx: ctxOf(),
+      });
+      expect(await fake.next()).toEqual({
+        t: "harnessed",
+        id: model.model,
+        outcome: { ok: true, result: answer, emits: [] },
+      });
+    }
+    const broken = {
+      ...def,
+      harness: { ...def.harness, resolveModel: 1 },
+    } as unknown as ServerPluginDef;
+    expect((await load(broken)).loaded).toMatchObject({
+      t: "load_failed",
+      error: expect.stringContaining("incomplete harness implementation"),
+    });
+  });
 });
 test("a retained producer works after dispatch while other captured authority expires", async () => {
   let captured: GuestCtx | undefined;
@@ -1735,7 +1787,7 @@ describe("sealed action preparation", () => {
       pluginId: manifest.id,
       manifest: preparedManifest,
       dir: ".",
-      hardenedContract: 12,
+      hardenedContract: HARDENED_CONTRACT_VERSION,
     });
     expect(await fake.next()).toMatchObject({
       t: "loaded",
@@ -1837,7 +1889,7 @@ describe("sealed action preparation", () => {
         pluginId: manifest.id,
         manifest: preparedManifest,
         dir: ".",
-        hardenedContract: 12,
+        hardenedContract: HARDENED_CONTRACT_VERSION,
       });
       await fake.next();
       fake.send({

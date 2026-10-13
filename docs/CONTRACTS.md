@@ -248,11 +248,45 @@ with an opaque trace; `reportRunActivity` accepts trusted runner/own-Run reports
 `blocked`, `done`, `idle` or `unknown`. Activity is observation, not authority or settlement:
 reporting `done` does not finish a Run.
 
+`reportRunActivityV2` also accepts an optional `model: {provider,model}`, the model the
+harness session currently serves (#1071). It is the same observation, from the same callers:
+the Run's own credential or its Agent runner, on a live Run. The V1 door refuses the field.
+The identity mechanism authorizes the reporter before any harness code runs. The host then asks
+the Run's own harness `ServerHarness.resolveModel(ctx, run, model)` under the Run's credential.
+Only that exact answer replaces `Run.model`, and the Run is authorized again when the answer is
+recorded. Activity and model are written together, and the trace records the outcome.
+Inspection and `listRuns` then show it. A report without `model` never calls the harness.
+A refused model refuses the whole report, so neither field changes and that report's activity is
+not recorded. `harness_credential_required` is any other caller. `run_model_unverifiable` is the
+`external` harness, a harness without `resolveModel`, or a hardened guest that did not announce
+it (contract 13). `run_model_unavailable` is a `null` answer. `harness model reference mismatch`
+is an answer naming another model. An in-realm harness that emits an event while resolving is
+refused with `harness model resolution is read-only`; a hardened guest's emission refuses as
+`unavailable` (`harness answered out of protocol`).
+
+A harness that implements `resolveModel` guarantees three things. It is **deterministic**:
+the same Run, reviewed launch and model always get the same answer. It is **read-only**: it
+writes no storage, starts no job or action and emits no event. It **refuses the unknown**: it
+answers `null` for every model its reviewed launch does not serve, including a model whose
+serving it cannot establish, and never broadens accounts, providers or the reviewed profile.
+The host enforces only the absence of emitted events. The resolver's context still carries the
+harness's ordinary storage, database, action, job and service slices, so writing nothing through
+them, determinism and refusing the unknown are the harness's own guarantees, and `Run.model` is
+only as truthful as they are. An accepted model is attribution, never authority, credit or
+evidence of a provider response.
+
 A run authenticates immediately but begins `pending_policy`. Until it fetches
 `core.access.getAgentPolicy` and sends every exact bundle id and digest to
 `core.access.acknowledgeAgentPolicy`, the dispatch ladder permits only policy and teardown
-doors, scoped inspection and explicitly admitted runner lifecycle operations; none bypasses
-the identity mechanism's current-Run checks. The required bytes are the built-in action-plane contract plus the optional operator
+doors, scoped inspection and exactly two runner lifecycle operations,
+`core.access.reportRunActivityV2` and `core.access.renewAgentRunV2`. None bypasses the identity
+mechanism's current-Run checks, which accept a Run credential for those two only on its own Run.
+A harness can therefore report activity and its model, and keep its Run's lease, before the
+model acknowledges;
+renewal keeps its required justification, lease bounds and renewal ceiling. Every other door,
+including the V1 `reportRunActivity` and `renewAgentRun`, and so every authority-bearing action,
+refuses with `policy_required`. A `policy_stale` Run admits neither lifecycle operation.
+The required bytes are the built-in action-plane contract plus the optional operator
 file selected by `MANIFOLD_AGENT_POLICY_FILE`. A changed revision moves active runs to
 `policy_stale`; startup and the root-only `core.access.reloadAgentPolicy` apply the same
 reconciliation, and only exact re-acknowledgement restores ordinary actions.
@@ -268,7 +302,9 @@ parent and standing grant: maximum depth four, at most 32 descendants under a ro
 lower ancestor budget still applies. Browser/root child admission also returns no bearer.
 
 `core.access.renewAgentRun` permits only the Run's own credential or its matching Agent runner
-to renew an active policy-current Run within the current Agent grant. Browser sponsors and root
+to renew an active policy-current Run within the current Agent grant. Before its first
+acknowledgement, only the Run's own credential renews it, through `renewAgentRunV2`.
+Browser sponsors and root
 are refused with `run_renewal_requires_harness` without minting or revoking credentials; a parent
 Run has no renewal authority over its child merely by being its parent. The door declares `caps: []`
 and `runAccess: "runner"` because the identity mechanism evaluates actual Run and grant authority,
@@ -308,19 +344,31 @@ accepts trusted `MANIFOLD_AGENT_SESSION` and `MANIFOLD_AGENT_MODEL` JSON. Every 
 is withdrawn before either input pipe is read; credentials never travel in argv, model JSONL,
 prompts or logs. Mixed modes and the former sponsor-token carrier are refused.
 
-Admission delivers live schemas and exact server-selected policy before model input. There is
-no `start` or `bind` model frame. Explicit exact acknowledgement remains required; `child`,
-`renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name owned run ids. Children narrow
+Admission delivers live schemas and exact server-selected policy before model input. Its
+`createRun` (Agent mode) or `inspectRun` (Run mode) result carries the Run's current `expiresAt`,
+and every `renew` result carries the expiry it leaves, so a harness needs no out-of-band lease
+to renew in time. There is no `start` or `bind` model frame. Explicit exact acknowledgement
+remains required; `child`, `renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name
+owned run ids. Only a Run-mode root may `renew` before acknowledgement, on its own bearer: an
+Agent-mode root renews on the runner credential and a child on its parent's, so both wait for
+acknowledgement. Children narrow
 the same Agent and cannot bind a session or model through their declaration. Every child and
 replacement bearer remains private. An ordinary `invoke` cannot impersonate a lifecycle or
 activity frame. A policy-stale refusal is followed by fresh policy, never automatic assent.
 The server remains the one argument validator and authority decision.
 
 A trusted harness reports activity through `ActionRunner.reportActivity` or a separate inherited
-`MANIFOLD_ACTIVITY_FD` pipe (descriptor at least 3), using `{runId,activity}` with
-`working | blocked | done | idle`. It cannot share model stdin. Reports use the same
-`core.access.reportRunActivity` door and owned run credential, not terminal-output inference;
-both pipes share the serialized executor and process lifetime.
+`MANIFOLD_ACTIVITY_FD` pipe (descriptor at least 3), using `{runId,activity,model?}` with
+`working | blocked | done | idle` and the optional harness-resolved session model above. It
+cannot share model stdin. Reports use the same `core.access.reportRunActivityV2` door and owned
+run credential, including while the run is pending policy, not terminal-output inference; both
+pipes share the serialized executor and process lifetime. The runner limits itself to
+`ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE` (1024) reports per owned Run from its adoption,
+admission or last successful renewal; the hub enforces no such bound. A refused renewal starts
+nothing. A Run that keeps renewing keeps reporting within the server's renewal ceiling. The
+report past a spent budget is `limit_exceeded`; on the activity pipe that ends
+`manifold-action-runner` and finishes the Run `failed`, so a harness that stops renewing must
+also stop reporting.
 
 By default JSONL results publish only mechanical success or the server's refusal rule, door,
 caller-declared target, run id, trace id and bounded lifecycle facts. Raw action results,
@@ -328,7 +376,7 @@ free-form refusal messages, arguments, credential values and credential hashes n
 interface. Policy digests are public acknowledgement identifiers, not credential hashes.
 The target is a declaration, not a claim that the caller has reconstructed resolved ledger targets.
 Frames reject credential fields and bearer-shaped input even inside opaque action arguments.
-The runner bounds each pipe's frames to 64 KiB and frame count to 1024, model idle time to
+The runner bounds each pipe's frames to 64 KiB and model stdin to 1024 frames, model idle time to
 five minutes, process lifetime to one hour and each HTTP request to 30 seconds. Model EOF
 abandons unfinished work; malformed input fails it; interruption cancels it. Closing only the
 activity pipe does not finish the run. Teardown attempts the same finish door: Agent mode
@@ -2744,6 +2792,35 @@ Missing legacy metadata is `unknown`, never falsely called compatible. The harde
 React-major, digest and ordinary authorization checks remain independent requirements.
 `install.compatibility` exposes the component, built/current values and classification, and
 the manager names that difference.
+A hub whose installed closure the next protocol would hold crosses it forward with a **staged
+replacement set** (#1068), never a compatibility window: whole bundles for the same installed ids,
+each pinned by the sha256 of its published bytes, identified by the sha256 of the set's canonical
+JSON. The candidate hub installs the set as one installer group after its boot assembly and
+before native execution is wired or anything serves. Each member must be exactly compatible
+(no unknown or future stamp, accepted hardened contract, same React major), may not widen the
+capability ceiling or change the data major, and no installed bundle may stay held. Rows keep
+their grants (narrowed only to what is still declared), installer lineage, hardening and
+enablement. A changed native declaration needs the member's explicit `nativeReview`; that
+plugin's native installations are then disabled at their approved revision, with consents,
+resource bindings, service records and owner-side data kept, until the existing deployment
+review admits a new revision. Nothing is approved automatically. A refusal changes nothing.
+A crossing is journaled durably before each effect: `prepared` (the previous rows) before the
+group commits, `committed` (the exact rows the group wrote), the native installations before
+they are disabled, then `completed`. Every write fsyncs the journal file and its directory,
+including the removal of an empty journal. A hub interrupted mid-crossing resumes from the
+journal at its next boot, even without the staged set: an uncommitted record is dropped and a
+committed one finishes its native half once. A completed crossing is never resumed, so staging
+its set again only discards the staging; native installations reviewed since stay as reviewed.
+A crossing is forward-only. Only the deployment's automatic recovery of a crossing whose switch or
+live verification failed restores it, in one database transaction: the previous rows, and
+exactly the installations the crossing stopped, re-enabled at the same revision and artifact.
+It restores a row only if the row is exactly one the journal recorded, so a later install of the
+same digest with other grants, hardening or installer refuses the whole restore. A restore that
+committed before its journal was truncated completes when retried. A restored crossing's bundle
+files are removed only once no installed row and no remaining journal record names them, so an
+earlier crossing still restores after a later one returned to its digest. A manual rollback
+behind a journaled crossing is refused before anything stops and changes nothing: recovery
+after a completed crossing is a forward deployment.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the
@@ -2801,7 +2878,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
 at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
-`format: 1`, `hardenedContract: 12`, the validated `PluginManifest`
+`format: 1`, `hardenedContract: 13`, the validated `PluginManifest`
 ([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
 `entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
 and base64 `files["server.js"]`, `files["web.js"]`,
@@ -2864,8 +2941,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 12; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 13; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2903,6 +2980,13 @@ and pending replies, and supplies a new portable client without remounting React
 Contract 12 also admits optional readonly inputs and expanded buttons. Unused/false
 readonly is omitted from frames; true prevents edits but preserves text selection and
 focused controlled updates. A pre-12 declaration of either feature faults only its instance.
+Contract 13 adds the optional harness `resolveModel` (#1071), announced by
+`loaded.harnessResolvesModel`, and an optional `model` on `identity.reportRunActivityV2`. The
+host sends the verb only to a contract-13 guest that announced it, refuses an announcement below
+13 at load and a respawn that changes it, and refuses any event the guest emits while resolving.
+Older guests and non-announcing harnesses keep their harness fingerprints and have every
+reported Run model refused as `run_model_unverifiable`. Every pack from a contract-13 kit stamps
+13, so its bundles need a hub from the same release or later.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
@@ -2951,7 +3035,9 @@ image with this snapshot in disposable data directories before replacing the tar
 [SELF-HOST.md §Environments](SELF-HOST.md#environments) owns this mandatory gate and its
 explicit, default-off one-time bootstrap exception for an authenticated `unknown_action`
 response from a target predating the export door. The exception emits a target/reason warning
-and step-summary receipt; an existing door always runs the normal gate.
+and step-summary receipt; an existing door always runs the normal gate. With `{ crossings: true }`
+the snapshot also names the journaled staged crossings (#1068), oldest first, by revision and set
+digest; a manual rollback gate refuses a target that does not contain one.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set
@@ -4448,6 +4534,32 @@ reset the set and require a coordinated hub/transport upgrade. An admission boun
 identically at every accepted version, leaving compliant frames byte-identical, changes
 neither the version nor the set.
 
+**Native owner proof on every connection (#1050).** After `welcome`, a hub that admits the
+hello's `jobOwner` challenges it with `owner_challenge` and accepts `owner_proof` only when the
+identity it signs is byte-identical to that `jobOwner`. Any other proof is dropped without a
+reply, leaving the owner's natives disconnected on a healthy socket. The owner signs its current
+identity, and its `inventoryDigest` (the journal head) can move without an owner event, including
+through the `drain` the hub re-latches on that same hello. The transport therefore compares every
+proof with the identity its hello named. On a difference it does not forward the proof: it logs
+`job_owner_unproved` (warn) with the changed field names, closes with 4011
+`job owner identity changed` and re-dials naming the identity the proof carried. Consecutive
+mismatches back off like failed dials. Gaining or losing the owner seat likewise re-dials with
+code 4011. Re-dialling cannot obtain a challenge the hub withholds, such as for a fenced owner.
+
+**One disable per owner incarnation (#1068).** Every accepted `owner_proof` makes the hub
+send each of the machine's installations as an `install` job command again. A disabled or held
+installation carries `action: "disable"`, and the hub sends an unchanged disable (the same
+command bytes) once to each owner incarnation (`ownerId`, `publicKey`, `generation`), not on
+its later proofs. The owner journals an installation action before acting on it, so a repeat
+adds nothing, yet current and released owners answer every disable by replaying each retained
+job of the plugin as an identity-prefixed event in one synchronous burst. Past the owner seat's
+outbound bound of two install frames that burst drops the seat, the transport re-dials with
+4011, and a disable re-sent on every proof kept the owner from staying proved. An enable or a
+purge is sent as before and clears that record, and a changed disable is sent once more. A new
+owner generation or identity, or a restarted hub, is sent the disable again, once. Tradeoff: a
+disable lost together with its channel is sent again only after the owner or the hub restarts.
+Until then the hub's disabled row still refuses new work, and its cancellations persist.
+
 Protocol 52's monetary service policies, invocation context and native charge replies require
 both machine transport 52 and owner RPC 44. An older admitted transport keeps its ordinary
 work, receives no incompatible monetary policy, and cannot admit a bounded direct call.
@@ -5224,6 +5336,13 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   declaration of that ID: edge approval and admission refuse
   `temporary_output_invocation_unsupported` before reservation or spawn, and the native owner
   refuses the same start independently. Retained parent-owned output paths are unchanged.
+  A parent's children together hold at most its admitted request's `timeoutMs` (a Run-bound
+  job's is already clamped to its Run), counted over the parent's life: the native owner
+  refuses a child past that budget (`parent_invocation_refused`). A job-scoped service runtime
+  is not requested by the workload, so the host lowers its provider's declared timeout to what
+  the parent has left after its earlier reserved children (#1064), and refuses
+  `invocation_timeout_budget_exhausted` before reservation when nothing is left. An explicit
+  workload invocation keeps its callee's declared limits.
 - **Owner recovery and dedupe.** The supervised job owner is independent of the terminal
   host and transport. Its durable signing identity, generation, nonce proof and journal
   fence ownership. Request ID and canonical digest bind immutable content; exact replay

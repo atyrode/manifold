@@ -41,6 +41,11 @@ on:
         required: false
         default: false
         type: boolean
+      replacement_set:
+        description: Staged crossing (#1068) for deploy only, the canonical replacement set JSON already staged on the host by digest (non-secret)
+        required: false
+        default: ""
+        type: string
 
 permissions:
   actions: read
@@ -80,11 +85,15 @@ jobs:
           DISPATCH_EXPECTED_CURRENT_SHA: ${{ inputs.expected_current_sha }}
           DISPATCH_REASON: ${{ inputs.reason }}
           DISPATCH_COMPATIBILITY_REVIEWED: ${{ inputs.compatibility_reviewed }}
+          DISPATCH_REPLACEMENT_SET: ${{ inputs.replacement_set }}
         with:
           script: |
             const fullSha = /^[0-9a-f]{40}$/;
             const dispatched = context.eventName === "workflow_dispatch";
             const operation = process.env.DISPATCH_OPERATION ?? "rollback";
+            if (dispatched && operation !== "deploy" && (process.env.DISPATCH_REPLACEMENT_SET ?? "") !== "") {
+              throw new Error("replacement_set applies only to a forward deploy");
+            }
             if (dispatched && !["rollback", "deploy"].includes(operation)) {
               throw new Error("operation must be rollback or deploy");
             }
@@ -177,28 +186,45 @@ jobs:
     timeout-minutes: 20
     outputs:
       bootstrap_required: ${{ steps.installed.outputs.bootstrap_required }}
+      replacement_set: ${{ steps.installed.outputs.replacement_set }}
     env:
       SHA: ${{ needs.request.outputs.sha }}
     steps:
+      # The gate runs the trusted workflow tooling, which drives any target's candidate and
+      # refuses a rollback behind a staged crossing (#1068); the candidate is built from the target.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.request.outputs.sha }}
+          path: target
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
       - name: Build the exact candidate
         run: |
-          [[ $(git rev-parse HEAD) == "$SHA" ]]
-          eval "$(bun scripts/build-identity.ts --env)"
+          [[ $(git -C target rev-parse HEAD) == "$SHA" ]]
+          eval "$(bun scripts/build-identity.ts --repository target --revision "$SHA" --env)"
           docker build --tag "installed-bundles:$SHA" \
-            --build-arg MANIFOLD_VERSION --build-arg MANIFOLD_BUILD --build-arg MANIFOLD_CHANNEL .
+            --build-arg MANIFOLD_VERSION --build-arg MANIFOLD_BUILD --build-arg MANIFOLD_CHANNEL target
       - name: Check the running instance's installed bundles without changing it
         id: installed
         env:
           INSTALLED_BUNDLES_ORIGIN: ${{ vars.DEV_DEPLOY_URL }}
           INSTALLED_BUNDLES_TOKEN: ${{ secrets.DEV_INSTALLED_BUNDLES_TOKEN }}
           INSTALLED_BUNDLES_BOOTSTRAP_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_gate }}
-        run: bun scripts/installed-bundles.ts "installed-bundles:$SHA"
+          INSTALLED_BUNDLES_REVISION: ${{ needs.request.outputs.sha }}
+          # A manual rollback refuses, before anything stops, a target behind a journaled crossing.
+          INSTALLED_BUNDLES_ROLLBACK_REPOSITORY: ${{ needs.request.outputs.rollback == 'true' && 'target' || '' }}
+          REPLACEMENT_SET: ${{ github.event_name == 'workflow_dispatch' && needs.request.outputs.rollback == 'false' && inputs.replacement_set || '' }}
+        run: |
+          if [ -n "$REPLACEMENT_SET" ]; then
+            printf '%s' "$REPLACEMENT_SET" > "$RUNNER_TEMP/replacement-set.json"
+            export INSTALLED_BUNDLES_REPLACEMENT_SET="$RUNNER_TEMP/replacement-set.json"
+          fi
+          bun scripts/installed-bundles.ts "installed-bundles:$SHA"
 
   deploy:
     name: development
@@ -289,6 +315,7 @@ jobs:
           SHA: ${{ needs.request.outputs.sha }}
           EXPECTED_CURRENT_SHA: ${{ needs.request.outputs.expected_current_sha }}
           ROLLBACK: ${{ needs.request.outputs.rollback }}
+          REPLACEMENT_SET_SHA256: ${{ needs.installed-bundles.outputs.replacement_set }}
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
           DEV_DEPLOY_USER: ${{ vars.DEV_DEPLOY_USER }}
           DEV_DEPLOY_HOST: ${{ vars.DEV_DEPLOY_HOST }}
@@ -299,7 +326,12 @@ jobs:
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
           if [ "$ROLLBACK" = true ]; then
+            # installed-bundles refused a target behind a journaled crossing (#1068); the host
+            # restores at most the in-flight crossing its outgoing revision applied.
             request="dev-rollback $EXPECTED_CURRENT_SHA $SHA"
+          elif [ -n "$REPLACEMENT_SET_SHA256" ]; then
+            # The host installs exactly the staged set the candidate gate proved, by digest (#1068).
+            request="dev $SHA $REPLACEMENT_SET_SHA256"
           else
             request="dev $SHA"
           fi
@@ -332,7 +364,13 @@ jobs:
         env:
           EXPECTED_BUILD: ${{ needs.deploy.outputs.expected_build }}
           VERIFY_LIVE_BOOTSTRAP_GATE: ${{ needs.request.outputs.rollback == 'false' && needs.installed-bundles.outputs.bootstrap_required == 'true' }}
-        run: bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$EXPECTED_BUILD"
+          REPLACEMENT_SET: ${{ needs.installed-bundles.outputs.replacement_set != '' && inputs.replacement_set || '' }}
+        run: |
+          if [ -n "$REPLACEMENT_SET" ]; then
+            printf '%s' "$REPLACEMENT_SET" > "$RUNNER_TEMP/replacement-set.json"
+            export VERIFY_LIVE_REPLACEMENT_SET="$RUNNER_TEMP/replacement-set.json"
+          fi
+          bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$EXPECTED_BUILD"
       - name: Restore the previous revision through the guarded receiver
         if: failure() || needs.deploy.result != 'success'
         env:
@@ -348,6 +386,8 @@ jobs:
           key="$(mktemp)"
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
+          # A forward switch's recovery restores the crossing it applied, if any (#1068). A manual
+          # rollback never restores one, so its recovery is the forward move back.
           if [ "$ROLLBACK" = true ]; then
             request="dev $PREVIOUS_SHA"
           else
@@ -385,8 +425,8 @@ jobs:
       - name: Continue development maintenance before pinning the owner
         if: needs.verify-live.outputs.maintenance_required == 'true'
         run: |
-          echo "::warning::Development $SHA requires plugin maintenance, not full-health acceptance. No preview-owner pin was dispatched. Install the named repacked plugins and run ordinary verify-live without VERIFY_LIVE_BOOTSTRAP_GATE before pinning."
-          printf '### Development maintenance required\n\nRevision `%s` passed only the one-deployment maintenance check. No preview-owner pin was dispatched. Install the repacked plugins named by verify-live, retain the pre-switch snapshot, and run ordinary `scripts/verify-live.ts verify PATH EXPECTED_BUILD` with `VERIFY_LIVE_BOOTSTRAP_GATE` unset. Only ordinary verification ends maintenance and permits the owner pin.\n\n' "$SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::Development $SHA requires plugin maintenance, not full-health acceptance. No preview-owner pin was dispatched. Complete what verify-live named, then rerun it against the retained snapshot before pinning."
+          printf '### Development maintenance required\n\nRevision `%s` passed only a maintenance check. No preview-owner pin was dispatched. Complete what verify-live named: install the repacked plugins after a bootstrap (then verify with `VERIFY_LIVE_BOOTSTRAP_GATE` unset), or review and apply the native deployments a staged crossing disabled (then verify with the same `VERIFY_LIVE_REPLACEMENT_SET`). Run `scripts/verify-live.ts verify PATH EXPECTED_BUILD` against the retained pre-switch snapshot; only a result with no maintenance permits the owner pin.\n\n' "$SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dispatch the preview owner pin
         # The release fleet follows production; this receiver follows ONLY the preview owner.

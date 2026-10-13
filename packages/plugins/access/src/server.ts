@@ -11,6 +11,7 @@ import type {
   CreateRunV2Result,
   InspectRunV2Result,
   ListRunsV2Result,
+  ReportRunActivityV2Request,
   ReportRunActivityV2Result,
   AcknowledgeAgentPolicyV2Result,
   RenewAgentRunV2Result,
@@ -113,7 +114,7 @@ interface AccessCtx {
     inspectRunV2(input: InspectRunRequest): AwaitableIdentity<InspectRunV2Result>;
     listRunsV2(input: ListRunsRequest): AwaitableIdentity<ListRunsV2Result>;
     reportRunActivityV2(
-      input: ReportRunActivityRequest,
+      input: ReportRunActivityV2Request,
     ): AwaitableIdentity<ReportRunActivityV2Result>;
     acknowledgeAgentPolicyV2(
       input: AcknowledgeAgentPolicyRequest,
@@ -283,7 +284,7 @@ export const accessHandlers = {
   },
   async reportRunActivityV2(
     ctx: AccessCtx,
-    args: ReportRunActivityRequest,
+    args: ReportRunActivityV2Request,
   ): Promise<Outcome<ReportRunActivityV2Result>> {
     const result = await ctx.identity.reportRunActivityV2(args);
     return result.ok ? result.value : { refused: result.message };

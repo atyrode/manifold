@@ -26,6 +26,7 @@ import {
 } from "../packages/protocol/src/index.ts";
 import {
   LiveVerificationError,
+  maintenanceRequired,
   pollLive,
   readLiveSnapshot,
   snapshotLive,
@@ -84,6 +85,7 @@ export function liveFixture(beforeRequest?: () => void) {
     pluginEnabled: true,
     pluginHeld: null as PluginRosterEntry["held"] | null,
     pluginLifecycle: "ok" as NonNullable<PluginRosterEntry["lifecycle"]>,
+    pluginMachine: undefined as PluginRosterEntry["manifest"]["machine"],
     pluginInstallRefusal: undefined as NonNullable<PluginRosterEntry["install"]>["refusal"],
     servicesMissing: false,
     machineDoorPresent: true,
@@ -183,6 +185,7 @@ export function liveFixture(beforeRequest?: () => void) {
       description: "Native parity proof",
       capabilities: [`${pluginId}:read`, `${pluginId}:write`],
       contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      ...(state.pluginMachine ? { machine: state.pluginMachine } : {}),
     },
     enabled: state.pluginHeld ? false : state.pluginEnabled,
     source: "plugin",
@@ -381,6 +384,7 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     const native = await snapshotLive(fixture.target);
     fixture.state.build = "1.0.0";
@@ -391,6 +395,7 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     await expect(pollLive(fixture.target, native, "1.0.0", shortPoll)).rejects.toBeInstanceOf(
       LiveVerificationError,
@@ -426,11 +431,149 @@ test("a healthy disabled legacy plugin keeps its configured intent across upgrad
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     fixture.state.pluginEnabled = true;
     await expect(pollLive(fixture.target, before, "1.1.0", shortPoll)).rejects.toThrow(
       /plugin example.live: enablement changed; expected false; observed true/,
     );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a staged crossing defers only acknowledged native reviews at their approved revision (#1068)", async () => {
+  const fixture = liveFixture();
+  try {
+    const before = await snapshotLive(fixture.target);
+    const member = {
+      pluginId,
+      sha256: hash,
+      url: "https://plugins.example.invalid/example.live.manifold-plugin.json",
+    };
+    Object.assign(fixture.state, {
+      build: "1.1.0",
+      installationEnabled: false,
+      installationReady: false,
+      serviceState: "unavailable",
+      serviceReason: "installation_disabled",
+    });
+    expect(
+      await pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [{ ...member, nativeReview: true }] },
+      }),
+    ).toEqual({
+      heldPlugins: [],
+      deferredServices: [serviceId],
+      deferredInstallations: [],
+      pendingNativeReviews: [{ machineId, pluginId, revision: "deployment-before" }],
+    });
+    // Without the acknowledgement, or once the staged digest is not the one serving, it refuses.
+    await expect(
+      pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [member] },
+      }),
+    ).rejects.toThrow(/expected ready; observed unavailable/);
+    await expect(
+      pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [{ ...member, sha256: "b".repeat(64) }] },
+      }),
+    ).rejects.toThrow(/staged replacement: expected b{64}; observed a{64}/);
+    // A purge is not a pending review.
+    fixture.state.installationPurgeRequested = true;
+    await expect(
+      pollLive(fixture.target, before, "1.1.0", {
+        ...shortPoll,
+        replacement: { format: 1, members: [{ ...member, nativeReview: true }] },
+      }),
+    ).rejects.toThrow(/pending the native deployment review/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a crossing keeps maintenance while a provider not ready before the switch, or its service, waits (#1068)", async () => {
+  const fixture = liveFixture();
+  try {
+    // Enabled but not ready when snapshotted, so ordinary parity owes it no readiness.
+    fixture.state.installationReady = false;
+    const before = await snapshotLive(fixture.target);
+    Object.assign(fixture.state, {
+      build: "1.1.0",
+      installationEnabled: false,
+      serviceState: "unavailable",
+      serviceReason: "installation_disabled",
+    });
+    const replacement = {
+      format: 1 as const,
+      members: [
+        {
+          pluginId,
+          sha256: hash,
+          url: "https://plugins.example.invalid/example.live.manifold-plugin.json",
+          nativeReview: true as const,
+        },
+      ],
+    };
+    const result = await pollLive(fixture.target, before, "1.1.0", { ...shortPoll, replacement });
+    expect(result).toEqual({
+      heldPlugins: [],
+      deferredServices: [serviceId],
+      deferredInstallations: [],
+      pendingNativeReviews: [{ machineId, pluginId, revision: "deployment-before" }],
+    });
+    expect(maintenanceRequired(result)).toBe(true);
+    // A deferred service alone withholds the owner pin as well.
+    expect(maintenanceRequired({ ...result, pendingNativeReviews: [] })).toBe(true);
+    expect(
+      maintenanceRequired({
+        heldPlugins: [],
+        deferredServices: [],
+        deferredInstallations: [],
+        pendingNativeReviews: [],
+      }),
+    ).toBe(false);
+    // Re-admitted at the replacement's declaration, it owes no readiness it never had.
+    Object.assign(fixture.state, {
+      revision: "deployment-reviewed",
+      installationEnabled: true,
+      serviceState: "ready",
+      pluginMachine: {
+        artifacts: {
+          "linux-x64": {
+            url: "https://example.invalid/worker",
+            sha256: hash,
+            entrySha256: hash,
+            format: "raw",
+            entry: ["worker"],
+            maxBytes: 4096,
+            maxExpandedBytes: 4096,
+            maxMembers: 1,
+          },
+        },
+        operations: {
+          [`${pluginId}.serve`]: {
+            argv: [],
+            input: {},
+            runtimeTools: [],
+            locations: [],
+            outputs: [],
+            network: "none",
+            stdin: false,
+            limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+          },
+        },
+        locations: {},
+      },
+    });
+    expect(
+      maintenanceRequired(
+        await pollLive(fixture.target, before, "1.1.0", { ...shortPoll, replacement }),
+      ),
+    ).toBe(false);
   } finally {
     await fixture.close();
   }
@@ -640,6 +783,7 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
       heldPlugins: [{ pluginId, minimum: 2 }],
       deferredServices: [serviceId],
       deferredInstallations: [{ machineId, pluginId, revision: "deployment-before" }],
+      pendingNativeReviews: [],
     });
     fixture.state.pluginHeld = null;
     fixture.state.readDoorPresent = true;
@@ -656,6 +800,7 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
       heldPlugins: [],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
   } finally {
     await fixture.close();
@@ -675,6 +820,7 @@ test("a snapshot taken during a repack hold records configured enablement", asyn
       heldPlugins: [{ pluginId, minimum: 2 }],
       deferredServices: [],
       deferredInstallations: [],
+      pendingNativeReviews: [],
     });
     fixture.state.pluginEnabled = false;
     await expect(

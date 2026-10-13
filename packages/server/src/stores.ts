@@ -2597,11 +2597,18 @@ export class ServerStore {
     });
   }
 
-  updateAgentRunActivity(runId: string, activity: RunActivity): void {
+  /** One observation: the activity and, when the harness reported one, its resolved model. */
+  updateAgentRunActivity(runId: string, activity: RunActivity, model?: RunModel): void {
     requireActionEffects();
+    if (model === undefined) {
+      this.db
+        .query<void, [string, string]>("UPDATE agent_runs SET activity=? WHERE id=?")
+        .run(RunActivitySchema.parse(activity), runId);
+      return;
+    }
     this.db
-      .query<void, [string, string]>("UPDATE agent_runs SET activity=? WHERE id=?")
-      .run(RunActivitySchema.parse(activity), runId);
+      .query<void, [string, string, string]>("UPDATE agent_runs SET activity=?, model=? WHERE id=?")
+      .run(RunActivitySchema.parse(activity), JSON.stringify(RunModelSchema.parse(model)), runId);
   }
 
   createAgentRun(record: AgentRunRecord, snapshot: AgentPolicySnapshotRecord): void {
@@ -2838,7 +2845,7 @@ export class ServerStore {
            SET expires_at=?,renewals=renewals+1,authorizer_token_id=?,authorizer_grant_id=?,
                authorizer_caps=?,authorizer_container_scope=?,authorizer_expires_at=?,
                authorizer_authority_scope=?
-           WHERE id=? AND state='active'`,
+           WHERE id=? AND state IN ('pending_policy','active')`,
         )
         .run(
           expiresAt,

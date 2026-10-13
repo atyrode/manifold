@@ -275,7 +275,8 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
     name: "exportInstalled",
     title: "Export installed bundles for a read-only deployment compatibility check",
     caps: ["*"],
-    input: z.strictObject({}),
+    // `crossings` adds the journaled staged crossings a manual rollback gate refuses (#1068).
+    input: z.strictObject({ crossings: z.literal(true).optional() }),
     result: InstalledPluginsSnapshotSchema,
   }),
   defineAction({

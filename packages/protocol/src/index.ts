@@ -45,6 +45,7 @@ export {
 export {
   ACTION_RUNNER_MAX_FRAME_BYTES,
   ACTION_RUNNER_MAX_FRAMES,
+  ACTION_RUNNER_MAX_ACTIVITY_REPORTS_PER_LEASE,
   ACTION_RUNNER_IDLE_TIMEOUT_MS,
   ActionProtocolSchema,
   ActionRunnerBindSchema,
@@ -1502,10 +1503,15 @@ export {
   type TerminalsResponse,
 } from "./http.ts";
 export {
+  InstalledCrossingSchema,
   InstalledPluginRowSchema,
   InstalledPluginStatesSchema,
   InstalledPluginsSnapshotSchema,
+  PluginReplacementSetSchema,
+  type InstalledCrossing,
   type InstalledPluginRow,
   type InstalledPluginStates,
   type InstalledPluginsSnapshot,
+  type PluginReplacementMember,
+  type PluginReplacementSet,
 } from "./installed-plugins.ts";

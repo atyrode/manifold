@@ -76,6 +76,17 @@ function isCanonicalBase64(value: string, maxBytes: number): boolean {
   );
 }
 
+/**
+ * A journaled staged crossing (#1068) as `exportInstalled { crossings: true }` names it: the
+ * revision that applied it and its set digest. A manual rollback gate refuses a target that does
+ * not contain one, because recovery after a completed crossing is a forward deployment.
+ */
+export const InstalledCrossingSchema = z.strictObject({
+  revision: z.string().regex(/^[0-9a-f]{40}$/),
+  setSha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type InstalledCrossing = z.infer<typeof InstalledCrossingSchema>;
+
 /** An explicit empty inventory is valid; a missing door or malformed response never is. */
 export const InstalledPluginsSnapshotSchema = z.strictObject({
   format: z.literal(1),
@@ -94,5 +105,38 @@ export const InstalledPluginsSnapshotSchema = z.strictObject({
     .refine((plugins) => new Set(plugins.map(({ row }) => row.pluginId)).size === plugins.length, {
       message: "duplicate installed plugin",
     }),
+  /** Only when asked for: the journal's crossings, oldest first. */
+  crossings: InstalledCrossingSchema.array().optional(),
 });
 export type InstalledPluginsSnapshot = z.infer<typeof InstalledPluginsSnapshotSchema>;
+
+/**
+ * A staged protocol crossing (#1068): whole replacement bundles for installed plugin ids, each
+ * pinned by the sha256 of its published bytes. `nativeReview` is the operator's explicit
+ * acknowledgement that the replacement declares a different native machine half, so the hub
+ * disables that plugin's native installations until the deployment review admits the new one.
+ */
+export const PluginReplacementSetSchema = z.strictObject({
+  format: z.literal(1),
+  members: z
+    .array(
+      z.strictObject({
+        pluginId: PluginIdSchema,
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        url: z
+          .string()
+          .max(2048)
+          .regex(
+            /^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?\/[A-Za-z0-9._~%/+-]+\.manifold-plugin\.json$/,
+          ),
+        nativeReview: z.literal(true).optional(),
+      }),
+    )
+    .min(1)
+    .max(64)
+    .refine((members) => new Set(members.map(({ pluginId }) => pluginId)).size === members.length, {
+      message: "duplicate replacement plugin",
+    }),
+});
+export type PluginReplacementSet = z.infer<typeof PluginReplacementSetSchema>;
+export type PluginReplacementMember = PluginReplacementSet["members"][number];

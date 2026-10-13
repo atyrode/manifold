@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 import type { PluginManifest } from "@manifold/protocol";
 import type { ActionPreparationCtx, PreparedRequirement } from "@manifold/protocol";
-import { AgentSchema, AgentRunSchema, type AgentRunAuthority } from "@manifold/protocol";
+import {
+  AgentSchema,
+  AgentRunSchema,
+  HARDENED_CONTRACT_VERSION,
+  type AgentRunAuthority,
+} from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { IsolateDenial } from "../src/isolate/contract.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
@@ -126,7 +131,7 @@ test("sealed preparation keeps child normalization private, denies mutations and
     pluginId: preparedManifest.id,
     manifest: preparedManifest,
     dir: resolve(import.meta.dir, "fixtures/isolate-preparation-guest"),
-    hardenedContract: 12,
+    hardenedContract: HARDENED_CONTRACT_VERSION,
     serverBinding: { prepareActions: { open: { caps: ["machines:read" as const] } } },
   };
   try {
@@ -228,7 +233,7 @@ test.each(["transform", "preprocess"] as const)(
         pluginId: declared.id,
         manifest: declared,
         dir: resolve(import.meta.dir, "fixtures/isolate-legacy-parser-guest"),
-        hardenedContract: 12,
+        hardenedContract: HARDENED_CONTRACT_VERSION,
       });
       holding = def.handlers.hold!(ctx, null as never);
       void holding.catch(() => {});
@@ -293,7 +298,7 @@ test("a guest cannot add or replace its preparer ceiling at load", async () => {
           capabilities: ["containers:read", "machines:read"],
         },
         dir: resolve(import.meta.dir, "fixtures/isolate-preparation-guest"),
-        hardenedContract: 12,
+        hardenedContract: HARDENED_CONTRACT_VERSION,
         serverBinding: { prepareActions: { open: { caps: [] } } },
       }),
     ).rejects.toThrow("sealed artifact binding");

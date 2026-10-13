@@ -10,23 +10,40 @@ import {
   readFileSync,
   rmSync,
   statfsSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:net";
 import { isDeepStrictEqual } from "node:util";
+import { z } from "zod";
 import { Y } from "../packages/scene/src/index.ts";
 import { retainedProcessAdmission, retainedProcessRefusal } from "./retained-process-holds.ts";
 import {
   ActionOutcomeSchema,
+  canonicalJobJson,
   ContainerResponseSchema,
   IndexResponseSchema,
+  JOB_OWNER_PROTOCOL_VERSION,
+  JobDeploymentReviewSchema,
+  JobDescriptionSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
+  PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS,
+  PluginBundleSchema,
+  PluginReplacementSetSchema,
+  PluginsResponseSchema,
+  PROTOCOL_VERSION,
+  ServerToAgentMessageSchema,
   TerminalsResponseSchema,
+  type JobCommand,
+  type JobOwner,
+  type PluginManifest,
+  type PluginReplacementSet,
 } from "../packages/protocol/src/index.ts";
+import { BUILT_AGAINST_PROTOCOL } from "../packages/plugin-kit/src/pack.ts";
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
 import { deriveBuildIdentity } from "./build-identity.ts";
 import { openDatabase } from "../packages/server/src/db.ts";
@@ -35,14 +52,19 @@ import { reserveLoopbackPort, sleep, until } from "./gate-lib.ts";
 
 const args = process.argv.slice(2);
 if (
-  args.some((arg) => arg !== "--measure-storage" && arg !== "--integrated") ||
-  new Set(args).size !== args.length
+  args.some(
+    (arg) => arg !== "--measure-storage" && arg !== "--integrated" && arg !== "--crossing",
+  ) ||
+  new Set(args).size !== args.length ||
+  (args.includes("--integrated") && args.includes("--crossing"))
 ) {
   throw new Error(
-    "usage: bun scripts/verify-preview-environment.ts [--measure-storage] [--integrated]",
+    "usage: bun scripts/verify-preview-environment.ts [--measure-storage] [--integrated | --crossing]",
   );
 }
-const integrated = args.includes("--integrated");
+/** A staged bundle crossing (#1068), rehearsed through the integrated fixture's real receiver. */
+const crossing = args.includes("--crossing");
+const integrated = crossing || args.includes("--integrated");
 const measureStorage = args.includes("--measure-storage");
 const repo = resolve(import.meta.dir, "..");
 const started = Date.now();
@@ -73,7 +95,12 @@ const ownedImages = new Set<string>();
 const ownedTopologyVolumes = new Set<string>();
 const ownedTopologyNetworks = new Set<string>();
 const processes = new Set<Bun.Subprocess>();
-const metrics: Record<string, unknown> = { integrated, measureStorage, artifacts: evidence };
+const metrics: Record<string, unknown> = {
+  integrated,
+  crossing,
+  measureStorage,
+  artifacts: evidence,
+};
 const reports: { name: string; elapsedMs: number }[] = [];
 let browser: Browser | null = null;
 let peerBrowser: Browser | null = null;
@@ -304,9 +331,11 @@ async function rememberImages(): Promise<void> {
     if (result.code === 0) ownedImages.add(result.out.trim());
   }
 }
+/** One receiver request. `last` is a forward crossing's optional staged set digest. */
 async function up(
   options: CommandOptions = {},
   rollbackFrom?: string,
+  last?: string,
 ): Promise<{ code: number; out: string; err: string }> {
   active = true;
   const argv = integrated
@@ -316,8 +345,12 @@ async function up(
   if (integrated) {
     requestOptions.env = {
       ...(options.env ?? env),
-      SSH_ORIGINAL_COMMAND:
-        rollbackFrom === undefined ? `dev ${revision}` : `dev-rollback ${rollbackFrom} ${revision}`,
+      SSH_ORIGINAL_COMMAND: [
+        ...(rollbackFrom === undefined
+          ? ["dev", revision]
+          : ["dev-rollback", rollbackFrom, revision]),
+        ...(last === undefined ? [] : [last]),
+      ].join(" "),
     };
   }
   const result = await command(argv, requestOptions);
@@ -357,7 +390,7 @@ async function act(name: string, args: unknown): Promise<unknown> {
   });
   requireThat(response.ok, `action ${name}: HTTP ${response.status}`);
   const result = ActionOutcomeSchema.parse(await response.json());
-  requireThat(result.ok, `action ${name} refused`);
+  if (!result.ok) throw new Error(`action ${name} refused: ${JSON.stringify(result.denial)}`);
   return result.result;
 }
 async function session(id: string): Promise<SessionClient> {
@@ -642,11 +675,11 @@ async function fixtureRevision(marker: string): Promise<string> {
   await command(["git", "checkout", "--detach", sha], { cwd: fixtureRepo });
   return sha;
 }
-async function fixtureChild(parent: string, marker: string): Promise<string> {
-  // Create a new commit object over the identical application tree. Objects and
-  // refs remain in this run's private repositories; source and main refs are untouched.
+async function fixtureChild(parent: string, marker: string, treeOf = parent): Promise<string> {
+  // Create a new commit object over TREEOF's application tree, by default the parent's own.
+  // Objects and refs remain in this run's private repositories; source and main are untouched.
   const tree = (
-    await command(["git", "rev-parse", `${parent}^{tree}`], { cwd: fixtureRepo })
+    await command(["git", "rev-parse", `${treeOf}^{tree}`], { cwd: fixtureRepo })
   ).out.trim();
   const sha = (
     await command(["git", "commit-tree", tree, "-p", parent], {
@@ -844,6 +877,13 @@ async function setup(): Promise<void> {
   mkdirSync(trustedScripts, { recursive: true, mode: 0o700 });
   cpSync(join(repo, "scripts", "build-identity.ts"), join(trustedScripts, "build-identity.ts"));
   cpSync(join(repo, "scripts", "preview-seed.ts"), join(trustedScripts, "preview-seed.ts"));
+  // deploy-dev.sh verifies a staged replacement set with the installed checkout's own sources,
+  // as the host's full tooling checkout does; they are read, never changed.
+  cpSync(
+    join(repo, "scripts", "bundle-replacement.ts"),
+    join(trustedScripts, "bundle-replacement.ts"),
+  );
+  symlinkSync(join(repo, "packages"), resolve(tooling, "../..", "packages"));
   if (!integrated) {
     const pin = readFileSync(pinPath, "utf8");
     requireThat(
@@ -1256,6 +1296,495 @@ async function preserveLive(
     await restore();
   }
 }
+
+/*
+  A STAGED CROSSING (#1068), rehearsed through the integrated fixture's real receiver grammar,
+  Docker volume steps and retained data volume (`--crossing`). The incumbent is a hub of the
+  earlier protocol: the same application, its bundle window the earlier stamp alone. It serves a
+  closure built for that protocol: a hardened server plugin with stored data, and a machine-half
+  plugin whose native deployment a proved owner admitted through the real review door. Fixture
+  plugins and a fixture owner only: no workload runs, no artifact URL is fetched, and the only keys
+  are this run's own.
+*/
+const CROSSING_COUNTER = "example.counter";
+const CROSSING_NATIVE = "example.native";
+const CROSSING_OPERATION = `${CROSSING_NATIVE}.serve`;
+/** A plugin-storage key no transition may touch, beside the count the plugin itself keeps. */
+const CROSSING_SENTINEL = "crossing-sentinel";
+/** A capability the install door withholds by default: only an explicit grant confers it. */
+const CROSSING_WITHHELD_CAP = "tokens:mint";
+const BUNDLE_SUFFIX = ".manifold-plugin.json";
+const CROSSING_JOURNAL = "/data/plugin-replacement/journal.json";
+const CrossingRowSchema = z.looseObject({
+  pluginId: z.string(),
+  sha256: z.string(),
+  grantedCaps: z.array(z.string()),
+  installedBy: z.string(),
+  installer: z.unknown().optional(),
+  hardened: z.boolean(),
+  bundlePath: z.string(),
+  builtAgainst: z.record(z.string(), z.string()).optional(),
+});
+type CrossingRow = z.infer<typeof CrossingRowSchema>;
+const CrossingInstallationSchema = z.strictObject({
+  machineId: z.string(),
+  pluginId: z.string(),
+  revision: z.string(),
+  artifact: z.string(),
+});
+type CrossingInstallation = z.infer<typeof CrossingInstallationSchema>;
+const CrossingRecordSchema = z.looseObject({
+  setSha256: z.string(),
+  revision: z.string(),
+  phase: z.string().optional(),
+  members: z.array(
+    z.looseObject({ sha256: z.string(), previous: z.unknown(), nativeReview: z.boolean() }),
+  ),
+  disabledInstallations: z.array(CrossingInstallationSchema),
+});
+const CrossingStateSchema = z.strictObject({
+  rows: z.array(CrossingRowSchema),
+  /** Each probed bundle path's sha256, or null where no file exists. */
+  files: z.record(z.string(), z.string().nullable()),
+  native: z
+    .strictObject({
+      revision: z.string(),
+      artifact: z.string(),
+      enabled: z.number(),
+      ready: z.number(),
+      purge_requested: z.number(),
+    })
+    .nullable(),
+  consents: z.array(z.unknown()),
+  journal: z.array(CrossingRecordSchema).nullable(),
+  staged: z.boolean(),
+  storage: z.record(
+    z.string(),
+    z.strictObject({ count: z.string().nullable(), sentinel: z.string().nullable() }),
+  ),
+});
+type CrossingState = z.infer<typeof CrossingStateSchema>;
+const CounterSchema = z.object({ count: z.number() });
+
+/**
+ * A machine half alone, whose one URL artifact no owner ever fetches. It declares one capability
+ * the door withholds by default, so its installer's grant is an authority decision of its own.
+ */
+function nativeFixture(version: string, artifact: string): PluginManifest {
+  return {
+    id: CROSSING_NATIVE,
+    version,
+    title: "Crossing native fixture",
+    description: "A machine half alone: a crossing that changes it stops its native installation.",
+    capabilities: [CROSSING_WITHHELD_CAP],
+    entry: {},
+    contributes: {
+      settings: [],
+      panels: [],
+      seats: [],
+      sections: [],
+      elements: [],
+      tools: [],
+      events: [],
+    },
+    machine: {
+      artifacts: {
+        "linux-x64": {
+          url: "https://artifacts.invalid/example-native-worker",
+          sha256: artifact,
+          entrySha256: artifact,
+          format: "raw",
+          entry: ["worker"],
+          maxBytes: 4096,
+          maxExpandedBytes: 4096,
+          maxMembers: 1,
+        },
+      },
+      operations: {
+        [CROSSING_OPERATION]: {
+          argv: [],
+          input: {},
+          runtimeTools: [],
+          locations: [],
+          outputs: [],
+          network: "none",
+          providesService: true,
+          stdin: false,
+          limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+        },
+      },
+      locations: {},
+    },
+  };
+}
+async function packFixture(dir: string, out: string): Promise<{ bytes: Buffer; sha256: string }> {
+  const packed = await command(
+    ["bun", join(repo, "packages/plugin-kit/src/pack.ts"), dir, "--out", out],
+    { cwd: join(repo, "packages/plugin-kit"), timeoutMs: 120_000 },
+  );
+  const bytes = readFileSync(out);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  requireThat(
+    z.object({ sha256: z.string() }).parse(JSON.parse(packed.out)).sha256 === sha256,
+    "plugin pack reported a digest its bundle does not have",
+  );
+  return { bytes, sha256 };
+}
+/**
+ * The same bundle stamped for `protocol` and serialized with `indent`: an earlier SDK's build
+ * when the stamp is one this hub no longer admits, otherwise a distinct digest of identical
+ * content, which is all a stacked crossing needs.
+ */
+function bundleVariant(bytes: Buffer, protocol: string, indent = 0): Buffer {
+  const bundle = PluginBundleSchema.parse(JSON.parse(bytes.toString("utf8")));
+  return Buffer.from(
+    JSON.stringify(
+      { ...bundle, builtAgainst: { ...bundle.builtAgainst, [BUILT_AGAINST_PROTOCOL]: protocol } },
+      null,
+      indent,
+    ),
+  );
+}
+/**
+ * The disposable one-shot that gives each plugin's storage a sentinel beside the data the plugin
+ * keeps itself, written over the stopped volume in the incumbent's image.
+ */
+function pluginDataSentinels(sentinels: Readonly<Record<string, string>>): string {
+  return `import { openDatabase, ServerStore } from "./packages/server/src/index.ts";
+const store = new ServerStore(openDatabase("/data/manifold.db"));
+try {
+  for (const [pluginId, sentinel] of Object.entries(${JSON.stringify(sentinels)}))
+    await store.pluginStorage(pluginId).set(${JSON.stringify(CROSSING_SENTINEL)}, sentinel);
+} finally {
+  store.close();
+}
+`;
+}
+/**
+ * A disposable, network-less fixture container of IMAGE over the retained volume. It is labelled
+ * for this run's cleanup but never as the `manifold` service, a label a Compose-built image would
+ * otherwise lend it: deploy-dev.sh requires exactly one such container, its incumbent.
+ */
+function fixtureVolumeRun(
+  image: string,
+  entrypoint: string,
+  args: readonly string[],
+  options: CommandOptions = {},
+) {
+  return docker(
+    [
+      "run",
+      "--rm",
+      ...(options.input === undefined ? [] : ["-i"]),
+      "--network",
+      "none",
+      "--security-opt",
+      "no-new-privileges",
+      "--label",
+      `com.docker.compose.project=${project()}`,
+      "--label",
+      "com.docker.compose.service=crossing-fixture",
+      "--mount",
+      `type=volume,src=${volume()},dst=/data`,
+      "--entrypoint",
+      entrypoint,
+      image,
+      ...args,
+    ],
+    { timeoutMs: 120_000, ...options },
+  );
+}
+/** A Bun script in a fixture container of IMAGE, as deploy-dev.sh runs its own volume steps. */
+async function volumeScript(image: string, source: string): Promise<string> {
+  return (await fixtureVolumeRun(image, "bun", ["-"], { input: source })).out.trim();
+}
+/** The crossing as the retained volume holds it, read without writing. */
+async function crossingState(
+  paths: readonly string[],
+  machineId: string,
+  run: (source: string) => Promise<string> = (source) => execBun(source),
+): Promise<CrossingState> {
+  return CrossingStateSchema.parse(
+    JSON.parse(
+      await run(`import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { ServerStore } from "./packages/server/src/index.ts";
+const ids = ${JSON.stringify([CROSSING_COUNTER, CROSSING_NATIVE])};
+const paths = ${JSON.stringify(paths)};
+const journal = ${JSON.stringify(CROSSING_JOURNAL)};
+const store = new ServerStore(new Database("/data/manifold.db", { readonly: true }));
+try {
+  const storage = {};
+  for (const id of ids)
+    storage[id] = {
+      count: (await store.pluginStorage(id).get("count")) ?? null,
+      sentinel: (await store.pluginStorage(id).get(${JSON.stringify(CROSSING_SENTINEL)})) ?? null,
+    };
+  console.log(JSON.stringify({
+    rows: store.pluginInstalls().filter((row) => ids.includes(row.pluginId)),
+    files: Object.fromEntries(paths.map((path) => [path, existsSync(path) ? createHash("sha256").update(readFileSync(path)).digest("hex") : null])),
+    native: store.db
+      .query("SELECT revision,artifact,enabled,ready,purge_requested FROM machine_job_installs WHERE machine_id=? AND plugin_id=?")
+      .get(${JSON.stringify(machineId)}, ${JSON.stringify(CROSSING_NATIVE)}),
+    consents: store.db
+      .query("SELECT * FROM machine_job_consents WHERE machine_id=? AND plugin_id=? ORDER BY installation_revision,node,cap")
+      .all(${JSON.stringify(machineId)}, ${JSON.stringify(CROSSING_NATIVE)}),
+    journal: existsSync(journal) ? JSON.parse(readFileSync(journal, "utf8")) : null,
+    staged: existsSync("/data/plugin-replacement/staged"),
+    storage,
+  }));
+} finally {
+  store.close();
+}`),
+    ),
+  );
+}
+/**
+ * CRASH-POINT INJECTION without a test hook. Once CONDITION holds over the retained volume, a FIFO
+ * takes the journal's next-write path, so the real code path's next journal write blocks in
+ * open(2) at exactly that point; `awaitBlockedWriter` proves it is there before a kill lands.
+ */
+async function plantJournalFifo(image: string, condition: string): Promise<void> {
+  await fixtureVolumeRun(
+    image,
+    "/bin/sh",
+    ["-c", `until ${condition}; do sleep 0.01; done; mkfifo ${CROSSING_JOURNAL}.next`],
+    { timeoutMs: 20 * 60_000 },
+  );
+}
+async function removeJournalFifo(image: string): Promise<void> {
+  await fixtureVolumeRun(image, "/bin/rm", ["-f", `${CROSSING_JOURNAL}.next`]);
+}
+/** Waits until CONTAINER's process running PROGRAM blocks opening the planted FIFO. */
+async function awaitBlockedWriter(container: string, program: string): Promise<void> {
+  await until(
+    async () =>
+      (
+        await docker(
+          [
+            "exec",
+            container,
+            "/bin/sh",
+            "-c",
+            `for p in /proc/[0-9]*; do if tr '\\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q "$1" && [ "$(cat "$p/wchan" 2>/dev/null)" = wait_for_partner ]; then echo blocked; fi; done`,
+            "blocked-writer",
+            program,
+          ],
+          { allowFailure: true },
+        )
+      ).out.includes("blocked"),
+    120_000,
+    `${program} blocked at the planted journal write`,
+  );
+}
+/** A staged set: its digest, its members, and the set file verify-live reads. */
+interface StagedSet {
+  readonly sha256: string;
+  readonly set: PluginReplacementSet;
+  readonly file: string;
+}
+/**
+ * TEST-ONLY STAGER. `bundle-replacement.ts stage` fetches each member over HTTPS through the
+ * artifact egress policy, which admits only ordinary public unicast destinations at every hop and
+ * at the connected peer (packages/server/src/artifact-https.ts), so no loopback server can serve
+ * it. This writes the layout `stage` produces from the packed bytes instead: the canonical set under
+ * its digest beside each member's exact bytes. deploy-dev.sh verifies it with the installed
+ * tooling's `verify`, and the candidate re-verifies it on receipt, exactly as on the host.
+ */
+function stageSet(
+  members: readonly { pluginId: string; bytes: Buffer; nativeReview?: true }[],
+): StagedSet {
+  const set = PluginReplacementSetSchema.parse({
+    format: 1,
+    members: members.map(({ pluginId, bytes, nativeReview }) => ({
+      pluginId,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      url: `https://plugins.invalid/${pluginId}${BUNDLE_SUFFIX}`,
+      ...(nativeReview === undefined ? {} : { nativeReview }),
+    })),
+  });
+  const text = canonicalJobJson(set);
+  const sha256 = createHash("sha256").update(text).digest("hex");
+  const staged = join(deployment, "bundle-replacements", sha256);
+  if (!existsSync(staged)) {
+    mkdirSync(staged, { recursive: true, mode: 0o700 });
+    writeFileSync(join(staged, "set.json"), text, { mode: 0o600 });
+    for (const [index, member] of set.members.entries())
+      writeFileSync(join(staged, `${member.sha256}${BUNDLE_SUFFIX}`), members[index]!.bytes, {
+        mode: 0o600,
+      });
+  }
+  const file = join(directory, `replacement-set-${sha256}.json`);
+  writeFileSync(file, text, { mode: 0o600 });
+  return { sha256, set, file };
+}
+/**
+ * A proved native owner on the real machine socket: it answers the owner challenge with its own
+ * key, reports each enabled installation installed unless it withholds readiness, and keeps a
+ * managed-store sentinel that only a purge command may delete, as a real owner's retained state.
+ * It runs no workload.
+ */
+class NativeOwner {
+  readonly commands: Extract<JobCommand, { type: "install" }>[] = [];
+  proofs = 0;
+  /** False while the owner withholds its installed reports, as an owner not yet ready does. */
+  acknowledges = true;
+  private socket: WebSocket | null = null;
+  private stopped = false;
+  private readonly key = generateKeyPairSync("ed25519");
+  readonly owner: JobOwner;
+  constructor(
+    readonly machineId: string,
+    private readonly token: string,
+    private readonly name: string,
+    readonly store: string,
+  ) {
+    this.owner = {
+      protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
+      ownerId: `crossing-owner-${number}`,
+      publicKey: this.key.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      generation: 1,
+      platforms: ["linux-x64"],
+      inventoryDigest: "0".repeat(64),
+      resources: { tools: {}, services: {}, anchors: {}, serviceDefinitions: {} },
+    };
+  }
+  connect(): void {
+    if (this.stopped) return;
+    const socket = new WebSocket(`${origin.replace(/^http/, "ws")}/ws/machine`);
+    this.socket = socket;
+    socket.addEventListener("open", () =>
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          token: this.token,
+          name: this.name,
+          agentVersion: "crossing-fixture",
+          protocolVersion: PROTOCOL_VERSION,
+          terminals: [],
+          jobOwner: this.owner,
+        }),
+      ),
+    );
+    socket.addEventListener("message", (event) => this.receive(socket, String(event.data)));
+    // A hub replacement closes the socket; the owner redials the successor like a real agent.
+    socket.addEventListener("close", () => {
+      if (this.socket === socket && !this.stopped) setTimeout(() => this.connect(), 1_000);
+    });
+  }
+  private receive(socket: WebSocket, data: string): void {
+    const message = ServerToAgentMessageSchema.parse(JSON.parse(data));
+    if (message.type === "ping") socket.send(JSON.stringify({ type: "pong" }));
+    if (message.type !== "job_command") return;
+    const command = message.command;
+    if (command.type === "owner_challenge") {
+      const proof = {
+        nonce: command.nonce,
+        serverEpoch: command.serverEpoch,
+        machineId: command.machineId,
+        owner: this.owner,
+      };
+      socket.send(
+        JSON.stringify({
+          type: "job_event",
+          event: {
+            type: "owner_proof",
+            ...proof,
+            signature: sign(
+              null,
+              Buffer.from(canonicalJobJson(proof)),
+              this.key.privateKey,
+            ).toString("base64"),
+          },
+        }),
+      );
+    } else if (command.type === "drain") this.proofs += 1;
+    else if (command.type === "install") {
+      this.commands.push(command);
+      if (command.action === "purge") rmSync(join(this.store, "broker.store"), { force: true });
+      if (command.action === undefined && this.acknowledges)
+        socket.send(
+          JSON.stringify({
+            type: "job_event",
+            event: {
+              type: "installed",
+              pluginId: command.pluginId,
+              installationRevision: command.installationRevision,
+              artifactSha256: command.artifactSha256,
+            },
+          }),
+        );
+    }
+  }
+  async proved(count: number): Promise<void> {
+    await until(() => this.proofs >= count, 60_000, `native owner proof ${count}`);
+  }
+  close(): void {
+    this.stopped = true;
+    this.socket?.close();
+  }
+}
+let nativeOwner: NativeOwner | null = null;
+/** `scripts/verify-live.ts` exactly as the deployment workflow runs it, against this run's hub. */
+async function verifyLive(
+  args: readonly string[],
+  replacementSet?: string,
+): Promise<{ code: number; out: string; maintenance: string | null }> {
+  const output = join(directory, `verify-live-${crypto.randomUUID()}.out`);
+  writeFileSync(output, "", { mode: 0o600 });
+  const result = await command(["bun", join(repo, "scripts/verify-live.ts"), ...args], {
+    cwd: repo,
+    env: {
+      ...env,
+      VERIFY_LIVE_ORIGIN: origin,
+      VERIFY_LIVE_TOKEN: ownerKey,
+      GITHUB_OUTPUT: output,
+      ...(replacementSet === undefined ? {} : { VERIFY_LIVE_REPLACEMENT_SET: replacementSet }),
+    },
+    timeoutMs: 6 * 60_000,
+    allowFailure: true,
+  });
+  return {
+    code: result.code,
+    out: `${result.out}${result.err}`,
+    maintenance: /^maintenance_required=(\w+)$/m.exec(readFileSync(output, "utf8"))?.[1] ?? null,
+  };
+}
+/** The manual rollback's installed-bundles gate, as deploy-dev.yml runs it from trusted tooling. */
+async function manualRollbackGate(
+  image: string,
+  target: string,
+): Promise<{ code: number; out: string; output: string }> {
+  const output = join(directory, `installed-bundles-${crypto.randomUUID()}.out`);
+  writeFileSync(output, "", { mode: 0o600 });
+  const result = await command(["bun", join(repo, "scripts/installed-bundles.ts"), image], {
+    cwd: repo,
+    env: {
+      ...env,
+      INSTALLED_BUNDLES_ORIGIN: origin,
+      INSTALLED_BUNDLES_TOKEN: ownerKey,
+      INSTALLED_BUNDLES_ROLLBACK_REPOSITORY: fixtureRepo,
+      INSTALLED_BUNDLES_REVISION: target,
+      GITHUB_OUTPUT: output,
+    },
+    timeoutMs: 6 * 60_000,
+    allowFailure: true,
+  });
+  return {
+    code: result.code,
+    out: `${result.out}${result.err}`,
+    output: readFileSync(output, "utf8"),
+  };
+}
+async function pluginRoster() {
+  const response = await fetch(`${origin}/api/plugins`, {
+    headers: { authorization: `Bearer ${ownerKey}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  requireThat(response.ok, `plugin roster: HTTP ${response.status}`);
+  return PluginsResponseSchema.parse(await response.json()).plugins;
+}
 function cleanup(): Promise<void> {
   return (cleanupPromise ??= teardown());
 }
@@ -1282,6 +1811,8 @@ async function teardown(): Promise<void> {
     await Promise.all(running.map((proc) => proc.exited));
   }
   closeClients();
+  nativeOwner?.close();
+  nativeOwner = null;
   await browser?.close();
   browser = null;
   await peerBrowser?.close();
@@ -1370,7 +1901,1006 @@ let failure: unknown;
 try {
   await step("private fixture prerequisites and local Git origin", setup);
   const initialStorage = await storage("before");
-  if (integrated) {
+  if (crossing) {
+    const fixtures = join(directory, "crossing-fixtures");
+    const nativeSource = join(fixtures, "native");
+    /** The replacement set's native build, its declaration changed. */
+    const nativeNextFile = join(fixtures, `native-2.0.0${BUNDLE_SUFFIX}`);
+    const ownerStore = join(directory, "native-owner-store");
+    const brokerStore = join(ownerStore, "broker.store");
+    mkdirSync(nativeSource, { recursive: true, mode: 0o700 });
+    mkdirSync(ownerStore, { recursive: true, mode: 0o700 });
+    // The newest earlier wire revision whose bundles this hub no longer admits.
+    let earlierStamp = PROTOCOL_VERSION - 1;
+    while (PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS.has(String(earlierStamp))) earlierStamp -= 1;
+    const receipts: Record<string, unknown> = { earlierStamp: String(earlierStamp) };
+    metrics["crossing"] = receipts;
+    // The earlier hub: this application with its bundle window narrowed to the earlier stamp, as
+    // the deployed hub of the earlier protocol admits its own closure and no later build. Every
+    // later revision is this application unchanged.
+    const application = revision;
+    const windowFile = join(fixtureRepo, "packages/protocol/src/version.ts");
+    const bundleWindow =
+      /(PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set\()\[[^\]]*\]\)/;
+    const windowSource = readFileSync(windowFile, "utf8");
+    requireThat(
+      bundleWindow.test(windowSource),
+      "the fixture cannot find the bundle protocol window it narrows for the earlier hub",
+    );
+    writeFileSync(
+      windowFile,
+      windowSource.replace(bundleWindow, `$1[${JSON.stringify(String(earlierStamp))}])`),
+    );
+    await command(["git", "add", "packages/protocol/src/version.ts"], { cwd: fixtureRepo });
+    const r0 = await fixtureRevision(`earlier-hub-${crypto.randomUUID()}`);
+    const earlierIdentity = deriveBuildIdentity(fixtureRepo, r0);
+    baseIdentity["MANIFOLD_VERSION"] = earlierIdentity.version;
+    baseIdentity["MANIFOLD_BUILD"] = earlierIdentity.build;
+    revision = r0;
+    expectedBuild = earlierIdentity.build;
+    const r2 = await fixtureChild(r0, `crossing-${crypto.randomUUID()}`, application);
+    const r3 = await fixtureChild(r2, `stacked-${crypto.randomUUID()}`);
+    const r4 = await fixtureChild(r3, `returned-${crypto.randomUUID()}`);
+    const images = new Map<string, string>();
+    const deployTo = (target: string): void => {
+      revision = target;
+      expectedBuild = deriveBuildIdentity(fixtureRepo, target).build;
+    };
+    const served = async (): Promise<void> => {
+      images.set(revision, (await inspectContainer()).Image);
+    };
+    const owner = (): NativeOwner => {
+      requireThat(nativeOwner !== null, "the native owner fixture is not connected");
+      return nativeOwner;
+    };
+    const describeNative = async () =>
+      JobDescriptionSchema.parse(
+        await act("engine.jobs.describe", {
+          machineId: owner().machineId,
+          pluginId: CROSSING_NATIVE,
+        }),
+      ).installation;
+    const sentinels: Record<string, string> = {
+      [CROSSING_COUNTER]: randomBytes(16).toString("hex"),
+      [CROSSING_NATIVE]: randomBytes(16).toString("hex"),
+    };
+    const ownerSentinel = randomBytes(64);
+    const snapshot = join(directory, "verify-live-before.json");
+    let counter: { bytes: Buffer; sha256: string } = { bytes: Buffer.alloc(0), sha256: "" };
+    let primary: StagedSet | undefined;
+    /** The stacked crossings: the counter to other bytes at r3, then back to the first's at r4. */
+    let third: StagedSet | undefined;
+    let returned: StagedSet | undefined;
+    let seeded: CrossingRow[] = [];
+    let crossedRows: CrossingRow[] = [];
+    let consents: unknown[] = [];
+    let approved: CrossingInstallation = {
+      machineId: "",
+      pluginId: "",
+      revision: "",
+      artifact: "",
+    };
+    const bundleFile = (pluginId: string, sha256: string): string =>
+      `/data/plugins/${pluginId}/${sha256}${BUNDLE_SUFFIX}`;
+    const primaryMember = (pluginId: string) => {
+      const member = primary?.set.members.find((candidate) => candidate.pluginId === pluginId);
+      requireThat(member !== undefined, `${pluginId} is not a member of the primary set`);
+      return member;
+    };
+    const state = (paths: readonly string[] = []) =>
+      crossingState(
+        [
+          ...seeded.map((row) => row.bundlePath),
+          ...crossedRows.map((row) => row.bundlePath),
+          ...paths,
+        ],
+        owner().machineId,
+      );
+    /** Plugin data, the owner-managed store and its install history admit no purge, ever. */
+    const dataRetained = (current: CrossingState, label: string): void => {
+      for (const pluginId of [CROSSING_COUNTER, CROSSING_NATIVE])
+        requireThat(
+          current.storage[pluginId]?.sentinel === sentinels[pluginId],
+          `${label}: ${pluginId} plugin data changed`,
+        );
+      requireThat(current.native?.purge_requested === 0, `${label}: native purge requested`);
+      requireThat(
+        !owner().commands.some((command) => command.action === "purge") &&
+          existsSync(brokerStore) &&
+          readFileSync(brokerStore).equals(ownerSentinel),
+        `${label}: the owner-managed store was purged or changed`,
+      );
+    };
+    const nativeAt = (
+      current: CrossingState,
+      expected: { enabled: number; ready?: number },
+      label: string,
+    ): void =>
+      requireThat(
+        current.native?.revision === approved.revision &&
+          current.native.artifact === approved.artifact &&
+          current.native.enabled === expected.enabled &&
+          (expected.ready === undefined || current.native.ready === expected.ready) &&
+          isDeepStrictEqual(current.consents, consents),
+        `${label}: native installation ${JSON.stringify(current.native)} is not the approved revision with enabled=${expected.enabled}${expected.ready === undefined ? "" : ` ready=${expected.ready}`} and its consents`,
+      );
+    const containerLogs = async (): Promise<string> =>
+      (await docker(["logs", await containerId()], { confidential: true })).out;
+
+    await step(
+      "crossing: the earlier hub serves its protocol closure beside its reviewed native deployment",
+      async () => {
+        appUid = 0;
+        await compose(finalImage(), ["up", "-d", "--build", "--no-deps", "manifold"], {
+          timeoutMs: 18 * 60_000,
+        });
+        active = true;
+        await rememberImages();
+        await ready();
+        await acquireIdentity();
+        await served();
+        const enrolled = MachineEnrollResponseSchema.parse(
+          await act("core.machines.enroll", { name: `crossing-owner-${number}` }),
+        );
+        requireThat(enrolled.machineToken !== undefined, "owner fixture minted no machine token");
+        secrets.add(enrolled.machineToken);
+        writeFileSync(brokerStore, ownerSentinel, { mode: 0o600 });
+        nativeOwner = new NativeOwner(
+          enrolled.machine.id,
+          enrolled.machineToken,
+          enrolled.machine.name,
+          ownerStore,
+        );
+        // Every later deployment names this enrolled machine as its explicit native owner.
+        env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"] = enrolled.machine.id;
+        owner().connect();
+        await owner().proved(1);
+        const counterFile = join(fixtures, `counter${BUNDLE_SUFFIX}`);
+        counter = await packFixture(
+          join(repo, "packages/plugin-kit/test/fixtures/sample"),
+          counterFile,
+        );
+        writeFileSync(
+          join(nativeSource, "manifest.json"),
+          JSON.stringify(nativeFixture("1.0.0", "a".repeat(64))),
+        );
+        const native = await packFixture(
+          nativeSource,
+          join(fixtures, `native-1.0.0${BUNDLE_SUFFIX}`),
+        );
+        const uploads = "/data/plugin-uploads";
+        await execBun(
+          `import { mkdirSync } from "node:fs"; mkdirSync(${JSON.stringify(uploads)}, { recursive: true, mode: 0o700 });`,
+        );
+        // The real install door writes each row of the earlier SDK's builds: grants, installer
+        // lineage and hardening. The native fixture's installer grants its withheld capability.
+        for (const [build, grant] of [
+          [counter, undefined],
+          [native, [CROSSING_WITHHELD_CAP]],
+        ] as const) {
+          const bytes = bundleVariant(build.bytes, String(earlierStamp));
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          const file = join(fixtures, `${sha256}${BUNDLE_SUFFIX}`);
+          writeFileSync(file, bytes, { mode: 0o600 });
+          const upload = `${uploads}/${sha256}${BUNDLE_SUFFIX}`;
+          await docker(["cp", file, `${await containerId()}:${upload}`]);
+          await act("engine.plugins.install", {
+            source: upload,
+            sha256,
+            hardened: true,
+            ...(grant === undefined ? {} : { grant }),
+          });
+        }
+        // The real review door admits the native deployment on the proved owner.
+        const request = {
+          deploymentId: `crossing-${number}`,
+          pluginId: CROSSING_NATIVE,
+          targets: [{ machineId: owner().machineId }],
+          operationIds: [CROSSING_OPERATION],
+        };
+        const review = JobDeploymentReviewSchema.parse(
+          await act("engine.jobs.reviewDeployment", request),
+        );
+        await act("engine.jobs.applyDeployment", { request, reviewDigest: review.reviewDigest });
+        await until(
+          async () => (await describeNative())?.ready === true,
+          30_000,
+          "the reviewed native deployment ready on its owner",
+        );
+        const installed = await describeNative();
+        requireThat(installed !== null, "the reviewed native installation is missing");
+        approved = {
+          machineId: owner().machineId,
+          pluginId: CROSSING_NATIVE,
+          revision: installed.revision,
+          artifact: installed.artifactSha256,
+        };
+        requireThat(
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 41 })).count === 41,
+          "the counter fixture did not answer on the incumbent",
+        );
+        // Plugin-storage sentinels go in over the stopped volume, in the incumbent's image. The
+        // owner then withholds readiness: an enabled provider not ready before the switch.
+        const incumbent = await inspectContainer();
+        await docker(["stop", "--time", "120", incumbent.Id], { timeoutMs: 180_000 });
+        await volumeScript(incumbent.Image, pluginDataSentinels(sentinels));
+        owner().acknowledges = false;
+        await docker(["start", incumbent.Id]);
+        await ready();
+        await owner().proved(2);
+        seeded = (await state()).rows;
+        const roster = await pluginRoster();
+        for (const pluginId of [CROSSING_COUNTER, CROSSING_NATIVE]) {
+          const row = seeded.find((candidate) => candidate.pluginId === pluginId);
+          const entry = roster.find((candidate) => candidate.manifest.id === pluginId);
+          requireThat(
+            row?.builtAgainst?.[BUILT_AGAINST_PROTOCOL] === String(earlierStamp) &&
+              entry?.held === undefined &&
+              entry?.install?.sha256 === row.sha256,
+            `${pluginId}: the earlier hub does not serve its protocol ${earlierStamp} build`,
+          );
+        }
+        const closure = await state();
+        consents = closure.consents;
+        requireThat(consents.length > 0, "the native review recorded no consents");
+        nativeAt(closure, { enabled: 1, ready: 0 }, "earlier closure");
+        requireThat(
+          seeded.every((row) => closure.files[row.bundlePath] === row.sha256) &&
+            seeded
+              .find((row) => row.pluginId === CROSSING_NATIVE)
+              ?.grantedCaps.includes(CROSSING_WITHHELD_CAP) === true &&
+            closure.storage[CROSSING_COUNTER]?.count === "41" &&
+            closure.journal === null,
+          "the earlier closure lost its bundles, grant or plugin data, or already holds a crossing",
+        );
+        dataRetained(closure, "earlier closure");
+        const before = await verifyLive(["snapshot", snapshot]);
+        requireThat(before.code === 0, `verify-live snapshot failed:\n${redact(before.out)}`);
+        receipts["closure"] = {
+          revision: r0,
+          rows: seeded.map(({ pluginId, sha256, grantedCaps }) => ({
+            pluginId,
+            sha256,
+            grantedCaps,
+          })),
+          native: approved,
+          consents: consents.length,
+          snapshot: redact(before.out.trim()),
+        };
+      },
+    );
+    await step(
+      "crossing: a set leaving a held bundle unreplaced is refused without mutation, then the automatic rollback restores the incumbent",
+      async () => {
+        const refused = stageSet([{ pluginId: CROSSING_COUNTER, bytes: counter.bytes }]);
+        deployTo(r2);
+        const forward = await up({}, undefined, refused.sha256);
+        const received = `received set ${refused.sha256} for ${r2}`;
+        requireThat(
+          forward.out.includes(received),
+          "the receiver did not hand over the refused set",
+        );
+        await ready();
+        await served();
+        const refusal = (await containerLogs())
+          .split("\n")
+          .find((line) => line.includes('"evt":"plugin_replacement_refused"'));
+        requireThat(
+          refusal?.includes(CROSSING_NATIVE) && refusal.includes("no replacement staged"),
+          "the candidate did not refuse a set that leaves a held bundle unreplaced",
+        );
+        const held = await state();
+        requireThat(
+          isDeepStrictEqual(held.rows, seeded) && held.journal === null,
+          "a refused crossing changed an installed row or journaled itself",
+        );
+        nativeAt(held, { enabled: 1 }, "refused crossing");
+        dataRetained(held, "refused crossing");
+        // The workflow's automatic recovery: the three-argument rollback no gate precedes.
+        deployTo(r0);
+        await up({}, r2);
+        await ready();
+        const restored = await state();
+        requireThat(
+          isDeepStrictEqual(restored.rows, seeded) && restored.journal === null && !restored.staged,
+          "the automatic rollback did not leave the earlier closure intact and unstaged",
+        );
+        nativeAt(restored, { enabled: 1 }, "automatic rollback");
+        dataRetained(restored, "automatic rollback");
+        receipts["refused"] = {
+          set: refused.sha256,
+          receipt: received,
+          refusal: redact(refusal ?? ""),
+          rollback: `dev-rollback ${r2} ${r0}`,
+        };
+      },
+    );
+    await step(
+      "crossing: a crossing applied and then failing verify-live is restored, with the outgoing hub, by the automatic recovery",
+      async () => {
+        writeFileSync(
+          join(nativeSource, "manifest.json"),
+          JSON.stringify(nativeFixture("2.0.0", "b".repeat(64))),
+        );
+        const next = await packFixture(nativeSource, nativeNextFile);
+        primary = stageSet([
+          { pluginId: CROSSING_COUNTER, bytes: counter.bytes },
+          { pluginId: CROSSING_NATIVE, bytes: next.bytes, nativeReview: true },
+        ]);
+        const set = primary;
+        const crossedFiles = set.set.members.map(({ pluginId, sha256 }) =>
+          bundleFile(pluginId, sha256),
+        );
+        deployTo(r2);
+        await up({}, undefined, set.sha256);
+        await ready();
+        await served();
+        const crossed = await state(crossedFiles);
+        requireThat(
+          set.set.members.every(
+            (member) =>
+              crossed.rows.find((row) => row.pluginId === member.pluginId)?.sha256 ===
+                member.sha256 &&
+              crossed.files[bundleFile(member.pluginId, member.sha256)] === member.sha256,
+          ) &&
+            crossed.journal?.length === 1 &&
+            crossed.journal[0]?.revision === r2 &&
+            crossed.journal[0].phase === "completed",
+          `the crossing was not applied before its verification: ${JSON.stringify(crossed.journal)}`,
+        );
+        nativeAt(crossed, { enabled: 0 }, "applied crossing");
+        // verify-live as the workflow runs it, with the staged set, but expecting the build that
+        // served before the switch: the crossed hub's /healthz diverges until the deadline, and
+        // the live verification of the applied crossing fails.
+        const unexpected = deriveBuildIdentity(fixtureRepo, r0).build;
+        const verified = await verifyLive(["verify", snapshot, unexpected], set.file);
+        requireThat(
+          verified.code !== 0 && verified.maintenance === null && verified.out.includes(unexpected),
+          `verify-live accepted the crossed hub against another build:\n${redact(verified.out)}`,
+        );
+        // The workflow's recovery: the three-argument rollback to the revision serving before the
+        // switch, which restores the journaled crossing with the outgoing image's own code.
+        owner().acknowledges = true;
+        const commands = owner().commands.length;
+        deployTo(r0);
+        const recovery = await up({}, r2);
+        await ready();
+        await served();
+        const restored = await state(crossedFiles);
+        requireThat(
+          isDeepStrictEqual(restored.rows, seeded) &&
+            seeded.every((row) => restored.files[row.bundlePath] === row.sha256) &&
+            crossedFiles.every((path) => restored.files[path] === null) &&
+            restored.journal === null &&
+            !restored.staged,
+          "the automatic recovery did not restore the earlier rows and files exactly",
+        );
+        nativeAt(restored, { enabled: 1 }, "automatic recovery");
+        dataRetained(restored, "automatic recovery");
+        // The outgoing hub serves its closure again, and the approval the crossing stopped is live
+        // again on its owner at the journaled revision.
+        const roster = await pluginRoster();
+        for (const row of seeded) {
+          const entry = roster.find((candidate) => candidate.manifest.id === row.pluginId);
+          requireThat(
+            entry?.held === undefined && entry?.install?.sha256 === row.sha256,
+            `${row.pluginId}: the outgoing hub does not serve its restored digest`,
+          );
+        }
+        requireThat(
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 42,
+          "the restored counter lost its stored count",
+        );
+        await until(
+          async () => {
+            const installation = await describeNative();
+            return (
+              installation?.revision === approved.revision &&
+              installation.artifactSha256 === approved.artifact &&
+              installation.enabled &&
+              installation.ready
+            );
+          },
+          30_000,
+          "the restored native approval ready on its owner again",
+        );
+        requireThat(
+          owner()
+            .commands.slice(commands)
+            .some(
+              (command) =>
+                command.pluginId === CROSSING_NATIVE &&
+                command.installationRevision === approved.revision &&
+                command.action === undefined,
+            ),
+          "the owner was never told to run the restored native revision again",
+        );
+        // The next crossing starts from an enabled provider that is not ready, as before.
+        owner().acknowledges = false;
+        receipts["recovery"] = {
+          revision: r2,
+          set: set.sha256,
+          applied: crossed.journal?.map(({ revision, phase }) => ({ revision, phase })),
+          verifyLive: redact(
+            verified.out
+              .trim()
+              .split("\n")
+              .filter((line) => line.startsWith("verify-live:"))
+              .slice(-2)
+              .join("\n"),
+          ),
+          request: `dev-rollback ${r2} ${r0}`,
+          restored: redact(
+            recovery.out
+              .split("\n")
+              .filter((line) => line.includes("restor"))
+              .join("\n"),
+          ),
+          rows: restored.rows.map(({ pluginId, sha256, grantedCaps }) => ({
+            pluginId,
+            sha256,
+            grantedCaps,
+          })),
+          native: restored.native,
+        };
+      },
+    );
+    await step(
+      "crossing: killed between its bundle commit and native completion, the crossing resumes on restart",
+      async () => {
+        const set = primary!;
+        const helper = images.get(r0)!;
+        deployTo(r2);
+        const deploying = up({}, undefined, set.sha256);
+        // The candidate's prepared record is its first durable journal write; the next one
+        // follows the bundle commit.
+        await Promise.race([
+          plantJournalFifo(
+            helper,
+            `[ -f ${CROSSING_JOURNAL} ] && [ ! -e ${CROSSING_JOURNAL}.next ]`,
+          ),
+          deploying.then(() => {
+            throw new Error("the crossing completed before its interruption point");
+          }),
+        ]);
+        const candidate = await containerId();
+        await awaitBlockedWriter(candidate, "packages/server/src/main.ts");
+        const midway = await state();
+        requireThat(
+          set.set.members.every(
+            (member) =>
+              midway.rows.find((row) => row.pluginId === member.pluginId)?.sha256 === member.sha256,
+          ) &&
+            midway.journal?.length === 1 &&
+            midway.journal[0]?.phase === "prepared" &&
+            midway.staged,
+          `the interruption did not land between the bundle commit and native completion: ${JSON.stringify(midway.journal)}`,
+        );
+        nativeAt(midway, { enabled: 1 }, "interrupted crossing");
+        const killedAt = (await inspectContainer()).State.StartedAt;
+        await removeJournalFifo(helper);
+        await docker(["kill", candidate]);
+        await until(
+          async () => (await inspectContainer()).State.Status !== "running",
+          30_000,
+          "the killed candidate stopped",
+        );
+        await docker(["start", candidate]);
+        const forward = await deploying;
+        const received = `received set ${set.sha256} for ${r2}`;
+        requireThat(
+          forward.out.includes(received),
+          "the receiver did not hand over the staged set",
+        );
+        await ready();
+        await served();
+        requireThat(
+          (await inspectContainer()).State.StartedAt !== killedAt,
+          "the candidate was not restarted after its kill",
+        );
+        const applied = (await containerLogs())
+          .split("\n")
+          .find((line) => line.includes('"evt":"plugin_replacement_applied"'));
+        requireThat(applied !== undefined, "the resumed candidate did not report the crossing");
+        const roster = await pluginRoster();
+        const holds = roster.filter((entry) => entry.held !== undefined);
+        requireThat(
+          holds.length === 0,
+          `the crossed hub holds ${holds.map((entry) => entry.manifest.id).join(", ")}`,
+        );
+        for (const member of set.set.members)
+          requireThat(
+            roster.find((entry) => entry.manifest.id === member.pluginId)?.install?.sha256 ===
+              member.sha256,
+            `${member.pluginId}: the installed digest is not the staged member's`,
+          );
+        const crossed = await state();
+        for (const row of seeded) {
+          const now = crossed.rows.find((candidate) => candidate.pluginId === row.pluginId);
+          requireThat(
+            now?.sha256 === primaryMember(row.pluginId).sha256 &&
+              now.builtAgainst?.[BUILT_AGAINST_PROTOCOL] === String(PROTOCOL_VERSION),
+            `${row.pluginId}: the row does not name the staged build`,
+          );
+          requireThat(
+            isDeepStrictEqual(
+              [now.grantedCaps, now.installedBy, now.installer, now.hardened],
+              [row.grantedCaps, row.installedBy, row.installer, row.hardened],
+            ),
+            `${row.pluginId}: grants, installer lineage or hardening changed`,
+          );
+          requireThat(
+            crossed.files[row.bundlePath] === row.sha256,
+            `${row.pluginId}: the earlier build's bytes were not retained for rollback`,
+          );
+        }
+        nativeAt(crossed, { enabled: 0 }, "crossing");
+        const record = crossed.journal?.length === 1 ? crossed.journal[0] : undefined;
+        requireThat(
+          record?.setSha256 === set.sha256 &&
+            record.revision === r2 &&
+            record.phase === "completed" &&
+            isDeepStrictEqual(
+              record.members.map(({ sha256, previous, nativeReview }) => ({
+                sha256,
+                previous,
+                nativeReview,
+              })),
+              set.set.members.map((member) => ({
+                sha256: member.sha256,
+                previous: seeded.find((row) => row.pluginId === member.pluginId),
+                nativeReview: member.nativeReview === true,
+              })),
+            ) &&
+            isDeepStrictEqual(record.disabledInstallations, [approved]),
+          `the journal does not record exactly this completed crossing: ${JSON.stringify(crossed.journal)}`,
+        );
+        requireThat(!crossed.staged, "the candidate left the staged set behind");
+        dataRetained(crossed, "crossing");
+        await owner().proved(4);
+        requireThat(
+          owner().commands.some(
+            (command) =>
+              command.pluginId === CROSSING_NATIVE &&
+              command.installationRevision === approved.revision &&
+              command.action === "disable",
+          ),
+          "the owner was never told to stop the approved native revision",
+        );
+        requireThat(
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 43,
+          "the crossed counter lost its stored count",
+        );
+        crossedRows = crossed.rows;
+        // The enabled provider was not ready in the pre-switch snapshot, its owner withholding
+        // readiness: the owner pin must still wait for its native review.
+        const verified = await verifyLive(["verify", snapshot, expectedBuild], set.file);
+        requireThat(
+          verified.code === 0 &&
+            verified.maintenance === "true" &&
+            verified.out.includes(`installation ${approved.machineId}/${CROSSING_NATIVE}`),
+          `verify-live released the owner pin while the crossed provider awaits its native review:\n${redact(verified.out)}`,
+        );
+        owner().acknowledges = true;
+        receipts["forward"] = {
+          revision: r2,
+          set: set.sha256,
+          members: set.set.members,
+          receipt: received,
+          interrupted: {
+            journal: midway.journal,
+            rows: midway.rows.map(({ pluginId, sha256 }) => ({ pluginId, sha256 })),
+          },
+          applied: redact(applied),
+          native: crossed.native,
+          verifyLive: redact(verified.out.trim()),
+        };
+      },
+    );
+    await step(
+      "crossing: two further crossings stack in the journal, the second returning to the first's bytes",
+      async () => {
+        third = stageSet([
+          {
+            pluginId: CROSSING_COUNTER,
+            bytes: bundleVariant(counter.bytes, String(PROTOCOL_VERSION), 1),
+          },
+        ]);
+        deployTo(r3);
+        await up({}, undefined, third.sha256);
+        await ready();
+        await served();
+        // The counter returns to the first crossing's exact bytes at a later revision: the same
+        // digest, at the same path, now named by three journal records.
+        returned = stageSet([{ pluginId: CROSSING_COUNTER, bytes: counter.bytes }]);
+        deployTo(r4);
+        await up({}, undefined, returned.sha256);
+        await ready();
+        await served();
+        const stacked = await state([bundleFile(CROSSING_COUNTER, third.set.members[0]!.sha256)]);
+        requireThat(
+          stacked.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256 ===
+            primaryMember(CROSSING_COUNTER).sha256 &&
+            isDeepStrictEqual(
+              stacked.journal?.map(({ setSha256, revision, phase }) => [
+                setSha256,
+                revision,
+                phase,
+              ]),
+              [
+                [primary!.sha256, r2, "completed"],
+                [third.sha256, r3, "completed"],
+                [returned.sha256, r4, "completed"],
+              ],
+            ),
+          `the stacked crossings are not journaled oldest first: ${JSON.stringify(stacked.journal)}`,
+        );
+        nativeAt(stacked, { enabled: 0 }, "stacked crossings");
+        dataRetained(stacked, "stacked crossings");
+        receipts["stacked"] = {
+          revisions: [r3, r4],
+          sets: [third.sha256, returned.sha256],
+          counter: [third.set.members[0]!.sha256, returned.set.members[0]!.sha256],
+        };
+      },
+    );
+    /** The counter's bytes along the stack: the first crossing's, then the third set's. */
+    const stackFiles = () => [
+      bundleFile(CROSSING_COUNTER, primaryMember(CROSSING_COUNTER).sha256),
+      bundleFile(CROSSING_COUNTER, third!.set.members[0]!.sha256),
+    ];
+    const forward = "recovery after a completed crossing is a forward deployment";
+    await step(
+      "crossing: a manual rollback behind a completed crossing refuses before anything stops, changing nothing",
+      async () => {
+        const incumbent = await inspectContainer();
+        const before = await state(stackFiles());
+        // The gate, from the trusted tooling, refuses the one target the host cannot tell from
+        // the automatic recovery: the newest crossing is the outgoing revision's own.
+        const gate = await manualRollbackGate(images.get(r3)!, r3);
+        requireThat(
+          gate.code !== 0 &&
+            gate.out.includes(`rollback to ${r3} refused`) &&
+            gate.out.includes(`${r4} (set ${returned!.sha256})`) &&
+            gate.out.includes(forward) &&
+            gate.output === "",
+          `the manual rollback gate did not refuse a target behind a crossing:\n${redact(gate.out.slice(-2_000))}`,
+        );
+        // The host refuses a rollback behind a crossing its outgoing revision did not apply,
+        // before it builds or stops anything.
+        deployTo(r2);
+        const refused = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r4);
+        const text = `${refused.out}${refused.err}`;
+        requireThat(
+          refused.code !== 0 &&
+            text.includes(`rollback to ${r2} refused`) &&
+            text.includes(forward),
+          `a rollback behind completed crossings did not refuse:\n${redact(text.slice(-2_000))}`,
+        );
+        deployTo(r4);
+        const after = await inspectContainer();
+        requireThat(
+          after.Id === incumbent.Id &&
+            after.Image === incumbent.Image &&
+            after.State.Status === "running" &&
+            after.State.StartedAt === incumbent.State.StartedAt &&
+            (await health()).build === expectedBuild,
+          "a refused manual rollback stopped, restarted or replaced the incumbent",
+        );
+        const kept = await state(stackFiles());
+        requireThat(
+          isDeepStrictEqual(kept.rows, before.rows) &&
+            isDeepStrictEqual(kept.journal, before.journal) &&
+            isDeepStrictEqual(kept.files, before.files) &&
+            kept.staged === before.staged,
+          "a refused manual rollback changed a row, the journal or a bundle file",
+        );
+        nativeAt(kept, { enabled: 0 }, "refused manual rollback");
+        dataRetained(kept, "refused manual rollback");
+        receipts["manualRollbackRefused"] = {
+          journal: before.journal?.map(({ revision }) => revision),
+          gate: redact(
+            gate.out
+              .split("\n")
+              .filter((line) => line.includes("refused"))
+              .join("\n"),
+          ),
+          host: redact(
+            text
+              .split("\n")
+              .filter((line) => line.includes("refused"))
+              .join("\n"),
+          ),
+          incumbent: { id: incumbent.Id, startedAt: incumbent.State.StartedAt },
+        };
+      },
+    );
+    await step(
+      "crossing: the automatic recovery of the crossing back to earlier bytes, killed before its journal truncation, converges on retry and keeps every file the journal names",
+      async () => {
+        const [firstBytes, thirdBytes] = stackFiles();
+        const incumbent = await inspectContainer();
+        // A steady hub writes no journal: the next journal write is the restore's truncation,
+        // after its one SQLite transaction committed.
+        await plantJournalFifo(incumbent.Image, "true");
+        deployTo(r3);
+        const recovering = up({ allowFailure: true }, r4);
+        let oneShot = "";
+        await until(
+          async () => {
+            oneShot =
+              (
+                await docker([
+                  "ps",
+                  "--no-trunc",
+                  "--filter",
+                  `label=com.docker.compose.project=${project()}`,
+                  "--format",
+                  "{{.ID}} {{.Command}}",
+                ])
+              ).out
+                .split("\n")
+                .find((line) => line.includes("bundle-replacement.ts restore"))
+                ?.split(" ")[0] ?? "";
+            return oneShot !== "";
+          },
+          15 * 60_000,
+          "the restore one-shot started",
+        );
+        await awaitBlockedWriter(oneShot, "bundle-replacement.ts");
+        const midway = await crossingState(stackFiles(), owner().machineId, (source) =>
+          volumeScript(incumbent.Image, source),
+        );
+        requireThat(
+          midway.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256 ===
+            third!.set.members[0]!.sha256 && midway.journal?.length === 3,
+          `the interruption did not land between the restore commit and journal truncation: ${JSON.stringify(midway.journal?.map((record) => record.revision))}`,
+        );
+        await removeJournalFifo(incumbent.Image);
+        await docker(["kill", oneShot], { allowFailure: true });
+        const interrupted = await recovering;
+        requireThat(
+          interrupted.code !== 0 &&
+            `${interrupted.out}${interrupted.err}`.includes("plugin transition refused"),
+          "a killed restore did not hold the recovery",
+        );
+        // deploy-dev.sh restarted its incumbent over the committed restore; the retry converges.
+        deployTo(r4);
+        await ready();
+        deployTo(r3);
+        const retried = await up({}, r4);
+        await ready();
+        await served();
+        const converged = await state(stackFiles());
+        requireThat(
+          converged.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256 ===
+            third!.set.members[0]!.sha256 &&
+            isDeepStrictEqual(
+              converged.journal?.map(({ setSha256, revision }) => [setSha256, revision]),
+              [
+                [primary!.sha256, r2],
+                [third!.sha256, r3],
+              ],
+            ) &&
+            !converged.staged,
+          `the retried recovery did not converge on the earlier crossings: ${JSON.stringify(converged.journal)}`,
+        );
+        // The newest crossing committed the first crossing's path again. Both remaining records
+        // still name it, so its bytes stay, beside the earlier closure's.
+        requireThat(
+          converged.files[firstBytes!] === primaryMember(CROSSING_COUNTER).sha256 &&
+            converged.files[thirdBytes!] === third!.set.members[0]!.sha256 &&
+            seeded.every((row) => converged.files[row.bundlePath] === row.sha256),
+          `the recovery removed bytes a remaining crossing names: ${JSON.stringify(converged.files)}`,
+        );
+        nativeAt(converged, { enabled: 0 }, "converged recovery");
+        dataRetained(converged, "converged recovery");
+        receipts["repeatedDigest"] = {
+          interrupted: {
+            journal: midway.journal?.map(({ revision }) => revision),
+            hold: redact(
+              `${interrupted.out}${interrupted.err}`.trim().split("\n").slice(-2).join("\n"),
+            ),
+          },
+          restored: redact(
+            retried.out
+              .split("\n")
+              .filter((line) => line.includes("restor"))
+              .join("\n"),
+          ),
+          files: converged.files,
+        };
+      },
+    );
+    await step(
+      "crossing: the earlier crossing then restores onto the bytes the later recovery kept",
+      async () => {
+        const [firstBytes, thirdBytes] = stackFiles();
+        deployTo(r2);
+        const rolledBack = await up({}, r3);
+        await ready();
+        await served();
+        const restored = await state(stackFiles());
+        requireThat(
+          isDeepStrictEqual(restored.rows, crossedRows) &&
+            crossedRows.every((row) => restored.files[row.bundlePath] === row.sha256) &&
+            restored.files[firstBytes!] === primaryMember(CROSSING_COUNTER).sha256 &&
+            restored.files[thirdBytes!] === null &&
+            seeded.every((row) => restored.files[row.bundlePath] === row.sha256) &&
+            isDeepStrictEqual(
+              restored.journal?.map(({ setSha256, revision }) => [setSha256, revision]),
+              [[primary!.sha256, r2]],
+            ) &&
+            !restored.staged,
+          `restoring the earlier crossing did not return the first crossing's rows onto its bytes: ${JSON.stringify(restored.files)}`,
+        );
+        const roster = await pluginRoster();
+        for (const row of crossedRows) {
+          const entry = roster.find((candidate) => candidate.manifest.id === row.pluginId);
+          requireThat(
+            entry?.held === undefined && entry?.install?.sha256 === row.sha256,
+            `${row.pluginId}: the hub does not serve the restored digest`,
+          );
+        }
+        requireThat(
+          CounterSchema.parse(await act(`${CROSSING_COUNTER}.bump`, { by: 1 })).count === 44,
+          "the restored counter lost its stored count",
+        );
+        nativeAt(restored, { enabled: 0 }, "earlier crossing restore");
+        dataRetained(restored, "earlier crossing restore");
+        receipts["earlierRestore"] = {
+          request: `dev-rollback ${r3} ${r2}`,
+          restored: redact(
+            rolledBack.out
+              .split("\n")
+              .filter((line) => line.includes("restor"))
+              .join("\n"),
+          ),
+          counter: restored.rows.find((row) => row.pluginId === CROSSING_COUNTER)?.sha256,
+        };
+      },
+    );
+    await step(
+      "crossing: a same-digest reinstall after a crossing makes its automatic recovery refuse",
+      async () => {
+        const crossed = await state();
+        requireThat(
+          crossed.journal?.length === 1 &&
+            crossed.journal[0]?.revision === r2 &&
+            crossed.journal[0].phase === "completed",
+          "the outgoing revision's own crossing is not the only one journaled",
+        );
+        nativeAt(crossed, { enabled: 0 }, "crossing before the reinstall");
+        // An authority decision after the crossing: the same digest, reinstalled through the real
+        // door with replacement consent and the default grant, which withdraws the withheld
+        // capability the crossing kept. Restoring the earlier row would grant it again.
+        const nativeMember = primaryMember(CROSSING_NATIVE);
+        const upload = `/data/plugin-uploads/${nativeMember.sha256}${BUNDLE_SUFFIX}`;
+        await docker(["cp", nativeNextFile, `${await containerId()}:${upload}`]);
+        const kept = crossed.rows.find((row) => row.pluginId === CROSSING_NATIVE);
+        requireThat(
+          kept?.grantedCaps.includes(CROSSING_WITHHELD_CAP) === true,
+          "the crossing did not keep the native fixture's granted capability",
+        );
+        await act("engine.plugins.install", {
+          source: upload,
+          sha256: nativeMember.sha256,
+          hardened: true,
+          replace: true,
+        });
+        const decided = await state();
+        const nativeRow = decided.rows.find((row) => row.pluginId === CROSSING_NATIVE);
+        requireThat(
+          nativeRow?.sha256 === nativeMember.sha256 &&
+            !nativeRow.grantedCaps.includes(CROSSING_WITHHELD_CAP),
+          "the same-digest reinstall did not withdraw the granted capability",
+        );
+        const serving = (await inspectContainer()).Image;
+        // The host's exact-row check refuses the recovery no gate precedes.
+        deployTo(r0);
+        const refused = await up({ allowFailure: true, timeoutMs: 6 * 60_000 }, r2);
+        const text = `${refused.out}${refused.err}`;
+        requireThat(
+          refused.code !== 0 &&
+            text.includes(
+              `${CROSSING_NATIVE}: the installed row changed since crossing ${r2}; restore refused`,
+            ),
+          `the automatic recovery over a later authority decision did not refuse:\n${redact(text.slice(-2_000))}`,
+        );
+        deployTo(r2);
+        await ready();
+        const after = await state();
+        requireThat(
+          (await inspectContainer()).Image === serving &&
+            isDeepStrictEqual(after.rows, decided.rows) &&
+            isDeepStrictEqual(after.journal, decided.journal) &&
+            isDeepStrictEqual(after.files, decided.files),
+          "a refused restore changed the incumbent, its rows, journal or files",
+        );
+        nativeAt(after, { enabled: 0 }, "refused recovery");
+        dataRetained(after, "refused recovery");
+        receipts["authorityChange"] = {
+          revision: r2,
+          grant: { crossed: kept.grantedCaps, decided: nativeRow.grantedCaps },
+          refusal: redact(
+            text
+              .split("\n")
+              .filter((line) => line.includes("restore refused") || line.includes("HOLD"))
+              .join("\n"),
+          ),
+        };
+      },
+    );
+    await step(
+      "crossing: replaying the applied set after the native review changes nothing",
+      async () => {
+        const request = {
+          deploymentId: `crossing-review-${number}`,
+          pluginId: CROSSING_NATIVE,
+          targets: [{ machineId: owner().machineId }],
+          operationIds: [CROSSING_OPERATION],
+        };
+        const review = JobDeploymentReviewSchema.parse(
+          await act("engine.jobs.reviewDeployment", request),
+        );
+        await act("engine.jobs.applyDeployment", { request, reviewDigest: review.reviewDigest });
+        await until(
+          async () => {
+            const installation = await describeNative();
+            return (
+              installation?.revision !== approved.revision &&
+              installation?.enabled === true &&
+              installation.ready
+            );
+          },
+          30_000,
+          "the reviewed replacement declaration ready on its owner",
+        );
+        const reviewed = (await describeNative())!;
+        requireThat(
+          reviewed.artifactSha256 === "b".repeat(64),
+          "the review did not admit the replacement's native declaration",
+        );
+        const before = await state();
+        const commands = owner().commands.length;
+        const proofs = owner().proofs;
+        deployTo(r2);
+        await up({}, undefined, primary!.sha256);
+        await ready();
+        await owner().proved(proofs + 1);
+        const replayed = (await containerLogs())
+          .split("\n")
+          .find((line) => line.includes('"evt":"plugin_replacement_replayed"'));
+        requireThat(
+          replayed?.includes(primary!.sha256) && replayed.includes(r2),
+          "the candidate did not recognize the replayed set",
+        );
+        await until(
+          async () => (await describeNative())?.ready === true,
+          30_000,
+          "the reviewed native installation ready again after the replay",
+        );
+        const after = await state();
+        const installation = await describeNative();
+        requireThat(
+          isDeepStrictEqual(after.rows, before.rows) &&
+            isDeepStrictEqual(after.journal, before.journal) &&
+            !after.staged &&
+            installation?.revision === reviewed.revision &&
+            installation.enabled &&
+            !owner()
+              .commands.slice(commands)
+              .some((command) => command.action !== undefined),
+          "replaying the applied set changed a row, the journal or the reviewed native installation",
+        );
+        dataRetained(after, "replay");
+        receipts["replay"] = {
+          reviewed: { revision: reviewed.revision, artifact: reviewed.artifactSha256 },
+          replayed: redact(replayed ?? ""),
+        };
+      },
+    );
+  } else if (integrated) {
     await step("retained server-only hub replacement preserves data and ownership", async () => {
       appUid = 0;
       await compose(finalImage(), ["up", "-d", "--build", "--no-deps", "manifold"], {
@@ -2382,7 +3912,7 @@ console.log(JSON.stringify({
       await assertDataWrites();
     });
   }
-  if (integrated) {
+  if (integrated && !crossing) {
     await step("misdirected integrated machine refuses before touching the live hub", async () => {
       const overlay = readFileSync(developmentOverlay, "utf8");
       await preserveLive(
@@ -2415,7 +3945,7 @@ console.log(JSON.stringify({
         "integrated deployment requires its project-owned manifold-data volume",
       );
     });
-  } else {
+  } else if (!integrated) {
     const goodPin = readFileSync(pinPath, "utf8");
     const safeRevision = revision;
     const malformedIdentityRevision = await fixtureChild(
@@ -2704,7 +4234,9 @@ if (failure !== undefined) {
   process.exitCode = 1;
 } else
   console.log(
-    integrated
-      ? "preview-environment: PASS (retained server-only topology and state preservation)"
-      : "preview-environment: PASS (screenshots require visual inspection)",
+    crossing
+      ? "preview-environment: PASS (staged bundle crossing, interruption, automatic recovery and refused manual rollback through the integrated receiver)"
+      : integrated
+        ? "preview-environment: PASS (retained server-only topology and state preservation)"
+        : "preview-environment: PASS (screenshots require visual inspection)",
   );

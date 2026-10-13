@@ -197,7 +197,13 @@ export const UpdateAgentV2RequestSchema = UpdateAgentRequestSchema.extend({
 export type UpdateAgentV2Request = z.infer<typeof UpdateAgentV2RequestSchema>;
 export const UpdateAgentV2ResultSchema = GetAgentV2ResultSchema;
 export type UpdateAgentV2Result = z.infer<typeof UpdateAgentV2ResultSchema>;
-export const ReportRunActivityV2RequestSchema = ReportRunActivityRequestSchema;
+/**
+ * The harness may also report the model its session currently serves. The Run's harness
+ * resolves it before it replaces `Run.model`; it is an observation like activity, not authority.
+ */
+export const ReportRunActivityV2RequestSchema = ReportRunActivityRequestSchema.extend({
+  model: RunModelSchema.optional(),
+});
 export type ReportRunActivityV2Request = z.infer<typeof ReportRunActivityV2RequestSchema>;
 export const DisableAgentV2RequestSchema = AgentRequestSchema;
 export type DisableAgentV2Request = z.infer<typeof DisableAgentV2RequestSchema>;
