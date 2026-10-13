@@ -292,9 +292,9 @@ vec3 fallsStone(float c, bool hard) {
 // along the base of each hard bed stain dark wet streaks down the rock below; lichen crusts the
 // dry stone. wet (the spray, the pool) darkens the stone and makes it glisten; rainWet (how wet
 // the rain has left the place) soaks the rest and glosses it, and sends rivulets over each ledge
-// and down the bed below; drip (0..1) drops water from the overhangs. glint reports the spray's
-// sparkle for the dither's shimmer.
-vec3 fallsRock(vec2 q, float s, float dsdy, vec3 ray, FallsLight L, float wet, float rainWet, float drip, float green, float dark, float tm, float t, out float glint) {
+// and down the bed below; drip (0..1) drops water from the overhangs, lit dropLight. glint reports
+// the spray's sparkle for the dither's shimmer.
+vec3 fallsRock(vec2 q, float s, float dsdy, vec3 ray, FallsLight L, float wet, float rainWet, float drip, vec3 dropLight, float green, float dark, float tm, float t, out float glint) {
   float rough = vnoise(vec2(q.x * 32.0, s * 3.0));
   float sr = s + 0.14 * (rough - 0.5);
   float c = floor(sr);
@@ -402,7 +402,7 @@ vec3 fallsRock(vec2 q, float s, float dsdy, vec3 ray, FallsLight L, float wet, f
   glint = wet * bare * (flashSun + 0.5 * flashMoon + 0.6 * film) * occlusion;
   // Drops gather under the overhang of the bed above and fall past the recess onto the ledge below.
   if (drip > 0.0 && !hard && proudUp > 0.3) {
-    col = mix(col, skyLight * 0.8, 0.7 * rainDrips(vec2(q.x, (c + 1.0 - s) / dsdy) * FALLS_CLIFF_M, t, drip * proudUp, 1.0));
+    col = mix(col, dropLight, rainDrips(vec2(q.x, (c + 1.0 - s) / dsdy) * FALLS_CLIFF_M, t, drip * proudUp, 1.0));
   }
   return col;
 }
@@ -724,10 +724,13 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
   vec3 haze = skyColor(sky, fallsWorld(normalize(vec3(rayCam.x, 0.04, 1.0))));
   haze = mix(haze, vec3(dot(haze, LUMA)), 0.75 * overcast) * (1.0 - 0.55 * rain);
   // The rain's air (the veil of drops too far off to make out; after dark it is lit like the
-  // scene), the light its drops catch, and how hard the ledges and fronds drip: while it rains,
-  // and for a while after, as long as they are wet.
+  // scene); the overcast's underside, the sky light under the deck greyed (drops, splashes and
+  // puddles all show it); the light the drops catch: each refracts the bright overcast, so a drop
+  // shows ~1.2x its cloud base, plus what sun gets through, never quite dark at night. Then how
+  // hard the ledges and fronds drip: while it rains, and for a while after, as long as they are wet.
   vec3 rainAir = mix(haze, 0.35 * skyLight, dark);
-  vec3 rainLight = skyLight * (1.0 - 0.6 * dark) + 0.25 * L.sunCol + vec3(0.04);
+  vec3 cloudBase = mix(vec3(dot(L.amb, LUMA)), L.amb, 0.3) * 0.6 + 0.15 * L.moonCol;
+  vec3 rainLight = max(1.2 * cloudBase + 0.3 * L.sunCol, vec3(0.08));
   float dripAmt = max(rain, 0.4 * rainWet);
 
   // Parallax: nearer layers slide further as the pointer moves.
@@ -820,7 +823,7 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     FallsLight Lr = L;
     Lr.sunCol *= 1.0 - shade * (0.5 + 0.4 * flow);
     Lr.amb *= 1.0 - 0.35 * smoothstep(0.0, -0.02, beside) * step(0.0, d);
-    col = fallsRock(qc, s, dsdy, rayCam, Lr, wet, rainWet, dripAmt, green, dark, tm, t, glint);
+    col = fallsRock(qc, s, dsdy, rayCam, Lr, wet, rainWet, dripAmt, rainLight, green, dark, tm, t, glint);
     if (green > 0.0) {
       // The fall's draught stirs the ferns beside it.
       float draught = exp(-max(beside, 0.0) / 0.08) * (0.3 + 0.7 * flow);
@@ -849,9 +852,9 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
       float block = fallsBoulders(qc, footX, footW, bn, bk, bh);
       if (block > 0.0) {
         col = mix(col, fallsBlock(qc, bn, bk, bh, Lr, skyLight, wet, rainWet, green, dark), block);
-        // Drops burst on their tops, drawn at twice true size (this far off a metre spans too few
-        // cells for the crowns to read), and left out on screens too small even for that.
-        if (rain > 0.0) col = mix(col, rainLight, 0.7 * rainSplashes(qc * (0.5 * FALLS_CLIFF_M), t, rain) * smoothstep(0.25, 0.6, bn.y) * step(0.5, block) * smoothstep(20.0, 30.0, uRes.y / (0.5 * FALLS_CLIFF_M)));
+        // Drops burst on their tops (at ~19 cells to the metre the crowns are 3-6 cells across),
+        // left out on screens too small for them to read.
+        if (rain > 0.0) col = mix(col, rainLight, rainSplashes(qc * FALLS_CLIFF_M, t, rain) * smoothstep(0.25, 0.6, bn.y) * step(0.5, block) * smoothstep(12.0, 16.0, uRes.y / FALLS_CLIFF_M));
         glint *= 1.0 - block;
       }
     }
@@ -1004,19 +1007,21 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     col = mix(stone, wetten(vec3(0.1, 0.22, 0.07), rainWet, 1.0), moss) * fallsLit(L, n) * 0.85;
     if (rainWet > 0.0) {
       // Pools a few times smaller than the library's, to fit the stones' tops; the top is seen
-      // foreshortened, so stretched in y.
+      // foreshortened, so stretched in y. They mirror the overcast, brighter than the stone.
       float bare = 1.0 - moss;
       float puddle = rainPuddles(vec2(qb.x, (qb.y - bankTop) * 3.0) * (6.0 * FALLS_BANK_M), rainWet) * top * bare;
-      col = mix(col + skyLight * 0.3 * wetGloss(rainWet, n.y) * bare, 0.6 * skyLight, puddle);
+      col = mix(col + skyLight * 0.3 * wetGloss(rainWet, n.y) * bare, cloudBase, puddle);
     }
-    if (rain > 0.0) col = mix(col, rainLight, 0.8 * rainSplashes(qb * FALLS_BANK_M, t, rain) * top);
+    // Splash crowns, a third of the library's size: this near (~160 cells to the metre) true-size
+    // crowns would be 25-50 cells across; these are 8-16.
+    if (rain > 0.0) col = mix(col, rainLight, rainSplashes(qb * (3.0 * FALLS_BANK_M), t, rain) * top);
   }
   // Water dripping off the bank's fronds falls in front of the stones and behind the nearer
   // fronds; beads of it on the leaflets catch the sky.
-  if (fernDrip.z > 0.0 && dripAmt > 0.0) col = mix(col, rainLight, 0.75 * rainDrips(fernDrip.xy * FALLS_FERN_M, t, dripAmt, 0.07));
+  if (fernDrip.z > 0.0 && dripAmt > 0.0) col = mix(col, rainLight, rainDrips(fernDrip.xy * FALLS_FERN_M, t, dripAmt, 0.07));
   if (fern > 0.0) {
     vec3 frond = wetten(mix(vec3(0.04, 0.12, 0.04), vec3(0.22, 0.4, 0.12), 0.25 + 0.6 * tip), rainWet, 0.4);
-    col = mix(col, frond * fallsLit(L, normalize(vec3(0.0, 0.6, -1.0))) + 0.7 * skyLight * bead, fern);
+    col = mix(col, mix(frond * fallsLit(L, normalize(vec3(0.0, 0.6, -1.0))), rainLight, bead), fern);
   }
   if (front > 0.0) {
     col = mix(col, haze, fogAmount(K_fog, 0.05, 0.0) * front);
@@ -1032,9 +1037,10 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
   if (rain > 0.0) {
     // The veil of rain too far off to make out, thickening with distance like fog (the white
     // water lights it after dark); then the drops themselves, catching the overcast's light and,
-    // after dark, the white water's, so they show around the fall.
+    // after dark, the white water's, so they show around the fall. The out-of-focus nearest drops
+    // are a little dimmer.
     col = mix(col, rainAir + glow * 1.5 * halo, pr.veil);
-    col = mix(col, rainLight + glow * (3.0 * halo + 2.0 * mistA), (0.6 + 0.15 * dark) * pr.cover);
+    col = mix(col, rainLight * (1.0 - 0.2 * pr.near) + glow * (3.0 * halo + 2.0 * mistA), pr.cover);
     mistAccent *= 1.0 - pr.veil;
     markAccent *= 1.0 - pr.veil;
   }
