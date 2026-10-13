@@ -35,10 +35,10 @@
 // running back every minute or so.
 //
 // The first frame opens on a grown network: a sketch of one (see "the sketch" below) seeds the
-// trail and the view, the specks are spread over it, and a GPU prewarm (as many steps as ~130 ms
-// allows) lets the mould take it over. The view crosses over from the sketch to the live mould as
-// the steps come in, and the sketch lingers a while as slime. Without float render targets the
-// scene shows the sketch, still, with its streaming.
+// trail and the view, the specks are spread over it, and a GPU prewarm (a fixed count of steps, spread
+// over frames on a slow machine) lets the mould take it over. The view crosses over from the sketch to
+// the live mould as the steps come in, and the sketch lingers a while as slime. Without float render
+// targets the scene shows the sketch, still, with its streaming.
 //
 // Textures:
 //   uSim0  rg16f over the trail grid (the frame plus PHYSARUM_MARGIN texels on every side): R the
@@ -54,8 +54,14 @@
 //   uSim3  rgba at half resolution: R food as the specks smell it (the flakes' halos, the M's
 //          strokes), G salt, B feeding (1 in a flake's pool, 0.5 at its rim, a fringe beyond),
 //          A light (the lit sea, and everything past the dish's glass wall).
-import type { ParamDef } from "../../params.ts";
+import { MARK_VERTICES, markVertex } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { gpuCommonGlsl } from "../../shaders/common.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
+import { runBudgeted } from "../../sims/clock.ts";
 import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget, type Scatter } from "../../sims/gpu.ts";
+import { clamp } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -187,10 +193,17 @@ const SHUTTLE_START = 0.6;
 
 // ---- prewarm ----------------------------------------------------------------------------------
 
-/** GPU prewarm at a reset: steps in chunks, synced, until the budget is spent. */
+/**
+ * GPU prewarm at a reset: PREWARM_STEPS real steps in chunks (the first short: a software rasterizer
+ * may only manage a handful), GPU-synced after each chunk. A count of steps, never a duration, so the
+ * opening picture does not depend on the machine's speed: PREWARM_MS only caps how long one frame may
+ * block, and a slower machine finishes the same steps over several frames (the sim holds still till then).
+ */
 const PREWARM_MS = 130;
-const PREWARM_STEPS = 320;
+const PREWARM_FIRST = 2;
 const PREWARM_CHUNK = 8;
+/** 320 steps, rounded up to whole chunks. */
+const PREWARM_STEPS = PREWARM_FIRST + PREWARM_CHUNK * Math.ceil((320 - PREWARM_FIRST) / PREWARM_CHUNK);
 
 // ---- the sketch -------------------------------------------------------------------------------
 
@@ -259,14 +272,6 @@ const MARK_SPACING = 0.17;
 /** Seconds the "now" button lays the M for; frames a size change must rest before it is relaid. */
 const MARK_HOLD = 60;
 const MARK_SETTLE = 20;
-/** The Manifold M's five vertices in mark units (common.ts markVertex): the middle one is the heart. */
-const MARK: readonly Point[] = [
-  { x: -0.47, y: -0.5 },
-  { x: -0.47, y: 0.5 },
-  { x: 0, y: -0.08 },
-  { x: 0.47, y: 0.5 },
-  { x: 0.47, y: -0.5 },
-];
 
 // ---- touch ------------------------------------------------------------------------------------
 
@@ -362,28 +367,11 @@ interface SketchNode extends Point {
   r: number;
 }
 
-const clamp = (value: number, low: number, high: number): number => Math.min(high, Math.max(low, value));
-
-/** A number as a GLSL float literal. */
-const glsl = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
-
 /** An element the code has just checked is there. */
 function item<T>(items: readonly T[], index: number): T {
   const value = items[index];
   if (value === undefined) throw new PhysarumError(`physarum: no item ${index} of ${items.length}`);
   return value;
-}
-
-/** Mulberry32: small, fast and seedable, so a seed always lays the same dish. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 function shuffled<T>(items: readonly T[], rand: () => number): T[] {
@@ -462,51 +450,8 @@ class Grid {
 
 // ---- knobs ------------------------------------------------------------------------------------
 
-type PhysarumKnob = "agents" | "angle" | "reach" | "decay" | "tempo" | "layout" | "feeding" | "foodSeed" | "salt" | "mark";
-
-interface KnobSlot {
-  /** Position in the scene's `params` (and so in `SimFrame.values`). */
-  index: number;
-  /** The knob's default (a feature's default amount). */
-  fallback: number;
-}
-
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class PhysarumKnobs {
-  readonly #slots: Record<PhysarumKnob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: PhysarumKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new PhysarumError(`physarum: the scene has no ${key} knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = {
-      agents: slot("agents"),
-      angle: slot("angle"),
-      reach: slot("reach"),
-      decay: slot("decay"),
-      tempo: slot("tempo"),
-      layout: slot("layout"),
-      feeding: slot("feeding"),
-      foodSeed: slot("foodSeed"),
-      salt: slot("salt"),
-      mark: slot("mark"),
-    };
-  }
-
-  /** As the shader sees it: a feature reads its amount while on, 0 while off. */
-  value(frame: SimFrame, key: PhysarumKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-
-  /** A feature's amount even while it is off (its "now" button still plays one). */
-  amount(frame: SimFrame, key: PhysarumKnob): number {
-    return frame.params[`${key}-amount`] ?? this.#slots[key].fallback;
-  }
-}
+const PHYSARUM_KNOBS = ["agents", "angle", "reach", "decay", "tempo", "layout", "feeding", "foodSeed", "salt", "mark"] as const;
+type PhysarumKnob = (typeof PHYSARUM_KNOBS)[number];
 
 type Layout = "random" | "grid" | "cities";
 /** In `layout` knob order. */
@@ -537,7 +482,7 @@ interface Settings {
 
 const markHeight = (amount: number): number => MARK_MIN + (MARK_MAX - MARK_MIN) * clamp(amount, 0, 1);
 
-function readSettings(knobs: PhysarumKnobs, frame: SimFrame): Settings {
+function readSettings(knobs: KnobReader<PhysarumKnob>, frame: SimFrame): Settings {
   const agents = physarumAgentCounts[Math.round(knobs.value(frame, "agents"))] ?? REFERENCE_AGENTS;
   const feeding = knobs.value(frame, "feeding");
   const mark = knobs.value(frame, "mark");
@@ -1083,23 +1028,23 @@ class FoodBook {
     const aspect = this.#aspect;
     // The M's corners lie 0.47 heights out across, 0.69 from its centre (per unit of height).
     const height = Math.min(size, (aspect / 2 - EDGE_GAP) / 0.47, (this.#dish - EDGE_GAP) / Math.hypot(0.47, 0.5));
-    const lay = (v: Point, kind: FoodKind): FoodNode =>
+    const lay = (vx: number, vy: number, kind: FoodKind): FoodNode =>
       this.#plant({
-        x: 0.5 + (v.x * height) / aspect, y: 0.5 + v.y * height,
+        x: 0.5 + (vx * height) / aspect, y: 0.5 + vy * height,
         radius: kind === "crumb" ? CRUMB_RADIUS * (0.85 + 0.3 * this.#rand()) : FLAKE_RADIUS,
         kind, site: -1, mark: true,
         rot: this.#rand() * TAU, elong: kind === "crumb" ? 0.7 + 0.25 * this.#rand() : 0.55 + 0.25 * this.#rand(), grain: this.#rand(),
       }, now);
     // Corners first, so they take the free slots before the crumbs.
-    MARK.forEach((v, i) => {
-      const node = lay(v, "flake");
+    MARK_VERTICES.forEach(([vx, vy], i) => {
+      const node = lay(vx, vy, "flake");
       if (i === 2) this.#heart = node.id;
     });
-    for (let s = 0; s + 1 < MARK.length; s++) {
-      const a = item(MARK, s);
-      const b = item(MARK, s + 1);
-      const pieces = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / MARK_SPACING));
-      for (let k = 1; k < pieces; k++) lay({ x: a.x + ((b.x - a.x) * k) / pieces, y: a.y + ((b.y - a.y) * k) / pieces }, "crumb");
+    for (let s = 0; s + 1 < MARK_VERTICES.length; s++) {
+      const [ax, ay] = markVertex(s);
+      const [bx, by] = markVertex(s + 1);
+      const pieces = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / MARK_SPACING));
+      for (let k = 1; k < pieces; k++) lay(ax + ((bx - ax) * k) / pieces, ay + ((by - ay) * k) / pieces, "crumb");
     }
     this.#markHeight = height;
   }
@@ -1549,17 +1494,6 @@ float physarumRandom(inout uint state) {
 }
 `;
 
-const MARK_GLSL = `
-float physarumSegment(vec2 p, vec2 a, vec2 b) {
-  vec2 pa = p - a, ba = b - a;
-  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
-}
-float physarumMarkDistance(vec2 q) {
-  vec2 m0 = vec2(-0.47, -0.5), m1 = vec2(-0.47, 0.5), m2 = vec2(0.0, -0.08), m3 = vec2(0.47, 0.5), m4 = vec2(0.47, -0.5);
-  return min(min(physarumSegment(q, m0, m1), physarumSegment(q, m1, m2)), min(physarumSegment(q, m2, m3), physarumSegment(q, m3, m4)));
-}
-`;
-
 /** Jones's step: sense at three sensors, turn, move (or bounce), starve or feed; the dead are reborn at a flake. */
 const MOVE = `
 const float TAU = 6.2831853;
@@ -1603,12 +1537,12 @@ void main() {
     return;
   }
   float ref = max(texelFetch(uRef, ivec2(0), 0).r, 1e-4);
-  float cap = ${glsl(SENSE_CAP)} * ref;
-  float food = (agent.w < ${glsl(HUNGRY)} * uLife ? ${glsl(FOOD_SENSE)} : ${glsl(FOOD_FED)}) * ref;
-  float repel = ${glsl(REPEL)} * ref;
+  float cap = ${glslFloat(SENSE_CAP)} * ref;
+  float food = (agent.w < ${glslFloat(HUNGRY)} * uLife ? ${glslFloat(FOOD_SENSE)} : ${glslFloat(FOOD_FED)}) * ref;
+  float repel = ${glslFloat(REPEL)} * ref;
   // This speck's own reach, fixed by its slot: short-sighted ones knit fine branches, long-sighted ones trunks.
   uint id = uint(texel.y) * uint(uSize.x) + uint(texel.x);
-  float reach = uReach * mix(${glsl(REACH_LOW)}, ${glsl(REACH_HIGH)}, float(physarumHash(id ^ 0x9e3779b9u) >> 8u) * (1.0 / 16777216.0));
+  float reach = uReach * mix(${glslFloat(REACH_LOW)}, ${glslFloat(REACH_HIGH)}, float(physarumHash(id ^ 0x9e3779b9u) >> 8u) * (1.0 / 16777216.0));
   float heading = agent.z;
   float front = physarumSense(agent.xy + reach * vec2(cos(heading), sin(heading)) * unit, cap, food, repel);
   float left = physarumSense(agent.xy + reach * vec2(cos(heading + uAngle), sin(heading + uAngle)) * unit, cap, food, repel);
@@ -1616,8 +1550,8 @@ void main() {
   float coin = physarumRandom(state);
   if (front < left && front < right) heading += coin < 0.5 ? uTurn : -uTurn;
   else if (front <= max(left, right)) heading += left > right ? uTurn : (right > left ? -uTurn : 0.0);
-  heading += (physarumRandom(state) - 0.5) * ${glsl(WANDER)};
-  vec2 next = agent.xy + vec2(cos(heading), sin(heading)) * unit * ${glsl(SPEED)};
+  heading += (physarumRandom(state) - 0.5) * ${glslFloat(WANDER)};
+  vec2 next = agent.xy + vec2(cos(heading), sin(heading)) * unit * ${glslFloat(SPEED)};
   vec4 there = texture(uEnv, next);
   if (any(lessThan(next, unit)) || any(greaterThan(next, 1.0 - unit)) || there.g + there.a > 0.5) {
     next = agent.xy;
@@ -1676,7 +1610,7 @@ uniform vec4 uMark;
 uniform float uLight;
 uniform vec3 uDish;   // centre (domain uv), radius (trail texels)
 uniform float uHalo;  // the food halo's fall-off beyond a flake's pool, trail texels
-${MARK_GLSL}
+${gpuCommonGlsl}
 void main() {
   vec2 p = vUv * uGrid;
   float scent = 0.0;
@@ -1691,8 +1625,8 @@ void main() {
     scent = max(scent, food.w * clamp(1.0 - (dist - food.z) / uHalo, 0.0, 1.0));
   }
   if (uMark.w > 0.0 && uMark.z > 0.0) {
-    float m = physarumMarkDistance((p - uMark.xy * uGrid) / uMark.z) * uMark.z;
-    scent = max(scent, uMark.w * ${glsl(MARK_SCENT)} * exp(-m * m / ${glsl(MARK_WIDTH * MARK_WIDTH)}));
+    float m = markDistance((p - uMark.xy * uGrid) / uMark.z) * uMark.z;
+    scent = max(scent, uMark.w * ${glslFloat(MARK_SCENT)} * exp(-m * m / ${glslFloat(MARK_WIDTH * MARK_WIDTH)}));
   }
   // The dish's glass wall is light to the mould: it blocks it and nothing grows past it.
   float wall = smoothstep(uDish.z - 1.5, uDish.z + 0.5, length(p - uDish.xy * uGrid));
@@ -1735,7 +1669,7 @@ uniform float uStride;
 const vec2 PHYSARUM_RING[8] = vec2[8](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0),
   vec2(1.0, 1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, -1.0));
 float physarumCost(vec2 at) {
-  return 1.0 + ${glsl(COST_OFF)} * (1.0 - smoothstep(0.35, 0.6, texture(uView, at).r));
+  return 1.0 + ${glslFloat(COST_OFF)} * (1.0 - smoothstep(0.35, 0.6, texture(uView, at).r));
 }
 void main() {
   vec2 toHeart = (vUv - uHeart.xy) * uSize;
@@ -1744,14 +1678,14 @@ void main() {
     return;
   }
   float here = physarumCost(vUv);
-  float best = ${glsl(PHYSARUM_FAR)};
+  float best = ${glslFloat(PHYSARUM_FAR)};
   for (int k = 0; k < 8; k++) {
     vec2 o = PHYSARUM_RING[k] * uStride;
     vec2 at = vUv + o * uTexel;
     float cost = length(o * uStepH) * 0.5 * (here + physarumCost(at));
     best = min(best, texture(uDist, at).r + cost);
   }
-  fragColor = vec4(min(best, ${glsl(PHYSARUM_FAR)}), 0.0, 0.0, 1.0);
+  fragColor = vec4(min(best, ${glslFloat(PHYSARUM_FAR)}), 0.0, 0.0, 1.0);
 }
 `;
 
@@ -1772,7 +1706,7 @@ void main() {
   float trail = 0.25 * (texture(uTrail, vUv + h).r + texture(uTrail, vUv - h).r
     + texture(uTrail, vUv + vec2(h.x, -h.y)).r + texture(uTrail, vUv + vec2(-h.x, h.y)).r);
   vec2 ref = texelFetch(uRef, ivec2(0), 0).rg;
-  float gamma = clamp(log(${glsl(LACE_TONE)}) / log(clamp(ref.y, ${glsl(SHARE_MIN)}, ${glsl(SHARE_MAX)})), ${glsl(GAMMA_MIN)}, ${glsl(GAMMA_MAX)});
+  float gamma = clamp(log(${glslFloat(LACE_TONE)}) / log(clamp(ref.y, ${glslFloat(SHARE_MIN)}, ${glslFloat(SHARE_MAX)})), ${glslFloat(GAMMA_MIN)}, ${glslFloat(GAMMA_MAX)});
   float tone = pow(max(trail / max(ref.x, 1e-4), 1e-6), gamma);
   vec2 prev = texelFetch(uPrev, ivec2(gl_FragCoord.xy), 0).rg;
   float now = mix(prev.r, tone, uBlend);
@@ -1789,7 +1723,7 @@ uniform sampler2D uTrail;
 uniform sampler2D uEnv;
 uniform sampler2D uRef;
 void main() {
-  float haze = ${glsl(FILAMENT_FLOOR)} * texelFetch(uRef, ivec2(0), 0).r;
+  float haze = ${glslFloat(FILAMENT_FLOOR)} * texelFetch(uRef, ivec2(0), 0).r;
   vec2 grid = vec2(textureSize(uTrail, 0));
   vec2 base = floor(gl_FragCoord.xy) * 16.0;
   vec4 sum = vec4(0.0);
@@ -1841,7 +1775,9 @@ void main() {
 /** The slime mould grown on the GPU. */
 class PhysarumSim implements SceneSim {
   readonly #gpu: GpuCompute;
-  readonly #knobs: PhysarumKnobs;
+  readonly #knobs: KnobReader<PhysarumKnob>;
+  readonly #feedSlot: number;
+  readonly #markSlot: number;
   readonly #food = new FoodBook();
   readonly #pulse = new PulseClock();
   readonly #foodTexture: DataTexture;
@@ -1883,7 +1819,8 @@ class PhysarumSim implements SceneSim {
   #seed = 0;
   #layoutAspect = 1;
   #resetIn = 0;
-  #triggers: number[] | undefined = undefined;
+  /** Prewarm steps taken since the last reset; the sim holds still until all PREWARM_STEPS are done. */
+  #warmed = PREWARM_STEPS;
   #markUntil = -1;
   #markLast: number | undefined = undefined;
   #markHeld = 0;
@@ -1900,9 +1837,11 @@ class PhysarumSim implements SceneSim {
   /** Steps since the last reset: the view crosses over from the sketch to the mould over SETTLE_STEPS. */
   #grown = 0;
 
-  constructor(gpu: GpuCompute, knobs: PhysarumKnobs) {
+  constructor(gpu: GpuCompute, knobs: KnobReader<PhysarumKnob>) {
     this.#gpu = gpu;
     this.#knobs = knobs;
+    this.#feedSlot = knobs.trigger("feeding");
+    this.#markSlot = knobs.trigger("mark");
     const gl = gpu.gl;
     this.#frameAspect = gl.drawingBufferWidth / Math.max(1, gl.drawingBufferHeight);
     const grid = new Grid(this.#frameAspect);
@@ -1952,8 +1891,8 @@ class PhysarumSim implements SceneSim {
       this.#frameGrid = new Grid(frame.aspect);
     }
     const grid = this.#frameGrid;
-    const fired = this.#fired(frame.triggers);
-    if (fired[1] === true) this.#markUntil = frame.time + MARK_HOLD;
+    const fired = frame.fired;
+    if (fired[this.#markSlot] === true) this.#markUntil = frame.time + MARK_HOLD;
     const mark = settings.mark ?? (frame.time < this.#markUntil ? settings.markNow : undefined);
 
     if (settings.layout !== this.#layout || settings.seed !== this.#seed) {
@@ -1970,8 +1909,12 @@ class PhysarumSim implements SceneSim {
       if (settings.agents !== this.#agentCount) this.#reseedAgents(settings.agents);
       this.#holdMark(mark);
     }
-    if (fired[0] === true) this.#food.constellation();
+    if (fired[this.#feedSlot] === true) this.#food.constellation();
     this.#touch(frame.pointer, frame.aspect, settings.salt);
+    if (this.#warmed < PREWARM_STEPS) {
+      this.#warm();
+      if (this.#warmed < PREWARM_STEPS) return this.#textures();
+    }
 
     const dt = Math.max(0, frame.dt) * clamp(frame.motion, 0, 1);
     const simDt = dt * settings.tempo;
@@ -2004,6 +1947,11 @@ class PhysarumSim implements SceneSim {
       this.#trace(DIST_PASSES);
     }
 
+    return this.#textures();
+  }
+
+  /** The flakes uploaded, with the textures the shader reads. */
+  #textures(): readonly (WebGLTexture | undefined)[] {
     this.#food.writeTexture(this.#foodData, this.#pulse.phase);
     this.#foodTexture.upload(this.#foodData);
     return [this.#view.texture, this.#dist.texture, this.#foodTexture.texture, this.#env.texture];
@@ -2057,28 +2005,34 @@ class PhysarumSim implements SceneSim {
     this.#syncUniforms(settings);
     this.#envPass.run(this.#env);
     this.#envDirty = false;
-    this.#prewarm();
+    this.#warmed = 0;
   }
 
   /**
-   * As many real steps as the budget allows (GPU-synced), the view then crossed over from the sketch
-   * by as much as they grew (all the way after SETTLE_STEPS): a fast GPU opens on the mould's own
-   * network, a slow one on the sketch, which its mould then grows out of. The first chunk is short:
-   * a software rasterizer may only manage a handful.
+   * The prewarm: PREWARM_STEPS real steps (the first chunk short), the trunk level followed and the
+   * distances relaxed after each chunk, GPU-synced; then the view crossed over from the sketch by as
+   * much as the mould grew (all the way after SETTLE_STEPS). Steps are counted, so every machine runs
+   * the same ones in the same order; a slow one only takes more frames (frame() holds still until
+   * #warmed reaches PREWARM_STEPS).
    */
-  #prewarm(): void {
+  #warm(): void {
     const gl = this.#gpu.gl;
-    const start = performance.now();
-    for (let done = 0; done < PREWARM_STEPS; ) {
-      const chunk = done === 0 ? 2 : PREWARM_CHUNK;
-      for (let i = 0; i < chunk; i++) this.#step();
-      done += chunk;
-      this.#grown = done;
-      this.#measure(0.3);
-      this.#trace(1);
-      gl.finish();
-      if (performance.now() - start > PREWARM_MS) break;
-    }
+    this.#warmed = runBudgeted(
+      (i) => {
+        this.#step();
+        const done = i + 1;
+        if ((done - PREWARM_FIRST) % PREWARM_CHUNK !== 0) return;
+        this.#grown = done;
+        this.#measure(0.3);
+        this.#trace(1);
+        gl.finish();
+      },
+      PREWARM_MS,
+      PREWARM_STEPS,
+      this.#warmed,
+      PREWARM_CHUNK,
+    );
+    if (this.#warmed < PREWARM_STEPS) return;
     const settled = Math.min(1, this.#grown / SETTLE_STEPS);
     this.#show(settled, settled);
   }
@@ -2272,13 +2226,6 @@ class PhysarumSim implements SceneSim {
       this.#distPass.run(this.#dist, { uniforms: { uStride: this.#stride } });
     }
   }
-
-  /** Trigger slots stamped since the previous frame. */
-  #fired(triggers: readonly number[]): boolean[] {
-    const previous = this.#triggers;
-    this.#triggers = [...triggers];
-    return triggers.map((at, slot) => previous !== undefined && at !== previous[slot] && at > -1e3);
-  }
 }
 
 /**
@@ -2286,7 +2233,7 @@ class PhysarumSim implements SceneSim {
  * (layout, dish, the M, the frame) sketch it afresh.
  */
 class PhysarumStill implements SceneSim {
-  readonly #knobs: PhysarumKnobs;
+  readonly #knobs: KnobReader<PhysarumKnob>;
   readonly #food = new FoodBook();
   readonly #pulse = new PulseClock();
   readonly #foodData = new Float32Array(PHYSARUM_MAX_FOOD * 3 * 4);
@@ -2302,7 +2249,7 @@ class PhysarumStill implements SceneSim {
   #width = 0;
   #height = 0;
 
-  constructor(gl: WebGL2RenderingContext, knobs: PhysarumKnobs) {
+  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<PhysarumKnob>) {
     this.#knobs = knobs;
     this.#foodTexture = new DataTexture(gl, { width: PHYSARUM_MAX_FOOD, height: 3, format: "rgba16f", filter: "nearest" });
     this.#view = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
@@ -2367,7 +2314,7 @@ class PhysarumStill implements SceneSim {
 
 /** The slime mould, for a scene whose `params` carry the knobs `PhysarumKnob` names. */
 export function physarumSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new PhysarumKnobs(params);
+  const knobs = new KnobReader<PhysarumKnob>("physarum", params, PHYSARUM_KNOBS);
   return (gl) => {
     const gpu = GpuCompute.create(gl);
     return gpu === undefined ? new PhysarumStill(gl, knobs) : new PhysarumSim(gpu, knobs);

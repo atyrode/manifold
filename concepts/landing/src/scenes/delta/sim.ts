@@ -28,7 +28,7 @@
 // A fresh landscape is laid out mature (`layDelta`, on the CPU): a meandering river in a valley
 // between hills, a fan of distributaries splitting toward the sea with levees, mouth bars and a
 // shallow platform, an older lobe off to one side, abandoned and turned to marsh, plants on the
-// old ground; then a short, time-boxed run of the simulation sets the water flowing.
+// old ground; then a short fixed run of the simulation (a count of steps) sets the water flowing.
 //
 // Textures handed to the shader (rgba16f, linear, the grid's size; the shader cover-fits the grid
 // to the frame), eased toward each new state so nothing jumps under the dither:
@@ -38,8 +38,14 @@
 //          Manifold M's rock 0..1, a current speed (cells per model time unit)
 // When float render targets are missing (GpuCompute.create returns undefined), the same layout is
 // uploaded once and stands still.
-import type { ParamDef } from "../../params.ts";
+import { markDistance } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { gpuCommonGlsl } from "../../shaders/common.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
+import { runBudgeted } from "../../sims/clock.ts";
 import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import { smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -55,11 +61,15 @@ const RELAYOUT_MS = 300;
 const STEPS_PER_SECOND = 120;
 /** Most steps in one frame however long it was (a slow machine runs the time-lapse slower). */
 const MAX_FRAME_STEPS = 4;
-/** Time-boxed warm-up after a layout: steps at most, and milliseconds of GPU time. */
+/**
+ * Warm-up after a layout: PREWARM_STEPS steps, the GPU synced after every PREWARM_CHUNK. A count of
+ * steps, never a duration, so the opening state does not depend on the machine's speed; PREWARM_MS
+ * only caps how long one frame may block, and a slower machine takes more frames (the sim holds still
+ * meanwhile).
+ */
 const PREWARM_STEPS = 240;
 const PREWARM_MS = 60;
-/** Steps timed (with a finish) before the warm-up decides how many more fit its budget. */
-const PREWARM_PROBE = 2;
+const PREWARM_CHUNK = 8;
 
 // ---- physics, per step, in cells (heights too) -------------------------------------------------------
 
@@ -91,6 +101,8 @@ const SILT_MORPH = 2.5;
  */
 const SETTLE = 0.0012;
 const SETTLE_SPEED = 0.1;
+/** Where settling begins to fade with speed: a third of SETTLE_SPEED, as the pass has always rounded it. */
+const SETTLE_FROM = 0.0333;
 /** Largest bed change in one step. */
 const MAX_CHANGE = 0.02;
 /** Angle of repose as a drop per cell, how much roots steepen it, and the slump rate. */
@@ -162,62 +174,10 @@ const VIEW_EASE = 0.35;
 
 // ---- knobs -------------------------------------------------------------------------------------------
 
-type DeltaKnob = "discharge" | "sediment" | "erosion" | "floods" | "speed" | "landscape" | "seaLevel" | "tide" | "current" | "vegetation" | "tool" | "mark";
-
-interface KnobSlot {
-  index: number;
-  fallback: number;
-}
-
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class DeltaKnobs {
-  readonly #slots: Record<DeltaKnob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: DeltaKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new DeltaError(`delta: the scene has no ${key} knob`);
-      return { index, fallback: def.kind === "feature" && !def.on ? 0 : def.value };
-    };
-    this.#slots = {
-      discharge: slot("discharge"),
-      sediment: slot("sediment"),
-      erosion: slot("erosion"),
-      floods: slot("floods"),
-      speed: slot("speed"),
-      landscape: slot("landscape"),
-      seaLevel: slot("seaLevel"),
-      tide: slot("tide"),
-      current: slot("current"),
-      vegetation: slot("vegetation"),
-      tool: slot("tool"),
-      mark: slot("mark"),
-    };
-  }
-
-  /** As the shader sees it: a feature reads its amount while on, 0 while off. */
-  value(frame: SimFrame, key: DeltaKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-}
-
-export class DeltaError extends Error {}
+const DELTA_KNOBS = ["discharge", "sediment", "erosion", "floods", "speed", "landscape", "seaLevel", "tide", "current", "vegetation", "tool", "mark"] as const;
+type DeltaKnob = (typeof DELTA_KNOBS)[number];
 
 // ---- noise ---------------------------------------------------------------------------------------------
-
-/** Mulberry32: a small seedable generator, so a landscape number always lays out the same delta. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function lattice(i: number, j: number, seed: number): number {
   let h = Math.imul(i, 0x27d4eb2d) ^ Math.imul(j, 0x165667b1) ^ Math.imul(seed + 1, 0x9e3779b1);
@@ -254,11 +214,6 @@ function fbm(x: number, y: number, seed: number, octaves: number): number {
     amp *= 0.5;
   }
   return sum / norm;
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
 }
 
 /**
@@ -322,25 +277,6 @@ function boxBlur(field: Float32Array, columns: number, rows: number, r: number):
 }
 
 // ---- the M ---------------------------------------------------------------------------------------------
-
-const MARK_X = Float64Array.of(-0.47, -0.47, 0, 0.47, 0.47);
-const MARK_Y = Float64Array.of(-0.5, 0.5, -0.08, 0.5, -0.5);
-
-function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
-}
-
-/** The Manifold M in mark units (x in ±0.47, y in ±0.5), as common.ts draws it. */
-function markDistance(x: number, y: number): number {
-  let best = Infinity;
-  for (let i = 0; i < 4; i++) {
-    best = Math.min(best, segmentDistance(x, y, MARK_X[i] ?? 0, MARK_Y[i] ?? 0, MARK_X[i + 1] ?? 0, MARK_Y[i + 1] ?? 0));
-  }
-  return best;
-}
 
 /** Where the M stands in grid cells and how tall it is (0: none). */
 interface MarkPlace {
@@ -777,25 +713,19 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
 // ---- GPU passes -----------------------------------------------------------------------------------------
 
 /** Declarations every pass shares: the state textures and the M. */
-const HEAD = `
+const HEAD = `${gpuCommonGlsl}
 uniform sampler2D uT;   // bed, silt, vegetation, fresh sediment
 uniform sampler2D uW;   // water depth, velocity xy, recently wet
 uniform sampler2D uF;   // outflow through the left, right, bottom and top faces
 uniform sampler2D uS;   // original ground, hardness, edge (1 open sea, 2 gorge, 3 inlet), plant cover it can carry
 uniform vec3 uMark;     // the M: centre in cells, height in cells (0: none)
 
-float deltaSegment(vec2 p, vec2 a, vec2 b) {
-  vec2 pa = p - a, ba = b - a;
-  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
-}
-
-// The Manifold M's rock at a cell centre, 0..1 (the vertices of common.ts's markDistance).
+// The Manifold M's rock at a cell centre, 0..1.
 float deltaMarkRock(vec2 p) {
   if (uMark.z <= 0.0) return 0.0;
   vec2 q = (p - uMark.xy) / uMark.z;
-  float d = min(min(deltaSegment(q, vec2(-0.47, -0.5), vec2(-0.47, 0.5)), deltaSegment(q, vec2(-0.47, 0.5), vec2(0.0, -0.08))),
-                min(deltaSegment(q, vec2(0.0, -0.08), vec2(0.47, 0.5)), deltaSegment(q, vec2(0.47, 0.5), vec2(0.47, -0.5))));
-  return 1.0 - smoothstep(${MARK_STROKE.toFixed(3)}, ${MARK_STROKE.toFixed(3)} + 1.5 / uMark.z, d);
+  float d = markDistance(q);
+  return 1.0 - smoothstep(${glslFloat(MARK_STROKE)}, ${glslFloat(MARK_STROKE)} + 1.5 / uMark.z, d);
 }
 `;
 
@@ -849,15 +779,15 @@ void main() {
   float inB = c.y > 0 ? texelFetch(uF, c - ivec2(0, 1), 0).w : 0.0;
   float inT = c.y < last.y ? texelFetch(uF, c + ivec2(0, 1), 0).z : 0.0;
   float depth = w.x + uDt * (inL + inR + inB + inT - (f.x + f.y + f.z + f.w));
-  vec2 velocity = 0.5 * vec2(inL - f.x + f.y - inR, inB - f.z + f.w - inT) / max(0.5 * (w.x + depth), ${MIN_DEPTH.toFixed(3)});
+  vec2 velocity = 0.5 * vec2(inL - f.x + f.y - inR, inB - f.z + f.w - inT) / max(0.5 * (w.x + depth), ${glslFloat(MIN_DEPTH)});
   float speed = length(velocity);
-  if (speed > ${MAX_SPEED.toFixed(3)}) velocity *= ${MAX_SPEED.toFixed(3)} / speed;
+  if (speed > ${glslFloat(MAX_SPEED)}) velocity *= ${glslFloat(MAX_SPEED)} / speed;
   if (g.z > 2.5) depth = max(depth, uStage - bed);
   float sea = uSea + uCurrent * (0.5 - vUv.x);
   if (g.z > 0.5 && g.z < 1.5 && bed < sea) depth = sea - bed;
-  if (depth < ${FILM.toFixed(3)}) depth -= uDt * ${EVAPORATION.toFixed(4)};
+  if (depth < ${glslFloat(FILM)}) depth -= uDt * ${glslFloat(EVAPORATION)};
   depth = max(depth, 0.0);
-  float wet = depth > 0.03 ? 1.0 : max(0.0, w.w - uDt * ${DRYING.toFixed(4)});
+  float wet = depth > 0.03 ? 1.0 : max(0.0, w.w - uDt * ${glslFloat(DRYING)});
   fragColor = vec4(depth, velocity, wet);
 }
 `;
@@ -876,7 +806,7 @@ uniform float uWilt;
 // Sand carried across a face by an outflow, the bed falling by drop across it.
 float deltaCarry(float flow, float face, float drop) {
   float u = flow / face;
-  return max(${CARRY.toFixed(4)} * flow * u * u + ${SLOPE_CARRY.toFixed(4)} * flow * drop, 0.0);
+  return max(${glslFloat(CARRY)} * flow * u * u + ${glslFloat(SLOPE_CARRY)} * flow * drop, 0.0);
 }
 
 // How freely a cell gives up sand: plants hold it, rock below the original ground does not give.
@@ -890,12 +820,12 @@ void deltaFace(ivec2 n, float flowOut, int back, vec4 t, float level, float loos
   vec4 tn = texelFetch(uT, n, 0);
   vec4 gn = texelFetch(uS, n, 0);
   float flowIn = texelFetch(uF, n, 0)[back];
-  float face = max(max(level, tn.x + texelFetch(uW, n, 0).x) - max(t.x, tn.x), ${MIN_FACE.toFixed(3)});
+  float face = max(max(level, tn.x + texelFetch(uW, n, 0).x) - max(t.x, tn.x), ${glslFloat(MIN_FACE)});
   float lose = deltaCarry(flowOut, face, t.x - tn.x) * loose;
   float gain = deltaCarry(flowIn, face, tn.x - t.x) * deltaLoose(tn, gn) * (gn.z > 1.5 ? uSupply : 1.0);
   float drop = tn.x - t.x;
-  float excess = abs(drop) - ${TALUS.toFixed(3)} * (1.0 + ${ROOT_TALUS.toFixed(3)} * 0.5 * (t.z + tn.z));
-  sums += vec4(gain - lose, excess > 0.0 ? ${SLUMP.toFixed(3)} * sign(drop) * excess : 0.0, tn.z, flowIn * tn.y);
+  float excess = abs(drop) - ${glslFloat(TALUS)} * (1.0 + ${glslFloat(ROOT_TALUS)} * 0.5 * (t.z + tn.z));
+  sums += vec4(gain - lose, excess > 0.0 ? ${glslFloat(SLUMP)} * sign(drop) * excess : 0.0, tn.z, flowIn * tn.y);
   waterIn += flowIn;
 }
 
@@ -915,8 +845,8 @@ void main() {
   if (c.y > 0) deltaFace(c - ivec2(0, 1), f.z, 3, t, level, loose, sums, waterIn);
   if (c.y < last.y) deltaFace(c + ivec2(0, 1), f.w, 2, t, level, loose, sums, waterIn);
   float change = uDt * uMorph * sums.x + sums.y
-    - uDt * ${SINK.toFixed(6)} * (1.0 + 2.0 * g.y) * smoothstep(0.0, 0.3, t.x - g.x)
-    + uDt * ${FILL.toFixed(6)} * max(g.x - t.x, 0.0);
+    - uDt * ${glslFloat(SINK)} * (1.0 + 2.0 * g.y) * smoothstep(0.0, 0.3, t.x - g.x)
+    + uDt * ${glslFloat(FILL)} * max(g.x - t.x, 0.0);
 
   // Silt, as a concentration, goes wherever the water goes: the same outflows carry it, upwind,
   // so none is made or lost on the way (w.x is the depth after this step's flows, the depth before
@@ -926,20 +856,20 @@ void main() {
   float silt = t.y * max(before - uDt * flowOut, 0.0) + uDt * sums.w;
   if (g.z > 2.5) silt = uSilt * w.x;
   float speed = length(w.yz);
-  if (w.x < ${FILM.toFixed(3)}) {
-    change += ${SILT_MORPH.toFixed(3)} * silt;
+  if (w.x < ${glslFloat(FILM)}) {
+    change += ${glslFloat(SILT_MORPH)} * silt;
     silt = 0.0;
   } else {
-    float settle = ${SETTLE.toFixed(4)} * silt * uDt * (1.0 - smoothstep(${(SETTLE_SPEED / 3).toFixed(4)}, ${SETTLE_SPEED.toFixed(3)}, speed));
-    change += ${SILT_MORPH.toFixed(3)} * settle;
+    float settle = ${glslFloat(SETTLE)} * silt * uDt * (1.0 - smoothstep(${glslFloat(SETTLE_FROM)}, ${glslFloat(SETTLE_SPEED)}, speed));
+    change += ${glslFloat(SILT_MORPH)} * settle;
     silt = (silt - settle) / w.x;
   }
   // The gorge the river enters by is bedrock; the open sea at the edges takes what reaches it.
   bool open = g.z > 0.5 && g.z < 1.5 && t.x < uSea;
   if (g.z > 1.5 || open) change = 0.0;
   if (open) silt = 0.0;
-  change = clamp(change, -${MAX_CHANGE.toFixed(3)}, ${MAX_CHANGE.toFixed(3)});
-  float fresh = min(1.0, t.w * (1.0 - uDt * ${FRESH_FADE.toFixed(4)}) + abs(change) * ${FRESH_GAIN.toFixed(2)});
+  change = clamp(change, -${glslFloat(MAX_CHANGE)}, ${glslFloat(MAX_CHANGE)});
+  float fresh = min(1.0, t.w * (1.0 - uDt * ${glslFloat(FRESH_FADE)}) + abs(change) * ${glslFloat(FRESH_GAIN)});
 
   // Plants take to dry, quiet ground above the tides, as much as it can carry, spreading from their
   // neighbours; water and current drown and scour them.
@@ -947,7 +877,7 @@ void main() {
   float dry = 1.0 - smoothstep(0.01, 0.06, w.x);
   float ground = smoothstep(0.05, 0.35, rise) * (1.0 - 0.6 * smoothstep(1.5, 5.0, rise));
   float grow = uGrow * (0.03 + 0.25 * sums.z) * max(g.w - t.z, 0.0) * dry * ground;
-  float wither = ${WITHER.toFixed(4)} * t.z * (smoothstep(0.03, 0.3, w.x) + 3.0 * smoothstep(${(0.7 * SCOUR).toFixed(3)}, ${(1.4 * SCOUR).toFixed(3)}, speed)) + uWilt * t.z;
+  float wither = ${glslFloat(WITHER)} * t.z * (smoothstep(0.03, 0.3, w.x) + 3.0 * smoothstep(${glslFloat(0.7 * SCOUR)}, ${glslFloat(1.4 * SCOUR)}, speed)) + uWilt * t.z;
   float veg = clamp(t.z + uDt * (grow - wither), 0.0, 1.0);
   fragColor = vec4(t.x + change, silt, veg, fresh);
 }
@@ -965,7 +895,7 @@ uniform float uDig;
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   vec4 t = texelFetch(uT, c, 0);
-  float k = uAmount * (1.0 - smoothstep(0.35 * uRadius, uRadius, deltaSegment(gl_FragCoord.xy, uFrom, uTo + vec2(1e-3, 0.0))));
+  float k = uAmount * (1.0 - smoothstep(0.35 * uRadius, uRadius, segmentDistance(gl_FragCoord.xy, uFrom, uTo + vec2(1e-3, 0.0))));
   float bed = uDig > 0.5 ? mix(t.x, min(t.x, uTarget), k) : mix(t.x, max(t.x, uTarget), k);
   fragColor = vec4(bed, t.y, t.z * (1.0 - k), max(t.w, k));
 }
@@ -1066,10 +996,11 @@ interface DeltaEnv {
 }
 
 /** Map pointer uv to grid uv, the way the shader cover-fits the grid to the frame. */
-function gridUv(u: number, v: number, frameAspect: number, gridAspect: number): { x: number; y: number } {
+function gridUv(u: number, v: number, frameAspect: number, gridAspect: number, out: { x: number; y: number }): void {
   const sx = frameAspect > gridAspect ? 1 : frameAspect / gridAspect;
   const sy = frameAspect > gridAspect ? gridAspect / frameAspect : 1;
-  return { x: 0.5 + (u - 0.5) * sx, y: 0.5 + (v - 0.5) * sy };
+  out.x = 0.5 + (u - 0.5) * sx;
+  out.y = 0.5 + (v - 0.5) * sy;
 }
 
 // ---- the simulation on the GPU ----------------------------------------------------------------------------
@@ -1093,6 +1024,11 @@ class DeltaField {
   readonly #viewSurfacePass: Pass;
   #layout: DeltaLayout;
   #mark: MarkPlace = { x: 0, y: 0, size: 0 };
+  // Uniform records the brush and the views rewrite each time, so a frame allocates nothing.
+  readonly #brushUniforms = { uFrom: new Float32Array(2), uTo: new Float32Array(2), uRadius: 0, uAmount: 0, uTarget: 0, uDig: 0 };
+  readonly #brushRun = { uniforms: this.#brushUniforms };
+  readonly #viewUniforms = { uBlend: 1 };
+  readonly #viewRun = { uniforms: this.#viewUniforms };
 
   constructor(gpu: GpuCompute, layout: DeltaLayout) {
     this.#gpu = gpu;
@@ -1192,28 +1128,41 @@ class DeltaField {
   /** Dig (or bank up) along a stretch of the pointer's path, in cells. */
   brush(from: { x: number; y: number }, to: { x: number; y: number }, amount: number, dig: boolean, seaBase: number): void {
     const scale = Math.min(this.#layout.columns, this.#layout.rows) / 256;
-    this.#brush.run(this.#terrain, {
-      uniforms: {
-        uFrom: [from.x, from.y], uTo: [to.x, to.y], uRadius: BRUSH_RADIUS * scale, uAmount: amount,
-        uTarget: seaBase + (dig ? DIG_TO : BANK_TO), uDig: dig ? 1 : 0,
-      },
-    });
+    const uniforms = this.#brushUniforms;
+    uniforms.uFrom[0] = from.x;
+    uniforms.uFrom[1] = from.y;
+    uniforms.uTo[0] = to.x;
+    uniforms.uTo[1] = to.y;
+    uniforms.uRadius = BRUSH_RADIUS * scale;
+    uniforms.uAmount = amount;
+    uniforms.uTarget = seaBase + (dig ? DIG_TO : BANK_TO);
+    uniforms.uDig = dig ? 1 : 0;
+    this.#brush.run(this.#terrain, this.#brushRun);
   }
 
   /** Ease the shader's views toward the state (blend 1: show it as it is). */
   view(blend: number): void {
-    this.#viewGroundPass.run(this.#viewGround, { uniforms: { uBlend: blend } });
-    this.#viewSurfacePass.run(this.#viewSurface, { uniforms: { uBlend: blend } });
+    this.#viewUniforms.uBlend = blend;
+    this.#viewGroundPass.run(this.#viewGround, this.#viewRun);
+    this.#viewSurfacePass.run(this.#viewSurface, this.#viewRun);
   }
 
-  /** Time `steps` steps (forcing the GPU to finish), in milliseconds per step. */
-  probe(steps: number): number {
+  /**
+   * Warm-up steps from step `from` on, until PREWARM_STEPS are done or PREWARM_MS has passed (checked
+   * every PREWARM_CHUNK steps, the GPU synced then). Returns where to resume: PREWARM_STEPS when done.
+   */
+  warm(from: number): number {
     const gl = this.#gpu.gl;
-    gl.finish();
-    const start = performance.now();
-    for (let i = 0; i < steps; i++) this.step();
-    gl.finish();
-    return (performance.now() - start) / Math.max(1, steps);
+    return runBudgeted(
+      (i) => {
+        this.step();
+        if ((i + 1) % PREWARM_CHUNK === 0) gl.finish();
+      },
+      PREWARM_MS,
+      PREWARM_STEPS,
+      from,
+      PREWARM_CHUNK,
+    );
   }
 
   dispose(): void {
@@ -1224,7 +1173,7 @@ class DeltaField {
 // ---- the scene's sim --------------------------------------------------------------------------------------
 
 /** Everything a frame's steps need from the knobs. */
-function environment(frame: SimFrame, knobs: DeltaKnobs, clock: number, flood: number): DeltaEnv {
+function environment(frame: SimFrame, knobs: KnobReader<DeltaKnob>, clock: number, flood: number): DeltaEnv {
   const seaBase = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
   const tide = TIDE_RANGE * knobs.value(frame, "tide") * Math.sin((2 * Math.PI * clock) / TIDE_PERIOD);
   const discharge = knobs.value(frame, "discharge");
@@ -1255,14 +1204,19 @@ function sameKey(a: LayoutKey, b: LayoutKey): boolean {
   return a.seed === b.seed && a.columns === b.columns && a.rows === b.rows;
 }
 
-/** The grid for a frame: the current one while the frame's aspect stays close to it. */
-function gridFor(frame: SimFrame, current: LayoutKey | undefined): { columns: number; rows: number } {
+/** The grid for a frame, into `out`: the current one while the frame's aspect stays close to it. */
+function gridFor(frame: SimFrame, current: LayoutKey | undefined, out: LayoutKey): void {
   if (current !== undefined) {
     const ratio = frame.aspect / (current.columns / current.rows);
-    if (ratio < ASPECT_SLACK && ratio > 1 / ASPECT_SLACK) return { columns: current.columns, rows: current.rows };
+    if (ratio < ASPECT_SLACK && ratio > 1 / ASPECT_SLACK) {
+      out.columns = current.columns;
+      out.rows = current.rows;
+      return;
+    }
   }
   const { width, height } = gridSize(frame.aspect, GRID_SHORT);
-  return { columns: width, rows: height };
+  out.columns = width;
+  out.rows = height;
 }
 
 /** The views of a layout as they stand, for machines without float render targets. */
@@ -1285,40 +1239,42 @@ function staticViews(layout: DeltaLayout, sea: number, mark: MarkPlace): { groun
   return { ground, surface };
 }
 
-function markSize(frame: SimFrame, knobs: DeltaKnobs, rows: number): number {
+function markSize(frame: SimFrame, knobs: KnobReader<DeltaKnob>, rows: number): number {
   const amount = knobs.value(frame, "mark");
   return amount > 0 ? (MARK_SMALL + (MARK_LARGE - MARK_SMALL) * amount) * rows : 0;
 }
 
 /** A still picture of the layout, where the GPU cannot run the simulation. */
-function stillSim(gl: WebGL2RenderingContext, knobs: DeltaKnobs): SceneSim {
+function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<DeltaKnob>): SceneSim {
   let key: LayoutKey | undefined;
   let layout: DeltaLayout | undefined;
-  let shown = "";
+  let shownSea = Number.NaN;
+  let shownSize = Number.NaN;
   let ground: DataTexture | undefined;
   let surface: DataTexture | undefined;
+  const want: LayoutKey = { seed: 0, columns: 0, rows: 0 };
   return {
     frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-      const grid = gridFor(frame, key);
-      const want: LayoutKey = { seed: knobs.value(frame, "landscape"), ...grid };
+      gridFor(frame, key, want);
+      want.seed = knobs.value(frame, "landscape");
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
       if (key === undefined || layout === undefined || !sameKey(key, want)) {
         layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0, knobs.value(frame, "current"));
-        key = want;
-        shown = "";
+        key = { ...want };
+        shownSea = Number.NaN;
       }
-      const mark: MarkPlace = { x: layout.markX, y: layout.markY, size: markSize(frame, knobs, layout.rows) };
-      const look = `${sea}:${mark.size}`;
-      if (look !== shown) {
-        const views = staticViews(layout, sea, mark);
-        const size = { width: layout.columns, height: layout.rows, format: "rgba16f" } as const;
-        ground ??= new DataTexture(gl, size);
-        surface ??= new DataTexture(gl, size);
+      const size = markSize(frame, knobs, layout.rows);
+      if (sea !== shownSea || size !== shownSize) {
+        const views = staticViews(layout, sea, { x: layout.markX, y: layout.markY, size });
+        const texture = { width: layout.columns, height: layout.rows, format: "rgba16f" } as const;
+        ground ??= new DataTexture(gl, texture);
+        surface ??= new DataTexture(gl, texture);
         ground.resize(layout.columns, layout.rows);
         surface.resize(layout.columns, layout.rows);
         ground.upload(views.ground);
         surface.upload(views.surface);
-        shown = look;
+        shownSea = sea;
+        shownSize = size;
       }
       return [ground?.texture, surface?.texture];
     },
@@ -1332,9 +1288,10 @@ function stillSim(gl: WebGL2RenderingContext, knobs: DeltaKnobs): SceneSim {
 /** The delta, for a scene whose `params` carry the knobs `DeltaKnob` names. */
 export function deltaSim(params: readonly ParamDef[]): SimFactory {
   return (gl: WebGL2RenderingContext): SceneSim => {
-    const knobs = new DeltaKnobs(params);
+    const knobs = new KnobReader<DeltaKnob>("delta", params, DELTA_KNOBS);
     const gpu = GpuCompute.create(gl);
     if (!gpu) return stillSim(gl, knobs);
+    const floodSlot = knobs.trigger("floods");
 
     let field: DeltaField | undefined;
     let key: LayoutKey | undefined;
@@ -1343,39 +1300,49 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     let clock = 0;
     let owed = 0;
     let markShown = -1;
-    let lastTrigger: number | undefined;
+    /** Warm-up steps taken since the last layout; the sim holds still until all PREWARM_STEPS are done. */
+    let warmed = PREWARM_STEPS;
     let manualFlood = -Infinity;
-    let lastCell: { x: number; y: number } | undefined;
+    let dragging = false;
+    // Scratch the frame rewrites: the grid the frame wants, where the pointer is, and where it was.
+    const want: LayoutKey = { seed: 0, columns: 0, rows: 0 };
+    const at = { x: 0, y: 0 };
+    const cell = { x: 0, y: 0 };
+    const last = { x: 0, y: 0 };
 
-    /** Lay out afresh and warm up, time-boxed: a probe of a few steps sets how many fit the budget. */
-    const relayout = (frame: SimFrame, want: LayoutKey): DeltaField => {
+    /** Lay out afresh for the grid in `want`; the frame then runs the warm-up. */
+    const relayout = (frame: SimFrame): DeltaField => {
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
       const layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0, knobs.value(frame, "current"));
       if (field === undefined) field = new DeltaField(gpu, layout);
       else field.reset(layout);
-      key = want;
+      key = { ...want };
       markShown = -1;
+      warmed = 0;
       field.setEnvironment(environment(frame, knobs, clock, 0));
-      const each = field.probe(PREWARM_PROBE);
-      const more = Math.min(PREWARM_STEPS - PREWARM_PROBE, Math.floor((PREWARM_MS - each * PREWARM_PROBE) / Math.max(each, 0.05)));
-      for (let i = 0; i < more; i++) field.step();
-      field.view(1);
       return field;
     };
 
     return {
       frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
         const now = performance.now();
-        const grid = gridFor(frame, key);
-        const want: LayoutKey = { seed: knobs.value(frame, "landscape"), ...grid };
+        gridFor(frame, key, want);
+        want.seed = knobs.value(frame, "landscape");
         if (pending === undefined || !sameKey(pending, want)) {
-          pending = want;
+          pending = { ...want };
           pendingSince = now;
         }
         let sim = field;
-        if (sim === undefined || key === undefined) sim = relayout(frame, want);
-        else if (!sameKey(key, want) && now - pendingSince >= RELAYOUT_MS) sim = relayout(frame, want);
+        if (sim === undefined || key === undefined) sim = relayout(frame);
+        else if (!sameKey(key, want) && now - pendingSince >= RELAYOUT_MS) sim = relayout(frame);
         const layout = sim.layout;
+
+        // The warm-up: a fixed count of steps, over as many frames as the machine needs.
+        if (warmed < PREWARM_STEPS) {
+          warmed = sim.warm(warmed);
+          sim.view(1);
+          if (warmed < PREWARM_STEPS) return sim.textures;
+        }
 
         // The M: stamped into the ground when it appears, grows or goes.
         const size = markSize(frame, knobs, layout.rows);
@@ -1387,11 +1354,9 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
         // Time-lapse seconds, the floods (seasonal while on, and one now when asked) and the steps owed.
         const lapse = frame.dt * frame.motion * knobs.value(frame, "speed");
         clock += lapse;
-        const trigger = frame.triggers[0] ?? -1e4;
-        if (lastTrigger !== undefined && trigger !== lastTrigger && trigger > -1e3) manualFlood = clock;
-        lastTrigger = trigger;
+        if (frame.fired[floodSlot] === true) manualFlood = clock;
         const seasonal = knobs.value(frame, "floods");
-        const strength = seasonal > 0 ? seasonal : (frame.params["floods-amount"] ?? 0.5);
+        const strength = seasonal > 0 ? seasonal : knobs.amount(frame, "floods");
         const flood = Math.max(seasonal > 0 ? seasonalFlood(clock, want.seed) : 0, floodShape(clock - manualFlood)) * strength;
         const env = environment(frame, knobs, clock, flood);
         owed += lapse * STEPS_PER_SECOND;
@@ -1403,13 +1368,16 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
         // The hand digs a ditch, or throws up a bank, wherever it is dragged.
         const pointer = frame.pointer;
         if (pointer.inside && pointer.down) {
-          const at = gridUv(pointer.x, pointer.y, frame.aspect, layout.columns / layout.rows);
-          const cell = { x: at.x * layout.columns, y: at.y * layout.rows };
+          gridUv(pointer.x, pointer.y, frame.aspect, layout.columns / layout.rows, at);
+          cell.x = at.x * layout.columns;
+          cell.y = at.y * layout.rows;
           const amount = 1 - Math.exp(-BRUSH_RATE * Math.max(frame.dt, 1 / 120));
-          sim.brush(lastCell ?? cell, cell, amount, knobs.value(frame, "tool") < 0.5, env.seaBase);
-          lastCell = cell;
+          sim.brush(dragging ? last : cell, cell, amount, knobs.value(frame, "tool") < 0.5, env.seaBase);
+          last.x = cell.x;
+          last.y = cell.y;
+          dragging = true;
         } else {
-          lastCell = undefined;
+          dragging = false;
         }
 
         sim.view(1 - (1 - VIEW_EASE) ** Math.max(steps, 1));

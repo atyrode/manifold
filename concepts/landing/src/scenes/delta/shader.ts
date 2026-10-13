@@ -179,9 +179,9 @@ vec3 deltaChart(DeltaGround s, vec2 cell) {
 }
 
 // Fair-weather cumulus drifting over, with their shadows thrown down and to the right.
-vec3 deltaClouds(vec3 col, vec2 uv, float t) {
+vec3 deltaClouds(vec3 col, vec2 uv) {
   if (K_clouds <= 0.0) return col;
-  vec2 p = vec2(uv.x * uRes.x / uRes.y, uv.y) * 5.5 + vec2(0.025, 0.009) * t * uMotion;
+  vec2 p = vec2(uv.x * uRes.x / uRes.y, uv.y) * 5.5 + vec2(0.025, 0.009) * uMotionTime;
   // Only the tops of the noise: small, crisp puffs, a few percent of the sky at the default cover.
   float lo = 0.66 - 0.14 * K_clouds;
   float hi = lo + 0.05;
@@ -192,13 +192,9 @@ vec3 deltaClouds(vec3 col, vec2 uv, float t) {
 }
 
 Shade sceneDelta(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   if (uSimOn.x < 0.5) {
     vec3 sea = mix(vec3(0.02, 0.06, 0.11), vec3(0.05, 0.16, 0.2), uv.y);
-    o.rgb = sea;
-    o.source = sea;
-    o.ink = dot(sea, LUMA);
-    return o;
+    return shadeOf(sea, dot(sea, LUMA), 0.0);
   }
   vec2 g = deltaGridUv(uv);
   DeltaGround s = deltaSample(g);
@@ -208,14 +204,10 @@ Shade sceneDelta(vec2 uv, vec2 cell, float t) {
   if (chart) col = deltaChart(s, cell);
   else if (K_palette > 0.5) col = deltaInfrared(s, cellPos);
   else col = deltaSatellite(s, cellPos);
-  if (!chart) col = deltaClouds(col, uv, t);
+  if (!chart) col = deltaClouds(col, uv);
 
-  float lum = dot(col, LUMA);
-  o.rgb = col;
-  o.source = col;
-  o.ink = chart ? clamp((0.92 - lum) / 0.8, 0.0, 1.0) : clamp(1.3 * lum, 0.0, 1.0);
   // The accent: the thin, jade end of the silt plumes spreading into the sea.
-  o.accent = s.water * deltaTurbid(s, cellPos) * (1.0 - smoothstep(0.012, 0.03, s.silt)) * smoothstep(0.1, 0.4, s.depth);
-  return o;
+  float accent = s.water * deltaTurbid(s, cellPos) * (1.0 - smoothstep(0.012, 0.03, s.silt)) * smoothstep(0.1, 0.4, s.depth);
+  return shadeOf(col, inkOf(col, 1.3, 1.0, vec2(0.92, 0.8)), accent);
 }
 `;

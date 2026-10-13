@@ -4,6 +4,7 @@
 // Jones's agent model (sim.ts), drawn as plasmodium on agar, a sumi drawing or a night rail map
 // (shader.ts).
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { physarumGlsl } from "./shader.ts";
 import { PHYSARUM_AGENTS_DEFAULT, physarumAgentCounts, physarumSim } from "./sim.ts";
@@ -46,8 +47,5 @@ export const physarumScene: SceneDef = {
   entry: "scenePhysarum",
   sim: physarumSim(params),
   // Ink is drawn on paper: the page copy goes dark on it.
-  theme: (values) => {
-    const palette = values.palette ?? params.find((def) => def.key === "palette")?.value ?? 0;
-    return Math.round(palette) === INK ? "paper" : "night";
-  },
+  theme: paletteTheme(params, "palette", (palette) => palette === INK),
 };

@@ -13,14 +13,15 @@
 // of trunks (0.9–1.4). Round a flake the plasmodium lies plain and flat over the oat: no pale core,
 // no relief, so a flake never reads as a glossy bead. Knobs read here: K_palette (0 agar, 1 ink,
 // 2 rail), K_pulse, K_relief, K_slime.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { PHYSARUM_DISH, PHYSARUM_FAR, PHYSARUM_MARGIN, PHYSARUM_MAX_FOOD, PHYSARUM_WAVE } from "./sim.ts";
 
 export const physarumGlsl = `
-const float PHYSARUM_MARGIN = ${PHYSARUM_MARGIN.toFixed(1)};
+const float PHYSARUM_MARGIN = ${glslFloat(PHYSARUM_MARGIN)};
 const int PHYSARUM_FOOD = ${PHYSARUM_MAX_FOOD};
-const float PHYSARUM_WAVE = ${PHYSARUM_WAVE.toFixed(3)};
-const float PHYSARUM_FAR = ${PHYSARUM_FAR.toFixed(1)};
-const float PHYSARUM_DISH = ${PHYSARUM_DISH.toFixed(3)};
+const float PHYSARUM_WAVE = ${glslFloat(PHYSARUM_WAVE)};
+const float PHYSARUM_FAR = ${glslFloat(PHYSARUM_FAR)};
+const float PHYSARUM_DISH = ${glslFloat(PHYSARUM_DISH)};
 // The dish's glass wall, screen heights thick.
 const float PHYSARUM_WALL = 0.014;
 
@@ -172,7 +173,7 @@ float physarumOat(vec2 p, vec2 c, float r, vec4 shape, float presence, bool eate
   float shadow = (1.0 - smoothstep(-0.3 * r, 0.5 * r * (1.0 + fall), length(qs) - edge)) * fade;
   col *= 1.0 - 0.35 * shadow;
   float len = length(q);
-  float cover = (1.0 - smoothstep(-px, px, len - edge)) * fade;
+  float cover = softFill(len - edge, px) * fade;
   if (cover <= 0.0) return 0.0;
   float u = clamp(len / edge, 0.0, 1.0);
   vec2 dir = (p - c) / max(length(p - c), 1e-6);
@@ -232,7 +233,6 @@ float physarumNodes(vec2 p, float aspect, float px, int palette, inout vec3 col,
 }
 
 Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   float px = 1.0 / uRes.y;
@@ -346,12 +346,8 @@ Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
     col += 0.1 * lip * (0.3 + 0.7 * facing);
   }
 
-  o.rgb = col;
-  o.source = col;
-  float lum = dot(col, LUMA);
   // Paper puts the page in its light theme, where ink means dark; on the dark dishes it means light.
-  o.ink = palette == 1 ? clamp((0.92 - lum) / 0.8, 0.0, 1.0) : clamp(1.3 * lum, 0.0, 1.0);
-  o.accent = (palette == 1 ? body : max(body, 0.5 * lace)) * (1.0 - 0.7 * nodes) * inside;
-  return o;
+  float accent = (palette == 1 ? body : max(body, 0.5 * lace)) * (1.0 - 0.7 * nodes) * inside;
+  return shadeOf(col, inkOf(col, 1.3, 1.0, vec2(0.92, 0.8)), accent);
 }
 `;

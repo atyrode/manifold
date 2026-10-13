@@ -42,8 +42,12 @@
 // Clocks. "Chemistry seconds" are scene seconds × motion × tempo as actually simulated: steps per
 // frame are capped, so a slow machine's dish runs slow rather than its events running ahead of it.
 // Drops, drift and pacemakers all run on that clock (and the model time it stands for).
-import type { ParamDef } from "../../params.ts";
+import { MARK_VERTICES, markDistance } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
 import { GpuCompute, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import { clamp, lerp, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -206,11 +210,6 @@ const MAX_TOUCHES = 6;
 /** Width of the events texture (row 0 bubbles, row 1 ripples). */
 const EVENT_WIDTH = 8;
 
-const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-
-/** The Manifold M in mark units (common's markDistance): x in [-0.47, 0.47], y in [-0.5, 0.5]. */
-const MARK: readonly (readonly [number, number])[] = [[-0.47, -0.5], [-0.47, 0.5], [0, -0.08], [0.47, 0.5], [0.47, -0.5]];
-
 /**
  * The M and the Turing ridge grown along it, for the passes here and the scene shader:
  *   petriMarkNear(q)   q in mark units: the distance to the M's strokes and how far along them,
@@ -221,7 +220,7 @@ const MARK: readonly (readonly [number, number])[] = [[-0.47, -0.5], [-0.47, 0.5
  *                      and ahead of the growing tip)
  */
 export const PETRI_MARK_GLSL = `
-const vec2 PETRI_M[5] = vec2[5](${MARK.map(([x, y]) => `vec2(${glsl(x)}, ${glsl(y)})`).join(", ")});
+const vec2 PETRI_M[5] = vec2[5](${MARK_VERTICES.map(([x, y]) => `vec2(${glslFloat(x)}, ${glslFloat(y)})`).join(", ")});
 
 vec2 petriMarkNear(vec2 q) {
   vec2 best = vec2(1e9, 0.0);
@@ -241,11 +240,11 @@ vec2 petriMarkNear(vec2 q) {
 vec2 petriRidge(vec2 g, float height, float grown, float texels) {
   vec2 near = petriMarkNear((g - 0.5) / height);
   float d = near.x * height * texels;
-  float front = grown * (1.0 + ${glsl(TURING_RIDGE_TIP)});
-  float hold = (1.0 - smoothstep(${glsl(TURING_RIDGE - 1)}, ${glsl(TURING_RIDGE + 1)}, d))
-    * (1.0 - smoothstep(front - ${glsl(TURING_RIDGE_TIP)}, front, near.y));
-  float q = d / ${glsl(TURING_RIDGE)};
-  return vec2(${glsl(TURING_RIDGE_PEAK)} * max(0.0, 1.0 - q * q), hold);
+  float front = grown * (1.0 + ${glslFloat(TURING_RIDGE_TIP)});
+  float hold = (1.0 - smoothstep(${glslFloat(TURING_RIDGE - 1)}, ${glslFloat(TURING_RIDGE + 1)}, d))
+    * (1.0 - smoothstep(front - ${glslFloat(TURING_RIDGE_TIP)}, front, near.y));
+  float q = d / ${glslFloat(TURING_RIDGE)};
+  return vec2(${glslFloat(TURING_RIDGE_PEAK)} * max(0.0, 1.0 - q * q), hold);
 }
 `;
 
@@ -309,12 +308,12 @@ void main() {
   v = clamp(v + uDt * (0.5 * lap.y + r - (feed + kill) * v), 0.0, 1.0);
   if (uMark.x > 0.0) {
     vec2 ridge = petriRidge(vUv, uMark.x, uMark.y, uSize.x);
-    v += (ridge.x - v) * ridge.y * min(1.0, uDt * ${glsl(TURING_HOLD)});
+    v += (ridge.x - v) * ridge.y * min(1.0, uDt * ${glslFloat(TURING_HOLD)});
   }
   // Growth ripens where v stands and is forgotten where it is gone; the edges of a still stripe
   // count as standing, so only newly covered gel reads as fresh.
   float here = smoothstep(0.02, 0.07, v);
-  float ripe = c.z + uDt * ${glsl(TURING_RIPEN)} * (here * (1.0 - c.z) - 6.0 * (1.0 - here) * c.z);
+  float ripe = c.z + uDt * ${glslFloat(TURING_RIPEN)} * (here * (1.0 - c.z) - 6.0 * (1.0 - here) * c.z);
   fragColor = vec4(u, v, clamp(ripe, 0.0, 1.0), 0.0);
 }
 `;
@@ -416,7 +415,7 @@ const VIEW_PASS = `
 uniform sampler2D uState;
 uniform float uChem; // 0 Turing, 1 BZ
 float petriShown(vec4 s) {
-  return uChem < 0.5 ? s.y : smoothstep(${glsl(BZ_SHOWN[0])}, ${glsl(BZ_SHOWN[1])}, s.y);
+  return uChem < 0.5 ? s.y : smoothstep(${glslFloat(BZ_SHOWN[0])}, ${glslFloat(BZ_SHOWN[1])}, s.y);
 }
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
@@ -478,40 +477,12 @@ interface Ripple {
   strength: number;
 }
 
-interface Slots {
-  chemistry: number;
-  tempo: number;
-  drift: number;
-  scale: number;
-  drops: number;
-  pattern: number;
-  size: number;
-  mark: number;
-}
-
-/** Mulberry32: a small, fast, seedable PRNG. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
-const lerp = (range: readonly [number, number], t: number): number => range[0] + (range[1] - range[0]) * t;
+/** The knobs the sim reads. */
+type Knob = "chemistry" | "tempo" | "drift" | "scale" | "drops" | "pattern" | "size" | "mark";
 
 /** Texels across the dish for its diameter in dither cells and the scale knob. */
 function gridFor(diameterCells: number, scale: number): number {
-  const perTexel = lerp(GRID_CELLS, clamp01(scale));
+  const perTexel = lerp(GRID_CELLS[0], GRID_CELLS[1], clamp(scale, 0, 1));
   const texels = Math.round(diameterCells / perTexel / GRID_ROUND) * GRID_ROUND;
   return Number.isFinite(texels) ? Math.min(GRID_MAX, Math.max(GRID_MIN, texels)) : GRID_MIN;
 }
@@ -526,22 +497,6 @@ function turingAt(position: number, out: Float32Array, at: number): void {
   const e = smoothstep(0, 1, wrapped - i);
   out[at] = from[0] + (to[0] - from[0]) * e;
   out[at + 1] = from[1] + (to[1] - from[1]) * e;
-}
-
-/** Distance from (x, y) to the M's strokes, in mark units. */
-function markDistance(x: number, y: number): number {
-  let best = Infinity;
-  for (let i = 0; i < MARK.length - 1; i++) {
-    const [ax, ay] = MARK[i] ?? [0, 0];
-    const [bx, by] = MARK[i + 1] ?? [0, 0];
-    const px = x - ax;
-    const py = y - ay;
-    const sx = bx - ax;
-    const sy = by - ay;
-    const h = Math.min(1, Math.max(0, (px * sx + py * sy) / (sx * sx + sy * sy)));
-    best = Math.min(best, Math.hypot(px - sx * h, py - sy * h));
-  }
-  return best;
 }
 
 /**
@@ -617,7 +572,7 @@ function seedBz(data: Float32Array, n: number, random: () => number): Pacemaker[
     const y = half + Math.sin(angle) * reach;
     if (Math.hypot(x - mx, y - my) < 0.24 * n) continue;
     if (pacemakers.some((p) => Math.hypot(x - p.x * n, y - p.y * n) < 0.22 * n)) continue;
-    const period = lerp(BZ_PACE_SEEDED, random());
+    const period = lerp(BZ_PACE_SEEDED[0], BZ_PACE_SEEDED[1], random());
     const phase = random();
     phases.push(phase);
     pacemakers.push({ x: x / n, y: y / n, period, next: (1 - phase) * period, born: -Infinity, dies: Infinity });
@@ -658,8 +613,10 @@ function seedBz(data: Float32Array, n: number, random: () => number): Pacemaker[
 /** The dish's chemistry on the GPU. */
 class PetriLab implements SceneSim {
   readonly #gpu: GpuCompute;
-  readonly #at: Slots;
-  readonly #defaults: readonly number[];
+  readonly #knobs: KnobReader<Knob>;
+  /** Trigger slots of the drops and mark knobs. */
+  readonly #dropSlot: number;
+  readonly #markSlot: number;
   readonly #state: PingPong;
   readonly #view: RenderTarget;
   readonly #turing: Pass;
@@ -700,17 +657,17 @@ class PetriLab implements SceneSim {
   #nextMark = 0;
   /** Turing: the chemistry second a ridge laid by 'now' with the M off is let go. */
   #ridgeUntil = 0;
-  #seen: [number | undefined, number | undefined] = [undefined, undefined];
   #lastX = 0;
   #lastY = 0;
   #held = false;
   /** The view needs redrawing even without a step (reseeded, resized). */
   #dirty = true;
 
-  constructor(gpu: GpuCompute, at: Slots, defaults: readonly number[]) {
+  constructor(gpu: GpuCompute, knobs: KnobReader<Knob>) {
     this.#gpu = gpu;
-    this.#at = at;
-    this.#defaults = defaults;
+    this.#knobs = knobs;
+    this.#dropSlot = knobs.trigger("drops");
+    this.#markSlot = knobs.trigger("mark");
     const size = { width: GRID_MIN, height: GRID_MIN };
     this.#state = gpu.pingPong({ ...size, format: "rgba32f", filter: "nearest" });
     this.#view = gpu.target({ ...size, format: "rgba16f" });
@@ -725,12 +682,12 @@ class PetriLab implements SceneSim {
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const aspect = frame.aspect > 0 && Number.isFinite(frame.aspect) ? frame.aspect : 16 / 9;
-    const chemistry: Chemistry = this.#value(frame, this.#at.chemistry) > 0.5 ? BZ : TURING;
-    const pattern = Math.round(this.#value(frame, this.#at.pattern));
-    const radius = petriRadius(aspect, this.#value(frame, this.#at.size));
-    const n = gridFor(2 * radius * frame.height, this.#value(frame, this.#at.scale));
+    const chemistry: Chemistry = this.#knobs.value(frame, "chemistry") > 0.5 ? BZ : TURING;
+    const pattern = Math.round(this.#knobs.value(frame, "pattern"));
+    const radius = petriRadius(aspect, this.#knobs.value(frame, "size"));
+    const n = gridFor(2 * radius * frame.height, this.#knobs.value(frame, "scale"));
     if (chemistry !== this.#chemistry || pattern !== this.#pattern) {
-      this.#reseed(chemistry, pattern, n, this.#value(frame, this.#at.mark));
+      this.#reseed(chemistry, pattern, n, this.#knobs.value(frame, "mark"));
     } else if (n !== this.#state.width) {
       // A new scale or frame size: stretch the pattern over the new grid; it re-forms at its own size.
       this.#state.resize(n, n, true);
@@ -742,7 +699,7 @@ class PetriLab implements SceneSim {
     // This frame's chemistry: model time in equal steps, capped, so a slow machine's dish runs slow.
     const rate = turing ? TURING_RATE : BZ_RATE;
     const longest = turing ? TURING_STEP : BZ_STEP;
-    const wanted = Math.max(0, frame.dt) * Math.max(0, frame.motion) * Math.max(0, this.#value(frame, this.#at.tempo)) * rate;
+    const wanted = Math.max(0, frame.dt) * Math.max(0, frame.motion) * Math.max(0, this.#knobs.value(frame, "tempo")) * rate;
     const steps = wanted > 0 ? Math.min(turing ? TURING_STEPS : BZ_STEPS, Math.ceil(wanted / longest - 1e-6)) : 0;
     const model = steps > 0 ? Math.min(wanted, steps * longest) : 0;
     const seconds = model / rate;
@@ -768,7 +725,7 @@ class PetriLab implements SceneSim {
     }
 
     if (steps > 0) {
-      const drift = Math.max(0, this.#value(frame, this.#at.drift));
+      const drift = Math.max(0, this.#knobs.value(frame, "drift"));
       const dt = model / steps;
       if (turing) {
         this.#drift += seconds * drift * TURING_DRIFT;
@@ -793,10 +750,6 @@ class PetriLab implements SceneSim {
   dispose(): void {
     this.#gpu.dispose();
     this.#eventTexture.dispose();
-  }
-
-  #value(frame: SimFrame, index: number): number {
-    return frame.values[index] ?? this.#defaults[index] ?? 0;
   }
 
   /**
@@ -890,7 +843,7 @@ class PetriLab implements SceneSim {
     const { x, y } = this.#somewhere();
     this.#ripple(x, y, 1);
     if (turing) {
-      this.#spreads.push({ x, y, radius: lerp(TURING_DROP, this.#random()), seed: TURING_SEED / n, start: this.#clock });
+      this.#spreads.push({ x, y, radius: lerp(TURING_DROP[0], TURING_DROP[1], this.#random()), seed: TURING_SEED / n, start: this.#clock });
       return;
     }
     this.#addTouch(x, y, BZ_DROP / n, 0);
@@ -906,29 +859,29 @@ class PetriLab implements SceneSim {
       const gone = this.#pacemakers.findIndex((p) => p.dies !== Infinity);
       this.#pacemakers.splice(gone < 0 ? 0 : gone, 1);
     }
-    const period = lerp(BZ_PACE, this.#random());
-    this.#pacemakers.push({ x, y, period, next: this.#model + period, born: now, dies: now + lerp(BZ_LIFE, this.#random()) });
+    const period = lerp(BZ_PACE[0], BZ_PACE[1], this.#random());
+    this.#pacemakers.push({ x, y, period, next: this.#model + period, born: now, dies: now + lerp(BZ_LIFE[0], BZ_LIFE[1], this.#random()) });
   }
 
   /** The 'now' buttons, the scheduled drops, the pacemakers' rings, the M and spreading drops. */
   #events(frame: SimFrame, turing: boolean, seconds: number, n: number): void {
-    const dropNow = this.#fired(frame, 0);
-    const markNow = this.#fired(frame, 1);
+    const dropNow = frame.fired[this.#dropSlot] === true;
+    const markNow = frame.fired[this.#markSlot] === true;
 
-    const rate = this.#value(frame, this.#at.drops);
+    const rate = this.#knobs.value(frame, "drops");
     if (dropNow) this.#drop(turing, n);
     if (rate > 0) {
       this.#untilDrop -= seconds;
       if (this.#untilDrop <= 0) {
         this.#drop(turing, n);
-        this.#untilDrop = lerp(DROP_INTERVAL, clamp01(rate)) * (0.7 + 0.6 * this.#random());
+        this.#untilDrop = lerp(DROP_INTERVAL[0], DROP_INTERVAL[1], clamp(rate, 0, 1)) * (0.7 + 0.6 * this.#random());
       }
     }
 
     // The M. Turing: a ridge of coral along its strokes, grown when switched on and held while on;
     // 'now' washes the dish round it clean and grows it afresh (with the M off, at the middle size,
     // let go after a while). BZ: it fires when switched on and on 'now', and keeps firing while on.
-    const amount = this.#value(frame, this.#at.mark);
+    const amount = this.#knobs.value(frame, "mark");
     const on = amount > 0;
     if (turing) {
       const ridge = this.#ridge;
@@ -955,33 +908,34 @@ class PetriLab implements SceneSim {
 
     if (turing) {
       // Spreading drops clear a growing disc (easing out), holding their seed until they settle.
-      this.#spreads = this.#spreads.filter((spread) => {
-        const k = clamp01((this.#clock - spread.start) / TURING_SPREAD);
+      const spreads = this.#spreads;
+      let kept = 0;
+      for (let i = 0; i < spreads.length; i++) {
+        const spread = spreads[i];
+        if (!spread) continue;
+        const k = clamp((this.#clock - spread.start) / TURING_SPREAD, 0, 1);
         const reach = spread.radius * (1 - (1 - k) ** 3);
         this.#addTouch(spread.x, spread.y, reach, spread.seed);
-        return k < 1;
-      });
+        if (k < 1) spreads[kept++] = spread;
+      }
+      spreads.length = kept;
       return;
     }
 
     // Pacemakers fire on time unless dissolving; dissolved ones are gone.
-    this.#pacemakers = this.#pacemakers.filter((pacemaker) => {
-      if (this.#clock >= pacemaker.dies) return false;
+    const pacemakers = this.#pacemakers;
+    let alive = 0;
+    for (let i = 0; i < pacemakers.length; i++) {
+      const pacemaker = pacemakers[i];
+      if (!pacemaker || this.#clock >= pacemaker.dies) continue;
       if (this.#clock < pacemaker.dies - BUBBLE_DISSOLVE && this.#model >= pacemaker.next) {
         this.#addTouch(pacemaker.x, pacemaker.y, BZ_FIRE / n, 0);
         pacemaker.next += pacemaker.period;
         if (pacemaker.next <= this.#model) pacemaker.next = this.#model + pacemaker.period;
       }
-      return true;
-    });
-  }
-
-  /** Whether a 'now' button fired since the last frame (not on the first frame seen). */
-  #fired(frame: SimFrame, slot: 0 | 1): boolean {
-    const fired = frame.triggers[slot] ?? -1e4;
-    const seen = this.#seen[slot];
-    this.#seen[slot] = fired;
-    return seen !== undefined && fired !== seen && fired > -1e3;
+      pacemakers[alive++] = pacemaker;
+    }
+    pacemakers.length = alive;
   }
 
   /** Held down in the dish, the pointer paints reagent (Turing) or sparks waves (BZ) along its path. */
@@ -1006,8 +960,15 @@ class PetriLab implements SceneSim {
   }
 
   #ageRipples(dt: number): void {
-    for (const ripple of this.#ripples) ripple.age += dt;
-    this.#ripples = this.#ripples.filter((ripple) => ripple.age < PETRI_RIPPLE.life);
+    const ripples = this.#ripples;
+    let kept = 0;
+    for (let i = 0; i < ripples.length; i++) {
+      const ripple = ripples[i];
+      if (!ripple) continue;
+      ripple.age += dt;
+      if (ripple.age < PETRI_RIPPLE.life) ripples[kept++] = ripple;
+    }
+    ripples.length = kept;
   }
 
   /** Write the bubbles, the ridge and the ripples for the shader; upload only when they changed. */
@@ -1017,7 +978,7 @@ class PetriLab implements SceneSim {
     let i = 0;
     for (const pacemaker of this.#pacemakers) {
       if (i >= PETRI_BUBBLES) break;
-      const presence = clamp01((this.#clock - pacemaker.born) / BUBBLE_GROW) * clamp01((pacemaker.dies - this.#clock) / BUBBLE_DISSOLVE);
+      const presence = clamp((this.#clock - pacemaker.born) / BUBBLE_GROW, 0, 1) * clamp((pacemaker.dies - this.#clock) / BUBBLE_DISSOLVE, 0, 1);
       if (presence <= 0) continue;
       data[i * 4] = pacemaker.x;
       data[i * 4 + 1] = pacemaker.y;
@@ -1027,13 +988,15 @@ class PetriLab implements SceneSim {
     }
     data[PETRI_RIDGE_TEXEL * 4] = this.#ridge[0] ?? 0;
     data[PETRI_RIDGE_TEXEL * 4 + 1] = this.#ridge[1] ?? 0;
-    this.#ripples.forEach((ripple, j) => {
+    for (let j = 0; j < this.#ripples.length; j++) {
+      const ripple = this.#ripples[j];
+      if (!ripple) continue;
       const at = (EVENT_WIDTH + j) * 4;
       data[at] = ripple.x;
       data[at + 1] = ripple.y;
       data[at + 2] = ripple.age;
       data[at + 3] = ripple.strength;
-    });
+    }
     let changed = false;
     for (let k = 0; k < data.length; k++) {
       if (data[k] !== this.#eventShown[k]) {
@@ -1053,25 +1016,10 @@ class PetriLab implements SceneSim {
  * a still dish of its own.
  */
 export function petriSim(knobs: readonly ParamDef[]): SimFactory {
-  const slot = (key: string): number => {
-    const index = knobs.findIndex((knob) => knob.key === key);
-    if (index < 0) throw new Error(`landing: the petri scene has no "${key}" knob`);
-    return index;
-  };
-  const at: Slots = {
-    chemistry: slot("chemistry"),
-    tempo: slot("tempo"),
-    drift: slot("drift"),
-    scale: slot("scale"),
-    drops: slot("drops"),
-    pattern: slot("pattern"),
-    size: slot("size"),
-    mark: slot("mark"),
-  };
-  const defaults = knobs.map((knob) => (knob.kind === "feature" ? (knob.on ? knob.value : 0) : knob.value));
+  const reader = new KnobReader<Knob>("petri", knobs, ["chemistry", "tempo", "drift", "scale", "drops", "pattern", "size", "mark"]);
   return (gl): SceneSim => {
     const gpu = GpuCompute.create(gl);
     if (!gpu) return { frame: () => [], dispose: () => undefined };
-    return new PetriLab(gpu, at, defaults);
+    return new PetriLab(gpu, reader);
   };
 }

@@ -3,7 +3,8 @@
 // fingerprints, coral, worms, dividing spots and mazes, or a Belousov–Zhabotinsky dish of turning
 // spirals and target rings. The chemistry is stepped on the GPU in sim.ts; shader.ts draws the
 // bench, the glass, the meniscus and the chemistry's colours.
-import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { choice, feature, knobValue, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { petriGlsl } from "./shader.ts";
 import { petriChemistries, petriPalettes, petriSim } from "./sim.ts";
@@ -38,9 +39,5 @@ export const petriScene: SceneDef = {
   entry: "scenePetri",
   sim: petriSim(params),
   // On the light box the page goes light, with dark copy; the UV transilluminator stays dark.
-  theme: (values) => {
-    const box = (values.lightbox ?? params.find((def) => def.key === "lightbox")?.value ?? 0) > 0.5;
-    const palette = Math.round(values.palette ?? params.find((def) => def.key === "palette")?.value ?? 0);
-    return box && petriPalettes[palette] !== "UV" ? "paper" : "night";
-  },
+  theme: paletteTheme(params, "lightbox", (box, values) => box === 1 && petriPalettes[Math.round(knobValue(params, values, "palette"))] !== "UV"),
 };

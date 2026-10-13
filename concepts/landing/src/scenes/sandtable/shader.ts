@@ -9,24 +9,23 @@
 // Field space: x right, y up, field units from the table's centre; the screen shows SANDTABLE.span
 // view heights per field unit (times the aspect on a portrait screen).
 // Knobs read here: K_machine, K_sand, K_depth, K_sparkle, K_light, K_height, K_rim.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { SANDTABLE } from "./sim.ts";
 
-const f = (value: number): string => value.toFixed(5);
-
 export const sandtableGlsl = `
-const float SANDTABLE_SPAN = ${f(SANDTABLE.span)};
-const float SANDTABLE_SAND = ${f(SANDTABLE.sand)};
-const float SANDTABLE_RIM = ${f(SANDTABLE.rim)};
-const float SANDTABLE_RIM_H = ${f(SANDTABLE.rimHeight)};
-const float SANDTABLE_BALL = ${f(SANDTABLE.ball)};
-const float SANDTABLE_GROOVE = ${f(SANDTABLE.groove)};
-const float SANDTABLE_GRID = ${f(SANDTABLE.grid)};
-const float SANDTABLE_FUNNEL = ${f(SANDTABLE.funnel)};
-const float SANDTABLE_FUNNEL_H = ${f(SANDTABLE.funnelHeight)};
-const float SANDTABLE_EDGE = ${f(SANDTABLE.edge)};
-const float SANDTABLE_EDGE_H = ${f(SANDTABLE.edgeHeight)};
-const float SANDTABLE_DEPTH_MIN = ${f(SANDTABLE.depthMin)};
-const float SANDTABLE_DEPTH_RANGE = ${f(SANDTABLE.depthRange)};
+const float SANDTABLE_SPAN = ${glslFloat(SANDTABLE.span)};
+const float SANDTABLE_SAND = ${glslFloat(SANDTABLE.sand)};
+const float SANDTABLE_RIM = ${glslFloat(SANDTABLE.rim)};
+const float SANDTABLE_RIM_H = ${glslFloat(SANDTABLE.rimHeight)};
+const float SANDTABLE_BALL = ${glslFloat(SANDTABLE.ball)};
+const float SANDTABLE_GROOVE = ${glslFloat(SANDTABLE.groove)};
+const float SANDTABLE_GRID = ${glslFloat(SANDTABLE.grid)};
+const float SANDTABLE_FUNNEL = ${glslFloat(SANDTABLE.funnel)};
+const float SANDTABLE_FUNNEL_H = ${glslFloat(SANDTABLE.funnelHeight)};
+const float SANDTABLE_EDGE = ${glslFloat(SANDTABLE.edge)};
+const float SANDTABLE_EDGE_H = ${glslFloat(SANDTABLE.edgeHeight)};
+const float SANDTABLE_DEPTH_MIN = ${glslFloat(SANDTABLE.depthMin)};
+const float SANDTABLE_DEPTH_RANGE = ${glslFloat(SANDTABLE.depthRange)};
 const float SANDTABLE_LAMP_D = 2.4;    // how far out from the table's centre the lamp stands
 const float SANDTABLE_PIVOT = 2.2;     // the pendulum's string hangs from this high over the centre
 const float SANDTABLE_DROP = 0.32;     // the floor lies this far below the sand
@@ -346,7 +345,6 @@ vec3 sandtableFunnel(vec3 under, vec2 p, vec4 bob, float fill, vec3 lamp, float 
 }
 
 Shade sceneSandtable(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   float span = SANDTABLE_SPAN * min(1.0, aspect);
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5) / span;
@@ -417,10 +415,6 @@ Shade sceneSandtable(vec2 uv, vec2 cell, float t) {
     col = sandtableBall(col, p, s0, ballR, lamp, around, px, spark);
   }
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(1.35 * dot(col, LUMA), 0.0, 1.0);
-  o.accent = clamp(max(accent, spark), 0.0, 1.0);
-  return o;
+  return shadeOf(col, inkOf(col, 1.35, 1.0), clamp(max(accent, spark), 0.0, 1.0));
 }
 `;

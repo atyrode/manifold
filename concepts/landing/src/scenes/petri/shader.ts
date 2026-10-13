@@ -10,19 +10,18 @@
 // Without uSim0 (no float render targets) the dish holds a still lattice of stripes (Turing) or a
 // pair of turning spirals (BZ) drawn here.
 // Knobs read here: K_chemistry, K_palette, K_relief, K_lightbox, K_size, K_mark.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { PETRI_BUBBLES, PETRI_FIT, PETRI_MARK, PETRI_MARK_GLSL, PETRI_RADIUS, PETRI_RIDGE_TEXEL, PETRI_RIPPLE, PETRI_RIPPLES } from "./sim.ts";
 
-const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-
 export const petriGlsl = `
-const float PETRI_RADIUS = ${glsl(PETRI_RADIUS)};
-const float PETRI_FIT = ${glsl(PETRI_FIT)};
-const float PETRI_MARK_BASE = ${glsl(PETRI_MARK.base)};
-const float PETRI_MARK_SPAN = ${glsl(PETRI_MARK.span)};
-const float PETRI_RIPPLE_SPEED = ${glsl(PETRI_RIPPLE.speed)};
-const float PETRI_RIPPLE_WIDTH = ${glsl(PETRI_RIPPLE.width)};
-const float PETRI_RIPPLE_SHIFT = ${glsl(PETRI_RIPPLE.shift)};
-const float PETRI_RIPPLE_LIFE = ${glsl(PETRI_RIPPLE.life)};
+const float PETRI_RADIUS = ${glslFloat(PETRI_RADIUS)};
+const float PETRI_FIT = ${glslFloat(PETRI_FIT)};
+const float PETRI_MARK_BASE = ${glslFloat(PETRI_MARK.base)};
+const float PETRI_MARK_SPAN = ${glslFloat(PETRI_MARK.span)};
+const float PETRI_RIPPLE_SPEED = ${glslFloat(PETRI_RIPPLE.speed)};
+const float PETRI_RIPPLE_WIDTH = ${glslFloat(PETRI_RIPPLE.width)};
+const float PETRI_RIPPLE_SHIFT = ${glslFloat(PETRI_RIPPLE.shift)};
+const float PETRI_RIPPLE_LIFE = ${glslFloat(PETRI_RIPPLE.life)};
 const float PETRI_WALL = 0.028;                       // the glass wall's thickness, in dish radii
 const float PETRI_MENISCUS = 0.08;                    // where the liquid climbs the glass, in dish radii
 const float PETRI_RELIEF = 7.0;                       // surface slope per unit of v per texel, at full relief
@@ -75,16 +74,16 @@ vec3 petriShadow(vec3 col, vec2 p, float R, float W, vec3 tint, vec3 lamp) {
   float wall = smoothstep(R - soft, R + 0.5 * W, rs) * under;
   col *= mix(vec3(1.0), mix(tint * 0.6, vec3(0.25), wall), under);
   float x = (rs - (R - 1.2 * W)) / (1.4 * W);
-  return col + lamp * mix(vec3(1.0), tint, 0.6) * (0.12 * exp(-x * x) * (1.0 - wall));
+  return col + lamp * mix(vec3(1.0), tint, 0.6) * (0.12 * bell(x) * (1.0 - wall));
 }
 
 // A still dish for when there is no simulation: crossed stripes, or a spiral pair turning.
-float petriStill(vec2 g, bool bz, float t) {
+float petriStill(vec2 g, bool bz) {
   if (bz) {
     vec2 a = vec2(0.40, 0.56);
     vec2 b = vec2(0.53, 0.47);
     float phase = (atan(g.y - a.y, g.x - a.x) - atan(g.y - b.y, g.x - b.x)) / TAU
-      - 5.5 * length(g - 0.5 * (a + b)) + 0.06 * t * uMotion;
+      - 5.5 * length(g - 0.5 * (a + b)) + 0.06 * uMotionTime;
     float f = fract(phase);
     return smoothstep(0.0, 0.06, f) * (1.0 - smoothstep(0.18, 0.45, f));
   }
@@ -97,11 +96,11 @@ float petriStill(vec2 g, bool bz, float t) {
 }
 
 // The chemistry at g (grid uv): the sim's view, or the still dish with its gradient per texel.
-vec4 petriField(vec2 g, bool bz, float t) {
+vec4 petriField(vec2 g, bool bz) {
   if (uSimOn.x > 0.5) return texture(uSim0, g);
   float e = 1.0 / 224.0;
-  float c = petriStill(g, bz, t);
-  return vec4(c, petriStill(g + vec2(e, 0.0), bz, t) - c, petriStill(g + vec2(0.0, e), bz, t) - c, 0.0);
+  float c = petriStill(g, bz);
+  return vec4(c, petriStill(g + vec2(e, 0.0), bz) - c, petriStill(g + vec2(0.0, e), bz) - c, 0.0);
 }
 
 // The Turing culture: raised growth on the gel, lit by the lamp (coral, bone-white chalk, or green
@@ -172,7 +171,7 @@ vec2 petriRipples(vec2 g, out float crest) {
     vec2 d = g - ripple.xy;
     float dist = length(d);
     float x = (dist - ripple.z * PETRI_RIPPLE_SPEED) / PETRI_RIPPLE_WIDTH;
-    float wave = sin(3.0 * x) * exp(-x * x) * ripple.w * (1.0 - ripple.z / PETRI_RIPPLE_LIFE);
+    float wave = sin(3.0 * x) * bell(x) * ripple.w * (1.0 - ripple.z / PETRI_RIPPLE_LIFE);
     shift += d / max(dist, 1e-4) * (wave * PETRI_RIPPLE_SHIFT);
     crest += max(wave, 0.0);
   }
@@ -229,7 +228,7 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
     vec2 g = p / (2.0 * R) + 0.5 + dir * (0.014 * men);
     float crest = 0.0;
     if (uSimOn.y > 0.5) g += petriRipples(g, crest);
-    vec4 f = petriField(g, bz, t);
+    vec4 f = petriField(g, bz);
     float act = 0.0;
     vec3 med = bz ? petriWaves(f, palette, box, ground, lit, act) : petriCulture(f, palette, box, ground, lamp, lit, act);
     if (bz && uSimOn.y > 0.5) med = petriBubbles(med, p, R, px, box, lamp);
@@ -273,7 +272,7 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
     float aw = px / W;
     float glass = smoothstep(-aw, 0.0, tw) * (1.0 - smoothstep(1.0, 1.0 + aw, tw));
     float x = (tw - 0.55) / 0.3;
-    float top = exp(-x * x);
+    float top = bell(x);
     vec3 wall;
     if (box) {
       wall = ground * (0.14 + 0.75 * top);
@@ -281,19 +280,13 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
       float facing = pow(max(dot(dir, PETRI_TOWARD), 0.0), 5.0);
       float far = pow(max(-dot(dir, PETRI_TOWARD), 0.0), 3.0);
       float y = tw / 0.25;
-      wall = col * 0.7 + lamp * (top * (0.05 + 0.8 * facing) + 0.28 * exp(-y * y) * far);
+      wall = col * 0.7 + lamp * (top * (0.05 + 0.8 * facing) + 0.28 * bell(y) * far);
     }
     col = mix(col, wall, glass);
     accent *= 1.0 - glass;
   }
 
-  Shade o = blankShade();
-  o.rgb = col;
-  o.source = col;
   // Over the light box the page takes its paper theme, where ink means dark.
-  float lum = dot(col, LUMA);
-  o.ink = box && palette != 2 ? clamp((0.95 - lum) / 0.85, 0.0, 1.0) : clamp(1.25 * lum, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
+  return shadeOf(col, inkOf(col, 1.25, 1.0, vec2(0.95, 0.85)), clamp(accent, 0.0, 1.0));
 }
 `;

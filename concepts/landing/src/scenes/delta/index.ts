@@ -4,9 +4,14 @@
 // river now and then breaks out to build a new lobe; the shader (shader.ts) shows it as a satellite
 // picture, a false-colour infrared scene or a surveyor's chart.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { deltaGlsl } from "./shader.ts";
 import { deltaSim } from "./sim.ts";
+
+/** In `palette` knob order: the shader's K_palette. */
+const PALETTES = ["satellite", "infrared", "chart"] as const;
+const CHART = PALETTES.indexOf("chart");
 
 const params: readonly ParamDef[] = [
   range("river", "discharge", "discharge", 0.5, "How much water the river brings down: a quiet stream that keeps to its channels, or a full river spilling over its banks into the marshes."),
@@ -21,7 +26,7 @@ const params: readonly ParamDef[] = [
   feature("land", "vegetation", "vegetation", true, "vigour", 0.5, "Plants spread over dry ground the river leaves alone, holding its banks together; the river scours them away where it moves. Off, the ground stays bare and loose."),
   feature("land", "farms", "farmland", true, "amount", 0.35, "A patchwork of fields on the old, settled ground away from the river."),
   choice("land", "tool", "drag to", [{ label: "dig", value: 0 }, { label: "bank", value: 1 }], 0, "What dragging across the land does: dig a ditch the river may take, or throw up a bank it must go around."),
-  choice("view", "palette", "palette", [{ label: "satellite", value: 0 }, { label: "infrared", value: 1 }, { label: "chart", value: 2 }], 0, "Satellite: the delta as seen from orbit at dusk. Infrared: a false-colour scene with plants red and silt glowing cyan. Chart: a surveyor's map on paper, the shore lined in ink."),
+  choice("view", "palette", "palette", PALETTES.map((label, value) => ({ label, value })), 0, "Satellite: the delta as seen from orbit at dusk. Infrared: a false-colour scene with plants red and silt glowing cyan. Chart: a surveyor's map on paper, the shore lined in ink."),
   range("view", "relief", "relief", 0.5, "How strongly the low sun picks out banks, levees and hills."),
   feature("view", "clouds", "clouds", false, "cover", 0.3, "A few small fair-weather clouds drifting over, their shadows sliding across the land below (satellite and infrared)."),
   feature("manifold", "mark", "rock M", false, "size", 0.5, "An outcrop of hard rock in the shape of the Manifold M in the middle of the delta: the water cannot wear it down, so the channels split and flow around its legs."),
@@ -45,5 +50,5 @@ export const deltaScene: SceneDef = {
   entry: "sceneDelta",
   sim: deltaSim(params),
   // The chart is printed on paper: the page copy goes dark on it.
-  theme: (values) => ((values.palette ?? 0) > 1.5 ? "paper" : "night"),
+  theme: paletteTheme(params, "palette", (palette) => palette === CHART),
 };

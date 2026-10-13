@@ -31,8 +31,11 @@
 //   2  the M: lit 0..1, its height in field units; ball: how much of it is drawn, in mark units along
 //      its stroke (positive from the left foot, negative from the right); pendulum: the funnel's
 //      fill 0..1; 0
-import { effective, type ParamDef } from "../../params.ts";
+import { markVertex } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
 import { domeProfile, HeightField, type GrooveOptions } from "../../sims/heightfield.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -84,18 +87,6 @@ type Ratio = Exclude<Figure, "cycle">;
 
 type Rand = () => number;
 
-/** Mulberry32: a small seedable generator, so a seed always gives the same run of drawings. */
-function mulberry32(seed: number): Rand {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function seedOf(seed: number, index: number, salt: number): number {
   return (Math.imul(seed + 1, 0x9e3779b1) ^ Math.imul(index + 1, 0x85ebca6b) ^ salt) >>> 0;
 }
@@ -106,13 +97,7 @@ function pick<T>(items: readonly T[], rand: Rand): T {
   return item;
 }
 
-const clamp = (value: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, value));
 const sign = (rand: Rand): number => (rand() < 0.5 ? -1 : 1);
-
-function smooth(t: number): number {
-  const s = clamp(t, 0, 1);
-  return s * s * (3 - 2 * s);
-}
 
 /** Move `value` toward `target` by at most `step`. */
 function approach(value: number, target: number, step: number): number {
@@ -125,16 +110,8 @@ const TALUS = 0.62;
 
 // ---- knobs ---------------------------------------------------------------------------------------
 
-type Knob = "machine" | "pattern" | "figure" | "speed" | "renew" | "drawings" | "depth" | "mark";
-
-interface KnobSlot {
-  /** Position in the scene's `params` (and so in `SimFrame.values`). */
-  index: number;
-  /** What the shader reads at the knob's default (0 for a feature that starts off). */
-  fallback: number;
-  /** A feature's default amount. */
-  amount: number;
-}
+const SANDTABLE_KNOBS = ["machine", "pattern", "figure", "speed", "renew", "drawings", "depth", "mark"] as const;
+type Knob = (typeof SANDTABLE_KNOBS)[number];
 
 interface Settings {
   machine: Machine;
@@ -155,48 +132,19 @@ interface Settings {
 
 const markSize = (amount: number): number => 0.8 + 0.5 * amount;
 
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class Knobs {
-  readonly #slots: Record<Knob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: Knob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new SandtableError(`sandtable: the scene has no ${key} knob`);
-      return { index, fallback: effective(def, {}), amount: def.value };
-    };
-    this.#slots = {
-      machine: slot("machine"),
-      pattern: slot("pattern"),
-      figure: slot("figure"),
-      speed: slot("speed"),
-      renew: slot("renew"),
-      drawings: slot("drawings"),
-      depth: slot("depth"),
-      mark: slot("mark"),
-    };
-  }
-
-  read(values: readonly number[], raw: Readonly<Record<string, number>>): Settings {
-    const value = (key: Knob): number => {
-      const slot = this.#slots[key];
-      return values[slot.index] ?? slot.fallback;
-    };
-    const renew = value("renew");
-    const mark = value("mark");
-    return {
-      machine: sandtableMachines[Math.round(value("machine"))] ?? "ball",
-      pattern: sandtablePatterns[Math.round(value("pattern"))] ?? "cycle",
-      figure: sandtableFigures[Math.round(value("figure"))] ?? "cycle",
-      speed: Math.max(0.05, value("speed")),
-      pause: renew > 0 ? 60 * renew : undefined,
-      seed: Math.round(value("drawings")),
-      depth: clamp(value("depth"), 0, 1),
-      mark: mark > 0 ? markSize(mark) : 0,
-      markNow: markSize(raw["mark-amount"] ?? this.#slots.mark.amount),
-    };
-  }
+/** The knobs as settings, written into `out` so a frame allocates nothing. */
+function readSettings(knobs: KnobReader<Knob>, frame: SimFrame, out: Settings): void {
+  const renew = knobs.value(frame, "renew");
+  const mark = knobs.value(frame, "mark");
+  out.machine = sandtableMachines[Math.round(knobs.value(frame, "machine"))] ?? "ball";
+  out.pattern = sandtablePatterns[Math.round(knobs.value(frame, "pattern"))] ?? "cycle";
+  out.figure = sandtableFigures[Math.round(knobs.value(frame, "figure"))] ?? "cycle";
+  out.speed = Math.max(0.05, knobs.value(frame, "speed"));
+  out.pause = renew > 0 ? 60 * renew : undefined;
+  out.seed = Math.round(knobs.value(frame, "drawings"));
+  out.depth = clamp(knobs.value(frame, "depth"), 0, 1);
+  out.mark = mark > 0 ? markSize(mark) : 0;
+  out.markNow = markSize(knobs.amount(frame, "mark"));
 }
 
 /** The pointer on the table, in field units from its centre. */
@@ -489,7 +437,7 @@ function waves(b: TrackBuilder, from: number, rand: Rand): void {
     const theta = TAU * turns * u;
     const base = from + (1 - 2 * from) * u;
     // Calm at the centre and the rim, so it starts and ends exactly there.
-    const taper = smooth(Math.min(1, base / 0.12, (1 - base) / 0.12));
+    const taper = smoothstep(0, 1, Math.min(1, base / 0.12, (1 - base) / 0.12));
     const rho = base + amplitude * taper * Math.sin(ripples * theta + twist * TAU * base);
     b.to(rho * Math.cos(theta), rho * Math.sin(theta));
   }
@@ -513,8 +461,6 @@ function loops(b: TrackBuilder, rand: Rand): void {
   }
 }
 
-/** The Manifold M as markDistance draws it, in mark units: x ±0.47, y ±0.5, centred on the table. */
-const MARK: readonly (readonly [number, number])[] = [[-0.47, -0.5], [-0.47, 0.5], [0, -0.08], [0.47, 0.5], [0.47, -0.5]];
 /** Seconds the magnet waits at each corner of the M, so the ball turns it crisply. */
 const MARK_STOP = 0.5;
 
@@ -534,7 +480,7 @@ const TRANSIT_PACE = 2.5;
  */
 function markTrack(size: number, fromX: number, fromY: number): Track {
   const order = fromX < 0 ? [0, 1, 2, 3, 4] : [4, 3, 2, 1, 0];
-  const foot: readonly [number, number] = MARK[order[0] ?? 0] ?? [0, 0];
+  const foot = markVertex(order[0] ?? 0);
   const footX = foot[0] * size;
   const footY = foot[1] * size;
   const rho0 = Math.min(1, Math.hypot(fromX, fromY));
@@ -547,7 +493,7 @@ function markTrack(size: number, fromX: number, fromY: number): Track {
   const lead = b.length;
   b.stop(MARK_STOP);
   for (const index of order.slice(1)) {
-    const vertex: readonly [number, number] = MARK[index] ?? [0, 0];
+    const vertex = markVertex(index);
     b.to(vertex[0] * size, vertex[1] * size);
     b.stop(MARK_STOP);
   }
@@ -833,7 +779,7 @@ class Ball {
     if (!this.#markFading) return 1;
     const track = this.#track;
     const progress = track !== undefined && track.length > 0 ? this.#s / track.length : 1;
-    return 1 - smooth((progress - MARK_FADE_FROM) / MARK_FADE_SPAN);
+    return 1 - smoothstep(0, 1, (progress - MARK_FADE_FROM) / MARK_FADE_SPAN);
   }
 
   #plan(settings: Settings): void {
@@ -1187,7 +1133,7 @@ class Pendulum {
       case "launch": {
         const l = this.#launch;
         l.t = Math.min(LAUNCH_SECONDS, l.t + time);
-        const f = smooth(l.t / LAUNCH_SECONDS);
+        const f = smoothstep(0, 1, l.t / LAUNCH_SECONDS);
         this.#x = l.x + (this.#cos * l.u - this.#sin * l.v - l.x) * f;
         this.#y = l.y + (this.#sin * l.u + this.#cos * l.v - l.y) * f;
         this.#fill = Math.max(this.#fill, f);
@@ -1419,7 +1365,7 @@ const RELAX_ROWS = 40;
 const UPLOAD_MS = 1000 / 30;
 
 class SandtableSim implements SceneSim {
-  readonly #knobs: Knobs;
+  readonly #knobs: KnobReader<Knob>;
   readonly #field = new HeightField(SANDTABLE.grid, SANDTABLE.grid, 1);
   readonly #heights: DataTexture;
   readonly #state: DataTexture;
@@ -1428,17 +1374,20 @@ class SandtableSim implements SceneSim {
   readonly #ball: Ball;
   readonly #pendulum: Pendulum;
   readonly #touch: Touch = { x: 0, y: 0, pressed: false, down: false };
-  /** Trigger stamps seen last frame (slot 0: next drawing, 1: the M), and which fired since. */
-  readonly #stamps = [-1e4, -1e4];
-  readonly #fired = [false, false];
-  #primed = false;
+  /** The knobs as settings, rewritten each frame. */
+  readonly #settings: Settings = { machine: "ball", pattern: "cycle", figure: "cycle", speed: 1, pause: undefined, seed: 0, depth: 0, mark: 0, markNow: 0 };
+  /** Trigger slots of the "next drawing" and "M track" knobs. */
+  readonly #nextSlot: number;
+  readonly #markSlot: number;
   /** The machine the table is laid out for; none until the first frame. */
   #machine: Machine | undefined;
   #uploadedAt = -Infinity;
   #force = true;
 
-  constructor(gl: WebGL2RenderingContext, knobs: Knobs) {
+  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>) {
     this.#knobs = knobs;
+    this.#nextSlot = knobs.trigger("renew");
+    this.#markSlot = knobs.trigger("mark");
     this.#heights = new DataTexture(gl, { width: SANDTABLE.grid, height: SANDTABLE.grid, format: "r16f" });
     this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
     this.#textures = [this.#heights.texture, this.#state.texture];
@@ -1448,8 +1397,8 @@ class SandtableSim implements SceneSim {
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_STEP);
-    const settings = this.#knobs.read(frame.values, frame.params);
-    this.#readTriggers(frame.triggers);
+    const settings = this.#settings;
+    readSettings(this.#knobs, frame, settings);
     const touch = this.#readTouch(frame);
     // The opening table is laid out on the first frame, the first time the page's knobs are known,
     // and afresh whenever the machine changes.
@@ -1458,11 +1407,11 @@ class SandtableSim implements SceneSim {
     const machine = settings.machine;
     switch (machine) {
       case "ball":
-        this.#ball.frame(dt, frame.motion, touch, settings, this.#fired[0] === true, this.#fired[1] === true);
+        this.#ball.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true, frame.fired[this.#markSlot] === true);
         this.#ball.write(this.#stateData);
         break;
       case "pendulum":
-        this.#pendulum.frame(dt, frame.motion, touch, settings, this.#fired[0] === true);
+        this.#pendulum.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true);
         this.#pendulum.write(this.#stateData);
         break;
       default: {
@@ -1494,15 +1443,6 @@ class SandtableSim implements SceneSim {
     this.#force = true;
   }
 
-  #readTriggers(triggers: readonly number[]): void {
-    for (let slot = 0; slot < 2; slot++) {
-      const at = triggers[slot] ?? -1e4;
-      this.#fired[slot] = this.#primed && at !== this.#stamps[slot] && at > -1e3;
-      this.#stamps[slot] = at;
-    }
-    this.#primed = true;
-  }
-
   /** The pointer in field units from the table's centre (the shader's mapping, inverted). */
   #readTouch(frame: SimFrame): Touch {
     const pointer = frame.pointer;
@@ -1519,6 +1459,6 @@ class SandtableSim implements SceneSim {
 
 /** The sand table, for a scene whose `params` carry the knobs `Knob` names. */
 export function sandtableSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new Knobs(params);
+  const knobs = new KnobReader<Knob>("sandtable", params, SANDTABLE_KNOBS);
   return (gl) => new SandtableSim(gl, knobs);
 }
