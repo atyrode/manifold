@@ -46,7 +46,7 @@ vec2 weatherRainLayer(vec2 q, float t, float cols, float speed, float len, float
   float y = (q.y + t * speed * (0.85 + 0.3 * hc)) / (len * gap) + hc * 17.0;
   float cy = floor(y);
   float h = hash12(vec2(cx * 1.31 + salt, cy));
-  float vis = clamp((fill - h) * 8.0, 0.0, 1.0);
+  float vis = clamp((fill - h) * 12.0, 0.0, 1.0);
   if (vis <= 0.0) return vec2(0.0);
   float h2 = hash12(vec2(cy + salt * 0.7, cx + 41.0));
   if (mix(span.x, span.y, fract(h2 * 23.7)) >= depth) return vec2(0.0);
@@ -55,22 +55,23 @@ vec2 weatherRainLayer(vec2 q, float t, float cols, float speed, float len, float
   float across = 1.0 - smoothstep(w * soft, w, abs(q.x - xc));
   float l = (0.5 + 0.5 * fract(h2 * 37.1)) / gap;          // this streak's length as a fraction of its row
   float s = (fract(y) - fract(h2 * 91.7) * (1.0 - l)) / l; // 0 at the head (bottom) .. 1 at the tail
-  float along = smoothstep(0.0, 0.06, s) * (1.0 - smoothstep(0.35, 1.0, s));
+  float along = smoothstep(0.0, 0.06, s) * (1.0 - smoothstep(0.45, 1.0, s));
   return vec2(across * along * vis, 0.8 + 0.2 * fract(h2 * 53.3));
 }
 
 // Rain layers, nearest first (layer i at z = 2^i m): the most each can fill, and the cover a streak
 // in it gives. A few big bright near drops, mid layers carrying the body of the rain, far layers a
 // fine, dense, faint moving texture. In steady rain every level stays above about a third, so a
-// scene's mix still crosses a dither level.
-const float weatherRainFill[6] = float[6](0.35, 0.5, 0.6, 0.45, 0.3, 0.25);
+// scene's mix still crosses a dither level. The fills set density against flicker: at amount 0.4
+// about 3.4% of open-sky cells are in a streak, 6% at 0.6 and 13% at 1.0.
+const float weatherRainFill[6] = float[6](0.45, 0.45, 0.5, 0.4, 0.3, 0.28);
 const float weatherRainLevel[6] = float[6](0.8, 0.9, 0.75, 0.6, 0.45, 0.35);
 
 // Rain between the eye and the first surface. depth: distance to that surface, 0 at the eye .. 1 far
 // horizon or open sky (the layers sit for depth = 1 - exp(-z / 30 m)). Six layers at 1, 2, 4, 8, 16
 // and 32 m: the nearest big, fast, sparse, soft and long; the farthest fine, short, slow and dense;
 // beyond them the rain fuses into the veil. The amount changes the rain's character, not just its
-// count: drizzle (0.1) is slow, faint, short streaks in the distance and mostly veil; steady rain
+// count: drizzle (0.1) is a few faint, short streaks in the distance and mostly veil; steady rain
 // (0.4) streaks at every depth; heavy rain (0.7) adds big near drops and gust sheets; a downpour
 // (1.0) is dense sheets sweeping across with the wind and a veil that swallows the distance.
 // wind -1..1 slants it (positive: to the right), more for slow drizzle than for heavy drops.
@@ -94,14 +95,14 @@ Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float 
     float z = pow(2.0, f);
     vec2 q = rotate(q0, -slant * (1.08 - 0.03 * f));
     // Far layers fill in first (drizzle is fine and distant), near drops only in real rain.
-    float fill = weatherRainFill[i] * sheet * smoothstep(0.3 - 0.15 * f, 1.0 - 0.06 * f, a);
+    float fill = weatherRainFill[i] * sheet * smoothstep(0.15 - 0.1 * f, 1.0 - 0.08 * f, a);
     fill *= 1.0 + gusty * (1.5 * weatherGust(q.x, z, tm, wind) - 0.55);
     // Nearer drops cross the screen far faster. Each streak is its drop's path over a shutter of
     // 0.12 s (near) .. 0.29 s (far): far streaks come out short and slow, and every cell stays lit
     // for several frames as one passes.
     float speed = 2.4 * pow(z, -0.9) * fall;
     vec2 r = weatherRainLayer(q, tm, min(6.0 * pow(z, 1.25), uRes.y / 7.0), speed, speed * 0.12 * pow(z, 0.25),
-                              2.5 - 0.1 * f, 0.011 * pow(z, -0.8) * thick, i == 0 ? 0.15 : 0.45, min(fill, 0.95),
+                              2.5 - 0.1 * f, 0.011 * pow(z, -0.8) * thick, i == 0 ? 0.15 : 0.6, min(fill, 0.95),
                               vec2(weatherDepth(z / 1.41), weatherDepth(z * 1.41)), depth, f * 7.3 + 1.0);
     float c = (r.x > th ? 1.0 : 0.0) * r.y * bright * weatherRainLevel[i];
     if (i == 0) nearCover = c;
@@ -175,7 +176,8 @@ Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float 
     float f = float(i);
     float z = pow(2.2, f);
     float m = pow(1.0 / z, 0.6);
-    float fill = (0.35 + 0.06 * f) * smoothstep(-0.1 - 0.03 * f, 0.8 + 0.05 * f, a);
+    // ~1.2% of open-sky cells hold a flake in steady snow (0.5), ~2.3% in a blizzard.
+    float fill = (0.5 + 0.06 * f) * smoothstep(-0.2 - 0.03 * f, 0.6 + 0.05 * f, a);
     fill *= 1.0 + gusty * (1.5 * weatherGust(q.x, z, tm, wind) - 0.55);
     float fall = 0.2 * m * mix(0.85, 1.3, a);
     float drift = push * m;

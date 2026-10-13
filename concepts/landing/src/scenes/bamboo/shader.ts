@@ -485,8 +485,8 @@ vec4 bambooCanopy(vec2 p) {
 // The grove floor at screen point p (below the horizon): leaf litter with moss, strewn with fallen
 // leaves whose detail gives way to its mean once finer than a few cells; gold where a ray reaches
 // it, and warm in the lantern's pool. Wet, the litter darkens and pools gather in its hollows, each
-// mirroring the bright mist above and the lantern's glow, ringed by the rain. zg returns its depth.
-vec3 bambooGround(vec2 p, float t, out float zg) {
+// mirroring the bright mist above and the lantern's glow. zg returns its depth.
+vec3 bambooGround(vec2 p, out float zg) {
   zg = BAMBOO_EYE / max(BAMBOO_HORIZON - p.y, 1e-3);
   vec2 w = vec2(p.x * zg, zg);
   float foot = zg * zg / (BAMBOO_EYE * uRes.y);
@@ -503,16 +503,14 @@ vec3 bambooGround(vec2 p, float t, out float zg) {
   // foreshortened that the dither cannot hold them.
   float pool = bambooWet > 0.0 ? rainPuddles(w * 2.5, bambooWet) * (1.0 - smoothstep(0.06, 0.25, foot)) : 0.0;
   if (pool > 0.0) {
-    vec3 rip = rainRipples(w * 2.5, t, bambooRainHere * keep);
     // A flat mirror shows what lies as far above the horizon as the pool lies below it; the
-    // lantern, nearer than that, shows mirrored about its own foot, in the pools in front of it. The
-    // mirror holds still; the rings are drawn on it as hard bright crests, so each passing crest
-    // turns a cell on and off once rather than sliding colours through it.
+    // lantern, nearer than that, shows mirrored about its own foot, in the pools in front of it. No
+    // rain rings: on a floor this foreshortened their crests are a cell or less tall and would
+    // sparkle under the dither instead of spreading.
     vec2 m = vec2(p.x, 2.0 * BAMBOO_HORIZON - p.y);
     vec2 ml = vec2(p.x, 2.0 * bambooLanternFoot - p.y);
     vec3 refl = bambooMistColor(m) * 0.8 + bambooLanternLight(ml, BAMBOO_LANTERN_DEPTH) * (1.0 - smoothstep(0.8, 1.1, zg / BAMBOO_LANTERN_DEPTH));
     col = mix(col, refl, pool * clamp(0.55 + 0.35 * wetGloss(bambooWet, 1.0), 0.0, 0.9));
-    col = mix(col, bambooMist * 1.3 + 0.02, bambooHard(rip.z) * 0.5 * step(0.5, pool));
   }
   return col;
 }
@@ -638,8 +636,9 @@ vec4 bambooFallingLeaves(vec2 p, vec2 par) {
 
 // Rings on the basin's water, w in basin-disc units (the water's ellipse mapped to the unit disc, so
 // rings are circles on the water and ellipses on screen): the sim's events (the pour, the clack, a leaf
-// landing, a click) and, in rain, the shared drops. Returns the slope (xy) and light on the crests (z).
-vec3 bambooRipples(vec2 w, float t) {
+// landing, a click). Returns the slope (xy) and light on the crests (z). The rain plinks instead
+// (bambooWater).
+vec3 bambooRipples(vec2 w) {
   vec2 tilt = vec2(0.0);
   float light = 0.0;
   if (uSimOn.y > 0.5) {
@@ -655,10 +654,7 @@ vec3 bambooRipples(vec2 w, float t) {
       light += max(sin(x * 16.0), 0.0) * env;
     }
   }
-  // The rain, and after it the leaves overhead still dripping into the basin: their rings tilt the
-  // mirror only a little, and their crests are hard, so the busy water stays calm under the dither.
-  vec3 rain = rainRipples(w * 2.2, t, max(bambooRainHere, 0.25 * bambooDripAmount));
-  return vec3(tilt * 0.6 + rain.xy * 0.25, min(light + bambooHard(rain.z) * 0.7, 1.0));
+  return vec3(tilt * 0.6, min(light, 1.0));
 }
 
 // The basin's water at disc point w: it mirrors the grove (the far side the bright mist at eye level,
@@ -666,7 +662,7 @@ vec3 bambooRipples(vec2 w, float t) {
 // toward the light and breaks up when rings cross it; the lantern's warm sheen on the side toward it;
 // foam where the pour lands; leaves floating on it.
 vec3 bambooWater(vec2 w, vec2 p, float t, float landing, float pour, vec3 lantern, float face, inout float accent) {
-  vec3 rip = bambooRipples(w, t);
+  vec3 rip = bambooRipples(w);
   float farSide = 0.5 + 0.5 * w.y;
   vec3 mirror = bambooMistColor(vec2(p.x + rip.x * 0.08, mix(0.88, 0.55, farSide) + rip.y * 0.3));
   mirror *= mix(0.55, 1.15, smoothstep(-0.9, 0.7, w.y));
@@ -682,6 +678,11 @@ vec3 bambooWater(vec2 w, vec2 p, float t, float landing, float pour, vec3 lanter
     float foam = exp(-dot(fv, fv) / (0.02 + 0.04 * pour)) * pour;
     col = mix(col, bambooMist * 1.8 + 0.06, clamp(foam, 0.0, 0.8));
   }
+  // Rain, and after it the leaves overhead still dripping, plinks on the water: small crowns
+  // flattened by the angle the water is seen at. The basin is only a dozen cells tall, too thin for
+  // rings growing across it to hold still under the dither; a crown lights a few cells and is gone.
+  float plinks = max(bambooRainHere, 0.25 * bambooDripAmount);
+  if (plinks > 0.0) col = mix(col, bambooMist * 1.5 + lantern + 0.03, rainSplashes(vec2(w.x, 0.5 * w.y), t, plinks) * 0.8);
   if (uSimOn.z > 0.5) {
     float aa = 1.5 / (uRes.y * BAMBOO_BASIN.z);
     for (int i = 0; i < BAMBOO_LEAVES; i++) {
@@ -1115,7 +1116,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   }
   if (p.y < BAMBOO_HORIZON) {
     float zg;
-    vec3 ground = bambooGround(p, t, zg);
+    vec3 ground = bambooGround(p, zg);
     vec2 sv = (p - lanternFoot) / (lanternScale * vec2(0.42, 0.07));
     ground *= 1.0 - 0.5 * exp(-dot(sv, sv));
     col = mix(mist, ground, bambooTransmit(zg, 0.0));
