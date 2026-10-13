@@ -1,25 +1,35 @@
-// The frost scene: a window pane on a winter night, frosting over. In front, the glass: fern
-// frost and the finer fur between it (grown by sim.ts), condensation, cleared lines where a warm
-// fingertip passed, and the window frame. Behind it, out of focus and blurred further wherever the
-// frost is thick: a snowy street with lit windows and a lamp, or a cabin among spruces.
-import { FROST_FRAME, FUR_RIPEN, FUR_SLOW_FERN, FUR_SLOW_FUR, MELT_CLEAR } from "./sim.ts";
+// The frost scene: a window pane on a winter night, frosting over. In front, the glass: feathery
+// fern frost (branches grown by sim.ts, barbs drawn here), the fur frost between the fronds, thick
+// rime along the frame, condensation, cleared lines where a warm fingertip passed, and the window
+// frame. Behind it, out of focus and blurred further wherever the frost is thick: a snowy street
+// with lit windows and a lamp, or a cabin among spruces.
+import { FROST_FRAME, FROST_START, FUR_RIPEN, FUR_SCALE, FUR_SLOW_FERN, FUR_SLOW_FUR, MELT_CLEAR, RIME_GROWN, WIDTH_SCALE } from "./sim.ts";
 
 export const frostGlsl = `
 // Knobs: K_speed, K_pattern, K_warmth and K_mark drive the simulation (sim.ts); the shader reads
 // K_style, K_sparkle, K_condensation, K_outside, the sky (K_time, K_cycle) and weather (K_snow,
-// K_wind). Simulation textures (layouts in sim.ts): uSim0 growth, uSim1 melt, uSim2 growth clock.
+// K_wind). Simulation textures (layouts in sim.ts): uSim0 crystals, uSim1 melt, uSim2 growth
+// clock, uSim3 crystal detail.
 const float FROST_FRAME = ${FROST_FRAME.toFixed(4)};
 const float FROST_CLEAR = ${MELT_CLEAR.toFixed(4)};
 const float FROST_RIPEN = ${FUR_RIPEN.toFixed(4)};
 const float FROST_FUR_FERN = ${FUR_SLOW_FERN.toFixed(4)};
 const float FROST_FUR_FUR = ${FUR_SLOW_FUR.toFixed(4)};
+const float FROST_START = ${FROST_START.toFixed(4)};
+const float FROST_RIME_GROWN = ${RIME_GROWN.toFixed(4)};
+const float FROST_FUR_SCALE = ${FUR_SCALE.toFixed(4)};
+const float FROST_WIDTH_SCALE = ${WIDTH_SCALE.toFixed(4)};
+// Barbs: their spacing along a branch, frame heights, and the growth seconds per frame height
+// they take to grow out from it.
+const float FROST_BARB_PITCH = 0.0055;
+const float FROST_BARB_LAG = 160.0;
 // uv height of the far kerb (street) or the clearing's far edge (cabin).
 const float FROST_HORIZON = 0.3;
 const vec3 FROST_LAMP = vec3(1.0, 0.68, 0.36);
 
 // Coverage for a signed distance, out of focus by 'blur' (frame heights).
 float frostSoft(float d, float blur) {
-  return smoothstep(blur, -blur, d);
+  return 1.0 - smoothstep(-blur, blur, d);
 }
 
 float frostBox(vec2 p, vec2 halfSize, float radius) {
@@ -32,7 +42,7 @@ float frostBox(vec2 p, vec2 halfSize, float radius) {
 float frostBokeh(vec2 p, vec2 at, float size, float blur) {
   float r = size + blur * 0.9;
   float d = length(p - at);
-  float disc = smoothstep(r, r - max(r * 0.3, 0.003), d);
+  float disc = 1.0 - smoothstep(r - max(r * 0.3, 0.003), r, d);
   return disc * (1.0 + 0.4 * smoothstep(r * 0.5, r * 0.95, d)) * mix(1.0, size / r, 0.7);
 }
 
@@ -48,7 +58,7 @@ float frostSpruce(vec2 q, float height, float halfWidth, out float snowy) {
   float y = q.y / height;
   float tier = fract(y * 5.0 + 0.3);
   float reach = halfWidth * max(1.0 - y, 0.0) * (0.6 + 0.4 * (1.0 - tier));
-  snowy = smoothstep(0.5, 0.05, tier) * smoothstep(0.2, 0.9, abs(q.x) / max(reach, 1e-4));
+  snowy = (1.0 - smoothstep(0.05, 0.5, tier)) * smoothstep(0.2, 0.9, abs(q.x) / max(reach, 1e-4));
   return max(abs(q.x) - reach, max(-q.y, q.y - height));
 }
 
@@ -68,7 +78,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   vec3 col = skyColor(sky, dir);
   vec4 cloud = skyClouds(sky, dir, t, 0.3 + 0.6 * K_snow, K_wind);
   col = mix(col, cloud.rgb, cloud.a);
-  float stars = skyStars(sky, dir, street ? 0.5 : 0.85) * (1.0 - cloud.a) * smoothstep(0.03, 0.01, blur);
+  float stars = skyStars(sky, dir, street ? 0.5 : 0.85) * (1.0 - cloud.a) * (1.0 - smoothstep(0.01, 0.03, blur));
   col += vec3(0.85, 0.9, 1.0) * stars;
   if (street) {
     // The town's light, caught low in the snowy air.
@@ -120,7 +130,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
     // Snow on the road and pavements: tyre ruts along the road, the lamp's pool, spill from windows.
     float groundLine = FROST_HORIZON + 0.012 * vnoise(vec2(p.x * 9.0, 2.0));
     vec3 ground = snowLit;
-    float ruts = smoothstep(0.008 + blur, 0.0, abs(p.y - 0.165 - 0.004 * sin(p.x * 3.0))) + smoothstep(0.008 + blur, 0.0, abs(p.y - 0.205 - 0.004 * sin(p.x * 2.3 + 1.0)));
+    float ruts = 2.0 - smoothstep(0.0, 0.008 + blur, abs(p.y - 0.165 - 0.004 * sin(p.x * 3.0))) - smoothstep(0.0, 0.008 + blur, abs(p.y - 0.205 - 0.004 * sin(p.x * 2.3 + 1.0)));
     ground *= 1.0 - 0.3 * ruts;
     ground += FROST_LAMP * lights * 0.6 * exp(-length((p - vec2(key.x, 0.08)) * vec2(0.7, 2.6)) / 0.22);
     ground += glow * 0.25 * smoothstep(FROST_HORIZON - 0.12, FROST_HORIZON, p.y);
@@ -230,13 +240,29 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   return col;
 }
 
-// Frost coverage at 'uv' without its fine grain: what blurs and bends the view behind it.
+// How far into the thick frost along the frame a point of the glass lies, in units of that
+// frost's depth (under 1: inside it), by growth second 'clock'. It lies deepest along the bottom,
+// where the glass is coldest, thinner up the sides and least along the top, and fills the corners
+// in round.
+float frostRime(vec2 uv, float aspect, float clock) {
+  float grown = smoothstep(-40.0, FROST_RIME_GROWN, clock);
+  float bottom = (uv.y - FROST_FRAME) / (0.03 + 0.055 * grown);
+  float top = (1.0 - uv.y - FROST_FRAME) / (0.008 + 0.02 * grown);
+  float side = (min(uv.x, 1.0 - uv.x) * aspect - FROST_FRAME) / ((0.012 + 0.03 * grown) * (1.5 - uv.y));
+  float rail = min(bottom, top);
+  float h = max(1.3 - abs(rail - side), 0.0) / 1.3;
+  return min(rail, side) - h * h * 0.325;
+}
+
+// Frost thickness at 'uv' without its fine structure: what blurs and bends the view behind it.
 float frostDensity(vec2 uv, float clock, float slow) {
   vec4 g = texture(uSim0, uv);
   float since = clock - g.r;
-  float fur = smoothstep(0.0, FROST_RIPEN, since - g.g * slow) * 0.75;
+  float n = abs(g.g);
+  float fronds = (1.0 - smoothstep(0.0, g.a + 0.006, n)) * smoothstep(0.0, 3.0, since) * 0.6;
+  float fur = smoothstep(0.0, FROST_RIPEN, since - 1.0 - n * slow) * 0.6;
   float melted = smoothstep(FROST_CLEAR - 0.05, FROST_CLEAR + 0.05, texture(uSim1, uv).r * uSimOn.y);
-  return max(g.b * smoothstep(0.0, 1.5, since), fur) * (1.0 - melted) * uSimOn.x;
+  return max(fronds, fur) * (1.0 - melted) * uSimOn.x;
 }
 
 Shade sceneFrost(vec2 uv, vec2 cell, float t) {
@@ -244,8 +270,10 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   float tm = t * uMotion;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
+  // One dither cell, in frame heights: the finest line worth drawing.
+  float px = 1.0 / uRes.y;
   Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
-  float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : 0.0;
+  float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : FROST_START;
   // Seconds the fur frost takes to spread a frame height: the style knob, fern to fur.
   float slow = FROST_FUR_FERN * pow(FROST_FUR_FUR / FROST_FUR_FERN, K_style);
 
@@ -254,18 +282,84 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   float thr = FROST_CLEAR + 0.12 * (vnoise(p * 90.0) - 0.5);
   float clear = smoothstep(thr - 0.05, thr + 0.05, melt.r);
 
+  // The nearest crystal branch (layouts in sim.ts): when it grew here, the signed distance across
+  // it, the distance along it and how far its barbs reach; its fur lag, half-width, brightness and
+  // a random number of its own.
+  vec4 g = uSimOn.x > 0.5 ? texture(uSim0, uv) : vec4(1e4, 1.0, 0.0, 0.0);
+  vec4 detail = uSimOn.w > 0.5 ? texture(uSim3, uv) : vec4(1.0, 0.0, 0.0, 0.0);
+  float since = clock - g.r;
+  float n = abs(g.g);
+  // Barbs leave the branch every 'pitch' along it, leaning 60° toward its tip: 'phase' counts them.
+  // On a coarse grid of cells they spread out to stay apart, and reach further, so every branch
+  // keeps a row of distinct barbs a few cells long down each side.
+  float pitch = max(FROST_BARB_PITCH, 2.6 * px);
+  float phase = (g.b - 0.577 * n) / pitch;
+  float reach = g.a * sqrt(pitch / FROST_BARB_PITCH);
+  // Rates across the screen, taken here in uniform control flow. Inside one branch's field the
+  // distances across and along it change by exactly a frame height per frame height; where two
+  // fields meet they jump, and no line or barb is drawn across that seam. (A seam can fall between
+  // the cells a rate is taken over, which then see half its jump: hence the low thresholds.)
+  vec2 dn = vec2(dFdx(g.g), dFdy(g.g)) * uRes.y;
+  vec2 da = vec2(dFdx(g.b), dFdy(g.b)) * uRes.y;
+  vec2 dp = vec2(dFdx(phase), dFdy(phase));
+  float seamLine = smoothstep(1.4, 2.0, length(dn));
+  float seamBarb = max(seamLine, smoothstep(1.4, 2.0, length(da)));
+
+  // The branch: a crisp line, tapering toward its tip.
+  float halfWidth = max(detail.g * FROST_WIDTH_SCALE, 0.55 * px);
+  float branch = (1.0 - smoothstep(halfWidth - 0.7 * px, halfWidth + 0.7 * px, n)) * (1.0 - seamLine);
+  // Its barbs: short needles packed down both sides, each its own length within the branch's reach.
+  float k = floor(phase + 0.5);
+  float across = abs(phase - k) * pitch * 0.866;
+  float barbLen = reach * (0.8 + 0.3 * hash12(vec2(k, detail.a * 97.0 + 5.0)));
+  float barbPos = n / max(0.866 * barbLen, 1e-5);
+  float barbHalf = max(mix(0.0009, 0.00035, barbPos), 0.45 * px);
+  float barb = (1.0 - smoothstep(barbHalf - 0.7 * px, barbHalf + 0.7 * px, across)) * (1.0 - smoothstep(0.8, 1.0, barbPos)) * (1.0 - seamBarb);
+  // Growth: the line fills in just behind the advancing tip; the barbs grow out after it.
+  float shine = 0.55 + 0.45 * detail.b;
+  float barbsIn = smoothstep(0.0, 0.6, since - n * FROST_BARB_LAG);
+  float crystal = max(branch * smoothstep(0.0, 0.8, since), barb * 0.85 * barbsIn) * shine;
+  // How far the fur frost lags its branch: the distance to it, roughened, shorter low on the pane.
+  // Unlike the signed distance it has no seams, so the hazes below take it.
+  float lag = detail.r / FROST_FUR_SCALE;
+  // The veil: finer frost among a frond's barbs, a pale haze over the whole feather.
+  float veil = (1.0 - smoothstep(0.0, reach * 0.9 + 1.5 * px, lag)) * smoothstep(0.0, 5.0, since - n * FROST_BARB_LAG) * mix(0.32, 0.5, K_style);
+
+  // Fur frost: a fine whitish fleece spreading out from the branches at the style knob's pace,
+  // ripening for FROST_RIPEN seconds, streaked along the barbs and thickest close to the fronds.
+  float fibre = vnoise(vec2(phase * 2.2, n / pitch * 0.6));
+  float low = 1.0 - smoothstep(0.04, 0.32, uv.y);
+  // Rime: thick, opaque frost along the frame, ragged at its edge, reaching out along the fronds.
+  float q = frostRime(uv, aspect, clock) + (vnoise(p * 16.0) - 0.5) * 0.7 + (fibre - 0.5) * 0.3;
+  q -= 0.35 * (1.0 - smoothstep(0.0, reach + 0.012, lag)) * smoothstep(0.0, 3.0, since);
+  float rime = 1.0 - smoothstep(0.7, 1.15, q);
+  float deep = 1.0 - smoothstep(0.2, 0.8, q);
+  float fur = smoothstep(0.0, FROST_RIPEN, since - 1.0 - lag * slow);
+  fur *= mix(0.38, 0.8, K_style) * (1.0 - 0.35 * smoothstep(0.03, 0.15, lag)) * (0.8 + 0.2 * low + 0.3 * (1.0 - smoothstep(1.0, 3.0, q))) * (0.6 + 0.5 * fibre);
+  float body = max(max(fur, veil), rime * (0.78 + 0.17 * deep));
+
+  // The edge of a cleared patch glistens, wet; frost round a warm spot goes thin and slushy;
+  // refrozen glass grows new frost, fine needles thin at first, thickening back into the pattern.
+  float rim = (1.0 - smoothstep(0.0, 0.08, abs(melt.r - thr))) * max(body, crystal);
+  float slush = smoothstep(0.12, thr, melt.r) * (1.0 - clear);
+  float young = melt.g * (1.0 - clear);
+  float keep = (1.0 - clear) * (1.0 - 0.6 * slush);
+  body = mix(body, (0.1 + 0.3 * fibre) * (1.0 - 0.6 * melt.g), young) * keep;
+  crystal = mix(crystal, barb * 0.6 * (1.0 - 0.6 * melt.g), young) * keep;
+  rime *= keep;
+
   // Frost thickness around this point: the view through the glass blurs and bends with it.
-  vec2 du = vec2(0.012 / aspect, 0.0);
-  vec2 dv = vec2(0.0, 0.012);
-  float right = frostDensity(uv + du, clock, slow);
-  float left = frostDensity(uv - du, clock, slow);
-  float up = frostDensity(uv + dv, clock, slow);
-  float down = frostDensity(uv - dv, clock, slow);
-  float dens = (2.0 * frostDensity(uv, clock, slow) + right + left + up + down) / 6.0;
+  vec2 sx = vec2(0.012 / aspect, 0.0);
+  vec2 sy = vec2(0.0, 0.012);
+  float right = frostDensity(uv + sx, clock, slow);
+  float left = frostDensity(uv - sx, clock, slow);
+  float up = frostDensity(uv + sy, clock, slow);
+  float down = frostDensity(uv - sy, clock, slow);
+  float dens = (2.0 * max(body, crystal * 0.7) + right + left + up + down) / 6.0;
 
   // Condensation: a milky film, heavier low on the pane; the warmth of a touch fogs the glass
   // around it, and a fingertip wipes it away where it melts the frost.
-  float haze = K_condensation * (0.45 + 0.55 * fbm(p * 2.2 + vec2(0.0, tm * 0.004))) * (0.55 + 0.45 * smoothstep(0.7, 0.05, uv.y));
+  float haze = K_condensation * (0.45 + 0.55 * fbm(p * 2.2 + vec2(0.0, tm * 0.004))) * (1.0 - 0.45 * smoothstep(0.05, 0.7, uv.y));
   haze = max(haze, smoothstep(0.03, 0.4, melt.b) * 0.7) * (1.0 - 0.9 * clear);
 
   // The world outside, seen through it all (and shifting a little as the viewer moves).
@@ -275,47 +369,30 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   vec3 outside = frostOutside(view, aspect, 0.007 + dens * 0.05 + haze * 0.025, t, sky, glow);
   vec3 col = mix(outside, vec3(0.1, 0.12, 0.15) + glow * 0.35 + outside * 0.3, clamp(haze, 0.0, 1.0) * 0.55);
 
-  // The frost itself: fern fronds where a branch has passed, fur filling in from them and
-  // thickening for FROST_RIPEN seconds, all heavier low on the pane and in its bottom corners.
-  vec4 g = uSimOn.x > 0.5 ? texture(uSim0, uv) : vec4(1e4, 0.0, 0.0, 0.0);
-  float since = clock - g.r;
-  float fern = g.b * smoothstep(0.0, 1.5, since);
-  float fur = smoothstep(0.0, FROST_RIPEN, since - g.g * slow);
-  // The crystals' grain: streaks along each branch's direction, finer than the growth field.
-  float angle = g.a * 3.14159265;
-  vec2 along = vec2(cos(angle), sin(angle));
-  float needles = vnoise(vec2(dot(p, along), dot(p, vec2(-along.y, along.x))) * vec2(30.0, 160.0));
-  float low = smoothstep(0.3, 0.04, uv.y);
-  float corner = smoothstep(0.35, 0.0, min(uv.x, 1.0 - uv.x) * aspect) * low;
-  float cover = clamp(max(fern * (0.85 + 0.15 * low), fur * (0.42 + 0.38 * needles) * (1.0 + 0.7 * low + 0.3 * corner)), 0.0, 1.0);
-  // The edge of a cleared patch glistens, wet; frost round a warm spot goes thin and slushy.
-  float rim = smoothstep(0.08, 0.0, abs(melt.r - thr)) * cover;
-  float slush = smoothstep(0.12, thr, melt.r) * (1.0 - clear);
-  // Refrozen glass grows new frost: fine needles, thin at first, thickening back into the pattern.
-  float young = melt.g * (1.0 - clear);
-  cover = mix(cover, (0.2 + 0.45 * needles) * (1.0 - 0.65 * melt.g), young);
-  cover *= (1.0 - clear) * (1.0 - 0.6 * slush);
-
-  // Light through the ice: what is behind it, scattered, plus the lamplit room on this side, so
-  // the frost glows warm in front of windows and lamps and stays a cool blue-white elsewhere.
-  vec3 back = outside * 0.75 + glow * 0.9;
-  float line = fern * (1.0 - young);
-  vec3 frostCol = vec3(0.8, 0.9, 1.0) * (vec3(0.2, 0.23, 0.28) + back * 1.1 + sky.ambient * 0.6) * (0.75 + 0.6 * line);
-  // Fresh growth: the tips brightest just as they arrive.
-  float tip = g.b * exp(-max(since, 0.0) / 1.5) * step(0.0, since);
-  frostCol += vec3(0.7, 0.85, 1.0) * tip * 0.5 + vec3(0.9, 0.95, 1.0) * rim * 0.45;
-  // Glints: a fine crystal flashes when it lies across the line to the light, so glints gather in
-  // rings round the light, as scratches on glass do, and shift as the viewer moves.
+  // Light in the ice: the room's dim light on this side, and the night behind the pane scattered
+  // on through it, so the frost glows warm before windows and lamps and cool white-blue elsewhere.
+  vec3 back = outside * 0.5 + glow;
+  vec3 room = vec3(0.3, 0.31, 0.34) + sky.ambient * 0.7;
+  vec3 ice = vec3(0.82, 0.9, 1.0);
+  vec3 furCol = ice * (room * 2.0 + back * 0.9) * (1.0 + 0.3 * rime * deep);
+  vec3 lineCol = ice * (room * 3.4 + back * 1.7);
+  // Fresh growth: tips and new barbs brightest just as they form.
+  float fresh = exp(-max(since, 0.0) / 2.0) * step(0.0, since);
+  // Glints: a crystal lying across the line to the light flashes, so glints gather in rings round
+  // it, as on scratched glass, and shift as the viewer moves; here and there a facet winks, slowly.
   vec2 toLight = frostKeyLight(aspect) + uPointer * 0.15 - p;
-  float sway = 0.08 * sin(tm * 0.3 + hash12(floor(uv * 300.0)) * TAU);
-  float glint = pow(1.0 - abs(dot(rotate(along, sway), normalize(toLight + 1e-4))), 14.0) * (0.4 + 1.2 * exp(-length(toLight) / 0.6));
-  float speck = step(0.97, hash12(floor(cell * 0.5) + 7.0)) * (0.5 + 0.5 * sin(tm * 1.3 + hash12(floor(cell * 0.5)) * 30.0));
-  float sparkle = K_sparkle * cover * (glint + speck * 0.5) * (0.3 + dot(back, LUMA));
-  frostCol += vec3(1.0, 0.97, 0.92) * sparkle * 0.9;
-  col = mix(col, frostCol, cover);
+  vec2 lightDir = toLight / max(length(toLight), 1e-4);
+  vec2 axis = branch >= barb ? vec2(-dn.y, dn.x) / max(length(dn), 1e-4) : vec2(-dp.y, dp.x) / max(length(dp), 1e-6);
+  float sway = 0.1 * sin(tm * 0.3 + hash12(floor(uv * 240.0)) * TAU);
+  float glint = pow(max(1.0 - abs(dot(rotate(axis, sway), lightDir)), 0.0), 10.0) * (0.35 + 1.4 * exp(-length(toLight) / 0.5));
+  vec2 speck = floor(cell * 0.5);
+  float wink = step(0.972, hash12(speck + 7.0)) * smoothstep(0.5, 1.0, sin(tm * (0.5 + 0.8 * hash12(speck + 19.0)) + hash12(speck + 31.0) * 60.0));
+  float sparkle = K_sparkle * (crystal * glint * 1.2 + max(crystal, rime * 0.6) * wink * (0.6 + glint)) * (0.35 + dot(back, LUMA));
+  col = mix(col, furCol, clamp(body, 0.0, 1.0));
+  col = mix(col, lineCol + vec3(0.6, 0.75, 0.9) * fresh, clamp(crystal, 0.0, 1.0));
+  col += vec3(1.0, 0.97, 0.92) * sparkle + vec3(0.9, 0.95, 1.0) * rim * 0.45;
   // The traced M's wet edges catch a cold light.
   col += vec3(0.25, 0.5, 0.7) * melt.a * rim * 0.4;
-  o.shimmer = K_sparkle * cover * (0.05 + 0.35 * min(glint, 1.0) + 0.4 * tip);
   o.accent = melt.a * max(clear, rim) * 0.9;
 
   // The window frame: painted wood, lit faintly from the room and, along its inner bevel, by the
@@ -327,11 +404,10 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
     float bevel = smoothstep(0.65, 1.0, depth);
     float grain = vnoise(vec2(edges.x < edges.y ? uv.y * 30.0 : uv.x * 30.0 * aspect, depth * 2.0));
     col = vec3(0.17, 0.155, 0.14) * (0.9 + 0.1 * grain) + (glow * 0.12 + vec3(0.06, 0.07, 0.09)) * bevel;
-    col *= 1.0 - 0.35 * smoothstep(0.0025, 0.0, abs(edges.x - edges.y));
-    o.shimmer = 0.0;
+    col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.0025, abs(edges.x - edges.y)));
     o.accent = 0.0;
   } else {
-    col *= 1.0 - 0.35 * smoothstep(0.006, 0.0, edge - FROST_FRAME);
+    col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.006, edge - FROST_FRAME));
   }
 
   // Lights run past 1: roll them off softly rather than clipping.

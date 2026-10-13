@@ -1,7 +1,8 @@
-// A window pane on a winter night, slowly frosting over: fern frost and fur frost grown on the CPU
-// (sim.ts, uSim0), melted by a warm fingertip and refreezing (uSim1), on a growth clock (uSim2).
-// Behind the glass, out of focus: a snowy street or a cabin in the woods, under the shared sky and
-// snowfall.
+// A window pane on a winter night, frosting over: fern frost grown on the CPU (sim.ts: the
+// branches and their fur in uSim0 and uSim3; the shader adds their feathery barbs, the rime along
+// the frame and the glints), melted by a warm fingertip and refreezing (uSim1), on a growth clock
+// (uSim2) that opens on a pane already frosted along its bottom. Behind the glass, out of focus:
+// a snowy street or a cabin in the woods, under the shared sky and snowfall.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
