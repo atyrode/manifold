@@ -2,9 +2,10 @@
 // simulation's density field (sim.ts), the falcon, the Manifold M the flock can draw, and a low
 // skyline (city, reeds on still water, or the sea) that frames the sky without competing with it.
 //
-// uSim0 rg: R birds per unit of sky, G the same weighted by how hard they roll (banking birds show
-// more wing, so turning parts of the flock darken). uSim1 3×1: falcon position and heading, falcon
-// shown / wings open / wingbeat, M strength / centre / height (see sim.ts).
+// uSim0 rg: R birds per texel, G the same weighted by how hard they roll (startled birds show more
+// wing, so a startle wave runs through the flock as a dark band). uSim1 3×1: falcon position and
+// heading; falcon shown / wings open / wingbeat, and in w the birds per texel of a sheet of birds at
+// the reference density seen face-on; M strength / centre / height (see sim.ts).
 export const flockGlsl = `
 // The horizon sits behind the skyline; the camera looks a little left, toward where the sun sets.
 const float FLOCK_HORIZON = 0.08;
@@ -13,6 +14,14 @@ const float FLOCK_VIEW_TURN = 0.75;
 /** Half the falcon's wingspan, in screen heights. */
 const float FLOCK_FALCON_SPAN = 0.018;
 const vec3 FLOCK_INK = vec3(0.03, 0.025, 0.045);
+/**
+ * Ink of the flock's sheet: coverage 1 - exp(-GAIN * density^CURVE), density 1 being the reference
+ * sheet seen face-on (a pale grey); the curve leaves stretched parts a veil and folds black.
+ */
+const float FLOCK_INK_GAIN = 0.33;
+const float FLOCK_INK_CURVE = 1.25;
+/** A lone bird's speck: coverage per bird of excess over its neighbourhood, in birds per texel. */
+const float FLOCK_SPECK_GAIN = 2.2;
 const vec3 FLOCK_FALCON_INK = vec3(0.055, 0.042, 0.038);
 const vec3 FLOCK_LAND = vec3(0.025, 0.022, 0.035);
 const vec3 FLOCK_REED = vec3(0.03, 0.028, 0.03);
@@ -230,13 +239,24 @@ Shade sceneFlock(vec2 uv, vec2 cell, float t) {
   }
   col += FLOCK_DUSK * markOn * exp(-markDist / 0.035) * 0.3;
 
-  // The flock: coverage from the density, deeper where birds roll in a turn or a startle wave.
+  // The flock. Its density is read through a wide footprint where the birds are sparse, so a moving
+  // veil stays smooth under the dither, and a sharp one where they crowd, so rims and folds stay
+  // crisp: a stretched sheet is a pale veil, face-on it is grey, edge-on or folded back black, and
+  // a startle wave a dark band. Where birds thin out, each one's excess over its neighbourhood shows
+  // as a speck of its own.
   float cover = 0.0;
   if (uSimOn.x > 0.5) {
-    vec2 flock = texture(uSim0, uv).rg;
-    float roll = clamp(flock.g / (flock.r + 0.08), 0.0, 1.0);
-    cover = 1.0 - exp(-flock.r * 1.9 * (0.55 + 0.9 * roll));
-    col = mix(col, mix(FLOCK_INK, col, 0.12 * (1.0 - roll)), cover);
+    vec2 texel = 1.0 / vec2(textureSize(uSim0, 0));
+    vec2 fine = texture(uSim0, uv).rg;
+    vec2 wide = 0.25 * (texture(uSim0, uv - texel).rg + texture(uSim0, uv + texel).rg
+      + texture(uSim0, uv + vec2(texel.x, -texel.y)).rg + texture(uSim0, uv + vec2(-texel.x, texel.y)).rg);
+    float reference = uSimOn.y > 0.5 ? max(texelFetch(uSim1, ivec2(1, 0), 0).w, 0.01) : 1.0;
+    float sheet = mix(wide.r, fine.r, smoothstep(0.8, 2.5, wide.r)) / reference;
+    float roll = clamp(wide.g / max(wide.r, 0.15), 0.0, 1.0);
+    float body = 1.0 - exp(-FLOCK_INK_GAIN * pow(sheet, FLOCK_INK_CURVE) * (1.0 + 0.9 * roll));
+    float speck = clamp((fine.r - wide.r) * FLOCK_SPECK_GAIN, 0.0, 1.0) * (1.0 - smoothstep(0.3, 0.8, wide.r / reference));
+    cover = 1.0 - (1.0 - body) * (1.0 - speck);
+    col = mix(col, mix(FLOCK_INK, col, 0.1 * (1.0 - roll)), cover);
   }
   accent *= 1.0 - cover;
   accent = max(accent, markOn * cover * smoothstep(0.06, 0.015, markDist));

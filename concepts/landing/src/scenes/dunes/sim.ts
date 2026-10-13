@@ -6,7 +6,9 @@
 // probability P_SAND on sand or P_BARE on bare bed, and always in a shadow zone (the lee of any top
 // upwind, below a 15° line); otherwise it hops on. Avalanches hold every slope at the angle of
 // repose. How much sand there is picks the regime Werner mapped: sparse sand gathers into crescent
-// barchans, more into barchanoid ridges, plenty into transverse dunes.
+// barchans, more into barchanoid ridges, plenty into transverse dunes. A fresh field is laid out as
+// those dunes already (DuneLayout), so they stand from the first frame on any machine; a short
+// warm-up then lets the model sharpen them into its own.
 //
 // Grid space, shared with the shader: x runs downwind (for a positive wind knob), z across it, y up,
 // all in cells. Uploads, both repeating so the shader can tile the sand sea: uSim0 r16f heights
@@ -53,12 +55,21 @@ const REPOSE = Int8Array.of(2, 2, 2, 2, 3, 3, 3, 3);
 export const DUNES_SAND = { sparse: 1.2, plenty: 13 } as const;
 
 /**
- * Updates of warm-up after laying out a field: about two seconds of slices, over which the soft
- * heaps it starts from sharpen into dunes (the upload morphs between the two meanwhile).
+ * Updates of warm-up after laying out a field: the laid-out dunes are already in place, so this
+ * only lets the model sharpen their brinks and trim them into its own shapes (the upload morphs
+ * from the layout to the model's field meanwhile).
  */
-const WARM_PICKS = 6_000_000;
-/** Milliseconds of warm-up per frame. */
-const WARM_SLICE_MS = 6;
+const WARM_PICKS = 1_500_000;
+/** Milliseconds of warm-up per frame at least: done in a handful of frames (some ten on a fast machine). */
+const WARM_SLICE_MS = 18;
+/**
+ * Where frames come slowly (a software renderer), the share of the time between them the warm-up
+ * takes instead, up to WARM_SLICE_MAX_MS: it costs such a frame little and still ends within a few.
+ */
+const WARM_SLICE_SHARE = 0.3;
+const WARM_SLICE_MAX_MS = 250;
+/** Updates between clock checks while warming up. */
+const WARM_CHUNK = 20_000;
 /** Updates per second at full wind with motion on (flux grows faster than the wind does). */
 const PICKS_PER_SECOND = 500_000;
 /** Most updates spent in one frame however long it was, so a stalled tab does not lock up. */
@@ -188,6 +199,91 @@ function latticeValue(i: number, j: number, seed: number): number {
   return (h >>> 0) / 4294967296;
 }
 
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Downwind slopes of the dunes a field is laid out with, in cells per cell: slip faces just under
+ * the angle of repose, stoss slopes at the 19° the model's windward slopes settle at.
+ */
+const LAY_LEE = 0.62;
+const LAY_STOSS = 0.34;
+/** The tallest crest a layout may need, in cells; the shader's DUNES_TOP leaves room above it. */
+const LAY_TALLEST = 12;
+
+/**
+ * The dunes a field is laid out as, so the very first frame shows them and the model only has to
+ * refine them: rows of crests square to the wind, about as far apart as the model sets them, each a
+ * stoss slope rising to a brink and a slip face falling from it. A crest's height wanders along it,
+ * and where it sinks the crest swings downwind, so a lone hump is a crescent with its horns trailing
+ * downwind. Sparse sand cuts the crests into lone barchans, more links them into wavy barchanoid
+ * ridges, and plenty keeps them whole as long transverse dunes; the rows meander together.
+ */
+class DuneLayout {
+  readonly #ridges: number;
+  /** Per ridge and grid row (ridge * DUNES_GRID + row): where its brink stands downwind, in cells. */
+  readonly #at: Float32Array;
+  /** Per ridge and grid row: its crest height, 0..1 of the tallest. */
+  readonly #rise: Float32Array;
+
+  constructor(sand: number, arrangement: number) {
+    // 1 once the crests run on unbroken as transverse ridges.
+    const whole = smoothstep(0.5, 1, sand);
+    const ridges = Math.round(5 + 4 * smoothstep(0, 0.45, sand) - 2 * whole);
+    const spacing = DUNES_GRID / ridges;
+    // Lattice cells of height noise along a crest: about one crescent to each.
+    const humps = Math.round(8 - 3 * smoothstep(0, 0.6, sand));
+    // Noise below `cut` leaves bare bed between crescents; `floor` keeps transverse crests whole.
+    const cut = 0.6 * (1 - smoothstep(0, 0.8, sand));
+    const floor = 0.35 * whole;
+    // How far the horns trail downwind of the crescent's nose, in cells.
+    const swing = 22 - 14 * sand;
+    this.#ridges = ridges;
+    this.#at = new Float32Array(ridges * DUNES_GRID);
+    this.#rise = new Float32Array(ridges * DUNES_GRID);
+    for (let k = 0; k < ridges; k++) {
+      const lane = k * spacing;
+      const base = lane + (0.5 + 0.4 * (latticeValue(k, 1, arrangement + 17) - 0.5)) * spacing;
+      for (let z = 0; z < DUNES_GRID; z++) {
+        const e = periodicNoise(lane, z, ridges, humps, arrangement + 5);
+        const f = Math.max(0, (e - cut) / (1 - cut));
+        // Broad meanders shared with the neighbouring rows, and a finer wander of each crest's own.
+        const meander = 0.7 * (periodicNoise(base, z, 2, 3, arrangement + 3) - 0.5) + 0.6 * (periodicNoise(lane, z, ridges, 7, arrangement + 9) - 0.5);
+        this.#at[k * DUNES_GRID + z] = base + meander * spacing + swing * (1 - f);
+        this.#rise[k * DUNES_GRID + z] = floor + (1 - floor) * f ** 0.6;
+      }
+    }
+  }
+
+  /**
+   * Heights in cells into `out` for crests `tall` cells high, slip faces toward `dir` (+1 downwind
+   * is +x); returns the total. Each cell takes the highest of the crest profiles over it.
+   */
+  fill(out: Float32Array, tall: number, dir: number): number {
+    const at = this.#at;
+    const rise = this.#rise;
+    let total = 0;
+    for (let z = 0; z < DUNES_GRID; z++) {
+      const row = z << SHIFT;
+      for (let u = 0; u < DUNES_GRID; u++) {
+        let h = 0;
+        for (let k = 0; k < this.#ridges; k++) {
+          const j = k * DUNES_GRID + z;
+          let d = u - (at[j] ?? 0);
+          d -= DUNES_GRID * Math.round(d / DUNES_GRID);
+          const top = tall * (rise[j] ?? 0);
+          h = Math.max(h, d >= 0 ? top - d * LAY_LEE : top + d * LAY_STOSS);
+        }
+        out[row | (dir > 0 ? u : MASK - u)] = h;
+        total += h;
+      }
+    }
+    return total;
+  }
+}
+
 /** The slab model itself, free of GL. */
 class DuneField {
   /** Sand per cell in slabs, rows bottom to top (row = grid z). */
@@ -225,31 +321,29 @@ class DuneField {
   }
 
   /**
-   * Lay out a fresh field for a supply knob 0..1 and an arrangement number: smooth noise, cut off
-   * to leave bare bed between heaps when sand is sparse and drawn out across the wind when it is
-   * plentiful, so the model starts near the dunes it will make; then let it slump to repose.
+   * Lay out a fresh field for a supply knob 0..1 and an arrangement number: the dunes the model
+   * would make of that much sand (DuneLayout), slip faces downwind, holding exactly the knob's sand;
+   * then let it slump to repose.
    */
   reset(sand: number, seed: number): void {
     const s = Math.min(1, Math.max(0, sand));
     const arrangement = Math.round(seed) >>> 0;
     this.#rng = (Math.imul(arrangement + 1, 2654435761) ^ 0x9e3779b9) >>> 0 || 1;
-    // Sparse sand: noise cut off to leave bare bed between heaps. Plenty: a full cover.
-    const ease = Math.min(1, s / 0.75);
-    const cover = 0.62 * (1 - ease * ease * (3 - 2 * ease));
-    // Heaps about the spacing the dunes settle at, drawn out into long crests across the wind as
-    // the sand gets plentiful.
-    const across = Math.round(2 + 5 * (1 - s));
+    const layout = new DuneLayout(s, arrangement);
     const raw = new Float32Array(CELLS);
-    let total = 0;
-    for (let y = 0; y < DUNES_GRID; y++) {
-      for (let x = 0; x < DUNES_GRID; x++) {
-        const f = 0.7 * periodicNoise(x, y, 5, across, arrangement) + 0.3 * periodicNoise(x, y, 12, 12, arrangement + 7);
-        const v = Math.max(0, f - cover);
-        raw[(y << SHIFT) | x] = v;
-        total += v;
-      }
+    // The crest height that holds the knob's sand. From a guess near where it lands (the crests
+    // are lowest for barchanoid ridges), two corrections come within a percent or so (the volume
+    // grows about as its square while dunes stand apart, more nearly in step once they overlap) and
+    // a last scale makes it exact.
+    const want = dunesMeanSlabs(s) * CELLS * DUNES_SLAB;
+    let tall = 7.8 - 4 * s + 7 * s * s;
+    for (let k = 0; k < 2; k++) {
+      const held = layout.fill(raw, tall, this.#dir);
+      if (held <= 0) break;
+      tall = Math.min(LAY_TALLEST, tall * (want / held) ** 0.6);
     }
-    const scale = total > 0 ? (dunesMeanSlabs(s) * CELLS) / total : 0;
+    const total = layout.fill(raw, tall, this.#dir);
+    const scale = total > 0 ? want / total / DUNES_SLAB : 0;
     // Round with the error carried along, so the field holds the intended sand to the slab.
     let carry = 0;
     for (let i = 0; i < CELLS; i++) {
@@ -594,10 +688,13 @@ export const dunesSim: SimFactory = (gl: WebGL2RenderingContext): SceneSim => {
   let owed = 0;
   let uploaded = -1;
   let lastUpload = -Infinity;
+  let lastFrame: number | undefined;
 
   return {
     frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
       const now = performance.now();
+      const interval = lastFrame === undefined ? 0 : now - lastFrame;
+      lastFrame = now;
       const sand = frame.params["sand"] ?? 0.45;
       const arrangement = frame.params["seed"] ?? 0;
       const wind = frame.params["wind"] ?? 0.2;
@@ -627,12 +724,15 @@ export const dunesSim: SimFactory = (gl: WebGL2RenderingContext): SceneSim => {
 
       const warming = warm > 0;
       if (warming) {
-        // Time-sliced so the first frames stay smooth; the dunes visibly gather meanwhile.
+        // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
+        // slowly (a software renderer) it takes a share of the time between them instead, so it
+        // still ends within a few.
+        const slice = Math.min(WARM_SLICE_MAX_MS, Math.max(WARM_SLICE_MS, WARM_SLICE_SHARE * interval));
         do {
-          const picks = Math.min(warm, 50_000);
+          const picks = Math.min(warm, WARM_CHUNK);
           field.step(picks);
           warm -= picks;
-        } while (warm > 0 && performance.now() - now < WARM_SLICE_MS);
+        } while (warm > 0 && performance.now() - now < slice);
       } else if (frame.dt > 0) {
         // Sand flux rises steeply with wind speed; wind 0 leaves the dunes standing.
         const strength = Math.min(1, Math.abs(wind));

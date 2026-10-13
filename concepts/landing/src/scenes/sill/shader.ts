@@ -102,25 +102,56 @@ float sillLamp(vec2 p, float aspect) {
   return 1.0 / (1.0 + dot(d, d) * 6.0);
 }
 
-// The neon sign's state: x and y the brightness of the M's left and right halves, z their mean.
-// It hums (a faint waver) and now and then, or on demand, one half stutters as if its transformer
-// were failing while the other dips in sympathy.
-vec3 sillNeon(float t, float tm, float power) {
-  if (power <= 0.0) return vec3(0.0);
+// The room mirrored in the window glass, faint against the bright day and plainer at night: the
+// lamp's drum shade glowing in the right-hand pane (centred at 'at'), its light spilling from the
+// hem, a soft bloom below it and the warm room behind. Nearer than the city, it slides against it
+// with the pointer.
+vec3 sillMirror(vec2 p, vec2 at, float aspect, float dark) {
+  vec2 r = p - at + uPointer * vec2(0.012, 0.005);
+  float halfW = mix(0.034, 0.024, clamp(r.y / 0.044 + 0.5, 0.0, 1.0));
+  float shade = 1.0 - smoothstep(-0.003, 0.005, max(abs(r.x) - halfW, abs(r.y) - 0.022));
+  float hem = (1.0 - smoothstep(0.0, 0.007, abs(r.y + 0.024))) * (1.0 - smoothstep(0.03, 0.042, abs(r.x)));
+  vec2 b = r + vec2(0.0, 0.032);
+  float bloom = exp(-dot(b, b) / 0.004);
+  float room = smoothstep(-0.2 * aspect, 0.5 * aspect, p.x);
+  return SILL_LAMP * (shade * 0.11 + hem * 0.07 + bloom * 0.08 + room * 0.035) * (0.3 + 0.7 * dark);
+}
+
+// The neon sign's state: the brightness of each of the M's four strokes (left leg, left diagonal,
+// right diagonal, right leg). The gas hums, a slow waver; every so often one stroke winks out for
+// an instant; now and then, or on demand, one stutters as if its electrode were failing (uneven
+// dropouts with a dim glow left in the tube, then a bright catch as it strikes again) while the
+// rest dip on the shared transformer.
+vec4 sillNeon(float tm, float power) {
+  if (power <= 0.0) return vec4(0.0);
   float pick = 0.0;
   float age = sillEvent(tm, 26.0, 51.0, pick);
-  float burst = step(0.4, pick) * step(0.0, age) * step(age, 0.5 + 1.1 * fract(pick * 7.3));
+  float span = 0.5 + 1.1 * fract(pick * 7.3);
+  float live = step(0.4, pick);
   float since = sinceTrigger(2);
-  if (since >= 0.0 && since < 1.4) {
-    burst = 1.0;
+  if (since >= 0.0 && since < 1.8) {
     age = since;
+    span = 1.4;
+    live = 1.0;
     pick = hash12(vec2(uTriggers[2], 5.0));
   }
-  float stutter = mix(1.0, 0.05 + 0.95 * step(0.42, hash12(vec2(floor(age * 13.0), pick * 91.0))), burst);
-  float dip = mix(1.0, 0.8, burst);
-  float hum = 0.94 + 0.06 * sin(tm * 5.3) * sin(tm * 1.7 + 1.0);
-  vec2 halves = (fract(pick * 13.7) < 0.5 ? vec2(stutter, dip) : vec2(dip, stutter)) * power * hum;
-  return vec3(halves, 0.5 * (halves.x + halves.y));
+  float burst = live * step(0.0, age) * step(age, span);
+  // Dropouts of uneven length: the stutter's clock runs at a wavering (never reversing) rate.
+  float beat = floor(age * 9.0 + 1.2 * sin(age * 5.0 + pick * 9.0));
+  float on = step(0.4, hash12(vec2(beat, pick * 91.0)));
+  float strike = sillTwitch(age - span, 0.03, 0.05, 0.25) * live;
+  float bad = mix(1.0, 0.06 + 0.94 * on, burst) + 0.3 * strike;
+  float rest = 1.0 - 0.12 * burst;
+  float which = floor(fract(pick * 13.7) * 4.0);
+  vec4 strokes = mix(vec4(rest), vec4(bad), vec4(equal(vec4(which), vec4(0.0, 1.0, 2.0, 3.0))));
+  // The wink: one stroke out for a few frames, eased back.
+  float pickW = 0.0;
+  float winkAge = sillEvent(tm, 11.0, 57.0, pickW);
+  float wink = sillTwitch(winkAge, 0.02, 0.04 + 0.06 * pickW, 0.12) * step(0.45, pickW);
+  float winkAt = floor(fract(pickW * 5.1) * 4.0);
+  strokes *= 1.0 - 0.75 * wink * vec4(equal(vec4(winkAt), vec4(0.0, 1.0, 2.0, 3.0)));
+  float hum = 0.95 + 0.05 * sin(tm * 5.3) * sin(tm * 1.7 + 1.0);
+  return strokes * power * hum;
 }
 
 // ---- The city
@@ -170,10 +201,11 @@ float sillRow(vec2 p, float w, float lo, float hi, float salt, float soft, out v
 // the pointer, the street's glow, the building across the street and its neon M, the weather.
 // 'soft' blurs every edge (wet glass, rain in the air). Returns colour, and the neon's accent
 // coverage in .a.
-vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky sky, vec3 haze, float dark, vec2 signAt, vec3 neon, float boltAge, float boltSeed, float flash) {
+vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky sky, vec3 haze, float dark, vec2 signAt, vec4 neon, float boltAge, float boltSeed, float flash) {
   float density = K_lights;
   float wet = smoothstep(0.0, 0.25, K_rain);
   float accent = 0.0;
+  float neonMean = dot(neon, vec4(0.25));
 
   // Sky: gradient, moon, stars and cloud deck from the shared library, lightning behind it all,
   // and the city's own glow low down.
@@ -194,22 +226,27 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   col += vec3(0.6, 0.3, 0.2) * exp(-max(sp.y - SILL_HORIZON + 0.1, 0.0) * 6.0) * dark * 0.25;
   col = mix(col, haze, fogAmount(K_fog, 1.0, clamp((sp.y - SILL_BACK) * 1.5, 0.0, 1.0)));
 
-  // Far: towers in the haze; the tallest have a setback crown and a mast with a red light.
+  // Far: towers in the haze; the tallest have a setback crown and a mast. Aircraft warning lights
+  // on the masts (tip and halfway up) and on the corners of the taller flat roofs blink in three
+  // synchronised groups: on for under a second, off a little longer, each flash eased in and out.
   vec2 fp = p + uPointer * vec2(0.022, 0.009);
   vec4 b = vec4(0.0);
   float x = 0.0;
   float cover = sillRow(fp, 0.062, -0.07, 0.16, 3.0, soft, b, x);
-  float red = 0.0;
+  float lightD = 1.0;
   if (hash12(vec2(b.w, 4.0)) > 0.78) {
     float inset = (b.y - b.x) * 0.22;
     float crown = min(min(x - b.x - inset, b.y - inset - x), b.z + 0.05 - fp.y);
     float mastX = 0.5 * (b.x + b.y);
     float mast = min(0.0018 - abs(x - mastX), b.z + 0.105 - fp.y);
     cover = max(cover, smoothstep(-soft, soft, max(crown, mast)));
-    float lightD = length(vec2(x - mastX, fp.y - b.z - 0.107));
-    float blink = smoothstep(0.2, 0.8, sin(tm * 2.3 + b.w * 1.7));
-    red = (smoothstep(0.0045 + soft, 0.0025, lightD) + exp(-lightD / 0.01) * 0.3) * blink * (0.4 + 0.6 * dark);
+    lightD = min(length(vec2(x - mastX, fp.y - b.z - 0.107)), length(vec2(x - mastX, fp.y - b.z - 0.078)) + 0.0008);
+  } else if (b.z > 0.085) {
+    lightD = length(vec2(min(x - b.x, b.y - x) - 0.004, fp.y - b.z - 0.002));
   }
+  float beat = fract(tm / 2.2 + floor(hash12(vec2(b.w, 6.0)) * 3.0) / 3.0);
+  float beacon = smoothstep(0.0, 0.08, beat) * (1.0 - smoothstep(0.3, 0.48, beat));
+  float red = (1.0 - smoothstep(0.0025, 0.0045 + soft, lightD) + exp(-lightD / 0.01) * 0.3) * beacon * (0.4 + 0.6 * dark);
   vec3 lit = sky.ambient + sky.sunColor * sky.day * 0.3 + vec3(0.03, 0.03, 0.045);
   vec3 facade = vec3(0.3, 0.32, 0.42) * lit;
   vec2 g = vec2((x - b.x) / 0.011, (b.z - fp.y) / 0.014);
@@ -279,15 +316,15 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
       // ripples.
       float deckDepth = (np.y - roofFront - 0.008) / (roofBack - roofFront - 0.008);
       c = vec3(0.1, 0.09, 0.1) * lit;
-      float wash = exp(-abs(np.x - signAt.x) * 7.0) * neon.z * (0.4 + 0.6 * deckDepth) * (0.35 + 0.65 * dark);
+      float wash = exp(-abs(np.x - signAt.x) * 7.0) * neonMean * (0.4 + 0.6 * deckDepth) * (0.35 + 0.65 * dark);
       c += uAccent * wash * 0.18;
       accent = max(accent, wash * 0.15);
       if (wet > 0.0) {
         vec3 ripple = rainRipples(np * 14.0, t, K_rain);
         vec2 rq = (vec2(np.x + ripple.x * 0.006, roofBack + (roofBack - np.y) * 2.4) - signAt) / 0.1;
-        float dl = min(segmentDistance(rq, M0, M1), segmentDistance(rq, M1, M2));
-        float dr = min(segmentDistance(rq, M2, M3), segmentDistance(rq, M3, M4));
-        float mirrored = (exp(-dl * 10.0) * neon.x + exp(-dr * 10.0) * neon.y) * wet * 0.55;
+        vec4 rd = vec4(segmentDistance(rq, M0, M1), segmentDistance(rq, M1, M2), segmentDistance(rq, M2, M3), segmentDistance(rq, M3, M4));
+        vec4 rg = exp(-rd * 10.0) * neon;
+        float mirrored = (max(rg.x, rg.y) + max(rg.z, rg.w)) * wet * 0.55;
         c += haze * 0.08 * wet + uAccent * mirrored + vec3(0.6, 0.65, 0.75) * ripple.z * wet * 0.15;
         accent = max(accent, mirrored * 0.8);
       }
@@ -295,7 +332,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
       // The facade: brick, a parapet along the top, one row of tall windows with blinds.
       float parapet = step(roofFront, np.y);
       c = vec3(0.36, 0.2, 0.15) * lit * (1.0 + 0.5 * parapet);
-      c += uAccent * parapet * neon.z * 0.12 * exp(-abs(np.x - signAt.x) * 5.0);
+      c += uAccent * parapet * neonMean * 0.12 * exp(-abs(np.x - signAt.x) * 5.0);
       float gx = (np.x - ax0) / 0.058;
       vec2 wq = vec2((fract(gx) - 0.5) * 0.058, np.y + 0.2265);
       float win = smoothstep(soft + 0.6 * px, -soft - 0.6 * px, sillBox(wq, vec2(0.013, 0.0285)));
@@ -307,31 +344,35 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
     col = mix(col, mix(c, haze, 0.04 + nearFog), coverA);
   }
 
-  // The sign: a steel frame on the roof, the M in neon tubes in front of it. Unlit glass still
-  // shows when the tubes stutter.
+  // The sign: a steel frame on the roof, the M in neon tubes in front of it, each stroke lit on its
+  // own (unlit glass still shows when one stutters). Round it the air glows with the hum, slowly
+  // swelling and settling, more in rain and fog.
   vec2 sq = np - signAt;
   float frameD = max(
     min(0.0024 - abs(abs(sq.x) - 0.066), min(sq.y + 0.062, 0.058 - sq.y)),
     min(0.0024 - abs(abs(sq.y + 0.002) - 0.056), 0.068 - abs(sq.x)));
-  col = mix(col, vec3(0.24, 0.2, 0.24) * lit + uAccent * neon.z * 0.25, smoothstep(-soft, soft, frameD));
+  col = mix(col, vec3(0.24, 0.2, 0.24) * lit + uAccent * neonMean * 0.25, smoothstep(-soft, soft, frameD));
   vec2 mq = sq / 0.1;
-  float dl = min(segmentDistance(mq, M0, M1), segmentDistance(mq, M1, M2));
-  float dr = min(segmentDistance(mq, M2, M3), segmentDistance(mq, M3, M4));
+  vec4 ds = vec4(segmentDistance(mq, M0, M1), segmentDistance(mq, M1, M2), segmentDistance(mq, M2, M3), segmentDistance(mq, M3, M4));
   float edge = (soft + 0.6 * px) / 0.1;
-  float tubeL = smoothstep(0.045 + edge, 0.045 - edge, dl);
-  float tubeR = smoothstep(0.045 + edge, 0.045 - edge, dr);
-  float core = max(tubeL * neon.x, tubeR * neon.y);
-  float glow = exp(-dl * 7.0) * neon.x + exp(-dr * 7.0) * neon.y;
-  float halo = (exp(-dl * 2.2) * neon.x + exp(-dr * 2.2) * neon.y) * (0.35 + 0.65 * dark);
-  col = mix(col, vec3(0.16, 0.09, 0.12), max(tubeL, tubeR) * 0.8);
-  col += uAccent * (glow * 0.45 + halo * 0.12);
+  vec4 tube = 1.0 - smoothstep(vec4(0.045 - edge), vec4(0.045 + edge), ds);
+  vec4 tubeLit = tube * neon;
+  float core = min(max(max(tubeLit.x, tubeLit.y), max(tubeLit.z, tubeLit.w)), 1.0);
+  vec4 sg = exp(-ds * 7.0) * neon;
+  float glow = max(sg.x, sg.y) + max(sg.z, sg.w);
+  vec4 sh = exp(-ds * 2.2) * neon;
+  float halo = (max(sh.x, sh.y) + max(sh.z, sh.w)) * (0.35 + 0.65 * dark);
+  float swell = 0.8 + 0.2 * sin(tm * 1.3) * sin(tm * 0.47 + 2.0);
+  float air = exp(-min(min(ds.x, ds.y), min(ds.z, ds.w)) * 1.1) * neonMean * swell * (0.3 + 0.7 * dark) * (1.0 + 1.5 * K_fog + 1.2 * wet);
+  col = mix(col, vec3(0.16, 0.09, 0.12), max(max(tube.x, tube.y), max(tube.z, tube.w)) * 0.8);
+  col += uAccent * (glow * 0.45 + halo * 0.12 + air * 0.07);
   col = mix(col, mix(uAccent, vec3(1.0), 0.55), core);
-  accent = max(accent, max(core, min(glow * 0.6 + halo * 0.15, 1.0)));
+  accent = max(accent, max(core, min(glow * 0.6 + halo * 0.15 + air * 0.05, 1.0)));
 
   // Weather in the air between here and there.
   vec2 wuv = p / vec2(aspect, 1.0) + 0.5;
   if (K_rain > 0.0) {
-    col += (vec3(0.5, 0.55, 0.66) * (0.35 + 0.4 * sky.day) + uAccent * neon.z * 0.08) * rainStreaks(wuv, aspect, t, K_rain, K_wind) * 0.6;
+    col += (vec3(0.5, 0.55, 0.66) * (0.35 + 0.4 * sky.day) + uAccent * neonMean * 0.08) * rainStreaks(wuv, aspect, t, K_rain, K_wind) * 0.6;
     col = mix(col, haze, K_rain * 0.12);
   }
   if (K_snow > 0.0) {
@@ -439,24 +480,39 @@ vec4 sillPlant(vec2 q, float tm, float breeze, vec3 light, vec3 cool, float px) 
 }
 
 // Steam from the mug: three ribbons that sway as they rise (the sway's phase climbs with time),
-// widen, break into wisps and fade, carried sideways by the wind.
+// widen, break into wisps and fade, carried sideways by the wind. Two eddies at a time rise
+// through them, each swelling and dying away over a few seconds, and roll the ribbons they pass
+// into a curl: the swirl is a rotation about the eddy's centre that fades with distance, so the
+// steam folds smoothly and never tears.
 float sillSteam(vec2 p, vec2 rim, float tm, float amount, float wind) {
-  float h = p.y - rim.y;
-  if (h < -0.005 || h > 0.25) return 0.0;
+  vec2 q = p - rim;
+  float h0 = q.y;
+  if (h0 < -0.005 || h0 > 0.27 || abs(q.x) > 0.17) return 0.0;
+  for (int k = 0; k < 2; k++) {
+    float ph = tm / 6.5 + float(k) * 0.5;
+    float age = fract(ph);
+    float side = sign(hash12(vec2(floor(ph), float(k) + 3.0)) - 0.5);
+    float y = 0.012 + 0.15 * age;
+    vec2 c = vec2(side * (0.006 + 0.02 * age) + wind * y * y * 1.5, y);
+    float r = 0.014 + 0.03 * age;
+    vec2 d = q - c;
+    q = c + rotate(d, -side * 2.6 * sin(age * 3.14159) * exp(-dot(d, d) / (r * r)));
+  }
+  float h = q.y;
   float s = 0.0;
   for (int i = 0; i < 3; i++) {
     float fi = float(i);
-    float x = rim.x + (fi - 1.0) * 0.008
+    float x = (fi - 1.0) * 0.008
       + (0.004 + 0.12 * h) * sin(h * 18.0 - tm * (1.1 + 0.25 * fi) + fi * 2.1)
       + (vnoise(vec2(h * 7.0 - tm * 0.35, fi * 3.7)) - 0.5) * 0.1 * h
       + wind * h * h * 1.5;
-    float across = (p.x - x) / (0.0035 + 0.035 * h);
+    float across = (q.x - x) / (0.005 + 0.03 * max(h, 0.0));
     float ribbon = exp(-across * across);
-    float wisps = smoothstep(0.25, 0.7, vnoise(vec2(h * 22.0 - tm * 0.9, fi * 5.3 + p.x * 30.0)));
+    float wisps = smoothstep(0.25, 0.7, vnoise(vec2(h * 22.0 - tm * 0.9, fi * 5.3 + q.x * 30.0)));
     s += ribbon * mix(1.0, wisps, smoothstep(0.02, 0.1, h)) * (1.0 - fi * 0.2);
   }
-  float life = smoothstep(-0.005, 0.015, h) * (1.0 - smoothstep(0.05, 0.08 + 0.16 * amount, h));
-  return clamp(s * life * (0.35 + 0.5 * amount), 0.0, 1.0);
+  float life = smoothstep(-0.005, 0.015, h0) * (1.0 - smoothstep(0.04, 0.1 + 0.15 * amount, h0));
+  return clamp(s * life * (0.45 + 0.55 * amount), 0.0, 1.0);
 }
 
 // The curtain at the left of the window: linen in loose vertical folds, hung from a rod above the
@@ -492,6 +548,7 @@ struct SillCat {
   float lash;   // its size
   float flick;  // tail-tip flick, signed
   float turn;   // the look back over the shoulder, 0..1
+  float tip;    // radius of the tail's tip, kept to a cell or more so it never breaks up
 };
 
 // One ear: a rounded triangle whose corners are 3D points (x out to 'side', y up, z toward the
@@ -511,11 +568,18 @@ float sillEar(vec2 h, float side, float yaw, float pitch, float twitch) {
   return sillTriangle(h, rotateAbout(pa, pivot, swivel), rotateAbout(pb, pivot, swivel), rotateAbout(pc, pivot, swivel)) - 0.012;
 }
 
-// The cat from behind, three-quarter: haunches and thighs, a front paw peeking out, back,
-// shoulders, neck, head with cheek ruff and muzzle, ears, and the tail across the sill and over
-// its edge, smooth-unioned into one silhouette (the return value). 'edge' is the sill's front
-// edge in cat units. For shading, part.x: how far along the tail (0 root .. 1 tip; -1 elsewhere);
-// part.y: distance to the ears alone; part.z: to the skull; part.w: to the cat without its ears.
+// The thighs over the folded hind legs, centre and radii in cat units: the near one (the cat's
+// right, turned a little toward us) and the far one. Shared by the silhouette and the shading.
+const vec4 SILL_THIGH_NEAR = vec4(0.13, 0.13, 0.15, 0.14);
+const vec4 SILL_THIGH_FAR = vec4(-0.13, 0.12, 0.13, 0.125);
+
+// The cat from behind, three-quarter: the seat with a thigh standing proud over each folded hind
+// leg, the near hind foot beneath its thigh, a front paw peeking out past the far one, the flanks
+// narrowing to the shoulder blades, a short neck, the head with its cheek ruff and muzzle, ears,
+// and the tail across the sill and over its edge, smooth-unioned into one silhouette (the return
+// value). 'edge' is the sill's front edge in cat units. For shading, part.x: how far along the
+// tail (0 root .. 1 tip; -1 elsewhere); part.y: distance to the ears alone; part.z: to the skull;
+// part.w: to the cat without its ears.
 // Ears and body are shaded from separate fields: any union of the two leaves a seam inside the
 // head where the bulge normals would turn.
 float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
@@ -524,37 +588,40 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
   part = vec4(-1.0, boxD, boxD, boxD);
   if (boxD > 0.15) return boxD;
   float swell = 1.0 + 0.022 * c.breath;
-  float d = sillEllipse(q - vec2(0.0, 0.2), vec2(0.31 * (1.0 + 0.012 * c.breath), 0.22));
-  d = sillSmin(d, sillEllipse(q - vec2(0.16, 0.15), vec2(0.175, 0.155)), 0.06);
-  d = sillSmin(d, sillEllipse(q - vec2(-0.17, 0.13), vec2(0.15, 0.135)), 0.06);
-  d = sillSmin(d, sillEllipse(q - vec2(-0.26, 0.035), vec2(0.075, 0.04)), 0.03);
-  d = sillSmin(d, sillEllipse(q - vec2(0.0, 0.45), vec2(0.215, 0.26) * swell), 0.08);
-  vec2 shoulder = vec2(0.03 * c.turn, 0.64 + 0.008 * c.breath);
-  d = sillSmin(d, sillEllipse(q - shoulder, vec2(0.16, 0.12)), 0.07);
+  // Small fillets keep a crease where each thigh tucks under the flank, and a notch between the
+  // near thigh and the hind foot showing beneath it.
+  float d = sillEllipse(q - vec2(0.0, 0.14), vec2(0.2, 0.15));
+  d = sillSmin(d, sillEllipse(q - SILL_THIGH_NEAR.xy, SILL_THIGH_NEAR.zw), 0.035);
+  d = sillSmin(d, sillEllipse(q - SILL_THIGH_FAR.xy, SILL_THIGH_FAR.zw), 0.035);
+  d = sillSmin(d, sillEllipse(q - vec2(0.2, 0.024), vec2(0.075, 0.026)), 0.02);
+  d = sillSmin(d, sillEllipse(q - vec2(-0.225, 0.028), vec2(0.06, 0.03)), 0.02);
+  d = sillSmin(d, sillEllipse(q - vec2(0.0, 0.38), vec2(0.195, 0.25) * swell), 0.07);
+  vec2 shoulder = vec2(0.03 * c.turn, 0.6 + 0.008 * c.breath);
+  d = sillSmin(d, sillEllipse(q - shoulder, vec2(0.16, 0.095)), 0.06);
   float u = 0.0;
-  d = sillSmin(d, sillCapsule(q, shoulder + vec2(0.0, 0.03), c.head - vec2(0.0, 0.07), 0.1, 0.085, u), 0.05);
+  d = sillSmin(d, sillCapsule(q, shoulder + vec2(0.0, 0.04), c.head - vec2(0.0, 0.08), 0.11, 0.098, u), 0.035);
   vec2 h = q - c.head;
-  float skull = sillEllipse(h, vec2(0.172, 0.148));
-  skull = sillSmin(skull, sillEllipse(h - vec2(0.0, -0.047), vec2(0.19, 0.1)), 0.04);
+  float skull = sillEllipse(h, vec2(0.17, 0.148));
+  skull = sillSmin(skull, sillEllipse(h - vec2(0.0, -0.047), vec2(0.182, 0.1)), 0.04);
   skull = sillSmin(skull, sillEllipse(h - vec2(0.135 * sin(c.yaw), -0.058 + 0.02 * c.pitch), vec2(0.078, 0.06)), 0.035);
   float ears = min(sillEar(h, -1.0, c.yaw, c.pitch, c.ears.x), sillEar(h, 1.0, c.yaw, c.pitch, c.ears.y));
   part.yz = vec2(ears, skull);
-  float earless = max(sillSmin(d, skull, 0.035), -q.y - 0.004);
-  d = sillSmin(d, sillSmin(skull, ears, 0.03), 0.035);
+  float earless = max(sillSmin(d, skull, 0.03), -q.y - 0.004);
+  d = sillSmin(d, sillSmin(skull, ears, 0.03), 0.03);
   // Sitting flat on the sill.
   d = max(d, -q.y - 0.004);
-  // The tail lies across the sill to its edge, then hangs: a slow swing at the edge, a lash
-  // travelling down it, a curl at the tip that flicks now and then.
-  vec2 from = vec2(0.16, edge + 0.012);
-  float tail = sillCapsule(q, vec2(0.07, 0.07), from, 0.062, 0.056, u);
+  // The tail lies across the sill to its edge, then hangs, slender, tapering to a fine tip: a
+  // slow swing at the edge, a lash travelling down it, a curl at the tip that flicks now and then.
+  vec2 from = vec2(0.15, edge + 0.012);
+  float tail = sillCapsule(q, vec2(0.065, 0.065), from, 0.05, 0.044, u);
   float along = u * 0.22;
-  float r0 = 0.056;
+  float r0 = 0.044;
   for (int i = 0; i < 6; i++) {
     float fi = float(i);
     float w = (fi + 1.0) / 6.0;
     float ang = c.sway * (0.5 + 0.5 * w) + c.lash * sin(c.wave - fi * 0.8) * w + 0.95 * smoothstep(0.45, 1.0, w) + c.flick * w * w * 1.5;
     vec2 to = from + vec2(sin(ang), -cos(ang)) * 0.068;
-    float r1 = mix(0.056, 0.034, w);
+    float r1 = max(0.044 * (1.0 - 0.2 * w) * (1.0 - 0.75 * smoothstep(0.45, 1.0, w)), c.tip);
     float sd = sillCapsule(q, from, to, r0, r1, u);
     if (sd < tail) {
       tail = sd;
@@ -601,8 +668,8 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   float boltAge = lightningAge(t, K_lightning, 1, boltSeed);
   float flash = lightningFlash(boltAge);
   float wet = smoothstep(0.0, 0.25, K_rain);
-  vec3 neon = sillNeon(t, tm, K_neon);
-  float neonGlow = neon.z * mix(0.35, 1.0, dark);
+  vec4 neon = sillNeon(tm, K_neon);
+  float neonGlow = dot(neon, vec4(0.25)) * mix(0.35, 1.0, dark);
 
   // The view: the open lower half, and the glass above the raised sash's rail (between its
   // stiles and glazing bars, three panes across and two up).
@@ -617,23 +684,39 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     vec2 at = p;
     float soft = 0.6 * px + 0.0015 * K_rain;
     vec3 drop = vec3(0.0);
+    vec2 fromCentre = vec2(0.0);
+    float lens = 0.0;
     if (inGlass) {
+      soft += 0.0012 + 0.005 * K_rain;
       if (K_drops > 0.5 && K_rain > 0.0) {
         drop = glassDrops(uv, aspect, t, K_rain);
         at += drop.xy * vec2(aspect, 1.0);
+        if (drop.z > 0.0) {
+          // Each drop is a little lens onto the lit city: a small inverted picture of the skyline
+          // round the sign, fixed to the drop, so a sliding drop carries its picture down instead
+          // of streaming the city through itself. The library's offset points through the drop's
+          // centre at about three times the distance from it, which gives the centre back.
+          fromCentre = -drop.xy * vec2(aspect, 1.0) / (3.2 * drop.z);
+          vec2 centre = p - fromCentre;
+          lens = smoothstep(0.15, 0.85, drop.z);
+          at = mix(at, vec2(0.8 * centre.x, SILL_HORIZON - 0.03) - fromCentre * 1.5, lens);
+          soft = mix(soft, 0.6 * px + 0.006, lens);
+        }
       }
-      soft += 0.0012 + 0.005 * K_rain;
     }
     vec4 city = sillCity(at, aspect, t, tm, px, soft, sky, haze, dark, signAt, neon, boltAge, boltSeed, flash);
     col = city.rgb;
     accent = city.a;
     if (inGlass) {
-      // The pane: a little light lost, the lamp faintly mirrored toward the right, drops catching
-      // the room's light.
-      col = col * 0.88 + SILL_LAMP * 0.035 * smoothstep(-0.2 * aspect, 0.5 * aspect, p.x);
-      col += (SILL_LAMP * 0.12 + cool * 0.1) * drop.z;
+      // The pane: a little light lost, the room faintly mirrored in it. Drops gather the city's
+      // light into their pictures, darken at the rim where they bend the dark room in, and catch
+      // the lamp along the side that faces it.
+      col = col * 0.88 * (1.0 + 0.6 * lens) + sillMirror(p, vec2(mix(xm2, xg1, 0.68), 0.3), aspect, dark);
+      float ring = 4.0 * drop.z * (1.0 - drop.z);
+      float glint = ring * smoothstep(0.1, 0.8, dot(normalize(fromCentre + 1e-6), vec2(0.876, -0.482)));
+      col = col * (1.0 - 0.35 * ring) + SILL_LAMP * glint * 0.45 + cool * drop.z * 0.05;
       accent *= 0.85;
-      o.shimmer = drop.z * 0.2 * m;
+      o.shimmer = glint * 0.25 * m;
     }
   }
 
@@ -780,9 +863,18 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     vec2 q = (p - base) / S;
     vec4 part = vec4(0.0);
     float edgeQ = (SILL_FRONT - base.y) / S;
+    cat.tip = max(0.011, 1.2 * px / S);
     float d = sillCatDist(q, cat, edgeQ, part);
     float aa = 1.1 * px / S;
-    float cover = smoothstep(aa, -aa, d);
+    // Fur along the outline: tufts standing a cell or so proud of it, fixed to the cat (on the
+    // head, to the head) so they never crawl; finer on the tail, none where it sits on the sill.
+    float tuft = 0.0;
+    if (d < 0.04) {
+      vec2 fq = q - (cat.head - vec2(0.0, 0.88)) * smoothstep(0.6, 0.76, q.y);
+      tuft = smoothstep(0.25, 0.85, vnoise(fq * vec2(34.0, 24.0) + 3.7));
+      d -= max(0.008, 1.3 * px / S) * tuft * (part.x >= 0.0 ? 0.4 : smoothstep(-0.01, 0.04, q.y));
+    }
+    float cover = 1.0 - smoothstep(-aa, aa, d);
     if (cover > 0.0) {
       // Shading normals by forward differences (smooth from pixel to pixel, where screen-space
       // derivatives would be constant over each 2x2 quad): from the ears' own field where an ear
@@ -796,23 +888,47 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       vec2 n = normalize((ear < 0.0 ? vec2(dx.y, dy.y) : vec2(dx.w, dy.w)) - shapeD + 1e-6);
       float inner = clamp(-shapeD / 0.13, 0.0, 1.0);
       float rim = pow(1.0 - inner, 3.0);
-      // Fur: a soft bulge lit by the lamp (to the right, toward the room), a warm rim on that
-      // side, the city's cool light around the outline it faces, a touch of neon from the sign.
+      // Fur: a soft bulge lit by the lamp (to the right, toward the room).
       vec3 N = normalize(vec3(n * (1.0 - inner), 0.5 + inner));
-      float diffuse = max(dot(N, normalize(vec3(0.75, 0.3, 0.6))), 0.0);
+      vec3 toLamp = normalize(vec3(0.75, 0.3, 0.6));
+      float diffuse = max(dot(N, toLamp), 0.0);
       float lampCat = sillLamp(base + vec2(0.0, 0.4 * S), aspect);
       vec2 toSign = normalize(signAt - (base + vec2(0.0, 0.5 * S)));
+      // The haunches: each thigh a bulge of its own, so the near one rounds out toward the lamp,
+      // and a crease of shadow runs along its top where it tucks in under the flank.
+      float crease = 0.0;
+      if (part.x < 0.0) {
+        float deep = smoothstep(0.012, 0.05, -part.w);
+        for (int i = 0; i < 2; i++) {
+          vec4 th = i == 0 ? SILL_THIGH_NEAR : SILL_THIGH_FAR;
+          vec2 tq = q - th.xy;
+          float td = sillEllipse(tq, th.zw);
+          float tin = clamp(-td / 0.09, 0.0, 1.0);
+          vec3 thighN = normalize(vec3(normalize(tq / (th.zw * th.zw) + 1e-6) * (1.0 - tin), 0.5 + tin));
+          diffuse = mix(diffuse, max(dot(thighN, toLamp), 0.0), (1.0 - smoothstep(-0.03, 0.0, td)) * deep * 0.75);
+          crease = max(crease, (1.0 - smoothstep(0.0, 0.025, abs(td + 0.006))) * smoothstep(0.0, 0.07, tq.y) * deep);
+        }
+      }
       // Grey tabby: stripes curving from the spine down the flanks, a dark line down the spine,
       // rings round the tail; faint enough to keep the silhouette whole.
       float stripes = part.x >= 0.0
         ? smoothstep(0.2, 0.7, sin(part.x * 40.0))
         : max(smoothstep(0.35, 0.85, sin(q.y * 30.0 + abs(q.x) * 10.0 + sin(q.x * 9.0 + q.y * 4.0) * 1.6)) * smoothstep(0.98, 0.5, q.y),
               smoothstep(0.05, 0.0, abs(q.x - 0.012 * sin(q.y * 7.0))) * smoothstep(0.1, 0.3, q.y) * smoothstep(0.85, 0.7, q.y));
-      vec3 fur = vec3(0.15, 0.135, 0.13) * (1.0 - 0.45 * stripes);
+      vec3 fur = vec3(0.15, 0.135, 0.13) * (1.0 - 0.45 * stripes) * (1.0 - 0.5 * crease);
       vec3 c = fur * (0.16 + diffuse * lampCat * SILL_LAMP * 1.3 + cool * 0.15 + cool * flash);
-      c += SILL_LAMP * pow(max(dot(n, vec2(0.93, 0.36)), 0.0), 2.0) * rim * lampCat * 1.6;
-      c += cool * (0.3 + 0.7 * max(dot(n, vec2(-0.45, 0.89)), 0.0)) * rim * 0.8 * (part.x > 0.3 ? 0.4 : 1.0);
-      c += uAccent * max(dot(n, toSign), 0.0) * rim * neonGlow * 0.5;
+      // Soft light round the form: warm toward the lamp, the city's cool light on the outline
+      // facing it, a touch of neon from the sign.
+      c += SILL_LAMP * pow(max(dot(n, vec2(0.93, 0.36)), 0.0), 2.0) * rim * lampCat;
+      c += cool * (0.3 + 0.7 * max(dot(n, vec2(-0.45, 0.89)), 0.0)) * rim * 0.45 * (part.x > 0.3 ? 0.4 : 1.0);
+      c += uAccent * max(dot(n, toSign), 0.0) * rim * neonGlow * 0.35;
+      // And a fine rim right on the outline, catching on the tufts: the lamp's along its side,
+      // the city's (tinged by the sign) along the other side and over the top.
+      float edgeLit = (1.0 - smoothstep(0.0, max(0.022, 3.0 * px / S), -d)) * (0.65 + 0.35 * tuft);
+      float warmSide = smoothstep(0.1, 0.8, dot(n, vec2(0.94, 0.34)));
+      float coolSide = smoothstep(-0.1, 0.7, dot(n, vec2(-0.5, 0.866)));
+      c += edgeLit * SILL_LAMP * lampCat * 1.8 * warmSide;
+      c += edgeLit * (cool * mix(0.75, 0.5, sky.day) + uAccent * neonGlow * 0.5 * max(dot(n, toSign), 0.0)) * coolSide * (part.x > 0.3 ? 0.4 : 1.0);
       // Thin ears glow where the city shines through them; turned this way, their pink insides.
       float earSkin = smoothstep(0.0, -0.03, ear);
       float facing = smoothstep(-0.1, -0.5, cos(cat.yaw));
@@ -839,10 +955,11 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     }
   }
 
-  // Steam off the mug, lit by the lamp and a little by the sign.
+  // Steam off the mug: it scatters the lamp's light (and a little of the window's and the sign's),
+  // so it shows pale against the dark city behind.
   if (K_steam > 0.0) {
     float steam = sillSteam(p, vec2(mugX, SILL_SEAT - 0.006 + 0.064), tm, K_steam, K_wind);
-    col += (vec3(0.6, 0.58, 0.56) * (0.3 + lampSill) + uAccent * neonGlow * 0.15) * steam * 0.9;
+    col += (vec3(0.74, 0.71, 0.67) * (0.3 + 1.5 * lampSill) + cool * 0.2 + uAccent * neonGlow * 0.15) * steam * 0.8;
   }
 
   if (K_curtain > 0.0) {

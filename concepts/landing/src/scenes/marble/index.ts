@@ -14,7 +14,7 @@ const params: readonly ParamDef[] = [
   feature("sheet", "renew", "new sheet", true, "rest", 0.4, "When the pattern is done it rests a while, then the sheet is lifted off with the ink and a fresh tray begins. Off: the finished pattern stays.", { trigger: 0 }),
   seed("sheet", "sheetSeed", "drops", "Where the drops fall and the combs start; re-seed for another run of sheets."),
   choice("surface", "medium", "view", [{ label: "tray", value: 0 }, { label: "print", value: 1 }], 0, "Tray: the ink floating on the size, in a dim studio. Print: the paper laid on and lifted, the pattern taken into its fibres."),
-  feature("surface", "ripples", "ripples", true, "strength", 0.4, "Slow swells on the size, rocking the ink and the light on it (tray)."),
+  feature("surface", "ripples", "ripples", true, "strength", 0.4, "Long, slow swells on the size, gently bending the studio window mirrored in it (tray)."),
   range("surface", "sheen", "sheen", 0.5, "The studio window mirrored in the wet surface (tray)."),
   range("surface", "fibre", "paper fibre", 0.5, "Mottling and fibres of the paper, showing through the ink (print)."),
   range("surface", "edges", "edges", 0.5, "Left: soft ink bleeding into its neighbours. Right: crisp edges with a fine dark rim where colours meet."),

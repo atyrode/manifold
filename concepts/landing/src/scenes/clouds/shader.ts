@@ -4,7 +4,8 @@
 //
 // Frames: the camera frame has x right, y up, z out through the window. The shared sky libraries
 // work in a world frame whose "ahead" is cloudsTurn to the right of the window's view, so the sun
-// sets inside the window at golden hour; directions turn into that frame only to read the sky.
+// sets inside the window at golden hour; directions turn into that frame only to read the sky. The
+// moon keeps a low arc of the scene's own (cloudsMoon) so it crosses the porthole around midnight.
 //
 // Knobs (index.ts): K_time, K_cycle (sky); K_cover, K_altitude, K_drift, K_thunderheads (cloud
 // sea); K_window, K_wing, K_contrail (window seat, trigger slot 1); K_wind, K_lightning (trigger
@@ -16,6 +17,7 @@ const float cloudsFocal = 1.2;    // lens: about 45 degrees of vertical field of
 const float cloudsTurn = 0.82;    // the window looks this far (radians) left of the sky's "ahead"
 const float cloudsAmp = 0.45;     // height range of the cloud tops, world units (domes are ~1.6 across)
 const vec3 cloudsBoltLight = vec3(0.74, 0.78, 1.0);
+const float cloudsMoonGain = 1.8; // moonlit cloud is the brightest thing in a night sky: the eye adapts
 
 vec3 cloudsToWorld(vec3 d) {
   vec2 xz = rotate(d.xz, cloudsTurn);
@@ -45,6 +47,14 @@ float cloudsRoundBox(vec2 q, vec2 size, float radius) {
 vec3 cloudsShoulder(vec3 c) {
   vec3 over = max(c - 0.7, 0.0);
   return min(c, vec3(0.7)) + 0.3 * (1.0 - exp(-over / 0.3));
+}
+
+// The wing's tone curve: luminance rolls off from 0.5 toward 0.9 with the hue kept, so sunlit
+// paint keeps its sheen and livery instead of burning out to flat white at noon.
+vec3 cloudsWingTone(vec3 c) {
+  float l = dot(c, LUMA);
+  float t = l < 0.5 ? l : 0.5 + 0.4 * (1.0 - exp(-(l - 0.5) / 0.4));
+  return c * (t / max(l, 1e-4));
 }
 
 // Henyey-Greenstein phase relative to isotropic scattering: about 19 straight into the light for
@@ -133,6 +143,22 @@ float cloudsShadow(vec3 at, vec3 L, vec2 drift, float cover, float boil, float d
   return exp(-depth * 9.0);
 }
 
+// The moon on a low arc of the scene's own: whatever the almanac says, the flight's heading puts
+// it in the porthole from about nine in the evening to one in the morning, some 12 degrees up at
+// midnight (now and then behind an anvil), rising on the right after dusk and setting on the left
+// before dawn. The shared sky's disc, halo and moonlight follow it.
+Sky cloudsMoon(Sky sky, float tod) {
+  float h = (fract(tod + 0.5) - 0.5) * TAU; // 0 at midnight
+  float el = 0.29 * cos(h) - 0.075;          // sine of its elevation: up from ~19:00 to ~05:00
+  float az = -0.08 - 0.4 * h;                // radians right of the window's view
+  float level = sqrt(1.0 - el * el);
+  sky.moon = cloudsToWorld(vec3(sin(az) * level, el, cos(az) * level));
+  vec3 moonColor = vec3(0.30, 0.36, 0.50) * sqrt(skyTransmit(el)) * smoothstep(-0.02, 0.06, el) * (1.0 - sky.day);
+  sky.ambient += (moonColor - sky.moonColor) * 0.3;
+  sky.moonColor = moonColor;
+  return sky;
+}
+
 // Everything that lights the scene, in the camera frame.
 struct CloudsLight {
   vec3 dir;        // key light: the sun, or the moon at night (held a little above the horizon)
@@ -142,13 +168,17 @@ struct CloudsLight {
   vec3 away;       // low sky opposite: the Earth's shadow and the pink Belt of Venus at dusk
   vec3 zenith;     // the deep sky overhead
   vec3 ambient;    // the sky libraries' overall skylight
+  vec3 fill;       // starlight and airglow: a cool fill so the deck reads as cloud on a dark night
+  vec3 moon;       // the moon's direction
+  vec3 moonlight;  // its light on cloud: the shared sky's moonlight times cloudsMoonGain, 0 by day
   vec2 sunBearing; // the sun's compass direction in the camera's xz plane
 };
 
 CloudsLight cloudsLighting(Sky sky) {
   CloudsLight li;
   vec3 sun = cloudsToCamera(sky.sun);
-  vec3 moon = cloudsToCamera(sky.moon);
+  li.moon = cloudsToCamera(sky.moon);
+  li.moonlight = sky.moonColor * cloudsMoonGain;
   li.sunBearing = normalize(sun.xz + vec2(0.0, 1e-3));
   // Sky samples that colour indirect light; each is aimed so the sun's disc never lands in it.
   vec2 aside = rotate(li.sunBearing, 0.25);
@@ -159,14 +189,15 @@ CloudsLight cloudsLighting(Sky sky) {
   // sky has put it out, and anvils longer still. They keep the red of the glow toward it.
   float dusk = smoothstep(0.03, -0.02, sky.sun.y);
   vec3 afterglow = li.toward * dusk * smoothstep(-0.13, -0.05, sky.sun.y) * 0.6;
-  li.key = sky.sunColor + afterglow + sky.moonColor;
-  li.high = sky.sunColor + li.toward * dusk * smoothstep(-0.2, -0.09, sky.sun.y) * 0.8 + sky.moonColor;
+  li.key = sky.sunColor + afterglow + li.moonlight;
+  li.high = sky.sunColor + li.toward * dusk * smoothstep(-0.2, -0.09, sky.sun.y) * 0.8 + li.moonlight;
   float ws = dot(sky.sunColor + afterglow, LUMA);
-  float wm = dot(sky.moonColor, LUMA);
-  vec3 dir = normalize(vec3(sun.x, max(sun.y, 0.03), sun.z)) * ws + moon * wm + vec3(0.0, 1e-4, 0.0);
+  float wm = dot(li.moonlight, LUMA);
+  vec3 dir = normalize(vec3(sun.x, max(sun.y, 0.03), sun.z)) * ws + li.moon * wm + vec3(0.0, 1e-4, 0.0);
   dir = normalize(dir);
   li.dir = normalize(vec3(dir.x, max(dir.y, 0.03), dir.z));
   li.ambient = sky.ambient;
+  li.fill = vec3(0.03, 0.045, 0.095) * sky.night;
   return li;
 }
 
@@ -177,7 +208,7 @@ vec3 cloudsAmbient(CloudsLight li, vec3 n) {
   vec3 low = mix(li.away, li.toward, 0.5 + 0.5 * side);
   vec3 dome = mix(low, li.zenith, 0.4 + 0.4 * max(n.y, 0.0));
   vec3 deck = li.key * (0.15 + 0.6 * max(li.dir.y, 0.0)) + li.ambient * 0.6;
-  return mix(li.ambient, mix(deck, dome, 0.55 + 0.45 * n.y), 0.6);
+  return mix(li.ambient, mix(deck, dome, 0.55 + 0.45 * n.y), 0.6) + li.fill * (0.6 + 0.4 * max(n.y, 0.0));
 }
 
 // Light on the cloud tops: wrapped diffuse for the soft terminator of a translucent volume (as in
@@ -197,55 +228,109 @@ vec3 cloudsShadeTop(CloudsLight li, vec3 rd, vec3 n, float h, float sunlit) {
 }
 
 // One distant cumulonimbus in its own frame: q.x across from its axis, q.y up from the horizon,
-// 1 = its height. A cauliflower column narrowing upward, an overshooting dome, and the flat anvil
-// spread downwind ('lean' -1..1) by the high winds. 'strike' lights it from inside at 'strikeAt'.
-vec4 cloudsThunderhead(vec2 q, float seed, float lean, float aa, Sky sky, CloudsLight li, vec3 rd, float strike, vec2 strikeAt) {
-  float side = q.x < 0.0 ? -1.0 : 1.0;
-  float bulge = cloudsBillow(vec2(q.y * 5.5 + seed * 7.0, side * 2.0 + seed * 3.0));
-  float cw = 0.15 + 0.08 * (1.0 - q.y) + 0.08 * bulge;
-  float column = smoothstep(-aa, aa, cw - abs(q.x)) * smoothstep(-aa, aa, 0.93 - q.y);
-  float reach = (0.42 + 0.55 * max(lean * side, 0.0)) * (0.9 + 0.2 * vnoise(vec2(q.y * 14.0, seed * 5.0 + side)));
-  float across = abs(q.x) / reach;
-  float bottom = 0.8 + 0.13 * across * across;
-  float dome = 0.07 * sqrt(max(1.0 - (q.x / 0.16) * (q.x / 0.16), 0.0));
-  float top = 0.97 - 0.05 * across * across + dome;
-  float anvil = smoothstep(-aa, aa, reach - abs(q.x)) * smoothstep(-aa, aa, q.y - bottom) * smoothstep(-aa, aa, top - q.y);
-  // The base sinks into the far deck.
-  float cov = max(column, anvil) * smoothstep(-0.06, 0.04, q.y);
-  if (cov <= 0.0) return vec4(0.0);
+// 1 = its height. One massive column, broadest at its dark rain-shaft base and leaning a little
+// downwind, its outline boiling into cauliflower lobes, climbs into the anvil: a broad, flat slab
+// of ice at the tropopause that the high winds spread downwind ('lean' -1..1) to two or three
+// times the column's width and fray into fibrous cirrus, with a soft underside and an
+// overshooting dome above the updraft. 'storm' 0..1 darkens it into a slate storm cell; 'strike'
+// lights it from inside at 'strikeAt'. 'moonHaze' is the moon's halo in the horizon haze its base
+// melts into. Returns straight rgb and coverage.
+vec4 cloudsThunderhead(vec2 q, float seed, float lean, float aa, Sky sky, CloudsLight li, vec3 rd, vec3 moonHaze, float storm, float strike, vec2 strikeAt) {
+  float ax = lean * 0.07 * q.y; // the updraft's axis
+  bool nearAxis = abs(q.x - ax) < 0.55 && q.y < 0.9;
+  if (!nearAxis && q.y < 0.55) return vec4(0.0);
+  // Fine lobes fade out before they would shimmer; soft billows mottle the body without creases.
+  float detail = 1.0 - smoothstep(0.012, 0.035, aa);
+  float billows = vnoise(vec2(q.x * 3.5, q.y * 6.0) + seed * 9.0);
 
-  // A stand-in normal (z toward the camera) and the texture of the cloud: boiling cauliflower on
-  // the column, smooth fibrous ice on the anvil.
-  vec3 n = vec3(0.0, 1.0, 0.0);
-  float tex = 1.0;
-  if (anvil > column) {
-    float v = clamp((q.y - bottom) / max(top - bottom, 0.02), 0.0, 1.0);
-    n = normalize(vec3(side * across * 0.6, mix(-0.8, 0.9, v), -0.55));
-    tex = 0.92 + 0.12 * vnoise(vec2(q.x * 3.0, q.y * 26.0) + seed * 9.0);
-  } else {
-    float nx = clamp(q.x / cw, -1.0, 1.0);
-    n = normalize(vec3(nx, 0.2 * (bulge - 0.4), -sqrt(max(1.0 - nx * nx, 0.0)) - 0.05));
-    tex = 0.8 + 0.35 * cloudsBillow(q * vec2(9.0, 7.0) + seed * 3.0);
+  // The column: one body, broadest at the base, its rounded top swallowed by the anvil. Only its
+  // outline boils: on each side, rounded lobes with sharp creases between them (folded noise up
+  // its height, two octaves), so the silhouette is cauliflower and the body stays solid.
+  float dcol = 1e3;
+  float wcol = 1.0;
+  if (nearAxis) {
+    float side = q.x < ax ? -1.0 : 1.0;
+    float lobes = 0.075 * cloudsBillow(vec2(q.y * 7.0 + seed * 11.0, side * 3.1 + seed * 5.0))
+                + 0.035 * detail * cloudsBillow(vec2(q.y * 16.0 + seed * 3.0, side * 7.3 - seed * 2.0));
+    float cap = clamp((q.y - 0.6) / 0.24, 0.0, 1.0);
+    wcol = (mix(0.34, 0.22, smoothstep(0.0, 0.7, q.y)) + lobes) * sqrt(1.0 - cap * cap);
+    dcol = abs(q.x - ax) - wcol;
   }
-  vec3 key = mix(li.key, li.high, clamp(q.y, 0.0, 1.0));
-  float wrap = clamp((dot(n, li.dir) + 0.35) / 1.35, 0.0, 1.0);
-  float rim = 1.0 - clamp(-n.z, 0.0, 1.0);
+  float column = 1.0 - smoothstep(-aa, aa, dcol);
+
+  // The anvil: a broad flat slab, its underside rising gently from the column to a thinner edge
+  // and fading softly into the air below, reaching furthest downwind. Each fibre of ice runs its
+  // own length, so the ends fray into streaks.
+  float dx = q.x - lean * 0.06;
+  float downwind = dx * (lean < 0.0 ? -1.0 : 1.0);
+  float shear = abs(lean);
+  float fib = clamp(0.25 / aa, 8.0, 28.0);
+  float reach = (downwind > 0.0 ? 0.6 + 0.75 * shear : 0.36 - 0.06 * shear)
+              * (0.85 + 0.25 * vnoise(vec2(q.y * fib, seed * 13.0 + step(0.0, downwind) * 5.0)));
+  float u = abs(dx) / reach;
+  float overshoot = sqrt(max(1.0 - dx * dx / 0.03, 0.0)) * (0.85 + 0.3 * billows);
+  float yTop = 0.9 - 0.035 * u * u + 0.08 * overshoot;
+  float yBot = mix(0.68, 0.8, smoothstep(0.0, 1.0, u)) + 0.025 * (billows - 0.5);
+  float fray = aa + 0.03 * smoothstep(0.4, 1.0, u);
+  float under = aa + 0.045;
+  float anvil = smoothstep(-fray, fray, yTop - q.y) * smoothstep(-under, under, q.y - yBot) * (1.0 - smoothstep(0.72, 1.0, u));
+  float fibres = vnoise(vec2(q.x * 2.5 + seed * 7.0, q.y * fib * 1.3));
+  anvil *= mix(1.0, 0.3 + 0.7 * fibres, smoothstep(0.5, 0.95, u));
+
+  // The base sinks into the far deck.
+  float body = max(column, anvil);
+  float cov = body * smoothstep(-0.08, 0.06, q.y);
+  if (cov <= 0.002) return vec4(0.0);
+  // How much of what shows is anvil: it spreads over the top of the column.
+  float wA = clamp(anvil * (1.0 - column * (1.0 - smoothstep(0.7, 0.8, q.y))) / max(body, 1e-3), 0.0, 1.0);
+
+  // Normals, z toward the camera: the column round across its girth (its lobes widen the lit
+  // flank where they bulge), soft billows tipping it up and down, its top turning skyward; the
+  // anvil a slab, its flat top facing up, its underside down, its edge out.
+  float gx = clamp((q.x - ax) / max(wcol, 0.05), -1.0, 1.0);
+  vec3 nCol = normalize(vec3(gx, 0.15 + 0.5 * (billows - 0.5) + 0.8 * smoothstep(0.55, 0.84, q.y), -sqrt(1.0 - gx * gx) - 0.05));
+  float v = clamp((q.y - yBot) / max(yTop - yBot, 0.01), 0.0, 1.0);
+  vec3 nAnv = normalize(vec3(sign(dx) * min(u, 1.0) * 0.4, mix(-0.75, 0.9, v), -0.6));
+  vec3 n = normalize(mix(nCol, nAnv, wA));
+
+  // Light: wrapped diffuse for the sunlit flank against the shadowed side; occlusion low in the
+  // column under the bulk above it and under the anvil; then the forward lobe through thin cloud,
+  // a silver or gold lining on the outer silhouette and the frayed ice only.
+  float lift = smoothstep(0.2, 0.85, q.y);
+  vec3 key = mix(li.key, li.high, lift);
+  float wrap = clamp((dot(n, li.dir) + 0.4) / 1.4, 0.0, 1.0);
+  float aoCol = mix(0.85, 1.0, billows) * mix(0.45, 1.0, smoothstep(-0.02, 0.5, q.y));
+  float ao = mix(aoCol, mix(0.5, 1.0, v), wA);
+  float thin = mix(1.0 - smoothstep(0.0, 0.06, -dcol), max(smoothstep(0.45, 1.0, u), 1.0 - smoothstep(0.0, 0.05, yTop - q.y)), wA);
+  float albedo = mix(0.95, mix(0.42, 0.6, wA), storm);
   float fwd = min(cloudsPhase(dot(rd, li.dir), 0.7), 12.0);
-  vec3 c = tex * 0.92 * (cloudsAmbient(li, n) + key * wrap * wrap) + key * fwd * 0.18 * rim * rim;
-  c = cloudsShoulder(c);
-  // A hundred kilometres of air: the base is lost in the horizon haze, the tops stand clearer.
-  vec3 haze = cloudsSky(sky, normalize(vec3(rd.x, -0.01, rd.z)));
-  c = mix(c, haze, mix(0.72, 0.32, smoothstep(0.0, 0.7, q.y)));
+  vec3 c = albedo * (cloudsAmbient(li, n) * ao + key * (0.08 + 0.92 * wrap * wrap) * (0.4 + 0.6 * ao));
+  c += key * fwd * (0.02 + 0.24 * thin * thin) * (1.0 - 0.5 * storm);
+  // The anvil's flat top holds the low sun longest: reddened sunlight on it, the violet zenith
+  // over it, pink at golden hour and after sunset.
+  float crown = wA * smoothstep(0.45, 1.0, v);
+  vec3 tint = mix(vec3(1.0), vec3(1.0, 0.72, 0.8), sky.twilight);
+  c += (li.high * tint + li.zenith * 0.35 * sky.twilight) * crown * (0.12 + 0.45 * sky.twilight) * (1.0 - 0.5 * storm);
+  // A storm cell is slate blue. Low in the column, rain: darker curtains streaking into the haze.
+  c *= mix(vec3(1.0), vec3(0.8, 0.86, 0.96), storm);
+  float rain = (1.0 - wA) * (1.0 - smoothstep(0.02, 0.32, q.y));
+  float shafts = vnoise(vec2((q.x - lean * 0.3 * q.y) * 8.0 + seed * 3.0, q.y * 1.5 + seed));
+  c *= 1.0 - rain * (0.3 + 0.35 * shafts) * (0.6 + 0.4 * storm);
+  // A hundred kilometres of air: the lower tower stands half lost in the horizon haze, the tops
+  // stand clearer, and a storm's dark cell stands out of it.
+  vec3 haze = cloudsSky(sky, normalize(vec3(rd.x, -0.01, rd.z))) + moonHaze;
+  c = mix(c, haze, mix(0.9, 0.22, smoothstep(-0.04, 0.55, q.y)) * (1.0 - 0.4 * storm));
+  // A strike lights the cloud from inside, brightest where it is thin enough to let the light out.
   vec2 dq = q - strikeAt;
-  c += cloudsBoltLight * strike * tex * (exp(-dot(dq, dq) * 14.0) * 1.4 + 0.18);
-  return vec4(c, cov);
+  c += cloudsBoltLight * strike * (exp(-dot(dq, dq) * 9.0) * (1.1 + 1.5 * thin) + 0.12 + 0.2 * thin);
+  return vec4(cloudsShoulder(c), cov);
 }
 
 // A thunderhead standing on the horizon at hv.x = tower.x, tower.y high, over 'col'.
-vec3 cloudsTowerOver(vec3 col, vec2 hv, vec2 tower, float seed, float lean, float px, Sky sky, CloudsLight li, vec3 rd, float strike, vec2 strikeAt) {
+vec3 cloudsTowerOver(vec3 col, vec2 hv, vec2 tower, float seed, float lean, float px, Sky sky, CloudsLight li, vec3 rd, vec3 moonHaze, float storm, float strike, vec2 strikeAt) {
   vec2 q = vec2(hv.x - tower.x, hv.y + 0.01) / tower.y;
-  if (q.y < -0.1 || q.y > 1.12 || abs(q.x) > 1.3) return col;
-  vec4 tw = cloudsThunderhead(q, seed, lean, px / tower.y, sky, li, rd, strike, strikeAt);
+  if (q.y < -0.1 || q.y > 1.05 || abs(q.x) > 1.6) return col;
+  vec4 tw = cloudsThunderhead(q, seed, lean, px / tower.y, sky, li, rd, moonHaze, storm, strike, strikeAt);
   return mix(col, tw.rgb, tw.a);
 }
 
@@ -342,16 +427,21 @@ vec4 cloudsWing(vec2 w, float cellW, vec3 rdCam, Sky sky, CloudsLight li, float 
   if (cov <= 0.0) return vec4(0.0);
 
   bool onWinglet = letD > wingD;
-  // Upper skin faces up (a touch of dihedral tips it toward the cabin); the winglet's inner face
-  // looks back at the fuselage.
-  vec3 n = onWinglet ? normalize(vec3(0.18, 0.3, -1.0)) : normalize(vec3(0.0, 1.0, -0.12));
-  vec3 paint = vec3(0.82, 0.83, 0.85);
+  // Upper skin faces up (a touch of dihedral tips it toward the cabin), the airfoil curving down
+  // toward its leading edge; the winglet's inner face looks back at the fuselage. Paint: satin
+  // grey-white skin, a bare-metal slat along the leading edge, the winglet in the airline's blue
+  // with a sky-blue stripe along its leading edge.
+  vec3 n = normalize(vec3(0.18, 0.3, -1.0));
+  vec3 paint = vec3(0.16, 0.26, 0.52);
   float lines = 0.0;
   float edgeLight = 0.0;
   float livered = 0.0;
+  float metal = 0.0;
   if (onWinglet) {
     float acrossLet = clamp(letTrail / max(letTrail + letLead, 1e-3), 0.0, 1.0);
     edgeLight = smoothstep(0.82, 0.97, acrossLet);
+    float stripe = smoothstep(0.03 - 0.7 * cellW, 0.03 + 0.7 * cellW, letLead) * (1.0 - smoothstep(0.065 - 0.7 * cellW, 0.065 + 0.7 * cellW, letLead));
+    paint = mix(paint, vec3(0.42, 0.66, 0.92), stripe);
     if (livery) {
       // The M, leaning back with the winglet.
       vec2 mq = rotate(w - vec2(-1.215, 0.94), -0.3) / 0.12;
@@ -363,27 +453,33 @@ vec4 cloudsWing(vec2 w, float cellW, vec3 rdCam, Sky sky, CloudsLight li, float 
     // Panel lines in chord/span terms: the aileron hinge and its ends, the slat line.
     float chord = inTrail + inLead;
     float cf = clamp(inTrail / max(chord, 1e-3), 0.0, 1.0);
+    n = normalize(vec3(mix(-0.12, 0.4, smoothstep(0.6, 1.0, cf)), 1.0, -0.12));
     lines = 1.0 - smoothstep(0.3 * cellW, 1.1 * cellW, abs(cf - 0.27) * chord);
     float ends = min(abs(inTip - 0.05), abs(inTip - 0.55));
     lines = max(lines, (1.0 - smoothstep(0.3 * cellW, 1.1 * cellW, ends)) * step(cf, 0.27));
     lines = max(lines, (1.0 - smoothstep(0.3 * cellW, 1.1 * cellW, abs(cf - 0.86) * chord)) * 0.6);
     edgeLight = smoothstep(0.9, 0.99, cf);
+    metal = smoothstep(-cellW, cellW, (cf - 0.86) * chord);
+    float aileron = (1.0 - smoothstep(-cellW, cellW, (cf - 0.27) * chord)) * smoothstep(-cellW, cellW, inTip - 0.05) * (1.0 - smoothstep(-cellW, cellW, inTip - 0.55));
+    paint = mix(vec3(0.76, 0.78, 0.81) * (1.0 - 0.05 * aileron), vec3(0.6, 0.62, 0.65), metal);
     paint *= mix(0.86, 1.0, smoothstep(0.0, 0.08, cf));
   }
   float ndl = max(dot(n, li.dir), 0.0);
   vec3 r = reflect(rdCam, n);
   float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(-rdCam, n), 0.0, 1.0), 5.0);
   vec3 refl = cloudsSky(sky, normalize(vec3(r.x, max(r.y, 0.02), r.z)));
-  float spec = pow(max(dot(r, li.dir), 0.0), 90.0);
+  float rl = max(dot(r, li.dir), 0.0);
+  // Satin paint: a broad soft sheen round a tighter core; bare metal is sharper and mirrors more.
+  float spec = mix(0.16 * pow(rl, 10.0) + 0.22 * pow(rl, 60.0), 0.08 * pow(rl, 20.0) + 0.5 * pow(rl, 240.0), metal);
   vec3 c = paint * (cloudsAmbient(li, n) * 0.85 + li.key * ndl);
   // Glossy paint mirrors the sky at this grazing angle: the horizon glow runs along the wing.
-  c += refl * fres * 0.55 + li.key * spec * 1.6;
+  c += refl * fres * mix(0.5, 0.9, metal) + li.key * spec;
   // The rounded leading edges catch the light from above.
   c += paint * (li.zenith * 0.2 + li.key * 0.25) * edgeLight;
-  c *= 1.0 - 0.3 * lines;
+  c *= 1.0 - 0.14 * lines;
   // Lit by its own lights: a red wash near the tip, the strobe flaring over wingtip and winglet.
   c += paint * (red * nav * exp(-length(w - navAt) * 9.0) * 0.8 + white * strobe * exp(-length(w - strobeAt) * 3.0) * 1.6);
-  c = cloudsShoulder(c);
+  c = cloudsWingTone(c);
   mark = max(mark, livered * cov * clamp(dot(c, LUMA) * 2.0 + 0.35, 0.0, 1.0));
   return vec4(c, cov);
 }
@@ -398,8 +494,12 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
   vec2 hv = rotate(p, roll) - vec2(0.0, cloudsHorizon);
   vec3 rd = normalize(vec3(hv, cloudsFocal));
   // The sky; below the horizon, the horizon colour the far deck dissolves into. Rays are held just
-  // under the horizon, where the shared sky keeps the sun's glow but cuts its disc.
-  vec3 bg = cloudsSky(sky, normalize(vec3(rd.x, max(rd.y, -0.01), rd.z)));
+  // under the horizon, where the shared sky keeps the sun's glow but cuts its disc. Moonlight in
+  // the haze spreads a broad halo round the moon, and the far deck under it melts into that glow.
+  vec3 mv = rd - li.moon;
+  float am = 0.5 * dot(mv, mv);
+  vec3 moonHaze = li.moonlight * (0.2 * exp(-am * 700.0) + 0.1 * exp(-am * 50.0));
+  vec3 bg = cloudsSky(sky, normalize(vec3(rd.x, max(rd.y, -0.01), rd.z))) + moonHaze;
   vec3 col = bg;
 
   float lseed = 0.0;
@@ -407,9 +507,11 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
   float flash = lightningFlash(lage);
   bool towersOn = K_thunderheads > 0.0;
   float tall = 0.55 + 0.9 * K_thunderheads;
-  vec2 tower0 = vec2(0.3 * frame.x, 0.2 * tall);   // x, height: right of the sun's setting point
-  vec2 tower1 = vec2(0.95 * frame.x, 0.14 * tall);
+  vec2 tower0 = vec2(0.15 * frame.x, 0.28 * tall);  // x, height: right of the sun's setting point
+  vec2 tower1 = vec2(0.95 * frame.x, 0.17 * tall);
   bool hitFirst = fract(lseed * 13.7) < 0.6;       // which of the two near towers the strike is in
+  bool between = fract(lseed * 29.1) < 0.4;        // a bolt between them, or one out of its base
+  vec2 struck = hitFirst ? tower0 : tower1;
 
   if (rd.y > 0.0) {
     vec3 dw = cloudsToWorld(rd);
@@ -420,22 +522,32 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
 
   if (towersOn && hv.y > -0.03) {
     float lean = clamp(0.35 + 0.65 * K_wind, -1.0, 1.0);
-    vec2 strikeAt = vec2((fract(lseed * 7.3) - 0.5) * 0.3, 0.25 + 0.55 * fract(lseed * 3.1));
+    // With lightning about, the towers are storm cells, slate dark, so a flash shows even at noon.
+    float storm = K_lightning > 0.0 ? 0.7 + 0.3 * K_lightning : 0.0;
+    float sx = (fract(lseed * 7.3) - 0.5) * 0.3;
+    vec2 strikeAt = between ? vec2(sx, 0.25 + 0.55 * fract(lseed * 3.1)) : vec2(sx, 0.4);
     // The storm's glow spills into the sky around it.
-    vec2 storm = hv - vec2(hitFirst ? tower0.x : tower1.x, 0.1);
-    col += cloudsBoltLight * flash * 0.06 * exp(-length(storm) * 6.0);
+    vec2 glowAt = hv - vec2(struck.x, 0.1);
+    col += cloudsBoltLight * flash * 0.06 * exp(-length(glowAt) * 6.0);
     // Now and then a bolt leaps between the two nearer towers; they hide its ends.
-    if (lage < 1.5 && fract(lseed * 29.1) < 0.4) {
+    if (between && lage < 1.5) {
       vec2 a = vec2(tower0.x + 0.12 * tower0.y, 0.5 * tower0.y);
       vec2 b = vec2(tower1.x - 0.1 * tower1.y, 0.38 * tower1.y);
       float g = lightningBolt(hv, a, b, lseed, lage);
       col += mix(vec3(0.6, 0.5, 1.0) * g, vec3(1.0), smoothstep(0.6, 0.9, g));
     }
     // Farthest first; the outer two only show on wide frames.
-    col = cloudsTowerOver(col, hv, vec2(-1.25 * frame.x, 0.17 * tall), 0.31, lean, px, sky, li, rd, flash * 0.06, strikeAt);
-    col = cloudsTowerOver(col, hv, vec2(1.7 * frame.x, 0.12 * tall), 0.67, lean, px, sky, li, rd, flash * 0.06, strikeAt);
-    col = cloudsTowerOver(col, hv, tower1, 0.53, lean, px, sky, li, rd, flash * (hitFirst ? 0.12 : 1.0), strikeAt);
-    col = cloudsTowerOver(col, hv, tower0, 0.19, lean, px, sky, li, rd, flash * (hitFirst ? 1.0 : 0.12), strikeAt);
+    col = cloudsTowerOver(col, hv, vec2(-1.25 * frame.x, 0.2 * tall), 0.31, lean, px, sky, li, rd, moonHaze, storm * 0.6, flash * 0.06, strikeAt);
+    col = cloudsTowerOver(col, hv, vec2(1.7 * frame.x, 0.15 * tall), 0.67, lean, px, sky, li, rd, moonHaze, storm * 0.6, flash * 0.06, strikeAt);
+    col = cloudsTowerOver(col, hv, tower1, 0.53, lean, px, sky, li, rd, moonHaze, storm, flash * (hitFirst ? 0.12 : 1.0), strikeAt);
+    col = cloudsTowerOver(col, hv, tower0, 0.19, lean, px, sky, li, rd, moonHaze, storm, flash * (hitFirst ? 1.0 : 0.12), strikeAt);
+    // Otherwise the bolt falls out of the struck tower's dark base, through the rain, to the deck.
+    if (!between && lage < 1.0) {
+      vec2 a = vec2(struck.x + sx * struck.y, 0.42 * struck.y);
+      vec2 b = vec2(struck.x + (sx + (fract(lseed * 8.3) - 0.5) * 0.35) * struck.y, -0.015);
+      float g = lightningBolt(hv, a, b, lseed, lage) * (1.0 - smoothstep(0.16 * struck.y, 0.36 * struck.y, hv.y));
+      col += mix(vec3(0.6, 0.5, 1.0) * g, vec3(1.0), smoothstep(0.6, 0.9, g));
+    }
   }
 
   if (hv.y > -0.02) {
@@ -493,7 +605,7 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
   if (flash > 0.0 && rd.y < 0.02) {
     // The strike lights the deck from inside: under the struck tower, or deep in the far deck.
     vec2 g = towersOn
-      ? vec2(hitFirst ? tower0.x : tower1.x, -0.012)
+      ? vec2(struck.x, -0.012)
       : vec2((fract(lseed * 5.3) - 0.5) * 1.6 * frame.x, -0.02 - 0.04 * fract(lseed * 9.7));
     vec2 dg = (hv - g) * vec2(0.55, 1.8);
     col += cloudsBoltLight * flash * exp(-dot(dg, dg) * 700.0) * (towersOn ? 0.45 : 0.9);
@@ -593,10 +705,13 @@ Shade sceneClouds(vec2 uv, vec2 cell, float t) {
   // Leaning toward the pointer: the near frame slides against the view, the wing a little.
   vec2 head = uPointer * m;
 
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  float tod = timeOfDay(K_time, K_cycle, t);
+  Sky sky = cloudsMoon(skyAt(tod), tod);
   CloudsLight li = cloudsLighting(sky);
-  // Under an aurora the tops pick up a faint green.
-  li.ambient += vec3(0.04, 0.22, 0.14) * K_aurora * sky.night * 0.15;
+  // Under an aurora the tops, and the window frame, pick up a faint green.
+  vec3 auroraGlow = vec3(0.04, 0.22, 0.14) * K_aurora * sky.night;
+  li.ambient += auroraGlow * 0.15;
+  li.fill += auroraGlow * 0.12;
 
   // The porthole: a deeply rounded rectangle, repeating along the cabin on very wide screens.
   bool windowOn = K_window > 0.5;

@@ -189,21 +189,35 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
   // One key light: the sun, or the moon once the sun is down. Both colours come pre-faded. The sky
   // library's frame is the camera's turned by DUNES_LOOK, so the setting sun stands in the picture.
-  vec3 key = dunesTurn(sky.sun.y > -0.03 ? sky.sun : sky.moon, DUNES_TURN - DUNES_LOOK);
+  float moonlit = sky.sun.y > -0.03 ? 0.0 : 1.0;
+  vec3 key = dunesTurn(mix(sky.sun, sky.moon, moonlit), DUNES_TURN - DUNES_LOOK);
+  // A high sun or moon stands above the picture and out across the wind, where it lights stoss and
+  // lee alike and the dunes go flat. As it climbs, swing it round upwind (out of the picture nobody
+  // can tell) and steepen the slopes it lights, so stoss slopes and crests stay lit and slip faces
+  // fall into shade at every hour, as they do at sunset.
+  float high = smoothstep(0.3, 0.6, key.y);
+  vec2 keyAcross = key.xz / max(length(key.xz), 1e-4);
+  key.xz = normalize(mix(keyAcross, vec2(-0.9 * windSign, 0.44), 0.5 * high)) * length(key.xz);
+  float relief = 1.0 + 0.5 * high;
   // In a sandstorm the dust swallows most of the sun.
   vec3 keyColor = (sky.sunColor + sky.moonColor) * (1.0 - 0.7 * storm);
   // A low sun is weak on flat ground but strong on the slopes turned to it, and outshines the sky
   // many times over: expose the direct light up as it sinks and keep the sky's fill modest, so
-  // dunes keep their light and shade at every hour.
-  vec3 sunlight = keyColor / (0.38 + 0.62 * max(key.y, 0.0));
+  // dunes keep their light and shade at every hour. A high sun is held back a little, so the sand
+  // turned to it does not burn out.
+  vec3 sunlight = keyColor / (0.38 + 0.62 * max(key.y, 0.0)) * (1.0 - 0.2 * high * sky.day);
   vec3 skylight = sky.ambient * 0.75;
   // A high sun on hot sand: the air wavers above the far dunes and the distance turns to mirage.
   float heat = K_heat * sky.day * smoothstep(0.3, 0.8, sky.sun.y);
 
-  // Camera. Aerial: low over the sand, looking to the horizon; heat bends rays near the horizon.
+  // Camera. Aerial: low over the sand, looking to the horizon. Heat bends rays near the horizon:
+  // columns of hot air rising and wavering, a few rows up and down.
   float band = exp(-abs(uv.y - DUNES_HORIZON) * 28.0);
-  vec2 waver = vec2(vnoise(vec2(uv.x * 38.0, tm * 2.6)), vnoise(vec2(uv.x * 23.0 + 7.0, tm * 2.1))) - 0.5;
-  vec2 at = overhead ? uv : uv + waver * vec2(0.003, 0.007) * band * heat;
+  vec2 waver = vec2(
+    vnoise(vec2(uv.x * 23.0 + 7.0, tm * 1.0)),
+    vnoise(vec2(uv.x * 34.0, (uv.y - DUNES_HORIZON) * 40.0 - tm * 0.9))
+  ) - 0.5;
+  vec2 at = overhead ? uv : uv + waver * vec2(0.004, 0.014) * band * heat;
   vec3 view = viewRay(at, aspect, DUNES_HORIZON, DUNES_FOV);
   view.xz = rotate(view.xz, -uPointer.x * 0.035);
   vec3 skyward = dunesTurn(view, DUNES_LOOK);
@@ -296,7 +310,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     float ripples = K_ripples * cover * (1.0 - slip) * (1.0 - 0.6 * crest) * (1.0 - smoothstep(0.18, 0.42, alias));
     float s = TAU * phase;
     float tilt = cos(s - 0.7 * sin(s)) * (1.0 - 0.7 * cos(s)) * (TAU / lambda) * 0.018 * ripples;
-    vec3 n = normalize(vec3(-(shape.x + tilt * windSign), 1.0, -shape.y));
+    vec3 n = normalize(vec3(-(shape.x + tilt * windSign) * relief, 1.0, -shape.y * relief));
 
     // Warm sand, the slip faces darker and smoother with faint avalanche chutes; a gravel bed.
     vec3 sand = mix(vec3(0.92, 0.66, 0.42), vec3(0.8, 0.55, 0.35), slip);
@@ -310,12 +324,20 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
 
     float ndl = max(dot(n, key), 0.0);
     float lit = ndl > 0.0 && key.y > 0.0 ? dunesShadow(p + vec3(0.0, 0.06, 0.0), key, markHeight, 0.004 * reach) : 0.0;
-    // Sunlit sand throws light back into the shade: deserts are never black in shadow.
-    vec3 bounce = keyColor * albedo * 0.25 * clamp(key.y * 2.0, 0.0, 1.0) * clamp(1.0 - 0.6 * n.y, 0.0, 1.0);
-    // The sky fills the shade with cooler, greyer light than the sun gives the sand.
-    col = albedo * sunlight * ndl * lit + mix(albedo, vec3(dot(albedo, LUMA)), 0.4) * skylight * ao * (0.55 + 0.45 * n.y) + bounce * ao;
-    // Crests catch the light when it comes from behind them.
+    // Sunlit sand throws light back into the shade: deserts are never black in shadow. Less of it
+    // under a high sun, so the slip faces keep their shade.
+    vec3 bounce = keyColor * albedo * 0.25 * clamp(key.y * 2.0, 0.0, 1.0) * clamp(1.0 - 0.6 * n.y, 0.0, 1.0) * (1.0 - 0.5 * high);
+    // The sky fills the shade with cooler, greyer light than the sun gives the sand; at night little
+    // of it finds the slip faces, so the lee sides stay dark.
+    float fill = ao * (0.55 + 0.45 * n.y) * (1.0 - 0.45 * slip * sky.night);
+    col = albedo * sunlight * ndl * lit + mix(albedo, vec3(dot(albedo, LUMA)), 0.4) * skylight * fill + bounce * ao;
+    // Crests catch the light when it comes from behind them; the moon lays a cool sheen along them.
     col += keyColor * albedo * crest * against * lit * 0.35;
+    col += sky.moonColor * (moonlit * sky.night * 0.6) * crest * ndl * lit;
+    // Out of the sun the sand takes the sky's colour: the slip faces under a high sun, and the hollows.
+    vec3 skyHue = skylight / max(dot(skylight, LUMA), 1e-3);
+    float cool = sky.day * (0.35 * slip * high + 0.3 * smoothstep(0.2, 1.4, shape.w));
+    col = mix(col, dot(col, LUMA) * skyHue, cool);
     col *= mix(vec3(1.0), vec3(0.7, 0.85, 1.3), sky.night * 0.75);
     // Quartz grains glinting on the nearer sunlit sand.
     o.shimmer = 0.06 * ndl * lit * cover * sky.day * smoothstep(140.0, 30.0, reach);
@@ -336,17 +358,22 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
       col = mix(col, grains, veil * drift * near * 0.55);
     }
 
-    // Mirage: at noon the far sand turns to a shimmering sheet of sky.
-    float mirage = overhead ? 0.0 : heat * smoothstep(220.0, 600.0, reach) * (0.55 + 0.45 * vnoise(vec2(uv.x * 30.0, tm * 1.5)));
-    col = mix(col, skyColor(sky, normalize(vec3(skyward.x, abs(skyward.y) + 0.01, skyward.z))), mirage * 0.5);
     col = mix(col, dust, fogAmount(hazeDensity, overhead ? 0.25 * K_fog + 0.6 * storm : reach / hazeReach, p.y / 22.0));
   } else if (overhead || view.y < 0.0) {
     // Below the horizon but past the far field: the haze closes it.
     col = dust;
   } else {
-    col = skyColor(sky, skyward) + skyStars(sky, skyward, 0.85) * vec3(0.92, 0.94, 1.0);
+    col = skyColor(sky, skyward) + skyStars(sky, skyward, 1.0) * vec3(0.92, 0.94, 1.0) * 1.3;
     float low = exp(-max(view.y, 0.0) * mix(16.0, 3.0, K_fog));
     col = mix(col, dust, max((0.18 + 0.72 * K_fog) * low, 0.9 * storm));
+  }
+
+  // Mirage: under a high sun the far sand gives way to pools of shimmering sky along the horizon,
+  // the far crests standing in them.
+  if (!overhead && !showMark && heat > 0.0 && view.y < 0.0) {
+    float pools = smoothstep(0.3, 0.7, vnoise(vec2(uv.x * 6.0 + 3.0, tm * 0.08)));
+    float mirage = heat * smoothstep(200.0, 650.0, reach) * (0.4 + 0.6 * pools) * (0.8 + 0.2 * vnoise(vec2(uv.x * 40.0, tm * 1.5)));
+    col = mix(col, skyColor(sky, normalize(vec3(skyward.x, abs(skyward.y) + 0.01, skyward.z))), min(1.2 * mirage, 0.85));
   }
 
   // Sand blowing off the crests the ray skimmed, seen against the sky or the dunes beyond.

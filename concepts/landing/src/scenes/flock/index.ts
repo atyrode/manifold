@@ -1,5 +1,7 @@
-// Murmuration: a starling flock folding over a dusk sky. The birds are simulated on the CPU (sim.ts)
-// and drawn by the shader (shader.ts) from a density field; the sky comes from the shared library.
+// Murmuration: a starling flock folding over a dusk sky. The birds fly on the CPU as a thin sheet
+// that bends, twists, folds and splits (sim.ts); the shader (shader.ts) inks them from a density
+// field, pale where the sheet is stretched and black where it folds. The sky comes from the shared
+// library.
 import { choice, counts, feature, range, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -10,7 +12,7 @@ const params: readonly ParamDef[] = [
   choice("flock", "birds", "starlings", counts(...FLOCK_SIZES), 3000, "How many starlings. More make a deeper, darker cloud; fewer leave single birds easy to pick out."),
   range("flock", "cohesion", "cohesion", 0.55, "Low: a loose flock that stretches into ribbons, tears and joins up again. High: a tight, dark ball."),
   range("flock", "chaos", "chaos", 0.35, "Calm: the flock sweeps as one smooth sheet. Restless: it folds and splits, and ripples run through it now and then with no falcon in sight."),
-  range("flock", "speed", "speed", 0.5, "How fast the starlings fly."),
+  range("flock", "speed", "speed", 0.5, "How fast the flock sweeps across the sky and changes shape."),
   feature("flock", "predator", "falcon", true, "frequency", 0.35, "A peregrine dives through now and then: the birds flash apart around it and dark waves ripple out across the flock.", { trigger: 0 }),
   choice("skyline", "skyline", "skyline", [{ label: "city", value: 0 }, { label: "reeds", value: 1 }, { label: "sea", value: 2 }], 1, "The low silhouette along the bottom: rooftops, a reed bed on still water, or the sea under a headland. Lights come on as night falls."),
   ...skyKnobs({ time: 0.76 }),
@@ -29,7 +31,7 @@ export const flockScene: SceneDef = {
     flock: { title: "Flock", blurb: "How many starlings, how tightly they keep together, how restless they are, and the falcon that scatters them." },
     skyline: { title: "Skyline", blurb: "The thin silhouette that grounds the sky." },
     sky: atmosphereGroups.sky,
-    weather: { title: atmosphereGroups.weather.title, blurb: "Wind carries the flock and its roost downwind, and stirs the reeds and the water." },
+    weather: { title: atmosphereGroups.weather.title, blurb: "Wind carries the flock downwind, and stirs the reeds and the water." },
     manifold: { title: "Manifold mark", blurb: "The flock itself draws the M, then lets it go." },
   },
   glsl: flockGlsl,

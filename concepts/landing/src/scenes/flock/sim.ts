@@ -1,37 +1,44 @@
 // The murmuration: a few thousand starlings flown on the CPU, splatted into a density field the
 // shader inks as the flock.
 //
-// Model, after StarDisplay (Hildenbrandt, Carere & Hemelrijk 2010, "Self-organized aerial displays
-// of thousands of starlings: a model", Behavioral Ecology 21):
-// - Topological interaction: each bird heeds its seven nearest neighbours, however far they are
-//   (Ballerini et al. 2008, PNAS 105), found through a uniform-grid spatial hash rebuilt each step
-//   with a counting sort, so a step costs O(N), never O(N²).
-// - Separation, alignment, and a cohesion weighted by how peripheral a bird is (the mean of unit
-//   vectors to its neighbours: ~0 inside the flock, ~1 at its rim), which gives the sharp edges of
-//   real murmurations; speed held near a cruise speed between a minimum and a maximum.
-// - Birds steer by turning, with inertia: the turn rate relaxes toward the steering demand and is
-//   coupled to the neighbours' turn rates, after the inertial spin model (Attanasi et al. 2014,
-//   "Information transfer and behavioural inertia in starling flocks", Nature Physics 10). Turns
-//   therefore travel through the flock as waves instead of dying out on the spot.
-// - A soft attraction to a roost point that wanders slowly keeps the flock in frame and makes it
-//   sweep across the sky; a slow breathing of the spacing and a gentle large-scale steering field
-//   fold and stretch it.
+// Seen from the ground, a murmuration is a thin sheet of birds, a few deep and hundreds across,
+// that bends, twists and folds as it sweeps over the sky. In projection most of it is a pale,
+// translucent veil; it turns dark only where the sheet is edge-on to us or folds back over itself,
+// its rim is sharp, and single birds show around it. So the flock is flown as such a sheet:
+// - Every bird keeps a place on a disc (sheet coordinates a along the flock, b across it, both in
+//   -1..1), laid out on a jittered sunflower spiral so the birds are evenly spread, never clumped.
+// - The disc is carried through the sky in 3D: stretched into a ribbon and gathered again (its area
+//   kept), bowed, cupped across its width, rippled by a bend wave running along it, banked about
+//   its long axis with a twist along it, turned into depth, parted into two lobes joined by a few
+//   strung-out birds and merged again, and seen with a little perspective. A banked, cupped sheet
+//   folds back over itself along one rim; a twisted one goes edge-on across a neck. Every one of
+//   these is a slow sum of sines with periods between 3 and 30 seconds, so the shape never stops
+//   changing, never repeats exactly and never jumps. The flock roams the sky left over once it
+//   fits in its band of sky (shrinking a little when it would not), so it never hugs an edge.
+// - Turns travel through the flock (Attanasi et al. 2014, "Information transfer and behavioural
+//   inertia in starling flocks", Nature Physics 10): a bird follows the sheet as it was a moment
+//   ago, the later the nearer it is to the trailing end, so a turn starts at the head and sweeps
+//   along the ribbon.
+// - A few birds fly just outside the rim and a handful of stragglers trail a second or two behind:
+//   the specks around a real flock.
 // - Agitation waves (Procaccini et al. 2011, "Propagating waves in starling flocks under
-//   predation", Animal Behaviour 82): an excitable medium on the neighbour graph. A startled bird
-//   rolls (shows more wing, so it reads darker) and startles its neighbours, then stays refractory
-//   for a while, so a dark band runs out across the flock and does not echo back.
+//   predation", Animal Behaviour 82): a startle runs out over the sheet as a ring; the birds in it
+//   roll (show more wing, so they read darker) and lift out of the sheet.
+// - The falcon pushes the birds near it aside; each springs back to its place once it has passed.
 //
-// Time runs in fixed steps of STEP seconds of simulated time, so the flight depends only on the seed,
-// the knobs and simulated time, not on the frame rate; positions are interpolated between the last
-// two steps for drawing. Every array is allocated up front for the largest flock (the spatial hash
-// and the density field only grow on resize or a knob change), so a frame allocates nothing.
+// Time runs in fixed steps of STEP seconds of simulated time, so the flight depends only on the
+// knobs and simulated time, not on the frame rate; positions are interpolated between the last two
+// steps for drawing. Every array is allocated up front for the largest flock (the density field
+// only grows on resize), so a frame allocates nothing.
 //
 // Textures:
-//   uSim0  rg16f, about half the cell resolution: R birds per DENSITY_UNIT² of sky (a short
-//          exponential trail smooths their motion), G the same weighted by how hard the birds roll.
+//   uSim0  rg16f, about FIELD_PER_CELL texels per cell (at most FIELD_ROWS rows): R birds per texel
+//          (a short exponential trail smooths their motion), G the same weighted by how hard the
+//          birds roll.
 //   uSim1  rgba16f 3×1, nearest: texel 0 falcon (uv xy, heading cos, sin); texel 1 falcon (shown,
-//          wings open 0..1, wingbeat sin, 0); texel 2 Manifold M (strength 0..1, centre uv xy, height
-//          in screen heights).
+//          wings open 0..1, wingbeat sin) and, in w, the birds per texel of a sheet at
+//          REFERENCE_DENSITY; texel 2 Manifold M (strength 0..1, centre uv xy, height in screen
+//          heights).
 import type { ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -41,88 +48,97 @@ export const FLOCK_SIZES = [1500, 3000, 5000] as const;
 const MAX_BIRDS = Math.max(...FLOCK_SIZES);
 /** Fixed seed: the flock is the same every time it is grown with the same size. */
 const SEED = 0x5ca1ab1e;
+const TAU = Math.PI * 2;
 
 /** Simulated seconds per step; frames run as many whole steps as their (motion-scaled) time covers. */
 const STEP = 1 / 60;
 /** A long hitch drops time instead of catching up step by step. */
 const MAX_STEPS = 4;
-/** Steps flown before the first frame, so even a still frame shows a settled flock. */
-const PREWARM_STEPS = 60;
+/** Seconds over which the flock follows a knob change, so turning a knob never makes it jump. */
+const KNOB_EASE = 0.8;
+/** Choreography seconds per second at speed 0 and 1. */
+const RATE_SLOW = 0.55;
+const RATE_FAST = 1.45;
 
-/** Topological range: seven nearest neighbours (Ballerini et al. 2008). */
-const NEIGHBOURS = 7;
-/** Sky area (screen heights²) a flock of any size settles into: loose at cohesion 0, tight at 1. */
-const LOOSE_AREA = 0.2;
-const TIGHT_AREA = 0.07;
-/** Hash cell side in bird spacings; the 3×3 cells searched always cover one cell side around a bird. */
-const CELL_SPACINGS = 2.6;
-/** Separation reach in bird spacings. */
-const SEPARATION_SPACINGS = 1.15;
-/** The hash covers the frame plus this margin (heights) on every side; birds beyond share edge cells. */
-const GRID_MARGIN = 0.5;
+// The sheet.
+/** Face-on area of the sheet (screen heights²) at cohesion 1 and 0. */
+const AREA_TIGHT = 0.055;
+const AREA_LOOSE = 0.15;
+/** Length over width at cohesion 1 and 0; the sheet stretches to about twice that and gathers to half. */
+const ELONGATION_TIGHT = 1.7;
+const ELONGATION_LOOSE = 3.6;
+/** Half the sheet's depth (screen heights): a few birds deep. */
+const THICKNESS = 0.012;
+/**
+ * Parting into two lobes: the gap opened along the sheet (sheet units), the width of the seam and
+ * how it curves, how much the bridge of birds left between the lobes narrows, and how far the lobes
+ * shear sideways (sheet widths) and bank apart (radians).
+ */
+const SPLIT_GAP = 0.5;
+const SPLIT_SEAM = 0.09;
+const SPLIT_CURVE = 0.35;
+const SPLIT_PINCH = 0.55;
+const SPLIT_SHEAR = 0.45;
+const SPLIT_BANK = 0.5;
+/** The bend wave running along the sheet: radians per sheet unit, and seconds per cycle. */
+const BEND_WAVENUMBER = 3.4;
+const BEND_PERIOD = 4.7;
+/** Distance to the flock (screen heights): a little perspective. */
+const DISTANCE = 2.2;
+/** The band of sky the flock keeps to (screen heights), and its margin from the frame's sides. */
+const SKY_LOW = 0.28;
+const SKY_HIGH = 0.95;
+const SIDE_MARGIN = 0.1;
 
-/** Cruise speed in screen heights per second at speed 0 and 1; limits as multiples of it. */
-const CRUISE_SLOW = 0.07;
-const CRUISE_FAST = 0.21;
-const SPEED_MIN = 0.55;
-const SPEED_MAX = 1.7;
-const SPEED_FLEE = 2.5;
+// The birds on the sheet.
+/** Share of the birds flying just outside the rim, and how far out they go (sheet units). */
+const RIM_SHARE = 0.035;
+const RIM_REACH = 0.35;
+/** Share of stragglers, and how far behind the flock they fly (s). */
+const STRAY_SHARE = 0.006;
+const STRAY_LAG_MIN = 0.8;
+const STRAY_LAG_MAX = 2.4;
+/** Seconds by which the trailing end of the sheet follows its head. */
+const LAG_SPAN = 0.6;
+/** Lags come in steps of this many seconds: the sheet's shape is worked out once per step of lag. */
+const LAG_LEVEL = 1 / 30;
+const LAG_LEVELS = Math.ceil(STRAY_LAG_MAX / LAG_LEVEL) + 1;
+/** The sunflower layout's jitter, in bird spacings. */
+const LAYOUT_JITTER = 0.6;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** Each bird's own slow wobble about its place (sheet units), calm and restless. */
+const JITTER_CALM = 0.01;
+const JITTER_CHAOS = 0.02;
 
-// Steering gains: each is a turn rate (rad/s) per unit of its steering vector.
-const ALIGN = 5.5;
-const COHESION_LOOSE = 1;
-const COHESION_TIGHT = 3.2;
-const SEPARATE = 9;
-/** Roost pull per screen height away, and the extra pull beyond ROOST_REACH. */
-const ROOST = 1.6;
-const ROOST_REACH = 0.42;
-const ROOST_FAR = 6;
-/** Stragglers with fewer than seven birds in sight head for the flock's centre. */
-const REJOIN = 1.2;
-/** Soft walls: the skyline below, the frame's other edges. */
-const FLOOR = 0.22;
-const CEILING = 0.95;
-const SIDE = 0.06;
-const WALL = 30;
-/** Large-scale steering field, stronger with chaos: folds and stretches the flock. */
-const FLOW_CALM = 0.2;
-const FLOW_CHAOS = 0.6;
-/** Each bird's own smooth wander (rad/s at chaos 1). */
-const WANDER = 1;
+// The sheet's shape at one lag: SHAPE floats per lag level (see #shapeAt).
+const SH_X = 0;
+const SH_Y = 1;
+const SH_HEADING_COS = 2;
+const SH_HEADING_SIN = 3;
+const SH_YAW_COS = 4;
+const SH_YAW_SIN = 5;
+const SH_BANK = 6;
+const SH_TWIST = 7;
+const SH_LENGTH = 8;
+const SH_WIDTH = 9;
+const SH_SPLIT = 10;
+const SH_BEND = 11;
+const SH_BEND_PHASE = 12;
+const SH_CUP = 13;
+const SH_CURL = 14;
+const SH_FIT = 15;
+const SHAPE = 16;
 
-/** Turn-rate inertia (s), coupling to the neighbours' turn rates (1/s), and the turn-rate limit. */
-const TURN_INERTIA = 0.18;
-const SPIN_COUPLING = 4;
-const TURN_MAX = 4;
-const TURN_MAX_PANIC = 8;
-/** Speed: relaxation to cruise, matching the neighbours (1/s), and how separation/cohesion brake or push. */
-const SPEED_RELAX = 1.5;
-const SPEED_MATCH = 2;
-const SEPARATE_SPEED = 3;
-const COHESION_SPEED = 1;
-/** Turn rate (rad/s) at which a bird reads fully rolled, and the roll's smoothing time (s). */
-const ROLL_RATE = 2.2;
-const ROLL_BLEND = 1 - Math.exp(-STEP / 0.1);
-
-/** The breathing of the spacing: amplitudes and periods (s) of two slow swells. */
-const BREATH_A = 0.16;
-const BREATH_A_PERIOD = 23;
-const BREATH_B = 0.07;
-const BREATH_B_PERIOD = 9.1;
-
-// Agitation waves (excitable medium on the neighbour graph).
-/** Startle charge gained per second per unit of the most startled neighbour's excitation above FIRE. */
-const STARTLE_RISE = 70;
-const STARTLE_FIRE = 0.5;
-const STARTLE_DECAY = Math.exp(-STEP / 0.25);
-const REFRACTORY_DECAY = Math.exp(-STEP / 0.8);
-/** Below this refractory level a bird can be startled again (~1.5 s after it fired). */
-const REFRACTORY_READY = 0.15;
-/** A startled bird's roll away from the wave's origin (rad/s) and its burst of speed. */
-const STARTLE_TURN = 3;
-const STARTLE_SPEED = 0.4;
-/** Spontaneous waves per second at chaos 1, with no falcon in sight. */
-const STARTLE_SPONTANEOUS = 0.04;
+// Agitation waves: rings running out over the sheet.
+/** Waves at once, front speed (screen heights/s), front width (heights), life (s), lift out of the sheet (heights). */
+const WAVES = 3;
+const WAVE_SPEED = 0.45;
+const WAVE_WIDTH = 0.03;
+const WAVE_LIFE = 2.4;
+const WAVE_LIFT = 0.012;
+/** Spontaneous waves per second, calm and restless, with no falcon in sight. */
+const STARTLE_CALM = 0.015;
+const STARTLE_CHAOS = 0.12;
 
 // The falcon.
 const FALCON_STOOP = 0.75;
@@ -130,12 +146,12 @@ const FALCON_CRUISE = 0.5;
 /** Pursuit and pull-out turn rates (rad/s). */
 const FALCON_TURN = 2.2;
 const FALCON_CLIMB = 1.6;
-/** Birds flee within FEAR (heights); those within STARTLE start an agitation wave. */
+/** Birds within FEAR (heights) are pushed aside, up to FLEE heights/s² right at the falcon. */
 const FEAR_RADIUS = 0.11;
-const STARTLE_RADIUS = 0.045;
-const FLEE = 40;
-const FLEE_SPEED = 6;
-const PANIC_SPEED = 1.2;
+const FLEE = 5;
+/** The spring that brings a pushed bird back to its place: natural frequency (rad/s) and damping ratio. */
+const SPRING = 3;
+const SPRING_DAMPING = 0.9;
 /** Wingbeats per second once the falcon pulls out of its dive. */
 const FALCON_WINGBEAT = 4.5;
 /** Seconds between attacks at frequency 0 and 1 (randomised ±40%). */
@@ -145,16 +161,18 @@ const ATTACK_OFTEN = 15;
 // The Manifold M: the flock streams along a racetrack around the M's strokes.
 /** The mark's height in screen heights. */
 const MARK_SIZE = 0.38;
-/** Seconds: gathered by GATHER, released from HOLD, over at END. */
-const MARK_GATHER = 1.8;
+/**
+ * Seconds: birds set off for the M over STAGGER, head first, each taking FLY to reach it; they let
+ * go from HOLD in the same order, so the M is over at END.
+ */
+const MARK_STAGGER = 0.8;
+const MARK_FLY = 1.1;
+const MARK_GATHER = MARK_STAGGER + MARK_FLY;
 const MARK_HOLD = 5.6;
-const MARK_END = 6.8;
-/** Pull toward a bird's point on the track (rad/s per height), and along the track's direction. */
-const MARK_PULL = 16;
-const MARK_ALONG = 1.2;
-/** How hard a bird speeds up for a point ahead of it (1/s), and the track's speed in cruise speeds. */
-const MARK_CATCH = 2.5;
-const MARK_STREAM = 0.45;
+const MARK_END = MARK_HOLD + MARK_STAGGER + MARK_FLY;
+/** How fast the birds stream along the track (screen heights/s) at speed 0 and 1. */
+const MARK_STREAM_SLOW = 0.03;
+const MARK_STREAM_FAST = 0.095;
 /** Seconds between formations at frequency 0 and 1, and the delay after switching it on. */
 const MARK_RARE = 150;
 const MARK_OFTEN = 40;
@@ -162,10 +180,15 @@ const MARK_FIRST = 4;
 /** Columns for the left-to-right ordering that hands out places on the M. */
 const MARK_BINS = 128;
 /** Lanes either side of a stroke, in mark units: out along one side, back along the other. */
-const MARK_LANE = 0.06;
+const MARK_LANE = 0.025;
+/** How far the birds of a lane spread across it (mark units). */
+const MARK_SCATTER = 0.025;
 
-/** Density unit: a texel's R counts birds per this square of sky (screen heights). */
-const DENSITY_UNIT = 0.0065;
+/** A sheet of birds at this density (birds per screen height²) seen face-on is the shader's reference grey. */
+const REFERENCE_DENSITY = 30000;
+/** Density texels per dither cell, and the most rows the field gets. */
+const FIELD_PER_CELL = 0.8;
+const FIELD_ROWS = 240;
 /** Exponential trail of the density field (s): softens the specks' motion into short streaks. */
 const TRAIL = 0.03;
 
@@ -207,6 +230,9 @@ const smoothstep = (edge0: number, edge1: number, x: number): number => {
   return t * t * (3 - 2 * t);
 };
 
+/** One slow swing of the choreography: a sine of the clock with the given period (s) and phase. */
+const swing = (clock: number, period: number, phase: number): number => Math.sin((clock / period) * TAU + phase);
+
 /** mulberry32: a small seeded generator, so the same seed always grows the same flock. */
 class Random {
   #state = 0;
@@ -232,48 +258,39 @@ class FlockSim implements SceneSim {
   readonly #knob: Record<KnobKey, number> = { birds: 3000, cohesion: 0.55, chaos: 0.35, speed: 0.5, predator: 0, wind: 0, mark: 0 };
   readonly #random = new Random();
 
-  // Birds, double-buffered: a step reads the current arrays and writes the next ones, then swaps.
-  #x = new Float32Array(MAX_BIRDS);
-  #y = new Float32Array(MAX_BIRDS);
-  #heading = new Float32Array(MAX_BIRDS);
-  #hx = new Float32Array(MAX_BIRDS);
-  #hy = new Float32Array(MAX_BIRDS);
-  #speed = new Float32Array(MAX_BIRDS);
-  #turn = new Float32Array(MAX_BIRDS);
-  #startle = new Float32Array(MAX_BIRDS);
-  #refractory = new Float32Array(MAX_BIRDS);
-  #roll = new Float32Array(MAX_BIRDS);
-  #x2 = new Float32Array(MAX_BIRDS);
-  #y2 = new Float32Array(MAX_BIRDS);
-  #heading2 = new Float32Array(MAX_BIRDS);
-  #hx2 = new Float32Array(MAX_BIRDS);
-  #hy2 = new Float32Array(MAX_BIRDS);
-  #speed2 = new Float32Array(MAX_BIRDS);
-  #turn2 = new Float32Array(MAX_BIRDS);
-  #startle2 = new Float32Array(MAX_BIRDS);
-  #refractory2 = new Float32Array(MAX_BIRDS);
-  #roll2 = new Float32Array(MAX_BIRDS);
-  // Fixed per bird.
+  // Fixed per bird: its place on the sheet (a along, b across, depth through it, -1..1), its lag
+  // level, weight, slow wobble, and place on the M's racetrack (mark units of arclength).
+  readonly #sheetA = new Float32Array(MAX_BIRDS);
+  readonly #sheetB = new Float32Array(MAX_BIRDS);
+  readonly #depth = new Float32Array(MAX_BIRDS);
+  readonly #lag = new Uint8Array(MAX_BIRDS);
   readonly #weight = new Float32Array(MAX_BIRDS);
-  readonly #pace = new Float32Array(MAX_BIRDS);
   readonly #phaseA = new Float32Array(MAX_BIRDS);
   readonly #phaseB = new Float32Array(MAX_BIRDS);
   readonly #rateA = new Float32Array(MAX_BIRDS);
   readonly #rateB = new Float32Array(MAX_BIRDS);
-  /** Where on the M's racetrack a bird streams, in mark units of arclength. */
   readonly #markPlace = new Float32Array(MAX_BIRDS);
+  // Per bird: position at the latest step and the one before (swapped each step), the falcon's
+  // push and its velocity, how much ink the bird puts down (bigger when nearer), and its roll.
+  #x = new Float32Array(MAX_BIRDS);
+  #y = new Float32Array(MAX_BIRDS);
+  #x2 = new Float32Array(MAX_BIRDS);
+  #y2 = new Float32Array(MAX_BIRDS);
+  readonly #pushX = new Float32Array(MAX_BIRDS);
+  readonly #pushY = new Float32Array(MAX_BIRDS);
+  readonly #pushVX = new Float32Array(MAX_BIRDS);
+  readonly #pushVY = new Float32Array(MAX_BIRDS);
+  readonly #ink = new Float32Array(MAX_BIRDS);
+  readonly #roll = new Float32Array(MAX_BIRDS);
   #n = 0;
 
-  // Spatial hash: birds sorted by cell (counting sort); cell c holds order[start[c] .. start[c + 1]).
-  #cellStart = new Int32Array(1);
-  #cellCursor = new Int32Array(1);
-  readonly #cellOf = new Int32Array(MAX_BIRDS);
-  readonly #order = new Int32Array(MAX_BIRDS);
-  #gridW = 1;
-  #gridH = 1;
-  #cell = 1;
-  readonly #nearD = new Float32Array(NEIGHBOURS);
-  readonly #nearI = new Int32Array(NEIGHBOURS);
+  /** The sheet's shape at every lag level, SHAPE floats each. */
+  readonly #shapes = new Float64Array(LAG_LEVELS * SHAPE);
+  /** Agitation waves: where on the sheet each started, and its age (WAVE_LIFE or more: idle). */
+  readonly #waveA = new Float64Array(WAVES);
+  readonly #waveB = new Float64Array(WAVES);
+  readonly #waveAge = new Float64Array(WAVES).fill(WAVE_LIFE);
+
   readonly #binStart = new Int32Array(MARK_BINS + 1);
   readonly #binCursor = new Int32Array(MARK_BINS);
   readonly #trackPoint = new Float32Array(4);
@@ -289,10 +306,12 @@ class FlockSim implements SceneSim {
   #dirty = true;
   #centreX = 0;
   #centreY = 0;
-  #roostX = 0;
-  #roostY = 0;
-  #waveX = 0;
-  #waveY = 0;
+  // The knobs as the flock follows them, and the choreography's own clock (it runs at the speed knob).
+  #chaos = 0;
+  #cohesion = 0;
+  #wind = 0;
+  #rate = 1;
+  #clock = 0;
 
   #primed = false;
   #seenAttack = 0;
@@ -345,9 +364,9 @@ class FlockSim implements SceneSim {
     knob.wind = values[index.wind] ?? knob.wind;
     knob.mark = values[index.mark] ?? knob.mark;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
+    this.#fitField(frame.width, frame.height);
     const n = Math.min(MAX_BIRDS, Math.max(1, Math.round(knob.birds)));
     if (n !== this.#n) this.#reset(n);
-    this.#fitField(frame.width, frame.height);
     this.#watchTriggers(frame.triggers);
 
     // Motion scales the flight; an event fired with "now" plays even while motion is 0.
@@ -386,8 +405,8 @@ class FlockSim implements SceneSim {
   }
 
   #fitField(width: number, height: number): void {
-    const w = Math.max(4, Math.round(width * 0.5));
-    const h = Math.max(4, Math.round(height * 0.5));
+    const h = Math.max(8, Math.min(FIELD_ROWS, Math.round(height * FIELD_PER_CELL)));
+    const w = Math.max(8, Math.round((h * width) / Math.max(1, height)));
     if (w === this.#fieldW && h === this.#fieldH) return;
     this.#fieldW = w;
     this.#fieldH = h;
@@ -396,13 +415,19 @@ class FlockSim implements SceneSim {
     this.#dirty = true;
   }
 
-  /** Grow a fresh flock of n birds: an elongated cloud around the roost, flying roughly together. */
+  /** Grow a fresh flock of n birds: lay them out on the sheet and place them on its first shape. */
   #reset(n: number): void {
     const random = this.#random;
     random.seed(SEED + n);
+    const knob = this.#knob;
     this.#n = n;
     this.#time = 0;
+    this.#clock = 0;
     this.#pending = 0;
+    this.#chaos = knob.chaos;
+    this.#cohesion = knob.cohesion;
+    this.#wind = knob.wind;
+    this.#rate = RATE_SLOW + (RATE_FAST - RATE_SLOW) * knob.speed;
     this.#falcon = false;
     this.#mark = false;
     this.#markStrength = 0;
@@ -410,422 +435,300 @@ class FlockSim implements SceneSim {
     this.#markNow = false;
     this.#nextAttack = Number.POSITIVE_INFINITY;
     this.#nextMark = Number.POSITIVE_INFINITY;
-    this.#roost(0);
-    const cruise = CRUISE_SLOW + (CRUISE_FAST - CRUISE_SLOW) * this.#knob.speed;
+    this.#waveAge.fill(WAVE_LIFE);
+
+    const rim = Math.round(n * RIM_SHARE);
+    const strays = Math.round(n * STRAY_SHARE);
+    const body = Math.max(1, n - rim - strays);
+    const spacing = Math.sqrt(Math.PI / body);
     for (let i = 0; i < n; i++) {
-      const r = Math.sqrt(random.next());
-      const a = random.next() * Math.PI * 2;
-      const dx = Math.cos(a) * r * 0.24;
-      const dy = Math.sin(a) * r * 0.09 + dx * 0.25;
-      const heading = 0.15 + 0.5 * Math.sin(dx * 6) + (random.next() - 0.5) * 0.3;
-      this.#x[i] = this.#roostX + dx;
-      this.#y[i] = this.#roostY + dy;
-      this.#heading[i] = heading;
-      this.#hx[i] = Math.cos(heading);
-      this.#hy[i] = Math.sin(heading);
-      this.#pace[i] = 1 + 0.08 * (random.next() * 2 - 1);
-      this.#speed[i] = cruise * (this.#pace[i] ?? 1);
-      this.#turn[i] = 0;
-      this.#startle[i] = 0;
-      this.#refractory[i] = 0;
-      this.#roll[i] = 0;
-      // Nearer birds (heavier ink) and farther ones: a murmuration is a deep cloud seen flat.
-      this.#weight[i] = 0.55 + 0.9 * random.next();
-      this.#phaseA[i] = random.next() * Math.PI * 2;
-      this.#phaseB[i] = random.next() * Math.PI * 2;
-      this.#rateA[i] = 0.6 + 1.2 * random.next();
-      this.#rateB[i] = 0.25 + 0.5 * random.next();
+      let a: number;
+      let b: number;
+      let lag: number;
+      if (i < body) {
+        // A jittered sunflower spiral spreads the body evenly over the disc.
+        const r = Math.sqrt((i + 0.5) / body);
+        const angle = i * GOLDEN_ANGLE;
+        a = r * Math.cos(angle) + (random.next() - 0.5) * LAYOUT_JITTER * spacing;
+        b = r * Math.sin(angle) + (random.next() - 0.5) * LAYOUT_JITTER * spacing;
+        lag = 0.5 * LAG_SPAN * (1 - Math.min(1, Math.max(-1, a)));
+      } else {
+        // Outside the rim, thinning outward; stragglers anywhere, well behind.
+        const stray = i >= body + rim;
+        const r = stray ? 1.2 * Math.sqrt(random.next()) : 1 + RIM_REACH * random.next() ** 2;
+        const angle = random.next() * TAU;
+        a = r * Math.cos(angle);
+        b = r * Math.sin(angle);
+        lag = stray ? STRAY_LAG_MIN + (STRAY_LAG_MAX - STRAY_LAG_MIN) * random.next() : 0.5 * LAG_SPAN * (1 - Math.min(1, Math.max(-1, a))) + 0.15 * random.next();
+      }
+      this.#sheetA[i] = a;
+      this.#sheetB[i] = b;
+      this.#lag[i] = Math.min(LAG_LEVELS - 1, Math.round(lag / LAG_LEVEL));
+      this.#depth[i] = random.next() * 2 - 1;
+      // Some birds are bigger or nearer than others: their specks are darker.
+      this.#weight[i] = 0.75 + 0.5 * random.next();
+      this.#phaseA[i] = random.next() * TAU;
+      this.#phaseB[i] = random.next() * TAU;
+      this.#rateA[i] = 0.5 + 0.9 * random.next();
+      this.#rateB[i] = 0.5 + 0.9 * random.next();
+      this.#pushX[i] = 0;
+      this.#pushY[i] = 0;
+      this.#pushVX[i] = 0;
+      this.#pushVY[i] = 0;
     }
-    this.#centreX = this.#roostX;
-    this.#centreY = this.#roostY;
-    for (let k = 0; k < PREWARM_STEPS; k++) this.#step();
+    this.#step();
     this.#x2.set(this.#x);
     this.#y2.set(this.#y);
     this.#dirty = true;
   }
 
-  /** The roost point the flock circles, wandering slowly across the sky and pushed downwind. */
-  #roost(t: number): void {
-    const a = this.#aspect;
-    const x = a * (0.5 + 0.2 * Math.sin(0.043 * t + 1.1) + 0.06 * Math.sin(0.131 * t + 4)) + this.#knob.wind * 0.15 * a;
-    this.#roostX = Math.min(a * 0.72, Math.max(a * 0.28, x));
-    this.#roostY = 0.58 + 0.09 * Math.sin(0.061 * t + 2.3) + 0.04 * Math.sin(0.17 * t + 0.4);
-  }
-
-  /** Rebuild the spatial hash for cells of side `cell` (screen heights). */
-  #buildGrid(cell: number): void {
-    const n = this.#n;
-    const w = Math.max(1, Math.ceil((this.#aspect + 2 * GRID_MARGIN) / cell));
-    const h = Math.max(1, Math.ceil((1 + 2 * GRID_MARGIN) / cell));
-    const cells = w * h;
-    if (this.#cellStart.length < cells + 1) {
-      this.#cellStart = new Int32Array(cells + 1);
-      this.#cellCursor = new Int32Array(cells);
-    }
-    this.#gridW = w;
-    this.#gridH = h;
-    this.#cell = cell;
-    const start = this.#cellStart;
-    const cursor = this.#cellCursor;
-    const cellOf = this.#cellOf;
-    const order = this.#order;
-    const x = this.#x;
-    const y = this.#y;
-    start.fill(0, 0, cells + 1);
-    for (let i = 0; i < n; i++) {
-      const cx = Math.min(w - 1, Math.max(0, Math.floor(((x[i] ?? 0) + GRID_MARGIN) / cell)));
-      const cy = Math.min(h - 1, Math.max(0, Math.floor(((y[i] ?? 0) + GRID_MARGIN) / cell)));
-      const c = cy * w + cx;
-      cellOf[i] = c;
-      start[c + 1] = (start[c + 1] ?? 0) + 1;
-    }
-    for (let c = 1; c <= cells; c++) start[c] = (start[c] ?? 0) + (start[c - 1] ?? 0);
-    for (let c = 0; c < cells; c++) cursor[c] = start[c] ?? 0;
-    for (let i = 0; i < n; i++) {
-      const c = cellOf[i] ?? 0;
-      const slot = cursor[c] ?? 0;
-      order[slot] = i;
-      cursor[c] = slot + 1;
-    }
-  }
-
   /**
-   * Find bird i's nearest neighbours within one cell side; fills #nearI/#nearD (squared distances)
-   * nearest first and returns how many were found (up to NEIGHBOURS).
+   * The sheet's shape at choreography time `clock`, written to #shapes at `at`. Lengths are in
+   * screen heights, already shrunk by the fit; the bend, cup and curl are their full displacements.
    */
-  #neighbours(i: number): number {
-    const x = this.#x;
-    const y = this.#y;
-    const start = this.#cellStart;
-    const order = this.#order;
-    const nearD = this.#nearD;
-    const nearI = this.#nearI;
-    const w = this.#gridW;
-    const h = this.#gridH;
-    const reach = this.#cell * this.#cell;
-    const xi = x[i] ?? 0;
-    const yi = y[i] ?? 0;
-    const c = this.#cellOf[i] ?? 0;
-    const cx = c % w;
-    const cy = (c - cx) / w;
-    let found = 0;
-    let worst = reach;
-    for (let gy = Math.max(0, cy - 1); gy <= Math.min(h - 1, cy + 1); gy++) {
-      for (let gx = Math.max(0, cx - 1); gx <= Math.min(w - 1, cx + 1); gx++) {
-        const cellIndex = gy * w + gx;
-        const end = start[cellIndex + 1] ?? 0;
-        for (let k = start[cellIndex] ?? 0; k < end; k++) {
-          const j = order[k] ?? 0;
-          if (j === i) continue;
-          const dx = (x[j] ?? 0) - xi;
-          const dy = (y[j] ?? 0) - yi;
-          const d2 = dx * dx + dy * dy;
-          if (d2 >= worst) continue;
-          // Insertion into the short sorted list, dropping the farthest once it is full.
-          let slot = found < NEIGHBOURS ? found++ : NEIGHBOURS - 1;
-          while (slot > 0 && (nearD[slot - 1] ?? 0) > d2) {
-            nearD[slot] = nearD[slot - 1] ?? 0;
-            nearI[slot] = nearI[slot - 1] ?? 0;
-            slot--;
-          }
-          nearD[slot] = d2;
-          nearI[slot] = j;
-          if (found === NEIGHBOURS) worst = nearD[NEIGHBOURS - 1] ?? reach;
-        }
-      }
-    }
-    return found;
+  #shapeAt(clock: number, at: number): void {
+    const shapes = this.#shapes;
+    const chaos = this.#chaos;
+    const loose = 1 - this.#cohesion;
+    const aspect = this.#aspect;
+    // It stretches into a ribbon and gathers again, keeping its area (and breathing a little).
+    const area = (AREA_TIGHT + (AREA_LOOSE - AREA_TIGHT) * loose) * (1 + 0.1 * swing(clock, 8.1, 0.6));
+    const elongation = (ELONGATION_TIGHT + (ELONGATION_LOOSE - ELONGATION_TIGHT) * loose) * Math.exp(0.55 * swing(clock, 10.3, 2.2) + 0.2 * swing(clock, 4.3, 0.9));
+    const length = Math.sqrt((area * elongation) / Math.PI);
+    const width = Math.sqrt(area / (Math.PI * elongation));
+    // Every quarter minute it parts into two lobes for a few seconds, readily when loose or restless.
+    const split = smoothstep(0.2, 0.85, swing(clock, 15, -3.04)) * Math.min(1, 0.45 + 0.7 * loose + 0.3 * chaos);
+    // Banked about its long axis and twisted along it: where it turns edge-on it reads dark.
+    const bank = 0.6 + (0.4 + 0.25 * chaos) * swing(clock, 13, 0.3) + 0.2 * swing(clock, 5.3, 4.1);
+    const twist = (0.55 + 1.1 * chaos) * swing(clock, 11, 1.9) + 0.2 * swing(clock, 4.7, 0.5);
+    // Its length turns into depth and back.
+    const yaw = (0.45 + 0.35 * chaos) * swing(clock, 16.5, 5) + 0.18 * swing(clock, 6.1, 2.6);
+    // A bend wave runs along it; it cups across its width (banked, one rim folds back over itself)
+    // and bows in its own plane.
+    const bend = (0.1 + 0.3 * chaos) * (0.75 + 0.25 * swing(clock, 8.9, 1.2));
+    const cup = (0.6 + 0.9 * chaos) * (0.75 + 0.25 * swing(clock, 14.3, 0.8));
+    const curl = 0.28 * swing(clock, 12.5, 3.7) + 0.12 * swing(clock, 5.9, 0.2);
+    // Which way its long axis lies on screen.
+    const heading = 0.45 * swing(clock, 17, 1.1) + 0.22 * swing(clock, 6.7, 3.3) + 0.08 * swing(clock, 3.1, 5.2);
+    const cosYaw = Math.cos(yaw);
+    const sinYaw = Math.sin(yaw);
+    const cosHeading = Math.cos(heading);
+    const sinHeading = Math.sin(heading);
+
+    // Fit it into its band of sky (its outline is about an ellipse with these half-axes), then let it
+    // roam the room left over.
+    const along = length * (1 + SPLIT_GAP * split);
+    const across = width * (1 + SPLIT_SHEAR * split + cup) + (0.67 * Math.abs(curl) + bend) * length + THICKNESS;
+    const seen = Math.hypot(along * cosYaw, across * sinYaw);
+    const reachX = 1.1 * Math.hypot(seen * cosHeading, across * sinHeading);
+    const reachY = 1.1 * Math.hypot(seen * sinHeading, across * cosHeading);
+    const roomX = Math.max(0.05, aspect / 2 - SIDE_MARGIN);
+    const roomY = (SKY_HIGH - SKY_LOW) / 2;
+    const fit = Math.min(1, roomX / reachX, roomY / reachY);
+    const wind = this.#wind;
+    const roamX = (0.7 * swing(clock, 27, 2.5) + 0.3 * swing(clock, 9.7, 0.4) + 0.45 * wind) / (1 + 0.45 * Math.abs(wind));
+    const roamY = 0.6 * swing(clock, 19, 4.4) + 0.4 * swing(clock, 7.3, 1.5);
+
+    shapes[at + SH_X] = aspect / 2 + Math.max(0, roomX - reachX * fit) * roamX;
+    shapes[at + SH_Y] = (SKY_LOW + SKY_HIGH) / 2 + Math.max(0, roomY - reachY * fit) * roamY;
+    shapes[at + SH_HEADING_COS] = cosHeading;
+    shapes[at + SH_HEADING_SIN] = sinHeading;
+    shapes[at + SH_YAW_COS] = cosYaw;
+    shapes[at + SH_YAW_SIN] = sinYaw;
+    shapes[at + SH_BANK] = bank;
+    shapes[at + SH_TWIST] = twist;
+    shapes[at + SH_LENGTH] = length * fit;
+    shapes[at + SH_WIDTH] = width * fit;
+    shapes[at + SH_SPLIT] = split;
+    shapes[at + SH_BEND] = bend * length * fit;
+    shapes[at + SH_BEND_PHASE] = (clock / BEND_PERIOD) * TAU;
+    shapes[at + SH_CUP] = cup * width * fit;
+    shapes[at + SH_CURL] = curl * length * fit;
+    shapes[at + SH_FIT] = fit;
   }
 
   /** One fixed step of simulated time. */
   #step(): void {
     const knob = this.#knob;
     const n = this.#n;
-    const aspect = this.#aspect;
     this.#time += STEP;
     const t = this.#time;
-    this.#roost(t);
+    // The flock follows the knobs over a moment, so turning one reshapes it smoothly.
+    const ease = 1 - Math.exp(-STEP / KNOB_EASE);
+    this.#chaos += (knob.chaos - this.#chaos) * ease;
+    this.#cohesion += (knob.cohesion - this.#cohesion) * ease;
+    this.#wind += (knob.wind - this.#wind) * ease;
+    this.#rate += (RATE_SLOW + (RATE_FAST - RATE_SLOW) * knob.speed - this.#rate) * ease;
+    this.#clock += STEP * this.#rate;
+    for (let k = 0; k < LAG_LEVELS; k++) this.#shapeAt(this.#clock - k * LAG_LEVEL * this.#rate, k * SHAPE);
     this.#events(t);
+    this.#fidget();
+    const waveA = this.#waveA;
+    const waveB = this.#waveB;
+    const waveAge = this.#waveAge;
+    for (let k = 0; k < WAVES; k++) waveAge[k] = (waveAge[k] ?? WAVE_LIFE) + STEP;
 
-    const chaos = knob.chaos;
-    const cohesionKnob = knob.cohesion;
-    const cruise = CRUISE_SLOW + (CRUISE_FAST - CRUISE_SLOW) * knob.speed;
-    const spacing = Math.sqrt((LOOSE_AREA + (TIGHT_AREA - LOOSE_AREA) * cohesionKnob) / n);
-    this.#buildGrid(spacing * CELL_SPACINGS);
-    // The flock breathes: its spacing swells and settles over tens of seconds.
-    const breath = 1 + BREATH_A * Math.sin((t / BREATH_A_PERIOD) * Math.PI * 2) + BREATH_B * Math.sin((t / BREATH_B_PERIOD) * Math.PI * 2 + 1.7);
-    const separation = spacing * SEPARATION_SPACINGS * breath;
-    const align = ALIGN - 2.5 * chaos;
-    const cohesion = COHESION_LOOSE + (COHESION_TIGHT - COHESION_LOOSE) * cohesionKnob;
-    const flow = FLOW_CALM + FLOW_CHAOS * chaos;
-    const wander = WANDER * chaos;
-    const drift = knob.wind * 0.04;
-    // The roost holds the flock to an ellipse: wider frames give it more room to sweep sideways.
-    const roostX = ROOST * Math.min(2.5, Math.max(0.55, 1 / aspect));
-    const roostY = ROOST * 2.2;
-
-    // The M: everything else gives way to the pull toward each bird's place on the track.
-    const mark = this.#markStrength;
-    const free = 1 - mark;
-    const markStream = MARK_STREAM * cruise;
-
+    const shapes = this.#shapes;
+    const jitter = JITTER_CALM + (JITTER_CHAOS - JITTER_CALM) * this.#chaos;
+    const springK = SPRING * SPRING;
+    const springC = 2 * SPRING_DAMPING * SPRING;
     const falcon = this.#falcon;
     const fx = this.#falconX;
     const fy = this.#falconY;
-    const waveX = this.#waveX;
-    const waveY = this.#waveY;
+    const mark = this.#mark;
+    const markAge = this.#markAge;
+    const markRun = this.#markRun;
+    const markX = this.#markX;
+    const markY = this.#markY;
+    const track = this.#trackPoint;
 
-    const x = this.#x;
-    const y = this.#y;
-    const hx = this.#hx;
-    const hy = this.#hy;
-    const speed = this.#speed;
-    const turn = this.#turn;
-    const startle = this.#startle;
-    const refractory = this.#refractory;
+    const sheetA = this.#sheetA;
+    const sheetB = this.#sheetB;
+    const depth = this.#depth;
+    const lag = this.#lag;
+    const weight = this.#weight;
+    const phaseA = this.#phaseA;
+    const phaseB = this.#phaseB;
+    const rateA = this.#rateA;
+    const rateB = this.#rateB;
+    const markPlace = this.#markPlace;
+    const pushX = this.#pushX;
+    const pushY = this.#pushY;
+    const pushVX = this.#pushVX;
+    const pushVY = this.#pushVY;
+    const ink = this.#ink;
     const roll = this.#roll;
     const nx = this.#x2;
     const ny = this.#y2;
-    const nHeading = this.#heading2;
-    const nhx = this.#hx2;
-    const nhy = this.#hy2;
-    const nSpeed = this.#speed2;
-    const nTurn = this.#turn2;
-    const nStartle = this.#startle2;
-    const nRefractory = this.#refractory2;
-    const nRoll = this.#roll2;
-    const heading = this.#heading;
-    const nearI = this.#nearI;
-    const nearD = this.#nearD;
-    const track = this.#trackPoint;
     let sumX = 0;
     let sumY = 0;
 
     for (let i = 0; i < n; i++) {
-      const xi = x[i] ?? 0;
-      const yi = y[i] ?? 0;
-      const hxi = hx[i] ?? 1;
-      const hyi = hy[i] ?? 0;
-      const si = speed[i] ?? cruise;
-      const found = this.#neighbours(i);
+      const o = (lag[i] ?? 0) * SHAPE;
+      const length = shapes[o + SH_LENGTH] ?? 0;
+      const width = shapes[o + SH_WIDTH] ?? 0;
+      const split = shapes[o + SH_SPLIT] ?? 0;
+      const fit = shapes[o + SH_FIT] ?? 1;
+      // The bird's place on the sheet, wobbling a little.
+      const a = (sheetA[i] ?? 0) + jitter * Math.sin((rateA[i] ?? 1) * t + (phaseA[i] ?? 0));
+      const b = (sheetB[i] ?? 0) + jitter * Math.sin((rateB[i] ?? 1) * t + (phaseB[i] ?? 0));
 
-      // Social terms over the topological neighbourhood.
-      let alignX = 0;
-      let alignY = 0;
-      let inX = 0;
-      let inY = 0;
-      let sepX = 0;
-      let sepY = 0;
-      let turnSum = 0;
-      let speedSum = 0;
-      let startled = 0;
-      for (let m = 0; m < found; m++) {
-        const j = nearI[m] ?? 0;
-        const d = Math.sqrt(nearD[m] ?? 0) + 1e-6;
-        const ux = ((x[j] ?? 0) - xi) / d;
-        const uy = ((y[j] ?? 0) - yi) / d;
-        inX += ux;
-        inY += uy;
-        if (d < separation) {
-          const push = 1 - d / separation;
-          sepX -= ux * push;
-          sepY -= uy * push;
-        }
-        alignX += hx[j] ?? 0;
-        alignY += hy[j] ?? 0;
-        turnSum += turn[j] ?? 0;
-        speedSum += speed[j] ?? 0;
-        startled = Math.max(startled, startle[j] ?? 0);
-      }
-      const share = found > 0 ? 1 / found : 0;
-      // Cohesion: the mean unit vector to the neighbours is ~0 inside the flock and points inward,
-      // with length ~1, at its rim, so only the edge birds are pulled in (Hemelrijk's centrality).
-      inX *= share;
-      inY *= share;
-
-      // Social steering (alignment, cohesion, separation) as a turn-rate vector: the bird turns by its
-      // component across the heading; the component along it is left to the speed control.
-      const socialX = alignX * share * align * (1 - 0.8 * mark) + inX * cohesion * free + sepX * SEPARATE;
-      const socialY = alignY * share * align * (1 - 0.8 * mark) + inY * cohesion * free + sepY * SEPARATE;
-      let demand = hxi * socialY - hyi * socialX;
-      let pushT = SEPARATE_SPEED * (hxi * sepX + hyi * sepY) + COHESION_SPEED * free * (hxi * inX + hyi * inY);
-
-      // Everything else pulls on the bird from outside the flock: the roost, the walls, the sky's
-      // large-scale drift, the falcon, the M.
-      let steerX = 0;
-      let steerY = 0;
-
-      const rdx = this.#roostX - xi;
-      const rdy = this.#roostY - yi;
-      const roostDistance = Math.hypot(rdx, rdy) + 1e-6;
-      const far = Math.max(0, roostDistance - ROOST_REACH) * ROOST_FAR / roostDistance;
-      steerX += (rdx * roostX + rdx * far) * free;
-      steerY += (rdy * roostY + rdy * far) * free;
-
-      if (found < NEIGHBOURS) {
-        const cdx = this.#centreX - xi;
-        const cdy = this.#centreY - yi;
-        const lost = (REJOIN * (1 - found / NEIGHBOURS) * free) / (Math.hypot(cdx, cdy) + 1e-3);
-        steerX += cdx * lost;
-        steerY += cdy * lost;
+      // Agitation: how hard a passing ring has startled the bird.
+      let startle = 0;
+      for (let k = 0; k < WAVES; k++) {
+        const age = waveAge[k] ?? WAVE_LIFE;
+        if (age >= WAVE_LIFE) continue;
+        const da = (a - (waveA[k] ?? 0)) * length;
+        const db = (b - (waveB[k] ?? 0)) * width;
+        const front = (Math.sqrt(da * da + db * db) - WAVE_SPEED * age) / WAVE_WIDTH;
+        if (front * front < 9) startle = Math.max(startle, Math.exp(-front * front) * (1 - smoothstep(0.6 * WAVE_LIFE, WAVE_LIFE, age)));
       }
 
-      if (yi < FLOOR) steerY += (FLOOR - yi) * WALL;
-      if (yi > CEILING) steerY -= (yi - CEILING) * WALL;
-      if (xi < SIDE) steerX += (SIDE - xi) * WALL;
-      if (xi > aspect - SIDE) steerX -= (xi - aspect + SIDE) * WALL;
+      // On the sheet: parted across a curved seam (the birds near it string out into a sparse
+      // bridge between the lobes), bowed in its plane, bent, cupped, and a few birds deep.
+      const seam = Math.tanh((a - SPLIT_CURVE * b * b) / SPLIT_SEAM);
+      const u = length * (a + SPLIT_GAP * split * seam);
+      const v = width * (b * (1 - SPLIT_PINCH * split * (1 - seam * seam)) + SPLIT_SHEAR * split * seam) + (shapes[o + SH_CURL] ?? 0) * (a * a - 1 / 3);
+      const w =
+        (shapes[o + SH_BEND] ?? 0) * Math.sin(BEND_WAVENUMBER * a - (shapes[o + SH_BEND_PHASE] ?? 0)) +
+        (shapes[o + SH_CUP] ?? 0) * (b * b - 1 / 3) +
+        ((depth[i] ?? 0) * THICKNESS + startle * WAVE_LIFT) * fit;
+      // Banked about the long axis (twisting along it, the lobes apart), then turned into depth.
+      const bank = (shapes[o + SH_BANK] ?? 0) + (shapes[o + SH_TWIST] ?? 0) * a + SPLIT_BANK * split * seam;
+      const cosBank = Math.cos(bank);
+      const sinBank = Math.sin(bank);
+      const y1 = v * cosBank - w * sinBank;
+      const z1 = v * sinBank + w * cosBank;
+      const cosYaw = shapes[o + SH_YAW_COS] ?? 1;
+      const sinYaw = shapes[o + SH_YAW_SIN] ?? 0;
+      const x2 = u * cosYaw + z1 * sinYaw;
+      const near = DISTANCE / (DISTANCE + z1 * cosYaw - u * sinYaw);
+      // Laid on the screen along the heading, around the flock's centre.
+      const cosHeading = shapes[o + SH_HEADING_COS] ?? 1;
+      const sinHeading = shapes[o + SH_HEADING_SIN] ?? 0;
+      let px = (shapes[o + SH_X] ?? 0) + (x2 * cosHeading - y1 * sinHeading) * near;
+      let py = (shapes[o + SH_Y] ?? 0) + (x2 * sinHeading + y1 * cosHeading) * near;
 
-      // A slowly changing large-scale steering field: one broad mode turns the whole flock, a finer
-      // one (with chaos) turns its parts differently, folding and stretching it.
-      const bearing =
-        2.1 * Math.sin(1.3 * xi + 0.071 * t + 0.4) + 1.7 * Math.sin(1.9 * yi - 0.053 * t + 1.3) + 1.8 * chaos * Math.sin(4.6 * xi - 3.7 * yi + 0.23 * t);
-      steerX += Math.cos(bearing) * flow * free;
-      steerY += Math.sin(bearing) * flow * free;
-
-      // The falcon: flee hard, faster the closer it is.
+      // The falcon pushes the bird aside; a spring brings it back to its place.
+      let ox = pushX[i] ?? 0;
+      let oy = pushY[i] ?? 0;
+      let vx = pushVX[i] ?? 0;
+      let vy = pushVY[i] ?? 0;
+      let ax = -springK * ox - springC * vx;
+      let ay = -springK * oy - springC * vy;
       let panic = 0;
       if (falcon) {
-        const ax = xi - fx;
-        const ay = yi - fy;
-        const d = Math.hypot(ax, ay) + 1e-6;
+        const dx = px + ox - fx;
+        const dy = py + oy - fy;
+        const d = Math.hypot(dx, dy) + 1e-6;
         if (d < FEAR_RADIUS) {
           panic = 1 - d / FEAR_RADIUS;
           const flee = (FLEE * panic * panic) / d;
-          steerX += ax * flee;
-          steerY += ay * flee;
-          pushT += (FLEE_SPEED * panic * (hxi * ax + hyi * ay)) / d;
+          ax += dx * flee;
+          ay += dy * flee;
+        }
+      }
+      vx += ax * STEP;
+      vy += ay * STEP;
+      ox += vx * STEP;
+      oy += vy * STEP;
+      pushX[i] = ox;
+      pushY[i] = oy;
+      pushVX[i] = vx;
+      pushVY[i] = vy;
+      px += ox;
+      py += oy;
+
+      if (mark) {
+        // Birds leave for the M head first and let go of it in the same order.
+        const delay = MARK_STAGGER * Math.min(1, Math.max(0, 0.5 * (1 - (sheetA[i] ?? 0))));
+        const pull = smoothstep(delay, delay + MARK_FLY, markAge) * (1 - smoothstep(MARK_HOLD + delay, MARK_HOLD + delay + MARK_FLY, markAge));
+        if (pull > 0) {
+          markTrackAt((markPlace[i] ?? 0) + markRun, track);
+          const spread = (sheetB[i] ?? 0) * MARK_SCATTER;
+          const tx = markX + ((track[0] ?? 0) + (track[3] ?? 0) * spread) * MARK_SIZE;
+          const ty = markY + ((track[1] ?? 0) - (track[2] ?? 0) * spread) * MARK_SIZE;
+          px += (tx - px) * pull;
+          py += (ty - py) * pull;
         }
       }
 
-      let target = cruise * (this.#pace[i] ?? 1) * (1 + PANIC_SPEED * panic);
-      let slowest = cruise * SPEED_MIN;
-      if (mark > 0) {
-        // The bird's place on the racetrack moves along it; lanes keep the streams apart.
-        markTrackAt((this.#markPlace[i] ?? 0) + this.#markRun, track);
-        const px = this.#markX + (track[0] ?? 0) * MARK_SIZE - xi;
-        const py = this.#markY + (track[1] ?? 0) * MARK_SIZE - yi;
-        steerX += mark * (px * MARK_PULL + (track[2] ?? 0) * MARK_ALONG);
-        steerY += mark * (py * MARK_PULL + (track[3] ?? 0) * MARK_ALONG);
-        target += (markStream + MARK_CATCH * (hxi * px + hyi * py) - target) * mark;
-        slowest *= 1 - 0.3 * mark;
-      }
-
-      // A pull from behind turns the bird at its full strength, one way or the other, so neither a
-      // flock flying straight away from the roost nor a bird diving at the floor is a stable state.
-      const cross = hxi * steerY - hyi * steerX;
-      const ahead = hxi * steerX + hyi * steerY;
-      demand += ahead >= 0 ? cross : (cross >= 0 ? 1 : -1) * Math.hypot(steerX, steerY);
-      demand += wander * (1 - 0.7 * mark) * (Math.sin((this.#rateA[i] ?? 1) * t + (this.#phaseA[i] ?? 0)) + 0.6 * Math.sin((this.#rateB[i] ?? 0.5) * t + (this.#phaseB[i] ?? 0)));
-
-      // Agitation: a startled bird rolls away from where the wave came from and spurts ahead.
-      let s = startle[i] ?? 0;
-      let r = refractory[i] ?? 0;
-      if (s > 0.01) {
-        const away = hxi * (yi - waveY) - hyi * (xi - waveX);
-        demand += STARTLE_TURN * s * (away >= 0 ? 1 : -1);
-        target *= 1 + STARTLE_SPEED * s;
-      }
-
-      // Inertial turning (implicit, so it is stable at any gain): relax toward the demand and toward
-      // the neighbours' turn rates; turns spread through the flock as waves.
-      const turnI = turn[i] ?? 0;
-      const neighbourTurn = found > 0 ? turnSum * share : turnI;
-      const spin = found > 0 ? SPIN_COUPLING : 0;
-      const limit = TURN_MAX + (TURN_MAX_PANIC - TURN_MAX) * panic;
-      let w = (turnI + STEP * (demand / TURN_INERTIA + spin * neighbourTurn)) / (1 + STEP * (1 / TURN_INERTIA + spin));
-      w = Math.max(-limit, Math.min(limit, w));
-      let angle = (heading[i] ?? 0) + w * STEP;
-      if (angle > Math.PI) angle -= Math.PI * 2;
-      else if (angle < -Math.PI) angle += Math.PI * 2;
-      const cosA = Math.cos(angle);
-      const sinA = Math.sin(angle);
-
-      const neighbourSpeed = found > 0 ? speedSum * share : si;
-      const fastest = cruise * (SPEED_MAX + (SPEED_FLEE - SPEED_MAX) * panic);
-      let v = (si + STEP * (SPEED_RELAX * target + SPEED_MATCH * neighbourSpeed + si * pushT)) / (1 + STEP * (SPEED_RELAX + SPEED_MATCH));
-      v = Math.max(slowest, Math.min(fastest, v));
-
-      // Excitable medium: charge from the most startled neighbour, fire, then rest.
-      s *= STARTLE_DECAY;
-      r *= REFRACTORY_DECAY;
-      if (r < REFRACTORY_READY && startled > STARTLE_FIRE) {
-        s = Math.min(1, s + STARTLE_RISE * (startled - STARTLE_FIRE) * STEP);
-        if (s >= 0.999) r = 1;
-      }
-
-      const xn = xi + (cosA * v + drift) * STEP;
-      const yn = yi + sinA * v * STEP;
-      nx[i] = xn;
-      ny[i] = yn;
-      nHeading[i] = angle;
-      nhx[i] = cosA;
-      nhy[i] = sinA;
-      nSpeed[i] = v;
-      nTurn[i] = w;
-      nStartle[i] = s;
-      nRefractory[i] = r;
-      // Banking: a turning or startled bird shows more of its wings and reads darker.
-      const rolled = Math.max(Math.min(1, Math.abs(w) / ROLL_RATE), s);
-      const rollI = roll[i] ?? 0;
-      nRoll[i] = rollI + (rolled - rollI) * ROLL_BLEND;
-      sumX += xn;
-      sumY += yn;
+      nx[i] = px;
+      ny[i] = py;
+      // A nearer bird looks bigger; a flock shrunk to fit is farther away, its birds smaller.
+      const scale = near * fit;
+      ink[i] = (weight[i] ?? 1) * scale * scale;
+      // A startled or fleeing bird rolls and shows more wing.
+      roll[i] = Math.max(startle, panic);
+      sumX += px;
+      sumY += py;
     }
     this.#centreX = sumX / n;
     this.#centreY = sumY / n;
 
-    // Swap: the next state becomes the current one; the old one is kept for drawing in between.
+    // Swap: the new positions become the current ones; the old are kept for drawing in between.
+    this.#x2 = this.#x;
+    this.#y2 = this.#y;
     this.#x = nx;
-    this.#x2 = x;
     this.#y = ny;
-    this.#y2 = y;
-    this.#heading = nHeading;
-    this.#heading2 = heading;
-    this.#hx = nhx;
-    this.#hx2 = hx;
-    this.#hy = nhy;
-    this.#hy2 = hy;
-    this.#speed = nSpeed;
-    this.#speed2 = speed;
-    this.#turn = nTurn;
-    this.#turn2 = turn;
-    this.#startle = nStartle;
-    this.#startle2 = startle;
-    this.#refractory = nRefractory;
-    this.#refractory2 = refractory;
-    this.#roll = nRoll;
-    this.#roll2 = roll;
-
-    this.#ignite(chaos);
   }
 
-  /** Start agitation waves: around the falcon's beak, and now and then for no visible reason. */
-  #ignite(chaos: number): void {
-    const startle = this.#startle;
-    const refractory = this.#refractory;
-    if (this.#falcon) {
-      const x = this.#x;
-      const y = this.#y;
-      const r2 = STARTLE_RADIUS * STARTLE_RADIUS;
-      for (let i = 0; i < this.#n; i++) {
-        const dx = (x[i] ?? 0) - this.#falconX;
-        const dy = (y[i] ?? 0) - this.#falconY;
-        if (dx * dx + dy * dy < r2 && (refractory[i] ?? 0) < REFRACTORY_READY) {
-          startle[i] = 1;
-          refractory[i] = 1;
-        }
-      }
-      this.#waveX = this.#falconX;
-      this.#waveY = this.#falconY;
-    }
-    if (this.#random.next() < STARTLE_SPONTANEOUS * chaos * STEP) {
-      const i = Math.min(this.#n - 1, Math.floor(this.#random.next() * this.#n));
-      if ((refractory[i] ?? 0) < REFRACTORY_READY) {
-        startle[i] = 1;
-        refractory[i] = 1;
-        this.#waveX = this.#x[i] ?? 0;
-        this.#waveY = this.#y[i] ?? 0;
-      }
+  /** Start an agitation wave running out over the sheet from (a, b), in place of the oldest one. */
+  #launchWave(a: number, b: number): void {
+    const age = this.#waveAge;
+    let slot = 0;
+    for (let k = 1; k < WAVES; k++) if ((age[k] ?? 0) > (age[slot] ?? 0)) slot = k;
+    this.#waveA[slot] = a;
+    this.#waveB[slot] = b;
+    age[slot] = 0;
+  }
+
+  /** Now and then a ripple starts somewhere in the flock for no visible reason. */
+  #fidget(): void {
+    const random = this.#random;
+    if (random.next() < (STARTLE_CALM + (STARTLE_CHAOS - STARTLE_CALM) * this.#chaos) * STEP) {
+      const i = Math.min(this.#n - 1, Math.floor(random.next() * this.#n));
+      this.#launchWave(this.#sheetA[i] ?? 0, this.#sheetB[i] ?? 0);
     }
   }
 
@@ -861,9 +764,10 @@ class FlockSim implements SceneSim {
     }
     if (this.#mark) {
       const age = (this.#markAge += STEP);
-      this.#markRun += (STEP * MARK_STREAM * (CRUISE_SLOW + (CRUISE_FAST - CRUISE_SLOW) * knob.speed)) / MARK_SIZE;
+      this.#markRun += (STEP * (MARK_STREAM_SLOW + (MARK_STREAM_FAST - MARK_STREAM_SLOW) * knob.speed)) / MARK_SIZE;
       this.#markStrength = smoothstep(0, MARK_GATHER, age) * (1 - smoothstep(MARK_HOLD, MARK_END, age));
-      if (age - STEP < MARK_HOLD && age >= MARK_HOLD) this.#releaseMark();
+      // Letting go: a ripple runs out from the middle of the flock as the birds scatter.
+      if (age - STEP < MARK_HOLD && age >= MARK_HOLD) this.#launchWave(0, 0);
       if (age >= MARK_END) {
         this.#mark = false;
         this.#markStrength = 0;
@@ -905,7 +809,10 @@ class FlockSim implements SceneSim {
     this.#wingbeat = 0;
   }
 
-  /** Pursue the prey in a stoop; once past it, pull out, open the wings, climb away and leave. */
+  /**
+   * Pursue the prey in a stoop; once past it (a startle runs out from where it struck), pull out,
+   * open the wings, climb away and leave.
+   */
   #flyFalcon(): void {
     this.#falconAge += STEP;
     this.#falconPrevX = this.#falconX;
@@ -918,12 +825,16 @@ class FlockSim implements SceneSim {
     let rate: number;
     let cruise: number;
     if (this.#falconStoop) {
-      const dx = (this.#x[this.#falconPrey] ?? 0) - this.#falconX;
-      const dy = (this.#y[this.#falconPrey] ?? 0) - this.#falconY;
+      const prey = this.#falconPrey;
+      const dx = (this.#x[prey] ?? 0) - this.#falconX;
+      const dy = (this.#y[prey] ?? 0) - this.#falconY;
       goal = Math.atan2(dy, dx);
       rate = FALCON_TURN;
       cruise = FALCON_STOOP;
-      if (Math.hypot(dx, dy) < 0.025 || dx * vx + dy * vy < 0) this.#falconStoop = false;
+      if (Math.hypot(dx, dy) < 0.025 || dx * vx + dy * vy < 0) {
+        this.#falconStoop = false;
+        this.#launchWave(this.#sheetA[prey] ?? 0, this.#sheetB[prey] ?? 0);
+      }
     } else {
       goal = vx >= 0 ? 0.5 : Math.PI - 0.5;
       rate = FALCON_CLIMB;
@@ -986,25 +897,8 @@ class FlockSim implements SceneSim {
     this.#markRun = 0;
   }
 
-  /** Letting go of the M: a ripple runs out from its middle vertex as the birds scatter. */
-  #releaseMark(): void {
-    const cx = this.#markX + (MARK_X[2] ?? 0) * MARK_SIZE;
-    const cy = this.#markY + (MARK_Y[2] ?? 0) * MARK_SIZE;
-    const r2 = 0.05 * 0.05;
-    for (let i = 0; i < this.#n; i++) {
-      const dx = (this.#x[i] ?? 0) - cx;
-      const dy = (this.#y[i] ?? 0) - cy;
-      if (dx * dx + dy * dy < r2) {
-        this.#startle[i] = 1;
-        this.#refractory[i] = 1;
-      }
-    }
-    this.#waveX = cx;
-    this.#waveY = cy;
-  }
-
   /**
-   * Splat the birds into the density field (cloud-in-cell: each bird shares its weight bilinearly
+   * Splat the birds into the density field (cloud-in-cell: each bird shares its ink bilinearly
    * among the four nearest texels; Hockney & Eastwood, "Computer Simulation Using Particles"),
    * blended over the last frame's field as a short trail. `keep` is how much of the old field
    * survives; `between` how far the clock is from the previous step to the latest one.
@@ -1015,7 +909,7 @@ class FlockSim implements SceneSim {
     const h = this.#fieldH;
     const n = this.#n;
     for (let k = 0; k < field.length; k++) field[k] = (field[k] ?? 0) * keep;
-    const gain = (1 - keep) * (DENSITY_UNIT * h) * (DENSITY_UNIT * h);
+    const gain = 1 - keep;
     const sx = w / this.#aspect;
     const sy = h;
     const f = Math.min(1, Math.max(0, between));
@@ -1023,8 +917,8 @@ class FlockSim implements SceneSim {
     const y = this.#y;
     const px = this.#x2;
     const py = this.#y2;
+    const ink = this.#ink;
     const roll = this.#roll;
-    const weight = this.#weight;
     for (let i = 0; i < n; i++) {
       const xi = (px[i] ?? 0) + ((x[i] ?? 0) - (px[i] ?? 0)) * f;
       const yi = (py[i] ?? 0) + ((y[i] ?? 0) - (py[i] ?? 0)) * f;
@@ -1035,7 +929,7 @@ class FlockSim implements SceneSim {
       if (i0 < -1 || j0 < -1 || i0 >= w || j0 >= h) continue;
       const ax = gx - i0;
       const ay = gy - j0;
-      const mass = gain * (weight[i] ?? 1);
+      const mass = gain * (ink[i] ?? 1);
       const dark = mass * (roll[i] ?? 0);
       for (let dj = 0; dj < 2; dj++) {
         const j = j0 + dj;
@@ -1062,7 +956,8 @@ class FlockSim implements SceneSim {
     d[4] = this.#falcon ? 1 : 0;
     d[5] = this.#wingOpen;
     d[6] = Math.sin(this.#wingbeat);
-    d[7] = 0;
+    // Birds per texel of a sheet at the reference density: the shader's unit of grey.
+    d[7] = (REFERENCE_DENSITY * a) / (w * h);
     d[8] = this.#markStrength;
     d[9] = this.#markX / a;
     d[10] = this.#markY;

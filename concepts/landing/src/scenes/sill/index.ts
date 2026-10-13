@@ -79,8 +79,8 @@ const params: readonly ParamDef[] = [
   ...skyKnobs({ time: 0.8 }),
   feature("sky", "clouds", "clouds", true, "cover", 0.35, "A cloud deck over the city, lit from below by its glow at night."),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 1 }),
-  toggle("weather", "drops", "drops on the glass", true, "Raindrops beading and running down the panes above the open sash, bending the city behind them.", { when: "rain" }),
-  feature("manifold", "neon", "neon M", true, "brightness", 0.8, "A neon Manifold M on the roof across the street, humming and stuttering now and then; in the rain it shines back from the wet roof and sill. Now: a stutter.", { trigger: 2 }),
+  toggle("weather", "drops", "drops on the glass", true, "Raindrops beading and running down the panes above the open sash, each holding a tiny upside-down picture of the lit city and catching the lamp along its edge.", { when: "rain" }),
+  feature("manifold", "neon", "neon M", true, "brightness", 0.8, "A neon Manifold M on the roof across the street, humming in a soft glow; now and then one stroke winks out or stutters before it catches again. In the rain it shines back from the wet roof and sill. Now: a stutter.", { trigger: 2 }),
 ];
 
 export const sillScene: SceneDef = {

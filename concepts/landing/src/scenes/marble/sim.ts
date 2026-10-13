@@ -20,7 +20,7 @@
 // where they bunch up), ink pushed far outside the view is culled, and a region that covers the
 // whole view hides everything beneath it. The regions are filled with Canvas 2D in drop order into
 // an OffscreenCanvas and uploaded as uSim0 (premultiplied rgba, alpha = ink cover); uSim1 carries the
-// tool and the lift fade for the shader.
+// tool and the veil over the ink (lifting the sheet, or a fresh one fading up) for the shader.
 //
 // Sheet units: height 1, origin at the centre of the view, y up; x spans ±aspect/2.
 import type { ParamDef } from "../../params.ts";
@@ -40,8 +40,9 @@ export interface MarblePalette {
   rings: boolean;
 }
 
-// Ebru's earth pigments: indigo, ochre, rust, cream, lamp black.
-const EBRU: MarblePalette = { label: "ebru", inks: ["#2a3b72", "#c69434", "#9a3c22", "#e8dabb", "#1b1a1e"], accent: "#2a3b72", rings: false };
+// Ebru's pigments, kept clear and saturated so the dither keeps them rich: deep indigo, ochre gold,
+// madder rust, cream and lamp black.
+const EBRU: MarblePalette = { label: "ebru", inks: ["#1f3a96", "#dca12c", "#b5401f", "#f2e4c2", "#151419"], accent: "#1f3a96", rings: false };
 // Sumi and indigo, each pushed out into a ring by a drop of clear water.
 const SUMINAGASHI: MarblePalette = { label: "suminagashi", inks: ["#1d1c21", "#2c3a6e"], accent: "#2c3a6e", rings: true };
 // Risograph spot inks: fluorescent pink, teal, sunflower, medium blue, midnight.
@@ -87,11 +88,22 @@ const IDLE_RESUME = 4;
 /** How long lifting the sheet takes, at the end of a loop and when asked for at once. */
 const LIFT_SECONDS = 3;
 const QUICK_LIFT_SECONDS = 1.2;
-/** Fast-forward of a fresh sheet's sprinkling: step in routine seconds, budget per frame. */
+/**
+ * Fast-forward of a fresh sheet's sprinkling, done out of sight (nothing is drawn until it ends):
+ * step in routine seconds, and budget per frame. A machine already drawing slow frames (software
+ * GL) gives it a third of the frame interval, up to the cap, so the sheet is laid in about a second
+ * there too.
+ */
 const PREROLL_STEP = 0.2;
-const PREROLL_BUDGET_MS = 10;
+const PREROLL_BUDGET_MS = 12;
+const PREROLL_SLOW_SHARE = 1 / 3;
+const PREROLL_BUDGET_MAX_MS = 40;
+/** A prerolled sheet fades up from the bare tray over this many seconds. */
+const ARRIVE_SECONDS = 0.8;
 /** Tool fade in and out, seconds. */
 const TOOL_FADE = 0.3;
+/** Share of a stroke's time the tool spends getting up to its even pace, and again slowing down. */
+const STROKE_RAMP = 0.2;
 
 /** Travel speeds in sheet units per routine second. */
 const STYLUS_SPEED = 0.65;
@@ -104,6 +116,7 @@ const STAGE_GAP = 1.2;
 const DRAG_START = 0.012;
 const DRAG_ALPHA = 0.07;
 const DRAG_LAMBDA = 0.01;
+const DRAG_RANGE = 0.2;
 const CLICK_RADIUS = 0.06;
 
 // ---- geometry -----------------------------------------------------------------------------------
@@ -139,6 +152,12 @@ interface Tool {
   amp: number;
   wave: number;
   phase: number;
+  /**
+   * How far across its path a single stylus still moves the ink. Lu et al.'s tine reaches across the
+   * whole tray with a slow 1/d tail that drags every stone in view by a cell or two as it passes,
+   * which reads as the sheet crawling; here the shift fades out smoothly by this distance.
+   */
+  range: number;
 }
 
 function circle(x: number, y: number, finalRadius: number, color: string | null): Blob {
@@ -184,12 +203,14 @@ function passed(u: number): number {
 /**
  * Move the tool's tip from `tip0` to `tip1` along its path. Each vertex gets the share of the tine
  * shift z = α λ / (d + λ) that the tip delivered in passing it; for a comb, d is to the nearest tine
- * on either side and both contribute. The window's slope stays below 1/α per unit of travel, so ink
- * on the line falls behind the tine instead of riding along with it forever.
+ * on either side and both contribute; a stylus's shift fades as (1 - d²/range²)² to nothing at its
+ * range. The shift depends only on d, so the map still preserves area. The window's slope stays
+ * below 1/α per unit of travel, so ink on the line falls behind the tine instead of riding along
+ * with it forever.
  */
 function sweep(blobs: readonly Blob[], tool: Tool, tip0: number, tip1: number): void {
   if (!(tip1 > tip0)) return;
-  const { ox, oy, mx, my, alpha, lambda, spacing, amp, wave, phase } = tool;
+  const { ox, oy, mx, my, alpha, lambda, spacing, amp, wave, phase, range } = tool;
   const nx = -my;
   const ny = mx;
   const w = windowWidth(alpha);
@@ -216,7 +237,10 @@ function sweep(blobs: readonly Blob[], tool: Tool, tip0: number, tip1: number): 
           const d = across - spacing * Math.floor(across / spacing);
           f = lambda / (d + lambda) + lambda / (spacing - d + lambda);
         } else {
-          f = lambda / (Math.abs(across) + lambda);
+          const d = Math.abs(across);
+          if (d >= range) continue;
+          const fade = 1 - (d * d) / (range * range);
+          f = (lambda / (d + lambda)) * fade * fade;
         }
         const z = alpha * f * share;
         xy[i] = (xy[i] ?? 0) + z * mx;
@@ -336,16 +360,27 @@ type Op = DropOp | StrokeOp | SwirlOp;
 
 /** Ink spreads fast, then slows as the surface tension evens out. */
 const growth = (p: number): number => 1 - (1 - p) * (1 - p) * (1 - p);
-/** Tools and stirs ease in and out. */
+/** Stirs and fades ease in and out. */
 const smooth = (p: number): number => p * p * (3 - 2 * p);
+/**
+ * Share of its travel a stroke has covered at time share p: the hand gets up to an even pace over
+ * the first STROKE_RAMP of the time, holds it, and slows over the last, so the tool spends little
+ * time creeping off-screen and crosses the view steadily.
+ */
+function glide(p: number): number {
+  const pace = 1 / (1 - STROKE_RAMP);
+  if (p < STROKE_RAMP) return (pace * p * p) / (2 * STROKE_RAMP);
+  if (p > 1 - STROKE_RAMP) return 1 - (pace * (1 - p) * (1 - p)) / (2 * STROKE_RAMP);
+  return pace * (p - STROKE_RAMP / 2);
+}
 const dropSeconds = (radius: number): number => 0.35 + 3.5 * radius;
 
 function drop(start: number, x: number, y: number, radius: number, color: string | null): DropOp {
   return { kind: "drop", start, duration: dropSeconds(radius), done: 0, x, y, r2: radius * radius, color, blob: undefined };
 }
 
-function line(ox: number, oy: number, mx: number, my: number, alpha: number, lambda: number, tines: Partial<Pick<Tool, "spacing" | "amp" | "wave" | "phase">> = {}): Tool {
-  return { ox, oy, mx, my, alpha, lambda, spacing: tines.spacing ?? 0, amp: tines.amp ?? 0, wave: tines.wave ?? 0, phase: tines.phase ?? 0 };
+function line(ox: number, oy: number, mx: number, my: number, alpha: number, lambda: number, tines: Partial<Pick<Tool, "spacing" | "amp" | "wave" | "phase" | "range">> = {}): Tool {
+  return { ox, oy, mx, my, alpha, lambda, spacing: tines.spacing ?? 0, amp: tines.amp ?? 0, wave: tines.wave ?? 0, phase: tines.phase ?? 0, range: tines.range ?? Infinity };
 }
 
 function stroke(start: number, tool: Tool, from: number, to: number, speed: number): StrokeOp {
@@ -355,7 +390,7 @@ function stroke(start: number, tool: Tool, from: number, to: number, speed: numb
 /** Where a stroke's tip is now (on tine 0 of a comb, riding its wave). */
 function tipOf(op: StrokeOp): { x: number; y: number } {
   const { ox, oy, mx, my, amp, wave, phase } = op.tool;
-  const along = op.from + (op.to - op.from) * smooth(op.done);
+  const along = op.from + (op.to - op.from) * glide(op.done);
   const off = amp * Math.sin(wave * along + phase);
   return { x: ox + mx * along - my * off, y: oy + my * along + mx * off };
 }
@@ -496,16 +531,21 @@ function fan(ops: Op[], spec: RoutineSpec, start: number): number {
   return end;
 }
 
-/** Gel-git ("come and go"): a stylus drawn across the tray and back, line after line. */
+/**
+ * Gel-git ("come and go"): a stylus drawn across the tray and back, line after line from the
+ * bottom up. The first line runs a third of a spacing or more inside the view, so the very first
+ * pass is seen; the last lies within two thirds of a spacing of the top edge. Each pass moves only
+ * the ink within two spacings of its line.
+ */
 function gelGit(ops: Op[], spec: RoutineSpec, start: number): number {
   const g = 0.13 * spec.scale;
   const alpha = 1.2 * g;
   const reach = spec.aspect / 2 + 0.12 + windowWidth(alpha);
-  const lines = Math.ceil(1.1 / g);
-  const first = -0.55 + g * (0.3 + 0.4 * spec.rand());
+  const lines = Math.ceil(1 / g);
+  const first = -0.5 + g * (0.35 + 0.3 * spec.rand());
   let t = start;
   for (let k = 0; k < lines; k++) {
-    const pass = stroke(t, line(0, first + g * k, k % 2 === 0 ? 1 : -1, 0, alpha, 0.3 * g), -reach, reach, STYLUS_SPEED);
+    const pass = stroke(t, line(0, first + g * k, k % 2 === 0 ? 1 : -1, 0, alpha, 0.3 * g, { range: 2 * g }), -reach, reach, STYLUS_SPEED);
     ops.push(pass);
     t += pass.duration + 0.2;
   }
@@ -562,7 +602,7 @@ function markStrokes(height: number, start: number): StrokeOp[] {
     const dx = (b[0] - a[0]) * height;
     const dy = (b[1] - a[1]) * height;
     const length = Math.hypot(dx, dy);
-    const pass = stroke(t, line(ax, ay, dx / length, dy / length, alpha, lambda), 0, length, MARK_SPEED);
+    const pass = stroke(t, line(ax, ay, dx / length, dy / length, alpha, lambda, { range: 0.3 * height }), 0, length, MARK_SPEED);
     out.push(pass);
     t += pass.duration;
   }
@@ -758,6 +798,11 @@ class MarbleSim implements SceneSim {
   /** Settings changed: start the run of sheets over and show the next one already sprinkled. */
   #fresh = false;
   #prerollTo = 0;
+  /** 0..1: a prerolled sheet fading up from the bare tray once it is laid (1: nothing to fade). */
+  #arrive = 1;
+  /** performance.now() at the previous frame, and the real interval before this one (0: unknown). */
+  #frameAt = 0;
+  #frameMs = 0;
   #sheet = 0;
   #signature: string | undefined;
   #triggers: number[] | undefined;
@@ -787,6 +832,9 @@ class MarbleSim implements SceneSim {
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const dt = Math.min(Math.max(frame.dt, 0), MAX_STEP);
+    const now = performance.now();
+    this.#frameMs = this.#frameAt > 0 ? now - this.#frameAt : 0;
+    this.#frameAt = now;
     const settings = this.#read(frame);
     this.#fit(frame.aspect);
     this.#follow(settings);
@@ -800,6 +848,8 @@ class MarbleSim implements SceneSim {
     moved = this.#choreograph(dt, frame.motion, settings) || moved;
     moved = this.#events.advance(dt * settings.tempo, this.#apply) || moved;
     moved = this.#user.advance(dt, this.#apply) || moved;
+    // A prerolled sheet fades up once it is laid; paused or frozen, it shows at once.
+    if (!this.#prerolling) this.#arrive = dt > 0 ? Math.min(1, this.#arrive + dt / ARRIVE_SECONDS) : 1;
     if (moved) {
       this.#refine();
       this.#dirty = true;
@@ -908,7 +958,7 @@ class MarbleSim implements SceneSim {
     const dy = to.y - from.y;
     const length = Math.hypot(dx, dy);
     if (length < 1e-5) return false;
-    const tool = line(from.x, from.y, dx / length, dy / length, DRAG_ALPHA * scale, DRAG_LAMBDA * scale);
+    const tool = line(from.x, from.y, dx / length, dy / length, DRAG_ALPHA * scale, DRAG_LAMBDA * scale, { range: DRAG_RANGE * scale });
     sweep(this.#blobs, tool, 0, length);
     this.#dragTool = tool;
     return true;
@@ -925,7 +975,7 @@ class MarbleSim implements SceneSim {
   }
 
   #choreograph(dt: number, motion: number, settings: Settings): boolean {
-    if (this.#prerollTo - this.#routine.clock > 1e-6) return this.#fastForward();
+    if (this.#prerolling) return this.#fastForward();
     const busy = this.#idle < IDLE_RESUME || this.#press !== undefined || !this.#events.finished;
     const step = busy ? 0 : dt * motion * settings.tempo;
     const phase = this.#phase;
@@ -955,9 +1005,18 @@ class MarbleSim implements SceneSim {
     }
   }
 
-  /** A fresh sheet opens on its stones: sprinkle at full speed, within a frame budget. */
+  /** A fresh sheet's sprinkling is still being fast-forwarded: nothing of it is drawn yet. */
+  get #prerolling(): boolean {
+    return this.#prerollTo - this.#routine.clock > 1e-6;
+  }
+
+  /**
+   * A fresh sheet opens on its stones: sprinkle at full speed, within a frame budget, out of sight
+   * (the canvas is only drawn once it is done, and the sheet then fades up from the bare tray).
+   */
   #fastForward(): boolean {
-    const until = performance.now() + PREROLL_BUDGET_MS;
+    const budget = Math.min(PREROLL_BUDGET_MAX_MS, Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs));
+    const until = performance.now() + budget;
     let moved = false;
     do {
       const step = Math.min(PREROLL_STEP, this.#prerollTo - this.#routine.clock);
@@ -965,7 +1024,7 @@ class MarbleSim implements SceneSim {
         this.#refine();
         moved = true;
       }
-    } while (this.#prerollTo - this.#routine.clock > 1e-6 && performance.now() < until);
+    } while (this.#prerolling && performance.now() < until);
     return moved;
   }
 
@@ -1001,6 +1060,7 @@ class MarbleSim implements SceneSim {
     });
     this.#routine.reset(routine.ops);
     this.#prerollTo = this.#fresh ? routine.sprinkled : 0;
+    this.#arrive = this.#fresh ? 0 : 1;
     this.#fresh = false;
     this.#events.reset();
     this.#user.reset();
@@ -1027,7 +1087,7 @@ class MarbleSim implements SceneSim {
       }
       case "stroke": {
         const span = op.to - op.from;
-        sweep(this.#blobs, op.tool, op.from + span * smooth(from), op.from + span * smooth(to));
+        sweep(this.#blobs, op.tool, op.from + span * glide(from), op.from + span * glide(to));
         return;
       }
       case "swirl":
@@ -1171,7 +1231,8 @@ class MarbleSim implements SceneSim {
   }
 
   #render(): void {
-    if (!this.#dirty) return;
+    // A sheet still being prerolled is drawn once, when it is laid, not step by step.
+    if (!this.#dirty || this.#prerolling) return;
     const now = performance.now();
     if (!this.#force && now - this.#drawnAt < REDRAW_MS) return;
     this.#draw();
@@ -1215,14 +1276,17 @@ class MarbleSim implements SceneSim {
     ctx.globalCompositeOperation = "source-over";
   }
 
-  /** uSim1: texel 0 = tool tip (uv), tool shown 0..1, lift 0..1; texel 1 = direction, tine spacing. */
+  /**
+   * uSim1: texel 0 = tool tip (uv), tool shown 0..1, ink veiled 0..1 (lifted off, or a fresh sheet
+   * not yet faded up); texel 1 = direction, tine spacing.
+   */
   #writeState(): void {
     const data = this.#stateData;
     const shown = this.#shown;
     data[0] = shown.x / this.#aspect + 0.5;
     data[1] = shown.y + 0.5;
     data[2] = shown.on;
-    data[3] = this.#phase === "lift" ? smooth(this.#lift) : 0;
+    data[3] = Math.max(this.#phase === "lift" ? smooth(this.#lift) : 0, 1 - smooth(this.#arrive));
     data[4] = shown.mx;
     data[5] = shown.my;
     data[6] = shown.spacing;

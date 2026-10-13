@@ -1,8 +1,29 @@
 # Scene backlog
 
-Scenes to explore after the current ones (wave, starry, orbit, swell, pond). Each is a dithered
-shader scene like the others: animated, tweakable in the lab, with a standalone Manifold landmark
-that fits the scene. Notes give a starting direction, not a design.
+Scene ideas beyond the first five (wave, starry, orbit, swell, pond). Each is a dithered shader
+scene: animated, tweakable in the lab, with a standalone Manifold landmark that fits the scene.
+How to write one: `src/scenes/README.md`.
+
+## Status
+
+All of the ideas below have a first implementation in the lab:
+
+| Idea | Scene id | Notes |
+|---|---|---|
+| Above the clouds | `clouds` | Aurora and lightning come from the shared weather layer. |
+| Waterfall | `falls` | |
+| Countryside | `country` | |
+| Murmuration | `flock` | CPU boids, topological neighbours. |
+| Paper marbling | `marble` | Mathematical marbling engine. |
+| Dunes | `dunes` | Werner slab model. |
+| Ice and frost | `frost` | Frost on a window pane; snowfall from the weather layer. |
+| Snow and rain | merged | Part of the shared weather layer, not a scene: rain, snow, rain on glass, ripples, fog. |
+| Sea shore and bioluminescent bay | `shore` | |
+| Window sill | `sill` | |
+
+The shared options became libraries every outdoor scene can use: sky and time of day, weather,
+lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`).
+The notes below are the original briefs.
 
 ## Above the clouds
 
