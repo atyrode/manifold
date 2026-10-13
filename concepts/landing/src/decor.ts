@@ -21,6 +21,8 @@ export interface DecorConfig {
   flowers: number;
   /** 0..1: tufts of grass along the waterline. */
   grass: number;
+  /** 0..1: a few distinct plants (0) to packed foliage with an understory (1). */
+  bushiness: number;
   /** Arrangement variant. */
   seed: number;
 }
@@ -28,6 +30,8 @@ export interface DecorConfig {
 export interface CanopyConfig {
   /** 0..1: how much of the sky above the camera is leaves. */
   coverage: number;
+  /** 0..1 lushness of each edge (top, right, bottom, left): the canopy thins toward bare ones. */
+  sides: readonly [number, number, number, number];
   seed: number;
 }
 
@@ -35,14 +39,14 @@ export interface CanopyConfig {
 export const CANOPY_MARGIN = 0.25;
 
 export function decorKey(config: DecorConfig): string {
-  return [config.reach, ...config.sides, config.vines, config.flowers, config.grass]
+  return [config.reach, ...config.sides, config.vines, config.flowers, config.grass, config.bushiness]
     .map((value) => value.toFixed(3))
     .concat(config.kinds.join(","), String(config.seed))
     .join("|");
 }
 
 export function canopyKey(config: CanopyConfig): string {
-  return `${config.coverage.toFixed(3)}|${config.seed}`;
+  return [config.coverage, ...config.sides].map((value) => value.toFixed(3)).concat(String(config.seed)).join("|");
 }
 
 /** Small deterministic PRNG so an arrangement is stable across rebuilds. */
@@ -73,14 +77,17 @@ function stamper(ctx: Context, size: number): Stamp {
   const local = scratch.getContext("2d");
   if (!local) throw new Error("landing: 2d canvas unavailable");
   return (x, y, angle, scale, flip, draw) => {
+    // Everything drawn in unit space stays within radius ~1.35 of its origin: only that square
+    // of the scratch sheet is cleared and copied.
+    const box = Math.min(size, Math.ceil(scale * 2.8) + 4);
     local.setTransform(1, 0, 0, 1, 0, 0);
-    local.clearRect(0, 0, size, size);
+    local.clearRect(0, 0, box, box);
     local.globalCompositeOperation = "source-over";
-    local.translate(size / 2, size / 2);
+    local.translate(box / 2, box / 2);
     local.rotate(angle);
     local.scale(scale, scale * (flip ? -1 : 1));
     draw(local);
-    ctx.drawImage(scratch, x - size / 2, y - size / 2);
+    ctx.drawImage(scratch, 0, 0, box, box, x - box / 2, y - box / 2, box, box);
   };
 }
 
@@ -145,7 +152,7 @@ function layout(width: number, height: number, config: DecorConfig, rand: Rand):
     const stem = curve(p0, p1, p2, 16);
     const b = brush(layer);
     pieces.push({ layer, draw: (ctx) => stroke(ctx, stem.map(([px, py]) => [px, py]), Material.stem, b, 0.4, height * 0.014, 0.7) });
-    const nodes = 2 + Math.floor(rand() * 3);
+    const nodes = 2 + Math.floor(rand() * 3) + Math.round(config.bushiness * 2);
     let side = rand() < 0.5 ? -1 : 1;
     for (let n = 0; n < nodes; n++) {
       const t = 0.3 + (0.7 * n) / Math.max(1, nodes - 1);
@@ -175,7 +182,7 @@ function layout(width: number, height: number, config: DecorConfig, rand: Rand):
   // Ferns and banana fan from a crown at the edge: fronds straight from the crown, banana leaves
   // on short stout petioles.
   const crown = (species: "fern" | "banana", x: number, y: number, inward: number, big: boolean, lush: number) => {
-    const count = (species === "fern" ? 5 : 3) + Math.floor(rand() * 2) + (lush > 0.7 ? 1 : 0);
+    const count = (species === "fern" ? 5 : 3) + Math.floor(rand() * 2) + (lush > 0.7 ? 1 : 0) + Math.round(config.bushiness * 3);
     const scale = 0.65 + 0.6 * lush;
     for (let i = 0; i < count; i++) {
       const fan = (count === 1 ? 0 : i / (count - 1) - 0.5) * (big ? 1.9 : 1.5) + (rand() - 0.5) * 0.3;
@@ -266,7 +273,7 @@ function layout(width: number, height: number, config: DecorConfig, rand: Rand):
     [width + margin, height + margin, Math.max(bottom, right)],
   ];
   for (const [x, y, lush] of corners) {
-    if (lush < 0.05 || rand() < 0.15 * (1 - lush)) continue;
+    if (lush < 0.05 || rand() < 0.15 * (1 - lush) * (1 - config.bushiness)) continue;
     plant(x, y, Math.atan2(height / 2 - y, width / 2 - x), true, lush);
   }
   const edges: [number, number, number, number, number, number][] = [
@@ -277,13 +284,36 @@ function layout(width: number, height: number, config: DecorConfig, rand: Rand):
   ];
   edges.forEach(([x0, y0, x1, y1, inward, lush], edge) => {
     if (lush < 0.05) return;
-    const spacing = height * (0.85 - 0.62 * lush);
+    const spacing = height * (0.85 - 0.62 * lush) * (1.35 - 0.8 * config.bushiness);
     const length = Math.hypot(x1 - x0, y1 - y0);
     const along = (t: number): Point => [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
     for (let d = spacing * (0.5 + rand() * 0.5); d < length - spacing * 0.4; d += spacing * (0.7 + rand() * 0.6)) {
-      if (rand() < 0.25 * (1 - lush)) continue;
+      if (rand() < 0.25 * (1 - lush) * (1 - config.bushiness)) continue;
       const [x, y] = along(d / length);
       plant(x, y, inward + (rand() - 0.5) * 0.5, rand() < 0.15 + 0.15 * lush, lush);
+    }
+    // Understory: young, unsplit leaves packed low along the edge, darker in the plants' shade.
+    const young = Math.round(config.bushiness * lush * (length / height) * 16);
+    for (let n = 0; n < young; n++) {
+      const [ex, ey] = along(rand());
+      const inset = height * 0.1 * rand() * (0.5 + config.reach);
+      const x = ex + Math.cos(inward) * inset;
+      const y = ey + Math.sin(inward) * inset;
+      const angle = inward + (rand() - 0.5) * 2.4;
+      const size = height * (0.06 + 0.07 * rand());
+      const b: Brush = { layer: 0, shade: 0.3 + 0.2 * rand() };
+      const seed = rand();
+      const kind = Math.floor(rand() * 3);
+      const flip = rand() < 0.5;
+      pieces.push({
+        layer: 0,
+        draw: (_ctx, stamp) => stamp(x, y, angle, size, flip, (local) => {
+          const leafRand = random(seed * 1e6);
+          if (kind === 0) monsteraLeaf(local, b, leafRand, 0.1);
+          else if (kind === 1) pothosLeaf(local, b, leafRand);
+          else fernFrond(local, b, leafRand);
+        }),
+      });
     }
     const tufts = Math.round(config.grass * lush * (length / height) * 7);
     for (let n = 0; n < tufts; n++) {
@@ -300,21 +330,121 @@ function layout(width: number, height: number, config: DecorConfig, rand: Rand):
   return pieces.map((piece, index) => ({ piece, index })).sort((a, b) => a.piece.layer - b.piece.layer || a.index - b.index).map(({ piece }) => piece);
 }
 
-/** Paint the border sheet: black background, pieces back to front. */
-export function paintDecor(ctx: Context, width: number, height: number, config: DecorConfig): void {
+/** Paint the border sheet: black background, pieces back to front, then crisp. Yields between steps. */
+export function* paintDecor(ctx: Context, width: number, height: number, config: DecorConfig): Generator<void, void> {
   const rand = random(17 + config.seed * 101);
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, width, height);
   const stamp = stamper(ctx, Math.ceil(height * 1.6));
-  for (const piece of layout(width, height, config, rand)) piece.draw(ctx, stamp);
+  for (const piece of layout(width, height, config, rand)) {
+    piece.draw(ctx, stamp);
+    yield;
+  }
+  yield* crisp(ctx, width, height);
+}
+
+/** Valid material codes: material × 16 + layer × 4 + 2, layers 0..2. */
+function snapCode(code: number): number | undefined {
+  const step = Math.round((code - 2) / 4);
+  if (Math.abs(code - (step * 4 + 2)) > 1.2 || step % 4 === 3 || step < 0 || step > 10 * 4 + 2) return undefined;
+  return step * 4 + 2;
+}
+
+/**
+ * Undo anti-aliasing so every texel is one material. Canvas blends edges with the black
+ * background and with neighbouring leaves, and a blended material code decodes as some other
+ * material (a stem's edge would read as a red petal), which then flickers as the leaves sway.
+ * Coverage is thresholded, shade and code un-premultiplied, codes snapped to valid values, and
+ * seam texels (unlike both neighbours along a row or column) take their neighbour's material.
+ */
+function* crisp(ctx: Context, width: number, height: number): Generator<void, void> {
+  const image = ctx.getImageData(0, 0, width, height);
+  const d = image.data;
+  const codes = new Int16Array(width * height).fill(-1);
+  for (let i = 0, px = 0; i < d.length; i += 4, px++) {
+    const r = d[i] ?? 0;
+    if (r < 128) {
+      d[i] = 0;
+      d[i + 1] = 0;
+      d[i + 2] = 0;
+      continue;
+    }
+    d[i] = 255;
+    d[i + 1] = Math.min(255, Math.round(((d[i + 1] ?? 0) * 255) / r));
+    codes[px] = snapCode(((d[i + 2] ?? 0) * 255) / r) ?? -2;
+  }
+  yield;
+  const at = (x: number, y: number) => (x < 0 || y < 0 || x >= width || y >= height ? -1 : codes[y * width + x] ?? -1);
+  for (let y = 0; y < height; y++) {
+    if (y % 64 === 0) yield;
+    for (let x = 0; x < width; x++) {
+      const px = y * width + x;
+      let code = codes[px] ?? -1;
+      if (code === -1) continue;
+      const left = at(x - 1, y);
+      const up = at(x, y - 1);
+      const seam = code === -2 || (code !== left && code !== at(x + 1, y)) || (code !== up && code !== at(x, y + 1));
+      if (seam) code = left >= 0 ? left : up >= 0 ? up : Math.max(at(x + 1, y), at(x, y + 1), 2);
+      if (code < 0) code = 2;
+      codes[px] = code;
+    }
+  }
+  // Wider seams can blend into a valid but foreign code: a texel unlike three of its four
+  // neighbours takes the most common one among them.
+  for (let y = 0; y < height; y++) {
+    if (y % 64 === 0) yield;
+    for (let x = 0; x < width; x++) {
+      const px = y * width + x;
+      const code = codes[px] ?? -1;
+      if (code < 0) continue;
+      const around = [at(x - 1, y), at(x + 1, y), at(x, y - 1), at(x, y + 1)].filter((n) => n >= 0);
+      if (around.filter((n) => n !== code).length >= 3) {
+        const counts = new Map<number, number>();
+        for (const n of around) counts.set(n, (counts.get(n) ?? 0) + 1);
+        codes[px] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? code;
+      }
+    }
+  }
+  // Clumps of blend: a blended code always lies between the two it came from. A boundary texel
+  // whose code is rare nearby and bracketed by two codes that are present takes the commoner one.
+  const counts = new Map<number, number>();
+  for (let y = 0; y < height; y++) {
+    if (y % 64 === 0) yield;
+    for (let x = 0; x < width; x++) {
+      const px = y * width + x;
+      const code = codes[px] ?? -1;
+      if (code < 0) continue;
+      if (at(x - 1, y) === code && at(x + 1, y) === code && at(x, y - 1) === code && at(x, y + 1) === code) continue;
+      counts.clear();
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const n = at(x + dx, y + dy);
+          if (n >= 0) counts.set(n, (counts.get(n) ?? 0) + 1);
+        }
+      }
+      if ((counts.get(code) ?? 0) > 8) continue;
+      let below = -1;
+      let above = -1;
+      for (const [n, c] of counts) {
+        if (n < code && c > (counts.get(below) ?? 0)) below = n;
+        if (n > code && c > (counts.get(above) ?? 0)) above = n;
+      }
+      if (below >= 0 && above >= 0) codes[px] = (counts.get(below) ?? 0) >= (counts.get(above) ?? 0) ? below : above;
+    }
+  }
+  for (let px = 0; px < width * height; px++) {
+    const code = codes[px] ?? -1;
+    if (code >= 0) d[px * 4 + 2] = code;
+  }
+  ctx.putImageData(image, 0, 0);
 }
 
 /**
  * Paint the overhead canopy: big leaves scattered across and beyond the frame. Only its shadow is
  * ever seen, so only coverage matters. `span` is how many frames wide the sheet is.
  */
-export function paintCanopy(ctx: Context, width: number, height: number, config: CanopyConfig, span: number): void {
+export function* paintCanopy(ctx: Context, width: number, height: number, config: CanopyConfig, span: number): Generator<void, void> {
   const rand = random(911 + config.seed * 53);
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = "#000";
@@ -322,15 +452,28 @@ export function paintCanopy(ctx: Context, width: number, height: number, config:
   const stamp = stamper(ctx, Math.ceil(height * 0.9));
   const count = Math.round(8 + config.coverage * 70);
   const brush: Brush = { layer: 0, shade: 0.5 };
+  const [top, right, bottom, left] = config.sides;
+  // Overhead leaves grow from the same sides as the border: thinning toward bare edges.
+  const density = (x: number, y: number): number => {
+    const u = Math.min(1, Math.max(0, (x / width) * span - (span - 1) / 2));
+    const v = Math.min(1, Math.max(0, (y / height) * span - (span - 1) / 2));
+    return Math.min(1, Math.min(left + (right - left) * u, top + (bottom - top) * v) / 0.6);
+  };
   for (let i = 0; i < count; i++) {
     const kind = Math.floor(rand() * 3);
     const length = (height / span) * (0.18 + 0.3 * rand());
     const seed = rand();
-    stamp(rand() * width, rand() * height, rand() * Math.PI * 2, length, rand() < 0.5, (local) => {
+    const x = rand() * width;
+    const y = rand() * height;
+    const angle = rand() * Math.PI * 2;
+    const flip = rand() < 0.5;
+    if (rand() > density(x, y)) continue;
+    stamp(x, y, angle, length, flip, (local) => {
       const leafRand = random(seed * 1e6);
       if (kind === 0) monsteraLeaf(local, brush, leafRand, 0.8);
       else if (kind === 1) bananaLeaf(local, brush, leafRand, 0.6);
       else fernFrond(local, brush, leafRand);
     });
+    yield;
   }
 }

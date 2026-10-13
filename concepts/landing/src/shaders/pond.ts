@@ -91,18 +91,48 @@ vec3 padState(float fi, float aspect, float tm, vec2 flow, float turbulence, flo
 
 // Pond knobs (params.ts order): 0 koi, 1 swim, 2 follow, 3 caustics, 4 rays, 5 sunPower, 6 sunX,
 // 7 sunY, 8 lilies, 9 ripples, 10 lilyDrift, 11 lilySeed, 12 tether, 13 depth, 14 floorType,
-// 15 grain, 16 floorMoss, 17 floorTint, 18 weeds, 19 plants, 20 plantStyle, 21-24 lushness by side,
-// 25-27 species, 28 vines, 29 flowers, 30 grass, 31 plantSeed, 32 canopy, 33 canopySoft,
-// 34 canopySeed, 35 wind, 36 current, 37 currentDir, 38 turbulence, 39 petals, 40 stone,
-// 41 stoneX, 42 stoneY, 43 moss.
+// 15 grain, 16 floorMoss, 17 floorTint, 18 weeds, 19 plants, 20 plantStyle, 21-24 edge lushness,
+// 25 bushiness, 26-28 species, 29 vines, 30 flowers, 31 grass, 32 plantSeed, 33 canopy,
+// 34 canopySoft, 35 canopySeed, 36 wind, 37 current, 38 currentDir, 39 turbulence, 40 petals,
+// 41 boat, 42 stone, 43 stoneX, 44 stoneY, 45 moss.
+
+// One texel of the plant sheet, exactly as painted: material codes must never be interpolated.
+vec4 decorTexel(vec2 at) {
+  ivec2 size = textureSize(uDecor, 0);
+  return texelFetch(uDecor, clamp(ivec2(at * vec2(size)), ivec2(0), size - 1), 0);
+}
+
+// A paper boat seen from above, in its own frame (x along the keel, unit = half its length):
+// rgb paper colour, a coverage. The hull is a long hexagon, the sail a ridge along the middle
+// with one face lit and one in shade, pockets of shadow inside the hull, crease lines to the bows.
+vec4 paperBoat(vec2 q, float litSide) {
+  float hull = 0.38 * clamp((1.0 - abs(q.x)) / 0.45, 0.0, 1.0);
+  if (abs(q.y) > hull) return vec4(0.0);
+  vec3 paper = vec3(0.96, 0.95, 0.91);
+  float sail = 0.13 * clamp(1.0 - abs(q.x) / 0.62, 0.0, 1.0);
+  float shade = 0.97;
+  if (abs(q.y) < sail) {
+    // The two faces of the sail, one toward the sun.
+    shade = sign(q.y) == litSide ? 1.02 : 0.74;
+    if (abs(q.y) < 0.012) shade = 0.9;
+  } else if (abs(q.y) < hull - 0.05 && abs(q.x) < 0.78) {
+    // Inside the hull, under the sail's overhang.
+    shade = 0.8 + 0.12 * (abs(q.y) - sail) / max(0.01, hull - sail);
+  }
+  // Folds running from the sail's ends out to the bows.
+  float crease = min(abs(abs(q.y) - (1.0 - abs(q.x)) * 0.32), 1.0);
+  if (abs(q.x) > 0.6 && crease < 0.012) shade *= 0.86;
+  return vec4(paper * shade, 1.0);
+}
+
 Shade scenePond(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
   float tm = t * m;
   float aspect = uRes.x / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
   float depth = uParams[13];
-  vec2 flow = vec2(cos(uParams[37] * TAU), sin(uParams[37] * TAU)) * uParams[36];
-  float turbulence = uParams[38];
+  vec2 flow = vec2(cos(uParams[38] * TAU), sin(uParams[38] * TAU)) * uParams[37];
+  float turbulence = uParams[39];
   bool tethered = uParams[12] > 0.5;
   // The sun: placed anywhere (off screen too); its power lifts the water, caustics and rays.
   vec2 sunUV = vec2(uParams[6], uParams[7]);
@@ -321,7 +351,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     float rim = smoothstep(radius * 0.86, radius * 0.97, length(d));
     if (inside > 0.0) {
       pad = 0.22 + 0.12 * veins + 0.45 * rim;
-      padCol = mix(vec3(0.24, 0.52, 0.2), vec3(0.5, 0.76, 0.34), rim) * (1.0 - 0.25 * veins) * (0.9 + 0.2 * vnoise(d * 40.0));
+      // The same greens as the foliage, lit like the lowest layer of it.
+      padCol = mix(vec3(0.1, 0.34, 0.14), vec3(0.36, 0.62, 0.28), rim) * (1.0 - 0.25 * veins) * (0.9 + 0.2 * vnoise(d * 40.0)) * (0.8 + 0.4 * power);
     }
     padShadow = max(padShadow, step(length(p - centre - shadowOffset * 0.6), radius));
     if (hash12(vec2(fi, 24.0 + uParams[11])) > 0.6) {
@@ -348,8 +379,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   }
 
   // Petals riding the current, recycled when they leave the pond.
-  if (uParams[36] > 0.0 && uParams[39] > 0.0) {
-    int petals = int(uParams[39] * 18.0 + 0.5);
+  if (uParams[37] > 0.0 && uParams[40] > 0.0) {
+    int petals = int(uParams[40] * 18.0 + 0.5);
     vec2 span = vec2(aspect * 1.1, 1.1);
     for (int i = 0; i < 18; i++) {
       if (i >= petals) break;
@@ -369,11 +400,57 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   o.ink = max(o.ink, ringLight * 0.7);
   col += vec3(0.85, 1.0, 1.0) * ringLight * 0.45;
 
+  // The paper boat: once in a while (or now, on trigger) it rides the current across, entering
+  // upstream and leaving downstream, rocking with the eddies. Real clock, so it sails at motion 0.
+  if (uParams[37] > 0.0) {
+    float age = sinceTrigger(1);
+    float lane = hash12(vec2(uTriggers[1], 61.0));
+    if (uParams[41] > 0.0 && (age < 0.0 || age > 90.0)) {
+      float slot = mix(300.0, 45.0, uParams[41]);
+      float k = floor(t / slot);
+      float start = k * slot + hash12(vec2(k, 62.0)) * slot * 0.3;
+      if (hash12(vec2(k, 63.0)) < 0.7) {
+        age = t - start;
+        lane = hash12(vec2(k, 64.0));
+      }
+    }
+    vec2 dir = normalize(flow + vec2(1e-4, 0.0));
+    vec2 across = vec2(-dir.y, dir.x);
+    float speed = 0.035 + 0.09 * uParams[37];
+    float reach = 0.62 * max(aspect, 1.0);
+    if (age >= 0.0 && age * speed < reach * 2.0) {
+      float rock = 0.3 + turbulence;
+      vec2 at = -dir * reach + across * (lane - 0.5) * 0.7 + dir * speed * age + across * sin(age * 0.5 + lane * 6.0) * 0.025 * rock;
+      float heading = atan(dir.y, dir.x) + sin(age * 0.8 + lane * 9.0) * 0.18 * rock;
+      float size = 0.05 * (1.0 + 0.03 * sin(age * 2.3));
+      vec2 sunAcross = rotate(towardSun, -heading);
+      float litSide = sunAcross.y > 0.0 ? 1.0 : -1.0;
+      // Its shadow on the water, then the boat itself.
+      vec4 shadowBoat = paperBoat(rotate(p - at + towardSun * 0.012, -heading) / size, litSide);
+      col *= 1.0 - 0.35 * shadowBoat.a;
+      o.ink *= 1.0 - 0.4 * shadowBoat.a;
+      // A faint V of wake trailing behind.
+      vec2 w = rotate(p - at, -heading) / size;
+      if (w.x < -1.0 && w.x > -5.0) {
+        float wake = smoothstep(0.08, 0.0, abs(abs(w.y) - (-w.x - 1.0) * 0.32)) * (1.0 + (w.x + 1.0) / 4.0);
+        o.ink = max(o.ink, wake * 0.35);
+        col += vec3(0.85, 1.0, 1.0) * wake * 0.12;
+      }
+      vec4 boat = paperBoat(w, litSide);
+      if (boat.a > 0.0) {
+        col = boat.rgb * (0.85 + 0.3 * power);
+        o.ink = 0.55 + 0.4 * boat.r;
+        o.accent = 0.0;
+        o.shimmer = 0.0;
+      }
+    }
+  }
+
   // The Manifold stone: a carved M standing in the water, its shadow on the floor and the water
   // lapping at its foot.
-  if (uParams[40] > 0.0) {
-    vec2 at = vec2(uParams[41] * aspect * 0.5, uParams[42] * 0.5);
-    float scale = 0.16 + 0.34 * uParams[40];
+  if (uParams[42] > 0.0) {
+    vec2 at = vec2(uParams[43] * aspect * 0.5, uParams[44] * 0.5);
+    float scale = 0.16 + 0.34 * uParams[42];
     float thickness = 0.12;
     // A hand-cut edge: the outline wavers a little, the way chiselled stone does.
     float d = markDistance((p - at) / scale) - thickness + (vnoise((p - at) / scale * 22.0) - 0.5) * 0.025;
@@ -389,7 +466,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       float light = 0.62 + 0.38 * dot(normalize(grad + 1e-6), normalize(vec2(-0.6, 0.8))) * bevel;
       vec2 q = (p - at) / scale;
       float grain = 0.85 + 0.15 * fbm(q * 18.0);
-      float growth = smoothstep(1.0 - uParams[43], 1.0 - uParams[43] + 0.25, fbm(q * 4.5 + 3.0)) * (1.0 - bevel * 0.6);
+      float growth = smoothstep(1.0 - uParams[45], 1.0 - uParams[45] + 0.25, fbm(q * 4.5 + 3.0)) * (1.0 - bevel * 0.6);
       vec3 granite = vec3(0.6, 0.6, 0.57) * grain * light;
       col = mix(granite, vec3(0.24, 0.48, 0.2) * (0.8 + 0.4 * fbm(q * 30.0)), growth);
       o.ink = mix(0.35 + 0.5 * light * grain, 0.22, growth);
@@ -407,12 +484,14 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   // Foliage: border plants (in frame) and the canopy (above the camera). Both cast shadows away
   // from the sun and stand in the way of its rays.
   int style = int(uParams[20] + 0.5);
-  float wind = uParams[35] * m;
+  float wind = uParams[36] * m;
   float gust = 0.6 + 0.4 * vnoise(vec2(t * 0.25, 3.0));
-  vec2 sway = vec2(sin(t * 0.9 + uv.y * 5.0), cos(t * 0.75 + uv.x * 4.0)) * 0.005 * wind * gust;
+  // Slow and wide enough to read as leaning in the breeze: a sway of only a cell or two, back and
+  // forth quickly, reads as jitter once pixelated.
+  vec2 sway = vec2(sin(t * 0.55 + uv.y * 3.0), cos(t * 0.45 + uv.x * 2.5)) * 0.008 * wind * gust;
   vec2 sunwardUV = normalize((sunUV - uv) * vec2(aspect, 1.0) + 1e-5) / vec2(aspect, 1.0);
   float canopySpan = 1.0 + 2.0 * ${CANOPY_MARGIN.toFixed(2)};
-  float softness = uParams[33];
+  float softness = uParams[34];
   float shadeAmount = 0.0;
   if (uCanopyOn > 0.5) {
     vec2 canopyUV = (uv + sunwardUV * (0.05 + 0.08 * softness) + sway * 2.2 + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan;
@@ -456,9 +535,18 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   o.ink = max(o.ink, glare);
 
   if (uDecorOn > 0.5 && style != 2) {
-    vec4 probe = textureLod(uDecor, uv + sway, 0.0);
-    float layer = floor(mod(floor(probe.b * 255.0 + 0.5), 16.0) / 4.0);
-    vec4 leaf = textureLod(uDecor, uv + sway * (0.5 + 0.5 * layer), 0.0);
+    // Each layer sways by its own amount: front to back, take the first texel that belongs to
+    // the layer whose offset found it, so overlapping leaves never swap from frame to frame.
+    vec4 leaf = vec4(0.0);
+    float layer = 0.0;
+    for (int l = 2; l >= 0; l--) {
+      vec4 texel = decorTexel(uv + sway * (0.5 + 0.5 * float(l)));
+      if (texel.r > 0.5 && floor(mod(floor(texel.b * 255.0 + 0.5), 16.0) / 4.0) == float(l)) {
+        leaf = texel;
+        layer = float(l);
+        break;
+      }
+    }
     if (leaf.r > 0.5) {
       // Materials (botany.ts): 0 monstera, 1 fern, 2 banana, 3 pothos, 4 hibiscus, 5 frangipani,
       // 6 pollen, 7 grass, 8 stem, 9 aerial root, 10 stigma.

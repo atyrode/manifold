@@ -83,6 +83,12 @@ async function buildCommit(sha: string): Promise<string> {
       minify: true,
     });
     if (!result.success) throw new BuildError(result.logs.map(String).join("\n"));
+    // The sheet worker is its own bundle, loaded next to the page (builds before it have none).
+    const worker = join(source, "src", "sheet-worker.ts");
+    if (await Bun.file(worker).exists()) {
+      const workerResult = await Bun.build({ entrypoints: [worker], outdir: join(work, "out"), naming: "sheet-worker.js", minify: true });
+      if (!workerResult.success) throw new BuildError(workerResult.logs.map(String).join("\n"));
+    }
     for (const file of await readdir(join(source, "art"))) {
       await Bun.write(join(work, "out", "art", file), Bun.file(join(source, "art", file)));
     }
@@ -122,8 +128,8 @@ async function committed(request: Request): Promise<Response> {
     const sha = await head();
     if (!sha) return new Response(`no committed lab on ${branch}`, { status: 503 });
     if (url.pathname === "/") return await serveFile(await built(sha), "", false);
-    // Builds before pinning fetched artwork from the root.
-    if (url.pathname.startsWith("/art/")) return await serveFile(await built(sha), url.pathname.slice(1), false);
+    // Builds before pinning fetched artwork from the root; the head page loads its worker there too.
+    if (url.pathname.startsWith("/art/") || url.pathname === "/sheet-worker.js") return await serveFile(await built(sha), url.pathname.slice(1), false);
     return new Response("not found", { status: 404 });
   } catch (error: unknown) {
     console.error("evt=landing.build_failed", error);
@@ -139,6 +145,12 @@ const server = args.includes("--dev")
       development: { hmr: true, console: true },
       routes: {
         "/": index,
+        "/sheet-worker.js": async () => {
+          const result = await Bun.build({ entrypoints: [new URL("./src/sheet-worker.ts", import.meta.url).pathname] });
+          const [output] = result.outputs;
+          if (!result.success || !output) return new Response(result.logs.map(String).join("\n"), { status: 500 });
+          return new Response(await output.text(), { headers: { "content-type": "text/javascript", "cache-control": "no-store" } });
+        },
         "/art/:file": (request) => {
           const { file } = request.params;
           if (!/^[a-z0-9-]+\.jpg$/.test(file)) return new Response("not found", { status: 404 });

@@ -1,8 +1,13 @@
 import { artworks, floodBackdrop, flowField, raster, type Artwork, type Raster } from "./artwork.ts";
 import { constellationUniforms } from "./constellations.ts";
-import { CANOPY_MARGIN, canopyKey, decorKey, paintCanopy, paintDecor, type CanopyConfig, type DecorConfig } from "./decor.ts";
+import { CANOPY_MARGIN, canopyKey, decorKey, type CanopyConfig, type DecorConfig } from "./decor.ts";
+import { SheetPainter } from "./sheet.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import { fragmentSource, vertexSource } from "./shaders/index.ts";
+
+/** Milliseconds per frame a sheet may spend painting: more while nothing is shown yet. */
+const SHEET_BUDGET_MS = 6;
+const FIRST_SHEET_BUDGET_MS = 24;
 
 /** Order is the shader's `uScene` index. */
 export const sceneIds = ["wave", "starry", "orbit", "swell", "pond"] as const;
@@ -106,13 +111,9 @@ export class DitherRenderer {
   /** Shader time each trigger slot last fired; far in the past when idle. */
   readonly #triggers = new Float32Array(MAX_TRIGGERS).fill(-1e4);
   #triggerScene = "";
-  /** Border-plant sheet for the pond, repainted when its settings or the frame's shape change. */
-  #decor: WebGLTexture | undefined;
-  #decorKey = "";
-  #decorPainted = 0;
-  #canopy: WebGLTexture | undefined;
-  #canopyKey = "";
-  #canopyPainted = 0;
+  /** The pond's border-plant and canopy sheets, repainted when their settings or the frame's shape change. */
+  readonly #decor: SheetPainter;
+  readonly #canopy: SheetPainter;
   /** Loading-page progress 0..1, or -1 off the loading page. */
   #progress = -1;
   /** WebGL version and renderer, for diagnosing remote reports. */
@@ -155,6 +156,8 @@ export class DitherRenderer {
     this.glInfo = `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`;
 
     this.#blank = gl.createTexture();
+    this.#decor = new SheetPainter(gl);
+    this.#canopy = new SheetPainter(gl);
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
 
@@ -245,50 +248,21 @@ export class DitherRenderer {
     });
   }
 
-  /** Repaint the plant sheet at the frame's aspect, at most every 200 ms while settings change. */
-  #paintDecor(config: DecorConfig, aspect: number, now: number): void {
-    const key = `${decorKey(config)}|${aspect.toFixed(2)}`;
-    if (key === this.#decorKey || now - this.#decorPainted < 200) return;
-    this.#decorKey = key;
-    this.#decorPainted = now;
-    const width = 2048;
-    const height = Math.max(1, Math.round(width / aspect));
-    const sheet = new OffscreenCanvas(width, height);
-    const ctx = sheet.getContext("2d");
-    if (!ctx) throw new RendererError("2d canvas unavailable");
-    paintDecor(ctx, width, height, config);
-    this.#decor = this.#uploadSheet(this.#decor, sheet);
-  }
-
-  /** Repaint the canopy sheet (uv -margin..1+margin) when its settings or the frame's shape change. */
-  #paintCanopy(config: CanopyConfig, aspect: number, now: number): void {
-    const key = `${canopyKey(config)}|${aspect.toFixed(2)}`;
-    if (key === this.#canopyKey || now - this.#canopyPainted < 200) return;
-    this.#canopyKey = key;
-    this.#canopyPainted = now;
-    const span = 1 + 2 * CANOPY_MARGIN;
-    const width = 768;
-    const height = Math.max(1, Math.round(width / aspect));
-    const sheet = new OffscreenCanvas(width, height);
-    const ctx = sheet.getContext("2d");
-    if (!ctx) throw new RendererError("2d canvas unavailable");
-    // Leaves are sized against the visible frame, which is 1/span of this sheet.
-    paintCanopy(ctx, width, height, config, span);
-    this.#canopy = this.#uploadSheet(this.#canopy, sheet);
-  }
-
-  #uploadSheet(existing: WebGLTexture | undefined, sheet: OffscreenCanvas): WebGLTexture {
-    const gl = this.#gl;
-    const texture = existing ?? gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sheet);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    return texture;
+  /** Request the pond's sheets for the current settings and frame shape, and paint a little of each. */
+  #paintSheets(decor: DecorConfig | undefined, canopy: CanopyConfig | undefined, aspect: number): void {
+    const shape = aspect.toFixed(2);
+    if (decor) {
+      const width = 2048;
+      this.#decor.request(`${decorKey(decor)}|${shape}`, width, Math.max(1, Math.round(width / aspect)), { kind: "decor", config: decor });
+      this.#decor.advance(this.#decor.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS);
+    }
+    if (canopy) {
+      const width = 768;
+      // Leaves are sized against the visible frame, which is 1/span of this sheet.
+      const span = 1 + 2 * CANOPY_MARGIN;
+      this.#canopy.request(`${canopyKey(canopy)}|${shape}`, width, Math.max(1, Math.round(width / aspect)), { kind: "canopy", config: canopy, span });
+      this.#canopy.advance(this.#canopy.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS);
+    }
   }
 
   #draw(now: number): void {
@@ -320,12 +294,13 @@ export class DitherRenderer {
       gl.bindTexture(gl.TEXTURE_2D, texture ?? this.#blank);
     });
     const stars = starsByScene[s.scene] ?? noStars;
-    if (s.decor) this.#paintDecor(s.decor, width / height, now);
-    if (s.canopy) this.#paintCanopy(s.canopy, width / height, now);
+    this.#paintSheets(s.decor, s.canopy, width / height);
+    const decor = s.decor ? this.#decor.texture : undefined;
+    const canopy = s.canopy ? this.#canopy.texture : undefined;
     gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, s.decor && this.#decor ? this.#decor : this.#blank);
+    gl.bindTexture(gl.TEXTURE_2D, decor ?? this.#blank);
     gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, s.canopy && this.#canopy ? this.#canopy : this.#blank);
+    gl.bindTexture(gl.TEXTURE_2D, canopy ?? this.#blank);
 
     const u = this.#uniforms;
     gl.uniform2f(u.uRes, width, height);
@@ -352,9 +327,9 @@ export class DitherRenderer {
     gl.uniform1f(u.uProgress, this.#progress);
     gl.uniform1fv(u.uTriggers, this.#triggers);
     gl.uniform1i(u.uDecor, 3);
-    gl.uniform1f(u.uDecorOn, s.decor && this.#decor ? 1 : 0);
+    gl.uniform1f(u.uDecorOn, decor ? 1 : 0);
     gl.uniform1i(u.uCanopy, 4);
-    gl.uniform1f(u.uCanopyOn, s.canopy && this.#canopy ? 1 : 0);
+    gl.uniform1f(u.uCanopyOn, canopy ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }

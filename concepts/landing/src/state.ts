@@ -185,19 +185,25 @@ function decorConfig(state: LabState, params: Params): DecorConfig | undefined {
   const on = (key: string) => (params[key] ?? 0) > 0.5;
   return {
     reach: params["plants-amount"] ?? 0.45,
-    sides: [params.lushTop ?? 0.6, params.lushRight ?? 0.6, params.lushBottom ?? 0.6, params.lushLeft ?? 0.6],
+    sides: edgeLushness(params),
     kinds: (Object.keys(toggles) as ClumpSpecies[]).filter((species) => (params[toggles[species]] ?? 1) > 0.5),
     vines: on("vines") ? params["vines-amount"] ?? 0.4 : 0,
     flowers: on("flowers") ? params["flowers-amount"] ?? 0.35 : 0,
     grass: on("grass") ? params["grass-amount"] ?? 0.4 : 0,
+    bushiness: params.bushiness ?? 0.55,
     seed: params.plantSeed ?? 0,
   };
+}
+
+/** How lush each edge of the pond is: top, right, bottom, left. */
+function edgeLushness(params: Params): [number, number, number, number] {
+  return [params.lushTop ?? 0.6, params.lushRight ?? 0.6, params.lushBottom ?? 0.6, params.lushLeft ?? 0.6];
 }
 
 /** The pond's overhead canopy; undefined when absent. */
 function canopyConfig(state: LabState, params: Params): CanopyConfig | undefined {
   if (state.scene !== "pond" || (params.canopy ?? 0) < 0.5) return undefined;
-  return { coverage: params["canopy-amount"] ?? 0.45, seed: params.canopySeed ?? 0 };
+  return { coverage: params["canopy-amount"] ?? 0.45, sides: edgeLushness(params), seed: params.canopySeed ?? 0 };
 }
 
 /** Each knob's default, keyed as readParams keys them. */
