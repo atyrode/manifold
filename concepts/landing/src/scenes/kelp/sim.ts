@@ -6,9 +6,11 @@
 // travels across the forest as a long wave (two components, so it never quite repeats), with a
 // little vertical orbit near the surface; a steady current the forest leans into; now and then a
 // big swell rolling through from one side; and the diver's hand: dragging the pointer stirs a wake
-// that pushes the kelp aside.
+// that pushes the kelp aside. A grown plant is longer than the water is deep: its lift fades in a
+// damped band under the surface, so its top bends over and lies along the surface, trailing
+// downstream, and its blades hang there as the canopy.
 //
-// Seen side-on, the forest stands in three depth layers (KELP_LAYERS), each a row of slots holding
+// Seen side-on, the forest stands in four depth layers (KELP_LAYERS), each a row of slots holding
 // at most one plant. A layer is simulated in its own screen units: lengths, flows and buoyancy are
 // scaled by its perspective scale, which leaves the timing of the motion the same at every depth,
 // so a far stipe sways exactly as a near one would, only smaller. The surge's phase runs on world
@@ -28,11 +30,14 @@
 //   uSim0  rgba16f PointTexture, two texels per point, KELP_POINTS per stipe in stipe order:
 //          xyz = position − KELP_ORIGIN, w = blade lean (radians, from the stipe toward screen +x);
 //          then velocity xyz (screen heights/s), w = speed.
-//   uSim1  rgba16f KELP_STATE_WIDTH × 4, nearest:
-//          row 0, per stipe: min x, max x, top y of its points, presence 0..1 (0 = not drawn)
+//   uSim1  rgba16f KELP_STATE_WIDTH × 5, nearest:
+//          row 0, per stipe: min x, max x of its rising part, top y of it, presence 0..1 (0 = not drawn)
 //          row 1, per fish: x, y, heading cos, sin (screen heights from the frame's centre/bottom)
 //          row 2, per fish: body length (0 = hidden), flash 0..1, tail beat −1..1, 0
 //          row 3, globals: KELP_GLOBAL columns (see there)
+//          row 4, per stipe: the node its rising part ends at (the first at the surface, else the
+//                 top), the x it reaches the surface at, the farthest x it floats to, link length
+//          row 5, per stipe: its own perspective scale (its layer's, jittered by DEPTH_JITTER), 0, 0, 0
 //   uSim2  r8 the hand's fading trail (TrailField), linear, uv.
 import { effective, type ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -61,13 +66,20 @@ const SPACING = 0.45;
 /** Half the width the forest is laid out over: a 21:9 frame with the sway to spare. */
 const HALF_SPAN = 1.55;
 /** Perspective scale of each layer, and how far its slots are shifted (in slots) off the others. */
-const LAYER_SCALES = [1, 0.6, 0.37] as const;
-const LAYER_SHIFT = [0, 0.37, 0.71] as const;
+const LAYER_SCALES = [1, 0.7, 0.48, 0.32] as const;
+const LAYER_SHIFT = [0, 0.37, 0.71, 0.13] as const;
 /**
- * Stipe length at the nearest layer (screen heights): most of the water's depth, so a grown plant's
- * crown stays just under the surface. Plants are 76–100% of it, most near the top of that range.
+ * Stipe length over the water's depth. A grown plant is longer than the water is deep: its top
+ * reaches the surface and lies along it, and its blades hang there as the canopy. A young plant
+ * (YOUNG_SHARE of them) stops short in mid-water.
  */
-export const KELP_STIPE_LENGTH = 0.92 * (KELP_VIEW.floor + KELP_VIEW.surface);
+const GROWN_MIN = 1.08;
+const GROWN_MAX = 1.32;
+const YOUNG_MIN = 0.5;
+const YOUNG_MAX = 0.85;
+const YOUNG_SHARE = 0.22;
+/** Each plant stands a little nearer or farther than its layer: ± half this share of its scale. */
+const DEPTH_JITTER = 0.1;
 
 export interface KelpLayer {
   /** Perspective scale: 1 at the nearest layer, smaller farther off. */
@@ -119,7 +131,7 @@ export const KELP_SWELL = { amplitude: 0.62, period: 10, span: 15, start: 4.8, s
 const SWELL_END = KELP_SWELL.span + (2 * KELP_SWELL.start) / KELP_SWELL.speed;
 
 /** State texture rows, and the columns of the globals row. */
-export const KELP_ROW = { stipes: 0, fishPose: 1, fishLook: 2, globals: 3 } as const;
+export const KELP_ROW = { stipes: 0, fishPose: 1, fishLook: 2, globals: 3, canopy: 4, scale: 5 } as const;
 /**
  * Globals (row 3):
  *   phases       cos φ1, sin φ1, cos φ2, sin φ2 of the surge
@@ -130,7 +142,7 @@ export const KELP_ROW = { stipes: 0, fishPose: 1, fishLook: 2, globals: 3 } as c
  */
 export const KELP_GLOBAL = { phases: 0, flow: 1, school: 2, visitorPose: 3, visitorLook: 4 } as const;
 export const KELP_STATE_WIDTH = Math.max(KELP_STIPES, KELP_FISH.max, 5);
-const STATE_ROWS = 4;
+const STATE_ROWS = 6;
 
 // ---- kelp physics -------------------------------------------------------------------------------
 /** Lift of the gas bladders, screen heights/s² at the nearest layer: a ~4 s natural sway. */
@@ -140,9 +152,25 @@ const DRAG = 1.6;
 /** Bending stiffness of a stipe (skip-one constraints): enough for a smooth curve, no more. */
 const BEND = 0.2;
 /** Vertical orbit of the surge at the surface, relative to its horizontal speed. */
-const ORBIT = 0.25;
+const ORBIT = 0.12;
+/**
+ * The band under the surface (world units) where a floating stipe's lift fades to nothing (and
+ * turns to a push down above it), and how hard its bobbing there is damped (1/s): critically, so
+ * the canopy settles on the surface instead of ringing.
+ */
+const SURFACE_BAND = 0.04;
+const SURFACE_DAMP = 14;
+/** Extra drag (1/s) on a floating top's sideways motion: the canopy follows the surge only in part. */
+const CANOPY_DRAG = 4;
+/**
+ * Lift per layer, near to far, as a share of BUOYANCY: the near plants hold more upright, so the
+ * largest kelp in the frame sways least across the dither and frames the page calmly.
+ */
+const LAYER_LIFT = [1.6, 1.45, 1.15, 1] as const;
+/** A node within this many bands of the surface counts as floating (the canopy starts there). */
+const FLOATING = 1.5;
 /** Blades stream with the relative flow: lean = atan(STREAM · flow), at most BLADE_MAX. */
-const BLADE_STREAM = 3.2;
+const BLADE_STREAM = 4.5;
 const BLADE_MAX = 1.25;
 /** Seconds a blade takes to swing to its new lean. */
 const BLADE_EASE = 0.35;
@@ -155,7 +183,7 @@ const PREWARM_STEP = 0.1;
 // ---- the hand -----------------------------------------------------------------------------------
 /** The wake's radius (screen heights) and how hard it pushes, per layer near to far. */
 const HAND_RADIUS = 0.13;
-const HAND_REACH = [1, 0.65, 0.4] as const;
+const HAND_REACH = [1, 0.7, 0.45, 0.3] as const;
 const HAND_GAIN = 1.6;
 /** The hand's velocity is smoothed over this many seconds, and capped (screen heights/s). */
 const HAND_SMOOTH = 0.06;
@@ -190,12 +218,12 @@ const FISH_SEPARATION = 0.028;
 const FISH_ALIGN = 0.09;
 const FISH_COHESION = 0.15;
 /** Speeds (screen heights/s): cruising, slowest, fastest, and the extra a fright allows. */
-const FISH_CRUISE = 0.085;
-const FISH_MIN = 0.045;
-const FISH_MAX = 0.13;
+const FISH_CRUISE = 0.06;
+const FISH_MIN = 0.035;
+const FISH_MAX = 0.09;
 const FISH_FRIGHT_SPEED = 0.32;
 /** Body length (screen heights at the school's depth), varied ±15% fish by fish. */
-const FISH_LENGTH = 0.03;
+const FISH_LENGTH = 0.036;
 /** A click scatters fish within this radius; dragging the hand repels them within FLEE. */
 const FISH_SCATTER = 0.35;
 const FISH_FLEE = 0.18;
@@ -435,7 +463,7 @@ class School {
       const wheel = Math.max(0, Math.sin(this.#clock * 0.17 + (x[i] ?? 0) * 3 + (y[i] ?? 0) * 1.3)) ** 24;
       const target = Math.max(turning, 0.8 * wheel);
       this.flash[i] = (this.flash[i] ?? 0) + (target - (this.flash[i] ?? 0)) * flashEase;
-      this.tail[i] = ((this.tail[i] ?? 0) + h * (5 + 40 * want)) % TAU;
+      this.tail[i] = ((this.tail[i] ?? 0) + h * (2 + 18 * want)) % TAU;
       const shown = this.shown[i] ?? 0;
       this.shown[i] = i < count ? Math.min(1, shown + fade) : Math.max(0, shown - fade);
     }
@@ -457,13 +485,17 @@ class KelpSim implements SceneSim {
   readonly #hand: Hand = { x: 0, y: 0.5, vx: 0, vy: 0, on: 0 };
   readonly #stepOptions: VerletStepOptions;
 
-  // Per stipe: when the density knob shows it (rank), and how far it has emerged from the haze.
+  // Per stipe: when the density knob shows it (rank), how far it has emerged from the haze, and
+  // the length of its links.
   readonly #rank = new Float32Array(KELP_STIPES);
   readonly #presence = new Float32Array(KELP_STIPES);
-  // Per point: its layer's scale and floor, the flow it was last dragged toward (screen heights/s)
-  // and its blade's lean.
+  readonly #link = new Float32Array(KELP_STIPES);
+  readonly #scale = new Float32Array(KELP_STIPES);
+  // Per point: its layer's scale, floor and surface, the flow it was last dragged toward (screen
+  // heights/s) and its blade's lean.
   readonly #pointScale = new Float32Array(POINT_COUNT);
   readonly #pointFloor = new Float32Array(POINT_COUNT);
+  readonly #pointSurface = new Float32Array(POINT_COUNT);
   readonly #pointLayer = new Uint8Array(POINT_COUNT);
   readonly #flowX = new Float32Array(POINT_COUNT);
   readonly #lean = new Float32Array(POINT_COUNT);
@@ -586,24 +618,35 @@ class KelpSim implements SceneSim {
     random.seed(SEED ^ Math.imul(seed + 1, 0x9e3779b1));
     const sys = this.#system;
     sys.clear();
+    // Grown plants are laid out as they will float: up to the surface, then along it downstream.
+    const downstream = this.#knob.current < 0 ? -1 : 1;
     for (const [l, layer] of KELP_LAYERS.entries()) {
-      const s = layer.scale;
-      const floorY = KELP_VIEW.horizon - KELP_VIEW.floor * s;
       for (let k = 0; k < layer.slots; k++) {
         const stipe = layer.first + k;
+        const s = layer.scale * (1 + DEPTH_JITTER * (random.next() - 0.5));
+        const floorY = KELP_VIEW.horizon - KELP_VIEW.floor * s;
+        const surfaceY = KELP_VIEW.horizon + KELP_VIEW.surface * s;
+        const rise = surfaceY - SURFACE_BAND * s - floorY;
         const x = layer.left + (k + 0.5 + 0.85 * (random.next() - 0.5)) * layer.spacing;
-        // Mostly grown plants reaching for the surface, now and then a younger, shorter one.
-        const young = random.next();
-        const length = KELP_STIPE_LENGTH * s * (1 - 0.24 * young * young);
+        const grown = random.next() >= YOUNG_SHARE;
+        const r = random.next();
+        const length = (surfaceY - floorY) * (grown ? GROWN_MIN + (GROWN_MAX - GROWN_MIN) * r : YOUNG_MIN + (YOUNG_MAX - YOUNG_MIN) * r);
         let rank = random.next();
         // The nearest plants keep the middle of the frame clear until the forest is dense.
         if (l === 0) rank += (0.92 + 0.07 * rank - rank) * (1 - smoothstep(0.25, 0.7, Math.abs(x)));
         this.#rank[stipe] = rank;
         this.#presence[stipe] = rank < this.#knob.density ? 1 : 0;
+        this.#link[stipe] = length / KELP_SEGMENTS;
+        this.#scale[stipe] = s;
         const chain = sys.addChain([x, floorY, 0], [x, floorY + length, 0], KELP_SEGMENTS, { bend: BEND, pinFirst: true });
+        for (let j = 1; j <= KELP_SEGMENTS; j++) {
+          const along = (j * length) / KELP_SEGMENTS;
+          if (along > rise) sys.place(chain.first + j, x + downstream * (along - rise), floorY + rise, 0);
+        }
         for (let p = chain.first; p < chain.first + chain.points; p++) {
           this.#pointScale[p] = s;
           this.#pointFloor[p] = floorY;
+          this.#pointSurface[p] = surfaceY;
           this.#pointLayer[p] = l;
           this.#flowX[p] = 0;
           this.#lean[p] = 0;
@@ -652,7 +695,11 @@ class KelpSim implements SceneSim {
     return amplitude * (slope * Math.sin(w * tau) + envelope * w * Math.cos(w * tau));
   }
 
-  /** Bladders lift every point; drag pulls it toward the flow, the hand's wake included. */
+  /**
+   * Bladders lift every point; drag pulls it toward the flow, the hand's wake included. In the band
+   * just under the surface the lift fades out (and pushes down above it), with extra damping of
+   * the up-and-down motion, so a grown plant's top comes to lie along the surface.
+   */
   readonly #force: VerletForce = (i, x, y, _z, out) => {
     const time = this.#system.time;
     if (time !== this.#flowTime) this.#advanceFlow(time);
@@ -678,8 +725,22 @@ class KelpSim implements SceneSim {
       }
     }
     this.#flowX[i] = fx;
-    out[0] = DRAG * fx;
-    out[1] = BUOYANCY * s + DRAG * fy;
+    let lift = BUOYANCY * s * (LAYER_LIFT[this.#pointLayer[i] ?? 0] ?? 1);
+    let push = DRAG * fx;
+    const band = SURFACE_BAND * s;
+    const over = (y - ((this.#pointSurface[i] ?? 1) - band)) / band;
+    if (over > 0) {
+      // Floating, its lift fades; its bobbing is damped, and so is its sloshing: the mat of fronds
+      // at the surface, held by its neighbours, follows the water only part of the way.
+      const prev = this.#system.previous;
+      const rate = 1 / this.#system.substep;
+      const floating = Math.min(1, over);
+      lift *= 1 - over;
+      lift -= SURFACE_DAMP * (y - (prev[3 * i + 1] ?? y)) * rate * floating;
+      push -= CANOPY_DRAG * (x - (prev[3 * i] ?? x)) * rate * floating;
+    }
+    out[0] = push;
+    out[1] = lift + DRAG * fy;
   };
 
   /**
@@ -834,17 +895,34 @@ class KelpSim implements SceneSim {
 
     const pos = this.#system.positions;
     for (let stipe = 0; stipe < KELP_STIPES; stipe++) {
+      const first = stipe * KELP_POINTS;
+      const s = this.#pointScale[first] ?? 1;
+      const floating = (this.#pointSurface[first] ?? 1) - FLOATING * SURFACE_BAND * s;
+      // The stipe rises from the holdfast to its first node at the surface (or to its top); from
+      // there it floats, the canopy, as far as the node that has trailed farthest along the surface.
+      let rising = KELP_SEGMENTS;
+      for (let j = 1; j <= KELP_SEGMENTS; j++) {
+        if ((pos[3 * (first + j) + 1] ?? 0) > floating) {
+          rising = j;
+          break;
+        }
+      }
       let minX = Infinity;
       let maxX = -Infinity;
-      let top = -Infinity;
-      for (let j = 0; j < KELP_POINTS; j++) {
-        const o = 3 * (stipe * KELP_POINTS + j);
-        const x = pos[o] ?? 0;
+      for (let j = 0; j <= rising; j++) {
+        const x = pos[3 * (first + j)] ?? 0;
         minX = Math.min(minX, x);
         maxX = Math.max(maxX, x);
-        top = Math.max(top, pos[o + 1] ?? 0);
       }
-      this.#put(KELP_ROW.stipes, stipe, minX, maxX, top, this.#presence[stipe] ?? 0);
+      const start = pos[3 * (first + rising)] ?? 0;
+      let end = start;
+      for (let j = rising + 1; j <= KELP_SEGMENTS; j++) {
+        const x = pos[3 * (first + j)] ?? 0;
+        if (Math.abs(x - start) > Math.abs(end - start)) end = x;
+      }
+      this.#put(KELP_ROW.stipes, stipe, minX, maxX, pos[3 * (first + rising) + 1] ?? 0, this.#presence[stipe] ?? 0);
+      this.#put(KELP_ROW.canopy, stipe, rising, start, end, this.#link[stipe] ?? 0);
+      this.#put(KELP_ROW.scale, stipe, s, 0, 0, 0);
     }
 
     const school = this.#school;
