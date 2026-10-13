@@ -4,8 +4,8 @@ import {
   creatorFace,
   recallCreator,
   rememberCreator,
-  type CreatorStorage,
 } from "../src/creator-choice.ts";
+import { brokenStorage, memoryStorage } from "./storage-fakes.ts";
 
 /**
  * THE FACE OF THE CREATION CONTROL (#1079): the last pick on this device while it is still
@@ -33,25 +33,8 @@ describe("creatorFace", () => {
 });
 
 describe("creator memory", () => {
-  const memory = (): CreatorStorage & { readonly items: Map<string, string> } => {
-    const items = new Map<string, string>();
-    return {
-      items,
-      getItem: (key) => items.get(key) ?? null,
-      setItem: (key, value) => void items.set(key, value),
-    };
-  };
-  const broken: CreatorStorage = {
-    getItem: () => {
-      throw new Error("storage disabled");
-    },
-    setItem: () => {
-      throw new Error("quota");
-    },
-  };
-
   test("a pick round-trips under its registered key", () => {
-    const storage = memory();
+    const storage = memoryStorage();
     expect(recallCreator(storage)).toBeNull();
     rememberCreator(storage, "new-folder");
     expect(storage.items.get(LAST_CREATOR_KEY)).toBe("new-folder");
@@ -59,7 +42,7 @@ describe("creator memory", () => {
   });
 
   test("a storage fault is no memory, never a broken control", () => {
-    expect(recallCreator(broken)).toBeNull();
-    expect(() => rememberCreator(broken, "new-folder")).not.toThrow();
+    expect(recallCreator(brokenStorage)).toBeNull();
+    expect(() => rememberCreator(brokenStorage, "new-folder")).not.toThrow();
   });
 });

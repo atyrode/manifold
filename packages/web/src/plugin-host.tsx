@@ -393,6 +393,7 @@ export function buildBrowserAssembly(
         // feeds is applied once, below, where this principal's values are known.
         ...(section.setting === undefined ? {} : { setting: section.setting }),
         ...(section.refKinds === undefined ? {} : { refKinds: section.refKinds }),
+        ...(section.defaultOpen === undefined ? {} : { defaultOpen: section.defaultOpen }),
         /*
           RESOLVED here, exactly as `assembleRoster` resolves it server-side: a manifest that
           declares nothing yields the default, so no reader downstream has to know what the
@@ -1620,7 +1621,18 @@ export function HostServicesGate({
   const composedSections = useMemo<readonly ComposedSection[]>(
     () =>
       assembly.sections.map(
-        ({ id, plugin, title, order, presentation, cluster, setting, refKinds, enabled }) => ({
+        ({
+          id,
+          plugin,
+          title,
+          order,
+          presentation,
+          cluster,
+          setting,
+          refKinds,
+          defaultOpen,
+          enabled,
+        }) => ({
           id,
           plugin,
           title,
@@ -1634,6 +1646,7 @@ export function HostServicesGate({
           // is a preference without asking a second registry.
           ...(setting === undefined ? {} : { setting }),
           ...(refKinds === undefined ? {} : { refKinds }),
+          ...(defaultOpen === undefined ? {} : { defaultOpen }),
           enabled,
         }),
       ),

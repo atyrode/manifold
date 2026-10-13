@@ -334,6 +334,12 @@ export type SettingDef = z.infer<typeof SettingDefSchema>;
  *
  * Absent ≡ this row is unconditional, which is what every manifest written before the field
  * existed says.
+ *
+ * `defaultOpen` is a disclosure row saying "A READER WHO HAS NEVER FOLDED ME SEES ME OPEN".
+ * Every other disclosure starts folded, so a rail of several sections opens on the one a
+ * reader came for instead of on every list at once; after the first fold or unfold the
+ * reader's own choice wins on that device. Meaningless on a `plain` row, which has no fold.
+ * Absent ≡ folded.
  */
 export const SectionDefSchema = z.strictObject({
   id: LocalNameSchema,
@@ -342,6 +348,7 @@ export const SectionDefSchema = z.strictObject({
   presentation: SectionPresentationSchema.optional(),
   cluster: LocalNameSchema.optional(),
   setting: LocalNameSchema.optional(),
+  defaultOpen: z.boolean().optional(),
   /** A reference reveals its owning section without hard-coded plugin names in the shell. */
   refKinds: z
     .array(z.enum(ManifoldRefSchema.options.map((option) => option.shape.kind.value)))
@@ -404,8 +411,10 @@ export const CreatorInputSchema = z
  * lands the presser inside it; any other result is the declaring plugin's to react to.
  *
  * `id` is claimed GLOBALLY, like a section's: the picker is one menu, and two plugins claiming
- * one entry is the shadowing D5 refuses. `title` is the whole label ("New canvas"), because a
- * picker entry and the face that repeats the last pick read it verbatim.
+ * one entry is the shadowing D5 refuses. `title` names the THING ("Canvas"), not the act: the
+ * shell owns the one verb and draws it once, "+ New", beside the title of the current choice,
+ * so the picker lists what can be made and the phrase reads "New Canvas" without every entry
+ * repeating "New".
  *
  * `setting` gates the entry exactly as it gates a section ({@link SectionDefSchema}): one of
  * this manifest's OWN boolean settings, refused by name otherwise, and an entry whose setting

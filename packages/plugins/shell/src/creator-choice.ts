@@ -8,21 +8,9 @@
  * Storage faults (privacy mode, quota, disabled storage) degrade to "no memory".
  */
 
-/** Minimal Storage ref so tests can inject fakes, including throwing ones. */
-export interface CreatorStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
+import type { DeviceStorage } from "./device-storage.ts";
 
 export const LAST_CREATOR_KEY = "manifold:last-creator";
-
-/** Defers `window.localStorage` to call time: reading the property itself can throw. */
-export function browserCreatorStorage(): CreatorStorage {
-  return {
-    getItem: (key) => window.localStorage.getItem(key),
-    setItem: (key, value) => window.localStorage.setItem(key, value),
-  };
-}
 
 /**
  * THE FACE: the remembered creator while it is still offered to this reader, otherwise the
@@ -38,7 +26,7 @@ export function creatorFace<T extends { readonly id: string }>(
 }
 
 /** The remembered creator id, or null on absence or a storage fault. */
-export function recallCreator(storage: CreatorStorage): string | null {
+export function recallCreator(storage: DeviceStorage): string | null {
   try {
     const stored = storage.getItem(LAST_CREATOR_KEY);
     return stored !== null && stored.length > 0 ? stored : null;
@@ -48,7 +36,7 @@ export function recallCreator(storage: CreatorStorage): string | null {
 }
 
 /** Remembers the picked creator; silently a no-op on storage faults. */
-export function rememberCreator(storage: CreatorStorage, creatorId: string): void {
+export function rememberCreator(storage: DeviceStorage, creatorId: string): void {
   try {
     storage.setItem(LAST_CREATOR_KEY, creatorId);
   } catch {

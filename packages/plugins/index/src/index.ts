@@ -62,13 +62,15 @@ export const indexManifest: PluginManifest = {
       with a fixed name at the root — and the tree reacts to its own creator having run on this
       device by opening the new folder's rename field (`lastCreated`, `web.tsx`). `index` keeps
       `order: 10` and its default `disclosure`, and it is the row the rail's leftover height
-      goes to, because it is the first row in the order with a body (`railRows`).
+      goes to, because it is the first row in the order with a body (`railRows`). It is also the
+      one row that starts UNFOLDED on a device that has never folded it (`defaultOpen`): the tree
+      is where a reader goes, and every other disclosure starts shut until somebody opens it.
      */
-    sections: [{ id: "index", title: "Index", order: 10, setting: "index" }],
+    sections: [{ id: "index", title: "Index", order: 10, setting: "index", defaultOpen: true }],
     creators: [
       {
         id: NEW_FOLDER_CREATOR,
-        title: "New folder",
+        title: "Folder",
         icon: "folder",
         order: 4,
         action: "core.index.createFolder",

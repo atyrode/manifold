@@ -126,6 +126,12 @@ export interface AssemblySection {
   readonly presentation: SectionPresentation;
   readonly refKinds?: readonly ManifoldRef["kind"][];
   /**
+   * Whether a reader who has never folded this disclosure sees it open, carried verbatim from
+   * the manifest (`SectionDefSchema`); absent ≡ folded. The reader's own fold choice, once
+   * made, is the shell's to remember and outranks it.
+   */
+  readonly defaultOpen?: boolean;
+  /**
    * WHICH CLUSTER this row declared, or undefined for "its own". Rows sharing a cluster paint
    * side by side as one horizontal row at the cluster's earliest member (`clusteredSections`,
    * `layout.ts`); absent is not defaulted to anything, because there is no such thing as a
@@ -160,7 +166,7 @@ export interface AssemblySection {
 export interface AssemblyCreator {
   readonly id: string;
   readonly plugin: string;
-  /** The entry's whole label ("New canvas"), read verbatim by the picker and its face. */
+  /** The name of the thing the entry makes ("Canvas"); the picker shows it beside the shell's "+ New". */
   readonly title: string;
   readonly icon: CreatorIcon;
   readonly order: number;
@@ -973,6 +979,7 @@ function assembleDefinitions(
         // Spread for the same reason, and absent means "unconditional" (`visibleSections`).
         ...(section.setting === undefined ? {} : { setting: section.setting }),
         ...(section.refKinds === undefined ? {} : { refKinds: section.refKinds }),
+        ...(section.defaultOpen === undefined ? {} : { defaultOpen: section.defaultOpen }),
         presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
       });
     }
