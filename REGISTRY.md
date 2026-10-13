@@ -713,6 +713,7 @@ Per kind:
 | **element** (scene record) | data untouched; renders the engine placeholder (`dormant.mode` `ghost`, default) or is skipped (`hide`) | renders again, in place              | records released, ownership freed             |
 | **panel** (layout leaf)    | leaf stays in every principal's stored layout; paints the placeholder, which carries a remove control   | paints its component again, in place | leaf becomes an unknown-panel placeholder     |
 | **section** (sidebar)      | ABSENT — chrome renders absence; the Plugins section is the one ledger of what is off                   | returns to its manifest-ordered slot | slot gone                                     |
+| **creator** (picker entry) | ABSENT from every reader's picker — an offer keeps no seat, and creation dies on a disable (D12)        | offered again                        | gone                                          |
 | **tool** (toolbar)         | absent from the strip; any in-flight tool state falls back to select                                    | reappears                            | gone                                          |
 | **stored data**            | retained — `ctx.storage` namespace, migration ledger, element-type reservation all stand                | read as they were                    | cleared, ledger dropped, reservation released |
 | **route**                  | the engine's named "disabled" page                                                                      | serves again                         | 404                                           |
@@ -1221,6 +1222,12 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "section",
       "means": "contribution kind: a composable row of the sidebar — a disclosure with a body, or a plain row — ordered by its manifest unless the reader has arranged it (see arrange mode), and painted beside its cluster's other members when it declares one. A reader's arrangement of them is a TREE, not a flat order: a row sits somewhere in the rail's stack, and a stack dropped between two rows holds its own rows along the other axis",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "creator",
+      "means": "contribution kind: an offer to make something, declared as DATA in `contributes.creators` — an id claimed globally, a title, a mark from the closed `CREATOR_ICONS`, an order, a full action name and a fixed bounded JSON input, optionally gated on the plugin's own boolean setting. `core.shell` draws every creator offered to the reader in one split button (its face repeats the last pick on this device) and runs the chosen one through the declared door as the presser; the declaring plugin supplies no component, so trusted, in-realm and hardened plugins offer creators the same way",
       "banned": [],
       "allow": []
     },
@@ -1761,7 +1768,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "sidebar",
       "owner": "packages/web/src/shell.css",
-      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, the chrome each presentation wears, and the wrappers a declared CLUSTER and a reader's own nested arrangement paint in, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-section-content`, `.sidebar-section-count` and `.sidebar-section-empty` by those three AND core.access, whose credential list is the newest tenant of the same row rhythm (ADR 0019 §3); `.sidebar-new` by core.canvas, core.compositions and core.index, one creator each; `.sidebar-brand` by core.brand, `.sidebar-status` and `.sidebar-identity` by core.shell's two remaining rows; `.sidebar-opener` by core.keys AND core.plugins, which is the clearest case for the rule — two clustered rows that must look identical cannot be two stylesheets agreeing (issue #91) — and `.sidebar-cluster` by the rail itself, around rows whose plugins have never heard of each other, joined by `.sidebar-split` (issue #104) around the members of a stack the reader dropped between two rows, which is the same case again: two plugins' rows wear that wrapper, so it can live in neither plugin's package. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make six plugins depend on a seventh's stylesheet"
+      "why": "the sidebar rail, its rows and inline actions. The rail's LAYOUT is painted by @manifold-plugin/shell's `sidebar-panel.tsx` — which after the rail was hollowed (2026-09-01) is the collapse control, the stack, the chrome each presentation wears, and the wrappers a declared CLUSTER and a reader's own nested arrangement paint in, and nothing else. Every class inside a row is filled by a PLUGIN: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted`, `.sidebar-section-action` by core.index, core.machines and core.plugins; `.sidebar-section-content`, `.sidebar-section-count` and `.sidebar-section-empty` by those three AND core.access, whose credential list is the newest tenant of the same row rhythm (ADR 0019 §3); `.sidebar-creator` by core.shell's creation control, which draws every plugin's declared creators (#1079); `.sidebar-create` by core.index's nested folder form; `.sidebar-brand` by core.brand, `.sidebar-status` and `.sidebar-identity` by core.shell's other rows; `.sidebar-opener` by core.keys AND core.plugins, which is the clearest case for the rule — two clustered rows that must look identical cannot be two stylesheets agreeing (issue #91) — and `.sidebar-cluster` by the rail itself, around rows whose plugins have never heard of each other, joined by `.sidebar-split` (issue #104) around the members of a stack the reader dropped between two rows, which is the same case again: two plugins' rows wear that wrapper, so it can live in neither plugin's package. So the owner is the floor sheet, exactly as for `plugin-placeholder` and `notice`: plugins fill these rows, the layer owner owns the row — and moving the family into one plugin's package would now make six plugins depend on a seventh's stylesheet"
     },
     {
       "family": "keys",
@@ -1842,6 +1849,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "family": "popover",
       "owner": "packages/ui/src/styles.css",
       "why": "the one popover's floating layer (`popover.tsx`), portaled to the body above every pointer-transparent overlay; its behavior engine is Radix Popover, an internals decision (docs/decisions/2026-09-01-radix-popover.md)"
+    },
+    {
+      "family": "menu",
+      "owner": "packages/ui/src/styles.css",
+      "why": "the one menu (`menu.tsx`): a list of choices riding the popover's layer with menu/menuitem roles and roving focus — its rows, their mark and their truncating label. First adopter: core.shell's creation control"
     },
     {
       "family": "credential",
@@ -2135,6 +2147,10 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     {
       "key": "manifold:plugin-manager-collapsed",
       "why": "which of the plugin manager's section bands (Installed, Built-in, Engine) THIS device has folded (issue #239). Presentation of a ledger whose content is durable server state, exactly as `manifold:expanded-index-folders` is for the index tree: which rows exist and whether they are on is the roster; whether a reader has tucked the engine's rows away is a fact about this screen. Absent ≡ the engine folded, everything else open"
+    },
+    {
+      "key": "manifold:last-creator",
+      "why": "which creator THIS device last picked from core.shell's creation control, so its face repeats it (#1079). A convenience about one screen naming an entry from an OPEN set any plugin may declare: a hidden, disabled, uninstalled or unknown pick simply falls back to the first entry offered, and a storage fault is no memory"
     }
   ]
 }
