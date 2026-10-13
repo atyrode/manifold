@@ -9,7 +9,7 @@ export const orbitScene: SceneDef = {
   title: "Orbit",
   blurb: "A planet in space: rings, moons, aurora, meteors.",
   accent: "#5c7cfa",
-  // The shader indexes uParams directly in this order: append only.
+  // The shader reads each knob through its K_<key> define.
   params: [
     range("stars", "stars", "density", 0.35, "How many background stars."),
     feature("stars", "twinkle", "twinkle", true, "speed", 0.3, "Stars dim briefly now and then."),

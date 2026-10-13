@@ -8,7 +8,7 @@ export const swellScene: SceneDef = {
   title: "Swell",
   blurb: "A moonlit sea rolling toward the horizon.",
   accent: "#4c6ef5",
-  // The shader indexes uParams directly in this order: append only.
+  // The shader reads each knob through its K_<key> define.
   params: [
     range("sea", "height", "swell", 0.5, "Height of the long swells."),
     range("sea", "chop", "chop", 0.5, "Small, fast waves on top of the swell."),
