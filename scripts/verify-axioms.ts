@@ -5398,6 +5398,19 @@ try {
       }, 5_000);
       return last;
     };
+    /*
+      The rung above re-enabled a plugin, so the rail may still be taking the roster's later
+      frames. Focus ▾ only once it reads shut and has held still for a beat, so the Enter below
+      lands on the control a reader would be looking at.
+    */
+    await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector(${pickSelector})?.getAttribute('aria-expanded') === 'false'`,
+        ),
+      5_000,
+    );
+    await Bun.sleep(250);
     const triggered = await browser.evaluate<boolean>(
       `(() => {
          const pick = document.querySelector(${pickSelector});
@@ -5407,6 +5420,10 @@ try {
        })()`,
     );
     await press("Enter");
+    const opened = await settles(
+      () => browser!.evaluate<boolean>(`document.querySelector(${menuSelector}) !== null`),
+      5_000,
+    );
     const openedOn = await focusOn("New canvas");
     await press("ArrowDown");
     const walkedTo = await focusOn("New composition");
@@ -5415,6 +5432,7 @@ try {
     const returnedTo = await focusOn("the trigger");
     const keyed =
       triggered &&
+      opened &&
       openedOn === "New canvas" &&
       walkedTo === "New composition" &&
       shut &&
@@ -5426,7 +5444,7 @@ try {
         ? "the creation control's ▾ could not take focus"
         : keyed
           ? "Enter on ▾ opened the menu on New canvas, ArrowDown walked to the returned New composition, and Escape shut it with focus back on ▾"
-          : `Enter on ▾ left focus on "${openedOn}", ArrowDown on "${walkedTo}"; Escape ${shut ? "shut the menu" : "left the menu open"} with focus on "${returnedTo}"`,
+          : `Enter on ▾ ${opened ? "opened the menu" : "did NOT open the menu"} with focus on "${openedOn}", ArrowDown on "${walkedTo}"; Escape ${shut ? "shut the menu" : "left the menu open"} with focus on "${returnedTo}"`,
     );
   }
 
