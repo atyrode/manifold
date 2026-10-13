@@ -24,7 +24,7 @@ const params: readonly ParamDef[] = [
   toggle("life", "dwellings", "pavilions", true, "Pavilions under the pines on the river banks, now and then with a scholar sitting in one, looking out over the water."),
   toggle("life", "falls", "waterfalls", true, "Thread waterfalls dropping down the clefts of the tall peaks, left as bare paper between dark rock."),
   toggle("life", "inscription", "inscriptions", true, "Now and then a sheet carries a few columns of calligraphy in its empty sky, faint and grey, as poets and owners wrote on scrolls."),
-  feature("manifold", "seal", "seal", true, "size", 0.45, "A cinnabar seal carved with the Manifold M in seal script, pressed across each join of the scroll's paper sheets as collectors did, once the join is well inside the frame. Click the page to press it where you like. Now: a fresh impression on the sky.", { trigger: 1 }),
+  feature("manifold", "seal", "seals", true, "size", 0.45, "Cinnabar seals carved with the Manifold M in seal script. The painter's own, cut in relief, sits high in the sky of every stretch of the scroll (beneath the inscription where there is one), so one is always in view; a collector's, cut into the stone, rides each join of the paper sheets. Click the page to press one where you like. Now: a fresh impression on the sky.", { trigger: 1 }),
 ];
 
 export const shanshuiScene: SceneDef = {
@@ -40,7 +40,7 @@ export const shanshuiScene: SceneDef = {
     ink: { title: "Ink and paper", blurb: "The palette, how heavy and how wet the brush, the strokes that model the rock, and the paper's age." },
     mist: { title: "Mist", blurb: "The clouds between the mountains, left as bare paper. Move the pointer to blow them aside." },
     life: { title: "Life", blurb: "Geese, a boatman, pavilions, waterfalls and inscriptions along the way." },
-    manifold: { title: "Manifold mark", blurb: "A red seal with the M in seal script, riding the joins of the paper. Click to press one." },
+    manifold: { title: "Manifold mark", blurb: "Red seals with the M in seal script: the painter's in the sky, collectors' on the joins of the paper. Click to press one." },
   },
   glsl: shanshuiGlsl,
   entry: "sceneShanshui",

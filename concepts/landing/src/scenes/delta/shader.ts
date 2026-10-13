@@ -76,6 +76,14 @@ vec3 deltaFarms(vec2 cellPos, DeltaGround s) {
   return vec3(hash12(floor(q) + 31.0), hedge, K_farms * settled * patchy);
 }
 
+// How turbid the water looks, 0..1: a long, soft ramp over the silt (so plumes fade out with
+// distance instead of ending in rims), combed into streaks along the coast, the way the longshore
+// current draws them out. The streaks are fixed to the ground, so they never crawl.
+float deltaTurbid(DeltaGround s, vec2 cellPos) {
+  float streak = vnoise(cellPos * vec2(0.035, 0.2) + vec2(3.1, 7.7));
+  return smoothstep(0.0003, 0.007, s.silt * (0.65 + 0.7 * streak));
+}
+
 // The satellite picture: deep, saturated colours, so four levels a channel still read as ocean,
 // marsh and sand rather than grey.
 vec3 deltaSatellite(DeltaGround s, vec2 cellPos) {
@@ -106,7 +114,7 @@ vec3 deltaSatellite(DeltaGround s, vec2 cellPos) {
   water = mix(water, vec3(0.0, 0.18, 0.32), smoothstep(0.7, 2.0, s.depth));
   water = mix(water, vec3(0.0, 0.07, 0.20), smoothstep(2.0, 3.6, s.depth));
   water = mix(land * 0.9 + vec3(0.0, 0.1, 0.1), water, smoothstep(0.0, 0.4, s.depth));
-  float plume = smoothstep(0.0005, 0.004, s.silt);
+  float plume = deltaTurbid(s, cellPos);
   vec3 silt = mix(vec3(0.20, 0.70, 0.60), vec3(0.45, 0.58, 0.36), smoothstep(0.005, 0.016, s.silt));
   silt = mix(silt, vec3(0.64, 0.48, 0.26), smoothstep(0.012, 0.03, s.silt));
   water = mix(water, silt, plume * mix(0.75, 0.9, smoothstep(0.2, 2.0, s.depth)));
@@ -138,7 +146,7 @@ vec3 deltaInfrared(DeltaGround s, vec2 cellPos) {
   vec3 water = mix(vec3(0.10, 0.22, 0.42), vec3(0.03, 0.07, 0.18), smoothstep(0.05, 0.8, s.depth));
   water = mix(water, vec3(0.008, 0.015, 0.04), smoothstep(0.8, 3.0, s.depth));
   water = mix(land * 0.6 + vec3(0.0, 0.03, 0.08), water, smoothstep(0.0, 0.4, s.depth));
-  float plume = smoothstep(0.0008, 0.006, s.silt);
+  float plume = deltaTurbid(s, cellPos);
   vec3 silt = mix(vec3(0.13, 0.42, 0.72), vec3(0.50, 0.80, 0.90), smoothstep(0.008, 0.035, s.silt));
   water = mix(water, silt, plume * mix(0.5, 0.9, smoothstep(0.2, 2.0, s.depth)));
   return mix(land, water, s.water);
@@ -207,7 +215,7 @@ Shade sceneDelta(vec2 uv, vec2 cell, float t) {
   o.source = col;
   o.ink = chart ? clamp((0.92 - lum) / 0.8, 0.0, 1.0) : clamp(1.3 * lum, 0.0, 1.0);
   // The accent: the thin, jade end of the silt plumes spreading into the sea.
-  o.accent = s.water * smoothstep(0.0008, 0.005, s.silt) * (1.0 - smoothstep(0.012, 0.03, s.silt)) * smoothstep(0.1, 0.4, s.depth);
+  o.accent = s.water * deltaTurbid(s, cellPos) * (1.0 - smoothstep(0.012, 0.03, s.silt)) * smoothstep(0.1, 0.4, s.depth);
   return o;
 }
 `;

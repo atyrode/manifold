@@ -496,10 +496,11 @@ export interface DeltaLayout {
 }
 
 /**
- * Lay out a mature delta on a `columns` × `rows` grid, sea at `sea`. Everything scales with the short
- * side; the river enters at the top, the sea lies along the bottom.
+ * Lay out a mature delta on a `columns` × `rows` grid, sea at `sea`, the longshore current `drift`
+ * (-1..1, positive to the right) bending its plumes. Everything scales with the short side; the
+ * river enters at the top, the sea lies along the bottom.
  */
-export function layDelta(columns: number, rows: number, seed: number, sea: number, plants: boolean): DeltaLayout {
+export function layDelta(columns: number, rows: number, seed: number, sea: number, plants: boolean, drift: number): DeltaLayout {
   const n = columns * rows;
   const rand = mulberry32((Math.round(seed) + 1) * 7919);
   const s = Math.min(columns, rows) / 256;
@@ -659,28 +660,33 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
   cutAll(outlets, 1);
   cutAll(old, 0.3);
 
-  // Mouth bars just off each mouth, and the plume of silt fanning out from it.
+  // Mouth bars just off each mouth, and a jet of silt from each: out along the channel, bent
+  // downstream by the longshore current, widening and fading with distance (summed, so neighbouring
+  // jets merge).
   const bar = new Float32Array(n);
   const plume = new Float32Array(n);
+  const fadeLength = 35 * s;
+  const reach = 3.2 * fadeLength;
   for (const m of mouths) {
     const ca = Math.cos(m.angle);
     const sa = Math.sin(m.angle);
     const cx = m.x + ca * 3 * m.width;
     const cy = m.y + sa * 3 * m.width;
-    for (let y = Math.max(0, Math.floor(cy - 45 * s)); y < Math.min(H, Math.ceil(cy + 4 * m.width + 4)); y++) {
-      for (let x = Math.max(0, Math.floor(cx - 50 * s)); x < Math.min(W, Math.ceil(cx + 50 * s)); x++) {
+    for (let y = Math.max(0, Math.floor(cy - reach)); y < Math.min(H, Math.ceil(cy + reach)); y++) {
+      for (let x = Math.max(0, Math.floor(cx - reach)); x < Math.min(W, Math.ceil(cx + reach)); x++) {
         const px = x + 0.5 - cx;
         const py = y + 0.5 - cy;
         const ahead = px * ca + py * sa;
-        const across = -px * sa + py * ca;
         const c = y * W + x;
-        const e = (ahead / (1.6 * m.width)) ** 2 + (across / m.width) ** 2;
+        const e = (ahead / (1.6 * m.width)) ** 2 + ((-px * sa + py * ca) / m.width) ** 2;
         if (e < 1) bar[c] = Math.max(bar[c] ?? 0, 1 - e);
-        if (ahead > -m.width) {
-          const spread = Math.max(ahead, 0) + 4 * m.width;
-          const fade = (1 - smoothstep(30 * s, 50 * s, Math.abs(px))) * (1 - smoothstep(25 * s, 45 * s, -py));
-          plume[c] = Math.max(plume[c] ?? 0, fade * Math.exp(-Math.max(ahead, 0) / (30 * s)) * Math.exp(-((across / spread) ** 2)));
-        }
+        const behind = smoothstep(-3 * m.width, 0, ahead);
+        // The jet's centre line at this distance out, drifted along the coast.
+        const a = Math.max(ahead, 0);
+        const off = Math.hypot(px - ca * a - drift * 0.5 * a, py - sa * a);
+        const spread = 3 * m.width + 0.45 * a;
+        const fade = behind * (1 - smoothstep(2.4 * fadeLength, reach, Math.hypot(px, py)));
+        plume[c] = (plume[c] ?? 0) + fade * Math.exp(-a / fadeLength) * Math.exp(-((off / spread) ** 2));
       }
     }
   }
@@ -747,9 +753,10 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
       // How much plant cover the ground can carry: patchy on the plain, wooded on the hills.
       const fertile = Math.max(Math.min(1, Math.max(0.3, 0.45 + 0.75 * smoothstep(0.35, 0.65, hillNoise) + 0.2 * (fine - 0.5))), 0.9 * upland);
       const veg = plants ? Math.min(fertile, dry * (1 - 0.8 * ch) * (0.15 + 0.6 * young + upland) * (0.6 + 0.8 * fine) * (1 - 0.6 * levee * lobe)) : 0;
-      const p = plume[c] ?? 0;
-      // Silt: the river's load in the channels across the land, a dilute plume fanning out off each mouth.
-      const fines = depth > 0 ? Math.max(0.15 * silt * p, cut > 0.25 && onLand ? silt : 0) : 0;
+      // Silt: the river's load in the channels across the land; in the sea a faint turbid halo along
+      // the delta front and the jets off the mouths, merging into it.
+      const turbid = 0.05 * (platform - lobe) + 0.16 * Math.min(plume[c] ?? 0, 1.5);
+      const fines = depth > 0 ? Math.max(silt * Math.max(turbid, 0), cut > 0.25 && onLand ? silt : 0) : 0;
 
       terrain[c * 4] = h;
       terrain[c * 4 + 1] = fines;
@@ -1296,7 +1303,7 @@ function stillSim(gl: WebGL2RenderingContext, knobs: DeltaKnobs): SceneSim {
       const want: LayoutKey = { seed: knobs.value(frame, "landscape"), ...grid };
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
       if (key === undefined || layout === undefined || !sameKey(key, want)) {
-        layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0);
+        layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0, knobs.value(frame, "current"));
         key = want;
         shown = "";
       }
@@ -1343,7 +1350,7 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     /** Lay out afresh and warm up, time-boxed: a probe of a few steps sets how many fit the budget. */
     const relayout = (frame: SimFrame, want: LayoutKey): DeltaField => {
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
-      const layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0);
+      const layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0, knobs.value(frame, "current"));
       if (field === undefined) field = new DeltaField(gpu, layout);
       else field.reset(layout);
       key = want;

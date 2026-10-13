@@ -12,14 +12,16 @@
 //     whole dish; the busiest filaments draw the most traffic and thicken into trunks.
 //   - Oat flakes feed the specks that reach them and are where new plasmodium is born: a speck
 //     that goes a minute without food dies and is reborn at a flake, heading out from it, so every
-//     flake sends out a fan of fresh filaments. A hungry speck (half a minute since it ate) smells
-//     a flake within its sensors' reach as strongly as a trunk, a fed one ignores food and roams.
-//     So fed plasmodium spreads out over the lace and hungry plasmodium homes back in along it:
-//     the filaments between flakes carry traffic both ways and thicken into trunks; when a flake
-//     is eaten its trunks lose their traffic and relax back into lace. Food is sensed, never
-//     poured into the trail, so the trail is only ever plasmodium (no glowing pool round a flake),
-//     and it has no long-range scent: one pulled the whole population into the flakes' basins and
-//     starved the lace.
+//     flake sends out a fan of fresh filaments. Each flake has a short halo of smell (about two and
+//     a half sensor offsets), flat over the flake and falling off beyond it; hungry specks (half a
+//     minute since they ate) smell it more keenly than fed ones. Trunks passing near a flake bend
+//     into it and run through it, the lace round it gathers into a fan, and the flakes become the
+//     network's junctions; when a flake is eaten its trunks lose their pull and relax back into
+//     lace. The smell is kept apart from the trail, so the trail is only ever plasmodium (no
+//     glowing pool round a flake), and it is short: a long-range scent pulled the whole population
+//     into the flakes' basins and starved the lace.
+//   - Each speck's sensor reach is its own (0.6–1.4 × the knob's): the short-sighted knit fine
+//     branches and small loops between the trunks the long-sighted lay down.
 //   - Salt (dragged across the dish), light (the sea on the Tokyo map, lit in the experiment so
 //     the mould would shun it) and the dish's glass wall repel it, block it and kill the trail.
 //   - Sensing saturates: where the plasmodium crowds onto a flake every sensor reads the same, so
@@ -49,8 +51,9 @@
 //          squash, grain (its own random number), 1 for a crumb. Row 2: texel 0 streaming phase
 //          (0..1) and the heart's presence; texel 1 the M (centre uv, height in screen heights,
 //          shown 0..1).
-//   uSim3  rgba at half resolution: R food scent, G salt, B feeding (1 in a flake's pool, 0.5 at its
-//          rim, a halo beyond), A light (the lit sea, and everything past the dish's glass wall).
+//   uSim3  rgba at half resolution: R food as the specks smell it (the flakes' halos, the M's
+//          strokes), G salt, B feeding (1 in a flake's pool, 0.5 at its rim, a fringe beyond),
+//          A light (the lit sea, and everything past the dish's glass wall).
 import type { ParamDef } from "../../params.ts";
 import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget, type Scatter } from "../../sims/gpu.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -64,7 +67,7 @@ const TAU = Math.PI * 2;
 
 /**
  * Trail texels across the frame's shorter side, and at most along its longer one. Fine enough that
- * the specks occupy only ~10% of the texels (see physarumAgentCounts); the view's blur draws a
+ * the specks occupy only ~15% of the texels (see physarumAgentCounts); the view's blur draws a
  * one-texel filament as a soft line ~2 cells wide.
  */
 const TRAIL_SHORT = 400;
@@ -74,13 +77,16 @@ export const PHYSARUM_MARGIN = 10;
 /** Flake slots: the shader's loop and the passes' uniform arrays. */
 export const PHYSARUM_MAX_FOOD = 32;
 /**
- * The `agents` knob's choices (power-of-two state textures). On a 16:9 frame's 711 × 400 texels
- * they occupy ~6%, ~12% and ~23% of them: Jones's model knits a reticulated network at a few to
- * ~15% occupancy and condenses into a few thick bands and loops well above it.
+ * The `agents` knob's choices, by index (the knob's value; URL `agents=0..2`). State textures are
+ * 256 wide. In the dish on a 16:9 frame (~270k texels) they occupy ~7.5%, ~15% and ~23% of it:
+ * Jones's model knits a reticulated network at a few to ~15% occupancy and condenses into a few
+ * thick bands and loops well above it.
  */
-export const physarumAgentCounts = [16_384, 32_768, 65_536] as const;
+export const physarumAgentCounts = [20_480, 40_960, 61_440] as const;
+/** The `agents` knob's default index. */
+export const PHYSARUM_AGENTS_DEFAULT = 1;
 /** Deposits are scaled so the trail's total is the same at any population. */
-const REFERENCE_AGENTS = 32_768;
+const REFERENCE_AGENTS = 40_960;
 
 // ---- the mould --------------------------------------------------------------------------------
 
@@ -98,13 +104,24 @@ const WANDER = 0.08;
 const TURN_MIN = 45;
 /** Sensed trail saturates here (× the trunk level): crowds on a flake read flat, so specks cross them. */
 const SENSE_CAP = 1.5;
-/** A flake as a hungry speck senses it (× the trunk level), and how hungry that is (share of LIFE left). */
-const FOOD_SENSE = 1;
+/**
+ * Food as sensed (× the trunk level) by a fed and by a hungry speck (hungry: under HUNGRY of LIFE
+ * left): a halo round each flake, flat over its pool and falling off linearly over HALO_REACH sensor
+ * offsets beyond, so trunks passing near a flake bend into it and run through it, and the lace
+ * round it gathers into a fan. Flat on top, so specks cross a flake along the trail rather than
+ * circling it; weaker than a trunk's trail across one sensor offset, so they leave along trunks.
+ */
+const FOOD_FED = 0.4;
+const FOOD_SENSE = 0.9;
 const HUNGRY = 0.5;
+const HALO_REACH = 2.5;
+/** Each speck's sensor reach is the knob's times its own factor in this range: fine and coarse at once. */
+const REACH_LOW = 0.6;
+const REACH_HIGH = 1.4;
 /** Salt, light and the dish's wall as sensed (× the trunk level). */
 const REPEL = 6;
-/** The scent laid along the M's strokes as sensed (× the trunk level), and its half-width in trail texels. */
-const MARK_SCENT = 0.5;
+/** The scent laid along the M's strokes (0..1 of a flake's halo, sensed as food), and its half-width in trail texels. */
+const MARK_SCENT = 0.8;
 const MARK_WIDTH = 10;
 /** Trail one speck per texel keeps up at the reference population. */
 const AGENT_UNIT = 0.1;
@@ -521,9 +538,7 @@ interface Settings {
 const markHeight = (amount: number): number => MARK_MIN + (MARK_MAX - MARK_MIN) * clamp(amount, 0, 1);
 
 function readSettings(knobs: PhysarumKnobs, frame: SimFrame): Settings {
-  const wanted = knobs.value(frame, "agents");
-  let agents: number = REFERENCE_AGENTS;
-  for (const count of physarumAgentCounts) if (Math.abs(count - wanted) < Math.abs(agents - wanted)) agents = count;
+  const agents = physarumAgentCounts[Math.round(knobs.value(frame, "agents"))] ?? REFERENCE_AGENTS;
   const feeding = knobs.value(frame, "feeding");
   const mark = knobs.value(frame, "mark");
   return {
@@ -1561,11 +1576,11 @@ uniform int uStep;
 uniform vec4 uFood[${PHYSARUM_MAX_FOOD}];
 uniform int uFoodCount;
 ${HASH}
-// What a sensor smells: the trail (saturating), the M's strokes, a flake (if the speck is hungry),
-// less salt, light and the dish's wall.
-float physarumSense(vec2 at, float cap, float mark, float food, float repel) {
+// What a sensor smells: the trail (saturating), food (the flakes' halos and the M's strokes, more
+// keenly when hungry), less salt, light and the dish's wall.
+float physarumSense(vec2 at, float cap, float food, float repel) {
   vec4 env = texture(uEnv, at);
-  return min(texture(uTrail, at).r, cap) + mark * env.r + food * clamp(2.0 * env.b - 1.0, 0.0, 1.0) - repel * (env.g + env.a);
+  return min(texture(uTrail, at).r, cap) + food * env.r - repel * (env.g + env.a);
 }
 void main() {
   ivec2 texel = ivec2(gl_FragCoord.xy);
@@ -1589,13 +1604,15 @@ void main() {
   }
   float ref = max(texelFetch(uRef, ivec2(0), 0).r, 1e-4);
   float cap = ${glsl(SENSE_CAP)} * ref;
-  float mark = ${glsl(MARK_SCENT)} * ref;
-  float food = agent.w < ${glsl(HUNGRY)} * uLife ? ${glsl(FOOD_SENSE)} * ref : 0.0;
+  float food = (agent.w < ${glsl(HUNGRY)} * uLife ? ${glsl(FOOD_SENSE)} : ${glsl(FOOD_FED)}) * ref;
   float repel = ${glsl(REPEL)} * ref;
+  // This speck's own reach, fixed by its slot: short-sighted ones knit fine branches, long-sighted ones trunks.
+  uint id = uint(texel.y) * uint(uSize.x) + uint(texel.x);
+  float reach = uReach * mix(${glsl(REACH_LOW)}, ${glsl(REACH_HIGH)}, float(physarumHash(id ^ 0x9e3779b9u) >> 8u) * (1.0 / 16777216.0));
   float heading = agent.z;
-  float front = physarumSense(agent.xy + uReach * vec2(cos(heading), sin(heading)) * unit, cap, mark, food, repel);
-  float left = physarumSense(agent.xy + uReach * vec2(cos(heading + uAngle), sin(heading + uAngle)) * unit, cap, mark, food, repel);
-  float right = physarumSense(agent.xy + uReach * vec2(cos(heading - uAngle), sin(heading - uAngle)) * unit, cap, mark, food, repel);
+  float front = physarumSense(agent.xy + reach * vec2(cos(heading), sin(heading)) * unit, cap, food, repel);
+  float left = physarumSense(agent.xy + reach * vec2(cos(heading + uAngle), sin(heading + uAngle)) * unit, cap, food, repel);
+  float right = physarumSense(agent.xy + reach * vec2(cos(heading - uAngle), sin(heading - uAngle)) * unit, cap, food, repel);
   float coin = physarumRandom(state);
   if (front < left && front < right) heading += coin < 0.5 ? uTurn : -uTurn;
   else if (front <= max(left, right)) heading += left > right ? uTurn : (right > left ? -uTurn : 0.0);
@@ -1643,9 +1660,10 @@ void main() {
 `;
 
 /**
- * The agar's state at half resolution: the M's scent along its strokes (0..1), salt, light (the lit
- * sea, and everything past the dish's glass wall), and feeding: 1 in a flake's pool, 0.5 at its rim
- * (specks feed, and hungry ones smell food, above 0.5), then a halo fading out to 2.6 radii that
+ * The agar's state at half resolution: R food as the specks smell it (0..1: each flake's halo, flat
+ * over its pool and falling off over uHalo texels beyond, the largest where they overlap; the M's
+ * strokes), G salt, A light (the lit sea, and everything past the dish's glass wall), B feeding:
+ * 1 in a flake's pool, 0.5 at its rim (specks feed above 0.5), then a fringe out to 2.6 radii that
  * the trunk level is never measured in, so the plasmodium crowding onto the flakes never sets it.
  */
 const ENV = `
@@ -1657,6 +1675,7 @@ uniform int uFoodCount;
 uniform vec4 uMark;
 uniform float uLight;
 uniform vec3 uDish;   // centre (domain uv), radius (trail texels)
+uniform float uHalo;  // the food halo's fall-off beyond a flake's pool, trail texels
 ${MARK_GLSL}
 void main() {
   vec2 p = vUv * uGrid;
@@ -1667,12 +1686,13 @@ void main() {
     vec4 food = uFood[i];
     float dist = length(p - food.xy * uGrid);
     float pool = 1.0 - smoothstep(0.8 * food.z, 1.2 * food.z, dist);
-    float halo = 1.0 - smoothstep(1.2 * food.z, 2.6 * food.z, dist);
-    feed = max(feed, food.w * 0.5 * (pool + halo));
+    float fringe = 1.0 - smoothstep(1.2 * food.z, 2.6 * food.z, dist);
+    feed = max(feed, food.w * 0.5 * (pool + fringe));
+    scent = max(scent, food.w * clamp(1.0 - (dist - food.z) / uHalo, 0.0, 1.0));
   }
   if (uMark.w > 0.0 && uMark.z > 0.0) {
     float m = physarumMarkDistance((p - uMark.xy * uGrid) / uMark.z) * uMark.z;
-    scent = uMark.w * exp(-m * m / ${glsl(MARK_WIDTH * MARK_WIDTH)});
+    scent = max(scent, uMark.w * ${glsl(MARK_SCENT)} * exp(-m * m / ${glsl(MARK_WIDTH * MARK_WIDTH)}));
   }
   // The dish's glass wall is light to the mould: it blocks it and nothing grows past it.
   float wall = smoothstep(uDish.z - 1.5, uDish.z + 0.5, length(p - uDish.xy * uGrid));
@@ -2224,6 +2244,7 @@ class PhysarumSim implements SceneSim {
       uMark: this.#markUniform,
       uLight: 1 - food.markShown,
       uDish: this.#dishUniform,
+      uHalo: HALO_REACH * settings.reach,
     });
     this.#distPass.set({ uHeart: this.#heartUniform, uStepH: this.#stepHeight });
   }

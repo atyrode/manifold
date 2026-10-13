@@ -202,12 +202,21 @@ const float MEADOW_STALK_TOP = 0.0026;
 const float MEADOW_KNOB = 0.16;
 const float MEADOW_SPOKE_CELLS = 4.5;
 // The mown M: centre (share of the width right of centre, height above the horizon), size, squash
-// (the hillside leans back), stroke half-width; all in screen heights.
-const float MEADOW_MARK_SHARE = 0.24;
-const float MEADOW_MARK_Y = 0.066;
-const float MEADOW_MARK_SIZE = 0.042;
+// (the hillside leans back), stroke half-width (and at least this many cells); all in screen heights.
+// It stands in the open middle of the view, left of where the near blades rise past the horizon.
+const float MEADOW_MARK_SHARE = 0.15;
+const float MEADOW_MARK_Y = 0.062;
+const float MEADOW_MARK_SIZE = 0.06;
 const float MEADOW_MARK_SQUASH = 0.82;
-const float MEADOW_MARK_STROKE = 0.0026;
+const float MEADOW_MARK_STROKE = 0.0042;
+const float MEADOW_MARK_CELLS = 1.6;
+// The down the M is mown into: its rise above the hills, its half-width; how much of its own colour
+// it keeps against the haze, and the path's (both less with the haze knob); the low sun on the stubble.
+const float MEADOW_DOWN = 0.095;
+const float MEADOW_DOWN_WIDTH = 0.34;
+const float MEADOW_DOWN_CLEAR = 0.62;
+const float MEADOW_PATH_CLEAR = 0.85;
+const float MEADOW_PATH_SUN = 0.95;
 
 const vec3 MEADOW_GREEN = vec3(0.13, 0.17, 0.05);      // the meadow's grasses, still green
 const vec3 MEADOW_STRAW = vec3(0.36, 0.29, 0.12);      // and gone to seed
@@ -297,8 +306,8 @@ float meadowFarHill(float x) {
 
 // The nearer hills, rising into a broad down on the right where the M can be mown.
 float meadowNearHill(float x, float markX) {
-  float d = (x - markX) / 0.34;
-  return 0.006 + 0.022 * vnoise(vec2(x * 1.9 + 7.1, 4.5)) + 0.006 * vnoise(vec2(x * 6.1, 6.5)) + 0.085 * exp(-d * d);
+  float d = (x - markX) / MEADOW_DOWN_WIDTH;
+  return 0.006 + 0.022 * vnoise(vec2(x * 1.9 + 7.1, 4.5)) + 0.006 * vnoise(vec2(x * 6.1, 6.5)) + MEADOW_DOWN * exp(-d * d);
 }
 
 // The tree line: clumps of crowns and lower hedges between them, a leafy edge three cells across,
@@ -322,10 +331,11 @@ vec3 meadowDistance(vec3 col, float cx, float above, float markX, vec3 haze, vec
     // Slopes rising to the right face the low sun on the left.
     float slope = (meadowNearHill(cx + 0.01, markX) - meadowNearHill(cx - 0.01, markX)) * 50.0;
     vec3 land = MEADOW_HILL * (amb * 0.6 + sun * (0.15 + 0.35 * clamp(slope * 3.0, 0.0, 1.0)));
-    col = mix(haze, land, 0.5 - 0.22 * K_haze);
+    col = mix(haze, land, MEADOW_DOWN_CLEAR - 0.22 * K_haze);
     accent = 0.0;
-    // The M mown into the down: paler stubble in a path three cells wide. 'Now' brings it out for a
-    // while (if it is off) and the low sun catches the cut grass in a glint sweeping along it.
+    // The M mown into the down: a path of pale stubble four or five cells wide, lit gold by the low
+    // sun, standing well clear of the trees in the gap below it. 'Now' brings it out for a while (if
+    // it is off) and the sun catches the cut grass in a glint sweeping along it.
     float age = uTriggers[MEADOW_MARK_TRIGGER] < -1000.0 ? -1.0 : sinceTrigger(MEADOW_MARK_TRIGGER);
     float summon = age < 0.0 ? 0.0 : smoothstep(0.0, 2.5, age) * (1.0 - smoothstep(11.0, 16.0, age));
     float mown = max(K_mown, summon);
@@ -333,11 +343,12 @@ vec3 meadowDistance(vec3 col, float cx, float above, float markX, vec3 haze, vec
       vec2 q = (vec2(cx, above) - vec2(markX, MEADOW_MARK_Y)) / MEADOW_MARK_SIZE;
       q.y /= MEADOW_MARK_SQUASH;
       float d = markDistance(q) * MEADOW_MARK_SIZE;
-      float stroke = 1.0 - smoothstep(MEADOW_MARK_STROKE - 0.7 * aa, MEADOW_MARK_STROKE + 0.7 * aa, d);
-      float across = (cx - markX + 0.1 - 0.06 * age) / 0.035;
+      float halfWidth = max(MEADOW_MARK_STROKE, MEADOW_MARK_CELLS * aa);
+      float stroke = 1.0 - smoothstep(halfWidth - 0.7 * aa, halfWidth + 0.7 * aa, d);
+      float across = (cx - markX + 1.5 * MEADOW_MARK_SIZE - 0.06 * age) / (0.6 * MEADOW_MARK_SIZE);
       float glint = age < 0.0 ? 0.0 : exp(-across * across) * (1.0 - smoothstep(4.0, 6.0, age));
-      vec3 stubble = MEADOW_STUBBLE * (amb * 0.55 + sun * (0.5 + 1.2 * glint));
-      col = mix(col, mix(haze, stubble, 0.75 - 0.25 * K_haze), stroke * mown);
+      vec3 stubble = MEADOW_STUBBLE * (amb * 0.6 + sun * (MEADOW_PATH_SUN + 1.2 * glint));
+      col = mix(col, mix(haze, stubble, MEADOW_PATH_CLEAR - 0.25 * K_haze), stroke * mown);
       accent = max(accent, stroke * mown);
     }
   }

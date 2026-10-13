@@ -74,9 +74,10 @@ export const GARDEN_PAPER = { from: 0.26, to: 0.745 } as const;
 /**
  * The Manifold M: where it lies when it is on (that patch of gravel is kept clear of islands), its
  * height in garden depths at the size knob's ends (small + grow × size), its slate's half stroke
- * width in M heights, and how far the slate stands above the gravel.
+ * width in M heights, and how far the slate stands above the gravel: a few centimetres, nearly
+ * flush.
  */
-export const GARDEN_MARK = { x: 1.5, y: 0.36, reserve: 0.32, small: 0.12, grow: 0.16, stroke: 0.055, slate: 0.016 } as const;
+export const GARDEN_MARK = { x: 1.5, y: 0.36, reserve: 0.32, small: 0.12, grow: 0.16, stroke: 0.055, slate: 0.004 } as const;
 
 /** Moss: a low cushion out to clear × (base + grow × moss knob). */
 export const GARDEN_MOSS = { height: 0.009, base: 0.25, grow: 0.7 } as const;

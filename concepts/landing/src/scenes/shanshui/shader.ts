@@ -676,6 +676,18 @@ float shanSealInk(vec2 q, float id, float cellUnit) {
   return body * (1.0 - cut) * (1.0 - 0.9 * speck);
 }
 
+// The painter's own seal, cut in relief: the M and a border stand proud on the stone and print in
+// cinnabar on the bare paper, the border worn thinner in places and the paste skipping here and
+// there. q in seal units (a square of side 1 centred on 0).
+float shanSealRelief(vec2 q, float id, float cellUnit) {
+  vec2 e = abs(q) - vec2(0.455);
+  float frame = abs(max(e.x, e.y)) - 0.045 * (0.8 + 0.4 * vnoise(q * 7.0 + id * 5.0));
+  float mark = markDistance(q / 0.58) * 0.58 - 0.06;
+  float paste = 1.0 - smoothstep(-cellUnit, cellUnit, min(frame, mark));
+  float skip = smoothstep(0.8, 0.86, vnoise(q * 6.0 + id * 3.1));
+  return paste * (1.0 - 0.9 * skip);
+}
+
 // One character of an inscription, in a square of side 1 centred on 0: three to five brush strokes
 // picked from the basic ones (level, upright, falling left, falling right, dot) on a three-by-three
 // frame, each pressed at its start and lifted at its end (the right-falling one swells to its
@@ -717,23 +729,45 @@ float shanGlyph(vec2 q, float id, float cell) {
   return shanSolid(1.0 - smoothstep(-cell, cell, d));
 }
 
+// Characters of an inscription are this many screen heights high, set in columns.
+const float SHAN_GLYPH = 0.036;
+
+struct ShanInscription {
+  float x;          // centre of the poem's column; the name's stands one column to its left
+  float top;        // top of the poem's column
+  float nameTop;    // top of the name's column, a little lower
+  float lines;      // characters in the poem (0: no inscription on this sheet)
+  float nameLines;  // characters in the name
+};
+
 // Now and then a sheet carries an inscription in its empty sky, as poets and owners wrote on
 // scrolls: a column of characters, read top to bottom, and a shorter one to its left with the
-// writer's name. Coverage.
+// writer's name. Where they stand on sheet j.
+ShanInscription shanInscriptionOn(float j) {
+  float h = shanHash(j, 86.0);
+  ShanInscription s;
+  s.x = (j + 0.3 + 0.45 * fract(h * 7.3)) * SHAN_SHEET;
+  s.top = 0.93 - 0.03 * fract(h * 3.9);
+  s.nameTop = s.top - SHAN_GLYPH * (2.0 + 2.0 * fract(h * 5.1));
+  s.lines = h > 0.55 || K_inscription < 0.5 ? 0.0 : 4.0 + floor(4.0 * fract(h * 11.1));
+  s.nameLines = 2.0 + floor(2.0 * fract(h * 17.3));
+  return s;
+}
+
+// The inscription's ink at P. Coverage.
 float shanInscription(vec2 P) {
   if (P.y < 0.45) return 0.0;
   float j = floor(P.x / SHAN_SHEET);
-  float h = shanHash(j, 86.0);
-  if (h > 0.55) return 0.0;
-  float cs = 0.036;
-  float x0 = (j + 0.3 + 0.45 * fract(h * 7.3)) * SHAN_SHEET;
-  float column = floor((x0 - P.x) / (cs * 1.35) + 0.5);  // 0: the poem, 1: the name beside it
+  ShanInscription s = shanInscriptionOn(j);
+  if (s.lines < 1.0) return 0.0;
+  float cs = SHAN_GLYPH;
+  float column = floor((s.x - P.x) / (cs * 1.35) + 0.5);  // 0: the poem, 1: the name beside it
   if (column < 0.0 || column > 1.0) return 0.0;
-  float count = column < 0.5 ? 4.0 + floor(4.0 * fract(h * 11.1)) : 2.0 + floor(2.0 * fract(h * 17.3));
-  float start = 0.93 - 0.03 * fract(h * 3.9) - column * cs * (2.0 + 2.0 * fract(h * 5.1));
+  float count = column < 0.5 ? s.lines : s.nameLines;
+  float start = column < 0.5 ? s.top : s.nameTop;
   float k = floor((start - P.y) / (cs * 1.12));
   if (k < 0.0 || k >= count) return 0.0;
-  vec2 q = (P - vec2(x0 - column * cs * 1.35, start - (k + 0.5) * cs * 1.12)) / cs;
+  vec2 q = (P - vec2(s.x - column * cs * 1.35, start - (k + 0.5) * cs * 1.12)) / cs;
   if (abs(q.x) > 0.55) return 0.0;
   return shanGlyph(q, j * 31.0 + column * 11.0 + k + shanSeed, shanPx / cs);
 }
@@ -819,7 +853,7 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   shanPaintLayer(4, P, vis, ink, mineral);
 
   // An inscription now and then, faint, in the sky of a sheet.
-  if (K_inscription > 0.5) ink += 0.8 * shanInscription(P);
+  ink += 0.8 * shanInscription(P);
 
   // Wild geese high over everything.
   ink += 2.2 * shanGeese(S, geese.xyz, t);
@@ -829,8 +863,9 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   float k = mix(0.55, 1.6, K_density);
   vec3 col = base * exp(-ink * k * SHAN_ABSORB);
 
-  // The seal: one rides each join of the sheets near the foot of the scroll, a little askew; the
-  // last one pressed by hand travels with the scroll from where it was put.
+  // The seals. A collector's rides each join of the sheets near the foot of the scroll, a little
+  // askew; the painter's own sits high in the sky of every stretch of the scroll; the last one
+  // pressed by hand travels with the scroll from where it was put.
   float seal = 0.0;
   if (K_seal > 0.0) {
     float size = mix(0.04, 0.09, K_seal);
@@ -840,6 +875,29 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
     vec2 q = rotate(P - c, (fract(h * 7.7) - 0.5) * 0.09) / size;
     // Only joins well inside the frame show their seal, so no seal is ever cut by an edge.
     if (max(abs(q.x), abs(q.y)) < 0.6) seal = shanSealShown(c.x + S.x - P.x, size, aspect) * shanSealInk(q, h, px / size);
+    // The painter's seals come one to every stretch of the scroll a frame wide, less the margins
+    // in which a seal is not yet wholly shown, so one is always fully in view. Each sits high in
+    // the empty sky, or beneath an inscription's columns when it falls among them, as a writer's
+    // seal does.
+    float ps = 0.85 * size;
+    float reach = 0.75 * ps;
+    float spacing = max(0.97 * (aspect - 2.0 * reach - 0.1), 0.25);
+    float i = floor(P.x / spacing - 0.3);
+    float sx = (i + 0.8) * spacing;
+    if (abs(P.x - sx) < 0.65 * ps) {
+      float hs = shanHash(i, 83.0);
+      float sy = min(0.8 + 0.06 * hs, 1.0 - reach - 0.06);
+      ShanInscription s = shanInscriptionOn(floor(sx / SHAN_SHEET));
+      if (s.lines > 0.0) {
+        float clear = reach + 0.55 * SHAN_GLYPH + 0.01;
+        float under = 1.0;
+        if (abs(sx - s.x) < clear) under = s.top - s.lines * SHAN_GLYPH * 1.12;
+        if (abs(sx - s.x + 1.35 * SHAN_GLYPH) < clear) under = min(under, s.nameTop - s.nameLines * SHAN_GLYPH * 1.12);
+        sy = min(sy, under - 0.015 - reach);
+      }
+      vec2 sq = rotate(P - vec2(sx, sy), (hs - 0.5) * 0.06) / ps;
+      if (max(abs(sq.x), abs(sq.y)) < 0.6) seal = max(seal, shanSealShown(sx + S.x - P.x, ps, aspect) * shanSealRelief(sq, hs, px / ps));
+    }
     if (stamp.w >= 0.0) {
       float since = stamp.w;
       float press = smoothstep(0.0, 0.18, since) * shanSealShown(stamp.x, size, aspect);

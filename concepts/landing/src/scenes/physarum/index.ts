@@ -6,17 +6,17 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { physarumGlsl } from "./shader.ts";
-import { physarumAgentCounts, physarumSim } from "./sim.ts";
+import { PHYSARUM_AGENTS_DEFAULT, physarumAgentCounts, physarumSim } from "./sim.ts";
 
 /** In `palette` knob order: the shader's K_palette. */
 const PALETTES = ["agar", "ink", "rail"] as const;
 const INK = PALETTES.indexOf("ink");
 
 const params: readonly ParamDef[] = [
-  choice("mould", "agents", "plasmodium", physarumAgentCounts.map((value) => ({ label: `${value / 1024}k`, value })), 32_768, "How many specks of plasmodium crawl the dish. Fewer: a sparse, airy lace. More: a fuller lace and thicker trunks, until at the most it starts to condense into a few heavy bands."),
+  choice("mould", "agents", "plasmodium", physarumAgentCounts.map((count, value) => ({ label: `${count / 1024}k`, value })), PHYSARUM_AGENTS_DEFAULT, "How many specks of plasmodium crawl the dish. Fewer: a sparse, airy lace. More: a fuller lace and thicker trunks, until at the most it starts to condense into a few heavy bands."),
   range("mould", "angle", "sensor angle", 35, "How far to either side each speck smells before it turns (it turns at least 45° at a time), in degrees. Narrow: long filaments in wide, open meshes. Wide: a tighter, curlier lace.", { min: 10, max: 80, step: 1 }),
   range("mould", "reach", "sensor reach", 9, "How far ahead each speck smells, in steps. Short: a fine lace of thin filaments. Long: a few broad, sweeping trunks.", { min: 3, max: 20, step: 1 }),
-  range("mould", "decay", "evaporation", 0.5, "How quickly the mould's trail fades. Low: a dense lace where many paths survive. High: only the busiest trunks are kept, and abandoned ones vanish fast."),
+  range("mould", "decay", "evaporation", 0.4, "How quickly the mould's trail fades. Low: a dense lace where many paths survive. High: only the busiest trunks are kept, and abandoned ones vanish fast."),
   range("mould", "tempo", "tempo", 1, "How fast the mould crawls, grows and reorganises, and how often its food is eaten and replaced.", { min: 0.25, max: 2 }),
   choice("food", "layout", "food", [{ label: "random", value: 0 }, { label: "grid", value: 1 }, { label: "Tokyo", value: 2 }], 0, "Where the oat flakes lie. Random: scattered over the dish. Grid: on a honeycomb, which the mould links into a lattice. Tokyo: at the cities round Tokyo Bay, the sea lit so the mould shuns it, as in Tero et al.'s dish, where it grew a network much like the railways."),
   feature("food", "feeding", "new food", true, "pace", 0.5, "Now and then a flake is eaten away and fresh food appears elsewhere: the veins to the old flake starve and fade, new ones reach out to the new. Pace: how often. The button scatters a constellation of fresh flakes now.", { trigger: 0 }),

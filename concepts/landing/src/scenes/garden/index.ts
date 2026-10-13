@@ -21,7 +21,7 @@ const params: readonly ParamDef[] = [
   // 0.735: golden hour, the sun low on the left behind the wall, raking across the grooves.
   ...skyKnobs({ time: 0.735 }),
   ...weatherKnobs({ snow: true, wind: true }),
-  feature("manifold", "mark", "M stone", false, "size", 0.5, "A slab of slate in the shape of the Manifold M set in the gravel, with rings raked round it in its own shape, as round the other stones. The garden is laid out afresh round it."),
+  feature("manifold", "mark", "M stone", false, "size", 0.5, "A low slab of grey-blue slate in the shape of the Manifold M, set nearly flush in the gravel: worn pale at its edges, lichen on it, a fringe of moss round it, and rings raked round it in its own shape, as round the other stones. The garden is laid out afresh round it."),
 ];
 
 export const gardenScene: SceneDef = {

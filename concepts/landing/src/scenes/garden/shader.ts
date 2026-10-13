@@ -356,6 +356,27 @@ float gardenMarkDistance(vec2 p, float size) {
   return markDistance((p - GARDEN_MARK_AT) / size) * size;
 }
 
+// Light reaching gravel point p past the low slate M: a few steps toward the light, as far as a ray
+// can run before it rises over the slab's top; long and soft under a low sun.
+float gardenSlateShade(vec2 p, vec3 L, float size) {
+  if (L.z <= 0.0) return 1.0;
+  float level = max(length(L.xy), 1e-3);
+  vec2 l2 = L.xy / level;
+  float reach = min(GARDEN_SLATE * level / L.z, 0.06);
+  float stroke = GARDEN_MARK_STROKE * size;
+  float lit = 1.0;
+  for (int k = 1; k <= 6; k++) {
+    float s = reach * float(k) / 6.0;
+    lit = min(lit, smoothstep(-0.002, 0.003 + 0.08 * s, gardenMarkDistance(p + l2 * s, size) - stroke));
+  }
+  return mix(1.0, lit, 0.8);
+}
+
+// Moss, velvet green, mottled.
+vec3 gardenMossColour(vec2 p) {
+  return mix(vec3(0.2, 0.36, 0.07), vec3(0.36, 0.54, 0.12), vnoise(p * 230.0 + 7.0));
+}
+
 Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
@@ -445,27 +466,35 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   }
   float depth = beyond ? 1e9 : tHit * rdLength;
 
-  // The M: a slab of slate lying in the gravel (its top a little above it; from the veranda, its
-  // front edge shows below the top).
+  // The M: a low slab of slate set in the gravel, a few centimetres proud, its outline wavering as
+  // a split slab's does and its edges worn round; from the veranda the front of that rounded edge
+  // shows below its top.
   float slate = 0.0;
+  float slateRim = 0.0;  // 0 on the slab's flat .. 1 at its worn edge
+  float markEdge = 1e9;  // how far gravel lies from the slab's edge (its moss fringe, its shadow)
   vec3 slateN = vec3(0.0, 0.0, 1.0);
   if (markSize > 0.0 && !beyond && !wall && hit < 0) {
-    float stroke = GARDEN_MARK_STROKE * markSize;
+    float stroke = GARDEN_MARK_STROKE * markSize + 0.0025 * (vnoise(S.xy * 55.0 + 3.0) - 0.5) + 0.0012 * (vnoise(S.xy * 150.0) - 0.5);
     vec2 topAt = above ? S.xy : (ro + rd * ((ro.z - GARDEN_SLATE) / -rd.z)).xy;
-    float dTop = gardenMarkDistance(topAt, markSize);
-    float dFoot = gardenMarkDistance(S.xy, markSize);
+    float dTop = gardenMarkDistance(topAt, markSize) - stroke;
+    markEdge = gardenMarkDistance(S.xy, markSize) - stroke;
     float aa = 0.7 * max(max(foot.x, foot.y), 0.0008);
-    float onTop = smoothstep(stroke + aa, stroke - aa, dTop);
-    float onSide = above ? 0.0 : smoothstep(stroke + aa, stroke - aa, dFoot) * (1.0 - onTop);
+    float onTop = smoothstep(aa, -aa, dTop);
+    float onSide = above ? 0.0 : smoothstep(aa, -aa, markEdge) * (1.0 - onTop);
     slate = max(onTop, onSide);
     if (slate > 0.0) {
-      // A bevelled rim: the top's normal tips outward over its last stretch.
+      bool side = onSide > onTop;
+      vec2 at = side ? S.xy : topAt;
       vec2 e = vec2(0.0015, 0.0);
-      vec2 grad = vec2(gardenMarkDistance(topAt + e, markSize) - gardenMarkDistance(topAt - e, markSize),
-                       gardenMarkDistance(topAt + e.yx, markSize) - gardenMarkDistance(topAt - e.yx, markSize)) / (2.0 * e.x);
-      float bevel = smoothstep(stroke - 0.006, stroke, dTop);
-      slateN = onSide > onTop ? vec3(0.0, -1.0, 0.0) : normalize(vec3(grad * bevel * 1.2, 1.0));
-      S = onTop > 0.5 ? vec3(topAt, GARDEN_SLATE) : S;
+      vec2 grad = vec2(gardenMarkDistance(at + e, markSize) - gardenMarkDistance(at - e, markSize),
+                       gardenMarkDistance(at + e.yx, markSize) - gardenMarkDistance(at - e.yx, markSize));
+      grad /= max(length(grad), 1e-6);
+      // The top is flat, its normal tipping outward over the worn rounding at its edge; the front
+      // edge is the rounding's lower half, turned out toward the viewer and up to the sky.
+      float wear = max(0.35 * GARDEN_MARK_STROKE * markSize, 0.004);
+      slateRim = side ? 1.0 : smoothstep(-wear, 0.0, dTop);
+      slateN = side ? normalize(vec3(grad, 0.8)) : normalize(vec3(grad * 1.2 * slateRim * slateRim, 1.0));
+      S = side ? vec3(S.xy, 0.5 * GARDEN_SLATE) : vec3(topAt, GARDEN_SLATE);
     }
   }
 
@@ -610,12 +639,22 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
     float sheen = 0.0;
     float velvet = 0.0;
     if (slate > 0.0) {
-      // The slate M: blue-black, finely cleft, its bevel catching the light.
+      // The slate M: grey-blue, its cleavage showing as faint broad laminae, finely pitted; its
+      // worn edges gone pale, pale lichen and the odd orange rosette on its flat, moss creeping
+      // in over its edge here and there; snow on it in winter.
       n = slateN;
-      float cleft = vnoise(vec2(dot(S.xy, vec2(0.8, 0.6)) * 340.0, dot(S.xy, vec2(-0.6, 0.8)) * 30.0));
-      albedo = vec3(0.13, 0.14, 0.17) * (0.85 + 0.3 * cleft);
-      albedo = mix(albedo, snowWhite, winter * 0.8 * n.z);
-      sheen = 0.25;
+      vec2 q = S.xy;
+      float lamina = vnoise(vec2(dot(q, vec2(0.8, 0.6)) * 70.0, dot(q, vec2(-0.6, 0.8)) * 9.0));
+      albedo = vec3(0.35, 0.39, 0.44) * (0.85 + 0.22 * lamina) * (0.94 + 0.12 * vnoise(q * 320.0));
+      albedo = mix(albedo, vec3(0.6, 0.62, 0.63), 0.65 * slateRim * slateRim);
+      float lichen = smoothstep(0.6, 0.72, vnoise(q * 85.0 + 11.0)) * (1.0 - 0.6 * slateRim);
+      albedo = mix(albedo, vec3(0.74, 0.76, 0.64), 0.7 * lichen);
+      albedo = mix(albedo, vec3(0.8, 0.54, 0.22), 0.6 * smoothstep(0.82, 0.88, vnoise(q * 170.0 + 5.0)));
+      float creep = smoothstep(0.55, 0.75, vnoise(q * 60.0 + 2.0)) * smoothstep(0.3, 1.0, slateRim) * smoothstep(0.0, 0.3, K_moss);
+      albedo = mix(albedo, gardenMossColour(q), 0.85 * creep);
+      albedo = mix(albedo, snowWhite, winter * 0.85 * smoothstep(0.6, 0.9, n.z));
+      ao = 0.85 + 0.15 * n.z;
+      sheen = 0.1;
     } else if (hit >= 0) {
       // An island: whichever stands higher here, a stone or the moss.
       float s0 = gardenStone(S.xy, isl.a0, isl.b0);
@@ -625,7 +664,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       vec4 b = s0 >= max(s1, s2) ? isl.b0 : (s1 >= s2 ? isl.b1 : isl.b2);
       float moss = gardenMoss(S.xy, isl);
       n = gardenIslandNormal(S.xy, isl, 0.0015);
-      vec3 mossColour = mix(vec3(0.2, 0.36, 0.07), vec3(0.36, 0.54, 0.12), vnoise(S.xy * 230.0 + 7.0));
+      vec3 mossColour = gardenMossColour(S.xy);
       if (stoneTop > moss) {
         // A weathered stone, its planes catching the light differently: grey granite, warm
         // brown, now and then a dark schist; mottled, cracked, pale lichen on its upper faces
@@ -700,10 +739,17 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       // Freshly turned gravel is damp and darker, drying back over a minute or two.
       float age = clock - texture(uSim3, fuv).r;
       albedo *= 1.0 - 0.13 * exp(-max(age, 0.0) / 45.0) * uSimOn.w;
+      // A patchy fringe of moss in the smooth gravel along the slate M's edge, before its rings.
+      if (markEdge < 0.012) {
+        float fringe = smoothstep(0.003 + 0.004 * vnoise(S.xy * 70.0), 0.0, markEdge) * smoothstep(0.35, 0.6, vnoise(S.xy * 45.0 + 8.0) + 0.25 * K_moss);
+        albedo = mix(albedo, gardenMossColour(S.xy), fringe * smoothstep(0.0, 0.3, K_moss));
+        ao *= 1.0 - 0.2 * smoothstep(0.003, 0.0, markEdge);
+      }
       // Snow lies on it, deepest in the grooves.
       albedo = mix(albedo, snowWhite, winter * (0.78 + 0.22 * smoothstep(0.0, -0.002, h)));
     }
     float lit = gardenStoneShade(S, L, hit) * gardenDapple(S, L, tm, t, gust) * leafShade;
+    if (slate <= 0.0 && markEdge < 0.07) lit *= gardenSlateShade(S.xy, L, markSize);
     float ndl = max(dot(n, L), 0.0);
     col = albedo * (sun * ndl * lit + (fill * (0.55 + 0.45 * n.z) + glow * max(dot(n, glowDir), 0.0)) * ao);
     // Wet pebbles and slate give back a little of the bright sky; moss has a velvet rim.
