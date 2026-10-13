@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="color-scheme" content="dark" />
+    <title>manifold</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2307080b'/%3E%3Cpath d='M9 23V9l7 8 7-8v14' fill='none' stroke='%23e8e6df' stroke-width='3' stroke-linecap='square'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body data-mode="landing" data-scene="wave">
+    <canvas id="stage" aria-hidden="true"></canvas>
+
+    <div class="overlay" id="overlay">
+      <header class="nav" data-show="landing">
+        <a class="wordmark" href="#" aria-label="manifold">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 25V7l9 10 9-10v18" /></svg>
+          <span>manifold</span>
+        </a>
+        <nav>
+          <a href="https://github.com/atyrode/manifold">source</a>
+          <a href="https://github.com/atyrode/manifold/blob/main/docs/SELF-HOST.md">self-host</a>
+          <a class="nav-cta" href="#">sign in</a>
+        </nav>
+      </header>
+
+      <main class="hero" data-show="landing">
+        <p class="eyebrow">a shared spatial workspace</p>
+        <h1>One canvas for the people and agents doing the work.</h1>
+        <p class="lede">
+          An infinite canvas with embedded terminals and live presence, where agents and humans
+          are first-class principals. Self-hosted, open, and yours.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/atyrode/manifold/blob/main/docs/SELF-HOST.md">Run your own</a>
+          <a class="button" href="https://github.com/atyrode/manifold">Read the source</a>
+        </div>
+      </main>
+
+      <section class="loading" data-show="loading" aria-live="polite">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 25V7l9 10 9-10v18" /></svg>
+        <div class="bar" id="bar" role="progressbar" aria-label="Loading manifold"></div>
+        <p class="status" id="status">resolving hub</p>
+      </section>
+
+      <section class="instance" data-show="instance">
+        <div class="card">
+          <p class="eyebrow">private instance</p>
+          <h2 id="instance-name">tyrode</h2>
+          <p class="lede">This Manifold is invite-only. Sign in with an account the owner has admitted.</p>
+          <a class="button primary" href="#">Sign in</a>
+          <p class="fine">Powered by <a href="https://github.com/atyrode/manifold">manifold</a></p>
+        </div>
+      </section>
+
+      <footer class="credit" id="credit" data-show="landing instance"></footer>
+    </div>
+
+    <button class="lab-toggle" id="lab-toggle" type="button" aria-expanded="false" aria-controls="lab">lab</button>
+    <form class="lab" id="lab" hidden>
+      <label>scene <select name="scene"></select></label>
+      <label>mode <select name="mode"></select></label>
+      <label>dither <select name="dither"></select></label>
+      <label>colour <select name="color"></select></label>
+      <label>pixel <input name="pixel" type="range" min="1" max="8" step="1" /><output></output></label>
+      <label>levels <input name="levels" type="range" min="2" max="6" step="1" /><output></output></label>
+      <label>motion <input name="motion" type="range" min="0" max="1" step="0.05" /><output></output></label>
+      <label>accent <input name="accent" type="color" /></label>
+      <label>name <input name="instance" type="text" maxlength="40" spellcheck="false" /></label>
+      <div class="lab-row">
+        <button type="button" id="lab-reset">reset</button>
+        <button type="button" id="lab-copy">copy link</button>
+      </div>
+      <p class="lab-keys">[ ] scene · h hide ui · l lab</p>
+    </form>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
