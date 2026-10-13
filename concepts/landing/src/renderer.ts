@@ -1,8 +1,8 @@
 import { artworks, floodBackdrop, flowField, raster, type Artwork, type Raster } from "./artwork.ts";
 import { constellationUniforms } from "./constellations.ts";
-import { decorKey, paintDecor, type DecorConfig } from "./decor.ts";
+import { CANOPY_MARGIN, canopyKey, decorKey, paintCanopy, paintDecor, type CanopyConfig, type DecorConfig } from "./decor.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
-import { fragmentSource, vertexSource } from "./shaders.ts";
+import { fragmentSource, vertexSource } from "./shaders/index.ts";
 
 /** Order is the shader's `uScene` index. */
 export const sceneIds = ["wave", "starry", "orbit", "swell", "pond"] as const;
@@ -32,6 +32,8 @@ export interface RenderSettings {
   view: ViewId;
   /** The pond's border plants; undefined when absent. */
   decor: DecorConfig | undefined;
+  /** The pond's overhead canopy; undefined when absent. */
+  canopy: CanopyConfig | undefined;
 }
 
 /** Must match `MAX_STARS` in the fragment shader. */
@@ -42,7 +44,7 @@ const uniformNames = [
   "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
   "uStars", "uStarCount", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
-  "uProgress", "uTriggers", "uDecor", "uDecorOn",
+  "uProgress", "uTriggers", "uDecor", "uDecorOn", "uCanopy", "uCanopyOn",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
@@ -108,6 +110,9 @@ export class DitherRenderer {
   #decor: WebGLTexture | undefined;
   #decorKey = "";
   #decorPainted = 0;
+  #canopy: WebGLTexture | undefined;
+  #canopyKey = "";
+  #canopyPainted = 0;
   /** Loading-page progress 0..1, or -1 off the loading page. */
   #progress = -1;
   /** WebGL version and renderer, for diagnosing remote reports. */
@@ -246,15 +251,36 @@ export class DitherRenderer {
     if (key === this.#decorKey || now - this.#decorPainted < 200) return;
     this.#decorKey = key;
     this.#decorPainted = now;
-    const width = 1280;
+    const width = 2048;
     const height = Math.max(1, Math.round(width / aspect));
     const sheet = new OffscreenCanvas(width, height);
     const ctx = sheet.getContext("2d");
     if (!ctx) throw new RendererError("2d canvas unavailable");
     paintDecor(ctx, width, height, config);
+    this.#decor = this.#uploadSheet(this.#decor, sheet);
+  }
+
+  /** Repaint the canopy sheet (uv -margin..1+margin) when its settings or the frame's shape change. */
+  #paintCanopy(config: CanopyConfig, aspect: number, now: number): void {
+    const key = `${canopyKey(config)}|${aspect.toFixed(2)}`;
+    if (key === this.#canopyKey || now - this.#canopyPainted < 200) return;
+    this.#canopyKey = key;
+    this.#canopyPainted = now;
+    const span = 1 + 2 * CANOPY_MARGIN;
+    const width = 768;
+    const height = Math.max(1, Math.round(width / aspect));
+    const sheet = new OffscreenCanvas(width, height);
+    const ctx = sheet.getContext("2d");
+    if (!ctx) throw new RendererError("2d canvas unavailable");
+    // Leaves are sized against the visible frame, which is 1/span of this sheet.
+    paintCanopy(ctx, width, height, config, span);
+    this.#canopy = this.#uploadSheet(this.#canopy, sheet);
+  }
+
+  #uploadSheet(existing: WebGLTexture | undefined, sheet: OffscreenCanvas): WebGLTexture {
     const gl = this.#gl;
-    this.#decor ??= gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, this.#decor);
+    const texture = existing ?? gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sheet);
     gl.generateMipmap(gl.TEXTURE_2D);
@@ -262,6 +288,7 @@ export class DitherRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return texture;
   }
 
   #draw(now: number): void {
@@ -294,8 +321,11 @@ export class DitherRenderer {
     });
     const stars = starsByScene[s.scene] ?? noStars;
     if (s.decor) this.#paintDecor(s.decor, width / height, now);
+    if (s.canopy) this.#paintCanopy(s.canopy, width / height, now);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, s.decor && this.#decor ? this.#decor : this.#blank);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, s.canopy && this.#canopy ? this.#canopy : this.#blank);
 
     const u = this.#uniforms;
     gl.uniform2f(u.uRes, width, height);
@@ -323,6 +353,8 @@ export class DitherRenderer {
     gl.uniform1fv(u.uTriggers, this.#triggers);
     gl.uniform1i(u.uDecor, 3);
     gl.uniform1f(u.uDecorOn, s.decor && this.#decor ? 1 : 0);
+    gl.uniform1i(u.uCanopy, 4);
+    gl.uniform1f(u.uCanopyOn, s.canopy && this.#canopy ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }

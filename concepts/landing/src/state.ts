@@ -1,6 +1,6 @@
 // The lab's state and its URL encoding. Global settings live in `LabState`; the current scene's
 // knobs live in `Params` (a feature also stores `<key>-amount`). URLs carry only non-defaults.
-import { speciesIds, type DecorConfig, type Species } from "./decor.ts";
+import type { CanopyConfig, ClumpSpecies, DecorConfig } from "./decor.ts";
 import { effective, MAX_SEED, sceneParams } from "./params.ts";
 import {
   colorIds,
@@ -181,13 +181,23 @@ export function readParams(scene: SceneId, q: URLSearchParams): Params {
 /** The pond's border plants, as the renderer paints them; undefined when absent. */
 function decorConfig(state: LabState, params: Params): DecorConfig | undefined {
   if (state.scene !== "pond" || (params.plants ?? 0) < 0.5) return undefined;
-  const toggles: Record<Species, string> = { monstera: "monstera", fern: "ferns", banana: "banana", heart: "hearts" };
+  const toggles: Record<ClumpSpecies, string> = { monstera: "monstera", fern: "ferns", banana: "banana" };
+  const on = (key: string) => (params[key] ?? 0) > 0.5;
   return {
     reach: params["plants-amount"] ?? 0.45,
-    density: params.plantDensity ?? 0.5,
-    kinds: speciesIds.filter((species) => (params[toggles[species]] ?? 1) > 0.5),
+    sides: [params.lushTop ?? 0.6, params.lushRight ?? 0.6, params.lushBottom ?? 0.6, params.lushLeft ?? 0.6],
+    kinds: (Object.keys(toggles) as ClumpSpecies[]).filter((species) => (params[toggles[species]] ?? 1) > 0.5),
+    vines: on("vines") ? params["vines-amount"] ?? 0.4 : 0,
+    flowers: on("flowers") ? params["flowers-amount"] ?? 0.35 : 0,
+    grass: on("grass") ? params["grass-amount"] ?? 0.4 : 0,
     seed: params.plantSeed ?? 0,
   };
+}
+
+/** The pond's overhead canopy; undefined when absent. */
+function canopyConfig(state: LabState, params: Params): CanopyConfig | undefined {
+  if (state.scene !== "pond" || (params.canopy ?? 0) < 0.5) return undefined;
+  return { coverage: params["canopy-amount"] ?? 0.45, seed: params.canopySeed ?? 0 };
 }
 
 /** Each knob's default, keyed as readParams keys them. */
@@ -227,5 +237,6 @@ export function renderSettings(state: LabState, params: Params): RenderSettings 
     followPointer: state.mouse === "follow",
     view: state.view,
     decor: decorConfig(state, params),
+    canopy: canopyConfig(state, params),
   };
 }

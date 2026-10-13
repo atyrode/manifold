@@ -1,5 +1,5 @@
 // Per-scene knobs. Each scene's list order is the index into the shader's `uParams` array, so
-// reorder only together with the matching `uParams[i]` reads in shaders.ts.
+// reorder only together with the matching `uParams[i]` reads in the scene's shader module.
 //
 // Kinds:
 //   range    a slider
@@ -41,7 +41,7 @@ export type ParamDef =
 export const MAX_SEED = 999;
 
 /** Must match `MAX_PARAMS` / `MAX_TRIGGERS` in the fragment shader. */
-export const MAX_PARAMS = 40;
+export const MAX_PARAMS = 48;
 export const MAX_TRIGGERS = 8;
 
 interface Extra { when?: string; trigger?: number; steady?: boolean }
@@ -150,24 +150,38 @@ export const sceneParams: Record<SceneId, readonly ParamDef[]> = {
     range("koi", "swim", "swim speed", 0.4, "How fast the koi swim.", { when: "koi" }),
     toggle("koi", "follow", "drawn to mouse", false, "The koi drift toward the pointer.", { when: "koi" }),
     feature("light", "caustics", "caustics", true, "strength", 0.6, "Light patterns rippling across the pond floor."),
-    feature("light", "rays", "light shafts", true, "strength", 0.5, "Slanted sunbeams through the water."),
+    feature("light", "rays", "god rays", true, "strength", 0.5, "Beams of light from the sun; leaves and canopy break them into shafts."),
+    range("light", "sunPower", "intensity", 0.4, "How strong the sunlight is: brighter water and caustics, stronger rays and glare."),
+    range("light", "sunX", "sun across", 0.15, "Where the sun is, left to right; beyond the edges puts it off screen.", { min: -0.5, max: 1.5, steady: true }),
+    range("light", "sunY", "sun height", 1.15, "Where the sun is, bottom to top; beyond the edges puts it off screen.", { min: -0.5, max: 1.5, steady: true }),
     feature("surface", "lilies", "lily pads", true, "amount", 0.5, "Floating pads, some with a flower."),
     feature("surface", "ripples", "ripples", true, "frequency", 0.35, "Rings spreading from drops landing on the surface.", { trigger: 0 }),
-    range("floor", "depth", "depth", 0.5, "Deeper water dims the floor and pushes shadows further from the fish."),
-    toggle("floor", "stones", "pebbles", true, "A pebble floor under the water."),
     feature("surface", "lilyDrift", "pads wander", false, "speed", 0.4, "Pads wander around their anchor (or across the pond when untethered)."),
-    feature("floor", "weeds", "water weeds", true, "amount", 0.5, "Clumps of weed on the floor, swaying and bending with the current."),
-    feature("plants", "plants", "border plants", true, "reach", 0.45, "Lush plants overhanging the pond's edges: monstera, ferns, banana and philodendron leaves."),
-    choice("plants", "plantStyle", "show", [{ label: "both", value: 0 }, { label: "leaves", value: 1 }, { label: "shadows", value: 2 }], 0, "Leaves: the plants themselves. Shadows: only the shade they cast, as if they hang above the camera. Both: leaves with their shadows on the water.", { when: "plants" }),
-    range("plants", "wind", "wind", 0.4, "How much the leaves stir in the breeze; front leaves move most.", { when: "plants" }),
-    range("plants", "plantDensity", "density", 0.5, "How many clumps line the edges.", { when: "plants" }),
-    toggle("plants", "monstera", "monstera", true, "Big split leaves with holes; they favour the corners.", { when: "plants" }),
-    toggle("plants", "ferns", "ferns", true, "Arching fronds of small leaflets.", { when: "plants" }),
-    toggle("plants", "banana", "banana leaves", true, "Long blades torn by the wind.", { when: "plants" }),
-    toggle("plants", "hearts", "philodendron", true, "Small glossy heart-shaped leaves.", { when: "plants" }),
-    seed("plants", "plantSeed", "arrangement", "Which arrangement of clumps; re-seed for another.", { when: "plants" }),
     seed("surface", "lilySeed", "pad placement", "Where the lily pads are anchored; re-seed to scatter them anew."),
     toggle("surface", "tether", "tethered", true, "Each pad hangs on a stem rooted in the floor: it leans with the current but cannot drift away. Off: pads are carried along and come back round."),
+    range("floor", "depth", "depth", 0.5, "Deeper water dims the floor and pushes shadows further from the fish."),
+    choice("floor", "floorType", "bed", [{ label: "pebbles", value: 0 }, { label: "river", value: 1 }, { label: "sand", value: 2 }, { label: "slate", value: 3 }, { label: "moss", value: 4 }], 0, "What the pond floor is made of: small pebbles, big smooth river stones, rippled sand, laid slate, or a soft moss bed."),
+    range("floor", "grain", "grain", 0.5, "Size of the stones, tiles or sand ripples."),
+    range("floor", "floorMoss", "moss", 0.5, "How much moss grows between and over the stones."),
+    range("floor", "floorTint", "tint", 0, "Cooler grey-blue stone to the left, warmer ochre to the right.", { min: -1, max: 1 }),
+    feature("floor", "weeds", "water weeds", true, "amount", 0.5, "Clumps of weed on the floor, swaying and bending with the current."),
+    feature("plants", "plants", "border plants", true, "reach", 0.45, "Plants around the pond's edges, each grown its own way: monstera climbing on stalked leaves, ferns and banana fanning from crowns."),
+    choice("plants", "plantStyle", "show", [{ label: "both", value: 0 }, { label: "leaves", value: 1 }, { label: "shadows", value: 2 }], 0, "Leaves: the plants themselves. Shadows: only the shade they cast. Both: leaves with their shadows on the water.", { when: "plants" }),
+    range("plants", "lushTop", "top", 0.6, "How lush the top edge is; 0 leaves it bare.", { when: "plants" }),
+    range("plants", "lushRight", "right", 0.6, "How lush the right edge is; 0 leaves it bare.", { when: "plants" }),
+    range("plants", "lushBottom", "bottom", 0.6, "How lush the bottom edge is; 0 leaves it bare.", { when: "plants" }),
+    range("plants", "lushLeft", "left", 0.6, "How lush the left edge is; 0 leaves it bare.", { when: "plants" }),
+    toggle("plants", "monstera", "monstera", true, "Split leaves on long stalks along a climbing stem.", { when: "plants" }),
+    toggle("plants", "ferns", "ferns", true, "Arching fronds of small leaflets, fanning from a crown.", { when: "plants" }),
+    toggle("plants", "banana", "banana leaves", true, "Long blades torn by the wind, fanning from the top of the stem.", { when: "plants" }),
+    feature("plants", "vines", "vines", true, "amount", 0.4, "Pothos vines trailing in from the edges, heart-shaped leaves along them, curling at the tips.", { when: "plants" }),
+    feature("plants", "flowers", "flowers", true, "amount", 0.35, "Hibiscus and frangipani blooming among the leaves.", { when: "plants" }),
+    feature("plants", "grass", "grass", true, "amount", 0.4, "Tufts of grass along the waterline, blades arching every way.", { when: "plants" }),
+    seed("plants", "plantSeed", "arrangement", "Which arrangement of plants; re-seed for another.", { when: "plants" }),
+    feature("canopy", "canopy", "canopy overhead", false, "coverage", 0.45, "Foliage above the camera, never seen directly: only its dappled shadow falls across the pond."),
+    range("canopy", "canopySoft", "softness", 0.5, "How soft the canopy's shadow is: higher means leaves further above the water.", { when: "canopy" }),
+    seed("canopy", "canopySeed", "arrangement", "Which canopy; re-seed for another.", { when: "canopy" }),
+    range("air", "wind", "wind", 0.4, "How much the plants and canopy stir in the breeze; nearer leaves move most."),
     feature("current", "current", "current", false, "strength", 0.35, "A flow through the pond: pads lean or travel, weeds bend, light and ripples drift, petals float by."),
     range("current", "currentDir", "direction", 0.1, "Which way the water flows, as a turn of the compass.", { when: "current" }),
     range("current", "turbulence", "turbulence", 0.4, "Eddies that jostle the pads and petals.", { when: "current" }),
@@ -227,10 +241,12 @@ export const groupInfo: Record<SceneId, Record<string, Blurb>> = {
   },
   pond: {
     koi: { title: "Koi", blurb: "How many fish, how they swim, and whether they follow you." },
-    light: { title: "Light", blurb: "Sunlight through the water." },
+    light: { title: "Light", blurb: "Move the sun, turn it up, and let its rays fall through the leaves." },
     surface: { title: "Surface", blurb: "What floats and what falls on the water." },
     floor: { title: "Floor", blurb: "Depth and the bed of the pond." },
-    plants: { title: "Border plants", blurb: "Hand-drawn foliage around the edges: as leaves, as shadows from above, or both." },
+    plants: { title: "Border plants", blurb: "Hand-drawn foliage around the edges, each side as lush as you like, with vines and flowers." },
+    canopy: { title: "Canopy", blurb: "Leaves above the camera, out of sight, casting dappled shade over everything." },
+    air: { title: "Breeze", blurb: "Wind through the plants and the canopy." },
     current: { title: "Water current", blurb: "Make the water flow and watch everything respond to it." },
     manifold: { title: "Manifold stone", blurb: "A landmark of its own: a carved stone M standing in the water." },
   },

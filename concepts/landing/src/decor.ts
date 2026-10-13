@@ -1,29 +1,52 @@
-// Hand-drawn border plants for the pond, painted with Canvas 2D into a data texture the shader
-// reads: R coverage, G shading (veins, rims, light along the blade), B species and depth layer
-// (species × 64 + layer × 16 + 8). Each leaf is drawn alone so its cuts and holes cannot erase the
-// leaves underneath, then laid onto the sheet back layer first.
+// The pond's foliage sheets. Plants are laid out around the frame by their growth habit and drawn
+// with the botany models into data textures the shader reads (see botany.ts for the encoding).
+// Each leaf or flower is drawn alone on a scratch sheet so its cuts and holes cannot erase what
+// lies underneath, then stamped onto the sheet, back layer first.
 
-export const speciesIds = ["monstera", "fern", "banana", "heart"] as const;
-export type Species = (typeof speciesIds)[number];
+import { bananaLeaf, fernFrond, frangipaniFlower, grassTuft, hibiscusFlower, Material, monsteraLeaf, pothosLeaf, stroke, type Brush, type Context, type Rand } from "./botany.ts";
+
+/** Plants that grow in clumps along the edges. */
+export const clumpSpecies = ["monstera", "fern", "banana"] as const;
+export type ClumpSpecies = (typeof clumpSpecies)[number];
 
 export interface DecorConfig {
   /** 0..1: how far the plants reach into the pond. */
   reach: number;
-  /** 0..1: how many clumps line the edges. */
-  density: number;
-  kinds: readonly Species[];
+  /** 0..1 lushness of each edge: top, right, bottom, left. */
+  sides: readonly [number, number, number, number];
+  kinds: readonly ClumpSpecies[];
+  /** 0..1: pothos vines trailing in from the edges. */
+  vines: number;
+  /** 0..1: how many flowers bloom among the leaves. */
+  flowers: number;
+  /** 0..1: tufts of grass along the waterline. */
+  grass: number;
   /** Arrangement variant. */
   seed: number;
 }
 
-export function decorKey(config: DecorConfig): string {
-  return `${config.reach.toFixed(3)}|${config.density.toFixed(3)}|${config.kinds.join(",")}|${config.seed}`;
+export interface CanopyConfig {
+  /** 0..1: how much of the sky above the camera is leaves. */
+  coverage: number;
+  seed: number;
 }
 
-type Context = OffscreenCanvasRenderingContext2D;
+/** The canopy sheet covers uv -0.25..1.25 so shadows cast at an angle still find leaves. */
+export const CANOPY_MARGIN = 0.25;
+
+export function decorKey(config: DecorConfig): string {
+  return [config.reach, ...config.sides, config.vines, config.flowers, config.grass]
+    .map((value) => value.toFixed(3))
+    .concat(config.kinds.join(","), String(config.seed))
+    .join("|");
+}
+
+export function canopyKey(config: CanopyConfig): string {
+  return `${config.coverage.toFixed(3)}|${config.seed}`;
+}
 
 /** Small deterministic PRNG so an arrangement is stable across rebuilds. */
-function random(seed: number): () => number {
+function random(seed: number): Rand {
   let state = (seed * 2654435761) >>> 0 || 1;
   return () => {
     state = (state + 0x6d2b79f5) >>> 0;
@@ -34,285 +57,280 @@ function random(seed: number): () => number {
   };
 }
 
-interface Ink {
-  species: number;
+type Point = [number, number];
+
+/** Something drawn onto the sheet, in a depth layer (0 back … 2 front). */
+interface Piece {
   layer: number;
-  /** 0..1 base lightness of this leaf. */
-  shade: number;
+  draw: (ctx: Context, stamp: Stamp) => void;
 }
 
-function colour(ink: Ink, shade: number): string {
-  const g = Math.round(Math.min(1, Math.max(0, shade)) * 255);
-  return `rgb(255, ${g}, ${ink.species * 64 + ink.layer * 16 + 8})`;
-}
+/** Draw in a local frame (origin, heading, scale, optional mirror) on the scratch sheet, then lay it down. */
+type Stamp = (x: number, y: number, angle: number, scale: number, flip: boolean, draw: (local: Context) => void) => void;
 
-/** Lighter toward the tip, the way light falls along a blade. */
-function bladeFill(ctx: Context, ink: Ink): CanvasGradient {
-  const gradient = ctx.createLinearGradient(0, 0, 1, 0);
-  gradient.addColorStop(0, colour(ink, ink.shade * 0.7));
-  gradient.addColorStop(1, colour(ink, Math.min(1, ink.shade * 1.25)));
-  return gradient;
-}
-
-// Each leaf is drawn in its own unit space: the stalk joins at (0, 0) and the tip points to (1, 0).
-
-function monstera(ctx: Context, ink: Ink, rand: () => number): void {
-  const outline = new Path2D();
-  outline.moveTo(0.03, 0);
-  outline.bezierCurveTo(-0.1, -0.3, 0.22, -0.56, 0.6, -0.47);
-  outline.bezierCurveTo(0.9, -0.38, 1.02, -0.14, 1.0, 0);
-  outline.bezierCurveTo(1.02, 0.14, 0.9, 0.38, 0.6, 0.47);
-  outline.bezierCurveTo(0.22, 0.56, -0.1, 0.3, 0.03, 0);
-  ctx.fillStyle = bladeFill(ctx, ink);
-  ctx.fill(outline);
-  // Midrib and side veins, a little lighter.
-  ctx.strokeStyle = colour(ink, Math.min(1, ink.shade * 1.45));
-  ctx.lineWidth = 0.014;
-  ctx.beginPath();
-  ctx.moveTo(0.02, 0);
-  ctx.quadraticCurveTo(0.5, 0.02, 0.98, 0);
-  ctx.stroke();
-  ctx.lineWidth = 0.006;
-  for (let k = 1; k <= 7; k++) {
-    const x = 0.08 + k * 0.11;
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.quadraticCurveTo(x + 0.06, side * 0.2, x + 0.12, side * 0.42 * Math.sin(Math.PI * Math.min(0.95, x + 0.1)));
-      ctx.stroke();
-    }
-  }
-  // The splits and holes that make a monstera.
-  ctx.globalCompositeOperation = "destination-out";
-  // Deep splits nearly to the midrib, wide at the margin, and a row of holes between them.
-  for (let k = 0; k < 6; k++) {
-    const a = 0.13 + k * 0.13 + (rand() - 0.5) * 0.025;
-    for (const side of [-1, 1]) {
-      if (rand() < 0.1) continue;
-      ctx.beginPath();
-      ctx.moveTo(a, side * 0.75);
-      ctx.lineTo(a + 0.06, side * 0.75);
-      ctx.lineTo(a + 0.09, side * 0.07);
-      ctx.lineTo(a + 0.075, side * 0.065);
-      ctx.closePath();
-      ctx.fill();
-      if (k < 5 && rand() < 0.85) {
-        ctx.beginPath();
-        ctx.ellipse(a + 0.125, side * (0.16 + rand() * 0.04), 0.036, 0.016, side * 0.55, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
-  ctx.globalCompositeOperation = "source-over";
-}
-
-function fern(ctx: Context, ink: Ink, rand: () => number): void {
-  const curl = (rand() - 0.5) * 0.3;
-  const at = (s: number): [number, number, number] => {
-    // Quadratic rachis from (0,0) through (0.5, curl) to (1, curl * 0.6); returns point and heading.
-    const x = s;
-    const y = 2 * (1 - s) * s * curl + s * s * curl * 0.6;
-    const dy = 2 * (1 - 2 * s) * curl + 2 * s * curl * 0.6;
-    return [x, y, Math.atan2(dy, 1)];
+function stamper(ctx: Context, size: number): Stamp {
+  const scratch = new OffscreenCanvas(size, size);
+  const local = scratch.getContext("2d");
+  if (!local) throw new Error("landing: 2d canvas unavailable");
+  return (x, y, angle, scale, flip, draw) => {
+    local.setTransform(1, 0, 0, 1, 0, 0);
+    local.clearRect(0, 0, size, size);
+    local.globalCompositeOperation = "source-over";
+    local.translate(size / 2, size / 2);
+    local.rotate(angle);
+    local.scale(scale, scale * (flip ? -1 : 1));
+    draw(local);
+    ctx.drawImage(scratch, x - size / 2, y - size / 2);
   };
-  const pairs = 20;
-  for (let i = 0; i < pairs; i++) {
-    const s = 0.06 + (0.92 * i) / pairs;
-    const [x, y, heading] = at(s);
-    const size = 0.22 * Math.pow(1 - s, 0.8) + 0.03;
-    for (const side of [-1, 1]) {
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(heading + side * (1.05 - 0.3 * s));
-      ctx.scale(size, size);
-      // A leaflet with a scalloped edge.
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      const lobes = 4;
-      for (let j = 0; j <= lobes; j++) {
-        const u = j / lobes;
-        ctx.quadraticCurveTo(u - 0.12, -0.2 * Math.sin(Math.PI * u) - 0.05, u, -0.12 * Math.sin(Math.PI * u));
-      }
-      for (let j = lobes; j >= 0; j--) {
-        const u = j / lobes;
-        ctx.quadraticCurveTo(u + 0.12, 0.2 * Math.sin(Math.PI * u) + 0.05, u, 0.12 * Math.sin(Math.PI * u));
-      }
-      // Leaflets brighten toward the frond's tip.
-      ctx.fillStyle = colour(ink, ink.shade * (0.85 + 0.3 * Math.min(1, s * 1.2)));
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-  ctx.strokeStyle = colour(ink, ink.shade * 0.6);
-  ctx.lineWidth = 0.012;
-  ctx.beginPath();
-  for (let i = 0; i <= 24; i++) {
-    const [x, y] = at(i / 24);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
 }
 
-function banana(ctx: Context, ink: Ink, rand: () => number): void {
-  const outline = new Path2D();
-  outline.moveTo(0, 0);
-  outline.bezierCurveTo(0.15, -0.2, 0.75, -0.2, 1.0, 0);
-  outline.bezierCurveTo(0.75, 0.2, 0.15, 0.2, 0, 0);
-  ctx.fillStyle = bladeFill(ctx, ink);
-  ctx.fill(outline);
-  ctx.strokeStyle = colour(ink, Math.min(1, ink.shade * 1.5));
-  ctx.lineWidth = 0.02;
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(0.97, 0);
-  ctx.stroke();
-  // Parallel veins sweeping toward the tip.
-  ctx.lineWidth = 0.004;
-  ctx.strokeStyle = colour(ink, ink.shade * 1.1);
-  for (let k = 0; k < 16; k++) {
-    const x = 0.06 + k * 0.055;
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x + 0.06, side * 0.17 * Math.sin(Math.PI * Math.min(0.97, x + 0.06)));
-      ctx.stroke();
-    }
+/** Points along a quadratic curve, with the heading at each. */
+function curve(p0: Point, p1: Point, p2: Point, steps: number): [number, number, number][] {
+  const out: [number, number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const x = u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0];
+    const y = u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1];
+    const dx = 2 * u * (p1[0] - p0[0]) + 2 * t * (p2[0] - p1[0]);
+    const dy = 2 * u * (p1[1] - p0[1]) + 2 * t * (p2[1] - p1[1]);
+    out.push([x, y, Math.atan2(dy, dx)]);
   }
-  // Wind tears from the margin to the midrib.
-  ctx.globalCompositeOperation = "destination-out";
-  ctx.lineWidth = 0.01;
-  const tears = 4 + Math.floor(rand() * 6);
-  for (let k = 0; k < tears; k++) {
-    const x = 0.15 + rand() * 0.75;
-    const side = rand() < 0.5 ? -1 : 1;
-    ctx.beginPath();
-    ctx.moveTo(x + 0.05, side * 0.3);
-    ctx.lineTo(x, side * 0.015);
-    ctx.stroke();
-  }
-  ctx.globalCompositeOperation = "source-over";
+  return out;
 }
 
-function heart(ctx: Context, ink: Ink): void {
-  const outline = new Path2D();
-  outline.moveTo(0.1, 0);
-  outline.bezierCurveTo(-0.02, -0.28, 0.3, -0.5, 0.6, -0.38);
-  outline.bezierCurveTo(0.86, -0.27, 1.0, -0.08, 1.0, 0);
-  outline.bezierCurveTo(1.0, 0.08, 0.86, 0.27, 0.6, 0.38);
-  outline.bezierCurveTo(0.3, 0.5, -0.02, 0.28, 0.1, 0);
-  ctx.fillStyle = bladeFill(ctx, ink);
-  ctx.fill(outline);
-  ctx.strokeStyle = colour(ink, Math.min(1, ink.shade * 1.5));
-  ctx.lineWidth = 0.012;
-  ctx.beginPath();
-  ctx.moveTo(0.1, 0);
-  ctx.lineTo(0.98, 0);
-  for (const side of [-1, 1]) {
-    for (const x of [0.25, 0.45, 0.65]) {
-      ctx.moveTo(x, 0);
-      ctx.quadraticCurveTo(x + 0.12, side * 0.18, x + 0.26, side * 0.25 * (1.1 - x));
-    }
+/** A thin, wandering aerial root hanging from a node. */
+function aerialRoot(x: number, y: number, heading: number, length: number, rand: Rand): Point[] {
+  const points: Point[] = [[x, y]];
+  let angle = heading;
+  for (let i = 1; i <= 10; i++) {
+    angle += (rand() - 0.5) * 0.5;
+    const [px, py] = points[i - 1] ?? [x, y];
+    points.push([px + Math.cos(angle) * (length / 10), py + Math.sin(angle) * (length / 10)]);
   }
-  ctx.stroke();
+  return points;
 }
 
-interface Leaf {
-  species: Species;
-  x: number;
-  y: number;
-  angle: number;
-  length: number;
-  layer: number;
-  shade: number;
-  flip: boolean;
-}
-
-/**
- * Clumps rooted just outside the frame, leaning in: big ones in the corners, smaller ones along
- * the edges. Unit is the sheet height.
- */
-function layout(width: number, height: number, config: DecorConfig, rand: () => number): Leaf[] {
-  const kinds = config.kinds.length > 0 ? config.kinds : speciesIds;
-  const pick = (prefer: readonly Species[]): Species => {
+/** Everything around the frame, as pieces. Unit is the sheet height. */
+function layout(width: number, height: number, config: DecorConfig, rand: Rand): Piece[] {
+  const kinds: readonly ClumpSpecies[] = config.kinds.length > 0 ? config.kinds : clumpSpecies;
+  const pick = (prefer: readonly ClumpSpecies[]): ClumpSpecies => {
     const pool = kinds.filter((kind) => prefer.includes(kind));
     const from = pool.length > 0 && rand() < 0.75 ? pool : kinds;
     return from[Math.floor(rand() * from.length)] ?? "fern";
   };
   const reach = height * (0.55 + 0.9 * config.reach);
-  const leaves: Leaf[] = [];
-  const clump = (x: number, y: number, inward: number, big: boolean) => {
-    const species = pick(big ? ["monstera", "banana"] : ["fern", "heart"]);
-    const count = (big ? 3 : 2) + Math.floor(rand() * 2);
+  const pieces: Piece[] = [];
+  const brush = (layer: number): Brush => ({ layer, shade: 0.5 + 0.3 * rand() });
+
+  const bloom = (x: number, y: number) => {
+    const size = height * (0.02 + 0.02 * rand());
+    const hibiscus = rand() < 0.55;
+    const b: Brush = { layer: 2, shade: hibiscus ? 0.65 + 0.25 * rand() : 0.88 + 0.1 * rand() };
+    const seed = rand();
+    pieces.push({
+      layer: 2,
+      draw: (_ctx, stamp) => stamp(x, y, 0, size, false, (local) => (hibiscus ? hibiscusFlower : frangipaniFlower)(local, b, random(seed * 1e6))),
+    });
+  };
+
+  // Monstera climbs: a stout stem leaning in from the edge; alternate nodes each carry a long
+  // petiole with a knee (geniculum) just below the blade, some an aerial root.
+  const monsteraPlant = (x: number, y: number, inward: number, lush: number, layer: number) => {
+    const length = reach * (0.15 + 0.11 * rand()) * (0.7 + 0.5 * lush);
+    const bend = (rand() - 0.5) * 1.1;
+    const p0: Point = [x, y];
+    const p1: Point = [x + Math.cos(inward + bend * 0.5) * length * 0.5, y + Math.sin(inward + bend * 0.5) * length * 0.5];
+    const p2: Point = [x + Math.cos(inward + bend) * length, y + Math.sin(inward + bend) * length];
+    const stem = curve(p0, p1, p2, 16);
+    const b = brush(layer);
+    pieces.push({ layer, draw: (ctx) => stroke(ctx, stem.map(([px, py]) => [px, py]), Material.stem, b, 0.4, height * 0.014, 0.7) });
+    const nodes = 2 + Math.floor(rand() * 3);
+    let side = rand() < 0.5 ? -1 : 1;
+    for (let n = 0; n < nodes; n++) {
+      const t = 0.3 + (0.7 * n) / Math.max(1, nodes - 1);
+      const [nx, ny, heading] = stem[Math.round(t * 16)] ?? [x, y, inward];
+      const out = heading + side * (0.8 + 0.4 * rand());
+      const petiole = length * (0.28 + 0.12 * rand());
+      const kneeX = nx + Math.cos(out) * petiole;
+      const kneeY = ny + Math.sin(out) * petiole;
+      // At the knee the blade turns to hang toward the light.
+      const bladeAngle = out - side * (0.25 + 0.25 * rand());
+      const stalk: Point[] = curve([nx, ny], [nx + Math.cos(out) * petiole * 0.6 + Math.cos(heading) * petiole * 0.15, ny + Math.sin(out) * petiole * 0.6 + Math.sin(heading) * petiole * 0.15], [kneeX, kneeY], 8).map(([px, py]) => [px, py]);
+      const leafLength = length * (0.5 + 0.2 * rand()) * (0.8 + 0.4 * t);
+      const maturity = 0.45 + 0.55 * rand();
+      const seed = rand();
+      const leafBrush = brush(layer);
+      pieces.push({ layer, draw: (ctx) => stroke(ctx, stalk, Material.stem, leafBrush, 0.55, height * 0.006, 0.8) });
+      pieces.push({ layer, draw: (_ctx, stamp) => stamp(kneeX, kneeY, bladeAngle, leafLength, side < 0, (local) => monsteraLeaf(local, leafBrush, random(seed * 1e6), maturity)) });
+      if (rand() < 0.5) {
+        const root = aerialRoot(nx, ny, heading - side * 1.2, height * (0.06 + 0.1 * rand()), rand);
+        pieces.push({ layer: Math.max(0, layer - 1), draw: (ctx) => stroke(ctx, root, Material.root, b, 0.5, height * 0.0035, 0.5) });
+      }
+      side = -side;
+    }
+    if (rand() < config.flowers * 0.7) bloom(p2[0], p2[1]);
+  };
+
+  // Ferns and banana fan from a crown at the edge: fronds straight from the crown, banana leaves
+  // on short stout petioles.
+  const crown = (species: "fern" | "banana", x: number, y: number, inward: number, big: boolean, lush: number) => {
+    const count = (species === "fern" ? 5 : 3) + Math.floor(rand() * 2) + (lush > 0.7 ? 1 : 0);
+    const scale = 0.65 + 0.6 * lush;
     for (let i = 0; i < count; i++) {
-      const lengthScale = species === "fern" ? 1.1 : species === "banana" ? 1.05 : species === "heart" ? 0.55 : 0.8;
-      // Spread the leaves of a clump evenly across its fan, with a little jitter.
-      const fan = (count === 1 ? 0 : i / (count - 1) - 0.5) * (big ? 1.9 : 1.3) + (rand() - 0.5) * 0.3;
-      leaves.push({
-        species,
-        x: x + (rand() - 0.5) * height * 0.06,
-        y: y + (rand() - 0.5) * height * 0.06,
-        angle: inward + fan,
-        length: reach * (big ? 0.36 : 0.26) * lengthScale * (0.75 + 0.45 * rand()),
-        layer: big ? (rand() < 0.5 ? 2 : 1) : Math.floor(rand() * 2),
-        shade: 0.45 + 0.35 * rand(),
-        flip: rand() < 0.5,
-      });
+      const fan = (count === 1 ? 0 : i / (count - 1) - 0.5) * (big ? 1.9 : 1.5) + (rand() - 0.5) * 0.3;
+      const angle = inward + fan;
+      const length = reach * (big ? 0.38 : 0.28) * (0.75 + 0.45 * rand()) * scale;
+      const layer = big ? 1 + Math.floor(rand() * 2) : Math.floor(rand() * 2);
+      const b = brush(layer);
+      const seed = rand();
+      const flip = rand() < 0.5;
+      if (species === "fern") {
+        pieces.push({ layer, draw: (_ctx, stamp) => stamp(x, y, angle, length, flip, (local) => fernFrond(local, b, random(seed * 1e6))) });
+      } else {
+        const petiole = length * 0.14;
+        const bx = x + Math.cos(angle) * petiole;
+        const by = y + Math.sin(angle) * petiole;
+        const wear = rand();
+        pieces.push({ layer, draw: (ctx) => stroke(ctx, [[x, y], [bx, by]], Material.banana, b, 0.85, height * 0.012, 0.8) });
+        pieces.push({ layer, draw: (_ctx, stamp) => stamp(bx, by, angle, length, flip, (local) => bananaLeaf(local, b, random(seed * 1e6), wear)) });
+      }
+      if (rand() < config.flowers * 0.4) {
+        const along = length * (0.35 + 0.45 * rand());
+        bloom(x + Math.cos(angle) * along, y + Math.sin(angle) * along);
+      }
     }
   };
-  const margin = height * 0.03;
-  // Corners, rooted outside the frame and leaning toward the middle.
-  for (const [x, y] of [[-margin, -margin], [width + margin, -margin], [-margin, height + margin], [width + margin, height + margin]] as const) {
-    if (rand() < 0.15 * (1 - config.density)) continue;
-    clump(x, y, Math.atan2(height / 2 - y, width / 2 - x), true);
-  }
-  // Edges: spacing tightens with density.
-  const spacing = height * (0.75 - 0.5 * config.density);
-  const edges: [number, number, number, number, number][] = [
-    [0, -margin, width, -margin, Math.PI / 2],
-    [0, height + margin, width, height + margin, -Math.PI / 2],
-    [-margin, 0, -margin, height, 0],
-    [width + margin, 0, width + margin, height, Math.PI],
-  ];
-  for (const [x0, y0, x1, y1, inward] of edges) {
-    const length = Math.hypot(x1 - x0, y1 - y0);
-    for (let d = spacing * (0.5 + rand() * 0.5); d < length - spacing * 0.4; d += spacing * (0.7 + rand() * 0.6)) {
-      if (rand() < 0.2) continue;
-      const t = d / length;
-      clump(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, inward, rand() < 0.2);
+
+  const plant = (x: number, y: number, inward: number, big: boolean, lush: number) => {
+    const species = pick(big ? ["monstera", "banana"] : ["fern", "monstera"]);
+    if (species === "monstera") monsteraPlant(x, y, inward, lush, big ? 2 : 1);
+    else crown(species, x, y, inward, big, lush);
+  };
+
+  const tuft = (x: number, y: number, inward: number, lush: number) => {
+    const size = height * (0.12 + 0.1 * rand()) * (0.7 + 0.5 * lush);
+    const layer = rand() < 0.6 ? 0 : 1;
+    const b: Brush = { layer, shade: 0.55 + 0.3 * rand() };
+    const seed = rand();
+    const blades = 16 + Math.floor(rand() * 16);
+    const lean = inward + (rand() - 0.5) * 0.4;
+    pieces.push({ layer, draw: (_ctx, stamp) => stamp(x, y, lean, size, false, (local) => grassTuft(local, b, random(seed * 1e6), blades)) });
+  };
+
+  // Pothos trails in: a wandering vine with alternate cordate leaves on short petioles, an aerial
+  // root now and then, curling at the tip.
+  const vine = (x: number, y: number, inward: number, index: number) => {
+    const vineLength = height * (0.3 + 0.45 * rand()) * (0.6 + 0.6 * config.reach);
+    const sway = (rand() - 0.5) * 0.8;
+    const steps = 40;
+    const points: Point[] = [[x, y]];
+    for (let i = 1; i <= steps; i++) {
+      const s = i / steps;
+      const heading = inward + sway * s + Math.sin(s * 9 + index) * 0.35;
+      const [px, py] = points[i - 1] ?? [x, y];
+      points.push([px + (Math.cos(heading) * vineLength) / steps, py + (Math.sin(heading) * vineLength) / steps]);
     }
+    const layer = rand() < 0.6 ? 2 : 1;
+    const b = brush(layer);
+    pieces.push({ layer, draw: (ctx) => stroke(ctx, points, Material.stem, b, 0.5, height * 0.0045, 0.5) });
+    let side = 1;
+    for (let i = 2; i < steps - 1; i += 2 + Math.floor(rand() * 2)) {
+      const [px, py] = points[i] ?? [x, y];
+      const [qx, qy] = points[i + 1] ?? [px, py];
+      const heading = Math.atan2(qy - py, qx - px);
+      const out = heading + side * (0.9 + 0.4 * rand());
+      const leafLength = height * (0.03 + 0.028 * rand()) * (1 - (i / steps) * 0.4);
+      const petiole = leafLength * 0.45;
+      const lx = px + Math.cos(out) * petiole;
+      const ly = py + Math.sin(out) * petiole;
+      const seed = rand();
+      const leafBrush = brush(layer);
+      pieces.push({ layer, draw: (ctx) => stroke(ctx, [[px, py], [lx, ly]], Material.stem, leafBrush, 0.6, height * 0.0025, 0.8) });
+      pieces.push({ layer, draw: (_ctx, stamp) => stamp(lx, ly, out - side * 0.3, leafLength, side < 0, (local) => pothosLeaf(local, leafBrush, random(seed * 1e6))) });
+      if (rand() < 0.12) {
+        const root = aerialRoot(px, py, heading - side * 1.4, height * 0.03, rand);
+        pieces.push({ layer, draw: (ctx) => stroke(ctx, root, Material.root, b, 0.5, height * 0.0022, 0.5) });
+      }
+      side = -side;
+    }
+  };
+
+  const [top, right, bottom, left] = config.sides;
+  const margin = height * 0.03;
+  // Corners follow their two edges.
+  const corners: [number, number, number][] = [
+    [-margin, -margin, Math.max(top, left)],
+    [width + margin, -margin, Math.max(top, right)],
+    [-margin, height + margin, Math.max(bottom, left)],
+    [width + margin, height + margin, Math.max(bottom, right)],
+  ];
+  for (const [x, y, lush] of corners) {
+    if (lush < 0.05 || rand() < 0.15 * (1 - lush)) continue;
+    plant(x, y, Math.atan2(height / 2 - y, width / 2 - x), true, lush);
   }
-  return leaves.sort((a, b) => a.layer - b.layer || b.length - a.length);
+  const edges: [number, number, number, number, number, number][] = [
+    [0, -margin, width, -margin, Math.PI / 2, top],
+    [width + margin, 0, width + margin, height, Math.PI, right],
+    [0, height + margin, width, height + margin, -Math.PI / 2, bottom],
+    [-margin, 0, -margin, height, 0, left],
+  ];
+  edges.forEach(([x0, y0, x1, y1, inward, lush], edge) => {
+    if (lush < 0.05) return;
+    const spacing = height * (0.85 - 0.62 * lush);
+    const length = Math.hypot(x1 - x0, y1 - y0);
+    const along = (t: number): Point => [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
+    for (let d = spacing * (0.5 + rand() * 0.5); d < length - spacing * 0.4; d += spacing * (0.7 + rand() * 0.6)) {
+      if (rand() < 0.25 * (1 - lush)) continue;
+      const [x, y] = along(d / length);
+      plant(x, y, inward + (rand() - 0.5) * 0.5, rand() < 0.15 + 0.15 * lush, lush);
+    }
+    const tufts = Math.round(config.grass * lush * (length / height) * 7);
+    for (let n = 0; n < tufts; n++) {
+      const [x, y] = along(rand());
+      tuft(x, y, inward, lush);
+    }
+    const strands = Math.round(config.vines * lush * (length / height) * 3);
+    for (let n = 0; n < strands; n++) {
+      const [x, y] = along(rand());
+      vine(x, y, inward, edge * 10 + n);
+    }
+  });
+  // Stable within a layer: plants keep the order they were laid out in.
+  return pieces.map((piece, index) => ({ piece, index })).sort((a, b) => a.piece.layer - b.piece.layer || a.index - b.index).map(({ piece }) => piece);
 }
 
-/** Paint the whole sheet: black background, leaves back to front. */
+/** Paint the border sheet: black background, pieces back to front. */
 export function paintDecor(ctx: Context, width: number, height: number, config: DecorConfig): void {
   const rand = random(17 + config.seed * 101);
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, width, height);
-  const leaves = layout(width, height, config, rand);
-  const size = Math.ceil(Math.max(...leaves.map((leaf) => leaf.length), 1) * 2.2);
-  const sheet = new OffscreenCanvas(size, size);
-  const leafCtx = sheet.getContext("2d");
-  if (!leafCtx) throw new Error("landing: 2d canvas unavailable");
-  for (const leaf of leaves) {
-    const ink: Ink = { species: speciesIds.indexOf(leaf.species), layer: leaf.layer, shade: leaf.shade };
-    leafCtx.setTransform(1, 0, 0, 1, 0, 0);
-    leafCtx.clearRect(0, 0, size, size);
-    leafCtx.translate(size / 2, size / 2);
-    leafCtx.rotate(leaf.angle);
-    leafCtx.scale(leaf.length, leaf.length * (leaf.flip ? -1 : 1));
-    switch (leaf.species) {
-      case "monstera": monstera(leafCtx, ink, rand); break;
-      case "fern": fern(leafCtx, ink, rand); break;
-      case "banana": banana(leafCtx, ink, rand); break;
-      case "heart": heart(leafCtx, ink); break;
-      default: {
-        const unreachable: never = leaf.species;
-        throw new Error(`landing: unknown plant ${String(unreachable)}`);
-      }
-    }
-    ctx.drawImage(sheet, leaf.x - size / 2, leaf.y - size / 2);
+  const stamp = stamper(ctx, Math.ceil(height * 1.6));
+  for (const piece of layout(width, height, config, rand)) piece.draw(ctx, stamp);
+}
+
+/**
+ * Paint the overhead canopy: big leaves scattered across and beyond the frame. Only its shadow is
+ * ever seen, so only coverage matters. `span` is how many frames wide the sheet is.
+ */
+export function paintCanopy(ctx: Context, width: number, height: number, config: CanopyConfig, span: number): void {
+  const rand = random(911 + config.seed * 53);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, width, height);
+  const stamp = stamper(ctx, Math.ceil(height * 0.9));
+  const count = Math.round(8 + config.coverage * 70);
+  const brush: Brush = { layer: 0, shade: 0.5 };
+  for (let i = 0; i < count; i++) {
+    const kind = Math.floor(rand() * 3);
+    const length = (height / span) * (0.18 + 0.3 * rand());
+    const seed = rand();
+    stamp(rand() * width, rand() * height, rand() * Math.PI * 2, length, rand() < 0.5, (local) => {
+      const leafRand = random(seed * 1e6);
+      if (kind === 0) monsteraLeaf(local, brush, leafRand, 0.8);
+      else if (kind === 1) bananaLeaf(local, brush, leafRand, 0.6);
+      else fernFrond(local, brush, leafRand);
+    });
   }
 }

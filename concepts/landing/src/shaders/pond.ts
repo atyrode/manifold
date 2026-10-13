@@ -1,0 +1,496 @@
+// The pond scene: water, floor, koi, lilies, foliage, sun and canopy.
+
+import { CANOPY_MARGIN } from "../decor.ts";
+
+export const pond = `
+// One layer of animated cellular light: bright where neighbouring cells meet.
+float causticLayer(vec2 x, float t) {
+  vec2 i = floor(x);
+  vec2 f = fract(x);
+  float f1 = 8.0;
+  float f2 = 8.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int k = -1; k <= 1; k++) {
+      vec2 g = vec2(float(k), float(y));
+      vec2 o = vec2(hash12(i + g), hash12(i + g + 19.1));
+      o = 0.5 + 0.45 * sin(t + TAU * o);
+      float d = length(g + o - f);
+      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+    }
+  }
+  return 1.0 - smoothstep(0.0, 0.06, f2 - f1);
+}
+
+// Pebble floor: cells with dark seams, each stone its own shade. Returns brightness.
+float pebbles(vec2 x) {
+  vec2 i = floor(x);
+  vec2 f = fract(x);
+  float f1 = 8.0;
+  float f2 = 8.0;
+  float shade = 0.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int k = -1; k <= 1; k++) {
+      vec2 g = vec2(float(k), float(y));
+      vec2 o = 0.15 + 0.7 * vec2(hash12(i + g + 3.1), hash12(i + g + 8.7));
+      float d = length(g + o - f);
+      if (d < f1) { f2 = f1; f1 = d; shade = hash12(i + g + 1.3); } else if (d < f2) { f2 = d; }
+    }
+  }
+  return smoothstep(0.02, 0.12, f2 - f1) * (0.35 + 0.65 * shade) * (1.0 - 0.5 * f1);
+}
+
+// Smooth looping swim path for koi number i at path time s.
+vec2 koiPath(float i, float s, float aspect) {
+  float a = 0.13 + 0.07 * hash12(vec2(i, 1.0));
+  float b = 0.11 + 0.08 * hash12(vec2(i, 2.0));
+  float ph = hash12(vec2(i, 3.0)) * TAU;
+  return vec2(
+    sin(s * a + ph) * 0.42 * aspect + sin(s * a * 2.3 + ph * 1.7) * 0.12,
+    sin(s * b + ph * 0.7) * 0.34 + cos(s * b * 1.9 + ph) * 0.1
+  );
+}
+
+// Where koi i is: its own loop, pulled toward the lure when following the pointer.
+vec2 koiAt(float i, float s, float aspect, vec2 lure, float follow) {
+  return mix(koiPath(i, s, aspect), lure + (vec2(hash12(vec2(i, 4.0)), hash12(vec2(i, 5.0))) - 0.5) * 0.25, follow);
+}
+
+// A koi in its own frame (x forward from the nose, y across): 0 outside, 1 body, 2 fin.
+float koiShape(vec2 q, float len, float swim) {
+  float u = (0.3 * len - q.x) / len; // 0 at the nose, 1 at the tail tip
+  if (u < 0.0 || u > 1.05) return 0.0;
+  q.y -= len * 0.09 * sin(u * 5.0 - swim) * u * u;
+  float body = len * 0.17 * pow(sin(3.14159 * clamp(u / 0.74, 0.0, 1.0)), 0.6) * (1.0 - 0.35 * u);
+  if (u < 0.74 && abs(q.y) < body) return 1.0;
+  float tail = len * (0.04 + 0.2 * smoothstep(0.7, 1.02, u));
+  bool notch = u > 0.95 && abs(q.y) < (u - 0.95) * len * 0.9;
+  if (u > 0.68 && abs(q.y) < tail && !notch) return 2.0;
+  vec2 fin = vec2((u - 0.26) / 0.07, (abs(q.y) - len * 0.2) / (len * 0.06));
+  if (dot(fin, fin) < 1.0) return 2.0;
+  return 0.0;
+}
+
+// Lily pad i: centre (xy) and radius (z); 'anchor' is where its stem is rooted in the floor.
+// Tethered pads lean downstream as far as the stem allows; untethered ones are carried along.
+vec3 padState(float fi, float aspect, float tm, vec2 flow, float turbulence, float placement, float wander, bool tethered, out vec2 anchor) {
+  anchor = (vec2(hash12(vec2(fi, 21.0 + placement * 1.37)), hash12(vec2(fi, 22.0 + placement * 1.91))) - 0.5) * vec2(aspect * 0.9, 0.85);
+  float radius = 0.045 + 0.05 * hash12(vec2(fi, 23.0 + placement));
+  vec2 roam = wander > 0.0
+    ? vec2(sin(tm * wander * 0.11 + fi * 1.7), cos(tm * wander * 0.083 + fi * 2.3)) * 0.15
+    : vec2(sin(tm * 0.07 + fi), cos(tm * 0.05 + fi * 2.0)) * 0.012;
+  vec2 eddy = (vec2(vnoise(vec2(tm * 0.35 + fi * 3.1, 1.0)), vnoise(vec2(tm * 0.35 + fi * 3.1, 9.0))) - 0.5) * turbulence * 0.12 * (0.3 + length(flow) * 2.0);
+  if (tethered) {
+    float stem = radius * 1.4 + 0.03;
+    vec2 push = flow * 0.35 + roam + eddy;
+    return vec3(anchor + push / (1.0 + length(push) / stem), radius);
+  }
+  vec2 span = vec2(aspect * 1.15, 1.15);
+  vec2 travelled = anchor + flow * tm * 0.05 + roam + eddy;
+  return vec3(mod(travelled + span * 0.5, span) - span * 0.5, radius);
+}
+
+// Pond knobs (params.ts order): 0 koi, 1 swim, 2 follow, 3 caustics, 4 rays, 5 sunPower, 6 sunX,
+// 7 sunY, 8 lilies, 9 ripples, 10 lilyDrift, 11 lilySeed, 12 tether, 13 depth, 14 floorType,
+// 15 grain, 16 floorMoss, 17 floorTint, 18 weeds, 19 plants, 20 plantStyle, 21-24 lushness by side,
+// 25-27 species, 28 vines, 29 flowers, 30 grass, 31 plantSeed, 32 canopy, 33 canopySoft,
+// 34 canopySeed, 35 wind, 36 current, 37 currentDir, 38 turbulence, 39 petals, 40 stone,
+// 41 stoneX, 42 stoneY, 43 moss.
+Shade scenePond(vec2 uv, vec2 cell, float t) {
+  float m = uMotion;
+  float tm = t * m;
+  float aspect = uRes.x / uRes.y;
+  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
+  float depth = uParams[13];
+  vec2 flow = vec2(cos(uParams[37] * TAU), sin(uParams[37] * TAU)) * uParams[36];
+  float turbulence = uParams[38];
+  bool tethered = uParams[12] > 0.5;
+  // The sun: placed anywhere (off screen too); its power lifts the water, caustics and rays.
+  vec2 sunUV = vec2(uParams[6], uParams[7]);
+  vec2 sunP = (sunUV - 0.5) * vec2(aspect, 1.0);
+  float power = uParams[5];
+  vec2 towardSun = normalize(sunP - p + 1e-5);
+  Shade o = blankShade();
+
+  // Surface: rings spreading from drops, carried by the current; used for refraction and glints.
+  float surface = 0.0;
+  float ringLight = 0.0;
+  if (uParams[9] > 0.0) {
+    vec2 grid = p / 0.28;
+    for (int y = -1; y <= 1; y++) {
+      for (int k = -1; k <= 1; k++) {
+        vec2 id = floor(grid) + vec2(float(k), float(y));
+        float slot = mix(9.0, 2.2, uParams[9]);
+        float kk = tm / slot + hash12(id);
+        float age = fract(kk) * slot;
+        vec2 drop = (id + vec2(hash12(id + floor(kk)), hash12(id + floor(kk) + 4.0))) * 0.28 + flow * age * 0.06;
+        float dist = length(p - drop);
+        float radius = age * 0.07;
+        float fade = exp(-age * 1.1) * step(0.3, hash12(id + floor(kk) * 3.1));
+        surface += sin((dist - radius) * 160.0) * exp(-pow((dist - radius) / 0.012, 2.0)) * fade;
+        ringLight = max(ringLight, smoothstep(0.004, 0.0, abs(dist - radius)) * fade + smoothstep(0.003, 0.0, abs(dist - radius * 0.6)) * fade * 0.6);
+      }
+    }
+  }
+  // "now": one drop at a random spot.
+  float dropAge = sinceTrigger(0);
+  if (dropAge >= 0.0 && dropAge < 5.0) {
+    vec2 drop = (vec2(hash12(vec2(uTriggers[0], 1.0)), hash12(vec2(uTriggers[0], 2.0))) - 0.5) * vec2(aspect * 0.7, 0.7) + flow * dropAge * 0.06;
+    float dist = length(p - drop);
+    float radius = dropAge * 0.07;
+    float fade = exp(-dropAge * 0.9);
+    surface += sin((dist - radius) * 160.0) * exp(-pow((dist - radius) / 0.012, 2.0)) * fade;
+    ringLight = max(ringLight, (smoothstep(0.004, 0.0, abs(dist - radius)) + 0.6 * smoothstep(0.003, 0.0, abs(dist - radius * 0.6))) * fade);
+  }
+  vec2 refract = vec2(dFdx(surface), dFdy(surface)) * 0.01 + vec2(sin(p.y * 9.0 + tm * 0.7), cos(p.x * 8.0 + tm * 0.6)) * 0.0025 * m;
+  vec2 floorP = p + refract;
+
+  // Floor: pebbles or silt with moss between, dimmer when deep. 'col' is the full-colour picture;
+  // ink and accent coverage carry the same layers for the accent and mono palettes.
+  int bed = int(uParams[14] + 0.5);
+  float grain = mix(1.6, 0.6, uParams[15]);
+  vec3 tint = mix(vec3(0.42, 0.47, 0.5), vec3(0.62, 0.5, 0.34), 0.5 + 0.5 * uParams[17]);
+  float stones;
+  if (bed == 0) {
+    stones = pebbles(floorP * 22.0 * grain);
+  } else if (bed == 1) {
+    // River stones: big and smooth.
+    stones = pebbles(floorP * 8.0 * grain) * 1.15;
+  } else if (bed == 2) {
+    // Sand with ripple marks.
+    float marks = 0.5 + 0.5 * sin((floorP.x * 0.6 + floorP.y) * 90.0 * grain + fbm(floorP * 6.0) * 6.0);
+    stones = 0.5 + 0.28 * marks + 0.15 * fbm(floorP * 40.0);
+    tint = mix(tint, vec3(0.9, 0.78, 0.55), 0.7);
+  } else if (bed == 3) {
+    // Laid slate: offset rows of tiles with dark joints.
+    vec2 g = floorP * 7.0 * grain;
+    g.x += step(1.0, mod(floor(g.y), 2.0)) * 0.5;
+    vec2 tile = fract(g);
+    float joint = smoothstep(0.0, 0.05, min(min(tile.x, 1.0 - tile.x), min(tile.y, 1.0 - tile.y)));
+    stones = joint * (0.32 + 0.3 * hash12(floor(g))) * (0.85 + 0.15 * fbm(floorP * 30.0));
+    tint = mix(tint, vec3(0.34, 0.37, 0.4), 0.6);
+  } else {
+    // Moss cushions: lumpy mounds with darker hollows between.
+    float cushions = fbm(floorP * 10.0 * grain);
+    stones = 0.15 + 0.7 * smoothstep(0.3, 0.75, cushions) + 0.1 * fbm(floorP * 60.0);
+  }
+  float floorLight = stones * 0.14 * (1.0 - depth * 0.6);
+  vec3 floorCol = tint * (0.5 + 1.1 * stones) * (0.9 + 0.2 * fbm(floorP * 5.0));
+  float mossAmount = uParams[16];
+  float moss = bed == 4 ? 0.75 + 0.25 * fbm(floorP * 20.0) : smoothstep(1.0 - mossAmount * 0.9 - 0.05, 1.0 - mossAmount * 0.9 + 0.2, fbm(floorP * 3.2 + 7.0));
+  floorCol = mix(floorCol, vec3(0.2, 0.42, 0.16) * (0.6 + 0.6 * stones), moss * 0.8);
+  // Turquoise water, deepening with depth; the floor shows through it.
+  vec3 water = mix(vec3(0.06, 0.46, 0.42), vec3(0.02, 0.2, 0.24), depth) * (0.85 + 0.3 * fbm(p * 1.4 + vec2(tm * 0.01, 0.0)));
+  vec3 col = mix(floorCol, water, 0.52 + 0.3 * depth) * (0.75 + 0.7 * power);
+  float caustic = 0.0;
+  if (uParams[3] > 0.0) {
+    // Two drifting layers; light gathers where their seams cross. The current carries them.
+    vec2 drift = flow * tm * 0.03;
+    float a = causticLayer((floorP - drift) * 4.2 + vec2(tm * 0.03, 0.0), tm * 0.7);
+    float b = causticLayer((floorP - drift) * 5.6 + vec2(4.0, -tm * 0.025), tm * 0.9 + 2.0);
+    caustic = (a * 0.3 + b * 0.2 + a * b * 0.9) * uParams[3] * (1.0 - depth * 0.45) * (0.6 + 0.9 * power);
+  }
+  col += vec3(0.7, 1.0, 0.92) * caustic * 0.55;
+
+  // Water weeds: clumps of blades radiating from the floor, swaying and bent downstream.
+  float weed = 0.0;
+  if (uParams[18] > 0.0) {
+    int clumps = int(3.0 + uParams[18] * 7.0);
+    for (int c = 0; c < 10; c++) {
+      if (c >= clumps) break;
+      float fc = float(c);
+      vec2 rel = floorP - (vec2(hash12(vec2(fc, 31.0)), hash12(vec2(fc, 32.0))) - 0.5) * vec2(aspect * 0.95, 0.9);
+      float reach = 0.07 + 0.07 * hash12(vec2(fc, 33.0));
+      float s = clamp(length(rel) / reach, 0.0, 1.0);
+      rel -= flow * 0.09 * s * s;
+      float r = length(rel);
+      if (r > reach) continue;
+      s = r / reach;
+      float angle = atan(rel.y, rel.x);
+      for (int b = 0; b < 7; b++) {
+        float fb = float(b);
+        float blade = hash12(vec2(fc, fb + 40.0)) * TAU + 0.45 * sin(tm * 0.7 + s * 2.6 + fb * 1.3 + fc) * s;
+        float off = abs(mod(angle - blade + 3.14159, TAU) - 3.14159) * r;
+        weed = max(weed, step(off, 0.0055 * (1.0 - s) + 0.0012) * (1.0 - s * 0.5));
+      }
+    }
+  }
+  col = mix(col, vec3(0.2, 0.52, 0.24) * (0.7 + 0.5 * weed), step(0.001, weed) * 0.85);
+
+  // Lily pads: where each wants to float, then two passes pushing overlapping pairs apart, so
+  // pads crowded by the current just touch and nudge rather than stack.
+  int pads = int(uParams[8] * 9.0 + 0.5);
+  vec3 padAt[9];
+  vec2 padRoot[9];
+  for (int i = 0; i < 9; i++) {
+    if (i >= pads) break;
+    vec2 anchor;
+    padAt[i] = padState(float(i), aspect, tm, flow, turbulence, uParams[11], uParams[10], tethered, anchor);
+    padRoot[i] = anchor;
+  }
+  for (int pass = 0; pass < 2; pass++) {
+    for (int i = 0; i < 9; i++) {
+      if (i >= pads) break;
+      for (int j = 0; j < 9; j++) {
+        if (j >= pads) break;
+        if (j <= i) continue;
+        vec2 gap = padAt[j].xy - padAt[i].xy;
+        float apart = length(gap);
+        float touching = (padAt[i].z + padAt[j].z) * 0.97;
+        if (apart < touching) {
+          vec2 away = apart > 1e-4 ? gap / apart : vec2(1.0, 0.0);
+          vec2 push = away * (touching - apart) * 0.5;
+          padAt[i].xy -= push;
+          padAt[j].xy += push;
+        }
+      }
+    }
+  }
+  // Stems, rooted in the floor and seen through the water.
+  float stem = 0.0;
+  if (tethered) {
+    for (int i = 0; i < 9; i++) {
+      if (i >= pads) break;
+      stem = max(stem, smoothstep(0.003, 0.0012, segmentDistance(floorP, padRoot[i], padAt[i].xy)) * smoothstep(0.004, 0.012, length(floorP - padRoot[i]) + 0.01));
+    }
+  }
+  col = mix(col, vec3(0.16, 0.36, 0.17), stem * 0.75);
+
+  // Koi, their shadows on the floor, and the lure when they follow the pointer.
+  int count = int(uParams[0] + 0.5);
+  vec2 lure = uPointer * vec2(aspect * 0.5, 0.5);
+  float follow = uParams[2] > 0.5 ? 0.55 : 0.0;
+  float swimTime = tm * (0.6 + 2.4 * uParams[1]);
+  float shadow = 0.0;
+  float fish = 0.0;
+  float fishAccent = 0.0;
+  bool onFish = false;
+  vec3 fishCol = vec3(0.0);
+  // Shadows fall away from the sun, further in deeper water.
+  vec2 shadowOffset = -towardSun * 0.034 * (0.4 + 1.2 * depth);
+  for (int i = 0; i < 8; i++) {
+    if (i >= count) break;
+    float fi = float(i);
+    float s = swimTime + fi * 11.0;
+    vec2 pos = koiAt(fi, s, aspect, lure, follow);
+    vec2 dir = normalize(koiAt(fi, s + 0.05, aspect, lure, follow) - koiAt(fi, s - 0.05, aspect, lure, follow) + 1e-5);
+    vec2 side = vec2(-dir.y, dir.x);
+    float len = 0.11 + 0.06 * hash12(vec2(fi, 6.0));
+    float swim = tm * (3.0 + 4.0 * uParams[1]) + fi;
+    vec2 rel = p - pos;
+    vec2 q = vec2(dot(rel, dir), dot(rel, side));
+    vec2 rs = rel - shadowOffset;
+    shadow = max(shadow, step(0.5, koiShape(vec2(dot(rs, dir), dot(rs, side)), len, swim)));
+    float shape = koiShape(q, len, swim);
+    if (shape > 0.0) {
+      onFish = true;
+      float u = (0.3 * len - q.x) / len;
+      float style = hash12(vec2(fi, 9.0));
+      float marking = vnoise(vec2(u * 4.0, q.y / len * 6.0) + fi * 13.0);
+      // Ogon (gold), showa (black with red and white), kohaku (white with red), or plain orange.
+      vec3 red = vec3(1.0, 0.4, 0.1);
+      vec3 white = vec3(0.97, 0.95, 0.9);
+      vec3 black = vec3(0.07, 0.07, 0.08);
+      vec3 gold = vec3(1.0, 0.78, 0.3);
+      float tone; // 0 dark, 1 white, 2 colour
+      if (style > 0.75) { fishCol = gold; tone = 2.0; }
+      else if (style > 0.45) { tone = marking > 0.6 ? 2.0 : marking < 0.35 ? 1.0 : 0.0; fishCol = tone > 1.5 ? red : tone > 0.5 ? white : black; }
+      else if (style > 0.2) { tone = marking > 0.5 ? 2.0 : 1.0; fishCol = tone > 1.5 ? red : white; }
+      else { fishCol = red * (0.9 + 0.2 * marking); tone = 2.0; }
+      fish = tone > 0.5 && tone < 1.5 ? 0.92 : 0.0;
+      fishAccent = tone > 1.5 ? 0.95 : 0.0;
+      if (shape > 1.5) { fish = 0.45; fishAccent = 0.0; fishCol = mix(water, white, 0.55); }
+      // Eyes, set wide on the head as seen from above.
+      if (abs(u - 0.07) < 0.025 && abs(abs(q.y) - len * 0.085) < len * 0.03) { fish = 0.0; fishAccent = 0.0; fishCol = black; }
+    }
+  }
+
+  // Lily pads float above the fish; some carry a flower.
+  float pad = 0.0;
+  float padShadow = 0.0;
+  float flower = 0.0;
+  vec3 padCol = vec3(0.0);
+  for (int i = 0; i < 9; i++) {
+    if (i >= pads) break;
+    float fi = float(i);
+    vec2 centre = padAt[i].xy;
+    float radius = padAt[i].z;
+    vec2 d = rotate(p - centre, -(tm * (0.02 + uParams[10] * 0.05) + fi * 1.7));
+    float notch = abs(atan(d.y, d.x)) < 0.16 && length(d) > radius * 0.08 ? 1.0 : 0.0;
+    float inside = step(length(d), radius) * (1.0 - notch);
+    float veins = smoothstep(0.06, 0.0, abs(sin(atan(d.y, d.x) * 8.0))) * smoothstep(radius * 0.1, radius * 0.3, length(d));
+    float rim = smoothstep(radius * 0.86, radius * 0.97, length(d));
+    if (inside > 0.0) {
+      pad = 0.22 + 0.12 * veins + 0.45 * rim;
+      padCol = mix(vec3(0.24, 0.52, 0.2), vec3(0.5, 0.76, 0.34), rim) * (1.0 - 0.25 * veins) * (0.9 + 0.2 * vnoise(d * 40.0));
+    }
+    padShadow = max(padShadow, step(length(p - centre - shadowOffset * 0.6), radius));
+    if (hash12(vec2(fi, 24.0 + uParams[11])) > 0.6) {
+      vec2 f = rotate(p - centre - vec2(radius * 0.25, radius * 0.1), tm * 0.05);
+      float fr = radius * 0.32;
+      float petals = fr * (0.55 + 0.45 * abs(cos(atan(f.y, f.x) * 4.0)));
+      flower = max(flower, step(length(f), petals) * (length(f) < fr * 0.25 ? 2.0 : 1.0));
+    }
+  }
+
+  float darken = 1.0 - 0.85 * max(shadow, padShadow * 0.8);
+  o.ink = max(max(floorLight + caustic, weed * 0.32), stem * 0.2) * darken;
+  col = col * (1.0 - 0.55 * max(shadow, padShadow * 0.8));
+  if (onFish) {
+    o.ink = fish + caustic * 0.25;
+    o.accent = fishAccent;
+    col = fishCol + vec3(0.7, 1.0, 0.92) * caustic * 0.2;
+  }
+  if (pad > 0.0) { o.ink = pad; o.accent = 0.0; col = padCol; }
+  if (flower > 0.0) {
+    o.ink = flower > 1.5 ? 0.0 : 0.95;
+    o.accent = flower > 1.5 ? 0.9 : 0.0;
+    col = flower > 1.5 ? vec3(1.0, 0.85, 0.3) : vec3(1.0, 0.72, 0.84);
+  }
+
+  // Petals riding the current, recycled when they leave the pond.
+  if (uParams[36] > 0.0 && uParams[39] > 0.0) {
+    int petals = int(uParams[39] * 18.0 + 0.5);
+    vec2 span = vec2(aspect * 1.1, 1.1);
+    for (int i = 0; i < 18; i++) {
+      if (i >= petals) break;
+      float fi = float(i);
+      vec2 start = (vec2(hash12(vec2(fi, 51.0)), hash12(vec2(fi, 52.0))) - 0.5) * span;
+      vec2 eddy = (vec2(vnoise(vec2(tm * 0.5 + fi, 3.0)), vnoise(vec2(tm * 0.5 + fi, 8.0))) - 0.5) * turbulence * 0.1;
+      vec2 at = mod(start + flow * tm * (0.07 + 0.03 * hash12(vec2(fi, 53.0))) + eddy + span * 0.5, span) - span * 0.5;
+      vec2 d = rotate(p - at, tm * (0.6 + hash12(vec2(fi, 54.0))) + fi);
+      if (length(d / vec2(0.011, 0.006)) < 1.0) {
+        o.ink = 0.9;
+        o.accent = 0.0;
+        col = mix(vec3(1.0, 0.75, 0.86), vec3(1.0, 0.97, 0.95), hash12(vec2(fi, 55.0)));
+      }
+    }
+  }
+
+  o.ink = max(o.ink, ringLight * 0.7);
+  col += vec3(0.85, 1.0, 1.0) * ringLight * 0.45;
+
+  // The Manifold stone: a carved M standing in the water, its shadow on the floor and the water
+  // lapping at its foot.
+  if (uParams[40] > 0.0) {
+    vec2 at = vec2(uParams[41] * aspect * 0.5, uParams[42] * 0.5);
+    float scale = 0.16 + 0.34 * uParams[40];
+    float thickness = 0.12;
+    // A hand-cut edge: the outline wavers a little, the way chiselled stone does.
+    float d = markDistance((p - at) / scale) - thickness + (vnoise((p - at) / scale * 22.0) - 0.5) * 0.025;
+    float shade = markDistance((p - at - vec2(0.025, -0.035)) / scale) - thickness;
+    if (shade < 0.0 && d > 0.0) { col *= 0.55; o.ink *= 0.35; o.accent *= 0.4; }
+    if (d < 0.0) {
+      float e = 0.004;
+      vec2 grad = vec2(
+        markDistance((p - at + vec2(e, 0.0)) / scale) - markDistance((p - at - vec2(e, 0.0)) / scale),
+        markDistance((p - at + vec2(0.0, e)) / scale) - markDistance((p - at - vec2(0.0, e)) / scale)
+      );
+      float bevel = smoothstep(-0.05, 0.0, d);
+      float light = 0.62 + 0.38 * dot(normalize(grad + 1e-6), normalize(vec2(-0.6, 0.8))) * bevel;
+      vec2 q = (p - at) / scale;
+      float grain = 0.85 + 0.15 * fbm(q * 18.0);
+      float growth = smoothstep(1.0 - uParams[43], 1.0 - uParams[43] + 0.25, fbm(q * 4.5 + 3.0)) * (1.0 - bevel * 0.6);
+      vec3 granite = vec3(0.6, 0.6, 0.57) * grain * light;
+      col = mix(granite, vec3(0.24, 0.48, 0.2) * (0.8 + 0.4 * fbm(q * 30.0)), growth);
+      o.ink = mix(0.35 + 0.5 * light * grain, 0.22, growth);
+      o.accent = 0.0;
+      o.shimmer = 0.0;
+    } else if (d < 0.07) {
+      // Water lapping at the stone: a foam line and small waves running outward.
+      float foam = smoothstep(0.03, 0.0, d) * (0.6 + 0.4 * vnoise(p * 140.0 + tm * 2.0));
+      float lap = (0.5 + 0.5 * sin(d * 120.0 - tm * 3.0)) * smoothstep(0.07, 0.01, d) * 0.35;
+      col = mix(col, vec3(0.92, 0.98, 0.97), max(foam, lap));
+      o.ink = max(o.ink, max(foam, lap));
+    }
+  }
+
+  // Foliage: border plants (in frame) and the canopy (above the camera). Both cast shadows away
+  // from the sun and stand in the way of its rays.
+  int style = int(uParams[20] + 0.5);
+  float wind = uParams[35] * m;
+  float gust = 0.6 + 0.4 * vnoise(vec2(t * 0.25, 3.0));
+  vec2 sway = vec2(sin(t * 0.9 + uv.y * 5.0), cos(t * 0.75 + uv.x * 4.0)) * 0.005 * wind * gust;
+  vec2 sunwardUV = normalize((sunUV - uv) * vec2(aspect, 1.0) + 1e-5) / vec2(aspect, 1.0);
+  float canopySpan = 1.0 + 2.0 * ${CANOPY_MARGIN.toFixed(2)};
+  float softness = uParams[33];
+  float shadeAmount = 0.0;
+  if (uCanopyOn > 0.5) {
+    vec2 canopyUV = (uv + sunwardUV * (0.05 + 0.08 * softness) + sway * 2.2 + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan;
+    float leaves = textureLod(uCanopy, canopyUV, 0.3 + softness * 2.6).r;
+    shadeAmount = max(shadeAmount, smoothstep(0.25 - 0.12 * softness, 0.6, leaves) * (0.85 - 0.25 * softness));
+  }
+  if (uDecorOn > 0.5 && style != 1) {
+    vec4 hanging = textureLod(uDecor, uv + sunwardUV * 0.035 + sway * 1.6, 2.5);
+    shadeAmount = max(shadeAmount, smoothstep(0.08, 0.6, hanging.r) * 0.8);
+  }
+  col *= 1.0 - 0.6 * shadeAmount;
+  o.ink *= 1.0 - 0.7 * shadeAmount;
+  o.accent *= 1.0 - 0.5 * shadeAmount;
+
+  // God rays: march toward the sun; every leaf on the way blocks a little of the beam.
+  if (uParams[4] > 0.0) {
+    vec2 marchStep = (sunUV - uv) * (0.85 / 24.0);
+    vec2 at = uv;
+    float lit = 0.0;
+    float weight = 1.0;
+    float total = 0.0;
+    for (int i = 0; i < 24; i++) {
+      at += marchStep;
+      float block = 0.0;
+      if (uDecorOn > 0.5) block = textureLod(uDecor, at + sway, 2.0).r;
+      if (uCanopyOn > 0.5) block = max(block, smoothstep(0.15, 0.6, textureLod(uCanopy, (at + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan, 2.5).r));
+      lit += (1.0 - block) * weight;
+      total += weight;
+      weight *= 0.93;
+    }
+    float angle = atan(uv.y - sunUV.y, (uv.x - sunUV.x) * aspect);
+    float beams = 0.5 + 0.5 * vnoise(vec2(angle * 16.0 + tm * 0.04, tm * 0.08));
+    float reachOfLight = exp(-length((uv - sunUV) * vec2(aspect, 1.0)) * 1.1);
+    float rays = (lit / total) * beams * reachOfLight * uParams[4] * (0.35 + 1.3 * power);
+    col += vec3(1.0, 0.95, 0.78) * rays * 0.55;
+    o.ink += rays * 0.45;
+  }
+  // Glare where the sun itself is in frame.
+  float glare = exp(-length(p - sunP) * 11.0) * power;
+  col += vec3(1.0, 0.97, 0.85) * glare * 0.7;
+  o.ink = max(o.ink, glare);
+
+  if (uDecorOn > 0.5 && style != 2) {
+    vec4 probe = textureLod(uDecor, uv + sway, 0.0);
+    float layer = floor(mod(floor(probe.b * 255.0 + 0.5), 16.0) / 4.0);
+    vec4 leaf = textureLod(uDecor, uv + sway * (0.5 + 0.5 * layer), 0.0);
+    if (leaf.r > 0.5) {
+      // Materials (botany.ts): 0 monstera, 1 fern, 2 banana, 3 pothos, 4 hibiscus, 5 frangipani,
+      // 6 pollen, 7 grass, 8 stem, 9 aerial root, 10 stigma.
+      float code = floor(leaf.b * 255.0 + 0.5);
+      float material = floor(code / 16.0);
+      layer = floor(mod(code, 16.0) / 4.0);
+      vec3 dark;
+      vec3 bright;
+      if (material < 0.5) { dark = vec3(0.04, 0.24, 0.1); bright = vec3(0.2, 0.52, 0.22); }
+      else if (material < 1.5) { dark = vec3(0.2, 0.45, 0.12); bright = vec3(0.55, 0.8, 0.3); }
+      else if (material < 2.5) { dark = vec3(0.18, 0.42, 0.12); bright = vec3(0.55, 0.78, 0.32); }
+      else if (material < 3.5) { dark = vec3(0.08, 0.32, 0.12); bright = vec3(0.38, 0.68, 0.3); }
+      else if (material < 4.5) { dark = vec3(0.45, 0.0, 0.08); bright = vec3(1.0, 0.3, 0.4); }
+      else if (material < 5.5) { dark = vec3(0.85, 0.8, 0.7); bright = vec3(1.0, 0.98, 0.94); }
+      else if (material < 6.5) { dark = vec3(0.9, 0.58, 0.1); bright = vec3(1.0, 0.86, 0.32); }
+      else if (material < 7.5) { dark = vec3(0.25, 0.42, 0.1); bright = vec3(0.68, 0.8, 0.35); }
+      else if (material < 8.5) { dark = vec3(0.16, 0.3, 0.1); bright = vec3(0.42, 0.55, 0.25); }
+      else if (material < 9.5) { dark = vec3(0.22, 0.15, 0.08); bright = vec3(0.5, 0.38, 0.24); }
+      else { dark = vec3(0.35, 0.0, 0.05); bright = vec3(0.8, 0.05, 0.15); }
+      // Leaves catch the sun on its side and dim in the canopy's shade.
+      col = mix(dark, bright, leaf.g) * (0.72 + 0.14 * layer) * (0.85 + 0.35 * power) * (1.0 - 0.35 * shadeAmount);
+      // Red blooms take the accent; everything else is ink, pale flowers brightest.
+      bool red = (material > 3.5 && material < 4.5) || material > 9.5;
+      o.ink = red ? 0.0 : (0.1 + 0.55 * leaf.g) * (0.72 + 0.14 * layer) + (material > 4.5 && material < 6.5 ? 0.35 : 0.0);
+      o.accent = red ? 0.6 + 0.35 * leaf.g : 0.0;
+      o.shimmer = 0.0;
+    }
+  }
+
+  o.shimmer = max(o.shimmer, caustic * 0.15 * m);
+  o.rgb = col;
+  o.source = col;
+  return o;
+}
+`;
