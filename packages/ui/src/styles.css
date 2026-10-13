@@ -655,6 +655,13 @@ button.chip:focus-visible {
   color: #f8f9fa;
 }
 
+/* The adopter's current choice: the menu opens on it, and it says so without a second glyph. */
+.menu__item[aria-current="true"] {
+  box-shadow: inset 2px 0 0 #4c6ef5;
+  color: #bac8ff;
+  font-weight: 600;
+}
+
 .menu__icon {
   display: inline-grid;
   flex: 0 0 auto;

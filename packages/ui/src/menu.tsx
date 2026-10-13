@@ -24,6 +24,12 @@ export interface MenuProps {
   /** The menu's accessible name: nothing inside it labels the list as a whole. */
   readonly label: string;
   readonly items: readonly MenuItem[];
+  /**
+   * The id of the item that is the adopter's CURRENT choice, if any: it wears
+   * `aria-current="true"` and is where focus lands when the menu opens, as a select opens on
+   * its value. Absent or unknown, focus lands on the first item.
+   */
+  readonly current?: string;
   /** The chosen item's id. The menu closes itself after; what choosing MEANS is the adopter's. */
   readonly onSelect: (id: string) => void;
   readonly side?: "top" | "right" | "bottom" | "left";
@@ -45,9 +51,9 @@ const MOVES: Readonly<Record<string, (at: number, count: number) => number>> = {
  * what makes a list a MENU:
  *
  *   - the roles: the layer is `role="menu"` with the given name, each choice a `menuitem`;
- *   - roving focus: opening focuses the first item, the arrow keys move between items and wrap,
- *     Home and End jump to either end, and only one item is ever a tab stop, so Tab leaves the
- *     menu (and closes it) instead of walking its rows;
+ *   - roving focus: opening focuses the current item (else the first), the arrow keys move
+ *     between items and wrap, Home and End jump to either end, and only one item is ever a tab
+ *     stop, so Tab leaves the menu (and closes it) instead of walking its rows;
  *   - choosing: Enter, Space or a press selects, then the menu closes.
  *
  * No typeahead and no submenus: nothing that adopts this needs them, and each is a prop the day
@@ -59,11 +65,16 @@ export function Menu({
   trigger,
   label,
   items,
+  current,
   onSelect,
   side,
   align,
 }: MenuProps): ReactElement {
   const list = useRef<HTMLDivElement>(null);
+  const stop = Math.max(
+    items.findIndex((item) => item.id === current),
+    0,
+  );
   const rove = (event: KeyboardEvent<HTMLDivElement>): void => {
     const move = MOVES[event.key];
     const buttons = Array.from(
@@ -92,8 +103,9 @@ export function Menu({
             className="menu__item"
             type="button"
             role="menuitem"
-            tabIndex={index === 0 ? 0 : -1}
+            tabIndex={index === stop ? 0 : -1}
             data-menu-item={item.id}
+            {...(item.id === current ? { "aria-current": true } : {})}
             {...(item.action === undefined ? {} : { "data-action": item.action })}
             onClick={() => {
               onSelect(item.id);

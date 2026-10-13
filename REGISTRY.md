@@ -1853,7 +1853,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "menu",
       "owner": "packages/ui/src/styles.css",
-      "why": "the one menu (`menu.tsx`): a list of choices riding the popover's layer with menu/menuitem roles and roving focus — its rows, their mark and their truncating label. First adopter: core.shell's creation control"
+      "why": "the one menu (`menu.tsx`): a list of choices riding the popover's layer with menu/menuitem roles and roving focus — its rows, their mark, their truncating label and the adopter's current choice. First adopter: core.shell's creation control"
     },
     {
       "family": "credential",
@@ -2150,7 +2150,11 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     },
     {
       "key": "manifold:last-creator",
-      "why": "which creator THIS device last picked from core.shell's creation control, so its face repeats it (#1079). A convenience about one screen naming an entry from an OPEN set any plugin may declare: a hidden, disabled, uninstalled or unknown pick simply falls back to the first entry offered, and a storage fault is no memory"
+      "why": "which creator THIS device last picked from core.shell's creation control, so it stays the current choice beside \"+ New\" (#1079). A convenience about one screen naming an entry from an OPEN set any plugin may declare: a hidden, disabled, uninstalled or unknown pick simply falls back to the first entry offered, and a storage fault is no memory"
+    },
+    {
+      "key": "manifold:sidebar-folds",
+      "why": "which sidebar disclosure sections THIS device has folded or unfolded, by global section id (#1079), exactly as `manifold:plugin-manager-collapsed` is for the manager's bands: a row's place, presence and gate are manifest, roster and settings state every principal can observe, and which lists one screen keeps open is a fact about that screen. Absent ≡ each section's manifest `defaultOpen` (folded unless declared); a stale id from a plugin that is gone is one ignored boolean, and a storage fault is the defaults"
     }
   ]
 }

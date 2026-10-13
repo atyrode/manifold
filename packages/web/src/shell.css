@@ -274,15 +274,19 @@
 }
 
 /*
- * THE CREATION CONTROL (`core.shell.creators`): one split button. The face runs the last creator
- * picked on this device; the narrow ▾ beside it opens the picker. Two buttons joined into one
- * box, so the pair reads as one control and each half still takes its own focus ring.
+ * THE CREATION CONTROL (`core.shell.creators`), read as one phrase: "+ New [Canvas ▾]". The
+ * verb runs the current choice; the inset field beside it IS the choice — the thing's mark,
+ * its name and a caret, drawn like a select so it reads as the part of the sentence you can
+ * change. Two buttons in one box, each with its own focus ring.
  */
 .sidebar-creator {
   display: flex;
   min-width: 0;
+  align-items: center;
+  gap: 0.2rem;
   border: 1px solid #343a40;
   border-radius: 0.6rem;
+  padding: 0.2rem;
   background: #202329;
 }
 
@@ -294,55 +298,68 @@
 .sidebar-creator-face,
 .sidebar-creator-pick {
   display: flex;
-  min-height: 2.35rem;
+  min-height: 1.95rem;
   align-items: center;
   border: 0;
+  border-radius: 0.45rem;
   color: #dee2e6;
   background: transparent;
+  font-size: 0.84rem;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .sidebar-creator-face {
-  min-width: 0;
-  flex: 1 1 auto;
-  gap: 0.65rem;
-  border-radius: 0.6rem 0 0 0.6rem;
-  padding: 0.45rem 0.55rem;
-  font-size: 0.84rem;
+  flex: 0 0 auto;
+  gap: 0.4rem;
+  padding: 0.25rem 0.45rem;
   font-weight: 650;
-  text-align: left;
-  white-space: nowrap;
 }
 
-/* The face's label contract: truncate; the title attribute still says it all. */
-.sidebar-creator-face > span {
+.sidebar-creator-pick {
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 0.45rem;
+  border: 1px solid #343a40;
+  padding: 0.25rem 0.45rem;
+  color: #f1f3f5;
+  background: #17191d;
+  font-weight: 600;
+  text-align: left;
+}
+
+/* The choice's name truncates; the caret after it never does. */
+.sidebar-creator-noun {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.sidebar-creator-pick {
+.sidebar-creator-pick:not(.is-alone) > svg:last-child {
   flex: 0 0 auto;
-  justify-content: center;
-  width: 2rem;
-  border-left: 1px solid #343a40;
-  border-radius: 0 0.6rem 0.6rem 0;
-  padding: 0;
-  color: #adb5bd;
+  color: #868e96;
 }
 
 /* Collapsed, the picker's button stands alone as the rail's "+" and wears the whole box. */
 .sidebar-creator-pick.is-alone {
   width: 100%;
-  border: 1px solid #343a40;
+  min-height: 2.35rem;
+  justify-content: center;
   border-radius: 0.6rem;
+  padding: 0;
   color: #dee2e6;
   background: #202329;
 }
 
-.sidebar-creator-face:hover,
+.sidebar-creator-face:hover {
+  background: #252932;
+}
+
 .sidebar-creator-pick:hover,
 .sidebar-creator-pick[data-state="open"] {
-  background: #252932;
+  border-color: #4c6ef5;
+  background: #1c1f25;
 }
 
 .sidebar-creator-face:disabled,

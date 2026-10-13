@@ -5301,11 +5301,12 @@ try {
     await closePluginManager();
     const pickSelector = JSON.stringify('[data-section-id="creators"] .sidebar-creator-pick');
     const menuSelector = JSON.stringify('[role="menu"][aria-label="Create"]');
-    const everyCreator = "New canvas | New composition | New folder";
-    const withoutCompositions = "New canvas | New folder";
+    const everyCreator = "Canvas | Composition | Folder";
+    const withoutCompositions = "Canvas | Folder";
     /**
      * What the picker offers, in painted order. Idempotent like `openPluginManager`: a shut
-     * picker gets ▾ pressed and answers "shut", and the next poll reads the menu that opened.
+     * picker gets its choice pressed and answers "shut", and the next poll reads the menu that
+     * opened.
      */
     const offered = (): Promise<string> =>
       browser!.evaluate<string>(
@@ -5368,15 +5369,16 @@ try {
       "R3 core.compositions creator",
       creatorRight,
       creatorRight
-        ? `the picker offered "${everyCreator}"; with core.compositions off it offered "${withdrawn}", and New composition came back in its declared place on re-enable`
+        ? `the picker offered "${everyCreator}"; with core.compositions off it offered "${withdrawn}", and Composition came back in its declared place on re-enable`
         : `offered "${listed}"; core.compositions off (${off ? "accepted" : "REFUSED"}) offered "${withdrawn}"; back on (${on ? "accepted" : "REFUSED"}) offered "${reoffered}"`,
     );
 
     /*
       AND BY KEYBOARD, landing on the entry that just came back: a menu button a pointer can
-      work and a keyboard cannot is half a control. Enter on ▾ opens the menu on its first item,
-      ArrowDown walks to the second — the re-offered New composition — and Escape shuts the menu
-      and hands focus back to ▾, where the reader left it.
+      work and a keyboard cannot is half a control. Enter on the choice opens the menu on the
+      current entry — Canvas, on a device that has picked nothing — ArrowDown walks to the
+      re-offered Composition, and Escape shuts the menu and hands focus back to the choice,
+      where the reader left it.
     */
     const focused = (): Promise<string> =>
       browser!.evaluate<string>(
@@ -5424,27 +5426,27 @@ try {
       () => browser!.evaluate<boolean>(`document.querySelector(${menuSelector}) !== null`),
       5_000,
     );
-    const openedOn = await focusOn("New canvas");
+    const openedOn = await focusOn("Canvas");
     await press("ArrowDown");
-    const walkedTo = await focusOn("New composition");
+    const walkedTo = await focusOn("Composition");
     await press("Escape");
     const shut = await menuGone();
     const returnedTo = await focusOn("the trigger");
     const keyed =
       triggered &&
       opened &&
-      openedOn === "New canvas" &&
-      walkedTo === "New composition" &&
+      openedOn === "Canvas" &&
+      walkedTo === "Composition" &&
       shut &&
       returnedTo === "the trigger";
     check(
       "R3 the re-offered creator by keyboard",
       keyed,
       !triggered
-        ? "the creation control's ▾ could not take focus"
+        ? "the creation control's choice could not take focus"
         : keyed
-          ? "Enter on ▾ opened the menu on New canvas, ArrowDown walked to the returned New composition, and Escape shut it with focus back on ▾"
-          : `Enter on ▾ ${opened ? "opened the menu" : "did NOT open the menu"} with focus on "${openedOn}", ArrowDown on "${walkedTo}"; Escape ${shut ? "shut the menu" : "left the menu open"} with focus on "${returnedTo}"`,
+          ? "Enter on the choice opened the menu on Canvas, ArrowDown walked to the returned Composition, and Escape shut it with focus back on the choice"
+          : `Enter on the choice ${opened ? "opened the menu" : "did NOT open the menu"} with focus on "${openedOn}", ArrowDown on "${walkedTo}"; Escape ${shut ? "shut the menu" : "left the menu open"} with focus on "${returnedTo}"`,
     );
   }
 

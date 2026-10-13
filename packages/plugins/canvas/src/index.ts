@@ -54,7 +54,7 @@ export const canvasManifest: PluginManifest = {
     panels: [],
     sections: [],
     /**
-     * ONE CREATOR: "New canvas", in the shell's picker. A creator is an opinion about a
+     * ONE CREATOR: "Canvas", in the shell's picker. A creator is an opinion about a
      * DISCIPLINE, so it belongs to the discipline's plugin rather than to whoever draws the
      * rail — disable this plugin and the offer to make a canvas goes with it (D12). It is DATA:
      * the door is the index's (`core.index.createContainer`), run as the presser with a fixed
@@ -64,7 +64,7 @@ export const canvasManifest: PluginManifest = {
     creators: [
       {
         id: "new-canvas",
-        title: "New canvas",
+        title: "Canvas",
         icon: "canvas",
         order: 2,
         action: "core.index.createContainer",

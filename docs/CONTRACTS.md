@@ -1777,7 +1777,8 @@ value no declaration answers is ignored at composition rather than pruned, so a 
 off for a week finds its reader's preferences intact.
 
 **Creators are declared offers, run by one door** (#1079). `contributes.creators` declares
-`{ id, title, icon, order, action, input?, setting? }`: an id claimed globally, a mark from the
+`{ id, title, icon, order, action, input?, setting? }`: an id claimed globally, a title naming
+the thing made (the shell supplies the one verb, "+ New"), a mark from the
 closed `creatorIcons`, a FULL action name and a fixed JSON input of at most
 `maxCreatorInputBytes` (absent ≡ `{}`). Assembly refuses an action no assembled plugin declares
 and a `setting` that is not the plugin's own boolean, naming both; on the hold path a plugin
@@ -1788,7 +1789,8 @@ reader every creator whose owner is enabled and whose setting does not read fals
 notice on refusal, paints nothing first, lands in a container the answer names, and publishes
 the run as `lastCreated` for the offering plugin. No component is registered, so trusted,
 in-realm and hardened plugins offer creators identically. `core.index.createFolder` answers
-`{ items, folderId }`.
+`{ items, folderId }`. A disclosure section may declare `defaultOpen`; every other disclosure
+starts folded, and a reader's own fold choice is remembered per device (`manifold:sidebar-folds`).
 
 `manifold://plugin/<id>` is a place to open, and the manager is what shows it. The shell's
 navigation door routes a `plugin` reference to the workspace it is already in, carrying the
@@ -2797,8 +2799,9 @@ the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by m
 bundle set is independent of session, machine and instance negotiation: sessions still require
 the current wire version. Protocol 58 admits only bundle stamp 58. Protocol 57's explicit
 per-viewport terminal attach/detach and completion acknowledgement changed the trusted
-plugin/SDK terminal ABI; protocol 58 adds the optional manifest `contributes.creators` and
-`core.index.createFolder`'s `folderId`, and stamp 57 is not retained until released 57 artifacts
+plugin/SDK terminal ABI; protocol 58 adds the optional manifest `contributes.creators`, the
+optional section `defaultOpen` and `core.index.createFolder`'s `folderId`, and stamp 57 is not
+retained until released 57 artifacts
 are proven against the host. Portable Worker projections still expose no terminal
 byte/snapshot subscriptions. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and

@@ -38,7 +38,7 @@ export const compositionsManifest: PluginManifest = {
     panels: [],
     sections: [],
     /**
-     * ONE CREATOR: "New composition", this discipline's own offer in the shell's picker and the
+     * ONE CREATOR: "Composition", this discipline's own offer in the shell's picker and the
      * exact counterpart of `core.canvas`'s — the index's door with this discipline as fixed
      * input, landing the presser inside what it made. `order: 3` seats it directly after the
      * canvas creator, where its row used to sit.
@@ -46,7 +46,7 @@ export const compositionsManifest: PluginManifest = {
     creators: [
       {
         id: "new-composition",
-        title: "New composition",
+        title: "Composition",
         icon: "composition",
         order: 3,
         action: "core.index.createContainer",

@@ -284,7 +284,7 @@ export const manifest: PluginManifest = {
     //            (default 1). core.shell seats its two at 0.22 and 0.78, which is the
     //            classical workspace; declare a seat and yours appears in a fresh
     //            workspace without anybody editing the floor (ADR 0017 §3).
-    sections: [], // { id, title, order, presentation?, cluster? } — a sidebar row; presentation
+    sections: [], // { id, title, order, presentation?, cluster?, setting?, defaultOpen? } — a sidebar row; presentation
     //            is "disclosure" (default: a titled block that folds) or "plain" (you draw the
     //            whole row). `cluster` is a bare word: rows sharing it paint side by side as one
     //            unit at the earliest member's place. One registry, one reader-arranged order.
@@ -1468,10 +1468,15 @@ their work invisible without deleting it, which is the one outcome worse than a 
   from their sidebar. Assembly refuses a `setting` your manifest does not contribute, naming
   both, and a row may never name another plugin's — a preference of theirs erasing a row of
   yours is exactly the shadowing D5 refuses one level up. Absent ≡ unconditional.
+  A disclosure row may also declare **`defaultOpen: true`**: it starts unfolded for a reader who
+  has never folded it. Every other disclosure starts folded, so a rail opens on the list a reader
+  came for (`core.index` declares it for Index). Once a reader folds or unfolds a row, that
+  choice is remembered on their device and outranks the declaration. Absent ≡ folded.
 - **`creators`** are offers to make something, listed in the shell's one "+ New" picker. A
   creator is DATA — `{ id, title, icon, order, action, input?, setting? }` — and you register no
-  component for it, so a hardened plugin offers one exactly as a trusted one does. `title` is the
-  whole label ("New canvas"); `icon` is one of the closed `creatorIcons` in `GET /api/protocol`'s
+  component for it, so a hardened plugin offers one exactly as a trusted one does. `title` names
+  the THING ("Canvas"), not the act: the control reads "+ New Canvas ▾", the shell owns the verb,
+  and the picker lists titles alone. `icon` is one of the closed `creatorIcons` in `GET /api/protocol`'s
   vocabulary; `action` is a FULL action name, yours or another plugin's (`core.canvas` offers
   `core.index.createContainer`), and `input` is the fixed JSON object it runs with (at most
   `maxCreatorInputBytes`, absent ≡ `{}`). The shell runs the chosen entry as the principal who
