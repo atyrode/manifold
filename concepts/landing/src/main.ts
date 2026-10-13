@@ -30,6 +30,7 @@ const credit = element("#credit", HTMLElement);
 const bar = element("#bar", HTMLElement);
 const status = element("#status", HTMLElement);
 const instanceName = element("#instance-name", HTMLElement);
+const stage = element("#stage", HTMLCanvasElement);
 
 const initial = new URLSearchParams(location.search);
 let state: LabState = readState(initial);
@@ -37,7 +38,7 @@ let params: Params = readParams(state.scene, initial);
 
 let renderer: DitherRenderer | undefined;
 try {
-  renderer = new DitherRenderer(element("#stage", HTMLCanvasElement), renderSettings(state, params), reducedMotion);
+  renderer = new DitherRenderer(stage, renderSettings(state, params), reducedMotion);
   renderer.start();
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
@@ -64,6 +65,10 @@ function apply(query: URLSearchParams): void {
     node.hidden = !(node.dataset.show ?? "").split(" ").includes(state.mode);
   }
   credit.textContent = sceneCredit[state.scene];
+  // Backdrop focus aids: blur and dim the scene behind the page.
+  stage.style.filter = state.dim > 0 || state.blur > 0 ? `blur(${(state.blur * 12).toFixed(1)}px) brightness(${(1 - state.dim * 0.85).toFixed(2)})` : "";
+  // Scale up slightly while blurred so the soft edges stay off screen.
+  stage.style.transform = state.blur > 0 ? `scale(${(1 + state.blur * 0.05).toFixed(3)})` : "";
   instanceName.textContent = state.instance;
   if (state.mode !== "loading") renderer?.setProgress(-1);
   lab?.sync();

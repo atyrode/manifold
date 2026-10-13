@@ -1,6 +1,7 @@
 // The lab's state and its URL encoding. Global settings live in `LabState`; the current scene's
 // knobs live in `Params` (a feature also stores `<key>-amount`). URLs carry only non-defaults.
-import { effective, sceneParams } from "./params.ts";
+import { speciesIds, type DecorConfig, type Species } from "./decor.ts";
+import { effective, MAX_SEED, sceneParams } from "./params.ts";
 import {
   colorIds,
   ditherIds,
@@ -34,6 +35,10 @@ export interface LabState {
   /** Whether the scene parallaxes toward the pointer. */
   mouse: MouseId;
   view: ViewId;
+  /** 0..1: darken the scene behind the page, to judge the copy's legibility. */
+  dim: number;
+  /** 0..1: soften the scene behind the page. */
+  blur: number;
 }
 
 export const sceneAccent: Record<SceneId, string> = {
@@ -64,6 +69,8 @@ export const defaults: LabState = {
   instance: "tyrode",
   mouse: "follow",
   view: "dithered",
+  dim: 0,
+  blur: 0,
 };
 
 /** Scenes that start from a different look (the pond is designed in full colour). */
@@ -132,6 +139,8 @@ export function readState(q: URLSearchParams): LabState {
     instance: (q.get("instance") ?? "").trim().slice(0, 40) || defaults.instance,
     mouse: pick(mouseIds, q.get("mouse"), defaults.mouse),
     view: pick(viewIds, q.get("view"), defaults.view),
+    dim: readNumber(q.get("dim"), 0, 1, defaults.dim),
+    blur: readNumber(q.get("blur"), 0, 1, defaults.blur),
   };
 }
 
@@ -157,6 +166,9 @@ export function readParams(scene: SceneId, q: URLSearchParams): Params {
         out[def.key] = def.options.some((option) => option.value === value) ? value : def.value;
         break;
       }
+      case "seed":
+        out[def.key] = Math.round(readNumber(q.get(def.key), 0, MAX_SEED, def.value));
+        break;
       default: {
         const unreachable: never = def;
         throw new Error(`landing: unknown knob ${String(unreachable)}`);
@@ -164,6 +176,18 @@ export function readParams(scene: SceneId, q: URLSearchParams): Params {
     }
   }
   return out;
+}
+
+/** The pond's border plants, as the renderer paints them; undefined when absent. */
+function decorConfig(state: LabState, params: Params): DecorConfig | undefined {
+  if (state.scene !== "pond" || (params.plants ?? 0) < 0.5) return undefined;
+  const toggles: Record<Species, string> = { monstera: "monstera", fern: "ferns", banana: "banana", heart: "hearts" };
+  return {
+    reach: params["plants-amount"] ?? 0.45,
+    density: params.plantDensity ?? 0.5,
+    kinds: speciesIds.filter((species) => (params[toggles[species]] ?? 1) > 0.5),
+    seed: params.plantSeed ?? 0,
+  };
 }
 
 /** Each knob's default, keyed as readParams keys them. */
@@ -202,5 +226,6 @@ export function renderSettings(state: LabState, params: Params): RenderSettings 
     params: sceneParams[state.scene].map((def) => effective(def, params)),
     followPointer: state.mouse === "follow",
     view: state.view,
+    decor: decorConfig(state, params),
   };
 }

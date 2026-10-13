@@ -1,6 +1,6 @@
 // The lab sidebar. Built entirely from the scene catalogue and knob definitions: every change goes
 // through the host as a URL query, so links, presets and undo all share one representation.
-import { formatValue, groupInfo, sceneInfo, sceneParams, type Option, type ParamDef } from "./params.ts";
+import { formatValue, groupInfo, MAX_SEED, sceneInfo, sceneParams, type Option, type ParamDef } from "./params.ts";
 import { loadLocalPresets, parsePresets, presets, saveLocalPresets, type Preset } from "./presets.ts";
 import { colorIds, ditherIds, sceneIds, viewIds, type DitherRenderer, type SceneId } from "./renderer.ts";
 import { accentOf, carryLook, defaultsFor, modeIds, paramDefaults, sceneAccent, serialise, type LabState, type Params } from "./state.ts";
@@ -43,6 +43,7 @@ const ICONS = {
   play: "M5 3.5v9l7-4.5z",
   pause: "M5 3.5v9M11 3.5v9",
   external: "M9 3h4v4M13 3 7 9M11 9.5V13H3V5h3.5",
+  dice: "M3 3h10v10H3zM6 6h.01M10 6h.01M8 8h.01M6 10h.01M10 10h.01",
   bolt: "M9 2 4 9h4l-1 5 5-7H8z",
   trash: "M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 8.5h6l.5-8.5",
 } as const;
@@ -470,18 +471,25 @@ export class Lab {
       block: page.el,
     });
     const grid = h("div", { class: "scene-grid", "data-search": "scene wave starry orbit swell pond picture" }, ...cards);
+    const dim = this.#slider("Dim background", 0, 1, 0.05, () => this.#current().state.dim, (value, commit) => this.#change({ dim: value }, commit));
+    const blur = this.#slider("Blur background", 0, 1, 0.05, () => this.#current().state.blur, (value, commit) => this.#change({ blur: value }, commit));
+    const dimRow = this.#row({ label: "Dim background", help: "Darken the scene behind the page, to judge whether the copy needs help to stand out.", block: dim.el, readout: () => `${Math.round(this.#current().state.dim * 100)}%`, modified: () => this.#current().state.dim !== 0, reset: () => this.#change({ dim: 0 }, true) });
+    const blurRow = this.#row({ label: "Blur background", help: "Soften the scene behind the page so the copy is the only sharp thing on screen.", block: blur.el, readout: () => `${Math.round(this.#current().state.blur * 12)}px`, modified: () => this.#current().state.blur !== 0, reset: () => this.#change({ blur: 0 }, true) });
     this.#syncers.push(() => {
       const { state } = this.#current();
       for (const card of cards) card.setAttribute("aria-pressed", String(card.dataset.scene === state.scene));
       if (document.activeElement !== nameInput) nameInput.value = state.instance;
-    }, page.sync, pageRow.sync, nameRow.sync, nameReveal.sync);
+    }, page.sync, pageRow.sync, nameRow.sync, nameReveal.sync, dim.sync, blur.sync, dimRow.sync, blurRow.sync);
     return this.#section({
       id: "scene",
       title: "Scene",
       blurb: "Pick the picture, then what sits on top of it.",
       open: true,
-      content: [grid, pageRow.el, nameReveal.el],
-      summary: () => [sceneInfo[this.#current().state.scene].title, MODE_LABEL[this.#current().state.mode]],
+      content: [grid, pageRow.el, nameReveal.el, dimRow.el, blurRow.el],
+      summary: () => {
+        const { state } = this.#current();
+        return [sceneInfo[state.scene].title, MODE_LABEL[state.mode], state.dim > 0 ? `dim ${Math.round(state.dim * 100)}%` : "", state.blur > 0 ? "blurred" : ""].filter(Boolean);
+      },
       syncers: this.#syncers,
     });
   }
@@ -748,6 +756,7 @@ export class Lab {
           }
           break;
         case "range":
+        case "seed":
           if (value !== fallback[def.key]) chips.push(`${def.label} ${formatValue(def, value)}`);
           break;
         default: {
@@ -787,6 +796,16 @@ export class Lab {
         const segments = this.#segments(def.label, options(def.options), () => String(value(def.key)), (next) => setKey(def.key)(Number(next)));
         built = this.#row({ label: def.label, help: def.help, block: segments.el, modified, reset });
         syncers.push(segments.sync);
+        break;
+      }
+      case "seed": {
+        const reseed = h("button", { type: "button", class: "fire", title: "Pick another arrangement" }, icon("dice"), h("span", {}, "re-seed"));
+        reseed.addEventListener("click", () => {
+          let next = Math.floor(Math.random() * (MAX_SEED + 1));
+          if (next === value(def.key)) next = (next + 1) % (MAX_SEED + 1);
+          setKey(def.key)(next);
+        });
+        built = this.#row({ label: def.label, help: def.help, inline: [reseed], readout: () => formatValue(def, value(def.key)), modified, reset });
         break;
       }
       case "feature": {
@@ -843,6 +862,9 @@ export class Lab {
           break;
         case "choice":
           patch[def.key] = pickOne(def.options)?.value ?? def.value;
+          break;
+        case "seed":
+          patch[def.key] = Math.floor(Math.random() * (MAX_SEED + 1));
           break;
         case "feature":
           patch[def.key] = Math.random() < 0.55 ? 1 : 0;

@@ -7,6 +7,7 @@
 //   feature  a switch plus its amount (slider, or segments when `options` is set); the shader reads
 //            the amount while on and 0 while off. URL keys: `key` (0/1) and `key-amount`.
 //   choice   segmented buttons; the shader reads the chosen value
+//   seed     an arrangement number with a "re-seed" button; the shader reads it
 import type { SceneId } from "./renderer.ts";
 
 interface Base {
@@ -33,7 +34,11 @@ export type ParamDef =
   | (Base & { kind: "range"; min: number; max: number; step: number; value: number })
   | (Base & { kind: "toggle"; value: number })
   | (Base & { kind: "feature"; on: boolean; amountLabel: string; min: number; max: number; step: number; value: number; options?: readonly Option[] })
-  | (Base & { kind: "choice"; options: readonly Option[]; value: number });
+  | (Base & { kind: "choice"; options: readonly Option[]; value: number })
+  | (Base & { kind: "seed"; value: number });
+
+/** Largest arrangement number a seed knob can hold. */
+export const MAX_SEED = 999;
 
 /** Must match `MAX_PARAMS` / `MAX_TRIGGERS` in the fragment shader. */
 export const MAX_PARAMS = 40;
@@ -70,6 +75,10 @@ const feature = (
 
 const choice = (group: string, key: string, label: string, options: readonly Option[], value: number, help: string, more: Extra = {}): ParamDef => ({
   kind: "choice", group, key, label, options, value, help, ...extra(more),
+});
+
+const seed = (group: string, key: string, label: string, help: string, more: Extra = {}): ParamDef => ({
+  kind: "seed", group, key, label, value: 0, help, ...extra(more),
 });
 
 const counts = (...values: number[]): Option[] => values.map((value) => ({ label: String(value), value }));
@@ -146,10 +155,27 @@ export const sceneParams: Record<SceneId, readonly ParamDef[]> = {
     feature("surface", "ripples", "ripples", true, "frequency", 0.35, "Rings spreading from drops landing on the surface.", { trigger: 0 }),
     range("floor", "depth", "depth", 0.5, "Deeper water dims the floor and pushes shadows further from the fish."),
     toggle("floor", "stones", "pebbles", true, "A pebble floor under the water."),
-    toggle("manifold", "stepping", "stepping stones", false, "Flat stones on the floor, laid out as the Manifold M."),
-    feature("manifold", "formation", "koi formation", false, "how often", 0.4, "Now and then the koi gather and swim the strokes of the M together.", { trigger: 1 }),
-    feature("surface", "lilyDrift", "pads drift", false, "speed", 0.4, "Lily pads wander slowly across the pond instead of bobbing in place."),
-    feature("floor", "weeds", "water weeds", true, "amount", 0.5, "Clumps of weed on the floor, swaying in the current."),
+    feature("surface", "lilyDrift", "pads wander", false, "speed", 0.4, "Pads wander around their anchor (or across the pond when untethered)."),
+    feature("floor", "weeds", "water weeds", true, "amount", 0.5, "Clumps of weed on the floor, swaying and bending with the current."),
+    feature("plants", "plants", "border plants", true, "reach", 0.45, "Lush plants overhanging the pond's edges: monstera, ferns, banana and philodendron leaves."),
+    choice("plants", "plantStyle", "show", [{ label: "both", value: 0 }, { label: "leaves", value: 1 }, { label: "shadows", value: 2 }], 0, "Leaves: the plants themselves. Shadows: only the shade they cast, as if they hang above the camera. Both: leaves with their shadows on the water.", { when: "plants" }),
+    range("plants", "wind", "wind", 0.4, "How much the leaves stir in the breeze; front leaves move most.", { when: "plants" }),
+    range("plants", "plantDensity", "density", 0.5, "How many clumps line the edges.", { when: "plants" }),
+    toggle("plants", "monstera", "monstera", true, "Big split leaves with holes; they favour the corners.", { when: "plants" }),
+    toggle("plants", "ferns", "ferns", true, "Arching fronds of small leaflets.", { when: "plants" }),
+    toggle("plants", "banana", "banana leaves", true, "Long blades torn by the wind.", { when: "plants" }),
+    toggle("plants", "hearts", "philodendron", true, "Small glossy heart-shaped leaves.", { when: "plants" }),
+    seed("plants", "plantSeed", "arrangement", "Which arrangement of clumps; re-seed for another.", { when: "plants" }),
+    seed("surface", "lilySeed", "pad placement", "Where the lily pads are anchored; re-seed to scatter them anew."),
+    toggle("surface", "tether", "tethered", true, "Each pad hangs on a stem rooted in the floor: it leans with the current but cannot drift away. Off: pads are carried along and come back round."),
+    feature("current", "current", "current", false, "strength", 0.35, "A flow through the pond: pads lean or travel, weeds bend, light and ripples drift, petals float by."),
+    range("current", "currentDir", "direction", 0.1, "Which way the water flows, as a turn of the compass.", { when: "current" }),
+    range("current", "turbulence", "turbulence", 0.4, "Eddies that jostle the pads and petals.", { when: "current" }),
+    feature("current", "petals", "floating petals", true, "amount", 0.5, "Petals drifting on the surface, showing how the water moves.", { when: "current" }),
+    feature("manifold", "stone", "manifold stone", false, "size", 0.45, "A carved stone M rising from the water, with moss on top and water lapping at its edges."),
+    range("manifold", "stoneX", "across", 0.45, "Where the stone stands, left to right.", { min: -1, max: 1, when: "stone", steady: true }),
+    range("manifold", "stoneY", "height", -0.2, "Where the stone stands, bottom to top.", { min: -1, max: 1, when: "stone", steady: true }),
+    range("manifold", "moss", "moss", 0.5, "How much moss has grown over the stone.", { when: "stone" }),
   ],
 };
 
@@ -204,13 +230,16 @@ export const groupInfo: Record<SceneId, Record<string, Blurb>> = {
     light: { title: "Light", blurb: "Sunlight through the water." },
     surface: { title: "Surface", blurb: "What floats and what falls on the water." },
     floor: { title: "Floor", blurb: "Depth and the bed of the pond." },
-    manifold: { title: "Manifold mark", blurb: "Ways the M can live in the pond." },
+    plants: { title: "Border plants", blurb: "Hand-drawn foliage around the edges: as leaves, as shadows from above, or both." },
+    current: { title: "Water current", blurb: "Make the water flow and watch everything respond to it." },
+    manifold: { title: "Manifold stone", blurb: "A landmark of its own: a carved stone M standing in the water." },
   },
 };
 
 /** How a knob's value reads in the lab. */
 export function formatValue(def: ParamDef, value: number): string {
   if (def.kind === "toggle") return value > 0.5 ? "on" : "off";
+  if (def.kind === "seed") return `#${Math.round(value)}`;
   const step = def.kind === "range" || def.kind === "feature" ? def.step : 1;
   if (step >= 1) return String(Math.round(value));
   const min = def.kind === "range" || def.kind === "feature" ? def.min : 0;

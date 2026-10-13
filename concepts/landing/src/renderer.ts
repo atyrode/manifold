@@ -1,5 +1,6 @@
 import { artworks, floodBackdrop, flowField, raster, type Artwork, type Raster } from "./artwork.ts";
 import { constellationUniforms } from "./constellations.ts";
+import { decorKey, paintDecor, type DecorConfig } from "./decor.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import { fragmentSource, vertexSource } from "./shaders.ts";
 
@@ -29,6 +30,8 @@ export interface RenderSettings {
   params: readonly number[];
   followPointer: boolean;
   view: ViewId;
+  /** The pond's border plants; undefined when absent. */
+  decor: DecorConfig | undefined;
 }
 
 /** Must match `MAX_STARS` in the fragment shader. */
@@ -39,7 +42,7 @@ const uniformNames = [
   "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
   "uStars", "uStarCount", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
-  "uProgress", "uTriggers",
+  "uProgress", "uTriggers", "uDecor", "uDecorOn",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
@@ -101,6 +104,10 @@ export class DitherRenderer {
   /** Shader time each trigger slot last fired; far in the past when idle. */
   readonly #triggers = new Float32Array(MAX_TRIGGERS).fill(-1e4);
   #triggerScene = "";
+  /** Border-plant sheet for the pond, repainted when its settings or the frame's shape change. */
+  #decor: WebGLTexture | undefined;
+  #decorKey = "";
+  #decorPainted = 0;
   /** Loading-page progress 0..1, or -1 off the loading page. */
   #progress = -1;
   /** WebGL version and renderer, for diagnosing remote reports. */
@@ -233,6 +240,30 @@ export class DitherRenderer {
     });
   }
 
+  /** Repaint the plant sheet at the frame's aspect, at most every 200 ms while settings change. */
+  #paintDecor(config: DecorConfig, aspect: number, now: number): void {
+    const key = `${decorKey(config)}|${aspect.toFixed(2)}`;
+    if (key === this.#decorKey || now - this.#decorPainted < 200) return;
+    this.#decorKey = key;
+    this.#decorPainted = now;
+    const width = 1280;
+    const height = Math.max(1, Math.round(width / aspect));
+    const sheet = new OffscreenCanvas(width, height);
+    const ctx = sheet.getContext("2d");
+    if (!ctx) throw new RendererError("2d canvas unavailable");
+    paintDecor(ctx, width, height, config);
+    const gl = this.#gl;
+    this.#decor ??= gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.#decor);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sheet);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
   #draw(now: number): void {
     const gl = this.#gl;
     const dt = this.#lastFrame === 0 ? 0 : Math.min((now - this.#lastFrame) / 1000, 0.1);
@@ -262,6 +293,9 @@ export class DitherRenderer {
       gl.bindTexture(gl.TEXTURE_2D, texture ?? this.#blank);
     });
     const stars = starsByScene[s.scene] ?? noStars;
+    if (s.decor) this.#paintDecor(s.decor, width / height, now);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, s.decor && this.#decor ? this.#decor : this.#blank);
 
     const u = this.#uniforms;
     gl.uniform2f(u.uRes, width, height);
@@ -287,6 +321,8 @@ export class DitherRenderer {
     gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     gl.uniform1f(u.uProgress, this.#progress);
     gl.uniform1fv(u.uTriggers, this.#triggers);
+    gl.uniform1i(u.uDecor, 3);
+    gl.uniform1f(u.uDecorOn, s.decor && this.#decor ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }
