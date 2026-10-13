@@ -3,13 +3,14 @@
 //   uSim0  texel 0 scroll (k, hi, lo, mist reshaping clock); texel 1 mist drift (k, hi, lo, -)
 //          texel 2 geese leader (x hi, x lo, y, skein number); texel 3 seal (x hi, x lo, y, age)
 //   uSim1  the pointer's breath over the page (uv), thinning the mist.
-// Four layers of forms are painted front to back: river banks, the near peaks, a middle range and
-// far peaks. Each layer is a row of overlapping mountain forms on a lattice along the scroll; at a
-// pixel the frontmost form covering it is painted (contour, wash, texture strokes, moss dots), so
-// forms stack and outline one another as in a painting. Mist is bare paper: bands of it fade what
-// lies behind them. Ink is laid as a density and turned into colour through the paper at the end.
-// Knobs read here: K_seed, K_detail, K_palette, K_density, K_wetness, K_cun, K_age, K_mist, K_birds,
-// K_boats, K_dwellings, K_falls, K_seal.
+// Five layers of forms are painted front to back: river banks, the near peaks, a middle range and
+// two far ranges. Each layer is a row of overlapping mountain forms on a lattice along the scroll,
+// each form asymmetric, craggy and often shouldered or stepped; at a pixel the frontmost form
+// covering it is painted (contour, wash, fold lines with texture strokes hung beneath them, moss
+// dots), so forms stack and outline one another as in a painting. Mist is bare paper: bands of it
+// fade what lies behind them. Ink is laid as a density and turned into colour through the paper.
+// Knobs read here: K_seed, K_detail, K_palette, K_density, K_wetness, K_cun, K_age, K_mist,
+// K_boats, K_dwellings, K_falls, K_inscription, K_seal (K_speed, K_drift, K_birds: in the sim).
 
 export const shanshuiGlsl = `
 const vec3 SHAN_PAPER_NEW = vec3(0.949, 0.925, 0.851); // fresh paper
@@ -24,6 +25,14 @@ const float SHAN_SHEET = 1.9;  // width of one sheet of paper along the scroll, 
 // Set once per pixel by the entry: the seed's hash row and one dither cell in screen heights.
 float shanSeed = 0.0;
 float shanPx = 0.001;
+// The cell's own dither threshold. Every crisp stroke's coverage is cut against it (shanSolid), so
+// as the scroll carries an antialiased edge across a cell the cell flips once, from paper to ink,
+// instead of stepping through every tone level (each channel at its own moment) on the way.
+float shanTh = 0.5;
+
+float shanSolid(float coverage) {
+  return coverage > shanTh ? 1.0 : 0.0;
+}
 
 float shanHash(float x, float row) {
   return hash12(vec2(x, row + shanSeed));
@@ -43,32 +52,38 @@ float shanUnsplit(vec4 v) {
   return v.x * 32.0 + (v.y + v.z) / 64.0;
 }
 
-// Layers: 0 river banks, 1 near peaks, 2 middle range, 3 far peaks.
+// Layers: 0 river banks, 1 near peaks, 2 middle range, 3 far peaks, 4 the farthest range.
 // Lattice cell, base height, lowest and tallest form; all in screen heights.
 vec4 shanLayerShape(int layer) {
   if (layer == 0) return vec4(0.9, -0.05, 0.1, 0.24);
-  if (layer == 1) return vec4(0.26, 0.07, 0.12, 0.84);
-  if (layer == 2) return vec4(0.18, 0.25, 0.05, 0.3);
-  return vec4(0.3, 0.39, 0.05, 0.38);
+  if (layer == 1) return vec4(0.21, 0.07, 0.12, 0.86);
+  if (layer == 2) return vec4(0.17, 0.24, 0.05, 0.3);
+  if (layer == 3) return vec4(0.26, 0.37, 0.06, 0.4);
+  return vec4(0.4, 0.47, 0.05, 0.34);
 }
 
-// Contour width in cells, wash, texture strokes, overall ink: nearer is bolder.
+// Contour width in cells, wash, texture strokes, overall ink. Nearer is bolder; the two far ranges
+// are boneless washes with no contour at all.
 vec4 shanLayerStyle(int layer) {
   if (layer == 0) return vec4(2.6, 0.3, 1.0, 1.15);
-  if (layer == 1) return vec4(2.2, 0.26, 0.9, 1.0);
-  if (layer == 2) return vec4(1.6, 0.22, 0.5, 0.62);
-  return vec4(0.0, 0.5, 0.0, 0.36);
+  if (layer == 1) return vec4(2.4, 0.26, 1.0, 1.0);
+  if (layer == 2) return vec4(1.4, 0.36, 0.45, 0.7);
+  if (layer == 3) return vec4(0.0, 0.8, 0.0, 0.55);
+  return vec4(0.0, 0.75, 0.0, 0.34);
 }
 
 struct ShanForm {
-  float c;     // centre along the scroll
-  float w;     // half width
-  float H;     // height above the layer's base (0: no form here)
-  float a;     // shape: low is sheer-sided and round-topped, high is a bell
-  float z;     // depth order within the layer: low is in front
-  float kind;  // texture strokes: 0 hemp-fibre, 1 axe-cut
-  float seed;  // 0..1, for everything else
-  float fall;  // where a waterfall drops, in half widths from the centre; -9: none
+  float c;         // centre along the scroll
+  float w;         // half width
+  float H;         // height above the layer's base (0: no form here)
+  vec2 a;          // fall of the left and right flanks: low is sheer, high a long concave slope
+  float skew;      // where the summit stands, in half widths from the centre
+  float shoulder;  // a lower second summit on the gentler flank, as a share of H (0: none)
+  float steps;     // rock planes stacked into ledges, how many (0: none)
+  float z;         // depth order within the layer: low is in front
+  float kind;      // texture strokes: 0 hemp-fibre, 1 axe-cut
+  float seed;      // 0..1, for everything else
+  float fall;      // where a waterfall drops, in half widths from the centre; -9: none
 };
 
 ShanForm shanFormAt(int layer, float i) {
@@ -76,50 +91,95 @@ ShanForm shanFormAt(int layer, float i) {
   float row = float(layer) * 17.0;
   float h1 = shanHash(i, row);
   float h2 = shanHash(i, row + 1.0);
+  float h3 = fract(h1 * 41.3 + h2 * 7.1);
+  float h4 = fract(h1 * 13.9 + h2 * 29.3);
   ShanForm f;
   f.seed = fract(h1 * 7.13 + h2 * 3.71);
   f.c = (i + 0.2 + 0.6 * h1) * L.x;
   f.w = L.x * (0.4 + 0.45 * h2);
-  // Massifs rise and fall along the scroll: tall peaks crowd together, then the land opens out
-  // to water and level distance.
+  f.z = fract(h1 * 91.7 + h2 * 3.3);
+  f.kind = K_cun < 0.5 ? 0.0 : K_cun < 1.5 ? 1.0 : step(0.5, fract(h2 * 57.3));
+  bool axe = f.kind > 0.5;
+  // No two alike, none symmetric: the summit off centre, one flank sheer and the other a long fall,
+  // often a shoulder, and rock that breaks into ledges where it is cut with the axe.
+  f.skew = (h4 - 0.5) * 0.7;
+  f.a = axe ? vec2(0.3 + 0.35 * h4, 0.5 + 0.9 * h3) : vec2(0.7 + 0.8 * h3, 0.6 + 0.7 * h4);
+  if (fract(h1 * 3.1) > 0.5) f.a = f.a.yx;
+  f.shoulder = fract(h2 * 11.3) < 0.6 ? 0.35 + 0.35 * fract(h1 * 17.9) : 0.0;
+  f.steps = axe ? 3.0 + floor(3.0 * fract(h2 * 5.7)) : 0.0;
+  f.fall = -9.0;
+  // Massifs rise and fall along the scroll, then the land opens out to water and level distance.
   float env = shanNoise(f.c / (layer == 1 ? 2.0 : 1.6), row + 2.0).x;
   float massif = smoothstep(0.28, 0.72, env);
-  float tall = fract(h1 * 41.3 + h2 * 7.1);
-  f.H = L.z + (L.w - L.z) * tall * (0.15 + 0.85 * massif);
-  if (layer == 1) {
-    // The near peaks come in massifs, and between them only the odd low hill stands in the water.
-    massif = smoothstep(0.4, 0.74, env);
-    f.H = massif > 0.2 ? L.z + (L.w - L.z) * (0.35 + 0.65 * tall) * massif : (fract(h1 * 3.7 + h2 * 1.9) < 0.2 ? 0.1 + 0.1 * tall : 0.0);
-    // Tall peaks stand broader at the foot, so a massif reads as mountains, not needles.
-    // (At most 1.15 cells either side: the lattice search looks one cell each way.)
-    f.w *= 0.85 + 0.5 * tall * massif;
-  }
-  float stroke = K_cun < 0.5 ? 0.0 : K_cun < 1.5 ? 1.0 : step(0.5, fract(h2 * 57.3));
-  f.kind = stroke;
-  float shape = fract(h1 * 13.9 + h2 * 29.3);
-  f.a = stroke > 0.5 ? mix(0.3, 0.7, shape) : mix(0.75, 1.5, shape);
-  f.z = fract(h1 * 91.7 + h2 * 3.3);
-  f.fall = -9.0;
+  f.H = L.z + (L.w - L.z) * h3 * (0.15 + 0.85 * massif);
   if (layer == 0) {
     // Banks are low, flat-topped and only here and there: between them lies open water.
-    f.a = 0.22 + 0.15 * shape;
+    f.a = vec2(0.22 + 0.15 * h4);
+    f.skew = 0.0;
+    f.shoulder = 0.0;
+    f.steps = 0.0;
     f.w = L.x * (0.28 + 0.3 * h2);
     if (fract(h2 * 23.1) > 0.55) f.H = 0.0;
-  } else if (layer == 1 && K_falls > 0.5 && f.H > 0.34 && fract(h2 * 13.9) < 0.45) {
-    f.fall = (fract(h1 * 5.3) - 0.5) * 0.5;
+  } else if (layer == 1) {
+    // The near peaks come in massifs, a main peak among many lower ones; between massifs only
+    // the odd low hill stands in the water.
+    massif = smoothstep(0.4, 0.74, env);
+    f.H = massif > 0.2 ? L.z + (L.w - L.z) * (0.25 + 0.75 * h3 * h3) * massif : (fract(h1 * 3.7 + h2 * 1.9) < 0.2 ? 0.1 + 0.1 * h3 : 0.0);
+    // Tall peaks stand broader at the foot. (At most 1.15 cells either side: the lattice search
+    // looks one cell each way.)
+    f.w *= 0.85 + 0.5 * h3 * massif;
+    // Needle peaks, as on Huangshan: sheer pillars of stacked stone.
+    if (massif > 0.3 && fract(h2 * 31.7) < 0.3) {
+      f.w *= 0.42;
+      f.H = max(f.H, L.z + (L.w - L.z) * (0.45 + 0.4 * h4) * massif);
+      f.a = vec2(0.28, 0.34);
+      f.skew *= 0.3;
+      f.shoulder = 0.0;
+      f.steps = 4.0 + floor(3.0 * h4);
+    }
+    if (K_falls > 0.5 && f.H > 0.34 && f.w > 0.09 && fract(h2 * 13.9) < 0.45) f.fall = f.skew + (fract(h1 * 5.3) - 0.5) * 0.4;
+  } else if (layer == 4) {
+    // The farthest range only shows now and then, high and pale over everything else.
+    if (env < 0.45) f.H = 0.0;
   }
   return f;
 }
 
-// Height of a form above its layer's base at X, and its slope, before the ridge's grain. A form
-// with a waterfall has a notch in its crest where the stream comes over.
+// Height of a form above its layer's base at X, and its slope. The summit stands off centre and
+// each flank falls at its own pace; a shoulder rises on the gentler flank with a notch between;
+// stacked rock steps down in ledges; a waterfall comes over a notch in the crest.
 vec2 shanProfile(ShanForm f, float X) {
   if (f.H <= 0.0) return vec2(-1.0, 0.0);
   float u = (X - f.c) / f.w;
-  float q = 1.0 - u * u;
-  if (q <= 0.0) return vec2(-1.0, 0.0);
-  float s = pow(q, f.a);
-  float ds = -2.0 * f.a * u * s / max(q, 0.02) / f.w;
+  if (abs(u) >= 1.0) return vec2(-1.0, 0.0);
+  bool left = u < f.skew;
+  float span = left ? 1.0 + f.skew : 1.0 - f.skew;
+  float t = (u - f.skew) / span;
+  float a = left ? f.a.x : f.a.y;
+  float q = max(1.0 - t * t, 0.0);
+  float s = pow(q, a);
+  float ds = -2.0 * a * t * s / max(q, 0.02) / (span * f.w);
+  if (f.shoulder > 0.0) {
+    float side = f.a.y > f.a.x ? 1.0 : -1.0;
+    float v = (u - f.skew - side * 0.55 * (1.0 - side * f.skew)) / 0.3;
+    float qs = 1.0 - v * v;
+    if (qs > 0.0) {
+      float ss = f.shoulder * pow(qs, 0.6);
+      if (ss > s) {
+        s = ss;
+        ds = -1.2 * f.shoulder * v * pow(max(qs, 0.02), -0.4) / (0.3 * f.w);
+      }
+    }
+  }
+  if (f.steps > 0.0) {
+    // Ledges: the lower half of each step is a near-level shelf, the upper half a short cliff.
+    float y = s * f.steps;
+    float k = floor(y);
+    float r = clamp((y - k - 0.5) * 2.0, 0.0, 1.0);
+    float terrace = (k + r * r * (3.0 - 2.0 * r)) / f.steps;
+    s = mix(s, terrace, 0.6);
+    ds *= mix(1.0, 12.0 * r * (1.0 - r), 0.6);
+  }
   vec2 h = f.H * vec2(s, ds);
   if (f.fall > -2.0) {
     float d = (X - f.c - f.fall * f.w) / 0.022;
@@ -130,77 +190,84 @@ vec2 shanProfile(ShanForm f, float X) {
 }
 
 // The frontmost form of a layer covering P (and its crest height and slope at P.x), and the
-// layer's skyline there. Forms reach at most one lattice cell either side of their own.
-bool shanLayerHit(int layer, vec2 P, out ShanForm hit, out vec2 top, out float sky) {
+// layer's skyline there (height, slope). Forms reach at most one lattice cell either side of their
+// own.
+bool shanLayerHit(int layer, vec2 P, out ShanForm hit, out vec2 top, out vec2 sky) {
   vec4 L = shanLayerShape(layer);
   float n = floor(P.x / L.x);
-  // The crest's grain: small knobs and hollows, where moss dots and little pines sit.
+  // The crest breaks into crags: V-shaped notches between rounded knuckles, and a finer grain of
+  // knobs where moss dots and little pines sit.
   float row = float(layer) * 17.0 + 5.0;
+  vec2 g0 = shanNoise(P.x * 13.0, row + 2.0);
+  float crag = abs(2.0 * g0.x - 1.0) - 0.5;
+  float dcrag = sign(2.0 * g0.x - 1.0) * 26.0 * g0.y;
   vec2 g1 = shanNoise(P.x * 31.0, row);
   vec2 g2 = shanNoise(P.x * 83.0, row + 1.0);
   float grain = (g1.x - 0.5) * 0.7 + (g2.x - 0.5) * 0.3;
   float dgrain = g1.y * 31.0 * 0.7 + g2.y * 83.0 * 0.3;
+  float cragged = layer >= 3 ? 0.03 : 0.07;
   hit = shanFormAt(layer, n);
   top = vec2(-1.0, 0.0);
-  sky = -1.0;
+  sky = vec2(-1.0, 0.0);
   float best = 2.0;
   for (int k = -1; k <= 1; k++) {
     ShanForm f = shanFormAt(layer, n + float(k));
     vec2 h = shanProfile(f, P.x);
     if (h.x < 0.0) continue;
-    float amp = (0.006 + 0.04 * f.H) * min(1.0, h.x / (0.3 * f.H));
-    float y = L.y + h.x + amp * grain;
-    sky = max(sky, y);
+    float fade = min(1.0, h.x / (0.3 * f.H));
+    float amp = (0.004 + 0.025 * f.H) * fade;
+    float ampC = cragged * f.H * fade;
+    float y = L.y + h.x + amp * grain + ampC * crag;
+    float slope = h.y + amp * dgrain + ampC * dcrag;
+    if (y > sky.x) sky = vec2(y, slope);
     if (P.y < y && f.z < best) {
       best = f.z;
       hit = f;
-      top = vec2(y, h.y + amp * dgrain);
+      top = vec2(y, slope);
     }
   }
   return best < 1.5;
 }
 
-// Hemp-fibre strokes: long wavering lines running down from the crest, fanning out as they go.
-float shanHemp(vec2 P, ShanForm f, float dz, float H, float px) {
-  float spread = 1.0 + 2.0 * dz / H;
-  float lines = mix(24.0, 58.0, K_detail);  // strokes per screen height across the crest
-  float q = (P.x - f.c) / spread * lines + 0.3 * sin(dz * 38.0 + f.seed * 20.0);
-  float k = floor(q);
-  float r = shanHash(k, 300.0 + f.seed * 97.0);
-  float along = (dz - r * 0.3 * H) / ((0.18 + 0.5 * fract(r * 37.1)) * H);
-  float present = step(fract(r * 71.3), 0.3 + 0.6 * K_detail);
-  float cell = px * lines / spread;  // one cell in q units
-  float line = 1.0 - smoothstep(0.95 * cell, 1.9 * cell, abs(fract(q) - 0.5));
-  return line * present * smoothstep(0.0, 0.12, along) * (1.0 - smoothstep(0.55, 1.0, along));
-}
-
-// Axe-cut strokes: angular side-brush wedges sweeping down and out across each flank, dark along
-// the edge the brush tip cut and dry-streaked in the belly.
-float shanAxe(vec2 P, ShanForm f, float dz, float H, float u, float px) {
-  float side = u < 0.0 ? -1.0 : 1.0;
-  vec2 v = vec2(P.x - f.c, dz);
-  vec2 dir = vec2(side * 0.447, 0.894);
-  float along = dot(v, dir);
-  float across = (v.x * dir.y - v.y * dir.x) * side;
-  float S = mix(0.034, 0.02, K_detail);
-  float k = floor(across / S);
-  float b = fract(across / S);
-  float r = shanHash(k + side * 500.0, 320.0 + f.seed * 97.0);
-  float t = (along - r * 0.35 * H) / ((0.08 + 0.24 * fract(r * 13.7)) * H);
-  if (t < 0.0 || t > 1.0) return 0.0;
+// Texture strokes hung beneath one fold of the rock (band m, fb from the fold down to the next),
+// in clusters. side: which flank, -1 left of the summit. x: the stroke's coverage, y: its tone.
+vec2 shanCun(vec2 P, ShanForm f, float dz, float m, float fb, float side, float px) {
+  if (f.kind < 0.5) {
+    // Hemp-fibre: long wavering parallel strokes running down and out across the slope.
+    float lines = mix(34.0, 66.0, K_detail);  // strokes per screen height
+    float xi = (P.x - f.c - side * 0.35 * dz) * lines + 0.25 * sin(dz * 70.0 + f.seed * 20.0 + m);
+    float k = floor(xi);
+    float r = shanHash(k + m * 131.0, 300.0 + f.seed * 97.0);
+    float cluster = smoothstep(0.35, 0.65, shanNoise(k * 0.21 + m * 3.7, 301.0 + f.seed * 97.0).x);
+    if (r > cluster * (0.45 + 0.5 * K_detail)) return vec2(0.0);
+    float along = fb / (0.4 + 0.55 * fract(r * 37.1));
+    float cell = px * lines;  // one cell in xi units
+    float line = 1.0 - smoothstep(0.95 * cell, 1.9 * cell, abs(fract(xi) - 0.5));
+    return vec2(line * smoothstep(0.0, 0.08, along) * (1.0 - smoothstep(0.6, 1.0, along)), 1.0);
+  }
+  // Axe-cut: short angular side-brush wedges slanting down and out, dark along the edge the brush
+  // tip cut, with dry gaps running down the belly.
+  float S = mix(0.03, 0.018, K_detail);
+  float xs = (P.x - f.c - side * 0.6 * dz) / S * side;
+  float k = floor(xs);
+  float b = fract(xs);
+  float r = shanHash(k + m * 131.0, 320.0 + f.seed * 97.0);
+  float cluster = smoothstep(0.3, 0.6, shanNoise(k * 0.37 + m * 2.9, 321.0 + f.seed * 97.0).x);
+  if (r > cluster * (0.5 + 0.45 * K_detail)) return vec2(0.0);
+  float t = fb / (0.4 + 0.55 * fract(r * 13.7));
+  if (t > 1.0) return vec2(0.0);
   float width = 0.9 * (1.0 - t * t);
   float body = 1.0 - smoothstep(width - 1.2 * px / S, width, b);
   float rim = 1.0 - smoothstep(0.0, 2.5 * px / S, b);
-  float streaks = smoothstep(0.25, 0.6, vnoise(vec2(along * 25.0, b * 4.0 + k)));
-  float present = step(fract(r * 59.1), 0.3 + 0.55 * K_detail);
-  return present * body * (0.35 + 0.65 * rim) * (0.55 + 0.45 * streaks);
+  float gaps = smoothstep(0.2, 0.4, vnoise(vec2(b * 2.5 + k * 3.0, t * 1.5)));
+  return vec2(body * gaps, 0.45 + 0.55 * shanSolid(rim));
 }
 
 // Moss dots: flattened blots hung along the crest in clusters, thickest on gentle tops.
 float shanDots(vec2 P, float d, float slope, float px, float scale) {
   if (d > 8.0 * px * scale) return 0.0;
-  float gentle = 1.0 - smoothstep(0.7, 1.6, abs(slope));
-  float cluster = smoothstep(0.3, 0.7, shanNoise(P.x * 9.0, 40.0).x) * gentle * (0.2 + 0.75 * K_detail);
+  float gentle = 1.0 - smoothstep(0.8, 1.8, abs(slope));
+  float cluster = smoothstep(0.25, 0.65, shanNoise(P.x * 9.0, 40.0).x) * gentle * (0.3 + 0.7 * K_detail);
   if (cluster <= 0.0) return 0.0;
   float sp = 0.015 * scale;
   float j = floor(P.x / sp);
@@ -229,47 +296,61 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
   float d = dz * slopeN + wet * 2.5 * px * (vnoise(P * 140.0 + f.seed * 50.0) - 0.5);
   float a = (P.x + top.y * P.y) * slopeN;  // distance along the contour
   float u = (P.x - f.c) / f.w;
+  float side = u < f.skew ? -1.0 : 1.0;
   float depth = clamp(dz / H, 0.0, 1.5);
-  float flank = 0.5 - 0.5 * clamp(u, -1.0, 1.0);  // the light comes from the right
+  // The light comes from the right: the left flank of each form is in shade.
+  float shade = 0.15 + 0.85 * smoothstep(0.35, -0.45, u - f.skew);
   float blue = step(0.5, K_palette);
   mineral = vec3(0.0);
 
-  // The contour: one confident stroke, swelling and thinning with the brush's pressure; where the
-  // brush runs dry it breaks into streaks of flying white.
+  // The contour: one stroke pressed hard where it turns over a crest or into a notch, thinning
+  // down the long slopes, breaking into flying white where the brush runs dry, and lost in mist.
   float line = 0.0;
   float bleed = 0.0;
   if (style.x > 0.0) {
-    float pressure = shanNoise(a * 9.0, 60.0 + f.seed * 100.0).x;
-    float lw = style.x * px * (0.6 + 0.8 * pressure) * (1.0 - 0.45 * smoothstep(0.2, 0.9, depth));
-    line = 1.0 - smoothstep(lw - 0.6 * px, lw + 0.6 * px, d);
-    float dry = (1.0 - wet) * smoothstep(0.45, 0.85, shanNoise(a * 5.0, 61.0 + f.seed * 100.0).x);
-    float streak = vnoise(vec2(a * 70.0, d / px * 0.3 + f.seed * 9.0));
-    line *= 1.0 - dry * smoothstep(0.55, 0.35, streak);
+    float pressure = shanNoise(a * 8.0, 60.0 + f.seed * 100.0).x;
+    float crest = exp(-1.5 * top.y * top.y);
+    float lw = style.x * px * (0.55 + 0.8 * pressure * pressure + 0.7 * crest);
+    float mist = 1.0 - smoothstep(0.35, 0.9, depth);
+    float dry = (1.0 - wet) * smoothstep(0.4, 0.8, shanNoise(a * 5.0, 61.0 + f.seed * 100.0).x) * (0.5 + 0.5 * smoothstep(0.4, 1.6, abs(top.y)));
+    float streak = vnoise(vec2(a * 70.0, d / px * 0.2 + f.seed * 9.0));
+    line = shanSolid((1.0 - smoothstep(lw - 0.6 * px, lw + 0.6 * px, d)) * (1.0 - dry * smoothstep(0.55, 0.35, streak))) * mist;
     // Wet ink bleeds in from the stroke and dries with a pale tide line at its edge.
     float past = max(d - lw, 0.0) / px;
-    bleed = wet * (0.3 * exp(-past / 5.0) + 0.2 * exp(-(past - 8.0) * (past - 8.0) / 3.2));
+    float tide = shanSolid(exp(-(past - 8.0) * (past - 8.0) / 3.2));
+    bleed = wet * (0.3 * exp(-past / 5.0) + 0.2 * tide) * mist;
   }
 
-  // The wash: darkest under the crest, dissolving downward, deeper on the shadowed flank, unevenly
-  // taken up by the paper.
-  float mottle = 0.7 + 0.6 * vnoise(P * vec2(9.0, 14.0) + f.seed * 20.0);
-  float fall = exp(-dz / (0.18 * H + 0.015));
-  float wash = style.y * (0.3 + 0.7 * fall) * (0.6 + 0.6 * flank) * mottle * mix(0.9, 1.2, wet);
-
-  // Texture strokes and the echoing inner contours that model the rock, thickest in shadow.
+  // Folds: the rock is built of stacked planes. Their edges run below the crest, never quite
+  // parallel to it; each plane is darkest just under its upper edge, and the texture strokes hang
+  // from it in clusters, thickest in shade, thinning down into the mist.
+  float band = (0.03 + 0.025 * fract(f.seed * 5.3)) * (0.7 + 0.6 * H) * (0.75 + 0.5 * shanNoise(a * 7.0, 63.0 + f.seed * 100.0).x);
+  float beta = d / band;
+  float m = floor(beta);
+  float fb = beta - m;
+  float planes = min(5.0, 2.0 + floor(H * 6.0));
+  float fold = 0.0;
   float tex = 0.0;
-  float echo = 0.0;
-  if (style.z > 0.0) {
-    float amount = style.z * (0.3 + 0.7 * flank) * (1.0 - smoothstep(0.5, 1.1, depth));
-    tex = amount * (f.kind < 0.5 ? shanHemp(P, f, dz, H, px) : shanAxe(P, f, dz, H, u, px));
-    float sp = 0.022 + 0.022 * fract(f.seed * 7.7);
-    float kk = floor(d / sp + 0.5);
-    if (kk >= 1.0 && kk <= 2.0) {
-      float on = smoothstep(0.5, 0.7, shanNoise(a * 12.0 + kk * 5.0, 62.0 + f.seed * 100.0).x);
-      echo = (1.0 - smoothstep(1.0 * px, 1.8 * px, abs(d - kk * sp))) * on * (1.25 - 0.35 * kk) * (0.3 + 0.7 * K_detail);
+  if (style.z > 0.0 && m <= planes) {
+    float kf = floor(beta + 0.5);
+    if (kf >= 1.0 && kf <= planes) {
+      float on = smoothstep(0.42, 0.62, shanNoise(a * 11.0 + kf * 5.0, 62.0 + f.seed * 100.0).x);
+      fold = shanSolid((1.0 - smoothstep(1.0 * px, 1.9 * px, abs(beta - kf) * band)) * on) * (1.3 - 0.18 * kf) * (0.35 + 0.65 * shade) * (0.4 + 0.6 * K_detail);
+    }
+    float amount = style.z * shade * (1.0 - 0.15 * m) * (1.0 - smoothstep(0.45, 1.0, depth));
+    if (amount > 0.01) {
+      vec2 cun = shanCun(P, f, dz, m, fb, side, px);
+      tex = amount * cun.y * shanSolid(cun.x);
     }
   }
-  float dots = layer < 3 ? shanDots(P, d, top.y, px, layer == 2 ? 0.75 : 1.0) : 0.0;
+  float dots = layer < 3 ? shanSolid(shanDots(P, d, top.y, px, layer == 2 ? 0.75 : 1.0)) : 0.0;
+
+  // The wash: darkest under the crest and under each fold, dissolving downward, deeper in shade,
+  // unevenly taken up by the paper.
+  float mottle = 0.7 + 0.6 * vnoise(P * vec2(9.0, 14.0) + f.seed * 20.0);
+  float fall = exp(-dz / (0.18 * H + 0.015));
+  float plane = style.z > 0.0 && m >= 1.0 ? 0.8 + 0.4 * exp(-3.0 * fb) : 1.0;
+  float wash = style.y * (0.3 + 0.7 * fall) * (0.55 + 0.65 * shade) * plane * mottle * mix(0.9, 1.2, wet);
 
   // A waterfall: a thread of bare paper falling from the notch, between dark lips of rock.
   float water = 0.0;
@@ -280,62 +361,65 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
     float s = abs(P.x - xw);
     float from = smoothstep(0.012, 0.03, dz);
     water = (1.0 - smoothstep(hw - px, hw, s)) * from;
-    lips = (1.0 - smoothstep(hw + 0.5 * px, hw + 2.6 * px, s)) * (1.0 - water) * from * (1.0 - smoothstep(0.6, 1.0, depth));
+    lips = shanSolid((1.0 - smoothstep(hw + 0.5 * px, hw + 2.6 * px, s)) * (1.0 - water) * from) * (1.0 - smoothstep(0.6, 1.0, depth));
     // the water's faint falling grain, painted, still
-    water *= 1.0 - 0.18 * smoothstep(0.62, 0.8, vnoise(vec2((P.x - xw) / hw * 1.6, P.y * 9.0)));
+    water = shanSolid(water * (1.0 - 0.3 * smoothstep(0.62, 0.8, vnoise(vec2((P.x - xw) / hw * 1.6, P.y * 9.0)))));
   }
 
-  float ink = style.w * (2.4 * line + bleed + wash * (1.0 - 0.45 * blue) + 1.1 * tex + 1.0 * echo + 2.4 * dots);
+  float ink = style.w * (2.4 * line + bleed + wash * (1.0 - 0.45 * blue) + 1.2 * tex + 1.1 * fold + 2.4 * dots);
   ink = ink * (1.0 - water) + 1.6 * lips;
 
   // Blue-green: ochre at the foot, malachite up the slopes, azurite capping the peaks.
   float cover = 0.0;
   if (blue > 0.5) {
-    float crest = clamp(1.0 - dz / (H * 0.9), 0.0, 1.0);
-    mineral = mix(SHAN_OCHRE, SHAN_MALACHITE, smoothstep(0.1, 0.45, crest));
-    mineral = mix(mineral, SHAN_AZURITE, smoothstep(0.55, 0.9, crest) * (0.5 + 0.5 * f.seed));
-    if (layer == 3) mineral = mix(SHAN_AZURITE, vec3(0.6, 0.7, 0.78), 0.35);
-    cover = (layer == 3 ? 0.4 : 0.55 + 0.3 * fall) * clamp(mottle, 0.0, 1.0) * (1.0 - water);
+    float crestward = clamp(1.0 - dz / (H * 0.9), 0.0, 1.0);
+    mineral = mix(SHAN_OCHRE, SHAN_MALACHITE, smoothstep(0.1, 0.45, crestward));
+    mineral = mix(mineral, SHAN_AZURITE, smoothstep(0.55, 0.9, crestward) * (0.5 + 0.5 * f.seed));
+    if (layer >= 3) mineral = mix(SHAN_AZURITE, vec3(0.6, 0.7, 0.78), layer == 4 ? 0.55 : 0.35);
+    cover = (layer >= 3 ? 0.4 : 0.55 + 0.3 * fall) * clamp(mottle, 0.0, 1.0) * (1.0 - water);
   }
   return vec2(ink, cover);
 }
 
 // Small pines on a layer's skyline, drawn the way distant pines are: a crooked stem and three or
-// four flat tiers of dark needles, fringed at the edges. Coverage 0..1.
+// four flat tiers of dark needles, fringed at the edges. They gather in groves on the crests and
+// cling to the edges of cliffs, leaning out over the drop. Coverage 0..1.
 float shanRidgePines(int layer, vec2 P, float sky) {
-  float hMax = layer == 1 ? 0.06 : 0.036;
-  if (sky < 0.0 || P.y < sky - 0.012 || P.y > sky + hMax) return 0.0;
-  float sp = layer == 1 ? 0.042 : 0.03;
+  float hMax = layer == 1 ? 0.07 : 0.036;
+  if (sky < 0.0 || P.y < sky - 0.015 || P.y > sky + hMax) return 0.0;
+  float sp = layer == 1 ? 0.036 : 0.03;
   float j = floor(P.x / sp);
   float pine = 0.0;
   for (int k = -1; k <= 1; k++) {
     float jj = j + float(k);
     float h = shanHash(jj, 90.0 + float(layer));
-    // Pines gather in groves along the crests, more of them with more detail.
-    float grove = smoothstep(0.35, 0.75, shanNoise(jj * sp * 4.0, 92.0 + float(layer)).x);
-    if (h > grove * (0.15 + 0.7 * K_detail)) continue;
+    if (h > 0.6) continue;
     float x = (jj + 0.5 + 0.5 * (fract(h * 13.7) - 0.5)) * sp;
     ShanForm f;
     vec2 top;
-    float base;
+    vec2 base;
     shanLayerHit(layer, vec2(x, -10.0), f, top, base);
-    if (base < shanLayerShape(layer).y + 0.04) continue;
+    if (base.x < shanLayerShape(layer).y + 0.04) continue;
+    bool cliff = abs(base.y) > 1.3;
+    float grove = smoothstep(0.35, 0.75, shanNoise(jj * sp * 4.0, 92.0 + float(layer)).x);
+    if (h > grove * (0.15 + 0.7 * K_detail) && !(cliff && h < 0.15 + 0.3 * K_detail)) continue;
     float hp = hMax * (0.55 + 0.45 * fract(h * 31.3));
-    vec2 q = (P - vec2(x, base - 0.006)) / hp;
-    if (abs(q.x) > 0.6 || q.y < 0.0 || q.y > 1.05) continue;
-    float lean = (fract(h * 7.9) - 0.5) * 0.5;
+    vec2 q = (P - vec2(x, base.x - 0.006)) / hp;
+    if (abs(q.x) > 0.75 || q.y < -0.05 || q.y > 1.05) continue;
+    float lean = cliff ? -clamp(base.y * 0.3, -0.75, 0.75) : (fract(h * 7.9) - 0.5) * 0.5;
     float cell = shanPx / hp;
-    float stem = segmentDistance(q, vec2(0.0), vec2(lean * 0.3, 0.85)) - max(0.035, 0.8 * cell);
+    vec2 crown = vec2(lean * 0.6, 0.85 - 0.25 * abs(lean));
+    float stem = segmentDistance(q, vec2(0.0), crown) - max(0.035, 0.8 * cell);
     float tiers = 1.0;
     for (int i = 0; i < 4; i++) {
       float fi = float(i);
       float y = 0.3 + 0.2 * fi;
-      vec2 r = (q - vec2(lean * 0.3 * y + 0.06 * sin(fi * 2.3 + h * 9.0), y)) / vec2(0.34 - 0.065 * fi, 0.075);
+      vec2 r = (q - vec2(crown.x * y / 0.85 + 0.06 * sin(fi * 2.3 + h * 9.0), y * crown.y / 0.85)) / vec2(0.34 - 0.065 * fi, 0.075);
       r.y = r.y < 0.0 ? r.y * 2.2 : r.y;  // flat underneath, domed above
       float fringe = 0.22 * (vnoise(q * vec2(5.0, 3.0) + fi * 5.0 + h * 40.0) - 0.5);
       tiers = min(tiers, (length(r) - 1.0 - fringe) * 0.075);
     }
-    pine = max(pine, 1.0 - smoothstep(-0.6 * cell, 0.6 * cell, min(stem, tiers)));
+    pine = max(pine, shanSolid(1.0 - smoothstep(-0.6 * cell, 0.6 * cell, min(stem, tiers))));
   }
   return pine;
 }
@@ -346,9 +430,9 @@ void shanPaintLayer(int layer, vec2 P, inout float vis, inout float ink, inout v
   if (vis < 0.004) return;
   ShanForm f;
   vec2 top;
-  float sky;
+  vec2 sky;
   bool hit = shanLayerHit(layer, P, f, top, sky);
-  float pine = layer == 1 || layer == 2 ? shanRidgePines(layer, P, sky) : 0.0;
+  float pine = layer == 1 || layer == 2 ? shanRidgePines(layer, P, sky.x) : 0.0;
   if (!hit && pine <= 0.0) return;
   vec4 L = shanLayerShape(layer);
   vec4 style = shanLayerStyle(layer);
@@ -380,7 +464,7 @@ float shanNeedles(vec2 q, float r, float id, float cell) {
   float within = 1.0 - smoothstep(tip - cell, tip + cell, length(v / vec2(1.0, 0.62)));
   // The heart of the cluster is a dark wash where the needles crowd.
   float heart = 1.0 - smoothstep(0.25, 0.7, length(e));
-  return max(needle * within * step(-0.1 * r, v.y), 0.8 * heart);
+  return max(shanSolid(needle * within * step(-0.1 * r, v.y)), 0.8 * heart);
 }
 
 // A big pine on a river bank, rooted at its foot, height hp: a leaning, twisting trunk with bark
@@ -396,9 +480,9 @@ vec2 shanBigPine(vec2 P, vec2 foot, float hp, float id) {
   vec2 d = vec2(lean * 0.42, 0.98);
   float trunk = min(segmentDistance(q, a, b), min(segmentDistance(q, b, c), segmentDistance(q, c, d)));
   float girth = mix(0.03, 0.012, clamp(q.y, 0.0, 1.0)) + 0.6 * cell;
-  float body = 1.0 - smoothstep(girth - cell, girth + cell, trunk);
-  float bark = 1.0 - smoothstep(girth - 2.2 * cell, girth - 1.0 * cell, trunk);
-  float scales = smoothstep(0.55, 0.75, vnoise(q * vec2(36.0, 20.0) + id * 11.0));
+  float body = shanSolid(1.0 - smoothstep(girth - cell, girth + cell, trunk));
+  float bark = shanSolid(1.0 - smoothstep(girth - 2.2 * cell, girth - 1.0 * cell, trunk));
+  float scales = shanSolid(smoothstep(0.55, 0.75, vnoise(q * vec2(36.0, 20.0) + id * 11.0)));
   float cover = body;
   float ink = body * (0.35 + 1.8 * (1.0 - bark) + 0.9 * scales * bark);
   for (int k = 0; k < 5; k++) {
@@ -408,7 +492,7 @@ vec2 shanBigPine(vec2 P, vec2 foot, float hp, float id) {
     vec2 from = vec2(lean * 0.42 * y + 0.02 * sin(y * 9.0), y * 0.98);
     vec2 at = from + vec2(side * (0.18 - 0.025 * fk) * (0.75 + 0.5 * fract(id * 17.0 + fk * 0.37)), 0.05 + 0.02 * fk);
     float branch = segmentDistance(q, from, at) - max(0.008, 0.7 * cell);
-    float limb = 1.0 - smoothstep(-cell, cell, branch);
+    float limb = shanSolid(1.0 - smoothstep(-cell, cell, branch));
     float r = 0.15 - 0.016 * fk;
     float needles = shanNeedles(q - at, r, id * 5.0 + fk, cell);
     float c2 = max(limb, needles);
@@ -426,14 +510,14 @@ vec2 shanPavilion(vec2 q, float scholar, float cell) {
   // the hipped roof, sweeping up at the eaves
   float t = ax / 0.8;
   float roof = step(ax, 0.8) * step(0.62 + 0.12 * pow(t, 5.0), q.y) * step(q.y, 0.98 - 0.36 * pow(t, 1.4));
-  float finial = 1.0 - smoothstep(0.04 - cell, 0.04 + cell, length(q - vec2(0.0, 1.01)));
-  float posts = (1.0 - smoothstep(0.035, 0.035 + cell, abs(ax - 0.44))) * step(0.08, q.y) * step(q.y, 0.64);
-  float rail = (1.0 - smoothstep(0.022, 0.022 + cell, abs(q.y - 0.27))) * step(ax, 0.44);
+  float finial = shanSolid(1.0 - smoothstep(0.04 - cell, 0.04 + cell, length(q - vec2(0.0, 1.01))));
+  float posts = shanSolid(1.0 - smoothstep(0.035, 0.035 + cell, abs(ax - 0.44))) * step(0.08, q.y) * step(q.y, 0.64);
+  float rail = shanSolid(1.0 - smoothstep(0.022, 0.022 + cell, abs(q.y - 0.27))) * step(ax, 0.44);
   float deck = step(ax, 0.6) * step(0.0, q.y) * step(q.y, 0.09);
   float stones = step(ax, 0.52 - 0.15 * (-q.y)) * step(-0.22, q.y) * step(q.y, 0.0);
-  float stoneEdge = stones * (1.0 - smoothstep(cell, 2.5 * cell, min(0.52 + 0.15 * q.y - ax, q.y + 0.22)));
-  float head = (1.0 - smoothstep(0.06 - cell, 0.06 + cell, length(q - vec2(0.12, 0.42)))) * scholar;
-  float robe = (1.0 - smoothstep(0.12 - cell, 0.12 + cell, length((q - vec2(0.1, 0.2)) / vec2(1.0, 1.2)))) * scholar * step(0.09, q.y);
+  float stoneEdge = stones * shanSolid(1.0 - smoothstep(cell, 2.5 * cell, min(0.52 + 0.15 * q.y - ax, q.y + 0.22)));
+  float head = shanSolid(1.0 - smoothstep(0.06 - cell, 0.06 + cell, length(q - vec2(0.12, 0.42)))) * scholar;
+  float robe = shanSolid(1.0 - smoothstep(0.12 - cell, 0.12 + cell, length((q - vec2(0.1, 0.2)) / vec2(1.0, 1.2)))) * scholar * step(0.09, q.y);
   float cover = max(max(roof, finial), max(max(posts, rail), max(deck, max(stones, max(head, robe)))));
   float ink = max(max(2.4 * roof, 2.4 * finial), max(2.0 * max(posts, deck), max(1.4 * rail, max(0.25 * stones + 1.6 * stoneEdge, max(2.2 * head, 0.55 * robe)))));
   return vec2(cover, ink);
@@ -485,7 +569,7 @@ vec2 shanWater(vec2 P, float swing, float t) {
   float rx = P.x / 0.05 + shanHash(row, 95.0) * 7.0;
   float rh = shanHash(floor(rx), 96.0 + row);
   float dash = step(rh, 0.22) * (1.0 - smoothstep(0.75 * shanPx, 1.5 * shanPx, abs(P.y - ry)));
-  dash *= smoothstep(0.0, 0.2, fract(rx)) * (1.0 - smoothstep(0.5 + 0.4 * fract(rh * 9.0), 1.0, fract(rx)));
+  dash = shanSolid(dash * smoothstep(0.0, 0.2, fract(rx)) * (1.0 - smoothstep(0.5 + 0.4 * fract(rh * 9.0), 1.0, fract(rx))));
   water.y = 0.45 * dash * (1.0 - smoothstep(0.06, 0.14, P.y));
   if (K_boats < 0.5) return water;
   for (int k = -1; k <= 1; k++) {
@@ -501,16 +585,16 @@ vec2 shanWater(vec2 P, float swing, float t) {
     // The hull: a slim crescent, bow to the left, both ends turned up.
     float hull = step(abs(q.x), 0.62) * step(-0.07 + 0.14 * q.x * q.x, q.y) * step(q.y, 0.05 + 0.3 * q.x * q.x);
     // The mat awning amidships.
-    float awning = (1.0 - smoothstep(1.0 - 2.0 * cell, 1.0, length((q - vec2(0.12, 0.05)) / vec2(0.22, 0.2)))) * step(0.05, q.y);
+    float awning = shanSolid(1.0 - smoothstep(1.0 - 2.0 * cell, 1.0, length((q - vec2(0.12, 0.05)) / vec2(0.22, 0.2)))) * step(0.05, q.y);
     // The boatman at the stern under a broad hat, leaning on his pole, which he plants and lifts.
     float stroke = sin(t * 0.35 + bank.seed * 9.0);
     vec2 hand = vec2(0.36, 0.5);
     float body = segmentDistance(q, vec2(0.42, 0.06), vec2(0.4 - 0.03 * stroke, 0.44)) - 0.045;
     float hat = max(abs(q.x - 0.4 + 0.03 * stroke) - 0.13 * (1.0 - (q.y - 0.47) / 0.1), abs(q.y - 0.52) - 0.05);
     float pole = segmentDistance(q, hand + vec2(0.1, 0.25), vec2(0.62 + 0.22 * stroke, -0.32)) - max(0.012, 0.7 * cell);
-    float man = 1.0 - smoothstep(-cell, cell, min(min(body, hat), pole));
+    float man = shanSolid(1.0 - smoothstep(-cell, cell, min(min(body, hat), pole)));
     float wake = (1.0 - smoothstep(0.02, 0.02 + cell, abs(q.y + 0.13))) * step(0.5, q.x) * step(q.x, 1.0);
-    wake = max(wake, (1.0 - smoothstep(0.02, 0.02 + cell, abs(q.y + 0.21))) * step(0.66, q.x) * step(q.x, 1.08));
+    wake = shanSolid(max(wake, (1.0 - smoothstep(0.02, 0.02 + cell, abs(q.y + 0.21))) * step(0.66, q.x) * step(q.x, 1.08)));
     float cover = max(max(hull, man), awning);
     water = vec2(max(water.x, cover), max(water.y, max(max(2.3 * hull, 2.2 * man), max(1.1 * awning, 0.5 * wake))));
   }
@@ -542,7 +626,7 @@ float shanGeese(vec2 S, vec3 g, float t) {
     vec2 m = vec2(abs(q.x), q.y);
     float wing = min(segmentDistance(m, vec2(0.0), joint), segmentDistance(m, joint, tip)) - w;
     float body = length((q - vec2(-0.1, -0.02)) / vec2(1.6, 1.0)) - 1.5 * w;
-    geese = max(geese, 1.0 - smoothstep(-0.5 * cell, 0.5 * cell, min(wing, body)));
+    geese = max(geese, shanSolid(1.0 - smoothstep(-0.5 * cell, 0.5 * cell, min(wing, body))));
   }
   return geese;
 }
@@ -592,11 +676,81 @@ float shanSealInk(vec2 q, float id, float cellUnit) {
   return body * (1.0 - cut) * (1.0 - 0.9 * speck);
 }
 
+// One character of an inscription, in a square of side 1 centred on 0: three to five brush strokes
+// picked from the basic ones (level, upright, falling left, falling right, dot) on a three-by-three
+// frame, each pressed at its start and lifted at its end (the right-falling one swells to its
+// foot). Not a real script, but it reads as a hand at a glance. Coverage.
+float shanGlyph(vec2 q, float id, float cell) {
+  float d = 1.0;
+  for (int i = 0; i < 5; i++) {
+    float fi = float(i);
+    float h = hash12(vec2(id, fi * 7.1 + 3.0));
+    if (i >= 3 && fract(h * 29.1) < 0.4) continue;
+    float kind = floor(h * 5.0);
+    float r0 = -0.3 + 0.3 * floor(fract(h * 13.7) * 3.0);
+    float c0 = -0.3 + 0.3 * floor(fract(h * 71.3) * 3.0);
+    vec2 a = vec2(c0, r0 + 0.08);
+    vec2 b = a + vec2(0.07, -0.08);
+    vec2 w = vec2(0.085, 0.06);  // half width at the start and at the end
+    if (kind < 1.0) {
+      a = vec2(-0.38 + 0.1 * fract(h * 3.3), r0);
+      b = vec2(0.38 - 0.1 * fract(h * 5.9), r0 + 0.05);
+      w = vec2(0.07, 0.06);
+    } else if (kind < 2.0) {
+      a = vec2(c0, 0.42);
+      b = vec2(c0, -0.42 + 0.35 * fract(h * 5.9));
+      w = vec2(0.08, 0.06);
+    } else if (kind < 3.0) {
+      a = vec2(c0 + 0.12, 0.3);
+      b = vec2(c0 - 0.28, -0.4);
+      w = vec2(0.08, 0.05);
+    } else if (kind < 4.0) {
+      a = vec2(c0 - 0.1, 0.2);
+      b = vec2(c0 + 0.3, -0.4);
+      w = vec2(0.05, 0.095);
+    }
+    vec2 pa = q - a;
+    vec2 ba = b - a;
+    float s = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    d = min(d, length(pa - ba * s) - mix(w.x, w.y, s));
+  }
+  return shanSolid(1.0 - smoothstep(-cell, cell, d));
+}
+
+// Now and then a sheet carries an inscription in its empty sky, as poets and owners wrote on
+// scrolls: a column of characters, read top to bottom, and a shorter one to its left with the
+// writer's name. Coverage.
+float shanInscription(vec2 P) {
+  if (P.y < 0.45) return 0.0;
+  float j = floor(P.x / SHAN_SHEET);
+  float h = shanHash(j, 86.0);
+  if (h > 0.55) return 0.0;
+  float cs = 0.036;
+  float x0 = (j + 0.3 + 0.45 * fract(h * 7.3)) * SHAN_SHEET;
+  float column = floor((x0 - P.x) / (cs * 1.35) + 0.5);  // 0: the poem, 1: the name beside it
+  if (column < 0.0 || column > 1.0) return 0.0;
+  float count = column < 0.5 ? 4.0 + floor(4.0 * fract(h * 11.1)) : 2.0 + floor(2.0 * fract(h * 17.3));
+  float start = 0.93 - 0.03 * fract(h * 3.9) - column * cs * (2.0 + 2.0 * fract(h * 5.1));
+  float k = floor((start - P.y) / (cs * 1.12));
+  if (k < 0.0 || k >= count) return 0.0;
+  vec2 q = (P - vec2(x0 - column * cs * 1.35, start - (k + 0.5) * cs * 1.12)) / cs;
+  if (abs(q.x) > 0.55) return 0.0;
+  return shanGlyph(q, j * 31.0 + column * 11.0 + k + shanSeed, shanPx / cs);
+}
+
+// How fully a seal of the given size centred at screen x lies inside the frame: 0 while any of it
+// would be cut by an edge, rising to 1 once it is well inside.
+float shanSealShown(float x, float size, float aspect) {
+  float reach = 0.75 * size;
+  return smoothstep(0.012, 0.05, min(x - reach, aspect - x - reach));
+}
+
 Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   float px = 1.0 / uRes.y;
   shanPx = px;
+  shanTh = threshold(cell);
   // Each seed reads the hash plane at its own offset, scattered by an irrational step.
   shanSeed = 0.5 + fract(floor(K_seed + 0.5) * 0.7548777) * 640.0;
 
@@ -630,7 +784,7 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   paper *= 1.0 + (0.012 + 0.02 * age) * (shanHash(sheet, 70.0) - 0.5);
   paper *= 1.0 + (0.02 + 0.05 * age) * (vnoise(P * vec2(3.0, 4.0) + 11.0) - 0.5);
   float lap = abs(P.x - floor(P.x / SHAN_SHEET + 0.5) * SHAN_SHEET);
-  paper *= 1.0 - (0.012 + 0.04 * age) * (1.0 - smoothstep(1.5 * px, 3.0 * px, lap));
+  paper *= 1.0 - (0.012 + 0.04 * age) * shanSolid(1.0 - smoothstep(1.5 * px, 3.0 * px, lap));
   // Foxing: small brown spots that come with age.
   float fox = smoothstep(0.86, 0.93, vnoise(P * 23.0 + 5.0)) * smoothstep(0.35, 0.9, age);
   paper = mix(paper, paper * vec3(0.86, 0.76, 0.6), fox * 0.6);
@@ -658,8 +812,14 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   float belt = smoothstep(0.58, 0.78, field) * exp(-beltY * beltY) * min(1.0, 2.0 * K_mist) * (1.0 - 0.85 * breath);
   vis *= (1.0 - shanMistBand(P.y, field, 0.31, 0.06, breath)) * (1.0 - belt);
   shanPaintLayer(2, P, vis, ink, mineral);
-  vis *= 1.0 - shanMistBand(P.y, 1.0 - field, 0.45, 0.06, breath);
+  // Thinner mist between the distant ranges, so their pale washes stand one behind the other.
+  vis *= 1.0 - 0.85 * shanMistBand(P.y, 1.0 - field, 0.43, 0.045, breath);
   shanPaintLayer(3, P, vis, ink, mineral);
+  vis *= 1.0 - 0.7 * shanMistBand(P.y, field, 0.52, 0.04, breath);
+  shanPaintLayer(4, P, vis, ink, mineral);
+
+  // An inscription now and then, faint, in the sky of a sheet.
+  if (K_inscription > 0.5) ink += 0.8 * shanInscription(P);
 
   // Wild geese high over everything.
   ink += 2.2 * shanGeese(S, geese.xyz, t);
@@ -678,14 +838,16 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
     float h = shanHash(j, 80.0);
     vec2 c = vec2(j * SHAN_SHEET + (h - 0.5) * 0.3 * size, 0.035 + 0.6 * size + 0.02 * fract(h * 13.1));
     vec2 q = rotate(P - c, (fract(h * 7.7) - 0.5) * 0.09) / size;
-    if (max(abs(q.x), abs(q.y)) < 0.6) seal = shanSealInk(q, h, px / size);
+    // Only joins well inside the frame show their seal, so no seal is ever cut by an edge.
+    if (max(abs(q.x), abs(q.y)) < 0.6) seal = shanSealShown(c.x + S.x - P.x, size, aspect) * shanSealInk(q, h, px / size);
     if (stamp.w >= 0.0) {
       float since = stamp.w;
-      float press = smoothstep(0.0, 0.18, since);
+      float press = smoothstep(0.0, 0.18, since) * shanSealShown(stamp.x, size, aspect);
       float squash = 1.0 + 0.08 * (1.0 - smoothstep(0.0, 0.3, since));
       vec2 sq = rotate(S - stamp.xy, 0.03) / (size * squash);
       if (max(abs(sq.x), abs(sq.y)) < 0.6) seal = max(seal, press * shanSealInk(sq, 0.37, px / size));
     }
+    seal = shanSolid(seal);
     if (seal > 0.0) {
       vec3 red = SHAN_CINNABAR * (0.92 + 0.16 * vnoise(P * 60.0)) * mix(vec3(1.0), exp(-ink * k * SHAN_ABSORB), 0.55);
       col = mix(col, red, seal * 0.94);

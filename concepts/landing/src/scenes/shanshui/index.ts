@@ -9,7 +9,7 @@ import { shanshuiGlsl } from "./shader.ts";
 import { shanshuiSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  range("scroll", "speed", "scroll speed", 0.3, "How quickly the scroll unrolls. A handscroll is read from right to left, so new scenery enters at the left edge and drifts slowly right. Zero holds the scroll still."),
+  range("scroll", "speed", "scroll speed", 0.25, "How quickly the scroll unrolls. A handscroll is read from right to left, so new scenery enters at the left edge and drifts slowly right. Zero holds the scroll still."),
   seed("scroll", "seed", "scroll", "Another scroll: a different run of mountains, waters, pavilions and boats."),
   range("scroll", "detail", "detail", 0.55, "How much the painter puts in. Left: a few contours, sparse dots and a great deal of bare paper, as in Ni Zan. Right: dense texture strokes, moss dots and pines, as in Fan Kuan."),
   choice("ink", "palette", "palette", [{ label: "ink", value: 0 }, { label: "blue-green", value: 1 }], 0, "Ink: sumi alone, in graded greys. Blue-green (qinglü): mineral azurite and malachite washed over the peaks, with ochre on the lower slopes, as in the court landscapes of the Tang and Song."),
@@ -23,7 +23,8 @@ const params: readonly ParamDef[] = [
   toggle("life", "boats", "boatman", true, "A fisherman in a small boat on the open water, drifting and poling between the banks."),
   toggle("life", "dwellings", "pavilions", true, "Pavilions under the pines on the river banks, now and then with a scholar sitting in one, looking out over the water."),
   toggle("life", "falls", "waterfalls", true, "Thread waterfalls dropping down the clefts of the tall peaks, left as bare paper between dark rock."),
-  feature("manifold", "seal", "seal", true, "size", 0.45, "A cinnabar seal carved with the Manifold M in seal script, pressed across each join of the scroll's paper sheets, as collectors did. Click the page to press it where you like. Now: a fresh impression on the sky.", { trigger: 1 }),
+  toggle("life", "inscription", "inscriptions", true, "Now and then a sheet carries a few columns of calligraphy in its empty sky, faint and grey, as poets and owners wrote on scrolls."),
+  feature("manifold", "seal", "seal", true, "size", 0.45, "A cinnabar seal carved with the Manifold M in seal script, pressed across each join of the scroll's paper sheets as collectors did, once the join is well inside the frame. Click the page to press it where you like. Now: a fresh impression on the sky.", { trigger: 1 }),
 ];
 
 export const shanshuiScene: SceneDef = {
@@ -38,7 +39,7 @@ export const shanshuiScene: SceneDef = {
     scroll: { title: "Scroll", blurb: "How fast the handscroll unrolls, which scroll it is, and how much the painter puts in." },
     ink: { title: "Ink and paper", blurb: "The palette, how heavy and how wet the brush, the strokes that model the rock, and the paper's age." },
     mist: { title: "Mist", blurb: "The clouds between the mountains, left as bare paper. Move the pointer to blow them aside." },
-    life: { title: "Life", blurb: "Geese, a boatman, pavilions and waterfalls along the way." },
+    life: { title: "Life", blurb: "Geese, a boatman, pavilions, waterfalls and inscriptions along the way." },
     manifold: { title: "Manifold mark", blurb: "A red seal with the M in seal script, riding the joins of the paper. Click to press one." },
   },
   glsl: shanshuiGlsl,

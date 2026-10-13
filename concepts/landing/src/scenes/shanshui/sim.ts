@@ -260,6 +260,11 @@ class ShanshuiSim implements SceneSim {
         x = aspect * (0.62 + 0.26 * random.next());
         y = 0.74 + 0.13 * random.next();
       }
+      // Keep the whole impression inside the frame (the shader's seal is 0.04..0.09 heights across
+      // with the size knob and only shows fully 0.05 heights in from an edge).
+      const margin = 0.75 * (0.04 + 0.05 * seal) + 0.05;
+      x = Math.min(Math.max(x, margin), Math.max(margin, aspect - margin));
+      y = Math.min(Math.max(y, margin), 1 - margin);
       this.#sealAt = x - this.#scroll;
       this.#sealY = y;
       this.#sealAge = 0;
