@@ -1,11 +1,13 @@
 // The ripple tank's picture: a lamp above the tank throws the water's light and shadow on a white
 // screen below it (the classic projection: crests gather the light into bright bands, troughs
 // spread it thin), or, as a surface, the dark water itself with the room and the lamp mirrored in
-// it. The fixtures show as the lamp throws them: dippers, barriers and the bar as solid shadows
-// rimmed by the bright line of their meniscus, things over the water (the dippers' beam and stems,
-// the barriers' tops) as soft shadows cast away from the lamp, the lens plate as a fine outline.
-//   uSim0  the shown tank's view (sim.ts): x height, y the Jacobian of the light's path to the
-//          screen, zw the slope (1 at a unit wave's steepest)
+// it. The fixtures show as the lamp throws them: barriers and the bar as solid shadows rimmed by the
+// bright line of their meniscus, the dippers as needle points with soft shadows, things over the
+// water (the dippers' beam and needles, the barriers' tops) as soft shadows cast away from the
+// lamp, the lens plate as a fine outline, the tank's frame as a dark border (on the screen) or a
+// lipped tray on a lamp-lit table (seen as a surface).
+//   uSim0  the shown tank's view (sim.ts): x how hard the screen focuses there, y the Jacobian of
+//          the light's path to the screen, zw the slope (1 at a unit wave's steepest)
 //   uSim1  the tank fading in, while it does
 //   uSim2  the layout, 16×2 rgba32f: row 0 shown, row 1 fading in (RIPPLE_TEXELS)
 // Without the sim (no float render targets) the screen shows two dippers' interference worked out
@@ -49,11 +51,15 @@ const vec2 RIPPLE_FOCUS = vec2(${glsl(RIPPLE_FOCUS[0])}, ${glsl(RIPPLE_FOCUS[1])
 const float RIPPLE_C = ${glsl(RIPPLE_SPEED)};
 const float RIPPLE_F = ${glsl(RIPPLE_FREQUENCY)};
 const float RIPPLE_TONE = 0.42;     // screen brightness = 1 - exp(-tone x light), light 1 under still water
-const float RIPPLE_WALL_Z = 0.07;   // the barriers stand this high above the water (short sides)
-const float RIPPLE_STEM = 0.003;    // half-width of a dipper's stem
+const float RIPPLE_SOFT = 0.25;     // how far the light's focus stops short of a perfect caustic (its peak is 1 / soft)
+const float RIPPLE_WALL_Z = 0.15;   // the barriers stand this high above the water (short sides)
+const float RIPPLE_CONTACT = 0.014; // the soft shadow round a dipper's needle point
 const float RIPPLE_BEAM_HALF = 0.007;
 const float RIPPLE_RIM = 0.32;      // the meniscus's bright line, × the lamp's light there
 const vec2 RIPPLE_TOWARD = vec2(-0.6, 0.8); // where the room's light comes from, seen in the surface
+const float RIPPLE_GLINT = 0.12;    // how far the surface's slope throws the lamp's reflection (short sides per unit slope)
+const float RIPPLE_INSET = 0.05;    // the tank's rim, in from the frame's edges, and its corners' radius
+const float RIPPLE_CORNER = 0.03;
 ${STOP_AT}
 ${STOP_RGB}
 ${RIPPLE_LENS_GLSL}
@@ -69,13 +75,12 @@ struct RippleLook {
 struct RippleFix {
   float wall;   // barriers (soft coverage; cut per cell when drawn)
   float bar;    // the plane-wave bar
-  float ball;   // dipper balls
+  float tip;    // dippers' needle points
   float mark;   // the M strip
   float rim;    // the meniscus round anything in the water
   float shade;  // shadows of what stands over the water, 0..1
   float lens;   // over the lens plate
   float edge;   // the plate's rim
-  float glint;  // a ball's highlight (surface view)
 };
 
 // A cell flips once as a soft edge passes: coverage cut against its own threshold.
@@ -140,7 +145,7 @@ float rippleHigh(vec2 p, vec2 a, vec2 b, float w, float z, vec2 lamp) {
 
 // Everything in and over the water of a layout row, at p.
 RippleFix rippleFixtures(int row, vec2 p, vec2 lamp) {
-  RippleFix f = RippleFix(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  RippleFix f = RippleFix(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   float px = ripplePx;
   vec4 halves = rippleAt(row, ${RIPPLE_TEXELS.halves});
   for (int i = 0; i < 4; i++) {
@@ -150,7 +155,8 @@ RippleFix rippleFixtures(int row, vec2 p, vec2 lamp) {
     float d = segmentDistance(p, s.xy, s.zw) - h;
     f.wall = max(f.wall, 1.0 - smoothstep(-px, px, d));
     f.rim = max(f.rim, rippleMeniscus(d));
-    f.shade = max(f.shade, 0.35 * rippleHigh(p, s.xy, s.zw, h, RIPPLE_WALL_Z, lamp));
+    // Its top, standing above the water, throws a faint shadow out from the lamp.
+    f.shade = max(f.shade, 0.3 * rippleHigh(p, s.xy, s.zw, h, RIPPLE_WALL_Z, lamp));
   }
   vec4 flags = rippleAt(row, ${RIPPLE_TEXELS.flags});
   if (flags.y > 0.5) {
@@ -166,17 +172,17 @@ RippleFix rippleFixtures(int row, vec2 p, vec2 lamp) {
   for (int i = 0; i < 4; i++) {
     vec4 s = rippleAt(row, ${RIPPLE_TEXELS.dippers} + i);
     if (s.w <= 0.0) continue;
-    vec2 q = p - s.xy;
-    float d = length(q) - s.z;
-    if (d > 0.6) continue;
-    f.ball = max(f.ball, 1.0 - smoothstep(-px, px, d));
-    f.rim = max(f.rim, rippleMeniscus(d));
-    // Its stem rises to the beam; the lamp throws its shadow outward from the ball.
-    float stem = segmentDistance(p, s.xy, rippleCast(s.xy, lamp, RIPPLE_BEAM_Z)) - RIPPLE_STEM;
-    f.shade = max(f.shade, 0.5 * (1.0 - smoothstep(-px, 1.5 * px, stem)));
-    vec2 toward = normalize(lamp - s.xy + vec2(1e-4));
-    vec2 g = (q - 0.4 * s.z * toward) / (0.35 * s.z);
-    f.glint = max(f.glint, exp(-dot(g, g)));
+    float r = distance(p, s.xy);
+    if (r > 0.6) continue;
+    // A needle's point in the water, a soft shadow round it, and the needle's own shadow running
+    // out from the lamp to the beam, widening and fading as it rises.
+    f.tip = max(f.tip, 1.0 - smoothstep(-px, px, r - s.z));
+    f.shade = max(f.shade, 0.35 * exp(-r * r / (RIPPLE_CONTACT * RIPPLE_CONTACT)));
+    vec2 rise = rippleCast(s.xy, lamp, RIPPLE_BEAM_Z) - s.xy;
+    float up = clamp(dot(p - s.xy, rise) / max(dot(rise, rise), 1e-8), 0.0, 1.0);
+    float needle = length(p - s.xy - rise * up) - mix(0.0018, 0.0043, up);
+    float blur = px + 0.012 * up;
+    f.shade = max(f.shade, 0.5 * (1.0 - 0.6 * up) * (1.0 - smoothstep(-blur, blur, needle)));
   }
   vec4 lens = rippleAt(row, ${RIPPLE_TEXELS.lens});
   if (lens.z > 0.0) {
@@ -202,37 +208,66 @@ RippleLook rippleProjection(int row, vec2 p, vec2 F, vec2 lamp, float pool) {
   float kappa = mix(RIPPLE_FOCUS.x, RIPPLE_FOCUS.y, clamp(K_focus, 0.0, 1.0)) * meta.z;
   vec2 uv = p / F;
   // The light landing here crossed the surface a little upslope of it (the water bends it by the
-  // slope times the screen's distance): read the focus there.
-  vec2 slope = rippleView(row, uv).zw;
-  vec4 v = rippleView(row, uv - slope * (kappa * meta.w * 0.159) / F);
-  float light = 1.0 / max(v.y, 0.18);
+  // slope times the screen's distance here): read the focus there. Near a perfect focus the light
+  // rises smoothly to a peak of 1 / RIPPLE_SOFT rather than to a hard-edged blaze.
+  vec4 here = rippleView(row, uv);
+  vec4 v = rippleView(row, uv - here.zw * (kappa * here.x * meta.w * 0.159) / F);
+  float light = 1.0 / sqrt(v.y * v.y + RIPPLE_SOFT * RIPPLE_SOFT);
   float b = pool * (1.0 - exp(-RIPPLE_TONE * light));
   RippleFix f = rippleFixtures(row, p, lamp);
   b *= 1.0 - f.shade;
   b *= 1.0 - 0.08 * f.lens;
   b += pool * (0.2 * f.edge * (1.0 - f.lens * 0.5) + RIPPLE_RIM * f.rim);
-  float solid = rippleHard(max(max(f.wall, f.bar), f.ball));
+  float solid = rippleHard(max(max(f.wall, f.bar), f.tip));
   b = mix(b, 0.03 * pool, solid);
   return RippleLook(b, f.mark * (1.0 - solid), pool * 0.8);
 }
 
 // The water itself from above, dark, its slopes catching the room's light and the lamp mirrored in
-// it, broken up by the waves; the fixtures seen as they are: wax barriers, a steel bar, black
-// glossy balls, the glass plate pale under its shallow water.
+// it: a small soft highlight the ripples break up and carry about. The fixtures seen as they are:
+// wax barriers, a steel bar, black needle points, the glass plate pale under its shallow water.
 RippleLook rippleSurface(int row, vec2 p, vec2 F, vec2 lamp) {
-  vec4 meta = rippleAt(row, ${RIPPLE_TEXELS.meta});
   vec2 slope = rippleView(row, p / F).zw;
   vec2 d = p - lamp;
   float room = 0.12 + 0.12 * exp(-dot(d, d) / 1.1);
   float b = room * max(1.0 + 1.1 * dot(slope, RIPPLE_TOWARD), 0.0);
-  vec2 q = p + slope * (0.05 + 0.25 * meta.w) - lamp;
-  b += 0.85 * exp(-dot(q, q) / 0.03);
+  vec2 q = p + slope * RIPPLE_GLINT - lamp;
+  b += 0.8 * exp(-dot(q, q) / 0.0025) + 0.08 * exp(-dot(d, d) / 0.05);
   RippleFix f = rippleFixtures(row, p, lamp);
   b += 0.05 * f.lens + 0.14 * f.edge + 0.12 * f.rim;
   b = mix(b, 0.48 + 0.12 * exp(-dot(d, d) / 0.8), rippleHard(f.wall));
   b = mix(b, 0.34, rippleHard(f.bar));
-  b = mix(b, 0.1 + 0.8 * f.glint, rippleHard(f.ball));
+  b = mix(b, 0.06, rippleHard(f.tip));
   return RippleLook(b, f.mark, 0.9);
+}
+
+// The tank: a tray inset from the frame's edges with rounded corners; negative over the water.
+float rippleTray(vec2 p, vec2 F) {
+  vec2 q = abs(p - 0.5 * F) - (0.5 * F - RIPPLE_INSET - RIPPLE_CORNER);
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - RIPPLE_CORNER;
+}
+
+// Projection: the tank's wooden frame throws a soft dark border on the screen, and the glass
+// tray's edge a fine bright line just inside it.
+float rippleFrameShadow(float b, float tray, float pool) {
+  b *= 1.0 - 0.7 * smoothstep(-0.012, 0.012, tray + 0.004);
+  float x = (tray + 0.016) / (1.3 * ripplePx);
+  return b + 0.12 * pool * exp(-x * x);
+}
+
+// Surface: the table round the tank, lit by the lamp and grained, the tank's shadow cast on it
+// away from the lamp, the tray's pale lip, and the water's meniscus bright along it.
+float rippleTable(float b, vec2 p, vec2 F, vec2 lamp, float tray) {
+  vec2 d = p - lamp;
+  float lamplit = exp(-dot(d, d) / 0.9);
+  float table = (0.07 + 0.16 * lamplit) * (0.85 + 0.15 * sin(p.y * 140.0 + 3.0 * sin(p.x * 9.0)));
+  float under = rippleTray(p - 0.025 * normalize(d + vec2(1e-4)), F);
+  table *= 1.0 - 0.5 * (1.0 - smoothstep(-0.01, 0.01, under));
+  float x = (tray + 0.011) / (1.2 * ripplePx);
+  b += 0.1 * exp(-x * x);
+  b = mix(b, table, smoothstep(-ripplePx, ripplePx, tray));
+  float lip = 1.0 - smoothstep(-ripplePx, ripplePx, abs(tray + 0.004) - 0.004);
+  return mix(b, 0.28 + 0.4 * lamplit, lip);
 }
 
 // Without the sim: two dippers' rings summed, the screen's focus worked out from the height (a
@@ -251,7 +286,8 @@ RippleLook rippleStill(vec2 p, vec2 F, float pool, float t) {
   float h = sqrt(lambda / max(r0, 0.25 * lambda)) * sin(phase - k * r0 - 0.785)
           + sqrt(lambda / max(r1, 0.25 * lambda)) * sin(phase - k * r1 - 0.785);
   float kappa = mix(RIPPLE_FOCUS.x, RIPPLE_FOCUS.y, clamp(K_focus, 0.0, 1.0));
-  float b = pool * (1.0 - exp(-RIPPLE_TONE / max(1.0 - kappa * h, 0.18)));
+  float J = 1.0 - kappa * h;
+  float b = pool * (1.0 - exp(-RIPPLE_TONE / sqrt(J * J + RIPPLE_SOFT * RIPPLE_SOFT)));
   float ball = 1.0 - smoothstep(-ripplePx, ripplePx, min(r0, r1) - RIPPLE_DIPPER_R);
   b = mix(b, 0.03 * pool, rippleHard(ball));
   return RippleLook(b, 0.0, pool);
@@ -285,6 +321,10 @@ Shade sceneRipple(vec2 uv, vec2 cell, float t) {
   } else {
     look = rippleStill(p, F, pool, t);
   }
+  float tray = rippleTray(p, F);
+  if (surface) look.b = rippleTable(look.b, p, F, lamp, tray);
+  else look.b = rippleFrameShadow(look.b, tray, pool);
+  look.m *= 1.0 - smoothstep(-ripplePx, ripplePx, tray);
 
   vec3 smoothCol;
   vec3 col = rippleRamp(look.b, clamp(int(K_light + 0.5), 0, ${LIGHTS.length - 1}), smoothCol);

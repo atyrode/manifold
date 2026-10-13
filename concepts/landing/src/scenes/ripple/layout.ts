@@ -12,8 +12,8 @@
 export const RIPPLE_SPEED = 0.028;
 export const RIPPLE_FREQUENCY = 0.25;
 
-/** A dipper ball's radius, the plane-wave bar's and a barrier's half-width, the M strip's half-width. */
-export const RIPPLE_DIPPER = 0.013;
+/** A dipper's needle point (radius), the plane-wave bar's and a barrier's half-width, the M strip's half-width. */
+export const RIPPLE_DIPPER = 0.0045;
 export const RIPPLE_BAR = 0.006;
 export const RIPPLE_WALL = 0.011;
 export const RIPPLE_MARK_HALF = 0.0075;
@@ -103,13 +103,18 @@ export interface Box {
   y1: number;
 }
 
-/** The double slit, for the seed: the barrier's faces along the waves' way, the slits just past it. */
+/** The double slit: the barrier's faces along the waves' way, the slits just past it. */
 export interface Slits {
   /** Slit centres on the barrier's far face, their clear width, and the faces' positions along the bar's normal. */
   centres: Point[];
   width: number;
   near: number;
   far: number;
+  /**
+   * How hard the screen focuses before the barrier and past it (× contrast): the bar's strong
+   * standing waves stay soft bands, the slits' fainter fringes come up clear.
+   */
+  focus: readonly [number, number];
 }
 
 export interface Layout {
@@ -250,8 +255,8 @@ export function rippleLayout(experiment: Experiment, frame: TankFrame, lambda: n
         width: w,
         near: ab - h,
         far: ab + h,
+        focus: [0.6, 3],
       };
-      layout.contrast = 1.5;
       break;
     }
     case LENS: {

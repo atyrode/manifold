@@ -2,9 +2,10 @@
 // over the whole frame, driven by the experiment's dippers (layout.ts), walled by its barriers,
 // slowed over its lens plate and soaked up at the tank's edges by sponges.
 //
-// uSim0  the shown tank's view, rgba16f at grid size (linear), frame uv: x the surface height, y the
-//        Jacobian of the light's path through it to the screen (1 flat; under 1 the light is focused,
-//        brighter), zw the surface slope, 1 at a unit wave's steepest
+// uSim0  the shown tank's view, rgba16f at grid size (linear), frame uv: x how hard the screen
+//        focuses here (× the knob's; softened round each dipper, split at the double slit's
+//        barrier), y the Jacobian of the light's path through the surface to the screen (1 flat;
+//        under 1 the light is focused, brighter), zw the surface slope, 1 at a unit wave's steepest
 // uSim1  the same for the tank fading in during a change of experiment (stale otherwise)
 // uSim2  the layout, rgba32f 16×2 (nearest): row 0 the shown tank, row 1 the one fading in; texels
 //        as RIPPLE_TEXELS, lengths in short sides
@@ -78,6 +79,8 @@ export const RIPPLE_LAYOUT_WIDTH = 16;
 
 /** How hard the screen focuses the light (D k² for a unit wave) at the focus knob's ends, × the experiment's contrast. */
 export const RIPPLE_FOCUS = [0.35, 1.25] as const;
+/** The screen's focus right at a dipper, × the knob's; it comes back to full a wavelength out. */
+const NEAR_FOCUS = 0.15;
 
 /** Sim step (scene seconds) and the Courant number it may not pass. */
 const STEP = 0.05;
@@ -293,15 +296,24 @@ void main() {
 `;
 
 /**
- * What the scene samples: the height between the last two steps, the Jacobian of the light's
- * path to the screen (det(I + D H), H the height's Hessian, D the screen's distance; over the lens
- * D shrinks with the square of the speed, so its shorter waves focus no harder), and the slope.
+ * What the scene samples: how hard the screen focuses here, the Jacobian of the light's path to
+ * the screen (det(I + D H), H the Hessian of the height between the last two steps, D the screen's
+ * distance), and the slope. D shrinks over the lens with the square of the speed, so its shorter
+ * waves focus no harder; round each dipper, so the steep rings close to it stay soft and the
+ * brightest lines start a little way out; and before the double slit's barrier, while it grows
+ * past it, so the bar's strong standing waves stay soft bands and the slits' fainter fringes,
+ * the point of the experiment, come up clear.
  */
 const VIEW_PASS = `
 uniform sampler2D uState;
+uniform vec2 uFrame;
 uniform float uFrac;    // how far the frame is past the step before last, 0..1 of a step
 uniform float uFocus;   // the screen's distance, texels squared
 uniform float uSlope;   // 1 / wavenumber per texel: a unit wave's steepest slope reads 1
+uniform float uLambda;  // wavelength, short sides
+uniform vec4 uNear[${DIPPERS}]; // dippers: x, y (short sides), 1 (0: none)
+uniform vec4 uSplit;    // the barrier: the waves' way, where they pass it, 1 (0: no split)
+uniform vec2 uGain;     // focus before the barrier and past it
 float rippleH(ivec2 q, float here) {
   vec4 s = texelFetch(uState, clamp(q, ivec2(0), ivec2(uSize) - 1), 0);
   return s.z > 0.75 ? here : mix(s.y, s.x, uFrac);
@@ -309,8 +321,16 @@ float rippleH(ivec2 q, float here) {
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
   vec4 c = texelFetch(uState, ij, 0);
+  vec2 p = vUv * uFrame;
+  float focus = 1.0;
+  if (uSplit.w > 0.0) focus = mix(uGain.x, uGain.y, smoothstep(uSplit.z - 0.02, uSplit.z + 0.06, dot(p, uSplit.xy)));
+  for (int i = 0; i < ${DIPPERS}; i++) {
+    if (uNear[i].z == 0.0) continue;
+    float r = distance(p, uNear[i].xy);
+    focus *= mix(${glsl(NEAR_FOCUS)}, 1.0, smoothstep(0.1 * uLambda, 0.9 * uLambda, r));
+  }
   if (c.z > 0.75) {
-    fragColor = vec4(0.0, 1.0, 0.0, 0.0);
+    fragColor = vec4(focus, 1.0, 0.0, 0.0);
     return;
   }
   float h = mix(c.y, c.x, uFrac);
@@ -322,12 +342,12 @@ void main() {
   float nw = rippleH(ij + ivec2(-1, 1), h);
   float se = rippleH(ij + ivec2(1, -1), h);
   float sw = rippleH(ij - ivec2(1, 1), h);
-  float D = uFocus * c.w * c.w;
+  float D = uFocus * focus * c.w * c.w;
   float hxx = e + w - 2.0 * h;
   float hyy = n + s - 2.0 * h;
   float hxy = 0.25 * (ne - nw - se + sw);
   float J = (1.0 + D * hxx) * (1.0 + D * hyy) - D * D * hxy * hxy;
-  fragColor = vec4(h, J, 0.5 * uSlope * c.w * vec2(e - w, n - s));
+  fragColor = vec4(focus, J, 0.5 * uSlope * c.w * vec2(e - w, n - s));
 }
 `;
 
@@ -547,6 +567,9 @@ class RippleLab implements SceneSim {
   readonly #movingDrive = new Float32Array(2);
   readonly #frameSize = new Float32Array(2);
   readonly #sponge = new Float32Array(2);
+  readonly #near = new Float32Array(DIPPERS * 4);
+  readonly #split = new Float32Array(4);
+  readonly #gain = new Float32Array(2);
 
   /** The tank on show and the one being prepared or faded in. */
   #tanks: [Tank, Tank] | undefined;
@@ -630,8 +653,8 @@ class RippleLab implements SceneSim {
     this.#advance(shown, seconds, MAX_STEPS, this.#finger);
     if (fading) this.#advance(coming, seconds, MAX_STEPS, undefined);
     else if (this.#preparing) this.#advance(coming, seconds * PREP_RATE, MAX_PREP_STEPS, undefined);
-    this.#render(frame, shown);
-    if (fading) this.#render(frame, coming);
+    this.#render(frame, shown, this.#finger);
+    if (fading) this.#render(frame, coming, undefined);
     this.#publish(shown, coming);
     return [shown.view.texture, (fading ? coming : shown).view.texture, this.#layoutTarget.texture];
   }
@@ -925,19 +948,11 @@ class RippleLab implements SceneSim {
     const pointPush = (4 * C2) / (sigma * sigma);
     const linePush = (2 * physics.omega * physics.step * physics.courant) / (sigma * Math.sqrt(Math.PI));
     this.#dippers.fill(0);
-    let slot = 0;
-    layout.dippers.forEach((dipper, i) => {
-      if (slot >= DIPPERS - 1) return;
-      const offset = tank.offsets[i];
-      this.#dippers.set([dipper.x + (offset?.x ?? 0), dipper.y + (offset?.y ?? 0), dipper.amp * pointPush, 0], slot * 4);
-      slot++;
+    this.#places(tank).forEach((place, i) => {
+      if (i >= DIPPERS - 1) return;
+      const amp = layout.dippers[i]?.amp ?? layout.track?.amp ?? 0;
+      this.#dippers.set([place.x, place.y, amp * pointPush, 0], i * 4);
     });
-    const track = layout.track;
-    if (track && slot < DIPPERS - 1) {
-      const at = trackAt(track, tank.time);
-      const offset = tank.offsets[slot];
-      this.#dippers.set([at.x + (offset?.x ?? 0), at.y + (offset?.y ?? 0), track.amp * pointPush, 0], slot * 4);
-    }
     if (finger) this.#dippers.set([finger.x, finger.y, FINGER * pointPush, 0], (DIPPERS - 1) * 4);
     const bar = layout.bar;
     if (bar) this.#bar.set([bar.ax, bar.ay, bar.bx, bar.by]);
@@ -979,15 +994,46 @@ class RippleLab implements SceneSim {
     offset.y *= keep;
   }
 
-  /** The view: the height between the last two steps, the light's focus, the slope. */
-  #render(frame: SimFrame, tank: Tank): void {
+  /** Where the tank's dippers are now: the fixed ones as dragged, the Doppler one on its track (as dragged). */
+  #places(tank: Tank): Point[] {
+    const layout = tank.layout;
+    if (!layout) return [];
+    const places = layout.dippers.map((dipper, i) => ({ x: dipper.x + (tank.offsets[i]?.x ?? 0), y: dipper.y + (tank.offsets[i]?.y ?? 0) }));
+    if (layout.track) {
+      const at = trackAt(layout.track, tank.time);
+      const offset = tank.offsets[places.length];
+      places.push({ x: at.x + (offset?.x ?? 0), y: at.y + (offset?.y ?? 0) });
+    }
+    return places;
+  }
+
+  /** The view: the screen's focus here, the light's focus through the surface, the slope. */
+  #render(frame: SimFrame, tank: Tank, finger: Point | undefined): void {
     const physics = this.#need();
     const k = (TAU / physics.lambda) / physics.n;
     const focus = Math.min(1, Math.max(0, this.#value(frame, this.#at.focus)));
     const kappa = lerp(RIPPLE_FOCUS, focus) * (tank.layout?.contrast ?? 1);
+    this.#near.fill(0);
+    this.#places(tank).forEach((place, i) => {
+      if (i < DIPPERS - 1) this.#near.set([place.x, place.y, 1, 0], i * 4);
+    });
+    if (finger) this.#near.set([finger.x, finger.y, 1, 0], (DIPPERS - 1) * 4);
+    const slits = tank.layout?.slits;
+    const bar = tank.layout?.bar;
+    this.#split.set(slits && bar ? [bar.nx, bar.ny, slits.far, 1] : [1, 0, 0, 0]);
+    this.#gain.set(slits ? slits.focus : [1, 1]);
     this.#shade.run(tank.view, {
       textures: { uState: tank.state },
-      uniforms: { uFrac: tank.pending, uFocus: kappa / (k * k), uSlope: 1 / k },
+      uniforms: {
+        uFrame: this.#frameSize,
+        uFrac: tank.pending,
+        uFocus: kappa / (k * k),
+        uSlope: 1 / k,
+        uLambda: physics.lambda,
+        uNear: this.#near,
+        uSplit: this.#split,
+        uGain: this.#gain,
+      },
     });
   }
 
@@ -1094,16 +1140,12 @@ class RippleLab implements SceneSim {
       data.set([a, b, c, d], base + texel * 4);
     };
     put(RIPPLE_TEXELS.meta, weight, layout.experiment, layout.contrast, physics.lambda);
-    const dippers: Point[] = layout.dippers.map((dipper, i) => ({ x: dipper.x + (tank.offsets[i]?.x ?? 0), y: dipper.y + (tank.offsets[i]?.y ?? 0) }));
+    const dippers = this.#places(tank);
     let beam = layout.beam;
-    if (layout.track) {
-      const slot = layout.dippers.length;
-      const at = trackAt(layout.track, tank.time);
-      const offset = tank.offsets[slot];
-      const dipper = { x: at.x + (offset?.x ?? 0), y: at.y + (offset?.y ?? 0) };
-      dippers.push(dipper);
-      // The dipper rides on an arm reaching in from the tank's near side.
-      beam = { ax: dipper.x, ay: dipper.y, bx: dipper.x - layout.track.wx, by: dipper.y - layout.track.wy };
+    const riding = dippers[layout.dippers.length];
+    if (layout.track && riding) {
+      // The Doppler dipper rides on an arm reaching in from the tank's near side.
+      beam = { ax: riding.x, ay: riding.y, bx: riding.x - layout.track.wx, by: riding.y - layout.track.wy };
     }
     dippers.forEach((dipper, i) => {
       if (i < 4) put(RIPPLE_TEXELS.dippers + i, dipper.x, dipper.y, RIPPLE_DIPPER, 1);
