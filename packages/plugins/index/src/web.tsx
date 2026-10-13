@@ -30,9 +30,14 @@ import {
   FALLBACK_POLL_MS,
   INDEX_RESOURCE,
   TERMINALS_RESOURCE,
+  useWorkspaceShell,
   type ItemDropAssessment,
 } from "@manifold/plugin/hooks";
-import { DEFAULT_CANVAS_DROP, placementItemFor } from "@manifold/protocol";
+import {
+  DEFAULT_CANVAS_DROP,
+  IndexFolderCreatedResponseSchema,
+  placementItemFor,
+} from "@manifold/protocol";
 import type {
   Container,
   Attendance,
@@ -54,6 +59,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { NEW_FOLDER_CREATOR, indexManifest } from "./index.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
 
 /**
@@ -147,14 +153,6 @@ function IndexSkeleton(): ReactElement {
   );
 }
 
-/**
- * The rail's top-level folder creator, re-exported from the plugin's one browser entry so a
- * registration names one module per plugin. It is a separate FILE because it is a separate
- * ROW — a `plain` contribution beside this `disclosure` one — and it shares nothing with the
- * tree below but the door they both go through.
- */
-export { NewFolderRow } from "./new-folder-row.tsx";
-
 export function IndexSection({ host }: SectionProps): ReactElement {
   const client = host.client;
   const activeContainerId = host.containerId;
@@ -227,6 +225,34 @@ export function IndexSection({ host }: SectionProps): ReactElement {
       current !== null && incoming !== null && sameIndexEntries(current, incoming),
     onError: (reason) => report(reason, "Could not load the index"),
   });
+
+  /*
+    THIS DEVICE JUST MADE A FOLDER FROM THE RAIL, through this plugin's own creator (#1079):
+    the press was a one-click "Untitled folder", so the tree opens that folder's rename field —
+    focused, its text selected — rather than leaving the reader to find and rename it. The
+    shell published the door's answer verbatim (`lastCreated`); the folder's id comes from
+    that answer, never from guessing it by name in a tree a collaborator may be changing, and
+    the answer's tree is applied first so the row is there to rename. Another device's folder
+    arrives as an ordinary event and opens nothing, and a remount does not replay an old run.
+  */
+  const { lastCreated } = useWorkspaceShell();
+  const handledRun = useRef(lastCreated?.seq ?? 0);
+  useEffect(() => {
+    if (lastCreated === null || lastCreated.seq === handledRun.current) return;
+    handledRun.current = lastCreated.seq;
+    if (lastCreated.plugin !== indexManifest.id || lastCreated.creator !== NEW_FOLDER_CREATOR) {
+      return;
+    }
+    const answer = IndexFolderCreatedResponseSchema.safeParse(lastCreated.result);
+    if (!answer.success) return;
+    const folder = answer.data.items.find(
+      (item) => item.kind === "folder" && item.id === answer.data.folderId,
+    );
+    if (folder?.kind !== "folder") return;
+    setTreeItems(answer.data.items);
+    setRenamingFolderId(folder.id);
+    setFolderRenameName(folder.name);
+  }, [lastCreated, setTreeItems]);
   const { value: terminalsByContainer } = usePolledResource(fetchByContainer, FALLBACK_POLL_MS, {
     key: CONTAINER_TERMINALS_RESOURCE,
     initial: NO_CONTAINER_TERMINALS,

@@ -52,33 +52,36 @@ export const canvasManifest: PluginManifest = {
   capabilities: ["scenes:write"],
   contributes: {
     panels: [],
+    sections: [],
     /**
-     * ONE ROW: the rail's "New canvas". A creator is an opinion about a DISCIPLINE, so it
-     * belongs to the discipline's plugin rather than to whoever draws the rail — disable this
-     * plugin and the offer to make a canvas goes with it (D4′), which is the reading the
-     * shell's hand-written button could never give. `plain`, because a creator is a control
-     * and not a collapsible block, and `order: 2` puts it where it has always been: under the
-     * brand line, above the composition creator (`core.compositions`, `order: 3`).
+     * ONE CREATOR: "New canvas", in the shell's picker. A creator is an opinion about a
+     * DISCIPLINE, so it belongs to the discipline's plugin rather than to whoever draws the
+     * rail — disable this plugin and the offer to make a canvas goes with it (D12). It is DATA:
+     * the door is the index's (`core.index.createContainer`), run as the presser with a fixed
+     * input, and the shell lands the viewer in the container the door answers. `order: 2`
+     * keeps it first among the shipped creators, as its row was.
      */
-    sections: [
+    creators: [
       {
         id: "new-canvas",
         title: "New canvas",
+        icon: "canvas",
         order: 2,
-        presentation: "plain",
+        action: "core.index.createContainer",
+        input: { name: "Untitled", discipline: "canvas" },
         setting: "new-canvas",
       },
     ],
     /**
      * AND ONE PREFERENCE OVER IT (#133). A creator is an offer, and an offer a reader has
-     * stopped needing should be theirs to put away — so the row is gated on a declared
-     * boolean, dropped from the rail when it reads false and back when it does not, per
+     * stopped needing should be theirs to put away — so the entry is gated on a declared
+     * boolean, dropped from the picker when it reads false and back when it does not, per
      * principal. `true` because that is what shipped; the operator's defaults-design pass
-     * decides whether any row starts off.
+     * decides whether any entry starts off.
      *
      * It is NOT a disable in miniature. Turning this off leaves `core.canvas` composed,
-     * enabled and rendering every canvas in the workspace: what goes away is one button in
-     * one rail, for one reader, and nothing else it contributes notices.
+     * enabled and rendering every canvas in the workspace: what goes away is one entry in
+     * one reader's picker, and nothing else it contributes notices.
      */
     settings: [{ id: "new-canvas", title: "New canvas", kind: "boolean", default: true }],
     elements: [],

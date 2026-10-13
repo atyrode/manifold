@@ -36,28 +36,29 @@ export const compositionsManifest: PluginManifest = {
   capabilities: ["scenes:write"],
   contributes: {
     panels: [],
+    sections: [],
     /**
-     * ONE ROW: the rail's "New composition" — this discipline's own creator, and the exact
-     * counterpart of `core.canvas`'s. It contributes a section while contributing no panel,
-     * which is not an inconsistency: a RENDERER is reached by layout and has no manifest row,
-     * while an offer to CREATE something is chrome somebody stacks, so it is ordered like all
-     * other chrome. `order: 3` seats it directly under the canvas creator, where the rail's
-     * hand-written pair used to sit.
+     * ONE CREATOR: "New composition", this discipline's own offer in the shell's picker and the
+     * exact counterpart of `core.canvas`'s — the index's door with this discipline as fixed
+     * input, landing the presser inside what it made. `order: 3` seats it directly after the
+     * canvas creator, where its row used to sit.
      */
-    sections: [
+    creators: [
       {
         id: "new-composition",
         title: "New composition",
+        icon: "composition",
         order: 3,
-        presentation: "plain",
+        action: "core.index.createContainer",
+        input: { name: "Untitled", discipline: "composition" },
         setting: "new-composition",
       },
     ],
     /**
      * AND ONE PREFERENCE OVER IT (#133), the exact counterpart of `core.canvas`'s: the offer
-     * is gated on a declared boolean, dropped from the rail per principal when it reads
+     * is gated on a declared boolean, dropped from the picker per principal when it reads
      * false, and shipped `true`. The discipline, its renderer and every composition in the
-     * workspace are untouched by it — this is a row's visibility, not a disable.
+     * workspace are untouched by it — this is an entry's visibility, not a disable.
      */
     settings: [{ id: "new-composition", title: "New composition", kind: "boolean", default: true }],
     elements: [],

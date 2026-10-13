@@ -3,6 +3,7 @@ import {
   CreateIndexFolderRequestSchema,
   CreateContainerRequestSchema,
   MoveIndexEntryRequestSchema,
+  IndexFolderCreatedResponseSchema,
   ContainerResponseSchema,
   IndexResponseSchema,
   ContainersResponseSchema,
@@ -10,6 +11,9 @@ import {
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
+
+/** The index's one creator id: declared below, and recognized by the tree when it has run. */
+export const NEW_FOLDER_CREATOR = "new-folder";
 
 /**
  * The workspace index, as a plugin. ONE index of everything that exists: canvases,
@@ -52,25 +56,28 @@ export const indexManifest: PluginManifest = {
   contributes: {
     panels: [],
     /*
-      TWO ROWS OF THE RAIL, and the pairing is the point: this plugin owns folders, so it owns
-      both the offer to create a top-level one and the tree that lists it. `new-folder` is
-      `plain` (a creator plus the form it opens — a control, not a collapsible block) and takes
-      `order: 4`, the last of the three creators; `index` keeps `order: 10` and its default
-      `disclosure`, and it is the row the rail's leftover height goes to, because it is the
-      first row in the order with a body (`railRows`).
+      ONE ROW AND ONE CREATOR, and the pairing is the point: this plugin owns folders, so it owns
+      both the offer to create a top-level one and the tree that lists it. The offer is a
+      creator in the shell's picker — data, run through this plugin's own `createFolder` door
+      with a fixed name at the root — and the tree reacts to its own creator having run on this
+      device by opening the new folder's rename field (`lastCreated`, `web.tsx`). `index` keeps
+      `order: 10` and its default `disclosure`, and it is the row the rail's leftover height
+      goes to, because it is the first row in the order with a body (`railRows`).
      */
-    sections: [
+    sections: [{ id: "index", title: "Index", order: 10, setting: "index" }],
+    creators: [
       {
-        id: "new-folder",
+        id: NEW_FOLDER_CREATOR,
         title: "New folder",
+        icon: "folder",
         order: 4,
-        presentation: "plain",
+        action: "core.index.createFolder",
+        input: { name: "Untitled folder", parentId: null },
         setting: "new-folder",
       },
-      { id: "index", title: "Index", order: 10, setting: "index" },
     ],
     /*
-      TWO PREFERENCES, one per row (#133), because they are two different sentences: "I do not
+      TWO PREFERENCES, one per offer (#133), because they are two different sentences: "I do not
       make folders from the rail" and "I do not keep the tree open in the rail" are choices a
       reader makes independently, and one toggle over both would force the second on whoever
       wanted the first.
@@ -187,7 +194,7 @@ export const indexActions = [
     title: "Create an index folder",
     caps: ["containers:write"],
     input: CreateIndexFolderRequestSchema,
-    result: IndexResponseSchema,
+    result: IndexFolderCreatedResponseSchema,
   }),
   defineAction({
     name: "renameFolder",

@@ -220,7 +220,7 @@ export const indexHandlers = {
   async createFolder(
     ctx: IndexCtx,
     args: { name: string; parentId: string | null },
-  ): Promise<TreeOutcome> {
+  ): Promise<Refusal | { items: readonly IndexEntry[]; folderId: string }> {
     const folderId = ctx.newId();
     const created = ctx.store.createFolder(
       { id: folderId, name: args.name, createdAt: ctx.now() },
@@ -228,7 +228,8 @@ export const indexHandlers = {
     );
     if (!created) return { refused: "parent folder changed while creating a folder" };
     announce(ctx, "folder_created", { folderId, name: args.name, parentId: args.parentId });
-    return { items: ctx.store.listIndex() };
+    // The id beside the tree: the caller that made the folder may act on it (#1079).
+    return { items: ctx.store.listIndex(), folderId };
   },
 
   async renameFolder(

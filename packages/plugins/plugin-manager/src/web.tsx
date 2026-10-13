@@ -1854,6 +1854,7 @@ function PluginDetail({
         contributes.routes ?? [],
         contributes.settings ?? [],
         contributes.disciplines ?? [],
+        contributes.creators ?? [],
       ].every((kind) => kind.length === 0) ? null : (
         <SheetCard title="Contributes" testid="plugin-manager-detail-contributes">
           <ContributedKind label="Panels" items={contributes.panels} />
@@ -1876,6 +1877,7 @@ function PluginDetail({
           />
           <ContributedKind label="Settings" items={contributes.settings ?? []} />
           <ContributedKind label="Disciplines" items={contributes.disciplines ?? []} />
+          <ContributedKind label="Creators" items={contributes.creators ?? []} />
         </SheetCard>
       )}
 
