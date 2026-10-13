@@ -452,9 +452,10 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   // The air: what mist and the rain's veil show of the sky.
   vec3 air = mix(fill * 1.3 + glow * 0.8, cloudLight * 0.95, overcast);
   // The sky's own brightness, the grey deck under cloud: mirrored in wet surfaces and water, and
-  // (a little brighter) the colour of the drops, so streaks read lighter than the wet gravel.
+  // (a little brighter, with what is left of a low sun) the colour of the drops, so streaks read
+  // lighter than the wet gravel; a small floor keeps some rain in sight at night.
   vec3 skyBright = mix(skyColor(sky, normalize(vec3(sunward.x * 0.3, 0.2, 1.0))), cloudLight, overcast);
-  vec3 dropLight = skyBright * 1.2;
+  vec3 dropLight = max(skyBright * 1.2 + sun * 0.2, vec3(0.08));
   // The eaves and the maple keep dripping a while after the rain has stopped; a drip point every
   // GARDEN_DRIP_CELLS cells along an edge, each drop falling some five spacings.
   float dripping = clamp(max(rain, 0.4 * wet), 0.0, 1.0);
@@ -719,7 +720,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
     // Drops running off the tiles' eave, falling past the wall's face toward the gutter.
     if (h < GARDEN_WALL_H && dripping > 0.0) {
       float below = (GARDEN_WALL_H - h) * GARDEN_FOCAL / (GARDEN_WALL_Y - GARDEN_EYE_Y);
-      col = mix(col, dropLight, 0.8 * rainDrips(vec2(uv.x * aspect, below), t, dripping, dripGap));
+      col = mix(col, dropLight, rainDrips(vec2(uv.x * aspect, below), t, dripping, dripGap));
     }
   } else {
     vec3 n;
@@ -870,13 +871,16 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       // Wet, the crests drain and dry first.
       wetHere = clamp(1.2 * wet - 0.2 * crest, 0.0, 1.0);
       porous = 0.85;
-      // Water stands in the groove bottoms once the garden is wet, rising with it and higher in
-      // the low patches (rainPuddles): a thin line of mirrored sky along every groove. Where the
-      // grooves are finer than the dither, only their share of water shows.
+      // Water stands in the groove bottoms once the garden is wet (from wet 0.35, where the
+      // library's pools begin), rising with it and brimming in the low patches (rainPuddles): a
+      // line of mirrored sky along every groove, about a third of its width in steady rain. Where
+      // the grooves come closer than ~7 cells the lines would thin below two: only their share of
+      // water shows there, as a sheen.
       float level = mix(-0.0017, -0.0007, smoothstep(0.35, 1.0, wet)) + 0.0006 * rainPuddles(S.xy / GARDEN_METRE, wet);
-      float lines = smoothstep(level + 0.00015, level - 0.00015, h);
-      float resolved = 1.0 - smoothstep(0.25, 0.5, max(foot.x, foot.y) / GARDEN_GROOVE);
-      pool = mix(0.2 * smoothstep(0.35, 1.0, wet), lines, resolved) * smoothstep(0.3, 0.55, wet) * (1.0 - lying);
+      float edge = max(0.00012, 0.5 * length(vec2(hx, hy)) * max(foot.x, foot.y));
+      float lines = smoothstep(level + edge, level - edge, h);
+      float resolved = 1.0 - smoothstep(0.15, 0.3, max(foot.x, foot.y) / GARDEN_GROOVE);
+      pool = mix(0.3, lines, resolved) * smoothstep(0.35, 0.6, wet) * (1.0 - lying);
       // Snow settles on the crests first, the grooves last.
       snowHere = snowCover(n.xzy, S.xy / GARDEN_METRE, clamp(lying + 0.2 * smoothstep(-0.001, 0.003, h) - 0.1, 0.0, 1.0));
     }
@@ -896,10 +900,11 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
     if (hit >= 0) col += albedo * bounce * (1.0 - n.z) * 0.9;
     // Wet stone, slate, tiles and pebbles mirror the sky; on the gravel the wet crests glint.
     col += gardenSheen(n, rdn, skyBright, wetGloss(wetHere * (1.0 - snowHere), n.z) * (1.0 - 0.8 * porous) * (1.0 + 1.5 * crest));
-    // Water standing in the grooves: the pale sky in it, rings spreading where drops land.
+    // Water standing in the grooves: the pale sky in it, well above the wet crests, faint rings
+    // where drops land.
     if (pool > 0.0) {
       vec3 rings = rainRipples(S.xy / GARDEN_RIPPLE_CELL, t, rain);
-      col = mix(col, skyBright * (1.05 + 0.2 * rings.x) + dropLight * 0.3 * rings.z, 0.9 * pool);
+      col = mix(col, skyBright * (1.6 + 0.15 * rings.x), pool);
     }
     // Drops bursting into crowns on the upward faces of stone, slate, tile and pebble, sized so a
     // crown always spans a few cells (larger than life far off).
@@ -1052,7 +1057,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   if (leafFront && leafT <= min(canopyFront ? canopyT : 1e9, barkFront ? barkT : 1e9)) col = mix(col, leafCol, leafCov);
   float leafSeen = leafFront ? leafCov : 0.0;
   // Drops falling from the maple.
-  col = mix(col, dropLight, 0.75 * drips);
+  col = mix(col, dropLight, drips);
   if (canopyFront && canopyCov > 0.5) opaque = min(opaque, canopyT);
   if (barkFront && bark > 0.5) opaque = min(opaque, barkT);
   if (leafFront && leafCov > 0.5) opaque = min(opaque, leafT);
@@ -1082,8 +1087,8 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       // The wet polish mirrors the grey sky; drops burst on the nosing (seen at a slant, so its
       // metres are half as tall as they are wide).
       boards += skyBright * 0.3 * wetGloss(edgeWet, 1.0) * smoothstep(0.5, 1.0, uv.y / top);
-      float onNose = exp(-pow((uv.y - (top - 0.005)) / 0.005, 2.0));
-      boards += dropLight * 0.7 * onNose * rainSplashes(vec2(x, 2.0 * (uv.y - top)) / GARDEN_NOSE_METRE, t, rain);
+      float onNose = step(abs(uv.y - (top - 0.005)), 0.0042);
+      boards = mix(boards, dropLight, onNose * rainSplashes(vec2(x, 2.0 * (uv.y - top)) / GARDEN_NOSE_METRE, t, rain));
       col = mix(col, boards, board);
       leafSeen *= 1.0 - board;
     }
@@ -1095,21 +1100,23 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   if (rain > 0.0 || K_snow > 0.0) {
     // From the veranda, the screen. Looking down, drops fall away from the eye toward the point
     // straight below, so they are drawn in log-polar coordinates round it (angle, log distance),
-    // where falling is moving inward; the singular centre is let go.
+    // where falling is moving inward. The map draws a drop at r / 0.25 of its size, so toward the
+    // centre, where drops are seen end-on anyway, the farther, finer layers are let go: the drops
+    // are handed a depth that shrinks with r there, while the veil keeps the true one.
     vec2 fallUv = uv;
     float fallAspect = aspect;
     float fallWind = K_wind;
-    float fallFade = 1.0;
+    float reach = 1.0;
     if (above) {
       vec2 c = (uv - 0.5) * vec2(aspect, 1.0);
       float r = max(length(c), 1e-4);
-      fallUv = vec2(atan(c.y, c.x), log(r)) * 0.5 + vec2(0.5, 0.8);
+      fallUv = vec2(atan(c.y, c.x), log(r)) * 0.25 + vec2(0.5, 0.8);
       fallAspect = 1.0;
       fallWind = 0.0;
-      // Toward the centre the map shrinks the drops below a couple of cells: let them go there.
-      fallFade = smoothstep(0.15, 0.35, r);
+      reach = 0.75 * smoothstep(0.06, 0.5, r);
     }
     float zN = opaque > 1e8 ? 1.0 : weatherDepth(opaque / GARDEN_METRE);
+    float zDrops = min(zN, reach);
     // Drizzle is mostly a grey mist over the distance (its optical depth growing faster than the
     // distance, so the near garden stays clear); the falling water's own veil, with its gust
     // curtains, closes in as it gets heavier.
@@ -1119,19 +1126,21 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
     float flakes = 0.0;
     if (rain > 0.0) {
       Precip pr = rainFall(fallUv, fallAspect, t, rain, fallWind, zN);
-      // From the veranda we sit under the temple's eaves, which reach out to the drip line: the
-      // nearest layer of drops would fall under the roof, so it is left out.
-      drops = pr.cover * (above ? 0.55 : 1.0 - pr.near) * fallFade;
       veil = max(veil, pr.veil);
+      if (zDrops < zN) pr = rainFall(fallUv, fallAspect, t, rain, fallWind, zDrops);
+      // From the veranda we sit under the temple's eaves, out to the drip line: the nearest layer
+      // of drops would fall under the roof, so it is left out (the library's sheltered form).
+      drops = above ? pr.cover : pr.cover * (1.0 - pr.near);
     }
     if (K_snow > 0.0) {
       Precip ps = snowFall(fallUv, fallAspect, t, K_snow, fallWind, zN);
-      flakes = ps.cover * fallFade;
       veil = max(veil, ps.veil);
+      if (zDrops < zN) ps = snowFall(fallUv, fallAspect, t, K_snow, fallWind, zDrops);
+      flakes = ps.cover;
     }
     col = mix(col, air, veil);
     col = mix(col, dropLight, drops);
-    col = mix(col, snowWhite * (dropLight + sun * 0.1), 0.9 * flakes);
+    col = mix(col, snowWhite * (dropLight + sun * 0.1), flakes);
   }
 
   col = clamp(col, 0.0, 1.0);
