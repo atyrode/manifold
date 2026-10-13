@@ -20,7 +20,8 @@
 // the top of the frame and as wide as the frame, centred: columns are counted from the middle of the
 // view, so a resize keeps every firefly that stays in view. Whether a cell holds one depends on the
 // forest (most live in the crowns, the tall Sonneratia "firefly trees" above all) and on the density
-// knob. Each wanders a little about a jittered place in its cell.
+// knob. Each crawls a little about a jittered place in its cell. A few more drift low over the river
+// between us and the bank, and a few hang close to us, out of focus, in the upper corners.
 //
 // Disturbances: the pointer's lantern (fireflies near a light lose the beat, and right beside it
 // stop flashing, as real ones do under a street lamp), a click (the lantern flares and scatters the
@@ -34,13 +35,14 @@
 // Textures:
 //   uSim0  rgba16f, cols × FIREFLIES_ROWS (row 0 at the waterline), linear: R, G the firefly's place
 //          in its cell (0.06..0.94, read with texelFetch; R = -1: no firefly in this cell, G negative:
-//          it is drawing the M); B its flash 0..1; A the mean flash around it (BOX cells; sampled
-//          smoothly it lights the leaves and the mist).
+//          it is drawing the M); B its light (flash × its own brightness); A its soft halo, the
+//          light of the 3×3 cells around it over 9 (sampled smoothly, it glows through the crowns).
 //   uSim1  rgba16f, cols·FIREFLIES_PROFILE_RES × 2, linear: the far bank. Row 0: canopy top, canopy
 //          underside (uv heights), crown tone 0..1, prop roots 0..1. Row 1: R trunk 0..1.
-//   uSim2  rgba16f, (FIREFLIES_NEAR + 2) × 1, nearest: the foreground fireflies (x, y on screen,
-//          distance in metres, flash), then the lantern (x, y, shown, flare) and the bank (mean
-//          flash, breeze front x, breeze on 0/1, M strength 0..1).
+//   uSim2  rgba16f, (FIREFLIES_NEAR + 2) × 1, nearest: the lights nearer than the bank (x, y on
+//          screen, distance in metres, negative for a drifter left out, flash): FIREFLIES_DRIFTERS
+//          drifters, then the out-of-focus ones; then the lantern (x, y, shown, flare) and the bank
+//          (mean flash, breeze front x, breeze on 0/1, M strength 0..1).
 import type { ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -53,8 +55,12 @@ export const FIREFLIES_WATER = 0.34;
 export const FIREFLIES_ROWS = Math.ceil((1 - FIREFLIES_WATER) / FIREFLIES_CELL);
 /** Forest profile texels per lattice column. */
 export const FIREFLIES_PROFILE_RES = 4;
-/** Foreground fireflies simulated (the `near` knob shows up to this many). */
+/**
+ * Lights nearer than the bank, one uSim2 texel each: first FIREFLIES_DRIFTERS fireflies drifting
+ * low over the river, then out-of-focus ones close to us (the `near` knob shows some of those).
+ */
 export const FIREFLIES_NEAR = 16;
+export const FIREFLIES_DRIFTERS = 10;
 /**
  * The camera, for the foreground fireflies: eye height above the river (m), focal length (screen
  * heights per unit of slope), the far bank's distance (m) and the aperture that blurs whatever is
@@ -113,11 +119,20 @@ const WANDER_SLOW = 0.03;
 const WANDER_FAST = 0.1;
 
 // Where they live.
-/** Habitat (0..1) in the open air above the trees, among the prop roots, and just above a crown. */
-const SKY_HABITAT = 0.006;
-const GAP_HABITAT = 0.07;
-const RIM_HABITAT = 0.3;
-const RIM_REACH = 0.03;
+/**
+ * Habitat (0..1) in the open air above the trees, among the prop roots along the waterline, and
+ * just above a crown: most fireflies are in the crowns, so a pulse lights the trees from within.
+ */
+const SKY_HABITAT = 0.002;
+const GAP_HABITAT = 0.2;
+const RIM_HABITAT = 0.15;
+const RIM_REACH = 0.025;
+/** A firefly's brightness (it also feeds its soft halo): most are modest, a few blaze. */
+const BRIGHT_MIN = 0.55;
+const BRIGHT_RANGE = 0.8;
+const BRIGHT_SKEW = 2.5;
+/** Brightness of the fireflies drawing the M. */
+const MARK_BRIGHT = 1.1;
 
 // The forest.
 /** Half the world width the forest is grown over (screen heights): frames up to aspect 5.2. */
@@ -176,15 +191,34 @@ const MARK_INTERVAL = 80;
 const MARK_XS = [-0.47, -0.47, 0, 0.47, 0.47];
 const MARK_YS = [-0.5, 0.5, -0.08, 0.5, -0.5];
 
-// The foreground fireflies.
-/** Range of distances (m), heights above the water (m), and how far they wander (m). */
-const NEAR_Z_MIN = 3.2;
-const NEAR_Z_MAX = 14;
-const NEAR_Y_MIN = 0.4;
-const NEAR_Y_MAX = 2.6;
-const NEAR_WANDER_X = 0.45;
-const NEAR_WANDER_Y = 0.3;
-const NEAR_WANDER_Z = 0.15;
+// The lights nearer than the bank.
+/**
+ * Drifters: distances (m), heights above the water (m) and how far they wander (m, and as a share
+ * of their distance); they keep low over the river, between us and the bank.
+ */
+const DRIFT_Z_MIN = 14;
+const DRIFT_Z_MAX = 40;
+const DRIFT_Y_MIN = 0.25;
+const DRIFT_Y_MAX = 1.4;
+const DRIFT_WANDER_X = 1;
+const DRIFT_WANDER_Y = 0.25;
+const DRIFT_WANDER_Z = 0.1;
+/** Drifters on show at density 1 / DRIFT_DENSITY and above; fewer below. */
+const DRIFT_DENSITY = 1.5;
+/**
+ * Out-of-focus fireflies close by: distances (m), where they hang on screen (uv height, and the
+ * share of the half width out from the middle: they keep to the sides and the upper half), and how
+ * far they wander (m, and as a share of their distance).
+ */
+const BOKEH_Z_MIN = 3.2;
+const BOKEH_Z_MAX = 7;
+const BOKEH_Y_MIN = 0.52;
+const BOKEH_Y_MAX = 0.92;
+const BOKEH_SIDE_MIN = 0.55;
+const BOKEH_SIDE_MAX = 0.94;
+const BOKEH_WANDER_X = 0.25;
+const BOKEH_WANDER_Y = 0.15;
+const BOKEH_WANDER_Z = 0.1;
 /** Their phase response to the bank's mean flash at coupling 1. */
 const NEAR_COUPLING = 0.8;
 
@@ -297,7 +331,7 @@ function growForest(seed: number): { lumps: Lump[]; trees: Tree[] } {
     const base = FIREFLIES_WATER + (grand ? 0.05 + 0.04 * rand() : 0.022 + 0.026 * rand());
     const tree = trees.length;
     const centre = x + width * 0.5;
-    trees.push({ x: centre, base, host: grand ? 0.9 + 0.1 * rand() : 0.55 + 0.35 * rand(), shade: rand(), roots: grand ? 0.35 : 1, trunk: grand });
+    trees.push({ x: centre, base, host: grand ? 0.95 + 0.05 * rand() : 0.35 + 0.5 * rand(), shade: rand(), roots: grand ? 0.35 : 1, trunk: grand });
     const count = grand ? 7 + Math.floor(4 * rand()) : 4 + Math.floor(3 * rand());
     for (let k = 0; k < count; k++) {
       const u = k / (count - 1) - 0.5;
@@ -354,6 +388,7 @@ class FirefliesSim implements SceneSim {
   #wanderPhase = new Float32Array(0);
   #wanderSpeed = new Float32Array(0);
   #habitat = new Float32Array(0);
+  #bright = new Float32Array(0);
   // The M: how much each cell belongs to it, and the place on its strokes it gathers to.
   #member = new Float32Array(0);
   #snapX = new Float32Array(0);
@@ -371,6 +406,9 @@ class FirefliesSim implements SceneSim {
   #sum = new Float32Array(0);
   #count = new Float32Array(0);
   #data = new Float32Array(0);
+  // Per frame: each firefly's light, and its 3×3 sum, the soft halo the shader samples.
+  #halo = new Float32Array(0);
+  #haloSum = new Float32Array(0);
 
   /** The swarm's own clock: scene seconds times motion. */
   #clock = 0;
@@ -583,14 +621,24 @@ class FirefliesSim implements SceneSim {
     this.#fit(knobs);
     const near = mulberry32((Math.imul(knobs.seed + 7, 0x85ebca6b) ^ 0x2545f491) >>> 0);
     for (let k = 0; k < FIREFLIES_NEAR; k++) {
-      // Golden-ratio steps across the frame: however many the `near` knob shows, they spread out.
-      const slot = (0.5 + k * 0.6180339887 + 0.08 * (near() - 0.5)) % 1;
-      this.#nearAnchorX[k] = (slot - 0.5) * 0.94;
-      this.#nearAnchorY[k] = NEAR_Y_MIN + (NEAR_Y_MAX - NEAR_Y_MIN) * near();
-      this.#nearAnchorZ[k] = NEAR_Z_MIN * Math.pow(NEAR_Z_MAX / NEAR_Z_MIN, near());
+      if (k < FIREFLIES_DRIFTERS) {
+        // Drifters: golden-ratio steps across the frame, so however many show, they spread out.
+        const slot = (0.5 + k * 0.6180339887 + 0.08 * (near() - 0.5)) % 1;
+        this.#nearAnchorX[k] = (slot - 0.5) * 0.92;
+        this.#nearAnchorY[k] = DRIFT_Y_MIN + (DRIFT_Y_MAX - DRIFT_Y_MIN) * near();
+        this.#nearAnchorZ[k] = DRIFT_Z_MIN * Math.pow(DRIFT_Z_MAX / DRIFT_Z_MIN, near());
+      } else {
+        // Close by and out of focus: alternately left and right, in the upper half of the frame.
+        const side = (k - FIREFLIES_DRIFTERS) % 2 === 0 ? -1 : 1;
+        const z = BOKEH_Z_MIN + (BOKEH_Z_MAX - BOKEH_Z_MIN) * near();
+        const y = BOKEH_Y_MIN + (BOKEH_Y_MAX - BOKEH_Y_MIN) * near();
+        this.#nearAnchorX[k] = 0.5 * side * (BOKEH_SIDE_MIN + (BOKEH_SIDE_MAX - BOKEH_SIDE_MIN) * near());
+        this.#nearAnchorY[k] = FIREFLIES_EYE + ((y - FIREFLIES_HORIZON) * z) / FIREFLIES_FOCAL;
+        this.#nearAnchorZ[k] = z;
+      }
       for (let j = 0; j < 3; j++) {
         this.#nearWander[k * 6 + j] = near() * TAU;
-        this.#nearWander[k * 6 + 3 + j] = 0.05 + 0.07 * near();
+        this.#nearWander[k * 6 + 3 + j] = 0.02 + 0.04 * near();
       }
       this.#nearRate[k] = 1 + RATE_SPREAD * (near() + near() - 1);
       this.#nearPhase[k] = near();
@@ -627,6 +675,7 @@ class FirefliesSim implements SceneSim {
     this.#wanderPhase = new Float32Array(2 * n);
     this.#wanderSpeed = new Float32Array(2 * n);
     this.#habitat = new Float32Array(n);
+    this.#bright = new Float32Array(n);
     this.#member = new Float32Array(n);
     this.#snapX = new Float32Array(n);
     this.#snapY = new Float32Array(n);
@@ -641,6 +690,8 @@ class FirefliesSim implements SceneSim {
     this.#sum = new Float32Array(n);
     this.#count = new Float32Array(n);
     this.#data = new Float32Array(4 * n);
+    this.#halo = new Float32Array(n);
+    this.#haloSum = new Float32Array(n);
     this.#swarmTexture.resize(cols, FIREFLIES_ROWS);
     this.#paintForest();
 
@@ -662,6 +713,7 @@ class FirefliesSim implements SceneSim {
       this.#wanderSpeed[2 * i] = WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 13);
       this.#wanderSpeed[2 * i + 1] = WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 14);
       this.#habitat[i] = this.#habitatAt(i);
+      this.#bright[i] = BRIGHT_MIN + BRIGHT_RANGE * cellHash(column, row, salt + 16) ** BRIGHT_SKEW;
       // Columns still in view keep their firefly's rhythm; new ones arrive in their places.
       const oldColumn = column + oldCols / 2;
       if (oldCols > 0 && oldColumn >= 0 && oldColumn < oldCols) {
@@ -826,8 +878,8 @@ class FirefliesSim implements SceneSim {
     }
     const mean = presTotal > 0 ? glowTotal / presTotal : 0;
     this.#meanFlash = presAll > 0 ? flashTotal / presAll : 0;
-    this.#box(glowIn, this.#sum);
-    this.#box(presIn, this.#count);
+    this.#box(glowIn, this.#sum, BOX);
+    this.#box(presIn, this.#count, BOX);
 
     // The phases.
     const kLocal = COUPLING_LOCAL * knobs.coupling;
@@ -875,27 +927,27 @@ class FirefliesSim implements SceneSim {
     this.#theta = Math.atan2(im, re) / TAU;
   }
 
-  /** Sum src over the (2·BOX + 1)² square around every cell into dst (running sums: O(n)). */
-  #box(src: Float32Array, dst: Float32Array): void {
+  /** Sum src over the (2·radius + 1)² square around every cell into dst (running sums: O(n)). */
+  #box(src: Float32Array, dst: Float32Array, radius: number): void {
     const cols = this.#cols;
     const rows = FIREFLIES_ROWS;
     const tmp = this.#rowSum;
     for (let r = 0; r < rows; r++) {
       const base = r * cols;
       let acc = 0;
-      for (let c = 0; c < BOX && c < cols; c++) acc += src[base + c] ?? 0;
+      for (let c = 0; c < radius && c < cols; c++) acc += src[base + c] ?? 0;
       for (let c = 0; c < cols; c++) {
-        if (c + BOX < cols) acc += src[base + c + BOX] ?? 0;
-        if (c - BOX - 1 >= 0) acc -= src[base + c - BOX - 1] ?? 0;
+        if (c + radius < cols) acc += src[base + c + radius] ?? 0;
+        if (c - radius - 1 >= 0) acc -= src[base + c - radius - 1] ?? 0;
         tmp[base + c] = acc;
       }
     }
     for (let c = 0; c < cols; c++) {
       let acc = 0;
-      for (let r = 0; r < BOX && r < rows; r++) acc += tmp[r * cols + c] ?? 0;
+      for (let r = 0; r < radius && r < rows; r++) acc += tmp[r * cols + c] ?? 0;
       for (let r = 0; r < rows; r++) {
-        if (r + BOX < rows) acc += tmp[(r + BOX) * cols + c] ?? 0;
-        if (r - BOX - 1 >= 0) acc -= tmp[(r - BOX - 1) * cols + c] ?? 0;
+        if (r + radius < rows) acc += tmp[(r + radius) * cols + c] ?? 0;
+        if (r - radius - 1 >= 0) acc -= tmp[(r - radius - 1) * cols + c] ?? 0;
         dst[r * cols + c] = acc;
       }
     }
@@ -1061,36 +1113,37 @@ class FirefliesSim implements SceneSim {
 
   // ---- textures --------------------------------------------------------------------------------
 
-  /** Every firefly's place in its cell, flash and the light around it, for uSim0. */
+  /** Every firefly's place in its cell, light and soft halo, for uSim0. */
   #pack(knobs: Knobs): void {
     const n = this.#n;
     const cols = this.#cols;
     const data = this.#data;
+    const halo = this.#halo;
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
     const wander = WANDER * knobs.drift;
     const clock = this.#clock;
     const mark = this.#mark ? this.#markStrength : 0;
-    const area = (2 * BOX + 1) * (2 * BOX + 1);
     const x0 = -0.5 * cols * FIREFLIES_CELL;
     for (let i = 0; i < n; i++) {
       const at = 4 * i;
-      data[at + 3] = (this.#sum[i] ?? 0) / area;
       const p = this.#present[i] ?? 0;
       if (p <= 0.002) {
         // No firefly here: R = -1 says so.
         data[at] = -1;
         data[at + 1] = 0.5;
         data[at + 2] = 0;
+        halo[i] = 0;
         continue;
       }
-      const e = p * flash((this.#phase[i] ?? 0) * span) * (1 - (this.#hush[i] ?? 0));
+      const a = mark * (this.#member[i] ?? 0);
+      const bright = (this.#bright[i] ?? 1) + (MARK_BRIGHT - (this.#bright[i] ?? 1)) * a;
+      const e = p * bright * flash((this.#phase[i] ?? 0) * span) * (1 - (this.#hush[i] ?? 0));
       let ox = (this.#jitterX[i] ?? 0.5) + wander * Math.sin(clock * (this.#wanderSpeed[2 * i] ?? 0) + (this.#wanderPhase[2 * i] ?? 0));
       let oy = (this.#jitterY[i] ?? 0.5) + wander * 0.7 * Math.sin(clock * (this.#wanderSpeed[2 * i + 1] ?? 0) + (this.#wanderPhase[2 * i + 1] ?? 0));
       if (this.#breeze) {
         const u = (x0 + ((i % cols) + 0.5) * FIREFLIES_CELL - this.#breezeFront) / BREEZE_WIDTH;
         ox += this.#breezeDir * BREEZE_SWAY * Math.exp(-u * u);
       }
-      const a = mark * (this.#member[i] ?? 0);
       if (a > 0) {
         ox += ((this.#snapX[i] ?? 0.5) - ox) * a * MARK_GATHER;
         oy += ((this.#snapY[i] ?? 0.5) - oy) * a * MARK_GATHER;
@@ -1099,21 +1152,28 @@ class FirefliesSim implements SceneSim {
       // A firefly drawing the M is marked by its place's sign (the place is never 0).
       data[at + 1] = (a > 0.5 ? -1 : 1) * Math.min(0.94, Math.max(0.06, oy));
       data[at + 2] = e;
+      halo[i] = e;
     }
+    // The soft halo: each firefly's light spread over the 3×3 cells around it (the shader's linear
+    // filtering rounds it off), so bright fireflies and dense crowns glow from within.
+    this.#box(halo, this.#haloSum, 1);
+    for (let i = 0; i < n; i++) data[4 * i + 3] = (this.#haloSum[i] ?? 0) / 9;
   }
 
-  /** The foreground fireflies, the lantern and the bank, for uSim2. */
+  /** The lights nearer than the bank, the lantern and the bank, for uSim2. */
   #packState(knobs: Knobs): void {
     const state = this.#state;
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
     const clock = this.#clock;
+    const drifters = Math.round(FIREFLIES_DRIFTERS * Math.min(1, knobs.density * DRIFT_DENSITY));
     for (let j = 0; j < FIREFLIES_NEAR; j++) {
+      const drifter = j < FIREFLIES_DRIFTERS;
       const wanderX = Math.sin(clock * (this.#nearWander[j * 6 + 3] ?? 0) + (this.#nearWander[j * 6] ?? 0));
       const wanderY = Math.sin(clock * (this.#nearWander[j * 6 + 4] ?? 0) + (this.#nearWander[j * 6 + 1] ?? 0));
       const wanderZ = Math.sin(clock * (this.#nearWander[j * 6 + 5] ?? 0) + (this.#nearWander[j * 6 + 2] ?? 0));
-      const z = (this.#nearAnchorZ[j] ?? 6) * (1 + NEAR_WANDER_Z * wanderZ);
-      const height = (this.#nearAnchorY[j] ?? 1) + NEAR_WANDER_Y * wanderY;
-      const x = (this.#nearAnchorX[j] ?? 0) * this.#aspect + (NEAR_WANDER_X * FIREFLIES_FOCAL * wanderX) / z;
+      const z = (this.#nearAnchorZ[j] ?? 6) * (1 + (drifter ? DRIFT_WANDER_Z : BOKEH_WANDER_Z) * wanderZ);
+      const height = (this.#nearAnchorY[j] ?? 1) + (drifter ? DRIFT_WANDER_Y : BOKEH_WANDER_Y) * wanderY;
+      const x = (this.#nearAnchorX[j] ?? 0) * this.#aspect + ((drifter ? DRIFT_WANDER_X : BOKEH_WANDER_X) * FIREFLIES_FOCAL * wanderX) / z;
       const y = FIREFLIES_HORIZON + ((height - FIREFLIES_EYE) * FIREFLIES_FOCAL) / z;
       this.#nearX[j] = x;
       this.#nearY[j] = y;
@@ -1121,7 +1181,8 @@ class FirefliesSim implements SceneSim {
       const hush = this.#lanternShown * (1 - smoothstep(LANTERN_HUSH * 0.4, LANTERN_HUSH, d)) * 0.9;
       state[4 * j] = x;
       state[4 * j + 1] = y;
-      state[4 * j + 2] = z;
+      // A drifter the density leaves out is marked by a negative distance.
+      state[4 * j + 2] = drifter && j >= drifters ? -z : z;
       state[4 * j + 3] = flash((this.#nearPhase[j] ?? 0) * span) * (1 - hush);
     }
     let at = 4 * FIREFLIES_STATE_LANTERN;

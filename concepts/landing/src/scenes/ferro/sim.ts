@@ -29,10 +29,11 @@ export const FERRO_STATE_HEAD = 3;
 /** The cameras, shared with the shader so the pointer lands on the dish where it is drawn. */
 export const FERRO_VIEW = {
   /** Three-quarter: elevation over the dish (radians), distance to the aim point, the aim point.
-   * The near lip of the dish just touches the bottom of a wide frame. */
-  elevation: 0.5236,
-  distance: 3.5,
-  target: [0, 0, 0.1],
+   * Close and low, so the crown spans about half a wide frame and its back row stands against
+   * the softbox mirrored in the far dish; the near lip of the dish just touches the frame's bottom. */
+  elevation: 0.4189,
+  distance: 2.65,
+  target: [0, -0.22, 0.12],
   /** tan of half the vertical field of view: a long lens, so the lattice stays regular. */
   tanHalfFov: 0.2309,
   /** Frames narrower than this aspect pull the camera back so the dish keeps its width. */
@@ -70,16 +71,16 @@ export function ferroBase(phi: number): number {
 const MAX_DT = 0.1;
 const STEP = 1 / 60;
 /** A pool of size 1: blob radius, and how far the ring of blobs sits from the middle one (its edge
- * then lies at about 0.59, leaving a ring of smooth mirror round the crown). */
-const BLOB_RADIUS = 0.66;
-const RING_REACH = 0.45;
+ * then lies at about 0.68, leaving a ring of smooth mirror round the crown). */
+const BLOB_RADIUS = 0.76;
+const RING_REACH = 0.52;
 /** A strong field draws the ring in by up to this share: the pool tightens and heaps. */
 const PULL_IN = 0.25;
 /** While the M stands the pool spreads to at least this (dish units), to carry every magnet. */
 const MARK_BLOB_RADIUS = 0.98;
 const MARK_RING_REACH = 0.58;
 /** The magnet's depth under the fluid as a share of the pool's size: how wide its field spreads. */
-const MAGNET_DEPTH = 0.46;
+const MAGNET_DEPTH = 0.56;
 /** Field (1 at full strength over the magnet) where spikes appear, how their height grows past it
  * (a power of the excess: they jump up just past the threshold, then grow slowly), and its cap. */
 const THRESHOLD = 0.35;
@@ -88,7 +89,7 @@ const EXCESS_CAP = 1.6;
 /** Between breaths the field rests at this share of its peak: a heaped pool, below the threshold. */
 const BREATH_FLOOR = 0.28;
 /** Seconds per breath at the middle speed; the scene opens near the top of a rise. */
-const BREATH_SECONDS = 24;
+const BREATH_SECONDS = 30;
 const START_PHASE = 0.36;
 /** Holding the button presses the magnet closer: the field grows by this share. */
 const PRESS_BOOST = 0.45;
@@ -109,8 +110,8 @@ const MAGNET_OMEGA = 5.5;
  * tallest. */
 const MARK_HEIGHT = 0.9;
 const MARK_SPACING = 0.8;
-const MARK_CORE = 0.3;
-const MARK_FADE = 0.6;
+const MARK_CORE = 0.36;
+const MARK_FADE = 0.7;
 const MARK_LIFT = 1;
 /** "now": an M episode's rise, hold and fall (seconds). */
 const EPISODE_RISE = 2.5;
@@ -404,10 +405,10 @@ class FerroSim implements SceneSim {
     const originY = lerp(this.#magnet.y, 0, mark);
     const blobRadius = this.#blobRadius(settings.size, mark);
     const scale = markScale(markSpacing);
-    const { phiMax, ampMax } = this.#spikes(settings, dt, field, mark, spacing, scale, blobRadius);
+    const { phiMax, ampMax, reach } = this.#spikes(settings, dt, field, mark, spacing, scale, blobRadius);
     this.#primed = true;
 
-    this.#writeState(originX, originY, spacing, mark, blobRadius, scale, ferroBase(phiMax * 1.03) + Math.max(ampMax, 0) * 1.05 + 0.005);
+    this.#writeState(originX, originY, spacing, mark, blobRadius, scale, reach, ferroBase(phiMax * 1.03) + Math.max(ampMax, 0) * 1.05 + 0.005);
     this.#field.upload(this.#fieldData);
     this.#state.upload(this.#stateData);
     return [this.#field.texture, this.#state.texture];
@@ -421,7 +422,7 @@ class FerroSim implements SceneSim {
   #read(frame: SimFrame): Settings {
     const knobs = this.#knobs;
     const mark = knobs.value(frame, "mark");
-    const spacing = 0.075 + 0.07 * knobs.value(frame, "spacing");
+    const spacing = 0.085 + 0.07 * knobs.value(frame, "spacing");
     const speed = knobs.amount(frame, "breath");
     return {
       peak: 0.55 + 1.1 * knobs.value(frame, "strength"),
@@ -495,7 +496,7 @@ class FerroSim implements SceneSim {
       y: settings.drift * 0.13 * Math.sin(0.083 * c + w2),
     };
     // The pool keeps clear of the dish's wall.
-    const target = softClamp(aim.x, aim.y, Math.max(0.05, 0.92 - 0.66 * settings.size));
+    const target = softClamp(aim.x, aim.y, Math.max(0.05, 0.92 - 0.7 * settings.size));
 
     const reach = RING_REACH * settings.size * (1 - PULL_IN * pull);
     const ringReach = lerp(reach, Math.max(reach, MARK_RING_REACH), mark);
@@ -531,10 +532,10 @@ class FerroSim implements SceneSim {
 
   /**
    * Every texel: the pool's field φ, the spike height the magnet (or the M) calls for there, the
-   * spring carrying the height toward it, and the lean. Returns the largest φ and height, for the
-   * shader's bound on the surface.
+   * spring carrying the height toward it, and the lean. Returns the largest φ and height, and how
+   * far the fluid reaches from the middle blob: the shader's bounds on the surface.
    */
-  #spikes(settings: Settings, dt: number, field: number, mark: number, spacing: number, scale: number, blobRadius: number): { phiMax: number; ampMax: number } {
+  #spikes(settings: Settings, dt: number, field: number, mark: number, spacing: number, scale: number, blobRadius: number): { phiMax: number; ampMax: number; reach: number } {
     const n = FERRO_GRID;
     const texel = (2 * FERRO_SPAN) / n;
     const blobs = this.#blobs;
@@ -570,6 +571,9 @@ class FerroSim implements SceneSim {
     const data = this.#fieldData;
     let phiMax = 0;
     let ampMax = 0;
+    let reach2 = 0;
+    const cx = blobs[0]?.x ?? 0;
+    const cy = blobs[0]?.y ?? 0;
 
     for (let j = 0; j < n; j++) {
       const y = -FERRO_SPAN + (j + 0.5) * texel;
@@ -639,26 +643,23 @@ class FerroSim implements SceneSim {
         data[o + 3] = phi;
         if (phi > phiMax) phiMax = phi;
         if (a > ampMax) ampMax = a;
+        if (phi > 1) reach2 = Math.max(reach2, (x - cx) * (x - cx) + (y - cy) * (y - cy));
       }
     }
-    return { phiMax, ampMax };
+    // The analytic edge lies within a texel of the last texel inside it.
+    return { phiMax, ampMax, reach: Math.sqrt(reach2) + 1.5 * texel };
   }
 
-  #writeState(originX: number, originY: number, spacing: number, mark: number, blobRadius: number, scale: number, top: number): void {
+  #writeState(originX: number, originY: number, spacing: number, mark: number, blobRadius: number, scale: number, reach: number, top: number): void {
     const data = this.#stateData;
     const blobs = this.#blobs;
-    const middle = blobs[0];
-    const cx = middle?.x ?? 0;
-    const cy = middle?.y ?? 0;
-    let reach = 0;
-    for (const blob of blobs) reach = Math.max(reach, Math.hypot(blob.x - cx, blob.y - cy) + blobRadius);
     data[0] = originX;
     data[1] = originY;
     data[2] = spacing;
     data[3] = mark;
-    data[4] = cx;
-    data[5] = cy;
-    data[6] = reach + 0.01;
+    data[4] = blobs[0]?.x ?? 0;
+    data[5] = blobs[0]?.y ?? 0;
+    data[6] = reach;
     data[7] = top;
     data[8] = scale;
     data[9] = 0;

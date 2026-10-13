@@ -52,10 +52,7 @@ const float FERRO_TOP_FIT = ${glslFloat(FERRO_VIEW.topFit)};
 const float FERRO_DISH = 1.0;                          // the dish floor's radius
 const float FERRO_LIP = 0.05;                          // width of its rounded, polished lip
 const float FERRO_F0 = 0.045;                          // the fluid's reflectance head on: an oily, opaque black
-const vec3 FERRO_BODY = vec3(0.004, 0.0035, 0.003);   // what little the fluid shows of itself
 const vec3 FERRO_STUDIO = vec3(1.0, 0.98, 0.95);      // the white lights
-const vec3 FERRO_ANODISED = vec3(0.034, 0.036, 0.042); // the dish
-const vec3 FERRO_TABLE = vec3(0.011, 0.011, 0.013);   // the black table under it
 
 // The state the sim hands over, loaded once per pixel.
 vec2 ferroOrigin;
@@ -235,9 +232,11 @@ float ferroTrace(vec3 ro, vec3 rd, float tFloor) {
 
   float ta = t0;
   float tb = -1.0;
-  // Over the pool a ray crosses about a dozen cells at the default spacing; 22 covers the finest
-  // spacing on the longest, most grazing rays. Each cell costs two height samples.
-  for (int k = 0; k < 22; k++) {
+  bool left = false;
+  // Over the pool a ray crosses about a dozen cells at the default spacing. A ray running straight
+  // away from the camera between two lattice columns zig-zags through a cell every half spacing, so
+  // the finest spacing on the longest rays needs about 30. Each cell costs two height samples.
+  for (int k = 0; k < 32; k++) {
     vec2 vertex = ferroVertex(ij);
     vec2 rel = ro.xy - vertex;
     float te = 1e9;
@@ -263,8 +262,24 @@ float ferroTrace(vec3 ro, vec3 rd, float tFloor) {
       break;
     }
     ta = te;
-    if (te >= t1) break;
+    if (te >= t1) {
+      left = true;
+      break;
+    }
     ij += next;
+  }
+  // Out of cells before the ray left the pool (finest spacing, most grazing rays): finish the walk
+  // in plain steps rather than let the dish show through.
+  if (tb < 0.0 && !left) {
+    float stride = (t1 - ta) / 10.0;
+    for (int k = 0; k < 10; k++) {
+      float t = ta + stride;
+      if (ferroGap(ro, rd, t) < 0.0) {
+        tb = t;
+        break;
+      }
+      ta = t;
+    }
   }
   if (tb < 0.0) return -1.0;
   for (int k = 0; k < 6; k++) {
@@ -287,59 +302,70 @@ float ferroPanel(vec2 ae, vec2 centre, vec2 size, float soft) {
 }
 
 // The studio, seen along r (z up, +y behind the dish as the three-quarter camera sees it, +x to its
-// right): a wide softbox behind the dish, brightest toward its top; a tall strip either side, a
-// little behind, where the steep front flanks of the spikes mirror them in long lines (bright, as
-// those flanks are seen nearly head on and so reflect little); the right strip gelled, its light
-// returned in 'gel' to be tinted; a ring light straight overhead; a faint card behind the camera.
-// aa is how far r swings across one cell: edges soften by it and the thin ring dims as it widens,
-// so reflections squeezed onto the spikes settle to their average instead of crawling.
-vec3 ferroStudio(vec3 r, float aa, out float gel) {
+// right), lit for the view. Three-quarter: a narrow strip softbox far behind, sized so its mirror
+// image in the black dish lies just behind the crown, where the back row of spikes stands against
+// it as black cones. Above: a broad softbox behind, and a ring light overhead, mirrored as a ring in
+// the pool. Both: a tall strip either side, a little behind, mirrored in long lines down the steep
+// front flanks of the spikes (bright, as those flanks are seen nearly head on and reflect little);
+// the right one gelled, its light returned in 'gel' to be tinted. 'steep' (0..1) weighs the strips,
+// so the caller can keep them off gentle slopes. aa is how far r swings across one cell: edges
+// soften by it and the thin ring dims as it widens, so squeezed reflections settle to their average
+// instead of crawling. Everything else is black.
+vec3 ferroStudio(vec3 r, float aa, float steep, out float gel) {
+  bool above = K_view < 0.5;
   float el = asin(clamp(r.z, -1.0, 1.0));
   float az = atan(r.x, r.y);
   vec2 ae = vec2(az, el);
-  float soft = 0.015 + aa;
-  float back = ferroPanel(ae, vec2(0.0, 0.36), vec2(0.56, 0.26), soft) * (0.7 + 0.5 * smoothstep(0.12, 0.6, el));
-  float side = ferroPanel(ae, vec2(-1.75, 0.38), vec2(0.4, 0.42), soft);
-  gel = 22.0 * ferroPanel(ae, vec2(1.75, 0.38), vec2(0.4, 0.42), soft);
-  float card = ferroPanel(vec2(3.14159 - abs(az), el), vec2(0.0, 0.5), vec2(0.7, 0.3), soft + 0.1);
-  float band = 0.012;
-  float ring = (1.0 - smoothstep(band, band + soft, abs(acos(clamp(r.z, -1.0, 1.0)) - 0.103))) * band / (band + aa);
-  vec3 room = vec3(0.016, 0.017, 0.02) * smoothstep(-0.15, 0.7, r.z);
-  return room + FERRO_STUDIO * (9.0 * back + 28.0 * side + 1.2 * card + 26.0 * ring);
+  float soft = 0.005 + aa;
+  float back = above
+    ? 12.0 * ferroPanel(ae, vec2(0.0, 0.36), vec2(0.56, 0.26), soft)
+    : 20.0 * ferroPanel(ae, vec2(0.0, 0.335), vec2(0.42, 0.035), soft);
+  float side = 28.0 * steep * ferroPanel(ae, vec2(-1.75, 0.5), vec2(0.4, 0.36), soft);
+  gel = 22.0 * steep * ferroPanel(ae, vec2(1.75, 0.5), vec2(0.4, 0.36), soft);
+  float ring = 0.0;
+  if (above) {
+    float band = 0.012;
+    ring = 26.0 * (1.0 - smoothstep(band, band + soft, abs(acos(clamp(r.z, -1.0, 1.0)) - 0.103))) * band / (band + aa);
+  }
+  return FERRO_STUDIO * (back + side + ring);
 }
 
-// Everything that is not fluid: the dish (dark anodised, a soft pool of light under the lamps, a
-// low gloss, the pool's contact shadow), its polished lip catching the studio (white behind and to
-// the left, the gel on the right), and the black table beyond, fading out. gelLit: how much of the
-// gel light it returns.
+// Everything that is not fluid: the dish (black glass, a sharp mirror of the studio, darkened round
+// the pool's foot by its contact shadow), its polished lip catching the studio (white behind and to
+// the left, the gel on the right), and the matte black table beyond, but for a satin glow of the
+// softbox just behind the dish, the soft ground the tallest spikes stand against before it falls to
+// black. gelLit: how much of the gel light it returns.
 vec3 ferroFloor(vec3 pos, vec3 rd, float aa, float px, float lights, vec3 gel, out float gelLit) {
   float rr = length(pos.xy);
-  float glossGel;
-  vec3 gloss = ferroStudio(reflect(rd, vec3(0.0, 0.0, 1.0)), 0.3, glossGel);
-  float fres = 0.03 + 0.5 * pow(1.0 - abs(rd.z), 5.0);
+  vec3 mirrored = reflect(rd, vec3(0.0, 0.0, 1.0));
+  float fres = 0.04 + 0.96 * pow(1.0 - abs(rd.z), 5.0);
   float shadow = smoothstep(0.1, 0.95, textureLod(uSim0, ferroTexCoord(pos.xy), 0.0).a);
 
-  float dishGel = 0.12 * fres * lights * glossGel * (1.0 - 0.8 * shadow);
-  vec3 dish = FERRO_ANODISED * (0.5 + 1.5 * exp(-1.6 * rr * rr)) * (1.0 - 0.45 * smoothstep(0.9, FERRO_DISH, rr));
-  dish = (dish + 0.12 * fres * lights * gloss) * (1.0 - 0.8 * shadow) + dishGel * gel;
+  float dishGel;
+  vec3 dish = ferroStudio(mirrored, aa, 1.0, dishGel);
+  float glass = 0.9 * fres * lights * (1.0 - 0.9 * shadow);
+  dishGel *= glass;
+  dish = glass * dish + dishGel * gel;
 
   // The lip, from its inner side over the top to its outer side.
   float w = (rr - FERRO_DISH) / FERRO_LIP;
   float bend = (clamp(w, 0.0, 1.0) - 0.5) * 2.6;
   vec3 nl = vec3(pos.xy / max(rr, 1e-4) * sin(bend), cos(bend));
   float lipGel;
-  vec3 lipLight = ferroStudio(reflect(rd, nl), aa + 0.05, lipGel);
+  vec3 lip = ferroStudio(reflect(rd, nl), aa + 0.05, 1.0, lipGel);
   lipGel *= 0.25 * lights;
-  vec3 lip = 0.012 + 0.25 * lights * lipLight + lipGel * gel;
+  lip = 0.25 * lights * lip + lipGel * gel;
 
-  // The table falls to black within a dish's radius, so no sparse dither dots spread over the frame.
-  vec3 table = FERRO_TABLE + 0.03 * fres * lights * (gloss + glossGel * gel);
-  table *= exp(-1.2 * (rr - FERRO_DISH) * (rr - FERRO_DISH));
+  float tableGel;
+  vec3 table = ferroStudio(mirrored, 0.08, 1.0, tableGel);
+  float satin = 0.2 * fres * lights * exp(-5.0 * (rr - FERRO_DISH) * (rr - FERRO_DISH)) * (1.0 - smoothstep(0.35, 0.8, abs(pos.x)));
+  tableGel *= satin;
+  table = satin * table + tableGel * gel;
 
   float edge = px / FERRO_LIP;
   float onLip = smoothstep(-edge, edge, w) * (1.0 - smoothstep(1.0 - edge, 1.0 + edge, w));
   float beyond = smoothstep(1.0 - edge, 1.0 + edge, w);
-  gelLit = mix(dishGel * (1.0 - beyond), lipGel, onLip);
+  gelLit = mix(mix(dishGel, tableGel, beyond), lipGel, onLip);
   return mix(mix(dish, table, beyond), lip, onLip);
 }
 
@@ -348,12 +374,13 @@ Shade sceneFerro(vec2 uv, vec2 cell, float t) {
   ferroLoad();
   float aspect = uRes.x / uRes.y;
   vec2 s = vec2((uv.x - 0.5) * aspect, uv.y - 0.5) * 2.0;
+  bool above = K_view < 0.5;
 
   vec3 rd;
   vec3 pos;
   float px;      // one cell's width in dish units, at the surface seen
   bool fluid;
-  if (K_view < 0.5) {
+  if (above) {
     // Above: an orthographic picture of the dish, with the mirrored directions of an eye overhead.
     float k = FERRO_TOP_HALF * max(1.0, FERRO_TOP_FIT / aspect);
     vec2 p = s * k;
@@ -388,20 +415,30 @@ Shade sceneFerro(vec2 uv, vec2 cell, float t) {
     float low = 1.0 - (spikes.y > 1e-4 ? clamp(spikes.x / spikes.y, 0.0, 1.0) : 1.0);
     float horizon = atan(max(spikes.y, 0.0) * low * low, 1.5 * ferroSpacing);
     float open = mix(0.45, 1.0, smoothstep(horizon - 0.35, horizon + 0.1, asin(clamp(r.z, -1.0, 1.0))));
+    // Three-quarter, the side strips draw only on steep slopes (flanks steeper than about 45°): lines
+    // down the spikes and a thin crescent at the pool's edge, never patches on the gentle feet and
+    // valleys round the crown's rim. Above, those gentle feet are what catches the light.
+    float steep = above ? 1.0 : 1.0 - smoothstep(0.5, 0.72, n.z);
     float gelPart;
-    vec3 studio = ferroStudio(r, aa, gelPart);
+    vec3 studio = ferroStudio(r, aa, steep, gelPart);
     float lit = fres * open * lights;
-    col = FERRO_BODY + lit * (studio + gelPart * gel);
+    col = lit * (studio + gelPart * gel);
     gelLit = lit * gelPart;
   } else {
     col = ferroFloor(pos, rd, aa, px, lights, gel, gelLit);
   }
   col = 1.0 - exp(-col);
+  // A mirror under the dither: the dim tail falls to true black and the highlights to white, so the
+  // picture is a few bold shapes on black rather than a field of grey dither. Above, where most
+  // spikes are seen end on, a lower black point keeps the faint rings that draw the lattice.
+  float lum = dot(col, LUMA);
+  float shaped = smoothstep(above ? 0.012 : 0.04, above ? 0.85 : 0.9, lum);
+  col = min(col * (shaped / max(lum, 1e-4)), 1.0);
 
   o.rgb = col;
   o.source = col;
-  o.ink = clamp(dot(col, LUMA) * 1.15, 0.0, 1.0);
-  o.accent = 1.0 - exp(-1.5 * gelLit);
+  o.ink = shaped;
+  o.accent = smoothstep(0.04, 0.9, 1.0 - exp(-1.5 * gelLit));
   // While the M stands, its spikes carry the accent too: the landmark in the two-tone palette.
   if (fluid && ferroMark > 0.01) {
     float d = markDistance(pos.xy / ferroMarkScale) * ferroMarkScale;
