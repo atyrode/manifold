@@ -51,16 +51,16 @@ const extra = (options: Extra) => ({
   ...(options.steady === undefined ? {} : { steady: options.steady }),
 });
 
-const range = (group: string, key: string, label: string, value: number, help: string, options: Extra & { min?: number; max?: number; step?: number } = {}): ParamDef => ({
+export const range = (group: string, key: string, label: string, value: number, help: string, options: Extra & { min?: number; max?: number; step?: number } = {}): ParamDef => ({
   kind: "range", group, key, label, value, help,
   min: options.min ?? 0, max: options.max ?? 1, step: options.step ?? 0.05, ...extra(options),
 });
 
-const toggle = (group: string, key: string, label: string, on: boolean, help: string, options: Extra = {}): ParamDef => ({
+export const toggle = (group: string, key: string, label: string, on: boolean, help: string, options: Extra = {}): ParamDef => ({
   kind: "toggle", group, key, label, value: on ? 1 : 0, help, ...extra(options),
 });
 
-const feature = (
+export const feature = (
   group: string, key: string, label: string, on: boolean, amountLabel: string, value: number, help: string,
   options: Extra & { min?: number; max?: number; step?: number; options?: readonly Option[] } = {},
 ): ParamDef => ({
@@ -73,15 +73,15 @@ const feature = (
   ...extra(options),
 });
 
-const choice = (group: string, key: string, label: string, options: readonly Option[], value: number, help: string, more: Extra = {}): ParamDef => ({
+export const choice = (group: string, key: string, label: string, options: readonly Option[], value: number, help: string, more: Extra = {}): ParamDef => ({
   kind: "choice", group, key, label, options, value, help, ...extra(more),
 });
 
-const seed = (group: string, key: string, label: string, help: string, more: Extra = {}): ParamDef => ({
+export const seed = (group: string, key: string, label: string, help: string, more: Extra = {}): ParamDef => ({
   kind: "seed", group, key, label, value: 0, help, ...extra(more),
 });
 
-const counts = (...values: number[]): Option[] => values.map((value) => ({ label: String(value), value }));
+export const counts = (...values: number[]): Option[] => values.map((value) => ({ label: String(value), value }));
 
 export const sceneParams: Record<SceneId, readonly ParamDef[]> = {
   wave: [
