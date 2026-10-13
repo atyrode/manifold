@@ -143,9 +143,18 @@ async function engageTerminal(browser: Browser, occupantReady: () => boolean): P
   );
 }
 
+/** Opens the rail and unfolds Machines, which a device that never opened it sees folded. */
 async function openSidebar(browser: Browser): Promise<void> {
   if (await visible(browser, 'button[aria-label="Expand sidebar"]'))
     await click(browser, 'button[aria-label="Expand sidebar"]');
+  const machinesHeader = '[data-testid="machines-section"] > .sidebar-section-header';
+  await waitFor(() => visible(browser, machinesHeader), 10_000, 50);
+  if (
+    await browser.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(machinesHeader)})?.getAttribute('aria-expanded') === 'false'`,
+    )
+  )
+    await click(browser, machinesHeader);
   await waitFor(() => visible(browser, '[data-testid="machines-rail"]'), 10_000, 50);
 }
 
