@@ -8,9 +8,14 @@ Run `manifold context` for the installed client's current operating instructions
 values or read another principal's credentials. A missing executable is an installation
 problem, not proof that core terminal access is unavailable.
 
-Ordinary terminal-local access uses the process's existing terminal-lifecycle identity;
-external Agent/Run automation uses `manifold-action-runner` and its delivered policy instead.
-Do not create a Run or request a human credential to replace a valid terminal binding.
+An ordinary terminal's own binding can inspect and control its existing terminal, but it cannot
+start a shell on another machine: `manifold ssh` and `manifold exec` refuse with
+`shell_spawn_not_delegated`. Remote commands need a finite shell-automation credential that a
+human mints for one exact machine under **Sessions → Delegate shell automation**
+(`docs/ENROLL.md`, "Delegate ordinary shell automation"). When you get that refusal, ask the
+human for that delegation; never borrow another credential, use an owner key or register a Run
+to get around it. External Agent/Run automation uses `manifold-action-runner` and its delivered
+policy instead.
 
 Use `manifold machines` to select an explicitly authorized, online target by ID or exact name.
 Run ordinary remote commands with `manifold ssh <target> <command...>`, as you would with ssh:
@@ -23,6 +28,8 @@ programs reached through WSL (`powershell.exe`, `cmd.exe`) need: do not add `-t`
 workarounds for them. Use `-t` only for a program that really needs a terminal; its stdout and
 stderr are then merged raw terminal bytes, no stdin is forwarded, and it starts with SIGINT and
 SIGQUIT ignored.
+To avoid quoting a command twice (once locally, once by the remote `/bin/sh -c`), send the
+script on stdin instead: `manifold ssh <target> sh -s <<'EOF'` … `EOF`.
 
 Exit status 255 with one `manifold: <code>: <message>` line on stderr is a Manifold-side
 failure (refusal, timeout, output bound, lost connection, unknown completion, unconfirmed
