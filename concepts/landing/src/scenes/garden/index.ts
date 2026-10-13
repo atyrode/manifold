@@ -6,7 +6,7 @@ import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { gardenGlsl } from "./shader.ts";
-import { gardenPatterns, gardenSeasons, gardenSim } from "./sim.ts";
+import { GARDEN_PAPER, gardenPatterns, gardenSeasons, gardenSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("garden", "pattern", "raked pattern", gardenPatterns.map((label, value) => ({ label, value })), 0, "Waves: parallel lines meandering across the garden like a slow current, five rings round each island. Straight: the still-water lines of the classic gardens, rings round the islands. Circles: rings spreading out from every stone until they meet the next stone's. The garden is laid out afresh; the rake then keeps it."),
@@ -15,7 +15,7 @@ const params: readonly ParamDef[] = [
   range("garden", "moss", "moss", 0.6, "Moss cushions round the stones: none leaves bare stones in smooth gravel; full gives deep green collars, creeping up the stones' feet."),
   seed("garden", "stones", "stones", "Another arrangement of the stone islands; the garden is raked afresh round them."),
   choice("maple", "season", "season", gardenSeasons.map((label, value) => ({ label, value })), 2, "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, snow on the stones, the moss and the wall; turn on snow (Weather) to have it falling."),
-  range("maple", "leaves", "leaf fall", 0.45, "How often a leaf lets go. Light ones flutter, swinging from side to side and gliding up at the end of each swing; heavier ones tumble end over end. They lie on the gravel a while, then fade or are raked away. Now: a gust shakes a shower loose and blows lying leaves along the gravel.", { trigger: 0 }),
+  range("maple", "leaves", "leaf fall", 0.5, "How often a leaf lets go. Light ones flutter, swinging from side to side and gliding up at the end of each swing; heavier ones tumble end over end. They lie on the gravel a while, then fade or are raked away. Now: a gust shakes a shower loose and blows lying leaves along the gravel.", { trigger: 0 }),
   range("maple", "dapple", "dappled shade", 0.6, "The maple's shadow on the gravel, pierced by round flecks of sun; it shows when the sun stands high enough to throw it into the garden."),
   choice("view", "camera", "view", [{ label: "veranda", value: 0 }, { label: "above", value: 1 }], 0, "Sit on the temple veranda looking across the garden to its earthen wall, or look straight down on it like a plan. Drag on the gravel to rake your own lines.", { steady: true }),
   // 0.735: golden hour, the sun low on the left behind the wall, raking across the grooves.
@@ -43,11 +43,11 @@ export const gardenScene: SceneDef = {
   glsl: gardenGlsl,
   entry: "sceneGarden",
   sim: gardenSim(params),
-  // Daylight on white gravel is bright: the page copy goes dark on it, from about 12 degrees of sun
-  // until it sinks back there, on a still clock. The shader repeats this test for its ink.
+  // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
+  // just after sunrise to just before sunset, on a still clock. The shader repeats this test.
   theme: (values) => {
     const time = values.time ?? 0.735;
     const cycling = (values.cycle ?? 0) > 0.5;
-    return !cycling && time > 0.33 && time < 0.67 ? "paper" : "night";
+    return !cycling && time > GARDEN_PAPER.from && time < GARDEN_PAPER.to ? "paper" : "night";
   },
 };

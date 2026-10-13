@@ -8,7 +8,7 @@
 // the stones are marched as height fields inside their islands' bounding cylinders, the gravel is
 // the plane with the raked height field for its normals. A low sun rakes across the grooves: the
 // flanks turned to it catch the light, the others fall into the sky's cool shade.
-import { GARDEN, GARDEN_CANOPY, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_STONES } from "./sim.ts";
+import { GARDEN, GARDEN_CANOPY, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_PAPER, GARDEN_STONES } from "./sim.ts";
 
 const glsl = (value: number): string => value.toFixed(4);
 
@@ -42,7 +42,7 @@ function mapleLow(above: boolean): number {
   let low = Infinity;
   for (const [, y, z, r] of [...GARDEN_CANOPY, ...LIMBS.flat()]) {
     const { v, s } = place(y, z);
-    low = Math.min(low, v - 1.35 * r * s);
+    low = Math.min(low, v - 1.55 * r * s);
   }
   return low - 0.04;
 }
@@ -62,6 +62,8 @@ const float GARDEN_EYE_Y = ${glsl(GARDEN.eyeY)};
 const float GARDEN_SPAN = ${glsl(GARDEN.span)};
 const float GARDEN_HIGH = ${glsl(GARDEN.overheadHeight)};
 const float GARDEN_ABOVE_Y = ${glsl(GARDEN.overheadY)};
+// While the sun is up (on a still clock) the white gravel is a light page: ink goes dark (index.ts).
+const vec2 GARDEN_PAPER = vec2(${glsl(GARDEN_PAPER.from)}, ${glsl(GARDEN_PAPER.to)});
 const vec2 GARDEN_MARK_AT = vec2(${glsl(GARDEN_MARK.x)}, ${glsl(GARDEN_MARK.y)});
 const vec2 GARDEN_MARK_SIZE = vec2(${glsl(GARDEN_MARK.small)}, ${glsl(GARDEN_MARK.grow)});
 const float GARDEN_MARK_STROKE = ${glsl(GARDEN_MARK.stroke)};
@@ -76,7 +78,7 @@ const int GARDEN_PETAL = ${GARDEN_LEAF_KIND.petal};
 const int GARDEN_GREEN = ${GARDEN_LEAF_KIND.green};
 const int GARDEN_WITHERED = ${GARDEN_LEAF_KIND.withered};
 // The largest leaf radius the sim draws, with room for its edge: rays farther off skip a leaf.
-const float GARDEN_LEAF_REACH = 0.016;
+const float GARDEN_LEAF_REACH = 0.018;
 const int GARDEN_CLUMP_COUNT = ${GARDEN_CANOPY.length};
 const vec4 GARDEN_CLUMPS[${GARDEN_CANOPY.length}] = vec4[${GARDEN_CANOPY.length}](
   ${vec4s(GARDEN_CANOPY)}
@@ -97,7 +99,8 @@ float gardenGravel(vec2 p) {
   return texture(uSim0, vec2(p.x / GARDEN_ASPECT, p.y)).r;
 }
 
-// A stone's height at p: a rounded dome on a wobbly footprint, steep-sided (sim.ts stoneHeight).
+// A stone's height at p (sim.ts stoneHeight): a steep-sided dome on a wobbly footprint, cut by a
+// tilted top plane and three steep side planes, so it stands as a weathered block with flat faces.
 // a = (centre relative to the garden's centre, half-axes), b = (height, turn, shape seed, 0).
 float gardenStone(vec2 p, vec4 a, vec4 b) {
   if (b.x <= 0.0) return 0.0;
@@ -109,7 +112,14 @@ float gardenStone(vec2 p, vec4 a, vec4 b) {
   vec2 q = vec2(c * d.x + s * d.y, c * d.y - s * d.x) / a.zw;
   float ang = atan(q.y, q.x);
   float r = length(q) / (1.0 + 0.1 * sin(3.0 * ang + TAU * b.z) + 0.06 * sin(5.0 * ang + 2.0 * TAU * b.z));
-  return r < 1.0 ? b.x * pow(1.0 - pow(r, 2.6), 0.45) : 0.0;
+  if (r >= 1.0) return 0.0;
+  float tilt = TAU * b.z * 3.1;
+  float h = min(1.25 * pow(1.0 - pow(r, 2.6), 0.45), 0.88 + 0.14 * dot(q, vec2(cos(tilt), sin(tilt))));
+  for (int k = 0; k < 3; k++) {
+    float fa = TAU * (b.z + float(k) / 3.0) + 0.4 * sin(17.0 * b.z + float(k));
+    h = min(h, 2.2 * (1.08 - dot(q, vec2(cos(fa), sin(fa)))));
+  }
+  return b.x * max(h, 0.0);
 }
 
 struct GardenIsland {
@@ -353,7 +363,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   bool above = K_camera > 0.5;
   float season = floor(K_season + 0.5);
   float winter = step(2.5, season);
-  bool paper = K_cycle <= 0.0 && K_time > 0.33 && K_time < 0.67;
+  bool paper = K_cycle <= 0.0 && K_time > GARDEN_PAPER.x && K_time < GARDEN_PAPER.y;
   float gust = gardenGust(sinceTrigger(0)) * (K_wind < -0.05 ? -1.0 : 1.0);
   float markSize = K_mark > 0.0 ? GARDEN_MARK_SIZE.x + GARDEN_MARK_SIZE.y * K_mark : 0.0;
   float clock = texelFetch(uSim1, ivec2(GARDEN_ISLAND_COUNT, 0), 0).x;
@@ -365,12 +375,16 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   vec3 key = moonlit ? sky.moon : sky.sun;
   vec3 L = normalize(vec3(key.x, key.z, max(key.y, 0.004)));
   vec3 sun = (moonlit ? sky.moonColor * 1.6 : sky.sunColor) * 0.95 / (0.3 + 0.7 * L.z);
-  vec3 fill = sky.ambient * 0.45;
+  // The sky's light: its colour greyed a little (the dusk sky's lilac would stain the white
+  // gravel), and fuller while the sun is low, when it is most of the light the garden gets.
+  vec3 fill = mix(vec3(dot(sky.ambient, LUMA)), sky.ambient, 0.6) * mix(1.25, 0.6, smoothstep(0.05, 0.5, sky.sun.y));
   // The bright sky low on the sun's side: a soft light that keeps the grooves legible at dusk.
   vec2 sunward = normalize(vec2(sky.sun.x, sky.sun.z) + vec2(1e-4, 0.0));
   vec3 glowDir = normalize(vec3(sunward * 0.93, 0.36));
   vec3 glow = skyColor(sky, normalize(vec3(sunward.x, 0.18, sunward.y))) * 0.26 * (1.0 - 0.6 * sky.night);
   vec3 snowWhite = vec3(0.9, 0.93, 0.98);
+  // Light thrown back off the pale gravel onto what stands on it: walls, stone faces, the boards.
+  vec3 bounce = vec3(0.86, 0.84, 0.8) * (sun * L.z + fill) * 0.45;
 
   // The ray, in garden space.
   vec3 ro;
@@ -531,47 +545,70 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   // ---- what the ray meets ----
   vec3 col;
   if (beyond) {
-    // Over the wall: the evening sky, and a band of far woods dark against it.
+    // Over the wall: the sky, and the woods of the temple grounds beyond, two rows of rounded
+    // crowns, dark green but lit by the sky, the farther row paler in the haze.
     vec3 dir = normalize(vec3(rd.x, rd.z, rd.y));
     col = skyColor(sky, dir) + skyStars(sky, dir, 0.85) * vec3(0.92, 0.94, 1.0) * 1.2;
+    vec3 haze = skyColor(sky, normalize(vec3(dir.x, 0.02, dir.z)));
     float capTop = GARDEN_HORIZON + GARDEN_FOCAL * (GARDEN_WALL_H + GARDEN_CAP_H - GARDEN_EYE_H) / (GARDEN_WALL_Y - GARDEN_EYE_Y);
     float x = uv.x * aspect;
-    float ridge = capTop + 0.018 + 0.035 * vnoise(vec2(x * 4.0, 1.3)) + 0.018 * vnoise(vec2(x * 13.0, 7.1)) + 0.007 * vnoise(vec2(x * 37.0, 3.3));
-    float woods = smoothstep(ridge + 0.0025, ridge - 0.0025, uv.y);
-    vec3 dark = vec3(0.02, 0.035, 0.03) + sky.ambient * 0.1 + glow * 0.2;
-    dark = mix(dark, mix(fill, snowWhite * 0.5, 0.4) * (0.5 + 0.5 * vnoise(vec2(x * 60.0, uv.y * 140.0))), 0.45 * winter);
-    col = mix(col, dark, woods);
+    float bumpsFar = 1.0 - pow(2.0 * fract(x * 6.0 + 0.4 * vnoise(vec2(x * 2.0, 4.0))) - 1.0, 2.0);
+    float bumpsNear = 1.0 - pow(2.0 * fract(x * 9.0 + 0.5 * vnoise(vec2(x * 3.0, 9.0))) - 1.0, 2.0);
+    float far = capTop + 0.05 + 0.03 * vnoise(vec2(x * 2.5, 1.7)) + 0.018 * bumpsFar;
+    float near = capTop + 0.012 + 0.03 * vnoise(vec2(x * 4.0, 1.3)) + 0.022 * bumpsNear;
+    vec3 foliage = vec3(0.12, 0.2, 0.1) * (fill * 1.3 + glow * 0.7) + vec3(0.1, 0.09, 0.04) * sun * L.z;
+    foliage = mix(foliage, mix(fill, snowWhite * 0.7, 0.5) * (0.6 + 0.4 * vnoise(vec2(x * 50.0, uv.y * 120.0))), 0.5 * winter);
+    col = mix(col, mix(foliage, haze, 0.55), smoothstep(far + 0.003, far - 0.003, uv.y));
+    col = mix(col, mix(foliage, haze, 0.22), smoothstep(near + 0.003, near - 0.003, uv.y));
   } else if (wall) {
     vec3 n;
     vec3 albedo;
     float ao = 1.0;
     float h = S.z;
+    float up = 0.0;
     if (h < GARDEN_WALL_H) {
-      // The earthen wall: ochre clay, blotched and streaked with the oil that seeps from it over
-      // the years, darker under the eave and at its foot where rain splashes up.
-      float stain = fbm(vec2(S.x * 7.0, h * 22.0));
-      float streak = vnoise(vec2(S.x * 55.0, h * 3.0));
-      albedo = mix(vec3(0.6, 0.43, 0.27), vec3(0.4, 0.27, 0.17), smoothstep(0.4, 0.75, stain));
-      albedo *= 1.0 - 0.2 * smoothstep(0.5, 0.85, streak) * smoothstep(0.0, 0.8, h / GARDEN_WALL_H);
       n = vec3(0.0, -1.0, 0.0);
-      ao = (1.0 - 0.6 * smoothstep(GARDEN_WALL_H - 0.03, GARDEN_WALL_H, h)) * (1.0 - 0.3 * smoothstep(0.025, 0.0, h));
+      if (h < 0.014) {
+        // A course of grey stone blocks at its foot.
+        float joint = max(smoothstep(0.0022, 0.0012, abs(fract(S.x / 0.075) - 0.5) * 0.075), smoothstep(0.0016, 0.0006, abs(h - 0.0135)));
+        albedo = vec3(0.52, 0.51, 0.48) * (0.9 + 0.12 * vnoise(vec2(S.x * 90.0, h * 300.0))) * (1.0 - 0.5 * joint);
+      } else {
+        // The earthen wall: warm ochre clay laid in faint courses, blotched and streaked with
+        // the oil that has seeped from it over the centuries.
+        float stain = fbm(vec2(S.x * 5.0, h * 14.0));
+        float streak = vnoise(vec2(S.x * 48.0, h * 2.5));
+        albedo = mix(vec3(0.8, 0.6, 0.37), vec3(0.56, 0.38, 0.22), smoothstep(0.42, 0.78, stain));
+        albedo *= 1.0 - 0.16 * smoothstep(0.5, 0.85, streak) * smoothstep(0.1, 0.9, h / GARDEN_WALL_H);
+        albedo *= 0.96 + 0.04 * sin(h * 330.0);
+      }
+      // The eave shades its top; rain splashing up darkens its foot.
+      ao = (1.0 - 0.5 * smoothstep(GARDEN_WALL_H - 0.022, GARDEN_WALL_H, h)) * (1.0 - 0.2 * smoothstep(0.02, 0.0, h));
+      up = 1.0 - 0.5 * h / GARDEN_WALL_H;
     } else {
-      // Its cap: a short roof of round grey tiles, their rolls catching the light, the eave's
-      // edge a bright line; snow along it in winter.
+      // Its cap: the eave's dark edge, then rows of round grey tiles running back over the wall,
+      // their rolls catching the light, the ridge along the top; snow on it in winter.
       float u = (h - GARDEN_WALL_H) / GARDEN_CAP_H;
       float roll = sin(fract(S.x / 0.028) * TAU);
-      n = normalize(vec3(0.55 * roll, -0.6 + 0.9 * u, 0.7));
-      albedo = vec3(0.17, 0.17, 0.18) * (1.0 + 0.25 * smoothstep(0.0, 0.2, u) * (1.0 - smoothstep(0.2, 0.4, u)));
-      albedo = mix(albedo, snowWhite, winter * smoothstep(0.35, 0.7, u));
+      if (u < 0.22) {
+        n = normalize(vec3(0.0, -1.0, -0.15));
+        albedo = vec3(0.15, 0.15, 0.17) * (1.0 + 0.8 * smoothstep(0.12, 0.2, u));
+      } else if (u < 0.88) {
+        n = normalize(vec3(0.55 * roll, -0.25, 0.9));
+        albedo = vec3(0.3, 0.31, 0.34);
+      } else {
+        n = vec3(0.0, 0.0, 1.0);
+        albedo = vec3(0.4, 0.4, 0.42);
+      }
+      albedo = mix(albedo, snowWhite, winter * smoothstep(0.2, 0.4, u));
     }
-    // The sky, the key from the front, and warm light thrown up off the gravel.
-    vec3 gravelBounce = vec3(0.8, 0.76, 0.68) * sun * L.z * 0.35;
-    col = albedo * (sun * max(dot(n, L), 0.0) + (fill * 0.75 + glow * 0.4 + gravelBounce * smoothstep(0.1, 0.0, h)) * ao);
+    // The key from the front (rarely), the sky, and warm light thrown up off the gravel.
+    col = albedo * (sun * max(dot(n, L), 0.0) + (fill * (0.7 + 0.3 * n.z) + glow * 0.3) * ao + bounce * up * ao);
   } else {
     vec3 n;
     vec3 albedo;
     float ao = 1.0;
     float sheen = 0.0;
+    float velvet = 0.0;
     if (slate > 0.0) {
       // The slate M: blue-black, finely cleft, its bevel catching the light.
       n = slateN;
@@ -588,31 +625,38 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       vec4 b = s0 >= max(s1, s2) ? isl.b0 : (s1 >= s2 ? isl.b1 : isl.b2);
       float moss = gardenMoss(S.xy, isl);
       n = gardenIslandNormal(S.xy, isl, 0.0015);
-      vec3 mossColour = mix(vec3(0.06, 0.14, 0.035), vec3(0.15, 0.26, 0.05), vnoise(S.xy * 230.0 + 7.0));
+      vec3 mossColour = mix(vec3(0.2, 0.36, 0.07), vec3(0.36, 0.54, 0.12), vnoise(S.xy * 230.0 + 7.0));
       if (stoneTop > moss) {
-        // A weathered stone: granite or brown chert or dark schist, faceted, lichen on its
-        // shoulders, dark streaks down its faces, moss creeping up its foot, snow on its top.
+        // A weathered stone, its planes catching the light differently: grey granite, warm
+        // brown, now and then a dark schist; mottled, cracked, pale lichen on its upper faces
+        // with the odd orange rosette, dark streaks down its sides, moss climbing its foot,
+        // snow on its top.
         float hf = clamp(S.z / max(b.x, 1e-3), 0.0, 1.0);
-        vec2 sp = S.xy * 90.0 + b.z * 40.0;
-        vec2 bump = vec2(vnoise(sp + vec2(S.z * 60.0, 0.0)), vnoise(sp.yx + vec2(3.1, S.z * 60.0))) - 0.5;
-        n = normalize(n + vec3(bump * 0.7, 0.0));
-        albedo = mix(vec3(0.3, 0.29, 0.27), vec3(0.37, 0.3, 0.23), b.z);
-        albedo = mix(albedo, vec3(0.19, 0.2, 0.21), smoothstep(0.65, 0.9, fract(b.z * 7.3)));
-        float lichen = smoothstep(0.62, 0.76, vnoise(S.xy * 160.0 + S.z * 40.0 + b.z * 17.0)) * smoothstep(0.2, 0.6, hf);
-        albedo = mix(albedo, vec3(0.62, 0.64, 0.52), 0.55 * lichen);
+        vec2 sp = S.xy * 140.0 + b.z * 40.0;
+        vec2 bump = vec2(vnoise(sp + vec2(S.z * 80.0, 0.0)), vnoise(sp.yx + vec2(3.1, S.z * 80.0))) - 0.5;
+        n = normalize(n + vec3(bump * 0.25, 0.0));
+        albedo = mix(vec3(0.5, 0.49, 0.46), vec3(0.56, 0.47, 0.37), b.z);
+        albedo = mix(albedo, vec3(0.3, 0.31, 0.33), smoothstep(0.7, 0.9, fract(b.z * 7.3)));
+        albedo *= 0.85 + 0.3 * vnoise(S.xy * 60.0 + S.z * 30.0 + b.z * 9.0);
+        float crack = abs(vnoise(vec2(dot(S.xy, vec2(0.8, 0.6)) * 70.0 + b.z * 31.0, S.z * 40.0)) - 0.5);
+        albedo *= 1.0 - 0.55 * smoothstep(0.035, 0.0, crack) * smoothstep(0.1, 0.4, hf);
+        float lichen = smoothstep(0.58, 0.72, vnoise(S.xy * 110.0 + S.z * 40.0 + b.z * 17.0)) * smoothstep(0.35, 0.8, n.z + 0.3 * hf);
+        albedo = mix(albedo, vec3(0.76, 0.78, 0.64), 0.65 * lichen);
+        float rosette = smoothstep(0.8, 0.86, vnoise(S.xy * 190.0 + b.z * 5.0)) * smoothstep(0.3, 0.7, hf);
+        albedo = mix(albedo, vec3(0.8, 0.52, 0.2), 0.6 * rosette);
         float streak = smoothstep(0.55, 0.8, vnoise(vec2(dot(S.xy, vec2(0.7, 0.7)) * 120.0 + b.z * 9.0, S.z * 8.0)));
         albedo *= 1.0 - 0.3 * streak * (1.0 - n.z);
-        albedo = mix(albedo, mossColour, smoothstep(0.3, 0.0, hf) * smoothstep(0.0, 0.3, K_moss) * 0.8);
+        albedo = mix(albedo, mossColour, smoothstep(0.28, 0.0, hf) * smoothstep(0.0, 0.3, K_moss) * 0.85);
         albedo = mix(albedo, snowWhite, winter * smoothstep(0.55, 0.8, n.z) * smoothstep(0.15, 0.4, hf));
-        ao = 0.75 + 0.25 * hf;
+        ao = 0.7 + 0.3 * hf;
       } else {
         // Moss: a velvet cushion, its tufts catching the light, darker at its rim.
         float r = distance(S.xy, isl.c) / max(isl.clear * (GARDEN_MOSS.y + GARDEN_MOSS.z * K_moss), 1e-3);
         vec2 tuft = vec2(vnoise(S.xy * 260.0), vnoise(S.xy * 260.0 + 9.7)) - 0.5;
         n = normalize(n + vec3(tuft * 0.5, 0.0));
-        albedo = mossColour * (1.0 - 0.35 * smoothstep(0.6, 1.0, r));
+        albedo = mossColour * (1.0 - 0.3 * smoothstep(0.6, 1.0, r));
         albedo = mix(albedo, snowWhite, winter * (0.75 + 0.2 * vnoise(S.xy * 120.0)));
-        sheen = 0.15;
+        velvet = 0.8;
       }
     } else if (above && (S.y > GARDEN_WALL_Y || S.x < -0.03 || S.x > GARDEN_ASPECT + 0.03)) {
       // From above, the walls round the garden are their tiled caps: rolls of grey tile running
@@ -628,7 +672,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       float tone;
       vec4 pebble = gardenPebbles(S.xy, tone);
       n = pebble.xyz;
-      albedo = mix(vec3(0.03), mix(vec3(0.1, 0.11, 0.12), vec3(0.24, 0.22, 0.2), tone), pebble.w);
+      albedo = mix(vec3(0.1, 0.1, 0.11), mix(vec3(0.26, 0.27, 0.29), vec3(0.46, 0.44, 0.41), tone), pebble.w);
       albedo = mix(albedo, snowWhite, winter * smoothstep(0.5, 0.9, n.z) * pebble.w);
       float curb = S.y < GARDEN_DRIP ? smoothstep(GARDEN_DRIP - 0.007, GARDEN_DRIP - 0.0055, S.y) : smoothstep(1.006, 1.0045, S.y);
       albedo = mix(albedo, mix(vec3(0.5, 0.49, 0.46), snowWhite, winter), curb);
@@ -647,12 +691,12 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       float relief = mix(1.3, 0.65, winter) * (1.0 - smoothstep(0.0, 0.05, outside));
       n = normalize(vec3(-hx * relief, -hy * relief, 1.0));
       ao = 1.0 - 0.3 * smoothstep(0.0, -0.003, h);
-      // White gravel: a fine grain (where a grain is at least a cell), the odd dark pebble, a
-      // broad mottle.
+      // White gravel, warm in the light: a fine grain (where a grain is at least a cell), the odd
+      // darker pebble, a broad mottle.
       float grainScale = 260.0;
       float grainSeen = 1.0 - smoothstep(0.4, 1.0, max(foot.x, foot.y) * grainScale);
       float speck = step(0.95, hash12(floor(S.xy * grainScale * 0.5)));
-      albedo = vec3(0.8, 0.77, 0.7) * (1.0 + grainSeen * (0.1 * (vnoise(S.xy * grainScale) - 0.5) - 0.28 * speck) + 0.06 * (vnoise(S.xy * 18.0) - 0.5));
+      albedo = vec3(0.88, 0.86, 0.81) * (1.0 + grainSeen * (0.08 * (vnoise(S.xy * grainScale) - 0.5) - 0.18 * speck) + 0.05 * (vnoise(S.xy * 18.0) - 0.5));
       // Freshly turned gravel is damp and darker, drying back over a minute or two.
       float age = clock - texture(uSim3, fuv).r;
       albedo *= 1.0 - 0.13 * exp(-max(age, 0.0) / 45.0) * uSimOn.w;
@@ -662,10 +706,11 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
     float lit = gardenStoneShade(S, L, hit) * gardenDapple(S, L, tm, t, gust) * leafShade;
     float ndl = max(dot(n, L), 0.0);
     col = albedo * (sun * ndl * lit + (fill * (0.55 + 0.45 * n.z) + glow * max(dot(n, glowDir), 0.0)) * ao);
-    // Wet pebbles, slate and velvet give back a little of the bright sky.
+    // Wet pebbles and slate give back a little of the bright sky; moss has a velvet rim.
     col += sheen * glow * pow(max(dot(reflect(rdn, n), glowDir), 0.0), 6.0);
-    // Faces turned from the sun still get its light thrown back off the gravel.
-    if (hit >= 0) col += albedo * vec3(0.8, 0.76, 0.68) * sun * L.z * 0.3 * (1.0 - n.z) * lit;
+    col += albedo * fill * velvet * pow(1.0 - abs(dot(n, rdn)), 2.0);
+    // Stone faces turned from the sky still get the light thrown back off the gravel round them.
+    if (hit >= 0) col += albedo * bounce * (1.0 - n.z) * 0.9;
   }
   // By moonlight the eye loses colour: the garden reads silver-blue.
   col = mix(col, vec3(dot(col, LUMA)) * vec3(0.75, 0.88, 1.2), 0.6 * sky.night);
@@ -708,7 +753,8 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
     float R = c.w * pr.z;
     vec2 q = (sp - vec2(pr.x * aspect, pr.y)) / R;
     float d2 = dot(q, q);
-    if (d2 > 1.7) continue;
+    // Leaves on the rim reach half a radius past it.
+    if (d2 > 2.3) continue;
     float fk = float(k);
     float ct = distance(C, ro) - c.w * 0.7;
     // Twigs fanning out from the clump's heart: what winter leaves of it, seen through the
@@ -727,34 +773,57 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       }
     }
     if (winter > 0.5) continue;
-    // Foliage: a leafy mass with a ragged rim and gaps between its sprays (blossom is sparser);
-    // its rim soft from above, where it hangs close to the eye.
-    float soft = above ? 0.16 : 1.5 * cellH / R;
-    float edge = 1.0 - sqrt(d2) + 0.3 * (vnoise(q * 2.6 + fk * 7.3) - 0.5) + 0.22 * (vnoise(q * 6.5 + fk * 3.1) - 0.5);
-    float gaps = vnoise(q * 11.0 + fk * 5.7);
-    float cover = smoothstep(0.05 - soft, 0.05 + soft, edge) * (1.0 - smoothstep(0.55, 0.75, gaps + 0.25 * spring - 0.15 * summer) * smoothstep(0.25, 0.0, -edge + 0.3));
+    // Foliage as leaves: a jittered lattice of them in the clump's own frame (so they sway with
+    // it), each its own size, turn, shade and tilt, kept within the clump's ragged outline, the
+    // sky showing between them. Blossom is smaller and finer; from above the clumps hang close to
+    // the eye, out of focus.
+    int stamp = spring > 0.5 ? GARDEN_PETAL : (summer > 0.5 ? GARDEN_GREEN : GARDEN_MAPLE);
+    float lattice = spring > 0.5 ? 0.2 : 0.3;
+    vec2 g = q / lattice;
+    vec2 gid = floor(g);
+    float cover = 0.0;
+    float pick = 0.0;
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec2 cid = gid + vec2(float(i), float(j));
+        float h = hash12(cid + fk * 13.7);
+        vec2 centre = (cid + 0.5 + 0.7 * (vec2(h, fract(h * 41.7)) - 0.5)) * lattice;
+        float outline = 1.0 - length(centre) + 0.28 * (vnoise(centre * 2.6 + fk * 7.3) - 0.5);
+        if (outline < -0.05) continue;
+        float size = lattice * (0.72 + 0.38 * fract(h * 3.7)) * (0.6 + 0.4 * smoothstep(-0.05, 0.25, outline));
+        vec2 lq = rotate(q - centre, TAU * fract(h * 7.13)) / size;
+        if (dot(lq, lq) > 1.3) continue;
+        float leafAa = max(1.2 * cellH / (R * size), above ? 0.22 : 0.0);
+        float cv = gardenLeafShape(lq, stamp, leafAa);
+        if (cv > cover) {
+          cover = cv;
+          pick = h;
+        }
+      }
+    }
     if (cover <= 0.0 || ct > canopyT) continue;
-    // Shaded as a ball of leaves: lit on the sun's side, and glowing where the low sun shines
-    // through it toward us.
+    // Each leaf tilted its own way on the ball of the clump: lit on the sun's side, glowing where
+    // the low sun shines through it toward us.
     float nz = sqrt(max(1.0 - d2, 0.0));
-    vec3 nv = above ? vec3(q, nz) : vec3(q.x, -nz, q.y);
+    vec2 tilt = (vec2(fract(pick * 5.3), fract(pick * 9.1)) - 0.5) * 1.4;
+    vec3 nv = above ? vec3(q + tilt, nz + 0.4) : vec3(q.x + tilt.x, -(nz + 0.4), q.y + tilt.y);
     float sunSide = max(dot(normalize(nv), L), 0.0);
-    float through = pow(max(dot(rdn, L), 0.0), 2.0) * (1.0 - 0.5 * nz);
-    float sprays = vnoise(q * 9.0 + fk * 2.3);
+    float through = pow(max(dot(rdn, L), 0.0), 2.0);
+    float tone = fract(pick * 3.3);
     vec3 base;
     vec3 shine;
     if (spring > 0.5) {
-      base = mix(vec3(0.86, 0.62, 0.7), vec3(0.98, 0.88, 0.9), sprays);
+      base = mix(vec3(0.88, 0.64, 0.72), vec3(0.99, 0.9, 0.92), tone);
       shine = vec3(1.0, 0.85, 0.88);
     } else if (summer > 0.5) {
-      base = mix(vec3(0.06, 0.18, 0.04), vec3(0.2, 0.4, 0.08), sprays);
+      base = mix(vec3(0.1, 0.26, 0.05), vec3(0.32, 0.52, 0.1), tone);
       shine = vec3(0.45, 0.75, 0.15);
     } else {
-      base = mix(vec3(0.45, 0.04, 0.03), vec3(0.82, 0.16, 0.05), sprays);
-      base = mix(base, vec3(0.9, 0.42, 0.08), 0.35 * smoothstep(0.6, 0.9, sprays));
+      base = mix(vec3(0.55, 0.05, 0.04), vec3(0.86, 0.17, 0.05), smoothstep(0.0, 0.6, tone));
+      base = mix(base, vec3(0.93, 0.44, 0.08), smoothstep(0.75, 0.95, tone));
       shine = vec3(1.0, 0.42, 0.1);
     }
-    canopyCol = base * (fill * 0.75 + glow * 0.4 + sun * sunSide * 0.7) + shine * sun * through * (0.18 + 0.32 * sprays);
+    canopyCol = base * (fill * 0.8 + glow * 0.4 + sun * sunSide * 0.6) + shine * sun * through * (0.15 + 0.3 * tone);
     canopyCol = mix(canopyCol, vec3(dot(canopyCol, LUMA)) * vec3(0.75, 0.88, 1.2), 0.6 * sky.night);
     canopyCov = max(canopyCov, cover);
     canopyT = ct;
@@ -774,19 +843,25 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   if (leafFront && leafT <= min(canopyFront ? canopyT : 1e9, barkFront ? barkT : 1e9)) col = mix(col, leafCol, leafCov);
   float leafSeen = leafFront ? leafCov : 0.0;
 
-  // ---- the veranda's edge along the bottom: polished dark boards, their nosing catching the sky ----
+  // ---- the veranda's edge (engawa) along the bottom: long boards of warm, polished wood running
+  // along the garden, a seam between two, the rounded nosing lit along its top; it covers the
+  // drip line, so the boards meet the gravel, which lies in the eaves' shade just beyond ----
   float board = 0.0;
   if (!above) {
-    float top = 0.042;
+    float top = GARDEN_HORIZON - GARDEN_FOCAL * GARDEN_EYE_H / (GARDEN_DRIP - GARDEN_EYE_Y) + 0.004;
+    col *= 1.0 - 0.22 * smoothstep(top + 0.03, top, uv.y);
     board = smoothstep(top + cellH, top - cellH, uv.y);
     if (board > 0.0) {
-      float grain = vnoise(vec2(uv.x * aspect * 3.0, uv.y * 160.0)) * 0.6 + vnoise(vec2(uv.x * aspect * 11.0, uv.y * 420.0)) * 0.4;
-      vec3 wood = vec3(0.13, 0.075, 0.045) * (0.8 + 0.4 * grain);
-      // The garden glimmers in the polish; the rounded nosing is a line of light.
-      float polish = smoothstep(0.0, top, uv.y) * 0.35;
-      vec3 boards = wood * (fill * 1.4 + glow * 0.6 + 0.04) + polish * (fill * 0.6 + glow * 0.8) * 0.5;
-      float nosing = exp(-pow((uv.y - (top - 2.0 * cellH)) / (1.5 * cellH), 2.0));
-      boards += nosing * (fill * 0.8 + glow * 0.9 + sun * L.z * 0.3) * 0.6;
+      float x = uv.x * aspect;
+      float grain = 0.55 * vnoise(vec2(x * 1.6, uv.y * 38.0)) + 0.45 * vnoise(vec2(x * 4.0 + 7.0, uv.y * 90.0));
+      vec3 wood = vec3(0.56, 0.36, 0.2) * (0.86 + 0.24 * grain);
+      wood *= 1.0 - 0.45 * exp(-pow((uv.y - 0.42 * top) / (0.9 * cellH), 2.0));
+      // Under the temple's eaves: lit by the sky and the gravel's glow, the bright garden softly
+      // in the polish toward the edge.
+      vec3 boards = wood * (fill * 0.9 + bounce * 1.2 + glow * 0.3) + (fill + glow) * 0.08 * smoothstep(0.3, 1.0, uv.y / top);
+      float nose = smoothstep(top - 0.014, top - 0.005, uv.y);
+      float highlight = exp(-pow((uv.y - (top - 0.0065)) / (1.6 * cellH), 2.0));
+      boards = mix(boards, boards * 0.78, nose * (1.0 - highlight)) + highlight * (fill * 0.5 + glow * 0.5 + sun * L.z * 0.3) * 0.5;
       col = mix(col, boards, board);
       leafSeen *= 1.0 - board;
     }

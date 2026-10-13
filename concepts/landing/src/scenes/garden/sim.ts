@@ -55,7 +55,7 @@ export const GARDEN = {
   drip: 0.03,
   wallY: 1.03,
   wallHeight: 0.125,
-  capHeight: 0.022,
+  capHeight: 0.032,
   focal: 1.25,
   horizon: 1.0,
   eyeHeight: 0.253,
@@ -64,6 +64,12 @@ export const GARDEN = {
   overheadHeight: 1.5,
   overheadY: 0.52,
 } as const;
+
+/**
+ * The times of day (still clock) when the white gravel is in daylight and the page is a light one:
+ * from just after sunrise to just before sunset (index.ts's theme and the shader's ink).
+ */
+export const GARDEN_PAPER = { from: 0.26, to: 0.745 } as const;
 
 /**
  * The Manifold M: where it lies when it is on (that patch of gravel is kept clear of islands), its
@@ -207,14 +213,14 @@ interface LeafSpec {
 }
 
 const SPECS: Readonly<Record<LeafKind, LeafSpec>> = {
-  [GARDEN_LEAF_KIND.maple]: { radius: 0.0105, chord: 0.042, pace: 0.17, flutter: [0.2, 0.42], tumble: [0.72, 0.9], tumbling: 0.15, life: [45, 85] },
-  [GARDEN_LEAF_KIND.petal]: { radius: 0.0058, chord: 0.022, pace: 0.13, flutter: [0.12, 0.3], tumble: [0.6, 0.75], tumbling: 0.08, life: [25, 50] },
-  [GARDEN_LEAF_KIND.green]: { radius: 0.011, chord: 0.042, pace: 0.17, flutter: [0.25, 0.45], tumble: [0.72, 0.9], tumbling: 0.12, life: [45, 85] },
-  [GARDEN_LEAF_KIND.withered]: { radius: 0.0095, chord: 0.032, pace: 0.15, flutter: [0.35, 0.55], tumble: [0.7, 0.9], tumbling: 0.4, life: [60, 100] },
+  [GARDEN_LEAF_KIND.maple]: { radius: 0.013, chord: 0.046, pace: 0.17, flutter: [0.2, 0.42], tumble: [0.72, 0.9], tumbling: 0.15, life: [45, 85] },
+  [GARDEN_LEAF_KIND.petal]: { radius: 0.0068, chord: 0.024, pace: 0.13, flutter: [0.12, 0.3], tumble: [0.6, 0.75], tumbling: 0.08, life: [25, 50] },
+  [GARDEN_LEAF_KIND.green]: { radius: 0.0135, chord: 0.046, pace: 0.17, flutter: [0.25, 0.45], tumble: [0.72, 0.9], tumbling: 0.12, life: [45, 85] },
+  [GARDEN_LEAF_KIND.withered]: { radius: 0.0115, chord: 0.034, pace: 0.15, flutter: [0.35, 0.55], tumble: [0.7, 0.9], tumbling: 0.4, life: [60, 100] },
 };
 
 /** Leaves let go per second at the leaf-fall knob's full travel, by season. */
-const FALL_RATE: Readonly<Record<GardenSeason, number>> = { spring: 1.4, summer: 0.15, autumn: 0.7, winter: 0.08 };
+const FALL_RATE: Readonly<Record<GardenSeason, number>> = { spring: 1.6, summer: 0.2, autumn: 1.0, winter: 0.1 };
 const SEASON_KIND: Readonly<Record<GardenSeason, LeafKind>> = {
   spring: GARDEN_LEAF_KIND.petal,
   summer: GARDEN_LEAF_KIND.green,
@@ -248,7 +254,7 @@ const SWEEP_SECONDS = 1.6;
 const ROLL = 0.3;
 /** Leaves on the gravel when a garden is first laid out, and in the air. */
 const PREWARM_LANDED = 9;
-const PREWARM_FALLING = 3;
+const PREWARM_FALLING = 4;
 /** Most leaves lying on the gravel at once; past it the oldest fades, leaving slots for the air. */
 const LANDED_MAX = 12;
 /** The share of lying leaves (the lightest, by hue) a full gust picks up and blows away. */
@@ -338,12 +344,11 @@ interface GardenIsland {
   stones: GardenStone[];
 }
 
-/** The angular wobble of a stone's outline (shared with the shader's gardenStoneShape). */
-function stoneWobble(angle: number, seed: number): number {
-  return 1 + 0.1 * Math.sin(3 * angle + TAU * seed) + 0.06 * Math.sin(5 * angle + 2 * TAU * seed);
-}
-
-/** A stone's smooth height at (x, y), without the weathered facets (the shader's base shape). */
+/**
+ * A stone's height at (x, y): a steep-sided dome on a wobbly footprint, cut by a tilted top plane
+ * and three steep side planes, so it stands as a weathered block with flat faces. The shader's
+ * gardenStone is the same shape.
+ */
 function stoneHeight(stone: GardenStone, x: number, y: number): number {
   const dx = x - stone.x;
   const dy = y - stone.y;
@@ -351,9 +356,16 @@ function stoneHeight(stone: GardenStone, x: number, y: number): number {
   const s = Math.sin(stone.angle);
   const qx = (c * dx + s * dy) / stone.rx;
   const qy = (-s * dx + c * dy) / stone.ry;
-  const d = Math.hypot(qx, qy) / stoneWobble(Math.atan2(qy, qx), stone.seed);
-  if (d >= 1) return 0;
-  return stone.height * Math.pow(1 - Math.pow(d, 2.6), 0.45);
+  const angle = Math.atan2(qy, qx);
+  const r = Math.hypot(qx, qy) / (1 + 0.1 * Math.sin(3 * angle + TAU * stone.seed) + 0.06 * Math.sin(5 * angle + 2 * TAU * stone.seed));
+  if (r >= 1) return 0;
+  const tilt = TAU * stone.seed * 3.1;
+  let h = Math.min(1.25 * Math.pow(1 - Math.pow(r, 2.6), 0.45), 0.88 + 0.14 * (qx * Math.cos(tilt) + qy * Math.sin(tilt)));
+  for (let k = 0; k < 3; k++) {
+    const a = TAU * (stone.seed + k / 3) + 0.4 * Math.sin(17 * stone.seed + k);
+    h = Math.min(h, 2.2 * (1.08 - (qx * Math.cos(a) + qy * Math.sin(a))));
+  }
+  return stone.height * Math.max(h, 0);
 }
 
 /** The composition the default arrangement shows: four islands after the Ryōan-ji groups. */
@@ -1303,7 +1315,7 @@ class GardenSim implements SceneSim {
       data[k] = island.x - OX;
       data[k + 1] = island.y - OY;
       data[k + 2] = island.clear;
-      data[k + 3] = tallest + 0.004;
+      data[k + 3] = 1.03 * tallest + 0.004;
     }
     data[GARDEN_ISLANDS * 4] = this.#clock;
     this.#stoneTexture.upload(data);
@@ -1406,13 +1418,13 @@ class GardenSim implements SceneSim {
     const kind = SEASON_KIND[settings.season];
     const spec = SPECS[kind];
     const zone = rand();
-    if (!settings.overhead && zone < 0.45) {
+    if (!settings.overhead && zone < 0.55) {
       // Overhead boughs, above the veranda's frame.
       const y = 0.06 + 0.42 * rand();
       this.#x[i] = OX + (rand() - 0.5) * 1.1 * (y - GARDEN.eyeY) * 1.4;
       this.#y[i] = y;
       this.#z[i] = GARDEN.eyeHeight + 0.03 + 0.03 * (y - GARDEN.eyeY) + 0.05 * rand();
-    } else if (gust && zone < 0.6) {
+    } else if (gust && zone > 0.7) {
       // Blown in from upwind, past the frame's edge.
       const y = 0.25 + 0.6 * rand();
       const half = settings.overhead ? 0.5 * this.#aspect * GARDEN.span : 0.5 * this.#aspect * (y - GARDEN.eyeY) / GARDEN.focal;
@@ -1614,17 +1626,21 @@ class GardenSim implements SceneSim {
     }
   }
 
-  /** The first frame shows leaves already lying about, and a few on their way down. */
+  /** The first frame shows leaves already lying about, and a few on their way down in plain view. */
   #prewarmLeaves(settings: Settings): void {
     this.#leafRand = mulberry32(0x6c656166 ^ settings.seed);
     const rand = this.#leafRand;
     for (let n = 0; n < PREWARM_FALLING; n++) {
-      this.#spawn(settings, false);
-    }
-    // Let the fallers get going, each for its own while.
-    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
-      if (this.#state[i] !== FALLING) continue;
-      const seconds = 1.5 + 4 * rand();
+      const i = this.#spawn(settings, false);
+      if (i === undefined) break;
+      // In the air over the gravel, between the top of the veranda's frame and half way down it.
+      const y = 0.12 + 0.5 * rand();
+      const depth = y - GARDEN.eyeY;
+      this.#x[i] = OX + (2 * rand() - 1) * 0.5 * depth;
+      this.#y[i] = y;
+      this.#z[i] = Math.max(0.1, GARDEN.eyeHeight + ((0.72 + 0.26 * rand() - GARDEN.horizon) * depth) / GARDEN.focal);
+      // Let it fall a moment, so it is in its swing.
+      const seconds = 0.5 + 0.8 * rand();
       for (let t = 0; t < seconds && this.#state[i] === FALLING; t += 0.05) this.#fall(i, 0.05, settings.wind * WIND_DRIFT, 0, settings);
       this.#alpha[i] = 1;
     }
