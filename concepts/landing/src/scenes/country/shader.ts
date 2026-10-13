@@ -156,9 +156,10 @@ float countryRows(vec2 r, vec2 dir, float period, vec2 px) {
 // The crop's colour at slope point w (world). r: row space, w with x taken at the ground's own
 // depth, so rows running down the slope converge into the distance while rows along the contour
 // crowd toward the crest. h: the field's hash; px: world size of a cell across and down; wind
-// -1..1; t: the scene clock already scaled by motion. relief gets the row profile (1 on the ridges,
-// where snow shows them), sheen how much the crop's surface glints in low sun.
-vec3 countryCropColor(float crop, float h, float season, vec2 w, vec2 r, vec2 px, float wind, float t, out float relief, out float sheen) {
+// -1..1; sway: how freely the crop moves (0 under snow, where it stands still); t: the scene clock
+// already scaled by motion. relief gets the row profile (1 on the ridges, where snow shows them),
+// sheen how much the crop's surface glints in low sun.
+vec3 countryCropColor(float crop, float h, float season, vec2 w, vec2 r, vec2 px, float wind, float sway, float t, out float relief, out float sheen) {
   float h2 = fract(h * 13.7);
   float h3 = fract(h * 71.3);
   // Most fields are drilled along the contour, the rest straight down the slope.
@@ -169,7 +170,7 @@ vec3 countryCropColor(float crop, float h, float season, vec2 w, vec2 r, vec2 px
   float drift = t * wind * 0.35;
   float gust = vnoise(vec2((w.x - drift) * 3.2, w.y * 1.4 + h * 9.0)) - 0.5;
   float ripple = (vnoise(vec2((w.x - drift * 1.7) * 9.0, w.y * 4.0 + 5.0)) - 0.5) * countryHold(0.11, vec2(1.0, 0.0), px);
-  float wave = (gust + 0.6 * ripple) * (0.14 + 0.5 * abs(wind));
+  float wave = (gust + 0.6 * ripple) * (0.14 + 0.5 * abs(wind)) * sway;
   // Richer and leaner patches within a field, a little more golden or more green.
   float rich = vnoise(w * 3.3 + h * 17.0);
   relief = 0.5;
@@ -328,11 +329,14 @@ vec2 countryRiver(float v, float start) {
 // reaches (wrapped Lambert; 0 is plain Lambert, so a low sun leaves faces turned away in shade).
 // shade: how much direct sun gets through (cloud shadow, overcast, hedges and trees). Shaded faces
 // still get a little warm light bounced off the sunlit land around them, so they stay warm rather
-// than turning a muddy grey under the blue skylight.
+// than turning a muddy grey under the blue skylight. By night the eye adapts: moonlight counts for
+// more and a cool skylight lifts the land, so moonlit fields read around 0.2 and snow pale blue-white
+// rather than near black (and a moonless night stays dim but legible).
 vec3 countryLight(Sky sky, vec3 n, float shade, float wrap) {
   float sun = clamp((dot(n, sky.sun) + wrap) / (1.0 + wrap), 0.0, 1.0) * shade;
   float moon = clamp((dot(n, sky.moon) + wrap) / (1.0 + wrap), 0.0, 1.0);
-  return sky.ambient * (0.6 + 0.25 * n.y) + sky.sunColor * (sun + 0.12) + sky.moonColor * moon;
+  vec3 adapted = sky.night * (vec3(0.08, 0.1, 0.16) * (0.7 + 0.3 * n.y) + sky.moonColor * (0.4 + 0.6 * moon));
+  return sky.ambient * (0.6 + 0.25 * n.y) + sky.sunColor * (sun + 0.12) + sky.moonColor * moon + adapted;
 }
 
 // The valley mist's colour where the sight line meets it, at screen x and \`above\` scale heights
@@ -684,8 +688,9 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   vec3 col = vec3(0.0);
   float accent = 0.0;
   float glint = 0.0;
-  // The horizon at this x: the colour the land fades into with distance.
-  vec3 haze = skyColor(sky, normalize(vec3(q.x, 0.02, 1.0)));
+  // The horizon at this x: the colour the land fades into with distance (by night a little lighter
+  // than the sky there, as the adapted eye sees moonlit far hills).
+  vec3 haze = skyColor(sky, normalize(vec3(q.x, 0.02, 1.0))) + sky.night * vec3(0.03, 0.04, 0.07);
   float i = float(hit);
 
   if (hit < 6) {
@@ -716,6 +721,10 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     float height = COUNTRY_EYE + ground.y;
     vec2 rows = vec2(q.x * z, w.y);
     vec2 pxr = vec2(z, down) * pxl;
+    // How fully lying snow covers this ground, 0..1: it settles first on the high far ridges, then
+    // creeps down to the near fields. A pure function of the sim's cover, so once that has settled
+    // nothing here changes; crops under it stop swaying.
+    float buried = smoothstep(0.0, 0.35, lying * 1.4 - 0.3 * vnoise(w * 2.5 + 11.0) - 0.1 * (1.0 - i / 5.0));
     // Sunlight through the cloud deck: follow the sun from this point of ground up to the deck.
     float sunShade = 1.0 - 0.75 * overcast;
     if (K_shadows > 0.0 && sky.sun.y > 0.0) {
@@ -756,7 +765,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
       vec2 f = countryFieldSpace(i, w);
       vec2 field = countryCells(f, site, other, axis);
       float crop = countryCrop(field.y, season);
-      albedo = countryCropColor(crop, field.y, season, w, rows, pxr, wind, tm, relief, sheen);
+      albedo = countryCropColor(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen);
       if (hit < 2 && (crop > 0.5 && crop < 1.5 || crop > 3.5 && crop < 4.5 && season > 0.5 && season < 1.5)) {
         float under = 0.0;
         vec4 dots = countryDots(crop, w, d, down, tm, under);
@@ -836,10 +845,9 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
       }
     }
 
-    // Snow settles first on the high far ridges, then creeps down to the near fields; the ridges
-    // of the crop rows whiten first, so the rows still show faintly through.
-    float snowLine = lying * 1.3 - 0.3 * vnoise(w * 2.5 + 11.0) - 0.12 * (1.0 - i / 5.0);
-    float snowCover = smoothstep(0.02, 0.4, snowLine) * settles * (0.8 + 0.2 * relief);
+    // Snow whitens the ground; the ridges of the crop rows hold it first, so the rows still show
+    // faintly through.
+    float snowCover = buried * settles * (0.8 + 0.2 * relief);
     albedo = mix(albedo, COUNTRY_SNOW, snowCover);
 
     // Direct sun through cloud and the shadows of hedges and trees; the land takes it with little
@@ -903,7 +911,11 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     col = mix(col, vec3(0.7, 0.75, 0.82) * air + 0.3 * flash, rainStreaks(uv, aspect, t, K_rain, wind) * 0.45);
   }
   if (K_snow > 0.0) {
-    col = mix(col, vec3(0.95, 0.96, 1.0) * clamp(air * 1.3 + 0.1, 0.0, 1.0), snowFlakes(uv, aspect, t, K_snow, wind));
+    // Flakes at 85% so the passing of each one crosses fewer dither steps against the dark sky; against
+    // pale snow-covered land they all but vanish, as falling snow does, instead of speckling it.
+    vec3 flake = vec3(0.95, 0.96, 1.0) * clamp(air * 1.3 + 0.1, 0.0, 1.0);
+    float contrast = clamp((dot(flake, LUMA) - dot(col, LUMA)) * 3.0, 0.0, 1.0);
+    col = mix(col, flake, snowFlakes(uv, aspect, t, K_snow, wind) * 0.85 * contrast);
   }
 
   Shade o = blankShade();

@@ -27,12 +27,17 @@ const SNOW = params.findIndex((def) => def.key === "snow");
 const RAIN = params.findIndex((def) => def.key === "rain");
 /**
  * Snow settles fast at first and then thickens slowly (an exponential approach to full cover): at
- * the default amount the land is mostly white within about ten seconds. It melts in about a
- * minute, faster in rain.
+ * the default amount the near fields start whitening within a second or two of scene time and the
+ * land is white within a few seconds, comfortably inside ten even where the renderer's per-frame
+ * dt clamp (0.1 s) slows the scene clock on a slow GPU. It melts in about a minute, faster in rain.
  */
-const SETTLE_RATE = 0.08;
-const SETTLE_PER_AMOUNT = 0.16;
+const SETTLE_RATE = 0.12;
+const SETTLE_PER_AMOUNT = 0.3;
 const MELT_PER_SECOND = 0.018;
+/** Cover this close to full snaps to 1, so the texel stops changing once the snow has settled. */
+const SETTLED = 0.99;
+/** Re-upload only once the cover has moved this far (and always on reaching 0 or 1). */
+const UPLOAD_STEP = 0.01;
 
 /** How much snow lies on the land, 0..1, as a single r16f texel. */
 const lyingSnow: SimFactory = (gl) => {
@@ -47,7 +52,9 @@ const lyingSnow: SimFactory = (gl) => {
       lying = snow > 0
         ? lying + (1 - lying) * (1 - Math.exp(-dt * (SETTLE_RATE + SETTLE_PER_AMOUNT * snow)))
         : Math.max(0, lying - dt * MELT_PER_SECOND * (1 + 2 * rain));
-      if (lying !== uploaded) {
+      if (lying >= SETTLED) lying = 1;
+      const end = lying === 0 || lying === 1;
+      if (lying !== uploaded && (end || !(Math.abs(lying - uploaded) < UPLOAD_STEP))) {
         texel[0] = lying;
         texture.upload(texel);
         uploaded = lying;
