@@ -1,8 +1,9 @@
 // Shared weather: rain and snow falling through the air in depth (hidden behind surfaces, fusing
-// into a veil with distance), what they do to the world (splashes, puddles, wet albedo and gloss,
-// drips from edges, lying snow), rain on a window pane, ripples on water, and fog. Compiled into
-// every scene program after the sky library; the contract and conventions are in
-// src/scenes/README.md. How wet the world is and how much snow lies come from the renderer as
+// into a veil with distance) and laid over the picture, what they do to the world (splashes,
+// puddles, wet albedo and gloss, drips from edges, lying snow), rain on a window pane, ripples on
+// water, fog, and the sky's answer (how overcast it is, greyed light, rain shafts under distant
+// cloud). Compiled into every scene program after the sky library; the contract and conventions are
+// in src/scenes/README.md. How wet the world is and how much snow lies come from the renderer as
 // uWeather (src/renderer.ts).
 
 export const weatherGlsl = `
@@ -194,6 +195,16 @@ Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float 
   k *= 1.0 + gusty * (1.4 * weatherGust(q.x, mix(2.0, 22.0, depth), tm, wind) - 0.5);
   o.veil = 1.0 - exp(-k * depth * (0.4 + 0.6 * depth));
   return o;
+}
+
+// Rain or snow over a shaded colour, as "Weather in the world" in the README asks: the veil toward
+// the air first (it already carries the amount, the distance and the gust curtains), then the drops
+// in their light with no extra factor (cover is already switched per cell and calibrated to cross a
+// dither level). air: the scene's rain grey or snow-lit haze; dropLight: ~1.2 x the sky or cloud
+// base the drops refract, plus lamps and lightning, never below ~0.08. A camera behind glass or under
+// an awning first sets p.cover *= 1.0 - p.near.
+vec3 precipOver(vec3 col, vec3 air, vec3 dropLight, Precip p) {
+  return mix(mix(col, air, p.veil), dropLight, p.cover);
 }
 
 // One grid of splash sites, p in cells: each cell's drops land at a fresh spot every ~0.45-1.1 s
@@ -444,5 +455,47 @@ float fogAmount(float fog, float distance, float height) {
   float dens = max(fog, 0.0) * exp(-4.0 * max(height, 0.0));
   float d = max(distance, 0.0);
   return 1.0 - exp(-dens * d * (1.0 + 4.0 * d));
+}
+
+// How far rain or snow has closed the sky over, 0..1: the curve for new scenes (scenes tuned before
+// it keep their own). A drizzle (0.1) already greys it over to ~0.64, steady rain (0.4) ~0.76, heavy
+// rain (0.7) ~0.88 and a downpour 1; snow falls from a lighter sky and counts 0.85x. It is also the
+// cover to give skyClouds (max with the fair-weather cover); dim the sun and moon and grey the light
+// by it (greyed). Scale it for a scene's own sky.
+float weatherOvercast(float rain, float snow) {
+  float storm = clamp(max(rain, 0.85 * snow), 0.0, 1.0);
+  return smoothstep(0.0, 0.08, storm) * (0.6 + 0.4 * storm);
+}
+
+// A colour drained toward its own luminance and tinted: mix(c, vec3(dot(c, LUMA)) * tint, amount).
+// For overcast light and sky (tint ~vec3(0.92, 0.95, 1.0), amount ~0.6 x overcast), for moonlit
+// (scotopic) blue after dark (a bluer tint, amount = how dark), and with vec3(1.0) for plain grey.
+vec3 greyed(vec3 c, vec3 tint, float amount) {
+  return mix(c, vec3(dot(c, LUMA)) * tint, amount);
+}
+
+// Rain shafts: curtains of heavier rain hanging from a distant cloud base, leaning downwind (their
+// feet trail where the drops have blown), riding along the horizon with the deck and streaked along
+// their fall. p: x along the horizon and y up from it, both in heights of the cloud base over the
+// horizon (p.y = 1 at the base; for a view ray, p = dir.xy / (dir.z * base) with base the tangent of
+// the cloud base's elevation). tm: the motion clock (uMotionTime). None in a drizzle, wisps of virga
+// that thin out above the ground in light rain, a few faint separate curtains in steady rain (0.4),
+// wider and darker ones in heavy rain, one grey wall in a downpour. wind -1..1 leans them and drifts
+// them at skyClouds' deck speed. Returns 0..1: how far to mix toward the cloud base's grey.
+float rainShafts(vec2 p, float tm, float amount, float wind) {
+  if (amount <= 0.0 || p.y > 1.2) return 0.0;
+  float a = clamp(amount, 0.0, 1.0);
+  float x = p.x - (1.0 - p.y) * 0.5 * wind - tm * 0.09 * wind;
+  float n = 0.65 * vnoise(vec2(x * 0.9, 3.1)) + 0.35 * vnoise(vec2(x * 2.3, 8.3));
+  float th = mix(0.68, 0.3, smoothstep(0.25, 1.0, a));
+  float curtain = smoothstep(th, th + 0.14, n);
+  if (curtain <= 0.0) return 0.0;
+  // Ragged where they leave the cloud; in light rain the drops evaporate before they reach the ground.
+  float base = 0.8 + 0.4 * vnoise(vec2(x * 0.7, 1.7));
+  float feet = mix(0.4, -0.1, smoothstep(0.25, 0.6, a));
+  float hang = smoothstep(feet - 0.15, feet + 0.1, p.y) * (1.0 - smoothstep(base * 0.5, base, p.y));
+  // Long streaks inside, sliding slowly down.
+  float streak = 0.75 + 0.25 * vnoise(vec2(x * 9.0, p.y * 4.0 + tm * 0.5));
+  return curtain * hang * streak * smoothstep(0.15, 0.5, a) * (0.25 + 0.75 * a * a);
 }
 `;

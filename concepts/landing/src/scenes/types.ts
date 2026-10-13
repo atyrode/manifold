@@ -2,8 +2,8 @@
 // src/scenes/<id>/ exporting a SceneDef; the registry (src/scenes/index.ts) lists them in lab order.
 //
 // Shader: each scene compiles to its own WebGL2 program:
-//   common preamble (uniforms, noise, dithering helpers, Shade)  — src/shaders/common.ts
-//   + shared libraries (sky, weather, lightning, aurora)          — src/shaders/lib/
+//   common preamble (uniforms, noise, dithering helpers, Shade)   — src/shaders/common.ts
+//   + shared libraries (sky, weather, surface, lightning, aurora) — src/shaders/lib/
 //   + one `#define K_<key> uParams[i]` per knob, generated from `params`
 //   + the scene's `glsl`, which defines `Shade <entry>(vec2 uv, vec2 cell, float t)`
 //   + the dithering `main`, which calls the entry.
@@ -37,6 +37,13 @@ export interface SimFrame {
   dt: number;
   /** The scene clock (the shader's `uTime`). */
   time: number;
+  /**
+   * The motion clock (the shader's `uMotionTime`): every step of the scene clock times the motion
+   * amount, summed on the same origin as `time`. It equals `time * motion` while motion holds still,
+   * and moving the slider changes the pace without jumping the phase: drive motion with it, never
+   * with `time * motion`.
+   */
+  motionTime: number;
   /** The lab's motion amount 0..1 (the shader's `uMotion`). */
   motion: number;
   /** Frame size in dither cells. */
@@ -50,6 +57,15 @@ export interface SimFrame {
   params: Readonly<Record<string, number>>;
   /** Scene-clock time each trigger slot last fired; -1e4 while idle. */
   triggers: readonly number[];
+  /**
+   * Per trigger slot (MAX_TRIGGERS long): true on the one frame after the slot was stamped by a
+   * "now" press, i.e. `triggers[slot]` moved to a new time since this sim's previous frame (several
+   * presses between two frames fire once; a second press while paused, at the same stamp, does not
+   * fire again, matching the shader's `sinceTrigger`). Always false on a sim's first frame. Leaving a
+   * scene resets its stamps to idle and re-entering builds a fresh sim, so presses from an earlier
+   * visit never replay. The renderer rewrites this array in place each frame: read it, don't keep it.
+   */
+  fired: readonly boolean[];
   pointer: PointerState;
 }
 
@@ -87,5 +103,14 @@ export interface SceneDef {
   entry: string;
   sim?: SimFactory;
   /** Page theme behind the copy; night unless the scene says otherwise. */
-  theme?: (params: Readonly<Record<string, number>>) => "night" | "paper";
+  theme?: SceneTheme;
 }
+
+export type PageTheme = "night" | "paper";
+
+/**
+ * Picks the page theme from the scene's raw knobs (keyed as in the URL). Build it with `skyTheme` or
+ * `paletteTheme` (atmosphere.ts); the shader reads the outcome with `pagePaper()`, never a copy of
+ * the test.
+ */
+export type SceneTheme = (params: Readonly<Record<string, number>>) => PageTheme;

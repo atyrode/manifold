@@ -1,14 +1,24 @@
 // Shared sky: the clock, sun and moon, a side-on camera ray, an analytic sky dome with sun and moon
-// discs, stars, and a cloud deck seen from below. Compiled into every scene program right after the
-// common preamble; the contract and conventions are in src/scenes/README.md.
+// discs, stars, and a cloud deck seen from below; helpers to turn the sky to a scene's facing, mirror
+// it for reflections, sample the horizon haze and tint the stars. Compiled into every scene program
+// right after the common preamble; the contract and conventions are in src/scenes/README.md.
 
 export const skyGlsl = `
 // ---- sky ----
 
 // The clock: K_time and K_cycle -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset). At cycle 1 a
-// whole day passes in four minutes; uMotion slows it with the rest of the scene.
+// whole day passes in four minutes; uMotion slows it with the rest of the scene. This rescales the
+// whole elapsed time by uMotion, so moving the motion slider jumps the time of day: new code uses
+// timeOfDayM.
 float timeOfDay(float time, float cycle, float t) {
   return fract(time + cycle * uMotion * t / 240.0);
+}
+
+// timeOfDay driven by the motion clock: motionTime = uMotionTime (the scene clock integrated with
+// uMotion), so the motion slider changes how fast the day passes without jumping the time of day.
+// Equal to timeOfDay while motion stays constant.
+float timeOfDayM(float time, float cycle, float motionTime) {
+  return fract(time + cycle * motionTime / 240.0);
 }
 
 struct Sky {
@@ -77,6 +87,29 @@ Sky skyAt(float tod) {
   vec3 dusk = mix(vec3(0.12, 0.15, 0.30), vec3(0.36, 0.25, 0.30), smoothstep(-0.1, 0.03, e));
   s.ambient = vec3(0.030, 0.038, 0.075) + vec3(0.40, 0.48, 0.62) * s.day + dusk * s.twilight * (1.0 - s.day) + s.moonColor * 0.3;
   return s;
+}
+
+// A sky-library direction turned about the vertical by yaw radians (positive turns +x toward +z),
+// for a scene facing away from the sky's own view (sun rising on the right, culminating ahead,
+// setting on the left): turns the sky's directions into the scene's frame, or with -yaw a scene ray
+// back into the sky's.
+vec3 skyFacing(vec3 dir, float yaw) {
+  vec2 r = rotate(dir.xz, yaw);
+  return vec3(r.x, dir.y, r.y);
+}
+
+// The sky with its sun and moon turned by skyFacing(dir, yaw); the light and colours stay as they are.
+Sky skyFacing(Sky sky, float yaw) {
+  sky.sun = skyFacing(sky.sun, yaw);
+  sky.moon = skyFacing(sky.moon, yaw);
+  return sky;
+}
+
+// The sky for mirrors (water, wet ground): the moon swung round behind the viewer, so no reflection
+// shows a sliver of its disc broken up by ripples. Draw the moon's path on the water as glitter.
+Sky skyMirror(Sky sky) {
+  sky.moon = vec3(-sky.moon.x, sky.moon.y, -sky.moon.z);
+  return sky;
 }
 
 // Side-on pinhole camera with a shifted lens (no pitch): verticals stay vertical and the horizon is
@@ -177,6 +210,13 @@ vec3 skyColor(Sky sky, vec3 dir) {
   return col * mix(1.0, 0.35, smoothstep(0.0, 0.25, -dir.y));
 }
 
+// The sky just above the horizon in a ray's bearing: the haze that distant land, mist and fog fade
+// into. lift is the sample's rise over the level bearing (dir.xz kept, y = lift, then normalised):
+// about the elevation in radians for a ray near the middle of the view. Scenes use 0..0.04.
+vec3 horizonHaze(Sky sky, vec3 dir, float lift) {
+  return skyColor(sky, normalize(vec3(dir.x, lift, dir.z)));
+}
+
 // One layer of stars on an equi-angular cube map of the sky: each face is a grid of cells that may
 // hold one star, so a star belongs to a direction and never moves. atan() evens out the cells (plain
 // gnomonic cells shrink ~5x in solid angle toward the cube corners and would bunch stars on the
@@ -219,6 +259,14 @@ float skyStars(Sky sky, vec3 dir, float density) {
           + skyStarLayer(dir, 44.0, 0.1 * density, 0.09, 7.0) * 1.3;
   float fade = sky.night * smoothstep(0.0, 0.22, dir.y) * smoothstep(0.03, 0.1, length(dir - sky.moon));
   return clamp(s * fade, 0.0, 1.0);
+}
+
+// The cool white most scenes give their stars.
+const vec3 SKY_STAR_TINT = vec3(0.85, 0.9, 1.0);
+
+// Starlight to add to the sky for a view ray: skyStars in SKY_STAR_TINT.
+vec3 skyStarLight(Sky sky, vec3 dir, float density) {
+  return SKY_STAR_TINT * skyStars(sky, dir, density);
 }
 
 // Cloud density on the deck: rotated fbm octaves over a slowly evolving domain warp (Quilez, "Domain

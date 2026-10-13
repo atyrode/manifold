@@ -1,12 +1,16 @@
 // Entry point: call the scene's entry, dither its coverage into the palette.
 
-/** The fragment `main` for a scene whose entry is `Shade <entry>(vec2 uv, vec2 cell, float t)`. */
+/**
+ * The fragment `main` for a scene whose entry is `Shade <entry>(vec2 uv, vec2 cell, float t)`.
+ * It sets `cellTh` before the entry runs and scales the Shade's shimmer by uMotion.
+ */
 export function main(entry: string): string {
   return `
 void main() {
   vec2 cell = gl_FragCoord.xy;
   vec2 uv = cell / uRes;
   float t = uTime;
+  cellTh = threshold(cell);
 
   Shade s = ${entry}(uv, cell, t);
 
@@ -15,7 +19,8 @@ void main() {
   s.rgb = mix(uBg, s.rgb, uReveal);
 
   float th = threshold(cell);
-  th = fract(th + s.shimmer * hash12(cell + floor(uTime * 7.0)));
+  // Shimmer re-rolls the threshold 7 times a second; it stills with the motion.
+  th = fract(th + s.shimmer * uMotion * hash12(cell + floor(uTime * 7.0)));
   float th2 = threshold(cell + vec2(3.0, 5.0));
 
   vec3 col;

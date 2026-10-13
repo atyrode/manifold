@@ -1,6 +1,172 @@
-// Shared preamble: uniforms, hashing and noise, the Manifold mark.
+// Shared preamble: uniforms, hashing and noise, the dither threshold and hard edges, ink and the
+// Shade, SDF primitives, the Manifold mark. The helpers that read no uniform are also exported on
+// their own as `gpuCommonGlsl`, for GPU simulation passes, which do not get this preamble.
 
+import { markGlsl } from "../mark.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "../params.ts";
+
+/**
+ * The preamble's GLSL helpers that read no uniform: hashing, value noise, band-limited fbm,
+ * rotation, smoothfall, SDF and coverage primitives, height-texture gradients and the Manifold
+ * mark. Every scene program has them through `common`. A `gpu.pass` or `gpu.scatter` body
+ * (sims/gpu.ts) prepends them to use them in a GPU simulation: `gpu.pass(gpuCommonGlsl + body)`.
+ * They declare no uniform or define; the only globals are the mark's vertices `M0`..`M4`.
+ */
+export const gpuCommonGlsl = `
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Two independent 0..1 hashes of p (Hoskins, "Hash without Sine", the family of hash12). It is not
+// vec2(hash12(a), hash12(b)): putting it in place of such a pair moves every seeded position.
+vec2 hash22(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
+    mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x),
+    u.y
+  );
+}
+
+// vnoise (the same lattice, so the same values) with its gradient: x the value, y d/dp.x, z d/dp.y.
+vec3 vnoiseD(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  vec2 du = 6.0 * f * (1.0 - f);
+  float a = hash12(i);
+  float b = hash12(i + vec2(1.0, 0.0));
+  float c = hash12(i + vec2(0.0, 1.0));
+  float d = hash12(i + vec2(1.0, 1.0));
+  return vec3(mix(mix(a, b, u.x), mix(c, d, u.x), u.y), mix(b - a, d - c, u.y) * du.x, mix(c - a, d - b, u.x) * du.y);
+}
+
+// Value noise along x alone, one independent lane per seed (half the cost of vnoise): x the value
+// 0..1, y its derivative d/dx.
+vec2 vnoise1(float x, float seed) {
+  float i = floor(x);
+  float f = x - i;
+  float a = hash12(vec2(i, seed));
+  float b = hash12(vec2(i + 1.0, seed));
+  return vec2(mix(a, b, f * f * (3.0 - 2.0 * f)), (b - a) * 6.0 * f * (1.0 - f));
+}
+
+float fbm(vec2 p) {
+  float a = 0.5;
+  float s = 0.0;
+  for (int i = 0; i < 5; i++) {
+    s += a * vnoise(p);
+    p = p * 2.03 + vec2(17.1, 9.2);
+    a *= 0.5;
+  }
+  return s;
+}
+
+// Three octaves of value noise, 0..1, for layers that do not need fbm's finest detail.
+float fbm3(vec2 p) {
+  return (0.5 * vnoise(p) + 0.25 * vnoise(p * 2.03 + vec2(17.1, 9.2)) + 0.125 * vnoise(p * 4.11 + vec2(4.3, 31.7))) / 0.875;
+}
+
+// Band-limited fbm, for texture that moves under the dither: 'octaves' octaves (1 or more) of value
+// noise, each 2.03 times finer, each fading to its mean 0.5 as its lattice shrinks from 4 to 2
+// cells across, so detail finer than the cells never crawls. foot: one cell's size in p units (the
+// larger side of an anisotropic footprint; scale it up where the texture travels fast). x: the
+// noise, 0..1 with mean 0.5; y: the share of its detail kept (1 up close, 0 where all of it is finer
+// than a cell), for instance to soften a threshold on the noise where it no longer resolves.
+vec2 fbmLod(vec2 p, float foot, int octaves) {
+  float s = 0.0;
+  float kept = 0.0;
+  float total = 0.0;
+  float a = 0.5;
+  float f = 1.0;
+  for (int i = 0; i < octaves; i++) {
+    float keep = 1.0 - smoothstep(0.25, 0.5, foot * f);
+    s += a * (keep > 0.0 ? mix(0.5, vnoise(p * f + float(i) * vec2(17.1, 9.2)), keep) : 0.5);
+    kept += a * keep;
+    total += a;
+    f *= 2.03;
+    a *= 0.5;
+  }
+  return vec2(s, kept) / total;
+}
+
+vec2 rotate(vec2 v, float angle) {
+  float c = cos(angle), s = sin(angle);
+  return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+vec2 rotateAbout(vec2 p, vec2 pivot, float angle) {
+  return pivot + rotate(p - pivot, angle);
+}
+
+// 1 at x <= b falling smoothly to 0 at x >= a, for a > b: the reversed smoothstep(a, b, x), which
+// GLSL ES leaves undefined, spelled so it is defined. Same arguments in the same order.
+float smoothfall(float a, float b, float x) {
+  return 1.0 - smoothstep(b, a, x);
+}
+
+// Coverage of the inside (d < 0) of a signed distance, softened over -aa..aa.
+float softFill(float d, float aa) {
+  return 1.0 - smoothstep(-aa, aa, d);
+}
+
+// The Gaussian bell: 1 at 0, 1/e at x = +-1.
+float bell(float x) {
+  return exp(-x * x);
+}
+
+// Signed distance to a box centred on the origin with half extents halfSize, its corners rounded
+// by r within that extent (r = 0: sharp corners).
+float sdBox(vec2 p, vec2 halfSize, float r) {
+  vec2 q = abs(p) - halfSize + r;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// Signed distance to a capsule from a to b whose radius tapers from ra at a to rb at b; t returns
+// where along a..b (0..1) the nearest point of the axis lies. The radius is taken at that point:
+// exact for ra = rb, close for gentle tapers.
+float sdTaperCapsule(vec2 p, vec2 a, vec2 b, float ra, float rb, out float t) {
+  vec2 pa = p - a;
+  vec2 ba = b - a;
+  t = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * t) - mix(ra, rb, t);
+}
+
+float sdTaperCapsule(vec2 p, vec2 a, vec2 b, float ra, float rb) {
+  float t;
+  return sdTaperCapsule(p, a, b, ra, rb, t);
+}
+
+// Signed distance to an ellipse centred on the origin with radii r: the scaled radial distance
+// inside (smooth all the way to the centre) and Quilez's gradient-normalised estimate outside.
+// Close to exact near the outline, where coverage is decided.
+float sdEllipse(vec2 p, vec2 r) {
+  float k0 = length(p / r);
+  if (k0 < 1.0) return (k0 - 1.0) * min(r.x, r.y);
+  return k0 * (k0 - 1.0) / length(p / (r * r));
+}
+
+// A height texture's red channel at uv and its gradient by central differences a texel either
+// side: x the height, y dh/du, z dh/dv (per uv unit: multiply by texel for the slope per texel,
+// divide y by the aspect for x in view heights).
+vec3 heightGrad(sampler2D h, vec2 uv, vec2 texel) {
+  float e = texture(h, uv + vec2(texel.x, 0.0)).r;
+  float w = texture(h, uv - vec2(texel.x, 0.0)).r;
+  float n = texture(h, uv + vec2(0.0, texel.y)).r;
+  float s = texture(h, uv - vec2(0.0, texel.y)).r;
+  return vec3(texture(h, uv).r, (e - w) / (2.0 * texel.x), (n - s) / (2.0 * texel.y));
+}
+${markGlsl}`;
 
 export const common = `#version 300 es
 precision highp float;
@@ -19,6 +185,7 @@ uniform int uColor;      // 0 accent, 1 mono, 2 full
 uniform int uView;       // 0 dithered, 1 source, 2 split (source left)
 uniform float uLevels;
 uniform float uMotion;
+uniform float uMotionTime; // the scene clock integrated with motion (seconds of motion-scaled time): no jump when uMotion changes
 uniform vec2 uPointer;   // -1..1, smoothed
 uniform vec4 uMouse;     // raw pointer: xy in uv (y up), z 1 while pressed, w uTime of the last press (-1e4: none)
 uniform float uProgress; // loading page progress 0..1, -1 elsewhere
@@ -52,35 +219,7 @@ uniform vec2 uWeather;    // x: how wet the world is 0..1 (rises while it rains,
 out vec4 outColor;
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
-
-float hash12(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
-
-float vnoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(
-    mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
-    mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x),
-    u.y
-  );
-}
-
-float fbm(vec2 p) {
-  float a = 0.5;
-  float s = 0.0;
-  for (int i = 0; i < 5; i++) {
-    s += a * vnoise(p);
-    p = p * 2.03 + vec2(17.1, 9.2);
-    a *= 0.5;
-  }
-  return s;
-}
-
+${gpuCommonGlsl}
 float bayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
 float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
 float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
@@ -97,13 +236,59 @@ float quantize(float v, float t) {
   return clamp(floor(clamp(v, 0.0, 1.0) * n + t) / n, 0.0, 1.0);
 }
 
-vec2 rotate(vec2 v, float angle) {
-  float c = cos(angle), s = sin(angle);
-  return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+// Hard edges. A soft edge that moves steps through the palette levels, each colour channel at its
+// own moment, and flickers. Cut it per cell instead: compare its coverage with a threshold from the
+// lab's dither pattern, so a passing edge flips each cell once and the coverage still reads as the
+// share of cells covered.
+
+// This cell's dither threshold, threshold(cell): main() sets it before the scene's entry runs.
+// Read it; never write it.
+float cellTh;
+
+// A threshold for a second, decorrelated edge layer: offset moves it to another cell of the dither
+// pattern. Kept within 0.004..0.996, so cover 0 never shows and cover 1 always does, whichever
+// way it is compared.
+float edgeThreshold(vec2 cell, vec2 offset) {
+  return 0.004 + 0.992 * threshold(cell + offset);
 }
 
-vec2 rotateAbout(vec2 p, vec2 pivot, float angle) {
-  return pivot + rotate(p - pivot, angle);
+// 1 where cover exceeds the threshold th, else 0; without th, against cellTh.
+float hardEdge(float cover, float th) {
+  return cover > th ? 1.0 : 0.0;
+}
+
+float hardEdge(float cover) {
+  return hardEdge(cover, cellTh);
+}
+
+// The inside (d < 0) of a signed distance, cut per cell: hardEdge(softFill(d, aa), th).
+float hardFill(float d, float aa, float th) {
+  return hardEdge(softFill(d, aa), th);
+}
+
+float hardFill(float d, float aa) {
+  return hardFill(d, aa, cellTh);
+}
+
+// c snapped per channel to the nearest palette level.
+vec3 snapLevel(vec3 c) {
+  float n = max(uLevels - 1.0, 1.0);
+  return floor(clamp(c, 0.0, 1.0) * n + 0.5) / n;
+}
+
+// Light of brightness b (0..1) in the hue of tint, drawn whole: rgb is palette level k = round(b * n)
+// times tint, snapped per channel, so no channel rounds off on its own into a stray hue; a is
+// hardEdge(cover, th). Fainter than the first level, level 1 shows on a share b * n * 2 of the
+// covered cells: a sparse, still stipple.
+vec4 hardRamp(float b, float cover, vec3 tint, float th) {
+  float n = max(uLevels - 1.0, 1.0);
+  float k = floor(clamp(b, 0.0, 1.0) * n + 0.5);
+  float alpha = cover;
+  if (k < 0.5) {
+    alpha *= b * n * 2.0;
+    k = 1.0;
+  }
+  return vec4(floor(k * tint + 0.5) / n, hardEdge(alpha, th));
 }
 
 // Cover-fit the artwork, keeping the focal point in frame.
@@ -133,26 +318,6 @@ float sinceTrigger(int slot) {
   return uTime - uTriggers[slot];
 }
 
-float segmentDistance(vec2 p, vec2 a, vec2 b) {
-  vec2 pa = p - a, ba = b - a;
-  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
-}
-
-// The Manifold M, after the app icon, in mark units: x in [-0.47, 0.47], y in [-0.5, 0.5].
-const vec2 M0 = vec2(-0.47, -0.5);
-const vec2 M1 = vec2(-0.47, 0.5);
-const vec2 M2 = vec2(0.0, -0.08);
-const vec2 M3 = vec2(0.47, 0.5);
-const vec2 M4 = vec2(0.47, -0.5);
-
-float markDistance(vec2 q) {
-  return min(min(segmentDistance(q, M0, M1), segmentDistance(q, M1, M2)), min(segmentDistance(q, M2, M3), segmentDistance(q, M3, M4)));
-}
-
-vec2 markVertex(int i) {
-  return i == 0 ? M0 : i == 1 ? M1 : i == 2 ? M2 : i == 3 ? M3 : M4;
-}
-
 struct Shade {
   float ink;      // coverage of the neutral ink
   float accent;   // coverage of the single accent colour
@@ -168,6 +333,38 @@ Shade blankShade() {
   o.shimmer = 0.0;
   o.rgb = vec3(0.0);
   o.source = vec3(0.0);
+  return o;
+}
+
+// Whether the page shows its paper theme (the scene's theme chose "paper"). It reads the page's
+// own background, so the shader can never disagree with the page.
+bool pagePaper() {
+  return dot(uBg, LUMA) > 0.5;
+}
+
+// Ink coverage for a final colour. On paper ink is dark: clamp((white - lum) / range) with
+// paper = (white, range). At night ink is light: clamp(gain * lum^gamma), lum floored at 0 (pow of
+// a negative is undefined) and gamma 1 taken without pow (which is not exact). Without paper,
+// white 0.9 and range 0.8.
+float inkOf(vec3 col, float gain, float gamma, vec2 paper) {
+  float lum = dot(col, LUMA);
+  if (pagePaper()) return clamp((paper.x - lum) / paper.y, 0.0, 1.0);
+  float l = max(lum, 0.0);
+  return clamp(gain * (gamma == 1.0 ? l : pow(l, gamma)), 0.0, 1.0);
+}
+
+float inkOf(vec3 col, float gain, float gamma) {
+  return inkOf(col, gain, gamma, vec2(0.9, 0.8));
+}
+
+// A scene's result: col as both the full-colour rendition and the source, the given ink and
+// accent coverage, no shimmer. Typically shadeOf(col, inkOf(col, 1.3, 0.8), accent).
+Shade shadeOf(vec3 col, float ink, float accent) {
+  Shade o = blankShade();
+  o.ink = ink;
+  o.accent = accent;
+  o.rgb = col;
+  o.source = col;
   return o;
 }
 `;

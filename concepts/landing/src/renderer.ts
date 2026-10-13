@@ -44,7 +44,7 @@ const NEVER = -1e4;
 const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [role=switch]";
 
 const uniformNames = [
-  "uRes", "uTime", "uDither", "uColor", "uLevels", "uMotion", "uPointer", "uMouse",
+  "uRes", "uTime", "uMotionTime", "uDither", "uColor", "uLevels", "uMotion", "uPointer", "uMouse",
   "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
   "uStars", "uStarCount", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
@@ -148,8 +148,14 @@ export class DitherRenderer {
     pressedAt: NEVER,
   };
   #settings: RenderSettings;
-  /** Scene clock in seconds; stands still while paused. */
+  /** Scene clock in seconds; stands still while paused. Never reset: scenes share it. */
   #clock = 0;
+  /**
+   * Motion clock (`uMotionTime`, `SimFrame.motionTime`): each scene-clock step times the motion
+   * amount, summed on the same origin as `#clock`, so it equals `#clock * motion` while motion holds
+   * still and moving the slider changes the pace without jumping the phase.
+   */
+  #motionClock = 0;
   #lastFrame = 0;
   #paused = false;
   /** Smoothed frames per second, for the lab footer. */
@@ -158,6 +164,10 @@ export class DitherRenderer {
   readonly #params = new Float32Array(MAX_PARAMS);
   /** Shader time each trigger slot last fired; far in the past when idle. */
   readonly #triggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
+  /** Each slot's stamp as the current scene's sim last saw it, to find the next frame's presses. */
+  readonly #seenTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
+  /** `SimFrame.fired`, rewritten in place each frame. */
+  readonly #fired: boolean[] = Array.from({ length: MAX_TRIGGERS }, () => false);
   /** The scene the triggers and the last press belong to: both reset when it changes. */
   #triggerScene = "";
   /** Loading-page progress 0..1, or -1 off the loading page. */
@@ -387,8 +397,10 @@ export class DitherRenderer {
     this.#lastFrame = now;
     if (dt > 0) this.fps = this.fps === 0 ? 1 / dt : this.fps * 0.92 + (1 / dt) * 0.08;
     const step = this.#paused || this.#frozen ? 0 : dt;
-    this.#clock += step;
     const s = this.#settings;
+    const motion = this.#frozen ? 0 : s.motion;
+    this.#clock += step;
+    this.#motionClock += step * motion;
     const width = Math.max(1, Math.ceil(this.#canvas.clientWidth / s.pixel));
     const height = Math.max(1, Math.ceil(this.#canvas.clientHeight / s.pixel));
     if (this.#canvas.width !== width || this.#canvas.height !== height) {
@@ -405,6 +417,7 @@ export class DitherRenderer {
 
     const current = this.#scene;
     const scene = current && current.id === s.scene ? current : this.#enter(s.scene);
+    const entered = scene !== current;
     const program = scene.program;
     if (!program) {
       gl.viewport(0, 0, width, height);
@@ -412,7 +425,6 @@ export class DitherRenderer {
       gl.clear(gl.COLOR_BUFFER_BIT);
       return;
     }
-    const motion = this.#frozen ? 0 : s.motion;
     // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
     // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
     // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s
@@ -423,17 +435,26 @@ export class DitherRenderer {
     const snow = s.params[scene.snow] ?? 0;
     const wetTo = rain > 0 ? Math.min(1, 0.4 + 1.1 * rain) : 0;
     const lyingTo = snow > 0 ? Math.min(1, 0.25 + snow) * (1 - 0.5 * rain) : 0;
-    if (scene !== current || this.#frozen) {
+    if (entered || this.#frozen) {
       weather.wet = wetTo;
       weather.lying = lyingTo;
     } else {
       weather.wet = wetTo + (weather.wet - wetTo) * Math.exp(-step / (weather.wet < wetTo ? 1.2 / rain : 25));
       weather.lying = lyingTo + (weather.lying - lyingTo) * Math.exp(-step / (weather.lying < lyingTo ? 3 / snow : 30 / (1 + 4 * rain)));
     }
+    // A slot fired when its stamp moved to a real press since the sim's previous frame. A scene just
+    // entered has a fresh sim with nothing to compare against: its first frame reports no presses
+    // (stamps were reset to idle when the scene changed, so an earlier visit's never replay).
+    for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
+      const stamp = this.#triggers[slot] ?? NEVER;
+      this.#fired[slot] = !entered && stamp > NEVER && stamp !== this.#seenTriggers[slot];
+      this.#seenTriggers[slot] = stamp;
+    }
     // Simulations upload (and so bind) their textures: step them before binding this frame's units.
     const simTextures = scene.sim?.frame({
       dt: step,
       time: this.#clock,
+      motionTime: this.#motionClock,
       motion,
       width,
       height,
@@ -441,6 +462,7 @@ export class DitherRenderer {
       values: s.params,
       params: s.knobs,
       triggers: this.#triggers,
+      fired: this.#fired,
       pointer,
     }) ?? [];
 
@@ -462,6 +484,7 @@ export class DitherRenderer {
     const u = program.uniforms;
     gl.uniform2f(u.uRes, width, height);
     gl.uniform1f(u.uTime, this.#clock);
+    gl.uniform1f(u.uMotionTime, this.#motionClock);
     gl.uniform1i(u.uDither, ditherIds.indexOf(s.dither));
     gl.uniform1i(u.uColor, colorIds.indexOf(s.color));
     gl.uniform1f(u.uLevels, s.levels);
