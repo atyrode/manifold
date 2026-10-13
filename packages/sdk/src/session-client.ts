@@ -12,6 +12,7 @@ import {
   AttendanceResponseSchema,
   ContainerResponseSchema,
   ContainerTerminalsResponseSchema,
+  IndexFolderCreatedResponseSchema,
   IndexResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
@@ -1258,10 +1259,13 @@ export class SessionClient {
     await this.invoke("core.space.removeTile", { containerId, tileId });
   }
 
-  /** Creates an index folder (`core.index.createFolder`); answers the whole new index. */
+  /**
+   * Creates an index folder (`core.index.createFolder`); answers the whole new index. The door
+   * also names the created folder (`IndexFolderCreatedResponseSchema.folderId`), parsed here.
+   */
   async createFolder(name: string, parentId: string | null): Promise<readonly IndexEntry[]> {
     const result = await this.invoke("core.index.createFolder", { name, parentId });
-    return IndexResponseSchema.parse(result).items;
+    return IndexFolderCreatedResponseSchema.parse(result).items;
   }
 
   /** Renames an index folder (`core.index.renameFolder`). */

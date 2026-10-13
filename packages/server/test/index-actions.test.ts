@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ContainerResponseSchema,
+  IndexFolderCreatedResponseSchema,
   IndexResponseSchema,
   ContainersResponseSchema,
   type ActionOutcome,
@@ -126,9 +127,13 @@ async function createFolder(
     name,
     parentId,
   });
-  const items = IndexResponseSchema.parse(result(outcome)).items;
-  const folder = items.findLast((item) => item.kind === "folder" && item.name === name);
-  if (folder?.kind !== "folder") throw new Error(`folder ${name} missing from the answer`);
+  // The answer NAMES what it made (#1079): the id beside the tree is that folder's own row,
+  // which is how the rail's "New folder" opens it for renaming without guessing by name.
+  const { items, folderId } = IndexFolderCreatedResponseSchema.parse(result(outcome));
+  const folder = items.find((item) => item.kind === "folder" && item.id === folderId);
+  if (folder?.kind !== "folder" || folder.name !== name || folder.parentId !== parentId) {
+    throw new Error(`folder ${name} is not the row the answer named`);
+  }
   return folder;
 }
 

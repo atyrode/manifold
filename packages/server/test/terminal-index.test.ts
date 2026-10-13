@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   ActionOutcomeSchema,
   ContainerTerminalsResponseSchema,
+  IndexFolderCreatedResponseSchema,
   IndexResponseSchema,
   ServerToAgentMessageSchema,
   TerminalsResponseSchema,
@@ -669,8 +670,9 @@ describe("core.index.moveEntry is how an unplaced terminal is reordered", () => 
       name: "machines",
     });
     expect(created.status).toBe(200);
-    const folder = actionItems(created.payload).find((item) => item.kind === "folder");
-    if (folder?.kind !== "folder") throw new Error("missing folder");
+    const answer = ActionOutcomeSchema.parse(created.payload);
+    if (!answer.ok) throw new Error(`action refused: ${answer.denial.message}`);
+    const folder = { id: IndexFolderCreatedResponseSchema.parse(answer.result).folderId };
 
     const moved = await call(fixture, "POST", "/api/actions/core.index.moveEntry", OWNER_KEY, {
       item: { kind: "container", id: born.homeId },

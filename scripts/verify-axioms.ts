@@ -80,7 +80,7 @@ import {
   LayoutResponseSchema,
   MachinesResponseSchema,
   ContainerResponseSchema,
-  IndexResponseSchema,
+  IndexFolderCreatedResponseSchema,
   MAX_TILE_CHILDREN,
   PluginManifestSchema,
   PluginRosterSchema,
@@ -5254,7 +5254,7 @@ try {
     /*
       "In its manifest-ordered place" is asserted among the rows of its OWN presentation, and
       that scoping is forced by the rail being fully composed now: the stack holds the brand
-      line, three creators, the status line, the key-table door and the identity footer beside
+      line, the creation control, the status line, the key-table door and the identity footer beside
       the three bodies, all carrying `data-section-id`, so an absolute index in the whole stack
       says nothing about ordering and everything about how much chrome happens to be
       contributed. `data-presentation` is the row's resolved presentation, published in the DOM
@@ -5440,11 +5440,9 @@ try {
         await dispatch("core.index.createFolder", { name, parentId: folderParent }),
       );
       if (!made.ok) throw new Error(`R9 seed folder refused: ${made.denial.message}`);
-      const { items } = IndexResponseSchema.parse(made.result);
-      const row = items.find((item) => item.kind === "folder" && item.name === name);
-      if (row === undefined || row.kind !== "folder") throw new Error("R9 folder not listed");
-      folderIds.push(row.id);
-      folderParent = row.id;
+      const { folderId } = IndexFolderCreatedResponseSchema.parse(made.result);
+      folderIds.push(folderId);
+      folderParent = folderId;
     }
     for (const [slot, id] of [seededIds[0], seededIds[1]].entries()) {
       const moved = ActionOutcomeSchema.parse(

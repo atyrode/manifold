@@ -3,6 +3,7 @@ import {
   CreateIndexFolderRequestSchema,
   MoveIndexEntryRequestSchema,
   ContainerResponseSchema,
+  IndexFolderCreatedResponseSchema,
   IndexResponseSchema,
   type IndexEntry,
   RenameContainerRequestSchema,
@@ -61,19 +62,16 @@ test("nested container tree mutations return one authoritative persistent tree",
         .sort((left, right) => left.sortOrder - right.sortOrder)
         .map((item) => (item.kind === "container" ? item.container.id : item.id));
 
-    const focusedTree = await tree(
-      "core.index.createFolder",
-      CreateIndexFolderRequestSchema.parse({ name: "Focused", parentId: null }),
-    );
-    const focused = focusedTree.find((item) => item.kind === "folder" && item.name === "Focused");
-    if (focused?.kind !== "folder") throw new Error("focused folder missing");
-
-    const nestedTree = await tree(
-      "core.index.createFolder",
-      CreateIndexFolderRequestSchema.parse({ name: "Nested", parentId: focused.id }),
-    );
-    const nested = nestedTree.find((item) => item.kind === "folder" && item.name === "Nested");
-    if (nested?.kind !== "folder") throw new Error("nested folder missing");
+    const folder = async (name: string, parentId: string | null): Promise<string> =>
+      IndexFolderCreatedResponseSchema.parse(
+        await ownerAction(
+          server,
+          "core.index.createFolder",
+          CreateIndexFolderRequestSchema.parse({ name, parentId }),
+        ),
+      ).folderId;
+    const focused = { id: await folder("Focused", null) };
+    const nested = { id: await folder("Nested", focused.id) };
 
     const move = async (
       item: { readonly kind: "container" | "folder"; readonly id: string },
