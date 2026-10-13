@@ -21,7 +21,7 @@ const params: readonly ParamDef[] = [
   range("look", "light", "light angle", 0.38, "Where the lamp stands round the table. Every groove has a lit side facing it and a shadowed side away.", { step: 0.01 }),
   range("look", "height", "lamp height", 0.45, "Low: a raking light, long shadows, every line in sharp relief. High: soft and even."),
   choice("look", "rim", "rim", [{ label: "walnut", value: 0 }, { label: "brass", value: 1 }, { label: "none", value: 2 }], 0, "A dark walnut rim on a dark floor, a polished brass one, or none: the sand runs on off the page."),
-  feature("manifold", "mark", "M track", false, "size", 0.5, "Every few drawings the ball spirals the table clean and draws the Manifold M from its centre as one continuous track, then rests to show it (ball). Now: draw it next.", { trigger: 1 }),
+  feature("manifold", "mark", "M track", false, "size", 0.5, "Switch on, or press now, and the ball heads straight for the Manifold M and draws it as one continuous stroke, foot to foot, the groove glowing warm as it goes, then rests to show it. While on, it comes round again every few drawings on a freshly groomed table (ball).", { trigger: 1 }),
 ];
 
 export const sandtableScene: SceneDef = {

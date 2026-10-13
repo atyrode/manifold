@@ -3,9 +3,11 @@
 // Ball: a steel ball pulled through fine sand by a magnet under the table, as in Bruce Shapiro's
 // Sisyphus tables. The magnet runs theta–rho tracks at an even pace; the ball chases it on a damped
 // spring (so corners come out rounded) and ploughs a groove whose spoil banks up either side
-// (HeightField.groove). Between drawings an erase spiral, its turns a groove apart, goes
-// straight over the last: wherever it crosses, it scrapes the old banks away and fills the old
-// grooves with its own, until the table lies groomed for the next drawing.
+// (HeightField.groove). Between drawings an erase spiral, its turns closer than a groove and ridden
+// shallower, goes straight over the last: wherever it crosses, it scrapes the old banks away and
+// fills the old grooves, until the table lies groomed for the next drawing. The Manifold M is one
+// continuous stroke from foot to foot, drawn at once when asked for (or every few drawings, on a
+// freshly groomed table), and lit in the accent as far as the ball has drawn it.
 //
 // Pendulum: a funnel of sand on a string, a damped two-axis pendulum
 //   u'' = -wu² u - 2γ u' + 2Ω v'        v'' = -wv² v - 2γ v' - 2Ω u'
@@ -26,7 +28,9 @@
 // Uploads: uSim0 r16f heights, SANDTABLE.grid square; uSim1 rgba16f, 3 texels:
 //   0  the ball or the funnel: centre (field units from the table's centre), shown 0..1, stream 0..1
 //   1  the straight edge: normal (unit), offset of its middle along the normal, shown 0..1
-//   2  the M: lit 0..1, its height in field units; the funnel's fill 0..1; 0
+//   2  the M: lit 0..1, its height in field units; ball: how much of it is drawn, in mark units along
+//      its stroke (positive from the left foot, negative from the right); pendulum: the funnel's
+//      fill 0..1; 0
 import { effective, type ParamDef } from "../../params.ts";
 import { domeProfile, HeightField, type GrooveOptions } from "../../sims/heightfield.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -47,7 +51,11 @@ export const SANDTABLE = {
   rimHeight: 0.018,
   /** Farthest the ball's centre goes from the middle: radius 1 of the theta–rho tracks. */
   track: 0.452,
-  /** The steel ball's radius, and the groove it ploughs (resting in it, it sinks a groove deep). */
+  /**
+   * The steel ball's radius (some 2.9% of the table across; the shader keeps it at least ten cells
+   * across on coarse pixels), and the groove it ploughs, about where a ball that size sinking a
+   * groove's depth meets the sand.
+   */
   ball: 0.015,
   groove: 0.021,
   /** Height-field texels across the field (about a cell and a half each on screen). */
@@ -150,7 +158,6 @@ const markSize = (amount: number): number => 0.8 + 0.5 * amount;
 /** Reads the scene's knobs by key, through their position in the scene's `params`. */
 class Knobs {
   readonly #slots: Record<Knob, KnobSlot>;
-  readonly #defaults: number[];
 
   constructor(params: readonly ParamDef[]) {
     const slot = (key: Knob): KnobSlot => {
@@ -169,12 +176,6 @@ class Knobs {
       depth: slot("depth"),
       mark: slot("mark"),
     };
-    this.#defaults = params.map((def) => effective(def, {}));
-  }
-
-  /** The knobs at their defaults, for the table laid out before the first frame. */
-  defaults(): Settings {
-    return this.read(this.#defaults, {});
   }
 
   read(values: readonly number[], raw: Readonly<Record<string, number>>): Settings {
@@ -220,6 +221,9 @@ interface Stop {
   seconds: number;
 }
 
+/** What a track does to the sand: draws, grooms the table flat for the next drawing, or draws the M. */
+type TrackKind = "draw" | "erase" | "mark";
+
 /** The magnet's path: a polyline in the unit disc, walked at an even pace. */
 interface Track {
   readonly xy: Float64Array;
@@ -231,8 +235,11 @@ interface Track {
   readonly stops: readonly Stop[];
   /** Pace relative to the drawing speed. */
   readonly pace: number;
-  /** It draws the Manifold M (the shader lights it in the accent while it lasts). */
-  readonly mark: boolean;
+  readonly kind: TrackKind;
+  /** The first stretch (field units) is a quick move into place, at TRANSIT_PACE. */
+  readonly lead: number;
+  /** For the M: how much of it (field units) was drawn before this track began. */
+  readonly drawn: number;
 }
 
 /**
@@ -300,7 +307,7 @@ class TrackBuilder {
     for (const stop of track.stops) if (stop.at >= from) this.#stops.push({ at: stop.at + shift, seconds: stop.seconds });
   }
 
-  build(pace: number, mark: boolean): Track {
+  build(pace: number, kind: TrackKind, lead = 0, drawn = 0): Track {
     return {
       xy: Float64Array.from(this.#xy),
       at: Float64Array.from(this.#at),
@@ -308,7 +315,9 @@ class TrackBuilder {
       length: this.#length,
       stops: this.#stops,
       pace,
-      mark,
+      kind,
+      lead,
+      drawn,
     };
   }
 
@@ -369,12 +378,13 @@ function begin(fromX: number, fromY: number, startRho: number, rand: Rand): Trac
 }
 
 /**
- * Erase spiral: one groove wound from `from` (0 centre, 1 rim) to the other end, its turns about a
- * groove apart, so each turn cuts away its neighbour's bank and buries whatever was there, leaving
- * the shallow ripple of a record's grooves.
+ * Erase spiral: one groove wound from `from` (0 centre, 1 rim) to the other end, its turns some
+ * three quarters of a groove apart and ridden shallower than a drawing (ERASE_DEPTH), so each turn
+ * shaves its neighbour's bank and buries whatever was there, leaving only the faint ripple of a
+ * record's grooves for the next drawing to stand out on.
  */
 function spiral(b: TrackBuilder, from: number, rand: Rand): void {
-  const spacing = SANDTABLE.groove * (1.0 + 0.15 * rand());
+  const spacing = SANDTABLE.groove * (0.75 + 0.1 * rand());
   const turns = Math.max(4, Math.round(SANDTABLE.track / spacing));
   const steps = turns * 360;
   for (let k = 1; k <= steps; k++) {
@@ -503,33 +513,50 @@ function loops(b: TrackBuilder, rand: Rand): void {
   }
 }
 
-/** The Manifold M as markDistance draws it, in mark units: x ±0.47, y ±0.5. */
+/** The Manifold M as markDistance draws it, in mark units: x ±0.47, y ±0.5, centred on the table. */
 const MARK: readonly (readonly [number, number])[] = [[-0.47, -0.5], [-0.47, 0.5], [0, -0.08], [0.47, 0.5], [0.47, -0.5]];
-/**
- * The M as one continuous path from the foot of its V, set on the table's centre: out along each
- * leg and back (retracing a groove cuts nothing new) and home to the centre.
- */
-const MARK_PATH: readonly number[] = [2, 1, 0, 1, 2, 3, 4, 3, 2];
 /** Seconds the magnet waits at each corner of the M, so the ball turns it crisply. */
 const MARK_STOP = 0.5;
 
-function markPath(b: TrackBuilder, size: number): void {
-  b.to(0, 0);
-  for (const index of MARK_PATH) {
-    const vertex = MARK[index];
-    if (vertex === undefined) continue;
-    b.to(vertex[0] * size, (vertex[1] + 0.08) * size);
+/**
+ * Erase spirals run at twice the drawings' pace, moves into place at two and a half times. The M is
+ * an event: it runs on the scene clock whatever the lab's motion, at about the pace a drawing has at
+ * the default motion.
+ */
+const ERASE_PACE = 2;
+const MARK_PACE = 0.6;
+const TRANSIT_PACE = 2.5;
+
+/**
+ * The M, `size` unit-disc units tall, as one continuous stroke from foot to foot: a brisk theta–rho
+ * move from the magnet to the nearer foot (the track's lead), then up, down into the V, up and
+ * down, pausing at each corner.
+ */
+function markTrack(size: number, fromX: number, fromY: number): Track {
+  const order = fromX < 0 ? [0, 1, 2, 3, 4] : [4, 3, 2, 1, 0];
+  const foot: readonly [number, number] = MARK[order[0] ?? 0] ?? [0, 0];
+  const footX = foot[0] * size;
+  const footY = foot[1] * size;
+  const rho0 = Math.min(1, Math.hypot(fromX, fromY));
+  const theta1 = Math.atan2(footY, footX);
+  const theta0 = rho0 > 0.02 ? Math.atan2(fromY, fromX) : theta1;
+  let turn = theta1 - theta0;
+  turn -= TAU * Math.round(turn / TAU);
+  const b = new TrackBuilder(fromX, fromY);
+  b.sweep(theta0, theta0 + turn, rho0, Math.hypot(footX, footY));
+  const lead = b.length;
+  b.stop(MARK_STOP);
+  for (const index of order.slice(1)) {
+    const vertex: readonly [number, number] = MARK[index] ?? [0, 0];
+    b.to(vertex[0] * size, vertex[1] * size);
     b.stop(MARK_STOP);
   }
+  return b.build(MARK_PACE, "mark", lead);
 }
-
-/** Erase spirals run at twice the drawings' pace; the M a little slower. */
-const ERASE_PACE = 2;
-const MARK_PACE = 0.7;
 
 type Job =
   | { kind: "drawing"; drawing: Drawing; seed: number }
-  /** An erase spiral from the rim in to the centre, where the M will start. */
+  /** An erase spiral from the centre out to the rim, for the M to come in from. */
   | { kind: "erase"; seed: number }
   | { kind: "mark"; size: number };
 
@@ -549,16 +576,12 @@ function buildTrack(job: Job, fromX: number, fromY: number): Track {
       return drawingTrack(job.drawing, mulberry32(job.seed), fromX, fromY);
     case "erase": {
       const rand = mulberry32(job.seed);
-      const b = begin(fromX, fromY, 1, rand);
-      spiral(b, 1, rand);
-      return b.build(ERASE_PACE, false);
+      const b = begin(fromX, fromY, 0, rand);
+      spiral(b, 0, rand);
+      return b.build(ERASE_PACE, "erase");
     }
-    case "mark": {
-      // Upright, so no turning: straight to the centre (where the erase spiral left the ball).
-      const b = new TrackBuilder(fromX, fromY);
-      markPath(b, job.size);
-      return b.build(MARK_PACE, true);
-    }
+    case "mark":
+      return markTrack(job.size, fromX, fromY);
     default: {
       const unreachable: never = job;
       throw new SandtableError(`sandtable: unknown job ${String(unreachable)}`);
@@ -574,32 +597,32 @@ function drawingTrack(drawing: Drawing, rand: Rand, fromX: number, fromY: number
     case "spiral": {
       const b = begin(fromX, fromY, side, rand);
       spiral(b, side, rand);
-      return b.build(ERASE_PACE, false);
+      return b.build(ERASE_PACE, "erase");
     }
     case "clover": {
       const b = begin(fromX, fromY, 1, rand);
       clover(b, rand);
-      return b.build(1, false);
+      return b.build(1, "draw");
     }
     case "rose": {
       const b = begin(fromX, fromY, 1, rand);
       rose(b, rand);
-      return b.build(1, false);
+      return b.build(1, "draw");
     }
     case "star": {
       const b = begin(fromX, fromY, side, rand);
       star(b, side, rand);
-      return b.build(1, false);
+      return b.build(1, "draw");
     }
     case "waves": {
       const b = begin(fromX, fromY, side, rand);
       waves(b, side, rand);
-      return b.build(1, false);
+      return b.build(1, "draw");
     }
     case "loops": {
       const b = begin(fromX, fromY, 1, rand);
       loops(b, rand);
-      return b.build(1, false);
+      return b.build(1, "draw");
     }
     default: {
       const unreachable: never = drawing;
@@ -610,8 +633,11 @@ function drawingTrack(drawing: Drawing, rand: Rand, fromX: number, fromY: number
 
 // ---- the ball ------------------------------------------------------------------------------------
 
-/** The magnet's pace at drawing speed 1, field units per second (some 30 cells a second). */
-const BALL_SPEED = 0.07;
+/**
+ * The magnet's pace at drawing speed 1 and full motion, field units per second; at the lab's default
+ * motion of 0.6 that is some 0.066, about 20 cells a second at 300 rows.
+ */
+const BALL_SPEED = 0.11;
 /** The ball chases the magnet on a damped spring: natural frequency (rad/s) and damping ratio. */
 const SPRING = 9;
 const SPRING_DAMPING = 0.85;
@@ -624,8 +650,15 @@ const GROOVE_STEP = 0.0025;
  */
 const PREWARM_SLICE = 0.05;
 const PREWARM_GROOVE_STEP = 0.022;
-/** The opening table: a drawing finished on a groomed bed, the erase spiral after it this far in. */
-const PREWARM_SHARE = 0.45;
+/**
+ * The opening table: a bed groomed, one drawing finished on it, and the ball this many seconds of
+ * drawing time into the next track, so a short fresh groove trails behind it. With the M track on,
+ * the ball has instead come in to the M and drawn this share of it.
+ */
+const PREWARM_LEAD = 3;
+const PREWARM_MARK = 0.3;
+/** Erase spirals ride this share of a drawing's groove depth, so the groomed bed stays quiet. */
+const ERASE_DEPTH = 0.55;
 /** While the M track is on, it comes round after this many drawings, and then rests this long. */
 const MARK_EVERY = 4;
 const MARK_REST = 40;
@@ -640,8 +673,9 @@ const SALT_ERASE = 0xe2a5;
 
 class Ball {
   readonly #field: HeightField;
-  /** The ball's tool; kept and only retuned, as HeightField asks. */
+  /** The ball's tools, drawing and erasing; kept and only retuned, as HeightField asks. */
   readonly #groove: GrooveOptions = { width: SANDTABLE.groove, depth: depthOf(0.5), ridge: 0.75 * SANDTABLE.groove };
+  readonly #erase: GrooveOptions = { width: SANDTABLE.groove, depth: ERASE_DEPTH * depthOf(0.5), ridge: 0.75 * SANDTABLE.groove };
   #track: Track | undefined;
   #phase: "draw" | "rest" = "draw";
   /** Distance along the track (field units), its segment, the next stop, time left waiting there. */
@@ -663,16 +697,24 @@ class Ball {
   #held = false;
   #away = false;
   #idle = 0;
+  /** The M: its height (field units), lit while it lies in the sand, how much is drawn, from which foot. */
   #markHeight = 0;
   #markLive = false;
   #markFading = false;
+  #markDrawn = 0;
+  #markSign = 1;
+  /** The M track knob was on last frame (switching it on draws the M at once). */
+  #markOn = false;
   #signature = "";
 
   constructor(field: HeightField) {
     this.#field = field;
   }
 
-  /** A fresh table: a bed groomed, a drawing done on it, and the next erase spiral part way in. */
+  /**
+   * A fresh table: a bed groomed, one drawing finished on it, and the ball just setting off on the
+   * next; or, with the M track on, already part way up the M.
+   */
   reset(settings: Settings): void {
     this.#field.fill(0);
     this.#magnet.x = 0;
@@ -687,17 +729,27 @@ class Ball {
     this.#away = false;
     this.#markLive = false;
     this.#markFading = false;
+    this.#markOn = settings.mark > 0;
     this.#signature = `${settings.pattern}|${settings.seed}`;
-    this.#groove.depth = depthOf(settings.depth);
-    for (const share of [1, 1, PREWARM_SHARE]) {
+    this.#retune(settings);
+    for (let k = 0; k < 2; k++) {
       this.#next(settings);
-      this.#runOut(share);
+      this.#runOut(Infinity);
+    }
+    if (this.#markOn) {
+      this.#drawMark(settings.markNow);
+      this.#next(settings);
+      const track = this.#track;
+      if (track !== undefined) this.#runOut(track.lead + PREWARM_MARK * (track.length - track.lead));
+    } else {
+      this.#next(settings);
+      this.#drive(PREWARM_LEAD, GROOVE_STEP);
     }
     for (let pass = 0; pass < 2; pass++) this.#field.relax(TALUS, 30, 1);
   }
 
   frame(dt: number, motion: number, touch: Touch, settings: Settings, next: boolean, markNow: boolean): void {
-    this.#groove.depth = depthOf(settings.depth);
+    this.#retune(settings);
     // A new pattern or run of drawings starts at once, with the chosen pattern rather than an erase.
     const signature = `${settings.pattern}|${settings.seed}`;
     if (signature !== this.#signature) {
@@ -710,10 +762,13 @@ class Ball {
       this.#queue = [];
       this.#next(settings);
     }
-    if (markNow) {
-      this.#planMark(settings.markNow, settings.seed);
+    // The M at once when asked for, or when its knob is switched on.
+    const markOn = settings.mark > 0;
+    if (markNow || (markOn && !this.#markOn)) {
+      this.#drawMark(settings.markNow);
       this.#next(settings);
     }
+    this.#markOn = markOn;
 
     // The pointer takes the ball: the magnet chases it while held; a moment after letting go, the
     // ball goes back to where it left its drawing and carries on.
@@ -738,13 +793,21 @@ class Ball {
       this.#next(settings);
     } else if (this.#phase === "rest" && settings.pause !== undefined) {
       this.#rested += dt * motion;
-      const rest = this.#track?.mark === true ? Math.max(MARK_REST, settings.pause) : settings.pause;
+      const rest = this.#track?.kind === "mark" ? Math.max(MARK_REST, settings.pause) : settings.pause;
       if (this.#rested >= rest) this.#next(settings);
     }
-    this.#drive(dt * motion * settings.speed, GROOVE_STEP);
+    // The M is an event and plays on the scene clock; the drawings follow the lab's motion.
+    const clock = this.#track?.kind === "mark" ? dt : dt * motion;
+    this.#drive(clock * settings.speed, GROOVE_STEP);
   }
 
   write(data: Float32Array): void {
+    const track = this.#track;
+    if (track?.kind === "mark" && this.#markLive && !this.#markFading) {
+      // Lit up to the ball, which trails the magnet by a little on its spring.
+      const lag = Math.hypot(this.#ball.x - this.#magnet.x, this.#ball.y - this.#magnet.y);
+      this.#markDrawn = Math.max(this.#markDrawn, track.drawn + this.#s - track.lead - lag);
+    }
     data[0] = this.#ball.x;
     data[1] = this.#ball.y;
     data[2] = 1;
@@ -755,11 +818,16 @@ class Ball {
     data[7] = 0;
     data[8] = this.#markShown();
     data[9] = this.#markHeight;
-    data[10] = 0;
+    data[10] = this.#markHeight > 0 ? (this.#markSign * this.#markDrawn) / this.#markHeight : 0;
     data[11] = 0;
   }
 
-  /** The M glows from when it is begun until a whole drawing has gone over it. */
+  #retune(settings: Settings): void {
+    this.#groove.depth = depthOf(settings.depth);
+    this.#erase.depth = ERASE_DEPTH * this.#groove.depth;
+  }
+
+  /** The M glows as it is drawn, until a whole track has gone over it. */
   #markShown(): number {
     if (!this.#markLive) return 0;
     if (!this.#markFading) return 1;
@@ -780,13 +848,20 @@ class Ball {
   }
 
   /**
-   * Spiral the table clean in to the centre, then draw the M from there. It stands in for the next
-   * erase spiral, so a drawing, not another erase, comes after it and slowly crosses it.
+   * In place of the next erase spiral (the index is even here): groom the table out to the rim, then
+   * draw the M in from there. A drawing, not another erase, comes after it and slowly crosses it.
    */
   #planMark(size: number, seed: number): void {
     this.#sinceMark = 0;
-    if (this.#drawing % 2 === 0) this.#drawing++;
-    this.#queue = [{ kind: "erase", seed: seedOf(seed, this.#drawing, SALT_ERASE) }, { kind: "mark", size }];
+    const index = this.#drawing++;
+    this.#queue = [{ kind: "erase", seed: seedOf(seed, index, SALT_ERASE) }, { kind: "mark", size }];
+  }
+
+  /** The M at once, over whatever the table holds; an erase spiral comes after it. */
+  #drawMark(size: number): void {
+    this.#sinceMark = 0;
+    if (this.#drawing % 2 === 1) this.#drawing--;
+    this.#queue = [{ kind: "mark", size }];
   }
 
   #next(settings: Settings): void {
@@ -798,6 +873,9 @@ class Ball {
       this.#markLive = true;
       this.#markFading = false;
       this.#markHeight = job.size * SANDTABLE.track;
+      this.#markDrawn = 0;
+      // It ends on the far foot: on the right, it set off from the left.
+      this.#markSign = (track.xy[2 * track.count - 2] ?? 1) > 0 ? 1 : -1;
     } else if (this.#markLive) {
       if (this.#markFading) this.#markLive = false;
       else this.#markFading = true;
@@ -811,12 +889,9 @@ class Ball {
     this.#phase = "draw";
   }
 
-  /** Draw on until `share` of the track is done (1: to its end), in slices, out of sight. */
-  #runOut(share: number): void {
-    const track = this.#track;
-    if (track === undefined) return;
-    const until = share * track.length;
-    while (this.#phase === "draw" && (share >= 1 || this.#s < until)) this.#drive(PREWARM_SLICE, PREWARM_GROOVE_STEP);
+  /** Draw on to distance `until` along the track (Infinity: its end), in slices, out of sight. */
+  #runOut(until: number): void {
+    while (this.#phase === "draw" && this.#s < until) this.#drive(PREWARM_SLICE, PREWARM_GROOVE_STEP);
     this.#carve(0);
   }
 
@@ -836,7 +911,6 @@ class Ball {
   #advance(time: number): void {
     const track = this.#track;
     if (track === undefined) return;
-    const v = BALL_SPEED * track.pace;
     let left = time;
     while (left > 0 && this.#phase === "draw") {
       if (this.#wait > 0) {
@@ -846,7 +920,10 @@ class Ball {
         continue;
       }
       const stop = track.stops[this.#stop];
-      const goal = stop === undefined ? track.length : Math.min(stop.at, track.length);
+      const stopAt = stop === undefined ? Infinity : stop.at;
+      const transit = this.#s < track.lead;
+      const goal = Math.min(stopAt, track.length, transit ? track.lead : Infinity);
+      const v = BALL_SPEED * (transit ? TRANSIT_PACE : track.pace);
       const need = (goal - this.#s) / v;
       if (need > left) {
         this.#s += v * left;
@@ -854,10 +931,10 @@ class Ball {
       }
       this.#s = Math.max(this.#s, goal);
       left -= Math.max(0, need);
-      if (stop !== undefined) {
+      if (stop !== undefined && this.#s >= stopAt) {
         this.#wait = stop.seconds;
         this.#stop++;
-      } else {
+      } else if (this.#s >= track.length) {
         this.#phase = "rest";
         this.#rested = 0;
       }
@@ -883,7 +960,8 @@ class Ball {
     const b = this.#ball;
     const cut = this.#cut;
     if (Math.hypot(b.x - cut.x, b.y - cut.y) < Math.max(step, 1e-6)) return;
-    this.#field.groove(0.5 + cut.x, 0.5 + cut.y, 0.5 + b.x, 0.5 + b.y, this.#groove);
+    const tool = !this.#away && this.#track?.kind === "erase" ? this.#erase : this.#groove;
+    this.#field.groove(0.5 + cut.x, 0.5 + cut.y, 0.5 + b.x, 0.5 + b.y, tool);
     cut.x = b.x;
     cut.y = b.y;
   }
@@ -918,9 +996,9 @@ class Ball {
   }
 
   /**
-   * Back to the drawing: a theta–rho move, the short way round, from where the pointer left the
-   * magnet to where it left the track, then the rest of the track. Resting between drawings, the
-   * next one simply starts from wherever the ball now is.
+   * Back to the drawing: a brisk theta–rho move, the short way round, from where the pointer left
+   * the magnet to where it left the track, then the rest of the track. Resting between drawings,
+   * the next one simply starts from wherever the ball now is.
    */
   #rejoin(): void {
     this.#away = false;
@@ -935,8 +1013,10 @@ class Ball {
     turn -= TAU * Math.round(turn / TAU);
     const b = new TrackBuilder(fromX, fromY);
     b.sweep(theta0, theta0 + turn, Math.min(1, Math.hypot(fromX, fromY)), Math.hypot(this.#point.x, this.#point.y));
+    const lead = b.length + Math.max(0, track.lead - this.#s);
+    const drawn = track.drawn + Math.max(0, this.#s - track.lead);
     b.follow(track, this.#s, this.#segment);
-    this.#track = b.build(track.pace, track.mark);
+    this.#track = b.build(track.pace, track.kind, lead, drawn);
     this.#s = 0;
     this.#segment = 0;
     this.#stop = 0;
@@ -1352,9 +1432,8 @@ class SandtableSim implements SceneSim {
   readonly #stamps = [-1e4, -1e4];
   readonly #fired = [false, false];
   #primed = false;
-  #machine: Machine;
-  /** The settings the opening table was laid out with, until the first frame confirms them. */
-  #laidOut: string | undefined;
+  /** The machine the table is laid out for; none until the first frame. */
+  #machine: Machine | undefined;
   #uploadedAt = -Infinity;
   #force = true;
 
@@ -1365,11 +1444,6 @@ class SandtableSim implements SceneSim {
     this.#textures = [this.#heights.texture, this.#state.texture];
     this.#ball = new Ball(this.#field);
     this.#pendulum = new Pendulum(this.#field);
-    // Lay the opening table out now, with the knobs at their defaults; the first frame redoes it only
-    // if the page asked for something else.
-    const settings = knobs.defaults();
-    this.#machine = settings.machine;
-    this.#lay(settings);
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -1377,13 +1451,11 @@ class SandtableSim implements SceneSim {
     const settings = this.#knobs.read(frame.values, frame.params);
     this.#readTriggers(frame.triggers);
     const touch = this.#readTouch(frame);
-    if (this.#laidOut !== undefined) {
-      if (this.#laidOut !== layout(settings)) this.#lay(settings);
-      this.#laidOut = undefined;
-    }
+    // The opening table is laid out on the first frame, the first time the page's knobs are known,
+    // and afresh whenever the machine changes.
     if (settings.machine !== this.#machine) this.#lay(settings);
 
-    const machine = this.#machine;
+    const machine = settings.machine;
     switch (machine) {
       case "ball":
         this.#ball.frame(dt, frame.motion, touch, settings, this.#fired[0] === true, this.#fired[1] === true);
@@ -1417,7 +1489,6 @@ class SandtableSim implements SceneSim {
   /** A fresh table for the settings' machine, already part way through its work. */
   #lay(settings: Settings): void {
     this.#machine = settings.machine;
-    this.#laidOut = layout(settings);
     if (settings.machine === "ball") this.#ball.reset(settings);
     else this.#pendulum.reset(settings);
     this.#force = true;
@@ -1444,11 +1515,6 @@ class SandtableSim implements SceneSim {
     touch.down = pointer.down;
     return touch;
   }
-}
-
-/** What the opening table depends on. */
-function layout(settings: Settings): string {
-  return `${settings.machine}|${settings.pattern}|${settings.figure}|${settings.seed}|${settings.depth.toFixed(2)}`;
 }
 
 /** The sand table, for a scene whose `params` carry the knobs `Knob` names. */
