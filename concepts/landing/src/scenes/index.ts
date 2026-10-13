@@ -12,6 +12,7 @@ import { firefliesScene } from "./fireflies/index.ts";
 import { flockScene } from "./flock/index.ts";
 import { fractalScene } from "./fractal/index.ts";
 import { frostScene } from "./frost/index.ts";
+import { gardenScene } from "./garden/index.ts";
 import { hyperbolicScene } from "./hyperbolic/index.ts";
 import { kelpScene } from "./kelp/index.ts";
 import { lanternsScene } from "./lanterns/index.ts";
@@ -19,6 +20,8 @@ import { marbleScene } from "./marble/index.ts";
 import { meadowScene } from "./meadow/index.ts";
 import { orbitScene } from "./orbit/index.ts";
 import { pearlScene } from "./pearl/index.ts";
+import { petriScene } from "./petri/index.ts";
+import { physarumScene } from "./physarum/index.ts";
 import { pondScene } from "./pond/index.ts";
 import { prismScene } from "./prism/index.ts";
 import { shanshuiScene } from "./shanshui/index.ts";
@@ -57,6 +60,9 @@ export const sceneDefs = {
   pearl: pearlScene,
   fractal: fractalScene,
   kelp: kelpScene,
+  garden: gardenScene,
+  petri: petriScene,
+  physarum: physarumScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
