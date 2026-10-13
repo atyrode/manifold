@@ -22,7 +22,8 @@
 //     +10     orbit trap: centre (z), pearl radius, lace radius
 //     +11     M trap: centre (z), size, rotation
 // Content units: half the screen height, origin at the centre, after the pan.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 /** The `mode` knob's values, in order. */
@@ -181,11 +182,6 @@ function csqrt(a: Complex): Complex {
   const im = Math.sqrt(Math.max(0, (r - a[0]) / 2));
   return [re, a[1] < 0 ? -im : im];
 }
-
-const smoothstep = (edge0: number, edge1: number, x: number): number => {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-};
 
 /** z ↦ (az + b)/(cz + d). */
 interface Mobius {
@@ -382,7 +378,9 @@ class Rate {
 class FractalSim implements SceneSim {
   readonly #row: StateRow;
   readonly #data = new Float32Array(FRACTAL_TEXELS * 4);
-  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #reader: KnobReader<KnobKey>;
+  readonly #nextTrigger: number;
+  readonly #markTrigger: number;
   readonly #knobs: Knobs = { mode: 0, pace: 1, breath: 0.5, wander: 0.4, zoom: 1, detail: 0.5, mark: 0 };
 
   #aspect = 16 / 9;
@@ -402,11 +400,6 @@ class FractalSim implements SceneSim {
   #pendingNext = false;
   #loops = 0;
   #diveSite = 0;
-
-  // Triggers.
-  #primed = false;
-  #seenNext = 0;
-  #seenMark = 0;
 
   // Pointer.
   #nudge: Complex = [0, 0];
@@ -447,34 +440,22 @@ class FractalSim implements SceneSim {
   #summonedUntil = -1;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new Error(`fractal: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#knobIndex = {
-      kind: index("kind"),
-      pace: index("pace"),
-      breath: index("breath"),
-      wander: index("wander"),
-      zoom: index("zoom"),
-      detail: index("detail"),
-      mark: index("mark"),
-    };
+    this.#reader = new KnobReader<KnobKey>("fractal", params, ["kind", "pace", "breath", "wander", "zoom", "detail", "mark"]);
+    this.#nextTrigger = this.#reader.trigger("wander");
+    this.#markTrigger = this.#reader.trigger("mark");
     this.#row = new StateRow(gl, FRACTAL_TEXELS);
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const values = frame.values;
-    const index = this.#knobIndex;
+    const reader = this.#reader;
     const knobs = this.#knobs;
-    knobs.mode = Math.min(fractalModes.length - 1, Math.max(0, Math.round(values[index.kind] ?? knobs.mode)));
-    knobs.pace = values[index.pace] ?? knobs.pace;
-    knobs.breath = values[index.breath] ?? knobs.breath;
-    knobs.wander = values[index.wander] ?? knobs.wander;
-    knobs.zoom = Math.max(0.1, values[index.zoom] ?? knobs.zoom);
-    knobs.detail = values[index.detail] ?? knobs.detail;
-    knobs.mark = values[index.mark] ?? knobs.mark;
+    knobs.mode = clamp(Math.round(reader.value(frame, "kind")), 0, fractalModes.length - 1);
+    knobs.pace = reader.value(frame, "pace");
+    knobs.breath = reader.value(frame, "breath");
+    knobs.wander = reader.value(frame, "wander");
+    knobs.zoom = Math.max(0.1, reader.value(frame, "zoom"));
+    knobs.detail = reader.value(frame, "detail");
+    knobs.mark = reader.value(frame, "mark");
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     if (frame.height > 0) this.#height = frame.height;
     this.#time = frame.time;
@@ -486,7 +467,8 @@ class FractalSim implements SceneSim {
     const drift = real * this.#motion * knobs.pace;
     this.#breathClock += drift;
 
-    const next = this.#watchTriggers(frame.triggers);
+    if (frame.fired[this.#markTrigger] === true) this.#summonedUntil = this.#time + MARK_SUMMON;
+    const next = frame.fired[this.#nextTrigger] === true;
     this.#steer(frame.pointer, real);
     if (!this.#started) this.#incoming.mode = knobs.mode;
     this.#started = true;
@@ -506,21 +488,6 @@ class FractalSim implements SceneSim {
 
   dispose(): void {
     this.#row.dispose();
-  }
-
-  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
-  #watchTriggers(triggers: readonly number[]): boolean {
-    const nextAt = triggers[0] ?? -1e4;
-    const markAt = triggers[1] ?? -1e4;
-    let next = false;
-    if (this.#primed) {
-      next = nextAt !== this.#seenNext && nextAt > -1e3;
-      if (markAt !== this.#seenMark && markAt > -1e3) this.#summonedUntil = this.#time + MARK_SUMMON;
-    }
-    this.#primed = true;
-    this.#seenNext = nextAt;
-    this.#seenMark = markAt;
-    return next;
   }
 
   /** Hover nudges (eased); a drag pans the picture, which drifts home once let go. */
@@ -592,9 +559,9 @@ class FractalSim implements SceneSim {
 
   #advanceLayers(drift: number, real: number): void {
     const knobs = this.#knobs;
-    for (const layer of [this.#incoming, this.#outgoing]) {
-      if (layer?.mode === MODE_DIVE) layer.phase += drift * this.#diveRate(layer.site);
-    }
+    const outgoing = this.#outgoing;
+    if (this.#incoming.mode === MODE_DIVE) this.#incoming.phase += drift * this.#diveRate(this.#incoming.site);
+    if (outgoing?.mode === MODE_DIVE) outgoing.phase += drift * this.#diveRate(outgoing.site);
     if (this.#wipe === "swap") {
       this.#wipeProgress = Math.min(1, this.#wipeProgress + real / SWAP_SECONDS);
       if (this.#wipeProgress >= 1) this.#endWipe();

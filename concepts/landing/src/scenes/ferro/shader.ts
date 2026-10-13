@@ -5,6 +5,7 @@
 //   uSim1  texel 0 lattice origin xy, spacing, M amount; 1 pool bound xy r, tallest point;
 //          2 M height; 3.. the pool's blobs: xy, radius, weight
 // Knobs read here: K_camera (0 above, 1 three-quarter), K_sharpness, K_gel, K_lights.
+import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { FERRO_BLOBS, FERRO_SHAPE, FERRO_SPAN, FERRO_STATE_HEAD, FERRO_VIEW } from "./sim.ts";
 
 /** The studio light colours a gel can give the right-hand panel; the first is a plain studio. */
@@ -15,20 +16,7 @@ export const ferroGels = [
   { label: "violet", color: "#9a63ff" },
 ] as const;
 
-/** A CSS hex colour as a GLSL vec3 literal (the pipeline works in display sRGB, as the canvas). */
-function glslColor(hex: string): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const channels = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((c) => (c / 255).toFixed(4));
-  return `vec3(${channels.join(", ")})`;
-}
-
-/** A number as a GLSL float literal. */
-function glslFloat(value: number): string {
-  const text = String(value);
-  return /[.e]/.test(text) ? text : `${text}.0`;
-}
-
-const gelChoices = ferroGels.map((gel, i) => `  if (K_gel < ${i}.5) return ${glslColor(gel.color)};`).join("\n");
+const gelChoices = glslPick("gel", ferroGels.map((gel) => glslVec3(gel.color)), "vec3(1.0)");
 const [targetX, targetY, targetZ] = FERRO_VIEW.target;
 
 export const ferroGlsl = `
@@ -65,7 +53,6 @@ vec4 ferroBlobs[FERRO_BLOBS];
 
 vec3 ferroGel() {
 ${gelChoices}
-  return vec3(1.0);
 }
 
 void ferroLoad() {
@@ -298,7 +285,7 @@ vec3 ferroNormal(vec2 p, float e) {
 // A soft-edged panel in (azimuth, elevation).
 float ferroPanel(vec2 ae, vec2 centre, vec2 size, float soft) {
   vec2 d = abs(ae - centre) - size;
-  return (1.0 - smoothstep(-soft, soft, d.x)) * (1.0 - smoothstep(-soft, soft, d.y));
+  return softFill(d.x, soft) * softFill(d.y, soft);
 }
 
 // The studio, seen along r (z up, +y behind the dish as the three-quarter camera sees it, +x to its
@@ -338,7 +325,7 @@ vec3 ferroStudio(vec3 r, float aa, float steep, out float gel) {
 vec3 ferroFloor(vec3 pos, vec3 rd, float aa, float px, float lights, vec3 gel, out float gelLit) {
   float rr = length(pos.xy);
   vec3 mirrored = reflect(rd, vec3(0.0, 0.0, 1.0));
-  float fres = 0.04 + 0.96 * pow(1.0 - abs(rd.z), 5.0);
+  float fres = 0.04 + 0.96 * pow(max(1.0 - abs(rd.z), 0.0), 5.0);
   float shadow = smoothstep(0.1, 0.95, textureLod(uSim0, ferroTexCoord(pos.xy), 0.0).a);
 
   float dishGel;
@@ -370,7 +357,6 @@ vec3 ferroFloor(vec3 pos, vec3 rd, float aa, float px, float lights, vec3 gel, o
 }
 
 Shade sceneFerro(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   ferroLoad();
   float aspect = uRes.x / uRes.y;
   vec2 s = vec2((uv.x - 0.5) * aspect, uv.y - 0.5) * 2.0;
@@ -435,16 +421,13 @@ Shade sceneFerro(vec2 uv, vec2 cell, float t) {
   float shaped = smoothstep(above ? 0.012 : 0.04, above ? 0.85 : 0.9, lum);
   col = min(col * (shaped / max(lum, 1e-4)), 1.0);
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = shaped;
-  o.accent = smoothstep(0.04, 0.9, 1.0 - exp(-1.5 * gelLit));
+  float accent = smoothstep(0.04, 0.9, 1.0 - exp(-1.5 * gelLit));
   // While the M stands, its spikes carry the accent too: the landmark in the two-tone palette.
   if (fluid && ferroMark > 0.01) {
     float d = markDistance(pos.xy / ferroMarkScale) * ferroMarkScale;
     float onMark = ferroMark * (1.0 - smoothstep(0.5 * ferroSpacing, 0.9 * ferroSpacing, d));
-    o.accent = max(o.accent, onMark * o.ink);
+    accent = max(accent, onMark * shaped);
   }
-  return o;
+  return shadeOf(col, shaped, accent);
 }
 `;

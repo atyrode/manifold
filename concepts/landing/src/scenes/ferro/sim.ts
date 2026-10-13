@@ -14,7 +14,9 @@
 //          1 the pool's bounding circle xy and radius, the height of its tallest point
 //          2 the M's height (dish units)
 //          3.. the blobs: centre xy, radius, weight
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { markDistance } from "../../mark.ts";
+import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -125,12 +127,6 @@ const PRESS_EASE = 0.3;
 
 const TAU = Math.PI * 2;
 
-const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
-const smoothstep = (a: number, b: number, x: number): number => {
-  const t = clamp01((x - a) / (b - a));
-  return t * t * (3 - 2 * t);
-};
 /** Move `value` toward `target` with time constant `tau` over `dt` seconds. */
 const approach = (value: number, target: number, dt: number, tau: number): number => value + (target - value) * (1 - Math.exp(-dt / tau));
 
@@ -160,23 +156,6 @@ function episodeShow(age: number): number {
   if (age < EPISODE_RISE) return smoothstep(0, EPISODE_RISE, age);
   if (age < EPISODE_RISE + EPISODE_HOLD) return 1;
   return 1 - smoothstep(EPISODE_RISE + EPISODE_HOLD, EPISODE_LENGTH, age);
-}
-
-function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const bax = bx - ax;
-  const bay = by - ay;
-  const t = clamp01(((px - ax) * bax + (py - ay) * bay) / (bax * bax + bay * bay));
-  return Math.hypot(px - ax - bax * t, py - ay - bay * t);
-}
-
-/** Distance to the Manifold M in mark units (x in [-0.47, 0.47], y in [-0.5, 0.5]), as in common. */
-function markDistance(x: number, y: number): number {
-  return Math.min(
-    segmentDistance(x, y, -0.47, -0.5, -0.47, 0.5),
-    segmentDistance(x, y, -0.47, 0.5, 0, -0.08),
-    segmentDistance(x, y, 0, -0.08, 0.47, 0.5),
-    segmentDistance(x, y, 0.47, 0.5, 0.47, -0.5),
-  );
 }
 
 /** The M's height for a lattice spacing: its upright strokes land exactly on lattice columns. */
@@ -253,50 +232,7 @@ interface Blob extends Body {
 // ---- knobs -----------------------------------------------------------------------------------
 
 type FerroKnob = "strength" | "breath" | "drift" | "follow" | "size" | "spacing" | "sharpness" | "pour" | "camera" | "mark";
-
-interface KnobSlot {
-  /** Position in the scene's `params` (and so in `SimFrame.values`). */
-  index: number;
-  /** The knob's default (a feature's default amount). */
-  fallback: number;
-}
-
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class FerroKnobs {
-  readonly #slots: Record<FerroKnob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: FerroKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new Error(`ferro: the scene has no ${key} knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = {
-      strength: slot("strength"),
-      breath: slot("breath"),
-      drift: slot("drift"),
-      follow: slot("follow"),
-      size: slot("size"),
-      spacing: slot("spacing"),
-      sharpness: slot("sharpness"),
-      pour: slot("pour"),
-      camera: slot("camera"),
-      mark: slot("mark"),
-    };
-  }
-
-  /** As the shader sees it: a feature reads its amount while on, 0 while off. */
-  value(frame: SimFrame, key: FerroKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-
-  /** A feature's amount even while it is off. */
-  amount(frame: SimFrame, key: FerroKnob): number {
-    return frame.params[`${key}-amount`] ?? this.#slots[key].fallback;
-  }
-}
+const FERRO_KNOBS: readonly FerroKnob[] = ["strength", "breath", "drift", "follow", "size", "spacing", "sharpness", "pour", "camera", "mark"];
 
 interface Settings {
   /** The field over the magnet at the top of a breath (1: the crown just reaches the pool's edge). */
@@ -321,7 +257,9 @@ interface Settings {
 // ---- the simulation --------------------------------------------------------------------------
 
 class FerroSim implements SceneSim {
-  readonly #knobs: FerroKnobs;
+  readonly #knobs: KnobReader<FerroKnob>;
+  readonly #markTrigger: number;
+  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #field: DataTexture;
   readonly #state: DataTexture;
   readonly #fieldData = new Float32Array(FERRO_GRID * FERRO_GRID * 4);
@@ -336,7 +274,10 @@ class FerroSim implements SceneSim {
 
   /** Settled at the first frame: everything starts at rest on its target, the crown already up. */
   #primed = false;
-  #signature = "";
+  /** The knobs, the one record `#read` fills in each frame, and the last frame's knobs and aspect (see `#sameAsLast`). */
+  readonly #settings: Settings = { peak: 0, breathing: false, rate: 0, drift: 0, follow: false, size: 1, spacing: 0, height: 0, seed: 0, above: false, markEvery: 0 };
+  readonly #lastValues: number[] = [];
+  #lastAspect = Number.NaN;
   /** Idle clock (scene time × motion): the drift and the pool's own swell. */
   #clock = 0;
   /** Breath phase 0..1, whether this breath draws the M, and breaths until the next one that does. */
@@ -349,30 +290,28 @@ class FerroSim implements SceneSim {
   /** M amount 0..1 (eased), and the magnet pressed closer 0..1 (eased). */
   #mark = 0;
   #press = 0;
-  #triggers: number[] | undefined;
 
-  constructor(gl: WebGL2RenderingContext, knobs: FerroKnobs) {
+  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<FerroKnob>) {
     this.#knobs = knobs;
+    this.#markTrigger = knobs.trigger("mark");
     this.#blobs = Array.from({ length: FERRO_BLOBS }, () => ({
       x: 0, y: 0, vx: 0, vy: 0, angle: 0, reach: 0, weight: 1, omega: 1, damping: 1, wobble: 0, wobbleRate: 0, wobblePhase: 0,
     }));
     this.#field = new DataTexture(gl, { width: FERRO_GRID, height: FERRO_GRID, format: "rgba16f" });
     this.#state = new DataTexture(gl, { width: FERRO_STATE_HEAD + FERRO_BLOBS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#textures = [this.#field.texture, this.#state.texture];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const settings = this.#read(frame);
     if (settings.seed !== this.#seed) this.#reseed(settings.seed);
-    const fired = this.#fired(frame.triggers);
-    if (fired[0] === true) this.#episode = 0;
+    const fired = frame.fired[this.#markTrigger] === true;
+    if (fired) this.#episode = 0;
 
     const dt = Math.min(Math.max(frame.dt, 0), MAX_DT);
     // Paused with nothing changed: the textures already hold this frame.
-    const signature = `${frame.values.join(",")}|${frame.aspect}`;
-    if (this.#primed && dt === 0 && signature === this.#signature && fired[0] !== true) {
-      return [this.#field.texture, this.#state.texture];
-    }
-    this.#signature = signature;
+    const unchanged = this.#sameAsLast(frame);
+    if (this.#primed && dt === 0 && unchanged && !fired) return this.#textures;
 
     const idle = dt * Math.max(0, frame.motion);
     this.#clock += idle;
@@ -394,7 +333,7 @@ class FerroSim implements SceneSim {
     // The magnet's field: it breathes (or holds), an M breath lets it rest, a press boosts it.
     const breathField = settings.breathing ? (this.#markBreath ? 0 : breath) : 1;
     const field = settings.peak * (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField) * (1 + PRESS_BOOST * this.#press);
-    const pull = clamp01((field - 0.3) / 0.9) * (1 - mark);
+    const pull = clamp((field - 0.3) / 0.9, 0, 1) * (1 - mark);
 
     this.#move(frame, settings, dt, mark, pull);
 
@@ -411,7 +350,7 @@ class FerroSim implements SceneSim {
     this.#writeState(originX, originY, spacing, mark, blobRadius, scale, reach, ferroBase(phiMax * 1.03) + Math.max(ampMax, 0) * 1.05 + 0.005);
     this.#field.upload(this.#fieldData);
     this.#state.upload(this.#stateData);
-    return [this.#field.texture, this.#state.texture];
+    return this.#textures;
   }
 
   dispose(): void {
@@ -419,31 +358,40 @@ class FerroSim implements SceneSim {
     this.#state.dispose();
   }
 
+  /** The knobs as the shader sees them, written into the sim's one `Settings` record. */
   #read(frame: SimFrame): Settings {
     const knobs = this.#knobs;
+    const settings = this.#settings;
     const mark = knobs.value(frame, "mark");
     const spacing = 0.085 + 0.07 * knobs.value(frame, "spacing");
     const speed = knobs.amount(frame, "breath");
-    return {
-      peak: 0.55 + 1.1 * knobs.value(frame, "strength"),
-      breathing: knobs.value(frame, "breath") > 0,
-      rate: 1 / (BREATH_SECONDS * 2 ** ((0.5 - speed) * 2.5)),
-      drift: knobs.value(frame, "drift"),
-      follow: knobs.value(frame, "follow") > 0.5,
-      size: 0.72 + 0.56 * knobs.value(frame, "size"),
-      spacing,
-      height: spacing * (1 + 1.5 * knobs.value(frame, "sharpness")),
-      seed: Math.round(knobs.value(frame, "pour")),
-      above: Math.round(knobs.value(frame, "camera")) === 0,
-      markEvery: mark > 0 ? Math.max(1, Math.round(1 + 5 * (1 - mark))) : 0,
-    };
+    settings.peak = 0.55 + 1.1 * knobs.value(frame, "strength");
+    settings.breathing = knobs.value(frame, "breath") > 0;
+    settings.rate = 1 / (BREATH_SECONDS * 2 ** ((0.5 - speed) * 2.5));
+    settings.drift = knobs.value(frame, "drift");
+    settings.follow = knobs.value(frame, "follow") > 0.5;
+    settings.size = 0.72 + 0.56 * knobs.value(frame, "size");
+    settings.spacing = spacing;
+    settings.height = spacing * (1 + 1.5 * knobs.value(frame, "sharpness"));
+    settings.seed = Math.round(knobs.value(frame, "pour"));
+    settings.above = Math.round(knobs.value(frame, "camera")) === 0;
+    settings.markEvery = mark > 0 ? Math.max(1, Math.round(1 + 5 * (1 - mark))) : 0;
+    return settings;
   }
 
-  /** Trigger slots stamped since the previous frame. */
-  #fired(triggers: readonly number[]): boolean[] {
-    const previous = this.#triggers;
-    this.#triggers = [...triggers];
-    return triggers.map((at, slot) => previous !== undefined && at !== previous[slot] && at > -1e3);
+  /** Whether the knobs and aspect are those of the previous frame; remembers this frame's. */
+  #sameAsLast(frame: SimFrame): boolean {
+    const values = frame.values;
+    const last = this.#lastValues;
+    let same = frame.aspect === this.#lastAspect && values.length === last.length;
+    for (let i = 0; i < values.length; i++) {
+      const value = values[i] ?? 0;
+      if (last[i] !== value) same = false;
+      last[i] = value;
+    }
+    last.length = values.length;
+    this.#lastAspect = frame.aspect;
+    return same;
   }
 
   /** A new pour: the ring's directions, reaches, weights, springs and swells, and the drift's path. */
@@ -665,18 +613,20 @@ class FerroSim implements SceneSim {
     data[9] = 0;
     data[10] = 0;
     data[11] = 0;
-    blobs.forEach((blob, i) => {
+    for (let i = 0; i < blobs.length; i++) {
+      const blob = blobs[i];
+      if (blob === undefined) continue;
       const o = (FERRO_STATE_HEAD + i) * 4;
       data[o] = blob.x;
       data[o + 1] = blob.y;
       data[o + 2] = blobRadius;
       data[o + 3] = blob.weight;
-    });
+    }
   }
 }
 
 /** The ferrofluid pool, for a scene whose `params` carry the knobs `FerroKnob` names. */
 export function ferroSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new FerroKnobs(params);
+  const knobs = new KnobReader<FerroKnob>("ferro", params, FERRO_KNOBS);
   return (gl) => new FerroSim(gl, knobs);
 }

@@ -4,6 +4,7 @@
 //   uSim0  the fans, one per row (layout in sim.ts)
 //   uSim1  the prisms, the shutter's M, the source beam and the screen (layout in sim.ts)
 // Knobs read here: K_edges, K_dust, K_screen, K_backdrop.
+import { glslFloat } from "../../shaders/glsl.ts";
 import {
   PRISM_CAUSTIC_CELLS,
   PRISM_CAUSTIC_SPREAD,
@@ -17,7 +18,7 @@ import {
   prismSpectrum,
 } from "./sim.ts";
 
-const glslFloat = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+// The wavelengths' colours are written to four places, as the picture was tuned with.
 const spectrum = prismSpectrum.map((c) => `vec3(${c.map((v) => v.toFixed(4)).join(", ")})`).join(",\n  ");
 
 export const prismGlsl = `
@@ -133,7 +134,7 @@ PrismGlass prismGlass(int k, vec2 p, float px, float glow) {
     glint += pow(max(dot(corner[m], PRISM_ROOM), 0.0), 6.0) * exp(-dot(r, r) / (6.0 * px * px));
   }
   float sd = outside > 0.0 ? edge : -edge;
-  g.inside = 1.0 - smoothstep(-0.5 * px, 0.5 * px, sd);
+  g.inside = softFill(sd, 0.5 * px);
   // One crisp silhouette, and inside it the bevel: the ground edge rounding off into the glass,
   // bright where it faces the light and a whisper on the far side.
   float silhouette = 1.0 - smoothstep(0.5 * px, 1.7 * px, edge);
@@ -142,7 +143,7 @@ PrismGlass prismGlass(int k, vec2 p, float px, float glow) {
   // The body: a faint cool tint, brighter toward the edges where glass reflects more at a glance, a
   // soft sheen across it from the room's light, and the glow of light trapped inside.
   vec2 local = (p - c) / radius;
-  float sheen = exp(-pow((dot(local, PRISM_ROOM) - 0.2) / 0.3, 2.0));
+  float sheen = bell((dot(local, PRISM_ROOM) - 0.2) / 0.3);
   float rim = exp(min(sd, 0.0) / (0.12 * radius));
   vec3 body = K_edges * (PRISM_TINT * (1.0 + 1.5 * rim) + 0.03 * sheen * PRISM_GLASS) + 0.03 * min(glow, 2.0) * PRISM_GLASS;
   g.light = K_edges * PRISM_GLASS * (1.2 * silhouette * lit + 0.8 * bevel * lit + glint) + g.inside * body;
@@ -184,12 +185,12 @@ void prismFans(vec2 p, float px, float inside1, float inside2, out vec3 core, ou
     // Between the faces it runs from and to; a ghost (partial reflection) fades with distance.
     float clip = smoothstep(-px, px, dot(start.xy, p) + start.z + start.w) * smoothstep(-px, px, dot(end.xy, p) + end.z + end.w);
     float fade = max(q.x, 0.0) * texelFetch(uSim0, ivec2(8, f), 0).x;
-    clip *= exp(-fade * fade);
+    clip *= bell(fade);
     float coreMask = 1.0 - inside;
     float glowMask = 1.0 - 0.5 * inside;
     if (spot.w > PRISM_SOURCE - 0.5) {
       // The sunbeam starts at the shutter while the M is shown.
-      clip *= 1.0 - beam.z * (1.0 - smoothstep(-px, px, dot(beam.xy, p - shutter)));
+      clip *= 1.0 - beam.z * softFill(dot(beam.xy, p - shutter), px);
     } else if (spot.w > 1.5) {
       coreMask = inside2;
       glowMask = inside2;
@@ -281,7 +282,7 @@ float prismMotes(vec2 p, float t, float px, float amount) {
     vec2 centre = 0.5 + (vec2(h2, h3) - 0.5) * 0.5 + 0.12 * vec2(sin(t * 0.23 + h * 40.0), cos(t * 0.19 + h2 * 40.0));
     float r = (1.25 + 0.75 * h3) * px / grid;
     float disc = 1.0 - smoothstep(0.45 * r, r, length(q - id - centre));
-    float facet = 0.25 + 0.75 * pow(0.5 + 0.5 * sin(t * (0.5 + 0.8 * h2) + h * 60.0), 6.0);
+    float facet = 0.25 + 0.75 * pow(max(0.5 + 0.5 * sin(t * (0.5 + 0.8 * h2) + h * 60.0), 0.0), 6.0);
     m = max(m, disc * facet);
   }
   return m;
@@ -304,7 +305,7 @@ vec3 prismShutter(vec2 p, float px, out float hole) {
 }
 
 Shade scenePrism(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
+  float accent = 0.0;
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   float px = 1.0 / uRes.y;
@@ -326,7 +327,7 @@ Shade scenePrism(vec2 uv, vec2 cell, float t) {
     vec3 glow;
     vec3 caustic;
     prismFans(p, px, first.inside, second.inside, core, glow, caustic);
-    float tm = t * uMotion;
+    float tm = uMotionTime;
     // Dust makes the scattered glow uneven; clean air leaves an even, fainter halo.
     glow *= K_dust > 0.0 ? prismHaze(p, tm) : 0.6;
 
@@ -352,7 +353,7 @@ Shade scenePrism(vec2 uv, vec2 cell, float t) {
       }
     }
 
-    vec3 beams = pow(1.0 - exp(-light * PRISM_EXPOSURE), vec3(1.0 / PRISM_GAMMA));
+    vec3 beams = pow(max(1.0 - exp(-light * PRISM_EXPOSURE), vec3(0.0)), vec3(1.0 / PRISM_GAMMA));
     col = 1.0 - (1.0 - col) * (1.0 - beams);
     col = 1.0 - (1.0 - col) * (1.0 - clamp(first.light + second.light, 0.0, 1.0));
 
@@ -362,11 +363,8 @@ Shade scenePrism(vec2 uv, vec2 cell, float t) {
 
     // Two-tone: the spectrum and the M in the accent colour, white light and glass in ink.
     float chroma = max(col.r, max(col.g, col.b)) - min(col.r, min(col.g, col.b));
-    o.accent = max(clamp(1.5 * chroma - 0.06, 0.0, 1.0), hole);
+    accent = max(clamp(1.5 * chroma - 0.06, 0.0, 1.0), hole);
   }
-  o.ink = clamp(1.3 * dot(col, LUMA), 0.0, 1.0);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  return shadeOf(col, inkOf(col, 1.3, 1.0), accent);
 }
 `;

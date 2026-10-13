@@ -39,7 +39,11 @@
 //   uSim1  rg16f MODE_NODES² over the same square: R the figure the plate comes from, G the one it
 //          goes to (each at RMS 0.5).
 //   uSim2  rgba16f 1×1, nearest: eased crossfade s, norm, swing A, share of the M in the field.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { markVertex, segmentDistance } from "../../mark.ts";
+import { runBudgeted } from "../../sims/clock.ts";
+import { smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -152,9 +156,6 @@ const POUR_PER_UNIT = 5000;
 const POUR_PER_SECOND = 700;
 const POUR_RADIUS = 0.03;
 
-/** The Manifold M in mark units, as markDistance in shaders/common.ts: x in [-0.47, 0.47], y in [-0.5, 0.5]. */
-const MARK_X = [-0.47, -0.47, 0, 0.47, 0.47] as const;
-const MARK_Y = [-0.5, 0.5, -0.08, 0.5, -0.5] as const;
 /** Each stroke's pull on the sand in the M's 'mode' (its distance is scaled by this): the leg, the inner strokes, the leg. */
 const MARK_PULL = [1, 0.6, 0.6, 1] as const;
 
@@ -272,23 +273,16 @@ for (let j = 0; j < MODE_NODES; j++) {
 }
 
 /**
- * Distance from (x, y) to the M's strokes in mark units, as markDistance in shaders/common.ts but
- * with each stroke's distance scaled by its MARK_PULL: the short inner strokes draw sand from
- * further, or the legs would take nearly all of it.
+ * Distance from (x, y) to the M's strokes in mark units, as markDistance in mark.ts but with each
+ * stroke's distance scaled by its MARK_PULL: the short inner strokes draw sand from further, or the
+ * legs would take nearly all of it.
  */
-function markDistance(x: number, y: number): number {
+function pulledMarkDistance(x: number, y: number): number {
   let best = Infinity;
   for (let k = 0; k < 4; k++) {
-    const ax = MARK_X[k] ?? 0;
-    const ay = MARK_Y[k] ?? 0;
-    const bx = (MARK_X[k + 1] ?? 0) - ax;
-    const by = (MARK_Y[k + 1] ?? 0) - ay;
-    const px = x - ax;
-    const py = y - ay;
-    const h = Math.min(1, Math.max(0, (px * bx + py * by) / (bx * bx + by * by)));
-    const dx = px - bx * h;
-    const dy = py - by * h;
-    best = Math.min(best, Math.sqrt(dx * dx + dy * dy) * (MARK_PULL[k] ?? 1));
+    const a = markVertex(k);
+    const b = markVertex(k + 1);
+    best = Math.min(best, segmentDistance(x, y, a[0], a[1], b[0], b[1]) * (MARK_PULL[k] ?? 1));
   }
   return best;
 }
@@ -341,7 +335,7 @@ function fillMark(out: Float32Array): void {
   for (let j = 0; j < MODE_NODES; j++) {
     const y = (node(j) - CHLADNI_MARK_Y) / CHLADNI_MARK_SIZE;
     for (let i = 0; i < MODE_NODES; i++) {
-      const d = markDistance(node(i) / CHLADNI_MARK_SIZE, y) * CHLADNI_MARK_SIZE;
+      const d = pulledMarkDistance(node(i) / CHLADNI_MARK_SIZE, y) * CHLADNI_MARK_SIZE;
       out[j * MODE_NODES + i] = d / (d + MARK_REACH) + MARK_SLOPE * d;
     }
   }
@@ -382,29 +376,13 @@ function fillFigure(out: Float32Array, figure: Figure, turn: number, round: bool
 
 // ---- the simulation ------------------------------------------------------------------------------
 
-/** mulberry32: a small seeded generator, so a seed always lays the same sand and turns the same figures. */
-class Random {
-  #state = 0;
-
-  seed(seed: number): void {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-}
-
 type ChladniKnob = "shape" | "sweep" | "vibration" | "plateSeed" | "grains" | "mark";
 
-const smooth = (p: number): number => p * p * (3 - 2 * p);
-
 class ChladniSim implements SceneSim {
-  readonly #slots: Readonly<Record<ChladniKnob, number>>;
+  readonly #knobs: KnobReader<ChladniKnob>;
+  readonly #sweepTrigger: number;
+  readonly #markTrigger: number;
+  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #sandTexture: DataTexture;
   readonly #modeTexture: DataTexture;
   readonly #stateTexture: DataTexture;
@@ -430,7 +408,7 @@ class ChladniSim implements SceneSim {
   #fromMark = 0;
   #toMark = 0;
   #moving = false;
-  /** Linear progress of the crossfade 0..1; the field uses smooth(#mix). */
+  /** Linear progress of the crossfade 0..1; the field uses smoothstep(0, 1, #mix). */
   #mix = 0;
   #norm = 1;
   #correlation = 0;
@@ -456,8 +434,12 @@ class ChladniSim implements SceneSim {
   readonly #hand = new Random();
   /** xorshift32 state for the dance. */
   #noise = 0x2545f491;
-  #triggers: number[] | undefined;
-  #pour: { x: number; y: number } | undefined;
+  /** Whether a drag is pouring, and where it last poured. */
+  #pouring = false;
+  #pourX = 0;
+  #pourY = 0;
+  /** Steps of settling the opening figure done so far (PREWARM_STEPS: finished). */
+  #warmed = PREWARM_STEPS;
   #pourDebt = 0;
   #shedDebt = 0;
   #sandDirty = true;
@@ -467,26 +449,24 @@ class ChladniSim implements SceneSim {
   #modesDirty = true;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const slot = (key: ChladniKnob): number => {
-      const index = params.findIndex((def) => def.key === key);
-      if (index < 0) throw new Error(`chladni: the scene has no '${key}' knob`);
-      return index;
-    };
-    this.#slots = { shape: slot("shape"), sweep: slot("sweep"), vibration: slot("vibration"), plateSeed: slot("plateSeed"), grains: slot("grains"), mark: slot("mark") };
+    this.#knobs = new KnobReader<ChladniKnob>("chladni", params, ["shape", "sweep", "vibration", "plateSeed", "grains", "mark"]);
+    this.#sweepTrigger = this.#knobs.trigger("sweep");
+    this.#markTrigger = this.#knobs.trigger("mark");
     this.#sandTexture = new DataTexture(gl, { width: CHLADNI_SAND_TEXELS, height: CHLADNI_SAND_TEXELS, format: "rg16f" });
     this.#modeTexture = new DataTexture(gl, { width: MODE_NODES, height: MODE_NODES, format: "rg16f" });
     this.#stateTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#textures = [this.#sandTexture.texture, this.#modeTexture.texture, this.#stateTexture.texture];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), 0.1);
-    const knob = (key: ChladniKnob): number => frame.values[this.#slots[key]] ?? 0;
-    const round = knob("shape") > 0.5;
-    const seed = Math.round(knob("plateSeed"));
-    const count = Math.min(MAX_GRAINS, Math.max(1000, Math.round(knob("grains"))));
-    const sweep = Math.min(1, Math.max(0, knob("sweep")));
-    const mark = knob("mark");
-    this.#amp = SWING_GENTLE * Math.pow(SWING_HARD / SWING_GENTLE, Math.min(1, Math.max(0, knob("vibration"))));
+    const knobs = this.#knobs;
+    const round = knobs.value(frame, "shape") > 0.5;
+    const seed = Math.round(knobs.value(frame, "plateSeed"));
+    const count = Math.min(MAX_GRAINS, Math.max(1000, Math.round(knobs.value(frame, "grains"))));
+    const sweep = Math.min(1, Math.max(0, knobs.value(frame, "sweep")));
+    const mark = knobs.value(frame, "mark");
+    this.#amp = SWING_GENTLE * Math.pow(SWING_HARD / SWING_GENTLE, Math.min(1, Math.max(0, knobs.value(frame, "vibration"))));
     this.#holdSeconds = HOLD_SLOW + (HOLD_FAST - HOLD_SLOW) * sweep;
     this.#moveSeconds = MOVE_SLOW + (MOVE_FAST - MOVE_SLOW) * sweep;
 
@@ -501,13 +481,17 @@ class ChladniSim implements SceneSim {
         this.#sandDirty = true;
       }
     }
+    // Settle a new plate's opening figure in steps; a slow machine takes more frames, not a different picture.
+    if (this.#warmed < PREWARM_STEPS) {
+      this.#warmed = runBudgeted(() => this.#settle(), PREWARM_MS, PREWARM_STEPS, this.#warmed);
+      if (this.#warmed < PREWARM_STEPS) return this.#textures;
+    }
     // Switching the M on brings it as the next figure.
     if (mark > 0 && this.#markWas <= 0) this.#markQueued = true;
     this.#markWas = mark;
 
-    const fired = this.#fired(frame.triggers);
-    if (fired[1] === true) this.#moveTo(this.#target(true, mark), true);
-    else if (fired[0] === true) this.#moveTo(this.#target(false, mark), true);
+    if (frame.fired[this.#markTrigger] === true) this.#moveTo(this.#target(true, mark), true);
+    else if (frame.fired[this.#sweepTrigger] === true) this.#moveTo(this.#target(false, mark), true);
 
     this.#pourAt(frame.pointer, dt, frame.aspect);
 
@@ -540,27 +524,20 @@ class ChladniSim implements SceneSim {
       this.#modeTexture.upload(modes);
       this.#modesDirty = false;
     }
-    const s = smooth(this.#mix);
+    const s = smoothstep(0, 1, this.#mix);
     const state = this.#state;
     state[0] = s;
     state[1] = this.#norm;
     state[2] = this.#amp;
     state[3] = this.#fromMark * (1 - s) + this.#toMark * s;
     this.#stateTexture.upload(state);
-    return [this.#sandTexture.texture, this.#modeTexture.texture, this.#stateTexture.texture];
+    return this.#textures;
   }
 
   dispose(): void {
     this.#sandTexture.dispose();
     this.#modeTexture.dispose();
     this.#stateTexture.dispose();
-  }
-
-  /** Trigger slots stamped since the previous frame. */
-  #fired(triggers: readonly number[]): boolean[] {
-    const previous = this.#triggers;
-    this.#triggers = [...triggers];
-    return triggers.map((at, slot) => previous !== undefined && at !== previous[slot] && at > -1e3);
   }
 
   /** A fresh plate for a new seed: sand strewn evenly, then settled into the sweep's first figure. */
@@ -591,7 +568,9 @@ class ChladniSim implements SceneSim {
     this.#mix = 0;
     this.#norm = 1;
     this.#held = 0;
-    this.#prewarm();
+    // Settled in `frame`, in steps (the first figure never depends on the machine's speed).
+    this.#steppedAmp = this.#amp;
+    this.#warmed = 0;
     this.#sandDirty = true;
     this.#snap = true;
     this.#modesDirty = true;
@@ -636,17 +615,9 @@ class ChladniSim implements SceneSim {
     }
   }
 
-  /**
-   * Settle the sand into the first figure before it is shown, in long steps without the dance:
-   * done when nearly every grain rests, or at the step or time cap (the rest settle on screen).
-   */
-  #prewarm(): void {
-    const until = performance.now() + PREWARM_MS;
-    this.#steppedAmp = this.#amp;
-    for (let k = 0; k < PREWARM_STEPS; k++) {
-      const moving = this.#advance(PREWARM_STEP, 0, false);
-      if (moving <= this.#count * PREWARM_DONE || performance.now() > until) break;
-    }
+  /** One long step of settling the first figure, without the dance: true once nearly every grain rests. */
+  #settle(): boolean {
+    return this.#advance(PREWARM_STEP, 0, false) <= this.#count * PREWARM_DONE;
   }
 
   /**
@@ -697,7 +668,7 @@ class ChladniSim implements SceneSim {
   /** Start the crossfade into a figure; one already under way is frozen where it is and left from there. */
   #moveTo(figure: Figure, urgent: boolean): void {
     if (this.#moving) {
-      const s = smooth(this.#mix);
+      const s = smoothstep(0, 1, this.#mix);
       const a = (1 - s) * this.#norm;
       const b = s * this.#norm;
       const from = this.#from;
@@ -721,7 +692,7 @@ class ChladniSim implements SceneSim {
   #tick(dt: number, mark: number): void {
     if (this.#moving) {
       this.#mix = Math.min(1, this.#mix + dt / this.#moveSeconds);
-      const s = smooth(this.#mix);
+      const s = smoothstep(0, 1, this.#mix);
       // Two figures at RMS 0.5 mix to 0.5·√((1 − s)² + s² + 2s(1 − s)c): lift the mix back to 0.5.
       this.#norm = 1 / Math.sqrt(Math.max(0.05, (1 - s) * (1 - s) + s * s + 2 * s * (1 - s) * this.#correlation));
     } else {
@@ -760,7 +731,7 @@ class ChladniSim implements SceneSim {
     const airborne = this.#airborne;
     const from = this.#from;
     const to = this.#to;
-    const s = this.#moving ? smooth(this.#mix) : 0;
+    const s = this.#moving ? smoothstep(0, 1, this.#mix) : 0;
     const blend = s > 0;
     const wFrom = (1 - s) * this.#norm;
     const wTo = s * this.#norm;
@@ -864,21 +835,25 @@ class ChladniSim implements SceneSim {
     const y = (pointer.y - 0.5) / half;
     // A press (even one already released within the frame) pours a pinch.
     if (pointer.pressed && pointer.inside) this.#strew(x, y, x, y, PINCH, PINCH_RADIUS);
-    const last = this.#pour;
     if (!pointer.down || !pointer.inside) {
-      this.#pour = undefined;
+      this.#pouring = false;
       return;
     }
-    if (last === undefined || pointer.pressed) {
-      this.#pour = { x, y };
+    if (!this.#pouring || pointer.pressed) {
+      this.#pouring = true;
+      this.#pourX = x;
+      this.#pourY = y;
       this.#pourDebt = 0;
       return;
     }
-    this.#pourDebt += Math.hypot(x - last.x, y - last.y) * POUR_PER_UNIT + dt * POUR_PER_SECOND;
+    const lastX = this.#pourX;
+    const lastY = this.#pourY;
+    this.#pourDebt += Math.hypot(x - lastX, y - lastY) * POUR_PER_UNIT + dt * POUR_PER_SECOND;
     const grains = Math.floor(this.#pourDebt);
     this.#pourDebt -= grains;
-    this.#strew(last.x, last.y, x, y, grains, POUR_RADIUS);
-    this.#pour = { x, y };
+    this.#strew(lastX, lastY, x, y, grains, POUR_RADIUS);
+    this.#pourX = x;
+    this.#pourY = y;
   }
 
   #onPlate(x: number, y: number): boolean {

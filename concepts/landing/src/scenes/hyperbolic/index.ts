@@ -4,6 +4,7 @@
 // shrinking back into it, and follows the pointer's drags. sim.ts holds the geometry and the
 // glide; shader.ts folds each pixel into one triangle of the tiling and draws it there.
 import { choice, feature, range, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { hyperbolicGlsl } from "./shader.ts";
 import {
@@ -48,8 +49,5 @@ export const hyperbolicScene: SceneDef = {
   glsl: hyperbolicGlsl,
   entry: "sceneHyperbolic",
   sim: hyperbolicSim(params),
-  theme: (values) => {
-    const palette = values.palette ?? params.find((def) => def.key === "palette")?.value ?? 0;
-    return HYPERBOLIC_PALETTES[Math.round(palette)]?.paper === true ? "paper" : "night";
-  },
+  theme: paletteTheme(params, "palette", (palette) => HYPERBOLIC_PALETTES[palette]?.paper === true),
 };

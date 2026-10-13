@@ -16,6 +16,7 @@
 //
 // uSim0 is the sim's state row (layout in sim.ts). Knobs read here: K_palette, K_lines, K_glow,
 // K_ripples, K_rays, K_filigree, K_trap.
+import { glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { FRACTAL_GLOBAL_TEXELS, FRACTAL_LAYER_TEXELS } from "./sim.ts";
 
 interface FractalPalette {
@@ -48,19 +49,11 @@ export const fractalPalettes: readonly FractalPalette[] = [
   { label: "porcelain", paper: true, bg: "#eef1f5", glow: "#c9d6ec", line: "#7d95c8", edge: "#14307a", body: "#1d3b8c", lit: "#4a68b8", bodyLine: "#a9bbe3", gild: "#c49a3c", seal: "#a8741e" },
 ];
 
-/** A CSS hex colour as a GLSL vec3 literal (the pipeline works in display sRGB, as the canvas). */
-function glslColor(hex: string): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const channels = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((c) => (c / 255).toFixed(4));
-  return `vec3(${channels.join(", ")})`;
-}
-
-const inks = fractalPalettes
-  .map((p, i) => {
-    const colours = [p.bg, p.glow, p.line, p.edge, p.body, p.lit, p.bodyLine, p.gild, p.seal].map(glslColor).join(", ");
-    return `  if (K_palette < ${i}.5) return FractalInk(${colours}, ${p.paper ? "1.0" : "0.0"});`;
-  })
-  .join("\n");
+const inks = glslPick(
+  "palette",
+  fractalPalettes.map((p) => `FractalInk(${[p.bg, p.glow, p.line, p.edge, p.body, p.lit, p.bodyLine, p.gild, p.seal].map(glslVec3).join(", ")})`),
+  "FractalInk(vec3(0.0), vec3(0.2), vec3(0.5), vec3(1.0), vec3(0.0), vec3(0.2), vec3(0.4), vec3(1.0, 0.8, 0.4), vec3(1.0, 0.8, 0.4))",
+);
 
 export const fractalGlsl = `
 const int FRACTAL_GLOBAL = ${FRACTAL_GLOBAL_TEXELS};
@@ -95,12 +88,10 @@ struct FractalInk {
   vec3 bodyLine;
   vec3 gild;
   vec3 seal;
-  float paper;
 };
 
 FractalInk fractalInk() {
 ${inks}
-  return FractalInk(vec3(0.0), vec3(0.2), vec3(0.5), vec3(1.0), vec3(0.0), vec3(0.2), vec3(0.4), vec3(1.0, 0.8, 0.4), vec3(1.0, 0.8, 0.4), 0.0);
 }
 
 // What a layer drew at a pixel, as coverages (0..1) the palette turns into colour.
@@ -196,7 +187,7 @@ float fractalTrap(vec2 z, float zCell, vec4 trap, float blur, inout float fresh)
   float size = r / zCell;
   if (reach > 2.2 * r || size < 2.0) return 0.0;
   float d = (reach - r) / zCell;
-  float cover = lace ? fractalLine(abs(d), 1.2, blur) : 1.0 - smoothstep(-0.6 - blur, 0.6 + blur, d);
+  float cover = lace ? fractalLine(abs(d), 1.2, blur) : softFill(d, 0.6 + blur);
   return weight * cover * smoothstep(2.0, 6.0, size);
 }
 
@@ -695,7 +686,7 @@ vec3 fractalPaint(FractalSample s, FractalInk k) {
   vec3 col = mix(k.bg, k.glow, clamp(s.wash, 0.0, 1.0));
   col *= 1.0 - 0.3 * s.shade;
   col = mix(col, mix(k.body, k.lit, clamp(s.lit, 0.0, 1.0)), clamp(s.body, 0.0, 1.0));
-  col = mix(col, k.paper > 0.5 ? k.bg : k.edge, clamp(s.sheen, 0.0, 1.0));
+  col = mix(col, pagePaper() ? k.bg : k.edge, clamp(s.sheen, 0.0, 1.0));
   vec3 lines = mix(k.line, k.bodyLine, clamp(s.body, 0.0, 1.0));
   col = mix(col, lines, clamp(s.ripple * K_ripples, 0.0, 1.0));
   col = mix(col, lines, clamp(s.ray * K_rays, 0.0, 1.0));
@@ -706,13 +697,8 @@ vec3 fractalPaint(FractalSample s, FractalInk k) {
 }
 
 Shade sceneFractal(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   FractalInk ink = fractalInk();
-  if (uSimOn.x < 0.5) {
-    o.rgb = ink.bg;
-    o.source = ink.bg;
-    return o;
-  }
+  if (uSimOn.x < 0.5) return shadeOf(ink.bg, 0.0, 0.0);
   vec4 wipe = fractalTexel(0);
   vec4 view = fractalTexel(1);
   float aspect = uRes.x / uRes.y;
@@ -740,10 +726,8 @@ Shade sceneFractal(vec2 uv, vec2 cell, float t) {
   vec3 col = fractalPaint(s, ink);
   float lum = dot(col, LUMA);
   float ground = dot(ink.bg, LUMA);
-  o.ink = ink.paper > 0.5 ? clamp((ground - lum) / max(ground - 0.06, 0.1), 0.0, 1.0) : clamp((lum - ground) / max(0.8 - ground, 0.1), 0.0, 1.0);
-  o.accent = max(s.gild * K_filigree * 0.85, s.mark);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  // Ink is measured from this palette's own ground: dark on a light page, light on a dark one.
+  float inked = pagePaper() ? clamp((ground - lum) / max(ground - 0.06, 0.1), 0.0, 1.0) : clamp((lum - ground) / max(0.8 - ground, 0.1), 0.0, 1.0);
+  return shadeOf(col, inked, max(s.gild * K_filigree * 0.85, s.mark));
 }
 `;

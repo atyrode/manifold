@@ -32,7 +32,9 @@
 //   uSim1  rgba16f STATE_TEXELS × 1, nearest: the prisms, the light source and the M (listed below).
 // Values that need more than half precision are stored as two halves (hi + lo), each exactly
 // representable, so however the GPU converts the upload it cannot round them.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
+import { splitHalf } from "../../sims/half.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -241,32 +243,8 @@ const GRIP_OUTER = 0.12;
 /** Longest step simulated at once. */
 const MAX_STEP = 0.1;
 
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
-const smooth = (x: number): number => {
-  const t = clamp(x, 0, 1);
-  return t * t * (3 - 2 * t);
-};
 /** An angle wrapped into (-span / 2, span / 2]. */
 const wrap = (angle: number, span: number): number => angle - span * Math.round(angle / span);
-
-/** The nearest half-precision float (exact in float32 too); subnormals and overflow included. */
-function toHalf(x: number): number {
-  if (!Number.isFinite(x) || x === 0) return 0;
-  const a = Math.abs(x);
-  if (a >= 65504) return Math.sign(x) * 65504;
-  let e = Math.floor(Math.log2(a));
-  if (2 ** e > a) e -= 1;
-  else if (2 ** (e + 1) <= a) e += 1;
-  const q = 2 ** (Math.max(e, -14) - 10);
-  return Math.round(x / q) * q;
-}
-
-/** Writes x as two halves, hi + lo, at data[at] and data[at + 1]. */
-function split(data: Float32Array, at: number, x: number): void {
-  const hi = toHalf(x);
-  data[at] = hi;
-  data[at + 1] = toHalf(x - hi);
-}
 
 /** Unpolarised Fresnel reflectance from index n1 into n2. */
 function fresnel(n1: number, n2: number, cosI: number, cosT: number): number {
@@ -359,17 +337,15 @@ const byWeight = (a: Fan, b: Fan): number => b.weight - a.weight;
 
 type KnobKey = "turn" | "speed" | "dispersion" | "beam" | "eclipse" | "second" | "reflections" | "mark" | "screen";
 
-interface KnobSlot {
-  index: number;
-  fallback: number;
-}
-
 class PrismSim implements SceneSim {
   readonly #fanTexture: DataTexture;
   readonly #stateTexture: DataTexture;
   readonly #fanData = new Float32Array(PRISM_ROW * PRISM_FANS * 4);
   readonly #stateData = new Float32Array(STATE_TEXELS * 4);
-  readonly #slots: Readonly<Record<KnobKey, KnobSlot>>;
+  readonly #knobs: KnobReader<KnobKey>;
+  readonly #eclipseTrigger: number;
+  readonly #secondTrigger: number;
+  readonly #markTrigger: number;
 
   readonly #faces: Face[] = Array.from({ length: 6 }, () => new Face());
   readonly #bundles: Bundle[] = Array.from({ length: BUNDLE_POOL }, () => new Bundle());
@@ -441,27 +417,11 @@ class PrismSim implements SceneSim {
   #restY = 0;
   #secondActive = false;
 
-  #primed = false;
-  readonly #seen = [-1e4, -1e4, -1e4];
-
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const slot = (key: KnobKey): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new PrismError(`prism: the scene has no '${key}' knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = {
-      turn: slot("turn"),
-      speed: slot("speed"),
-      dispersion: slot("dispersion"),
-      beam: slot("beam"),
-      eclipse: slot("eclipse"),
-      second: slot("second"),
-      reflections: slot("reflections"),
-      mark: slot("mark"),
-      screen: slot("screen"),
-    };
+    this.#knobs = new KnobReader<KnobKey>("prism", params, ["turn", "speed", "dispersion", "beam", "eclipse", "second", "reflections", "mark", "screen"]);
+    this.#eclipseTrigger = this.#knobs.trigger("eclipse");
+    this.#secondTrigger = this.#knobs.trigger("second");
+    this.#markTrigger = this.#knobs.trigger("mark");
     this.#free.push(...this.#bundles);
     this.#fanTexture = new DataTexture(gl, { width: PRISM_ROW, height: PRISM_FANS, format: "rgba16f", filter: "nearest" });
     this.#stateTexture = new DataTexture(gl, { width: STATE_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
@@ -474,7 +434,7 @@ class PrismSim implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     this.#readKnobs(frame);
     this.#layout(frame);
-    this.#watchTriggers(frame.triggers);
+    this.#fire(frame.fired);
     const dt = clamp(frame.dt, 0, MAX_STEP);
     this.#advance(dt, clamp(frame.motion, 0, 1), frame.pointer);
     this.#place(dt);
@@ -492,30 +452,22 @@ class PrismSim implements SceneSim {
 
   // ---- knobs, layout, triggers -----------------------------------------------------------------
 
-  #value(frame: SimFrame, key: KnobKey): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-
-  /** A feature's amount even while it is off (its "now" button still plays one). */
-  #amount(frame: SimFrame, key: KnobKey): number {
-    return frame.params[`${key}-amount`] ?? this.#slots[key].fallback;
-  }
-
   #readKnobs(frame: SimFrame): void {
-    this.#spinning = this.#value(frame, "turn") > 0.5;
-    this.#speed = clamp(this.#value(frame, "speed"), 0, 1);
-    this.#cauchyB = CAUCHY_MIN + (CAUCHY_MAX - CAUCHY_MIN) * clamp(this.#value(frame, "dispersion"), 0, 1);
-    this.#ghost = GHOST_GAIN * clamp(this.#value(frame, "reflections"), 0, 1);
-    this.#eclipseRate = clamp(this.#value(frame, "eclipse"), 0, 1);
-    const second = this.#value(frame, "second");
+    const knobs = this.#knobs;
+    this.#spinning = knobs.value(frame, "turn") > 0.5;
+    this.#speed = clamp(knobs.value(frame, "speed"), 0, 1);
+    this.#cauchyB = CAUCHY_MIN + (CAUCHY_MAX - CAUCHY_MIN) * clamp(knobs.value(frame, "dispersion"), 0, 1);
+    this.#ghost = GHOST_GAIN * clamp(knobs.value(frame, "reflections"), 0, 1);
+    this.#eclipseRate = clamp(knobs.value(frame, "eclipse"), 0, 1);
+    const second = knobs.value(frame, "second");
     this.#secondOn = second > 0;
-    this.#gap = clamp(this.#secondOn ? second : this.#amount(frame, "second"), 0, 1);
-    const mark = this.#value(frame, "mark");
+    // A feature's amount reads even while it is off: its "now" button still plays one.
+    this.#gap = clamp(this.#secondOn ? second : knobs.amount(frame, "second"), 0, 1);
+    const mark = knobs.value(frame, "mark");
     this.#markOn = mark > 0;
-    this.#markSize = clamp(this.#markOn ? mark : this.#amount(frame, "mark"), 0, 1);
-    this.#beam = clamp(this.#value(frame, "beam"), 0, 1);
-    this.#screenOn = this.#value(frame, "screen") > 0;
+    this.#markSize = clamp(this.#markOn ? mark : knobs.amount(frame, "mark"), 0, 1);
+    this.#beam = clamp(knobs.value(frame, "beam"), 0, 1);
+    this.#screenOn = knobs.value(frame, "screen") > 0;
     for (let i = 0; i < PRISM_SAMPLES; i++) this.#index[i] = cauchy(WAVELENGTHS[i] ?? 550, this.#cauchyB);
   }
 
@@ -545,18 +497,11 @@ class PrismSim implements SceneSim {
     this.#markY = py - dy * along;
   }
 
-  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
-  #watchTriggers(triggers: readonly number[]): void {
-    for (let slot = 0; slot < 3; slot++) {
-      const stamp = triggers[slot] ?? -1e4;
-      const fired = this.#primed && stamp !== this.#seen[slot] && stamp > -1e3;
-      this.#seen[slot] = stamp;
-      if (!fired) continue;
-      if (slot === 0) this.#startEclipse(true);
-      else if (slot === 1) this.#secondVisit = VISIT;
-      else this.#markVisit = MARK_VISIT;
-    }
-    this.#primed = true;
+  /** A "now" button fires its feature's one occurrence at once (frame.fired is true on the frame after the press). */
+  #fire(fired: readonly boolean[]): void {
+    if (fired[this.#eclipseTrigger] === true) this.#startEclipse(true);
+    if (fired[this.#secondTrigger] === true) this.#secondVisit = VISIT;
+    if (fired[this.#markTrigger] === true) this.#markVisit = MARK_VISIT;
   }
 
   // ---- motion ----------------------------------------------------------------------------------
@@ -595,9 +540,9 @@ class PrismSim implements SceneSim {
 
   #eclipseEnvelope(): number {
     const age = this.#eclipseAge;
-    if (age < ECLIPSE_IN) return smooth(age / ECLIPSE_IN);
+    if (age < ECLIPSE_IN) return smoothstep(0, 1, age / ECLIPSE_IN);
     if (age < ECLIPSE_IN + ECLIPSE_HOLD) return 1;
-    if (age < ECLIPSE_LENGTH) return smooth((ECLIPSE_LENGTH - age) / ECLIPSE_OUT);
+    if (age < ECLIPSE_LENGTH) return smoothstep(0, 1, (ECLIPSE_LENGTH - age) / ECLIPSE_OUT);
     return 0;
   }
 
@@ -658,7 +603,7 @@ class PrismSim implements SceneSim {
         if (shade > 0) this.#user += shade * (this.#eclipseTarget - (this.#base + this.#user));
         this.#eclipseAge = Number.POSITIVE_INFINITY;
       } else {
-        const grip = smooth((Math.hypot(x, y) - GRIP_INNER) / (GRIP_OUTER - GRIP_INNER));
+        const grip = smoothstep(0, 1, (Math.hypot(x, y) - GRIP_INNER) / (GRIP_OUTER - GRIP_INNER));
         const turn = wrap(angle - this.#dragAngle, TAU) * grip;
         this.#user += turn;
         if (dt > 0) this.#userVelocity += (turn / dt - this.#userVelocity) * Math.min(1, dt / 0.1);
@@ -798,7 +743,7 @@ class PrismSim implements SceneSim {
       this.#restX = Number.isNaN(this.#restX) ? restX : this.#restX + (restX - this.#restX) * follow;
       this.#restY += (restY - this.#restY) * follow;
       this.#secondX = this.#restX;
-      this.#secondY = this.#restY + DROP * (1 - smooth(this.#secondShown));
+      this.#secondY = this.#restY + DROP * (1 - smoothstep(0, 1, this.#secondShown));
       active = this.#secondY - radius < 0.5 + VIEW_MARGIN;
     }
     this.#secondActive = active;
@@ -1233,16 +1178,16 @@ class PrismSim implements SceneSim {
     data[base + 1] = wymin;
     data[base + 2] = wxmax;
     data[base + 3] = wymax;
-    split(data, base + 4, ox);
-    split(data, base + 6, oy);
-    split(data, base + 8, c);
-    split(data, base + 10, s);
+    splitHalf(data, base + 4, ox);
+    splitHalf(data, base + 6, oy);
+    splitHalf(data, base + 8, c);
+    splitHalf(data, base + 10, s);
     data[base + 12] = fan.startX;
     data[base + 13] = fan.startY;
-    split(data, base + 14, fan.startC);
+    splitHalf(data, base + 14, fan.startC);
     data[base + 16] = fan.endX;
     data[base + 17] = fan.endY;
-    split(data, base + 18, fan.endC);
+    splitHalf(data, base + 18, fan.endC);
     data[base + 20] = xmin - reach;
     data[base + 21] = xmax + reach;
     data[base + 22] = low - reach * Math.hypot(1, lowSlope);
@@ -1279,23 +1224,23 @@ class PrismSim implements SceneSim {
 
   #packState(): void {
     const data = this.#stateData;
-    split(data, 0, this.#centreX);
-    split(data, 2, this.#centreY);
-    split(data, 4, Math.cos(this.#angle));
-    split(data, 6, Math.sin(this.#angle));
-    split(data, 8, this.#secondX);
-    split(data, 10, this.#secondY);
-    split(data, 12, Math.cos(this.#angle + Math.PI));
-    split(data, 14, Math.sin(this.#angle + Math.PI));
+    splitHalf(data, 0, this.#centreX);
+    splitHalf(data, 2, this.#centreY);
+    splitHalf(data, 4, Math.cos(this.#angle));
+    splitHalf(data, 6, Math.sin(this.#angle));
+    splitHalf(data, 8, this.#secondX);
+    splitHalf(data, 10, this.#secondY);
+    splitHalf(data, 12, Math.cos(this.#angle + Math.PI));
+    splitHalf(data, 14, Math.sin(this.#angle + Math.PI));
     data[16] = this.#side / Math.sqrt(3);
     data[17] = this.#secondActive ? 1 : 0;
     data[18] = this.#glow[0] ?? 0;
     data[19] = this.#glow[1] ?? 0;
-    split(data, 20, this.#markX);
-    split(data, 22, this.#markY);
+    splitHalf(data, 20, this.#markX);
+    splitHalf(data, 22, this.#markY);
     data[24] = this.#beamDX;
     data[25] = this.#beamDY;
-    data[26] = smooth(this.#markShown);
+    data[26] = smoothstep(0, 1, this.#markShown);
     data[27] = (MARK_SMALL + (MARK_LARGE - MARK_SMALL) * this.#markSize) * this.#scale;
     data[28] = this.#beamWidth;
     data[29] = this.#screenX;

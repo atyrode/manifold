@@ -11,7 +11,9 @@
 // whenever the screen's centre leaves the central tile the motion is traded for the equivalent one
 // that brings it back (`settle`). The picture does not change, and the numbers the shader gets stay
 // small and precise however long the plane glides.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { mulberry32 } from "../../sims/random.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -59,8 +61,6 @@ function atanhOf(a: Complex): Complex {
   const r = quotient(plus(ONE, a), minus(ONE, a));
   return complex(0.5 * Math.log(size(r)), 0.5 * angle(r));
 }
-
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
 // ---- Motions of the plane -------------------------------------------------------------------------
 
@@ -214,6 +214,8 @@ export const HYPERBOLIC_TILINGS: readonly TilingDef[] = [
   { label: "{4,5}", p: 4, q: 5 },
   { label: "{3,8}", p: 3, q: 8 },
 ];
+
+const FIRST_TILING: TilingDef = HYPERBOLIC_TILINGS[0] ?? { label: "{7,3}", p: 7, q: 3 };
 
 /** A {p,q} tiling's central tile in the disk: centred on 0, an edge straddling the positive real axis. */
 export interface Tiling {
@@ -580,19 +582,29 @@ interface State {
 
 const coarse = (x: number): number => Math.round(x * 64) / 64;
 
+/** A number as a coarse texel part and the fine remainder after it, component i of texel and texel + 1. */
+function writeSplit(out: Float32Array, texel: number, i: number, value: number): void {
+  const big = coarse(value);
+  out[texel * 4 + i] = big;
+  out[(texel + 1) * 4 + i] = value - big;
+}
+
 function writeMotion(out: Float32Array, texel: number, m: Motion): void {
-  const values = [m.a.re, m.a.im, m.b.re, m.b.im];
-  values.forEach((value, i) => {
-    const big = coarse(value);
-    out[texel * 4 + i] = big;
-    out[(texel + 1) * 4 + i] = value - big;
-  });
+  writeSplit(out, texel, 0, m.a.re);
+  writeSplit(out, texel, 1, m.a.im);
+  writeSplit(out, texel, 2, m.b.re);
+  writeSplit(out, texel, 3, m.b.im);
+}
+
+function put(out: Float32Array, texel: number, x: number, y: number, z: number, w: number): void {
+  const at = texel * 4;
+  out[at] = x;
+  out[at + 1] = y;
+  out[at + 2] = z;
+  out[at + 3] = w;
 }
 
 function writeState(out: Float32Array, state: State): void {
-  const put = (texel: number, x: number, y: number, z: number, w: number): void => {
-    out.set([x, y, z, w], texel * 4);
-  };
   const t = HYPERBOLIC_TEXELS;
   const st = state.strands;
   writeMotion(out, t.motion, state.motion);
@@ -600,20 +612,20 @@ function writeState(out: Float32Array, state: State): void {
   const mark = state.mark;
   const markFits = mark !== undefined && Math.max(size(mark.a), size(mark.b)) < 30;
   writeMotion(out, t.mark, markFits ? mark : STILL);
-  put(t.arc, coarse(st.s), st.s - coarse(st.s), coarse(st.rho), st.rho - coarse(st.rho));
-  put(t.strand, st.k, st.side, st.body, st.outline);
-  put(t.average, ...st.average);
-  put(t.source, state.source.re, state.source.im, state.focus, markFits ? state.shown : 0);
-  put(t.pulse, state.pulse.re, state.pulse.im, state.pulseRadius, state.pulseStrength);
-  put(t.breath, state.breath[0], state.breath[1], state.flip, st.markHalf);
-  put(t.scale, st.spacing, state.glow, 0, 0);
-  put(t.flow, state.flow.turn, state.flow.push.re, state.flow.push.im, 0);
+  put(out, t.arc, coarse(st.s), st.s - coarse(st.s), coarse(st.rho), st.rho - coarse(st.rho));
+  put(out, t.strand, st.k, st.side, st.body, st.outline);
+  put(out, t.average, st.average[0], st.average[1], st.average[2], st.average[3]);
+  put(out, t.source, state.source.re, state.source.im, state.focus, markFits ? state.shown : 0);
+  put(out, t.pulse, state.pulse.re, state.pulse.im, state.pulseRadius, state.pulseStrength);
+  put(out, t.breath, state.breath[0], state.breath[1], state.flip, st.markHalf);
+  put(out, t.scale, st.spacing, state.glow, 0, 0);
+  put(out, t.flow, state.flow.turn, state.flow.push.re, state.flow.push.im, 0);
 }
 
 /** The state before the first frame: the default tiling at rest. The shader falls back on it. */
 export function hyperbolicFallback(): readonly number[] {
   const out = new Float32Array(TEXELS * 4);
-  const tiling = tilingOf(HYPERBOLIC_TILINGS[0] ?? { label: "{7,3}", p: 7, q: 3 });
+  const tiling = tilingOf(FIRST_TILING);
   writeState(out, {
     motion: STILL,
     mark: undefined,
@@ -704,31 +716,32 @@ interface Knobs {
   mark: number;
 }
 
-function pick<T>(list: readonly T[], value: number, fallback: T): T {
-  return list[clamp(Math.round(value), 0, list.length - 1)] ?? fallback;
-}
-
-/** Deterministic 0..1 numbers (mulberry32). */
-function randomFrom(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let x = s;
-    x = Math.imul(x ^ (x >>> 15), x | 1);
-    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 class HyperbolicSim implements SceneSim {
   readonly #texture: DataTexture;
   readonly #data = new Float32Array(TEXELS * 4);
-  readonly #at: Readonly<Record<KnobKey, number>>;
-  readonly #random = randomFrom(7);
+  readonly #reader: KnobReader<KnobKey>;
+  readonly #markTrigger: number;
+  readonly #pulseTrigger: number;
+  /** What `#read` last read: one record, rewritten each frame. */
+  readonly #knobs: Knobs = {
+    tiling: FIRST_TILING,
+    motif: "weave",
+    spread: HYPERBOLIC_DEFAULTS.spread,
+    weight: HYPERBOLIC_DEFAULTS.weight,
+    flow: "glide",
+    speed: 0,
+    pulse: 0,
+    model: "disk",
+    mark: 0,
+  };
+  readonly #random = mulberry32(7);
   #tilingDef: TilingDef | undefined;
   #tiling: Tiling;
   #strands: Strands;
-  #strandKey = "";
+  /** The motif and the spread and weight (in thousandths) the current strands were derived for. */
+  #strandMotif: Motif | undefined;
+  #strandSpread = 0;
+  #strandWeight = 0;
   /** Screen disk → plane. */
   #motion: Motion = STILL;
   /** Tiles' colour flip from the motions traded in `settle` (lattice, even corners). */
@@ -756,36 +769,20 @@ class HyperbolicSim implements SceneSim {
   #pulsing = false;
   #pulseNow = false;
   #nextPulse = PULSE_FIRST;
-  #seen: readonly number[] | undefined;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new Error(`hyperbolic: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#at = {
-      tiling: index("tiling"),
-      motif: index("motif"),
-      spread: index("spread"),
-      weight: index("weight"),
-      flow: index("flow"),
-      speed: index("speed"),
-      pulse: index("pulse"),
-      model: index("model"),
-      mark: index("mark"),
-    };
-    const first = HYPERBOLIC_TILINGS[0] ?? { label: "{7,3}", p: 7, q: 3 };
-    this.#tiling = tilingOf(first);
+    this.#reader = new KnobReader<KnobKey>("hyperbolic", params, ["tiling", "motif", "spread", "weight", "flow", "speed", "pulse", "model", "mark"]);
+    this.#markTrigger = this.#reader.trigger("mark");
+    this.#pulseTrigger = this.#reader.trigger("pulse");
+    this.#tiling = tilingOf(FIRST_TILING);
     this.#strands = strandsOf(this.#tiling, "weave", HYPERBOLIC_DEFAULTS.spread, HYPERBOLIC_DEFAULTS.weight);
     this.#texture = new DataTexture(gl, { width: TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
-    const knobs = this.#read(frame.values);
+    const knobs = this.#read(frame);
     this.#fit(knobs, aspect);
-    const fired = this.#fired(frame.triggers);
     const dt = Math.max(0, frame.dt);
     const glide = dt * clamp(frame.motion, 0, 1);
 
@@ -799,8 +796,8 @@ class HyperbolicSim implements SceneSim {
     }
     this.#clock += glide;
     this.#settle();
-    this.#tendMark(knobs, fired[1] === true, dt, aspect, frame.height, ambient);
-    this.#tendPulse(knobs, fired[0] === true, dt, frame.motion);
+    this.#tendMark(knobs, frame.fired[this.#markTrigger] === true, dt, aspect, frame.height, ambient);
+    this.#tendPulse(knobs, frame.fired[this.#pulseTrigger] === true, dt, frame.motion);
 
     const glow = knobs.mark > 0 ? knobs.mark : 0.5;
     const rimward = this.#source(knobs);
@@ -828,21 +825,20 @@ class HyperbolicSim implements SceneSim {
     this.#texture.dispose();
   }
 
-  #read(values: readonly number[]): Knobs {
-    const at = this.#at;
-    const value = (key: KnobKey, fallback: number): number => values[at[key]] ?? fallback;
-    const first = HYPERBOLIC_TILINGS[0] ?? { label: "{7,3}", p: 7, q: 3 };
-    return {
-      tiling: pick(HYPERBOLIC_TILINGS, value("tiling", 0), first),
-      motif: pick(HYPERBOLIC_MOTIFS, value("motif", 0), "weave"),
-      spread: clamp(value("spread", HYPERBOLIC_DEFAULTS.spread), 0.15, 0.85),
-      weight: clamp(value("weight", HYPERBOLIC_DEFAULTS.weight), 0.05, 1),
-      flow: pick(HYPERBOLIC_FLOWS, value("flow", 0), "glide"),
-      speed: Math.max(0, value("speed", 0.35)),
-      pulse: Math.max(0, value("pulse", 0)),
-      model: pick(HYPERBOLIC_MODELS, value("model", 0), "disk"),
-      mark: Math.max(0, value("mark", 0)),
-    };
+  /** The knobs as the shader sees them, written into the sim's one `Knobs` record. */
+  #read(frame: SimFrame): Knobs {
+    const knobs = this.#knobs;
+    const reader = this.#reader;
+    knobs.tiling = reader.pick(frame, "tiling", HYPERBOLIC_TILINGS, FIRST_TILING);
+    knobs.motif = reader.pick(frame, "motif", HYPERBOLIC_MOTIFS, "weave");
+    knobs.spread = clamp(reader.value(frame, "spread"), 0.15, 0.85);
+    knobs.weight = clamp(reader.value(frame, "weight"), 0.05, 1);
+    knobs.flow = reader.pick(frame, "flow", HYPERBOLIC_FLOWS, "glide");
+    knobs.speed = Math.max(0, reader.value(frame, "speed"));
+    knobs.pulse = Math.max(0, reader.value(frame, "pulse"));
+    knobs.model = reader.pick(frame, "model", HYPERBOLIC_MODELS, "disk");
+    knobs.mark = Math.max(0, reader.value(frame, "mark"));
+    return knobs;
   }
 
   /** A new tiling or new strands: re-derive the geometry. A new tiling also re-seats the M. */
@@ -852,24 +848,20 @@ class HyperbolicSim implements SceneSim {
       this.#tilingDef = knobs.tiling;
       this.#tiling = tilingOf(knobs.tiling);
       this.#flip = 0;
-      this.#strandKey = "";
+      this.#strandMotif = undefined;
       if (fresh && this.#markTile !== undefined) {
         this.#seatMark(ZERO, knobs.model, aspect);
         this.#markShown = 0;
       }
     }
-    const key = `${knobs.motif}|${knobs.spread.toFixed(3)}|${knobs.weight.toFixed(3)}`;
-    if (key !== this.#strandKey) {
-      this.#strandKey = key;
+    const spread = Math.round(knobs.spread * 1000);
+    const weight = Math.round(knobs.weight * 1000);
+    if (knobs.motif !== this.#strandMotif || spread !== this.#strandSpread || weight !== this.#strandWeight) {
+      this.#strandMotif = knobs.motif;
+      this.#strandSpread = spread;
+      this.#strandWeight = weight;
       this.#strands = strandsOf(this.#tiling, knobs.motif, knobs.spread, knobs.weight);
     }
-  }
-
-  /** "Now" buttons stamp their slot with the scene clock: any change since the last frame fires. */
-  #fired(triggers: readonly number[]): boolean[] {
-    const previous = this.#seen;
-    this.#seen = [...triggers];
-    return triggers.map((at, slot) => previous !== undefined && at !== previous[slot] && at > -1e3);
   }
 
   /** The flow the plane glides on, as a velocity of the screen. */
@@ -1076,11 +1068,6 @@ class HyperbolicSim implements SceneSim {
       this.#nextPulse = this.#clock + gap * (0.75 + 0.5 * this.#random());
     }
   }
-}
-
-function smoothstep(a: number, b: number, x: number): number {
-  const t = clamp((x - a) / (b - a), 0, 1);
-  return t * t * (3 - 2 * t);
 }
 
 export const hyperbolicSim =

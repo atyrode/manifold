@@ -3,6 +3,7 @@
 // method laid out as a dry garden. sim.ts moves them (and carries one into the next); shader.ts
 // draws them all in one language of ripples, rays, outlines and gilded orbit traps.
 import { choice, feature, range, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { fractalGlsl, fractalPalettes } from "./shader.ts";
 import { fractalModes, fractalSim } from "./sim.ts";
@@ -40,8 +41,5 @@ export const fractalScene: SceneDef = {
   entry: "sceneFractal",
   sim: fractalSim(params),
   // Sumi and porcelain are light grounds: the page copy goes dark on them.
-  theme: (values) => {
-    const palette = values.palette ?? params.find((def) => def.key === "palette")?.value ?? 0;
-    return fractalPalettes[Math.round(palette)]?.paper === true ? "paper" : "night";
-  },
+  theme: paletteTheme(params, "palette", (palette) => fractalPalettes[palette]?.paper === true),
 };

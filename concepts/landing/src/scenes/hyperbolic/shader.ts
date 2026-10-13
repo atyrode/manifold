@@ -4,6 +4,7 @@
 // are a handful of circles. The sim (sim.ts) supplies the glide and the geometry:
 //   uSim0  one row of state texels, laid out in HYPERBOLIC_TEXELS (sim.ts)
 // Knobs read here: K_tiling, K_model, K_palette, K_breath.
+import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import {
   HYPERBOLIC_DETAIL,
   HYPERBOLIC_PALETTES,
@@ -15,29 +16,29 @@ import {
   tilingOf,
 } from "./sim.ts";
 
-const glslFloat = (x: number): string => x.toFixed(6);
-
-/** A CSS hex colour as a GLSL vec3 literal (the pipeline works in display sRGB, as the canvas). */
-function glslColor(hex: string): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const channels = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((c) => (c / 255).toFixed(4));
-  return `vec3(${channels.join(", ")})`;
-}
+// The tilings' derived numbers (corner, c, r) and the fallback texels are written rounded to six
+// places, as the picture was tuned with: an exact literal would move the tiling's circles by
+// float-rounding amounts, and the fold amplifies them.
+const fixed6 = (x: number): string => x.toFixed(6);
 
 const tilings = HYPERBOLIC_TILINGS.map((def) => {
   const t = tilingOf(def);
-  return `HyperbolicTiling(${glslFloat(t.p)}, ${glslFloat(t.c)}, ${glslFloat(t.r)}, ${glslFloat(t.corner)}, ${t.q % 2 === 0})`;
+  return `HyperbolicTiling(${fixed6(t.p)}, ${fixed6(t.c)}, ${fixed6(t.r)}, ${fixed6(t.corner)}, ${t.q % 2 === 0})`;
 });
-const tilingTable = tilings.map((tiling, i) => `  if (K_tiling < ${i}.5) return ${tiling};`).join("\n");
+const tilingTable = glslPick("tiling", tilings, tilings[tilings.length - 1] ?? "HyperbolicTiling(7.0, 2.0, 1.7, 0.3, false)");
 
 const palettes = HYPERBOLIC_PALETTES.map((p) => {
-  const colors = [p.ground, p.groundAlt, p.groundBreath, p.strand, p.strandBreath, p.ink, p.back, p.glow, p.rim, p.source, p.mark].map(glslColor);
-  return `HyperbolicPalette(${colors.join(", ")}, ${glslFloat(p.lamp)}, ${p.paper})`;
+  const colors = [p.ground, p.groundAlt, p.groundBreath, p.strand, p.strandBreath, p.ink, p.back, p.glow, p.rim, p.source, p.mark].map(glslVec3);
+  return `HyperbolicPalette(${colors.join(", ")}, ${glslFloat(p.lamp)})`;
 });
-const paletteTable = palettes.map((palette, i) => `  if (K_palette < ${i}.5) return ${palette};`).join("\n");
+const paletteTable = glslPick(
+  "palette",
+  palettes,
+  palettes[palettes.length - 1] ?? "HyperbolicPalette(vec3(0.0), vec3(0.0), vec3(0.0), vec3(1.0), vec3(1.0), vec3(0.0), vec3(0.0), vec3(0.5), vec3(1.0), vec3(1.0), vec3(1.0), 1.0)",
+);
 
 const fallback = hyperbolicFallback();
-const fallbackTexels = Array.from({ length: fallback.length / 4 }, (_, i) => `vec4(${fallback.slice(i * 4, i * 4 + 4).map(glslFloat).join(", ")})`);
+const fallbackTexels = Array.from({ length: fallback.length / 4 }, (_, i) => `vec4(${fallback.slice(i * 4, i * 4 + 4).map(fixed6).join(", ")})`);
 
 const T = HYPERBOLIC_TEXELS;
 const D = HYPERBOLIC_DETAIL;
@@ -66,7 +67,6 @@ struct HyperbolicTiling {
 
 HyperbolicTiling hyperbolicTiling() {
 ${tilingTable}
-  return ${tilings[tilings.length - 1] ?? "HyperbolicTiling(7.0, 2.0, 1.7, 0.3, false)"};
 }
 
 struct HyperbolicPalette {
@@ -82,12 +82,10 @@ struct HyperbolicPalette {
   vec3 source;       // the light where tiles come from, and of the pulse
   vec3 mark;         // the M
   float lamp;        // light at the screen's edges, against 1 in the middle
-  bool paper;
 };
 
 HyperbolicPalette hyperbolicPalette() {
 ${paletteTable}
-  return ${palettes[palettes.length - 1] ?? "HyperbolicPalette(vec3(0.0), vec3(0.0), vec3(0.0), vec3(1.0), vec3(1.0), vec3(0.0), vec3(0.0), vec3(0.5), vec3(1.0), vec3(1.0), vec3(1.0), 1.0, false)"};
 }
 
 // The default tiling at rest, for a frame without the sim.
@@ -226,19 +224,19 @@ HyperbolicStrands hyperbolicStrands(vec2 x, float p, float k, float s, float rho
 }
 
 // Coverage of a band of the given half-width round a centre line 'gap' away. The edge is
-// antialiased over aa, then cut against this cell's own threshold, its grain: the edge keeps its
-// smoothness as a dither pattern, and as it slides past, each cell flips just once.
+// antialiased over aa, then cut against this cell's own grain (an edge threshold of the lab's
+// dither pattern): the edge keeps its smoothness as a dither pattern, and as it slides past, each
+// cell flips just once.
 float hyperbolicCover(float halfWidth, float gap, float aa, float grain) {
-  return step(grain, 1.0 - smoothstep(halfWidth - aa, halfWidth + aa, abs(gap)));
+  return hardFill(abs(gap) - halfWidth, aa, grain);
 }
 
 Shade sceneHyperbolic(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 q = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   HyperbolicPalette pal = hyperbolicPalette();
   HyperbolicView view = hyperbolicView(q, aspect);
-  float grain = bayer4(cell + vec2(2.0, 1.0)) * 0.9375 + 0.03125;
+  float grain = edgeThreshold(cell, vec2(2.0, 1.0));
 
   // The palette breathes: the second ground and the strands drift between neighbouring shades.
   vec4 breath = hyperbolicState(${T.breath});
@@ -361,8 +359,8 @@ Shade sceneHyperbolic(vec2 uv, vec2 cell, float t) {
       vec2 c = pulse.xy;
       float chord = length(view.z - c) / max(length(vec2(1.0, 0.0) - hyperbolicMul(vec2(c.x, -c.y), view.z)), 1e-6);
       float u = (2.0 * atanh(min(chord, 0.999999)) - pulse.z) / HYPERBOLIC_PULSE_WIDTH;
-      float ring = pulse.w * exp(-u * u);
-      col = pal.paper ? mix(col, col * pal.source, 0.45 * ring) : col + ring * pal.source * (0.05 + 0.3 * fill);
+      float ring = pulse.w * bell(u);
+      col = pagePaper() ? mix(col, col * pal.source, 0.45 * ring) : col + ring * pal.source * (0.05 + 0.3 * fill);
     }
 
     col *= mix(pal.lamp, 1.04, exp(-dot(q, q) / 0.16));
@@ -372,11 +370,6 @@ Shade sceneHyperbolic(vec2 uv, vec2 cell, float t) {
     accent = max(accent, 0.5 * toward * rim);
   }
 
-  float lum = dot(col, LUMA);
-  o.rgb = col;
-  o.source = col;
-  o.ink = pal.paper ? clamp((0.92 - lum) / 0.8, 0.0, 1.0) : clamp(1.25 * lum, 0.0, 1.0);
-  o.accent = accent;
-  return o;
+  return shadeOf(col, inkOf(col, 1.25, 1.0, vec2(0.92, 0.8)), accent);
 }
 `;

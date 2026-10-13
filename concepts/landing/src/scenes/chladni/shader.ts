@@ -4,6 +4,7 @@
 //   uSim1  the plate's field over the same square: R the figure it comes from, G the one it goes to
 //   uSim2  texel 0: eased crossfade s, norm, swing A, share of the M in the field
 // Knobs read here: K_shape, K_tone, K_sand, K_lamp, K_lampHue, K_shimmer (the rest drive the sim).
+import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { CHLADNI_HUB, CHLADNI_MARK_SIZE, CHLADNI_MARK_Y, CHLADNI_PLATE, CHLADNI_PLATE_FIT, CHLADNI_SAND_TEXELS } from "./sim.ts";
 
 export interface ChladniColor {
@@ -42,21 +43,6 @@ export const chladniMetals: readonly ChladniMetal[] = [
   { label: "brass", base: "#1c140a", sheen: "#ffcf86" },
 ];
 
-/** A CSS hex colour as a GLSL vec3 literal (the pipeline works in display sRGB, as the canvas). */
-function glslColor(hex: string): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const channels = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((c) => (c / 255).toFixed(4));
-  return `vec3(${channels.join(", ")})`;
-}
-
-/** A number as a GLSL float literal (GLSL ES never turns an int literal into a float). */
-const glslFloat = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
-
-/** `if (K_<knob> < i.5) return <colour i>;` for each choice. */
-function pick(knob: string, colors: readonly string[]): string {
-  return colors.map((color, i) => `  if (K_${knob} < ${i}.5) return ${glslColor(color)};`).join("\n");
-}
-
 export const chladniGlsl = `
 const float CHLADNI_PLATE = ${glslFloat(CHLADNI_PLATE)};
 const float CHLADNI_PLATE_FIT = ${glslFloat(CHLADNI_PLATE_FIT)};
@@ -72,23 +58,19 @@ const float CHLADNI_HEAP = 2.0;                         // grains per texel to h
 const float CHLADNI_DUST = 4.0;                         // grains per texel for a full veil of dancing sand
 
 vec3 chladniSandColor() {
-${pick("sand", chladniSands.map((sand) => sand.color))}
-  return vec3(0.9);
+${glslPick("sand", chladniSands.map((sand) => glslVec3(sand.color)), "vec3(0.9)")}
 }
 
 vec3 chladniLampHue() {
-${pick("lampHue", chladniLamps.map((lamp) => lamp.color))}
-  return vec3(1.0);
+${glslPick("lampHue", chladniLamps.map((lamp) => glslVec3(lamp.color)), "vec3(1.0)")}
 }
 
 vec3 chladniMetal() {
-${pick("tone", chladniMetals.map((metal) => metal.base))}
-  return vec3(0.08);
+${glslPick("tone", chladniMetals.map((metal) => glslVec3(metal.base)), "vec3(0.08)")}
 }
 
 vec3 chladniSheen() {
-${pick("tone", chladniMetals.map((metal) => metal.sheen))}
-  return vec3(0.8);
+${glslPick("tone", chladniMetals.map((metal) => glslVec3(metal.sheen)), "vec3(0.8)")}
 }
 
 // Signed distance to the plate's edge in plate units: the unit disc, or the unit square with its
@@ -137,14 +119,13 @@ vec3 chladniHub(vec3 col, vec2 q, float px, vec3 light) {
 }
 
 Shade sceneChladni(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
   float size = min(CHLADNI_PLATE, 0.5 * CHLADNI_PLATE_FIT * aspect);
   vec2 q = p / size;
   float px = 1.0 / (uRes.y * size);
   bool disc = K_shape > 0.5;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   vec2 toward = CHLADNI_TOWARD_LAMP;
   vec3 hue = chladniLampHue();
   vec3 light = K_lamp > 0.0 ? hue * (0.35 + 0.85 * K_lamp) : CHLADNI_ROOM;
@@ -269,16 +250,12 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
 
     top = chladniHub(top, q, px, light);
 
-    float cover = 1.0 - smoothstep(-px, px, sd);
+    float cover = softFill(sd, px);
     col = mix(col, top, cover);
     accent = cover * (0.6 * smoothstep(0.3, 0.95, band) * step(0.001, K_lamp) * (1.0 - max(grain, flying)) + grain * mark);
     accent *= smoothstep(CHLADNI_HUB, CHLADNI_HUB + 2.0 * px, r);
   }
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(1.3 * dot(col, LUMA), 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
+  return shadeOf(col, inkOf(col, 1.3, 1.0), clamp(accent, 0.0, 1.0));
 }
 `;
