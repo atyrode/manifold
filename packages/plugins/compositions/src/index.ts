@@ -38,10 +38,10 @@ export const compositionsManifest: PluginManifest = {
     panels: [],
     sections: [],
     /**
-     * ONE CREATOR: "Composition", this discipline's own offer in the shell's picker and the
+     * ONE CREATOR: "Composition", this discipline's own entry in the shell's draft and the
      * exact counterpart of `core.canvas`'s — the index's door with this discipline as fixed
-     * input, landing the presser inside what it made. `order: 3` seats it directly after the
-     * canvas creator, where its row used to sit.
+     * input and the typed name as its `name`, landing the presser inside what it made.
+     * `order: 3` seats it directly after the canvas creator, where its row used to sit.
      */
     creators: [
       {
@@ -51,12 +51,13 @@ export const compositionsManifest: PluginManifest = {
         order: 3,
         action: "core.index.createContainer",
         input: { name: "Untitled", discipline: "composition" },
+        nameInput: "name",
         setting: "new-composition",
       },
     ],
     /**
      * AND ONE PREFERENCE OVER IT (#133), the exact counterpart of `core.canvas`'s: the offer
-     * is gated on a declared boolean, dropped from the picker per principal when it reads
+     * is gated on a declared boolean, dropped from the draft's list per principal when it reads
      * false, and shipped `true`. The discipline, its renderer and every composition in the
      * workspace are untouched by it — this is an entry's visibility, not a disable.
      */

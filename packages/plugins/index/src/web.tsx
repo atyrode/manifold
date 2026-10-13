@@ -30,14 +30,9 @@ import {
   FALLBACK_POLL_MS,
   INDEX_RESOURCE,
   TERMINALS_RESOURCE,
-  useWorkspaceShell,
   type ItemDropAssessment,
 } from "@manifold/plugin/hooks";
-import {
-  DEFAULT_CANVAS_DROP,
-  IndexFolderCreatedResponseSchema,
-  placementItemFor,
-} from "@manifold/protocol";
+import { DEFAULT_CANVAS_DROP, placementItemFor } from "@manifold/protocol";
 import type {
   Container,
   Attendance,
@@ -59,7 +54,6 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { NEW_FOLDER_CREATOR, indexManifest } from "./index.ts";
 import { useHeadlessTree } from "./use-headless-tree.ts";
 
 /**
@@ -225,35 +219,6 @@ export function IndexSection({ host }: SectionProps): ReactElement {
       current !== null && incoming !== null && sameIndexEntries(current, incoming),
     onError: (reason) => report(reason, "Could not load the index"),
   });
-
-  /*
-    THIS DEVICE JUST MADE A FOLDER FROM THE RAIL, through this plugin's own creator (#1079):
-    the press was a one-click "Untitled folder", so the tree opens that folder's rename field —
-    focused, its text selected — rather than leaving the reader to find and rename it. The
-    shell published the door's answer verbatim (`lastCreated`); the folder's id comes from
-    that answer, never from guessing it by name in a tree a collaborator may be changing. The
-    row itself arrives through the index feed (the shell refreshed it, and `folder_created`
-    reaches this subscription), and the rename field mounts focused the moment it does.
-    Another device's folder arrives as an ordinary event and opens nothing, and a remount
-    does not replay an old run. Adjusted during render rather than in an effect (React's
-    derived-state guidance), so no frame paints the folder un-opened.
-  */
-  const { lastCreated } = useWorkspaceShell();
-  const [handledRun, setHandledRun] = useState(lastCreated?.seq ?? 0);
-  if (lastCreated !== null && lastCreated.seq !== handledRun) {
-    setHandledRun(lastCreated.seq);
-    const answer =
-      lastCreated.plugin === indexManifest.id && lastCreated.creator === NEW_FOLDER_CREATOR
-        ? IndexFolderCreatedResponseSchema.safeParse(lastCreated.result)
-        : null;
-    const folder = answer?.success
-      ? answer.data.items.find((item) => item.kind === "folder" && item.id === answer.data.folderId)
-      : undefined;
-    if (folder?.kind === "folder") {
-      setRenamingFolderId(folder.id);
-      setFolderRenameName(folder.name);
-    }
-  }
   const { value: terminalsByContainer } = usePolledResource(fetchByContainer, FALLBACK_POLL_MS, {
     key: CONTAINER_TERMINALS_RESOURCE,
     initial: NO_CONTAINER_TERMINALS,

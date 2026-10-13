@@ -159,20 +159,22 @@ export interface AssemblySection {
 
 /**
  * ONE OFFER TO MAKE SOMETHING, as the composition resolved it: the manifest's declaration
- * (`CreatorDefSchema`) and the plugin that made it. The shell's picker is drawn from these and
- * runs the chosen one through `action` with `input`, as the principal who pressed — so the row
- * is the whole of what a creator IS, and no component stands behind it.
+ * (`CreatorDefSchema`) and the plugin that made it. The shell's draft entry lists these by
+ * title and runs the chosen one through `action` with `input`, as the principal who pressed —
+ * so the row is the whole of what a creator IS, and no component stands behind it.
  */
 export interface AssemblyCreator {
   readonly id: string;
   readonly plugin: string;
-  /** The name of the thing the entry makes ("Canvas"); the picker shows it beside the shell's "+ New". */
+  /** The name of the thing the entry makes ("Canvas"); the draft lists kinds by it. */
   readonly title: string;
   readonly icon: CreatorIcon;
   readonly order: number;
   /** A FULL action name, checked against the assembled actions; it may be another plugin's. */
   readonly action: string;
   readonly input: CreatorDef["input"];
+  /** The `input` property the reader's typed name replaces; absent ≡ the thing takes no name. */
+  readonly nameInput?: string;
   /**
    * WHICH of the owner's own boolean settings gates this entry, or undefined for
    * "unconditional" — the reference a section carries, resolved by the same rule at the same
@@ -957,7 +959,7 @@ function assembleDefinitions(
         .map((setting) => setting.id),
     );
     // Sections, creators, elements and tools are named GLOBALLY rather than per plugin: a
-    // section is a slot in one sidebar, a creator an entry in one picker, an element type is a
+    // section is a slot in one sidebar, a creator an entry in one draft list, an element type is a
     // wire kind a scene doc stores, and a tool id is what presence publishes as the peer's
     // current tool. Two plugins claiming one of those would be two plugins claiming one thing,
     // which is exactly what D5 refuses.
@@ -1003,7 +1005,8 @@ function assembleDefinitions(
         order: creator.order,
         action: creator.action,
         input: creator.input,
-        // Spread: absent means "unconditional", and an explicit `undefined` would not.
+        // Spread: absent means "no name" / "unconditional", and an explicit `undefined` would not.
+        ...(creator.nameInput === undefined ? {} : { nameInput: creator.nameInput }),
         ...(creator.setting === undefined ? {} : { setting: creator.setting }),
       });
     }

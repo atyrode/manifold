@@ -713,7 +713,7 @@ Per kind:
 | **element** (scene record) | data untouched; renders the engine placeholder (`dormant.mode` `ghost`, default) or is skipped (`hide`) | renders again, in place              | records released, ownership freed             |
 | **panel** (layout leaf)    | leaf stays in every principal's stored layout; paints the placeholder, which carries a remove control   | paints its component again, in place | leaf becomes an unknown-panel placeholder     |
 | **section** (sidebar)      | ABSENT — chrome renders absence; the Plugins section is the one ledger of what is off                   | returns to its manifest-ordered slot | slot gone                                     |
-| **creator** (picker entry) | ABSENT from every reader's picker — an offer keeps no seat, and creation dies on a disable (D12)        | offered again                        | gone                                          |
+| **creator** (draft entry)  | ABSENT from every reader's draft — an offer keeps no seat, and creation dies on a disable (D12)         | offered again                        | gone                                          |
 | **tool** (toolbar)         | absent from the strip; any in-flight tool state falls back to select                                    | reappears                            | gone                                          |
 | **stored data**            | retained — `ctx.storage` namespace, migration ledger, element-type reservation all stand                | read as they were                    | cleared, ledger dropped, reservation released |
 | **route**                  | the engine's named "disabled" page                                                                      | serves again                         | 404                                           |
@@ -1227,7 +1227,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "creator",
-      "means": "contribution kind: an offer to make something, declared as DATA in `contributes.creators` — an id claimed globally, a title, a mark from the closed `CREATOR_ICONS`, an order, a full action name and a fixed bounded JSON input, optionally gated on the plugin's own boolean setting. `core.shell` draws every creator offered to the reader in one split button (its face repeats the last pick on this device) and runs the chosen one through the declared door as the presser; the declaring plugin supplies no component, so trusted, in-realm and hardened plugins offer creators the same way",
+      "means": "contribution kind: an offer to make something, declared as DATA in `contributes.creators` — an id claimed globally, a title, a mark from the closed `CREATOR_ICONS`, an order, a full action name and a fixed bounded JSON input, optionally naming the input's string property the typed name replaces (`nameInput`) and optionally gated on the plugin's own boolean setting. `core.shell` lists every creator offered to the reader by title in one draft entry (it opens on the creator last run on this device) and runs the chosen one through the declared door as the presser with the typed name; the declaring plugin supplies no component, so trusted, in-realm and hardened plugins offer creators the same way",
       "banned": [],
       "allow": []
     },
@@ -1851,11 +1851,6 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "the one popover's floating layer (`popover.tsx`), portaled to the body above every pointer-transparent overlay; its behavior engine is Radix Popover, an internals decision (docs/decisions/2026-09-01-radix-popover.md)"
     },
     {
-      "family": "menu",
-      "owner": "packages/ui/src/styles.css",
-      "why": "the one menu (`menu.tsx`): a list of choices riding the popover's layer with menu/menuitem roles and roving focus — its rows, their mark, their truncating label and the adopter's current choice. First adopter: core.shell's creation control"
-    },
-    {
       "family": "credential",
       "owner": "packages/plugins/access/src/styles.css",
       "why": "core.access' credential list (ADR 0019 §3): the principal row, its colour pip, the meta line under the name, the two-press withdraw control and the refusal it renders in place. It is this plugin's sheet rather than a block in the shell's for `keys`' reason — a skin that cannot leave with the plugin it dresses is a plugin that was never really extracted — while the row VOCABULARY the section fills (`.sidebar-section-content`, `.sidebar-section-count`, `.sidebar-section-empty`) stays in the `sidebar` family, because a class more than one tenant fills belongs to whoever owns the rail"
@@ -2150,7 +2145,7 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     },
     {
       "key": "manifold:last-creator",
-      "why": "which creator THIS device last picked from core.shell's creation control, so it stays the current choice beside \"+ New\" (#1079). A convenience about one screen naming an entry from an OPEN set any plugin may declare: a hidden, disabled, uninstalled or unknown pick simply falls back to the first entry offered, and a storage fault is no memory"
+      "why": "which creator THIS device last ran from core.shell's creation control, so the next draft entry opens on it (#1079). A convenience about one screen naming an entry from an OPEN set any plugin may declare: a hidden, disabled, uninstalled or unknown pick simply falls back to the first entry offered, and a storage fault is no memory"
     },
     {
       "key": "manifold:sidebar-folds",

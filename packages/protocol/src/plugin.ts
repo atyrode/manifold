@@ -398,40 +398,54 @@ export const CreatorInputSchema = z
 
 /**
  * ONE CREATOR: an offer to make something, declared as DATA — the entry's label, its mark, where
- * it sorts, and the ACTION it runs with a FIXED input. `core.shell` draws every visible creator
- * in one picker in the rail and runs the chosen one; the declaring plugin supplies no component,
- * which is what lets a hardened Worker plugin offer a creator exactly as a trusted one does
- * (CONTRACTS.md §Producer-neutral behavior: one pipeline, whoever produced the entry).
+ * it sorts, and the ACTION it runs with a FIXED input. `core.shell` lists every visible creator
+ * by title in the rail's draft entry and runs the chosen one; the declaring plugin supplies
+ * no component, which is what lets a hardened Worker plugin offer a creator exactly as a trusted
+ * one does (CONTRACTS.md §Producer-neutral behavior: one pipeline, whoever produced the entry).
  *
  * `action` is a FULL action name and may be another plugin's door — `core.canvas` offers a
  * canvas through `core.index.createContainer`. That grants nothing: the shell dispatches it as
  * the principal who pressed, through the same ladder any `data-action` control goes through, so
  * a creator can offer only what its presser could already do. Assembly refuses a name no
  * assembled action answers to, naming both. A result naming a container (`{ container }`)
- * lands the presser inside it; any other result is the declaring plugin's to react to.
+ * lands the presser inside it.
  *
- * `id` is claimed GLOBALLY, like a section's: the picker is one menu, and two plugins claiming
- * one entry is the shadowing D5 refuses. `title` names the THING ("Canvas"), not the act: the
- * shell owns the one verb and draws it once, "+ New", beside the title of the current choice,
- * so the picker lists what can be made and the phrase reads "New Canvas" without every entry
- * repeating "New".
+ * `id` is claimed GLOBALLY, like a section's: the creators are one list, and two plugins
+ * claiming one entry is the shadowing D5 refuses. `title` names the THING ("Canvas"), not the
+ * act: the shell owns the one verb, "+ New…", and lists titles under the draft's name field.
+ *
+ * `nameInput` names the property of `input` that carries the made thing's NAME, so the draft
+ * entry can create it already named: the reader's typed name replaces that property, and its
+ * declared value — a string, refused otherwise — is the default an empty field creates with
+ * and shows as its placeholder. Absent ≡ the thing takes no name; the draft shows the title
+ * where the field would be, and Enter runs the fixed input as declared.
  *
  * `setting` gates the entry exactly as it gates a section ({@link SectionDefSchema}): one of
  * this manifest's OWN boolean settings, refused by name otherwise, and an entry whose setting
- * reads false is dropped from that reader's picker (`visibleCreators`). Absent ≡ unconditional.
+ * reads false is dropped from that reader's list (`visibleCreators`). Absent ≡ unconditional.
  *
  * A DISABLED owner's creators are gone, not marked: creation dies on a disable (D12), and an
  * offer has no place to paint an absence on.
  */
-export const CreatorDefSchema = z.strictObject({
-  id: LocalNameSchema,
-  title: TitleSchema,
-  icon: CreatorIconSchema,
-  order: z.number().int(),
-  action: ActionNameSchema,
-  input: CreatorInputSchema.default({}),
-  setting: LocalNameSchema.optional(),
-});
+export const CreatorDefSchema = z
+  .strictObject({
+    id: LocalNameSchema,
+    title: TitleSchema,
+    icon: CreatorIconSchema,
+    order: z.number().int(),
+    action: ActionNameSchema,
+    input: CreatorInputSchema.default({}),
+    nameInput: z.string().min(1).max(64).optional(),
+    setting: LocalNameSchema.optional(),
+  })
+  .refine(
+    (creator) =>
+      creator.nameInput === undefined || typeof creator.input[creator.nameInput] === "string",
+    {
+      message: "a creator's nameInput must name a string property of its input",
+      path: ["nameInput"],
+    },
+  );
 export type CreatorDef = z.infer<typeof CreatorDefSchema>;
 
 /**
@@ -556,7 +570,7 @@ export type RouteDef = z.infer<typeof RouteDefSchema>;
  * are where those panels ask to sit in a workspace nobody has arranged (see
  * {@link SeatDefSchema}), `sections` are sidebar rows ordered by their declared `order` (see
  * {@link SectionDefSchema}), `creators` are offers to make something, run from the shell's one
- * picker (see {@link CreatorDefSchema}), `elements` are canvas element renderers keyed by wire
+ * draft entry (see {@link CreatorDefSchema}), `elements` are canvas element renderers keyed by wire
  * type, `tools` are toolbar tools, and `routes` are the URL spaces it claims (see
  * {@link RouteDefSchema}).
  */
@@ -573,7 +587,7 @@ const ContributesSchema = z.strictObject({
   seats: z.array(SeatDefSchema).max(8).optional(),
   sections: z.array(SectionDefSchema).max(8).default([]),
   /**
-   * THE OFFERS TO MAKE SOMETHING this plugin puts in the shell's picker ({@link CreatorDefSchema}).
+   * THE OFFERS TO MAKE SOMETHING this plugin lists in the shell's draft entry ({@link CreatorDefSchema}).
    * Optional rather than defaulted to `[]` for the reason `seats` is: absence is a MEANING — the
    * plugin offers nothing to create — so every manifest written before the field existed keeps
    * exactly the sense it had and serializes as it did.

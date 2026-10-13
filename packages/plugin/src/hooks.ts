@@ -323,7 +323,6 @@ export {
 export {
   WorkspaceShellProvider,
   useWorkspaceShell,
-  type CreatorRun,
   type WebChangelogRelease,
   type WorkspaceShell,
 } from "./workspace-shell.ts";

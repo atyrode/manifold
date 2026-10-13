@@ -420,6 +420,7 @@ export function buildBrowserAssembly(
         order: creator.order,
         action: creator.action,
         input: creator.input,
+        ...(creator.nameInput === undefined ? {} : { nameInput: creator.nameInput }),
         ...(creator.setting === undefined ? {} : { setting: creator.setting }),
       });
     }

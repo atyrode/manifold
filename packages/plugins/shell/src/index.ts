@@ -83,7 +83,7 @@ export const shellManifest: PluginManifest = {
     sections: [
       /*
         THE CREATION CONTROL: a plain row drawing every creator the composition offers this
-        reader (`contributes.creators`, any plugin's) behind one split button. It names no kind
+        reader (`contributes.creators`, any plugin's) in one draft entry. It names no kind
         of thing, so it is the rail's chrome rather than any discipline's opinion — the
         opinions are the creators themselves, declared by the plugins that own them.
       */

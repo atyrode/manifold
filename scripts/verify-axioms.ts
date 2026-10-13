@@ -5290,37 +5290,37 @@ try {
   {
     /*
       THE CREATOR ROW of the disable table: an offer keeps no seat. Every plugin's declared
-      creators land in ONE picker, core.shell's creation control, so a plugin going off takes its
-      entry OUT of that menu — not greyed, not a press that refuses later — and coming back offers
-      it again in its declared place. Read off the OPEN picker, because the menu is where a reader
-      learns what they can make; an assembly agreeing with itself would prove less.
+      creators land in ONE draft entry, core.shell's creation control, so a plugin going off takes
+      its title OUT of the draft's list — not greyed, not a press that refuses later — and coming
+      back offers it again in its declared place. Read off the OPEN draft, because its list is
+      where a reader learns what they can make; an assembly agreeing with itself would prove less.
 
       The rung above leaves the manager's modal open, and a modal makes the rail inert, so it is
       shut first, the way a reader shuts it.
     */
     await closePluginManager();
-    const pickSelector = JSON.stringify('[data-section-id="creators"] .sidebar-creator-pick');
-    const menuSelector = JSON.stringify('[role="menu"][aria-label="Create"]');
+    const newSelector = JSON.stringify('[data-section-id="creators"] .sidebar-creator');
+    const draftSelector = JSON.stringify('[data-section-id="creators"] .sidebar-draft');
     const everyCreator = "Canvas | Composition | Folder";
     const withoutCompositions = "Canvas | Folder";
     /**
-     * What the picker offers, in painted order. Idempotent like `openPluginManager`: a shut
-     * picker gets its choice pressed and answers "shut", and the next poll reads the menu that
+     * What the draft offers, in painted order. Idempotent like `openPluginManager`: a closed
+     * draft gets "+ New…" pressed and answers "shut", and the next poll reads the draft that
      * opened.
      */
     const offered = (): Promise<string> =>
       browser!.evaluate<string>(
         `(() => {
-           const menu = document.querySelector(${menuSelector});
-           if (menu === null) {
-             document.querySelector(${pickSelector})?.click();
+           const draft = document.querySelector(${draftSelector});
+           if (draft === null) {
+             document.querySelector(${newSelector})?.click();
              return 'shut';
            }
-           return Array.from(menu.querySelectorAll('[role="menuitem"]'),
+           return Array.from(draft.querySelectorAll('[role="radio"]'),
              (item) => (item.textContent ?? '').trim()).join(' | ');
          })()`,
       );
-    /** Waits for the picker to offer exactly `wanted`, and answers what it last offered. */
+    /** Waits for the draft to offer exactly `wanted`, and answers what it last offered. */
     const offers = async (wanted: string): Promise<string> => {
       let last = "";
       await settles(async () => {
@@ -5330,8 +5330,8 @@ try {
       return last;
     };
     /** One key as a hand presses it; Enter carries its "\r", or a focused button never fires. */
-    const press = async (key: "Enter" | "ArrowDown" | "Escape"): Promise<void> => {
-      const keyCode = { Enter: 13, ArrowDown: 40, Escape: 27 }[key];
+    const press = async (key: "Enter" | "Tab" | "Escape"): Promise<void> => {
+      const keyCode = { Enter: 13, Tab: 9, Escape: 27 }[key];
       for (const type of ["keyDown", "keyUp"] as const) {
         await browser!.send("Input.dispatchKeyEvent", {
           type,
@@ -5343,22 +5343,22 @@ try {
         });
       }
     };
-    const menuGone = (): Promise<boolean> =>
+    const draftGone = (): Promise<boolean> =>
       settles(
-        () => browser!.evaluate<boolean>(`document.querySelector(${menuSelector}) === null`),
+        () => browser!.evaluate<boolean>(`document.querySelector(${draftSelector}) === null`),
         5_000,
       );
     const listed = await offers(everyCreator);
     await press("Escape");
-    await menuGone();
+    await draftGone();
     const off = await setEnabled("core.compositions", false);
     const withdrawn = await offers(withoutCompositions);
     await press("Escape");
-    await menuGone();
+    await draftGone();
     const on = await setEnabled("core.compositions", true);
     const reoffered = await offers(everyCreator);
     await press("Escape");
-    await menuGone();
+    await draftGone();
     const creatorRight =
       listed === everyCreator &&
       off &&
@@ -5369,26 +5369,25 @@ try {
       "R3 core.compositions creator",
       creatorRight,
       creatorRight
-        ? `the picker offered "${everyCreator}"; with core.compositions off it offered "${withdrawn}", and Composition came back in its declared place on re-enable`
+        ? `the draft offered "${everyCreator}"; with core.compositions off it offered "${withdrawn}", and Composition came back in its declared place on re-enable`
         : `offered "${listed}"; core.compositions off (${off ? "accepted" : "REFUSED"}) offered "${withdrawn}"; back on (${on ? "accepted" : "REFUSED"}) offered "${reoffered}"`,
     );
 
     /*
-      AND BY KEYBOARD, landing on the entry that just came back: a menu button a pointer can
-      work and a keyboard cannot is half a control. Enter on the choice opens the menu on the
-      current entry — Canvas, on a device that has picked nothing — ArrowDown walks to the
-      re-offered Composition, and Escape shuts the menu and hands focus back to the choice,
-      where the reader left it.
+      AND BY KEYBOARD, landing on the entry that just came back: a control a pointer can work
+      and a keyboard cannot is half a control. Enter on "+ New…" opens the draft with focus in
+      the name field of the creator it opens on — Canvas, on a device that has made nothing —
+      Tab steps the choice to the re-offered Composition with focus still in the field, and
+      Escape drops the draft and hands focus back to "+ New…", where the reader started.
     */
     const focused = (): Promise<string> =>
       browser!.evaluate<string>(
         `(() => {
            const at = document.activeElement;
            if (!(at instanceof HTMLElement)) return 'nothing';
-           if (at.matches(${pickSelector})) return 'the trigger';
-           return at.getAttribute('role') === 'menuitem'
-             ? (at.textContent ?? '').trim()
-             : at.tagName.toLowerCase();
+           if (at.matches(${newSelector})) return 'new';
+           const checked = at.closest('form')?.querySelector('[role="radio"][aria-checked="true"]');
+           return at.getAttribute('aria-label') + ' / ' + (checked?.textContent ?? '').trim();
          })()`,
       );
     /** Waits for focus to rest on `wanted`, and answers where it last was. */
@@ -5402,51 +5401,43 @@ try {
     };
     /*
       The rung above re-enabled a plugin, so the rail may still be taking the roster's later
-      frames. Focus ▾ only once it reads shut and has held still for a beat, so the Enter below
-      lands on the control a reader would be looking at.
+      frames. Focus "+ New…" only once it is drawn and has held still for a beat, so the Enter
+      below lands on the control a reader would be looking at.
     */
     await settles(
-      () =>
-        browser!.evaluate<boolean>(
-          `document.querySelector(${pickSelector})?.getAttribute('aria-expanded') === 'false'`,
-        ),
+      () => browser!.evaluate<boolean>(`document.querySelector(${newSelector}) !== null`),
       5_000,
     );
     await Bun.sleep(250);
     const triggered = await browser.evaluate<boolean>(
       `(() => {
-         const pick = document.querySelector(${pickSelector});
-         if (!(pick instanceof HTMLElement)) return false;
-         pick.focus();
-         return document.activeElement === pick;
+         const button = document.querySelector(${newSelector});
+         if (!(button instanceof HTMLElement)) return false;
+         button.focus();
+         return document.activeElement === button;
        })()`,
     );
     await press("Enter");
-    const opened = await settles(
-      () => browser!.evaluate<boolean>(`document.querySelector(${menuSelector}) !== null`),
-      5_000,
-    );
-    const openedOn = await focusOn("Canvas");
-    await press("ArrowDown");
-    const walkedTo = await focusOn("Composition");
+    const openedOn = await focusOn("Canvas name / Canvas");
+    await press("Tab");
+    const steppedTo = await focusOn("Composition name / Composition");
     await press("Escape");
-    const shut = await menuGone();
-    const returnedTo = await focusOn("the trigger");
+    const dropped = await draftGone();
+    const returnedTo = await focusOn("new");
     const keyed =
       triggered &&
-      opened &&
-      openedOn === "Canvas" &&
-      walkedTo === "Composition" &&
-      shut &&
-      returnedTo === "the trigger";
+      openedOn === "Canvas name / Canvas" &&
+      steppedTo === "Composition name / Composition" &&
+      dropped &&
+      returnedTo === "new";
     check(
       "R3 the re-offered creator by keyboard",
       keyed,
       !triggered
-        ? "the creation control's choice could not take focus"
+        ? `"+ New…" could not take focus`
         : keyed
-          ? "Enter on the choice opened the menu on Canvas, ArrowDown walked to the returned Composition, and Escape shut it with focus back on the choice"
-          : `Enter on the choice ${opened ? "opened the menu" : "did NOT open the menu"} with focus on "${openedOn}", ArrowDown on "${walkedTo}"; Escape ${shut ? "shut the menu" : "left the menu open"} with focus on "${returnedTo}"`,
+          ? "Enter on + New… opened the draft in Canvas's name field, Tab stepped to the returned Composition, and Escape dropped it with focus back on + New…"
+          : `Enter on + New… focused "${openedOn}", Tab "${steppedTo}"; Escape ${dropped ? "dropped the draft" : "left the draft open"} with focus on "${returnedTo}"`,
     );
   }
 

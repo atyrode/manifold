@@ -228,7 +228,7 @@ export const indexHandlers = {
     );
     if (!created) return { refused: "parent folder changed while creating a folder" };
     announce(ctx, "folder_created", { folderId, name: args.name, parentId: args.parentId });
-    // The id beside the tree: the caller that made the folder may act on it (#1079).
+    // The id beside the tree, as `createContainer` answers its container: a caller may act on it.
     return { items: ctx.store.listIndex(), folderId };
   },
 

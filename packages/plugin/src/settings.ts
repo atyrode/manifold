@@ -131,13 +131,13 @@ export function visibleSections<T extends { readonly plugin: string; readonly se
 }
 
 /**
- * THE PICKER ENTRIES THIS PRINCIPAL SEES: every creator whose owner is ENABLED and whose own
+ * THE CREATORS THIS PRINCIPAL IS OFFERED: every creator whose owner is ENABLED and whose own
  * setting does not read false, in the order given.
  *
  * The owner rule is where a creator parts company with a section. A disabled plugin's section
  * keeps its seat in the arrangement so re-enabling restores the reader's place (D4′); a creator
  * has no seat — it is an offer, and creation dies on a disable (D12) — so it is simply not in
- * the picker until its plugin is back, and nothing downstream has to ask whether it may run.
+ * the draft entry until its plugin is back, and nothing downstream has to ask whether it may run.
  */
 export function visibleCreators<T extends { readonly plugin: string; readonly setting?: string }>(
   creators: readonly T[],

@@ -274,98 +274,149 @@
 }
 
 /*
- * THE CREATION CONTROL (`core.shell.creators`), read as one phrase: "+ New [Canvas ▾]". The
- * verb runs the current choice; the inset field beside it IS the choice — the thing's mark,
- * its name and a caret, drawn like a select so it reads as the part of the sentence you can
- * change. Two buttons in one box, each with its own focus ring.
+ * THE CREATION CONTROL (`core.shell.creators`). At rest a quiet "+ New…" row, drawn as the
+ * empty slot an entry would fill; pressed, the same slot becomes the DRAFT — the chosen
+ * creator's mark, a borderless name field, the titles to choose from and a one-line hint —
+ * so nothing jumps: the row grows in place into the thing being named.
  */
 .sidebar-creator {
   display: flex;
-  min-width: 0;
+  width: 100%;
+  min-height: 2rem;
   align-items: center;
-  gap: 0.2rem;
-  border: 1px solid #343a40;
-  border-radius: 0.6rem;
-  padding: 0.2rem;
-  background: #202329;
+  gap: 0.45rem;
+  border: 1px dashed #343a40;
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.55rem;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.84rem;
+  cursor: pointer;
 }
 
 .sidebar-creator:hover,
-.sidebar-creator:focus-within {
+.sidebar-creator:focus-visible {
   border-color: #4c6ef5;
+  outline: none;
+  color: #e9ecef;
+  background: #1c1f25;
 }
 
-.sidebar-creator-face,
-.sidebar-creator-pick {
+.sidebar-creator:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Collapsed, the "+" stands alone and fills the rail's width. */
+.sidebar-creator.is-alone {
+  min-height: 2.35rem;
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-draft {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  border: 1px solid #4c6ef5;
+  border-radius: 0.5rem;
+  padding: 0.3rem 0.4rem 0.35rem;
+  background: #121417;
+}
+
+.sidebar-draft[aria-busy="true"] {
+  opacity: 0.7;
+}
+
+.sidebar-draft-line {
   display: flex;
-  min-height: 1.95rem;
+  min-width: 0;
   align-items: center;
+  gap: 0.4rem;
+}
+
+.sidebar-draft-mark {
+  display: inline-grid;
+  width: 1.6rem;
+  height: 1.6rem;
+  flex: 0 0 auto;
+  place-items: center;
   border: 0;
-  border-radius: 0.45rem;
-  color: #dee2e6;
+  border-radius: 0.35rem;
+  color: #bac8ff;
+  background: #1f2433;
+  cursor: pointer;
+}
+
+.sidebar-draft-mark:hover {
+  background: #283049;
+}
+
+.sidebar-draft-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  padding: 0.2rem 0;
+  color: #f8f9fa;
   background: transparent;
-  font-size: 0.84rem;
+  font: inherit;
+  font-size: 0.88rem;
+  outline: none;
+}
+
+/* The draft's own border is the focus indication; the field inside it draws no second ring. */
+.sidebar-draft-name:focus,
+.sidebar-draft-name:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.sidebar-draft-name::placeholder {
+  color: #6c757d;
+}
+
+/* A creator that takes no name: its title sits where the field would, and Enter presses it. */
+.sidebar-draft-name.is-fixed {
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
 }
 
-.sidebar-creator-face {
-  flex: 0 0 auto;
-  gap: 0.4rem;
-  padding: 0.25rem 0.45rem;
-  font-weight: 650;
+.sidebar-draft-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
 }
 
-.sidebar-creator-pick {
-  min-width: 0;
-  flex: 1 1 auto;
-  gap: 0.45rem;
-  border: 1px solid #343a40;
-  padding: 0.25rem 0.45rem;
-  color: #f1f3f5;
-  background: #17191d;
-  font-weight: 600;
-  text-align: left;
-}
-
-/* The choice's name truncates; the caret after it never does. */
-.sidebar-creator-noun {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sidebar-creator-pick:not(.is-alone) > svg:last-child {
-  flex: 0 0 auto;
+.sidebar-draft-choice {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.12rem 0.55rem;
   color: #868e96;
+  background: transparent;
+  font-size: 0.74rem;
+  cursor: pointer;
 }
 
-/* Collapsed, the picker's button stands alone as the rail's "+" and wears the whole box. */
-.sidebar-creator-pick.is-alone {
-  width: 100%;
-  min-height: 2.35rem;
-  justify-content: center;
-  border-radius: 0.6rem;
-  padding: 0;
+.sidebar-draft-choice:hover {
   color: #dee2e6;
-  background: #202329;
-}
-
-.sidebar-creator-face:hover {
-  background: #252932;
-}
-
-.sidebar-creator-pick:hover,
-.sidebar-creator-pick[data-state="open"] {
-  border-color: #4c6ef5;
   background: #1c1f25;
 }
 
-.sidebar-creator-face:disabled,
-.sidebar-creator-pick:disabled {
-  opacity: 0.6;
-  cursor: default;
+.sidebar-draft-choice[aria-checked="true"] {
+  border-color: #364fc7;
+  color: #dbe4ff;
+  background: #1f2433;
+}
+
+.sidebar-draft-hint {
+  margin: 0;
+  color: #5c636a;
+  font-size: 0.68rem;
 }
 
 .workspace.is-collapsed .sidebar {

@@ -617,63 +617,6 @@ button.chip:focus-visible {
 }
 
 /*
- * THE MENU (`menu.tsx`): a list of choices riding the popover's layer. The layer keeps its own
- * frame; the list drops the padding a prose popover wants and paints full-width rows, each a
- * mark and a label that truncates rather than widening the layer.
- */
-.menu.popover__content {
-  min-width: 12rem;
-  padding: 0.25rem;
-  font-size: 0.8rem;
-}
-
-.menu__items {
-  display: grid;
-  gap: 0.1rem;
-}
-
-.menu__item {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.55rem;
-  border: 0;
-  border-radius: 0.3rem;
-  padding: 0.4rem 0.5rem;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.menu__item:hover,
-.menu__item:focus-visible {
-  outline: none;
-  background: #252932;
-  color: #f8f9fa;
-}
-
-/* The adopter's current choice: the menu opens on it, and it says so without a second glyph. */
-.menu__item[aria-current="true"] {
-  box-shadow: inset 2px 0 0 #4c6ef5;
-  color: #bac8ff;
-  font-weight: 600;
-}
-
-.menu__icon {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-}
-
-.menu__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/*
  * ── The component vocabulary (`vocabulary.tsx`, `mf-vocab`) ──────────────────
  * THE ONE FAMILY every `UiNode` kind paints into (ADR 0016 §3, ADR 0053): a portable plugin's
  * components rendered in the page, and the tree a hardened Worker sends, which the host paints

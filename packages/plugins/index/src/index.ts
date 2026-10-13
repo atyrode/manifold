@@ -12,9 +12,6 @@ import {
 } from "@manifold/protocol";
 import { z } from "zod";
 
-/** The index's one creator id: declared below, and recognized by the tree when it has run. */
-export const NEW_FOLDER_CREATOR = "new-folder";
-
 /**
  * The workspace index, as a plugin. ONE index of everything that exists: canvases,
  * compositions, and the terminals that live in them, with folders over all three — a canvas
@@ -57,10 +54,9 @@ export const indexManifest: PluginManifest = {
     panels: [],
     /*
       ONE ROW AND ONE CREATOR, and the pairing is the point: this plugin owns folders, so it owns
-      both the offer to create a top-level one and the tree that lists it. The offer is a
-      creator in the shell's picker — data, run through this plugin's own `createFolder` door
-      with a fixed name at the root — and the tree reacts to its own creator having run on this
-      device by opening the new folder's rename field (`lastCreated`, `web.tsx`). `index` keeps
+      both the offer to create a top-level one and the tree that lists it. The offer is an entry
+      in the shell's draft — data, run through this plugin's own `createFolder` door at the
+      root, named by the reader before it exists (`nameInput`). `index` keeps
       `order: 10` and its default `disclosure`, and it is the row the rail's leftover height
       goes to, because it is the first row in the order with a body (`railRows`). It is also the
       one row that starts UNFOLDED on a device that has never folded it (`defaultOpen`): the tree
@@ -69,12 +65,13 @@ export const indexManifest: PluginManifest = {
     sections: [{ id: "index", title: "Index", order: 10, setting: "index", defaultOpen: true }],
     creators: [
       {
-        id: NEW_FOLDER_CREATOR,
+        id: "new-folder",
         title: "Folder",
         icon: "folder",
         order: 4,
         action: "core.index.createFolder",
         input: { name: "Untitled folder", parentId: null },
+        nameInput: "name",
         setting: "new-folder",
       },
     ],

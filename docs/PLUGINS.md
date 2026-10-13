@@ -1472,20 +1472,23 @@ their work invisible without deleting it, which is the one outcome worse than a 
   has never folded it. Every other disclosure starts folded, so a rail opens on the list a reader
   came for (`core.index` declares it for Index). Once a reader folds or unfolds a row, that
   choice is remembered on their device and outranks the declaration. Absent ≡ folded.
-- **`creators`** are offers to make something, listed in the shell's one "+ New" picker. A
-  creator is DATA — `{ id, title, icon, order, action, input?, setting? }` — and you register no
-  component for it, so a hardened plugin offers one exactly as a trusted one does. `title` names
-  the THING ("Canvas"), not the act: the control reads "+ New Canvas ▾", the shell owns the verb,
-  and the picker lists titles alone. `icon` is one of the closed `creatorIcons` in `GET /api/protocol`'s
-  vocabulary; `action` is a FULL action name, yours or another plugin's (`core.canvas` offers
+- **`creators`** are offers to make something, listed in the shell's one draft entry: "+ New…"
+  opens an unsaved row with a name field and every creator's title listed under it. A creator
+  is DATA — `{ id, title, icon, order, action, input?, nameInput?, setting? }` — and you
+  register no component for it, so a hardened plugin offers one exactly as a trusted one does.
+  `title` names the THING ("Canvas"), not the act: the shell owns the verb and lists titles
+  alone. `icon` is one of the closed `creatorIcons` in `GET /api/protocol`'s vocabulary;
+  `action` is a FULL action name, yours or another plugin's (`core.canvas` offers
   `core.index.createContainer`), and `input` is the fixed JSON object it runs with (at most
-  `maxCreatorInputBytes`, absent ≡ `{}`). The shell runs the chosen entry as the principal who
-  pressed — naming another plugin's door grants nothing — shows a refusal as a notice, and lands
-  the presser in a container the answer names (`{ container }`). Any other answer is yours to
-  react to: `WorkspaceShell.lastCreated` names the last creator this device ran and its result
-  (`core.index` opens the folder it just made for renaming). Ids are claimed globally; `setting`
-  gates the entry exactly as it gates a section, and a disabled plugin's entries are absent.
-  Assembly refuses an action nothing assembled declares, naming both. Absent ≡ you offer nothing.
+  `maxCreatorInputBytes`, absent ≡ `{}`). `nameInput` names the string property of `input` that
+  carries the made thing's name: the reader's typed name replaces it, and its declared value is
+  the default an empty field creates with (`{ name: "Untitled", … }`, `nameInput: "name"`).
+  Without it the draft shows your title instead of a field. The shell runs the chosen entry as
+  the principal who pressed — naming another plugin's door grants nothing — shows a refusal as
+  a notice while keeping the draft, and lands the presser in a container the answer names
+  (`{ container }`). Ids are claimed globally; `setting` gates the entry exactly as it gates a
+  section, and a disabled plugin's entries are absent. Assembly refuses an action nothing
+  assembled declares, naming both. Absent ≡ you offer nothing.
 - **`settings`** declare `{ id, title, kind, default, scope? }`. Kinds are `boolean` (a switch)
   and `enum` (a select). An enum adds `values: [{ id, title }]`: one to 32 choices with unique,
   non-empty ids; `default` must name one. Invalid choices refuse manifest admission with
@@ -3103,7 +3106,7 @@ A `plain` row is the shape for anything in the rail that is not a collapsible bl
 line, a footer, a control. It is an ORDINARY contribution — same registry, same per-principal
 arrangement, same D4′ placeholder — and the only difference from a disclosure section is that
 the stack wraps it in nothing and it draws itself end to end. (An offer to CREATE something is
-not a row at all: declare a `creators` entry and the shell's picker draws it.) Three pieces,
+not a row at all: declare a `creators` entry and the shell's draft entry lists it.) Three pieces,
 and the third is one line:
 
 ```ts

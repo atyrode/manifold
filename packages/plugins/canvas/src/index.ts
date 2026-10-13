@@ -54,12 +54,13 @@ export const canvasManifest: PluginManifest = {
     panels: [],
     sections: [],
     /**
-     * ONE CREATOR: "Canvas", in the shell's picker. A creator is an opinion about a
+     * ONE CREATOR: "Canvas", an entry in the shell's draft. A creator is an opinion about a
      * DISCIPLINE, so it belongs to the discipline's plugin rather than to whoever draws the
      * rail — disable this plugin and the offer to make a canvas goes with it (D12). It is DATA:
      * the door is the index's (`core.index.createContainer`), run as the presser with a fixed
-     * input, and the shell lands the viewer in the container the door answers. `order: 2`
-     * keeps it first among the shipped creators, as its row was.
+     * input whose `name` the reader's typed name replaces (`nameInput`), and the shell lands the
+     * viewer in the container the door answers. `order: 2` keeps it first among the shipped
+     * creators, as its row was.
      */
     creators: [
       {
@@ -69,13 +70,14 @@ export const canvasManifest: PluginManifest = {
         order: 2,
         action: "core.index.createContainer",
         input: { name: "Untitled", discipline: "canvas" },
+        nameInput: "name",
         setting: "new-canvas",
       },
     ],
     /**
      * AND ONE PREFERENCE OVER IT (#133). A creator is an offer, and an offer a reader has
      * stopped needing should be theirs to put away — so the entry is gated on a declared
-     * boolean, dropped from the picker when it reads false and back when it does not, per
+     * boolean, dropped from the draft's list when it reads false and back when it does not, per
      * principal. `true` because that is what shipped; the operator's defaults-design pass
      * decides whether any entry starts off.
      *

@@ -447,10 +447,10 @@ export interface AssemblyFacet {
    */
   readonly sections: readonly ComposedSection[];
   /**
-   * The creators THIS READER'S picker offers, sorted by declared `order` with ties in roster
+   * The creators THIS READER'S draft entry offers, sorted by declared `order` with ties in roster
    * order: owners enabled, own settings not false (`visibleCreators`). Unlike `sections`, a
    * disabled owner's entry is ABSENT rather than marked — an offer keeps no seat (D12). The
-   * shell's picker draws from here and runs one through `WorkspaceShell.runCreator`; any other
+   * shell's draft entry draws from here and runs one through `WorkspaceShell.runCreator`; any other
    * plugin may read it, as a stranger's replacement for the shell would.
    */
   readonly creators: readonly AssemblyCreator[];

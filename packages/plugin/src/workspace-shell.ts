@@ -49,26 +49,6 @@ export interface WebChangelogRelease {
   readonly changes: readonly string[];
 }
 
-/**
- * THE LAST CREATOR THIS DEVICE RAN, and what its door answered: a client-local NOTICE, not
- * state anybody else can observe. The thing created arrives for everyone through its owner's
- * own events; this says only "the press on THIS screen made it", which is what lets the
- * plugin that offered the creator follow up on its own row — `core.index` opens the folder it
- * just made for renaming — without the shell knowing what any creator makes.
- *
- * `seq` increases with every successful run, so a reader reacts once per press even when the
- * same creator answers the same way twice.
- */
-export interface CreatorRun {
-  /** The plugin that OFFERED the creator, not the one whose door it ran. */
-  readonly plugin: string;
-  /** The creator's own id, as its manifest declared it. */
-  readonly creator: string;
-  /** The action's validated result, verbatim; the offering plugin knows its shape. */
-  readonly result: unknown;
-  readonly seq: number;
-}
-
 export interface WorkspaceShell {
   /** False while the rail is collapsed to icons. PRESENCE, not device state (A2). */
   readonly sidebarOpen: boolean;
@@ -79,14 +59,14 @@ export interface WorkspaceShell {
   readonly creating: boolean;
   /**
    * RUN ONE CREATOR — whoever declared it, trusted, in-realm or hardened, one pipeline. The
-   * declared action is dispatched with its declared input as the principal who pressed;
+   * declared action is dispatched with its declared input as the principal who pressed — a
+   * non-empty `name` replacing the input's `nameInput` property when the creator declares one;
    * a denial or a fault is a notice, nothing is painted ahead of the answer, the index is
    * refreshed, and an answer naming a container (`{ container }`) lands the viewer inside it.
-   * Every success is published as {@link lastCreated}.
+   * Resolves true on success, false on a refusal, a fault or a press ignored while another is
+   * in flight, so the caller keeps whatever the reader typed when nothing was made.
    */
-  runCreator(creator: AssemblyCreator): void;
-  /** The last successful {@link runCreator} on this device, or null before the first. */
-  readonly lastCreated: CreatorRun | null;
+  runCreator(creator: AssemblyCreator, name?: string): Promise<boolean>;
   /**
    * The rail's own element, handed back so the host can answer "is this point over the
    * sidebar" for a carry that crosses it — the one geometric question the host cannot ask

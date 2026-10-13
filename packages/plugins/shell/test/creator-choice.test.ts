@@ -1,34 +1,57 @@
 import { describe, expect, test } from "bun:test";
 import {
   LAST_CREATOR_KEY,
-  creatorFace,
+  cycleCreator,
+  draftCreator,
   recallCreator,
   rememberCreator,
 } from "../src/creator-choice.ts";
 import { brokenStorage, memoryStorage } from "./storage-fakes.ts";
 
+const offered = [{ id: "new-canvas" }, { id: "new-composition" }, { id: "new-folder" }];
+
 /**
- * THE FACE OF THE CREATION CONTROL (#1079): the last pick on this device while it is still
+ * WHERE THE DRAFT ENTRY OPENS (#1079): the creator last run on this device while it is still
  * offered to this reader, otherwise the first entry offered. The offered list is already
  * filtered (owner enabled, own setting not false), so "hidden", "disabled", "uninstalled" and
  * "never a creator" all arrive here as the same case: not in the list.
  */
-describe("creatorFace", () => {
-  const offered = [{ id: "new-canvas" }, { id: "new-composition" }, { id: "new-folder" }];
-
-  test("the remembered pick is the face while it is offered", () => {
-    expect(creatorFace(offered, "new-folder")?.id).toBe("new-folder");
+describe("draftCreator", () => {
+  test("the remembered pick opens the draft while it is offered", () => {
+    expect(draftCreator(offered, "new-folder")?.id).toBe("new-folder");
   });
 
   test("no memory, or a pick no longer offered, falls back to the first entry", () => {
-    expect(creatorFace(offered, null)?.id).toBe("new-canvas");
-    expect(creatorFace(offered, "a-stranger-entry")?.id).toBe("new-canvas");
-    // The pick was hidden: the face falls back, and returns when the entry does.
-    expect(creatorFace(offered.slice(0, 2), "new-folder")?.id).toBe("new-canvas");
+    expect(draftCreator(offered, null)?.id).toBe("new-canvas");
+    expect(draftCreator(offered, "a-stranger-entry")?.id).toBe("new-canvas");
+    // The pick was hidden: the draft falls back, and returns to it when the entry does.
+    expect(draftCreator(offered.slice(0, 2), "new-folder")?.id).toBe("new-canvas");
   });
 
-  test("nothing offered is no face at all, so the control is absent", () => {
-    expect(creatorFace([], "new-folder")).toBeNull();
+  test("nothing offered is no draft at all, so the control is absent", () => {
+    expect(draftCreator([], "new-folder")).toBeNull();
+  });
+});
+
+describe("cycleCreator", () => {
+  test("Tab steps forward in declared order and wraps past the last entry", () => {
+    expect(cycleCreator(offered, "new-canvas", 1)?.id).toBe("new-composition");
+    expect(cycleCreator(offered, "new-folder", 1)?.id).toBe("new-canvas");
+  });
+
+  test("Shift+Tab steps back and wraps before the first entry", () => {
+    expect(cycleCreator(offered, "new-composition", -1)?.id).toBe("new-canvas");
+    expect(cycleCreator(offered, "new-canvas", -1)?.id).toBe("new-folder");
+  });
+
+  test("a choice that left the list mid-draft steps from the first entry", () => {
+    expect(cycleCreator(offered, "gone", 1)?.id).toBe("new-composition");
+    expect(cycleCreator(offered, "gone", -1)?.id).toBe("new-folder");
+  });
+
+  test("one entry stays itself; none is nothing", () => {
+    expect(cycleCreator([{ id: "only" }], "only", 1)?.id).toBe("only");
+    expect(cycleCreator([], "only", 1)).toBeNull();
   });
 });
 

@@ -127,8 +127,8 @@ async function createFolder(
     name,
     parentId,
   });
-  // The answer NAMES what it made (#1079): the id beside the tree is that folder's own row,
-  // which is how the rail's "New folder" opens it for renaming without guessing by name.
+  // The answer NAMES what it made: the id beside the tree is that folder's own row, so a
+  // caller acts on it without guessing by name in a tree a collaborator may be changing.
   const { items, folderId } = IndexFolderCreatedResponseSchema.parse(result(outcome));
   const folder = items.find((item) => item.kind === "folder" && item.id === folderId);
   if (folder?.kind !== "folder" || folder.name !== name || folder.parentId !== parentId) {

@@ -381,9 +381,9 @@ export const AttendanceResponseSchema = z.strictObject({
 export const IndexResponseSchema = z.strictObject({ items: z.array(IndexEntrySchema) });
 /**
  * What `core.index.createFolder` answers: the whole new index, as every index mutation does,
- * plus WHICH row it made. A caller that wants to act on the folder it just created — the rail's
- * "New folder" opens it for renaming — must not have to guess it out of the tree by name and
- * position, which a concurrent principal's identical folder would make ambiguous.
+ * plus WHICH row it made, as `createContainer` answers the container it made. A caller that
+ * wants to act on the folder it just created must not have to guess it out of the tree by name
+ * and position, which a concurrent principal's identical folder would make ambiguous.
  */
 export const IndexFolderCreatedResponseSchema = IndexResponseSchema.extend({
   folderId: z.string().min(1),

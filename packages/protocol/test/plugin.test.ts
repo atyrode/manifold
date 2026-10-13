@@ -357,11 +357,12 @@ describe("plugin manifest", () => {
   test("a creator is inert data: a closed mark, a full action name and a bounded JSON input", () => {
     const creator = {
       id: "new-folder",
-      title: "New folder",
+      title: "Folder",
       icon: "folder",
       order: 4,
       action: "core.index.createFolder",
       input: { name: "Untitled folder", parentId: null },
+      nameInput: "name",
       setting: "new-folder",
     };
     const parse = (row: Record<string, unknown>) =>
@@ -380,10 +381,9 @@ describe("plugin manifest", () => {
 
     expect(parse(creator).success).toBe(true);
     // Absent input is the empty object an argument-less action takes, never `undefined`.
-    expect(parse({ ...creator, input: undefined }).data?.contributes.creators?.[0]?.input).toEqual(
-      {},
-    );
-    // The picker paints every value it can be handed, so a mark it cannot draw is refused.
+    const bare = { ...creator, input: undefined, nameInput: undefined };
+    expect(parse(bare).data?.contributes.creators?.[0]?.input).toEqual({});
+    // The draft paints every value it can be handed, so a mark it cannot draw is refused.
     expect(parse({ ...creator, icon: "rocket" }).success).toBe(false);
     // The name an assembled action is dispatched by, never a local name or a bare plugin id.
     expect(parse({ ...creator, action: "createFolder" }).success).toBe(false);
@@ -392,6 +392,11 @@ describe("plugin manifest", () => {
     expect(parse({ ...creator, input: { name: "x".repeat(2000) } }).success).toBe(false);
     // ...and a component smuggled in as data is as refused here as on any other row.
     expect(parse({ ...creator, render: "x" }).success).toBe(false);
+    // The typed name replaces a STRING the input declares, which is also the default name; a
+    // nameInput naming nothing, or a non-string, would leave the draft no default to show.
+    expect(parse({ ...creator, nameInput: "label" }).success).toBe(false);
+    expect(parse({ ...creator, nameInput: "parentId" }).success).toBe(false);
+    expect(parse({ ...creator, nameInput: undefined }).success).toBe(true);
   });
 });
 
