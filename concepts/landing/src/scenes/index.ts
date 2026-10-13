@@ -8,6 +8,7 @@ import { dewScene } from "./dew/index.ts";
 import { dunesScene } from "./dunes/index.ts";
 import { fallsScene } from "./falls/index.ts";
 import { ferroScene } from "./ferro/index.ts";
+import { filmScene } from "./film/index.ts";
 import { firefliesScene } from "./fireflies/index.ts";
 import { flockScene } from "./flock/index.ts";
 import { fractalScene } from "./fractal/index.ts";
@@ -63,6 +64,7 @@ export const sceneDefs = {
   garden: gardenScene,
   petri: petriScene,
   physarum: physarumScene,
+  film: filmScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
