@@ -1,7 +1,8 @@
 // Paper marbling: ink floating on size, dropped, combed and swirled, as in Turkish ebru and
 // Japanese suminagashi. The ink is simulated in sim.ts (Lu et al., "Mathematical Marbling") and
 // lit as tray or print in shader.ts.
-import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { choice, feature, knobValue, range, seed, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { marbleGlsl } from "./shader.ts";
 import { marblePalettes, marblePatterns, marbleSim } from "./sim.ts";
@@ -36,11 +37,7 @@ export const marbleScene: SceneDef = {
   glsl: marbleGlsl,
   entry: "sceneMarble",
   sim: marbleSim(params),
-  // Paper, and suminagashi's pale basin, are light: the page copy goes dark on them.
-  theme: (values) => {
-    const print = (values.medium ?? params.find((def) => def.key === "medium")?.value ?? 0) > 0.5;
-    const palette = values.palette ?? params.find((def) => def.key === "palette")?.value ?? 0;
-    const rings = marblePalettes[Math.round(palette)]?.rings === true;
-    return print || rings ? "paper" : "night";
-  },
+  // Paper, and suminagashi's pale basin, are light: the page copy goes dark on them (the shader's
+  // `pagePaper()` follows this).
+  theme: paletteTheme(params, "medium", (medium, values) => medium > 0 || marblePalettes[Math.round(knobValue(params, values, "palette"))]?.rings === true),
 };

@@ -38,9 +38,13 @@
 //
 // Without float render targets the shader draws an analytic film (filmAnalytic) that still lives
 // the life above, which runs here on the CPU either way.
-import type { ParamDef } from "../../params.ts";
-import { FluidSim } from "../../sims/fluid.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { gpuCommonGlsl } from "../../shaders/common.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
+import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
 import { GpuCompute, GpuError, type Pass } from "../../sims/gpu.ts";
+import { clamp } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -118,8 +122,6 @@ const LIFETIME_LONG = 400;
 const LIFETIME_SHORT = 90;
 /** The film on show when the scene opens is this many seconds old. */
 const OPENING_AGE = 45;
-/** The pop knob's "now" slot. */
-const POP_SLOT = 0;
 
 // ---- flow ---------------------------------------------------------------------------------------
 
@@ -196,28 +198,17 @@ const GLSL_CONSTANTS = Object.entries({
   FILM_RIM_REF: RIM_REF,
   FILM_RIM_SOFT: RIM_SOFT,
 })
-  .map(([name, value]) => `const float ${name} = ${Number.isInteger(value) ? value.toFixed(1) : String(value)};`)
+  .map(([name, value]) => `const float ${name} = ${glslFloat(value)};`)
   .join("\n");
 
 /**
  * The film's geometry and thickness models, shared by the fluid's snippets, the physics and seed
- * passes and the scene's shader (which has the common preamble too, so every name is prefixed).
- * q is in frame heights from the view's centre, y up.
+ * passes (which prepend gpuCommonGlsl for hash12, rotate and markDistance) and the scene's shader
+ * (which has them in common, so every name here is prefixed). q is in frame heights from the
+ * view's centre, y up.
  */
 export const filmCommonGlsl = `
 ${GLSL_CONSTANTS}
-
-float filmHash(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
-
-vec2 filmRotate(vec2 v, float angle) {
-  float c = cos(angle);
-  float s = sin(angle);
-  return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
-}
 
 // What holds the film (shape 0 frame, 1 loop, 2 bubble) at a view aspect: centre (xy) and half
 // size (zw); a loop and a bubble are round, z = w = radius.
@@ -256,18 +247,9 @@ vec3 filmMarkPlace(float shape, vec4 o, float size) {
   return vec3(o.x, foot + 0.5 * size - FILM_MARK_SINK, size);
 }
 
-float filmSegment(vec2 p, vec2 a, vec2 b) {
-  vec2 pa = p - a;
-  vec2 ba = b - a;
-  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
-}
-
-// Distance from the M wire's axis, frame heights (the M as markDistance draws it).
+// Distance from the M wire's axis, frame heights: markDistance on the M scaled to height m.z.
 float filmMarkDistance(vec2 q, vec3 m) {
-  vec2 p = (q - m.xy) / m.z;
-  float d = min(min(filmSegment(p, vec2(-0.47, -0.5), vec2(-0.47, 0.5)), filmSegment(p, vec2(-0.47, 0.5), vec2(0.0, -0.08))),
-                min(filmSegment(p, vec2(0.0, -0.08), vec2(0.47, 0.5)), filmSegment(p, vec2(0.47, 0.5), vec2(0.47, -0.5))));
-  return d * m.z;
+  return markDistance((q - m.xy) / m.z) * m.z;
 }
 
 // The rim of a hole in film h µm thick runs at this many frame heights per second (Taylor–Culick).
@@ -303,12 +285,12 @@ float filmAnalytic(vec2 q, vec4 o, float seed, float t) {
   vec2 w = q;
   for (int i = 0; i < 4; i++) {
     float k = float(i) + 1.0;
-    vec2 r = vec2(filmHash(vec2(seed + 0.37, k * 3.1)), filmHash(vec2(k * 5.7, seed + 1.3)));
+    vec2 r = vec2(hash12(vec2(seed + 0.37, k * 3.1)), hash12(vec2(k * 5.7, seed + 1.3)));
     vec2 centre = o.xy + (r * 2.0 - 1.0) * o.zw * vec2(0.72, 0.45) - vec2(0.0, 0.25 * o.w);
-    float radius = (0.2 + 0.16 * filmHash(vec2(seed + k, 9.1))) * o.w;
+    float radius = (0.2 + 0.16 * hash12(vec2(seed + k, 9.1))) * o.w;
     float turn = (r.x < 0.5 ? -1.0 : 1.0) * (0.55 + 0.75 * r.y) + 0.4 * sin(0.05 * t + 2.3 * k);
     vec2 d = w - centre;
-    w = centre + filmRotate(d, turn * exp(-dot(d, d) / (radius * radius)));
+    w = centre + rotate(d, turn * exp(-dot(d, d) / (radius * radius)));
   }
   float depth = clamp((o.y + o.w - w.y) / (2.0 * o.w) + 0.012 * sin(9.0 * w.x + seed), 0.0, 1.0);
   return filmBlacken(FILM_SEED_BOTTOM * pow(depth, 0.65));
@@ -325,6 +307,7 @@ float filmFresh(vec2 q, vec4 o, float seed) {
 
 const OBSTACLE_GLSL = `
 uniform float uFilmShape;
+${gpuCommonGlsl}
 ${filmCommonGlsl}
 // Everything outside the film is solid; its walls stand under the wire.
 float fluidObstacle(vec2 p) {
@@ -338,6 +321,7 @@ uniform float uFilmShape;
 uniform float uFilmMark;
 uniform float uFilmBuoyancy;
 uniform float uFilmStir;
+${gpuCommonGlsl}
 ${filmCommonGlsl}
 // Thickness is compared with its level this far to either side, frame heights.
 const float FILM_LATERAL[3] = float[3](0.04, 0.1, 0.22);
@@ -395,6 +379,7 @@ uniform vec4 uFilmHole;
 uniform vec2 uFilmDraw;
 uniform vec4 uFilmSpots[FILM_SPOTS];
 uniform int uFilmSpotCount;
+${gpuCommonGlsl}
 ${filmCommonGlsl}
 
 float filmRow(int x, int row) {
@@ -462,6 +447,7 @@ const SEED_GLSL = `
 uniform vec2 uFilmDomain;
 uniform float uFilmShape;
 uniform float uFilmSeed;
+${gpuCommonGlsl}
 ${filmCommonGlsl}
 void main() {
   vec2 q = (vUv - 0.5) * uFilmDomain;
@@ -574,25 +560,33 @@ function filmSpectrumTable(): Float32Array {
 class FilmError extends Error {}
 
 interface Outline {
-  readonly shape: FilmShape;
-  readonly x: number;
-  readonly y: number;
-  readonly hw: number;
-  readonly hh: number;
+  shape: FilmShape;
+  x: number;
+  y: number;
+  hw: number;
+  hh: number;
 }
 
-/** filmOutline: the outline's centre and half size, frame heights. */
-function outlineOf(shape: FilmShape, aspect: number): Outline {
+/** filmOutline: the outline's centre and half size, frame heights, written into `out`. */
+function outlineInto(out: Outline, shape: FilmShape, aspect: number): void {
+  out.shape = shape;
+  out.x = 0;
   switch (shape) {
     case "frame": {
       const wide = Math.max(0.5 * aspect - Math.min(RECT_MARGIN, 0.15 * aspect), 0.1);
-      return { shape, x: 0, y: RECT_Y, hw: Math.min(wide, RECT_MAX_HALF_WIDTH), hh: RECT_HALF_HEIGHT };
+      out.y = RECT_Y;
+      out.hw = Math.min(wide, RECT_MAX_HALF_WIDTH);
+      out.hh = RECT_HALF_HEIGHT;
+      return;
     }
     case "loop":
     case "bubble": {
       const loop = shape === "loop";
       const r = Math.max(Math.min(loop ? LOOP_RADIUS : BUBBLE_RADIUS, 0.5 * aspect - ROUND_MARGIN), 0.05);
-      return { shape, x: 0, y: loop ? LOOP_Y : BUBBLE_Y, hw: r, hh: r };
+      out.y = loop ? LOOP_Y : BUBBLE_Y;
+      out.hw = r;
+      out.hh = r;
+      return;
     }
     default: {
       const unreachable: never = shape;
@@ -604,18 +598,6 @@ function outlineOf(shape: FilmShape, aspect: number): Outline {
 /** The Taylor–Culick rim speed, frame heights per second, as filmRimSpeed. */
 function rimSpeed(h: number): number {
   return RIM_SPEED * Math.sqrt(RIM_REF / (Math.max(h, 0) + RIM_SOFT));
-}
-
-/** Mulberry32: a small, fast, seedable generator, so a seed always gives the same films. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 // ---- the film's life ----------------------------------------------------------------------------
@@ -636,19 +618,19 @@ interface Plume extends Spot {
   readonly duration: number;
 }
 
-/** What the knobs ask of the film this frame. */
+/** What the knobs ask of the film this frame; the sim rewrites one in place each frame. */
 interface Tuning {
-  readonly shape: FilmShape;
-  readonly seed: number;
+  shape: FilmShape;
+  seed: number;
   readonly outline: Outline;
   /** The pop knob's amount while on, 0 while off. */
-  readonly pop: number;
-  readonly drain: number;
-  readonly evaporate: number;
-  readonly swirl: number;
-  readonly plumes: number;
+  pop: number;
+  drain: number;
+  evaporate: number;
+  swirl: number;
+  plumes: number;
   /** Height of the M wire, 0 without it. */
-  readonly mark: number;
+  mark: number;
 }
 
 /** A film's life on the CPU: drained, burst, gone, drawn again; and its plumes. */
@@ -845,16 +827,37 @@ class FilmLife {
 
 // ---- the flow on the GPU ------------------------------------------------------------------------
 
-/** One step of the film's flow and thickness. */
+/** One step of the film's flow and thickness; the sim rewrites dt, time and spotCount in place. */
 interface FlowStep {
-  readonly dt: number;
-  readonly time: number;
+  dt: number;
+  time: number;
   readonly tuning: Tuning;
   readonly hole: Float32Array;
   readonly draw: Float32Array;
   readonly spots: Float32Array;
-  readonly spotCount: number;
+  spotCount: number;
 }
+
+/** The film's snippets' own uniforms (a type literal, so it passes as a uniform record). */
+type SnippetUniforms = {
+  uFilmShape: number;
+  uFilmMark: number;
+  uFilmBuoyancy: number;
+  uFilmStir: number;
+};
+
+type PhysicsUniforms = {
+  uFilmDomain: Float32Array;
+  uFilmShape: number;
+  uFilmSeed: number;
+  uFilmDt: number;
+  uFilmDrain: number;
+  uFilmEvaporate: number;
+  uFilmHole: Float32Array;
+  uFilmDraw: Float32Array;
+  uFilmSpots: Float32Array;
+  uFilmSpotCount: number;
+};
 
 /** The fluid carrying the film and the passes for its thickness. */
 class FilmFlow {
@@ -863,6 +866,20 @@ class FilmFlow {
   readonly #physics: Pass;
   readonly #seeder: Pass;
   readonly #domain = new Float32Array(2);
+  readonly #snippet: SnippetUniforms = { uFilmShape: 0, uFilmMark: 0, uFilmBuoyancy: BUOYANCY, uFilmStir: 0 };
+  readonly #fluidStep: FluidStep = { dt: 0, time: 0, velocityDissipation: VELOCITY_DISSIPATION, uniforms: this.#snippet };
+  readonly #physicsUniforms: PhysicsUniforms = {
+    uFilmDomain: this.#domain,
+    uFilmShape: 0,
+    uFilmSeed: 0,
+    uFilmDt: 0,
+    uFilmDrain: 0,
+    uFilmEvaporate: 0,
+    uFilmHole: new Float32Array(4),
+    uFilmDraw: new Float32Array(2),
+    uFilmSpots: new Float32Array(SPOTS * 4),
+    uFilmSpotCount: 0,
+  };
 
   /** Throws GpuError when a pass does not compile; the caller disposes `gpu`. */
   constructor(gpu: GpuCompute) {
@@ -888,27 +905,27 @@ class FilmFlow {
   step(step: FlowStep): void {
     const { tuning, dt } = step;
     const shape = filmShapes.indexOf(tuning.shape);
-    this.fluid.step({
-      dt,
-      time: step.time,
-      velocityDissipation: VELOCITY_DISSIPATION,
-      uniforms: { uFilmShape: shape, uFilmMark: tuning.mark, uFilmBuoyancy: BUOYANCY, uFilmStir: STIR * tuning.swirl },
-    });
+    const snippet = this.#snippet;
+    snippet.uFilmShape = shape;
+    snippet.uFilmMark = tuning.mark;
+    snippet.uFilmStir = STIR * tuning.swirl;
+    const fluidStep = this.#fluidStep;
+    fluidStep.dt = dt;
+    fluidStep.time = step.time;
+    this.fluid.step(fluidStep);
     if (dt <= 0) return;
-    this.#physics.run(this.fluid.dye, {
-      uniforms: {
-        uFilmDomain: this.#updateDomain(),
-        uFilmShape: shape,
-        uFilmSeed: tuning.seed,
-        uFilmDt: dt,
-        uFilmDrain: tuning.drain,
-        uFilmEvaporate: tuning.evaporate,
-        uFilmHole: step.hole,
-        uFilmDraw: step.draw,
-        uFilmSpots: step.spots,
-        uFilmSpotCount: step.spotCount,
-      },
-    });
+    const uniforms = this.#physicsUniforms;
+    uniforms.uFilmDomain = this.#updateDomain();
+    uniforms.uFilmShape = shape;
+    uniforms.uFilmSeed = tuning.seed;
+    uniforms.uFilmDt = dt;
+    uniforms.uFilmDrain = tuning.drain;
+    uniforms.uFilmEvaporate = tuning.evaporate;
+    uniforms.uFilmHole = step.hole;
+    uniforms.uFilmDraw = step.draw;
+    uniforms.uFilmSpots = step.spots;
+    uniforms.uFilmSpotCount = step.spotCount;
+    this.#physics.set(uniforms).run(this.fluid.dye);
   }
 
   #updateDomain(): Float32Array {
@@ -922,56 +939,26 @@ class FilmFlow {
 
 type FilmKnob = "shape" | "pop" | "filmSeed" | "drainage" | "swirl" | "plumes" | "blow" | "mark";
 
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class FilmKnobs {
-  readonly #slots: Record<FilmKnob, { index: number; fallback: number }>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: FilmKnob): { index: number; fallback: number } => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new FilmError(`film: the scene has no ${key} knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = {
-      shape: slot("shape"),
-      pop: slot("pop"),
-      filmSeed: slot("filmSeed"),
-      drainage: slot("drainage"),
-      swirl: slot("swirl"),
-      plumes: slot("plumes"),
-      blow: slot("blow"),
-      mark: slot("mark"),
-    };
-  }
-
-  /** As the shader sees it: a feature reads its amount while on, 0 while off. */
-  value(frame: SimFrame, key: FilmKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-}
-
-function tuningOf(frame: SimFrame, knobs: FilmKnobs): Tuning {
-  const shape = filmShapes[Math.min(Math.max(Math.round(knobs.value(frame, "shape")), 0), filmShapes.length - 1)] ?? "loop";
+/** Write what the knobs ask of the film this frame into `out`. */
+function tune(out: Tuning, frame: SimFrame, knobs: KnobReader<FilmKnob>): void {
+  const shape = filmShapes[clamp(Math.round(knobs.value(frame, "shape")), 0, filmShapes.length - 1)] ?? "loop";
   const pace = DRAIN_RANGE ** (2 * knobs.value(frame, "drainage") - 1);
   const mark = knobs.value(frame, "mark");
-  return {
-    shape,
-    seed: Math.round(knobs.value(frame, "filmSeed")),
-    outline: outlineOf(shape, frame.aspect),
-    pop: knobs.value(frame, "pop"),
-    drain: DRAIN * pace,
-    evaporate: EVAPORATION * pace,
-    swirl: knobs.value(frame, "swirl"),
-    plumes: knobs.value(frame, "plumes"),
-    mark: mark > 0 ? MARK_MIN + MARK_SPAN * mark : 0,
-  };
+  out.shape = shape;
+  out.seed = Math.round(knobs.value(frame, "filmSeed"));
+  outlineInto(out.outline, shape, frame.aspect);
+  out.pop = knobs.value(frame, "pop");
+  out.drain = DRAIN * pace;
+  out.evaporate = EVAPORATION * pace;
+  out.swirl = knobs.value(frame, "swirl");
+  out.plumes = knobs.value(frame, "plumes");
+  out.mark = mark > 0 ? MARK_MIN + MARK_SPAN * mark : 0;
 }
 
 /** The soap film, for a scene whose `params` carry the knobs `FilmKnob` names. */
 export function filmSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new FilmKnobs(params);
+  const knobs = new KnobReader<FilmKnob>("film", params, ["shape", "pop", "filmSeed", "drainage", "swirl", "plumes", "blow", "mark"]);
+  const popSlot = knobs.trigger("pop");
   return (gl): SceneSim => {
     const colours = new DataTexture(gl, { width: LUT_SIZE, height: 1, format: "rgba16f" });
     colours.upload(filmSpectrumTable());
@@ -995,67 +982,95 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
 
     const life = new FilmLife();
     const spots = new Float32Array(SPOTS * 4);
+    // Everything a frame or a step needs is built here once and rewritten in place.
+    const tuning: Tuning = {
+      shape: "loop",
+      seed: 0,
+      outline: { shape: "loop", x: 0, y: 0, hw: 0, hh: 0 },
+      pop: 0,
+      drain: 0,
+      evaporate: 0,
+      swirl: 0,
+      plumes: 0,
+      mark: 0,
+    };
+    const flowStep: FlowStep = { dt: 0, time: 0, tuning, hole, draw, spots, spotCount: 0 };
+    const breath = { x: 0, y: 0, radius: BLOW_SPOT_RADIUS, rate: 0 };
+    const impulse = { velocity: new Float32Array(2) };
+    const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
     let time = 0;
     let shownShape: FilmShape | undefined;
     let shownSeed: number | undefined;
-    let lastFired: number | undefined;
-    /** Where the pointer was last frame while blowing. */
-    let last: { x: number; y: number } | undefined;
+    /** Where the pointer was last frame while blowing (if it was). */
+    let blowing = false;
+    let lastX = 0;
+    let lastY = 0;
 
-    const advance = (dt: number, tuning: Tuning, breath: Spot | undefined): void => {
+    const advance = (dt: number, breathing: boolean): void => {
       if (life.advance(dt, tuning)) flow?.fluid.clear();
       life.packState(stateData);
       time += dt;
       if (!flow) return;
-      const spotCount = life.packSpots(spots, breath);
-      flow.step({ dt, time, tuning, hole, draw, spots, spotCount });
+      flowStep.dt = dt;
+      flowStep.time = time;
+      flowStep.spotCount = life.packSpots(spots, breathing ? breath : undefined);
+      flow.step(flowStep);
     };
 
     /** A fresh opening film for this shape and seed, settled by a few steps. */
-    const restart = (tuning: Tuning): void => {
+    const restart = (): void => {
       shownShape = tuning.shape;
       shownSeed = tuning.seed;
       life.reset(tuning.seed);
-      last = undefined;
+      blowing = false;
       time = 0;
       if (!flow) return;
       flow.reseed(tuning.shape, tuning.seed);
-      for (let i = 0; i < PREWARM_STEPS; i++) advance(PREWARM_DT, tuning, undefined);
+      for (let i = 0; i < PREWARM_STEPS; i++) advance(PREWARM_DT, false);
     };
 
     return {
       frame(frame) {
-        const tuning = tuningOf(frame, knobs);
+        tune(tuning, frame, knobs);
         const resized = flow?.fluid.resize(frame.width, frame.height) ?? false;
-        if (resized || tuning.shape !== shownShape || tuning.seed !== shownSeed) restart(tuning);
+        if (resized || tuning.shape !== shownShape || tuning.seed !== shownSeed) restart();
 
         // "now": burst the film at once (a film still being drawn too).
-        const fired = frame.triggers[POP_SLOT] ?? -1e4;
-        if (lastFired !== undefined && fired !== lastFired && fired > -1e3) life.burst(tuning.outline);
-        lastFired = fired;
+        if (frame.fired[popSlot] === true) life.burst(tuning.outline);
 
         // The pointer blows on the film: a push along its motion, and a thin spot under it.
         const dt = frame.dt * frame.motion;
         const { pointer } = frame;
         const amount = knobs.value(frame, "blow");
-        const from = last;
-        last = flow && amount > 0 && pointer.inside ? { x: pointer.x, y: pointer.y } : undefined;
-        let breath: Spot | undefined;
-        if (flow && last && from && dt > 0 && frame.dt > 0) {
-          const vx = ((pointer.x - from.x) * frame.aspect) / frame.dt;
-          const vy = (pointer.y - from.y) / frame.dt;
+        const hadLast = blowing;
+        const fromX = lastX;
+        const fromY = lastY;
+        blowing = flow !== undefined && amount > 0 && pointer.inside;
+        lastX = pointer.x;
+        lastY = pointer.y;
+        let breathing = false;
+        if (flow && blowing && hadLast && dt > 0 && frame.dt > 0) {
+          const vx = ((pointer.x - fromX) * frame.aspect) / frame.dt;
+          const vy = (pointer.y - fromY) / frame.dt;
           const speed = Math.hypot(vx, vy);
           if (speed > BLOW_STILL) {
             const gain = Math.min(BLOW_GAIN * amount * dt, BLOW_MAX / speed);
-            flow.fluid.splat(pointer.x, pointer.y, BLOW_RADIUS, { velocity: [gain * vx, gain * vy] });
+            impulse.velocity[0] = gain * vx;
+            impulse.velocity[1] = gain * vy;
+            flow.fluid.splat(pointer.x, pointer.y, BLOW_RADIUS, impulse);
           }
-          const rate = amount * (BLOW_THIN * Math.min(1, speed / BLOW_FULL_SPEED) + (pointer.down ? BLOW_HOLD : 0));
-          breath = { x: (pointer.x - 0.5) * frame.aspect, y: pointer.y - 0.5, radius: BLOW_SPOT_RADIUS, rate };
+          breath.x = (pointer.x - 0.5) * frame.aspect;
+          breath.y = pointer.y - 0.5;
+          breath.rate = amount * (BLOW_THIN * Math.min(1, speed / BLOW_FULL_SPEED) + (pointer.down ? BLOW_HOLD : 0));
+          breathing = true;
         }
 
-        advance(dt, tuning, breath);
+        advance(dt, breathing);
         state.upload(stateData);
-        return [flow?.fluid.dye.texture, colours.texture, state.texture];
+        textures[0] = flow?.fluid.dye.texture;
+        textures[1] = colours.texture;
+        textures[2] = state.texture;
+        return textures;
       },
       dispose() {
         colours.dispose();

@@ -23,7 +23,11 @@
 // tool and the veil over the ink (lifting the sheet, or a fresh one fading up) for the shader.
 //
 // Sheet units: height 1, origin at the centre of the view, y up; x spans ±aspect/2.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { MARK_VERTICES, markVertex } from "../../mark.ts";
+import { runBudgeted } from "../../sims/clock.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -50,9 +54,6 @@ const RISO: MarblePalette = { label: "riso", inks: ["#ff5c98", "#00a29a", "#ffd0
 
 /** In `palette` knob order. */
 export const marblePalettes: readonly MarblePalette[] = [EBRU, SUMINAGASHI, RISO];
-
-/** The Manifold M in mark units (markDistance's vertices): x in [-0.47, 0.47], y in [-0.5, 0.5]. */
-const MARK: readonly (readonly [number, number])[] = [[-0.47, -0.5], [-0.47, 0.5], [0, -0.08], [0.47, 0.5], [0.47, -0.5]];
 
 const TAU = Math.PI * 2;
 
@@ -360,8 +361,6 @@ type Op = DropOp | StrokeOp | SwirlOp;
 
 /** Ink spreads fast, then slows as the surface tension evens out. */
 const growth = (p: number): number => 1 - (1 - p) * (1 - p) * (1 - p);
-/** Stirs and fades ease in and out. */
-const smooth = (p: number): number => p * p * (3 - 2 * p);
 /**
  * Share of its travel a stroke has covered at time share p: the hand gets up to an even pace over
  * the first STROKE_RAMP of the time, holds it, and slows over the last, so the tool spends little
@@ -387,24 +386,13 @@ function stroke(start: number, tool: Tool, from: number, to: number, speed: numb
   return { kind: "stroke", start, duration: (to - from) / speed, done: 0, tool, from, to };
 }
 
-/** Where a stroke's tip is now (on tine 0 of a comb, riding its wave). */
-function tipOf(op: StrokeOp): { x: number; y: number } {
+/** Where a stroke's tip is now (on tine 0 of a comb, riding its wave), written into `out`. */
+function tipInto(op: StrokeOp, out: { x: number; y: number }): void {
   const { ox, oy, mx, my, amp, wave, phase } = op.tool;
   const along = op.from + (op.to - op.from) * glide(op.done);
   const off = amp * Math.sin(wave * along + phase);
-  return { x: ox + mx * along - my * off, y: oy + my * along + mx * off };
-}
-
-/** Mulberry32: a small, fast, seedable generator, so a seed always gives the same sheet. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  out.x = ox + mx * along - my * off;
+  out.y = oy + my * along + mx * off;
 }
 
 function sheetSeed(seed: number, sheet: number): number {
@@ -593,10 +581,9 @@ function markStrokes(height: number, start: number): StrokeOp[] {
   const alpha = 0.16 * height;
   const lambda = 0.02 * height;
   let t = start;
-  for (let i = 0; i + 1 < MARK.length; i++) {
-    const a = MARK[i];
-    const b = MARK[i + 1];
-    if (a === undefined || b === undefined) continue;
+  for (let i = 0; i + 1 < MARK_VERTICES.length; i++) {
+    const a = markVertex(i);
+    const b = markVertex(i + 1);
     const ax = a[0] * height;
     const ay = a[1] * height;
     const dx = (b[0] - a[0]) * height;
@@ -687,7 +674,7 @@ class Timeline {
     }
     let moved = false;
     for (const op of this.#active) {
-      const p = op.duration > 0 ? Math.min(1, Math.max(0, (this.clock - op.start) / op.duration)) : 1;
+      const p = op.duration > 0 ? clamp((this.clock - op.start) / op.duration, 0, 1) : 1;
       if (p <= op.done) continue;
       apply(op, op.done, p);
       op.done = p;
@@ -701,47 +688,6 @@ class Timeline {
 // ---- the simulation ----------------------------------------------------------------------------
 
 type MarbleKnob = "pattern" | "palette" | "tempo" | "scale" | "renew" | "sheetSeed" | "stylus";
-
-interface KnobSlot {
-  /** Position in the scene's `params` (and so in `SimFrame.values`). */
-  index: number;
-  /** The knob's default (a feature's default amount). */
-  fallback: number;
-}
-
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class MarbleKnobs {
-  readonly #slots: Record<MarbleKnob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: MarbleKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new Error(`marble: the scene has no ${key} knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = {
-      pattern: slot("pattern"),
-      palette: slot("palette"),
-      tempo: slot("tempo"),
-      scale: slot("scale"),
-      renew: slot("renew"),
-      sheetSeed: slot("sheetSeed"),
-      stylus: slot("stylus"),
-    };
-  }
-
-  /** As the shader sees it: a feature reads its amount while on, 0 while off. */
-  value(frame: SimFrame, key: MarbleKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-
-  /** A feature's amount even while it is off (its "now" button still plays one). */
-  amount(frame: SimFrame, key: MarbleKnob): number {
-    return frame.params[`${key}-amount`] ?? this.#slots[key].fallback;
-  }
-}
 
 interface Settings {
   pattern: MarblePattern;
@@ -771,7 +717,7 @@ interface ShownTool {
 
 class MarbleSim implements SceneSim {
   readonly #gl: WebGL2RenderingContext;
-  readonly #knobs: MarbleKnobs;
+  readonly #knobs: KnobReader<MarbleKnob>;
   readonly #ink: DataTexture;
   readonly #state: DataTexture;
   readonly #stateData = new Float32Array(8);
@@ -805,24 +751,42 @@ class MarbleSim implements SceneSim {
   #frameMs = 0;
   #sheet = 0;
   #signature: string | undefined;
-  #triggers: number[] | undefined;
+  /** What the previous frame's settings were, so the unchanged frame builds no signature string. */
+  readonly #seen: { pattern: MarblePattern | undefined; palette: MarblePalette | undefined; scale: number; seed: number } = {
+    pattern: undefined,
+    palette: undefined,
+    scale: Number.NaN,
+    seed: Number.NaN,
+  };
+  /** The frame's settings, rewritten in place each frame. */
+  readonly #settings: Settings = { pattern: "bouquet", palette: EBRU, tempo: 1, scale: 1, seed: 0, rest: undefined, mark: 0, markNow: 0 };
+  readonly #renewSlot: number;
+  readonly #stylusSlot: number;
+  /** Whether the fast-forward step in progress moved the ink. */
+  #prerollMoved = false;
+  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined];
 
   #aspect = 0;
   #dirty = true;
   #force = true;
   #drawnAt = -Infinity;
   #idle = Infinity;
-  #press: { x: number; y: number } | undefined;
-  #last = { x: 0, y: 0 };
+  /** The pointer this frame, and where a press began and a drag was last combed: reused, never reallocated. */
+  readonly #at = { x: 0, y: 0 };
+  #pressing = false;
+  readonly #pressAt = { x: 0, y: 0 };
+  readonly #last = { x: 0, y: 0 };
   #dragging = false;
   #dragTool: Tool | undefined;
   #nextInk = 0;
   readonly #jitter = mulberry32(0x6d61726c);
   readonly #shown: ShownTool = { x: 0, y: 0, mx: 1, my: 0, spacing: 0, on: 0 };
 
-  constructor(gl: WebGL2RenderingContext, knobs: MarbleKnobs) {
+  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<MarbleKnob>) {
     this.#gl = gl;
     this.#knobs = knobs;
+    this.#renewSlot = knobs.trigger("renew");
+    this.#stylusSlot = knobs.trigger("stylus");
     const ctx = this.#canvas.getContext("2d");
     if (ctx === null) throw new Error("marble: no 2D canvas context for the ink");
     this.#ctx = ctx;
@@ -839,9 +803,8 @@ class MarbleSim implements SceneSim {
     this.#fit(frame.aspect);
     this.#follow(settings);
 
-    const fired = this.#fired(frame.triggers);
-    if (fired[0] === true) this.#startLift(settings, QUICK_LIFT_SECONDS, true, false);
-    if (fired[1] === true) this.#events.add(markStrokes(settings.markNow, this.#events.clock + 0.3));
+    if (frame.fired[this.#renewSlot] === true) this.#startLift(settings, QUICK_LIFT_SECONDS, true, false);
+    if (frame.fired[this.#stylusSlot] === true) this.#events.add(markStrokes(settings.markNow, this.#events.clock + 0.3));
 
     let moved = this.#play(frame.pointer, settings);
     this.#idle += dt;
@@ -858,7 +821,10 @@ class MarbleSim implements SceneSim {
     this.#showTool(dt);
     this.#render();
     this.#writeState();
-    return [this.#ink.texture, this.#state.texture];
+    const textures = this.#textures;
+    textures[0] = this.#ink.texture;
+    textures[1] = this.#state.texture;
+    return textures;
   }
 
   dispose(): void {
@@ -868,18 +834,18 @@ class MarbleSim implements SceneSim {
 
   #read(frame: SimFrame): Settings {
     const knobs = this.#knobs;
+    const settings = this.#settings;
     const renew = knobs.value(frame, "renew");
     const stylus = knobs.value(frame, "stylus");
-    return {
-      pattern: marblePatterns[Math.round(knobs.value(frame, "pattern"))] ?? "bouquet",
-      palette: marblePalettes[Math.round(knobs.value(frame, "palette"))] ?? EBRU,
-      tempo: Math.max(0.05, knobs.value(frame, "tempo")),
-      scale: 0.6 + 0.8 * knobs.value(frame, "scale"),
-      seed: Math.round(knobs.value(frame, "sheetSeed")),
-      rest: renew > 0 ? 4 + 36 * renew : undefined,
-      mark: stylus > 0 ? markHeight(stylus) : 0,
-      markNow: markHeight(knobs.amount(frame, "stylus")),
-    };
+    settings.pattern = knobs.pick(frame, "pattern", marblePatterns, "bouquet");
+    settings.palette = knobs.pick(frame, "palette", marblePalettes, EBRU);
+    settings.tempo = Math.max(0.05, knobs.value(frame, "tempo"));
+    settings.scale = 0.6 + 0.8 * knobs.value(frame, "scale");
+    settings.seed = Math.round(knobs.value(frame, "sheetSeed"));
+    settings.rest = renew > 0 ? 4 + 36 * renew : undefined;
+    settings.mark = stylus > 0 ? markHeight(stylus) : 0;
+    settings.markNow = markHeight(knobs.amount(frame, "stylus"));
+    return settings;
   }
 
   /** Size the ink canvas to the frame's aspect; the ink itself lives in sheet units and stays. */
@@ -899,6 +865,13 @@ class MarbleSim implements SceneSim {
 
   /** A new pattern, palette, scale or seed lifts the sheet at once and starts the new one. */
   #follow(settings: Settings): void {
+    const seen = this.#seen;
+    if (seen.pattern === settings.pattern && seen.palette === settings.palette && seen.scale === settings.scale && seen.seed === settings.seed) return;
+    seen.pattern = settings.pattern;
+    seen.palette = settings.palette;
+    seen.scale = settings.scale;
+    seen.seed = settings.seed;
+    // The scale counts to three places: a change finer than that does not start a new sheet.
     const signature = `${settings.pattern}|${settings.palette.label}|${settings.scale.toFixed(3)}|${settings.seed}`;
     if (signature === this.#signature) return;
     const first = this.#signature === undefined;
@@ -911,19 +884,17 @@ class MarbleSim implements SceneSim {
     }
   }
 
-  /** Trigger slots stamped since the previous frame. */
-  #fired(triggers: readonly number[]): boolean[] {
-    const previous = this.#triggers;
-    this.#triggers = [...triggers];
-    return triggers.map((at, slot) => previous !== undefined && at !== previous[slot] && at > -1e3);
-  }
-
   /** Click: a drop of the next ink where the pointer is. Drag: a stylus along the drag. */
   #play(pointer: PointerState, settings: Settings): boolean {
-    const at = { x: (pointer.x - 0.5) * this.#aspect, y: pointer.y - 0.5 };
+    const at = this.#at;
+    at.x = (pointer.x - 0.5) * this.#aspect;
+    at.y = pointer.y - 0.5;
     if (pointer.pressed && pointer.inside) {
-      this.#press = at;
-      this.#last = at;
+      this.#pressAt.x = at.x;
+      this.#pressAt.y = at.y;
+      this.#pressing = true;
+      this.#last.x = at.x;
+      this.#last.y = at.y;
       this.#dragging = false;
       this.#idle = 0;
       // Someone is playing with the tray: keep the sheet they are working on.
@@ -933,20 +904,23 @@ class MarbleSim implements SceneSim {
         this.#lift = 0;
       }
     }
-    const press = this.#press;
-    if (press === undefined) return false;
+    if (!this.#pressing) return false;
+    const press = this.#pressAt;
     let moved = false;
     this.#idle = 0;
     if (pointer.down) {
       if (!this.#dragging && Math.hypot(at.x - press.x, at.y - press.y) > DRAG_START) this.#dragging = true;
       if (this.#dragging) {
         moved = this.#comb(this.#last, at, settings.scale);
-        if (moved) this.#last = at;
+        if (moved) {
+          this.#last.x = at.x;
+          this.#last.y = at.y;
+        }
       }
     }
     if (pointer.released || !pointer.down) {
       if (!this.#dragging) this.#dropAt(press, settings);
-      this.#press = undefined;
+      this.#pressing = false;
       this.#dragging = false;
       this.#dragTool = undefined;
     }
@@ -976,7 +950,7 @@ class MarbleSim implements SceneSim {
 
   #choreograph(dt: number, motion: number, settings: Settings): boolean {
     if (this.#prerolling) return this.#fastForward();
-    const busy = this.#idle < IDLE_RESUME || this.#press !== undefined || !this.#events.finished;
+    const busy = this.#idle < IDLE_RESUME || this.#pressing || !this.#events.finished;
     const step = busy ? 0 : dt * motion * settings.tempo;
     const phase = this.#phase;
     switch (phase) {
@@ -1016,17 +990,22 @@ class MarbleSim implements SceneSim {
    */
   #fastForward(): boolean {
     const budget = Math.min(PREROLL_BUDGET_MAX_MS, Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs));
-    const until = performance.now() + budget;
-    let moved = false;
-    do {
-      const step = Math.min(PREROLL_STEP, this.#prerollTo - this.#routine.clock);
-      if (this.#routine.advance(step, this.#apply)) {
-        this.#refine();
-        moved = true;
-      }
-    } while (this.#prerolling && performance.now() < until);
-    return moved;
+    // The sprinkle is a count of steps, the same on every machine; the budget only spreads them over frames.
+    const steps = Math.ceil((this.#prerollTo - this.#routine.clock) / PREROLL_STEP) + 1;
+    this.#prerollMoved = false;
+    runBudgeted(this.#prerollStep, budget, steps);
+    return this.#prerollMoved;
   }
+
+  /** One fast-forward step; true once the sprinkling is laid. */
+  readonly #prerollStep = (): boolean => {
+    const step = Math.min(PREROLL_STEP, this.#prerollTo - this.#routine.clock);
+    if (this.#routine.advance(step, this.#apply)) {
+      this.#refine();
+      this.#prerollMoved = true;
+    }
+    return !this.#prerolling;
+  };
 
   #startLift(settings: Settings, seconds: number, now: boolean, fresh: boolean): void {
     this.#fresh ||= fresh;
@@ -1091,7 +1070,7 @@ class MarbleSim implements SceneSim {
         return;
       }
       case "swirl":
-        swirl(this.#blobs, op, smooth(to) - smooth(from));
+        swirl(this.#blobs, op, smoothstep(0, 1, to) - smoothstep(0, 1, from));
         return;
       default: {
         const unreachable: never = op;
@@ -1215,18 +1194,28 @@ class MarbleSim implements SceneSim {
   #showTool(dt: number): void {
     const shown = this.#shown;
     const drag = this.#dragging ? this.#dragTool : undefined;
-    let target: Omit<ShownTool, "on"> | undefined;
+    let following = false;
     if (drag !== undefined) {
-      target = { x: this.#last.x, y: this.#last.y, mx: drag.mx, my: drag.my, spacing: 0 };
+      shown.x = this.#last.x;
+      shown.y = this.#last.y;
+      shown.mx = drag.mx;
+      shown.my = drag.my;
+      shown.spacing = 0;
+      following = true;
     } else {
       const op = this.#events.stroke ?? (this.#phase === "routine" ? this.#routine.stroke : undefined);
-      if (op !== undefined) target = { ...tipOf(op), mx: op.tool.mx, my: op.tool.my, spacing: op.tool.spacing };
+      if (op !== undefined) {
+        tipInto(op, shown);
+        shown.mx = op.tool.mx;
+        shown.my = op.tool.my;
+        shown.spacing = op.tool.spacing;
+        following = true;
+      }
     }
-    if (target === undefined) {
+    if (!following) {
       shown.on = Math.max(0, shown.on - dt / TOOL_FADE);
       return;
     }
-    Object.assign(shown, target);
     shown.on = Math.min(1, shown.on + dt / TOOL_FADE);
   }
 
@@ -1286,7 +1275,7 @@ class MarbleSim implements SceneSim {
     data[0] = shown.x / this.#aspect + 0.5;
     data[1] = shown.y + 0.5;
     data[2] = shown.on;
-    data[3] = Math.max(this.#phase === "lift" ? smooth(this.#lift) : 0, 1 - smooth(this.#arrive));
+    data[3] = Math.max(this.#phase === "lift" ? smoothstep(0, 1, this.#lift) : 0, 1 - smoothstep(0, 1, this.#arrive));
     data[4] = shown.mx;
     data[5] = shown.my;
     data[6] = shown.spacing;
@@ -1297,6 +1286,6 @@ class MarbleSim implements SceneSim {
 
 /** The marbling tray, for a scene whose `params` carry the knobs `MarbleKnob` names. */
 export function marbleSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new MarbleKnobs(params);
+  const knobs = new KnobReader<MarbleKnob>("marble", params, ["pattern", "palette", "tempo", "scale", "renew", "sheetSeed", "stylus"]);
   return (gl) => new MarbleSim(gl, knobs);
 }

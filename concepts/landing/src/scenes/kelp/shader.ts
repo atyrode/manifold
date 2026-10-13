@@ -149,6 +149,10 @@ const vec3 KELP_CORALLINE = vec3(0.86, 0.45, 0.58);
 const vec3 KELP_URCHIN = vec3(0.20, 0.06, 0.22);
 const float KELP_THING_TALL = 0.16;                    // the tallest thing standing on the floor (world units)
 
+// This cell's threshold for hard edges, apart from the colour dither's (cellTh): edgeThreshold keeps
+// it off 0 and 1, so nothing shows where a cover is 0 and everything where it is 1. Set by sceneKelp.
+float kelpTh = 0.5;
+
 // ---- the simulation's textures ----
 
 vec4 kelpState(int col, int row) {
@@ -184,9 +188,9 @@ struct KelpEnv {
   float swellDir;
 };
 
-KelpEnv kelpEnvironment(float t) {
+KelpEnv kelpEnvironment(float tm) {
   KelpEnv e;
-  e.sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  e.sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
   float sunUp = smoothstep(-0.02, 0.5, e.sky.sun.y);
   float moonUp = smoothstep(0.0, 0.4, e.sky.moon.y);
   // A low sun glances off the surface but still sends long golden shafts down; the moon gives a
@@ -337,7 +341,7 @@ vec2 kelpWaves(vec2 w, float tc, KelpEnv e) {
 // ---- the floor and the surface ----
 
 // Whichever the view ray meets, hazed by distance. rays: the shafts' weight in front of it.
-vec3 kelpBackground(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, out float rays) {
+vec3 kelpBackground(vec2 P, vec3 water, float aa, float tc, KelpEnv e, out float rays) {
   if (P.y < KELP_HORIZON) {
     // The sea floor: sand rippled across the surge, patches of rock and turf, the canopy's shade
     // lying over it and the caustic net.
@@ -378,7 +382,7 @@ vec3 kelpBackground(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e
   }
   // (Beyond s = 0.2 the haze has it all; cutting it there keeps a dissolve out of the picture.)
   float margin = kelpCanopy(w, e);
-  float mat = step(kth, smoothstep(-0.012, 0.012, margin)) * step(0.2, s);
+  float mat = hardEdge(smoothstep(-0.012, 0.012, margin), kelpTh) * step(0.2, s);
   vec3 frond = KELP_CANOPY * e.light + KELP_GOLD * e.beam * 0.35 * (1.0 - smoothstep(0.0, 0.05, margin));
   c = mix(c, frond, mat);
   rays = kelpRayWeight(s);
@@ -394,7 +398,7 @@ struct KelpThing {
   float s;
 };
 
-KelpThing kelpThings(vec2 P, float aa, float tc, float kth, KelpEnv e) {
+KelpThing kelpThings(vec2 P, float aa, float tc, KelpEnv e) {
   KelpThing best = KelpThing(vec3(0.0), 0.0, 0.0);
   if (K_understory <= 0.0 || P.y > KELP_HORIZON - 0.05) return best;
   const float CX = 0.5;
@@ -476,7 +480,7 @@ KelpThing kelpThings(vec2 P, float aa, float tc, float kth, KelpEnv e) {
         cover = max(stalk, blades);
         col = (KELP_OLIVE * lit * KELP_DIFFUSE + KELP_GOLD * kelpBeamAt(depth - q.y, e) * 0.3 * blades);
       }
-      if (step(kth, cover) > 0.5) {
+      if (hardEdge(cover, kelpTh) > 0.5) {
         best.col = col;
         best.cover = 1.0;
         best.s = s;
@@ -498,7 +502,7 @@ void kelpPlace(KelpThing thing, float s, vec3 water, inout bool placed, inout ve
 // A wall of distant kelp at scale s: columns that sway with the surge, ragged with blades, rising
 // into the ragged band of their canopy along the surface; faint silhouettes in the haze, a little
 // darker than it.
-void kelpBackdrop(float s, float salt, vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col, inout float rays) {
+void kelpBackdrop(float s, float salt, vec2 P, vec3 water, float aa, KelpEnv e, inout vec3 col, inout float rays) {
   float floorY = KELP_HORIZON - KELP_FLOOR * s;
   float surfaceY = KELP_HORIZON + KELP_SURFACE * s;
   if (P.y < floorY || P.y > surfaceY) return;
@@ -520,7 +524,7 @@ void kelpBackdrop(float s, float salt, vec2 P, vec3 water, float aa, float kth, 
     float halfWidth = max(s * (0.008 + 0.03 * fuzz), 1.2 * aa);
     cover = max(cover, 1.0 - smoothstep(halfWidth - aa, halfWidth + aa, abs(P.x - x)));
   }
-  if (step(kth, cover) < 0.5) return;
+  if (hardEdge(cover, kelpTh) < 0.5) return;
   vec3 kelp = KELP_OLIVE * kelpLightAt((surfaceY - P.y) / s, e) * KELP_DIFFUSE;
   col = mix(kelp, water, 0.82 * kelpFog(s));
   rays = kelpRayWeight(s);
@@ -727,7 +731,7 @@ KelpHit kelpStipe(int i, float s, float surfaceY, vec2 P, float aa, float tc, bo
 // Layer l of the forest over col: the plants in the slots around P, lit at their depth, emerging
 // from or fading into the haze with the density knob, hazed by distance; each cell is kelp or not
 // by its threshold, so a passing edge flips it once.
-void kelpForest(int l, vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, bool wantStir, inout vec3 col, inout float rays, inout float accent, inout float stir) {
+void kelpForest(int l, vec2 P, vec3 water, float aa, float tc, KelpEnv e, bool wantStir, inout vec3 col, inout float rays, inout float accent, inout float stir) {
   if (uSimOn.x < 0.5 || uSimOn.y < 0.5) return;
   float s = KELP_LAYER_SCALE[l];
   // Each plant stands a little off its layer's depth (row 5): bounds wide enough for all of them.
@@ -762,7 +766,7 @@ void kelpForest(int l, vec2 P, vec3 water, float aa, float tc, float kth, KelpEn
     float si = kelpState(i, KELP_ROW_SCALE).x;
     KelpHit h = kelpStipe(i, si, KELP_HORIZON + KELP_SURFACE * si, P, aa, tc, wantStir, rising, floating);
     stir = max(stir, h.stir * box.w);
-    float alpha = step(kth, h.cover * smoothstep(0.0, 0.3, box.w));
+    float alpha = hardEdge(h.cover * smoothstep(0.0, 0.3, box.w), kelpTh);
     if (alpha <= 0.0) continue;
     // The caustic net plays softly over the kelp too (worked out once, for the first plant here).
     if (caustic < 0.0) {
@@ -799,10 +803,10 @@ float kelpSnow(vec2 P, float s, float cell, float radius, float amount, float aa
 }
 
 // Lay a snow layer over col: lit by the water at its depth, brighter inside a shaft.
-void kelpSnowLayer(vec2 P, float s, float cell, float radius, float density, float aa, float tc, float kth, float shafts, KelpEnv e, float salt, vec3 water, inout vec3 col) {
+void kelpSnowLayer(vec2 P, float s, float cell, float radius, float density, float aa, float tc, float shafts, KelpEnv e, float salt, vec3 water, inout vec3 col) {
   float amount = K_marineSnow * density;
   if (amount <= 0.0) return;
-  float flake = step(kth, 0.9 * kelpSnow(P, s, cell, radius, amount, aa, tc, e, salt));
+  float flake = hardEdge(0.9 * kelpSnow(P, s, cell, radius, amount, aa, tc, e, salt), kelpTh);
   if (flake <= 0.0) return;
   float dw = max((KELP_HORIZON + KELP_SURFACE * s - P.y) / s, 0.0);
   vec3 c = kelpLightAt(dw, e) * vec3(0.4, 0.46, 0.44) + kelpBeamAt(dw, e) * KELP_SHAFT_TINT * shafts * 0.4;
@@ -831,7 +835,7 @@ float kelpSparks(vec2 P, float stir, float aa, float tc, KelpEnv e) {
 // The Manifold M of rounded stones piled along its strokes on the floor, in a clearing the nearer
 // plants leave it (sim.ts), crusted pink and white with coralline algae and lit by the caustic net;
 // it carries a little through the haze. At night a bioluminescent film outlines it.
-void kelpStone(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, inout vec3 col, inout float rays, inout float accent) {
+void kelpStone(vec2 P, vec3 water, float aa, float tc, KelpEnv e, inout vec3 col, inout float rays, inout float accent) {
   if (K_mark <= 0.0) return;
   const float s = KELP_MARK_SCALE;
   float floorY = KELP_HORIZON - KELP_FLOOR * s;
@@ -864,7 +868,7 @@ void kelpStone(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, ino
     }
   }
   float px = aa / height;
-  if (step(kth, 1.0 - smoothstep(-px, px, d)) <= 0.0) return;
+  if (hardFill(d, px, kelpTh) <= 0.0) return;
   // Each stone a dome lit from above; coralline crust on the tops, pink or white stone by stone.
   float crust = smoothstep(0.42, 0.56, vnoise(q * 14.0 + stone * 40.0)) * smoothstep(-0.2, 0.5, nrm.y);
   vec3 coral = mix(KELP_CORALLINE, vec3(0.95, 0.92, 0.88), step(0.7, fract(stone * 5.3)));
@@ -884,7 +888,7 @@ void kelpStone(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, ino
 
 // A sea lion gliding past far off in the blue: a sleek dark shape, a fore flipper sweeping now and
 // then, the hind flippers trailing.
-void kelpVisitor(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, inout vec3 col, inout float rays) {
+void kelpVisitor(vec2 P, vec3 water, float aa, float tc, KelpEnv e, inout vec3 col, inout float rays) {
   if (uSimOn.y < 0.5) return;
   vec4 pose = kelpState(KELP_G_VISITOR_POSE, KELP_ROW_GLOBALS);
   if (pose.w <= 0.0) return;
@@ -907,7 +911,7 @@ void kelpVisitor(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, i
   float reachOut = clamp(dot(q - shoulder, tip - shoulder) / dot(tip - shoulder, tip - shoulder), 0.0, 1.0);
   float flipper = 0.035 - 0.02 * reachOut - segmentDistance(q, shoulder, tip);
   float hind = 0.022 - min(segmentDistance(q, vec2(-0.42, 0.0), vec2(-0.58, 0.035)), segmentDistance(q, vec2(-0.42, 0.0), vec2(-0.6, -0.025)));
-  float cover = step(kth, smoothstep(-aa / L, aa / L, max(max(body, flipper), hind)) * pose.w);
+  float cover = hardEdge(smoothstep(-aa / L, aa / L, max(max(body, flipper), hind)) * pose.w, kelpTh);
   if (cover <= 0.0) return;
   const float s = KELP_VISITOR_SCALE;
   float dw = (KELP_HORIZON + KELP_SURFACE * s - P.y) / s;
@@ -942,9 +946,9 @@ void kelpJellies(vec2 P, float aspect, vec3 water, float aa, float tc, KelpEnv e
     float rim = length(vec2(bq.x, max(bq.y, 0.0)));
     float under = -0.18 * (1.0 - bq.x * bq.x);
     float px = aa / Hb;
-    float bell = (1.0 - smoothstep(1.0 - px, 1.0 + px, rim)) * smoothstep(under - px, under + px, bq.y);
+    float dome = (1.0 - smoothstep(1.0 - px, 1.0 + px, rim)) * smoothstep(under - px, under + px, bq.y);
     vec2 gq = (vec2(abs(bq.x), bq.y) - vec2(0.38, 0.3)) / 0.17;
-    float gonads = exp(-dot(gq, gq)) * bell;
+    float gonads = exp(-dot(gq, gq)) * dome;
     float below = clamp(-q.y / trail, 0.0, 1.0);
     float arms = 0.0;
     float fringe = 0.0;
@@ -958,9 +962,9 @@ void kelpJellies(vec2 P, float aspect, vec3 water, float aa, float tc, KelpEnv e
       float edge = (abs(q.x) - 0.85 * W) / (0.18 * W);
       fringe = exp(-edge * edge) * (1.0 - smoothstep(0.0, 0.8 * trail, -q.y));
     }
-    float alpha = max(bell * (0.35 + 0.45 * smoothstep(0.6, 1.0, rim)), max(0.5 * arms, 0.22 * fringe)) * show;
+    float alpha = max(dome * (0.35 + 0.45 * smoothstep(0.6, 1.0, rim)), max(0.5 * arms, 0.22 * fringe)) * show;
     if (alpha <= 0.0) continue;
-    float glow = (bell * (0.25 + 0.75 * smoothstep(0.55, 1.0, rim) * (0.6 + 0.4 * squeeze)) + 0.6 * gonads + 0.4 * arms + 0.2 * fringe) * show;
+    float glow = (dome * (0.25 + 0.75 * smoothstep(0.55, 1.0, rim) * (0.6 + 0.4 * squeeze)) + 0.6 * gonads + 0.4 * arms + 0.2 * fringe) * show;
     float fog = kelpFog(s);
     float dw = (KELP_HORIZON + KELP_SURFACE * s - P.y) / s;
     vec3 jc = mix(KELP_JELLY_DAY * kelpLightAt(max(dw, 0.0), e) * 0.7, KELP_GLOW * 0.35, e.night);
@@ -974,7 +978,7 @@ void kelpJellies(vec2 P, float aspect, vec3 water, float aa, float tc, KelpEnv e
 // tail, silver along the flank and dark along the back, swimming loosely at slightly different
 // depths (and so sizes). A fish turning toward or away from the eye shows less of its side; each
 // flank catches the light by its heading, and a fish rolling into a turn flashes bright.
-void kelpFish(vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col, inout float rays, inout float accent) {
+void kelpFish(vec2 P, vec3 water, float aa, KelpEnv e, inout vec3 col, inout float rays, inout float accent) {
   if (uSimOn.y < 0.5) return;
   vec4 box = kelpState(KELP_G_SCHOOL, KELP_ROW_GLOBALS);
   if (P.x < box.x || P.x > box.z || P.y < box.y || P.y > box.w) return;
@@ -1001,7 +1005,7 @@ void kelpFish(vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col
     float tl = -0.3 - q.x;
     float fin = min(min(0.02 + 0.75 * tl - abs(q.y), 0.18 - tl), tl + 0.03);
     float px = aa / len;
-    if (step(kth, smoothstep(-px, px, max(body, fin)) * min(look.w * 1.5, 1.0)) <= 0.0) continue;
+    if (hardEdge(smoothstep(-px, px, max(body, fin)) * min(look.w * 1.5, 1.0), kelpTh) <= 0.0) continue;
     float sheen = 0.7 + 0.35 * cos(2.0 * atan(pose.w, pose.z) + float(f) * 1.7);
     vec3 flank = KELP_SILVER * (light * 0.7 * sheen + beam * (0.2 + 1.2 * look.y));
     fishCol = mix(flank, KELP_FISH_BACK * light * 1.3, step(0.03, q.y));
@@ -1016,15 +1020,12 @@ void kelpFish(vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col
 }
 
 Shade sceneKelp(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 P = vec2((uv.x - 0.5) * aspect, uv.y);
   float aa = 1.0 / uRes.y;
-  float tc = t * uMotion;
-  // The cell's own threshold for hard edges, apart from the colour dither's; kept off 0 and 1, so
-  // nothing shows where its cover is 0 and everything where it is 1.
-  float kth = 0.004 + 0.992 * threshold(cell + vec2(2.0, 7.0));
-  KelpEnv e = kelpEnvironment(t);
+  float tc = uMotionTime;
+  kelpTh = edgeThreshold(cell, vec2(2.0, 7.0));
+  KelpEnv e = kelpEnvironment(tc);
   vec3 water = kelpWater(P, e);
   bool wantStir = e.night * K_plankton > 0.01;
   float shafts = kelpShafts(P, e, tc) * K_rays;
@@ -1032,32 +1033,32 @@ Shade sceneKelp(vec2 uv, vec2 cell, float t) {
   float rays = 1.0;
   float accent = 0.0;
   float stir = 0.0;
-  vec3 col = kelpBackground(P, water, aa, tc, kth, e, rays);
+  vec3 col = kelpBackground(P, water, aa, tc, e, rays);
   // Things on the floor go down just before the first layer nearer than they are.
-  KelpThing thing = kelpThings(P, aa, tc, kth, e);
+  KelpThing thing = kelpThings(P, aa, tc, e);
   bool placed = thing.cover <= 0.0;
   // Two walls of distant kelp, the farther first, both behind anything on the floor.
-  kelpBackdrop(0.16, 11.0, P, water, aa, kth, e, col, rays);
-  kelpBackdrop(0.24, 37.0, P, water, aa, kth, e, col, rays);
+  kelpBackdrop(0.16, 11.0, P, water, aa, e, col, rays);
+  kelpBackdrop(0.24, 37.0, P, water, aa, e, col, rays);
   kelpPlace(thing, KELP_LAYER_SCALE[3], water, placed, col, rays);
-  kelpForest(3, P, water, aa, tc, kth, e, wantStir, col, rays, accent, stir);
+  kelpForest(3, P, water, aa, tc, e, wantStir, col, rays, accent, stir);
   kelpPlace(thing, 0.45, water, placed, col, rays);
-  kelpSnowLayer(P, 0.45, 0.035, 0.0022, 0.1, aa, tc, kth, shafts, e, 3.0, water, col);
+  kelpSnowLayer(P, 0.45, 0.035, 0.0022, 0.1, aa, tc, shafts, e, 3.0, water, col);
   kelpPlace(thing, KELP_LAYER_SCALE[2], water, placed, col, rays);
-  kelpForest(2, P, water, aa, tc, kth, e, wantStir, col, rays, accent, stir);
+  kelpForest(2, P, water, aa, tc, e, wantStir, col, rays, accent, stir);
   kelpPlace(thing, KELP_VISITOR_SCALE, water, placed, col, rays);
-  kelpVisitor(P, water, aa, tc, kth, e, col, rays);
+  kelpVisitor(P, water, aa, tc, e, col, rays);
   kelpPlace(thing, KELP_MARK_SCALE, water, placed, col, rays);
-  kelpStone(P, water, aa, tc, kth, e, col, rays, accent);
+  kelpStone(P, water, aa, tc, e, col, rays, accent);
   kelpPlace(thing, KELP_LAYER_SCALE[1], water, placed, col, rays);
-  kelpForest(1, P, water, aa, tc, kth, e, wantStir, col, rays, accent, stir);
+  kelpForest(1, P, water, aa, tc, e, wantStir, col, rays, accent, stir);
   kelpJellies(P, aspect, water, aa, tc, e, col, accent);
   kelpPlace(thing, KELP_FISH_SCALE, water, placed, col, rays);
-  kelpSnowLayer(P, 0.75, 0.055, 0.003, 0.08, aa, tc, kth, shafts, e, 17.0, water, col);
-  kelpFish(P, water, aa, kth, e, col, rays, accent);
+  kelpSnowLayer(P, 0.75, 0.055, 0.003, 0.08, aa, tc, shafts, e, 17.0, water, col);
+  kelpFish(P, water, aa, e, col, rays, accent);
   kelpPlace(thing, KELP_LAYER_SCALE[0], water, placed, col, rays);
-  kelpForest(0, P, water, aa, tc, kth, e, wantStir, col, rays, accent, stir);
-  kelpSnowLayer(P, 1.15, 0.1, 0.005, 0.06, aa, tc, kth, shafts, e, 41.0, water, col);
+  kelpForest(0, P, water, aa, tc, e, wantStir, col, rays, accent, stir);
+  kelpSnowLayer(P, 1.15, 0.1, 0.005, 0.06, aa, tc, shafts, e, 41.0, water, col);
 
   // The shafts: light scattered toward the eye from the water in front of whatever is seen.
   col += e.beam * KELP_SHAFT_TINT * shafts * rays * 0.28;
@@ -1070,10 +1071,6 @@ Shade sceneKelp(vec2 uv, vec2 cell, float t) {
     accent = max(accent, sparks);
   }
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(dot(col, LUMA) * 1.6, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
+  return shadeOf(col, inkOf(col, 1.6, 1.0), clamp(accent, 0.0, 1.0));
 }
 `;

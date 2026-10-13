@@ -40,7 +40,10 @@
 //                 top), the x it reaches the surface at, the farthest x it floats to, link length
 //          row 5, per stipe: its own perspective scale (its layer's, jittered by DEPTH_JITTER), 0, 0, 0
 //   uSim2  r8 the hand's fading trail (TrailField), linear, uv.
-import { effective, type ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
+import { smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
 import { PointTexture, VerletSystem, type VerletForce, type VerletStepOptions } from "../../sims/verlet.ts";
@@ -254,31 +257,6 @@ const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "d
 /** Fixed base seed: the same arrangement number always grows the same forest. */
 const SEED = 0x6b31f00d;
 
-/** The scene's knobs and its simulation disagree. */
-export class KelpSimError extends Error {}
-
-/** mulberry32: a small seeded generator. */
-class Random {
-  #state = 0;
-
-  seed(seed: number): void {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
 /** The diver's hand: where it is (screen heights), its smoothed velocity, and how present (0..1). */
 interface Hand {
   x: number;
@@ -310,7 +288,7 @@ class School {
   readonly #ax = new Float32Array(KELP_FISH.max);
   readonly #ay = new Float32Array(KELP_FISH.max);
   #clock = 0;
-  #pending = 0;
+  readonly #stepper = new FixedStep(FISH_STEP, FISH_MAX_STEPS);
   #fright = 0;
   /** The wander target, as last worked out by #aim. */
   #tx = 0;
@@ -356,11 +334,8 @@ class School {
   }
 
   advance(dt: number, count: number, aspect: number, hand: Hand): void {
-    this.#pending = Math.min(this.#pending + dt, FISH_MAX_STEPS * FISH_STEP);
-    while (this.#pending >= FISH_STEP) {
-      this.#step(FISH_STEP, count, aspect, hand);
-      this.#pending -= FISH_STEP;
-    }
+    const steps = this.#stepper.advance(dt);
+    for (let i = 0; i < steps; i++) this.#step(FISH_STEP, count, aspect, hand);
   }
 
   /** Where the school is drawn toward: a slow figure wandering the open water. */
@@ -511,7 +486,9 @@ class KelpSim implements SceneSim {
   readonly #trail = new TrailField(TRAIL_W, TRAIL_H);
   readonly #trailTexture: DataTexture;
   readonly #textures: readonly WebGLTexture[];
-  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #knobs: KnobReader<KnobKey>;
+  readonly #swellSlot: number;
+  readonly #visitorSlot: number;
   readonly #knob: Record<KnobKey, number>;
   readonly #random = new Random();
   readonly #school = new School();
@@ -546,9 +523,6 @@ class KelpSim implements SceneSim {
 
   #seed = -1;
   #aspect = 16 / 9;
-  #primed = false;
-  #seenSwell = -1e4;
-  #seenVisitor = -1e4;
   #clock = 0;
   #nextSwell = SWELL_FIRST;
   #visitorAge = -1;
@@ -562,37 +536,20 @@ class KelpSim implements SceneSim {
   #trailVersion = -1;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new KelpSimError(`kelp: the scene has no '${key}' knob`);
-      return at;
-    };
-    const knobIndex: Record<KnobKey, number> = {
-      surge: index("surge"),
-      period: index("period"),
-      current: index("current"),
-      swell: index("swell"),
-      density: index("density"),
-      kelpSeed: index("kelpSeed"),
-      fish: index("fish"),
-      visitor: index("visitor"),
-      mark: index("mark"),
-    };
-    const initial = (key: KnobKey): number => {
-      const def = params[knobIndex[key]];
-      return def === undefined ? 0 : effective(def, {});
-    };
-    this.#knobIndex = knobIndex;
+    const knobs = new KnobReader("kelp", params, KNOB_KEYS);
+    this.#knobs = knobs;
+    this.#swellSlot = knobs.trigger("swell");
+    this.#visitorSlot = knobs.trigger("visitor");
     this.#knob = {
-      surge: initial("surge"),
-      period: initial("period"),
-      current: initial("current"),
-      swell: initial("swell"),
-      density: initial("density"),
-      kelpSeed: initial("kelpSeed"),
-      fish: initial("fish"),
-      visitor: initial("visitor"),
-      mark: initial("mark"),
+      surge: knobs.initial("surge"),
+      period: knobs.initial("period"),
+      current: knobs.initial("current"),
+      swell: knobs.initial("swell"),
+      density: knobs.initial("density"),
+      kelpSeed: knobs.initial("kelpSeed"),
+      fish: knobs.initial("fish"),
+      visitor: knobs.initial("visitor"),
+      mark: knobs.initial("mark"),
     };
     this.#system = new VerletSystem({ points: POINT_COUNT, constraints: KELP_STIPES * (2 * KELP_SEGMENTS - 1) });
     this.#stepOptions = { gravity: [0, 0, 0], damping: DRAG, iterations: 4, force: this.#force };
@@ -605,14 +562,13 @@ class KelpSim implements SceneSim {
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const values = frame.values;
     const knob = this.#knob;
-    for (const key of KNOB_KEYS) knob[key] = values[this.#knobIndex[key]] ?? knob[key];
+    for (const key of KNOB_KEYS) knob[key] = this.#knobs.value(frame, key);
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#applyKnobs();
     const seed = Math.round(knob.kelpSeed);
     if (seed !== this.#seed) this.#build(seed);
-    this.#watchTriggers(frame.triggers);
+    this.#watchTriggers(frame.fired);
 
     // Motion scales everything; a swell or a visitor fired with "now" plays even while it is 0.
     const busy = this.#swellAge >= 0 || this.#visitorAge >= 0;
@@ -869,17 +825,10 @@ class KelpSim implements SceneSim {
     this.#handPrevY = y;
   }
 
-  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
-  #watchTriggers(triggers: readonly number[]): void {
-    const swell = triggers[0] ?? -1e4;
-    const visitor = triggers[1] ?? -1e4;
-    if (this.#primed) {
-      if (swell !== this.#seenSwell && swell > -1e3) this.#startSwell();
-      if (visitor !== this.#seenVisitor && visitor > -1e3 && this.#visitorAge < 0) this.#startVisitor();
-    }
-    this.#primed = true;
-    this.#seenSwell = swell;
-    this.#seenVisitor = visitor;
+  /** A "now" button stamps its slot with the scene clock: `fired` is true for the one frame after. */
+  #watchTriggers(fired: readonly boolean[]): void {
+    if (fired[this.#swellSlot] === true) this.#startSwell();
+    if (fired[this.#visitorSlot] === true && this.#visitorAge < 0) this.#startVisitor();
   }
 
   /** Big swells and the sea lion turn up at random, as often as their knobs say. */

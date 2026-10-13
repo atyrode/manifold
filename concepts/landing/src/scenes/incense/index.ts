@@ -3,6 +3,7 @@
 // GPU and the incense burns down on the CPU (sim.ts); the room, the light and the smoke are drawn
 // in shader.ts.
 import { choice, feature, range, toggle, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { incenseGlsl } from "./shader.ts";
 import { incenseKinds, incenseSim } from "./sim.ts";
@@ -40,6 +41,6 @@ export const incenseScene: SceneDef = {
   glsl: incenseGlsl,
   entry: "sceneIncense",
   sim: incenseSim(params),
-  // Washi walls are pale: the page copy goes dark on them.
-  theme: (values) => ((values.room ?? params.find((def) => def.key === "room")?.value ?? 1) > 2.5 ? "paper" : "night"),
+  // Washi walls are pale: the page copy goes dark on them (the shader's `pagePaper()` follows this).
+  theme: paletteTheme(params, "room", (room) => room > 2.5),
 };

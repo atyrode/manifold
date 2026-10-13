@@ -34,9 +34,7 @@ import {
   DEW_STEM_UNIT,
   DEW_WET_LEVELS,
 } from "./sim.ts";
-
-const f = (x: number): string => x.toFixed(6);
-const v3 = (values: readonly number[]): string => `vec3(${values.map(f).join(", ")})`;
+import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
 
 export const dewGlsl = `
 // Knobs: K_breeze, K_dew, K_dof and K_webSeed drive the simulation; the shader reads K_dew (bead
@@ -44,22 +42,22 @@ export const dewGlsl = `
 const int DEW_SEG_TEXELS = ${DEW_SEG_TEXELS};
 const int DEW_SEG_ROW = ${DEW_SEG_ROW};
 const int DEW_BIN_SLOTS = ${DEW_BIN_SLOTS};
-const float DEW_CODE = ${f(DEW_CODE)};
-const float DEW_KIND_SPIRAL = ${f(DEW_KIND_SPIRAL)};
-const float DEW_KIND_FRAME = ${f(DEW_KIND_FRAME)};
-const float DEW_KIND_STEM = ${f(DEW_KIND_STEM)};
-const float DEW_STEM_UNIT = ${f(DEW_STEM_UNIT)};
-const float DEW_WET_LEVELS = ${f(DEW_WET_LEVELS)};
-const float DEW_DOF = ${f(DEW_DOF)};
-const float DEW_BLUR_MAX = ${f(DEW_BLUR_MAX)};
-const float DEW_BEAD_R = ${f(DEW_BEAD_R)};
-const vec3 DEW_BEAD_SCALE = ${v3(DEW_BEAD_SCALE)};
-const vec3 DEW_PRESENCE_BASE = ${v3(DEW_PRESENCE_BASE)};
-const vec3 DEW_PRESENCE_DEW = ${v3(DEW_PRESENCE_DEW)};
-const float DEW_BEAD_HANG = ${f(DEW_BEAD_HANG)};
-const float DEW_SILK_HALF = ${f(DEW_SILK_HALF)};
-const float DEW_FRAME_HALF = ${f(DEW_FRAME_HALF)};
-const float DEW_GLINT_SWELL = ${f(DEW_GLINT_SWELL)};
+const float DEW_CODE = ${glslFloat(DEW_CODE)};
+const float DEW_KIND_SPIRAL = ${glslFloat(DEW_KIND_SPIRAL)};
+const float DEW_KIND_FRAME = ${glslFloat(DEW_KIND_FRAME)};
+const float DEW_KIND_STEM = ${glslFloat(DEW_KIND_STEM)};
+const float DEW_STEM_UNIT = ${glslFloat(DEW_STEM_UNIT)};
+const float DEW_WET_LEVELS = ${glslFloat(DEW_WET_LEVELS)};
+const float DEW_DOF = ${glslFloat(DEW_DOF)};
+const float DEW_BLUR_MAX = ${glslFloat(DEW_BLUR_MAX)};
+const float DEW_BEAD_R = ${glslFloat(DEW_BEAD_R)};
+const vec3 DEW_BEAD_SCALE = ${glslVec3(DEW_BEAD_SCALE)};
+const vec3 DEW_PRESENCE_BASE = ${glslVec3(DEW_PRESENCE_BASE)};
+const vec3 DEW_PRESENCE_DEW = ${glslVec3(DEW_PRESENCE_DEW)};
+const float DEW_BEAD_HANG = ${glslFloat(DEW_BEAD_HANG)};
+const float DEW_SILK_HALF = ${glslFloat(DEW_SILK_HALF)};
+const float DEW_FRAME_HALF = ${glslFloat(DEW_FRAME_HALF)};
+const float DEW_GLINT_SWELL = ${glslFloat(DEW_GLINT_SWELL)};
 
 // The backdrop's camera: the horizon's height in the frame, the hedge's crown, the field of view.
 const float DEW_HORIZON = 0.4;
@@ -132,23 +130,6 @@ vec3 dewTone(vec3 c) {
   return 1.0 - exp(-c * 1.15);
 }
 
-// Silk and dew are inked whole, in one ramp of whites: the cell takes brightness 'b' (display
-// space) snapped to level k of the palette, in red and green, a little less in blue ('tint': golden
-// by day, bluer by moonlight), or nothing, decided by coverage against the cell's own threshold. So
-// a slowly moving edge flips each cell once, every step is a clean white or pale gold, and no
-// channel rounds off on its own into a stray pink or olive. Fainter than the first level: a sparse,
-// still stipple of it.
-vec4 dewRamp(float b, float cover, vec3 tint, float th) {
-  float n = max(uLevels - 1.0, 1.0);
-  float k = floor(clamp(b, 0.0, 1.0) * n + 0.5);
-  float alpha = cover;
-  if (k < 0.5) {
-    alpha *= b * n * 2.0;
-    k = 1.0;
-  }
-  return vec4(floor(k * tint + 0.5) / n, alpha > th ? 1.0 : 0.0);
-}
-
 // Brightness of linear light once rolled off for display, for the ramp.
 float dewBright(vec3 light) {
   return 1.0 - exp(-dot(light, LUMA) * 1.15);
@@ -156,11 +137,6 @@ float dewBright(vec3 light) {
 
 float dewByKind(vec3 values, float kind) {
   return kind < 0.5 ? values.x : (kind < 1.5 ? values.y : values.z);
-}
-
-vec3 dewYaw(vec3 v, float yaw) {
-  float c = cos(yaw), s = sin(yaw);
-  return vec3(v.x * c - v.z * s, v.y, v.x * s + v.z * c);
 }
 
 // The key light (the sun, or the moon at night) seen from the camera, which keeps it off to the right.
@@ -212,7 +188,7 @@ vec3 dewBackdrop(vec2 uv, float aspect, Sky view, DewLight lt, float tm, float s
   int mode = int(K_backdrop + 0.5);
   float x = uv.x * aspect;
   vec3 dir = viewRay(uv, aspect, DEW_HORIZON, DEW_FOV);
-  vec3 air = skyColor(view, normalize(vec3(dir.x, max(dir.y, 0.0) + 0.04, dir.z)));
+  vec3 air = horizonHaze(view, dir, max(dir.y, 0.0) + 0.04);
   vec2 toLight = (uv - lt.glow) * vec2(aspect, 1.0);
   float near = exp(-length(toLight) * 1.6);
   vec3 glow = lt.color * (0.3 * near + 0.6 * near * near);
@@ -432,12 +408,6 @@ void dewDrop(int d, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
   }
 }
 
-float dewCapsule(vec2 p, vec2 a, vec2 b, float ra, float rb, out float along) {
-  vec2 pa = p - a, ba = b - a;
-  along = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba * along) - mix(ra, rb, along);
-}
-
 // The wasp spider (Argiope) resting head down at the hub with her legs held in pairs, the X her
 // kind is named for; once in a while she shifts one leg and sets it back. A dark body: silvery
 // carapace, a shield of cream, gold and black bands, dark legs ringed gold at the joints, every edge
@@ -470,9 +440,9 @@ vec4 dewSpider(vec2 q, float cells, DewLight lt, float tm) {
     vec2 knee = root + d1 * leg.y;
     vec2 tip = knee + d2 * leg.w;
     float along;
-    float df = dewCapsule(q, root, knee, max(0.085, thin), max(0.07, thin), along);
+    float df = sdTaperCapsule(q, root, knee, max(0.085, thin), max(0.07, thin), along);
     if (df < legD) { legD = df; legAlong = along * 0.5; legDir = d1; }
-    float dt = dewCapsule(q, knee, tip, max(0.065, thin), max(0.045, thin), along);
+    float dt = sdTaperCapsule(q, knee, tip, max(0.065, thin), max(0.045, thin), along);
     if (dt < legD) { legD = dt; legAlong = 0.5 + along * 0.5; legDir = d2; }
   }
   // Legs: dark, ringed gold at the joints; the ones lying across the light catch it along their length.
@@ -544,19 +514,15 @@ float dewStabilimentum(vec2 q, float size, float px) {
 }
 
 Shade sceneDew(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   int mode = int(K_backdrop + 0.5);
-  float th = threshold(cell);
 
   // The low sun, kept off the frame's right edge by the camera, wandering a few degrees.
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
   float bearing = atan(DEW_SUN_X * aspect * 2.0 * tan(0.5 * DEW_FOV)) + DEW_SUN_WANDER * sin(tm * TAU / DEW_DRIFT);
   float yaw = atan(sky.sun.x, sky.sun.z) - bearing;
-  Sky view = sky;
-  view.sun = dewYaw(sky.sun, yaw);
-  view.moon = dewYaw(sky.moon, yaw);
+  Sky view = skyFacing(sky, yaw);
   DewLight lt = dewLight(view, aspect);
   if (mode == 2) {
     // Mist scatters the sun: softer glints, more light from all round.
@@ -614,9 +580,9 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   }
 
   // Stems: hard-edged against the cell's threshold, shaded smoothly.
-  if (acc.stem.a > th) col = dewTone(acc.stem.rgb);
+  if (hardEdge(acc.stem.a) > 0.5) col = dewTone(acc.stem.rgb);
   // Silk: faint stipple, or solid where it glints.
-  vec4 silk = dewRamp(dewBright(acc.silk), acc.silkCover, tint, th);
+  vec4 silk = hardRamp(dewBright(acc.silk), acc.silkCover, tint, cellTh);
   if (silk.a > 0.5) col = silk.rgb;
 
   // At the hub: a mat of dense silk under her, her M of zig-zag silk.
@@ -625,39 +591,35 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   vec3 silkWhite = vec3(0.95, 0.93, 0.88) * (lt.sky * 1.6 + lt.color * 0.45 * (0.5 + 0.5 * lt.back) + 0.08);
   if (K_spider > 0.5) {
     float mat = (1.0 - smoothstep(0.7, 1.0, length(local) / (unit * DEW_MAT))) * 0.35;
-    vec4 hubSilk = dewRamp(dewBright(silkWhite * 0.4), mat, tint, th);
+    vec4 hubSilk = hardRamp(dewBright(silkWhite * 0.4), mat, tint, cellTh);
     if (hubSilk.a > 0.5) col = hubSilk.rgb;
   }
   float markOn = 0.0;
   if (K_mark > 0.0) {
-    vec4 band = dewRamp(dewBright(silkWhite), dewStabilimentum(local, webR * mix(DEW_MARK_MIN, DEW_MARK_MAX, K_mark), v.px), tint, th);
+    vec4 band = hardRamp(dewBright(silkWhite), dewStabilimentum(local, webR * mix(DEW_MARK_MIN, DEW_MARK_MAX, K_mark), v.px), tint, cellTh);
     markOn = band.a;
     if (markOn > 0.5) col = band.rgb;
   }
 
   // Dew: the bead or drop's body, then its spark.
-  vec4 water = dewRamp(dewBright(acc.water.rgb), acc.water.a, tint, th);
+  vec4 water = hardRamp(dewBright(acc.water.rgb), acc.water.a, tint, cellTh);
   if (water.a > 0.5) col = water.rgb;
-  float sparkOn = acc.spark > th ? 1.0 : 0.0;
-  if (sparkOn > 0.5) col = dewRamp(1.0, 1.0, vec3(1.0, 1.0, 0.9), th).rgb;
+  float sparkOn = hardEdge(acc.spark);
+  if (sparkOn > 0.5) col = hardRamp(1.0, 1.0, vec3(1.0, 1.0, 0.9), cellTh).rgb;
 
   if (K_spider > 0.5) {
     // She is opaque: her colour snapped to the palette, black where she is dark, a silhouette on the mat.
     vec4 spider = dewSpider(local / unit, unit / v.px, lt, tm);
-    if (spider.a > th) {
-      float n = max(uLevels - 1.0, 1.0);
-      col = floor(clamp(dewTone(spider.rgb), 0.0, 1.0) * n + 0.5) / n;
+    if (hardEdge(spider.a) > 0.5) {
+      col = snapLevel(dewTone(spider.rgb));
       markOn = 0.0;
     }
   }
 
-  float lum = dot(col, LUMA);
   // Mist is light: the page goes to its paper theme (index.ts) and ink turns dark on it.
-  o.ink = mode == 2 ? clamp((0.92 - lum) / 0.8, 0.0, 1.0) : clamp(pow(lum, 0.8) * 1.3, 0.0, 1.0);
+  float ink = inkOf(col, 1.3, 0.8, vec2(0.92, 0.8));
   // The accent is all or nothing per cell too: glinting silk and the sparks on the dew.
-  o.accent = K_mark > 0.0 ? markOn : max(silk.a * step(0.5, acc.glint), sparkOn);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  float accent = K_mark > 0.0 ? markOn : max(silk.a * step(0.5, acc.glint), sparkOn);
+  return shadeOf(col, ink, accent);
 }
 `;

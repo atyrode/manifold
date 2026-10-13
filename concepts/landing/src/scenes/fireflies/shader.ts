@@ -29,20 +29,21 @@ import {
   FIREFLIES_STATE_LANTERN,
   FIREFLIES_WATER,
 } from "./sim.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
 
 export const firefliesGlsl = `
-const float FIREFLIES_CELL = ${FIREFLIES_CELL.toFixed(5)};
-const float FIREFLIES_WATER = ${FIREFLIES_WATER.toFixed(5)};
+const float FIREFLIES_CELL = ${glslFloat(FIREFLIES_CELL)};
+const float FIREFLIES_WATER = ${glslFloat(FIREFLIES_WATER)};
 const int FIREFLIES_ROWS = ${FIREFLIES_ROWS};
 const int FIREFLIES_NEAR = ${FIREFLIES_NEAR};
 const int FIREFLIES_DRIFTERS = ${FIREFLIES_DRIFTERS};
 const int FIREFLIES_LANTERN = ${FIREFLIES_STATE_LANTERN};
 const int FIREFLIES_STATE = ${FIREFLIES_STATE_BANK};
-const float FIREFLIES_HORIZON = ${FIREFLIES_HORIZON.toFixed(5)};
-const float FIREFLIES_EYE = ${FIREFLIES_EYE.toFixed(5)};
-const float FIREFLIES_FOCAL = ${FIREFLIES_FOCAL.toFixed(5)};
-const float FIREFLIES_DISTANCE = ${FIREFLIES_BANK.toFixed(5)};
-const float FIREFLIES_APERTURE = ${FIREFLIES_APERTURE.toFixed(5)};
+const float FIREFLIES_HORIZON = ${glslFloat(FIREFLIES_HORIZON)};
+const float FIREFLIES_EYE = ${glslFloat(FIREFLIES_EYE)};
+const float FIREFLIES_FOCAL = ${glslFloat(FIREFLIES_FOCAL)};
+const float FIREFLIES_DISTANCE = ${glslFloat(FIREFLIES_BANK)};
+const float FIREFLIES_APERTURE = ${glslFloat(FIREFLIES_APERTURE)};
 
 // A bank firefly's glow radius in cells at size 1 (its place stays 0.06 inside its cell, so at the
 // largest size, 1.2, every glow reaching a point lies in the 3×3 cells around it).
@@ -111,7 +112,7 @@ float firefliesRoots(vec2 q, float gap, float amount) {
     vec2 d = vec2((q.x - centre) / spread, y / rise);
     // Distance to the ellipse to first order: its implicit value over its gradient.
     float dist = abs(dot(d, d) - 1.0) / max(2.0 * length(vec2(d.x / spread, d.y / rise)), 1e-3);
-    cover = max(cover, smoothstep(1.5 * w, 0.8 * w, dist));
+    cover = max(cover, smoothfall(1.5 * w, 0.8 * w, dist));
   }
   return cover;
 }
@@ -136,7 +137,7 @@ vec3 firefliesBank(vec2 q, float x0, float span, float tm, float pulse, bool mir
     if (sh > 1.0 - 0.08 * K_stars) {
       vec2 sp = si + 0.2 + 0.6 * vec2(hash12(si + 2.7), hash12(si + 5.3));
       float cells = length(sg - sp) / 85.0 * uRes.y;
-      col += vec3(0.85, 0.9, 1.0) * (0.5 + 0.5 * fract(sh * 91.7)) * smoothstep(0.9, 0.5, cells) * smoothstep(0.28, 0.4, h);
+      col += vec3(0.85, 0.9, 1.0) * (0.5 + 0.5 * fract(sh * 91.7)) * smoothfall(0.9, 0.5, cells) * smoothstep(0.28, 0.4, h);
     }
   }
 
@@ -222,10 +223,9 @@ float firefliesSwarm(vec2 q, float x0, float cols, float stretch, out float reac
 // Knobs: coupling, density, period, drift, unrest, lantern and mark drive the simulation; here
 // K_near, K_seed, K_reflections, K_mist and K_stars are read.
 Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   bool sim = uSimOn.x > 0.5 && uSimOn.z > 0.5;
   float cols = sim ? float(textureSize(uSim0, 0).x) : 2.0;
   float span = cols * FIREFLIES_CELL;
@@ -314,8 +314,8 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
       float r = FIREFLIES_APERTURE * FIREFLIES_FOCAL * (1.0 / f.z - 1.0 / FIREFLIES_DISTANCE);
       float dist = length(p - f.xy) / r;
       if (dist >= 1.0) continue;
-      nearLight += f.w * FIREFLIES_BOKEH_GAIN * smoothstep(1.0, 0.15, dist);
-      disc = max(disc, smoothstep(1.0, 0.9, dist));
+      nearLight += f.w * FIREFLIES_BOKEH_GAIN * smoothfall(1.0, 0.15, dist);
+      disc = max(disc, smoothfall(1.0, 0.9, dist));
     }
   }
 
@@ -325,7 +325,7 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
   if (lantern.z > 0.004) {
     float flame = 1.0 + 0.05 * sin(tm * 2.1) + 0.03 * sin(tm * 3.4 + 1.3);
     vec2 dl = p - lantern.xy;
-    lamp = smoothstep(1.0, 0.6, length(dl / vec2(0.0055, 0.0075))) * lantern.z;
+    lamp = smoothfall(1.0, 0.6, length(dl / vec2(0.0055, 0.0075))) * lantern.z;
     float warm = exp(-length(dl) / (0.03 + 0.04 * lantern.w)) * (0.22 + 0.7 * lantern.w) * flame;
     float surface = min(lantern.y, FIREFLIES_WATER) - 0.05;
     if (p.y < surface) {
@@ -344,11 +344,10 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
   glow = mix(mix(glow, FIREFLIES_CORE, core), FIREFLIES_MARK, mark);
   glow = mix(glow, FIREFLIES_BOKEH, disc);
 
-  o.source = col + glow * min(light, 1.2) * 0.85;
-  o.rgb = mix(col, glow, lit);
   // Accent: the fireflies; while the M holds, the others step back so it reads in two tones too.
-  o.accent = lit * mix(0.55 + 0.45 * core, 1.0, mark) * mix(1.0, 0.45, bank.w * (1.0 - mark));
-  o.ink = max(clamp(dot(col, LUMA) * 3.2, 0.0, 1.0), 0.85 * lit);
+  float accent = lit * mix(0.55 + 0.45 * core, 1.0, mark) * mix(1.0, 0.45, bank.w * (1.0 - mark));
+  Shade o = shadeOf(mix(col, glow, lit), max(inkOf(col, 3.2, 1.0), 0.85 * lit), accent);
+  o.source = col + glow * min(light, 1.2) * 0.85;
   return o;
 }
 `;

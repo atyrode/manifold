@@ -6,6 +6,7 @@
 // Without the sim (no float render targets) the flakes are laid along the streamlines of a few
 // slowly drifting eddies, drawn here.
 // Knobs read here: K_palette, K_lamp, K_contrast, K_nacre.
+import { glslVec3 } from "../../shaders/glsl.ts";
 
 /** A fluid: its flakes edge-on, at random and turned to the lamp, and the pigment dripped into it. */
 export interface PearlPalette {
@@ -34,21 +35,13 @@ export const pearlPalettes: readonly PearlPalette[] = [
   { label: "pearl", deep: "#76737e", milk: "#c3c0c6", sheen: "#fdfaf4", pigment: "#2c3f94", paper: true },
 ];
 
-/** A CSS hex colour as a GLSL vec3 literal (the pipeline works in display sRGB, as the canvas). */
-function glslColor(hex: string): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const channels = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((c) => (c / 255).toFixed(4));
-  return `vec3(${channels.join(", ")})`;
-}
-
 const last = pearlPalettes.length - 1;
 const paletteCases = pearlPalettes
   .map((palette, i) => {
-    const set = `deep = ${glslColor(palette.deep)}; milk = ${glslColor(palette.milk)}; sheen = ${glslColor(palette.sheen)}; pigment = ${glslColor(palette.pigment)};`;
+    const set = `deep = ${glslVec3(palette.deep)}; milk = ${glslVec3(palette.milk)}; sheen = ${glslVec3(palette.sheen)}; pigment = ${glslVec3(palette.pigment)};`;
     return i < last ? `  if (K_palette < ${i}.5) { ${set} return; }` : `  ${set}`;
   })
   .join("\n");
-const paperCases = pearlPalettes.map((palette, i) => `  if (K_palette < ${i}.5) return ${palette.paper ? "true" : "false"};`).join("\n");
 
 export const pearlGlsl = `
 const vec3 PEARL_NACRE = vec3(0.36, -0.14, 0.16);  // rose on one flank of a bright band, sea-green on the other
@@ -57,11 +50,6 @@ const vec3 PEARL_HEATER = vec3(1.0, 0.5, 0.18);     // the heater glowing along 
 
 void pearlPalette(out vec3 deep, out vec3 milk, out vec3 sheen, out vec3 pigment) {
 ${paletteCases}
-}
-
-bool pearlPaper() {
-${paperCases}
-  return false;
 }
 
 // Flakes where no simulation runs: five slow eddies, the flakes laid along their streamlines (so a
@@ -102,7 +90,6 @@ vec3 pearlRod(vec3 col, vec2 p, vec4 rod, vec2 lamp, float aa) {
 }
 
 Shade scenePearl(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2(uv.x * aspect, uv.y);
   vec2 mid = vec2(0.5 * aspect, 0.5);
@@ -111,7 +98,6 @@ Shade scenePearl(vec2 uv, vec2 cell, float t) {
   vec3 sheen;
   vec3 pigment;
   pearlPalette(deep, milk, sheen, pigment);
-  bool paper = pearlPaper();
 
   // The lamp, as a direction across the tank and as a doubled angle for the flakes (a flake and
   // its half-turn catch the light alike).
@@ -123,12 +109,12 @@ Shade scenePearl(vec2 uv, vec2 cell, float t) {
   if (uSimOn.x > 0.5) {
     // A soft five-tap footprint about two cells across: whatever the flakes do below the dither's
     // grain never reaches it.
-    vec2 o = 1.0 / uRes;
+    vec2 texel = 1.0 / uRes;
     q = 0.36 * texture(uSim0, uv).xy
-      + 0.16 * (texture(uSim0, uv + o).xy + texture(uSim0, uv - o).xy
-              + texture(uSim0, uv + vec2(o.x, -o.y)).xy + texture(uSim0, uv - vec2(o.x, -o.y)).xy);
+      + 0.16 * (texture(uSim0, uv + texel).xy + texture(uSim0, uv - texel).xy
+              + texture(uSim0, uv + vec2(texel.x, -texel.y)).xy + texture(uSim0, uv - vec2(texel.x, -texel.y)).xy);
   } else {
-    q = pearlStill(p, aspect, t * uMotion);
+    q = pearlStill(p, aspect, uMotionTime);
   }
   vec4 dye = uSimOn.y > 0.5 ? texture(uSim1, uv) : vec4(0.0);
   vec4 nozzle = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(4, 0), 0) : vec4(0.0);
@@ -179,12 +165,8 @@ Shade scenePearl(vec2 uv, vec2 cell, float t) {
     col = pearlRod(col, p, vec4(nozzle.xy, nozzle.z, 0.009), lamp, aa);
   }
 
-  float lum = dot(col, LUMA);
-  o.rgb = col;
-  o.source = col;
-  // Pearl puts the page in its light theme, where ink means dark; on the dark fluids it means light.
-  o.ink = paper ? clamp((0.95 - lum) / 0.6, 0.0, 1.0) : clamp(1.2 * lum, 0.0, 1.0);
-  o.accent = clamp(max(0.9 * stain, smoothstep(0.08, 0.6, trace)), 0.0, 1.0);
-  return o;
+  // The page theme (paper for the pearl fluid, see index.ts) turns the ink dark there.
+  float accent = clamp(max(0.9 * stain, smoothstep(0.08, 0.6, trace)), 0.0, 1.0);
+  return shadeOf(col, inkOf(col, 1.2, 1.0, vec2(0.95, 0.6)), accent);
 }
 `;

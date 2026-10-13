@@ -35,7 +35,9 @@
 //          web radius); t2 = (gust 0..1, breeze 0..1, 0, 0).
 //
 // Units: frame heights, x from the frame's left edge, y up from its bottom, z toward the viewer.
-import type { ParamDef } from "../../params.ts";
+import { segmentDistance } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { VerletSystem, type VerletForce, type VerletStepOptions, type WebLayout } from "../../sims/verlet.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -213,30 +215,9 @@ const BIN_ROWS_MAX = 64;
 
 // ---- helpers ----------------------------------------------------------------------------------------
 
-/** mulberry32: a small seeded generator, so a seed always spins the same web. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 /** The part of x a half float holds exactly (a multiple of 1/64); the shader adds the remainder back. */
 function hi(x: number): number {
   return Math.floor(x * 64) / 64;
-}
-
-/** Distance from (px, py) to the segment a–b. */
-function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const ex = bx - ax;
-  const ey = by - ay;
-  const len2 = ex * ex + ey * ey;
-  const t = len2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * ex + (py - ay) * ey) / len2)) : 0;
-  return Math.hypot(px - ax - ex * t, py - ay - ey * t);
 }
 
 export class DewError extends Error {}
@@ -461,45 +442,13 @@ class DewWeb {
 
 type DewKnob = "breeze" | "dew" | "dof" | "webSeed";
 
-interface KnobSlot {
-  index: number;
-  fallback: number;
-}
-
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class DewKnobs {
-  readonly #slots: Record<DewKnob, KnobSlot>;
-  /** The trigger slot of the breeze's "now" (a gust). */
-  readonly gust: number;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: DewKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new DewError(`dew: the scene has no ${key} knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = { breeze: slot("breeze"), dew: slot("dew"), dof: slot("dof"), webSeed: slot("webSeed") };
-    const gust = params.find((def) => def.key === "breeze")?.trigger;
-    if (gust === undefined) throw new DewError("dew: the breeze knob needs a trigger slot for gusts");
-    this.gust = gust;
-  }
-
-  value(frame: SimFrame, key: DewKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-
-  fallback(key: DewKnob): number {
-    return this.#slots[key].fallback;
-  }
-}
-
 const RIDING = 1;
 const FALLING = 2;
 
 class DewSim implements SceneSim {
-  readonly #knobs: DewKnobs;
+  readonly #knobs: KnobReader<DewKnob>;
+  /** The trigger slot of the breeze's "now" (a gust). */
+  readonly #gustSlot: number;
   readonly #segTex: DataTexture;
   readonly #binTex: DataTexture;
   readonly #dropTex: DataTexture;
@@ -511,6 +460,10 @@ class DewSim implements SceneSim {
   readonly #headData = new Float32Array(3 * 4);
   #rows = 0;
   #cols = 0;
+  /** One bin's side and its half diagonal, frame heights. */
+  #binSize = 1;
+  #binHalf = Math.SQRT1_2;
+  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
 
   #web: DewWeb;
   /** The drops' chance, reseeded with every web so a seed always plays out the same. */
@@ -531,8 +484,8 @@ class DewSim implements SceneSim {
   #nextGust = 30;
   #gust = 0;
   #focus = 0;
-  #triggers: number[] | undefined;
-  #strum = { x: 0, y: 0 };
+  #strumX = 0;
+  #strumY = 0;
   #prewarming = false;
 
   // The drop pool (structure of arrays).
@@ -558,16 +511,17 @@ class DewSim implements SceneSim {
   readonly #vel2 = new Float32Array(3);
   readonly #at = new Float64Array(3);
 
-  constructor(gl: WebGL2RenderingContext, knobs: DewKnobs) {
+  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<DewKnob>) {
     this.#knobs = knobs;
+    this.#gustSlot = knobs.trigger("breeze");
     this.#segTex = new DataTexture(gl, { width: DEW_SEG_ROW * DEW_SEG_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
     this.#binTex = new DataTexture(gl, { width: DEW_BIN_SLOTS, height: 1, format: "r16f", filter: "nearest" });
     this.#dropTex = new DataTexture(gl, { width: DEW_DROPS * 2, height: 1, format: "rgba16f", filter: "nearest" });
     this.#headTex = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
-    const seed = Math.round(knobs.fallback("webSeed"));
-    this.#breeze = knobs.fallback("breeze");
-    this.#dew = knobs.fallback("dew");
-    this.#dof = knobs.fallback("dof");
+    const seed = Math.round(knobs.initial("webSeed"));
+    this.#breeze = knobs.initial("breeze");
+    this.#dew = knobs.initial("dew");
+    this.#dof = knobs.initial("dof");
     this.#opts = { gravity: [0, GRAVITY, 0], damping: DAMPING, iterations: ITERATIONS, force: this.#force };
     // Spun for the usual landscape frame; a different aspect respins it on the first frame.
     this.#web = this.#spin(16 / 9, seed);
@@ -585,7 +539,7 @@ class DewSim implements SceneSim {
 
     const dt = Math.min(Math.max(frame.dt, 0), 0.1);
     const sdt = dt * Math.min(1, Math.max(0, frame.motion));
-    if (this.#fired(frame.triggers)) {
+    if (frame.fired[this.#gustSlot] === true) {
       this.#gustAt = this.#clock;
       this.#gustAmp = 1;
     }
@@ -593,7 +547,11 @@ class DewSim implements SceneSim {
     this.#play(frame.pointer, aspect);
 
     this.#pack(frame.height);
-    return [this.#segTex.texture, this.#binTex.texture, this.#dropTex.texture, this.#headTex.texture];
+    this.#textures[0] = this.#segTex.texture;
+    this.#textures[1] = this.#binTex.texture;
+    this.#textures[2] = this.#dropTex.texture;
+    this.#textures[3] = this.#headTex.texture;
+    return this.#textures;
   }
 
   dispose(): void {
@@ -631,18 +589,11 @@ class DewSim implements SceneSim {
     if (rows === this.#rows && cols === this.#cols) return;
     this.#rows = rows;
     this.#cols = cols;
+    this.#binSize = 1 / rows;
+    this.#binHalf = this.#binSize * Math.SQRT1_2;
     this.#binTex.resize(rows * DEW_BIN_SLOTS, cols);
     this.#binData = new Float32Array(rows * DEW_BIN_SLOTS * cols);
     this.#binCount = new Uint8Array(rows * cols);
-  }
-
-  /** Trigger slot stamped since the previous frame: a gust now. */
-  #fired(triggers: readonly number[]): boolean {
-    const previous = this.#triggers;
-    this.#triggers = [...triggers];
-    const slot = this.#knobs.gust;
-    const at = triggers[slot] ?? -1e4;
-    return previous !== undefined && at !== previous[slot] && at > -1e3;
   }
 
   // ---- the breeze ---------------------------------------------------------------------------------
@@ -736,10 +687,12 @@ class DewSim implements SceneSim {
     const y = pointer.y;
     if (pointer.pressed) {
       this.#pluck(x, y, PLUCK_V);
-      this.#strum = { x, y };
-    } else if (pointer.down && Math.hypot(x - this.#strum.x, y - this.#strum.y) > STRUM_STEP) {
+      this.#strumX = x;
+      this.#strumY = y;
+    } else if (pointer.down && Math.hypot(x - this.#strumX, y - this.#strumY) > STRUM_STEP) {
       this.#pluck(x, y, STRUM_V);
-      this.#strum = { x, y };
+      this.#strumX = x;
+      this.#strumY = y;
     }
   }
 
@@ -973,6 +926,33 @@ class DewSim implements SceneSim {
     }
   }
 
+  /** Blur (frame heights) of something at depth z: how far it lies off the focus, capped. */
+  #blurAt(z: number): number {
+    return Math.min(DEW_BLUR_MAX, Math.abs(z - this.#focus) * (DEW_DOF * this.#dof));
+  }
+
+  /** Lists id in every bin the segment a–b reaches, within margin; a full bin drops it. */
+  #bin(id: number, ax: number, ay: number, bx: number, by: number, margin: number): void {
+    const rows = this.#rows;
+    const size = this.#binSize;
+    const bins = this.#binData;
+    const counts = this.#binCount;
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - margin) / size));
+    const i1 = Math.min(this.#cols - 1, Math.floor((Math.max(ax, bx) + margin) / size));
+    const j0 = Math.max(0, Math.floor((Math.min(ay, by) - margin) / size));
+    const j1 = Math.min(rows - 1, Math.floor((Math.max(ay, by) + margin) / size));
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        if (segmentDistance((i + 0.5) * size, (j + 0.5) * size, ax, ay, bx, by) > this.#binHalf + margin) continue;
+        const bin = i * rows + j;
+        const k = counts[bin] ?? 0;
+        if (k >= DEW_BIN_SLOTS) continue;
+        bins[bin * DEW_BIN_SLOTS + k] = id;
+        counts[bin] = k + 1;
+      }
+    }
+  }
+
   // ---- packing ------------------------------------------------------------------------------------
 
   #pack(heightCells: number): void {
@@ -981,9 +961,7 @@ class DewSim implements SceneSim {
     const aspect = web.aspect;
     const cell = 1 / Math.max(1, heightCells);
     const dew = this.#dew;
-    const dof = DEW_DOF * this.#dof;
     const focus = this.#focus;
-    const blurAt = (z: number): number => Math.min(DEW_BLUR_MAX, Math.abs(z - focus) * dof);
 
     // Drawn positions: blended between the last two substeps (as PointTexture does), seen with a
     // little perspective about the frame's centre.
@@ -1014,27 +992,6 @@ class DewSim implements SceneSim {
     const counts = this.#binCount;
     bins.fill(0);
     counts.fill(0);
-    const rows = this.#rows;
-    const cols = this.#cols;
-    const size = 1 / rows;
-    const half = size * Math.SQRT1_2;
-    const put = (id: number, ax: number, ay: number, bx: number, by: number, margin: number): void => {
-      const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - margin) / size));
-      const i1 = Math.min(cols - 1, Math.floor((Math.max(ax, bx) + margin) / size));
-      const j0 = Math.max(0, Math.floor((Math.min(ay, by) - margin) / size));
-      const j1 = Math.min(rows - 1, Math.floor((Math.max(ay, by) + margin) / size));
-      for (let i = i0; i <= i1; i++) {
-        for (let j = j0; j <= j1; j++) {
-          if (segmentDistance((i + 0.5) * size, (j + 0.5) * size, ax, ay, bx, by) > half + margin) continue;
-          const bin = i * rows + j;
-          const k = counts[bin] ?? 0;
-          if (k >= DEW_BIN_SLOTS) continue;
-          bins[(i * rows + j) * DEW_BIN_SLOTS + k] = id;
-          counts[bin] = k + 1;
-        }
-      }
-    };
-
     // Drops first, so a crowded bin never loses one.
     const drop = this.#dropData;
     drop.fill(0);
@@ -1072,8 +1029,8 @@ class DewSim implements SceneSim {
       drop[o + 5] = z;
       drop[o + 6] = stretch;
       drop[o + 7] = squash;
-      const reach = r * stretch * (1 + Math.abs(squash)) * 1.25 + blurAt(z) + 1.5 * cell;
-      put(-(d + 1), x, y, x, y, reach);
+      const reach = r * stretch * (1 + Math.abs(squash)) * 1.25 + this.#blurAt(z) + 1.5 * cell;
+      this.#bin(-(d + 1), x, y, x, y, reach);
     }
 
     // Stems.
@@ -1096,7 +1053,7 @@ class DewSim implements SceneSim {
         const code = Math.min(DEW_CODE - 1, Math.round(radius / DEW_STEM_UNIT));
         const id = web.threads + s * STEM_SEGMENTS + k;
         this.#writeSegment(seg, id, ax, ay, az, bx, by, bz, 0, DEW_KIND_STEM * DEW_CODE + code);
-        put(id + 1, ax, ay, bx, by, code * DEW_STEM_UNIT + dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 + Math.max(blurAt(az), blurAt(bz)) + 2 * cell);
+        this.#bin(id + 1, ax, ay, bx, by, code * DEW_STEM_UNIT + dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 + Math.max(this.#blurAt(az), this.#blurAt(bz)) + 2 * cell);
         ax = bx;
         ay = by;
         az = bz;
@@ -1120,7 +1077,7 @@ class DewSim implements SceneSim {
       this.#writeSegment(seg, c, ax, ay, az, bx, by, bz, wet, kind * DEW_CODE + (web.beads[c] ?? 0));
       const silk = ((kind === DEW_KIND_FRAME ? DEW_FRAME_HALF : DEW_SILK_HALF) * (1 + DEW_GLINT_SWELL) + 1) * cell;
       const bead = dewBeadMax(kind, dew) * (1 + DEW_BEAD_HANG) + cell;
-      put(c + 1, ax, ay, bx, by, Math.max(silk, bead) + Math.max(blurAt(az), blurAt(bz)));
+      this.#bin(c + 1, ax, ay, bx, by, Math.max(silk, bead) + Math.max(this.#blurAt(az), this.#blurAt(bz)));
     }
     this.#segTex.upload(seg);
     this.#binTex.upload(bins);
@@ -1171,6 +1128,6 @@ class DewSim implements SceneSim {
 
 /** The dewy web's simulation, for a scene whose `params` carry the knobs `DewKnob` names. */
 export function dewSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new DewKnobs(params);
+  const knobs = new KnobReader<DewKnob>("dew", params, ["breeze", "dew", "dof", "webSeed"]);
   return (gl) => new DewSim(gl, knobs);
 }

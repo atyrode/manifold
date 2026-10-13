@@ -3,7 +3,7 @@
 // fall (sim.ts); the shader (shader.ts) draws the glinting silk, the beads and drops as little
 // lenses, the stems, and the garden spider at the hub. The sky comes from the shared library.
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
+import { atmosphereGroups, paletteTheme, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { dewGlsl } from "./shader.ts";
 import { dewSim } from "./sim.ts";
@@ -36,5 +36,5 @@ export const dewScene: SceneDef = {
   entry: "sceneDew",
   sim: dewSim(params),
   // Mist is pale: the page copy goes dark on it.
-  theme: (values) => ((values.backdrop ?? 0) > 1.5 ? "paper" : "night"),
+  theme: paletteTheme(params, "backdrop", (index) => index === 2),
 };

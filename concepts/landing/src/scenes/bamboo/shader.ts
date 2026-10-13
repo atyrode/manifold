@@ -115,19 +115,6 @@ float bambooRaySlant;  // the rays' angle from straight down, + falling toward -
 vec2 bambooLanternAt;  // the lantern's window, in screen units
 float bambooLanternLit;
 float bambooLanternFoot; // screen y of the lantern's foot
-float bambooTh;        // this cell's dither threshold
-
-float bambooBell(float x) {
-  return exp(-x * x);
-}
-
-// The coverage of something that moves, made all-or-nothing against this cell's dither threshold.
-// A soft edge mixes colours, and the mix's three channels cross their quantisation steps at
-// different moments, so a passing edge would flip the cell several times; a hard one flips it once.
-// The edge stays dithered: where the soft coverage is a half, half the cells are covered.
-float bambooHard(float cover) {
-  return cover > bambooTh ? 1.0 : 0.0;
-}
 
 // The mist as the sky lights it: dark cool jade low in the grove's depths, brightening to green-gold
 // up toward the canopy where the light comes in through the leaves, a little warmer on the sun's side,
@@ -143,7 +130,7 @@ vec3 bambooMistColor(vec2 p) {
   float toward = clamp(0.5 + p.x * s.sun.x / bambooAspect, 0.0, 1.0);
   c += s.sunColor * BAMBOO_FILTER * (0.03 + 0.16 * toward * toward) * (0.3 + 0.7 * p.y);
   c += s.moonColor * vec3(0.45, 0.7, 0.75) * (0.18 + 0.35 * p.y * p.y);
-  return mix(c, vec3(dot(c, LUMA)) * vec3(0.9, 1.0, 0.97), 0.5 * ov);
+  return greyed(c, vec3(0.9, 1.0, 0.97), 0.5 * ov);
 }
 
 // How much of something at depth z (m) and height (m above the ground) shows through the mist. The
@@ -194,7 +181,7 @@ vec3 bambooLanternLight(vec2 p, float z) {
 vec3 bambooRod(vec3 albedo, float u, vec3 light) {
   float nz = sqrt(max(1.0 - u * u, 0.0));
   vec3 c = wetten(albedo, bambooWet, 0.3) * light * (0.55 + 0.6 * clamp(0.5 + 0.5 * u, 0.0, 1.0)) * (0.7 + 0.3 * nz);
-  return c + bambooSheen * 0.3 * (1.0 + 1.5 * bambooGloss) * bambooBell((u - 0.4) / 0.25) + bambooMist * 0.35 * pow(1.0 - nz, 3.0);
+  return c + bambooSheen * 0.3 * (1.0 + 1.5 * bambooGloss) * bell((u - 0.4) / 0.25) + bambooMist * 0.35 * pow(1.0 - nz, 3.0);
 }
 
 // Coverage of a slender bamboo leaf at w hung from 'base' along unit 'dir' (all in metres): a narrow
@@ -374,7 +361,7 @@ vec4 bambooCulms(vec2 q, int i, float tm, out float height, out float depth, out
   vec3 col = albedo * light;
   float face = bambooKeySide.x < 0.0 ? -1.0 : 1.0;
   vec3 shine = bambooSheen * 0.8 + bambooKey * bambooBeam * 0.35 + lantern * 0.3;
-  col += shine * bambooBell((u - 0.4 * face) / mix(0.22, 0.15, bambooWet)) * (0.25 + 0.5 * bambooGloss) * (1.0 - 0.5 * age);
+  col += shine * bell((u - 0.4 * face) / mix(0.22, 0.15, bambooWet)) * (0.25 + 0.5 * bambooGloss) * (1.0 - 0.5 * age);
   col += bambooMist * 0.3 * pow(1.0 - nz, 4.0);
 
   // Rain on the stem: water held on each node's ridge catches the light, and down the stems of the
@@ -392,7 +379,7 @@ vec4 bambooCulms(vec2 q, int i, float tm, out float height, out float depth, out
         float above = fract((hh + tm * 0.09) / 1.6 + fract(hc * (11.3 + 7.1 * fr))) * 1.6;
         float bead = 1.0 - smoothstep(0.02, 0.035, above);
         col += shine * run * 0.2 * bambooWet;
-        col = mix(col, shine * 1.3 + 0.02, bambooHard(run * bead) * 0.8 * smoothstep(0.05, 0.4, bambooWet));
+        col = mix(col, shine * 1.3 + 0.02, hardEdge(run * bead) * 0.8 * smoothstep(0.05, 0.4, bambooWet));
       }
     }
   }
@@ -474,7 +461,7 @@ vec4 bambooCanopy(vec2 p) {
   float gap = smoothstep(0.6, 0.78, n) * smoothstep(0.86, 1.02, q.y);
   float open = 0.0;
   if (K_shafts > 0.0) {
-    for (int r = 0; r < BAMBOO_RAYS; r++) open = max(open, bambooBell((p.x - bambooRaySrc[r]) / 0.07));
+    for (int r = 0; r < BAMBOO_RAYS; r++) open = max(open, bell((p.x - bambooRaySrc[r]) / 0.07));
   }
   dens *= 1.0 - 0.85 * open * smoothstep(0.8, 0.96, p.y);
   float behind = 0.3 + 0.7 * clamp(bambooKeySide.y * 1.5, 0.0, 1.0);
@@ -526,7 +513,7 @@ float bambooLanternWidth(float y) {
   if (y < 0.52) return mix(0.085, 0.17, smoothstep(0.42, 0.5, y));
   if (y < 0.76) return 0.14;
   if (y < 0.8) return 0.29;
-  if (y < 0.95) return 0.29 * pow(1.0 - (y - 0.8) / 0.15, 1.7) + 0.04;
+  if (y < 0.95) return 0.29 * pow(max(1.0 - (y - 0.8) / 0.15, 0.0), 1.7) + 0.04;
   if (y < 1.1) {
     float s = (y - 0.95) / 0.15;
     return 0.12 * sqrt(max(s * (1.0 - s), 0.0)) * (1.0 - 0.4 * s);
@@ -667,10 +654,10 @@ vec3 bambooWater(vec2 w, vec2 p, float t, float landing, float pour, vec3 lanter
   vec3 mirror = bambooMistColor(vec2(p.x + rip.x * 0.08, mix(0.88, 0.55, farSide) + rip.y * 0.3));
   mirror *= mix(0.55, 1.15, smoothstep(-0.9, 0.7, w.y));
   vec3 col = mix(vec3(0.02, 0.045, 0.04), mirror, 0.5 + 0.35 * farSide);
-  float glint = bambooBell((w.x - 0.35 * face + rip.x * 0.6) / 0.4) * bambooBell((w.y - 0.5 + rip.y * 0.5) / 0.28);
+  float glint = bell((w.x - 0.35 * face + rip.x * 0.6) / 0.4) * bell((w.y - 0.5 + rip.y * 0.5) / 0.28);
   col += (bambooMist * 1.3 + bambooKey * 0.35 + 0.03) * glint * (0.5 + 0.6 * rip.z);
   col += (bambooMist + lantern * 1.5 + bambooKey * 0.2) * rip.z * 0.6;
-  float sheen = bambooBell((w.x + 0.8) * 1.1) * (0.6 + 0.4 * farSide) * bambooLanternLit;
+  float sheen = bell((w.x + 0.8) * 1.1) * (0.6 + 0.4 * farSide) * bambooLanternLit;
   col += BAMBOO_FLAME * sheen * (0.1 + 0.25 * rip.z);
   accent += sheen * (0.25 + 0.5 * rip.z);
   if (pour > 0.0) {
@@ -693,7 +680,7 @@ vec3 bambooWater(vec2 w, vec2 p, float t, float landing, float pour, vec3 lanter
       float s = l.x / a.w + 0.5;
       if (s <= 0.0 || s >= 1.0) continue;
       float hw = 0.14 * a.w * bambooLeafWidth(s);
-      float cv = bambooHard((1.0 - smoothstep(hw - aa, hw + aa, abs(l.y))) * b.z);
+      float cv = hardEdge((1.0 - smoothstep(hw - aa, hw + aa, abs(l.y))) * b.z);
       // Soaked and darkened, lit like the water around it.
       vec3 leaf = BAMBOO_DRY * 0.6 * (bambooFill * 1.2 + bambooKey * bambooBeam * 0.5 + lantern);
       col = mix(col, leaf, cv);
@@ -750,7 +737,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       float up = clamp((d.y - (BAMBOO_STRIKE.y - 0.06)) / 0.06, 0.0, 1.0);
       float side = clamp(0.5 + 0.5 * face * c.x / 0.05, 0.0, 1.0);
       vec3 albedo = wetten(BAMBOO_GRANITE * (0.75 + 0.35 * vnoise(d * 60.0)), bambooWet, 0.45);
-      float worn = bambooBell((d.x - BAMBOO_STRIKE.x) / 0.02) * smoothstep(BAMBOO_STRIKE.y - 0.015, BAMBOO_STRIKE.y, d.y);
+      float worn = bell((d.x - BAMBOO_STRIKE.x) / 0.02) * smoothstep(BAMBOO_STRIKE.y - 0.015, BAMBOO_STRIKE.y, d.y);
       albedo = mix(albedo, vec3(0.55, 0.54, 0.5), worn * 0.6);
       vec3 c2 = albedo * light * (0.5 + 0.3 * side + 0.45 * up) + bambooRainOnStone(d, up, t, lantern);
       float moss = bambooMoss(d, 0.55 * (1.0 - worn)) * (1.0 - smoothstep(0.7, 1.0, up));
@@ -797,7 +784,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
     if (drop > 0.0 && d.y > yEnd) {
       float x = BAMBOO_LIP.x - 0.006 * sqrt(drop / 0.04);
       float hw = max(0.0035 * sqrt(flow), 0.9 * aa);
-      float cv = bambooHard(1.0 - smoothstep(hw - 0.6 * aa, hw + 0.6 * aa, abs(d.x - x)));
+      float cv = hardEdge(1.0 - smoothstep(hw - 0.6 * aa, hw + 0.6 * aa, abs(d.x - x)));
       float beads = 0.85 + 0.15 * sin((d.y + tm * 0.05) * 90.0);
       col = mix(col, water * beads, cv * 0.95);
     }
@@ -815,7 +802,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
     float ub = dot(rel, nrm) / BAMBOO_RADIUS;
     float tipEnd = BAMBOO_FRONT - BAMBOO_CUT * clamp(0.5 * (ub + 1.0), 0.0, 1.0);
     float sd = max(max((abs(ub) - 1.0) * BAMBOO_RADIUS, -BAMBOO_BACK - a), (a - tipEnd) * 0.9);
-    float cv = bambooHard(1.0 - smoothstep(-aa, aa, sd));
+    float cv = hardFill(sd, aa);
     if (cv > 0.0) {
       float u = clamp(ub, -1.0, 1.0);
       vec3 albedo = BAMBOO_CANE * (0.85 + 0.25 * vnoise(vec2(a * 9.0, u * 3.0 + 5.0)));
@@ -825,7 +812,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       float rim = 1.0 - smoothstep(0.0, 0.006 + aa, tipEnd - a);
       float nz = sqrt(max(1.0 - u * u, 0.0));
       vec3 c = albedo * light * (0.4 + 0.5 * (0.5 + 0.5 * u * cs.x) + 0.35 * nz);
-      c += (bambooSheen * 0.6 + bambooKey * bambooBeam * 0.3 + lantern * 0.3) * bambooBell((u - 0.5) / mix(0.25, 0.16, bambooWet)) * (0.6 + 0.8 * bambooGloss);
+      c += (bambooSheen * 0.6 + bambooKey * bambooBeam * 0.3 + lantern * 0.3) * bell((u - 0.5) / mix(0.25, 0.16, bambooWet)) * (0.6 + 0.8 * bambooGloss);
       c = mix(c, BAMBOO_CUT_FACE * (light * 1.2 + 0.02), rim * 0.8);
       c += (bambooMist * 1.2 + lantern) * rim * smoothstep(0.75, 1.0, fill) * 0.6;
       col = mix(col, c, cv);
@@ -866,7 +853,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       vec2 launch = vec2(0.03 + 0.05 * fract(fi * 0.618 + 0.3), 0.22 + 0.12 * fract(fi * 0.382 + 0.7)) * (0.5 + 0.5 * knock.y);
       vec2 at = lip + launch * knock.x - vec2(0.0, 0.5 * BAMBOO_POUR_GRAVITY * knock.x * knock.x);
       float r = 0.0035 * (1.0 - 0.4 * knock.x);
-      col = mix(col, water * 1.2, bambooHard((1.0 - smoothstep(r - aa, r + aa, length(d - at))) * shown));
+      col = mix(col, water * 1.2, hardEdge((1.0 - smoothstep(r - aa, r + aa, length(d - at))) * shown));
     }
   }
 
@@ -939,7 +926,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       float slope = (vy - g * tau) / vx;
       float dist = abs(d.y - y) / sqrt(1.0 + slope * slope);
       float hw = (0.003 + 0.007 * sqrt(pour)) * (1.0 - 0.35 * clamp(tau / flight, 0.0, 1.0));
-      float cv = bambooHard((1.0 - smoothstep(hw - aa, hw + aa, dist)) * smoothstep(-0.02, 0.0, tau));
+      float cv = hardEdge((1.0 - smoothstep(hw - aa, hw + aa, dist)) * smoothstep(-0.02, 0.0, tau));
       col = mix(col, water * 1.15, cv * 0.9);
     }
   }
@@ -1007,12 +994,11 @@ float bambooDrip(vec2 q, float tm, float amount, float z, float salt) {
 }
 
 Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   bambooAspect = aspect;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
-  float tm = t * uMotion;
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  float tm = uMotionTime;
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
   // The rain's cloud closes over the sky as the rain sets in: a drizzle still lets some sun through,
   // and from about a quarter of the rain knob up the sun and moon are gone, rays and all. The cloud
   // deck is lit from above, so the grove's light turns soft and grey but stays bright: as much as
@@ -1028,7 +1014,6 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   bambooGloss = wetGloss(bambooWet, 0.0);
   // The leaves drip while they are wet, hardest in the rain, and keep on a while as the grove dries.
   bambooDripAmount = bambooWet * (0.3 + 0.5 * clamp(1.6 * K_rain, 0.0, 1.0));
-  bambooTh = threshold(cell);
   // Parallax: nearer things slide further as the pointer moves (divided by depth below).
   vec2 par = uPointer * vec2(0.05, 0.02);
   float gustAll = uSimOn.y > 0.5 ? texelFetch(uSim1, ivec2(1, 0), 0).z : 0.0;
@@ -1061,7 +1046,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   // columns slanting with the wind.
   float gapX = p.x - K_wind * 0.35 * (1.0 - p.y);
   float gap = smoothstep(0.5, 0.75, vnoise(vec2(gapX * 2.2 + K_groveSeed * 0.37, 7.3)));
-  for (int r = 0; r < BAMBOO_RAYS; r++) gap = max(gap, bambooBell((gapX - bambooRaySrc[r]) / 0.09));
+  for (int r = 0; r < BAMBOO_RAYS; r++) gap = max(gap, bell((gapX - bambooRaySrc[r]) / 0.09));
   bambooRainHere = K_rain * mix(0.5, 1.0, gap);
   // The canopy's gaps open and close a little as gusts pass.
   float flutter = 1.0 - 0.25 * gustAll * (0.5 + 0.5 * sin(tm * 1.1 + dot(p, vec2(7.0, 3.0))));
@@ -1136,19 +1121,19 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
     vec4 frond;
     // Stems, branches and sprays move: their edges are made hard against the cell's threshold.
     vec4 culm = bambooCulms(q, i, tm, height, depth, frond);
-    float solid = bambooHard(culm.a);
+    float solid = hardEdge(culm.a);
     if (solid > 0.0) {
       col = mix(col, mix(mist, culm.rgb, bambooTransmit(depth, height)), solid);
       hitZ = depth;
     }
-    solid = bambooHard(frond.a);
+    solid = hardEdge(frond.a);
     if (solid > 0.0) {
       col = mix(col, mix(mist, frond.rgb, bambooTransmit(z, 5.0)), solid);
       hitZ = z;
     }
     if (i == 1 || i == 2) {
       vec4 spray = bambooSprays(q, i, tm);
-      solid = bambooHard(spray.a);
+      solid = hardEdge(spray.a);
       if (solid > 0.0) {
         col = mix(col, mix(mist, spray.rgb, bambooTransmit(z, 8.0)), solid);
         hitZ = z;
@@ -1170,7 +1155,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
         float eaves = max(K_rain, 0.4 * bambooWet);
         if (eaves > 0.0 && lq.y < 0.775 && abs(lq.x) < 0.28) {
           float spacing = 18.0 / (uRes.y * lanternScale);
-          float drip = bambooHard(rainDrips(vec2(lq.x + 0.28, 0.775 - lq.y), t, eaves, spacing));
+          float drip = hardEdge(rainDrips(vec2(lq.x + 0.28, 0.775 - lq.y), t, eaves, spacing));
           col = mix(col, bambooMist * 1.3 + bambooLanternLight(p, BAMBOO_LANTERN_DEPTH) * 1.5 + 0.02, drip * 0.85);
         }
       }
@@ -1183,7 +1168,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   }
 
   vec4 falling = bambooFallingLeaves(p, par);
-  col = mix(col, falling.rgb, bambooHard(falling.a));
+  col = mix(col, falling.rgb, hardEdge(falling.a));
 
   vec2 d = (p - vec2(0.5 * aspect, 0.0) + par / BAMBOO_DEVICE_DEPTH) / k;
   if (d.x > -0.56 && d.y < 0.42) col = bambooDevice(d, p, 1.0 / (uRes.y * k), t, tm, col, accent, hitZ);
@@ -1196,7 +1181,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
     float drip = 0.0;
     if (hitZ > BAMBOO_Z[1]) drip = bambooDrip(p + par / BAMBOO_Z[1], tm, bambooDripAmount, BAMBOO_Z[1], 1.0);
     if (hitZ > BAMBOO_Z[2]) drip = max(drip, 0.75 * bambooDrip(p + par / BAMBOO_Z[2], tm, 0.75 * bambooDripAmount, BAMBOO_Z[2], 2.0));
-    col = mix(col, dropLit * 1.1, bambooHard(drip) * 0.85);
+    col = mix(col, dropLit * 1.1, hardEdge(drip) * 0.85);
   }
   // The rain, in depth: each layer of drops hidden behind the first surface along this pixel (the
   // library's depth is 1 - e^(-z / 30 m)), its unresolved haze laid over the distance like the mist,
@@ -1204,14 +1189,11 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   // focus, fainter.
   if (bambooRain > 0.0) {
     Precip rain = rainFall(uv, aspect, t, bambooRainHere, K_wind, 1.0 - exp(-hitZ / 30.0));
-    col = mix(col, bambooMist, rain.veil);
-    col = mix(col, dropLit, rain.cover * mix(0.9, 0.55, rain.near));
+    // The nearest, out-of-focus drops are fainter, so the rain never buries the grove.
+    rain.cover *= mix(0.9, 0.55, rain.near);
+    col = precipOver(col, bambooMist, dropLit, rain);
   }
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(dot(col, LUMA) * 1.5, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
+  return shadeOf(col, inkOf(col, 1.5, 1.0), clamp(accent, 0.0, 1.0));
 }
 `;

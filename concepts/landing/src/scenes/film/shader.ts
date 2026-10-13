@@ -74,7 +74,6 @@ vec3 filmWire(float s, vec2 side, float light) {
 }
 
 Shade sceneFilm(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 q = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   float px = 1.0 / uRes.y;
@@ -104,7 +103,7 @@ Shade sceneFilm(vec2 uv, vec2 cell, float t) {
     h = s.x;
     present = clamp(s.y, 0.0, 1.0);
   } else {
-    h = filmAnalytic(qs, ol, K_filmSeed, t * uMotion);
+    h = filmAnalytic(qs, ol, K_filmSeed, uMotionTime);
     present = life.w;
   }
 
@@ -144,7 +143,7 @@ Shade sceneFilm(vec2 uv, vec2 cell, float t) {
     float pane = (1.0 - smoothstep(0.8, 1.0, max(abs(w.x), abs(w.y)))) * smoothstep(0.05, 0.12, min(abs(w.x), abs(w.y)));
     float light = 0.16 + 0.22 * (0.5 + 0.5 * r.y) + 1.8 * pane;
     vec2 qb = filmInside(vec2(2.0 * ol.x - q.x, q.y), shape, ol, FILM_INSET);
-    float hb = uSimOn.x > 0.5 ? texture(uSim0, vec2(qb.x / aspect + 0.5, qb.y + 0.5)).r : filmAnalytic(qb, ol, K_filmSeed + 17.0, t * uMotion);
+    float hb = uSimOn.x > 0.5 ? texture(uSim0, vec2(qb.x / aspect + 0.5, qb.y + 0.5)).r : filmAnalytic(qb, ol, K_filmSeed + 17.0, uMotionTime);
     lit = filmSpectrum(hv * slant) * fresnel * light + 0.25 * filmSpectrum(hb * slant);
   } else {
     lit = filmSpectrum(hv) * key;
@@ -158,13 +157,13 @@ Shade sceneFilm(vec2 uv, vec2 cell, float t) {
     // The rim: the burst film gathered into a bright rope, crumpled along its length.
     float rim = smoothstep(-px, px, ahead) * (1.0 - smoothstep(FILM_RIM_WIDTH - px, FILM_RIM_WIDTH + px, ahead)) * present * inside * drawn;
     float around = atan(q.y - hole.y, q.x - hole.x) / TAU + 0.5;
-    float crumple = 0.6 + 0.4 * filmHash(vec2(floor(around * 150.0), hole.x * 53.0 + 7.0));
+    float crumple = 0.6 + 0.4 * hash12(vec2(floor(around * 150.0), hole.x * 53.0 + 7.0));
     col = mix(col, (filmSpectrum(1.7) * 1.6 + 0.35) * crumple * key, rim);
     // Droplets flung off the rim, flying out and falling: one per lucky sector round the break,
     // found by undoing the fall they all share.
     vec2 dq = q + vec2(0.0, 0.5 * FILM_GRAVITY * hole.z * hole.z) - hole.xy;
     float sector = floor((atan(dq.y, dq.x) / TAU + 0.5) * FILM_DROPS);
-    float pick = filmHash(vec2(sector + 0.5, hole.x * 71.0 + hole.y * 13.0));
+    float pick = hash12(vec2(sector + 0.5, hole.x * 71.0 + hole.y * 13.0));
     if (pick > 0.65) {
       float angle = ((sector + 0.2 + 0.6 * fract(pick * 7.13)) / FILM_DROPS - 0.5) * TAU;
       float travel = hole.z * FILM_DROP_SPEED * (0.35 + 0.55 * fract(pick * 3.71));
@@ -210,13 +209,12 @@ Shade sceneFilm(vec2 uv, vec2 cell, float t) {
   }
 
   vec3 shown = pow(max(col, 0.0), vec3(1.0 / 2.2));
+  // The ink follows the picture before its colour is pulled toward or away from grey.
+  float ink = inkOf(shown, 1.25, 1.0);
   float lum = dot(shown, LUMA);
   shown = clamp(mix(vec3(lum), shown, mix(0.5, 1.5, K_colour)), 0.0, 1.0);
-  o.rgb = shown;
-  o.source = shown;
-  o.ink = clamp(1.25 * lum, 0.0, 1.0);
   // The two-tone palette lights the film's magentas, and the M, in the accent.
-  o.accent = max(clamp(2.5 * (min(shown.r, shown.b) - shown.g), 0.0, 1.0) * film, markWire);
-  return o;
+  float accent = max(clamp(2.5 * (min(shown.r, shown.b) - shown.g), 0.0, 1.0) * film, markWire);
+  return shadeOf(shown, ink, accent);
 }
 `;

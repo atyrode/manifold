@@ -24,9 +24,14 @@
 //
 // Units are frame heights, p = uv * (aspect, 1), as in the fluid. Everything stands on the table at
 // the anchor (INCENSE_X of the width, INCENSE_FLOOR up); the table is the fluid's floor.
-import type { ParamDef } from "../../params.ts";
-import { FluidSim } from "../../sims/fluid.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { gpuCommonGlsl } from "../../shaders/common.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
+import { runBudgeted } from "../../sims/clock.ts";
+import { FluidSim, type FluidStep, type SplatImpulse } from "../../sims/fluid.ts";
 import { GpuCompute, GpuError, gridSize, type Pass, type PingPong, type RenderTarget, type Scatter } from "../../sims/gpu.ts";
+import { clamp, lerp, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -34,7 +39,7 @@ import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 export const incenseKinds = ["stick", "cone", "coil", "waterfall"] as const;
 export type IncenseKind = (typeof incenseKinds)[number];
 
-/** A scene whose knobs do not match what the simulation reads, or an impossible burner state. */
+/** An impossible burner state. */
 export class IncenseError extends Error {}
 
 const TAU = Math.PI * 2;
@@ -86,10 +91,8 @@ const FLAME_H = 0.042;
 const ASH_GRAVITY = 1.6;
 const MAX_FALLEN = 7;
 
-const glslFloat = (value: number): string => {
-  const text = value.toFixed(5);
-  return text.includes(".") ? text : `${text}.0`;
-};
+/** The coil's pitch to five places, as the shader has always read it: a finer value would shift the spiral. */
+const COIL_PITCH = Number(((COIL_OUT - COIL_IN) / COIL_TURNS).toFixed(5));
 
 /** The layout as GLSL defines, for the scene's shader and the fluid's snippets. */
 export const incenseLayoutGlsl = `
@@ -108,7 +111,7 @@ export const incenseLayoutGlsl = `
 #define INCENSE_PLATE_W ${glslFloat(PLATE_W)}
 #define INCENSE_COIL_Y ${glslFloat(COIL_Y)}
 #define INCENSE_COIL_IN ${glslFloat(COIL_IN)}
-#define INCENSE_COIL_PITCH ${glslFloat((COIL_OUT - COIL_IN) / COIL_TURNS)}
+#define INCENSE_COIL_PITCH ${glslFloat(COIL_PITCH)}
 #define INCENSE_COIL_TURNS ${glslFloat(COIL_TURNS)}
 #define INCENSE_COIL_END ${glslFloat(COIL_END)}
 #define INCENSE_COIL_SQUASH ${glslFloat(COIL_SQUASH)}
@@ -130,14 +133,10 @@ export const incenseLayoutGlsl = `
 
 /**
  * Side-on silhouettes as signed distances (frame heights, negative inside), q from the anchor: the
- * fluid's obstacle and the shader's drawing share them.
+ * fluid's obstacle and the shader's drawing share them. They use sdBox, from the shared GLSL (the
+ * scene's `common`, or `gpuCommonGlsl` in the obstacle's pass).
  */
 export const incenseShapesGlsl = `
-float incenseBox(vec2 q, vec2 halfSize, float radius) {
-  vec2 d = abs(q) - halfSize + radius;
-  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
-}
-
 float incenseSmin(float a, float b, float k) {
   float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
   return mix(b, a, h) - k * h * (1.0 - h);
@@ -145,21 +144,21 @@ float incenseSmin(float a, float b, float k) {
 
 // The glazed dish a stick or a cone stands in.
 float incenseDish(vec2 q) {
-  return incenseBox(q - vec2(0.0, 0.5 * INCENSE_DISH_H), vec2(INCENSE_DISH_W, 0.5 * INCENSE_DISH_H), 0.005);
+  return sdBox(q - vec2(0.0, 0.5 * INCENSE_DISH_H), vec2(INCENSE_DISH_W, 0.5 * INCENSE_DISH_H), 0.005);
 }
 
 // The coil's stand: a thin round plate on three short feet.
 float incensePlate(vec2 q) {
-  return incenseBox(q - vec2(0.0, INCENSE_PLATE_Y), vec2(INCENSE_PLATE_W, 0.003), 0.003);
+  return sdBox(q - vec2(0.0, INCENSE_PLATE_Y), vec2(INCENSE_PLATE_W, 0.003), 0.003);
 }
 
 // The backflow burner: a little ceramic mountain of three ledges stepping down to the right, with a
 // cup on top for its cone. The cold smoke pours from an outlet on the top ledge's right face.
 float incenseMountain(vec2 q) {
-  float d = incenseBox(q - vec2(0.0, 0.022), vec2(0.1, 0.022), 0.016);
-  d = incenseSmin(d, incenseBox(q - vec2(-0.022, 0.07), vec2(0.068, 0.028), 0.018), 0.01);
-  d = incenseSmin(d, incenseBox(q - vec2(-0.04, 0.122), vec2(0.04, 0.026), 0.018), 0.01);
-  return incenseSmin(d, incenseBox(q - vec2(INCENSE_MOUNT_CUP_X, 0.157), vec2(0.022, 0.012), 0.008), 0.006);
+  float d = sdBox(q - vec2(0.0, 0.022), vec2(0.1, 0.022), 0.016);
+  d = incenseSmin(d, sdBox(q - vec2(-0.022, 0.07), vec2(0.068, 0.028), 0.018), 0.01);
+  d = incenseSmin(d, sdBox(q - vec2(-0.04, 0.122), vec2(0.04, 0.026), 0.018), 0.01);
+  return incenseSmin(d, sdBox(q - vec2(INCENSE_MOUNT_CUP_X, 0.157), vec2(0.022, 0.012), 0.008), 0.006);
 }
 
 // What the incense stands on, by kind (0 stick, 1 cone, 2 coil, 3 waterfall).
@@ -172,7 +171,7 @@ float incenseHolder(vec2 q, float kind) {
 // The candle's wax pillar.
 float incenseCandleBody(vec2 q) {
   vec2 c = vec2(INCENSE_CANDLE_DX, INCENSE_CANDLE_Y + 0.5 * INCENSE_CANDLE_H);
-  return incenseBox(q - c, vec2(INCENSE_CANDLE_W, 0.5 * INCENSE_CANDLE_H), 0.004);
+  return sdBox(q - c, vec2(INCENSE_CANDLE_W, 0.5 * INCENSE_CANDLE_H), 0.004);
 }
 `;
 
@@ -247,8 +246,9 @@ const DOOR_OFTEN = 40;
 const DOOR_FIRST = 45;
 
 /**
- * First-frame prewarm: steps of this length (short, so the thread is laid smooth, not beaded), at
- * most this many, within this budget (ms, waiting for the GPU after each step).
+ * First-frame prewarm: this many steps of this length (short, so the thread is laid smooth, not
+ * beaded), run within a CPU-time budget per frame. A slow machine takes more frames to get through
+ * them, never fewer steps, and the scene holds still until they are done.
  */
 const PREWARM_DT = 0.05;
 const PREWARM_STEPS = 48;
@@ -306,6 +306,7 @@ vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
 
 const OBSTACLE_GLSL = `
 uniform vec2 uHolder;  // kind (0 stick, 1 cone, 2 coil, 3 waterfall), candle (0 / 1)
+${gpuCommonGlsl}
 ${incenseLayoutGlsl}
 ${incenseShapesGlsl}
 float fluidObstacle(vec2 p) {
@@ -351,26 +352,6 @@ bool particle(int id, out vec2 uv, out vec4 value) {
 
 // ---- small helpers -----------------------------------------------------------------------------
 
-/** Mulberry32: a small seedable generator, so a run always plays out the same. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
-const smooth = (x: number): number => {
-  const t = clamp01(x);
-  return t * t * (3 - 2 * t);
-};
-const smoothstep = (a: number, b: number, x: number): number => smooth((x - a) / (b - a));
-const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
-
 function hash2(x: number, y: number): number {
   let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -388,7 +369,7 @@ function valueNoise(x: number, y: number): number {
   const b = hash2(ix + 1, iy);
   const c = hash2(ix, iy + 1);
   const d = hash2(ix + 1, iy + 1);
-  return mix(mix(a, b, ux), mix(c, d, ux), uy);
+  return lerp(lerp(a, b, ux), lerp(c, d, ux), uy);
 }
 
 function fbm3(x: number, y: number): number {
@@ -404,13 +385,6 @@ interface Point {
 
 type IncenseKnob = "stick" | "smoke" | "renew" | "draft" | "turbulence" | "door" | "hand" | "candle" | "dust";
 
-interface KnobSlot {
-  /** Position in the scene's `params` (and so in `SimFrame.values`). */
-  index: number;
-  /** The knob's default (a feature's default amount). */
-  fallback: number;
-}
-
 interface Settings {
   kind: IncenseKind;
   /** Emission scale for the smoke. */
@@ -425,48 +399,17 @@ interface Settings {
   dust: boolean;
 }
 
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class IncenseKnobs {
-  readonly #slots: Record<IncenseKnob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: IncenseKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new IncenseError(`incense: the scene has no ${key} knob`);
-      return { index, fallback: def.kind === "feature" ? (def.on ? def.value : 0) : def.value };
-    };
-    this.#slots = {
-      stick: slot("stick"),
-      smoke: slot("smoke"),
-      renew: slot("renew"),
-      draft: slot("draft"),
-      turbulence: slot("turbulence"),
-      door: slot("door"),
-      hand: slot("hand"),
-      candle: slot("candle"),
-      dust: slot("dust"),
-    };
-  }
-
-  settings(frame: SimFrame): Settings {
-    const value = (key: IncenseKnob): number => {
-      const slot = this.#slots[key];
-      return frame.values[slot.index] ?? slot.fallback;
-    };
-    const kind = incenseKinds[Math.min(incenseKinds.length - 1, Math.max(0, Math.round(value("stick"))))] ?? "stick";
-    return {
-      kind,
-      smoke: 0.25 + 1.5 * clamp01(value("smoke")),
-      renew: value("renew") > 0.5,
-      draft: clamp01(value("draft")),
-      turbulence: clamp01(value("turbulence")),
-      doors: clamp01(value("door")),
-      hand: value("hand") > 0.5,
-      candle: value("candle") > 0.5,
-      dust: value("dust") > 0.001,
-    };
-  }
+/** Write this frame's settings into `out`. */
+function readSettings(out: Settings, frame: SimFrame, knobs: KnobReader<IncenseKnob>): void {
+  out.kind = incenseKinds[clamp(Math.round(knobs.value(frame, "stick")), 0, incenseKinds.length - 1)] ?? "stick";
+  out.smoke = 0.25 + 1.5 * clamp(knobs.value(frame, "smoke"), 0, 1);
+  out.renew = knobs.value(frame, "renew") > 0.5;
+  out.draft = clamp(knobs.value(frame, "draft"), 0, 1);
+  out.turbulence = clamp(knobs.value(frame, "turbulence"), 0, 1);
+  out.doors = clamp(knobs.value(frame, "door"), 0, 1);
+  out.hand = knobs.value(frame, "hand") > 0.5;
+  out.candle = knobs.value(frame, "candle") > 0.5;
+  out.dust = knobs.value(frame, "dust") > 0.001;
 }
 
 // ---- the incense, burning ----------------------------------------------------------------------
@@ -512,7 +455,7 @@ class Burner {
   constructor(kind: IncenseKind) {
     this.kind = kind;
     this.progress = OPENING_PROGRESS[kind];
-    this.#breakAt = mix(ASH_BREAK[0], ASH_BREAK[1], this.#rand());
+    this.#breakAt = lerp(ASH_BREAK[0], ASH_BREAK[1], this.#rand());
     // The opening stick has been burning a while: some ash on it, a few pieces already in the dish.
     this.ash = kind === "stick" ? 0.7 * this.#breakAt : 0;
     this.fallen = kind === "stick" ? 2 : 0;
@@ -538,11 +481,11 @@ class Burner {
     const phase = this.#phase;
     switch (phase) {
       case "arriving":
-        this.presence = smooth(t / ARRIVE_SECONDS);
+        this.presence = smoothstep(0, 1, t / ARRIVE_SECONDS);
         if (t >= ARRIVE_SECONDS) this.#enter("lighting");
         break;
       case "lighting":
-        this.glow = smooth(t / LIGHT_SECONDS);
+        this.glow = smoothstep(0, 1, t / LIGHT_SECONDS);
         this.#burn(dt);
         if (t >= LIGHT_SECONDS) this.#enter("burning");
         break;
@@ -552,7 +495,7 @@ class Burner {
         if (this.progress >= 1) this.#enter("dying");
         break;
       case "dying":
-        this.glow = 1 - smooth(t / DIE_SECONDS);
+        this.glow = 1 - smoothstep(0, 1, t / DIE_SECONDS);
         if (t >= DIE_SECONDS) this.#enter("out");
         break;
       case "out":
@@ -561,7 +504,7 @@ class Burner {
         break;
       case "leaving":
         // Taken away still burning ("now"): its ember fades with it.
-        this.presence = 1 - smooth(t / LEAVE_SECONDS);
+        this.presence = 1 - smoothstep(0, 1, t / LEAVE_SECONDS);
         this.glow = Math.min(this.glow, this.presence);
         if (t >= LEAVE_SECONDS) this.#restart();
         break;
@@ -644,7 +587,7 @@ class Burner {
     out[3] = this.presence;
     out[4] = this.progress;
     out[5] = this.ash;
-    out[6] = this.curl * clamp01(this.ash / this.#breakAt) ** 2;
+    out[6] = this.curl * clamp(this.ash / this.#breakAt, 0, 1) ** 2;
     out[7] = this.fallen;
     const falling = this.falling;
     out[8] = falling ? falling.age : -1;
@@ -664,12 +607,12 @@ class Burner {
     const lean = STICK_LEAN + 0.5 * this.curl;
     this.falling = { age: 0, x: ember.x + 0.5 * this.ash * Math.sin(lean), y: ember.y + 0.5 * this.ash * Math.cos(lean), length: this.ash };
     this.ash = 0;
-    this.#breakAt = mix(ASH_BREAK[0], ASH_BREAK[1], this.#rand());
+    this.#breakAt = lerp(ASH_BREAK[0], ASH_BREAK[1], this.#rand());
     this.curl = this.#newCurl();
   }
 
   #newCurl(): number {
-    return (this.#rand() < 0.5 ? -1 : 1) * mix(0.25, 0.7, this.#rand());
+    return (this.#rand() < 0.5 ? -1 : 1) * lerp(0.25, 0.7, this.#rand());
   }
 
   #enter(phase: BurnPhase): void {
@@ -710,7 +653,7 @@ class Doors {
     this.#clock += dt;
     const now = this.#clock;
     if (often <= 0) this.#next = undefined;
-    else if (this.#next === undefined) this.#next = Math.max(DOOR_FIRST, now + mix(DOOR_RARE, DOOR_OFTEN, often) * (0.6 + 0.8 * this.#rand()));
+    else if (this.#next === undefined) this.#next = Math.max(DOOR_FIRST, now + lerp(DOOR_RARE, DOOR_OFTEN, often) * (0.6 + 0.8 * this.#rand()));
     else if (now >= this.#next) this.open();
 
     const u = this.uniform;
@@ -724,7 +667,7 @@ class Doors {
     // The draft rises, falls away, and swings back a little as the door swings shut.
     const tau = now - gust.start;
     const swing = (tau - GUST_SWING_AT) / GUST_SWING_WIDTH;
-    const strength = (tau < GUST_RISE ? smooth(tau / GUST_RISE) : Math.exp(-(tau - GUST_RISE) / GUST_FALL)) - GUST_SWING * Math.exp(-swing * swing);
+    const strength = (tau < GUST_RISE ? smoothstep(0, 1, tau / GUST_RISE) : Math.exp(-(tau - GUST_RISE) / GUST_FALL)) - GUST_SWING * Math.exp(-swing * swing);
     u[0] = gust.dir * GUST_SPEED * strength;
     u[1] = (gust.dir > 0 ? -FRONT_SOFT : aspect + FRONT_SOFT) + gust.dir * FRONT_SPEED * tau;
     u[2] = gust.dir;
@@ -739,8 +682,13 @@ class Motes {
   readonly field: RenderTarget;
   readonly #move: Pass;
   readonly #deposit: Scatter;
+  readonly #moveUniforms = { uDt: 0, uTime: 0, uAspect: 1 };
+  readonly #depositUniforms = { uTime: 0 };
+  readonly #depositRun = { count: MOTES_X * MOTES_Y, pointSize: MOTE_SIZE, uniforms: this.#depositUniforms };
+  #aspect: number;
 
-  constructor(gpu: GpuCompute, aspect: number) {
+  constructor(gpu: GpuCompute, aspect: number, velocity: PingPong) {
+    this.#aspect = aspect;
     this.#state = gpu.pingPong({ width: MOTES_X, height: MOTES_Y, format: "rgba32f", filter: "nearest" });
     const rand = mulberry32(0x0d057);
     const start = new Float32Array(MOTES_X * MOTES_Y * 4);
@@ -752,22 +700,27 @@ class Motes {
     }
     this.#state.seed(start);
     this.field = gpu.target({ ...gridSize(aspect, DYE_RES), format: "r16f" });
-    this.#move = gpu.pass(MOTE_MOVE_GLSL, "incense motes move");
-    this.#deposit = gpu.scatter(MOTE_DEPOSIT_GLSL, { name: "incense motes deposit", shape: "soft" });
+    this.#move = gpu.pass(MOTE_MOVE_GLSL, "incense motes move").bind({ uMotes: this.#state, uVelocity: velocity });
+    this.#deposit = gpu.scatter(MOTE_DEPOSIT_GLSL, { name: "incense motes deposit", shape: "soft" }).bind({ uMotes: this.#state });
     this.#move.set({ uLow: MOTE_LOW });
   }
 
-  frame(velocity: PingPong, dt: number, time: number, aspect: number): void {
-    const size = gridSize(aspect, DYE_RES);
-    this.field.resize(size.width, size.height);
+  frame(dt: number, time: number, aspect: number): void {
+    if (aspect !== this.#aspect) {
+      this.#aspect = aspect;
+      const size = gridSize(aspect, DYE_RES);
+      this.field.resize(size.width, size.height);
+    }
     if (dt > 0) {
-      this.#move.run(this.#state, {
-        uniforms: { uDt: dt, uTime: time, uAspect: aspect },
-        textures: { uMotes: this.#state, uVelocity: velocity },
-      });
+      const uniforms = this.#moveUniforms;
+      uniforms.uDt = dt;
+      uniforms.uTime = time;
+      uniforms.uAspect = aspect;
+      this.#move.set(uniforms).run(this.#state);
     }
     this.field.clear(0);
-    this.#deposit.run(this.field, { count: MOTES_X * MOTES_Y, pointSize: MOTE_SIZE, uniforms: { uTime: time }, textures: { uMotes: this.#state } });
+    this.#depositUniforms.uTime = time;
+    this.#deposit.run(this.field, this.#depositRun);
   }
 }
 
@@ -775,7 +728,7 @@ class Motes {
 
 /**
  * A plume as it stands after a while of burning, painted straight into the fluid on the first
- * frame so the scene opens on one (a software rasterizer only manages a few prewarm steps): a
+ * frame so the scene opens on one (the prewarm steps that follow then only settle it, however slow the machine): a
  * laminar thread, leaning a little, beginning to sway a hand-span up and fraying out; and above it
  * the older smoke, spread into faint veils that widen and drift off to the right under the ceiling.
  */
@@ -835,13 +788,28 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
   fluid.dye.seed(dye);
 }
 
+/** The force and obstacle snippets' own uniforms (a type literal, so it passes as a uniform record). */
+type SnippetUniforms = {
+  uBuoyancy: number;
+  uAir: Float32Array;
+  uGust: Float32Array;
+  uSource: Float32Array;
+  uStir: Float32Array;
+  uCeiling: Float32Array;
+  uHolder: Float32Array;
+};
+
 class Plume {
   readonly fluid: FluidSim;
   readonly motes: Motes;
-  readonly #gl: WebGL2RenderingContext;
   #clock = 0;
   #seeded = false;
-  #hand: Point | undefined;
+  /** Prewarm steps done so far. */
+  #warmed = 0;
+  /** Whether the pointer was over the page last frame, and where. */
+  #handed = false;
+  #handX = 0;
+  #handY = 0;
   readonly #air = new Float32Array(4);
   readonly #source = new Float32Array(4);
   readonly #stir = new Float32Array(4);
@@ -850,9 +818,30 @@ class Plume {
   readonly #dye = new Float32Array(4);
   readonly #push = new Float32Array(2);
   readonly #dissipation = [SMOKE_FADE, HEAT_FADE, FRESH_FADE, 0] as const;
+  /** Splats and the fluid's step, built once and rewritten in place. */
+  readonly #splatDye: SplatImpulse = { dye: this.#dye };
+  readonly #splatBackflow: SplatImpulse = { dye: this.#dye, velocity: this.#push };
+  readonly #splatHand: SplatImpulse = { velocity: this.#push };
+  readonly #uniforms: SnippetUniforms = {
+    uBuoyancy: BUOYANCY,
+    uAir: this.#air,
+    uGust: new Float32Array(4),
+    uSource: this.#source,
+    uStir: this.#stir,
+    uCeiling: this.#ceiling,
+    uHolder: this.#holder,
+  };
+  readonly #fluidStep: FluidStep = {
+    dt: 0,
+    time: 0,
+    iterations: PRESSURE_ITERATIONS,
+    vorticity: 0,
+    velocityDissipation: VELOCITY_FADE,
+    dyeDissipation: this.#dissipation,
+    uniforms: this.#uniforms,
+  };
 
   constructor(gpu: GpuCompute) {
-    this.#gl = gpu.gl;
     this.fluid = new FluidSim(gpu, {
       velocityResolution: VELOCITY_RES,
       dyeResolution: DYE_RES,
@@ -861,7 +850,12 @@ class Plume {
       force: FORCE_GLSL,
       obstacle: OBSTACLE_GLSL,
     });
-    this.motes = new Motes(gpu, this.fluid.aspect);
+    this.motes = new Motes(gpu, this.fluid.aspect, this.fluid.velocity);
+  }
+
+  /** The opening plume is still being warmed up: hold the burner and the live stepping. */
+  get warming(): boolean {
+    return this.#seeded && this.#warmed < PREWARM_STEPS;
   }
 
   frame(frame: SimFrame, burner: Burner, doors: Doors, settings: Settings): void {
@@ -870,37 +864,35 @@ class Plume {
     const aspect = fluid.aspect;
     if (!this.#seeded) {
       this.#seeded = true;
-      this.#prewarm(burner, doors, settings, aspect);
+      // The opening plume: painted in, then PREWARM_STEPS real steps to settle it.
+      const source = burner.source();
+      seedPlume(fluid, { x: ANCHOR_X * aspect + source.x, y: FLOOR + source.y }, settings.smoke);
+    }
+    if (this.#warmed < PREWARM_STEPS) {
+      // A count of steps, the same on every machine: the budget only spreads them over frames.
+      this.#warmed = runBudgeted(() => this.#step(PREWARM_DT, burner, doors, settings, aspect), PREWARM_MS, PREWARM_STEPS, this.#warmed);
+      if (this.#warmed < PREWARM_STEPS) return;
     }
 
     const dt = frame.dt * frame.motion;
     this.#touch(frame, dt, aspect, settings.hand);
     const steps = dt > 0 ? Math.min(MAX_STEPS, Math.ceil(dt / MAX_STEP - 1e-6)) : 0;
     for (let i = 0; i < steps; i++) this.#step(dt / steps, burner, doors, settings, aspect);
-    if (settings.dust) this.motes.frame(fluid.velocity, dt, this.#clock, aspect);
-  }
-
-  /** The opening plume: painted in, then a few real steps (as many as the budget allows) to settle it. */
-  #prewarm(burner: Burner, doors: Doors, settings: Settings, aspect: number): void {
-    const anchor = ANCHOR_X * aspect;
-    const source = burner.source();
-    seedPlume(this.fluid, { x: anchor + source.x, y: FLOOR + source.y }, settings.smoke);
-    const started = performance.now();
-    for (let i = 0; i < PREWARM_STEPS; i++) {
-      this.#step(PREWARM_DT, burner, doors, settings, aspect);
-      this.#gl.finish();
-      if (performance.now() - started > PREWARM_MS) break;
-    }
+    if (settings.dust) this.motes.frame(dt, this.#clock, aspect);
   }
 
   /** A hand moving through the air pushes it along. */
   #touch(frame: SimFrame, dt: number, aspect: number, on: boolean): void {
     const pointer = frame.pointer;
-    const last = this.#hand;
-    this.#hand = pointer.inside ? { x: pointer.x, y: pointer.y } : undefined;
-    if (!on || !last || !pointer.inside || dt <= 0 || frame.dt <= 0) return;
-    let vx = ((pointer.x - last.x) * aspect) / frame.dt;
-    let vy = (pointer.y - last.y) / frame.dt;
+    const hadHand = this.#handed;
+    const lastX = this.#handX;
+    const lastY = this.#handY;
+    this.#handed = pointer.inside;
+    this.#handX = pointer.x;
+    this.#handY = pointer.y;
+    if (!on || !hadHand || !pointer.inside || dt <= 0 || frame.dt <= 0) return;
+    let vx = ((pointer.x - lastX) * aspect) / frame.dt;
+    let vy = (pointer.y - lastY) / frame.dt;
     const speed = Math.hypot(vx, vy);
     if (speed < 0.01) return;
     const scale = Math.min(HAND_GAIN, HAND_MAX / speed);
@@ -908,7 +900,7 @@ class Plume {
     vy *= scale;
     this.#push[0] = vx;
     this.#push[1] = vy;
-    this.fluid.splat(pointer.x, pointer.y, pointer.down ? 1.4 * HAND_RADIUS : HAND_RADIUS, { velocity: this.#push });
+    this.fluid.splat(pointer.x, pointer.y, pointer.down ? 1.4 * HAND_RADIUS : HAND_RADIUS, this.#splatHand);
   }
 
   #step(dt: number, burner: Burner, doors: Doors, settings: Settings, aspect: number): void {
@@ -932,7 +924,7 @@ class Plume {
         dye[2] = 0.3 * dye[0];
         this.#push[0] = BACKFLOW_PUSH * glow * dt;
         this.#push[1] = 0;
-        fluid.splat((anchor + OUTLET_X) / aspect, FLOOR + OUTLET_Y, BACKFLOW_RADIUS, { dye, velocity: this.#push });
+        fluid.splat((anchor + OUTLET_X) / aspect, FLOOR + OUTLET_Y, BACKFLOW_RADIUS, this.#splatBackflow);
         dye[0] = WISP_SMOKE * smoke;
         dye[1] = WISP_HEAT * heat;
         dye[2] = dye[0];
@@ -941,14 +933,14 @@ class Plume {
         dye[1] = heat;
         dye[2] = smoke;
       }
-      fluid.splat(sx / aspect, sy, EMIT_RADIUS, { dye });
+      fluid.splat(sx / aspect, sy, EMIT_RADIUS, this.#splatDye);
     }
     if (settings.candle) {
       const dye = this.#dye;
       dye[0] = 0;
       dye[1] = CANDLE_HEAT * dt;
       dye[2] = 0;
-      fluid.splat((anchor + CANDLE_DX) / aspect, FLOOR + CANDLE_Y + CANDLE_H + FLAME_BASE + 0.6 * FLAME_H, 0.007, { dye });
+      fluid.splat((anchor + CANDLE_DX) / aspect, FLOOR + CANDLE_Y + CANDLE_H + FLAME_BASE + 0.6 * FLAME_H, 0.007, this.#splatDye);
     }
 
     // The room's draft: a slow sway, sheared with height (see FORCE_GLSL).
@@ -981,15 +973,13 @@ class Plume {
     holder[0] = incenseKinds.indexOf(burner.kind);
     holder[1] = settings.candle ? 1 : 0;
 
-    fluid.step({
-      dt,
-      time: t,
-      iterations: PRESSURE_ITERATIONS,
-      vorticity: VORTICITY * turbulence,
-      velocityDissipation: VELOCITY_FADE,
-      dyeDissipation: this.#dissipation,
-      uniforms: { uBuoyancy: BUOYANCY, uAir: air, uGust: doors.uniform, uSource: src, uStir: stir, uCeiling: ceiling, uHolder: holder },
-    });
+    const uniforms = this.#uniforms;
+    uniforms.uGust = doors.uniform;
+    const step = this.#fluidStep;
+    step.dt = dt;
+    step.time = t;
+    step.vorticity = VORTICITY * turbulence;
+    fluid.step(step);
     this.#clock += dt;
   }
 }
@@ -998,14 +988,16 @@ class Plume {
 
 /** The incense, for a scene whose `params` carry the knobs IncenseKnob names. */
 export function incenseSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new IncenseKnobs(params);
+  const knobs = new KnobReader<IncenseKnob>("incense", params, ["stick", "smoke", "renew", "draft", "turbulence", "door", "hand", "candle", "dust"]);
+  const renewSlot = knobs.trigger("renew");
+  const doorSlot = knobs.trigger("door");
   return (gl): SceneSim => {
     const state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
     const stateData = new Float32Array(12);
     const doors = new Doors();
+    const settings: Settings = { kind: "stick", smoke: 0, renew: false, draft: 0, turbulence: 0, doors: 0, hand: false, candle: false, dust: false };
+    const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
     let burner: Burner | undefined;
-    let renewFired: number | undefined;
-    let doorFired: number | undefined;
 
     const gpu = GpuCompute.create(gl);
     let plume: Plume | undefined;
@@ -1022,25 +1014,25 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
 
     return {
       frame(frame) {
-        const settings = knobs.settings(frame);
-        const dt = frame.dt * frame.motion;
+        readSettings(settings, frame, knobs);
+        // While the opening plume warms up over several frames, the burner holds still with it.
+        const dt = plume?.warming ? 0 : frame.dt * frame.motion;
         if (!burner) burner = new Burner(settings.kind);
         else if (burner.kind !== settings.kind) burner.replace(settings.kind);
 
-        const renewAt = frame.triggers[1] ?? -1e4;
-        if (renewFired !== undefined && renewAt !== renewFired && renewAt > -1e3) burner.renew();
-        renewFired = renewAt;
+        if (frame.fired[renewSlot] === true) burner.renew();
         burner.step(dt, settings.renew);
 
-        const doorAt = frame.triggers[0] ?? -1e4;
-        if (doorFired !== undefined && doorAt !== doorFired && doorAt > -1e3) doors.open();
-        doorFired = doorAt;
+        if (frame.fired[doorSlot] === true) doors.open();
         plume?.frame(frame, burner, doors, settings);
 
         burner.write(stateData);
         state.upload(stateData);
-        if (!plume) return [undefined, undefined, state.texture];
-        return [plume.fluid.dye.texture, plume.fluid.velocity.texture, state.texture, settings.dust ? plume.motes.field.texture : undefined];
+        textures[0] = plume?.fluid.dye.texture;
+        textures[1] = plume?.fluid.velocity.texture;
+        textures[2] = state.texture;
+        textures[3] = plume && settings.dust ? plume.motes.field.texture : undefined;
+        return textures;
       },
       dispose() {
         state.dispose();

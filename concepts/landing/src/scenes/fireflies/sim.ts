@@ -43,7 +43,11 @@
 //          screen, distance in metres, negative for a drifter left out, flash): FIREFLIES_DRIFTERS
 //          drifters, then the out-of-focus ones; then the lantern (x, y, shown, flare) and the bank
 //          (mean flash, breeze front x, breeze on 0/1, M strength 0..1).
-import type { ParamDef } from "../../params.ts";
+import { markVertex } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { runBudgeted } from "../../sims/clock.ts";
+import { smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -110,8 +114,14 @@ const COUNT_FLOOR = 7;
 const PRESENCE_EASE = 0.8;
 /** Longest simulated step (s); a frame takes as many as it needs. */
 const MAX_STEP = 0.05;
-/** Seconds of rhythm simulated before the first frame (the forest starts out of step either way). */
+/**
+ * Seconds of rhythm simulated before the first frame (the forest starts out of step either way), in
+ * whole steps: the swarm holds still until they are done, so the opening picture never depends on
+ * the machine. The budget only caps how long one frame may block; a slow machine spreads the steps
+ * over a few frames.
+ */
 const PREWARM_SECONDS = 2;
+const PREWARM_STEPS = Math.round(PREWARM_SECONDS / MAX_STEP);
 const PREWARM_BUDGET_MS = 90;
 /**
  * How far a firefly wanders about its place, in cells, at drift 1, and its angular speeds (rad/s):
@@ -199,9 +209,6 @@ const MARK_RELEASE = 1.6;
  */
 const MARK_FIRST = 3;
 const MARK_INTERVAL = 60;
-/** The Manifold M in mark units, as in shaders/common.ts: x in [-0.47, 0.47], y in [-0.5, 0.5]. */
-const MARK_XS = [-0.47, -0.47, 0, 0.47, 0.47];
-const MARK_YS = [-0.5, 0.5, -0.08, 0.5, -0.5];
 
 // The lights nearer than the bank.
 /**
@@ -270,11 +277,6 @@ interface Tree {
   trunk: boolean;
 }
 
-const smoothstep = (edge0: number, edge1: number, x: number): number => {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-};
-
 /** The flash envelope at u = time since the flash began over its length: 0 outside 0..1. */
 function flash(u: number): number {
   if (u <= 0 || u >= 1) return 0;
@@ -282,18 +284,6 @@ function flash(u: number): number {
   // A smooth fall, raised to 1.5 so it drops quickly from the peak and lingers as an afterglow.
   const fall = 1 - smoothstep(FLASH_RISE, 1, u);
   return fall * Math.sqrt(fall);
-}
-
-/** mulberry32: a small seeded generator, so a seed always grows the same forest. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 /** A stable number 0..1 for a lattice cell (world column, row) and a salt: survives resizes. */
@@ -308,10 +298,12 @@ function cellHash(column: number, row: number, salt: number): number {
 function markNearest(x: number, y: number, out: Float64Array): number {
   let best = Infinity;
   for (let s = 0; s < 4; s++) {
-    const ax = MARK_XS[s] ?? 0;
-    const ay = MARK_YS[s] ?? 0;
-    const bx = (MARK_XS[s + 1] ?? 0) - ax;
-    const by = (MARK_YS[s + 1] ?? 0) - ay;
+    const a = markVertex(s);
+    const c = markVertex(s + 1);
+    const ax = a[0];
+    const ay = a[1];
+    const bx = c[0] - ax;
+    const by = c[1] - ay;
     const t = Math.min(1, Math.max(0, ((x - ax) * bx + (y - ay) * by) / (bx * bx + by * by)));
     const px = ax + bx * t;
     const py = ay + by * t;
@@ -372,8 +364,14 @@ class FirefliesSim implements SceneSim {
   readonly #forestTexture: DataTexture;
   readonly #stateTexture: DataTexture;
   readonly #state = new Float32Array(4 * STATE_TEXELS);
-  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
-  readonly #knobDefault: Readonly<Record<KnobKey, number>>;
+  readonly #reader: KnobReader<KnobKey>;
+  /** The trigger slots of the breeze's and the M's "now". */
+  readonly #breezeSlot: number;
+  readonly #markSlot: number;
+  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
+  /** One prewarm step, as runBudgeted calls it. */
+  readonly #warmStep = (): void => this.#step(MAX_STEP, this.#knobs);
+  #warmed = 0;
   readonly #knobs: Knobs = { coupling: 0.5, density: 0.7, period: 3, drift: 0.35, unrest: 0, lantern: true, mark: 0, markNow: 5, seed: 0 };
   readonly #nearest = new Float64Array(2);
 
@@ -430,11 +428,6 @@ class FirefliesSim implements SceneSim {
   #theta = 0;
   #sync = 0;
 
-  // Triggers.
-  #primed = false;
-  #seenBreeze = -1e4;
-  #seenMark = -1e4;
-
   // The foreground fireflies: anchors (share of the frame width, height m, distance m), wander, rhythm.
   readonly #nearAnchorX = new Float64Array(FIREFLIES_NEAR);
   readonly #nearAnchorY = new Float64Array(FIREFLIES_NEAR);
@@ -474,36 +467,9 @@ class FirefliesSim implements SceneSim {
   #markNow = false;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const slot = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new Error(`fireflies: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#knobIndex = {
-      coupling: slot("coupling"),
-      density: slot("density"),
-      period: slot("period"),
-      drift: slot("drift"),
-      unrest: slot("unrest"),
-      lantern: slot("lantern"),
-      mark: slot("mark"),
-      seed: slot("seed"),
-    };
-    // Fallbacks as the shader would see the defaults: a feature that starts off reads 0.
-    const fallback = (key: KnobKey): number => {
-      const def = params[this.#knobIndex[key]];
-      return def === undefined || (def.kind === "feature" && !def.on) ? 0 : def.value;
-    };
-    this.#knobDefault = {
-      coupling: fallback("coupling"),
-      density: fallback("density"),
-      period: fallback("period"),
-      drift: fallback("drift"),
-      unrest: fallback("unrest"),
-      lantern: fallback("lantern"),
-      mark: fallback("mark"),
-      seed: fallback("seed"),
-    };
+    this.#reader = new KnobReader("fireflies", params, ["coupling", "density", "period", "drift", "unrest", "lantern", "mark", "seed"]);
+    this.#breezeSlot = this.#reader.trigger("unrest");
+    this.#markSlot = this.#reader.trigger("mark");
     this.#swarmTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
     this.#forestTexture = new DataTexture(gl, { width: 1, height: 2, format: "rgba16f" });
     this.#stateTexture = new DataTexture(gl, { width: STATE_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
@@ -515,21 +481,26 @@ class FirefliesSim implements SceneSim {
     const dt = Math.max(0, frame.dt);
     if (knobs.seed !== this.#seed) this.#grow(knobs);
     else this.#fit(knobs);
-    this.#watchTriggers(frame.triggers, knobs);
-    this.#schedule(knobs);
-    this.#steerLantern(frame.pointer, knobs, dt);
+    // The opening seconds run in whole steps (a few frames of them on a slow machine) before the
+    // swarm moves on its own.
+    if (this.#warmed < PREWARM_STEPS) this.#warmed = runBudgeted(this.#warmStep, PREWARM_BUDGET_MS, PREWARM_STEPS, this.#warmed);
+    this.#watchTriggers(frame.fired, knobs);
+    if (this.#warmed >= PREWARM_STEPS) {
+      this.#schedule(knobs);
+      this.#steerLantern(frame.pointer, knobs, dt);
 
-    // Motion runs the swarm; a breeze or an M under way still plays while motion is 0.
-    const busy = this.#breeze || this.#mark;
-    const advance = dt * (frame.motion > 0 ? frame.motion : busy ? 1 : 0);
-    let left = advance;
-    while (left > 1e-6) {
-      const h = Math.min(MAX_STEP, left);
-      this.#step(h, knobs);
-      left -= h;
+      // Motion runs the swarm; a breeze or an M under way still plays while motion is 0.
+      const busy = this.#breeze || this.#mark;
+      const advance = dt * (frame.motion > 0 ? frame.motion : busy ? 1 : 0);
+      let left = advance;
+      while (left > 1e-6) {
+        const h = Math.min(MAX_STEP, left);
+        this.#step(h, knobs);
+        left -= h;
+      }
+      if (this.#scatterAt) this.#scatterPhases(this.#scatterAt.x, this.#scatterAt.y);
+      this.#scatterAt = undefined;
     }
-    if (this.#scatterAt) this.#scatterPhases(this.#scatterAt.x, this.#scatterAt.y);
-    this.#scatterAt = undefined;
 
     if (dt > 0 || this.#dirty) {
       this.#pack(knobs);
@@ -538,7 +509,10 @@ class FirefliesSim implements SceneSim {
       this.#stateTexture.upload(this.#state);
       this.#dirty = false;
     }
-    return [this.#swarmTexture.texture, this.#forestTexture.texture, this.#stateTexture.texture];
+    this.#textures[0] = this.#swarmTexture.texture;
+    this.#textures[1] = this.#forestTexture.texture;
+    this.#textures[2] = this.#stateTexture.texture;
+    return this.#textures;
   }
 
   dispose(): void {
@@ -548,34 +522,27 @@ class FirefliesSim implements SceneSim {
   }
 
   #read(frame: SimFrame): Knobs {
-    const value = (key: KnobKey): number => frame.values[this.#knobIndex[key]] ?? this.#knobDefault[key];
+    const reader = this.#reader;
     const knobs = this.#knobs;
-    knobs.coupling = value("coupling");
-    knobs.density = value("density");
-    knobs.period = Math.max(0.5, value("period"));
-    knobs.drift = value("drift");
-    knobs.unrest = value("unrest");
-    knobs.lantern = value("lantern") > 0.5;
-    knobs.mark = Math.round(value("mark"));
-    knobs.markNow = Math.max(1, Math.round(frame.params["mark-amount"] ?? knobs.markNow));
-    knobs.seed = Math.round(value("seed"));
+    knobs.coupling = reader.value(frame, "coupling");
+    knobs.density = reader.value(frame, "density");
+    knobs.period = Math.max(0.5, reader.value(frame, "period"));
+    knobs.drift = reader.value(frame, "drift");
+    knobs.unrest = reader.value(frame, "unrest");
+    knobs.lantern = reader.value(frame, "lantern") > 0.5;
+    knobs.mark = Math.round(reader.value(frame, "mark"));
+    knobs.markNow = Math.max(1, Math.round(reader.amount(frame, "mark")));
+    knobs.seed = Math.round(reader.value(frame, "seed"));
     return knobs;
   }
 
-  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
-  #watchTriggers(triggers: readonly number[], knobs: Knobs): void {
-    const breeze = triggers[0] ?? -1e4;
-    const mark = triggers[1] ?? -1e4;
-    if (this.#primed) {
-      if (breeze !== this.#seenBreeze && breeze > -1e3) this.#breezeNow = true;
-      if (mark !== this.#seenMark && mark > -1e3) {
-        this.#markNow = true;
-        this.#markBeats = knobs.markNow;
-      }
+  /** A "now" button stamps its slot with the scene clock: `fired` is true for the one frame after. */
+  #watchTriggers(fired: readonly boolean[], knobs: Knobs): void {
+    if (fired[this.#breezeSlot] === true) this.#breezeNow = true;
+    if (fired[this.#markSlot] === true) {
+      this.#markNow = true;
+      this.#markBeats = knobs.markNow;
     }
-    this.#primed = true;
-    this.#seenBreeze = breeze;
-    this.#seenMark = mark;
   }
 
   /** Start the breeze and the M when they are due or asked for. */
@@ -663,8 +630,7 @@ class FirefliesSim implements SceneSim {
     this.#nextBreeze = Number.POSITIVE_INFINITY;
     this.#nextMark = Number.POSITIVE_INFINITY;
     this.#markWasOn = false;
-    const until = performance.now() + PREWARM_BUDGET_MS;
-    for (let t = 0; t < PREWARM_SECONDS && performance.now() < until; t += MAX_STEP) this.#step(MAX_STEP, knobs);
+    this.#warmed = 0;
     this.#dirty = true;
   }
 

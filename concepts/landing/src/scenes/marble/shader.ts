@@ -4,17 +4,11 @@
 //   uSim1  texel 0: tool tip (uv), tool shown 0..1, ink veiled 0..1 (lifted off, or not yet faded up)
 //          texel 1: tool direction (unit), tine spacing across it in uv heights (0 = one stylus)
 // Knobs read here: K_medium (0 tray, 1 print), K_palette, K_ripples, K_sheen, K_fibre, K_edges.
+import { glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { marblePalettes } from "./sim.ts";
 
-/** A CSS hex colour as a GLSL vec3 literal (the pipeline works in display sRGB, as the canvas). */
-function glslColor(hex: string): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const channels = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((c) => (c / 255).toFixed(4));
-  return `vec3(${channels.join(", ")})`;
-}
-
-const accentInks = marblePalettes.map((palette, i) => `  if (K_palette < ${i}.5) return ${glslColor(palette.accent)};`).join("\n");
-const ringPalettes = marblePalettes.map((palette, i) => `  if (K_palette < ${i}.5) return ${palette.rings ? "true" : "false"};`).join("\n");
+const accentInks = glslPick("palette", marblePalettes.map((palette) => glslVec3(palette.accent)), "vec3(0.0)");
+const ringPalettes = glslPick("palette", marblePalettes.map((palette) => (palette.rings ? "true" : "false")), "false");
 
 export const marbleGlsl = `
 const vec3 MARBLE_SIZE = vec3(0.035, 0.047, 0.058);  // dark size in a dim studio (ebru, riso)
@@ -136,12 +130,10 @@ vec3 marbleTool(vec3 col, vec2 q, vec2 m, vec2 n, float spacing, float shown, fl
 }
 
 Shade sceneMarble(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   bool print = K_medium > 0.5;
   bool rings = marbleRings();
-  float tm = t * uMotion;
 
   vec4 tool = vec4(0.0);
   vec4 toolDir = vec4(1.0, 0.0, 0.0, 0.0);
@@ -164,7 +156,7 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
   // shifted or relit. Only the tool's wake catches the light, and the long swells only bend the
   // window's reflection.
   vec2 wake = held ? marbleWake(q, m, n, spacing) * tool.z : vec2(0.0);
-  vec2 swell = print ? vec2(0.0) : marbleSwell(p, tm) * (2.0 * K_ripples);
+  vec2 swell = print ? vec2(0.0) : marbleSwell(p, uMotionTime) * (2.0 * K_ripples);
 
   // A cross of four taps around the ink softens its edges (wider and weighted more as K_edges
   // falls) and finds where colours meet, for the fine dark rim that ink with ox gall draws round
@@ -210,13 +202,8 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
     if (held) col = marbleTool(col, q, m, n, spacing, tool.z, 1.0 / uRes.y);
   }
 
-  float lum = dot(col, LUMA);
-  o.rgb = col;
-  o.source = col;
-  // Paper and the pale basin put the page in its light theme, where ink means dark; on the dark
-  // size it means light.
-  o.ink = (print || rings) ? clamp((0.9 - lum) / 0.8, 0.0, 1.0) : clamp(1.3 * lum, 0.0, 1.0);
-  o.accent = ink.a * (1.0 - smoothstep(0.07, 0.18, distance(inkColor, marbleAccentInk())));
-  return o;
+  // The page theme (paper for print and the pale basin, see index.ts) turns the ink dark there.
+  float accent = ink.a * (1.0 - smoothstep(0.07, 0.18, distance(inkColor, marbleAccentInk())));
+  return shadeOf(col, inkOf(col, 1.3, 1.0), accent);
 }
 `;

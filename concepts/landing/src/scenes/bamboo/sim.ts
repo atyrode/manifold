@@ -18,7 +18,9 @@
 //   uSim2  rgba16f, 2 x BAMBOO_MAX_LEAVES, nearest: one row per leaf. Falling or lying: (screen x, y,
 //          angle, length in screen heights), (width 0..1, depth m, alpha, 1). Floating: (disc u, v,
 //          angle, length in disc units), (1, depth m, alpha, 2). Unused rows are 0.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { hash31, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -233,31 +235,6 @@ const LEAF_FAR = 8;
 
 const TAU = 2 * Math.PI;
 
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-/** Mulberry32: a small seedable generator, so a seed always gives the same grove. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** A stable 0..1 number for three integers (a culm's own natural frequency). */
-function hashUnit(a: number, b: number, c: number): number {
-  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ Math.imul(c | 0, 0x9e3779b1);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
 export class BambooSimError extends Error {}
 
 interface Culm {
@@ -334,7 +311,8 @@ class BambooSim implements SceneSim {
   readonly #groveData = new Float32Array(BAMBOO_CELLS * BAMBOO_LAYERS.length * 2);
   readonly #deviceData = new Float32Array((2 + BAMBOO_RIPPLES) * 4);
   readonly #leafData = new Float32Array(2 * BAMBOO_MAX_LEAVES * 4);
-  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #knobs: KnobReader<KnobKey>;
+  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
 
   readonly #culms: Culm[] = [];
   readonly #gusts: Gust[] = [];
@@ -372,19 +350,8 @@ class BambooSim implements SceneSim {
   #pointerX: number | undefined;
   #pointerSpeed = 0;
 
-  // Triggers: a "now" stamps its slot with the scene clock, so any change fires.
-  #primed = false;
-  #seenTip = 0;
-  #seenGust = 0;
-  #seenLeaves = 0;
-
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new BambooSimError(`bamboo: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#knobIndex = { clock: index("clock"), gusts: index("gusts"), leaves: index("leaves"), groveSeed: index("groveSeed"), wind: index("wind") };
+    this.#knobs = new KnobReader("bamboo", params, ["clock", "gusts", "leaves", "groveSeed", "wind"]);
     this.#groveTexture = new DataTexture(gl, { width: BAMBOO_CELLS, height: BAMBOO_LAYERS.length, format: "rg16f" });
     this.#deviceTexture = new DataTexture(gl, { width: 2 + BAMBOO_RIPPLES, height: 1, format: "rgba16f", filter: "nearest" });
     this.#leafTexture = new DataTexture(gl, { width: 2, height: BAMBOO_MAX_LEAVES, format: "rgba16f", filter: "nearest" });
@@ -401,12 +368,12 @@ class BambooSim implements SceneSim {
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
-    this.#readKnobs(frame.values);
+    this.#readKnobs(frame);
     if (!this.#warm) {
       this.#prewarm(aspect);
       this.#warm = true;
     }
-    this.#watchTriggers(frame.triggers, aspect);
+    this.#watchTriggers(frame.fired, aspect);
     this.#trackPointer(frame.pointer, frame.dt, aspect);
 
     const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), 0.25);
@@ -418,7 +385,10 @@ class BambooSim implements SceneSim {
       this.#leafTexture.upload(this.#leafData);
       this.#dirty = false;
     }
-    return [this.#groveTexture.texture, this.#deviceTexture.texture, this.#leafTexture.texture];
+    this.#textures[0] = this.#groveTexture.texture;
+    this.#textures[1] = this.#deviceTexture.texture;
+    this.#textures[2] = this.#leafTexture.texture;
+    return this.#textures;
   }
 
   dispose(): void {
@@ -427,20 +397,20 @@ class BambooSim implements SceneSim {
     this.#leafTexture.dispose();
   }
 
-  #readKnobs(values: readonly number[]): void {
-    const index = this.#knobIndex;
-    this.#period = values[index.clock] ?? this.#period;
-    this.#gustRate = values[index.gusts] ?? this.#gustRate;
-    this.#leafAmount = values[index.leaves] ?? this.#leafAmount;
-    this.#wind = values[index.wind] ?? this.#wind;
-    const seed = Math.round(values[index.groveSeed] ?? 0);
+  #readKnobs(frame: SimFrame): void {
+    const knobs = this.#knobs;
+    this.#period = knobs.value(frame, "clock");
+    this.#gustRate = knobs.value(frame, "gusts");
+    this.#leafAmount = knobs.value(frame, "leaves");
+    this.#wind = knobs.value(frame, "wind");
+    const seed = Math.round(knobs.value(frame, "groveSeed"));
     if (seed !== this.#seed) {
       this.#seed = seed;
       this.#random = mulberry32(0x6b616b65 ^ Math.imul(seed + 1, 0x9e3779b1));
       for (const [i, culm] of this.#culms.entries()) {
         const cell = i % BAMBOO_CELLS;
         // Thick near stems a little slower; each its own pace, so they drift out of step.
-        culm.omega = TAU * (0.2 + 0.16 * hashUnit(seed, culm.layer, cell)) * (0.88 + 0.04 * culm.layer);
+        culm.omega = TAU * (0.2 + 0.16 * hash31(seed, culm.layer, cell)) * (0.88 + 0.04 * culm.layer);
       }
       this.#dirty = true;
     }
@@ -470,26 +440,18 @@ class BambooSim implements SceneSim {
     for (let s = 0; s < 25; s++) this.#stepLeaves(0.1, aspect);
   }
 
-  #watchTriggers(triggers: readonly number[], aspect: number): void {
-    const tip = triggers[0] ?? -1e4;
-    const gust = triggers[1] ?? -1e4;
-    const leaves = triggers[3] ?? -1e4;
-    if (this.#primed) {
-      if (tip !== this.#seenTip && tip > -1e3) this.#gushLeft = GUSH_LIMIT;
-      if (gust !== this.#seenGust && gust > -1e3) {
-        // Felt even in still air: at least half a metre of sway at its crest.
-        this.#launchGust(this.#gustStart(aspect), Number.NEGATIVE_INFINITY, Math.max(1, 0.55 / windSway(this.#wind)));
-      }
-      if (leaves !== this.#seenLeaves && leaves > -1e3) {
-        this.#release(aspect, true);
-        this.#release(aspect, false);
-        this.#release(aspect, false);
-      }
+  #watchTriggers(fired: readonly boolean[], aspect: number): void {
+    const knobs = this.#knobs;
+    if (fired[knobs.trigger("clock")] === true) this.#gushLeft = GUSH_LIMIT;
+    if (fired[knobs.trigger("gusts")] === true) {
+      // Felt even in still air: at least half a metre of sway at its crest.
+      this.#launchGust(this.#gustStart(aspect), Number.NEGATIVE_INFINITY, Math.max(1, 0.55 / windSway(this.#wind)));
     }
-    this.#primed = true;
-    this.#seenTip = tip;
-    this.#seenGust = gust;
-    this.#seenLeaves = leaves;
+    if (fired[knobs.trigger("leaves")] === true) {
+      this.#release(aspect, true);
+      this.#release(aspect, false);
+      this.#release(aspect, false);
+    }
   }
 
   /** Moving the pointer through the stems brushes them aside; a click sends a gust or rings the basin. */
@@ -556,11 +518,10 @@ class BambooSim implements SceneSim {
     } else {
       // Mean wait from 18 s (rare) down to 5 s (restless).
       const mean = 18 - 13 * Math.min(1, rate);
-      const wait = () => mean * Math.min(2.5, Math.max(0.35, -Math.log(1 - this.#random())));
-      if (!Number.isFinite(this.#nextGust)) this.#nextGust = this.#clock + wait();
+      if (!Number.isFinite(this.#nextGust)) this.#nextGust = this.#clock + this.#wait(mean);
       if (this.#clock >= this.#nextGust) {
         this.#launchGust(this.#gustStart(aspect), Number.NEGATIVE_INFINITY, 0.7 + 0.3 * this.#random());
-        this.#nextGust = this.#clock + wait();
+        this.#nextGust = this.#clock + this.#wait(mean);
       }
     }
     // Retire gusts whose tails have left the far side of the view.
@@ -570,6 +531,11 @@ class BambooSim implements SceneSim {
       const gust = this.#gusts[i];
       if (gust && gust.from + gust.speed * (this.#clock - gust.born) - end > 8 * gust.tail) this.#gusts.splice(i, 1);
     }
+  }
+
+  /** The wait until the next gust: exponential about `mean` seconds, kept between 0.35x and 2.5x. */
+  #wait(mean: number): number {
+    return mean * Math.min(2.5, Math.max(0.35, -Math.log(1 - this.#random())));
   }
 
   /** The gusts' push at (x, z) in the grove: signed toward +x. */
@@ -702,7 +668,13 @@ class BambooSim implements SceneSim {
 
   /** A leaf lets go of the canopy: above the basin (near) or anywhere in the grove. */
   #release(aspect: number, near: boolean): void {
-    const leaf = this.#leaves.find((candidate) => candidate.state === "free");
+    let leaf: Leaf | undefined;
+    for (const candidate of this.#leaves) {
+      if (candidate.state === "free") {
+        leaf = candidate;
+        break;
+      }
+    }
     if (!leaf) return;
     const random = this.#random;
     const heading = this.#wind < 0 ? -1 : 1;
@@ -820,16 +792,21 @@ class BambooSim implements SceneSim {
 
   /** Too many leaves on the water: the oldest starts to sink. */
   #sinkOldest(): void {
-    const floating = this.#leaves.filter((leaf) => leaf.state === "floating" && leaf.age < FLOAT_LIFE);
-    if (floating.length <= MAX_FLOATING) return;
+    let floating = 0;
     let oldest: Leaf | undefined;
-    for (const leaf of floating) if (!oldest || leaf.age > oldest.age) oldest = leaf;
-    if (oldest) oldest.age = FLOAT_LIFE;
+    for (const leaf of this.#leaves) {
+      if (leaf.state !== "floating" || leaf.age >= FLOAT_LIFE) continue;
+      floating++;
+      if (!oldest || leaf.age > oldest.age) oldest = leaf;
+    }
+    if (floating > MAX_FLOATING && oldest) oldest.age = FLOAT_LIFE;
   }
 
   #pack(aspect: number): void {
     const grove = this.#groveData;
-    for (const [i, culm] of this.#culms.entries()) {
+    for (let i = 0; i < this.#culms.length; i++) {
+      const culm = this.#culms[i];
+      if (!culm) continue;
       grove[i * 2] = culm.deflect;
       grove[i * 2 + 1] = culm.gust;
     }
@@ -843,7 +820,9 @@ class BambooSim implements SceneSim {
     device[5] = this.#clackStrength;
     device[6] = this.#gustMean;
     device[7] = 0;
-    for (const [i, ripple] of this.#ripples.entries()) {
+    for (let i = 0; i < this.#ripples.length; i++) {
+      const ripple = this.#ripples[i];
+      if (!ripple) continue;
       const o = 8 + i * 4;
       device[o] = ripple.u;
       device[o + 1] = ripple.v;
@@ -853,7 +832,9 @@ class BambooSim implements SceneSim {
 
     const leaves = this.#leafData;
     const k = bambooDeviceScale(aspect);
-    for (const [i, leaf] of this.#leaves.entries()) {
+    for (let i = 0; i < this.#leaves.length; i++) {
+      const leaf = this.#leaves[i];
+      if (!leaf) continue;
       const o = i * 8;
       switch (leaf.state) {
         case "free":

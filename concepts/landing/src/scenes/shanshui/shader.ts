@@ -25,26 +25,14 @@ const float SHAN_SHEET = 1.9;  // width of one sheet of paper along the scroll, 
 // Set once per pixel by the entry: the seed's hash row and one dither cell in screen heights.
 float shanSeed = 0.0;
 float shanPx = 0.001;
-// The cell's own dither threshold. Every crisp stroke's coverage is cut against it (shanSolid), so
-// as the scroll carries an antialiased edge across a cell the cell flips once, from paper to ink,
-// instead of stepping through every tone level (each channel at its own moment) on the way.
-float shanTh = 0.5;
-
-float shanSolid(float coverage) {
-  return coverage > shanTh ? 1.0 : 0.0;
-}
 
 float shanHash(float x, float row) {
   return hash12(vec2(x, row + shanSeed));
 }
 
-// 1D value noise along the scroll and its derivative.
+// 1D value noise along the scroll and its derivative, on the seed's hash row.
 vec2 shanNoise(float x, float row) {
-  float i = floor(x);
-  float f = x - i;
-  float a = shanHash(i, row);
-  float b = shanHash(i + 1.0, row);
-  return vec2(mix(a, b, f * f * (3.0 - 2.0 * f)), (b - a) * 6.0 * f * (1.0 - f));
+  return vnoise1(x, row + shanSeed);
 }
 
 // The sim's split half floats rebuilt: k * 32 + (hi + lo) / 64.
@@ -260,7 +248,7 @@ vec2 shanCun(vec2 P, ShanForm f, float dz, float m, float fb, float side, float 
   float body = 1.0 - smoothstep(width - 1.2 * px / S, width, b);
   float rim = 1.0 - smoothstep(0.0, 2.5 * px / S, b);
   float gaps = smoothstep(0.2, 0.4, vnoise(vec2(b * 2.5 + k * 3.0, t * 1.5)));
-  return vec2(body * gaps, 0.45 + 0.55 * shanSolid(rim));
+  return vec2(body * gaps, 0.45 + 0.55 * hardEdge(rim));
 }
 
 // Moss dots: flattened blots hung along the crest in clusters, thickest on gentle tops.
@@ -299,7 +287,7 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
   float side = u < f.skew ? -1.0 : 1.0;
   float depth = clamp(dz / H, 0.0, 1.5);
   // The light comes from the right: the left flank of each form is in shade.
-  float shade = 0.15 + 0.85 * smoothstep(0.35, -0.45, u - f.skew);
+  float shade = 0.15 + 0.85 * smoothfall(0.35, -0.45, u - f.skew);
   float blue = step(0.5, K_palette);
   mineral = vec3(0.0);
 
@@ -314,10 +302,10 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
     float mist = 1.0 - smoothstep(0.35, 0.9, depth);
     float dry = (1.0 - wet) * smoothstep(0.4, 0.8, shanNoise(a * 5.0, 61.0 + f.seed * 100.0).x) * (0.5 + 0.5 * smoothstep(0.4, 1.6, abs(top.y)));
     float streak = vnoise(vec2(a * 70.0, d / px * 0.2 + f.seed * 9.0));
-    line = shanSolid((1.0 - smoothstep(lw - 0.6 * px, lw + 0.6 * px, d)) * (1.0 - dry * smoothstep(0.55, 0.35, streak))) * mist;
+    line = hardEdge((1.0 - smoothstep(lw - 0.6 * px, lw + 0.6 * px, d)) * (1.0 - dry * smoothfall(0.55, 0.35, streak))) * mist;
     // Wet ink bleeds in from the stroke and dries with a pale tide line at its edge.
     float past = max(d - lw, 0.0) / px;
-    float tide = shanSolid(exp(-(past - 8.0) * (past - 8.0) / 3.2));
+    float tide = hardEdge(exp(-(past - 8.0) * (past - 8.0) / 3.2));
     bleed = wet * (0.3 * exp(-past / 5.0) + 0.2 * tide) * mist;
   }
 
@@ -335,15 +323,15 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
     float kf = floor(beta + 0.5);
     if (kf >= 1.0 && kf <= planes) {
       float on = smoothstep(0.42, 0.62, shanNoise(a * 11.0 + kf * 5.0, 62.0 + f.seed * 100.0).x);
-      fold = shanSolid((1.0 - smoothstep(1.0 * px, 1.9 * px, abs(beta - kf) * band)) * on) * (1.3 - 0.18 * kf) * (0.35 + 0.65 * shade) * (0.4 + 0.6 * K_detail);
+      fold = hardEdge((1.0 - smoothstep(1.0 * px, 1.9 * px, abs(beta - kf) * band)) * on) * (1.3 - 0.18 * kf) * (0.35 + 0.65 * shade) * (0.4 + 0.6 * K_detail);
     }
     float amount = style.z * shade * (1.0 - 0.15 * m) * (1.0 - smoothstep(0.45, 1.0, depth));
     if (amount > 0.01) {
       vec2 cun = shanCun(P, f, dz, m, fb, side, px);
-      tex = amount * cun.y * shanSolid(cun.x);
+      tex = amount * cun.y * hardEdge(cun.x);
     }
   }
-  float dots = layer < 3 ? shanSolid(shanDots(P, d, top.y, px, layer == 2 ? 0.75 : 1.0)) : 0.0;
+  float dots = layer < 3 ? hardEdge(shanDots(P, d, top.y, px, layer == 2 ? 0.75 : 1.0)) : 0.0;
 
   // The wash: darkest under the crest and under each fold, dissolving downward, deeper in shade,
   // unevenly taken up by the paper.
@@ -361,9 +349,9 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
     float s = abs(P.x - xw);
     float from = smoothstep(0.012, 0.03, dz);
     water = (1.0 - smoothstep(hw - px, hw, s)) * from;
-    lips = shanSolid((1.0 - smoothstep(hw + 0.5 * px, hw + 2.6 * px, s)) * (1.0 - water) * from) * (1.0 - smoothstep(0.6, 1.0, depth));
+    lips = hardEdge((1.0 - smoothstep(hw + 0.5 * px, hw + 2.6 * px, s)) * (1.0 - water) * from) * (1.0 - smoothstep(0.6, 1.0, depth));
     // the water's faint falling grain, painted, still
-    water = shanSolid(water * (1.0 - 0.3 * smoothstep(0.62, 0.8, vnoise(vec2((P.x - xw) / hw * 1.6, P.y * 9.0)))));
+    water = hardEdge(water * (1.0 - 0.3 * smoothstep(0.62, 0.8, vnoise(vec2((P.x - xw) / hw * 1.6, P.y * 9.0)))));
   }
 
   float ink = style.w * (2.4 * line + bleed + wash * (1.0 - 0.45 * blue) + 1.2 * tex + 1.1 * fold + 2.4 * dots);
@@ -419,7 +407,7 @@ float shanRidgePines(int layer, vec2 P, float sky) {
       float fringe = 0.22 * (vnoise(q * vec2(5.0, 3.0) + fi * 5.0 + h * 40.0) - 0.5);
       tiers = min(tiers, (length(r) - 1.0 - fringe) * 0.075);
     }
-    pine = max(pine, shanSolid(1.0 - smoothstep(-0.6 * cell, 0.6 * cell, min(stem, tiers))));
+    pine = max(pine, hardFill(min(stem, tiers), 0.6 * cell));
   }
   return pine;
 }
@@ -464,7 +452,7 @@ float shanNeedles(vec2 q, float r, float id, float cell) {
   float within = 1.0 - smoothstep(tip - cell, tip + cell, length(v / vec2(1.0, 0.62)));
   // The heart of the cluster is a dark wash where the needles crowd.
   float heart = 1.0 - smoothstep(0.25, 0.7, length(e));
-  return max(shanSolid(needle * within * step(-0.1 * r, v.y)), 0.8 * heart);
+  return max(hardEdge(needle * within * step(-0.1 * r, v.y)), 0.8 * heart);
 }
 
 // A big pine on a river bank, rooted at its foot, height hp: a leaning, twisting trunk with bark
@@ -480,9 +468,9 @@ vec2 shanBigPine(vec2 P, vec2 foot, float hp, float id) {
   vec2 d = vec2(lean * 0.42, 0.98);
   float trunk = min(segmentDistance(q, a, b), min(segmentDistance(q, b, c), segmentDistance(q, c, d)));
   float girth = mix(0.03, 0.012, clamp(q.y, 0.0, 1.0)) + 0.6 * cell;
-  float body = shanSolid(1.0 - smoothstep(girth - cell, girth + cell, trunk));
-  float bark = shanSolid(1.0 - smoothstep(girth - 2.2 * cell, girth - 1.0 * cell, trunk));
-  float scales = shanSolid(smoothstep(0.55, 0.75, vnoise(q * vec2(36.0, 20.0) + id * 11.0)));
+  float body = hardEdge(1.0 - smoothstep(girth - cell, girth + cell, trunk));
+  float bark = hardEdge(1.0 - smoothstep(girth - 2.2 * cell, girth - 1.0 * cell, trunk));
+  float scales = hardEdge(smoothstep(0.55, 0.75, vnoise(q * vec2(36.0, 20.0) + id * 11.0)));
   float cover = body;
   float ink = body * (0.35 + 1.8 * (1.0 - bark) + 0.9 * scales * bark);
   for (int k = 0; k < 5; k++) {
@@ -492,7 +480,7 @@ vec2 shanBigPine(vec2 P, vec2 foot, float hp, float id) {
     vec2 from = vec2(lean * 0.42 * y + 0.02 * sin(y * 9.0), y * 0.98);
     vec2 at = from + vec2(side * (0.18 - 0.025 * fk) * (0.75 + 0.5 * fract(id * 17.0 + fk * 0.37)), 0.05 + 0.02 * fk);
     float branch = segmentDistance(q, from, at) - max(0.008, 0.7 * cell);
-    float limb = shanSolid(1.0 - smoothstep(-cell, cell, branch));
+    float limb = hardFill(branch, cell);
     float r = 0.15 - 0.016 * fk;
     float needles = shanNeedles(q - at, r, id * 5.0 + fk, cell);
     float c2 = max(limb, needles);
@@ -510,14 +498,14 @@ vec2 shanPavilion(vec2 q, float scholar, float cell) {
   // the hipped roof, sweeping up at the eaves
   float t = ax / 0.8;
   float roof = step(ax, 0.8) * step(0.62 + 0.12 * pow(t, 5.0), q.y) * step(q.y, 0.98 - 0.36 * pow(t, 1.4));
-  float finial = shanSolid(1.0 - smoothstep(0.04 - cell, 0.04 + cell, length(q - vec2(0.0, 1.01))));
-  float posts = shanSolid(1.0 - smoothstep(0.035, 0.035 + cell, abs(ax - 0.44))) * step(0.08, q.y) * step(q.y, 0.64);
-  float rail = shanSolid(1.0 - smoothstep(0.022, 0.022 + cell, abs(q.y - 0.27))) * step(ax, 0.44);
+  float finial = hardEdge(1.0 - smoothstep(0.04 - cell, 0.04 + cell, length(q - vec2(0.0, 1.01))));
+  float posts = hardEdge(1.0 - smoothstep(0.035, 0.035 + cell, abs(ax - 0.44))) * step(0.08, q.y) * step(q.y, 0.64);
+  float rail = hardEdge(1.0 - smoothstep(0.022, 0.022 + cell, abs(q.y - 0.27))) * step(ax, 0.44);
   float deck = step(ax, 0.6) * step(0.0, q.y) * step(q.y, 0.09);
   float stones = step(ax, 0.52 - 0.15 * (-q.y)) * step(-0.22, q.y) * step(q.y, 0.0);
-  float stoneEdge = stones * shanSolid(1.0 - smoothstep(cell, 2.5 * cell, min(0.52 + 0.15 * q.y - ax, q.y + 0.22)));
-  float head = shanSolid(1.0 - smoothstep(0.06 - cell, 0.06 + cell, length(q - vec2(0.12, 0.42)))) * scholar;
-  float robe = shanSolid(1.0 - smoothstep(0.12 - cell, 0.12 + cell, length((q - vec2(0.1, 0.2)) / vec2(1.0, 1.2)))) * scholar * step(0.09, q.y);
+  float stoneEdge = stones * hardEdge(1.0 - smoothstep(cell, 2.5 * cell, min(0.52 + 0.15 * q.y - ax, q.y + 0.22)));
+  float head = hardEdge(1.0 - smoothstep(0.06 - cell, 0.06 + cell, length(q - vec2(0.12, 0.42)))) * scholar;
+  float robe = hardEdge(1.0 - smoothstep(0.12 - cell, 0.12 + cell, length((q - vec2(0.1, 0.2)) / vec2(1.0, 1.2)))) * scholar * step(0.09, q.y);
   float cover = max(max(roof, finial), max(max(posts, rail), max(deck, max(stones, max(head, robe)))));
   float ink = max(max(2.4 * roof, 2.4 * finial), max(2.0 * max(posts, deck), max(1.4 * rail, max(0.25 * stones + 1.6 * stoneEdge, max(2.2 * head, 0.55 * robe)))));
   return vec2(cover, ink);
@@ -569,7 +557,7 @@ vec2 shanWater(vec2 P, float swing, float t) {
   float rx = P.x / 0.05 + shanHash(row, 95.0) * 7.0;
   float rh = shanHash(floor(rx), 96.0 + row);
   float dash = step(rh, 0.22) * (1.0 - smoothstep(0.75 * shanPx, 1.5 * shanPx, abs(P.y - ry)));
-  dash = shanSolid(dash * smoothstep(0.0, 0.2, fract(rx)) * (1.0 - smoothstep(0.5 + 0.4 * fract(rh * 9.0), 1.0, fract(rx))));
+  dash = hardEdge(dash * smoothstep(0.0, 0.2, fract(rx)) * (1.0 - smoothstep(0.5 + 0.4 * fract(rh * 9.0), 1.0, fract(rx))));
   water.y = 0.45 * dash * (1.0 - smoothstep(0.06, 0.14, P.y));
   if (K_boats < 0.5) return water;
   for (int k = -1; k <= 1; k++) {
@@ -585,16 +573,16 @@ vec2 shanWater(vec2 P, float swing, float t) {
     // The hull: a slim crescent, bow to the left, both ends turned up.
     float hull = step(abs(q.x), 0.62) * step(-0.07 + 0.14 * q.x * q.x, q.y) * step(q.y, 0.05 + 0.3 * q.x * q.x);
     // The mat awning amidships.
-    float awning = shanSolid(1.0 - smoothstep(1.0 - 2.0 * cell, 1.0, length((q - vec2(0.12, 0.05)) / vec2(0.22, 0.2)))) * step(0.05, q.y);
+    float awning = hardEdge(1.0 - smoothstep(1.0 - 2.0 * cell, 1.0, length((q - vec2(0.12, 0.05)) / vec2(0.22, 0.2)))) * step(0.05, q.y);
     // The boatman at the stern under a broad hat, leaning on his pole, which he plants and lifts.
     float stroke = sin(t * 0.35 + bank.seed * 9.0);
     vec2 hand = vec2(0.36, 0.5);
     float body = segmentDistance(q, vec2(0.42, 0.06), vec2(0.4 - 0.03 * stroke, 0.44)) - 0.045;
     float hat = max(abs(q.x - 0.4 + 0.03 * stroke) - 0.13 * (1.0 - (q.y - 0.47) / 0.1), abs(q.y - 0.52) - 0.05);
     float pole = segmentDistance(q, hand + vec2(0.1, 0.25), vec2(0.62 + 0.22 * stroke, -0.32)) - max(0.012, 0.7 * cell);
-    float man = shanSolid(1.0 - smoothstep(-cell, cell, min(min(body, hat), pole)));
+    float man = hardFill(min(min(body, hat), pole), cell);
     float wake = (1.0 - smoothstep(0.02, 0.02 + cell, abs(q.y + 0.13))) * step(0.5, q.x) * step(q.x, 1.0);
-    wake = shanSolid(max(wake, (1.0 - smoothstep(0.02, 0.02 + cell, abs(q.y + 0.21))) * step(0.66, q.x) * step(q.x, 1.08)));
+    wake = hardEdge(max(wake, (1.0 - smoothstep(0.02, 0.02 + cell, abs(q.y + 0.21))) * step(0.66, q.x) * step(q.x, 1.08)));
     float cover = max(max(hull, man), awning);
     water = vec2(max(water.x, cover), max(water.y, max(max(2.3 * hull, 2.2 * man), max(1.1 * awning, 0.5 * wake))));
   }
@@ -626,7 +614,7 @@ float shanGeese(vec2 S, vec3 g, float t) {
     vec2 m = vec2(abs(q.x), q.y);
     float wing = min(segmentDistance(m, vec2(0.0), joint), segmentDistance(m, joint, tip)) - w;
     float body = length((q - vec2(-0.1, -0.02)) / vec2(1.6, 1.0)) - 1.5 * w;
-    geese = max(geese, shanSolid(1.0 - smoothstep(-0.5 * cell, 0.5 * cell, min(wing, body))));
+    geese = max(geese, hardFill(min(wing, body), 0.5 * cell));
   }
   return geese;
 }
@@ -668,7 +656,7 @@ float shanFibre(vec2 cell) {
 float shanSealInk(vec2 q, float id, float cellUnit) {
   vec2 e = abs(q) - vec2(0.5);
   float edge = max(e.x, e.y) + 0.03 * (vnoise(q * 9.0 + id * 7.0) - 0.5);
-  float body = 1.0 - smoothstep(-cellUnit, cellUnit, edge);
+  float body = softFill(edge, cellUnit);
   if (body <= 0.0) return 0.0;
   float dm = markDistance(q / 0.68) * 0.68;
   float cut = 1.0 - smoothstep(0.068 - cellUnit, 0.068 + cellUnit, dm);
@@ -683,7 +671,7 @@ float shanSealRelief(vec2 q, float id, float cellUnit) {
   vec2 e = abs(q) - vec2(0.455);
   float frame = abs(max(e.x, e.y)) - 0.045 * (0.8 + 0.4 * vnoise(q * 7.0 + id * 5.0));
   float mark = markDistance(q / 0.58) * 0.58 - 0.06;
-  float paste = 1.0 - smoothstep(-cellUnit, cellUnit, min(frame, mark));
+  float paste = softFill(min(frame, mark), cellUnit);
   float skip = smoothstep(0.8, 0.86, vnoise(q * 6.0 + id * 3.1));
   return paste * (1.0 - 0.9 * skip);
 }
@@ -721,12 +709,9 @@ float shanGlyph(vec2 q, float id, float cell) {
       b = vec2(c0 + 0.3, -0.4);
       w = vec2(0.05, 0.095);
     }
-    vec2 pa = q - a;
-    vec2 ba = b - a;
-    float s = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-    d = min(d, length(pa - ba * s) - mix(w.x, w.y, s));
+    d = min(d, sdTaperCapsule(q, a, b, w.x, w.y));
   }
-  return shanSolid(1.0 - smoothstep(-cell, cell, d));
+  return hardFill(d, cell);
 }
 
 // Characters of an inscription are this many screen heights high, set in columns.
@@ -780,17 +765,15 @@ float shanSealShown(float x, float size, float aspect) {
 }
 
 Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   float px = 1.0 / uRes.y;
   shanPx = px;
-  shanTh = threshold(cell);
   // Each seed reads the hash plane at its own offset, scattered by an irrational step.
   shanSeed = 0.5 + fract(floor(K_seed + 0.5) * 0.7548777) * 640.0;
 
-  float scroll = t * 0.0048 * uMotion;
-  float drift = t * 0.0021 * uMotion;
-  float morph = t * 0.45 * uMotion;
+  float scroll = uMotionTime * 0.0048;
+  float drift = uMotionTime * 0.0021;
+  float morph = uMotionTime * 0.45;
   vec4 geese = vec4(-9.0, 0.0, 0.0, 0.0);
   vec4 stamp = vec4(-9.0, 0.0, 0.0, -1.0);
   float breath = 0.0;
@@ -818,7 +801,7 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   paper *= 1.0 + (0.012 + 0.02 * age) * (shanHash(sheet, 70.0) - 0.5);
   paper *= 1.0 + (0.02 + 0.05 * age) * (vnoise(P * vec2(3.0, 4.0) + 11.0) - 0.5);
   float lap = abs(P.x - floor(P.x / SHAN_SHEET + 0.5) * SHAN_SHEET);
-  paper *= 1.0 - (0.012 + 0.04 * age) * shanSolid(1.0 - smoothstep(1.5 * px, 3.0 * px, lap));
+  paper *= 1.0 - (0.012 + 0.04 * age) * hardEdge(1.0 - smoothstep(1.5 * px, 3.0 * px, lap));
   // Foxing: small brown spots that come with age.
   float fox = smoothstep(0.86, 0.93, vnoise(P * 23.0 + 5.0)) * smoothstep(0.35, 0.9, age);
   paper = mix(paper, paper * vec3(0.86, 0.76, 0.6), fox * 0.6);
@@ -905,18 +888,14 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
       vec2 sq = rotate(S - stamp.xy, 0.03) / (size * squash);
       if (max(abs(sq.x), abs(sq.y)) < 0.6) seal = max(seal, press * shanSealInk(sq, 0.37, px / size));
     }
-    seal = shanSolid(seal);
+    seal = hardEdge(seal);
     if (seal > 0.0) {
       vec3 red = SHAN_CINNABAR * (0.92 + 0.16 * vnoise(P * 60.0)) * mix(vec3(1.0), exp(-ink * k * SHAN_ABSORB), 0.55);
       col = mix(col, red, seal * 0.94);
     }
   }
 
-  o.rgb = col;
-  o.source = col;
   float paperLum = dot(paper, LUMA);
-  o.ink = clamp((1.0 - dot(col, LUMA) / max(paperLum, 0.2)) * 1.25, 0.0, 1.0) * (1.0 - seal);
-  o.accent = seal;
-  return o;
+  return shadeOf(col, clamp((1.0 - dot(col, LUMA) / max(paperLum, 0.2)) * 1.25, 0.0, 1.0) * (1.0 - seal), seal);
 }
 `;

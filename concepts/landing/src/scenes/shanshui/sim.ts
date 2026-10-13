@@ -17,7 +17,8 @@
 // uSim1, r8: the pointer's trail over the page (uv), thinning the mist where it has passed.
 // Texel 2 alpha is the skein's number (1, 2, ...; 0 while the sky is empty), so each skein can
 // fly in its own loose line.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -44,22 +45,6 @@ const TRAIL_PER_TRAVEL = 4;
 const SEAL_SETTLED = 30;
 
 type KnobKey = "speed" | "drift" | "birds" | "seal" | "seed";
-const KNOBS: readonly KnobKey[] = ["speed", "drift", "birds", "seal", "seed"];
-
-/** A small deterministic generator (mulberry32). */
-class Random {
-  #state = 1;
-  seed(value: number): void {
-    this.#state = (Math.imul(value | 0, 0x9e3779b1) ^ 0x5eed5a17) >>> 0;
-  }
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let z = this.#state;
-    z = Math.imul(z ^ (z >>> 15), z | 1);
-    z ^= z + Math.imul(z ^ (z >>> 7), z | 61);
-    return ((z ^ (z >>> 14)) >>> 0) / 4294967296;
-  }
-}
 
 /** value = k * 32 + (hi + lo) / 64, each part exact in a half float for 0 <= value < 65536. */
 function split3(out: Float32Array, at: number, value: number): void {
@@ -83,12 +68,16 @@ function split2(out: Float32Array, at: number, value: number): void {
 class ShanshuiSim implements SceneSim {
   readonly #state: DataTexture;
   readonly #texels = new Float32Array(16);
-  readonly #index: Readonly<Record<KnobKey, number>>;
+  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined];
+  readonly #knobs: KnobReader<KnobKey>;
+  readonly #geeseSlot: number;
+  readonly #sealSlot: number;
   readonly #random = new Random();
   #trail: TrailField | undefined;
   #trailTexture: DataTexture | undefined;
   #uploaded = -1;
-  #last: { x: number; y: number } | undefined;
+  #lastX = Number.NaN;
+  #lastY = 0;
 
   #seed = Number.NaN;
   #rate = Number.NaN;
@@ -102,43 +91,30 @@ class ShanshuiSim implements SceneSim {
   #geeseY = 0.78;
   #skein = 0;
   #nextGeese = Number.NaN;
-  #geeseNow = false;
 
   // The seal last pressed: where on the scroll (screen x minus scroll, in heights) and how long ago.
   #sealAt = Number.NaN;
   #sealY = 0;
   #sealAge = -1;
-  #sealNow = false;
-
-  #primed = false;
-  #seenGeese = -1e4;
-  #seenSeal = -1e4;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const find = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new Error(`shanshui: the scene has no '${key}' knob`);
-      return at;
-    };
-    const index: Record<KnobKey, number> = { speed: 0, drift: 0, birds: 0, seal: 0, seed: 0 };
-    for (const key of KNOBS) index[key] = find(key);
-    this.#index = index;
+    this.#knobs = new KnobReader("shanshui", params, ["speed", "drift", "birds", "seal", "seed"]);
+    this.#geeseSlot = this.#knobs.trigger("birds");
+    this.#sealSlot = this.#knobs.trigger("seal");
     this.#state = new DataTexture(gl, { width: 4, height: 1, format: "rgba16f", filter: "nearest" });
     this.#trailTexture = new DataTexture(gl, { width: 1, height: 1, format: "r8" });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const values = frame.values;
-    const index = this.#index;
-    const speed = values[index.speed] ?? 0.3;
-    const drift = values[index.drift] ?? 0.3;
-    const birds = values[index.birds] ?? 0;
-    const seal = values[index.seal] ?? 0;
-    const seed = Math.round(values[index.seed] ?? 0);
+    const knobs = this.#knobs;
+    const speed = knobs.value(frame, "speed");
+    const drift = knobs.value(frame, "drift");
+    const birds = knobs.value(frame, "birds");
+    const seal = knobs.value(frame, "seal");
+    const seed = Math.round(knobs.value(frame, "seed"));
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
 
     if (seed !== this.#seed) this.#reset(seed, speed, birds > 0, aspect);
-    this.#watch(frame);
 
     // The scroll and the mist move on the scene clock, scaled by the lab's motion.
     const dt = Math.max(0, frame.dt);
@@ -149,8 +125,8 @@ class ShanshuiSim implements SceneSim {
     this.#morph = (this.#morph + step * (0.15 + drift)) % 256;
     this.#clock += step;
 
-    this.#flyGeese(dt, frame.motion, birds, aspect);
-    this.#pressSeal(frame, dt, seal, aspect);
+    this.#flyGeese(dt, frame.motion, birds, aspect, frame.fired[this.#geeseSlot] === true);
+    this.#pressSeal(frame, dt, seal, aspect, frame.fired[this.#sealSlot] === true);
     this.#breathe(frame, aspect);
 
     const out = this.#texels;
@@ -166,7 +142,9 @@ class ShanshuiSim implements SceneSim {
     out[14] = this.#sealY;
     out[15] = sealShown ? Math.min(this.#sealAge, SEAL_SETTLED) : -1;
     this.#state.upload(out);
-    return [this.#state.texture, this.#trailTexture?.texture];
+    this.#textures[0] = this.#state.texture;
+    this.#textures[1] = this.#trailTexture?.texture;
+    return this.#textures;
   }
 
   dispose(): void {
@@ -179,7 +157,8 @@ class ShanshuiSim implements SceneSim {
   /** A new scroll: start at its beginning, with a skein of geese already crossing (prewarmed). */
   #reset(seed: number, speed: number, geese: boolean, aspect: number): void {
     this.#seed = seed;
-    this.#random.seed(seed + 1);
+    // A scroll's own run of numbers: its seed mixed so neighbouring seeds do not start alike.
+    this.#random.seed(Math.imul((seed + 1) | 0, 0x9e3779b1) ^ 0x5eed5a17);
     this.#rate = speed * SPEED_MAX;
     this.#scroll = 0;
     this.#drift = 0;
@@ -197,18 +176,6 @@ class ShanshuiSim implements SceneSim {
     this.#nextGeese = Number.NaN;
   }
 
-  #watch(frame: SimFrame): void {
-    const geese = frame.triggers[0] ?? -1e4;
-    const seal = frame.triggers[1] ?? -1e4;
-    if (this.#primed) {
-      if (geese !== this.#seenGeese && geese > -1e3) this.#geeseNow = true;
-      if (seal !== this.#seenSeal && seal > -1e3) this.#sealNow = true;
-    }
-    this.#primed = true;
-    this.#seenGeese = geese;
-    this.#seenSeal = seal;
-  }
-
   #launchGeese(aspect: number): void {
     const random = this.#random;
     this.#geeseX = aspect + 0.12;
@@ -220,11 +187,8 @@ class ShanshuiSim implements SceneSim {
    * Geese cross the sky right to left; the next skein waits a while, jittered, after one is gone.
    * A skein in the air keeps flying, slowly, even while motion is held at zero.
    */
-  #flyGeese(dt: number, motion: number, birds: number, aspect: number): void {
-    if (this.#geeseNow) {
-      this.#geeseNow = false;
-      if (!Number.isFinite(this.#geeseX) || this.#geeseX < aspect * 0.5) this.#launchGeese(aspect);
-    }
+  #flyGeese(dt: number, motion: number, birds: number, aspect: number, now: boolean): void {
+    if (now && (!Number.isFinite(this.#geeseX) || this.#geeseX < aspect * 0.5)) this.#launchGeese(aspect);
     if (Number.isFinite(this.#geeseX)) {
       this.#geeseX -= dt * Math.max(motion, 0.35) * GEESE_SPEED;
       // The skein trails up to ~0.45 heights behind (to the right of) its leader.
@@ -245,10 +209,10 @@ class ShanshuiSim implements SceneSim {
   }
 
   /** A click on the page, or "now", presses the seal onto the paper; it then travels with the scroll. */
-  #pressSeal(frame: SimFrame, dt: number, seal: number, aspect: number): void {
+  #pressSeal(frame: SimFrame, dt: number, seal: number, aspect: number, now: boolean): void {
     const pointer = frame.pointer;
     const clicked = seal > 0 && pointer.inside && pointer.pressed;
-    if (clicked || (this.#sealNow && seal > 0)) {
+    if (clicked || (now && seal > 0)) {
       const random = this.#random;
       let x: number;
       let y: number;
@@ -269,7 +233,6 @@ class ShanshuiSim implements SceneSim {
       this.#sealY = y;
       this.#sealAge = 0;
     }
-    this.#sealNow = false;
     if (this.#sealAge >= 0) this.#sealAge += dt;
     // Gone off the right edge with the scroll: forget it.
     if (Number.isFinite(this.#sealAt) && this.#sealAt + this.#scroll > aspect + 0.3) {
@@ -285,19 +248,19 @@ class ShanshuiSim implements SceneSim {
       this.#trail = new TrailField(columns, TRAIL_ROWS);
       this.#trailTexture?.resize(columns, TRAIL_ROWS);
       this.#uploaded = -1;
-      this.#last = undefined;
+      this.#lastX = Number.NaN;
     }
     const trail = this.#trail;
     const pointer = frame.pointer;
     if (pointer.inside) {
-      const last = this.#last;
-      const travel = last === undefined ? 0 : Math.hypot((pointer.x - last.x) * aspect, pointer.y - last.y);
+      const travel = Number.isNaN(this.#lastX) ? 0 : Math.hypot((pointer.x - this.#lastX) * aspect, pointer.y - this.#lastY);
       const strength = Math.min(0.6, travel * TRAIL_PER_TRAVEL);
       if (strength > 0.002) trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, strength, aspect);
-      this.#last = { x: pointer.x, y: pointer.y };
+      this.#lastX = pointer.x;
+      this.#lastY = pointer.y;
     } else {
       trail.lift();
-      this.#last = undefined;
+      this.#lastX = Number.NaN;
     }
     trail.decay(frame.dt * frame.motion, TRAIL_HALF_LIFE);
     if (trail.version !== this.#uploaded) {

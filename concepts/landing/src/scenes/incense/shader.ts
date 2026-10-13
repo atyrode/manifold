@@ -90,10 +90,6 @@ vec3 incenseTableColor() {
   return vec3(0.46, 0.36, 0.27);
 }
 
-float incenseFill(float d, float aa) {
-  return 1.0 - smoothstep(-aa, aa, d);
-}
-
 // Approximate signed distance to an ellipse of radii r (after Quilez): close enough for its outline.
 float incenseEllipse(vec2 q, vec2 r) {
   float k0 = length(q / r);
@@ -135,7 +131,7 @@ float incenseLit(vec2 p) {
 float incenseHaze(vec2 p) {
   vec2 r = p - incensePool;
   float across = abs(dot(r, vec2(-incenseDir.y, incenseDir.x)));
-  return (1.0 - smoothstep(incenseBand - 0.06, incenseBand + 0.04, across)) * smoothstep(0.3, -0.25, dot(r, incenseDir));
+  return (1.0 - smoothstep(incenseBand - 0.06, incenseBand + 0.04, across)) * smoothfall(0.3, -0.25, dot(r, incenseDir));
 }
 
 // Light on a solid at p from the room, the shaft and the ember; facing -1..1 turns it away from or
@@ -159,7 +155,7 @@ vec4 incenseAnalytic(vec2 p) {
   vec2 src = incenseSource;
   float h = p.y - src.y;
   if (h < -0.005) return vec4(0.0);
-  float tm = uTime * uMotion;
+  float tm = uMotionTime;
   float rise = smoothstep(0.08, 0.45, h);
   float axis = src.x - 0.03 * h + 0.025 * h * sin(0.21 * tm) + 0.02 * rise * sin(19.0 * h - 0.8 * tm);
   axis += 0.07 * rise * min(1.0, h / 0.45) * (vnoise(vec2(3.0 * p.x, 4.0 * p.y - 0.25 * tm)) - 0.5) + 0.12 * smoothstep(0.35, 0.65, h);
@@ -217,14 +213,14 @@ vec3 incenseDrawDish(vec3 col, vec2 p, vec4 s1, bool stick, float aa) {
   float light = incenseLit(p);
   vec3 glaze = INCENSE_GLAZE * incenseLightAt(p, -side) * (0.65 + 0.5 * smoothstep(0.0, INCENSE_DISH_H, q.y));
   // A soft highlight in the glaze on the shoulder toward the window.
-  glaze += incenseLightCol * light * 0.22 * exp(-pow((side + 0.55) / 0.16, 2.0)) * smoothstep(0.003, 0.01, q.y);
-  col = mix(col, glaze, incenseFill(body, aa) * incensePresence);
+  glaze += incenseLightCol * light * 0.22 * exp(-pow(abs((side + 0.55) / 0.16), 2.0)) * smoothstep(0.003, 0.01, q.y);
+  col = mix(col, glaze, softFill(body, aa) * incensePresence);
   // Sand inside the rim, darker toward the back where the rim shades it.
   float sand = incenseEllipse(q - rimC, rimR - vec2(0.003, 0.0016));
-  vec3 sandCol = INCENSE_SAND * incenseLightAt(p, 0.3) * (0.55 + 0.45 * smoothstep(0.004, -0.004, q.y - rimC.y));
-  col = mix(col, sandCol, incenseFill(sand, aa) * incensePresence);
+  vec3 sandCol = INCENSE_SAND * incenseLightAt(p, 0.3) * (0.55 + 0.45 * smoothfall(0.004, -0.004, q.y - rimC.y));
+  col = mix(col, sandCol, softFill(sand, aa) * incensePresence);
   // The lip catching the light along the rim's front.
-  float lip = exp(-pow(rim / 0.0012, 2.0)) * smoothstep(rimC.y + 0.002, rimC.y - 0.004, q.y);
+  float lip = exp(-pow(abs(rim / 0.0012), 2.0)) * smoothfall(rimC.y + 0.002, rimC.y - 0.004, q.y);
   col += (INCENSE_GLAZE * incenseLightAt(p, 0.5) * 1.4 + incenseLightCol * light * 0.15) * lip * incensePresence;
   if (!stick) return col;
   // Ash that broke off earlier lies on the sand.
@@ -235,7 +231,7 @@ vec3 incenseDrawDish(vec3 col, vec2 p, vec4 s1, bool stick, float aa) {
     float h2 = hash12(vec2(float(i), 1.93));
     vec2 c = incenseAnchor + vec2((h1 - 0.5) * 1.4 * (INCENSE_DISH_W - 0.008), rimC.y + 0.0035 * (h2 - 0.5));
     vec2 a = rotate(vec2(0.003 + 0.004 * h2, 0.0), (h1 - 0.5) * 0.8);
-    col = mix(col, ash * (0.8 + 0.3 * h2), incenseFill(segmentDistance(p, c - a, c + a) - 0.0016, aa) * incensePresence);
+    col = mix(col, ash * (0.8 + 0.3 * h2), softFill(segmentDistance(p, c - a, c + a) - 0.0016, aa) * incensePresence);
   }
   return col;
 }
@@ -249,8 +245,8 @@ vec3 incenseDrawStick(vec3 col, vec2 p, vec4 s1, vec4 s2, float aa) {
   float shade = 0.7 + 0.3 * sqrt(max(0.0, 1.0 - across * across));
   float d = segmentDistance(p, base, incenseEmber) - INCENSE_STICK_HW;
   // Dark wood, its edge toward the window catching a thin line of the light.
-  vec3 sheen = INCENSE_SHEEN * incenseLightCol * incenseLit(p) * smoothstep(-0.1, -0.85, across) * 0.45;
-  col = mix(col, INCENSE_STICK_COLOR * incenseLightAt(p, -across) * shade + sheen, incenseFill(d, aa) * incensePresence);
+  vec3 sheen = INCENSE_SHEEN * incenseLightCol * incenseLit(p) * smoothfall(-0.1, -0.85, across) * 0.45;
+  col = mix(col, INCENSE_STICK_COLOR * incenseLightAt(p, -across) * shade + sheen, softFill(d, aa) * incensePresence);
 
   vec3 ash = INCENSE_ASH * incenseLightAt(p, -across) * shade + sheen;
   float length0 = s1.y;
@@ -260,14 +256,14 @@ vec3 incenseDrawStick(vec3 col, vec2 p, vec4 s1, vec4 s2, float aa) {
     float da = min(segmentDistance(p, incenseEmber, mid), segmentDistance(p, mid, tip)) - INCENSE_STICK_HW * 1.08;
     // Ash is cracked and uneven: a little lighter in flecks, darker toward its tip.
     float fleck = 0.85 + 0.3 * vnoise(p * 1400.0);
-    col = mix(col, ash * fleck * mix(1.0, 0.75, smoothstep(0.0, length0, distance(p, incenseEmber))), incenseFill(da, aa) * incensePresence);
+    col = mix(col, ash * fleck * mix(1.0, 0.75, smoothstep(0.0, length0, distance(p, incenseEmber))), softFill(da, aa) * incensePresence);
   }
   // A piece breaking off tumbles down into the dish.
   if (s2.x >= 0.0) {
     float age = s2.x;
     vec2 c = incenseAnchor + s2.yz + vec2(0.012 * age, -0.5 * INCENSE_ASH_GRAVITY * age * age);
     vec2 a = rotate(axis, -3.0 * age) * (0.5 * s2.w);
-    col = mix(col, ash, incenseFill(segmentDistance(p, c - a, c + a) - INCENSE_STICK_HW, aa) * incensePresence);
+    col = mix(col, ash, softFill(segmentDistance(p, c - a, c + a) - INCENSE_STICK_HW, aa) * incensePresence);
   }
   return col;
 }
@@ -281,12 +277,12 @@ vec3 incenseDrawCone(vec3 col, vec2 p, vec2 base, float height, float halfW, flo
   float d = max(max(side, -q.y), q.y - apex + 0.002 * (1.0 - smoothstep(0.0, halfW, abs(q.x))));
   if (d > 2.0 * aa) return col;
   float across = clamp(q.x / max(halfW * (1.0 - q.y / height), 1e-4), -1.0, 1.0);
-  vec3 body = mix(INCENSE_ASH * 0.85 * (0.85 + 0.3 * vnoise(p * 1200.0)), INCENSE_CONE_COLOR, smoothstep(ring + 0.0012, ring - 0.0012, q.y));
+  vec3 body = mix(INCENSE_ASH * 0.85 * (0.85 + 0.3 * vnoise(p * 1200.0)), INCENSE_CONE_COLOR, smoothfall(ring + 0.0012, ring - 0.0012, q.y));
   body *= incenseLightAt(p, -across) * (0.7 + 0.3 * sqrt(max(0.0, 1.0 - across * across)));
-  float inside = incenseFill(d, aa);
+  float inside = softFill(d, aa);
   col = mix(col, body, inside * incensePresence);
   // The burning ring, glowing through the ash.
-  float band = exp(-pow((q.y - ring) / 0.0018, 2.0)) * inside;
+  float band = exp(-pow(abs((q.y - ring) / 0.0018), 2.0)) * inside;
   col += (INCENSE_EMBER * 1.3 + INCENSE_EMBER_CORE * 0.5 * band) * band * incenseHeat * incensePresence;
   return col;
 }
@@ -298,17 +294,17 @@ vec3 incenseDrawCoil(vec3 col, vec2 p, float progress, float aa) {
   // The stand: a round plate on three feet.
   for (int i = 0; i < 3; i++) {
     float x = (float(i) - 1.0) * 0.6 * INCENSE_PLATE_W;
-    float leg = incenseBox(q - vec2(x, 0.5 * INCENSE_PLATE_Y), vec2(0.0018, 0.5 * INCENSE_PLATE_Y), 0.0008);
-    col = mix(col, INCENSE_BRASS * 0.5 * incenseLightAt(p, 0.0), incenseFill(leg, aa) * incensePresence);
+    float leg = sdBox(q - vec2(x, 0.5 * INCENSE_PLATE_Y), vec2(0.0018, 0.5 * INCENSE_PLATE_Y), 0.0008);
+    col = mix(col, INCENSE_BRASS * 0.5 * incenseLightAt(p, 0.0), softFill(leg, aa) * incensePresence);
   }
   vec2 pr = vec2(INCENSE_PLATE_W, INCENSE_PLATE_W * INCENSE_COIL_SQUASH);
   float plate = incenseEllipse(q - vec2(0.0, INCENSE_PLATE_Y), pr);
   vec3 brass = INCENSE_BRASS * incenseLightAt(p, -q.x / INCENSE_PLATE_W) * (0.6 + 0.4 * smoothstep(-pr.y, pr.y, q.y - INCENSE_PLATE_Y));
-  col = mix(col, brass, incenseFill(plate, aa) * incensePresence);
-  col += INCENSE_BRASS * incenseLightAt(p, 0.5) * 1.5 * exp(-pow(plate / 0.001, 2.0)) * incensePresence;
+  col = mix(col, brass, softFill(plate, aa) * incensePresence);
+  col += INCENSE_BRASS * incenseLightAt(p, 0.5) * 1.5 * exp(-pow(abs(plate / 0.001), 2.0)) * incensePresence;
   // The pin the coil hangs on.
   float pin = segmentDistance(q, vec2(0.0, INCENSE_PLATE_Y), vec2(0.0, INCENSE_COIL_Y + 0.012)) - 0.0012;
-  col = mix(col, INCENSE_BRASS * incenseLightAt(p, 0.3), incenseFill(pin, aa) * incensePresence);
+  col = mix(col, INCENSE_BRASS * incenseLightAt(p, 0.3), softFill(pin, aa) * incensePresence);
 
   // The spiral: its top face, then its side wall below it (the coil has some height).
   float burnt = INCENSE_COIL_TURNS - progress * (INCENSE_COIL_TURNS - INCENSE_COIL_END);
@@ -334,7 +330,7 @@ vec3 incenseDrawCoil(vec3 col, vec2 p, float progress, float aa) {
   if (best < 2.0 * aa) {
     float ash = smoothstep(burnt - 0.004, burnt + 0.004, bestU);
     vec3 coil = mix(INCENSE_COIL_COLOR, INCENSE_ASH * 0.9, ash) * incenseLightAt(p, 0.2) * (wall > 0.5 ? 0.6 : 1.0);
-    col = mix(col, coil, incenseFill(best, aa) * incensePresence);
+    col = mix(col, coil, softFill(best, aa) * incensePresence);
   }
   return col;
 }
@@ -353,9 +349,9 @@ vec3 incenseDrawMountain(vec3 col, vec2 p, float progress, float aa) {
     stone *= incenseLightAt(p, mix(0.0, facing, edge));
     // The glaze's sheen along the ledges' upper edges.
     stone += INCENSE_STONEWARE * incenseLightAt(p, 1.0) * 1.5 * edge * smoothstep(0.3, 0.9, n.y) * smoothstep(-0.004, 0.0, d);
-    col = mix(col, stone, incenseFill(d, aa) * incensePresence);
+    col = mix(col, stone, softFill(d, aa) * incensePresence);
     float hole = length((q - vec2(INCENSE_OUTLET_X - 0.009, INCENSE_OUTLET_Y)) / vec2(0.5, 1.0)) - 0.0045;
-    col = mix(col, col * 0.25, incenseFill(hole, aa) * incensePresence);
+    col = mix(col, col * 0.25, softFill(hole, aa) * incensePresence);
   }
   return incenseDrawCone(col, p, incenseAnchor + vec2(INCENSE_MOUNT_CUP_X, INCENSE_MOUNT_TOP), INCENSE_MOUNT_CONE_H, INCENSE_MOUNT_CONE_W, progress, aa);
 }
@@ -370,9 +366,9 @@ vec3 incenseDrawCandle(vec3 col, vec2 p, float aa) {
   float through = exp(-max(top - q.y, 0.0) / 0.014);
   vec3 wax = INCENSE_WAX * incenseRoomLight(p, -across) * (0.7 + 0.3 * sqrt(max(0.0, 1.0 - across * across)));
   wax += INCENSE_FLAME_LIGHT * (0.12 + 0.6 * through) * (0.75 + 0.25 * (1.0 - across * across));
-  col = mix(col, wax, incenseFill(d, aa));
+  col = mix(col, wax, softFill(d, aa));
   float wick = segmentDistance(q, vec2(INCENSE_CANDLE_DX, top), vec2(INCENSE_CANDLE_DX, top + INCENSE_FLAME_BASE + 0.002)) - 0.0011;
-  return mix(col, vec3(0.05, 0.04, 0.035), incenseFill(wick, aa));
+  return mix(col, vec3(0.05, 0.04, 0.035), softFill(wick, aa));
 }
 
 // The flame, leaning and bending with the air around it: a blue root, a white-gold core, an orange
@@ -387,7 +383,7 @@ vec3 incenseDrawFlame(vec3 col, vec2 p, vec2 base, float lean, float aa) {
   float inside = step(-0.07, t) * step(t, 1.0);
   float body = (1.0 - smoothstep(0.7, 1.0 + aa / max(w, 1e-4), d)) * inside;
   float core = (1.0 - smoothstep(0.15, 0.55, d)) * smoothstep(0.04, 0.22, t) * (1.0 - smoothstep(0.4, 0.75, t));
-  vec3 flame = mix(vec3(1.0, 0.42, 0.12), vec3(1.0, 0.78, 0.4), smoothstep(0.95, 0.35, t));
+  vec3 flame = mix(vec3(1.0, 0.42, 0.12), vec3(1.0, 0.78, 0.4), smoothfall(0.95, 0.35, t));
   flame = mix(flame, vec3(1.0, 0.97, 0.86), core);
   col = mix(col, flame, body * (0.4 + 0.6 * smoothstep(0.0, 0.2, t)));
   col += vec3(0.15, 0.25, 0.75) * 0.5 * (1.0 - smoothstep(0.0, 0.2, t)) * smoothstep(0.3, 0.9, d) * (1.0 - smoothstep(0.9, 1.3, d)) * inside;
@@ -396,13 +392,13 @@ vec3 incenseDrawFlame(vec3 col, vec2 p, vec2 base, float lean, float aa) {
 }
 
 Shade sceneIncense(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
+  float accent = 0.0;
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2(uv.x * aspect, uv.y);
   float aa = 0.75 / uRes.y;
   float kind = floor(K_stick + 0.5);
-  bool paper = K_room > 2.5;
-  float tm = t * uMotion;
+  bool paper = pagePaper();
+  float tm = uMotionTime;
 
   // The burner (sim.ts Burner.write).
   vec4 s0 = vec4(sin(INCENSE_STICK_LEAN) * 0.26, INCENSE_STICK_BASE + cos(INCENSE_STICK_LEAN) * 0.26, 1.0, 1.0);
@@ -508,7 +504,7 @@ Shade sceneIncense(vec2 uv, vec2 cell, float t) {
     mark = 1.0 - smoothstep(0.012, 0.021, markDistance((p - mc) / size) * size);
     float onWall = 1.0 - smoothstep(0.01, 0.03, markDistance((p - mc - vec2(0.035, -0.02)) / (1.12 * size)) * 1.12 * size);
     if (p.y > INCENSE_TABLE_BACK) col += INCENSE_MARK_LIGHT * K_mark * (paper ? 0.06 : 0.035) * onWall;
-    o.accent = 0.35 * K_mark * onWall;
+    accent = 0.35 * K_mark * onWall;
   }
 
   // ---- the burner ---------------------------------------------------------------------------------
@@ -567,7 +563,7 @@ Shade sceneIncense(vec2 uv, vec2 cell, float t) {
   } else {
     col = col * (1.0 - 0.45 * cover) + cover * tint * onSmoke + air;
   }
-  o.accent = max(o.accent, cover * mark * K_mark);
+  accent = max(accent, cover * mark * K_mark);
 
   // ---- light sources, on top ----------------------------------------------------------------------
   // The ember: a hot bead under the ash, its glow.
@@ -575,13 +571,10 @@ Shade sceneIncense(vec2 uv, vec2 cell, float t) {
   float glowShape = 1.2 * exp(-dot(de, de) / 0.0000045) + 0.3 * exp(-dot(de, de) / 0.00012) + 0.06 * exp(-dot(de, de) / 0.0016);
   if ((kind > 0.5 && kind < 1.5) || kind > 2.5) glowShape *= 0.5;
   col += (INCENSE_EMBER_CORE * exp(-dot(de, de) / 0.0000045) + INCENSE_EMBER * glowShape) * ember;
-  o.accent = max(o.accent, clamp(glowShape * ember * 1.5, 0.0, 1.0));
+  accent = max(accent, clamp(glowShape * ember * 1.5, 0.0, 1.0));
   if (candle) col = incenseDrawFlame(col, p, flameBase, lean, aa);
 
-  o.rgb = col;
-  o.source = col;
-  float lum = dot(col, LUMA);
-  o.ink = paper ? clamp((0.9 - lum) / 0.8, 0.0, 1.0) : clamp(1.25 * lum, 0.0, 1.0);
-  return o;
+  // The page theme (paper for the washi room, see index.ts) turns the ink dark; so does paper above.
+  return shadeOf(col, inkOf(col, 1.25, 1.0), accent);
 }
 `;

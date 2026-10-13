@@ -2,6 +2,7 @@
 // current shows as satin bands, spirals and filaments. The flow and the flakes are simulated on the
 // GPU in sim.ts (stable fluids, Jeffery's equation for the flakes) and lit by a lamp in shader.ts.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { pearlGlsl, pearlPalettes } from "./shader.ts";
 import { pearlForcings, pearlSim } from "./sim.ts";
@@ -36,9 +37,6 @@ export const pearlScene: SceneDef = {
   glsl: pearlGlsl,
   entry: "scenePearl",
   sim: pearlSim(params),
-  // Pearl is a light fluid: the page copy goes dark on it.
-  theme: (values) => {
-    const palette = values.palette ?? params.find((def) => def.key === "palette")?.value ?? 0;
-    return pearlPalettes[Math.round(palette)]?.paper === true ? "paper" : "night";
-  },
+  // Pearl is a light fluid: the page copy goes dark on it (the shader's `pagePaper()` follows this).
+  theme: paletteTheme(params, "palette", (palette) => pearlPalettes[palette]?.paper === true),
 };

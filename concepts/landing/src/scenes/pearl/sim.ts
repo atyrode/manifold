@@ -43,15 +43,18 @@
 // texels 0–2 the braid rods and 3 the Manifold rod (x, y in frame heights, shown 0..1, radius),
 // texel 4 the pigment nozzle (x, y, shown) with the share of convection in w.
 // Without float render targets the scene returns no textures and the shader draws still eddies.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { markVertex } from "../../mark.ts";
 import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
 import { GpuCompute, GpuError, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import { hash31, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export const pearlForcings = ["turntable", "convection", "rods"] as const;
 type PearlForcing = (typeof pearlForcings)[number];
 
-/** The scene was set up wrong: a knob the simulation reads is missing. */
+/** The sim reached a state its knobs cannot produce. */
 export class PearlError extends Error {}
 
 // ---- tuning ---------------------------------------------------------------------------------------
@@ -342,8 +345,6 @@ interface Rod {
 
 const rod = (): Rod => ({ x: 0, y: 0, vx: 0, vy: 0, shown: 0 });
 
-const smooth = (x: number): number => x * x * (3 - 2 * x);
-
 /**
  * The turntable's angular acceleration (rad/s²): θ = A (1 − cos πs) / 2 over a turn, then a rest,
  * then back the other way. Each turn is a little longer or shorter than TURN_ANGLE (seeded), so the
@@ -354,7 +355,7 @@ function turntableAcceleration(time: number, seed: number): number {
   const n = Math.floor(time / leg);
   const s = (time - n * leg) / TURN_SECONDS;
   if (s >= 1) return 0;
-  const angle = (n % 2 === 0 ? 1 : -1) * TURN_ANGLE * (0.75 + 0.5 * lattice(n, 29, seed));
+  const angle = (n % 2 === 0 ? 1 : -1) * TURN_ANGLE * (0.75 + 0.5 * hash31(n, 29, seed));
   return (angle * Math.PI * Math.PI * Math.cos(Math.PI * s)) / (2 * TURN_SECONDS * TURN_SECONDS);
 }
 
@@ -400,15 +401,14 @@ interface MarkStroke {
   length: number;
 }
 
-const markStroke = (ax: number, ay: number, bx: number, by: number): MarkStroke => ({ ax, ay, bx, by, length: Math.hypot(bx - ax, by - ay) });
+const markStroke = (k: number): MarkStroke => {
+  const a = markVertex(k);
+  const b = markVertex(k + 1);
+  return { ax: a[0], ay: a[1], bx: b[0], by: b[1], length: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+};
 
-/** The Manifold M in mark units (markDistance's vertices), as the four strokes the rod draws. */
-const MARK_STROKES = [
-  markStroke(-0.47, -0.5, -0.47, 0.5),
-  markStroke(-0.47, 0.5, 0, -0.08),
-  markStroke(0, -0.08, 0.47, 0.5),
-  markStroke(0.47, 0.5, 0.47, -0.5),
-] as const;
+/** The Manifold M (mark.ts) as the four strokes the rod draws. */
+const MARK_STROKES = [markStroke(0), markStroke(1), markStroke(2), markStroke(3)] as const;
 
 /**
  * The Manifold rod `elapsed` seconds into writing an M of height `size` at the centre: lowered in
@@ -424,7 +424,7 @@ function markRod(elapsed: number, size: number, aspect: number, out: Rod): boole
     const first = MARK_STROKES[0];
     out.x = cx + first.ax * size;
     out.y = 0.5 + first.ay * size;
-    out.shown = smooth(Math.max(0, t) / MARK_FADE);
+    out.shown = smoothstep(0, 1, Math.max(0, t) / MARK_FADE);
     return true;
   }
   t -= MARK_FADE;
@@ -432,7 +432,7 @@ function markRod(elapsed: number, size: number, aspect: number, out: Rod): boole
     const duration = (MARK_EASE * stroke.length * size) / MARK_SPEED;
     if (t < duration) {
       const s = t / duration;
-      const along = smooth(s);
+      const along = smoothstep(0, 1, s);
       const rate = (6 * s * (1 - s)) / duration;
       out.x = cx + (stroke.ax + (stroke.bx - stroke.ax) * along) * size;
       out.y = 0.5 + (stroke.ay + (stroke.by - stroke.ay) * along) * size;
@@ -446,42 +446,22 @@ function markRod(elapsed: number, size: number, aspect: number, out: Rod): boole
   const last = MARK_STROKES[3];
   out.x = cx + last.bx * size;
   out.y = 0.5 + last.by * size;
-  out.shown = 1 - smooth(Math.min(1, t / MARK_FADE));
+  out.shown = 1 - smoothstep(0, 1, Math.min(1, t / MARK_FADE));
   return t < MARK_FADE;
 }
 
 // ---- the pour -----------------------------------------------------------------------------------
 
-/** Mulberry32: a small seedable generator, so a pour number always pours the same tank. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** A seeded hash of a lattice point, 0..1. */
-function lattice(x: number, y: number, seed: number): number {
-  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(seed | 0, 0x9e3779b1);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
 /** Smooth value noise, 0..1. */
 function valueNoise(x: number, y: number, seed: number): number {
   const ix = Math.floor(x);
   const iy = Math.floor(y);
-  const ux = smooth(x - ix);
-  const uy = smooth(y - iy);
-  const a = lattice(ix, iy, seed);
-  const b = lattice(ix + 1, iy, seed);
-  const c = lattice(ix, iy + 1, seed);
-  const d = lattice(ix + 1, iy + 1, seed);
+  const ux = smoothstep(0, 1, x - ix);
+  const uy = smoothstep(0, 1, y - iy);
+  const a = hash31(ix, iy, seed);
+  const b = hash31(ix + 1, iy, seed);
+  const c = hash31(ix, iy + 1, seed);
+  const d = hash31(ix + 1, iy + 1, seed);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 
@@ -546,48 +526,6 @@ interface Drifter {
 
 type PearlKnob = "forcing" | "speed" | "vorticity" | "drift" | "swirl" | "pour" | "pigment" | "mark";
 
-interface KnobSlot {
-  /** Position in the scene's `params` (and so in `SimFrame.values`). */
-  index: number;
-  /** The knob's default (a feature's default amount). */
-  fallback: number;
-}
-
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class PearlKnobs {
-  readonly #slots: Record<PearlKnob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: PearlKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new PearlError(`pearl: the scene has no ${key} knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = {
-      forcing: slot("forcing"),
-      speed: slot("speed"),
-      vorticity: slot("vorticity"),
-      drift: slot("drift"),
-      swirl: slot("swirl"),
-      pour: slot("pour"),
-      pigment: slot("pigment"),
-      mark: slot("mark"),
-    };
-  }
-
-  /** As the shader sees it: a feature reads its amount while on, 0 while off. */
-  value(frame: SimFrame, key: PearlKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-
-  /** A feature's amount even while it is off (its "now" button still plays one). */
-  amount(frame: SimFrame, key: PearlKnob): number {
-    return frame.params[`${key}-amount`] ?? this.#slots[key].fallback;
-  }
-}
-
 // ---- the tank -----------------------------------------------------------------------------------
 
 /** The fluid snippet's uniforms (a type literal, so it passes as a uniform record). */
@@ -625,7 +563,7 @@ type SourceUniforms = {
 
 class PearlTank implements SceneSim {
   readonly #gpu: GpuCompute;
-  readonly #knobs: PearlKnobs;
+  readonly #knobs: KnobReader<PearlKnob>;
   readonly #fluid: FluidSim;
   readonly #flakes: PingPong;
   readonly #props: RenderTarget;
@@ -704,15 +642,18 @@ class PearlTank implements SceneSim {
   #mark: { start: number; size: number } | undefined;
   /** When the Manifold rod writes next; undefined while it is off. */
   #nextMark: number | undefined;
-  /** Each trigger slot's stamp as last seen; undefined before the first frame. */
-  readonly #seen: (number | undefined)[] = [undefined, undefined];
+  readonly #swirlSlot: number;
+  readonly #markSlot: number;
+  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
   #stirring = false;
   #lastX = 0;
   #lastY = 0;
 
-  constructor(gpu: GpuCompute, knobs: PearlKnobs) {
+  constructor(gpu: GpuCompute, knobs: KnobReader<PearlKnob>) {
     this.#gpu = gpu;
     this.#knobs = knobs;
+    this.#swirlSlot = knobs.trigger("swirl");
+    this.#markSlot = knobs.trigger("mark");
     const fluid = new FluidSim(gpu, {
       velocityResolution: VELOCITY_RESOLUTION,
       dyeResolution: DYE_RESOLUTION,
@@ -740,7 +681,11 @@ class PearlTank implements SceneSim {
       for (let i = 0; i < steps; i++) this.#advance(h / steps);
     }
     this.#writeProps();
-    return [this.#flakes.texture, this.#fluid.dye.texture, this.#props.texture];
+    const textures = this.#textures;
+    textures[0] = this.#flakes.texture;
+    textures[1] = this.#fluid.dye.texture;
+    textures[2] = this.#props.texture;
+    return textures;
   }
 
   dispose(): void {
@@ -750,7 +695,7 @@ class PearlTank implements SceneSim {
 
   #read(frame: SimFrame): void {
     const knobs = this.#knobs;
-    this.#forcing = pearlForcings[Math.round(knobs.value(frame, "forcing"))] ?? "turntable";
+    this.#forcing = knobs.pick(frame, "forcing", pearlForcings, "turntable");
     this.#speed = Math.max(0, knobs.value(frame, "speed"));
     this.#vorticity = Math.max(0, knobs.value(frame, "vorticity"));
     this.#drift = Math.max(0, knobs.value(frame, "drift"));
@@ -897,27 +842,19 @@ class PearlTank implements SceneSim {
     }
   }
 
-  /** Whether a "now" button was pressed since the last frame. */
-  #fired(frame: SimFrame, slot: number): boolean {
-    const fired = frame.triggers[slot] ?? -1e4;
-    const seen = this.#seen[slot];
-    this.#seen[slot] = fired;
-    return seen !== undefined && fired !== seen && fired > -1e3;
-  }
-
   /** Start, schedule and retire the swirls and the Manifold rod. */
   #events(frame: SimFrame): void {
     const knobs = this.#knobs;
     const clock = this.#clock;
 
     const swirl = knobs.value(frame, "swirl");
-    if (this.#fired(frame, 0)) this.#startSwirl(knobs.amount(frame, "swirl"));
+    if (frame.fired[this.#swirlSlot] === true) this.#startSwirl(knobs.amount(frame, "swirl"));
     else if (swirl > 0 && clock >= this.#nextSwirl) this.#startSwirl(swirl);
     if (swirl <= 0) this.#nextSwirl = Math.max(this.#nextSwirl, clock + SWIRL_RESUME);
     if (this.#swirl && clock >= this.#swirl.start + SWIRL_SECONDS) this.#swirl = undefined;
 
     const mark = knobs.value(frame, "mark");
-    if (this.#fired(frame, 1)) this.#startMark(knobs.amount(frame, "mark"));
+    if (frame.fired[this.#markSlot] === true) this.#startMark(knobs.amount(frame, "mark"));
     else if (mark > 0 && this.#nextMark !== undefined && clock >= this.#nextMark) this.#startMark(mark);
     if (mark <= 0) this.#nextMark = undefined;
     else if (this.#nextMark === undefined) this.#nextMark = clock + MARK_FIRST;
@@ -930,7 +867,7 @@ class PearlTank implements SceneSim {
     const sense = this.#swirls % 2 === 0 ? 1 : -1;
     this.#swirl = { start: this.#clock, strength: sense * SWIRL_ACCEL * (0.4 + 1.2 * amount) };
     this.#swirls++;
-    this.#nextSwirl = this.#clock + SWIRL_EVERY + SWIRL_JITTER * (lattice(this.#swirls, 17, this.#pour ?? 0) - 0.5);
+    this.#nextSwirl = this.#clock + SWIRL_EVERY + SWIRL_JITTER * (hash31(this.#swirls, 17, this.#pour ?? 0) - 0.5);
   }
 
   #startMark(amount: number): void {
@@ -1149,7 +1086,7 @@ const stillTank: SceneSim = {
 
 /** The tank of pearl fluid, for a scene whose `params` carry the knobs `PearlKnob` names. */
 export function pearlSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new PearlKnobs(params);
+  const knobs = new KnobReader<PearlKnob>("pearl", params, ["forcing", "speed", "vorticity", "drift", "swirl", "pour", "pigment", "mark"]);
   return (gl) => {
     const gpu = GpuCompute.create(gl);
     if (!gpu) return stillTank;
