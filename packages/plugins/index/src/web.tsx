@@ -231,28 +231,29 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     the press was a one-click "Untitled folder", so the tree opens that folder's rename field —
     focused, its text selected — rather than leaving the reader to find and rename it. The
     shell published the door's answer verbatim (`lastCreated`); the folder's id comes from
-    that answer, never from guessing it by name in a tree a collaborator may be changing, and
-    the answer's tree is applied first so the row is there to rename. Another device's folder
-    arrives as an ordinary event and opens nothing, and a remount does not replay an old run.
+    that answer, never from guessing it by name in a tree a collaborator may be changing. The
+    row itself arrives through the index feed (the shell refreshed it, and `folder_created`
+    reaches this subscription), and the rename field mounts focused the moment it does.
+    Another device's folder arrives as an ordinary event and opens nothing, and a remount
+    does not replay an old run. Adjusted during render rather than in an effect (React's
+    derived-state guidance), so no frame paints the folder un-opened.
   */
   const { lastCreated } = useWorkspaceShell();
-  const handledRun = useRef(lastCreated?.seq ?? 0);
-  useEffect(() => {
-    if (lastCreated === null || lastCreated.seq === handledRun.current) return;
-    handledRun.current = lastCreated.seq;
-    if (lastCreated.plugin !== indexManifest.id || lastCreated.creator !== NEW_FOLDER_CREATOR) {
-      return;
+  const [handledRun, setHandledRun] = useState(lastCreated?.seq ?? 0);
+  if (lastCreated !== null && lastCreated.seq !== handledRun) {
+    setHandledRun(lastCreated.seq);
+    const answer =
+      lastCreated.plugin === indexManifest.id && lastCreated.creator === NEW_FOLDER_CREATOR
+        ? IndexFolderCreatedResponseSchema.safeParse(lastCreated.result)
+        : null;
+    const folder = answer?.success
+      ? answer.data.items.find((item) => item.kind === "folder" && item.id === answer.data.folderId)
+      : undefined;
+    if (folder?.kind === "folder") {
+      setRenamingFolderId(folder.id);
+      setFolderRenameName(folder.name);
     }
-    const answer = IndexFolderCreatedResponseSchema.safeParse(lastCreated.result);
-    if (!answer.success) return;
-    const folder = answer.data.items.find(
-      (item) => item.kind === "folder" && item.id === answer.data.folderId,
-    );
-    if (folder?.kind !== "folder") return;
-    setTreeItems(answer.data.items);
-    setRenamingFolderId(folder.id);
-    setFolderRenameName(folder.name);
-  }, [lastCreated, setTreeItems]);
+  }
   const { value: terminalsByContainer } = usePolledResource(fetchByContainer, FALLBACK_POLL_MS, {
     key: CONTAINER_TERMINALS_RESOURCE,
     initial: NO_CONTAINER_TERMINALS,
