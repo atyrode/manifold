@@ -30,6 +30,7 @@ import { petriScene } from "./petri/index.ts";
 import { physarumScene } from "./physarum/index.ts";
 import { pondScene } from "./pond/index.ts";
 import { prismScene } from "./prism/index.ts";
+import { rippleScene } from "./ripple/index.ts";
 import { sandtableScene } from "./sandtable/index.ts";
 import { shanshuiScene } from "./shanshui/index.ts";
 import { shoreScene } from "./shore/index.ts";
@@ -77,6 +78,7 @@ export const sceneDefs = {
   lava: lavaScene,
   forest: forestScene,
   lake: lakeScene,
+  ripple: rippleScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
