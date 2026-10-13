@@ -4,11 +4,13 @@
 //          quantity (Turing: the activator v; BZ: the oxidised share), yz its gradient per texel,
 //          w Turing: how young the growth is, BZ: the excitation u
 //   uSim1  events, rgba16f 8×2: row 0 bubbles marking BZ pacemakers (grid uv x, y, radius,
-//          presence), row 1 ripples where drops fell (grid uv x, y, age in seconds, strength)
+//          presence) and, in texel PETRI_RIDGE_TEXEL, the Turing M's ridge (height in grid uv,
+//          0 = none; how far it has grown); row 1 ripples where drops fell (grid uv x, y, age in
+//          seconds, strength)
 // Without uSim0 (no float render targets) the dish holds a still lattice of stripes (Turing) or a
 // pair of turning spirals (BZ) drawn here.
 // Knobs read here: K_chemistry, K_palette, K_relief, K_lightbox, K_size, K_mark.
-import { PETRI_BUBBLES, PETRI_FIT, PETRI_MARK, PETRI_RADIUS, PETRI_RIPPLE, PETRI_RIPPLES } from "./sim.ts";
+import { PETRI_BUBBLES, PETRI_FIT, PETRI_MARK, PETRI_MARK_GLSL, PETRI_RADIUS, PETRI_RIDGE_TEXEL, PETRI_RIPPLE, PETRI_RIPPLES } from "./sim.ts";
 
 const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
@@ -30,7 +32,7 @@ const vec3 PETRI_HALF = vec3(-0.222, 0.276, 0.935);   // halfway between the lam
 const vec2 PETRI_TOWARD = vec2(-0.628, 0.778);        // the lamp's bearing across the bench
 const vec2 PETRI_CAST = vec2(0.11, -0.135);           // the dish's shadow, offset in dish radii
 const vec2 PETRI_POOL = vec2(-1.05, 0.75);            // the lamp's pool of light, from the dish, in radii
-
+${PETRI_MARK_GLSL}
 // The dish's inner radius in frame heights (sim.ts petriRadius).
 float petriRadius(float aspect) {
   return min(PETRI_RADIUS * (0.75 + 0.5 * K_size), PETRI_FIT * aspect);
@@ -232,8 +234,15 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
     vec3 med = bz ? petriWaves(f, palette, box, ground, lit, act) : petriCulture(f, palette, box, ground, lamp, lit, act);
     if (bz && uSimOn.y > 0.5) med = petriBubbles(med, p, R, px, box, lamp);
 
-    // The Manifold M etched into the glass floor, frosted where the chemistry takes hold.
-    if (K_mark > 0.0) {
+    // The Manifold M. Turing: the ridge of coral the sim grows along its strokes, in the accent
+    // colour where it stands. BZ, and a still dish without the sim: etched into the glass floor.
+    if (!bz && uSimOn.x > 0.5 && uSimOn.y > 0.5) {
+      vec4 m = texelFetch(uSim1, ivec2(${PETRI_RIDGE_TEXEL}, 0), 0);
+      if (m.x > 0.0) {
+        vec2 ridge = petriRidge(g, m.x, m.y, float(textureSize(uSim0, 0).x));
+        act = max(act, ridge.y * min(smoothstep(0.1, 0.28, f.x), smoothstep(0.1, 0.28, ridge.x)));
+      }
+    } else if (K_mark > 0.0) {
       float H = (PETRI_MARK_BASE + PETRI_MARK_SPAN * K_mark) * 2.0 * R;
       float w = max(1.5 * px, 0.016 * H);
       float etch = 1.0 - smoothstep(0.6 * w, w + px, markDistance(p / H) * H);

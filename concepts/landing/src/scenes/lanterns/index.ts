@@ -9,8 +9,8 @@ import { lanternsGlsl } from "./shader.ts";
 import { LANTERN_COUNTS, lanternsSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  choice("river", "lanterns", "lanterns", counts(...LANTERN_COUNTS), 24, "How many lanterns float on the river at once: a procession from small lights far out by the far bank, sweeping in past the near stone. As they drift away downstream, new ones come round the bend."),
-  range("river", "current", "current", 0.35, "How fast the river runs: a slow drift that lets the lanterns gather and turn, or a steady stream that strings them out. It runs fast along the far side and slows in the shallows near you, so the procession closes up as it comes near."),
+  choice("river", "lanterns", "lanterns", counts(...LANTERN_COUNTS), 24, "How many lanterns float on the river at once: a procession from small lights far out by the far bank, sweeping in past the near stone, and a second string drifting by close in front of you. As they drift away downstream, new ones come round the bend."),
+  range("river", "current", "current", 0.3, "How fast the river runs: a slow drift that lets the lanterns gather and turn, or a steady stream that strings them out. It runs fast along the far side and slows in the shallows near you, so the procession closes up as it comes near."),
   feature("river", "flotilla", "flotillas", true, "frequency", 0.3, "Now and then a family sets a little group of lanterns on the water from this bank: big and close, they glide out together along the front and drift away downstream.", { trigger: 0 }),
   seed("river", "lanternSeed", "evening", "Where the lanterns float and how the eddies turn; re-seed for another evening on the river."),
   range("water", "ripple", "water ripple", 0.45, "Glassy calm to the left: the river is a mirror. To the right a breeze ruffles it and every reflection breaks into wavering bands."),
@@ -18,7 +18,7 @@ const params: readonly ParamDef[] = [
   range("water", "mist", "mist", 0.35, "Mist lying on the river: the far bank fades into it, and each lantern wears a halo."),
   ...skyKnobs({ time: 0.79 }),
   ...weatherKnobs({ rain: true, wind: true }),
-  toggle("manifold", "mark", "M lantern", false, "One lantern of indigo paper with the Manifold M cut through it, glowing amber. It floats with the others, keeps turning back to face you, and comes round again once it has gone. Now: set it on the water from this bank.", { trigger: 1 }),
+  toggle("manifold", "mark", "M lantern", false, "One lantern of indigo paper with the Manifold M cut through it, glowing amber. Set on the water from this bank as it comes on, it keeps to the near water where the M reads, turns back to face you, and comes round again soon after it has drifted away. Now: set it on the water again.", { trigger: 1 }),
 ];
 
 export const lanternsScene: SceneDef = {

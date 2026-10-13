@@ -19,7 +19,7 @@ const params: readonly ParamDef[] = [
   range("dish", "relief", "relief", 0.6, "How much the surface catches the lamp: the raised growth and its wet glints, or the faint bending of light along the BZ waves."),
   toggle("dish", "lightbox", "light box", false, "Set the dish on a light box and see the chemistry by the light shining through it, the way the reaction is usually shown. With the UV palette, a UV transilluminator."),
   range("dish", "size", "dish size", 0.5, "How large the dish is in the frame.", { steady: true }),
-  feature("manifold", "mark", "etched M", false, "size", 0.5, "The Manifold M etched into the glass floor, where the chemistry takes hold: the Turing pattern grows out from it every few minutes, and BZ waves leave it in M-shaped fronts that round into rings.", { trigger: 1 }),
+  feature("manifold", "mark", "etched M", false, "size", 0.5, "The Manifold M etched into the dish's floor, where the chemistry takes hold. Turing: a ridge of coral grows along its strokes and the stripes around settle parallel to it; 'now' washes the dish around it clean and lets it all grow back. BZ: waves leave it in M-shaped fronts that round into rings.", { trigger: 1 }),
 ];
 
 export const petriScene: SceneDef = {

@@ -7,8 +7,9 @@
 //        Grid uv = (frame position - dish centre) / dish diameter + 0.5. N follows the dish's
 //        diameter in dither cells and the scale knob, so features stay a readable size.
 // uSim1  events, rgba16f 8×2 (nearest): row 0 the bubbles that mark BZ pacemakers (grid uv x, y,
-//        radius, presence 0..1); row 1 the ripples of falling drops (x, y, age in seconds,
-//        strength; 0 strength = none).
+//        radius, presence 0..1) and, in its last texel, the Turing M's ridge (height in grid uv,
+//        0 = none; how far it has grown 0..1); row 1 the ripples of falling drops (x, y, age in
+//        seconds, strength; 0 strength = none).
 //
 // State. An rgba32f ping-pong (half floats round away the tiny per-step changes both models live
 // on). Texels outside the inscribed disc hold the medium at rest and never change; inside, a texel
@@ -20,8 +21,10 @@
 // coral, worms, dividing spots, still spots, mazes, holes. Regions of the dish run a little ahead of
 // the drift or behind it, so neighbouring classes share the dish and the frontier between them
 // sweeps by; staying on the loop keeps every region alive. A drop of fresh gel clears a disc,
-// which the pattern grows back into from its rim and from a seed at its centre. Along the etched M
-// the gel is richer: the pattern takes hold there as a denser growth, so the M stays legible.
+// which the pattern grows back into from its rim and from a seed at its centre. The etched M grows
+// a ridge of coral along its strokes: v is held there to a stripe's rounded profile, a little
+// wider than a stripe, so the M keeps one width everywhere with clean ends and holds still, while
+// the stripes round it arrange themselves parallel to it, as they do along any wall.
 //
 // BZ: Barkley's excitable medium (D. Barkley, "A model for fast computer simulation of waves in
 // excitable media", Physica D 49, 1991): u the fast activator, v the slow recovery, with his
@@ -31,9 +34,10 @@
 //
 // Start. A fresh dish is seeded with a pattern already of the right kind: Turing, a band-pass noise
 // at the pattern's natural wavelength, saturated into a labyrinth and set to the labyrinth's own
-// levels of u and v (seeding bare gel between the stripes instead starves them, and most die); BZ,
-// a phase field of a counter-rotating spiral pair and two pacemakers' target rings turned into the
-// wave profile. A short prewarm then lets the chemistry settle the seed before the first frame.
+// levels of u and v (seeding bare gel between the stripes instead starves them, and most die),
+// with the M's ridge and its parallel echoes already in place when the M is on; BZ, a phase field
+// of a counter-rotating spiral pair and two pacemakers' target rings turned into the wave profile.
+// A short prewarm then lets the chemistry settle the seed before the first frame.
 //
 // Clocks. "Chemistry seconds" are scene seconds × motion × tempo as actually simulated: steps per
 // frame are capped, so a slow machine's dish runs slow rather than its events running ahead of it.
@@ -47,7 +51,7 @@ export const petriChemistries = ["Turing", "BZ"] as const;
 export const petriPalettes = ["stain", "ink", "UV"] as const;
 
 /** Inner radius of the dish in frame heights at the middle of the size knob... */
-export const PETRI_RADIUS = 0.4;
+export const PETRI_RADIUS = 0.43;
 /** ...and its cap as a share of the frame's width, for portrait screens. */
 export const PETRI_FIT = 0.45;
 /** Height of the Manifold M in dish diameters: base + span × the mark knob. */
@@ -55,6 +59,8 @@ export const PETRI_MARK = { base: 0.22, span: 0.36 } as const;
 /** Bubbles (BZ pacemakers) and ripples (falling drops) the events texture holds. */
 export const PETRI_BUBBLES = 6;
 export const PETRI_RIPPLES = 4;
+/** The texel of the events texture's row 0 that holds the Turing M's ridge. */
+export const PETRI_RIDGE_TEXEL = 7;
 /**
  * A drop's ripples: ring speed in dish diameters per second, width of the wave packet and how far
  * it bends the view of the bottom (dish diameters), seconds until it has died away.
@@ -124,14 +130,26 @@ const TURING_SEED = 3.5;
 const TURING_DROP = [0.06, 0.1] as const;
 const TURING_SPREAD = 1.6;
 /**
- * The M: half-width of its seeded strokes and of its richer gel, texels (wider than a stripe, so
- * the pattern there differs rather than merely bending round it); the feed and kill added there.
+ * The M's ridge: v is held to a rounded profile peaking at TURING_RIDGE_PEAK and falling to 0
+ * TURING_RIDGE texels from the stroke's centre line (shown about 12 texels wide, a stripe and a
+ * half), closing TURING_HOLD of the gap per model time unit.
  */
-const TURING_MARK_SEED = 2.6;
-const TURING_MARK_FEED = 7;
-const TURING_MARK_SHIFT = [0.006, -0.002] as const;
-/** The disc cleared round the M when it is laid, × its height. */
+const TURING_RIDGE = 9;
+const TURING_RIDGE_PEAK = 0.36;
+const TURING_HOLD = 0.5;
+/** Soft end of a growing ridge, as a share of the M's whole stroke. */
+const TURING_RIDGE_TIP = 0.03;
+/**
+ * Chemistry seconds the ridge takes to grow along the M's strokes, and that one laid by 'now'
+ * while the M is off holds before it is let go into the pattern.
+ */
+const TURING_MARK_GROW = 10;
+const TURING_MARK_LINGER = 60;
+/** The disc washed clean round the M on 'now': × its height, and at most (grid uv). */
 const TURING_MARK_CLEAR = 0.75;
+const TURING_MARK_CLEAR_MAX = 0.38;
+/** The seed's stripes follow the M's outline out to this many wavelengths, fading into the labyrinth by the second. */
+const TURING_ECHO = [1.5, 3] as const;
 
 /** Barkley's a, b, ε and the grid spacing in model space units (diffusion 1). */
 const BZ_A = 0.75;
@@ -190,6 +208,47 @@ const EVENT_WIDTH = 8;
 
 const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
+/** The Manifold M in mark units (common's markDistance): x in [-0.47, 0.47], y in [-0.5, 0.5]. */
+const MARK: readonly (readonly [number, number])[] = [[-0.47, -0.5], [-0.47, 0.5], [0, -0.08], [0.47, 0.5], [0.47, -0.5]];
+
+/**
+ * The M and the Turing ridge grown along it, for the passes here and the scene shader:
+ *   petriMarkNear(q)   q in mark units: the distance to the M's strokes and how far along them,
+ *                      0..1 from the foot of the left leg, the nearest point lies
+ *   petriRidge(g, height, grown, texels)
+ *                      g in grid uv, the M's height in grid uv, how far the ridge has grown 0..1,
+ *                      grid texels per grid uv: the v held there and how firmly (0 off the strokes
+ *                      and ahead of the growing tip)
+ */
+export const PETRI_MARK_GLSL = `
+const vec2 PETRI_M[5] = vec2[5](${MARK.map(([x, y]) => `vec2(${glsl(x)}, ${glsl(y)})`).join(", ")});
+
+vec2 petriMarkNear(vec2 q) {
+  vec2 best = vec2(1e9, 0.0);
+  float start = 0.0;
+  for (int i = 0; i < 4; i++) {
+    vec2 a = PETRI_M[i];
+    vec2 ba = PETRI_M[i + 1] - a;
+    float len = length(ba);
+    float h = clamp(dot(q - a, ba) / (len * len), 0.0, 1.0);
+    float d = length(q - a - ba * h);
+    if (d < best.x) best = vec2(d, start + h * len);
+    start += len;
+  }
+  return vec2(best.x, best.y / start);
+}
+
+vec2 petriRidge(vec2 g, float height, float grown, float texels) {
+  vec2 near = petriMarkNear((g - 0.5) / height);
+  float d = near.x * height * texels;
+  float front = grown * (1.0 + ${glsl(TURING_RIDGE_TIP)});
+  float hold = (1.0 - smoothstep(${glsl(TURING_RIDGE - 1)}, ${glsl(TURING_RIDGE + 1)}, d))
+    * (1.0 - smoothstep(front - ${glsl(TURING_RIDGE_TIP)}, front, near.y));
+  float q = d / ${glsl(TURING_RIDGE)};
+  return vec2(${glsl(TURING_RIDGE_PEAK)} * max(0.0, 1.0 - q * q), hold);
+}
+`;
+
 /** Helpers every pass shares; each pass declares `uniform sampler2D uState;` before them. */
 const PASS_COMMON = `
 // Inside the dish: the disc inscribed in the grid, less a texel and a half, so the stencil round any
@@ -210,17 +269,7 @@ float petriSegment(vec2 p, vec2 a, vec2 b) {
   vec2 ba = b - a;
   return length(pa - ba * clamp(dot(pa, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0));
 }
-
-// The Manifold M in mark units, as the scene shader's markDistance draws it.
-float petriMark(vec2 q) {
-  vec2 m0 = vec2(-0.47, -0.5);
-  vec2 m1 = vec2(-0.47, 0.5);
-  vec2 m2 = vec2(0.0, -0.08);
-  vec2 m3 = vec2(0.47, 0.5);
-  vec2 m4 = vec2(0.47, -0.5);
-  return min(min(petriSegment(q, m0, m1), petriSegment(q, m1, m2)), min(petriSegment(q, m2, m3), petriSegment(q, m3, m4)));
-}
-
+${PETRI_MARK_GLSL}
 // A smooth field over the dish (g from its centre, in diameters), about -1..1: a long swell along
 // 'heading' and a shorter one across it, both sliding with 'phase'.
 float petriVary(vec2 g, float phase, float heading) {
@@ -236,8 +285,7 @@ uniform sampler2D uState;
 uniform float uDt;
 uniform vec4 uFeedKill;  // (feed, kill) behind the drift and ahead of it on its path
 uniform vec2 uVary;      // the variation field's phase and heading
-uniform vec4 uMark;      // the M: centre (grid uv), height (grid uv; 0 = none), half-width of its gel
-uniform vec2 uMarkShift; // feed and kill added along the M
+uniform vec2 uMark;      // the M's ridge: height (grid uv; 0 = none), how far it has grown 0..1
 ${PASS_COMMON}
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
@@ -254,17 +302,15 @@ void main() {
   float ahead = 0.5 + 0.5 * petriVary(vUv - 0.5, uVary.x, uVary.y);
   float feed = mix(uFeedKill.x, uFeedKill.z, ahead);
   float kill = mix(uFeedKill.y, uFeedKill.w, ahead);
-  if (uMark.z > 0.0) {
-    float d = petriMark((vUv - uMark.xy) / uMark.z) * uMark.z;
-    float along = 1.0 - smoothstep(uMark.w, 2.0 * uMark.w, d);
-    feed += uMarkShift.x * along;
-    kill += uMarkShift.y * along;
-  }
   float u = c.x;
   float v = c.y;
   float r = u * v * v;
   u = clamp(u + uDt * (lap.x - r + feed * (1.0 - u)), 0.0, 1.0);
   v = clamp(v + uDt * (0.5 * lap.y + r - (feed + kill) * v), 0.0, 1.0);
+  if (uMark.x > 0.0) {
+    vec2 ridge = petriRidge(vUv, uMark.x, uMark.y, uSize.x);
+    v += (ridge.x - v) * ridge.y * min(1.0, uDt * ${glsl(TURING_HOLD)});
+  }
   // Growth ripens where v stands and is forgotten where it is gone; the edges of a still stripe
   // count as standing, so only newly covered gel reads as fresh.
   float here = smoothstep(0.02, 0.07, v);
@@ -313,7 +359,7 @@ void main() {
 
 /**
  * What the pointer, drops, pacemakers and the M put into the dish this frame. Turing: reagent
- * (u 0.5, v 0.25, fresh), and fresh gel clearing discs; BZ: excitation (u 1).
+ * (u 0.5, v 0.25, fresh), and fresh gel clearing discs; BZ: excitation (u 1), the M's included.
  */
 const TOUCH_PASS = `
 uniform sampler2D uState;
@@ -322,7 +368,7 @@ uniform vec4 uStroke;         // the pointer's path this frame: from xy to zw, g
 uniform float uStrokeRadius;  // grid uv; 0: no stroke
 uniform vec4 uDrops[${MAX_TOUCHES}];  // centre xy; Turing: cleared radius, seed radius; BZ: spark radius
 uniform int uDropCount;
-uniform vec4 uMark;           // the M: centre xy, height (0: none this frame), half-width of its strokes
+uniform vec2 uMark;           // BZ's M firing: height (grid uv; 0: not this frame), half-width of its strokes
 ${PASS_COMMON}
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
@@ -349,9 +395,9 @@ void main() {
       add = max(add, 1.0 - smoothstep(0.5 * drop.z, drop.z, d));
     }
   }
-  if (uMark.z > 0.0) {
-    float d = petriMark((g - uMark.xy) / uMark.z) * uMark.z;
-    add = max(add, 1.0 - smoothstep(0.5 * uMark.w, uMark.w, d));
+  if (uMark.x > 0.0) {
+    float d = petriMarkNear((g - 0.5) / uMark.x).x * uMark.x;
+    add = max(add, 1.0 - smoothstep(0.5 * uMark.y, uMark.y, d));
   }
   if (uChem < 0.5) {
     s = mix(s, vec4(1.0, 0.0, 0.0, 0.0), clear);
@@ -421,8 +467,6 @@ interface Spread {
   seed: number;
   /** Chemistry seconds it landed. */
   start: number;
-  /** The M's height when it seeds the M (grid uv), else 0. */
-  mark: number;
 }
 
 /** Rings on the surface where a drop fell, for the shader. */
@@ -484,12 +528,30 @@ function turingAt(position: number, out: Float32Array, at: number): void {
   out[at + 1] = from[1] + (to[1] - from[1]) * e;
 }
 
+/** Distance from (x, y) to the M's strokes, in mark units. */
+function markDistance(x: number, y: number): number {
+  let best = Infinity;
+  for (let i = 0; i < MARK.length - 1; i++) {
+    const [ax, ay] = MARK[i] ?? [0, 0];
+    const [bx, by] = MARK[i + 1] ?? [0, 0];
+    const px = x - ax;
+    const py = y - ay;
+    const sx = bx - ax;
+    const sy = by - ay;
+    const h = Math.min(1, Math.max(0, (px * sx + py * sy) / (sx * sx + sy * sy)));
+    best = Math.min(best, Math.hypot(px - sx * h, py - sy * h));
+  }
+  return best;
+}
+
 /**
  * Seed a Turing dish: band-pass noise (plane waves at the natural wavelength, all directions)
- * saturated into a labyrinth, at a stripe's and a gap's own u and v. rgba = (u, v, ripeness, 0):
- * the seeded growth counts as mature.
+ * saturated into a labyrinth, at a stripe's and a gap's own u and v. With the M's height (grid uv;
+ * 0 = none), the stripes near it run parallel to its strokes, a stripe on the strokes themselves,
+ * as the labyrinth arranges itself round the ridge. rgba = (u, v, ripeness, 0): the seeded growth
+ * counts as mature.
  */
-function seedTuring(data: Float32Array, n: number, random: () => number): void {
+function seedTuring(data: Float32Array, n: number, random: () => number, markHeight: number): void {
   const k = TAU / TURING_PERIOD;
   const waves = new Float64Array(TURING_WAVES * 3);
   const turn = random() * Math.PI;
@@ -511,7 +573,13 @@ function seedTuring(data: Float32Array, n: number, random: () => number): void {
       if (dx * dx + dy * dy >= inside) continue;
       let sum = 0;
       for (let w = 0; w < waves.length; w += 3) sum += Math.cos((waves[w] ?? 0) * x + (waves[w + 1] ?? 0) * y + (waves[w + 2] ?? 0));
-      const m = 0.5 + 0.5 * Math.tanh(3 * sum * norm);
+      let field = sum * norm;
+      if (markHeight > 0) {
+        const d = markDistance(dx / (markHeight * n), dy / (markHeight * n)) * markHeight * n;
+        const echo = smoothstep(TURING_ECHO[1] * TURING_PERIOD, TURING_ECHO[0] * TURING_PERIOD, d);
+        field += (1.2 * Math.cos(k * d) - field) * echo;
+      }
+      const m = 0.5 + 0.5 * Math.tanh(3 * field);
       data[i] = TURING_GAP[0] + (TURING_STRIPE[0] - TURING_GAP[0]) * m;
       data[i + 1] = TURING_GAP[1] + (TURING_STRIPE[1] - TURING_GAP[1]) * m;
       data[i + 2] = 0.9;
@@ -605,11 +673,13 @@ class PetriLab implements SceneSim {
   readonly #feedKill = new Float32Array(4);
   readonly #turingVary = new Float32Array(2);
   readonly #bzVary = new Float32Array(4);
-  readonly #feedMark = new Float32Array(4);
+  /** Turing: the M's ridge, as uMark: height (grid uv; 0 = none), how far it has grown 0..1. */
+  readonly #ridge = new Float32Array(2);
   readonly #model4 = new Float32Array([BZ_A, BZ_B, 1 / BZ_EPS, 1 / (BZ_H * BZ_H)]);
   readonly #stroke = new Float32Array(4);
   readonly #touches = new Float32Array(MAX_TOUCHES * 4);
-  readonly #touchMark = new Float32Array(4);
+  /** BZ: the M firing this frame, as the touch pass's uMark: height (grid uv; 0 = not now), half-width. */
+  readonly #touchMark = new Float32Array(2);
   #touchCount = 0;
 
   #chemistry: Chemistry | undefined;
@@ -628,6 +698,8 @@ class PetriLab implements SceneSim {
   #markOn = false;
   /** BZ: model time of the M's next firing. */
   #nextMark = 0;
+  /** Turing: the chemistry second a ridge laid by 'now' with the M off is let go. */
+  #ridgeUntil = 0;
   #seen: [number | undefined, number | undefined] = [undefined, undefined];
   #lastX = 0;
   #lastY = 0;
@@ -643,7 +715,6 @@ class PetriLab implements SceneSim {
     this.#state = gpu.pingPong({ ...size, format: "rgba32f", filter: "nearest" });
     this.#view = gpu.target({ ...size, format: "rgba16f" });
     this.#turing = gpu.pass(TURING_PASS, "petri gray-scott").bind({ uState: this.#state });
-    this.#turing.set({ uMarkShift: TURING_MARK_SHIFT });
     this.#bz = gpu.pass(BZ_PASS, "petri barkley").bind({ uState: this.#state });
     this.#bz.set({ uModel: this.#model4 });
     this.#touch = gpu.pass(TOUCH_PASS, "petri touch").bind({ uState: this.#state });
@@ -659,7 +730,7 @@ class PetriLab implements SceneSim {
     const radius = petriRadius(aspect, this.#value(frame, this.#at.size));
     const n = gridFor(2 * radius * frame.height, this.#value(frame, this.#at.scale));
     if (chemistry !== this.#chemistry || pattern !== this.#pattern) {
-      this.#reseed(chemistry, pattern, n);
+      this.#reseed(chemistry, pattern, n, this.#value(frame, this.#at.mark));
     } else if (n !== this.#state.width) {
       // A new scale or frame size: stretch the pattern over the new grid; it re-forms at its own size.
       this.#state.resize(n, n, true);
@@ -679,10 +750,10 @@ class PetriLab implements SceneSim {
     this.#model += model;
 
     this.#touchCount = 0;
-    this.#touchMark[2] = 0;
+    this.#touchMark[0] = 0;
     this.#events(frame, turing, seconds, n);
     const stroke = this.#pointer(frame, aspect, radius);
-    const touched = stroke || this.#touchCount > 0 || this.#touchMark[2] > 0;
+    const touched = stroke || this.#touchCount > 0 || (this.#touchMark[0] ?? 0) > 0;
     if (touched) {
       this.#touch.run(this.#state, {
         uniforms: {
@@ -701,7 +772,7 @@ class PetriLab implements SceneSim {
       const dt = model / steps;
       if (turing) {
         this.#drift += seconds * drift * TURING_DRIFT;
-        this.#setTuring(dt, this.#value(frame, this.#at.mark), n);
+        this.#setTuring(dt);
         for (let i = 0; i < steps; i++) this.#turing.run(this.#state);
       } else {
         this.#drift += model * drift * BZ_DRIFT;
@@ -728,16 +799,20 @@ class PetriLab implements SceneSim {
     return frame.values[index] ?? this.#defaults[index] ?? 0;
   }
 
-  /** A fresh dish of `chemistry` for this pattern seed, settled by a short prewarm. */
-  #reseed(chemistry: Chemistry, pattern: number, n: number): void {
+  /**
+   * A fresh dish of `chemistry` for this pattern seed, settled by a short prewarm. A Turing M
+   * already on stands grown in it from the start, the stripes round it already following it.
+   */
+  #reseed(chemistry: Chemistry, pattern: number, n: number, mark: number): void {
     this.#chemistry = chemistry;
     this.#pattern = pattern;
     this.#state.resize(n, n);
     this.#view.resize(n, n);
     this.#random = mulberry32((Math.imul(pattern + 1, 0x9e3779b1) ^ Math.imul(chemistry + 1, 0x85ebca6b)) >>> 0);
     const data = new Float32Array(n * n * 4);
+    const ridge = chemistry === TURING && mark > 0 ? petriMarkHeight(mark) : 0;
     if (chemistry === TURING) {
-      seedTuring(data, n, this.#random);
+      seedTuring(data, n, this.#random, ridge);
       this.#pacemakers = [];
     } else {
       this.#pacemakers = seedBz(data, n, this.#random);
@@ -750,11 +825,14 @@ class PetriLab implements SceneSim {
     this.#untilDrop = DROP_FIRST;
     this.#spreads = [];
     this.#ripples = [];
-    // An M already on is laid into the fresh dish at once.
-    this.#markOn = false;
+    this.#ridge[0] = ridge;
+    this.#ridge[1] = 1;
+    this.#ridgeUntil = 0;
+    // BZ's M, already on, fires into the fresh dish at once.
+    this.#markOn = ridge > 0;
     this.#held = false;
     if (chemistry === TURING) {
-      this.#setTuring(TURING_STEP, 0, n);
+      this.#setTuring(TURING_STEP);
       for (let i = 0; i < TURING_PREWARM; i++) this.#turing.run(this.#state);
     } else {
       this.#setBz(BZ_STEP);
@@ -766,19 +844,14 @@ class PetriLab implements SceneSim {
   /**
    * Gray–Scott's uniforms: feed and kill behind and ahead of the drift (regions of the dish pick
    * their place between by the variation field, which slides and turns with the drift), and the
-   * M's richer gel while the mark is on.
+   * M's ridge.
    */
-  #setTuring(dt: number, mark: number, n: number): void {
+  #setTuring(dt: number): void {
     turingAt(this.#drift - TURING_LEAD, this.#feedKill, 0);
     turingAt(this.#drift + TURING_LEAD, this.#feedKill, 2);
     this.#turingVary[0] = this.#drift * 0.9;
     this.#turingVary[1] = this.#heading + this.#drift * 0.35;
-    const feedMark = this.#feedMark;
-    feedMark[0] = 0.5;
-    feedMark[1] = 0.5;
-    feedMark[2] = mark > 0 ? petriMarkHeight(mark) : 0;
-    feedMark[3] = TURING_MARK_FEED / n;
-    this.#turing.set({ uDt: dt, uFeedKill: this.#feedKill, uVary: this.#turingVary, uMark: feedMark });
+    this.#turing.set({ uDt: dt, uFeedKill: this.#feedKill, uVary: this.#turingVary, uMark: this.#ridge });
   }
 
   /** Barkley's uniforms: the step, and the excitability field sliding and turning with the drift. */
@@ -817,7 +890,7 @@ class PetriLab implements SceneSim {
     const { x, y } = this.#somewhere();
     this.#ripple(x, y, 1);
     if (turing) {
-      this.#spreads.push({ x, y, radius: lerp(TURING_DROP, this.#random()), seed: TURING_SEED / n, start: this.#clock, mark: 0 });
+      this.#spreads.push({ x, y, radius: lerp(TURING_DROP, this.#random()), seed: TURING_SEED / n, start: this.#clock });
       return;
     }
     this.#addTouch(x, y, BZ_DROP / n, 0);
@@ -852,20 +925,33 @@ class PetriLab implements SceneSim {
       }
     }
 
-    // The M: laid when switched on and on 'now' (even while off, at the middle size). Turing: a disc
-    // is washed clean and the pattern regrows from the M. BZ: it fires, and keeps firing while on.
+    // The M. Turing: a ridge of coral along its strokes, grown when switched on and held while on;
+    // 'now' washes the dish round it clean and grows it afresh (with the M off, at the middle size,
+    // let go after a while). BZ: it fires when switched on and on 'now', and keeps firing while on.
     const amount = this.#value(frame, this.#at.mark);
     const on = amount > 0;
-    const height = petriMarkHeight(on ? amount : 0.5);
-    const lay = markNow || (on && (!this.#markOn || (!turing && this.#model >= this.#nextMark)));
-    this.#markOn = on;
-    if (lay && turing) {
-      this.#spreads.push({ x: 0.5, y: 0.5, radius: TURING_MARK_CLEAR * height, seed: 0, start: this.#clock, mark: height });
-      this.#ripple(0.5, 0.5, 0.7);
-    } else if (lay) {
-      this.#markTouch(height, BZ_MARK_WIDTH / n);
+    if (turing) {
+      const ridge = this.#ridge;
+      if (markNow) {
+        const height = petriMarkHeight(on ? amount : 0.5);
+        ridge[0] = height;
+        ridge[1] = 0;
+        this.#ridgeUntil = this.#clock + TURING_MARK_LINGER;
+        this.#spreads.push({ x: 0.5, y: 0.5, radius: Math.min(TURING_MARK_CLEAR * height, TURING_MARK_CLEAR_MAX), seed: 0, start: this.#clock });
+        this.#ripple(0.5, 0.5, 0.7);
+      } else if (on) {
+        if (ridge[0] === 0) ridge[1] = 0;
+        ridge[0] = petriMarkHeight(amount);
+      } else if (this.#clock >= this.#ridgeUntil) {
+        ridge[0] = 0;
+      }
+      ridge[1] = Math.min(1, (ridge[1] ?? 0) + seconds / TURING_MARK_GROW);
+    } else if (markNow || (on && (!this.#markOn || this.#model >= this.#nextMark))) {
+      this.#touchMark[0] = petriMarkHeight(on ? amount : 0.5);
+      this.#touchMark[1] = BZ_MARK_WIDTH / n;
       this.#nextMark = this.#model + BZ_MARK_PERIOD;
     }
+    this.#markOn = on;
 
     if (turing) {
       // Spreading drops clear a growing disc (easing out), holding their seed until they settle.
@@ -873,7 +959,6 @@ class PetriLab implements SceneSim {
         const k = clamp01((this.#clock - spread.start) / TURING_SPREAD);
         const reach = spread.radius * (1 - (1 - k) ** 3);
         this.#addTouch(spread.x, spread.y, reach, spread.seed);
-        if (spread.mark > 0) this.#markTouch(spread.mark, TURING_MARK_SEED / n);
         return k < 1;
       });
       return;
@@ -889,14 +974,6 @@ class PetriLab implements SceneSim {
       }
       return true;
     });
-  }
-
-  #markTouch(height: number, width: number): void {
-    const mark = this.#touchMark;
-    mark[0] = 0.5;
-    mark[1] = 0.5;
-    mark[2] = height;
-    mark[3] = width;
   }
 
   /** Whether a 'now' button fired since the last frame (not on the first frame seen). */
@@ -933,7 +1010,7 @@ class PetriLab implements SceneSim {
     this.#ripples = this.#ripples.filter((ripple) => ripple.age < PETRI_RIPPLE.life);
   }
 
-  /** Write the bubbles and ripples for the shader; upload only when they changed. */
+  /** Write the bubbles, the ridge and the ripples for the shader; upload only when they changed. */
   #publish(): void {
     const data = this.#eventData;
     data.fill(0);
@@ -948,6 +1025,8 @@ class PetriLab implements SceneSim {
       data[i * 4 + 3] = presence;
       i++;
     }
+    data[PETRI_RIDGE_TEXEL * 4] = this.#ridge[0] ?? 0;
+    data[PETRI_RIDGE_TEXEL * 4 + 1] = this.#ridge[1] ?? 0;
     this.#ripples.forEach((ripple, j) => {
       const at = (EVENT_WIDTH + j) * 4;
       data[at] = ripple.x;

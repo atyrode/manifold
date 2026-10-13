@@ -4,10 +4,11 @@
 // LANTERNS_EYE over the water, the far bank's waterline LANTERNS_BANK ahead. Above that waterline
 // the frame is the far bank (a silhouette in its own plane: tree crowns, a temple hall and a
 // pagoda, a quay with stone lanterns, a vermilion arched bridge hung with lamps whose half-ring
-// closes into a full circle with its reflection, an old pine), the wooded hills beyond it, falling
-// away toward the sunset on the left, and the sky. Below it lies the water: a mirror of the sky's
-// afterglow and the bank, bent by ripples into broad horizontal bands, darkening toward our bank;
-// around two stones a cushion of water, a glassy lee and a wake.
+// closes into a full circle with its reflection, an old pine), a warm glow in the haze over the
+// temple grounds, the wooded hills beyond, falling away toward the sunset on the left, and the
+// dusk sky with a few stars and a thin young moon low over the pine. Below it lies the water: a
+// mirror of the sky's afterglow, the moon and the bank, bent by ripples into broad horizontal
+// bands, darkening toward our bank; around two stones a cushion of water, a glassy lee and a wake.
 //
 // The lanterns come from the simulation (sim.ts), one texel each in uSim0. Each is a small box
 // traced along the eye ray: wooden tray, paper walls glowing brightest level with the candle, the
@@ -274,21 +275,62 @@ float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out vec2 lamp, 
   return cover;
 }
 
-// What a ray sees beyond the water: the sky (with stars when seen directly), the hills, the far
-// bank where the ray crosses its plane, and mist lying along the bank's foot. o is where the ray
-// leaves (the eye, or a point on the water); lift tips the sky lookup up a little for a rough
-// mirror; foot is a cell's size at the bank (m), blur how far the water draws its lamps out.
+// The young moon, a thin crescent low over the old pine at dusk: lit on the side toward the set
+// sun (down and to the left), the rest of its disc faintly grey with earthshine, in a soft halo.
+// Fixed in the frame: e in screen heights right of the centre and above the horizon. soft widens
+// its edges (in the rippled mirror). Returns x: the lit crescent, y: the whole disc, z: the halo.
+const vec2 LANTERNS_MOON = vec2(-0.66, 0.205);
+const float LANTERNS_MOON_R = 0.021;
+vec3 lanternsMoon(vec2 e, float soft) {
+  vec2 d = e - LANTERNS_MOON;
+  float r = LANTERNS_MOON_R;
+  float aa = soft + 1.2 / uRes.y;
+  float disc = 1.0 - smoothstep(r - aa, r + aa, length(d));
+  // The dark limb: the disc again, shifted up and to the right, leaving a crescent ~4 cells thick.
+  float lit = disc * smoothstep(r - aa, r + aa, length(d - r * 0.32 * vec2(0.55, 0.835)));
+  return vec3(lit, disc, exp(-dot(d, d) / (9.0 * r * r)));
+}
+
+// A sparse scatter of stars over the dusk sky, fixed in the frame (e as for the moon): a few
+// bright, more faint, each a soft dot two to four cells across that breathes very slowly.
+float lanternsStars(vec2 e) {
+  vec2 g = e * 24.0;
+  vec2 id = floor(g);
+  float h = hash12(id + vec2(17.3, 4.1));
+  if (h > 0.1) return 0.0;
+  float m = h / 0.1;
+  m *= m; // magnitudes: mostly faint
+  vec2 c = 0.25 + 0.5 * vec2(hash12(id + 3.1), hash12(id.yx + 8.9));
+  float r = (1.0 + 1.1 * m) * 24.0 / uRes.y; // radius 1..2 cells, in grid units
+  float star = 1.0 - smoothstep(0.35 * r, r, length(g - id - c));
+  float breathe = 0.85 + 0.15 * sin(uTime * uMotion * (0.2 + 0.3 * fract(h * 37.0)) + h * 91.0);
+  return star * (0.4 + 0.6 * m) * breathe;
+}
+
+// What a ray sees beyond the water: the sky (with a few stars when seen directly) and the young
+// moon, the hills, a warm glow in the haze over the temple grounds, the far bank where the ray
+// crosses its plane, and mist lying along the bank's foot. o is where the ray leaves (the eye, or
+// a point on the water); lift tips the sky lookup up a little for a rough mirror (and softens the
+// moon); foot is a cell's size at the bank (m), blur how far the water draws its lamps out.
 // Returns the colour without the bank's lamps; lamp returns their light (x as seen, y drawn out),
 // faded in with the dusk and veiled by the mist, for the caller to lay on.
 vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, bool direct, out vec2 lamp) {
   vec3 col = skyColor(sky, normalize(r + vec3(0.0, lift, 0.0)));
-  if (direct) col += vec3(0.85, 0.9, 1.0) * skyStars(sky, r, 0.55);
+  float ex = r.x / r.z * LANTERNS_FOCAL;
+  float ey = r.y / r.z * LANTERNS_FOCAL;
+  if (direct) {
+    col += vec3(0.85, 0.9, 1.0) * skyStars(sky, r, 0.55);
+    float shown = (1.0 - sky.day) * clamp(0.35 + sky.night, 0.0, 1.0) * smoothstep(0.03, 0.09, ey);
+    shown *= 1.0 - smoothstep(0.1, 0.3, dot(col, LUMA)); // lost in the afterglow
+    col += vec3(0.82, 0.87, 1.0) * 0.75 * lanternsStars(vec2(ex, ey)) * shown;
+  }
+  vec3 moon = lanternsMoon(vec2(ex, ey), 0.5 * lift);
+  float evening = 1.0 - smoothstep(-0.06, 0.02, sky.sun.y);
+  col += (vec3(0.056, 0.063, 0.084) * moon.y + vec3(1.0, 0.9, 0.72) * 1.3 * moon.x + vec3(0.5, 0.45, 0.4) * 0.1 * moon.z) * evening;
 
   // Two ranges of hills, the further paler (aerial perspective), as in an ink-wash painting. They
   // fall away toward the sunset on the left, so the afterglow lies low over the bank there, and
   // the river can mirror it.
-  float ex = r.x / r.z * LANTERNS_FOCAL;
-  float ey = r.y / r.z * LANTERNS_FOCAL;
   float aa = max(1.2 / uRes.y, foot * LANTERNS_FOCAL / LANTERNS_BANK);
   float fall = mix(0.3, 1.0, smoothstep(-0.95, 0.2, ex));
   vec3 hills = LANTERNS_HILLS * lit;
@@ -297,6 +339,10 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
 
   float run = (LANTERNS_BANK - o.z) / r.z;
   vec2 b = vec2(o.x + r.x * run, o.y + r.y * run);
+  // Lanterns lit among the trees of the temple grounds warm the haze above the hall, so its roofs
+  // stand dark against a soft amber glow (and the river mirrors it below).
+  vec2 grounds = (b - vec2(LANTERNS_TEMPLE, 9.5)) / vec2(17.0, 6.0);
+  col += vec3(1.0, 0.56, 0.24) * 0.1 * dark * (0.7 + 0.6 * K_mist) * exp(-dot(grounds, grounds));
   vec3 alb;
   float gap;
   float cover = lanternsBank(b, foot, blur, alb, lamp, gap);

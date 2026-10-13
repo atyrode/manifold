@@ -7,8 +7,11 @@
 // - the stream, which follows a lane: it comes round the bend far out on the right, along the far
 //   side, and sweeps in diagonally toward our bank on the left (a meander's fastest water crossing
 //   from one bank to the other). Every streamline is the lane shifted across the river, slower the
-//   further from it, so the stream neither gathers nor spreads; along our bank it turns to run
-//   beside the bank, and a gentle drift out from the bank carries lanterns set down there out;
+//   further from it; its pace grows with distance, so on screen the procession moves at much the
+//   same pace near and far. Along our bank it turns to run beside the bank, and a gentle drift out
+//   from the bank carries lanterns set down there out;
+// - the near stream, a slower current straight along in front of us, which carries a share of the
+//   lanterns across the foreground from the right edge to the left;
 // - slow eddies, strongest along our bank: the curl of a stream function (a few drifting sines
 //   times an envelope across the river), so they swirl the lanterns without gathering or
 //   scattering the water;
@@ -20,13 +23,14 @@
 // they take, and slide off the rocks.
 //
 // So the lanterns make a procession: a loose ribbon from small far points of light near the far
-// bank on the right, growing as it sweeps in past the near stone, drifting off to the left. A
-// steady population follows the count knob: lanterns leave past the left edge and new ones come
-// round the bend on the lane, now and then in twos and threes, a few straying wide of it.
-// Flotillas are pushed off from our bank, just below the frame, and glide along the front; a click
-// sets a lantern down on the water under the pointer, its candle catching as rings spread from it;
-// dragging the held pointer pushes the water along. The M lantern (the landmark) has a slot of its
-// own and keeps turning back to face the bank.
+// bank on the right, growing as it sweeps in past the near stone, drifting off to the left, and a
+// second string of big, close lanterns crossing the foreground. A steady population follows the
+// count knob: lanterns leave past the left edge and new ones come round the bend, now and then in
+// twos and threes, a few straying wide of their stream. Flotillas are pushed off from our bank,
+// just below the frame, and glide along the front; a click sets a lantern down on the water under
+// the pointer, its candle catching as rings spread from it; dragging the held pointer pushes the
+// water along. The M lantern (the landmark) has a slot of its own, keeps to the near water where
+// its M reads, keeps turning back to face the bank, and comes round again soon after it has gone.
 //
 // Time runs in fixed steps of STEP seconds of simulated time, so the river depends only on the
 // knobs, the seed and simulated time, not on the frame rate; positions are interpolated between
@@ -115,11 +119,17 @@ const LANE_FAR = 72;
 const BANK_PUSH = 1.5;
 const BANK_TURN = 6;
 /** The drift out from our bank (m/s at LANE_NEAR) and how far out it reaches (m). */
-const OUTFLOW = 0.1;
-const OUTFLOW_REACH = 4;
+const OUTFLOW = 0.08;
+const OUTFLOW_REACH = 2;
 /** Right along our bank a little of the stream runs on regardless of the shallows (share of the
  *  knob's speed), so lanterns set down there glide out of view instead of lingering. */
-const BANK_DRIFT = 0.35;
+const BANK_DRIFT = 0.25;
+/** The near stream: a second, slower current close in front of us (centre and half-width, m; its
+ *  own speed as a share of the knob's), carrying lanterns set down from a jetty upstream on our
+ *  side across the foreground, big and close, from the right edge to the left. */
+const NEAR_Z = 11.5;
+const NEAR_WIDTH = 2.2;
+const NEAR_PACE = 0.24;
 /** Eddies: modes, each's speed (m/s), the share left mid-river, how far from our bank they are strong, how fast they ride the stream. */
 const EDDY_MODES = 3;
 const EDDY_SPEED = 0.025;
@@ -159,11 +169,14 @@ const AGE_KEPT = 60;
 // ---- Spawning ----
 
 /** New lanterns float this far either side of the lane (m, roughly the standard deviation); a
- *  share of them stray anywhere between these offsets. */
+ *  share of them stray anywhere between these offsets. A share come on the near stream instead,
+ *  this far either side of its centre (m). */
 const LANE_SPREAD = 2.2;
 const STRAY_SHARE = 0.18;
 const STRAY_NEAR = -4;
 const STRAY_FAR = 18;
+const NEAR_SHARE = 0.3;
+const NEAR_SPREAD = 1.6;
 /** New lanterns come in this far beyond the frame's right edge, and leave this far beyond its left
  *  (m: past their halo, which is all that shows of them by then). */
 const SPAWN_MARGIN = 1.2;
@@ -184,9 +197,15 @@ const RELEASE_SPACING = 0.55;
 const FLOTILLA_RARE = 150;
 const FLOTILLA_OFTEN = 35;
 const FLOTILLA_FIRST = 14;
-/** The M lantern comes round the bend on the lane's near side, this far off it (m). */
-const MARK_OFFSET_NEAR = -3;
-const MARK_OFFSET_FAR = -1;
+/** The M lantern keeps to the near water, where its M reads: it is drawn toward this distance
+ *  (m) by a soft spring (1/s²), comes in this far beyond the right edge (m) so it is in view within
+ *  seconds, and is set down from our bank this far ahead (m, its foot just in the frame). */
+const MARK_Z = 13;
+const MARK_HOLD = 0.08;
+/** The most that spring pulls (m/s²), so its glide out from our bank stays gentle. */
+const MARK_PULL = 0.22;
+const MARK_MARGIN = 0.8;
+const MARK_SET_Z = 7.7;
 /** Clicks further out than this set the lantern down here (m). */
 const CLICK_FAR = 75;
 
@@ -242,7 +261,9 @@ function laneSlope(x: number): number {
 const ROCK_STREAM = ROCKS.map((rock) => {
   const centre = laneZ(rock.x);
   const off = (rock.z - centre) / LANE_WIDTH;
-  const speed = (LANE_SLACK + (1 - LANE_SLACK) * Math.exp(-off * off)) * paceAt(centre);
+  const lane = Math.exp(-off * off);
+  const pace = paceAt(rock.z) + (paceAt(centre) - paceAt(rock.z)) * lane;
+  const speed = (LANE_SLACK + (1 - LANE_SLACK) * lane) * pace;
   const turn = smoothstep(LANE_NEAR, LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN), rock.z);
   return { x: -speed, z: -speed * laneSlope(rock.x) * turn };
 });
@@ -373,7 +394,7 @@ class LanternRiver implements SceneSim {
     const values = frame.values;
     const index = this.#knobIndex;
     this.#target = clamp(Math.round(values[index.lanterns] ?? this.#target), 0, MAX_LANTERNS - 1);
-    this.#current = CURRENT_SLOW + (CURRENT_FAST - CURRENT_SLOW) * clamp(values[index.current] ?? 0.35, 0, 1);
+    this.#current = CURRENT_SLOW + (CURRENT_FAST - CURRENT_SLOW) * clamp(values[index.current] ?? 0.3, 0, 1);
     this.#wind = clamp(values[index.wind] ?? 0, -1, 1);
     this.#flotilla = clamp(values[index.flotilla] ?? 0, 0, 1);
     this.#markOn = (values[index.mark] ?? 0) > 0.5;
@@ -493,15 +514,13 @@ class LanternRiver implements SceneSim {
     this.#handHeld = false;
 
     // The evening is already under way: the procession all across the view, settled into the
-    // current. The M lantern joins it just left of centre on the lane's near side, where it is
-    // big enough for the M to read.
+    // current. The M lantern floats in the near water right of centre, drifting into the middle.
     for (let k = 0; k < this.#target; k++) this.#scatter();
     for (let s = 0; s < PREWARM / STEP; s++) this.#step();
     if (this.#markOn) {
-      const x = -1.5;
-      const z = laneZ(x) + 0.5 * (MARK_OFFSET_NEAR + MARK_OFFSET_FAR);
-      this.#flow(x, z);
-      this.#launch(this.#mark, x, z, this.#water[0] ?? 0, this.#water[1] ?? 0, 1, AGE_KEPT);
+      const x = 0.25 * this.#halfWidth(MARK_Z);
+      this.#flow(x, MARK_Z);
+      this.#launch(this.#mark, x, MARK_Z, this.#water[0] ?? 0, 0, 1, AGE_KEPT);
     }
     for (const lantern of this.#all) {
       lantern.lastX = lantern.x;
@@ -518,9 +537,9 @@ class LanternRiver implements SceneSim {
   #scatter(): void {
     const random = this.#random;
     for (let tries = 0; tries < 6; tries++) {
-      const offset = this.#sampleOffset();
-      const x = this.#seenAt(offset, 2.1 * random.next() - 1, 0);
-      const z = clamp(laneZ(x) + offset, LANE_NEAR + 0.3, LANE_FAR);
+      this.#place(2.1 * random.next() - 1, 0);
+      const x = this.#point[0] ?? 0;
+      const z = this.#point[1] ?? NEAR_Z;
       const onRock = ROCKS.some((rock) => Math.hypot(x - rock.x, z - rock.z) < rock.radius + RADIUS + 0.2);
       if (onRock || this.#crowded(x, z, 0.6)) continue;
       const lantern = this.#freeSlot();
@@ -529,6 +548,25 @@ class LanternRiver implements SceneSim {
       this.#launch(lantern, x, z, this.#water[0] ?? 0, this.#water[1] ?? 0, 1, AGE_KEPT);
       return;
     }
+  }
+
+  /** Pick a new lantern's streamline (mostly on or about the lane, a share on the near stream) and
+   *  where on it it is seen: `frac` of the way from the middle of the view to its right (1) or left
+   *  (-1) edge, `margin` metres further out. Writes x, z into #point; returns whether it is on the
+   *  near stream. */
+  #place(frac: number, margin: number): boolean {
+    const random = this.#random;
+    if (random.next() < NEAR_SHARE) {
+      const z = NEAR_Z + NEAR_SPREAD * (random.next() + random.next() - 1);
+      this.#point[0] = frac * this.#halfWidth(z) + (frac < 0 ? -margin : margin);
+      this.#point[1] = z;
+      return true;
+    }
+    const offset = this.#sampleOffset();
+    const x = this.#seenAt(offset, frac, margin);
+    this.#point[0] = x;
+    this.#point[1] = clamp(laneZ(x) + offset, LANE_NEAR + 0.3, LANE_FAR);
+    return false;
   }
 
   /** How far off the lane a new lantern floats (m across, + further out): mostly close to it, a few strays. */
@@ -615,9 +653,11 @@ class LanternRiver implements SceneSim {
   #spawnUpstream(): number {
     const random = this.#random;
     for (let tries = 0; tries < 4; tries++) {
-      const offset = this.#sampleOffset();
-      const x = this.#seenAt(offset, 1, SPAWN_MARGIN) + 1.5 * random.next();
-      const z = clamp(laneZ(x) + offset, LANE_NEAR + 0.3, LANE_FAR);
+      const near = this.#place(1, SPAWN_MARGIN);
+      const x0 = this.#point[0] ?? 0;
+      const z0 = this.#point[1] ?? NEAR_Z;
+      const x = x0 + 1.5 * random.next();
+      const z = near ? z0 : clamp(z0 + laneZ(x) - laneZ(x0), LANE_NEAR + 0.3, LANE_FAR);
       if (this.#crowded(x, z, 0.6)) continue;
       const lantern = this.#freeSlot();
       if (!lantern) return 0;
@@ -629,7 +669,8 @@ class LanternRiver implements SceneSim {
       const companions = random.next() < PAIR_CHANCE ? 1 + Math.floor(2 * random.next()) : 0;
       for (let k = 1; k <= companions && this.#count() <= this.#target; k++) {
         const x2 = x + k * (0.5 + 0.4 * random.next());
-        const z2 = clamp(laneZ(x2) + offset + (random.next() - 0.5) * 1.2, LANE_NEAR + 0.3, LANE_FAR);
+        const follow = near ? 0 : laneZ(x2) - laneZ(x);
+        const z2 = clamp(z + follow + (random.next() - 0.5) * 1.2, LANE_NEAR + 0.3, LANE_FAR);
         const companion = this.#freeSlot();
         if (!companion || this.#crowded(x2, z2, 0.5)) continue;
         this.#launch(companion, x2, z2, vx, vz, 1, AGE_KEPT);
@@ -661,11 +702,12 @@ class LanternRiver implements SceneSim {
     this.#release(count, (0.1 + 0.35 * random.next()) * this.#halfWidth(RELEASE_Z + 1), true);
   }
 
-  /** The M lantern pushed off from our bank, right of centre so it crosses the whole view. */
+  /** The M lantern set down from our bank right of centre, its foot just in the frame: it glides
+   *  out to the near water (MARK_Z) and drifts across the whole view. */
   #releaseMark(): void {
-    const x = 0.25 * this.#halfWidth(RELEASE_Z + 1);
-    this.#flow(x, RELEASE_Z);
-    this.#launch(this.#mark, x, RELEASE_Z + 0.2, 0.5 * (this.#water[0] ?? 0), RELEASE_PUSH * 1.15, 1, AGE_KEPT);
+    const x = 0.35 * this.#halfWidth(MARK_SET_Z);
+    this.#flow(x, MARK_SET_Z);
+    this.#launch(this.#mark, x, MARK_SET_Z, this.#water[0] ?? 0, 0.15, 1, AGE_KEPT);
     this.#nextMark = Number.POSITIVE_INFINITY;
   }
 
@@ -686,9 +728,12 @@ class LanternRiver implements SceneSim {
     // across the river: u = -U p(x) s(o), w = -U p(x) s(o) z'(x) with o = z - laneZ(x) and p the
     // pace. Its vorticity is U (p (s'(o) (1 + z'²) - s(o) z'') - s(o) p' z'); where the pace falls
     // downstream the stream converges along the lane, so the lanterns close up as they come near.
+    // Away from the lane the slack water keeps the pace of its own distance, so the shallows in
+    // front of us stay slow even where the lane is far out.
     // Between the lane and our bank the stream flattens out to run beside the bank, so lanterns
     // there drift in toward the lane as it comes near; right along the bank a little of the stream
-    // runs on regardless of the shallows (the vorticity of both is left out).
+    // runs on regardless of the shallows; and the near stream runs straight along in front of us
+    // (the vorticity of the first two is left out).
     const centre = laneZ(x);
     const slope = laneSlope(x);
     const curve = (-slope * (LANE_SLOPE - slope)) / LANE_BEND;
@@ -696,12 +741,15 @@ class LanternRiver implements SceneSim {
     const lane = Math.exp(-off * off);
     const speed = LANE_SLACK + (1 - LANE_SLACK) * lane;
     const dSpeed = (-(1 - LANE_SLACK) * 2 * off * lane) / LANE_WIDTH;
-    const pace = paceAt(centre);
-    const dPace = pace > PACE_MIN && pace < PACE_MAX ? (PACE_POWER * pace * slope) / Math.max(centre, 1) : 0;
+    const lanePace = paceAt(centre);
+    const pace = paceAt(z) + (lanePace - paceAt(z)) * lane;
+    const dPace = lanePace > PACE_MIN && lanePace < PACE_MAX ? (PACE_POWER * lanePace * slope * lane) / Math.max(centre, 1) : 0;
     const turn = smoothstep(LANE_NEAR, LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN), z);
-    let u = -stream * (speed * pace + BANK_DRIFT * (1 - smoothstep(LANE_NEAR + 1, LANE_NEAR + 4.5, z)));
+    const across = (z - NEAR_Z) / NEAR_WIDTH;
+    const nearStream = NEAR_PACE * Math.exp(-across * across);
+    let u = -stream * (speed * pace + nearStream + BANK_DRIFT * (1 - smoothstep(LANE_NEAR + 1, LANE_NEAR + 4.5, z)));
     let w = -stream * speed * pace * slope * turn + OUTFLOW * Math.exp(-(z - LANE_NEAR) / OUTFLOW_REACH);
-    let vorticity = stream * (pace * (dSpeed * (1 + slope * slope) - speed * curve) - speed * dPace * slope);
+    let vorticity = stream * (pace * (dSpeed * (1 + slope * slope) - speed * curve) - speed * dPace * slope - (2 * nearStream * across) / NEAR_WIDTH);
 
     // Eddies: velocity = curl(e psi) = (d(e psi)/dz, -d(e psi)/dx), vorticity = -laplacian(e psi),
     // the envelope e strongest along our bank.
@@ -783,6 +831,8 @@ class LanternRiver implements SceneSim {
       lantern.torque = 0;
       if (lantern.z < LANE_NEAR) lantern.az += (LANE_NEAR - lantern.z) * BANK_PUSH;
       else if (lantern.z > LANE_FAR) lantern.az -= (lantern.z - LANE_FAR) * BANK_PUSH;
+      // The M lantern keeps to the near water, where its M reads.
+      if (lantern.mark) lantern.az += clamp((MARK_Z - lantern.z) * MARK_HOLD, -MARK_PULL, MARK_PULL);
       if (this.#hand) {
         const d = Math.hypot(lantern.x - this.#handX, lantern.z - this.#handZ);
         if (d < HAND_RADIUS) {
@@ -868,15 +918,14 @@ class LanternRiver implements SceneSim {
       const half = this.#halfWidth(lantern.z);
       if (lantern.x < -half - EXIT_MARGIN || lantern.x > half + SPAWN_MARGIN + STRAY) {
         lantern.alive = false;
-        if (lantern.mark && this.#markOn) this.#nextMark = this.#clock + 2 + 6 * this.#random.next();
+        if (lantern.mark && this.#markOn) this.#nextMark = this.#clock + 2 + 4 * this.#random.next();
       }
     }
 
     this.#spawn();
     if (this.#markOn && !this.#mark.alive && this.#clock >= this.#nextMark) {
-      const offset = MARK_OFFSET_NEAR + (MARK_OFFSET_FAR - MARK_OFFSET_NEAR) * this.#random.next();
-      const x = this.#seenAt(offset, 1, SPAWN_MARGIN);
-      const z = clamp(laneZ(x) + offset, LANE_NEAR + 0.3, LANE_FAR);
+      const z = MARK_Z + (this.#random.next() - 0.5);
+      const x = this.#halfWidth(z) + MARK_MARGIN;
       this.#flow(x, z);
       this.#launch(this.#mark, x, z, this.#water[0] ?? 0, this.#water[1] ?? 0, 1, AGE_KEPT);
       this.#nextMark = Number.POSITIVE_INFINITY;
