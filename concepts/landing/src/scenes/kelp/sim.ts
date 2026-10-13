@@ -33,7 +33,8 @@
 //   uSim1  rgba16f KELP_STATE_WIDTH × 5, nearest:
 //          row 0, per stipe: min x, max x of its rising part, top y of it, presence 0..1 (0 = not drawn)
 //          row 1, per fish: x, y, heading cos, sin (screen heights from the frame's centre/bottom)
-//          row 2, per fish: body length (0 = hidden), flash 0..1, tail beat −1..1, 0
+//          row 2, per fish: body length (0 = hidden), flash 0..1, flank (1 broadside, less turned
+//                 toward or away), shown 0..1
 //          row 3, globals: KELP_GLOBAL columns (see there)
 //          row 4, per stipe: the node its rising part ends at (the first at the surface, else the
 //                 top), the x it reaches the surface at, the farthest x it floats to, link length
@@ -115,6 +116,12 @@ export const KELP_ORIGIN = [0, 0.5, 0] as const;
 export const KELP_FISH = { scale: 0.8, max: 32, low: 0.24, high: 0.8 } as const;
 /** The sea lion: its depth and length (screen heights). */
 export const KELP_VISITOR = { scale: 0.5, length: 0.095 } as const;
+/**
+ * The Manifold M of piled stones on the floor: its depth (perspective scale), the world x it
+ * stands at, its height in world units at size 0 and 1, and its half-width in mark units (the M's
+ * strokes plus the stones on them). The plants nearer than it give it a clearing.
+ */
+export const KELP_MARK = { scale: 0.62, x: 0.52, low: 0.15, high: 0.32, halfWidth: 0.6 } as const;
 
 /**
  * The surge, in world units (screen heights at the nearest layer): u(x, t) = speed · surge knob ·
@@ -213,17 +220,27 @@ const VISITOR_FIRST = 18;
 // ---- the school -----------------------------------------------------------------------------------
 const FISH_STEP = 1 / 60;
 const FISH_MAX_STEPS = 8;
-/** Neighbour radii (screen heights): keep apart, swim alike, keep together. */
-const FISH_SEPARATION = 0.028;
+/**
+ * Neighbour radii (screen heights): keep apart (each fish its own, ±30%), swim alike, keep
+ * together; and how strongly. A loose school: they align, but not in ranks.
+ */
+const FISH_SEPARATION = 0.03;
 const FISH_ALIGN = 0.09;
-const FISH_COHESION = 0.15;
+const FISH_COHESION = 0.16;
+const FISH_ALIGN_PULL = 0.9;
+const FISH_COHESION_PULL = 0.5;
+/** Each fish's own slow wandering (screen heights/s²), so headings and spacing vary. */
+const FISH_WANDER = 0.04;
 /** Speeds (screen heights/s): cruising, slowest, fastest, and the extra a fright allows. */
 const FISH_CRUISE = 0.06;
 const FISH_MIN = 0.035;
 const FISH_MAX = 0.09;
 const FISH_FRIGHT_SPEED = 0.32;
-/** Body length (screen heights at the school's depth), varied ±15% fish by fish. */
-const FISH_LENGTH = 0.036;
+/**
+ * Body length (screen heights at the school's depth): small fish, a few cells long, varied ±20%
+ * and ±25% more by how near or far in the school's depth each swims.
+ */
+const FISH_LENGTH = 0.0135;
 /** A click scatters fish within this radius; dragging the hand repels them within FLEE. */
 const FISH_SCATTER = 0.35;
 const FISH_FLEE = 0.18;
@@ -231,8 +248,8 @@ const FISH_FLEE = 0.18;
 const FISH_FRIGHT_TIME = 2;
 const FISH_FADE = 1.2;
 
-type KnobKey = "surge" | "period" | "current" | "swell" | "density" | "kelpSeed" | "fish" | "visitor";
-const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "density", "kelpSeed", "fish", "visitor"];
+type KnobKey = "surge" | "period" | "current" | "swell" | "density" | "kelpSeed" | "fish" | "visitor" | "mark";
+const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "density", "kelpSeed", "fish", "visitor", "mark"];
 
 /** Fixed base seed: the same arrangement number always grows the same forest. */
 const SEED = 0x6b31f00d;
@@ -271,7 +288,11 @@ interface Hand {
   on: number;
 }
 
-/** The school of fish, flown as boids in screen heights at the school's depth. */
+/**
+ * The school of fish, flown as boids in screen heights at the school's depth. Loose and in depth:
+ * each fish keeps its own distance, wanders a little on its own, swims a little nearer or farther
+ * (bigger or smaller), and now and then turns toward or away from the eye, foreshortening.
+ */
 class School {
   readonly x = new Float32Array(KELP_FISH.max);
   readonly y = new Float32Array(KELP_FISH.max);
@@ -280,9 +301,12 @@ class School {
   readonly heading = new Float32Array(KELP_FISH.max);
   readonly turn = new Float32Array(KELP_FISH.max);
   readonly flash = new Float32Array(KELP_FISH.max);
-  readonly tail = new Float32Array(KELP_FISH.max);
+  /** How much of its side a fish shows: 1 broadside, less as it turns toward or away. */
+  readonly flank = new Float32Array(KELP_FISH.max);
   readonly shown = new Float32Array(KELP_FISH.max);
   readonly size = new Float32Array(KELP_FISH.max);
+  readonly #phase = new Float32Array(KELP_FISH.max);
+  readonly #spread = new Float32Array(KELP_FISH.max);
   readonly #ax = new Float32Array(KELP_FISH.max);
   readonly #ay = new Float32Array(KELP_FISH.max);
   #clock = 0;
@@ -300,7 +324,7 @@ class School {
     const ty = this.#ty;
     for (let i = 0; i < KELP_FISH.max; i++) {
       const a = random.next() * TAU;
-      const r = 0.07 * Math.sqrt(random.next());
+      const r = 0.12 * Math.sqrt(random.next());
       this.x[i] = tx + r * Math.cos(a) * 1.6;
       this.y[i] = ty + r * Math.sin(a) * 0.7;
       this.vx[i] = FISH_CRUISE;
@@ -308,9 +332,12 @@ class School {
       this.heading[i] = 0;
       this.turn[i] = 0;
       this.flash[i] = 0;
-      this.tail[i] = random.next() * TAU;
+      this.flank[i] = 1;
       this.shown[i] = i < count ? 1 : 0;
-      this.size[i] = FISH_LENGTH * (0.85 + 0.3 * random.next());
+      const depth = 2 * random.next() - 1;
+      this.size[i] = FISH_LENGTH * (0.8 + 0.4 * random.next()) * (1 + 0.25 * depth);
+      this.#phase[i] = random.next();
+      this.#spread[i] = 0.7 + 0.6 * random.next();
     }
   }
 
@@ -366,6 +393,7 @@ class School {
       let cx = 0;
       let cy = 0;
       let nc = 0;
+      const reach = FISH_SEPARATION * (this.#spread[i] ?? 1);
       for (let j = 0; j < n; j++) {
         if (j === i) continue;
         const dx = (x[j] ?? 0) - xi;
@@ -380,9 +408,9 @@ class School {
           avy += vy[j] ?? 0;
           na++;
         }
-        if (d2 < FISH_SEPARATION * FISH_SEPARATION && d2 > 1e-10) {
+        if (d2 < reach * reach && d2 > 1e-10) {
           const d = Math.sqrt(d2);
-          const push = (1 - d / FISH_SEPARATION) / d;
+          const push = (1 - d / reach) / d;
           sx -= dx * push;
           sy -= dy * push;
         }
@@ -392,14 +420,18 @@ class School {
       let fx = 1.4 * sx;
       let fy = 1.4 * sy;
       if (na > 0) {
-        fx += 1.6 * (avx / na - vxi);
-        fy += 1.6 * (avy / na - vyi);
+        fx += FISH_ALIGN_PULL * (avx / na - vxi);
+        fy += FISH_ALIGN_PULL * (avy / na - vyi);
       }
       if (nc > 0) {
-        const pull = 0.7 * (1 - 0.7 * fright);
+        const pull = FISH_COHESION_PULL * (1 - 0.7 * fright);
         fx += (pull * cx) / nc;
         fy += (pull * cy) / nc;
       }
+      // Each fish's own slow wandering.
+      const phase = (this.#phase[i] ?? 0) * TAU;
+      fx += FISH_WANDER * Math.sin(this.#clock * 0.37 + phase);
+      fy += 0.8 * FISH_WANDER * Math.cos(this.#clock * 0.29 + 1.4 * phase);
       // Toward the wander target, gently and capped, so the school drifts rather than homes in.
       let gx = (tx - xi) * 0.25;
       let gy = (ty - yi) * 0.25;
@@ -463,7 +495,8 @@ class School {
       const wheel = Math.max(0, Math.sin(this.#clock * 0.17 + (x[i] ?? 0) * 3 + (y[i] ?? 0) * 1.3)) ** 24;
       const target = Math.max(turning, 0.8 * wheel);
       this.flash[i] = (this.flash[i] ?? 0) + (target - (this.flash[i] ?? 0)) * flashEase;
-      this.tail[i] = ((this.tail[i] ?? 0) + h * (2 + 18 * want)) % TAU;
+      // Turning toward or away from the eye now and then, slowly.
+      this.flank[i] = 0.55 + 0.45 * Math.abs(Math.cos(this.#clock * 0.11 + (this.#phase[i] ?? 0) * TAU));
       const shown = this.shown[i] ?? 0;
       this.shown[i] = i < count ? Math.min(1, shown + fade) : Math.max(0, shown - fade);
     }
@@ -491,6 +524,7 @@ class KelpSim implements SceneSim {
   readonly #presence = new Float32Array(KELP_STIPES);
   readonly #link = new Float32Array(KELP_STIPES);
   readonly #scale = new Float32Array(KELP_STIPES);
+  readonly #baseX = new Float32Array(KELP_STIPES);
   // Per point: its layer's scale, floor and surface, the flow it was last dragged toward (screen
   // heights/s) and its blade's lean.
   readonly #pointScale = new Float32Array(POINT_COUNT);
@@ -542,6 +576,7 @@ class KelpSim implements SceneSim {
       kelpSeed: index("kelpSeed"),
       fish: index("fish"),
       visitor: index("visitor"),
+      mark: index("mark"),
     };
     const initial = (key: KnobKey): number => {
       const def = params[knobIndex[key]];
@@ -557,6 +592,7 @@ class KelpSim implements SceneSim {
       kelpSeed: initial("kelpSeed"),
       fish: initial("fish"),
       visitor: initial("visitor"),
+      mark: initial("mark"),
     };
     this.#system = new VerletSystem({ points: POINT_COUNT, constraints: KELP_STIPES * (2 * KELP_SEGMENTS - 1) });
     this.#stepOptions = { gravity: [0, 0, 0], damping: DRAG, iterations: 4, force: this.#force };
@@ -638,6 +674,7 @@ class KelpSim implements SceneSim {
         this.#presence[stipe] = rank < this.#knob.density ? 1 : 0;
         this.#link[stipe] = length / KELP_SEGMENTS;
         this.#scale[stipe] = s;
+        this.#baseX[stipe] = x;
         const chain = sys.addChain([x, floorY, 0], [x, floorY + length, 0], KELP_SEGMENTS, { bend: BEND, pinFirst: true });
         for (let j = 1; j <= KELP_SEGMENTS; j++) {
           const along = (j * length) / KELP_SEGMENTS;
@@ -653,6 +690,7 @@ class KelpSim implements SceneSim {
         }
       }
     }
+    this.#updatePresence(0);
     this.#flowTime = sys.time;
     this.#swellAge = -1;
     this.#school.place(random, this.#aspect, Math.round(this.#knob.fish));
@@ -772,12 +810,20 @@ class KelpSim implements SceneSim {
     }
   }
 
-  /** Plants emerge from the haze or fade into it as the density knob moves; at once while paused. */
+  /**
+   * Plants emerge from the haze or fade into it as the density knob moves (at once while paused).
+   * While the Manifold M stands, the plants nearer than it step aside: it stands in a clearing.
+   */
   #updatePresence(dt: number): void {
     const density = this.#knob.density;
     const step = dt > 0 ? dt / PRESENCE_EASE : 1;
+    const mark = this.#knob.mark;
+    const markX = KELP_MARK.x * KELP_MARK.scale;
+    const markHalf = KELP_MARK.halfWidth * (KELP_MARK.low + (KELP_MARK.high - KELP_MARK.low) * mark) * KELP_MARK.scale;
     for (let stipe = 0; stipe < KELP_STIPES; stipe++) {
-      const want = (this.#rank[stipe] ?? 1) < density ? 1 : 0;
+      const s = this.#scale[stipe] ?? 1;
+      const inFront = mark > 0 && s > KELP_MARK.scale && Math.abs((this.#baseX[stipe] ?? 0) - markX) < markHalf + 0.18 * s;
+      const want = (this.#rank[stipe] ?? 1) < density && !inFront ? 1 : 0;
       const have = this.#presence[stipe] ?? 0;
       this.#presence[stipe] = want > have ? Math.min(want, have + step) : Math.max(want, have - step);
     }
@@ -937,7 +983,7 @@ class KelpSim implements SceneSim {
       const angle = school.heading[i] ?? 0;
       const size = school.size[i] ?? 0;
       this.#put(KELP_ROW.fishPose, i, x, y, Math.cos(angle), Math.sin(angle));
-      this.#put(KELP_ROW.fishLook, i, shown > 0 ? size * (0.4 + 0.6 * shown) : 0, school.flash[i] ?? 0, Math.sin(school.tail[i] ?? 0), shown);
+      this.#put(KELP_ROW.fishLook, i, shown > 0 ? size * (0.4 + 0.6 * shown) : 0, school.flash[i] ?? 0, school.flank[i] ?? 1, shown);
       if (shown <= 0) continue;
       minX = Math.min(minX, x - size);
       maxX = Math.max(maxX, x + size);

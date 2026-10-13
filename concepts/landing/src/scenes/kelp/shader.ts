@@ -33,6 +33,7 @@ import {
   KELP_FISH,
   KELP_GLOBAL,
   KELP_LAYERS,
+  KELP_MARK,
   KELP_ORIGIN,
   KELP_POINT_ROW,
   KELP_POINTS,
@@ -82,6 +83,11 @@ const int KELP_MAX_FISH = ${KELP_FISH.max};
 const float KELP_FISH_SCALE = ${num(KELP_FISH.scale)};
 const float KELP_VISITOR_SCALE = ${num(KELP_VISITOR.scale)};
 const float KELP_VISITOR_LENGTH = ${num(KELP_VISITOR.length)};
+const float KELP_MARK_SCALE = ${num(KELP_MARK.scale)};
+const float KELP_MARK_X = ${num(KELP_MARK.x)};
+const float KELP_MARK_LOW = ${num(KELP_MARK.low)};
+const float KELP_MARK_HIGH = ${num(KELP_MARK.high)};
+const float KELP_MARK_HALF = ${num(KELP_MARK.halfWidth)};
 const float KELP_SURGE_SPEED = ${num(KELP_SURGE.speed)};
 const float KELP_SURGE_K1 = ${num(KELP_SURGE.k1)};
 const float KELP_SURGE_K2 = ${num(KELP_SURGE.k2)};
@@ -138,7 +144,7 @@ const vec3 KELP_FISH_BACK = vec3(0.06, 0.13, 0.18);
 const vec3 KELP_SEALION = vec3(0.17, 0.13, 0.10);
 const vec3 KELP_JELLY_DAY = vec3(0.75, 0.80, 0.92);
 const vec3 KELP_GLOW = vec3(0.30, 0.95, 1.0);          // bioluminescence: plankton, jellies, the stone's crust
-const vec3 KELP_STONE = vec3(0.34, 0.36, 0.31);
+const vec3 KELP_STONE = vec3(0.52, 0.50, 0.44);        // pale limestone
 const vec3 KELP_CORALLINE = vec3(0.86, 0.45, 0.58);
 const vec3 KELP_URCHIN = vec3(0.20, 0.06, 0.22);
 const float KELP_THING_TALL = 0.16;                    // the tallest thing standing on the floor (world units)
@@ -313,7 +319,8 @@ float kelpShafts(vec2 P, KelpEnv e, float tc) {
   float xTop = e.vanish.x + fan * (e.vanish.y - 1.0);
   float gap = 1.0 - smoothstep(-0.06, 0.06, kelpCanopy(vec2(xTop / sTop, 1.0 / sTop), e));
   float beams = smoothstep(0.35, 0.8, vnoise(vec2(fan * 6.0, tc * 0.012)));
-  return beams * (0.2 + 0.8 * gap) * mix(0.3, 1.0, smoothstep(0.0, 1.0, P.y));
+  // Faint far down too, where the far water and the distant kelp give them depth.
+  return beams * (0.2 + 0.8 * gap) * mix(0.45, 1.0, smoothstep(0.1, 0.9, P.y));
 }
 
 // Slopes of the surface's small waves (long and slow), plus the swell's long slope swaying with
@@ -411,6 +418,8 @@ KelpThing kelpThings(vec2 P, float aa, float tc, float kth, KelpEnv e) {
       float s = 1.0 / z;
       if (s <= best.s) continue;
       float x = (cell.x + 0.2 + 0.6 * hash12(cell + 7.7)) * CX;
+      // Nothing stands between the eye and the Manifold M: it has its clearing.
+      if (K_mark > 0.0 && s > KELP_MARK_SCALE && abs(x * s - KELP_MARK_X * KELP_MARK_SCALE) < (KELP_MARK_HALF * mix(KELP_MARK_LOW, KELP_MARK_HIGH, K_mark) + 0.12) * KELP_MARK_SCALE) continue;
       vec2 q = (P - vec2(x * s, KELP_HORIZON - KELP_FLOOR * s)) / s;
       if (q.y < 0.0 || q.y > KELP_THING_TALL || abs(q.x) > 0.16) continue;
       float px = aa / s;
@@ -486,32 +495,34 @@ void kelpPlace(KelpThing thing, float s, vec3 water, inout bool placed, inout ve
   placed = true;
 }
 
-// A wall of distant kelp in the haze: columns that sway with the surge, ragged with blades.
-void kelpBackdrop(vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col, inout float rays) {
-  const float s = 0.21;
+// A wall of distant kelp at scale s: columns that sway with the surge, ragged with blades, rising
+// into the ragged band of their canopy along the surface; faint silhouettes in the haze, a little
+// darker than it.
+void kelpBackdrop(float s, float salt, vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col, inout float rays) {
   float floorY = KELP_HORIZON - KELP_FLOOR * s;
   float surfaceY = KELP_HORIZON + KELP_SURFACE * s;
   if (P.y < floorY || P.y > surfaceY) return;
   float spacing = 0.36 * s;
   float frac = (P.y - floorY) / (surfaceY - floorY);
   float cell = floor(P.x / spacing);
-  float cover = 0.0;
+  // The canopy: a band under the surface, thicker and thinner, with gaps, drifting with the surge.
+  float mat = vnoise(vec2((P.x / s - 0.5 * kelpShift(P.x / s, e)) * 5.0 + salt, salt));
+  float band = s * (0.015 + 0.05 * mat) * smoothstep(0.3, 0.45, mat + 0.25 * K_density);
+  float cover = 1.0 - smoothstep(band - aa, band + aa, surfaceY - P.y);
   for (int d = -1; d <= 1; d++) {
     float c = cell + float(d);
-    float h = hash12(vec2(c, K_kelpSeed + 11.0));
+    float h = hash12(vec2(c, K_kelpSeed + salt));
     if (h > 0.25 + 0.75 * K_density) continue;
-    float h2 = hash12(vec2(c + 0.5, K_kelpSeed + 23.0));
-    float x = (c + 0.5 + 0.6 * (h2 - 0.5)) * spacing;
+    float h2 = hash12(vec2(c + 0.5, K_kelpSeed + salt + 12.0));
+    float x = (c + 0.5 + 0.9 * (h2 - 0.5)) * spacing;
     x += kelpShift(x / s, e) * s * pow(frac, 1.3) * 0.8;
-    // Toward the surface the column bends over and spreads into its canopy.
-    float crown = smoothstep(0.8, 1.0, frac);
-    float fuzz = smoothstep(0.35, 0.85, vnoise(vec2(frac * 30.0, c * 3.1))) * smoothstep(0.05, 0.2, frac);
-    float halfWidth = max(s * (0.006 + 0.022 * fuzz + 0.12 * crown), 1.2 * aa);
+    float fuzz = smoothstep(0.35, 0.85, vnoise(vec2(frac * 30.0, c * 3.1 + salt))) * smoothstep(0.05, 0.2, frac);
+    float halfWidth = max(s * (0.008 + 0.03 * fuzz), 1.2 * aa);
     cover = max(cover, 1.0 - smoothstep(halfWidth - aa, halfWidth + aa, abs(P.x - x)));
   }
   if (step(kth, cover) < 0.5) return;
   vec3 kelp = KELP_OLIVE * kelpLightAt((surfaceY - P.y) / s, e) * KELP_DIFFUSE;
-  col = mix(kelp, water, kelpFog(s));
+  col = mix(kelp, water, 0.82 * kelpFog(s));
   rays = kelpRayWeight(s);
 }
 
@@ -817,34 +828,55 @@ float kelpSparks(vec2 P, float stir, float aa, float tc, KelpEnv e) {
 
 // ---- the stone, the sea lion, the jellyfish, the school ----
 
-// The Manifold M carved in stone, standing half sunk in the sand, crusted with coralline algae; the
-// caustic net plays over it. At night the crust breathes a faint glow and a bioluminescent film
-// traces the stone's edges, so the M still reads in the dark.
+// The Manifold M of rounded stones piled along its strokes on the floor, in a clearing the nearer
+// plants leave it (sim.ts), crusted pink and white with coralline algae and lit by the caustic net;
+// it carries a little through the haze. At night a bioluminescent film outlines it.
 void kelpStone(vec2 P, vec3 water, float aa, float tc, float kth, KelpEnv e, inout vec3 col, inout float rays, inout float accent) {
   if (K_mark <= 0.0) return;
-  const float s = 0.55;
+  const float s = KELP_MARK_SCALE;
   float floorY = KELP_HORIZON - KELP_FLOOR * s;
-  float height = mix(0.16, 0.34, K_mark) * s;
-  vec2 q = rotate(P - vec2(0.64 * s, floorY), -0.05) / height - vec2(0.0, 0.45);
-  if (abs(q.x) > 0.62 || abs(q.y) > 0.62) return;
-  float erode = 0.025 * (vnoise(q * 18.0) - 0.5) + 0.012 * (vnoise(q * 47.0) - 0.5);
-  float d = markDistance(q) - 0.105 + erode;
-  float sand = -0.47 + 0.04 * vnoise(vec2(q.x * 6.0, 1.3));
+  float height = mix(KELP_MARK_LOW, KELP_MARK_HIGH, K_mark) * s;
+  // Mark units, the M's foot on the floor.
+  vec2 q = (P - vec2(KELP_MARK_X * s, floorY)) / height - vec2(0.0, 0.5);
+  if (abs(q.x) > KELP_MARK_HALF + 0.05 || q.y > 0.65 || q.y < -0.56) return;
+  // The nearest stone: along each stroke, the two around the pixel's place on it.
+  float d = 1e3;
+  vec2 nrm = vec2(0.0, 1.0);
+  float stone = 0.0;
+  for (int k = 0; k < 4; k++) {
+    vec2 a = markVertex(k);
+    vec2 ab = markVertex(k + 1) - a;
+    float L = length(ab);
+    vec2 dir = ab / L;
+    vec2 across = vec2(-dir.y, dir.x);
+    float before = floor(clamp(dot(q - a, dir), 0.0, L) / 0.12);
+    for (int j = 0; j < 2; j++) {
+      float index = min(before + float(j), floor(L / 0.12));
+      float hs = hash12(vec2(float(k) * 17.0 + index, 3.7));
+      vec2 c = a + dir * (index * 0.12 + 0.03 * (hs - 0.5)) + across * 0.04 * (fract(hs * 7.1) - 0.5);
+      vec2 rel = (q - c) / vec2(1.0, 0.8);
+      float dd = length(rel) - (0.09 + 0.045 * fract(hs * 13.3));
+      if (dd < d) {
+        d = dd;
+        nrm = rel / max(length(rel), 1e-4);
+        stone = hs;
+      }
+    }
+  }
   float px = aa / height;
-  float cover = step(kth, (1.0 - smoothstep(-px, px, d)) * smoothstep(sand - px, sand + px, q.y));
-  if (cover <= 0.0) return;
-  // Bevelled edges catch the light from above.
-  vec2 eps = vec2(0.01, 0.0);
-  vec2 grad = vec2(markDistance(q + eps.xy) - markDistance(q - eps.xy), markDistance(q + eps.yx) - markDistance(q - eps.yx));
-  float relief = 1.0 + 0.45 * smoothstep(-0.07, 0.0, d) * dot(normalize(grad + 1e-5), vec2(0.25, 0.97));
-  float crust = smoothstep(0.55, 0.68, vnoise(q * 9.0 + 4.0)) * (0.5 + 0.5 * smoothstep(-0.2, 0.4, q.y));
+  if (step(kth, 1.0 - smoothstep(-px, px, d)) <= 0.0) return;
+  // Each stone a dome lit from above; coralline crust on the tops, pink or white stone by stone.
+  float crust = smoothstep(0.42, 0.56, vnoise(q * 14.0 + stone * 40.0)) * smoothstep(-0.2, 0.5, nrm.y);
+  vec3 coral = mix(KELP_CORALLINE, vec3(0.95, 0.92, 0.88), step(0.7, fract(stone * 5.3)));
+  vec3 albedo = mix(KELP_STONE * (0.85 + 0.35 * stone), coral, crust);
   float dw = (KELP_HORIZON + KELP_SURFACE * s - P.y) / s;
   float caustic = kelpCaustic(vec2(P.x / s - dw * e.slant, 1.0 / s + 0.35 * dw), tc * KELP_CAUSTIC_RATE, 0.05) * K_caustics;
-  vec3 c = mix(KELP_STONE, KELP_CORALLINE, crust) * relief * (kelpLightAt(dw, e) * 0.4 + kelpBeamAt(dw, e) * (0.3 + 0.8 * caustic));
+  float top = max(nrm.y, 0.0);
+  vec3 c = albedo * (kelpLightAt(0.5 * dw, e) * 0.7 * (0.65 + 0.5 * top) + kelpBeamAt(0.7 * dw, e) * (0.35 + 0.9 * caustic) * (0.45 + 0.75 * top));
   float breathe = 0.6 + 0.4 * sin(tc * 0.5);
-  float outline = (1.0 - smoothstep(0.0, 0.035, -d)) * breathe * e.night;
+  float outline = (1.0 - smoothstep(0.0, 0.03, -d)) * breathe * e.night;
   c += KELP_GLOW * (0.12 * crust * breathe * e.night + 0.35 * outline);
-  float fog = kelpFog(s);
+  float fog = 0.6 * kelpFog(s);
   col = mix(c, water, fog);
   rays = kelpRayWeight(s);
   accent = (0.55 + 0.45 * max(crust, outline)) * (1.0 - fog);
@@ -938,8 +970,10 @@ void kelpJellies(vec2 P, float aspect, vec3 water, float aa, float tc, KelpEnv e
   }
 }
 
-// The school: slim silver fish with dark backs, each flank catching the light by its heading, so
-// the school shimmers as it turns, and flashing bright as a fish rolls into a turn.
+// The school: small spindle-shaped fish a few cells long, pointed at the snout and forked at the
+// tail, silver along the flank and dark along the back, swimming loosely at slightly different
+// depths (and so sizes). A fish turning toward or away from the eye shows less of its side; each
+// flank catches the light by its heading, and a fish rolling into a turn flashes bright.
 void kelpFish(vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col, inout float rays, inout float accent) {
   if (uSimOn.y < 0.5) return;
   vec4 box = kelpState(KELP_G_SCHOOL, KELP_ROW_GLOBALS);
@@ -957,22 +991,20 @@ void kelpFish(vec2 P, vec3 water, float aa, float kth, KelpEnv e, inout vec3 col
     if (len <= 0.0) continue;
     vec4 pose = kelpState(f, KELP_ROW_FISH_POSE);
     vec2 d = P - pose.xy;
-    if (dot(d, d) > 0.36 * len * len) continue;
-    // Body lengths: x toward the snout, y up whichever way it swims; the tail beats.
+    if (dot(d, d) > 0.4 * len * len) continue;
+    // Body lengths: x toward the snout (foreshortened as it turns in depth), y up whichever way it
+    // swims.
     float up = pose.z >= 0.0 ? 1.0 : -1.0;
-    vec2 q = vec2(dot(d, pose.zw), dot(d, vec2(-pose.w, pose.z)) * up) / len;
-    float rear = clamp((0.1 - q.x) / 0.6, 0.0, 1.0);
-    q.y -= look.z * 0.05 * rear * rear;
-    float bx = (q.x - 0.08) / 0.42;
-    float body = min(0.13 * sqrt(max(1.0 - bx * bx, 0.0)) - abs(q.y), 0.1 * (1.0 - abs(bx)));
+    vec2 q = vec2(dot(d, pose.zw) / max(look.z, 0.3), dot(d, vec2(-pose.w, pose.z)) * up) / len;
+    float bx = (q.x - 0.1) / 0.4;
+    float body = 0.2 * (1.0 - bx * bx) - abs(q.y);
     float tl = -0.3 - q.x;
-    float fin = min(min(0.02 + 0.6 * tl - abs(q.y), 0.2 - tl), tl + 0.04);
+    float fin = min(min(0.02 + 0.75 * tl - abs(q.y), 0.18 - tl), tl + 0.03);
     float px = aa / len;
     if (step(kth, smoothstep(-px, px, max(body, fin)) * min(look.w * 1.5, 1.0)) <= 0.0) continue;
-    float dorsal = smoothstep(-0.02, 0.05, q.y);
-    float sheen = 0.75 + 0.45 * cos(2.0 * atan(pose.w, pose.z) + float(f) * 1.7);
-    vec3 flank = KELP_SILVER * (light * 0.85 * sheen + beam * (0.25 + 1.3 * look.y));
-    fishCol = mix(flank, KELP_FISH_BACK * light, 0.35 * dorsal);
+    float sheen = 0.7 + 0.35 * cos(2.0 * atan(pose.w, pose.z) + float(f) * 1.7);
+    vec3 flank = KELP_SILVER * (light * 0.7 * sheen + beam * (0.2 + 1.2 * look.y));
+    fishCol = mix(flank, KELP_FISH_BACK * light * 1.3, step(0.03, q.y));
     flash = look.y;
     cover = 1.0;
   }
@@ -1004,8 +1036,9 @@ Shade sceneKelp(vec2 uv, vec2 cell, float t) {
   // Things on the floor go down just before the first layer nearer than they are.
   KelpThing thing = kelpThings(P, aa, tc, kth, e);
   bool placed = thing.cover <= 0.0;
-  kelpPlace(thing, 0.21, water, placed, col, rays);
-  kelpBackdrop(P, water, aa, kth, e, col, rays);
+  // Two walls of distant kelp, the farther first, both behind anything on the floor.
+  kelpBackdrop(0.16, 11.0, P, water, aa, kth, e, col, rays);
+  kelpBackdrop(0.24, 37.0, P, water, aa, kth, e, col, rays);
   kelpPlace(thing, KELP_LAYER_SCALE[3], water, placed, col, rays);
   kelpForest(3, P, water, aa, tc, kth, e, wantStir, col, rays, accent, stir);
   kelpPlace(thing, 0.45, water, placed, col, rays);
@@ -1014,7 +1047,7 @@ Shade sceneKelp(vec2 uv, vec2 cell, float t) {
   kelpForest(2, P, water, aa, tc, kth, e, wantStir, col, rays, accent, stir);
   kelpPlace(thing, KELP_VISITOR_SCALE, water, placed, col, rays);
   kelpVisitor(P, water, aa, tc, kth, e, col, rays);
-  kelpPlace(thing, 0.55, water, placed, col, rays);
+  kelpPlace(thing, KELP_MARK_SCALE, water, placed, col, rays);
   kelpStone(P, water, aa, tc, kth, e, col, rays, accent);
   kelpPlace(thing, KELP_LAYER_SCALE[1], water, placed, col, rays);
   kelpForest(1, P, water, aa, tc, kth, e, wantStir, col, rays, accent, stir);
@@ -1027,7 +1060,7 @@ Shade sceneKelp(vec2 uv, vec2 cell, float t) {
   kelpSnowLayer(P, 1.15, 0.1, 0.005, 0.06, aa, tc, kth, shafts, e, 41.0, water, col);
 
   // The shafts: light scattered toward the eye from the water in front of whatever is seen.
-  col += e.beam * KELP_SHAFT_TINT * shafts * rays * 0.25;
+  col += e.beam * KELP_SHAFT_TINT * shafts * rays * 0.28;
 
   // Night plankton, sparking where the kelp moves and where the hand has stirred the water.
   if (wantStir) {
