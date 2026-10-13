@@ -1,0 +1,1711 @@
+// A dry stone garden (karesansui), kept by an unseen rake, under a maple letting go of its leaves.
+//
+// The gravel is a HeightField (src/sims/heightfield.ts) over a fixed garden 2.4 depths wide and 1
+// deep (Y runs away from the veranda, X to the right; the rest level is 0; a garden depth is about
+// ten metres). The rake follows a choreographed plan built from the stone islands and the pattern
+// knob: long passes across the garden, straight or in waves, the rake lifted over the ring zones,
+// then a lap of five rings around every island; or, for "circles", rings spreading out from every
+// stone until they meet the rings of the next. Every frame the rake moves a little along the plan:
+// a board just ahead of it levels the old pattern (the field helper has no leveling tool, so that
+// is done here on the field's data), then five tines cut fresh grooves with HeightField.rake, in
+// short pieces so the banks stay even round a bend. Behind it the grooves slump to the angle of
+// repose (relax, a band of rows per frame) and soften slowly (smooth, every couple of seconds), so
+// the garden is crisp where the rake has just been and softer the longer since it passed. A coarser
+// grid remembers when each spot was last raked: freshly turned gravel is darker and dries back.
+//
+// Raking the whole garden through the tool would cost a few hundred milliseconds, so a layout (at
+// construction, and when the pattern, the stones or the M change) is laid straight from the same
+// plan: each texel takes the groove phase the plan leaves there, with a weathered profile, rounded
+// by one smoothing pass. The rake then starts left of centre and re-cuts it for real, crisp.
+//
+// Leaves fall as flat plates (Andersen, Pesavento & Wang, "Unsteady aerodynamics of fluttering and
+// tumbling plates", J. Fluid Mech. 541, 2005: the quasi-steady model with added mass, circulation
+// lift, quadratic drag and a rotational damping torque), each in its own vertical plane that slowly
+// turns, carried by the wind. Light leaves flutter, swinging from side to side and gliding up at the
+// end of each swing; heavier ones tumble end over end. They land, settle flat, lie a while and fade,
+// or are pushed away by the rake. The leaves are packed into an rgba16f texture, four texels a leaf.
+//
+// Uploads: uSim0 r16f heights (GARDEN.cols × rows); uSim1 rgba16f islands and stones (8 × 4) plus
+// the drying clock; uSim2 rgba16f leaves (4 × GARDEN_LEAF_SLOTS); uSim3 r16f when each spot was
+// last raked, on the drying clock (half resolution).
+import type { ParamDef } from "../../params.ts";
+import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
+import { DataTexture } from "../../sims/texture.ts";
+import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+
+export const gardenPatterns = ["waves", "straight", "circles"] as const;
+export type GardenPattern = (typeof gardenPatterns)[number];
+export const gardenSeasons = ["spring", "summer", "autumn", "winter"] as const;
+export type GardenSeason = (typeof gardenSeasons)[number];
+
+/**
+ * The garden and its two cameras, shared with the shader. Garden space: X right (0..aspect), Y away
+ * from the veranda (0..1), Z up, in garden depths.
+ *   veranda: a shifted-lens pinhole at (aspect / 2, eyeY, eyeHeight) looking along +Y, horizon at
+ *            screen height `horizon`, focal length `focal` in screen heights (as viewRay's 0.5 /
+ *            tan(fov / 2)); the earthen wall stands at Y = wallY.
+ *   above:   a pinhole `overheadHeight` above (aspect / 2, overheadY) looking straight down; the
+ *            ground spans `span` garden depths per screen height, from the drip line to the wall's cap.
+ */
+export const GARDEN = {
+  aspect: 2.4,
+  cols: 672,
+  rows: 280,
+  /** The pebble drip line along the veranda: garden Y below this is not raked. */
+  drip: 0.03,
+  wallY: 1.03,
+  wallHeight: 0.125,
+  capHeight: 0.022,
+  focal: 1.25,
+  horizon: 1.0,
+  eyeHeight: 0.253,
+  eyeY: -0.316,
+  span: 1.06,
+  overheadHeight: 1.5,
+  overheadY: 0.52,
+} as const;
+
+/**
+ * The Manifold M: where it lies when it is on (that patch of gravel is kept clear of islands), its
+ * height in garden depths at the size knob's ends (small + grow × size), its slate's half stroke
+ * width in M heights, and how far the slate stands above the gravel.
+ */
+export const GARDEN_MARK = { x: 1.5, y: 0.36, reserve: 0.32, small: 0.12, grow: 0.16, stroke: 0.055, slate: 0.016 } as const;
+
+/** Moss: a low cushion out to clear × (base + grow × moss knob). */
+export const GARDEN_MOSS = { height: 0.009, base: 0.25, grow: 0.7 } as const;
+
+/**
+ * The maple's foliage, as clumps (x, y, z, radius) in garden space: a tree standing beyond the wall
+ * at the far left, one limb reaching over the wall toward the middle, another higher over the
+ * garden (out of the veranda's frame, in view from above).
+ */
+export const GARDEN_CANOPY: readonly (readonly [number, number, number, number])[] = [
+  [0.05, 1.1, 0.27, 0.1],
+  [0.3, 1.04, 0.21, 0.085],
+  [0.52, 1.0, 0.17, 0.07],
+  [0.66, 0.93, 0.225, 0.075],
+  [0.88, 0.86, 0.245, 0.07],
+  [1.08, 0.8, 0.262, 0.06],
+  [0.2, 0.9, 0.3, 0.09],
+  [0.45, 0.82, 0.29, 0.08],
+  [0.72, 0.74, 0.31, 0.07],
+  [0.38, 1.14, 0.15, 0.08],
+];
+
+/** Islands and stones per island the stone texture holds (the shader's loops and struct match). */
+export const GARDEN_ISLANDS = 4;
+export const GARDEN_STONES = 3;
+export const GARDEN_LEAF_SLOTS = 24;
+/** uSim1's size: a row of islands (and the drying clock), then a row per stone, two texels each. */
+const STONE_COLUMNS = 2 * GARDEN_ISLANDS;
+const STONE_ROWS = 1 + GARDEN_STONES;
+/** The "when was it raked" grid: half the height field's resolution. */
+const GARDEN_FRESH = { cols: 336, rows: 140 } as const;
+/** The drying clock wraps back by this much once it passes twice that, so r16f keeps it to seconds. */
+const FRESH_REBASE = 3000;
+
+/** Leaf kinds, as packed for the shader. */
+export const GARDEN_LEAF_KIND = { maple: 0, petal: 1, green: 2, withered: 3 } as const;
+type LeafKind = (typeof GARDEN_LEAF_KIND)[keyof typeof GARDEN_LEAF_KIND];
+
+const GA = GARDEN.aspect;
+/** Positions are packed relative to the garden's centre, where half floats are finest. */
+const OX = GA / 2;
+const OY = 0.5;
+const TAU = Math.PI * 2;
+
+// ---- the rake ------------------------------------------------------------------------------------
+
+/** The garden rake: five tines; a groove 3 mm deep would be invisible, so these are stage-sized. */
+const RAKE: RakeOptions = { width: 0.012, depth: 0.003, ridge: 0.012, tines: 5, spacing: 0.024 };
+/** One pass of the rake covers this width: passes and ring laps are laid this far apart. */
+const SWATH = RAKE.tines * RAKE.spacing;
+/** The leveling board: half its width (reaching half-way into the bank beyond the outer tines), its soft edge, and how far it runs ahead of the tines. */
+const LEVEL_HALF = 0.066;
+const LEVEL_SOFT = 0.008;
+const LEAD = 0.03;
+/** The hand rake the pointer draws with: three tines. */
+const HAND: RakeOptions = { width: 0.011, depth: 0.0028, ridge: 0.011, tines: 3, spacing: 0.022 };
+const HAND_LEVEL_HALF = 0.04;
+/** Shortest pointer move that rakes, garden depths. */
+const HAND_STEP = 0.003;
+/** Centre of the nearest pass; passes then every SWATH out to the wall. */
+const PASS_FIRST = 0.1;
+const PASSES = 8;
+/** Groove centres of the line patterns start here (the nearest pass's nearest tine). */
+const LINE_FIRST = PASS_FIRST - 0.5 * (RAKE.tines - 1) * RAKE.spacing;
+/** Waves: amplitude and wavelength of the passes' meander. */
+const WAVE_AMPLITUDE = 0.028;
+const WAVE_LENGTH = 0.62;
+/** Laps of rings around each island (and the M) in the line patterns: five rings. */
+const RING_LAPS = 1;
+/** The first ring's innermost groove sits this far outside an island's clear radius... */
+const RING_GAP = 0.012;
+/** ...so the rake's centre runs this far out on the first lap, and a SWATH further on each next. */
+const RING_FIRST = RING_GAP + 0.5 * (RAKE.tines - 1) * RAKE.spacing;
+/**
+ * Plan polylines are sampled this finely: the tool lays each piece's banks square to that piece, so
+ * a coarse bend would leave beads where the pieces meet at an angle.
+ */
+const PLAN_STEP = 0.006;
+/** Pieces of a pass shorter than this between ring zones are not worth setting the rake down for. */
+const MIN_STROKE = 0.04;
+/** Between strokes the rake is lifted and carried: this much plan distance of rest. */
+const STROKE_PAUSE = 0.05;
+/** Garden depths per second at the raking knob's full travel. */
+const RAKE_SPEED = 0.08;
+/** Longest piece the rake cuts in one go (garden depths): a slow frame is cut in several. */
+const MAX_PIECE = 0.0015;
+/** Where the rake starts after a layout (the plan point nearest it): left of centre, in both views. */
+const LIVE_START = { x: 0.66, y: 0.56 } as const;
+/** Weathered groove amplitude a layout starts with (a fresh cut is RAKE.depth deep). */
+const LAID_AMPLITUDE = 0.0022;
+
+/** Angle of repose of the gravel (rise over run), the slumping rate, and rows relaxed per frame. */
+const TALUS = 0.8;
+const SLUMP_RATE = 2.5;
+const RELAX_ROWS = 6;
+/** Seconds between weathering passes, and their diffusion per second at the knob's full travel. */
+const SMOOTH_EVERY = 2;
+const SMOOTH_RATE = 0.012;
+/** Milliseconds between uploads of the heights and the drying grid while they change. */
+const UPLOAD_EVERY_MS = 1000 / 30;
+/** Knobs that re-lay the garden must rest this long first (a dragged slider). */
+const RELAYOUT_MS = 220;
+
+// ---- the leaves ----------------------------------------------------------------------------------
+
+// The plate model in units of the plate's chord, the air's density and gravity (the paper's model
+// with C_T = 1.2, C_R = π, drag A = 1.4, B = 1.0; added masses of a thin ellipse; a weak damping
+// torque, which lets light plates flutter widely and heavy ones tumble).
+const PLATE_CT = 1.2;
+const PLATE_CR = Math.PI;
+const PLATE_A = 1.4;
+const PLATE_B = 1.0;
+const PLATE_MU = 0.02;
+const PLATE_M11 = 0.02;
+const PLATE_M22 = Math.PI / 4;
+const PLATE_IA = Math.PI / 128;
+/** Model time per substep (stable to ~0.06 with the midpoint rule). */
+const PLATE_STEP = 0.03;
+
+interface LeafSpec {
+  /** Drawn radius, garden depths. */
+  radius: number;
+  /** The plate's aerodynamic chord: sets the swing and the speed of descent. */
+  chord: number;
+  /** Real seconds per model time unit: sets the pace of the swing. */
+  pace: number;
+  /** Mass per span (the dimensionless moment of inertia I*): flutter below ~0.6, tumble above. */
+  flutter: readonly [number, number];
+  tumble: readonly [number, number];
+  /** Share of leaves that tumble. */
+  tumbling: number;
+  /** Seconds a leaf lies on the gravel before it fades. */
+  life: readonly [number, number];
+}
+
+const SPECS: Readonly<Record<LeafKind, LeafSpec>> = {
+  [GARDEN_LEAF_KIND.maple]: { radius: 0.0105, chord: 0.042, pace: 0.17, flutter: [0.2, 0.42], tumble: [0.72, 0.9], tumbling: 0.15, life: [45, 85] },
+  [GARDEN_LEAF_KIND.petal]: { radius: 0.0058, chord: 0.022, pace: 0.13, flutter: [0.12, 0.3], tumble: [0.6, 0.75], tumbling: 0.08, life: [25, 50] },
+  [GARDEN_LEAF_KIND.green]: { radius: 0.011, chord: 0.042, pace: 0.17, flutter: [0.25, 0.45], tumble: [0.72, 0.9], tumbling: 0.12, life: [45, 85] },
+  [GARDEN_LEAF_KIND.withered]: { radius: 0.0095, chord: 0.032, pace: 0.15, flutter: [0.35, 0.55], tumble: [0.7, 0.9], tumbling: 0.4, life: [60, 100] },
+};
+
+/** Leaves let go per second at the leaf-fall knob's full travel, by season. */
+const FALL_RATE: Readonly<Record<GardenSeason, number>> = { spring: 1.4, summer: 0.15, autumn: 0.7, winter: 0.08 };
+const SEASON_KIND: Readonly<Record<GardenSeason, LeafKind>> = {
+  spring: GARDEN_LEAF_KIND.petal,
+  summer: GARDEN_LEAF_KIND.green,
+  autumn: GARDEN_LEAF_KIND.maple,
+  winter: GARDEN_LEAF_KIND.withered,
+};
+
+/** Leaf states. */
+const FREE = 0;
+const FALLING = 1;
+const LANDED = 2;
+const LEAVING = 3;
+
+/** Wind drift (garden depths per second) at wind = 1; a gust's peak, rise time, and updraft. */
+const WIND_DRIFT = 0.12;
+const GUST_DRIFT = 0.22;
+const GUST_RISE = 1.0;
+const GUST_LIFT = 0.03;
+/** Seconds a gust keeps shaking leaves loose, how many, and how long it keeps the leaves moving at motion 0. */
+const GUST_SHAKE = 1.8;
+const GUST_SHOWER = 12;
+const GUST_BUSY = 14;
+/** A landed leaf lies this far above the ground it rests on. */
+const LEAF_LIFT = 0.0012;
+/** Seconds to settle flat after touching down, to fade in, to fade out, and to be swept away. */
+const SETTLE_SECONDS = 0.5;
+const FADE_IN = 0.4;
+const FADE_OUT = 6;
+const SWEEP_SECONDS = 1.6;
+/** How far a falling leaf rocks about its chord (radians), on its own slow swing. */
+const ROLL = 0.3;
+/** Leaves on the gravel when a garden is first laid out, and in the air. */
+const PREWARM_LANDED = 9;
+const PREWARM_FALLING = 3;
+/** Most leaves lying on the gravel at once; past it the oldest fades, leaving slots for the air. */
+const LANDED_MAX = 12;
+/** The share of lying leaves (the lightest, by hue) a full gust picks up and blows away. */
+const GUST_CARRY = 0.4;
+
+// ---- small helpers -------------------------------------------------------------------------------
+
+/** Mulberry32: a small, seedable generator, so an arrangement number always gives the same garden. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
+const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+const smoothstep = (e0: number, e1: number, x: number): number => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+/** A gust's strength `age` seconds after it was called: rises over GUST_RISE, then dies away (the shader's gardenGust). */
+const gustAt = (age: number): number => {
+  if (!(age > 0 && age < 12 * GUST_RISE)) return 0;
+  const a = age / GUST_RISE;
+  return a * a * Math.exp(2 * (1 - a));
+};
+
+/** The meander of the "waves" passes at X. */
+const waveAt = (x: number): number => WAVE_AMPLITUDE * Math.sin((TAU * x) / WAVE_LENGTH);
+
+// The M as common.ts draws it: five vertices, four strokes, in mark units.
+const MARK_X = [-0.47, -0.47, 0, 0.47, 0.47] as const;
+const MARK_Y = [-0.5, 0.5, -0.08, 0.5, -0.5] as const;
+
+/** Distance from (px, py) to the M of height `size` centred on GARDEN_MARK, and the unit gradient. */
+function markField(px: number, py: number, size: number, out: Float64Array): number {
+  let best = Infinity;
+  let bx = 0;
+  let by = 0;
+  for (let k = 0; k < 4; k++) {
+    const ax = GARDEN_MARK.x + (MARK_X[k] ?? 0) * size;
+    const ay = GARDEN_MARK.y + (MARK_Y[k] ?? 0) * size;
+    const ex = GARDEN_MARK.x + (MARK_X[k + 1] ?? 0) * size - ax;
+    const ey = GARDEN_MARK.y + (MARK_Y[k + 1] ?? 0) * size - ay;
+    const l2 = ex * ex + ey * ey;
+    const t = l2 > 0 ? clamp(((px - ax) * ex + (py - ay) * ey) / l2, 0, 1) : 0;
+    const qx = ax + t * ex;
+    const qy = ay + t * ey;
+    const d = Math.hypot(px - qx, py - qy);
+    if (d < best) {
+      best = d;
+      bx = qx;
+      by = qy;
+    }
+  }
+  const inv = 1 / Math.max(best, 1e-9);
+  out[0] = (px - bx) * inv;
+  out[1] = (py - by) * inv;
+  return best;
+}
+
+// ---- islands -------------------------------------------------------------------------------------
+
+interface GardenStone {
+  x: number;
+  y: number;
+  /** Half-axes of the stone's footprint. */
+  rx: number;
+  ry: number;
+  height: number;
+  /** Turn of the footprint's long axis. */
+  angle: number;
+  /** 0..1: the shape of its weathering. */
+  seed: number;
+}
+
+interface GardenIsland {
+  x: number;
+  y: number;
+  /** The gravel is left smooth within this radius; the rings start just outside it. */
+  clear: number;
+  stones: GardenStone[];
+}
+
+/** The angular wobble of a stone's outline (shared with the shader's gardenStoneShape). */
+function stoneWobble(angle: number, seed: number): number {
+  return 1 + 0.1 * Math.sin(3 * angle + TAU * seed) + 0.06 * Math.sin(5 * angle + 2 * TAU * seed);
+}
+
+/** A stone's smooth height at (x, y), without the weathered facets (the shader's base shape). */
+function stoneHeight(stone: GardenStone, x: number, y: number): number {
+  const dx = x - stone.x;
+  const dy = y - stone.y;
+  const c = Math.cos(stone.angle);
+  const s = Math.sin(stone.angle);
+  const qx = (c * dx + s * dy) / stone.rx;
+  const qy = (-s * dx + c * dy) / stone.ry;
+  const d = Math.hypot(qx, qy) / stoneWobble(Math.atan2(qy, qx), stone.seed);
+  if (d >= 1) return 0;
+  return stone.height * Math.pow(1 - Math.pow(d, 2.6), 0.45);
+}
+
+/** The composition the default arrangement shows: four islands after the Ryōan-ji groups. */
+function defaultIslands(): GardenIsland[] {
+  return [
+    {
+      x: 0.8, y: 0.66, clear: 0.135,
+      stones: [
+        { x: 0.805, y: 0.675, rx: 0.043, ry: 0.034, height: 0.105, angle: 0.35, seed: 0.13 },
+        { x: 0.735, y: 0.632, rx: 0.03, ry: 0.024, height: 0.05, angle: -0.4, seed: 0.61 },
+        { x: 0.872, y: 0.622, rx: 0.024, ry: 0.018, height: 0.026, angle: 0.9, seed: 0.37 },
+      ],
+    },
+    {
+      x: 1.3, y: 0.86, clear: 0.1,
+      stones: [
+        { x: 1.285, y: 0.858, rx: 0.06, ry: 0.028, height: 0.033, angle: -0.15, seed: 0.82 },
+        { x: 1.355, y: 0.872, rx: 0.027, ry: 0.024, height: 0.076, angle: 0.6, seed: 0.45 },
+      ],
+    },
+    {
+      x: 0.95, y: 0.3, clear: 0.075,
+      stones: [{ x: 0.95, y: 0.3, rx: 0.036, ry: 0.028, height: 0.04, angle: 1.1, seed: 0.29 }],
+    },
+    {
+      x: 1.74, y: 0.72, clear: 0.1,
+      stones: [
+        { x: 1.735, y: 0.73, rx: 0.036, ry: 0.03, height: 0.088, angle: -0.5, seed: 0.71 },
+        { x: 1.8, y: 0.69, rx: 0.022, ry: 0.02, height: 0.034, angle: 0.2, seed: 0.05 },
+      ],
+    },
+  ];
+}
+
+/**
+ * Another arrangement: three or four islands of one to three stones, inside what the veranda sees,
+ * clear of each other and of the M's patch. Seed 0 is the default composition.
+ */
+function layIslands(seed: number): GardenIsland[] {
+  if (seed === 0) return defaultIslands();
+  const rand = mulberry32(Math.imul(seed + 7, 0x9e3779b1));
+  const count = rand() < 0.6 ? 4 : 3;
+  const islands: GardenIsland[] = [];
+  for (let attempt = 0; attempt < 400 && islands.length < count; attempt++) {
+    const first = islands.length === 0;
+    const clear = first ? 0.11 + 0.03 * rand() : 0.07 + 0.05 * rand();
+    const y = 0.26 + 0.6 * rand();
+    const half = Math.min(0.62 * (y - GARDEN.eyeY), 0.82) - clear - 0.04;
+    if (half <= 0) continue;
+    const x = OX + (2 * rand() - 1) * half;
+    if (Math.hypot(x - GARDEN_MARK.x, y - GARDEN_MARK.y) < GARDEN_MARK.reserve + clear) continue;
+    if (islands.some((o) => Math.hypot(x - o.x, y - o.y) < clear + o.clear + 0.12)) continue;
+    const stones: GardenStone[] = [];
+    const n = 1 + Math.floor(rand() * (clear > 0.1 ? 3 : 2));
+    const mainR = clear * (0.28 + 0.08 * rand());
+    const tall = first || rand() < 0.5;
+    stones.push({
+      x: x + (rand() - 0.5) * 0.02,
+      y: y + (rand() - 0.5) * 0.02,
+      rx: mainR,
+      ry: mainR * (0.7 + 0.25 * rand()),
+      height: tall ? 0.07 + 0.04 * rand() : 0.03 + 0.02 * rand(),
+      angle: rand() * Math.PI,
+      seed: rand(),
+    });
+    for (let k = 1; k < n; k++) {
+      const r = mainR * (0.45 + 0.25 * rand());
+      const a = rand() * TAU;
+      const reach = Math.min(mainR + r * 0.9, clear - r - 0.01);
+      stones.push({
+        x: x + Math.cos(a) * reach,
+        y: y + Math.sin(a) * reach,
+        rx: r,
+        ry: r * (0.7 + 0.25 * rand()),
+        height: 0.02 + 0.035 * rand(),
+        angle: rand() * Math.PI,
+        seed: rand(),
+      });
+    }
+    islands.push({ x, y, clear, stones });
+  }
+  return islands;
+}
+
+// ---- the plan ------------------------------------------------------------------------------------
+
+/** A stretch the rake is drawn along without lifting: a polyline with cumulative distances. */
+interface Stroke {
+  readonly xy: Float64Array;
+  readonly at: Float64Array;
+  readonly length: number;
+}
+
+function strokeOf(points: readonly number[]): Stroke {
+  const n = points.length >> 1;
+  const xy = Float64Array.from(points);
+  const at = new Float64Array(n);
+  for (let i = 1; i < n; i++) {
+    at[i] = (at[i - 1] ?? 0) + Math.hypot((xy[2 * i] ?? 0) - (xy[2 * i - 2] ?? 0), (xy[2 * i + 1] ?? 0) - (xy[2 * i - 1] ?? 0));
+  }
+  return { xy, at, length: at[n - 1] ?? 0 };
+}
+
+interface Layout {
+  pattern: GardenPattern;
+  islands: GardenIsland[];
+  /** The M's height, 0 when it is off. */
+  mark: number;
+}
+
+/** The ring zone around island i (line patterns): its rings reach this far from the centre. */
+const ringReach = (island: GardenIsland): number => island.clear + RING_LAPS * SWATH;
+/** The M's slate half width, and the reach of its rings, from its strokes. */
+const markSlate = (mark: number): number => GARDEN_MARK.stroke * mark;
+const markReach = (mark: number): number => markSlate(mark) + RING_GAP + RING_LAPS * SWATH;
+
+/** Inside some ring zone (where the line patterns lift the rake). */
+function inRingZone(layout: Layout, x: number, y: number, grad: Float64Array): boolean {
+  for (const island of layout.islands) {
+    if (Math.hypot(x - island.x, y - island.y) < ringReach(island)) return true;
+  }
+  return layout.mark > 0 && markField(x, y, layout.mark, grad) < markReach(layout.mark);
+}
+
+/** Within the raked part of the field (a margin beyond the sides, so the edges are raked through). */
+const inField = (x: number, y: number): boolean => x > -0.06 && x < GA + 0.06 && y > PASS_FIRST - 0.06 && y < 1.0;
+
+/**
+ * Trace the closed contour at distance r around the M (marching along the level set, pulled back
+ * onto it after every step), as plan points.
+ */
+function markContour(mark: number, r: number, grad: Float64Array): number[] {
+  let x = GARDEN_MARK.x - 0.47 * mark - r;
+  let y = GARDEN_MARK.y;
+  const points = [x, y];
+  let travelled = 0;
+  const limit = 8 * (mark + TAU * r) + 1;
+  while (travelled < limit) {
+    markField(x, y, mark, grad);
+    const mx = x + 0.5 * PLAN_STEP * (grad[1] ?? 0);
+    const my = y - 0.5 * PLAN_STEP * (grad[0] ?? 0);
+    markField(mx, my, mark, grad);
+    x += PLAN_STEP * (grad[1] ?? 0);
+    y -= PLAN_STEP * (grad[0] ?? 0);
+    const d = markField(x, y, mark, grad);
+    x -= (d - r) * (grad[0] ?? 0);
+    y -= (d - r) * (grad[1] ?? 0);
+    travelled += PLAN_STEP;
+    points.push(x, y);
+    if (travelled > 2 * mark && Math.hypot(x - (points[0] ?? 0), y - (points[1] ?? 0)) < 1.5 * PLAN_STEP) break;
+  }
+  // Close it, and run on past the start so the lap's ends overlap.
+  for (let k = 0; k < 16 && k < points.length; k++) points.push(points[k] ?? 0);
+  return points;
+}
+
+/** A circle around (cx, cy), kept only where `keep` says, split into strokes. */
+function ringStrokes(cx: number, cy: number, r: number, keep: (x: number, y: number) => boolean, strokes: Stroke[]): boolean {
+  const n = Math.max(12, Math.ceil((TAU * r) / PLAN_STEP));
+  const kept: boolean[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU;
+    kept.push(keep(cx + r * Math.cos(a), cy + r * Math.sin(a)));
+  }
+  if (!kept.includes(true)) return false;
+  // Start just after a gap (or anywhere on a full circle), so a run never straddles the seam.
+  const gap = kept.indexOf(false);
+  const start = gap < 0 ? 0 : gap;
+  let run: number[] = [];
+  const flush = (): void => {
+    if (run.length >= 4) {
+      const stroke = strokeOf(run);
+      if (stroke.length >= MIN_STROKE) strokes.push(stroke);
+    }
+    run = [];
+  };
+  // A full circle laps on past its start, so the lap's ends overlap.
+  const total = gap < 0 ? n + 8 : n + 1;
+  for (let k = 0; k <= total; k++) {
+    const i = (start + k) % n;
+    if (kept[i] === true) {
+      const a = (i / n) * TAU;
+      run.push(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return true;
+}
+
+/** The rake's choreography for a layout: every stroke of one full tending of the garden. */
+function buildPlan(layout: Layout): Stroke[] {
+  const strokes: Stroke[] = [];
+  const grad = new Float64Array(2);
+  const islands = layout.islands;
+  if (layout.pattern === "circles") {
+    // Rings spread out from every stone (and the M) at once, lap by lap, each kept to the gravel
+    // nearer its own centre than any other (a power diagram on the clear radii).
+    const own = (k: number) => (x: number, y: number): boolean => {
+      if (!inField(x, y)) return false;
+      const mine = k < islands.length ? Math.hypot(x - (islands[k]?.x ?? 0), y - (islands[k]?.y ?? 0)) - (islands[k]?.clear ?? 0) : markField(x, y, layout.mark, grad) - markSlate(layout.mark);
+      for (let j = 0; j < islands.length; j++) {
+        const o = islands[j];
+        if (j === k || o === undefined) continue;
+        if (Math.hypot(x - o.x, y - o.y) - o.clear < mine) return false;
+      }
+      if (k < islands.length && layout.mark > 0 && markField(x, y, layout.mark, grad) - markSlate(layout.mark) < mine) return false;
+      return true;
+    };
+    const centres = islands.length + (layout.mark > 0 ? 1 : 0);
+    const live = new Array<boolean>(centres).fill(true);
+    for (let lap = 0; lap < 40 && live.includes(true); lap++) {
+      for (let k = 0; k < centres; k++) {
+        if (live[k] !== true) continue;
+        const island = islands[k];
+        if (island !== undefined) {
+          live[k] = ringStrokes(island.x, island.y, island.clear + RING_FIRST + lap * SWATH, own(k), strokes);
+        } else {
+          const r = markSlate(layout.mark) + RING_FIRST + lap * SWATH;
+          const run: number[] = [];
+          const contour = markContour(layout.mark, r, grad);
+          const keep = own(k);
+          let any = false;
+          for (let i = 0; i < contour.length; i += 2) {
+            const x = contour[i] ?? 0;
+            const y = contour[i + 1] ?? 0;
+            if (keep(x, y)) {
+              run.push(x, y);
+              any = true;
+            } else if (run.length > 0) {
+              const stroke = strokeOf(run);
+              if (stroke.length >= MIN_STROKE) strokes.push(stroke);
+              run.length = 0;
+            }
+          }
+          if (run.length >= 4) {
+            const stroke = strokeOf(run);
+            if (stroke.length >= MIN_STROKE) strokes.push(stroke);
+          }
+          live[k] = any;
+        }
+      }
+    }
+    return strokes;
+  }
+
+  // Line patterns: passes across the whole width, far to near, back and forth, the rake lifted over
+  // the ring zones; then the rings around each island, inner lap first; then the M's.
+  const waves = layout.pattern === "waves";
+  for (let k = PASSES - 1; k >= 0; k--) {
+    const y0 = PASS_FIRST + k * SWATH;
+    const forward = (PASSES - 1 - k) % 2 === 0;
+    const run: number[] = [];
+    const flush = (): void => {
+      if (run.length >= 4) {
+        const stroke = strokeOf(run);
+        if (stroke.length >= MIN_STROKE) strokes.push(stroke);
+      }
+      run.length = 0;
+    };
+    const n = Math.ceil((GA + 0.12) / PLAN_STEP);
+    for (let i = 0; i <= n; i++) {
+      const x = forward ? -0.06 + i * PLAN_STEP : GA + 0.06 - i * PLAN_STEP;
+      const y = y0 + (waves ? waveAt(x) : 0);
+      if (inRingZone(layout, x, y, grad)) flush();
+      else run.push(x, y);
+    }
+    flush();
+  }
+  for (const island of islands) {
+    for (let lap = 0; lap < RING_LAPS; lap++) {
+      ringStrokes(island.x, island.y, island.clear + RING_FIRST + lap * SWATH, inField, strokes);
+    }
+  }
+  if (layout.mark > 0) {
+    for (let lap = 0; lap < RING_LAPS; lap++) {
+      const contour = markContour(layout.mark, markSlate(layout.mark) + RING_FIRST + lap * SWATH, grad);
+      strokes.push(strokeOf(contour));
+    }
+  }
+  return strokes;
+}
+
+/**
+ * The groove phase the plan leaves at (x, y): grooves at whole numbers, NaN where the gravel is
+ * left smooth (inside an island's clear radius, under the M, outside the raked field).
+ */
+function phaseAt(layout: Layout, x: number, y: number, grad: Float64Array): number {
+  if (y < LINE_FIRST - 0.5 * RAKE.spacing || y > 1.0) return Number.NaN;
+  const islands = layout.islands;
+  const markOn = layout.mark > 0;
+  const slate = markSlate(layout.mark);
+  if (layout.pattern === "circles") {
+    let best = Infinity;
+    let phase = Number.NaN;
+    for (const island of islands) {
+      const d = Math.hypot(x - island.x, y - island.y) - island.clear;
+      if (d < best) {
+        best = d;
+        phase = d < 0 ? Number.NaN : (d - RING_GAP) / RAKE.spacing;
+      }
+    }
+    if (markOn) {
+      const d = markField(x, y, layout.mark, grad) - slate;
+      if (d < best) phase = d < 0 ? Number.NaN : (d - RING_GAP) / RAKE.spacing;
+    }
+    return phase;
+  }
+  // Later strokes win where ring zones overlap: the M, then the islands from last to first.
+  if (markOn) {
+    const d = markField(x, y, layout.mark, grad);
+    if (d < markReach(layout.mark)) return d < slate ? Number.NaN : (d - slate - RING_GAP) / RAKE.spacing;
+  }
+  for (let i = islands.length - 1; i >= 0; i--) {
+    const island = islands[i];
+    if (island === undefined) continue;
+    const d = Math.hypot(x - island.x, y - island.y);
+    if (d < ringReach(island)) return d < island.clear ? Number.NaN : (d - island.clear - RING_GAP) / RAKE.spacing;
+  }
+  return (y - (layout.pattern === "waves" ? waveAt(x) : 0) - LINE_FIRST) / RAKE.spacing;
+}
+
+/**
+ * A weathered groove across one period, phase 0 at the groove's centre: a rounded cut over half
+ * the period, the spoil heaped in a hump between (equal volumes).
+ */
+function grooveProfile(phase: number): number {
+  const u = Math.abs(phase - Math.round(phase));
+  if (u < 0.25) {
+    const s = u / 0.25;
+    return -(1 - s * s);
+  }
+  return (Math.PI / 3) * Math.sin((Math.PI * (u - 0.25)) / 0.5);
+}
+
+// ---- the simulation ------------------------------------------------------------------------------
+
+type GardenKnob = "pattern" | "speed" | "soften" | "moss" | "stones" | "season" | "leaves" | "camera" | "wind" | "mark";
+const KNOBS: readonly GardenKnob[] = ["pattern", "speed", "soften", "moss", "stones", "season", "leaves", "camera", "wind", "mark"];
+
+interface Settings {
+  pattern: GardenPattern;
+  season: GardenSeason;
+  seed: number;
+  /** Rake travel, garden depths per second (before motion). */
+  speed: number;
+  /** Diffusion per second for weathering. */
+  soften: number;
+  moss: number;
+  /** Leaf-fall knob 0..1. */
+  leaves: number;
+  overhead: boolean;
+  wind: number;
+  /** The M's height, 0 when off. */
+  mark: number;
+  /** What a layout is made from: a change lays the garden out afresh. */
+  signature: string;
+}
+
+class GardenSim implements SceneSim {
+  readonly #slots: Record<GardenKnob, number>;
+  readonly #defaults: Record<GardenKnob, number>;
+
+  // The gravel, the drying grid and their textures.
+  readonly #field = new HeightField(GARDEN.cols, GARDEN.rows, GA);
+  readonly #heights: DataTexture;
+  readonly #fresh = new Float32Array(GARDEN_FRESH.cols * GARDEN_FRESH.rows);
+  readonly #freshTexture: DataTexture;
+  #freshDirty = true;
+  #freshAt = -Infinity;
+  #heightsAt = -Infinity;
+  /** The drying clock: seconds of garden time (dt × motion), wrapped back now and then. */
+  #clock = 0;
+
+  // Islands and stones.
+  readonly #stoneData = new Float32Array(STONE_COLUMNS * STONE_ROWS * 4);
+  readonly #stoneTexture: DataTexture;
+
+  // The plan and the rake on it.
+  #layout: Layout = { pattern: "waves", islands: [], mark: 0 };
+  /** The arrangement the islands were laid for (-1: none yet). */
+  #layoutSeed = -1;
+  #signature = "";
+  #pending = "";
+  #pendingSince = 0;
+  #plan: Stroke[] = [];
+  #stroke = 0;
+  #along = 0;
+  /** Index of the plan vertex at or before #along on the current stroke. */
+  #vertex = 0;
+  #pause = 0;
+  /** The rake has just been set down: level the stretch ahead of its tines before the first cut. */
+  #landing = true;
+  /** Where the rake's tines are and which way they travel (for sweeping up leaves); on while raking. */
+  #rakeX = 0;
+  #rakeY = 0;
+  #rakeDX = 1;
+  #rakeDY = 0;
+  #rakeOn = false;
+  #smoothDue = 0;
+  readonly #grad = new Float64Array(2);
+  readonly #segA = new Float64Array(2);
+  readonly #segB = new Float64Array(2);
+  /** Scratch for the plate model's rates. */
+  readonly #rates = new Float64Array(3);
+
+  // The pointer's hand rake.
+  #handOn = false;
+  #handX = 0;
+  #handY = 0;
+
+  // Leaves.
+  readonly #state = new Uint8Array(GARDEN_LEAF_SLOTS);
+  readonly #kind = new Uint8Array(GARDEN_LEAF_SLOTS);
+  readonly #x = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #y = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #z = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Fall-plane azimuth and its slow turn per second. */
+  readonly #psi = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #dpsi = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Body-frame velocity along the chord and normal to it, and the pitch rate (model units). */
+  readonly #u = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #v = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #w = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Pitch of the plate in its plane. */
+  readonly #th = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** The leaf's turn within its own plane, and its rate. */
+  readonly #sigma = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #dsigma = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #roll = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #rollRate = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #mass = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #chord = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #pace = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #radius = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #hue = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Seconds since it landed. */
+  readonly #lain = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #life = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #alpha = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Slide velocity on the gravel (swept by the rake or skittering in a gust). */
+  readonly #vx = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #vy = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Model time not yet stepped. */
+  readonly #debt = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Pitch it settles to on the gravel, and its pitch as it touched down. */
+  readonly #rest = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #touch = new Float64Array(GARDEN_LEAF_SLOTS);
+  readonly #leafData = new Float32Array(GARDEN_LEAF_SLOTS * 4 * 4);
+  readonly #leafTexture: DataTexture;
+  #leafRand = mulberry32(1);
+  #nextLeaf = 0;
+  #season: GardenSeason = "autumn";
+
+  // Gusts.
+  #gustAge = Infinity;
+  #gustSign = 1;
+  #shower = 0;
+  #primed = false;
+  #seenGust = -1e4;
+
+  #aspect = 16 / 9;
+  #overhead = false;
+
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+    const slot = (key: GardenKnob): number => {
+      const at = params.findIndex((def) => def.key === key);
+      if (at < 0) throw new Error(`garden: the scene has no '${key}' knob`);
+      return at;
+    };
+    const fallback = (key: GardenKnob): number => {
+      const def = params[slot(key)];
+      if (def === undefined) return 0;
+      return def.kind === "feature" ? (def.on ? def.value : 0) : def.value;
+    };
+    const slots = {} as Record<GardenKnob, number>;
+    const defaults = {} as Record<GardenKnob, number>;
+    for (const key of KNOBS) {
+      slots[key] = slot(key);
+      defaults[key] = fallback(key);
+    }
+    this.#slots = slots;
+    this.#defaults = defaults;
+    this.#heights = new DataTexture(gl, { width: GARDEN.cols, height: GARDEN.rows, format: "r16f" });
+    this.#freshTexture = new DataTexture(gl, { width: GARDEN_FRESH.cols, height: GARDEN_FRESH.rows, format: "r16f" });
+    this.#stoneTexture = new DataTexture(gl, { width: STONE_COLUMNS, height: STONE_ROWS, format: "rgba16f", filter: "nearest" });
+    this.#leafTexture = new DataTexture(gl, { width: 4, height: GARDEN_LEAF_SLOTS, format: "rgba16f", filter: "nearest" });
+    // Lay out the default garden now, so the first frame already shows it raked, with leaves.
+    const settings = this.#settings(undefined);
+    this.#season = settings.season;
+    this.#relay(settings);
+    this.#prewarmLeaves(settings);
+  }
+
+  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+    const settings = this.#settings(frame);
+    if (frame.aspect > 0 && Number.isFinite(frame.aspect)) this.#aspect = frame.aspect;
+    this.#overhead = settings.overhead;
+    const dt = Math.min(Math.max(frame.dt, 0), 0.1);
+    const now = performance.now();
+
+    // Pattern, arrangement or the M changed: lay the garden out afresh once the knob rests.
+    if (settings.signature !== this.#signature) {
+      if (settings.signature !== this.#pending) {
+        this.#pending = settings.signature;
+        this.#pendingSince = now;
+      }
+      if (now - this.#pendingSince >= RELAYOUT_MS) this.#relay(settings);
+    }
+    if (settings.season !== this.#season) this.#reskin(settings.season);
+
+    this.#watchGust(frame.triggers, settings);
+    const step = dt * frame.motion;
+    this.#clock += step;
+    if (this.#clock > 2 * FRESH_REBASE) this.#rebaseClock();
+
+    this.#tend(step, settings);
+    this.#handRake(frame.pointer, settings);
+    // A "now" gust plays even with motion off.
+    const busy = this.#gustAge < GUST_BUSY;
+    this.#leaves(dt * Math.max(frame.motion, busy ? 1 : 0), settings);
+    if (this.#gustAge < GUST_BUSY) this.#gustAge += dt;
+
+    if (now - this.#heightsAt >= UPLOAD_EVERY_MS && this.#field.upload(this.#heights)) this.#heightsAt = now;
+    if (this.#freshDirty && now - this.#freshAt >= UPLOAD_EVERY_MS) {
+      this.#freshTexture.upload(this.#fresh);
+      this.#freshDirty = false;
+      this.#freshAt = now;
+    }
+    this.#packStones();
+    this.#packLeaves();
+    return [this.#heights.texture, this.#stoneTexture.texture, this.#leafTexture.texture, this.#freshTexture.texture];
+  }
+
+  dispose(): void {
+    this.#heights.dispose();
+    this.#freshTexture.dispose();
+    this.#stoneTexture.dispose();
+    this.#leafTexture.dispose();
+  }
+
+  // ---- knobs ---------------------------------------------------------------------------------------
+
+  #settings(frame: SimFrame | undefined): Settings {
+    const value = (key: GardenKnob): number => frame?.values[this.#slots[key]] ?? this.#defaults[key];
+    const pattern = gardenPatterns[Math.round(value("pattern"))] ?? "waves";
+    const seed = Math.max(0, Math.round(value("stones")));
+    const markKnob = value("mark");
+    const mark = markKnob > 0 ? GARDEN_MARK.small + GARDEN_MARK.grow * markKnob : 0;
+    return {
+      pattern,
+      season: gardenSeasons[Math.round(value("season"))] ?? "autumn",
+      seed,
+      speed: RAKE_SPEED * clamp(value("speed"), 0, 1),
+      soften: SMOOTH_RATE * clamp(value("soften"), 0, 1),
+      moss: clamp(value("moss"), 0, 1),
+      leaves: clamp(value("leaves"), 0, 1),
+      overhead: value("camera") > 0.5,
+      wind: clamp(value("wind"), -1, 1),
+      mark,
+      signature: `${pattern}|${seed}|${mark.toFixed(3)}`,
+    };
+  }
+
+  // ---- laying out ----------------------------------------------------------------------------------
+
+  /** A fresh garden: islands, the plan, the gravel laid from it, the rake set down to begin. */
+  #relay(settings: Settings): void {
+    this.#signature = settings.signature;
+    this.#pending = settings.signature;
+    const islands = settings.seed === this.#layoutSeed ? this.#layout.islands : layIslands(settings.seed);
+    this.#layoutSeed = settings.seed;
+    this.#layout = { pattern: settings.pattern, islands, mark: settings.mark };
+    this.#plan = buildPlan(this.#layout);
+    this.#lay();
+    this.#fresh.fill(-FRESH_REBASE);
+    this.#freshDirty = true;
+    this.#clock = 0;
+    this.#smoothDue = SMOOTH_EVERY;
+    this.#rakeOn = false;
+    this.#packStones();
+    // The rake begins at the plan point nearest LIVE_START, where both views see it at work.
+    let best = Infinity;
+    let start = 0;
+    let offset = 0;
+    for (const stroke of this.#plan) {
+      const n = stroke.xy.length >> 1;
+      for (let i = 0; i < n; i++) {
+        const d = Math.hypot((stroke.xy[2 * i] ?? 0) - LIVE_START.x, (stroke.xy[2 * i + 1] ?? 0) - LIVE_START.y);
+        if (d < best) {
+          best = d;
+          start = offset + (stroke.at[i] ?? 0);
+        }
+      }
+      offset += stroke.length + STROKE_PAUSE;
+    }
+    this.#seek(start);
+  }
+
+  /** Lay the gravel straight from the plan: every texel at its groove phase, weathered. */
+  #lay(): void {
+    const field = this.#field;
+    const data = field.data;
+    const w = field.width;
+    const h = field.height;
+    const grad = this.#grad;
+    for (let j = 0; j < h; j++) {
+      const y = (j + 0.5) / h;
+      for (let i = 0; i < w; i++) {
+        const x = ((i + 0.5) / w) * GA;
+        const phase = phaseAt(this.#layout, x, y, grad);
+        data[j * w + i] = Number.isNaN(phase) ? 0 : LAID_AMPLITUDE * grooveProfile(phase);
+      }
+    }
+    field.touch();
+    // Round the profile off, as weather would.
+    field.smooth(0.6);
+  }
+
+  /** Set the rake down at plan distance `at` (pauses count STROKE_PAUSE each). */
+  #seek(at: number): void {
+    this.#landing = true;
+    let rest = at;
+    for (let k = 0; k < this.#plan.length; k++) {
+      const stroke = this.#plan[k];
+      if (stroke === undefined) continue;
+      if (rest < stroke.length) {
+        this.#stroke = k;
+        this.#along = rest;
+        this.#pause = 0;
+        this.#vertex = 0;
+        while ((stroke.at[this.#vertex + 1] ?? Infinity) <= rest) this.#vertex++;
+        return;
+      }
+      rest -= stroke.length;
+      if (rest < STROKE_PAUSE) {
+        this.#stroke = (k + 1) % this.#plan.length;
+        this.#along = 0;
+        this.#vertex = 0;
+        this.#pause = STROKE_PAUSE - rest;
+        return;
+      }
+      rest -= STROKE_PAUSE;
+    }
+    this.#stroke = 0;
+    this.#along = 0;
+    this.#vertex = 0;
+    this.#pause = 0;
+  }
+
+  // ---- raking --------------------------------------------------------------------------------------
+
+  /** One frame of tending: the rake moves on (sweeping up leaves in its way), the grooves slump and weather. */
+  #tend(step: number, settings: Settings): void {
+    if (!(step > 0)) return;
+    if (settings.speed > 0) {
+      this.#advance(settings.speed * step);
+      if (this.#rakeOn) this.#sweep(this.#rakeX, this.#rakeY, this.#rakeDX, this.#rakeDY, LEVEL_HALF, settings.speed);
+    } else {
+      this.#rakeOn = false;
+    }
+    this.#field.relax(TALUS, SLUMP_RATE, step, RELAX_ROWS);
+    this.#smoothDue -= step;
+    if (this.#smoothDue <= 0) {
+      this.#field.smooth(settings.soften * (SMOOTH_EVERY - this.#smoothDue));
+      this.#smoothDue = SMOOTH_EVERY;
+    }
+  }
+
+  /**
+   * Move the rake `distance` along the plan: level ahead, cut, note the freshly raked gravel. It
+   * goes in steps of at most MAX_PIECE, so on a bend each piece's banks meet the next's evenly.
+   */
+  #advance(distance: number): void {
+    const plan = this.#plan;
+    let budget = distance;
+    let guard = 0;
+    this.#rakeOn = false;
+    while (budget > 1e-9 && plan.length > 0 && guard++ < 10_000) {
+      if (this.#pause > 0) {
+        const rest = Math.min(this.#pause, budget);
+        this.#pause -= rest;
+        budget -= rest;
+        continue;
+      }
+      const stroke = plan[this.#stroke];
+      if (stroke === undefined) {
+        this.#stroke = 0;
+        continue;
+      }
+      const s0 = this.#along;
+      const s1 = Math.min(stroke.length, s0 + Math.min(budget, MAX_PIECE));
+      if (this.#landing) {
+        this.#levelAlong(stroke, s0, Math.min(s0 + LEAD, stroke.length), LEVEL_HALF);
+        this.#landing = false;
+      }
+      this.#levelAlong(stroke, Math.min(s0 + LEAD, stroke.length), Math.min(s1 + LEAD, stroke.length), LEVEL_HALF);
+      this.#rakeAlong(stroke, s0, s1);
+      budget -= s1 - s0;
+      this.#along = s1;
+      if (s1 >= stroke.length) {
+        this.#stroke = (this.#stroke + 1) % plan.length;
+        this.#along = 0;
+        this.#vertex = 0;
+        this.#pause = STROKE_PAUSE;
+        this.#landing = true;
+      }
+    }
+  }
+
+  /** Point at distance s along a stroke into `out`, searching from vertex index `from`. */
+  #pointAt(stroke: Stroke, s: number, from: number, out: Float64Array): number {
+    let i = Math.max(0, from);
+    const last = (stroke.xy.length >> 1) - 1;
+    while (i < last - 1 && (stroke.at[i + 1] ?? Infinity) <= s) i++;
+    const a = stroke.at[i] ?? 0;
+    const b = stroke.at[i + 1] ?? a;
+    const t = b > a ? clamp((s - a) / (b - a), 0, 1) : 0;
+    out[0] = lerp(stroke.xy[2 * i] ?? 0, stroke.xy[2 * i + 2] ?? 0, t);
+    out[1] = lerp(stroke.xy[2 * i + 1] ?? 0, stroke.xy[2 * i + 3] ?? 0, t);
+    return i;
+  }
+
+  /** Visit the polyline pieces of a stroke between distances s0 and s1. */
+  #pieces(stroke: Stroke, s0: number, s1: number, from: number, visit: (ax: number, ay: number, bx: number, by: number) => void): number {
+    if (!(s1 > s0)) return from;
+    const a = this.#segA;
+    const b = this.#segB;
+    let i = this.#pointAt(stroke, s0, from, a);
+    let s = s0;
+    while (s < s1) {
+      const next = Math.min(s1, stroke.at[i + 1] ?? s1);
+      i = this.#pointAt(stroke, next, i, b);
+      visit(a[0] ?? 0, a[1] ?? 0, b[0] ?? 0, b[1] ?? 0);
+      a[0] = b[0] ?? 0;
+      a[1] = b[1] ?? 0;
+      if (next <= s) break;
+      s = next;
+      if ((stroke.at[i + 1] ?? Infinity) <= s) i++;
+    }
+    return i;
+  }
+
+  #levelAlong(stroke: Stroke, s0: number, s1: number, half: number): void {
+    this.#pieces(stroke, s0, s1, this.#vertex, (ax, ay, bx, by) => this.#level(ax, ay, bx, by, half));
+  }
+
+  #rakeAlong(stroke: Stroke, s0: number, s1: number): void {
+    const field = this.#field;
+    this.#vertex = this.#pieces(stroke, s0, s1, this.#vertex, (ax, ay, bx, by) => {
+      field.rake(ax / GA, ay, bx / GA, by, RAKE);
+      const length = Math.hypot(bx - ax, by - ay);
+      this.#stampFresh(ax, ay, bx, by, LEVEL_HALF);
+      if (length > 1e-9) {
+        this.#rakeDX = (bx - ax) / length;
+        this.#rakeDY = (by - ay) / length;
+      }
+      this.#rakeX = bx;
+      this.#rakeY = by;
+      this.#rakeOn = true;
+    });
+  }
+
+  /**
+   * The leveling board: drawn from (ax, ay) to (bx, by), it eases the gravel within `half` of its
+   * centre line back to the rest level, softly at its ends of the board, so the old pattern goes
+   * before the tines cut the new one. Half-open along the stroke, so consecutive pieces tile.
+   */
+  #level(ax: number, ay: number, bx: number, by: number, half: number): void {
+    const field = this.#field;
+    const w = field.width;
+    const h = field.height;
+    const data = field.data;
+    const tw = GA / w;
+    const th = 1 / h;
+    let ux = bx - ax;
+    let uy = by - ay;
+    const length = Math.hypot(ux, uy);
+    if (!(length > 1e-9)) return;
+    ux /= length;
+    uy /= length;
+    const nx = -uy;
+    const ny = ux;
+    const i0 = Math.max(0, Math.ceil((Math.min(ax, bx) - half) / tw - 0.5));
+    const i1 = Math.min(w - 1, Math.floor((Math.max(ax, bx) + half) / tw - 0.5));
+    const j0 = Math.max(0, Math.ceil((Math.min(ay, by) - half) / th - 0.5));
+    const j1 = Math.min(h - 1, Math.floor((Math.max(ay, by) + half) / th - 0.5));
+    if (i0 > i1 || j0 > j1) return;
+    const inner = half - LEVEL_SOFT;
+    for (let j = j0; j <= j1; j++) {
+      const py = (j + 0.5) * th - ay;
+      const row = j * w;
+      for (let i = i0; i <= i1; i++) {
+        const px = (i + 0.5) * tw - ax;
+        const t = px * ux + py * uy;
+        if (t < 0 || t >= length) continue;
+        const d = Math.abs(px * nx + py * ny);
+        if (d >= half) continue;
+        const e = d <= inner ? 1 : (half - d) / LEVEL_SOFT;
+        const k = row + i;
+        data[k] = (data[k] ?? 0) * (1 - e * e * (3 - 2 * e));
+      }
+    }
+    field.touch();
+  }
+
+  /** Note that the gravel within `half` of a raked piece was turned over now. */
+  #stampFresh(ax: number, ay: number, bx: number, by: number, half: number): void {
+    const cols = GARDEN_FRESH.cols;
+    const rows = GARDEN_FRESH.rows;
+    const cw = GA / cols;
+    const ch = 1 / rows;
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - half) / cw));
+    const i1 = Math.min(cols - 1, Math.floor((Math.max(ax, bx) + half) / cw));
+    const j0 = Math.max(0, Math.floor((Math.min(ay, by) - half) / ch));
+    const j1 = Math.min(rows - 1, Math.floor((Math.max(ay, by) + half) / ch));
+    const ex = bx - ax;
+    const ey = by - ay;
+    const l2 = ex * ex + ey * ey;
+    const now = this.#clock;
+    for (let j = j0; j <= j1; j++) {
+      const py = (j + 0.5) * ch;
+      for (let i = i0; i <= i1; i++) {
+        const px = (i + 0.5) * cw;
+        const t = l2 > 0 ? clamp(((px - ax) * ex + (py - ay) * ey) / l2, 0, 1) : 0;
+        if (Math.hypot(px - ax - t * ex, py - ay - t * ey) < half) this.#fresh[j * cols + i] = now;
+      }
+    }
+    this.#freshDirty = true;
+  }
+
+  /** Wind the drying clock back, and every mark on it, so half floats keep it to the second. */
+  #rebaseClock(): void {
+    this.#clock -= FRESH_REBASE;
+    const fresh = this.#fresh;
+    for (let k = 0; k < fresh.length; k++) fresh[k] = Math.max(-FRESH_REBASE, (fresh[k] ?? 0) - FRESH_REBASE);
+    this.#freshDirty = true;
+  }
+
+  /** Drag on the gravel: rake your own lines with a hand rake. */
+  #handRake(pointer: PointerState, settings: Settings): void {
+    const at = pointer.inside && pointer.down ? this.#groundUnder(pointer.x, pointer.y) : undefined;
+    if (at === undefined || this.#onStone(at.x, at.y)) {
+      this.#handOn = false;
+      return;
+    }
+    if (!this.#handOn || pointer.pressed) {
+      this.#handOn = true;
+      this.#handX = at.x;
+      this.#handY = at.y;
+      return;
+    }
+    const length = Math.hypot(at.x - this.#handX, at.y - this.#handY);
+    if (length < HAND_STEP) return;
+    this.#level(this.#handX, this.#handY, at.x, at.y, HAND_LEVEL_HALF);
+    this.#field.rake(this.#handX / GA, this.#handY, at.x / GA, at.y, HAND);
+    this.#stampFresh(this.#handX, this.#handY, at.x, at.y, HAND_LEVEL_HALF);
+    this.#sweep(at.x, at.y, (at.x - this.#handX) / length, (at.y - this.#handY) / length, HAND_LEVEL_HALF, Math.max(settings.speed, 0.05));
+    this.#handX = at.x;
+    this.#handY = at.y;
+  }
+
+  /** Within an island's clear radius, where the rake is lifted. */
+  #onStone(x: number, y: number): boolean {
+    return this.#layout.islands.some((island) => Math.hypot(x - island.x, y - island.y) < island.clear * 0.85) ||
+      (this.#layout.mark > 0 && markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark) + 0.01);
+  }
+
+  /** The garden point under screen uv (u, v), or undefined off the gravel. */
+  #groundUnder(u: number, v: number): { x: number; y: number } | undefined {
+    let x: number;
+    let y: number;
+    if (this.#overhead) {
+      x = OX + (u - 0.5) * this.#aspect * GARDEN.span;
+      y = GARDEN.overheadY + (v - 0.5) * GARDEN.span;
+    } else {
+      const down = GARDEN.horizon - v;
+      if (down <= 1e-3) return undefined;
+      const s = GARDEN.eyeHeight / down;
+      x = OX + (u - 0.5) * this.#aspect * s;
+      y = GARDEN.eyeY + GARDEN.focal * s;
+    }
+    if (y < GARDEN.drip + 0.01 || y > 1.0 || x < 0 || x > GA) return undefined;
+    return { x, y };
+  }
+
+  /** Screen uv of garden point (x, y, z) in the current view, or undefined behind the camera. */
+  #project(x: number, y: number, z: number): { u: number; v: number } | undefined {
+    if (this.#overhead) {
+      const s = GARDEN.overheadHeight / Math.max(GARDEN.overheadHeight - z, 1e-3);
+      return { u: 0.5 + ((x - OX) * s) / GARDEN.span / this.#aspect, v: 0.5 + ((y - GARDEN.overheadY) * s) / GARDEN.span };
+    }
+    const depth = y - GARDEN.eyeY;
+    if (depth <= 0.02) return undefined;
+    return { u: 0.5 + (GARDEN.focal * (x - OX)) / depth / this.#aspect, v: GARDEN.horizon + (GARDEN.focal * (z - GARDEN.eyeHeight)) / depth };
+  }
+
+  // ---- islands -------------------------------------------------------------------------------------
+
+  /** What a leaf comes to rest on at (x, y): gravel, a moss cushion or a stone. */
+  #groundAt(x: number, y: number, moss: number): number {
+    let top = this.#field.sample(x / GA, y);
+    const cover = smoothstep(0, 0.15, moss);
+    for (const island of this.#layout.islands) {
+      const r = Math.hypot(x - island.x, y - island.y);
+      if (r >= island.clear) continue;
+      const reach = island.clear * (GARDEN_MOSS.base + GARDEN_MOSS.grow * moss);
+      if (r < reach) {
+        const s = 1 - (r / reach) * (r / reach);
+        top = Math.max(top, GARDEN_MOSS.height * cover * s * s);
+      }
+      for (const stone of island.stones) top = Math.max(top, stoneHeight(stone, x, y));
+    }
+    if (this.#layout.mark > 0 && markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark)) top = Math.max(top, GARDEN_MARK.slate);
+    return top;
+  }
+
+  /**
+   * uSim1, STONE_COLUMNS × STONE_ROWS rgba16f. Row 0: island i at column i (x, y relative to the
+   * garden's centre, clear radius, tallest stone; clear 0 = none), then at column GARDEN_ISLANDS
+   * (drying clock, 0, 0, 0). Row 1 + j: stone j of island i at columns 2i (x, y, rx, ry) and 2i + 1
+   * (height, angle, seed, 0); height 0 = none.
+   */
+  #packStones(): void {
+    const data = this.#stoneData;
+    data.fill(0);
+    const islands = this.#layout.islands;
+    for (let i = 0; i < GARDEN_ISLANDS; i++) {
+      const island = islands[i];
+      if (island === undefined) continue;
+      let tallest = 0;
+      for (let j = 0; j < Math.min(GARDEN_STONES, island.stones.length); j++) {
+        const stone = island.stones[j];
+        if (stone === undefined) continue;
+        tallest = Math.max(tallest, stone.height);
+        const a = ((1 + j) * STONE_COLUMNS + 2 * i) * 4;
+        data[a] = stone.x - OX;
+        data[a + 1] = stone.y - OY;
+        data[a + 2] = stone.rx;
+        data[a + 3] = stone.ry;
+        data[a + 4] = stone.height;
+        data[a + 5] = stone.angle;
+        data[a + 6] = stone.seed;
+      }
+      const k = i * 4;
+      data[k] = island.x - OX;
+      data[k + 1] = island.y - OY;
+      data[k + 2] = island.clear;
+      data[k + 3] = tallest + 0.004;
+    }
+    data[GARDEN_ISLANDS * 4] = this.#clock;
+    this.#stoneTexture.upload(data);
+  }
+
+  // ---- leaves --------------------------------------------------------------------------------------
+
+  #watchGust(triggers: readonly number[], settings: Settings): void {
+    const gust = triggers[0] ?? -1e4;
+    if (this.#primed && gust !== this.#seenGust && gust > -1e3) {
+      this.#gustAge = 0;
+      this.#gustSign = settings.wind < -0.05 ? -1 : 1;
+      this.#shower = GUST_SHOWER;
+    }
+    this.#primed = true;
+    this.#seenGust = gust;
+  }
+
+  /** Give the leaves on the ground (and in the air) the new season's colours. */
+  #reskin(season: GardenSeason): void {
+    this.#season = season;
+    const kind = SEASON_KIND[season];
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
+      if (this.#state[i] === FREE) continue;
+      this.#kind[i] = kind;
+      this.#radius[i] = SPECS[kind].radius * (0.85 + 0.3 * this.#leafRand());
+    }
+  }
+
+  #leaves(dt: number, settings: Settings): void {
+    if (!(dt > 0)) return;
+    const rand = this.#leafRand;
+    // Let go: leaves at the knob's pace, and a gust's shower over its first moments.
+    const rate = settings.leaves * FALL_RATE[settings.season];
+    if (rate > 0) {
+      this.#nextLeaf -= dt;
+      if (this.#nextLeaf <= 0) {
+        this.#spawn(settings, false);
+        this.#nextLeaf = -Math.log(1 - 0.999 * rand()) / rate;
+      }
+    }
+    // The shower comes down over the gust's first moments, as slots free up (the gust blows some
+    // lying leaves away).
+    if (this.#shower > 0 && this.#gustAge < GUST_SHAKE + 3) {
+      const due = this.#gustAge < GUST_SHAKE ? Math.ceil(GUST_SHOWER * (1 - this.#gustAge / GUST_SHAKE)) : 0;
+      while (this.#shower > due && this.#spawn(settings, true) !== undefined) this.#shower--;
+    }
+    // Keep room in the air: past LANDED_MAX on the ground, the oldest starts to fade.
+    let landed = 0;
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) if (this.#state[i] === LANDED && (this.#lain[i] ?? 0) < (this.#life[i] ?? 0)) landed++;
+    if (landed > LANDED_MAX) this.#retireOldest();
+
+    const gust = gustAt(this.#gustAge) * this.#gustSign;
+    const windX = settings.wind * WIND_DRIFT + gust * GUST_DRIFT;
+    const lift = Math.abs(gust) * GUST_LIFT;
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
+      const state = this.#state[i];
+      if (state === FALLING) {
+        this.#alpha[i] = Math.min(1, (this.#alpha[i] ?? 0) + dt / FADE_IN);
+        this.#fall(i, dt, windX, lift, settings);
+      } else if (state === LANDED) {
+        this.#lie(i, dt, gust, settings);
+      } else if (state === LEAVING) {
+        this.#leave(i, dt);
+      }
+    }
+  }
+
+  /** A free slot; when there is none, the oldest leaf lying on the gravel is made to fade. */
+  #slot(): number | undefined {
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) if (this.#state[i] === FREE) return i;
+    this.#retireOldest();
+    return undefined;
+  }
+
+  /** Start the oldest lying leaf fading, unless one already is. */
+  #retireOldest(): void {
+    let oldest = -1;
+    let oldestAge = -1;
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
+      if (this.#state[i] !== LANDED) continue;
+      const lain = this.#lain[i] ?? 0;
+      if (lain >= (this.#life[i] ?? 0)) return;
+      if (lain > oldestAge) {
+        oldestAge = lain;
+        oldest = i;
+      }
+    }
+    if (oldest >= 0) this.#life[oldest] = oldestAge;
+  }
+
+  /**
+   * A leaf lets go: from the maple's foliage, or (on the veranda) from the boughs overhead, out of
+   * frame; a gust also brings some in from upwind. Returns its slot, if one was free.
+   */
+  #spawn(settings: Settings, gust: boolean): number | undefined {
+    const i = this.#slot();
+    if (i === undefined) return undefined;
+    const rand = this.#leafRand;
+    const kind = SEASON_KIND[settings.season];
+    const spec = SPECS[kind];
+    const zone = rand();
+    if (!settings.overhead && zone < 0.45) {
+      // Overhead boughs, above the veranda's frame.
+      const y = 0.06 + 0.42 * rand();
+      this.#x[i] = OX + (rand() - 0.5) * 1.1 * (y - GARDEN.eyeY) * 1.4;
+      this.#y[i] = y;
+      this.#z[i] = GARDEN.eyeHeight + 0.03 + 0.03 * (y - GARDEN.eyeY) + 0.05 * rand();
+    } else if (gust && zone < 0.6) {
+      // Blown in from upwind, past the frame's edge.
+      const y = 0.25 + 0.6 * rand();
+      const half = settings.overhead ? 0.5 * this.#aspect * GARDEN.span : 0.5 * this.#aspect * (y - GARDEN.eyeY) / GARDEN.focal;
+      this.#x[i] = OX - this.#gustSign * (half + 0.05);
+      this.#y[i] = y;
+      this.#z[i] = 0.12 + 0.12 * rand();
+    } else {
+      // From inside a clump of the maple, on the garden's side of the wall.
+      const [cx, cy, cz, r] = GARDEN_CANOPY[Math.floor(rand() * GARDEN_CANOPY.length)] ?? ([0.5, 1, 0.2, 0.08] as const);
+      const a = rand() * TAU;
+      const d = 0.6 * r * Math.sqrt(rand());
+      this.#x[i] = cx + Math.cos(a) * d;
+      this.#y[i] = Math.min(cy + Math.sin(a) * d, 0.99);
+      this.#z[i] = cz - 0.3 * r * rand();
+    }
+    this.#state[i] = FALLING;
+    this.#kind[i] = kind;
+    const tumbles = rand() < spec.tumbling;
+    const range = tumbles ? spec.tumble : spec.flutter;
+    this.#mass[i] = lerp(range[0], range[1], rand());
+    this.#chord[i] = spec.chord * (0.85 + 0.3 * rand());
+    this.#pace[i] = spec.pace * (0.9 + 0.2 * rand());
+    this.#radius[i] = spec.radius * (0.85 + 0.3 * rand());
+    this.#psi[i] = rand() * TAU;
+    this.#dpsi[i] = (rand() - 0.5) * 0.6;
+    this.#u[i] = 0;
+    this.#v[i] = 0;
+    this.#w[i] = 0;
+    this.#th[i] = (rand() - 0.5) * 1.2;
+    this.#sigma[i] = rand() * TAU;
+    this.#dsigma[i] = (rand() - 0.5) * 0.9;
+    this.#roll[i] = rand() * TAU;
+    this.#rollRate[i] = 1.2 + 1.6 * rand();
+    this.#hue[i] = rand();
+    this.#lain[i] = 0;
+    this.#life[i] = lerp(spec.life[0], spec.life[1], rand());
+    this.#alpha[i] = 0;
+    this.#vx[i] = 0;
+    this.#vy[i] = 0;
+    this.#debt[i] = 0;
+    this.#rest[i] = (rand() - 0.5) * 0.14;
+    return i;
+  }
+
+  /**
+   * Andersen, Pesavento & Wang's quasi-steady plate, per unit span, in units of chord, air density
+   * and gravity: the rates of the body-frame velocity along the chord (u) and normal to it (v) and
+   * of the pitch rate (w), at pitch th, into #rates. Circulation Γ = -½ C_T uv/|V| + ½ C_R w lifts
+   * across the flow; drag ½ (A - B cos 2α) |V| opposes it; added masses couple u, v and w; a weak
+   * damping torque lets light plates swing wide.
+   */
+  #plate(m: number, inertia: number, u: number, v: number, w: number, th: number): void {
+    const speed = Math.hypot(u, v) + 1e-9;
+    const gamma = -0.5 * PLATE_CT * ((u * v) / speed) + 0.5 * PLATE_CR * w;
+    const drag = 0.5 * (PLATE_A - (PLATE_B * (u * u - v * v)) / (speed * speed)) * speed;
+    const torque = PLATE_MU * (1 + Math.abs(w)) * w;
+    const out = this.#rates;
+    out[0] = ((m + PLATE_M22) * v * w - gamma * v - m * Math.sin(th) - drag * u) / (m + PLATE_M11);
+    out[1] = (-(m + PLATE_M11) * u * w + gamma * u - m * Math.cos(th) - drag * v) / (m + PLATE_M22);
+    out[2] = ((PLATE_M11 - PLATE_M22) * u * v - torque) / inertia;
+  }
+
+  /** Flutter or tumble down: the plate model in the leaf's plane, the plane turning, the wind carrying it. */
+  #fall(i: number, dt: number, windX: number, lift: number, settings: Settings): void {
+    const m = this.#mass[i] ?? 0.3;
+    const chord = this.#chord[i] ?? 0.04;
+    const pace = this.#pace[i] ?? 0.17;
+    const inertia = m / 12 + PLATE_IA;
+    let u = this.#u[i] ?? 0;
+    let v = this.#v[i] ?? 0;
+    let w = this.#w[i] ?? 0;
+    let th = this.#th[i] ?? 0;
+    let x = this.#x[i] ?? 0;
+    let y = this.#y[i] ?? 0;
+    let z = this.#z[i] ?? 0;
+    let psi = this.#psi[i] ?? 0;
+    let debt = (this.#debt[i] ?? 0) + dt / pace;
+    const real = PLATE_STEP * pace;
+    const dpsi = this.#dpsi[i] ?? 0;
+    const rates = this.#rates;
+    const h = 0.5 * PLATE_STEP;
+    let landed = false;
+    let guard = 0;
+    while (debt >= PLATE_STEP && guard++ < 64) {
+      debt -= PLATE_STEP;
+      // The midpoint rule.
+      this.#plate(m, inertia, u, v, w, th);
+      const uMid = u + h * (rates[0] ?? 0);
+      const vMid = v + h * (rates[1] ?? 0);
+      const wMid = w + h * (rates[2] ?? 0);
+      const thMid = th + h * w;
+      this.#plate(m, inertia, uMid, vMid, wMid, thMid);
+      u += PLATE_STEP * (rates[0] ?? 0);
+      v += PLATE_STEP * (rates[1] ?? 0);
+      w += PLATE_STEP * (rates[2] ?? 0);
+      th += PLATE_STEP * wMid;
+      // Motion in the plane, in chords, from the midpoint state; then into the garden.
+      const ct = Math.cos(thMid);
+      const st = Math.sin(thMid);
+      const along = (uMid * ct - vMid * st) * PLATE_STEP * chord;
+      const rise = (uMid * st + vMid * ct) * PLATE_STEP * chord;
+      x += along * Math.cos(psi) + windX * real;
+      y += along * Math.sin(psi);
+      z += rise + lift * real;
+      psi += dpsi * real;
+      if (z <= this.#groundAt(x, y, settings.moss) + LEAF_LIFT) {
+        landed = true;
+        break;
+      }
+    }
+    this.#debt[i] = Math.min(debt, 2 * PLATE_STEP);
+    this.#sigma[i] = (this.#sigma[i] ?? 0) + (this.#dsigma[i] ?? 0) * dt;
+    this.#roll[i] = (this.#roll[i] ?? 0) + (this.#rollRate[i] ?? 0) * dt;
+    this.#u[i] = u;
+    this.#v[i] = v;
+    this.#w[i] = w;
+    this.#th[i] = th;
+    this.#x[i] = x;
+    this.#y[i] = y;
+    this.#z[i] = Math.min(z, 0.8);
+    this.#psi[i] = psi;
+    if (x < -0.3 || x > GA + 0.3 || y < -0.25 || y > 1.4) {
+      this.#state[i] = FREE;
+      return;
+    }
+    if (landed) this.#land(i, settings);
+  }
+
+  /** Touch down: rest on what lies there, or vanish if nobody would see it lie. */
+  #land(i: number, settings: Settings): void {
+    const x = this.#x[i] ?? 0;
+    const y = this.#y[i] ?? 0;
+    const seen = this.#project(x, y, 0);
+    const offGravel = y < 0 || y > GARDEN.wallY - 0.01;
+    if (seen === undefined || offGravel || seen.u < -0.05 || seen.u > 1.05 || seen.v < -0.05 || seen.v > 1.05) {
+      this.#state[i] = FREE;
+      return;
+    }
+    this.#state[i] = LANDED;
+    this.#z[i] = this.#groundAt(x, y, settings.moss) + LEAF_LIFT;
+    // Pitch wrapped into (-π, π]: it settles face up from whichever side it came down on.
+    const th = this.#th[i] ?? 0;
+    this.#touch[i] = Math.atan2(Math.sin(th), Math.cos(th));
+    this.#lain[i] = 0;
+  }
+
+  /** On the gravel: settle flat, skitter in a gust, get swept up by the rake, fade at the end. */
+  #lie(i: number, dt: number, gust: number, settings: Settings): void {
+    const lain = (this.#lain[i] ?? 0) + dt;
+    this.#lain[i] = lain;
+    const touch = this.#touch[i] ?? 0;
+    const rest = this.#rest[i] ?? 0;
+    // Face up or face down, whichever is nearer.
+    const target = Math.abs(touch) > Math.PI / 2 ? Math.sign(touch) * Math.PI + rest : rest;
+    this.#th[i] = lerp(touch, target, smoothstep(0, SETTLE_SECONDS, lain));
+    if (Math.abs(gust) > 0.05) {
+      // Skitter downwind a little, turning, each leaf by its own share; at the gust's height the
+      // lightest are carried off along the gravel.
+      const share = 0.15 + 0.35 * (this.#hue[i] ?? 0);
+      this.#x[i] = (this.#x[i] ?? 0) + gust * GUST_DRIFT * share * dt;
+      this.#sigma[i] = (this.#sigma[i] ?? 0) + gust * share * 2.5 * dt;
+      this.#z[i] = this.#groundAt(this.#x[i] ?? 0, this.#y[i] ?? 0, settings.moss) + LEAF_LIFT;
+      if (Math.abs(gust) > 0.7 && (this.#hue[i] ?? 0) > 1 - GUST_CARRY) {
+        this.#state[i] = LEAVING;
+        this.#vx[i] = gust * GUST_DRIFT * 2 * share;
+        this.#vy[i] = 0;
+      }
+    }
+    if (lain > (this.#life[i] ?? 60)) {
+      this.#alpha[i] = Math.max(0, (this.#alpha[i] ?? 0) - dt / FADE_OUT);
+      if ((this.#alpha[i] ?? 0) <= 0) this.#state[i] = FREE;
+    }
+  }
+
+  /** Swept away by a rake: slide on ahead of it and fade. */
+  #leave(i: number, dt: number): void {
+    this.#x[i] = (this.#x[i] ?? 0) + (this.#vx[i] ?? 0) * dt;
+    this.#y[i] = (this.#y[i] ?? 0) + (this.#vy[i] ?? 0) * dt;
+    this.#vx[i] = (this.#vx[i] ?? 0) * Math.exp(-1.5 * dt);
+    this.#vy[i] = (this.#vy[i] ?? 0) * Math.exp(-1.5 * dt);
+    this.#sigma[i] = (this.#sigma[i] ?? 0) + (this.#dsigma[i] ?? 0) * 2 * dt;
+    this.#alpha[i] = Math.max(0, (this.#alpha[i] ?? 0) - dt / SWEEP_SECONDS);
+    if ((this.#alpha[i] ?? 0) <= 0) this.#state[i] = FREE;
+  }
+
+  /** Leaves lying in the rake's way (at (x, y), heading (dx, dy), `half` wide) are swept up. */
+  #sweep(x: number, y: number, dx: number, dy: number, half: number, speed: number): void {
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
+      if (this.#state[i] !== LANDED) continue;
+      const px = (this.#x[i] ?? 0) - x;
+      const py = (this.#y[i] ?? 0) - y;
+      const along = px * dx + py * dy;
+      const across = Math.abs(px * dy - py * dx);
+      if (across > half || along < -0.01 || along > LEAD + 0.02) continue;
+      this.#state[i] = LEAVING;
+      const push = 1.5 * speed + 0.03;
+      this.#vx[i] = dx * push;
+      this.#vy[i] = dy * push;
+    }
+  }
+
+  /** The first frame shows leaves already lying about, and a few on their way down. */
+  #prewarmLeaves(settings: Settings): void {
+    this.#leafRand = mulberry32(0x6c656166 ^ settings.seed);
+    const rand = this.#leafRand;
+    for (let n = 0; n < PREWARM_FALLING; n++) {
+      this.#spawn(settings, false);
+    }
+    // Let the fallers get going, each for its own while.
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
+      if (this.#state[i] !== FALLING) continue;
+      const seconds = 1.5 + 4 * rand();
+      for (let t = 0; t < seconds && this.#state[i] === FALLING; t += 0.05) this.#fall(i, 0.05, settings.wind * WIND_DRIFT, 0, settings);
+      this.#alpha[i] = 1;
+    }
+    for (let n = 0; n < PREWARM_LANDED; n++) {
+      const i = this.#spawn(settings, false);
+      if (i === undefined) break;
+      // Somewhere both views see, off the stones.
+      let x = OX;
+      let y = 0.5;
+      for (let tries = 0; tries < 20; tries++) {
+        y = 0.12 + 0.72 * rand();
+        x = OX + (2 * rand() - 1) * (Math.min(0.6 * (y - GARDEN.eyeY), 0.85) - 0.05);
+        if (!this.#onStone(x, y)) break;
+      }
+      this.#x[i] = x;
+      this.#y[i] = y;
+      this.#th[i] = (this.#rest[i] ?? 0) + (rand() < 0.3 ? Math.PI : 0);
+      this.#land(i, settings);
+      if (this.#state[i] !== LANDED) continue;
+      this.#lain[i] = (this.#life[i] ?? 60) * rand();
+      this.#alpha[i] = 1;
+    }
+    this.#nextLeaf = 1 + 2 * rand();
+  }
+
+  /**
+   * uSim2, 4 × GARDEN_LEAF_SLOTS rgba16f, one row per leaf: (x, y relative to the garden's centre, z,
+   * alpha; alpha 0 = none), (first in-plane axis, radius), (second in-plane axis, kind), (hue, age on
+   * the ground 0..1, landed 0..1, 0).
+   */
+  #packLeaves(): void {
+    const data = this.#leafData;
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
+      const o = i * 16;
+      const state = this.#state[i] ?? FREE;
+      if (state === FREE) {
+        data.fill(0, o, o + 16);
+        continue;
+      }
+      const psi = this.#psi[i] ?? 0;
+      const th = this.#th[i] ?? 0;
+      const ce = Math.cos(psi);
+      const se = Math.sin(psi);
+      const ct = Math.cos(th);
+      const st = Math.sin(th);
+      // Chord axis, span axis and normal of the plate, the span rocked about the chord.
+      const tx = ct * ce;
+      const ty = ct * se;
+      const tz = st;
+      const settle = state === FALLING ? 1 : 1 - smoothstep(0, SETTLE_SECONDS, this.#lain[i] ?? 0);
+      const rho = ROLL * Math.sin(this.#roll[i] ?? 0) * settle;
+      const cr = Math.cos(rho);
+      const sr = Math.sin(rho);
+      const sx = -se * cr - st * ce * sr;
+      const sy = ce * cr - st * se * sr;
+      const sz = ct * sr;
+      const sigma = this.#sigma[i] ?? 0;
+      const cs = Math.cos(sigma);
+      const ss = Math.sin(sigma);
+      data[o] = (this.#x[i] ?? 0) - OX;
+      data[o + 1] = (this.#y[i] ?? 0) - OY;
+      data[o + 2] = this.#z[i] ?? 0;
+      data[o + 3] = this.#alpha[i] ?? 0;
+      data[o + 4] = cs * tx + ss * sx;
+      data[o + 5] = cs * ty + ss * sy;
+      data[o + 6] = cs * tz + ss * sz;
+      data[o + 7] = this.#radius[i] ?? 0.01;
+      data[o + 8] = -ss * tx + cs * sx;
+      data[o + 9] = -ss * ty + cs * sy;
+      data[o + 10] = -ss * tz + cs * sz;
+      data[o + 11] = this.#kind[i] ?? 0;
+      data[o + 12] = this.#hue[i] ?? 0;
+      data[o + 13] = state === FALLING ? 0 : clamp((this.#lain[i] ?? 0) / Math.max(this.#life[i] ?? 60, 1), 0, 1);
+      data[o + 14] = state === FALLING ? 0 : 1;
+      data[o + 15] = 0;
+    }
+    this.#leafTexture.upload(data);
+  }
+}
+
+/** The dry garden, for a scene whose `params` carry the knobs GardenKnob names. */
+export function gardenSim(params: readonly ParamDef[]): SimFactory {
+  return (gl) => new GardenSim(gl, params);
+}

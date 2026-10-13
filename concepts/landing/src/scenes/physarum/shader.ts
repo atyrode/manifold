@@ -1,0 +1,302 @@
+// The slime mould's picture, from the fields its sim grows (sim.ts): golden plasmodium and oat
+// flakes on dark agar, a sumi drawing on paper, or a night transit map.
+//   uSim0  rg16f over the trail grid (the frame plus PHYSARUM_MARGIN texels round it): R the trail in
+//          units of the vein level, smoothed; G its slow memory (the slime the mould leaves behind)
+//   uSim1  r32f (nearest; r16f in the still fallback) at half resolution: distance along the veins
+//          from the heart, screen heights. Filtered here by hand: 32-bit floats may not filter.
+//   uSim2  rgba16f PHYSARUM_MAX_FOOD × 3, nearest: row 0 per flake centre uv, radius (heights),
+//          presence (negative while it is eaten); row 1 turn, squash, grain, 1 for a crumb; row 2
+//          texel 0 the streaming phase and the heart's presence, texel 1 the M (centre uv, height, shown)
+//   uSim3  rgba at half resolution: R scent, G salt, B feeding, A light (the sea on the Tokyo map)
+// Knobs read here: K_palette (0 agar, 1 ink, 2 rail), K_pulse, K_relief, K_slime.
+import { PHYSARUM_FAR, PHYSARUM_MARGIN, PHYSARUM_MAX_FOOD, PHYSARUM_WAVE } from "./sim.ts";
+
+export const physarumGlsl = `
+const float PHYSARUM_MARGIN = ${PHYSARUM_MARGIN.toFixed(1)};
+const int PHYSARUM_FOOD = ${PHYSARUM_MAX_FOOD};
+const float PHYSARUM_WAVE = ${PHYSARUM_WAVE.toFixed(3)};
+const float PHYSARUM_FAR = ${PHYSARUM_FAR.toFixed(1)};
+
+// Agar: dark amber under a lamp high on the left; the lit sea the mould shuns, cool and pale; the
+// glossy track of slime it leaves where it has been.
+const vec3 PHYSARUM_AGAR = vec3(0.050, 0.037, 0.022);
+const vec3 PHYSARUM_LAMP = vec3(0.045, 0.032, 0.016);
+const vec3 PHYSARUM_LIT = vec3(0.115, 0.122, 0.120);
+const vec3 PHYSARUM_SLIME = vec3(0.055, 0.040, 0.014);
+// The plasmodium: a thin ochre film round the veins, golden tubes, paler cores, surges of cytoplasm.
+const vec3 PHYSARUM_FILM = vec3(0.30, 0.165, 0.020);
+const vec3 PHYSARUM_VEIN = vec3(0.93, 0.66, 0.10);
+const vec3 PHYSARUM_CORE = vec3(1.0, 0.89, 0.42);
+const vec3 PHYSARUM_SURGE = vec3(0.30, 0.26, 0.14);
+// Oat flakes fresh and eaten, and salt.
+const vec3 PHYSARUM_OAT = vec3(0.80, 0.70, 0.50);
+const vec3 PHYSARUM_HUSK = vec3(0.34, 0.26, 0.16);
+const vec3 PHYSARUM_SALT = vec3(0.86, 0.88, 0.90);
+// Ink: warm paper, sumi, its grey bleed, a pale wash for the sea.
+const vec3 PHYSARUM_PAPER = vec3(0.925, 0.898, 0.835);
+const vec3 PHYSARUM_SUMI = vec3(0.105, 0.100, 0.125);
+const vec3 PHYSARUM_BLEED = vec3(0.70, 0.68, 0.66);
+const vec3 PHYSARUM_WASH = vec3(0.80, 0.845, 0.86);
+// Rail: a night map, lines in sodium amber, white stations, disused lines in blue, salt as closures.
+const vec3 PHYSARUM_NIGHT = vec3(0.030, 0.045, 0.090);
+const vec3 PHYSARUM_SEA = vec3(0.012, 0.022, 0.055);
+const vec3 PHYSARUM_COAST = vec3(0.10, 0.17, 0.30);
+const vec3 PHYSARUM_LINE = vec3(1.0, 0.70, 0.28);
+const vec3 PHYSARUM_LINECORE = vec3(1.0, 0.93, 0.74);
+const vec3 PHYSARUM_GLOW = vec3(0.26, 0.12, 0.035);
+const vec3 PHYSARUM_DISUSED = vec3(0.06, 0.09, 0.16);
+const vec3 PHYSARUM_STATION = vec3(0.95, 0.95, 0.92);
+const vec3 PHYSARUM_CLOSED = vec3(0.62, 0.20, 0.16);
+
+// Toward the lamp, high on the left: in the plane, and in 3D (both unit).
+const vec2 PHYSARUM_TOLAMP = vec2(-0.6402, 0.7682);
+const vec3 PHYSARUM_LIGHT = vec3(-0.50, 0.60, 0.6245);
+
+// Where a point of the frame lies in the sim's fields, which run PHYSARUM_MARGIN texels past every edge.
+vec2 physarumDomain(vec2 uv) {
+  vec2 m = PHYSARUM_MARGIN / vec2(textureSize(uSim0, 0));
+  return m + uv * (1.0 - 2.0 * m);
+}
+
+// The distance along the veins at a point of the fields, bilinear by hand (see uSim1 above).
+float physarumDistance(vec2 d) {
+  ivec2 size = textureSize(uSim1, 0);
+  vec2 at = d * vec2(size) - 0.5;
+  vec2 w = fract(at);
+  ivec2 a = clamp(ivec2(floor(at)), ivec2(0), size - 1);
+  ivec2 b = clamp(ivec2(floor(at)) + 1, ivec2(0), size - 1);
+  float d00 = texelFetch(uSim1, a, 0).r;
+  float d10 = texelFetch(uSim1, ivec2(b.x, a.y), 0).r;
+  float d01 = texelFetch(uSim1, ivec2(a.x, b.y), 0).r;
+  float d11 = texelFetch(uSim1, b, 0).r;
+  return mix(mix(d00, d10, w.x), mix(d01, d11, w.x), w.y);
+}
+
+struct PhysarumField {
+  float dens;   // the trail, ~1 in a vein
+  float glow;   // the trail a few texels round: the film of plasmodium about the veins
+  vec2 grad;    // its slope, per texel
+  float lee;    // the trail a little toward the lamp: veins shading the agar beside them
+  float memory; // the trail over the last minute: the slime track
+  float dist;   // along the veins from the heart, screen heights
+  vec4 env;     // scent, salt, feeding, light
+};
+
+PhysarumField physarumField(vec2 uv) {
+  PhysarumField f;
+  f.dens = 0.0;
+  f.glow = 0.0;
+  f.grad = vec2(0.0);
+  f.lee = 0.0;
+  f.memory = 0.0;
+  f.dist = 1e3;
+  f.env = vec4(0.0);
+  if (uSimOn.x < 0.5) return f;
+  vec2 d = physarumDomain(uv);
+  vec2 tx = 1.0 / vec2(textureSize(uSim0, 0));
+  vec2 c = texture(uSim0, d).rg;
+  float e = texture(uSim0, d + vec2(tx.x, 0.0)).r;
+  float w = texture(uSim0, d - vec2(tx.x, 0.0)).r;
+  float n = texture(uSim0, d + vec2(0.0, tx.y)).r;
+  float s = texture(uSim0, d - vec2(0.0, tx.y)).r;
+  vec2 r = 3.0 * tx;
+  f.glow = 0.25 * (texture(uSim0, d + r).r + texture(uSim0, d - r).r
+    + texture(uSim0, d + vec2(r.x, -r.y)).r + texture(uSim0, d + vec2(-r.x, r.y)).r);
+  f.dens = 0.5 * c.r + 0.125 * (e + w + n + s);
+  f.grad = 0.5 * vec2(e - w, n - s);
+  f.lee = texture(uSim0, d + PHYSARUM_TOLAMP * 2.5 * tx).r;
+  f.memory = c.g;
+  if (uSimOn.y > 0.5) f.dist = physarumDistance(d);
+  if (uSimOn.w > 0.5) f.env = texture(uSim3, d);
+  return f;
+}
+
+// Salt: grains three cells apart, each a crisp 2 × 2 cells set by its own hash, present (at most
+// seven in ten, so even thick salt reads as scattered crystals, not a lattice) where the salt at its
+// centre is thick enough: a line of salt thins grain by grain as it dissolves. x: grain, y: its lit
+// corner.
+vec2 physarumGrains(vec2 cell) {
+  if (uSimOn.x < 0.5 || uSimOn.w < 0.5) return vec2(0.0);
+  vec2 g = floor(cell / 3.0);
+  float salt = texture(uSim3, physarumDomain((g * 3.0 + 1.5) / uRes)).g;
+  if (salt < 0.02 || hash12(g + 3.1) > 0.7 * salt) return vec2(0.0);
+  vec2 local = floor(cell) - g * 3.0 - floor(vec2(hash12(g + 7.7), hash12(g + 9.3)) * 2.0);
+  if (local.x < 0.0 || local.y < 0.0 || local.x > 1.0 || local.y > 1.0) return vec2(0.0);
+  return vec2(1.0, local.x < 0.5 && local.y > 0.5 ? 1.0 : 0.0);
+}
+
+// Oat dust strewn along the M's strokes while it is laid: specks of 2 × 2 cells.
+float physarumDust(vec2 p, vec2 cell, vec4 mark, float aspect) {
+  if (mark.w < 0.002 || mark.z <= 0.0) return 0.0;
+  vec2 c = vec2((mark.x - 0.5) * aspect, mark.y - 0.5);
+  float near = 1.0 - smoothstep(0.004, 0.016, markDistance((p - c) / mark.z) * mark.z);
+  if (near <= 0.0) return 0.0;
+  return near * mark.w * step(0.72, hash12(floor(cell / 2.0) + 17.0));
+}
+
+// An oat flake from above: flattened and irregular, domed toward the lamp, fibres along its length,
+// a soft shadow away from the lamp. A fresh one lands, shrinking a little as its shadow closes in
+// under it; an eaten one shrinks and browns to a husk. Returns its cover.
+float physarumOat(vec2 p, vec2 c, float r, vec4 shape, float presence, bool eaten, float px, inout vec3 col) {
+  float fade = smoothstep(0.0, 0.35, presence);
+  float fall = eaten ? 0.0 : (1.0 - presence) * (1.0 - presence);
+  r *= eaten ? 0.55 + 0.45 * presence : 1.0 + 0.35 * fall;
+  vec2 away = vec2(0.35, -0.42) * r * (1.0 + 5.0 * fall);
+  vec2 squash = vec2(1.0, 1.0 / shape.y);
+  vec2 q = rotate(p - c, -shape.x) * squash;
+  vec2 qs = rotate(p - c - away, -shape.x) * squash;
+  // An irregular rim: two octaves of noise taken round a circle, so it closes without a seam.
+  float a = atan(q.y, q.x + 1e-6);
+  vec2 rim = vec2(cos(a), sin(a));
+  float edge = r * (1.0 + 0.18 * (vnoise(rim * 1.7 + shape.z * 41.0) - 0.5) + 0.07 * (vnoise(rim * 4.3 + shape.z * 13.0) - 0.5));
+  float shadow = (1.0 - smoothstep(-0.2 * r, 0.7 * r * (1.0 + fall), length(qs) - edge)) * fade;
+  col *= 1.0 - 0.5 * shadow;
+  float len = length(q);
+  float cover = (1.0 - smoothstep(-px, px, len - edge)) * fade;
+  if (cover <= 0.0) return 0.0;
+  float u = clamp(len / edge, 0.0, 1.0);
+  vec2 dir = (p - c) / max(length(p - c), 1e-6);
+  float dome = 0.86 + 0.32 * dot(dir, PHYSARUM_TOLAMP) * u * u - 0.22 * smoothstep(0.7, 1.0, u);
+  float fibre = vnoise(vec2(q.x / r * 2.2, q.y / r * 7.0) + shape.z * 57.0);
+  vec3 oat = PHYSARUM_OAT * dome * (0.88 + 0.24 * fibre);
+  if (eaten) oat = mix(oat, PHYSARUM_HUSK * dome, 1.0 - presence);
+  col = mix(col, oat, cover);
+  return cover;
+}
+
+// Ink: a dot inside a fine ring, as food is marked on a plate; an eaten one's dot shrinks away.
+float physarumDot(vec2 p, vec2 c, float r, float presence, bool eaten, float px, inout vec3 col) {
+  float fade = smoothstep(0.0, 0.35, presence);
+  float d = length(p - c);
+  float inner = r * (eaten ? 0.55 * presence : 0.55);
+  float fill = (1.0 - smoothstep(inner - px, inner + px, d)) * fade;
+  float ring = (1.0 - smoothstep(0.5 * px, 1.4 * px, abs(d - 1.15 * r))) * fade * (eaten ? presence : 1.0);
+  col = mix(col, PHYSARUM_SUMI, max(fill, ring));
+  return fill;
+}
+
+// Rail: a station, a white ring round a dark hole with a white pip.
+float physarumStation(vec2 p, vec2 c, float r, float presence, bool eaten, float px, inout vec3 col) {
+  float fade = smoothstep(0.0, 0.35, presence) * (eaten ? presence : 1.0);
+  float d = length(p - c);
+  float outer = 0.8 * r;
+  float disc = (1.0 - smoothstep(outer - px, outer + px, d)) * fade;
+  float hole = (1.0 - smoothstep(0.55 * outer - px, 0.55 * outer + px, d)) * fade;
+  float pip = (1.0 - smoothstep(0.22 * outer - px, 0.22 * outer + px, d)) * fade;
+  col = mix(col, PHYSARUM_STATION, disc);
+  col = mix(col, PHYSARUM_NIGHT, hole);
+  col = mix(col, PHYSARUM_STATION, pip);
+  return disc;
+}
+
+// Every flake on the dish, in the palette's manner. Returns their cover.
+float physarumNodes(vec2 p, float aspect, float px, int palette, inout vec3 col) {
+  if (uSimOn.z < 0.5) return 0.0;
+  float cover = 0.0;
+  for (int i = 0; i < PHYSARUM_FOOD; i++) {
+    vec4 node = texelFetch(uSim2, ivec2(i, 0), 0);
+    float presence = abs(node.w);
+    if (presence < 0.002) continue;
+    vec2 c = vec2((node.x - 0.5) * aspect, node.y - 0.5);
+    if (length(p - c) > 5.0 * node.z + 0.01) continue;
+    bool eaten = node.w < 0.0;
+    if (palette == 1) cover = max(cover, physarumDot(p, c, node.z, presence, eaten, px, col));
+    else if (palette == 2) cover = max(cover, physarumStation(p, c, node.z, presence, eaten, px, col));
+    else cover = max(cover, physarumOat(p, c, node.z, texelFetch(uSim2, ivec2(i, 1), 0), presence, eaten, px, col));
+  }
+  return cover;
+}
+
+Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
+  Shade o = blankShade();
+  float aspect = uRes.x / uRes.y;
+  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+  float px = 1.0 / uRes.y;
+  int palette = int(K_palette + 0.5);
+
+  PhysarumField f = physarumField(uv);
+  vec4 state = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(0, 2), 0) : vec4(0.0);
+  vec4 mark = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(1, 2), 0) : vec4(0.0);
+
+  // Shuttle streaming: crests of cytoplasm running along the veins out from the heart (and back,
+  // once the flow reverses), each swelling the vein it passes through. The sim moves the phase.
+  float crest = 0.0;
+  if (K_pulse > 0.0) {
+    float wave = 0.5 + 0.5 * cos(TAU * (f.dist / PHYSARUM_WAVE - state.x));
+    crest = K_pulse * state.y * wave * wave * wave * (1.0 - smoothstep(0.5 * PHYSARUM_FAR, 0.8 * PHYSARUM_FAR, f.dist));
+  }
+  float dens = f.dens * (1.0 + 0.6 * crest);
+  float body = smoothstep(0.3, 0.8, dens);
+  float core = smoothstep(1.0, 2.3, dens);
+  float halo = smoothstep(0.06, 0.6, f.glow);
+  float lee = smoothstep(0.3, 0.9, f.lee) * (1.0 - body) * K_relief;
+  float track = smoothstep(0.08, 0.5, f.memory - 0.8 * f.dens) * K_slime;
+  float sea = smoothstep(0.35, 0.65, f.env.a);
+  float coast = 1.0 - smoothstep(0.04, 0.14, abs(f.env.a - 0.5));
+  float damp = smoothstep(0.03, 0.4, f.env.g);
+  vec2 grain = physarumGrains(cell);
+  float dust = physarumDust(p, cell, mark, aspect);
+  // The veins lit as tubes from the lamp: 1 on the flat, brighter on the slopes facing it.
+  vec3 tilt = normalize(vec3(-2.6 * f.grad, 1.0));
+  float relief = mix(1.0, clamp(dot(tilt, PHYSARUM_LIGHT) / PHYSARUM_LIGHT.z, 0.55, 1.45), K_relief);
+
+  vec3 col;
+  float nodes;
+  if (palette == 1) {
+    // Ink: a sumi drawing on warm paper; thin veins grey, trunks black and pooled at their edges,
+    // the sea a hatched wash, abandoned veins a ghost of grey, salt a stipple.
+    col = PHYSARUM_PAPER * (0.965 + 0.06 * fbm(cell / 70.0 + 2.3));
+    float hatch = step(mod(floor(cell.y), 5.0), 0.5);
+    col = mix(col, PHYSARUM_WASH * (1.0 - 0.08 * hatch), sea);
+    col = mix(col, PHYSARUM_SUMI, 0.7 * coast);
+    col *= 1.0 - 0.08 * track - 0.06 * damp;
+    col = mix(col, PHYSARUM_SUMI * 3.0, 0.75 * grain.x);
+    col = mix(col, PHYSARUM_SUMI, 0.5 * dust);
+    col = mix(col, PHYSARUM_BLEED, 0.4 * halo * (1.0 - body));
+    float pool = K_relief * smoothstep(0.12, 0.45, length(f.grad));
+    vec3 ink = mix(PHYSARUM_BLEED * 0.55, PHYSARUM_SUMI, max(core, pool)) * (1.0 - 0.3 * crest);
+    col = mix(col, ink, body);
+    nodes = physarumNodes(p, aspect, px, 1, col);
+  } else if (palette == 2) {
+    // Rail: a night transit map, a faint graticule, lines in sodium amber glowing on the dark,
+    // disused ones a dim blue, salt red closures, cities as stations.
+    col = PHYSARUM_NIGHT;
+    vec2 graticule = (0.5 - abs(fract(p / 0.125) - 0.5)) * 0.125;
+    col += 0.02 * (1.0 - smoothstep(0.4 * px, 1.1 * px, min(graticule.x, graticule.y)));
+    col = mix(col, PHYSARUM_SEA, sea);
+    col = mix(col, PHYSARUM_COAST, coast);
+    col += PHYSARUM_DISUSED * track;
+    col = mix(col, PHYSARUM_CLOSED, grain.x);
+    col += PHYSARUM_GLOW * halo * (1.0 - body);
+    vec3 line = mix(PHYSARUM_LINE, PHYSARUM_LINECORE, core) * relief + 0.35 * crest * PHYSARUM_LINECORE;
+    col = mix(col, line, body);
+    col = mix(col, PHYSARUM_STATION * 0.6, 0.6 * dust);
+    nodes = physarumNodes(p, aspect, px, 2, col);
+  } else {
+    // Agar: mottled amber under the lamp, the sea lit pale, the slime track glossy, the agar wet
+    // round the salt and shaded beside the veins; the flakes, the salt, then the plasmodium over
+    // them, lying thinner across the flakes it is eating.
+    col = PHYSARUM_AGAR * (0.86 + 0.28 * fbm(p * 2.6 + 3.7));
+    vec2 lamp = p - vec2(-0.42 * aspect, 0.4);
+    col += PHYSARUM_LAMP * exp(-1.6 * dot(lamp, lamp));
+    col = mix(col, PHYSARUM_LIT * (0.94 + 0.12 * fbm(p * 1.8 + 9.1)), sea);
+    col += 0.05 * coast;
+    col += PHYSARUM_SLIME * track;
+    col *= (1.0 - 0.35 * damp) * (1.0 - 0.4 * lee);
+    col = mix(col, PHYSARUM_OAT * 0.8, 0.8 * dust);
+    nodes = physarumNodes(p, aspect, px, 0, col);
+    col = mix(col, PHYSARUM_SALT * (grain.y > 0.5 ? 1.08 : 0.9), grain.x);
+    col += PHYSARUM_FILM * halo * (1.0 - body) * (1.0 - 0.5 * nodes);
+    vec3 vein = mix(PHYSARUM_VEIN, PHYSARUM_CORE, core) * relief + PHYSARUM_SURGE * crest;
+    col = mix(col, vein, body * (1.0 - 0.45 * nodes));
+  }
+
+  o.rgb = col;
+  o.source = col;
+  float lum = dot(col, LUMA);
+  // Paper puts the page in its light theme, where ink means dark; on the dark dishes it means light.
+  o.ink = palette == 1 ? clamp((0.92 - lum) / 0.8, 0.0, 1.0) : clamp(1.3 * lum, 0.0, 1.0);
+  o.accent = palette == 1 ? body : max(body, 0.4 * halo) * (1.0 - nodes);
+  return o;
+}
+`;
