@@ -58,21 +58,27 @@ export const DEW_WET_LEVELS = 31;
 /** Depth of field: blur radius (frame heights) per unit of depth off the focus at full knob; its cap. */
 export const DEW_DOF = 1.2;
 export const DEW_BLUR_MAX = 0.01;
-/** Typical bead radius (frame heights) on a fully wet capture thread in the heaviest dew. */
-export const DEW_BEAD_R = 0.0031;
+/**
+ * Bead radius (frame heights) on a fully wet capture thread in the heaviest dew, before its own
+ * ±15%: 2–3 cells at 540 rows, so a bead reads as a bead (a lit body and a spark) under the dither.
+ */
+export const DEW_BEAD_R = 0.0045;
 /** Bead radius by kind (spoke, spiral, frame): the dry radii and frame carry finer dew. */
-export const DEW_BEAD_SCALE = [0.72, 1, 0.85] as const;
+export const DEW_BEAD_SCALE = [0.75, 1, 0.85] as const;
+/** Share of a thread's bead places that hold a bead, by kind: base + slope × dew. The sticky spiral nearly all. */
+export const DEW_PRESENCE_BASE = [0.35, 0.75, 0.5] as const;
+export const DEW_PRESENCE_DEW = [0.35, 0.25, 0.3] as const;
 /** Share of their radius beads and big drops hang below their thread. */
 export const DEW_BEAD_HANG = 0.3;
 export const DEW_DROP_HANG = 0.55;
 /** Thread half-widths in cells (radii and spiral, frame and moorings) and how much a glint swells them. */
-export const DEW_SILK_HALF = 0.62;
-export const DEW_FRAME_HALF = 0.85;
-export const DEW_GLINT_SWELL = 0.7;
+export const DEW_SILK_HALF = 0.5;
+export const DEW_FRAME_HALF = 0.6;
+export const DEW_GLINT_SWELL = 0.6;
 
-/** Largest bead radius the shader can draw for a kind at this dew (its hash term peaks at 1.3). */
+/** Largest bead radius the shader can draw for a kind at this dew (its own variation peaks at 1.15). */
 export function dewBeadMax(kind: number, dew: number): number {
-  return DEW_BEAD_R * (DEW_BEAD_SCALE[kind] ?? 1) * (0.6 + 0.4 * dew) * 1.3;
+  return DEW_BEAD_R * (DEW_BEAD_SCALE[kind] ?? 1) * (0.55 + 0.45 * dew) * 1.15;
 }
 
 // ---- the web ----------------------------------------------------------------------------------------
@@ -95,60 +101,73 @@ const CORNERS = [18, 90, 162, 234, 306] as const;
 const CORNER_JITTER = 6;
 const CORNER_REACH = 1.28;
 const CORNER_REACH_JITTER = 0.04;
-/** Where a frame thread's bead count comes from: bead spacing (frame heights) by kind. */
-const BEAD_SPACING = [0.015, 0.0105, 0.017] as const;
-/** Gravity (frame heights/s²), damping (1/s) and constraint passes per substep. */
+/** Bead spacing along a thread (frame heights) by kind: well apart, so they read as beads on a string. */
+const BEAD_SPACING = [0.024, 0.016, 0.026] as const;
+/**
+ * Gravity (frame heights/s²), damping (1/s) and constraint passes per substep. The damping keeps
+ * ringing short (a pluck dies away in about a second) so fine threads never shimmer for long.
+ */
 const GRAVITY = -0.05;
-const DAMPING = 0.8;
+const DAMPING = 1.6;
 const ITERATIONS = 4;
 /** Prewarm: whole 0.1 s steps run at construction so the tension has settled (it does in ~2 s). */
 const PREWARM_STEPS = 20;
 /** Seconds of drop life fast-forwarded at construction, and the step. */
 const PREWARM_DROPS = 50;
 const PREWARM_DROP_STEP = 0.25;
-/** Camera distance in frame heights: a point swinging toward the viewer grows by z / distance. */
-const CAMERA_DISTANCE = 2;
+/**
+ * Camera distance in frame heights: a point swinging toward the viewer grows by z / distance. Far,
+ * so the out-of-plane breathing shows as focus and glints rather than as threads sliding about.
+ */
+const CAMERA_DISTANCE = 10;
 
 // ---- breeze -----------------------------------------------------------------------------------------
 
-/** Out-of-plane pressure on every point at breeze 1 (frame heights/s²), its share in the plane. */
+/**
+ * Out-of-plane pressure on every point at breeze 1 (frame heights/s²) and its share in the plane.
+ * At rest the web only breathes: the threads move well under a cell; gusts and plucks move it more.
+ */
 const PRESSURE = 0.06;
-const SIDEWAYS = 0.2;
-/** A pressure ripple running across the web: amplitude share, wavenumber (rad/height), rate (rad/s). */
-const RIPPLE = 0.45;
-const RIPPLE_K = 11;
-const RIPPLE_W = 1.6;
+const SIDEWAYS = 0.04;
+/** A slow pressure ripple across the web: amplitude share, wavenumber (rad/height), rate (rad/s). */
+const RIPPLE = 0.3;
+const RIPPLE_K = 7;
+const RIPPLE_W = 0.5;
+/** The breeze's slow swell: periods (s) of its two parts. */
+const SWELL_SLOW = 23.7;
+const SWELL_FAST = 13.1;
 /** Gusts: length (s), extra pressure at the peak (× breeze 1), seconds between natural ones at breeze 0 and 1. */
 const GUST_SECONDS = 6;
 const GUST_GAIN = 2.2;
 const GUST_RARE = 80;
 const GUST_OFTEN = 24;
-/** Sway of a stem's tip at breeze 1 (frame heights), and the extra a full gust adds. */
-const STEM_SWAY = 0.03;
-const STEM_GUST = 0.035;
+/** Sway of a stem's tip at breeze 1 (frame heights), the extra a full gust adds, and the twig's nod. */
+const STEM_SWAY = 0.006;
+const STEM_GUST = 0.02;
+const TWIG_NOD = 0.0015;
 
 // ---- drops ------------------------------------------------------------------------------------------
 
 /** A drop of this radius on a vertical thread pulls with 1 against the pinning PIN (contact-angle hysteresis). */
-const R_SLIDE = 0.0075;
+const R_SLIDE = 0.006;
 const PIN = 0.4;
 /** Creeping speed (frame heights/s per unit of excess pull), and the time it takes to get going. */
-const SLIDE_SPEED = 0.025;
-const SLIDE_EASE = 0.6;
+const SLIDE_SPEED = 0.012;
+const SLIDE_EASE = 0.8;
 /** At a crossing a drop only goes on down a thread at least this steep; turning keeps this much speed. */
 const SLOPE_MIN = 0.15;
 const CORNER_KEEP = 0.6;
-/** Radius at which a drop falls at once; above R_HANG one parked at a low point lets go after ~HANG s. */
-const R_FALL = 0.0105;
-const R_HANG = 0.0085;
+/** Radius at which a drop falls at once (about 9 cells across); above R_HANG one parked at a low point lets go after ~HANG s. */
+const R_FALL = 0.0085;
+const R_HANG = 0.007;
 const HANG_SECONDS = 15;
 /** Condensation onto a drop: r³ per second at dew 1. */
 const GROW = 7e-9;
 /** With more drops than the dew feeds (it was turned down) they dry: r³ per second; gone below R_GONE. */
 const EVAPORATE = 4e-8;
 const R_GONE = 0.002;
-/** A new drop's radius, how long it takes to gather, the share of its thread's beads it takes up. */
-const SPAWN_R = 0.0036;
+/** A new drop's radius (about 5 cells across once gathered), how long it takes to gather, the share of its thread's beads it takes up. */
+const SPAWN_R = 0.0045;
 const BIRTH_SECONDS = 3;
 const SPAWN_TAKE = 0.6;
 /** Seconds between new drops while the web holds fewer than its share. */
@@ -158,19 +177,20 @@ const WET_REGROW = 0.01;
 const WET_REGROW_DEW = 0.03;
 /** Fall: gravity (frame heights/s²) and the upward kick its thread gets from a drop of R_FALL. */
 const FALL_GRAVITY = 1.4;
-const RECOIL = 0.35;
+const RECOIL = 0.2;
 const RECOIL_RADIUS = 0.04;
 /** A drop of R_FALL weighs this much on its thread (frame heights/s² on the two points). */
 const WEIGHT = 0.25;
 /** Thread speed (frame heights/s) that shakes a drop of R_FALL loose (smaller drops need (R_FALL / r)² more). */
 const SHAKE_FALL = 0.35;
-/** Wobble: amplitude per unit thread speed, its cap, decay (s) and frequency (Hz). */
-const SHIVER_GAIN = 0.4;
-const SHIVER_MAX = 0.3;
-const SHIVER_DECAY = 1.2;
-const SHIVER_HZ = 2.1;
+/** Wobble: amplitude per unit thread speed, its cap, the kick a merge gives, decay (s) and frequency (Hz). */
+const SHIVER_GAIN = 0.3;
+const SHIVER_MAX = 0.2;
+const SHIVER_MERGE = 0.1;
+const SHIVER_DECAY = 1;
+const SHIVER_HZ = 1.2;
 /** During a gust, drops bigger than this may be blown off, at up to GUST_SHED per second for a drop of R_FALL. */
-const GUST_SHED_R = 0.006;
+const GUST_SHED_R = 0.005;
 const GUST_SHED = 0.25;
 
 // ---- the pointer ------------------------------------------------------------------------------------
@@ -640,7 +660,7 @@ class DewSim implements SceneSim {
     const since = clock - this.#gustAt;
     const g = since >= 0 && since < GUST_SECONDS ? Math.sin((Math.PI * since) / GUST_SECONDS) : 0;
     this.#gust = g * g * this.#gustAmp;
-    const swell = 0.6 + 0.25 * Math.sin((clock / 7.3) * TAU) + 0.15 * Math.sin((clock / 12.9) * TAU + 1.3);
+    const swell = 0.6 + 0.25 * Math.sin((clock / SWELL_FAST) * TAU) + 0.15 * Math.sin((clock / SWELL_SLOW) * TAU + 1.3);
     const level = breeze * swell + GUST_GAIN * this.#gust * (0.35 + breeze);
     this.#fz = PRESSURE * level;
     this.#fx = PRESSURE * SIDEWAYS * level;
@@ -648,16 +668,16 @@ class DewSim implements SceneSim {
     const web = this.#web;
     for (const stem of web.stems) {
       const p = stem.phase;
-      const nod = breeze * (0.6 * Math.sin((clock / 6.3) * TAU + p) + 0.4 * Math.sin((clock / 9.7) * TAU + 2 * p));
+      const nod = breeze * (0.6 * Math.sin((clock / 11.3) * TAU + p) + 0.4 * Math.sin((clock / 17.9) * TAU + 2 * p));
       stem.sx = STEM_SWAY * nod + STEM_GUST * this.#gust;
-      stem.sz = STEM_SWAY * breeze * (0.7 * Math.sin((clock / 8.1) * TAU + 3 * p) + 0.3 * Math.sin((clock / 4.9) * TAU + p)) + 0.5 * STEM_GUST * this.#gust;
+      stem.sz = STEM_SWAY * breeze * (0.7 * Math.sin((clock / 14.7) * TAU + 3 * p) + 0.3 * Math.sin((clock / 9.1) * TAU + p)) + 0.5 * STEM_GUST * this.#gust;
     }
     const at = this.#at;
     for (const m of web.moorings) {
       const stem = web.stems[m.stem];
       if (stem === undefined) {
         // The twig above: a small, slow nod of its own.
-        const nod = 0.006 * breeze * Math.sin((clock / 10.3) * TAU + 0.7);
+        const nod = TWIG_NOD * breeze * Math.sin((clock / 15.1) * TAU + 0.7);
         web.sys.move(m.point, m.x + nod, m.y, nod * 0.6);
       } else {
         stemAt(stem, m.u, at);
@@ -862,8 +882,8 @@ class DewSim implements SceneSim {
   /** r³ a drop takes up per frame height of thread swept, at the thread's wetness (the shader's beads). */
   #sweep(kind: number, wet: number): number {
     const dew = this.#dew;
-    const presence = (0.4 + 0.6 * dew) * (kind === DEW_KIND_SPOKE ? 0.6 : 1);
-    const mean = DEW_BEAD_R * (DEW_BEAD_SCALE[kind] ?? 1) * (0.6 + 0.4 * dew) * 0.9;
+    const presence = (DEW_PRESENCE_BASE[kind] ?? 1) + (DEW_PRESENCE_DEW[kind] ?? 0) * dew;
+    const mean = DEW_BEAD_R * (DEW_BEAD_SCALE[kind] ?? 1) * (0.55 + 0.45 * dew);
     return (presence * mean * mean * mean * wet) / (BEAD_SPACING[kind] ?? 0.0105);
   }
 
@@ -945,7 +965,7 @@ class DewSim implements SceneSim {
         const gone = keep === d ? e : d;
         this.#r[keep] = Math.cbrt(rd * rd * rd + re * re * re);
         this.#birth[keep] = Math.max(this.#birth[d] ?? 0, this.#birth[e] ?? 0);
-        this.#shiver[keep] = SHIVER_MAX;
+        this.#shiver[keep] = SHIVER_MERGE;
         this.#state[gone] = 0;
         this.#place(keep);
         if (gone === d) break;
