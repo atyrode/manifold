@@ -62,9 +62,19 @@ const float FIREFLIES_BOKEH_GAIN = 0.42;
 const float FIREFLIES_STRETCH = 1.6;
 
 // The night: skyglow low over the trees fading to black overhead, distant hills, the mangroves in
-// black, the mist glowing under them, the mist itself, the river's own dark.
-const vec3 FIREFLIES_SKYGLOW = vec3(0.060, 0.150, 0.220);
-const vec3 FIREFLIES_HILLS = vec3(0.012, 0.030, 0.045);
+// black, the mist glowing under them, the mist itself, the river's own dark. The skyglow and hills
+// have no red: every channel dithers on the same threshold, so they print as black, navy (blue
+// only) and teal (green and blue) cells, never grey. The navy, so dark it reads as deep blue sky
+// rather than texture, reaches high and thins out slowly; the brighter teal hugs the treeline,
+// where the silhouettes stand against it.
+const vec3 FIREFLIES_SKYGLOW = vec3(0.000, 0.200, 0.250);
+// Per channel, the height (screen heights above the waterline) over which the skyglow falls by e
+// (red is 0 anyway), and the heights between which what is left fades out, leaving the sky over
+// the stars black.
+const vec3 FIREFLIES_GLOW_FALL = vec3(1.0, 0.09, 0.20);
+const float FIREFLIES_GLOW_FADE = 0.2;
+const float FIREFLIES_GLOW_END = 0.55;
+const vec3 FIREFLIES_HILLS = vec3(0.000, 0.020, 0.040);
 // Under 1/192 a channel (even with the crown tone's 1.25), below the dither's first step at four
 // levels, so the silhouettes print solid black.
 const vec3 FIREFLIES_LEAVES = vec3(0.000, 0.003, 0.003);
@@ -115,8 +125,8 @@ vec3 firefliesBank(vec2 q, float x0, float span, float tm, float pulse, bool mir
   leaves = 0.0;
   float roots = 0.0;
 
-  // Skyglow: deep teal over the trees, fading to black overhead, where the stars are.
-  vec3 col = FIREFLIES_SKYGLOW * exp(-max(h, 0.0) / 0.26) * (1.0 - smoothstep(0.3, 0.66, h));
+  // Skyglow: teal over the trees, deep blue above, fading to black overhead, where the stars are.
+  vec3 col = FIREFLIES_SKYGLOW * exp(-max(h, 0.0) / FIREFLIES_GLOW_FALL) * (1.0 - smoothstep(FIREFLIES_GLOW_FADE, FIREFLIES_GLOW_END, h));
   col.g += 0.012 * pulse * exp(-h / 0.14);
   if (!mirrored && K_stars > 0.0 && h > 0.28) {
     // Sparse stars, each one or two cells, still.

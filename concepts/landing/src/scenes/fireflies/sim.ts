@@ -95,9 +95,13 @@ const RATE_SPREAD = 0.05;
 const STUBBORN_SHARE = 0.012;
 const STUBBORN_PULL = 0.08;
 const STUBBORN_SPREAD = 0.2;
-/** Phase response (cycles/s at full light) at coupling 1: to the neighbours, and to the whole bank. */
-const COUPLING_LOCAL = 1.1;
-const COUPLING_GLOBAL = 0.42;
+/**
+ * Phase response (cycles/s at full light) at coupling 1: to the neighbours, and to the whole bank.
+ * At the default coupling (0.5) and the lab's default motion (0.6) the bank visibly falls into
+ * step within about 10 s and pulses as one by about 20–25 s.
+ */
+const COUPLING_LOCAL = 1.65;
+const COUPLING_GLOBAL = 0.63;
 /** Neighbourhood radius in cells: a firefly sees the flashes within a (2·BOX + 1)² square. */
 const BOX = 3;
 /** A sparse neighbourhood's light is averaged over at least this many fireflies, so loners answer less. */
@@ -133,6 +137,11 @@ const BRIGHT_RANGE = 0.8;
 const BRIGHT_SKEW = 2.5;
 /** Brightness of the fireflies drawing the M. */
 const MARK_BRIGHT = 1.1;
+/**
+ * Between its flashes the M's fireflies keep a faint steady glow (as Photuris do), this share of a
+ * flash, so its shape reads all through the episode; it rises and fades with the M itself.
+ */
+const MARK_EMBER = 0.25;
 
 // The forest.
 /** Half the world width the forest is grown over (screen heights): frames up to aspect 5.2. */
@@ -184,9 +193,12 @@ const MARK_FOLLOW = 0.6;
 /** Gathering and letting go, in periods. */
 const MARK_RISE = 1.2;
 const MARK_RELEASE = 1.6;
-/** When it is on: seconds before the first M, and between them. */
-const MARK_FIRST = 30;
-const MARK_INTERVAL = 80;
+/**
+ * When it is on: seconds of swarm time (scene seconds × motion) before the first M, soon after
+ * loading or switching it on, and between them.
+ */
+const MARK_FIRST = 3;
+const MARK_INTERVAL = 60;
 /** The Manifold M in mark units, as in shaders/common.ts: x in [-0.47, 0.47], y in [-0.5, 0.5]. */
 const MARK_XS = [-0.47, -0.47, 0, 0.47, 0.47];
 const MARK_YS = [-0.5, 0.5, -0.08, 0.5, -0.5];
@@ -1137,7 +1149,8 @@ class FirefliesSim implements SceneSim {
       }
       const a = mark * (this.#member[i] ?? 0);
       const bright = (this.#bright[i] ?? 1) + (MARK_BRIGHT - (this.#bright[i] ?? 1)) * a;
-      const e = p * bright * flash((this.#phase[i] ?? 0) * span) * (1 - (this.#hush[i] ?? 0));
+      const lit = Math.max(flash((this.#phase[i] ?? 0) * span), MARK_EMBER * a);
+      const e = p * bright * lit * (1 - (this.#hush[i] ?? 0));
       let ox = (this.#jitterX[i] ?? 0.5) + wander * Math.sin(clock * (this.#wanderSpeed[2 * i] ?? 0) + (this.#wanderPhase[2 * i] ?? 0));
       let oy = (this.#jitterY[i] ?? 0.5) + wander * 0.7 * Math.sin(clock * (this.#wanderSpeed[2 * i + 1] ?? 0) + (this.#wanderPhase[2 * i + 1] ?? 0));
       if (this.#breeze) {

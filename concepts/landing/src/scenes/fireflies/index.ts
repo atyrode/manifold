@@ -19,7 +19,7 @@ const params: readonly ParamDef[] = [
   range("river", "reflections", "reflections", 0.85, "How clearly the still river mirrors the skyglow, the trees and their lights."),
   range("river", "mist", "mist", 0.35, "Mist lying on the water and under the trees, glowing green with each pulse."),
   range("river", "stars", "stars", 0.5, "Sparse stars high over the trees."),
-  feature("manifold", "mark", "M of fireflies", false, "beats", 5, "Now and then the fireflies along the strokes of a Manifold M gather onto them and flash half a beat apart from the forest, so the M lights up alone between the pulses for a few beats, then lets go.", { trigger: 1, options: counts(3, 5, 8) }),
+  feature("manifold", "mark", "M of fireflies", false, "beats", 5, "A few seconds after you switch it on, and every minute after, the fireflies along the strokes of a Manifold M gather onto them, glowing faintly, and flash half a beat apart from the forest, so the M lights up alone between the pulses for a few beats, mirrored in the river, then lets go.", { trigger: 1, options: counts(3, 5, 8) }),
 ];
 
 export const firefliesScene: SceneDef = {
