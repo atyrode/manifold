@@ -19,6 +19,7 @@ import { hyperbolicScene } from "./hyperbolic/index.ts";
 import { incenseScene } from "./incense/index.ts";
 import { kelpScene } from "./kelp/index.ts";
 import { lanternsScene } from "./lanterns/index.ts";
+import { lavaScene } from "./lava/index.ts";
 import { marbleScene } from "./marble/index.ts";
 import { meadowScene } from "./meadow/index.ts";
 import { orbitScene } from "./orbit/index.ts";
@@ -71,6 +72,7 @@ export const sceneDefs = {
   incense: incenseScene,
   sandtable: sandtableScene,
   delta: deltaScene,
+  lava: lavaScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
