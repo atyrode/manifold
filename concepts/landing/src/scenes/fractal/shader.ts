@@ -82,6 +82,8 @@ const float FRACTAL_LN2 = 0.6931472;
 const float FRACTAL_SMEAR = 0.7;
 // Newton's method has converged within this many z units of a stone.
 const float FRACTAL_NEWTON_TOL = 0.002;
+// How strongly the garden's braid is inked in the outline colour: a fine pen line, not a white surf.
+const float FRACTAL_BRAID = 0.75;
 
 struct FractalInk {
   vec3 bg;
@@ -643,14 +645,17 @@ FractalSample fractalGarden(vec2 p, int at, float markOn) {
     o.ripple = fractalLine(fractalLevel(2.0 * nu - head.z, 0.5 * band), fine, rakeBlur) * fractalRoom(0.5 * band, rakeBlur);
     float spokeStep = (TAU / 8.0) * e / (dzl * cell);
     o.ray = fractalLine(fractalLevel(atan(toStone.y, toStone.x) * (8.0 / TAU), spokeStep), fine, blur) * fractalRoom(spokeStep, blur);
-    o.edge = 1.0 - smoothstep(0.7, 2.6 + blur, band);
+    // The braid: only where the rings crowd tighter than about a cell, and inked or not per cell,
+    // like a pen line, so as it shifts each cell turns over once instead of wading through the
+    // dither's levels.
+    o.edge = FRACTAL_BRAID * step(band, 1.3);
     o.wash = 0.12 + 0.22 * fract(float(found) * 0.618 + 0.2);
     o.gild *= 1.0 - smoothstep(0.0, 8.0, blur);
     o.mark *= 1.0 - smoothstep(0.0, 8.0, blur);
   } else {
     // Still among the stones: the braid itself. Far out, the orbit passed near a pole of the
     // step and is still falling back from afar: plain sand, not a stray speck of ink.
-    o.edge = 1.0 - smoothstep(2.5, 5.0, length(z));
+    o.edge = FRACTAL_BRAID * step(length(z), 3.5);
   }
 
   // The stones, lit from the upper left, each a little irregular, with a soft shadow on the sand.

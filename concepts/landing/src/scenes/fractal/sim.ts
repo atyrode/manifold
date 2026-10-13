@@ -146,9 +146,9 @@ const GARDEN_DANCE_RADIUS = 0.035;
 const GARDEN_DANCE_PERIODS = [125, 107, 146, 96, 164] as const;
 const GARDEN_MORPH_SECONDS = 8;
 /** Seconds of drift per ripple drifting outward one band, and the breath's twist (imaginary relaxation). */
-const GARDEN_RAKE = 45;
-const GARDEN_TWIST = 0.14;
-const GARDEN_BREATH_PERIOD = 30;
+const GARDEN_RAKE = 120;
+const GARDEN_TWIST = 0.08;
+const GARDEN_BREATH_PERIOD = 48;
 /** z units per content unit at zoom 1, the hovering pebble's weight and how fast it follows. */
 const GARDEN_REACH = 1.3;
 const GARDEN_PEBBLE = 0.55;
