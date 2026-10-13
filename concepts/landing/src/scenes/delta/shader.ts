@@ -83,9 +83,10 @@ vec3 deltaSatellite(DeltaGround s, vec2 cellPos) {
   float low = 1.0 - smoothstep(0.05, 0.6, s.height);
   float high = smoothstep(1.2, 4.5, s.height);
   vec3 soil = mix(vec3(0.55, 0.45, 0.27), vec3(0.45, 0.35, 0.22), high);
-  soil = mix(soil, vec3(0.30, 0.26, 0.16), 0.8 * low);
+  // Low ground by the water is wet sand, darker where the water has just left it.
+  soil = mix(soil, vec3(0.58, 0.50, 0.32), 0.85 * low);
   soil = mix(soil, vec3(0.82, 0.68, 0.42), s.fresh * (1.0 - 0.5 * low));
-  soil *= 1.0 - 0.35 * max(s.wet, s.film);
+  soil *= 1.0 - 0.18 * max(s.wet, s.film);
   float canopy = clamp(s.veg * (0.8 + 0.45 * (grain - 0.5) * 2.0), 0.0, 1.0);
   vec3 green = mix(vec3(0.50, 0.62, 0.16), vec3(0.20, 0.48, 0.14), smoothstep(0.25, 0.8, canopy));
   green = mix(green, vec3(0.08, 0.36, 0.12), high);
@@ -99,15 +100,16 @@ vec3 deltaSatellite(DeltaGround s, vec2 cellPos) {
   land = mix(land, stone, s.rock);
   land *= 0.42 + 0.58 * s.light;
 
-  // Water: the bed showing through the shallows, then teal to navy; silt in jade, olive and tan.
-  vec3 water = mix(vec3(0.07, 0.38, 0.38), vec3(0.02, 0.25, 0.33), smoothstep(0.05, 0.7, s.depth));
-  water = mix(water, vec3(0.0, 0.16, 0.30), smoothstep(0.7, 2.0, s.depth));
+  // Water: the bed showing through the shallows, light turquoise over the shelf, deepening to
+  // navy; silt in jade, olive and tan.
+  vec3 water = mix(vec3(0.14, 0.56, 0.52), vec3(0.04, 0.36, 0.42), smoothstep(0.05, 0.7, s.depth));
+  water = mix(water, vec3(0.0, 0.18, 0.32), smoothstep(0.7, 2.0, s.depth));
   water = mix(water, vec3(0.0, 0.07, 0.20), smoothstep(2.0, 3.6, s.depth));
-  water = mix(land * 0.8 + vec3(0.0, 0.08, 0.08), water, smoothstep(0.0, 0.4, s.depth));
-  float plume = smoothstep(0.0008, 0.006, s.silt);
-  vec3 silt = mix(vec3(0.16, 0.62, 0.55), vec3(0.42, 0.56, 0.36), smoothstep(0.005, 0.016, s.silt));
-  silt = mix(silt, vec3(0.62, 0.47, 0.26), smoothstep(0.012, 0.03, s.silt));
-  water = mix(water, silt, plume * mix(0.7, 0.88, smoothstep(0.2, 2.0, s.depth)));
+  water = mix(land * 0.9 + vec3(0.0, 0.1, 0.1), water, smoothstep(0.0, 0.4, s.depth));
+  float plume = smoothstep(0.0005, 0.004, s.silt);
+  vec3 silt = mix(vec3(0.20, 0.70, 0.60), vec3(0.45, 0.58, 0.36), smoothstep(0.005, 0.016, s.silt));
+  silt = mix(silt, vec3(0.64, 0.48, 0.26), smoothstep(0.012, 0.03, s.silt));
+  water = mix(water, silt, plume * mix(0.75, 0.9, smoothstep(0.2, 2.0, s.depth)));
   water += 0.05 * smoothstep(0.2, 0.6, s.speed) * vec3(0.8, 0.9, 0.9);
   return mix(land, water, s.water);
 }
@@ -171,12 +173,13 @@ vec3 deltaChart(DeltaGround s, vec2 cell) {
 // Fair-weather cumulus drifting over, with their shadows thrown down and to the right.
 vec3 deltaClouds(vec3 col, vec2 uv, float t) {
   if (K_clouds <= 0.0) return col;
-  vec2 p = vec2(uv.x * uRes.x / uRes.y, uv.y) * 2.4 + vec2(0.011, 0.004) * t * uMotion;
-  float lo = 0.6 - 0.22 * K_clouds;
-  float hi = 0.75 - 0.18 * K_clouds;
-  float shadow = smoothstep(lo, hi, fbm(p + vec2(-0.09, 0.08)));
+  vec2 p = vec2(uv.x * uRes.x / uRes.y, uv.y) * 5.5 + vec2(0.025, 0.009) * t * uMotion;
+  // Only the tops of the noise: small, crisp puffs, a few percent of the sky at the default cover.
+  float lo = 0.66 - 0.14 * K_clouds;
+  float hi = lo + 0.05;
+  float shadow = smoothstep(lo, hi, fbm(p + vec2(-0.2, 0.18)));
   float cloud = smoothstep(lo, hi, fbm(p));
-  col *= 1.0 - 0.5 * shadow;
+  col *= 1.0 - 0.45 * shadow;
   return mix(col, vec3(0.86, 0.88, 0.90), 0.85 * cloud);
 }
 

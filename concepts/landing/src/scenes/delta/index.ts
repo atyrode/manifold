@@ -23,7 +23,7 @@ const params: readonly ParamDef[] = [
   choice("land", "tool", "drag to", [{ label: "dig", value: 0 }, { label: "bank", value: 1 }], 0, "What dragging across the land does: dig a ditch the river may take, or throw up a bank it must go around."),
   choice("view", "palette", "palette", [{ label: "satellite", value: 0 }, { label: "infrared", value: 1 }, { label: "chart", value: 2 }], 0, "Satellite: the delta as seen from orbit at dusk. Infrared: a false-colour scene with plants red and silt glowing cyan. Chart: a surveyor's map on paper, the shore lined in ink."),
   range("view", "relief", "relief", 0.5, "How strongly the low sun picks out banks, levees and hills."),
-  feature("view", "clouds", "clouds", true, "cover", 0.3, "Fair-weather clouds drifting over, their shadows sliding across the land (satellite and infrared)."),
+  feature("view", "clouds", "clouds", false, "cover", 0.3, "A few small fair-weather clouds drifting over, their shadows sliding across the land below (satellite and infrared)."),
   feature("manifold", "mark", "rock M", false, "size", 0.5, "An outcrop of hard rock in the shape of the Manifold M in the middle of the delta: the water cannot wear it down, so the channels split and flow around its legs."),
 ];
 

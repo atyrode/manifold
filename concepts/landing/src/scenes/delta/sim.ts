@@ -82,14 +82,14 @@ const SLOPE_CARRY = 0.05;
 /** Least water depth over a face when its velocity is taken. */
 const MIN_FACE = 0.05;
 /** Morphological factor at the default erosion knob (bed change per unit of sand moved). */
-const MORPH = 8;
+const MORPH = 16;
 /** Bed raised per unit of silt settled. */
 const SILT_MORPH = 2.5;
 /**
  * Silt settling rate in still water, and the speed above which it stays up (from a third of it
  * settling begins): only slack water lets it fall, so the river carries it out to sea.
  */
-const SETTLE = 0.002;
+const SETTLE = 0.0012;
 const SETTLE_SPEED = 0.1;
 /** Largest bed change in one step. */
 const MAX_CHANGE = 0.02;
@@ -118,8 +118,8 @@ const STAGE_HIGH = 0.05;
 /** Silt per unit of water depth entering, at sediment 0 and 1; sand supply against capacity likewise. */
 const SILT_LOW = 0.012;
 const SILT_HIGH = 0.062;
-const SAND_LOW = 0.4;
-const SAND_HIGH = 1.6;
+const SAND_LOW = 0.6;
+const SAND_HIGH = 1.9;
 /** Sea level swing of the sea level knob, in cells either way. */
 const SEA_RANGE = 0.6;
 /** Tidal range at full amount (cells, half the swing) and period (time-lapse seconds). */
@@ -131,8 +131,8 @@ const TIDE_PERIOD = 42;
  */
 const CURRENT_TILT = 0.024;
 /** Floods: one every FLOOD_EVERY ± FLOOD_JITTER seconds while on; rise and fall times. */
-const FLOOD_EVERY = 75;
-const FLOOD_JITTER = 20;
+const FLOOD_EVERY = 55;
+const FLOOD_JITTER = 15;
 const FLOOD_RISE = 4;
 const FLOOD_FALL = 16;
 /** At full strength a flood lifts the stage this much, multiplies the silt, cuts the sand supply. */
@@ -557,14 +557,19 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
   const outlets: Reach[] = [];
   const mouths: { x: number; y: number; angle: number; width: number }[] = [];
   const fork = { x: xApex, y: yApex, z: zApex, angle: -Math.PI / 2 };
-  const branch = (into: Reach[], x: number, y: number, angle: number, width: number, depth: number, level: number, length: number, z: number, skip: number): void => {
-    const lobe = (18 + 7 * level) * s;
-    const wiggle = Math.floor(rand() * 1e6);
+  const branch = (into: Reach[], x: number, y: number, heading: number, width: number, depth: number, level: number, length: number, z: number, skip: number): void => {
+    const lobe = (16 + 5 * level) * s;
+    const drift = Math.floor(rand() * 1e6);
+    // Each channel bends to and fro about its course (mild sinuosity), its course itself drifting.
+    const bend = 0.3 + 0.25 * rand();
+    const wavelength = (20 + 14 * rand()) * s;
+    const phase = rand() * Math.PI * 2;
     let walked = 0;
     let i = 0;
     while (walked < length && y > yFront) {
-      angle += 0.08 * (valueNoise(walked * 0.06, level * 3.1, wiggle) - 0.5) + 0.005 * (-Math.PI / 2 - angle);
-      angle = Math.max(0.3 - Math.PI, Math.min(-0.3, angle));
+      heading += 0.06 * (valueNoise(walked * 0.05, level * 3.1, drift) - 0.5) + 0.004 * (-Math.PI / 2 - heading);
+      heading = Math.max(0.35 - Math.PI, Math.min(-0.35, heading));
+      const angle = heading + bend * Math.sin((2 * Math.PI * walked) / wavelength + phase) * Math.min(1, walked / (6 * s));
       const nx = x + 2 * s * Math.cos(angle);
       const ny = y + 2 * s * Math.sin(angle);
       const nz = z - deltaSlope * 2 * s;
@@ -575,28 +580,33 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
       walked += 2 * s;
       i++;
     }
-    if (level >= 3 || y <= yFront) {
+    if (level >= 4 || y <= yFront || width < 1.2 * s) {
       if (into !== live) return;
       for (let run = 0; run < 0.9 * lobe; run += 2 * s) {
-        const nx = x + 2 * s * Math.cos(angle);
-        const ny = y + 2 * s * Math.sin(angle);
+        const nx = x + 2 * s * Math.cos(heading);
+        const ny = y + 2 * s * Math.sin(heading);
         const nz = z - 3 * deltaSlope * 2 * s;
         outlets.push({ ax: x, ay: y, bx: nx, by: ny, za: z, zb: nz, width, depth, lobe: 0, cut: true });
         x = nx;
         y = ny;
         z = nz;
       }
-      mouths.push({ x, y, angle, width });
+      mouths.push({ x, y, angle: heading, width });
       return;
     }
-    if (level === 0 && into === live) Object.assign(fork, { x, y, z, angle });
-    if (level === 0 || rand() > 0.22) {
-      const spread = 0.45 + 0.25 * rand();
-      const bias = (rand() - 0.5) * 0.2;
-      branch(into, x, y, angle + spread + bias, width * 0.78, depth * 0.88, level + 1, length * 0.9, z, 0);
-      branch(into, x, y, angle - spread + bias, width * 0.78, depth * 0.88, level + 1, length * 0.9, z, 0);
+    if (level === 0 && into === live) Object.assign(fork, { x, y, z, angle: heading });
+    // Bifurcation: the flow splits unequally, the larger arm turning less and running further.
+    if (level === 0 || rand() > 0.15) {
+      const share = 0.3 + 0.4 * rand();
+      const big = Math.max(share, 1 - share);
+      const small = 1 - big;
+      const side = share > 0.5 ? 1 : -1;
+      const turnBig = side * (0.15 + 0.3 * rand());
+      const turnSmall = -side * (0.4 + 0.35 * rand());
+      branch(into, x, y, heading + turnBig, width * (0.45 + 0.6 * big), depth * (0.8 + 0.15 * big), level + 1, length * (0.6 + 0.4 * big), z, 0);
+      branch(into, x, y, heading + turnSmall, width * (0.45 + 0.6 * small), depth * (0.8 + 0.15 * small), level + 1, length * (0.6 + 0.4 * small), z, 0);
     } else {
-      branch(into, x, y, angle, width * 0.9, depth * 0.95, level + 1, length * 0.9, z, 0);
+      branch(into, x, y, heading, width * 0.9, depth * 0.95, level + 1, length * 0.8, z, 0);
     }
   };
   branch(live, xApex, yApex, 0.3 * apexAngle - 0.35 * Math.PI, 3 * s, 1.15, 0, 0.22 * span, zApex, 0);
