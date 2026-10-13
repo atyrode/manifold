@@ -38,15 +38,17 @@ export interface WeatherOptions {
 
 /**
  * The weather layer, as far as a scene wants it:
- * K_rain / K_snow amount (0 off), K_fog 0..1, K_wind -1..1 (left to right), K_lightning strike
- * rate (0 off; its trigger slot fires one strike now), K_aurora strength (0 off).
+ * K_rain / K_snow amount (0 off; ~0.1 drizzle or a flurry .. 1 a downpour or a blizzard), K_fog
+ * 0..1, K_wind -1..1 (left to right), K_lightning strike rate (0 off; its trigger slot fires one
+ * strike now), K_aurora strength (0 off). The renderer follows the `rain` and `snow` knobs with
+ * `uWeather` (how wet the world is, how much snow lies).
  */
 export function weatherKnobs(options: WeatherOptions): ParamDef[] {
   const group = options.group ?? "weather";
   const on = options.on ?? {};
   const knobs: ParamDef[] = [];
-  if (options.rain) knobs.push(feature(group, "rain", "rain", on.rain ?? false, "amount", 0.5, "Rain falling through the scene, nearer drops faster and longer."));
-  if (options.snow) knobs.push(feature(group, "snow", "snow", on.snow ?? false, "amount", 0.5, "Snowflakes drifting down in layers, the nearest large and soft."));
+  if (options.rain) knobs.push(feature(group, "rain", "rain", on.rain ?? false, "amount", 0.5, "Rain falling through the scene in depth, from drizzle to a downpour; surfaces get wet and drip."));
+  if (options.snow) knobs.push(feature(group, "snow", "snow", on.snow ?? false, "amount", 0.5, "Snow falling through the scene in depth, from a flurry to a blizzard; it settles on the scene."));
   if (options.fog) knobs.push(range(group, "fog", "fog", 0, "Mist settling in: distance fades first."));
   if (options.wind) knobs.push(range(group, "wind", "wind", 0.2, "Which way and how hard the wind blows: slants rain, drifts snow and cloud.", { min: -1, max: 1 }));
   if (options.lightning !== undefined) {

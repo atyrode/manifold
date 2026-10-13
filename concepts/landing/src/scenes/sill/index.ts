@@ -77,10 +77,10 @@ const params: readonly ParamDef[] = [
   feature("room", "curtain", "curtain", true, "breeze", 0.5, "A linen curtain beside the window, stirring as the air comes in; the wind stirs it more."),
   feature("city", "lights", "city lights", true, "lit", 0.45, "Windows across the city, each switching on or off now and then as the evening goes on: how many are lit."),
   ...skyKnobs({ time: 0.8 }),
-  feature("sky", "clouds", "clouds", true, "cover", 0.35, "A cloud deck over the city, lit from below by its glow at night."),
+  feature("sky", "clouds", "clouds", true, "cover", 0.35, "A cloud deck over the city, lit from below by its glow at night. Rain or snow closes it over whatever the cover, lower and darker the heavier they fall."),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 1 }),
   toggle("weather", "drops", "drops on the glass", true, "Raindrops beading and running down the panes above the open sash, each holding a tiny upside-down picture of the lit city and catching the lamp along its edge.", { when: "rain" }),
-  feature("manifold", "neon", "neon M", true, "brightness", 0.8, "A neon Manifold M on the roof across the street, humming in a soft glow; now and then one stroke winks out or stutters before it catches again. In the rain it shines back from the wet roof and sill. Now: a stutter.", { trigger: 2 }),
+  feature("manifold", "neon", "neon M", true, "brightness", 0.8, "A neon Manifold M on the roof across the street, humming in a soft glow; now and then one stroke winks out or stutters before it catches again. In the rain it glows in the wet air and shines back from the roof, the ledge and the sill; in snow it tints the snow on its frame. Now: a stutter.", { trigger: 2 }),
 ];
 
 export const sillScene: SceneDef = {

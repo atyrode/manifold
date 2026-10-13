@@ -32,7 +32,7 @@ export const lanternsScene: SceneDef = {
     river: { title: "River", blurb: "The lanterns and the current carrying them. Click the water to set a lantern down; hold and drag to push the water along." },
     water: { title: "Water", blurb: "How the river's surface moves and mirrors the lights, and the mist lying on it." },
     sky: atmosphereGroups.sky,
-    weather: { title: atmosphereGroups.weather.title, blurb: "Rain rings the water and streaks through the lantern light; wind slants it, ruffles the river and leans on the lanterns." },
+    weather: { title: atmosphereGroups.weather.title, blurb: "Rain brings cloud down over the dusk, rings the whole river, glistens on the temple roofs and streaks amber only where it falls through the lantern light; in a downpour the far bank fades and candles gutter. Wind slants it, ruffles the river and leans on the lanterns." },
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: one lantern among the others, its indigo paper cut with the M." },
   },
   glsl: lanternsGlsl,

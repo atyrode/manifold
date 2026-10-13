@@ -1,10 +1,10 @@
 // Countryside: overlooking rolling hills from a vantage point, a patchwork of fields with a village
-// in the middle distance and woods beyond, under the shared sky and weather. Lying snow is the one
-// piece of state: a tiny sim lets it build up while it snows and melt after, as one texel (uSim0).
+// in the middle distance and woods beyond, under the shared sky and weather. Rain and snow leave their
+// mark through the renderer's weather state (uWeather): the land, the farm track and the roofs
+// wetten while it rains and dry after, and the land turns white while it snows and thaws after.
 import { choice, feature, range, toggle } from "../../params.ts";
-import { DataTexture } from "../../sims/texture.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
-import type { SceneDef, SimFactory } from "../types.ts";
+import type { SceneDef } from "../types.ts";
 import { countryGlsl } from "./shader.ts";
 
 const params = [
@@ -22,50 +22,6 @@ const params = [
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 0 }),
   toggle("manifold", "chalk", "chalk M", false, "A giant M cut into the turf of a far hillside, in the manner of the Uffington White Horse."),
 ];
-
-const SNOW = params.findIndex((def) => def.key === "snow");
-const RAIN = params.findIndex((def) => def.key === "rain");
-/**
- * Snow settles fast at first and then thickens slowly (an exponential approach to full cover): at
- * the default amount the near fields start whitening within a second or two of scene time and the
- * land is white within a few seconds, comfortably inside ten even where the renderer's per-frame
- * dt clamp (0.1 s) slows the scene clock on a slow GPU. It melts in about a minute, faster in rain.
- */
-const SETTLE_RATE = 0.12;
-const SETTLE_PER_AMOUNT = 0.3;
-const MELT_PER_SECOND = 0.018;
-/** Cover this close to full snaps to 1, so the texel stops changing once the snow has settled. */
-const SETTLED = 0.99;
-/** Re-upload only once the cover has moved this far (and always on reaching 0 or 1). */
-const UPLOAD_STEP = 0.01;
-
-/** How much snow lies on the land, 0..1, as a single r16f texel. */
-const lyingSnow: SimFactory = (gl) => {
-  const texture = new DataTexture(gl, { width: 1, height: 1, format: "r16f", filter: "nearest" });
-  const texel = new Float32Array(1);
-  let lying = 0;
-  let uploaded = Number.NaN;
-  return {
-    frame({ dt, values }) {
-      const snow = values[SNOW] ?? 0;
-      const rain = values[RAIN] ?? 0;
-      lying = snow > 0
-        ? lying + (1 - lying) * (1 - Math.exp(-dt * (SETTLE_RATE + SETTLE_PER_AMOUNT * snow)))
-        : Math.max(0, lying - dt * MELT_PER_SECOND * (1 + 2 * rain));
-      if (lying >= SETTLED) lying = 1;
-      const end = lying === 0 || lying === 1;
-      if (lying !== uploaded && (end || !(Math.abs(lying - uploaded) < UPLOAD_STEP))) {
-        texel[0] = lying;
-        texture.upload(texel);
-        uploaded = lying;
-      }
-      return [texture.texture];
-    },
-    dispose() {
-      texture.dispose();
-    },
-  };
-};
 
 export const countryScene: SceneDef = {
   id: "country",
@@ -85,5 +41,4 @@ export const countryScene: SceneDef = {
   },
   glsl: countryGlsl,
   entry: "sceneCountry",
-  sim: lyingSnow,
 };

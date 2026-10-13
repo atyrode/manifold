@@ -34,9 +34,10 @@ scene's accent colour (the Manifold landmark, bioluminescence, a neon sign...).
 Available in GLSL (from `common`): `uRes`, `uTime`, `uMotion` (0..1, multiply animation speeds by
 it), `uPointer` (smoothed -1..1 parallax, 0 when the pointer is not followed), `uMouse` (raw
 pointer: xy in uv, z = button held, w = scene time of the last press), `uParams[]`, `uTriggers[]`,
-`sinceTrigger(slot)`, `uSim0..uSim3` + `uSimOn` (textures from the scene's sim), `hash12`,
-`vnoise`, `fbm`, `rotate`, `rotateAbout`, `segmentDistance`, `markDistance` (the Manifold M in
-mark units: x in [-0.47, 0.47], y in [-0.5, 0.5]), `starfield`, `LUMA`, `TAU`.
+`sinceTrigger(slot)`, `uSim0..uSim3` + `uSimOn` (textures from the scene's sim), `uWeather` (x: how
+wet the world is, y: how much snow lies, both 0..1; see "Weather in the world"), `hash12`, `vnoise`,
+`fbm`, `rotate`, `rotateAbout`, `segmentDistance`, `markDistance` (the Manifold M in mark units: x in
+[-0.47, 0.47], y in [-0.5, 0.5]), `starfield`, `threshold`, `LUMA`, `TAU`.
 
 ### Knobs
 
@@ -65,11 +66,24 @@ vec3 skyColor(Sky sky, vec3 dir);                         // gradient, sunset gl
 float skyStars(Sky sky, vec3 dir, float density);         // stars faded by daylight, stable per direction
 vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind); // a cloud deck seen from below: rgb, alpha
 
-float rainStreaks(vec2 uv, float aspect, float t, float amount, float wind); // 0..1 coverage, several depth layers
-float snowFlakes(vec2 uv, float aspect, float t, float amount, float wind);  // 0..1 coverage
-vec3 glassDrops(vec2 uv, float aspect, float t, float amount);  // rain on a pane: xy refraction offset, z drop coverage
-vec3 rainRipples(vec2 p, float t, float amount);                // rings on a wet surface: xy normal tilt, z ring light
-float fogAmount(float fog, float distance, float height);      // 0..1 of fog colour to mix in (distance 0 near..1 far)
+// Rain or snow through the air between the eye and the first opaque surface. depth: distance to that
+// surface, 0 at the eye .. 1 far horizon or open sky, as 1.0 - exp(-z / 30.0) with z in metres.
+// cover: drops/flakes (all layers, binarised per cell); veil: unresolved distant rain/snow (mix toward
+// the air colour); near: share of cover from the nearest, out-of-focus layer.
+struct Precip { float cover; float veil; float near; };
+Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float depth);
+Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth);
+
+// Surfaces (p in the scene's own ground units, roughly metres; scale freely):
+float rainSplashes(vec2 p, float t, float amount);        // 0 or the light of brief splash crowns on hard upward-facing ground
+vec3 rainRipples(vec2 p, float t, float amount);          // rings on water or puddles: xy normal tilt, z ring light (p in ring cells)
+float rainPuddles(vec2 p, float wet);                     // 0..1 where water pools on flat ground as wet (uWeather.x) rises
+vec3 wetten(vec3 albedo, float wet, float porous);        // wet albedo: darker, richer; porous 0 stone/metal/glass .. 1 soil/wood/cloth
+float wetGloss(float wet, float up);                      // 0..1 extra specular/reflection; up = normal.y (flat ground pools and mirrors)
+float rainDrips(vec2 p, float t, float amount, float width); // drops gathering and falling from an edge: p.x along it, p.y down; width = drip spacing
+float snowCover(vec3 n, vec2 p, float lying);             // 0..1 snow on a surface with normal n (y up), lying = uWeather.y
+vec3 glassDrops(vec2 uv, float aspect, float t, float amount); // rain on a pane: xy refraction offset, z drop coverage
+float fogAmount(float fog, float distance, float height); // 0..1 of fog colour to mix in (distance 0 near..1 far)
 
 float lightningAge(float t, float rate, int slot, out float seed); // seconds since the latest strike (random at `rate`, or the trigger)
 float lightningBolt(vec2 p, vec2 top, vec2 ground, float seed, float age); // forked bolt glow at p (aspect-corrected units)
@@ -80,6 +94,67 @@ vec3 aurora(vec3 dir, float t, float strength);                // curtains of li
 
 Name scene-local GLSL functions with the scene id as a prefix (`dunesHeight`, `sillCat`) so they can
 never collide with common or library functions.
+
+### Weather in the world
+
+Rain and snow belong to the scene: they come from its sky, fall through its depth, stop at its
+surfaces and change them. Never paste them over the frame as a flat layer.
+
+- **The sky justifies it.** With `K_rain` (or `K_snow`) on, the sky is overcast: raise the cloud
+  cover passed to `skyClouds` (about `0.6 + 0.4 * K_rain`), dim the sun and soften its shadows
+  toward a flat grey ambient, and lower and darken the sky as the amount grows. Under distant cloud,
+  near the horizon, hang rain shafts: slow vertical bands of `vnoise` along the horizon, drifting with
+  `K_wind` and mixing toward the cloud-base grey. They are faint in steady rain and wall-like in a
+  downpour. Drizzle is a light grey haze over a soft sky.
+- **Depth.** For each pixel, take the distance z (metres) to the first opaque surface you shade and
+  pass `depth = 1.0 - exp(-z / 30.0)`; open sky and the far horizon are 1. Scale a miniature or
+  vast scene's distances to metres first. Rain layers sit at z ≈ 1, 2, 4, 8, 16 and 32 m (snow at
+  1, 2.2, 4.8, 10.6 and 23 m), and anything farther is `veil` only. Each drop has its own depth,
+  so rain disappears behind a near tree and ends where it meets the ground. Near rain is a few
+  long, bright, soft streaks. The 4–8 m layers carry the body of the rain. Far rain is hundreds
+  of short, faint, slow streaks: a moving texture over the distance and the sky.
+- **Colour.** First `col = mix(col, air, p.veil)`: the veil already carries the amount, the
+  distance and the gust curtains. `air` is the scene's grey (rain) or pale (snow) haze, lit by
+  lightning flashes and lamp halos. Then `col = mix(col, dropLight, p.cover)`, with no extra
+  factor. `cover` is calibrated so the mix crosses a dither level: about 0.6–0.9 for near and mid
+  streaks, down to ~0.3 far, a quarter less in drizzle.
+  - **dropLight.** Rain is seen because every drop refracts the bright sky: use about 1.2 × the
+    sky's (or the overcast cloud base's) brightness, plus lamp, neon, lightning and low-sun light
+    where they shine. Streaks then read as light lines against darker ground, trees and walls, and
+    barely against the bright sky itself, as in life. At night keep a small floor (~0.08) so some
+    rain still reads.
+  - **Near drops.** Out-of-focus near drops (`p.near`) may get a softer, dimmer light.
+  - **No reprocessing.** `cover` is already switched per cell against the dither threshold: never
+    blur it, add noise to it, or threshold it again.
+- **Shelter.** The scene decides where rain cannot be. Pass the depth of the shelter's edge
+  instead of the surface behind it: rain stops at the eave line, and the air under an awning or
+  inside a room stays dry. Splashes, puddles and wetness drop to nothing under cover. A camera
+  behind glass or under an awning has no drops at arm's length: use `p.cover * (1.0 - p.near)`.
+- **Wetness.** `uWeather.x` is how wet the world is. The renderer follows `K_rain` on the scene
+  clock: soaked within ~10 s of steady rain (faster when heavier), dry ~75 s after. A scene loaded
+  in rain is already wet. Use less of it where a surface is sheltered. Apply
+  `wetten(albedo, wet, porous)` to every exposed albedo. Scale highlights and mirrored lights by
+  `wetGloss(wet, n.y)`, which gives a sheen on walls and leaves and a mirror on flat ground: streets
+  stretch lamps into long reflections. On flat ground `rainPuddles(p.xz, wet)` (p in metres)
+  marks pools ~1.5–4 m across: ~3% of the ground after drizzle, ~20% in steady rain, ~26% when
+  soaked. Make them full mirrors of the sky and lights with `rainRipples` rings while it rains,
+  clearly brighter or darker than the ground around them.
+- **Splashes and drips.** Hard, upward-facing ground gets `rainSplashes(p.xz, t, K_rain)` (p in
+  metres) times the drop light. A crown is ~5 cells across where a metre spans 25 cells. Fade it
+  out where a metre spans fewer than ~15 cells, and don't use it on water, where `rainRipples`
+  belongs. Edges (eaves, leaves, branches, sills, rails) get
+  `rainDrips(vec2(along, below), t, max(K_rain, 0.4 * uWeather.x), spacing)`, keeping the spacing
+  at least ~15 cells on screen. To drip from a given tip, lane k drips at
+  `(k + 0.3 + 0.4 * hash12(vec2(k, 3.7))) * spacing`.
+- **Snow.** `snowFall` works like `rainFall`, from a flurry to a blizzard whiteout; its veil mixes
+  toward the snow-lit air. `uWeather.y` is how much snow lies: it settles within ~10–20 s of
+  steady snow, faster in a blizzard, and melts over ~90 s, faster in rain. Mix every exposed
+  upward-facing surface (roofs, ledges, branches, stones, ground) toward lit snow white by
+  `snowCover(n, p.xz, uWeather.y)`, so the land turns white.
+- **Intensity.** Amount 0.1 is drizzle (slow faint streaks, mostly veil), 0.4 steady rain, 0.7
+  heavy rain with near drops and gust sheets, and 1.0 a downpour: dense sheets sweeping with the
+  wind, loud splashes, and visibility falling. Let the sky, the light, the wetness and the splashes
+  follow the same scale.
 
 ## Simulations (`sim`)
 

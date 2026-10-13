@@ -36,7 +36,7 @@ export const bambooScene: SceneDef = {
     grove: { title: "Grove", blurb: "The stems, the mist between them, the gusts and the falling leaves. Brush the stems with the pointer; click to send a gust, or click the basin to ring it." },
     light: { title: "Light", blurb: "God rays through the canopy, and the stone lantern beside the water clock." },
     sky: atmosphereGroups.sky,
-    weather: { title: atmosphereGroups.weather.title, blurb: "Rain drips from the leaves and rings the basin; the wind sets how hard the grove sways and which way the gusts travel." },
+    weather: { title: atmosphereGroups.weather.title, blurb: "Rain closes the sky and greys the mist; the canopy shelters the grove but pours through its gaps, the leaves gather water and drip, long after the rain, stems and stones go dark and glossy, pools gather on the floor and rings spread on the basin. The wind sets how hard the grove sways and which way the gusts travel." },
     manifold: { title: "Manifold mark", blurb: "The M glowing in the stone lantern's window." },
   },
   glsl: bambooGlsl,

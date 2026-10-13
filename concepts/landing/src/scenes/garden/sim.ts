@@ -66,10 +66,11 @@ export const GARDEN = {
 } as const;
 
 /**
- * The times of day (still clock) when the white gravel is in daylight and the page is a light one:
- * from just after sunrise to just before sunset (index.ts's theme and the shader's ink).
+ * When the white gravel is in daylight and the page is a light one: times of day (still clock)
+ * from just after sunrise to just before sunset, while the rain (its amount) stays lighter than
+ * `rain`; harder rain greys and darkens the garden (index.ts's theme and the shader's ink).
  */
-export const GARDEN_PAPER = { from: 0.26, to: 0.745 } as const;
+export const GARDEN_PAPER = { from: 0.26, to: 0.745, rain: 0.35 } as const;
 
 /**
  * The Manifold M: where it lies when it is on (that patch of gravel is kept clear of islands), its
@@ -126,6 +127,8 @@ const TAU = Math.PI * 2;
 
 /** The garden rake: five tines; a groove 3 mm deep would be invisible, so these are stage-sized. */
 const RAKE: RakeOptions = { width: 0.012, depth: 0.003, ridge: 0.012, tines: 5, spacing: 0.024 };
+/** The grooves' spacing: below it on screen the shader lets their light and water melt away. */
+export const GARDEN_GROOVE = RAKE.spacing;
 /** One pass of the rake covers this width: passes and ring laps are laid this far apart. */
 const SWATH = RAKE.tines * RAKE.spacing;
 /** The leveling board: half its width (reaching half-way into the bank beyond the outer tines), its soft edge, and how far it runs ahead of the tines. */

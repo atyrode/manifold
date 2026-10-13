@@ -34,7 +34,7 @@ export const meadowScene: SceneDef = {
     meadow: { title: "Meadow", blurb: "The grass around you and the dandelion clocks in it. Move over the page to breathe on the grass; click to blow seeds off a clock." },
     wind: { title: "Wind", blurb: "Which way the wind blows, and the gusts it sends rolling across the field." },
     sky: atmosphereGroups.sky,
-    weather: { title: "Air", blurb: "Golden haze, and rain, which closes the clocks and holds their seeds." },
+    weather: { title: "Air", blurb: "Golden haze, and rain: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds." },
     manifold: { title: "Manifold mark", blurb: "The M mown into a far hillside." },
   },
   glsl: meadowGlsl,

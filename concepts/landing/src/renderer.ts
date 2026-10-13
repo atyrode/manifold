@@ -48,7 +48,7 @@ const uniformNames = [
   "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
   "uStars", "uStarCount", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
-  "uProgress", "uTriggers", "uSim0", "uSim1", "uSim2", "uSim3", "uSimOn",
+  "uProgress", "uTriggers", "uSim0", "uSim1", "uSim2", "uSim3", "uSimOn", "uWeather",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
@@ -58,11 +58,16 @@ interface SceneProgram {
   uniforms: Record<UniformName, WebGLUniformLocation | null>;
 }
 
-/** The scene being drawn: its program (undefined when it failed to build) and its simulation. */
+/**
+ * The scene being drawn: its program (undefined when it failed to build), its simulation, and where
+ * its `rain` and `snow` knobs sit in `params` (-1 when it has none, which reads as 0).
+ */
 interface ActiveScene {
   id: SceneId;
   program: SceneProgram | undefined;
   sim: SceneSim | undefined;
+  rain: number;
+  snow: number;
 }
 
 interface LoadedArt {
@@ -157,6 +162,8 @@ export class DitherRenderer {
   #triggerScene = "";
   /** Loading-page progress 0..1, or -1 off the loading page. */
   #progress = -1;
+  /** `uWeather`: how wet the world is and how much snow lies, 0..1 each, on the scene clock. */
+  readonly #weather = { wet: 0, lying: 0 };
   /** WebGL version and renderer, for diagnosing remote reports. */
   glInfo = "";
 
@@ -346,7 +353,14 @@ export class DitherRenderer {
       this.#programs.set(id, built);
     }
     const program = this.#programs.get(id);
-    this.#scene = { id, program, sim: program ? sceneDefs[id].sim?.(this.#gl) : undefined };
+    const params = sceneDefs[id].params;
+    this.#scene = {
+      id,
+      program,
+      sim: program ? sceneDefs[id].sim?.(this.#gl) : undefined,
+      rain: params.findIndex((def) => def.key === "rain"),
+      snow: params.findIndex((def) => def.key === "snow"),
+    };
     return this.#scene;
   }
 
@@ -399,6 +413,23 @@ export class DitherRenderer {
       return;
     }
     const motion = this.#frozen ? 0 : s.motion;
+    // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
+    // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
+    // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s
+    // (~75 s); settling 3 / snow s (~18 s in steady snow), melting 30 s (~90 s), faster in rain.
+    // A scene just entered, or a frozen frame, starts where its weather leads.
+    const weather = this.#weather;
+    const rain = s.params[scene.rain] ?? 0;
+    const snow = s.params[scene.snow] ?? 0;
+    const wetTo = rain > 0 ? Math.min(1, 0.4 + 1.1 * rain) : 0;
+    const lyingTo = snow > 0 ? Math.min(1, 0.25 + snow) * (1 - 0.5 * rain) : 0;
+    if (scene !== current || this.#frozen) {
+      weather.wet = wetTo;
+      weather.lying = lyingTo;
+    } else {
+      weather.wet = wetTo + (weather.wet - wetTo) * Math.exp(-step / (weather.wet < wetTo ? 1.2 / rain : 25));
+      weather.lying = lyingTo + (weather.lying - lyingTo) * Math.exp(-step / (weather.lying < lyingTo ? 3 / snow : 30 / (1 + 4 * rain)));
+    }
     // Simulations upload (and so bind) their textures: step them before binding this frame's units.
     const simTextures = scene.sim?.frame({
       dt: step,
@@ -450,6 +481,7 @@ export class DitherRenderer {
     gl.uniform1f(u.uProgress, this.#progress);
     gl.uniform1fv(u.uTriggers, this.#triggers);
     gl.uniform4f(u.uSimOn, simTextures[0] ? 1 : 0, simTextures[1] ? 1 : 0, simTextures[2] ? 1 : 0, simTextures[3] ? 1 : 0);
+    gl.uniform2f(u.uWeather, weather.wet, weather.lying);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }

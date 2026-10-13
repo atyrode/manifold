@@ -24,8 +24,8 @@
 // Dandelion clocks: up to MAX_CLOCKS on long stalks (springs too), each head a sphere of
 // SECTORS × SEEDS_PER_SECTOR seeds. Gusts and the breath pull seeds off one at a time, mostly from
 // the downwind side, so a head goes lopsided before it goes bare; a click blows a handful off the
-// nearest one. Rain closes the heads and holds the seeds. A bare clock wilts and fades; a fresh one
-// rises close by as a closed bud and opens.
+// nearest one. Rain, from the first drizzle, closes the heads and holds the seeds. A bare clock
+// wilts and fades; a fresh one rises close by as a closed bud and opens.
 //
 // Seeds: at most MAX_SEEDS in the air, each a little parachute with drag. It relaxes toward the air
 // around it (a breeze along the wind, gusts that push and lift it, slow eddies of its own, a gentle
@@ -43,7 +43,8 @@
 //   uSim1  rg16f columns×2, nearest: per column of near grass (row = layer) the lean and the bow.
 //   uSim2  rgba16f 18×5, nearest: per clock (row): texel 0 root uv xy and head uv xy; texel 1 head
 //          radius (screen heights), presence, open 0..1, fullness 0..1; texels 2–17 the share of seeds
-//          left in each sector (r), sector k centred (k + 0.5) / 16 of a turn from +x, anticlockwise.
+//          left in each sector (r), sector k centred (k + 0.5) / 16 of a turn from +x, anticlockwise;
+//          texel 2 also carries the clock's depth (g, world units) and how closed it is (b, 0..1).
 import type { ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -348,7 +349,12 @@ const DETACH_FROM = 0.15;
 const DETACH_TO = 0.85;
 /** The sectors' shown fill follows the seeds left at this rate (/s), so a seed visibly pulls away. */
 const FILL_EASE = 3;
-/** Rain closes the heads (radius shrinks by this share) over this many seconds, and holds the seeds. */
+/**
+ * Rain closes the heads over CLOSE_TIME seconds and holds the seeds: the first drizzle closes them
+ * this far, more with the amount; a closed head is this much smaller (and folded narrow in the shader).
+ */
+const CLOSE_DRIZZLE = 0.55;
+const CLOSE_PER_RAIN = 0.6;
 const CLOSE_SHARE = 0.35;
 const CLOSE_TIME = 4;
 
@@ -709,7 +715,7 @@ class MeadowSim implements SceneSim {
 
   #step(tm: number, nowAge: number, detachBoost: number, blades: boolean): void {
     const wind = meadowWind(this.#wind, this.#windKnob, this.#gusts, this.#gustRate, nowAge);
-    const closing = this.#rain > 0 ? Math.min(1, this.#rain * 1.5) : 0;
+    const closing = this.#rain > 0 ? Math.min(1, CLOSE_DRIZZLE + CLOSE_PER_RAIN * this.#rain) : 0;
     this.#closed += (closing - this.#closed) * (1 - Math.exp(-STEP / CLOSE_TIME));
     if (blades) this.#stepBlades(tm, wind);
     this.#stepClocks(tm, wind, detachBoost);
@@ -1067,6 +1073,8 @@ class MeadowSim implements SceneSim {
         clocks[o + (2 + k) * 4] = fill;
         fullness += fill;
       });
+      clocks[o + 2 * 4 + 1] = clock.z;
+      clocks[o + 2 * 4 + 2] = this.#closed;
       clocks[o + 4] = clock.radius * (1 - CLOSE_SHARE * this.#closed);
       clocks[o + 5] = clock.presence;
       clocks[o + 6] = clamp(clock.open, 0, 1);

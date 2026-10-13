@@ -47,6 +47,7 @@ uniform sampler2D uSim1;
 uniform sampler2D uSim2;
 uniform sampler2D uSim3;
 uniform vec4 uSimOn;      // 1 in each component whose uSim texture the simulation supplied
+uniform vec2 uWeather;    // x: how wet the world is 0..1 (rises while it rains, dries after); y: how much snow lies 0..1 (settles while it snows, melts after)
 
 out vec4 outColor;
 

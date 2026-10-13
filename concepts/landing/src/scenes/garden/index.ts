@@ -20,9 +20,12 @@ const params: readonly ParamDef[] = [
   choice("view", "camera", "view", [{ label: "veranda", value: 0 }, { label: "above", value: 1 }], 0, "Sit on the temple veranda looking across the garden to its earthen wall, or look straight down on it like a plan. Drag on the gravel to rake your own lines.", { steady: true }),
   // 0.735: golden hour, the sun low on the left behind the wall, raking across the grooves.
   ...skyKnobs({ time: 0.735 }),
-  ...weatherKnobs({ snow: true, wind: true }),
+  ...weatherKnobs({ rain: true, snow: true, wind: true }),
   feature("manifold", "mark", "M stone", false, "size", 0.5, "A low slab of grey-blue slate in the shape of the Manifold M, set nearly flush in the gravel: worn pale at its edges, lichen on it, a fringe of moss round it, and rings raked round it in its own shape, as round the other stones. The garden is laid out afresh round it."),
 ];
+
+/** The rain knob's default amount (a feature's), for the page theme. */
+const rainDefault = params.find((def) => def.key === "rain")?.value ?? 0.5;
 
 export const gardenScene: SceneDef = {
   id: "garden",
@@ -37,17 +40,19 @@ export const gardenScene: SceneDef = {
     view: { title: "View", blurb: "From the veranda, or from above." },
     sky: atmosphereGroups.sky,
     // The shared heading, with what the weather does here.
-    weather: { ...atmosphereGroups.weather, blurb: "Snow falling on the garden, and the wind that sways the maple and carries its leaves." },
+    weather: { ...atmosphereGroups.weather, blurb: "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; drizzle is a soft grey mist, a downpour closes the garden in. Snow settles, crests and stone tops first. Wind sways the maple and carries its leaves." },
     manifold: { title: "Manifold M", blurb: "A landmark of its own: a slate M among the stones, the gravel raked round it." },
   },
   glsl: gardenGlsl,
   entry: "sceneGarden",
   sim: gardenSim(params),
   // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
-  // just after sunrise to just before sunset, on a still clock. The shader repeats this test.
+  // just after sunrise to just before sunset, on a still clock, unless steady rain greys it. The
+  // shader repeats this test.
   theme: (values) => {
     const time = values.time ?? 0.735;
     const cycling = (values.cycle ?? 0) > 0.5;
-    return !cycling && time > GARDEN_PAPER.from && time < GARDEN_PAPER.to ? "paper" : "night";
+    const rain = (values.rain ?? 0) > 0.5 ? (values["rain-amount"] ?? rainDefault) : 0;
+    return !cycling && time > GARDEN_PAPER.from && time < GARDEN_PAPER.to && rain < GARDEN_PAPER.rain ? "paper" : "night";
   },
 };

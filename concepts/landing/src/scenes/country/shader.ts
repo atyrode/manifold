@@ -10,6 +10,14 @@
 // grows with the square root of the drop below the crest (a rounded hill top seen at a grazing
 // angle), which foreshortens fields toward the crest. One pass, front to back: the first ridge
 // (or a tree or building standing on it) that covers the pixel is the one shaded.
+//
+// The weather belongs to that world. Rain comes from a grey deck that sinks and darkens with the
+// amount, flattening the light; shafts of rain hang from its base over the far hills; the falling
+// drops and their veil are drawn only as far as the first surface each pixel meets, so the near
+// field shows a few large drops and the dense fine rain fills the valleys behind it. The land, the
+// farm track and the roofs wetten (uWeather.x): darker, glossier, puddles in the ruts mirroring the
+// sky, drops bouncing off the track and dimpling the river. Snow falls the same way and settles
+// (uWeather.y): first on the high far ridges, then down to the near fields, roofs and tree tops.
 
 export const countryGlsl = /* glsl */ `
 const float COUNTRY_HORIZON = 0.62;      // eye level, uv.y
@@ -20,6 +28,7 @@ const float COUNTRY_ROUND = 0.004;       // how sharply a face folds over at its
 const float COUNTRY_CLOUD_BASE = 1.6;    // cloud deck height above the eye, world units
 const float COUNTRY_RECEDE = 0.22;       // how steeply a building's long wall runs away up the screen
 const vec2 COUNTRY_FIELDS = vec2(3.0, 4.2); // fields per world unit across, down the slope
+const float COUNTRY_LANE = 0.014;        // half-width of the farm track over the near field, world units
 const vec3 COUNTRY_AMBER = vec3(1.0, 0.7, 0.3);
 const vec3 COUNTRY_SNOW = vec3(0.9, 0.92, 0.95);
 
@@ -472,7 +481,8 @@ struct CountryVillage {
   float hit;     // 1 on a building
   vec3 albedo;
   vec3 normal;
-  float roof;    // how much lying snow settles here: 1 roofs, 0 walls
+  float roof;    // 1 roofs, 0.5 the spire, 0 walls: where snow can lie and how much a wet face shines
+  float porous;  // how much rain soaks in and darkens it: 0 slate, lead, glass .. 1 thatch
   float lamp;    // 1 on a lit window
   float smoke;   // chimney smoke in front of whatever is behind, 0..1
   float glow;    // warm spill from lit windows nearby
@@ -484,6 +494,7 @@ CountryVillage countryNoVillage() {
   v.albedo = vec3(0.0);
   v.normal = vec3(0.0, 1.0, 0.0);
   v.roof = 0.0;
+  v.porous = 0.6;
   v.lamp = 0.0;
   v.smoke = 0.0;
   v.glow = 0.0;
@@ -568,6 +579,8 @@ CountryVillage countryVillage(vec2 q, float vx, float knoll, float tod, float da
     v.albedo = roof;
     v.normal = normalize(vec3(0.42, 0.78, -0.46));
     v.roof = 1.0;
+    // Clay tiles drink a little rain, slate none, thatch a lot.
+    v.porous = church > 0.5 || (hr >= 0.5 && hr < 0.8) ? 0.05 : (hr < 0.5 ? 0.35 : 0.85);
   } else if (face < 4.5) {
     v.albedo = vec3(0.5, 0.3, 0.22);
     v.normal = gableNormal;
@@ -575,6 +588,7 @@ CountryVillage countryVillage(vec2 q, float vx, float knoll, float tod, float da
     v.albedo = vec3(0.45, 0.47, 0.5);
     v.normal = face < 7.5 ? normalize(vec3(-0.55, 0.45, -0.7)) : normalize(vec3(0.6, 0.45, -0.66));
     v.roof = 0.5;
+    v.porous = 0.05;
   } else {
     v.albedo = vec3(0.08, 0.07, 0.07);
     v.normal = gableNormal;
@@ -583,19 +597,72 @@ CountryVillage countryVillage(vec2 q, float vx, float knoll, float tod, float da
   if (pane > 0.5) {
     float lit = countryWindow(fract(which * 91.0 + (pane < 1.5 ? 0.13 : (pane < 2.5 ? 0.57 : 0.89))), tod, dark, church > 0.5 ? 0.5 * lights : lights);
     v.albedo = vec3(0.1, 0.12, 0.16);
+    v.porous = 0.0;
     v.lamp = lit;
   }
   return v;
 }
 
-// Rain hanging from the cloud base in grey veils over the far hills, slanted by the wind and
-// drifting with it; finer streaks inside each veil slide slowly down.
-float countryVeils(vec2 p, float t, float wind) {
-  float x = p.x + (p.y - COUNTRY_HORIZON) * wind * 0.35 - t * wind * 0.01;
-  float shafts = smoothstep(0.45, 0.75, 0.7 * vnoise(vec2(x * 5.0, 1.7)) + 0.3 * vnoise(vec2(x * 13.0, 4.2 + t * 0.03)));
-  float streaks = 0.75 + 0.25 * vnoise(vec2(x * 90.0, p.y * 3.0 + t * 0.4));
-  float hang = (1.0 - smoothstep(0.74, 0.86, p.y)) * smoothstep(0.45, 0.56, p.y);
-  return shafts * streaks * hang;
+// Any rain at all hangs a grey deck over the sky, 0..1.
+float countryGrey(float rain) {
+  return smoothstep(0.0, 0.05, rain);
+}
+
+// The sky dome as the weather has it: rain greys it and dims it. No stars, no deck.
+vec3 countryDome(Sky sky, vec3 dir, float rain) {
+  vec3 c = skyColor(sky, dir);
+  return mix(c, vec3(dot(c, LUMA)) * vec3(0.92, 0.95, 1.0), 0.75 * countryGrey(rain)) * (1.0 - 0.4 * rain);
+}
+
+// The cloud deck as the weather has it. Rain brings its base down (low > 1: the same clouds, nearer,
+// so they loom larger and race faster across the view) and turns it grey: an even, pale grey in a
+// drizzle, dark slate in a downpour.
+vec4 countryDeck(Sky sky, vec3 dir, float t, float cover, float wind, float low, float rain) {
+  vec4 c = countryClouds(sky, normalize(vec3(dir.x, dir.y * low, dir.z)), t, cover, wind);
+  float grey = countryGrey(rain);
+  c.rgb = mix(c.rgb, vec3(dot(c.rgb, LUMA)) * vec3(0.94, 0.96, 1.0), 0.6 * grey) * (1.0 + 0.25 * grey - 0.6 * rain);
+  return c;
+}
+
+// The farm track over the near field, from the bottom of the frame up over the brow toward the
+// village: its centre across the slope (x at the ground's own depth, so it narrows into the
+// distance) at down-slope distance v below the crest, and the centre's drift per unit v.
+vec2 countryLane(float v, float start) {
+  return vec2(start + 0.42 * v + 0.05 * sin(v * 6.0 + 1.1), 0.42 + 0.3 * cos(v * 6.0 + 1.1));
+}
+
+// Rain shafts hanging from the cloud base over the far hills: three curtains at distances D (world),
+// each filling the view between the cloud base (\`base\` above the eye) and the ground at D, its feet
+// trailing downwind as the drops drift in falling, riding along with the deck. Steady rain hangs a
+// few faint, separate shafts; heavier rain widens and darkens them until a downpour merges them into
+// one grey wall; a drizzle leaves wisps of virga that thin out before they reach the ground.
+// seen: distance to the pixel's own surface (world), so a shaft shows only in front of what lies
+// beyond it; tm: the scene clock scaled by motion. x: the shafts' opacity; y: how much the cloud
+// base above them darkens.
+vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float wind) {
+  float clear = 1.0;
+  float belly = 0.0;
+  float th = mix(0.66, 0.16, rain);
+  float reach = mix(0.6, 1.5, smoothstep(0.1, 0.5, rain));
+  for (int j = 0; j < 3; j++) {
+    float fj = float(j);
+    float D = 5.5 * pow(1.75, fj);
+    if (seen <= D) break;
+    // 0 at the cloud base .. 1 on the ground at D.
+    float f = (COUNTRY_HORIZON + base / D - p.y) * D / (base + COUNTRY_EYE);
+    if (f < -0.5 || f > 1.0) continue;
+    // Along the curtain, in world units at D: the deck drifts 0.09 * wind cloud-base heights a
+    // second (skyClouds), and the lower the drops the further downwind they have blown.
+    float x = p.x * D - 0.09 * COUNTRY_CLOUD_BASE * wind * tm - 0.45 * wind * (base + COUNTRY_EYE) * max(f, 0.0);
+    float n = 0.7 * vnoise(vec2(x * 0.6, 5.3 * fj + 1.0)) + 0.3 * vnoise(vec2(x * 1.9, 3.1 * fj + 7.0));
+    float shaft = smoothstep(th, th + 0.22, n);
+    belly = max(belly, shaft * smoothstep(-0.5, 0.0, f) * (1.0 - smoothstep(0.0, 0.35, f)));
+    float hang = smoothstep(-0.04, 0.12, f) * (1.0 - smoothstep(reach - 0.45, reach, f));
+    // Long streaks inside, slanting with the curtain and sliding slowly down.
+    float streaks = 0.78 + 0.22 * vnoise(vec2(x * 5.0, p.y * 4.0 + tm * 0.5));
+    clear *= 1.0 - shaft * hang * streaks * (0.1 + 0.5 * rain * rain);
+  }
+  return vec2(1.0 - clear, belly);
 }
 
 Shade sceneCountry(vec2 uv, vec2 cell, float t) {
@@ -608,14 +675,26 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   vec2 spots = vec2(-0.2, 0.24) * aspect;
   float wind = K_wind;
   float season = K_season;
+  float rain = K_rain;
+  // How wet the land is and how much snow lies on it: the renderer lets both build up while it rains
+  // or snows and fade after, so a shower leaves the track shining for a while.
+  float wet = uWeather.x;
+  float lying = uWeather.y;
 
   float tod = timeOfDay(K_time, K_cycle, t);
   Sky sky = skyAt(tod);
-  float cover = clamp(K_clouds + 0.7 * K_rain + 0.4 * K_snow + 0.3 * K_lightning, 0.0, 1.0);
+  // Rain falls from a grey deck over the whole sky, lower and darker the heavier it is: the sun is
+  // lost behind it and the light goes flat and grey, bright in a drizzle, dim in a downpour.
+  float grey = countryGrey(rain);
+  float low = 1.0 + 0.8 * rain;
+  sky.sunColor *= 1.0 - grey * (0.5 + 0.45 * rain);
+  sky.moonColor *= 1.0 - grey * (0.4 + 0.3 * rain);
+  sky.ambient = mix(sky.ambient, vec3(dot(sky.ambient, LUMA)) * vec3(0.95, 0.98, 1.04), 0.6 * grey) * (1.0 - 0.4 * rain);
+  float cover = clamp(max(K_clouds + 0.4 * K_snow + 0.3 * K_lightning, grey * (0.86 + 0.14 * smoothstep(0.15, 0.7, rain))), 0.0, 1.0);
   float overcast = smoothstep(0.55, 1.0, cover);
   // How dark it is for the villagers: the first lamps come on while the sun is still ~7 degrees up
   // (tod .70), most by sunset, all of them early in dusk (and earlier under a heavy sky).
-  float dark = clamp(1.0 - smoothstep(-0.12, 0.2, sky.sun.y) + 0.3 * overcast, 0.0, 1.0);
+  float dark = clamp(1.0 - smoothstep(-0.12, 0.2, sky.sun.y) + 0.3 * overcast + 0.2 * rain, 0.0, 1.0);
   // Mist gathers in the valleys around dawn and burns off as the sun climbs: a layer lying on the
   // valley floors, densest at the bottom and thinning with height (scale height fogTop, world
   // units), lower and thinner as the morning wears on.
@@ -623,9 +702,10 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   float burn = smoothstep(0.27, 0.42, tod) * (1.0 - smoothstep(0.62, 0.8, tod));
   float fog = min(K_fog * (0.55 + 0.9 * exp(-dawn * dawn)) * (1.0 - 0.55 * burn), 1.5);
   float fogTop = 0.03 + 0.03 * fog;
-  // Snow lying on the land: the sim lets it build up while it snows and melt after.
-  float lying = uSimOn.x > 0.5 ? texture(uSim0, vec2(0.5)).r : K_snow;
   vec3 air = sky.ambient + 0.5 * sky.sunColor + 0.4 * sky.moonColor;
+  float seed = 0.0;
+  float age = lightningAge(t, K_lightning, 0, seed);
+  float flash = lightningFlash(age);
 
   // Front to back: the first ridge, or a tree or building standing on it, that covers the pixel.
   int hit = 6;
@@ -637,6 +717,8 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   float treeShadow = 0.0;
   CountryVillage village = countryNoVillage();
   bool villageSeen = false;
+  // How far off the surface the pixel sees is (world): the falling rain and snow stop there.
+  float seen = 1e3;
   for (int k = 0; k < 6; k++) {
     float i = float(k);
     treeShadow = 0.0;
@@ -652,6 +734,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
         crest = c;
         q = qi;
         object = 2.0;
+        seen = 0.9 * L.x;
         break;
       }
     }
@@ -672,6 +755,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
           crest = c;
           q = qi;
           object = 1.0;
+          seen = L.x * (1.0 - 0.35 * smoothstep(0.0, 0.2, sRoot));
           break;
         }
       }
@@ -690,7 +774,9 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   float glint = 0.0;
   // The horizon at this x: the colour the land fades into with distance (by night a little lighter
   // than the sky there, as the adapted eye sees moonlit far hills).
-  vec3 haze = skyColor(sky, normalize(vec3(q.x, 0.02, 1.0))) + sky.night * vec3(0.03, 0.04, 0.07);
+  vec3 haze = countryDome(sky, normalize(vec3(q.x, 0.02, 1.0)), rain) + sky.night * vec3(0.03, 0.04, 0.07);
+  // Raindrops catch the light of the sky around them, the lightning, and lamplight by the village.
+  vec3 dropCol = mix(vec3(dot(haze, LUMA)), haze, 0.5) * 1.15 + 0.05 + 0.5 * flash + COUNTRY_AMBER * village.glow * 0.12 * dark;
   float i = float(hit);
 
   if (hit < 6) {
@@ -717,23 +803,30 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     // the valley floor, and row space for the crops: across at that depth, so rows running down
     // the slope converge into the distance.
     float z = d * (1.0 - 0.35 * smoothstep(0.0, 0.2, s));
+    if (object < 0.5) seen = z;
     vec3 ground = vec3(q.x * z, (q.y - COUNTRY_HORIZON) * z, z);
     float height = COUNTRY_EYE + ground.y;
     vec2 rows = vec2(q.x * z, w.y);
     vec2 pxr = vec2(z, down) * pxl;
     // How fully lying snow covers this ground, 0..1: it settles first on the high far ridges, then
-    // creeps down to the near fields. A pure function of the sim's cover, so once that has settled
+    // creeps down to the near fields. A pure function of the lying snow, so once that has settled
     // nothing here changes; crops under it stop swaying.
     float buried = smoothstep(0.0, 0.35, lying * 1.4 - 0.3 * vnoise(w * 2.5 + 11.0) - 0.1 * (1.0 - i / 5.0));
-    // Sunlight through the cloud deck: follow the sun from this point of ground up to the deck.
+    // The same front for the trees and buildings, which carry their own snow (snowCover).
+    float lyingHere = clamp(lying * 1.4 - 0.1 * (1.0 - i / 5.0), 0.0, 1.0);
+    // Sunlight through the cloud deck: follow the sun from this point of ground up to the deck,
+    // brought down by rain as the sky shows it (countryDeck).
     float sunShade = 1.0 - 0.75 * overcast;
     if (K_shadows > 0.0 && sky.sun.y > 0.0) {
-      vec3 deck = ground + sky.sun * ((COUNTRY_CLOUD_BASE - ground.y) / max(sky.sun.y, 0.12));
-      sunShade *= 1.0 - K_shadows * skyClouds(sky, normalize(deck), t, cover, wind).a;
+      vec3 deck = ground + sky.sun * ((COUNTRY_CLOUD_BASE / low - ground.y) / max(sky.sun.y, 0.12));
+      sunShade *= 1.0 - K_shadows * skyClouds(sky, normalize(vec3(deck.x, deck.y * low, deck.z)), t, cover, wind).a;
     }
 
     vec3 albedo = vec3(0.0);
     float settles = 1.0;   // how much of the lying snow shows here
+    float snowy = -1.0;    // snow on a tree or building, which carries its own; below 0 on the land
+    float porous = 0.8;    // how much rain soaks in and darkens: 0 slate .. 1 soil, thatch
+    float glossy = 0.12;   // how much a wet surface mirrors the sky: fields little, the track and roofs most
     float water = 0.0;
     float lamp = 0.0;
     float chalk = 0.0;
@@ -741,11 +834,17 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     float relief = 0.5;    // crop rows: 1 on their ridges, where snow shows them
     float sheen = 0.0;     // low sun glancing off standing crops
     float shadow = treeShadow;
+    float onLane = 0.0;    // 1 on the farm track
+    float rut = 0.0;       // 1 in its wheel ruts
+    vec2 lp = vec2(0.0);   // track space for its puddles: across, down the slope, ~0.007 world a unit
     if (object > 1.5) {
       albedo = village.albedo;
       n = village.normal;
-      settles = village.roof;
       lamp = village.lamp;
+      porous = village.porous;
+      glossy = 0.15 + 0.2 * village.roof;
+      // Snow lies on the roofs and the spire's ledges, never the walls, its edge broken over the tiles.
+      snowy = village.roof * snowCover(n, q * 32.0, lyingHere);
     } else if (object > 0.5) {
       // A hedgerow tree: a leafy dome lit on the sun's side, darker underneath; in autumn each
       // turns its own colour.
@@ -755,10 +854,14 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
       vec3 leaf = season < 0.5 ? vec3(0.2, 0.37, 0.13) : vec3(0.23, 0.36, 0.12);
       if (season > 1.5) leaf = th < 0.3 ? vec3(0.62, 0.36, 0.1) : (th < 0.55 ? vec3(0.5, 0.22, 0.08) : (th < 0.75 ? vec3(0.7, 0.56, 0.17) : vec3(0.2, 0.3, 0.11)));
       albedo = leaf * (0.82 + 0.36 * vnoise(q * uRes.y / 3.0)) * (0.7 + 0.3 * smoothstep(-1.0, 0.3, dc.y));
-      settles = 0.5;
+      porous = 0.3;
+      glossy = 0.15;
+      // Snow lies on the tops of the crowns, its edge ragged over the leaves; the undersides stay dark.
+      snowy = snowCover(n, dc * 0.7 + crown.w * 31.0, lyingHere);
       shadow = 0.0;
     } else {
       // The patchwork.
+      vec3 slope = n;
       vec2 site = vec2(0.0);
       vec2 other = vec2(0.0);
       vec2 axis = vec2(0.0);
@@ -792,7 +895,11 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
         float u = border / hedgeHalf;
         n = normalize(mix(n, normalize(vec3(-toHedge.x * u, 1.0 - 0.6 * u, toHedge.y * u)), holds));
         albedo = mix(albedo, hedgeLeaf * (0.8 + 0.35 * vnoise(f * 30.0)), holds);
-        settles = 0.55;
+        // Snow caps the hedge tops and leaves their flanks dark, so the patchwork still shows under
+        // snow: its pattern at a middling depth, brought in with the land's own front (buried).
+        settles = 0.25 + 0.5 * snowCover(n, f * 2.0, 0.6);
+        porous = 0.4;
+        glossy = 0.08;
         relief = 0.5;
         sheen = 0.0;
       } else if (toSun > 0.0 && sky.sun.y > 0.0) {
@@ -810,8 +917,34 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
         albedo = mix(albedo, leaf * mix(1.0, 0.65 + 0.35 * ao, crowns), woods);
         n = normalize(mix(n, canopy.xyz, woods * crowns));
         settles = mix(settles, 0.35 + 0.4 * max(canopy.y, 0.0), woods);
+        porous = mix(porous, 0.35, woods);
+        glossy = mix(glossy, 0.08, woods);
         relief = mix(relief, 0.5, woods);
         sheen *= 1.0 - woods;
+      }
+      // The farm track up the near field and over its brow toward the village: two wheel ruts either
+      // side of a grassy crown, cutting through the hedges. Rain darkens it and makes it shine, and
+      // puddles gather in the ruts (once it is lit, below); snow shows the ruts as darker lines.
+      if (hit == 0) {
+        vec2 lane = countryLane(w.y, spots.x * 0.6);
+        float side = (rows.x - lane.x) / sqrt(1.0 + lane.y * lane.y);
+        float u = abs(side) / COUNTRY_LANE;
+        if (u < 1.3) {
+          onLane = 1.0 - smoothstep(1.0, 1.3, u);
+          rut = 1.0 - smoothstep(0.1, 0.24, abs(u - 0.56));
+          lp = vec2(side, w.y) * 150.0;
+          vec3 track = vec3(0.56, 0.48, 0.36) * (0.88 + 0.24 * vnoise(lp * 0.8));
+          track = mix(track, vec3(0.42, 0.34, 0.24), rut);
+          vec3 sward = season > 1.5 ? vec3(0.36, 0.42, 0.19) : vec3(0.3, 0.47, 0.18);
+          track = mix(track, sward, 1.0 - smoothstep(0.16, 0.3, u));
+          albedo = mix(albedo, track, onLane);
+          n = normalize(mix(n, slope, onLane));
+          settles = mix(settles, 0.95 - 0.4 * rut, onLane);
+          relief = mix(relief, 0.5, onLane);
+          sheen *= 1.0 - onLane;
+          porous = mix(porous, 0.5, onLane);
+          glossy = mix(glossy, 0.45, onLane);
+        }
       }
       // The river on the second ridge, mirroring the sky between reedy banks.
       if (hit == 1) {
@@ -823,16 +956,19 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
           settles = 0.6;
           relief = 0.5;
           sheen = 0.0;
+          porous = 0.5;
         }
         if (across < bank) {
+          // Raindrops dimple it: their rings tilt the mirror and catch the light on their crests.
+          vec3 rr = rainRipples(vec2(w.x * 50.0, w.y * 30.0), t, rain);
           vec3 view = normalize(vec3(q.x, q.y - COUNTRY_HORIZON, 1.0));
-          vec3 mirrored = vec3(view.x, -view.y, view.z);
-          vec4 cloud = countryClouds(sky, mirrored, t, cover, wind);
+          vec3 mirrored = normalize(vec3(view.x + 0.12 * rr.x, -view.y + 0.12 * rr.y, view.z));
+          vec4 cloud = countryDeck(sky, mirrored, t, cover, wind, low, rain);
           float ripple = vnoise(vec2(w.x * 60.0, w.y * 25.0 - tm * 0.6));
-          reflection = mix(skyColor(sky, mirrored), cloud.rgb, cloud.a) * (0.82 + 0.25 * ripple);
+          reflection = mix(countryDome(sky, mirrored, rain), cloud.rgb, cloud.a) * (0.82 + 0.25 * ripple) + dropCol * rr.z * 0.35;
           water = 0.85;
           settles = 0.0;
-          glint = smoothstep(0.6, 0.9, ripple);
+          glint = smoothstep(0.6, 0.9, ripple) * (1.0 - grey);
         }
       }
       // The chalk figure: an M cut through the turf of the down, foreshortened on its slope like
@@ -842,20 +978,42 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
         vec2 mq = vec2(w.x - spots.y * d, countryDown(0.036, d) - w.y) / unit;
         chalk = 1.0 - smoothstep(0.075, 0.09, markDistance(mq));
         albedo = mix(albedo, vec3(0.93, 0.92, 0.86) * (0.94 + 0.06 * vnoise(f * 20.0)), chalk);
+        porous = mix(porous, 0.3, chalk);
       }
     }
 
-    // Snow whitens the ground; the ridges of the crop rows hold it first, so the rows still show
-    // faintly through.
-    float snowCover = buried * settles * (0.8 + 0.2 * relief);
-    albedo = mix(albedo, COUNTRY_SNOW, snowCover);
+    // Rain soaks in, darkening and deepening the colours. Snow whitens the land, the ridges of the
+    // crop rows holding it first so the rows still show faintly through; trees and roofs carry their own.
+    albedo = wetten(albedo, wet, porous);
+    float snowCov = snowy >= 0.0 ? snowy : buried * settles * (0.8 + 0.2 * relief);
+    albedo = mix(albedo, COUNTRY_SNOW, snowCov);
 
     // Direct sun through cloud and the shadows of hedges and trees; the land takes it with little
     // wrap so a low sun models the hills, trees and buildings a little softer.
     float lit = sunShade * (1.0 - 0.8 * shadow);
     col = albedo * countryLight(sky, n, lit, object > 0.5 ? 0.35 : 0.2);
-    col += albedo * sky.sunColor * lit * sheen * 0.3 * (1.0 - snowCover);
+    col += albedo * sky.sunColor * lit * sheen * 0.3 * (1.0 - snowCov);
+    // A wet surface mirrors the sky low over the land, flat ground and roofs most: grey under the
+    // rain, gold when the sun breaks through after it.
+    col = mix(col, haze * 0.95, wetGloss(wet, n.y) * glossy * (1.0 - snowCov));
+    // Puddles gather in the track's ruts as it wets, mirroring the sky through the rings of the
+    // drops landing in them.
+    if (onLane > 0.0 && wet > 0.0) {
+      float puddle = rainPuddles(lp, wet) * (0.4 + 0.6 * rut) * onLane * (1.0 - snowCov);
+      if (puddle > 0.0) {
+        vec3 rr = rainRipples(lp * 0.7, t, rain);
+        vec3 view = normalize(vec3(q.x, q.y - COUNTRY_HORIZON, 1.0));
+        vec3 mirrored = normalize(vec3(view.x + 0.1 * rr.x, -view.y + 0.1 * rr.y, view.z));
+        vec4 cloud = countryDeck(sky, mirrored, t, cover, wind, low, rain);
+        reflection = mix(countryDome(sky, mirrored, rain), cloud.rgb, cloud.a) * 0.8 + dropCol * rr.z * 0.25;
+        water = 0.85 * puddle;
+      }
+    }
     col = mix(col, reflection, water);
+    // Drops bouncing off the hard track, sized on screen: a splash rises toward us, unforeshortened.
+    if (onLane > 0.0 && rain > 0.0) {
+      col += dropCol * rainSplashes(q * uRes.y / 26.0, t, rain) * 0.45 * onLane * (1.0 - snowCov);
+    }
     if (lamp > 0.0) {
       col = mix(col, COUNTRY_AMBER, lamp);
       accent = lamp;
@@ -877,45 +1035,58 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     }
   } else {
     vec3 dir = viewRay(uv, aspect, COUNTRY_HORIZON, COUNTRY_FOV);
-    col = skyColor(sky, dir);
-    vec4 cloud = countryClouds(sky, dir, t, cover, wind);
+    col = countryDome(sky, dir, rain);
+    vec4 cloud = countryDeck(sky, dir, t, cover, wind, low, rain);
     col += skyStars(sky, dir, 0.4) * vec3(0.9, 0.93, 1.0) * (1.0 - cloud.a);
     col = mix(col, cloud.rgb, cloud.a);
     col = mix(col, countryMist(sky, p.x, 2.0, overcast), fogAmount(min(fog, 1.0), 1.0, max(p.y - valley, 0.0) * 12.0 / 0.25));
   }
 
-  // The village's life: warm light around lit windows, smoke drifting over whatever lies behind.
+  // The village's life: warm light around lit windows (pooling on wet ground), smoke drifting over
+  // whatever lies behind.
   if (villageSeen && hit >= 2) {
-    col += COUNTRY_AMBER * village.glow * 0.12 * dark * (1.0 - village.lamp);
+    col += COUNTRY_AMBER * village.glow * 0.12 * dark * (1.0 - village.lamp) * (1.0 + 1.5 * wet);
     col = mix(col, vec3(0.8, 0.8, 0.83) * air, village.smoke * 0.75);
   }
 
-  // Rain veils hang over the far hills.
-  if (K_rain > 0.0 && hit >= 3) {
-    col = mix(col, haze * 0.85 + 0.03, countryVeils(p, tm, wind) * K_rain * 0.7);
-  }
-
-  // Lightning over the far hills: bolts to the fourth ridge, the whole scene flashing.
-  float seed = 0.0;
-  float age = lightningAge(t, K_lightning, 0, seed);
-  float flash = lightningFlash(age);
+  // Lightning over the far hills: bolts to the fourth ridge, behind any rain shafts.
   if (age < 2.0 && hit >= 4) {
     float bx = (fract(seed * 7.13) - 0.5) * aspect * 0.8;
     float gx = bx + (fract(seed * 3.71) - 0.5) * 0.12;
     float bolt = lightningBolt(p, vec2(bx, 0.92), vec2(gx, countryCrest(4.0, gx, spots) - 0.004), seed, age);
     col += vec3(0.85, 0.9, 1.0) * bolt;
   }
+  // Rain shafts hanging under the cloud base over the far hills, the base darkening above them.
+  if (rain > 0.0) {
+    vec2 shafts = countryShafts(p, seen, COUNTRY_CLOUD_BASE / low, tm, rain, wind);
+    if (hit == 6) col *= 1.0 - 0.35 * rain * shafts.y;
+    col = mix(col, mix(vec3(dot(haze, LUMA)), haze, 0.35) * 0.76, shafts.x);
+  }
+  // The whole scene flashing.
   col += vec3(0.5, 0.55, 0.7) * flash * (hit == 6 ? 0.45 : 0.25);
 
-  if (K_rain > 0.0) {
-    col = mix(col, vec3(0.7, 0.75, 0.82) * air + 0.3 * flash, rainStreaks(uv, aspect, t, K_rain, wind) * 0.45);
+  // Rain and snow falling through the air as far as the first surface: the veil of all that lies
+  // too deep to resolve, then the drops and flakes themselves (already calm, cell by cell). Their
+  // depth runs 0 at the eye .. 1 at the horizon, not to scale (the land lies hundreds of metres off,
+  // beyond any drop the eye resolves): the near field sits a quarter of the way in, so only the
+  // nearer, sparser layers fall in front of it while the dense fine rain hangs in the valleys
+  // beyond, hidden behind each ridge in turn, and the far hills lie deep in the veil.
+  float airDepth = 1.0 - exp(-seen / 2.5);
+  if (rain > 0.0) {
+    Precip pr = rainFall(uv, aspect, t, rain, wind, airDepth);
+    col = mix(col, mix(vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.0), haze, 0.4) + 0.25 * flash, pr.veil);
+    // The nearest drops, out of focus, show fainter.
+    col = mix(col, dropCol, clamp(pr.cover * (0.75 - 0.25 * pr.near), 0.0, 1.0));
   }
   if (K_snow > 0.0) {
-    // Flakes at 85% so the passing of each one crosses fewer dither steps against the dark sky; against
-    // pale snow-covered land they all but vanish, as falling snow does, instead of speckling it.
+    Precip ps = snowFall(uv, aspect, t, K_snow, wind, airDepth);
     vec3 flake = vec3(0.95, 0.96, 1.0) * clamp(air * 1.3 + 0.1, 0.0, 1.0);
+    // A blizzard whites out the distance.
+    col = mix(col, flake * 0.92, ps.veil);
+    // Flakes at most 85% so the passing of each one crosses fewer dither steps against the dark sky;
+    // against pale snow-covered land they all but vanish, as falling snow does, instead of speckling it.
     float contrast = clamp((dot(flake, LUMA) - dot(col, LUMA)) * 3.0, 0.0, 1.0);
-    col = mix(col, flake, snowFlakes(uv, aspect, t, K_snow, wind) * 0.85 * contrast);
+    col = mix(col, flake, clamp(ps.cover, 0.0, 1.0) * (0.85 - 0.2 * ps.near) * contrast);
   }
 
   Shade o = blankShade();
