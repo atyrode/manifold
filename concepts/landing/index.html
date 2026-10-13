@@ -59,20 +59,40 @@
 
     <button class="lab-toggle" id="lab-toggle" type="button" aria-expanded="false" aria-controls="lab">lab</button>
     <form class="lab" id="lab" hidden>
-      <label>scene <select name="scene"></select></label>
-      <label>mode <select name="mode"></select></label>
-      <label>dither <select name="dither"></select></label>
-      <label>colour <select name="color"></select></label>
-      <label>pixel <input name="pixel" type="range" min="1" max="8" step="1" /><output></output></label>
-      <label>levels <input name="levels" type="range" min="2" max="6" step="1" /><output></output></label>
-      <label>motion <input name="motion" type="range" min="0" max="1" step="0.05" /><output></output></label>
-      <label>accent <input name="accent" type="color" /></label>
-      <label>name <input name="instance" type="text" maxlength="40" spellcheck="false" /></label>
-      <div class="lab-row">
-        <button type="button" id="lab-reset">reset</button>
-        <button type="button" id="lab-copy">copy link</button>
+      <div class="lab-head">
+        <select class="lab-presets" id="lab-presets" aria-label="presets"></select>
+        <a class="lab-pinned" id="lab-pinned" hidden></a>
       </div>
-      <p class="lab-keys">[ ] scene · h hide ui · l lab</p>
+      <fieldset>
+        <legend>scene</legend>
+        <label data-help="The picture behind the page. [ and ] cycle through them.">scene <select name="scene"></select></label>
+        <label data-help="Which page sits on top: the landing page, a loading screen, a private instance's sign-in, or nothing.">page <select name="mode"></select></label>
+        <label data-when-mode="instance" data-help="Instance name on the sign-in card.">name <input name="instance" type="text" maxlength="40" spellcheck="false" /></label>
+      </fieldset>
+      <fieldset>
+        <legend>look</legend>
+        <label data-help="dithered: the shader's output. source: the picture before dithering. split: source on the left, dithered on the right.">view <select name="view"></select></label>
+        <label data-help="Threshold pattern. bayer8/bayer4: ordered cross-hatch grids. ign: finer, noise-like grain. none: plain rounding, flat posterised bands.">dither <select name="dither"></select></label>
+        <label data-help="accent: one accent colour plus off-white ink. mono: ink only. full: the picture's own colours, quantised.">colour <select name="color"></select></label>
+        <label data-help="Tones per channel. 2 is pure on/off dots; more levels add in-between shades.">levels <input name="levels" type="range" min="2" max="6" step="1" /><output></output></label>
+        <label data-help="Size of one dot, in screen pixels.">pixel <input name="pixel" type="range" min="1" max="8" step="1" /><output></output></label>
+        <label data-help="The single accent colour.">accent <input name="accent" type="color" /></label>
+      </fieldset>
+      <fieldset>
+        <legend>motion</legend>
+        <label data-help="Overall amount of animation. 0 is a still frame.">motion <input name="motion" type="range" min="0" max="1" step="0.05" /><output></output></label>
+        <label class="switch" data-help="Tilt the scene gently toward the mouse pointer.">follow mouse <input name="mouse" type="checkbox" /></label>
+      </fieldset>
+      <div id="lab-params"></div>
+      <div class="lab-row">
+        <button type="button" id="lab-reset" title="Back to the default setup">reset</button>
+        <button type="button" id="lab-copy" title="Copy a link that replays this setup on this exact build">copy link</button>
+      </div>
+      <div class="lab-row">
+        <button type="button" id="lab-save" title="Keep this setup in this browser's preset list">save</button>
+        <button type="button" id="lab-export" title="Copy saved setups as JSON, with the commit each was made on">export</button>
+      </div>
+      <p class="lab-keys"><span id="lab-build"></span> · [ ] scene · h hide ui · l lab</p>
     </form>
 
     <script type="module" src="./src/main.ts"></script>

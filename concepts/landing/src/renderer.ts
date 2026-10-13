@@ -1,11 +1,18 @@
+import { artworks, floodBackdrop, flowField, raster, type Artwork, type Raster } from "./artwork.ts";
+import { constellationUniforms } from "./constellations.ts";
+import { MAX_PARAMS } from "./params.ts";
 import { fragmentSource, vertexSource } from "./shaders.ts";
 
+/** Order is the shader's `uScene` index. */
 export const sceneIds = ["wave", "starry", "orbit", "swell"] as const;
 export type SceneId = (typeof sceneIds)[number];
 export const ditherIds = ["bayer8", "bayer4", "ign", "none"] as const;
 export type DitherId = (typeof ditherIds)[number];
 export const colorIds = ["accent", "mono", "full"] as const;
 export type ColorId = (typeof colorIds)[number];
+/** Order is the shader's `uView` index. */
+export const viewIds = ["dithered", "source", "split"] as const;
+export type ViewId = (typeof viewIds)[number];
 
 export interface RenderSettings {
   scene: SceneId;
@@ -18,101 +25,29 @@ export interface RenderSettings {
   bg: string;
   ink: string;
   accent: string;
+  /** The current scene's knobs, in `sceneParams` order. */
+  params: readonly number[];
+  followPointer: boolean;
+  view: ViewId;
 }
 
-interface Artwork {
-  url: string;
-  focus: readonly [number, number];
-  /** Flood the unpainted paper from the top-right so the scene can drop it to black. */
-  backdrop: boolean;
-  /** Extra image-space rectangles [x0, y0, x1, y1] forced into the backdrop (title cartouche). */
-  clear: readonly (readonly [number, number, number, number])[];
-}
-
-const artwork: Partial<Record<SceneId, Artwork>> = {
-  wave: { url: "/art/great-wave.jpg", focus: [0.4, 0.52], backdrop: true, clear: [[0, 0.04, 0.1, 0.31]] },
-  starry: { url: "/art/starry-night.jpg", focus: [0.5, 0.6], backdrop: false, clear: [] },
-};
+/** Must match `MAX_STARS` in the fragment shader. */
+const MAX_STARS = 16;
 
 const uniformNames = [
   "uRes", "uTime", "uScene", "uDither", "uColor", "uLevels", "uMotion", "uPointer",
-  "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uImageSize", "uFocus", "uReveal",
+  "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
+  "uStars", "uStarCount", "uParams", "uView",
+  "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
 interface LoadedArt {
   texture: WebGLTexture;
   backdrop: WebGLTexture | undefined;
+  flow: WebGLTexture;
   size: [number, number];
   loadedAt: number;
-}
-
-/**
- * Paper/sky mask: light, non-blue pixels reachable from the top-right edge without crossing a
- * (one-cell dilated) line or ink. Woodblock outlines are closed enough that foam stays separate
- * from the identically coloured paper.
- */
-function floodBackdrop(image: HTMLImageElement, clear: Artwork["clear"]): { data: Uint8Array; width: number; height: number } {
-  const width = 480;
-  const height = Math.round((width * image.naturalHeight) / image.naturalWidth);
-  const context = new OffscreenCanvas(width, height).getContext("2d");
-  if (!context) throw new RendererError("2d canvas unavailable");
-  context.drawImage(image, 0, 0, width, height);
-  const px = context.getImageData(0, 0, width, height).data;
-  const blocked = new Uint8Array(width * height);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4;
-      const r = px[i] ?? 0, g = px[i + 1] ?? 0, b = px[i + 2] ?? 0;
-      if (0.299 * r + 0.587 * g + 0.114 * b >= 175 && b - r <= 0) continue;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const X = x + dx, Y = y + dy;
-          if (X >= 0 && Y >= 0 && X < width && Y < height) blocked[Y * width + X] = 1;
-        }
-      }
-    }
-  }
-  const mask = new Uint8Array(width * height);
-  const stack: number[] = [];
-  for (let x = Math.round(width * 0.45); x < width; x++) stack.push(x);
-  for (let y = 0; y < height * 0.4; y++) stack.push(y * width + width - 1);
-  while (stack.length > 0) {
-    const i = stack.pop() ?? 0;
-    if (mask[i] || blocked[i]) continue;
-    mask[i] = 255;
-    const x = i % width;
-    if (x > 0) stack.push(i - 1);
-    if (x < width - 1) stack.push(i + 1);
-    if (i >= width) stack.push(i - width);
-    if (i < width * (height - 1)) stack.push(i + width);
-  }
-  // Paper flecks become islands after dilation; fold islands of at most 24 cells back into the sky.
-  const seen = new Uint8Array(width * height);
-  for (let start = 0; start < mask.length; start++) {
-    if (mask[start] || seen[start]) continue;
-    const island: number[] = [];
-    const queue = [start];
-    seen[start] = 1;
-    while (queue.length > 0) {
-      const i = queue.pop() ?? 0;
-      island.push(i);
-      const x = i % width;
-      for (const n of [x > 0 ? i - 1 : -1, x < width - 1 ? i + 1 : -1, i - width, i + width]) {
-        if (n >= 0 && n < mask.length && !mask[n] && !seen[n]) {
-          seen[n] = 1;
-          queue.push(n);
-        }
-      }
-    }
-    if (island.length <= 24) for (const i of island) mask[i] = 255;
-  }
-  for (const [x0, y0, x1, y1] of clear) {
-    for (let y = Math.round(y0 * height); y < Math.round(y1 * height); y++) {
-      mask.fill(255, y * width + Math.round(x0 * width), y * width + Math.round(x1 * width));
-    }
-  }
-  return { data: mask, width, height };
 }
 
 export class RendererError extends Error {}
@@ -133,6 +68,19 @@ function rgb(hex: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
+/** Pulsing vortices as shader uniforms: image uv with y up, radius in image heights. */
+function starUniform(art: Artwork | undefined): { data: Float32Array; count: number } {
+  const stars = (art?.vortices ?? []).filter((v) => v.pulse).slice(0, MAX_STARS);
+  const data = new Float32Array(MAX_STARS * 4);
+  stars.forEach((star, i) => data.set([star.x, 1 - star.y, star.r, star.spin], i * 4));
+  return { data, count: stars.length };
+}
+
+const noStars = starUniform(undefined);
+const starsByScene: Readonly<Record<string, { data: Float32Array; count: number }>> = Object.fromEntries(
+  Object.entries(artworks).map(([scene, art]) => [scene, starUniform(art)]),
+);
+
 export class DitherRenderer {
   readonly #gl: WebGL2RenderingContext;
   readonly #canvas: HTMLCanvasElement;
@@ -143,6 +91,7 @@ export class DitherRenderer {
   #settings: RenderSettings;
   #start = performance.now();
   #frozen: boolean;
+  readonly #params = new Float32Array(MAX_PARAMS);
 
   constructor(canvas: HTMLCanvasElement, settings: RenderSettings, frozen: boolean) {
     const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: false });
@@ -151,6 +100,7 @@ export class DitherRenderer {
     this.#canvas = canvas;
     this.#settings = settings;
     this.#frozen = frozen;
+    this.#params.set(settings.params.slice(0, MAX_PARAMS));
 
     const program = gl.createProgram();
     gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertexSource));
@@ -166,6 +116,14 @@ export class DitherRenderer {
       uniformNames.map((name) => [name, gl.getUniformLocation(program, name)]),
     ) as Record<UniformName, WebGLUniformLocation | null>;
 
+    const u = this.#uniforms;
+    const figures = constellationUniforms;
+    gl.uniform4fv(u.uConStars, figures.stars);
+    gl.uniform1fv(u.uConBright, figures.brightness);
+    gl.uniform2fv(u.uConLines, figures.lines);
+    gl.uniform1i(u.uConStarCount, figures.starCount);
+    gl.uniform1i(u.uConLineCount, figures.lineCount);
+
     this.#blank = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
@@ -174,11 +132,13 @@ export class DitherRenderer {
       this.#pointer.tx = (event.clientX / window.innerWidth) * 2 - 1;
       this.#pointer.ty = 1 - (event.clientY / window.innerHeight) * 2;
     });
-    for (const art of Object.values(artwork)) this.#load(art);
+    for (const art of Object.values(artworks)) this.#load(art);
   }
 
   update(settings: RenderSettings): void {
     this.#settings = settings;
+    this.#params.fill(0);
+    this.#params.set(settings.params.slice(0, MAX_PARAMS));
   }
 
   start(): void {
@@ -189,19 +149,22 @@ export class DitherRenderer {
     requestAnimationFrame(tick);
   }
 
-  #upload(source: TexImageSource | { data: Uint8Array; width: number; height: number }): WebGLTexture {
+  #upload(source: TexImageSource | Raster): WebGLTexture {
     const gl = this.#gl;
     const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if ("data" in source) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, source.width, source.height, 0, gl.RED, gl.UNSIGNED_BYTE, source.data);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    } else {
+    if (!("data" in source)) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    } else if (source.data instanceof Float32Array) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, source.width, source.height, 0, gl.RG, gl.FLOAT, source.data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, source.width, source.height, 0, gl.RED, gl.UNSIGNED_BYTE, source.data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     }
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -214,9 +177,15 @@ export class DitherRenderer {
     image.decoding = "async";
     image.src = art.url;
     image.decode().then(() => {
+      const started = performance.now();
+      const px = raster(image, 480);
+      const backdrop = art.backdrop ? floodBackdrop(px, art.clear) : undefined;
+      const flow = flowField(px, art, backdrop);
+      console.info(`evt=landing.artwork.analysed url=${art.url} ms=${Math.round(performance.now() - started)}`);
       this.#textures.set(art.url, {
         texture: this.#upload(image),
-        backdrop: art.backdrop ? this.#upload(floodBackdrop(image, art.clear)) : undefined,
+        backdrop: backdrop ? this.#upload(backdrop) : undefined,
+        flow: this.#upload(flow),
         size: [image.naturalWidth, image.naturalHeight],
         loadedAt: performance.now(),
       });
@@ -228,10 +197,8 @@ export class DitherRenderer {
   #draw(now: number): void {
     const gl = this.#gl;
     const s = this.#settings;
-    const cssWidth = this.#canvas.clientWidth;
-    const cssHeight = this.#canvas.clientHeight;
-    const width = Math.max(1, Math.ceil(cssWidth / s.pixel));
-    const height = Math.max(1, Math.ceil(cssHeight / s.pixel));
+    const width = Math.max(1, Math.ceil(this.#canvas.clientWidth / s.pixel));
+    const height = Math.max(1, Math.ceil(this.#canvas.clientHeight / s.pixel));
     if (this.#canvas.width !== width || this.#canvas.height !== height) {
       this.#canvas.width = width;
       this.#canvas.height = height;
@@ -239,15 +206,19 @@ export class DitherRenderer {
     gl.viewport(0, 0, width, height);
 
     const p = this.#pointer;
-    p.x += (p.tx - p.x) * 0.04;
-    p.y += (p.ty - p.y) * 0.04;
+    const tx = s.followPointer ? p.tx : 0;
+    const ty = s.followPointer ? p.ty : 0;
+    p.x += (tx - p.x) * 0.04;
+    p.y += (ty - p.y) * 0.04;
 
-    const art = artwork[s.scene];
+    const art = artworks[s.scene];
     const loaded = art ? this.#textures.get(art.url) : undefined;
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, loaded?.texture ?? this.#blank);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, loaded?.backdrop ?? this.#blank);
+    const textures = [loaded?.texture, loaded?.backdrop, loaded?.flow];
+    textures.forEach((texture, unit) => {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, texture ?? this.#blank);
+    });
+    const stars = starsByScene[s.scene] ?? noStars;
 
     const u = this.#uniforms;
     gl.uniform2f(u.uRes, width, height);
@@ -263,9 +234,14 @@ export class DitherRenderer {
     gl.uniform3f(u.uAccent, ...rgb(s.accent));
     gl.uniform1i(u.uImage, 0);
     gl.uniform1i(u.uBackdrop, 1);
+    gl.uniform1i(u.uFlow, 2);
     gl.uniform2f(u.uImageSize, loaded?.size[0] ?? 1, loaded?.size[1] ?? 1);
     gl.uniform2f(u.uFocus, art?.focus[0] ?? 0.5, art?.focus[1] ?? 0.5);
-    gl.uniform1f(u.uReveal, loaded ? Math.min(1, (now - loaded.loadedAt) / 1400) : 0);
+    gl.uniform1f(u.uReveal, !art ? 1 : loaded ? Math.min(1, (now - loaded.loadedAt) / 1400) : 0);
+    gl.uniform4fv(u.uStars, stars.data);
+    gl.uniform1i(u.uStarCount, stars.count);
+    gl.uniform1fv(u.uParams, this.#params);
+    gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }
