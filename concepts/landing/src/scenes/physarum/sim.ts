@@ -8,32 +8,39 @@
 //   - Each agent is a speck of plasmodium with a position and a heading. Every step it smells the
 //     trail at three sensors ahead of it, turns toward the strongest smell, steps forward and
 //     deposits trail where it lands; the trail spreads (a 3×3 blur) and evaporates. Specks follow
-//     each other's trail and bundle into veins, and the busiest veins draw the most traffic.
-//   - Oat flakes pour attractant into the trail, scent the agar far around them, feed the specks
-//     that reach them and are where new plasmodium is born: a speck that goes too long without
-//     food dies and is reborn at a flake, heading out from it. Veins that link two flakes are fed
-//     from both ends and thrive; veins that lead nowhere starve and fade.
-//   - Flakes are eaten and fresh ones appear elsewhere, so the network keeps reorganising.
-//   - Salt (dragged across the dish) and light (the sea on the Tokyo map, lit in the experiment so
-//     the mould would shun it) repel it, block it and kill the trail beneath.
-//   - Sensing saturates: inside a flake's pool of attractant every sensor reads the same, so specks
-//     cross it in straight lines and leave along the veins instead of circling the food forever.
-// Per frame the trail is normalised by its typical vein level (the mass-weighted mean of the trail
-// outside the flakes, followed over a second or two), so the picture is the same at any population
-// or evaporation; smoothed over a third of a second, so the specks' flicker never reaches the
-// dither; and remembered over a minute, so abandoned veins leave a faint track of slime. A distance
-// field along the veins from the heart (where the mould began) carries the shuttle streaming: crests
-// of cytoplasm running out along the veins, slowing, stopping and running back every minute or so.
+//     each other's trail and bundle into filaments, which knit into a reticulated lace over the
+//     whole dish; the busiest filaments draw the most traffic and thicken into trunks.
+//   - Oat flakes feed the specks that reach them and are where new plasmodium is born: a speck
+//     that goes a minute without food dies and is reborn at a flake, heading out from it, so every
+//     flake sends out a fan of fresh filaments. A hungry speck (half a minute since it ate) smells
+//     a flake within its sensors' reach as strongly as a trunk, a fed one ignores food and roams.
+//     So fed plasmodium spreads out over the lace and hungry plasmodium homes back in along it:
+//     the filaments between flakes carry traffic both ways and thicken into trunks; when a flake
+//     is eaten its trunks lose their traffic and relax back into lace. Food is sensed, never
+//     poured into the trail, so the trail is only ever plasmodium (no glowing pool round a flake),
+//     and it has no long-range scent: one pulled the whole population into the flakes' basins and
+//     starved the lace.
+//   - Salt (dragged across the dish), light (the sea on the Tokyo map, lit in the experiment so
+//     the mould would shun it) and the dish's glass wall repel it, block it and kill the trail.
+//   - Sensing saturates: where the plasmodium crowds onto a flake every sensor reads the same, so
+//     specks cross it in straight lines and leave along the veins instead of circling it forever.
+// Per frame the trail is normalised by its trunk level (Σt³ / Σt² outside the flakes, followed
+// over a second or two), so the picture is the same at any population or evaporation and the
+// shader can draw trunks bright and the lace dim; smoothed over half a second, so the specks'
+// flicker never reaches the dither; and remembered over a minute, so abandoned veins leave a faint
+// track of slime. A distance field along the veins from the heart (where the mould began) carries
+// the shuttle streaming: a slow brightness wave running out along the veins, easing to a stop and
+// running back every minute or so.
 //
-// The first frame opens on a grown network: the flakes' relative-neighbourhood graph (the sparse
-// network a Physarum approximates) is sketched as gently bowed veins into the trail, the specks are
-// laid along it and at the flakes, and a GPU prewarm (as many steps as ~130 ms allows) lets the
-// mould take it over. Without float render targets the scene shows that sketch, still, with its
-// streaming.
+// The first frame opens on a grown network: a sketch of one (see "the sketch" below) seeds the
+// trail and the view, the specks are spread over it, and a GPU prewarm (as many steps as ~130 ms
+// allows) lets the mould take it over. The view crosses over from the sketch to the live mould as
+// the steps come in, and the sketch lingers a while as slime. Without float render targets the
+// scene shows the sketch, still, with its streaming.
 //
 // Textures:
 //   uSim0  rg16f over the trail grid (the frame plus PHYSARUM_MARGIN texels on every side): R the
-//          trail in units of the vein level, smoothed; G its memory over the last minute.
+//          trail in units of its trunk level, smoothed; G its memory over the last minute.
 //   uSim1  r32f at half resolution, nearest (r16f still, without float targets): distance along the
 //          veins from the heart, screen heights (PHYSARUM_FAR off the network). 32-bit because it is
 //          relaxed by adding steps of ~1/150 height, which half floats round away at a few heights.
@@ -43,7 +50,7 @@
 //          (0..1) and the heart's presence; texel 1 the M (centre uv, height in screen heights,
 //          shown 0..1).
 //   uSim3  rgba at half resolution: R food scent, G salt, B feeding (1 in a flake's pool, 0.5 at its
-//          rim, a halo beyond), A light.
+//          rim, a halo beyond), A light (the lit sea, and everything past the dish's glass wall).
 import type { ParamDef } from "../../params.ts";
 import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget, type Scatter } from "../../sims/gpu.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -55,17 +62,25 @@ const TAU = Math.PI * 2;
 
 // ---- grids ------------------------------------------------------------------------------------
 
-/** Trail texels across the frame's shorter side, and at most along its longer one. */
-const TRAIL_SHORT = 300;
-const TRAIL_LONG = 900;
+/**
+ * Trail texels across the frame's shorter side, and at most along its longer one. Fine enough that
+ * the specks occupy only ~10% of the texels (see physarumAgentCounts); the view's blur draws a
+ * one-texel filament as a soft line ~2 cells wide.
+ */
+const TRAIL_SHORT = 400;
+const TRAIL_LONG = 960;
 /** Trail texels beyond each edge of the frame: the specks bounce off the grid's edge out of sight. */
 export const PHYSARUM_MARGIN = 10;
 /** Flake slots: the shader's loop and the passes' uniform arrays. */
 export const PHYSARUM_MAX_FOOD = 32;
-/** The `agents` knob's choices: square-ish power-of-two state textures. */
-export const physarumAgentCounts = [65_536, 131_072, 262_144] as const;
+/**
+ * The `agents` knob's choices (power-of-two state textures). On a 16:9 frame's 711 × 400 texels
+ * they occupy ~6%, ~12% and ~23% of them: Jones's model knits a reticulated network at a few to
+ * ~15% occupancy and condenses into a few thick bands and loops well above it.
+ */
+export const physarumAgentCounts = [16_384, 32_768, 65_536] as const;
 /** Deposits are scaled so the trail's total is the same at any population. */
-const REFERENCE_AGENTS = 131_072;
+const REFERENCE_AGENTS = 32_768;
 
 // ---- the mould --------------------------------------------------------------------------------
 
@@ -73,53 +88,79 @@ const REFERENCE_AGENTS = 131_072;
 const STEPS_PER_SECOND = 40;
 /** Most steps in one frame; a slow machine's mould runs slow rather than skipping. */
 const MAX_STEPS = 4;
-/** Steps a speck lives without reaching food: three or four flake spacings of wandering. */
-const LIFE = 320;
+/** Steps a speck lives without reaching food (a minute): it roams the whole dish. */
+const LIFE = 2400;
 /** Texels per step. */
 const SPEED = 1;
-/** Random wobble per step (radians, full width): explorers meander instead of ruling lines. */
-const WANDER = 0.2;
-/** Rotation per step as a share of the sensor angle: smaller than it, for smooth, calm veins. */
-const TURN_SHARE = 0.65;
-/** Sensed trail saturates here (× the vein level): flakes' pools read flat, so specks cross them. */
-const SENSE_CAP = 1.6;
-/** A flake's long-range scent as sensed (× the vein level at its centre), and its reach (heights). */
-const SCENT_GAIN = 0.6;
-const SCENT_REACH = 0.15;
-/** Salt and light as sensed (× the vein level). */
+/** Random wobble per step (radians, full width): a little, so filaments wander rather than rule lines. */
+const WANDER = 0.08;
+/** Rotation per step (degrees): Jones's 45°, or the sensor angle where that is wider. */
+const TURN_MIN = 45;
+/** Sensed trail saturates here (× the trunk level): crowds on a flake read flat, so specks cross them. */
+const SENSE_CAP = 1.5;
+/** A flake as a hungry speck senses it (× the trunk level), and how hungry that is (share of LIFE left). */
+const FOOD_SENSE = 1;
+const HUNGRY = 0.5;
+/** Salt, light and the dish's wall as sensed (× the trunk level). */
 const REPEL = 6;
-/** The scent laid along the M's strokes (× a flake's), and its half-width in trail texels. */
-const MARK_SCENT = 0.8;
-const MARK_WIDTH = 7;
+/** The scent laid along the M's strokes as sensed (× the trunk level), and its half-width in trail texels. */
+const MARK_SCENT = 0.5;
+const MARK_WIDTH = 10;
 /** Trail one speck per texel keeps up at the reference population. */
 const AGENT_UNIT = 0.1;
-/** Steady attractant inside a flake (× the vein level): above SENSE_CAP. */
-const FOOD_LEVEL = 3;
-/** A flake feeds (and pours attractant) out to this many of its radii. */
+/** A flake feeds out to this many of its radii. */
 const FEED_SCALE = 1.3;
-/** Evaporation per step at evaporation 0 and 1 (log-spaced between). */
+/** Evaporation per step at evaporation 0 and 1 (log-spaced between; Jones's ~10% at 0.5). */
 const LOSS_MIN = 0.03;
-const LOSS_MAX = 0.25;
-/** Share of the specks laid along the sketched veins at a reset; the rest at the flakes. */
-const EDGE_SHARE = 0.6;
+const LOSS_MAX = 0.3;
+/** Specks seeded along the sketch's trunks, along its fans and at the flakes; the rest anywhere on the dish. */
+const SEED_TRUNKS = 0.3;
+const SEED_FANS = 0.12;
+const SEED_FLAKES = 0.18;
 
 // ---- the view ---------------------------------------------------------------------------------
 
-/** The trail is shown smoothed over this many seconds: no speck-level flicker under the dither. */
-const VIEW_SECONDS = 0.3;
+/** The trail is shown smoothed over this many seconds: single specks' motion never reaches the dither. */
+const VIEW_SECONDS = 0.7;
+/**
+ * Tone: a typical filament is shown at LACE_TONE (trunks at 1), through a power curve whose
+ * exponent follows the mould's own contrast (the filament's share of the trunk level, as measured,
+ * held within SHARE_MIN..SHARE_MAX; the exponent within GAMMA_MIN..GAMMA_MAX).
+ */
+const LACE_TONE = 0.3;
+/** Below this share of the trunk level the trail is background haze, not a filament. */
+const FILAMENT_FLOOR = 0.04;
+const SHARE_MIN = 0.02;
+const SHARE_MAX = 0.9;
+const GAMMA_MIN = 0.3;
+const GAMMA_MAX = 1.2;
+
+/** The view pass's tone curve (see VIEW): `level` in trunk levels, `share` a filament's share of it. */
+function tone(level: number, share: number): number {
+  const gamma = clamp(Math.log(LACE_TONE) / Math.log(clamp(share, SHARE_MIN, SHARE_MAX)), GAMMA_MIN, GAMMA_MAX);
+  return Math.pow(Math.max(level, 1e-6), gamma);
+}
+
+/**
+ * Steps after a reset by which the view has crossed over from the sketch to the live mould, and its
+ * smoothing (seconds) at the start of the crossing: a fast GPU's prewarm covers it, a slow one's
+ * mould grows out of the sketch over its first seconds.
+ */
+const SETTLE_STEPS = 160;
+const SETTLE_SECONDS = 1.5;
 /** Slime memory: seconds it takes to follow the network, updated every MEMORY_EVERY seconds. */
 const MEMORY_SECONDS = 50;
 const MEMORY_EVERY = 0.5;
-/** The vein level follows the trail over this many seconds. */
+/** The trunk level follows the trail over this many seconds. */
 const REF_SECONDS = 1.5;
 /** Distance relaxation passes per frame (strides alternate 1 and 2 texels). */
 const DIST_PASSES = 2;
 /** Distance off the network, screen heights. */
 export const PHYSARUM_FAR = 8;
-/** Crossing bare agar costs this many times more than following a vein. */
+/** Crossing lace or bare agar costs this many times more than following a vein. */
 const COST_OFF = 40;
-/** Streaming: wavelength along the veins (screen heights) and crest speed (heights per second). */
-export const PHYSARUM_WAVE = 0.24;
+/** Streaming: wavelength along the veins (screen heights) and wave speed (heights per second). */
+export const PHYSARUM_WAVE = 0.3;
 const PULSE_SPEED = 0.05;
 /** Shuttle streaming reverses every half period; the flow eases through zero over SHUTTLE_SOFT. */
 const SHUTTLE_PERIOD = 96;
@@ -131,30 +172,53 @@ const SHUTTLE_START = 0.6;
 
 /** GPU prewarm at a reset: steps in chunks, synced, until the budget is spent. */
 const PREWARM_MS = 130;
-const PREWARM_STEPS = 240;
+const PREWARM_STEPS = 320;
 const PREWARM_CHUNK = 8;
+
+// ---- the sketch -------------------------------------------------------------------------------
+
+/** How far trunks wander off their chord (share of its length). */
+const TRUNK_WANDER = 0.07;
+/** Tributaries fanning out of each flake: how many, how far (heights), how much they wander. */
+const FAN_MIN = 4;
+const FAN_MAX = 8;
+const FAN_SHORT = 0.03;
+const FAN_LONG = 0.08;
+const FAN_WANDER = 0.12;
+/** The lace: Voronoi cell size (heights), level (sketch units: trunks ~1.3) and line half-width (texels). */
+const LACE_CELL = 0.07;
+const LACE_LEVEL = 0.2;
+const LACE_SIGMA = 0.6;
+
+// ---- the dish ---------------------------------------------------------------------------------
+
+/** The petri dish's radius as a share of the frame's half-diagonal: its glass wall cuts the corners. */
+export const PHYSARUM_DISH = 0.9;
+
+/** The dish's radius in screen heights for a frame aspect (its centre is the frame's). */
+const dishRadius = (aspect: number): number => (PHYSARUM_DISH * Math.hypot(aspect, 1)) / 2;
 
 // ---- food -------------------------------------------------------------------------------------
 
 /** Flake and crumb radii in screen heights; the heart (where the mould began) is bigger. */
-const FLAKE_RADIUS = 0.021;
-const CRUMB_RADIUS = 0.011;
-const HEART_SCALE = 1.3;
+const FLAKE_RADIUS = 0.014;
+const CRUMB_RADIUS = 0.009;
+const HEART_SCALE = 1.35;
 /** Seconds a flake takes to land, to be eaten, and to give way to the M (or come back after). */
 const FADE_IN = 3;
 const EAT_SECONDS = 14;
 const MARK_FADE = 6;
-/** Flakes keep this far from the frame's edges (screen heights). */
-const EDGE_GAP = 0.08;
+/** Flakes keep this far from the frame's edges and the dish's wall (screen heights). */
+const EDGE_GAP = 0.06;
 const DROP_GAP = 0.03;
 /** Random layout: flakes per unit of aspect, within these bounds. */
-const RANDOM_PER_ASPECT = 6.5;
-const RANDOM_MIN = 6;
-const RANDOM_MAX = 16;
+const RANDOM_PER_ASPECT = 14;
+const RANDOM_MIN = 12;
+const RANDOM_MAX = 26;
 /** Candidates tried for a free spot (the one farthest from every flake wins). */
 const SPOT_CANDIDATES = 24;
-/** Grid layout: honeycomb spacing (heights), most sites, share left empty at a time. */
-const GRID_SPACING = 0.27;
+/** Grid layout: about this many honeycomb sites over the frame (at most GRID_MAX), share left empty at a time. */
+const GRID_COUNT = 26;
 const GRID_MAX = 26;
 const GRID_VACANT = 0.22;
 /** Cities left without food at a time, the frame margin and the closest two may sit (heights). */
@@ -342,6 +406,11 @@ class Grid {
     return this.frameHeight;
   }
 
+  /** The dish's radius in trail texels; its centre is the frame's, (trailX(0.5), trailY(0.5)). */
+  get dish(): number {
+    return dishRadius(this.frameWidth / this.frameHeight) * this.frameHeight;
+  }
+
   /** Trail texel coordinates of a point in screen uv. */
   trailX(u: number): number {
     return PHYSARUM_MARGIN + u * this.frameWidth;
@@ -498,20 +567,25 @@ function project(map: CityMap, lon: number, lat: number): Point {
 /** Light cover 0..1 at a point in screen uv. */
 type SeaSampler = (u: number, v: number) => number;
 
-/** Honeycomb sites (screen uv), nearest the centre first: the heart is the first. */
+/**
+ * Honeycomb sites (screen uv) spaced so about GRID_COUNT cover the frame, those inside the dish,
+ * nearest the centre first: the heart is the first.
+ */
 function hexSites(aspect: number): { sites: Point[]; heart: number } {
-  const rowHeight = (GRID_SPACING * Math.sqrt(3)) / 2;
   const halfWidth = aspect / 2 - EDGE_GAP;
   const halfHeight = 0.5 - EDGE_GAP;
+  const spacing = Math.sqrt((8 * halfWidth * halfHeight) / (Math.sqrt(3) * GRID_COUNT));
+  const rowHeight = (spacing * Math.sqrt(3)) / 2;
+  const inside = dishRadius(aspect) - EDGE_GAP;
   const rows = Math.max(1, Math.floor((2 * halfHeight) / rowHeight) + 1);
   const frame: Point[] = [];
   for (let j = 0; j < rows; j++) {
     const y = (j - (rows - 1) / 2) * rowHeight;
-    const shift = (j % 2 === 0 ? -0.25 : 0.25) * GRID_SPACING;
-    const reach = Math.floor((halfWidth + Math.abs(shift)) / GRID_SPACING) + 1;
+    const shift = (j % 2 === 0 ? -0.25 : 0.25) * spacing;
+    const reach = Math.floor((halfWidth + Math.abs(shift)) / spacing) + 1;
     for (let i = -reach; i <= reach; i++) {
-      const x = shift + i * GRID_SPACING;
-      if (Math.abs(x) <= halfWidth) frame.push({ x, y });
+      const x = shift + i * spacing;
+      if (Math.abs(x) <= halfWidth && Math.hypot(x, y) <= inside) frame.push({ x, y });
     }
   }
   frame.sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y));
@@ -519,13 +593,15 @@ function hexSites(aspect: number): { sites: Point[]; heart: number } {
   return { sites, heart: 0 };
 }
 
-/** The cities in view and on land (screen uv); Tokyo, the heart, first. */
+/** The cities in view, inside the dish and on land (screen uv); Tokyo, the heart, first. */
 function citySites(map: CityMap | undefined, aspect: number, sea: SeaSampler): { sites: Point[]; heart: number } {
   const sites: Point[] = [];
   if (map === undefined) return { sites, heart: 0 };
+  const inside = dishRadius(aspect) - EDGE_GAP;
   for (const [, lat, lon] of CITIES) {
     const p = project(map, lon, lat);
     if (p.x < CITY_GAP / aspect || p.x > 1 - CITY_GAP / aspect || p.y < CITY_GAP || p.y > 1 - CITY_GAP) continue;
+    if (Math.hypot((p.x - 0.5) * aspect, p.y - 0.5) > inside) continue;
     if (sea(p.x, p.y) > 0.2) continue;
     if (sites.some((s) => Math.hypot((s.x - p.x) * aspect, s.y - p.y) < CITY_MIN_GAP)) continue;
     sites.push(p);
@@ -627,6 +703,8 @@ class FoodBook {
   #nextFeed = -1;
   #layout: Layout = "random";
   #aspect = 16 / 9;
+  /** The dish's radius, screen heights. */
+  #dish = dishRadius(16 / 9);
   #sea: SeaSampler = () => 0;
   #sites: Point[] = [];
   #vacant: number[] = [];
@@ -663,6 +741,7 @@ class FoodBook {
     this.#nextFeed = -1;
     this.#layout = layout;
     this.#aspect = aspect;
+    this.#dish = dishRadius(aspect);
     this.map = map;
     this.#sea = sea;
     this.#sites = [];
@@ -752,7 +831,7 @@ class FoodBook {
   drop(x: number, y: number): void {
     const u = clamp(x, DROP_GAP / this.#aspect, 1 - DROP_GAP / this.#aspect);
     const v = clamp(y, DROP_GAP, 1 - DROP_GAP);
-    if (this.#sea(u, v) > 0.3) return;
+    if (this.#sea(u, v) > 0.3 || this.#beyondDish(u, v, DROP_GAP)) return;
     this.#plant(this.#flake(u, v, -1, 1), false);
     this.#trim();
   }
@@ -769,6 +848,7 @@ class FoodBook {
       const x = centre.x + (Math.cos(a) * r) / aspect;
       const y = centre.y + Math.sin(a) * r;
       if (x < EDGE_GAP / aspect || x > 1 - EDGE_GAP / aspect || y < EDGE_GAP || y > 1 - EDGE_GAP) continue;
+      if (this.#beyondDish(x, y, EDGE_GAP)) continue;
       if (this.#sea(x, y) > 0.05) continue;
       if (placed.some((p) => Math.hypot((p.x - x) * aspect, p.y - y) < CONSTELLATION_GAP)) continue;
       placed.push({ x, y });
@@ -957,7 +1037,12 @@ class FoodBook {
     }
   }
 
-  /** The open spot (screen uv, off the light) farthest from every flake, of a few candidates. */
+  /** Whether a point (screen uv) lies within `margin` (heights) of the dish's wall, or past it. */
+  #beyondDish(x: number, y: number, margin: number): boolean {
+    return Math.hypot((x - 0.5) * this.#aspect, y - 0.5) > this.#dish - margin;
+  }
+
+  /** The open spot (screen uv, in the dish, off the light) farthest from every flake, of a few candidates. */
   #freeSpot(extra: readonly Point[]): Point {
     const aspect = this.#aspect;
     let best: Point = { x: 0.5, y: 0.5 };
@@ -965,7 +1050,7 @@ class FoodBook {
     for (let k = 0; k < SPOT_CANDIDATES; k++) {
       const x = 0.5 + (this.#rand() - 0.5) * (1 - (2 * EDGE_GAP) / aspect);
       const y = 0.5 + (this.#rand() - 0.5) * (1 - 2 * EDGE_GAP);
-      if (this.#sea(x, y) > 0.05) continue;
+      if (this.#sea(x, y) > 0.05 || this.#beyondDish(x, y, EDGE_GAP)) continue;
       let gap = Infinity;
       for (const p of this.nodes) gap = Math.min(gap, Math.hypot((p.x - x) * aspect, p.y - y));
       for (const p of this.#pending) gap = Math.min(gap, Math.hypot((p.x - x) * aspect, p.y - y));
@@ -978,8 +1063,11 @@ class FoodBook {
     return best;
   }
 
-  #layMark(height: number, now: boolean): void {
+  /** Lay the M `size` tall, or smaller where the frame or the dish is too narrow for it. */
+  #layMark(size: number, now: boolean): void {
     const aspect = this.#aspect;
+    // The M's corners lie 0.47 heights out across, 0.69 from its centre (per unit of height).
+    const height = Math.min(size, (aspect / 2 - EDGE_GAP) / 0.47, (this.#dish - EDGE_GAP) / Math.hypot(0.47, 0.5));
     const lay = (v: Point, kind: FoodKind): FoodNode =>
       this.#plant({
         x: 0.5 + (v.x * height) / aspect, y: 0.5 + v.y * height,
@@ -1018,20 +1106,31 @@ class FoodBook {
 }
 
 // ---- the sketch: a grown network for the first frame --------------------------------------------
+//
+// What the mould looks like once it has spread, drawn on the CPU so the first frame (and a machine
+// without float targets) shows one: a faint reticulated lace over the dish (the edges of a jittered
+// Voronoi tiling, patchy), trunks wandering between neighbouring flakes (their relative-
+// neighbourhood graph, the sparse network a Physarum approximates; the minimum spanning tree's
+// links thickest, every one swelling and narrowing along its length) and a fan of fine tributaries
+// round each flake. The live mould starts from it and grows its own network out of it.
 
-/** A vein of the sketch: a quadratic Bézier between two flakes (trail texels). */
-interface Curve {
-  readonly ax: number;
-  readonly ay: number;
-  readonly cx: number;
-  readonly cy: number;
-  readonly bx: number;
-  readonly by: number;
+/** A vein of the sketch, as points ~0.7 texel apart (trail texels). */
+interface Path {
+  readonly xs: Float64Array;
+  readonly ys: Float64Array;
+  /** Texels along it. */
   readonly length: number;
+  /** The flake it leaves, and the one it reaches (-1: a tributary, petering out in the agar). */
   readonly from: number;
   readonly to: number;
-  /** On the minimum spanning tree: a trunk, drawn thicker. */
-  readonly trunk: boolean;
+  /** Trail level (sketch units) and profile width (texels); a tributary tapers from these to nothing. */
+  readonly level: number;
+  readonly sigma: number;
+}
+
+interface SketchPaths {
+  readonly trunks: readonly Path[];
+  readonly fans: readonly Path[];
 }
 
 /** Relative-neighbourhood graph: i–j unless some k is nearer to both than they are to each other. */
@@ -1085,68 +1184,182 @@ function spanningTree(points: readonly Point[]): Set<number> {
   return tree;
 }
 
-function buildCurves(points: readonly SketchNode[], rand: () => number): Curve[] {
-  const tree = spanningTree(points);
-  return neighbourhood(points).map(([i, j]) => {
-    const a = item(points, i);
-    const b = item(points, j);
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const span = Math.max(Math.hypot(dx, dy), 1e-6);
-    // Bowed a little to one side, as a real tube never runs dead straight.
-    const bow = (rand() - 0.5) * 0.3 * span;
-    const cx = (a.x + b.x) / 2 - (dy / span) * bow;
-    const cy = (a.y + b.y) / 2 + (dx / span) * bow;
-    let length = 0;
-    let px = a.x;
-    let py = a.y;
-    for (let k = 1; k <= 12; k++) {
-      const t = k / 12;
-      const u = 1 - t;
-      const x = u * u * a.x + 2 * u * t * cx + t * t * b.x;
-      const y = u * u * a.y + 2 * u * t * cy + t * t * b.y;
-      length += Math.hypot(x - px, y - py);
-      px = x;
-      py = y;
-    }
-    return { ax: a.x, ay: a.y, cx, cy, bx: b.x, by: b.y, length, from: i, to: j, trunk: tree.has(i * 64 + j) };
-  });
+/** A line from a to b wandering off to its side: a bow and two slow waves, pinned at both ends. */
+function wander(ax: number, ay: number, bx: number, by: number, amplitude: number, rand: () => number): { xs: Float64Array; ys: Float64Array; length: number } {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const span = Math.max(Math.hypot(dx, dy), 1e-6);
+  const bow = (rand() - 0.5) * 1.2 * amplitude;
+  const a1 = amplitude * (0.5 + rand());
+  const f1 = 1 + rand();
+  const p1 = rand() * TAU;
+  const a2 = amplitude * 0.4 * rand();
+  const f2 = 2.5 + 2 * rand();
+  const p2 = rand() * TAU;
+  const n = Math.max(2, Math.ceil(span / 0.7));
+  const xs = new Float64Array(n + 1);
+  const ys = new Float64Array(n + 1);
+  let length = 0;
+  let px = ax;
+  let py = ay;
+  for (let k = 0; k <= n; k++) {
+    const t = k / n;
+    const side = span * Math.sin(Math.PI * t) * (bow + a1 * Math.sin(TAU * f1 * t + p1) + a2 * Math.sin(TAU * f2 * t + p2));
+    const x = ax + dx * t - (dy / span) * side;
+    const y = ay + dy * t + (dx / span) * side;
+    length += Math.hypot(x - px, y - py);
+    xs[k] = x;
+    ys[k] = y;
+    px = x;
+    py = y;
+  }
+  return { xs, ys, length };
 }
 
-/** The sketch as trail, in vein levels: trunks and branches with soft profiles, pools at the flakes. */
-function stampTrail(curves: readonly Curve[], points: readonly SketchNode[], grid: Grid): Float32Array {
-  const { width, height } = grid;
-  const field = new Float32Array(width * height);
-  const splat = (x: number, y: number, level: number, sigma: number): void => {
-    const reach = Math.ceil(3 * sigma);
-    const x0 = Math.max(0, Math.floor(x - reach));
-    const x1 = Math.min(width - 1, Math.ceil(x + reach));
-    const y0 = Math.max(0, Math.floor(y - reach));
-    const y1 = Math.min(height - 1, Math.ceil(y + reach));
-    for (let yy = y0; yy <= y1; yy++) {
-      for (let xx = x0; xx <= x1; xx++) {
-        const dx = xx + 0.5 - x;
-        const dy = yy + 0.5 - y;
-        const v = level * Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
-        const at = yy * width + xx;
-        if (v > (field[at] ?? 0)) field[at] = v;
-      }
+/** The sketch's veins: trunks along the flakes' neighbourhood graph, and tributaries fanning out of each flake. */
+function sketchPaths(points: readonly SketchNode[], grid: Grid, rand: () => number): SketchPaths {
+  const tree = spanningTree(points);
+  const trunks = neighbourhood(points).map(([i, j]): Path => {
+    const a = item(points, i);
+    const b = item(points, j);
+    const main = tree.has(i * 64 + j);
+    return { ...wander(a.x, a.y, b.x, b.y, TRUNK_WANDER, rand), from: i, to: j, level: main ? 1.3 : 0.6, sigma: main ? 1.3 : 0.9 };
+  });
+  const fans: Path[] = [];
+  points.forEach((p, i) => {
+    const count = FAN_MIN + Math.floor(rand() * (FAN_MAX - FAN_MIN + 1));
+    for (let k = 0; k < count; k++) {
+      const a = rand() * TAU;
+      const reach = (FAN_SHORT + (FAN_LONG - FAN_SHORT) * rand()) * grid.perHeight;
+      const x = p.x + Math.cos(a) * p.r;
+      const y = p.y + Math.sin(a) * p.r;
+      fans.push({ ...wander(x, y, x + Math.cos(a) * reach, y + Math.sin(a) * reach, FAN_WANDER, rand), from: i, to: -1, level: 0.35, sigma: 0.8 });
     }
-  };
-  for (const c of curves) {
-    const samples = Math.max(1, Math.ceil(c.length / 0.6));
-    for (let k = 0; k <= samples; k++) {
-      const t = k / samples;
-      const u = 1 - t;
-      splat(u * u * c.ax + 2 * u * t * c.cx + t * t * c.bx, u * u * c.ay + 2 * u * t * c.cy + t * t * c.by, c.trunk ? 1.25 : 0.85, c.trunk ? 1.5 : 1.1);
+  });
+  return { trunks, fans };
+}
+
+/** A soft dot of sketch trail at (x, y) (trail texels), keeping the larger value. */
+function splat(field: Float32Array, grid: Grid, x: number, y: number, level: number, sigma: number): void {
+  const reach = Math.ceil(3 * sigma);
+  const x0 = Math.max(0, Math.floor(x - reach));
+  const x1 = Math.min(grid.width - 1, Math.ceil(x + reach));
+  const y0 = Math.max(0, Math.floor(y - reach));
+  const y1 = Math.min(grid.height - 1, Math.ceil(y + reach));
+  for (let yy = y0; yy <= y1; yy++) {
+    for (let xx = x0; xx <= x1; xx++) {
+      const dx = xx + 0.5 - x;
+      const dy = yy + 0.5 - y;
+      const v = level * Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
+      const at = yy * grid.width + xx;
+      if (v > (field[at] ?? 0)) field[at] = v;
     }
   }
-  for (const p of points) splat(p.x, p.y, 2, Math.max(1, 0.7 * p.r));
+}
+
+/** A vein swelling and narrowing along its length, as no tube is even; a tributary tapers away. */
+function stampPath(field: Float32Array, grid: Grid, path: Path, taper: boolean): void {
+  const count = path.xs.length;
+  const phase = path.from * 1.7 + path.to * 0.9;
+  for (let k = 0; k < count; k++) {
+    const t = k / (count - 1);
+    const swell = 0.75 + 0.5 * (0.5 + 0.5 * Math.sin(t * path.length * 0.08 + phase));
+    const tip = taper ? Math.pow(1 - t, 0.7) : 1;
+    const sigma = path.sigma * (taper ? 0.6 + 0.4 * (1 - t) : 0.7 + 0.3 * swell);
+    splat(field, grid, path.xs[k] ?? 0, path.ys[k] ?? 0, path.level * swell * tip, sigma);
+  }
+}
+
+/** A faint reticulated lace: the edges of a jittered Voronoi tiling LACE_CELL across, patchy. */
+function stampLace(field: Float32Array, grid: Grid, rand: () => number): void {
+  const cell = LACE_CELL * grid.perHeight;
+  const cols = Math.ceil(grid.width / cell) + 2;
+  const rows = Math.ceil(grid.height / cell) + 2;
+  const fx = new Float64Array(cols * rows);
+  const fy = new Float64Array(cols * rows);
+  const patch = new Float64Array(cols * rows);
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const at = j * cols + i;
+      fx[at] = (i - 1 + 0.15 + 0.7 * rand()) * cell;
+      fy[at] = (j - 1 + 0.15 + 0.7 * rand()) * cell;
+      patch[at] = 0.3 + 0.7 * rand();
+    }
+  }
+  for (let y = 0; y < grid.height; y++) {
+    for (let x = 0; x < grid.width; x++) {
+      const px = x + 0.5;
+      const py = y + 0.5;
+      const ci = Math.floor(px / cell) + 1;
+      const cj = Math.floor(py / cell) + 1;
+      let d1 = Infinity;
+      let d2 = Infinity;
+      let i1 = 0;
+      let i2 = 0;
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let di = -1; di <= 1; di++) {
+          const at = (cj + dj) * cols + ci + di;
+          const ex = (fx[at] ?? 0) - px;
+          const ey = (fy[at] ?? 0) - py;
+          const d = ex * ex + ey * ey;
+          if (d < d1) {
+            d2 = d1;
+            i2 = i1;
+            d1 = d;
+            i1 = at;
+          } else if (d < d2) {
+            d2 = d;
+            i2 = at;
+          }
+        }
+      }
+      // Distance to the bisector of the two nearest sites: an edge of the tiling, even in width.
+      const gap = (d2 - d1) / (2 * Math.max(Math.hypot((fx[i2] ?? 0) - (fx[i1] ?? 0), (fy[i2] ?? 0) - (fy[i1] ?? 0)), 1e-6));
+      const v = LACE_LEVEL * 0.5 * ((patch[i1] ?? 0) + (patch[i2] ?? 0)) * Math.exp(-(gap * gap) / (2 * LACE_SIGMA * LACE_SIGMA));
+      const at = y * grid.width + x;
+      if (v > (field[at] ?? 0)) field[at] = v;
+    }
+  }
+}
+
+/** The sketch as trail, in sketch units (lace ≤ 0.2, fans ~0.35, branches ~0.6, trunks ~1.3, the crowd on a flake 1); nothing past the dish's wall. */
+function stampSketch(paths: SketchPaths, points: readonly SketchNode[], grid: Grid, rand: () => number): Float32Array {
+  const field = new Float32Array(grid.width * grid.height);
+  stampLace(field, grid, rand);
+  for (const path of paths.trunks) stampPath(field, grid, path, false);
+  for (const path of paths.fans) stampPath(field, grid, path, true);
+  for (const p of points) splat(field, grid, p.x, p.y, 1, Math.max(1, 0.7 * p.r));
+  const cx = grid.trailX(0.5);
+  const cy = grid.trailY(0.5);
+  const dish = grid.dish;
+  for (let y = 0; y < grid.height; y++) {
+    for (let x = 0; x < grid.width; x++) if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) > dish) field[y * grid.width + x] = 0;
+  }
   return field;
 }
 
+/** The sketch's trunk level (Σs³ / Σs²) and a typical filament's share of it, as the GPU measures them. */
+function sketchLevel(sketch: Float32Array): { level: number; share: number } {
+  let s2 = 0;
+  let s3 = 0;
+  for (const s of sketch) {
+    s2 += s * s;
+    s3 += s * s * s;
+  }
+  if (s2 <= 0) return { level: 1, share: LACE_TONE };
+  const level = s3 / s2;
+  let lit = 0;
+  let sum = 0;
+  for (const s of sketch) {
+    if (s < FILAMENT_FLOOR * level) continue;
+    lit++;
+    sum += s;
+  }
+  return { level, share: lit > 0 ? sum / lit / level : LACE_TONE };
+}
+
 /** Distance along the sketch from the heart (screen heights) at half resolution; PHYSARUM_FAR elsewhere. */
-function stampDistance(curves: readonly Curve[], points: readonly SketchNode[], heart: number, grid: Grid): Float32Array {
+function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart: number, grid: Grid): Float32Array {
   const ew = grid.envWidth;
   const eh = grid.envHeight;
   const field = new Float32Array(ew * eh).fill(PHYSARUM_FAR);
@@ -1155,7 +1368,7 @@ function stampDistance(curves: readonly Curve[], points: readonly SketchNode[], 
   const sy = eh / grid.height;
   const unitX = 1 / (sx * grid.perHeight);
   const unitY = 1 / (sy * grid.perHeight);
-  // Dijkstra over the sketch, heights along the curves.
+  // Dijkstra over the trunks, in heights along them.
   const n = points.length;
   const along = new Float64Array(n).fill(Infinity);
   const done = new Uint8Array(n);
@@ -1165,10 +1378,10 @@ function stampDistance(curves: readonly Curve[], points: readonly SketchNode[], 
     for (let i = 0; i < n; i++) if (done[i] === 0 && Number.isFinite(along[i] ?? Infinity) && (next < 0 || (along[i] ?? 0) < (along[next] ?? 0))) next = i;
     if (next < 0) break;
     done[next] = 1;
-    for (const c of curves) {
-      if (c.from !== next && c.to !== next) continue;
-      const other = c.from === next ? c.to : c.from;
-      const d = (along[next] ?? 0) + c.length / grid.perHeight;
+    for (const path of paths.trunks) {
+      if (path.from !== next && path.to !== next) continue;
+      const other = path.from === next ? path.to : path.from;
+      const d = (along[next] ?? 0) + path.length / grid.perHeight;
       if (d < (along[other] ?? Infinity)) along[other] = d;
     }
   }
@@ -1185,18 +1398,15 @@ function stampDistance(curves: readonly Curve[], points: readonly SketchNode[], 
       }
     }
   };
-  for (const c of curves) {
-    const from = along[c.from] ?? Infinity;
-    const to = along[c.to] ?? Infinity;
+  for (const path of [...paths.trunks, ...paths.fans]) {
+    const from = along[path.from] ?? Infinity;
+    const to = path.to < 0 ? Infinity : (along[path.to] ?? Infinity);
     if (!Number.isFinite(from) && !Number.isFinite(to)) continue;
-    const span = c.length / grid.perHeight;
-    const samples = Math.max(1, Math.ceil((c.length * sx) / 0.5));
-    for (let k = 0; k <= samples; k++) {
-      const t = k / samples;
-      const u = 1 - t;
-      const x = (u * u * c.ax + 2 * u * t * c.cx + t * t * c.bx) * sx;
-      const y = (u * u * c.ay + 2 * u * t * c.cy + t * t * c.by) * sy;
-      stamp(x, y, Math.min(from + t * span, to + (1 - t) * span), 2.5);
+    const span = path.length / grid.perHeight;
+    const count = path.xs.length;
+    for (let k = 0; k < count; k++) {
+      const t = k / (count - 1);
+      stamp((path.xs[k] ?? 0) * sx, (path.ys[k] ?? 0) * sy, Math.min(from + t * span, to + (1 - t) * span), 2.5);
     }
   }
   points.forEach((p, i) => {
@@ -1207,67 +1417,79 @@ function stampDistance(curves: readonly Curve[], points: readonly SketchNode[], 
 }
 
 /**
- * The specks for a sketch: EDGE_SHARE laid along its veins heading either way, the rest at the
- * flakes heading out; ages spread so they do not all starve at once. Also returns the trail level
- * (raw units) they will keep up on the sketched veins, to scale the seeded trail by.
+ * The specks for a sketch: SEED_TRUNKS laid along its trunks heading either way, SEED_FANS out
+ * along its tributaries, SEED_FLAKES at the flakes heading out, the rest anywhere on the dish, any
+ * way; ages spread so they do not all starve at once. Also returns the trail level (raw units) they
+ * will keep up on the trunks, to scale the seeded trail by.
  */
-function seedAgents(shape: { width: number; height: number }, curves: readonly Curve[], points: readonly SketchNode[], grid: Grid, rand: () => number): { data: Float32Array; level: number } {
+function seedAgents(shape: { width: number; height: number }, paths: SketchPaths, points: readonly SketchNode[], grid: Grid, rand: () => number): { data: Float32Array; level: number } {
   const total = shape.width * shape.height;
   const data = new Float32Array(total * 4);
+  const trunks = paths.trunks;
+  const fans = paths.fans;
   let length = 0;
-  const ends = new Float64Array(curves.length);
-  curves.forEach((c, i) => {
-    length += c.length;
+  const ends = new Float64Array(trunks.length);
+  trunks.forEach((path, i) => {
+    length += path.length;
     ends[i] = length;
   });
-  const onCurves = length > 0 ? Math.floor(total * EDGE_SHARE) : 0;
+  const onTrunks = length > 0 ? Math.floor(total * SEED_TRUNKS) : 0;
+  const onFans = onTrunks + (fans.length > 0 ? Math.floor(total * SEED_FANS) : 0);
+  const atFlakes = onFans + (points.length > 0 ? Math.floor(total * SEED_FLAKES) : 0);
+  const cx = grid.trailX(0.5);
+  const cy = grid.trailY(0.5);
+  const dish = grid.dish - 2;
   for (let i = 0; i < total; i++) {
     let x: number;
     let y: number;
     let heading: number;
-    let energy: number;
-    if (i < onCurves) {
-      const pick = rand() * length;
-      let lo = 0;
-      let hi = curves.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if ((ends[mid] ?? 0) < pick) lo = mid + 1;
-        else hi = mid;
+    if (i < onFans) {
+      let path: Path;
+      if (i < onTrunks) {
+        const pick = rand() * length;
+        let lo = 0;
+        let hi = trunks.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if ((ends[mid] ?? 0) < pick) lo = mid + 1;
+          else hi = mid;
+        }
+        path = item(trunks, lo);
+      } else {
+        path = item(fans, Math.min(fans.length - 1, Math.floor(rand() * fans.length)));
       }
-      const c = item(curves, lo);
-      const t = rand();
-      const u = 1 - t;
-      const tx = 2 * u * (c.cx - c.ax) + 2 * t * (c.bx - c.cx);
-      const ty = 2 * u * (c.cy - c.ay) + 2 * t * (c.by - c.cy);
+      const k = Math.min(path.xs.length - 2, Math.floor(rand() * (path.xs.length - 1)));
+      const x0 = path.xs[k] ?? 0;
+      const y0 = path.ys[k] ?? 0;
+      const tx = (path.xs[k + 1] ?? 0) - x0;
+      const ty = (path.ys[k + 1] ?? 0) - y0;
       const tl = Math.max(Math.hypot(tx, ty), 1e-6);
       const side = (rand() - 0.5) * 2.4;
-      x = u * u * c.ax + 2 * u * t * c.cx + t * t * c.bx - (ty / tl) * side;
-      y = u * u * c.ay + 2 * u * t * c.cy + t * t * c.by + (tx / tl) * side;
-      heading = Math.atan2(ty, tx) + (rand() < 0.5 ? Math.PI : 0) + (rand() - 0.5) * 0.3;
-      energy = LIFE * (0.2 + 0.8 * rand());
-    } else if (points.length > 0) {
+      x = x0 - (ty / tl) * side;
+      y = y0 + (tx / tl) * side;
+      heading = Math.atan2(ty, tx) + (path.to >= 0 && rand() < 0.5 ? Math.PI : 0) + (rand() - 0.5) * 0.3;
+    } else if (i < atFlakes) {
       const p = item(points, Math.min(points.length - 1, Math.floor(rand() * points.length)));
       const a = rand() * TAU;
       const r = p.r * (0.3 + 0.6 * rand());
       x = p.x + Math.cos(a) * r;
       y = p.y + Math.sin(a) * r;
       heading = a + (rand() - 0.5) * 1.2;
-      energy = LIFE * (0.3 + 0.7 * rand());
     } else {
-      x = rand() * grid.width;
-      y = rand() * grid.height;
+      do {
+        x = rand() * grid.width;
+        y = rand() * grid.height;
+      } while (Math.hypot(x - cx, y - cy) > dish);
       heading = rand() * TAU;
-      energy = 0;
     }
     const o = i * 4;
     data[o] = clamp(x / grid.width, 0, 1);
     data[o + 1] = clamp(y / grid.height, 0, 1);
     data[o + 2] = ((heading % TAU) + TAU) % TAU;
-    data[o + 3] = energy;
+    data[o + 3] = LIFE * (0.2 + 0.8 * rand());
   }
-  // Specks per texel across a vein about three texels wide, each keeping up AGENT_UNIT × REF / N.
-  const level = length > 0 ? (AGENT_UNIT * REFERENCE_AGENTS * onCurves) / (total * 3 * length) : AGENT_UNIT;
+  // Specks per texel across a trunk about three texels wide, each keeping up AGENT_UNIT × REF / N.
+  const level = length > 0 ? (AGENT_UNIT * REFERENCE_AGENTS * onTrunks) / (total * 3 * length) : AGENT_UNIT;
   return { data, level };
 }
 
@@ -1339,9 +1561,11 @@ uniform int uStep;
 uniform vec4 uFood[${PHYSARUM_MAX_FOOD}];
 uniform int uFoodCount;
 ${HASH}
-float physarumSense(vec2 at, float cap, float scent, float repel) {
+// What a sensor smells: the trail (saturating), the M's strokes, a flake (if the speck is hungry),
+// less salt, light and the dish's wall.
+float physarumSense(vec2 at, float cap, float mark, float food, float repel) {
   vec4 env = texture(uEnv, at);
-  return min(texture(uTrail, at).r, cap) + scent * env.r - repel * (env.g + env.a);
+  return min(texture(uTrail, at).r, cap) + mark * env.r + food * clamp(2.0 * env.b - 1.0, 0.0, 1.0) - repel * (env.g + env.a);
 }
 void main() {
   ivec2 texel = ivec2(gl_FragCoord.xy);
@@ -1365,12 +1589,13 @@ void main() {
   }
   float ref = max(texelFetch(uRef, ivec2(0), 0).r, 1e-4);
   float cap = ${glsl(SENSE_CAP)} * ref;
-  float scent = ${glsl(SCENT_GAIN)} * ref;
+  float mark = ${glsl(MARK_SCENT)} * ref;
+  float food = agent.w < ${glsl(HUNGRY)} * uLife ? ${glsl(FOOD_SENSE)} * ref : 0.0;
   float repel = ${glsl(REPEL)} * ref;
   float heading = agent.z;
-  float front = physarumSense(agent.xy + uReach * vec2(cos(heading), sin(heading)) * unit, cap, scent, repel);
-  float left = physarumSense(agent.xy + uReach * vec2(cos(heading + uAngle), sin(heading + uAngle)) * unit, cap, scent, repel);
-  float right = physarumSense(agent.xy + uReach * vec2(cos(heading - uAngle), sin(heading - uAngle)) * unit, cap, scent, repel);
+  float front = physarumSense(agent.xy + uReach * vec2(cos(heading), sin(heading)) * unit, cap, mark, food, repel);
+  float left = physarumSense(agent.xy + uReach * vec2(cos(heading + uAngle), sin(heading + uAngle)) * unit, cap, mark, food, repel);
+  float right = physarumSense(agent.xy + uReach * vec2(cos(heading - uAngle), sin(heading - uAngle)) * unit, cap, mark, food, repel);
   float coin = physarumRandom(state);
   if (front < left && front < right) heading += coin < 0.5 ? uTurn : -uTurn;
   else if (front <= max(left, right)) heading += left > right ? uTurn : (right > left ? -uTurn : 0.0);
@@ -1400,34 +1625,28 @@ bool particle(int id, out vec2 uv, out vec4 value) {
 }
 `;
 
-/**
- * The trail spreads and evaporates; flakes pour attractant into their pools (feeding above 0.5);
- * salt and light kill it.
- */
+/** The trail spreads and evaporates; salt, light and the dish's wall kill it. */
 const DIFFUSE = `
 uniform sampler2D uTrail;
 uniform sampler2D uEnv;
-uniform sampler2D uRef;
 uniform float uKeep;
-uniform float uFeed;
 void main() {
   float sum = 0.0;
   for (int y = -1; y <= 1; y++) {
     for (int x = -1; x <= 1; x++) sum += texture(uTrail, vUv + vec2(float(x), float(y)) * uTexel).r;
   }
   vec4 env = texture(uEnv, vUv);
-  float ref = max(texelFetch(uRef, ivec2(0), 0).r, 1e-4);
-  float trail = uKeep * sum / 9.0 + uFeed * ref * clamp(2.0 * env.b - 1.0, 0.0, 1.0);
+  float trail = uKeep * sum / 9.0;
   trail *= 1.0 - clamp(1.6 * (env.g + env.a), 0.0, 1.0);
   fragColor = vec4(trail, 0.0, 0.0, 1.0);
 }
 `;
 
 /**
- * The agar's state at half resolution: flakes' scent, the M's scent, salt, light, and feeding: 1 in
- * a flake's pool, 0.5 at its rim (agents feed and attractant is poured above 0.5), then a halo
- * fading out to 2.6 radii that the vein level is never measured in. The attractant is poured in
- * proportion to the vein level, so measuring where it spreads would feed back and run away.
+ * The agar's state at half resolution: the M's scent along its strokes (0..1), salt, light (the lit
+ * sea, and everything past the dish's glass wall), and feeding: 1 in a flake's pool, 0.5 at its rim
+ * (specks feed, and hungry ones smell food, above 0.5), then a halo fading out to 2.6 radii that
+ * the trunk level is never measured in, so the plasmodium crowding onto the flakes never sets it.
  */
 const ENV = `
 uniform sampler2D uSalt;
@@ -1435,9 +1654,9 @@ uniform sampler2D uSea;
 uniform vec2 uGrid;
 uniform vec4 uFood[${PHYSARUM_MAX_FOOD}];
 uniform int uFoodCount;
-uniform float uReach;
 uniform vec4 uMark;
 uniform float uLight;
+uniform vec3 uDish;   // centre (domain uv), radius (trail texels)
 ${MARK_GLSL}
 void main() {
   vec2 p = vUv * uGrid;
@@ -1446,19 +1665,18 @@ void main() {
   for (int i = 0; i < ${PHYSARUM_MAX_FOOD}; i++) {
     if (i >= uFoodCount) break;
     vec4 food = uFood[i];
-    vec2 d = p - food.xy * uGrid;
-    float d2 = dot(d, d);
-    scent += food.w * exp(-d2 / (uReach * uReach));
-    float dist = sqrt(d2);
+    float dist = length(p - food.xy * uGrid);
     float pool = 1.0 - smoothstep(0.8 * food.z, 1.2 * food.z, dist);
     float halo = 1.0 - smoothstep(1.2 * food.z, 2.6 * food.z, dist);
     feed = max(feed, food.w * 0.5 * (pool + halo));
   }
   if (uMark.w > 0.0 && uMark.z > 0.0) {
     float m = physarumMarkDistance((p - uMark.xy * uGrid) / uMark.z) * uMark.z;
-    scent += uMark.w * ${glsl(MARK_SCENT)} * exp(-m * m / ${glsl(MARK_WIDTH * MARK_WIDTH)});
+    scent = uMark.w * exp(-m * m / ${glsl(MARK_WIDTH * MARK_WIDTH)});
   }
-  fragColor = vec4(scent, texture(uSalt, vUv).r, feed, texture(uSea, vUv).r * uLight);
+  // The dish's glass wall is light to the mould: it blocks it and nothing grows past it.
+  float wall = smoothstep(uDish.z - 1.5, uDish.z + 0.5, length(p - uDish.xy * uGrid));
+  fragColor = vec4(scent, texture(uSalt, vUv).r, feed, max(texture(uSea, vUv).r * uLight, wall));
 }
 `;
 
@@ -1497,7 +1715,7 @@ uniform float uStride;
 const vec2 PHYSARUM_RING[8] = vec2[8](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0),
   vec2(1.0, 1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, -1.0));
 float physarumCost(vec2 at) {
-  return 1.0 + ${glsl(COST_OFF)} * (1.0 - smoothstep(0.15, 0.55, texture(uView, at).r));
+  return 1.0 + ${glsl(COST_OFF)} * (1.0 - smoothstep(0.35, 0.6, texture(uView, at).r));
 }
 void main() {
   vec2 toHeart = (vUv - uHeart.xy) * uSize;
@@ -1517,7 +1735,12 @@ void main() {
 }
 `;
 
-/** What the shader sees: the trail in vein levels, smoothed in time, and its slow memory. */
+/**
+ * What the shader sees: the trail in tone, smoothed in time, and its slow memory. Tone is the trail
+ * over its trunk level raised to the power that puts a typical filament (the share of the trunk
+ * level uRef.g) at LACE_TONE: whatever the mould's own contrast, trunks read ~1 and the lace a dim,
+ * steady ~0.3, never lost in the dark nor shouting as loud as the trunks.
+ */
 const VIEW = `
 uniform sampler2D uPrev;
 uniform sampler2D uTrail;
@@ -1528,21 +1751,28 @@ void main() {
   vec2 h = 0.5 * uTexel;
   float trail = 0.25 * (texture(uTrail, vUv + h).r + texture(uTrail, vUv - h).r
     + texture(uTrail, vUv + vec2(h.x, -h.y)).r + texture(uTrail, vUv + vec2(-h.x, h.y)).r);
-  trail /= max(texelFetch(uRef, ivec2(0), 0).r, 1e-4);
+  vec2 ref = texelFetch(uRef, ivec2(0), 0).rg;
+  float gamma = clamp(log(${glsl(LACE_TONE)}) / log(clamp(ref.y, ${glsl(SHARE_MIN)}, ${glsl(SHARE_MAX)})), ${glsl(GAMMA_MIN)}, ${glsl(GAMMA_MAX)});
+  float tone = pow(max(trail / max(ref.x, 1e-4), 1e-6), gamma);
   vec2 prev = texelFetch(uPrev, ivec2(gl_FragCoord.xy), 0).rg;
-  float now = mix(prev.r, trail, uBlend);
+  float now = mix(prev.r, tone, uBlend);
   fragColor = vec4(now, mix(prev.g, now, uRemember), 0.0, 1.0);
 }
 `;
 
-/** Block sums of the trail away from the flakes and their halos: (sum, sum of squares, samples). */
+/**
+ * Block moments of the trail away from the flakes and their halos: (Σt², Σt³) for the trunk level,
+ * and the sum and count of texels lit above FILAMENT_FLOOR of it, for a typical filament.
+ */
 const SUMS = `
 uniform sampler2D uTrail;
 uniform sampler2D uEnv;
+uniform sampler2D uRef;
 void main() {
+  float haze = ${glsl(FILAMENT_FLOOR)} * texelFetch(uRef, ivec2(0), 0).r;
   vec2 grid = vec2(textureSize(uTrail, 0));
   vec2 base = floor(gl_FragCoord.xy) * 16.0;
-  vec3 sum = vec3(0.0);
+  vec4 sum = vec4(0.0);
   for (int j = 0; j < 8; j++) {
     for (int i = 0; i < 8; i++) {
       // Each tap sits on a texel corner, so the linear filter averages a 2 × 2 block.
@@ -1550,31 +1780,39 @@ void main() {
       if (at.x > grid.x || at.y > grid.y) continue;
       vec2 uv = at / grid;
       float t = texture(uTrail, uv).r * (1.0 - smoothstep(0.01, 0.1, texture(uEnv, uv).b));
-      sum += vec3(t, t * t, 1.0);
+      float lit = step(haze, t);
+      sum += vec4(t * t, t * t * t, t * lit, lit);
     }
   }
-  fragColor = vec4(sum, 1.0);
+  fragColor = sum;
 }
 `;
 
-/** The vein level: the mass-weighted mean of the trail (Σt² / Σt), followed smoothly. */
+/**
+ * The trunk level (the trail's mean weighted by its square, Σt³ / Σt²) and a typical filament's
+ * share of it (the mean of the lit texels, over the trunk level), followed smoothly.
+ */
 const LEVEL = `
 uniform sampler2D uSums;
 uniform sampler2D uPrev;
 uniform float uBlend;
 void main() {
   ivec2 size = textureSize(uSums, 0);
-  vec3 total = vec3(0.0);
+  vec4 total = vec4(0.0);
   for (int j = 0; j < 64; j++) {
     if (j >= size.y) break;
     for (int i = 0; i < 64; i++) {
       if (i >= size.x) break;
-      total += texelFetch(uSums, ivec2(i, j), 0).rgb;
+      total += texelFetch(uSums, ivec2(i, j), 0);
     }
   }
-  float prev = texelFetch(uPrev, ivec2(0), 0).r;
-  float level = total.x > 1e-6 ? total.y / total.x : prev;
-  fragColor = vec4(max(mix(prev, level, uBlend), 1e-5), 0.0, 0.0, 1.0);
+  vec2 prev = texelFetch(uPrev, ivec2(0), 0).rg;
+  vec2 now = prev;
+  if (total.x > 1e-9 && total.w > 0.5) {
+    float trunk = total.y / total.x;
+    now = vec2(trunk, (total.z / total.w) / trunk);
+  }
+  fragColor = vec4(max(mix(prev, now, uBlend), vec2(1e-5)), 0.0, 1.0);
 }
 `;
 
@@ -1594,6 +1832,7 @@ class PhysarumSim implements SceneSim {
   readonly #gridUniform = new Float32Array(2);
   readonly #stepHeight = new Float32Array(2);
   readonly #segment = new Float32Array(4);
+  readonly #dishUniform = new Float32Array(3);
 
   readonly #move: Pass;
   readonly #deposit: Scatter;
@@ -1638,6 +1877,8 @@ class PhysarumSim implements SceneSim {
   #stepCount = 0;
   #stride = 1;
   #memoryDebt = 0;
+  /** Steps since the last reset: the view crosses over from the sketch to the mould over SETTLE_STEPS. */
+  #grown = 0;
 
   constructor(gpu: GpuCompute, knobs: PhysarumKnobs) {
     this.#gpu = gpu;
@@ -1658,7 +1899,7 @@ class PhysarumSim implements SceneSim {
     this.#dist = gpu.pingPong({ ...half, format: "r32f", filter: "nearest" });
     this.#sea = gpu.target({ ...half, format: "r8" });
     this.#sums = gpu.target({ ...sumSize(grid), format: "rgba32f", filter: "nearest" });
-    this.#level = gpu.pingPong({ width: 1, height: 1, format: "r32f", filter: "nearest" });
+    this.#level = gpu.pingPong({ width: 1, height: 1, format: "rg32f", filter: "nearest" });
     this.#seaCover = new Float32Array(half.width * half.height);
     this.#foodTexture = new DataTexture(gl, { width: PHYSARUM_MAX_FOOD, height: 3, format: "rgba16f", filter: "nearest" });
 
@@ -1674,12 +1915,12 @@ class PhysarumSim implements SceneSim {
 
     this.#move.bind({ uAgents: this.#agents, uTrail: this.#trail, uEnv: this.#env, uRef: this.#level });
     this.#deposit.bind({ uAgents: this.#agents });
-    this.#diffuse.bind({ uTrail: this.#trail, uEnv: this.#env, uRef: this.#level });
+    this.#diffuse.bind({ uTrail: this.#trail, uEnv: this.#env });
     this.#envPass.bind({ uSalt: this.#salt, uSea: this.#sea });
     this.#saltPass.bind({ uSalt: this.#salt });
     this.#distPass.bind({ uDist: this.#dist, uView: this.#view });
     this.#viewPass.bind({ uPrev: this.#view, uTrail: this.#trail, uRef: this.#level });
-    this.#sumPass.bind({ uTrail: this.#trail, uEnv: this.#env });
+    this.#sumPass.bind({ uTrail: this.#trail, uEnv: this.#env, uRef: this.#level });
     this.#levelPass.bind({ uSums: this.#sums, uPrev: this.#level });
     this.#levelPass.set({ uBlend: 1 });
   }
@@ -1727,6 +1968,7 @@ class PhysarumSim implements SceneSim {
     const steps = Math.min(Math.floor(this.#stepDebt), MAX_STEPS);
     this.#stepDebt = Math.min(this.#stepDebt - steps, 1);
     for (let i = 0; i < steps; i++) this.#step();
+    this.#grown += steps;
     if (dt > 0) {
       this.#measure(1 - Math.exp(-dt / REF_SECONDS));
       this.#memoryDebt += simDt;
@@ -1735,7 +1977,10 @@ class PhysarumSim implements SceneSim {
         remember = 1 - Math.exp(-this.#memoryDebt / MEMORY_SECONDS);
         this.#memoryDebt = 0;
       }
-      this.#show(1 - Math.exp(-dt / VIEW_SECONDS), remember);
+      // Smoothed heavily while the view is still crossing over from the sketch, then lightly.
+      const settled = Math.min(1, this.#grown / SETTLE_STEPS);
+      const smoothing = SETTLE_SECONDS + (VIEW_SECONDS - SETTLE_SECONDS) * settled;
+      this.#show(1 - Math.exp(-dt / smoothing), remember);
       this.#trace(DIST_PASSES);
     }
 
@@ -1765,26 +2010,29 @@ class PhysarumSim implements SceneSim {
 
     const { points, heart } = this.#food.sketchNodes(grid);
     const rand = mulberry32((Math.imul(settings.seed + 7, 0x85ebca6b) ^ 0x6a09e667) >>> 0);
-    const curves = buildCurves(points, rand);
-    const agents = seedAgents(this.#agents, curves, points, grid, rand);
+    const paths = sketchPaths(points, grid, rand);
+    const sketch = stampSketch(paths, points, grid, rand);
+    const agents = seedAgents(this.#agents, paths, points, grid, rand);
     this.#agents.seed(agents.data);
-    const sketch = stampTrail(curves, points, grid);
+    // The trail, the view and the measured levels agree: trail / trunk level = sketch / its level.
+    const measured = sketchLevel(sketch);
     const raw = new Float32Array(sketch.length);
     const view = new Float32Array(sketch.length * 2);
     for (let i = 0; i < sketch.length; i++) {
       const v = sketch[i] ?? 0;
       raw[i] = v * agents.level;
-      view[2 * i] = v;
-      view[2 * i + 1] = v;
+      view[2 * i] = tone(v / measured.level, measured.share);
+      view[2 * i + 1] = view[2 * i] ?? 0;
     }
     this.#trail.seed(raw);
     this.#view.seed(view);
-    this.#dist.seed(stampDistance(curves, points, heart, grid));
-    this.#level.seed(Float32Array.of(agents.level));
+    this.#dist.seed(stampDistance(paths, points, heart, grid));
+    this.#level.seed(Float32Array.of(agents.level * measured.level, measured.share));
     this.#salt.clear(0);
     this.#saltLeft = 0;
     this.#stepDebt = 0;
     this.#memoryDebt = 0;
+    this.#grown = 0;
 
     this.#syncUniforms(settings);
     this.#envPass.run(this.#env);
@@ -1793,8 +2041,10 @@ class PhysarumSim implements SceneSim {
   }
 
   /**
-   * As many real steps as the budget allows (GPU-synced), so the sketch is the mould's own. The
-   * first chunk is short: a software rasterizer may only manage a handful.
+   * As many real steps as the budget allows (GPU-synced), the view then crossed over from the sketch
+   * by as much as they grew (all the way after SETTLE_STEPS): a fast GPU opens on the mould's own
+   * network, a slow one on the sketch, which its mould then grows out of. The first chunk is short:
+   * a software rasterizer may only manage a handful.
    */
   #prewarm(): void {
     const gl = this.#gpu.gl;
@@ -1803,13 +2053,14 @@ class PhysarumSim implements SceneSim {
       const chunk = done === 0 ? 2 : PREWARM_CHUNK;
       for (let i = 0; i < chunk; i++) this.#step();
       done += chunk;
+      this.#grown = done;
       this.#measure(0.3);
-      this.#show(1, 0);
       this.#trace(1);
       gl.finish();
       if (performance.now() - start > PREWARM_MS) break;
     }
-    this.#show(1, 1);
+    const settled = Math.min(1, this.#grown / SETTLE_STEPS);
+    this.#show(settled, settled);
   }
 
   #resize(grid: Grid, keep: boolean): void {
@@ -1850,12 +2101,12 @@ class PhysarumSim implements SceneSim {
     this.#deposit.bind({ uAgents: this.#agents });
   }
 
-  /** A new population, laid along the sketch of the flakes on the dish now; the trail stays. */
+  /** A new population, spread over a sketch of the flakes on the dish now; the trail stays. */
   #reseedAgents(count: number): void {
     this.#replaceAgents(count);
     const { points } = this.#food.sketchNodes(this.#grid);
     const rand = mulberry32((Math.imul(count, 0x9e3779b1) ^ this.#stepCount) >>> 0);
-    this.#agents.seed(seedAgents(this.#agents, buildCurves(points, rand), points, this.#grid, rand).data);
+    this.#agents.seed(seedAgents(this.#agents, sketchPaths(points, this.#grid, rand), points, this.#grid, rand).data);
   }
 
   /** On and off at once; a new size only once the knob has rested, so a slider drag lays one M. */
@@ -1952,24 +2203,27 @@ class PhysarumSim implements SceneSim {
     }
     this.#stepHeight[0] = grid.width / grid.envWidth / grid.perHeight;
     this.#stepHeight[1] = grid.height / grid.envHeight / grid.perHeight;
+    this.#dishUniform[0] = grid.domainX(0.5);
+    this.#dishUniform[1] = grid.domainY(0.5);
+    this.#dishUniform[2] = grid.dish;
     this.#move.set({
       uGrid: this.#gridUniform,
       uReach: settings.reach,
       uAngle: settings.angle,
-      uTurn: settings.angle * TURN_SHARE,
+      uTurn: Math.max(settings.angle, (TURN_MIN * Math.PI) / 180),
       uLife: LIFE,
       uFood: this.#foodUniform,
       uFoodCount: count,
     });
     this.#deposit.set({ uDeposit: (settings.loss * AGENT_UNIT * REFERENCE_AGENTS) / this.#agentCount });
-    this.#diffuse.set({ uKeep: 1 - settings.loss, uFeed: settings.loss * FOOD_LEVEL });
+    this.#diffuse.set({ uKeep: 1 - settings.loss });
     this.#envPass.set({
       uGrid: this.#gridUniform,
       uFood: this.#foodUniform,
       uFoodCount: count,
-      uReach: SCENT_REACH * grid.perHeight,
       uMark: this.#markUniform,
       uLight: 1 - food.markShown,
+      uDish: this.#dishUniform,
     });
     this.#distPass.set({ uHeart: this.#heartUniform, uStepH: this.#stepHeight });
   }
@@ -1981,7 +2235,7 @@ class PhysarumSim implements SceneSim {
     this.#stepCount = (this.#stepCount + 1) % STEP_WRAP;
   }
 
-  /** Follow the vein level by `blend`. */
+  /** Follow the trunk level by `blend`. */
   #measure(blend: number): void {
     this.#sumPass.run(this.#sums);
     this.#levelPass.run(this.#level, { uniforms: { uBlend: blend } });
@@ -2068,12 +2322,14 @@ class PhysarumStill implements SceneSim {
     const cover = seaCover(map, grid);
     this.#food.reset(settings.layout, settings.seed, aspect, map, (u, v) => seaAt(cover, grid, u, v), settings.mark);
     const { points, heart } = this.#food.sketchNodes(grid);
-    const curves = buildCurves(points, mulberry32((Math.imul(settings.seed + 7, 0x85ebca6b) ^ 0x6a09e667) >>> 0));
-    const sketch = stampTrail(curves, points, grid);
+    const rand = mulberry32((Math.imul(settings.seed + 7, 0x85ebca6b) ^ 0x6a09e667) >>> 0);
+    const paths = sketchPaths(points, grid, rand);
+    const sketch = stampSketch(paths, points, grid, rand);
+    const measured = sketchLevel(sketch);
     const view = new Float32Array(sketch.length * 2);
     for (let i = 0; i < sketch.length; i++) {
-      view[2 * i] = sketch[i] ?? 0;
-      view[2 * i + 1] = sketch[i] ?? 0;
+      view[2 * i] = tone((sketch[i] ?? 0) / measured.level, measured.share);
+      view[2 * i + 1] = view[2 * i] ?? 0;
     }
     // Under an M the lights over the sea are out, as in the live dish.
     const light = settings.mark === undefined ? 255 : 0;
@@ -2082,7 +2338,7 @@ class PhysarumStill implements SceneSim {
     this.#view.resize(grid.width, grid.height);
     this.#view.upload(view);
     this.#dist.resize(grid.envWidth, grid.envHeight);
-    this.#dist.upload(stampDistance(curves, points, heart, grid));
+    this.#dist.upload(stampDistance(paths, points, heart, grid));
     this.#env.resize(grid.envWidth, grid.envHeight);
     this.#env.upload(env);
   }
