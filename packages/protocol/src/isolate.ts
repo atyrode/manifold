@@ -15,7 +15,12 @@ import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { StreamServerMessageSchema } from "./stream.ts";
 import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./jobs.ts";
-import { AgentSchema, HarnessDefinitionSchema, HarnessTargetSchema } from "./agents.ts";
+import {
+  AgentSchema,
+  HarnessDefinitionSchema,
+  HarnessTargetSchema,
+  RunModelSchema,
+} from "./agents.ts";
 import { AgentRunSchema, SendRunInputRequestSchema } from "./agent-runs.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 import { TerminalRuntimeSchema, type TerminalRuntime } from "./jobs.ts";
@@ -749,6 +754,8 @@ export const IsolateHarnessRequestSchema = z.discriminatedUnion("method", [
     run: AgentRunSchema,
     input: SendRunInputRequestSchema.shape.input,
   }),
+  /** Contract 13+, and only to a guest whose `loaded` frame declared `harnessResolvesModel`. */
+  z.strictObject({ method: z.literal("resolveModel"), run: AgentRunSchema, model: RunModelSchema }),
 ]);
 export type IsolateHarnessRequest = z.infer<typeof IsolateHarnessRequestSchema>;
 
@@ -764,6 +771,7 @@ export const IsolateHarnessResultSchemas = {
   sessions: z.array(SessionRefSchema).max(101),
   resolveSession: SessionRefSchema.nullable(),
   send: z.null(),
+  resolveModel: RunModelSchema.nullable(),
 } as const;
 
 /**
@@ -907,6 +915,8 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     }),
     migrations: IsolateMigrationsSchema.optional(),
     harness: HarnessDefinitionSchema.optional(),
+    /** Contract 13+: the declared harness implements `resolveModel`. */
+    harnessResolvesModel: z.literal(true).optional(),
     /** Must equal the artifact's sealed server binding. */
     prepareActions: IsolatePreparationMetadataSchema.optional(),
   }),
@@ -1121,10 +1131,13 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  * 11 -> 12: Live workspace authority, subscription-ordering fences, scoped identity RPC
  *    and sealed read-only action preparation. Older guests retain their released frames
  *    and legacy capability vocabulary.
+ * 12 -> 13: Additive-optional harness `resolveModel`, announced by `loaded.harnessResolvesModel`,
+ *    and an optional `model` on `identity.reportRunActivityV2`. Hosts never send the verb to
+ *    older guests, whose Run model reports refuse as unverifiable.
  */
-export const HARDENED_CONTRACT_VERSION = 12;
+export const HARDENED_CONTRACT_VERSION = 13;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 

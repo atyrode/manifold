@@ -162,6 +162,18 @@ describe("risk-selected CI topology coverage", () => {
     );
   });
 
+  test("requires every preview mode, including the staged crossing rehearsal", () => {
+    const noCrossing = ci.replace(
+      "mode: [plain, integrated, crossing]",
+      "mode: [plain, integrated]",
+    );
+    expect(ciCoverageErrors(registry, noCrossing)).toContain(
+      "preview job must retain plain, integrated and crossing matrix modes",
+    );
+    const unrun = ci.replace("bun scripts/verify-preview-environment.ts --crossing", "true");
+    expect(ciCoverageErrors(registry, unrun)).toContain("preview job must run its crossing mode");
+  });
+
   test("requires every native Nix target and matching hosted architecture", () => {
     const missingTarget = ci.replace(
       "          - system: aarch64-darwin\n            runner: macos-15\n",

@@ -4605,6 +4605,19 @@ export class JobService {
     // A child is the parent's lineage, confinement included (ADR 0051).
     const context = this.restoreJob(parent);
     if (!context) fail("invocation_credential_revoked");
+    const callee = this.jobs.installation(machineId, edge.callee.pluginId);
+    const provider = callee?.machine.operations[event.operationId];
+    if (!callee || !provider) fail("unknown_operation");
+    // A job-scoped service runtime is started by the owner on a workload's first call to the
+    // service and lives no longer than its parent. Its provider's declared timeout is only a
+    // ceiling, so the child gets what the parent has left, and nothing left refuses here (#1064).
+    let limits: JobRequest["limits"] | undefined;
+    if (provider.providesService) {
+      const budget = this.jobSchedules.childTimeoutBudget(parent.request, event.invocationId);
+      if (budget < 1) fail("invocation_timeout_budget_exhausted");
+      const ceiling = jobLimits(provider.limits);
+      limits = { ...ceiling, timeoutMs: Math.min(ceiling.timeoutMs, budget) };
+    }
     const template = this.build(
       context,
       edge.callee.pluginId,
@@ -4615,6 +4628,7 @@ export class JobService {
         operationId: event.operationId,
         input: event.input,
         outputs: event.outputs,
+        ...(limits ? { limits } : {}),
       },
       parent.request,
     );
@@ -4625,8 +4639,7 @@ export class JobService {
     };
     delete unsigned.requestDigest;
     const child = { ...unsigned, requestDigest: digest(unsigned) };
-    const callee = this.jobs.installation(machineId, edge.callee.pluginId)!;
-    const resources = callee.machine.operations[event.operationId]!.locations.map((resource) => ({
+    const resources = provider.locations.map((resource) => ({
       ...resource,
       revision: callee.machine.locations[resource.locationId]!.revision,
     }));
@@ -4929,6 +4942,19 @@ export class JobService {
   readonly admissionPublicKey: string;
   private readonly signingKey: string;
   private readonly channels = new Map<string, LiveJobOwner>();
+  /**
+   * The disable each machine's owner incarnation was last sent, by plugin (#1068). An owner
+   * journals an installation action before acting on it, so the same disable re-sent on every
+   * proof only repeats its work, and every owner release to date repeats it expensively: it
+   * replays each retained job of the plugin as an identity-prefixed event, and a burst past its
+   * seat's queue drops the seat, the transport re-dials, and the next proof re-sends the disable.
+   * A new incarnation or hub process is told again. A disable lost with its channel converges
+   * there, while the hub's disabled row already refuses new work and its cancellations persist.
+   */
+  private readonly ownerDisables = new Map<
+    string,
+    { readonly incarnation: string; readonly plugins: Map<string, string> }
+  >();
   private readonly reads = new Map<
     string,
     {
@@ -6922,31 +6948,40 @@ export class JobService {
     const machine = jobOwnerMachine(live.owner.protocolVersion, install.machine);
     if (!machine) return;
     const enabled = install.enabled && !this.heldPlugins.has(install.pluginId);
-    live.channel.send({
-      type: "job_command",
-      command: JobCommandSchema.parse({
-        type: "install",
-        pluginId: install.pluginId,
-        installationRevision: install.revision,
-        artifactSha256: install.artifact,
-        machine,
-        ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
-        ...(enabled && !install.purgeRequested
-          ? // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
-            (this.artifactDelivery(
-              install.pluginId,
-              install.machine,
-              install.artifact,
-              live.owner.platforms,
-            ) ?? {})
-          : {}),
-        ...(install.purgeRequested
-          ? { action: "purge" as const }
-          : enabled
-            ? {}
-            : { action: "disable" as const }),
-      }),
+    const command = JobCommandSchema.parse({
+      type: "install",
+      pluginId: install.pluginId,
+      installationRevision: install.revision,
+      artifactSha256: install.artifact,
+      machine,
+      ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
+      ...(enabled && !install.purgeRequested
+        ? // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
+          (this.artifactDelivery(
+            install.pluginId,
+            install.machine,
+            install.artifact,
+            live.owner.platforms,
+          ) ?? {})
+        : {}),
+      ...(install.purgeRequested
+        ? { action: "purge" as const }
+        : enabled
+          ? {}
+          : { action: "disable" as const }),
     });
+    const { ownerId, publicKey, generation } = live.owner;
+    const incarnation = canonicalJobJson([ownerId, publicKey, generation]);
+    let sent = this.ownerDisables.get(install.machineId);
+    if (sent?.incarnation !== incarnation) {
+      sent = { incarnation, plugins: new Map() };
+      this.ownerDisables.set(install.machineId, sent);
+    }
+    const disable = !enabled && !install.purgeRequested ? digest(command) : null;
+    if (disable !== null && sent.plugins.get(install.pluginId) === disable) return;
+    sent.plugins.delete(install.pluginId);
+    if (live.channel.send({ type: "job_command", command }) && disable !== null)
+      sent.plugins.set(install.pluginId, disable);
   }
   event(channel: JobChannel, event: JobEvent): void {
     const live = this.channels.get(channel.machineId);

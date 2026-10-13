@@ -550,8 +550,12 @@ export const ciCoverageErrors = (
           "mode"
         ]
       : undefined;
-    if (!Array.isArray(modes) || !same(modes.map(String), ["plain", "integrated"]))
-      errors.push("preview job must retain plain and integrated matrix modes");
+    if (!Array.isArray(modes) || !same(modes.map(String), ["plain", "integrated", "crossing"]))
+      errors.push("preview job must retain plain, integrated and crossing matrix modes");
+    const previewScript = preview ? collectKey(preview["steps"], "run").map(String).join("\n") : "";
+    for (const mode of ["integrated", "crossing"])
+      if (!previewScript.includes(`bun scripts/verify-preview-environment.ts --${mode}`))
+        errors.push(`preview job must run its ${mode} mode`);
 
     const nix = optionalChildMap(jobs, "nix", "nix job");
     if (nix) {

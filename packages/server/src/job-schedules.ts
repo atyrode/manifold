@@ -353,6 +353,27 @@ export class JobSchedules {
     });
   }
 
+  /**
+   * The timeout a new child of `parent` may still hold. A native owner admits a child only while
+   * the children it has started for that parent hold no more than the parent's own `timeoutMs`
+   * in total; every child it can be asked to start is reserved here first, so this sum never
+   * falls below the owner's. A replayed invocation keeps the timeout its reservation recorded,
+   * so its rebuilt request stays identical.
+   */
+  childTimeoutBudget(parent: JobRequest, invocationId: string): number {
+    let budget = parent.limits.timeoutMs;
+    for (const row of this.store.db
+      .query<{ invocation_id: string; request: string }, [string]>(
+        "SELECT invocation_id,request FROM job_invocation_reservations WHERE parent_job_id=?",
+      )
+      .all(parent.jobId)) {
+      const { timeoutMs } = (JSON.parse(row.request) as JobRequest).limits;
+      if (row.invocation_id === invocationId) return timeoutMs;
+      budget -= timeoutMs;
+    }
+    return budget;
+  }
+
   reserveInvocation(
     spec: JobInvocationSpec,
     callbacks: Pick<JobScheduleCallbacks, "reauthorize" | "enqueue">,

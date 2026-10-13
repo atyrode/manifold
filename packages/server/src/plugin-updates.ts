@@ -150,13 +150,18 @@ function failureMessage(error: unknown): string {
   ).slice(0, 1000);
 }
 
-function covers(caps: readonly AuthoredCap[], cap: AuthoredCap): boolean {
+export function covers(caps: readonly AuthoredCap[], cap: AuthoredCap): boolean {
   return cap === "*" ? caps.includes("*") : hasCap(caps, cap);
 }
 
 /** Consent to a wider ceiling must not restore a previously withheld part of that ceiling. */
-function prospectiveGrant(
-  previous: Installed | undefined,
+export function prospectiveGrant(
+  previous:
+    | {
+        readonly row: { readonly grantedCaps: readonly AuthoredCap[] };
+        readonly bundle: PluginBundle | null;
+      }
+    | undefined,
   declared: readonly AuthoredCap[],
 ): AuthoredCap[] {
   const before = previous?.bundle?.manifest.capabilities ?? [];

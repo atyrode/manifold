@@ -49,6 +49,12 @@ export const LOG_EVENTS = [
   // bundle refused at boot is a `plugin_lifecycle` line: it is why the row cannot serve.
   "plugin_installed",
   "plugin_uninstalled",
+  // A staged crossing (#1068): committed with its hub and its native half completed, refused
+  // with every reason and nothing changed, or a completed crossing's set staged again and only
+  // removed.
+  "plugin_replacement_applied",
+  "plugin_replacement_refused",
+  "plugin_replacement_replayed",
 
   // Server: the unpacked directory (ADR 0025 §4, #257) — files written through the authoring
   // door, a rebuild that could not become a row (a build error, an assembly refusal), and the
@@ -205,6 +211,10 @@ export const LOG_EVENTS = [
   "terminal_host_refused",
   "terminal_host_unreachable",
   "terminal_host_lost",
+
+  // Transport (issue #1050): a native owner proof the hub would drop, because the identity the
+  // owner signed is no longer the one this connection's hello named; the transport re-dials.
+  "job_owner_unproved",
 
   // Server: supervision of the co-located terminal host (the local machine's PTY owner).
   "local_terminal_host_reused",

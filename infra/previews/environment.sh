@@ -441,6 +441,13 @@ replace_environment() {
     fi
     fail "$project deployment could not stop the incumbent"
   fi
+  # The retained caller's plugin transition (deploy-dev.sh `retained_transition`, #1068) runs
+  # while nothing holds the data volume. A refusal restarts the unchanged incumbent.
+  if [[ $lifecycle == retained ]] && ! retained_transition; then
+    "$@" "$final_image" start manifold ||
+      fail "HOLD: $project plugin transition refused and the stopped incumbent did not restart"
+    fail "HOLD: $project plugin transition refused; the incumbent is serving unchanged"
+  fi
   if [[ $lifecycle == disposable ]]; then
     docker run --rm --network none --label "com.docker.compose.project=$project" --user 0:0 --entrypoint /bin/bash \
       --mount "type=volume,src=$volume,dst=/data" "$final_image" \

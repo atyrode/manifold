@@ -1579,7 +1579,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           typeof def.harness.launch !== "function" ||
           typeof def.harness.sessions !== "function" ||
           typeof def.harness.resolveSession !== "function" ||
-          typeof def.harness.send !== "function"
+          typeof def.harness.send !== "function" ||
+          (def.harness.resolveModel !== undefined && typeof def.harness.resolveModel !== "function")
         )
           throw new Error("incomplete harness implementation");
         harnessMetadata = HarnessDefinitionSchema.parse({
@@ -1609,6 +1610,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
       ...(harnessMetadata === undefined ? {} : { harness: harnessMetadata }),
+      ...(harnessMetadata !== undefined &&
+      def.harness?.resolveModel !== undefined &&
+      (frame.hardenedContract ?? 1) >= 13
+        ? { harnessResolvesModel: true as const }
+        : {}),
       ...(preparationMetadata === undefined ? {} : { prepareActions: preparationMetadata }),
     });
   };
@@ -1789,6 +1795,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         case "send":
           await harness.send(ctx, request.run, request.input);
           produced = null;
+          break;
+        case "resolveModel":
+          if (harness.resolveModel === undefined)
+            throw new Error("harness does not resolve models");
+          produced = await harness.resolveModel(ctx, request.run, request.model);
           break;
       }
       const result = IsolateHarnessResultSchemas[request.method].safeParse(produced);
