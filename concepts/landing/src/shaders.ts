@@ -213,7 +213,7 @@ Shade sceneSwell(vec2 uv, float t) {
     float md = length(p - moon);
     float disc = smoothstep(0.075, 0.072, md);
     float craters = fbm((p - moon) * 30.0);
-    o.ink = disc * (0.7 + 0.3 * craters) + exp(-md * 9.0) * 0.18;
+    o.ink = disc * (0.7 + 0.3 * craters) + exp(-md * 12.0) * 0.16;
     o.ink += starfield(floor(p * uRes.y), 0.0035) * (1.0 - disc);
     o.ink += 0.06 * smoothstep(0.25, 0.0, p.y - horizon);
   } else {

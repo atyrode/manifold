@@ -1,16 +1,20 @@
-// Landing/loading/instance-face concept lab. Bun bundles index.html on demand with HMR, so edits
-// in this directory appear live behind whatever proxy fronts the loopback port.
+// Landing/loading/instance-face concept lab, served on loopback for a fronting proxy.
 //
-//   bun concepts/landing/serve.ts [port]     (default 7920, loopback only)
+//   bun concepts/landing/serve.ts [port]          public: rebundles on edit, refresh to see it
+//   bun concepts/landing/serve.ts [port] --hmr    local: adds hot reload
+//
+// Bun's HMR server refuses any Host/Origin other than its own bind address, so hot reload only
+// works when the browser talks to the loopback port directly.
 import index from "./index.html";
 
-const port = Number(process.argv[2] ?? 7920);
+const hmr = process.argv.includes("--hmr");
+const port = Number(process.argv.slice(2).find((arg) => /^\d+$/.test(arg)) ?? 7920);
 const art = new URL("./art/", import.meta.url);
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port,
-  development: { hmr: true, console: true },
+  development: { hmr, console: hmr },
   routes: {
     "/": index,
     "/art/:file": (request) => {
