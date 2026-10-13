@@ -44,7 +44,10 @@
 //                      the water (60 at most), size (1 = LANTERN_HALF by LANTERN_TALL)
 //   texel 2 MAX + r    rock r: lantern light falling on its visible face, and from which side
 //                      (-1 left .. 1 right)
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -233,13 +236,6 @@ type KnobKey = "lanterns" | "current" | "flotilla" | "lanternSeed" | "wind" | "m
 /** The simulation was set up wrong: a knob it reads is missing, or it ran out of lantern slots. */
 export class LanternsSimError extends Error {}
 
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
-
-const smoothstep = (edge0: number, edge1: number, x: number): number => {
-  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-};
-
 /** The lane's distance across the river at x (m): a straight diagonal on the water, bending
  *  upstream (softly, a softplus) to run along the far side. */
 function laneZ(x: number): number {
@@ -273,23 +269,6 @@ export const ROCK_DOWNSTREAM: readonly { readonly x: number; readonly z: number 
   const length = Math.hypot(stream.x, stream.z);
   return { x: stream.x / length, z: stream.z / length };
 });
-
-/** mulberry32: a small seeded generator, so the same seed always gives the same evening. */
-class Random {
-  #state = 0;
-
-  seed(seed: number): void {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-}
 
 class Lantern {
   alive = false;
@@ -331,7 +310,14 @@ class Eddy {
 class LanternRiver implements SceneSim {
   readonly #texture: DataTexture;
   readonly #data = new Float32Array(TEXTURE_WIDTH * 4);
-  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #knobs: KnobReader<KnobKey>;
+  /** The trigger slots of the flotilla and M knobs: their "now" buttons. */
+  readonly #flotillaSlot: number;
+  readonly #markSlot: number;
+  /** The fixed-step clock: STEP seconds of river per step, at most MAX_STEPS owed after a stall. */
+  readonly #stepper = new FixedStep(STEP, MAX_STEPS);
+  /** The textures handed to the renderer every frame. */
+  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #random = new Random();
   readonly #regular: readonly Lantern[] = Array.from({ length: MAX_LANTERNS - 1 }, () => new Lantern());
   readonly #mark = new Lantern();
@@ -352,7 +338,6 @@ class LanternRiver implements SceneSim {
   #seed = Number.NaN;
 
   #clock = 0;
-  #pending = 0;
   #nextSpawn = 0;
   #nextFlotilla = Number.POSITIVE_INFINITY;
   #nextMark = Number.POSITIVE_INFINITY;
@@ -360,10 +345,6 @@ class LanternRiver implements SceneSim {
    *  worked out for. */
   #crossing = 120;
   #crossingKey = Number.NaN;
-
-  #primed = false;
-  #seenFlotilla = 0;
-  #seenMark = 0;
 
   #hand = false;
   #handHeld = false;
@@ -373,35 +354,25 @@ class LanternRiver implements SceneSim {
   #handVZ = 0;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new LanternsSimError(`lanterns: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#knobIndex = {
-      lanterns: index("lanterns"),
-      current: index("current"),
-      flotilla: index("flotilla"),
-      lanternSeed: index("lanternSeed"),
-      wind: index("wind"),
-      mark: index("mark"),
-    };
+    this.#knobs = new KnobReader("lanterns", params, ["lanterns", "current", "flotilla", "lanternSeed", "wind", "mark"]);
+    this.#flotillaSlot = this.#knobs.trigger("flotilla");
+    this.#markSlot = this.#knobs.trigger("mark");
     this.#mark.mark = true;
     this.#texture = new DataTexture(gl, { width: TEXTURE_WIDTH, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#textures = [this.#texture.texture];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const values = frame.values;
-    const index = this.#knobIndex;
-    this.#target = clamp(Math.round(values[index.lanterns] ?? this.#target), 0, MAX_LANTERNS - 1);
-    this.#current = CURRENT_SLOW + (CURRENT_FAST - CURRENT_SLOW) * clamp(values[index.current] ?? 0.3, 0, 1);
-    this.#wind = clamp(values[index.wind] ?? 0, -1, 1);
-    this.#flotilla = clamp(values[index.flotilla] ?? 0, 0, 1);
-    this.#markOn = (values[index.mark] ?? 0) > 0.5;
+    const knobs = this.#knobs;
+    this.#target = clamp(Math.round(knobs.value(frame, "lanterns")), 0, MAX_LANTERNS - 1);
+    this.#current = CURRENT_SLOW + (CURRENT_FAST - CURRENT_SLOW) * clamp(knobs.value(frame, "current"), 0, 1);
+    this.#wind = clamp(knobs.value(frame, "wind"), -1, 1);
+    this.#flotilla = clamp(knobs.value(frame, "flotilla"), 0, 1);
+    this.#markOn = knobs.value(frame, "mark") > 0.5;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
 
     this.#refreshCrossing();
-    const seed = Math.round(values[index.lanternSeed] ?? 0);
+    const seed = Math.round(knobs.value(frame, "lanternSeed"));
     if (seed !== this.#seed) this.#reset(seed);
 
     // Flotillas on their own: a fresh wait whenever the knob comes on, none while it is off.
@@ -411,34 +382,19 @@ class LanternRiver implements SceneSim {
     if (this.#markOn && !this.#markWasOn && !this.#mark.alive) this.#releaseMark();
     this.#markWasOn = this.#markOn;
 
-    this.#watchTriggers(frame.triggers);
+    // A "now" press releases a flotilla or sets the M lantern down again.
+    if (frame.fired[this.#flotillaSlot]) this.#releaseFlotilla();
+    if (frame.fired[this.#markSlot]) this.#releaseMark();
     this.#follow(frame);
 
-    const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
-    this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
-    while (this.#pending >= STEP) {
-      this.#step();
-      this.#pending -= STEP;
-    }
-    this.#upload(this.#pending / STEP);
-    return [this.#texture.texture];
+    const due = this.#stepper.advance(Math.max(0, frame.dt) * Math.max(0, frame.motion));
+    for (let i = 0; i < due; i++) this.#step();
+    this.#upload(this.#stepper.alpha);
+    return this.#textures;
   }
 
   dispose(): void {
     this.#texture.dispose();
-  }
-
-  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
-  #watchTriggers(triggers: readonly number[]): void {
-    const flotilla = triggers[0] ?? -1e4;
-    const mark = triggers[1] ?? -1e4;
-    if (this.#primed) {
-      if (flotilla !== this.#seenFlotilla && flotilla > -1e3) this.#releaseFlotilla();
-      if (mark !== this.#seenMark && mark > -1e3) this.#releaseMark();
-    }
-    this.#primed = true;
-    this.#seenFlotilla = flotilla;
-    this.#seenMark = mark;
   }
 
   /** The pointer: a press on the water sets a lantern down there; holding it pushes the water along. */
@@ -506,7 +462,7 @@ class LanternRiver implements SceneSim {
       eddy.amp = EDDY_SPEED / k;
     }
     this.#clock = 0;
-    this.#pending = 0;
+    this.#stepper.reset();
     this.#nextSpawn = 0;
     this.#nextFlotilla = Number.POSITIVE_INFINITY;
     this.#nextMark = Number.POSITIVE_INFINITY;

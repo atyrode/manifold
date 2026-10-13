@@ -28,8 +28,11 @@
 // Uploads: uSim0 r16f heights (GARDEN.cols × rows); uSim1 rgba16f islands and stones (8 × 4) plus
 // the drying clock; uSim2 rgba16f leaves (4 × GARDEN_LEAF_SLOTS); uSim3 r16f when each spot was
 // last raked, on the drying clock (half resolution).
-import type { ParamDef } from "../../params.ts";
+import { markVertex } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
 import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
+import { clamp, lerp, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -266,24 +269,6 @@ const GUST_CARRY = 0.4;
 
 // ---- small helpers -------------------------------------------------------------------------------
 
-/** Mulberry32: a small, seedable generator, so an arrangement number always gives the same garden. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
-const smoothstep = (e0: number, e1: number, x: number): number => {
-  const t = clamp((x - e0) / (e1 - e0), 0, 1);
-  return t * t * (3 - 2 * t);
-};
 /** A gust's strength `age` seconds after it was called: rises over GUST_RISE, then dies away (the shader's gardenGust). */
 const gustAt = (age: number): number => {
   if (!(age > 0 && age < 12 * GUST_RISE)) return 0;
@@ -294,20 +279,18 @@ const gustAt = (age: number): number => {
 /** The meander of the "waves" passes at X. */
 const waveAt = (x: number): number => WAVE_AMPLITUDE * Math.sin((TAU * x) / WAVE_LENGTH);
 
-// The M as common.ts draws it: five vertices, four strokes, in mark units.
-const MARK_X = [-0.47, -0.47, 0, 0.47, 0.47] as const;
-const MARK_Y = [-0.5, 0.5, -0.08, 0.5, -0.5] as const;
-
 /** Distance from (px, py) to the M of height `size` centred on GARDEN_MARK, and the unit gradient. */
 function markField(px: number, py: number, size: number, out: Float64Array): number {
   let best = Infinity;
   let bx = 0;
   let by = 0;
   for (let k = 0; k < 4; k++) {
-    const ax = GARDEN_MARK.x + (MARK_X[k] ?? 0) * size;
-    const ay = GARDEN_MARK.y + (MARK_Y[k] ?? 0) * size;
-    const ex = GARDEN_MARK.x + (MARK_X[k + 1] ?? 0) * size - ax;
-    const ey = GARDEN_MARK.y + (MARK_Y[k + 1] ?? 0) * size - ay;
+    const a = markVertex(k);
+    const b = markVertex(k + 1);
+    const ax = GARDEN_MARK.x + a[0] * size;
+    const ay = GARDEN_MARK.y + a[1] * size;
+    const ex = GARDEN_MARK.x + b[0] * size - ax;
+    const ey = GARDEN_MARK.y + b[1] * size - ay;
     const l2 = ex * ex + ey * ey;
     const t = l2 > 0 ? clamp(((px - ax) * ex + (py - ay) * ey) / l2, 0, 1) : 0;
     const qx = ax + t * ex;
@@ -731,8 +714,29 @@ interface Settings {
 }
 
 class GardenSim implements SceneSim {
-  readonly #slots: Record<GardenKnob, number>;
-  readonly #defaults: Record<GardenKnob, number>;
+  readonly #knobs: KnobReader<GardenKnob>;
+  /** The trigger slot of the leaves knob: its "now" button shakes a gust loose. */
+  readonly #gustSlot: number;
+  /** The knobs as the sim reads them, rewritten in place each frame so frames allocate nothing. */
+  readonly #current: Settings = {
+    pattern: "waves",
+    season: "autumn",
+    seed: 0,
+    speed: 0,
+    soften: 0,
+    moss: 0,
+    leaves: 0,
+    overhead: false,
+    wind: 0,
+    mark: 0,
+    signature: "",
+  };
+  /** What `#current.signature` was last built from, so the string is built only when one changes. */
+  #signedPattern: GardenPattern | undefined = undefined;
+  #signedSeed = -1;
+  #signedMark = -1;
+  /** The textures handed to the renderer every frame, in slot order. */
+  readonly #textures: readonly (WebGLTexture | undefined)[];
 
   // The gravel, the drying grid and their textures.
   readonly #field = new HeightField(GARDEN.cols, GARDEN.rows, GA);
@@ -774,6 +778,8 @@ class GardenSim implements SceneSim {
   readonly #grad = new Float64Array(2);
   readonly #segA = new Float64Array(2);
   readonly #segB = new Float64Array(2);
+  /** The garden point under the pointer (x, y), written by #groundUnder. */
+  readonly #ground = new Float64Array(2);
   /** Scratch for the plate model's rates. */
   readonly #rates = new Float64Array(3);
 
@@ -829,35 +835,18 @@ class GardenSim implements SceneSim {
   #gustAge = Infinity;
   #gustSign = 1;
   #shower = 0;
-  #primed = false;
-  #seenGust = -1e4;
 
   #aspect = 16 / 9;
   #overhead = false;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const slot = (key: GardenKnob): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new Error(`garden: the scene has no '${key}' knob`);
-      return at;
-    };
-    const fallback = (key: GardenKnob): number => {
-      const def = params[slot(key)];
-      if (def === undefined) return 0;
-      return def.kind === "feature" ? (def.on ? def.value : 0) : def.value;
-    };
-    const slots = {} as Record<GardenKnob, number>;
-    const defaults = {} as Record<GardenKnob, number>;
-    for (const key of KNOBS) {
-      slots[key] = slot(key);
-      defaults[key] = fallback(key);
-    }
-    this.#slots = slots;
-    this.#defaults = defaults;
+    this.#knobs = new KnobReader("garden", params, KNOBS);
+    this.#gustSlot = this.#knobs.trigger("leaves");
     this.#heights = new DataTexture(gl, { width: GARDEN.cols, height: GARDEN.rows, format: "r16f" });
     this.#freshTexture = new DataTexture(gl, { width: GARDEN_FRESH.cols, height: GARDEN_FRESH.rows, format: "r16f" });
     this.#stoneTexture = new DataTexture(gl, { width: STONE_COLUMNS, height: STONE_ROWS, format: "rgba16f", filter: "nearest" });
     this.#leafTexture = new DataTexture(gl, { width: 4, height: GARDEN_LEAF_SLOTS, format: "rgba16f", filter: "nearest" });
+    this.#textures = [this.#heights.texture, this.#stoneTexture.texture, this.#leafTexture.texture, this.#freshTexture.texture];
     // Lay out the default garden now, so the first frame already shows it raked, with leaves.
     const settings = this.#settings(undefined);
     this.#season = settings.season;
@@ -882,7 +871,7 @@ class GardenSim implements SceneSim {
     }
     if (settings.season !== this.#season) this.#reskin(settings.season);
 
-    this.#watchGust(frame.triggers, settings);
+    this.#watchGust(frame.fired, settings);
     const step = dt * frame.motion;
     this.#clock += step;
     if (this.#clock > 2 * FRESH_REBASE) this.#rebaseClock();
@@ -902,7 +891,7 @@ class GardenSim implements SceneSim {
     }
     this.#packStones();
     this.#packLeaves();
-    return [this.#heights.texture, this.#stoneTexture.texture, this.#leafTexture.texture, this.#freshTexture.texture];
+    return this.#textures;
   }
 
   dispose(): void {
@@ -915,24 +904,33 @@ class GardenSim implements SceneSim {
   // ---- knobs ---------------------------------------------------------------------------------------
 
   #settings(frame: SimFrame | undefined): Settings {
-    const value = (key: GardenKnob): number => frame?.values[this.#slots[key]] ?? this.#defaults[key];
-    const pattern = gardenPatterns[Math.round(value("pattern"))] ?? "waves";
-    const seed = Math.max(0, Math.round(value("stones")));
-    const markKnob = value("mark");
+    const s = this.#current;
+    const pattern = gardenPatterns[Math.round(this.#knob(frame, "pattern"))] ?? "waves";
+    const seed = Math.max(0, Math.round(this.#knob(frame, "stones")));
+    const markKnob = this.#knob(frame, "mark");
     const mark = markKnob > 0 ? GARDEN_MARK.small + GARDEN_MARK.grow * markKnob : 0;
-    return {
-      pattern,
-      season: gardenSeasons[Math.round(value("season"))] ?? "autumn",
-      seed,
-      speed: RAKE_SPEED * clamp(value("speed"), 0, 1),
-      soften: SMOOTH_RATE * clamp(value("soften"), 0, 1),
-      moss: clamp(value("moss"), 0, 1),
-      leaves: clamp(value("leaves"), 0, 1),
-      overhead: value("camera") > 0.5,
-      wind: clamp(value("wind"), -1, 1),
-      mark,
-      signature: `${pattern}|${seed}|${mark.toFixed(3)}`,
-    };
+    s.pattern = pattern;
+    s.season = gardenSeasons[Math.round(this.#knob(frame, "season"))] ?? "autumn";
+    s.seed = seed;
+    s.speed = RAKE_SPEED * clamp(this.#knob(frame, "speed"), 0, 1);
+    s.soften = SMOOTH_RATE * clamp(this.#knob(frame, "soften"), 0, 1);
+    s.moss = clamp(this.#knob(frame, "moss"), 0, 1);
+    s.leaves = clamp(this.#knob(frame, "leaves"), 0, 1);
+    s.overhead = this.#knob(frame, "camera") > 0.5;
+    s.wind = clamp(this.#knob(frame, "wind"), -1, 1);
+    s.mark = mark;
+    if (pattern !== this.#signedPattern || seed !== this.#signedSeed || mark !== this.#signedMark) {
+      this.#signedPattern = pattern;
+      this.#signedSeed = seed;
+      this.#signedMark = mark;
+      s.signature = `${pattern}|${seed}|${mark.toFixed(3)}`;
+    }
+    return s;
+  }
+
+  /** A knob as the shader sees it; before the first frame, as it reads at the scene's defaults. */
+  #knob(frame: SimFrame | undefined, key: GardenKnob): number {
+    return frame === undefined ? this.#knobs.initial(key) : this.#knobs.value(frame, key);
   }
 
   // ---- laying out ----------------------------------------------------------------------------------
@@ -1064,11 +1062,11 @@ class GardenSim implements SceneSim {
       const s0 = this.#along;
       const s1 = Math.min(stroke.length, s0 + Math.min(budget, MAX_PIECE));
       if (this.#landing) {
-        this.#levelAlong(stroke, s0, Math.min(s0 + LEAD, stroke.length), LEVEL_HALF);
+        this.#pieces(stroke, s0, Math.min(s0 + LEAD, stroke.length), this.#vertex, false);
         this.#landing = false;
       }
-      this.#levelAlong(stroke, Math.min(s0 + LEAD, stroke.length), Math.min(s1 + LEAD, stroke.length), LEVEL_HALF);
-      this.#rakeAlong(stroke, s0, s1);
+      this.#pieces(stroke, Math.min(s0 + LEAD, stroke.length), Math.min(s1 + LEAD, stroke.length), this.#vertex, false);
+      this.#vertex = this.#pieces(stroke, s0, s1, this.#vertex, true);
       budget -= s1 - s0;
       this.#along = s1;
       if (s1 >= stroke.length) {
@@ -1094,8 +1092,8 @@ class GardenSim implements SceneSim {
     return i;
   }
 
-  /** Visit the polyline pieces of a stroke between distances s0 and s1. */
-  #pieces(stroke: Stroke, s0: number, s1: number, from: number, visit: (ax: number, ay: number, bx: number, by: number) => void): number {
+  /** Visit the polyline pieces of a stroke between distances s0 and s1: cut each with the tines (`rake`), or level it. */
+  #pieces(stroke: Stroke, s0: number, s1: number, from: number, rake: boolean): number {
     if (!(s1 > s0)) return from;
     const a = this.#segA;
     const b = this.#segB;
@@ -1104,7 +1102,8 @@ class GardenSim implements SceneSim {
     while (s < s1) {
       const next = Math.min(s1, stroke.at[i + 1] ?? s1);
       i = this.#pointAt(stroke, next, i, b);
-      visit(a[0] ?? 0, a[1] ?? 0, b[0] ?? 0, b[1] ?? 0);
+      if (rake) this.#rakePiece(a[0] ?? 0, a[1] ?? 0, b[0] ?? 0, b[1] ?? 0);
+      else this.#level(a[0] ?? 0, a[1] ?? 0, b[0] ?? 0, b[1] ?? 0, LEVEL_HALF);
       a[0] = b[0] ?? 0;
       a[1] = b[1] ?? 0;
       if (next <= s) break;
@@ -1114,24 +1113,18 @@ class GardenSim implements SceneSim {
     return i;
   }
 
-  #levelAlong(stroke: Stroke, s0: number, s1: number, half: number): void {
-    this.#pieces(stroke, s0, s1, this.#vertex, (ax, ay, bx, by) => this.#level(ax, ay, bx, by, half));
-  }
-
-  #rakeAlong(stroke: Stroke, s0: number, s1: number): void {
-    const field = this.#field;
-    this.#vertex = this.#pieces(stroke, s0, s1, this.#vertex, (ax, ay, bx, by) => {
-      field.rake(ax / GA, ay, bx / GA, by, RAKE);
-      const length = Math.hypot(bx - ax, by - ay);
-      this.#stampFresh(ax, ay, bx, by, LEVEL_HALF);
-      if (length > 1e-9) {
-        this.#rakeDX = (bx - ax) / length;
-        this.#rakeDY = (by - ay) / length;
-      }
-      this.#rakeX = bx;
-      this.#rakeY = by;
-      this.#rakeOn = true;
-    });
+  /** The tines cut one piece of the plan, and the gravel it turned over is stamped fresh. */
+  #rakePiece(ax: number, ay: number, bx: number, by: number): void {
+    this.#field.rake(ax / GA, ay, bx / GA, by, RAKE);
+    const length = Math.hypot(bx - ax, by - ay);
+    this.#stampFresh(ax, ay, bx, by, LEVEL_HALF);
+    if (length > 1e-9) {
+      this.#rakeDX = (bx - ax) / length;
+      this.#rakeDY = (by - ay) / length;
+    }
+    this.#rakeX = bx;
+    this.#rakeY = by;
+    this.#rakeOn = true;
   }
 
   /**
@@ -1212,35 +1205,39 @@ class GardenSim implements SceneSim {
 
   /** Drag on the gravel: rake your own lines with a hand rake. */
   #handRake(pointer: PointerState, settings: Settings): void {
-    const at = pointer.inside && pointer.down ? this.#groundUnder(pointer.x, pointer.y) : undefined;
-    if (at === undefined || this.#onStone(at.x, at.y)) {
+    const at = this.#ground;
+    if (!(pointer.inside && pointer.down && this.#groundUnder(pointer.x, pointer.y, at)) || this.#onStone(at[0] ?? 0, at[1] ?? 0)) {
       this.#handOn = false;
       return;
     }
+    const x = at[0] ?? 0;
+    const y = at[1] ?? 0;
     if (!this.#handOn || pointer.pressed) {
       this.#handOn = true;
-      this.#handX = at.x;
-      this.#handY = at.y;
+      this.#handX = x;
+      this.#handY = y;
       return;
     }
-    const length = Math.hypot(at.x - this.#handX, at.y - this.#handY);
+    const length = Math.hypot(x - this.#handX, y - this.#handY);
     if (length < HAND_STEP) return;
-    this.#level(this.#handX, this.#handY, at.x, at.y, HAND_LEVEL_HALF);
-    this.#field.rake(this.#handX / GA, this.#handY, at.x / GA, at.y, HAND);
-    this.#stampFresh(this.#handX, this.#handY, at.x, at.y, HAND_LEVEL_HALF);
-    this.#sweep(at.x, at.y, (at.x - this.#handX) / length, (at.y - this.#handY) / length, HAND_LEVEL_HALF, Math.max(settings.speed, 0.05));
-    this.#handX = at.x;
-    this.#handY = at.y;
+    this.#level(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
+    this.#field.rake(this.#handX / GA, this.#handY, x / GA, y, HAND);
+    this.#stampFresh(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
+    this.#sweep(x, y, (x - this.#handX) / length, (y - this.#handY) / length, HAND_LEVEL_HALF, Math.max(settings.speed, 0.05));
+    this.#handX = x;
+    this.#handY = y;
   }
 
   /** Within an island's clear radius, where the rake is lifted. */
   #onStone(x: number, y: number): boolean {
-    return this.#layout.islands.some((island) => Math.hypot(x - island.x, y - island.y) < island.clear * 0.85) ||
-      (this.#layout.mark > 0 && markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark) + 0.01);
+    for (const island of this.#layout.islands) {
+      if (Math.hypot(x - island.x, y - island.y) < island.clear * 0.85) return true;
+    }
+    return this.#layout.mark > 0 && markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark) + 0.01;
   }
 
-  /** The garden point under screen uv (u, v), or undefined off the gravel. */
-  #groundUnder(u: number, v: number): { x: number; y: number } | undefined {
+  /** The garden point under screen uv (u, v) into `out` (x, y); false off the gravel. */
+  #groundUnder(u: number, v: number, out: Float64Array): boolean {
     let x: number;
     let y: number;
     if (this.#overhead) {
@@ -1248,13 +1245,15 @@ class GardenSim implements SceneSim {
       y = GARDEN.overheadY + (v - 0.5) * GARDEN.span;
     } else {
       const down = GARDEN.horizon - v;
-      if (down <= 1e-3) return undefined;
+      if (down <= 1e-3) return false;
       const s = GARDEN.eyeHeight / down;
       x = OX + (u - 0.5) * this.#aspect * s;
       y = GARDEN.eyeY + GARDEN.focal * s;
     }
-    if (y < GARDEN.drip + 0.01 || y > 1.0 || x < 0 || x > GA) return undefined;
-    return { x, y };
+    if (y < GARDEN.drip + 0.01 || y > 1.0 || x < 0 || x > GA) return false;
+    out[0] = x;
+    out[1] = y;
+    return true;
   }
 
   /** Screen uv of garden point (x, y, z) in the current view, or undefined behind the camera. */
@@ -1327,15 +1326,11 @@ class GardenSim implements SceneSim {
 
   // ---- leaves --------------------------------------------------------------------------------------
 
-  #watchGust(triggers: readonly number[], settings: Settings): void {
-    const gust = triggers[0] ?? -1e4;
-    if (this.#primed && gust !== this.#seenGust && gust > -1e3) {
-      this.#gustAge = 0;
-      this.#gustSign = settings.wind < -0.05 ? -1 : 1;
-      this.#shower = GUST_SHOWER;
-    }
-    this.#primed = true;
-    this.#seenGust = gust;
+  #watchGust(fired: readonly boolean[], settings: Settings): void {
+    if (!fired[this.#gustSlot]) return;
+    this.#gustAge = 0;
+    this.#gustSign = settings.wind < -0.05 ? -1 : 1;
+    this.#shower = GUST_SHOWER;
   }
 
   /** Give the leaves on the ground (and in the air) the new season's colours. */

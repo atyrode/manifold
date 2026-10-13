@@ -41,10 +41,8 @@
 //
 // Knobs: K_ripple, K_reflection, K_mist (water), K_current (ripples drift with the stream; the
 // lanterns themselves are the sim's), K_time, K_cycle (sky), K_rain, K_wind (weather).
+import { glslFloat } from "../../shaders/glsl.ts";
 import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN_HALF, LANTERN_TALL, MAX_LANTERNS, ROCK_DOWNSTREAM, ROCKS } from "./sim.ts";
-
-/** A number as a GLSL float literal. */
-const glslFloat = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
 
 const rocks = ROCKS.map((rock) => `vec4(${glslFloat(rock.x)}, ${glslFloat(rock.z)}, ${glslFloat(rock.radius)}, ${glslFloat(rock.height)})`).join(", ");
 const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFloat(d.z)})`).join(", ");
@@ -93,13 +91,6 @@ const vec3 LANTERNS_WALL = vec3(0.22, 0.18, 0.15);
 const vec3 LANTERNS_STONE = vec3(0.2, 0.2, 0.21);
 const vec3 LANTERNS_LACQUER = vec3(0.6, 0.15, 0.08);
 const vec3 LANTERNS_HILLS = vec3(0.1, 0.14, 0.18);
-
-// The sky library's sun or moon direction, turned about the vertical by LANTERNS_FACING.
-vec3 lanternsTurn(vec3 v) {
-  float c = cos(LANTERNS_FACING);
-  float s = sin(LANTERNS_FACING);
-  return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
-}
 
 // A range of wooded hills beyond the far bank: its height over the horizon (screen heights) at
 // screen position x (screen heights from the centre). Three octaves of smooth value noise give
@@ -320,7 +311,7 @@ float lanternsStars(vec2 e) {
   vec2 c = 0.25 + 0.5 * vec2(hash12(id + 3.1), hash12(id.yx + 8.9));
   float r = (1.0 + 1.1 * m) * 24.0 / uRes.y; // radius 1..2 cells, in grid units
   float star = 1.0 - smoothstep(0.35 * r, r, length(g - id - c));
-  float breathe = 0.85 + 0.15 * sin(uTime * uMotion * (0.2 + 0.3 * fract(h * 37.0)) + h * 91.0);
+  float breathe = 0.85 + 0.15 * sin(uMotionTime * (0.2 + 0.3 * fract(h * 37.0)) + h * 91.0);
   return star * (0.4 + 0.6 * m) * breathe;
 }
 
@@ -369,7 +360,7 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
   float shaft;
   vec4 deck = lanternsOvercast(vec2(ex, ey), haze, tm, shaft);
   if (direct) {
-    col += vec3(0.85, 0.9, 1.0) * skyStars(sky, r, 0.55) * (1.0 - deck.w);
+    col += skyStarLight(sky, r, 0.55) * (1.0 - deck.w);
     float shown = (1.0 - sky.day) * clamp(0.35 + sky.night, 0.0, 1.0) * smoothstep(0.03, 0.09, ey) * (1.0 - deck.w);
     shown *= 1.0 - smoothstep(0.1, 0.3, dot(col, LUMA)); // lost in the afterglow
     col += vec3(0.82, 0.87, 1.0) * 0.75 * lanternsStars(vec2(ex, ey)) * shown;
@@ -428,23 +419,14 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
 // mirror instead (as LEAN mapping does, Olano & Baker 2010). A train is drawn only once its
 // wavelength spans a dozen cells; finer ones would crawl through the dither.
 vec3 lanternsRipples(vec2 p, float tm, vec2 cellSize, float amp, float drift) {
-  vec2 slope = vec2(0.0);
-  float hidden = 0.0;
+  vec3 sum = vec3(0.0);
   for (int i = 0; i < 5; i++) {
     float fi = float(i);
-    float wavelength = 6.0 * pow(0.53, fi);
     float turn = 0.5 * sin(fi * 2.4 + 0.7);
-    vec2 along = vec2(sin(turn), cos(turn));
-    float k = TAU / wavelength;
-    float s = amp * (0.06 - 0.007 * fi);
-    float seen = smoothstep(7.0, 14.0, wavelength / max(length(along * cellSize), 1e-6));
     // Deep-water waves, slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz.
-    float omega = 0.14 * sqrt(9.81 * k) * (1.0 - 0.1 * fi);
-    float phase = k * dot(along, p + vec2(drift, 0.0)) - omega * tm + fi * 1.9;
-    slope += along * cos(phase) * s * seen;
-    hidden += 0.5 * s * s * (1.0 - seen);
+    sum += rippleTrain(p + vec2(drift, 0.0), tm, cellSize, 6.0 * pow(0.53, fi), vec2(sin(turn), cos(turn)), amp * (0.06 - 0.007 * fi), 0.14 * (1.0 - 0.1 * fi), fi * 1.9, vec2(7.0, 14.0));
   }
-  return vec3(slope, hidden);
+  return sum;
 }
 
 // Rows of wave facets that can catch a light. A light mirrored at a slope the ripples only now and
@@ -638,27 +620,24 @@ vec3 lanternsRockShade(vec3 n, float v, float u, vec3 ray, vec3 lit, vec3 haze, 
 }
 
 Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
   vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y); // screen heights, x from the centre
   vec3 dir = viewRay(uv, aspect, LANTERNS_HORIZON, LANTERNS_FOV);
 
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
-  sky.sun = lanternsTurn(sky.sun);
-  sky.moon = lanternsTurn(sky.moon);
+  Sky sky = skyFacing(skyAt(timeOfDayM(K_time, K_cycle, tm)), LANTERNS_FACING);
   // For the mirror: the moon swung round behind the viewer, so no reflection shows a sliver of its
   // disc broken by the ripples.
-  Sky skyM = sky;
-  skyM.moon = vec3(-sky.moon.x, sky.moon.y, -sky.moon.z);
+  Sky skyM = skyMirror(sky);
   float dark = 1.0 - smoothstep(0.05, 0.5, sky.day);
   vec3 moonLight = sky.moonColor * (0.3 + 0.6 * sqrt(max(sky.moon.y, 0.0)));
   vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + moonLight;
   // The sky low over the far bank in this direction: the colour of haze and mist.
-  vec3 haze = skyColor(skyM, normalize(vec3(dir.x, 0.04, dir.z)));
+  vec3 haze = horizonHaze(skyM, dir, 0.04);
   // Rain comes under cloud: the light dimmer and flatter, the haze grey, the mist thicker.
   float overcast = sqrt(max(K_rain, 0.0));
   lit *= 1.0 - 0.35 * overcast;
-  haze = mix(haze, vec3(dot(haze, LUMA)) * 0.9, 0.55 * overcast);
+  haze = greyed(haze, vec3(0.9), 0.55 * overcast);
   // (Distance haze in the rain is the shared veil's; here rain only thickens the mist a little.)
   float mist = clamp(K_mist + 0.15 * K_rain, 0.0, 1.0);
   // In heavy rain the candles gutter.
@@ -695,13 +674,13 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     col += LANTERNS_LAMP * bankLamp.x;
     lamp = bankLamp.x;
   } else {
-    float q = -dir.y / dir.z;
-    zp = LANTERNS_EYE / q;
-    xp = dir.x / dir.z * zp;
-    cellX = zp / (LANTERNS_FOCAL * uRes.y);
-    cellZ = cellX * zp / LANTERNS_EYE;
-    vec3 rip = lanternsRipples(vec2(xp, zp), tm, vec2(cellX, cellZ), rippled, 0.6 * current * tm);
-    glint = lanternsGlitter(vec2(xp, zp), tm);
+    Ground g = groundHit(dir, LANTERNS_EYE, LANTERNS_FOCAL);
+    xp = g.p.x;
+    zp = g.p.y;
+    cellX = g.foot.x;
+    cellZ = g.foot.y;
+    vec3 rip = lanternsRipples(g.p, tm, g.foot, rippled, 0.6 * current * tm);
+    glint = lanternsGlitter(g.p, tm);
 
     // The stones: glassy water in the lee of each, a wake opening behind it in two arms that catch
     // the sky and the lanterns' light, and a cushion of water heaped against its upstream face
@@ -747,7 +726,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
 
     vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
     float spread = sqrt(0.0012 + hidden + 0.003 * K_rain);
-    fres = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, -dir), spread * 0.6, 1.0), 5.0);
+    fres = fresnelSchlick(dot(n, -dir), 0.02, spread * 0.6);
     refl = reflect(dir, n);
     refl = vec3(refl.x, max(refl.y, 0.002), max(refl.z, 0.05));
     sigma = (0.04 + 0.16 * K_reflection) * (0.45 + 0.55 * min(rippled, 1.0)) + 0.5 * spread;
@@ -950,26 +929,18 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     float reachZ = water ? length(vec2(xp, zp)) : 1e4;
     if (nearest < 1e3) reachZ = mix(reachZ, nearest, solidCover);
     Precip p = rainFall(uv, aspect, t, K_rain, K_wind, 1.0 - exp(-reachZ / 30.0));
-    vec3 air = mix(vec3(dot(haze, LUMA)), haze, 0.5) * 0.85 + inAir * 0.6;
-    col = mix(col, air, p.veil);
+    vec3 air = greyed(haze, vec3(1.0), 0.5) * 0.85 + inAir * 0.6;
     glow *= 1.0 - 0.5 * p.veil;
     // Drops shine with the cloud base they refract (a floor so some rain still reads in the dark),
     // and with lantern light where they fall through a halo; near, out-of-focus drops dimmer. The
     // bank's lamps are a hundred metres beyond the nearest drops, so they light none of them.
     vec3 drop = max(cloud * 1.2, vec3(0.08)) + inAir * mix(3.0, 1.0, p.near);
-    col = mix(col, drop * mix(1.0, 0.8, p.near), p.cover);
+    col = precipOver(col, air, drop * mix(1.0, 0.8, p.near), p);
     glow += p.cover * airGlow * mix(1.0, 0.3, p.near) * 0.6;
   }
 
   // Ink is the picture's light; the lantern light (and the bank's lamps) is the accent. A sunlit
-  // river puts the page in its paper theme (index.ts), where ink is dark on a light ground.
-  float lum = dot(col, LUMA);
-  bool paperTheme = K_cycle <= 0.0 && K_time > 0.33 && K_time < 0.67;
-  Shade o = blankShade();
-  o.ink = paperTheme ? clamp((0.9 - lum) / 0.8, 0.0, 1.0) : clamp(pow(max(lum, 0.0), 0.8) * 1.3, 0.0, 1.0);
-  o.accent = clamp(glow, 0.0, 1.0);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  // river puts the page in its paper theme (index.ts), where inkOf turns the ink dark.
+  return shadeOf(col, inkOf(col, 1.3, 0.8), clamp(glow, 0.0, 1.0));
 }
 `;

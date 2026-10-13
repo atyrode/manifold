@@ -2,7 +2,7 @@
 // city at dusk; a cat on the sill watching it, a steaming mug, a plant, books, a stirring curtain;
 // three rows of skyline with windows switching on and off, and across the street a neon Manifold M.
 // Knobs arrive as K_<key> defines (see ./index.ts); the sky, weather and lightning come from the
-// shared libraries (src/shaders/lib/), which take the raw scene clock and apply uMotion themselves.
+// shared libraries (src/shaders/lib/); the scene's own motion runs on uMotionTime.
 // Rain and snow fall only outside the window, through the depth of the city, and the city answers
 // them: an overcast sky, wet roofs and brick, drips and splashes, snow settling (uWeather).
 // The cat's gaze is eased on the CPU (./index.ts) and read from uSim0.
@@ -38,27 +38,6 @@ const float SILL_D_FAR = 0.98;
 float sillSmin(float a, float b, float k) {
   float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
   return mix(b, a, h) - k * h * (1.0 - h);
-}
-
-// Distance to an ellipse: scaled radial distance inside (smooth all the way to the centre, which
-// the rim lighting needs) and Quilez's gradient-normalised estimate outside.
-float sillEllipse(vec2 p, vec2 r) {
-  float k0 = length(p / r);
-  if (k0 < 1.0) return (k0 - 1.0) * min(r.x, r.y);
-  return k0 * (k0 - 1.0) / length(p / (r * r));
-}
-
-// A capsule tapering from radius ra at a to rb at b; u returns where along it the closest point is.
-float sillCapsule(vec2 p, vec2 a, vec2 b, float ra, float rb, out float u) {
-  vec2 pa = p - a;
-  vec2 ba = b - a;
-  u = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba * u) - mix(ra, rb, u);
-}
-
-float sillBox(vec2 p, vec2 halfSize) {
-  vec2 d = abs(p) - halfSize;
-  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
 }
 
 // Exact distance to a triangle (Quilez), either winding.
@@ -183,7 +162,7 @@ float sillShafts(vec2 sp, float tm, float wind) {
   float h = sp.y - SILL_HORIZON;
   float x = sp.x + h * 0.3 * wind - tm * 0.012 * wind;
   float n = 0.65 * vnoise(vec2(x * 2.4, 3.1)) + 0.35 * vnoise(vec2(x * 6.5, 8.3));
-  float hang = smoothstep(0.45, 0.15, h) * smoothstep(-0.15, 0.0, h);
+  float hang = smoothfall(0.45, 0.15, h) * smoothstep(-0.15, 0.0, h);
   return smoothstep(0.5, 0.78, n) * hang * (0.75 + 0.25 * vnoise(vec2(x * 55.0, 4.7)));
 }
 
@@ -199,7 +178,7 @@ vec3 sillSnow(vec3 lit, float dark) {
 float sillCap(float above, float x, float deep, float lying, float px) {
   if (lying <= 0.0) return 0.0;
   float h = deep * snowCover(vec3(0.0, 1.0, 0.0), vec2(x, 0.37), lying);
-  return smoothstep(0.6 * px, -0.6 * px, above - h) * step(-1.5 * px, above) * smoothstep(0.0, px, h);
+  return smoothfall(0.6 * px, -0.6 * px, above - h) * step(-1.5 * px, above) * smoothstep(0.0, px, h);
 }
 
 // ---- The city
@@ -226,7 +205,7 @@ vec3 sillWindow(vec2 id, float tm, float density) {
 // (also in shares of the cell).
 float sillPane(vec2 f, vec2 size, vec2 blur) {
   vec2 d = abs(f - 0.5) - size * 0.5;
-  return smoothstep(blur.x, -blur.x, d.x) * smoothstep(blur.y, -blur.y, d.y);
+  return softFill(d.x, blur.x) * softFill(d.y, blur.y);
 }
 
 // One row of buildings side by side in columns about w wide; the columns are warped (a monotonic
@@ -324,7 +303,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   facade += sillWindow(vec2(b.w * 31.0 + floor(g.x), floor(g.y) + 300.0), tm, density) * pane * rows * 0.7 * (0.3 + 0.7 * dark);
   float cap = step(0.0, roofGap) * (1.0 - smoothstep(0.002, 0.0045, roofGap));
   if (cap > 0.0 && lying > 0.0) facade = mix(facade, sillSnow(lit, dark), cap * snowCover(up, vec2(x * 30.0, b.w), lying));
-  facade = mix(facade, haze, 0.38 + 0.3 * smoothstep(0.05, -0.2, fp.y));
+  facade = mix(facade, haze, 0.38 + 0.3 * smoothfall(0.05, -0.2, fp.y));
   facade = mix(facade, haze, fogAmount(K_fog, 0.85, clamp((fp.y - SILL_BACK) * 1.5, 0.0, 1.0)));
   col = mix(col, facade, cover);
   depth = mix(depth, SILL_D_FAR, cover);
@@ -408,7 +387,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
     float lane = step(hash12(vec2(floor(np.x / 0.03), 5.3)), dripOn);
     col = mix(col, mix(dripLit, haze, nearFog), rainDrips(vec2(np.x, roofB - 0.012 - np.y), t, drip, 0.03) * lane * 0.85);
   }
-  float capB = sillCap(np.y - roofB - 0.006, np.x * 20.0, 0.007, lying, px) * smoothstep(soft, -soft, np.x - bx1 - 0.006);
+  float capB = sillCap(np.y - roofB - 0.006, np.x * 20.0, 0.007, lying, px) * softFill(np.x - bx1 - 0.006, soft);
   col = mix(col, mix(snowLit, haze, 0.06 + nearFog), capB);
   depth = mix(depth, SILL_D_NEAR + 0.04, capB);
 
@@ -450,7 +429,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
       if (lying > 0.0) c = mix(c, snowLit, step(roofFront + 0.0055, np.y) * snowCover(up, vec2(np.x * 20.0, 0.8), lying));
       float gx = (np.x - ax0) / 0.058;
       vec2 wq = vec2((fract(gx) - 0.5) * 0.058, np.y + 0.2265);
-      float win = smoothstep(soft + 0.6 * px, -soft - 0.6 * px, sillBox(wq, vec2(0.013, 0.0285)));
+      float win = smoothfall(soft + 0.6 * px, -soft - 0.6 * px, sdBox(wq, vec2(0.013, 0.0285), 0.0));
       win *= step(0.5, gx) * step(gx, (ax1 - ax0) / 0.058 - 0.5);
       float slats = 0.75 + 0.25 * step(0.5, fract(np.y / 0.009));
       c = mix(c, vec3(0.02, 0.02, 0.03) + sillWindow(vec2(floor(gx) + 500.0, 3.0), tm, density) * slats * (0.3 + 0.7 * dark), win);
@@ -515,7 +494,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
     float corner = min(exp(-(p.x - opening.x) / 0.035) + exp(-(opening.y - p.x) / 0.035), 1.0);
     heap = (0.004 + 0.012 * corner) * snowCover(up, vec2(p.x * 15.0, 1.3), lying);
   }
-  float onLedge = smoothstep(0.6 * px, -0.6 * px, p.y - SILL_LEDGE - heap);
+  float onLedge = smoothfall(0.6 * px, -0.6 * px, p.y - SILL_LEDGE - heap);
   if (onLedge > 0.0) {
     float v = clamp((p.y - ledge0) / (SILL_LEDGE - ledge0), 0.0, 1.0);
     vec3 light = sky.ambient * 1.2 + sky.sunColor * sky.day * 0.25 + SILL_LAMP * spill * 0.5 + vec3(0.03, 0.03, 0.04);
@@ -553,18 +532,16 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   if (K_rain > 0.0) {
     Precip fall = rainFall(wuv, aspect, t, K_rain, K_wind, depth);
     float shafts = sillShafts(sp, tm, K_wind) * smoothstep(0.1, 0.5, K_rain) * smoothstep(0.86, 0.97, depth);
-    float veil = 1.0 - (1.0 - fall.veil) * (1.0 - 0.5 * shafts);
-    col = mix(col, airCol, veil);
-    accent *= 1.0 - 0.7 * veil;
+    fall.veil = 1.0 - (1.0 - fall.veil) * (1.0 - 0.5 * shafts);
+    accent *= 1.0 - 0.7 * fall.veil;
     vec3 drop = rainLight * (1.0 - 0.2 * fall.near) + SILL_LAMP * spill * 0.9 * fall.near;
-    col = mix(col, drop, fall.cover);
+    col = precipOver(col, airCol, drop, fall);
   }
   if (K_snow > 0.0) {
     Precip fall = snowFall(wuv, aspect, t, K_snow, K_wind, depth);
     vec3 flake = vec3(0.8, 0.82, 0.9) * (0.38 + 0.5 * sky.day * (1.0 - 0.3 * ov.y)) + vec3(0.14, 0.07, 0.04) * dark + uAccent * air * 0.5 + SILL_LAMP * spill * 0.9 * fall.near + vec3(0.5) * flash;
-    col = mix(col, mix(airCol, flake, 0.5), fall.veil);
     accent *= 1.0 - 0.7 * fall.veil;
-    col = mix(col, flake, fall.cover);
+    col = precipOver(col, mix(airCol, flake, 0.5), flake, fall);
   }
 
   // Water off the lintel above the window, dripping past it onto the ledge from the spots where it
@@ -590,19 +567,19 @@ vec4 sillMug(vec2 q, vec3 light, vec3 cool, float px) {
   float ry = 0.0075;
   float foot = ry - ry * sqrt(max(1.0 - (q.x / r) * (q.x / r), 0.0));
   float body = max(abs(q.x) - r, max(foot - q.y, q.y - top));
-  float lid = sillEllipse(q - vec2(0.0, top), vec2(r, ry));
+  float lid = sdEllipse(q - vec2(0.0, top), vec2(r, ry));
   float handle = max(abs(length((q - vec2(r + 0.004, top * 0.52)) * vec2(1.0, 0.87)) - 0.016) - 0.0045, r - 0.003 - q.x);
-  float cover = smoothstep(px, -px, min(min(body, lid), handle));
+  float cover = softFill(min(min(body, lid), handle), px);
   if (cover <= 0.0) return vec4(0.0);
   float nx = handle < min(body, lid) ? 1.0 : clamp(q.x / r, -1.0, 1.0);
   vec3 glaze = vec3(0.86, 0.8, 0.7);
   vec3 c = glaze * light * (0.5 + 0.9 * clamp(0.45 + 0.6 * nx, 0.0, 1.0));
-  c += light * 0.45 * smoothstep(0.18, 0.0, abs(nx - 0.55));
-  c += cool * 0.3 * smoothstep(-0.4, -1.0, nx);
-  float coffee = sillEllipse(q - vec2(0.0, top), vec2(r - 0.004, ry - 0.0025));
+  c += light * 0.45 * smoothfall(0.18, 0.0, abs(nx - 0.55));
+  c += cool * 0.3 * smoothfall(-0.4, -1.0, nx);
+  float coffee = sdEllipse(q - vec2(0.0, top), vec2(r - 0.004, ry - 0.0025));
   if (lid < 0.0) {
     c = coffee < 0.0
-      ? vec3(0.13, 0.07, 0.04) * (0.4 + light) + light * 0.25 * smoothstep(0.004, 0.0, length(q - vec2(0.008, top + 0.001)))
+      ? vec3(0.13, 0.07, 0.04) * (0.4 + light) + light * 0.25 * smoothfall(0.004, 0.0, length(q - vec2(0.008, top + 0.001)))
       : glaze * light * 1.1;
   }
   return vec4(c, cover);
@@ -622,7 +599,7 @@ vec4 sillBooks(vec2 q, vec3 light, float px) {
     off = (hash12(vec2(fi, 7.0)) - 0.5) * 0.022;
     bc = i == 0 ? vec3(0.5, 0.13, 0.11) : i == 1 ? vec3(0.74, 0.54, 0.2) : vec3(0.12, 0.31, 0.33);
     vec2 bq = q - vec2(off, y0 + th * 0.5);
-    float cover = smoothstep(px, -px, sillBox(bq, vec2(w, th * 0.5)) - 0.0015);
+    float cover = softFill(sdBox(bq, vec2(w, th * 0.5), 0.0) - 0.0015, px);
     if (cover > 0.0) {
       float across = bq.y / (th * 0.5);
       float bulge = 0.75 + 0.25 * sqrt(max(1.0 - across * across, 0.0));
@@ -634,7 +611,7 @@ vec4 sillBooks(vec2 q, vec3 light, float px) {
     y0 += th;
   }
   // The top cover, seen from above and catching the lamp.
-  float cover = smoothstep(px, -px, sillBox(q - vec2(off, y0 + 0.0055), vec2(0.05, 0.0055)) - 0.001);
+  float cover = softFill(sdBox(q - vec2(off, y0 + 0.0055), vec2(0.05, 0.0055), 0.0) - 0.001, px);
   o = vec4(mix(o.rgb, bc * light * 1.25, cover), max(o.a, cover));
   return o;
 }
@@ -645,17 +622,17 @@ vec4 sillPlant(vec2 q, float tm, float breeze, vec3 light, vec3 cool, float px) 
   vec4 o = vec4(0.0);
   // The pot, its rim standing proud, soil seen from above.
   float potW = mix(0.03, 0.037, clamp(q.y / 0.065, 0.0, 1.0));
-  float pot = smoothstep(px, -px, max(abs(q.x) - potW, max(-q.y, q.y - 0.058)));
-  float rimBand = smoothstep(px, -px, max(abs(q.x) - 0.042, abs(q.y - 0.064) - 0.008));
+  float pot = softFill(max(abs(q.x) - potW, max(-q.y, q.y - 0.058)), px);
+  float rimBand = softFill(max(abs(q.x) - 0.042, abs(q.y - 0.064) - 0.008), px);
   float potCover = max(pot, rimBand);
   if (potCover > 0.0) {
     float nx = q.x / 0.042;
     vec3 c = vec3(0.58, 0.3, 0.18) * light * (0.6 + 0.5 * clamp(0.5 + 0.6 * nx, 0.0, 1.0));
     c *= rimBand > pot ? 1.15 : 1.0 - 0.3 * smoothstep(0.05, 0.056, q.y);
-    c += cool * 0.2 * smoothstep(-0.5, -1.0, nx);
+    c += cool * 0.2 * smoothfall(-0.5, -1.0, nx);
     o = vec4(c, potCover);
   }
-  float soil = smoothstep(px, -px, sillEllipse(q - vec2(0.0, 0.07), vec2(0.035, 0.006)));
+  float soil = softFill(sdEllipse(q - vec2(0.0, 0.07), vec2(0.035, 0.006)), px);
   o = vec4(mix(o.rgb, vec3(0.05, 0.035, 0.03) * (0.5 + light), soil), max(o.a, soil));
   for (int i = 0; i < 7; i++) {
     float fi = float(i);
@@ -668,7 +645,7 @@ vec4 sillPlant(vec2 q, float tm, float breeze, vec3 light, vec3 cool, float px) 
     // Each leaf arches outward under its own weight.
     float v = l.x - sign(ang) * (0.12 + 0.4 * abs(ang)) * u * u * len;
     float halfW = len * 0.15 * pow(sin(3.14159 * u), 0.7);
-    float cover = smoothstep(px, -px, abs(v) - halfW);
+    float cover = softFill(abs(v) - halfW, px);
     if (cover <= 0.0) continue;
     vec3 c = mix(vec3(0.05, 0.17, 0.08), vec3(0.14, 0.34, 0.15), v > 0.0 ? 1.0 : 0.35) * (0.55 + 0.45 * u) * (0.35 + light);
     c += cool * 0.35 * smoothstep(halfW * 0.4, halfW, abs(v));
@@ -718,11 +695,11 @@ float sillSteam(vec2 p, vec2 rim, float tm, float amount, float wind) {
 // frame. The breeze through the open sash lifts its free edge and sends slow waves down the cloth.
 vec4 sillCurtain(vec2 p, float aspect, float tm, float breeze, float xw0, vec3 light, vec3 cool, float px) {
   float left = -0.5 * aspect;
-  float sway = smoothstep(0.5, -0.45, p.y);
+  float sway = smoothfall(0.5, -0.45, p.y);
   float gust = 0.55 + 0.45 * vnoise(vec2(tm * 0.17, 4.0));
   float wave = 0.6 * sin(tm * 0.8 - p.y * 4.5) + 0.4 * sin(tm * 1.3 - p.y * 8.0 + 1.3);
   float edge = left + max(0.12 * aspect, 0.09) + breeze * sway * gust * (0.025 + 0.02 * wave);
-  float cover = smoothstep(px, -px, p.x - edge);
+  float cover = softFill(p.x - edge, px);
   if (cover <= 0.0) return vec4(0.0);
   float x = (p.x - left) / (edge - left);
   float folds = sin(x * 21.0 + breeze * sway * gust * wave * 1.6 + 0.6 * sin(p.y * 2.0));
@@ -789,20 +766,20 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
   float swell = 1.0 + 0.022 * c.breath;
   // Small fillets keep a crease where each thigh tucks under the flank, and a notch between the
   // near thigh and the hind foot showing beneath it.
-  float d = sillEllipse(q - vec2(0.0, 0.14), vec2(0.2, 0.15));
-  d = sillSmin(d, sillEllipse(q - SILL_THIGH_NEAR.xy, SILL_THIGH_NEAR.zw), 0.035);
-  d = sillSmin(d, sillEllipse(q - SILL_THIGH_FAR.xy, SILL_THIGH_FAR.zw), 0.035);
-  d = sillSmin(d, sillEllipse(q - vec2(0.2, 0.024), vec2(0.075, 0.026)), 0.02);
-  d = sillSmin(d, sillEllipse(q - vec2(-0.225, 0.028), vec2(0.06, 0.03)), 0.02);
-  d = sillSmin(d, sillEllipse(q - vec2(0.0, 0.38), vec2(0.195, 0.25) * swell), 0.07);
+  float d = sdEllipse(q - vec2(0.0, 0.14), vec2(0.2, 0.15));
+  d = sillSmin(d, sdEllipse(q - SILL_THIGH_NEAR.xy, SILL_THIGH_NEAR.zw), 0.035);
+  d = sillSmin(d, sdEllipse(q - SILL_THIGH_FAR.xy, SILL_THIGH_FAR.zw), 0.035);
+  d = sillSmin(d, sdEllipse(q - vec2(0.2, 0.024), vec2(0.075, 0.026)), 0.02);
+  d = sillSmin(d, sdEllipse(q - vec2(-0.225, 0.028), vec2(0.06, 0.03)), 0.02);
+  d = sillSmin(d, sdEllipse(q - vec2(0.0, 0.38), vec2(0.195, 0.25) * swell), 0.07);
   vec2 shoulder = vec2(0.03 * c.turn, 0.6 + 0.008 * c.breath);
-  d = sillSmin(d, sillEllipse(q - shoulder, vec2(0.16, 0.095)), 0.06);
+  d = sillSmin(d, sdEllipse(q - shoulder, vec2(0.16, 0.095)), 0.06);
   float u = 0.0;
-  d = sillSmin(d, sillCapsule(q, shoulder + vec2(0.0, 0.04), c.head - vec2(0.0, 0.08), 0.11, 0.098, u), 0.035);
+  d = sillSmin(d, sdTaperCapsule(q, shoulder + vec2(0.0, 0.04), c.head - vec2(0.0, 0.08), 0.11, 0.098, u), 0.035);
   vec2 h = q - c.head;
-  float skull = sillEllipse(h, vec2(0.17, 0.148));
-  skull = sillSmin(skull, sillEllipse(h - vec2(0.0, -0.047), vec2(0.182, 0.1)), 0.04);
-  skull = sillSmin(skull, sillEllipse(h - vec2(0.135 * sin(c.yaw), -0.058 + 0.02 * c.pitch), vec2(0.078, 0.06)), 0.035);
+  float skull = sdEllipse(h, vec2(0.17, 0.148));
+  skull = sillSmin(skull, sdEllipse(h - vec2(0.0, -0.047), vec2(0.182, 0.1)), 0.04);
+  skull = sillSmin(skull, sdEllipse(h - vec2(0.135 * sin(c.yaw), -0.058 + 0.02 * c.pitch), vec2(0.078, 0.06)), 0.035);
   float ears = min(sillEar(h, -1.0, c.yaw, c.pitch, c.ears.x), sillEar(h, 1.0, c.yaw, c.pitch, c.ears.y));
   part.yz = vec2(ears, skull);
   float earless = max(sillSmin(d, skull, 0.03), -q.y - 0.004);
@@ -812,7 +789,7 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
   // The tail lies across the sill to its edge, then hangs, slender, tapering to a fine tip: a
   // slow swing at the edge, a lash travelling down it, a curl at the tip that flicks now and then.
   vec2 from = vec2(0.15, edge + 0.012);
-  float tail = sillCapsule(q, vec2(0.065, 0.065), from, 0.05, 0.044, u);
+  float tail = sdTaperCapsule(q, vec2(0.065, 0.065), from, 0.05, 0.044, u);
   float along = u * 0.22;
   float r0 = 0.044;
   for (int i = 0; i < 6; i++) {
@@ -821,7 +798,7 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
     float ang = c.sway * (0.5 + 0.5 * w) + c.lash * sin(c.wave - fi * 0.8) * w + 0.95 * smoothstep(0.45, 1.0, w) + c.flick * w * w * 1.5;
     vec2 to = from + vec2(sin(ang), -cos(ang)) * 0.068;
     float r1 = max(0.044 * (1.0 - 0.2 * w) * (1.0 - 0.75 * smoothstep(0.45, 1.0, w)), c.tip);
-    float sd = sillCapsule(q, from, to, r0, r1, u);
+    float sd = sdTaperCapsule(q, from, to, r0, r1, u);
     if (sd < tail) {
       tail = sd;
       along = 0.22 + 0.78 * (fi + u) / 6.0;
@@ -835,12 +812,11 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
 }
 
 Shade sceneSill(vec2 uv, vec2 cell, float t) {
-  float m = uMotion;
-  float tm = t * m;
+  float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
   float px = 1.0 / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
-  Shade o = blankShade();
+  float shimmer = 0.0;
 
   // Where things are. The window opening runs between its casings almost edge to edge; the cat
   // sits right of centre, clear of the page's copy at the lower left.
@@ -860,17 +836,17 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   // comes in through the window. Rain or snow closes the sky over (sillOvercast): sun and moon fade
   // behind the deck, the daylight flattens to grey and dims as the fall gets heavier, and the
   // city's lamps and the sign come into their own early in the gloom.
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
   vec2 ov = sillOvercast();
   sky.sunColor *= 1.0 - 0.8 * ov.x;
   sky.moonColor *= 1.0 - 0.7 * ov.x;
-  sky.ambient = mix(sky.ambient, vec3(dot(sky.ambient, LUMA)), 0.5 * ov.x) * (1.0 - 0.35 * ov.y);
+  sky.ambient = greyed(sky.ambient, vec3(1.0), 0.5 * ov.x) * (1.0 - 0.35 * ov.y);
   float dark = clamp(1.0 - sky.day * (1.0 - 0.45 * ov.y), 0.0, 1.0);
   vec3 haze = (vec3(0.62, 0.68, 0.78) * sky.day + vec3(0.5, 0.33, 0.34) * sky.twilight + vec3(0.11, 0.1, 0.16) * sky.night) / max(sky.day + sky.twilight + sky.night, 1e-3);
   haze += vec3(0.5, 0.26, 0.16) * dark * 0.25;
-  haze = mix(haze, vec3(dot(haze, LUMA)), 0.5 * ov.x) * (1.0 - 0.3 * ov.y);
+  haze = greyed(haze, vec3(1.0), 0.5 * ov.x) * (1.0 - 0.3 * ov.y);
   vec3 cool = mix(vec3(0.26, 0.31, 0.52), vec3(0.85, 0.88, 0.95), sky.day) + vec3(0.06, 0.03, 0.02) * dark;
-  cool = mix(cool, vec3(dot(cool, LUMA)), 0.4 * ov.x) * (1.0 - 0.3 * ov.y);
+  cool = greyed(cool, vec3(1.0), 0.4 * ov.x) * (1.0 - 0.3 * ov.y);
   float boltSeed = 0.0;
   float boltAge = lightningAge(t, K_lightning, 1, boltSeed);
   float flash = lightningFlash(boltAge);
@@ -922,7 +898,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       if (lying > 0.0) {
         float bar = min(min(abs(p.x - xm1), abs(p.x - xm2)) - 0.006, min(p.x - xg0, xg1 - p.x));
         float h = (0.003 + 0.016 * exp(-bar / 0.018)) * snowCover(vec3(0.0, 1.0, 0.0), vec2(p.x * 12.0, step(0.405, p.y) * 3.0), lying);
-        float bank = smoothstep(0.6 * px, -0.6 * px, p.y - (p.y < 0.405 ? SILL_RAIL_TOP : 0.411) - h) * smoothstep(0.0, px, h);
+        float bank = smoothfall(0.6 * px, -0.6 * px, p.y - (p.y < 0.405 ? SILL_RAIL_TOP : 0.411) - h) * smoothstep(0.0, px, h);
         col = mix(col, vec3(0.72, 0.75, 0.84) * (0.16 + 0.6 * sky.day * (1.0 - 0.3 * ov.y)) + SILL_LAMP * sillLamp(p, aspect) * 0.45 + vec3(0.14, 0.07, 0.05) * dark, bank);
         accent *= 1.0 - bank;
       }
@@ -934,14 +910,14 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       float glint = ring * smoothstep(0.1, 0.8, dot(normalize(fromCentre + 1e-6), vec2(0.876, -0.482)));
       col = col * (1.0 - 0.35 * ring) + SILL_LAMP * glint * 0.45 + cool * drop.z * 0.05;
       accent *= 0.85;
-      o.shimmer = glint * 0.25 * m;
+      shimmer = glint * 0.25;
     }
   }
 
   // The room's light at this point: the lamp, a little ambient, the window's light near it, and
   // lightning flashes.
   float lamp = sillLamp(p, aspect);
-  float nearWindow = smoothstep(0.25, 0.0, max(max(xw0 - p.x, p.x - xw1), SILL_BACK - p.y));
+  float nearWindow = smoothfall(0.25, 0.0, max(max(xw0 - p.x, p.x - xw1), SILL_BACK - p.y));
   vec3 roomLight = SILL_LAMP * lamp * 1.35 + vec3(0.05, 0.045, 0.06) + cool * ((0.08 + 0.25 * nearWindow) * (1.0 + 2.0 * sky.day) + 0.6 * flash);
   vec3 wood = vec3(0.42, 0.26, 0.15);
   vec3 wall = vec3(0.27, 0.24, 0.29);
@@ -959,12 +935,12 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         vec2 poolAt = vec2((p.x - 0.36 * aspect) / 0.32, (depth - 0.45) / 0.9);
         float pool = exp(-dot(poolAt, poolAt));
         col = wood * 1.1 * grain * (roomLight + SILL_LAMP * pool * 0.55 + cool * 0.4 * depth * depth);
-        col += SILL_LAMP * (lamp + pool * 0.3) * 0.25 * smoothstep(0.08, 0.0, depth);
-        float shadow = 0.5 * smoothstep(1.0, 0.3, length((p - vec2(mugX - 0.022, SILL_SEAT - 0.008)) / vec2(0.05, 0.012)));
-        shadow = max(shadow, 0.5 * smoothstep(1.0, 0.4, length((p - vec2(booksX - 0.03, SILL_SEAT - 0.006)) / vec2(0.1, 0.014))));
-        if (K_plant > 0.5) shadow = max(shadow, 0.5 * smoothstep(1.0, 0.3, length((p - vec2(plantX - 0.015, SILL_SEAT - 0.006)) / vec2(0.06, 0.012))));
+        col += SILL_LAMP * (lamp + pool * 0.3) * 0.25 * smoothfall(0.08, 0.0, depth);
+        float shadow = 0.5 * smoothfall(1.0, 0.3, length((p - vec2(mugX - 0.022, SILL_SEAT - 0.008)) / vec2(0.05, 0.012)));
+        shadow = max(shadow, 0.5 * smoothfall(1.0, 0.4, length((p - vec2(booksX - 0.03, SILL_SEAT - 0.006)) / vec2(0.1, 0.014))));
+        if (K_plant > 0.5) shadow = max(shadow, 0.5 * smoothfall(1.0, 0.3, length((p - vec2(plantX - 0.015, SILL_SEAT - 0.006)) / vec2(0.06, 0.012))));
         if (K_cat > 0.0) {
-          shadow = max(shadow, 0.55 * smoothstep(1.0, 0.35, length((p - vec2(catX - 0.15 * S, SILL_SEAT - 0.006)) / vec2(0.5 * S, 0.03))));
+          shadow = max(shadow, 0.55 * smoothfall(1.0, 0.35, length((p - vec2(catX - 0.15 * S, SILL_SEAT - 0.006)) / vec2(0.5 * S, 0.03))));
         }
         col *= 1.0 - shadow;
         // Rain blowing in wets the sill by the window: it catches the city and the neon.
@@ -984,10 +960,10 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         float rx = (p.x - 0.03 * aspect) / 0.022;
         if (p.y < SILL_NOSE - 0.02 && p.x > 0.03 * aspect - 0.01 && p.x < xw1 - 0.02) {
           float fin = abs(fract(rx) - 0.5) * 2.0;
-          float ribs = smoothstep(0.75, 0.55, fin) * (0.75 + 0.25 * sqrt(max(1.0 - fin * fin, 0.0)));
+          float ribs = smoothfall(0.75, 0.55, fin) * (0.75 + 0.25 * sqrt(max(1.0 - fin * fin, 0.0)));
           vec3 paint = vec3(0.6, 0.56, 0.5) * roomLight * under;
-          col = mix(col * 0.6, paint, ribs * smoothstep(SILL_NOSE - 0.02, SILL_NOSE - 0.03, p.y));
-          col = mix(col, paint * 1.1, smoothstep(0.006, 0.0, abs(p.y - (SILL_NOSE - 0.027))));
+          col = mix(col * 0.6, paint, ribs * smoothfall(SILL_NOSE - 0.02, SILL_NOSE - 0.03, p.y));
+          col = mix(col, paint * 1.1, smoothfall(0.006, 0.0, abs(p.y - (SILL_NOSE - 0.027))));
         }
       }
     } else if (p.y < SILL_BACK + 0.014 && p.x > xw0 && p.x < xw1) {
@@ -999,7 +975,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     } else if (p.x < xw0 || p.x > xw1) {
       // The casing: a moulded wood surround, a groove and a bead along its inner edge.
       float u = p.x < xw0 ? (p.x - xw0 + casing) / casing : (xw1 + casing - p.x) / casing;
-      float profile = 0.75 + 0.25 * smoothstep(0.0, 0.25, u) - 0.3 * smoothstep(0.55, 0.6, u) * smoothstep(0.72, 0.67, u) + 0.2 * smoothstep(0.85, 1.0, u);
+      float profile = 0.75 + 0.25 * smoothstep(0.0, 0.25, u) - 0.3 * smoothstep(0.55, 0.6, u) * smoothfall(0.72, 0.67, u) + 0.2 * smoothstep(0.85, 1.0, u);
       col = wood * roomLight * profile + cool * 0.2 * smoothstep(0.8, 1.0, u);
     } else if (p.x < xw0 + reveal || p.x > xw1 - reveal) {
       // The reveal, the wall's depth: the left one faces the lamp, the right one turns away.
@@ -1010,7 +986,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       col = wood * 0.85 * roomLight + cool * 0.15;
       if (p.y < SILL_RAIL_TOP) {
         float v = (p.y - SILL_RAIL) / (SILL_RAIL_TOP - SILL_RAIL);
-        col = col * (0.8 + 0.3 * smoothstep(0.0, 0.2, v)) + SILL_LAMP * lamp * 0.5 * smoothstep(0.2, 0.0, v);
+        col = col * (0.8 + 0.3 * smoothstep(0.0, 0.2, v)) + SILL_LAMP * lamp * 0.5 * smoothfall(0.2, 0.0, v);
         vec2 lq = (p - vec2(0.5 * (xw0 + xw1), SILL_RAIL_TOP - 0.004)) / vec2(0.024, 0.008);
         if (dot(lq, lq) < 1.0) col = vec3(0.85, 0.64, 0.3) * (0.4 + roomLight * 1.5) * (0.8 + 0.2 * lq.y);
       }
@@ -1093,7 +1069,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       tuft = smoothstep(0.25, 0.85, vnoise(fq * vec2(34.0, 24.0) + 3.7));
       d -= max(0.008, 1.3 * px / S) * tuft * (part.x >= 0.0 ? 0.4 : smoothstep(-0.01, 0.04, q.y));
     }
-    float cover = 1.0 - smoothstep(-aa, aa, d);
+    float cover = softFill(d, aa);
     if (cover > 0.0) {
       // Shading normals by forward differences (smooth from pixel to pixel, where screen-space
       // derivatives would be constant over each 2x2 quad): from the ears' own field where an ear
@@ -1121,7 +1097,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         for (int i = 0; i < 2; i++) {
           vec4 th = i == 0 ? SILL_THIGH_NEAR : SILL_THIGH_FAR;
           vec2 tq = q - th.xy;
-          float td = sillEllipse(tq, th.zw);
+          float td = sdEllipse(tq, th.zw);
           float tin = clamp(-td / 0.09, 0.0, 1.0);
           vec3 thighN = normalize(vec3(normalize(tq / (th.zw * th.zw) + 1e-6) * (1.0 - tin), 0.5 + tin));
           diffuse = mix(diffuse, max(dot(thighN, toLamp), 0.0), (1.0 - smoothstep(-0.03, 0.0, td)) * deep * 0.75);
@@ -1132,8 +1108,8 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       // rings round the tail; faint enough to keep the silhouette whole.
       float stripes = part.x >= 0.0
         ? smoothstep(0.2, 0.7, sin(part.x * 40.0))
-        : max(smoothstep(0.35, 0.85, sin(q.y * 30.0 + abs(q.x) * 10.0 + sin(q.x * 9.0 + q.y * 4.0) * 1.6)) * smoothstep(0.98, 0.5, q.y),
-              smoothstep(0.05, 0.0, abs(q.x - 0.012 * sin(q.y * 7.0))) * smoothstep(0.1, 0.3, q.y) * smoothstep(0.85, 0.7, q.y));
+        : max(smoothstep(0.35, 0.85, sin(q.y * 30.0 + abs(q.x) * 10.0 + sin(q.x * 9.0 + q.y * 4.0) * 1.6)) * smoothfall(0.98, 0.5, q.y),
+              smoothfall(0.05, 0.0, abs(q.x - 0.012 * sin(q.y * 7.0))) * smoothstep(0.1, 0.3, q.y) * smoothfall(0.85, 0.7, q.y));
       vec3 fur = vec3(0.15, 0.135, 0.13) * (1.0 - 0.45 * stripes) * (1.0 - 0.5 * crease);
       vec3 c = fur * (0.16 + diffuse * lampCat * SILL_LAMP * 1.3 + cool * 0.15 + cool * flash);
       // Soft light round the form: warm toward the lamp, the city's cool light on the outline
@@ -1149,10 +1125,10 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       c += edgeLit * SILL_LAMP * lampCat * 1.8 * warmSide;
       c += edgeLit * (cool * mix(0.75, 0.5, sky.day) + uAccent * neonGlow * 0.5 * max(dot(n, toSign), 0.0)) * coolSide * (part.x > 0.3 ? 0.4 : 1.0);
       // Thin ears glow where the city shines through them; turned this way, their pink insides.
-      float earSkin = smoothstep(0.0, -0.03, ear);
-      float facing = smoothstep(-0.1, -0.5, cos(cat.yaw));
+      float earSkin = smoothfall(0.0, -0.03, ear);
+      float facing = smoothfall(-0.1, -0.5, cos(cat.yaw));
       c += vec3(0.9, 0.4, 0.3) * earSkin * (0.05 + 0.15 * dark) * (1.0 - facing);
-      c = mix(c, vec3(0.55, 0.32, 0.3) * (0.3 + lampCat * 1.2), facing * smoothstep(-0.02, -0.045, ear));
+      c = mix(c, vec3(0.55, 0.32, 0.3) * (0.3 + lampCat * 1.2), facing * smoothfall(-0.02, -0.045, ear));
       // Eyes, on the turned face: amber with wide night pupils and a catchlight; they close in
       // a blink.
       for (int i = 0; i < 2; i++) {
@@ -1160,15 +1136,15 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         float face = -cos(al);
         vec2 e = cat.head + vec2(0.14 * sin(al), 0.012 + 0.03 * cat.pitch);
         vec2 r = vec2(0.036 * clamp(face, 0.3, 1.0), max(0.025 * (1.0 - blink), 0.003));
-        float eye = smoothstep(aa, -aa, sillEllipse(q - e, r)) * smoothstep(0.05, 0.3, face);
-        float pupil = smoothstep(aa, -aa, sillEllipse(q - e, r * vec2(0.5, 0.85)));
+        float eye = softFill(sdEllipse(q - e, r), aa) * smoothstep(0.05, 0.3, face);
+        float pupil = softFill(sdEllipse(q - e, r * vec2(0.5, 0.85)), aa);
         vec3 iris = vec3(0.85, 0.72, 0.22) * (0.5 + 0.9 * lampCat) + cool * 0.2;
         vec3 ec = mix(iris, vec3(0.03, 0.03, 0.02), pupil);
-        ec += vec3(1.0) * smoothstep(0.014, 0.006, length(q - e - r * 0.35)) * (1.0 - blink);
+        ec += vec3(1.0) * smoothfall(0.014, 0.006, length(q - e - r * 0.35)) * (1.0 - blink);
         c = mix(c, ec, eye);
       }
       vec2 nose = cat.head + vec2(0.16 * sin(cat.yaw), -0.055 + 0.03 * cat.pitch);
-      c = mix(c, vec3(0.75, 0.42, 0.45) * (0.4 + lampCat), smoothstep(0.025, 0.015, length((q - nose) * vec2(1.0, 1.4))) * smoothstep(-0.3, -0.7, cos(cat.yaw)));
+      c = mix(c, vec3(0.75, 0.42, 0.45) * (0.4 + lampCat), smoothfall(0.025, 0.015, length((q - nose) * vec2(1.0, 1.4))) * smoothfall(-0.3, -0.7, cos(cat.yaw)));
       col = mix(col, c, cover);
       accent *= 1.0 - cover;
     }
@@ -1190,10 +1166,8 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   // A soft vignette pulls the corners into the room's dark.
   col *= 1.0 - 0.28 * smoothstep(0.45, 1.0, length((uv - 0.5) * vec2(1.2, 1.0)));
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(pow(max(dot(col, LUMA), 0.0), 0.8) * 1.15, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
+  Shade o = shadeOf(col, inkOf(col, 1.15, 0.8), clamp(accent, 0.0, 1.0));
+  o.shimmer = shimmer;
   return o;
 }
 `;

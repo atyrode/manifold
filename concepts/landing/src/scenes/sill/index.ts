@@ -24,6 +24,7 @@ const TURN_TIME = 0.45;
 function sillGaze(gl: WebGL2RenderingContext): SceneSim {
   const texture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f", filter: "nearest" });
   const texel = new Float32Array(4);
+  const textures = [texture.texture];
   let fixX = 0.5;
   let fixY = 0.6;
   let gazeX = fixX;
@@ -61,7 +62,7 @@ function sillGaze(gl: WebGL2RenderingContext): SceneSim {
       texel[2] = attention;
       texel[3] = Math.min(time - lastShift, 60);
       texture.upload(texel);
-      return [texture.texture];
+      return textures;
     },
     dispose() {
       texture.dispose();

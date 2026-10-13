@@ -3,7 +3,7 @@
 // its leaves. The gravel, the rake and the falling leaves are simulated in sim.ts; shader.ts lights
 // it all from the veranda or from straight above.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { gardenGlsl } from "./shader.ts";
 import { GARDEN_PAPER, gardenPatterns, gardenSeasons, gardenSim } from "./sim.ts";
@@ -23,9 +23,6 @@ const params: readonly ParamDef[] = [
   ...weatherKnobs({ rain: true, snow: true, wind: true }),
   feature("manifold", "mark", "M stone", false, "size", 0.5, "A low slab of grey-blue slate in the shape of the Manifold M, set nearly flush in the gravel: worn pale at its edges, lichen on it, a fringe of moss round it, and rings raked round it in its own shape, as round the other stones. The garden is laid out afresh round it."),
 ];
-
-/** The rain knob's default amount (a feature's), for the page theme. */
-const rainDefault = params.find((def) => def.key === "rain")?.value ?? 0.5;
 
 export const gardenScene: SceneDef = {
   id: "garden",
@@ -48,11 +45,6 @@ export const gardenScene: SceneDef = {
   sim: gardenSim(params),
   // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
   // just after sunrise to just before sunset, on a still clock, unless steady rain greys it. The
-  // shader repeats this test.
-  theme: (values) => {
-    const time = values.time ?? 0.735;
-    const cycling = (values.cycle ?? 0) > 0.5;
-    const rain = (values.rain ?? 0) > 0.5 ? (values["rain-amount"] ?? rainDefault) : 0;
-    return !cycling && time > GARDEN_PAPER.from && time < GARDEN_PAPER.to && rain < GARDEN_PAPER.rain ? "paper" : "night";
-  },
+  // shader follows the page (pagePaper in inkOf).
+  theme: skyTheme(params, { from: GARDEN_PAPER.from, to: GARDEN_PAPER.to, rainBelow: GARDEN_PAPER.rain }),
 };

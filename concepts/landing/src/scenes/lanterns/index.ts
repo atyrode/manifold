@@ -3,7 +3,7 @@
 // eddies along our bank, potential flow round two stones) in sim.ts; shader.ts traces each as a
 // small glowing box, with its reflection in the rippled river, the far bank, the hills and the sky.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { lanternsGlsl } from "./shader.ts";
 import { LANTERN_COUNTS, lanternsSim } from "./sim.ts";
@@ -40,11 +40,6 @@ export const lanternsScene: SceneDef = {
   sim: lanternsSim(params),
   // A sunlit river is bright water and sky: the copy needs dark ink on it, from the time the sun is
   // about 12 degrees up until it sinks back there. With the day cycle running the light keeps
-  // changing, so the page stays on the night theme. The shader repeats this test to turn its ink
-  // dark on the paper theme: keep the two in step.
-  theme: (values) => {
-    const time = values.time ?? 0.79;
-    const cycling = (values.cycle ?? 0) > 0.5;
-    return !cycling && time > 0.33 && time < 0.67 ? "paper" : "night";
-  },
+  // changing, so the page stays on the night theme. The shader follows the page (inkOf).
+  theme: skyTheme(params),
 };
