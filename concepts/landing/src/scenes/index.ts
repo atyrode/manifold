@@ -15,6 +15,7 @@ import { fractalScene } from "./fractal/index.ts";
 import { frostScene } from "./frost/index.ts";
 import { gardenScene } from "./garden/index.ts";
 import { hyperbolicScene } from "./hyperbolic/index.ts";
+import { incenseScene } from "./incense/index.ts";
 import { kelpScene } from "./kelp/index.ts";
 import { lanternsScene } from "./lanterns/index.ts";
 import { marbleScene } from "./marble/index.ts";
@@ -65,6 +66,7 @@ export const sceneDefs = {
   petri: petriScene,
   physarum: physarumScene,
   film: filmScene,
+  incense: incenseScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
