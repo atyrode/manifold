@@ -15,13 +15,15 @@
 //
 // Rain belongs to the beach's weather, not to the glass in front of it. It comes out of an overcast
 // that closes over the stars, the moon and the sun with the amount (a thin, broken haze in a
-// drizzle, whole from steady rain on), which dims their light so the beach is lit flat from the grey
-// above; heavier rain lowers and darkens the cloud, and hangs shafts of rain under it far out at
-// sea. Drops fall only in front of the sand, surf or sea they would land on (rainFall's depth), and
-// the farther rain fuses into a grey veil that closes in on the horizon. On the water the drops
-// dimple the surface and, where there is plankton, each strike lights a spark; on the sand they
-// splash, and the beach soaks through as it goes on raining (uWeather.x: darker, with a sheen and
-// puddles in its hollows) and dries slowly after.
+// drizzle, whole from steady rain on), which spreads their light into a dim glow and lights the
+// beach flat from the grey above; heavier rain lowers and darkens the cloud, and hangs shafts of
+// rain under it far out at sea. Drops fall only in front of the sand, surf or sea they would land on
+// (rainFall's depth), and the farther rain fuses into a grey veil that closes in on the horizon. On
+// the water the drops ring near the shore and, where there is plankton, now and then a strike
+// lights a spark; on the near sand they splash, and the beach soaks through as it goes on raining
+// (uWeather.x: darker, glazed with a film that mirrors the lighter cloud low over the sea, puddles
+// in its hollows) and dries slowly after. Sparks and rings are switched on per cell against the
+// cell's threshold, so each cell lights once and goes dark once.
 //
 // Knobs: K_size, K_period (surf); K_glow, K_sparkles, K_stir, K_fish (bioluminescence; fish fire
 // on trigger 0); K_time, K_cycle (sky); K_rain, K_fog, K_wind, K_lightning (weather; lightning on
@@ -261,23 +263,41 @@ float shoreStormBank(float az, float el, float drift) {
   return 1.0 - smoothstep(top - 0.012, top, el);
 }
 
-// The underside of the rain's cloud: as grey as the light coming through it (dim by night), a
-// little lighter toward the horizon, brighter where the hidden moon or sun stands behind it, and
-// darker the heavier the rain.
-vec3 shoreGrey(Sky sky, vec3 dir, float heavy) {
-  float h = max(dir.y, 0.0);
-  float base = dot(sky.ambient, LUMA) * mix(0.5, 1.0, sky.day) * (0.7 + 0.5 * exp(-h * 6.0));
-  vec3 mv = dir - sky.moon;
-  vec3 sv = dir - sky.sun;
-  vec3 c = vec3(0.9, 0.96, 1.08) * base + sky.moonColor * 0.6 * exp(-dot(mv, mv) * 4.0) + sky.sunColor * 0.5 * exp(-dot(sv, sv) * 4.0);
-  return c * mix(1.0, 0.75, heavy);
+// The rain's cloud: how far it has closed over the sky (overcast 0..1), how heavy and low it hangs
+// (heavy 0..1), the grey of its underside, and the moon and sun behind it with the light they would
+// shed through a clear sky.
+struct ShoreCloud {
+  float overcast;
+  float heavy;
+  vec3 base;
+  vec3 moon;
+  vec3 moonCol;
+  vec3 sun;
+  vec3 sunCol;
+};
+
+// The light of the hidden moon or sun, spread by the cloud into a broad, dim patch around it.
+vec3 shoreHidden(ShoreCloud c, vec3 dir) {
+  vec3 mv = dir - c.moon;
+  vec3 sv = dir - c.sun;
+  return c.moonCol * 0.15 * exp(-dot(mv, mv) * 2.5) + c.sunCol * 0.3 * exp(-dot(sv, sv) * 3.0);
 }
 
-// The sky as the mirrors and the air see it: the clear sky under as much of the rain's grey as it
-// is overcast.
-vec3 shoreDome(Sky sky, vec3 dir, float overcast, float heavy) {
-  vec3 c = skyColor(sky, dir);
-  return overcast > 0.0 ? mix(c, shoreGrey(sky, dir, heavy), overcast) : c;
+// The underside of the rain's cloud along dir: grey, lighter toward the horizon (the light comes in
+// under the cloud base out at sea), glowing where the hidden moon or sun stands behind it, and
+// darker the heavier the rain.
+vec3 shoreGrey(ShoreCloud c, vec3 dir) {
+  float h = max(dir.y, 0.0);
+  return (c.base * (0.7 + 0.7 * exp(-h * 5.0)) + shoreHidden(c, dir)) * mix(1.0, 0.7, c.heavy);
+}
+
+// The sky as the mirrors and the air see it: the clear sky (skyM, with the moon swung round behind
+// the viewer, see sceneShore) under as much of the rain's grey as it is overcast. The grey keeps the
+// true moon: its glow through the cloud has no disc to break, so the water and the wet sand mirror
+// it as a broad, soft path.
+vec3 shoreDome(Sky skyM, ShoreCloud c, vec3 dir) {
+  vec3 clear = skyColor(skyM, dir);
+  return c.overcast > 0.0 ? mix(clear, shoreGrey(c, dir), c.overcast) : clear;
 }
 
 // Rain shafts far out at sea: curtains hanging from the cloud base (elevation top) to the horizon,
@@ -298,40 +318,46 @@ float shoreShafts(float az, float el, float top, float tm, float rain, float win
 
 // The rain's sky over the clear one (col): a grey haze closing over it with the amount, then the
 // underside of a cloud deck, broken in a drizzle and whole in steady rain, lower (so larger) and
-// darker the heavier it rains. Out at sea, under the cloud base, a thin light gap along the horizon
-// and rain shafts hanging in front of it, lit up by the lightning. az, el: the view direction's x
-// and y over z.
-vec3 shoreRainSky(vec3 col, Sky sky, vec3 dir, float az, float el, float t, float rain, float overcast, float heavy, float wind, float flash) {
+// darker the heavier it rains, with the hidden moon or sun glowing through. Out at sea, under the
+// cloud base, a thin light gap along the horizon and rain shafts hanging in front of it, lit up by
+// the lightning. az, el: the view direction's x and y over z.
+vec3 shoreRainSky(vec3 col, Sky sky, ShoreCloud c, vec3 dir, float az, float el, float t, float rain, float wind, float flash) {
   vec3 clear = col;
-  vec3 grey = shoreGrey(sky, dir, heavy);
-  col = mix(col, grey, overcast);
-  float low = mix(1.0, 0.55, heavy);
+  vec3 grey = shoreGrey(c, dir);
+  col = mix(col, grey, c.overcast);
+  float low = mix(1.0, 0.55, c.heavy);
   vec4 deck = skyClouds(sky, normalize(vec3(dir.x * low, dir.y, dir.z * low)), t, mix(0.45, 1.0, sqrt(smoothstep(0.0, 0.4, rain))), wind);
-  col = mix(col, deck.rgb * mix(0.5, 1.0, sky.day) * mix(0.9, 0.6, heavy), deck.a * smoothstep(0.0, 0.05, rain));
-  float gap = exp(-el / 0.03) * (1.0 - 0.85 * heavy) * smoothstep(0.15, 0.4, rain);
+  vec3 under = deck.rgb * mix(0.5, 1.0, sky.day) * mix(0.9, 0.6, c.heavy) + shoreHidden(c, dir) * 0.6 * c.overcast;
+  col = mix(col, under, deck.a * smoothstep(0.0, 0.05, rain));
+  float gap = exp(-el / 0.03) * (1.0 - 0.85 * c.heavy) * smoothstep(0.15, 0.4, rain);
   col = mix(col, grey * 1.25 + clear * 0.3, gap * 0.8);
-  float shaft = shoreShafts(az, el, mix(0.1, 0.055, heavy), t * uMotion, rain, wind);
+  float shaft = shoreShafts(az, el, mix(0.1, 0.055, c.heavy), t * uMotion, rain, wind);
   return mix(col, grey * 0.6 + vec3(0.3, 0.32, 0.45) * flash, shaft * 0.8);
 }
 
-// Raindrops striking the sea: where there is plankton each one lights a pinpoint of blue, swelling
-// over a fifth of a second or so and fading over the next second, before the next drop lands
-// somewhere else in the cell. As for the glints the grid is fixed to the water in perspective (gp),
-// cells 8 x 5 dither cells, so a spark is never thinner than two. density 0..1 is the share of cells
-// struck. Returns 0..1.
-float shoreRainSparks(vec2 gp, float tm, float density) {
-  vec2 g = gp / vec2(8.0, 5.0);
+// Raindrops striking the sea: where there is plankton each one lights a pinpoint of blue that swells
+// for about a third of a second, holds, and fades over a second, before that cell's next drop lands
+// somewhere else two or three seconds later. The grid is fixed to the water in perspective like the
+// glints' (gp, in dither cells, 10 x 6 of them per grid cell), so a spark is never thinner than two
+// cells, and it thins out with distance (zk over the rows below the horizon is the distance in
+// metres) so the far sea never fills with points. Each spark is switched on per dither cell against
+// th: a cell lights once and goes dark once. density 0..1 is the share of grid cells struck in each
+// turn. Returns 0 or 1.
+float shoreRainSparks(vec2 gp, float tm, float density, float zk, float th) {
+  vec2 g = gp / vec2(10.0, 6.0);
   vec2 id = floor(g);
+  float z = zk / max((id.y + 0.5) * 6.0, 1.0);
+  density *= 1.0 - smoothstep(12.0, 45.0, z);
   float h = hash12(id + 23.7);
-  float age = tm * (0.5 + 0.4 * h) + fract(h * 5.31);
+  float age = tm * (0.3 + 0.2 * h) + fract(h * 5.31);
   float turn = floor(age);
   vec2 seed = id + turn * vec2(0.91, 1.73);
-  if (hash12(seed + 7.7) > density) return 0.0;
+  if (hash12(seed + 7.7) >= density) return 0.0;
   vec2 at = 0.3 + 0.4 * vec2(hash12(seed + 1.3), hash12(seed + 4.1));
-  vec2 r = (fract(g) - at) * vec2(8.0 / 1.8, 5.0 / 1.1); // in spark radii: 1.8 x 1.1 cells
+  vec2 r = (fract(g) - at) * vec2(10.0 / 2.2, 6.0 / 1.3); // in spark radii: 2.2 x 1.3 cells
   float phase = age - turn;
-  float env = smoothstep(0.0, 0.15, phase) * (1.0 - smoothstep(0.15, 0.7, phase));
-  return env * (1.0 - smoothstep(0.3, 1.0, dot(r, r)));
+  float env = smoothstep(0.0, 0.12, phase) * (1.0 - smoothstep(0.25, 0.6, phase));
+  return env * (1.0 - smoothstep(0.2, 1.0, dot(r, r))) > th ? 1.0 : 0.0;
 }
 
 // A school of fish darting through the shallows. Each fish runs a wavy line across the view and
@@ -378,14 +404,22 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
   sky.sun = shoreTurn(sky.sun);
   sky.moon = shoreTurn(sky.moon);
   // Rain comes out of an overcast sky: the cloud closes over with the amount, hiding the stars, the
-  // moon and the sun, so their direct light dims and the beach is lit flat by the grey above;
+  // moon and the sun, whose light it spreads instead, so the beach is lit flat by the grey above;
   // heavier rain darkens it further.
   float rain = K_rain;
-  float overcast = sqrt(smoothstep(0.0, 0.5, rain));
-  float heavy = smoothstep(0.3, 1.0, rain);
-  sky.sunColor *= 1.0 - 0.85 * overcast;
-  sky.moonColor *= 1.0 - 0.85 * overcast;
-  sky.ambient *= 1.0 - 0.3 * heavy;
+  ShoreCloud cloud;
+  cloud.overcast = sqrt(smoothstep(0.0, 0.5, rain));
+  cloud.heavy = smoothstep(0.3, 1.0, rain);
+  cloud.base = vec3(0.9, 0.96, 1.08) * dot(sky.ambient, LUMA) * mix(0.5, 1.0, sky.day);
+  cloud.moon = sky.moon;
+  cloud.moonCol = sky.moonColor;
+  cloud.sun = sky.sun;
+  cloud.sunCol = sky.sunColor;
+  sky.sunColor *= 1.0 - 0.85 * cloud.overcast;
+  sky.moonColor *= 1.0 - 0.85 * cloud.overcast;
+  sky.ambient *= 1.0 - 0.3 * cloud.heavy;
+  // This cell's own threshold for the rain's rings and sparks, offset from the palette's.
+  float th = threshold(cell + vec2(6.0, 1.0));
   // For mirrors (the sea, the wet sand, fog): the same sky with the moon swung round behind the
   // viewer, so no reflection shows a broken sliver of its disc. The moon on the water is the
   // glitter's alone.
@@ -404,15 +438,17 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
   // The bank stands while lightning is on; a strike fired with lightning off brings it only briefly.
   float storm = K_lightning > 0.0 ? 1.0 : 1.0 - smoothstep(1.0, 3.0, boltAge);
   // Light on a level surface. Moonlight is played up the lower the moon stands, so foam and sand
-  // keep their shape under a moon near the horizon.
+  // keep their shape under a moon near the horizon. Under the rain's cloud part of the hidden light
+  // still comes through, flat and shadowless.
   vec3 moonLight = sky.moonColor * (0.3 + 0.6 * sqrt(max(sky.moon.y, 0.0)));
-  vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + moonLight + vec3(0.3, 0.33, 0.42) * flash;
+  vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + moonLight + vec3(0.3, 0.33, 0.42) * flash
+           + (cloud.moonCol * 0.25 + cloud.sunCol * max(sky.sun.y, 0.0) * 0.3) * cloud.overcast;
   // How far the moon or the sun stands out over the sea ahead: then it shines through thin crests
   // and spray.
   float backMoon = max(sky.moon.z, 0.0);
   float backSun = 0.5 + 0.5 * max(sky.sun.z, 0.0);
   // The rain's air: the grey it fades into with distance, lit up by the lightning.
-  vec3 air = shoreGrey(sky, normalize(vec3(dir.x, 0.0, dir.z)), heavy) * 1.1 + vec3(0.12, 0.13, 0.18) * flash;
+  vec3 air = shoreGrey(cloud, normalize(vec3(dir.x, 0.0, dir.z))) * 1.1 + vec3(0.12, 0.13, 0.18) * flash;
 
   vec3 col = vec3(0.0);
   float glow = 0.0;    // plankton light, before the strength knob and the dark
@@ -423,7 +459,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     float az = dir.x / dir.z;
     float el = dir.y / dir.z;
     col = skyColor(sky, dir) + vec3(0.85, 0.9, 1.0) * skyStars(sky, dir, 0.6);
-    if (rain > 0.0) col = shoreRainSky(col, sky, dir, az, el, t, rain, overcast, heavy, K_wind, flash);
+    if (rain > 0.0) col = shoreRainSky(col, sky, cloud, dir, az, el, t, rain, K_wind, flash);
     if (storm > 0.0) {
       float bank = shoreStormBank(az, el, tm * 0.004 * K_wind) * storm;
       float inside = flash * exp(-abs(az - boltAz) * 3.0) * (0.5 + fbm(vec2(az * 9.0, el * 40.0)));
@@ -432,7 +468,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     float bolt = boltAge < 1.5 ? lightningBolt(sp, boltTop, boltFoot, boltSeed, boltAge) : 0.0;
     col += mix(vec3(0.55, 0.45, 1.0), vec3(1.0), smoothstep(0.45, 0.75, bolt)) * min(bolt, 1.5);
     col += vec3(0.1, 0.11, 0.16) * flash * exp(-el * 6.0);
-    if (K_fog > 0.0) col = mix(col, shoreDome(skyM, normalize(vec3(dir.x, 0.03, dir.z)), overcast, heavy), fogAmount(K_fog, 1.0, clamp(el * 5.0, 0.0, 1.0)));
+    if (K_fog > 0.0) col = mix(col, shoreDome(skyM, cloud, normalize(vec3(dir.x, 0.03, dir.z))), fogAmount(K_fog, 1.0, clamp(el * 5.0, 0.0, 1.0)));
   } else {
     float q = -dir.y / dir.z; // tangent of the angle below the horizon
     float slopeX = dir.x / dir.z;
@@ -514,13 +550,19 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     float wet = 1.0;
 
     // Rain: rings where the drops land on the water and in standing water on the sand, small and
-    // few in a drizzle, larger and crowding in a downpour; stretched along z so they survive
-    // perspective, and faded out where a ring would shrink below a few cells.
+    // few in a drizzle, larger and crowding in a downpour, stretched along z so they survive
+    // perspective. Their crests are switched on per cell (ring), and they fade out where a crest
+    // would be thinner than a cell or two, so they never shimmer: they show on the swash and at the
+    // water's edge, while further out the rain roughens the sea instead.
     vec3 drops = vec3(0.0);
+    float ring = 0.0;
     if (rain > 0.0) {
-      vec2 rs = vec2(5.0, 2.0) * mix(1.4, 0.9, heavy);
-      float fade = 1.0 - smoothstep(0.08, 0.25, max(cellX * rs.x, cellZ * rs.y));
-      drops = rainRipples(g * rs, t, min(rain * 1.3, 1.0)) * fade;
+      vec2 rs = vec2(3.0, 1.2) * mix(1.15, 0.85, cloud.heavy);
+      float fade = 1.0 - smoothstep(0.04, 0.07, max(cellX * rs.x, cellZ * rs.y));
+      if (fade > 0.0) {
+        drops = rainRipples(g * rs, t, min(rain * 1.3, 1.0)) * fade;
+        ring = drops.z > 0.1 + 0.9 * th ? 1.0 : 0.0; // never the rings' faint tails
+      }
     }
 
     vec3 mirror = vec3(0.0);
@@ -542,11 +584,11 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       // Facets too fine to draw still lean toward the eye: at a grazing view the sea mirrors sky
       // from higher up, and less of it, so it stays darker than the sky at the horizon.
       // Rain roughens it too, and a downpour beats it matte.
-      float rough = 0.002 + 0.0015 * windy + rip.z * choppy + 0.003 * rain + 0.012 * heavy;
+      float rough = 0.002 + 0.0015 * windy + rip.z * choppy + 0.003 * rain + 0.012 * cloud.heavy;
       float spread = sqrt(rough);
       float fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, view), spread * 0.8), 5.0);
       vec3 refl = reflect(dir, n);
-      mirror = shoreDome(skyM, normalize(vec3(refl.x, max(refl.y, 0.0) + spread * 1.5, refl.z)), overcast, heavy) + vec3(0.1, 0.11, 0.16) * flash;
+      mirror = shoreDome(skyM, cloud, normalize(vec3(refl.x, max(refl.y, 0.0) + spread * 1.5, refl.z))) + vec3(0.1, 0.11, 0.16) * flash;
       // The moon's path on the water (the sun's by day), broken by the swell into rows, and glints
       // in it: single facets catching the light for a moment. Around it a wide moonlit sheen, the
       // tail of the same glitter on a rougher scale: it lights the backs and troughs of the swell
@@ -686,10 +728,10 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       vec3 sprayCol = vec3(0.95, 0.97, 1.0) * (lit * 1.5 + sky.moonColor * 1.6 * moonOnFoam + moonLight * backMoon + sky.sunColor * 0.3 * backSun);
       col = mix(mix(sea, foamCol, foam), sprayCol, clamp(spray, 0.0, 1.0));
       // Rain on the water: ring crests catching the grey light, and where there is plankton every
-      // drop that strikes lights a spark, thinning out to sea.
-      col += drops.z * 0.3 * (mirror + air);
-      glow = surf * (0.55 + 0.7 * churn) + drops.z * 0.3;
-      if (rain > 0.0) glow += shoreRainSparks(gp, tm, mix(0.06, 0.6, rain)) * 0.8 * (1.0 - smoothstep(40.0, 160.0, hz));
+      // drop that strikes lights a spark.
+      col += ring * 0.25 * (mirror + air);
+      glow = surf * (0.55 + 0.7 * churn) + ring * 0.25;
+      if (rain > 0.0) glow += shoreRainSparks(gp, tm, mix(0.03, 0.22, rain), SHORE_EYE * focal * uRes.y, th) * 0.8;
 
       // Lightning mirrored in the sea near the horizon, broken up by the ripples.
       if (boltAge < 1.5 && SHORE_HORIZON - uv.y < 0.15) {
@@ -698,9 +740,10 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       }
     } else {
       // Sand: dry above the swash's usual reach, darker where wet, and a mirror while a film of
-      // water drains off it. Rain soaks the whole beach as it goes on (uWeather.x), darkening it and
-      // giving it a soft sheen, and gathers in its hollows as puddles that mirror the sky as the
-      // swash's film does; drops ring and splash wherever water stands.
+      // water drains off it. Rain soaks the whole beach as it goes on (uWeather.x): it darkens and
+      // takes a glaze of water that mirrors the lighter cloud low over the sea (and the hidden moon's
+      // glow, and near the water the plankton's light), brighter the more the view grazes it;
+      // puddles gather in its hollows, drops ring in them and splash all over the near beach.
       float usual = 0.9 + 1.3 * size;
       float soaked = 1.0 - smoothstep(0.4, 1.0, e / usual);
       float film = exp(-drained / 2.5);
@@ -725,39 +768,55 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       // By moonlight the sand loses its warmth to the eye and goes a dim, cool grey-blue.
       sand = mix(sand, vec3(dot(sand, LUMA)) * vec3(0.78, 0.88, 1.12), 0.65 * dark) * mix(1.0, 0.62, dark);
 
-      // Only the band the backwash has just left, the saturated sand right at the water's edge and
-      // the rain's puddles are wet enough to mirror: sharp while a film drains off it, dull again
-      // as it soaks in. Rain-soaked sand keeps a softer sheen. Gentle undulations draw the moon out
-      // into a streak.
-      float gloss = max(max(film, 0.6 * (1.0 - smoothstep(0.2, 1.0, e))), puddle);
+      // Only the band the backwash has just left and the saturated sand right at the water's edge
+      // are wet enough to mirror sharply: while a film drains off it, dull again as it soaks in.
+      // Gentle undulations draw the moon out into a streak.
+      float gloss = max(film, 0.6 * (1.0 - smoothstep(0.2, 1.0, e)));
       vec2 swell = vec2(vnoise(g * vec2(1.2, 0.6)), vnoise(g * vec2(1.2, 0.6) + 7.3)) - 0.5;
       vec2 tilt = swell * 0.05 + drops.xy * 0.4 * pool;
       vec3 n = normalize(vec3(-tilt.x, 1.0, -tilt.y));
-      float fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, view), 0.0), 5.0);
+      float cv = max(dot(n, view), 0.0);
+      float fres = 0.02 + 0.98 * pow(1.0 - cv, 5.0);
       vec3 refl = reflect(dir, n);
       refl = normalize(vec3(refl.x, max(refl.y, 0.01), refl.z));
-      mirror = shoreDome(skyM, refl, overcast, heavy) + vec3(0.9, 0.95, 1.0) * skyStars(sky, refl, 0.6) * gloss * (1.0 - overcast) + vec3(0.1, 0.11, 0.16) * flash;
+      mirror = shoreDome(skyM, cloud, refl) + vec3(0.9, 0.95, 1.0) * skyStars(sky, refl, 0.6) * gloss * (1.0 - cloud.overcast) + vec3(0.1, 0.11, 0.16) * flash;
       float rough = 0.002 + 0.012 * (1.0 - gloss);
       // By day damp sand keeps a soft sheen of the bright sky; by night only the glossy band shows.
       float soak = wet * mix(1.0, 0.2, dark);
-      float sheen = wetGloss(rained, n.y);
-      vec3 shine = (sky.moonColor * shoreGlitter(n, view, sky.moon, rough) * 1.6 + sky.sunColor * shoreGlitter(n, view, sky.sun, rough) * 0.8) * (soak * 0.3 + gloss * 0.9 + sheen * 0.5);
-      col = mix(sand, mirror, clamp(fres * (soak * 0.7 + gloss * 1.4 + sheen), 0.0, 1.0)) + shine + drops.z * 0.2 * mirror * pool;
+      vec3 shine = (sky.moonColor * shoreGlitter(n, view, sky.moon, rough) * 1.6 + sky.sunColor * shoreGlitter(n, view, sky.sun, rough) * 0.8) * (soak * 0.3 + gloss * 0.9);
+      col = mix(sand, mirror, clamp(fres * (soak * 0.7 + gloss * 1.4), 0.0, 1.0)) + shine;
+      // The rain's glaze: the film on soaked sand is rough enough to blur the sky it mirrors down
+      // toward the horizon, where the cloud is lighter; it shines more where the view grazes it, so
+      // it brightens toward the water, and the puddles mirror most. Within a metre or two of the
+      // waterline it carries the blue of the surf's plankton light, most just after a wave runs up.
+      if (rained > 0.0) {
+        vec3 wetSky = shoreDome(skyM, cloud, normalize(vec3(refl.x, refl.y * 0.35, refl.z))) + vec3(0.1, 0.11, 0.16) * flash;
+        float spill = exp(-max(e - reach, 0.0) / 1.5) * (0.4 + 0.6 * exp(-max(topSwash, 0.0) / 3.0));
+        wetSky += SHORE_BIO * bio * spill * 0.12;
+        float glaze = max(wetGloss(rained, n.y) * (0.15 + 0.85 * (1.0 - cv) * (1.0 - cv)), puddle * 0.8);
+        col = mix(col, wetSky, glaze);
+      }
+      col += ring * 0.3 * (mirror + air) * pool;
       // The line of light each swash leaves at the top of its run.
       glow += strandGlow * 1.4;
       // Bubbles bursting in the foam the backwash leaves behind.
       if (K_sparkles > 0.0) {
         glow += shoreSparks(g, tm, K_sparkles * 0.9) * exp(-drained / 4.0) * 1.3;
       }
-      glow += drops.z * 0.4 * film;
-      // Drops splashing: small crowns, brightest on wet, packed sand and in the puddles (dry sand
-      // swallows them), and lit blue where the backwash has just left plankton stranded. Stretched
-      // along z like the rings, and gone before a metre spans fewer than ~25 cells.
+      glow += ring * 0.4 * film;
+      // Drops splashing: crowns of 3-6 cm, brightest on wet, packed sand and in the puddles (dry
+      // sand swallows them), and lit blue where the backwash has just left plankton stranded. Their
+      // units are 40 cm across and 90 cm along z, which perspective squashes, so a crown is a few
+      // cells across; they show on the near beach only, gone before a unit spans fewer than ~15
+      // cells.
       if (rain > 0.0) {
-        float fine = 1.0 - smoothstep(0.03, 0.05, max(cellX, cellZ * 0.4));
-        float splash = rainSplashes(vec2(hx, hz * 0.4), t, rain) * fine * mix(0.35, 1.0, max(max(wet, rained), pool));
-        col += splash * (air * 1.6 + lit * 0.5);
-        glow += splash * exp(-drained / 5.0);
+        vec2 sq = vec2(2.5, 1.1);
+        float fine = 1.0 - smoothstep(0.04, 0.067, max(cellX * sq.x, cellZ * sq.y));
+        if (fine > 0.0) {
+          float splash = rainSplashes(g * sq, t, rain * 0.6) * fine * mix(0.35, 1.0, max(max(wet, rained), pool));
+          col += splash * (air * 1.6 + lit * 0.5);
+          glow += splash * exp(-drained / 5.0);
+        }
       }
     }
 
@@ -808,7 +867,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
 
     if (K_fog > 0.0) {
       float f = fogAmount(K_fog, 1.0 - exp(-hz / 45.0), clamp(hy / 3.0, 0.0, 1.0));
-      col = mix(col, shoreDome(skyM, normalize(vec3(dir.x, 0.03, dir.z)), overcast, heavy), f);
+      col = mix(col, shoreDome(skyM, cloud, normalize(vec3(dir.x, 0.03, dir.z))), f);
       glow *= 1.0 - f;
       mark *= 1.0 - f;
     }
@@ -816,8 +875,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
 
   // Rain in the air between the eye and what this pixel sees: the veil of the farther rain closes
   // in on the horizon and dims the surf's light as it rains harder (less of it looking up, through
-  // less rain), and the drops catch the grey light, the lightning and the plankton's glow behind
-  // them, the big out-of-focus ones nearest the most.
+  // less rain).
   Precip pr = Precip(0.0, 0.0, 0.0);
   if (rain > 0.0) {
     pr = rainFall(uv, aspect, t, rain, K_wind, airDepth);
@@ -826,25 +884,22 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     glow *= 1.0 - veil;
     mark *= 1.0 - veil;
   }
-  float light = clamp(glow * bio, 0.0, 1.5);
-  float hot = light + mark;
-  if (rain > 0.0) {
-    vec3 dropCol = air * 1.5 + lit * 0.25 + SHORE_BIO * hot * (0.3 + 0.4 * pr.near);
-    col = mix(col, dropCol, pr.cover * mix(0.55, 0.35, pr.near));
-  }
+  // The drops catch the grey light and the lightning, the nearest, out of focus, the softest; the
+  // plankton's light, laid on below, shines on over them.
+  col = mix(col, air * 1.5 + lit * 0.25, pr.cover * mix(0.55, 0.35, pr.near));
 
   // Ink is the picture's light without the plankton; the plankton and the M are the accent. In full
   // colour their light is a colour of its own: where it is strong it outshines the foam it is in,
   // so the surf reads electric blue rather than washing out to white or teal. A sunlit beach puts
-  // the page in its paper theme (index.ts), where ink is dark on a light ground. Drops in front of
-  // the glow streak across it.
+  // the page in its paper theme (index.ts), where ink is dark on a light ground.
+  float light = clamp(glow * bio, 0.0, 1.5);
   float lum = dot(col, LUMA);
   bool paper = K_cycle <= 0.0 && K_time > 0.33 && K_time < 0.67;
   Shade o = blankShade();
   o.ink = paper ? clamp((0.9 - lum) / 0.8, 0.0, 1.0) : clamp(pow(lum, 0.8) * 1.3, 0.0, 1.0);
-  float through = 1.0 - 0.4 * pr.cover;
-  o.accent = clamp(max(light, mark), 0.0, 1.0) * through;
-  col = mix(col, SHORE_BIO * 1.1, smoothstep(0.15, 1.2, hot) * 0.55 * through) + SHORE_BIO * hot * 0.8 * through;
+  o.accent = clamp(max(light, mark), 0.0, 1.0);
+  float hot = light + mark;
+  col = mix(col, SHORE_BIO * 1.1, smoothstep(0.15, 1.2, hot) * 0.55) + SHORE_BIO * hot * 0.8;
   o.rgb = col;
   o.source = col;
   return o;
