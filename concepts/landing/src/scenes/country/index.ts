@@ -25,8 +25,13 @@ const params = [
 
 const SNOW = params.findIndex((def) => def.key === "snow");
 const RAIN = params.findIndex((def) => def.key === "rain");
-/** Steady snow covers the land in about half a minute; it melts in about a minute, faster in rain. */
-const SETTLE_PER_SECOND = 0.035;
+/**
+ * Snow settles fast at first and then thickens slowly (an exponential approach to full cover): at
+ * the default amount the land is mostly white within about ten seconds. It melts in about a
+ * minute, faster in rain.
+ */
+const SETTLE_RATE = 0.08;
+const SETTLE_PER_AMOUNT = 0.16;
 const MELT_PER_SECOND = 0.018;
 
 /** How much snow lies on the land, 0..1, as a single r16f texel. */
@@ -40,7 +45,7 @@ const lyingSnow: SimFactory = (gl) => {
       const snow = values[SNOW] ?? 0;
       const rain = values[RAIN] ?? 0;
       lying = snow > 0
-        ? Math.min(1, lying + dt * SETTLE_PER_SECOND * (0.3 + snow))
+        ? lying + (1 - lying) * (1 - Math.exp(-dt * (SETTLE_RATE + SETTLE_PER_AMOUNT * snow)))
         : Math.max(0, lying - dt * MELT_PER_SECOND * (1 + 2 * rain));
       if (lying !== uploaded) {
         texel[0] = lying;

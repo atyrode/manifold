@@ -13,6 +13,7 @@ const float FALLS_EYE = 0.34;   // eye level: the camera's horizon line
 const float FALLS_FOV = 0.9;    // vertical field of view, radians
 const float FALLS_G = 0.34;     // gravity in screen heights / s^2: a big fall seen from afar is unhurried
 const float FALLS_DEG = 57.29578;
+const float FALLS_BEDS = 9.0;   // couplets of beds (a hard lava flow and the soft bed on it) per screen height
 const vec3 FALLS_MIST = vec3(0.86, 0.96, 1.0);
 const vec3 FALLS_CYAN = vec3(0.5, 0.86, 0.92);
 
@@ -43,6 +44,26 @@ float fallsFbm3(vec2 p) {
   return (0.5 * vnoise(p) + 0.25 * vnoise(p * 2.03 + vec2(17.1, 9.2)) + 0.125 * vnoise(p * 4.11 + vec2(4.3, 31.7))) / 0.875;
 }
 
+// Smooth value noise along x alone, 0..1, one lane per seed: half the cost of vnoise.
+float fallsNoise1(float x, float seed) {
+  float i = floor(x);
+  float f = x - i;
+  return mix(hash12(vec2(i, seed)), hash12(vec2(i + 1.0, seed)), f * f * (3.0 - 2.0 * f));
+}
+
+// vnoise (the same lattice) with its derivative along the first axis: x value, y d/dp.x.
+vec2 fallsNoiseDx(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float du = 6.0 * f.x * (1.0 - f.x);
+  float a = hash12(i);
+  float b = hash12(i + vec2(1.0, 0.0));
+  float c = hash12(i + vec2(0.0, 1.0));
+  float d = hash12(i + vec2(1.0, 1.0));
+  return vec2(mix(mix(a, b, u.x), mix(c, d, u.x), u.y), mix(b - a, d - c, u.y) * du);
+}
+
 // ---- the falling water ----
 // Free fall from the lip: water comes over at v0 and, having dropped d, moves at
 // v = sqrt(v0^2 + 2 g d); it left the lip tau = (v - v0) / g seconds ago.
@@ -55,10 +76,11 @@ float fallsTau(float d, float v0) {
   return (v - v0) / FALLS_G;
 }
 
-// Half-width of the sheet after dropping d: set by the flow, spreading a little as it falls.
+// Half-width of the sheet after dropping d: set by the flow, spreading as it falls and faster
+// toward the foot, where the water breaks up and fans out.
 float fallsHalfWidth(float d, float flow) {
   float fall = max(d, 0.0);
-  return mix(0.02, 0.15, flow) * (1.0 + 0.3 * fall) + 0.015 * fall;
+  return mix(0.02, 0.15, flow) * (1.0 + 0.3 * fall + 0.7 * fall * fall) + 0.02 * fall;
 }
 
 // Middle of the sheet after dropping d: a steady wind pushes the water aside by ~ a tau^2 / 2.
@@ -106,25 +128,27 @@ vec4 fallsCurtain(vec2 q, float fx, float flow, float split, float wind, float t
   // Air beaten in as it falls: clear at the lip, then white ropes, then whole sheets.
   float aeration = clamp(smoothstep(0.012, 0.26, d) * (0.75 + 0.45 * flow), 0.0, 1.0);
   float level = mix(0.95, 0.3 - 0.12 * flow, aeration);
-  float white = smoothstep(level - 0.12, level + 0.1, streak);
+  // A soft threshold: the ropes ride down fast, and a hard one would flash cells on and off.
+  float white = smoothstep(level - 0.15, level + 0.13, streak);
   white = max(white, 0.8 * smoothstep(0.4, 0.66, vnoise(vec2(u * 2.0 + 3.0, e * 0.8 + 9.0))) * smoothstep(0.08, 0.35, d));
   return vec4(alpha, white, 1.0 - smoothstep(0.0, 0.07, d), u);
 }
 
 // The falling water's colour: clear dark water carrying streaks of reflected sky at the lip,
 // white aerated water lower down, bluish in its own shade. The sheet bows toward the viewer, so
-// its middle catches more light than its edges.
-vec3 fallsWater(vec4 c, float sheen, FallsLight L, vec3 skyLight) {
+// its middle catches more light than its edges. glow is the white water's own soft light after
+// dark (0 by day).
+vec3 fallsWater(vec4 c, float sheen, FallsLight L, vec3 skyLight, vec3 glow) {
   float bow = sqrt(max(1.0 - c.w * c.w, 0.0));
   vec3 lit = fallsLit(L, normalize(vec3(c.w * 0.45, 0.15, -1.0)));
-  vec3 foam = mix(vec3(0.56, 0.72, 0.8), vec3(1.0), 0.4 + 0.6 * bow) * lit * 1.1;
+  vec3 foam = mix(vec3(0.56, 0.72, 0.8), vec3(1.0), 0.4 + 0.6 * bow) * lit * 1.1 + glow * (0.6 + 0.4 * bow);
   vec3 clear = mix(vec3(0.03, 0.075, 0.065), vec3(0.09, 0.17, 0.15), sheen) * lit + skyLight * smoothstep(0.55, 0.85, sheen) * (0.12 + 0.38 * c.z);
   return mix(clear, foam, c.y);
 }
 
 // White water lying on the pool or boiling up at the plunge; shade 0..1 from hollows to tops.
-vec3 fallsFoam(FallsLight L, float shade) {
-  return mix(vec3(0.55, 0.7, 0.76), vec3(0.98, 1.0, 1.0), shade) * (L.amb * 1.2 + L.sunCol * 0.8 + L.moonCol * 0.7);
+vec3 fallsFoam(FallsLight L, vec3 glow, float shade) {
+  return mix(vec3(0.55, 0.7, 0.76), vec3(0.98, 1.0, 1.0), shade) * (L.amb * 1.2 + L.sunCol * 0.8 + L.moonCol * 0.7) + glow * shade;
 }
 
 // The plunge: a low dome of churning white water where the sheet hits the pool, wider than the
@@ -138,21 +162,45 @@ vec2 fallsChurn(vec2 q, float cx, float wb, float flow, float tm) {
   return vec2(smoothstep(-0.05, 0.3, dome + (boil - 0.5) * 0.8), clamp(0.35 + 0.5 * dome + 0.5 * (boil - 0.5), 0.0, 1.0));
 }
 
-// Spray in the air at q: a plume boiling up from the plunge, widening as it rises and leaning
-// downwind, its puffs (two fbm layers advected up and along the wind) rising and drifting; a
-// thinner haze spreads toward the viewer over the pool and hangs low across the valley floor.
+// Spray in the air at q: a plume billowing up from the plunge, widening as it rises and leaning
+// downwind, its puffs (two fbm layers advected up and along the wind) rising and drifting; spray
+// flung out sideways at the impact in two low fans; a thinner haze spreads toward the viewer over
+// the pool and hangs low across the valley floor.
 float fallsMist(vec2 q, float cx, float wb, float flow, float amount, float wind, float tm) {
   float h = q.y - FALLS_POOL;
   float rise = max(h, 0.0);
   float dx = q.x - cx - wind * (0.25 * rise + 0.9 * rise * rise);
-  float spread = wb + 0.04 + 0.45 * rise + 0.9 * max(-h, 0.0);
-  float reach = (0.05 + 0.3 * amount) * (0.5 + 0.7 * flow);
-  float plume = (0.25 + amount) * (0.4 + 0.8 * flow) * exp(-dx * dx / (spread * spread)) * exp(-rise / reach) * exp(min(h, 0.0) / 0.1);
+  float spread = wb + 0.05 + 0.5 * rise + 0.9 * max(-h, 0.0);
+  float reach = (0.06 + 0.34 * amount) * (0.5 + 0.7 * flow);
+  float plume = (0.3 + 1.1 * amount) * (0.4 + 0.8 * flow) * exp(-dx * dx / (spread * spread)) * exp(-rise / reach) * exp(min(h, 0.0) / 0.1);
   float valley = amount * 0.3 * exp(-abs(h) / (0.05 + 0.08 * amount));
-  if (plume + valley < 0.004) return 0.0;
+  // The fans: droplets leave the plunge sideways on ballistic arcs, so the spray stands highest
+  // a third of the way out and falls back to the water at its reach; its puffs ride outward.
+  float side = abs(q.x - cx) - 0.7 * wb;
+  float far = side / ((0.1 + 0.18 * flow) * (0.6 + 0.6 * amount));
+  float fan = 0.0;
+  if (far > -0.3 && far < 1.0 && h > -0.04) {
+    float top = (0.035 + 0.06 * flow) * (0.6 + 0.5 * amount) * 2.6 * sqrt(max(far, 0.0)) * (1.0 - far) + 0.012;
+    float drift = vnoise(vec2(side * 9.0 - tm * (0.5 + 0.5 * flow), h * 16.0 + sign(q.x - cx) * 5.0));
+    fan = (0.2 + 0.5 * flow) * (0.4 + 0.8 * amount) * (1.0 - smoothstep(0.35, 1.0, h / top)) * exp(min(h, 0.0) / 0.015)
+        * (1.0 - far) * smoothstep(-0.3, 0.0, far) * (0.35 + drift);
+  }
+  if (plume + valley + fan < 0.004) return 0.0;
   vec2 p = vec2(q.x * 3.4 - tm * 0.05 * wind, q.y * 3.4 - tm * 0.075);
   float puffs = smoothstep(0.25, 0.85, 0.5 * fallsFbm3(p) + 0.6 * fallsFbm3(p * 0.5 + vec2(5.2, 1.3 - tm * 0.02)));
-  return plume * (0.35 + 1.1 * puffs) + valley * (0.4 + 0.9 * puffs);
+  return plume * (0.3 + 1.2 * puffs) + valley * (0.4 + 0.9 * puffs) + fan;
+}
+
+// After dark the white water seems to glow: a soft bloom, 0..1, strongest at the sheet's edges
+// and fading over a few dozen cells of air; below the waterline, its reflection's.
+float fallsHalo(vec2 q, float fx, float flow, float wind) {
+  if (abs(q.x - fx) > 0.75) return 0.0;
+  bool inPool = q.y < FALLS_POOL;
+  float y = inPool ? 2.0 * FALLS_POOL - q.y : q.y;
+  float d = clamp(FALLS_LIP - y, 0.0, FALLS_LIP - FALLS_POOL);
+  float off = max(abs(q.x - fallsCentre(d, fx, flow, wind)) - fallsHalfWidth(d, flow), 0.0);
+  float along = (1.0 - smoothstep(FALLS_LIP - 0.06, FALLS_LIP + 0.06, y)) * (inPool ? 0.7 : 1.0);
+  return exp(-off / (0.035 + 0.04 * flow)) * along * (0.5 + 0.5 * smoothstep(0.0, 0.3, d));
 }
 
 float fallsLobe(float k, float c, float w) {
@@ -194,72 +242,135 @@ float fallsCrowns(float x, float size, float seed) {
   return h;
 }
 
-// Strata coordinate: horizontal beds, undulating (fbm) and dipping slightly; one bed per unit.
-float fallsStrata(vec2 q) {
-  return q.y * 16.0 + 3.0 * fbm(vec2(q.x * 1.3, q.y * 0.8) + 3.7) + 0.4 * q.x;
+// The bedding: s counts couplets up the cliff, each a hard bed (a lava flow) with a soft bed
+// (ash, scoria) lying on it. The beds dip gently to the right and sag in broad, shared folds; a
+// slow warp along the column, different for each bed and changing along x, makes them thicken and
+// thin (pinch and swell). dsdy = ds/dy, to turn fractions of a bed into screen heights.
+float fallsLayer(vec2 q, out float dsdy) {
+  float s0 = q.y * FALLS_BEDS + 0.6 * q.x + 1.3 * fallsNoise1(q.x * 0.9, 1.3) + 0.45 * fallsNoise1(q.x * 2.7, 2.9);
+  vec2 w = fallsNoiseDx(vec2(s0 * 1.1, q.x * 1.6));
+  dsdy = FALLS_BEDS * (1.0 + 0.55 * w.y);
+  return s0 + 0.5 * (w.x - 0.5);
 }
 
-// Each bed's stone: mostly dark basalt, some paler tuff and rusty, iron-stained beds.
-vec3 fallsStone(float band) {
-  float kind = hash12(vec2(band, 5.3));
-  vec3 stone = kind < 0.45 ? vec3(0.23, 0.23, 0.24) : kind < 0.7 ? vec3(0.36, 0.33, 0.29) : kind < 0.88 ? vec3(0.37, 0.27, 0.21) : vec3(0.17, 0.17, 0.19);
-  return stone * (0.85 + 0.3 * hash12(vec2(band, 6.1)));
+// The share of couplet c the hard bed takes up at x (the soft bed on it has the rest), varying
+// along the bed so the soft partings now and then all but pinch out.
+float fallsSplit(float c, float x) {
+  return clamp(0.4 + 0.42 * hash12(vec2(c, 2.7)) + 0.32 * (fallsNoise1(x * 1.9 + c * 3.7, c + 0.5) - 0.5), 0.3, 0.95);
 }
 
-// The cliff face at q (s = fallsStrata(q)). Beds stand out or recede in turn: a bed proud of the
-// one above has a shelf along its top (moss, ferns), one proud of the one below shows its dark
-// underside, and an overhang shades the bed beneath it. Joints split the beds and a few long
-// fissures wander across them. wet (spray, seeps, rain) darkens the stone and makes it glisten;
-// glint reports the sparkle for the dither's shimmer.
-vec3 fallsRock(vec2 q, float s, vec3 ray, FallsLight L, float wet, float green, float tm, out float glint) {
-  float band = floor(s);
-  float f = fract(s);
-  float here = hash12(vec2(band, 3.1));
-  float above = hash12(vec2(band + 1.0, 3.1));
-  float ledge = smoothstep(0.1, 0.3, here - above);
-  float overhang = smoothstep(0.1, 0.3, above - here);
-  float jut = smoothstep(0.1, 0.3, here - hash12(vec2(band - 1.0, 3.1)));
-  float shelf = smoothstep(0.86 - 0.12 * ledge, 0.92, f) * ledge;
-  float shadowed = smoothstep(0.62, 1.0, f) * overhang;
-  float soffit = (1.0 - smoothstep(0.0, 0.14, f)) * jut;
+// How far couplet c's hard bed stands out from the soft beds about it at x, 0..1: some flows
+// stand out as ledges and overhangs, some barely, and erosion bites in and out along each.
+float fallsProud(float c, float x) {
+  return clamp(0.15 + 0.85 * hash12(vec2(c, 3.1)) + 0.7 * (fallsNoise1(x * 2.3 + c * 5.1, c + 7.5) - 0.5), 0.0, 1.0);
+}
 
-  // Fine bedding and a rough surface for the light to play on; beds round off top and bottom.
-  float g1 = vnoise(q * vec2(45.0, 110.0));
-  float g2 = vnoise(q * vec2(120.0, 120.0) + 7.0);
-  vec3 n = normalize(vec3((g2 - 0.5) * 0.7, (f - 0.5) * 0.8 + (g1 - 0.5) * 0.5, -1.0));
-  n = normalize(mix(n, vec3(0.0, 0.92, -0.4), shelf));
-  n = normalize(mix(n, vec3(0.0, -0.9, -0.45), soffit));
+// A bed's stone: the hard beds dark basalt, some greyer or browner; the soft beds rusty scoria,
+// pale ash or dark rubble.
+vec3 fallsStone(float c, bool hard) {
+  float kind = hash12(vec2(c, hard ? 5.3 : 6.1));
+  if (hard) return kind < 0.5 ? vec3(0.22, 0.22, 0.23) : kind < 0.8 ? vec3(0.3, 0.29, 0.28) : vec3(0.29, 0.25, 0.21);
+  return kind < 0.45 ? vec3(0.38, 0.26, 0.19) : kind < 0.8 ? vec3(0.37, 0.33, 0.27) : vec3(0.21, 0.19, 0.19);
+}
 
-  // Vertical joints, their spacing and offset set per bed; long fissures across the beds.
-  float spacing = 4.0 + 8.0 * hash12(vec2(band, 7.7));
-  float jx = q.x * spacing + 9.0 * hash12(vec2(band, 8.8)) + 0.35 * (vnoise(vec2(q.x * 25.0, s * 2.0)) - 0.5);
-  float joint = (1.0 - smoothstep(0.0012, 0.0032, abs(fract(jx + 0.5) - 0.5) / spacing)) * step(0.35, hash12(vec2(band, 9.9))) * smoothstep(0.02, 0.12, f) * (1.0 - shelf);
-  float crack = (1.0 - smoothstep(0.006, 0.016, abs(fallsFbm3(vec2(q.x * 3.4, q.y * 1.1) + 11.0) - 0.5))) * smoothstep(0.55, 0.7, vnoise(q * vec2(1.8, 0.8) + 40.0));
+// The cliff face at q (s, dsdy from fallsLayer). Erosion bites the bed edges into scallops. A
+// hard bed's top rolls back into a rounded lip facing the sky (moss, ferns, a rim of sky light
+// after dark) and its base tucks under as a dark overhang; a few joints split it, each leaning
+// its own way, reaching down from the top some way and opening into a notch at the lip, the
+// blocks either side rounded into it; a thick bed shows a faint parting between two flows. The
+// soft bed on it is recessed, finely layered and shaded by the overhang of the bed above. Seeps
+// along the base of each hard bed stain dark wet streaks down the rock below; lichen crusts the
+// dry stone. wet (spray, rain) darkens the stone and makes it glisten; glint reports the sparkle
+// for the dither's shimmer.
+vec3 fallsRock(vec2 q, float s, float dsdy, vec3 ray, FallsLight L, float wet, float green, float dark, float tm, out float glint) {
+  float rough = vnoise(vec2(q.x * 32.0, s * 3.0));
+  float sr = s + 0.14 * (rough - 0.5);
+  float c = floor(sr);
+  float g = sr - c;
+  float split = fallsSplit(c, q.x);
+  bool hard = g < split;
+  float f = hard ? g / split : (g - split) / (1.0 - split); // 0 at the bed's base .. 1 at its top
+  float thick = (hard ? split : 1.0 - split) / dsdy;         // the bed's thickness, screen heights
+  float proud = fallsProud(c, q.x);
+  float proudUp = fallsProud(c + 1.0, q.x);
+  float g1 = vnoise(q * vec2(28.0, 46.0));
+  float g2 = vnoise(q * vec2(90.0, 70.0) + 7.0);
 
-  // Moss: cushions on the shelves spilling raggedly over their edges, and patches on the face
-  // where the spray keeps it wet.
-  float patchy = fallsFbm3(q * vec2(10.0, 16.0) + 2.0);
-  float drape = ledge * smoothstep(0.66, 0.8, f + 0.14 * (vnoise(vec2(q.x * 80.0, band)) - 0.5));
-  float onShelf = max(shelf, drape) * smoothstep(0.62 - 0.45 * green, 0.78 - 0.45 * green, patchy);
-  float onFace = smoothstep(0.78, 0.92, patchy + 0.25 * wet + 0.15 * green) * (1.0 - joint);
+  float lip = 0.0;
+  float tuck = 0.0;
+  float overhang = 0.0;
+  float layering = 0.0;
+  float joint = 0.0;
+  float groove = 0.0;
+  vec3 n = vec3((g2 - 0.5) * 0.5 + (g1 - 0.5) * 0.5, (g1 - 0.5) * 0.4, -1.0);
+  if (hard) {
+    lip = smoothstep(1.0 - min(0.45, (0.008 + 0.016 * proud) / thick), 1.0, f) * (0.3 + 0.7 * proud);
+    tuck = (1.0 - smoothstep(0.0, min(0.35, (0.005 + 0.012 * proud) / thick), f)) * proud;
+    n.y += (f - 0.5) * 0.35;
+    float at = 0.3 + 0.4 * hash12(vec2(c, 4.4));
+    layering = (1.0 - smoothstep(0.002, 0.005, abs(f - at) * thick)) * smoothstep(0.05, 0.08, thick) * smoothstep(0.4, 0.6, fallsNoise1(q.x * 7.0, c + 12.0));
+    // Joints: at most one per irregular stretch of the bed, and only in some stretches.
+    float jx = q.x * 3.4 + 9.0 * hash12(vec2(c, 8.8));
+    float stretch = floor(jx);
+    float hj = hash12(vec2(stretch, c + 0.31));
+    if (hj < 0.6) {
+      float run = smoothstep(0.0, 0.12, f - 0.75 * fract(hj * 31.1));
+      float dx = (fract(jx) - 0.2 - 0.6 * fract(hj * 7.1)) / 3.4 - (fract(hj * 17.3) - 0.5) * 0.5 * (f - 0.5) * thick - 0.005 * (g1 - 0.5);
+      float w = 0.003 + 0.005 * smoothstep(0.6, 1.0, f);
+      joint = (1.0 - smoothstep(0.5 * w, w, abs(dx))) * run;
+      groove = (1.0 - smoothstep(w, 3.5 * w, abs(dx))) * run;
+      n.x += sign(dx) * 0.7 * groove;
+    }
+  } else {
+    float reach = (0.004 + 0.022 * proudUp) / thick;
+    overhang = proudUp * smoothstep(1.0 - reach - 0.15, 1.0 - reach + 0.1, f + 0.2 * (g1 - 0.5));
+    layering = smoothstep(0.5, 0.9, abs(fract(sr * 7.0 + 0.4 * g1) - 0.5) * 2.0) * 0.6;
+  }
+  n = normalize(n);
+  n = normalize(mix(n, vec3(0.0, 0.85, -0.53), lip));
+  n = normalize(mix(n, vec3(0.0, -0.8, -0.6), tuck));
+
+  // Seeps: water oozing out along the base of the hard bed above stains streaks down from it.
+  float below = (c + 1.0 - sr) / dsdy;
+  float seep = smoothstep(0.55, 0.85, fallsNoise1(q.x * 5.5, c + 41.0));
+  float stain = seep * smoothstep(0.35, 0.65, vnoise(vec2(q.x * 30.0, sr * 0.6 + 3.0))) * (1.0 - smoothstep(0.0, 0.04 + 0.12 * seep, below));
+  float damp = max(wet, 0.8 * stain);
+
+  // Moss: cushions along the lips of the ledges and on the soft rock just above them, spilling
+  // raggedly over; patches on the face where spray and seeps keep it wet. Lichen on dry stone.
+  float patchy = fallsFbm3(q * vec2(9.0, 13.0) + 2.0);
+  float band = (0.012 + 0.02 * green * proud) / thick;
+  float onLip = hard
+    ? smoothstep(1.0 - band * (1.0 + 0.8 * rough), 1.0 - 0.4 * band, f) * smoothstep(0.15, 0.45, proud)
+    : (1.0 - smoothstep(0.0, 0.18 + 0.2 * rough, f)) * smoothstep(0.3, 0.6, proud) * 0.8;
+  float onShelf = onLip * smoothstep(0.62 - 0.45 * green, 0.78 - 0.45 * green, patchy);
+  float onFace = smoothstep(0.78, 0.92, patchy + 0.25 * wet + 0.1 * stain + 0.15 * green) * (1.0 - joint);
   float moss = clamp(max(onShelf, onFace), 0.0, 1.0) * smoothstep(0.0, 0.15, green);
   vec3 mossCol = mix(vec3(0.1, 0.24, 0.06), vec3(0.34, 0.52, 0.13), patchy);
+  float lichen = smoothstep(0.64, 0.78, 1.0 - patchy + 0.4 * (g2 - 0.5)) * (1.0 - smoothstep(0.15, 0.45, damp)) * (hard ? 0.8 : 0.4) * (1.0 - moss);
+  vec3 lichenCol = mix(vec3(0.48, 0.52, 0.42), vec3(0.6, 0.43, 0.2), smoothstep(0.55, 0.7, g1));
 
-  vec3 stone = fallsStone(band) * (0.72 + 0.45 * g1) * mix(1.0, 0.5, wet);
-  vec3 albedo = mix(stone, mossCol * mix(1.0, 0.8, wet), moss);
-  float occlusion = (1.0 - 0.7 * shadowed) * (1.0 - 0.75 * joint) * (1.0 - 0.7 * crack);
+  vec3 albedo = fallsStone(c, hard) * (0.72 + 0.45 * g1) * (0.6 + 0.8 * patchy) * mix(1.0, 0.5, damp);
+  albedo = mix(albedo, vec3(0.05, 0.06, 0.045), 0.45 * stain);
+  albedo = mix(albedo, lichenCol, 0.75 * lichen);
+  albedo = mix(albedo, mossCol * mix(1.0, 0.8, damp), moss);
+  float occlusion = (1.0 - 0.7 * overhang) * (1.0 - 0.8 * joint) * (1.0 - 0.25 * groove) * (1.0 - 0.5 * tuck) * (1.0 - 0.3 * layering) * (hard ? 1.0 : 0.85);
   vec3 col = albedo * fallsLit(L, n) * occlusion;
 
+  // Sky light along the lips: the rounded tops face the open sky and, wet, mirror it. After dark,
+  // with the sky the only light, these rims draw the ledges.
+  vec3 skyLight = L.amb * 1.5 + L.sunCol * 0.3 + L.moonCol * 0.35;
+  col += skyLight * lip * (0.04 + 0.1 * damp + 0.22 * dark) * (1.0 - 0.5 * moss);
+
   // Wet stone glistens: facets flash where they mirror the sun or moon, the sky lies in a faint
-  // sheen over it, and films of water slide down it catching the light.
+  // sheen over it, and films of water slide down it in the spray, catching the light.
   vec3 r = reflect(ray, n);
   float flashSun = pow(max(dot(r, L.sun), 0.0), 36.0);
   float flashMoon = pow(max(dot(r, L.moon), 0.0), 36.0);
   float film = smoothstep(0.66, 0.92, vnoise(vec2(q.x * 80.0, q.y * 7.0 + tm * 1.1))) * wet;
   float bare = 1.0 - moss;
-  vec3 skyLight = L.amb * 1.5 + L.sunCol * 0.3 + L.moonCol * 0.35;
-  col += (L.sunCol * flashSun + L.moonCol * flashMoon) * 1.5 * wet * bare * occlusion;
-  col += skyLight * (0.06 * wet + 0.35 * film) * (1.0 - 0.7 * moss);
+  col += (L.sunCol * flashSun + L.moonCol * flashMoon) * 1.5 * damp * bare * occlusion;
+  col += skyLight * (0.06 * damp + 0.35 * film) * (1.0 - 0.7 * moss);
   glint = wet * bare * (flashSun + 0.5 * flashMoon + 0.6 * film) * occlusion;
   return col;
 }
@@ -277,27 +388,31 @@ float fallsFrond(vec2 rel, float side, float len, float lift, float droop, float
   return smoothstep(width, width * 0.5, dist);
 }
 
-// Ferns and creepers hanging from the shelves: a clump of fronds here and there along a shelf's
-// edge, arching out and drooping over the face below, and curtains of creeper strands hanging
-// straight down. Both sway with the wind and the fall's draught (sway: how far the frond tips
-// swing, in frond lengths). Looks at the shelves topping this bed and the next, three clumps along
-// each. Returns coverage; tip is how far along the frond (tips are younger and paler).
-float fallsFerns(vec2 q, float s, float green, float sway, float tm, out float tip) {
+// Ferns and creepers hanging from the ledges (the lips of the hard beds): a clump of fronds here
+// and there along a ledge that stands out far enough, arching out and drooping over the face
+// below, and curtains of creeper strands hanging straight down. Both sway with the wind and the
+// fall's draught (sway: how far the frond tips swing, in frond lengths). Looks at the two ledges
+// above q, three clumps along each. Returns coverage; tip is how far along the frond (tips are
+// younger and paler).
+float fallsFerns(vec2 q, float s, float dsdy, float green, float sway, float tm, out float tip) {
   tip = 0.0;
   float cover = 0.0;
+  float c0 = floor(s);
+  float first = s - c0 < fallsSplit(c0, q.x) ? c0 : c0 + 1.0;
   for (int lv = 0; lv < 2; lv++) {
-    float band = floor(s) + float(lv);
-    // Ferns need a shelf: this bed standing proud of the one above.
-    if (hash12(vec2(band, 3.1)) - hash12(vec2(band + 1.0, 3.1)) < 0.12) continue;
-    float shelfY = q.y + (band + 0.92 - s) / 16.0;
+    float cc = first + float(lv);
+    // A little under the smooth bedding line, so the roots sit in the moss on the eroded lip.
+    float shelfY = q.y + (cc + fallsSplit(cc, q.x) - s) / dsdy - 0.004;
+    if (shelfY - q.y > 0.09) break;
     float c = floor(q.x / 0.1);
     for (int k = -1; k <= 1; k++) {
       float id = c + float(k);
-      vec2 key = vec2(id, band * 1.37);
+      vec2 key = vec2(id, cc * 1.37);
       if (hash12(key) > green * 0.9) continue;
       vec2 root = vec2((id + 0.5 + (hash12(key + 1.7) - 0.5) * 0.7) * 0.1, shelfY);
+      if (fallsProud(cc, root.x) < 0.4) continue;
       float reach = 0.035 + 0.035 * hash12(key + 2.9);
-      float swing = sway * sin(tm * 0.7 + id * 1.9 + band);
+      float swing = sway * sin(tm * 0.7 + id * 1.9 + cc);
       for (int j = 0; j < 3; j++) {
         float fj = float(j);
         float side = j == 1 ? 1.0 : -1.0;
@@ -310,19 +425,82 @@ float fallsFerns(vec2 q, float s, float green, float sway, float tm, out float t
         }
       }
     }
-    // Creepers: strands hanging from the shelf directly above, swinging together.
+    // Creepers: strands hanging from the ledge directly above, swinging together.
     if (lv == 0) {
       float hang = shelfY - q.y;
-      float vx = q.x * 60.0 + sin(tm * 0.6 + band * 2.0) * hang * 25.0 * sway;
+      float vx = q.x * 60.0 + sin(tm * 0.6 + cc * 2.0) * hang * 25.0 * sway;
       float strand = floor(vx);
-      float len = (0.015 + 0.06 * hash12(vec2(strand, band + 0.71))) * green;
-      if (hash12(vec2(strand, band + 0.37)) < green * 0.5 * smoothstep(0.45, 0.7, vnoise(vec2(strand * 0.12, band))) && hang > 0.0 && hang < len) {
+      float len = (0.015 + 0.06 * hash12(vec2(strand, cc + 0.71))) * green;
+      if (hang > 0.0 && hang < len && hash12(vec2(strand, cc + 0.37)) < green * 0.5 * smoothstep(0.45, 0.7, vnoise(vec2(strand * 0.12, cc))) && fallsProud(cc, (strand + 0.5) / 60.0) > 0.3) {
         float width = 0.08 + 0.18 * (1.0 - hang / len);
         cover = max(cover, smoothstep(width, width * 0.5, abs(fract(vx) - 0.5)));
       }
     }
   }
   return cover;
+}
+
+// One row of blocks fallen from the cliff (see fallsBoulders): a block or a gap per stretch of
+// width size, each a rounded, squarish lump (a superellipse) of its own size and lean, sunk into
+// the scree at height base; none within clearW + ~0.05 of clearX, where the plunge has scoured
+// them away. Lays itself over what the rows behind left in cover, n, k and h.
+void fallsBlockRow(vec2 q, float size, float base, float salt, float clearX, float clearW, inout float cover, inout vec3 n, inout float k, inout float h) {
+  float cell = floor(q.x / size);
+  for (int j = -1; j <= 1; j++) {
+    float id = cell + float(j);
+    vec2 key = vec2(id, salt);
+    float hb = hash12(key);
+    if (hb < 0.22) continue;
+    float x0 = (id + 0.5 + (hash12(key + 1.3) - 0.5) * 0.5) * size;
+    float r = size * (0.3 + 0.32 * hb) * smoothstep(clearW + 0.02, clearW + 0.1, abs(x0 - clearX));
+    if (r < 0.004) continue;
+    vec2 p = (q - vec2(x0, base)) / vec2(r, r * (0.55 + 0.35 * hash12(key + 3.7)));
+    p.x += (hash12(key + 5.1) - 0.5) * 0.6 * p.y;
+    float e = pow(abs(p.x), 2.4) + pow(max(p.y, 0.0), 2.4);
+    float a = 1.0 - smoothstep(0.8, 1.0, e);
+    if (a > 0.0 && (a > 0.5 || a > cover)) {
+      vec2 grad = vec2(sign(p.x) * pow(abs(p.x), 1.4), pow(max(p.y, 0.0), 1.4));
+      n = normalize(vec3(grad.x * 0.9, grad.y * 0.9 + 0.15, -1.0));
+      k = fract(hb * 7.3);
+      h = clamp(p.y, 0.0, 1.0);
+    }
+    cover = max(cover, a);
+  }
+}
+
+// Blocks fallen from the cliff, heaped along its foot: a row of big blocks, scree banked against
+// them, smaller stones in front. Returns coverage; n the surface normal, k a 0..1 key for the
+// stone's tone, h how high up the block (0 at its foot, wet, .. 1 at its top).
+float fallsBoulders(vec2 q, float clearX, float clearW, out vec3 n, out float k, out float h) {
+  n = vec3(0.0, 0.0, -1.0);
+  k = 0.0;
+  h = 0.0;
+  float cover = 0.0;
+  fallsBlockRow(q, 0.085, FALLS_POOL + 0.008, 17.0, clearX, clearW, cover, n, k, h);
+  float apron = FALLS_POOL + (0.008 + 0.016 * vnoise(vec2(q.x * 20.0, 3.0))) * smoothstep(clearW, clearW + 0.08, abs(q.x - clearX));
+  if (q.y < apron) {
+    float gv = vnoise(q * vec2(110.0, 140.0));
+    float a = 1.0 - smoothstep(apron - 0.003, apron, q.y);
+    if (a > 0.5 || a > cover) {
+      n = normalize(vec3((gv - 0.5) * 0.9, 0.35 + 0.4 * (gv - 0.5), -1.0));
+      k = 0.1 + 0.3 * gv;
+      h = 0.4 * (q.y - FALLS_POOL) / max(apron - FALLS_POOL, 0.001);
+    }
+    cover = max(cover, a);
+  }
+  fallsBlockRow(q, 0.042, FALLS_POOL - 0.004, 29.0, clearX, clearW, cover, n, k, h);
+  return cover;
+}
+
+// A fallen block's (or the scree's) colour: stone with a little grain, dark and wet toward the
+// water, moss on the tops, and like the ledges a rim of sky light along the tops after dark.
+vec3 fallsBlock(vec2 q, vec3 n, float k, float h, FallsLight L, vec3 skyLight, float wet, float green, float dark) {
+  float grain = vnoise(q * 64.0 + k * 40.0);
+  vec3 stone = mix(vec3(0.16, 0.16, 0.17), vec3(0.32, 0.3, 0.27), k) * (0.8 + 0.4 * grain);
+  float damp = max(wet, 1.0 - smoothstep(0.0, 0.5, h));
+  float moss = smoothstep(0.4, 0.8, n.y + 0.6 * (grain - 0.5)) * smoothstep(0.05, 0.6, green);
+  vec3 albedo = mix(stone * mix(1.0, 0.5, damp), mix(vec3(0.1, 0.24, 0.06), vec3(0.3, 0.48, 0.12), grain), moss);
+  return albedo * fallsLit(L, n) + skyLight * smoothstep(0.4, 0.9, n.y) * (0.03 + 0.1 * damp + 0.2 * dark) * (1.0 - 0.5 * moss);
 }
 
 // The Manifold M cut into the rock, centred at 'at', size its height. x: groove coverage (a
@@ -338,49 +516,71 @@ vec3 fallsMark(vec2 q, vec2 at, float size) {
   return vec3(groove, lit, wall * groove);
 }
 
-// What the pool mirrors at q (a point on the cliff above the waterline): the stone, the falling
-// water and the plunge, done cheaply (no ferns, cracks or carving): the ripples smear it anyway.
-vec3 fallsMirror(vec2 q, FallsLight L, vec3 skyLight, float fx, float flow, float green, float split, float wind, float tm) {
-  float s = fallsStrata(q);
-  float band = floor(s);
-  float f = fract(s);
+// What the pool mirrors at q (a point on the cliff above the waterline): the stone, the fallen
+// blocks, the falling water and the plunge, done cheaply (no ferns, joints or carving): the
+// ripples smear it anyway.
+vec3 fallsMirror(vec2 q, FallsLight L, vec3 skyLight, vec3 glow, float fx, float flow, float green, float split, float wind, float dark, float tm) {
+  float dsdy = 0.0;
+  float s = fallsLayer(q, dsdy);
+  float c = floor(s);
+  float g = s - c;
+  float sp = fallsSplit(c, q.x);
+  bool hard = g < sp;
+  float f = hard ? g / sp : (g - sp) / (1.0 - sp);
   float d = FALLS_LIP - q.y;
   float beside = abs(q.x - fallsCentre(d, fx, flow, wind)) - fallsHalfWidth(d, flow);
   float wet = max(exp(-max(beside, 0.0) / (0.04 + 0.08 * flow)), smoothstep(FALLS_POOL + 0.035, FALLS_POOL, q.y));
-  vec3 n = normalize(vec3(0.0, (f - 0.5) * 0.8, -1.0));
-  vec3 col = fallsStone(band) * (0.72 + 0.45 * vnoise(q * vec2(45.0, 110.0))) * mix(1.0, 0.5, wet) * fallsLit(L, n);
-  float shelf = smoothstep(0.86, 0.92, f) * smoothstep(0.1, 0.3, hash12(vec2(band, 3.1)) - hash12(vec2(band + 1.0, 3.1)));
-  col = mix(col, vec3(0.2, 0.36, 0.1) * fallsLit(L, vec3(0.0, 0.92, -0.4)), shelf * smoothstep(0.0, 0.15, green) * 0.8);
+  float lip = hard ? smoothstep(0.7, 1.0, f) * fallsProud(c, q.x) : 0.0;
+  vec3 n = normalize(vec3(0.0, hard ? (f - 0.5) * 0.5 : 0.0, -1.0));
+  vec3 col = fallsStone(c, hard) * (0.72 + 0.45 * vnoise(q * vec2(28.0, 46.0))) * mix(1.0, 0.5, wet) * fallsLit(L, n) * (hard ? 1.0 : 0.8);
+  col = mix(col, vec3(0.2, 0.36, 0.1) * fallsLit(L, vec3(0.0, 0.85, -0.53)), lip * smoothstep(0.0, 0.15, green) * 0.8);
+  col += skyLight * lip * 0.22 * dark;
+  float drop = FALLS_LIP - FALLS_POOL;
+  float footX = fallsCentre(drop, fx, flow, wind);
+  float footW = fallsHalfWidth(drop, flow);
+  if (q.y < FALLS_POOL + 0.075) {
+    vec3 bn = vec3(0.0, 0.0, -1.0);
+    float bk = 0.0;
+    float bh = 0.0;
+    float block = fallsBoulders(q, footX, footW, bn, bk, bh);
+    if (block > 0.0) col = mix(col, fallsBlock(q, bn, bk, bh, L, skyLight, wet, green, dark), block);
+  }
   float sheen = 0.0;
   vec4 sheet = fallsCurtain(q, fx, flow, split, wind, tm, sheen);
-  if (sheet.x > 0.0) col = mix(col, fallsWater(sheet, sheen, L, skyLight), sheet.x);
-  float drop = FALLS_LIP - FALLS_POOL;
-  vec2 churn = fallsChurn(q, fallsCentre(drop, fx, flow, wind), fallsHalfWidth(drop, flow), flow, tm);
-  return mix(col, fallsFoam(L, churn.y), churn.x);
+  if (sheet.x > 0.0) col = mix(col, fallsWater(sheet, sheen, L, skyLight, glow), sheet.x);
+  vec2 churn = fallsChurn(q, footX, footW, flow, tm);
+  return mix(col, fallsFoam(L, glow, churn.y), churn.x);
 }
 
 // Fireflies over the pool: each drifts on its own slow loop at its own height over the water and
-// flashes now and then; its reflection lies straight below it, as far under the surface as it is
-// above. Perspective sizes them: nearer flies, lower on the screen, are larger.
-float fallsFireflies(vec2 q, float aspect, float tm, float count) {
-  float glow = 0.0;
+// glows up and dies away every few seconds (a smooth pulse, never a per-frame flicker), a warm
+// point with a soft halo; its reflection lies straight below it, as far under the surface as it
+// is above, drawn out by the ripples. Perspective sizes them: nearer flies, lower on the screen,
+// are larger. Returns the light they add.
+vec3 fallsFireflies(vec2 q, float aspect, float tm, float count) {
+  vec3 light = vec3(0.0);
   for (int i = 0; i < 14; i++) {
     float fi = float(i);
     if (fi >= count) break;
     float hx = hash12(vec2(fi, 71.0));
     float hy = hash12(vec2(fi, 72.0));
     float hz = hash12(vec2(fi, 73.0));
-    float ground = 0.04 + 0.21 * hy;
+    float ground = 0.05 + 0.19 * hy;
     float scale = (FALLS_EYE - ground) / (FALLS_EYE - 0.1);
     float x = (hx - 0.5) * aspect * 0.9 + 0.06 * scale * sin(tm * (0.11 + 0.08 * hz) + fi * 2.3);
-    float alt = scale * (0.03 + 0.07 * hz) * (1.0 + 0.25 * sin(tm * 0.23 + fi * 4.1));
-    float pulse = pow(max(sin(tm * (0.5 + 0.4 * hx) + fi * 1.7), 0.0), 5.0);
-    float r = 0.0035 * scale + 0.001;
-    float up = length(q - vec2(x, ground + alt));
-    float down = length((q - vec2(x, ground - alt)) * vec2(1.0, 0.6));
-    glow += pulse * (smoothstep(r, r * 0.4, up) + 0.35 * exp(-up / (r * 3.5)) + 0.45 * smoothstep(r * 1.2, r * 0.3, down) + 0.12 * exp(-down / (r * 3.0)));
+    float alt = scale * (0.025 + 0.06 * hz) * (1.0 + 0.25 * sin(tm * 0.23 + fi * 4.1));
+    float r = 0.0042 * scale + 0.0022;
+    vec2 up = q - vec2(x, ground + alt);
+    vec2 down = (q - vec2(x, ground - alt)) * vec2(1.0, 0.4);
+    if (min(dot(up, up), dot(down, down)) > 196.0 * r * r) continue;
+    float wave = 0.5 + 0.5 * sin(tm * (1.2 + 1.1 * hx) + fi * 1.7);
+    float pulse = 0.1 + 0.9 * wave * wave * wave;
+    float du = length(up) / r;
+    float dd = length(down) / r;
+    light += pulse * (vec3(1.0, 0.95, 0.62) * 1.3 * exp(-du * du) + vec3(0.95, 0.75, 0.24) * 0.32 * exp(-du * 0.33)
+                    + vec3(1.0, 0.9, 0.5) * 0.6 * exp(-dd * dd) + vec3(0.9, 0.7, 0.22) * 0.12 * exp(-dd * 0.4));
   }
-  return glow;
+  return light;
 }
 
 // Ferns on the near bank: up to four clumps toward the corners (more with more greenery), fronds
@@ -439,8 +639,20 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
   L.sunCol = sky.sunColor * (1.0 - overcast);
   L.moonCol = sky.moonColor * (1.0 - overcast);
   L.amb = sky.ambient * (1.0 - 0.3 * overcast);
-  // What a glassy surface shows of the sky, and the haze on the horizon (fog, distance).
+  // Night vision: as the light fails the eye adapts, so the scene below the sky is shaded with
+  // the light scaled back up toward a readable level (the sky itself is left as the library paints
+  // it) and its blue cast softened. dark (0 by day .. 1 at night) brings in what shows only after
+  // dusk: sky light along the ledges, the white water's soft glow, rain lit around the fall.
+  float lightLum = dot(L.amb, LUMA) + 0.6 * dot(L.sunCol, LUMA) + 0.5 * dot(L.moonCol, LUMA);
+  float adapt = clamp(0.42 / max(lightLum, 0.01), 1.0, 6.0);
+  float dark = 1.0 - smoothstep(0.15, 0.5, lightLum);
+  L.amb = mix(L.amb, vec3(dot(L.amb, LUMA)), 0.3 * dark) * adapt;
+  L.sunCol *= adapt;
+  L.moonCol *= adapt;
+  // What a glassy surface shows of the sky, the white water's own light after dark, and the haze
+  // on the horizon (fog, distance).
   vec3 skyLight = L.amb * 1.5 + L.sunCol * 0.3 + L.moonCol * 0.35;
+  vec3 glow = vec3(0.75, 0.88, 1.0) * dot(L.amb + 0.8 * L.moonCol, LUMA) * 0.5 * dark;
   vec3 haze = skyColor(sky, fallsWorld(normalize(vec3(rayCam.x, 0.04, 1.0))));
   haze = mix(haze, vec3(dot(haze, LUMA)), 0.6 * overcast);
 
@@ -482,7 +694,8 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     }
   } else if (qc.y > FALLS_POOL) {
     // The cliff face.
-    float s = fallsStrata(qc);
+    float dsdy = 0.0;
+    float s = fallsLayer(qc, dsdy);
     float d = FALLS_LIP - qc.y;
     float beside = abs(qc.x - fallsCentre(d, fx, flow, wind)) - fallsHalfWidth(d, flow);
     // Spray soaks the rock beside the fall, widest near the foot; the pool wets the base; rain
@@ -499,12 +712,12 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     FallsLight Lr = L;
     Lr.sunCol *= 1.0 - shade * (0.5 + 0.4 * flow);
     Lr.amb *= 1.0 - 0.35 * smoothstep(0.0, -0.02, beside) * step(0.0, d);
-    col = fallsRock(qc, s, rayCam, Lr, wet, green, tm, glint);
+    col = fallsRock(qc, s, dsdy, rayCam, Lr, wet, green, dark, tm, glint);
     if (green > 0.0) {
       // The fall's draught stirs the ferns beside it.
       float draught = exp(-max(beside, 0.0) / 0.08) * (0.3 + 0.7 * flow);
       float tip = 0.0;
-      float fern = fallsFerns(qc, s, green, 0.06 + 0.2 * abs(wind) + 0.12 * draught, tm, tip);
+      float fern = fallsFerns(qc, s, dsdy, green, 0.06 + 0.2 * abs(wind) + 0.12 * draught, tm, tip);
       if (fern > 0.0) {
         vec3 frond = mix(vec3(0.06, 0.17, 0.05), vec3(0.3, 0.5, 0.15), 0.3 + 0.55 * tip);
         col = mix(col, frond * fallsLit(Lr, normalize(vec3(0.0, 0.4, -1.0))), fern);
@@ -518,6 +731,17 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
         vec3 held = FALLS_CYAN * (L.amb * 1.5 + L.sunCol * 0.3 + L.moonCol * 0.5);
         col = mix(col, col * mix(0.35, 0.75, mk.y) + held * (0.12 + 0.3 * mk.y + 0.35 * mk.z), mk.x);
         markAccent = mk.x * (0.5 + 0.35 * mk.y + 0.15 * mk.z);
+      }
+    }
+    // Blocks fallen from the cliff, heaped along its foot with scree.
+    if (qc.y < FALLS_POOL + 0.075) {
+      vec3 bn = vec3(0.0, 0.0, -1.0);
+      float bk = 0.0;
+      float bh = 0.0;
+      float block = fallsBoulders(qc, footX, footW, bn, bk, bh);
+      if (block > 0.0) {
+        col = mix(col, fallsBlock(qc, bn, bk, bh, Lr, skyLight, wet, green, dark), block);
+        glint *= 1.0 - block;
       }
     }
     fogDist = 0.55;
@@ -547,7 +771,7 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     // The mirror image: a vertical cliff at the pool's far edge reflects about the waterline
     // exactly; the tilted surface smears it, mostly up and down.
     vec2 mq = vec2(qc.x + slope.x * 0.012, 2.0 * FALLS_POOL - qc.y + slope.y * 0.03);
-    vec3 mirror = fallsMirror(mq, L, skyLight, fx, flow, green, mark, wind, tm);
+    vec3 mirror = fallsMirror(mq, L, skyLight, glow, fx, flow, green, mark, wind, dark, tm);
     // Schlick's Fresnel: a mirror at grazing angles far off, dark water underfoot.
     float cosI = clamp(-rayCam.y + slope.y * 0.03, 0.02, 1.0);
     float fresnel = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);
@@ -555,13 +779,15 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     vec3 body = mix(vec3(0.012, 0.035, 0.035), vec3(0.08, 0.27, 0.26), aerated) * (L.amb * 1.3 + L.sunCol * 0.45 + L.moonCol * 0.4);
     col = mix(body, mirror * 0.92, fresnel);
     float crest = smoothstep(0.75, 1.0, sin(phase)) * rings;
-    col += skyLight * (crest * 0.12 + drops.z * 0.35);
+    col += skyLight * (crest * (0.12 + 0.2 * dark) + drops.z * 0.35);
+    // Facets of the ruffled water tipped toward the viewer catch the open sky.
+    col += skyLight * smoothstep(0.1, 0.35, slope.y) * (0.03 + 0.1 * dark) * detail;
     glint = crest * 0.3 + drops.z * 0.5;
     // Foam rafts carried out from the plunge, stretching sideways as they spread.
     float ang = atan(rel.x, -rel.y);
     vec2 fp = vec2(ang * 2.8, r * 0.7 - tm * 0.2);
     float raft = smoothstep(0.52, 0.74, 0.65 * vnoise(fp) + 0.35 * mix(0.5, vnoise(fp * 2.1 + 5.0), detail) + 0.3 * exp(-r * 0.5)) * exp(-r * 0.12) * (0.3 + 0.7 * flow);
-    col = mix(col, fallsFoam(L, 0.7), raft * 0.85);
+    col = mix(col, fallsFoam(L, glow, 0.7), raft * 0.85);
     white = raft * 0.6;
     fogDist = mix(0.1, 0.5, clamp((depth - focal / FALLS_EYE) / (back - focal / FALLS_EYE), 0.0, 1.0));
   }
@@ -571,7 +797,7 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     float sheen = 0.0;
     vec4 sheet = fallsCurtain(qc, fx, flow, mark, wind, tm, sheen);
     if (sheet.x > 0.0) {
-      vec3 water = fallsWater(sheet, sheen, L, skyLight);
+      vec3 water = fallsWater(sheet, sheen, L, skyLight, glow);
       // Where it curves over the lip the water mirrors the sky in one bright line.
       water += skyLight * 0.6 * exp(-abs(FALLS_LIP - qc.y + 0.002) / 0.004) * max(1.0 - sheet.w * sheet.w, 0.0);
       col = mix(col, water, sheet.x);
@@ -585,14 +811,15 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
   // The plunge.
   vec2 churn = fallsChurn(qc, footX, footW, flow, tm);
   if (churn.x > 0.0) {
-    col = mix(col, fallsFoam(L, churn.y), churn.x);
+    col = mix(col, fallsFoam(L, glow, churn.y), churn.x);
     white = max(white, churn.x);
     glint *= 1.0 - churn.x;
   }
 
   col = mix(col, haze, fogAmount(K_fog, fogDist, clamp((qc.y - FALLS_POOL) / 0.6, 0.0, 1.0)));
 
-  // Spray: the plume from the plunge, and spray hugging the lower sheet and its frayed edges.
+  // Spray: the plume and fans from the plunge, and spray hugging the lower sheet and its frayed
+  // edges.
   float density = fallsMist(qc, footX, footW, flow, mistAmount, wind, tm);
   float fallen = FALLS_LIP - qc.y;
   if (fallen > 0.1 && qc.y > FALLS_POOL - 0.03) {
@@ -624,10 +851,14 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     col = col * (1.0 - bowLit * (0.3 * max(bow.r, max(bow.g, bow.b)) + 0.12 * alexander)) + (bow * 0.6 + 0.08 * smoothstep(41.0, 30.0, ang)) * L.sunCol * bowLit;
   }
 
+  // The white water's bloom after dark, in the air about it and in the pool.
+  float halo = dark > 0.0 ? fallsHalo(qc, fx, flow, wind) : 0.0;
+  col += glow * halo;
+
   // Fireflies, from dusk on.
-  float dusk = clamp(sky.night + 0.8 * sky.twilight, 0.0, 1.0) * (1.0 - 0.7 * rain);
-  if (K_fireflies > 0.0 && dusk > 0.0) {
-    col += vec3(0.78, 1.0, 0.38) * fallsFireflies(q - uPointer * vec2(0.01, 0.005), aspect, tm, 4.0 + 10.0 * K_fireflies) * dusk;
+  float dusk = clamp(sky.night + 0.8 * sky.twilight, 0.0, 1.0) * (1.0 - sky.day) * (1.0 - 0.7 * rain);
+  if (K_fireflies > 0.0 && dusk > 0.0 && q.y < 0.42) {
+    col += fallsFireflies(q - uPointer * vec2(0.01, 0.005), aspect, tm, 4.0 + 10.0 * K_fireflies) * dusk;
   }
 
   // The near bank: dark boulders and ferns along the bottom of the frame.
@@ -659,10 +890,14 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
     spray *= 1.0 - front;
     mistAccent *= 1.0 - front;
     markAccent *= 1.0 - front;
+    halo *= 1.0 - front;
+    mistA *= 1.0 - front;
   }
 
   if (rain > 0.0) {
-    col = mix(col, skyLight + vec3(0.04), 0.55 * rainStreaks(uv, aspect, t, rain, wind));
+    // Lit by the sky, and after dark by the white water's glow: the streaks show around the fall.
+    vec3 rainLight = skyLight * (1.0 - 0.6 * dark) + vec3(0.04) + glow * (3.0 * halo + 2.0 * mistA);
+    col = mix(col, rainLight, (0.55 + 0.15 * dark) * rainStreaks(uv, aspect, t, rain, wind));
   }
 
   o.rgb = col;

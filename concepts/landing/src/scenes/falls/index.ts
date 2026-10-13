@@ -1,6 +1,7 @@
-// A waterfall seen level from the edge of its plunge pool: a cliff of wet basalt beds, the fall
-// pouring from a notch in the lip, spray rising from the plunge with a rainbow in it, ferns on the
-// ledges and fireflies over the water at dusk. All in the shader; no simulation.
+// A waterfall seen level from the edge of its plunge pool: a cliff of basalt flows and rusty ash
+// beds with fallen blocks heaped at its foot, the fall pouring from a notch in the lip, spray
+// rising from the plunge with a rainbow in it, ferns on the ledges and fireflies over the water at
+// dusk. All in the shader; no simulation.
 import { feature, range } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
