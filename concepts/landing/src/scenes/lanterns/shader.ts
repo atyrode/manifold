@@ -23,14 +23,16 @@
 //
 // Rain (K_rain, slanted by K_wind) belongs to the evening rather than lying over it. A deck of
 // cloud draws over the dusk (pale over the afterglow in a drizzle, low and dark down to the hills
-// in a downpour, with shafts of rain hanging under it), the light dims and flattens, the mist
-// greys. The drops fall in depth (the shared rainFall, hidden behind whatever the eye ray meets
-// first) and are lit by what lights the air round them, so they streak amber only through the
-// lanterns' halos and by the bank's lamps; their veil swallows the far bank as it pours. The river
-// rings everywhere: rings near us, catching the lantern light, crowns thrown up in heavy rain, and
-// beyond, where the rings are too small to draw, a dimpled, duller mirror smearing every
-// reflection. As the world wets (uWeather.x) the bank's tiles, lacquer and stone and the stones in
-// the river darken and turn glossy. In heavy rain the candles gutter, and in a downpour some drown.
+// in a downpour, glowing faintly warm grey with the temple and town lights after dark, with shafts
+// of rain hanging under it), the light dims and flattens, the mist greys. The drops fall in depth
+// (the shared rainFall, hidden behind whatever the eye ray meets first) and shine with the cloud
+// base they refract, faint grey lines against the dark bank and water, and amber where they fall
+// through the lanterns' halos; their veil swallows the far bank as it pours. The river rings in
+// front of us, the rings catching the lantern light and the cloud base, and beyond, where the
+// rings are too small to draw, it is a dimpled sheet of grey sheen mirroring the overcast and
+// smearing every reflection. As the world wets (uWeather.x) the bank's tiles, lacquer and stone and
+// the stones in the river darken and turn glossy. In heavy rain the candles gutter, and in a
+// downpour some drown.
 //
 // Nothing changes by chance from one frame to the next: every motion is a slow function of time
 // (ripples and glitter rows under 0.2 Hz, flames breathing under 0.4 Hz, a guttering candle dipping
@@ -322,6 +324,16 @@ float lanternsStars(vec2 e) {
   return star * (0.4 + 0.6 * m) * breathe;
 }
 
+// The rain cloud's underside, unmottled, from haze (the sky's colour low over the bank): a grey
+// that darkens as the rain grows heavy. At dusk and after dark the cloud still glows faintly with
+// the temple's lamps and the town beyond, a warm grey it never falls below, so the river has a
+// sheen to mirror and the drops something to refract.
+const vec3 LANTERNS_CLOUD_GLOW = vec3(0.17, 0.155, 0.14);
+vec3 lanternsCloudBase(vec3 haze) {
+  vec3 grey = mix(vec3(dot(haze, LUMA)), haze, 0.35);
+  return max(grey, LANTERNS_CLOUD_GLOW) * mix(0.95, 0.65, smoothstep(0.35, 1.0, K_rain));
+}
+
 // The rain's sky. As it rains a deck of cloud draws over the dusk: thin and pale in a drizzle,
 // the afterglow still showing in a band under it; lower, darker and down to the hills in a
 // downpour; its underside mottled by broad, slow swells drifting with the wind. Under it, from
@@ -335,7 +347,7 @@ vec4 lanternsOvercast(vec2 e, vec3 haze, float tm, out float shaft) {
   float heavy = smoothstep(0.35, 1.0, K_rain);
   float drift = K_wind * tm * 0.01;
   float swell = 0.65 * vnoise(vec2(e.x * 2.2 - drift, e.y * 7.0 + 1.3)) + 0.35 * vnoise(vec2(e.x * 5.5 - drift * 1.7, e.y * 16.0 + 6.1));
-  vec3 deck = mix(vec3(dot(haze, LUMA)), haze, 0.35) * mix(0.95, 0.5, heavy) * (0.8 + 0.4 * swell);
+  vec3 deck = lanternsCloudBase(haze) * (0.8 + 0.4 * swell);
   float base = mix(0.11, -0.02, heavy); // the deck's lower edge, above the horizon
   float cover = sqrt(K_rain) * smoothstep(base, base + 0.05 + 0.05 * swell, e.y);
   shaft = smoothstep(0.55, 0.85, vnoise(vec2(e.x * 3.2 - drift * 2.0, 4.7))) * smoothstep(0.25, 0.7, K_rain);
@@ -651,6 +663,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   float mist = clamp(K_mist + 0.15 * K_rain, 0.0, 1.0);
   // In heavy rain the candles gutter.
   float storm = smoothstep(0.5, 1.0, K_rain);
+  vec3 cloud = lanternsCloudBase(haze); // the rain cloud's underside
   float current = mix(LANTERNS_CURRENT_SLOW, LANTERNS_CURRENT_FAST, K_current);
   float rippled = K_ripple * (1.0 + 0.6 * abs(K_wind));
   float shore = LANTERNS_HORIZON - LANTERNS_EYE * LANTERNS_FOCAL / LANTERNS_BANK;
@@ -671,10 +684,9 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   vec3 glint = vec3(0.0);
   // How far down the water (m) a lantern's glitter runs before it has faded.
   float reach = 3.0 + 14.0 * K_reflection;
-  // Rain on the water: rings (xy tilt, z light on their crests), crowns thrown up in heavy rain,
-  // and how much of either these cells can draw.
+  // Rain on the water: rings (xy tilt, z light on their crests) and how much of them these cells
+  // can draw.
   vec3 drops = vec3(0.0);
-  float splash = 0.0;
   float rainFade = 0.0;
 
   if (!water) {
@@ -720,19 +732,17 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     vec2 slope = rip.xy * (1.0 - 0.7 * lee) + vec2(0.0, wake * 0.09 * (0.4 + rippled));
     float hidden = rip.z * (1.0 - 0.7 * lee);
 
-    // Rain: rings on the water, as many as it rains hard, faded out where they would shrink below a
-    // few cells. Further out the rings are too small to draw but still dimple the whole river:
-    // they roughen its mirror, smearing the reflections and greying the water. In heavy rain the
-    // drops also throw up little crowns of water close in front of us.
+    // Rain: rings on the water, as many as it rains hard, drawn only where the bright crest of a
+    // ring (a tenth of a ring unit) is three cells or more across and deep, and expanding at well
+    // under a cell a frame; finer rings would shimmer through the dither. Further out the rings
+    // are too small to draw but still dimple the whole river, roughening its mirror into a sheen.
     if (K_rain > 0.0) {
-      vec2 rp = vec2(xp * 3.0, zp * 1.2);
-      rainFade = 1.0 - smoothstep(0.08, 0.25, max(cellX * 3.0, cellZ * 1.2));
-      drops = rainRipples(rp, t, K_rain) * rainFade;
+      vec2 rp = vec2(xp * 2.5, zp * 0.8);
+      float band = 0.1 * min(1.0 / (2.5 * cellX), 1.0 / (0.8 * cellZ));
+      rainFade = smoothstep(2.5, 4.0, band);
+      drops = rainRipples(rp, t * 0.7, K_rain) * rainFade;
       slope += drops.xy * 0.35;
       hidden += K_rain * 0.008 * (1.0 - rainFade);
-      // Crowns are a few centimetres across: only where a metre spans 25 cells or more.
-      float near = 1.0 - smoothstep(0.03, 0.05, max(cellX, cellZ));
-      splash = rainSplashes(vec2(xp, zp), t, K_rain) * near * smoothstep(0.5, 0.9, K_rain);
     }
 
     vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
@@ -756,8 +766,14 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     lamp = lampSeen * fres * 1.3;
     vec3 body = vec3(0.004, 0.012, 0.018) + lit * 0.03; // the river's own dark green-blue
     // Darker toward our bank, where the water mirrors the high, dim sky and lies in our bank's shade.
-    col = mix(body, mirror, fres) * (0.6 + 0.4 * smoothstep(0.0, 0.32, uv.y));
-    col += drops.z * 0.3 * (mirror + lit * 0.2) + haze * 0.06 * K_rain * (1.0 - rainFade);
+    // Rained on, the river turns a dimpled sheet of grey light: the rings tip facets every way, so
+    // even straight below us much of the water faces the bright cloud base, and under the even
+    // light of the overcast our bank's shade lifts. The ring crests catch the cloud base too.
+    float dimple = smoothstep(0.0, 0.4, K_rain);
+    float shade = mix(0.6 + 0.4 * smoothstep(0.0, 0.32, uv.y), 1.0, 0.6 * dimple);
+    float sheen = mix(fres, max(fres, 0.5 + 0.2 * K_rain), dimple);
+    col = mix(body, mirror, sheen) * shade;
+    col += drops.z * (0.3 * mirror + 0.4 * cloud);
     col += stir;
   }
 
@@ -797,7 +813,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   float waterGlow = 0.0;
   vec3 inAir = vec3(0.0);   // lantern light in the air: halos
   float airGlow = 0.0;
-  vec3 pool = vec3(0.0);    // lantern light falling on the water here, for the rain's rings and crowns
+  vec3 pool = vec3(0.0);    // lantern light falling on the water here, for the rain's rings
   if (uSimOn.x > 0.5) {
     for (int i = 0; i < LANTERNS_MAX; i++) {
       vec4 st = texelFetch(uSim0, ivec2(i, 0), 0); // x, z (m), turn (rad), candle 0..1
@@ -907,9 +923,9 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   if (water) {
     col += onWater;
     glow += waterGlow;
-    // The rain's rings and crowns catch the lantern light where it falls on the water.
-    col += drops.z * pool * 0.9 + splash * (lit * 0.5 + pool * 1.2);
-    glow += (drops.z * 0.9 + splash * 1.2) * dot(pool, LUMA);
+    // The rain's rings catch the lantern light where it falls on the water.
+    col += drops.z * pool * 0.7;
+    glow += drops.z * 0.7 * dot(pool, LUMA);
     // Mist over the water: thicker toward the far bank, lying in long horizontal bands (sized on
     // screen, so they stay broad near and far) that drift downstream, lit by the lanterns in it.
     float wisp = vnoise(vec2((xp + 0.6 * current * tm) / zp * 2.5, log(zp) * 3.5));
@@ -937,8 +953,11 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     vec3 air = mix(vec3(dot(haze, LUMA)), haze, 0.5) * 0.85 + inAir * 0.6;
     col = mix(col, air, p.veil);
     glow *= 1.0 - 0.5 * p.veil;
-    vec3 drop = lit * 0.5 + haze * 0.3 + inAir * mix(5.0, 1.5, p.near) + LANTERNS_LAMP * lamp * 0.4;
-    col = mix(col, drop, p.cover * 0.6);
+    // Drops shine with the cloud base they refract (a floor so some rain still reads in the dark),
+    // and with lantern light where they fall through a halo; near, out-of-focus drops dimmer. The
+    // bank's lamps are a hundred metres beyond the nearest drops, so they light none of them.
+    vec3 drop = max(cloud * 1.2, vec3(0.08)) + inAir * mix(3.0, 1.0, p.near);
+    col = mix(col, drop * mix(1.0, 0.8, p.near), p.cover);
     glow += p.cover * airGlow * mix(1.0, 0.3, p.near) * 0.6;
   }
 
