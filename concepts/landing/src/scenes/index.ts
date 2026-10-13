@@ -26,6 +26,7 @@ import { petriScene } from "./petri/index.ts";
 import { physarumScene } from "./physarum/index.ts";
 import { pondScene } from "./pond/index.ts";
 import { prismScene } from "./prism/index.ts";
+import { sandtableScene } from "./sandtable/index.ts";
 import { shanshuiScene } from "./shanshui/index.ts";
 import { shoreScene } from "./shore/index.ts";
 import { sillScene } from "./sill/index.ts";
@@ -67,6 +68,7 @@ export const sceneDefs = {
   physarum: physarumScene,
   film: filmScene,
   incense: incenseScene,
+  sandtable: sandtableScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
