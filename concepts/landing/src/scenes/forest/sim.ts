@@ -59,13 +59,13 @@ export function forestStreamHalf(z: number): number {
 }
 
 /**
- * The great cedar framing the left, its axis `edge` screen heights in from the left edge: the bole's
- * radius (m), how much wider its buttressed foot is (a share), over how many metres up that flare
- * fades, and its lean (m across per m up).
+ * The great cedar on the left, its axis `edge` screen heights in from the left edge so the whole bole
+ * shows: its radius (m), how much wider its buttressed foot is (a share), over how many metres up that
+ * flare fades, and its lean (m across per m up).
  */
-export const FOREST_HERO = { edge: 0.13, z: 3.8, radius: 0.92, flare: 0.75, flareHeight: 0.5, lean: 0.05 } as const;
+export const FOREST_HERO = { edge: 0.33, z: 3.8, radius: 0.95, flare: 0.8, flareHeight: 0.7, lean: 0.04 } as const;
 /** The old beech on the right, its axis `edge` in from the right edge; it puts out the branch. */
-export const FOREST_ELDER = { edge: 0.17, z: 7, radius: 0.72, flare: 0.8, flareHeight: 0.6, lean: -0.02 } as const;
+export const FOREST_ELDER = { edge: 0.17, z: 7, radius: 0.85, flare: 0.8, flareHeight: 0.6, lean: -0.02 } as const;
 /**
  * The beech's branch, in metres at its depth: it leaves the trunk `root` radii left of the axis at
  * `height`; along s = 0..1 of its `length` its centre line rises by rise s - sag s^2 and its radius
@@ -74,10 +74,8 @@ export const FOREST_ELDER = { edge: 0.17, z: 7, radius: 0.72, flare: 0.8, flareH
 export const FOREST_BRANCH = { height: 3.05, length: 3.3, rise: 0.75, sag: 0.45, radius: 0.17, tip: 0.07, root: 0.55 } as const;
 /** Moss beards hang from the branch in lanes this far apart (m); the drips fall from their tips. */
 export const FOREST_BEARD_SPACING = 0.2;
-/** A second cedar, left of the stream at a fixed world x (m). */
-export const FOREST_SISTER = { x: -3.1, z: 7.4, radius: 0.62, flare: 0.8, flareHeight: 0.55, lean: 0.02 } as const;
 /** Mossy boulders: centre `edge` screen heights in from the left / right edge, depth, radii across and up (m), centre height (m). */
-export const FOREST_ROCK_LEFT = { edge: 0.43, z: 3, rx: 0.62, ry: 0.5, centre: 0.1 } as const;
+export const FOREST_ROCK_LEFT = { edge: 0.62, z: 3, rx: 0.62, ry: 0.5, centre: 0.1 } as const;
 export const FOREST_ROCK_RIGHT = { edge: 0.31, z: 4.4, rx: 0.6, ry: 0.44, centre: -0.02 } as const;
 /** The fallen log, lying across from world x `from` to `to` (m) at depth z, its radius (m). */
 export const FOREST_LOG = { from: 0.95, to: 5.8, z: 8.5, radius: 0.34 } as const;
@@ -87,6 +85,8 @@ export const FOREST_LOG = { from: 0.95, to: 5.8, z: 8.5, radius: 0.34 } as const
  * foot, the left foot sunk in a mound of moss.
  */
 export const FOREST_TORII = { z: 13, span: 1.55, height: 3.05, beam: 0.25, overhang: 0.75, lean: 0.05 } as const;
+/** A cluster of mushrooms on the moss mound swallowing the torii's left foot, in the torii's own frame (m). */
+export const FOREST_GATE_SHROOMS = { x: -1.15, y: 0.42 } as const;
 /** Stepping stones across the stream: depth, offset from the stream's centre, radius, height above the water (m). */
 export const FOREST_STONES = [
   { z: 5.2, offset: -0.42, radius: 0.24, height: 0.14 },
@@ -123,6 +123,15 @@ function onRock(rock: Rock, cx: number, u: number): [number, number, number] {
   return [cx + (u * rock.rx) / rock.z, forestScreenY(rock.centre, rock.z) + (rock.ry / rock.z) * Math.sqrt(1 - u * u), rock.z];
 }
 
+/** A point of the torii's own frame (m: x from its centre, y up from its feet), leaning with it, on screen. */
+function onTorii(x: number, y: number): [number, number, number] {
+  const t = FOREST_TORII;
+  const c = Math.cos(t.lean);
+  const s = Math.sin(t.lean);
+  const px = x - t.span;
+  return [(forestStreamX(t.z) + t.span + c * px - s * y) / t.z, forestScreenY(s * px + c * y, t.z), t.z];
+}
+
 /**
  * Where the glowing mushrooms grow, for a frame of this aspect: screen x, y (at parallax 0) and
  * depth (m) of each cluster's foot. shader.ts places them the same way.
@@ -132,13 +141,13 @@ export function forestShroomSites(aspect: number): [number, number, number][] {
   const left = -0.5 * la + FOREST_ROCK_LEFT.edge;
   const right = 0.5 * la - FOREST_ROCK_RIGHT.edge;
   const logTop = forestScreenY(2 * FOREST_LOG.radius - 0.03, FOREST_LOG.z);
-  const floorZ = FOREST_SISTER.z - 0.6;
+  const gate = FOREST_GATE_SHROOMS;
   return [
     onRock(FOREST_ROCK_LEFT, left, 0.8),
     onRock(FOREST_ROCK_LEFT, left, -0.66),
     [1.25 / FOREST_LOG.z, logTop, FOREST_LOG.z],
     [3.9 / FOREST_LOG.z, logTop, FOREST_LOG.z],
-    [(FOREST_SISTER.x + 1.05) / floorZ, forestScreenY(0, floorZ), floorZ],
+    onTorii(gate.x, gate.y),
     onRock(FOREST_ROCK_RIGHT, right, -0.72),
   ];
 }
@@ -170,24 +179,16 @@ function forestPerches(aspect: number): Perch[] {
     add([(rootX - s * b.length) / FOREST_ELDER.z, forestScreenY(top - 0.02, FOREST_ELDER.z), FOREST_ELDER.z]);
   }
   // On the torii's top beam, leaning with it.
-  const t = FOREST_TORII;
-  const cx = forestStreamX(t.z);
-  const c = Math.cos(t.lean);
-  const sn = Math.sin(t.lean);
-  for (const lx of [-0.75, 0.8]) {
-    const px = lx - t.span;
-    const py = forestKasagiTop(lx) + 0.03;
-    add([(cx + t.span + c * px - sn * py) / t.z, forestScreenY(sn * px + c * py, t.z), t.z]);
-  }
+  for (const lx of [-0.75, 0.8]) add(onTorii(lx, forestKasagiTop(lx) + 0.03));
   // Two of the stepping stones.
   for (const stone of [FOREST_STONES[0], FOREST_STONES[2]]) {
     add([(forestStreamX(stone.z) + stone.offset) / stone.z, forestScreenY(stone.height - 0.01, stone.z), stone.z]);
   }
-  // The floor: between the cedars' roots, at the beech's foot, on the banks before the torii.
+  // The floor: on the right bank before the torii, at the beech's foot, on both banks nearer the torii.
   const elderX = (0.5 * la - FOREST_ELDER.edge) * FOREST_ELDER.z;
   const floor: [number, number][] = [
-    [FOREST_SISTER.x + 1.3, 6.6],
-    [elderX - 1.75, 6.5],
+    [forestStreamX(9) + forestStreamHalf(9) + 0.3, 9],
+    [elderX - 2.0, 6.5],
     [forestStreamX(12.2) + forestStreamHalf(12.2) + 0.6, 12.2],
     [forestStreamX(12) - forestStreamHalf(12) - 0.7, 12],
   ];
@@ -246,7 +247,9 @@ const STAG_FADE = 3; // s to fade away if its knob goes off mid-crossing
 // Motes.
 const MAX_MOTES = 140;
 /** Motes at spores amount 1, leaving room for puffs. */
-const MOTE_TARGET = 110;
+const MOTE_TARGET = 90;
+/** Share of motes that rise from the mushrooms (the rest are dust, seen in the shafts). */
+const MOTE_FROM_SHROOMS = 0.55;
 const MOTE_FADE_IN = 2.5;
 const MOTE_FADE_OUT = 3;
 const MOTE_LIFE_MIN = 14;
@@ -456,6 +459,7 @@ class ForestSim implements SceneSim {
     mode: "walk", timer: 0, look: 0, headUp: 0.35, alpha: 0, lastDir: -1, next: Number.POSITIVE_INFINITY,
   };
   #perches: Perch[] = [];
+  #shroomSites: [number, number, number][] = [];
   #aspect = 0;
   #moteCols = 0;
 
@@ -579,6 +583,7 @@ class ForestSim implements SceneSim {
   #resize(aspect: number): void {
     this.#aspect = aspect;
     this.#perches = forestPerches(aspect);
+    this.#shroomSites = forestShroomSites(aspect);
     this.#moteCols = Math.ceil(FOREST_MOTE_ROWS * aspect) + 1;
     this.#moteTexture.resize(2 * this.#moteCols, FOREST_MOTE_ROWS);
     this.#moteData = new Float32Array(2 * this.#moteCols * FOREST_MOTE_ROWS * 4);
@@ -624,7 +629,7 @@ class ForestSim implements SceneSim {
     if (fired(0)) this.#gather();
     if (fired(1) && !this.#stag.active) this.#startStag(aspect, true);
     if (fired(2)) this.#puffMark(aspect);
-    if (fired(3)) this.#puffShrooms(aspect);
+    if (fired(3)) this.#puffShrooms();
     this.#primed = true;
   }
 
@@ -1006,9 +1011,17 @@ class ForestSim implements SceneSim {
     const r = this.#random;
     mote.alive = true;
     mote.puff = false;
-    mote.x = (2 * r() - 1) * 0.5 * aspect;
-    mote.y = r() < 0.45 ? 0.04 + 0.4 * r() : 0.04 + 0.9 * r();
-    mote.z = MOTE_NEAR * (MOTE_FAR / MOTE_NEAR) ** r();
+    const site = r() < MOTE_FROM_SHROOMS ? this.#shroomSites[Math.floor(r() * this.#shroomSites.length)] : undefined;
+    if (site) {
+      const [x, y, z] = site;
+      mote.x = x + (r() - 0.5) * 0.12;
+      mote.y = y + 0.08 * r();
+      mote.z = Math.max(MOTE_NEAR, z * (0.9 + 0.2 * r()));
+    } else {
+      mote.x = (2 * r() - 1) * 0.5 * aspect;
+      mote.y = 0.04 + 0.9 * r();
+      mote.z = MOTE_NEAR * (MOTE_FAR / MOTE_NEAR) ** r();
+    }
     mote.life = MOTE_LIFE_MIN + (MOTE_LIFE_MAX - MOTE_LIFE_MIN) * r();
     mote.age = anyAge ? r() * mote.life : 0;
     mote.base = 0.5 + 0.5 * r();
@@ -1040,8 +1053,8 @@ class ForestSim implements SceneSim {
   }
 
   /** The mushrooms breathe out their spores. */
-  #puffShrooms(aspect: number): void {
-    for (const [x, y, z] of forestShroomSites(aspect)) this.#puff(x, y + 0.06 / z, z - 0.1, 5, 0.12 / z, 1);
+  #puffShrooms(): void {
+    for (const [x, y, z] of this.#shroomSites) this.#puff(x, y + 0.06 / z, z - 0.1, 5, 0.12 / z, 1);
   }
 
   /** Spores rise from the roots of the M. */

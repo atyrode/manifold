@@ -1,15 +1,16 @@
-// The mystic forest's picture, back to front: the mist (jade-grey, brighter up toward the canopy, lit
-// by the sky and by shafts of sun or moon falling through the canopy's gaps), the sky in those gaps,
-// the floor (moss, cedar litter and roots, the stream with the bed showing through near and the mist
-// and the torii mirrored far, foam round the stepping stones), three layers of far trunks fading into
-// the mist, the stag crossing between them, the torii over the stream half swallowed by moss, the
-// fallen log, the second cedar, the old beech with its branch and beards of lichen, the stepping
-// stones, the near boulder, the great cedar with its rope and paper streamers, the boulder its roots
-// grip (or the M they grew into), the ferns in the corners; then the spirits on their perches, the
-// glow of mushrooms, spirits and M in the air, the mist's drifting banks, the spores, the drips off the
-// canopy and the rain, in depth. Rain closes the sky, greys and thickens the mist, and (through
-// uWeather.x, how wet the forest is) darkens and glosses every surface, pools on the floor, rings the
-// stream and keeps the beards, the torii and the canopy dripping as it dries.
+// The mystic forest's picture, back to front: the mist (luminous grey-green, near white up toward the
+// canopy, lit by the sky and by shafts of sun or moon falling through the canopy's gaps), the sky in
+// those gaps, the floor (moss, cedar litter and roots, the stream a ribbon of light with the bed
+// showing through near and the mist and the torii mirrored far, foam round the stepping stones), three
+// layers of far trunks fading into the mist, the stag crossing between them, the torii over the stream
+// half swallowed by moss with mushrooms at its foot, the fallen log, the old beech with its branch and
+// beards of lichen, the stepping stones, the near boulder, the great cedar with its rope and paper
+// streamers, the boulder its roots grip (or the M they grew into), the ferns in the corners; then the
+// spirits on their perches, the glow of mushrooms, spirits and M in the air, the mist's drifting banks,
+// the spores (round the mushrooms and in the shafts), the drips off the canopy and the rain, in depth.
+// Rain closes the sky, greys and thickens the mist, and (through uWeather.x, how wet the forest is)
+// darkens and glosses every surface, pools on the floor, rings the stream and keeps the beards, the
+// torii and the canopy dripping as it dries.
 // The sim (sim.ts) moves the spirits, the stag, the motes and the mist field; its textures are
 // described there. Knobs read here: K_spirits (via the sim), K_mushrooms, K_spores, K_stream, K_mist,
 // K_shafts, K_forestSeed, K_time, K_cycle, K_rain, K_wind, K_mark; triggers 2 (the M) and 3 (spores).
@@ -18,6 +19,7 @@ import {
   FOREST_BRANCH,
   FOREST_ELDER,
   FOREST_EYE,
+  FOREST_GATE_SHROOMS,
   FOREST_HERO,
   FOREST_HORIZON,
   FOREST_LOG,
@@ -26,7 +28,6 @@ import {
   FOREST_MOTE_ROWS,
   FOREST_ROCK_LEFT,
   FOREST_ROCK_RIGHT,
-  FOREST_SISTER,
   FOREST_SPIRITS,
   FOREST_STAG,
   FOREST_STONES,
@@ -50,12 +51,12 @@ const vec2 FOREST_STREAM_W = vec2(${f(FOREST_STREAM.half)}, ${f(FOREST_STREAM.wi
 const vec4 FOREST_HERO_SHAPE = vec4(${f(FOREST_HERO.radius)}, ${f(FOREST_HERO.flare)}, ${f(FOREST_HERO.flareHeight)}, ${f(FOREST_HERO.lean)});
 const float FOREST_HERO_EDGE = ${f(FOREST_HERO.edge)};
 const float FOREST_HERO_Z = ${f(FOREST_HERO.z)};
+const float FOREST_HERO_SALT = 3.1;   // its bark's pattern, and its wander (forestBigAxis)
 const vec4 FOREST_ELDER_SHAPE = vec4(${f(FOREST_ELDER.radius)}, ${f(FOREST_ELDER.flare)}, ${f(FOREST_ELDER.flareHeight)}, ${f(FOREST_ELDER.lean)});
 const float FOREST_ELDER_EDGE = ${f(FOREST_ELDER.edge)};
 const float FOREST_ELDER_Z = ${f(FOREST_ELDER.z)};
-const vec4 FOREST_SISTER_SHAPE = vec4(${f(FOREST_SISTER.radius)}, ${f(FOREST_SISTER.flare)}, ${f(FOREST_SISTER.flareHeight)}, ${f(FOREST_SISTER.lean)});
-const float FOREST_SISTER_X = ${f(FOREST_SISTER.x)};
-const float FOREST_SISTER_Z = ${f(FOREST_SISTER.z)};
+// The mushrooms on the moss mound at the torii's left foot, in the torii's own frame (m).
+const vec2 FOREST_GATE_SHROOMS = vec2(${f(FOREST_GATE_SHROOMS.x)}, ${f(FOREST_GATE_SHROOMS.y)});
 // The beech's branch: (height, length, rise, sag), (radius, tip radius, root in trunk radii).
 const vec4 FOREST_BRANCH_A = vec4(${f(FOREST_BRANCH.height)}, ${f(FOREST_BRANCH.length)}, ${f(FOREST_BRANCH.rise)}, ${f(FOREST_BRANCH.sag)});
 const vec3 FOREST_BRANCH_B = vec3(${f(FOREST_BRANCH.radius)}, ${f(FOREST_BRANCH.tip)}, ${f(FOREST_BRANCH.root)});
@@ -98,12 +99,13 @@ const vec3 FOREST_CEDAR = vec3(0.42, 0.25, 0.16);       // cedar bark: red-brown
 const vec3 FOREST_CEDAR_OLD = vec3(0.38, 0.33, 0.28);   // weathered to grey
 const vec3 FOREST_BEECH = vec3(0.46, 0.47, 0.43);       // smooth grey beech
 const vec3 FOREST_LICHEN = vec3(0.66, 0.70, 0.60);
-const vec3 FOREST_MOSS = vec3(0.30, 0.50, 0.11);
-const vec3 FOREST_MOSS_DEEP = vec3(0.10, 0.24, 0.07);
-const vec3 FOREST_MOSS_LIT = vec3(0.62, 0.78, 0.20);    // moss with the light grazing it
+const vec3 FOREST_MOSS = vec3(0.34, 0.60, 0.10);
+const vec3 FOREST_MOSS_DEEP = vec3(0.09, 0.26, 0.06);
+const vec3 FOREST_MOSS_LIT = vec3(0.72, 0.92, 0.22);    // moss with the light grazing it
 const vec3 FOREST_ROCK = vec3(0.40, 0.41, 0.39);
 const vec3 FOREST_LITTER = vec3(0.27, 0.18, 0.11);      // cedar needles and soil
-const vec3 FOREST_FERN = vec3(0.18, 0.42, 0.13);
+const vec3 FOREST_FERN = vec3(0.22, 0.50, 0.13);
+const vec3 FOREST_FERN_LIT = vec3(0.55, 0.85, 0.25);    // light through a frond
 const vec3 FOREST_USNEA = vec3(0.58, 0.64, 0.52);       // beard lichen
 const vec3 FOREST_VERMILION = vec3(0.66, 0.24, 0.13);   // the torii's faded lacquer
 const vec3 FOREST_STRAW = vec3(0.72, 0.62, 0.40);       // the rope
@@ -112,9 +114,9 @@ const vec3 FOREST_SPIRIT = vec3(0.88, 0.93, 0.86);      // a spirit's chalky whi
 const vec3 FOREST_GLOW = vec3(0.66, 1.0, 0.80);         // spirit light
 const vec3 FOREST_CAP = vec3(0.80, 0.74, 0.60);
 const vec3 FOREST_SHROOM_GLOW = vec3(0.50, 1.0, 0.72);
-const vec3 FOREST_MIST_LOW = vec3(0.40, 0.56, 0.54);
-const vec3 FOREST_MIST_HIGH = vec3(0.68, 0.80, 0.72);
-const vec3 FOREST_SUNLIT = vec3(1.0, 0.90, 0.62);       // sunlight through the cedars: warm gold
+const vec3 FOREST_MIST_LOW = vec3(0.46, 0.56, 0.56);
+const vec3 FOREST_MIST_HIGH = vec3(0.86, 0.91, 0.86);
+const vec3 FOREST_SUNLIT = vec3(1.0, 0.95, 0.80);       // sunlight through the cedars: gold-white
 const vec3 FOREST_NEEDLE = vec3(0.10, 0.20, 0.10);      // the canopy
 const vec3 FOREST_WATER = vec3(0.05, 0.09, 0.08);
 const vec3 FOREST_STAG_COAT = vec3(0.16, 0.13, 0.11);
@@ -125,7 +127,8 @@ float forestAspect;
 float forestLA;        // the aspect the layout is made for (never narrower than FOREST_MIN_ASPECT)
 float forestTh;        // this cell's dither threshold
 float forestLevel;     // how bright the sky is (luminance of its ambient light)
-vec3 forestFill;       // the soft light under the canopy
+vec3 forestFill;       // the soft light under the canopy, on every side of things
+vec3 forestTop;        // the light from the canopy's gaps on whatever faces up (moss tops, the floor)
 vec3 forestKey;        // direct sun and moon, where a shaft gets through
 vec2 forestKeySide;    // their horizontal direction (x across, z into the scene), unit
 vec3 forestKeyDir;     // toward the key light (x across, y up, z into the scene), unit
@@ -191,14 +194,16 @@ vec2 forestOnRock(vec2 c, vec2 rs, float u) {
   return c + vec2(u * rs.x, rs.y * sqrt(1.0 - u * u));
 }
 
-// The mist as the sky lights it: grey-jade low in the forest's depths, brightening up toward the
-// canopy where the light comes in, warmer on the sun's side, blue-green toward the moon, with a faint
-// glow of its own at night. Under rain cloud it goes a flatter pale green-grey.
+// The mist as the sky lights it: pale and luminous, a cool grey-green low in the forest's depths and
+// near white up toward the canopy where the light comes in (by day it outshines every trunk standing in
+// it), warmer on the sun's side, blue-green toward the moon, with a faint glow of its own at night.
+// Under rain cloud it goes a flatter pale green-grey.
 vec3 forestMistColor(vec2 p) {
   Sky s = forestSky;
   float up = smoothstep(0.05, 1.0, p.y);
   float ov = forestOvercast;
-  vec3 c = mix(FOREST_MIST_LOW, FOREST_MIST_HIGH, up) * forestLevel * (mix(0.5, 0.72, ov) + mix(0.85, 0.45, ov) * up * up);
+  float rise = mix(0.6, 0.9, s.day) + mix(0.75, 0.6, s.day) * up;
+  vec3 c = mix(FOREST_MIST_LOW, FOREST_MIST_HIGH, up) * forestLevel * mix(rise, 0.8 + 0.4 * up, ov);
   float toward = clamp(0.5 + p.x * s.sun.x / forestAspect, 0.0, 1.0);
   c += s.sunColor * FOREST_SUNLIT * (0.03 + 0.15 * toward * toward) * (0.3 + 0.7 * p.y);
   float moonward = clamp(0.5 + p.x * s.moon.x / forestAspect, 0.0, 1.0);
@@ -253,38 +258,48 @@ vec3 forestShroomLight(vec2 p, float z) {
   return FOREST_SHROOM_GLOW * s * forestShroomGlow * 0.5;
 }
 
-// Bark seen side-on, u across the trunk (-1..1), h metres up, hw its half-width there: a cedar's
-// (kind 0) long red-brown strips twisting up the bole with dark fissures between them, or a beech's
-// (kind 1) smooth grey skin with pale lichen; moss thick at the foot and climbing the shaded left side
-// in streaks of cushions. Round: the soft light lights the body, the key light rims the side it comes
-// from and gilds it in a shaft; wet, it darkens and its strips glisten.
+// Bark seen side-on, u across the trunk (-1..1), h metres up, hw its half-width there, aa a cell in
+// metres at its depth z: a cedar's (kind 0) fibrous red-brown strips parted by deep furrows that wander
+// and twist slowly up the bole, or a beech's (kind 1) smooth grey skin with pale lichen; ribbed into
+// buttresses at the foot; moss thick at the foot and climbing the shaded side in cushions. Strongly
+// round: its edges fall into shadow, the side toward the sun or moon takes their light (gilded where a
+// shaft crosses), and only the very edge catches the bright mist behind. Wet, it darkens and its
+// strips glisten.
 vec3 forestBark(float kind, float u, float h, float hw, float salt, float aa, float z, vec2 at, float mossAmt) {
   float nz = sqrt(max(1.0 - u * u, 0.0));
   float a = asin(clamp(u, -1.0, 1.0));
   float arc = a * hw;
-  float detail = 1.0 - smoothstep(0.012, 0.05, aa);
-  float tw = arc + 0.16 * h * (1.0 - kind);
-  float fib = vnoise(vec2(tw * 6.0 + salt * 13.0, h * 0.4 + salt));
-  float fis = smoothstep(0.56, 0.8, vnoise(vec2(tw * 14.0 + salt * 7.0, h * (0.7 + 2.0 * kind) + salt * 3.0)));
-  vec3 cedar = mix(FOREST_CEDAR, FOREST_CEDAR_OLD, smoothstep(0.3, 0.85, vnoise(vec2(tw * 1.8 + salt, h * 0.25 + salt * 2.0))));
-  cedar *= (0.85 + 0.3 * mix(0.5, fib, detail)) * (1.0 - 0.5 * fis * detail);
+  float face = forestKeySide.x < 0.0 ? -1.0 : 1.0;
+  float bold = 1.0 - smoothstep(0.022, 0.045, aa);   // furrows 15 cm apart need a few cells
+  float fine = 1.0 - smoothstep(0.008, 0.02, aa);    // the fibres between them
+  float wander = vnoise(vec2(arc * 1.3 + salt, h * 0.35 + salt * 2.0)) - 0.5;
+  float tw = arc + 0.12 * h * (1.0 - kind) + 0.18 * wander;
+  float ridge = abs(fract(tw / 0.15 + salt) - 0.5) * 2.0;
+  // Furrows fade where the trunk turns away and they would crowd into less than a cell.
+  float furrow = (1.0 - smoothstep(0.05, 0.5, ridge)) * bold * smoothstep(0.15, 0.55, nz) * (1.0 - kind);
+  float fib = vnoise(vec2(tw * 26.0 + salt * 13.0, h * 0.9 + salt));
+  vec3 cedar = mix(FOREST_CEDAR, FOREST_CEDAR_OLD, smoothstep(0.35, 0.8, vnoise(vec2(tw * 2.2 + salt, h * 0.3 + salt * 2.0))));
+  cedar *= (0.78 + 0.44 * mix(0.5, fib, fine)) * (1.0 - 0.85 * furrow);
   float lichen = smoothstep(0.55, 0.75, vnoise(vec2(arc * 3.0 + salt * 9.0, h * 2.2)));
-  vec3 beech = mix(FOREST_BEECH * (0.9 + 0.2 * fib), FOREST_LICHEN, lichen * 0.7 * detail) * (1.0 - 0.25 * fis * detail);
+  vec3 beech = mix(FOREST_BEECH * (0.8 + 0.4 * vnoise(vec2(arc * 4.0 + salt, h * 0.6))), FOREST_LICHEN, lichen * 0.75 * max(bold, 0.4));
   vec3 albedo = mix(cedar, beech, kind);
   float mn = vnoise(vec2(a * 2.4 + salt * 5.0, h * 1.1 + salt));
-  float climb = 0.8 * exp(-h / 1.4) + 0.35 * (1.0 - smoothstep(-0.9, 0.3, u));
-  float mossy = smoothstep(0.55, 0.75, 0.55 * mn + mossAmt * climb + 0.15 * forestWet);
-  float cushion = mix(0.5, vnoise(vec2(arc * 11.0 + salt, h * 11.0)), detail);
-  albedo = mix(albedo, mix(FOREST_MOSS_DEEP, FOREST_MOSS, 0.35 + 0.65 * cushion), mossy);
+  float shaded = 1.0 - smoothstep(-0.9, 0.4, u * face);
+  float mossy = smoothstep(0.5, 0.72, 0.5 * mn + mossAmt * (0.75 * exp(-h / 1.5) + 0.4 * shaded * exp(-h / 6.0)) + 0.12 * forestWet);
+  float cushion = mix(0.5, vnoise(vec2(arc * 12.0 + salt, h * 12.0)), fine);
+  albedo = mix(albedo, mix(FOREST_MOSS_DEEP, FOREST_MOSS, 0.3 + 0.7 * cushion), mossy);
   albedo = wetten(albedo, forestWet, mix(0.4 + 0.2 * (1.0 - kind), 0.9, mossy));
-  float body = 0.3 + 0.85 * pow(nz, 0.8);
-  float key = clamp((u * forestKeySide.x - nz * forestKeySide.y + 0.35) / 1.35, 0.0, 1.0);
-  vec3 light = forestFill * body + forestKey * key * (0.08 + 1.3 * forestBeam) + forestShroomLight(at, z) * (0.4 + 0.6 * nz);
+  // Buttresses: broad ribs round the foot, dark in the valleys between them.
+  float valley = exp(-h / 0.9) * (0.5 - 0.5 * sin(a * 4.0 + salt * 3.0));
+  float lit = clamp(0.5 + 0.5 * (u * face * 0.9 + nz * 0.3), 0.0, 1.0);
+  float rounded = (0.1 + 0.9 * pow(nz, 1.3)) * (1.0 - 0.5 * valley);
+  vec3 light = forestFill * rounded * (0.5 + 0.8 * lit)
+             + forestKey * smoothstep(0.45, 1.0, lit) * (0.45 + 1.2 * forestBeam) * (1.0 - 0.5 * valley)
+             + forestShroomLight(at, z) * (0.4 + 0.6 * nz);
   vec3 col = albedo * light;
-  col += FOREST_MOSS_LIT * forestKey * forestBeam * mossy * key * cushion * 0.35;
-  float face = forestKeySide.x < 0.0 ? -1.0 : 1.0;
-  col += forestSheen * forestGloss * (1.0 - 0.7 * mossy) * 0.4 * forestBell((u - 0.35 * face) / 0.28) * (0.6 + 0.4 * fib);
-  col += forestMist * 0.22 * pow(1.0 - nz, 4.0);
+  col += FOREST_MOSS_LIT * forestKey * (0.15 + forestBeam) * mossy * lit * cushion * 0.3;
+  col += forestSheen * forestGloss * (1.0 - 0.7 * mossy) * (1.0 - furrow) * 0.4 * forestBell((u - 0.4 * face) / 0.28) * (0.6 + 0.4 * fib);
+  col += forestMist * 0.15 * pow(1.0 - nz, 6.0);
   return col;
 }
 
@@ -314,13 +329,15 @@ vec4 forestTrees(vec2 q, int i, out float depth, out float height) {
     float hk = hash12(vec2(k + 0.5, float(i) * 7.1 + K_forestSeed * 3.17 + 40.0));
     if (fract(hk * 5.31) > FOREST_TREE_FILL[i]) continue;
     float x0 = (k + 0.5 + 0.55 * (fract(hk * 41.7) - 0.5)) * sp;
-    float r = FOREST_TREE_R[i] * (0.75 + 0.5 * fract(hk * 7.3));
+    float r = FOREST_TREE_R[i] * (0.5 + 1.0 * fract(hk * 7.3));
     if (abs(x0 - sx) < sh + 1.6 * r + 0.3) continue;
     if (i == 0 && abs(x0 / z - gate) < 0.2) continue;
     if (i == 1 && abs(x0 / z - gate) < 0.09) continue;
-    float ax = x0 + (fract(hk * 113.9) - 0.5) * 0.05 * hh;
+    // Leaning a little and wandering slowly from straight, tapering, buttressed, its roots splaying.
+    float ax = x0 + (fract(hk * 113.9) - 0.5) * 0.05 * hh + 0.1 * r * (sin(hh * 0.5 + hk * 30.0) - sin(hk * 30.0));
     float side = xw > ax ? 1.0 : -1.0;
-    float hw = forestFlare(hh, r, 0.7, 0.55) * (1.0 + 0.08 * sin(hh * 2.1 + side * 1.7 + hk * 20.0) * exp(-hh / 1.4));
+    float hw = forestFlare(hh, r * (1.0 - 0.012 * hh), 0.85, 0.6) * (1.0 + 0.08 * sin(hh * 2.1 + side * 1.7 + hk * 20.0) * exp(-hh / 1.4))
+             + r * 0.5 * exp(-hh / 0.22) * (0.5 + 0.5 * sin(side * 2.3 + hk * 40.0));
     float e = abs(xw - ax) - hw;
     if (e < best) {
       best = e;
@@ -339,18 +356,24 @@ vec4 forestTrees(vec2 q, int i, out float depth, out float height) {
   return vec4(col, cover);
 }
 
-// One of the named trees, its axis at screen x axisS, depth z; shape: (radius, flare, flare height,
-// lean). The buttresses bulge unevenly side to side. Returns lit colour and coverage; height (m) and
-// u (-1..1 across it) out.
+// How far a named tree's axis has strayed (m) at height h: its lean, and a slow sinuous wander.
+float forestBigAxis(float h, vec4 shape, float salt) {
+  return shape.w * h + 0.1 * shape.x * (sin(h * 0.55 + salt) - sin(salt));
+}
+
+// One of the named trees, its axis at screen x axisS (at its foot), depth z; shape: (radius, flare,
+// flare height, lean). It tapers a little, bulges unevenly side to side, flares into buttresses and
+// splays its roots at the ground. Returns lit colour and coverage; height (m) and u (-1..1) out.
 vec4 forestBigTree(vec2 q, float axisS, float z, vec4 shape, float kind, float salt, float moss, out float height, out float u) {
   u = 0.0;
   height = (q.y - (FOREST_HORIZON - FOREST_EYE / z)) * z;
   if (height < -0.1) return vec4(0.0);
   float hh = max(height, 0.0);
-  float xw = (q.x - axisS) * z - shape.w * hh;
+  float xw = (q.x - axisS) * z - forestBigAxis(hh, shape, salt);
   float side = xw > 0.0 ? 1.0 : -1.0;
-  float hw = forestFlare(hh, shape.x, shape.y, shape.z)
-           * (1.0 + 0.09 * sin(hh * 1.8 + side * 1.3 + salt) * exp(-hh / 1.5) + 0.035 * (vnoise(vec2(hh * 1.6, side * 3.0 + salt)) - 0.5));
+  float hw = forestFlare(hh, shape.x * (1.0 - 0.01 * hh), shape.y, shape.z)
+           * (1.0 + 0.08 * sin(hh * 1.8 + side * 1.3 + salt) * exp(-hh / 1.5) + 0.04 * (vnoise(vec2(hh * 1.6, side * 3.0 + salt)) - 0.5))
+           + shape.x * 0.55 * exp(-hh / 0.25) * (0.55 + 0.45 * sin(side * 2.3 + salt));
   float aa = z / uRes.y;
   float e = abs(xw) - hw;
   if (e > 2.0 * aa) return vec4(0.0);
@@ -360,40 +383,42 @@ vec4 forestBigTree(vec2 q, float axisS, float z, vec4 shape, float kind, float s
   return vec4(forestBark(kind, u, hh, hw, salt, aa, z, q, moss), cover);
 }
 
-// The rope round the great cedar (a shimenawa: it is a sacred tree), twisted straw, and its four
+// The rope round the great cedar (a shimenawa: it is a sacred tree), thick twisted straw, and its four
 // zigzag paper streamers (shide) swaying a little. hh, u: the point on the trunk. Returns colour and
 // coverage over the bark.
 vec4 forestRope(vec2 q, float hh, float u, float tm) {
   float z = FOREST_HERO_Z;
   float aa = z / uRes.y;
   float nz = sqrt(max(1.0 - u * u, 0.0));
-  float hw = forestFlare(FOREST_ROPE_H, FOREST_HERO_SHAPE.x, FOREST_HERO_SHAPE.y, FOREST_HERO_SHAPE.z);
-  float xw = (q.x - forestHeroX) * z - FOREST_HERO_SHAPE.w * hh;
+  float hw = forestFlare(FOREST_ROPE_H, FOREST_HERO_SHAPE.x * (1.0 - 0.01 * FOREST_ROPE_H), FOREST_HERO_SHAPE.y, FOREST_HERO_SHAPE.z);
+  float xw = (q.x - forestHeroX) * z - forestBigAxis(hh, FOREST_HERO_SHAPE, FOREST_HERO_SALT);
   float rise = (FOREST_ROPE_H - FOREST_EYE) * hw / z;
   // A ring above the eye: its near side shows a little higher than its edges.
   float dy = hh - (FOREST_ROPE_H + rise * nz);
-  float key = clamp((u * forestKeySide.x - nz * forestKeySide.y + 0.35) / 1.35, 0.0, 1.0);
-  vec3 light = forestFill + forestKey * key * (0.08 + 1.2 * forestBeam) + forestShroomLight(q, z) * 0.4;
+  float face = forestKeySide.x < 0.0 ? -1.0 : 1.0;
+  float lit = clamp(0.5 + 0.5 * (u * face * 0.9 + nz * 0.3), 0.0, 1.0);
+  vec3 light = forestFill * (0.6 + 0.8 * lit) + forestTop * 0.4 + forestKey * smoothstep(0.4, 1.0, lit) * (0.45 + 1.2 * forestBeam) + forestShroomLight(q, z) * 0.4;
   vec4 o = vec4(0.0);
-  float th = 0.075;
+  float th = 0.085;
   if (abs(dy) < th + 2.0 * aa) {
     float cover = 1.0 - smoothstep(th - 0.7 * aa, th + 0.7 * aa, abs(dy));
     float twist = fract(asin(u) * hw * 4.5 + dy * 7.0);
     float strand = smoothstep(0.0, 0.3, twist) * (1.0 - smoothstep(0.6, 1.0, twist));
     float bulge = sqrt(max(1.0 - (dy / th) * (dy / th), 0.0));
-    vec3 straw = wetten(FOREST_STRAW * (0.55 + 0.45 * strand), forestWet, 0.8);
-    o = vec4(straw * light * (0.35 + 0.75 * nz) * (0.5 + 0.5 * bulge), cover);
+    vec3 straw = wetten(FOREST_STRAW * (0.5 + 0.5 * strand), forestWet, 0.8);
+    o = vec4(straw * light * (0.25 + 0.85 * nz) * (0.45 + 0.55 * bulge), cover);
   }
   for (int k = 0; k < 4; k++) {
     float a = (float(k) - 1.5) * 0.62;
     float sy = FOREST_ROPE_H + rise * cos(a) - th * 0.5 - hh;   // down from the streamer's top (m)
-    if (sy < 0.0 || sy > 0.34) continue;
-    float sway = (0.03 + 0.03 * abs(K_wind)) * sin(tm * (0.7 + 0.13 * float(k)) + float(k) * 1.9) * sy / 0.34;
-    float seg = floor(sy / 0.085);
+    if (sy < 0.0 || sy > 0.38) continue;
+    float sway = (0.03 + 0.03 * abs(K_wind)) * sin(tm * (0.7 + 0.13 * float(k)) + float(k) * 1.9) * sy / 0.38;
+    float seg = floor(sy / 0.095);
     float fold = mod(seg, 2.0);
-    float edge = abs(xw - hw * sin(a) - (fold < 0.5 ? -0.018 : 0.018) - sway) - 0.03;
-    float cover = (1.0 - smoothstep(-0.7 * aa, 0.7 * aa, edge)) * (1.0 - smoothstep(0.31, 0.34, sy));
-    if (cover > o.a) o = vec4(wetten(FOREST_PAPER, forestWet, 0.6) * (light * 0.9 + forestFill * 0.2) * (0.85 + 0.15 * fold), cover);
+    float edge = abs(xw - hw * sin(a) - (fold < 0.5 ? -0.02 : 0.02) - sway) - 0.035;
+    float cover = (1.0 - smoothstep(-0.7 * aa, 0.7 * aa, edge)) * (1.0 - smoothstep(0.35, 0.38, sy));
+    // The paper takes the light as the bark does not: it shows pale even at night.
+    if (cover > o.a) o = vec4(wetten(FOREST_PAPER, forestWet, 0.6) * (light * 1.1 + forestMist * 0.3) * (0.85 + 0.15 * fold), cover);
   }
   return o;
 }
@@ -427,8 +452,8 @@ vec4 forestBranch(vec2 q, float t, float tm, out float drip) {
     vec3 albedo = mix(FOREST_BEECH * (0.8 + 0.3 * mn), mix(FOREST_MOSS_DEEP, FOREST_MOSS, 0.35 + 0.65 * cushion), mossy);
     albedo = wetten(albedo, forestWet, mix(0.35, 0.9, mossy));
     float up = 0.5 + 0.5 * v;
-    vec3 light = forestFill * (0.3 + 0.8 * up) * (0.7 + 0.3 * nz) + forestKey * (0.08 + 1.2 * forestBeam) * up * 0.7 + forestShroomLight(q, z) * 0.5;
-    col = albedo * light + FOREST_MOSS_LIT * forestKey * forestBeam * mossy * up * 0.3;
+    vec3 light = forestFill * (0.3 + 0.5 * up) * (0.7 + 0.3 * nz) + forestTop * 1.2 * max(v, 0.0) + forestKey * (0.25 + 1.2 * forestBeam) * up * 0.7 + forestShroomLight(q, z) * 0.5;
+    col = albedo * light + FOREST_MOSS_LIT * (forestKey * (0.15 + forestBeam) + forestTop * 0.3) * mossy * up * 0.3;
     col += forestSheen * forestGloss * (1.0 - mossy) * 0.3 * forestBell((v - 0.5) / 0.3);
   }
   // Beards: one strand per lane of FOREST_BEARD, hung where rainDrips puts that lane's drip point,
@@ -486,9 +511,9 @@ vec4 forestRock(vec2 q, vec2 c, vec2 rs, float z, float cutY, float salt, float 
   vec3 albedo = mix(stone, mix(FOREST_MOSS_DEEP, FOREST_MOSS, 0.3 + 0.7 * cushion), mossy);
   albedo = wetten(albedo, forestWet, mix(0.12, 0.9, mossy));
   float key = max(dot(n, forestKeyDir), 0.0);
-  vec3 light = forestFill * (0.35 + 0.65 * (0.5 + 0.5 * n.y)) * (0.75 + 0.25 * cushion * mossy)
-             + forestKey * key * (0.08 + 1.3 * forestBeam) + forestShroomLight(q, z) * (0.6 + 0.4 * n.y);
-  vec3 col = albedo * light + FOREST_MOSS_LIT * forestKey * forestBeam * key * mossy * cushion * 0.3;
+  vec3 light = forestFill * (0.3 + 0.4 * (0.5 + 0.5 * n.y)) * (0.75 + 0.25 * cushion * mossy) + forestTop * 1.2 * max(n.y, 0.0)
+             + forestKey * key * (0.3 + 1.3 * forestBeam) + forestShroomLight(q, z) * (0.6 + 0.4 * n.y);
+  vec3 col = albedo * light + FOREST_MOSS_LIT * (forestKey * (0.15 + forestBeam) * key + forestTop * 0.3 * max(n.y, 0.0)) * mossy * cushion * 0.3;
   col += forestSheen * wetGloss(forestWet, n.y) * (1.0 - mossy) * 0.5;
   if (forestRainHere > 0.0 && n.y > 0.4) {
     // Crowns ~5 cells across: the library's units scaled so one spans ~22 cells here.
@@ -563,7 +588,7 @@ vec4 forestRoots(vec2 q, vec2 c, vec2 rs, float z, float mark, float markGlow, o
   vec3 bark = FOREST_CEDAR * 0.75 * (0.8 + 0.35 * mix(0.5, vnoise(q * vec2(160.0, 60.0)), detail));
   vec3 albedo = wetten(mix(bark, mix(FOREST_MOSS_DEEP, FOREST_MOSS, 0.4 + 0.5 * vnoise(q * 140.0)), mossy), forestWet, mix(0.45, 0.9, mossy));
   float key = max(dot(n, forestKeyDir), 0.0);
-  vec3 light = forestFill * (0.3 + 0.7 * (0.5 + 0.5 * n.y)) + forestKey * key * (0.08 + 1.3 * forestBeam) + forestShroomLight(q, z);
+  vec3 light = forestFill * (0.3 + 0.4 * (0.5 + 0.5 * n.y)) + forestTop * 1.1 * max(n.y, 0.0) + forestKey * key * (0.3 + 1.3 * forestBeam) + forestShroomLight(q, z);
   vec3 col = albedo * light;
   col += forestSheen * wetGloss(forestWet, n.y) * (1.0 - mossy) * 0.5 * forestBell((v - 0.45) / 0.35);
   if (isM > 0.0) {
@@ -600,8 +625,8 @@ vec4 forestLog(vec2 q, out float up) {
   albedo = mix(albedo, mix(FOREST_MOSS_DEEP, FOREST_MOSS, 0.3 + 0.7 * cushion), mossy);
   albedo = wetten(albedo, forestWet, mix(0.6, 0.9, mossy));
   float lit = 0.5 + 0.5 * vc;
-  vec3 light = forestFill * (0.3 + 0.75 * lit) * (0.7 + 0.3 * nz) + forestKey * (0.06 + 1.2 * forestBeam) * lit * 0.6 + forestShroomLight(q, z) * (0.5 + 0.5 * lit);
-  vec3 col = albedo * light + FOREST_MOSS_LIT * forestKey * forestBeam * mossy * cushion * lit * 0.3;
+  vec3 light = forestFill * (0.3 + 0.45 * lit) * (0.7 + 0.3 * nz) + forestTop * 1.2 * max(vc, 0.0) + forestKey * (0.25 + 1.2 * forestBeam) * lit * 0.6 + forestShroomLight(q, z) * (0.5 + 0.5 * lit);
+  vec3 col = albedo * light + FOREST_MOSS_LIT * (forestKey * (0.15 + forestBeam) + forestTop * 0.3) * mossy * cushion * lit * 0.3;
   col += forestSheen * wetGloss(forestWet, vc) * (1.0 - mossy) * 0.35;
   return vec4(col, cover);
 }
@@ -654,7 +679,7 @@ vec4 forestTorii(vec2 P, float aa) {
   if (moss < 0.0 || moss < wood) {
     float cushion = vnoise(P * vec2(16.0, 20.0));
     vec3 m = wetten(mix(FOREST_MOSS_DEEP, FOREST_MOSS, 0.3 + 0.7 * cushion), forestWet, 0.9);
-    col = m * (forestFill * (0.8 + 0.35 * cushion) + forestKey * (0.08 + 1.1 * forestBeam) * 0.6) + FOREST_MOSS_LIT * forestKey * forestBeam * cushion * 0.25;
+    col = m * (forestFill * (0.6 + 0.3 * cushion) + forestTop * 1.1 + forestKey * (0.25 + 1.1 * forestBeam) * 0.6) + FOREST_MOSS_LIT * (forestKey * forestBeam + forestTop * 0.3) * cushion * 0.25;
   } else {
     float flake = smoothstep(0.6, 0.72, vnoise(P * vec2(6.0, 2.5) + 2.0));
     vec3 albedo = mix(FOREST_VERMILION * (0.78 + 0.3 * vnoise(P * vec2(2.0, 9.0))), vec3(0.36, 0.33, 0.29), flake);
@@ -662,15 +687,15 @@ vec4 forestTorii(vec2 P, float aa) {
     albedo = wetten(albedo, forestWet, 0.35);
     float bulge = pillar <= min(min(nuki, strut), min(shimaki, kasagi)) ? sqrt(max(1.0 - (px / pr) * (px / pr), 0.0)) : 0.8;
     float under = kasagi <= 0.0 ? smoothstep(bottom, bottom + 0.1, P.y) : 1.0;
-    col = albedo * (forestFill * (0.45 + 0.55 * bulge) * (0.6 + 0.4 * under) + forestKey * (0.06 + 1.1 * forestBeam) * 0.5);
+    col = albedo * (forestFill * (0.7 + 0.8 * bulge) * (0.6 + 0.4 * under) + forestTop * 0.3 + forestKey * (0.25 + 1.1 * forestBeam) * 0.5);
     col += forestSheen * forestGloss * 0.3 * bulge;
   }
   return vec4(col, cover);
 }
 
-// A cluster of mushrooms at site i, q at the host's parallax: four slender stems leaning out from the
-// moss under small domed caps, pale by day; at dusk their caps and gills glow green. Returns colour
-// and coverage; glow out: their light here (the accent).
+// A cluster of mushrooms at site i, q at the host's parallax: four short pale stems leaning out from
+// the moss under broad, slightly flattened domed caps, pale by day; at dusk their caps and gills glow
+// green. Returns colour and coverage; glow out: their light here (the accent).
 vec4 forestShrooms(vec2 q, int i, out float glow) {
   glow = 0.0;
   vec4 site = forestShroom[i];
@@ -684,18 +709,18 @@ vec4 forestShrooms(vec2 q, int i, out float glow) {
   float tone = 0.0;
   for (int j = 0; j < 4; j++) {
     float hj = hash12(vec2(float(i) * 7.3 + 1.0, float(j) * 3.1 + 2.0));
-    float x0 = (float(j) - 1.5) * 0.045 + (hj - 0.5) * 0.03;
-    float h = 0.045 + 0.075 * fract(hj * 13.7);
-    float lean = (fract(hj * 5.9) - 0.5) * 0.3 + x0 * 3.0;
-    float rc = 0.022 + 0.022 * fract(hj * 29.3);
+    float x0 = (float(j) - 1.5) * 0.05 + (hj - 0.5) * 0.03;
+    float h = 0.03 + 0.045 * fract(hj * 13.7);
+    float lean = (fract(hj * 5.9) - 0.5) * 0.25 + x0 * 2.0;
+    float rc = 0.03 + 0.025 * fract(hj * 29.3);
     vec2 top = vec2(x0 + lean * h, h);
-    float stem = segmentDistance(l, vec2(x0, -0.02), top) - max(0.006, 0.6 * aa);
-    float cap = max((length((l - top) / vec2(rc, rc * 0.65)) - 1.0) * rc * 0.65, top.y - 0.15 * rc - l.y);
+    float stem = segmentDistance(l, vec2(x0, -0.02), top) - max(0.009, 0.6 * aa);
+    float cap = max((length((l - top) / vec2(rc, rc * 0.7)) - 1.0) * rc * 0.7, top.y - 0.12 * rc - l.y);
     float dj = min(stem, cap);
     if (dj < best) {
       best = dj;
       isCap = cap < stem ? 1.0 : 0.0;
-      under = 1.0 - smoothstep(0.0, 0.45 * rc, l.y - top.y + 0.15 * rc);
+      under = 1.0 - smoothstep(0.0, 0.45 * rc, l.y - top.y + 0.12 * rc);
       tone = hj;
     }
   }
@@ -703,48 +728,72 @@ vec4 forestShrooms(vec2 q, int i, out float glow) {
   if (cover <= 0.0) return vec4(0.0);
   float emit = forestShroomGlow * site.w * (0.75 + 0.25 * fract(tone * 41.0)) * mix(0.45, 1.0, isCap) * (1.0 + 0.6 * under * isCap);
   vec3 albedo = wetten(mix(vec3(0.86, 0.85, 0.78), FOREST_CAP, isCap), forestWet, 0.5);
-  vec3 col = albedo * (forestFill * 1.1 + forestKey * forestBeam * 0.5) + FOREST_SHROOM_GLOW * emit * 1.3;
+  vec3 col = albedo * (forestFill + forestTop * 0.7 * (1.0 - under) + forestKey * forestBeam * 0.5) + FOREST_SHROOM_GLOW * emit * 1.3;
   col += forestSheen * forestGloss * 0.3 * isCap;
   glow = clamp(emit, 0.0, 1.0);
   return vec4(col, cover);
 }
 
 // A fern growing from a crown just below the frame (crown, screen), 'scale' screen heights per frond
-// unit: six fronds arching out and drooping at the tips, leaflets swept toward the tip along both
-// sides, swaying slowly in turn. Returns lit colour and coverage.
+// unit: seven fronds springing up and out and arching over under their own weight, each a bare stalk
+// becoming a spine with leaflets along both sides, longest a third of the way out and shrinking to the
+// tip, swept toward it and rounded at their ends; they sway slowly, one after another. Lit from the
+// canopy above and glowing green where the light comes through them, darker down in the crown.
+// Returns lit colour and coverage.
 vec4 forestFern(vec2 q, vec2 crown, float scale, float salt, float tm) {
   vec2 v = (q - crown) / scale;
-  if (v.y < 0.0 || v.y > 1.15 || abs(v.x) > 1.25) return vec4(0.0);
+  if (v.y < -0.05 || v.y > 1.2 || abs(v.x) > 1.6) return vec4(0.0);
   float aa = 1.0 / (uRes.y * scale);
   float cover = 0.0;
   float tone = 0.0;
-  for (int f = 0; f < 6; f++) {
+  float along = 0.0;
+  float across = 0.0;
+  for (int f = 0; f < 7; f++) {
     float hf = hash12(vec2(float(f) + salt * 7.0, 4.7));
-    float ang = (float(f) - 2.5) * 0.36 + (hf - 0.5) * 0.2 + 0.035 * sin(tm * 0.55 + float(f) * 1.9 + salt) + 0.05 * K_wind;
-    float len = 0.78 + 0.3 * fract(hf * 7.1);
+    float ang = (float(f) - 3.0) * 0.32 + (hf - 0.5) * 0.16 + 0.03 * sin(tm * 0.5 + float(f) * 1.9 + salt) + 0.05 * K_wind;
+    float len = 0.75 + 0.3 * fract(hf * 7.1);
     vec2 dir = vec2(sin(ang), cos(ang));
-    vec2 side = vec2(dir.y, -dir.x);
-    float a = dot(v, dir);
-    float s = a / len;
-    if (s < 0.03 || s > 1.0) continue;
-    float lean = ang < 0.0 ? -1.0 : 1.0;
-    float b = dot(v, side) - lean * (0.3 + 0.2 * fract(hf * 3.7)) * s * s * len;
-    float pl = 0.2 * len * pow(1.0 - s, 0.75) * smoothstep(0.0, 0.15, s);
-    float pitch = 0.062;
-    float lobe = abs(fract((a - abs(b) * 0.55) / pitch + hf * 5.0) - 0.5);
-    float width = 0.4 * (1.0 - smoothstep(0.0, 1.0, abs(b) / max(pl, 1e-3)));
-    float leaflet = (1.0 - smoothstep(pl - aa, pl + aa, abs(b))) * (1.0 - smoothstep(width - aa / pitch, width + aa / pitch, lobe));
-    float rachis = 1.0 - smoothstep(0.006 - aa, 0.006 + aa, abs(b));
+    // The spine arches over toward its own side (the upright ones gently, the outer ones hard):
+    // P(t) = t dir + bend t^2 g for t = 0..len. Three Newton steps from a guess along the chord find
+    // the point of it nearest v.
+    float arch = ang + (hf - 0.5) * 0.3;
+    vec2 g = normalize(vec2((arch < 0.0 ? -0.35 : 0.35) + ang * 1.4, -1.0));
+    float bend = (0.3 + 0.45 * abs(dir.x)) * (0.85 + 0.3 * fract(hf * 3.7));
+    vec2 chord = len * dir + bend * len * len * g;
+    float t = clamp(dot(v, chord) / dot(chord, chord), 0.0, 1.0) * len;
+    for (int n = 0; n < 3; n++) {
+      vec2 off = t * dir + bend * t * t * g - v;
+      vec2 d1 = dir + 2.0 * bend * t * g;
+      t = clamp(t - dot(off, d1) / max(dot(d1, d1) + dot(off, 2.0 * bend * g), 0.2), 0.0, len);
+    }
+    vec2 rel = v - (t * dir + bend * t * t * g);
+    float dist = length(rel);
+    if (dist > 0.3) continue;
+    vec2 tangent = normalize(dir + 2.0 * bend * t * g);
+    float b = abs(dot(rel, vec2(-tangent.y, tangent.x)));
+    float s = t / len;
+    float pl = 0.21 * len * smoothstep(0.1, 0.28, s) * pow(1.0 - s, 0.6);
+    float pitch = 0.058;
+    float lobe = abs(fract((t - b * 0.5) / pitch + hf * 5.0) - 0.5);
+    float r = b / max(pl, 1e-3);
+    float width = 0.42 * sqrt(max(1.0 - r * r, 0.0));
+    float leaflet = (1.0 - smoothstep(pl - aa, pl + aa, b)) * (1.0 - smoothstep(width - aa / pitch, width + aa / pitch, lobe));
+    float stalk = 0.007 + 0.006 * (1.0 - s);
+    float rachis = 1.0 - smoothstep(stalk - aa, stalk + aa, dist);
     float cv = max(leaflet, rachis);
     if (cv > cover) {
       cover = cv;
-      tone = hf + 0.2 * s;
+      tone = hf;
+      along = s;
+      across = min(r, 1.0);
     }
   }
   if (cover <= 0.0) return vec4(0.0);
-  vec3 albedo = wetten(FOREST_FERN * (0.8 + 0.4 * fract(tone * 3.0)), forestWet, 0.4);
-  float behind = 0.3 + 0.7 * clamp(forestKeySide.y * 1.5, 0.0, 1.0);
-  vec3 col = albedo * (forestFill * 0.8 + forestShroomLight(q, 2.3) * 0.5) + FOREST_MOSS_LIT * forestKey * forestBeam * behind * 0.35;
+  vec3 albedo = wetten(FOREST_FERN * (0.75 + 0.35 * across + 0.2 * along + 0.15 * (fract(tone * 7.0) - 0.5)), forestWet, 0.4);
+  float behind = 0.4 + 0.6 * clamp(forestKeySide.y * 1.5, 0.0, 1.0);
+  vec3 col = albedo * (forestFill * 0.7 + forestTop * 0.9 + forestShroomLight(q, 2.3) * 0.5)
+           + FOREST_FERN_LIT * (forestKey * (0.15 + forestBeam) * behind + dot(forestSheen, LUMA) * 0.25) * (0.4 + 0.6 * across) * 0.6;
+  col *= 0.6 + 0.4 * smoothstep(0.0, 0.4, along);
   col += forestSheen * forestGloss * 0.15;
   return vec4(col, cover);
 }
@@ -883,13 +932,20 @@ vec4 forestMotes(vec2 p, float hitZ) {
       bestZ = m.z;
     }
   }
-  if (forestHard(best) <= 0.0) return vec4(0.0);
-  float show = clamp(forestNight + 1.5 * forestBeam * step(0.001, K_shafts), 0.0, 1.0);
-  if (show <= 0.0) return vec4(0.0);
+  // At night the spores show round the mushrooms that breathe them out (and in the shafts), shrinking
+  // away as they drift off; by day only the dust lit in the shafts shows.
+  float nearShroom = 0.0;
+  for (int i = 0; i < 6; i++) {
+    vec4 site = forestShroom[i];
+    vec2 v = p + forestPar / site.z - site.xy - vec2(0.0, 0.05);
+    nearShroom = max(nearShroom, exp(-dot(v, v) / 0.025));
+  }
+  float show = clamp(1.5 * forestBeam * step(0.001, K_shafts) + forestNight * (0.1 + 0.9 * nearShroom), 0.0, 1.0);
+  if (forestHard(best * show) <= 0.0) return vec4(0.0);
   vec3 spore = FOREST_GLOW * 0.75 * forestNight;
   vec3 dust = forestRayLight * forestBeam * 1.1 + forestFill * 0.3;
   vec3 col = mix(forestMist, spore + dust, mix(forestTransmit(bestZ, 1.5), 1.0, 0.5 * forestNight));
-  return vec4(col, 0.85 * show);
+  return vec4(col, 0.85);
 }
 
 // The canopy overhead: a ragged ceiling of dark cedar foliage, swaying a little, thinning into gaps
@@ -927,8 +983,10 @@ vec3 forestWater(vec2 q, vec2 w, float zg, float t, float tm, float keep, vec3 b
     tilt += rr.xy * ringKeep;
     ring = rr.z * ringKeep;
   }
-  float fres = mix(0.35, 0.92, smoothstep(3.0, 16.0, zg));
-  vec3 refl = forestMistColor(vec2(q.x + tilt.x * 0.02, 2.0 * FOREST_HORIZON - q.y + tilt.y * 0.03));
+  // A ribbon of light: the water mirrors the bright mist and the sky high above far more than the
+  // floor round it gives back; the bed shows through only close by.
+  float fres = mix(0.6, 0.95, smoothstep(3.0, 14.0, zg));
+  vec3 refl = mix(forestMistColor(vec2(q.x + tilt.x * 0.02, min(2.0 * FOREST_HORIZON - q.y + tilt.y * 0.03, 0.98))), forestSheen, 0.45) * 1.15;
   if (zg < FOREST_TORII_Z) {
     // The reflected ray reaches this height at the torii's depth.
     float h = FOREST_EYE * (FOREST_TORII_Z / zg - 1.0);
@@ -936,10 +994,10 @@ vec3 forestWater(vec2 q, vec2 w, float zg, float t, float tm, float keep, vec3 b
     vec4 tr = forestTorii(forestToriiFrame(qr), FOREST_TORII_Z / uRes.y);
     refl = mix(refl, mix(forestMist, tr.rgb, forestTransmit(FOREST_TORII_Z, 2.0)), tr.a * 0.85);
   }
-  vec3 col = mix(mix(FOREST_WATER * (forestFill + 0.02), bed, 0.6), refl * 0.9, fres);
+  vec3 col = mix(mix(FOREST_WATER * (forestFill + 0.02), bed, 0.6), refl, fres);
   float streak = smoothstep(0.66, 0.84, vnoise(vec2(w.x * 7.0, (w.y + tm * flow) * 0.5) + 2.0)) * keep;
   col += forestSheen * streak * (0.06 + 0.12 * K_stream);
-  col += forestKey * forestBeam * 0.12;
+  col += forestRayLight * forestBeam * 0.2;
   // Foam where the current parts round the stepping stones, trailing downstream (toward you).
   float foam = 0.0;
   for (int k = 0; k < ${FOREST_STONES.length}; k++) {
@@ -977,7 +1035,7 @@ vec3 forestGround(vec2 p, float t, float tm, out float zg) {
   float root = (1.0 - smoothstep(0.018, 0.034, rl)) * keep * smoothstep(0.35, 0.6, vnoise(w * 0.35 + 9.0));
   albedo = mix(albedo, FOREST_CEDAR * 0.55, root * 0.7);
   albedo = wetten(albedo, forestWet, 0.85);
-  vec3 light = forestFill * 0.72 + forestKey * (0.04 + 1.4 * forestBeam) * 0.8 + forestShroomLight(q, zg) * 1.3;
+  vec3 light = forestFill * 0.45 + forestTop * 0.9 + forestKey * (0.1 + 1.4 * forestBeam) * 0.8 + forestShroomLight(q, zg) * 1.3;
   vec3 col = albedo * light;
   if (forestWet > 0.35 && abs(s) > 1.25) {
     // Pools a metre or two across, only where the floor is not too foreshortened to hold them.
@@ -993,12 +1051,12 @@ vec3 forestGround(vec2 p, float t, float tm, out float zg) {
     float hb = hash12(id + 3.1);
     vec2 cen = (vec2(hash12(id + 7.7), hb) - 0.5) * 0.25;
     float pebble = (1.0 - smoothstep(0.25, 0.42, length(fract(bp) - 0.5 - cen))) * keep;
-    vec3 bedLight = forestFill * 1.1 + forestKey * forestBeam * 0.6;
+    vec3 bedLight = forestFill * 1.1 + forestTop * 0.5 + forestKey * forestBeam * 0.6;
     vec3 bed = mix(FOREST_LITTER * 0.6, FOREST_ROCK * (0.5 + 0.45 * hb), pebble) * bedLight;
     vec3 inner = K_stream > 0.0 ? forestWater(q, w, zg, t, tm, keep, wetten(bed, 1.0, 0.3) * 0.7) : wetten(bed, forestWet, 0.3);
     float lip = forestBell((abs(s) - 1.0) / 0.09);
     col = mix(inner, col, smoothstep(0.92, 1.18, abs(s)));
-    col = mix(col, wetten(FOREST_MOSS_DEEP * 1.2, 1.0, 0.9) * light, lip * 0.6 * keep);
+    col = mix(col, wetten(FOREST_MOSS_DEEP, 1.0, 0.9) * light, lip * 0.75 * keep);
   }
   return col;
 }
@@ -1064,10 +1122,13 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   forestGloss = wetGloss(forestWet, 0.0);
   forestPar = uPointer * vec2(0.05, 0.02);
 
-  // Light: the sky's brightness (its hue stays outside: the canopy makes the forest's light), the key
-  // (sun or moon, through the gaps) and the side it comes from.
+  // Light: the sky's brightness (its hue stays outside: the canopy makes the forest's light). Little of
+  // it reaches the sides of things under the canopy, so the trunks stand dark against the luminous
+  // mist; what faces up takes the light from the gaps above (forestTop); the key (sun or moon) lights
+  // one side, strongest in a shaft.
   forestLevel = max(dot(sky.ambient, LUMA), 0.02);
-  forestFill = forestLevel * vec3(0.8, 1.0, 0.86) * mix(1.1, 1.4, forestOvercast) + sky.moonColor * 0.25;
+  forestFill = forestLevel * vec3(0.82, 0.92, 0.84) * mix(0.6, 1.0, forestOvercast) + sky.moonColor * 0.2;
+  forestTop = forestLevel * vec3(0.9, 1.0, 0.85) * mix(1.0, 0.85, forestOvercast) + sky.moonColor * 0.25;
   forestKey = sky.sunColor * FOREST_SUNLIT + sky.moonColor * vec3(0.7, 0.85, 0.95) * 1.2;
   float sunLevel = dot(sky.sunColor, LUMA);
   float moonLevel = dot(sky.moonColor, LUMA) * 1.3;
@@ -1087,7 +1148,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   vec2 rays = K_shafts > 0.0 ? forestRays(p, tm) : vec2(0.0);
   forestBeam = K_shafts > 0.0 ? rays.x : 0.3;
   forestRayLight = sky.sunColor * FOREST_SUNLIT + sky.moonColor * vec3(0.6, 0.8, 0.95) * 1.6;
-  vec3 beamGlow = forestRayLight * rays.y * K_shafts * (0.35 + 0.9 * K_mist) * 1.9;
+  vec3 beamGlow = forestRayLight * rays.y * K_shafts * (0.45 + 0.9 * K_mist) * 2.2;
 
   // The canopy shelters the forest: under it less than half the rain gets through (the rest gathers
   // and drips); through its gaps, where the shafts come, it pours, slanting with the wind.
@@ -1115,12 +1176,12 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The mushrooms (as forestShroomSites in sim.ts), breathing slowly; a "now" on the spores makes them
   // flare as they puff.
   float logTop = FOREST_HORIZON + (2.0 * FOREST_LOG.w - 0.03 - FOREST_EYE) / FOREST_LOG.z;
-  float floorZ = FOREST_SISTER_Z - 0.6;
+  vec2 gate = vec2(FOREST_TORII_SPAN, 0.0) + rotate(FOREST_GATE_SHROOMS - vec2(FOREST_TORII_SPAN, 0.0), FOREST_TORII_LEAN);
   forestShroom[0] = vec4(forestOnRock(rockLC, rockLR, 0.8), FOREST_ROCKL.y, 1.0);
   forestShroom[1] = vec4(forestOnRock(rockLC, rockLR, -0.66), FOREST_ROCKL.y, 0.85);
   forestShroom[2] = vec4(1.25 / FOREST_LOG.z, logTop, FOREST_LOG.z, 0.9);
   forestShroom[3] = vec4(3.9 / FOREST_LOG.z, logTop, FOREST_LOG.z, 0.8);
-  forestShroom[4] = vec4((FOREST_SISTER_X + 1.05) / floorZ, FOREST_HORIZON - FOREST_EYE / floorZ, floorZ, 1.0);
+  forestShroom[4] = vec4((forestToriiX + gate.x) / FOREST_TORII_Z, FOREST_HORIZON + (gate.y - FOREST_EYE) / FOREST_TORII_Z, FOREST_TORII_Z, 1.2);
   forestShroom[5] = vec4(forestOnRock(rockRC, rockRR, -0.72), FOREST_ROCKR.y, 0.75);
   float sinceSpores = sinceTrigger(3);
   float flare = sinceSpores >= 0.0 ? exp(-sinceSpores / 2.5) : 0.0;
@@ -1216,7 +1277,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     }
 
     if (i == 1) {
-      // The torii, and the drips off its top beam.
+      // The torii, the mushrooms glowing on the moss mound at its foot, and the drips off its top beam.
       float tz = FOREST_TORII_Z;
       vec2 tq = p + forestPar / tz;
       if ((tq.y - FOREST_HORIZON) * tz + FOREST_EYE >= -0.02) {
@@ -1225,6 +1286,13 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
         if (forestHard(torii.a) > 0.0) {
           col = mix(mist, torii.rgb, forestTransmit(tz, max(P.y, 0.0)));
           hitZ = tz;
+        }
+        float glow;
+        vec4 sh = forestShrooms(tq, 4, glow);
+        if (forestHard(sh.a) > 0.0) {
+          col = mix(mist, sh.rgb, forestTransmit(tz, 0.3)) + FOREST_SHROOM_GLOW * glow * 0.3;
+          hitZ = tz;
+          accent = max(accent, glow);
         }
         float eaves = max(K_rain, 0.4 * forestWet);
         float ext = FOREST_TORII_SPAN + FOREST_TORII_OVER;
@@ -1258,35 +1326,11 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     }
   }
 
-  // The second cedar, and the mushrooms at its foot.
-  {
-    float z = FOREST_SISTER_Z;
-    vec2 q = p + forestPar / z;
-    float sx = FOREST_SISTER_X / z;
-    if (abs(q.x - sx) < 0.3) {
-      float height;
-      float u;
-      vec4 tree = forestBigTree(q, sx, z, FOREST_SISTER_SHAPE, 0.0, 5.3, 1.0, height, u);
-      if (forestHard(tree.a) > 0.0) {
-        col = mix(mist, tree.rgb, forestTransmit(z, height));
-        hitZ = z;
-      }
-    }
-    float glow;
-    vec2 fq = p + forestPar / forestShroom[4].z;
-    vec4 sh = forestShrooms(fq, 4, glow);
-    if (forestHard(sh.a) > 0.0) {
-      col = mix(mist, sh.rgb, forestTransmit(forestShroom[4].z, 0.1)) + FOREST_SHROOM_GLOW * glow * 0.3;
-      hitZ = forestShroom[4].z;
-      accent = max(accent, glow);
-    }
-  }
-
   // The old beech and its branch.
   {
     float z = FOREST_ELDER_Z;
     vec2 q = p + forestPar / z;
-    if (abs(q.x - forestElderX) < 0.35) {
+    if (abs(q.x - forestElderX) < 0.4) {
       float height;
       float u;
       vec4 tree = forestBigTree(q, forestElderX, z, FOREST_ELDER_SHAPE, 1.0, 7.7, 0.9, height, u);
@@ -1339,14 +1383,14 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     }
   }
 
-  // The great cedar with its rope.
+  // The great cedar with its rope: the whole massive bole in view, buttresses splaying at its foot.
   {
     float z = FOREST_HERO_Z;
     vec2 q = p + forestPar / z;
-    if (q.x < forestHeroX + 0.62) {
+    if (abs(q.x - forestHeroX) < 0.66) {
       float height;
       float u;
-      vec4 tree = forestBigTree(q, forestHeroX, z, FOREST_HERO_SHAPE, 0.0, 3.1, 1.25, height, u);
+      vec4 tree = forestBigTree(q, forestHeroX, z, FOREST_HERO_SHAPE, 0.0, FOREST_HERO_SALT, 1.25, height, u);
       if (forestHard(tree.a) > 0.0) {
         vec4 rope = forestRope(q, max(height, 0.0), u, tm);
         vec3 c = mix(tree.rgb, rope.rgb, forestHard(rope.a));
@@ -1387,8 +1431,8 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   {
     float z = 2.3;
     vec2 q = p + forestPar / z;
-    vec4 fern = forestFern(q, vec2(0.5 * forestLA - 0.1, -0.06), 0.36, 1.0, tm);
-    vec4 fern2 = forestFern(q, vec2(-0.5 * forestLA + 0.06, -0.08), 0.3, 5.0, tm);
+    vec4 fern = forestFern(q, vec2(0.5 * forestLA - 0.07, -0.05), 0.42, 1.0, tm);
+    vec4 fern2 = forestFern(q, vec2(-0.5 * forestLA + 0.07, -0.06), 0.34, 5.0, tm);
     if (fern2.a > fern.a) fern = fern2;
     if (forestHard(fern.a) > 0.0) {
       col = mix(mist, fern.rgb, forestTransmit(z, 0.5));
@@ -1419,7 +1463,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       if (l.y < 0.03 + 0.03 * sin(l.x * 23.0 + float(s))) continue;
       vec4 shape = forestSpiritShape(l + vec2(0.0, sc.x * 0.45), sb.x, sb.y, sb.w, hs * uRes.y);
       if (forestHard(shape.x * sa.w) <= 0.0) continue;
-      vec3 body = FOREST_SPIRIT * (forestFill * 1.3 + forestKey * (0.1 + 0.4 * forestBeam) + forestShroomLight(q, z) * 0.6) * (0.75 + 0.25 * shape.z);
+      vec3 body = FOREST_SPIRIT * (forestFill * 1.6 + forestTop * 0.6 + forestKey * (0.2 + 0.4 * forestBeam) + forestShroomLight(q, z) * 0.6) * (0.75 + 0.25 * shape.z);
       vec3 inner = FOREST_GLOW * sb.z * forestNight * (0.5 + 0.5 * shape.w) * 0.6;
       vec3 c = mix(mist, body, T) + inner * mix(T, 1.0, 0.5);
       if (shape.y > 0.5) c = mix(mist, vec3(0.01, 0.015, 0.012), mix(T, 1.0, 0.3));
