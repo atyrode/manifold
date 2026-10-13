@@ -1,6 +1,6 @@
 import { artworks, floodBackdrop, flowField, raster, type Artwork, type Raster } from "./artwork.ts";
 import { constellationUniforms } from "./constellations.ts";
-import { MAX_PARAMS } from "./params.ts";
+import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import { fragmentSource, vertexSource } from "./shaders.ts";
 
 /** Order is the shader's `uScene` index. */
@@ -39,7 +39,7 @@ const uniformNames = [
   "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
   "uStars", "uStarCount", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
-  "uProgress",
+  "uProgress", "uTriggers",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
@@ -93,6 +93,9 @@ export class DitherRenderer {
   #start = performance.now();
   #frozen: boolean;
   readonly #params = new Float32Array(MAX_PARAMS);
+  /** Shader time each trigger slot last fired; far in the past when idle. */
+  readonly #triggers = new Float32Array(MAX_TRIGGERS).fill(-1e4);
+  #triggerScene = "";
   /** Loading-page progress 0..1, or -1 off the loading page. */
   #progress = -1;
   /** WebGL version and renderer, for diagnosing remote reports. */
@@ -145,12 +148,21 @@ export class DitherRenderer {
     for (const art of Object.values(artworks)) this.#load(art);
   }
 
+  /** Fire one occurrence of the current scene's occasional effect in `slot` right now. */
+  trigger(slot: number): void {
+    if (slot >= 0 && slot < MAX_TRIGGERS) this.#triggers[slot] = (performance.now() - this.#start) / 1000;
+  }
+
   setProgress(progress: number): void {
     this.#progress = progress;
   }
 
   update(settings: RenderSettings): void {
     this.#settings = settings;
+    if (settings.scene !== this.#triggerScene) {
+      this.#triggerScene = settings.scene;
+      this.#triggers.fill(-1e4);
+    }
     this.#params.fill(0);
     this.#params.set(settings.params.slice(0, MAX_PARAMS));
   }
@@ -257,6 +269,7 @@ export class DitherRenderer {
     gl.uniform1fv(u.uParams, this.#params);
     gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     gl.uniform1f(u.uProgress, this.#progress);
+    gl.uniform1fv(u.uTriggers, this.#triggers);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }

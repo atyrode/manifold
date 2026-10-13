@@ -68,6 +68,33 @@ const NIGHT = { bg: "#07080b", ink: "#e8e6df", muted: "#8b8a85", line: "rgb(232 
 /** The wave's "ink on paper" theme: the print's paper with dark ink. */
 const PAPER = { bg: "#ebe2cc", ink: "#1b2235", muted: "#5d5a52", line: "rgb(27 34 53 / 0.18)" };
 const LOCAL_PRESETS = "landing.presets";
+const LAB_PREFS = "landing.lab";
+
+/** Sidebar layout preferences, kept per browser rather than in shared links. */
+interface LabPrefs {
+  open: boolean;
+  /** `data-section` ids the user has folded. */
+  folded: string[];
+}
+
+function loadPrefs(): LabPrefs {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(LAB_PREFS) ?? "{}");
+    const record = typeof parsed === "object" && parsed !== null ? (parsed as Partial<LabPrefs>) : {};
+    return {
+      open: record.open === true,
+      folded: Array.isArray(record.folded) ? record.folded.filter((id): id is string => typeof id === "string") : [],
+    };
+  } catch (error: unknown) {
+    console.error("evt=landing.lab_prefs.unreadable", error);
+    return { open: false, folded: [] };
+  }
+}
+
+const prefs = loadPrefs();
+function savePrefs(): void {
+  localStorage.setItem(LAB_PREFS, JSON.stringify(prefs));
+}
 
 /** The commit this page was built from; empty when served straight from a working tree. */
 const build = document.querySelector<HTMLMetaElement>('meta[name="landing-build"]')?.content ?? "";
@@ -179,7 +206,7 @@ function flash(button: HTMLButtonElement, text: string): void {
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const canvas = element("#stage", HTMLCanvasElement);
 const lab = element("#lab", HTMLFormElement);
-const labToggle = element("#lab-toggle", HTMLButtonElement);
+const labOpen = element("#lab-open", HTMLButtonElement);
 const labParams = element("#lab-params", HTMLElement);
 const presetSelect = element("#lab-presets", HTMLSelectElement);
 const pinned = element("#lab-pinned", HTMLAnchorElement);
@@ -283,6 +310,20 @@ function segmentsLabel(text: string, name: string, options: readonly { label: st
   return label;
 }
 
+/** "now": fire one occurrence of an occasional effect immediately, even while it is off. */
+function triggerButton(slot: number, what: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "now";
+  button.textContent = "▶ now";
+  button.title = `Show one ${what} right now`;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    renderer?.trigger(slot);
+  });
+  return button;
+}
+
 /** A knob's controls: a feature is its switch plus an amount row shown only while on. */
 function paramFields(def: ParamDef): HTMLLabelElement[] {
   const name = `param:${def.key}`;
@@ -304,7 +345,9 @@ function paramFields(def: ParamDef): HTMLLabelElement[] {
         : sliderLabel(def.amountLabel, amountName, def.min, def.max, def.step);
       amount.classList.add("amount");
       amount.dataset.when = def.key;
-      fields = [withHelp(switchLabel(def.label, name), def.help), amount];
+      const toggleRow = switchLabel(def.label, name);
+      if (def.trigger !== undefined) toggleRow.append(triggerButton(def.trigger, def.label));
+      fields = [withHelp(toggleRow, def.help), amount];
       break;
     }
     default: {
@@ -318,16 +361,19 @@ function paramFields(def: ParamDef): HTMLLabelElement[] {
   return fields;
 }
 
-/** One fieldset per knob group, in first-appearance order. */
-function paramSections(scene: SceneId): HTMLFieldSetElement[] {
-  const sections = new Map<string, HTMLFieldSetElement>();
+/** One collapsible section per knob group, in first-appearance order. */
+function paramSections(scene: SceneId): HTMLDetailsElement[] {
+  const sections = new Map<string, HTMLDetailsElement>();
   for (const def of sceneParams[scene]) {
     let section = sections.get(def.group);
     if (!section) {
-      section = document.createElement("fieldset");
-      const legend = document.createElement("legend");
-      legend.textContent = def.group;
-      section.append(legend);
+      section = document.createElement("details");
+      section.className = "section";
+      section.dataset.section = `${scene}:${def.group}`;
+      section.open = !prefs.folded.includes(section.dataset.section);
+      const summary = document.createElement("summary");
+      summary.textContent = def.group;
+      section.append(summary);
       sections.set(def.group, section);
     }
     section.append(...paramFields(def));
@@ -440,10 +486,33 @@ presetSelect.addEventListener("change", () => {
   applyQuery(new URLSearchParams(preset.query));
 });
 
-labToggle.addEventListener("click", () => {
-  lab.hidden = !lab.hidden;
-  labToggle.setAttribute("aria-expanded", String(!lab.hidden));
+function setLabOpen(open: boolean): void {
+  lab.hidden = !open;
+  document.body.classList.toggle("lab-open", open);
+  labOpen.setAttribute("aria-expanded", String(open));
+  prefs.open = open;
+  savePrefs();
+}
+labOpen.addEventListener("click", () => setLabOpen(true));
+element("#lab-close", HTMLButtonElement).addEventListener("click", () => setLabOpen(false));
+// <details> toggle events do not bubble; listen in the capture phase to remember folds.
+lab.addEventListener("toggle", (event) => {
+  const section = event.target;
+  if (!(section instanceof HTMLDetailsElement) || !section.dataset.section) return;
+  const id = section.dataset.section;
+  prefs.folded = prefs.folded.filter((entry) => entry !== id);
+  if (!section.open) prefs.folded.push(id);
+  savePrefs();
+}, true);
+element("#lab-collapse-all", HTMLButtonElement).addEventListener("click", () => {
+  const sections = [...lab.querySelectorAll<HTMLDetailsElement>("details.section")];
+  const open = !sections.some((section) => section.open);
+  for (const section of sections) section.open = open;
 });
+for (const section of lab.querySelectorAll<HTMLDetailsElement>("details.section[data-section]")) {
+  section.open = !prefs.folded.includes(section.dataset.section ?? "");
+}
+setLabOpen(prefs.open);
 element("#lab-reset", HTMLButtonElement).addEventListener("click", () => applyQuery(new URLSearchParams()));
 element("#lab-copy", HTMLButtonElement).addEventListener("click", (event) => {
   const button = event.currentTarget;
@@ -493,7 +562,7 @@ window.addEventListener("keydown", (event) => {
     if (state.mode !== "bare") modeBeforeHide = state.mode;
     apply({ ...state, mode: state.mode === "bare" ? modeBeforeHide : "bare" }, params);
   } else if (event.key === "l") {
-    labToggle.click();
+    setLabOpen(lab.hidden);
   }
 });
 

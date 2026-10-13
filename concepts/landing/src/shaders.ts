@@ -14,9 +14,10 @@ const common = `#version 300 es
 precision highp float;
 
 #define MAX_STARS 16
-#define MAX_PARAMS 32
+#define MAX_PARAMS 40
 #define MAX_CON_STARS 48
 #define MAX_CON_LINES 48
+#define MAX_TRIGGERS 8
 #define TAU 6.2831853
 
 uniform vec2 uRes;
@@ -48,6 +49,7 @@ uniform int uConStarCount;
 uniform int uConLineCount;
 uniform int uConMarkStar;  // first star / line of the Manifold asterism
 uniform int uConMarkLine;
+uniform float uTriggers[MAX_TRIGGERS]; // uTime when each "now" button fired
 
 out vec4 outColor;
 
@@ -126,6 +128,42 @@ float starfield(vec2 cell, float density, float twinkle, float scatter) {
   float wave = 0.5 + 0.5 * sin(uTime * rate * uMotion + h3 * TAU * (1.0 + 9.0 * scatter));
   float dip = pow(wave, mix(1.0, 9.0, scatter)) * step(0.001, twinkle);
   return on * (1.0 - 0.75 * dip * uMotion) * (0.4 + 0.6 * fract(h * 97.0));
+}
+
+// Seconds since a "now" button fired (negative or huge when idle).
+float sinceTrigger(int slot) {
+  return uTime - uTriggers[slot];
+}
+
+float segmentDistance(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
+}
+
+// The Manifold M, after the app icon, in mark units: x in [-0.47, 0.47], y in [-0.5, 0.5].
+const vec2 M0 = vec2(-0.47, -0.5);
+const vec2 M1 = vec2(-0.47, 0.5);
+const vec2 M2 = vec2(0.0, -0.08);
+const vec2 M3 = vec2(0.47, 0.5);
+const vec2 M4 = vec2(0.47, -0.5);
+
+float markDistance(vec2 q) {
+  return min(min(segmentDistance(q, M0, M1), segmentDistance(q, M1, M2)), min(segmentDistance(q, M2, M3), segmentDistance(q, M3, M4)));
+}
+
+// Point at fraction s (0..1) of the way along the M's strokes, by length.
+vec2 markPoint(float s) {
+  float d = clamp(s, 0.0, 1.0) * 3.493;
+  if (d < 1.0) return mix(M0, M1, d);
+  d -= 1.0;
+  if (d < 0.7465) return mix(M1, M2, d / 0.7465);
+  d -= 0.7465;
+  if (d < 0.7465) return mix(M2, M3, d / 0.7465);
+  return mix(M3, M4, d - 0.7465);
+}
+
+vec2 markVertex(int i) {
+  return i == 0 ? M0 : i == 1 ? M1 : i == 2 ? M2 : i == 3 ? M3 : M4;
 }
 
 struct Shade {
@@ -230,6 +268,19 @@ Shade sceneWave(vec2 uv, float t) {
     o.rgb = mix(uBg, s, max(sea, line));
   }
   o.source = s;
+  if (uParams[7] > 0.5) {
+    // Hanko seal with the M cut out, where the title cartouche was cleared.
+    vec2 q = (base - vec2(0.062, 0.825)) * vec2(uImageSize.x / uImageSize.y, 1.0) / 0.045;
+    float rough = (vnoise(q * 9.0) - 0.5) * 0.08;
+    float box = length(max(abs(q) - 0.84, 0.0)) - 0.14 + rough;
+    if (box < 0.0) {
+      float cut = step(markDistance(q * 0.6), 0.085);
+      o.accent = (1.0 - cut) * (0.82 + 0.18 * vnoise(q * 22.0));
+      o.ink = 0.0;
+      o.rgb = mix(o.rgb, uAccent, o.accent);
+      o.source = mix(s, uAccent, o.accent);
+    }
+  }
   return o;
 }
 
@@ -281,6 +332,21 @@ Shade sceneStarry(vec2 uv, float t) {
   o.shimmer = yellow * 0.12 * m;
   o.rgb = s * 0.92 * pulse;
   o.source = s;
+  if (uParams[5] > 0.5) {
+    // Five haloed stars at the M's corners, joined by a faint painted stroke.
+    vec2 centre = vec2(0.5, 0.84);
+    float size = 0.15;
+    vec2 local = (base - centre) * vec2(aspect, 1.0) / size;
+    for (int i = 0; i < 5; i++) {
+      float d = length(local - markVertex(i)) * size / 0.017;
+      float core = smoothstep(1.0, 0.4, d);
+      float halo = smoothstep(3.4, 1.2, d) * smoothstep(0.6, 1.1, d) * (0.55 + 0.45 * sin(d * 3.0 - t * 2.2 * m + float(i)));
+      o.accent = max(o.accent, core);
+      o.ink = max(o.ink * (1.0 - core), halo * 0.8);
+    }
+    float stroke = smoothstep(0.045, 0.015, markDistance(local)) * (0.6 + 0.4 * vnoise(local * 30.0 + t * m));
+    o.accent = max(o.accent, stroke * 0.55);
+  }
   return o;
 }
 `;
@@ -317,29 +383,32 @@ vec2 constellations(vec2 sky, float aspect, float px, bool figures, bool lines, 
   return vec2(star, line);
 }
 
-// Shooting stars: each time slot may throw one streak across the upper sky.
+// One shooting star 'tau' seconds into its flight.
+float meteorStreak(vec2 p, float tau, vec2 seed, float px) {
+  float duration = 0.6 + 0.5 * hash12(seed + 2.0);
+  if (tau < 0.0 || tau > duration) return 0.0;
+  vec2 start = vec2((hash12(seed + 4.0) - 0.3) * 1.6, 0.2 + 0.3 * hash12(seed + 6.0));
+  float angle = 3.65 + 0.5 * hash12(seed + 8.0);
+  vec2 dir = vec2(cos(angle), sin(angle));
+  vec2 head = start + dir * tau * 0.9;
+  vec2 tail = head - dir * 0.16;
+  vec2 pa = p - tail;
+  float along = clamp(dot(pa, dir) / 0.16, 0.0, 1.0);
+  float d = length(pa - dir * along * 0.16) / px;
+  float fade = 1.0 - smoothstep(0.6 * duration, duration, tau);
+  return step(d, 0.6 + 0.6 * along) * along * along * fade;
+}
+
+// Shooting stars: each time slot may throw one streak; trigger slot 0 throws one now.
 float meteors(vec2 p, float rate, float px, float t) {
-  float acc = 0.0;
+  float acc = meteorStreak(p, sinceTrigger(0), vec2(uTriggers[0], 91.0), px);
   if (rate <= 0.0) return acc;
   for (int layer = 0; layer < 2; layer++) {
     float slotLength = mix(10.0, 1.6, rate) * (1.0 + 0.37 * float(layer));
     float k = t / slotLength + float(layer) * 0.5;
-    float slot = floor(k);
-    float tau = fract(k) * slotLength;
-    vec2 seed = vec2(slot, float(layer) * 17.0);
+    vec2 seed = vec2(floor(k), float(layer) * 17.0);
     if (hash12(seed) > 0.35 + 0.65 * rate) continue;
-    float duration = 0.6 + 0.5 * hash12(seed + 2.0);
-    if (tau > duration) continue;
-    vec2 start = vec2((hash12(seed + 4.0) - 0.3) * 1.6, 0.2 + 0.3 * hash12(seed + 6.0));
-    float angle = 3.65 + 0.5 * hash12(seed + 8.0);
-    vec2 dir = vec2(cos(angle), sin(angle));
-    vec2 head = start + dir * tau * 0.9;
-    vec2 tail = head - dir * 0.16;
-    vec2 pa = p - tail;
-    float along = clamp(dot(pa, dir) / 0.16, 0.0, 1.0);
-    float d = length(pa - dir * along * 0.16) / px;
-    float fade = 1.0 - smoothstep(0.6 * duration, duration, tau);
-    acc = max(acc, step(d, 0.6 + 0.6 * along) * along * along * fade);
+    acc = max(acc, meteorStreak(p, fract(k) * slotLength, seed, px));
   }
   return acc;
 }
@@ -357,17 +426,12 @@ bool behindPlanet(vec3 p, float r) {
   return l2 < r * r && p.z < sqrt(r * r - l2);
 }
 
-// Captured meteor: arrives, spirals inward around the planet and burns up in the atmosphere.
-// Returns (ink, accent).
-vec2 captured(vec2 dp, float r, float t, float freq, float px) {
+// Captured meteor 'tau' seconds after it appears: spirals inward around the planet and burns up
+// in the atmosphere. Returns (ink, accent).
+vec2 capturedEvent(vec2 dp, float r, float tau, float id, float px) {
   vec2 acc = vec2(0.0);
-  if (freq <= 0.0) return acc;
-  float slot = mix(40.0, 10.0, freq);
-  float k = t / slot;
-  float id = floor(k);
-  float tau = fract(k) * slot;
   float duration = 8.0;
-  if (tau > duration + 1.4) return acc;
+  if (tau < 0.0 || tau > duration + 1.4) return acc;
   float tilt = 0.3 + 0.55 * hash12(vec2(id, 5.1));
   float roll = (hash12(vec2(id, 9.7)) - 0.5) * 0.9;
   float start = hash12(vec2(id, 3.3)) * TAU;
@@ -389,6 +453,31 @@ vec2 captured(vec2 dp, float r, float t, float freq, float px) {
     if (!behindPlanet(end, r)) acc.y = max(acc.y, flash);
   }
   return acc;
+}
+
+// Scheduled captures at the chosen frequency; trigger slot 1 starts one now.
+vec2 captured(vec2 dp, float r, float t, float freq, float px) {
+  vec2 acc = capturedEvent(dp, r, sinceTrigger(1), 1000.0 + uTriggers[1], px);
+  if (freq <= 0.0) return acc;
+  float slot = mix(40.0, 10.0, freq);
+  float k = t / slot;
+  return max(acc, capturedEvent(dp, r, fract(k) * slot, floor(k), px));
+}
+
+// Auroral oval around a pole tipped toward the viewer: a band at a set distance from the pole,
+// broken into drifting folds and patches. 'n' is a unit direction from the planet's centre.
+float auroraOval(vec3 n, float size, float tm) {
+  vec3 pole = normalize(vec3(0.12, 0.86, 0.5));
+  float colat = acos(clamp(dot(n, pole), -1.0, 1.0));
+  vec3 e1 = normalize(cross(pole, vec3(0.0, 0.0, 1.0)));
+  vec3 e2 = cross(pole, e1);
+  float az = atan(dot(n, e2), dot(n, e1));
+  vec2 ring = vec2(cos(az), sin(az));
+  float wobble = (fbm(ring * 2.2 + vec2(tm * 0.06, -tm * 0.04)) - 0.5) * 0.22;
+  float band = exp(-pow((colat - mix(0.25, 0.75, size) - wobble) / 0.09, 2.0));
+  float folds = 0.55 + 0.45 * sin(az * 38.0 + fbm(ring * 3.0 + tm * 0.08) * 7.0 + tm * 0.4);
+  float mass = smoothstep(0.25, 0.7, fbm(ring * 4.0 + vec2(colat * 6.0, tm * 0.12)));
+  return band * folds * mass;
 }
 
 // Ring plane geometry shared by the ring itself and the shadows it casts.
@@ -493,18 +582,30 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     float rim = pow(1.0 - normal.z, 3.0);
     float limbSun = smoothstep(-0.2, 0.6, dot(normalize(q), normalize(L.xy + 1e-4)));
     float night = smoothstep(0.15, 0.0, diff);
-    float lights = step(0.992, hash12(floor(vec2(lon * 90.0, normal.y * 140.0)))) * night;
+    vec2 city = floor(vec2(lon * 90.0, normal.y * 140.0));
+    float lights = step(0.992, hash12(city)) * night * step(0.5, uParams[32]);
+    lights *= 1.0 - uParams[33] * m * (0.5 + 0.5 * sin(t * (1.0 + 3.0 * hash12(city + 7.0)) + hash12(city) * 40.0));
     o.ink = diff * diff * (0.2 + 0.6 * bands) * 0.85;
-    o.accent = rim * limbSun * 1.4 + lights * (0.6 + 0.4 * sin(t * 2.0 + lon * 30.0) * m);
+    o.accent = rim * limbSun * 1.4 + lights * 0.85;
+    if (uParams[15] > 0.0) o.accent = max(o.accent, auroraOval(normal, uParams[31], tm) * mix(0.6, 1.0, night) * uParams[15] * 2.0);
     // Cloud decks drift faster than the surface and catch the light.
     float cloud = smoothstep(0.52, 0.72, fbm(vec2(lon * 4.0 + tm * 0.02, normal.y * 9.0) + vec2(5.0, 1.0)));
     o.ink = max(o.ink, cloud * uParams[13] * (0.15 + 0.8 * diff));
     // Storms: brief flashes inside the night-side clouds, each cell on its own clock.
     vec2 stormCell = floor(vec2(lon * 40.0, normal.y * 60.0));
-    float strike = step(1.0 - 0.06 * uParams[14], hash12(stormCell + floor(t * 6.0 + hash12(stormCell) * 6.0)));
-    float storm = strike * step(0.001, uParams[14]) * (0.4 + 0.6 * cloud) * smoothstep(0.35, 0.0, diff) * step(0.001, m);
+    float burst = sinceTrigger(2) >= 0.0 ? 0.9 * (1.0 - smoothstep(1.5, 3.0, sinceTrigger(2))) : 0.0;
+    float stormLevel = max(uParams[14] * step(0.001, m), burst);
+    float strike = step(1.0 - 0.06 * stormLevel, hash12(stormCell + floor(t * 6.0 + hash12(stormCell) * 6.0)));
+    float storm = strike * step(0.001, stormLevel) * (0.4 + 0.6 * cloud) * smoothstep(0.35, 0.0, diff);
     o.ink = max(o.ink, storm);
     o.shimmer = storm * 0.3;
+    if (uParams[30] > 0.5) {
+      // City lights on the night side, laid out as the M.
+      vec2 at = (normal.xy + normalize(L.xy + 1e-4) * 0.45) / 0.3;
+      vec2 town = floor(normal.xy * 180.0);
+      float lit = step(0.6, hash12(town)) * (0.8 + 0.2 * hash12(town + 3.0));
+      o.accent = max(o.accent, step(markDistance(at), 0.06) * lit * smoothstep(0.25, 0.0, diff));
+    }
     // The rings' shadow bands across the surface.
     if (uParams[19] > 0.5) {
       float toward = dot(n, L);
@@ -525,13 +626,10 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     if (ringZ > 0.0) halo *= 1.0 - cover;
     else ring *= 1.0 - 0.8 * min(halo, 1.0);
     if (uParams[15] > 0.0) {
-      // Aurora: rippling curtains a little above the limb.
-      float height = d - 1.0; // in planet radii
-      float along = atan(q.y, q.x);
-      float curtain = smoothstep(0.0, 0.012, height) * smoothstep(0.11, 0.02, height);
-      float folds = 0.65 + 0.35 * sin(along * 60.0 + fbm(vec2(along * 6.0, tm * 0.12)) * 9.0 + tm * 0.5);
-      float flicker = smoothstep(0.35, 0.8, fbm(vec2(along * 14.0 - tm * 0.25, height * 18.0 - tm * 0.1)));
-      halo += curtain * folds * flicker * smoothstep(0.1, 0.7, q.y / d) * uParams[15] * 1.2;
+      // Where the oval meets the horizon its curtains rise into space.
+      float height = d - 1.0;
+      float curtain = auroraOval(vec3(q / d, 0.0), uParams[31], tm) * exp(-height / 0.06) * smoothstep(0.0, 0.008, height);
+      halo += curtain * uParams[15] * 1.2;
     }
     o.accent += halo * 0.9;
     o.ink *= 1.0 - min(halo, 1.0);
@@ -607,7 +705,8 @@ Shade sceneSwell(vec2 uv, float t) {
     float md = length(p - moon);
     float disc = smoothstep(moonRadius, moonRadius - 0.003, md);
     float craters = fbm((p - moon) * 30.0);
-    o.ink = disc * (0.7 + 0.3 * craters) + exp(-md * 12.0 * 0.075 / moonRadius) * 0.16;
+    float maria = uParams[4] > 0.5 ? smoothstep(0.11, 0.07, markDistance((p - moon) / moonRadius / 1.3)) : 0.0;
+    o.ink = disc * (0.7 + 0.3 * craters) * (1.0 - 0.6 * maria) + exp(-md * 12.0 * 0.075 / moonRadius) * 0.16;
     o.ink += starfield(floor(p * uRes.y), 0.001 + 0.007 * uParams[3], 0.3, 0.8) * (1.0 - disc);
     o.ink += 0.06 * smoothstep(0.25, 0.0, p.y - horizon);
   } else {
@@ -684,8 +783,16 @@ vec2 koiPath(float i, float s, float aspect) {
   );
 }
 
-vec2 koiAt(float i, float s, float aspect, vec2 lure, float follow) {
-  return mix(koiPath(i, s, aspect), lure + (vec2(hash12(vec2(i, 4.0)), hash12(vec2(i, 5.0))) - 0.5) * 0.25, follow);
+// Where koi i is: its own loop, pulled toward the lure, or (in formation) gliding along the M.
+vec2 koiAt(float i, float s, float aspect, vec2 lure, float follow, float formation, float count) {
+  vec2 free = mix(koiPath(i, s, aspect), lure + (vec2(hash12(vec2(i, 4.0)), hash12(vec2(i, 5.0))) - 0.5) * 0.25, follow);
+  vec2 inLine = markPoint(fract((i + 0.5) / count + s * 0.012)) * 0.82;
+  return mix(free, inLine, formation);
+}
+
+// 0..1 presence of a koi formation that started 'tau' seconds ago (12 s long).
+float formationWindow(float tau) {
+  return tau < 0.0 ? 0.0 : smoothstep(0.0, 2.5, tau) * smoothstep(12.0, 9.5, tau);
 }
 
 // Distance-like test for a koi in its own frame (x forward from the nose, y across).
@@ -734,11 +841,31 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       }
     }
   }
+  // "now": one drop at a random spot.
+  float dropAge = sinceTrigger(0);
+  if (dropAge >= 0.0 && dropAge < 5.0) {
+    vec2 drop = (vec2(hash12(vec2(uTriggers[0], 1.0)), hash12(vec2(uTriggers[0], 2.0))) - 0.5) * vec2(aspect * 0.7, 0.7);
+    float dist = length(p - drop);
+    float radius = dropAge * 0.07;
+    float fade = exp(-dropAge * 0.9);
+    surface += sin((dist - radius) * 160.0) * exp(-pow((dist - radius) / 0.012, 2.0)) * fade;
+    ringLight = max(ringLight, (smoothstep(0.004, 0.0, abs(dist - radius)) + 0.6 * smoothstep(0.003, 0.0, abs(dist - radius * 0.6))) * fade);
+  }
   vec2 refract = vec2(dFdx(surface), dFdy(surface)) * 0.01 + vec2(sin(p.y * 9.0 + tm * 0.7), cos(p.x * 8.0 + tm * 0.6)) * 0.0025 * m;
   vec2 floorP = p + refract;
 
   // Floor: pebbles or silt, dimmer when deep.
   float floorLight = uParams[8] > 0.5 ? pebbles(floorP * 22.0) * 0.14 : 0.04 + 0.05 * fbm(floorP * 9.0);
+  if (uParams[9] > 0.5) {
+    // Flat stepping stones laid along the M.
+    for (int i = 0; i < 26; i++) {
+      vec2 stone = markPoint(float(i) / 25.0) * 0.72 + vec2(0.006 * sin(float(i) * 4.1), 0.006 * sin(float(i) * 2.7));
+      vec2 d = floorP - stone;
+      float edge = 0.026 + 0.006 * (vnoise(d * 60.0 + float(i) * 7.0) - 0.5) + 0.004 * hash12(vec2(float(i), 2.0));
+      float r = length(d * vec2(1.0, 1.15));
+      if (r < edge) floorLight = (0.3 + 0.1 * vnoise(d * 120.0)) * smoothstep(edge, edge * 0.8, r) + 0.06;
+    }
+  }
   floorLight *= 1.0 - depth * 0.6;
   float caustic = 0.0;
   if (uParams[3] > 0.0) {
@@ -753,6 +880,11 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   vec2 lure = uPointer * vec2(aspect * 0.5, 0.5);
   float follow = uParams[2] > 0.5 ? 0.55 : 0.0;
   float swimTime = tm * (0.6 + 2.4 * uParams[1]);
+  float formation = formationWindow(sinceTrigger(1));
+  if (uParams[10] > 0.0) {
+    float period = mix(70.0, 20.0, uParams[10]);
+    formation = max(formation, formationWindow(mod(tm, period)));
+  }
   float shadow = 0.0;
   float fish = 0.0;
   float fishAccent = 0.0;
@@ -761,8 +893,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     if (i >= count) break;
     float fi = float(i);
     float s = swimTime + fi * 11.0;
-    vec2 pos = koiAt(fi, s, aspect, lure, follow);
-    vec2 dir = normalize(koiAt(fi, s + 0.05, aspect, lure, follow) - koiAt(fi, s - 0.05, aspect, lure, follow) + 1e-5);
+    vec2 pos = koiAt(fi, s, aspect, lure, follow, formation, float(count));
+    vec2 dir = normalize(koiAt(fi, s + 0.05, aspect, lure, follow, formation, float(count)) - koiAt(fi, s - 0.05, aspect, lure, follow, formation, float(count)) + 1e-5);
     vec2 side = vec2(-dir.y, dir.x);
     float len = 0.11 + 0.06 * hash12(vec2(fi, 6.0));
     float swim = tm * (3.0 + 4.0 * uParams[1]) + fi;

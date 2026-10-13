@@ -195,8 +195,11 @@ h1 {
 .card .button { width: 100%; text-align: center; }
 .fine { font-family: var(--mono); font-size: 11px; color: var(--muted); margin: 18px 0 0; }
 
-/* lab panel */
-.lab-toggle, .lab button {
+/* lab sidebar: docked left; while open the scene and page shift right instead of hiding under it */
+:root { --lab-width: 312px; }
+body.lab-open #stage { left: var(--lab-width); width: calc(100vw - var(--lab-width)); }
+body.lab-open .overlay { left: var(--lab-width); }
+.lab-opener, .lab button {
   font: 12px var(--mono);
   color: var(--ink);
   background: color-mix(in srgb, var(--bg) 85%, transparent);
@@ -204,27 +207,49 @@ h1 {
   padding: 6px 10px;
   cursor: pointer;
 }
-.lab-toggle { position: fixed; right: 14px; bottom: 14px; z-index: 3; }
-.lab-toggle[aria-expanded="true"] { border-color: var(--ink); }
+.lab-opener { position: fixed; left: 14px; bottom: 14px; z-index: 3; display: inline-flex; align-items: center; gap: 8px; }
+.lab-opener svg, .lab-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+body.lab-open .lab-opener { display: none; }
 .lab {
   position: fixed;
-  right: 14px;
-  bottom: 52px;
+  top: 0;
+  bottom: 0;
+  left: 0;
   z-index: 3;
-  width: 240px;
+  width: var(--lab-width);
   display: grid;
-  gap: 8px;
-  padding: 14px;
+  grid-template-rows: auto 1fr auto;
   font: 12px var(--mono);
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  border: 1px solid var(--line);
+  background: var(--bg);
+  border-right: 1px solid var(--line);
 }
 .lab[hidden] { display: none; }
-.lab { max-height: calc(100vh - 70px); overflow-y: auto; }
-.lab { width: 268px; }
-.lab fieldset { display: grid; gap: 7px; margin: 0; padding: 8px 0 2px; border: 0; border-top: 1px solid var(--line); min-width: 0; }
-.lab legend { padding: 0 6px 0 0; color: var(--ink); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.7; }
-#lab-params { display: grid; gap: 8px; }
+.lab-top { display: flex; align-items: center; gap: 6px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.lab-title { flex: 1; color: var(--ink); letter-spacing: 0.14em; text-transform: uppercase; font-size: 11px; }
+.lab .lab-icon { padding: 4px 7px; display: inline-flex; align-items: center; }
+.lab-scroll { overflow-y: auto; padding: 10px 14px 14px; display: grid; align-content: start; gap: 10px; }
+.lab-bottom { padding: 10px 14px 12px; border-top: 1px solid var(--line); }
+.lab .section { display: grid; gap: 7px; border-top: 1px solid var(--line); padding-top: 8px; min-width: 0; }
+.lab .section:not([open]) { gap: 0; }
+.lab .section > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.75;
+  user-select: none;
+}
+.lab .section > summary::-webkit-details-marker { display: none; }
+.lab .section > summary::before { content: "▸"; font-size: 9px; transition: transform 120ms; }
+.lab .section[open] > summary::before { transform: rotate(90deg); }
+.lab .section > summary:hover { opacity: 1; }
+.lab .section > summary .count { margin-left: auto; color: var(--muted); letter-spacing: 0; text-transform: none; }
+#lab-params { display: grid; gap: 10px; }
 #lab-params:empty { display: none; }
 .lab-head { display: grid; gap: 4px; }
 .lab-presets { width: 100%; padding: 3px 2px; }
@@ -300,9 +325,17 @@ h1 {
 .lab-row { display: flex; gap: 8px; margin-top: 4px; }
 .lab-row button { flex: 1; }
 .lab-keys { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
-body.ui-hidden .lab-toggle, body.ui-hidden .lab { display: none; }
+body.ui-hidden .lab-opener, body.ui-hidden .lab { display: none; }
+body.ui-hidden #stage { left: 0; width: 100vw; }
+.lab label.switch:has(.now) { grid-template-columns: 1fr auto auto 14px; }
+.lab button.now { padding: 1px 6px; font-size: 10px; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.lab button.now:active { background: var(--accent); color: var(--bg); }
 
 @media (max-width: 720px) {
+  /* Small screens: the lab overlays the scene rather than pushing it aside. */
+  :root { --lab-width: min(320px, 88vw); }
+  body.lab-open #stage { left: 0; width: 100vw; }
+  body.lab-open .overlay { left: 0; }
   .nav nav a:not(.nav-cta) { display: none; }
   body[data-scene] .hero { justify-self: start; }
   body[data-scene="wave"] .hero { align-self: end; padding-top: 0; }
