@@ -76,6 +76,18 @@ Wind over a sand sea.
   pointer stirring the water, fish darting).
 - Day mode as an ordinary seaside scene.
 
+## Window sill
+
+A view from inside, through an open window onto a city skyline, with a cat sitting on the sill, in
+the spirit of lo-fi study streams.
+
+- The cat as the living detail: breathing, ear twitches, tail flicks, the occasional slow blink or
+  stretch; a "now" trigger for a bigger gesture (yawn, turning to look at the pointer).
+- Skyline layers with parallax, windows lighting up and going dark, a time-of-day dial from dusk
+  to deep night, rain on the glass or snow as options (shared with the weather layer).
+- Interior hints at the frame edges: curtain stirring in the breeze, a plant or a mug on the sill,
+  warm lamp light spilling onto the sill against the cool city.
+
 ## Shared options worth building once
 
 - **Aurora** (orbit has one; adapt it for ground- and plane-level views).
