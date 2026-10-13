@@ -12,6 +12,7 @@ import { ferroScene } from "./ferro/index.ts";
 import { filmScene } from "./film/index.ts";
 import { firefliesScene } from "./fireflies/index.ts";
 import { flockScene } from "./flock/index.ts";
+import { forestScene } from "./forest/index.ts";
 import { fractalScene } from "./fractal/index.ts";
 import { frostScene } from "./frost/index.ts";
 import { gardenScene } from "./garden/index.ts";
@@ -73,6 +74,7 @@ export const sceneDefs = {
   sandtable: sandtableScene,
   delta: deltaScene,
   lava: lavaScene,
+  forest: forestScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
