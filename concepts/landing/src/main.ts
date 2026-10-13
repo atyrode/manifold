@@ -1,4 +1,4 @@
-import { sceneParams, type ParamDef } from "./params.ts";
+import { effective, sceneParams, type ParamDef } from "./params.ts";
 import { presets, type Preset } from "./presets.ts";
 import {
   colorIds,
@@ -39,6 +39,7 @@ const sceneAccent: Record<SceneId, string> = {
   starry: "#f2c94c",
   orbit: "#5c7cfa",
   swell: "#4c6ef5",
+  pond: "#ff7a2f",
 };
 
 const sceneCredit: Record<SceneId, string> = {
@@ -46,6 +47,7 @@ const sceneCredit: Record<SceneId, string> = {
   starry: "after Vincent van Gogh, The Starry Night, 1889 — public domain",
   orbit: "",
   swell: "",
+  pond: "",
 };
 
 const defaults: LabState = {
@@ -62,8 +64,9 @@ const defaults: LabState = {
   view: "dithered",
 };
 
-const BG = "#07080b";
-const INK = "#e8e6df";
+const NIGHT = { bg: "#07080b", ink: "#e8e6df", muted: "#8b8a85", line: "rgb(232 230 223 / 0.14)" };
+/** The wave's "ink on paper" theme: the print's paper with dark ink. */
+const PAPER = { bg: "#ebe2cc", ink: "#1b2235", muted: "#5d5a52", line: "rgb(27 34 53 / 0.18)" };
 const LOCAL_PRESETS = "landing.presets";
 
 /** The commit this page was built from; empty when served straight from a working tree. */
@@ -95,11 +98,40 @@ function readState(q: URLSearchParams): LabState {
   };
 }
 
-/** The current scene's knobs, by key. */
+/** The current scene's knobs, by key; a feature also stores `<key>-amount`. */
 function readParams(scene: SceneId, q: URLSearchParams): Record<string, number> {
-  return Object.fromEntries(
-    sceneParams[scene].map((def) => [def.key, readNumber(q.get(def.key), def.min, def.max, def.value)]),
-  );
+  const out: Record<string, number> = {};
+  for (const def of sceneParams[scene]) {
+    switch (def.kind) {
+      case "range":
+        out[def.key] = readNumber(q.get(def.key), def.min, def.max, def.value);
+        break;
+      case "toggle":
+        out[def.key] = Math.round(readNumber(q.get(def.key), 0, 1, def.value));
+        break;
+      case "feature": {
+        out[def.key] = Math.round(readNumber(q.get(def.key), 0, 1, def.on ? 1 : 0));
+        const amount = readNumber(q.get(`${def.key}-amount`), def.min, def.max, def.value);
+        out[`${def.key}-amount`] = def.options?.some((option) => option.value === amount) === false ? def.value : amount;
+        break;
+      }
+      case "choice": {
+        const value = Number(q.get(def.key));
+        out[def.key] = def.options.some((option) => option.value === value) ? value : def.value;
+        break;
+      }
+      default: {
+        const unreachable: never = def;
+        throw new Error(`landing: unknown knob ${String(unreachable)}`);
+      }
+    }
+  }
+  return out;
+}
+
+/** Each knob's default, keyed as readParams keys them. */
+function paramDefaults(scene: SceneId): Record<string, number> {
+  return readParams(scene, new URLSearchParams());
 }
 
 /** Minimal query: only values that differ from their defaults. */
@@ -108,9 +140,9 @@ function serialise(state: LabState, params: Record<string, number>): URLSearchPa
   for (const key of Object.keys(defaults) as (keyof LabState)[]) {
     if (state[key] !== defaults[key]) q.set(key, String(state[key]));
   }
-  for (const def of sceneParams[state.scene]) {
-    const value = params[def.key] ?? def.value;
-    if (value !== def.value) q.set(def.key, String(value));
+  const fallback = paramDefaults(state.scene);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== fallback[key]) q.set(key, String(value));
   }
   return q;
 }
@@ -156,14 +188,20 @@ const bar = element("#bar", HTMLElement);
 const status = element("#status", HTMLElement);
 const instanceName = element("#instance-name", HTMLElement);
 for (const label of lab.querySelectorAll<HTMLLabelElement>("label[data-help]")) withHelp(label, label.dataset.help ?? "");
-element("#lab-build", HTMLElement).textContent = build ? `build ${build}` : "build: working tree";
+const buildLine = element("#lab-build", HTMLElement);
+buildLine.textContent = build ? `build ${build}` : "build: working tree";
 
 const initial = new URLSearchParams(location.search);
 let state = readState(initial);
 let params = readParams(state.scene, initial);
 let paramScene: SceneId | undefined;
 
+function palette(): typeof NIGHT {
+  return state.scene === "wave" && (params.paper ?? 0) > 0.5 ? PAPER : NIGHT;
+}
+
 function renderSettings(): RenderSettings {
+  const colours = palette();
   return {
     scene: state.scene,
     dither: state.dither,
@@ -171,10 +209,10 @@ function renderSettings(): RenderSettings {
     pixel: state.pixel,
     levels: state.levels,
     motion: state.motion,
-    bg: BG,
-    ink: INK,
+    bg: colours.bg,
+    ink: colours.ink,
     accent: state.accent || sceneAccent[state.scene],
-    params: sceneParams[state.scene].map((def) => params[def.key] ?? def.value),
+    params: sceneParams[state.scene].map((def) => effective(def, params)),
     followPointer: state.mouse === "follow",
     view: state.view,
   };
@@ -184,7 +222,10 @@ let renderer: DitherRenderer | undefined;
 try {
   renderer = new DitherRenderer(canvas, renderSettings(), reducedMotion);
   renderer.start();
+  buildLine.title = renderer.glInfo;
+  buildLine.textContent += ` · ${renderer.glInfo.split(" · ")[1] ?? ""}`;
 } catch (error: unknown) {
+  buildLine.textContent += " · WebGL2 unavailable";
   console.error("evt=landing.renderer.unavailable", error);
 }
 
@@ -203,20 +244,78 @@ function withHelp(label: HTMLLabelElement, help: string): HTMLLabelElement {
   return label;
 }
 
-function paramField(def: ParamDef): HTMLLabelElement {
+function switchLabel(text: string, name: string): HTMLLabelElement {
+  const label = document.createElement("label");
+  label.className = "switch";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = name;
+  const knob = document.createElement("span");
+  knob.className = "knob";
+  label.append(text, input, knob);
+  return label;
+}
+
+function sliderLabel(text: string, name: string, min: number, max: number, step: number): HTMLLabelElement {
   const label = document.createElement("label");
   const input = document.createElement("input");
-  input.name = `param:${def.key}`;
-  if (def.kind === "toggle") {
-    input.type = "checkbox";
-    label.className = "switch";
-    label.append(def.label, input);
-  } else {
-    Object.assign(input, { type: "range", min: String(def.min), max: String(def.max), step: String(def.step) });
-    label.append(def.label, input, document.createElement("output"));
+  Object.assign(input, { type: "range", name, min: String(min), max: String(max), step: String(step) });
+  label.append(text, input, document.createElement("output"));
+  return label;
+}
+
+function segmentsLabel(text: string, name: string, options: readonly { label: string; value: number }[]): HTMLLabelElement {
+  const label = document.createElement("label");
+  label.className = "choice";
+  const segments = document.createElement("span");
+  segments.className = "segments";
+  for (const option of options) {
+    const input = document.createElement("input");
+    Object.assign(input, { type: "radio", name, value: String(option.value), title: option.label });
+    const face = document.createElement("span");
+    face.textContent = option.label;
+    const wrap = document.createElement("span");
+    wrap.className = "segment";
+    wrap.append(input, face);
+    segments.append(wrap);
   }
-  if (def.when !== undefined) label.dataset.when = def.when;
-  return withHelp(label, def.help);
+  label.append(text, segments);
+  return label;
+}
+
+/** A knob's controls: a feature is its switch plus an amount row shown only while on. */
+function paramFields(def: ParamDef): HTMLLabelElement[] {
+  const name = `param:${def.key}`;
+  let fields: HTMLLabelElement[];
+  switch (def.kind) {
+    case "range":
+      fields = [withHelp(sliderLabel(def.label, name, def.min, def.max, def.step), def.help)];
+      break;
+    case "toggle":
+      fields = [withHelp(switchLabel(def.label, name), def.help)];
+      break;
+    case "choice":
+      fields = [withHelp(segmentsLabel(def.label, name, def.options), def.help)];
+      break;
+    case "feature": {
+      const amountName = `param:${def.key}-amount`;
+      const amount = def.options
+        ? segmentsLabel(def.amountLabel, amountName, def.options)
+        : sliderLabel(def.amountLabel, amountName, def.min, def.max, def.step);
+      amount.classList.add("amount");
+      amount.dataset.when = def.key;
+      fields = [withHelp(switchLabel(def.label, name), def.help), amount];
+      break;
+    }
+    default: {
+      const unreachable: never = def;
+      throw new Error(`landing: unknown knob ${String(unreachable)}`);
+    }
+  }
+  if (def.when !== undefined) for (const field of fields) field.dataset.when ??= def.when;
+  // A knob shown only under another stays hidden whenever that one is off.
+  if (def.when !== undefined) for (const field of fields) field.dataset.whenAlso = def.when;
+  return fields;
 }
 
 /** One fieldset per knob group, in first-appearance order. */
@@ -231,7 +330,7 @@ function paramSections(scene: SceneId): HTMLFieldSetElement[] {
       section.append(legend);
       sections.set(def.group, section);
     }
-    section.append(paramField(def));
+    section.append(...paramFields(def));
   }
   return [...sections.values()];
 }
@@ -274,6 +373,13 @@ function apply(next: LabState, nextParams: Record<string, number>): void {
     node.hidden = !(node.dataset.show ?? "").split(" ").includes(state.mode);
   }
   credit.textContent = sceneCredit[state.scene];
+  const colours = palette();
+  const root = document.documentElement.style;
+  root.setProperty("--bg", colours.bg);
+  root.setProperty("--ink", colours.ink);
+  root.setProperty("--muted", colours.muted);
+  root.setProperty("--line", colours.line);
+  if (state.mode !== "loading") renderer?.setProgress(-1);
   instanceName.textContent = state.instance;
 
   if (paramScene !== state.scene) {
@@ -281,7 +387,8 @@ function apply(next: LabState, nextParams: Record<string, number>): void {
     labParams.replaceChildren(...paramSections(state.scene));
   }
   for (const label of labParams.querySelectorAll<HTMLLabelElement>("label[data-when]")) {
-    label.hidden = (params[label.dataset.when ?? ""] ?? 0) < 0.5;
+    const on = (key: string | undefined) => key === undefined || (params[key] ?? 0) > 0.5;
+    label.hidden = !on(label.dataset.when) || !on(label.dataset.whenAlso);
   }
   for (const label of lab.querySelectorAll<HTMLLabelElement>("label[data-when-mode]")) {
     label.hidden = label.dataset.whenMode !== state.mode;
@@ -295,6 +402,7 @@ function apply(next: LabState, nextParams: Record<string, number>): void {
     if (value === undefined) continue;
     const editing = field === document.activeElement && field.type === "text";
     if (field instanceof HTMLInputElement && field.type === "checkbox") field.checked = value === "1" || value === "follow";
+    else if (field instanceof HTMLInputElement && field.type === "radio") field.checked = field.value === value;
     else if (!editing) field.value = value;
     const output = field.nextElementSibling;
     if (output instanceof HTMLOutputElement) output.value = value;
@@ -400,6 +508,7 @@ setInterval(() => {
   cells.forEach((cell, index) => {
     cell.className = index < filled - 1 ? "on" : index === filled - 1 ? "head" : "";
   });
+  renderer?.setProgress(filled / cells.length);
   status.textContent = phases[Math.min(phases.length - 1, Math.floor((filled / cells.length) * (phases.length - 1)))] ?? "";
 }, 110);
 

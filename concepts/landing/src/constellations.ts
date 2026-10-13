@@ -59,12 +59,21 @@ const figures: readonly Figure[] = [
   },
   {
     name: "Crux",
-    at: [0.4, 0.0],
+    at: [-0.15, -0.02],
     scale: 0.45,
     stars: [[0, 0.16, 0.8], [0.02, -0.16, 0.9], [-0.1, 0.02, 0.8], [0.11, 0.05, 0.6], [0.05, -0.05, 0.4]],
     lines: [[0, 1], [2, 3]],
   },
 ];
+
+/** The Manifold mark traced as an asterism, after the app icon's M. Kept separate so it toggles alone. */
+const mark: Figure = {
+  name: "Manifold",
+  at: [0.45, 0.06],
+  scale: 0.24,
+  stars: [[-0.47, -0.5, 0.8], [-0.47, 0, 0.6], [-0.47, 0.5, 1], [0, -0.08, 0.7], [0.47, 0.5, 1], [0.47, 0, 0.6], [0.47, -0.5, 0.8]],
+  lines: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]],
+};
 
 /** Must match `MAX_CON_STARS` / `MAX_CON_LINES` in the fragment shader. */
 export const MAX_CON_STARS = 48;
@@ -78,6 +87,9 @@ export interface ConstellationUniforms {
   lines: Float32Array;
   starCount: number;
   lineCount: number;
+  /** First star and line index belonging to the Manifold mark. */
+  markStar: number;
+  markLine: number;
 }
 
 export const constellationUniforms: ConstellationUniforms = (() => {
@@ -86,7 +98,13 @@ export const constellationUniforms: ConstellationUniforms = (() => {
   const lines = new Float32Array(MAX_CON_LINES * 2);
   let starCount = 0;
   let lineCount = 0;
-  for (const figure of figures) {
+  let markStar = 0;
+  let markLine = 0;
+  for (const figure of [...figures, mark]) {
+    if (figure === mark) {
+      markStar = starCount;
+      markLine = lineCount;
+    }
     const first = starCount;
     for (const [x, y, b] of figure.stars) {
       stars.set([figure.at[0], figure.at[1], x * figure.scale, y * figure.scale], starCount * 4);
@@ -98,5 +116,5 @@ export const constellationUniforms: ConstellationUniforms = (() => {
       lineCount++;
     }
   }
-  return { stars, brightness, lines, starCount, lineCount };
+  return { stars, brightness, lines, starCount, lineCount, markStar, markLine };
 })();

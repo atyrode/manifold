@@ -4,7 +4,7 @@ import { MAX_PARAMS } from "./params.ts";
 import { fragmentSource, vertexSource } from "./shaders.ts";
 
 /** Order is the shader's `uScene` index. */
-export const sceneIds = ["wave", "starry", "orbit", "swell"] as const;
+export const sceneIds = ["wave", "starry", "orbit", "swell", "pond"] as const;
 export type SceneId = (typeof sceneIds)[number];
 export const ditherIds = ["bayer8", "bayer4", "ign", "none"] as const;
 export type DitherId = (typeof ditherIds)[number];
@@ -38,7 +38,8 @@ const uniformNames = [
   "uRes", "uTime", "uScene", "uDither", "uColor", "uLevels", "uMotion", "uPointer",
   "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
   "uStars", "uStarCount", "uParams", "uView",
-  "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount",
+  "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
+  "uProgress",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
@@ -92,6 +93,10 @@ export class DitherRenderer {
   #start = performance.now();
   #frozen: boolean;
   readonly #params = new Float32Array(MAX_PARAMS);
+  /** Loading-page progress 0..1, or -1 off the loading page. */
+  #progress = -1;
+  /** WebGL version and renderer, for diagnosing remote reports. */
+  glInfo = "";
 
   constructor(canvas: HTMLCanvasElement, settings: RenderSettings, frozen: boolean) {
     const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: false });
@@ -123,6 +128,11 @@ export class DitherRenderer {
     gl.uniform2fv(u.uConLines, figures.lines);
     gl.uniform1i(u.uConStarCount, figures.starCount);
     gl.uniform1i(u.uConLineCount, figures.lineCount);
+    gl.uniform1i(u.uConMarkStar, figures.markStar);
+    gl.uniform1i(u.uConMarkLine, figures.markLine);
+    const debug = gl.getExtension("WEBGL_debug_renderer_info");
+    const gpu: unknown = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    this.glInfo = `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`;
 
     this.#blank = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
@@ -133,6 +143,10 @@ export class DitherRenderer {
       this.#pointer.ty = 1 - (event.clientY / window.innerHeight) * 2;
     });
     for (const art of Object.values(artworks)) this.#load(art);
+  }
+
+  setProgress(progress: number): void {
+    this.#progress = progress;
   }
 
   update(settings: RenderSettings): void {
@@ -242,6 +256,7 @@ export class DitherRenderer {
     gl.uniform1i(u.uStarCount, stars.count);
     gl.uniform1fv(u.uParams, this.#params);
     gl.uniform1i(u.uView, viewIds.indexOf(s.view));
+    gl.uniform1f(u.uProgress, this.#progress);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }
