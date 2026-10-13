@@ -4682,6 +4682,12 @@ try {
       source and target separately after an assumed delay, so layout motion between those reads
       could leave the native release aimed at stale coordinates. A gesture must begin from one
       stable geometry that is actually under the pointer.
+
+      The two rows are FOUND, never indexed: by now the rail carries the trio the rungs above
+      filled and the vacant stack the centre drop left beside the tallest row, and a gap measured
+      across a stack lands in that stack rather than on a boundary — across the vacant one, the
+      column nests in its seat and the squeeze below loses its empty case. So the target is the
+      first pair of rows with nothing painted between them.
     */
     const columnGestureAt = (): Promise<ColumnGesture | null> =>
       browser!.evaluate<ColumnGesture | null>(
@@ -4690,8 +4696,8 @@ try {
            const item = document.querySelector('[data-testid="palette-stack-column"]');
            if (!(rail instanceof HTMLElement) || !(item instanceof HTMLElement)) return null;
            const rows = Array.from(rail.querySelectorAll(':scope > [data-section-id]'));
-           const above = rows[1];
-           const below = rows[2];
+           const above = rows.find((row) => rows.includes(row.nextElementSibling));
+           const below = above?.nextElementSibling;
            if (!(above instanceof HTMLElement) || !(below instanceof HTMLElement)) return null;
            const railBox = rail.getBoundingClientRect();
            const sourceBox = item.getBoundingClientRect();
@@ -5278,6 +5284,149 @@ try {
       vanished && ledgered && back
         ? "the Machines section VANISHES on disable (manager row stays the ledger) and returns to its manifest-ordered place, no reload"
         : `vanished: ${String(vanished)}, ledgered: ${String(ledgered)}, restored in place: ${String(back)}`,
+    );
+  }
+
+  {
+    /*
+      THE CREATOR ROW of the disable table: an offer keeps no seat. Every plugin's declared
+      creators land in ONE picker, core.shell's creation control, so a plugin going off takes its
+      entry OUT of that menu — not greyed, not a press that refuses later — and coming back offers
+      it again in its declared place. Read off the OPEN picker, because the menu is where a reader
+      learns what they can make; an assembly agreeing with itself would prove less.
+
+      The rung above leaves the manager's modal open, and a modal makes the rail inert, so it is
+      shut first, the way a reader shuts it.
+    */
+    await closePluginManager();
+    const pickSelector = JSON.stringify('[data-section-id="creators"] .sidebar-creator-pick');
+    const menuSelector = JSON.stringify('[role="menu"][aria-label="Create"]');
+    const everyCreator = "New canvas | New composition | New folder";
+    const withoutCompositions = "New canvas | New folder";
+    /**
+     * What the picker offers, in painted order. Idempotent like `openPluginManager`: a shut
+     * picker gets ▾ pressed and answers "shut", and the next poll reads the menu that opened.
+     */
+    const offered = (): Promise<string> =>
+      browser!.evaluate<string>(
+        `(() => {
+           const menu = document.querySelector(${menuSelector});
+           if (menu === null) {
+             document.querySelector(${pickSelector})?.click();
+             return 'shut';
+           }
+           return Array.from(menu.querySelectorAll('[role="menuitem"]'),
+             (item) => (item.textContent ?? '').trim()).join(' | ');
+         })()`,
+      );
+    /** Waits for the picker to offer exactly `wanted`, and answers what it last offered. */
+    const offers = async (wanted: string): Promise<string> => {
+      let last = "";
+      await settles(async () => {
+        last = await offered();
+        return last === wanted;
+      }, 10_000);
+      return last;
+    };
+    /** One key as a hand presses it; Enter carries its "\r", or a focused button never fires. */
+    const press = async (key: "Enter" | "ArrowDown" | "Escape"): Promise<void> => {
+      const keyCode = { Enter: 13, ArrowDown: 40, Escape: 27 }[key];
+      for (const type of ["keyDown", "keyUp"] as const) {
+        await browser!.send("Input.dispatchKeyEvent", {
+          type,
+          key,
+          code: key,
+          windowsVirtualKeyCode: keyCode,
+          nativeVirtualKeyCode: keyCode,
+          ...(key === "Enter" ? { text: "\r" } : {}),
+        });
+      }
+    };
+    const menuGone = (): Promise<boolean> =>
+      settles(
+        () => browser!.evaluate<boolean>(`document.querySelector(${menuSelector}) === null`),
+        5_000,
+      );
+    const listed = await offers(everyCreator);
+    await press("Escape");
+    await menuGone();
+    const off = await setEnabled("core.compositions", false);
+    const withdrawn = await offers(withoutCompositions);
+    await press("Escape");
+    await menuGone();
+    const on = await setEnabled("core.compositions", true);
+    const reoffered = await offers(everyCreator);
+    await press("Escape");
+    await menuGone();
+    const creatorRight =
+      listed === everyCreator &&
+      off &&
+      withdrawn === withoutCompositions &&
+      on &&
+      reoffered === everyCreator;
+    check(
+      "R3 core.compositions creator",
+      creatorRight,
+      creatorRight
+        ? `the picker offered "${everyCreator}"; with core.compositions off it offered "${withdrawn}", and New composition came back in its declared place on re-enable`
+        : `offered "${listed}"; core.compositions off (${off ? "accepted" : "REFUSED"}) offered "${withdrawn}"; back on (${on ? "accepted" : "REFUSED"}) offered "${reoffered}"`,
+    );
+
+    /*
+      AND BY KEYBOARD, landing on the entry that just came back: a menu button a pointer can
+      work and a keyboard cannot is half a control. Enter on ▾ opens the menu on its first item,
+      ArrowDown walks to the second — the re-offered New composition — and Escape shuts the menu
+      and hands focus back to ▾, where the reader left it.
+    */
+    const focused = (): Promise<string> =>
+      browser!.evaluate<string>(
+        `(() => {
+           const at = document.activeElement;
+           if (!(at instanceof HTMLElement)) return 'nothing';
+           if (at.matches(${pickSelector})) return 'the trigger';
+           return at.getAttribute('role') === 'menuitem'
+             ? (at.textContent ?? '').trim()
+             : at.tagName.toLowerCase();
+         })()`,
+      );
+    /** Waits for focus to rest on `wanted`, and answers where it last was. */
+    const focusOn = async (wanted: string): Promise<string> => {
+      let last = "";
+      await settles(async () => {
+        last = await focused();
+        return last === wanted;
+      }, 5_000);
+      return last;
+    };
+    const triggered = await browser.evaluate<boolean>(
+      `(() => {
+         const pick = document.querySelector(${pickSelector});
+         if (!(pick instanceof HTMLElement)) return false;
+         pick.focus();
+         return document.activeElement === pick;
+       })()`,
+    );
+    await press("Enter");
+    const openedOn = await focusOn("New canvas");
+    await press("ArrowDown");
+    const walkedTo = await focusOn("New composition");
+    await press("Escape");
+    const shut = await menuGone();
+    const returnedTo = await focusOn("the trigger");
+    const keyed =
+      triggered &&
+      openedOn === "New canvas" &&
+      walkedTo === "New composition" &&
+      shut &&
+      returnedTo === "the trigger";
+    check(
+      "R3 the re-offered creator by keyboard",
+      keyed,
+      !triggered
+        ? "the creation control's ▾ could not take focus"
+        : keyed
+          ? "Enter on ▾ opened the menu on New canvas, ArrowDown walked to the returned New composition, and Escape shut it with focus back on ▾"
+          : `Enter on ▾ left focus on "${openedOn}", ArrowDown on "${walkedTo}"; Escape ${shut ? "shut the menu" : "left the menu open"} with focus on "${returnedTo}"`,
     );
   }
 
