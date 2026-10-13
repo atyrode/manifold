@@ -32,7 +32,7 @@ const params: readonly ParamDef[] = [
   toggle("room", "twin", "second lamp", false, "A smaller lamp further back on the sideboard, in the next colours along, its wax at its own pace."),
   toggle("room", "sleeve", "record", true, "A record sleeve leaning on the wall, its record slid half out, the grooves catching the lamp."),
   toggle("room", "shelf", "shelf", false, "A wall shelf up to the left: a row of books and a trailing plant, lit faintly by the lamp."),
-  toggle("manifold", "badge", "M in the base", true, "An M cut out of the lamp's metal base, glowing with the bulb inside."),
+  toggle("manifold", "badge", "M in the base", true, "An M etched into the lamp's metal base: a dark groove catching a little of the bulb's warmth."),
   feature("manifold", "mark", "M of wax", false, "how often", 0.35, "Now and then the wax gathers itself into an M in the middle of the glass, glows, holds it for a few breaths, then lets go and flows on. How often: from every few minutes to about once a minute. Now: gather one at once.", { trigger: 1 }),
 ];
 
@@ -46,7 +46,7 @@ export const lavaScene: SceneDef = {
   groups: {
     lamp: { title: "Lamp", blurb: "Its colours, how hot it runs, how much wax it holds, and a cold start. Hold the button on the glass to warm the wax." },
     room: { title: "Room", blurb: "The light the lamp throws about, the moon at the window, and what stands around it." },
-    manifold: { title: "Manifold mark", blurb: "An M glowing in the lamp's base, and now and then an M of wax." },
+    manifold: { title: "Manifold mark", blurb: "An M etched in the lamp's base, and now and then an M of wax." },
   },
   glsl: lavaGlsl,
   entry: "sceneLava",

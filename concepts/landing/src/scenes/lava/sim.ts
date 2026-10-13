@@ -18,8 +18,8 @@
 //            draws out a neck, then lets go; cold wax binds harder; bonded parcels damp their
 //            relative motion (a blob moves as one) and share heat; warm and cool parcels slide
 //            through one another (they pass at different depths in the glass) and barely hold on
-// So the heap on the coil warms, swells and sends up blobs one at a time; they cool under the cap,
-// pool and sink, merge with the heap and warm again. The Manifold M draws a dozen parcels onto its
+// So the heap on the coil warms, swells and sends up blobs one at a time; each cools against the
+// cap and sinks, merges with the heap and warms again. The Manifold M draws a dozen parcels onto its
 // strokes for a few seconds while the rest flows round it. Lamps run on fixed steps (deterministic
 // for a seed).
 //
@@ -84,8 +84,8 @@ const LENS = 0.8;
 const STRETCH = 7;
 /** The Manifold M the wax gathers into: centre and height in glass units. */
 const MARK_X = 0;
-const MARK_Y = 0.45;
-const MARK_SIZE = 0.26;
+const MARK_Y = 0.43;
+const MARK_SIZE = 0.3;
 
 const glslFloat = (value: number): string => {
   const text = value.toFixed(5);
@@ -144,11 +144,11 @@ const PREWARM_STEP = 1 / 30;
 /** Settling a fresh cold heap before the first frame (s). */
 const SETTLE = 4;
 /** A parcel's mean radius (glass units) and the spread of sizes either side (share). */
-const R0 = 0.042;
+const R0 = 0.047;
 const SIZE_SPREAD = 0.28;
 /** Parcels for the wax knob at 0 and 1, and the twin's share of them. */
-const COUNT_MIN = 12;
-const COUNT_MAX = LAVA_MAX;
+const COUNT_MIN = 9;
+const COUNT_MAX = 23;
 const TWIN_SHARE = 0.7;
 /** Time constant of a parcel growing in or melting away when the amount of wax changes (s). */
 const GROW_TAU = 1.5;
@@ -172,11 +172,17 @@ const EXCHANGE = 1 / 30;
  * 1. Wax clings to the coil until it is RELEASE warm, well past floating: it leaves with heat to
  * spare and rises a long way, instead of bobbing just over the coil. */
 const COIL_REACH = 0.035;
-const COIL_HALF = 0.09;
-const COIL_RATE = 0.15;
+const COIL_HALF = 0.055;
+const COIL_RATE = 0.18;
 const COIL_T0 = 1.25;
 const COIL_T1 = 0.15;
 const RELEASE = 0.85;
+/** The cap: wax pressed up under it (its top within CAP_REACH, glass units) loses heat to the air
+ * through the metal (1/s toward CAP_T), so each blob that arrives turns round on its own instead of
+ * pooling under the cap with the next ones into one heavy mass. */
+const CAP_REACH = 0.06;
+const CAP_RATE = 0.25;
+const CAP_T = 0.12;
 /** Warm-up time constant from cold at the middle heat (s). */
 const WARM_TAU = 45;
 /** The bulb fading out and back in for a cold restart (time constants, s of scene clock). */
@@ -193,12 +199,12 @@ const FLOW = 0.005;
 /** Bonds, in shares of the two radii: rest and break distance; repulsion and cohesion peaks
  * (glass units/s²), cold wax's extra bond, relative-velocity damping (1/s) and heat sharing (1/s). */
 const REST = 0.7;
-const BREAK = 1.3;
+const BREAK = 1.05;
 const REPEL = 1;
 const COHESION = 0.035;
 const COLD_BOND = 2;
 const VISCOSITY = 0.3;
-const CONDUCT = 0.015;
+const CONDUCT = 0.006;
 /** Parcels this much apart in temperature (from PASS_LO to PASS_HI) lose PASS of their repulsion
  * and viscosity (warm and cool wax slide past each other) and TEAR of their cohesion. */
 const PASS = 0.85;
@@ -624,6 +630,7 @@ class Lamp {
         let dT = EXCHANGE * scale * (liquidTemperature(w.y, warm) - w.T);
         const contact = smoothstep(COIL_REACH, 0, w.y - w.r) * Math.exp(-((w.x / COIL_HALF) ** 2));
         dT += COIL_RATE * quick * contact * (coilT - w.T);
+        dT += CAP_RATE * smoothstep(CAP_REACH, 0, 1 - w.y - w.r) * (CAP_T - w.T);
         if (hand !== undefined) {
           const d2 = (w.x - hand.x) ** 2 + (w.y - hand.y) ** 2;
           dT += HAND_RATE * Math.exp(-d2 / (HAND_REACH * HAND_REACH)) * (HAND_T - w.T);

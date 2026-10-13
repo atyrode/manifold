@@ -204,8 +204,10 @@ vec3 lavaAura(LavaLamp L, vec2 p) {
     float bright = (0.3 + 0.9 * exp(-2.4 * max(s, 0.0))) * mix(1.0, g.y, 0.5);
     col = mix(L.ink.light, L.ink.wax * L.ink.light * 1.4, 0.6 * g.x) * (1.0 - 0.4 * g.x) * bright * shown;
   }
+  // A warm halo all round: strong close to the glass, and faint over the whole wall.
   vec2 h = (p - L.foot) / L.size - vec2(0.0, 0.55);
-  col += L.ink.light * 0.3 / (1.0 + 2.5 * dot(h, h));
+  float d2 = dot(h, h);
+  col += L.ink.light * (0.4 / (1.0 + 1.5 * d2) + 0.07 / (1.0 + 0.15 * d2));
   return col * L.bulb;
 }
 
@@ -272,17 +274,16 @@ vec3 lavaMetal(LavaLamp L, float xi, float v, float up, float down) {
   return col * mix(0.5, 1.0, face);
 }
 
-// The Manifold M cut out of the base's metal: the bulb shines through it, warming the metal round it.
+// The Manifold M etched into the base's metal: a shallow groove, darker than the metal round it, its
+// floor catching only a little of the bulb's warmth and the glass's glow.
 vec3 lavaBadge(vec3 metal, LavaLamp L, vec2 l, float aa) {
   float size = 0.075;
-  float stroke = 0.0075;
+  float stroke = 0.006;
   float d = markDistance((l - vec2(0.0, 0.14)) / size) * size;
   float cut = 1.0 - smoothstep(stroke - aa, stroke + aa, d);
-  float halo = exp(-max(d - stroke, 0.0) / 0.01) * (1.0 - cut);
-  vec3 col = metal + L.ink.light * L.bulb * halo * 0.18;
-  col = mix(col, LAVA_BULB * (0.05 + 1.1 * L.bulb), cut);
-  lavaAccent = max(lavaAccent, cut * (0.3 + 0.7 * L.bulb));
-  return col;
+  vec3 groove = 0.45 * metal + L.bulb * (0.06 * L.ink.metal * L.ink.light + 0.035 * LAVA_BULB);
+  lavaAccent = max(lavaAccent, 0.4 * cut);
+  return mix(metal, groove, cut);
 }
 
 // What shows through the glass at lamp point l (s up the glass, rg its outer radius there): the
@@ -301,10 +302,12 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
   float shade = mix(1.0, grid.y, 0.55);
 
   // The liquid glows with the bulb's light scattered in it: brightest low down, dimmer toward the
-  // cap and over the wax that shades it, fuller through the middle where the glass is deepest; over
-  // the coil a white-hot core. Cold, it is cloudy.
-  float glow = L.bulb * (0.22 + low * shade) * (0.45 + 0.55 * P);
+  // cap and over the wax that shades it, fuller through the middle where the glass is deepest, with
+  // a faint warm haze all the way up so the glass reads to the cap; over the coil a white-hot core.
+  // Cold, it is cloudy.
+  float glow = L.bulb * (0.3 + low * shade) * (0.6 + 0.4 * P);
   vec3 col = ink.liquid * glow * ink.glow + behind * (1.0 - ink.glow) * 0.8;
+  col += ink.light * L.bulb * (0.045 + 0.03 * (1.0 - clamp(s, 0.0, 1.0)));
   float core = L.bulb * exp(-(q.x * q.x / 0.01 + s * s / 0.005));
   col = mix(col, vec3(1.0, 0.92, 0.76), 0.55 * core);
   float cloud = 1.0 - smoothstep(0.15, 0.8, L.warm);
@@ -318,8 +321,9 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
   }
 
   // The wax: its outline all or nothing per cell against the dither, so a moving edge flips each
-  // cell once. Inside, lit from below by the bulb, darker and more saturated where thick, glowing
-  // where thin; pale and matte while solid; brighter in the M.
+  // cell once. Inside, lit by the glowing liquid all round it and by the bulb from below, deeper and
+  // more saturated where thick, glowing along its thin, back-lit edges; pale and matte while solid;
+  // brighter in the M.
   if (L.count > 0) {
     LavaField w = lavaField(q, 2 * L.lamp, L.count);
     float depth = w.f - LAVA_ISO;
@@ -329,13 +333,14 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
       float dd = max(depth, 0.0);
       vec3 n = normalize(vec3(-w.grad * LAVA_BULGE / (2.0 * sqrt(dd + 0.002)), 1.0));
       float thick = 1.0 - exp(-2.4 * dd);
+      float liq = L.bulb * (0.3 + low * shade);
       float under = L.bulb * (0.16 + 1.05 * low * shade);
       float below = max(-n.y, 0.0);
       float rim = 1.0 - smoothstep(0.0, 0.42, thick);
-      vec3 wax = ink.wax * (0.08 + under * (0.5 + 0.6 * below) * (1.0 - 0.45 * thick));
-      wax += ink.wax * rim * (0.1 + 0.6 * under);
-      wax *= mix(vec3(1.0), ink.wax, 0.5 * thick);
-      wax = mix(wax, wax * ink.liquid * 1.6, 0.25 * ink.glow);
+      vec3 wax = ink.wax * (0.7 * liq + 0.7 * under * (0.45 + 0.55 * below)) * (1.0 - 0.3 * thick);
+      wax += ink.wax * rim * (0.5 * liq + 0.9 * under) + ink.light * rim * rim * 0.12 * L.bulb;
+      wax *= mix(vec3(1.0), ink.wax, 0.4 * thick);
+      wax = mix(wax, wax * ink.liquid * 1.6, 0.2 * ink.glow);
       float solid = 1.0 - smoothstep(0.1, 0.22, w.temp);
       vec3 cold = mix(ink.wax, vec3(0.86, 0.84, 0.8), 0.35) * (0.08 + 0.5 * under * (0.6 + 0.4 * below));
       wax = mix(wax, cold, solid);
@@ -350,7 +355,7 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
   // the moonlit window mirrored in a narrow streak down the left, the room's glow broad on the right.
   float wall = smoothstep(ri - aa, ri + aa, ax);
   col = mix(col, col * 0.5 + ink.liquid * glow * 0.12, wall);
-  col += (vec3(0.05) + ink.light * 0.08 * L.bulb) * lavaBell((ax - rg + 0.8 * aa) / (1.1 * aa));
+  col += (vec3(0.06) + ink.light * 0.14 * L.bulb) * lavaBell((ax - rg + 0.8 * aa) / (1.1 * aa));
   col += LAVA_MOON * (0.04 + 0.5 * K_moon) * lavaBell((xo + 0.56) / 0.075) * (0.5 + 0.5 * smoothstep(0.0, 0.4, s));
   col += ink.light * 0.06 * L.bulb * lavaBell((xo - 0.5) / 0.2);
   return col;
@@ -627,7 +632,7 @@ Shade sceneLava(vec2 uv, vec2 cell, float t) {
   LavaLamp B = lavaLamp(1, aspect);
   bool twin = K_twin > 0.5;
   vec3 bounce = A.ink.light * A.bulb + (twin ? 0.6 * B.ink.light * B.bulb : vec3(0.0));
-  lavaAmbient = vec3(0.008, 0.009, 0.014) + 0.02 * lavaSpill * bounce + 0.01 * K_moon * LAVA_MOON;
+  lavaAmbient = vec3(0.008, 0.009, 0.014) + 0.03 * lavaSpill * bounce + 0.01 * K_moon * LAVA_MOON;
 
   vec3 col;
   if (p.y > LAVA_TOP_BACK) col = lavaWall(p, A, B, twin, aspect);

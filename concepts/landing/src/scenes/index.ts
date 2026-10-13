@@ -19,6 +19,7 @@ import { gardenScene } from "./garden/index.ts";
 import { hyperbolicScene } from "./hyperbolic/index.ts";
 import { incenseScene } from "./incense/index.ts";
 import { kelpScene } from "./kelp/index.ts";
+import { lakeScene } from "./lake/index.ts";
 import { lanternsScene } from "./lanterns/index.ts";
 import { lavaScene } from "./lava/index.ts";
 import { marbleScene } from "./marble/index.ts";
@@ -75,6 +76,7 @@ export const sceneDefs = {
   delta: deltaScene,
   lava: lavaScene,
   forest: forestScene,
+  lake: lakeScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
