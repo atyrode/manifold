@@ -18,7 +18,7 @@ const params: readonly ParamDef[] = [
   range("fluid", "spacing", "spike scale", 0.5, "How far apart the spikes stand: many small ones to the left, fewer and larger to the right."),
   range("fluid", "sharpness", "sharpness", 0.6, "Left: low, rounded cones. Right: tall needles on flared feet."),
   seed("fluid", "pour", "pour", "How the fluid was poured: the gentle lumps in the pool's outline and the path the magnet drifts along."),
-  choice("studio", "view", "view", [{ label: "above", value: 0 }, { label: "three-quarter", value: 1 }], 1, "Three-quarter: low over the dish, the crown's back row standing black against the softbox mirrored in the black glass. Above: straight down, the ring light mirrored in the black pool and each spike a star of highlights."),
+  choice("studio", "camera", "view", [{ label: "above", value: 0 }, { label: "three-quarter", value: 1 }], 1, "Three-quarter: low over the dish, the crown's back row standing black against the softbox mirrored in the black glass. Above: straight down, the ring light mirrored in the black pool and each spike a star of highlights."),
   choice("studio", "gel", "coloured light", ferroGels.map((gel, value) => ({ label: gel.label, value })), 1, "The studio light on the right is gelled: its colour runs down one flank of every spike and round the dish's lip. White: a plain studio."),
   range("studio", "lights", "lights", 0.6, "How bright the studio lights mirrored in the fluid are; low leaves a black pool drawn by a few crisp highlights."),
   feature("manifold", "mark", "M of magnets", false, "how often", 0.3, "Magnets laid out in an M under the dish: now and then a breath raises the spikes along the M instead of the crown, then lets them sink. More often: every breath.", { trigger: 0 }),

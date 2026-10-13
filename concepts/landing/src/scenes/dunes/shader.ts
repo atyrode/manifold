@@ -178,7 +178,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   float tm = t * uMotion;
-  bool overhead = K_view > 0.5;
+  bool overhead = K_camera > 0.5;
   float windSign = K_wind < 0.0 ? -1.0 : 1.0;
   // How hard it blows: drives the blowing sand, the ripples' creep and, with haze, a sandstorm.
   float gale = min(abs(K_wind) / 0.8, 1.0);

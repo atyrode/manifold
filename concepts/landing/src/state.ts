@@ -55,6 +55,17 @@ export const defaults: LabState = {
   blur: 0,
 };
 
+export class KnobKeyError extends Error {}
+
+// Scene knobs share the URL with the lab's own settings, so no knob may take one of their names.
+for (const id of sceneIds) {
+  for (const def of sceneDefs[id].params) {
+    if (def.key in defaults || `${def.key}-amount` in defaults) {
+      throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with the lab setting of that name`);
+    }
+  }
+}
+
 /** The defaults that apply to a scene: the global ones with its own look on top. */
 export function defaultsFor(scene: SceneId): LabState {
   const look = sceneDefs[scene].look;

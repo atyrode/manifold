@@ -1,0 +1,900 @@
+// The kelp forest's moving parts, worked out on the CPU for shader.ts.
+//
+// Giant kelp: every stipe is a buoyant Verlet chain (src/sims/verlet.ts) pinned to its holdfast on
+// the sea floor. The gas bladders along it lift it taut; water drag pulls each point toward the
+// local flow (dv/dt = DRAG · (u − v)). The flow is the swell's surge, a slow back-and-forth that
+// travels across the forest as a long wave (two components, so it never quite repeats), with a
+// little vertical orbit near the surface; a steady current the forest leans into; now and then a
+// big swell rolling through from one side; and the diver's hand: dragging the pointer stirs a wake
+// that pushes the kelp aside.
+//
+// Seen side-on, the forest stands in three depth layers (KELP_LAYERS), each a row of slots holding
+// at most one plant. A layer is simulated in its own screen units: lengths, flows and buoyancy are
+// scaled by its perspective scale, which leaves the timing of the motion the same at every depth,
+// so a far stipe sways exactly as a near one would, only smaller. The surge's phase runs on world
+// x (screen x over the scale), so the wave reaches near and far kelp at the right place.
+//
+// Each blade streams with the water flowing past its node (flow minus the node's own velocity),
+// against its buoyancy; that lean, relative to the stipe and eased over BLADE_EASE, rides in the w
+// of the point texture. The kelp density knob shows a share of the slots (by a seeded rank), fading
+// plants in from the haze and back; the near layer keeps the middle of the frame clear until the
+// forest is dense, framing the page.
+//
+// Also: a school of small silver fish (boids, fixed steps of FISH_STEP), flashing as they turn and
+// scattering from the hand; a sea lion gliding past far off now and then; and the hand's fading
+// trail, where the night plankton sparks.
+//
+// Textures:
+//   uSim0  rgba16f PointTexture, two texels per point, KELP_POINTS per stipe in stipe order:
+//          xyz = position − KELP_ORIGIN, w = blade lean (radians, from the stipe toward screen +x);
+//          then velocity xyz (screen heights/s), w = speed.
+//   uSim1  rgba16f KELP_STATE_WIDTH × 4, nearest:
+//          row 0, per stipe: min x, max x, top y of its points, presence 0..1 (0 = not drawn)
+//          row 1, per fish: x, y, heading cos, sin (screen heights from the frame's centre/bottom)
+//          row 2, per fish: body length (0 = hidden), flash 0..1, tail beat −1..1, 0
+//          row 3, globals: KELP_GLOBAL columns (see there)
+//   uSim2  r8 the hand's fading trail (TrailField), linear, uv.
+import { effective, type ParamDef } from "../../params.ts";
+import { DataTexture } from "../../sims/texture.ts";
+import { TrailField } from "../../sims/trail.ts";
+import { PointTexture, VerletSystem, type VerletForce, type VerletStepOptions } from "../../sims/verlet.ts";
+import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+
+const TAU = Math.PI * 2;
+
+/** The side-on camera. Screen heights; x from the frame's centre, y up from its bottom edge. */
+export const KELP_VIEW = {
+  /** Eye level: where the floor and the surface meet in the haze. */
+  horizon: 0.4,
+  /** How far the floor lies below eye level, and the surface above it, at the nearest layer. */
+  floor: 0.52,
+  surface: 0.8,
+  /** Focal length: Snell's window (48.6° off the vertical) opens over the top tenth of the frame. */
+  focal: 0.58,
+} as const;
+
+/** Links per stipe; a stipe has one more point than links. */
+export const KELP_SEGMENTS = 12;
+export const KELP_POINTS = KELP_SEGMENTS + 1;
+/** Plants are this far apart at the nearest layer (screen heights), one per slot. */
+const SPACING = 0.45;
+/** Half the width the forest is laid out over: a 21:9 frame with the sway to spare. */
+const HALF_SPAN = 1.55;
+/** Perspective scale of each layer, and how far its slots are shifted (in slots) off the others. */
+const LAYER_SCALES = [1, 0.6, 0.37] as const;
+const LAYER_SHIFT = [0, 0.37, 0.71] as const;
+/**
+ * Stipe length at the nearest layer (screen heights): most of the water's depth, so a grown plant's
+ * crown stays just under the surface. Plants are 76–100% of it, most near the top of that range.
+ */
+export const KELP_STIPE_LENGTH = 0.92 * (KELP_VIEW.floor + KELP_VIEW.surface);
+
+export interface KelpLayer {
+  /** Perspective scale: 1 at the nearest layer, smaller farther off. */
+  readonly scale: number;
+  /** Width of a slot, screen heights. */
+  readonly spacing: number;
+  /** Left edge of slot 0, screen heights from the frame's centre. */
+  readonly left: number;
+  readonly slots: number;
+  /** The layer's first stipe. */
+  readonly first: number;
+}
+
+export const KELP_LAYERS: readonly KelpLayer[] = (() => {
+  const layers: KelpLayer[] = [];
+  let first = 0;
+  LAYER_SCALES.forEach((scale, l) => {
+    const spacing = SPACING * scale;
+    const slots = Math.ceil((2 * HALF_SPAN) / spacing);
+    layers.push({ scale, spacing, left: (-0.5 * slots + (LAYER_SHIFT[l] ?? 0)) * spacing, slots, first });
+    first += slots;
+  });
+  return layers;
+})();
+export const KELP_STIPES = KELP_LAYERS.reduce((n, layer) => n + layer.slots, 0);
+const POINT_COUNT = KELP_STIPES * KELP_POINTS;
+/** Texels per row of the point texture: every point's two texels in one row. */
+export const KELP_POINT_ROW = 2 * POINT_COUNT;
+/** Subtracted from positions before packing (half floats are finest near 0): mid-frame. */
+export const KELP_ORIGIN = [0, 0.5, 0] as const;
+
+/** The school: its depth (perspective scale), most fish, and the band of water it keeps to. */
+export const KELP_FISH = { scale: 0.8, max: 32, low: 0.24, high: 0.8 } as const;
+/** The sea lion: its depth and length (screen heights). */
+export const KELP_VISITOR = { scale: 0.5, length: 0.095 } as const;
+
+/**
+ * The surge, in world units (screen heights at the nearest layer): u(x, t) = speed · surge knob ·
+ * (sin(φ1 − k1·x) + second · sin(φ2 − k2·x + phase2)), with φ2 turning `ratio` times as fast as φ1.
+ * Wavelengths of 5.2 and 8.9: the sway travels across the forest without ever lining up.
+ */
+export const KELP_SURGE = { speed: 0.32, k1: TAU / 5.2, k2: TAU / 8.9, second: 0.35, ratio: 1 / 2.37, phase2: 1.3, current: 0.16 } as const;
+/**
+ * A big swell: a displacement amplitude · sin²(π τ / span) · sin(2π τ / period) of the water, its
+ * front starting `start` world units upstream and running at `speed`; τ is the time since the
+ * front passed.
+ */
+export const KELP_SWELL = { amplitude: 0.62, period: 10, span: 15, start: 4.8, speed: 1.3 } as const;
+const SWELL_END = KELP_SWELL.span + (2 * KELP_SWELL.start) / KELP_SWELL.speed;
+
+/** State texture rows, and the columns of the globals row. */
+export const KELP_ROW = { stipes: 0, fishPose: 1, fishLook: 2, globals: 3 } as const;
+/**
+ * Globals (row 3):
+ *   phases       cos φ1, sin φ1, cos φ2, sin φ2 of the surge
+ *   flow         surge speed (world units/s), φ1's rate (rad/s), current (world units/s), swell age (s, −1 idle)
+ *   school       the school's box: min x, min y, max x, max y
+ *   visitorPose  the sea lion: x, y, heading (rad), shown 0..1
+ *   visitorLook  fore-flipper stroke 0..1, facing (±1), swell direction (±1), 0
+ */
+export const KELP_GLOBAL = { phases: 0, flow: 1, school: 2, visitorPose: 3, visitorLook: 4 } as const;
+export const KELP_STATE_WIDTH = Math.max(KELP_STIPES, KELP_FISH.max, 5);
+const STATE_ROWS = 4;
+
+// ---- kelp physics -------------------------------------------------------------------------------
+/** Lift of the gas bladders, screen heights/s² at the nearest layer: a ~4 s natural sway. */
+const BUOYANCY = 2;
+/** Water drag rate (1/s): the kelp follows the flow with a lag of about 1/DRAG. */
+const DRAG = 1.6;
+/** Bending stiffness of a stipe (skip-one constraints): enough for a smooth curve, no more. */
+const BEND = 0.2;
+/** Vertical orbit of the surge at the surface, relative to its horizontal speed. */
+const ORBIT = 0.25;
+/** Blades stream with the relative flow: lean = atan(STREAM · flow), at most BLADE_MAX. */
+const BLADE_STREAM = 3.2;
+const BLADE_MAX = 1.25;
+/** Seconds a blade takes to swing to its new lean. */
+const BLADE_EASE = 0.35;
+/** Seconds a plant takes to emerge from (or fade into) the haze when the density knob moves. */
+const PRESENCE_EASE = 1.6;
+/** Seconds of sway simulated before the first frame, in steps of PREWARM_STEP. */
+const PREWARM = 3;
+const PREWARM_STEP = 0.1;
+
+// ---- the hand -----------------------------------------------------------------------------------
+/** The wake's radius (screen heights) and how hard it pushes, per layer near to far. */
+const HAND_RADIUS = 0.13;
+const HAND_REACH = [1, 0.65, 0.4] as const;
+const HAND_GAIN = 1.6;
+/** The hand's velocity is smoothed over this many seconds, and capped (screen heights/s). */
+const HAND_SMOOTH = 0.06;
+const HAND_MAX_SPEED = 1.5;
+/** Seconds the wake takes to settle once the button is let go. */
+const HAND_RELEASE = 0.25;
+/** The plankton trail: grid, brush radius (uv heights), strength per stroke, half-life (s). */
+const TRAIL_W = 128;
+const TRAIL_H = 72;
+const TRAIL_RADIUS = 0.035;
+const TRAIL_STRENGTH = 0.5;
+const TRAIL_HALF_LIFE = 1.4;
+
+// ---- events ---------------------------------------------------------------------------------------
+/** Seconds between big swells at frequency 0 and 1 (randomised ±40%), and before the first. */
+const SWELL_RARE = 150;
+const SWELL_OFTEN = 25;
+const SWELL_FIRST = 30;
+/** The sea lion: speed (screen heights/s at its depth), margin off screen, a stroke every STROKE s. */
+const VISITOR_SPEED = 0.11;
+const VISITOR_MARGIN = 0.12;
+const VISITOR_STROKE = 2.6;
+const VISITOR_RARE = 170;
+const VISITOR_OFTEN = 35;
+const VISITOR_FIRST = 18;
+
+// ---- the school -----------------------------------------------------------------------------------
+const FISH_STEP = 1 / 60;
+const FISH_MAX_STEPS = 8;
+/** Neighbour radii (screen heights): keep apart, swim alike, keep together. */
+const FISH_SEPARATION = 0.028;
+const FISH_ALIGN = 0.09;
+const FISH_COHESION = 0.15;
+/** Speeds (screen heights/s): cruising, slowest, fastest, and the extra a fright allows. */
+const FISH_CRUISE = 0.085;
+const FISH_MIN = 0.045;
+const FISH_MAX = 0.13;
+const FISH_FRIGHT_SPEED = 0.32;
+/** Body length (screen heights at the school's depth), varied ±15% fish by fish. */
+const FISH_LENGTH = 0.03;
+/** A click scatters fish within this radius; dragging the hand repels them within FLEE. */
+const FISH_SCATTER = 0.35;
+const FISH_FLEE = 0.18;
+/** Seconds a fright lasts, and a fish takes to fade in or out when the count changes. */
+const FISH_FRIGHT_TIME = 2;
+const FISH_FADE = 1.2;
+
+type KnobKey = "surge" | "period" | "current" | "swell" | "density" | "kelpSeed" | "fish" | "visitor";
+const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "density", "kelpSeed", "fish", "visitor"];
+
+/** Fixed base seed: the same arrangement number always grows the same forest. */
+const SEED = 0x6b31f00d;
+
+/** The scene's knobs and its simulation disagree. */
+export class KelpSimError extends Error {}
+
+/** mulberry32: a small seeded generator. */
+class Random {
+  #state = 0;
+
+  seed(seed: number): void {
+    this.#state = seed >>> 0;
+  }
+
+  next(): number {
+    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
+    let t = this.#state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** The diver's hand: where it is (screen heights), its smoothed velocity, and how present (0..1). */
+interface Hand {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  on: number;
+}
+
+/** The school of fish, flown as boids in screen heights at the school's depth. */
+class School {
+  readonly x = new Float32Array(KELP_FISH.max);
+  readonly y = new Float32Array(KELP_FISH.max);
+  readonly vx = new Float32Array(KELP_FISH.max);
+  readonly vy = new Float32Array(KELP_FISH.max);
+  readonly heading = new Float32Array(KELP_FISH.max);
+  readonly turn = new Float32Array(KELP_FISH.max);
+  readonly flash = new Float32Array(KELP_FISH.max);
+  readonly tail = new Float32Array(KELP_FISH.max);
+  readonly shown = new Float32Array(KELP_FISH.max);
+  readonly size = new Float32Array(KELP_FISH.max);
+  readonly #ax = new Float32Array(KELP_FISH.max);
+  readonly #ay = new Float32Array(KELP_FISH.max);
+  #clock = 0;
+  #pending = 0;
+  #fright = 0;
+  /** The wander target, as last worked out by #aim. */
+  #tx = 0;
+  #ty = 0.5;
+
+  /** A loose shoal around the wander target, all heading the same way. */
+  place(random: Random, aspect: number, count: number): void {
+    this.#clock = random.next() * 400;
+    this.#aim(aspect);
+    const tx = this.#tx;
+    const ty = this.#ty;
+    for (let i = 0; i < KELP_FISH.max; i++) {
+      const a = random.next() * TAU;
+      const r = 0.07 * Math.sqrt(random.next());
+      this.x[i] = tx + r * Math.cos(a) * 1.6;
+      this.y[i] = ty + r * Math.sin(a) * 0.7;
+      this.vx[i] = FISH_CRUISE;
+      this.vy[i] = 0;
+      this.heading[i] = 0;
+      this.turn[i] = 0;
+      this.flash[i] = 0;
+      this.tail[i] = random.next() * TAU;
+      this.shown[i] = i < count ? 1 : 0;
+      this.size[i] = FISH_LENGTH * (0.85 + 0.3 * random.next());
+    }
+  }
+
+  /** Scatter from a click at (hx, hy). */
+  scatter(hx: number, hy: number): void {
+    for (let i = 0; i < KELP_FISH.max; i++) {
+      const dx = (this.x[i] ?? 0) - hx;
+      const dy = (this.y[i] ?? 0) - hy;
+      const d = Math.hypot(dx, dy);
+      if (d >= FISH_SCATTER || d < 1e-5) continue;
+      const k = 0.45 * (1 - d / FISH_SCATTER) ** 2;
+      this.vx[i] = (this.vx[i] ?? 0) + (dx / d) * k;
+      this.vy[i] = (this.vy[i] ?? 0) + (dy / d) * k;
+    }
+    this.#fright = 1;
+  }
+
+  advance(dt: number, count: number, aspect: number, hand: Hand): void {
+    this.#pending = Math.min(this.#pending + dt, FISH_MAX_STEPS * FISH_STEP);
+    while (this.#pending >= FISH_STEP) {
+      this.#step(FISH_STEP, count, aspect, hand);
+      this.#pending -= FISH_STEP;
+    }
+  }
+
+  /** Where the school is drawn toward: a slow figure wandering the open water. */
+  #aim(aspect: number): void {
+    const c = this.#clock;
+    this.#tx = 0.5 * aspect * (0.42 * Math.sin(c * 0.043 + 0.7) + 0.16 * Math.sin(c * 0.11 + 2.3));
+    this.#ty = 0.52 + 0.12 * Math.sin(c * 0.067 + 1.9);
+  }
+
+  #step(h: number, count: number, aspect: number, hand: Hand): void {
+    this.#clock += h;
+    this.#fright = Math.max(0, this.#fright - h / FISH_FRIGHT_TIME);
+    const fright = this.#fright;
+    this.#aim(aspect);
+    const tx = this.#tx;
+    const ty = this.#ty;
+    const half = 0.5 * aspect - 0.06;
+    const n = KELP_FISH.max;
+    const { x, y, vx, vy } = this;
+    const ax = this.#ax;
+    const ay = this.#ay;
+    for (let i = 0; i < n; i++) {
+      const xi = x[i] ?? 0;
+      const yi = y[i] ?? 0;
+      let sx = 0;
+      let sy = 0;
+      let avx = 0;
+      let avy = 0;
+      let na = 0;
+      let cx = 0;
+      let cy = 0;
+      let nc = 0;
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        const dx = (x[j] ?? 0) - xi;
+        const dy = (y[j] ?? 0) - yi;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > FISH_COHESION * FISH_COHESION) continue;
+        cx += dx;
+        cy += dy;
+        nc++;
+        if (d2 < FISH_ALIGN * FISH_ALIGN) {
+          avx += vx[j] ?? 0;
+          avy += vy[j] ?? 0;
+          na++;
+        }
+        if (d2 < FISH_SEPARATION * FISH_SEPARATION && d2 > 1e-10) {
+          const d = Math.sqrt(d2);
+          const push = (1 - d / FISH_SEPARATION) / d;
+          sx -= dx * push;
+          sy -= dy * push;
+        }
+      }
+      const vxi = vx[i] ?? 0;
+      const vyi = vy[i] ?? 0;
+      let fx = 1.4 * sx;
+      let fy = 1.4 * sy;
+      if (na > 0) {
+        fx += 1.6 * (avx / na - vxi);
+        fy += 1.6 * (avy / na - vyi);
+      }
+      if (nc > 0) {
+        const pull = 0.7 * (1 - 0.7 * fright);
+        fx += (pull * cx) / nc;
+        fy += (pull * cy) / nc;
+      }
+      // Toward the wander target, gently and capped, so the school drifts rather than homes in.
+      let gx = (tx - xi) * 0.25;
+      let gy = (ty - yi) * 0.25;
+      const g = Math.hypot(gx, gy);
+      if (g > 0.05) {
+        gx *= 0.05 / g;
+        gy *= 0.05 / g;
+      }
+      fx += gx;
+      fy += gy;
+      // Soft walls: the band of open water and the frame's sides.
+      if (yi < KELP_FISH.low) fy += (KELP_FISH.low - yi) * 2;
+      if (yi > KELP_FISH.high) fy -= (yi - KELP_FISH.high) * 2;
+      if (xi < -half) fx += (-half - xi) * 2;
+      if (xi > half) fx -= (xi - half) * 2;
+      // The hand, while held: fish dart away from it.
+      if (hand.on > 0) {
+        const dx = xi - hand.x;
+        const dy = yi - hand.y;
+        const d = Math.hypot(dx, dy);
+        if (d < FISH_FLEE && d > 1e-5) {
+          const k = (2 * hand.on * (1 - d / FISH_FLEE)) / d;
+          fx += dx * k;
+          fy += dy * k;
+        }
+      }
+      ax[i] = fx;
+      ay[i] = fy;
+    }
+
+    const top = FISH_MAX + FISH_FRIGHT_SPEED * fright;
+    const ease = 1 - Math.exp(-h / 0.2);
+    const flashEase = 1 - Math.exp(-h / 0.15);
+    const fade = h / FISH_FADE;
+    for (let i = 0; i < n; i++) {
+      let u = (vx[i] ?? 0) + (ax[i] ?? 0) * h;
+      let v = (vy[i] ?? 0) + (ay[i] ?? 0) * h;
+      // Back toward cruising speed, within the limits.
+      let speed = Math.hypot(u, v);
+      if (speed < 1e-6) {
+        u = FISH_CRUISE;
+        v = 0;
+        speed = FISH_CRUISE;
+      }
+      const want = Math.min(top, Math.max(FISH_MIN, speed + (FISH_CRUISE - speed) * 0.8 * h));
+      u *= want / speed;
+      v *= want / speed;
+      vx[i] = u;
+      vy[i] = v;
+      x[i] = (x[i] ?? 0) + u * h;
+      y[i] = (y[i] ?? 0) + v * h;
+
+      // Heading and how fast it turns: a turning fish rolls and flashes its silver flank.
+      const angle = Math.atan2(v, u);
+      let da = angle - (this.heading[i] ?? 0);
+      da -= TAU * Math.round(da / TAU);
+      this.heading[i] = angle;
+      this.turn[i] = (this.turn[i] ?? 0) + (da / h - (this.turn[i] ?? 0)) * ease;
+      const turning = Math.min(1, Math.max(0, (Math.abs(this.turn[i] ?? 0) - 0.25) * 1.2));
+      // Now and then a glint sweeps across the school as it wheels in the light.
+      const wheel = Math.max(0, Math.sin(this.#clock * 0.17 + (x[i] ?? 0) * 3 + (y[i] ?? 0) * 1.3)) ** 24;
+      const target = Math.max(turning, 0.8 * wheel);
+      this.flash[i] = (this.flash[i] ?? 0) + (target - (this.flash[i] ?? 0)) * flashEase;
+      this.tail[i] = ((this.tail[i] ?? 0) + h * (5 + 40 * want)) % TAU;
+      const shown = this.shown[i] ?? 0;
+      this.shown[i] = i < count ? Math.min(1, shown + fade) : Math.max(0, shown - fade);
+    }
+  }
+}
+
+class KelpSim implements SceneSim {
+  readonly #system: VerletSystem;
+  readonly #points: PointTexture;
+  readonly #state: DataTexture;
+  readonly #stateData = new Float32Array(KELP_STATE_WIDTH * STATE_ROWS * 4);
+  readonly #trail = new TrailField(TRAIL_W, TRAIL_H);
+  readonly #trailTexture: DataTexture;
+  readonly #textures: readonly WebGLTexture[];
+  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #knob: Record<KnobKey, number>;
+  readonly #random = new Random();
+  readonly #school = new School();
+  readonly #hand: Hand = { x: 0, y: 0.5, vx: 0, vy: 0, on: 0 };
+  readonly #stepOptions: VerletStepOptions;
+
+  // Per stipe: when the density knob shows it (rank), and how far it has emerged from the haze.
+  readonly #rank = new Float32Array(KELP_STIPES);
+  readonly #presence = new Float32Array(KELP_STIPES);
+  // Per point: its layer's scale and floor, the flow it was last dragged toward (screen heights/s)
+  // and its blade's lean.
+  readonly #pointScale = new Float32Array(POINT_COUNT);
+  readonly #pointFloor = new Float32Array(POINT_COUNT);
+  readonly #pointLayer = new Uint8Array(POINT_COUNT);
+  readonly #flowX = new Float32Array(POINT_COUNT);
+  readonly #lean = new Float32Array(POINT_COUNT);
+
+  // The flow, advanced substep by substep from the system's clock (see #advanceFlow).
+  #flowTime = 0;
+  #phase1 = 1.1;
+  #phase2 = 4;
+  #omega1 = TAU / 8;
+  #surgeSpeed = 0;
+  #currentSpeed = 0;
+  #swellAge = -1;
+  #swellDir = 1;
+
+  #seed = -1;
+  #aspect = 16 / 9;
+  #primed = false;
+  #seenSwell = -1e4;
+  #seenVisitor = -1e4;
+  #clock = 0;
+  #nextSwell = SWELL_FIRST;
+  #visitorAge = -1;
+  #visitorDir = 1;
+  #visitorY = 0.5;
+  #visitorPhase = 0;
+  #nextVisitor = VISITOR_FIRST;
+  #handPrevX = 0;
+  #handPrevY = 0;
+  #handHeld = false;
+  #trailVersion = -1;
+
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+    const index = (key: KnobKey): number => {
+      const at = params.findIndex((def) => def.key === key);
+      if (at < 0) throw new KelpSimError(`kelp: the scene has no '${key}' knob`);
+      return at;
+    };
+    const knobIndex: Record<KnobKey, number> = {
+      surge: index("surge"),
+      period: index("period"),
+      current: index("current"),
+      swell: index("swell"),
+      density: index("density"),
+      kelpSeed: index("kelpSeed"),
+      fish: index("fish"),
+      visitor: index("visitor"),
+    };
+    const initial = (key: KnobKey): number => {
+      const def = params[knobIndex[key]];
+      return def === undefined ? 0 : effective(def, {});
+    };
+    this.#knobIndex = knobIndex;
+    this.#knob = {
+      surge: initial("surge"),
+      period: initial("period"),
+      current: initial("current"),
+      swell: initial("swell"),
+      density: initial("density"),
+      kelpSeed: initial("kelpSeed"),
+      fish: initial("fish"),
+      visitor: initial("visitor"),
+    };
+    this.#system = new VerletSystem({ points: POINT_COUNT, constraints: KELP_STIPES * (2 * KELP_SEGMENTS - 1) });
+    this.#stepOptions = { gravity: [0, 0, 0], damping: DRAG, iterations: 4, force: this.#force };
+    this.#points = new PointTexture(gl, { points: POINT_COUNT, velocity: true, width: KELP_POINT_ROW, origin: KELP_ORIGIN });
+    this.#state = new DataTexture(gl, { width: KELP_STATE_WIDTH, height: STATE_ROWS, format: "rgba16f", filter: "nearest" });
+    this.#trailTexture = new DataTexture(gl, { width: TRAIL_W, height: TRAIL_H, format: "r8" });
+    this.#textures = [this.#points.texture, this.#state.texture, this.#trailTexture.texture];
+    this.#applyKnobs();
+    this.#build(Math.round(this.#knob.kelpSeed));
+  }
+
+  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+    const values = frame.values;
+    const knob = this.#knob;
+    for (const key of KNOB_KEYS) knob[key] = values[this.#knobIndex[key]] ?? knob[key];
+    if (frame.aspect > 0) this.#aspect = frame.aspect;
+    this.#applyKnobs();
+    const seed = Math.round(knob.kelpSeed);
+    if (seed !== this.#seed) this.#build(seed);
+    this.#watchTriggers(frame.triggers);
+
+    // Motion scales everything; a swell or a visitor fired with "now" plays even while it is 0.
+    const busy = this.#swellAge >= 0 || this.#visitorAge >= 0;
+    const advance = Math.max(0, frame.dt) * Math.max(frame.motion, busy ? 1 : 0);
+    this.#clock += advance;
+    this.#schedule(advance);
+    this.#updateHand(frame, advance);
+
+    this.#system.step(advance, this.#stepOptions);
+    this.#settleBlades(advance);
+    this.#updatePresence(advance);
+    this.#school.advance(advance, Math.round(knob.fish), this.#aspect, this.#hand);
+    if (frame.pointer.pressed && frame.pointer.inside) this.#school.scatter((frame.pointer.x - 0.5) * this.#aspect, frame.pointer.y);
+    this.#advanceVisitor(advance);
+
+    this.#trail.decay(advance, TRAIL_HALF_LIFE);
+    this.#points.upload(this.#system, this.#lean);
+    this.#packState();
+    this.#state.upload(this.#stateData);
+    if (this.#trail.version !== this.#trailVersion) {
+      this.#trailTexture.upload(this.#trail.data);
+      this.#trailVersion = this.#trail.version;
+    }
+    return this.#textures;
+  }
+
+  dispose(): void {
+    this.#points.dispose();
+    this.#state.dispose();
+    this.#trailTexture.dispose();
+  }
+
+  // ---- the forest -------------------------------------------------------------------------------
+
+  /** Plant the forest for an arrangement number and let it sway into shape. */
+  #build(seed: number): void {
+    this.#seed = seed;
+    const random = this.#random;
+    random.seed(SEED ^ Math.imul(seed + 1, 0x9e3779b1));
+    const sys = this.#system;
+    sys.clear();
+    for (const [l, layer] of KELP_LAYERS.entries()) {
+      const s = layer.scale;
+      const floorY = KELP_VIEW.horizon - KELP_VIEW.floor * s;
+      for (let k = 0; k < layer.slots; k++) {
+        const stipe = layer.first + k;
+        const x = layer.left + (k + 0.5 + 0.85 * (random.next() - 0.5)) * layer.spacing;
+        // Mostly grown plants reaching for the surface, now and then a younger, shorter one.
+        const young = random.next();
+        const length = KELP_STIPE_LENGTH * s * (1 - 0.24 * young * young);
+        let rank = random.next();
+        // The nearest plants keep the middle of the frame clear until the forest is dense.
+        if (l === 0) rank += (0.92 + 0.07 * rank - rank) * (1 - smoothstep(0.25, 0.7, Math.abs(x)));
+        this.#rank[stipe] = rank;
+        this.#presence[stipe] = rank < this.#knob.density ? 1 : 0;
+        const chain = sys.addChain([x, floorY, 0], [x, floorY + length, 0], KELP_SEGMENTS, { bend: BEND, pinFirst: true });
+        for (let p = chain.first; p < chain.first + chain.points; p++) {
+          this.#pointScale[p] = s;
+          this.#pointFloor[p] = floorY;
+          this.#pointLayer[p] = l;
+          this.#flowX[p] = 0;
+          this.#lean[p] = 0;
+        }
+      }
+    }
+    this.#flowTime = sys.time;
+    this.#swellAge = -1;
+    this.#school.place(random, this.#aspect, Math.round(this.#knob.fish));
+    for (let t = 0; t < PREWARM; t += PREWARM_STEP) {
+      sys.step(PREWARM_STEP, this.#stepOptions);
+      this.#settleBlades(PREWARM_STEP);
+    }
+    const fish = Math.round(this.#knob.fish);
+    for (let t = 0; t < 2 * PREWARM; t += PREWARM_STEP) this.#school.advance(PREWARM_STEP, fish, this.#aspect, this.#hand);
+  }
+
+  #applyKnobs(): void {
+    const knob = this.#knob;
+    this.#omega1 = TAU / Math.max(1, knob.period);
+    this.#surgeSpeed = KELP_SURGE.speed * knob.surge;
+    this.#currentSpeed = KELP_SURGE.current * knob.current;
+  }
+
+  /** Advance the surge's phases and the swell to the system's clock (once per substep). */
+  #advanceFlow(time: number): void {
+    const dt = time - this.#flowTime;
+    this.#flowTime = time;
+    if (!(dt > 0)) return;
+    this.#phase1 = (this.#phase1 + dt * this.#omega1) % TAU;
+    this.#phase2 = (this.#phase2 + dt * this.#omega1 * KELP_SURGE.ratio) % TAU;
+    if (this.#swellAge >= 0) {
+      this.#swellAge += dt;
+      if (this.#swellAge > SWELL_END) this.#swellAge = -1;
+    }
+  }
+
+  /** The big swell's water speed at world x (world units/s): the time derivative of its displacement. */
+  #swellFlow(xw: number): number {
+    const { amplitude, period, span, start, speed } = KELP_SWELL;
+    const tau = this.#swellAge - (this.#swellDir * xw + start) / speed;
+    if (tau <= 0 || tau >= span) return 0;
+    const w = TAU / period;
+    const envelope = Math.sin((Math.PI * tau) / span) ** 2;
+    const slope = (Math.PI / span) * Math.sin((TAU * tau) / span);
+    return amplitude * (slope * Math.sin(w * tau) + envelope * w * Math.cos(w * tau));
+  }
+
+  /** Bladders lift every point; drag pulls it toward the flow, the hand's wake included. */
+  readonly #force: VerletForce = (i, x, y, _z, out) => {
+    const time = this.#system.time;
+    if (time !== this.#flowTime) this.#advanceFlow(time);
+    const s = this.#pointScale[i] ?? 1;
+    const xw = x / s;
+    const a1 = this.#phase1 - KELP_SURGE.k1 * xw;
+    const a2 = this.#phase2 - KELP_SURGE.k2 * xw + KELP_SURGE.phase2;
+    let u = this.#surgeSpeed * (Math.sin(a1) + KELP_SURGE.second * Math.sin(a2)) + this.#currentSpeed;
+    if (this.#swellAge >= 0) u += this.#swellFlow(xw);
+    // The surge's orbit turns elliptical toward the surface: a little bob at the crown.
+    const rise = Math.min(1, Math.max(0, (y - (this.#pointFloor[i] ?? 0)) / ((KELP_VIEW.floor + KELP_VIEW.surface) * s)));
+    let fx = u * s;
+    let fy = ORBIT * this.#surgeSpeed * Math.cos(a1) * rise * s;
+    const hand = this.#hand;
+    if (hand.on > 0) {
+      const dx = x - hand.x;
+      const dy = y - hand.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 9 * HAND_RADIUS * HAND_RADIUS) {
+        const k = HAND_GAIN * hand.on * (HAND_REACH[this.#pointLayer[i] ?? 0] ?? 0) * Math.exp(-d2 / (HAND_RADIUS * HAND_RADIUS));
+        fx += hand.vx * k;
+        fy += hand.vy * k;
+      }
+    }
+    this.#flowX[i] = fx;
+    out[0] = DRAG * fx;
+    out[1] = BUOYANCY * s + DRAG * fy;
+  };
+
+  /**
+   * Each blade leans with the water flowing past its node, against its own buoyancy; stored
+   * relative to the stipe's direction there, eased so a jolt never snaps it round.
+   */
+  #settleBlades(dt: number): void {
+    if (!(dt > 0)) return;
+    const sys = this.#system;
+    const pos = sys.positions;
+    const prev = sys.previous;
+    const rate = 1 / sys.substep;
+    const ease = 1 - Math.exp(-dt / BLADE_EASE);
+    for (let stipe = 0; stipe < KELP_STIPES; stipe++) {
+      const first = stipe * KELP_POINTS;
+      for (let j = 0; j < KELP_POINTS; j++) {
+        const i = first + j;
+        const below = 3 * (first + Math.max(0, j - 1));
+        const above = 3 * (first + Math.min(KELP_SEGMENTS, j + 1));
+        const spine = Math.atan2((pos[above] ?? 0) - (pos[below] ?? 0), (pos[above + 1] ?? 0) - (pos[below + 1] ?? 0));
+        // The pinned holdfast has no flow of its own: it takes its neighbour's.
+        const flow = this.#flowX[j === 0 ? i + 1 : i] ?? 0;
+        const vx = ((pos[3 * i] ?? 0) - (prev[3 * i] ?? 0)) * rate;
+        const s = this.#pointScale[i] ?? 1;
+        const lean = Math.max(-BLADE_MAX, Math.min(BLADE_MAX, Math.atan((BLADE_STREAM * (flow - vx)) / s)));
+        const current = this.#lean[i] ?? 0;
+        this.#lean[i] = current + (lean - spine - current) * ease;
+      }
+    }
+  }
+
+  /** Plants emerge from the haze or fade into it as the density knob moves; at once while paused. */
+  #updatePresence(dt: number): void {
+    const density = this.#knob.density;
+    const step = dt > 0 ? dt / PRESENCE_EASE : 1;
+    for (let stipe = 0; stipe < KELP_STIPES; stipe++) {
+      const want = (this.#rank[stipe] ?? 1) < density ? 1 : 0;
+      const have = this.#presence[stipe] ?? 0;
+      this.#presence[stipe] = want > have ? Math.min(want, have + step) : Math.max(want, have - step);
+    }
+  }
+
+  // ---- the hand, events -------------------------------------------------------------------------
+
+  #updateHand(frame: SimFrame, dt: number): void {
+    const pointer = frame.pointer;
+    const hand = this.#hand;
+    const x = (pointer.x - 0.5) * this.#aspect;
+    const y = pointer.y;
+    const held = pointer.down && pointer.inside;
+    if (held) {
+      if (this.#handHeld && dt > 0) {
+        const k = 1 - Math.exp(-dt / HAND_SMOOTH);
+        let vx = (x - this.#handPrevX) / dt;
+        let vy = (y - this.#handPrevY) / dt;
+        const speed = Math.hypot(vx, vy);
+        if (speed > HAND_MAX_SPEED) {
+          vx *= HAND_MAX_SPEED / speed;
+          vy *= HAND_MAX_SPEED / speed;
+        }
+        hand.vx += (vx - hand.vx) * k;
+        hand.vy += (vy - hand.vy) * k;
+      } else if (!this.#handHeld) {
+        hand.vx = 0;
+        hand.vy = 0;
+      }
+      hand.x = x;
+      hand.y = y;
+      hand.on = 1;
+      this.#trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, TRAIL_STRENGTH, this.#aspect);
+    } else {
+      if (this.#handHeld) this.#trail.lift();
+      hand.on = dt > 0 ? Math.max(0, hand.on - dt / HAND_RELEASE) : hand.on;
+      const k = dt > 0 ? Math.exp(-dt / HAND_RELEASE) : 1;
+      hand.vx *= k;
+      hand.vy *= k;
+    }
+    this.#handHeld = held;
+    this.#handPrevX = x;
+    this.#handPrevY = y;
+  }
+
+  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
+  #watchTriggers(triggers: readonly number[]): void {
+    const swell = triggers[0] ?? -1e4;
+    const visitor = triggers[1] ?? -1e4;
+    if (this.#primed) {
+      if (swell !== this.#seenSwell && swell > -1e3) this.#startSwell();
+      if (visitor !== this.#seenVisitor && visitor > -1e3 && this.#visitorAge < 0) this.#startVisitor();
+    }
+    this.#primed = true;
+    this.#seenSwell = swell;
+    this.#seenVisitor = visitor;
+  }
+
+  /** Big swells and the sea lion turn up at random, as often as their knobs say. */
+  #schedule(dt: number): void {
+    if (dt <= 0) return;
+    const random = this.#random;
+    const swell = this.#knob.swell;
+    if (swell > 0 && this.#clock >= this.#nextSwell) {
+      if (this.#swellAge < 0) this.#startSwell();
+      this.#nextSwell = this.#clock + (SWELL_RARE + (SWELL_OFTEN - SWELL_RARE) * swell) * (0.6 + 0.8 * random.next());
+    } else if (swell <= 0) {
+      this.#nextSwell = Math.max(this.#nextSwell, this.#clock + SWELL_FIRST);
+    }
+    const visitor = this.#knob.visitor;
+    if (visitor > 0 && this.#clock >= this.#nextVisitor) {
+      if (this.#visitorAge < 0) this.#startVisitor();
+      this.#nextVisitor = this.#clock + (VISITOR_RARE + (VISITOR_OFTEN - VISITOR_RARE) * visitor) * (0.6 + 0.8 * random.next());
+    } else if (visitor <= 0) {
+      this.#nextVisitor = Math.max(this.#nextVisitor, this.#clock + VISITOR_FIRST);
+    }
+  }
+
+  #startSwell(): void {
+    this.#swellAge = 0;
+    // Swells roll in downstream when a current runs, else from either side.
+    const current = this.#knob.current;
+    this.#swellDir = Math.abs(current) > 0.1 ? Math.sign(current) : this.#random.next() < 0.5 ? -1 : 1;
+  }
+
+  #startVisitor(): void {
+    const random = this.#random;
+    this.#visitorAge = 0;
+    this.#visitorDir = random.next() < 0.5 ? -1 : 1;
+    this.#visitorY = 0.44 + 0.16 * random.next();
+    this.#visitorPhase = random.next() * TAU;
+  }
+
+  #advanceVisitor(dt: number): void {
+    if (this.#visitorAge < 0) return;
+    this.#visitorAge += dt;
+    const travel = 2 * (0.5 * this.#aspect + VISITOR_MARGIN);
+    if (this.#visitorAge * VISITOR_SPEED > travel) this.#visitorAge = -1;
+  }
+
+  // ---- packing ----------------------------------------------------------------------------------
+
+  /** One texel of the state texture. */
+  #put(row: number, col: number, a: number, b: number, c: number, d: number): void {
+    const data = this.#stateData;
+    const o = (row * KELP_STATE_WIDTH + col) * 4;
+    data[o] = a;
+    data[o + 1] = b;
+    data[o + 2] = c;
+    data[o + 3] = d;
+  }
+
+  #packState(): void {
+    this.#stateData.fill(0);
+
+    const pos = this.#system.positions;
+    for (let stipe = 0; stipe < KELP_STIPES; stipe++) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let top = -Infinity;
+      for (let j = 0; j < KELP_POINTS; j++) {
+        const o = 3 * (stipe * KELP_POINTS + j);
+        const x = pos[o] ?? 0;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        top = Math.max(top, pos[o + 1] ?? 0);
+      }
+      this.#put(KELP_ROW.stipes, stipe, minX, maxX, top, this.#presence[stipe] ?? 0);
+    }
+
+    const school = this.#school;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < KELP_FISH.max; i++) {
+      const shown = school.shown[i] ?? 0;
+      const x = school.x[i] ?? 0;
+      const y = school.y[i] ?? 0;
+      const angle = school.heading[i] ?? 0;
+      const size = school.size[i] ?? 0;
+      this.#put(KELP_ROW.fishPose, i, x, y, Math.cos(angle), Math.sin(angle));
+      this.#put(KELP_ROW.fishLook, i, shown > 0 ? size * (0.4 + 0.6 * shown) : 0, school.flash[i] ?? 0, Math.sin(school.tail[i] ?? 0), shown);
+      if (shown <= 0) continue;
+      minX = Math.min(minX, x - size);
+      maxX = Math.max(maxX, x + size);
+      minY = Math.min(minY, y - size);
+      maxY = Math.max(maxY, y + size);
+    }
+    if (minX > maxX) this.#put(KELP_ROW.globals, KELP_GLOBAL.school, 1, 1, -1, -1);
+    else this.#put(KELP_ROW.globals, KELP_GLOBAL.school, minX, minY, maxX, maxY);
+
+    this.#put(KELP_ROW.globals, KELP_GLOBAL.phases, Math.cos(this.#phase1), Math.sin(this.#phase1), Math.cos(this.#phase2), Math.sin(this.#phase2));
+    this.#put(KELP_ROW.globals, KELP_GLOBAL.flow, this.#surgeSpeed, this.#omega1, this.#currentSpeed, this.#swellAge);
+
+    if (this.#visitorAge >= 0) {
+      const travel = 2 * (0.5 * this.#aspect + VISITOR_MARGIN);
+      const age = this.#visitorAge;
+      const p = (age * VISITOR_SPEED) / travel;
+      const dir = this.#visitorDir;
+      const x = dir * (age * VISITOR_SPEED - 0.5 * travel);
+      // A long, lazy dip and a slow undulation: a sea lion idling across the forest.
+      const wave = TAU * 1.3 * p + this.#visitorPhase;
+      const y = this.#visitorY + 0.035 * Math.sin(wave) - 0.05 * Math.sin(Math.PI * p);
+      const dy = (0.035 * TAU * 1.3 * Math.cos(wave) - 0.05 * Math.PI * Math.cos(Math.PI * p)) / travel;
+      const heading = Math.atan2(dy, dir);
+      const shown = smoothstep(0, 0.08, p) * (1 - smoothstep(0.92, 1, p));
+      const phase = (age % VISITOR_STROKE) / VISITOR_STROKE;
+      const stroke = Math.sin(Math.PI * Math.min(1, phase / 0.3)) ** 2;
+      this.#put(KELP_ROW.globals, KELP_GLOBAL.visitorPose, x, y, heading, shown);
+      this.#put(KELP_ROW.globals, KELP_GLOBAL.visitorLook, stroke, dir, this.#swellDir, 0);
+    } else {
+      this.#put(KELP_ROW.globals, KELP_GLOBAL.visitorLook, 0, 1, this.#swellDir, 0);
+    }
+  }
+}
+
+/** The kelp forest's simulation for a scene whose knobs are `params` (looked up by key). */
+export function kelpSim(params: readonly ParamDef[]): SimFactory {
+  return (gl) => new KelpSim(gl, params);
+}

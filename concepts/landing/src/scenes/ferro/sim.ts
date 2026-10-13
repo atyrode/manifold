@@ -252,7 +252,7 @@ interface Blob extends Body {
 
 // ---- knobs -----------------------------------------------------------------------------------
 
-type FerroKnob = "strength" | "breath" | "drift" | "follow" | "size" | "spacing" | "sharpness" | "pour" | "view" | "mark";
+type FerroKnob = "strength" | "breath" | "drift" | "follow" | "size" | "spacing" | "sharpness" | "pour" | "camera" | "mark";
 
 interface KnobSlot {
   /** Position in the scene's `params` (and so in `SimFrame.values`). */
@@ -281,7 +281,7 @@ class FerroKnobs {
       spacing: slot("spacing"),
       sharpness: slot("sharpness"),
       pour: slot("pour"),
-      view: slot("view"),
+      camera: slot("camera"),
       mark: slot("mark"),
     };
   }
@@ -434,7 +434,7 @@ class FerroSim implements SceneSim {
       spacing,
       height: spacing * (1 + 1.5 * knobs.value(frame, "sharpness")),
       seed: Math.round(knobs.value(frame, "pour")),
-      above: Math.round(knobs.value(frame, "view")) === 0,
+      above: Math.round(knobs.value(frame, "camera")) === 0,
       markEvery: mark > 0 ? Math.max(1, Math.round(1 + 5 * (1 - mark))) : 0,
     };
   }

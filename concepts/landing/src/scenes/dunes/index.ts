@@ -19,7 +19,7 @@ export const dunesScene: SceneDef = {
     seed("dunes", "seed", "arrangement", "Another starting field of sand: same wind and supply, different dunes."),
     range("dunes", "ripples", "ripples", 0.7, "Fine wind ripples combed across the sand, square to the wind; the slip faces stay smooth."),
     feature("dunes", "drift", "blowing sand", true, "amount", 0.6, "Sand skimming up the windward slopes and streaming off the crests in veils; grows with the wind."),
-    choice("view", "view", "view", [{ label: "aerial", value: 0 }, { label: "overhead", value: 1 }], 0, "Look low across the dune sea to the horizon, or straight down on it like a satellite picture.", { steady: true }),
+    choice("view", "camera", "view", [{ label: "aerial", value: 0 }, { label: "overhead", value: 1 }], 0, "Look low across the dune sea to the horizon, or straight down on it like a satellite picture.", { steady: true }),
     ...skyKnobs({ time: 0.74 }),
     ...weatherKnobs({ wind: true, fog: true }),
     range("weather", "heat", "heat shimmer", 0.5, "When the sun stands high, hot air wavers over the far dunes and the distance turns to a mirage."),

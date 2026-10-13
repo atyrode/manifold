@@ -746,7 +746,7 @@ export const dunesSim: SimFactory = (gl: WebGL2RenderingContext): SceneSim => {
       if (pointer.inside && (pointer.pressed || pointer.down)) {
         const slabs = pointer.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
         const drop = DUNES_CAMERA.height + (DUNES_CAMERA.rise - 1) * dunesMeanSlabs(sand) * DUNES_SLAB;
-        const cell = slabs > 0 ? pointerCell(frame, frame.params["view"] ?? 0, drop) : undefined;
+        const cell = slabs > 0 ? pointerCell(frame, frame.params["camera"] ?? 0, drop) : undefined;
         if (cell !== undefined) field.pour(cell.x, cell.y, slabs);
       }
 

@@ -4,7 +4,7 @@
 //   uSim0  spike field over the dish: r spike height, gb tip lean, a the pool's field φ (shadow)
 //   uSim1  texel 0 lattice origin xy, spacing, M amount; 1 pool bound xy r, tallest point;
 //          2 M height; 3.. the pool's blobs: xy, radius, weight
-// Knobs read here: K_view (0 above, 1 three-quarter), K_sharpness, K_gel, K_lights.
+// Knobs read here: K_camera (0 above, 1 three-quarter), K_sharpness, K_gel, K_lights.
 import { FERRO_BLOBS, FERRO_SHAPE, FERRO_SPAN, FERRO_STATE_HEAD, FERRO_VIEW } from "./sim.ts";
 
 /** The studio light colours a gel can give the right-hand panel; the first is a plain studio. */
@@ -312,7 +312,7 @@ float ferroPanel(vec2 ae, vec2 centre, vec2 size, float soft) {
 // soften by it and the thin ring dims as it widens, so squeezed reflections settle to their average
 // instead of crawling. Everything else is black.
 vec3 ferroStudio(vec3 r, float aa, float steep, out float gel) {
-  bool above = K_view < 0.5;
+  bool above = K_camera < 0.5;
   float el = asin(clamp(r.z, -1.0, 1.0));
   float az = atan(r.x, r.y);
   vec2 ae = vec2(az, el);
@@ -374,7 +374,7 @@ Shade sceneFerro(vec2 uv, vec2 cell, float t) {
   ferroLoad();
   float aspect = uRes.x / uRes.y;
   vec2 s = vec2((uv.x - 0.5) * aspect, uv.y - 0.5) * 2.0;
-  bool above = K_view < 0.5;
+  bool above = K_camera < 0.5;
 
   vec3 rd;
   vec3 pos;
