@@ -1,5 +1,9 @@
 Closes #N
 
+## Summary
+
+<!-- Two or three plain sentences for someone who has not followed the work: what changes for users or the operator, and what, if anything, they must do. -->
+
 ## Problem
 
 <!-- State the accepted issue's problem in consumer terms. -->

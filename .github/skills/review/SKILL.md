@@ -9,7 +9,7 @@ Commands: `gh pr view <n>`, `gh pr diff <n>`, `gh pr checks <n>`. This runbook w
 and nothing else — never push to the branch under review.
 
 Post exactly one comment per reviewed head, beginning `## Verdict: pass` or `## Verdict: fail`,
-followed by the acceptance checklist with evidence per item and, on a fail, the blocking findings.
+opening with the plain result, then the acceptance checklist with a one-line evidence pointer per item and, on a fail, the blocking findings.
 Separate proved implementation/pre-merge acceptance from pending post-merge operational acceptance;
 the latter needs the runbook's accountable handoff, not a false claim of completion or an automatic
 review failure. Missing implementation or required pre-merge evidence still fails.

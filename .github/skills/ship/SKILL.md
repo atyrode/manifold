@@ -18,7 +18,7 @@ concrete unresolved decision, not a path or an already-covered action. Arming sq
 enters the runbook's integration lane: only the head-of-line is updated from `main` and rerun, a
 clean catch-up gets a refreshed verdict, and a failing or stalled head-of-line is diagnosed or
 disarmed rather than left to block the lane. Each pass first reconciles lane merges since the last:
-update the issue receipt, inspect `bun run ci:status` and reconcile
+edit the issue handoff of each merged `Refs` PR (a `Closes` PR needs nothing more), inspect `bun run ci:status` and reconcile
 dependent PRs; full main verification and deployment run asynchronously for ordinary work. Wait
 for exact-revision full proof when the task owns deployment or release, and handle assigned CI
 repair issues promptly. Rebase and reverify branches you own; comment the required
