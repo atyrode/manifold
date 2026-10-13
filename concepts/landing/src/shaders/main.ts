@@ -1,17 +1,14 @@
-// Entry point: pick the scene, dither its coverage into the palette.
+// Entry point: call the scene's entry, dither its coverage into the palette.
 
-export const main = `
+/** The fragment `main` for a scene whose entry is `Shade <entry>(vec2 uv, vec2 cell, float t)`. */
+export function main(entry: string): string {
+  return `
 void main() {
   vec2 cell = gl_FragCoord.xy;
   vec2 uv = cell / uRes;
   float t = uTime;
 
-  Shade s;
-  if (uScene == 0) s = sceneWave(uv, t);
-  else if (uScene == 1) s = sceneStarry(uv, t);
-  else if (uScene == 2) s = sceneOrbit(uv, cell, t);
-  else if (uScene == 3) s = sceneSwell(uv, t);
-  else s = scenePond(uv, cell, t);
+  Shade s = ${entry}(uv, cell, t);
 
   s.ink *= uReveal;
   s.accent *= uReveal;
@@ -37,3 +34,4 @@ void main() {
   outColor = vec4(col, 1.0);
 }
 `;
+}

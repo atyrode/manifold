@@ -1,9 +1,10 @@
 // The lab sidebar. Built entirely from the scene catalogue and knob definitions: every change goes
 // through the host as a URL query, so links, presets and undo all share one representation.
-import { formatValue, groupInfo, MAX_SEED, sceneInfo, sceneParams, type Option, type ParamDef } from "./params.ts";
+import { formatValue, MAX_SEED, type Option, type ParamDef } from "./params.ts";
 import { loadLocalPresets, parsePresets, presets, saveLocalPresets, type Preset } from "./presets.ts";
-import { colorIds, ditherIds, sceneIds, viewIds, type DitherRenderer, type SceneId } from "./renderer.ts";
-import { accentOf, carryLook, defaultsFor, modeIds, paramDefaults, sceneAccent, serialise, type LabState, type Params } from "./state.ts";
+import { colorIds, ditherIds, viewIds, type DitherRenderer } from "./renderer.ts";
+import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
+import { accentOf, carryLook, defaults, defaultsFor, modeIds, paramDefaults, serialise, type LabState, type Params } from "./state.ts";
 
 export interface LabHost {
   current(): { state: LabState; params: Params };
@@ -216,7 +217,7 @@ export class Lab {
   sync(): void {
     const { state } = this.#current();
     if (this.#builtScene !== state.scene) this.#buildScene(state.scene);
-    this.#sceneLabel.textContent = sceneInfo[state.scene].title;
+    this.#sceneLabel.textContent = sceneDefs[state.scene].title;
     for (const sync of this.#syncers) sync();
     for (const sync of this.#sceneSyncers) sync();
     this.#filter();
@@ -450,12 +451,13 @@ export class Lab {
 
   #sceneSection(): HTMLElement {
     const cards = sceneIds.map((id) => {
-      const card = h("button", { type: "button", class: "scene-card", "data-scene": id },
+      const scene = sceneDefs[id];
+      const card = h("button", { type: "button", class: "scene-card", "data-scene": id, title: `${scene.title}: ${scene.blurb}` },
         h("span", { class: "scene-dot" }),
-        h("span", { class: "scene-title" }, sceneInfo[id].title),
-        h("span", { class: "scene-blurb" }, sceneInfo[id].blurb),
+        h("span", { class: "scene-title" }, scene.title),
+        h("span", { class: "scene-blurb" }, scene.blurb),
       );
-      card.style.setProperty("--dot", sceneAccent[id]);
+      card.style.setProperty("--dot", scene.accent);
       card.addEventListener("click", () => this.#setScene(id));
       return card;
     });
@@ -470,7 +472,7 @@ export class Lab {
       help: "Landing: the public introduction. Loading: what shows while the app boots. Sign-in: the face of a private instance. None: the scene alone (h toggles this).",
       block: page.el,
     });
-    const grid = h("div", { class: "scene-grid", "data-search": "scene wave starry orbit swell pond picture" }, ...cards);
+    const grid = h("div", { class: "scene-grid", "data-search": `scene picture ${sceneIds.map((id) => `${id} ${sceneDefs[id].title.toLowerCase()}`).join(" ")}` }, ...cards);
     const dim = this.#slider("Dim background", 0, 1, 0.05, () => this.#current().state.dim, (value, commit) => this.#change({ dim: value }, commit));
     const blur = this.#slider("Blur background", 0, 1, 0.05, () => this.#current().state.blur, (value, commit) => this.#change({ blur: value }, commit));
     const dimRow = this.#row({ label: "Dim background", help: "Darken the scene behind the page, to judge whether the copy needs help to stand out.", block: dim.el, readout: () => `${Math.round(this.#current().state.dim * 100)}%`, modified: () => this.#current().state.dim !== 0, reset: () => this.#change({ dim: 0 }, true) });
@@ -488,7 +490,7 @@ export class Lab {
       content: [grid, pageRow.el, nameReveal.el, dimRow.el, blurRow.el],
       summary: () => {
         const { state } = this.#current();
-        return [sceneInfo[state.scene].title, MODE_LABEL[state.mode], state.dim > 0 ? `dim ${Math.round(state.dim * 100)}%` : "", state.blur > 0 ? "blurred" : ""].filter(Boolean);
+        return [sceneDefs[state.scene].title, MODE_LABEL[state.mode], state.dim > 0 ? `dim ${Math.round(state.dim * 100)}%` : "", state.blur > 0 ? "blurred" : ""].filter(Boolean);
       },
       syncers: this.#syncers,
     });
@@ -527,7 +529,7 @@ export class Lab {
     this.#syncers.push(view.sync, dither.sync, colour.sync, levels.sync, pixel.sync, ...rows.map((row) => row.sync), () => {
       const { state } = this.#current();
       for (const swatch of swatches) swatch.setAttribute("aria-pressed", String(swatch.dataset.value === state.accent));
-      for (const swatch of swatches) swatch.style.setProperty("--swatch", swatch.dataset.value || sceneAccent[state.scene]);
+      for (const swatch of swatches) swatch.style.setProperty("--swatch", swatch.dataset.value || sceneDefs[state.scene].accent);
       if (document.activeElement !== custom) custom.value = accentOf(state);
     });
     const keys = ["view", "dither", "color", "accent", "levels", "pixel"] as const;
@@ -590,7 +592,7 @@ export class Lab {
       event.preventDefault();
       const { state } = this.#current();
       const preset: Preset = {
-        name: name.value.trim() || `${sceneInfo[state.scene].title} · ${new Date().toLocaleString()}`,
+        name: name.value.trim() || `${sceneDefs[state.scene].title} · ${new Date().toLocaleString()}`,
         commit: this.#host.build || "working-tree",
         query: this.#query(),
         savedAt: new Date().toISOString().slice(0, 10),
@@ -630,7 +632,7 @@ export class Lab {
         ...loadLocalPresets().map((preset, index) => ({ preset, local: index })),
       ];
       list.replaceChildren(...entries.map(({ preset, local }) => {
-        const scene = new URLSearchParams(preset.query).get("scene") ?? "wave";
+        const scene = new URLSearchParams(preset.query).get("scene") ?? defaults.scene;
         const main = h("button", { type: "button", class: "preset-main", title: "Load these settings on this build" },
           h("span", { class: "preset-name" }, preset.name),
           h("span", { class: "preset-meta" }, `${scene} · ${local === undefined ? "baseline" : "saved here"} · @${preset.commit}`),
@@ -685,7 +687,7 @@ export class Lab {
     this.#builtScene = scene;
     this.#sceneSyncers = [];
     const groups = new Map<string, ParamDef[]>();
-    for (const def of sceneParams[scene]) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
+    for (const def of sceneDefs[scene].params) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
     let first = true;
     const sections = [...groups.entries()].map(([group, defs]) => {
       const section = this.#groupSection(scene, group, defs, first);
@@ -703,7 +705,7 @@ export class Lab {
   }
 
   #groupSection(scene: SceneId, group: string, defs: readonly ParamDef[], open: boolean): HTMLElement {
-    const info = groupInfo[scene][group] ?? { title: group, blurb: "" };
+    const info = sceneDefs[scene].groups[group] ?? { title: group, blurb: "" };
     const master = this.#masterOf(defs);
     const fallback = paramDefaults(scene);
     const keysOf = (def: ParamDef) => (def.kind === "feature" ? [def.key, `${def.key}-amount`] : [def.key]);
@@ -851,7 +853,7 @@ export class Lab {
     const patch: Patch = {};
     const pickOne = <T>(list: readonly T[]): T | undefined => list[Math.floor(Math.random() * list.length)];
     const within = (min: number, max: number, step: number) => Math.round((min + Math.random() * (max - min)) / step) * step;
-    for (const def of sceneParams[state.scene]) {
+    for (const def of sceneDefs[state.scene].params) {
       if (def.steady) continue;
       switch (def.kind) {
         case "range":

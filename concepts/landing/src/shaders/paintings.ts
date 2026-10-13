@@ -1,4 +1,5 @@
-// The painting scenes (wave, starry): flow-map advection along the brushstroke field.
+// The painting scenes (wave, starry): flow-map advection along the brushstroke field. Both scene
+// modules include this whole module as their `glsl` and differ only in the entry they name.
 
 export const paintings = `
 // Two-phase flow-map advection: paint slides along uFlow and cross-fades back to its origin
@@ -52,7 +53,7 @@ float spray(vec2 b, float t, float amount) {
   return acc;
 }
 
-Shade sceneWave(vec2 uv, float t) {
+Shade sceneWave(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
   bool paper = uParams[5] > 0.5;
   // On the loading page the crest can gather as the bar fills and break when it completes.
@@ -114,7 +115,7 @@ float starPulse(vec2 b, float t) {
 }
 
 // Starry knobs: 0 swirl, 1 pulse, 2 stir, 3 sway, 4 windows.
-Shade sceneStarry(vec2 uv, float t) {
+Shade sceneStarry(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
   float aspect = uImageSize.x / uImageSize.y;
   vec2 base = coverUV(uv, 1.03, uPointer * 0.006 * m);

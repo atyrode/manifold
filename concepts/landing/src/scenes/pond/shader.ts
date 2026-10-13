@@ -1,8 +1,8 @@
 // The pond scene: water, floor, koi, lilies, foliage, sun and canopy.
 
-import { CANOPY_MARGIN } from "../decor.ts";
+import { CANOPY_MARGIN } from "../../decor.ts";
 
-export const pond = `
+export const pondGlsl = `
 // One layer of animated cellular light: bright where neighbouring cells meet.
 float causticLayer(vec2 x, float t) {
   vec2 i = floor(x);
@@ -89,17 +89,17 @@ vec3 padState(float fi, float aspect, float tm, vec2 flow, float turbulence, flo
   return vec3(mod(travelled + span * 0.5, span) - span * 0.5, radius);
 }
 
-// Pond knobs (params.ts order): 0 koi, 1 swim, 2 follow, 3 caustics, 4 rays, 5 sunPower, 6 sunX,
+// Pond knobs (index.ts order): 0 koi, 1 swim, 2 follow, 3 caustics, 4 rays, 5 sunPower, 6 sunX,
 // 7 sunY, 8 lilies, 9 ripples, 10 lilyDrift, 11 lilySeed, 12 tether, 13 depth, 14 floorType,
 // 15 grain, 16 floorMoss, 17 floorTint, 18 weeds, 19 plants, 20 plantStyle, 21-24 edge lushness,
 // 25 bushiness, 26-28 species, 29 vines, 30 flowers, 31 grass, 32 plantSeed, 33 canopy,
 // 34 canopySoft, 35 canopySeed, 36 wind, 37 current, 38 currentDir, 39 turbulence, 40 petals,
 // 41 boat, 42 stone, 43 stoneX, 44 stoneY, 45 moss.
 
-// One texel of the plant sheet, exactly as painted: material codes must never be interpolated.
+// One texel of the plant sheet (uSim0), exactly as painted: material codes must never be interpolated.
 vec4 decorTexel(vec2 at) {
-  ivec2 size = textureSize(uDecor, 0);
-  return texelFetch(uDecor, clamp(ivec2(at * vec2(size)), ivec2(0), size - 1), 0);
+  ivec2 size = textureSize(uSim0, 0);
+  return texelFetch(uSim0, clamp(ivec2(at * vec2(size)), ivec2(0), size - 1), 0);
 }
 
 // A paper boat seen from above, in its own frame (x along the keel, unit = half its length):
@@ -493,13 +493,13 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   float canopySpan = 1.0 + 2.0 * ${CANOPY_MARGIN.toFixed(2)};
   float softness = uParams[34];
   float shadeAmount = 0.0;
-  if (uCanopyOn > 0.5) {
+  if (uSimOn.y > 0.5) {
     vec2 canopyUV = (uv + sunwardUV * (0.05 + 0.08 * softness) + sway * 2.2 + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan;
-    float leaves = textureLod(uCanopy, canopyUV, 0.3 + softness * 2.6).r;
+    float leaves = textureLod(uSim1, canopyUV, 0.3 + softness * 2.6).r;
     shadeAmount = max(shadeAmount, smoothstep(0.25 - 0.12 * softness, 0.6, leaves) * (0.85 - 0.25 * softness));
   }
-  if (uDecorOn > 0.5 && style != 1) {
-    vec4 hanging = textureLod(uDecor, uv + sunwardUV * 0.035 + sway * 1.6, 2.5);
+  if (uSimOn.x > 0.5 && style != 1) {
+    vec4 hanging = textureLod(uSim0, uv + sunwardUV * 0.035 + sway * 1.6, 2.5);
     shadeAmount = max(shadeAmount, smoothstep(0.08, 0.6, hanging.r) * 0.8);
   }
   col *= 1.0 - 0.6 * shadeAmount;
@@ -516,8 +516,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     for (int i = 0; i < 24; i++) {
       at += marchStep;
       float block = 0.0;
-      if (uDecorOn > 0.5) block = textureLod(uDecor, at + sway, 2.0).r;
-      if (uCanopyOn > 0.5) block = max(block, smoothstep(0.15, 0.6, textureLod(uCanopy, (at + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan, 2.5).r));
+      if (uSimOn.x > 0.5) block = textureLod(uSim0, at + sway, 2.0).r;
+      if (uSimOn.y > 0.5) block = max(block, smoothstep(0.15, 0.6, textureLod(uSim1, (at + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan, 2.5).r));
       lit += (1.0 - block) * weight;
       total += weight;
       weight *= 0.93;
@@ -534,7 +534,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   col += vec3(1.0, 0.97, 0.85) * glare * 0.7;
   o.ink = max(o.ink, glare);
 
-  if (uDecorOn > 0.5 && style != 2) {
+  if (uSimOn.x > 0.5 && style != 2) {
     // Each layer sways by its own amount: front to back, take the first texel that belongs to
     // the layer whose offset found it, so overlapping leaves never swap from frame to frame.
     vec4 leaf = vec4(0.0);

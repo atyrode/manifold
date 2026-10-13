@@ -134,6 +134,17 @@ export class SheetPainter {
     );
   }
 
+  /**
+   * Free the texture and drop any painting in progress. Back to the unrequested key, so a worker
+   * reply still in flight no longer matches and never uploads into the deleted texture.
+   */
+  dispose(): void {
+    this.#key = "";
+    this.#local = undefined;
+    if (this.#texture) this.#gl.deleteTexture(this.#texture);
+    this.#texture = undefined;
+  }
+
   /** Paint on the page for up to `budget` milliseconds, when the worker could not. */
   advance(budget: number): void {
     const job = this.#local;

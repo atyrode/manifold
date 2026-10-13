@@ -1,17 +1,11 @@
 import { artworks, floodBackdrop, flowField, raster, type Artwork, type Raster } from "./artwork.ts";
 import { constellationUniforms } from "./constellations.ts";
-import { CANOPY_MARGIN, canopyKey, decorKey, type CanopyConfig, type DecorConfig } from "./decor.ts";
-import { SheetPainter } from "./sheet.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
-import { fragmentSource, vertexSource } from "./shaders/index.ts";
+import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import type { PointerState, SceneSim } from "./scenes/types.ts";
+import { fragmentSourceFor, vertexSource } from "./shaders/index.ts";
+import type { Params } from "./state.ts";
 
-/** Milliseconds per frame a sheet may spend painting: more while nothing is shown yet. */
-const SHEET_BUDGET_MS = 6;
-const FIRST_SHEET_BUDGET_MS = 24;
-
-/** Order is the shader's `uScene` index. */
-export const sceneIds = ["wave", "starry", "orbit", "swell", "pond"] as const;
-export type SceneId = (typeof sceneIds)[number];
 export const ditherIds = ["bayer8", "bayer4", "ign", "none"] as const;
 export type DitherId = (typeof ditherIds)[number];
 export const colorIds = ["accent", "mono", "full"] as const;
@@ -31,27 +25,45 @@ export interface RenderSettings {
   bg: string;
   ink: string;
   accent: string;
-  /** The current scene's knobs, in `sceneParams` order. */
+  /** The current scene's knobs as the shader reads them, in the scene's `params` order. */
   params: readonly number[];
+  /** The current scene's raw knobs, keyed as in the URL, for its simulation. */
+  knobs: Params;
   followPointer: boolean;
   view: ViewId;
-  /** The pond's border plants; undefined when absent. */
-  decor: DecorConfig | undefined;
-  /** The pond's overhead canopy; undefined when absent. */
-  canopy: CanopyConfig | undefined;
 }
 
 /** Must match `MAX_STARS` in the fragment shader. */
 const MAX_STARS = 16;
+/** Texture units: 0..2 the artwork (image, backdrop, flow), then `uSim0..uSim3`. */
+const SIM_UNIT = 3;
+const SIM_SLOTS = 4;
+/** Scene-clock time of a trigger or press that has not happened. */
+const NEVER = -1e4;
+/** Presses on these belong to the lab or the page's own controls, not to the scene. */
+const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [role=switch]";
 
 const uniformNames = [
-  "uRes", "uTime", "uScene", "uDither", "uColor", "uLevels", "uMotion", "uPointer",
+  "uRes", "uTime", "uDither", "uColor", "uLevels", "uMotion", "uPointer", "uMouse",
   "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
   "uStars", "uStarCount", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
-  "uProgress", "uTriggers", "uDecor", "uDecorOn", "uCanopy", "uCanopyOn",
+  "uProgress", "uTriggers", "uSim0", "uSim1", "uSim2", "uSim3", "uSimOn",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
+
+/** One scene's linked program and where its uniforms live. */
+interface SceneProgram {
+  program: WebGLProgram;
+  uniforms: Record<UniformName, WebGLUniformLocation | null>;
+}
+
+/** The scene being drawn: its program (undefined when it failed to build) and its simulation. */
+interface ActiveScene {
+  id: SceneId;
+  program: SceneProgram | undefined;
+  sim: SceneSim | undefined;
+}
 
 interface LoadedArt {
   texture: WebGLTexture;
@@ -63,13 +75,27 @@ interface LoadedArt {
 
 export class RendererError extends Error {}
 
-function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
+/**
+ * The info log with the offending source line under each `ERROR: 0:<line>:`, since the scene's
+ * fragment source is generated and otherwise never seen.
+ */
+function annotate(log: string, source: string): string {
+  const lines = source.split("\n");
+  return log.split("\n").map((entry) => {
+    const line = /^ERROR: \d+:(\d+):/.exec(entry)?.[1];
+    return line === undefined ? entry : `${entry}\n    > ${(lines[Number(line) - 1] ?? "").trim()}`;
+  }).join("\n");
+}
+
+function compile(gl: WebGL2RenderingContext, type: number, source: string, what: string): WebGLShader {
   const shader = gl.createShader(type);
-  if (!shader) throw new RendererError("could not allocate shader");
+  if (!shader) throw new RendererError(`${what}: could not allocate shader`);
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new RendererError(gl.getShaderInfoLog(shader) ?? "shader compile failed");
+    const log = gl.getShaderInfoLog(shader) ?? "";
+    gl.deleteShader(shader);
+    throw new RendererError(`${what}: shader compile failed\n${annotate(log, source)}`);
   }
   return shader;
 }
@@ -95,10 +121,27 @@ const starsByScene: Readonly<Record<string, { data: Float32Array; count: number 
 export class DitherRenderer {
   readonly #gl: WebGL2RenderingContext;
   readonly #canvas: HTMLCanvasElement;
-  readonly #uniforms: Record<UniformName, WebGLUniformLocation | null>;
+  /** Shared by every scene's program. */
+  readonly #vertex: WebGLShader;
+  /** Each scene's program, built on first use; undefined once it has failed (logged). */
+  readonly #programs = new Map<SceneId, SceneProgram | undefined>();
+  #scene: ActiveScene | undefined;
   readonly #textures = new Map<string, LoadedArt>();
   readonly #blank: WebGLTexture;
+  /** Smoothed parallax (-1..1 over the window), eased toward the target `tx`, `ty`. */
   readonly #pointer = { x: 0, y: 0, tx: 0, ty: 0 };
+  /** The raw pointer for `uMouse` and simulations; mapped to stage uv once per frame. */
+  readonly #mouse = {
+    clientX: window.innerWidth / 2,
+    clientY: window.innerHeight / 2,
+    inside: false,
+    down: false,
+    /** Edges since the previous frame. */
+    pressed: false,
+    released: false,
+    /** Scene-clock time of the last press that started over the page. */
+    pressedAt: NEVER,
+  };
   #settings: RenderSettings;
   /** Scene clock in seconds; stands still while paused. */
   #clock = 0;
@@ -109,11 +152,9 @@ export class DitherRenderer {
   #frozen: boolean;
   readonly #params = new Float32Array(MAX_PARAMS);
   /** Shader time each trigger slot last fired; far in the past when idle. */
-  readonly #triggers = new Float32Array(MAX_TRIGGERS).fill(-1e4);
+  readonly #triggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
+  /** The scene the triggers and the last press belong to: both reset when it changes. */
   #triggerScene = "";
-  /** The pond's border-plant and canopy sheets, repainted when their settings or the frame's shape change. */
-  readonly #decor: SheetPainter;
-  readonly #canopy: SheetPainter;
   /** Loading-page progress 0..1, or -1 off the loading page. */
   #progress = -1;
   /** WebGL version and renderer, for diagnosing remote reports. */
@@ -128,42 +169,49 @@ export class DitherRenderer {
     this.#frozen = frozen;
     this.#params.set(settings.params.slice(0, MAX_PARAMS));
 
-    const program = gl.createProgram();
-    gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertexSource));
-    gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, fragmentSource));
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      throw new RendererError(gl.getProgramInfoLog(program) ?? "program link failed");
-    }
-    gl.useProgram(program);
+    this.#vertex = compile(gl, gl.VERTEX_SHADER, vertexSource, "vertex");
     gl.bindVertexArray(gl.createVertexArray());
-
-    this.#uniforms = Object.fromEntries(
-      uniformNames.map((name) => [name, gl.getUniformLocation(program, name)]),
-    ) as Record<UniformName, WebGLUniformLocation | null>;
-
-    const u = this.#uniforms;
-    const figures = constellationUniforms;
-    gl.uniform4fv(u.uConStars, figures.stars);
-    gl.uniform1fv(u.uConBright, figures.brightness);
-    gl.uniform2fv(u.uConLines, figures.lines);
-    gl.uniform1i(u.uConStarCount, figures.starCount);
-    gl.uniform1i(u.uConLineCount, figures.lineCount);
-    gl.uniform1i(u.uConMarkStar, figures.markStar);
-    gl.uniform1i(u.uConMarkLine, figures.markLine);
     const debug = gl.getExtension("WEBGL_debug_renderer_info");
     const gpu: unknown = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
     this.glInfo = `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`;
 
     this.#blank = gl.createTexture();
-    this.#decor = new SheetPainter(gl);
-    this.#canopy = new SheetPainter(gl);
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
 
+    const mouse = this.#mouse;
+    const track = (event: PointerEvent) => {
+      mouse.clientX = event.clientX;
+      mouse.clientY = event.clientY;
+      mouse.inside = !(event.target instanceof Element) || event.target.closest(CONTROLS) === null;
+    };
+    const lift = () => {
+      if (!mouse.down) return;
+      mouse.down = false;
+      mouse.released = true;
+    };
     window.addEventListener("pointermove", (event) => {
       this.#pointer.tx = (event.clientX / window.innerWidth) * 2 - 1;
       this.#pointer.ty = 1 - (event.clientY / window.innerHeight) * 2;
+      track(event);
+    });
+    window.addEventListener("pointerdown", (event) => {
+      track(event);
+      // Only presses that start over the page count: the lab and page controls keep theirs.
+      if (!event.isPrimary || event.button !== 0 || !mouse.inside) return;
+      mouse.down = true;
+      mouse.pressed = true;
+      mouse.pressedAt = this.#clock;
+    });
+    window.addEventListener("pointerup", (event) => {
+      if (event.isPrimary && event.button === 0) lift();
+    });
+    window.addEventListener("pointercancel", (event) => {
+      if (event.isPrimary) lift();
+    });
+    // Leaving the window (no related target) leaves the page too.
+    window.addEventListener("pointerout", (event) => {
+      if (event.relatedTarget === null) mouse.inside = false;
     });
     for (const art of Object.values(artworks)) this.#load(art);
   }
@@ -189,7 +237,8 @@ export class DitherRenderer {
     this.#settings = settings;
     if (settings.scene !== this.#triggerScene) {
       this.#triggerScene = settings.scene;
-      this.#triggers.fill(-1e4);
+      this.#triggers.fill(NEVER);
+      this.#mouse.pressedAt = NEVER;
     }
     this.#params.fill(0);
     this.#params.set(settings.params.slice(0, MAX_PARAMS));
@@ -248,21 +297,74 @@ export class DitherRenderer {
     });
   }
 
-  /** Request the pond's sheets for the current settings and frame shape, and paint a little of each. */
-  #paintSheets(decor: DecorConfig | undefined, canopy: CanopyConfig | undefined, aspect: number): void {
-    const shape = aspect.toFixed(2);
-    if (decor) {
-      const width = 2048;
-      this.#decor.request(`${decorKey(decor)}|${shape}`, width, Math.max(1, Math.round(width / aspect)), { kind: "decor", config: decor });
-      this.#decor.advance(this.#decor.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS);
+  /** Compile and link a scene's program; throws RendererError (with the info log) on failure. */
+  #link(id: SceneId): SceneProgram {
+    const gl = this.#gl;
+    const fragment = compile(gl, gl.FRAGMENT_SHADER, fragmentSourceFor(sceneDefs[id]), `scene ${id}`);
+    const program = gl.createProgram();
+    gl.attachShader(program, this.#vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    // Only flagged while attached: freed together with the program.
+    gl.deleteShader(fragment);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(program) ?? "";
+      gl.deleteProgram(program);
+      throw new RendererError(`scene ${id}: program link failed\n${log}`);
     }
-    if (canopy) {
-      const width = 768;
-      // Leaves are sized against the visible frame, which is 1/span of this sheet.
-      const span = 1 + 2 * CANOPY_MARGIN;
-      this.#canopy.request(`${canopyKey(canopy)}|${shape}`, width, Math.max(1, Math.round(width / aspect)), { kind: "canopy", config: canopy, span });
-      this.#canopy.advance(this.#canopy.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS);
+    gl.useProgram(program);
+    const uniforms = Object.fromEntries(
+      uniformNames.map((name) => [name, gl.getUniformLocation(program, name)]),
+    ) as Record<UniformName, WebGLUniformLocation | null>;
+    // Constant for the program's lifetime: the constellation figures (only orbit reads them; the
+    // other programs drop the uniforms) and the texture unit of every sampler.
+    const figures = constellationUniforms;
+    gl.uniform4fv(uniforms.uConStars, figures.stars);
+    gl.uniform1fv(uniforms.uConBright, figures.brightness);
+    gl.uniform2fv(uniforms.uConLines, figures.lines);
+    gl.uniform1i(uniforms.uConStarCount, figures.starCount);
+    gl.uniform1i(uniforms.uConLineCount, figures.lineCount);
+    gl.uniform1i(uniforms.uConMarkStar, figures.markStar);
+    gl.uniform1i(uniforms.uConMarkLine, figures.markLine);
+    gl.uniform1i(uniforms.uImage, 0);
+    gl.uniform1i(uniforms.uBackdrop, 1);
+    gl.uniform1i(uniforms.uFlow, 2);
+    [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) => gl.uniform1i(location, SIM_UNIT + slot));
+    return { program, uniforms };
+  }
+
+  /** Leave the current scene (disposing its simulation) and enter `id`, building its program once. */
+  #enter(id: SceneId): ActiveScene {
+    this.#scene?.sim?.dispose();
+    if (!this.#programs.has(id)) {
+      let built: SceneProgram | undefined;
+      try {
+        built = this.#link(id);
+      } catch (error: unknown) {
+        console.error(`evt=landing.renderer.scene_failed scene=${id}`, error);
+      }
+      this.#programs.set(id, built);
     }
+    const program = this.#programs.get(id);
+    this.#scene = { id, program, sim: program ? sceneDefs[id].sim?.(this.#gl) : undefined };
+    return this.#scene;
+  }
+
+  /** The pointer in stage uv for this frame; consumes the press and release edges. */
+  #pointerState(): PointerState {
+    const mouse = this.#mouse;
+    const rect = this.#canvas.getBoundingClientRect();
+    const state: PointerState = {
+      x: (mouse.clientX - rect.left) / Math.max(rect.width, 1),
+      y: 1 - (mouse.clientY - rect.top) / Math.max(rect.height, 1),
+      inside: mouse.inside,
+      down: mouse.down,
+      pressed: mouse.pressed,
+      released: mouse.released,
+    };
+    mouse.pressed = false;
+    mouse.released = false;
+    return state;
   }
 
   #draw(now: number): void {
@@ -270,7 +372,8 @@ export class DitherRenderer {
     const dt = this.#lastFrame === 0 ? 0 : Math.min((now - this.#lastFrame) / 1000, 0.1);
     this.#lastFrame = now;
     if (dt > 0) this.fps = this.fps === 0 ? 1 / dt : this.fps * 0.92 + (1 / dt) * 0.08;
-    if (!this.#paused && !this.#frozen) this.#clock += dt;
+    const step = this.#paused || this.#frozen ? 0 : dt;
+    this.#clock += step;
     const s = this.#settings;
     const width = Math.max(1, Math.ceil(this.#canvas.clientWidth / s.pixel));
     const height = Math.max(1, Math.ceil(this.#canvas.clientHeight / s.pixel));
@@ -278,14 +381,40 @@ export class DitherRenderer {
       this.#canvas.width = width;
       this.#canvas.height = height;
     }
-    gl.viewport(0, 0, width, height);
 
     const p = this.#pointer;
     const tx = s.followPointer ? p.tx : 0;
     const ty = s.followPointer ? p.ty : 0;
     p.x += (tx - p.x) * 0.04;
     p.y += (ty - p.y) * 0.04;
+    const pointer = this.#pointerState();
 
+    const current = this.#scene;
+    const scene = current && current.id === s.scene ? current : this.#enter(s.scene);
+    const program = scene.program;
+    if (!program) {
+      gl.viewport(0, 0, width, height);
+      gl.clearColor(...rgb(s.bg), 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      return;
+    }
+    const motion = this.#frozen ? 0 : s.motion;
+    // Simulations upload (and so bind) their textures: step them before binding this frame's units.
+    const simTextures = scene.sim?.frame({
+      dt: step,
+      time: this.#clock,
+      motion,
+      width,
+      height,
+      aspect: width / height,
+      values: s.params,
+      params: s.knobs,
+      triggers: this.#triggers,
+      pointer,
+    }) ?? [];
+
+    gl.viewport(0, 0, width, height);
+    gl.useProgram(program.program);
     const art = artworks[s.scene];
     const loaded = art ? this.#textures.get(art.url) : undefined;
     const textures = [loaded?.texture, loaded?.backdrop, loaded?.flow];
@@ -293,30 +422,24 @@ export class DitherRenderer {
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, texture ?? this.#blank);
     });
+    for (let slot = 0; slot < SIM_SLOTS; slot++) {
+      gl.activeTexture(gl.TEXTURE0 + SIM_UNIT + slot);
+      gl.bindTexture(gl.TEXTURE_2D, simTextures[slot] ?? this.#blank);
+    }
     const stars = starsByScene[s.scene] ?? noStars;
-    this.#paintSheets(s.decor, s.canopy, width / height);
-    const decor = s.decor ? this.#decor.texture : undefined;
-    const canopy = s.canopy ? this.#canopy.texture : undefined;
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, decor ?? this.#blank);
-    gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, canopy ?? this.#blank);
 
-    const u = this.#uniforms;
+    const u = program.uniforms;
     gl.uniform2f(u.uRes, width, height);
     gl.uniform1f(u.uTime, this.#clock);
-    gl.uniform1i(u.uScene, sceneIds.indexOf(s.scene));
     gl.uniform1i(u.uDither, ditherIds.indexOf(s.dither));
     gl.uniform1i(u.uColor, colorIds.indexOf(s.color));
     gl.uniform1f(u.uLevels, s.levels);
-    gl.uniform1f(u.uMotion, this.#frozen ? 0 : s.motion);
+    gl.uniform1f(u.uMotion, motion);
     gl.uniform2f(u.uPointer, p.x, p.y);
+    gl.uniform4f(u.uMouse, pointer.x, pointer.y, pointer.down ? 1 : 0, this.#mouse.pressedAt);
     gl.uniform3f(u.uBg, ...rgb(s.bg));
     gl.uniform3f(u.uInk, ...rgb(s.ink));
     gl.uniform3f(u.uAccent, ...rgb(s.accent));
-    gl.uniform1i(u.uImage, 0);
-    gl.uniform1i(u.uBackdrop, 1);
-    gl.uniform1i(u.uFlow, 2);
     gl.uniform2f(u.uImageSize, loaded?.size[0] ?? 1, loaded?.size[1] ?? 1);
     gl.uniform2f(u.uFocus, art?.focus[0] ?? 0.5, art?.focus[1] ?? 0.5);
     gl.uniform1f(u.uReveal, !art ? 1 : loaded ? Math.min(1, (now - loaded.loadedAt) / 1400) : 0);
@@ -326,10 +449,7 @@ export class DitherRenderer {
     gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     gl.uniform1f(u.uProgress, this.#progress);
     gl.uniform1fv(u.uTriggers, this.#triggers);
-    gl.uniform1i(u.uDecor, 3);
-    gl.uniform1f(u.uDecorOn, decor ? 1 : 0);
-    gl.uniform1i(u.uCanopy, 4);
-    gl.uniform1f(u.uCanopyOn, canopy ? 1 : 0);
+    gl.uniform4f(u.uSimOn, simTextures[0] ? 1 : 0, simTextures[1] ? 1 : 0, simTextures[2] ? 1 : 0, simTextures[3] ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }

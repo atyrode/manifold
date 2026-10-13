@@ -1,6 +1,6 @@
 // The swell scene: open-ocean waves.
 
-export const swell = `
+export const swellGlsl = `
 float swellHeight(vec2 w, float t, float chop) {
   float s = 0.0;
   s += sin(dot(w, vec2(0.9, 0.42)) * 1.3 + t * 1.05) * 0.5;
@@ -11,7 +11,7 @@ float swellHeight(vec2 w, float t, float chop) {
 }
 
 // Swell knobs: 0 height, 1 chop, 2 moon, 3 stars.
-Shade sceneSwell(vec2 uv, float t) {
+Shade sceneSwell(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
   float aspect = uRes.x / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0) + uPointer * vec2(0.012, 0.006) * m;

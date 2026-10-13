@@ -1,7 +1,8 @@
 // Page controller: owns the current setup (from the URL), drives the renderer and the page on top,
 // and hands the lab a host interface. Every change is a URL query applied here.
 import { Lab } from "./lab.ts";
-import { DitherRenderer, sceneIds } from "./renderer.ts";
+import { DitherRenderer } from "./renderer.ts";
+import { sceneDefs, sceneIds } from "./scenes/index.ts";
 import {
   accentOf,
   carryLook,
@@ -10,7 +11,6 @@ import {
   readParams,
   readState,
   renderSettings,
-  sceneCredit,
   serialise,
   type LabState,
   type ModeId,
@@ -64,7 +64,7 @@ function apply(query: URLSearchParams): void {
   for (const node of document.querySelectorAll<HTMLElement>("[data-show]")) {
     node.hidden = !(node.dataset.show ?? "").split(" ").includes(state.mode);
   }
-  credit.textContent = sceneCredit[state.scene];
+  credit.textContent = sceneDefs[state.scene].credit ?? "";
   // Backdrop focus aids: blur and dim the scene behind the page.
   stage.style.filter = state.dim > 0 || state.blur > 0 ? `blur(${(state.blur * 12).toFixed(1)}px) brightness(${(1 - state.dim * 0.85).toFixed(2)})` : "";
   // Scale up slightly while blurred so the soft edges stay off screen.

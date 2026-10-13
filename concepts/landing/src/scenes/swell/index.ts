@@ -1,0 +1,26 @@
+// A moonlit sea rolling toward the horizon.
+import { range, toggle } from "../../params.ts";
+import type { SceneDef } from "../types.ts";
+import { swellGlsl } from "./shader.ts";
+
+export const swellScene: SceneDef = {
+  id: "swell",
+  title: "Swell",
+  blurb: "A moonlit sea rolling toward the horizon.",
+  accent: "#4c6ef5",
+  // The shader indexes uParams directly in this order: append only.
+  params: [
+    range("sea", "height", "swell", 0.5, "Height of the long swells."),
+    range("sea", "chop", "chop", 0.5, "Small, fast waves on top of the swell."),
+    range("sky", "moon", "moon", 0.5, "Moon size."),
+    range("sky", "stars", "stars", 0.35, "How many stars."),
+    toggle("manifold", "mmoon", "M on the moon", false, "The moon's dark seas form the Manifold M."),
+  ],
+  groups: {
+    sea: { title: "Sea", blurb: "The swell and its surface chop." },
+    sky: { title: "Sky", blurb: "Moon and stars." },
+    manifold: { title: "Manifold mark", blurb: "Ways the M can live in this night." },
+  },
+  glsl: swellGlsl,
+  entry: "sceneSwell",
+};

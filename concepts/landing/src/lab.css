@@ -264,14 +264,15 @@ body.lab-open .lab-opener { display: none; }
 .fire:hover { border-color: var(--accent); }
 .fire:active { color: var(--bg); background: var(--accent); }
 
-/* scene cards */
-.scene-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
+/* scene cards: two compact columns, so a dozen or more scenes stay a short, scannable block */
+.scene-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .scene-card {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   align-content: start;
-  gap: 4px 8px;
-  padding: 10px 11px 11px;
+  gap: 3px 7px;
+  min-width: 0;
+  padding: 7px 9px 8px;
   text-align: left;
   background: none;
   border: 1px solid var(--line);
@@ -279,9 +280,19 @@ body.lab-open .lab-opener { display: none; }
 }
 .scene-card:hover { border-color: var(--muted); }
 .scene-card[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.scene-dot { width: 8px; height: 8px; align-self: center; background: var(--dot); }
-.scene-title { color: var(--ink); }
-.scene-blurb { grid-column: 1 / -1; font: 11.5px/1.4 var(--sans); color: var(--muted); }
+.scene-dot { width: 7px; height: 7px; align-self: center; background: var(--dot); }
+.scene-title { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
+/* At most two lines keep the grid compact; the full blurb is the card's tooltip. */
+.scene-blurb {
+  display: -webkit-box;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  font: 11px/1.35 var(--sans);
+  color: var(--muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
 .row input[type="text"] { width: 100%; padding: 7px 9px; background: none; border: 1px solid var(--line); }
 
 /* accent swatches */

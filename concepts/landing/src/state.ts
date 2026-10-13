@@ -1,18 +1,16 @@
 // The lab's state and its URL encoding. Global settings live in `LabState`; the current scene's
 // knobs live in `Params` (a feature also stores `<key>-amount`). URLs carry only non-defaults.
-import type { CanopyConfig, ClumpSpecies, DecorConfig } from "./decor.ts";
-import { effective, MAX_SEED, sceneParams } from "./params.ts";
+import { effective, MAX_SEED } from "./params.ts";
 import {
   colorIds,
   ditherIds,
-  sceneIds,
   viewIds,
   type ColorId,
   type DitherId,
   type RenderSettings,
-  type SceneId,
   type ViewId,
 } from "./renderer.ts";
+import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 
 export const modeIds = ["landing", "loading", "instance", "bare"] as const;
 export type ModeId = (typeof modeIds)[number];
@@ -41,22 +39,6 @@ export interface LabState {
   blur: number;
 }
 
-export const sceneAccent: Record<SceneId, string> = {
-  wave: "#4c6ef5",
-  starry: "#f2c94c",
-  orbit: "#5c7cfa",
-  swell: "#4c6ef5",
-  pond: "#ff7a2f",
-};
-
-export const sceneCredit: Record<SceneId, string> = {
-  wave: "after Katsushika Hokusai, The Great Wave off Kanagawa, c. 1831 — public domain",
-  starry: "after Vincent van Gogh, The Starry Night, 1889 — public domain",
-  orbit: "",
-  swell: "",
-  pond: "",
-};
-
 export const defaults: LabState = {
   scene: "wave",
   mode: "landing",
@@ -73,14 +55,10 @@ export const defaults: LabState = {
   blur: 0,
 };
 
-/** Scenes that start from a different look (the pond is designed in full colour). */
-const sceneDefaults: Partial<Record<SceneId, Partial<Pick<LabState, "color" | "levels">>>> = {
-  pond: { color: "full", levels: 4 },
-};
-
 /** The defaults that apply to a scene: the global ones with its own look on top. */
 export function defaultsFor(scene: SceneId): LabState {
-  return { ...defaults, scene, ...sceneDefaults[scene] };
+  const look = sceneDefs[scene].look;
+  return { ...defaults, scene, color: look?.color ?? defaults.color, levels: look?.levels ?? defaults.levels };
 }
 
 /** Keep a look knob following the scene's own default unless it was deliberately changed. */
@@ -103,15 +81,15 @@ export interface Palette {
 }
 
 const NIGHT: Palette = { bg: "#07080b", ink: "#e8e6df", muted: "#8b8a85", line: "rgb(232 230 223 / 0.14)" };
-/** The wave's "ink on paper" theme: the print's paper with dark ink. */
+/** The "paper" theme (the wave's ink on paper): the print's paper with dark ink. */
 const PAPER: Palette = { bg: "#ebe2cc", ink: "#1b2235", muted: "#5d5a52", line: "rgb(27 34 53 / 0.18)" };
 
 export function palette(state: LabState, params: Params): Palette {
-  return state.scene === "wave" && (params.paper ?? 0) > 0.5 ? PAPER : NIGHT;
+  return sceneDefs[state.scene].theme?.(params) === "paper" ? PAPER : NIGHT;
 }
 
 export function accentOf(state: LabState): string {
-  return state.accent || sceneAccent[state.scene];
+  return state.accent || sceneDefs[state.scene].accent;
 }
 
 function pick<T extends string>(allowed: readonly T[], value: string | null, fallback: T): T {
@@ -146,7 +124,7 @@ export function readState(q: URLSearchParams): LabState {
 
 export function readParams(scene: SceneId, q: URLSearchParams): Params {
   const out: Params = {};
-  for (const def of sceneParams[scene]) {
+  for (const def of sceneDefs[scene].params) {
     switch (def.kind) {
       case "range":
         out[def.key] = readNumber(q.get(def.key), def.min, def.max, def.value);
@@ -176,34 +154,6 @@ export function readParams(scene: SceneId, q: URLSearchParams): Params {
     }
   }
   return out;
-}
-
-/** The pond's border plants, as the renderer paints them; undefined when absent. */
-function decorConfig(state: LabState, params: Params): DecorConfig | undefined {
-  if (state.scene !== "pond" || (params.plants ?? 0) < 0.5) return undefined;
-  const toggles: Record<ClumpSpecies, string> = { monstera: "monstera", fern: "ferns", banana: "banana" };
-  const on = (key: string) => (params[key] ?? 0) > 0.5;
-  return {
-    reach: params["plants-amount"] ?? 0.45,
-    sides: edgeLushness(params),
-    kinds: (Object.keys(toggles) as ClumpSpecies[]).filter((species) => (params[toggles[species]] ?? 1) > 0.5),
-    vines: on("vines") ? params["vines-amount"] ?? 0.4 : 0,
-    flowers: on("flowers") ? params["flowers-amount"] ?? 0.35 : 0,
-    grass: on("grass") ? params["grass-amount"] ?? 0.4 : 0,
-    bushiness: params.bushiness ?? 0.55,
-    seed: params.plantSeed ?? 0,
-  };
-}
-
-/** How lush each edge of the pond is: top, right, bottom, left. */
-function edgeLushness(params: Params): [number, number, number, number] {
-  return [params.lushTop ?? 0.6, params.lushRight ?? 0.6, params.lushBottom ?? 0.6, params.lushLeft ?? 0.6];
-}
-
-/** The pond's overhead canopy; undefined when absent. */
-function canopyConfig(state: LabState, params: Params): CanopyConfig | undefined {
-  if (state.scene !== "pond" || (params.canopy ?? 0) < 0.5) return undefined;
-  return { coverage: params["canopy-amount"] ?? 0.45, sides: edgeLushness(params), seed: params.canopySeed ?? 0 };
 }
 
 /** Each knob's default, keyed as readParams keys them. */
@@ -239,10 +189,9 @@ export function renderSettings(state: LabState, params: Params): RenderSettings 
     bg: colours.bg,
     ink: colours.ink,
     accent: accentOf(state),
-    params: sceneParams[state.scene].map((def) => effective(def, params)),
+    params: sceneDefs[state.scene].params.map((def) => effective(def, params)),
+    knobs: params,
     followPointer: state.mouse === "follow",
     view: state.view,
-    decor: decorConfig(state, params),
-    canopy: canopyConfig(state, params),
   };
 }

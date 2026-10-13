@@ -1,6 +1,6 @@
 // The orbit scene: planet, rings, moons, aurora, constellations, city lights.
 
-export const orbit = `
+export const orbitGlsl = `
 // Real constellations, plus the optional Manifold asterism, drifting with the sky.
 vec2 constellations(vec2 sky, float aspect, float px, bool figures, bool lines, bool mark, float tm) {
   float star = 0.0;

@@ -14,13 +14,13 @@ precision highp float;
 
 uniform vec2 uRes;
 uniform float uTime;
-uniform int uScene;      // index into sceneIds
 uniform int uDither;     // 0 bayer8, 1 bayer4, 2 interleaved gradient noise, 3 none
 uniform int uColor;      // 0 accent, 1 mono, 2 full
 uniform int uView;       // 0 dithered, 1 source, 2 split (source left)
 uniform float uLevels;
 uniform float uMotion;
 uniform vec2 uPointer;   // -1..1, smoothed
+uniform vec4 uMouse;     // raw pointer: xy in uv (y up), z 1 while pressed, w uTime of the last press (-1e4: none)
 uniform float uProgress; // loading page progress 0..1, -1 elsewhere
 uniform vec3 uBg;
 uniform vec3 uInk;
@@ -42,10 +42,11 @@ uniform int uConLineCount;
 uniform int uConMarkStar;  // first star / line of the Manifold asterism
 uniform int uConMarkLine;
 uniform float uTriggers[MAX_TRIGGERS]; // uTime when each "now" button fired
-uniform sampler2D uDecor;  // pond border plants: R cover, G shading, B species/layer
-uniform float uDecorOn;
-uniform sampler2D uCanopy; // overhead canopy coverage over uv -0.25..1.25
-uniform float uCanopyOn;
+uniform sampler2D uSim0;  // the scene simulation's textures (see scenes/types.ts SceneSim)
+uniform sampler2D uSim1;
+uniform sampler2D uSim2;
+uniform sampler2D uSim3;
+uniform vec4 uSimOn;      // 1 in each component whose uSim texture the simulation supplied
 
 out vec4 outColor;
 
