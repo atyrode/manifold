@@ -5,7 +5,9 @@ import {
   projectJson,
   type ActionResultProjection,
   type Cap,
+  type CreatorDef,
   type PluginManifest,
+  type SettingDef,
   type StreamDescriptor,
 } from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
@@ -1396,5 +1398,156 @@ describe("assembleRoster quarantine", () => {
         hold,
       ),
     ).toThrow(AssemblyError);
+  });
+});
+
+/**
+ * CREATORS (#1079): offers to make something, declared as data and run by the shell's picker.
+ * Assembly owes them what it owes a section — a global claim and an own-setting gate — plus the
+ * one check only a creator needs: the door it runs must be an assembled one. Every refusal is
+ * named and attributed to the plugin that made the offer.
+ */
+describe("creators", () => {
+  const creator = (id: string, order: number, fields: Partial<CreatorDef> = {}): CreatorDef => ({
+    id,
+    title: `New ${id}`,
+    icon: "add",
+    order,
+    action: "core.terminals.rename",
+    input: {},
+    ...fields,
+  });
+  const offering = (
+    id: string,
+    creators: readonly CreatorDef[],
+    settings?: readonly SettingDef[],
+  ): PluginDef => ({
+    manifest: manifest({
+      id,
+      contributes: {
+        creators: [...creators],
+        ...(settings === undefined ? {} : { settings: [...settings] }),
+      },
+    }),
+    actions: [],
+  });
+  const refusal = (defs: readonly PluginDef[]): AssemblyError => {
+    try {
+      assembleRoster(defs, NONE);
+    } catch (error) {
+      if (error instanceof AssemblyError) return error;
+      throw error;
+    }
+    throw new Error("assembly composed");
+  };
+  const flag: SettingDef = { id: "offer", title: "Offer", kind: "boolean", default: true };
+
+  test("they come out in declared order across plugins, and may run another plugin's door", () => {
+    const assembly = assembleRoster(
+      [
+        terminals,
+        offering("vendor.late", [creator("second", 2)]),
+        offering(
+          "vendor.early",
+          [creator("first", 1, { setting: "offer", input: { name: "Untitled" } })],
+          [flag],
+        ),
+      ],
+      NONE,
+    );
+    expect(assembly.creators).toEqual([
+      {
+        id: "first",
+        plugin: "vendor.early",
+        title: "New first",
+        icon: "add",
+        order: 1,
+        action: "core.terminals.rename",
+        input: { name: "Untitled" },
+        setting: "offer",
+      },
+      {
+        id: "second",
+        plugin: "vendor.late",
+        title: "New second",
+        icon: "add",
+        order: 2,
+        action: "core.terminals.rename",
+        input: {},
+      },
+    ]);
+  });
+
+  test("two plugins offering one creator id refuse, and both are named", () => {
+    const error = refusal([
+      terminals,
+      offering("vendor.alpha", [creator("thing", 1)]),
+      offering("vendor.beta", [creator("thing", 2)]),
+    ]);
+    expect(error.problems).toContain(
+      'duplicate creator "thing" claimed by: vendor.alpha, vendor.beta',
+    );
+  });
+
+  test("an entry may be gated only on its own plugin's BOOLEAN setting", () => {
+    const choice: SettingDef = {
+      id: "offer",
+      title: "Offer",
+      kind: "enum",
+      values: [{ id: "on", title: "On" }],
+      default: "on",
+    };
+    const gated = [creator("thing", 1, { setting: "offer" })];
+    for (const settings of [undefined, [choice]]) {
+      expect(refusal([terminals, offering("vendor.alpha", gated, settings)]).problems).toContain(
+        'plugin "vendor.alpha" gates creator "thing" on setting "offer", which it does not contribute as a boolean',
+      );
+    }
+    // Another plugin's boolean of the same name answers nothing: the reference is local.
+    expect(
+      refusal([terminals, offering("vendor.other", [], [flag]), offering("vendor.alpha", gated)])
+        .problems,
+    ).toContain(
+      'plugin "vendor.alpha" gates creator "thing" on setting "offer", which it does not contribute as a boolean',
+    );
+  });
+
+  test("an entry whose door nothing assembled refuses, attributed to the plugin that offered it", () => {
+    const offered = offering("vendor.alpha", [
+      creator("thing", 1, { action: "core.terminals.kill" }),
+    ]);
+    for (const defs of [[terminals, offered], [offered]]) {
+      const error = refusal(defs);
+      const reason =
+        'plugin "vendor.alpha" offers creator "thing" through action "core.terminals.kill", which no assembled plugin declares';
+      expect(error.problems).toContain(reason);
+      expect(error.attributed).toContainEqual({ reason, plugins: ["vendor.alpha"] });
+    }
+  });
+
+  test("an entry running a HELD plugin's door is held beside it, never a refused hub", () => {
+    const door: PluginDef = {
+      manifest: manifest({
+        id: "vendor.door",
+        capabilities: ["containers:write"],
+        // `draw` is the shell's: the conflict that quarantines this plugin.
+        contributes: { elements: [{ type: "draw", title: "Not core drawing" }] },
+      }),
+      actions: [RENAME],
+    };
+    const assembly = assembleRoster(
+      [
+        shell,
+        door,
+        offering("vendor.offer", [creator("thing", 1, { action: "vendor.door.rename" })]),
+      ],
+      NONE,
+      { problemPolicy: "hold" },
+    );
+    expect(assembly.roster.find((row) => row.manifest.id === "vendor.offer")?.held).toEqual({
+      reason: "held_by_dependency:vendor.door",
+      by: "vendor.door",
+    });
+    expect(assembly.creators).toEqual([]);
   });
 });

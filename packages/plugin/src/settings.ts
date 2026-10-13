@@ -17,7 +17,9 @@ import type { PluginRoster, SettingDef, SettingRef, SettingValue } from "@manifo
  * ({@link visibleSections}). Dropped, not marked — a preference is not a disable, so there is
  * no tombstone, no placeholder and no seat kept warm. A disabled plugin's row is an absence
  * the workspace owes the reader an explanation for (D4′); a row somebody turned off is one
- * they already know about, and explaining it back to them would be the product arguing.
+ * they already know about, and explaining it back to them would be the product arguing. A
+ * creator (`CreatorDef.setting`) is gated by the same rule at the same seam
+ * ({@link visibleCreators}).
  */
 
 /**
@@ -95,7 +97,7 @@ export function composeSettings(
 }
 
 /**
- * THE ONE ROW RULE: a section that names a setting survives composition only while that setting
+ * THE ONE ROW RULE: a row that names a setting survives composition only while that setting
  * reads true.
  *
  * Generic over the row so the engine's registry, the browser's join and a test's fixture all go
@@ -103,21 +105,49 @@ export function composeSettings(
  * loop — one rule, one implementation, and a row's fate is a property of the composition rather
  * than of whichever list happened to be built last (docs/CONTRACTS.md §One authoritative implementation).
  *
- * A section naming a setting NO row answers is KEPT. Assembly already refuses a manifest that
+ * A row naming a setting NO row answers is KEPT. Assembly already refuses a manifest that
  * gates a row on a setting it does not contribute, so the only way to reach this case is a
- * roster that no longer carries the plugin at all — and then the section is gone with it. A
+ * roster that no longer carries the plugin at all — and then the row is gone with it. A
  * preference cannot make a row disappear by going missing; only by reading false.
  */
+function settingGated<T extends { readonly plugin: string; readonly setting?: string }>(
+  rows: readonly T[],
+  settings: readonly ComposedSetting[],
+): readonly T[] {
+  if (rows.every((row) => row.setting === undefined)) return rows;
+  const byRef = new Map(settings.map((setting) => [setting.ref, setting.value]));
+  return rows.filter((row) => {
+    if (row.setting === undefined) return true;
+    return byRef.get(settingRefId(row.plugin, row.setting)) !== false;
+  });
+}
+
+/** The sidebar rows this principal sees: {@link settingGated}, applied to sections. */
 export function visibleSections<T extends { readonly plugin: string; readonly setting?: string }>(
   sections: readonly T[],
   settings: readonly ComposedSetting[],
 ): readonly T[] {
-  if (sections.every((section) => section.setting === undefined)) return sections;
-  const byRef = new Map(settings.map((setting) => [setting.ref, setting.value]));
-  return sections.filter((section) => {
-    if (section.setting === undefined) return true;
-    return byRef.get(settingRefId(section.plugin, section.setting)) !== false;
-  });
+  return settingGated(sections, settings);
+}
+
+/**
+ * THE PICKER ENTRIES THIS PRINCIPAL SEES: every creator whose owner is ENABLED and whose own
+ * setting does not read false, in the order given.
+ *
+ * The owner rule is where a creator parts company with a section. A disabled plugin's section
+ * keeps its seat in the arrangement so re-enabling restores the reader's place (D4′); a creator
+ * has no seat — it is an offer, and creation dies on a disable (D12) — so it is simply not in
+ * the picker until its plugin is back, and nothing downstream has to ask whether it may run.
+ */
+export function visibleCreators<T extends { readonly plugin: string; readonly setting?: string }>(
+  creators: readonly T[],
+  settings: readonly ComposedSetting[],
+  enabled: (plugin: string) => boolean,
+): readonly T[] {
+  return settingGated(
+    creators.filter((creator) => enabled(creator.plugin)),
+    settings,
+  );
 }
 
 /**

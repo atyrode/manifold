@@ -15,6 +15,8 @@ import {
   PluginIdSchema,
   PluginManifestSchema,
   type ActionSummary,
+  type CreatorDef,
+  type CreatorIcon,
   type DisciplineDeclaration,
   type PlacementTraits,
   type PluginDataVersion,
@@ -145,6 +147,30 @@ export interface AssemblySection {
    * reads false is dropped at the composition seam where the principal's delta is known. So
    * this registry keeps every declared row, exactly as it keeps a disabled plugin's, and the
    * per-principal answer stays a function of the seam rather than of the assembly.
+   */
+  readonly setting?: string;
+}
+
+/**
+ * ONE OFFER TO MAKE SOMETHING, as the composition resolved it: the manifest's declaration
+ * (`CreatorDefSchema`) and the plugin that made it. The shell's picker is drawn from these and
+ * runs the chosen one through `action` with `input`, as the principal who pressed — so the row
+ * is the whole of what a creator IS, and no component stands behind it.
+ */
+export interface AssemblyCreator {
+  readonly id: string;
+  readonly plugin: string;
+  /** The entry's whole label ("New canvas"), read verbatim by the picker and its face. */
+  readonly title: string;
+  readonly icon: CreatorIcon;
+  readonly order: number;
+  /** A FULL action name, checked against the assembled actions; it may be another plugin's. */
+  readonly action: string;
+  readonly input: CreatorDef["input"];
+  /**
+   * WHICH of the owner's own boolean settings gates this entry, or undefined for
+   * "unconditional" — the reference a section carries, resolved by the same rule at the same
+   * seam (`visibleCreators`, `settings.ts`).
    */
   readonly setting?: string;
 }
@@ -308,6 +334,13 @@ export interface Assembly {
    * and in what sequence", which is the thing the per-principal arrangement reorders.
    */
   readonly sections: readonly AssemblySection[];
+  /**
+   * THE creator registry: every declared offer to make something, sorted by declared `order`
+   * with ties in registration order, disabled owners included like every registry here. Whose
+   * picker shows which entry is decided at the seam a principal's settings exist at
+   * (`visibleCreators`), never here.
+   */
+  readonly creators: readonly AssemblyCreator[];
   /** Keyed by wire element type (`draw`) — the same string a scene element carries. */
   readonly elements: ReadonlyMap<string, AssemblyElement>;
   /**
@@ -611,13 +644,29 @@ export function assembleRoster(
         );
       }
     }
+    /*
+      A creator naming a door is a dependency on its owner in all but name: assembly refuses a
+      creator whose action is not assembled, so a plugin offering a HELD plugin's door would
+      fail the re-assembly below. It is held beside the plugin it leans on instead, exactly as
+      a required dependency is, rather than turning one quarantine into a refused hub.
+    */
+    const actionOwners = new Map(
+      defs.flatMap(({ manifest, actions }) =>
+        actions.map((action) => [`${manifest.id}.${action.name}`, manifest.id] as const),
+      ),
+    );
     for (;;) {
       let changed = false;
       for (const { manifest } of defs) {
         if (held.has(manifest.id)) continue;
-        const by = dependencyEntries(manifest).find(
-          ([id, dependency]) => dependency.type === "required" && held.has(id),
-        )?.[0];
+        const by =
+          dependencyEntries(manifest).find(
+            ([id, dependency]) => dependency.type === "required" && held.has(id),
+          )?.[0] ??
+          // `?.`: a manifest that failed to parse under no usable id is fatal below, not here.
+          (manifest.contributes?.creators ?? [])
+            .map((creator) => actionOwners.get(creator.action))
+            .find((owner) => owner !== undefined && held.has(owner));
         if (by === undefined) continue;
         const reason = `held_by_dependency:${by}`;
         if (protectedIds.has(manifest.id)) {
@@ -675,6 +724,7 @@ function assembleDefinitions(
   const actionNames: Claims = new Map();
   const panelIds: Claims = new Map();
   const sectionIds: Claims = new Map();
+  const creatorIds: Claims = new Map();
   const elementTypes: Claims = new Map();
   const disciplineIds: Claims = new Map();
   const toolIds: Claims = new Map();
@@ -689,6 +739,7 @@ function assembleDefinitions(
   const actions = new Map<string, AssemblyAction>();
   const panels = new Map<string, AssemblyPanel>();
   const sections: AssemblySection[] = [];
+  const creators: AssemblyCreator[] = [];
   const elements = new Map<string, AssemblyElement>();
   const disciplines = new Map<string, AssemblyDiscipline>();
   const settings = new Map<string, AssemblySetting>();
@@ -885,26 +936,28 @@ function assembleDefinitions(
         declaration: setting,
       });
     }
-    // Sections, elements and tools are named GLOBALLY rather than per plugin: a section is a
-    // slot in one sidebar, an element type is a wire kind a scene doc stores, and a tool id is
-    // what presence publishes as the peer's current tool. Two plugins claiming one of those
-    // would be two plugins claiming one thing, which is exactly what D5 refuses.
+    /*
+      The settings a ROW may be gated on — a section's or a creator's — are this manifest's own
+      booleans, checked against its OWN declarations for the reason a seat's panel is: the
+      settings registry above is global and half-built here, so a lookup there would make
+      legality depend on registration order AND would let one plugin gate its row on somebody
+      else's preference. The row still composes — a refused assembly names every problem it
+      found rather than the first — and the ungated row is what a reader sees if this build
+      somehow shipped.
+    */
+    const ownBooleans = new Set(
+      (manifest.contributes.settings ?? [])
+        .filter((setting) => setting.kind === "boolean")
+        .map((setting) => setting.id),
+    );
+    // Sections, creators, elements and tools are named GLOBALLY rather than per plugin: a
+    // section is a slot in one sidebar, a creator an entry in one picker, an element type is a
+    // wire kind a scene doc stores, and a tool id is what presence publishes as the peer's
+    // current tool. Two plugins claiming one of those would be two plugins claiming one thing,
+    // which is exactly what D5 refuses.
     for (const section of manifest.contributes.sections) {
       claim(sectionIds, section.id, manifest.id);
-      /*
-        A GATED ROW IS CHECKED AGAINST ITS OWN MANIFEST, for the reason a seat's panel is: the
-        settings registry above is global and half-built here, so a lookup there would make
-        legality depend on registration order AND would let one plugin gate its row on
-        somebody else's preference. The row still composes — a refused assembly names every
-        problem it found rather than the first — and the ungated row is what a reader sees if
-        this build somehow shipped.
-      */
-      if (
-        section.setting !== undefined &&
-        !(manifest.contributes.settings ?? []).some(
-          (setting) => setting.id === section.setting && setting.kind === "boolean",
-        )
-      ) {
+      if (section.setting !== undefined && !ownBooleans.has(section.setting)) {
         problems.push(
           `plugin "${manifest.id}" gates section "${section.id}" on setting "${section.setting}", which it does not contribute as a boolean`,
         );
@@ -921,6 +974,30 @@ function assembleDefinitions(
         ...(section.setting === undefined ? {} : { setting: section.setting }),
         ...(section.refKinds === undefined ? {} : { refKinds: section.refKinds }),
         presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
+      });
+    }
+    /*
+      A creator's ACTION is checked after every definition has registered its doors (below),
+      because it may name another plugin's — `core.canvas` offers a canvas through
+      `core.index.createContainer` — and the actions registry is half-built here.
+    */
+    for (const creator of manifest.contributes.creators ?? []) {
+      claim(creatorIds, creator.id, manifest.id);
+      if (creator.setting !== undefined && !ownBooleans.has(creator.setting)) {
+        problems.push(
+          `plugin "${manifest.id}" gates creator "${creator.id}" on setting "${creator.setting}", which it does not contribute as a boolean`,
+        );
+      }
+      creators.push({
+        id: creator.id,
+        plugin: manifest.id,
+        title: creator.title,
+        icon: creator.icon,
+        order: creator.order,
+        action: creator.action,
+        input: creator.input,
+        // Spread: absent means "unconditional", and an explicit `undefined` would not.
+        ...(creator.setting === undefined ? {} : { setting: creator.setting }),
       });
     }
     for (const element of manifest.contributes.elements) {
@@ -1034,6 +1111,22 @@ function assembleDefinitions(
     for (const reason of problems) attributed.push({ reason, plugins: [manifest.id] });
   }
 
+  /*
+    EVERY CREATOR RUNS AN ASSEMBLED DOOR. Checked here, after every definition has registered its
+    actions, because a creator may name somebody else's. A name nothing answers to is refused
+    and attributed to the plugin that OFFERED it, with both names in the sentence: an entry that
+    could only ever be refused at dispatch is an authoring bug, not a picker row. Which plugin
+    owns the door is deliberately not checked — the shell dispatches as the presser, so naming
+    another plugin's door grants nothing it would not grant from any `data-action` control.
+  */
+  for (const creator of creators) {
+    if (actions.has(creator.action)) continue;
+    attributed.push({
+      reason: `plugin "${creator.plugin}" offers creator "${creator.id}" through action "${creator.action}", which no assembled plugin declares`,
+      plugins: [creator.plugin],
+    });
+  }
+
   const duplicates = (claims: Claims, noun: string): void => {
     for (const [name, plugins] of claims) {
       if (plugins.length < 2) continue;
@@ -1045,6 +1138,7 @@ function assembleDefinitions(
   duplicates(actionNames, "action");
   duplicates(panelIds, "panel");
   duplicates(sectionIds, "section");
+  duplicates(creatorIds, "creator");
   duplicates(elementTypes, "element type");
   duplicates(disciplineIds, "discipline");
   duplicates(settingRefs, "setting");
@@ -1107,6 +1201,7 @@ function assembleDefinitions(
     );
 
   sections.sort((left, right) => left.order - right.order);
+  creators.sort((left, right) => left.order - right.order);
   // Sorted, not registration-ordered: this index is published vocabulary, and a diff of two
   // builds' event surfaces should show what changed rather than where a registration moved.
   declaredEvents.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
@@ -1189,6 +1284,7 @@ function assembleDefinitions(
     actions,
     panels,
     sections,
+    creators,
     elements,
     disciplines,
     settings,
