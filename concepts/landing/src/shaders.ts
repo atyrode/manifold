@@ -811,7 +811,8 @@ float koiShape(vec2 q, float len, float swim) {
   return 0.0;
 }
 
-// Pond knobs: 0 koi, 1 swim, 2 follow, 3 caustics, 4 rays, 5 lilies, 6 ripples, 7 depth, 8 stones.
+// Pond knobs: 0 koi, 1 swim, 2 follow, 3 caustics, 4 rays, 5 lilies, 6 ripples, 7 depth, 8 stones,
+// 9 stepping, 10 formation, 11 lilyDrift, 12 weeds.
 Shade scenePond(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
   float tm = t * m;
@@ -854,8 +855,13 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   vec2 refract = vec2(dFdx(surface), dFdy(surface)) * 0.01 + vec2(sin(p.y * 9.0 + tm * 0.7), cos(p.x * 8.0 + tm * 0.6)) * 0.0025 * m;
   vec2 floorP = p + refract;
 
-  // Floor: pebbles or silt, dimmer when deep.
-  float floorLight = uParams[8] > 0.5 ? pebbles(floorP * 22.0) * 0.14 : 0.04 + 0.05 * fbm(floorP * 9.0);
+  // Floor: pebbles or silt with moss between, dimmer when deep. 'col' is the full-colour picture;
+  // ink and accent coverage carry the same layers for the accent and mono palettes.
+  float stones = uParams[8] > 0.5 ? pebbles(floorP * 22.0) : 0.3 + 0.35 * fbm(floorP * 9.0);
+  float floorLight = stones * 0.14;
+  vec3 floorCol = mix(vec3(0.58, 0.5, 0.38), vec3(0.42, 0.46, 0.42), fbm(floorP * 5.0)) * (0.5 + 1.1 * stones);
+  float moss = smoothstep(0.42, 0.68, fbm(floorP * 3.2 + 7.0));
+  floorCol = mix(floorCol, vec3(0.2, 0.42, 0.16) * (0.6 + 0.6 * stones), moss * 0.75);
   if (uParams[9] > 0.5) {
     // Flat stepping stones laid along the M.
     for (int i = 0; i < 26; i++) {
@@ -863,10 +869,17 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       vec2 d = floorP - stone;
       float edge = 0.026 + 0.006 * (vnoise(d * 60.0 + float(i) * 7.0) - 0.5) + 0.004 * hash12(vec2(float(i), 2.0));
       float r = length(d * vec2(1.0, 1.15));
-      if (r < edge) floorLight = (0.3 + 0.1 * vnoise(d * 120.0)) * smoothstep(edge, edge * 0.8, r) + 0.06;
+      if (r < edge) {
+        float face = (0.3 + 0.1 * vnoise(d * 120.0)) * smoothstep(edge, edge * 0.8, r);
+        floorLight = face + 0.06;
+        floorCol = vec3(0.78, 0.74, 0.66) * (0.5 + 1.5 * face);
+      }
     }
   }
   floorLight *= 1.0 - depth * 0.6;
+  // Turquoise water, deepening with depth; the floor shows through it.
+  vec3 water = mix(vec3(0.06, 0.46, 0.42), vec3(0.02, 0.2, 0.24), depth) * (0.85 + 0.3 * fbm(p * 1.4 + vec2(tm * 0.01, 0.0)));
+  vec3 col = mix(floorCol, water, 0.52 + 0.3 * depth);
   float caustic = 0.0;
   if (uParams[3] > 0.0) {
     // Two drifting layers; light gathers where their seams cross.
@@ -874,6 +887,30 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     float b = causticLayer(floorP * 5.6 + vec2(4.0, -tm * 0.025), tm * 0.9 + 2.0);
     caustic = (a * 0.3 + b * 0.2 + a * b * 0.9) * uParams[3] * (1.0 - depth * 0.45);
   }
+  col += vec3(0.7, 1.0, 0.92) * caustic * 0.55;
+
+  // Water weeds: clumps of blades radiating from the floor, swaying in the current.
+  float weed = 0.0;
+  if (uParams[12] > 0.0) {
+    int clumps = int(3.0 + uParams[12] * 7.0);
+    for (int c = 0; c < 10; c++) {
+      if (c >= clumps) break;
+      float fc = float(c);
+      vec2 rel = floorP - (vec2(hash12(vec2(fc, 31.0)), hash12(vec2(fc, 32.0))) - 0.5) * vec2(aspect * 0.95, 0.9);
+      float r = length(rel);
+      float reach = 0.07 + 0.07 * hash12(vec2(fc, 33.0));
+      if (r > reach) continue;
+      float s = r / reach;
+      float angle = atan(rel.y, rel.x);
+      for (int b = 0; b < 7; b++) {
+        float fb = float(b);
+        float blade = hash12(vec2(fc, fb + 40.0)) * TAU + 0.45 * sin(tm * 0.7 + s * 2.6 + fb * 1.3 + fc) * s;
+        float off = abs(mod(angle - blade + 3.14159, TAU) - 3.14159) * r;
+        weed = max(weed, step(off, 0.0055 * (1.0 - s) + 0.0012) * (1.0 - s * 0.5));
+      }
+    }
+  }
+  col = mix(col, vec3(0.2, 0.52, 0.24) * (0.7 + 0.5 * weed), step(0.001, weed) * 0.85);
 
   // Koi, their shadows on the floor, and the lure when they follow the pointer.
   int count = int(uParams[0] + 0.5);
@@ -888,6 +925,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   float shadow = 0.0;
   float fish = 0.0;
   float fishAccent = 0.0;
+  bool onFish = false;
+  vec3 fishCol = vec3(0.0);
   vec2 shadowOffset = vec2(0.015, -0.03) * (0.4 + 1.2 * depth);
   for (int i = 0; i < 8; i++) {
     if (i >= count) break;
@@ -904,34 +943,52 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     shadow = max(shadow, step(0.5, koiShape(vec2(dot(rs, dir), dot(rs, side)), len, swim)));
     float shape = koiShape(q, len, swim);
     if (shape > 0.0) {
+      onFish = true;
       float u = (0.3 * len - q.x) / len;
       float style = hash12(vec2(fi, 9.0));
       float marking = vnoise(vec2(u * 4.0, q.y / len * 6.0) + fi * 13.0);
-      bool orange = style > 0.75 ? true : style > 0.2 ? marking > 0.5 : marking > 0.72;
-      if (shape > 1.5) { fish = 0.45; fishAccent = 0.0; }
-      else { fish = orange ? 0.0 : 0.92; fishAccent = orange ? 0.95 : 0.0; }
+      // Ogon (gold), showa (black with red and white), kohaku (white with red), or plain orange.
+      vec3 red = vec3(1.0, 0.4, 0.1);
+      vec3 white = vec3(0.97, 0.95, 0.9);
+      vec3 black = vec3(0.07, 0.07, 0.08);
+      vec3 gold = vec3(1.0, 0.78, 0.3);
+      float tone; // 0 dark, 1 white, 2 colour
+      if (style > 0.75) { fishCol = gold; tone = 2.0; }
+      else if (style > 0.45) { tone = marking > 0.6 ? 2.0 : marking < 0.35 ? 1.0 : 0.0; fishCol = tone > 1.5 ? red : tone > 0.5 ? white : black; }
+      else if (style > 0.2) { tone = marking > 0.5 ? 2.0 : 1.0; fishCol = tone > 1.5 ? red : white; }
+      else { fishCol = red * (0.9 + 0.2 * marking); tone = 2.0; }
+      fish = tone > 0.5 && tone < 1.5 ? 0.92 : 0.0;
+      fishAccent = tone > 1.5 ? 0.95 : 0.0;
+      if (shape > 1.5) { fish = 0.45; fishAccent = 0.0; fishCol = mix(water, white, 0.55); }
       // Eyes, set wide on the head as seen from above.
-      if (abs(u - 0.07) < 0.025 && abs(abs(q.y) - len * 0.085) < len * 0.03) { fish = 0.0; fishAccent = 0.0; }
+      if (abs(u - 0.07) < 0.025 && abs(abs(q.y) - len * 0.085) < len * 0.03) { fish = 0.0; fishAccent = 0.0; fishCol = black; }
     }
   }
 
-  // Lily pads float above everything, slowly turning; some carry a flower.
+  // Lily pads float above everything; some carry a flower. With drift on they wander the pond.
   float pad = 0.0;
   float padShadow = 0.0;
   float flower = 0.0;
+  vec3 padCol = vec3(0.0);
   int pads = int(uParams[5] * 9.0 + 0.5);
+  float drift = uParams[11];
   for (int i = 0; i < 9; i++) {
     if (i >= pads) break;
     float fi = float(i);
     vec2 centre = (vec2(hash12(vec2(fi, 21.0)), hash12(vec2(fi, 22.0))) - 0.5) * vec2(aspect * 0.9, 0.85);
-    centre += vec2(sin(tm * 0.07 + fi), cos(tm * 0.05 + fi * 2.0)) * 0.012;
+    centre += drift > 0.0
+      ? vec2(sin(tm * drift * 0.11 + fi * 1.7) * aspect * 0.2, cos(tm * drift * 0.083 + fi * 2.3) * 0.2)
+      : vec2(sin(tm * 0.07 + fi), cos(tm * 0.05 + fi * 2.0)) * 0.012;
     float radius = 0.045 + 0.05 * hash12(vec2(fi, 23.0));
-    vec2 d = rotate(p - centre, -(tm * 0.02 + fi * 1.7));
+    vec2 d = rotate(p - centre, -(tm * (0.02 + drift * 0.05) + fi * 1.7));
     float notch = abs(atan(d.y, d.x)) < 0.16 && length(d) > radius * 0.08 ? 1.0 : 0.0;
     float inside = step(length(d), radius) * (1.0 - notch);
     float veins = smoothstep(0.06, 0.0, abs(sin(atan(d.y, d.x) * 8.0))) * smoothstep(radius * 0.1, radius * 0.3, length(d));
     float rim = smoothstep(radius * 0.86, radius * 0.97, length(d));
-    pad = max(pad, inside * (0.22 + 0.12 * veins + 0.45 * rim));
+    if (inside > 0.0) {
+      pad = 0.22 + 0.12 * veins + 0.45 * rim;
+      padCol = mix(vec3(0.24, 0.52, 0.2), vec3(0.5, 0.76, 0.34), rim) * (1.0 - 0.25 * veins) * (0.9 + 0.2 * vnoise(d * 40.0));
+    }
     vec2 ds = p - centre - shadowOffset * 0.6;
     padShadow = max(padShadow, step(length(ds), radius));
     if (hash12(vec2(fi, 24.0)) > 0.6) {
@@ -951,19 +1008,25 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     rays *= uParams[4] * 0.3;
   }
 
-  float floorTotal = (floorLight + caustic) * (1.0 - 0.85 * max(shadow, padShadow * 0.8));
-  o.ink = floorTotal + rays;
-  o.accent = 0.0;
-  if (fish > 0.0 || fishAccent > 0.0) {
+  float darken = 1.0 - 0.85 * max(shadow, padShadow * 0.8);
+  o.ink = max(floorLight + caustic, weed * 0.32) * darken + rays;
+  col = col * (1.0 - 0.55 * max(shadow, padShadow * 0.8)) + vec3(1.0, 0.96, 0.82) * rays * 0.6;
+  if (onFish) {
     o.ink = fish + caustic * 0.25;
     o.accent = fishAccent;
+    col = fishCol + vec3(0.7, 1.0, 0.92) * caustic * 0.2;
   }
-  if (pad > 0.0) { o.ink = pad; o.accent = 0.0; }
-  if (flower > 0.0) { o.ink = flower > 1.5 ? 0.0 : 0.95; o.accent = flower > 1.5 ? 0.9 : 0.0; }
+  if (pad > 0.0) { o.ink = pad; o.accent = 0.0; col = padCol; }
+  if (flower > 0.0) {
+    o.ink = flower > 1.5 ? 0.0 : 0.95;
+    o.accent = flower > 1.5 ? 0.9 : 0.0;
+    col = flower > 1.5 ? vec3(1.0, 0.85, 0.3) : vec3(1.0, 0.72, 0.84);
+  }
   o.ink = max(o.ink, ringLight * 0.7);
+  col += vec3(0.85, 1.0, 1.0) * ringLight * 0.45;
   o.shimmer = caustic * 0.15 * m;
-  o.rgb = uBg + uInk * o.ink + uAccent * o.accent;
-  o.source = o.rgb;
+  o.rgb = col;
+  o.source = col;
   return o;
 }
 `;

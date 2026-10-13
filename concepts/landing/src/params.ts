@@ -20,6 +20,8 @@ interface Base {
   when?: string;
   /** Slot in the shader's `uTriggers`: adds a "now" button that fires one occurrence at once. */
   trigger?: number;
+  /** Shuffle leaves this knob alone (framing that would otherwise lose the subject). */
+  steady?: boolean;
 }
 
 export interface Option {
@@ -37,10 +39,11 @@ export type ParamDef =
 export const MAX_PARAMS = 40;
 export const MAX_TRIGGERS = 8;
 
-interface Extra { when?: string; trigger?: number }
+interface Extra { when?: string; trigger?: number; steady?: boolean }
 const extra = (options: Extra) => ({
   ...(options.when === undefined ? {} : { when: options.when }),
   ...(options.trigger === undefined ? {} : { trigger: options.trigger }),
+  ...(options.steady === undefined ? {} : { steady: options.steady }),
 });
 
 const range = (group: string, key: string, label: string, value: number, help: string, options: Extra & { min?: number; max?: number; step?: number } = {}): ParamDef => ({
@@ -101,9 +104,9 @@ export const sceneParams: Record<SceneId, readonly ParamDef[]> = {
     feature("stars", "captures", "captured meteors", false, "frequency", 0.5, "Now and then a meteor is caught by the planet, spirals round it and burns up in the atmosphere.", { trigger: 1 }),
     feature("stars", "nebula", "nebula", true, "density", 1, "Faint dust behind the stars."),
     feature("stars", "drift", "sky drift", true, "speed", 0.5, "The starfield slides slowly sideways."),
-    range("camera", "planetX", "across", 0.36, "Where the planet sits horizontally: -1 left edge, 1 right edge.", { min: -1, max: 1 }),
-    range("camera", "planetY", "height", -1.32, "Height of the planet's centre: low values sink it below the frame, around 0 centres it.", { min: -1.8, max: 0.6 }),
-    range("camera", "planet", "size", 1, "Planet radius.", { min: 0.15, max: 1.6 }),
+    range("camera", "planetX", "across", 0.36, "Where the planet sits horizontally: -1 left edge, 1 right edge.", { min: -1, max: 1, steady: true }),
+    range("camera", "planetY", "height", -1.32, "Height of the planet's centre: low values sink it below the frame, around 0 centres it.", { min: -1.8, max: 0.6, steady: true }),
+    range("camera", "planet", "size", 1, "Planet radius.", { min: 0.15, max: 1.6, steady: true }),
     feature("planet", "clouds", "clouds", false, "cover", 0.6, "Cloud decks drifting over the day side."),
     feature("planet", "storms", "storms", false, "frequency", 0.5, "Lightning flashing in the night-side clouds.", { trigger: 2 }),
     feature("planet", "aurora", "aurora", false, "glow", 0.6, "An auroral oval drifting over the polar night side, rising into curtains where it meets the horizon."),
@@ -145,6 +148,8 @@ export const sceneParams: Record<SceneId, readonly ParamDef[]> = {
     toggle("floor", "stones", "pebbles", true, "A pebble floor under the water."),
     toggle("manifold", "stepping", "stepping stones", false, "Flat stones on the floor, laid out as the Manifold M."),
     feature("manifold", "formation", "koi formation", false, "how often", 0.4, "Now and then the koi gather and swim the strokes of the M together.", { trigger: 1 }),
+    feature("surface", "lilyDrift", "pads drift", false, "speed", 0.4, "Lily pads wander slowly across the pond instead of bobbing in place."),
+    feature("floor", "weeds", "water weeds", true, "amount", 0.5, "Clumps of weed on the floor, swaying in the current."),
   ],
 };
 
@@ -153,4 +158,63 @@ export function effective(def: ParamDef, params: Record<string, number>): number
   const value = params[def.key] ?? (def.kind === "feature" ? (def.on ? 1 : 0) : def.value);
   if (def.kind !== "feature") return value;
   return value > 0.5 ? (params[`${def.key}-amount`] ?? def.value) : 0;
+}
+
+export interface Blurb {
+  title: string;
+  blurb: string;
+}
+
+export const sceneInfo: Record<SceneId, Blurb> = {
+  wave: { title: "Wave", blurb: "Hokusai's Great Wave, moving along its own brushstrokes." },
+  starry: { title: "Starry", blurb: "Van Gogh's sky swirling, stars pulsing with light." },
+  orbit: { title: "Orbit", blurb: "A planet in space: rings, moons, aurora, meteors." },
+  swell: { title: "Swell", blurb: "A moonlit sea rolling toward the horizon." },
+  pond: { title: "Pond", blurb: "A koi pond from above, light through clear water." },
+};
+
+/** Section headings and what each group of knobs is for. */
+export const groupInfo: Record<SceneId, Record<string, Blurb>> = {
+  wave: {
+    motion: { title: "Movement", blurb: "How the print comes alive: rocking, flowing paint, spray and depth." },
+    look: { title: "Print", blurb: "Foam density, and night versus ink-on-paper." },
+    loading: { title: "Loading page", blurb: "Behaviour when the loading page is on top." },
+    manifold: { title: "Manifold mark", blurb: "Ways the M can live inside the print." },
+  },
+  starry: {
+    sky: { title: "Sky", blurb: "The painted sky in motion, and the pointer's stir." },
+    land: { title: "Land", blurb: "The cypress and the sleeping village." },
+    manifold: { title: "Manifold mark", blurb: "Ways the M can live inside the painting." },
+  },
+  orbit: {
+    stars: { title: "Sky & events", blurb: "Background stars, constellations and what streaks across them." },
+    camera: { title: "Camera", blurb: "Frame the planet: where it sits and how big it is." },
+    planet: { title: "Planet", blurb: "Surface, weather, aurora and the sun's path." },
+    moons: { title: "Moons", blurb: "Satellites on inclined orbits, and their eclipses." },
+    ring: { title: "Rings", blurb: "A ring system: its shape, what it's made of, and how it moves." },
+    manifold: { title: "Manifold mark", blurb: "Ways the M can live in this sky." },
+  },
+  swell: {
+    sea: { title: "Sea", blurb: "The swell and its surface chop." },
+    sky: { title: "Sky", blurb: "Moon and stars." },
+    manifold: { title: "Manifold mark", blurb: "Ways the M can live in this night." },
+  },
+  pond: {
+    koi: { title: "Koi", blurb: "How many fish, how they swim, and whether they follow you." },
+    light: { title: "Light", blurb: "Sunlight through the water." },
+    surface: { title: "Surface", blurb: "What floats and what falls on the water." },
+    floor: { title: "Floor", blurb: "Depth and the bed of the pond." },
+    manifold: { title: "Manifold mark", blurb: "Ways the M can live in the pond." },
+  },
+};
+
+/** How a knob's value reads in the lab. */
+export function formatValue(def: ParamDef, value: number): string {
+  if (def.kind === "toggle") return value > 0.5 ? "on" : "off";
+  const step = def.kind === "range" || def.kind === "feature" ? def.step : 1;
+  if (step >= 1) return String(Math.round(value));
+  const min = def.kind === "range" || def.kind === "feature" ? def.min : 0;
+  const max = def.kind === "range" || def.kind === "feature" ? def.max : 1;
+  if (min >= 0 && max <= 1) return `${Math.round(value * 100)}%`;
+  return value.toFixed(2);
 }

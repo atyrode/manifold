@@ -90,7 +90,12 @@ export class DitherRenderer {
   readonly #blank: WebGLTexture;
   readonly #pointer = { x: 0, y: 0, tx: 0, ty: 0 };
   #settings: RenderSettings;
-  #start = performance.now();
+  /** Scene clock in seconds; stands still while paused. */
+  #clock = 0;
+  #lastFrame = 0;
+  #paused = false;
+  /** Smoothed frames per second, for the lab footer. */
+  fps = 0;
   #frozen: boolean;
   readonly #params = new Float32Array(MAX_PARAMS);
   /** Shader time each trigger slot last fired; far in the past when idle. */
@@ -150,7 +155,15 @@ export class DitherRenderer {
 
   /** Fire one occurrence of the current scene's occasional effect in `slot` right now. */
   trigger(slot: number): void {
-    if (slot >= 0 && slot < MAX_TRIGGERS) this.#triggers[slot] = (performance.now() - this.#start) / 1000;
+    if (slot >= 0 && slot < MAX_TRIGGERS) this.#triggers[slot] = this.#clock;
+  }
+
+  get paused(): boolean {
+    return this.#paused;
+  }
+
+  setPaused(paused: boolean): void {
+    this.#paused = paused;
   }
 
   setProgress(progress: number): void {
@@ -222,6 +235,10 @@ export class DitherRenderer {
 
   #draw(now: number): void {
     const gl = this.#gl;
+    const dt = this.#lastFrame === 0 ? 0 : Math.min((now - this.#lastFrame) / 1000, 0.1);
+    this.#lastFrame = now;
+    if (dt > 0) this.fps = this.fps === 0 ? 1 / dt : this.fps * 0.92 + (1 / dt) * 0.08;
+    if (!this.#paused && !this.#frozen) this.#clock += dt;
     const s = this.#settings;
     const width = Math.max(1, Math.ceil(this.#canvas.clientWidth / s.pixel));
     const height = Math.max(1, Math.ceil(this.#canvas.clientHeight / s.pixel));
@@ -248,7 +265,7 @@ export class DitherRenderer {
 
     const u = this.#uniforms;
     gl.uniform2f(u.uRes, width, height);
-    gl.uniform1f(u.uTime, this.#frozen ? 0 : (now - this.#start) / 1000);
+    gl.uniform1f(u.uTime, this.#clock);
     gl.uniform1i(u.uScene, sceneIds.indexOf(s.scene));
     gl.uniform1i(u.uDither, ditherIds.indexOf(s.dither));
     gl.uniform1i(u.uColor, colorIds.indexOf(s.color));
