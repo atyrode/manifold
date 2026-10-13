@@ -498,6 +498,11 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   accent = max(accent, max(core, min(glow * 0.6 + halo * 0.15 + air * 0.05, 1.0)));
   depth = mix(depth, SILL_D_NEAR + 0.02, max(max(frame, capS), glass));
 
+  // The light a raindrop shows: each one refracts the bright overcast, so about 1.2 x the cloud
+  // base, plus what shines round it (the street's glow low down, the sign's pink near it,
+  // lightning), never quite dark at night. Streaks, splashes and drips all take it.
+  vec3 rainLight = max(deck * 1.2 + vec3(1.0, 0.52, 0.28) * street * (0.06 + 0.3 * dark) + uAccent * air * 0.5 + vec3(0.45, 0.5, 0.65) * flash * 0.6, vec3(0.08));
+
   // The stone ledge outside the window, seen from above past the frame's own sill, in the room's
   // light spilling out. Wet, it darkens and at this grazing angle mirrors the city: its lights
   // drawn into streaks, the grey sky, the sign's pink right below the sign; water pools on it,
@@ -526,7 +531,9 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
       c += uAccent * mirrored * 0.45;
       if (K_rain > 0.0) {
         c += vec3(0.6, 0.65, 0.75) * rainRipples(p * 60.0, t, K_rain).z * pool * 0.25;
-        c += (deck + SILL_LAMP * spill * 0.6) * rainSplashes(p * 10.0, t, K_rain) * 0.9;
+        // Splash crowns, flattened by the grazing view of the ledge: ~30 cells to the unit across
+        // it, ~15 into it at 540 rows.
+        c += (rainLight + SILL_LAMP * spill * 0.6) * rainSplashes(vec2(p.x * 18.0, p.y * 36.0), t, K_rain);
       }
     }
     float snowy = snowCover(up, vec2(p.x * 15.0, v * 0.6), lying);
@@ -537,10 +544,10 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
     depth = mix(depth, SILL_D_LEDGE, onLedge);
   }
 
-  // The weather in the air between the window and the first surface beyond it. What falls takes
-  // the light round it: the grey of the air, the street's glow low down, the sign's pink near it,
-  // lightning, and just outside the window the room's lamp. Beyond the low blocks, rain shafts
-  // hang under the clouds.
+  // The weather in the air between the window and the first surface beyond it: the veil first,
+  // then the drops in their own light, the nearest out-of-focus ones a little dimmer but catching
+  // the room's lamp just outside the window. Beyond the low blocks, rain shafts hang under the
+  // clouds.
   vec2 wuv = (p + uPointer * vec2(0.012, 0.005)) / vec2(aspect, 1.0) + 0.5;
   vec3 airCol = mix(haze, deck, 0.6 * ov.x) + vec3(1.0, 0.52, 0.28) * street * (0.03 + 0.15 * dark) + uAccent * air * 0.3 + vec3(0.45, 0.5, 0.65) * flash * 0.4;
   if (K_rain > 0.0) {
@@ -549,8 +556,8 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
     float veil = 1.0 - (1.0 - fall.veil) * (1.0 - 0.5 * shafts);
     col = mix(col, airCol, veil);
     accent *= 1.0 - 0.7 * veil;
-    vec3 drop = airCol * 1.35 + vec3(0.09, 0.1, 0.12) * (0.35 + 0.65 * sky.day) + uAccent * air * 0.4 + SILL_LAMP * spill * 0.9 * fall.near;
-    col = mix(col, drop, fall.cover * 0.8);
+    vec3 drop = rainLight * (1.0 - 0.2 * fall.near) + SILL_LAMP * spill * 0.9 * fall.near;
+    col = mix(col, drop, fall.cover);
   }
   if (K_snow > 0.0) {
     Precip fall = snowFall(wuv, aspect, t, K_snow, K_wind, depth);
@@ -567,7 +574,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   if (dripOn > 0.0) {
     float lane = step(hash12(vec2(floor(p.x / 0.05), 8.1)), 0.55 * dripOn);
     float d = rainDrips(vec2(p.x / 0.05, (SILL_LINTEL - p.y) / 0.27), t, drip, 1.0) * lane * smoothstep(ledge0, SILL_LEDGE, p.y);
-    col = mix(col, airCol * 1.5 + SILL_LAMP * spill * 0.9 + uAccent * neonMean * 0.06, d);
+    col = mix(col, rainLight * 1.1 + SILL_LAMP * spill * 0.9, d);
     accent *= 1.0 - d;
   }
   return vec4(col, clamp(accent, 0.0, 1.0));

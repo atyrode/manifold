@@ -210,6 +210,17 @@ const float MEADOW_RAIN_MIST = 0.016;
 const float MEADOW_OVERCAST_SUN = 0.88;
 const float MEADOW_OVERCAST_LOW = 0.3;
 const float MEADOW_OVERCAST_DARK = 0.35;
+// The bright sky the rain refracts and the wet grass mirrors: sampled this high (screen heights above
+// the horizon) toward this cell's bearing. Drops shine at MEADOW_DROP_SKY x it plus the sun's light,
+// never below MEADOW_DROP_FLOOR (night); the overcast deck also lights the field flatly by this much.
+const float MEADOW_DECK_ABOVE = 0.25;
+const float MEADOW_DROP_SKY = 1.2;
+const float MEADOW_DROP_FLOOR = 0.08;
+const float MEADOW_DECK_LIGHT = 0.6;
+// Wet grass tops mirror the sky: how upward they face (for wetGloss), and how bright the sky in them
+// is, so each row of the field carries a band of light along its tops.
+const float MEADOW_TOP_UP = 0.75;
+const float MEADOW_WET_SHEEN = 1.4;
 // Rain shafts hanging over the far hills: opacity, how high they reach (screen heights, more in
 // heavier rain), lean downwind (across per height) and drift (screen heights per second per wind).
 const float MEADOW_SHAFT = 0.55;
@@ -221,17 +232,16 @@ const float MEADOW_SHAFT_DRIFT = 0.012;
 const float MEADOW_CURTAIN_FROM = 0.1;
 const float MEADOW_CURTAIN_TO = 0.8;
 const float MEADOW_CURTAIN = 0.25;
-const float MEADOW_CURTAIN_DROPS = 0.6;
 // Wet grass: how far the near blades bow and the field sags; how far the near seed heads nod
 // (radians); beads per blade length and the share of places holding one when soaked; the spacing of
-// the drip lanes in cells (a drop is ~0.22 of it across and falls ~5 of it, fading after 3). A closed
-// clock folds this much narrower.
+// the drip lanes in cells, at least ~15 (a drop is ~0.22 of it across and falls ~5 of it, fading
+// after 3). A closed clock folds this much narrower.
 const float MEADOW_WET_BOW = 0.3;
 const float MEADOW_WET_SAG = 0.12;
 const float MEADOW_WET_NOD = 0.9;
 const float MEADOW_BEADS = 7.0;
 const float MEADOW_BEAD_SHARE = 0.55;
-const float MEADOW_DRIP_CELLS = 10.0;
+const float MEADOW_DRIP_CELLS = 16.0;
 const float MEADOW_FOLD = 0.55;
 // The breath over the field: reach (screen heights), how hard it presses and how far it leans the grass.
 const float MEADOW_BREATH_RADIUS = 0.09;
@@ -448,7 +458,7 @@ vec3 meadowFlower(float h) {
 //
 // The loop is the scene's longest: (ln G / (G - tallest)) / MEADOW_ROW rows, 10 at the default grass
 // height, 15 at the tallest, most of them cheap (no blade, or the cell already covered).
-vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, float sunUp, float toward, vec3 amb, vec3 sun, vec3 haze, vec4 breath, float hScale, float wet, float rainExt, float aa, out float zHit, out float gHit) {
+vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, float sunUp, float toward, vec3 amb, vec3 sun, vec3 haze, vec4 breath, float hScale, float wet, float rainExt, vec3 deck, float overcast, float aa, out float zHit, out float gHit) {
   float zg = MEADOW_GROUND * MEADOW_FOCAL / (MEADOW_HORIZON - uv.y);
   float a = (uv.x - 0.5) * aspect / MEADOW_FOCAL; // the ray's slope across: ground x = a z
   float pixel = aa / MEADOW_FOCAL;                // a cell's width as a slope
@@ -475,15 +485,16 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
   float low = 1.0 - smoothstep(0.1, 0.55, sunUp);
   float high = clamp(sunUp, 0.0, 1.0);
   float glow = (0.22 + 0.6 * pow(toward, 3.0) + pow(toward, 24.0)) * low;
-  vec3 lit = amb * 0.45 + sun * (0.7 * high + 0.6 * glow);
+  // Under an overcast the whole deck lights the grass flatly, so its texture stays readable.
+  vec3 lit = amb * 0.45 + sun * (0.7 * high + 0.6 * glow) + deck * MEADOW_DECK_LIGHT * overcast;
   vec3 pale = MEADOW_PALE * 0.62 * (amb * 0.5 + sun * (0.6 * high + 0.5 * glow + 0.12));
   vec3 gold = sun * MEADOW_RIM * (0.08 + 0.5 * glow) * (1.0 + max(g, 0.0));
-  // Wet grass is darker and richer, and its tops glisten: the bright sky in the water on them, and
-  // the low sun once it is back.
+  // Wet grass is darker and richer, and its tops glisten: the bright sky in the water on them (a band
+  // of light along the top of every row, over the dark wet depths), and the low sun once it is back.
   vec3 green = wetten(MEADOW_GREEN, wet, 0.5);
   vec3 straw = wetten(MEADOW_STRAW, wet, 0.5);
   vec3 seedCol = wetten(MEADOW_HEAD, wet, 0.7);
-  gold += wetGloss(wet, 0.4) * (haze * 0.3 + sun * (0.2 + 0.7 * glow));
+  gold += wetGloss(wet, MEADOW_TOP_UP) * (deck * MEADOW_WET_SHEEN + sun * (0.2 + 0.7 * glow));
 
   // Patches: green and gone to straw; drifts of flowers, thickening far off into a band of colour
   // before the trees.
@@ -601,7 +612,7 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
 // their column (uSim1: lean, bow away from the viewer). Tall at the sides and short in the middle,
 // they frame the view; dark against the light, glowing through where they are thin and along their
 // edges, paler as a gust bows them away.
-void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, vec3 amb, vec3 sun, float behind, float sunNear, float sunX, float wet, vec3 air, float aa, inout vec3 col, inout float accent, inout float zHit) {
+void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, vec3 amb, vec3 sun, float behind, float sunNear, float sunX, float wet, vec3 deck, float aa, inout vec3 col, inout float accent, inout float zHit) {
   float yy = p.y - MEADOW_ROOT[layer];
   if (yy <= 0.0) return;
   float pitch = MEADOW_PITCH[layer];
@@ -636,7 +647,7 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
   vec3 stem = wetten(MEADOW_STEM, wet, 0.45);
   vec3 seedCol = wetten(MEADOW_HEAD, wet, 0.7);
   float gloss = wetGloss(wet, 0.3);
-  vec3 bead = air * 0.5 + amb * 0.6 + sun * (0.4 + 2.0 * behind + sunNear);
+  vec3 bead = deck * MEADOW_DROP_SKY + amb * 0.3 + sun * (0.4 + 2.0 * behind + sunNear);
   for (int k = -reach; k <= reach; k++) {
     float i = column + float(k);
     vec2 key = vec2(i, salt);
@@ -666,7 +677,7 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
     vec3 shade = (stalk ? stem : leaf) * (amb * 0.3 + sun * (0.1 + 0.55 * behind)) * MEADOW_SHADE[layer];
     shade += sun * MEADOW_THROUGH * pressed * (0.45 + behind) * 0.9;
     shade += sun * MEADOW_RIM * rim * (MEADOW_RIM_BASE + 1.1 * behind + 0.6 * sunNear);
-    shade += gloss * (air * 0.25 + sun * (0.15 + 0.8 * behind)) * facing;
+    shade += gloss * (deck * 0.4 + sun * (0.15 + 0.8 * behind)) * facing;
     col = mix(col, shade, cover);
     accent *= 1.0 - cover;
     zHit = mix(zHit, layerZ, cover);
@@ -693,7 +704,7 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
       float head = 1.0 - smoothstep(1.0 - aa / spikeGirth, 1.0 + aa / spikeGirth, e);
       vec3 seeds = seedCol * (amb * 0.35 + sun * (0.2 + 0.9 * behind + 0.4 * pressed));
       seeds += sun * MEADOW_RIM * smoothstep(0.2, 1.0, e) * (MEADOW_RIM_BASE + 1.6 * behind + sunNear);
-      seeds += gloss * (air * 0.3 + sun * (0.2 + behind)) * smoothstep(0.3, 1.0, e);
+      seeds += gloss * (deck * 0.5 + sun * (0.2 + behind)) * smoothstep(0.3, 1.0, e);
       col = mix(col, seeds, head);
       accent *= 1.0 - head;
       zHit = mix(zHit, layerZ, head);
@@ -848,6 +859,13 @@ void meadowSeeds(vec2 uv, vec2 p, float aspect, vec3 amb, vec3 sun, float behind
   }
 }
 
+// The sky gone overcast under the rain: greyer, and lower and darker the heavier it falls, darkest
+// overhead. above: height above the horizon (screen heights).
+vec3 meadowDeck(vec3 col, float above, float overcast, float rain) {
+  col = mix(col, vec3(dot(col, LUMA)) * vec3(0.92, 0.95, 1.0) + 0.02, 0.6 * overcast);
+  return col * (1.0 - rain * (MEADOW_OVERCAST_LOW + MEADOW_OVERCAST_DARK * smoothstep(0.0, 0.45, above)));
+}
+
 // Knobs read here: see the top of shader.ts.
 Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
@@ -891,6 +909,9 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   vec3 air = mix(haze, vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.02), 0.5 * overcast) * (1.0 - 0.25 * heavy);
   float rainExt = rain > 0.0 ? MEADOW_DRIZZLE_MIST + MEADOW_RAIN_MIST * rain * rain : 0.0;
   float far = 1.0 - exp(-rainExt * MEADOW_TREES_Z);
+  // The bright sky (or overcast deck) above this bearing: what the rain refracts and the wet grass
+  // mirrors. Only looked up while there is rain or water about.
+  vec3 deck = rain > 0.0 || wet > 0.0 ? meadowDeck(skyColor(dull, normalize(vec3(dir.x, MEADOW_DECK_ABOVE / MEADOW_FOCAL * length(dir.xz), dir.z))), MEADOW_DECK_ABOVE, overcast, rain) : vec3(0.0);
 
   MeadowWind wind = meadowWind();
   vec4 breath = uSimOn.x > 0.5 ? texelFetch(uSim0, ivec2(MEADOW_SEED_GROUPS, 2), 0) : vec4(0.0);
@@ -908,9 +929,7 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
     vec4 cloud = skyClouds(dull, dir, t, 0.2 + 0.8 * overcast, K_wind);
     col = mix(col, cloud.rgb, cloud.a);
     col += vec3(0.85, 0.9, 1.0) * skyStars(sky, dir, 0.6) * (1.0 - cloud.a);
-    // Under the rain the deck goes grey and hangs lower and darker, darkest overhead.
-    col = mix(col, vec3(dot(col, LUMA)) * vec3(0.92, 0.95, 1.0) + 0.02, 0.6 * overcast);
-    col *= 1.0 - rain * (MEADOW_OVERCAST_LOW + MEADOW_OVERCAST_DARK * smoothstep(0.0, 0.45, above));
+    col = meadowDeck(col, above, overcast, rain);
     accent = (1.0 - smoothstep(0.016, 0.021, length(dir - sky.sun))) * up * (1.0 - cloud.a) * (1.0 - overcast);
     float shaft = rain > 0.0 ? meadowShafts(cx, above, tm, rain) : 0.0;
     vec3 shaftCol = air * 0.8 + sun * 0.5 * pow(toward, 4.0);
@@ -923,7 +942,7 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
       gHit = meadowGust(wind, vec2(cx * zc / MEADOW_FOCAL, zc), tm, MEADOW_BLUR_CELLS * (abs(wind.dir.x) * span + wind.dir.y * span * zc / MEADOW_GROUND));
     }
   }
-  if (uv.y < MEADOW_HORIZON) col = meadowGrass(uv, aspect, col, wind, tm, sky.sun.y, toward, amb, sun, haze, breath, fieldScale, wet, rainExt, aa, zHit, gHit);
+  if (uv.y < MEADOW_HORIZON) col = meadowGrass(uv, aspect, col, wind, tm, sky.sun.y, toward, amb, sun, haze, breath, fieldScale, wet, rainExt, deck, overcast, aa, zHit, gHit);
   // Golden haze: light scattered toward the eye around the sun, over everything beyond the near grass.
   col += sun * (0.05 + 0.3 * K_haze) * exp(-5.0 * length(dir - sky.sun)) * (1.0 - overcast);
   // Heavy rain: the gusts drive curtains of it across the field and the sky, with the honami bands.
@@ -931,19 +950,19 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   col = mix(col, air, MEADOW_CURTAIN * curtain);
 
   float density = MEADOW_DENSITY_MIN + (1.0 - MEADOW_DENSITY_MIN) * K_grassDensity;
-  meadowLayer(1, p, aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, wet, air, aa, col, accent, zHit);
+  meadowLayer(1, p, aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, wet, deck, aa, col, accent, zHit);
   meadowClocks(p, aspect, amb, sun, behind, sunNear, wet, aa, col, accent, zHit);
   meadowSeeds(uv, p, aspect, amb, sun, behind, sunNear, aa, col, accent);
-  meadowLayer(0, p, aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, wet, air, aa, col, accent, zHit);
+  meadowLayer(0, p, aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, wet, deck, aa, col, accent, zHit);
 
   if (rain > 0.0) {
     // The shared rain at the depth of what this cell sees: drops hide behind the near blades, and
-    // the rain too far to make out closes in like fog.
+    // the rain too far to make out closes in like fog. Veil first, then the drops, which are seen by
+    // the bright sky they refract and the low sun where it shines; the nearest, out of focus, dimmer.
     Precip fall = rainFall(uv, aspect, t, rain, K_wind, 1.0 - exp(-zHit / MEADOW_RAIN_DEPTH));
     col = mix(col, air, fall.veil);
-    // Drops catch what light there is: brightest against the sun, softer nearest the eye.
-    vec3 dropLight = amb * 0.8 + air * 0.4 + sun * (0.3 + 2.5 * behind + 1.5 * sunNear);
-    col = mix(col, dropLight, clamp(fall.cover * (0.55 - 0.2 * fall.near) * (1.0 + MEADOW_CURTAIN_DROPS * curtain), 0.0, 1.0));
+    vec3 dropLight = max(deck * MEADOW_DROP_SKY + sun * (0.3 + 2.5 * behind + 1.5 * sunNear), vec3(MEADOW_DROP_FLOOR)) * (1.0 - 0.15 * fall.near);
+    col = mix(col, dropLight, fall.cover);
     accent *= 1.0 - fall.veil;
   }
 
