@@ -5,14 +5,15 @@ export const PROTOCOL_VERSION = 58;
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
  * Protocol 57 requires independently identified terminal views and completion-only parser credit.
  * The explicit-view attach/detach/ack SDK and plugin ABI requires rebuilt bundles; no shared-view
- * fallback is safe. Protocol 58 adds only the optional manifest `contributes.creators` and the
- * `folderId` beside `core.index.createFolder`'s index: a 57 bundle's manifest omits the field,
- * parses unchanged, and no packed runtime parses that door's answer, so stamp 57 is retained.
+ * fallback is safe. Protocol 58 adds the optional manifest `contributes.creators` and the
+ * `folderId` beside `core.index.createFolder`'s index. A 57 bundle is expected to load unchanged,
+ * but no proof from released 57 artifacts against this host exists yet, so acceptance resets
+ * to 58 and an installed 57 bundle is held `repack_required` until rebuilt or proven.
  * Machine/instance wires and independent native/enrollment floors are unchanged.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
-export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["57", "58"]);
+export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["58"]);
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -503,8 +504,8 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * v58: DECLARATIVE CREATORS (issue #1079). Plugin manifests gain the optional
  * `contributes.creators` (offers the shell runs from one picker), and `core.index.createFolder`
  * answers the created `folderId` beside the index. Old browser and SDK decoders are strict, so
- * the session version bumps and strict consumers update together. A 57 bundle's manifest and
- * calls are unchanged, so plugin bundle acceptance adds 58 and retains 57. Machine,
+ * the session version bumps and strict consumers update together. No released 57 bundle has
+ * been proven against this host, so plugin bundle acceptance resets to 58. Machine,
  * native-owner, hardened, terminal-host and instance messages are unchanged; machine and
  * instance acceptance add 58 without requiring a fleet restart.
  */

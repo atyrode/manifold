@@ -2795,11 +2795,11 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 58 admits bundle stamps 57 and 58. Protocol 57's explicit
+the current wire version. Protocol 58 admits only bundle stamp 58. Protocol 57's explicit
 per-viewport terminal attach/detach and completion acknowledgement changed the trusted
-plugin/SDK terminal ABI, so earlier stamps require a rebuild; protocol 58 adds only the optional
-manifest `contributes.creators` and `core.index.createFolder`'s `folderId`, which leave a 57
-bundle's manifest and calls unchanged. Portable Worker projections still expose no terminal
+plugin/SDK terminal ABI; protocol 58 adds the optional manifest `contributes.creators` and
+`core.index.createFolder`'s `folderId`, and stamp 57 is not retained until released 57 artifacts
+are proven against the host. Portable Worker projections still expose no terminal
 byte/snapshot subscriptions. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
