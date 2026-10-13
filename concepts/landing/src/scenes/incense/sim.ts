@@ -1,9 +1,11 @@
 // Incense in a dark room. The smoke is a 2D fluid on the GPU (sims/fluid.ts): the ember lays smoke
 // and heat into the dye, the heat lifts the air (buoyancy, in the force snippet) and fades within
-// seconds, the smoke lingers and drifts out through the open top and sides. Just above the ember
-// the air is held to the room's slow draft, so the smoke leaves in a laminar thread that leans and
-// sways with it; a hand-span up, the room's faint currents (a divergence-free stir acting only where
-// there is smoke) and vorticity confinement roll it into Kelvin–Helmholtz curls, then soft veils.
+// seconds, the smoke lingers. Just above the ember the air is held to the room's slow draft, so the
+// smoke leaves in a laminar thread that leans and sways with it; a hand-span up, the room's faint
+// currents (a divergence-free stir acting only where there is smoke) and vorticity confinement roll
+// it into Kelvin–Helmholtz curls. Higher up the cooled smoke meets the warmer air under the ceiling
+// (the frame's top is a wall), stops rising and spreads into slow layered veils that a faint
+// ceiling draft carries off to the right, out through the open side.
 // Now and then a door opens somewhere and a draft sweeps across the room (trigger 0); the pointer
 // is a hand moving the air. Dust motes drift in the light: GPU particles carried by the same air.
 //
@@ -40,14 +42,14 @@ const TAU = Math.PI * 2;
 // ---- layout (frame heights), shared with the shader through incenseLayoutGlsl -------------------
 
 /** The anchor: share of the frame's width, and the table top's height under the burner. */
-const ANCHOR_X = 0.64;
-const FLOOR = 0.13;
+const ANCHOR_X = 0.58;
+const FLOOR = 0.1;
 /** The dish a stick or cone stands in: half its width, its height. */
 const DISH_W = 0.04;
 const DISH_H = 0.014;
 /** The stick: where it enters the dish's sand, its length, lean (radians, to the right), and the share that burns. */
 const STICK_BASE = 0.012;
-const STICK_LENGTH = 0.3;
+const STICK_LENGTH = 0.26;
 const STICK_LEAN = 0.05;
 const STICK_BURN = 0.8;
 /** The cone: base height on the sand, height, half width; the ember ring's and the crumbling tip's descent. */
@@ -190,8 +192,8 @@ const EMIT_HEAT = 6;
 const EMIT_RADIUS = 0.0045;
 /** Upward acceleration per unit of heat, frame heights per second². */
 const BUOYANCY = 0.3;
-/** Fade rates per second: smoke, heat, fresh smoke, velocity. */
-const SMOKE_FADE = 0.06;
+/** Fade rates per second: smoke (slow: old smoke lingers in veils), heat, fresh smoke, velocity. */
+const SMOKE_FADE = 0.03;
 const HEAT_FADE = 0.32;
 const FRESH_FADE = 0.35;
 const VELOCITY_FADE = 0.2;
@@ -204,6 +206,15 @@ const LAMINAR_RATE = 10;
 /** The room's draft at full knob (frame heights per second) and how firmly the air follows it. */
 const AIR_SPEED = 0.045;
 const AIR_RATE = 0.25;
+/**
+ * Under the ceiling: the faint draft there at full draft knob (frame heights per second, to the
+ * right) and the height it starts at; how firmly the warmer air there stops cooled smoke rising
+ * (per unit of smoke) and the height that starts at.
+ */
+const CEILING_DRIFT = 0.075;
+const CEILING_FROM = 0.65;
+const STRATIFY = 0.6;
+const STRATIFY_FROM = 0.86;
 /** The backflow: cold (negative heat) and smoke per second at the outlet, its push out, and the wisp from the cone's tip. */
 const BACKFLOW_COLD = 9;
 const BACKFLOW_SMOKE = 1.4;
@@ -256,13 +267,16 @@ uniform vec4 uAir;        // the room's draft: x velocity, sway amplitude, sway 
 uniform vec4 uGust;       // a door's draft: x velocity, front x, direction (+1 rightward), coupling per second
 uniform vec4 uSource;     // where the smoke leaves the ember (p), laminar span, laminar coupling per second
 uniform vec4 uStir;       // the room's faint currents: strength, height above the source, ramp, smoke gain
+uniform vec4 uCeiling;    // under the ceiling: drift speed, height it starts; stratification, height it starts
 
 vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
-  vec2 a = vec2(0.0, uBuoyancy * dye.g);
+  // Warm air rises; under the ceiling the air is warmer still, so cooled smoke stops rising there
+  // and spreads out in layers.
+  vec2 a = vec2(0.0, uBuoyancy * dye.g - uCeiling.z * dye.r * smoothstep(uCeiling.w, 1.0, p.y));
 
-  // The air follows the room's slow draft, sheared with height; a door's draft takes over behind
-  // its front, strongest along the floor.
-  float target = uAir.x + uAir.y * sin(uAir.z + 2.5 * p.y);
+  // The air follows the room's slow draft, sheared with height and drifting off to the right under
+  // the ceiling; a door's draft takes over behind its front, strongest along the floor.
+  float target = uAir.x + uAir.y * sin(uAir.z + 2.5 * p.y) + uCeiling.x * smoothstep(uCeiling.y, 1.0, p.y);
   float rate = uAir.w;
   float swept = smoothstep(-${glslFloat(FRONT_SOFT)}, ${glslFloat(FRONT_SOFT)}, uGust.z * (uGust.y - p.x));
   target += swept * uGust.x * mix(1.0, 0.55, smoothstep(0.15, 0.9, p.y));
@@ -763,7 +777,7 @@ class Motes {
  * A plume as it stands after a while of burning, painted straight into the fluid on the first
  * frame so the scene opens on one (a software rasterizer only manages a few prewarm steps): a
  * laminar thread, leaning a little, beginning to sway a hand-span up and fraying out; and above it
- * the older smoke, spread into faint veils.
+ * the older smoke, spread into faint veils that widen and drift off to the right under the ceiling.
  */
 function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
   const aspect = fluid.aspect;
@@ -774,8 +788,8 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
   };
   // The veils' middle and breadth.
   const veil = (x: number, y: number, h: number): { dx: number; width: number } => ({
-    dx: x - source.x + 0.02 - 0.08 * (fbm3(3 * x + 5.1, 4 * y) - 0.5),
-    width: 0.03 + 0.07 * smoothstep(0.25, 0.6, h),
+    dx: x - source.x + 0.02 - 0.12 * smoothstep(0.35, 0.65, h) - 0.08 * (fbm3(3 * x + 5.1, 4 * y) - 0.5),
+    width: 0.03 + 0.1 * smoothstep(0.25, 0.6, h),
   });
 
   const vw = fluid.velocity.width;
@@ -787,7 +801,7 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
     if (h < -0.01) continue;
     for (let i = 0; i < vw; i++) {
       const x = ((i + 0.5) / vw) * aspect;
-      if (Math.abs(x - source.x) > 0.35) continue;
+      if (Math.abs(x - source.x) > 0.45) continue;
       const t = thread(x, h);
       const v = veil(x, y, h);
       const rise = 0.06 * Math.exp(-((t.dx / 0.02) ** 2)) * t.share + 0.03 * Math.exp(-((v.dx / v.width) ** 2)) * smoothstep(0.2, 0.35, h);
@@ -804,11 +818,11 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
     if (h < -0.004) continue;
     for (let i = 0; i < dw; i++) {
       const x = ((i + 0.5) / dw) * aspect;
-      if (Math.abs(x - source.x) > 0.35) continue;
+      if (Math.abs(x - source.x) > 0.45) continue;
       const t = thread(x, h);
       const v = veil(x, y, h);
       const fresh = 0.4 * smoke * (0.0035 / t.width) ** 0.7 * Math.exp(-((t.dx / t.width) ** 2)) * t.share * smoothstep(-0.004, 0.004, h);
-      const old = 0.13 * smoke * smoothstep(0.22, 0.38, h) * Math.exp(-((v.dx / v.width) ** 2)) * (0.3 + 1.4 * fbm3(14 * x + 1.3, 10 * y - 2.1)) * (1 - smoothstep(0.88, 1, y));
+      const old = 0.16 * smoke * smoothstep(0.22, 0.38, h) * Math.exp(-((v.dx / v.width) ** 2)) * (0.3 + 1.4 * fbm3(14 * x + 1.3, 10 * y - 2.1)) * (1 - smoothstep(0.95, 1, y));
       if (fresh + old < 1e-4) continue;
       const age = Math.max(0, h) / 0.07;
       const k = (j * dw + i) * 4;
@@ -831,6 +845,7 @@ class Plume {
   readonly #air = new Float32Array(4);
   readonly #source = new Float32Array(4);
   readonly #stir = new Float32Array(4);
+  readonly #ceiling = new Float32Array(4);
   readonly #holder = new Float32Array(2);
   readonly #dye = new Float32Array(4);
   readonly #push = new Float32Array(2);
@@ -841,7 +856,8 @@ class Plume {
     this.fluid = new FluidSim(gpu, {
       velocityResolution: VELOCITY_RES,
       dyeResolution: DYE_RES,
-      boundary: { left: "open", right: "open", top: "open" },
+      // Open sides let the drafts through; the floor (the table) and the ceiling are walls.
+      boundary: { left: "open", right: "open" },
       force: FORCE_GLSL,
       obstacle: OBSTACLE_GLSL,
     });
@@ -956,6 +972,11 @@ class Plume {
     stir[1] = 0.75 * span;
     stir[2] = 0.1;
     stir[3] = 4;
+    const ceiling = this.#ceiling;
+    ceiling[0] = CEILING_DRIFT * settings.draft;
+    ceiling[1] = CEILING_FROM;
+    ceiling[2] = STRATIFY;
+    ceiling[3] = STRATIFY_FROM;
     const holder = this.#holder;
     holder[0] = incenseKinds.indexOf(burner.kind);
     holder[1] = settings.candle ? 1 : 0;
@@ -967,7 +988,7 @@ class Plume {
       vorticity: VORTICITY * turbulence,
       velocityDissipation: VELOCITY_FADE,
       dyeDissipation: this.#dissipation,
-      uniforms: { uBuoyancy: BUOYANCY, uAir: air, uGust: doors.uniform, uSource: src, uStir: stir, uHolder: holder },
+      uniforms: { uBuoyancy: BUOYANCY, uAir: air, uGust: doors.uniform, uSource: src, uStir: stir, uCeiling: ceiling, uHolder: holder },
     });
     this.#clock += dt;
   }

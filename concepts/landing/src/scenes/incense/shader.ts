@@ -1,5 +1,7 @@
-// The incense scene's picture: a dark room with a shaft of light falling across it from a window
-// off to the left, a low table, the incense on it and its smoke, which sim.ts simulates.
+// The incense scene's picture: a dark room, light from a window off to the left crossing it in a
+// hazy shaft and lying on the plaster wall as a tall pane of light; a low table, the incense on it
+// standing dark against that light, and its smoke (simulated in sim.ts), which glows where it drifts
+// through the shaft and throws soft shadows on the wall.
 //   uSim0  dye: r smoke, g heat, b fresh smoke (b / r: how young it is)
 //   uSim1  velocity, frame heights per second
 //   uSim2  the burner: texel 0 ember (from the anchor), glow, presence; texel 1 progress, ash
@@ -12,12 +14,16 @@ import { incenseLayoutGlsl, incenseShapesGlsl } from "./sim.ts";
 export const incenseGlsl = `
 ${incenseLayoutGlsl}
 ${incenseShapesGlsl}
-#define INCENSE_TABLE_BACK 0.2      // where the table top meets the wall
-#define INCENSE_BEAM_HALF 0.19      // half the shaft's width
-#define INCENSE_HAZE 0.04           // light the hazy air scatters out of the shaft
+#define INCENSE_TABLE_BACK (INCENSE_FLOOR + 0.07)  // where the table top meets the wall
+#define INCENSE_TABLE_FRONT 0.045   // the table top's front edge; its front face below
+#define INCENSE_DEPTH 0.12          // how far in front of the wall the incense stands, along the light
+#define INCENSE_POOL_W 0.23         // half the width of the window's light on the wall
+#define INCENSE_POOL_H 0.44         // half its height
+#define INCENSE_HAZE 0.07           // light the hazy air scatters out of the shaft
 #define INCENSE_DENSE 3.2           // smoke cover per unit of dye
 #define INCENSE_SHADOW 60.0         // light lost per unit of dye and frame height, toward the window
-#define INCENSE_STICK_HW 0.0019     // half the stick's width
+#define INCENSE_WALL_SHADOW 2.5     // shadow on the wall per unit of dye in front of it
+#define INCENSE_STICK_HW 0.0022     // half the stick's width
 #define INCENSE_FLAME_W 0.0068      // half the candle flame's width
 
 const vec3 INCENSE_EMBER = vec3(1.0, 0.36, 0.08);
@@ -36,6 +42,7 @@ const vec3 INCENSE_FRESH = vec3(0.74, 0.86, 1.12);         // young smoke: fine 
 const vec3 INCENSE_AGED = vec3(1.0, 0.96, 0.9);            // older smoke: grown particles, neutral
 const vec3 INCENSE_MARK_LIGHT = vec3(1.0, 0.66, 0.34);     // lamplight from the next room
 const vec3 INCENSE_SUMI = vec3(0.24, 0.27, 0.34);          // smoke on washi, read as ink
+const vec3 INCENSE_SHEEN = vec3(0.55, 0.45, 0.38);         // the light's glint along a stick's edge
 
 // Set once per pixel by sceneIncense, read by the helpers below.
 vec2 incenseAnchor;
@@ -46,6 +53,9 @@ float incensePresence;
 vec3 incenseLightCol;
 vec2 incenseDir;
 vec2 incenseCentre;
+vec2 incensePool;
+float incenseSlope;
+float incenseBand;
 vec3 incenseAmbient;
 vec2 incenseFlame;
 float incenseFlameOn;
@@ -63,6 +73,14 @@ vec3 incenseWallColor() {
   if (K_room < 1.5) return vec3(0.022, 0.028, 0.052);
   if (K_room < 2.5) return vec3(0.058, 0.04, 0.03);
   return vec3(0.84, 0.81, 0.74);
+}
+
+// Plaster in the window's light: the colour the pool takes.
+vec3 incensePlaster() {
+  if (K_room < 0.5) return vec3(0.15, 0.15, 0.16);
+  if (K_room < 1.5) return vec3(0.13, 0.14, 0.18);
+  if (K_room < 2.5) return vec3(0.2, 0.15, 0.12);
+  return vec3(0.85, 0.82, 0.76);
 }
 
 vec3 incenseTableColor() {
@@ -83,19 +101,48 @@ float incenseEllipse(vec2 q, vec2 r) {
   return k0 * (k0 - 1.0) / max(k1, 1e-6);
 }
 
-// The shaft: how much of it reaches p (0 outside, 1 inside), its penumbra widening away from the window.
-float incenseBeam(vec2 p) {
-  vec2 r = p - incenseCentre;
+// The window's light where it falls on the wall at w: a tall pane, its sides upright, its top and
+// bottom slanting with the light, crossed by its transom bar; soft-edged.
+float incenseWindow(vec2 w) {
+  vec2 r = w - incensePool;
+  float v = r.y - incenseSlope * r.x;
+  float side = 1.0 - smoothstep(INCENSE_POOL_W - 0.03, INCENSE_POOL_W + 0.03, abs(r.x));
+  float ends = 1.0 - smoothstep(INCENSE_POOL_H - 0.03, INCENSE_POOL_H + 0.03, abs(v));
+  float bar = 1.0 - 0.35 * (1.0 - smoothstep(0.007, 0.02, abs(v - 0.14)));
+  return side * ends * bar;
+}
+
+// The light reaching the incense's plane at p: it carries on to the wall INCENSE_DEPTH further on.
+// Smoke and solids there are lit by it; outside it they stay dim.
+float incenseShaft(vec2 p) {
+  return incenseWindow(p + incenseDir * INCENSE_DEPTH);
+}
+
+// The window's light spilling past the foot of the wall onto the table top at p (and whatever
+// stands low on it), reaching further right as the table comes nearer.
+float incenseSpill(vec2 p) {
+  float nearer = max(INCENSE_TABLE_BACK - p.y, 0.0);
+  return incenseWindow(vec2(p.x - 0.9 * nearer, INCENSE_TABLE_BACK + 0.01)) * (1.0 - 0.5 * nearer / INCENSE_TABLE_BACK) * (1.0 - smoothstep(INCENSE_TABLE_BACK, INCENSE_TABLE_BACK + 0.05, p.y));
+}
+
+// The window's light on a solid standing at p: in the shaft, or in the spill on the table.
+float incenseLit(vec2 p) {
+  return max(incenseShaft(p), incenseSpill(p));
+}
+
+// The shaft seen in the hazy air: the band the window's light sweeps on its way down to the wall,
+// fading out where it lands.
+float incenseHaze(vec2 p) {
+  vec2 r = p - incensePool;
   float across = abs(dot(r, vec2(-incenseDir.y, incenseDir.x)));
-  float soft = 0.045 + 0.035 * clamp(0.5 + dot(r, incenseDir), 0.0, 1.0);
-  return 1.0 - smoothstep(INCENSE_BEAM_HALF - soft, INCENSE_BEAM_HALF + soft, across);
+  return (1.0 - smoothstep(incenseBand - 0.06, incenseBand + 0.04, across)) * smoothstep(0.3, -0.25, dot(r, incenseDir));
 }
 
 // Light on a solid at p from the room, the shaft and the ember; facing -1..1 turns it away from or
 // toward the window.
 vec3 incenseRoomLight(vec2 p, float facing) {
   vec3 light = incenseAmbient;
-  light += incenseLightCol * incenseBeam(p) * (0.2 + 0.8 * clamp(0.5 + 0.5 * facing, 0.0, 1.0)) * 0.55;
+  light += incenseLightCol * incenseLit(p) * (0.2 + 0.8 * clamp(0.5 + 0.5 * facing, 0.0, 1.0)) * 0.55;
   vec2 de = p - incenseEmber;
   light += INCENSE_EMBER * incenseHeat * 0.0003 / (dot(de, de) + 0.00015);
   return light;
@@ -115,11 +162,11 @@ vec4 incenseAnalytic(vec2 p) {
   float tm = uTime * uMotion;
   float rise = smoothstep(0.08, 0.45, h);
   float axis = src.x - 0.03 * h + 0.025 * h * sin(0.21 * tm) + 0.02 * rise * sin(19.0 * h - 0.8 * tm);
-  axis += 0.07 * rise * min(1.0, h / 0.45) * (vnoise(vec2(3.0 * p.x, 4.0 * p.y - 0.25 * tm)) - 0.5);
-  float w = 0.0035 + 0.065 * rise * min(1.0, h / 0.5);
+  axis += 0.07 * rise * min(1.0, h / 0.45) * (vnoise(vec2(3.0 * p.x, 4.0 * p.y - 0.25 * tm)) - 0.5) + 0.12 * smoothstep(0.35, 0.65, h);
+  float w = 0.0035 + 0.09 * rise * min(1.0, h / 0.5);
   float dx = (p.x - axis) / w;
   float veil = mix(1.0, 0.25 + 1.5 * vnoise(vec2(14.0 * p.x, 10.0 * p.y - 0.4 * tm)), rise);
-  float r = 0.5 * pow(0.0035 / w, 0.6) * exp(-dx * dx) * veil * smoothstep(-0.005, 0.004, h) * (1.0 - smoothstep(0.85, 1.0, p.y));
+  float r = 0.5 * pow(0.0035 / w, 0.6) * exp(-dx * dx) * veil * smoothstep(-0.005, 0.004, h) * (1.0 - smoothstep(0.93, 1.0, p.y));
   return vec4(r, 0.0, r * exp(-3.2 * max(h, 0.0)), 0.0);
 }
 
@@ -140,6 +187,23 @@ float incenseOptical(vec2 uv, vec2 toward) {
   return tau;
 }
 
+// The window's light reaching the wall at w past what stands INCENSE_DEPTH in front of it: the
+// smoke (soft shadows drifting and curling over the plaster), the incense and its holder, the candle.
+float incenseWallShade(vec2 w, float kind, float aspect) {
+  vec2 s = w - incenseDir * INCENSE_DEPTH;
+  vec2 spread = vec2(-incenseDir.y, incenseDir.x) * 0.004;
+  vec2 k = vec2(aspect, 1.0);
+  float rho = incenseDye(s / k).r + incenseDye((s + spread) / k).r + incenseDye((s - spread) / k).r;
+  float shade = exp(-INCENSE_WALL_SHADOW * max(rho, 0.0) / 3.0);
+  vec2 q = s - incenseAnchor;
+  float solid = incenseHolder(q, kind);
+  if (kind < 0.5) solid = min(solid, segmentDistance(s, incenseAnchor + vec2(0.0, INCENSE_STICK_BASE), incenseEmber) - INCENSE_STICK_HW);
+  else if (kind < 1.5) solid = min(solid, segmentDistance(q, vec2(0.0, INCENSE_CONE_BASE), vec2(0.0, INCENSE_CONE_BASE + 0.7 * INCENSE_CONE_H)) - 0.6 * INCENSE_CONE_W);
+  shade *= 1.0 - 0.7 * incensePresence * (1.0 - smoothstep(-0.002, 0.006, solid));
+  if (incenseFlameOn > 0.5) shade *= 0.3 + 0.7 * smoothstep(-0.002, 0.006, incenseCandleBody(q));
+  return shade;
+}
+
 // The dish, dark celadon, seen a little from above: its body, the rim's ellipse, sand inside, the
 // ash that has dropped into it.
 vec3 incenseDrawDish(vec3 col, vec2 p, vec4 s1, bool stick, float aa) {
@@ -150,9 +214,10 @@ vec3 incenseDrawDish(vec3 col, vec2 p, vec4 s1, bool stick, float aa) {
   float body = min(incenseDish(q), rim);
   if (body > 2.0 * aa) return col;
   float side = clamp(q.x / INCENSE_DISH_W, -1.0, 1.0);
+  float light = incenseLit(p);
   vec3 glaze = INCENSE_GLAZE * incenseLightAt(p, -side) * (0.65 + 0.5 * smoothstep(0.0, INCENSE_DISH_H, q.y));
   // A soft highlight in the glaze on the shoulder toward the window.
-  glaze += incenseLightCol * incenseBeam(p) * 0.05 * exp(-pow((side + 0.55) / 0.14, 2.0)) * smoothstep(0.003, 0.01, q.y);
+  glaze += incenseLightCol * light * 0.22 * exp(-pow((side + 0.55) / 0.16, 2.0)) * smoothstep(0.003, 0.01, q.y);
   col = mix(col, glaze, incenseFill(body, aa) * incensePresence);
   // Sand inside the rim, darker toward the back where the rim shades it.
   float sand = incenseEllipse(q - rimC, rimR - vec2(0.003, 0.0016));
@@ -160,7 +225,7 @@ vec3 incenseDrawDish(vec3 col, vec2 p, vec4 s1, bool stick, float aa) {
   col = mix(col, sandCol, incenseFill(sand, aa) * incensePresence);
   // The lip catching the light along the rim's front.
   float lip = exp(-pow(rim / 0.0012, 2.0)) * smoothstep(rimC.y + 0.002, rimC.y - 0.004, q.y);
-  col += INCENSE_GLAZE * incenseLightAt(p, 0.5) * 1.4 * lip * incensePresence;
+  col += (INCENSE_GLAZE * incenseLightAt(p, 0.5) * 1.4 + incenseLightCol * light * 0.15) * lip * incensePresence;
   if (!stick) return col;
   // Ash that broke off earlier lies on the sand.
   vec3 ash = INCENSE_ASH * incenseLightAt(p, 0.3);
@@ -183,9 +248,11 @@ vec3 incenseDrawStick(vec3 col, vec2 p, vec4 s1, vec4 s2, float aa) {
   float across = clamp(dot(p - base, n) / INCENSE_STICK_HW, -1.0, 1.0);
   float shade = 0.7 + 0.3 * sqrt(max(0.0, 1.0 - across * across));
   float d = segmentDistance(p, base, incenseEmber) - INCENSE_STICK_HW;
-  col = mix(col, INCENSE_STICK_COLOR * incenseLightAt(p, -across) * shade, incenseFill(d, aa) * incensePresence);
+  // Dark wood, its edge toward the window catching a thin line of the light.
+  vec3 sheen = INCENSE_SHEEN * incenseLightCol * incenseLit(p) * smoothstep(-0.1, -0.85, across) * 0.45;
+  col = mix(col, INCENSE_STICK_COLOR * incenseLightAt(p, -across) * shade + sheen, incenseFill(d, aa) * incensePresence);
 
-  vec3 ash = INCENSE_ASH * incenseLightAt(p, -across) * shade;
+  vec3 ash = INCENSE_ASH * incenseLightAt(p, -across) * shade + sheen;
   float length0 = s1.y;
   if (length0 > 0.0005) {
     vec2 mid = incenseEmber + rotate(axis, 0.35 * s1.z) * (0.5 * length0);
@@ -364,12 +431,18 @@ Shade sceneIncense(vec2 uv, vec2 cell, float t) {
   }
   incenseHeat = s0.z * (0.88 + 0.12 * sin(0.7 * tm) * sin(0.43 * tm + 1.0) + 0.7 * fan);
 
-  // The shaft of light from the window, the room's ambient, the candle.
+  // The window's light: its colour, the way it travels (down to the right, and on into the room),
+  // where it lights the incense's plane (around the plume, a little higher over a stick than over
+  // the short burners) and where it lands on the wall, INCENSE_DEPTH further on.
   incenseLightCol = incenseLightColor() * 2.0 * K_window;
   float angle = radians(mix(12.0, 64.0, K_angle));
   incenseDir = vec2(cos(angle), -sin(angle));
-  // The shaft crosses the plume where it curls: higher over a stick, lower over the short burners.
-  incenseCentre = vec2(incenseAnchor.x - 0.02, kind < 0.5 ? 0.6 : kind > 2.5 ? 0.36 : 0.46);
+  incenseCentre = vec2(incenseAnchor.x, kind < 0.5 ? 0.6 : kind > 2.5 ? 0.42 : 0.5);
+  incensePool = incenseCentre + incenseDir * INCENSE_DEPTH;
+  incenseSlope = max(-1.0, 0.5 * incenseDir.y / incenseDir.x);
+  vec2 across = vec2(-incenseDir.y, incenseDir.x);
+  incenseBand = max(abs(dot(across, vec2(INCENSE_POOL_W, incenseSlope * INCENSE_POOL_W + INCENSE_POOL_H))),
+                    abs(dot(across, vec2(INCENSE_POOL_W, incenseSlope * INCENSE_POOL_W - INCENSE_POOL_H))));
   vec3 wall = incenseWallColor();
   incenseAmbient = paper ? vec3(0.9) : wall * 3.0 + 0.012;
   bool candle = K_candle > 0.5;
@@ -382,38 +455,48 @@ Shade sceneIncense(vec2 uv, vec2 cell, float t) {
   }
   incenseFlame = flameBase + vec2(0.3 * lean, 0.4) * INCENSE_FLAME_H;
 
-  float beam = K_window > 0.0 ? incenseBeam(p) : 0.0;
+  bool window = K_window > 0.0;
+  float shaft = window ? incenseShaft(p) : 0.0;
+  float haze = window ? incenseHaze(p) : 0.0;
   vec2 toward = -incenseDir / vec2(aspect, 1.0);
-  float lit = beam > 0.002 ? exp(-INCENSE_SHADOW * incenseOptical(uv, toward)) : 1.0;
+  float lit = shaft > 0.002 || haze > 0.002 ? exp(-INCENSE_SHADOW * incenseOptical(uv, toward)) : 1.0;
 
   // ---- the room ----------------------------------------------------------------------------------
   vec3 col;
-  vec3 albedo = paper ? vec3(0.85) : wall * 5.0;
+  vec3 albedo = incensePlaster();
   vec2 df = p - incenseFlame;
   vec2 de = p - incenseEmber;
   vec3 warm = INCENSE_FLAME_LIGHT * incenseFlameOn * 0.02 / (dot(df, df) + 0.01) + INCENSE_EMBER * incenseHeat * incensePresence * 0.0004 / (dot(de, de) + 0.0015);
   if (p.y > INCENSE_TABLE_BACK) {
-    // Plaster, mottled (fixed to the frame, so it never crawls), dimmer toward the ceiling.
-    float plaster = fbm(cell / 70.0 + 3.1) - 0.5;
-    col = wall * (1.0 + 0.35 * plaster) * mix(1.15, 0.6, smoothstep(INCENSE_TABLE_BACK, 1.0, p.y));
+    // Plaster, mottled (fixed to the frame, so it never crawls), dimmer toward the ceiling; the
+    // window's light lying on it, crossed by the shadows of the smoke and the incense.
+    float plaster = 1.0 + 0.35 * (fbm(cell / 70.0 + 3.1) - 0.5);
+    col = wall * plaster * mix(1.1, 0.65, smoothstep(INCENSE_TABLE_BACK, 1.0, p.y));
+    float pool = window ? incenseWindow(p) : 0.0;
+    if (pool > 0.001) col += albedo * plaster * incenseLightCol * pool * incenseWallShade(p, kind, aspect) * (paper ? 0.18 : 0.6);
     col += albedo * 0.5 * warm;
-  } else {
-    // The table top, receding to the wall: faint grain, a sheen toward the back, the shaft's patch
-    // where it lands (crossed by the smoke's shadow), the candle's and ember's glow.
-    float depth = (INCENSE_TABLE_BACK - p.y) / INCENSE_TABLE_BACK;
+    // A soft contact shadow where the wall meets the table.
+    col *= 1.0 - 0.35 * exp(-(p.y - INCENSE_TABLE_BACK) / 0.012);
+  } else if (p.y > INCENSE_TABLE_FRONT) {
+    // The table top, receding to the wall: faint grain, a sheen toward the back, the window's light
+    // spilling onto it, the candle's and the ember's glow.
+    float depth = (INCENSE_TABLE_BACK - p.y) / (INCENSE_TABLE_BACK - INCENSE_TABLE_FRONT);
     float grain = vnoise(vec2(p.x * 9.0 / (0.4 + depth), 60.0 * log(0.4 + depth)));
     vec3 wood = incenseTableColor();
-    col = wood * (0.8 + 0.4 * grain) * mix(1.2, 0.75, depth);
+    col = wood * (0.8 + 0.4 * grain) * mix(1.2, 0.8, depth);
     vec3 woodAlbedo = paper ? wood : wood * 5.0;
-    col += woodAlbedo * (0.35 * incenseLightCol * beam * lit + 0.6 * warm);
+    col += woodAlbedo * (0.5 * incenseLightCol * (window ? incenseSpill(p) : 0.0) + 0.6 * warm);
     // The candle's flame mirrored in the polished top, a soft smear below the candle.
     if (candle) {
       vec2 m = vec2(incenseFlame.x, 2.0 * (incenseAnchor.y + INCENSE_CANDLE_Y) - incenseFlame.y);
       vec2 r = (p - m) / vec2(0.012, 0.035);
       col += INCENSE_FLAME_LIGHT * 0.12 * exp(-dot(r, r)) * step(p.y, incenseAnchor.y + INCENSE_CANDLE_Y);
     }
-    // The back edge, catching a little light.
-    col += albedo * incenseAmbient * 0.5 * exp(-pow((INCENSE_TABLE_BACK - p.y) / 0.0025, 2.0));
+    // The front edge, catching the light.
+    col += (incenseAmbient * 0.5 + incenseLightCol * 0.05) * exp(-pow((p.y - INCENSE_TABLE_FRONT) / 0.0025, 2.0));
+  } else {
+    // The table's front face, in shadow.
+    col = incenseTableColor() * mix(0.35, 0.5, p.y / INCENSE_TABLE_FRONT);
   }
 
   // The M of light (Manifold): lamplight from the next room through a carved transom, landing on the
@@ -463,18 +546,19 @@ Shade sceneIncense(vec2 uv, vec2 cell, float t) {
   float cover = 1.0 - exp(-INCENSE_DENSE * rho);
   float fresh = clamp(dye.b / max(dye.r, 0.02), 0.0, 1.0);
   vec3 tint = mix(INCENSE_AGED, INCENSE_FRESH, fresh);
-  // Faces of the smoke turned toward the window catch more of it; thin wisps glow (the light scatters
-  // forward through them unshadowed).
+  // In the shaft the smoke lights up, faces turned toward the window brightest, thin wisps glowing (the
+  // light scatters forward through them unshadowed); outside it, only the room's dim light finds it.
   float facing = dot(-slope / (length(slope) + 1e-4), -incenseDir) * smoothstep(0.0, 0.06, length(slope));
-  vec3 onSmoke = incenseLightCol * beam * lit * (1.0 + 0.35 * facing) * (1.0 + 0.6 * (1.0 - cover));
+  vec3 onSmoke = incenseLightCol * shaft * lit * (1.0 + 0.35 * facing) * (1.0 + 0.6 * (1.0 - cover));
   onSmoke += INCENSE_FLAME_LIGHT * incenseFlameOn * 0.6 / (1.0 + dot(df, df) / 0.012);
   onSmoke += INCENSE_EMBER * incenseHeat * incensePresence * 0.8 * exp(-dot(de, de) / 0.0005);
   onSmoke += INCENSE_MARK_LIGHT * K_mark * 2.2 * mark;
   onSmoke += incenseAmbient * (paper ? 0.3 : 1.0);
 
-  // The hazy air glows faintly in the shaft, darkened where the smoke shadows it; motes drift in it.
-  vec3 air = incenseLightCol * beam * lit * INCENSE_HAZE;
-  if (uSimOn.w > 0.5 && K_dust > 0.0) air += incenseLightCol * beam * lit * textureLod(uSim3, uv, 0.0).r * K_dust * 0.9;
+  // The hazy air glows in the shaft on its way to the wall, darkened where the smoke shadows it;
+  // motes drift in it.
+  vec3 air = incenseLightCol * haze * lit * INCENSE_HAZE;
+  if (uSimOn.w > 0.5 && K_dust > 0.0) air += incenseLightCol * max(haze, shaft) * lit * textureLod(uSim3, uv, 0.0).r * K_dust * 0.9;
   if (paper) {
     // On washi the smoke reads as ink: a cool grey wash, paler where the light catches it.
     float light = clamp(dot(onSmoke - incenseAmbient * 0.3, LUMA) * 0.5, 0.0, 1.0);
