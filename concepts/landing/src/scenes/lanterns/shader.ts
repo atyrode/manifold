@@ -3,34 +3,36 @@
 // World units are metres: x right (upstream; the river runs to the left), y up, z ahead, the eye
 // LANTERNS_EYE over the water, the far bank's waterline LANTERNS_BANK ahead. Above that waterline
 // the frame is the far bank (a silhouette in its own plane: tree crowns, a temple hall and a
-// pagoda, a quay with stone lanterns, a vermilion arched bridge whose half-ring closes into a full
-// circle with its reflection, an old pine), the wooded hills beyond it and the sky. Below it lies
-// the water, a mirror bent by ripples whose crests run mostly along the current: it reflects the
-// sky, the hills and the bank (their lamps drawn out into columns), and around two stones a cushion
-// of water, a glassy lee and a wake.
+// pagoda, a quay with stone lanterns, a vermilion arched bridge hung with lamps whose half-ring
+// closes into a full circle with its reflection, an old pine), the wooded hills beyond it, falling
+// away toward the sunset on the left, and the sky. Below it lies the water: a mirror of the sky's
+// afterglow and the bank, bent by ripples into broad horizontal bands, darkening toward our bank;
+// around two stones a cushion of water, a glassy lee and a wake.
 //
 // The lanterns come from the simulation (sim.ts), one texel each in uSim0. Each is a small box
 // traced along the eye ray: wooden tray, paper walls glowing brightest level with the candle, the
 // flame itself a soft drop of light seen through the paper, a column of writing on two walls of
 // the nearer ones, a dark frame, an open top showing the lit far walls. Its reflection is the same
-// box traced along the ray reflected off the rippled water: a wavering mirror image near it, and
-// beyond, the glitter path, where facets too fine to draw still send its light to the eye: a column
-// down the water toward the viewer whose reach is set by how rough the surface is (K_reflection).
-// Around each lantern its halo in the air (wider in mist), a pool of light on the water, and rings
-// spreading where one has just been set down. The M lantern is indigo paper with the M cut through.
+// box traced along the ray reflected off the rippled water: a wavering mirror image right under
+// it, and below that its glitter: rows of wave facets that tip its light to the eye now and then,
+// so the reflection runs down the water toward the viewer as stacked amber dashes that sway, thin
+// out and fade (how far: K_reflection). The bank's lamps are mirrored the same way. Around each
+// lantern its halo in the air (wider in mist), a pool of light on the water, and rings spreading
+// where one has just been set down. The M lantern is indigo paper with the M cut through.
 //
 // Nothing changes by chance from one frame to the next: every motion is a slow function of time
-// (ripples under 0.3 Hz, flames breathing under 0.4 Hz), and drawn features stay a few cells wide
-// or fade out before they get finer. So the scene sets no shimmer.
+// (ripples and glitter rows under 0.2 Hz, flames breathing under 0.4 Hz), and drawn features stay a
+// few cells wide or fade out before they get finer. So the scene sets no shimmer.
 //
 // Knobs: K_ripple, K_reflection, K_mist (water), K_current (ripples drift with the stream; the
 // lanterns themselves are the sim's), K_time, K_cycle (sky), K_rain, K_wind (weather).
-import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN_HALF, LANTERN_TALL, MAX_LANTERNS, ROCKS } from "./sim.ts";
+import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN_HALF, LANTERN_TALL, MAX_LANTERNS, ROCK_DOWNSTREAM, ROCKS } from "./sim.ts";
 
 /** A number as a GLSL float literal. */
 const glslFloat = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
 
 const rocks = ROCKS.map((rock) => `vec4(${glslFloat(rock.x)}, ${glslFloat(rock.z)}, ${glslFloat(rock.radius)}, ${glslFloat(rock.height)})`).join(", ");
+const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFloat(d.z)})`).join(", ");
 
 export const lanternsGlsl = `
 const float LANTERNS_HORIZON = ${glslFloat(HORIZON)};
@@ -45,6 +47,7 @@ const float LANTERNS_CURRENT_SLOW = ${glslFloat(CURRENT_SLOW)};
 const float LANTERNS_CURRENT_FAST = ${glslFloat(CURRENT_FAST)};
 const int LANTERNS_ROCKS = ${ROCKS.length};
 const vec4 LANTERNS_ROCK[${ROCKS.length}] = vec4[${ROCKS.length}](${rocks}); // x, z, radius, height (m)
+const vec2 LANTERNS_DOWN[${ROCKS.length}] = vec2[${ROCKS.length}](${downstream}); // downstream from each (unit x, z)
 // How far around a lantern (m, at its distance) its light can reach on screen: halo, rings, wobble.
 const float LANTERNS_REACH = 2.2;
 // The view faces 20 degrees left of the sky library's, toward the sunset: the afterglow stands in
@@ -54,10 +57,12 @@ const float LANTERNS_FACING = -0.35;
 // The far bank, metres along it from straight ahead.
 const float LANTERNS_TEMPLE = -23.0;
 const float LANTERNS_PAGODA = 22.0;
-const float LANTERNS_BRIDGE = 7.0;
+const float LANTERNS_BRIDGE = 3.0;
+const float LANTERNS_ARCH_IN = 4.5;  // the bridge's arch: under its soffit, and over its deck (m)
+const float LANTERNS_ARCH_OUT = 5.2;
 const float LANTERNS_PINE = -47.0;
 const float LANTERNS_QUAY = 1.3;   // height of the stone quay along the water
-const float LANTERNS_TORO[5] = float[5](-37.0, -7.5, 13.2, 30.5, 57.0); // stone lanterns on the quay
+const float LANTERNS_TORO[5] = float[5](-37.0, -9.0, 13.5, 30.5, 57.0); // stone lanterns on the quay
 // The pine's pads of needles: centre (m along, m up) and radii.
 const vec4 LANTERNS_PADS[5] = vec4[5](
   vec4(-44.0, 7.2, 3.0, 0.85), vec4(-49.8, 8.6, 2.4, 0.75), vec4(-41.4, 5.5, 2.2, 0.65),
@@ -112,31 +117,35 @@ void lanternsOver(inout vec3 alb, inout float cover, vec3 a, float c) {
   cover = max(cover, c);
 }
 
-// A lit window or screen on the bank: dx from its axis, half-width hw, from h0 to h1 high. In a
-// reflection (blur > 0, m) its top and bottom are drawn out up and down, keeping its light.
-float lanternsPane(float dx, float h, float hw, float h0, float h1, float foot, float blur) {
+// A lit window or screen on the bank: dx from its axis, half-width hw, from h0 to h1 high. Returns
+// x: its light as it is, y: its light drawn out up and down by blur (m), keeping its total, for the
+// glitter of its reflection.
+vec2 lanternsPane(float dx, float h, float hw, float h0, float h1, float foot, float blur) {
   float hh = 0.5 * (h1 - h0);
-  float off = max(abs(h - 0.5 * (h0 + h1)) - hh, 0.0) / (foot + blur);
-  return smoothstep(-foot, foot, hw - dx) * exp(-off * off) * hh / (hh + 0.6 * blur);
+  float off = max(abs(h - 0.5 * (h0 + h1)) - hh, 0.0);
+  float sharp = off / foot;
+  float drawn = off / (foot + blur);
+  return smoothstep(-foot, foot, hw - dx) * vec2(exp(-sharp * sharp), exp(-drawn * drawn) * hh / (hh + 0.6 * blur));
 }
 
-// A small lamp of radius r at offset d from it, drawn out up and down by blur in reflections.
-float lanternsLampAt(vec2 d, float r, float blur) {
+// A small lamp of radius r at offset d from it: x as it is, y drawn out up and down by blur.
+vec2 lanternsLampAt(vec2 d, float r, float blur) {
   float ry = r + blur;
-  return exp(-d.x * d.x / (r * r) - d.y * d.y / (ry * ry)) * r / ry;
+  float across = exp(-d.x * d.x / (r * r));
+  return across * vec2(exp(-d.y * d.y / (r * r)), exp(-d.y * d.y / (ry * ry)) * r / ry);
 }
 
 // The far bank in its own plane, b = (along the bank, height over its waterline) in metres, back
 // to front: tree crowns, the temple's main hall and its pagoda, two houses, the quay with its stone
 // lanterns, the arched bridge and an old pine leaning out over the water. foot is a cell's size
-// there (m) for soft edges, blur how far the water draws the lamps out (m, 0 seen directly).
-// Returns coverage; alb is the surface colour to light, lamp the light of lamps and windows
-// (before dusk fades them in), gap how much of the bridge's arch shows the hazy inlet through it.
-float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out float lamp, out float gap) {
+// there (m) for soft edges, blur how far the water draws the lamps out (m). Returns coverage; alb
+// is the surface colour to light, lamp the light of lamps and windows (x sharp, y drawn out; before
+// dusk fades them in), gap how much of the bridge's arch shows the misty inlet through it.
+float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out vec2 lamp, out float gap) {
   float x = b.x;
   float h = b.y;
   alb = LANTERNS_TREES;
-  lamp = 0.0;
+  lamp = vec2(0.0);
   gap = 0.0;
   if (h > 22.0) return 0.0;
 
@@ -146,6 +155,8 @@ float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out float lamp,
   top = min(top, mix(40.0, 8.6, 1.0 - smoothstep(11.0, 15.0, abs(x - LANTERNS_TEMPLE))));
   top = min(top, mix(40.0, 7.6, 1.0 - smoothstep(4.0, 7.0, abs(x - LANTERNS_PAGODA))));
   top = min(top, mix(40.0, 4.2, 1.0 - smoothstep(6.0, 10.0, abs(x - LANTERNS_PINE))));
+  // Only low shrubs behind the bridge, so its arch stands against the hills and the mist.
+  top = min(top, mix(40.0, 2.6, 1.0 - smoothstep(7.5, 10.5, abs(x - LANTERNS_BRIDGE))));
   float cover = smoothstep(-foot, foot, top - h);
 
   // The main hall: a hipped-and-gabled roof whose eaves sweep out and curl up at the tips, a pair
@@ -208,7 +219,7 @@ float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out float lamp,
   // The quay along the water, open where the inlet runs in under the bridge, its coping lighter.
   vec2 bd = vec2(x - LANTERNS_BRIDGE, h);
   float rb = length(bd);
-  float quay = smoothstep(-foot, foot, LANTERNS_QUAY - h) * smoothstep(-foot, foot, rb - 3.5);
+  float quay = smoothstep(-foot, foot, LANTERNS_QUAY - h) * smoothstep(-foot, foot, rb - LANTERNS_ARCH_IN);
   lanternsOver(alb, cover, LANTERNS_STONE * (h > LANTERNS_QUAY - 0.18 ? 1.35 : 1.0), quay);
 
   // Stone lanterns on the quay: a foot, a pillar, a firebox with its window lit, a curved cap and
@@ -223,19 +234,27 @@ float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out float lamp,
   }
 
   // The arched bridge: a vermilion half-ring standing on the water, so that with its reflection it
-  // closes into a full circle; a railing with posts along the deck above the quay; a lamp on a post
-  // at either end.
+  // closes into a full circle, the lacquer catching the sky along its crown; a railing with posts
+  // along the deck above the quay; nine lamps on the rail, which with their reflections make a ring
+  // of lights round the misty eye of the arch.
   float bx = abs(x - LANTERNS_BRIDGE);
-  if (bx < 6.0 && h > -foot) {
-    float arch = smoothstep(-foot, foot, rb - 3.5) * smoothstep(-foot, foot, 4.15 - rb);
-    float post = abs(fract(atan(bd.y, bd.x) / 0.24 + 0.5) - 0.5) * 0.24 * rb;
-    float rail = max(smoothstep(-foot, foot, 0.12 - abs(rb - 5.0)), smoothstep(-foot, foot, 0.1 - post) * step(rb, 5.05));
-    rail *= step(4.15, rb) * smoothstep(-foot, foot, h - LANTERNS_QUAY);
-    float lampPost = smoothstep(-foot, foot, 0.12 - abs(bx - 5.25)) * step(LANTERNS_QUAY, h) * step(h, LANTERNS_QUAY + 1.0);
-    lanternsOver(alb, cover, LANTERNS_LACQUER, max(max(arch, rail) * step(0.0, h), lampPost));
-    gap = smoothstep(-foot, foot, 3.5 - rb) * step(0.0, h);
+  if (bx < 7.5 && h > -foot) {
+    float arch = smoothstep(-foot, foot, rb - LANTERNS_ARCH_IN) * smoothstep(-foot, foot, LANTERNS_ARCH_OUT - rb);
+    float ang = atan(max(bd.y, 0.0), bd.x);
+    float post = abs(fract(ang / 0.2 + 0.5) - 0.5) * 0.2 * rb;
+    float rail = max(smoothstep(-foot, foot, 0.12 - abs(rb - LANTERNS_ARCH_OUT - 0.85)), smoothstep(-foot, foot, 0.1 - post) * step(rb, LANTERNS_ARCH_OUT + 0.9));
+    rail *= step(LANTERNS_ARCH_OUT, rb) * smoothstep(-foot, foot, h - LANTERNS_QUAY);
+    float crown = smoothstep(LANTERNS_ARCH_OUT - 0.3, LANTERNS_ARCH_OUT, rb);
+    lanternsOver(alb, cover, LANTERNS_LACQUER * (1.0 + 0.8 * crown), max(arch, rail) * step(0.0, h));
+    gap = smoothstep(-foot, foot, LANTERNS_ARCH_IN - rb) * step(0.0, h);
     cover = max(cover, gap);
-    lamp += lanternsLampAt(vec2(bx - 5.25, h - LANTERNS_QUAY - 1.1), 0.26, blur);
+    float stepA = (3.14159265 - 0.6) / 8.0;
+    float k0 = clamp(floor((ang - 0.3) / stepA), 0.0, 7.0);
+    for (int j = 0; j < 2; j++) {
+      float th = 0.3 + (k0 + float(j)) * stepA;
+      vec2 d = bd - (LANTERNS_ARCH_OUT + 1.2) * vec2(cos(th), sin(th));
+      lamp += lanternsLampAt(d, 0.24, blur) + lanternsLampAt(d, 0.8, blur) * 0.1;
+    }
   }
 
   // An old pine leaning out over the water from the left, its needles in flat pads.
@@ -248,7 +267,7 @@ float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out float lamp,
       vec2 q = (b - pad.xy) / pad.zw;
       q.y *= q.y < 0.0 ? 1.7 : 1.0; // flat underneath
       float tufts = 0.22 * (vnoise(vec2(x * 1.7, float(i) * 3.1)) - 0.5);
-      pine = max(pine, smoothstep(foot, -foot, (length(q) - 1.0 + tufts) * pad.w));
+      pine = max(pine, smoothstep(-foot, foot, (1.0 - tufts - length(q)) * pad.w));
     }
     lanternsOver(alb, cover, LANTERNS_TREES * 0.8, pine);
   }
@@ -258,26 +277,30 @@ float lanternsBank(vec2 b, float foot, float blur, out vec3 alb, out float lamp,
 // What a ray sees beyond the water: the sky (with stars when seen directly), the hills, the far
 // bank where the ray crosses its plane, and mist lying along the bank's foot. o is where the ray
 // leaves (the eye, or a point on the water); lift tips the sky lookup up a little for a rough
-// mirror; foot is a cell's size at the bank (m), blur how far the water draws its lamps out. lamp
-// returns the bank's lamplight seen along the ray, for the accent.
-vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, bool direct, out float lamp) {
+// mirror; foot is a cell's size at the bank (m), blur how far the water draws its lamps out.
+// Returns the colour without the bank's lamps; lamp returns their light (x as seen, y drawn out),
+// faded in with the dusk and veiled by the mist, for the caller to lay on.
+vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, bool direct, out vec2 lamp) {
   vec3 col = skyColor(sky, normalize(r + vec3(0.0, lift, 0.0)));
   if (direct) col += vec3(0.85, 0.9, 1.0) * skyStars(sky, r, 0.55);
 
-  // Two ranges of hills, the further paler (aerial perspective), as in an ink-wash painting.
+  // Two ranges of hills, the further paler (aerial perspective), as in an ink-wash painting. They
+  // fall away toward the sunset on the left, so the afterglow lies low over the bank there, and
+  // the river can mirror it.
   float ex = r.x / r.z * LANTERNS_FOCAL;
   float ey = r.y / r.z * LANTERNS_FOCAL;
   float aa = max(1.2 / uRes.y, foot * LANTERNS_FOCAL / LANTERNS_BANK);
+  float fall = mix(0.3, 1.0, smoothstep(-0.95, 0.2, ex));
   vec3 hills = LANTERNS_HILLS * lit;
-  col = mix(col, mix(haze, hills, 0.35 + 0.2 * dark), smoothstep(aa, -aa, ey - lanternsHill(ex, 0.075, 0.12, 2.0)));
-  col = mix(col, mix(haze, hills, 0.65 + 0.2 * dark), smoothstep(aa, -aa, ey - lanternsHill(ex, 0.035, 0.08, 9.0)));
+  col = mix(col, mix(haze, hills, 0.35 + 0.2 * dark), smoothstep(-aa, aa, lanternsHill(ex, 0.075, 0.12, 2.0) * fall - ey));
+  col = mix(col, mix(haze, hills, 0.65 + 0.2 * dark), smoothstep(-aa, aa, lanternsHill(ex, 0.035, 0.08, 9.0) * fall - ey));
 
   float run = (LANTERNS_BANK - o.z) / r.z;
   vec2 b = vec2(o.x + r.x * run, o.y + r.y * run);
   vec3 alb;
   float gap;
   float cover = lanternsBank(b, foot, blur, alb, lamp, gap);
-  col = mix(col, mix(alb * lit * 1.3, haze * 0.6, gap * 0.85), cover);
+  col = mix(col, mix(alb * lit * 1.3, haze * 0.45, gap * 0.85), cover);
   lamp *= dark;
 
   // Mist lying along the foot of the bank, drifting downstream.
@@ -285,7 +308,7 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
   float veil = clamp(K_mist * exp(-max(b.y, 0.0) / 3.5) * (0.55 + 0.45 * drift), 0.0, 0.85);
   col = mix(col, haze, veil);
   lamp *= 1.0 - 0.6 * veil;
-  return col + LANTERNS_LAMP * lamp;
+  return col;
 }
 
 // The river's surface: five trains of ripples, crests mostly along the current, running slowly
@@ -298,19 +321,40 @@ vec3 lanternsRipples(vec2 p, float tm, vec2 cellSize, float amp, float drift) {
   float hidden = 0.0;
   for (int i = 0; i < 5; i++) {
     float fi = float(i);
-    float wavelength = 2.8 * pow(0.6, fi);
+    float wavelength = 6.0 * pow(0.53, fi);
     float turn = 0.5 * sin(fi * 2.4 + 0.7);
     vec2 along = vec2(sin(turn), cos(turn));
     float k = TAU / wavelength;
-    float s = amp * (0.075 - 0.009 * fi);
+    float s = amp * (0.06 - 0.007 * fi);
     float seen = smoothstep(7.0, 14.0, wavelength / max(length(along * cellSize), 1e-6));
-    // Deep-water waves, slowed (more so the finer) so nothing passes a cell faster than ~0.3 Hz.
-    float omega = 0.22 * sqrt(9.81 * k) * (1.0 - 0.12 * fi);
+    // Deep-water waves, slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz.
+    float omega = 0.14 * sqrt(9.81 * k) * (1.0 - 0.1 * fi);
     float phase = k * dot(along, p + vec2(drift, 0.0)) - omega * tm + fi * 1.9;
     slope += along * cos(phase) * s * seen;
     hidden += 0.5 * s * s * (1.0 - seen);
   }
   return vec3(slope, hidden);
+}
+
+// Rows of wave facets that can catch a light. A light mirrored at a slope the ripples only now and
+// then reach is seen in the few facets tilted just right, and those lie along the crests: its
+// reflection breaks into short horizontal dashes stacked down the water. The rows are spaced in
+// proportion to their distance (evenly in log z), so each stays several cells tall from our bank to
+// the far one, and they creep toward the viewer. p is the point on the water (x, z). Returns x: how
+// near this point is to the middle of its row (0..1), y: the row's luck here (0..1, slowly
+// changing along the row and in time; a row lights for a light when its luck beats the odds), z:
+// how far the row sways sideways (-1..1).
+vec3 lanternsGlitter(vec2 p, float tm) {
+  // Rows 11% of their distance apart: about 15 cells on screen 15 m out, 6 cells 40 m out.
+  float phase = log(p.y) / 0.11 + tm * 0.06;
+  float row = floor(phase);
+  float h = hash12(vec2(row, 3.7));
+  float f = fract(phase);
+  float d = (f - 0.5 - 0.3 * (h - 0.5)) / (0.13 + 0.1 * fract(h * 17.3));
+  float luck = vnoise(vec2(p.x * 0.9 + row * 5.3, row * 1.7 + tm * 0.07));
+  // Zero at the row's edges, where its luck and sway hand over to the next row's.
+  float dash = exp(-d * d) * (1.0 - smoothstep(0.36, 0.5, abs(f - 0.5)));
+  return vec3(dash, luck, sin(row * 2.1 + tm * 0.4));
 }
 
 // A lantern's box along a ray. The ray crosses the lantern's axis plane at lateral offset u and
@@ -425,16 +469,16 @@ vec3 lanternsWall(vec4 hit, float u, float v0, float size, vec3 paper, float on,
       float block = 1.0 - smoothstep(0.22, 0.5, max(r.x, r.y));
       // Soft sumi grey rather than black, so marks sliding past with the lantern step through the
       // dither gently.
-      float ink = stroke * block * smoothstep(2.2, 3.4, 0.213 * a * cpm) * 0.6;
+      float ink = stroke * block * smoothstep(2.6, 3.8, 0.213 * a * cpm) * 0.48;
       col *= 1.0 - ink;
       glow *= 1.0 - 0.8 * ink;
     }
   }
-  // The frame: posts at the corners and a rim along the top, faded out before they get thinner
-  // than about two cells.
-  float frame = max(smoothstep(0.84, 0.92, abs(across)), smoothstep(0.92, 0.97, y)) * smoothstep(1.2, 2.2, 0.12 * a * cpm);
-  col = mix(col, LANTERNS_WOOD * (lit + paper * on * 0.18), frame * 0.9);
-  glow *= 1.0 - 0.9 * frame;
+  // The frame: posts at the corners and a rim along the top, a warm brown rather than black (they
+  // slide through the dither with the lantern), and only where comfortably over two cells wide.
+  float frame = max(smoothstep(0.84, 0.92, abs(across)), smoothstep(0.92, 0.97, y)) * smoothstep(1.8, 3.0, 0.12 * a * cpm);
+  col = mix(col, LANTERNS_WOOD * (lit + paper * on * 0.18) + paper * on * 0.25, frame * 0.6);
+  glow *= 1.0 - 0.5 * frame;
   // The paper by daylight.
   col += (mark ? LANTERNS_INDIGO : vec3(0.9, 0.86, 0.78)) * lit * 0.35 * (1.0 - frame);
   return col;
@@ -463,15 +507,20 @@ float lanternsRock(float u, float v0, float climb, float r, float h, float salt,
   return w;
 }
 
-// A stone's face: speckled granite lit from the sky above and, warmly, by the lanterns floating
-// near it (shine.x how much, shine.y from which side, -1 left .. 1 right); dark and wet just above
-// the water.
-vec3 lanternsRockShade(vec3 n, float v, float u, vec3 lit, vec4 shine, float salt) {
-  vec3 alb = vec3(0.12, 0.12, 0.13) * (0.8 + 0.4 * vnoise(vec2(u * 4.0 + salt, v * 5.0)));
+// A stone's face, seen along ray: speckled granite lit from the sky above; wet, so its outline
+// mirrors the bright low sky in a pale rim; and warm where the lanterns floating near it light it
+// (shine.x how much, shine.y from which side, -1 left .. 1 right): its face toward them, and a
+// bright amber rim on that side. Dark and wet just above the water.
+vec3 lanternsRockShade(vec3 n, float v, float u, vec3 ray, vec3 lit, vec3 haze, vec4 shine, float salt) {
+  vec3 alb = vec3(0.16, 0.155, 0.16) * (0.8 + 0.4 * vnoise(vec2(u * 4.0 + salt, v * 5.0)));
+  float rim = 1.0 - max(dot(n, -ray), 0.0);
+  rim *= rim * sqrt(rim);
   vec3 col = alb * lit * (0.35 + 0.9 * max(n.y, 0.0));
+  col += haze * rim * (0.2 + 0.35 * max(n.y, 0.0));
   float facing = clamp(0.35 - 0.45 * n.z + 0.5 * n.x * shine.y, 0.0, 1.0);
-  col += alb * LANTERNS_AMBER * shine.x * facing * 2.2;
-  return col * (0.65 + 0.35 * smoothstep(0.0, 0.07, v));
+  float side = clamp(0.35 + 0.65 * n.x * shine.y, 0.0, 1.0);
+  col += LANTERNS_AMBER * shine.x * (alb * facing * 2.4 + rim * side * 0.5);
+  return col * (0.65 + 0.35 * smoothstep(0.0, 0.06, v));
 }
 
 Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
@@ -500,19 +549,25 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   bool water = uv.y < shore;
 
   vec3 col;
-  float lamp = 0.0;
+  float lamp = 0.0; // the bank's lamplight in view, for the accent
   // Where the eye ray meets the water, the cell's footprint there, and how the water mirrors.
   float zp = 1e4;
   float xp = 0.0;
   float cellX = 0.0;
   float cellZ = 0.0;
   float fres = 0.0;
-  float sigma = 0.0; // rms slope of the glitter that draws lights out into columns
+  float sigma = 0.0; // rms slope of the facets that draw lights out down the water
   vec3 refl = vec3(0.0, 1.0, 1.0);
   vec3 mirror = vec3(0.0);
+  vec3 glint = vec3(0.0);
+  // How far down the water (m) a lantern's glitter runs before it has faded.
+  float reach = 3.0 + 14.0 * K_reflection;
 
   if (!water) {
-    col = lanternsBeyond(vec3(0.0, LANTERNS_EYE, 0.0), dir, 0.0, sky, lit, haze, dark, tm, bankFoot, 0.0, true, lamp);
+    vec2 bankLamp;
+    col = lanternsBeyond(vec3(0.0, LANTERNS_EYE, 0.0), dir, 0.0, sky, lit, haze, dark, tm, bankFoot, 0.0, true, bankLamp);
+    col += LANTERNS_LAMP * bankLamp.x;
+    lamp = bankLamp.x;
   } else {
     float q = -dir.y / dir.z;
     zp = LANTERNS_EYE / q;
@@ -520,24 +575,33 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     cellX = zp / (LANTERNS_FOCAL * uRes.y);
     cellZ = cellX * zp / LANTERNS_EYE;
     vec3 rip = lanternsRipples(vec2(xp, zp), tm, vec2(cellX, cellZ), rippled, 0.6 * current * tm);
+    glint = lanternsGlitter(vec2(xp, zp), tm);
 
-    // The stones: glassy water in the lee of each, a wake opening behind it in two arms, and a
-    // cushion of water heaped against its upstream face.
+    // The stones: glassy water in the lee of each, a wake opening behind it in two arms that catch
+    // the sky and the lanterns' light, and a cushion of water heaped against its upstream face
+    // (only where it is a few cells wide).
     float lee = 0.0;
     float wake = 0.0;
-    float pillow = 0.0;
+    vec3 stir = vec3(0.0);
     for (int i = 0; i < LANTERNS_ROCKS; i++) {
       vec4 rk = LANTERNS_ROCK[i];
+      vec2 down = LANTERNS_DOWN[i];
+      vec4 shine = uSimOn.x > 0.5 ? texelFetch(uSim0, ivec2(2 * LANTERNS_MAX + i, 0), 0) : vec4(0.0);
       vec2 d = vec2(xp - rk.x, zp - rk.y);
-      float ds = -d.x; // metres downstream of the stone
+      float ds = dot(d, down);                   // metres downstream of the stone
+      float across = down.x * d.y - down.y * d.x; // metres to one side of its wake
+      float lit2 = 0.0;
       if (ds > 0.0) {
-        float side = d.y / rk.z;
+        float side = across / rk.z;
         lee = max(lee, exp(-side * side) * exp(-ds / (3.0 * rk.z)));
-        float arm = (abs(d.y) - rk.z - 0.32 * ds) / max(0.18 + 0.03 * ds, 2.5 * cellZ);
-        wake += exp(-arm * arm) * exp(-ds / 10.0) * smoothstep(0.0, rk.z, ds) * sin(ds * 3.0 - tm * 1.2);
+        float arm = (abs(across) - rk.z - 0.3 * ds) / max(0.16 + 0.03 * ds, 2.5 * cellZ);
+        float line = exp(-arm * arm) * exp(-ds / 9.0) * smoothstep(0.0, rk.z, ds);
+        wake += line * sin(ds * 3.0 - tm * 1.0);
+        lit2 = line * 0.55;
       }
-      float rim = (length(d) - rk.z) / max(0.12, 2.5 * cellZ);
-      pillow = max(pillow, exp(-rim * rim) * smoothstep(-0.3 * rk.z, 0.6 * rk.z, d.x));
+      float rim = (length(d) - rk.z) / max(0.1, 2.2 * cellZ);
+      lit2 += exp(-rim * rim) * smoothstep(0.0, 0.6, -ds / rk.z) * (1.0 - smoothstep(0.3, 0.45, 2.2 * cellZ));
+      stir += lit2 * (haze * 0.16 + LANTERNS_AMBER * shine.x * 0.12);
     }
     vec2 slope = rip.xy * (1.0 - 0.7 * lee) + vec2(0.0, wake * 0.09 * (0.4 + rippled));
     float hidden = rip.z * (1.0 - 0.7 * lee);
@@ -556,14 +620,24 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     refl = reflect(dir, n);
     refl = vec3(refl.x, max(refl.y, 0.002), max(refl.z, 0.05));
     sigma = (0.04 + 0.16 * K_reflection) * (0.45 + 0.55 * min(rippled, 1.0)) + 0.5 * spread;
+    // The sky, hills and bank are mirrored by the same ripples tipped more steeply, so the long
+    // swells fold the afterglow low over the bank and the dark bank and upper sky into broad
+    // horizontal bands.
+    vec3 bands = reflect(dir, normalize(vec3(-slope.x * 1.4, 1.0, -slope.y * 2.2)));
+    bands = vec3(bands.x, max(bands.y, 0.002), max(bands.z, 0.05));
     float behind = LANTERNS_BANK - zp;
-    mirror = lanternsBeyond(vec3(xp, 0.0, zp), refl, spread * 0.7, skyM, lit, haze, dark, tm,
-                            bankFoot + spread * behind * 0.3, min(0.8 * sigma * behind, 6.0), false, lamp);
-    lamp *= fres * 1.3;
+    vec2 bankLamp;
+    mirror = lanternsBeyond(vec3(xp, 0.0, zp), bands, spread * 0.7, skyM, lit, haze, dark, tm,
+                            bankFoot + spread * behind * 0.3, min(0.8 * sigma * behind, 6.0), false, bankLamp);
+    // The bank's lamps mirrored: each a wavering image, and under it glints in the rows of facets.
+    float lampSeen = bankLamp.x + glint.x * smoothstep(0.35, 0.6, glint.y) * bankLamp.y * 3.0;
+    mirror += LANTERNS_LAMP * lampSeen;
+    lamp = lampSeen * fres * 1.3;
     vec3 body = vec3(0.004, 0.012, 0.018) + lit * 0.03; // the river's own dark green-blue
-    col = mix(body, mirror, fres);
+    // Darker toward our bank, where the water mirrors the high, dim sky and lies in our bank's shade.
+    col = mix(body, mirror, fres) * (0.6 + 0.4 * smoothstep(0.0, 0.32, uv.y));
     col += drops.z * 0.3 * (mirror + lit * 0.2);
-    col += haze * pillow * 0.22;
+    col += stir;
   }
 
   // Solids on the water, nearest first by depth: the stones, then the lanterns.
@@ -584,7 +658,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     float w = lanternsRock(u, (uv.y - LANTERNS_HORIZON) / s + LANTERNS_EYE, climb, rk.z, rk.w, salt, rn, rv);
     if (rk.y + w < nearest) {
       nearest = rk.y + w;
-      solid = lanternsRockShade(rn, rv, u, lit, shine, salt);
+      solid = lanternsRockShade(rn, rv, u, dir, lit, haze, shine, salt);
       solidCover = 1.0;
       solidGlow = 0.0;
     }
@@ -593,7 +667,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
       float tau = (rk.y - zp) / refl.z;
       float ur = xp + refl.x * tau - rk.x;
       if (lanternsRock(ur, refl.y * tau, refl.y / refl.z, rk.z, rk.w, salt, rn, rv) < 1e3) {
-        col += (lanternsRockShade(rn, rv, ur, lit, shine, salt) - mirror) * fres;
+        col += (lanternsRockShade(rn, rv, ur, refl, lit, haze, shine, salt) - mirror) * fres;
       }
     }
   }
@@ -643,42 +717,45 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
         }
       }
 
-      // Its halo in the air, wider and stronger in mist.
+      // Its halo in the air, wider and stronger in mist; mostly hidden while it floats behind a
+      // stone.
       vec2 hc = vec2(qx, qy - 0.55 * hl);
       float d2 = dot(hc, hc);
       float hr = 0.26 + 0.42 * mist;
-      float halo = on * size * ((0.07 + 0.38 * mist) * exp(-d2 / (hr * hr)) + (0.025 + 0.05 * mist) * exp(-d2 / 0.45));
+      float behindStone = nearest < st.y - 0.3 ? 0.3 : 1.0;
+      float halo = on * size * behindStone * ((0.07 + 0.38 * mist) * exp(-d2 / (hr * hr)) + (0.025 + 0.05 * mist) * exp(-d2 / 0.45));
       inAir += mean * halo;
       airGlow += halo;
 
       if (!water) continue;
-      // Its reflection: the box traced along the reflected ray. Where the ray meets a wall, a
-      // wavering mirror image; above the box, the glitter path: the facets too fine to draw that
-      // still tip its light to the eye, spread up and down by sv and across by su (both grow with
-      // the distance between the lantern and the water reflecting it).
+      // Its reflection: the box traced along the reflected ray. Right under the lantern, where
+      // that ray meets a wall, its wavering mirror image. Below that its glitter: the rows of facets
+      // that tip its light to the eye, fewer and fainter further down the water (the odds fall as
+      // the slope needed steepens, and with distance, over K_reflection's reach), each row's dash
+      // swaying a little to one side. Amber dashes, darker than the lantern.
       if (zp < st.y) {
         float dz = st.y - zp;
         float tau = dz / refl.z;
         float vr = refl.y * tau - bob;
-        float sv = 2.0 * sigma * dz;
-        if (vr < hl + 3.0 * sv) {
-          float ur = xp + refl.x * tau - st.x;
-          float su = 0.8 * sigma * dz * LANTERNS_EYE / zp + cellX;
-          float g = on * (mark ? 0.45 : 1.0);
-          vec3 rc = mean * on;
+        float ur = xp + refl.x * tau - st.x;
+        if (vr <= hl) {
           vec4 rh = lanternsBox(ur, vr, refl.y / refl.z, cs, sn, a, hl);
           if (rh.x >= 0.0 && rh.x < 3.5) {
             float gw;
-            vec3 image = lanternsWall(rh, ur, vr, size, paper, on, seed, mark, cpm, tm, lit, gw);
-            float blurred = smoothstep(0.05, 0.3, sv);
-            rc = mix(image, rc, blurred);
-            g = mix(gw, g, blurred);
+            onWater += lanternsWall(rh, ur, vr, size, paper, on, seed, mark, cpm, tm, lit, gw) * fres * 1.2;
+            waterGlow += gw * fres * 1.2;
           }
-          float across = 1.0 - smoothstep(hw, hw + su + 0.02, abs(ur));
-          float above = max(vr - hl, 0.0) / max(sv, 1e-3);
-          float k = across * exp(-above * above) * (hl + 0.12) / (hl + 0.12 + 0.3 * sv) * fres * 1.6;
-          onWater += rc * k;
-          waterGlow += g * k;
+        }
+        float sv = 2.0 * sigma * dz + 0.05;
+        float above = max(vr - hl, 0.0) / sv;
+        float chance = exp(-above * above - dz / reach) * smoothstep(0.4 * hl, hl, vr);
+        if (chance > 0.01) {
+          float su = 0.8 * sigma * dz * LANTERNS_EYE / zp;
+          float wide = 0.7 * hw + 0.4 * su;
+          float across = 1.0 - smoothstep(wide, wide + 0.3 * hw + 0.4 * su + 1.5 / cpm, abs(ur - glint.z * 0.6 * su));
+          float k = glint.x * smoothstep(1.0 - chance, 1.15 - chance, glint.y) * across * (0.35 + 0.65 * chance) * fres * 2.0;
+          onWater += mean * on * k;
+          waterGlow += on * (mark ? 0.45 : 1.0) * k;
         }
       }
       // A pool of its light on the water around it, and rings spreading where it was set down.
@@ -703,9 +780,9 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   if (water) {
     col += onWater;
     glow += waterGlow;
-    // Mist over the water: thicker toward the far bank, in slow wisps drifting downstream, lit
-    // by the lanterns in it.
-    float wisp = vnoise(vec2(xp * 0.18 + current * tm * 0.11, zp * 0.09 + 2.0));
+    // Mist over the water: thicker toward the far bank, lying in long horizontal bands (sized on
+    // screen, so they stay broad near and far) that drift downstream, lit by the lanterns in it.
+    float wisp = vnoise(vec2((xp + 0.6 * current * tm) / zp * 2.5, log(zp) * 3.5));
     float fm = mist * (1.0 - exp(-zp / 40.0)) * (0.45 + 0.55 * wisp) * 0.8;
     col = mix(col, haze * 0.92 + inAir * 0.3, fm);
     glow *= 1.0 - fm;

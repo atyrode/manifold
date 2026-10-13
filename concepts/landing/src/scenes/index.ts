@@ -4,6 +4,7 @@ import { bambooScene } from "./bamboo/index.ts";
 import { cloudsScene } from "./clouds/index.ts";
 import { chladniScene } from "./chladni/index.ts";
 import { countryScene } from "./country/index.ts";
+import { dewScene } from "./dew/index.ts";
 import { dunesScene } from "./dunes/index.ts";
 import { fallsScene } from "./falls/index.ts";
 import { ferroScene } from "./ferro/index.ts";
@@ -15,6 +16,7 @@ import { lanternsScene } from "./lanterns/index.ts";
 import { marbleScene } from "./marble/index.ts";
 import { meadowScene } from "./meadow/index.ts";
 import { orbitScene } from "./orbit/index.ts";
+import { pearlScene } from "./pearl/index.ts";
 import { pondScene } from "./pond/index.ts";
 import { prismScene } from "./prism/index.ts";
 import { shanshuiScene } from "./shanshui/index.ts";
@@ -49,6 +51,8 @@ export const sceneDefs = {
   hyperbolic: hyperbolicScene,
   fireflies: firefliesScene,
   bamboo: bambooScene,
+  dew: dewScene,
+  pearl: pearlScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;

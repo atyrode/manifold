@@ -9,12 +9,12 @@ import { lanternsGlsl } from "./shader.ts";
 import { LANTERN_COUNTS, lanternsSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  choice("river", "lanterns", "lanterns", counts(...LANTERN_COUNTS), 18, "How many lanterns float on the river at once. As they drift away downstream, new ones come round the bend upstream."),
-  range("river", "current", "current", 0.45, "How fast the river runs: a slow drift that lets the lanterns gather and turn, or a steady stream that strings them out. Mid-river runs fastest."),
+  choice("river", "lanterns", "lanterns", counts(...LANTERN_COUNTS), 24, "How many lanterns float on the river at once: a procession from small lights far out by the far bank, sweeping in past the near stone. As they drift away downstream, new ones come round the bend."),
+  range("river", "current", "current", 0.35, "How fast the river runs: a slow drift that lets the lanterns gather and turn, or a steady stream that strings them out. It runs fastest along the procession's lane."),
   feature("river", "flotilla", "flotillas", true, "frequency", 0.3, "Now and then a family sets a little group of lanterns on the water from this bank: they glide out together, then slowly drift apart.", { trigger: 0 }),
   seed("river", "lanternSeed", "evening", "Where the lanterns float and how the eddies turn; re-seed for another evening on the river."),
   range("water", "ripple", "water ripple", 0.45, "Glassy calm to the left: the river is a mirror. To the right a breeze ruffles it and every reflection breaks into wavering bands."),
-  range("water", "reflection", "reflection length", 0.55, "How far each lantern's light runs down the water toward you: short glints near the lantern, or long trembling columns."),
+  range("water", "reflection", "reflection length", 0.55, "How far each lantern's light runs down the water toward you: a few glints under it, or long trails of trembling amber dashes."),
   range("water", "mist", "mist", 0.35, "Mist lying on the river: the far bank fades into it, and each lantern wears a halo."),
   ...skyKnobs({ time: 0.79 }),
   ...weatherKnobs({ rain: true, wind: true }),

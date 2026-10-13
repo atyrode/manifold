@@ -69,7 +69,7 @@ const vec3 CHLADNI_CLOTH = vec3(0.015, 0.015, 0.017);   // the black cloth the p
 const vec3 CHLADNI_ROOM = vec3(0.3, 0.32, 0.35);        // the light when the coloured lamp is off
 const vec3 CHLADNI_STEEL = vec3(0.2, 0.21, 0.23);       // the hub's washer, nut and rod
 const float CHLADNI_HEAP = 2.0;                         // grains per texel to heap the sand up to cover
-const float CHLADNI_DUST = 2.5;                         // grains per texel for a full veil of dancing sand
+const float CHLADNI_DUST = 4.0;                         // grains per texel for a full veil of dancing sand
 
 vec3 chladniSandColor() {
 ${pick("sand", chladniSands.map((sand) => sand.color))}
@@ -148,9 +148,9 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
   vec2 toward = CHLADNI_TOWARD_LAMP;
   vec3 hue = chladniLampHue();
   vec3 light = K_lamp > 0.0 ? hue * (0.35 + 0.85 * K_lamp) : CHLADNI_ROOM;
-  // Light off the metal and the cloth keeps only part of the lamp's colour: dim, saturated light
-  // dithers into single-channel specks, so it is held halfway to grey.
-  vec3 soft = mix(vec3(dot(light, LUMA)), light, 0.5);
+  // Light off the metal and the cloth keeps only a little of the lamp's colour: dim, saturated
+  // light dithers into single-channel specks, so it is held well toward grey.
+  vec3 soft = mix(vec3(dot(light, LUMA)), light, 0.3);
   vec4 state = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(0), 0) : vec4(0.0, 1.0, 1.0, 0.0);
 
   // The cloth: near black, lit a little toward the lamp, enough for the plate's soft shadow,
@@ -196,7 +196,7 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
       float swing = abs(mix(f.r, f.g, state.x)) * state.y * state.z;
       haze = smoothstep(0.35, 1.3, swing) * K_shimmer * (0.8 + 0.2 * sin(tm * 0.7));
     }
-    vec3 plate = metal * (0.82 + 0.4 * fall) * (0.95 + 0.1 * grooves) + soft * tint * (0.22 * sheen * (1.0 + haze) + 0.05 * haze);
+    vec3 plate = metal * (0.75 + 0.55 * fall) * (0.95 + 0.1 * grooves) + soft * tint * (0.26 * sheen * (1.0 + 0.6 * haze) + 0.04 * haze);
 
     // The sand: R heaped at rest, G a veil of grains in the air, read wide so it moves smoothly.
     float heap = 0.0;
@@ -226,14 +226,17 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
     plate *= 1.0 - 0.7 * shade * (1.0 - heap);
 
     // A ridge is solid where the sand lies deep and breaks up into loose grains where only a few
-    // lie. Each cell holds a grain once the sand there is deep enough for it, so the edge is grains
-    // rather than a screen, and a cell changes at most once as sand comes and goes.
+    // lie. Each cell holds a grain once the sand there is deep enough for its own threshold, so the
+    // edge is grains rather than a screen, and a cell changes at most once as sand comes and goes.
+    // The thresholds stay clear of 0, so bare metal never shows a grain.
     float g1 = hash12(cell);
     float g2 = hash12(cell + 17.31);
     float g3 = hash12(cell + 53.7);
     float g4 = hash12(cell + 91.3);
-    float grain = smoothstep(g1 - 0.05, g1 + 0.05, smoothstep(0.12, 0.7, heap));
-    float flying = smoothstep(g2 - 0.08, g2 + 0.08, dust) * (1.0 - grain);
+    float t1 = 0.06 + 0.9 * g1;
+    float t2 = 0.1 + 0.85 * g2;
+    float grain = smoothstep(t1 - 0.05, t1 + 0.05, smoothstep(0.15, 0.7, heap));
+    float flying = smoothstep(t2 - 0.08, t2 + 0.08, dust) * (1.0 - grain);
     // Lit on the flank toward the lamp, darker on the far one.
     float lit = clamp(0.8 + 2.4 * dot(slope, toward), 0.45, 1.3);
     vec3 sand = chladniSandColor() * (0.8 + 0.32 * g3) * lit * (g3 > 0.94 ? 0.55 : 1.0) + soft * 0.1 * max(lit - 0.9, 0.0);

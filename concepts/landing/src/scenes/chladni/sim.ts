@@ -80,14 +80,14 @@ const THRESHOLD_CURVE = 3;
 const SWING_GENTLE = 0.55;
 const SWING_HARD = 1.8;
 /** Drift down the slope of |u|: plate units per second at full excess, and the excess that gets half of it. */
-const DRIFT = 0.11;
+const DRIFT = 0.09;
 const DRIFT_EASE = 0.15;
 /** Slope of A|u| (per plate unit) under which the drift fades: on a crest a grain has no way down. */
 const DRIFT_FLAT = 0.2;
 /** A step covers at most this share of the (linearised) way to the grain's contour: no overshoot. */
 const DRIFT_REACH = 0.5;
 /** The dance: speed (plate units per second at excess 1) and memory (s) of the smooth random walk. */
-const DANCE = 0.07;
+const DANCE = 0.03;
 const DANCE_MEMORY = 0.4;
 /** Excess under which a grain comes to rest, and at which it counts as fully on the move (G channel). */
 const REST = 0.004;
@@ -103,7 +103,7 @@ const MAX_STEP = 0.05;
  * Memory (s) of the sand field as shown: it eases toward where the grains are, so the count of
  * grains passing through a texel never flickers from one frame to the next.
  */
-const SHOWN_MEMORY = 0.3;
+const SHOWN_MEMORY = 0.8;
 /**
  * Share of the grains each move between figures lifts off the deepest heaps (at least SHED_HEAP
  * grains per texel, found in SHED_DRAWS tries) and lets fall again anywhere on the plate.
@@ -117,11 +117,14 @@ const MARK_SHED = 0.6;
 // The sweep.
 /** The figure seed 0 opens on (a ring on a cross, or eight spokes and a ring); other seeds count on from it. */
 const FIRST_FIGURE = 5;
-/** Seconds a figure holds, and seconds of crossfade into the next, at mode sweep 0 and 1. */
+/**
+ * Seconds a figure holds, and seconds of crossfade into the next, at mode sweep 0 and 1. The lines
+ * slide at the pace of the crossfade, so a long one keeps them calm under the dither.
+ */
 const HOLD_SLOW = 48;
 const HOLD_FAST = 6;
-const MOVE_SLOW = 12;
-const MOVE_FAST = 5;
+const MOVE_SLOW = 18;
+const MOVE_FAST = 7;
 /** After a "now" (or a new plate) the sand runs at full pace, even with motion off, for the move and this long after. */
 const URGENT_SETTLE = 4;
 /** Figures between two Ms at frequency 0 and 1. */
