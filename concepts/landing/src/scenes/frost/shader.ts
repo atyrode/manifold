@@ -5,6 +5,7 @@
 // with lit windows and lamps, or a cabin among spruces. Snow falls through that world in depth (the
 // shared snowFall, hidden behind whatever is nearer), lit by the lamps and windows, and lies on its
 // roofs, boughs, rails, sills, lamp cap and the outside sill as deep as uWeather.y says.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { FROST_FRAME, FROST_START, FUR_RIPEN, FUR_SCALE, FUR_SLOW_FERN, FUR_SLOW_FUR, MELT_CLEAR, RIME_GROWN, WIDTH_SCALE } from "./sim.ts";
 
 export const frostGlsl = `
@@ -12,15 +13,15 @@ export const frostGlsl = `
 // K_style, K_sparkle, K_condensation, K_outside, the sky (K_time, K_cycle) and weather (K_snow,
 // K_wind, and uWeather.y for the snow lying outside). Simulation textures (layouts in sim.ts): uSim0
 // crystals, uSim1 melt, uSim2 growth clock, uSim3 crystal detail.
-const float FROST_FRAME = ${FROST_FRAME.toFixed(4)};
-const float FROST_CLEAR = ${MELT_CLEAR.toFixed(4)};
-const float FROST_RIPEN = ${FUR_RIPEN.toFixed(4)};
-const float FROST_FUR_FERN = ${FUR_SLOW_FERN.toFixed(4)};
-const float FROST_FUR_FUR = ${FUR_SLOW_FUR.toFixed(4)};
-const float FROST_START = ${FROST_START.toFixed(4)};
-const float FROST_RIME_GROWN = ${RIME_GROWN.toFixed(4)};
-const float FROST_FUR_SCALE = ${FUR_SCALE.toFixed(4)};
-const float FROST_WIDTH_SCALE = ${WIDTH_SCALE.toFixed(4)};
+const float FROST_FRAME = ${glslFloat(FROST_FRAME)};
+const float FROST_CLEAR = ${glslFloat(MELT_CLEAR)};
+const float FROST_RIPEN = ${glslFloat(FUR_RIPEN)};
+const float FROST_FUR_FERN = ${glslFloat(FUR_SLOW_FERN)};
+const float FROST_FUR_FUR = ${glslFloat(FUR_SLOW_FUR)};
+const float FROST_START = ${glslFloat(FROST_START)};
+const float FROST_RIME_GROWN = ${glslFloat(RIME_GROWN)};
+const float FROST_FUR_SCALE = ${glslFloat(FUR_SCALE)};
+const float FROST_WIDTH_SCALE = ${glslFloat(WIDTH_SCALE)};
 // Barbs: their spacing along a branch, frame heights, and the growth seconds per frame height
 // they take to grow out from it.
 const float FROST_BARB_PITCH = 0.0055;
@@ -42,16 +43,6 @@ float frostCone(vec2 q, float spread, float fall) {
   float down = max(-q.y, 0.0);
   float w = 0.012 + down * spread;
   return exp(-2.0 * q.x * q.x / (w * w)) * exp(-down * fall) * smoothstep(0.0, 0.03, down);
-}
-
-// Coverage for a signed distance, out of focus by 'blur' (frame heights).
-float frostSoft(float d, float blur) {
-  return 1.0 - smoothstep(-blur, blur, d);
-}
-
-float frostBox(vec2 p, vec2 halfSize, float radius) {
-  vec2 q = abs(p) - halfSize + radius;
-  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
 }
 
 // An out-of-focus point light: the disc widens with the blur (its circle of confusion) and dims
@@ -88,7 +79,7 @@ float frostSpruce(vec2 q, float height, float halfWidth, float laden, out float 
 // and whatever each pixel sees, the farthest of it a veil of lit air.
 vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 glow) {
   glow = vec3(0.0);
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   bool street = K_outside < 0.5;
   float lying = clamp(uWeather.y, 0.0, 1.0);
@@ -118,7 +109,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   vec4 cloud = skyClouds(sky, dir, t, 0.3 + 0.7 * overcast, K_wind);
   col = mix(col, cloud.rgb * (1.0 - 0.4 * heavy) + town, cloud.a);
   float stars = skyStars(sky, dir, street ? 0.5 : 0.85) * (1.0 - cloud.a) * (1.0 - smoothstep(0.01, 0.03, blur));
-  col += vec3(0.85, 0.9, 1.0) * stars;
+  col += SKY_STAR_TINT * stars;
   if (street) {
     // The town's light, caught low in the snowy air.
     col += vec3(0.55, 0.32, 0.16) * 0.12 * lights * exp(-max(uv.y - FROST_HORIZON, 0.0) * 5.0) * (0.5 + 0.5 * cloud.a);
@@ -135,14 +126,14 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
       float wallTop = 0.47 + 0.12 * hash12(vec2(fi, 3.0));
       float roofH = hash12(vec2(fi, 4.0)) > 0.35 ? 0.07 + 0.07 * hash12(vec2(fi, 5.0)) : 0.025;
       vec2 q = p - vec2(cx, 0.0);
-      float wall = frostBox(q - vec2(0.0, (FROST_HORIZON - 0.02 + wallTop) * 0.5), vec2(hw, (wallTop - FROST_HORIZON + 0.02) * 0.5), 0.0);
+      float wall = sdBox(q - vec2(0.0, (FROST_HORIZON - 0.02 + wallTop) * 0.5), vec2(hw, (wallTop - FROST_HORIZON + 0.02) * 0.5), 0.0);
       float slope = roofH / (hw + 0.02);
       // The snow on the roof, frame heights deep: thick on a low roof, thinner on a steep gable,
       // overhanging the eaves a little.
       float roofSnow = 0.026 * settled * (1.0 - 0.45 * smoothstep(0.3, 1.2, slope));
       float roofTop = (q.y - wallTop - roofH + abs(q.x) * slope) / sqrt(1.0 + slope * slope);
       float roof = max(roofTop - roofSnow, max(wallTop - 0.005 - q.y, abs(q.x) - hw - 0.02 - 0.6 * roofSnow));
-      float cover = frostSoft(min(wall, roof), blur);
+      float cover = softFill(min(wall, roof), blur);
       vec3 house = roof < wall
         ? mix(vec3(0.1, 0.095, 0.1) * lit, snowLit, smoothstep(-0.004 - blur, blur - 0.004, roofTop) * smoothstep(0.0, 0.004, roofSnow))
         : vec3(0.3, 0.26, 0.24) * lit;
@@ -160,10 +151,10 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
           if (fract(h * 31.1) > 0.875) warm = mix(vec3(0.45, 0.6, 1.0), vec3(0.75, 0.55, 0.95), 0.5 + 0.5 * sin(tm * 0.7 + h * 20.0)) * 0.8;
           float power = on * (1.1 + 0.9 * fract(h * 7.3));
           vec3 glass = mix(vec3(0.03, 0.035, 0.05) + sky.ambient * 0.4, warm * power, step(0.001, on));
-          house = mix(house, glass, frostSoft(frostBox(wq, vec2(0.024, 0.032), 0.004), blur));
+          house = mix(house, glass, softFill(sdBox(wq, vec2(0.024, 0.032), 0.004), blur));
           // Snow along its sill, banked against the bottom of the pane, warm under a lit window.
           float sill = 0.005 * settled;
-          house = mix(house, snowLit * 1.05 + warm * power * 0.3, frostSoft(frostBox(wq - vec2(0.0, sill - 0.035), vec2(0.03, sill + 0.0005), 0.0), blur) * smoothstep(0.0, 0.002, sill));
+          house = mix(house, snowLit * 1.05 + warm * power * 0.3, softFill(sdBox(wq - vec2(0.0, sill - 0.035), vec2(0.03, sill + 0.0005), 0.0), blur) * smoothstep(0.0, 0.002, sill));
           glow += warm * power * exp(-length(wq) / 0.09) * 0.25;
         }
       }
@@ -188,7 +179,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
     float onSnow = max(fresh, bank);
     ground += FROST_LAMP * lights * mix(0.2, 0.6, onSnow) * exp(-length((p - vec2(key.x, 0.08)) * vec2(0.7, 2.6)) / 0.22);
     ground += glow * mix(0.08, 0.25, onSnow) * smoothstep(FROST_HORIZON - 0.12, FROST_HORIZON, p.y);
-    float onGround = frostSoft(p.y - groundLine, blur);
+    float onGround = softFill(p.y - groundLine, blur);
     col = mix(col, ground, onGround);
     dep = mix(dep, weatherDepth(gz), onGround);
 
@@ -197,10 +188,10 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
     float postX = (floor(p.x / 0.07) + 0.5) * 0.07;
     float fence = min(max(abs(p.x - postX) - 0.004, max(groundLine - 0.004 - p.y, p.y - fenceTop - 0.003)),
                       min(abs(p.y - fenceTop + 0.003) - 0.003, abs(p.y - fenceTop + 0.016) - 0.0025));
-    float fenceCov = frostSoft(fence, blur);
+    float fenceCov = softFill(fence, blur);
     col = mix(col, vec3(0.06, 0.05, 0.045) * (lit * 2.0 + 0.15), fenceCov);
     float railSnow = 0.007 * settled;
-    float onRails = frostSoft(min(abs(p.y - fenceTop - railSnow * 0.5) - railSnow * 0.5, abs(p.y - fenceTop + 0.0135 - railSnow * 0.35) - railSnow * 0.35), blur) * smoothstep(0.0, 0.003, railSnow);
+    float onRails = softFill(min(abs(p.y - fenceTop - railSnow * 0.5) - railSnow * 0.5, abs(p.y - fenceTop + 0.0135 - railSnow * 0.35) - railSnow * 0.35), blur) * smoothstep(0.0, 0.003, railSnow);
     col = mix(col, snowLit * 1.05 + glow * 0.15, onRails);
     dep = mix(dep, weatherDepth(16.0), max(fenceCov, onRails));
 
@@ -210,9 +201,9 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
       float fi = float(i);
       vec2 at = vec2((-0.38 + 0.27 * fi) * aspect, 0.57 - 0.012 * fi);
       vec3 shade = i == 1 ? vec3(0.85, 0.9, 1.0) : FROST_LAMP;
-      float post = frostBox(p - vec2(at.x, (at.y + FROST_HORIZON) * 0.5), vec2(0.003, (at.y - FROST_HORIZON) * 0.5), 0.0);
+      float post = sdBox(p - vec2(at.x, (at.y + FROST_HORIZON) * 0.5), vec2(0.003, (at.y - FROST_HORIZON) * 0.5), 0.0);
       float bokeh = frostBokeh(p, at, 0.013 - 0.0015 * fi, blur);
-      float postCov = frostSoft(post, blur) * 0.8;
+      float postCov = softFill(post, blur) * 0.8;
       col = mix(col, vec3(0.02, 0.02, 0.025), postCov);
       dep = mix(dep, weatherDepth(14.0), max(postCov, min(bokeh, 1.0)));
       col += shade * lights * 1.6 * bokeh;
@@ -222,13 +213,13 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
 
     // The near lamp, on this side of the road: nearer, so more out of focus; snow heaps on its cap.
     float nearBlur = blur * 1.5 + 0.004;
-    float post = frostBox(p - vec2(key.x, key.y * 0.5 - 0.02), vec2(0.008, key.y * 0.5), 0.0);
-    float cap = frostBox(p - key - vec2(0.0, 0.032), vec2(0.03, 0.008), 0.006);
-    float lamp = frostSoft(min(post, cap), nearBlur);
+    float post = sdBox(p - vec2(key.x, key.y * 0.5 - 0.02), vec2(0.008, key.y * 0.5), 0.0);
+    float cap = sdBox(p - key - vec2(0.0, 0.032), vec2(0.03, 0.008), 0.006);
+    float lamp = softFill(min(post, cap), nearBlur);
     col = mix(col, vec3(0.02, 0.02, 0.025) + FROST_LAMP * 0.04 * lights, lamp);
     float heap = 0.02 * settled;
     vec2 m = p - key - vec2(0.0, 0.039);
-    float onCap = frostSoft(max((length(m / vec2(0.035, max(heap, 1e-4))) - 1.0) * heap, -m.y), nearBlur) * smoothstep(0.0, 0.004, heap);
+    float onCap = softFill(max((length(m / vec2(0.035, max(heap, 1e-4))) - 1.0) * heap, -m.y), nearBlur) * smoothstep(0.0, 0.004, heap);
     col = mix(col, snowLit * 1.1 + FROST_LAMP * lights * 0.12, onCap);
     float bokeh = frostBokeh(p, key, 0.024, nearBlur);
     dep = mix(dep, weatherDepth(6.0), max(max(lamp, onCap), min(bokeh, 1.0)));
@@ -249,7 +240,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
       float tx = (fi + 0.5) * farW - 50.0 + (hash12(vec2(fi, 21.0)) - 0.5) * 0.04;
       float th = 0.1 + 0.12 * hash12(vec2(fi, 22.0));
       float snowy = 0.0;
-      float tree = frostSoft(frostSpruce(p - vec2(tx, FROST_HORIZON + 0.01), th, th * 0.32, laden, snowy), blur);
+      float tree = softFill(frostSpruce(p - vec2(tx, FROST_HORIZON + 0.01), th, th * 0.32, laden, snowy), blur);
       if (tree > forest) { forest = tree; farSnow = snowy; }
     }
     vec3 farCol = mix(vec3(0.03, 0.05, 0.06) * (lit * 4.0), snowLit, farSnow * 0.5);
@@ -270,33 +261,33 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
       float wx = cabinX + (float(w) * 2.0 - 1.0) * 0.085;
       ground += vec3(1.0, 0.62, 0.3) * lights * 0.35 * exp(-length((p - vec2(wx, base - 0.05)) * vec2(1.3, 3.0)) / 0.08);
     }
-    float onGround = frostSoft(p.y - groundLine, blur);
+    float onGround = softFill(p.y - groundLine, blur);
     col = mix(col, ground, onGround);
     dep = mix(dep, weatherDepth(gz), onGround);
 
     // The cabin: log walls, a gable roof under the lying snow (overhanging its eaves), a warm
     // chimney with only a rim of snow and smoke drifting on the wind.
     vec2 q = p - vec2(cabinX, base);
-    float wall = frostBox(q - vec2(0.0, 0.06), vec2(0.16, 0.06), 0.0);
+    float wall = sdBox(q - vec2(0.0, 0.06), vec2(0.16, 0.06), 0.0);
     float slope = 0.1 / 0.19;
     float roofSnow = 0.03 * settled;
     float roofTop = (q.y - 0.22 + abs(q.x) * slope) / sqrt(1.0 + slope * slope);
     float roof = max(roofTop - roofSnow, max(0.115 - q.y, abs(q.x) - 0.19 - 0.6 * roofSnow));
-    float chimney = frostBox(q - vec2(0.07, 0.2), vec2(0.014, 0.045), 0.0);
-    float cabin = frostSoft(min(min(wall, roof), chimney), blur);
+    float chimney = sdBox(q - vec2(0.07, 0.2), vec2(0.014, 0.045), 0.0);
+    float cabin = softFill(min(min(wall, roof), chimney), blur);
     vec3 logs = vec3(0.16, 0.1, 0.07) * lit * (0.85 + 0.15 * smoothstep(-0.4, 0.4, sin(q.y * 260.0)));
     vec3 cabinCol = roof < wall ? mix(vec3(0.08, 0.07, 0.07) * lit, snowLit * 1.1, smoothstep(-0.006 - blur, blur - 0.006, roofTop) * smoothstep(0.0, 0.004, roofSnow)) : logs;
     if (chimney < min(wall, roof)) cabinCol = vec3(0.12, 0.1, 0.1) * lit + snowLit * smoothstep(0.035, 0.045, q.y - 0.2) * 0.8 * settled;
     for (int w = 0; w < 2; w++) {
       vec2 wq = q - vec2((float(w) * 2.0 - 1.0) * 0.085, 0.065);
       vec3 warm = vec3(1.0, 0.62, 0.3) * (1.4 + 0.15 * sin(tm * 1.7 + float(w) * 2.0)) * lights;
-      cabinCol = mix(cabinCol, warm, frostSoft(frostBox(wq, vec2(0.028, 0.028), 0.003), blur));
+      cabinCol = mix(cabinCol, warm, softFill(sdBox(wq, vec2(0.028, 0.028), 0.003), blur));
       // Snow along its sill, lit by the window above it.
       float sill = 0.005 * settled;
-      cabinCol = mix(cabinCol, snowLit * 1.05 + warm * 0.25, frostSoft(frostBox(wq - vec2(0.0, sill - 0.031), vec2(0.034, sill + 0.0005), 0.0), blur) * smoothstep(0.0, 0.002, sill));
+      cabinCol = mix(cabinCol, snowLit * 1.05 + warm * 0.25, softFill(sdBox(wq - vec2(0.0, sill - 0.031), vec2(0.034, sill + 0.0005), 0.0), blur) * smoothstep(0.0, 0.002, sill));
       glow += vec3(1.0, 0.6, 0.28) * lights * exp(-length(wq) / 0.09) * 0.3;
     }
-    cabinCol = mix(cabinCol, vec3(0.05, 0.035, 0.03) * lit, frostSoft(frostBox(q - vec2(0.005, 0.045), vec2(0.022, 0.045), 0.002), blur));
+    cabinCol = mix(cabinCol, vec3(0.05, 0.035, 0.03) * lit, softFill(sdBox(q - vec2(0.005, 0.045), vec2(0.022, 0.045), 0.002), blur));
     col = mix(col, cabinCol, cabin);
     dep = mix(dep, weatherDepth(19.0), cabin);
     // Smoke from the chimney top, leaning with the wind.
@@ -318,7 +309,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
       if (abs(tx - cabinX) < 0.32) continue;
       float th = 0.32 + 0.2 * hash12(vec2(fi, 32.0));
       float snowy = 0.0;
-      float tree = frostSoft(frostSpruce(p - vec2(tx, FROST_HORIZON - 0.06), th, th * 0.33, laden, snowy), blur * 1.3 + 0.003);
+      float tree = softFill(frostSpruce(p - vec2(tx, FROST_HORIZON - 0.06), th, th * 0.33, laden, snowy), blur * 1.3 + 0.003);
       col = mix(col, mix(vec3(0.02, 0.035, 0.035) * (lit * 3.0 + 0.02), snowLit, snowy * 0.75), tree);
       dep = mix(dep, weatherDepth(14.0), tree);
     }
@@ -331,14 +322,14 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
     float fenceEnd = (floor((cabinX + 0.4) / 0.16) + 0.5) * 0.16 + 0.007;
     float fence = max(min(max(abs(p.x - postX) - 0.006, max(fy - p.y, p.y - fy - 0.058)),
                           min(abs(p.y - fy - 0.046) - 0.0035, abs(p.y - fy - 0.022) - 0.0035)), p.x - fenceEnd);
-    float fenceCov = frostSoft(fence, fenceBlur);
+    float fenceCov = softFill(fence, fenceBlur);
     col = mix(col, vec3(0.11, 0.09, 0.07) * (lit * 2.5 + 0.03), fenceCov);
     float railSnow = 0.008 * settled;
     float caps = min(min(abs(p.y - fy - 0.0495 - railSnow * 0.5) - railSnow * 0.5, abs(p.y - fy - 0.0255 - railSnow * 0.35) - railSnow * 0.35),
                      max(abs(p.x - postX) - 0.007, abs(p.y - fy - 0.058 - railSnow * 0.5) - railSnow * 0.5));
-    float onRails = frostSoft(max(caps, p.x - fenceEnd), fenceBlur) * smoothstep(0.0, 0.003, railSnow);
+    float onRails = softFill(max(caps, p.x - fenceEnd), fenceBlur) * smoothstep(0.0, 0.003, railSnow);
     float foot = fy + 0.018 * lying * (0.7 + 0.3 * vnoise(vec2(p.x * 30.0, 9.0)));
-    float onFoot = frostSoft(max(p.y - foot, fy - 0.01 - p.y), fenceBlur) * smoothstep(0.0, 0.1, lying) * (1.0 - smoothstep(fenceEnd, fenceEnd + 0.04, p.x));
+    float onFoot = softFill(max(p.y - foot, fy - 0.01 - p.y), fenceBlur) * smoothstep(0.0, 0.1, lying) * (1.0 - smoothstep(fenceEnd, fenceEnd + 0.04, p.x));
     col = mix(col, snowLit * 1.05 + glow * 0.15, max(onRails, onFoot));
     dep = mix(dep, weatherDepth(10.0), max(max(fenceCov, onRails), onFoot));
 
@@ -369,7 +360,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   // blizzard), heaped toward the side the wind blows to.
   float heaped = lying * (0.05 + 0.035 * K_snow + 0.025 * K_wind * (uv.x - 0.5));
   float drift = 0.045 + heaped + (0.006 + 0.012 * lying) * (vnoise(vec2(p.x * 7.0, 4.0)) + 0.4 * vnoise(vec2(p.x * 23.0, 5.0)));
-  col = mix(col, snowLit * 1.15 + vec3(0.04, 0.045, 0.06) + glow * 0.2, frostSoft(uv.y - drift, blur * 0.5 + 0.002));
+  col = mix(col, snowLit * 1.15 + vec3(0.04, 0.045, 0.06) + glow * 0.2, softFill(uv.y - drift, blur * 0.5 + 0.002));
   return col;
 }
 
@@ -399,13 +390,12 @@ float frostDensity(vec2 uv, float clock, float slow) {
 }
 
 Shade sceneFrost(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   // One dither cell, in frame heights: the finest line worth drawing.
   float px = 1.0 / uRes.y;
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
   float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : FROST_START;
   // Seconds the fur frost takes to spread a frame height: the style knob, fern to fur.
   float slow = FROST_FUR_FERN * pow(FROST_FUR_FUR / FROST_FUR_FERN, K_style);
@@ -526,7 +516,7 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   col += vec3(1.0, 0.97, 0.92) * sparkle + vec3(0.9, 0.95, 1.0) * rim * 0.45;
   // The traced M's wet edges catch a cold light.
   col += vec3(0.25, 0.5, 0.7) * melt.a * rim * 0.4;
-  o.accent = melt.a * max(clear, rim) * 0.9;
+  float accent = melt.a * max(clear, rim) * 0.9;
 
   // The window frame: painted wood, lit faintly from the room and, along its inner bevel, by the
   // light outside; a hairline where its mitred rails meet; a shadow where it holds the glass.
@@ -538,16 +528,13 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
     float grain = vnoise(vec2(edges.x < edges.y ? uv.y * 30.0 : uv.x * 30.0 * aspect, depth * 2.0));
     col = vec3(0.17, 0.155, 0.14) * (0.9 + 0.1 * grain) + (glow * 0.12 + vec3(0.06, 0.07, 0.09)) * bevel;
     col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.0025, abs(edges.x - edges.y)));
-    o.accent = 0.0;
+    accent = 0.0;
   } else {
     col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.006, edge - FROST_FRAME));
   }
 
   // Lights run past 1: roll them off softly rather than clipping.
   col = 1.0 - exp(-col * 1.2);
-  o.ink = clamp(dot(col, LUMA) * 1.25, 0.0, 1.0);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  return shadeOf(col, inkOf(col, 1.25, 1.0), accent);
 }
 `;

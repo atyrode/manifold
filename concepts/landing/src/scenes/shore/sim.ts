@@ -23,7 +23,9 @@ export const shoreSim: SimFactory = (gl) => {
   let field: TrailField | undefined;
   let texture: DataTexture | undefined;
   let uploaded = -1;
-  let last: { x: number; y: number } | undefined;
+  let hasLast = false;
+  let lastX = 0;
+  let lastY = 0;
 
   const sim: SceneSim = {
     frame(frame: SimFrame) {
@@ -32,20 +34,22 @@ export const shoreSim: SimFactory = (gl) => {
         // A new aspect starts a fresh trail: the old one would land in the wrong place.
         field = new TrailField(columns, ROWS);
         uploaded = -1;
-        last = undefined;
+        hasLast = false;
       }
       if (texture === undefined) texture = new DataTexture(gl, { width: columns, height: ROWS, format: "r8" });
       texture.resize(columns, ROWS);
 
       const pointer = frame.pointer;
       if (pointer.inside) {
-        const travel = last === undefined ? 0 : Math.hypot((pointer.x - last.x) * frame.aspect, pointer.y - last.y);
+        const travel = hasLast ? Math.hypot((pointer.x - lastX) * frame.aspect, pointer.y - lastY) : 0;
         const strength = Math.min(MAX_STROKE, travel * PER_TRAVEL + (pointer.down ? HELD : 0));
         if (strength > 0.001) field.stroke(pointer.x, pointer.y, pointer.down ? HELD_RADIUS : RADIUS, strength, frame.aspect);
-        last = { x: pointer.x, y: pointer.y };
+        lastX = pointer.x;
+        lastY = pointer.y;
+        hasLast = true;
       } else {
         field.lift();
-        last = undefined;
+        hasLast = false;
       }
       // The glow fades on the scene's own clock, so a paused or frozen scene keeps its swirls.
       field.decay(frame.dt * frame.motion, HALF_LIFE);

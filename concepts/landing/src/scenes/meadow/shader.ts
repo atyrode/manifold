@@ -25,6 +25,7 @@
 // Knobs read here: K_grassHeight, K_grassDensity, K_meadowSeed, K_wind, K_gusts (and its "now"),
 // K_gustRate, K_time, K_cycle, K_haze, K_rain, K_mown (and its "now"); uWeather.x for how wet the
 // grass is. K_dandelions only reaches the shader through the clocks the simulation grows.
+import { glslFloat } from "../../shaders/glsl.ts";
 import {
   GUST_TRIGGER,
   MARK_TRIGGER,
@@ -50,15 +51,9 @@ import {
   type MeadowLayer,
 } from "./sim.ts";
 
-/** A number as a GLSL float literal. */
-function float(value: number): string {
-  const text = String(value);
-  return /[.e]/.test(text) ? text : `${text}.0`;
-}
-
 /** A const float array initialiser. */
 function floats(values: readonly number[]): string {
-  return `float[${values.length}](${values.map(float).join(", ")})`;
+  return `float[${values.length}](${values.map(glslFloat).join(", ")})`;
 }
 
 /** One property of every near-grass layer, as a const float array initialiser. */
@@ -75,53 +70,53 @@ const FIELD_NEAR = 3;
 
 export const meadowGlsl = `
 // ---- the view, the gust field and the near grass: constants shared with sim.ts ----
-const float MEADOW_HORIZON = ${float(MEADOW_HORIZON)};
-const float MEADOW_FOCAL = ${float(MEADOW_FOCAL)};
-const float MEADOW_GROUND = ${float(MEADOW_GROUND)};
-const float MEADOW_FOV = ${float(2 * Math.atan(0.5 / MEADOW_FOCAL))};
-const float MEADOW_TREES_Z = ${float(MEADOW_TREES_Z)};
+const float MEADOW_HORIZON = ${glslFloat(MEADOW_HORIZON)};
+const float MEADOW_FOCAL = ${glslFloat(MEADOW_FOCAL)};
+const float MEADOW_GROUND = ${glslFloat(MEADOW_GROUND)};
+const float MEADOW_FOV = ${glslFloat(2 * Math.atan(0.5 / MEADOW_FOCAL))};
+const float MEADOW_TREES_Z = ${glslFloat(MEADOW_TREES_Z)};
 const int MEADOW_GUST_TRIGGER = ${GUST_TRIGGER};
 const int MEADOW_MARK_TRIGGER = ${MARK_TRIGGER};
 
-const float MEADOW_DIR_X = ${float(G.dirX)};
-const float MEADOW_DIR_Z = ${float(G.dirZ)};
-const float MEADOW_SPEED = ${float(G.speed)};
-const float MEADOW_SPEED_WIND = ${float(G.speedWind)};
+const float MEADOW_DIR_X = ${glslFloat(G.dirX)};
+const float MEADOW_DIR_Z = ${glslFloat(G.dirZ)};
+const float MEADOW_SPEED = ${glslFloat(G.speed)};
+const float MEADOW_SPEED_WIND = ${glslFloat(G.speedWind)};
 const float MEADOW_LAMBDA[3] = ${floats(G.lambda)};
 const float MEADOW_TRAIN_OFFSET[3] = ${floats(G.offset)};
 const float MEADOW_WOB_A[3] = ${floats(G.wobA)};
 const float MEADOW_WOB_K[3] = ${floats(G.wobK)};
 const float MEADOW_WOB_W[3] = ${floats(G.wobW)};
 const float MEADOW_WOB_P[3] = ${floats(G.wobP)};
-const float MEADOW_WOB_SECOND = ${float(G.wobSecond)};
+const float MEADOW_WOB_SECOND = ${glslFloat(G.wobSecond)};
 const float MEADOW_GATE_STEP[3] = ${floats(G.gateStep)};
 const float MEADOW_GATE_K[3] = ${floats(G.gateK)};
 const float MEADOW_GATE_W[3] = ${floats(G.gateW)};
 const float MEADOW_GATE_P[3] = ${floats(G.gateP)};
 const float MEADOW_TRAIN_WEIGHT[3] = ${floats(G.weight)};
-const float MEADOW_GATE_RARE = ${float(G.gateRare)};
-const float MEADOW_GATE_OFTEN = ${float(G.gateOften)};
-const float MEADOW_GATE_SOFT = ${float(G.gateSoft)};
-const float MEADOW_FRONT_TAIL = ${float(G.tail)};
-const float MEADOW_FRONT_PEAK = ${float(G.peak)};
-const float MEADOW_FRONT_EDGE = ${float(G.edge)};
-const float MEADOW_REBOUND = ${float(G.rebound)};
-const float MEADOW_REBOUND_AT = ${float(G.reboundAt)};
-const float MEADOW_REBOUND_WIDTH = ${float(G.reboundWidth)};
-const float MEADOW_FRONT_MEAN = ${float(G.frontMean)};
-const float MEADOW_BLUR_FROM = ${float(G.blurFrom)};
-const float MEADOW_BLUR_TO = ${float(G.blurTo)};
-const float MEADOW_SOFTCLIP = ${float(G.softclip)};
-const float MEADOW_NOW_START = ${float(G.nowStart)};
-const float MEADOW_NOW_PACE = ${float(G.nowPace)};
-const float MEADOW_NOW_EDGE = ${float(G.nowEdge)};
-const float MEADOW_NOW_TAIL = ${float(G.nowTail)};
-const float MEADOW_NOW_GAIN = ${float(G.nowGain)};
-const float MEADOW_NOW_LIFE = ${float(G.nowLife)};
-const float MEADOW_NOW_RISE = ${float(G.nowRise)};
-const float MEADOW_NOW_WOB = ${float(G.nowWob)};
-const float MEADOW_NOW_WOB_K = ${float(G.nowWobK)};
-const float MEADOW_NOW_WOB_P = ${float(G.nowWobP)};
+const float MEADOW_GATE_RARE = ${glslFloat(G.gateRare)};
+const float MEADOW_GATE_OFTEN = ${glslFloat(G.gateOften)};
+const float MEADOW_GATE_SOFT = ${glslFloat(G.gateSoft)};
+const float MEADOW_FRONT_TAIL = ${glslFloat(G.tail)};
+const float MEADOW_FRONT_PEAK = ${glslFloat(G.peak)};
+const float MEADOW_FRONT_EDGE = ${glslFloat(G.edge)};
+const float MEADOW_REBOUND = ${glslFloat(G.rebound)};
+const float MEADOW_REBOUND_AT = ${glslFloat(G.reboundAt)};
+const float MEADOW_REBOUND_WIDTH = ${glslFloat(G.reboundWidth)};
+const float MEADOW_FRONT_MEAN = ${glslFloat(G.frontMean)};
+const float MEADOW_BLUR_FROM = ${glslFloat(G.blurFrom)};
+const float MEADOW_BLUR_TO = ${glslFloat(G.blurTo)};
+const float MEADOW_SOFTCLIP = ${glslFloat(G.softclip)};
+const float MEADOW_NOW_START = ${glslFloat(G.nowStart)};
+const float MEADOW_NOW_PACE = ${glslFloat(G.nowPace)};
+const float MEADOW_NOW_EDGE = ${glslFloat(G.nowEdge)};
+const float MEADOW_NOW_TAIL = ${glslFloat(G.nowTail)};
+const float MEADOW_NOW_GAIN = ${glslFloat(G.nowGain)};
+const float MEADOW_NOW_LIFE = ${glslFloat(G.nowLife)};
+const float MEADOW_NOW_RISE = ${glslFloat(G.nowRise)};
+const float MEADOW_NOW_WOB = ${glslFloat(G.nowWob)};
+const float MEADOW_NOW_WOB_K = ${glslFloat(G.nowWobK)};
+const float MEADOW_NOW_WOB_P = ${glslFloat(G.nowWobP)};
 
 const float MEADOW_ROOT[${LAYERS}] = ${layerFloats("root")};
 const float MEADOW_PITCH[${LAYERS}] = ${layerFloats("pitch")};
@@ -136,13 +131,13 @@ const float MEADOW_STALKS[${LAYERS}] = ${layerFloats("stalks")};
 const float MEADOW_SHADE[${LAYERS}] = ${layerFloats("shade")};
 const float MEADOW_LAYER_Z[${LAYERS}] = ${layerFloats("z")};
 const float MEADOW_PAD[${LAYERS}] = ${floats(MEADOW_LAYER_PAD)};
-const float MEADOW_HEIGHT_MIN = ${float(MEADOW_HEIGHT_MIN)};
-const float MEADOW_HEIGHT_SPAN = ${float(MEADOW_HEIGHT_SPAN)};
-const float MEADOW_LEAN_MAX = ${float(MEADOW_LEAN_MAX)};
-const float MEADOW_AWAY_MAX = ${float(MEADOW_AWAY_MAX)};
-const float MEADOW_BEND_SHAPE = ${float(MEADOW_BEND_SHAPE)};
-const float MEADOW_BOW = ${float(MEADOW_BOW)};
-const float MEADOW_REACH = ${float(MEADOW_REACH)};
+const float MEADOW_HEIGHT_MIN = ${glslFloat(MEADOW_HEIGHT_MIN)};
+const float MEADOW_HEIGHT_SPAN = ${glslFloat(MEADOW_HEIGHT_SPAN)};
+const float MEADOW_LEAN_MAX = ${glslFloat(MEADOW_LEAN_MAX)};
+const float MEADOW_AWAY_MAX = ${glslFloat(MEADOW_AWAY_MAX)};
+const float MEADOW_BEND_SHAPE = ${glslFloat(MEADOW_BEND_SHAPE)};
+const float MEADOW_BOW = ${glslFloat(MEADOW_BOW)};
+const float MEADOW_REACH = ${glslFloat(MEADOW_REACH)};
 const int MEADOW_MARGIN = ${MEADOW_MARGIN};
 const int MEADOW_MAX_CLOCKS = ${MAX_CLOCKS};
 const int MEADOW_SECTORS = ${SECTORS};
@@ -165,7 +160,7 @@ const float MEADOW_RIM_BASE = 0.08;
 // knob), the share of columns holding a blade (and more with the density knob), flowering stalks,
 // flowers (more in drifts and far off, a band of colour before the trees), their seed heads and
 // flowers (world units), how far a gust leans them and their own combed curl.
-const float MEADOW_ROW = ${float(ROW)};
+const float MEADOW_ROW = ${glslFloat(ROW)};
 const int MEADOW_ROW_FIRST = ${Math.floor(Math.log(FIELD_NEAR) / ROW)};
 const int MEADOW_ROW_LAST = ${Math.floor(Math.log(MEADOW_TREES_Z) / ROW)};
 const float MEADOW_BLADE_SPACING = 0.075;
@@ -320,7 +315,7 @@ float meadowFront(float f, float b) {
   return rise * fall - MEADOW_REBOUND * (MEADOW_REBOUND_WIDTH / width) * exp(-df * df / (width * width));
 }
 
-// The gust load at ground point p = (x, z) at time tm (t x motion); blur is the ground length the
+// The gust load at ground point p = (x, z) at time tm (uMotionTime); blur is the ground length the
 // sample spans along the wind.
 float meadowGust(MeadowWind w, vec2 p, float tm, float blur) {
   float s = p.x * w.dir.x + p.y * w.dir.y;
@@ -868,11 +863,10 @@ vec3 meadowDeck(vec3 col, float above, float overcast, float rain) {
 
 // Knobs read here: see the top of shader.ts.
 Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2(uv.x * aspect, uv.y);
   float cx = p.x - 0.5 * aspect;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float aa = 1.0 / uRes.y;
   float rain = K_rain;
   float wet = uWeather.x;
@@ -881,19 +875,17 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   float overcast = 1.0 - pow(1.0 - clamp(rain, 0.0, 1.0), 3.0);
   float heavy = smoothstep(0.35, 0.9, rain);
 
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
   vec3 sun = sky.sunColor * (1.0 - MEADOW_OVERCAST_SUN * overcast);
-  vec3 amb = mix(sky.ambient, vec3(dot(sky.ambient, LUMA)), 0.6 * overcast) * (1.0 - 0.3 * rain);
+  vec3 amb = greyed(sky.ambient, vec3(1.0), 0.6 * overcast) * (1.0 - 0.3 * rain);
   Sky dull = sky;
   dull.sunColor = sun;
   dull.ambient = amb;
   dull.twilight *= 1.0 - 0.7 * overcast;
   // The camera's own frame (cam, ground x and z) and the sky library's (dir), turned toward the sun.
   vec3 cam = viewRay(uv, aspect, MEADOW_HORIZON, MEADOW_FOV);
-  vec3 dir = cam;
-  dir.xz = rotate(cam.xz, MEADOW_TURN);
-  vec2 sunXZ = rotate(sky.sun.xz, -MEADOW_TURN);
-  vec3 sunCam = vec3(sunXZ.x, sky.sun.y, sunXZ.y);
+  vec3 dir = skyFacing(cam, MEADOW_TURN);
+  vec3 sunCam = skyFacing(sky.sun, -MEADOW_TURN);
   float up = smoothstep(-0.03, 0.03, sky.sun.y);
   // Forward scattering: how much light comes through thin things between this cell and the sun.
   float toSun = max(dot(cam, sunCam), 0.0);
@@ -902,16 +894,16 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   vec2 sunP = vec2(0.5 * aspect, MEADOW_HORIZON) + sunCam.xy / max(sunCam.z, 0.05) * MEADOW_FOCAL;
   float sunNear = sunCam.z > 0.05 ? exp(-length(p - sunP) / 0.2) * up : 0.0;
   // The low sky toward this bearing, gilded toward the sun by the haze; it closes the distance.
-  vec3 haze = skyColor(dull, normalize(vec3(dir.x, 0.012, dir.z))) + sun * K_haze * 0.22 * pow(toward, 6.0);
+  vec3 haze = horizonHaze(dull, dir, 0.012) + sun * K_haze * 0.22 * pow(toward, 6.0);
   haze = mix(haze, vec3(dot(haze, LUMA)) * 0.85 + 0.03, 0.55 * overcast);
   // The air full of rain: the haze gone grey, darker the heavier it falls; how much it hides of the
   // distance per world unit, and of the land at the meadow's edge and beyond.
-  vec3 air = mix(haze, vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.02), 0.5 * overcast) * (1.0 - 0.25 * heavy);
+  vec3 air = greyed(haze, vec3(0.94, 0.97, 1.02), 0.5 * overcast) * (1.0 - 0.25 * heavy);
   float rainExt = rain > 0.0 ? MEADOW_DRIZZLE_MIST + MEADOW_RAIN_MIST * rain * rain : 0.0;
   float far = 1.0 - exp(-rainExt * MEADOW_TREES_Z);
   // The bright sky (or overcast deck) above this bearing: what the rain refracts and the wet grass
   // mirrors. Only looked up while there is rain or water about.
-  vec3 deck = rain > 0.0 || wet > 0.0 ? meadowDeck(skyColor(dull, normalize(vec3(dir.x, MEADOW_DECK_ABOVE / MEADOW_FOCAL * length(dir.xz), dir.z))), MEADOW_DECK_ABOVE, overcast, rain) : vec3(0.0);
+  vec3 deck = rain > 0.0 || wet > 0.0 ? meadowDeck(horizonHaze(dull, dir, MEADOW_DECK_ABOVE / MEADOW_FOCAL * length(dir.xz)), MEADOW_DECK_ABOVE, overcast, rain) : vec3(0.0);
 
   MeadowWind wind = meadowWind();
   vec4 breath = uSimOn.x > 0.5 ? texelFetch(uSim0, ivec2(MEADOW_SEED_GROUPS, 2), 0) : vec4(0.0);
@@ -928,7 +920,7 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
     col = skyColor(dull, dir);
     vec4 cloud = skyClouds(dull, dir, t, 0.2 + 0.8 * overcast, K_wind);
     col = mix(col, cloud.rgb, cloud.a);
-    col += vec3(0.85, 0.9, 1.0) * skyStars(sky, dir, 0.6) * (1.0 - cloud.a);
+    col += skyStarLight(sky, dir, 0.6) * (1.0 - cloud.a);
     col = meadowDeck(col, above, overcast, rain);
     accent = (1.0 - smoothstep(0.016, 0.021, length(dir - sky.sun))) * up * (1.0 - cloud.a) * (1.0 - overcast);
     float shaft = rain > 0.0 ? meadowShafts(cx, above, tm, rain) : 0.0;
@@ -960,16 +952,11 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
     // the rain too far to make out closes in like fog. Veil first, then the drops, which are seen by
     // the bright sky they refract and the low sun where it shines; the nearest, out of focus, dimmer.
     Precip fall = rainFall(uv, aspect, t, rain, K_wind, 1.0 - exp(-zHit / MEADOW_RAIN_DEPTH));
-    col = mix(col, air, fall.veil);
     vec3 dropLight = max(deck * MEADOW_DROP_SKY + sun * (0.3 + 2.5 * behind + 1.5 * sunNear), vec3(MEADOW_DROP_FLOOR)) * (1.0 - 0.15 * fall.near);
-    col = mix(col, dropLight, fall.cover);
+    col = precipOver(col, air, dropLight, fall);
     accent *= 1.0 - fall.veil;
   }
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(dot(col, LUMA) * 1.3, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
+  return shadeOf(col, inkOf(col, 1.3, 1.0), clamp(accent, 0.0, 1.0));
 }
 `;

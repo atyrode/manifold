@@ -165,8 +165,8 @@ float countryRows(vec2 r, vec2 dir, float period, vec2 px) {
 // The crop's colour at slope point w (world). r: row space, w with x taken at the ground's own
 // depth, so rows running down the slope converge into the distance while rows along the contour
 // crowd toward the crest. h: the field's hash; px: world size of a cell across and down; wind
-// -1..1; sway: how freely the crop moves (0 under snow, where it stands still); t: the scene clock
-// already scaled by motion. relief gets the row profile (1 on the ridges, where snow shows them),
+// -1..1; sway: how freely the crop moves (0 under snow, where it stands still); t: the motion clock
+// (uMotionTime). relief gets the row profile (1 on the ridges, where snow shows them),
 // sheen how much the crop's surface glints in low sun.
 vec3 countryCropColor(float crop, float h, float season, vec2 w, vec2 r, vec2 px, float wind, float sway, float t, out float relief, out float sheen) {
   float h2 = fract(h * 13.7);
@@ -365,7 +365,7 @@ vec3 countryMist(Sky sky, float x, float above, float overcast) {
 vec4 countryClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
   vec4 day = sky.night < 1.0 ? skyClouds(sky, dir, t, cover, wind) : vec4(0.0);
   if (sky.night <= 0.0 || dir.y <= 0.015 || cover <= 0.0) return day;
-  vec2 p = dir.xz / dir.y - vec2(0.09 * wind, -0.01) * t * uMotion;
+  vec2 p = dir.xz / dir.y - vec2(0.09 * wind, -0.01) * uMotionTime;
   float fine = 1.0 - smoothstep(0.08, 0.3, 1.3 / (uRes.y * dir.y * dir.y));
   float n = 0.62 * vnoise(p * 0.55 + 4.3) + 0.38 * mix(0.5, vnoise(p * 1.3 + 9.1), fine);
   float th = mix(0.66, 0.3, cover);
@@ -612,7 +612,7 @@ float countryGrey(float rain) {
 // thing in the scene, as an overcast sky does. No stars, no deck.
 vec3 countryDome(Sky sky, vec3 dir, float rain) {
   vec3 c = skyColor(sky, dir);
-  return mix(c, vec3(dot(c, LUMA)) * vec3(0.92, 0.95, 1.0), 0.6 * countryGrey(rain)) * (1.0 - 0.2 * rain);
+  return greyed(c, vec3(0.92, 0.95, 1.0), 0.6 * countryGrey(rain)) * (1.0 - 0.2 * rain);
 }
 
 // The cloud deck as the weather has it. Rain brings its base down (low > 1: the same clouds, nearer,
@@ -621,7 +621,7 @@ vec3 countryDome(Sky sky, vec3 dir, float rain) {
 vec4 countryDeck(Sky sky, vec3 dir, float t, float cover, float wind, float low, float rain) {
   vec4 c = countryClouds(sky, normalize(vec3(dir.x, dir.y * low, dir.z)), t, cover, wind);
   float grey = countryGrey(rain);
-  c.rgb = mix(c.rgb, vec3(dot(c.rgb, LUMA)) * vec3(0.94, 0.96, 1.0), 0.6 * grey) * (1.0 + 0.2 * grey - 0.35 * rain);
+  c.rgb = greyed(c.rgb, vec3(0.94, 0.96, 1.0), 0.6 * grey) * (1.0 + 0.2 * grey - 0.35 * rain);
   return c;
 }
 
@@ -638,8 +638,8 @@ vec2 countryLane(float v, float start) {
 // even in still air), riding along with the deck. Steady rain hangs a few faint, separate shafts;
 // heavier rain widens and darkens them until a downpour merges them into one grey wall; a drizzle
 // leaves wisps of virga that thin out before they reach the ground. seen: distance to the pixel's
-// own surface (world), so a shaft shows only in front of what lies beyond it; tm: the scene clock
-// scaled by motion. x: the shafts' opacity; y: how much the cloud base above them darkens.
+// own surface (world), so a shaft shows only in front of what lies beyond it; tm: the motion clock
+// (uMotionTime). x: the shafts' opacity; y: how much the cloud base above them darkens.
 vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float wind) {
   float clear = 1.0;
   float belly = 0.0;
@@ -669,7 +669,7 @@ vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float w
 
 Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
-  float tm = t * m;
+  float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
   float pxl = 1.0 / uRes.y;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
@@ -683,7 +683,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   float wet = uWeather.x;
   float lying = uWeather.y;
 
-  float tod = timeOfDay(K_time, K_cycle, t);
+  float tod = timeOfDayM(K_time, K_cycle, uMotionTime);
   Sky sky = skyAt(tod);
   // Rain falls from a grey deck over the whole sky, lower and darker the heavier it is: the sun is
   // lost behind it and its light, diffused through the cloud, comes from the whole sky instead, so
@@ -695,7 +695,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   vec3 diffused = sky.sunColor * lost * (0.55 - 0.3 * rain);
   sky.sunColor *= 1.0 - lost;
   sky.moonColor *= 1.0 - grey * (0.4 + 0.3 * rain);
-  sky.ambient = mix(sky.ambient, vec3(dot(sky.ambient, LUMA)) * vec3(0.95, 0.98, 1.04), 0.3 * grey) * (1.0 - 0.25 * rain) + diffused;
+  sky.ambient = greyed(sky.ambient, vec3(0.95, 0.98, 1.04), 0.3 * grey) * (1.0 - 0.25 * rain) + diffused;
   float cover = clamp(max(K_clouds + 0.4 * K_snow + 0.3 * K_lightning, grey * (0.86 + 0.14 * smoothstep(0.15, 0.7, rain))), 0.0, 1.0);
   float overcast = smoothstep(0.55, 1.0, cover);
   // How dark it is for the villagers: the first lamps come on while the sun is still ~7 degrees up
@@ -733,7 +733,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     vec2 qi = p + uPointer * m * vec2(0.022, 0.01) / L.x;
     float c = countryCrest(i, qi.x, spots);
     if (k == 2) {
-      village = countryVillage(qi, spots.x, L.y + 0.012, tod, dark, t * m, wind);
+      village = countryVillage(qi, spots.x, L.y + 0.012, tod, dark, uMotionTime, wind);
       villageSeen = true;
       if (village.hit > 0.5) {
         hit = k;
@@ -784,7 +784,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
   // Raindrops are seen by the bright sky they refract: about 1.2x the overcast horizon (greyed a
   // little, as the cloud base is), with a floor so some rain still reads at night, plus the
   // lightning and lamplight by the village.
-  vec3 dropCol = max(mix(vec3(dot(haze, LUMA)), haze, 0.5) * 1.2, vec3(0.08)) + 0.5 * flash + COUNTRY_AMBER * village.glow * 0.12 * dark;
+  vec3 dropCol = max(greyed(haze, vec3(1.0), 0.5) * 1.2, vec3(0.08)) + 0.5 * flash + COUNTRY_AMBER * village.glow * 0.12 * dark;
   float i = float(hit);
 
   if (hit < 6) {
@@ -974,7 +974,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
           // stay several cells apart, each cell lit or not against its own threshold so a passing
           // ring flips it once instead of crawling through the colour steps.
           vec3 rr = rainRipples(vec2(q.x, q.y * 1.6) * uRes.y / 20.0, t, rain);
-          float ring = rr.z * 1.4 > threshold(cell + vec2(6.0, 1.0)) ? 1.0 : 0.0;
+          float ring = hardEdge(rr.z * 1.4, threshold(cell + vec2(6.0, 1.0)));
           vec3 view = normalize(vec3(q.x, q.y - COUNTRY_HORIZON, 1.0));
           vec3 mirrored = vec3(view.x, -view.y, view.z);
           vec4 cloud = countryDeck(sky, mirrored, t, cover, wind, low, rain);
@@ -1016,7 +1016,7 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
       float puddle = rainPuddles(lp, wet) * (0.4 + 0.6 * rut) * onLane * (1.0 - snowCov);
       if (puddle > 0.0) {
         vec3 rr = rainRipples(vec2(q.x, q.y * 2.0) * uRes.y / 22.0, t, rain);
-        float ring = rr.z * 1.4 > threshold(cell + vec2(6.0, 1.0)) ? 1.0 : 0.0;
+        float ring = hardEdge(rr.z * 1.4, threshold(cell + vec2(6.0, 1.0)));
         vec3 view = normalize(vec3(q.x, q.y - COUNTRY_HORIZON, 1.0));
         vec3 mirrored = vec3(view.x, -view.y, view.z);
         vec4 cloud = countryDeck(sky, mirrored, t, cover, wind, low, rain);
@@ -1105,12 +1105,9 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     col = mix(col, flake, clamp(ps.cover, 0.0, 1.0) * (0.85 - 0.2 * ps.near) * contrast);
   }
 
-  Shade o = blankShade();
-  o.rgb = clamp(col, 0.0, 1.0);
-  o.source = o.rgb;
-  o.ink = clamp(dot(o.rgb, LUMA) * 1.1, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  o.shimmer = glint * 0.3 * m;
+  vec3 rgb = clamp(col, 0.0, 1.0);
+  Shade o = shadeOf(rgb, inkOf(rgb, 1.1, 1.0), clamp(accent, 0.0, 1.0));
+  o.shimmer = glint * 0.3;
   return o;
 }
 `;

@@ -31,9 +31,10 @@
 // around it (a breeze along the wind, gusts that push and lift it, slow eddies of its own, a gentle
 // sink), drifts away from the viewer as it goes, and fades into the haze.
 //
-// Time runs in fixed steps of STEP on the shader's clock (scene time × motion), so the simulation and
-// the picture always evaluate the gusts at the same moment. The first frame pre-runs PREWARM seconds,
-// so the page opens with seeds already in the air.
+// Time runs in fixed steps of STEP on the shader's clock (the motion clock, uMotionTime), so the
+// simulation and the picture always evaluate the gusts at the same moment. The first frame pre-runs
+// PREWARM seconds (a fixed count of steps, spread over frames only when one frame cannot hold them
+// all), so the page opens with seeds already in the air.
 //
 // Textures:
 //   uSim0  rgba16f 32×3, nearest. Rows 0–1: the seeds sorted by x (row 0: uv x, uv y, pappus radius
@@ -45,7 +46,10 @@
 //          radius (screen heights), presence, open 0..1, fullness 0..1; texels 2–17 the share of seeds
 //          left in each sector (r), sector k centred (k + 0.5) / 16 of a turn from +x, anticlockwise;
 //          texel 2 also carries the clock's depth (g, world units) and how closed it is (b, 0..1).
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -155,14 +159,6 @@ export function meadowWind(out: MeadowWind, wind: number, gusts: number, rate: n
   return out;
 }
 
-/** GLSL's smoothstep. */
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-const clamp = (x: number, low: number, high: number): number => Math.min(high, Math.max(low, x));
-
 /** One front over its period, f in 0..1, blurred by b periods (shader: meadowFront). */
 function meadowFront(f: number, b: number): number {
   const G = MEADOW_GUST;
@@ -175,7 +171,7 @@ function meadowFront(f: number, b: number): number {
 }
 
 /**
- * The gust load at ground point (x, z) at time tm (scene time × motion): about 0 in a lull, up to ~1
+ * The gust load at ground point (x, z) at time tm (the motion clock): about 0 in a lull, up to ~1
  * in a strong gust (more under 'now'), slightly negative in a rebound. `blur` is the ground length a
  * sample spans along the wind (the shader's footprint; 0 for a point). Shader: meadowGust.
  */
@@ -279,9 +275,16 @@ const CLOCK_SEEDS = SECTORS * SEEDS_PER_SECTOR;
 /** Simulated seconds per step, and the most steps one frame may take (a hitch drops time). */
 const STEP = 1 / 60;
 const MAX_STEPS = 8;
-/** Seconds pre-run on the first frame (the blades only need the last few), within this budget. */
+/** Seconds pre-run on the first frame (the blades only need the last few). */
 const PREWARM = 16;
 const BLADE_PREWARM = 3;
+const PREWARM_STEPS = Math.round(PREWARM / STEP);
+const BLADE_FROM = PREWARM_STEPS - Math.round(BLADE_PREWARM / STEP);
+/**
+ * The pre-run is a count of steps, never a duration, so the opening meadow does not depend on how
+ * fast the machine is: this is only how long one frame may spend on it before the rest waits for
+ * the next frame (the sim holds its clock and draws its opening state until it is done).
+ */
 const PREWARM_BUDGET_MS = 90;
 /** Seeds let go this much more readily while pre-running, so the page opens with some in the air. */
 const PREWARM_DETACH = 3;
@@ -420,23 +423,6 @@ type MeadowKnob = "wind" | "gusts" | "gustRate" | "dandelions" | "meadowSeed" | 
 
 export class MeadowSimError extends Error {}
 
-/** mulberry32: a small seeded generator, so one arrangement number always grows the same meadow. */
-class Random {
-  #state = 0;
-
-  seed(seed: number): void {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-}
-
 /** A stable 0..1 per (a, b): a column's own sway, unchanged by resizes or re-seeding. */
 function hash01(a: number, b: number): number {
   let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul((b | 0) + 0x165667b1, 0x9e3779b1);
@@ -521,7 +507,8 @@ function remaining(clock: Clock): number {
 const byX = (a: Seed, b: Seed): number => a.x - b.x;
 
 class MeadowSim implements SceneSim {
-  readonly #index: Readonly<Record<MeadowKnob, number>>;
+  readonly #knobs: KnobReader<MeadowKnob>;
+  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #seedTexture: DataTexture;
   readonly #bladeTexture: DataTexture;
   readonly #clockTexture: DataTexture;
@@ -553,8 +540,11 @@ class MeadowSim implements SceneSim {
 
   #aspect = 16 / 9;
   #rows = 540;
-  #pending = 0;
+  readonly #clock = new FixedStep(STEP, MAX_STEPS);
   #warm = false;
+  /** The pre-run's progress: the step to resume at, and the shader's clock where it began (NaN: not begun). */
+  #warmFrom = 0;
+  #warmClock = Number.NaN;
   #dirty = true;
   /** How closed the heads are against the rain, 0..1. */
   #closed = 0;
@@ -573,39 +563,38 @@ class MeadowSim implements SceneSim {
   #pushY = 0;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: MeadowKnob): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new MeadowSimError(`meadow: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#index = { wind: index("wind"), gusts: index("gusts"), gustRate: index("gustRate"), dandelions: index("dandelions"), meadowSeed: index("meadowSeed"), rain: index("rain") };
+    this.#knobs = new KnobReader<MeadowKnob>("meadow", params, ["wind", "gusts", "gustRate", "dandelions", "meadowSeed", "rain"]);
     this.#seedTexture = new DataTexture(gl, { width: MAX_SEEDS, height: SEED_ROWS, format: "rgba16f", filter: "nearest" });
     this.#bladeTexture = new DataTexture(gl, { width: 1, height: 2, format: "rg16f", filter: "nearest" });
     this.#clockTexture = new DataTexture(gl, { width: CLOCK_TEXELS, height: MAX_CLOCKS, format: "rgba16f", filter: "nearest" });
+    this.#textures = [this.#seedTexture.texture, this.#bladeTexture.texture, this.#clockTexture.texture];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const values = frame.values;
-    const index = this.#index;
-    this.#windKnob = values[index.wind] ?? 0;
-    this.#gusts = values[index.gusts] ?? 0;
-    this.#gustRate = values[index.gustRate] ?? 0;
-    this.#rain = values[index.rain] ?? 0;
-    this.#count = Math.round(clamp(values[index.dandelions] ?? 0, 0, MAX_CLOCKS));
+    const knobs = this.#knobs;
+    this.#windKnob = knobs.value(frame, "wind");
+    this.#gusts = knobs.value(frame, "gusts");
+    this.#gustRate = knobs.value(frame, "gustRate");
+    this.#rain = knobs.value(frame, "rain");
+    this.#count = Math.round(clamp(knobs.value(frame, "dandelions"), 0, MAX_CLOCKS));
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#rows = Math.max(1, frame.height);
     this.#fitBlades();
 
-    const arrangement = Math.round(values[index.meadowSeed] ?? 0);
+    const arrangement = Math.round(knobs.value(frame, "meadowSeed"));
     if (arrangement !== this.#arrangement) this.#reset(arrangement);
 
-    // The shader's clock: everything it draws moves on scene time × motion.
+    // The shader's clock: everything it draws moves on the motion clock (uMotionTime).
     const motion = Math.max(0, frame.motion);
-    const tmNow = frame.time * motion;
+    const tmNow = frame.motionTime;
     const fired = frame.triggers[GUST_TRIGGER] ?? -1e4;
     const ageNow = fired < -1e3 ? -1 : (frame.time - fired) * motion;
     if (!this.#warm) {
-      this.#prewarm(tmNow);
+      // Pre-run PREWARM seconds up to the clock of the first frame, a step count over as many
+      // frames as the budget needs; until it is done nothing else moves.
+      if (Number.isNaN(this.#warmClock)) this.#warmClock = tmNow;
+      this.#warmFrom = runBudgeted((k) => this.#prewarmStep(k), PREWARM_BUDGET_MS, PREWARM_STEPS, this.#warmFrom, 32);
+      if (this.#warmFrom < PREWARM_STEPS) return this.#textures;
       this.#warm = true;
     }
 
@@ -613,10 +602,9 @@ class MeadowSim implements SceneSim {
     if (frame.pointer.pressed && frame.pointer.inside) this.#blowNearest(frame.pointer);
 
     const advance = Math.max(0, frame.dt) * motion;
-    this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
-    while (this.#pending >= STEP) {
-      this.#pending -= STEP;
-      const lag = this.#pending;
+    const steps = this.#clock.advance(advance);
+    for (let i = 0; i < steps; i++) {
+      const lag = this.#clock.lag(i);
       this.#step(tmNow - lag, ageNow < 0 ? -1 : ageNow - lag, 1, true);
     }
 
@@ -627,7 +615,7 @@ class MeadowSim implements SceneSim {
       this.#clockTexture.upload(this.#clockData);
       this.#dirty = false;
     }
-    return [this.#seedTexture.texture, this.#bladeTexture.texture, this.#clockTexture.texture];
+    return this.#textures;
   }
 
   dispose(): void {
@@ -699,18 +687,14 @@ class MeadowSim implements SceneSim {
       }
     });
     this.#warm = false;
+    this.#warmFrom = 0;
+    this.#warmClock = Number.NaN;
     this.#dirty = true;
   }
 
-  /** Run PREWARM seconds up to now (the blades only the last BLADE_PREWARM), within a time budget. */
-  #prewarm(tmNow: number): void {
-    const begun = performance.now();
-    const steps = Math.round(PREWARM / STEP);
-    const bladesFrom = steps - Math.round(BLADE_PREWARM / STEP);
-    for (let k = 0; k < steps; k++) {
-      if ((k & 31) === 0 && performance.now() - begun > PREWARM_BUDGET_MS) break;
-      this.#step(tmNow - (steps - 1 - k) * STEP, -1, PREWARM_DETACH, k >= bladesFrom);
-    }
+  /** Pre-run step k of PREWARM_STEPS, ending at the clock the pre-run began at (the blades only the last BLADE_PREWARM). */
+  #prewarmStep(k: number): void {
+    this.#step(this.#warmClock - (PREWARM_STEPS - 1 - k) * STEP, -1, PREWARM_DETACH, k >= BLADE_FROM);
   }
 
   #step(tm: number, nowAge: number, detachBoost: number, blades: boolean): void {

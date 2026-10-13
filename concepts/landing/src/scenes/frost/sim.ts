@@ -46,7 +46,9 @@
 // Melt. A TrailField records the pointer's warmth. Where it is warm enough the frost melts; once
 // it cools, the meltwater refreezes from the cleared patch's edges inward (only texels next to
 // frozen glass refreeze quickly), and the new frost there starts thin and thickens back.
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -84,12 +86,14 @@ const GROWTH_TEXELS = 512 * 288;
 /** The quick first field has this fraction of the full field's resolution, across and up. */
 const COARSE_DIVISOR = 2;
 /**
- * Milliseconds per frame the growth may take: until a pattern's first field is up, what it needs
- * (up to FIRST_BUDGET_MS); after that a share of the time between frames, within BUDGET_MS.
+ * How the growth is spread over frames, counted in slices of work (a lockstep round of the branches,
+ * or a few rows of the field), never in time, so the field on show after n frames does not depend on
+ * the machine: until a pattern's first field is up, as many slices as that takes; after that
+ * REFINE_SLICES a frame. The caps in milliseconds only bound how long one frame may block.
  */
-const FIRST_BUDGET_MS = 250;
-const BUDGET_SHARE = 0.3;
-const BUDGET_MS = [6, 50] as const;
+const REFINE_SLICES = 8;
+const FIRST_CAP_MS = 250;
+const SLICE_CAP_MS = 50;
 /**
  * Longest real time one frame may add to the growth clock, seconds. The clock runs on the time
  * between frames, not the scene clock, which the renderer holds to 0.1 s a frame: on a slow
@@ -170,18 +174,6 @@ const MARK_PAUSE = 0.15;
 const MARK_REPEAT = 80;
 const MARK_FIRST = FROST_START + 25;
 
-/** Mulberry32: a small, fast, seedable PRNG. */
-function random(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 /** A lattice hash to 0..1, after the murmur3 finaliser. */
 function hash(x: number, y: number, salt: number): number {
   let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(salt | 0, 0x9e3779b1);
@@ -203,11 +195,6 @@ function noise(x: number, y: number, salt: number): number {
   const c = hash(ix, iy + 1, salt);
   const d = hash(ix + 1, iy + 1, salt);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
 }
 
 interface Size {
@@ -342,7 +329,7 @@ interface Tip {
 function* growSkeleton(pattern: number, width: number, height: number): Generator<undefined, Skeleton, undefined> {
   const unit = height;
   const frame = FROST_FRAME * unit;
-  const rand = random(Math.imul(pattern + 1, 0x9e3779b1) ^ 0x5bd1e995);
+  const rand = mulberry32(Math.imul(pattern + 1, 0x9e3779b1) ^ 0x5bd1e995);
   const range = (lo: number, hi: number): number => lo + (hi - lo) * rand();
   const skeleton = new Skeleton(width / height);
   // Which branch first claimed each texel (a plus round every point, so tips cannot slip between
@@ -815,16 +802,12 @@ function markPoint(elapsed: number): readonly [number, number] | undefined {
 }
 
 /**
- * The frost simulation. `knobs` are the scene's params, so it can read its own knobs from
+ * The frost simulation. `params` are the scene's knobs, so it can read its own knobs from
  * `SimFrame.values` by key.
  */
-export function frostSim(knobs: readonly ParamDef[]): SimFactory {
-  const slot = (key: string): number => {
-    const index = knobs.findIndex((knob) => knob.key === key);
-    if (index < 0) throw new Error(`landing: the frost scene has no "${key}" knob`);
-    return index;
-  };
-  const at = { speed: slot("speed"), style: slot("style"), pattern: slot("pattern"), warmth: slot("warmth"), mark: slot("mark") };
+export function frostSim(params: readonly ParamDef[]): SimFactory {
+  const knobs = new KnobReader("frost", params, ["speed", "style", "pattern", "warmth", "mark"]);
+  const markTrigger = knobs.trigger("mark");
 
   return (gl): SceneSim => {
     const growthTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
@@ -842,8 +825,9 @@ export function frostSim(knobs: readonly ParamDef[]): SimFactory {
     let clock = FROST_START;
     let uploadedClock = Number.NaN;
     let melt: MeltField | undefined;
-    let last: { x: number; y: number } | undefined;
-    let lastTrigger: number | undefined;
+    let hasLast = false;
+    let lastX = 0;
+    let lastY = 0;
     let traceStart: number | undefined;
     let traceSize = 0.4;
     let nextTrace: number | undefined;
@@ -858,15 +842,15 @@ export function frostSim(knobs: readonly ParamDef[]): SimFactory {
 
     /** Warm the glass under the pointer: a held fingertip melts, a passing hand only breathes on it. */
     const touch = (frame: SimFrame, glass: MeltField): void => {
-      const warmth = frame.values[at.warmth] ?? 0;
+      const warmth = knobs.value(frame, "warmth");
       const { pointer, aspect, dt } = frame;
       if (warmth <= 0 || !pointer.inside || dt <= 0) {
         glass.heat.lift();
-        last = undefined;
+        hasLast = false;
         return;
       }
       const radius = TOUCH_RADIUS[0] + (TOUCH_RADIUS[1] - TOUCH_RADIUS[0]) * warmth;
-      const moved = last ? Math.hypot((pointer.x - last.x) * aspect, pointer.y - last.y) : 0;
+      const moved = hasLast ? Math.hypot((pointer.x - lastX) * aspect, pointer.y - lastY) : 0;
       if (pointer.pressed) glass.heat.lift();
       if (pointer.down) {
         glass.heat.stroke(pointer.x, pointer.y, radius, Math.min(1, dt * 40) * (0.55 + 0.45 * warmth), aspect);
@@ -875,19 +859,19 @@ export function frostSim(knobs: readonly ParamDef[]): SimFactory {
         // the melting point however slowly the pointer goes; rubbing back and forth does melt it.
         glass.heat.stroke(pointer.x, pointer.y, radius * 1.25, 0.22 * Math.min(1, moved / radius), aspect);
       }
-      last = { x: pointer.x, y: pointer.y };
+      lastX = pointer.x;
+      lastY = pointer.y;
+      hasLast = true;
     };
 
     /** The Manifold M: a fingertip writes it in the frost on "now", and now and then while on. */
     const trace = (frame: SimFrame, glass: MeltField): void => {
-      const size = frame.values[at.mark] ?? 0;
-      const fired = frame.triggers[0] ?? -1e4;
-      if (lastTrigger !== undefined && fired !== lastTrigger && fired > -1e3) {
+      const size = knobs.value(frame, "mark");
+      if (frame.fired[markTrigger]) {
         // "now": start over, even halfway through a tracing.
         glass.finger.lift();
         traceStart = frame.time;
       }
-      lastTrigger = fired;
       if (size <= 0) nextTrace = undefined;
       else if (traceStart === undefined && clock >= MARK_FIRST && (nextTrace === undefined || frame.time >= nextTrace)) traceStart = frame.time;
       if (traceStart === undefined) return;
@@ -923,7 +907,7 @@ export function frostSim(knobs: readonly ParamDef[]): SimFactory {
         }
 
         // A new pattern frosts over afresh from the opening state; a new frame shape regrows it.
-        const seed = Math.round(frame.values[at.pattern] ?? 0);
+        const seed = Math.round(knobs.value(frame, "pattern"));
         if (pattern !== undefined && seed !== pattern) clock = FROST_START;
         pattern = seed;
         const size = growthSize(aspect);
@@ -933,9 +917,10 @@ export function frostSim(knobs: readonly ParamDef[]): SimFactory {
           job = growFrost(seed, size);
         }
         if (job) {
-          // Race to this pattern's first field, then refine on a share of the frame interval.
+          // Race to this pattern's first field, then refine a few slices a frame (REFINE_SLICES).
           const first = shownKey !== jobKey;
-          const until = now + (first ? FIRST_BUDGET_MS : Math.min(BUDGET_MS[1], Math.max(BUDGET_MS[0], interval * BUDGET_SHARE)));
+          const until = now + (first ? FIRST_CAP_MS : SLICE_CAP_MS);
+          let slices = 0;
           for (;;) {
             const step = job.next();
             if (step.value) {
@@ -946,15 +931,17 @@ export function frostSim(knobs: readonly ParamDef[]): SimFactory {
               job = undefined;
               break;
             }
-            if ((first && step.value) || performance.now() >= until) break;
+            slices++;
+            if (first ? step.value !== undefined : slices >= REFINE_SLICES) break;
+            if (performance.now() >= until) break;
           }
         }
 
         // The growth clock: real time between frames while the scene runs (see MAX_FRAME_SECONDS),
         // paced by the speed knob and the lab's motion, held once all is frosted.
         const elapsed = frame.dt > 0 ? Math.max(frame.dt, Math.min(interval / 1000, MAX_FRAME_SECONDS)) : 0;
-        clock += elapsed * frame.motion * (frame.values[at.speed] ?? 1);
-        if (field) clock = Math.min(clock, Math.max(RIME_GROWN, field.latest + field.reach * furSlowness(frame.values[at.style] ?? 0.35) + FUR_RIPEN + 5));
+        clock += elapsed * frame.motion * knobs.value(frame, "speed");
+        if (field) clock = Math.min(clock, Math.max(RIME_GROWN, field.latest + field.reach * furSlowness(knobs.value(frame, "style")) + FUR_RIPEN + 5));
         clock = Math.min(clock, 60000);
         if (clock !== uploadedClock) {
           clockData[0] = clock;
@@ -968,7 +955,7 @@ export function frostSim(knobs: readonly ParamDef[]): SimFactory {
           melt = new MeltField(meltWidth, meltHeight);
           meltTexture.resize(meltWidth, meltHeight);
           meltTexture.upload(melt.bytes);
-          last = undefined;
+          hasLast = false;
         }
         touch(frame, melt);
         trace(frame, melt);
