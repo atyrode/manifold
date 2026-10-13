@@ -14,6 +14,10 @@
 // all in cells. Uploads, both repeating so the shader can tile the sand sea: uSim0 r16f heights
 // (cells above the bed, smoothed); uSim1 rgba16f slope dh/dx, dh/dz, curvature (negative on crests)
 // and how far a cell sits below its surroundings (for ambient occlusion).
+import { markDistance } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { runBudgeted } from "../../sims/clock.ts";
+import { smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -55,11 +59,14 @@ const REPOSE = Int8Array.of(2, 2, 2, 2, 3, 3, 3, 3);
 export const DUNES_SAND = { sparse: 1.2, plenty: 13 } as const;
 
 /**
- * Updates of warm-up after laying out a field: the laid-out dunes are already in place, so this
- * only lets the model sharpen their brinks and trim them into its own shapes (the upload morphs
- * from the layout to the model's field meanwhile).
+ * Updates of warm-up after laying out a field, run as WARM_STEPS steps of WARM_CHUNK updates (1.5
+ * million in all): the laid-out dunes are already in place, so this only lets the model sharpen
+ * their brinks and trim them into its own shapes (the upload morphs from the layout to the model's
+ * field meanwhile). A step count, never a duration: the field after the warm-up is the same on every
+ * machine, a slow one only takes more frames to get there.
  */
-const WARM_PICKS = 1_500_000;
+const WARM_CHUNK = 20_000;
+const WARM_STEPS = 75;
 /** Milliseconds of warm-up per frame at least: done in a handful of frames (some ten on a fast machine). */
 const WARM_SLICE_MS = 18;
 /**
@@ -68,8 +75,6 @@ const WARM_SLICE_MS = 18;
  */
 const WARM_SLICE_SHARE = 0.3;
 const WARM_SLICE_MAX_MS = 250;
-/** Updates between clock checks while warming up. */
-const WARM_CHUNK = 20_000;
 /** Updates per second at full wind with motion on (flux grows faster than the wind does). */
 const PICKS_PER_SECOND = 500_000;
 /** Most updates spent in one frame however long it was, so a stalled tab does not lock up. */
@@ -119,27 +124,6 @@ export const DUNES_MARK = {
 function dunesMeanSlabs(sand: number): number {
   const s = Math.min(1, Math.max(0, sand));
   return DUNES_SAND.sparse + (DUNES_SAND.plenty - DUNES_SAND.sparse) * s * s;
-}
-
-// The M as common.ts draws it: five vertices, four strokes.
-const MARK_X = Float64Array.of(-0.47, -0.47, 0, 0.47, 0.47);
-const MARK_Y = Float64Array.of(-0.5, 0.5, -0.08, 0.5, -0.5);
-
-function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const pax = px - ax;
-  const pay = py - ay;
-  const bax = bx - ax;
-  const bay = by - ay;
-  const along = Math.min(1, Math.max(0, (pax * bax + pay * bay) / (bax * bax + bay * bay)));
-  return Math.hypot(pax - bax * along, pay - bay * along);
-}
-
-function markDistance(x: number, y: number): number {
-  let d = Infinity;
-  for (let k = 0; k < 4; k++) {
-    d = Math.min(d, segmentDistance(x, y, MARK_X[k] ?? 0, MARK_Y[k] ?? 0, MARK_X[k + 1] ?? 0, MARK_Y[k + 1] ?? 0));
-  }
-  return d;
 }
 
 /**
@@ -197,11 +181,6 @@ function latticeValue(i: number, j: number, seed: number): number {
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
 }
 
 /**
@@ -653,121 +632,131 @@ function boxTransposed(src: Float32Array, dst: Float32Array, r: number): void {
 }
 
 /**
- * The grid cell under the pointer. Aerial: where its ray (viewRay's lens-shifted pinhole, turned
- * into grid space) meets the mean sand level, `drop` below the eye; undefined at and above the
- * horizon. Overhead: a straight map centred on the M.
+ * The grid cell under the pointer, written to `out`. Aerial: where its ray (viewRay's lens-shifted
+ * pinhole, turned into grid space) meets the mean sand level, `drop` below the eye; false at and
+ * above the horizon. Overhead: a straight map centred on the M.
  */
-function pointerCell(frame: SimFrame, view: number, drop: number): { x: number; y: number } | undefined {
+function pointerCell(frame: SimFrame, view: number, drop: number, out: { x: number; y: number }): boolean {
   const { x, y } = frame.pointer;
   if (view >= 0.5) {
-    return { x: DUNES_MARK.x + (x - 0.5) * frame.aspect * DUNES_MAP.span, y: DUNES_MARK.z + (y - 0.5) * DUNES_MAP.span };
+    out.x = DUNES_MARK.x + (x - 0.5) * frame.aspect * DUNES_MAP.span;
+    out.y = DUNES_MARK.z + (y - 0.5) * DUNES_MAP.span;
+    return true;
   }
   const down = DUNES_CAMERA.horizon - y;
-  if (down < 0.01) return undefined;
+  if (down < 0.01) return false;
   const reach = drop / down;
   const right = (x - 0.5) * frame.aspect * reach;
   const ahead = (0.5 / Math.tan(DUNES_CAMERA.fov * 0.5)) * reach;
   const c = Math.cos(DUNES_CAMERA.turn);
   const s = Math.sin(DUNES_CAMERA.turn);
-  return { x: DUNES_CAMERA.x + c * right - s * ahead, y: DUNES_CAMERA.z + s * right + c * ahead };
+  out.x = DUNES_CAMERA.x + c * right - s * ahead;
+  out.y = DUNES_CAMERA.z + s * right + c * ahead;
+  return true;
 }
 
-export const dunesSim: SimFactory = (gl: WebGL2RenderingContext): SceneSim => {
-  const field = new DuneField();
-  const surface = new DuneSurface();
-  // The surface as first laid out, which the uploads morph away from while the field warms up.
-  const start = new DuneSurface();
-  const heights = new DataTexture(gl, { width: DUNES_GRID, height: DUNES_GRID, format: "r16f", wrap: "repeat" });
-  const shape = new DataTexture(gl, { width: DUNES_GRID, height: DUNES_GRID, format: "rgba16f", wrap: "repeat" });
-  const textures: readonly WebGLTexture[] = [heights.texture, shape.texture];
-  let layout: string | undefined;
-  let pendingLayout = "";
-  let pendingSince = 0;
-  let stoneKey: string | undefined;
-  let warm = 0;
-  let owed = 0;
-  let uploaded = -1;
-  let lastUpload = -Infinity;
-  let lastFrame: number | undefined;
+export function dunesSim(params: readonly ParamDef[]): SimFactory {
+  const knobs = new KnobReader("dunes", params, ["sand", "seed", "wind", "mark", "camera"]);
+  return (gl: WebGL2RenderingContext): SceneSim => {
+    const field = new DuneField();
+    const surface = new DuneSurface();
+    // The surface as first laid out, which the uploads morph away from while the field warms up.
+    const start = new DuneSurface();
+    const heights = new DataTexture(gl, { width: DUNES_GRID, height: DUNES_GRID, format: "r16f", wrap: "repeat" });
+    const shape = new DataTexture(gl, { width: DUNES_GRID, height: DUNES_GRID, format: "rgba16f", wrap: "repeat" });
+    const textures: readonly WebGLTexture[] = [heights.texture, shape.texture];
+    const cell = { x: 0, y: 0 };
+    // The knobs the laid-out field was made from, and the pair seen last frame (with when it first showed).
+    let laid = false;
+    let laidSand = 0;
+    let laidArrangement = 0;
+    let seenSand = Number.NaN;
+    let seenArrangement = Number.NaN;
+    let seenSince = 0;
+    // The M's size as last stood in the field (0: none; -1: not yet set).
+    let stoneSize = -1;
+    let warmed = WARM_STEPS;
+    let owed = 0;
+    let uploaded = -1;
+    let lastUpload = -Infinity;
+    let lastFrame: number | undefined;
 
-  return {
-    frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-      const now = performance.now();
-      const interval = lastFrame === undefined ? 0 : now - lastFrame;
-      lastFrame = now;
-      const sand = frame.params["sand"] ?? 0.45;
-      const arrangement = frame.params["seed"] ?? 0;
-      const wind = frame.params["wind"] ?? 0.2;
-      field.setWind(wind);
+    return {
+      frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+        const now = performance.now();
+        const interval = lastFrame === undefined ? 0 : now - lastFrame;
+        lastFrame = now;
+        const sand = knobs.value(frame, "sand");
+        const arrangement = knobs.value(frame, "seed");
+        const wind = knobs.value(frame, "wind");
+        field.setWind(wind);
 
-      const markOn = (frame.params["mark"] ?? 0) > 0.5;
-      const markSize = frame.params["mark-amount"] ?? 0.5;
-      const wantStone = markOn ? `${markSize}` : "";
-      if (wantStone !== stoneKey) {
-        field.setStone(markOn ? markSize : undefined);
-        stoneKey = wantStone;
-      }
-
-      // A new supply or arrangement lays the field out afresh once the knob rests, then warms up.
-      const want = `${sand}:${arrangement}`;
-      const relayout = layout === undefined || (want === pendingLayout && want !== layout && now - pendingSince >= RELAYOUT_MS);
-      if (want !== pendingLayout) {
-        pendingLayout = want;
-        pendingSince = now;
-      }
-      if (relayout) {
-        field.reset(sand, arrangement);
-        start.update(field);
-        layout = want;
-        warm = WARM_PICKS;
-      }
-
-      const warming = warm > 0;
-      if (warming) {
-        // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
-        // slowly (a software renderer) it takes a share of the time between them instead, so it
-        // still ends within a few.
-        const slice = Math.min(WARM_SLICE_MAX_MS, Math.max(WARM_SLICE_MS, WARM_SLICE_SHARE * interval));
-        do {
-          const picks = Math.min(warm, WARM_CHUNK);
-          field.step(picks);
-          warm -= picks;
-        } while (warm > 0 && performance.now() - now < slice);
-      } else if (frame.dt > 0) {
-        // Sand flux rises steeply with wind speed; wind 0 leaves the dunes standing.
-        const strength = Math.min(1, Math.abs(wind));
-        owed += PICKS_PER_SECOND * strength * Math.sqrt(strength) * frame.dt * frame.motion;
-        const picks = Math.min(MAX_FRAME_PICKS, Math.floor(owed));
-        owed = Math.min(owed - picks, MAX_FRAME_PICKS);
-        if (picks > 0) field.step(picks);
-      }
-
-      const pointer = frame.pointer;
-      if (pointer.inside && (pointer.pressed || pointer.down)) {
-        const slabs = pointer.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
-        const drop = DUNES_CAMERA.height + (DUNES_CAMERA.rise - 1) * dunesMeanSlabs(sand) * DUNES_SLAB;
-        const cell = slabs > 0 ? pointerCell(frame, frame.params["camera"] ?? 0, drop) : undefined;
-        if (cell !== undefined) field.pour(cell.x, cell.y, slabs);
-      }
-
-      // While the sand creeps an upload every UPLOAD_EVERY is plenty; the finished warm-up shows at once.
-      const due = uploaded < 0 || (warming && warm === 0) || now - lastUpload >= UPLOAD_EVERY * 1000;
-      if (field.version !== uploaded && due) {
-        surface.update(field);
-        if (warm > 0) {
-          const progress = 1 - warm / WARM_PICKS;
-          surface.easeFrom(start, progress * progress * (3 - 2 * progress));
+        // The sandstone M's size, 0 while the knob is off.
+        const markSize = knobs.value(frame, "mark");
+        if (markSize !== stoneSize) {
+          field.setStone(markSize > 0 ? markSize : undefined);
+          stoneSize = markSize;
         }
-        heights.upload(surface.heights);
-        shape.upload(surface.shape);
-        uploaded = field.version;
-        lastUpload = now;
-      }
-      return textures;
-    },
-    dispose(): void {
-      heights.dispose();
-      shape.dispose();
-    },
+
+        // A new supply or arrangement lays the field out afresh once the knob rests, then warms up.
+        const rested = sand === seenSand && arrangement === seenArrangement;
+        const changed = sand !== laidSand || arrangement !== laidArrangement;
+        const relayout = !laid || (rested && changed && now - seenSince >= RELAYOUT_MS);
+        if (!rested) {
+          seenSand = sand;
+          seenArrangement = arrangement;
+          seenSince = now;
+        }
+        if (relayout) {
+          field.reset(sand, arrangement);
+          start.update(field);
+          laid = true;
+          laidSand = sand;
+          laidArrangement = arrangement;
+          warmed = 0;
+        }
+
+        const warming = warmed < WARM_STEPS;
+        if (warming) {
+          // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
+          // slowly (a software renderer) it takes a share of the time between them instead, so it
+          // still ends within a few.
+          const slice = Math.min(WARM_SLICE_MAX_MS, Math.max(WARM_SLICE_MS, WARM_SLICE_SHARE * interval));
+          warmed = runBudgeted(() => field.step(WARM_CHUNK), slice, WARM_STEPS, warmed);
+        } else if (frame.dt > 0) {
+          // Sand flux rises steeply with wind speed; wind 0 leaves the dunes standing.
+          const strength = Math.min(1, Math.abs(wind));
+          owed += PICKS_PER_SECOND * strength * Math.sqrt(strength) * frame.dt * frame.motion;
+          const picks = Math.min(MAX_FRAME_PICKS, Math.floor(owed));
+          owed = Math.min(owed - picks, MAX_FRAME_PICKS);
+          if (picks > 0) field.step(picks);
+        }
+
+        const pointer = frame.pointer;
+        if (pointer.inside && (pointer.pressed || pointer.down)) {
+          const slabs = pointer.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
+          const drop = DUNES_CAMERA.height + (DUNES_CAMERA.rise - 1) * dunesMeanSlabs(sand) * DUNES_SLAB;
+          if (slabs > 0 && pointerCell(frame, knobs.value(frame, "camera"), drop, cell)) field.pour(cell.x, cell.y, slabs);
+        }
+
+        // While the sand creeps an upload every UPLOAD_EVERY is plenty; the finished warm-up shows at once.
+        const due = uploaded < 0 || (warming && warmed === WARM_STEPS) || now - lastUpload >= UPLOAD_EVERY * 1000;
+        if (field.version !== uploaded && due) {
+          surface.update(field);
+          if (warmed < WARM_STEPS) {
+            surface.easeFrom(start, smoothstep(0, 1, warmed / WARM_STEPS));
+          }
+          heights.upload(surface.heights);
+          shape.upload(surface.shape);
+          uploaded = field.version;
+          lastUpload = now;
+        }
+        return textures;
+      },
+      dispose(): void {
+        heights.dispose();
+        shape.dispose();
+      },
+    };
   };
-};
+}

@@ -34,28 +34,20 @@ vec3 flockRay(vec2 uv, float aspect) {
   return d;
 }
 
-// A capsule from a to b whose radius tapers from ra to rb: signed distance.
-float flockTaper(vec2 q, vec2 a, vec2 b, float ra, float rb) {
-  vec2 pa = q - a;
-  vec2 ba = b - a;
-  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba * h) - mix(ra, rb, h);
-}
-
 // A peregrine seen from below in its own frame (x forward, y across, 1 = half its wingspan):
 // coverage. Tucked wings give the narrow anchor of a stoop; open, they are long, pointed, swept
 // back at the wrist, and beat.
 float flockFalcon(vec2 q, float open, float beat, float aa) {
   q.y = abs(q.y);
-  float d = flockTaper(q, vec2(0.48, 0.0), vec2(-0.42, 0.0), 0.12, 0.1);
-  d = min(d, flockTaper(q, vec2(-0.38, 0.0), vec2(-0.85, 0.0), 0.07, 0.13));
+  float d = sdTaperCapsule(q, vec2(0.48, 0.0), vec2(-0.42, 0.0), 0.12, 0.1);
+  d = min(d, sdTaperCapsule(q, vec2(-0.38, 0.0), vec2(-0.85, 0.0), 0.07, 0.13));
   float span = mix(0.32, 1.0, open) * (1.0 - 0.18 * open * (0.5 - 0.5 * beat));
   vec2 shoulder = vec2(0.14, 0.06);
   vec2 wrist = vec2(mix(-0.2, 0.02, open), 0.5 * span);
   vec2 tip = vec2(mix(-0.68, -0.32, open) + 0.06 * open * beat, span);
-  d = min(d, flockTaper(q, shoulder, wrist, 0.2, 0.14));
-  d = min(d, flockTaper(q, wrist, tip, 0.14, 0.03));
-  return smoothstep(aa, -aa, d);
+  d = min(d, sdTaperCapsule(q, shoulder, wrist, 0.2, 0.14));
+  d = min(d, sdTaperCapsule(q, wrist, tip, 0.14, 0.03));
+  return softFill(d, aa);
 }
 
 // Ripples on open water seen at a grazing angle: noise laid on the water plane, so it compresses
@@ -123,14 +115,14 @@ float flockReeds(vec2 p, float tm, float wind) {
     float base = (i + 0.5 + 0.7 * (hash12(vec2(i, 43.0)) - 0.5)) * pitch;
     float sway = 0.4 * wind + (0.08 + 0.1 * abs(wind)) * sin(tm * (0.5 + 0.3 * h1) + i * 1.7);
     float s = clamp(p.y / height, 0.0, 1.0);
-    float stem = smoothstep(0.0021, 0.0011, abs(p.x - base - sway * height * 0.3 * s * s)) * step(p.y, height);
+    float stem = smoothfall(0.0021, 0.0011, abs(p.x - base - sway * height * 0.3 * s * s)) * step(p.y, height);
     cover = max(cover, stem);
     if (h1 < 0.6 * clump) {
       // A plume at the tip, drooping downwind.
       float lean = -sway * 0.8;
       vec2 tip = vec2(base + sway * height * 0.3, height);
       vec2 q = rotate(p - tip, -lean) - vec2(0.0, 0.006);
-      cover = max(cover, smoothstep(1.0, 0.7, length(q / vec2(0.0032, 0.0095))));
+      cover = max(cover, smoothfall(1.0, 0.7, length(q / vec2(0.0032, 0.0095))));
     }
   }
   return cover;
@@ -156,8 +148,8 @@ void flockReedbed(vec2 p, float aspect, Sky sky, vec3 dir, vec3 haze, float ligh
   for (int k = 0; k < 2; k++) {
     vec2 lamp = vec2(aspect * (k == 0 ? 0.19 : 0.64), FLOCK_HORIZON + 0.004);
     float on = lights * step(0.35 - 0.3 * float(k), lights);
-    float bulb = smoothstep(0.0028, 0.0012, length((p - lamp) * vec2(1.0, 1.4))) * on;
-    float streak = above < 0.0 ? smoothstep(0.0022, 0.0006, abs(p.x - lamp.x + ripple * 0.006)) * exp(above * 30.0) * on * (0.5 + ripple) : 0.0;
+    float bulb = smoothfall(0.0028, 0.0012, length((p - lamp) * vec2(1.0, 1.4))) * on;
+    float streak = above < 0.0 ? smoothfall(0.0022, 0.0006, abs(p.x - lamp.x + ripple * 0.006)) * exp(above * 30.0) * on * (0.5 + ripple) : 0.0;
     float glow = max(bulb, streak * 0.7);
     col = mix(col, FLOCK_LAMP, glow);
     accent = max(accent, glow);
@@ -179,7 +171,7 @@ void flockSea(vec2 p, float aspect, Sky sky, vec3 dir, vec3 haze, float lights, 
   if (above < 0.0) {
     wave = flockWaves(p, tm, K_wind);
     vec3 mirrored = normalize(vec3(dir.x + wave * 0.05, -dir.y + wave * 0.09 + 0.004, dir.z));
-    float fresnel = mix(0.35, 0.85, smoothstep(0.07, 0.0, -above));
+    float fresnel = mix(0.35, 0.85, smoothfall(0.07, 0.0, -above));
     col = skyColor(sky, mirrored) * fresnel + vec3(0.01, 0.02, 0.035);
     accent *= 0.5;
     shimmer = max(shimmer, 0.16);
@@ -204,8 +196,8 @@ void flockSea(vec2 p, float aspect, Sky sky, vec3 dir, vec3 haze, float lights, 
   vec2 lamp = vec2(towerX, base + 0.025);
   float flash = 0.35 + 0.65 * pow(0.5 + 0.5 * cos(tm * TAU / 6.0), 24.0);
   float d = length(p - lamp);
-  float light = (smoothstep(0.0035, 0.0015, d) * (0.5 + 0.5 * flash) + exp(-d / 0.012) * 0.35 * flash) * lights;
-  if (above < 0.0) light += smoothstep(0.003, 0.0008, abs(p.x - towerX + wave * 0.006)) * exp(above * 25.0) * lights * flash * 0.6;
+  float light = (smoothfall(0.0035, 0.0015, d) * (0.5 + 0.5 * flash) + exp(-d / 0.012) * 0.35 * flash) * lights;
+  if (above < 0.0) light += smoothfall(0.003, 0.0008, abs(p.x - towerX + wave * 0.006)) * exp(above * 25.0) * lights * flash * 0.6;
   light = clamp(light, 0.0, 1.0);
   col = mix(col, FLOCK_LAMP, light);
   accent = max(accent, light);
@@ -214,13 +206,12 @@ void flockSea(vec2 p, float aspect, Sky sky, vec3 dir, vec3 haze, float lights, 
 // Knobs (K_*): birds, cohesion, chaos, speed, predator, skyline, time, cycle, wind, mark. The
 // flock's knobs drive the simulation; here only the sky, the skyline and the wind are read.
 Shade sceneFlock(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2(uv.x * aspect, uv.y);
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float aa = 1.0 / uRes.y;
 
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
   vec3 dir = flockRay(uv, aspect);
   vec3 col = skyColor(sky, dir);
   col += vec3(0.86, 0.88, 1.0) * skyStars(sky, dir, 0.45);
@@ -259,7 +250,7 @@ Shade sceneFlock(vec2 uv, vec2 cell, float t) {
     col = mix(col, mix(FLOCK_INK, col, 0.1 * (1.0 - roll)), cover);
   }
   accent *= 1.0 - cover;
-  accent = max(accent, markOn * cover * smoothstep(0.06, 0.015, markDist));
+  accent = max(accent, markOn * cover * smoothfall(0.06, 0.015, markDist));
 
   if (uSimOn.y > 0.5) {
     vec4 shown = texelFetch(uSim1, ivec2(1, 0), 0);
@@ -276,17 +267,14 @@ Shade sceneFlock(vec2 uv, vec2 cell, float t) {
   // The skyline: a thin band along the bottom, never more than about an eighth of the frame (the
   // test reaches higher so the lighthouse's halo fades out before it).
   if (uv.y < 0.2) {
-    vec3 haze = skyColor(sky, normalize(vec3(dir.x, 0.01, dir.z)));
+    vec3 haze = horizonHaze(sky, dir, 0.01);
     int skyline = int(K_skyline + 0.5);
     if (skyline == 0) flockCity(p, haze, lights, col, accent);
     else if (skyline == 1) flockReedbed(p, aspect, sky, dir, haze, lights, tm, col, accent, shimmer);
     else flockSea(p, aspect, sky, dir, haze, lights, tm, col, accent, shimmer);
   }
 
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(dot(col, LUMA) * 1.4, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
+  Shade o = shadeOf(col, inkOf(col, 1.4, 1.0), clamp(accent, 0.0, 1.0));
   o.shimmer = shimmer;
   return o;
 }

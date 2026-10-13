@@ -6,34 +6,33 @@
 // aerial camera turns its rays into grid space by DUNES_CAMERA.turn, so the wind blows left to right
 // and toward the viewer; the sky library's frame is the camera's turned by DUNES_CAMERA.look, and
 // its sun and moon are turned on into grid space to light the sand.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { DUNES_CAMERA, DUNES_GRID, DUNES_MAP, DUNES_MARK, DUNES_SAND, DUNES_SLAB } from "./sim.ts";
 
-const glsl = (value: number): string => value.toFixed(4);
-
 export const dunesGlsl = `
-const float DUNES_GRID = ${glsl(DUNES_GRID)};
+const float DUNES_GRID = ${glslFloat(DUNES_GRID)};
 // No sand stands higher than this (cells); rays above it and climbing can stop.
 const float DUNES_TOP = 16.0;
 // Rays give up here: the dust has the horizon by then.
 const float DUNES_FAR = 900.0;
-const vec2 DUNES_EYE = vec2(${glsl(DUNES_CAMERA.x)}, ${glsl(DUNES_CAMERA.z)});
-const float DUNES_EYE_HEIGHT = ${glsl(DUNES_CAMERA.height)};
-const float DUNES_EYE_RISE = ${glsl(DUNES_CAMERA.rise)};
-const float DUNES_HORIZON = ${glsl(DUNES_CAMERA.horizon)};
-const float DUNES_FOV = ${glsl(DUNES_CAMERA.fov)};
-const float DUNES_TURN = ${glsl(DUNES_CAMERA.turn)};
-const float DUNES_LOOK = ${glsl(DUNES_CAMERA.look)};
-const float DUNES_MAP_SPAN = ${glsl(DUNES_MAP.span)};
-const vec2 DUNES_MARK_AT = vec2(${glsl(DUNES_MARK.x)}, ${glsl(DUNES_MARK.z)});
-const float DUNES_MARK_YAW = ${glsl(DUNES_MARK.yaw)};
-const float DUNES_MARK_SMALL = ${glsl(DUNES_MARK.small)};
-const float DUNES_MARK_LARGE = ${glsl(DUNES_MARK.large)};
-const float DUNES_MARK_STROKE = ${glsl(DUNES_MARK.stroke)};
-const float DUNES_MARK_DEPTH = ${glsl(DUNES_MARK.depth)};
-const float DUNES_MARK_SCOUR = ${glsl(DUNES_MARK.scour)};
-const float DUNES_SAND_SPARSE = ${glsl(DUNES_SAND.sparse)};
-const float DUNES_SAND_PLENTY = ${glsl(DUNES_SAND.plenty)};
-const float DUNES_SLAB = ${glsl(DUNES_SLAB)};
+const vec2 DUNES_EYE = vec2(${glslFloat(DUNES_CAMERA.x)}, ${glslFloat(DUNES_CAMERA.z)});
+const float DUNES_EYE_HEIGHT = ${glslFloat(DUNES_CAMERA.height)};
+const float DUNES_EYE_RISE = ${glslFloat(DUNES_CAMERA.rise)};
+const float DUNES_HORIZON = ${glslFloat(DUNES_CAMERA.horizon)};
+const float DUNES_FOV = ${glslFloat(DUNES_CAMERA.fov)};
+const float DUNES_TURN = ${glslFloat(DUNES_CAMERA.turn)};
+const float DUNES_LOOK = ${glslFloat(DUNES_CAMERA.look)};
+const float DUNES_MAP_SPAN = ${glslFloat(DUNES_MAP.span)};
+const vec2 DUNES_MARK_AT = vec2(${glslFloat(DUNES_MARK.x)}, ${glslFloat(DUNES_MARK.z)});
+const float DUNES_MARK_YAW = ${glslFloat(DUNES_MARK.yaw)};
+const float DUNES_MARK_SMALL = ${glslFloat(DUNES_MARK.small)};
+const float DUNES_MARK_LARGE = ${glslFloat(DUNES_MARK.large)};
+const float DUNES_MARK_STROKE = ${glslFloat(DUNES_MARK.stroke)};
+const float DUNES_MARK_DEPTH = ${glslFloat(DUNES_MARK.depth)};
+const float DUNES_MARK_SCOUR = ${glslFloat(DUNES_MARK.scour)};
+const float DUNES_SAND_SPARSE = ${glslFloat(DUNES_SAND.sparse)};
+const float DUNES_SAND_PLENTY = ${glslFloat(DUNES_SAND.plenty)};
+const float DUNES_SLAB = ${glslFloat(DUNES_SLAB)};
 
 float dunesHeight(vec2 p) {
   return uSimOn.x > 0.5 ? texture(uSim0, p / DUNES_GRID).r : 0.0;
@@ -42,12 +41,6 @@ float dunesHeight(vec2 p) {
 // Slope dh/dx, dh/dz, curvature (negative on crests and brinks), hollowness (positive in troughs).
 vec4 dunesShape(vec2 p) {
   return uSimOn.y > 0.5 ? texture(uSim1, p / DUNES_GRID) : vec4(0.0);
-}
-
-// A direction turned about the vertical (camera into grid or sky frame; sky into grid).
-vec3 dunesTurn(vec3 v, float turn) {
-  vec2 r = rotate(v.xz, turn);
-  return vec3(r.x, v.y, r.y);
 }
 
 // Blown sand: thin streaks drawn out along the wind and racing down it. 'across' is the streak
@@ -64,7 +57,7 @@ float dunesMarkSdf(vec3 p, float height) {
   vec3 q = p - vec3(DUNES_MARK_AT.x, 0.0, DUNES_MARK_AT.y);
   vec2 face = rotate(q.xz, -DUNES_MARK_YAW);
   vec2 m = vec2(face.x, q.y) / height - vec2(0.0, 0.5);
-  float stroke = DUNES_MARK_STROKE * (1.0 - DUNES_MARK_SCOUR * smoothstep(-0.2, -0.5, m.y));
+  float stroke = DUNES_MARK_STROKE * (1.0 - DUNES_MARK_SCOUR * smoothfall(-0.2, -0.5, m.y));
   vec2 w = vec2((markDistance(m) - stroke) * height, abs(face.y) - DUNES_MARK_DEPTH * height);
   return min(max(w.x, w.y), 0.0) + length(max(w, 0.0));
 }
@@ -177,7 +170,7 @@ float dunesMarch(vec3 ro, vec3 rd, float t, out vec4 skim) {
 Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   bool overhead = K_camera > 0.5;
   float windSign = K_wind < 0.0 ? -1.0 : 1.0;
   // How hard it blows: drives the blowing sand, the ripples' creep and, with haze, a sandstorm.
@@ -186,11 +179,11 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   float mean = (DUNES_SAND_SPARSE + (DUNES_SAND_PLENTY - DUNES_SAND_SPARSE) * K_sand * K_sand) * DUNES_SLAB;
   float markHeight = K_mark > 0.0 ? mix(DUNES_MARK_SMALL, DUNES_MARK_LARGE, K_mark) : 0.0;
 
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
   // One key light: the sun, or the moon once the sun is down. Both colours come pre-faded. The sky
   // library's frame is the camera's turned by DUNES_LOOK, so the setting sun stands in the picture.
   float moonlit = sky.sun.y > -0.03 ? 0.0 : 1.0;
-  vec3 key = dunesTurn(mix(sky.sun, sky.moon, moonlit), DUNES_TURN - DUNES_LOOK);
+  vec3 key = skyFacing(mix(sky.sun, sky.moon, moonlit), DUNES_TURN - DUNES_LOOK);
   // A high sun or moon stands above the picture and out across the wind, where it lights stoss and
   // lee alike and the dunes go flat. As it climbs, swing it round upwind (out of the picture nobody
   // can tell) and steepen the slopes it lights, so stoss slopes and crests stay lit and slip faces
@@ -220,9 +213,9 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   vec2 at = overhead ? uv : uv + waver * vec2(0.004, 0.014) * band * heat;
   vec3 view = viewRay(at, aspect, DUNES_HORIZON, DUNES_FOV);
   view.xz = rotate(view.xz, -uPointer.x * 0.035);
-  vec3 skyward = dunesTurn(view, DUNES_LOOK);
+  vec3 skyward = skyFacing(view, DUNES_LOOK);
   vec3 ro = vec3(DUNES_EYE.x, DUNES_EYE_HEIGHT + DUNES_EYE_RISE * mean, DUNES_EYE.y);
-  vec3 rd = dunesTurn(view, DUNES_TURN);
+  vec3 rd = skyFacing(view, DUNES_TURN);
   if (overhead) {
     // Straight down on the M's patch of desert, the wind blowing left to right.
     vec2 g = DUNES_MARK_AT + (uv - 0.5) * vec2(aspect, 1.0) * DUNES_MAP_SPAN;
@@ -252,7 +245,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
 
   // Dust haze. The desert air is never quite clear; the haze knob thickens it, and with a hard wind
   // on top it becomes a sandstorm closing in to a few dune lengths: ochre, and dimming the sun.
-  vec3 horizon = skyColor(sky, normalize(vec3(skyward.x, 0.0, skyward.z)));
+  vec3 horizon = horizonHaze(sky, skyward, 0.0);
   vec3 dustTint = vec3(0.82, 0.58, 0.38) * (sky.sunColor * 0.55 + sky.ambient * 1.1);
   vec3 dust = mix(horizon, dustTint, 0.3 + 0.6 * storm);
   float hazeDensity = 0.3 + 0.7 * K_fog + 2.0 * storm;
@@ -278,7 +271,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     vec3 stone = mix(vec3(0.74, 0.42, 0.26), vec3(0.92, 0.66, 0.45), clamp(0.5 + 0.4 * strata, 0.0, 1.0));
     float varnish = smoothstep(0.6, 0.9, vnoise(vec2(face.x * 0.9, q.y * 0.12 + 3.0))) * smoothstep(0.35, 0.95, my);
     stone *= 1.0 - 0.35 * varnish;
-    stone = mix(stone, vec3(0.94, 0.74, 0.54), 0.35 * smoothstep(0.3, 0.0, my));
+    stone = mix(stone, vec3(0.94, 0.74, 0.54), 0.35 * smoothfall(0.3, 0.0, my));
     n = normalize(n + 0.12 * (vec3(vnoise(q.yz * 2.0), vnoise(q.xz * 2.0 + 2.0), vnoise(q.xy * 2.0 + 4.0)) - 0.5));
     float ndl = max(dot(n, key), 0.0);
     float shade = key.y > 0.0 ? dunesShadow(q + n * 0.15, key, 0.0, 0.0) : 0.0;
@@ -286,7 +279,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     vec3 bounce = keyColor * vec3(0.9, 0.62, 0.4) * 0.45 * clamp(key.y * 2.5, 0.0, 1.0) * (0.5 - 0.5 * n.y);
     // The sun is always somewhere ahead, so the face toward us is mostly in shade: a fuller sky fill
     // than the sand's keeps the stone's colour and strata legible.
-    col = stone * sunlight * ndl * shade + mix(stone, vec3(dot(stone, LUMA)), 0.3) * sky.ambient * 0.9 * (0.55 + 0.45 * n.y) + stone * bounce;
+    col = stone * sunlight * ndl * shade + greyed(stone, vec3(1.0), 0.3) * sky.ambient * 0.9 * (0.55 + 0.45 * n.y) + stone * bounce;
     // Backlit, its edges catch a thin line of the sun.
     col += stone * sunlight * pow(1.0 - max(dot(n, -rd), 0.0), 3.0) * against * shade * 0.6;
     col *= mix(vec3(1.0), vec3(0.7, 0.85, 1.3), sky.night * 0.75);
@@ -320,7 +313,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     vec3 bed = vec3(0.62, 0.46, 0.36) * (0.78 + 0.22 * vnoise(pan * 0.35) + 0.12 * vnoise(pan * 0.9 + 3.0)) * (1.0 + 0.12 * grain * (vnoise(pan * 2.5) - 0.5));
     vec3 albedo = mix(bed, sand, cover);
     // By moonlight the eye loses colour: sand reads grey-blue.
-    albedo = mix(albedo, vec3(dot(albedo, LUMA)), 0.5 * sky.night);
+    albedo = greyed(albedo, vec3(1.0), 0.5 * sky.night);
 
     float ndl = max(dot(n, key), 0.0);
     float lit = ndl > 0.0 && key.y > 0.0 ? dunesShadow(p + vec3(0.0, 0.06, 0.0), key, markHeight, 0.004 * reach) : 0.0;
@@ -330,20 +323,20 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     // The sky fills the shade with cooler, greyer light than the sun gives the sand; at night little
     // of it finds the slip faces, so the lee sides stay dark.
     float fill = ao * (0.55 + 0.45 * n.y) * (1.0 - 0.45 * slip * sky.night);
-    col = albedo * sunlight * ndl * lit + mix(albedo, vec3(dot(albedo, LUMA)), 0.4) * skylight * fill + bounce * ao;
+    col = albedo * sunlight * ndl * lit + greyed(albedo, vec3(1.0), 0.4) * skylight * fill + bounce * ao;
     // Crests catch the light when it comes from behind them; the moon lays a cool sheen along them.
     col += keyColor * albedo * crest * against * lit * 0.35;
     col += sky.moonColor * (moonlit * sky.night * 0.6) * crest * ndl * lit;
     // Out of the sun the sand takes the sky's colour: the slip faces under a high sun, and the hollows.
     vec3 skyHue = skylight / max(dot(skylight, LUMA), 1e-3);
     float cool = sky.day * (0.35 * slip * high + 0.3 * smoothstep(0.2, 1.4, shape.w));
-    col = mix(col, dot(col, LUMA) * skyHue, cool);
+    col = greyed(col, skyHue, cool);
     col *= mix(vec3(1.0), vec3(0.7, 0.85, 1.3), sky.night * 0.75);
     // Quartz grains glinting on the nearer sunlit sand.
-    o.shimmer = 0.06 * ndl * lit * cover * sky.day * smoothstep(140.0, 30.0, reach);
+    o.shimmer = 0.06 * ndl * lit * cover * sky.day * smoothfall(140.0, 30.0, reach);
 
     if (drift > 0.0) {
-      float near = overhead ? 1.0 : smoothstep(170.0, 50.0, reach);
+      float near = overhead ? 1.0 : smoothfall(170.0, 50.0, reach);
       // Saltation: sheets of sand skimming up the stoss slopes, thickest toward the crest.
       float flux = cover * (1.0 - slip) * (0.25 + 0.75 * crest + 0.5 * smoothstep(0.0, 0.3, windSign * shape.x));
       // The skimming grains brighten whatever light falls there rather than glowing on their own.
@@ -378,7 +371,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
 
   // Sand blowing off the crests the ray skimmed, seen against the sky or the dunes beyond.
   if (!overhead && drift > 0.0 && skim.w > 0.0 && !showMark) {
-    float wisp = skim.w * dunesStreak(skim.xyz, tm * 1.3, windSign, gale, 1.2) * smoothstep(250.0, 60.0, length(skim.xyz - ro));
+    float wisp = skim.w * dunesStreak(skim.xyz, tm * 1.3, windSign, gale, 1.2) * smoothfall(250.0, 60.0, length(skim.xyz - ro));
     col = mix(col, grains, wisp * drift * 0.5);
   }
 
@@ -402,16 +395,15 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   // Only where the sim can heap it: on the sand, below the horizon.
   if (!overhead && pouring > 0.0 && uMouse.y < DUNES_HORIZON - 0.01) {
     vec2 q = (uv - uMouse.xy) * vec2(aspect, 1.0);
-    float width = 0.006 + 0.012 * smoothstep(0.02, -0.01, q.y);
-    float stream = smoothstep(width, 0.0, abs(q.x)) * smoothstep(-0.015, 0.0, q.y) * smoothstep(0.24, 0.1, q.y);
+    float width = 0.006 + 0.012 * smoothfall(0.02, -0.01, q.y);
+    float stream = smoothfall(width, 0.0, abs(q.x)) * smoothstep(-0.015, 0.0, q.y) * smoothfall(0.24, 0.1, q.y);
     stream *= 0.55 + 0.45 * vnoise(vec2(q.x * 260.0, q.y * 50.0 + t * 12.0));
     col = mix(col, grains * vec3(0.95, 0.75, 0.5), stream * pouring);
   }
 
   col = clamp(col, 0.0, 1.0);
-  o.ink = clamp(pow(dot(col, LUMA), 0.85) * 1.1, 0.0, 1.0);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  Shade s = shadeOf(col, inkOf(col, 1.1, 0.85), o.accent);
+  s.shimmer = o.shimmer;
+  return s;
 }
 `;

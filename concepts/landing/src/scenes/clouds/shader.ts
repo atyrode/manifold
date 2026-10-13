@@ -20,13 +20,11 @@ const vec3 cloudsBoltLight = vec3(0.74, 0.78, 1.0);
 const float cloudsMoonGain = 1.8; // moonlit cloud is the brightest thing in a night sky: the eye adapts
 
 vec3 cloudsToWorld(vec3 d) {
-  vec2 xz = rotate(d.xz, cloudsTurn);
-  return vec3(xz.x, d.y, xz.y);
+  return skyFacing(d, cloudsTurn);
 }
 
 vec3 cloudsToCamera(vec3 d) {
-  vec2 xz = rotate(d.xz, -cloudsTurn);
-  return vec3(xz.x, d.y, xz.y);
+  return skyFacing(d, -cloudsTurn);
 }
 
 // The shared sky for a camera-frame direction.
@@ -36,11 +34,6 @@ vec3 cloudsSky(Sky sky, vec3 dirCam) {
 
 float cloudsCross(vec2 a, vec2 b) {
   return a.x * b.y - a.y * b.x;
-}
-
-float cloudsRoundBox(vec2 q, vec2 size, float radius) {
-  vec2 d = abs(q) - size + radius;
-  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
 }
 
 // Highlights roll off toward 1 instead of clipping flat, so sunlit domes keep their modelling.
@@ -187,7 +180,7 @@ CloudsLight cloudsLighting(Sky sky) {
   li.zenith = cloudsSky(sky, normalize(vec3(-0.3 * li.sunBearing.x, 1.0, -0.3 * li.sunBearing.y)));
   // From cruise altitude the horizon dips: cloud tops see the sun a few degrees after the shared
   // sky has put it out, and anvils longer still. They keep the red of the glow toward it.
-  float dusk = smoothstep(0.03, -0.02, sky.sun.y);
+  float dusk = smoothfall(0.03, -0.02, sky.sun.y);
   vec3 afterglow = li.toward * dusk * smoothstep(-0.13, -0.05, sky.sun.y) * 0.6;
   li.key = sky.sunColor + afterglow + li.moonlight;
   li.high = sky.sunColor + li.toward * dusk * smoothstep(-0.2, -0.09, sky.sun.y) * 0.8 + li.moonlight;
@@ -256,7 +249,7 @@ vec4 cloudsThunderhead(vec2 q, float seed, float lean, float aa, Sky sky, Clouds
     wcol = (mix(0.34, 0.22, smoothstep(0.0, 0.7, q.y)) + lobes) * sqrt(1.0 - cap * cap);
     dcol = abs(q.x - ax) - wcol;
   }
-  float column = 1.0 - smoothstep(-aa, aa, dcol);
+  float column = softFill(dcol, aa);
 
   // The anvil: a broad flat slab, its underside rising gently from the column to a thinner edge
   // and fading softly into the air below, reaching furthest downwind. Each fibre of ice runs its
@@ -360,7 +353,7 @@ vec2 cloudsContrail(vec2 hv, float px, float since, float seed, float wind, floa
     float x = dot(r, across) - sink - wobble;
     float u0 = (x - sep) / width;
     float u1 = (x + sep) / width;
-    float lines = max(exp(-u0 * u0), exp(-u1 * u1));
+    float lines = max(bell(u0), bell(u1));
     trail = lines * smoothstep(0.2, 1.5, age) * (1.0 - smoothstep(22.0, 38.0, age)) * sqrt(1.1 * px / width);
   }
   float flown = since * speed;
@@ -420,9 +413,9 @@ vec4 cloudsWing(vec2 w, float cellW, vec3 rdCam, Sky sky, CloudsLight li, float 
   float ds = length(w - strobeAt) / cellW;
   vec3 red = vec3(1.0, 0.1, 0.05);
   vec3 white = vec3(0.95, 0.97, 1.0);
-  float navCore = smoothstep(2.6, 0.9, dn) * nav;
+  float navCore = smoothfall(2.6, 0.9, dn) * nav;
   glow = red * (navCore * 1.2 + nav * (exp(-dn / 4.0) * 0.45 + exp(-dn / 18.0) * 0.12));
-  glow += white * (smoothstep(3.0, 1.0, ds) * (0.45 + 1.8 * strobe) + strobe * (exp(-ds / 6.0) * 0.9 + exp(-ds / 36.0) * 0.3));
+  glow += white * (smoothfall(3.0, 1.0, ds) * (0.45 + 1.8 * strobe) + strobe * (exp(-ds / 6.0) * 0.9 + exp(-ds / 36.0) * 0.3));
   mark = navCore;
   if (cov <= 0.0) return vec4(0.0);
 
@@ -648,7 +641,7 @@ vec3 cloudsWindow(vec3 view, vec2 p, vec2 qp, float dP, float dT, vec2 size, flo
   // hairline scratches that only show where light catches them, glare round the sun, and the
   // little breather hole near the bottom.
   vec3 pane = view * mix(1.0, 0.76, smoothstep(-0.04, 0.0, dP));
-  float sheen = smoothstep(0.3, 0.0, abs(dot(qp, vec2(0.83, 0.56)) + 0.12));
+  float sheen = smoothfall(0.3, 0.0, abs(dot(qp, vec2(0.83, 0.56)) + 0.12));
   pane += (cabin * 1.5 + 0.01) * (0.25 + 0.75 * sheen) * (0.15 + 0.45 * night);
   vec2 lamp = qp - size * vec2(0.42, 0.5);
   pane += vec3(1.0, 0.82, 0.55) * exp(-dot(lamp, lamp) * 1600.0) * 0.08 * night;
@@ -681,7 +674,7 @@ vec3 cloudsWindow(vec3 view, vec2 p, vec2 qp, float dP, float dT, vec2 size, flo
   // The rolled-up shade along the top, its finger grip at the middle.
   float blind = smoothstep(0.6, 0.9, outward.y) * (1.0 - smoothstep(0.42, 0.48, rv));
   reveal *= 1.0 - 0.16 * blind;
-  float grip = 1.0 - smoothstep(-px, px, cloudsRoundBox(qp - vec2(0.0, size.y + 0.014), vec2(0.04, 0.006), 0.005));
+  float grip = softFill(sdBox(qp - vec2(0.0, size.y + 0.014), vec2(0.04, 0.006), 0.005), px);
   reveal = mix(reveal, reveal * 1.15 + 0.01, grip);
   // The dark seal round the pane, and the trim's rounded lip catching the light.
   reveal *= 1.0 - 0.6 * (1.0 - smoothstep(0.0, 2.5 * px, dP));
@@ -698,14 +691,14 @@ vec3 cloudsWindow(vec3 view, vec2 p, vec2 qp, float dP, float dT, vec2 size, flo
 
 Shade sceneClouds(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
-  float tm = t * m;
+  float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
   float px = 1.0 / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
   // Leaning toward the pointer: the near frame slides against the view, the wing a little.
   vec2 head = uPointer * m;
 
-  float tod = timeOfDay(K_time, K_cycle, t);
+  float tod = timeOfDayM(K_time, K_cycle, tm);
   Sky sky = cloudsMoon(skyAt(tod), tod);
   CloudsLight li = cloudsLighting(sky);
   // Under an aurora the tops, and the window frame, pick up a faint green.
@@ -721,8 +714,8 @@ Shade sceneClouds(vec2 uv, vec2 cell, float t) {
   float cx = pitch * floor(p.x / pitch + 0.5);
   vec2 qp = p - vec2(cx, 0.0) + head * 0.008;
   vec2 qt = p - vec2(cx, 0.0) + head * 0.02;
-  float dP = windowOn ? cloudsRoundBox(qp, size, radius) : -1.0;
-  float dT = windowOn ? cloudsRoundBox(qt, size + 0.055, radius + 0.055) : -1.0;
+  float dP = windowOn ? sdBox(qp, size, radius) : -1.0;
+  float dT = windowOn ? sdBox(qt, size + 0.055, radius + 0.055) : -1.0;
   vec2 frame = windowOn ? size : vec2(aspect * 0.5, 0.5);
 
   vec3 col = vec3(0.0);
@@ -732,19 +725,15 @@ Shade sceneClouds(vec2 uv, vec2 cell, float t) {
   if (windowOn) {
     vec2 sunAt = li.dir.xy / max(li.dir.z, 0.05) * cloudsFocal + vec2(0.0, cloudsHorizon);
     col = cloudsWindow(col, p, qp, dP, dT, size, radius, pitch, cx, px, sky, li, sunAt);
-    float paneMask = 1.0 - smoothstep(-0.6 * px, 0.6 * px, dP);
+    float paneMask = softFill(dP, 0.6 * px);
     stars *= paneMask;
     accent *= paneMask;
   }
   float v = length((uv - 0.5) * vec2(1.0, 0.85)) * 1.45;
   col *= 1.0 - 0.25 * smoothstep(0.45, 1.05, v);
 
-  Shade o = blankShade();
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(dot(col, LUMA), 0.0, 1.0);
-  o.accent = accent;
-  o.shimmer = stars * 0.4 * m;
+  Shade o = shadeOf(col, inkOf(col, 1.0, 1.0), accent);
+  o.shimmer = stars * 0.4; // main scales it by the motion
   return o;
 }
 `;

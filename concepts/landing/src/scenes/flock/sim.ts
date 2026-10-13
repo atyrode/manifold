@@ -39,7 +39,11 @@
 //          wings open 0..1, wingbeat sin) and, in w, the birds per texel of a sheet at
 //          REFERENCE_DENSITY; texel 2 Manifold M (strength 0..1, centre uv xy, height in screen
 //          heights).
-import type { ParamDef } from "../../params.ts";
+import { markVertex } from "../../mark.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -192,10 +196,6 @@ const FIELD_ROWS = 240;
 /** Exponential trail of the density field (s): softens the specks' motion into short streaks. */
 const TRAIL = 0.03;
 
-/** The Manifold M in mark units, as in shaders/common.ts: x in [-0.47, 0.47], y in [-0.5, 0.5]. */
-const MARK_X = [-0.47, -0.47, 0, 0.47, 0.47];
-const MARK_Y = [-0.5, 0.5, -0.08, 0.5, -0.5];
-
 /**
  * The racetrack the birds stream along while they draw the M: up the strokes on one side and back
  * down on the other, each lane offset to the right of its direction of travel so the two streams
@@ -206,12 +206,8 @@ const MARK_TRACK = (() => {
   const track = new Float32Array((route.length - 1) * 6);
   let along = 0;
   for (let k = 0; k + 1 < route.length; k++) {
-    const from = route[k] ?? 0;
-    const to = route[k + 1] ?? 0;
-    const ax = MARK_X[from] ?? 0;
-    const ay = MARK_Y[from] ?? 0;
-    const bx = MARK_X[to] ?? 0;
-    const by = MARK_Y[to] ?? 0;
+    const [ax, ay] = markVertex(route[k] ?? 0);
+    const [bx, by] = markVertex(route[k + 1] ?? 0);
     const length = Math.hypot(bx - ax, by - ay);
     const rx = ((by - ay) / length) * MARK_LANE;
     const ry = (-(bx - ax) / length) * MARK_LANE;
@@ -225,36 +221,16 @@ const MARK_OUTWARD_LENGTH = MARK_TRACK_LENGTH / 2;
 
 type KnobKey = "birds" | "cohesion" | "chaos" | "speed" | "predator" | "wind" | "mark";
 
-const smoothstep = (edge0: number, edge1: number, x: number): number => {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-};
-
 /** One slow swing of the choreography: a sine of the clock with the given period (s) and phase. */
 const swing = (clock: number, period: number, phase: number): number => Math.sin((clock / period) * TAU + phase);
-
-/** mulberry32: a small seeded generator, so the same seed always grows the same flock. */
-class Random {
-  #state = 0;
-
-  seed(seed: number): void {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-}
 
 class FlockSim implements SceneSim {
   readonly #density: DataTexture;
   readonly #state: DataTexture;
   readonly #stateData = new Float32Array(12);
-  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #knobs: KnobReader<KnobKey>;
+  readonly #attackSlot: number;
+  readonly #markSlot: number;
   readonly #knob: Record<KnobKey, number> = { birds: 3000, cohesion: 0.55, chaos: 0.35, speed: 0.5, predator: 0, wind: 0, mark: 0 };
   readonly #random = new Random();
 
@@ -302,7 +278,7 @@ class FlockSim implements SceneSim {
 
   #aspect = 16 / 9;
   #time = 0;
-  #pending = 0;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
   #dirty = true;
   #centreX = 0;
   #centreY = 0;
@@ -313,9 +289,6 @@ class FlockSim implements SceneSim {
   #rate = 1;
   #clock = 0;
 
-  #primed = false;
-  #seenAttack = 0;
-  #seenMark = 0;
   #attackNow = false;
   #markNow = false;
 
@@ -342,43 +315,38 @@ class FlockSim implements SceneSim {
   #nextMark = Number.POSITIVE_INFINITY;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new Error(`flock: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#knobIndex = { birds: index("birds"), cohesion: index("cohesion"), chaos: index("chaos"), speed: index("speed"), predator: index("predator"), wind: index("wind"), mark: index("mark") };
+    this.#knobs = new KnobReader<KnobKey>("flock", params, ["birds", "cohesion", "chaos", "speed", "predator", "wind", "mark"]);
+    this.#attackSlot = this.#knobs.trigger("predator");
+    this.#markSlot = this.#knobs.trigger("mark");
     this.#density = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
     this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const values = frame.values;
-    const index = this.#knobIndex;
+    const knobs = this.#knobs;
     const knob = this.#knob;
-    knob.birds = values[index.birds] ?? knob.birds;
-    knob.cohesion = values[index.cohesion] ?? knob.cohesion;
-    knob.chaos = values[index.chaos] ?? knob.chaos;
-    knob.speed = values[index.speed] ?? knob.speed;
-    knob.predator = values[index.predator] ?? knob.predator;
-    knob.wind = values[index.wind] ?? knob.wind;
-    knob.mark = values[index.mark] ?? knob.mark;
+    knob.birds = knobs.value(frame, "birds");
+    knob.cohesion = knobs.value(frame, "cohesion");
+    knob.chaos = knobs.value(frame, "chaos");
+    knob.speed = knobs.value(frame, "speed");
+    knob.predator = knobs.value(frame, "predator");
+    knob.wind = knobs.value(frame, "wind");
+    knob.mark = knobs.value(frame, "mark");
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#fitField(frame.width, frame.height);
     const n = Math.min(MAX_BIRDS, Math.max(1, Math.round(knob.birds)));
     if (n !== this.#n) this.#reset(n);
-    this.#watchTriggers(frame.triggers);
+    // The "now" buttons: one frame of `fired` after a press.
+    if (frame.fired[this.#attackSlot]) this.#attackNow = true;
+    if (frame.fired[this.#markSlot]) this.#markNow = true;
 
     // Motion scales the flight; an event fired with "now" plays even while motion is 0.
     const busy = this.#falcon || this.#mark || this.#attackNow || this.#markNow;
     const advance = Math.max(0, frame.dt) * Math.max(frame.motion, busy ? 1 : 0);
-    this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
-    while (this.#pending >= STEP) {
-      this.#step();
-      this.#pending -= STEP;
-    }
+    const steps = this.#steps.advance(advance);
+    for (let i = 0; i < steps; i++) this.#step();
     if (advance > 0 || this.#dirty) {
-      this.#paint(this.#dirty ? 0 : Math.exp(-advance / TRAIL), this.#pending / STEP);
+      this.#paint(this.#dirty ? 0 : Math.exp(-advance / TRAIL), this.#steps.alpha);
       this.#density.upload(this.#field);
       this.#state.upload(this.#stateData);
       this.#dirty = false;
@@ -389,19 +357,6 @@ class FlockSim implements SceneSim {
   dispose(): void {
     this.#density.dispose();
     this.#state.dispose();
-  }
-
-  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
-  #watchTriggers(triggers: readonly number[]): void {
-    const attack = triggers[0] ?? -1e4;
-    const mark = triggers[1] ?? -1e4;
-    if (this.#primed) {
-      if (attack !== this.#seenAttack && attack > -1e3) this.#attackNow = true;
-      if (mark !== this.#seenMark && mark > -1e3) this.#markNow = true;
-    }
-    this.#primed = true;
-    this.#seenAttack = attack;
-    this.#seenMark = mark;
   }
 
   #fitField(width: number, height: number): void {
@@ -423,7 +378,7 @@ class FlockSim implements SceneSim {
     this.#n = n;
     this.#time = 0;
     this.#clock = 0;
-    this.#pending = 0;
+    this.#steps.reset();
     this.#chaos = knob.chaos;
     this.#cohesion = knob.cohesion;
     this.#wind = knob.wind;
@@ -451,7 +406,7 @@ class FlockSim implements SceneSim {
         const angle = i * GOLDEN_ANGLE;
         a = r * Math.cos(angle) + (random.next() - 0.5) * LAYOUT_JITTER * spacing;
         b = r * Math.sin(angle) + (random.next() - 0.5) * LAYOUT_JITTER * spacing;
-        lag = 0.5 * LAG_SPAN * (1 - Math.min(1, Math.max(-1, a)));
+        lag = 0.5 * LAG_SPAN * (1 - clamp(a, -1, 1));
       } else {
         // Outside the rim, thinning outward; stragglers anywhere, well behind.
         const stray = i >= body + rim;
@@ -459,7 +414,7 @@ class FlockSim implements SceneSim {
         const angle = random.next() * TAU;
         a = r * Math.cos(angle);
         b = r * Math.sin(angle);
-        lag = stray ? STRAY_LAG_MIN + (STRAY_LAG_MAX - STRAY_LAG_MIN) * random.next() : 0.5 * LAG_SPAN * (1 - Math.min(1, Math.max(-1, a))) + 0.15 * random.next();
+        lag = stray ? STRAY_LAG_MIN + (STRAY_LAG_MAX - STRAY_LAG_MIN) * random.next() : 0.5 * LAG_SPAN * (1 - clamp(a, -1, 1)) + 0.15 * random.next();
       }
       this.#sheetA[i] = a;
       this.#sheetB[i] = b;
@@ -681,7 +636,7 @@ class FlockSim implements SceneSim {
 
       if (mark) {
         // Birds leave for the M head first and let go of it in the same order.
-        const delay = MARK_STAGGER * Math.min(1, Math.max(0, 0.5 * (1 - (sheetA[i] ?? 0))));
+        const delay = MARK_STAGGER * clamp(0.5 * (1 - (sheetA[i] ?? 0)), 0, 1);
         const pull = smoothstep(delay, delay + MARK_FLY, markAge) * (1 - smoothstep(MARK_HOLD + delay, MARK_HOLD + delay + MARK_FLY, markAge));
         if (pull > 0) {
           markTrackAt((markPlace[i] ?? 0) + markRun, track);
@@ -912,7 +867,7 @@ class FlockSim implements SceneSim {
     const gain = 1 - keep;
     const sx = w / this.#aspect;
     const sy = h;
-    const f = Math.min(1, Math.max(0, between));
+    const f = clamp(between, 0, 1);
     const x = this.#x;
     const y = this.#y;
     const px = this.#x2;
@@ -977,7 +932,7 @@ function markTrackAt(u: number, out: Float32Array): void {
   const bx = MARK_TRACK[o + 2] ?? 0;
   const by = MARK_TRACK[o + 3] ?? 0;
   const length = MARK_TRACK[o + 5] ?? 1;
-  const f = Math.min(1, Math.max(0, (along - (MARK_TRACK[o + 4] ?? 0)) / length));
+  const f = clamp((along - (MARK_TRACK[o + 4] ?? 0)) / length, 0, 1);
   out[0] = ax + (bx - ax) * f;
   out[1] = ay + (by - ay) * f;
   out[2] = (bx - ax) / length;
