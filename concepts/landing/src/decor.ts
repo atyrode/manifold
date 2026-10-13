@@ -265,12 +265,12 @@ function layout(width: number, height: number, config: DecorConfig, rand: Rand):
 
   const [top, right, bottom, left] = config.sides;
   const margin = height * 0.03;
-  // Corners follow their two edges.
+  // A corner is only as lush as the barer of its two edges: 0 on a side leaves it clear.
   const corners: [number, number, number][] = [
-    [-margin, -margin, Math.max(top, left)],
-    [width + margin, -margin, Math.max(top, right)],
-    [-margin, height + margin, Math.max(bottom, left)],
-    [width + margin, height + margin, Math.max(bottom, right)],
+    [-margin, -margin, Math.min(top, left)],
+    [width + margin, -margin, Math.min(top, right)],
+    [-margin, height + margin, Math.min(bottom, left)],
+    [width + margin, height + margin, Math.min(bottom, right)],
   ];
   for (const [x, y, lush] of corners) {
     if (lush < 0.05 || rand() < 0.15 * (1 - lush) * (1 - config.bushiness)) continue;
