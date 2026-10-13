@@ -1635,7 +1635,8 @@ Everything above the foundation floor is a plugin (`AXIOMS.md` axiom A1); this s
 the packages promise each other about that. Assembly happens twice from the same manifests —
 `packages/server/src/assembly.ts` registers server halves, `packages/web/src/assembly.ts`
 web halves — and both run `assembleRoster` from `@manifold/plugin`, which refuses duplicate
-plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
+plugin ids, action names, panel ids, section ids, creator ids, element types and tool ids by
+NAMING every offender.
 Manifests are inert DATA: no executable fields. A bundle's `entry` names its executable
 halves; the composition root may separately register a trusted hardened source recipe
 for a first-party definition without creating an installed row (§Hardened plugins).
@@ -1774,6 +1775,20 @@ Dropped is not disabled: nothing is retained, marked or tombstoned (`REGISTRY.md
 semantics), the plugin stays enabled and every other thing it contributes is untouched. A stored
 value no declaration answers is ignored at composition rather than pruned, so a plugin switched
 off for a week finds its reader's preferences intact.
+
+**Creators are declared offers, run by one door** (#1079). `contributes.creators` declares
+`{ id, title, icon, order, action, input?, setting? }`: an id claimed globally, a mark from the
+closed `creatorIcons`, a FULL action name and a fixed JSON input of at most
+`maxCreatorInputBytes` (absent ≡ `{}`). Assembly refuses an action no assembled plugin declares
+and a `setting` that is not the plugin's own boolean, naming both; on the hold path a plugin
+whose creator runs a held plugin's door is held with `held_by_dependency`. The browser offers a
+reader every creator whose owner is enabled and whose setting does not read false
+(`visibleCreators`); `core.shell` draws them in one picker and runs the chosen one through
+`WorkspaceShell.runCreator`, which dispatches the declared action as the presser, raises a
+notice on refusal, paints nothing first, lands in a container the answer names, and publishes
+the run as `lastCreated` for the offering plugin. No component is registered, so trusted,
+in-realm and hardened plugins offer creators identically. `core.index.createFolder` answers
+`{ items, folderId }`.
 
 `manifold://plugin/<id>` is a place to open, and the manager is what shows it. The shell's
 navigation door routes a `plugin` reference to the workspace it is already in, carrying the
