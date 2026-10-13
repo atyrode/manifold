@@ -3,12 +3,12 @@
 A scene is one folder, `src/scenes/<id>/`, whose `index.ts` exports a `SceneDef` (see `types.ts`).
 The registry `src/scenes/index.ts` lists scenes in lab order. Everything a scene needs is in its
 folder; shared pieces live in `src/shaders/lib/` (GLSL), `src/scenes/atmosphere.ts` (knobs) and
-`src/sims/` (CPU helpers).
+`src/sims/` (simulation helpers, CPU and GPU).
 
 ```
 src/scenes/<id>/index.ts    SceneDef: title, blurb, accent, look, params, groups, glsl, entry, sim
 src/scenes/<id>/shader.ts   export const <id>Glsl = `...` defining Shade scene<Id>(vec2 uv, vec2 cell, float t)
-src/scenes/<id>/sim.ts      optional SimFactory (CPU simulation feeding textures)
+src/scenes/<id>/sim.ts      optional SimFactory (CPU or GPU simulation feeding textures)
 ```
 
 ## The shader
@@ -86,14 +86,34 @@ never collide with common or library functions.
 When a scene needs state (particles, a height field, ink, a growing crystal, the pointer's wake),
 give it a `sim: (gl) => SceneSim`. Each frame the renderer calls `frame(SimFrame)` (dt, time,
 motion, size, knob values, raw params, triggers, pointer) and binds the returned textures as
-`uSim0..uSim3` (`uSimOn` says which are set). Helpers:
+`uSim0..uSim3` (`uSimOn` says which are set). Helpers in `src/sims/` (each file's header has the
+full API and a usage example):
 
-- `DataTexture` (`src/sims/texture.ts`): r8/rg8/rgba8/r16f/rg16f/rgba16f from typed arrays (rows bottom
-  to top), or `uploadImage(canvas)` for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1).
-- `TrailField` (`src/sims/trail.ts`): where the pointer has been, fading; for stirring and melting.
+- `DataTexture` (`texture.ts`): r8/rg8/rgba8/r16f/rg16f/rgba16f from typed arrays (rows bottom to
+  top), or `uploadImage(canvas)` for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1).
+- `TrailField` (`trail.ts`): where the pointer has been, fading; for stirring and melting.
+- `VerletSystem` and `PointTexture` (`verlet.ts`): 3D position-based Verlet chains, nets and orb
+  webs with impulses and nearest-point queries, packed into a texture for `texelFetch` (kelp, dew).
+- `HeightField` (`heightfield.ts`): stamps, grooves and rakes with side ridges, angle-of-repose
+  slumping, smoothing, upload to r16f (garden, sand table).
+- `GpuCompute` (`gpu.ts`): float render targets, ping-pong grids, fullscreen passes and point
+  scatters for GPU simulations (petri, physarum, delta). `create` returns undefined without float
+  render targets: the scene must then draw a still picture instead. It leaves the GL state the
+  renderer expects (framebuffer unbound, blending off, the renderer's vertex array bound).
+- `FluidSim` (`fluid.ts`): 2D stable fluids on `GpuCompute` with MacCormack dye, vorticity, walls,
+  a GLSL force snippet, an obstacle SDF, splats and `advect` for extra fields (incense, film, pearl).
 
 Keep simulations cheap (a few ms per frame at most) and scale step counts with `dt * motion`.
 Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) and resizes.
+
+Knob keys share the URL with the lab's own settings, so a knob may not be called `accent`,
+`scene`, `mode`, `dither`, `color`, `pixel`, `levels`, `motion`, `instance`, `mouse`, `view`,
+`dim` or `blur` (`state.ts` refuses to load such a scene).
+
+Moving hard edges flicker under the dither when a soft edge steps each colour channel at its own
+moment. Compare the edge's coverage with the cell's own `threshold(cell)` so a passing edge flips
+each cell once (`bambooHard`, `shanSolid`, `dewRamp` are examples), and keep `shimmer` off anything
+large: the page re-rolls it several times a second.
 
 ## Art direction
 

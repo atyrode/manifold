@@ -4,6 +4,7 @@ import { bambooScene } from "./bamboo/index.ts";
 import { cloudsScene } from "./clouds/index.ts";
 import { chladniScene } from "./chladni/index.ts";
 import { countryScene } from "./country/index.ts";
+import { deltaScene } from "./delta/index.ts";
 import { dewScene } from "./dew/index.ts";
 import { dunesScene } from "./dunes/index.ts";
 import { fallsScene } from "./falls/index.ts";
@@ -69,6 +70,7 @@ export const sceneDefs = {
   film: filmScene,
   incense: incenseScene,
   sandtable: sandtableScene,
+  delta: deltaScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;

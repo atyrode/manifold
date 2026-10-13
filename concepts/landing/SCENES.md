@@ -25,6 +25,34 @@ The shared options became libraries every outdoor scene can use: sky and time of
 lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`).
 The notes below are the original briefs.
 
+## Zen batch
+
+A second batch of calm scenes whose subject is a simulation, from grounded scenery to pure
+mathematics. All have a first implementation in the lab:
+
+| Idea | Scene id | Simulation | Shared engine |
+|---|---|---|---|
+| Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves | `HeightField` |
+| Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube | |
+| Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, contacts | |
+| Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice | |
+| Kelp forest | `kelp` | Buoyant Verlet stipes in surge, boids school | `VerletSystem` |
+| Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling | `VerletSystem` |
+| Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds | |
+| Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist | |
+| Incense smoke | `incense` | Buoyant smoke, laminar to turbulent | `FluidSim` |
+| Sand table | `sandtable` | Theta–rho ball and sand pendulum on a height field | `HeightField` |
+| Chladni plate | `chladni` | Sand grains drifting to the nodal lines of plate modes | |
+| Ferrofluid | `ferro` | Rosensweig spike lattice, sloshing blob | |
+| Soap film | `film` | Thin-film interference, gravity drainage, pops | `FluidSim` |
+| Pearlescent fluid (rheoscopic) | `pearl` | Flake orientation advected and turned by the flow | `FluidSim` |
+| Petri dish | `petri` | Gray–Scott Turing patterns, Barkley BZ spirals | `GpuCompute` |
+| Slime mould network (Physarum) | `physarum` | Jones agent model linking oat flakes | `GpuCompute` |
+| Hyperbolic tiling | `hyperbolic` | Möbius glide over a {p,q} weave | |
+| River delta from above | `delta` | Shallow water erosion and deposition | `GpuCompute` |
+| Fractals | `fractal` | Julia walk, Mandelbrot dive, Apollonian gasket, Newton garden | |
+| Prism | `prism` | Dispersion through glass, total internal reflection | |
+
 ## Above the clouds
 
 The view from a plane window: a sea of clouds below, open sky above.
