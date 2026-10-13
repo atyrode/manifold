@@ -40,13 +40,16 @@ export interface BambooLayer {
   readonly diameter: number;
 }
 
-/** The grove's depth layers, near to far. */
+/**
+ * The grove's depth layers, near to far. The nearest holds a single big culm framing the left edge
+ * (shader.ts places it); the others are grids of cells, each of which may hold a culm.
+ */
 export const BAMBOO_LAYERS: readonly BambooLayer[] = [
-  { depth: 2.3, spacing: 1.4, diameter: 0.13 },
-  { depth: 3.9, spacing: 1.3, diameter: 0.11 },
-  { depth: 6.4, spacing: 1.1, diameter: 0.1 },
-  { depth: 10.5, spacing: 1.0, diameter: 0.1 },
-  { depth: 17, spacing: 0.95, diameter: 0.11 },
+  { depth: 0.85, spacing: 1.2, diameter: 0.14 },
+  { depth: 1.6, spacing: 1.0, diameter: 0.12 },
+  { depth: 3.6, spacing: 0.95, diameter: 0.11 },
+  { depth: 7, spacing: 0.9, diameter: 0.1 },
+  { depth: 13, spacing: 0.85, diameter: 0.1 },
 ];
 /** Grid cells simulated per layer, centred on the view axis (enough for a 2.9:1 frame). */
 export const BAMBOO_CELLS = 64;
@@ -54,11 +57,11 @@ export const BAMBOO_CELLS = 64;
 export const BAMBOO_SWAY_HEIGHT = 8;
 
 /**
- * The water clock, in device units: screen heights at full size, origin at the frame's bottom-right
- * corner, y up (the whole corner shrinks on narrow frames, see bambooDeviceScale). The tube pivots at
- * (x, y); `back` and `front` are its lengths behind and ahead of the pivot, the mouth is cut
- * obliquely over `cut`; it rests mouth up at `rest` (radians) on the striking stone and tips no lower
- * than `low`.
+ * The water clock, in device units: screen heights before the corner's scale (bambooDeviceScale,
+ * 1.25 on landscape frames, less on narrow ones), origin at the frame's bottom-right corner, y up.
+ * The tube pivots at (x, y); `back` and `front` are its lengths behind and ahead of the pivot, the
+ * mouth is cut obliquely over `cut`; it rests mouth up at `rest` (radians) on the striking stone and
+ * tips no lower than `low`. At full size the tube spans about a quarter of a 16:9 frame's width.
  */
 export const BAMBOO_TUBE = { x: -0.31, y: 0.22, back: 0.15, front: 0.22, radius: 0.022, cut: 0.055, rest: 0.38, low: -0.4 } as const;
 /** Where the tube's closed end strikes: the top of the stone under it at rest. */
@@ -85,21 +88,22 @@ export const BAMBOO_BASIN = { x: -0.13, y: 0.06, rx: 0.078, ry: 0.02 } as const;
 /** The pour leaves the mouth along the tube at `speed` and falls under `gravity` (device units). */
 export const BAMBOO_POUR = { speed: 0.12, gravity: 1.2 } as const;
 /** How far away the water clock stands (m): its parallax, and the depth of leaves meant for it. */
-export const BAMBOO_DEVICE_DEPTH = 1.7;
-/** The stone lantern: its axis in device units across, its depth in metres. */
-export const BAMBOO_LANTERN = { x: -0.62, depth: 4.6 } as const;
+export const BAMBOO_DEVICE_DEPTH = 1.35;
+/** The stone lantern standing on the grove floor left of the water clock: its axis in device units
+ *  across, its depth in metres (it stands between the second and third layers of culms). */
+export const BAMBOO_LANTERN = { x: -0.64, depth: 3.4 } as const;
 /** Ripple events the shader rings at once. */
 export const BAMBOO_RIPPLES = 8;
 /** Leaves in the air or on the water at once. */
 export const BAMBOO_MAX_LEAVES = 12;
 
-/** The corner group (water clock and lantern) is full size from this aspect up, and shrinks with
- *  narrower frames down to `smallest`, so it never fills a phone's screen. */
-export const BAMBOO_CORNER_FIT = { aspect: 1.5, smallest: 0.55 } as const;
+/** The corner group (water clock and lantern) is drawn `size` times its device units from this aspect
+ *  up, and shrinks with narrower frames down to `smallest` of that, so it never fills a phone's screen. */
+export const BAMBOO_CORNER_FIT = { aspect: 1.5, smallest: 0.55, size: 1.25 } as const;
 
-/** The corner group's scale for a frame of this aspect. */
+/** The corner group's scale (screen heights per device unit) for a frame of this aspect. */
 export function bambooDeviceScale(aspect: number): number {
-  return Math.min(1, Math.max(BAMBOO_CORNER_FIT.smallest, aspect / BAMBOO_CORNER_FIT.aspect));
+  return BAMBOO_CORNER_FIT.size * Math.min(1, Math.max(BAMBOO_CORNER_FIT.smallest, aspect / BAMBOO_CORNER_FIT.aspect));
 }
 
 /**
@@ -224,7 +228,7 @@ const RELEASE_GUST = 1.2;
 /** Share that let go above the basin, at the water clock's depth. */
 const NEAR_SHARE = 0.3;
 /** Depth range (m) of the other leaves. */
-const LEAF_NEAR = 2.2;
+const LEAF_NEAR = 1.8;
 const LEAF_FAR = 8;
 
 const TAU = 2 * Math.PI;
