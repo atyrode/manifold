@@ -5,20 +5,26 @@
 // are the same flake) and S 0..1 how well they agree (0 a milky jumble, 1 all aligned). Each step:
 //   1. sources  heat along the floor and a cool lid (convection), the pigment nozzle, the trace of
 //               the Manifold rod (dye: r pigment, g temperature, b the M's trace for the accent)
-//   2. fluid    forces (turntable, buoyancy, rods, swirl), advection, projection, dye
+//   2. fluid    forces (turntable, buoyancy, rods, drifting eddies, swirl), advection, projection
 //   3. flakes   Jeffery's equation for thin flakes (G. B. Jeffery, "The motion of ellipsoidal
 //               particles immersed in a viscous fluid", Proc. R. Soc. A 102, 1922), in doubled angles:
 //                 dq/dt = ω q⊥ + 2λ (e − (e·q) q)
 //               ω the vorticity (flakes spin at ω/2, so their doubled angle at ω) and e the strain
 //               (½(∂u/∂x − ∂v/∂y), ½(∂u/∂y + ∂v/∂x)), which combs them toward its stretching axis
-//               and raises their order (|q| → 1 along e); then a slow settling toward disorder and a
-//               little diffusion, so no band gets thinner than a few dither cells
+//               and raises their order (|q| → 1 along e). λ a little over 1 gives steady shear a
+//               stable angle, so shear layers never tumble the flakes round and round into ever
+//               finer stripes. Then a slow settling toward disorder, and damping that falls mostly
+//               on the finest scales (a little diffusion, more hyperdiffusion): stripes a texel or
+//               two wide melt into milk within a second, bands of six cells and up live on.
 //   4. carry    the flakes advected by the flow (MacCormack)
-// The shader lights q with a lamp: flakes along the lamp's doubled angle glint, flakes across it go
-// dark, and halfway between they show nacre's rose and green.
+// The pour is seeded with history: a silk of orientations varying at two scales, wound into
+// spirals by a dozen eddies of many sizes, which go on turning. Drifting eddies (the room's warmth
+// stirring the tank) keep winding new spirals and filaments at several scales for as long as it
+// runs. The shader lights q with a lamp: flakes along the lamp's doubled angle glint, flakes across
+// it go dark, and on either flank of a bright band they show nacre's rose and green.
 //
 // Forcing, in the fluid's units (frame heights, seconds):
-//   turntable   the camera rides the tank, which turns about a quarter turn, rests and turns
+//   turntable   the camera rides the tank, which turns about an eighth of a turn, rests and turns
 //               back. In the tank's frame the only force is Euler's, −dΩ/dt ẑ × r (Coriolis and
 //               centrifugal forces are gradients in 2D: the pressure takes them); the walls drag
 //               (no-slip), so the lagging fluid curls off them in eddies and spirals.
@@ -29,7 +35,9 @@
 //               mechanics of stirring", J. Fluid Mech. 403, 2000). The rods grip the fluid by
 //               penalisation: inside them it is set to their velocity.
 // A drag across the page adds velocity splats along the path; the swirl spins a slow vortex up at
-// the centre; the Manifold rod writes the M, laying the flakes along its path as it goes.
+// the centre; the Manifold rod writes the M, laying the flakes along its path as it goes. Drifting
+// eddies stir every mode: a few vortex forces wandering on slow Lissajous paths, each waxing,
+// waning and turning about over a minute or two.
 //
 // Textures: uSim0 the flakes (rg16f q), uSim1 the dye (rgba16f), uSim2 the props (rgba32f, 5×1):
 // texels 0–2 the braid rods and 3 the Manifold rod (x, y in frame heights, shown 0..1, radius),
@@ -48,41 +56,49 @@ export class PearlError extends Error {}
 
 // ---- tuning ---------------------------------------------------------------------------------------
 
-/** Grids, in texels on the frame's short side: velocity, dye, flakes (a flake texel is about two
- * dither cells on a 540-row frame, so the satin is as fine as the dither can hold still). */
+/** Grids, in texels on the frame's short side: velocity, dye, flakes. A flake texel is about 1.7
+ * dither cells on a 540-row frame: bands of four cells and up are drawn cleanly. The dye only
+ * carries heat, a pigment thread and the M's trace, all soft, so it is coarse and plainly advected. */
 const VELOCITY_RESOLUTION = 128;
-const DYE_RESOLUTION = 192;
-const FLAKE_RESOLUTION = 256;
+const DYE_RESOLUTION = 160;
+const FLAKE_RESOLUTION = 320;
 
 /** Longest step and most steps per frame (the renderer's dt is at most 0.1 s, speed at most 2). */
 const MAX_STEP = 0.1;
 const MAX_STEPS = 2;
 /** A fresh pour runs this many long steps before it is shown, so it is already moving. */
-const PREWARM_STEPS = 5;
+const PREWARM_STEPS = 3;
 const PREWARM_STEP = 0.2;
 
 /** Bottom friction (per second) everywhere, and the drag of the no-slip walls within ~0.025. */
 const BOTTOM_FRICTION = 0.05;
-const WALL_DRAG = 1.5;
+const WALL_DRAG = 1;
 /** Fade per second of the dye's channels: pigment, temperature (slow enough that a plume still
  * carries warmth to the lid), the M's trace. */
 const DYE_FADE: readonly number[] = [0.015, 0.06, 0.03, 0];
 
-/** Jeffery's shape factor: 1 for flakes so thin that steady shear lays them flat along the flow. */
-const ALIGN = 1;
+/**
+ * Jeffery's shape factor. 1 is the infinitely thin flake, whose angle in steady shear is only
+ * marginally stable; a little over 1 makes it a firm attractor, so persistent shear (along the
+ * walls, in a rod's wake) lays the flakes down instead of tumbling them into fine stripes.
+ */
+const ALIGN = 1.1;
 /** Order lost per second as flakes settle and jostle. */
-const SETTLE = 0.02;
-/** Diffusion of the flakes' orientation, in flake texels² per second. */
-const SPREAD = 0.25;
+const SETTLE = 0.015;
+/** Diffusion (flake texels² per second) and hyperdiffusion (texels⁴ per second) of the flakes'
+ * orientation: stripes of a 2-texel period fade at ~2.2 / s, 4-texel ~0.6, 7-texel ~0.13. */
+const SPREAD = 0.08;
+const HYPER = 0.12;
 
-/** The turntable: a quarter turn eased over TURN_SECONDS, a rest, and back. */
-const TURN_ANGLE = Math.PI / 2;
+/** The turntable: an eighth of a turn (give or take a quarter of that) eased over TURN_SECONDS,
+ * a rest, and back. */
+const TURN_ANGLE = 0.25 * Math.PI;
 const TURN_SECONDS = 16;
 const TURN_REST = 10;
 
 /** Convection: floor heating (and lid cooling) per second, lift per unit of temperature. */
 const HEAT = 0.5;
-const BUOYANCY = 0.005;
+const BUOYANCY = 0.004;
 /** How fast the heater's warmer spots wander (radians per second), so the plumes drift. */
 const HEATER_DRIFT = 0.02;
 /** A fresh pour over the heater starts with this much warmth along the floor. */
@@ -91,26 +107,32 @@ const WARM_FLOOR = 1.2;
 /** The braid: rod radius, spacing of the three rods, seconds per swap and the pause after it. */
 const ROD_RADIUS = 0.024;
 const BRAID_SPACING = 0.26;
-const SWAP_SECONDS = 10;
+const SWAP_SECONDS = 14;
 const SWAP_REST = 2;
+
+/** Drifting eddies: how many, peak angular acceleration (rad/s²) at full drift, radii. */
+const DRIFTERS = 6;
+const DRIFT_ACCEL = 0.02;
+const DRIFT_RADIUS_MIN = 0.08;
+const DRIFT_RADIUS_MAX = 0.22;
 
 /** Seconds for the forcing, the rods and the nozzle to ease in or out when the knobs change. */
 const BLEND_SECONDS = 2;
 
 /** The swirl: seconds it pushes, peak angular acceleration (rad/s²) at strength 0.5, radius. */
-const SWIRL_SECONDS = 6;
-const SWIRL_ACCEL = 0.15;
-const SWIRL_RADIUS = 0.22;
+const SWIRL_SECONDS = 8;
+const SWIRL_ACCEL = 0.08;
+const SWIRL_RADIUS = 0.26;
 /** First swirl after a pour, then about every SWIRL_EVERY ± SWIRL_JITTER / 2 seconds. */
-const SWIRL_FIRST = 14;
-const SWIRL_EVERY = 75;
+const SWIRL_FIRST = 40;
+const SWIRL_EVERY = 60;
 const SWIRL_JITTER = 20;
 /** Turned back on, the next swirl comes no sooner than this. */
 const SWIRL_RESUME = 4;
 
 /** The Manifold rod: radius, peak speed, seconds lowering in and lifting out, schedule. */
 const MARK_ROD_RADIUS = 0.02;
-const MARK_SPEED = 0.16;
+const MARK_SPEED = 0.2;
 const MARK_FADE = 0.9;
 const MARK_FIRST = 3;
 const MARK_EVERY = 110;
@@ -127,11 +149,18 @@ const STIR_GAIN = 0.8;
 const STIR_MAX = 0.45;
 const STIR_SPLATS = 8;
 
-/** The pour: eddies and their peak speed. */
-const SEED_EDDIES = 6;
-const SEED_SPEED = 0.05;
-/** Peak speed of a Gaussian stream function a·exp(−r²/R²) is PEAK·a/R (at r = R/√2). */
-const PEAK = Math.SQRT2 * Math.exp(-0.5);
+/**
+ * The pour: eddies (radii spread evenly in log between the bounds), the spin at their centres
+ * (vorticity, rad/s: the same for all sizes, so a small eddy never whirls its satin round fast
+ * enough to blink), and how far round each had wound the fluid before the scene opens (radians
+ * at its centre). A Gaussian stream function a·exp(−r²/R²) spins at 4a / R² at its centre.
+ */
+const POUR_EDDIES = 12;
+const POUR_RADIUS_MIN = 0.06;
+const POUR_RADIUS_MAX = 0.26;
+const POUR_SPIN = 0.35;
+const POUR_TWIST_MIN = 1.5;
+const POUR_TWIST_MAX = 5;
 
 /** The pigment nozzle: where it dips (share of the width, height), its radius, pigment per second. */
 const NOZZLE_X = 0.2;
@@ -141,6 +170,7 @@ const PIGMENT_BASE = 1;
 const PIGMENT_RATE = 4;
 
 const PROP_TEXELS = 5;
+const TAU = 2 * Math.PI;
 
 // ---- GLSL -----------------------------------------------------------------------------------------
 
@@ -152,6 +182,7 @@ uniform float uPearlWallDrag;  // per second, at the walls
 uniform vec4 uPearlRods[4];    // centre, velocity (frame heights, per second)
 uniform vec2 uPearlGrip[4];    // grip 0..1, radius
 uniform vec4 uPearlSwirl;      // centre, angular acceleration (rad/s^2), radius
+uniform vec4 uPearlDrift[${DRIFTERS}];   // drifting eddies: centre, angular acceleration, radius
 
 vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
   // In the turning tank's frame: Euler's force, -dOmega/dt z x r.
@@ -163,6 +194,11 @@ vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
   force.y += uPearlBuoyancy * dye.g;
   vec2 s = p - uPearlSwirl.xy;
   force += uPearlSwirl.z * vec2(-s.y, s.x) * exp(-dot(s, s) / (uPearlSwirl.w * uPearlSwirl.w));
+  for (int i = 0; i < ${DRIFTERS}; i++) {
+    vec4 drift = uPearlDrift[i];
+    vec2 d = p - drift.xy;
+    force += drift.z * vec2(-d.y, d.x) * exp(-dot(d, d) / (drift.w * drift.w));
+  }
   // The rods carry the fluid inside them at their own velocity (penalisation, at most all of the
   // way in one step).
   float grab = 1.0 / max(uDt, 1e-3);
@@ -176,15 +212,6 @@ vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
 }
 `;
 
-/** Turn a doubled-angle vector by `angle`. */
-const TURN = `
-vec2 pearlTurn(vec2 q, float angle) {
-  float c = cos(angle);
-  float s = sin(angle);
-  return vec2(c * q.x - s * q.y, s * q.x + c * q.y);
-}
-`;
-
 /** One step of the flakes: diffuse, spin and comb by the flow, settle, and the Manifold rod. */
 const FLAKES = `
 uniform sampler2D uDirector;
@@ -194,24 +221,46 @@ uniform vec2 uVelocityTexel;  // 1 / the velocity grid's size
 uniform float uDt;
 uniform float uAlign;
 uniform float uSettle;
-uniform float uSpread;
+uniform float uSpread;        // diffusion, texels^2 per second
+uniform float uHyper;         // hyperdiffusion, texels^4 per second
 uniform vec4 uStroke;         // the Manifold rod's path this step: from xy to zw, frame heights
 uniform vec2 uStrokePaint;    // its reach, and how firmly it lays the flakes (0: not painting)
-${TURN}
+
+// Turn a doubled-angle vector by angle.
+vec2 pearlTurn(vec2 q, float angle) {
+  float c = cos(angle);
+  float s = sin(angle);
+  return vec2(c * q.x - s * q.y, s * q.x + c * q.y);
+}
+
 void main() {
+  // Damping, mostly of the finest scales: the 13-point biharmonic takes stripes a texel or two
+  // wide down within a second and barely touches bands of six texels and more. (Explicit: the
+  // caps keep a checkerboard's factor, 1 - 8a - 64b, above -1.)
   vec2 q = texture(uDirector, vUv).xy;
   vec2 dx = vec2(uTexel.x, 0.0);
   vec2 dy = vec2(0.0, uTexel.y);
-  vec2 around = texture(uDirector, vUv + dx).xy + texture(uDirector, vUv - dx).xy
-              + texture(uDirector, vUv + dy).xy + texture(uDirector, vUv - dy).xy;
-  q += min(uSpread * uDt, 0.2) * (around - 4.0 * q);
+  vec2 sides = texture(uDirector, vUv + dx).xy + texture(uDirector, vUv - dx).xy
+             + texture(uDirector, vUv + dy).xy + texture(uDirector, vUv - dy).xy;
+  vec2 corners = texture(uDirector, vUv + dx + dy).xy + texture(uDirector, vUv + dx - dy).xy
+               + texture(uDirector, vUv - dx + dy).xy + texture(uDirector, vUv - dx - dy).xy;
+  vec2 far = texture(uDirector, vUv + 2.0 * dx).xy + texture(uDirector, vUv - 2.0 * dx).xy
+           + texture(uDirector, vUv + 2.0 * dy).xy + texture(uDirector, vUv - 2.0 * dy).xy;
+  vec2 laplacian = sides - 4.0 * q;
+  vec2 biharmonic = 20.0 * q - 8.0 * sides + 2.0 * corners + far;
+  q += min(uSpread * uDt, 0.03) * laplacian - min(uHyper * uDt, 0.025) * biharmonic;
 
-  // The velocity gradient, per second, across two velocity texels.
+  // The velocity gradient, per second: central differences two velocity texels wide, each averaged
+  // over half a texel either side across it. Both are blind to a grid-scale checkerboard in the
+  // velocity (which the projection cannot see) wherever the flake texel falls between velocity
+  // texels, so the coarser grid never prints its own stripes into the flakes.
   vec2 hx = vec2(uVelocityTexel.x, 0.0);
   vec2 hy = vec2(0.0, uVelocityTexel.y);
-  vec2 span = 2.0 * uVelocityTexel * uDomain;
-  vec2 ddx = (texture(uVelocity, vUv + hx).xy - texture(uVelocity, vUv - hx).xy) / span.x;
-  vec2 ddy = (texture(uVelocity, vUv + hy).xy - texture(uVelocity, vUv - hy).xy) / span.y;
+  vec2 span = 4.0 * uVelocityTexel * uDomain;
+  vec2 ddx = (texture(uVelocity, vUv + hx + 0.5 * hy).xy + texture(uVelocity, vUv + hx - 0.5 * hy).xy
+            - texture(uVelocity, vUv - hx + 0.5 * hy).xy - texture(uVelocity, vUv - hx - 0.5 * hy).xy) / span.x;
+  vec2 ddy = (texture(uVelocity, vUv + hy + 0.5 * hx).xy + texture(uVelocity, vUv + hy - 0.5 * hx).xy
+            - texture(uVelocity, vUv - hy + 0.5 * hx).xy - texture(uVelocity, vUv - hy - 0.5 * hx).xy) / span.y;
   float spin = ddx.y - ddy.x;
   vec2 strain = 0.5 * vec2(ddx.x - ddy.y, ddy.x + ddx.y);
 
@@ -297,7 +346,7 @@ const smooth = (x: number): number => x * x * (3 - 2 * x);
 
 /**
  * The turntable's angular acceleration (rad/s²): θ = A (1 − cos πs) / 2 over a turn, then a rest,
- * then back the other way. Each turn is a little longer or shorter than a quarter (seeded), so the
+ * then back the other way. Each turn is a little longer or shorter than TURN_ANGLE (seeded), so the
  * tank never settles into one exact rhythm.
  */
 function turntableAcceleration(time: number, seed: number): number {
@@ -436,12 +485,16 @@ function valueNoise(x: number, y: number, seed: number): number {
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 
-/** An eddy of the pour: a Gaussian stream function a·exp(−|p − c|² / r²). */
+/**
+ * An eddy of the pour: a Gaussian stream function a·exp(−|p − c|² / r²) (a > 0 turns
+ * counter-clockwise), which had already wound the fluid `twist` radians round at its centre.
+ */
 interface Eddy {
   x: number;
   y: number;
   r: number;
   a: number;
+  twist: number;
 }
 
 /**
@@ -470,9 +523,28 @@ function pourVelocity(eddies: readonly Eddy[], aspect: number, x: number, y: num
   out[1] = -(w * gx + g * wx);
 }
 
+/**
+ * A drifting eddy: a vortex force wandering on a Lissajous path about (x, y) (shares of the width,
+ * height) with amplitudes ax, ay and rates fx, fy (radians per second), its strength swelling,
+ * fading and turning about at rate `beat`.
+ */
+interface Drifter {
+  x: number;
+  y: number;
+  ax: number;
+  ay: number;
+  fx: number;
+  fy: number;
+  phaseX: number;
+  phaseY: number;
+  beat: number;
+  phase: number;
+  r: number;
+}
+
 // ---- knobs --------------------------------------------------------------------------------------
 
-type PearlKnob = "forcing" | "speed" | "vorticity" | "swirl" | "pour" | "pigment" | "mark";
+type PearlKnob = "forcing" | "speed" | "vorticity" | "drift" | "swirl" | "pour" | "pigment" | "mark";
 
 interface KnobSlot {
   /** Position in the scene's `params` (and so in `SimFrame.values`). */
@@ -496,6 +568,7 @@ class PearlKnobs {
       forcing: slot("forcing"),
       speed: slot("speed"),
       vorticity: slot("vorticity"),
+      drift: slot("drift"),
       swirl: slot("swirl"),
       pour: slot("pour"),
       pigment: slot("pigment"),
@@ -525,6 +598,7 @@ type ForceUniforms = {
   uPearlRods: Float32Array;
   uPearlGrip: Float32Array;
   uPearlSwirl: Float32Array;
+  uPearlDrift: Float32Array;
 };
 
 type FlakeUniforms = {
@@ -534,6 +608,7 @@ type FlakeUniforms = {
   uAlign: number;
   uSettle: number;
   uSpread: number;
+  uHyper: number;
   uStroke: Float32Array;
   uStrokePaint: Float32Array;
 };
@@ -566,6 +641,7 @@ class PearlTank implements SceneSim {
     uPearlRods: new Float32Array(16),
     uPearlGrip: new Float32Array([0, ROD_RADIUS, 0, ROD_RADIUS, 0, ROD_RADIUS, 0, MARK_ROD_RADIUS]),
     uPearlSwirl: new Float32Array([0, 0, 0, SWIRL_RADIUS]),
+    uPearlDrift: new Float32Array(DRIFTERS * 4),
   };
   readonly #flakeUniforms: FlakeUniforms = {
     uDomain: this.#domain,
@@ -574,6 +650,7 @@ class PearlTank implements SceneSim {
     uAlign: ALIGN,
     uSettle: SETTLE,
     uSpread: SPREAD,
+    uHyper: HYPER,
     uStroke: this.#stroke,
     uStrokePaint: new Float32Array(2),
   };
@@ -605,6 +682,7 @@ class PearlTank implements SceneSim {
   #forcing: PearlForcing = "turntable";
   #speed = 1;
   #vorticity = 0;
+  #drift = 0;
   #pigment = 0;
 
   /** The pour on show; undefined until the first frame pours one. */
@@ -617,6 +695,8 @@ class PearlTank implements SceneSim {
   #rodShare = 0;
   #nozzleShare = 0;
   #layoutAspect = 0;
+  /** The pour's drifting eddies. */
+  #drifters: readonly Drifter[] = [];
 
   #swirl: { start: number; strength: number } | undefined;
   #swirls = 0;
@@ -637,6 +717,7 @@ class PearlTank implements SceneSim {
       velocityResolution: VELOCITY_RESOLUTION,
       dyeResolution: DYE_RESOLUTION,
       dyeFormat: "rgba16f",
+      dyeScheme: "linear",
       force: FORCE,
     });
     this.#fluid = fluid;
@@ -672,6 +753,7 @@ class PearlTank implements SceneSim {
     this.#forcing = pearlForcings[Math.round(knobs.value(frame, "forcing"))] ?? "turntable";
     this.#speed = Math.max(0, knobs.value(frame, "speed"));
     this.#vorticity = Math.max(0, knobs.value(frame, "vorticity"));
+    this.#drift = Math.max(0, knobs.value(frame, "drift"));
     this.#pigment = Math.max(0, knobs.value(frame, "pigment"));
   }
 
@@ -709,23 +791,47 @@ class PearlTank implements SceneSim {
   }
 
   /**
-   * Seed the pour: a few eddies (the velocity), the flakes laid along their streamlines with a slow
-   * twist across the tank, as fluid looks just after it settles from pouring, and over the heater
-   * a warm layer along the floor.
+   * Seed the pour. A dozen eddies of many sizes (the velocity) had already wound the fluid round
+   * before the scene opens: each flake texel is traced back through their twists to where it lay
+   * in a silk of orientations varying at two scales, and its flakes turned with the fluid on the
+   * way, so each eddy holds spiral arms and rings of satin. Over the heater the floor starts warm.
+   * Also the drifting eddies that keep stirring the tank.
    */
   #pourInto(pour: number): void {
     const fluid = this.#fluid;
     const aspect = fluid.aspect;
     const rand = mulberry32(Math.imul(pour + 1, 0x9e3779b1));
     const eddies: Eddy[] = [];
-    for (let i = 0; i < SEED_EDDIES; i++) {
-      const r = 0.12 + 0.16 * rand();
-      const x = (0.1 + 0.8 * rand()) * aspect;
-      const y = 0.1 + 0.8 * rand();
+    for (let i = 0; i < POUR_EDDIES; i++) {
+      const r = POUR_RADIUS_MIN * (POUR_RADIUS_MAX / POUR_RADIUS_MIN) ** rand();
+      const x = (0.06 + 0.88 * rand()) * aspect;
+      const y = 0.06 + 0.88 * rand();
       const spin = rand() < 0.5 ? -1 : 1;
-      eddies.push({ x, y, r, a: (spin * (0.6 + 0.6 * rand()) * SEED_SPEED * r) / PEAK });
+      const a = (spin * (0.6 + 0.6 * rand()) * POUR_SPIN * r * r) / 4;
+      // Small eddies wind less, so their innermost rings stay a few cells wide.
+      const twist = spin * (POUR_TWIST_MIN + (POUR_TWIST_MAX - POUR_TWIST_MIN) * rand()) * Math.min(1, r / 0.12);
+      eddies.push({ x, y, r, a, twist });
     }
-    const noiseSeed = Math.floor(rand() * 0x7fffffff);
+    const drifters: Drifter[] = [];
+    for (let i = 0; i < DRIFTERS; i++) {
+      drifters.push({
+        x: 0.25 + 0.5 * rand(),
+        y: 0.3 + 0.4 * rand(),
+        ax: 0.1 + 0.12 * rand(),
+        ay: 0.1 + 0.12 * rand(),
+        fx: TAU / (90 + 150 * rand()),
+        fy: TAU / (90 + 150 * rand()),
+        phaseX: TAU * rand(),
+        phaseY: TAU * rand(),
+        beat: TAU / (50 + 70 * rand()),
+        phase: TAU * rand(),
+        r: DRIFT_RADIUS_MIN * (DRIFT_RADIUS_MAX / DRIFT_RADIUS_MIN) ** rand(),
+      });
+    }
+    this.#drifters = drifters;
+    const silk = Math.floor(rand() * 0x7fffffff);
+    const ripple = Math.floor(rand() * 0x7fffffff);
+    const sheen = Math.floor(rand() * 0x7fffffff);
     const flow = new Float64Array(2);
 
     const velocity = fluid.velocity;
@@ -747,12 +853,28 @@ class PearlTank implements SceneSim {
       const y = (j + 0.5) / flakes.height;
       for (let i = 0; i < flakes.width; i++) {
         const x = ((i + 0.5) / flakes.width) * aspect;
-        pourVelocity(eddies, aspect, x, y, flow);
-        const u = flow[0] ?? 0;
-        const w = flow[1] ?? 0;
-        const twist = 2.4 * (valueNoise(x / 0.32, y / 0.32, noiseSeed) - 0.5);
-        const phi = 2 * Math.atan2(w, u) + twist;
-        const order = 0.35 + 0.6 * smooth(Math.min(1, Math.hypot(u, w) / SEED_SPEED));
+        // Back through each eddy's twist (a turn by −θ about its centre, θ falling off as a
+        // Gaussian), adding up how far the fluid here has turned.
+        let px = x;
+        let py = y;
+        let turned = 0;
+        for (const eddy of eddies) {
+          const dx = px - eddy.x;
+          const dy = py - eddy.y;
+          const reach = eddy.r * eddy.r;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > 9 * reach) continue;
+          const theta = eddy.twist * Math.exp(-d2 / reach);
+          const c = Math.cos(theta);
+          const s = Math.sin(theta);
+          px = eddy.x + c * dx + s * dy;
+          py = eddy.y - s * dx + c * dy;
+          turned += theta;
+        }
+        // Doubled angles: the silk turns a full circle across a broad noise cell and half one
+        // across a fine one, and a flake turned by θ turns its doubled angle by 2θ.
+        const phi = TAU * (valueNoise(px / 0.45, py / 0.45, silk) + 0.5 * valueNoise(px / 0.18, py / 0.18, ripple)) + 2 * turned;
+        const order = 0.5 + 0.45 * valueNoise(px / 0.3, py / 0.3, sheen);
         const k = 2 * (j * flakes.width + i);
         q[k] = order * Math.cos(phi);
         q[k + 1] = order * Math.sin(phi);
@@ -767,7 +889,7 @@ class PearlTank implements SceneSim {
         const y = (j + 0.5) / dye.height;
         for (let i = 0; i < dye.width; i++) {
           const x = ((i + 0.5) / dye.width) * aspect;
-          const warm = WARM_FLOOR * Math.exp(-y / 0.05) * (0.7 + 0.6 * valueNoise(x / 0.2, 3.7, noiseSeed));
+          const warm = WARM_FLOOR * Math.exp(-y / 0.05) * (0.7 + 0.6 * valueNoise(x / 0.2, 3.7, silk));
           d[4 * (j * dye.width + i) + 1] = warm - 0.5 * Math.exp(-(1 - y) / 0.05);
         }
       }
@@ -953,6 +1075,16 @@ class PearlTank implements SceneSim {
     swirl[0] = 0.5 * aspect;
     swirl[1] = 0.5;
     swirl[2] = this.#swirlAcceleration(mid);
+    const drift = force.uPearlDrift;
+    const strength = DRIFT_ACCEL * this.#drift;
+    let at = 0;
+    for (const d of this.#drifters) {
+      drift[at] = (d.x + d.ax * Math.sin(d.fx * mid + d.phaseX)) * aspect;
+      drift[at + 1] = d.y + d.ay * Math.sin(d.fy * mid + d.phaseY);
+      drift[at + 2] = strength * Math.sin(d.beat * mid + d.phase);
+      drift[at + 3] = d.r;
+      at += 4;
+    }
 
     const painting = this.#paint(t0, t1);
     const heat = this.#convectShare * HEAT;

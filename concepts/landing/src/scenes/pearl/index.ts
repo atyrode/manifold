@@ -7,15 +7,16 @@ import { pearlGlsl, pearlPalettes } from "./shader.ts";
 import { pearlForcings, pearlSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  choice("tank", "forcing", "currents", pearlForcings.map((label, value) => ({ label, value })), 0, "What keeps the fluid moving. Turntable: the tank turns about a quarter turn, rests and turns back; the fluid lags behind the glass and curls off its walls in slow spirals. Convection: the tank stands upright over a gentle heater; warm fluid rises in plumes and rolls over. Rods: three glass rods trade places in a slow braid, folding the fluid like taffy."),
-  range("tank", "speed", "speed", 1, "How quickly everything moves: the currents, the turntable, the heater's plumes and the rods.", { min: 0.25, max: 2 }),
-  range("tank", "vorticity", "eddies", 3, "How long small whirls hold together. Low: they melt into broad currents. High: they keep spinning, tight and curly.", { min: 0, max: 12, step: 0.5 }),
+  choice("tank", "forcing", "currents", pearlForcings.map((label, value) => ({ label, value })), 0, "What keeps the fluid moving. Turntable: the tank slowly turns an eighth of a turn, rests and turns back; the fluid lags behind the glass and curls off its walls. Convection: the tank stands upright over a gentle heater; warm fluid rises in plumes and rolls over. Rods: three glass rods trade places in a slow braid, folding the fluid like taffy."),
+  range("tank", "speed", "speed", 0.6, "How quickly everything moves: the currents, the turntable, the heater's plumes, the rods and the drifting eddies.", { min: 0.2, max: 2 }),
+  range("tank", "drift", "drifting eddies", 0.5, "Slow eddies that wander through the tank on their own, as the room's warmth stirs it: they swell, fade and turn about, winding the satin into spirals and long ribbons at many sizes.", { min: 0, max: 1 }),
+  range("tank", "vorticity", "eddies hold", 1.5, "How long small whirls hold together. Low: they melt into broad currents. High: they keep spinning, tight and curly.", { min: 0, max: 8, step: 0.5 }),
   feature("tank", "swirl", "centre swirl", true, "strength", 0.5, "Now and then a slow swirl wells up from the middle of the tank, turning one way then the other, and winds the sheen into a spiral.", { trigger: 0 }),
   seed("tank", "pour", "pour", "How the fluid was poured: its first currents and the flakes' first sheen. Re-seed for a fresh pour."),
   choice("light", "palette", "fluid", pearlPalettes.map((palette, value) => ({ label: palette.label, value })), 0, "Midnight: silver flakes in blue-black. Gold: gilt flakes in dark amber. Jade: pale flakes in deep green. Pearl: mother-of-pearl, white on dove grey (a light page)."),
   range("light", "lamp", "lamp", 120, "Where the lamp stands around the tank, in degrees. The flakes turned toward it glint and those edge-on to it go dark, so turning it swaps the bright and dark bands.", { min: 0, max: 180, step: 5 }),
-  range("light", "contrast", "flake contrast", 0.45, "Left: soft, milky satin. Right: crisp bright and dark bands with a glint along their crests."),
-  range("light", "nacre", "nacre", 0.5, "The rose and green of mother-of-pearl along the flanks of each band."),
+  range("light", "contrast", "flake contrast", 0.35, "Left: soft, milky satin. Right: crisp bright and dark bands with a glint along their crests."),
+  range("light", "nacre", "nacre", 0.5, "The rose and sea-green of mother-of-pearl along the flanks of each bright band."),
   feature("light", "pigment", "pigment", false, "flow", 0.5, "A fine glass nozzle drips pigment into the tank; the currents draw it out into a winding thread that slowly fades."),
   feature("manifold", "mark", "M stirring rod", false, "size", 0.5, "A glass rod writes the Manifold M through the fluid. The flakes keep it as a satin ribbon that the currents slowly unwind; while on, it is written again every couple of minutes.", { trigger: 1 }),
 ];

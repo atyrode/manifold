@@ -23,12 +23,13 @@ export interface PearlPalette {
 
 /** In `palette` knob order. */
 export const pearlPalettes: readonly PearlPalette[] = [
-  // Silver flakes in blue-black, with a vermilion thread.
-  { label: "midnight", deep: "#03060e", milk: "#18213a", sheen: "#b3c1dd", pigment: "#e0583a", paper: false },
+  // Silver flakes in blue-black, with a vermilion thread. (The deeps stay just off black, so a
+  // band turned edge-on reads as dark fluid, not a hole.)
+  { label: "midnight", deep: "#070c1a", milk: "#1a2440", sheen: "#b3c1dd", pigment: "#e0583a", paper: false },
   // Gilt flakes in dark amber, with ultramarine.
-  { label: "gold", deep: "#0a0603", milk: "#3b2711", sheen: "#f2d08a", pigment: "#2f4fc4", paper: false },
+  { label: "gold", deep: "#0e0905", milk: "#3b2711", sheen: "#f2d08a", pigment: "#2f4fc4", paper: false },
   // Pale flakes in deep green, with coral.
-  { label: "jade", deep: "#020908", milk: "#123129", sheen: "#b0ead0", pigment: "#e8644c", paper: false },
+  { label: "jade", deep: "#05100e", milk: "#123129", sheen: "#b0ead0", pigment: "#e8644c", paper: false },
   // Mother-of-pearl, white on dove grey, with indigo.
   { label: "pearl", deep: "#76737e", milk: "#c3c0c6", sheen: "#fdfaf4", pigment: "#2c3f94", paper: true },
 ];
@@ -50,7 +51,7 @@ const paletteCases = pearlPalettes
 const paperCases = pearlPalettes.map((palette, i) => `  if (K_palette < ${i}.5) return ${palette.paper ? "true" : "false"};`).join("\n");
 
 export const pearlGlsl = `
-const vec3 PEARL_NACRE = vec3(0.24, -0.15, 0.12);   // rose on one flank of a band, green on the other
+const vec3 PEARL_NACRE = vec3(0.36, -0.14, 0.16);  // rose on one flank of a bright band, sea-green on the other
 const vec3 PEARL_GLASS = vec3(0.03, 0.035, 0.045);  // the glass rods' own dark tint
 const vec3 PEARL_HEATER = vec3(1.0, 0.5, 0.18);     // the heater glowing along the floor
 
@@ -118,21 +119,35 @@ Shade scenePearl(vec2 uv, vec2 cell, float t) {
   vec2 lamp = vec2(cos(angle), sin(angle));
   vec2 lamp2 = vec2(cos(2.0 * angle), sin(2.0 * angle));
 
-  vec2 q = uSimOn.x > 0.5 ? texture(uSim0, uv).xy : pearlStill(p, aspect, t * uMotion);
+  vec2 q;
+  if (uSimOn.x > 0.5) {
+    // A soft five-tap footprint about two cells across: whatever the flakes do below the dither's
+    // grain never reaches it.
+    vec2 o = 1.0 / uRes;
+    q = 0.36 * texture(uSim0, uv).xy
+      + 0.16 * (texture(uSim0, uv + o).xy + texture(uSim0, uv - o).xy
+              + texture(uSim0, uv + vec2(o.x, -o.y)).xy + texture(uSim0, uv - vec2(o.x, -o.y)).xy);
+  } else {
+    q = pearlStill(p, aspect, t * uMotion);
+  }
   vec4 dye = uSimOn.y > 0.5 ? texture(uSim1, uv) : vec4(0.0);
   vec4 nozzle = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(4, 0), 0) : vec4(0.0);
   float convect = nozzle.w;
 
   // Satin: flakes turned to the lamp glint, edge-on ones go dark, a jumble stays milky. The
-  // contrast knob sharpens the step between them and adds a glint along each band's crest; 45
-  // degrees off the lamp the flakes show nacre's rose on one side and green on the other.
+  // contrast knob steepens the step between them (gently: a band edge spans many cells, so a
+  // slight turn of the flakes never flips a cell back and forth) and adds a glint along each
+  // band's crest.
   float facing = dot(q, lamp2);
   float skew = dot(q, vec2(-lamp2.y, lamp2.x));
-  float k = mix(0.9, 4.0, K_contrast);
+  float k = mix(0.6, 2.8, K_contrast);
   float lit = 0.5 + 0.5 * tanh(k * facing) / tanh(k);
   vec3 col = lit < 0.5 ? mix(deep, milk, 2.0 * lit) : mix(milk, sheen, 2.0 * lit - 1.0);
-  col += sheen * (0.3 * K_contrast) * pow(max(facing, 0.0), 6.0);
-  col = max(col * (1.0 + (0.9 * K_nacre * skew) * PEARL_NACRE), 0.0);
+  col += sheen * (0.25 * K_contrast) * pow(max(facing, 0.0), 4.0);
+  // Nacre: on either flank of a bright band, where the flakes turn off the lamp one way or the
+  // other, the glint leans rose on one side and sea-green on the other.
+  float pearly = K_nacre * skew * smoothstep(0.3, 0.85, lit);
+  col = max(col * (1.0 + pearly * PEARL_NACRE), 0.0);
 
   // Over the heater, warm currents blush and the element glows along the floor.
   float warmth = clamp(0.3 * dye.g, -0.3, 0.8) * convect;
