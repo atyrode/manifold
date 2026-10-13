@@ -286,16 +286,19 @@ const PREWARM_BUDGET_MS = 90;
 const PREWARM_DETACH = 3;
 
 // Near grass springs.
-/** Natural frequencies (Hz) and damping ratio: a slow, heavy sway with a little overshoot. */
-const BLADE_FREQ_MIN = 0.4;
-const BLADE_FREQ_MAX = 0.75;
-const BLADE_DAMPING = 0.3;
+/**
+ * Natural frequencies (Hz) and damping ratio: a slow, heavy sway with a little overshoot. Kept slow
+ * and small so a moving blade's edge crosses a dither cell at most once or twice a second.
+ */
+const BLADE_FREQ_MIN = 0.28;
+const BLADE_FREQ_MAX = 0.5;
+const BLADE_DAMPING = 0.45;
 /** Lean and bow per unit of gust (along the wind's sideways and away components). */
-const BLADE_BEND = 0.5;
-const BLADE_BOW = 0.9;
+const BLADE_BEND = 0.32;
+const BLADE_BOW = 0.7;
 /** The breeze's own slow sway, at no wind and added per unit of wind. */
-const BLADE_FLUTTER = 0.02;
-const BLADE_FLUTTER_WIND = 0.05;
+const BLADE_FLUTTER = 0.01;
+const BLADE_FLUTTER_WIND = 0.03;
 
 // Dandelion clocks.
 /** Where the clocks stand: share of the width, head height (uv), head radius (screen heights), depth. */
@@ -327,11 +330,12 @@ const CLOCK_ROOT = -0.04;
 const CLOCK_JITTER_SHARE = 0.06;
 const CLOCK_JITTER_HEAD = 0.05;
 const CLOCK_JITTER_RADIUS = 0.2;
-const CLOCK_FREQ = 0.5;
-const CLOCK_DAMPING = 0.35;
-const CLOCK_BEND = 0.32;
-const CLOCK_BOW = 0.4;
-const CLOCK_FLUTTER = 0.03;
+/** The stalks nod slowly and only a little: the heads' fine spokes must not slide across the cells. */
+const CLOCK_FREQ = 0.35;
+const CLOCK_DAMPING = 0.5;
+const CLOCK_BEND = 0.16;
+const CLOCK_BOW = 0.25;
+const CLOCK_FLUTTER = 0.012;
 /** A wilting stalk droops this far (bow) and leans downwind. */
 const WILT_DROOP = 0.7;
 const WILT_LEAN = 0.3;

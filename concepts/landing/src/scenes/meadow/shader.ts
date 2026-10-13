@@ -146,9 +146,11 @@ const int MEADOW_SEED_GROUPS = ${SEED_GROUPS};
 const float MEADOW_TURN = 0.8;
 // Grass density knob 0..1 maps onto this much of the near layers' full density and more.
 const float MEADOW_DENSITY_MIN = 0.15;
-// The near blades' natural lean, and their lit edge (cells).
+// The near blades' natural lean.
 const float MEADOW_CURL = 0.4;
-const float MEADOW_RIM_CELLS = 1.6;
+// The near blades' backlit edge (only the side facing the sun, fading across the blade) away from the
+// sun; near it, it brightens with the forward scattering.
+const float MEADOW_RIM_BASE = 0.08;
 
 // The sea of grass: rows ${ROW} apart in log depth from depth ${FIELD_NEAR} to the tree line; blades a
 // ground distance apart in each row, their half-width at the root, heights (before the grass height
@@ -169,8 +171,18 @@ const float MEADOW_FLOWER_SHARE = 0.12;
 const float MEADOW_HEAD_LENGTH = 0.12;
 const float MEADOW_HEAD_WIDTH = 0.026;
 const float MEADOW_FLOWER_RADIUS = 0.04;
-const float MEADOW_FIELD_BEND = 0.45;
+const float MEADOW_FIELD_BEND = 0.15;
 const float MEADOW_FIELD_CURL = 0.18;
+// Only field blades at least this wide at the root (cells) lean, fully from the second: thinner ones
+// would slide their stipple across the cells.
+const float MEADOW_LEAN_FROM = 3.0;
+const float MEADOW_LEAN_TO = 5.0;
+// The soft golden veil over the far field: from this depth to the tree line it takes this much more
+// of the haze (and more with the haze knob), warmed by the sun.
+const float MEADOW_VEIL_NEAR = 25.0;
+const float MEADOW_VEIL = 0.3;
+const float MEADOW_VEIL_HAZE = 0.35;
+const float MEADOW_VEIL_GOLD = 0.08;
 // How strongly the gust load turns the grass to its pale, pressed side, and darkens it on the rebound.
 const float MEADOW_SHEEN = 1.1;
 const float MEADOW_REBOUND_SHADE = 0.6;
@@ -188,7 +200,7 @@ const float MEADOW_BREATH_LEAN = 0.5;
 const float MEADOW_STALK_BASE = 0.0042;
 const float MEADOW_STALK_TOP = 0.0026;
 const float MEADOW_KNOB = 0.16;
-const float MEADOW_SPOKE_CELLS = 3.2;
+const float MEADOW_SPOKE_CELLS = 4.5;
 // The mown M: centre (share of the width right of centre, height above the horizon), size, squash
 // (the hillside leans back), stroke half-width; all in screen heights.
 const float MEADOW_MARK_SHARE = 0.24;
@@ -359,9 +371,10 @@ vec3 meadowFlower(float h) {
 // log depth, and at row depth z it is MEADOW_GROUND (1 - z / zg) above the ground: where that height
 // is below a blade's top, the blade can cover the cell. The cell walks those rows nearest first and
 // stops once covered. Each blade is box-filtered across the cell (its half-width against the cell's
-// width, both in ground units at the blade), and rows whose blades are under a cell apart give way to
-// their average, so far grass is a soft fine texture rather than noise. Leaning is a warp of the
-// lookup, the same for every blade of a row at a given height, so blades bend without tearing.
+// width, both in ground units at the blade), and rows whose blades are under two cells apart give way
+// to their average, which a golden veil of haze softens further toward the tree line. Leaning is a
+// warp of the lookup, the same for every blade of a row at a given height, so blades bend without
+// tearing; only blades several cells wide lean, and only a little.
 //
 // The loop is the scene's longest: (ln G / (G - tallest)) / MEADOW_ROW rows, 10 at the default grass
 // height, 15 at the tallest, most of them cheap (no blade, or the cell already covered).
@@ -415,14 +428,14 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
     float rise = MEADOW_GROUND * (1.0 - zj / zg); // the ray's height above the ground over this row
     float tRow = clamp(rise / hMax, 0.0, 1.0);
     float px = zj * pixel;                         // a cell's size in ground units at this row
-    // Far rows, whose blades stand under a cell apart, give way to their average.
-    float lod = smoothstep(1.0, 2.5, px / MEADOW_BLADE_SPACING);
+    // Far rows, whose blades stand under two cells apart, give way to their average.
+    float lod = smoothstep(0.5, 1.5, px / MEADOW_BLADE_SPACING);
     float c = 0.0;
     vec3 premult = vec3(0.0);
     if (lod < 1.0) {
       // Lean only blades wide enough to move cleanly; the fine far ones hold still.
       float curl = MEADOW_FIELD_CURL * sin(a * zj * 1.7 + lj * 13.0);
-      float sway = lean * smoothstep(1.2, 2.5, 2.0 * MEADOW_BLADE_WIDTH / px);
+      float sway = lean * smoothstep(MEADOW_LEAN_FROM, MEADOW_LEAN_TO, 2.0 * MEADOW_BLADE_WIDTH / px);
       float u = (a - (curl + sway) * MEADOW_BEND_SHAPE * hMax * tRow * tRow / zj) * zj / MEADOW_BLADE_SPACING;
       float k = floor(u);
       vec2 key = vec2(k, lj * 31.0 + K_meadowSeed * 0.53);
@@ -444,7 +457,9 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
           c = t <= 1.0 ? clamp(min(dw + w, 0.5 * pw) - max(dw - w, -0.5 * pw), 0.0, pw) / pw : 0.0;
           vec3 albedo = mix(MEADOW_GREEN, MEADOW_STRAW, clamp(ripe + h3 - 0.5, 0.0, 1.0));
           vec3 blade = albedo * lit * mix(0.35, 1.0, sqrt(clamp(t, 0.0, 1.0)));
-          blade = mix(blade, pale, press * (0.35 + 0.65 * t)) + gold * smoothstep(0.55, 1.0, t);
+          // The gold of backlit tips belongs to the height in the canopy, not to the blade, so a
+          // swaying blade carries no bright tip across the cells.
+          blade = mix(blade, pale, press * (0.35 + 0.65 * t)) + gold * smoothstep(0.5, 1.0, tRow);
           float hq = above - hb; // height above the stalk's top
           if (flower) {
             float r = MEADOW_FLOWER_RADIUS;
@@ -460,7 +475,7 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
             float head = clamp((1.0 - e) * girth / pw + 0.5, 0.0, 1.0) * (MEADOW_HEAD_WIDTH / girth);
             if (head > c) {
               c = head;
-              blade = mix(MEADOW_HEAD * lit, pale, 0.6 * press) + gold * (0.6 + smoothstep(0.4, 1.0, e));
+              blade = mix(MEADOW_HEAD * lit, pale, 0.6 * press) + gold;
             }
           }
           premult = c * blade;
@@ -471,11 +486,12 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
       // The row's average: its blades' share of the cell at this height, an average blade's colour,
       // and the flowers in bloom at their tops.
       float t = rise / (0.5 * (hMin + hMax));
-      float share = t <= 1.0 ? fill * 1.2 * MEADOW_BLADE_WIDTH * pow(max(1.0 - t, 0.0), 0.7) / MEADOW_BLADE_SPACING : 0.0;
+      // Heights vary from blade to blade, so on average a row thins out smoothly toward its tops.
+      float share = fill * 1.4 * MEADOW_BLADE_WIDTH * (1.0 - smoothstep(0.0, 1.25, t)) / MEADOW_BLADE_SPACING;
       share += fill * flowerShare * smoothstep(0.75, 1.05, t) * (1.0 - smoothstep(1.05, 1.2, t));
       vec3 blade = MEADOW_GREEN + (MEADOW_STRAW - MEADOW_GREEN) * ripe;
       blade = blade * lit * mix(0.35, 1.0, sqrt(clamp(t, 0.0, 1.0)));
-      blade = mix(blade, pale, press * (0.35 + 0.65 * t)) + gold * smoothstep(0.55, 1.0, t);
+      blade = mix(blade, pale, press * (0.35 + 0.65 * t)) + gold * smoothstep(0.5, 1.0, tRow);
       blade = mix(blade, driftColour * (amb * 0.6 + sun * (0.35 + 0.9 * glow)), flowerShare * 2.5 * smoothstep(0.75, 1.0, t));
       premult = mix(premult, share * blade, lod);
       c = mix(c, share, lod);
@@ -490,11 +506,14 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
   // Just behind a gust the released grass springs up past upright and shows its darker side.
   float rebound = 1.0 + MEADOW_REBOUND_SHADE * min(g, 0.0);
   float hazeDensity = MEADOW_HAZE_BASE + MEADOW_HAZE_GAIN * K_haze + 0.012 * K_rain;
-  acc = mix(acc * rebound, haze * cover, 1.0 - exp(-hazeDensity * (cover > 0.0 ? zsum / cover : zg)));
+  float veil = MEADOW_VEIL + MEADOW_VEIL_HAZE * K_haze;
+  vec3 veilCol = haze + sun * MEADOW_VEIL_GOLD * (0.5 + 0.5 * toward);
+  float zf = cover > 0.0 ? zsum / cover : zg;
+  acc = mix(acc * rebound, veilCol * cover, 1.0 - exp(-hazeDensity * zf) * (1.0 - veil * smoothstep(MEADOW_VEIL_NEAR, MEADOW_TREES_Z, zf)));
   if (zg < MEADOW_TREES_Z) {
     // Between the stems: the shaded depths of the grass, lighter where a gust opens it to the sky.
     vec3 floorCol = mix(MEADOW_GREEN, MEADOW_STRAW, ripe) * (amb * 0.22 + sun * 0.15 * glow) * (1.0 + 0.8 * max(g, 0.0)) * rebound;
-    behind = mix(floorCol, haze, 1.0 - exp(-hazeDensity * zg));
+    behind = mix(floorCol, veilCol, 1.0 - exp(-hazeDensity * zg) * (1.0 - veil * smoothstep(MEADOW_VEIL_NEAR, MEADOW_TREES_Z, zg)));
   }
   return acc + (1.0 - cover) * behind;
 }
@@ -504,7 +523,7 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
 // their column (uSim1: lean, bow away from the viewer). Tall at the sides and short in the middle,
 // they frame the view; dark against the light, glowing through where they are thin and along their
 // edges, paler as a gust bows them away.
-void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, vec3 amb, vec3 sun, float behind, float sunNear, float aa, inout vec3 col, inout float accent) {
+void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, vec3 amb, vec3 sun, float behind, float sunNear, float sunX, float aa, inout vec3 col, inout float accent) {
   float yy = p.y - MEADOW_ROOT[layer];
   if (yy <= 0.0) return;
   float pitch = MEADOW_PITCH[layer];
@@ -546,14 +565,18 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
     float tip = MEADOW_BEND_SHAPE * lean * h;
     float sc = min(s, 1.0);
     float slope = 2.0 * tip * sc / tall;
-    float d = abs(p.x - x0 - tip * sc * sc) * inversesqrt(1.0 + slope * slope);
+    float across = (p.x - x0 - tip * sc * sc) * inversesqrt(1.0 + slope * slope); // signed, + to the right
+    float d = abs(across);
     float w = stalk ? max(girth * 0.36 * (1.0 - 0.3 * sc), 1.2 * aa) : girth * pow(max(1.0 - s, 0.0), 0.6);
     float cover = s <= 1.0 ? 1.0 - smoothstep(w - aa, w + aa, d) : 0.0;
-    float rim = smoothstep(w - MEADOW_RIM_CELLS * aa, w, d) * cover;
+    // The backlit edge on the side facing the sun only, fading across the blade: as a blade sways,
+    // a cell sees one soft change of light, not a thin bright line passing.
+    float facing = clamp(across * sign(sunX - p.x) / max(w, aa), 0.0, 1.0);
+    float rim = facing * facing * cover;
     float pressed = clamp(bow, 0.0, 1.0);
     vec3 shade = (stalk ? MEADOW_STEM : MEADOW_LEAF) * (amb * 0.3 + sun * (0.1 + 0.55 * behind)) * MEADOW_SHADE[layer];
     shade += sun * MEADOW_THROUGH * pressed * (0.45 + behind) * 0.9;
-    shade += sun * MEADOW_RIM * rim * (0.2 + 1.1 * behind + 0.6 * sunNear);
+    shade += sun * MEADOW_RIM * rim * (MEADOW_RIM_BASE + 1.1 * behind + 0.6 * sunNear);
     col = mix(col, shade, cover);
     accent *= 1.0 - cover;
     if (stalk) {
@@ -563,7 +586,7 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
       float e = length(vec2(2.0 * dot(q, axis) / spike - 1.0, dot(q, vec2(axis.y, -axis.x)) / spikeGirth));
       float head = 1.0 - smoothstep(1.0 - aa / spikeGirth, 1.0 + aa / spikeGirth, e);
       vec3 seeds = MEADOW_HEAD * (amb * 0.35 + sun * (0.2 + 0.9 * behind + 0.4 * pressed));
-      seeds += sun * MEADOW_RIM * smoothstep(0.45, 1.0, e) * (0.3 + 1.6 * behind + sunNear);
+      seeds += sun * MEADOW_RIM * smoothstep(0.2, 1.0, e) * (MEADOW_RIM_BASE + 1.6 * behind + sunNear);
       col = mix(col, seeds, head);
       accent *= 1.0 - head;
     }
@@ -646,8 +669,8 @@ void meadowClocks(vec2 p, float aspect, vec3 amb, vec3 sun, float behind, float 
       float arc = abs(u - k - 0.2 * jitter) * gap;        // across the nearest spoke
       float present = smoothstep(-0.05, 0.05, meadowSectorFill(c, (kk + 0.2 * jitter) / spokes * TAU) - hash12(vec2(kk, cf * 3.3 + 1.7)));
       float end = 0.92 + 0.1 * jitter;                    // the spokes' ragged ends
-      float beak = (1.0 - smoothstep(0.5 * aa, 1.2 * aa, arc)) * smoothstep(0.14, 0.2, rr) * (1.0 - smoothstep(0.5, 0.6, rr)) * 0.45;
-      float fan = mix(0.08, 0.36, smoothstep(0.5, end, rr)) * gap;
+      float beak = (1.0 - smoothstep(0.5 * aa, 1.2 * aa, arc)) * smoothstep(0.14, 0.2, rr) * (1.0 - smoothstep(0.5, 0.6, rr)) * 0.3;
+      float fan = mix(0.08, 0.3, smoothstep(0.5, end, rr)) * gap;
       float tuft = (1.0 - smoothstep(fan - 0.7 * aa, fan + 0.7 * aa, arc)) * smoothstep(0.5, 0.62, rr) * (1.0 - smoothstep(end - 0.05, end + 0.05, rr));
       float veil = fullness * 0.22 * smoothstep(0.15, 0.4, rr) * (1.0 - smoothstep(0.7, 0.95, rr));
       float fluff = clamp(max(beak, tuft) * present + veil, 0.0, 1.0) * shown * presence;
@@ -749,10 +772,10 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   col += sun * (0.05 + 0.3 * K_haze) * exp(-5.0 * length(dir - sky.sun)) * (1.0 - 0.6 * rain);
 
   float density = MEADOW_DENSITY_MIN + (1.0 - MEADOW_DENSITY_MIN) * K_grassDensity;
-  meadowLayer(1, p, aspect, hScale, density, amb, sun, behind, sunNear, aa, col, accent);
+  meadowLayer(1, p, aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, aa, col, accent);
   meadowClocks(p, aspect, amb, sun, behind, sunNear, aa, col, accent);
   meadowSeeds(uv, p, aspect, amb, sun, behind, sunNear, aa, col, accent);
-  meadowLayer(0, p, aspect, hScale, density, amb, sun, behind, sunNear, aa, col, accent);
+  meadowLayer(0, p, aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, aa, col, accent);
 
   if (rain > 0.0) {
     float streak = rainStreaks(uv, aspect, t, rain, K_wind);

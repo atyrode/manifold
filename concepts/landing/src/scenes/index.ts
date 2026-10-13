@@ -6,8 +6,10 @@ import { countryScene } from "./country/index.ts";
 import { dunesScene } from "./dunes/index.ts";
 import { fallsScene } from "./falls/index.ts";
 import { ferroScene } from "./ferro/index.ts";
+import { firefliesScene } from "./fireflies/index.ts";
 import { flockScene } from "./flock/index.ts";
 import { frostScene } from "./frost/index.ts";
+import { hyperbolicScene } from "./hyperbolic/index.ts";
 import { lanternsScene } from "./lanterns/index.ts";
 import { marbleScene } from "./marble/index.ts";
 import { meadowScene } from "./meadow/index.ts";
@@ -43,6 +45,8 @@ export const sceneDefs = {
   ferro: ferroScene,
   chladni: chladniScene,
   shanshui: shanshuiScene,
+  hyperbolic: hyperbolicScene,
+  fireflies: firefliesScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
