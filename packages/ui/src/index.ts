@@ -138,6 +138,11 @@ export { Disclosure, type DisclosureProps } from "./disclosure.tsx";
  * nothing Radix crosses its signature (docs/decisions/2026-09-01-radix-popover.md).
  */
 export { Popover, type PopoverProps } from "./popover.tsx";
+/**
+ * The one menu: a list of choices on the popover, with menu/menuitem roles and roving focus
+ * (arrow keys, Home/End; Escape returns focus to its button).
+ */
+export { Menu, type MenuItem, type MenuProps } from "./menu.tsx";
 export { ScrollRegion, type ScrollRegionProps } from "./scroll-region.tsx";
 /**
  * THE motion primitive: FLIP over a stack of rows whose ORDER is data (a per-principal

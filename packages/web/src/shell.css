@@ -10,10 +10,10 @@
  * its components live in it. It is that the `sidebar` family is a vocabulary the FLOOR
  * PUBLISHES for every contributed row to fill, and the list of plugins filling it is now most
  * of the roster: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted` and
- * `.sidebar-section-action` are `core.index`, `core.machines` and `core.plugins`; `.sidebar-new`
- * is `core.canvas`, `core.compositions` and `core.index`, one creator each; `.sidebar-brand` is
- * `core.brand`'s and `.sidebar-status` / `.sidebar-identity` are `core.shell`'s two remaining
- * rows — all of which reach the rail through the projection registry exactly as a stranger's
+ * `.sidebar-section-action` are `core.index`, `core.machines` and `core.plugins`;
+ * `.sidebar-creator` is `core.shell`'s creation control, drawing every plugin's declared
+ * creators; `.sidebar-brand` is `core.brand`'s and `.sidebar-status` / `.sidebar-identity` are
+ * `core.shell`'s other rows — all of which reach the rail through the projection registry exactly as a stranger's
  * would. `.sidebar-opener` and `.sidebar-cluster` are the newest members and the clearest case
  * for the rule: an opener row is worn by `core.keys` AND `core.plugins`, and a cluster wrapper
  * is drawn by the rail around rows belonging to plugins that have never heard of each other
@@ -217,7 +217,6 @@
 }
 
 .sidebar-icon-button,
-.sidebar-new,
 .sidebar-link,
 .sidebar-delete,
 .sidebar-create button {
@@ -274,32 +273,82 @@
   display: none;
 }
 
-.sidebar-new {
+/*
+ * THE CREATION CONTROL (`core.shell.creators`): one split button. The face runs the last creator
+ * picked on this device; the narrow ▾ beside it opens the picker. Two buttons joined into one
+ * box, so the pair reads as one control and each half still takes its own focus ring.
+ */
+.sidebar-creator {
   display: flex;
   min-width: 0;
+  border: 1px solid #343a40;
+  border-radius: 0.6rem;
+  background: #202329;
+}
+
+.sidebar-creator:hover,
+.sidebar-creator:focus-within {
+  border-color: #4c6ef5;
+}
+
+.sidebar-creator-face,
+.sidebar-creator-pick {
+  display: flex;
   min-height: 2.35rem;
   align-items: center;
-  gap: 0.65rem;
-  border-color: #343a40;
-  border-radius: 0.6rem;
-  padding: 0.45rem 0.55rem;
+  border: 0;
   color: #dee2e6;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar-creator-face {
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 0.65rem;
+  border-radius: 0.6rem 0 0 0.6rem;
+  padding: 0.45rem 0.55rem;
   font-size: 0.84rem;
   font-weight: 650;
   text-align: left;
-  background: #202329;
   white-space: nowrap;
 }
 
-/* A creator label's declared contract: truncate; the title attribute still says it all. */
-.sidebar-new > span {
+/* The face's label contract: truncate; the title attribute still says it all. */
+.sidebar-creator-face > span {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.sidebar-new:hover {
-  border-color: #4c6ef5;
+.sidebar-creator-pick {
+  flex: 0 0 auto;
+  justify-content: center;
+  width: 2rem;
+  border-left: 1px solid #343a40;
+  border-radius: 0 0.6rem 0.6rem 0;
+  padding: 0;
+  color: #adb5bd;
+}
+
+/* Collapsed, the picker's button stands alone as the rail's "+" and wears the whole box. */
+.sidebar-creator-pick.is-alone {
+  width: 100%;
+  border: 1px solid #343a40;
+  border-radius: 0.6rem;
+  color: #dee2e6;
+  background: #202329;
+}
+
+.sidebar-creator-face:hover,
+.sidebar-creator-pick:hover,
+.sidebar-creator-pick[data-state="open"] {
   background: #252932;
+}
+
+.sidebar-creator-face:disabled,
+.sidebar-creator-pick:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .workspace.is-collapsed .sidebar {
@@ -314,11 +363,6 @@
 .workspace.is-collapsed .sidebar-sections > .sidebar-plain:first-child,
 .workspace.is-collapsed .sidebar-sections > .sidebar-section:first-child > .sidebar-section-header {
   padding-right: 0;
-}
-
-.workspace.is-collapsed .sidebar-new {
-  justify-content: center;
-  padding-inline: 0;
 }
 
 .sidebar-create {

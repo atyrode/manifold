@@ -26,11 +26,12 @@ import { z } from "zod";
  * rail NON-NEGOTIABLES, so each is now an essential seat a reader can find by name in the
  * roster, and each declares its own section id at its own order — `brand` at `1`, `keys` at
  * `50` — so a principal's stored arrangement keeps the seat it already chose. What stayed is
- * what the shell itself answers for: whether its socket is up, and who this device is.
+ * what the shell itself answers for: whether its socket is up, who this device is, and — since
+ * #1079 — the one control that runs every plugin's declared creators.
  *
- * THE ORDER NUMBERS ARE THE RAIL, TOP TO BOTTOM. `1` is `core.brand`'s line; the creators the
- * two container disciplines and the index contribute take `2`–`4`; the bodies (`index` 10,
- * `machines` 20) sit in the middle where they always have; and the rail's foot is `status` 40,
+ * THE ORDER NUMBERS ARE THE RAIL, TOP TO BOTTOM. `1` is `core.brand`'s line; the creation
+ * control takes `2`, where the three per-plugin creator rows it replaced used to start; the
+ * bodies (`index` 10, `machines` 20) sit in the middle where they always have; and the rail's foot is `status` 40,
  * then the `utility` cluster `core.keys` and `core.plugins` declare (50, 51 — painted side by
  * side), then `identity` 60. A principal's stored arrangement overrides all of it
  * (`arrangedSections`).
@@ -80,6 +81,13 @@ export const shellManifest: PluginManifest = {
       { panel: "container-view", order: 200, ratio: 0.78 },
     ],
     sections: [
+      /*
+        THE CREATION CONTROL: a plain row drawing every creator the composition offers this
+        reader (`contributes.creators`, any plugin's) behind one split button. It names no kind
+        of thing, so it is the rail's chrome rather than any discipline's opinion — the
+        opinions are the creators themselves, declared by the plugins that own them.
+      */
+      { id: "creators", title: "New", order: 2, presentation: "plain" },
       { id: "status", title: "Connection", order: 40, presentation: "plain" },
       { id: "identity", title: "Identity", order: 60, presentation: "plain" },
     ],

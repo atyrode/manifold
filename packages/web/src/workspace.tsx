@@ -6,6 +6,7 @@ import {
   sameIndexEntries,
   withPanelSections,
   withSeatedPanels,
+  type AssemblyCreator,
   type AuthoringHandle,
 } from "@manifold/plugin";
 import {
@@ -26,6 +27,7 @@ import {
   INDEX_RESOURCE,
   TERMINALS_RESOURCE,
   type ContainerRoute,
+  type CreatorRun,
   type WorkspaceShell,
   type WorkspaceSidebarState,
 } from "@manifold/plugin/hooks";
@@ -53,7 +55,6 @@ import {
 } from "react";
 import {
   INDEX_CREATE_CONTAINER_ACTION,
-  INDEX_CREATE_FOLDER_ACTION,
   SIDEBAR_PANEL,
   SPACE_SET_LAYOUT_ACTION,
 } from "./assembly.ts";
@@ -768,38 +769,45 @@ export function WorkspaceHost({
     }
   }, [identity.principal.id, memory, navigate, containers, requestedContainerId]);
 
+  /** The last creator THIS device ran, published for the plugin that offered it (`CreatorRun`). */
+  const [lastCreated, setLastCreated] = useState<CreatorRun | null>(null);
+
   /**
-   * Creation is ONE click. A container is born as "Untitled" and the operator lands inside
-   * it; the Views section renames it in place from its row, which is where every other rename
-   * of that row already happens.
+   * THE ONE CREATION PIPELINE, whoever asked: the shell's empty state and every creator a
+   * plugin declared go through it, so a canvas made from the picker and one made from "Create
+   * your first canvas" land identically (docs/CONTRACTS.md §Producer-neutral behavior).
+   *
+   * Creation is ONE click and nothing is painted ahead of the door's answer: a denial or a
+   * fault is a notice, the index feed is refreshed on success, and an answer naming a
+   * container is remembered on this device and LANDED in — the operator renames it in place
+   * from its index row, where every other rename of that row already happens. `creating` is
+   * the single in-flight guard: a second press until the first settles is ignored.
    */
-  const createContainer = useCallback(
-    (discipline: Container["discipline"]): void => {
+  const create = useCallback(
+    (action: string, input: unknown, landed: (result: unknown) => void): void => {
       if (creating) return;
       setCreating(true);
       void host.client
-        .action(INDEX_CREATE_CONTAINER_ACTION, {
-          name: DEFAULT_CONTAINER_NAME,
-          discipline,
-        })
+        .action(action, input)
         .then((outcome) => {
           if (!outcome.ok) {
-            notify(outcome.denial.message, { key: "container-create" });
+            notify(outcome.denial.message, { key: "create" });
             return;
           }
-          const { container } = ContainerResponseSchema.parse(outcome.result);
-          rememberContainers([container]);
           refreshTree();
-          rememberContainer(memory, identity.principal.id, container.id);
-          navigate(`/p/${encodeURIComponent(container.id)}`);
+          const answer = ContainerResponseSchema.safeParse(outcome.result);
+          if (answer.success) {
+            const { container } = answer.data;
+            rememberContainers([container]);
+            rememberContainer(memory, identity.principal.id, container.id);
+            navigate(`/p/${encodeURIComponent(container.id)}`);
+          }
+          landed(outcome.result);
         })
         .catch((reason: unknown) => {
-          notify(
-            reason instanceof Error
-              ? reason.message
-              : `Could not create the ${discipline === "composition" ? "composition" : "canvas"}`,
-            { key: "container-create" },
-          );
+          notify(reason instanceof Error ? reason.message : "Could not create it", {
+            key: "create",
+          });
         })
         .finally(() => setCreating(false));
     },
@@ -815,25 +823,27 @@ export function WorkspaceHost({
     ],
   );
 
-  const createFolder = useCallback(
-    async (name: string): Promise<void> => {
-      try {
-        const outcome = await host.client.action(INDEX_CREATE_FOLDER_ACTION, {
-          name,
-          parentId: null,
-        });
-        if (!outcome.ok) {
-          notify(outcome.denial.message, { key: "folder-create" });
-          return;
-        }
-        refreshTree();
-      } catch (reason: unknown) {
-        notify(reason instanceof Error ? reason.message : "Could not create the folder", {
-          key: "folder-create",
-        });
-      }
-    },
-    [host.client, notify, refreshTree],
+  const createContainer = useCallback(
+    (discipline: Container["discipline"]): void =>
+      create(
+        INDEX_CREATE_CONTAINER_ACTION,
+        { name: DEFAULT_CONTAINER_NAME, discipline },
+        () => undefined,
+      ),
+    [create],
+  );
+
+  const runCreator = useCallback(
+    (creator: AssemblyCreator): void =>
+      create(creator.action, creator.input, (result) =>
+        setLastCreated((previous) => ({
+          plugin: creator.plugin,
+          creator: creator.id,
+          result,
+          seq: (previous?.seq ?? 0) + 1,
+        })),
+      ),
+    [create],
   );
 
   /** Stable identity: the publishing effect inside the composition must not re-run per render. */
@@ -903,8 +913,8 @@ export function WorkspaceHost({
       setSidebarOpen,
       workspace,
       creating,
-      createContainer,
-      createFolder,
+      runCreator,
+      lastCreated,
       registerSidebarElement,
       layout,
       seatPanels,
@@ -916,8 +926,8 @@ export function WorkspaceHost({
     }),
     [
       commitSectionArrangement,
-      createContainer,
-      createFolder,
+      lastCreated,
+      runCreator,
       creating,
       registerSidebarElement,
       layout,

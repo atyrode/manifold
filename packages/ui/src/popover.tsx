@@ -37,6 +37,14 @@ export interface PopoverProps {
   readonly align?: "start" | "center" | "end";
   /** Extra classes for the floating layer (`.popover__content`). */
   readonly contentClassName?: string;
+  /**
+   * What the floating layer IS to assistive technology. `dialog` (the default) is a small
+   * panel of controls; `menu` is a list of choices — the {@link Menu} sets it, so the layer the
+   * trigger's `aria-controls` points at carries the role its `aria-haspopup` announced.
+   */
+  readonly contentRole?: "dialog" | "menu";
+  /** The accessible name of the layer; required in practice when nothing inside labels it. */
+  readonly contentLabel?: string;
   readonly children: ReactNode;
 }
 
@@ -47,6 +55,8 @@ export function Popover({
   side,
   align,
   contentClassName,
+  contentRole,
+  contentLabel,
   children,
 }: PopoverProps): ReactElement {
   return (
@@ -59,6 +69,8 @@ export function Popover({
           {...(align === undefined ? {} : { align })}
           sideOffset={6}
           collisionPadding={10}
+          {...(contentRole === undefined ? {} : { role: contentRole })}
+          {...(contentLabel === undefined ? {} : { "aria-label": contentLabel })}
         >
           {children}
         </PopoverPrimitive.Content>

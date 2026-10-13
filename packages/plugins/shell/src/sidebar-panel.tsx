@@ -63,10 +63,11 @@ const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
  * and false of its top and bottom, and no reader of the assembly could see the difference.
  * Every one of those is a contributed row now:
  *
- *   `core.shell`        brand · status · keys · identity
- *   `core.canvas`       new-canvas
- *   `core.compositions` new-composition
- *   `core.index`        new-folder · index
+ *   `core.shell`        creators · status · identity (the creation control draws every
+ *                       plugin's declared `contributes.creators`, which are data, not rows)
+ *   `core.brand`        brand
+ *   `core.keys`         keys
+ *   `core.index`        index
  *   `core.machines`     machines
  *   `core.plugins`      plugins
  *

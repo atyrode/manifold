@@ -30,7 +30,9 @@ export { SidebarPanel } from "./sidebar-panel.tsx";
  *
  * TWO ROWS LEFT WITH THEIR SEATS: the brand line is `@manifold-plugin/brand` and the key table
  * is `@manifold-plugin/keys`, each an essential seat of its own (issue #91). What remains is
- * what the shell itself answers for — its connection, and this device's identity.
+ * what the shell itself answers for — its connection, this device's identity, and the one
+ * creation control that draws every plugin's declared creators (#1079).
  */
+export { CreatorsRow } from "./creators-row.tsx";
 export { IdentityRow } from "./identity-row.tsx";
 export { StatusRow } from "./status-row.tsx";
