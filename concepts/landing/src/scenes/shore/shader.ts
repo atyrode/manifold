@@ -12,6 +12,10 @@
 // Nothing changes from one frame to the next by chance: glints and sparks swell and fade over a
 // quarter of a second or more, and textures that travel keep their features a few cells wide, so
 // the dither steps through them instead of blinking. For the same reason the scene sets no shimmer.
+// What sweeps across the frame is decided per cell against the cell's own threshold: foam, spray
+// and the crest line are there or not, and the plankton's light is snapped to off, half or full, so
+// a breaker or a swash running over a cell changes it a couple of times, every colour channel at
+// once, rather than stepping each channel through the palette's levels on its own.
 //
 // Rain belongs to the beach's weather, not to the glass in front of it. It comes out of an overcast
 // that closes over the stars, the moon and the sun with the amount (a thin, broken haze in a
@@ -236,6 +240,12 @@ float shoreFoamCover(vec2 noise, float amount) {
   return smoothstep(th - w, th + w, noise.x) * smoothstep(0.0, 0.15, amount);
 }
 
+// A light snapped per cell to 0, 0.5 or 1 against the cell's threshold th: as it sweeps in or fades,
+// a cell changes at most twice, all its colour channels at once.
+float shoreStep(float v, float th) {
+  return min(floor(max(v, 0.0) * 2.0 + th) * 0.5, 1.0);
+}
+
 // Foam bubbles bursting on freshly drained sand, each a spark: Noctiluca lights when its membrane
 // is stressed. Each spark swells over a fifth of a second or more and fades over a second, so the
 // dither steps through it rather than blinking, and moves to a new place for its next burst. Cells
@@ -420,6 +430,10 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
   sky.ambient *= 1.0 - 0.3 * cloud.heavy;
   // This cell's own threshold for the rain's rings and sparks, offset from the palette's.
   float th = threshold(cell + vec2(6.0, 1.0));
+  // The cell's own threshold for the surf's foam, spray and crest line, and one offset from it for
+  // the plankton's light, so the two don't pick the same cells.
+  float thF = threshold(cell);
+  float thG = threshold(cell + vec2(1.0, 4.0));
   // For mirrors (the sea, the wet sand, fog): the same sky with the moon swung round behind the
   // viewer, so no reflection shows a broken sliver of its disc. The moon on the water is the
   // glitter's alone.
@@ -628,7 +642,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
         float crest = (1.0 - smoothstep(0.8, 2.6, below)) * smoothstep(0.25, 0.7, shoal) * (0.4 + 0.6 * whole);
         crest *= 0.8 + 0.2 * vnoise(vec2(hx * 0.5, hit.seed * 7.0));
         vec3 crestCol = lit * 0.6 + moonLight * 1.6 + sky.moonColor * 1.5 * moonOnFoam;
-        sea = mix(sea, crestCol, crest * mix(0.85, 0.35, sky.day));
+        sea = mix(sea, crestCol, (crest > thF ? 1.0 : 0.0) * mix(0.85, 0.35, sky.day));
         // As it plunges, the curl's shadow: a dark tube under the falling lip.
         float plunge = smoothstep(0.0, 0.4, hit.broken) * (1.0 - smoothstep(0.8, 2.5, hit.broken));
         sea *= 1.0 - 0.6 * plunge * face * smoothstep(0.3, 0.55, hr) * (1.0 - smoothstep(0.72, 0.86, hr));
@@ -708,25 +722,32 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
 
       // The swash: a rim of foam pushed ahead of the sheet, and behind it lace carried up and back
       // with the flow, thinning as the sheet slows and drains. Its edge draws a line of plankton
-      // light up the sand on every run-up: sharp at the front, trailing off behind it.
+      // light up the sand on every run-up: a band of fixed width right behind the edge (15 cm, or two
+      // cells), lit whole, then trailing off over the next metre. The band ends where the light
+      // starts to fade, so even the fastest run-up changes a cell only a few frames apart: on as the
+      // edge arrives, the rim gone as the band passes, the light stepping down well behind.
       float rim = 0.0;
       float lace = 0.0;
       if (topSwash >= 0.0 && edge < 6.0) {
         float young = exp(-topSwash / 2.0);
         float rising = 1.0 - smoothstep(0.3, 0.45, topSwash / shoreSwashTime(topRunup));
         float net = exp(-edge / (0.6 + 1.6 * young)) * (0.35 + 0.65 * young) * (1.0 - smoothstep(3.5, 5.5, edge));
-        rim = exp(-edge / max(0.14, 1.5 * cellZ)) * (0.35 + 0.65 * young) * (0.7 + 0.3 * vnoise(vec2(hx * 1.3, e * 0.8)));
-        // The sheet's texture rides up with seven tenths of the front's run, and back down with it.
-        lace = shoreFoamCover(shoreFoamNoise(vec2(hx * 1.1, (e - 0.7 * reach) * 1.1), vec2(cellX, cellZ) * 2.2), net) * 0.9;
-        float rimGlow = exp(-edge / max(0.3, 2.5 * cellZ));
+        float band = max(0.15, 2.0 * cellZ);
+        float front = edge < band ? 1.0 : 0.0;
+        rim = front * (0.35 + 0.65 * young) * (0.7 + 0.3 * vnoise(vec2(hx * 1.3, e * 0.8)));
+        // The sheet's texture rides up with seven tenths of the front's run, and back down with it,
+        // fast enough that its finest features are held to four times the usual size.
+        lace = shoreFoamCover(shoreFoamNoise(vec2(hx * 1.1, (e - 0.7 * reach) * 1.1), vec2(cellX, cellZ) * 4.4), net) * 0.9;
+        float rimGlow = front > 0.0 ? 1.0 : exp(-(edge - band) / max(0.8, 2.5 * cellZ));
         surf += rimGlow * mix(0.6, 1.5, rising) * (0.5 + 0.5 * young) + lace * young * 0.4;
       }
-      float foam = clamp(max(max(white, trailFoam), max(lace, rim)), 0.0, 1.0);
+      // Foam and spray are there or not in each cell, so their edges pass a cell in one step.
+      float foam = max(max(white, trailFoam), max(lace, rim)) > thF ? 1.0 : 0.0;
       // Moonlit white water: about 0.4 away from the moon, up to 0.8 in its path.
       vec3 foamCol = vec3(0.92, 0.95, 0.97) * (lit * 1.4 + sky.moonColor * 1.4 * moonOnFoam) * (0.85 + 0.3 * churn);
       // Spray is thin enough to glow with the light behind it.
       vec3 sprayCol = vec3(0.95, 0.97, 1.0) * (lit * 1.5 + sky.moonColor * 1.6 * moonOnFoam + moonLight * backMoon + sky.sunColor * 0.3 * backSun);
-      col = mix(mix(sea, foamCol, foam), sprayCol, clamp(spray, 0.0, 1.0));
+      col = mix(mix(sea, foamCol, foam), sprayCol, spray > thF ? 1.0 : 0.0);
       // Rain on the water: ring crests catching the grey light, and where there is plankton every
       // drop that strikes lights a spark.
       col += ring * 0.25 * (mirror + air);
@@ -888,16 +909,18 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
   // plankton's light, laid on below, shines on over them.
   col = mix(col, air * 1.5 + lit * 0.25, pr.cover * mix(0.55, 0.35, pr.near));
 
-  // Ink is the picture's light without the plankton; the plankton and the M are the accent. In full
-  // colour their light is a colour of its own: where it is strong it outshines the foam it is in,
-  // so the surf reads electric blue rather than washing out to white or teal. A sunlit beach puts
-  // the page in its paper theme (index.ts), where ink is dark on a light ground.
-  float light = clamp(glow * bio, 0.0, 1.5);
+  // Ink is the picture's light without the plankton; the plankton and the M are the accent, each
+  // snapped per cell to off, half or full (shoreStep). In full colour their light is a colour of its
+  // own: where it is strong it outshines the foam it is in, so the surf reads electric blue rather
+  // than washing out to white or teal. A sunlit beach puts the page in its paper theme (index.ts),
+  // where ink is dark on a light ground.
+  float light = shoreStep(glow * bio, thG);
+  mark = shoreStep(mark, thG);
   float lum = dot(col, LUMA);
   bool paper = K_cycle <= 0.0 && K_time > 0.33 && K_time < 0.67;
   Shade o = blankShade();
   o.ink = paper ? clamp((0.9 - lum) / 0.8, 0.0, 1.0) : clamp(pow(lum, 0.8) * 1.3, 0.0, 1.0);
-  o.accent = clamp(max(light, mark), 0.0, 1.0);
+  o.accent = max(light, mark);
   float hot = light + mark;
   col = mix(col, SHORE_BIO * 1.1, smoothstep(0.15, 1.2, hot) * 0.55) + SHORE_BIO * hot * 0.8;
   o.rgb = col;
