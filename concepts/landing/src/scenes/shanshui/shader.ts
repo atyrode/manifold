@@ -10,8 +10,8 @@
 // covering it is painted (contour, wash, fold lines with texture strokes hung beneath them, moss
 // dots), so forms stack and outline one another as in a painting. Mist is bare paper: bands of it
 // fade what lies behind them. Ink is laid as a density and turned into colour through the paper.
-// Knobs read here: K_seed, K_detail, K_palette, K_density, K_wetness, K_cun, K_age, K_mist,
-// K_boats, K_dwellings, K_falls, K_inscription, K_seal (K_speed, K_drift, K_birds: in the sim).
+// Knobs read here: K_seed, K_detail, K_palette, K_season, K_density, K_wetness, K_cun, K_age,
+// K_mist, K_boats, K_dwellings, K_falls, K_inscription, K_seal (K_speed, K_drift, K_birds: sim).
 // The scroll comes in sections of SHANSHUI_SECTION heights, each painted from its own origin (and
 // its own row of the seed's hash plane) and joined to the one before by a strip of mounting silk,
 // the paintings either side dissolving into bare paper toward it, as separators join the sections
@@ -51,6 +51,8 @@ const vec3 SHAN_CINNABAR = vec3(0.77, 0.19, 0.12);     // seal paste
 const vec3 SHAN_AZURITE = vec3(0.21, 0.42, 0.63);
 const vec3 SHAN_MALACHITE = vec3(0.27, 0.55, 0.45);
 const vec3 SHAN_OCHRE = vec3(0.77, 0.56, 0.35);
+const vec3 SHAN_BLOSSOM = vec3(0.93, 0.66, 0.7);      // peach blossom (spring)
+const vec3 SHAN_MAPLE = vec3(0.8, 0.36, 0.16);        // maple leaves (autumn)
 const float SHAN_SHEET = 1.9;  // width of one sheet of paper along the scroll, in screen heights
 
 // Set once per pixel by the entry: the seed's hash row and one dither cell in screen heights.
@@ -309,6 +311,19 @@ float shanDots(vec2 P, float d, float slope, float px, float scale) {
   return dots;
 }
 
+// The season's light colour wash on a form (K_season 1 spring .. 4 winter), as Guo Xi saw them:
+// spring hills pale as if smiling, blossom pink at the foot and young green up the slopes;
+// summer's deep green as if dripping; autumn clear and bright as if made up, ochre at the foot
+// turning russet toward the crest; winter asleep under snow, with no colour at all. crestward: 0
+// at the foot .. 1 at the crest. rgb colour, a cover.
+vec4 shanSeasonTint(int layer, float crestward, float fall, float seed) {
+  bool far = layer >= 3;
+  if (K_season < 1.5) return far ? vec4(0.66, 0.76, 0.64, 0.2) : vec4(mix(vec3(0.92, 0.7, 0.7), vec3(0.54, 0.74, 0.42), smoothstep(0.15, 0.6, crestward)), 0.32 + 0.18 * fall);
+  if (K_season < 2.5) return far ? vec4(0.44, 0.58, 0.6, 0.28) : vec4(mix(vec3(0.44, 0.58, 0.38), vec3(0.26, 0.46, 0.36), crestward), 0.42 + 0.2 * fall);
+  if (K_season < 3.5) return far ? vec4(0.78, 0.66, 0.54, 0.2) : vec4(mix(vec3(0.82, 0.62, 0.36), vec3(0.76, 0.36, 0.18), smoothstep(0.3, 0.9, crestward) * (0.6 + 0.4 * seed)), 0.4 + 0.2 * fall);
+  return vec4(0.0);
+}
+
 // Ink of one form at P: sumi density (x) and mineral colour cover (y; its colour in 'mineral').
 vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
   float px = shanPx;
@@ -391,17 +406,48 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
     water = hardEdge(water * (1.0 - 0.3 * smoothstep(0.62, 0.8, vnoise(vec2((P.x - xw) / hw * 1.6, P.y * 9.0)))));
   }
 
+  // Winter: snow lies on the upper faces, on each ledge of stacked rock and on the gentler slopes;
+  // sheer rock stays dark, and the wash below the snow deepens to set it off.
+  float snow = 0.0;
+  if (K_season > 3.5) {
+    float lying = 1.0 - smoothstep(0.18, 0.42, depth + 0.25 * (vnoise(P * vec2(14.0, 34.0) + f.seed * 9.0) - 0.5));
+    float ledge = m >= 1.0 ? 0.85 * (1.0 - smoothstep(0.08, 0.4, fb)) : 0.0;
+    snow = hardEdge(max(lying, ledge) * (1.0 - smoothstep(0.8, 1.8, abs(top.y))));
+    wash *= mix(1.5, 0.0, snow);
+    tex *= 1.0 - snow;
+    dots *= 1.0 - snow;
+  } else if (K_season > 1.5 && K_season < 2.5) {
+    wash *= 1.15;
+  }
+  // Spring blossom and autumn leaves: some clusters of the dots open in colour.
+  float flower = 0.0;
+  if (abs(K_season - 1.0) < 0.5 || abs(K_season - 3.0) < 0.5) {
+    flower = dots * hardEdge(smoothstep(0.36, 0.5, vnoise(P * 26.0 + f.seed * 31.0)));
+    dots -= flower;
+  }
+
   float ink = style.w * (2.4 * line + bleed + wash * (1.0 - 0.45 * blue) + 1.2 * tex + 1.1 * fold + 2.4 * dots);
   ink = ink * (1.0 - water) + 1.6 * lips;
 
   // Blue-green: ochre at the foot, malachite up the slopes, azurite capping the peaks.
   float cover = 0.0;
+  float crestward = clamp(1.0 - dz / (H * 0.9), 0.0, 1.0);
   if (blue > 0.5) {
-    float crestward = clamp(1.0 - dz / (H * 0.9), 0.0, 1.0);
     mineral = mix(SHAN_OCHRE, SHAN_MALACHITE, smoothstep(0.1, 0.45, crestward));
     mineral = mix(mineral, SHAN_AZURITE, smoothstep(0.55, 0.9, crestward) * (0.5 + 0.5 * f.seed));
     if (layer >= 3) mineral = mix(SHAN_AZURITE, vec3(0.6, 0.7, 0.78), layer == 4 ? 0.55 : 0.35);
     cover = (layer >= 3 ? 0.4 : 0.55 + 0.3 * fall) * clamp(mottle, 0.0, 1.0) * (1.0 - water);
+  }
+  // The season's wash: the only colour over the ink, a glaze over the minerals; none on snow.
+  if (K_season > 0.5) {
+    vec4 tint = shanSeasonTint(layer, crestward, fall, f.seed);
+    tint.a *= clamp(mottle, 0.0, 1.0) * (1.0 - water);
+    if (tint.a > 0.0) mineral = cover > 0.0 ? mix(mineral, tint.rgb, 0.5) : tint.rgb;
+    cover = max(cover, tint.a) * (1.0 - snow);
+    if (flower > 0.0) {
+      mineral = K_season < 1.5 ? SHAN_BLOSSOM : SHAN_MAPLE;
+      cover = 0.95;
+    }
   }
   return vec2(ink, cover);
 }
@@ -977,6 +1023,8 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   shanPaintLayer(3, P, vis, ink, mineral);
   vis *= 1.0 - 0.7 * shanMistBand(P.y, field, 0.52, 0.04, breath);
   shanPaintLayer(4, P, vis, ink, mineral);
+  // A winter scroll washes its sky and water grey, so that the snow left as bare paper shines.
+  if (K_season > 3.5) ink += 0.32 * vis;
 
   // An inscription now and then, faint, in the sky of a sheet.
   ink += 0.8 * shanInscription(P);

@@ -4,7 +4,7 @@ import { sceneDefs } from "./src/scenes/index.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
-import { verifyShanshuiSections } from "./src/scenes/shanshui/sections.verify.ts";
+import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -253,7 +253,7 @@ export function verify(): Record<string, unknown> {
   );
   gl.deleteProgram(terrain);
 
-  result.shanshuiSections = verifyShanshuiSections(gl);
+  result.shanshui = verifyShanshui(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

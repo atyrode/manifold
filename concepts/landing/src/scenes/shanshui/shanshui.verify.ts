@@ -1,7 +1,8 @@
-// Browser check (verify-browser.ts): the shanshui scroll's sections on its real program and sim.
-// A long session must leave the scroll moving every frame (one float32 painting coordinate froze
-// for frames at a time between ever larger jumps), and the change to a new section's origin must
-// leave the picture on screen as it was (the section before runs on beyond the join).
+// Browser check (verify-browser.ts): shanshui on its real program and sim. Each season must wash
+// the painting in a colour of its own, winter greying the sky. A long session must leave the scroll
+// moving every frame (one float32 painting coordinate froze for frames at a time between ever
+// larger jumps), and the change to a new section's origin must leave the picture on screen as it
+// was (the section before runs on beyond the join).
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
@@ -36,7 +37,7 @@ function differing(a: Uint8Array, b: Uint8Array): number {
   return count;
 }
 
-export function verifyShanshuiSections(gl: WebGL2RenderingContext): Record<string, unknown> {
+export function verifyShanshui(gl: WebGL2RenderingContext): Record<string, unknown> {
   const knobs = { ...paramDefaults("shanshui"), speed: 1 };
   const frame = { knobs, aspect: WIDTH / HEIGHT, height: HEIGHT };
   // Screen heights a second of the fastest scroll unrolls, measured on the sim itself.
@@ -66,7 +67,10 @@ export function verifyShanshuiSections(gl: WebGL2RenderingContext): Record<strin
   gl.uniform3f(uniform("uBg"), 0.92, 0.886, 0.8);
   gl.uniform2f(uniform("uPassage"), 1, 0);
   gl.uniform1fv(uniform("uTriggers"), new Float32Array(8).fill(-1e4));
-  gl.uniform1fv(uniform("uParams"), Float32Array.from(renderSettings(defaultsFor("shanshui"), knobs).params));
+  const setKnobs = (values: Record<string, number>): void => {
+    gl.uniform1fv(uniform("uParams"), Float32Array.from(renderSettings(defaultsFor("shanshui"), values).params));
+  };
+  setKnobs(knobs);
   gl.uniform1i(uniform("uSim0"), 0);
   gl.uniform1i(uniform("uSim1"), 1);
   const draw = (textures: readonly (WebGLTexture | undefined)[]): Uint8Array => {
@@ -82,8 +86,26 @@ export function verifyShanshuiSections(gl: WebGL2RenderingContext): Record<strin
   };
 
   try {
+    const opening = sim.frame(frame);
+    const plain = draw(opening);
+    const seasonChanged = [1, 2, 3].map((season) => {
+      setKnobs({ ...knobs, season });
+      return differing(plain, draw(opening));
+    });
+    if (seasonChanged.some((count) => count < 0.02 * WIDTH * HEIGHT)) throw new Error(`A shanshui season left the painting as it was: ${seasonChanged.join(", ")} pixels changed`);
+    // The sky: the top fifth of the frame (readPixels rows run bottom to top).
+    const sky = (pixels: Uint8Array): number => {
+      let sum = 0;
+      for (let at = Math.floor(HEIGHT * 0.8) * WIDTH * 4; at < pixels.length; at += 4) sum += 0.2126 * (pixels[at] ?? 0) + 0.7152 * (pixels[at + 1] ?? 0) + 0.0722 * (pixels[at + 2] ?? 0);
+      return sum / (WIDTH * Math.ceil(HEIGHT * 0.2) * 255);
+    };
+    setKnobs({ ...knobs, season: 4 });
+    const winterSky = sky(draw(opening));
+    const plainSky = sky(plain);
+    if (winterSky > plainSky - 0.1) throw new Error(`Shanshui's winter left the sky unwashed: ${winterSky.toFixed(3)} against ${plainSky.toFixed(3)}`);
+    setKnobs(knobs);
+
     // A millionth of a height either side of the first section's end.
-    sim.frame(frame);
     const before = draw(sim.frame({ ...frame, dt: (SHANSHUI_SECTION - 1e-6) / pace - 1 / 60 }));
     const after = draw(sim.frame({ ...frame, dt: 2e-6 / pace }));
     const switchChanged = differing(before, after);
@@ -98,7 +120,7 @@ export function verifyShanshuiSections(gl: WebGL2RenderingContext): Record<strin
       previous = next;
     }
     if (frozenFrames > 0) throw new Error(`Shanshui's scroll stood still in ${frozenFrames} of 4 frames after a long session`);
-    return { switchChanged, pixels: WIDTH * HEIGHT, frozenFrames };
+    return { seasonChanged, plainSky, winterSky, switchChanged, pixels: WIDTH * HEIGHT, frozenFrames };
   } finally {
     sim.dispose();
     gl.deleteProgram(program);
