@@ -198,6 +198,8 @@ vec3 rainVanish(vec3 dir, vec3 right, vec3 up, vec3 fwd, float focal);
 Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish);
 float weatherRainClock(float t);                          // real time for gravity-driven things once motion > 0.4
 Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth);
+vec3 snowFallDir(float amount, float wind);               // the flakes' world direction, for rainVanish
+Precip snowFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish); // tilted camera: flakes stream out of (or into) the vanishing point; vanish.z = 0 is snowFall
 vec3 precipOver(vec3 col, vec3 air, vec3 dropLight, Precip p); // the veil toward air, then the drops toward dropLight (see below)
 
 // Surfaces (p in the scene's own ground units, roughly metres; scale freely):

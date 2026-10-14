@@ -16,7 +16,7 @@
 // (opt-in M), the birds, then the plane and its contrail beyond the clouds.
 //
 // Knobs (index.ts): K_towers, K_windows, K_greenery, K_traffic, K_citySeed (city); K_time, K_cycle,
-// K_stars (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind (weather); K_mark.
+// K_stars (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind, K_snowOverhead (weather); K_mark.
 
 /** Seconds of the entrance (the view tips back from street level to the zenith) and the exit (it tips down toward the street again) (SceneDef.passage). */
 export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
@@ -968,6 +968,14 @@ vec3 skywardGround(vec3 rd, float tg, SkywardHit h) {
   return col;
 }
 
+// The snow between the eye and depth (weatherDepth), seen through the camera sceneSkyward set up:
+// down the frame as a level camera sees it, or with K_snowOverhead streaming out of the patch of sky
+// the flakes fall from (vanish.z = 0 is the level camera's snow, snowFall).
+Precip skywardSnow(vec2 uv, float aspect, float t, float depth) {
+  vec3 vanish = K_snowOverhead > 0.5 ? rainVanish(snowFallDir(K_snow, K_wind), skywardR, skywardU, skywardF, SKYWARD_FOCAL) : vec3(0.0, -1.0, 0.0);
+  return snowFallSeen(uv, aspect, t, K_snow, K_wind, depth, vanish);
+}
+
 // ---- The picture ----
 
 Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
@@ -1034,7 +1042,8 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   col = skywardLamps(col, rd, tw);
   col = skywardGantry(col, rd, tw);
 
-  // The air: rain streams out of the zenith straight at you; snow comes down the frame.
+  // The air: rain streams out of the zenith straight at you; snow comes down the frame or, with
+  // K_snowOverhead, streams out of the sky the same way (vanish.z = 0 is the level camera's snow).
   float depth = weatherDepth(tw);
   float stars = 0.0;
   if (K_rain > 0.0) {
@@ -1049,7 +1058,7 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
     col = precipOver(col, air, dropLight * (1.0 - 0.2 * pr.near), pr);
   }
   if (K_snow > 0.0) {
-    Precip ps = snowFall(uv, aspect, t, K_snow, K_wind, depth);
+    Precip ps = skywardSnow(uv, aspect, t, depth);
     vec3 air = mix(skywardDeck * 1.3, vec3(0.75, 0.78, 0.85) * (skywardAmbient + 0.1), 0.5);
     col = mix(col, air, ps.veil);
     col = mix(col, max(vec3(0.8, 0.83, 0.9) * (skywardDeck * 1.6 + skywardAmbient * 0.4), vec3(0.1)), ps.cover);
