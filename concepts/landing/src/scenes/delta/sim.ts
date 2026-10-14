@@ -17,8 +17,12 @@
 // square of the velocity there (a stream-power law), plus a share that rolls downhill; the bed
 // rises where more arrives than leaves (Exner's equation), so sand is laid down wherever the water
 // slows: on bars at the river mouths, which split the flow, and along the banks. Every exchange is
-// counted face by face, so sand is never made or lost. Silt rides in suspension, carried through
-// the same faces as the water (out of the river's mouths into the sea: the plumes), and settles
+// counted face by face, so sand is never made or lost, but for the cap on a cell's change in one
+// step (MAX_CHANGE), which drops what a capped cell's neighbours still exchange with it. Measured,
+// it binds only in the warm-up at the most erosive knobs (erosion and sediment 1: 41 cells in 240
+// steps, 0.15 cell heights of sand lost against 559 moved), and in none of the steps sampled at the
+// defaults, in a flood or after a dug ditch. Silt rides in suspension, carried through the same
+// faces as the water (out of the river's mouths into the sea: the plumes), and settles
 // where the water is still. Steep banks slump to an angle of repose, deposits sink slowly (the
 // delta subsides, so lobes the river abandons drown again), and plants spread over dry, quiet
 // ground, as much as it can carry, holding it against the current and steepening the banks they
