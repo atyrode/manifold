@@ -141,7 +141,7 @@ export const KELP_PASSAGE = { enter: 3, exit: 1.8 } as const;
  * sinks into place, settling `dip` past it from `dipFrom` seconds on; the exit lifts it `rise`
  * toward the light.
  */
-export const KELP_CAMERA = { delay: 0.3, dipFrom: 1.5, drop: 0.5, dip: 0.025, rise: 0.6 } as const;
+export const KELP_CAMERA = { delay: 0.3, dipFrom: 1.5, drop: 0.3, dip: 0.025, rise: 0.3 } as const;
 /**
  * The passage's surge (world units/s at the nearest layer, along the current's way). Arriving, a
  * pulse of `speed` · sin(2πq) · sin²(πq) (the forest is pushed over, then swings back) rolls
