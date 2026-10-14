@@ -706,7 +706,7 @@ export function dunesPointerCell(
   const vz = 0.5 / Math.tan(DUNES_CAMERA.fov * 0.5);
   const length = Math.hypot(vx, vy, vz);
   // viewRay, turned by -uPointer.x * parallax and then by turn into grid space: one turn by their sum.
-  const yaw = DUNES_CAMERA.turn - frame.parallax.x * DUNES_CAMERA.parallax;
+  const yaw = DUNES_CAMERA.turn - (frame.parallax?.x ?? 0) * DUNES_CAMERA.parallax;
   const c = Math.cos(yaw);
   const s = Math.sin(yaw);
   const dx = (c * vx - s * vz) / length;

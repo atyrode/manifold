@@ -71,9 +71,10 @@ export interface SimFrame {
    * The smoothed pointer parallax, as the shader's `uPointer`: -1..1 across the window each way,
    * easing toward the pointer, 0 while the lab does not follow it. A sim that casts the pointer
    * through a camera the shader turns or shifts with `uPointer` does the same with this. The
-   * renderer rewrites it in place each frame: read it, don't keep it.
+   * renderer rewrites it in place each frame: read it, don't keep it. Absent (hand-built frames in
+   * tests) means no parallax.
    */
-  parallax: Readonly<{ x: number; y: number }>;
+  parallax?: Readonly<{ x: number; y: number }>;
   /**
    * How far the scene has come in (`enter`, 0→1 over `SceneDef.passage.enter` seconds of real time,
    * then 1; always 1 when passages are off) and gone out (`exit`, 0 until it leaves, then 0→1), as
