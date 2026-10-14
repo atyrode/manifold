@@ -82,6 +82,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies. Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it |
 | Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, birds; rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`) |
 | Autumn park | `autumn` | Leaves flutter and tumble down (quasi-steady plate model), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts lift swirls of the top leaves off the path |
+| Hanging mobile | `mobile` | Balanced arms on links as coupled Verlet pendulums, plate drag in drafts, gusts and eddies, plate contacts, shadows from one or two lamps on the wall |
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
 sees it (`rainFallSeen`), whatever the calm of the rest of the scene.
@@ -166,6 +167,34 @@ Overlooking rolling hills with a village in the distance and forest around.
   only weights. Historical revision-pinned replay keeps its original controls and render.
 - Presets: the original crop baseline, flower valley, lavender rows, sunflowers and mixed patchwork.
   Their replay arrows point to the actual feature revision on which these setups were tuned.
+
+## Hanging mobile
+
+A Calder mobile turning in a quiet room, its shadows thrown large across the wall behind it.
+
+- The mobile is a shared part (`src/sims/mobile.ts`): a seeded cascade of wire arms, each a rigid
+  triangle (two ends and a hang loop just above them) balanced by the lever rule, hung on a link
+  from the end above it, so the arms are coupled pendulums that swing, rock and turn freely. Plates
+  ride the arm ends; the air pushes on each plate along its normal (quadratic drag), and plates
+  that meet another arm's plate, wire or link are pushed apart instead of passing through. Its GLSL
+  traces plates, wires and links along a view ray and gives the share of a round lamp they hide
+  from any point, so other scenes can hang one (a window sill, a bar) and light it their own way.
+- Air (`src/sims/wind.ts`, the shared wind conventions): the draft (`wind`, -1..1) from a window,
+  gusts on the garden/autumn pulse crossing the room as a front with a "now", and the room's eddies
+  (`room air`). Uniform air barely turns a balanced arm (its plates' drag balances about the loop
+  as their weight does), so it is the difference between neighbouring plates' air that turns the
+  arms, a few degrees a second at the defaults.
+- Light: a spotlight on a stand at night (paper theme off) or a white room in daylight (paper
+  theme); `light from` moves it, `soft shadows` sizes it; a second, cooler light through a window
+  on the right throws a paler second shadow, so the two shadows take each other's colour where
+  they part. Each shadow is cut per cell against its own threshold.
+- Knobs: arms (3..7), plate outlines (leaves, discs, mixed), paint (primaries, black, white,
+  brass), clearance, design seed; draft, gusts, room air; room, light from, soft shadows, second
+  light; the Manifold M cut from red sheet at the cascade's tip. Click a plate to blow on it.
+- Passage: lowered from the ceiling on its link, bobbing once as it stops; hoisted back up on exit.
+  It is a pose applied when the mobile is packed, so the simulation at rest is untouched.
+- Cost: about the same per frame as `pendula` (software WebGL, 480×270: 108–139 ms against
+  105–136 ms; 147 ms at 7 arms); the physics is 16 µs a substep at 240 substeps a second.
 
 ## Murmuration
 

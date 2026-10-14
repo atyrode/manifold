@@ -369,6 +369,12 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `Errand` (`errand.ts`): a kerbside errand's choreography (a vehicle pulls in, hazards on, a porter
   carries loads to a door in trips, climbs back in, the vehicle leaves); the scene drives and walks
   them and reports arrivals (street's late delivery).
+- `gustPulse`, `GustTrain`, `windSign`, `windNoise` (`wind.ts`): the lab's wind conventions (K_wind
+  -1..1, gusts blowing with it), the gust pulse garden and autumn use, a seeded gust scheduler with
+  "now", and smooth eddy noise (mobile).
+- `Mobile`, `designMobile`, `MobileTexture`, `mobileGlsl` (`mobile.ts`): a balanced hanging mobile on
+  `VerletSystem` with plate drag and contacts, and GLSL tracing its plates, wires and links and the
+  shadows they throw from a round lamp (mobile).
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and
