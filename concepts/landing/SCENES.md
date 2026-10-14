@@ -53,6 +53,21 @@ mathematics. All have a first implementation in the lab:
 | Fractals | `fractal` | Julia walk, Mandelbrot dive, Apollonian gasket, Newton garden | |
 | Prism | `prism` | Dispersion through glass, total internal reflection | |
 
+## Slices of life and more
+
+A third batch built on the shared foundations (weather in the world, hard edges, the GPU and CPU sims):
+
+| Idea | Scene id | Simulation |
+|---|---|---|
+| Late-night bar | `bar` | Patrons arrive, sip and leave; the bartender pours, shakes, polishes; rain and traffic outside the window |
+| City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain |
+| Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint |
+| Mystic forest | `forest` | Kodama spirits appearing and turning their heads, spores on curl-noise air, a stag crossing |
+| Ripple tank | `ripple` | GPU wave equation: interference, double slit, lens, Doppler, standing waves; projected caustics |
+| Lava lamp | `lava` | Heated wax blobs with buoyancy, necks and merging |
+| Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles |
+| Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning |
+
 ## Above the clouds
 
 The view from a plane window: a sea of clouds below, open sky above.
