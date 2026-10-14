@@ -23,4 +23,7 @@ export const swellScene: SceneDef = {
   },
   glsl: swellGlsl,
   entry: "sceneSwell",
+  // Enter: the camera rises from just above the water to its height while one long swell rolls in from
+  // the far sea. Exit: it sinks toward the waves and tips down into them.
+  passage: { enter: 2.8, exit: 1.5 },
 };
