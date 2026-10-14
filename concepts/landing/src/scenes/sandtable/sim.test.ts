@@ -33,8 +33,9 @@ function table(knobs: Record<string, number>): Table {
       return () => undefined;
     },
   }) as unknown as WebGL2RenderingContext;
-  const params = sandtableScene.params;
-  const values = params.map((p) => effective(p, knobs));
+  const values = sandtableScene.params.map((p) => effective(p, knobs));
+  const sim = sandtableScene.sim?.(gl);
+  if (!sim) throw new Error("sandtable has no sim");
   let textures: readonly (WebGLTexture | undefined)[] = [];
   const fired = [false, false];
   const frame = (dt: number, next: boolean): void => {
