@@ -71,23 +71,51 @@ float countryWoods(float i, float wx, float wv, vec2 near) {
   return smoothstep(0.5, 0.56, n + lean + 0.12 * exp(-3.0 * wv)) * keep;
 }
 
-// Silhouette of ridge i at screen x. The second ridge opens a saddle onto the village, the third
-// carries the village knoll and dips in front of the chalk down, the fourth lifts the down into
-// view. Woods raise the line by their height, in rounded crowns.
-float countryCrest(float i, float x, vec2 spots) {
+// Bare terrain only: settlement shaping belongs to the ground, tree crowns never do.
+float countryGroundCrest(float i, float x, vec2 spots) {
   vec4 L = countryLayer(i);
   float c = L.y + L.z * (2.0 * countryRidge(x * L.w + 11.0 * i, 5.0 * i + 0.5) - 1.0);
   vec2 near = countrySpots(x, spots);
   if (i > 0.5 && i < 1.5) c = mix(c, L.y - 0.06, 0.75 * near.x);
   if (i > 1.5 && i < 2.5) c = mix(c, L.y + 0.012, 0.8 * near.x) - 0.06 * near.y;
   if (i > 2.5 && i < 3.5) c = mix(c, L.y + 0.035, 0.7 * near.y);
+  return c;
+}
+
+// A stable species draw, independent of season and canopy density.
+bool countryPine(float h) {
+  return fract(h * 83.17 + 0.19) < K_pines;
+}
+
+// Tiered, tapered boughs in crown coordinates (y up); evergreen structure, not a tinted dome.
+float countryPineWidth(float y) {
+  float taper = clamp((1.4 - y) / 2.4, 0.0, 1.0);
+  return 0.82 * taper * (0.78 + 0.22 * fract((1.4 - y) * 2.0));
+}
+
+// The visible outline includes treetops for occlusion, but never defines the ground underneath.
+float countryCrest(float i, float x, vec2 spots, out float terrain) {
+  vec4 L = countryLayer(i);
+  terrain = countryGroundCrest(i, x, spots);
+  float c = terrain;
+  vec2 near = countrySpots(x, spots);
   float wx = x * L.x;
   float woods = countryWoods(i, wx, 0.0, near);
   if (woods > 0.0) {
     float u = wx * 16.0 + 0.7 * vnoise(vec2(wx * 4.0, i + 0.5));
     float f = fract(u) * 2.0 - 1.0;
-    float dome = sqrt(max(1.0 - f * f, 0.0)) * (0.55 + 0.45 * hash12(vec2(floor(u), i)));
-    c += woods * (0.03 + 0.022 * dome) / L.x;
+    float h = hash12(vec2(floor(u), i));
+    float top;
+    if (countryPine(h)) {
+      float center = 0.32 + 0.36 * fract(h * 17.3);
+      float width = 0.22 + 0.1 * fract(h * 37.7);
+      float peak = max(1.0 - abs(fract(u) - center) / width, 0.0);
+      top = 0.018 + 0.049 * peak * (0.48 + 0.52 * fract(h * 7.13));
+    } else {
+      float dome = sqrt(max(1.0 - f * f, 0.0)) * (0.55 + 0.45 * h);
+      top = 0.03 + 0.022 * dome;
+    }
+    c += woods * top / L.x;
   }
   return c;
 }
@@ -306,9 +334,8 @@ vec4 countryTrees(vec2 f, vec2 scale, float r, float density, float above, vec3 
   return best;
 }
 
-// A woodland canopy seen from the side: packed round crowns (cellular), each a dome. c: crown space
-// (one crown per unit, y down the slope). Returns the dome normal (xyz) and the crown's hash (w);
-// ao darkens the gaps between crowns.
+// Woodland crowns in their own side-view space, not terrain coordinates. Round broadleaf crowns
+// and tiered evergreen cones compete inside the same bounded 3x3 neighborhood; ao darkens gaps.
 vec4 countryCanopy(vec2 c, out float ao) {
   vec2 i = floor(c);
   vec2 g = fract(c);
@@ -320,7 +347,14 @@ vec4 countryCanopy(vec2 c, out float ao) {
       vec2 o = vec2(float(k), float(y));
       vec2 at = o + 0.2 + 0.6 * vec2(hash12(i + o + 1.7), hash12(i + o + 6.1));
       vec2 d = g - at;
+      float h = hash12(i + o + 2.3);
       float dd = dot(d, d);
+      if (countryPine(h)) {
+        vec2 pinePoint = vec2(d.x, -d.y) * 2.0;
+        float cone = max(abs(pinePoint.x) / max(countryPineWidth(pinePoint.y), 0.01),
+                         abs((pinePoint.y - 0.2) / 1.2));
+        dd = 0.25 * cone * cone;
+      }
       if (dd < d1) {
         d1 = dd;
         rel = d;
@@ -329,7 +363,11 @@ vec4 countryCanopy(vec2 c, out float ao) {
     }
   }
   ao = 1.0 - smoothstep(0.12, 0.5, d1);
-  return vec4(normalize(vec3(rel.x, -rel.y + 0.2, -sqrt(max(0.45 - d1, 0.03)))), hash12(id + 2.3));
+  float h = hash12(id + 2.3);
+  vec3 normal = countryPine(h)
+    ? normalize(vec3(rel.x / max(countryPineWidth(-rel.y * 2.0), 0.06), 0.38, -0.75))
+    : normalize(vec3(rel.x, -rel.y + 0.2, -sqrt(max(0.45 - d1, 0.03))));
+  return vec4(normal, h);
 }
 
 // The river winding down the second ridge toward us, from the saddle below the village: its centre
@@ -731,6 +769,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   // Front to back: the first ridge, or a tree or building standing on it, that covers the pixel.
   int hit = 6;
   float crest = 0.0;
+  float groundCrest = 0.0;
   float valley = -1.0;
   vec2 q = p;
   float object = 0.0;
@@ -746,13 +785,15 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     vec4 L = countryLayer(i);
     // Nearer ridges slide further as the pointer moves.
     vec2 qi = p + uPointer * m * vec2(0.022, 0.01) / L.x;
-    float c = countryCrest(i, qi.x, spots);
+    float terrain = 0.0;
+    float c = countryCrest(i, qi.x, spots, terrain);
     if (k == 2) {
       village = countryVillage(qi, spots.x, L.y + 0.012, tod, dark, uMotionTime, wind);
       villageSeen = true;
       if (village.hit > 0.5) {
         hit = k;
         crest = c;
+        groundCrest = terrain;
         q = qi;
         object = 2.0;
         seen = 0.9 * L.x;
@@ -774,6 +815,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         if (crown.z > 0.5) {
           hit = k;
           crest = c;
+          groundCrest = terrain;
           q = qi;
           object = 1.0;
           seen = L.x * (1.0 - 0.35 * smoothstep(0.0, 0.2, sRoot));
@@ -784,6 +826,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     if (qi.y < c) {
       hit = k;
       crest = c;
+      groundCrest = terrain;
       q = qi;
       break;
     }
@@ -805,17 +848,16 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   if (hit < 6) {
     vec4 L = countryLayer(i);
     float d = L.x;
-    float s = max(crest - q.y, 0.0);
+    float s = max(groundCrest - q.y, 0.0);
+    float canopyDrop = max(crest - q.y, 0.0);
     vec2 w = vec2(q.x * d, countryDown(s, d));
     float down = countryDownRate(s, d);
     vec2 px = vec2(d, down) * pxl;
     vec2 near = countrySpots(q.x, spots);
 
-    // The face turns from skyward at the crest toward us lower down, leans with the silhouette's
-    // slope and rolls over broad swells a few fields across, so a low sun lights one flank of each
-    // swell and leaves the other in shade.
+    // Ground lighting follows the bare ridge and broad swells, never the treetop outline.
     float e = 2.0 * pxl;
-    float lean = (countryCrest(i, q.x + e, spots) - crest) / e;
+    float lean = (countryGroundCrest(i, q.x + e, spots) - groundCrest) / e;
     float facing = 0.38 * sqrt(clamp(s / 0.12, 0.0, 1.0));
     vec2 hw = w * vec2(1.5, 2.2) + 3.0 * i;
     float h0 = vnoise(hw);
@@ -942,10 +984,16 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       float woods = countryWoods(i, w.x, w.y, near);
       if (woods > 0.0) {
         float ao = 0.0;
-        vec4 canopy = countryCanopy(vec2(w.x, s * d) * 16.0, ao);
         float crowns = smoothstep(2.5, 5.0, 0.0625 / px.x);
+        // Unresolved crowns use an evergreen/broadleaf area mean, no nine-cell detail search.
+        vec4 canopy = vec4(0.0, 0.55, -0.835, 0.5);
+        if (crowns > 0.0) canopy = countryCanopy(vec2(w.x, canopyDrop * d) * 16.0, ao);
+        vec3 evergreen = vec3(0.085, 0.2, 0.145);
         vec3 leaf = vec3(0.12, 0.25, 0.11);
-        if (season > 1.5) leaf = canopy.w < 0.3 ? vec3(0.5, 0.26, 0.08) : (canopy.w < 0.5 ? vec3(0.62, 0.45, 0.12) : vec3(0.14, 0.26, 0.1));
+        if (countryPine(canopy.w)) leaf = evergreen;
+        else if (season > 1.5) leaf = canopy.w < 0.3 ? vec3(0.5, 0.26, 0.08) : (canopy.w < 0.5 ? vec3(0.62, 0.45, 0.12) : vec3(0.14, 0.26, 0.1));
+        vec3 broadleafMean = season > 1.5 ? vec3(0.38, 0.31, 0.1) : vec3(0.12, 0.25, 0.11);
+        leaf = mix(mix(broadleafMean, evergreen, K_pines), leaf, crowns);
         albedo = mix(albedo, leaf * mix(1.0, 0.65 + 0.35 * ao, crowns), woods);
         n = normalize(mix(n, canopy.xyz, woods * crowns));
         settles = mix(settles, 0.35 + 0.4 * max(canopy.y, 0.0), woods);
@@ -1094,7 +1142,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   if (age < 2.0 && hit >= 4) {
     float bx = (fract(seed * 7.13) - 0.5) * aspect * 0.8;
     float gx = bx + (fract(seed * 3.71) - 0.5) * 0.12;
-    float bolt = lightningBolt(p, vec2(bx, 0.92), vec2(gx, countryCrest(4.0, gx, spots) - 0.004), seed, age);
+    float boltTerrain = 0.0;
+    float boltCrest = countryCrest(4.0, gx, spots, boltTerrain);
+    float bolt = lightningBolt(p, vec2(bx, 0.92), vec2(gx, boltCrest - 0.004), seed, age);
     col += vec3(0.85, 0.9, 1.0) * bolt;
   }
   // The whole scene flashing.

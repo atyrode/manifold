@@ -154,6 +154,90 @@ export function verify(): Record<string, unknown> {
   );
   result.fieldShares = counts;
   gl.deleteProgram(fields);
+  // Observe the actual scene entry away from canopy overlaps: changing species must not deform
+  // exposed ground, and fully pine woodland must remain evergreen through autumn, including LOD.
+  const terrain = program(
+    gl,
+    fragmentSourceFor({
+      ...sceneDefs.country,
+      entry: "regressionCountrySurface",
+      glsl:
+        sceneDefs.country.glsl +
+        `
+      uniform int regressionHabitat;
+      Shade regressionCountrySurface(vec2 uv, vec2 cell, float t) {
+        Shade actual = sceneCountry(uv, cell, t);
+        float aspect = uRes.x / uRes.y;
+        vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
+        vec2 spots = vec2(-0.2, 0.24) * aspect + countrySeed * 0.004 * aspect;
+        for (int k = 0; k < 6; k++) {
+          float i = float(k);
+          float d = countryLayer(i).x;
+          float crest = countryGroundCrest(i, p.x, spots);
+          if (abs(crest - p.y) < 0.07 / d) break;
+          if (p.y < crest) {
+            vec2 w = vec2(p.x * d, countryDown(crest - p.y, d));
+            float woods = countryWoods(i, w.x, w.y, countrySpots(p.x, spots));
+            if (k >= 3 && (regressionHabitat == 0 ? woods < 0.001 : woods >= 1.0))
+              return actual;
+            break;
+          }
+        }
+        return shadeOf(vec3(1.0, 0.0, 1.0), 0.0, 0.0);
+      }`,
+    }),
+  );
+  gl.canvas.width = 256;
+  gl.canvas.height = 160;
+  gl.useProgram(terrain);
+  gl.viewport(0, 0, 256, 160);
+  gl.uniform2f(gl.getUniformLocation(terrain, "uRes"), 256, 160);
+  gl.uniform1i(gl.getUniformLocation(terrain, "uView"), 1);
+  gl.uniform1fv(gl.getUniformLocation(terrain, "uTriggers"), new Float32Array(8).fill(-1e4));
+  gl.uniform2f(gl.getUniformLocation(terrain, "uPassage"), 1, 0);
+  const drawTerrain = (season: number, pines: number, habitat: number): Uint8Array => {
+    gl.uniform1i(gl.getUniformLocation(terrain, "regressionHabitat"), habitat);
+    const knobs = {
+      ...paramDefaults("country"),
+      pines,
+      season,
+      time: 0.58,
+      clouds: 0,
+      shadows: 0,
+      wind: 0,
+      fog: 0,
+    };
+    gl.uniform1fv(
+      gl.getUniformLocation(terrain, "uParams"),
+      Float32Array.from(renderSettings(defaultsFor("country"), knobs).params),
+    );
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    return pixels(gl, 256, 160);
+  };
+  const compareSurface = (a: Uint8Array, b: Uint8Array, message: string): number => {
+    let observed = 0;
+    for (let at = 0; at < a.length; at += 4) {
+      if (a[at] === 255 && a[at + 1] === 0 && a[at + 2] === 255) continue;
+      observed++;
+      check(
+        [0, 1, 2].every((channel) => a[at + channel] === b[at + channel]),
+        `${message} at pixel ${at / 4}`,
+      );
+    }
+    check(observed >= 20, `Surface fixture lacked the requested habitat: ${observed}`);
+    return observed;
+  };
+  result.exposedGroundPixels = compareSurface(
+    drawTerrain(1, 0, 0),
+    drawTerrain(1, 1, 0),
+    "Tree species changed exposed countryside ground",
+  );
+  result.evergreenPixels = compareSurface(
+    drawTerrain(0, 1, 1),
+    drawTerrain(2, 1, 1),
+    "Pine woodland changed color in autumn",
+  );
+  gl.deleteProgram(terrain);
 
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");

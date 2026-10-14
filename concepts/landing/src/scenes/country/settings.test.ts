@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { readParams, readState, serialise } from "../../state.ts";
 
-test("field weights and their landscape survive URL reconstruction across other knob edits", () => {
-  const weights = { crops: 30, wildflowers: 0, lavender: 50, sunflowers: 20 };
+test("field weights, pine mix and landscape survive URL reconstruction across other knob edits", () => {
+  const weights = { crops: 30, wildflowers: 0, lavender: 50, sunflowers: 20, pines: 0 };
   let query = new URLSearchParams(
-    "scene=country&crops=30&wildflowers=0&lavender=50&sunflowers=20&landscape=137&season=2",
+    "scene=country&crops=30&wildflowers=0&lavender=50&sunflowers=20&pines=0&landscape=137&season=2",
   );
   const edits = [
     ["time", "0.25"],
@@ -38,9 +38,9 @@ test("field weights and their landscape survive URL reconstruction across other 
   }
 });
 
-test("editing one field weight preserves the other weights, landscape and season", () => {
+test("editing one field weight preserves the other weights, trees, landscape and season", () => {
   const initial = new URLSearchParams(
-    "scene=country&crops=20&wildflowers=40&lavender=60&sunflowers=0&landscape=83&season=0",
+    "scene=country&crops=20&wildflowers=40&lavender=60&sunflowers=0&pines=0.73&landscape=83&season=0",
   );
   const state = readState(initial);
   const query = serialise(state, readParams(state.scene, initial));
@@ -51,6 +51,7 @@ test("editing one field weight preserves the other weights, landscape and season
     20, 40, 60, 80,
   ]);
   expect(params.landscape).toBe(83);
+  expect(params.pines).toBe(0.73);
   expect(params.season).toBe(0);
 });
 

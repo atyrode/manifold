@@ -111,7 +111,12 @@ A cliff face with a waterfall as the focus.
 Overlooking rolling hills with a village in the distance and forest around.
 
 - Layered hills with atmospheric perspective, patchwork fields, hedgerows, a winding road or river.
-- Village: a few roofs and a church spire, chimney smoke; forest canopy as dithered texture.
+- Village: a few roofs and a church spire, chimney smoke.
+- Woodland: distant woods mix rounded broadleaf crowns with tapered, tiered pines (25% by default,
+  0–100%). Pines stay evergreen in autumn. Treetops raise the visible skyline and occlude what is
+  behind them, but the ground's field mapping and lighting follow only the bare terrain, so canopy
+  bumps never corrugate the hillsides. Unresolved distant crowns use an area-mean colour instead of
+  per-crown detail.
 - Day cycle and weather (cloud shadows sweeping over the fields).
 - Fields: independently weight original seasonal crops, wildflowers, lavender and sunflowers from
   0–100. Weights are relative, not area percentages: 2:1:1:0 gives approximately half crop fields,
