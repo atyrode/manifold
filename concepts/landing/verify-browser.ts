@@ -541,8 +541,8 @@ type Check = readonly [name: string, check: (gl: WebGL2RenderingContext) => unkn
 
 /**
  * Every check, by name: real WebGL outputs under controlled timing/state, not mocked helper calls.
- * verify.ts runs each in its own evaluation on a freshly loaded page (`run`), so a check gets a
- * context of its own and must restore any global it patches.
+ * verify.ts runs each on a freshly loaded page (`run`), so a check gets a context of its own and
+ * must restore any global it patches.
  */
 export const checks: readonly Check[] = [
   ["forestClock", forestClock],
@@ -578,11 +578,20 @@ export const checks: readonly Check[] = [
   ["pondKoi", verifyPondKoi],
 ];
 
-/** Runs the named check on a fresh WebGL2 context with a vertex array bound. */
-export function run(name: string): unknown {
-  const entry = checks.find(([key]) => key === name);
-  if (!entry) throw new Error(`No check named ${name}`);
-  const gl = context();
-  gl.bindVertexArray(gl.createVertexArray());
-  return entry[1](gl);
+/**
+ * Runs the named check on a fresh WebGL2 context with a vertex array bound, and hands `report` its
+ * outcome as JSON, `{ result }` or `{ error }`. verify.ts passes a page binding as `report`, so the
+ * check may outlast any one protocol call.
+ */
+export async function run(name: string, report: (outcome: string) => void): Promise<void> {
+  try {
+    const entry = checks.find(([key]) => key === name);
+    if (!entry) throw new Error(`No check named ${name}`);
+    const gl = context();
+    gl.bindVertexArray(gl.createVertexArray());
+    report(JSON.stringify({ result: await entry[1](gl) }));
+  } catch (error) {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    report(JSON.stringify({ error: message }));
+  }
 }

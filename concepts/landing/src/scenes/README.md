@@ -567,16 +567,18 @@ and `dwell` (`state.ts` refuses to load such a scene).
 
 Run `bun concepts/landing/verify.ts` from the repository root with system Chromium available
 (`MANIFOLD_CHROMIUM` can select its binary); name checks to run only those
-(`bun concepts/landing/verify.ts frostSky pondKoi`). Each check runs in its own evaluation on a
-freshly loaded page, so it inherits nothing from the others and has the browser driver's 30 s
-per-call deadline to itself. The run prints `PASS  <name> (<seconds> s)` per check, then the
-results as JSON keyed by check name, and stops at the first failure with `FAIL  <name>` and a
-non-zero exit. The isolated browser exercises actual WebGL output: Forest's sky phase across
-motion changes, inherited GPU blending and preserving resize, Frost's warmth/trace reset while
-paused and after resume, the shared sky components' outputs (stars, the moon's phase, aurora,
-meteors) and their coupling in Frost's picture (`frost/sky.verify.ts`), uncapped FPS, and
-saved-frame dissolve sampling across larger, smaller, aspect-changed, and unchanged render sizes.
-Software WebGL is deliberate; this check is not a real-device performance qualification.
+(`bun concepts/landing/verify.ts frostSky pondKoi`). Each check runs on a freshly loaded page, so
+it inherits nothing from the others, and has a deadline of its own: 180 s, or
+`LANDING_CHECK_SECONDS` (it is started in the page and reports back when done, so no browser
+protocol call waits on it). The run prints `PASS  <name> (<seconds> s)` per check, then the
+results as JSON keyed by check name, and stops at the first failure (a throw or the deadline) with
+`FAIL  <name>` and a non-zero exit. The isolated browser exercises actual WebGL output: Forest's
+sky phase across motion changes, inherited GPU blending and preserving resize, Frost's
+warmth/trace reset while paused and after resume, the shared sky components' outputs (stars, the
+moon's phase, aurora, meteors) and their coupling in Frost's picture (`frost/sky.verify.ts`),
+uncapped FPS, and saved-frame dissolve sampling across larger, smaller, aspect-changed, and
+unchanged render sizes. Software WebGL is deliberate; this check is not a real-device
+performance qualification.
 
 To add a check, write `<topic>.verify.ts` in the scene's folder exporting a function that takes a
 `WebGL2RenderingContext`, throws on a regression and returns what it measured as plain JSON data,
@@ -584,8 +586,8 @@ then register it in `concepts/landing/verify-browser.ts` with one import and one
 `["<name>", verifyTopic],` line at the end of `checks`. The context is the check's own (a vertex
 array bound, the canvas at its default size): size the canvas for what it reads back, and restore
 in a `finally` any global or shared definition it patches (`window.requestAnimationFrame`, a
-scene's `glsl` or `sim`). Keep each check well inside the deadline under software WebGL; split a
-slower one into several entries.
+scene's `glsl` or `sim`). Keep each check well under the deadline in software WebGL on a busy
+machine; split a slower one into several entries.
 
 `src/runtime.verify.ts` adds the renderer's runtime: under reduced motion a press and a trigger
 age in real time while the clocks stand still (Dunes' streak clears after release; paused, ages
