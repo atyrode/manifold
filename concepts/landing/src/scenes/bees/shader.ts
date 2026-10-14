@@ -147,9 +147,10 @@ const int BEES_C_TRAIL = ${BEES_CODE.trail};
 // The crown of an old apple tree: lobes (x, y, radius) in metres from the foot of the trunk, spreading
 // wide; each tree jitters, stretches and resizes them by its seed.
 const vec3 BEES_CROWN[9] = vec3[9](vec3(-2.7, 2.7, 1.15), vec3(-1.5, 3.1, 1.3), vec3(-0.2, 3.5, 1.45), vec3(1.2, 3.2, 1.3), vec3(2.6, 2.8, 1.1), vec3(-1.1, 3.9, 1.0), vec3(0.5, 4.0, 1.05), vec3(-2.0, 2.2, 0.8), vec3(2.0, 2.3, 0.85));
-// A cumulus: lobes (x, y, radius) in the cloud's own units, a flat base at y = 0: wide at the foot, the
-// billows heaping up into a cauliflower top.
-const vec3 BEES_CLOUDLOBE[11] = vec3[11](vec3(-0.62, 0.15, 0.17), vec3(-0.28, 0.17, 0.22), vec3(0.10, 0.19, 0.26), vec3(0.50, 0.16, 0.20), vec3(0.78, 0.12, 0.14), vec3(-0.40, 0.46, 0.22), vec3(0.0, 0.54, 0.27), vec3(0.42, 0.43, 0.21), vec3(-0.14, 0.90, 0.21), vec3(0.22, 0.80, 0.17), vec3(0.0, 1.12, 0.13));
+// A cumulus: ellipse lobes (x, y, half width, half height) in the cloud's own units, a flat base at y = 0:
+// three wide flat lobes at the foot, a few big billows above them, then many small ones along the edges
+// and the crown, so the outline is lumpy at every scale.
+const vec4 BEES_CLOUDLOBE[17] = vec4[17](vec4(-0.55, 0.10, 0.34, 0.13), vec4(0.0, 0.11, 0.42, 0.14), vec4(0.55, 0.09, 0.32, 0.12), vec4(-0.25, 0.42, 0.30, 0.26), vec4(0.20, 0.50, 0.34, 0.30), vec4(0.62, 0.30, 0.20, 0.17), vec4(-0.70, 0.28, 0.18, 0.15), vec4(-0.05, 0.86, 0.26, 0.22), vec4(0.30, 0.82, 0.20, 0.17), vec4(0.05, 1.10, 0.13, 0.10), vec4(-0.88, 0.15, 0.10, 0.09), vec4(0.88, 0.14, 0.10, 0.09), vec4(-0.52, 0.58, 0.11, 0.10), vec4(0.60, 0.62, 0.12, 0.10), vec4(-0.30, 1.00, 0.10, 0.09), vec4(0.45, 1.02, 0.10, 0.08), vec4(0.72, 0.50, 0.10, 0.09));
 // The wall's foot (uv) and the gate in it, as fractions of the stage.
 const float BEES_WALL_Y = 0.372;
 const float BEES_GATE_0 = 0.27;
@@ -208,38 +209,36 @@ vec4 beesSkyline(float x) {
 
 // ---- the sky -------------------------------------------------------------------------------------------
 
-// The signed distance (in the cloud's own units) to a cumulus: a union of lobes, so the outline is a
-// string of round billows, cut flat at the base. lobe: the nearest lobe (x, y, radius), for shading.
-float beesCloudSdf(vec2 q, float seed, out vec3 lobe) {
+// The signed distance (in the cloud's own units, roughly) to a cumulus: a union of ellipse lobes, cut
+// flat at the base.
+float beesCloudSdf(vec2 q, float seed) {
   float d = 1e3;
-  lobe = vec3(0.0, 0.5, 0.3);
-  for (int k = 0; k < 11; k++) {
-    vec3 c = BEES_CLOUDLOBE[k];
-    vec2 j = hash22(vec2(float(k), seed)) - 0.5;
-    c.xy += j * 0.12;
-    c.z *= 0.85 + 0.3 * hash12(vec2(float(k) + 7.0, seed));
-    float dk = length(q - c.xy) - c.z;
-    if (dk < d) {
-      d = dk;
-      lobe = c;
-    }
+  for (int k = 0; k < 17; k++) {
+    vec4 c = BEES_CLOUDLOBE[k];
+    c.xy += (hash22(vec2(float(k), seed)) - 0.5) * 0.06;
+    c.zw *= 0.88 + 0.28 * hash12(vec2(float(k) + 7.0, seed));
+    d = min(d, (length((q - c.xy) / c.zw) - 1.0) * min(c.z, c.w));
   }
   return max(d, -q.y);
 }
 
-// One cumulus at p: rgb and coverage (0 or 1). Each billow is lit on the side that faces the sun, so a
-// bright crescent crowns every lobe against the blue-grey of its shadowed hollows; the flat base is the
-// darkest, bluest part, and the sunward rim glows.
+// One cumulus at p: rgb and coverage (0 or 1). The light comes from the outline's normal (taken over a
+// wide step, so the billows blend into one mass) mixed with the cloud's overall facing: the sunward side
+// and the crown are bright cream, the shaded side and the flat base blue-grey, the sunward rim glows.
 vec4 beesCloudAt(vec2 p, float cx, float by, float s, float tall, float seed) {
   vec2 q = vec2((p.x - cx) / s, (p.y - by) / (s * tall));
-  if (q.x < -1.1 || q.x > 1.15 || q.y < -0.05 || q.y > 1.45) return vec4(0.0);
-  vec3 lobe;
-  float d = beesCloudSdf(q, seed + beesSeed, lobe);
-  d += 0.025 * (vnoise(q * 8.0 + seed) - 0.5);
+  if (q.x < -1.15 || q.x > 1.2 || q.y < -0.05 || q.y > 1.5) return vec4(0.0);
+  float sd = seed + beesSeed;
+  float d = beesCloudSdf(q, sd);
+  d += 0.045 * (vnoise(q * 9.0 + seed) - 0.5) + 0.02 * (vnoise(q * 23.0 + seed) - 0.5);
   if (hardFill(d * s, beesAa) < 0.5) return vec4(0.0);
-  vec2 n = (q - lobe.xy) / lobe.z;
-  float facing = dot(n, normalize(vec2(beesSunDir.x, beesSunDir.y * tall + 0.01)));
-  float lit = smoothstep(-0.8, 0.7, facing);
+  float e = 0.12;
+  vec2 grad = vec2(beesCloudSdf(q + vec2(e, 0.0), sd) - beesCloudSdf(q - vec2(e, 0.0), sd), beesCloudSdf(q + vec2(0.0, e), sd) - beesCloudSdf(q - vec2(0.0, e), sd));
+  vec2 n = grad / max(length(grad), 1e-3);
+  vec2 toSun = normalize(vec2(beesSunDir.x, beesSunDir.y / tall));
+  float facing = dot(n, toSun);
+  float wide = dot(normalize(q - vec2(0.0, 0.5) + 1e-3), toSun);
+  float lit = smoothstep(-1.0, 0.9, 0.55 * facing + 0.45 * wide);
   lit *= 0.5 + 0.5 * smoothstep(0.0, 0.5, q.y);
   vec3 litC = beesSun * 0.7 + beesAmb * 0.55 + vec3(0.14, 0.13, 0.12);
   vec3 c = mix(beesCloudShade, litC, lit);
@@ -273,28 +272,31 @@ float beesCloudShadow(vec2 p, float tm) {
 
 // ---- the hills ---------------------------------------------------------------------------------------
 
-// Patchwork fields on a hill k = 1 (near) .. 3 (far): parcels that follow the contours, hay, grass, deep
-// green, ploughed brown and the odd yellow of rape, hedgerows between some of them with clumps of trees,
-// lit warm along the ridge, gone to haze by distance.
+// Patchwork fields on a hill k = 1 (near) .. 3 (far): small parcels that follow the contours in hay gold,
+// bright and deep greens, ploughed brown, the yellow of rape and the odd lavender field, hedgerows
+// between many of them with clumps of trees, lit warm along the ridge, saturated on the near hill
+// (summer green-gold) and gone to haze with distance.
 vec3 beesHill(vec2 p, float ridge, float k, vec3 haze, float hazeAmt) {
   float deep = max(ridge - p.y, 0.0);
-  float v = deep * (24.0 - 5.0 * k) + 1.2 * (vnoise1(p.x * 2.5 + k * 5.0 + beesSeed, k).x - 0.5);
+  float v = deep * (60.0 - 12.0 * k) + 1.5 * (vnoise1(p.x * 2.2 + k * 5.0 + beesSeed, k).x - 0.5);
   float rowId = floor(v);
   float rh = hash12(vec2(rowId, k * 11.0));
-  float cu = p.x * (1.6 + 1.2 * rh) * (1.0 + 1.2 * deep) + rh * 9.0;
+  float cu = p.x * (5.0 - 0.8 * k + 3.0 * rh) + rh * 9.0;
   float colId = floor(cu);
   float hf = hash12(vec2(colId, rowId + k * 17.0));
-  vec3 c = hf < 0.22 ? vec3(0.84, 0.74, 0.36) : hf < 0.46 ? vec3(0.52, 0.66, 0.24) : hf < 0.7 ? vec3(0.34, 0.52, 0.18) : hf < 0.86 ? vec3(0.22, 0.40, 0.17) : hf < 0.95 ? vec3(0.64, 0.48, 0.30) : vec3(0.92, 0.82, 0.28);
+  vec3 c = hf < 0.2 ? vec3(0.90, 0.74, 0.26) : hf < 0.42 ? vec3(0.50, 0.72, 0.18) : hf < 0.64 ? vec3(0.26, 0.54, 0.14) : hf < 0.78 ? vec3(0.14, 0.36, 0.12) : hf < 0.88 ? vec3(0.70, 0.46, 0.24) : hf < 0.96 ? vec3(1.0, 0.86, 0.18) : vec3(0.60, 0.45, 0.75);
   c *= 0.9 + 0.2 * hash12(vec2(colId, rowId) + 3.7);
-  float rowEdge = (1.0 - smoothstep(0.0, 0.1, fract(v))) * step(0.4, rh);
-  float colEdge = (1.0 - smoothstep(0.0, 0.05, fract(cu))) * step(0.55, hash12(vec2(colId, rowId + 4.0)));
-  c = mix(c, vec3(0.10, 0.22, 0.09), max(rowEdge, colEdge) * 0.85);
-  vec2 tc = vec2(p.x * (34.0 - 8.0 * k), v * 3.0);
-  float tree = step(0.9, hash12(floor(tc) + k * 7.0)) * hardEdge(1.0 - smoothstep(0.22, 0.42, length(fract(tc) - 0.5)));
-  c = mix(c, vec3(0.08, 0.2, 0.08) * (0.8 + 0.6 * smoothstep(0.7, 0.2, fract(tc).y)), tree);
-  c *= mix(1.12, 0.86, smoothstep(0.0, 0.1, deep));
+  float rowEdge = (1.0 - smoothstep(0.0, 0.14, fract(v))) * step(0.3, rh);
+  float colEdge = (1.0 - smoothstep(0.0, 0.08, fract(cu))) * step(0.4, hash12(vec2(colId, rowId + 4.0)));
+  c = mix(c, vec3(0.08, 0.20, 0.07), max(rowEdge, colEdge) * 0.9);
+  vec2 tc = vec2(p.x * (40.0 - 8.0 * k), v * 2.0);
+  float tree = step(0.84, hash12(floor(tc) + k * 7.0)) * hardEdge(1.0 - smoothstep(0.22, 0.42, length(fract(tc) - 0.5)));
+  c = mix(c, vec3(0.06, 0.18, 0.07) * (0.8 + 0.7 * smoothstep(0.7, 0.2, fract(tc).y)), tree);
+  c *= mix(1.12, 0.88, smoothstep(0.0, 0.1, deep));
+  if (k < 1.5) c *= vec3(1.1, 1.05, 0.86);
   c = beesShade(c, 0.0);
   c += beesSun * vec3(0.6, 0.45, 0.15) * 0.2 * (1.0 - smoothstep(0.0, 0.012, deep));
+  c = mix(vec3(dot(c, LUMA)), c, 1.4 - 0.2 * k);
   return mix(c, haze, hazeAmt);
 }
 
@@ -437,39 +439,44 @@ float beesPatchDensity(int i, vec2 p) {
   return 1.0 - smoothstep(0.5, 1.0, length(q) + 0.3 * (vnoise(p * vec2(7.0, 24.0) + float(i) * 5.3 + beesSeed) - 0.5));
 }
 
-// Lavender: rounded bushes in rows that run away to the horizon, a bush every 0.75 m along a row and a
-// row every 1.2 m, each a dome with a textured top of flower spikes, shaded round, grey-green stems at its
-// foot, the rows' soil between. A pixel can lie on bushes of up to six rows (the dome is taller than the
-// rows are apart), nearest on top.
-void beesLavender(int pi, vec2 p, float gust, inout vec3 col) {
+// Lavender: six long narrow rows of rounded mounds running away from the viewer to the horizon, so they
+// converge in perspective, with lanes of soil and grass between them. Each row is a string of low domes
+// (the slices 0.3 m apart along it overlap into one ridge), lit on the side toward the sun and shaded on
+// the other, its top textured with flower spikes, grey-green foliage at its foot. A pixel can lie on the
+// slices of up to eight depths, nearest on top.
+void beesLavender(vec2 p, float gust, inout vec3 col) {
+  if (p.x > 0.0 || p.y > 0.34) return;
+  float x0 = -6.2;
+  float pitch = 0.8;
   float dy = max(BEES_YH - p.y, 0.03);
-  float jTop = floor(BEES_CAM / dy / 0.75);
-  for (int m = 0; m < 6; m++) {
+  float Zp = BEES_CAM / dy;
+  float Xp = p.x * Zp;
+  float lane = step(x0 - 0.5 * pitch, Xp) * step(Xp, x0 + 5.5 * pitch) * step(Zp, 9.2);
+  vec3 soil = beesShade(vec3(0.58, 0.46, 0.28) * (0.85 + 0.3 * hash12(floor(vec2(Xp, Zp) * 7.0))), 0.0);
+  col = mix(col, soil, 0.55 * lane);
+  float jTop = floor(Zp / 0.3);
+  for (int m = 0; m < 8; m++) {
     float j = jTop - float(m);
-    if (j < 2.0) break;
-    float Z = j * 0.75;
+    float Z = j * 0.3;
+    if (Z < 2.0) break;
     float S = 1.0 / Z;
     float yb = BEES_YH - BEES_CAM / Z;
-    float i = floor(p.x * Z / 1.2 + 0.5);
-    vec2 h = hash22(vec2(i, j + beesSeed));
-    if (h.x < 0.06) continue;
-    float sc = 0.85 + 0.35 * hash12(vec2(i + 5.0, j));
-    vec2 r = vec2(0.44, 0.36) * S * sc;
-    vec2 c = vec2((i * 1.2 + (h.y - 0.5) * 0.12) * S, yb + 0.2 * S * sc);
+    float fi = floor((p.x * Z - x0) / pitch + 0.5);
+    if (fi < 0.0 || fi > 5.0) continue;
+    if (Z > 7.2 + 1.8 * hash12(vec2(fi, 3.0 + beesSeed))) continue;
+    float lump = 0.8 + 0.4 * vnoise1(Z * 1.4 + fi * 9.0 + beesSeed, 7.0).x;
+    vec2 r = vec2(0.24, 0.17) * S * lump;
+    vec2 c = vec2((x0 + fi * pitch) * S, yb + 0.07 * S * lump);
     vec2 q = (p - c) / r;
-    float e = length(q) + 0.12 * (vnoise(q * vec2(4.0, 3.0) + h * 20.0) - 0.5);
-    if (e > 1.0 || p.y < yb - 0.03 * S) continue;
-    if (beesPatchCover(pi, vec2(c.x, yb + 0.15 * S)) < 0.3 + 0.35 * h.x) continue;
+    float e = length(q) + 0.1 * (vnoise(vec2(q.x * 5.0, Z * 3.0 + fi * 5.0)) - 0.5);
+    if (e > 1.0 || p.y < yb - 0.02 * S) continue;
     if (hardFill((e - 1.0) * r.y, beesAa) < 0.5) continue;
-    float lit = 0.5 + 0.5 * clamp(q.x * beesSunX * 1.3 + q.y * 0.8, -1.0, 1.0);
-    vec3 deep = mix(vec3(0.24, 0.14, 0.46), vec3(0.20, 0.17, 0.50), h.y);
-    vec3 bright = mix(vec3(0.74, 0.56, 0.95), vec3(0.62, 0.52, 0.98), h.x);
-    bright = mix(bright, vec3(0.86, 0.58, 0.88), 0.25 * step(0.8, h.y));
-    float fineOk = smoothstep(14.0, 30.0, r.y / beesAa);
-    float tex = (hash12(floor(vec2(q.x * 9.0, q.y * 7.0) + h * 40.0)) - 0.5) * 0.5 * fineOk * smoothstep(-0.3, 0.2, q.y);
-    vec3 c3 = mix(deep, bright, clamp(lit * 0.85 + 0.25 * gust + tex, 0.0, 1.0));
-    c3 = mix(c3, vec3(0.26, 0.34, 0.2), smoothfall(-0.1, -0.7, q.y) * 0.75);
-    col = beesShade(c3, q.x * 0.7) + beesGlow(c3, 0.5 * smoothstep(0.7, 1.0, e) * max(lit, 0.3));
+    float lit = 0.5 + 0.5 * clamp(q.x * beesSunX * 1.4 + q.y * 0.7, -1.0, 1.0);
+    float fineOk = smoothstep(5.0, 12.0, r.x / beesAa);
+    float tex = (hash12(floor(vec2(q.x * 6.0, q.y * 4.0 + Z * 5.0) + fi * 13.0)) - 0.5) * 0.6 * fineOk * smoothstep(-0.2, 0.3, q.y);
+    vec3 c3 = mix(vec3(0.26, 0.16, 0.48), vec3(0.72, 0.54, 0.95), clamp(lit * 0.9 + 0.2 * gust + tex, 0.0, 1.0));
+    c3 = mix(c3, vec3(0.34, 0.40, 0.30), smoothfall(-0.15, -0.6, q.y) * 0.8);
+    col = beesShade(c3, q.x * 0.7) + beesGlow(c3, 0.5 * smoothstep(0.6, 1.0, e) * max(lit, 0.3));
   }
 }
 
@@ -502,7 +509,7 @@ void beesBlooms(int pi, int kind, vec2 p, float gust, float tm, inout vec3 col) 
       vec2 d = p - ctr - vec2(sway, 0.0);
       float dist = length(d);
       if (dist > rr * 1.15) continue;
-      float dens = beesPatchDensity(pi, ctr) * (0.2 + 0.95 * smoothstep(0.3, 0.62, vnoise(ctr * vec2(11.0, 38.0) + seed)));
+      float dens = beesPatchDensity(pi, ctr) * (0.1 + 0.9 * smoothstep(0.35, 0.7, vnoise(ctr * vec2(11.0, 38.0) + seed)));
       if (h2.x > dens) continue;
       int ke = kind;
       float hm = hash12(vec2(ci, k) + 51.0);
@@ -514,9 +521,9 @@ void beesBlooms(int pi, int kind, vec2 p, float gust, float tm, inout vec3 col) 
       float coreR = 0.0;
       if (ke == BEES_POPPY) {
         edge = 0.9 + 0.1 * cos(4.0 * th + ph);
-        petal = mix(vec3(0.88, 0.12, 0.06), vec3(0.98, 0.38, 0.10), h.y);
+        petal = mix(vec3(1.0, 0.16, 0.08), vec3(1.0, 0.42, 0.10), h.y);
         core = vec3(0.10, 0.05, 0.06);
-        coreR = 0.26;
+        coreR = 0.2;
       } else if (ke == BEES_DAISY) {
         edge = 0.82 + 0.18 * cos(9.0 * th + ph);
         petal = vec3(0.97, 0.96, 0.90);
@@ -531,33 +538,32 @@ void beesBlooms(int pi, int kind, vec2 p, float gust, float tm, inout vec3 col) 
         petal = hm < 0.3 ? vec3(0.98, 0.82, 0.16) : hm < 0.55 ? vec3(0.45, 0.50, 0.90) : hm < 0.8 ? vec3(0.95, 0.55, 0.70) : vec3(0.98, 0.95, 0.85);
       }
       if (hardFill(dist - rr * edge, beesAa * 0.8) < 0.5) continue;
-      vec3 c = beesShade(petal, d.x / rr) + beesGlow(petal, 0.55 * smoothstep(0.5, 1.0, dist / rr));
-      if (coreR > 0.0 && rr / beesAa > 2.0) c = mix(c, beesShade(core, 0.0), hardFill(dist - rr * coreR, beesAa * 0.8));
+      vec3 c = mix(beesShade(petal, d.x / rr), petal, 0.4) + beesGlow(petal, 0.55 * smoothstep(0.5, 1.0, dist / rr));
+      if (coreR > 0.0 && rr / beesAa > 3.5) c = mix(c, beesShade(core, 0.0), hardFill(dist - rr * coreR, beesAa * 0.8));
       col = c;
     }
   }
 }
 
 void beesPatch(int i, vec2 p, float gust, float tm, inout vec3 col) {
-  float cov = beesPatchCover(i, p);
-  if (cov <= 0.0) return;
   int kind = BEES_PATCH_KIND[i];
   if (kind == BEES_LAVENDER) {
-    // The rows' soil, then the bushes.
-    col = mix(col, beesShade(vec3(0.50, 0.40, 0.24), 0.0), hardEdge(cov * 0.9) * 0.6);
-    beesLavender(i, p, gust, col);
+    beesLavender(p, gust, col);
     return;
   }
+  float cov = beesPatchCover(i, p);
+  if (cov <= 0.0) return;
   float seed = float(i) * 13.7 + beesSeed;
   float clump = smoothstep(0.3, 0.65, vnoise(p * vec2(11.0, 38.0) + seed));
-  vec3 lush = beesShade(vec3(0.20, 0.38, 0.09) * (1.0 + 0.2 * gust), 0.0);
-  col = mix(col, lush, hardEdge(cov * 0.7) * 0.5);
-  // A mass of the drift's colour under the blooms, broken by the clumps; far away the blooms are less
-  // than a cell and the drift is only this tint.
+  vec3 lush = beesShade(vec3(0.18, 0.42, 0.08) * (1.0 + 0.2 * gust), 0.0);
+  col = mix(col, lush, hardEdge(cov * 0.7) * 0.6);
+  // A faint mass of the drift's colour under the blooms (none under poppies, which stay red on green),
+  // broken by the clumps; far away the blooms are less than a cell and the drift is then only this tint.
   float dk = max(BEES_YH - p.y, 0.02);
   float rcFar = 0.33 * 0.1 * dk / beesAa;
-  vec3 tintCol = kind == BEES_POPPY ? vec3(0.8, 0.22, 0.12) : kind == BEES_DAISY ? vec3(0.9, 0.88, 0.72) : kind == BEES_COSMOS ? vec3(0.9, 0.5, 0.68) : vec3(0.85, 0.75, 0.45);
-  float mass = hardEdge(cov * (0.2 + 0.8 * clump)) * (0.3 + 0.35 * (1.0 - smoothstep(1.0, 2.5, rcFar)));
+  float far = 1.0 - smoothstep(1.0, 2.5, rcFar);
+  vec3 tintCol = kind == BEES_POPPY ? vec3(0.9, 0.18, 0.1) : kind == BEES_DAISY ? vec3(0.9, 0.88, 0.72) : kind == BEES_COSMOS ? vec3(0.9, 0.5, 0.68) : vec3(0.85, 0.75, 0.45);
+  float mass = hardEdge(cov * (0.2 + 0.8 * clump)) * ((kind == BEES_POPPY ? 0.0 : 0.1) + 0.4 * far);
   col = mix(col, beesShade(tintCol, 0.0), mass);
   beesBlooms(i, kind, p, gust, tm, col);
 }
@@ -622,6 +628,15 @@ void beesTree(int t, vec2 p, inout vec3 col) {
   if (ah.x > 0.975) {
     float apple = hardFill((length(fract(ap) - (0.5 + (ah - 0.5) * 0.5)) / 2.3 - 0.09) * S, beesAa);
     c = mix(c, beesShade(vec3(0.75, 0.2, 0.08), nxl) + beesGlow(vec3(0.75, 0.2, 0.08), 0.3), apple);
+  }
+  // Apple blossom clusters in the sunlit upper crowns of the two orchard trees the bees visit.
+  if (seed > 5.0 && seed < 13.0) {
+    vec2 bg = q * 3.4;
+    vec2 bh = hash22(floor(bg) + seed * 3.0);
+    float bd = length(fract(bg) - (0.5 + (bh - 0.5) * 0.5)) / 3.4;
+    float bl = step(0.62, bh.x) * hardEdge((1.0 - smoothstep(0.11, 0.17, bd)) * smoothstep(0.15, 0.5, l));
+    vec3 pink = mix(vec3(0.99, 0.90, 0.93), vec3(0.95, 0.62, 0.74), bh.y);
+    c = mix(c, beesShade(pink, nxl) + beesGlow(pink, 0.4), bl);
   }
   col = c;
 }
@@ -811,10 +826,10 @@ void beesBlades(vec2 p, float tm, inout vec3 col) {
 // What the simulation's cell map holds: a bee (near-black, a golden back cell with pollen), the pale
 // glint of its wing, the dotted line it leaves in the air, a butterfly's wings and body.
 vec3 beesSpeck(int code, vec3 under) {
-  if (code == BEES_C_BEE) return vec3(0.09, 0.05, 0.02);
+  if (code == BEES_C_BEE) return vec3(0.05, 0.03, 0.02);
   if (code == BEES_C_LOADED) return vec3(1.0, 0.75, 0.10);
-  if (code == BEES_C_WING) return mix(under, vec3(1.0, 0.98, 0.88), 0.92);
-  if (code == BEES_C_TRAIL) return mix(under, vec3(0.1, 0.06, 0.03), 0.55);
+  if (code == BEES_C_WING) return mix(under, vec3(1.0, 1.0, 0.94), 0.95);
+  if (code == BEES_C_TRAIL) return mix(under, vec3(0.05, 0.03, 0.02), 0.5);
   if (code == BEES_C_BODY) return vec3(0.12, 0.08, 0.06);
   if (code == BEES_C_ORANGE) return vec3(1.0, 0.55, 0.05);
   if (code == BEES_C_WHITE) return vec3(1.0, 1.0, 0.97);
@@ -862,9 +877,9 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
 
   // Sky and hills, far to near, then the ground of the garden.
   if (y >= y3) col = beesSky(p, dir, sky, tm);
-  else if (y >= y2) col = beesHill(p, y3, 3.0, hazeB, 0.66);
-  else if (y >= y1) col = beesHill(p, y2, 2.0, hazeB, 0.42);
-  else if (y >= g) col = beesHill(p, y1, 1.0, haze, 0.18);
+  else if (y >= y2) col = beesHill(p, y3, 3.0, hazeB, 0.55);
+  else if (y >= y1) col = beesHill(p, y2, 2.0, hazeB, 0.3);
+  else if (y >= g) col = beesHill(p, y1, 1.0, haze, 0.08);
   if (y > 0.4 && y < 0.72) beesFar(p, tm, haze, hazeB, col);
 
   float dy = max(BEES_YH - y, 0.03);

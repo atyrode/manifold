@@ -76,6 +76,9 @@ export const BEES_POPPY = 1;
 export const BEES_DAISY = 2;
 export const BEES_WILD = 3;
 export const BEES_COSMOS = 4;
+/** Apple blossom in the orchard's crowns, and a meadow on the hill beyond the wall: flowers the foragers fly up to (the shader paints them as part of the trees and the hill). */
+export const BEES_BLOSSOM = 5;
+export const BEES_HILL = 6;
 
 export interface BeesPatch {
   f: number;
@@ -84,14 +87,22 @@ export interface BeesPatch {
   rx: number;
   ry: number;
   kind: number;
+  /** How often a forager (or butterfly, for the first BEES_GROUND_PATCHES) picks it. */
+  weight: number;
 }
 
+/** The first this many patches are drifts on the garden's ground; butterflies keep to them. */
+export const BEES_GROUND_PATCHES = 5;
+
 export const BEES_PATCHES: readonly BeesPatch[] = [
-  { f: -0.66, y: 0.2, rx: 0.3, ry: 0.1, kind: BEES_LAVENDER },
-  { f: 0.6, y: 0.15, rx: 0.32, ry: 0.09, kind: BEES_POPPY },
-  { f: 0.0, y: 0.095, rx: 0.26, ry: 0.06, kind: BEES_DAISY },
-  { f: -0.55, y: 0.348, rx: 0.4, ry: 0.022, kind: BEES_WILD },
-  { f: 0.72, y: 0.285, rx: 0.22, ry: 0.05, kind: BEES_COSMOS },
+  { f: -0.62, y: 0.17, rx: 0.32, ry: 0.1, kind: BEES_LAVENDER, weight: 0.3 },
+  { f: 0.6, y: 0.15, rx: 0.32, ry: 0.09, kind: BEES_POPPY, weight: 0.2 },
+  { f: 0.0, y: 0.095, rx: 0.26, ry: 0.06, kind: BEES_DAISY, weight: 0.12 },
+  { f: -0.55, y: 0.348, rx: 0.4, ry: 0.022, kind: BEES_WILD, weight: 0.06 },
+  { f: 0.72, y: 0.285, rx: 0.22, ry: 0.05, kind: BEES_COSMOS, weight: 0.08 },
+  { f: -0.22, y: 0.56, rx: 0.12, ry: 0.045, kind: BEES_BLOSSOM, weight: 0.1 },
+  { f: 0.2, y: 0.54, rx: 0.1, ry: 0.04, kind: BEES_BLOSSOM, weight: 0.08 },
+  { f: 0.45, y: 0.47, rx: 0.3, ry: 0.025, kind: BEES_HILL, weight: 0.08 },
 ];
 
 /** What a texel of uSim0 means (the byte value; 0 is nothing). */
@@ -219,8 +230,9 @@ function follow(drawn: number, v: number): number {
   return Math.abs(v - (drawn + 0.5)) <= 0.85 ? drawn : Math.floor(v);
 }
 
-const PATCH_WEIGHTS: readonly number[] = BEES_PATCHES.map((patch) => patch.rx * patch.ry);
+const PATCH_WEIGHTS: readonly number[] = BEES_PATCHES.map((patch) => patch.weight);
 const PATCH_WEIGHT_TOTAL = PATCH_WEIGHTS.reduce((sum, w) => sum + w, 0);
+const GROUND_WEIGHT_TOTAL = PATCH_WEIGHTS.slice(0, BEES_GROUND_PATCHES).reduce((sum, w) => sum + w, 0);
 
 class BeesSim implements SceneSim {
   readonly #knobs: KnobReader<BeesKnob>;
@@ -341,7 +353,7 @@ class BeesSim implements SceneSim {
       bee.newbie = rand.next() < 0.14;
       bee.pace = rand.range(0.9, 1.12);
       bee.phase = rand.next() * TAU;
-      bee.patch = this.#pickPatch();
+      bee.patch = this.#pickPatch(false);
     }
     for (const g of this.#butterflies) {
       if (!g.active) continue;
@@ -364,9 +376,11 @@ class BeesSim implements SceneSim {
     g.half = BEES_BOARD_HALF * s;
   }
 
-  #pickPatch(): number {
-    let pick = this.#random.next() * PATCH_WEIGHT_TOTAL;
+  /** A patch by weight: any, or (for butterflies) only a drift on the ground. */
+  #pickPatch(groundOnly: boolean): number {
+    let pick = this.#random.next() * (groundOnly ? GROUND_WEIGHT_TOTAL : PATCH_WEIGHT_TOTAL);
     for (const [i, w] of PATCH_WEIGHTS.entries()) {
+      if (groundOnly && i >= BEES_GROUND_PATCHES) break;
       pick -= w;
       if (pick <= 0) return i;
     }
@@ -455,7 +469,7 @@ class BeesSim implements SceneSim {
 
   #depart(b: Bee): void {
     const rand = this.#random;
-    if (rand.next() > 0.7) b.patch = this.#pickPatch();
+    if (rand.next() > 0.7) b.patch = this.#pickPatch(false);
     this.#flowerPoint(b.patch);
     b.tx = this.#pt.x;
     b.ty = this.#pt.y;
@@ -645,7 +659,7 @@ class BeesSim implements SceneSim {
     const rand = this.#random;
     g.wayLeft = rand.range(2.5, 5);
     if (mayPerch && g.quiet <= 0 && rand.next() < 0.45) {
-      g.patch = this.#pickPatch();
+      g.patch = this.#pickPatch(true);
       this.#flowerPoint(g.patch);
       g.tx = this.#pt.x;
       g.ty = this.#pt.y + 0.004;
@@ -655,7 +669,7 @@ class BeesSim implements SceneSim {
       return;
     }
     // Wander over the flowers, a little above them.
-    this.#flowerPoint(this.#pickPatch());
+    this.#flowerPoint(this.#pickPatch(true));
     g.tx = this.#pt.x + rand.range(-0.06, 0.06);
     g.ty = clamp(this.#pt.y + rand.range(0.03, 0.12), 0.1, 0.6);
   }
@@ -765,15 +779,15 @@ class BeesSim implements SceneSim {
         const s = ((b.trailHead - j + TRAIL_N) % TRAIL_N) * 2;
         const tx = Math.floor(((b.trail[s] ?? 0) * h + 0.5 * w) / u);
         const ty = Math.floor(((b.trail[s + 1] ?? 0) * h) / u);
-        if (Math.abs(tx - b.cx) > 1 || Math.abs(ty - b.cy) > 1) this.#plot(tx, ty, BEES_CODE.trail);
+        if (Math.abs(tx - b.cx - 1) > 3 || Math.abs(ty - b.cy) > 2) this.#plot(tx, ty, BEES_CODE.trail);
       }
     }
     for (const b of this.#bees) {
       if (b.mode === "inside") continue;
-      // A dark body two cells long (golden at the back when it carries pollen) and, in flight, a pale glint of wing above it.
-      this.#plot(b.cx, b.cy, BEES_CODE.bee);
-      this.#plot(b.cx + 1, b.cy, b.load > 0.5 ? BEES_CODE.beeLoaded : BEES_CODE.bee);
-      if (b.fly) this.#plot(b.cx, b.cy + 1, BEES_CODE.beeWing);
+      // A near-black body three cells long and two tall (golden at the back when it carries pollen) and, in flight, a bright glint of wing above it.
+      this.#block(b.cx, b.cy, 3, 2, BEES_CODE.bee);
+      if (b.load > 0.5) this.#block(b.cx + 2, b.cy, 1, 2, BEES_CODE.beeLoaded);
+      if (b.fly) this.#block(b.cx, b.cy + 2, 2, 1, BEES_CODE.beeWing);
     }
     for (const g of this.#butterflies) {
       if (!g.active) continue;
