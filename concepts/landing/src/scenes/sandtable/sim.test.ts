@@ -1,12 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { effective } from "../../params.ts";
-import type { SimFrame } from "../types.ts";
+import { HeadlessSim } from "../../sims/headless.ts";
 import { sandtableScene } from "./index.ts";
 import { SANDTABLE } from "./sim.ts";
 
 // The sim sends its machines' state every frame and the heights at most every 1000/30 ms. These
-// checks drive it at 60 Hz with a little jitter on a fake clock, through a WebGL stand-in that keeps
-// what each texture last received: what the shader would draw from. Knobs are as in the URL.
+// checks drive it at 60 Hz with a little jitter on a fake clock, on the headless stand-in, which
+// keeps what each texture last received: what the shader would draw from. Knobs are as in the URL.
 
 const realNow = performance.now.bind(performance);
 let clock = 0;
@@ -16,52 +15,19 @@ afterEach(() => {
 
 interface Table {
   frame(dt: number, next: boolean): void;
-  /** The heights and machine state as last uploaded. */
-  heights(): Float32Array | undefined;
-  state(): Float32Array;
+  /** The heights and machine state as last uploaded (the heights the same array until re-sent). */
+  heights(): Float32Array | Uint8Array;
+  state(): Float32Array | Uint8Array;
 }
 
 function table(knobs: Record<string, number>): Table {
-  const uploads = new Map<object, Float32Array>();
-  let bound: object | undefined;
-  const gl = new Proxy({} as Record<string, unknown>, {
-    get(_target, key: string) {
-      if (key === "createTexture") return () => ({});
-      if (key === "bindTexture") return (_unit: number, texture: object) => (bound = texture);
-      if (key === "texSubImage2D") return (...args: unknown[]) => bound && uploads.set(bound, Float32Array.from(args[8] as Float32Array));
-      if (/^[A-Z0-9_]+$/.test(key)) return 1;
-      return () => undefined;
-    },
-  }) as unknown as WebGL2RenderingContext;
-  const values = sandtableScene.params.map((p) => effective(p, knobs));
-  const sim = sandtableScene.sim?.(gl);
-  if (!sim) throw new Error("sandtable has no sim");
-  let textures: readonly (WebGLTexture | undefined)[] = [];
-  const fired = [false, false];
-  const frame = (dt: number, next: boolean): void => {
-    fired[0] = next;
-    const f: SimFrame = {
-      dt,
-      time: 0,
-      motionTime: 0,
-      motion: 1,
-      width: 960,
-      height: 540,
-      aspect: 16 / 9,
-      values,
-      params: {},
-      triggers: [],
-      fired,
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
-      parallax: { x: 0, y: 0 },
-      passage: { enter: 1, exit: 0 },
-    };
-    textures = sim.frame(f);
-  };
+  const sim = new HeadlessSim(sandtableScene);
   return {
-    frame,
-    heights: () => (textures[0] ? uploads.get(textures[0] as object) : undefined),
-    state: () => (textures[1] ? uploads.get(textures[1] as object) : undefined) ?? new Float32Array(12),
+    frame: (dt, next) => {
+      sim.step({ dt, knobs, now: next ? ["renew"] : [], pointer: { inside: false } });
+    },
+    heights: () => sim.upload(0).data,
+    state: () => sim.upload(1).data,
   };
 }
 
@@ -86,7 +52,7 @@ test("a fast ball never runs ahead of the groove the shader shows: its head stay
   // drawing and its rest the ball ploughs at some 0.88 field units a second.
   const ball = table({ speed: 4, pattern: 1 });
   let shownAt: [number, number] | undefined;
-  let shown: Float32Array | undefined;
+  let shown: Float32Array | Uint8Array | undefined;
   let worst = 0;
   let moving = 0;
   let last: [number, number] | undefined;
@@ -118,12 +84,11 @@ test("a fast wipe's edge and the funnel's stream never run ahead of the sand the
   let streamFrames = 0;
   let streamWorst = 0;
   let shownAt: [number, number] | undefined;
-  let shown: Float32Array | undefined;
+  let shown: Float32Array | Uint8Array | undefined;
   play([{ table: shownTable, offset: 0 }, { table: liveTable, offset: 1000 }], 15, (frame) => frame === 1, () => {
     const s = shownTable.state();
     const heights = shownTable.heights();
     const live = liveTable.heights();
-    if (!heights || !live) return;
     if (heights !== shown) {
       shown = heights;
       shownAt = [s[0] ?? 0, s[1] ?? 0];

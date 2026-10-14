@@ -42,13 +42,10 @@ export function verifyShanshui(gl: WebGL2RenderingContext): Record<string, unkno
   const frame = { knobs, aspect: WIDTH / HEIGHT, height: HEIGHT };
   // Screen heights a second of the fastest scroll unrolls, measured on the sim itself.
   const probe = new HeadlessSim(shanshuiScene);
-  const scrollOf = (state: unknown): number => {
-    const s = state as Float32Array;
-    return (s[0] ?? 0) * 32 + ((s[1] ?? 0) + (s[2] ?? 0)) / 64;
-  };
+  const scrollOf = (s: ArrayLike<number>): number => (s[0] ?? 0) * 32 + ((s[1] ?? 0) + (s[2] ?? 0)) / 64;
   probe.step(frame);
-  const start = scrollOf(probe.step({ ...frame, dt: 1 })[0]);
-  const pace = scrollOf(probe.step({ ...frame, dt: 1 })[0]) - start;
+  const start = scrollOf(probe.step({ ...frame, dt: 1 }).upload(0).data);
+  const pace = scrollOf(probe.step({ ...frame, dt: 1 }).upload(0).data) - start;
 
   const program = compile(gl);
   const sim = new HeadlessSim(shanshuiScene, gl);

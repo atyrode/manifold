@@ -1,12 +1,10 @@
 // Real-WebGL check of the dew web's bin lists: on a small frame, where the hub's bins need more than
 // one page, the shader's reader (binListsGlsl, through the dew program and the sim's header pages)
 // must walk exactly the lists the sim built, page after page. The expected lists come from a twin
-// of the same sim run on a HeadlessGl, which keeps its uploads.
-import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
+// of the same sim run on the headless stand-in context, which keeps its uploads.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { BIN_PAGE } from "../../sims/bins.ts";
-import { HeadlessGl } from "../../sims/headless.ts";
-import type { SimFrame } from "../types.ts";
+import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { dewScene } from "./index.ts";
 
 function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
@@ -29,40 +27,16 @@ function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 }
 
 export function verifyDewBins(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const params = paramDefaults("dew");
-  const frame = (): SimFrame => ({
-    dt: 1 / 30,
-    time: 0,
-    motionTime: 0,
-    motion: 1,
-    width: 480,
-    height: 270,
-    aspect: 480 / 270,
-    params,
-    values: renderSettings(defaultsFor("dew"), params).params,
-    triggers: new Array<number>(8).fill(-1e4),
-    fired: new Array<boolean>(8).fill(false),
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
-    passage: { enter: 1, exit: 0 },
-  });
-  const headless = new HeadlessGl();
-  const twin = dewScene.sim?.(headless.gl);
-  const sim = dewScene.sim?.(gl);
-  if (!twin || !sim) throw new Error("dew bins: no sim");
-  const real = frame();
-  const copy = frame();
+  const frame: HeadlessFrame = { dt: 1 / 30, aspect: 480 / 270, height: 270, pointer: { inside: false } };
+  const twin = new HeadlessSim(dewScene);
+  const sim = new HeadlessSim(dewScene, gl);
   let textures: readonly (WebGLTexture | undefined)[] = [];
-  let expected: readonly (WebGLTexture | undefined)[] = [];
   for (let f = 0; f < 30; f++) {
-    for (const each of [real, copy]) {
-      each.time += each.dt;
-      each.motionTime += each.dt;
-    }
-    textures = sim.frame(real);
-    expected = twin.frame(copy);
+    textures = sim.frame(frame);
+    twin.step(frame);
   }
-  const lists = headless.upload(expected[1]);
-  const pages = Math.max(1, Math.round(headless.upload(expected[3]).data[10] ?? 0));
+  const lists = twin.upload(1);
+  const pages = Math.max(1, Math.round(twin.upload(3).data[10] ?? 0));
   const rows = lists.width / BIN_PAGE;
   const cols = lists.height / pages;
 

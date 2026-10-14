@@ -1,39 +1,14 @@
 import { expect, test } from "bun:test";
 import { BIN_PAGE } from "../../sims/bins.ts";
-import { HeadlessGl, type HeadlessUpload } from "../../sims/headless.ts";
-import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import type { SimFrame } from "../types.ts";
+import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
 import { dewScene } from "./index.ts";
 import { DEW_CODE, DEW_KIND_SPOKE, DEW_SEG_ROW, DEW_SEG_TEXELS } from "./sim.ts";
 
 /** The dew sim's textures after it has run a second at this frame size and web seed. */
 function run(width: number, height: number, webSeed: number): { segments: HeadlessUpload; lists: HeadlessUpload; header: HeadlessUpload } {
-  const headless = new HeadlessGl();
-  const sim = dewScene.sim?.(headless.gl);
-  if (!sim) throw new Error("dew has no sim");
-  const params = { ...paramDefaults("dew"), webSeed };
-  const frame: SimFrame = {
-    dt: 1 / 30,
-    time: 0,
-    motionTime: 0,
-    motion: 1,
-    width,
-    height,
-    aspect: width / height,
-    params,
-    values: renderSettings(defaultsFor("dew"), params).params,
-    triggers: new Array<number>(8).fill(-1e4),
-    fired: new Array<boolean>(8).fill(false),
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
-    passage: { enter: 1, exit: 0 },
-  };
-  let textures: readonly (WebGLTexture | undefined)[] = [];
-  for (let f = 0; f < 30; f++) {
-    frame.time += frame.dt;
-    frame.motionTime += frame.dt;
-    textures = sim.frame(frame);
-  }
-  return { segments: headless.upload(textures[0]), lists: headless.upload(textures[1]), header: headless.upload(textures[3]) };
+  const sim = new HeadlessSim(dewScene);
+  for (let f = 0; f < 30; f++) sim.step({ dt: 1 / 30, aspect: width / height, height, knobs: { webSeed }, pointer: { inside: false } });
+  return { segments: sim.upload(0), lists: sim.upload(1), header: sim.upload(3) };
 }
 
 /** Whether the segment a–b crosses the square [x0, x0 + size] × [y0, y0 + size] (Liang–Barsky). */

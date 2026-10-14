@@ -364,8 +364,12 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `separateDiscs` (`discs.ts`): after an integration step, moves apart bodies that touch as discs on
   a plane and have sunk into one another past a given share, a limited distance per step, coincident
   ones included; for soft-contact crowds (lanterns).
-- `HeadlessGl` (`headless.ts`): a stand-in context for `bun test` that runs a CPU sim's
-  `DataTexture`s and keeps each texture's last upload, to check what the shader would receive.
+- `HeadlessSim` and `HeadlessGl` (`headless.ts`): the one harness for sim regressions. `HeadlessGl`
+  is a stand-in context that takes a sim's `DataTexture` calls and keeps each texture's size and last
+  upload (anything else throws, naming the call); `HeadlessSim` drives a scene's real sim on it (or
+  on a real context) with frames built as the renderer builds them: knobs read as from a URL, "now"
+  presses by knob, pointer, passage. `step(frame).upload(slot)` is what the shader would sample.
+  Tests use it rather than a stand-in context of their own (dew, fractal, sand table, prism...).
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and

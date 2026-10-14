@@ -1,28 +1,8 @@
 import { expect, test } from "bun:test";
-import { effective } from "../../params.ts";
-import type { PointerState, SimFrame } from "../types.ts";
+import { HeadlessSim } from "../../sims/headless.ts";
+import type { PointerState } from "../types.ts";
 import { forestScene } from "./index.ts";
 import { FOREST_SPIRITS } from "./sim.ts";
-
-/** A WebGL2 stand-in that keeps the last data uploaded into each texture: the spirits' row is what the shader reads. */
-function recordingGl(): { gl: WebGL2RenderingContext; uploads: Map<object, Float32Array> } {
-  let bound: object | undefined;
-  const uploads = new Map<object, Float32Array>();
-  const gl = new Proxy({}, {
-    get(_, key) {
-      if (typeof key === "string" && /^[A-Z0-9_]+$/.test(key)) return key.length;
-      if (key === "createTexture") return () => ({});
-      if (key === "bindTexture") return (_target: number, texture: object) => (bound = texture);
-      if (key === "texSubImage2D") {
-        return (...args: unknown[]) => {
-          if (bound && args[8] instanceof Float32Array) uploads.set(bound, args[8].slice());
-        };
-      }
-      return () => undefined;
-    },
-  });
-  return { gl: gl as WebGL2RenderingContext, uploads };
-}
 
 interface SpiritRow {
   x: number;
@@ -39,27 +19,15 @@ interface SpiritRow {
  * for a second, then leaves. Returns that spirit's row as the shader sees it, near and after.
  */
 function approach(shy: number): { near: SpiritRow; away: SpiritRow[] } {
-  const { gl, uploads } = recordingGl();
-  const knobs: Record<string, number> = { shy };
-  const values = forestScene.params.map((def) => effective(def, knobs));
-  const sim = forestScene.sim?.(gl);
-  if (!sim) throw new Error("forest has no sim");
+  const sim = new HeadlessSim(forestScene);
   const aspect = 16 / 9;
   const pointer: PointerState = { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false };
-  let time = 0;
-  let texture: object | undefined;
   const step = (): void => {
-    const dt = 1 / 60;
-    time += dt;
-    const frame: SimFrame = {
-      dt, time, motionTime: time, motion: 1, width: 640, height: 360, aspect, values, params: knobs,
-      triggers: new Array<number>(8).fill(-1e4), fired: new Array<boolean>(8).fill(false), pointer, passage: { enter: 1, exit: 0 },
-    };
-    texture = sim.frame(frame)[0] ?? undefined;
+    sim.step({ aspect, height: 360, knobs: { shy }, pointer });
   };
+  // The spirits' row (uSim0) as last uploaded.
   const row = (i: number): SpiritRow => {
-    const data = texture ? uploads.get(texture) : undefined;
-    if (!data) throw new Error("no spirits uploaded");
+    const data = sim.upload(0).data;
     const o = i * 12;
     return { x: data[o] ?? 0, y: data[o + 1] ?? 0, z: data[o + 2] ?? 1, alpha: data[o + 3] ?? 0, yaw: data[o + 5] ?? 0, sink: data[o + 8] ?? 0, size: data[o + 9] ?? 0 };
   };

@@ -4,7 +4,7 @@ import { HYPERBOLIC_MODELS } from "./sim.ts";
 import { hyperbolicScene } from "./index.ts";
 
 // The state row's first two texels: screen disk → plane (coarse, then fine).
-const motionOf = (state: unknown): number[] => Array.from((state as Float32Array).subarray(0, 8));
+const motionOf = (sim: HeadlessSim): number[] => Array.from(sim.upload(0).data.subarray(0, 8));
 
 // With the glide at rest the plane only moves when the hand moves it: a drag held still while the
 // screen turns or the map changes must neither jump the plane nor fling it off once let go.
@@ -23,14 +23,14 @@ for (const change of changes) {
     for (let i = 0; i < 10; i++) sim.step({ knobs });
     sim.step({ knobs, pointer: { ...at, pressed: true } });
     for (let i = 0; i < 20; i++) sim.step({ knobs, pointer: at });
-    const held = motionOf(sim.step({ knobs, pointer: at })[0]);
+    const held = motionOf(sim.step({ knobs, pointer: at }));
 
     const after = { aspect: change.aspect, knobs: { ...knobs, model: HYPERBOLIC_MODELS.indexOf(change.model) } };
-    expect(motionOf(sim.step({ ...after, pointer: at })[0])).toEqual(held);
+    expect(motionOf(sim.step({ ...after, pointer: at }))).toEqual(held);
     sim.step({ ...after, pointer: at });
     sim.step({ ...after, pointer: { ...at, down: false, released: true } });
     for (let i = 0; i < 120; i++) sim.step(after);
-    expect(motionOf(sim.step(after)[0])).toEqual(held);
+    expect(motionOf(sim.step(after))).toEqual(held);
   });
 }
 
@@ -39,8 +39,8 @@ test("after a change mid-drag the plane still follows the hand", () => {
   const knobs = { speed: 0 };
   const at = { x: 0.62, y: 0.58, inside: true, down: true };
   sim.step({ knobs, pointer: { ...at, pressed: true } });
-  const held = motionOf(sim.step({ knobs, pointer: at })[0]);
+  const held = motionOf(sim.step({ knobs, pointer: at }));
   sim.step({ knobs, aspect: 9 / 16, pointer: at });
-  const moved = motionOf(sim.step({ knobs, aspect: 9 / 16, pointer: { ...at, x: 0.45 } })[0]);
+  const moved = motionOf(sim.step({ knobs, aspect: 9 / 16, pointer: { ...at, x: 0.45 } }));
   expect(moved).not.toEqual(held);
 });
