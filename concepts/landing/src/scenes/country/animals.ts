@@ -65,12 +65,6 @@ mat2 countryFieldWarp(vec2 f0, out vec2 f) {
   return mat2(1.0 + 0.275 * a.y, 0.275 * b.y, 0.275 * a.z, 1.0 + 0.275 * b.z);
 }
 
-// countryDown inverted: the screen drop below the crest of ground v (world) down a ridge at depth d.
-float countryDrop(float v, float d) {
-  float r = max(v, 0.0) / (d * COUNTRY_SLOPE) + sqrt(COUNTRY_ROUND);
-  return r * r - COUNTRY_ROUND;
-}
-
 // The down-slope rate over the depth (countryDownRate / d) at ground v down a ridge at depth d.
 float countryFore(float v, float d) {
   return 0.5 * COUNTRY_SLOPE / sqrt(countryDrop(v, d) + COUNTRY_ROUND);

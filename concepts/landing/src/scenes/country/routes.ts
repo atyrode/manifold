@@ -45,12 +45,6 @@ const int COUNTRY_PARTIES = 6;         // walking parties at most, one to three 
 const int COUNTRY_CARTS = 3;           // carts at most
 const int COUNTRY_AGENTS = 9;          // parties and carts: every pixel's whole candidate set
 
-// The drop below the crest (screen) at down-slope distance v: countryDown inverted, for v >= 0.
-float countryDrop(float v, float d) {
-  float r = v / (d * COUNTRY_SLOPE) + sqrt(COUNTRY_ROUND);
-  return r * r - COUNTRY_ROUND;
-}
-
 // The depth of the ground at drop s below the crest of a ridge at depth d, as sceneCountry has it:
 // the face comes toward us below the crest.
 float countryFaceDepth(float s, float d) {

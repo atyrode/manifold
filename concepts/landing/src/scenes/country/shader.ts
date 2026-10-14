@@ -170,6 +170,11 @@ float countryDown(float s, float d) {
 float countryDownRate(float s, float d) {
   return d * COUNTRY_SLOPE * 0.5 / sqrt(max(s, 0.0) + COUNTRY_ROUND);
 }
+// countryDown inverted: the screen drop below the crest of ground v (world) down a ridge at depth d.
+float countryDrop(float v, float d) {
+  float r = max(v, 0.0) / (d * COUNTRY_SLOPE) + sqrt(COUNTRY_ROUND);
+  return r * r - COUNTRY_ROUND;
+}
 
 // Field space for ridge i: slope coordinates in fields, offset per ridge and domain-warped so the
 // borders wander like old enclosures.
