@@ -284,7 +284,7 @@ export const manifest: PluginManifest = {
     //            (default 1). core.shell seats its two at 0.22 and 0.78, which is the
     //            classical workspace; declare a seat and yours appears in a fresh
     //            workspace without anybody editing the floor (ADR 0017 §3).
-    sections: [], // { id, title, order, presentation?, cluster? } — a sidebar row; presentation
+    sections: [], // { id, title, order, presentation?, cluster?, setting?, defaultOpen? } — a sidebar row; presentation
     //            is "disclosure" (default: a titled block that folds) or "plain" (you draw the
     //            whole row). `cluster` is a bare word: rows sharing it paint side by side as one
     //            unit at the earliest member's place. One registry, one reader-arranged order.
@@ -1450,7 +1450,7 @@ their work invisible without deleting it, which is the one outcome worse than a 
   of two presentations — `"disclosure"` (the default: a titled, collapsible block) or
   `"plain"` (a row that draws itself end to end). There is no user-visible section-order
   setting to read and no hardcoded section list to edit; the manifests _are_ the order. `plain`
-  is why the rail has no floor JSX left: the brand line, the three creators, the status line,
+  is why the rail has no floor JSX left: the brand line, the creation control, the status line,
   the key table's opener and the identity footer are all ordinary rows now. See "Contributing a
   plain row" below.
   A row may also declare **`cluster`**, a bare word: rows that declare the SAME word paint side
@@ -1468,6 +1468,28 @@ their work invisible without deleting it, which is the one outcome worse than a 
   from their sidebar. Assembly refuses a `setting` your manifest does not contribute, naming
   both, and a row may never name another plugin's — a preference of theirs erasing a row of
   yours is exactly the shadowing D5 refuses one level up. Absent ≡ unconditional.
+  A disclosure row may also declare **`defaultOpen: true`**: it starts unfolded for a reader who
+  has never folded it. Every other disclosure starts folded, so a rail opens on the list a reader
+  came for (`core.index` declares it for Index). Once a reader folds or unfolds a row, that
+  choice is remembered on their device and outranks the declaration. Absent ≡ folded.
+- **`creators`** are offers to make something, listed in the shell's one draft entry: "+ New…"
+  opens an unsaved row with a name field, a Create button and every creator's title listed under
+  it. Create and Enter run the same action, using the default name when the field is empty. A creator
+  is DATA — `{ id, title, icon, order, action, input?, nameInput?, setting? }` — and you
+  register no component for it, so a hardened plugin offers one exactly as a trusted one does.
+  `title` names the THING ("Canvas"), not the act: the shell owns the verb and lists titles
+  alone. `icon` is one of the closed `creatorIcons` in `GET /api/protocol`'s vocabulary;
+  `action` is a FULL action name, yours or another plugin's (`core.canvas` offers
+  `core.index.createContainer`), and `input` is the fixed JSON object it runs with (at most
+  `maxCreatorInputBytes`, absent ≡ `{}`). `nameInput` names the string property of `input` that
+  carries the made thing's name: the reader's typed name replaces it, and its declared value is
+  the default an empty field creates with (`{ name: "Untitled", … }`, `nameInput: "name"`).
+  Without it the draft shows your title instead of a field. The shell runs the chosen entry as
+  the principal who pressed — naming another plugin's door grants nothing — shows a refusal as
+  a notice while keeping the draft, and lands the presser in a container the answer names
+  (`{ container }`). Ids are claimed globally; `setting` gates the entry exactly as it gates a
+  section, and a disabled plugin's entries are absent. Assembly refuses an action nothing
+  assembled declares, naming both. Absent ≡ you offer nothing.
 - **`settings`** declare `{ id, title, kind, default, scope? }`. Kinds are `boolean` (a switch)
   and `enum` (a select). An enum adds `values: [{ id, title }]`: one to 32 choices with unique,
   non-empty ids; `default` must name one. Invalid choices refuse manifest admission with
@@ -3081,59 +3103,43 @@ format.
 
 ### Contributing a plain row
 
-A `plain` row is the shape for anything in the rail that is not a collapsible block: a creator,
-a status line, a footer. It is an ORDINARY contribution — same registry, same per-principal
+A `plain` row is the shape for anything in the rail that is not a collapsible block: a status
+line, a footer, a control. It is an ORDINARY contribution — same registry, same per-principal
 arrangement, same D4′ placeholder — and the only difference from a disclosure section is that
-the stack wraps it in nothing and it draws itself end to end. Three pieces, and the third is
-one line:
+the stack wraps it in nothing and it draws itself end to end. (An offer to CREATE something is
+not a row at all: declare a `creators` entry and the shell's draft entry lists it.) Three pieces,
+and the third is one line:
 
 ```ts
 // 1. the manifest row: `presentation` says how it draws, `order` says where it sits
 contributes: {
-  sections: [{ id: "new-canvas", title: "New canvas", order: 2, presentation: "plain" }],
+  sections: [{ id: "sync-state", title: "Sync", order: 45, presentation: "plain" }],
 }
 ```
 
 ```tsx
 // 2. the component — reached like any other section, so it takes `SectionProps`
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
-import { ControlIcon } from "@manifold/ui";
 
-export function NewCanvasRow() {
+export function SyncStateRow() {
   // The rail's WIDTH is the host's fact, and the one thing a row usually needs from it:
   // collapsed to icons there is no room for a label. Read it here — never keep a second copy.
-  const { createContainer, creating, setSidebarOpen, sidebarOpen } = useWorkspaceShell();
-  return (
-    <button
-      className="sidebar-new"
-      type="button"
-      data-action="core.index.createContainer"
-      title="New canvas"
-      aria-label="New canvas"
-      onClick={() => {
-        if (!sidebarOpen) setSidebarOpen(true);
-        createContainer("canvas");
-      }}
-      disabled={creating}
-    >
-      <ControlIcon kind="add" />
-      {sidebarOpen ? <span>New canvas</span> : null}
-    </button>
-  );
+  const { sidebarOpen } = useWorkspaceShell();
+  if (!sidebarOpen) return null;
+  return <p className="plugin-example_sync__state">All changes synced</p>;
 }
 ```
 
 ```ts
 // 3. the registration, in the web package's assembly.ts — the same map a disclosure uses
-export const canvasWebPlugin = { id: "core.canvas", sections: { "new-canvas": NewCanvasRow } };
+export const syncWebPlugin = { id: "example.sync", sections: { "sync-state": SyncStateRow } };
 ```
 
 Four rules the shipped rows follow, and the reasons:
 
-- **Own your own state.** A row that opens a form (`core.index.new-folder`) or a modal
-  (`core.shell.brand`'s changelog, `core.shell.keys`' key table) holds that state itself and
-  portals the dialog to `document.body`. The rail is a narrow, clipping, scrolling box; a
-  dialog inside it would be laid out by it.
+- **Own your own state.** A row that opens a modal (`core.brand`'s changelog, `core.keys`' key
+  table) holds that state itself and portals the dialog to `document.body`. The rail is a
+  narrow, clipping, scrolling box; a dialog inside it would be laid out by it.
 - **Render nothing when you have nothing.** `core.shell.status` returns `null` with no
   container mounted and on a collapsed rail. A plain row that draws nothing is legitimate; its
   seat in the arrangement is unaffected.

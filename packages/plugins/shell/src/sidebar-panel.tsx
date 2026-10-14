@@ -41,6 +41,8 @@ import { ControlIcon, Disclosure, ScrollRegion, Stack, useFlipStack } from "@man
 import { railTree, type RailNode } from "./rail-rows.ts";
 import { railExtents, railPoint, stackPoint, type RailBox } from "./rail-aim.ts";
 import { shellManifest } from "./index.ts";
+import { browserStorage } from "./device-storage.ts";
+import { isFolded, recallFolds, rememberFolds, type SectionFolds } from "./section-folds.ts";
 
 /**
  * THIS PANEL'S OWN REF, spelled the one way a full panel id is ever spelled. The manifest is
@@ -63,10 +65,11 @@ const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
  * and false of its top and bottom, and no reader of the assembly could see the difference.
  * Every one of those is a contributed row now:
  *
- *   `core.shell`        brand · status · keys · identity
- *   `core.canvas`       new-canvas
- *   `core.compositions` new-composition
- *   `core.index`        new-folder · index
+ *   `core.shell`        creators · status · identity (the creation control draws every
+ *                       plugin's declared `contributes.creators`, which are data, not rows)
+ *   `core.brand`        brand
+ *   `core.keys`         keys
+ *   `core.index`        index
  *   `core.machines`     machines
  *   `core.plugins`      plugins
  *
@@ -95,9 +98,6 @@ const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
  * arrangement the manifests declared and whether the owning plugin is enabled — never who
  * fills a row.
  */
-
-/** Per-section disclosure state. Device-LOCAL and in-memory: see the module note below. */
-type CollapsedSections = Readonly<Record<string, boolean>>;
 
 /**
  * ── THE RAIL'S DROP GESTURE ──────────────────────────────────────────────────────────
@@ -784,14 +784,15 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   /** The one notice channel, for the refusal a silent no-op would hide (the spacer, below). */
   const { notify } = useNotice();
   /*
-   * Per-section disclosure is in-memory only. The sidebar's four private storage keys are gone
-   * with the rest of its device-only state (D13): a row's PLACE now comes from its manifest,
-   * its presence from the roster, and the rail's width from the workspace layout — all three
-   * observable by every principal. Which sections one tab happened to fold shut is the one
-   * piece of that state nobody else can act on, so it is not worth a key, a register entry, or
-   * a migration; it lasts as long as the tab does.
+   * Per-section disclosure is this DEVICE's (`section-folds.ts`, registered in REGISTRY.md
+   * §Device-local register): a row's PLACE comes from its manifest, its presence from the
+   * roster and the rail's width from the workspace layout — all observable by every principal
+   * — while which lists one screen keeps open is the one piece of the rail nobody else can act
+   * on. A row nobody here has touched follows its manifest's `defaultOpen`; a fold or unfold is
+   * remembered across reloads.
    */
-  const [collapsedSections, setCollapsedSections] = useState<CollapsedSections>({});
+  const [folds, setFolds] = useState<SectionFolds>(() => recallFolds(browserStorage()));
+  useEffect(() => rememberFolds(browserStorage(), folds), [folds]);
   const requestedRef = host.requestedRef;
   const [revealedRef, setRevealedRef] = useState<typeof requestedRef>(null);
   // A new navigation unfolds its declared destination before painting. Later renders must
@@ -803,12 +804,12 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
         (section) =>
           section.enabled &&
           section.refKinds?.includes(requestedRef.kind) &&
-          collapsedSections[section.id] === true,
+          isFolded(section, folds),
       );
       if (folded.length > 0) {
-        const next = { ...collapsedSections };
+        const next = { ...folds };
         for (const section of folded) next[section.id] = false;
-        setCollapsedSections(next);
+        setFolds(next);
       }
     }
   }
@@ -1266,11 +1267,11 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
         section={section}
         path={node.path}
         grow={grow}
-        collapsed={sidebarOpen && collapsedSections[section.id] === true}
+        collapsed={isFolded(section, folds)}
         onCollapsedChange={(id, collapsed) => {
-          // The icon rail force-opens its one body; that is layout, not a choice.
+          // Only a visible disclosure header changes the reader's fold choice.
           if (!sidebarOpen) return;
-          setCollapsedSections((current) =>
+          setFolds((current) =>
             current[id] === collapsed ? current : { ...current, [id]: collapsed },
           );
         }}
@@ -1329,6 +1330,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           type="button"
           title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
           aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          aria-expanded={sidebarOpen}
           onClick={() => setSidebarOpen(!sidebarOpen)}
         >
           <ControlIcon kind={sidebarOpen ? "sidebarCollapse" : "sidebarExpand"} />

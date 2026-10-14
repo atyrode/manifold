@@ -31,8 +31,10 @@ import {
   openedPanel,
   parseKeystroke,
   reportDuplicates,
+  visibleCreators,
   visibleSections,
   ENGINE_SET_ENABLED_ACTION,
+  type AssemblyCreator,
   type BindingSource,
   type Claims,
   type ComposedBinding,
@@ -260,6 +262,11 @@ export interface BrowserAssembly {
   readonly panels: ReadonlyMap<string, WebPanel>;
   /** Sorted by declared `order`; ties keep roster order. */
   readonly sections: readonly WebSection[];
+  /**
+   * The creators THIS principal's picker offers: enabled owners, own settings not false,
+   * sorted by declared `order` with ties in roster order (`visibleCreators`).
+   */
+  readonly creators: readonly AssemblyCreator[];
   readonly elements: ReadonlyMap<string, RegisteredElement>;
   /** Keyed by the claimed first path segment; a segment no manifest claimed is absent. */
   readonly routes: ReadonlyMap<string, WebRoute>;
@@ -328,6 +335,7 @@ export function buildBrowserAssembly(
   const enabledIds = new Set<string>();
   const panels = new Map<string, WebPanel>();
   const sections: WebSection[] = [];
+  const creators: AssemblyCreator[] = [];
   const elements = new Map<string, RegisteredElement>();
   const tools: RegisteredTool[] = [];
   const routes = new Map<string, WebRoute>();
@@ -385,6 +393,7 @@ export function buildBrowserAssembly(
         // feeds is applied once, below, where this principal's values are known.
         ...(section.setting === undefined ? {} : { setting: section.setting }),
         ...(section.refKinds === undefined ? {} : { refKinds: section.refKinds }),
+        ...(section.defaultOpen === undefined ? {} : { defaultOpen: section.defaultOpen }),
         /*
           RESOLVED here, exactly as `assembleRoster` resolves it server-side: a manifest that
           declares nothing yields the default, so no reader downstream has to know what the
@@ -395,6 +404,24 @@ export function buildBrowserAssembly(
           ? isolatedSection(manifest.id, section.id, manifest.entry?.worker === true)
           : (def?.sections?.[section.id] ?? null),
         enabled,
+      });
+    }
+    /*
+      CREATORS are data all the way down: no component is attached, so a hardened plugin's
+      offer joins exactly as a trusted one's does. Disabled owners are collected and dropped
+      below with the setting rule, at the one seam that knows both.
+    */
+    for (const creator of manifest.contributes.creators ?? []) {
+      creators.push({
+        id: creator.id,
+        plugin: manifest.id,
+        title: creator.title,
+        icon: creator.icon,
+        order: creator.order,
+        action: creator.action,
+        input: creator.input,
+        ...(creator.nameInput === undefined ? {} : { nameInput: creator.nameInput }),
+        ...(creator.setting === undefined ? {} : { setting: creator.setting }),
       });
     }
     for (const element of manifest.contributes.elements) {
@@ -519,6 +546,7 @@ export function buildBrowserAssembly(
   // Array#sort is stable, so equal orders keep the roster's own order — the same tiebreak
   // the engine's `assembleRoster` applies server-side.
   sections.sort((left, right) => left.order - right.order);
+  creators.sort((left, right) => left.order - right.order);
 
   /*
     THE ROW RULE, applied ONCE, here — the seam this principal's preferences exist at, exactly
@@ -537,6 +565,7 @@ export function buildBrowserAssembly(
     pluginTitle: (id) => titles.get(id) ?? null,
     panels,
     sections: visibleSections(sections, settings),
+    creators: visibleCreators(creators, settings, (id) => enabledIds.has(id)),
     elements,
     routes,
     tools,
@@ -1593,7 +1622,18 @@ export function HostServicesGate({
   const composedSections = useMemo<readonly ComposedSection[]>(
     () =>
       assembly.sections.map(
-        ({ id, plugin, title, order, presentation, cluster, setting, refKinds, enabled }) => ({
+        ({
+          id,
+          plugin,
+          title,
+          order,
+          presentation,
+          cluster,
+          setting,
+          refKinds,
+          defaultOpen,
+          enabled,
+        }) => ({
           id,
           plugin,
           title,
@@ -1607,6 +1647,7 @@ export function HostServicesGate({
           // is a preference without asking a second registry.
           ...(setting === undefined ? {} : { setting }),
           ...(refKinds === undefined ? {} : { refKinds }),
+          ...(defaultOpen === undefined ? {} : { defaultOpen }),
           enabled,
         }),
       ),
@@ -1654,6 +1695,7 @@ export function HostServicesGate({
         enabled: (id) => assembly.enabled(id),
         pluginTitle: (id) => assembly.pluginTitle(id),
         sections: composedSections,
+        creators: assembly.creators,
         panels: composedPanels,
         bindings: assembly.bindings,
         bindingOverrides: assembly.bindingOverrides,

@@ -80,6 +80,23 @@ export const LocalNameSchema = z.string().regex(LOCAL_NAME_PATTERN).max(32);
 export type LocalName = z.infer<typeof LocalNameSchema>;
 
 /**
+ * A FULLY QUALIFIED ACTION NAME, `${pluginId}.${local}`: the name a door is dispatched by
+ * (`POST /api/actions/:name`, `host.client.action`), published on the roster and stamped on a
+ * control as `data-action`. Composed from the two schemas that own its halves — the pair rule
+ * {@link SettingRefSchema} composes for a setting's name — so a declaration NAMING an action
+ * (a creator's, `CreatorDefSchema`) is held to the exact shape an assembled action has.
+ *
+ * Shape only: whether anything answers to the name is the ASSEMBLY's question, asked where
+ * every action is known (`assembleRoster`). The bound is the halves' own plus the separator,
+ * checked explicitly because `templateLiteral` composes patterns and not lengths.
+ */
+export const MAX_ACTION_NAME_LENGTH = 64 + 1 + 32;
+export const ActionNameSchema = z
+  .templateLiteral([PluginIdSchema, ".", LocalNameSchema])
+  .check(z.maxLength(MAX_ACTION_NAME_LENGTH));
+export type ActionName = z.infer<typeof ActionNameSchema>;
+
+/**
  * A PLUGIN'S OWN CAPABILITY (ADR 0035): `<pluginId>:<name>`, and the pair is the whole law.
  *
  * The engine's vocabulary is a closed enum (`CAPS`) because every name in it is authority over
@@ -317,6 +334,12 @@ export type SettingDef = z.infer<typeof SettingDefSchema>;
  *
  * Absent ≡ this row is unconditional, which is what every manifest written before the field
  * existed says.
+ *
+ * `defaultOpen` is a disclosure row saying "A READER WHO HAS NEVER FOLDED ME SEES ME OPEN".
+ * Every other disclosure starts folded, so a rail of several sections opens on the one a
+ * reader came for instead of on every list at once; after the first fold or unfold the
+ * reader's own choice wins on that device. Meaningless on a `plain` row, which has no fold.
+ * Absent ≡ folded.
  */
 export const SectionDefSchema = z.strictObject({
   id: LocalNameSchema,
@@ -325,12 +348,105 @@ export const SectionDefSchema = z.strictObject({
   presentation: SectionPresentationSchema.optional(),
   cluster: LocalNameSchema.optional(),
   setting: LocalNameSchema.optional(),
+  defaultOpen: z.boolean().optional(),
   /** A reference reveals its owning section without hard-coded plugin names in the shell. */
   refKinds: z
     .array(z.enum(ManifoldRefSchema.options.map((option) => option.shape.kind.value)))
     .optional(),
 });
 export type SectionDef = z.infer<typeof SectionDefSchema>;
+
+/**
+ * WHAT A CREATOR'S ENTRY WEARS: the mark of the kind of thing it makes, out of a CLOSED set the
+ * design system draws. Closed because the entry is DATA a stranger's manifest hands the shell's
+ * picker, and the picker has to be able to paint every value it can be handed — the same reason
+ * a portable frame names control glyphs out of `UI_CONTROL_KINDS` rather than shipping a
+ * drawing. The item marks are `@manifold/ui`'s `ItemIcon` names for the things a workspace holds;
+ * `add` is the neutral control glyph, for a creator whose result has no mark of its own.
+ *
+ * Growing the set is a protocol vocabulary change reviewed as one, with its drawing beside it.
+ */
+export const CREATOR_ICONS = [
+  "add",
+  "canvas",
+  "composition",
+  "folder",
+  "terminal",
+  "machine",
+] as const;
+export const CreatorIconSchema = z.enum(CREATOR_ICONS);
+export type CreatorIcon = (typeof CREATOR_ICONS)[number];
+
+/**
+ * Bound on one creator's fixed input, as bytes of its JSON. An input NAMES what to make — a
+ * default name, a discipline, a parent — and it rides every roster fan-out inside the manifest,
+ * so the bound is generous for naming and far too small for a payload.
+ */
+export const MAX_CREATOR_INPUT_BYTES = 1024;
+const CREATOR_UTF8 = new TextEncoder();
+
+/**
+ * A creator's fixed action input: a JSON object, all the way down (`z.json()` refuses anything a
+ * JSON round trip would rewrite), no larger than {@link MAX_CREATOR_INPUT_BYTES}. Absent ≡ `{}`,
+ * the input of an action that takes no arguments.
+ */
+export const CreatorInputSchema = z
+  .record(z.string().min(1).max(64), z.json())
+  .refine((input) => CREATOR_UTF8.encode(JSON.stringify(input)).length <= MAX_CREATOR_INPUT_BYTES, {
+    message: `a creator input is at most ${MAX_CREATOR_INPUT_BYTES} bytes of JSON`,
+  });
+
+/**
+ * ONE CREATOR: an offer to make something, declared as DATA — the entry's label, its mark, where
+ * it sorts, and the ACTION it runs with a FIXED input. `core.shell` lists every visible creator
+ * by title in the rail's draft entry and runs the chosen one; the declaring plugin supplies
+ * no component, which is what lets a hardened Worker plugin offer a creator exactly as a trusted
+ * one does (CONTRACTS.md §Producer-neutral behavior: one pipeline, whoever produced the entry).
+ *
+ * `action` is a FULL action name and may be another plugin's door — `core.canvas` offers a
+ * canvas through `core.index.createContainer`. That grants nothing: the shell dispatches it as
+ * the principal who pressed, through the same ladder any `data-action` control goes through, so
+ * a creator can offer only what its presser could already do. Assembly refuses a name no
+ * assembled action answers to, naming both. A result naming a container (`{ container }`)
+ * lands the presser inside it.
+ *
+ * `id` is claimed GLOBALLY, like a section's: the creators are one list, and two plugins
+ * claiming one entry is the shadowing D5 refuses. `title` names the THING ("Canvas"), not the
+ * act: the shell owns the one verb, "+ New…", and lists titles under the draft's name field.
+ *
+ * `nameInput` names the property of `input` that carries the made thing's NAME, so the draft
+ * entry can create it already named: the reader's typed name replaces that property, and its
+ * declared value — a string, refused otherwise — is the default an empty field creates with
+ * and shows as its placeholder. Absent ≡ the thing takes no name; the draft shows the title
+ * where the field would be, and Enter runs the fixed input as declared.
+ *
+ * `setting` gates the entry exactly as it gates a section ({@link SectionDefSchema}): one of
+ * this manifest's OWN boolean settings, refused by name otherwise, and an entry whose setting
+ * reads false is dropped from that reader's list (`visibleCreators`). Absent ≡ unconditional.
+ *
+ * A DISABLED owner's creators are gone, not marked: creation dies on a disable (D12), and an
+ * offer has no place to paint an absence on.
+ */
+export const CreatorDefSchema = z
+  .strictObject({
+    id: LocalNameSchema,
+    title: TitleSchema,
+    icon: CreatorIconSchema,
+    order: z.number().int(),
+    action: ActionNameSchema,
+    input: CreatorInputSchema.default({}),
+    nameInput: z.string().min(1).max(64).optional(),
+    setting: LocalNameSchema.optional(),
+  })
+  .refine(
+    (creator) =>
+      creator.nameInput === undefined || typeof creator.input[creator.nameInput] === "string",
+    {
+      message: "a creator's nameInput must name a string property of its input",
+      path: ["nameInput"],
+    },
+  );
+export type CreatorDef = z.infer<typeof CreatorDefSchema>;
 
 /**
  * ONE CONTRIBUTED PANEL: a tile-ref leaf, named `${manifest.id}.${id}` in a `panel` ref.
@@ -453,8 +569,9 @@ export type RouteDef = z.infer<typeof RouteDefSchema>;
  * may declare an inner arrangement of its own — see {@link PanelDefSchema}), `seats`
  * are where those panels ask to sit in a workspace nobody has arranged (see
  * {@link SeatDefSchema}), `sections` are sidebar rows ordered by their declared `order` (see
- * {@link SectionDefSchema}), `elements` are canvas element renderers keyed by wire type,
- * `tools` are toolbar tools, and `routes` are the URL spaces it claims (see
+ * {@link SectionDefSchema}), `creators` are offers to make something, run from the shell's one
+ * draft entry (see {@link CreatorDefSchema}), `elements` are canvas element renderers keyed by wire
+ * type, `tools` are toolbar tools, and `routes` are the URL spaces it claims (see
  * {@link RouteDefSchema}).
  */
 const ContributesSchema = z.strictObject({
@@ -469,6 +586,13 @@ const ContributesSchema = z.strictObject({
    */
   seats: z.array(SeatDefSchema).max(8).optional(),
   sections: z.array(SectionDefSchema).max(8).default([]),
+  /**
+   * THE OFFERS TO MAKE SOMETHING this plugin lists in the shell's draft entry ({@link CreatorDefSchema}).
+   * Optional rather than defaulted to `[]` for the reason `seats` is: absence is a MEANING — the
+   * plugin offers nothing to create — so every manifest written before the field existed keeps
+   * exactly the sense it had and serializes as it did.
+   */
+  creators: z.array(CreatorDefSchema).max(8).optional(),
   /**
    * A contributed element kind: `type` is the wire type stored in scene documents, and
    * `placement` is how the algebra must treat it (G1). Traits are DATA here for the same
@@ -1717,6 +1841,14 @@ export function pluginVocabulary(): Record<string, unknown> {
     defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
     sectionPresentations: SECTION_PRESENTATIONS,
     defaultSectionPresentation: DEFAULT_SECTION_PRESENTATION,
+    /*
+      The creator vocabulary: the closed set of marks a picker entry may wear and the bound on
+      its fixed input. How an entry is spelled rides in the manifest schema below, as every
+      contribution's does; what an AUTHOR cannot read off that schema is which icon names the
+      shell can paint, so the set is published by name.
+    */
+    creatorIcons: CREATOR_ICONS,
+    maxCreatorInputBytes: MAX_CREATOR_INPUT_BYTES,
     toolbars: TOOLBARS,
     defaultToolbar: DEFAULT_TOOLBAR,
     defaultSeatRatio: DEFAULT_SEAT_RATIO,

@@ -6,6 +6,7 @@ import {
   settingRefId,
   settingValue,
   settingWriteRefusal,
+  visibleCreators,
   visibleSections,
 } from "../src/settings.ts";
 
@@ -119,6 +120,36 @@ describe("visibleSections", () => {
     expect(visibleSections(sections, settings).map((section) => section.id)).toContain(
       "new-canvas",
     );
+  });
+});
+
+/**
+ * THE PICKER RULE (#1079): the section rule, plus the owner. A creator hidden by its own
+ * setting leaves this reader's picker; a DISABLED owner's creator leaves everyone's, because an
+ * offer keeps no seat (D12). Order is the caller's and survives the filter.
+ */
+describe("visibleCreators", () => {
+  const creators = [
+    { id: "new-canvas", plugin: "core.canvas", setting: "new-canvas" },
+    { id: "new-composition", plugin: "core.compositions" },
+    { id: "new-folder", plugin: "core.index" },
+  ];
+  const settings = composeSettings(
+    roster([{ manifest: manifest({ id: "core.canvas", settings: [NEW_CANVAS] }) }]),
+    { "core.canvas.new-canvas": false },
+  );
+  const ids = (rows: readonly { readonly id: string }[]) => rows.map((row) => row.id);
+
+  test("a setting reading false drops only its own entry", () => {
+    expect(ids(visibleCreators(creators, settings, () => true))).toEqual([
+      "new-composition",
+      "new-folder",
+    ]);
+  });
+
+  test("a disabled owner's entries are gone whatever its settings say", () => {
+    const enabled = (plugin: string): boolean => plugin !== "core.compositions";
+    expect(ids(visibleCreators(creators, [], enabled))).toEqual(["new-canvas", "new-folder"]);
   });
 });
 

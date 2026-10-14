@@ -1,5 +1,6 @@
-import type { Container, SectionNode, TileLayout } from "@manifold/protocol";
+import type { SectionNode, TileLayout } from "@manifold/protocol";
 import { createContext, createElement, useContext, type ReactElement, type ReactNode } from "react";
+import type { AssemblyCreator } from "./assemble.ts";
 import type { WorkspaceSidebarState } from "./container-route.ts";
 
 /**
@@ -10,20 +11,20 @@ import type { WorkspaceSidebarState } from "./container-route.ts";
  * not import each other. The workspace host is FLOOR (`packages/web/src/workspace.tsx`); the
  * sidebar panel is `core.shell`'s browser half, a plugin, reached through a panel outlet that
  * takes no props. So the handful of facts that are genuinely the HOST's — how wide the rail is
- * drawn, which arrangement this principal stored, the two creation doors, the running build's
- * own version — arrive as context the host publishes above the tree, and `@manifold/plugin` is
+ * drawn, which arrangement this principal stored, the creation doors, the running build's own
+ * version — arrive as context the host publishes above the tree, and `@manifold/plugin` is
  * the only thing both halves are allowed to import (REGISTRY.md §Plugin layer).
  *
  * CONTRIBUTED ROWS READ IT TOO, and that is the wave that hollowed the rail rather than a
- * loosening. The rail's chrome is contributed now — a brand line, three creators from three
- * plugins, a status line, a key table's door, an identity footer — and two of the facts here
- * are exactly what such a row needs: whether the rail is drawn collapsed (a row that cannot
- * ask renders a label into 64 pixels) and the creation doors (a birth also has to be
- * remembered on this device, refresh the index and LAND the viewer inside it, none of which is
- * a row's business). A row that needs neither never touches this context; a row that does
- * reads it HERE, because a second channel for "is the sidebar collapsed" would be a second
- * answer to it (docs/CONTRACTS.md §One authoritative implementation). Everything else a section does still goes through
- * `host.client` and `host.assembly` like any other contribution.
+ * loosening. The rail's chrome is contributed now — a brand line, the creation control, a
+ * status line, a key table's door, an identity footer — and two of the facts here are exactly
+ * what such a row needs: whether the rail is drawn collapsed (a row that cannot ask renders a
+ * label into 64 pixels) and the creation doors (a birth also has to be remembered on this
+ * device, refresh the index and LAND the viewer inside it, none of which is a row's business).
+ * A row that needs neither never touches this context; a row that does reads it HERE, because
+ * a second channel for "is the sidebar collapsed" would be a second answer to it
+ * (docs/CONTRACTS.md §One authoritative implementation). Everything else a section does still
+ * goes through `host.client` and `host.assembly` like any other contribution.
  *
  * It is NOT {@link HostServices}, and the difference survives: `HostServices` is what every
  * plugin may touch anywhere; this is published by ONE host, above ONE tree, and a plugin
@@ -54,9 +55,18 @@ export interface WorkspaceShell {
   setSidebarOpen(open: boolean): void;
   /** Connection and persistence state of the mounted container, when one is mounted. */
   readonly workspace: WorkspaceSidebarState | null;
+  /** True while a creation is in flight; a second press until it settles is ignored. */
   readonly creating: boolean;
-  createContainer(discipline: Container["discipline"]): void;
-  createFolder(name: string): Promise<void>;
+  /**
+   * RUN ONE CREATOR — whoever declared it, trusted, in-realm or hardened, one pipeline. The
+   * declared action is dispatched with its declared input as the principal who pressed — a
+   * non-empty `name` replacing the input's `nameInput` property when the creator declares one;
+   * a denial or a fault is a notice, nothing is painted ahead of the answer, the index is
+   * refreshed, and an answer naming a container (`{ container }`) lands the viewer inside it.
+   * Resolves true on success, false on a refusal, a fault or a press ignored while another is
+   * in flight, so the caller keeps whatever the reader typed when nothing was made.
+   */
+  runCreator(creator: AssemblyCreator, name?: string): Promise<boolean>;
   /**
    * The rail's own element, handed back so the host can answer "is this point over the
    * sidebar" for a carry that crosses it — the one geometric question the host cannot ask

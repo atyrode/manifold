@@ -80,7 +80,7 @@ import {
   LayoutResponseSchema,
   MachinesResponseSchema,
   ContainerResponseSchema,
-  IndexResponseSchema,
+  IndexFolderCreatedResponseSchema,
   MAX_TILE_CHILDREN,
   PluginManifestSchema,
   PluginRosterSchema,
@@ -3422,6 +3422,59 @@ try {
         : `ratios ${moved ? "changed" : "unchanged"} after ${String(commits)} core.space.setLayout dispatch(es)`,
     );
 
+    // Collapse is presence, not a resize. Measure the painted rail, not just its state class:
+    // an inline flex-grow used to beat the stylesheet and make the "collapsed" rail wider.
+    const railGeometry = (): Promise<{ width: number; target: number; seamHidden: boolean }> =>
+      browser!.evaluate(
+        `(() => {
+          const rail = document.querySelector('.sidebar');
+          const pane = rail?.closest('.workspace-pane');
+          const seam = pane?.nextElementSibling;
+          return {
+            width: rail?.getBoundingClientRect().width ?? 0,
+            target: parseFloat(getComputedStyle(document.documentElement).fontSize) * 3.25,
+            seamHidden: seam !== null && seam !== undefined &&
+              getComputedStyle(seam).visibility === 'hidden'
+          };
+        })()`,
+      );
+    const expanded = await railGeometry();
+    const layoutBeforeCollapse = LayoutResponseSchema.parse(
+      await getJson("/api/layout", viewer.token),
+    ).layout;
+    const collapseCommits = actionLog.filter(
+      (entry) => entry.name === "core.space.setLayout",
+    ).length;
+    await browser.evaluate(`document.querySelector('[aria-label="Collapse sidebar"]')?.click()`);
+    const narrow = await settles(async () => {
+      const geometry = await railGeometry();
+      return Math.abs(geometry.width - geometry.target) < 1 && geometry.seamHidden;
+    }, 5_000);
+    const compact = await railGeometry();
+    await browser.evaluate(`document.querySelector('[aria-label="Expand sidebar"]')?.click()`);
+    // Let finite row transitions finish before the arrange snapshot; liveness pulses never end.
+    const restored = await settles(async () => {
+      const still = await browser!.evaluate<boolean>(
+        `Array.from(document.querySelector('.sidebar')?.getAnimations({ subtree: true }) ?? [])
+          .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+          .every((animation) => animation.playState !== 'running')`,
+      );
+      return still && Math.abs((await railGeometry()).width - expanded.width) < 1;
+    }, 5_000);
+    const layoutAfterCollapse = LayoutResponseSchema.parse(
+      await getJson("/api/layout", viewer.token),
+    ).layout;
+    const collapseWrites =
+      actionLog.filter((entry) => entry.name === "core.space.setLayout").length - collapseCommits;
+    check(
+      "R4 sidebar collapse reclaims width without editing layout",
+      narrow &&
+        restored &&
+        collapseWrites === 0 &&
+        JSON.stringify(layoutAfterCollapse) === JSON.stringify(layoutBeforeCollapse),
+      `rail ${String(expanded.width)} → ${String(compact.width)} → ${String((await railGeometry()).width)}px; restored=${String(restored)}; resize seam ${compact.seamHidden ? "hidden" : "live"}; ${String(collapseWrites)} layout writes; layout retained=${String(JSON.stringify(layoutAfterCollapse) === JSON.stringify(layoutBeforeCollapse))}`,
+    );
+
     const other = await mint({
       principal: { name: "axiom-bystander", kind: "human" },
       caps: ["containers:read"],
@@ -4682,6 +4735,12 @@ try {
       source and target separately after an assumed delay, so layout motion between those reads
       could leave the native release aimed at stale coordinates. A gesture must begin from one
       stable geometry that is actually under the pointer.
+
+      The two rows are FOUND, never indexed: by now the rail carries the trio the rungs above
+      filled and the vacant stack the centre drop left beside the tallest row, and a gap measured
+      across a stack lands in that stack rather than on a boundary — across the vacant one, the
+      column nests in its seat and the squeeze below loses its empty case. So the target is the
+      first pair of rows with nothing painted between them.
     */
     const columnGestureAt = (): Promise<ColumnGesture | null> =>
       browser!.evaluate<ColumnGesture | null>(
@@ -4690,8 +4749,8 @@ try {
            const item = document.querySelector('[data-testid="palette-stack-column"]');
            if (!(rail instanceof HTMLElement) || !(item instanceof HTMLElement)) return null;
            const rows = Array.from(rail.querySelectorAll(':scope > [data-section-id]'));
-           const above = rows[1];
-           const below = rows[2];
+           const above = rows.find((row) => rows.includes(row.nextElementSibling));
+           const below = above?.nextElementSibling;
            if (!(above instanceof HTMLElement) || !(below instanceof HTMLElement)) return null;
            const railBox = rail.getBoundingClientRect();
            const sourceBox = item.getBoundingClientRect();
@@ -5254,7 +5313,7 @@ try {
     /*
       "In its manifest-ordered place" is asserted among the rows of its OWN presentation, and
       that scoping is forced by the rail being fully composed now: the stack holds the brand
-      line, three creators, the status line, the key-table door and the identity footer beside
+      line, the creation control, the status line, the key-table door and the identity footer beside
       the three bodies, all carrying `data-section-id`, so an absolute index in the whole stack
       says nothing about ordering and everything about how much chrome happens to be
       contributed. `data-presentation` is the row's resolved presentation, published in the DOM
@@ -5278,6 +5337,160 @@ try {
       vanished && ledgered && back
         ? "the Machines section VANISHES on disable (manager row stays the ledger) and returns to its manifest-ordered place, no reload"
         : `vanished: ${String(vanished)}, ledgered: ${String(ledgered)}, restored in place: ${String(back)}`,
+    );
+  }
+
+  {
+    /*
+      THE CREATOR ROW of the disable table: an offer keeps no seat. Every plugin's declared
+      creators land in ONE draft entry, core.shell's creation control, so a plugin going off takes
+      its title OUT of the draft's list — not greyed, not a press that refuses later — and coming
+      back offers it again in its declared place. Read off the OPEN draft, because its list is
+      where a reader learns what they can make; an assembly agreeing with itself would prove less.
+
+      The rung above leaves the manager's modal open, and a modal makes the rail inert, so it is
+      shut first, the way a reader shuts it.
+    */
+    await closePluginManager();
+    const newSelector = JSON.stringify('[data-section-id="creators"] .sidebar-creator');
+    const draftSelector = JSON.stringify('[data-section-id="creators"] .sidebar-draft');
+    const everyCreator = "Canvas | Composition | Folder";
+    const withoutCompositions = "Canvas | Folder";
+    /**
+     * What the draft offers, in painted order. Idempotent like `openPluginManager`: a closed
+     * draft gets "+ New…" pressed and answers "shut", and the next poll reads the draft that
+     * opened.
+     */
+    const offered = (): Promise<string> =>
+      browser!.evaluate<string>(
+        `(() => {
+           const draft = document.querySelector(${draftSelector});
+           if (draft === null) {
+             document.querySelector(${newSelector})?.click();
+             return 'shut';
+           }
+           return Array.from(draft.querySelectorAll('[role="radio"]'),
+             (item) => (item.textContent ?? '').trim()).join(' | ');
+         })()`,
+      );
+    /** Waits for the draft to offer exactly `wanted`, and answers what it last offered. */
+    const offers = async (wanted: string): Promise<string> => {
+      let last = "";
+      await settles(async () => {
+        last = await offered();
+        return last === wanted;
+      }, 10_000);
+      return last;
+    };
+    /** One key as a hand presses it; Enter carries its "\r", or a focused button never fires. */
+    const press = async (key: "Enter" | "Tab" | "Escape"): Promise<void> => {
+      const keyCode = { Enter: 13, Tab: 9, Escape: 27 }[key];
+      for (const type of ["keyDown", "keyUp"] as const) {
+        await browser!.send("Input.dispatchKeyEvent", {
+          type,
+          key,
+          code: key,
+          windowsVirtualKeyCode: keyCode,
+          nativeVirtualKeyCode: keyCode,
+          ...(key === "Enter" ? { text: "\r" } : {}),
+        });
+      }
+    };
+    const draftGone = (): Promise<boolean> =>
+      settles(
+        () => browser!.evaluate<boolean>(`document.querySelector(${draftSelector}) === null`),
+        5_000,
+      );
+    const listed = await offers(everyCreator);
+    await press("Escape");
+    await draftGone();
+    const off = await setEnabled("core.compositions", false);
+    const withdrawn = await offers(withoutCompositions);
+    await press("Escape");
+    await draftGone();
+    const on = await setEnabled("core.compositions", true);
+    const reoffered = await offers(everyCreator);
+    await press("Escape");
+    await draftGone();
+    const creatorRight =
+      listed === everyCreator &&
+      off &&
+      withdrawn === withoutCompositions &&
+      on &&
+      reoffered === everyCreator;
+    check(
+      "R3 core.compositions creator",
+      creatorRight,
+      creatorRight
+        ? `the draft offered "${everyCreator}"; with core.compositions off it offered "${withdrawn}", and Composition came back in its declared place on re-enable`
+        : `offered "${listed}"; core.compositions off (${off ? "accepted" : "REFUSED"}) offered "${withdrawn}"; back on (${on ? "accepted" : "REFUSED"}) offered "${reoffered}"`,
+    );
+
+    /*
+      AND BY KEYBOARD, landing on the entry that just came back: a control a pointer can work
+      and a keyboard cannot is half a control. Enter on "+ New…" opens the draft with focus in
+      the name field of the creator it opens on — Canvas, on a device that has made nothing —
+      Tab steps the choice to the re-offered Composition with focus still in the field, and
+      Escape drops the draft and hands focus back to "+ New…", where the reader started.
+    */
+    const focused = (): Promise<string> =>
+      browser!.evaluate<string>(
+        `(() => {
+           const at = document.activeElement;
+           if (!(at instanceof HTMLElement)) return 'nothing';
+           if (at.matches(${newSelector})) return 'new';
+           const checked = at.closest('form')?.querySelector('[role="radio"][aria-checked="true"]');
+           return at.getAttribute('aria-label') + ' / ' + (checked?.textContent ?? '').trim();
+         })()`,
+      );
+    /** Waits for focus to rest on `wanted`, and answers where it last was. */
+    const focusOn = async (wanted: string): Promise<string> => {
+      let last = "";
+      await settles(async () => {
+        last = await focused();
+        return last === wanted;
+      }, 5_000);
+      return last;
+    };
+    /*
+      The rung above re-enabled a plugin, so the rail may still be taking the roster's later
+      frames. Focus "+ New…" only once it is drawn and has held still for a beat, so the Enter
+      below lands on the control a reader would be looking at.
+    */
+    await settles(
+      () => browser!.evaluate<boolean>(`document.querySelector(${newSelector}) !== null`),
+      5_000,
+    );
+    await Bun.sleep(250);
+    const triggered = await browser.evaluate<boolean>(
+      `(() => {
+         const button = document.querySelector(${newSelector});
+         if (!(button instanceof HTMLElement)) return false;
+         button.focus();
+         return document.activeElement === button;
+       })()`,
+    );
+    await press("Enter");
+    const openedOn = await focusOn("Canvas name / Canvas");
+    await press("Tab");
+    const steppedTo = await focusOn("Composition name / Composition");
+    await press("Escape");
+    const dropped = await draftGone();
+    const returnedTo = await focusOn("new");
+    const keyed =
+      triggered &&
+      openedOn === "Canvas name / Canvas" &&
+      steppedTo === "Composition name / Composition" &&
+      dropped &&
+      returnedTo === "new";
+    check(
+      "R3 the re-offered creator by keyboard",
+      keyed,
+      !triggered
+        ? `"+ New…" could not take focus`
+        : keyed
+          ? "Enter on + New… opened the draft in Canvas's name field, Tab stepped to the returned Composition, and Escape dropped it with focus back on + New…"
+          : `Enter on + New… focused "${openedOn}", Tab "${steppedTo}"; Escape ${dropped ? "dropped the draft" : "left the draft open"} with focus on "${returnedTo}"`,
     );
   }
 
@@ -5440,11 +5653,9 @@ try {
         await dispatch("core.index.createFolder", { name, parentId: folderParent }),
       );
       if (!made.ok) throw new Error(`R9 seed folder refused: ${made.denial.message}`);
-      const { items } = IndexResponseSchema.parse(made.result);
-      const row = items.find((item) => item.kind === "folder" && item.name === name);
-      if (row === undefined || row.kind !== "folder") throw new Error("R9 folder not listed");
-      folderIds.push(row.id);
-      folderParent = row.id;
+      const { folderId } = IndexFolderCreatedResponseSchema.parse(made.result);
+      folderIds.push(folderId);
+      folderParent = folderId;
     }
     for (const [slot, id] of [seededIds[0], seededIds[1]].entries()) {
       const moved = ActionOutcomeSchema.parse(

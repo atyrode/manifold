@@ -89,6 +89,7 @@ export {
   rosterElementTraits,
   type Assembly,
   type AssemblyAction,
+  type AssemblyCreator,
   type AssemblyEvent,
   type AssemblyStream,
   type AssemblyElement,
@@ -108,6 +109,7 @@ export {
   settingRefId,
   settingValue,
   settingWriteRefusal,
+  visibleCreators,
   visibleSections,
   type ComposedSetting,
 } from "./settings.ts";

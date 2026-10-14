@@ -40,7 +40,7 @@ export interface RailRow {
  *
  * A COLLAPSED RAIL keeps every plain row and exactly the absorber: the plain rows are the
  * icon strip (each draws itself icon-only when the rail is collapsed — the brand's mark, the
- * three creators, the key table's door, the identity dot), and one body is what the rail has
+ * creator draft's opener, the key table's door, the identity dot), and one body is what the rail has
  * room for. That is not a second layout: it is the same stack with the rows that need a
  * header's width left out.
  */

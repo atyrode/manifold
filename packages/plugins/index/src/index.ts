@@ -3,6 +3,7 @@ import {
   CreateIndexFolderRequestSchema,
   CreateContainerRequestSchema,
   MoveIndexEntryRequestSchema,
+  IndexFolderCreatedResponseSchema,
   ContainerResponseSchema,
   IndexResponseSchema,
   ContainersResponseSchema,
@@ -52,25 +53,30 @@ export const indexManifest: PluginManifest = {
   contributes: {
     panels: [],
     /*
-      TWO ROWS OF THE RAIL, and the pairing is the point: this plugin owns folders, so it owns
-      both the offer to create a top-level one and the tree that lists it. `new-folder` is
-      `plain` (a creator plus the form it opens — a control, not a collapsible block) and takes
-      `order: 4`, the last of the three creators; `index` keeps `order: 10` and its default
-      `disclosure`, and it is the row the rail's leftover height goes to, because it is the
-      first row in the order with a body (`railRows`).
+      ONE ROW AND ONE CREATOR, and the pairing is the point: this plugin owns folders, so it owns
+      both the offer to create a top-level one and the tree that lists it. The offer is an entry
+      in the shell's draft — data, run through this plugin's own `createFolder` door at the
+      root, named by the reader before it exists (`nameInput`). `index` keeps
+      `order: 10` and its default `disclosure`, and it is the row the rail's leftover height
+      goes to, because it is the first row in the order with a body (`railRows`). It is also the
+      one row that starts UNFOLDED on a device that has never folded it (`defaultOpen`): the tree
+      is where a reader goes, and every other disclosure starts shut until somebody opens it.
      */
-    sections: [
+    sections: [{ id: "index", title: "Index", order: 10, setting: "index", defaultOpen: true }],
+    creators: [
       {
         id: "new-folder",
-        title: "New folder",
+        title: "Folder",
+        icon: "folder",
         order: 4,
-        presentation: "plain",
+        action: "core.index.createFolder",
+        input: { name: "Untitled folder", parentId: null },
+        nameInput: "name",
         setting: "new-folder",
       },
-      { id: "index", title: "Index", order: 10, setting: "index" },
     ],
     /*
-      TWO PREFERENCES, one per row (#133), because they are two different sentences: "I do not
+      TWO PREFERENCES, one per offer (#133), because they are two different sentences: "I do not
       make folders from the rail" and "I do not keep the tree open in the rail" are choices a
       reader makes independently, and one toggle over both would force the second on whoever
       wanted the first.
@@ -187,7 +193,7 @@ export const indexActions = [
     title: "Create an index folder",
     caps: ["containers:write"],
     input: CreateIndexFolderRequestSchema,
-    result: IndexResponseSchema,
+    result: IndexFolderCreatedResponseSchema,
   }),
   defineAction({
     name: "renameFolder",

@@ -49,7 +49,7 @@ import { releasedTileLayout, withPanelLeafState } from "./tile-release.ts";
  * The arrangement a panel's sections render in. `arranged` is this principal's stored
  * tree, `declared` is manifest order; the answer names ids out of `declared` alone.
  *
- * Three rules, and all three are consequences of manifest order being the default rather
+ * Four rules, and all four are consequences of manifest order being the default rather
  * than choices made here:
  *
  *   A stored id the manifests no longer declare is DROPPED, wherever in the tree it sits —
@@ -61,7 +61,15 @@ import { releasedTileLayout, withPanelLeafState } from "./tile-release.ts";
  *   dropped split IS — two seats and nothing in them — so "empty" can never mean "delete
  *   me" without the palette's own drop deleting itself.
  *
- *   A declared id the arrangement does not name lands AFTER everything it does, at the top
+ *   A declared id the arrangement does not name takes the first TOP-LEVEL seat a dropped id
+ *   left, in manifest order. This is how a row that SUCCEEDS others keeps their place: the
+ *   shell's one creation control replaced the three creator rows (#1079), and a reader who had
+ *   arranged those rows finds the control where the first of them sat rather than at the
+ *   rail's foot. A seat inside a split is never filled — that split holds the rows its reader
+ *   put there — and a dropped id that comes back reclaims its seat from the stored row, which
+ *   moves the newcomer on to the next free seat or the end.
+ *
+ *   Any declared id still unplaced lands AFTER everything the arrangement names, at the top
  *   level, in manifest order. A section contributed since you last arranged the sidebar is
  *   new information, and the honest place for it is somewhere you can see it — never
  *   displacing a slot you chose, and never buried inside a split you did not put it in.
@@ -77,10 +85,16 @@ export function arrangedSections(
       if (typeof node !== "string") return [{ dir: node.dir, sections: keep(node.sections) }];
       return declaredSet.has(node) ? [node] : [];
     });
-  const placed = keep(arranged);
-  const named = new Set(sectionArrangementIds(placed));
+  const named = new Set(sectionArrangementIds(keep(arranged)));
   if (named.size === 0) return declared;
-  return [...placed, ...declared.filter((id) => !named.has(id))];
+  const unplaced = declared.filter((id) => !named.has(id));
+  const placed = arranged.flatMap((node): SectionNode[] => {
+    if (typeof node !== "string") return keep([node]);
+    if (declaredSet.has(node)) return [node];
+    const successor = unplaced.shift();
+    return successor === undefined ? [] : [successor];
+  });
+  return [...placed, ...unplaced];
 }
 
 /** One painted unit of a section stack: a lone row, or the members of one declared cluster. */

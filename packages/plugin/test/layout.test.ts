@@ -112,6 +112,44 @@ describe("arrangedSections", () => {
     ).toEqual([{ dir: "row", sections: ["index"] }, "notes", "machines"]);
   });
 
+  test("a newly declared section takes the first top-level seat a dropped one left", () => {
+    // #1079: one creation control succeeded three creator rows. A reader who had arranged the
+    // rail finds it where the first of them sat, not at the rail's foot; the other two seats
+    // close as dropped seats always have.
+    expect(
+      arrangedSections(
+        ["brand", "creators", "index", "machines", "status"],
+        ["brand", "machines", "new-canvas", "new-composition", "new-folder", "index", "status"],
+      ),
+    ).toEqual(["brand", "machines", "creators", "index", "status"]);
+  });
+
+  test("a seat inside a split is never filled, and what is left over still lands last", () => {
+    expect(
+      arrangedSections(
+        ["brand", "creators", "notes", "index"],
+        ["brand", { dir: "row", sections: ["new-canvas", "index"] }, "gone"],
+      ),
+    ).toEqual(["brand", { dir: "row", sections: ["index"] }, "creators", "notes"]);
+  });
+
+  test("a dropped section that returns reclaims its seat, and the newcomer moves on", () => {
+    const stored = ["brand", "machines", "index"];
+    // `machines` is gone (hidden by its reader, or its plugin left): `notes` sits in its seat.
+    expect(arrangedSections(["brand", "notes", "index"], stored)).toEqual([
+      "brand",
+      "notes",
+      "index",
+    ]);
+    // The stored row still names `machines`, so its return is its own place, not a newcomer's.
+    expect(arrangedSections(["brand", "machines", "notes", "index"], stored)).toEqual([
+      "brand",
+      "machines",
+      "index",
+      "notes",
+    ]);
+  });
+
   test("an arrangement naming nothing declared falls all the way back to manifest order", () => {
     const declared = ["index", "plugins"];
     expect(arrangedSections(declared, ["gone", "also-gone"])).toBe(declared);

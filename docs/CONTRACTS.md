@@ -720,11 +720,18 @@ field on the tile holding the sidebar panel, committed at release through
 `core.space.setLayout` — so an arrangement follows the principal across devices, a section the
 manifests stopped declaring leaves no gap, and a newly contributed section appears after the
 arrangement rather than displacing a chosen slot. Folder membership and tree order are durable
-server state; sidebar WIDTH
-is the workspace layout's root ratio (`core.space.setLayout`), collapse is presence
-(`vantage.sidebarCollapsed`, with a device-local mirror for first paint), and terminal-row
-visibility plus folder expansion stay device-local (`REGISTRY.md` §Device-local register). The
-server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
+server state; expanded sidebar WIDTH is the workspace layout's ratio (`core.space.setLayout`),
+while collapse is presence (`vantage.sidebarCollapsed`, with a device-local mirror for first
+paint). Collapse pins a sidebar pane in a horizontal split to a 3.25rem icon rail and disables
+its resize seam without changing the stored layout. Expanding restores the previous width
+and section folds; collapsing never force-opens a folded section. The compact Index retains
+named, tooltip-labelled navigation icons but
+omits row menus, terminal details and indentation; a folder icon opens the full rail and its
+folder, and F2 opens the full rail for rename. New opens the full rail with its draft focused.
+On narrow viewports the open sidebar overlays the view; its pane remains rail-width, so
+neither toggling nor resizing the viewport rewrites desktop ratios. Terminal-row visibility
+and folder expansion stay device-local (`REGISTRY.md` §Device-local register). The server
+SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
 fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client
 after capturing it in document memory; recovery keys are never written to browser storage.
 
@@ -1635,7 +1642,8 @@ Everything above the foundation floor is a plugin (`AXIOMS.md` axiom A1); this s
 the packages promise each other about that. Assembly happens twice from the same manifests —
 `packages/server/src/assembly.ts` registers server halves, `packages/web/src/assembly.ts`
 web halves — and both run `assembleRoster` from `@manifold/plugin`, which refuses duplicate
-plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
+plugin ids, action names, panel ids, section ids, creator ids, element types and tool ids by
+NAMING every offender.
 Manifests are inert DATA: no executable fields. A bundle's `entry` names its executable
 halves; the composition root may separately register a trusted hardened source recipe
 for a first-party definition without creating an installed row (§Hardened plugins).
@@ -1774,6 +1782,25 @@ Dropped is not disabled: nothing is retained, marked or tombstoned (`REGISTRY.md
 semantics), the plugin stays enabled and every other thing it contributes is untouched. A stored
 value no declaration answers is ignored at composition rather than pruned, so a plugin switched
 off for a week finds its reader's preferences intact.
+
+**Creators are declared offers, run by one door** (#1079). `contributes.creators` declares
+`{ id, title, icon, order, action, input?, nameInput?, setting? }`: an id claimed globally, a
+title naming the thing made (the shell supplies the one verb, "+ New…"), a mark from the
+closed `creatorIcons`, a FULL action name and a fixed JSON input of at most
+`maxCreatorInputBytes` (absent ≡ `{}`), and optionally the input's string property that carries
+the made thing's name (its declared value is the default name). Assembly refuses an action no
+assembled plugin declares and a `setting` that is not the plugin's own boolean, naming both; on
+the hold path a plugin whose creator runs a held plugin's door is held with
+`held_by_dependency`. The browser offers a reader every creator whose owner is enabled and whose
+setting does not read false (`visibleCreators`); `core.shell` lists them in one draft entry.
+Its Create button and Enter run the same path, using the default name when the field is empty.
+It runs the chosen one through `WorkspaceShell.runCreator`, which dispatches the declared action as
+the presser with the typed name in its `nameInput`, raises a notice on refusal, paints nothing
+first, lands in a container the answer names, and resolves whether anything was made so the
+draft keeps its name on refusal. No component is registered, so trusted, in-realm and hardened
+plugins offer creators identically. `core.index.createFolder` answers
+`{ items, folderId }`. A disclosure section may declare `defaultOpen`; every other disclosure
+starts folded, and a reader's own fold choice is remembered per device (`manifold:sidebar-folds`).
 
 `manifold://plugin/<id>` is a place to open, and the manager is what shows it. The shell's
 navigation door routes a `plugin` reference to the workspace it is already in, carrying the
@@ -2780,9 +2807,12 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 57 admits only bundle stamp 57: explicit per-viewport
-terminal attach/detach and completion acknowledgement changed the trusted plugin/SDK terminal
-ABI, so earlier stamps require a rebuild. Portable Worker projections still expose no terminal
+the current wire version. Protocol 58 admits only bundle stamp 58. Protocol 57's explicit
+per-viewport terminal attach/detach and completion acknowledgement changed the trusted
+plugin/SDK terminal ABI; protocol 58 adds the optional manifest `contributes.creators`, the
+optional section `defaultOpen` and `core.index.createFolder`'s `folderId`, and stamp 57 is not
+retained until released 57 artifacts
+are proven against the host. Portable Worker projections still expose no terminal
 byte/snapshot subscriptions. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version

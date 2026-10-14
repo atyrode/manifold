@@ -10,10 +10,10 @@
  * its components live in it. It is that the `sidebar` family is a vocabulary the FLOOR
  * PUBLISHES for every contributed row to fill, and the list of plugins filling it is now most
  * of the roster: `.sidebar-row`, `.sidebar-link`, `.sidebar-list`, `.sidebar-muted` and
- * `.sidebar-section-action` are `core.index`, `core.machines` and `core.plugins`; `.sidebar-new`
- * is `core.canvas`, `core.compositions` and `core.index`, one creator each; `.sidebar-brand` is
- * `core.brand`'s and `.sidebar-status` / `.sidebar-identity` are `core.shell`'s two remaining
- * rows — all of which reach the rail through the projection registry exactly as a stranger's
+ * `.sidebar-section-action` are `core.index`, `core.machines` and `core.plugins`;
+ * `.sidebar-creator` is `core.shell`'s creation control, drawing every plugin's declared
+ * creators; `.sidebar-brand` is `core.brand`'s and `.sidebar-status` / `.sidebar-identity` are
+ * `core.shell`'s other rows — all of which reach the rail through the projection registry exactly as a stranger's
  * would. `.sidebar-opener` and `.sidebar-cluster` are the newest members and the clearest case
  * for the rule: an opener row is worn by `core.keys` AND `core.plugins`, and a cluster wrapper
  * is drawn by the rail around rows belonging to plugins that have never heard of each other
@@ -69,8 +69,24 @@
  * the collapse lasts. `:has()` is what lets the rail be presentation rather than a second,
  * competing copy of the tree.
  */
-.workspace.is-collapsed .workspace-pane:has(> .tile-content-host > .sidebar) {
+.workspace.is-collapsed
+  .workspace-split.is-row
+  > .workspace-pane:has(> .tile-content-host > .sidebar) {
   flex: 0 0 3.25rem;
+  /* The tree writes this longhand inline; collapse temporarily overrides that share. */
+  flex-grow: 0 !important;
+}
+
+/* A fixed-width rail has no resize gesture. Keep the seam's geometry, but not its hit target. */
+.workspace.is-collapsed
+  .workspace-split.is-row
+  > .workspace-pane:has(> .tile-content-host > .sidebar)
+  + .workspace-divider,
+.workspace.is-collapsed
+  .workspace-split.is-row
+  > .workspace-divider:has(+ .workspace-pane > .tile-content-host > .sidebar) {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /*
@@ -217,7 +233,6 @@
 }
 
 .sidebar-icon-button,
-.sidebar-new,
 .sidebar-link,
 .sidebar-delete,
 .sidebar-create button {
@@ -274,36 +289,176 @@
   display: none;
 }
 
-.sidebar-new {
+/*
+ * THE CREATION CONTROL (`core.shell.creators`). At rest a quiet "+ New…" row, drawn as the
+ * empty slot an entry would fill; pressed, the same slot becomes the DRAFT — the chosen
+ * creator's mark, a borderless name field and a Create button, with flat text choices below.
+ * Only the name row is underlined: this is an entry being written, not a separate card.
+ */
+.sidebar-creator {
+  display: flex;
+  width: 100%;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px dashed #343a40;
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.55rem;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.sidebar-creator:hover,
+.sidebar-creator:focus-visible {
+  border-color: #4c6ef5;
+  outline: none;
+  color: #e9ecef;
+  background: #1c1f25;
+}
+
+.sidebar-creator:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Collapsed, the "+" stands alone and fills the rail's width. */
+.sidebar-creator.is-alone {
+  min-height: 2.35rem;
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-draft {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0.25rem 0.55rem;
+  background: transparent;
+}
+
+.sidebar-draft[aria-busy="true"] {
+  opacity: 0.7;
+}
+
+.sidebar-draft-line {
   display: flex;
   min-width: 0;
-  min-height: 2.35rem;
   align-items: center;
-  gap: 0.65rem;
-  border-color: #343a40;
-  border-radius: 0.6rem;
-  padding: 0.45rem 0.55rem;
-  color: #dee2e6;
-  font-size: 0.84rem;
-  font-weight: 650;
-  text-align: left;
-  background: #202329;
-  white-space: nowrap;
+  gap: 0.4rem;
+  min-height: 2rem;
+  border-bottom: 1px solid #495057;
 }
 
-/* A creator label's declared contract: truncate; the title attribute still says it all. */
-.sidebar-new > span {
+.sidebar-draft-line:focus-within {
+  border-bottom-color: #748ffc;
+}
+
+.sidebar-draft-mark {
+  display: inline-grid;
+  width: 1.6rem;
+  height: 1.6rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  color: #868e96;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar-draft-mark:hover {
+  color: #bac8ff;
+}
+
+.sidebar-draft-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  padding: 0.2rem 0;
+  color: #f8f9fa;
+  background: transparent;
+  font: inherit;
+  font-size: 0.88rem;
+  outline: none;
+}
+
+/* The name row's underline indicates focus; the field draws no second ring. */
+.sidebar-draft-name:focus,
+.sidebar-draft-name:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.sidebar-draft-name::placeholder {
+  color: #6c757d;
+}
+
+/* A creator that takes no name: its title sits where the field would, and Enter presses it. */
+.sidebar-draft-name.is-fixed {
   overflow: hidden;
+  text-align: left;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.sidebar-new:hover {
-  border-color: #4c6ef5;
-  background: #252932;
+.sidebar-draft-submit {
+  flex: 0 0 auto;
+  min-height: 1.8rem;
+  border: 0;
+  border-radius: 0.2rem;
+  padding: 0.2rem 0.4rem;
+  color: #bac8ff;
+  background: #252c40;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.sidebar-draft-submit:hover,
+.sidebar-draft-submit:focus-visible {
+  color: #fff;
+  background: #364fc7;
+}
+
+.sidebar-draft-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sidebar-draft-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding-inline-start: 2rem;
+}
+
+.sidebar-draft-choice {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  padding: 0.2rem 0;
+  color: #868e96;
+  background: transparent;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.sidebar-draft-choice:hover {
+  color: #dee2e6;
+  border-bottom-color: #495057;
+}
+
+.sidebar-draft-choice[aria-checked="true"] {
+  border-bottom-color: #748ffc;
+  color: #bac8ff;
 }
 
 .workspace.is-collapsed .sidebar {
-  padding-inline: 0.6rem;
+  padding-inline: 0.5rem;
 }
 
 .workspace.is-collapsed .sidebar-brand {
@@ -314,11 +469,6 @@
 .workspace.is-collapsed .sidebar-sections > .sidebar-plain:first-child,
 .workspace.is-collapsed .sidebar-sections > .sidebar-section:first-child > .sidebar-section-header {
   padding-right: 0;
-}
-
-.workspace.is-collapsed .sidebar-new {
-  justify-content: center;
-  padding-inline: 0;
 }
 
 .sidebar-create {
@@ -635,6 +785,18 @@
 }
 
 .workspace.is-collapsed .sidebar-link {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
+}
+
+.workspace.is-collapsed .sidebar-actions,
+.workspace.is-collapsed .sidebar-folder-chevron,
+.workspace.is-collapsed .sidebar-folder-toggle > strong {
+  display: none;
+}
+
+.workspace.is-collapsed .sidebar-folder-toggle {
   justify-content: center;
   gap: 0;
   padding-inline: 0;
@@ -1504,8 +1666,20 @@ button.sidebar-terminal.is-summary > small {
    * container view, rather than letting the stored ratio eat the screen. The tree is untouched:
    * this is presentation, so a phone and a monitor read the same stored layout.
    */
-  .workspace .workspace-pane:has(> .tile-content-host > .sidebar) {
+  .workspace .workspace-split.is-row > .workspace-pane:has(> .tile-content-host > .sidebar) {
     flex: 0 0 3.25rem;
+    flex-grow: 0 !important;
+  }
+
+  .workspace
+    .workspace-split.is-row
+    > .workspace-pane:has(> .tile-content-host > .sidebar)
+    + .workspace-divider,
+  .workspace
+    .workspace-split.is-row
+    > .workspace-divider:has(+ .workspace-pane > .tile-content-host > .sidebar) {
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .sidebar {

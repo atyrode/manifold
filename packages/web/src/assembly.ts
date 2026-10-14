@@ -13,7 +13,7 @@ import { PluginManagerSection } from "@manifold-plugin/plugin-manager/web";
 import { presenceWebPlugin } from "@manifold-plugin/presence/web";
 import { terminalsWebPlugin } from "@manifold-plugin/terminals/web";
 import { uriWebPlugin } from "@manifold-plugin/uri/web";
-import { IndexSection, NewFolderRow } from "@manifold-plugin/index/web";
+import { IndexSection } from "@manifold-plugin/index/web";
 import { accessManifest } from "@manifold-plugin/access";
 import { indexManifest } from "@manifold-plugin/index";
 import { machinesManifest } from "@manifold-plugin/machines";
@@ -21,6 +21,7 @@ import { presenceManifest } from "@manifold-plugin/presence";
 import { shellManifest, spaceManifest } from "@manifold-plugin/shell";
 import {
   ContainerViewPanel,
+  CreatorsRow,
   IdentityRow,
   SidebarPanel,
   StatusRow,
@@ -49,7 +50,7 @@ import type { WebPluginDef } from "./plugin-host.tsx";
 export const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
 
 /**
- * WHICH DOORS THE FLOOR ITSELF KNOCKS ON — the five action names `packages/web/src` dispatches
+ * WHICH DOORS THE FLOOR ITSELF KNOCKS ON — the four action names `packages/web/src` dispatches
  * for its own account, spelled here for the reason `SIDEBAR_PANEL` is: an action name is the
  * pair `${manifest.id}.${local}`, so writing one is naming a plugin, and this is the only file
  * in `packages/web/src` allowed to do that. Each is built from the manifest rather than typed
@@ -72,7 +73,6 @@ export const SIDEBAR_PANEL = panelRefId(shellManifest.id, "sidebar");
  */
 export const SPACE_SET_LAYOUT_ACTION = `${spaceManifest.id}.setLayout`;
 export const INDEX_CREATE_CONTAINER_ACTION = `${indexManifest.id}.createContainer`;
-export const INDEX_CREATE_FOLDER_ACTION = `${indexManifest.id}.createFolder`;
 export const INDEX_READ_CONTAINER_ACTION = `${indexManifest.id}.readContainer`;
 export const ACCESS_CREATE_PRINCIPAL_ACTION = `${accessManifest.id}.createPrincipal`;
 
@@ -138,9 +138,9 @@ export const FEED_TOPICS: FeedTopics = {
  * matches a row below:
  *
  *   `core.canvas` / `core.compositions` register CONTAINER REFS, keyed by container discipline,
- *     and one SECTION each — their own creator in the rail. Neither declares a panel: a
- *     renderer is reached by layout, and the routed shell and a tile leaf embedding a canvas
- *     ask for it identically.
+ *     and nothing else — their creators in the rail are manifest data the shell draws
+ *     (`contributes.creators`). Neither declares a panel: a renderer is reached by layout, and
+ *     the routed shell and a tile leaf embedding a canvas ask for it identically.
  *   `core.terminals` registers the TERMINAL FACET — the viewer plus the machine-choice policy
  *     a ref needs in order to offer "new terminal" — instead of exporting a component two
  *     renderers imported.
@@ -157,14 +157,14 @@ export const FEED_TOPICS: FeedTopics = {
  * what a shell genuinely owns: the tile layout, the workspace index, and the two contexts it
  * publishes above the tree for its panels to read.
  *
- * AND IT REGISTERS ITS OWN FOUR ROWS, which is the same sentence one level down. The rail's
- * brand line, status line, key-table door and identity footer were hand-written inside that
- * panel until this wave — chrome nobody could read off the assembly, nothing could order, and
- * arrange mode could not move. They are contributions now, and so are the three creators
- * (`core.canvas`, `core.compositions`, `core.index`) that used to be a hard-coded strip above
- * the stack. The panel imports none of them: it reads the composed section list and asks the
- * projection registry who draws each id, which is what makes the shell's own rows arrive by
- * exactly the route a stranger's do.
+ * AND IT REGISTERS ITS OWN ROWS, which is the same sentence one level down. The rail's brand
+ * line, status line, key-table door and identity footer were hand-written inside that panel
+ * until this wave — chrome nobody could read off the assembly, nothing could order, and
+ * arrange mode could not move. They are contributions now, and so is the creation control,
+ * which draws the creators every plugin DECLARES (`contributes.creators`) — data, so no
+ * plugin registers a component for its offer. The panel imports none of these rows: it reads
+ * the composed section list and asks the projection registry who draws each id, which is what
+ * makes the shell's own rows arrive by exactly the route a stranger's do.
  *
  * `core.` IS RESERVED, and this file is one of the two halves of that reservation. The shipped
  * distribution's ids are derived from `packages/server/src/assembly.ts` (`SHIPPED_PLUGIN_IDS`)
@@ -187,14 +187,14 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
       sidebar by the same route a stranger's plugin does — which is the only way "the rail is
       composed" can be checked rather than asserted.
     */
-    sections: { status: StatusRow, identity: IdentityRow },
+    sections: { creators: CreatorsRow, status: StatusRow, identity: IdentityRow },
     /*
       No `bindings` row: the shell claims no keys at all now. Arrange mode's F8 went to
       `core.arrange` and the drop-zone probe's F9 to `core.debug`, each beside the behaviour it
       reaches — so the key table's owner column names the plugin that implements the key.
     */
   },
-  { id: "core.index", sections: { index: IndexSection, "new-folder": NewFolderRow } },
+  { id: "core.index", sections: { index: IndexSection } },
   { id: "core.machines", sections: { machines: MachinesSection } },
   /*
     Durable profiles and their runs belong to Agents; Sessions remains the identity and
