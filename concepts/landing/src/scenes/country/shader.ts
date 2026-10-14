@@ -60,15 +60,37 @@ vec2 countrySpots(float x, vec2 spots) {
   return exp(-a * a);
 }
 
-// Woodland cover on ridge i at slope point (wx across, wv down), 0..1: masses on the far hills,
-// thickest toward the crests, copses on the middle ridge; never on the near fields, the village
-// knoll or the chalk down.
-float countryWoods(float i, float wx, float wv, vec2 near) {
-  if (i < 1.5) return 0.0;
+// Woodland suitability on ridge i at slope point (wx across, wv down): masses on the far hills,
+// thickest toward the crests, copses on the middle ridge. Woodland stands where it exceeds 0.53;
+// K_woodland 0.5 keeps the original extent, 0 removes woods and 1 spreads them widely.
+float countryWoodScore(float i, float wx, float wv) {
   float lean = i < 2.5 ? -0.1 : (i < 4.5 ? 0.06 : 0.14);
   float n = 0.65 * vnoise(vec2(wx * 1.1, wv * 1.6 + 7.3 * i) + countrySeed) + 0.35 * vnoise(vec2(wx * 2.9 + 4.1, wv * 3.3 + 2.9 * i) + countrySeed);
-  float keep = i < 2.5 ? 1.0 - near.x : (i < 3.5 ? 1.0 - near.y : 1.0);
-  return smoothstep(0.5, 0.56, n + lean + 0.12 * exp(-3.0 * wv)) * keep;
+  return n + lean + 0.12 * exp(-3.0 * wv) + 0.36 * (K_woodland - 0.5);
+}
+
+// Never on the near fields, the village knoll or the chalk down: the exclusion lowers the score,
+// so the woods' edge there still follows the land instead of a straight cut.
+float countryWoodKeep(float i, vec2 near) {
+  if (i < 1.5 || K_woodland <= 0.0) return 0.0;
+  return i < 2.5 ? 1.0 - near.x : (i < 3.5 ? 1.0 - near.y : 1.0);
+}
+float countryWoodStand(float i, float wx, float wv, vec2 near) {
+  float keep = countryWoodKeep(i, near);
+  if (keep <= 0.0) return -1.0;
+  return countryWoodScore(i, wx, wv) - 0.3 * (1.0 - keep);
+}
+
+// Woodland area fraction, for distant detail that resolves below one crown.
+float countryWoods(float i, float wx, float wv, vec2 near) {
+  return smoothstep(0.5, 0.56, countryWoodStand(i, wx, wv, near));
+}
+
+// Whether one tree, rooted at (wx, wv) with hash h, stands: whole trees, never translucent woods.
+// A ragged edge and occasional clearings keep the stand from reading as a planted block.
+bool countryTreeStands(float i, float wx, float wv, vec2 near, float h) {
+  if (fract(h * 53.7) < 0.08) return false;
+  return countryWoodStand(i, wx, wv, near) + 0.06 * (fract(h * 29.3) - 0.5) > 0.53;
 }
 
 // Bare terrain only: settlement shaping belongs to the ground, tree crowns never do.
@@ -93,31 +115,48 @@ float countryPineWidth(float y) {
   return 0.82 * taper * (0.78 + 0.22 * fract((1.4 - y) * 2.0));
 }
 
+// One woodland tree's size (0.7..1.3, most near 1), varied so stands never read as planted rows.
+float countryTreeSize(float h) {
+  return 0.7 + 0.3 * (fract(h * 7.13) + fract(h * 11.7));
+}
+
+// Treetop height above the bare crest at x (screen units at depth one): a ragged line of whole
+// trees, up to two per crown cell with jittered roots, varied sizes, clearings and both species.
+float countryTreeline(float i, float wx, vec2 near) {
+  if (countryWoodStand(i, wx, 0.0, near) < 0.4) return 0.0;
+  float u = wx * 16.0;
+  float cell = floor(u);
+  float top = 0.0;
+  for (int k = -1; k <= 1; k++) {
+    for (int j = 0; j < 2; j++) {
+      float h = hash12(vec2(cell + float(k), i + 0.5 + 7.1 * float(j)));
+      // A second tree in only some cells: clumps and gaps rather than even spacing.
+      if (j == 1 && fract(h * 91.3) > 0.4) continue;
+      float root = cell + float(k) + 0.1 + 0.8 * fract(h * 17.3);
+      if (!countryTreeStands(i, root / 16.0, 0.0, near, h)) continue;
+      float size = countryTreeSize(h);
+      float t;
+      if (countryPine(h)) {
+        float f = abs(u - root) / (0.42 * size);
+        // A spire with tiered shoulders; the tallest pines stand well above the rest.
+        float spire = max(1.0 - f, 0.0);
+        t = size * (0.012 * step(f, 1.0) + 0.052 * spire * (0.88 + 0.12 * fract(spire * 4.0)));
+      } else {
+        float f = (u - root) / (0.62 * size);
+        t = size * 0.046 * pow(max(1.0 - f * f, 0.0), 0.35);
+      }
+      top = max(top, t);
+    }
+  }
+  return top;
+}
+
 // The visible outline includes treetops for occlusion, but never defines the ground underneath.
 float countryCrest(float i, float x, vec2 spots, out float terrain) {
   vec4 L = countryLayer(i);
   terrain = countryGroundCrest(i, x, spots);
-  float c = terrain;
-  vec2 near = countrySpots(x, spots);
-  float wx = x * L.x;
-  float woods = countryWoods(i, wx, 0.0, near);
-  if (woods > 0.0) {
-    float u = wx * 16.0 + 0.7 * vnoise(vec2(wx * 4.0, i + 0.5));
-    float f = fract(u) * 2.0 - 1.0;
-    float h = hash12(vec2(floor(u), i));
-    float top;
-    if (countryPine(h)) {
-      float center = 0.32 + 0.36 * fract(h * 17.3);
-      float width = 0.22 + 0.1 * fract(h * 37.7);
-      float peak = max(1.0 - abs(fract(u) - center) / width, 0.0);
-      top = 0.018 + 0.049 * peak * (0.48 + 0.52 * fract(h * 7.13));
-    } else {
-      float dome = sqrt(max(1.0 - f * f, 0.0)) * (0.55 + 0.45 * h);
-      top = 0.03 + 0.022 * dome;
-    }
-    c += woods * top / L.x;
-  }
-  return c;
+  if (i < 1.5) return terrain;
+  return terrain + countryTreeline(i, x * L.x, countrySpots(x, spots)) / L.x;
 }
 
 // Down-slope distance (world) at a drop s below the crest of a ridge at depth d, and its rate
@@ -334,39 +373,50 @@ vec4 countryTrees(vec2 f, vec2 scale, float r, float density, float above, vec3 
   return best;
 }
 
-// Woodland crowns in their own side-view space, not terrain coordinates. Round broadleaf crowns
-// and tiered evergreen cones compete inside the same bounded 3x3 neighborhood; ao darkens gaps.
-vec4 countryCanopy(vec2 c, out float ao) {
+// Woodland crowns in their own side-view space (c: 16 crowns per world unit across, y down from
+// the visible treeline). Each crown stands or not by the woodland at its own root, so stands have
+// whole-tree edges, clearings and no translucent overlay. lift: treeline height above the bare
+// crest here; depth: the ridge's. Returns the nearest covering crown's normal (xyz) and hash (w);
+// cover 1 on a crown; ao darkens toward crown edges.
+vec4 countryCanopy(vec2 c, float ridge, float depth, float lift, vec2 near, out float ao, out float cover) {
   vec2 i = floor(c);
   vec2 g = fract(c);
   float d1 = 8.0;
   vec2 rel = vec2(0.0);
+  float size1 = 1.0;
   vec2 id = vec2(0.0);
   for (int y = -1; y <= 1; y++) {
     for (int k = -1; k <= 1; k++) {
       vec2 o = vec2(float(k), float(y));
-      vec2 at = o + 0.2 + 0.6 * vec2(hash12(i + o + 1.7), hash12(i + o + 6.1));
-      vec2 d = g - at;
       float h = hash12(i + o + 2.3);
-      float dd = dot(d, d);
+      vec2 at = o + 0.1 + 0.8 * vec2(hash12(i + o + 1.7), hash12(i + o + 6.1));
+      vec2 root = (i + at) / vec2(16.0, 16.0 * depth);
+      if (!countryTreeStands(ridge, root.x, countryDown(max(root.y - lift, 0.0), depth), near, h)) continue;
+      float size = countryTreeSize(h);
+      vec2 d = g - at;
+      float dd;
       if (countryPine(h)) {
-        vec2 pinePoint = vec2(d.x, -d.y) * 2.0;
-        float cone = max(abs(pinePoint.x) / max(countryPineWidth(pinePoint.y), 0.01),
-                         abs((pinePoint.y - 0.2) / 1.2));
-        dd = 0.25 * cone * cone;
+        vec2 pinePoint = vec2(d.x / 1.3, -d.y) * 2.0 / size;
+        dd = max(abs(pinePoint.x) / max(countryPineWidth(pinePoint.y), 0.01),
+                 abs((pinePoint.y - 0.2) / 1.2));
+      } else {
+        dd = length(d) / (0.62 * size);
       }
       if (dd < d1) {
         d1 = dd;
         rel = d;
+        size1 = size;
         id = i + o;
       }
     }
   }
-  ao = 1.0 - smoothstep(0.12, 0.5, d1);
+  cover = step(d1, 1.0);
+  ao = 1.0 - smoothstep(0.35, 1.0, d1);
   float h = hash12(id + 2.3);
+  vec2 r = rel / (0.62 * size1);
   vec3 normal = countryPine(h)
-    ? normalize(vec3(rel.x / max(countryPineWidth(-rel.y * 2.0), 0.06), 0.38, -0.75))
-    : normalize(vec3(rel.x, -rel.y + 0.2, -sqrt(max(0.45 - d1, 0.03))));
+    ? normalize(vec3(rel.x / max(size1 * countryPineWidth(-rel.y * 2.0 / size1), 0.06), 0.38, -0.75))
+    : normalize(vec3(r.x, -r.y + 0.2, -sqrt(max(1.0 - dot(r, r), 0.05))));
   return vec4(normal, h);
 }
 
@@ -980,27 +1030,38 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         float reach = hedgeHalf * (1.0 + min(1.6 * toSun / max(sky.sun.y, 0.1), 6.0));
         shadow = max(shadow, (1.0 - smoothstep(0.75 * reach, reach, border)) * holds);
       }
-      // Woods on the farther ridges, crown by crown where the crowns are big enough to show.
-      float woods = countryWoods(i, w.x, w.y, near);
-      if (woods > 0.0) {
-        float ao = 0.0;
-        float crowns = smoothstep(2.5, 5.0, 0.0625 / px.x);
-        // Unresolved crowns use an evergreen/broadleaf area mean, no nine-cell detail search.
-        vec4 canopy = vec4(0.0, 0.55, -0.835, 0.5);
-        if (crowns > 0.0) canopy = countryCanopy(vec2(w.x, canopyDrop * d) * 16.0, ao);
+      // Woods on the farther ridges. Resolved stands are whole crowns over a dark forest floor;
+      // unresolved ones use the area mean. Pixels above the bare crest lie inside the treeline
+      // silhouette, so they are always canopy and never stretched field.
+      bool treetop = q.y > groundCrest;
+      float woods = treetop ? 1.0 : countryWoods(i, w.x, w.y, near);
+      float crowns = smoothstep(2.5, 5.0, 0.0625 / px.x);
+      float ao = 1.0;
+      float cover = 0.0;
+      vec4 canopy = vec4(0.0, 0.55, -0.835, 0.5);
+      float stand = countryWoodStand(i, w.x, w.y, near);
+      bool standing = treetop || stand > 0.45;
+      if (crowns > 0.0 && standing)
+        canopy = countryCanopy(vec2(w.x, canopyDrop * d) * 16.0, i, d, crest - groundCrest, near, ao, cover);
+      if (treetop) cover = 1.0;
+      float trees = mix(woods, cover, crowns);
+      if (trees > 0.0 || (crowns > 0.0 && standing)) {
         vec3 evergreen = vec3(0.085, 0.2, 0.145);
         vec3 leaf = vec3(0.12, 0.25, 0.11);
         if (countryPine(canopy.w)) leaf = evergreen;
         else if (season > 1.5) leaf = canopy.w < 0.3 ? vec3(0.5, 0.26, 0.08) : (canopy.w < 0.5 ? vec3(0.62, 0.45, 0.12) : vec3(0.14, 0.26, 0.1));
         vec3 broadleafMean = season > 1.5 ? vec3(0.38, 0.31, 0.1) : vec3(0.12, 0.25, 0.11);
-        leaf = mix(mix(broadleafMean, evergreen, K_pines), leaf, crowns);
-        albedo = mix(albedo, leaf * mix(1.0, 0.65 + 0.35 * ao, crowns), woods);
-        n = normalize(mix(n, canopy.xyz, woods * crowns));
-        settles = mix(settles, 0.35 + 0.4 * max(canopy.y, 0.0), woods);
-        porous = mix(porous, 0.35, woods);
-        glossy = mix(glossy, 0.08, woods);
-        relief = mix(relief, 0.5, woods);
-        sheen *= 1.0 - woods;
+        vec3 mean = mix(broadleafMean, evergreen, K_pines);
+        // Between resolved crowns inside a stand: shaded needles and leaf litter, not open field.
+        vec3 floorColor = mix(albedo, albedo * 0.45 + vec3(0.02, 0.04, 0.02), step(0.53, stand));
+        vec3 resolved = mix(floorColor, leaf * (0.65 + 0.35 * ao), cover);
+        albedo = mix(mix(albedo, mean, woods), resolved, crowns);
+        n = normalize(mix(n, canopy.xyz, cover * crowns));
+        settles = mix(settles, 0.35 + 0.4 * max(canopy.y, 0.0), trees);
+        porous = mix(porous, 0.35, trees);
+        glossy = mix(glossy, 0.08, trees);
+        relief = mix(relief, 0.5, trees);
+        sheen *= 1.0 - trees;
       }
       // The farm track up the near field and over its brow toward the village: two wheel ruts either
       // side of a grassy crown, cutting through the hedges. Rain darkens it and makes it shine, and

@@ -178,6 +178,7 @@ export function verify(): Record<string, unknown> {
           if (p.y < crest) {
             vec2 w = vec2(p.x * d, countryDown(crest - p.y, d));
             float woods = countryWoods(i, w.x, w.y, countrySpots(p.x, spots));
+            if (regressionHabitat == 2) return actual;
             if (k >= 3 && (regressionHabitat == 0 ? woods < 0.001 : woods >= 1.0))
               return actual;
             break;
@@ -195,11 +196,17 @@ export function verify(): Record<string, unknown> {
   gl.uniform1i(gl.getUniformLocation(terrain, "uView"), 1);
   gl.uniform1fv(gl.getUniformLocation(terrain, "uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform2f(gl.getUniformLocation(terrain, "uPassage"), 1, 0);
-  const drawTerrain = (season: number, pines: number, habitat: number): Uint8Array => {
+  const drawTerrain = (
+    season: number,
+    pines: number,
+    habitat: number,
+    woodland = 0.5,
+  ): Uint8Array => {
     gl.uniform1i(gl.getUniformLocation(terrain, "regressionHabitat"), habitat);
     const knobs = {
       ...paramDefaults("country"),
       pines,
+      woodland,
       season,
       time: 0.58,
       clouds: 0,
@@ -236,6 +243,12 @@ export function verify(): Record<string, unknown> {
     drawTerrain(0, 1, 1),
     drawTerrain(2, 1, 1),
     "Pine woodland changed color in autumn",
+  );
+  // With woodland cleared, species must have nothing left to change anywhere on the far land.
+  result.clearedPixels = compareSurface(
+    drawTerrain(2, 0, 2, 0),
+    drawTerrain(2, 1, 2, 0),
+    "Woodland cover 0 left trees standing",
   );
   gl.deleteProgram(terrain);
 
