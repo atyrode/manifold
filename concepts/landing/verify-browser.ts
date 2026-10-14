@@ -1,6 +1,7 @@
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
 import { sceneDefs } from "./src/scenes/index.ts";
+import { verifyCountryWildlife } from "./src/scenes/country/wildlife.verify.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
@@ -268,6 +269,7 @@ export function verify(): Record<string, unknown> {
   result.tidepoolExchange = verifyTidepoolExchange(gl);
   result.lakeFreshSnow = verifyLakeFreshSnow(gl);
   result.shanshui = verifyShanshui(gl);
+  Object.assign(result, verifyCountryWildlife(gl));
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

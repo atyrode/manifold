@@ -34,6 +34,11 @@
 // steps for drawing. Every array is allocated up front for the largest flock (the density field
 // only grows on resize), so a frame allocates nothing.
 //
+// A scene flies the flock through a FlockSetup: which of its knobs drives each control (or a value
+// that holds it fixed) and the band of sky the flock keeps to; the Murmuration scene's own knobs and
+// sky are the default. With no birds (the control at 0, a switch that is off) the flock is idle: it
+// steps nothing, paints nothing and hands the shader no textures, and grows afresh when birds return.
+//
 // Textures:
 //   uSim0  rg16f, about FIELD_PER_CELL texels per cell (at most FIELD_ROWS rows): R birds per texel
 //          (a short exponential trail smooths their motion), G the same weighted by how hard the
@@ -92,7 +97,7 @@ const BEND_WAVENUMBER = 3.4;
 const BEND_PERIOD = 4.7;
 /** Distance to the flock (screen heights): a little perspective. */
 const DISTANCE = 2.2;
-/** The band of sky the flock keeps to (screen heights), and its margin from the frame's sides. */
+/** The Murmuration's band of sky (screen heights; FlockSetup.sky), and the margin from the frame's sides. */
 const SKY_LOW = 0.28;
 const SKY_HIGH = 0.95;
 const SIDE_MARGIN = 0.1;
@@ -261,6 +266,25 @@ const MARK_OUTWARD_LENGTH = MARK_TRACK_LENGTH / 2;
 
 type KnobKey = "birds" | "cohesion" | "chaos" | "speed" | "predator" | "wind" | "mark";
 
+/**
+ * How a scene flies the flock: for each control, the key of the scene knob that drives it (as the
+ * shader reads it) or a number that holds it there (a fixed control never fires a "now" press); and
+ * the band of sky the flock keeps to, in screen heights from the bottom of the frame.
+ */
+export interface FlockSetup {
+  readonly knobs: Readonly<Record<KnobKey, string | number>>;
+  readonly sky: Readonly<{ low: number; high: number }>;
+}
+
+/** The Murmuration scene: every control a knob of its own name, the sky above its skyline. */
+const MURMURATION: FlockSetup = {
+  knobs: { birds: "birds", cohesion: "cohesion", chaos: "chaos", speed: "speed", predator: "predator", wind: "wind", mark: "mark" },
+  sky: { low: SKY_LOW, high: SKY_HIGH },
+};
+
+/** What an idle flock hands the renderer: no textures. */
+const IDLE: readonly (WebGLTexture | undefined)[] = [];
+
 /** One slow swing of the choreography: a sine of the clock with the given period (s) and phase. */
 const swing = (clock: number, period: number, phase: number): number => Math.sin((clock / period) * TAU + phase);
 
@@ -268,7 +292,8 @@ class FlockSim implements SceneSim {
   readonly #density: DataTexture;
   readonly #state: DataTexture;
   readonly #stateData = new Float32Array(12);
-  readonly #knobs: KnobReader<KnobKey>;
+  readonly #setup: FlockSetup;
+  readonly #knobs: KnobReader<string>;
   readonly #attackSlot: number;
   readonly #markSlot: number;
   readonly #knob: Record<KnobKey, number> = { birds: 3000, cohesion: 0.55, chaos: 0.35, speed: 0.5, predator: 0, wind: 0, mark: 0 };
@@ -359,29 +384,35 @@ class FlockSim implements SceneSim {
   #exit = 0;
   #entrySide = 1;
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader<KnobKey>("flock", params, ["birds", "cohesion", "chaos", "speed", "predator", "wind", "mark"]);
-    this.#attackSlot = this.#knobs.trigger("predator");
-    this.#markSlot = this.#knobs.trigger("mark");
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[], setup: FlockSetup) {
+    this.#setup = setup;
+    const keys = Object.values(setup.knobs).filter((source): source is string => typeof source === "string");
+    this.#knobs = new KnobReader<string>("flock", params, keys);
+    this.#attackSlot = this.#triggerOf("predator");
+    this.#markSlot = this.#triggerOf("mark");
     this.#density = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
     this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const knobs = this.#knobs;
     const knob = this.#knob;
-    knob.birds = knobs.value(frame, "birds");
-    knob.cohesion = knobs.value(frame, "cohesion");
-    knob.chaos = knobs.value(frame, "chaos");
-    knob.speed = knobs.value(frame, "speed");
-    knob.predator = knobs.value(frame, "predator");
-    knob.wind = knobs.value(frame, "wind");
-    knob.mark = knobs.value(frame, "mark");
+    knob.birds = this.#read(frame, "birds");
+    // No birds: idle, and grow a fresh flock when they return.
+    if (knob.birds < 1) {
+      this.#n = 0;
+      return IDLE;
+    }
+    knob.cohesion = this.#read(frame, "cohesion");
+    knob.chaos = this.#read(frame, "chaos");
+    knob.speed = this.#read(frame, "speed");
+    knob.predator = this.#read(frame, "predator");
+    knob.wind = this.#read(frame, "wind");
+    knob.mark = this.#read(frame, "mark");
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#fitField(frame.width, frame.height);
     const n = Math.min(MAX_BIRDS, Math.max(1, Math.round(knob.birds)));
     if (n !== this.#n) this.#reset(n);
-    // The "now" buttons: one frame of `fired` after a press.
+    // The "now" buttons: one frame of `fired` after a press (a fixed control has no slot: -1).
     if (frame.fired[this.#attackSlot]) this.#attackNow = true;
     if (frame.fired[this.#markSlot]) this.#markNow = true;
 
@@ -406,6 +437,18 @@ class FlockSim implements SceneSim {
   dispose(): void {
     this.#density.dispose();
     this.#state.dispose();
+  }
+
+  /** A control as the shader reads its knob, or its fixed value. */
+  #read(frame: SimFrame, control: KnobKey): number {
+    const source = this.#setup.knobs[control];
+    return typeof source === "number" ? source : this.#knobs.value(frame, source);
+  }
+
+  /** The trigger slot of a control's knob ("now"); -1, which never fires, for a fixed control. */
+  #triggerOf(control: KnobKey): number {
+    const source = this.#setup.knobs[control];
+    return typeof source === "number" ? -1 : this.#knobs.trigger(source);
   }
 
   #fitField(width: number, height: number): void {
@@ -528,14 +571,15 @@ class FlockSim implements SceneSim {
     const reachX = 1.1 * Math.hypot(seen * cosHeading, across * sinHeading);
     const reachY = 1.1 * Math.hypot(seen * sinHeading, across * cosHeading);
     const roomX = Math.max(0.05, aspect / 2 - SIDE_MARGIN);
-    const roomY = (SKY_HIGH - SKY_LOW) / 2;
+    const sky = this.#setup.sky;
+    const roomY = (sky.high - sky.low) / 2;
     const fit = Math.min(1, roomX / reachX, roomY / reachY);
     const wind = this.#wind;
     const roamX = (0.7 * swing(clock, 27, 2.5) + 0.3 * swing(clock, 9.7, 0.4) + 0.45 * wind) / (1 + 0.45 * Math.abs(wind));
     const roamY = 0.6 * swing(clock, 19, 4.4) + 0.4 * swing(clock, 7.3, 1.5);
 
     shapes[at + SH_X] = aspect / 2 + Math.max(0, roomX - reachX * fit) * roamX;
-    shapes[at + SH_Y] = (SKY_LOW + SKY_HIGH) / 2 + Math.max(0, roomY - reachY * fit) * roamY;
+    shapes[at + SH_Y] = (sky.low + sky.high) / 2 + Math.max(0, roomY - reachY * fit) * roamY;
     shapes[at + SH_HEADING_COS] = cosHeading;
     shapes[at + SH_HEADING_SIN] = sinHeading;
     shapes[at + SH_YAW_COS] = cosYaw;
@@ -1034,7 +1078,7 @@ function markTrackAt(u: number, out: Float32Array): void {
   out[3] = (by - ay) / length;
 }
 
-/** The murmuration's simulation for a scene whose knobs are `params` (looked up by key). */
-export function flockSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new FlockSim(gl, params);
+/** The murmuration's simulation for a scene whose knobs are `params` (looked up by key), flown as `setup` says. */
+export function flockSim(params: readonly ParamDef[], setup: FlockSetup = MURMURATION): SimFactory {
+  return (gl) => new FlockSim(gl, params, setup);
 }
