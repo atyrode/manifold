@@ -7,7 +7,7 @@ import { choice, feature, knobValue, range, seed, toggle, type ParamDef } from "
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { petriGlsl } from "./shader.ts";
-import { petriChemistries, petriPalettes, petriSim } from "./sim.ts";
+import { PETRI_PASSAGE, petriChemistries, petriPalettes, petriSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("chemistry", "chemistry", "chemistry", petriChemistries.map((label, value) => ({ label, value })), 0, "Turing: two chemicals feeding and inhibiting each other (Gray–Scott) grow a living pattern of stripes, coral, worms and dividing spots that slowly turns from one into the next. BZ: the Belousov–Zhabotinsky reaction, waves of blue running through an orange dish as turning spirals and target rings."),
@@ -29,6 +29,7 @@ export const petriScene: SceneDef = {
   blurb: "A reaction slowly living in a glass dish: Turing patterns and Belousov–Zhabotinsky spirals.",
   accent: "#4d84f5",
   look: { color: "full", levels: 4 },
+  passage: { enter: PETRI_PASSAGE.enter, exit: PETRI_PASSAGE.exit },
   params,
   groups: {
     chemistry: { title: "Chemistry", blurb: "What reacts in the dish and how it lives. Press and drag in the dish to add reagent or spark waves." },

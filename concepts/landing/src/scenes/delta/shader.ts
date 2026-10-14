@@ -6,6 +6,29 @@
 //          a current speed (grid cells per model time unit)
 // The grid is cover-fitted to the frame. Knobs read here: K_palette (0 satellite, 1 infrared,
 // 2 chart), K_relief, K_clouds, K_farms.
+//
+// Entrance and exit are the camera's: it descends from a higher orbit onto the delta (the ground
+// swells from a little farther away, drifting as the orbit carries it, with a small overshoot and
+// settle) while a bank of thin high cloud, nearer the camera and so moving faster across the frame,
+// slides past and away; on exit the camera climbs back out, the ground shrinking and drifting on
+// the same way, and a bank of cloud drifts in over the land. Everything is built from one view of
+// the grid (deltaViewUv), so the land, the sim's picture and the clouds share a projection; at
+// rest (passageIn() 1, passageOut() 0) every one of them returns its input untouched.
+import { glslFloat } from "../../shaders/glsl.ts";
+
+/** Seconds the entrance and the exit take (SceneDef.passage). */
+export const DELTA_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.5 };
+
+/**
+ * The camera's passage. zoomIn / zoomOut: how much farther (as a share of the resting view) the
+ * ground looks at the start of the entrance and the end of the exit; drift: how far (grid uv) the
+ * orbit carries the ground across the frame over the entrance, and on over the exit; settle: the
+ * entrance's overshoot (0 none); parallax: how much faster the cloud's scale changes than the
+ * ground's (it is nearer the camera); windX/windY: the cloud's drift direction, and slide: how far
+ * (uv) a bank of cloud travels to leave the frame; rest: how far into the frame the exit's bank has
+ * come when it ends.
+ */
+const VIEW = { zoomIn: 0.2, zoomOut: 0.18, driftX: 0.04, driftY: 0.02, settle: 1.2, parallax: 1.5, windX: 1, windY: 0.3, slide: 1.8, rest: 0.55 } as const;
 
 export const deltaGlsl = `
 // Sunlight from the upper left (north-west), some 35 degrees up.
@@ -33,6 +56,51 @@ vec2 deltaGridUv(vec2 uv) {
   float frame = uRes.x / uRes.y;
   vec2 scale = frame > grid ? vec2(1.0, grid / frame) : vec2(frame / grid, 1.0);
   return 0.5 + (uv - 0.5) * scale;
+}
+
+// The passage's camera (see the header): the ground's zoom (1 at rest, above 1 the camera is farther
+// off) in x and its drift in grid uv in yz; the entrance's term settles through 0 with a small
+// overshoot, the exit's eases in, so the camera pulls away slowly and then faster.
+const float DELTA_ZOOM_IN = ${glslFloat(VIEW.zoomIn)};
+const float DELTA_ZOOM_OUT = ${glslFloat(VIEW.zoomOut)};
+const vec2 DELTA_DRIFT = vec2(${glslFloat(VIEW.driftX)}, ${glslFloat(VIEW.driftY)});
+const float DELTA_SETTLE = ${glslFloat(VIEW.settle)};
+const float DELTA_PARALLAX = ${glslFloat(VIEW.parallax)};
+const vec2 DELTA_WIND = vec2(${glslFloat(VIEW.windX)}, ${glslFloat(VIEW.windY)});
+const float DELTA_SLIDE = ${glslFloat(VIEW.slide)};
+const float DELTA_REST = ${glslFloat(VIEW.rest)};
+
+bool deltaAtRest() {
+  return passageIn() >= 1.0 && passageOut() <= 0.0;
+}
+
+// 0 to 1 over x in 0..1, overshooting a little on the way and ending exactly on 1.
+float deltaSettle(float x) {
+  float u = clamp(x, 0.0, 1.0) - 1.0;
+  return 1.0 + (DELTA_SETTLE + 1.0) * u * u * u + DELTA_SETTLE * u * u;
+}
+
+vec3 deltaCamera() {
+  float arrive = 1.0 - deltaSettle(passageIn());
+  float leave = passageOut() * passageOut();
+  return vec3(1.0 + DELTA_ZOOM_IN * arrive + DELTA_ZOOM_OUT * leave, DELTA_DRIFT * (arrive - leave));
+}
+
+// The grid's uv for a frame uv, through the passage's camera. Beyond the grid's edge the land is
+// mirrored: more of the same country, with no streak of clamped edge cells.
+vec2 deltaViewUv(vec2 uv) {
+  vec2 g = deltaGridUv(uv);
+  if (deltaAtRest()) return g;
+  vec3 cam = deltaCamera();
+  g = 0.5 + cam.yz + (g - 0.5) * cam.x;
+  return 1.0 - abs(1.0 - mod(g, 2.0));
+}
+
+// A frame uv in the cloud's plane: it is nearer the camera than the ground, so the climb and the
+// descent change its scale faster.
+vec2 deltaCloudUv(vec2 uv) {
+  if (deltaAtRest()) return uv;
+  return 0.5 + (uv - 0.5) * (1.0 + DELTA_PARALLAX * (deltaCamera().x - 1.0));
 }
 
 DeltaGround deltaSample(vec2 g) {
@@ -191,12 +259,44 @@ vec3 deltaClouds(vec3 col, vec2 uv) {
   return mix(col, vec3(0.86, 0.88, 0.90), 0.85 * cloud);
 }
 
+// How far along its drift the passage's bank of cloud has travelled (uv): the entrance's lies over
+// the whole frame at first and slides off it; the exit's slides in from beyond the left edge and
+// ends partway over the land.
+float deltaBankAt() {
+  if (passageOut() > 0.0) return -mix(DELTA_SLIDE, DELTA_REST, smoothstep(0.0, 1.0, passageOut()));
+  return DELTA_SLIDE * smoothstep(0.0, 0.92, passageIn());
+}
+
+// Cover 0..1 of the bank at a point in the cloud's plane: thin wisps drawn out along the drift, in
+// a bank that is a finite patch of sky (soft-edged, and empty beyond), so it leaves the frame whole
+// and nothing new drifts in behind it. A smooth three-octave field: nothing fine to crawl as it moves.
+float deltaBankCover(vec2 cuv, float bank) {
+  vec2 q = cuv - DELTA_WIND * bank;
+  float box = smoothstep(-0.5, -0.25, q.x) * (1.0 - smoothstep(1.1, 1.35, q.x)) * smoothstep(-0.5, -0.25, q.y) * (1.0 - smoothstep(1.1, 1.35, q.y));
+  if (box <= 0.0) return 0.0;
+  vec2 along = normalize(DELTA_WIND);
+  vec2 a = vec2(q.x * uRes.x / uRes.y, q.y);
+  vec2 w = vec2(dot(a, along) * 1.1, dot(a, vec2(-along.y, along.x)) * 4.2) + vec2(11.3, 4.7);
+  return smoothstep(0.55, 0.72, fbm3(w)) * box;
+}
+
+// The passage's bank of cloud and the shadows it throws down and to the right. Per cell, so its
+// edges step across the screen without shimmer. Nothing at rest.
+vec3 deltaBank(vec3 col, vec2 cuv) {
+  if (deltaAtRest()) return col;
+  float bank = deltaBankAt();
+  float shadow = deltaBankCover(cuv - vec2(0.035, -0.03), bank);
+  float cloud = deltaBankCover(cuv, bank);
+  col *= 1.0 - 0.35 * hardEdge(shadow);
+  return mix(col, vec3(0.86, 0.88, 0.90), 0.85 * hardEdge(cloud));
+}
+
 Shade sceneDelta(vec2 uv, vec2 cell, float t) {
   if (uSimOn.x < 0.5) {
     vec3 sea = mix(vec3(0.02, 0.06, 0.11), vec3(0.05, 0.16, 0.2), uv.y);
     return shadeOf(sea, dot(sea, LUMA), 0.0);
   }
-  vec2 g = deltaGridUv(uv);
+  vec2 g = deltaViewUv(uv);
   DeltaGround s = deltaSample(g);
   vec2 cellPos = g * vec2(textureSize(uSim0, 0));
   bool chart = K_palette > 1.5;
@@ -204,7 +304,10 @@ Shade sceneDelta(vec2 uv, vec2 cell, float t) {
   if (chart) col = deltaChart(s, cell);
   else if (K_palette > 0.5) col = deltaInfrared(s, cellPos);
   else col = deltaSatellite(s, cellPos);
-  if (!chart) col = deltaClouds(col, uv);
+  if (!chart) {
+    vec2 cuv = deltaCloudUv(uv);
+    col = deltaBank(deltaClouds(col, cuv), cuv);
+  }
 
   // The accent: the thin, jade end of the silt plumes spreading into the sea.
   float accent = s.water * deltaTurbid(s, cellPos) * (1.0 - smoothstep(0.012, 0.03, s.silt)) * smoothstep(0.1, 0.4, s.depth);

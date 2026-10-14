@@ -106,6 +106,7 @@ vec3 bonsaiL;          // toward the sun (x right, y up, z away from the viewer:
 vec3 bonsaiSun;        // direct sun
 vec3 bonsaiAmb;        // soft light from the sky over the veranda
 vec3 bonsaiLampLight;  // the lamp's colour and strength
+float bonsaiShift;     // how far right the stand (pot, tree, everything on it) stands off its place: 0 at rest, the entrance and exit slide it
 
 float bonsaiHard(float cover) {
   return cover > bonsaiTh ? 1.0 : 0.0;
@@ -230,7 +231,7 @@ vec3 bonsaiWall(vec2 d) {
              * smoothstep(w.y - soft, w.y + soft, d.y) * (1.0 - smoothstep(w.w - soft * 1.6, w.w + soft * 1.6, d.y));
   // The tree's shadow (and the stand's and pot's below it): seen from the wall toward the sun.
   float s = min(BONSAI_WALL_Z * cot, 1.3);
-  vec2 at = vec2(d.x + bonsaiL.x * s, p.y + bonsaiL.y * s);
+  vec2 at = vec2(d.x - bonsaiShift + bonsaiL.x * s, p.y + bonsaiL.y * s);
   float shade = bonsaiCaster(at);
   float pot = (1.0 - smoothstep(-0.01, 0.02, abs(at.x) - BONSAI_POT_SIZE.x)) * (1.0 - smoothstep(-0.01, 0.02, abs(at.y + 0.5 * BONSAI_POT_SIZE.z) - 0.5 * BONSAI_POT_SIZE.z));
   float stand = (1.0 - smoothstep(-0.01, 0.02, abs(at.x) - BONSAI_STAND_HALF.x)) * (1.0 - smoothstep(-0.01, 0.02, abs(at.y - BONSAI_STAND_TOP + 0.5 * BONSAI_STAND_SLAB) - 0.5 * BONSAI_STAND_SLAB));
@@ -242,7 +243,7 @@ vec3 bonsaiWall(vec2 d) {
   float r2 = dot(l, l);
   float u = -BONSAI_WALL_Z / (BONSAI_LAMP_AT.z - BONSAI_WALL_Z);
   vec3 q = p + (BONSAI_LAMP_AT - p) * u;
-  float lampShade = 0.75 * bonsaiCaster(vec2(q.x, q.y));
+  float lampShade = 0.75 * bonsaiCaster(vec2(q.x - bonsaiShift, q.y));
   vec3 lamp = bonsaiLampLight * max(dot(n, normalize(l)), 0.0) * 0.45 / (r2 + 0.15);
   c += albedo * lamp * (1.0 - lampShade);
   c += vec3(0.95, 0.88, 0.72) * glow * (bonsaiAmb * 0.5 + bonsaiSun * 0.12) * (1.0 - 0.7 * shade * beam);
@@ -263,9 +264,9 @@ vec3 bonsaiFloorAt(vec2 d) {
   // The stand's shadow: from the floor toward the sun up to the stand's top.
   float h = BONSAI_STAND_TOP - BONSAI_FLOOR;
   vec3 s = p + bonsaiL * (h / max(bonsaiL.y, 0.12));
-  vec2 e = abs(s.xz) - BONSAI_STAND_HALF;
+  vec2 e = abs(vec2(s.x - bonsaiShift, s.z)) - BONSAI_STAND_HALF;
   float shadow = 1.0 - smoothstep(-0.02, 0.03, max(e.x, e.y));
-  vec2 under = abs(p.xz) - BONSAI_STAND_HALF;
+  vec2 under = abs(vec2(p.x - bonsaiShift, p.z)) - BONSAI_STAND_HALF;
   float ao = 1.0 - 0.55 * (1.0 - smoothstep(-0.02, 0.06, max(under.x, under.y)));
   vec3 c = albedo * bonsaiLight(p, vec3(0.0, 1.0, 0.0), 1.0 - 0.85 * shadow) * ao;
   return c;
@@ -816,6 +817,7 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
   bonsaiLying = state.y;
   bonsaiFalling = state.z;
   bonsaiLeafy = state.w;
+  bonsaiShift = bonsaiTable(BONSAI_ROW_STATE, 2).y;
   // Midsummer warm and high, midwinter cold and low.
   bonsaiCold = 0.5 + 0.5 * cos(TAU * (bonsaiYear - 0.875));
 
@@ -846,39 +848,42 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
     col = mix(col, l.rgb * bonsaiLight(vec3(d.x, BONSAI_FLOOR, 0.0), vec3(0.0, 1.0, 0.0), 1.0), l.a);
     col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), d * vec2(5.0, 25.0), bonsaiLight(vec3(d.x, BONSAI_FLOOR, 0.0), vec3(0.0, 1.0, 0.0), 1.0), 0.8);
   }
-  vec4 stand = bonsaiStand(d, standTop);
+  // Everything on the stand (and the stand) is drawn in its own frame g, slid by the passage; the
+  // wall and floor stay in the room's, d (g == d at rest).
+  vec2 g = vec2(d.x - bonsaiShift, d.y);
+  vec4 stand = bonsaiStand(g, standTop);
   if (stand.a > 0.0) {
     col = stand.rgb;
     depth = 2.0 - 0.2;
     if (standTop > 0.5) {
-      vec3 p = vec3(d.x, BONSAI_STAND_TOP, (d.y - BONSAI_STAND_TOP) / BONSAI_TILT);
+      vec3 p = vec3(g.x, BONSAI_STAND_TOP, (g.y - BONSAI_STAND_TOP) / BONSAI_TILT);
       vec3 light = bonsaiLight(p, vec3(0.0, 1.0, 0.0), 1.0 - bonsaiCanopyShade(p));
-      vec4 l = bonsaiLitter(d);
+      vec4 l = bonsaiLitter(g);
       col = mix(col, l.rgb * light, l.a);
-      col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), d * vec2(6.0, 30.0), light, 1.0);
+      col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), g * vec2(6.0, 30.0), light, 1.0);
     }
   }
-  vec4 pot = bonsaiPot(d, rim);
+  vec4 pot = bonsaiPot(g, rim);
   if (pot.a > 0.0) {
     col = pot.rgb;
     depth = 1.8;
   }
   vec3 mp;
-  vec4 moss = bonsaiMossAt(d, mp);
+  vec4 moss = bonsaiMossAt(g, mp);
   if (moss.a > 0.0) {
     col = moss.rgb;
     vec3 light = bonsaiLight(mp, vec3(0.0, 1.0, 0.0), 1.0 - bonsaiCanopyShade(mp));
-    vec4 l = bonsaiLitter(d);
+    vec4 l = bonsaiLitter(g);
     col = mix(col, l.rgb * light, l.a);
-    col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), vec2(d.x, mp.z) * 10.0, light, 1.1);
+    col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), vec2(g.x, mp.z) * 10.0, light, 1.1);
     depth = 1.9;
   }
   // The stone and the figure sit on the moss among the roots: whichever is nearer shows.
   float stoneAccent = 0.0;
-  vec4 stone = bonsaiStone(d, stoneAccent);
-  vec4 fig = K_figure > 0.5 ? bonsaiFigure(d) : vec4(0.0);
+  vec4 stone = bonsaiStone(g, stoneAccent);
+  vec4 fig = K_figure > 0.5 ? bonsaiFigure(g) : vec4(0.0);
   float treeZ;
-  vec4 tree = bonsaiTree(d, treeZ, accent);
+  vec4 tree = bonsaiTree(g, treeZ, accent);
   // The trunk's foot and the roots go down into the soil behind the pot's front wall.
   if (pot.a > 0.0 && rim < 0.5) tree.a = 0.0;
   if (tree.a > 0.0) {
@@ -890,15 +895,15 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
     accent = max(accent, stoneAccent);
   }
   if (fig.a > 0.0 && (tree.a <= 0.0 || treeZ > BONSAI_FIGURE.y)) col = fig.rgb;
-  vec4 twigs = bonsaiTwigs(d);
+  vec4 twigs = bonsaiTwigs(g);
   if (twigs.a > 0.0) col = twigs.rgb;
   vec4 box = bonsaiTable(BONSAI_ROW_STATE, 3);
-  vec4 motes = d.x > box.x && d.y > box.y && d.x < box.z && d.y < box.w ? bonsaiMotes(d, accent) : vec4(0.0);
+  vec4 motes = g.x > box.x && g.y > box.y && g.x < box.z && g.y < box.w ? bonsaiMotes(g, accent) : vec4(0.0);
   if (motes.a > 0.0) col = motes.rgb;
 
   // The snip: a brief glint where the blades met.
   if (snip.z < 0.5) {
-    vec2 v = (d - snip.xy) / max(bonsaiPx, 1e-5);
+    vec2 v = (g - snip.xy) / max(bonsaiPx, 1e-5);
     float k = snip.z / 0.5;
     float len = mix(3.0, 9.0, k);
     float star = (1.0 - smoothstep(0.6, 1.4, abs(v.x))) * step(abs(v.y), len) + (1.0 - smoothstep(0.6, 1.4, abs(v.y))) * step(abs(v.x), len);

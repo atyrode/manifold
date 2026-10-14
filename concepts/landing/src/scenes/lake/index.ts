@@ -3,12 +3,14 @@
 // down into it and now and then a new one singing across with a flash, snow lying in wind-carved
 // patches and streaming over the ice, and on the far shore a cabin with a lit window. The aurora
 // surges overhead every few minutes, mirrored in the ice. sim.ts grows the cracks, drifts the snow
-// and paces the substorms; shader.ts draws the night.
+// and paces the substorms; shader.ts draws the night. It comes in with the camera tilting down from
+// the aurora onto the ice as a crack sings across, and goes out as a gust of snow streams over the
+// ice and the camera tilts back up (LAKE_PASSAGE).
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { lakeGlsl } from "./shader.ts";
-import { lakeSim } from "./sim.ts";
+import { LAKE_PASSAGE, lakeSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   ...weatherKnobs({ group: "aurora", aurora: true, on: { aurora: true } }),
@@ -47,6 +49,7 @@ export const lakeScene: SceneDef = {
   blurb: "Black ice under the aurora: bubbles frozen deep, cracks that sing, snow drifting across.",
   accent: "#4cf08c",
   look: { color: "full", levels: 4 },
+  passage: LAKE_PASSAGE,
   params,
   groups: {
     aurora: { title: "Aurora", blurb: "The northern lights over the lake and in its ice: how bright, what colours, and the substorms that set them dancing." },

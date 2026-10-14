@@ -4,7 +4,7 @@
 // there is no simulation: shader.ts traces the beam, bobs, threads, shadows and trails per pixel.
 import { choice, counts, feature, range, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { pendulaBeams, pendulaCameras, pendulaGlsl } from "./shader.ts";
+import { PENDULA_PASSAGE, pendulaBeams, pendulaCameras, pendulaGlsl } from "./shader.ts";
 
 const params: readonly ParamDef[] = [
   choice("wave", "count", "pendulums", counts(15, 18, 21, 24), 18, "How many pendulums hang in the row. Each is a little shorter than the one before, so each swings a little faster: one more swing per cycle."),
@@ -34,5 +34,6 @@ export const pendulaScene: SceneDef = {
     manifold: { title: "Manifold mark", blurb: "The M, in light on the floor." },
   },
   glsl: pendulaGlsl,
+  passage: PENDULA_PASSAGE,
   entry: "scenePendula",
 };

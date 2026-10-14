@@ -1365,9 +1365,10 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
         sim.setEnvironment(env);
         for (let i = 0; i < steps; i++) sim.step();
 
-        // The hand digs a ditch, or throws up a bank, wherever it is dragged.
+        // The hand digs a ditch, or throws up a bank, wherever it is dragged. Not while the passage's
+        // camera moves: the picture is not yet (or no longer) where the pointer maps it.
         const pointer = frame.pointer;
-        if (pointer.inside && pointer.down) {
+        if (frame.passage.enter >= 1 && frame.passage.exit <= 0 && pointer.inside && pointer.down) {
           gridUv(pointer.x, pointer.y, frame.aspect, layout.columns / layout.rows, at);
           cell.x = at.x * layout.columns;
           cell.y = at.y * layout.rows;

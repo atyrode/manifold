@@ -18,8 +18,16 @@
 // wind-shaped patches (crisp, world-anchored edges cut against each cell's threshold), drifting
 // snow streams across in long thin streamers, the moon and the window draw paths of light down the
 // ice, and hoarfrost catches the light here and there.
+//
+// Entrance and exit are in the world. The camera tilts: a vertical lens shift of the whole frame
+// (the horizon slides down the screen as it looks up), applied to uv before everything is built from
+// it, so the ice, its cracks, the sky, the mist and the falling snow stay in one projection. It
+// arrives from the aurora, settling a little past level, and leaves toward it. On the way in a crack
+// sings across the ice (the sim); on the way out a gust of blown snow streams across, carrying low
+// streamers over the ice and the far shore, in rows of the screen and faster the nearer the ice,
+// cut per cell. At rest none of it is drawn and uv is the screen's.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
-import { ABOVE_RANGE, DIST_RANGE, DRIFT_MAX, EYE, FIELD_FU, FIELD_FV, FIELD_H, FIELD_W, FOCAL, HORIZON, ICE_DEPTH, ICE_INDEX, MARK_ID, SNOW_MAX } from "./sim.ts";
+import { ABOVE_RANGE, DIST_RANGE, DRIFT_MAX, EYE, FIELD_FU, FIELD_FV, FIELD_H, FIELD_W, FOCAL, HORIZON, ICE_DEPTH, ICE_INDEX, LAKE_PASSAGE, MARK_ID, SNOW_MAX } from "./sim.ts";
 
 /** The aurora's colours by the `hue` knob (green, teal, storm, crimson): its low light and its high fringe. */
 const AURORA_LOW = ["vec3(0.25, 1.0, 0.55)", "vec3(0.2, 0.95, 0.88)", "vec3(0.38, 1.0, 0.48)", "vec3(1.0, 0.3, 0.38)"] as const;
@@ -39,6 +47,9 @@ const float LAKE_ABOVE = ${glslFloat(ABOVE_RANGE)};
 const float LAKE_SNOW_MAX = ${glslFloat(SNOW_MAX)};
 const float LAKE_DRIFT_MAX = ${glslFloat(DRIFT_MAX)};
 const float LAKE_MARK = ${glslFloat(MARK_ID)};
+// The passage: how far the camera tilts (screen heights) and how long the exit's gust takes (s).
+const float LAKE_TILT = 0.5;
+const float LAKE_EXIT_S = ${glslFloat(LAKE_PASSAGE.exit)};
 
 // The cabin stands this far off (m) on a bank this high, its window 1.3 m up, 1.1 m left of its middle.
 const float LAKE_CABIN_Z = 92.0;
@@ -582,6 +593,40 @@ vec3 lakeIce(vec2 uv, float aspect, vec3 dir, float range, out float glow) {
   return col;
 }
 
+// The camera arriving from the aurora: the share of the tilt still to go at progress p. A damped
+// spring from the sky down onto the ice, settling a little past level (the overshoot eased out by
+// the end, so it lands on exactly zero).
+float lakeArrive(float p) {
+  float q = clamp(p, 0.0, 1.0);
+  float e = 1.0 - exp(-4.0 * q) * (cos(3.6 * q) + (4.0 / 3.6) * sin(3.6 * q));
+  return (1.0 - e) * (1.0 - smoothstep(0.88, 1.0, q));
+}
+
+// The camera leaving toward the aurora: the share of the tilt done at progress p, easing in once
+// the gust has begun.
+float lakeLeave(float p) {
+  float q = clamp((p - 0.1) / 0.9, 0.0, 1.0);
+  return q * q * (3.0 - 2.0 * q);
+}
+
+// A gust of blown snow, 0..1 at this uv (the camera's, tilt included): its head crosses the frame
+// downwind, and behind it low streamers ride the ice in rows of the screen, the nearer rows faster,
+// thinning to nothing over the horizon; a haze of fine snow between them. Each row's streamers slide
+// along it (no noise crawl); the caller cuts the density against the cell's threshold.
+float lakeGust(vec2 uv, float aspect, float gp) {
+  float fv = LAKE_HORIZON - uv.y;
+  float uu = (K_wind < -0.05 ? -1.0 : 1.0) * (uv.x - 0.5) * aspect;
+  float head = mix(-0.5 * aspect - 0.3, 0.5 * aspect + 1.2, smoothstep(0.0, 0.9, gp));
+  float behind = head - uu;
+  float cover = smoothstep(0.0, 0.2, behind) * (1.0 - 0.45 * smoothstep(0.3, 1.8, behind));
+  float low = fv >= 0.0 ? 1.0 : exp(fv / 0.06);
+  float xs = uu - (0.5 + 3.0 * max(fv, 0.0)) * gp * LAKE_EXIT_S;
+  float row = fv * 64.0;
+  float n = 0.6 * vnoise(vec2(xs * 4.0, row)) + 0.4 * vnoise(vec2(xs * 11.0 + 7.0, row * 2.1 + 3.0));
+  float streak = smoothstep(0.5, 0.75, n);
+  return clamp(streak + 0.16, 0.0, 1.0) * cover * low;
+}
+
 // The night: twilight to deep night by K_hour, our moon, the aurora's colours and the sim's surge,
 // the light on the land, overcast while it snows, the cabin's and the moon's bearings for the frame.
 void lakeSetup(float t, float aspect) {
@@ -617,8 +662,14 @@ void lakeSetup(float t, float aspect) {
   lakePar = uPointer.x * 0.012;
 }
 
-Shade sceneLake(vec2 uv, vec2 cell, float t) {
+Shade sceneLake(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
+  // The camera's tilt, a lens shift of uv (exactly nothing at rest).
+  vec2 uv = screenUv;
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin < 1.0) uv.y += LAKE_TILT * lakeArrive(pin);
+  if (pout > 0.0) uv.y += LAKE_TILT * lakeLeave(pout);
   lakeTh = threshold(cell);
   lakeSetup(t, aspect);
   vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y - LAKE_HORIZON);
@@ -649,6 +700,13 @@ Shade sceneLake(vec2 uv, vec2 cell, float t) {
     float f = fogAmount(K_fog, 1.0 - exp(-range / 160.0), max(dir.y, 0.0) * 6.0);
     col = mix(col, mist, f);
     glow *= 1.0 - f;
+  }
+  // The exit's gust of blown snow, low over the ice and the far shore.
+  if (pout > 0.0) {
+    float hit = lakeHard(lakeGust(uv, aspect, pout));
+    vec3 blown = LAKE_SNOW * (lakeAmb * 2.6 + lakeMoonLight * 0.9 + lakeAurLight * 2.2);
+    col = mix(col, blown, 0.85 * hit);
+    glow *= 1.0 - 0.85 * hit;
   }
   // Falling snow, in depth to the first thing the eye meets.
   if (K_snow > 0.0) {

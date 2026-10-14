@@ -6,12 +6,13 @@
 //   uSim1  events, rgba16f 8×2: row 0 bubbles marking BZ pacemakers (grid uv x, y, radius,
 //          presence) and, in texel PETRI_RIDGE_TEXEL, the Turing M's ridge (height in grid uv,
 //          0 = none; how far it has grown); row 1 ripples where drops fell (grid uv x, y, age in
-//          seconds, strength)
+//          seconds, strength); row 0's texel PETRI_ARRIVAL_TEXEL, while the dish arrives: how far
+//          the pattern has spread from its seed point (x, 0..1) and that it is spreading (y)
 // Without uSim0 (no float render targets) the dish holds a still lattice of stripes (Turing) or a
 // pair of turning spirals (BZ) drawn here.
-// Knobs read here: K_chemistry, K_palette, K_relief, K_lightbox, K_size, K_mark.
+// Knobs read here: K_chemistry, K_palette, K_relief, K_lightbox, K_size, K_mark, K_pattern.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { PETRI_BUBBLES, PETRI_FIT, PETRI_MARK, PETRI_MARK_GLSL, PETRI_RADIUS, PETRI_RIDGE_TEXEL, PETRI_RIPPLE, PETRI_RIPPLES } from "./sim.ts";
+import { PETRI_ARRIVAL_TEXEL, PETRI_BUBBLES, PETRI_FIT, PETRI_MARK, PETRI_MARK_GLSL, PETRI_PASSAGE, PETRI_RADIUS, PETRI_RIDGE_TEXEL, PETRI_RIPPLE, PETRI_RIPPLES } from "./sim.ts";
 
 export const petriGlsl = `
 const float PETRI_RADIUS = ${glslFloat(PETRI_RADIUS)};
@@ -22,6 +23,10 @@ const float PETRI_RIPPLE_SPEED = ${glslFloat(PETRI_RIPPLE.speed)};
 const float PETRI_RIPPLE_WIDTH = ${glslFloat(PETRI_RIPPLE.width)};
 const float PETRI_RIPPLE_SHIFT = ${glslFloat(PETRI_RIPPLE.shift)};
 const float PETRI_RIPPLE_LIFE = ${glslFloat(PETRI_RIPPLE.life)};
+const float PETRI_ENTER = ${glslFloat(PETRI_PASSAGE.enter)};            // seconds: the dish slides in, then the pattern spreads
+const float PETRI_SLIDE = ${glslFloat(PETRI_PASSAGE.slide)};            // seconds the dish takes to slide home
+const float PETRI_SPREAD_START = ${glslFloat(PETRI_PASSAGE.spreadStart)};
+const float PETRI_SPREAD = ${glslFloat(PETRI_PASSAGE.spread)};
 const float PETRI_WALL = 0.028;                       // the glass wall's thickness, in dish radii
 const float PETRI_MENISCUS = 0.08;                    // where the liquid climbs the glass, in dish radii
 const float PETRI_RELIEF = 7.0;                       // surface slope per unit of v per texel, at full relief
@@ -178,11 +183,54 @@ vec2 petriRipples(vec2 g, out float crest) {
   return shift;
 }
 
+// The dish slides over the bench, which stays where it is: in from the right over PETRI_SLIDE
+// seconds, settling with a touch of overshoot, and out to the left gathering speed. Frame heights
+// from where the dish rests; exactly 0 at rest.
+vec2 petriSlide(float pin, float pout, float aspect, float R) {
+  vec2 slide = vec2(0.0);
+  float reach = 0.5 * aspect + 1.5 * R + 0.05;
+  if (pin < 1.0) {
+    float u = clamp(pin * PETRI_ENTER / PETRI_SLIDE, 0.0, 1.0) - 1.0;
+    slide += vec2(reach, -0.1) * -(u * u * (1.7 * u + 0.7));
+  }
+  if (pout > 0.0) slide += vec2(-reach, 0.12) * (pout * pout);
+  return slide;
+}
+
+// The entrance's spread of the pattern: its seed point in grid uv (the dish's centre with the Turing
+// M on, else wherever the pattern's seed puts it)...
+vec2 petriSeed() {
+  if (K_chemistry < 0.5 && K_mark > 0.0) return vec2(0.5);
+  float pattern = floor(K_pattern + 0.5);
+  float a = TAU * hash12(vec2(pattern, 3.7));
+  return vec2(0.5) + (0.08 + 0.12 * hash12(vec2(pattern, 9.1))) * vec2(cos(a), sin(a));
+}
+
+// ...and how far g lies from it along the front, which is lobed and runs a little ahead along the
+// pattern itself (grown 0..1). The front stands at spreadFront on the same scale.
+float petriReach(vec2 g, vec2 seed, float grown) {
+  vec2 d = g - seed;
+  float a = atan(d.y, d.x + 1e-5);
+  float lobes = 1.0 + 0.12 * sin(3.0 * a + 1.3 + 6.0 * seed.x) + 0.07 * sin(5.0 * a + 4.1 + 6.0 * seed.y);
+  return length(d) * lobes - 0.06 * grown;
+}
+
+// What the front has done at g: reached (the pattern stands there; cut per cell, so the front passes
+// as a clean stipple), fresh (the newly grown band behind it) and edge (a thin ring on the front).
+void petriSpread(vec2 g, vec2 seed, float spreadFront, float grown, out float reached, out float fresh, out float edge) {
+  float ahead = spreadFront - petriReach(g, seed, grown);
+  reached = hardEdge(smoothstep(0.0, 0.035, ahead));
+  fresh = hardEdge(1.0 - smoothstep(0.0, 0.16, ahead)) * reached;
+  edge = hardEdge(bell((ahead - 0.03) / 0.03));
+}
+
 // The bubbles that mark BZ pacemakers: a dark refracting rim, a glint toward the lamp; they swell
 // as they appear and shrink as they dissolve.
-vec3 petriBubbles(vec3 col, vec2 p, float R, float px, bool box, vec3 lamp) {
+vec3 petriBubbles(vec3 col, vec2 p, float R, float px, bool box, vec3 lamp, bool spreading, float spreadFront, vec2 seed) {
   for (int i = 0; i < ${PETRI_BUBBLES}; i++) {
     vec4 b = texelFetch(uSim1, ivec2(i, 0), 0);
+    // While the pattern spreads over the dish a bubble swells only once the front has reached it.
+    if (spreading) b.w *= smoothstep(0.0, 0.06, spreadFront - petriReach(b.xy, seed, 0.0));
     if (b.w <= 0.0) continue;
     float rb = max(b.z * 2.0 * R * (0.4 + 0.6 * b.w), 2.0 * px);
     vec2 d = (p - (b.xy - 0.5) * (2.0 * R)) / rb;
@@ -201,9 +249,13 @@ vec3 petriBubbles(vec3 col, vec2 p, float R, float px, bool box, vec3 lamp) {
 
 Shade scenePetri(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
-  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+  vec2 pw = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);  // from the frame's centre
   float px = 1.0 / uRes.y;
   float R = petriRadius(aspect);
+  float pin = passageIn();
+  float pout = passageOut();
+  bool passing = pin < 1.0 || pout > 0.0;
+  vec2 p = pw - petriSlide(pin, pout, aspect, R);     // from the dish's centre
   float W = max(R * PETRI_WALL, 2.5 * px);
   float r = length(p);
   vec2 dir = p / max(r, 1e-5);
@@ -212,16 +264,31 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
   bool box = K_lightbox > 0.5;
   vec3 lamp = petriLamp(palette);
 
-  vec3 ground = petriGround(p, aspect, R, palette, box, lamp);
+  vec3 ground = petriGround(pw, aspect, R, palette, box, lamp);
   vec3 col = box ? ground : petriShadow(ground, p, R, W, petriTint(bz, palette), lamp);
   float accent = 0.0;
+
+  // The entrance's spread: the sim says how far the pattern has come (or, without the sim, the
+  // passage does); the bench, the lamp and the dish's lit side stay where they are in the frame.
+  bool spreading = false;
+  float spreadK = 0.0;
+  if (uSimOn.y > 0.5) {
+    vec4 arrival = texelFetch(uSim1, ivec2(${PETRI_ARRIVAL_TEXEL}, 0), 0);
+    spreading = arrival.y > 0.5;
+    spreadK = arrival.x;
+  } else if (pin < 1.0) {
+    spreading = true;
+    spreadK = clamp((pin * PETRI_ENTER - PETRI_SPREAD_START) / PETRI_SPREAD, 0.0, 1.0);
+  }
+  float spreadFront = mix(-0.12, 1.2, 1.0 - (1.0 - spreadK) * (1.0 - spreadK));
+  vec2 seed = spreading ? petriSeed() : vec2(0.5);
 
   // The liquid, seen from above through its surface: it climbs the glass at the rim (the meniscus),
   // which bends the view of the bottom outward and catches the light (or, over the light box, bends
   // it away into a dark ring).
   if (r < R + px) {
     // The lamp lights the dish brightest toward its upper left.
-    vec2 l = p - vec2(-0.6, 0.5) * R;
+    vec2 l = pw - vec2(-0.6, 0.5) * R;
     float lit = box ? 1.0 : 0.75 + 0.45 * exp(-dot(l, l) / (1.1 * R * R));
     float men = smoothstep(R * (1.0 - PETRI_MENISCUS), R, r);
     men *= men;
@@ -229,9 +296,26 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
     float crest = 0.0;
     if (uSimOn.y > 0.5) g += petriRipples(g, crest);
     vec4 f = petriField(g, bz);
+    if (spreading) {
+      float grown = bz ? f.x : smoothstep(0.1, 0.28, f.x);
+      float reached;
+      float fresh;
+      float edge;
+      petriSpread(g, seed, spreadFront, grown, reached, fresh, edge);
+      f.yz *= reached;
+      if (bz) {
+        // A front of blue runs out from the seed, the waves standing behind it.
+        f.x = max(f.x * reached, edge);
+        f.w *= reached;
+      } else {
+        // The coral grows out from the seed, fresh and pale where it has just grown.
+        f.x *= reached;
+        f.w = max(f.w, fresh);
+      }
+    }
     float act = 0.0;
     vec3 med = bz ? petriWaves(f, palette, box, ground, lit, act) : petriCulture(f, palette, box, ground, lamp, lit, act);
-    if (bz && uSimOn.y > 0.5) med = petriBubbles(med, p, R, px, box, lamp);
+    if (bz && uSimOn.y > 0.5) med = petriBubbles(med, p, R, px, box, lamp, spreading, spreadFront, seed);
 
     // The Manifold M. Turing: the ridge of coral the sim grows along its strokes, in the accent
     // colour where it stands. BZ, and a still dish without the sim: etched into the glass floor.
@@ -255,12 +339,12 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
     } else {
       // The meniscus mirrors the lamp on the side away from it; a soft sheen of the lamp lies on the
       // liquid toward it; the ripples' crests catch it too.
-      vec2 s = p - vec2(-0.42, 0.48) * R;
+      vec2 s = pw - vec2(-0.42, 0.48) * R;
       float sheen = exp(-dot(s, s) / (0.12 * R * R)) * (0.02 + 0.05 * K_relief);
       float rim = men * (0.025 + 0.3 * pow(max(-dot(dir, PETRI_TOWARD), 0.0), 3.0));
       med += lamp * (rim + sheen + 0.06 * crest);
     }
-    float inside = 1.0 - smoothstep(R - px, R, r);
+    float inside = passing ? hardFill(r - (R - 0.5 * px), 0.5 * px) : 1.0 - smoothstep(R - px, R, r);
     col = mix(col, med, inside);
     accent = act * inside;
   }
@@ -271,6 +355,7 @@ Shade scenePetri(vec2 uv, vec2 cell, float t) {
   if (tw > -0.5 && tw < 1.5) {
     float aw = px / W;
     float glass = smoothstep(-aw, 0.0, tw) * (1.0 - smoothstep(1.0, 1.0 + aw, tw));
+    if (passing) glass = hardEdge(glass);
     float x = (tw - 0.55) / 0.3;
     float top = bell(x);
     vec3 wall;

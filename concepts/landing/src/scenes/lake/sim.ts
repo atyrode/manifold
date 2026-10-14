@@ -139,6 +139,17 @@ const SONG_OFTEN = 14;
 const SONG_FIRST = 9;
 /** Seconds after the M is switched on before it sings in. */
 const MARK_DELAY = 1.5;
+
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads both). Entrance:
+ * the camera tilts down from the aurora onto the ice, and a crack sings across it. Exit: a gust of
+ * snow streams across the ice while the camera tilts back up to the sky.
+ */
+export const LAKE_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.5 };
+/** How far into the entrance (0..1) a crack starts to sing, and how fast its front runs (screen heights per second). */
+const ENTRANCE_SING_AT = 0.4;
+const ENTRANCE_ZIP_SPEED = 2;
+
 /** The M: its height (screen heights), centre below the horizon, and the jag of its strokes. */
 const MARK_SIZE = 0.13;
 const MARK_DEPTH = 0.215;
@@ -677,6 +688,8 @@ class FrozenLake implements SceneSim {
   #branchChance = BRANCH_FEW;
 
   #primed = false;
+  /** Whether this sim was built for an entrance whose crack has yet to sing (undefined until the first frame). */
+  #arriving: boolean | undefined = undefined;
   #seed = Number.NaN;
   #fractures = Number.NaN;
   #wantFractures = Number.NaN;
@@ -775,7 +788,14 @@ class FrozenLake implements SceneSim {
       if (frame.fired[2] && this.#mark) this.#mark.sing(MARK_ZIP_SPEED, MARK_GLOW_FADE, 0);
     }
 
-    this.#follow(frame);
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
+    if (this.#arriving && frame.passage.enter >= ENTRANCE_SING_AT) {
+      this.#arriving = false;
+      this.#singEntrance();
+    }
+
+    // The camera is tilting while the scene comes in or goes out: the screen is not the ice's view then.
+    if (frame.passage.enter >= 1 && frame.passage.exit <= 0) this.#follow(frame);
     this.#clock += mdt;
 
     // The ice sings on its own schedule.
@@ -1080,6 +1100,23 @@ class FrozenLake implements SceneSim {
       if (Math.abs(c.u[mid] ?? 9) < half && (c.v[mid] ?? 0) > 0.05) pick = c;
     }
     pick?.sing(ZIP_SPEED, GLOW_FADE, 0);
+  }
+
+  /**
+   * The entrance's song: the longest pressure crack with a good stretch in view sings across, its
+   * front running fast. An old crack and no draw from the night's streams, so what follows is the
+   * night it would have been.
+   */
+  #singEntrance(): void {
+    const half = this.#aspect / 2;
+    let pick: Crack | undefined;
+    for (const c of this.#cracks) {
+      if (c.id === MARK_ID || c.singing || c.length <= 0) continue;
+      const mid = Math.floor(c.u.length / 2);
+      if (Math.abs(c.u[mid] ?? 9) >= half || (c.v[mid] ?? 0) <= 0.05) continue;
+      if (!pick || c.cls > pick.cls || (c.cls === pick.cls && c.length > pick.length)) pick = c;
+    }
+    pick?.sing(ENTRANCE_ZIP_SPEED, GLOW_FADE, 0);
   }
 
   /** Run the fronts of singing cracks on dt (so a "now" plays at motion 0), stamping what they reach. */

@@ -3,12 +3,14 @@
 // grown for its species and seed by space colonisation inside sculpted cloud pads (tree.ts) and
 // lives through the year (sim.ts): leaves open, colour and fall to lie on the moss and the stand,
 // snow settles in winter, new shoots reach out each spring and are trimmed back by an unseen hand.
-// Hover to stir the pads; click to snip a twig. The picture is painted in shader.ts.
+// Hover to stir the pads; click to snip a twig. The picture is painted in shader.ts. It comes in as
+// the stand glides in from the side along the veranda, the pads leaning on its braking and springing
+// back, and leaves as the stand is pushed off to the side with a gust and a few leaves shaken loose.
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { bonsaiGlsl } from "./shader.ts";
-import { bonsaiSim } from "./sim.ts";
+import { BONSAI_PASSAGE, bonsaiSim } from "./sim.ts";
 
 // The day passes slowly by default, so the shadow creeps over the wall: afternoon to dusk to the
 // lamp in about ten minutes.
@@ -49,4 +51,5 @@ export const bonsaiScene: SceneDef = {
   glsl: bonsaiGlsl,
   entry: "sceneBonsai",
   sim: bonsaiSim(params),
+  passage: BONSAI_PASSAGE,
 };

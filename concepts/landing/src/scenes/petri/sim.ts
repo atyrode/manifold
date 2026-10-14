@@ -9,7 +9,10 @@
 // uSim1  events, rgba16f 8×2 (nearest): row 0 the bubbles that mark BZ pacemakers (grid uv x, y,
 //        radius, presence 0..1) and, in its last texel, the Turing M's ridge (height in grid uv,
 //        0 = none; how far it has grown 0..1); row 1 the ripples of falling drops (x, y, age in
-//        seconds, strength; 0 strength = none).
+//        seconds, strength; 0 strength = none). Row 0's texel PETRI_ARRIVAL_TEXEL holds the
+//        entrance's spread while the dish is arriving: x how far the pattern has spread over the
+//        dish 0..1, y 1 while it spreads (0 once spread, and always when the scene was not
+//        entered with a passage).
 //
 // State. An rgba32f ping-pong (half floats round away the tiny per-step changes both models live
 // on). Texels outside the inscribed disc hold the medium at rest and never change; inside, a texel
@@ -65,6 +68,16 @@ export const PETRI_BUBBLES = 6;
 export const PETRI_RIPPLES = 4;
 /** The texel of the events texture's row 0 that holds the Turing M's ridge. */
 export const PETRI_RIDGE_TEXEL = 7;
+/** The texel of the events texture's row 0 that holds the entrance's spread. */
+export const PETRI_ARRIVAL_TEXEL = 6;
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads them all).
+ * Entrance: the dish slides in from the right across the bench, under the lamp, and settles with a
+ * touch of overshoot (`slide`); once it is nearly home the pattern spreads from a seed point over
+ * the dish (`spreadStart` seconds in, over `spread` seconds of the sim's own clock, which starts
+ * after the prewarm). Exit: the dish slides off to the left, gathering speed.
+ */
+export const PETRI_PASSAGE = { enter: 2.8, exit: 1.4, slide: 1.5, spreadStart: 0.6, spread: 1.8 } as const;
 /**
  * A drop's ripples: ring speed in dish diameters per second, width of the wave packet and how far
  * it bends the view of the bottom (dish diameters), seconds until it has died away.
@@ -610,6 +623,30 @@ function seedBz(data: Float32Array, n: number, random: () => number): Pacemaker[
   return pacemakers;
 }
 
+/**
+ * The entrance's spread of the pattern, on the sim's own clock: it starts after the prewarm and runs
+ * on frame time (which the renderer caps per frame), so a slow first frame delays the spread
+ * instead of using it up. 0..1 across PETRI_PASSAGE.spread, undefined once spread, and from the
+ * start when the scene was not entered with a passage. A scene held still (no frame time) past its
+ * entrance shows the dish spread.
+ */
+class ArrivalClock {
+  #arriving: boolean | undefined = undefined;
+  #seconds = 0;
+
+  advance(frame: SimFrame, ready: boolean): number | undefined {
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
+    if (!this.#arriving) return undefined;
+    if (ready) this.#seconds += Math.max(0, frame.dt);
+    const spread = (this.#seconds - PETRI_PASSAGE.spreadStart) / PETRI_PASSAGE.spread;
+    if (spread >= 1 || (frame.dt <= 0 && frame.passage.enter >= 1)) {
+      this.#arriving = false;
+      return undefined;
+    }
+    return clamp(spread, 0, 1);
+  }
+}
+
 /** The dish's chemistry on the GPU. */
 class PetriLab implements SceneSim {
   readonly #gpu: GpuCompute;
@@ -662,6 +699,8 @@ class PetriLab implements SceneSim {
   #held = false;
   /** The view needs redrawing even without a step (reseeded, resized). */
   #dirty = true;
+  /** The entrance's spread of the pattern (see ArrivalClock). */
+  readonly #arrival = new ArrivalClock();
 
   constructor(gpu: GpuCompute, knobs: KnobReader<Knob>) {
     this.#gpu = gpu;
@@ -686,7 +725,8 @@ class PetriLab implements SceneSim {
     const pattern = Math.round(this.#knobs.value(frame, "pattern"));
     const radius = petriRadius(aspect, this.#knobs.value(frame, "size"));
     const n = gridFor(2 * radius * frame.height, this.#knobs.value(frame, "scale"));
-    if (chemistry !== this.#chemistry || pattern !== this.#pattern) {
+    const reseeded = chemistry !== this.#chemistry || pattern !== this.#pattern;
+    if (reseeded) {
       this.#reseed(chemistry, pattern, n, this.#knobs.value(frame, "mark"));
     } else if (n !== this.#state.width) {
       // A new scale or frame size: stretch the pattern over the new grid; it re-forms at its own size.
@@ -743,7 +783,7 @@ class PetriLab implements SceneSim {
     }
 
     this.#ageRipples(Math.max(0, frame.dt) * Math.max(0, frame.motion));
-    this.#publish();
+    this.#publish(this.#arrival.advance(frame, !reseeded));
     return [this.#view.texture, this.#eventTexture.texture];
   }
 
@@ -971,8 +1011,8 @@ class PetriLab implements SceneSim {
     ripples.length = kept;
   }
 
-  /** Write the bubbles, the ridge and the ripples for the shader; upload only when they changed. */
-  #publish(): void {
+  /** Write the bubbles, the ridge, the entrance's spread and the ripples for the shader; upload only when they changed. */
+  #publish(spread: number | undefined): void {
     const data = this.#eventData;
     data.fill(0);
     let i = 0;
@@ -988,6 +1028,10 @@ class PetriLab implements SceneSim {
     }
     data[PETRI_RIDGE_TEXEL * 4] = this.#ridge[0] ?? 0;
     data[PETRI_RIDGE_TEXEL * 4 + 1] = this.#ridge[1] ?? 0;
+    if (spread !== undefined) {
+      data[PETRI_ARRIVAL_TEXEL * 4] = spread;
+      data[PETRI_ARRIVAL_TEXEL * 4 + 1] = 1;
+    }
     for (let j = 0; j < this.#ripples.length; j++) {
       const ripple = this.#ripples[j];
       if (!ripple) continue;

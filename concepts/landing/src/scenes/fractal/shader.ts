@@ -13,6 +13,9 @@
 // detail is smeared along its motion (sim.ts sends how fast things move; the shader turns that into
 // cells per second here): a line that would flash a cell on and off widens and pales instead,
 // keeping its ink.
+// Entrance and exit are a camera in the world (sim.ts): it rises from a point deep in the fractal
+// and settles, the iterations climbing so the detail grows in; leaving, it falls into a point. The
+// streaming picture is smeared like any other motion; at rest none of it is drawn.
 //
 // uSim0 is the sim's state row (layout in sim.ts). Knobs read here: K_palette, K_lines, K_glow,
 // K_ripples, K_rays, K_filigree, K_trap.
@@ -138,9 +141,22 @@ vec2 fractalSqrt(vec2 a) {
   return vec2(sqrt(max(0.5 * (r + a.x), 0.0)), a.y < 0.0 ? -im : im);
 }
 
+// The passage (sim.ts): entering and leaving, the camera rises from or falls into a point of the
+// fractal. fractalLayer scales content units about that point (a mode then draws a little of its
+// own world, just as it does at rest): fractalPassK is the scale, so a screen cell spans that
+// much less content, and fractalPassSpeed is how fast the picture streams past the pixel, in cells
+// per second, smeared away like any other motion. At rest: 1 and 0.
+float fractalPassK = 1.0;
+float fractalPassSpeed = 0.0;
+
+// The size of one screen cell in the layer's content units.
+float fractalCell() {
+  return 2.0 / uRes.y * fractalPassK;
+}
+
 // Cells a feature moving at speed cells per second is smeared over.
 float fractalBlur(float speed) {
-  return min(FRACTAL_SMEAR * speed, 24.0);
+  return min(FRACTAL_SMEAR * (speed + fractalPassSpeed), 24.0);
 }
 
 // Coverage of a line whose middle is d cells away, w cells wide, smeared by blur cells: it widens
@@ -241,7 +257,7 @@ FractalSample fractalJulia(vec2 p, int at, float markOn) {
   vec4 mark = fractalTexel(at + 11);
   int iterations = int(head.y);
   float reach = head.w;
-  float cell = 2.0 / uRes.y;
+  float cell = fractalCell();
   vec2 c = walk.xy;
   vec2 alpha = fixedPoint.xy;
   float cMove = length(walk.zw) / (reach * cell);
@@ -351,7 +367,7 @@ FractalSample fractalDive(vec2 p, int at, float markOn) {
   vec4 focus = fractalTexel(at + 3);
   vec4 trap = fractalTexel(at + 10);
   vec4 mark = fractalTexel(at + 11);
-  float cell = 2.0 / uRes.y;
+  float cell = fractalCell();
   vec2 c0 = view.xy;
   vec2 delta = view.zw + fractalMul(stride.xy, p);
   float blur = fractalBlur(length(p - focus.xy) * head.w / cell);
@@ -440,7 +456,7 @@ FractalSample fractalGasket(vec2 p, int at, float markOn) {
   vec4 flowA = fractalTexel(at + 3);
   vec4 flowC = fractalTexel(at + 4);
   vec4 mark = fractalTexel(at + 11);
-  float cell = 2.0 / uRes.y;
+  float cell = fractalCell();
   vec2 den = fractalMul(cd.xy, p) + cd.zw;
   vec2 u = fractalDiv(fractalMul(ab.xy, p) + ab.zw, den);
   float uCell = cell / dot(den, den);
@@ -573,7 +589,7 @@ FractalSample fractalGarden(vec2 p, int at, float markOn) {
   vec2 relax = weightsB.zw;
   int iterations = int(head.y);
   float reach = head.w;
-  float cell = 2.0 / uRes.y;
+  float cell = fractalCell();
 
   vec2 z = p * reach;
   vec2 dz = vec2(1.0, 0.0);
@@ -618,8 +634,8 @@ FractalSample fractalGarden(vec2 p, int at, float markOn) {
     z -= fractalMul(relax, invS1);
     if (i < FRACTAL_TRAP_ITER) {
       float zCell = length(dz) * reach * cell;
-      o.gild = max(o.gild, fractalTrap(z, zCell, trap, 0.0, fresh));
-      if (markOn > 0.0) o.mark = max(o.mark, fractalMarkTrap(z, dz, zCell, mark, 0.0));
+      o.gild = max(o.gild, fractalTrap(z, zCell, trap, fractalBlur(0.0), fresh));
+      if (markOn > 0.0) o.mark = max(o.mark, fractalMarkTrap(z, dz, zCell, mark, fractalBlur(0.0)));
     }
   }
 
@@ -676,8 +692,17 @@ FractalSample fractalGarden(vec2 p, int at, float markOn) {
 
 FractalSample fractalLayer(vec2 p, int at, float markOn) {
   float mode = fractalTexel(at).x;
+  fractalPassK = 1.0;
+  fractalPassSpeed = 0.0;
+  if (mode > 0.5 && mode < 1.5) return fractalDive(p, at, markOn);
+  // The dive's passage is a stretch of its own zoom (sim.ts); the others scale about the point.
+  vec4 fall = fractalTexel(2);
+  if (fall.x > 0.0) {
+    fractalPassSpeed = length(p - fall.yz) * fall.w / (2.0 / uRes.y);
+    fractalPassK = fall.x;
+    p = fall.yz + (p - fall.yz) * fall.x;
+  }
   if (mode < 0.5) return fractalJulia(p, at, markOn);
-  if (mode < 1.5) return fractalDive(p, at, markOn);
   if (mode < 2.5) return fractalGasket(p, at, markOn);
   return fractalGarden(p, at, markOn);
 }

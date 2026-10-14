@@ -89,6 +89,16 @@ const TWIG_DRAG = 2.2;
 const SHOOTS_PER_YEAR = 30;
 const TRIM_SPAN = 0.022;
 
+// ---- passage ----
+/** Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the stand glides in from the right along the veranda and comes to rest, the pads leaning on its slowing and springing back; exit: the stand is pushed off to the right, the pads lagging, a gust and a few leaves left behind in the air. */
+export const BONSAI_PASSAGE = { enter: 2.6, exit: 1.5 } as const;
+/** How far right (display units) the stand stands off the frame: it slides in from there and out to there. */
+const SLIDE = 1.25;
+/** The pads' lag behind the stand's acceleration: the share of it felt as a push on a pad. */
+const SLIDE_PUSH = 0.2;
+/** Leaves a leaving stand shakes loose over its first half. */
+const SHAKEN_LEAVES = 5;
+
 type KnobKey = "species" | "treeSeed" | "breeze" | "growth" | "season" | "year" | "leaves" | "snowfall";
 
 export class BonsaiSimError extends Error {}
@@ -242,6 +252,15 @@ class BonsaiSim implements SceneSim {
   #atlasDirty = true;
   #atlasWait = 0;
 
+  // The passage: the stand's slide on the sim's own frame clock (like a growth that starts after the
+  // first, heavy frame), how far right it stands off now, and the push its acceleration gives the pads.
+  #arriving: boolean | undefined = undefined;
+  #arrived = 0;
+  #shift = 0;
+  #push = 0;
+  #leaving = false;
+  #shaken = 0;
+
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     const index = (key: KnobKey): number => {
       const at = params.findIndex((def) => def.key === key);
@@ -274,6 +293,7 @@ class BonsaiSim implements SceneSim {
     const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), 0.25);
     this.#readKnobs(frame.values);
     this.#watchTriggers(frame.triggers);
+    this.#stepPassage(frame);
     this.#trackPointer(frame.pointer, frame.dt, aspect);
     if (advance > 0) this.#advance(advance);
     this.#pack();
@@ -357,7 +377,7 @@ class BonsaiSim implements SceneSim {
     }
     this.#seedLitter(y);
     // The pads have been swaying a while, and a few leaves are on their way down.
-    for (let s = 0; s < 180; s++) this.#stepPads(STEP);
+    for (let s = 0; s < 180; s++) this.#stepPads(STEP, 0);
     const expected = this.#releaseRate(y) * 6;
     for (let k = 0; k < Math.min(6, Math.round(expected)); k++) {
       const mote = this.#launch(y);
@@ -396,7 +416,7 @@ class BonsaiSim implements SceneSim {
       return;
     }
     const place = bonsaiPlacement(aspect);
-    const x = ((pointer.x - 0.5) * aspect - place.x) / place.scale;
+    const x = ((pointer.x - 0.5) * aspect - place.x) / place.scale - this.#shift;
     const y = (pointer.y - place.y) / place.scale;
     if (this.#pointerX !== undefined && dt > 0) {
       const k = 1 - Math.exp(-dt / 0.1);
@@ -417,7 +437,7 @@ class BonsaiSim implements SceneSim {
     this.#scheduleGusts();
     this.#gust = this.#gustStrength * gustPulse(this.#clock - this.#gustAt);
     const steps = Math.ceil(dt / STEP);
-    for (let s = 0; s < steps; s++) this.#stepPads(dt / steps);
+    for (let s = 0; s < steps; s++) this.#stepPads(dt / steps, this.#push);
     this.#stepSnow(y, dt);
     this.#stepShoots(y);
     // Leaves let go at the season's pace, more in a gust.
@@ -436,6 +456,40 @@ class BonsaiSim implements SceneSim {
         s.used = false;
         this.#atlasDirty = true;
       }
+    }
+  }
+
+  // ---- passage ----
+
+  /**
+   * Where the stand stands: entering it eases out of SLIDE to rest (cubic, braking all the way),
+   * leaving it accelerates back out to SLIDE (quadratic); zero exactly once arrived and not leaving.
+   * Leaves in the air stay where they are in the room as the stand goes, so they are moved the other
+   * way in the stand's own frame; leaves still in the air as it arrives ride in with it.
+   */
+  #stepPassage(frame: SimFrame): void {
+    const enter = BONSAI_PASSAGE.enter;
+    const exit = BONSAI_PASSAGE.exit;
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
+    else if (this.#arriving) this.#arrived += Math.max(0, frame.dt);
+    if (this.#arrived >= enter) this.#arriving = false;
+    const rest = this.#arriving ? 1 - this.#arrived / enter : 0;
+    const q = Math.min(1, Math.max(0, frame.passage.exit));
+    const before = this.#shift;
+    this.#shift = SLIDE * (rest * rest * rest + q * q);
+    this.#push = SLIDE_PUSH * SLIDE * ((6 * rest) / (enter * enter) + (q > 0 ? (2 * smoothstep(0, 0.12, q)) / (exit * exit) : 0));
+    if (q <= 0) return;
+    if (!this.#leaving) {
+      this.#leaving = true;
+      this.#launchGust(1);
+    }
+    const moved = this.#shift - before;
+    for (const mote of this.#motes) if (mote.live) mote.x0 -= moved;
+    for (const twig of this.#twigs) if (twig.live) twig.x -= moved;
+    const target = Math.min(SHAKEN_LEAVES, Math.floor(q * 10));
+    while (this.#shaken < target) {
+      this.#shaken++;
+      this.#launch(this.#year, true);
     }
   }
 
@@ -575,7 +629,7 @@ class BonsaiSim implements SceneSim {
     this.#gustStrength = strength;
   }
 
-  #stepPads(h: number): void {
+  #stepPads(h: number, push: number): void {
     const t = this.#clock;
     const amp = BREEZE_SWAY * Math.max(this.#breeze, 0.08);
     const px = this.#pointerX;
@@ -587,6 +641,7 @@ class BonsaiSim implements SceneSim {
       const wind = 0.5 * Math.sin(0.62 * lag + s.phase * 0.25) + 0.3 * Math.sin(1.07 * lag + 1.3) + 0.2 * Math.sin(0.29 * lag + s.phase) + 1.6 * gustPulse(t - this.#gustAt - pad.x * 1.2) * this.#gustStrength;
       let fx = s.omega * s.omega * amp * wind * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
       let fy = s.omega * s.omega * amp * 0.3 * Math.sin(0.83 * lag + s.phase);
+      if (push !== 0) fx -= push * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
       if (px !== undefined) {
         const ex = (px - s.sx) / s.rx;
         const ey = (this.#pointerY - s.sy) / s.ry;
@@ -1131,6 +1186,7 @@ class BonsaiSim implements SceneSim {
     data[state + 5] = this.#snip.y;
     data[state + 6] = Math.min(60, this.#clock - this.#snip.at);
     data[state + 7] = this.#gust;
+    data[state + 9] = this.#shift;
     data[state + 8] = n > 0 ? blossom / n : 0;
     data[state + 12] = x0;
     data[state + 13] = y0;

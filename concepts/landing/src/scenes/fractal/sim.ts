@@ -14,6 +14,8 @@
 // view offsets or the walk of c without visible steps), uSim0, FRACTAL_TEXELS × 1, nearest:
 //   texel 0   the wipe: front centre (content units), radius, softness (radius ≥ 1e3: one layer)
 //   texel 1   drag pan (content units), M strength 0..1, M size knob
+//   texel 2   the passage: scale about the focus (0 at rest, else < 1), focus (content units),
+//             e-folds of zoom per second
 //   then one block of FRACTAL_LAYER_TEXELS per layer, incoming first:
 //     +0      mode, iterations, ripple phase, a mode's scalar (Julia, garden: z units per content
 //             unit; dive: the zoom's speed, 1/s)
@@ -24,13 +26,13 @@
 // Content units: half the screen height, origin at the centre, after the pan.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PointerState, SceneDef, ScenePassageProgress, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 /** The `mode` knob's values, in order. */
 export const fractalModes = ["julia", "dive", "gasket", "garden"] as const;
 
 /** State row: these global texels, then one block per layer (incoming first); see the top. */
-export const FRACTAL_GLOBAL_TEXELS = 2;
+export const FRACTAL_GLOBAL_TEXELS = 3;
 export const FRACTAL_LAYER_TEXELS = 12;
 export const FRACTAL_TEXELS = FRACTAL_GLOBAL_TEXELS + 2 * FRACTAL_LAYER_TEXELS;
 
@@ -46,6 +48,36 @@ const SWAP_SECONDS = 4.5;
 /** Width of the wipe's soft front (content units). */
 const SWAP_SOFT = 0.45;
 const LOOP_SOFT = 0.35;
+
+// The passage: the entrance and exit happen in the world, as a camera. Entering, it rises from a
+// point deep in the fractal and settles into the usual framing while the iteration count climbs,
+// so the fine detail grows in; leaving, it falls into a point, accelerating. Julia, gasket and
+// garden scale their view about a focus (shader.ts, texel 2); the dive spends its own zoom: its
+// loop phase runs deeper than usual and back (the self-similarity keeps the framing exact at rest).
+/** Seconds the entrance and exit take (SceneDef.passage). */
+export const FRACTAL_PASSAGE: NonNullable<SceneDef["passage"]> = { enter: 2.8, exit: 1.4 };
+/** The fall is a power of the time left (entrance) or gone (exit): it rushes, then settles softly. */
+const PASSAGE_CURVE = 2.2;
+/** The share of the iterations the entrance starts with, rising to all of them over its last 85%. */
+const PASSAGE_ITER_FROM = 0.15;
+const PASSAGE_MIN_ITERATIONS = 10;
+/** Where the focus may lie on screen, as a share of the half-extents (it is kept in view). */
+const PASSAGE_FOCUS_MARGIN = 0.8;
+
+/** How deep the camera is, in e-folds of zoom, on entering and leaving, and the share of iterations it starts with. */
+interface PassageReach {
+  enter: number;
+  exit: number;
+  floor: number;
+}
+const PASSAGE_NONE: PassageReach = { enter: 0, exit: 0, floor: 1 };
+/** In the order of the modes. */
+const PASSAGE_REACH: readonly PassageReach[] = [
+  { enter: 3, exit: 3.4, floor: 0.3 }, // julia: toward the repelling fixed point, on the set
+  { enter: 3.6, exit: 3.4, floor: 0.3 }, // dive: further into the island
+  { enter: 2.6, exit: 3, floor: 0.4 }, // gasket: toward where two big circles kiss
+  { enter: 2.2, exit: 2.6, floor: 0.65 }, // garden: toward where the stones' pulls balance
+];
 
 // The pointer.
 /** Seconds for the hover nudge to follow the pointer, and the half-life of a released drag. */
@@ -390,6 +422,11 @@ class FractalSim implements SceneSim {
   #started = false;
   /** Seconds of drift: every mode's breath is a sine of it, each with its own period. */
   #breathClock = 0;
+  // The passage: how many e-folds deeper than the usual framing the camera is, how fast that
+  // changes (per second), and the share of the iterations in use. 0, 0 and 1 at rest.
+  #depth = 0;
+  #depthRate = 0;
+  #iterShare = 1;
 
   // Layers and the wipe between them.
   #incoming: Layer = { mode: MODE_JULIA, site: 0, phase: DIVE_ENTRY };
@@ -481,6 +518,7 @@ class FractalSim implements SceneSim {
     this.#advanceLayers(drift, real);
     this.#advanceMark(real);
 
+    this.#advancePassage(frame.passage);
     this.#write();
     this.#row.upload(this.#data);
     return [this.#row.texture];
@@ -749,6 +787,55 @@ class FractalSim implements SceneSim {
     if (real > 0) this.#markStrength += Math.sign(target - this.#markStrength) * Math.min(Math.abs(target - this.#markStrength), real / MARK_FADE);
   }
 
+  /** The camera's depth, its speed and the iterations' share, from how far in and out the scene is. */
+  #advancePassage(passage: Readonly<ScenePassageProgress>): void {
+    const reach = PASSAGE_REACH[this.#incoming.mode] ?? PASSAGE_NONE;
+    const entered = clamp(passage.enter, 0, 1);
+    const left = clamp(passage.exit, 0, 1);
+    const coming = 1 - entered;
+    this.#depth = reach.enter * Math.pow(coming, PASSAGE_CURVE) + reach.exit * Math.pow(left, PASSAGE_CURVE);
+    let rate = 0;
+    if (coming > 0) rate += (reach.enter * PASSAGE_CURVE * Math.pow(coming, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.enter;
+    if (left > 0) rate += (reach.exit * PASSAGE_CURVE * Math.pow(left, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.exit;
+    this.#depthRate = rate;
+    this.#iterShare = coming > 0 ? reach.floor + (1 - reach.floor) * smoothstep(PASSAGE_ITER_FROM, 1, entered) : 1;
+  }
+
+  /** An iteration count with the passage's share of it (itself at rest). */
+  #iterations(count: number): number {
+    return this.#iterShare < 1 ? Math.max(PASSAGE_MIN_ITERATIONS, Math.round(count * this.#iterShare)) : count;
+  }
+
+  /**
+   * Where the camera falls into and rises from, in content units: a point where the fractal is all
+   * fine detail. Julia: the repelling fixed point β = 1 − α, on the set, where it is self-similar.
+   * Gasket: the kiss of the two big circles A and B, at (1/2, 1/2) in the band. Garden: the balance
+   * of the stones' pulls, where their basins braid. Kept in view.
+   */
+  #passageFocus(): Complex {
+    let at: Complex = [0, 0];
+    switch (this.#incoming.mode) {
+      case MODE_JULIA: {
+        const root = csqrt(sub([1, 0], scale(this.#juliaC(), 4)));
+        at = scale(add([1, 0], root), (0.5 * this.#knobs.zoom) / JULIA_REACH);
+        break;
+      }
+      case MODE_GASKET: {
+        const map = this.#gasketNow ?? this.#gasketMap();
+        const kiss: Complex = [0.5, 0.5];
+        at = div(sub(mul(map.d, kiss), map.b), sub(map.a, mul(map.c, kiss)));
+        break;
+      }
+      case MODE_GARDEN:
+        at = scale(this.#gardenCentre(this.#gardenStones()), this.#knobs.zoom / GARDEN_REACH);
+        break;
+      default:
+        break;
+    }
+    if (!Number.isFinite(at[0]) || !Number.isFinite(at[1])) return [0, 0];
+    return [clamp(at[0], -PASSAGE_FOCUS_MARGIN * this.#aspect, PASSAGE_FOCUS_MARGIN * this.#aspect), clamp(at[1], -PASSAGE_FOCUS_MARGIN, PASSAGE_FOCUS_MARGIN)];
+  }
+
   #write(): void {
     const data = this.#data;
     data.fill(0);
@@ -769,6 +856,10 @@ class FractalSim implements SceneSim {
     // The dive leans a little toward a hovering pointer: parallax, as if looking past its edge.
     const lean: Complex = this.#incoming.mode === MODE_DIVE ? scale(this.#nudge, DIVE_NUDGE) : [0, 0];
     data.set([this.#pan[0] + lean[0], this.#pan[1] + lean[1], this.#markStrength, knobs.mark > 0 ? knobs.mark : 0.5], 4);
+    if (this.#depth > 0 && this.#incoming.mode !== MODE_DIVE) {
+      const fall = this.#passageFocus();
+      data.set([Math.exp(-this.#depth), fall[0], fall[1], this.#depthRate], 8);
+    }
 
     this.#writeLayer(this.#incoming, FRACTAL_GLOBAL_TEXELS);
     if (outgoing) this.#writeLayer(outgoing, FRACTAL_GLOBAL_TEXELS + FRACTAL_LAYER_TEXELS);
@@ -811,7 +902,7 @@ class FractalSim implements SceneSim {
     const velocity = this.#juliaRate.value;
     const alpha = scale(sub([1, 0], csqrt(sub([1, 0], scale(c, 4)))), 0.5);
     const mu = scale(alpha, 2);
-    const iterations = Math.min(128, Math.max(32, Math.round(this.#budget(44, 84))));
+    const iterations = this.#iterations(Math.min(128, Math.max(32, Math.round(this.#budget(44, 84)))));
     // The rings round the set need no sway of their own: they follow c as it breathes.
     data.set([MODE_JULIA, iterations, 0, JULIA_REACH / knobs.zoom], at);
     data.set([c[0], c[1], velocity[0] ?? 0, velocity[1] ?? 0], at + 4);
@@ -834,14 +925,16 @@ class FractalSim implements SceneSim {
     const dive = DIVE_SITES[layer.site] ?? DIVE_SITES[0];
     if (!dive) return;
     const s = layer.phase;
-    const power = polar(Math.exp(s * dive.logScale[0]), s * dive.logScale[1]);
+    // The passage runs the loop's phase deeper than usual (a stretch of the dive's own zoom).
+    const deeper = this.#incoming.mode === MODE_DIVE ? 1 / -dive.logScale[0] : 0;
+    const power = polar(Math.exp((s + this.#depth * deeper) * dive.logScale[0]), (s + this.#depth * deeper) * dive.logScale[1]);
     const height = dive.height / this.#knobs.zoom;
     const centre = add(sub(dive.focus, dive.nucleus), mul(power, sub(dive.start, dive.focus)));
     const step = scale(power, height);
     const focus = this.#diveFocus(layer.site);
-    const iterations = Math.min(128, Math.max(32, Math.round(this.#budget(22, 14) * Math.pow(dive.period, Math.max(0, s)))));
+    const iterations = this.#iterations(Math.min(128, Math.max(32, Math.round(this.#budget(22, 14) * Math.pow(dive.period, Math.max(0, s))))));
     // The zoom's speed in e-folds (and turns) per second of the scene clock, for softening moving detail.
-    const speed = this.#diveRate(layer.site) * Math.hypot(dive.logScale[0], dive.logScale[1]) * this.#motion * this.#knobs.pace;
+    const speed = this.#diveRate(layer.site) * Math.hypot(dive.logScale[0], dive.logScale[1]) * this.#motion * this.#knobs.pace + this.#depthRate * deeper * Math.hypot(dive.logScale[0], dive.logScale[1]);
     data.set([MODE_DIVE, iterations, 0, speed], at);
     data.set([dive.nucleus[0], dive.nucleus[1], centre[0], centre[1]], at + 4);
     data.set([step[0], step[1], dive.scale[0], dive.scale[1]], at + 8);
@@ -869,7 +962,7 @@ class FractalSim implements SceneSim {
     const gamma = sub(mul(da, map.c), mul(map.a, dc));
     const beta = sub(add(mul(da, map.d), mul(db, map.c)), add(mul(map.a, dd), mul(map.b, dc)));
     const alpha = sub(mul(db, map.d), mul(map.b, dd));
-    const iterations = Math.min(64, Math.max(24, Math.round(this.#budget(30, 34))));
+    const iterations = this.#iterations(Math.min(64, Math.max(24, Math.round(this.#budget(30, 34)))));
     // The growth rings swell and ebb a little with the breath; +4 z carries how fast (rings per second).
     const breath = (this.#breathClock * TAU) / GASKET_BREATH_PERIOD;
     const rings = (0.15 * TAU * this.#motion * this.#knobs.pace * Math.cos(breath)) / GASKET_BREATH_PERIOD;
@@ -893,26 +986,31 @@ class FractalSim implements SceneSim {
     const rate = this.#gardenRate.value;
     const relax = this.#gardenRelax();
     const weights = stones.slice(GARDEN_STONES * 2);
-    data.set([MODE_GARDEN, Math.min(40, Math.max(18, Math.round(this.#budget(20, 16)))), this.#rake, GARDEN_REACH / knobs.zoom], at);
+    data.set([MODE_GARDEN, this.#iterations(Math.min(40, Math.max(18, Math.round(this.#budget(20, 16))))), this.#rake, GARDEN_REACH / knobs.zoom], at);
     data.set([...stones.slice(0, GARDEN_STONES * 2), this.#pebble[0], this.#pebble[1]], at + 4);
     data.set([...weights, this.#pebbleWeight, relax[0], relax[1]], at + 16);
     data.set([...rate.slice(0, GARDEN_STONES * 2), rate[10] ?? 0, rate[11] ?? 0], at + 24);
     // The raked rings drift outward: bands of the step count per second.
     data.set([(this.#motion * knobs.pace) / GARDEN_RAKE, 0, 0, 0], at + 36);
     // Pearls gather where the stones' pulls balance: round their weighted centre.
+    const centre = this.#gardenCentre(stones);
+    data.set([centre[0], centre[1], 0.06, 0.1], at + 40);
+    const first: Complex = [stones[0] ?? 0, stones[1] ?? 0];
+    data.set([first[0] + 0.3, first[1] + 0.22, 0.12 + 0.12 * this.#markSize(), 0], at + 44);
+  }
+
+  /** The stones' centre of weight (z units): where their pulls balance. */
+  #gardenCentre(stones: readonly number[]): Complex {
     let cx = 0;
     let cy = 0;
     let total = 0;
     for (let k = 0; k < GARDEN_STONES; k++) {
-      const w = weights[k] ?? 0;
+      const w = stones[GARDEN_STONES * 2 + k] ?? 0;
       cx += (stones[2 * k] ?? 0) * w;
       cy += (stones[2 * k + 1] ?? 0) * w;
       total += w;
     }
-    const centre: Complex = total > 0 ? [cx / total, cy / total] : [0, 0];
-    data.set([centre[0], centre[1], 0.06, 0.1], at + 40);
-    const first: Complex = [stones[0] ?? 0, stones[1] ?? 0];
-    data.set([first[0] + 0.3, first[1] + 0.22, 0.12 + 0.12 * this.#markSize(), 0], at + 44);
+    return total > 0 ? [cx / total, cy / total] : [0, 0];
   }
 
   /** The M's size knob, or its middle when a 'now' summoned it with the feature off. */

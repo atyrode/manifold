@@ -5,7 +5,13 @@
 // from one camera, and moving edges (bobs, threads, shadows, trails) are cut per cell.
 // Knobs read here: K_count, K_cycle, K_swing, K_release, K_camera, K_trail, K_material, K_beam,
 // K_lamp, K_mark.
+// Passage (PENDULA_PASSAGE): entrance, the bobs hang gathered under the beam, drop together on their
+// threads (a gentle stretch at the end) and the swing builds up in its wave; exit, the row is hoisted
+// back up to the beam in a ripple while the swing dies away. At rest it all reduces to nothing.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
+
+/** Seconds of the entrance and exit (SceneDef.passage). */
+export const PENDULA_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 
 export interface PendulaCamera {
   label: string;
@@ -71,6 +77,12 @@ const vec3 PENDULA_TABLE = vec3(0.3, 0.19, 0.105);
 const vec3 PENDULA_GOLD = vec3(1.0, 0.78, 0.42);
 const vec3 PENDULA_BRASS = ${glslVec3(pendulaBrass)};
 const vec3 PENDULA_STEEL = ${glslVec3(pendulaSteel)};
+const float PENDULA_ENTER = ${glslFloat(PENDULA_PASSAGE.enter)};
+const float PENDULA_EXIT = ${glslFloat(PENDULA_PASSAGE.exit)};
+const float PENDULA_DROP = 0.9;        // entrance: seconds a bob takes to drop (a longer thread takes longer)
+const float PENDULA_BUILD = 1.5;       // entrance: seconds the swing takes to build up once a bob is falling
+const float PENDULA_RIPPLE = 0.4;      // exit: seconds the hoist's start is spread along the row
+const float PENDULA_HUNG = 0.06;       // gap between the beam and a hoisted bob's top
 
 vec4 pendulaPose() {
 ${cameraPose}
@@ -148,6 +160,35 @@ vec3 pendulaBobAt(vec3 piv, float L, float amp, float k, float f) {
   return piv + vec3(0.0, -cos(th), sin(th)) * L;
 }
 
+// Ease-out with a gentle overshoot (about 4.5%): 0 at 0, 1 at 1.
+float pendulaBack(float u) {
+  float v = u - 1.0;
+  return 1.0 + 2.1 * v * v * v + 1.1 * v * v;
+}
+
+// The passage's effect on pendulum fi of the row (thread length L): x the thread's length, y the
+// factor on the swing. Exactly (L, 1) once arrived and not leaving.
+vec2 pendulaPassage(float L, float br, float fi, float cnt) {
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return vec2(L, 1.0);
+  float hang = 1.0;
+  float swing = 1.0;
+  if (pin < 1.0) {
+    float tin = pin * PENDULA_ENTER;
+    float fall = PENDULA_DROP + 0.5 * sqrt(L / PENDULA_LMAX);
+    hang = pendulaBack(clamp(tin / fall, 0.0, 1.0));
+    swing = smoothstep(0.5 * fall, 0.5 * fall + PENDULA_BUILD, tin);
+  }
+  if (pout > 0.0) {
+    float u = clamp((pout * PENDULA_EXIT - PENDULA_RIPPLE * fi / max(cnt - 1.0, 1.0)) / (PENDULA_EXIT - PENDULA_RIPPLE), 0.0, 1.0);
+    hang *= 1.0 - smoothstep(0.0, 1.0, u);
+    swing *= 1.0 - smoothstep(0.0, 0.8, u);
+  }
+  float hung = br + PENDULA_HUNG;
+  return vec2(hung + (L - hung) * hang, swing);
+}
+
 // Where the shadow of P falls on the table: xy = (x, z), z = magnification.
 vec3 pendulaCast(vec3 P) {
   float lam = PENDULA_LAMP_POS.y / max(PENDULA_LAMP_POS.y - P.y, 0.5);
@@ -183,7 +224,8 @@ float pendulaBobShadow(vec2 q, float cnt, float n0, float sp, float br, float fc
     if (fi > cnt - 0.5) break;
     float k = n0 + fi;
     float L = PENDULA_LMAX * (n0 / k) * (n0 / k);
-    vec3 bob = pendulaBobAt(vec3((fi + 0.5 - 0.5 * cnt) * sp, PENDULA_PIVOT, 0.0), L, amp, k, fc);
+    vec2 ps = pendulaPassage(L, br, fi, cnt);
+    vec3 bob = pendulaBobAt(vec3((fi + 0.5 - 0.5 * cnt) * sp, PENDULA_PIVOT, 0.0), ps.x, amp * ps.y, k, fc);
     vec3 s = pendulaCast(bob);
     cov = max(cov, softFill(length(q - s.xy) - br * s.z, pendulaPen(bob.y)));
   }
@@ -414,19 +456,22 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
     if (fi > cnt - 0.5) break;
     float k = n0 + fi;
     float L = PENDULA_LMAX * (n0 / k) * (n0 / k);
+    vec2 ps = pendulaPassage(L, br, fi, cnt);
+    float Lp = ps.x;
+    float ampP = amp * ps.y;
     float x = (fi + 0.5 - 0.5 * cnt) * sp;
     vec3 piv = vec3(x, PENDULA_PIVOT, 0.0);
-    vec3 bob = pendulaBobAt(piv, L, amp, k, fc);
-    vec3 dir = (bob - piv) / L;
-    vec3 eye = piv + dir * (L - br);
+    vec3 bob = pendulaBobAt(piv, Lp, ampP, k, fc);
+    vec3 dir = (bob - piv) / Lp;
+    vec3 eye = piv + dir * (Lp - br);
     vec3 tint = pendulaBobTint(fi / max(cnt - 1.0, 1.0));
 
     // Where the bob has just been: three straight pieces along its arc.
     if (K_trail > 0.0) {
       float dc = (0.12 + 0.5 * K_trail) / k / 3.0;
-      vec3 q1 = pendulaBobAt(piv, L, amp, k, fc - dc);
-      vec3 q2 = pendulaBobAt(piv, L, amp, k, fc - 2.0 * dc);
-      vec3 q3 = pendulaBobAt(piv, L, amp, k, fc - 3.0 * dc);
+      vec3 q1 = pendulaBobAt(piv, Lp, ampP, k, fc - dc);
+      vec3 q2 = pendulaBobAt(piv, Lp, ampP, k, fc - 2.0 * dc);
+      vec3 q3 = pendulaBobAt(piv, Lp, ampP, k, fc - 3.0 * dc);
       vec3 mid = 0.25 * (bob + q1 + q2 + q3);
       float reach = max(max(length(bob - mid), length(q1 - mid)), max(length(q2 - mid), length(q3 - mid))) + 0.04;
       vec3 om = ro - mid;
@@ -443,7 +488,7 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
     vec3 mid = 0.5 * (piv + eye);
     vec3 om = ro - mid;
     float bm = dot(om, rd);
-    float reach = 0.5 * (L - br) + 0.25 * sp + 0.05;
+    float reach = 0.5 * (Lp - br) + 0.25 * sp + 0.05;
     if (bm < 0.0 && dot(om, om) - bm * bm < reach * reach) {
       for (int j = 0; j < 2; j++) {
         vec3 anchor = vec3(x + (j == 0 ? -0.2 : 0.2) * sp, PENDULA_PIVOT, 0.0);

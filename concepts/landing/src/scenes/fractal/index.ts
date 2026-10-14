@@ -6,7 +6,7 @@ import { choice, feature, range, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { fractalGlsl, fractalPalettes } from "./shader.ts";
-import { fractalModes, fractalSim } from "./sim.ts";
+import { FRACTAL_PASSAGE, fractalModes, fractalSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("fractal", "kind", "fractal", fractalModes.map((label, value) => ({ label, value })), 0, "Julia: a Julia set breathing, its c walking the rim of the Mandelbrot set past rabbits, spirals, dendrites and dust. Dive: a slow zoom into an island of the Mandelbrot set that loops forever, since the island is the whole set again. Gasket: Apollonian circles, every gap filled by circles kissing its sides, flowing round. Garden: Newton's method as a dry garden: stones, raked rings, and braided seams where their pulls meet."),
@@ -31,6 +31,7 @@ export const fractalScene: SceneDef = {
   blurb: "A Julia set breathing, an endless Mandelbrot dive, Apollonian circles, a Newton garden.",
   accent: "#d4a646",
   look: { color: "full", levels: 5 },
+  passage: FRACTAL_PASSAGE,
   params,
   groups: {
     fractal: { title: "Fractal", blurb: "Which fractal, and how it lives. Hover to nudge it, drag to pan; let go and it drifts home." },
