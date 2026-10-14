@@ -18,12 +18,13 @@
 // on). Texels outside the inscribed disc hold the medium at rest and never change; inside, a texel
 // whose stencil reaches outside reads its own value there, so nothing flows through the glass.
 //
-// Turing: Gray–Scott (u substrate, v activator, z how long v has stood here), on Karl Sims's
-// 9-point stencil (D_u 1, D_v 0.5, steps ≤ 1). Feed and kill drift along a loop through Pearson's
-// classes (J. E. Pearson, "Complex patterns in a simple system", Science 261, 1993): fingerprints,
-// coral, worms, dividing spots, still spots, mazes, holes. Regions of the dish run a little ahead of
-// the drift or behind it, so neighbouring classes share the dish and the frontier between them
-// sweeps by; staying on the loop keeps every region alive. A drop of fresh gel clears a disc,
+// Turing: Gray–Scott (u substrate, v activator, z how long v has stood here; sims/grayscott.ts), on
+// Karl Sims's 9-point stencil (D_u 1, D_v 0.5, steps ≤ 1). By default feed and kill drift along a
+// loop through Pearson's classes (grayScottRegimes): fingerprints, coral, worms, dividing spots,
+// still spots, mazes, holes. Regions of the dish run a little ahead of the drift or behind it, so
+// neighbouring classes share the dish and the frontier between them sweeps by; staying on the loop
+// keeps every region alive. A chosen regime, or the Advanced feed and kill, instead holds the
+// whole dish at one point of the map, and the drift waits. A drop of fresh gel clears a disc,
 // which the pattern grows back into from its rim and from a seed at its centre. The etched M grows
 // a ridge of coral along its strokes: v is held there to a stripe's rounded profile, a little
 // wider than a stripe, so the M keeps one width everywhere with clean ends and holds still, while
@@ -49,6 +50,7 @@ import { MARK_VERTICES, markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { GpuCompute, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import { grayScottAlong, grayScottGlsl, grayScottRegimes } from "../../sims/grayscott.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -56,6 +58,10 @@ import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export const petriChemistries = ["Turing", "BZ"] as const;
 export const petriPalettes = ["stain", "ink", "UV"] as const;
+/** The `regime` knob, in order: wandering along the loop, then each of grayScottRegimes. */
+export const petriRegimes = ["wander", ...grayScottRegimes.map((regime) => regime.label)] as const;
+/** The Advanced feed and kill knobs are in thousandths (37 = 0.037). */
+export const PETRI_FEED_KILL_UNIT = 1000;
 
 /** Inner radius of the dish in frame heights at the middle of the size knob... */
 export const PETRI_RADIUS = 0.43;
@@ -113,23 +119,16 @@ const TURING_STEP = 1;
 const TURING_STEPS = 10;
 /** Steps a fresh dish takes before it is shown. */
 const TURING_PREWARM = 140;
-/**
- * The drift's loop over the (feed, kill) map, eased from one stop to the next. Feed and kill are
- * independent of the diffusion's scale, so these are the classic values.
- */
-const TURING_PATH: readonly (readonly [number, number])[] = [
-  [0.037, 0.06], //    fingerprints: long, parallel stripes
-  [0.0545, 0.062], //  coral: stripes branching as they grow
-  [0.05, 0.0635], //   worms: stripes breaking into short segments
-  [0.0367, 0.0649], // mitosis: spots dividing to fill the dish
-  [0.03, 0.062], //    solitons: spots holding still
-  [0.029, 0.057], //   mazes: spots stretching into a maze
-  [0.039, 0.058], //   holes: the maze swelling round dark holes
-];
-/** Path stops per chemistry second at full drift. */
+/** Loop stops (grayScottRegimes) per chemistry second at full drift. */
 const TURING_DRIFT = 1 / 40;
-/** How far along the path, in stops, the dish's regions run ahead of the drift or behind it. */
+/** How far along the loop, in stops, the dish's regions run ahead of the drift or behind it. */
 const TURING_LEAD = 0.35;
+/**
+ * Chemistry seconds a fresh dish held at a regime (or the Advanced feed and kill) takes to be eased
+ * there from the loop's start, where its seed settled: switched at once, mitosis and others starve
+ * the young labyrinth and leave a bare dish.
+ */
+const TURING_APPROACH = 4;
 /** Ripening of the growth per model time unit (it fades six times faster where the growth is gone). */
 const TURING_RIPEN = 1 / 1600;
 /**
@@ -295,10 +294,11 @@ float petriVary(vec2 g, float phase, float heading) {
 const TURING_PASS = `
 uniform sampler2D uState;
 uniform float uDt;
-uniform vec4 uFeedKill;  // (feed, kill) behind the drift and ahead of it on its path
+uniform vec4 uFeedKill;  // (feed, kill) behind the drift and ahead of it on its loop (equal when held)
 uniform vec2 uVary;      // the variation field's phase and heading
 uniform vec2 uMark;      // the M's ridge: height (grid uv; 0 = none), how far it has grown 0..1
 ${PASS_COMMON}
+${grayScottGlsl}
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
   if (!petriInside(ij)) {
@@ -314,11 +314,9 @@ void main() {
   float ahead = 0.5 + 0.5 * petriVary(vUv - 0.5, uVary.x, uVary.y);
   float feed = mix(uFeedKill.x, uFeedKill.z, ahead);
   float kill = mix(uFeedKill.y, uFeedKill.w, ahead);
-  float u = c.x;
-  float v = c.y;
-  float r = u * v * v;
-  u = clamp(u + uDt * (lap.x - r + feed * (1.0 - u)), 0.0, 1.0);
-  v = clamp(v + uDt * (0.5 * lap.y + r - (feed + kill) * v), 0.0, 1.0);
+  vec2 next = grayScottStep(c.xy, lap, feed, kill, uDt);
+  float u = next.x;
+  float v = next.y;
   if (uMark.x > 0.0) {
     vec2 ridge = petriRidge(vUv, uMark.x, uMark.y, uSize.x);
     v += (ridge.x - v) * ridge.y * min(1.0, uDt * ${glslFloat(TURING_HOLD)});
@@ -491,25 +489,39 @@ interface Ripple {
 }
 
 /** The knobs the sim reads. */
-type Knob = "chemistry" | "tempo" | "drift" | "scale" | "drops" | "pattern" | "size" | "mark";
+type Knob = "chemistry" | "regime" | "tempo" | "drift" | "scale" | "drops" | "pattern" | "size" | "mark" | "custom" | "feed" | "kill";
+
+/** A point of the (feed, kill) map the whole dish is held at. */
+export interface PetriHold {
+  readonly feed: number;
+  readonly kill: number;
+}
 
 /** Texels across the dish for its diameter in dither cells and the scale knob. */
-function gridFor(diameterCells: number, scale: number): number {
+export function gridFor(diameterCells: number, scale: number): number {
   const perTexel = lerp(GRID_CELLS[0], GRID_CELLS[1], clamp(scale, 0, 1));
   const texels = Math.round(diameterCells / perTexel / GRID_ROUND) * GRID_ROUND;
   return Number.isFinite(texels) ? Math.min(GRID_MAX, Math.max(GRID_MIN, texels)) : GRID_MIN;
 }
 
-/** Feed and kill at a position along TURING_PATH (stops, wrapping), eased between stops, into out[at..]. */
-function turingAt(position: number, out: Float32Array, at: number): void {
-  const count = TURING_PATH.length;
-  const wrapped = ((position % count) + count) % count;
-  const i = Math.floor(wrapped);
-  const from = TURING_PATH[i % count] ?? [0.037, 0.06];
-  const to = TURING_PATH[(i + 1) % count] ?? from;
-  const e = smoothstep(0, 1, wrapped - i);
-  out[at] = from[0] + (to[0] - from[0]) * e;
-  out[at + 1] = from[1] + (to[1] - from[1]) * e;
+/**
+ * Gray–Scott's feed and kill behind the drift and ahead of it (the Turing pass's uFeedKill), into
+ * out[0..3]. Wandering (`hold` undefined), the dish's regions spread TURING_LEAD stops either side
+ * of `drift` along the loop through grayScottRegimes. Held at a regime or the Advanced feed and
+ * kill, the whole dish is taken from there to that one point as `arrived` runs 0..1, and then stays
+ * there whatever the drift.
+ */
+export function petriFeedKill(out: Float32Array, drift: number, hold: PetriHold | undefined, arrived: number): void {
+  const e = hold === undefined ? 0 : smoothstep(0, 1, arrived);
+  if (e < 1) {
+    grayScottAlong(drift - TURING_LEAD, out, 0);
+    grayScottAlong(drift + TURING_LEAD, out, 2);
+  }
+  if (hold === undefined) return;
+  for (let i = 0; i < 4; i += 2) {
+    out[i] = e < 1 ? (out[i] ?? 0) + (hold.feed - (out[i] ?? 0)) * e : hold.feed;
+    out[i + 1] = e < 1 ? (out[i + 1] ?? 0) + (hold.kill - (out[i + 1] ?? 0)) * e : hold.kill;
+  }
 }
 
 /**
@@ -682,8 +694,12 @@ class PetriLab implements SceneSim {
   /** Chemistry seconds and model time simulated since the dish was seeded. */
   #clock = 0;
   #model = 0;
-  /** Turing: position along TURING_PATH; BZ: phase of the excitability field. */
+  /** Turing: position along the loop through grayScottRegimes; BZ: phase of the excitability field. */
   #drift = 0;
+  /** Turing: the point the whole dish is held at (a regime, or the Advanced knobs); undefined while it wanders. */
+  #hold: PetriHold | undefined;
+  /** The Advanced feed and kill, rewritten in place each frame. */
+  readonly #custom = { feed: 0, kill: 0 };
   #heading = 0;
   #untilDrop = DROP_FIRST;
   #pacemakers: Pacemaker[] = [];
@@ -722,10 +738,15 @@ class PetriLab implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const aspect = frame.aspect > 0 && Number.isFinite(frame.aspect) ? frame.aspect : 16 / 9;
     const chemistry: Chemistry = this.#knobs.value(frame, "chemistry") > 0.5 ? BZ : TURING;
+    const hold = this.#holdFor(frame);
     const pattern = Math.round(this.#knobs.value(frame, "pattern"));
     const radius = petriRadius(aspect, this.#knobs.value(frame, "size"));
     const n = gridFor(2 * radius * frame.height, this.#knobs.value(frame, "scale"));
-    const reseeded = chemistry !== this.#chemistry || pattern !== this.#pattern;
+    // A dish settled in one regime can die outright when switched to another (holes to anything
+    // sparser, mazes to coral), so a new regime, or wandering again, starts a fresh dish; the
+    // Advanced feed and kill move the live one (`hold` stays the same object while they change).
+    const reseeded = chemistry !== this.#chemistry || pattern !== this.#pattern || (chemistry === TURING && hold !== this.#hold);
+    this.#hold = hold;
     if (reseeded) {
       this.#reseed(chemistry, pattern, n, this.#knobs.value(frame, "mark"));
     } else if (n !== this.#state.width) {
@@ -768,8 +789,8 @@ class PetriLab implements SceneSim {
       const drift = Math.max(0, this.#knobs.value(frame, "drift"));
       const dt = model / steps;
       if (turing) {
-        this.#drift += seconds * drift * TURING_DRIFT;
-        this.#setTuring(dt);
+        if (this.#hold === undefined) this.#drift += seconds * drift * TURING_DRIFT;
+        this.#setTuring(dt, this.#hold);
         for (let i = 0; i < steps; i++) this.#turing.run(this.#state);
       } else {
         this.#drift += model * drift * BZ_DRIFT;
@@ -825,7 +846,10 @@ class PetriLab implements SceneSim {
     this.#markOn = ridge > 0;
     this.#held = false;
     if (chemistry === TURING) {
-      this.#setTuring(TURING_STEP);
+      // The labyrinth seed is laid at the levels of the loop's start and settles there: every
+      // regime grows on from it as the dish is eased over (see TURING_APPROACH), while most starve
+      // it outright from the first step.
+      this.#setTuring(TURING_STEP, undefined);
       for (let i = 0; i < TURING_PREWARM; i++) this.#turing.run(this.#state);
     } else {
       this.#setBz(BZ_STEP);
@@ -835,13 +859,26 @@ class PetriLab implements SceneSim {
   }
 
   /**
-   * Gray–Scott's uniforms: feed and kill behind and ahead of the drift (regions of the dish pick
-   * their place between by the variation field, which slides and turns with the drift), and the
-   * M's ridge.
+   * The point the Turing dish is held at this frame: the Advanced feed and kill while they are on,
+   * else the chosen regime; undefined while it wanders along the loop.
    */
-  #setTuring(dt: number): void {
-    turingAt(this.#drift - TURING_LEAD, this.#feedKill, 0);
-    turingAt(this.#drift + TURING_LEAD, this.#feedKill, 2);
+  #holdFor(frame: SimFrame): PetriHold | undefined {
+    const knobs = this.#knobs;
+    if (knobs.value(frame, "custom") > 0.5) {
+      this.#custom.feed = knobs.value(frame, "feed") / PETRI_FEED_KILL_UNIT;
+      this.#custom.kill = knobs.value(frame, "kill") / PETRI_FEED_KILL_UNIT;
+      return this.#custom;
+    }
+    return grayScottRegimes[Math.round(knobs.value(frame, "regime")) - 1];
+  }
+
+  /**
+   * Gray–Scott's uniforms: feed and kill behind and ahead of the drift, or held (regions of the dish
+   * pick their place between by the variation field, which slides and turns with the drift), and
+   * the M's ridge.
+   */
+  #setTuring(dt: number, hold: PetriHold | undefined): void {
+    petriFeedKill(this.#feedKill, this.#drift, hold, this.#clock / TURING_APPROACH);
     this.#turingVary[0] = this.#drift * 0.9;
     this.#turingVary[1] = this.#heading + this.#drift * 0.35;
     this.#turing.set({ uDt: dt, uFeedKill: this.#feedKill, uVary: this.#turingVary, uMark: this.#ridge });
@@ -1060,7 +1097,7 @@ class PetriLab implements SceneSim {
  * a still dish of its own.
  */
 export function petriSim(knobs: readonly ParamDef[]): SimFactory {
-  const reader = new KnobReader<Knob>("petri", knobs, ["chemistry", "tempo", "drift", "scale", "drops", "pattern", "size", "mark"]);
+  const reader = new KnobReader<Knob>("petri", knobs, ["chemistry", "regime", "tempo", "drift", "scale", "drops", "pattern", "size", "mark", "custom", "feed", "kill"]);
   return (gl): SceneSim => {
     const gpu = GpuCompute.create(gl);
     if (!gpu) return { frame: () => [], dispose: () => undefined };
