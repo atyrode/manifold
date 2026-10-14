@@ -85,7 +85,7 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
       at("uParams"),
       Float32Array.from(renderSettings(defaultsFor("swell"), { ...paramDefaults("swell"), ...knobs }).params),
     );
-    gl.uniform3f(at("regressionCamera"), ...camera);
+    gl.uniform3f(at("regressionCamera"), camera[0], camera[1], camera[2]);
     let offSea = 0;
     let skipped = 0;
     let swamped = 0;
