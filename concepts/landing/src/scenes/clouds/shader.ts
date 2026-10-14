@@ -80,8 +80,11 @@ float cloudsMacro(vec2 w, float cover, float boil) {
 }
 
 // Cauliflower detail on the domes, for normals only; 'detail' fades it out before it would alias.
+// Fully faded (most of the far deck from cruise height) it adds exactly nothing, so its two noise
+// octaves are not evaluated at all: the same picture for six fewer noise lookups per deck cell.
 float cloudsSurface(vec2 w, float cover, float boil, float detail) {
   float h = cloudsMacro(w, cover, boil);
+  if (detail <= 0.0) return h;
   float fine = 0.62 * cloudsBillow(w * 3.3 + vec2(1.7, 8.2)) + 0.38 * cloudsBillow(w * 7.4 - vec2(3.3, 0.6));
   return h + (fine - 0.4) * 0.16 * detail * smoothstep(0.1, 0.5, h);
 }
