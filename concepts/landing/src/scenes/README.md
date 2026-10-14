@@ -152,7 +152,14 @@ float rainShafts(vec2 p, float tm, float amount, float wind); // 0..1 toward clo
 // cover: drops/flakes (all layers, binarised per cell); veil: unresolved distant rain/snow (mix toward
 // the air colour); near: share of cover from the nearest, out-of-focus layer.
 struct Precip { float cover; float veil; float near; };
-Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float depth);
+Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float depth); // level camera: paths straight down the frame
+// A camera pitched up or down: the drops' paths meet at the vanishing point of their fall direction.
+// right/up/fwd: camera axes in the world; focal in screen heights (ray = fwd*focal + right*x + up*y,
+// x, y about the frame's centre). Shift vanish.y by -lens * vanish.z for a lens-shifted frame.
+vec3 rainFallDir(float amount, float wind);               // the drops' world direction (terminal speed 4..9 m/s, wind drift)
+vec3 rainVanish(vec3 dir, vec3 right, vec3 up, vec3 fwd, float focal);
+Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish);
+float weatherRainClock(float t);                          // real time for gravity-driven things once motion > 0.4
 Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth);
 vec3 precipOver(vec3 col, vec3 air, vec3 dropLight, Precip p); // the veil toward air, then the drops toward dropLight (see below)
 
