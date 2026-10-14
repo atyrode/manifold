@@ -45,6 +45,7 @@
 // Without float render targets the scene returns no textures and the shader draws still eddies.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex } from "../../mark.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
 import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
 import { GpuCompute, GpuError, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
 import { hash31, smoothstep } from "../../sims/math.ts";
@@ -76,6 +77,11 @@ const PREWARM_STEP = 0.2;
 /** Bottom friction (per second) everywhere, and the drag of the no-slip walls within ~0.025. */
 const BOTTOM_FRICTION = 0.05;
 const WALL_DRAG = 1;
+/**
+ * Viscosity, velocity texels² per second: a checkerboard fades at 8× this per second, an eddy 40
+ * texels across at a hundredth of it.
+ */
+const VISCOSITY = 2;
 /** Fade per second of the dye's channels: pigment, temperature (slow enough that a plume still
  * carries warmth to the lid), the M's trace. */
 const DYE_FADE: readonly number[] = [0.015, 0.06, 0.03, 0];
@@ -188,9 +194,16 @@ uniform vec4 uPearlSwirl;      // centre, angular acceleration (rad/s^2), radius
 uniform vec4 uPearlDrift[${DRIFTERS}];   // drifting eddies: centre, angular acceleration, radius
 
 vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
+  // Viscosity: without it every shear layer rolls up into eddies a few texels across, a fur of
+  // streaks along each band. Explicit; ${glslFloat(VISCOSITY)} texels^2/s, a step taking at most a fifth.
+  vec2 dx = vec2(uTexel.x, 0.0);
+  vec2 dy = vec2(0.0, uTexel.y);
+  vec2 laplacian = texture(uVelocity, uv + dx).xy + texture(uVelocity, uv - dx).xy
+                 + texture(uVelocity, uv + dy).xy + texture(uVelocity, uv - dy).xy - 4.0 * velocity;
+  vec2 force = min(${glslFloat(VISCOSITY)} * uDt, 0.2) / max(uDt, 1e-3) * laplacian;
   // In the turning tank's frame: Euler's force, -dOmega/dt z x r.
   vec2 r = p - 0.5 * uDomain;
-  vec2 force = uPearlEuler * vec2(r.y, -r.x);
+  force += uPearlEuler * vec2(r.y, -r.x);
   // No-slip walls: the fluid drags along the glass.
   float wall = min(min(p.x, uDomain.x - p.x), min(p.y, uDomain.y - p.y));
   force -= uPearlWallDrag * exp(-wall / 0.025) * velocity;
