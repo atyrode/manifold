@@ -763,8 +763,10 @@ class HyperbolicSim implements SceneSim {
   #steer = 1;
   #coast: Velocity = REST;
   #dragPace: Velocity = REST;
-  /** The pointer's last screen-disk point while dragging. */
+  /** The pointer's last screen-disk point while dragging, and the map and aspect it was read in. */
   #grab: Complex | undefined;
+  #grabModel: Model = "disk";
+  #grabAspect = 0;
   /** The central tile → the M's tile, in the plane. */
   #markTile: Motion | undefined;
   #markShown = 0;
@@ -949,12 +951,16 @@ class HyperbolicSim implements SceneSim {
   /**
    * Hold and drag: the plane follows the pointer, the point grabbed staying under it (each frame a
    * translation along the line from the pointer's last point to its new one). Let go: it coasts on
-   * at the drag's speed, slowing, and the glide takes over again.
+   * at the drag's speed, slowing, and the glide takes over again. A new map or a new screen shape
+   * mid-drag moves every point on screen, not the hand: the grip is taken again where the pointer
+   * now is, and the plane neither jumps nor flings off at the speed of that jump.
    */
   #drag(pointer: PointerState, dt: number, aspect: number, model: Model): void {
     if (this.#grab === undefined) {
       if (pointer.down && pointer.inside) {
         this.#grab = this.#pointerPoint(pointer, aspect, model);
+        this.#grabModel = model;
+        this.#grabAspect = aspect;
         this.#dragPace = REST;
       }
       return;
@@ -967,6 +973,12 @@ class HyperbolicSim implements SceneSim {
       return;
     }
     const now = this.#pointerPoint(pointer, aspect, model);
+    if (model !== this.#grabModel || aspect !== this.#grabAspect) {
+      this.#grab = now;
+      this.#grabModel = model;
+      this.#grabAspect = aspect;
+      return;
+    }
     const last = this.#grab;
     // The last point seen from the new one; the step is the translation taking now to last there.
     let m = carry(shift(scaled(now, -1)), last);
