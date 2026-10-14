@@ -22,6 +22,7 @@
 import { countryAnimalsGlsl } from "./animals.ts";
 import { countryFieldsGlsl } from "./fields.ts";
 import { countryWildlifeGlsl } from "./wildlife.ts";
+import { countryRoutesGlsl } from "./routes.ts";
 
 export const countryGlsl = /* glsl */ `
 const float COUNTRY_HORIZON = 0.62;      // eye level, uv.y
@@ -236,6 +237,7 @@ float countryRows(vec2 r, vec2 dir, float period, vec2 px) {
 }
 
 ${countryFieldsGlsl}
+${countryRoutesGlsl}
 
 // The crop's colour at slope point w (world). r: row space, w with x taken at the ground's own
 // depth, so rows running down the slope converge into the distance while rows along the contour
@@ -358,7 +360,7 @@ vec4 countryTrees(vec2 f, vec2 scale, float r, float density, float above, vec3 
   reach *= min(1.0, 4.0 / max(length(reach), 1e-3));
   for (int j = -1; j <= 1; j++) {
     float th = hash12(floor((site + other) * 37.0) + float(j) * 3.7);
-    if (th > density) continue;
+    if (th > density || countryTreeCleared(mid + along * (0.3 * float(j)), f)) continue;
     vec2 ds = (f - (mid + along * (0.3 * float(j)))) / scale;
     ds.y = above - ds.y;
     float rad = r * (0.7 + 0.3 * fract(th * 17.3));
@@ -865,6 +867,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         float sRoot = max(sQ, 0.0);
         vec2 fQ = countryFieldSpace(i, vec2(qi.x * L.x, countryDown(sRoot, L.x)));
         vec2 scale = vec2(L.x, countryDownRate(sRoot, L.x)) * COUNTRY_FIELDS;
+        // Hedgerow trees give way to the tracks and a broadened river (routes.ts).
+        countryClearing(i, vec2(qi.x * L.x, countryDown(sRoot, L.x)), spots);
         float density = 0.3 * (1.0 - 0.8 * countrySpots(qi.x, spots).x);
         crown = countryTrees(fQ, scale, r, density, max(-sQ, 0.0), sky.sun, treeShadow);
         if (crown.z > 0.5) {
@@ -885,7 +889,23 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       q = qi;
       break;
     }
+    // What this ridge showed here, for a walker or cart over its skyline (routes.ts).
+    countrySeen[k] = vec4(qi, c, terrain);
     valley = max(valley, c);
+  }
+  // A walker or cart (routes.ts) standing on the ground this pixel shows, or over the skyline of a
+  // nearer ridge, covers it.
+  vec4 agentFrame = vec4(0.0);
+  float agentRidge = 0.0;
+  float agentZ = 0.0;
+  Figure agent = countryAgentAt(hit, object, q, crest, groundCrest, spots, dark, agentFrame, agentRidge, agentZ);
+  if (agent.cover > 0.5) {
+    hit = int(agentRidge);
+    q = agentFrame.xy;
+    crest = agentFrame.z;
+    groundCrest = agentFrame.w;
+    object = 5.0;
+    seen = agentZ;
   }
 
   vec3 col = vec3(0.0);
@@ -957,7 +977,16 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     float onLane = 0.0;    // 1 on the farm track
     float rut = 0.0;       // 1 in its wheel ruts
     vec2 lp = vec2(0.0);   // track space for its puddles: across, down the slope, ~0.007 world a unit
-    if (object > 1.5) {
+    if (object > 4.5) {
+      // A walker or a cart (routes.ts): rain wets it like the land; snow settles only on a load's top.
+      albedo = agent.albedo;
+      n = agent.normal;
+      lamp = agent.lamp;
+      porous = 0.5;
+      glossy = 0.12;
+      snowy = agent.top * snowCover(n, q * 40.0, lyingHere);
+      shadow = 0.0;
+    } else if (object > 1.5) {
       albedo = village.albedo;
       n = village.normal;
       lamp = village.lamp;
@@ -1094,19 +1123,59 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           glossy = mix(glossy, 0.6, onLane);
         }
       }
-      // The river on the second ridge, mirroring the sky between reedy banks.
+      // The tracks beyond the near field (routes.ts), as K_tracks brings them in: worn like the lane
+      // (the street and the valley road metalled, the hill track chalk), plainer as the knob rises,
+      // opening the hedges and passing under the woods. Narrower than the dither holds, a track thins
+      // rather than breaking up; its grassy crown and ruts show only where they hold.
+      if (hit > 0 && K_tracks > 0.0) {
+        vec2 axis = vec2(0.0);
+        vec4 route = countryRouteAt(i, w, s, groundCrest, spots, axis);
+        float cells = route.y * length(axis / vec2(z, down)) * uRes.y;
+        float hold = min(cells / 0.7, 1.0);
+        float u = abs(route.x) * hold / route.y;
+        if (route.z > 0.0 && u < 1.3) {
+          onLane = (1.0 - smoothstep(1.0, 1.3, u)) * route.z * hold * (1.0 - trees);
+          rut = (1.0 - smoothstep(0.1, 0.24, abs(u - 0.56))) * smoothstep(2.5, 5.0, cells);
+          lp = vec2(route.x, w.x + w.y) * 150.0;
+          albedo = mix(albedo, countryTrackColor(route.w, u, rut, lp, cells, season), onLane);
+          n = normalize(mix(n, slope, onLane));
+          settles = mix(settles, 0.95 - 0.4 * rut, onLane);
+          relief = mix(relief, 0.5, onLane);
+          sheen *= 1.0 - onLane;
+          porous = mix(porous, route.w > 0.5 && route.w < 1.5 ? 0.25 : 0.5, onLane);
+          glossy = mix(glossy, 0.6, onLane);
+        }
+      }
+      // The river on the second ridge, mirroring the sky between reedy banks. K_river scales its open
+      // water (routes.ts; 1 is the original stream): the reeds widen more slowly, a broad river shows
+      // shingle at its edge, and a brook too narrow for the dither thins instead of breaking up.
       if (hit == 1) {
         vec2 river = countryRiver(w.y, (spots.x + 0.07) * d);
         float across = abs(w.x - river.x) / sqrt(1.0 + river.y * river.y);
         float bank = 0.012 + 0.008 * clamp(w.y / 0.6, 0.0, 1.0);
-        if (across < bank * 1.7) {
+        float broad = countryRiverScale();
+        float open = bank * broad;
+        float thin = 1.0;
+        if (broad < 1.0) {
+          float least = 0.6 * d / uRes.y;
+          thin = open / max(open, least);
+          open = max(open, least);
+        }
+        if (thin >= 1.0 && across < countryRiverReeds(bank, broad)) {
           albedo = vec3(0.16, 0.24, 0.1) * (0.85 + 0.3 * vnoise(f * 40.0));
           settles = 0.6;
           relief = 0.5;
           sheen = 0.0;
           porous = 0.5;
         }
-        if (across < bank) {
+        if (broad > 1.0 && across < open + 0.3 * bank * (broad - 1.0)) {
+          // Shingle and mud between a broad river and its reeds.
+          albedo = vec3(0.58, 0.53, 0.44) * (0.85 + 0.3 * vnoise(f * 60.0));
+          settles = 0.8;
+          porous = 0.7;
+          glossy = 0.3;
+        }
+        if (across < open) {
           // Raindrops dimple it: rings of light spreading from each drop, sized on screen so they
           // stay several cells apart, each cell lit or not against its own threshold so a passing
           // ring flips it once instead of crawling through the colour steps.
@@ -1120,6 +1189,27 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           water = 0.85;
           settles = 0.0;
           glint = smoothstep(0.6, 0.9, ripple) * (1.0 - grey);
+          if (thin < 1.0) {
+            water *= thin;
+            glint *= thin;
+          }
+        }
+        // The stone bridge taking the bridge track over it (routes.ts), seen from downstream: the
+        // deck and its parapets, the face toward us with its arch in shadow over the water.
+        vec4 bridge = countryBridge(w, z, down, spots);
+        if (bridge.x > 0.5) {
+          float stone = 0.86 + 0.2 * vnoise(vec2(w.x * 300.0, q.y * uRes.y * 0.5));
+          albedo = (bridge.w > 0.5 ? vec3(0.74, 0.71, 0.64) : (bridge.y > 0.5 ? vec3(0.5, 0.47, 0.42) : vec3(0.6, 0.55, 0.47))) * stone;
+          n = bridge.y > 0.5 ? normalize(vec3(0.0, 0.15, -1.0)) : slope;
+          if (bridge.z > 0.5) albedo = vec3(0.05, 0.06, 0.07);
+          settles = bridge.y > 0.5 ? 0.0 : 0.9;
+          porous = 0.3;
+          glossy = 0.2;
+          relief = 0.5;
+          sheen = 0.0;
+          water = 0.25 * bridge.z;
+          glint = 0.0;
+          onLane *= 1.0 - bridge.y;
         }
       }
       // Pasture enclosures (animals.ts): their post-and-rail fences and grazing herds, standing in
@@ -1145,6 +1235,12 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         chalk = 1.0 - smoothstep(0.075, 0.09, markDistance(mq));
         albedo = mix(albedo, vec3(0.93, 0.92, 0.86) * (0.94 + 0.06 * vnoise(f * 20.0)), chalk);
         porous = mix(porous, 0.3, chalk);
+      }
+      // A walker or cart too small to draw tints the ground it stands on; nearer ones shade it at
+      // their feet (routes.ts).
+      if (agent.faint > 0.0 || agent.shadow > 0.0) {
+        albedo = mix(albedo, agent.albedo, agent.faint);
+        shadow = max(shadow, agent.shadow);
       }
     }
 
