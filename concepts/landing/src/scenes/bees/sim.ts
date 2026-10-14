@@ -14,8 +14,11 @@
 // Size. A worker is BEE_LENGTH long and a butterfly BUTTERFLY_SPAN across, so at the hives' distance a
 // bee is about one dither cell, and fewer the farther off: far traffic is one cell of a fainter dark,
 // a bee within a few metres of the lens two or three with a glint of wing. There is no other scale.
-// The map carries, with each cell's code, the depth of what it draws (BEES_DEPTH_STEP bytes per metre)
-// so the shader can hide a bee behind the wall, a tree or a hive.
+// The map (SpeckMap, sims/specks.ts) carries, with each cell's code, the depth of what it draws
+// (BEES_DEPTH_STEP bytes per metre) so the shader can hide a bee behind the wall, a tree or a hive.
+// Where two insects fall in one cell the nearer one is drawn, whichever was plotted first: the shader
+// sees one depth per cell, so a farther insect hidden behind a hive must not take the cell of a
+// nearer one flying in front of it.
 //
 // Bees (a small state machine each, stepped at a fixed 1/60 s):
 //   inside   in the hive, waiting its turn;
@@ -31,7 +34,7 @@
 // on every beat, now and then settling on a flower where the wings slowly open and close.
 //
 // A thing is drawn in the cell its projection falls in, and only changes cell once it has clearly left
-// it (hysteresis), so a hovering bee never flickers between two.
+// it (hysteresis, followCell), so a hovering bee never flickers between two.
 //
 // Passage (BEES_PASSAGE). An entrance skips the pre-run: the colony starts asleep and nearly every bee
 // comes out of its hive within the first two seconds and flies at once for its flowers (a little hurried,
@@ -46,6 +49,7 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
+import { followCell, SpeckMap } from "../../sims/specks.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -267,11 +271,6 @@ function newButterfly(kind: number): Butterfly {
   };
 }
 
-/** The cell a thing at float cell position v is drawn in: it stays put until it has clearly left. */
-function follow(drawn: number, v: number): number {
-  return Math.abs(v - (drawn + 0.5)) <= 0.85 ? drawn : Math.floor(v);
-}
-
 /** How fast a thing at depth z moves, as a share of its nominal speed: the same on screen near and far. */
 function depthPace(z: number): number {
   return clamp(z / 8, 0.45, 1.3);
@@ -293,10 +292,7 @@ class BeesSim implements SceneSim {
   readonly #geo = { x: 0, z: 0, landZ: 0, landH: 0, half: 0 };
   readonly #pt = { x: 0, z: 0, h: 0 };
   readonly #pc = { ex: 0, ey: 0 };
-  #cells = new Uint8Array(2);
-  #written: number[] = [];
-  #width = 1;
-  #height = 1;
+  readonly #specks = new SpeckMap();
   #stage = BEES_STAGE_MIN;
   #beeCount = 0;
   #butterflyCount = 0;
@@ -315,6 +311,7 @@ class BeesSim implements SceneSim {
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader<BeesKnob>("bees", params, ["bees", "butterflies"]);
     this.#texture = new DataTexture(gl, { width: 1, height: 1, format: "rg8", filter: "nearest" });
+    this.#specks.resize(1, 1);
     this.#textures = [this.#texture.texture];
   }
 
@@ -324,11 +321,8 @@ class BeesSim implements SceneSim {
     this.#butterflyCount = clamp(Math.round(knobs.value(frame, "butterflies")), 0, BEES_MAX_BUTTERFLIES);
     const width = Math.max(1, Math.round(frame.width));
     const height = Math.max(1, Math.round(frame.height));
-    if (width !== this.#width || height !== this.#height) {
-      this.#width = width;
-      this.#height = height;
-      this.#cells = new Uint8Array(width * height * 2);
-      this.#written = [];
+    if (width !== this.#specks.width || height !== this.#specks.height) {
+      this.#specks.resize(width, height);
       this.#texture.resize(width, height);
       for (const bee of this.#bees) bee.cx = Number.NaN;
       for (const butterfly of this.#butterflies) butterfly.cx = Number.NaN;
@@ -350,7 +344,7 @@ class BeesSim implements SceneSim {
     for (let i = 0; i < steps; i++) this.#step(STEP);
     if (steps > 0 || this.#dirty) {
       this.#paint();
-      this.#texture.upload(this.#cells);
+      this.#texture.upload(this.#specks.data);
       this.#dirty = false;
     }
     return this.#textures;
@@ -947,85 +941,70 @@ class BeesSim implements SceneSim {
 
   // ---- drawing into the cell map ------------------------------------------------------------------------
 
-  #plot(cx: number, cy: number, code: number, depth: number): void {
-    if (cx < 0 || cx >= this.#width || cy < 0 || cy >= this.#height) return;
-    const at = (cy * this.#width + cx) * 2;
-    this.#cells[at] = code;
-    this.#cells[at + 1] = depth;
-    this.#written.push(at);
-  }
-
-  #block(cx: number, cy: number, bw: number, bh: number, code: number, depth: number): void {
-    for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) this.#plot(cx + i, cy + j, code, depth);
-  }
-
   #paint(): void {
-    for (const at of this.#written) {
-      this.#cells[at] = 0;
-      this.#cells[at + 1] = 0;
-    }
-    this.#written.length = 0;
-    const h = this.#height;
-    const w = this.#width;
+    const specks = this.#specks;
+    specks.clear();
+    const h = specks.height;
+    const w = specks.width;
     for (const b of this.#bees) {
       if (b.mode === "inside" || b.z < 0.8) continue;
       // Its projection (the shader's own ground mapping) in cells, and its real size in cells there.
-      b.cx = follow(b.cx, (b.x / b.z) * h + 0.5 * w);
-      b.cy = follow(b.cy, (BEES_YH - (BEES_CAM - b.h) / b.z) * h);
+      b.cx = followCell(b.cx, (b.x / b.z) * h + 0.5 * w);
+      b.cy = followCell(b.cy, (BEES_YH - (BEES_CAM - b.h) / b.z) * h);
       const depth = Math.min(255, Math.round(b.z * BEES_DEPTH_STEP));
       const n = (BEE_LENGTH * h) / b.z;
       if (n < 1.7) {
-        this.#plot(b.cx, b.cy, n >= 0.8 ? BEES_CODE.bee : n >= 0.5 ? BEES_CODE.beeDim : BEES_CODE.beeFaint, depth);
+        specks.plot(b.cx, b.cy, n >= 0.8 ? BEES_CODE.bee : n >= 0.5 ? BEES_CODE.beeDim : BEES_CODE.beeFaint, depth);
         continue;
       }
       // Close to the lens: a dark body two or three cells long (two tall when very near), golden at the back with pollen, and a glint of wing above it in flight.
       const length = n < 3.2 ? 2 : 3;
       const tall = n < 3.2 ? 1 : 2;
-      this.#block(b.cx, b.cy, length, tall, BEES_CODE.bee, depth);
-      if (b.load > 0.5) this.#block(b.cx + length - 1, b.cy, 1, tall, BEES_CODE.beeLoaded, depth);
-      if (b.fly) this.#block(b.cx, b.cy + tall, length - 1, 1, BEES_CODE.beeWing, depth);
+      specks.block(b.cx, b.cy, length, tall, BEES_CODE.bee, depth);
+      if (b.load > 0.5) specks.block(b.cx + length - 1, b.cy, 1, tall, BEES_CODE.beeLoaded, depth);
+      if (b.fly) specks.block(b.cx, b.cy + tall, length - 1, 1, BEES_CODE.beeWing, depth);
     }
     for (const g of this.#butterflies) {
       if (!g.active || g.z < 0.8) continue;
-      g.cx = follow(g.cx, (g.x / g.z) * h + 0.5 * w);
-      g.cy = follow(g.cy, (BEES_YH - (BEES_CAM - g.h) / g.z) * h);
+      g.cx = followCell(g.cx, (g.x / g.z) * h + 0.5 * w);
+      g.cy = followCell(g.cy, (BEES_YH - (BEES_CAM - g.h) / g.z) * h);
       const depth = Math.min(255, Math.round(g.z * BEES_DEPTH_STEP));
       const open = BUTTERFLY_OPEN[g.kind] ?? BEES_CODE.orange;
       const shut = BUTTERFLY_SHUT[g.kind] ?? BEES_CODE.orangeDim;
       // The wingbeat is the size of the speck: its half span in cells decides how many cells each wing is.
       const half = 0.5 * (BUTTERFLY_SPAN * h) / g.z;
       if (half < 0.75) {
-        this.#plot(g.cx, g.cy, g.open > 0.45 ? open : shut, depth);
+        specks.plot(g.cx, g.cy, g.open > 0.45 ? open : shut, depth);
       } else if (half < 1.5) {
         if (g.open > 0.62) {
-          this.#plot(g.cx - 1, g.cy, open, depth);
-          this.#plot(g.cx + 1, g.cy, open, depth);
-          this.#plot(g.cx, g.cy, BEES_CODE.butterflyBody, depth);
+          specks.plot(g.cx - 1, g.cy, open, depth);
+          specks.plot(g.cx + 1, g.cy, open, depth);
+          specks.plot(g.cx, g.cy, BEES_CODE.butterflyBody, depth);
         } else {
-          this.#plot(g.cx, g.cy, g.open > 0.3 ? open : shut, depth);
+          specks.plot(g.cx, g.cy, g.open > 0.3 ? open : shut, depth);
         }
       } else if (half < 2.5) {
         if (g.open > 0.62) {
-          this.#block(g.cx - 2, g.cy, 2, 1, open, depth);
-          this.#block(g.cx + 1, g.cy, 2, 1, open, depth);
-          this.#plot(g.cx, g.cy, BEES_CODE.butterflyBody, depth);
+          specks.block(g.cx - 2, g.cy, 2, 1, open, depth);
+          specks.block(g.cx + 1, g.cy, 2, 1, open, depth);
+          specks.plot(g.cx, g.cy, BEES_CODE.butterflyBody, depth);
         } else if (g.open > 0.3) {
-          this.#plot(g.cx - 1, g.cy, open, depth);
-          this.#plot(g.cx + 1, g.cy, open, depth);
-          this.#plot(g.cx, g.cy, BEES_CODE.butterflyBody, depth);
+          specks.plot(g.cx - 1, g.cy, open, depth);
+          specks.plot(g.cx + 1, g.cy, open, depth);
+          specks.plot(g.cx, g.cy, BEES_CODE.butterflyBody, depth);
         } else {
-          this.#block(g.cx, g.cy, 1, 2, shut, depth);
+          specks.block(g.cx, g.cy, 1, 2, shut, depth);
         }
       } else if (g.open > 0.62) {
-        this.#block(g.cx - 2, g.cy, 2, 2, open, depth);
-        this.#block(g.cx + 1, g.cy, 2, 2, open, depth);
-        this.#block(g.cx, g.cy, 1, 2, BEES_CODE.butterflyBody, depth);
+        specks.block(g.cx - 2, g.cy, 2, 2, open, depth);
+        specks.block(g.cx + 1, g.cy, 2, 2, open, depth);
+        specks.block(g.cx, g.cy, 1, 2, BEES_CODE.butterflyBody, depth);
       } else if (g.open > 0.3) {
-        this.#block(g.cx - 1, g.cy, 1, 2, open, depth);
-        this.#block(g.cx + 1, g.cy, 1, 2, open, depth);
-        this.#block(g.cx, g.cy, 1, 2, BEES_CODE.butterflyBody, depth);
+        specks.block(g.cx - 1, g.cy, 1, 2, open, depth);
+        specks.block(g.cx + 1, g.cy, 1, 2, open, depth);
+        specks.block(g.cx, g.cy, 1, 2, BEES_CODE.butterflyBody, depth);
       } else {
-        this.#block(g.cx, g.cy, 1, 2, shut, depth);
+        specks.block(g.cx, g.cy, 1, 2, shut, depth);
       }
     }
   }
