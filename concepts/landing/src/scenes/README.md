@@ -15,8 +15,9 @@ src/scenes/<id>/sim.ts      optional SimFactory (CPU or GPU simulation feeding t
 
 ## The shader
 
-Each scene compiles to its own program: `common` + shared `libs` + generated knob defines + the
-scene's `glsl` + the dithering `main`. The entry returns a `Shade`:
+Each scene compiles to its own program: `common` + its library `features` (`#define`s, see
+"Composing components") + shared `libs` + generated knob defines + the scene's `glsl` + the
+dithering `main`. The entry returns a `Shade`:
 
 ```glsl
 struct Shade {
@@ -153,8 +154,11 @@ and 0 while off). Never index `uParams` by hand in new scenes. Keys are camelCas
 
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`
-as requested. Two are opt-in, given the value the scene draws with as their default:
-`skyKnobs({ stars: 0.6 })` adds `K_stars` (density for `skyStars`, 0 none .. 1 a dark-site sky) and
+as requested. The rest are opt-in sky components (see "Composing components"), each given the value
+the scene draws with as its default: `skyKnobs({ stars: 0.6 })` adds `K_stars` (density for
+`skyStars`, 0 none .. 1 a dark-site sky), `skyKnobs({ moon: 1 })` adds `K_moon` (the moon's phase for
+`skyMoonPhase`, 1 full, 0 while switched off: no moon), `skyKnobs({ meteors: { trigger: 1 } })` adds
+`K_meteors` (shooting stars for `meteorAge`, off by default, "now" on that slot), and
 `weatherKnobs({ clouds: 0.3 })` adds `K_clouds` (fair-weather cover 0..1, which rain and snow
 thicken). Use `atmosphereGroups.sky` / `.weather` for their lab headings.
 
@@ -178,17 +182,24 @@ Coordinates: `viewRay` gives x right, y up, z into the scene.
 
 ```glsl
 float timeOfDayM(float time, float cycle, float motionTime); // K_time, K_cycle, uMotionTime -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset)
-struct Sky { vec3 sun; vec3 moon; float day; float twilight; float night; vec3 sunColor; vec3 ambient; vec3 moonColor; };
+struct Sky { vec3 sun; vec3 moon; float day; float twilight; float night; vec3 sunColor; vec3 ambient; vec3 moonColor; }; // + float moonPhase with SKY_MOON_PHASE
 Sky skyAt(float tod);                                     // sun rises on the right, crosses high, sets on the left; moon opposite
 vec3 viewRay(vec2 uv, float aspect, float horizon, float fov); // side-on camera, horizon at screen height `horizon`
 vec3 skyColor(Sky sky, vec3 dir);                         // gradient, sunset glow, sun and moon discs (no stars)
 float skyStars(Sky sky, vec3 dir, float density);         // stars faded by daylight, stable per direction
+float skyStars(Sky sky, vec3 dir, float density, float foot); // the same with a level of detail: foot = radians a dither cell spans
+float skyStarFade(Sky sky, vec3 dir);                     // where stars show at all: night, height, away from the moon's disc and glare
 vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind); // a cloud deck seen from below: rgb, alpha
 vec3 skyStarLight(Sky sky, vec3 dir, float density);      // skyStars tinted SKY_STAR_TINT (cool white), to add to the sky
 vec3 skyFacing(vec3 dir, float yaw);                      // turn a direction about +y (+x toward +z): a camera looking off-axis
 Sky skyFacing(Sky sky, float yaw);                        // the sun and moon turned with it
 Sky skyMirror(Sky sky);                                   // moon swung behind the viewer, for reflections
 vec3 horizonHaze(Sky sky, vec3 dir, float lift);          // the sky just above the horizon in dir's heading (lift 0..0.04)
+float skyMoonCover(Sky sky, vec3 dir);                    // 0..1 the moon's disc (unlit part too) over dir: hide what lies behind it
+vec2 skyAngles(vec3 dir);                                 // (bearing from straight ahead, elevation) in radians: a flat frame on the dome
+// With SKY_MOON_PHASE (SceneDef.features):
+Sky skyMoonPhase(Sky sky, float phase);                   // K_moon: 1 full (unchanged) .. 0 no moon; disc, halo, moonColor, ambient follow
+float skyMoonPhaseLight(float phase);                     // the moon's light at a phase relative to full (0.32 half, 0.11 a quarter)
 
 float weatherOvercast(float rain, float snow);            // cloud cover under rain/snow: .64 drizzle, .76 steady, .88 heavy, 1 downpour
 vec3 greyed(vec3 c, vec3 tint, float amount);             // toward c's luminance times tint (vec3(1.0) plain grey): overcast, moonlight
@@ -236,11 +247,141 @@ float lightningAge(float t, float rate, int slot, out float seed); // seconds si
 float lightningBolt(vec2 p, vec2 top, vec2 ground, float seed, float age); // forked bolt glow at p (aspect-corrected units)
 float lightningFlash(float age);                               // sky-wide flash 0..1
 
-vec3 aurora(vec3 dir, float t, float strength);                // curtains of light for a view ray, to add to the night sky
+// Aurora (AURORA_CURTAINS feature: curtains, default 3). tm: uMotionTime; foot: radians a dither cell spans.
+vec3 auroraM(vec3 dir, float tm, float strength, float foot);   // curtains of light for a view ray, to add to the night sky
+vec3 auroraGlow(float tm, float strength);                       // its light on the land, to add to ambient (times auroraSeen)
+float auroraSeen(Sky sky, float cloud);                          // night and open sky: multiply the curtains and their glow by it
+vec3 aurora(vec3 dir, float t, float strength);                  // auroraM on t * uMotion at full detail, for scenes with their own clocks
+
+// Shooting stars: when, and the streak in the scene's own flat sky frame (skyAngles for a dome).
+float meteorAge(float tm, float rate, int slot, out float seed); // seconds since the latest one (random at `rate` while motion > 0, or slot's "now")
+float meteorStreak(vec2 q, vec4 field, float age, float seed, float foot); // 0..1 coverage; starts in field (xy corner, zw size)
 ```
 
 Name scene-local GLSL functions with the scene id as a prefix (`dunesHeight`, `sillCat`) so they can
 never collide with common or library functions.
+
+### Composing components
+
+A component is shared simulation that a scene composes into its own picture. The shared code
+decides what happens and where: which star sits in which direction, how the aurora's curtains
+ripple on the motion clock, which side of a crescent is lit, when a shooting star flies and along
+which path. The scene decides how it looks there: its tint, what stands in front of it, how much of
+its light reaches the scene's own materials, and what the passage does. A component has three
+parts, all inside the existing scene contract (no registry, render pass or engine of its own):
+
+1. **Controls.** A knob builder in `atmosphere.ts` (`skyKnobs`, `weatherKnobs`) with shared keys,
+   labels and help, so they ride the URL, reset, shuffle and presets like any knob. Optional
+   components are opt-in and start at the value the scene already draws with, or off, so adopting
+   one never changes the default picture. Give a scene a knob only if its shader reads it.
+2. **Capabilities.** `SceneDef.features` puts `#define NAME n` ahead of the libraries. A capability
+   no scene selects is not in its program. A function a scene never calls costs nothing anyway, so
+   features are for what changes a function every scene calls (the moon's phase inside `skyColor`)
+   or for a cheaper tier of a costly loop (`AURORA_CURTAINS`). A scene that reads a component's knob
+   without selecting its feature fails to compile (`skyMoonPhase` does not exist), never silently.
+3. **Outputs.** GLSL functions in `src/shaders/lib/` that return explicit values:
+   - *coverage* 0..1: multiply it by the scene's own occlusion, then cut moving edges with `hardEdge`;
+   - *radiance*: light added to the sky before the scene draws what stands in front of it;
+   - *light on materials*: added into the scene's own lighting;
+   - *visibility*: what hides the component (night, cloud).
+
+   They read only the common uniforms (clocks, triggers). Everything that belongs to the scene is a
+   parameter: directions, footprints, fields and trigger slots.
+
+**Level of detail.** One component can be a hero subject or a far decoration. A function with a
+`foot` parameter takes the size of one dither cell at that point, in its own units. For sky
+directions that is radians: about the vertical field of view over `uRes.y`. Raise it where the scene
+blurs, as Frost does behind thick frost. Detail finer than a cell or two fades to its area mean, as
+`fbmLod` does with octaves:
+- a star layer whose grid falls under ~1.25 cells becomes a faint glow;
+- the aurora's finest rays become an even glow;
+- a meteor's core stays about a cell wide.
+
+Where the detail is resolved (stars at 96 rows or more for a 1-radian view, the aurora's rays at 76),
+the result is bit for bit the full-detail one, so passing `foot` never changes a picture that was
+already right.
+
+**Clocks.** Moving components take the motion clock (`uMotionTime`), so the motion slider changes
+their pace, never their phase. Events, meteors like lightning, fly in real seconds once started.
+Random events stop at motion 0 (still pictures, reduced motion), and "now" still fires one.
+
+| Component | Controls | Features | Outputs |
+|---|---|---|---|
+| Stars | `skyKnobs({ stars })`: `K_stars` | | `skyStars(sky, dir, density, foot)` coverage, `SKY_STAR_TINT`; `skyStarFade` |
+| Moon | `skyKnobs({ moon })`: `K_moon` | `SKY_MOON_PHASE` | `skyMoonPhase(sky, K_moon)`: the disc and halo in `skyColor`, the light in `sky.moonColor` and `sky.ambient`, the glare in `skyStars`; `skyMoonCover(sky, dir)` coverage |
+| Aurora | `weatherKnobs({ aurora })`: `K_aurora` | `AURORA_CURTAINS` (3) | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility |
+| Meteors | `skyKnobs({ meteors: { trigger } })`: `K_meteors` | | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome) |
+
+Frost composes all four in the sky through its window (`frost/index.ts`, `frost/shader.ts`):
+
+```ts
+...skyKnobs({ time: 0.9, stars: 0.5, moon: 1, meteors: { trigger: FROST_METEOR_TRIGGER } }),
+...weatherKnobs({ snow: true, wind: true, aurora: true, on: { snow: true } }),
+// in the SceneDef:
+features: { SKY_MOON_PHASE: 1 },
+```
+
+```glsl
+Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
+// ... behind the glass, sky first:
+float foot = 1.0 / uRes.y;                             // a cell in radians: the view spans 1 radian
+vec3 col = skyColor(sky, dir);                         // the moon's disc and halo in its phase
+vec4 cloud = skyClouds(sky, dir, t, cover, K_wind);
+col = mix(col, cloud.rgb, cloud.a);
+col += SKY_STAR_TINT * skyStars(sky, dir, K_stars, foot) * (1.0 - cloud.a) * sharp;
+float open = auroraSeen(sky, cloud.a);
+col += auroraM(dir, uMotionTime, K_aurora, max(foot, blur)) * open;
+float seed;
+float age = meteorAge(uMotionTime, K_meteors, FROST_METEOR_SLOT, seed);
+col += vec3(0.9, 0.95, 1.0) * hardEdge(meteorStreak(skyAngles(dir), FROST_METEOR_FIELD, age, seed, max(foot, 0.5 * blur)) * open * sharp);
+// ... then houses, trees and lamps over it, lit by
+lit += auroraGlow(uMotionTime, K_aurora) * auroraSeen(sky, overcast);   // the snow cloud shuts it out
+```
+
+The moon's light reaches the snow, the clouds and the room through `sky` itself. Setups are plain
+URLs, e.g. `?scene=frost&snow=0&aurora=1&moon-amount=0.3&meteors=1`, and reset restores the
+defaults: full moon, aurora and meteors off.
+
+#### Sky capabilities by scene
+
+What each scene with a sky does with the components today. **knob**: wired to the shared knob.
+**fixed n**: drawn by the shared component at a fixed value; `skyKnobs({ stars: n })` with `K_stars`
+in place of the number exposes it without changing the default. **full**: the ordinary full moon
+of `skyColor`, ready for `SKY_MOON_PHASE`. **open**: an open night sky where the component could
+be composed (no knob yet). **own**: a scene-specific version kept on purpose. **—**: not applicable,
+no knob.
+
+| Scene | Sky seen | Stars | Moon | Aurora | Meteors |
+|---|---|---|---|---|---|
+| `frost` | through the window | knob (cabin ×1.7) | knob (phase) | knob | knob, trigger 1 |
+| `autumn` | over the park | fixed 0.5 | full | open | open |
+| `bees` | over the valley | fixed 0.6 | full | open | open |
+| `clouds` | above the cloud sea | fixed 0.75 | own bearing, drawn by `skyColor` | knob (`aurora()`, scene clock) | open |
+| `country` | over the valley | fixed 0.4 | full | open | open |
+| `dunes` | over the dune sea | fixed 1 (×1.3) | full | open | open |
+| `falls` | above the cliff | fixed 0.45 | full | open | open |
+| `flock` | the subject, mirrored in water | fixed 0.45 | full | open | open |
+| `garden` | over the wall | fixed 0.85 (×1.2) | full | open | open |
+| `island` | round the island | knob 0.6 | full | open | open |
+| `lanterns` | over the river, mirrored | fixed 0.55 + own | full (`skyMirror`) | open | open |
+| `meadow` | over the meadow | fixed 0.6 | full | open | open |
+| `shore` | over the sea, in wet sand | fixed 0.6 | full (moonrise) | open | open |
+| `sill` | over the city | fixed 0.5 | full | open | open |
+| `skyward` | a strip between roofs | knob 0.3 | full | open | open |
+| `train` | through the window | fixed 0.75 | full + night glow | knob (`aurora()`) | own: `K_meteors`, trigger 5, window and tunnel |
+| `campfire` | above the pines | knob 0.8 + own Milky Way | — (the giant planet replaces it) | open | own: `K_shooting`, trigger 0, under the planet |
+| `lake` | over the ice, mirrored | own `K_stars` + Milky Way | own phase, fixed bearing | knob (`aurora()` on the sim's substorm clock, rough-ice tap) | open |
+| `aurora` | the subject | own `K_stars` on a fixed night | own crescent | own curtains | open |
+| `bamboo`, `forest` | canopy gaps | fixed 0.5 | full | — | — |
+| `street` | in reflections only | fixed 0.55 | full | — | — |
+| `kelp` | Snell's window | — | full, refracted | — | — |
+| `dew` | out-of-focus dawn backdrop | — | — | — | — |
+| `bonsai` | none (its light only) | — | — | — | — |
+| `orbit`, `swell`, `fireflies` | their own skies | own | own (`fireflies`: moonless) | — | own (`orbit`'s captured meteors) |
+
+The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
+`hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,
+`prism`, `ripple`, `sandtable`, `shanshui`.
 
 ### Weather in the world
 
@@ -413,8 +554,10 @@ and `dwell` (`state.ts` refuses to load such a scene).
 Run `bun concepts/landing/verify.ts` from the repository root with system Chromium available
 (`MANIFOLD_CHROMIUM` can select its binary). The isolated browser exercises actual WebGL output:
 Forest's sky phase across motion changes, inherited GPU blending and preserving resize, Frost's
-warmth/trace reset while paused and after resume, uncapped FPS, and saved-frame dissolve sampling
-across larger, smaller, aspect-changed, and unchanged render sizes. Software WebGL is deliberate;
+warmth/trace reset while paused and after resume, the shared sky components' outputs (stars,
+the moon's phase, aurora, meteors) and their coupling in Frost's picture (`frost/sky.verify.ts`),
+uncapped FPS, and saved-frame dissolve sampling across larger, smaller, aspect-changed, and
+unchanged render sizes. Software WebGL is deliberate;
 this check is not a real-device performance qualification.
 
 `src/runtime.verify.ts` adds the renderer's runtime: under reduced motion a press and a trigger

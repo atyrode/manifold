@@ -2,8 +2,9 @@
 // browser upscales it with `image-rendering: pixelated`, so `gl_FragCoord` is already the cell index.
 //
 // Every scene compiles to its own fragment shader (see scenes/types.ts): the common preamble, the
-// shared libraries, one `#define K_<key> uParams[i]` per knob, the scene's GLSL, then `main`, which
-// calls the scene's entry and dithers the Shade it returns into the palette.
+// scene's compile-time library features, the shared libraries, one `#define K_<key> uParams[i]` per
+// knob, the scene's GLSL, then `main`, which calls the scene's entry and dithers the Shade it returns
+// into the palette.
 
 import { MAX_PARAMS } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
@@ -38,6 +39,18 @@ function knobDefines(scene: SceneDef): string {
   }).join("");
 }
 
+/** Library feature names: macros the libraries test with `#ifdef` / `#if`. */
+const FEATURE_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+/** `#define NAME n` per compile-time library feature the scene selects (SceneDef.features). */
+function featureDefines(scene: SceneDef): string {
+  return Object.entries(scene.features ?? {}).map(([name, value]) => {
+    if (!FEATURE_NAME.test(name)) throw new SceneShaderError(`scene ${scene.id}: feature "${name}" must match ${String(FEATURE_NAME)}`);
+    if (!Number.isInteger(value)) throw new SceneShaderError(`scene ${scene.id}: feature ${name} must be an integer, not ${value}`);
+    return `#define ${name} ${value}\n`;
+  }).join("");
+}
+
 export function fragmentSourceFor(scene: SceneDef): string {
-  return common + libs + knobDefines(scene) + scene.glsl + main(scene.entry);
+  return common + featureDefines(scene) + libs + knobDefines(scene) + scene.glsl + main(scene.entry);
 }

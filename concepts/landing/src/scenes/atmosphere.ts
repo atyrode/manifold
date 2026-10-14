@@ -1,8 +1,9 @@
 // Shared lab knobs for outdoor scenes: time of day, and the weather layer (rain, snow, fog, wind,
-// lightning, aurora), plus opt-in star density and fair-weather cloud. Every scene that uses them gets
-// the same keys, labels and help, so a setting means the same thing everywhere; the GLSL side lives in
-// src/shaders/lib/ and reads them through the generated K_<key> defines (K_time, K_cycle, K_stars,
-// K_clouds, K_rain, K_snow, K_fog, K_wind, K_lightning, K_aurora).
+// lightning, aurora), plus the opt-in sky components (star density, the moon's phase, shooting stars)
+// and fair-weather cloud. Every scene that uses them gets the same keys, labels and help, so a setting
+// means the same thing everywhere; the GLSL side lives in src/shaders/lib/ and reads them through the
+// generated K_<key> defines (K_time, K_cycle, K_stars, K_moon, K_meteors, K_clouds, K_rain, K_snow,
+// K_fog, K_wind, K_lightning, K_aurora). How a scene composes them: src/scenes/README.md.
 //
 // The page theme is decided here too (skyTheme, paletteTheme), once, from the knobs: the shader reads
 // the outcome with pagePaper() instead of repeating the test.
@@ -17,6 +18,17 @@ export interface SkyOptions {
    * give it the density the scene draws with. Omit to leave the knob out.
    */
   stars?: number;
+  /**
+   * Adds K_moon, the shared moon's phase for `skyMoonPhase` (lit share 0.05..1 while on, 0 off: no
+   * moon), starting on at this phase: 1 is the full moon every scene draws. Needs the SKY_MOON_PHASE
+   * feature. Omit to leave the knob out.
+   */
+  moon?: number;
+  /**
+   * Adds K_meteors, shooting stars for `meteorAge` (frequency while on, 0 off) with a "now" button on
+   * this trigger slot; off unless `on`, at `value` (default 0.3). Omit to leave the knob out.
+   */
+  meteors?: { trigger: number; on?: boolean; value?: number };
   /** Lab group; default "sky". */
   group?: string;
 }
@@ -25,6 +37,8 @@ export interface SkyOptions {
  * K_time: time of day 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset).
  * K_cycle: day-cycle speed (0 = the clock stands at K_time); pass both with uMotionTime to `timeOfDayM`.
  * K_stars (only with `stars`): star density for `skyStars`.
+ * K_moon (only with `moon`): the moon's phase for `skyMoonPhase`.
+ * K_meteors (only with `meteors`): shooting-star frequency for `meteorAge`, trigger slot `meteors.trigger`.
  */
 export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";
@@ -33,6 +47,13 @@ export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
     feature(group, "cycle", "day cycle", false, "speed", 0.3, "The sun and moon keep moving: days pass at this pace."),
   ];
   if (options.stars !== undefined) knobs.push(range(group, "stars", "stars", options.stars, "How many stars come out once the sky is dark: none to the left, a dark country sky to the right."));
+  if (options.moon !== undefined) {
+    knobs.push(feature(group, "moon", "moon", true, "phase", options.moon, "The moon on its nightly path, from a thin crescent to full, its lit side toward the sun: a slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.", { min: 0.05, max: 1 }));
+  }
+  if (options.meteors !== undefined) {
+    const { trigger, on = false, value = 0.3 } = options.meteors;
+    knobs.push(feature(group, "meteors", "shooting stars", on, "frequency", value, "Now and then a shooting star streaks across the open night sky: one every minute or two at the left end, every ten seconds or so at the right. Now: one at once.", { trigger }));
+  }
   return knobs;
 }
 

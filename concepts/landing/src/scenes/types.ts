@@ -3,7 +3,8 @@
 //
 // Shader: each scene compiles to its own WebGL2 program:
 //   common preamble (uniforms, noise, dithering helpers, Shade)   — src/shaders/common.ts
-//   + shared libraries (sky, weather, surface, lightning, aurora) — src/shaders/lib/
+//   + one `#define <NAME> <n>` per compile-time library feature, from `features`
+//   + shared libraries (sky, weather, surface, lightning, aurora, meteors) — src/shaders/lib/
 //   + one `#define K_<key> uParams[i]` per knob, generated from `params`
 //   + the scene's `glsl`, which defines `Shade <entry>(vec2 uv, vec2 cell, float t)`
 //   + the dithering `main`, which calls the entry.
@@ -130,6 +131,12 @@ export interface SceneDef {
    * is the whole entrance and there is no exit.
    */
   passage?: { enter: number; exit: number };
+  /**
+   * Compile-time capabilities of the shared libraries this scene composes, as `NAME: integer`
+   * (`#define NAME n` ahead of the libraries): a capability no scene selects is not compiled at all.
+   * Names and meanings: the "Composing components" section of src/scenes/README.md.
+   */
+  features?: Readonly<Record<string, number>>;
 }
 
 export type PageTheme = "night" | "paper";

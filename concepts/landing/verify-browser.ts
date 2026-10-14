@@ -6,6 +6,7 @@ import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyCountryAnimals } from "./src/scenes/country/animals.verify.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
+import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
 import { verifySwellRelief } from "./src/scenes/swell/relief.verify.ts";
@@ -288,6 +289,7 @@ export function verify(): Record<string, unknown> {
   result.fallsGorge = fallsGorgeCheck(gl);
   Object.assign(result, verifyMotionClocks(gl));
   result.physics = { film: verifyFilmRupture(gl), pendula: verifyPendulaSwing(gl) };
+  result.frostSky = verifyFrostSky(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
