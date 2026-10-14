@@ -155,6 +155,35 @@ const float MEADOW_CURL = 0.4;
 // sun; near it, it brightens with the forward scattering.
 const float MEADOW_RIM_BASE = 0.08;
 
+// The near stalks (the nearest layers' flowering grasses). Half-width at the root in cells, at the
+// nearest layer (thinner further off) and how much more the thickest has; the share of it kept at the
+// top; never under this many cells (thinner stalks would only dot the cells). The lean they are given
+// on top of the blades' own curl, and the exponent range of their curve (2 is the blades' own bow:
+// lower bends nearer the root, higher holds upright and bends late). Clumps over the columns: their
+// scale, the share of stalks left between them and the extra in them. The share of stalks standing
+// bare, and carrying a plain ear (the rest carry panicles); the longest head x the layer's seed head;
+// panicle spikelets at least this many cells apart, and its width x the layer's seed head width.
+const float MEADOW_STALK_CELLS = 1.0;
+const float MEADOW_STALK_CELLS_SPAN = 1.0;
+const float MEADOW_STALK_TIP = 0.4;
+const float MEADOW_STALK_MIN = 0.8;
+const float MEADOW_STALK_LEAN = 0.3;
+const float MEADOW_STALK_CURVE_MIN = 1.4;
+const float MEADOW_STALK_CURVE_MAX = 2.3;
+const float MEADOW_CLUMP_SCALE = 0.2;
+const float MEADOW_CLUMP_GAP = 0.2;
+const float MEADOW_CLUMP_GAIN = 2.0;
+const float MEADOW_BARE_SHARE = 0.22;
+const float MEADOW_EAR_SHARE = 0.22;
+const float MEADOW_HEAD_MAX = 1.4;
+const float MEADOW_SPIKELET_CELLS = 3.6;
+const float MEADOW_PANICLE_WIDTH = 1.8;
+// Against the glare (the clock's backdrop this bright, in luma) a clock's body darkens by this much,
+// so its starburst reads as a pale fan over a dim disc.
+const float MEADOW_GLARE_FROM = 0.55;
+const float MEADOW_GLARE_TO = 1.0;
+const float MEADOW_GLARE_DARK = 0.45;
+
 // The sea of grass: rows ${ROW} apart in log depth from depth ${FIELD_NEAR} to the tree line; blades a
 // ground distance apart in each row, their half-width at the root, heights (before the grass height
 // knob), the share of columns holding a blade (and more with the density knob), flowering stalks,
@@ -180,11 +209,13 @@ const float MEADOW_FIELD_CURL = 0.18;
 // would slide their stipple across the cells.
 const float MEADOW_LEAN_FROM = 3.0;
 const float MEADOW_LEAN_TO = 5.0;
-// The soft golden veil over the far field: from this depth to the tree line it takes this much more
-// of the haze (and more with the haze knob), warmed by the sun.
-const float MEADOW_VEIL_NEAR = 25.0;
-const float MEADOW_VEIL = 0.3;
-const float MEADOW_VEIL_HAZE = 0.35;
+// The soft golden veil over the far field: from this depth to MEADOW_VEIL_FAR it takes this much more
+// of the haze (and more with the haze knob), warmed by the sun, so the field's texture fades into haze
+// well before the tree line.
+const float MEADOW_VEIL_NEAR = 9.0;
+const float MEADOW_VEIL_FAR = 80.0;
+const float MEADOW_VEIL = 0.45;
+const float MEADOW_VEIL_HAZE = 0.4;
 const float MEADOW_VEIL_GOLD = 0.08;
 // How strongly the gust load turns the grass to its pale, pressed side, and darkens it on the rebound.
 const float MEADOW_SHEEN = 1.1;
@@ -512,7 +543,7 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
     float tRow = clamp(rise / hMax, 0.0, 1.0);
     float px = zj * pixel;                         // a cell's size in ground units at this row
     // Far rows, whose blades stand under two cells apart, give way to their average.
-    float lod = smoothstep(0.5, 1.5, px / MEADOW_BLADE_SPACING);
+    float lod = smoothstep(0.4, 0.9, px / MEADOW_BLADE_SPACING);
     float c = 0.0;
     vec3 premult = vec3(0.0);
     if (lod < 1.0) {
@@ -592,12 +623,12 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
   float veil = MEADOW_VEIL + MEADOW_VEIL_HAZE * K_haze;
   vec3 veilCol = haze + sun * MEADOW_VEIL_GOLD * (0.5 + 0.5 * toward);
   float zf = cover > 0.0 ? zsum / cover : zg;
-  acc = mix(acc * rebound, veilCol * cover, 1.0 - exp(-hazeDensity * zf) * (1.0 - veil * smoothstep(MEADOW_VEIL_NEAR, MEADOW_TREES_Z, zf)));
+  acc = mix(acc * rebound, veilCol * cover, 1.0 - exp(-hazeDensity * zf) * (1.0 - veil * smoothstep(MEADOW_VEIL_NEAR, MEADOW_VEIL_FAR, zf)));
   zHit = mix(min(zg, MEADOW_TREES_Z), zf, cover);
   if (zg < MEADOW_TREES_Z) {
     // Between the stems: the shaded depths of the grass, lighter where a gust opens it to the sky.
     vec3 floorCol = mix(green, straw, ripe) * (amb * 0.22 + sun * 0.15 * glow) * (1.0 + 0.8 * max(g, 0.0)) * rebound;
-    behind = mix(floorCol, veilCol, 1.0 - exp(-hazeDensity * zg) * (1.0 - veil * smoothstep(MEADOW_VEIL_NEAR, MEADOW_TREES_Z, zg)));
+    behind = mix(floorCol, veilCol, 1.0 - exp(-hazeDensity * zg) * (1.0 - veil * smoothstep(MEADOW_VEIL_NEAR, MEADOW_VEIL_FAR, zg)));
   }
   return acc + (1.0 - cover) * behind;
 }
@@ -607,6 +638,10 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
 // their column (uSim1: lean, bow away from the viewer). Tall at the sides and short in the middle,
 // they frame the view; dark against the light, glowing through where they are thin and along their
 // edges, paler as a gust bows them away.
+// The stalks are a meadow edge, not a fence: they stand in clumps with gaps between, each at its own
+// place in its column, leaning and curving its own way (a static lean and curve on top of the
+// column's sway), two to four cells thick at the root and thinning to the top, cut hard per cell. A
+// stalk carries a panicle (a rachis hung with fine spikelets), a plain ear of seeds, or nothing.
 void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, vec3 amb, vec3 sun, float behind, float sunNear, float sunX, float wet, vec3 deck, float aa, inout vec3 col, inout float accent, inout float zHit) {
   float yy = p.y - MEADOW_ROOT[layer];
   if (yy <= 0.0) return;
@@ -614,15 +649,20 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
   float hMin = MEADOW_HMIN[layer] * hScale;
   float hMax = MEADOW_HMAX[layer] * hScale;
   float spike = MEADOW_SPIKE[layer] * hScale;
+  float spikeMax = spike * MEADOW_HEAD_MAX;
   float low = MEADOW_LOW[layer];
+  // A leaning stalk's head can stray further than the layer's own padding allows for.
+  float pad = MEADOW_PAD[layer] + 0.6 * spike;
   // The tallest blade that could reach this cell grows from the root furthest toward the frame's
   // side within reach; above it there is nothing of this layer.
-  float reach0 = MEADOW_REACH * yy + MEADOW_PAD[layer];
+  float reach0 = MEADOW_REACH * yy + pad;
   float side = smoothstep(0.15, 0.75, abs(p.x / aspect - 0.5) * 2.0 + 2.0 * reach0 / aspect);
   float tallest = hMax * mix(low, 1.0, side);
-  if (yy > tallest + spike) return;
+  if (yy > tallest + spikeMax) return;
   float girth = MEADOW_WIDTH[layer];
   float spikeGirth = MEADOW_SPIKE_WIDTH[layer];
+  // Stalks of the layers further off are thinner, as their blades are.
+  float stalkScale = clamp(girth / MEADOW_WIDTH[0], 0.6, 1.0);
   int columns = textureSize(uSim1, 0).x;
   bool bent = uSimOn.y > 0.5;
   // A blade's centreline strays at most MEADOW_REACH x its height above the roots (sim.ts), so only
@@ -632,8 +672,8 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
   // Wet seed heads drip: then a stalk can also reach this cell from a head up to five drip spacings
   // above it (~2-3 more columns each side).
   float dripWidth = MEADOW_DRIP_CELLS * aa;
-  float yr = min(yy + (wet > 0.0 ? 5.0 * dripWidth : 0.0), tallest + spike);
-  int reach = min(int(ceil((MEADOW_REACH * yr + MEADOW_PAD[layer]) / pitch)), MEADOW_MARGIN);
+  float yr = min(yy + (wet > 0.0 ? 5.0 * dripWidth : 0.0), tallest + spikeMax);
+  int reach = min(int(ceil((MEADOW_REACH * yr + pad) / pitch)), MEADOW_MARGIN);
   float column = floor(p.x / pitch);
   float salt = float(layer) * 57.0 + K_meadowSeed * 1.37;
   float layerZ = MEADOW_LAYER_Z[layer];
@@ -646,30 +686,48 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
   for (int k = -reach; k <= reach; k++) {
     float i = column + float(k);
     vec2 key = vec2(i, salt);
-    float x0 = (i + 0.15 + 0.7 * hash12(key + 3.1)) * pitch;
+    // Anywhere in its column, so neighbours crowd together or leave gaps.
+    float x0 = (i + hash12(key + 3.1)) * pitch;
     float edge = smoothstep(0.15, 0.75, abs(x0 / aspect - 0.5) * 2.0);
     if (hash12(key) > density * mix(MEADOW_CENTRE[layer], 1.0, edge)) continue;
-    float h = mix(hMin, hMax, hash12(key + 7.7)) * mix(low, 1.0, edge);
-    bool stalk = hash12(key + 11.3) < MEADOW_STALKS[layer];
+    // Stalks come in clumps: a slow noise over the columns raises their share in some stretches and
+    // lets it fall away in the gaps between.
+    float clump = smoothstep(0.4, 0.68, 0.65 * vnoise(vec2(i * MEADOW_CLUMP_SCALE, salt)) + 0.35 * vnoise(vec2(i * MEADOW_CLUMP_SCALE * 3.7 + 9.1, salt)));
+    bool stalk = hash12(key + 11.3) < min(MEADOW_STALKS[layer] * (MEADOW_CLUMP_GAP + MEADOW_CLUMP_GAIN * clump), 0.9);
+    float hHeight = hash12(key + 7.7);
+    float h = mix(hMin, hMax, stalk ? sqrt(hHeight) : hHeight) * mix(low, 1.0, edge);
+    // What the stalk carries: nothing (0), a panicle (1) or a plain ear (2), and how long it is.
+    float kindH = hash12(key + 53.9);
+    int kind = !stalk || kindH < MEADOW_BARE_SHARE ? 0 : (kindH < MEADOW_BARE_SHARE + MEADOW_EAR_SHARE ? 2 : 1);
+    float lenH = hash12(key + 47.3);
+    float headLen = kind == 0 ? 0.0 : spike * (kind == 1 ? 0.9 + 0.5 * lenH : 0.6 + 0.4 * lenH);
     vec2 bend = bent ? texelFetch(uSim1, ivec2(clamp(int(i) + MEADOW_MARGIN, 0, columns - 1), layer), 0).rg : vec2(0.0);
-    float lean = clamp(MEADOW_CURL * (hash12(key + 17.9) - 0.5) + bend.x, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX);
+    float lean = clamp(MEADOW_CURL * (hash12(key + 17.9) - 0.5) + (stalk ? MEADOW_STALK_LEAN * 2.0 * (hash12(key + 59.3) - 0.5) : 0.0) + bend.x, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX);
     float bow = clamp(bend.y + MEADOW_WET_BOW * wet, -0.2, MEADOW_AWAY_MAX);
     float tall = h * (1.0 - MEADOW_BOW * bow);
     float s = yy / tall;
-    if (s > 1.0 + (stalk ? spike / tall : 0.0)) continue;
+    if (s > 1.0 + headLen / tall) continue;
+    // The centreline: offset tip x (s^curve); curve 2 is the blades' own bow, a stalk's runs from a
+    // quick lean near the root to a late bend near the head.
+    float curve = stalk ? mix(MEADOW_STALK_CURVE_MIN, MEADOW_STALK_CURVE_MAX, hash12(key + 41.9)) : 2.0;
     float tip = MEADOW_BEND_SHAPE * lean * h;
     float sc = min(s, 1.0);
-    float slope = 2.0 * tip * sc / tall;
-    float across = (p.x - x0 - tip * sc * sc) * inversesqrt(1.0 + slope * slope); // signed, + to the right
+    float slope = curve * tip * pow(sc, curve - 1.0) / tall;
+    float across = (p.x - x0 - tip * pow(sc, curve)) * inversesqrt(1.0 + slope * slope); // signed, + to the right
     float d = abs(across);
-    float w = stalk ? max(girth * 0.36 * (1.0 - 0.3 * sc), 1.2 * aa) : girth * pow(max(1.0 - s, 0.0), 0.6);
-    float cover = s <= 1.0 ? 1.0 - smoothstep(w - aa, w + aa, d) : 0.0;
+    // A stalk is two to four cells thick at the root, thinning to the head; blades taper to a point.
+    float w = stalk ? max(aa * (MEADOW_STALK_CELLS + MEADOW_STALK_CELLS_SPAN * hash12(key + 37.1)) * stalkScale * mix(1.0, MEADOW_STALK_TIP, pow(sc, 0.8)), MEADOW_STALK_MIN * aa) : girth * pow(max(1.0 - s, 0.0), 0.6);
+    float soft = stalk ? 0.5 * aa : aa;
+    float cover = s <= 1.0 ? 1.0 - smoothstep(w - soft, w + soft, d) : 0.0;
+    // Stalks are cut per cell, so a swaying edge changes one cell at a time, once.
+    if (stalk) cover = hardEdge(cover);
     // The backlit edge on the side facing the sun only, fading across the blade: as a blade sways,
     // a cell sees one soft change of light, not a thin bright line passing.
     float facing = clamp(across * sign(sunX - p.x) / max(w, aa), 0.0, 1.0);
     float rim = facing * facing * cover;
     float pressed = clamp(bend.y, 0.0, 1.0); // bowed by the wind (not the rain) shows the light through it
-    vec3 shade = (stalk ? stem : leaf) * (amb * 0.3 + sun * (0.1 + 0.55 * behind)) * MEADOW_SHADE[layer];
+    vec3 body = stalk ? stem * mix(vec3(0.75), vec3(1.4, 1.2, 0.8), hash12(key + 61.1)) : leaf;
+    vec3 shade = body * (amb * 0.3 + sun * (0.1 + 0.55 * behind)) * MEADOW_SHADE[layer];
     shade += sun * MEADOW_THROUGH * pressed * (0.45 + behind) * 0.9;
     shade += sun * MEADOW_RIM * rim * (MEADOW_RIM_BASE + 1.1 * behind + 0.6 * sunNear);
     shade += gloss * (deck * 0.4 + sun * (0.15 + 0.8 * behind)) * facing;
@@ -688,23 +746,60 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
         col = mix(col, bead, 0.85 * drop);
       }
     }
-    if (stalk) {
-      // The seed head, nodding on along the stalk's tip; heavy with rain it droops toward the side
-      // the stalk leans, glistens, and drips from its end.
+    if (kind > 0) {
+      // The head, nodding on along the stalk's tip; heavy with rain it droops toward the side the
+      // stalk leans, glistens, and drips from its end.
       float nodSide = hash12(key + 17.9) < 0.5 ? -1.0 : 1.0;
-      vec2 axis = rotate(normalize(vec2(2.0 * tip / tall, 1.0)), -nodSide * MEADOW_WET_NOD * wet);
+      vec2 axis = rotate(normalize(vec2(curve * tip / tall, 1.0)), -nodSide * MEADOW_WET_NOD * wet);
       vec2 base = vec2(x0 + tip, MEADOW_ROOT[layer] + tall);
       vec2 q = p - base;
-      float e = length(vec2(2.0 * dot(q, axis) / spike - 1.0, dot(q, vec2(axis.y, -axis.x)) / spikeGirth));
-      float head = 1.0 - smoothstep(1.0 - aa / spikeGirth, 1.0 + aa / spikeGirth, e);
-      vec3 seeds = seedCol * (amb * 0.35 + sun * (0.2 + 0.9 * behind + 0.4 * pressed));
+      float reachHead = headLen + 3.0 * spikeGirth + 2.0 * aa;
+      float head = 0.0;
+      float e = 1.0; // 0 along the head's axis, 1 at its rim
+      if (dot(q, q) < reachHead * reachHead) {
+        float u = dot(q, axis);
+        float v = dot(q, vec2(axis.y, -axis.x));
+        if (kind == 2) {
+          // A plain ear: a dense ellipse of seeds.
+          float girthEar = spikeGirth * (0.8 + 0.5 * hash12(key + 43.3));
+          e = length(vec2(2.0 * u / headLen - 1.0, v / girthEar));
+          head = 1.0 - smoothstep(1.0 - 0.5 * aa / girthEar, 1.0 + 0.5 * aa / girthEar, e);
+        } else {
+          // A panicle: a rachis arching to one side, a spikelet hung from it every few cells,
+          // alternating sides, longest in the middle.
+          float spikelets = clamp(floor(headLen / (MEADOW_SPIKELET_CELLS * aa)), 3.0, 8.0);
+          float gapU = headLen / spikelets;
+          float arch = (hash12(key + 67.3) < 0.5 ? -1.0 : 1.0) * 0.22 * headLen;
+          float ut = clamp(u / headLen, 0.0, 1.0);
+          float wv = v - arch * ut * ut;
+          float rachis = length(vec2(u - clamp(u, 0.0, headLen), wv));
+          float dist = 1e3;
+          float n1 = floor(u / gapU - 0.5);
+          for (int dn = 0; dn < 2; dn++) {
+            float n = n1 - float(dn);
+            if (n < 0.0 || n >= spikelets) continue;
+            float fr = (n + 0.5) / spikelets;
+            float hn = hash12(key + vec2(n * 1.3, 71.7));
+            float sgn = mod(n, 2.0) < 0.5 ? 1.0 : -1.0;
+            float lat = MEADOW_PANICLE_WIDTH * spikeGirth * (0.35 + 0.65 * sin(0.5 * TAU * fr)) * (0.8 + 0.4 * hn);
+            vec2 a = vec2(fr * headLen, arch * fr * fr);
+            vec2 b = a + vec2(gapU * (0.9 + 0.5 * hn), sgn * lat);
+            dist = min(dist, segmentDistance(vec2(u, v), a, b));
+          }
+          float r = 0.7 * aa;
+          head = 1.0 - smoothstep(r - 0.5 * aa, r + 0.5 * aa, min(rachis, dist));
+          e = clamp(abs(wv) / (MEADOW_PANICLE_WIDTH * spikeGirth), 0.0, 1.0);
+        }
+        head = hardEdge(head);
+      }
+      vec3 seeds = seedCol * mix(0.7, 1.3, hash12(key + 73.1)) * (amb * 0.35 + sun * (0.2 + 0.9 * behind + 0.4 * pressed));
       seeds += sun * MEADOW_RIM * smoothstep(0.2, 1.0, e) * (MEADOW_RIM_BASE + 1.6 * behind + sunNear);
       seeds += gloss * (deck * 0.5 + sun * (0.2 + behind)) * smoothstep(0.3, 1.0, e);
       col = mix(col, seeds, head);
       accent *= 1.0 - head;
       zHit = mix(zHit, layerZ, head);
       if (wet > 0.0) {
-        vec2 end = base + axis * spike;
+        vec2 end = base + axis * headLen;
         vec2 below = vec2(p.x - end.x, end.y - p.y);
         if (below.y > 0.0 && below.y < 5.0 * dripWidth && abs(below.x) < 0.5 * dripWidth) {
           // Each head drips from a lane of its own (so on its own clock), placed on that lane's drip
@@ -791,6 +886,10 @@ void meadowClocks(vec2 p, float aspect, vec3 amb, vec3 sun, float behind, float 
     float Rs = R * mix(0.3, 1.0, shown);
     float rr = r / Rs;
     if (rr < 1.6 && shown > 0.0) {
+      // Against the glare (a backdrop this bright) the fluff would be lost: its body darkens there,
+      // as a backlit head is seen against the sun, so the starburst reads as a pale fan over a dim disc.
+      float glare = smoothstep(MEADOW_GLARE_FROM, MEADOW_GLARE_TO, dot(col, LUMA));
+      col *= 1.0 - MEADOW_GLARE_DARK * glare * (1.0 - smoothstep(0.45, 1.05, rr)) * shown * presence;
       // Counted on the full head, so the starburst does not jump as the clock opens.
       float spokes = clamp(floor(TAU * R / (MEADOW_SPOKE_CELLS * aa)), 10.0, 32.0);
       float u = fract(atan(qf.y, qf.x) / TAU) * spokes;

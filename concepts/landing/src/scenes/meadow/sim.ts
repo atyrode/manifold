@@ -305,9 +305,9 @@ const BLADE_FLUTTER = 0.01;
 const BLADE_FLUTTER_WIND = 0.03;
 
 // Dandelion clocks.
-/** Where the clocks stand: share of the width, head height (uv), head radius (screen heights), depth. */
+/** Where the clocks stand: share of the width, head height (uv), head radius (screen heights), depth. The first stands in the sky above the horizon, well clear of the low sun's glare (left of centre at golden hour) and of the mown M. */
 const CLOCK_SLOTS: readonly { share: number; head: number; radius: number; z: number }[] = [
-  { share: 0.27, head: 0.47, radius: 0.046, z: 3 },
+  { share: 0.52, head: 0.56, radius: 0.046, z: 3 },
   { share: 0.77, head: 0.37, radius: 0.04, z: 3.4 },
   { share: 0.16, head: 0.31, radius: 0.054, z: 2.4 },
   { share: 0.62, head: 0.27, radius: 0.034, z: 4 },
