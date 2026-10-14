@@ -1,5 +1,6 @@
 // The scene registry, in lab order (cards, `[` / `]` cycling). A scene is one folder under
 // src/scenes/ (see README.md); adding one is an import and an entry here, keyed by its id.
+import { auroraScene } from "./aurora/index.ts";
 import { bambooScene } from "./bamboo/index.ts";
 import { barScene } from "./bar/index.ts";
 import { bonsaiScene } from "./bonsai/index.ts";
@@ -95,6 +96,7 @@ export const sceneDefs = {
   campfire: campfireScene,
   pendula: pendulaScene,
   island: islandScene,
+  aurora: auroraScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
