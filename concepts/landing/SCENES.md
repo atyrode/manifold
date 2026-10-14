@@ -44,7 +44,7 @@ mathematics. All have a first implementation in the lab:
 | Sand table | `sandtable` | Theta–rho ball and sand pendulum on a height field; the relief is re-sent every frame while a machine outruns it, so a groove's head stays under the ball | `HeightField` |
 | Chladni plate | `chladni` | Sand grains drifting to the nodal lines of plate modes; grain size from fine sand (thin, crisp lines, slow to gather) to grit (broad, rough, steep ridges, quick) | `grainAt` |
 | Ferrofluid | `ferro` | Rosensweig spike lattice, sloshing blob | |
-| Soap film | `film` | Thin-film interference, gravity drainage, pops | `FluidSim` |
+| Soap film | `film` | Thin-film interference, gravity drainage, pops whose rim crosses the film from the break in least time | `FluidSim`, `ArrivalField` |
 | Pearlescent fluid (rheoscopic) | `pearl` | Flake orientation advected and turned by the flow | `FluidSim` |
 | Petri dish | `petri` | Gray–Scott Turing patterns, Barkley BZ spirals | `GpuCompute` |
 | Slime mould network (Physarum) | `physarum` | Jones agent model linking oat flakes | `GpuCompute` |
@@ -76,7 +76,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 |---|---|---|
 | Harmonograph | `harmonograph` | Damped, slightly detuned pendulums drive a pen; the figure precesses and spirals inward, then a fresh sheet slides in |
 | Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out |
-| Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment |
+| Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment; or real ones, released by a board and slowed by their own wide swing (`sims/pendulum.ts`), drifting off the realignment |
 | A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below |
 | Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: `shaders/windWater.ts`), a red cabin, falling and lying snow |
 | Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies. Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it |
