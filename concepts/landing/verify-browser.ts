@@ -8,6 +8,7 @@ import { verifySwellRelief } from "./src/scenes/swell/relief.verify.ts";
 import { verifyAuroraRipples } from "./src/scenes/aurora/ripples.verify.ts";
 import { verifyBarLastCall } from "./src/scenes/bar/lastcall.verify.ts";
 import { verifyDewBins } from "./src/scenes/dew/bins.verify.ts";
+import { verifyTidepoolExchange } from "./src/scenes/tidepool/exchange.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 
 function check(ok: boolean, message: string): void {
@@ -262,6 +263,7 @@ export function verify(): Record<string, unknown> {
   result.auroraRipples = verifyAuroraRipples(gl);
   result.barLastCall = verifyBarLastCall(gl);
   result.dewBins = verifyDewBins(gl);
+  result.tidepoolExchange = verifyTidepoolExchange(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

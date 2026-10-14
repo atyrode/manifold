@@ -86,6 +86,32 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
 sees it (`rainFallSeen`), whatever the calm of the rest of the scene.
 
+## Tide pool
+
+`tidepool`: a rock pool on a basalt platform, seen from straight above, with the open sea along the
+top. Prototype (issue #1082, N1), built from shared parts rather than scene code:
+
+- **Water:** `ShallowWater` (`src/sims/shallow.ts`), GPU shallow water over a bed (virtual pipes,
+  local inertial flow, the scheme the delta's river uses). A wave maker in the top band forces both
+  the swell's level and its flow, so waves run in one way and reflections are soaked up; they shoal,
+  break over the reefs, run up the rock and, in the sets, pour through the notch in the basin's rim.
+  The basin keeps what comes over and spills back to its sill. `stillWater` (priority flood) opens
+  every layout settled: the basin and potholes full to their spill points.
+- **Response:** the water carries foam (made where the flow outruns its own waves), agitation (a
+  hard surge or a touch closes the anemones; they reopen over ~10 s) and wetness (rock drying over
+  half a minute). Kelp and surfgrass stream and flutter with the flow at their holdfasts; anemones
+  lean with it and close when the water leaves them.
+- **Caustics:** `src/shaders/caustics.ts`: the swell's caustic focus from the sim's surface Hessian
+  times analytic wind ripples', both det(I + D·H), D a quarter of the depth.
+- **Passage:** entering, the last of a wave's white water drains back up the frame and the anemones
+  unfurl; leaving, a wave breaks in from the sea and sweeps down over everything.
+- Knobs: tide (and a tide cycle), swell, wave length, direction, sets (with "now"), pace, foam;
+  caustics, glints, breeze; sky time and rain; anemones (and shyness), kelp, surfgrass, sea lettuce,
+  sea stars, urchins, sway; rock type, mussels/barnacles, coralline, pool size, arrangement;
+  bioluminescence; a pebble M.
+- Open: the rock reads too dark and busy at the dither, the open sea reads as mottled rather than
+  as swell, and the zonation needs art direction before this leaves the prototype stage.
+
 ## Above the clouds
 
 The view from a plane window: a sea of clouds below, open sky above.
