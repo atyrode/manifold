@@ -1,14 +1,16 @@
-// A scene's simulation run without a browser, for `bun test` regressions on what a sim hands its
-// shader: a stand-in WebGL2 context that accepts every call and keeps each texture's last data
-// upload, and a driver that builds SimFrames from knobs, a pointer and a frame size the way the
-// renderer does (knobs keyed as in the URL, read through `effective`; missing knobs at defaults).
+// A scene's simulation driven frame by frame outside the renderer: in `bun test` regressions on
+// what a sim hands its shader (with a stand-in WebGL2 context that accepts every call and keeps each
+// texture's last data upload), or in a browser check on a real context, feeding the scene's real
+// program. Frames are built from knobs, a pointer and a frame size the way the renderer builds
+// them (knobs keyed as in the URL, read through `effective`; missing knobs at their defaults).
 //
 //   headlessGl()          { gl, data(texture) }: `data` is a copy of the typed array last uploaded to
 //                         that texture (texImage2D or texSubImage2D), undefined before any upload.
 //                         Every other call is a no-op; constants read as 1, createTexture as a token.
-//   new HeadlessSim(scene)
-//     step(frame)         one renderer frame (dt 1/60 s, motion 1, 960 × 540 cells unless given) and
-//                         the data the sim's returned textures hold, in slot order
+//   new HeadlessSim(scene, gl?)   on the stand-in context unless a real one is given
+//     frame(frame)        one renderer frame (dt 1/60 s, motion 1, 960 × 540 cells unless given): the
+//                         textures the sim returns, in slot order, to bind as uSim0..uSim3
+//     step(frame)         the same frame, answering the data those textures hold (stand-in only)
 //     time, motionTime    the scene and motion clocks, as the renderer sums them
 //
 // Usage (a drag held still while the screen turns portrait must not move the plane):
@@ -18,7 +20,7 @@
 //   const before = sim.step({ pointer: at })[0];
 //   const after = sim.step({ pointer: at, aspect: 9 / 16 })[0];
 import { effective, MAX_TRIGGERS } from "../params.ts";
-import type { PointerState, ScenePassageProgress, SceneDef, SimFrame } from "../scenes/types.ts";
+import type { PointerState, ScenePassageProgress, SceneDef, SceneSim } from "../scenes/types.ts";
 
 type Upload = Float32Array | Uint16Array | Uint8Array;
 
@@ -77,19 +79,25 @@ export interface HeadlessFrame {
 
 export class HeadlessSim {
   readonly #scene: SceneDef;
-  readonly #gl: HeadlessGl;
-  readonly #sim;
+  readonly #standIn: HeadlessGl | undefined;
+  readonly #sim: SceneSim;
   time = 0;
   motionTime = 0;
 
-  constructor(scene: SceneDef) {
+  constructor(scene: SceneDef, gl?: WebGL2RenderingContext) {
     if (scene.sim === undefined) throw new Error(`headless: ${scene.id} has no sim`);
     this.#scene = scene;
-    this.#gl = headlessGl();
-    this.#sim = scene.sim(this.#gl.gl);
+    if (gl === undefined) {
+      const standIn = headlessGl();
+      this.#standIn = standIn;
+      this.#sim = scene.sim(standIn.gl);
+    } else {
+      this.#standIn = undefined;
+      this.#sim = scene.sim(gl);
+    }
   }
 
-  step(options: HeadlessFrame = {}): (Upload | undefined)[] {
+  frame(options: HeadlessFrame = {}): readonly (WebGLTexture | undefined)[] {
     const dt = options.dt ?? 1 / 60;
     const motion = options.motion ?? 1;
     const aspect = options.aspect ?? 16 / 9;
@@ -97,7 +105,7 @@ export class HeadlessSim {
     const knobs = options.knobs ?? {};
     this.time += dt;
     this.motionTime += dt * motion;
-    const frame: SimFrame = {
+    return this.#sim.frame({
       dt,
       time: this.time,
       motionTime: this.motionTime,
@@ -111,8 +119,13 @@ export class HeadlessSim {
       fired: Array.from({ length: MAX_TRIGGERS }, (_, slot) => options.fired?.includes(slot) === true),
       pointer: { x: 0.5, y: 0.5, inside: true, down: false, pressed: false, released: false, ...options.pointer },
       passage: { enter: 1, exit: 0, ...options.passage },
-    };
-    return this.#sim.frame(frame).map((texture) => this.#gl.data(texture));
+    });
+  }
+
+  step(options: HeadlessFrame = {}): (Upload | undefined)[] {
+    const standIn = this.#standIn;
+    if (standIn === undefined) throw new Error("headless: step reads uploads from the stand-in context; use frame on a real one");
+    return this.frame(options).map((texture) => standIn.data(texture));
   }
 
   dispose(): void {
