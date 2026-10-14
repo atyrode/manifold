@@ -20,12 +20,12 @@
 //     dispose()                   the sim's
 //
 // A HeadlessFrame is all optional: dt 1/60 s, motion 1, aspect 16 / 9 at 540 cells high, the pointer
-// over the page at its centre with no button, no parallax, arrived and not leaving. `knobs` are read
-// as the lab reads them from a URL (keys as in the URL, features also `<key>-amount`; missing ones at
-// their defaults, values clamped to their knobs), so `params` and `values` are what the renderer
-// would hand over. `now` presses those knobs' "now" buttons just before the frame: each slot is
-// stamped on the clock as it stood and keeps its stamp, as the lab's, and the frame reports it fired;
-// a sim's first frame, as in the renderer, reports no presses.
+// over the page at its centre with no button, no parallax, arrived and not leaving. `knobs` are keyed
+// as in the URL (features also `<key>-amount`) and handed over as given, unclamped, so a test may go
+// past a slider's end; the rest are at their defaults, as the lab fills them, so `params` and
+// `values` are what the renderer would hand over. `now` presses those knobs' "now" buttons just
+// before the frame: each slot is stamped on the clock as it stood and keeps its stamp, as the lab's,
+// and the frame reports it fired; a sim's first frame, as in the renderer, reports no presses.
 //
 // Usage (a drag held still while the screen turns portrait must not move the plane):
 //   const sim = new HeadlessSim(hyperbolicScene);
@@ -36,9 +36,9 @@
 //
 // Rows run bottom to top, as DataTexture uploads them.
 import { effective, knobDef, MAX_TRIGGERS } from "../params.ts";
-import { sceneIds, type SceneId } from "../scenes/index.ts";
+import { sceneIds } from "../scenes/index.ts";
 import type { PointerState, ScenePassageProgress, SceneDef, SceneSim } from "../scenes/types.ts";
-import { readParams } from "../state.ts";
+import { paramDefaults } from "../state.ts";
 
 export class HeadlessError extends Error {}
 
@@ -138,7 +138,7 @@ export interface HeadlessFrame {
   /** width / height (default 16 / 9) and the height in cells (default 540). */
   aspect?: number;
   height?: number;
-  /** Knobs keyed as in the URL (features also `<key>-amount`), read as the lab reads a URL. */
+  /** Knobs keyed as in the URL (features also `<key>-amount`), as given; the rest at their defaults. */
   knobs?: Readonly<Record<string, number>>;
   /** Over the page at its centre, no button, unless given. */
   pointer?: Partial<PointerState>;
@@ -154,7 +154,7 @@ const NEVER = -1e4;
 
 export class HeadlessSim {
   readonly #scene: SceneDef;
-  readonly #id: SceneId;
+  readonly #defaults: Readonly<Record<string, number>>;
   readonly #headless: HeadlessGl | undefined;
   readonly #sim: SceneSim;
   readonly #triggers = new Array<number>(MAX_TRIGGERS).fill(NEVER);
@@ -170,7 +170,7 @@ export class HeadlessSim {
     if (id === undefined) throw new HeadlessError(`headless: '${scene.id}' is not a registered scene`);
     if (scene.sim === undefined) throw new HeadlessError(`headless: '${scene.id}' has no sim`);
     this.#scene = scene;
-    this.#id = id;
+    this.#defaults = paramDefaults(id);
     if (gl === undefined) {
       const headless = new HeadlessGl();
       this.#headless = headless;
@@ -194,7 +194,7 @@ export class HeadlessSim {
     const motion = options.motion ?? 1;
     const aspect = options.aspect ?? 16 / 9;
     const height = options.height ?? 540;
-    const params = readParams(this.#id, new URLSearchParams(Object.entries(options.knobs ?? {}).map(([key, value]) => [key, String(value)])));
+    const params = { ...this.#defaults, ...options.knobs };
     for (const key of options.now ?? []) {
       const slot = knobDef("headless", this.#scene.params, key).trigger;
       if (slot === undefined) throw new HeadlessError(`headless: the '${key}' knob has no "now"`);
