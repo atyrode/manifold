@@ -36,7 +36,7 @@ mathematics. All have a first implementation in the lab:
 | Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube; a moss pad on its stone softens the knock for a quiet clock | |
 | Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step | `separateDiscs` |
 | Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population | |
-| Kelp forest | `kelp` | Buoyant Verlet stipes in surge, boids school | `VerletSystem` |
+| Kelp forest | `kelp` | Buoyant Verlet stipes in surge: giant kelp, or bull kelp held up by one gas bulb (or a mix); boids school | `VerletSystem`, `fishGlsl` |
 | Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling; paged bin lists keep the dense hub whole | `VerletSystem`, `BinLists` |
 | Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds carried in the world along the gust direction | `LevelCamera` |
 | Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist, four seasons' washes; painted in sections joined by mounting silk so days of unrolling stay precise | |

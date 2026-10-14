@@ -27,6 +27,7 @@ import { verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
 import { verifyFilmRupture } from "./src/scenes/film/rupture.verify.ts";
 import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
 import { petriRegimesVerify } from "./src/scenes/petri/regimes.verify.ts";
+import { verifyPondKoi } from "./src/scenes/pond/koi.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -296,6 +297,7 @@ export function verify(): Record<string, unknown> {
   Object.assign(result, verifyCountryRoutes(gl));
   result.cloudsDetail = verifyCloudsDetail(gl);
   result.petriRegimes = petriRegimesVerify(gl);
+  result.pondKoi = verifyPondKoi(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

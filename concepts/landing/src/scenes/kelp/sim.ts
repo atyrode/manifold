@@ -10,6 +10,11 @@
 // damped band under the surface, so its top bends over and lies along the surface, trailing
 // downstream, and its blades hang there as the canopy.
 //
+// Bull kelp (the species knob: all bull, or mixed): the same chain, shorter than the water is deep,
+// with its lift gathered in one gas bulb at the top (BULL_*), so the bare stipe hangs taut under the
+// bulb and the bulb swings through the surge about the holdfast, its blade fan dragging on it; the
+// shader draws the bulb and the fan (kelpBullCrown) instead of blades up the stipe.
+//
 // Seen side-on, the forest stands in four depth layers (KELP_LAYERS), each a row of slots holding
 // at most one plant. A layer is simulated in its own screen units: lengths, flows and buoyancy are
 // scaled by its perspective scale, which leaves the timing of the motion the same at every depth,
@@ -45,11 +50,12 @@
 //          row 3, globals: KELP_GLOBAL columns (see there)
 //          row 4, per stipe: the node its rising part ends at (the first at the surface, else the
 //                 top), the x it reaches the surface at, the farthest x it floats to, link length
-//          row 5, per stipe: its own perspective scale (its layer's, jittered by DEPTH_JITTER), 0, 0, 0
+//          row 5, per stipe: its own perspective scale (its layer's, jittered by DEPTH_JITTER), 1 for
+//                 bull kelp (0 giant), 0, 0
 //   uSim2  r8 the hand's fading trail (TrailField), linear, uv.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
@@ -91,6 +97,22 @@ const YOUNG_MAX = 0.85;
 const YOUNG_SHARE = 0.22;
 /** Each plant stands a little nearer or farther than its layer: ± half this share of its scale. */
 const DEPTH_JITTER = 0.1;
+/**
+ * Bull kelp (Nereocystis), the `species` knob's other plant, on the same chain: a bare, whip-thin
+ * stipe shorter than the water is deep (BULL_MIN..BULL_MAX of it, from the giant's length draw), all
+ * but BULL_STIPE_LIFT of its lift gathered in one gas bulb at the top (BULL_BULB_LIFT points' worth),
+ * so the stipe hangs taut under the bulb and the bulb swings through the surge in an arc about the
+ * holdfast; the fan of strap blades streaming from the bulb drags it BULL_BULB_DRAG times as hard as
+ * the water drags a point. In a mixed forest a plant is bull kelp with BULL_SHARE odds, by a hash, so
+ * the forest's random draws (and with them a giant forest) stay as they were.
+ */
+const BULL_MIN = 0.5;
+const BULL_MAX = 0.82;
+const BULL_STIPE_LIFT = 0.15;
+const BULL_BULB_LIFT = 6;
+const BULL_BULB_DRAG = 2;
+const BULL_SHARE = 0.45;
+export const kelpSpecies = ["giant", "bull", "mixed"] as const;
 
 export interface KelpLayer {
   /** Perspective scale: 1 at the nearest layer, smaller farther off. */
@@ -299,8 +321,8 @@ const FISH_EDGE = 0.06;
 const FISH_ROW = 0.14;
 const FISH_ARC = 0.12;
 
-type KnobKey = "surge" | "period" | "current" | "swell" | "density" | "kelpSeed" | "fish" | "visitor" | "mark";
-const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "density", "kelpSeed", "fish", "visitor", "mark"];
+type KnobKey = "surge" | "period" | "current" | "swell" | "density" | "kelpSeed" | "species" | "fish" | "visitor" | "mark";
+const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "density", "kelpSeed", "species", "fish", "visitor", "mark"];
 
 /** Fixed base seed: the same arrangement number always grows the same forest. */
 const SEED = 0x6b31f00d;
@@ -610,6 +632,11 @@ class KelpSim implements SceneSim {
   readonly #pointSurface = new Float32Array(POINT_COUNT);
   readonly #pointLayer = new Uint8Array(POINT_COUNT);
   readonly #pointDrift = new Float32Array(POINT_COUNT);
+  // Bull kelp's points: the share of a giant point's lift each has (1 for giant kelp) and the extra
+  // drag of the blades streaming from its bulb (0 elsewhere); and per stipe, whether it is bull kelp.
+  readonly #pointLift = new Float32Array(POINT_COUNT);
+  readonly #pointBlades = new Float32Array(POINT_COUNT);
+  readonly #bull = new Uint8Array(KELP_STIPES);
   readonly #flowX = new Float32Array(POINT_COUNT);
   readonly #lean = new Float32Array(POINT_COUNT);
 
@@ -632,6 +659,8 @@ class KelpSim implements SceneSim {
   #exitSide = 0;
 
   #seed = -1;
+  /** The species the forest was grown as (index into kelpSpecies). */
+  #species = -1;
   #aspect = 16 / 9;
   #clock = 0;
   #nextSwell = SWELL_FIRST;
@@ -657,6 +686,7 @@ class KelpSim implements SceneSim {
       swell: knobs.initial("swell"),
       density: knobs.initial("density"),
       kelpSeed: knobs.initial("kelpSeed"),
+      species: knobs.initial("species"),
       fish: knobs.initial("fish"),
       visitor: knobs.initial("visitor"),
       mark: knobs.initial("mark"),
@@ -677,7 +707,8 @@ class KelpSim implements SceneSim {
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#applyKnobs();
     const seed = Math.round(knob.kelpSeed);
-    if (seed !== this.#seed) this.#build(seed);
+    const species = Math.round(knob.species);
+    if (seed !== this.#seed || species !== this.#species) this.#build(seed);
     this.#enterT = frame.passage.enter * KELP_PASSAGE.enter;
     this.#exitT = frame.passage.exit * KELP_PASSAGE.exit;
     this.#passing = frame.passage.enter < 1 || frame.passage.exit > 0;
@@ -720,6 +751,7 @@ class KelpSim implements SceneSim {
   /** Plant the forest for an arrangement number and let it sway into shape. */
   #build(seed: number): void {
     this.#seed = seed;
+    this.#species = Math.round(this.#knob.species);
     const random = this.#random;
     random.seed(SEED ^ Math.imul(seed + 1, 0x9e3779b1));
     const sys = this.#system;
@@ -736,7 +768,9 @@ class KelpSim implements SceneSim {
         const x = layer.left + (k + 0.5 + 0.85 * (random.next() - 0.5)) * layer.spacing;
         const grown = random.next() >= YOUNG_SHARE;
         const r = random.next();
-        const length = (surfaceY - floorY) * (grown ? GROWN_MIN + (GROWN_MAX - GROWN_MIN) * r : YOUNG_MIN + (YOUNG_MAX - YOUNG_MIN) * r);
+        const bull = this.#isBull(stipe, seed);
+        const depth = surfaceY - floorY;
+        const length = bull ? depth * (BULL_MIN + (BULL_MAX - BULL_MIN) * r) : depth * (grown ? GROWN_MIN + (GROWN_MAX - GROWN_MIN) * r : YOUNG_MIN + (YOUNG_MAX - YOUNG_MIN) * r);
         const drift = 0.6 + 0.8 * random.next();
         let rank = random.next();
         // The nearest plants keep the middle of the frame clear until the forest is dense.
@@ -757,8 +791,16 @@ class KelpSim implements SceneSim {
           this.#pointSurface[p] = surfaceY;
           this.#pointLayer[p] = l;
           this.#pointDrift[p] = drift;
+          this.#pointLift[p] = bull ? BULL_STIPE_LIFT : 1;
+          this.#pointBlades[p] = 0;
           this.#flowX[p] = 0;
           this.#lean[p] = 0;
+        }
+        this.#bull[stipe] = bull ? 1 : 0;
+        if (bull) {
+          const bulb = chain.first + KELP_SEGMENTS;
+          this.#pointLift[bulb] = BULL_BULB_LIFT;
+          this.#pointBlades[bulb] = BULL_BULB_DRAG;
         }
       }
     }
@@ -782,6 +824,12 @@ class KelpSim implements SceneSim {
     this.#enterT = enterT;
     this.#exitT = exitT;
     this.#passing = passing;
+  }
+
+  /** Whether stipe `stipe` grows as bull kelp in the forest grown for `seed` (the species knob). */
+  #isBull(stipe: number, seed: number): boolean {
+    const species = kelpSpecies[this.#species] ?? "giant";
+    return species === "bull" || (species === "mixed" && hash31(stipe, seed, 0xb011) < BULL_SHARE);
   }
 
   #applyKnobs(): void {
@@ -880,6 +928,19 @@ class KelpSim implements SceneSim {
     this.#flowX[i] = fx;
     let lift = BUOYANCY * s * (LAYER_LIFT[this.#pointLayer[i] ?? 0] ?? 1);
     let push = DRAG * fx;
+    const share = this.#pointLift[i] ?? 1;
+    if (share !== 1) {
+      // Bull kelp: a little lift along the stipe, the rest in the bulb; the bulb's blades drag it
+      // toward the water's motion harder than the water drags a bare point.
+      lift *= share;
+      const blades = this.#pointBlades[i] ?? 0;
+      if (blades > 0) {
+        const prev = this.#system.previous;
+        const rate = 1 / this.#system.substep;
+        push += blades * DRAG * (fx - (x - (prev[3 * i] ?? x)) * rate);
+        fy += blades * (fy - (y - (prev[3 * i + 1] ?? y)) * rate);
+      }
+    }
     if (over > 0) {
       // Floating, its lift fades; its bobbing is damped, and so is its sloshing: the mat of fronds
       // at the surface, held by its neighbours, follows the water only part of the way.
@@ -1074,7 +1135,7 @@ class KelpSim implements SceneSim {
       }
       this.#put(KELP_ROW.stipes, stipe, minX, maxX, pos[3 * (first + rising) + 1] ?? 0, this.#presence[stipe] ?? 0);
       this.#put(KELP_ROW.canopy, stipe, rising, start, end, this.#link[stipe] ?? 0);
-      this.#put(KELP_ROW.scale, stipe, s, 0, 0, 0);
+      this.#put(KELP_ROW.scale, stipe, s, this.#bull[stipe] ?? 0, 0, 0);
     }
 
     const school = this.#school;
