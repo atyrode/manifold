@@ -733,7 +733,9 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
         }
 
         const pointer = frame.pointer;
-        if (pointer.inside && (pointer.pressed || pointer.down)) {
+        // While the camera glides in or the view settles the pointer's ray is not the rest camera's, so no pouring.
+        const resting = frame.passage.enter >= 1 && frame.passage.exit <= 0;
+        if (resting && pointer.inside && (pointer.pressed || pointer.down)) {
           const slabs = pointer.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
           const drop = DUNES_CAMERA.height + (DUNES_CAMERA.rise - 1) * dunesMeanSlabs(sand) * DUNES_SLAB;
           if (slabs > 0 && pointerCell(frame, knobs.value(frame, "camera"), drop, cell)) field.pour(cell.x, cell.y, slabs);

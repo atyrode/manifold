@@ -2,7 +2,7 @@
 // figures reach the shader as the uCon* uniforms, see constellations.ts).
 import { choice, counts, feature, range, toggle } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { orbitGlsl } from "./shader.ts";
+import { ORBIT_PASSAGE, orbitGlsl } from "./shader.ts";
 
 export const orbitScene: SceneDef = {
   id: "orbit",
@@ -56,4 +56,7 @@ export const orbitScene: SceneDef = {
   },
   glsl: orbitGlsl,
   entry: "sceneOrbit",
+  // The camera swings round and the planet slides in from the right and settles while the moons
+  // catch up along their orbits; leaving, the camera pulls back and the planet slides off left.
+  passage: ORBIT_PASSAGE,
 };

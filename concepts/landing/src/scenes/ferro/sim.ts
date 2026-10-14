@@ -6,6 +6,12 @@
 // that splays the spikes outward along the field lines. The shader (shader.ts) stands the spikes on
 // a hexagonal lattice centred on the magnet and lights the fluid as a black mirror in a studio.
 //
+// The passage (FERRO_PASSAGE): the magnet's field is gated. Coming in, the pool lies flat with no
+// spikes, then the field comes on and the crown rises from the middle (where it passes the
+// threshold first), each spike on its usual spring, the pool drawing in as it pulls. Going out the
+// field switches off and the spikes sink on critically damped springs while the shader runs a
+// ripple over the pool. At rest the gate is exactly 1 and nothing else differs.
+//
 //   uSim0  rgba16f, FERRO_GRID² texels over dish coordinates [-FERRO_SPAN, FERRO_SPAN]² (the dish's
 //          radius is 1, y away from the three-quarter camera): r the height of a spike standing
 //          there, gb the offset of its tip (lean), a the pool's field φ (1 at its edge)
@@ -60,6 +66,16 @@ export const FERRO_SHAPE = {
   radius: 0.6,
   spikeFade: 0.35,
 } as const;
+
+/** Seconds the entrance and the exit take (SceneDef.passage; the shader reads the exit's for its ripple). */
+export const FERRO_PASSAGE = { enter: 3, exit: 1.7 } as const;
+
+/**
+ * The ripple that crosses the pool as the spikes slump on the way out (shader.ts): a ring packet
+ * running out from the middle blob. Height (dish units), speed (units/s), seconds into the exit it
+ * starts, the packet's width and wavelength.
+ */
+export const FERRO_RIPPLE = { height: 0.007, speed: 0.75, start: 0.2, width: 0.17, wavelength: 0.2 } as const;
 
 /** Height of the pool's surface without its spikes, for the blob field φ (1 at the edge). */
 export function ferroBase(phi: number): number {
@@ -122,6 +138,14 @@ const EPISODE_FALL = 3;
 /** Easing time constants (seconds): the M amount, and pressing the magnet closer. */
 const MARK_EASE = 0.6;
 const PRESS_EASE = 0.3;
+/** Entrance: the pool lies flat, then the field comes on between these seconds (the spikes stand
+ * where it passes the threshold, middle first). Exit: the field is gone within `FIELD_OFF` seconds,
+ * and the spikes sink on stiffer, critically damped springs: no ringing under the flat pool. */
+const FIELD_ON_FROM = 0.55;
+const FIELD_ON_TO = 2.3;
+const FIELD_OFF = 0.55;
+const SLUMP_OMEGA = 6.5;
+const SLUMP_DAMPING = 1;
 
 // ---- helpers ---------------------------------------------------------------------------------
 
@@ -277,6 +301,8 @@ class FerroSim implements SceneSim {
   /** The knobs, the one record `#read` fills in each frame, and the last frame's knobs and aspect (see `#sameAsLast`). */
   readonly #settings: Settings = { peak: 0, breathing: false, rate: 0, drift: 0, follow: false, size: 1, spacing: 0, height: 0, seed: 0, above: false, markEvery: 0 };
   readonly #lastValues: number[] = [];
+  /** The field's passage gate last frame (see `frame`). */
+  #lastGate = 1;
   #lastAspect = Number.NaN;
   /** Idle clock (scene time × motion): the drift and the pool's own swell. */
   #clock = 0;
@@ -309,8 +335,14 @@ class FerroSim implements SceneSim {
     if (fired) this.#episode = 0;
 
     const dt = Math.min(Math.max(frame.dt, 0), MAX_DT);
+    const enterSeconds = clamp(frame.passage.enter, 0, 1) * FERRO_PASSAGE.enter;
+    const exitSeconds = clamp(frame.passage.exit, 0, 1) * FERRO_PASSAGE.exit;
+    // The passage gate on the magnet's field: 0 while the pool lies flat, 1 at rest.
+    const gate = smoothstep(FIELD_ON_FROM, FIELD_ON_TO, enterSeconds) * (1 - smoothstep(0, FIELD_OFF, exitSeconds));
+    const leaving = exitSeconds > 0;
+    const unchanged = this.#sameAsLast(frame) && gate === this.#lastGate;
+    this.#lastGate = gate;
     // Paused with nothing changed: the textures already hold this frame.
-    const unchanged = this.#sameAsLast(frame);
     if (this.#primed && dt === 0 && unchanged && !fired) return this.#textures;
 
     const idle = dt * Math.max(0, frame.motion);
@@ -323,7 +355,7 @@ class FerroSim implements SceneSim {
     }
 
     const breath = breathCurve(this.#phase);
-    const markTarget = Math.max(this.#markBreath ? breath : 0, episodeShow(this.#episode));
+    const markTarget = Math.max(this.#markBreath ? breath : 0, episodeShow(this.#episode)) * gate;
     this.#mark = this.#primed ? approach(this.#mark, markTarget, dt, MARK_EASE) : markTarget;
     const mark = this.#mark;
     const pointer = frame.pointer;
@@ -332,7 +364,7 @@ class FerroSim implements SceneSim {
 
     // The magnet's field: it breathes (or holds), an M breath lets it rest, a press boosts it.
     const breathField = settings.breathing ? (this.#markBreath ? 0 : breath) : 1;
-    const field = settings.peak * (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField) * (1 + PRESS_BOOST * this.#press);
+    const field = settings.peak * (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField) * (1 + PRESS_BOOST * this.#press) * gate;
     const pull = clamp((field - 0.3) / 0.9, 0, 1) * (1 - mark);
 
     this.#move(frame, settings, dt, mark, pull);
@@ -344,10 +376,10 @@ class FerroSim implements SceneSim {
     const originY = lerp(this.#magnet.y, 0, mark);
     const blobRadius = this.#blobRadius(settings.size, mark);
     const scale = markScale(markSpacing);
-    const { phiMax, ampMax, reach } = this.#spikes(settings, dt, field, mark, spacing, scale, blobRadius);
+    const { phiMax, ampMax, reach } = this.#spikes(settings, dt, field, mark, spacing, scale, blobRadius, leaving);
     this.#primed = true;
 
-    this.#writeState(originX, originY, spacing, mark, blobRadius, scale, reach, ferroBase(phiMax * 1.03) + Math.max(ampMax, 0) * 1.05 + 0.005);
+    this.#writeState(originX, originY, spacing, mark, blobRadius, scale, reach, ferroBase(phiMax * 1.03) + Math.max(ampMax, 0) * 1.05 + 0.005 + (leaving ? FERRO_RIPPLE.height : 0));
     this.#field.upload(this.#fieldData);
     this.#state.upload(this.#stateData);
     return this.#textures;
@@ -483,7 +515,7 @@ class FerroSim implements SceneSim {
    * spring carrying the height toward it, and the lean. Returns the largest φ and height, and how
    * far the fluid reaches from the middle blob: the shader's bounds on the surface.
    */
-  #spikes(settings: Settings, dt: number, field: number, mark: number, spacing: number, scale: number, blobRadius: number): { phiMax: number; ampMax: number; reach: number } {
+  #spikes(settings: Settings, dt: number, field: number, mark: number, spacing: number, scale: number, blobRadius: number, leaving: boolean): { phiMax: number; ampMax: number; reach: number } {
     const n = FERRO_GRID;
     const texel = (2 * FERRO_SPAN) / n;
     const blobs = this.#blobs;
@@ -512,8 +544,9 @@ class FerroSim implements SceneSim {
 
     const steps = dt > 0 ? Math.ceil(dt / STEP - 1e-9) : 0;
     const h = steps > 0 ? dt / steps : 0;
-    const k = SPIKE_OMEGA * SPIKE_OMEGA;
-    const c = 2 * SPIKE_DAMPING * SPIKE_OMEGA;
+    const omega = leaving ? SLUMP_OMEGA : SPIKE_OMEGA;
+    const k = omega * omega;
+    const c = 2 * (leaving ? SLUMP_DAMPING : SPIKE_DAMPING) * omega;
     const amp = this.#amp;
     const vel = this.#vel;
     const data = this.#fieldData;

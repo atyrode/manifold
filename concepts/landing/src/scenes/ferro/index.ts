@@ -7,7 +7,7 @@
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { ferroGels, ferroGlsl } from "./shader.ts";
-import { ferroSim } from "./sim.ts";
+import { FERRO_PASSAGE, ferroSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("magnet", "strength", "field strength", 0.6, "How strong the magnet is at the top of each breath. Weak: a few spikes in the middle. Strong: a crown over the whole pool, taller and drawn in tighter."),
@@ -40,4 +40,8 @@ export const ferroScene: SceneDef = {
   glsl: ferroGlsl,
   entry: "sceneFerro",
   sim: ferroSim(params),
+  // The pool lies flat as a mirror, then the field comes on and the crown of spikes rises out of it,
+  // middle first; on the way out the field switches off and the spikes slump back into a flat pool
+  // that a ripple crosses (sim.ts gates the field, shader.ts ripples the surface).
+  passage: FERRO_PASSAGE,
 };

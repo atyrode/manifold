@@ -5,7 +5,7 @@
 import { feature, range } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { fallsGlsl } from "./shader.ts";
+import { FALLS_PASSAGE, fallsGlsl } from "./shader.ts";
 
 export const fallsScene: SceneDef = {
   id: "falls",
@@ -33,4 +33,8 @@ export const fallsScene: SceneDef = {
   },
   glsl: fallsGlsl,
   entry: "sceneFalls",
+  // The camera starts up at the lip and tilts down the fall to the pool as the ferns spring up on
+  // the bank and the spray rises, the rainbow forming in it; on the way out it tilts back up the
+  // fall into a surge of spray.
+  passage: FALLS_PASSAGE,
 };

@@ -6,7 +6,7 @@
 //          2 M height; 3.. the pool's blobs: xy, radius, weight
 // Knobs read here: K_camera (0 above, 1 three-quarter), K_sharpness, K_gel, K_lights.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
-import { FERRO_BLOBS, FERRO_SHAPE, FERRO_SPAN, FERRO_STATE_HEAD, FERRO_VIEW } from "./sim.ts";
+import { FERRO_BLOBS, FERRO_PASSAGE, FERRO_RIPPLE, FERRO_SHAPE, FERRO_SPAN, FERRO_STATE_HEAD, FERRO_VIEW } from "./sim.ts";
 
 /** The studio light colours a gel can give the right-hand panel; the first is a plain studio. */
 export const ferroGels = [
@@ -37,6 +37,12 @@ const float FERRO_FIT = ${glslFloat(FERRO_VIEW.fit)};
 const float FERRO_TOP_HALF = ${glslFloat(FERRO_VIEW.topHalf)};
 const float FERRO_TOP_EYE = ${glslFloat(FERRO_VIEW.topEye)};
 const float FERRO_TOP_FIT = ${glslFloat(FERRO_VIEW.topFit)};
+const float FERRO_EXIT = ${glslFloat(FERRO_PASSAGE.exit)};
+const float FERRO_RIPPLE_HEIGHT = ${glslFloat(FERRO_RIPPLE.height)};
+const float FERRO_RIPPLE_SPEED = ${glslFloat(FERRO_RIPPLE.speed)};
+const float FERRO_RIPPLE_START = ${glslFloat(FERRO_RIPPLE.start)};
+const float FERRO_RIPPLE_WIDTH = ${glslFloat(FERRO_RIPPLE.width)};
+const float FERRO_RIPPLE_WAVE = ${glslFloat(FERRO_RIPPLE.wavelength)};
 const float FERRO_DISH = 1.0;                          // the dish floor's radius
 const float FERRO_LIP = 0.05;                          // width of its rounded, polished lip
 const float FERRO_F0 = 0.045;                          // the fluid's reflectance head on: an oily, opaque black
@@ -143,11 +149,23 @@ vec2 ferroSpikes(vec2 p) {
   return vec2(a.x + b.x + c.x, max(max(a.y, b.y), c.y));
 }
 
+// The exit's ripple: as the field goes and the spikes slump, a ring packet runs out over the pool
+// from its middle blob, losing height as it travels and dying away over the pool's rounded edge.
+// Exactly 0 at rest (passageOut() is 0), so the picture is untouched.
+float ferroRipple(vec2 p, float phi) {
+  float t = passageOut() * FERRO_EXIT - FERRO_RIPPLE_START;
+  if (t <= 0.0) return 0.0;
+  float front = FERRO_RIPPLE_SPEED * t;
+  float x = length(p - ferroBound.xy) - front;
+  float packet = exp(-x * x / (FERRO_RIPPLE_WIDTH * FERRO_RIPPLE_WIDTH)) * cos(TAU * x / FERRO_RIPPLE_WAVE);
+  return FERRO_RIPPLE_HEIGHT * smoothstep(0.0, 0.3, t) * exp(-1.2 * front) * packet * smoothstep(1.0, 1.35, phi);
+}
+
 // The fluid's height at p (0 on the bare dish); spikes shrink away toward the pool's edge.
 float ferroHeight(vec2 p) {
   float phi = ferroField(p);
   if (phi <= 1.0) return 0.0;
-  return ferroBase(phi) + smoothstep(1.0, 1.0 + FERRO_SPIKE_FADE, phi) * ferroSpikes(p).x;
+  return ferroBase(phi) + ferroRipple(p, phi) + smoothstep(1.0, 1.0 + FERRO_SPIKE_FADE, phi) * ferroSpikes(p).x;
 }
 
 // How far the ray at t is above the fluid (negative: inside it). The small lift keeps a ray that

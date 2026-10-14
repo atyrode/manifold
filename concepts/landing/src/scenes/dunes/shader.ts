@@ -9,6 +9,13 @@
 import { glslFloat } from "../../shaders/glsl.ts";
 import { DUNES_CAMERA, DUNES_GRID, DUNES_MAP, DUNES_MARK, DUNES_SAND, DUNES_SLAB } from "./sim.ts";
 
+/**
+ * Seconds of the dunes' entrance and exit (SceneDef.passage). Arriving, the camera glides in low
+ * over the crests and settles while a veil of blown sand streams away downwind and clears; leaving,
+ * the wind rises and a veil of sand streams in across the picture.
+ */
+export const DUNES_PASSAGE = { enter: 2.6, exit: 1.5 } as const;
+
 export const dunesGlsl = `
 const float DUNES_GRID = ${glslFloat(DUNES_GRID)};
 // No sand stands higher than this (cells); rays above it and climbing can stop.
@@ -33,6 +40,11 @@ const float DUNES_MARK_SCOUR = ${glslFloat(DUNES_MARK.scour)};
 const float DUNES_SAND_SPARSE = ${glslFloat(DUNES_SAND.sparse)};
 const float DUNES_SAND_PLENTY = ${glslFloat(DUNES_SAND.plenty)};
 const float DUNES_SLAB = ${glslFloat(DUNES_SLAB)};
+// The entrance's glide: the eye starts this many cells upwind of its place and this far lower, and
+// the overhead view starts this share farther out (cells per screen height).
+const float DUNES_PASSAGE_BACK = 34.0;
+const float DUNES_PASSAGE_DROP = 4.5;
+const float DUNES_PASSAGE_ZOOM = 0.3;
 
 float dunesHeight(vec2 p) {
   return uSimOn.x > 0.5 ? texture(uSim0, p / DUNES_GRID).r : 0.0;
@@ -49,6 +61,15 @@ float dunesStreak(vec3 q, float tm, float windSign, float gale, float across) {
   vec2 s = vec2((q.x * windSign - tm * (4.0 + 14.0 * gale)) * 0.16, q.z * across + q.y * 0.5);
   float n = 0.6 * vnoise(s) + 0.4 * vnoise(s * vec2(1.7, 2.9) + 4.1);
   return smoothstep(0.52, 0.85, n);
+}
+
+// The passage's veil: strands of sand like dunesStreak's, drawn out along the wind, but carried a
+// given distance 'travel' downwind (cells) rather than at a rate, so the pace can change while
+// the strands keep their shape.
+float dunesVeilStreak(vec3 q, float travel, float windSign, float across) {
+  vec2 s = vec2((q.x * windSign - travel) * 0.16, q.z * across + q.y * 0.5);
+  float n = 0.6 * vnoise(s) + 0.4 * vnoise(s * vec2(1.7, 2.9) + 4.1);
+  return smoothstep(0.5, 0.8, n);
 }
 
 // The M as a slab of sandstone: the glyph extruded through its depth (Quilez's extrusion of a 2D
@@ -216,11 +237,31 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   vec3 skyward = skyFacing(view, DUNES_LOOK);
   vec3 ro = vec3(DUNES_EYE.x, DUNES_EYE_HEIGHT + DUNES_EYE_RISE * mean, DUNES_EYE.y);
   vec3 rd = skyFacing(view, DUNES_TURN);
+  // Arriving and leaving. 'left' is how much of the entrance's glide remains: exactly 0 at rest,
+  // where every passage term below is off or multiplied away.
+  float pin = passageIn();
+  float pout = passageOut();
+  bool passing = pin < 1.0 || pout > 0.0;
+  float left = max(1.0 - pin, 0.0);
+  left = left * left * left;
+  float span = DUNES_MAP_SPAN * (1.0 + (overhead ? DUNES_PASSAGE_ZOOM : 0.0) * left);
   if (overhead) {
-    // Straight down on the M's patch of desert, the wind blowing left to right.
-    vec2 g = DUNES_MARK_AT + (uv - 0.5) * vec2(aspect, 1.0) * DUNES_MAP_SPAN;
+    // Straight down on the M's patch of desert, the wind blowing left to right; arriving, the
+    // view settles down from a little higher.
+    vec2 g = DUNES_MARK_AT + (uv - 0.5) * vec2(aspect, 1.0) * span;
     ro = vec3(g.x, DUNES_TOP + 24.0, g.y);
     rd = vec3(0.0, -1.0, 0.0);
+  }
+  // The veil of the passage is drawn from where the camera comes to rest, so it travels with the view.
+  vec3 veilRo = ro;
+  if (passing && !overhead && pin < 1.0) {
+    // Arriving: the eye glides forward from upwind and low, rising to its place with the faintest
+    // overshoot (an ease-out-back), and never dips into the sand under it.
+    float back = max(1.0 - pin, 0.0);
+    float rise = 1.0 - 2.2 * back * back * back + 1.2 * back * back;
+    ro.xz -= vec2(-sin(DUNES_TURN), cos(DUNES_TURN)) * DUNES_PASSAGE_BACK * left;
+    ro.y -= DUNES_PASSAGE_DROP * (1.0 - rise);
+    ro.y = max(ro.y, dunesHeight(ro.xz) + 1.5);
   }
 
   vec4 skim = vec4(0.0);
@@ -388,6 +429,39 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
       sheets += smoothstep(0.4, 0.75, n) * exp(-max(q.y, 0.0) / 14.0) * 0.6;
     }
     col = mix(col, dust, clamp(sheets * storm * 1.3, 0.0, 0.9));
+  }
+
+  // The passage's veil: strands of blown sand streaming downwind across the view at three depths.
+  // Arriving, the wind drops: a front of the veil clears from upwind (left) across the picture to
+  // the right and the strands slow. Leaving, the wind rises: strands stream in from the left and
+  // thicken until they cover it. Each strand is cut per cell (hardEdge), its pattern carried
+  // whole, so nothing crawls. The front is exactly off at rest.
+  if (passing) {
+    float x = uv.x + 0.12 * (vnoise(vec2(uv.y * 5.0, 3.0)) - 0.5);
+    float density = 0.0;
+    float travel = 0.0;
+    if (pout > 0.0) {
+      float e = mix(-0.45, 1.6, smoothstep(0.0, 1.0, pout));
+      density = smoothfall(e, e - 0.45, x);
+      travel = ${glslFloat(DUNES_PASSAGE.exit)} * (10.0 * pout + 16.0 * pout * pout);
+    } else {
+      float cleared = 1.0 - (1.0 - pin) * (1.0 - pin);
+      float e = mix(-0.4, 1.5, cleared);
+      density = 0.85 * smoothstep(e, e + 0.45, x);
+      travel = ${glslFloat(DUNES_PASSAGE.enter)} * 26.0 * (pin - 0.5 * pin * pin);
+    }
+    if (density > 0.0) {
+      float veil = 0.0;
+      for (int k = 0; k < 3; k++) {
+        float d = overhead ? veilRo.y - 6.0 + 2.5 * float(k) : 18.0 * pow(2.2, float(k));
+        if (hitT > 0.0 && d > hitT) break;
+        vec3 q = veilRo + rd * d;
+        float strand = dunesVeilStreak(q + vec3(0.0, 0.0, 11.0 * float(k)), travel * (1.5 - 0.35 * float(k)), windSign, overhead ? 0.9 : 1.6);
+        veil = max(veil, strand * exp(-max(q.y, 0.0) / 26.0));
+      }
+      vec3 veilColor = mix(grains, dust, 0.35);
+      col = mix(col, veilColor, 0.7 * hardEdge(veil * density));
+    }
   }
 
   // Pouring sand: a stream falls onto the pointer while the button is held (the sim heaps it up).

@@ -36,6 +36,12 @@
 // Once all is gone a liquid line rises from the bottom wire drawing up a fresh film, thin at the
 // top that left the bath first (a bubble is blown again, growing from its middle).
 //
+// Passage: entered through one, the scene opens on the bare wire and the same liquid line draws the
+// film up from the bottom wire over FILM_PASSAGE.enter seconds (no prewarm: the fluid starts empty);
+// leaving, the film bursts at its top, its rim racing a little faster than a film's own so that it
+// is gone by FILM_PASSAGE.exit, and no new film is drawn. Both run on frame time, whatever the
+// motion amount. Without a passage nothing changes.
+//
 // Without float render targets the shader draws an analytic film (filmAnalytic) that still lives
 // the life above, which runs here on the CPU either way.
 import { KnobReader, type ParamDef } from "../../params.ts";
@@ -117,6 +123,13 @@ const BREAK_INSET = 0.022;
 /** Seconds the frame stands empty after a burst, and a new film takes to draw. */
 const EMPTY_SECONDS = 1.4;
 const DRAW_SECONDS = 4.5;
+/**
+ * The scene's passage, seconds: the entrance draws a fresh film up from the bottom wire (a bubble is
+ * blown) in as long, and the exit pops the film.
+ */
+export const FILM_PASSAGE = { enter: 3, exit: 1.6 } as const;
+/** The exit's burst runs this much faster than a film's own, so the film is gone with the exit. */
+const EXIT_PACE = 1.3;
 /** A film lasts LIFETIME_LONG seconds at the pop knob's least, LIFETIME_SHORT at its most, give or take a quarter. */
 const LIFETIME_LONG = 400;
 const LIFETIME_SHORT = 90;
@@ -645,6 +658,10 @@ class FilmLife {
   breakY = 0;
   /** The drawing line's height where it meets the wire, or the bubble's radius. */
   front = 0;
+  /** Whether the scene is being entered: the film on show is drawn at the entrance's pace. */
+  entering = false;
+  /** Whether the scene is being left: the film pops and stays gone. */
+  leaving = false;
   readonly #plumes: Plume[] = [];
   #rand: () => number = mulberry32(0);
   #seed = 0;
@@ -657,15 +674,22 @@ class FilmLife {
   #plumeClock = 0;
   #plumeDue = 1;
 
-  /** The opening film of a seed, OPENING_AGE seconds old. */
-  reset(seed: number): void {
+  /** The opening film of a seed, OPENING_AGE seconds old, or when `entering` a film drawn up as the scene comes in. */
+  reset(seed: number, entering: boolean): void {
     this.#seed = seed;
     this.#films = 0;
-    this.phase = "film";
+    this.entering = entering;
+    this.phase = entering ? "draw" : "film";
     this.since = 0;
-    this.age = OPENING_AGE;
+    this.age = entering ? 0 : OPENING_AGE;
     this.#plumes.length = 0;
     this.#newFilm();
+  }
+
+  /** The scene is leaving: burst the film (if it has not burst already) and never draw another. */
+  leave(o: Outline): void {
+    this.leaving = true;
+    this.burst(o);
   }
 
   /** Break the film at the top of its outline (only while there is one to break). */
@@ -687,6 +711,7 @@ class FilmLife {
     this.#burstSeconds = far / rimSpeed(MAX_THICKNESS) + 0.15;
     this.phase = "burst";
     this.since = 0;
+    this.entering = false;
   }
 
   /** Whether the phase just moved from `burst` to `empty`: the fluid should be cleared. */
@@ -698,7 +723,7 @@ class FilmLife {
         if (tuning.pop > 0 && this.age >= this.#lifeShare * (LIFETIME_LONG + (LIFETIME_SHORT - LIFETIME_LONG) * tuning.pop)) this.burst(tuning.outline);
         break;
       case "burst":
-        this.since += dt;
+        this.since += this.leaving ? dt * EXIT_PACE : dt;
         if (this.since >= this.#burstSeconds) {
           this.phase = "empty";
           this.since = 0;
@@ -708,7 +733,7 @@ class FilmLife {
         break;
       case "empty":
         this.since += dt;
-        if (this.since >= EMPTY_SECONDS) {
+        if (!this.leaving && this.since >= EMPTY_SECONDS) {
           this.phase = "draw";
           this.since = 0;
           this.age = 0;
@@ -718,9 +743,10 @@ class FilmLife {
       case "draw":
         this.since += dt;
         this.age += dt;
-        if (this.since >= DRAW_SECONDS) {
+        if (this.since >= (this.entering ? FILM_PASSAGE.enter : DRAW_SECONDS)) {
           this.phase = "film";
           this.since = 0;
+          this.entering = false;
         }
         break;
       default: {
@@ -773,7 +799,7 @@ class FilmLife {
 
   /** The drawing line rises from below the bottom wire to above the top one; a bubble grows from its middle. */
   #frontAt(o: Outline): number {
-    const p = Math.min(this.since / DRAW_SECONDS, 1);
+    const p = Math.min(this.since / (this.entering ? FILM_PASSAGE.enter : DRAW_SECONDS), 1);
     if (o.shape === "bubble") return o.hw * (1 - (1 - p) ** 3);
     const from = o.y - o.hh - 0.02;
     const to = o.y + o.hh + SAG + 0.02;
@@ -1005,6 +1031,8 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     let blowing = false;
     let lastX = 0;
     let lastY = 0;
+    /** Whether the scene was entered through a passage (decided on the first frame), until its film is drawn. */
+    let arriving: boolean | undefined;
 
     const advance = (dt: number, breathing: boolean): void => {
       if (life.advance(dt, tuning)) flow?.fluid.clear();
@@ -1017,14 +1045,23 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
       flow.step(flowStep);
     };
 
-    /** A fresh opening film for this shape and seed, settled by a few steps. */
-    const restart = (): void => {
+    /** A fresh opening film for this shape and seed, settled by a few steps; while entering, an empty wire the film is drawn onto. */
+    const restart = (entering: boolean): void => {
       shownShape = tuning.shape;
       shownSeed = tuning.seed;
-      life.reset(tuning.seed);
       blowing = false;
+      // Leaving, the film that is bursting or gone stays so, a resize notwithstanding.
+      if (life.leaving) {
+        flow?.fluid.clear();
+        return;
+      }
+      life.reset(tuning.seed, entering);
       time = 0;
       if (!flow) return;
+      if (entering) {
+        flow.fluid.clear();
+        return;
+      }
       flow.reseed(tuning.shape, tuning.seed);
       for (let i = 0; i < PREWARM_STEPS; i++) advance(PREWARM_DT, false);
     };
@@ -1032,8 +1069,13 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     return {
       frame(frame) {
         tune(tuning, frame, knobs);
+        // Entered through a passage the film is drawn up from the bottom wire; otherwise it is on show already.
+        arriving ??= frame.passage.enter < 1;
         const resized = flow?.fluid.resize(frame.width, frame.height) ?? false;
-        if (resized || tuning.shape !== shownShape || tuning.seed !== shownSeed) restart();
+        if (resized || tuning.shape !== shownShape || tuning.seed !== shownSeed) restart(arriving);
+
+        // The exit: the film pops, and no new one is drawn.
+        if (frame.passage.exit > 0 && !life.leaving) life.leave(tuning.outline);
 
         // "now": burst the film at once (a film still being drawn too).
         if (frame.fired[popSlot] === true) life.burst(tuning.outline);
@@ -1065,7 +1107,9 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
           breathing = true;
         }
 
-        advance(dt, breathing);
+        // The entrance and the exit run on frame time, whatever the motion amount.
+        advance(life.entering || life.leaving ? frame.dt : dt, breathing);
+        if (!life.entering) arriving = false;
         state.upload(stateData);
         textures[0] = flow?.fluid.dye.texture;
         textures[1] = colours.texture;

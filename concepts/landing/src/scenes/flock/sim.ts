@@ -25,6 +25,9 @@
 //   predation", Animal Behaviour 82): a startle runs out over the sheet as a ring; the birds in it
 //   roll (show more wing, so they read darker) and lift out of the sheet.
 // - The falcon pushes the birds near it aside; each springs back to its place once it has passed.
+// - The entrance and exit (FLOCK_PASSAGE) displace the birds only when the density is splatted: they
+//   stream in head first from beyond a side edge and fold into the sheet, and at the end pour down
+//   head first to roost behind the skyline. The flight itself runs on regardless.
 //
 // Time runs in fixed steps of STEP seconds of simulated time, so the flight depends only on the
 // knobs and simulated time, not on the frame rate; positions are interpolated between the last two
@@ -188,6 +191,43 @@ const MARK_LANE = 0.025;
 /** How far the birds of a lane spread across it (mark units). */
 const MARK_SCATTER = 0.025;
 
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the flock streams in
+ * from beyond the nearer side edge, head first, in a loose file that folds into its sheet as the
+ * birds slow. Exit: it pours down head first, funnelling together, to roost below the horizon, where
+ * the skyline hides it. Both are worked out when the density is splatted, so they follow the frame
+ * clock smoothly; at rest (enter 1, exit 0) the birds are exactly where the flight puts them.
+ */
+export const FLOCK_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.5 };
+/**
+ * Entrance, as shares of its progress: a bird sets off after LEAD plus STAGGER × how far back it
+ * flies in the sheet plus up to SCATTER of its own, and takes FLIGHT to arrive (they add up to 1).
+ * It starts BEYOND the edge plus up to DEPTH (heights) out, in a file about SPREAD tall following
+ * the sheet's height; the file sways by SWAY (heights) with SWAY_WAVE radians per height.
+ */
+const ENTER_LEAD = 0.04;
+const ENTER_STAGGER = 0.26;
+const ENTER_SCATTER = 0.08;
+const ENTER_FLIGHT = 0.62;
+const ENTER_BEYOND = 0.06;
+const ENTER_DEPTH = 0.4;
+const ENTER_SPREAD = 0.05;
+const ENTER_SWAY = 0.07;
+const ENTER_SWAY_WAVE = 4;
+/**
+ * Exit, same shares: the birds fall FALL of it, accelerating, down to a roost between ROOST_LOW and
+ * ROOST_LOW + ROOST_SPREAD (heights, under the horizon), closing to FUNNEL of their width about the
+ * flock's centre and swooping SWOOP (heights) along its heading on the way.
+ */
+const EXIT_STAGGER = 0.28;
+const EXIT_SCATTER = 0.1;
+const EXIT_FALL = 0.62;
+const EXIT_POWER = 1.7;
+const EXIT_ROOST_LOW = 0.02;
+const EXIT_ROOST_SPREAD = 0.05;
+const EXIT_FUNNEL = 0.35;
+const EXIT_SWOOP = 0.08;
+
 /** A sheet of birds at this density (birds per screen height²) seen face-on is the shader's reference grey. */
 const REFERENCE_DENSITY = 30000;
 /** Density texels per dither cell, and the most rows the field gets. */
@@ -314,6 +354,11 @@ class FlockSim implements SceneSim {
   #markStrength = 0;
   #nextMark = Number.POSITIVE_INFINITY;
 
+  // How far the passage has come (see FLOCK_PASSAGE), and the side edge the flock enters from (-1 left, 1 right).
+  #enter = 1;
+  #exit = 0;
+  #entrySide = 1;
+
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader<KnobKey>("flock", params, ["birds", "cohesion", "chaos", "speed", "predator", "wind", "mark"]);
     this.#attackSlot = this.#knobs.trigger("predator");
@@ -340,8 +385,12 @@ class FlockSim implements SceneSim {
     if (frame.fired[this.#attackSlot]) this.#attackNow = true;
     if (frame.fired[this.#markSlot]) this.#markNow = true;
 
-    // Motion scales the flight; an event fired with "now" plays even while motion is 0.
-    const busy = this.#falcon || this.#mark || this.#attackNow || this.#markNow;
+    // Motion scales the flight; an event fired with "now" plays even while motion is 0, and so does
+    // the entrance and the exit.
+    this.#enter = clamp(frame.passage.enter, 0, 1);
+    this.#exit = clamp(frame.passage.exit, 0, 1);
+    const passing = this.#enter < 1 || this.#exit > 0;
+    const busy = this.#falcon || this.#mark || this.#attackNow || this.#markNow || passing;
     const advance = Math.max(0, frame.dt) * Math.max(frame.motion, busy ? 1 : 0);
     const steps = this.#steps.advance(advance);
     for (let i = 0; i < steps; i++) this.#step();
@@ -432,6 +481,7 @@ class FlockSim implements SceneSim {
       this.#pushVY[i] = 0;
     }
     this.#step();
+    this.#entrySide = this.#centreX < this.#aspect / 2 ? -1 : 1;
     this.#x2.set(this.#x);
     this.#y2.set(this.#y);
     this.#dirty = true;
@@ -868,6 +918,18 @@ class FlockSim implements SceneSim {
     const sx = w / this.#aspect;
     const sy = h;
     const f = clamp(between, 0, 1);
+    const enter = this.#enter;
+    const exit = this.#exit;
+    const arriving = enter < 1;
+    const leaving = exit > 0;
+    const side = this.#entrySide;
+    const aspect = this.#aspect;
+    const shapes = this.#shapes;
+    const lag = this.#lag;
+    const sheetA = this.#sheetA;
+    const sheetB = this.#sheetB;
+    const phaseA = this.#phaseA;
+    const phaseB = this.#phaseB;
     const x = this.#x;
     const y = this.#y;
     const px = this.#x2;
@@ -875,8 +937,41 @@ class FlockSim implements SceneSim {
     const ink = this.#ink;
     const roll = this.#roll;
     for (let i = 0; i < n; i++) {
-      const xi = (px[i] ?? 0) + ((x[i] ?? 0) - (px[i] ?? 0)) * f;
-      const yi = (py[i] ?? 0) + ((y[i] ?? 0) - (py[i] ?? 0)) * f;
+      let xi = (px[i] ?? 0) + ((x[i] ?? 0) - (px[i] ?? 0)) * f;
+      let yi = (py[i] ?? 0) + ((y[i] ?? 0) - (py[i] ?? 0)) * f;
+      if (arriving || leaving) {
+        const o = (lag[i] ?? 0) * SHAPE;
+        // Head first: 0 at the leading end of the sheet, 1 at the trailing end; two fixed random shares.
+        const back = clamp(0.5 * (1 - (sheetA[i] ?? 0)), 0, 1);
+        const luck = (phaseA[i] ?? 0) / TAU;
+        const other = (phaseB[i] ?? 0) / TAU;
+        if (arriving) {
+          // From a file beyond the edge to its place in the sheet, slowing as it folds in.
+          const q = clamp((enter - (ENTER_LEAD + ENTER_STAGGER * back + ENTER_SCATTER * luck)) / ENTER_FLIGHT, 0, 1);
+          if (q < 1) {
+            const e = q * (2 - q);
+            const startX = side < 0 ? -(ENTER_BEYOND + ENTER_DEPTH * other) : aspect + ENTER_BEYOND + ENTER_DEPTH * other;
+            const sheetY = shapes[o + SH_Y] ?? 0;
+            const startY = sheetY + 0.5 * (yi - sheetY) + (sheetB[i] ?? 0) * ENTER_SPREAD;
+            const flyX = startX + (xi - startX) * e;
+            const flyY = startY + (yi - startY) * e;
+            xi = flyX;
+            yi = flyY + ENTER_SWAY * (1 - e) * Math.sin(ENTER_SWAY_WAVE * flyX + 1.3);
+          }
+        }
+        if (leaving) {
+          // Down to the roost behind the skyline, closing up about the flock's centre.
+          const q = clamp((exit - (EXIT_STAGGER * back + EXIT_SCATTER * luck)) / EXIT_FALL, 0, 1);
+          if (q > 0) {
+            const centre = shapes[o + SH_X] ?? 0;
+            const heading = shapes[o + SH_HEADING_COS] ?? 1;
+            const gather = smoothstep(0, 0.85, q);
+            const roost = EXIT_ROOST_LOW + EXIT_ROOST_SPREAD * other;
+            xi += (centre + (xi - centre) * EXIT_FUNNEL - xi) * gather + EXIT_SWOOP * heading * Math.sin(Math.PI * q);
+            yi += (roost - yi) * q ** EXIT_POWER;
+          }
+        }
+      }
       const gx = xi * sx - 0.5;
       const gy = yi * sy - 0.5;
       const i0 = Math.floor(gx);

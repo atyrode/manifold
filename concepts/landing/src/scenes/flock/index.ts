@@ -6,7 +6,7 @@ import { choice, counts, feature, range, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { flockGlsl } from "./shader.ts";
-import { FLOCK_SIZES, flockSim } from "./sim.ts";
+import { FLOCK_PASSAGE, FLOCK_SIZES, flockSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("flock", "birds", "starlings", counts(...FLOCK_SIZES), 3000, "How many starlings. More make a deeper, darker cloud; fewer leave single birds easy to pick out."),
@@ -37,4 +37,5 @@ export const flockScene: SceneDef = {
   glsl: flockGlsl,
   entry: "sceneFlock",
   sim: flockSim(params),
+  passage: FLOCK_PASSAGE,
 };

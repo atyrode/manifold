@@ -1,6 +1,9 @@
 // The waterfall scene: a cliff across the frame, a fall pouring from a notch in its lip into a
 // plunge pool, seen level from the pool's edge. Sky, weather and fog come from src/shaders/lib.
 
+/** Seconds of the waterfall's entrance (the camera tilts down the fall to the pool) and exit (it tilts back up into the spray); SceneDef.passage. */
+export const FALLS_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
+
 export const fallsGlsl = `
 // ---- falls ----
 // Frame: q = ((uv.x - 0.5) * aspect, uv.y): x in screen heights from the centre, y the screen
@@ -602,7 +605,9 @@ vec3 fallsFireflies(vec2 q, float aspect, float tm, float count) {
 // them) hangs beads of water under the leaflets' tips: bead 0..1. drip finds the nearest frond
 // overhead, for the water dripping off it: x along that frond, y how far below it (screen
 // heights), z 1 if there is one.
-float fallsBankFerns(vec2 q, float aspect, float green, float sway, float tm, float wet, out float tip, out float bead, out vec3 drip) {
+// grow (1 at rest) scales the fronds and slides the clumps in from the frame's edge: the entrance
+// springs them up past 1 and back, standing upright at first and arching over as they grow.
+float fallsBankFerns(vec2 q, float aspect, float green, float sway, float tm, float wet, float grow, out float tip, out float bead, out vec3 drip) {
   tip = 0.0;
   bead = 0.0;
   drip = vec3(0.0, 1.0, 0.0);
@@ -615,15 +620,15 @@ float fallsBankFerns(vec2 q, float aspect, float green, float sway, float tm, fl
     if ((fc + 1.0) * 0.22 > green + 0.12) break;
     float side = mod(fc, 2.0) < 0.5 ? -1.0 : 1.0;
     float inward = floor(fc * 0.5);
-    vec2 root = vec2(side * (0.47 * aspect - 0.04 - 0.2 * inward - 0.06 * hash12(vec2(fc, 81.0))), 0.07 + 0.08 * (1.0 - inward));
+    vec2 root = vec2(side * (0.47 * aspect - 0.04 - 0.2 * inward - 0.06 * hash12(vec2(fc, 81.0)) + 0.08 * (1.0 - clamp(grow, 0.0, 1.0))), 0.07 + 0.08 * (1.0 - inward));
     for (int j = 0; j < 5; j++) {
       float fj = float(j);
       float id = fc * 7.0 + fj;
       float h = hash12(vec2(id, 83.0));
-      float lj = (0.07 + 0.08 * h) * (1.0 - 0.3 * inward);
+      float lj = (0.07 + 0.08 * h) * (1.0 - 0.3 * inward) * grow;
       float u = 0.0;
       float uj = 0.0;
-      float frond = fallsFrond(q - root, mod(fj, 2.0) < 0.5 ? -1.0 : 1.0, lj, 1.4 + 1.4 * h, 1.3 + 0.8 * fract(h * 7.3), sway * sin(tm * 0.8 + fc * 2.1 + fj), u, uj);
+      float frond = fallsFrond(q - root, mod(fj, 2.0) < 0.5 ? -1.0 : 1.0, lj, 1.4 + 1.4 * h, (1.3 + 0.8 * fract(h * 7.3)) * (1.0 - 0.6 * (1.0 - clamp(grow, 0.0, 1.0))), sway * sin(tm * 0.8 + fc * 2.1 + fj), u, uj);
       if (frond > cover) {
         cover = frond;
         tip = u;
@@ -646,14 +651,40 @@ float fallsBankFerns(vec2 q, float aspect, float green, float sway, float tm, fl
   return cover;
 }
 
+// ---- passage ----
+// The entrance: the camera starts up at the lip and tilts down the fall to the pool (a lens shift of
+// uv, as the countryside does), settling a touch past rest and back; then the ferns on the bank
+// spring up and the spray rises, the rainbow forming in it. The exit tilts the camera back up the
+// fall while the spray surges up the cliff to meet it. At rest (passageIn() == 1, passageOut() == 0)
+// every term below is exactly 1 or 0.
+const float FALLS_TILT_IN = 0.4;   // screen heights the frame starts above its rest view
+const float FALLS_TILT_OUT = 0.34; // and how far the exit lifts it
+
+// The camera's way down: eases in and out, then overshoots a little (x = 1 is rest) and settles.
+float fallsSettle(float x) {
+  float e = smoothstep(0.0, 1.0, x);
+  return e + 0.07 * smoothstep(0.55, 0.85, x) * (1.0 - smoothstep(0.85, 1.0, x));
+}
+
+// Something springing up: 0 at x = 0, a gentle overshoot past 1, exactly 1 at x = 1.
+float fallsSpring(float x) {
+  float u = clamp(x, 0.0, 1.0) - 1.0;
+  return 1.0 + u * u * (2.2 * u + 1.2);
+}
+
 // Waterfall knobs: K_flow, K_mist, K_rainbow, K_greenery, K_fireflies, K_time, K_cycle, K_rain,
 // K_fog, K_wind, K_mark; uWeather.x is how wet the rain has left the place.
-Shade sceneFalls(vec2 uv, vec2 cell, float t) {
+Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
+  float arrive = passageIn();
+  float leave = passageOut();
+  // Everything below, projection and rain included, looks through the shifted frame.
+  vec2 uv = screenUv + vec2(0.0, FALLS_TILT_IN * (1.0 - fallsSettle(clamp(arrive / 0.85, 0.0, 1.0))) + FALLS_TILT_OUT * smoothstep(0.0, 1.0, leave));
   vec2 q = vec2((uv.x - 0.5) * aspect, uv.y);
   float flow = K_flow;
-  float mistAmount = K_mist;
+  // The spray is held low until the camera has come down, then rises; at the exit it surges up.
+  float mistAmount = K_mist * (1.0 - 0.75 * (1.0 - smoothstep(0.3, 0.9, arrive))) * (1.0 + 0.9 * smoothstep(0.0, 1.0, leave));
   float green = K_greenery;
   float rain = K_rain;
   float rainWet = uWeather.x;
@@ -723,7 +754,8 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
   vec3 fernDrip = vec3(0.0);
   float fern = 0.0;
   // The bank's ferns grow toward the corners: skip the loop in the open middle.
-  if (green > 0.0 && qb.y < 0.45 && abs(qb.x) > 0.47 * aspect - 0.45) fern = fallsBankFerns(qb, aspect, green, 0.04 + 0.12 * abs(wind), tm, rainWet, tip, bead, fernDrip);
+  float fernGrow = fallsSpring((arrive - 0.5) / 0.4);
+  if (green > 0.0 && fernGrow > 0.01 && qb.y < 0.45 && abs(qb.x) > 0.47 * aspect - 0.45) fern = fallsBankFerns(qb, aspect, green, 0.04 + 0.12 * abs(wind), tm, rainWet, fernGrow, tip, bead, fernDrip);
   float front = max(step(qb.y, bankTop), fern);
 
   vec3 col = vec3(0.0);
@@ -1017,7 +1049,9 @@ Shade sceneFalls(vec2 uv, vec2 cell, float t) {
   }
 
   Shade o = shadeOf(col, inkOf(col, 1.15, 1.0), clamp(max(markAccent, mistAccent), 0.0, 1.0));
-  o.shimmer = clamp(0.6 * glint + 0.15 * white + 0.35 * spray, 0.0, 1.0);
+  // The shimmer is re-rolled several times a second: hold most of it back while the camera moves.
+  float moving = max(1.0 - smoothstep(0.0, 0.85, arrive), smoothstep(0.0, 0.3, leave));
+  o.shimmer = clamp(0.6 * glint + 0.15 * white + 0.35 * spray, 0.0, 1.0) * (1.0 - 0.6 * moving);
   return o;
 }
 `;

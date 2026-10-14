@@ -1,5 +1,8 @@
 // The orbit scene: planet, rings, moons, aurora, constellations, city lights.
 
+/** Seconds of the orbit's entrance and exit (SceneDef.passage). */
+export const ORBIT_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+
 export const orbitGlsl = `
 // Real constellations, plus the optional Manifold asterism, drifting with the sky.
 vec2 orbitConstellations(vec2 sky, float aspect, float px, bool figures, bool lines, bool mark, float tm) {
@@ -175,6 +178,17 @@ float orbitRingCover(vec3 point, vec3 n, float tm, out float inkTone) {
   return inBand * material * (0.6 + 0.4 * hash12(vec2(band, 5.0)));
 }
 
+// Share of a body's way still to go as the camera swings it in and settles: 1 at the start, easing
+// out through a slight overshoot (about 2%) to exactly 0 once s reaches 0.85 of the entrance.
+float orbitSettle(float s) {
+  float w = smoothstep(0.0, 0.85, s);
+  float u = 1.0 - w;
+  return u * u * (1.0 - 1.9 * w);
+}
+
+// How far the camera pulls back as the planet leaves (planet-space scale at the end: 1 + this).
+const float ORBIT_PULL = 0.35;
+
 Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
   float tm = uMotionTime;
@@ -182,8 +196,34 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   float px = 1.0 / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0) + uPointer * 0.012 * m;
 
+  float r = 1.12 * K_planet;
+  vec2 c = vec2(K_planetX * aspect * 0.5, K_planetY);
+
+  // Passage: the camera swings round so the planet slides in from the right and settles, the moons
+  // catch up along their orbits; leaving, the camera pulls back as the planet slides off to the
+  // left. cam shifts the planet, zoom pulls the camera back, spin turns the surface along with
+  // the swing. All of it is exactly 0 / 1 at rest.
+  vec2 cam = vec2(0.0);
+  float zoom = 1.0;
+  float spin = 0.0;
+  float moonIn = 0.0;
+  float moonOut = 0.0;
+  if (passageIn() < 1.0 || passageOut() > 0.0) {
+    float settle = orbitSettle(passageIn());
+    float leave = smoothstep(0.0, 1.0, passageOut());
+    vec2 fromSide = vec2(aspect * 0.5 + r + 0.15 - c.x, -0.12);
+    vec2 toSide = vec2(c.x + (1.0 + ORBIT_PULL) * aspect * 0.5 + r + 0.15, 0.0);
+    cam = fromSide * settle - toSide * leave;
+    zoom = 1.0 + ORBIT_PULL * leave;
+    spin = 0.4 * leave - 0.5 * settle;
+    moonIn = orbitSettle(clamp((passageIn() - 0.12) / 0.88, 0.0, 1.0));
+    moonOut = leave;
+    c += cam;
+  }
+
   Shade o = blankShade();
-  vec2 sky = p + vec2(tm * 0.006 * K_drift, 0.0);
+  // The stars are far off: they follow the swing only a little.
+  vec2 sky = p - cam * 0.15 + vec2(tm * 0.006 * K_drift, 0.0);
   o.ink = starfield(floor(sky * uRes.y), 0.001 + 0.009 * K_stars, K_twinkle, K_scatter);
   o.ink += 0.16 * K_nebula * smoothstep(0.5, 0.95, fbm(p * 1.8 + vec2(tm * 0.012 * K_drift, 3.0)));
   o.accent = 0.08 * K_nebula * smoothstep(0.55, 0.95, fbm(p * 2.4 + vec2(9.0, -tm * 0.008 * K_drift)));
@@ -194,9 +234,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   }
   o.ink = max(o.ink, orbitMeteors(p, K_meteors, px, tm));
 
-  float r = 1.12 * K_planet;
-  vec2 c = vec2(K_planetX * aspect * 0.5, K_planetY);
-  vec2 dp = p - c;
+  vec2 dp = p * zoom - c;
   vec2 q = dp / r;
   float d = length(q);
   // The sun can circle the planet (day cycle), sweeping the terminator across it.
@@ -221,7 +259,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   if (d < 1.0) {
     vec3 normal = vec3(q, sqrt(1.0 - d * d));
     float diff = max(dot(normal, L), 0.0);
-    float lon = atan(normal.x, normal.z) + tm * 0.012;
+    float lon = atan(normal.x, normal.z) + tm * 0.012 + spin;
     float bands = fbm(vec2(lon * 3.0, normal.y * 11.0));
     float rim = pow(1.0 - normal.z, 3.0);
     float limbSun = smoothstep(-0.2, 0.6, dot(normalize(q), normalize(L.xy + 1e-4)));
@@ -292,7 +330,9 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     if (float(i) >= K_moons) break;
     float fi = float(i);
     float size = (0.016 + 0.01 * fi) * K_planet;
-    vec3 moon = orbitInclined(tm * (0.06 - 0.014 * fi) + 1.2 + fi * 0.9, r * (1.2 + 0.18 * fi), 0.9 - 0.1 * fi, -0.15 + 0.15 * fi);
+    float ang = tm * (0.06 - 0.014 * fi) + 1.2 + fi * 0.9 - moonIn * (1.7 + 0.5 * fi) + moonOut * (0.8 + 0.3 * fi);
+    float rad = r * (1.2 + 0.18 * fi) * (1.0 + 0.35 * moonIn + 0.25 * moonOut);
+    vec3 moon = orbitInclined(ang, rad, 0.9 - 0.1 * fi, -0.15 + 0.15 * fi);
     if (K_eclipses > 0.5 && d < 1.0) {
       float toward = dot(moon, L);
       float disc = toward * toward - dot(moon, moon) + r * r;
@@ -312,7 +352,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     }
   }
 
-  vec2 meteor = orbitCaptured(dp, r, tm, K_captures, px);
+  vec2 meteor = orbitCaptured(dp, r, tm, K_captures, px * zoom);
   o.ink = max(o.ink, meteor.x);
   o.accent = max(o.accent, meteor.y);
 

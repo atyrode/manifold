@@ -5,7 +5,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { filmBackdrops, filmGlsl } from "./shader.ts";
-import { filmShapes, filmSim } from "./sim.ts";
+import { FILM_PASSAGE, filmShapes, filmSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("film", "shape", "held by", filmShapes.map((label, value) => ({ label, value })), 1, "What holds the film: a wide rectangular frame or a round loop like a bubble wand, each on a twisted wire handle, or nothing at all: a free bubble floating in the dark."),
@@ -35,4 +35,5 @@ export const filmScene: SceneDef = {
   glsl: filmGlsl,
   entry: "sceneFilm",
   sim: filmSim(params),
+  passage: FILM_PASSAGE,
 };

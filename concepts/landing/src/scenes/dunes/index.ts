@@ -5,7 +5,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { dunesGlsl } from "./shader.ts";
+import { DUNES_PASSAGE, dunesGlsl } from "./shader.ts";
 import { dunesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -38,4 +38,5 @@ export const dunesScene: SceneDef = {
   glsl: dunesGlsl,
   entry: "sceneDunes",
   sim: dunesSim(params),
+  passage: DUNES_PASSAGE,
 };
