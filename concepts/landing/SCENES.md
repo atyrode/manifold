@@ -16,7 +16,7 @@ All of the ideas below have a first implementation in the lab:
 | Murmuration | `flock` | CPU boids, topological neighbours. |
 | Paper marbling | `marble` | Mathematical marbling engine. |
 | Dunes | `dunes` | Werner slab model. |
-| Ice and frost | `frost` | Frost on a window pane; snowfall from the weather layer. |
+| Ice and frost | `frost` | Frost on a window pane; snowfall from the weather layer; the shared sky components (stars, moon phase, aurora, shooting stars) in the window. |
 | Snow and rain | merged | Part of the shared weather layer, not a scene: rain, snow, rain on glass, ripples, fog. |
 | Sea shore and bioluminescent bay | `shore` | |
 | Window sill | `sill` | |
@@ -164,6 +164,12 @@ Wind over a sand sea.
 - Frost crystals growing across a pane (diffusion-limited aggregation or a phase-field model),
   melting from a warm point under the pointer.
 - Or a frozen lake: cracks, trapped bubbles, snow drifting across the surface.
+- Built: the pane (`frost`). Behind it, the night composes the shared sky components
+  (src/scenes/README.md, "Composing components"): a star knob (the cabin, away from the town's
+  lights, shows 1.7x the street's stars), the moon's phase (`SKY_MOON_PHASE`: disc, halo, its light
+  on the snow and in the room), an aurora (off by default) whose green lights the snow while the
+  sky is open, and shooting stars (off by default, "now" on trigger 1) in the sky over the roofs.
+  The snow cloud hides them all and shuts out their light; the frost's blur coarsens their detail.
 
 ## Weather: snow and rain
 
