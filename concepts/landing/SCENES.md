@@ -22,7 +22,10 @@ All of the ideas below have a first implementation in the lab:
 | Window sill | `sill` | |
 
 The shared options became libraries every outdoor scene can use: sky and time of day, weather,
-lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`).
+lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`). The
+giant ringed planet is one too (`src/shaders/lib/planet.ts`, knobs `src/scenes/planet.ts`): `orbit`
+draws it as its subject with every feature (belts, clouds, storms, aurora, city lights, day cycle,
+banded rings, moons), `campfire` as scenery over its pines.
 The notes below are the original briefs.
 
 ## Zen batch
@@ -75,7 +78,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Idea | Scene id | Simulation |
 |---|---|---|
 | Harmonograph | `harmonograph` | Damped, slightly detuned pendulums drive a pen; the figure precesses and spirals inward, then a fresh sheet slides in |
-| Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out |
+| Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out. The giant planet is the shared one (`shaders/lib/planet.ts`, decoration tier): optional moons on its ring plane (crossing in front of and behind it, casting shadows), an aurora, night-side city lights and its own day cycle |
 | Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment |
 | A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below |
 | Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: `shaders/windWater.ts`), a red cabin, falling and lying snow |

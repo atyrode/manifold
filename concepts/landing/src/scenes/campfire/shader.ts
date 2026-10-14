@@ -1,10 +1,10 @@
 // The campfire's picture, back to front: the night sky (dusk to deep night from the shared sky, the
-// Milky Way, stars, a giant ringed planet, shooting stars), two rows of far pines fading into the haze,
-// the ground (soil, and a flat rocky outcrop under the fire) lit by the fire, two big pines framing the
-// view, the tent with its lantern and the backpack at the edge of the light, the far half of the stone
-// ring, the coals, the back log, the flames (four nested layers of licking tongues), the smoke column,
-// the two front logs, the near stones, the mug, the marshmallow stick, the log bench (with the M carved
-// in it when it is on) and the sparks.
+// Milky Way, stars, the shared giant ringed planet, shooting stars), two rows of far pines fading into
+// the haze, the ground (soil, and a flat rocky outcrop under the fire) lit by the fire, two big pines
+// framing the view, the tent with its lantern and the backpack at the edge of the light, the far half
+// of the stone ring, the coals, the back log, the flames (four nested layers of licking tongues), the
+// smoke column, the two front logs, the near stones, the mug, the marshmallow stick, the log bench
+// (with the M carved in it when it is on) and the sparks.
 //
 // Space: p = (x in view heights from the centre, y up from the bottom), one cell = 1 / uRes.y. The
 // fire stands at campfireF; ground distances are foreshortened (a circle on the ground is an ellipse
@@ -18,8 +18,9 @@
 // firelight, the coals, the smoke and the sparks follow the bed, and each log chars, thins, slumps and
 // crumbles away; off, the fire is exactly the steady one it always was.
 // Knobs read here: K_flame, K_lively, K_sparks, K_smoke, K_marshmallow, K_fuel (K_tend: sim.ts,
-// trigger 1), K_reach, K_camp, K_time, K_cycle, K_stars, K_planet, K_shooting (trigger 0), K_wind,
-// K_fog, K_mark.
+// trigger 1), K_reach, K_camp, K_time, K_cycle, K_stars, K_planet and its shared options
+// (K_planetMoons, K_planetEclipses, K_planetAurora, K_planetAuroraSize, K_planetLights,
+// K_planetLightsTwinkle, K_planetDaycycle), K_shooting (trigger 0), K_wind, K_fog, K_mark.
 import { CAMPFIRE_LOGS } from "./sim.ts";
 
 export const campfireGlsl = `
@@ -146,50 +147,25 @@ vec3 campfireSkyAt(vec3 d) {
   return col;
 }
 
-// The giant: a banded, storm-swirled planet lit from the upper left with a thin ring tipped across it.
+// The giant: the shared planet's decoration tier (planetGiant, planetOver in shaders/lib/planet.ts),
+// a banded, storm-swirled planet lit from the upper left with a thin ring tipped across it, low in
+// the sky behind the pines (drawn over it later), fading by day. Its options (moons on the ring
+// plane, an aurora round its tipped pole, night-side city lights, the sun circling it) are the shared
+// planet knobs, prefixed: K_planetMoons .. K_planetDaycycle; all off, it is exactly as it was.
 vec3 campfirePlanetOver(vec3 col, vec2 p, float px) {
   if (K_planet <= 0.0) return col;
-  vec2 c = vec2(0.58 * campfireHalf, 0.57);
-  float r = 0.07 + 0.13 * K_planet;
-  vec2 q = (p - c) / r;
-  if (abs(q.x) > 2.3 || abs(q.y) > 2.3) return col;
-  float vis = 1.0 - 0.85 * campfireSkyState.day;
-  float night = campfireSkyState.night;
-  float l = length(q);
-  vec2 qt = rotate(q, -0.32);
-  // The ring: an ellipse in the tilted frame, streaked, with a gap.
-  float ru = length(vec2(qt.x, qt.y / 0.20));
-  float ringBody = smoothstep(1.32, 1.38, ru) * smoothfall(2.12, 2.05, ru);
-  float streak = clamp(0.6 + 0.4 * sin(ru * 30.0 + 1.0), 0.0, 1.0);
-  ringBody *= (1.0 - 0.85 * bell((ru - 1.72) / 0.035)) * streak;
-  vec3 ringCol = mix(vec3(0.42, 0.35, 0.25), vec3(0.78, 0.68, 0.50), streak);
-  float ringCover = hardEdge(ringBody * 0.85);
-  // Faint glow round the limb.
-  col += vec3(0.012, 0.034, 0.034) * bell((l - 1.0) / 0.9) * night * vis;
-  // Behind the disc: the far half of the ring.
-  if (qt.y >= 0.0) col = mix(col, ringCol, ringCover * vis);
-  float cover = hardFill((l - 1.0) * r, px);
-  if (cover > 0.5) {
-    vec3 n = vec3(q, sqrt(max(1.0 - l * l, 0.0)));
-    vec3 lightDir = normalize(vec3(-0.62, 0.42, 0.66));
-    float lit = smoothstep(-0.12, 0.62, dot(n, lightDir));
-    vec2 sw = qt - vec2(-0.30, -0.28);
-    float storm = bell(length(sw) / 0.38);
-    vec2 qs = vec2(-0.30, -0.28) + rotate(sw, 2.6 * storm);
-    float warp = fbm3(vec2(qs.x * 1.8 + 0.004 * campfireTm, qs.y * 5.0));
-    float band = 0.5 + 0.5 * sin(qs.y * 11.0 + warp * 5.0);
-    vec3 deep = vec3(0.04, 0.20, 0.22);
-    vec3 mid = vec3(0.12, 0.45, 0.40);
-    vec3 pale = vec3(0.62, 0.78, 0.62);
-    vec3 base = mix(mix(deep, mid, smoothstep(0.1, 0.6, band)), pale, 0.8 * smoothstep(0.62, 0.95, band));
-    base = mix(base, vec3(0.80, 0.86, 0.76), 0.35 * storm);
-    vec3 disc = base * (0.10 + 0.95 * lit) * (0.55 + 0.45 * n.z);
-    disc += vec3(0.08, 0.30, 0.30) * pow(1.0 - n.z, 3.0) * lit * 0.8;
-    col = mix(col, disc, vis);
-  }
-  // In front of the disc: the near half of the ring.
-  if (qt.y < 0.0) col = mix(col, ringCol, ringCover * vis);
-  return col;
+  vec3 light = normalize(vec3(-0.62, 0.42, 0.66));
+  if (K_planetDaycycle > 0.0) light = planetSun(light, campfireTm * K_planetDaycycle * 0.25);
+  PlanetLook look = planetGiant(vec2(0.58 * campfireHalf, 0.57), 0.07 + 0.13 * K_planet, light);
+  look.visible = 1.0 - 0.85 * campfireSkyState.day;
+  look.night = campfireSkyState.night;
+  look.moons = K_planetMoons;
+  look.eclipses = K_planetEclipses;
+  look.aurora = K_planetAurora;
+  look.auroraSize = K_planetAuroraSize;
+  look.lights = K_planetLights;
+  look.twinkle = K_planetLightsTwinkle;
+  return planetOver(col, p, px, look, campfireTm, uTime);
 }
 
 // A shooting star age seconds after it appeared: a head sliding along a straight path, a tail behind it.

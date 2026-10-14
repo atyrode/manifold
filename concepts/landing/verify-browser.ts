@@ -13,6 +13,7 @@ import { verifyTidepoolExchange } from "./src/scenes/tidepool/exchange.verify.ts
 import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
+import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -270,6 +271,7 @@ export function verify(): Record<string, unknown> {
   result.lakeFreshSnow = verifyLakeFreshSnow(gl);
   result.shanshui = verifyShanshui(gl);
   Object.assign(result, verifyCountryWildlife(gl));
+  result.planet = verifyPlanet(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
