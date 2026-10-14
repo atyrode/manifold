@@ -7,7 +7,7 @@ import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { physarumGlsl } from "./shader.ts";
-import { PHYSARUM_AGENTS_DEFAULT, physarumAgentCounts, physarumSim } from "./sim.ts";
+import { PHYSARUM_AGENTS_DEFAULT, PHYSARUM_PASSAGE, physarumAgentCounts, physarumSim } from "./sim.ts";
 
 /** In `palette` knob order: the shader's K_palette. */
 const PALETTES = ["agar", "ink", "rail"] as const;
@@ -36,6 +36,7 @@ export const physarumScene: SceneDef = {
   blurb: "A golden network linking its food, thickening good paths and pruning the rest.",
   accent: "#e9b824",
   look: { color: "full", levels: 4 },
+  passage: PHYSARUM_PASSAGE,
   params,
   groups: {
     mould: { title: "Slime mould", blurb: "Physarum polycephalum: how it smells its way, bundles into veins and lets unused ones go." },

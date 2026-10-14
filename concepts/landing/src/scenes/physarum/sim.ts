@@ -54,8 +54,9 @@
 //   uSim2  rgba16f PHYSARUM_MAX_FOOD × 3, nearest. Row 0 per flake: centre (screen uv), radius
 //          (screen heights), presence (negative while it is being eaten). Row 1: turn (radians),
 //          squash, grain (its own random number), 1 for a crumb. Row 2: texel 0 streaming phase
-//          (0..1) and the heart's presence; texel 1 the M (centre uv, height in screen heights,
-//          shown 0..1).
+//          (0..1), the heart's presence and its centre (screen uv: the entrance grows the mould out
+//          of it); texel 1 the M (centre uv, height in screen heights, shown 0..1); texel 2 how far
+//          the entrance's growth has come (0..1, exactly 1 once grown and whenever there was none).
 //   uSim3  rgba at half resolution: R food as the specks smell it (the flakes' halos, the M's
 //          strokes), G salt, B feeding (1 in a flake's pool, 0.5 at its rim, a fringe beyond),
 //          A light (the lit sea, and everything past the dish's glass wall).
@@ -233,6 +234,13 @@ const FILM_GAIN = 1;
 
 /** The petri dish's radius as a share of the frame's half-diagonal: its glass wall cuts the corners. */
 export const PHYSARUM_DISH = 0.9;
+
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the entrance's).
+ * Entrance: oat flakes land on the dish, then the mould grows out of the heart along its veins, the
+ * fine lace following. Exit: the strands thin and draw back into the flakes, leaving a slime track.
+ */
+export const PHYSARUM_PASSAGE: { enter: number; exit: number } = { enter: 3.2, exit: 1.6 };
 
 /** The dish's radius in screen heights for a frame aspect (its centre is the frame's). */
 const dishRadius = (aspect: number): number => (PHYSARUM_DISH * Math.hypot(aspect, 1)) / 2;
@@ -885,7 +893,7 @@ class FoodBook {
   }
 
   /** The shader's flake texture (see the file header). */
-  writeTexture(data: Float32Array, phase: number): void {
+  writeTexture(data: Float32Array, phase: number, grown: number): void {
     data.fill(0);
     const row = PHYSARUM_MAX_FOOD * 4;
     const count = Math.min(this.nodes.length, PHYSARUM_MAX_FOOD);
@@ -904,10 +912,13 @@ class FoodBook {
     const heart = this.heartNode();
     data[2 * row] = phase;
     data[2 * row + 1] = heart === undefined ? 0 : heart.strength;
+    data[2 * row + 2] = heart === undefined ? 0.5 : heart.x;
+    data[2 * row + 3] = heart === undefined ? 0.5 : heart.y;
     data[2 * row + 4] = 0.5;
     data[2 * row + 5] = 0.5;
     data[2 * row + 6] = this.#markHeight;
     data[2 * row + 7] = this.#markShown;
+    data[2 * row + 8] = grown;
   }
 
   #flake(x: number, y: number, site: number, scale: number): FoodSpec {
@@ -2022,6 +2033,28 @@ function seedAgents(shape: { width: number; height: number }, paths: SketchPaths
   return { data, level };
 }
 
+/**
+ * The entrance's growth, on the sim's own clock: it starts when the prewarm has finished and runs
+ * on frame time (which the renderer caps per frame), so a slow first frame or a long prewarm delays
+ * the growth instead of using it up. 0..1 over PHYSARUM_PASSAGE.enter seconds of it; exactly 1 once
+ * grown, and from the start when the scene was not entered with a passage.
+ */
+class GrowthClock {
+  #arriving: boolean | undefined = undefined;
+  #seconds = 0;
+
+  advance(frame: SimFrame, ready: boolean): number {
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
+    if (!this.#arriving) return 1;
+    if (ready) this.#seconds += Math.max(0, frame.dt);
+    if (this.#seconds >= PHYSARUM_PASSAGE.enter) {
+      this.#arriving = false;
+      return 1;
+    }
+    return this.#seconds / PHYSARUM_PASSAGE.enter;
+  }
+}
+
 /** Streaming phase: crests advance along the veins, ease to a stop and run back, again and again. */
 class PulseClock {
   phase = 0;
@@ -2356,6 +2389,7 @@ class PhysarumSim implements SceneSim {
   readonly #markSlot: number;
   readonly #food = new FoodBook();
   readonly #pulse = new PulseClock();
+  readonly #growth = new GrowthClock();
   readonly #foodTexture: DataTexture;
   readonly #foodData = new Float32Array(PHYSARUM_MAX_FOOD * 3 * 4);
   readonly #foodUniform = new Float32Array(PHYSARUM_MAX_FOOD * 4);
@@ -2491,7 +2525,7 @@ class PhysarumSim implements SceneSim {
     this.#touch(frame.pointer, frame.aspect, settings.salt);
     if (this.#warmed < PREWARM_STEPS) {
       this.#warm();
-      if (this.#warmed < PREWARM_STEPS) return this.#textures();
+      if (this.#warmed < PREWARM_STEPS) return this.#textures(this.#growth.advance(frame, false));
     }
 
     const dt = Math.max(0, frame.dt) * clamp(frame.motion, 0, 1);
@@ -2525,12 +2559,12 @@ class PhysarumSim implements SceneSim {
       this.#trace(DIST_PASSES);
     }
 
-    return this.#textures();
+    return this.#textures(this.#growth.advance(frame, true));
   }
 
   /** The flakes uploaded, with the textures the shader reads. */
-  #textures(): readonly (WebGLTexture | undefined)[] {
-    this.#food.writeTexture(this.#foodData, this.#pulse.phase);
+  #textures(grown: number): readonly (WebGLTexture | undefined)[] {
+    this.#food.writeTexture(this.#foodData, this.#pulse.phase, grown);
     this.#foodTexture.upload(this.#foodData);
     return [this.#view.texture, this.#dist.texture, this.#foodTexture.texture, this.#env.texture];
   }
@@ -2818,6 +2852,7 @@ class PhysarumStill implements SceneSim {
   readonly #knobs: KnobReader<PhysarumKnob>;
   readonly #food = new FoodBook();
   readonly #pulse = new PulseClock();
+  readonly #growth = new GrowthClock();
   readonly #foodData = new Float32Array(PHYSARUM_MAX_FOOD * 3 * 4);
   readonly #foodTexture: DataTexture;
   readonly #view: DataTexture;
@@ -2850,7 +2885,7 @@ class PhysarumStill implements SceneSim {
       this.#build(settings, grid, frame.aspect);
     }
     this.#pulse.advance(Math.max(0, frame.dt) * clamp(frame.motion, 0, 1) * settings.tempo);
-    this.#food.writeTexture(this.#foodData, this.#pulse.phase);
+    this.#food.writeTexture(this.#foodData, this.#pulse.phase, this.#growth.advance(frame, true));
     this.#foodTexture.upload(this.#foodData);
     return [this.#view.texture, this.#dist.texture, this.#foodTexture.texture, this.#env.texture];
   }

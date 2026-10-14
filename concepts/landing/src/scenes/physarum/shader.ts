@@ -6,15 +6,24 @@
 //          from the heart, screen heights. Filtered here by hand: 32-bit floats may not filter.
 //   uSim2  rgba16f PHYSARUM_MAX_FOOD × 3, nearest: row 0 per flake centre uv, radius (heights),
 //          presence (negative while it is eaten); row 1 turn, squash, grain, 1 for a crumb; row 2
-//          texel 0 the streaming phase and the heart's presence, texel 1 the M (centre uv, height, shown)
+//          texel 0 the streaming phase, the heart's presence and its centre uv, texel 1 the M (centre
+//          uv, height, shown), texel 2 the entrance's growth 0..1 (the sim's own clock, 1 at rest)
 //   uSim3  rgba at half resolution: R scent, G salt, B feeding, A light (the sea, and past the dish)
 // The trail arrives in tone (sim.ts VIEW): a typical filament at ~0.3, trunks at ~1. It is drawn
 // in three registers: a dim ochre lace (0.1–0.28), golden veins (0.4–0.72) and the pale, lit cores
 // of trunks (0.9–1.4). Round a flake the plasmodium lies plain and flat over the oat: no pale core,
 // no relief, so a flake never reads as a glossy bead. Knobs read here: K_palette (0 agar, 1 ink,
 // 2 rail), K_pulse, K_relief, K_slime.
+//
+// Entrance: oat flakes land on the dish on passageIn(), staggered, the heart's first; then the mould
+// grows out of the heart along its veins (the sim's distance field) on the sim's own growth clock,
+// which starts once its prewarm is done and ignores slow frames, so a slow first frame cannot use it
+// up: strands reach out thin and thicken behind the front, the fine lace filling in after. Cut per
+// cell, never faded. Exit
+// (passageOut): the lace thins away, then the strands thin and draw back into the nearest flakes,
+// leaving the slime they laid; the flakes stay. At rest none of it is drawn.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { PHYSARUM_DISH, PHYSARUM_FAR, PHYSARUM_MARGIN, PHYSARUM_MAX_FOOD, PHYSARUM_WAVE } from "./sim.ts";
+import { PHYSARUM_DISH, PHYSARUM_FAR, PHYSARUM_MARGIN, PHYSARUM_MAX_FOOD, PHYSARUM_PASSAGE, PHYSARUM_WAVE } from "./sim.ts";
 
 export const physarumGlsl = `
 const float PHYSARUM_MARGIN = ${glslFloat(PHYSARUM_MARGIN)};
@@ -24,6 +33,23 @@ const float PHYSARUM_FAR = ${glslFloat(PHYSARUM_FAR)};
 const float PHYSARUM_DISH = ${glslFloat(PHYSARUM_DISH)};
 // The dish's glass wall, screen heights thick.
 const float PHYSARUM_WALL = 0.014;
+
+// The entrance, in seconds of it: each flake lands over LAND_SECONDS, starting at LAND_FROM plus its
+// own share of LAND_SPREAD (the heart's LAND_HEART); the veins' front runs from GROW_FROM over
+// GROW_SECONDS, the lace's from LACE_FROM over LACE_SECONDS. Fronts are in screen heights.
+const float PHYSARUM_ENTER = ${glslFloat(PHYSARUM_PASSAGE.enter)};
+const float PHYSARUM_LAND_FROM = 0.4;
+const float PHYSARUM_LAND_SPREAD = 0.75;
+const float PHYSARUM_LAND_HEART = 0.3;
+const float PHYSARUM_LAND_SECONDS = 0.5;
+const float PHYSARUM_GROW_FROM = 0.8;
+const float PHYSARUM_GROW_SECONDS = 2.1;
+const float PHYSARUM_LACE_FROM = 1.2;
+const float PHYSARUM_LACE_SECONDS = 1.9;
+// The exit's farthest strand from any flake (heights) before it starts to draw back, and the share
+// of the veins' thickness the strands keep once thinned.
+const float PHYSARUM_DRAW = 1.2;
+const float PHYSARUM_THIN = 0.55;
 
 // Agar: warm amber, brighter under a lamp high on the left; the lit sea the mould shuns, cool and
 // pale; the glossy track of slime it leaves; the meniscus where the agar climbs the glass; the
@@ -212,9 +238,16 @@ float physarumStation(vec2 p, vec2 c, float r, float presence, bool eaten, float
   return disc;
 }
 
+// How far a flake has landed, 0..1 over its landing (the entrance only): the heart's first, the rest
+// staggered by their own grain. 'shape' is the flake's row 1, 'c' its centre in p, 'heart' the heart's.
+float physarumLanding(vec4 shape, vec2 c, vec2 heart, float tin) {
+  float delay = length(c - heart) < 0.002 ? PHYSARUM_LAND_HEART : PHYSARUM_LAND_FROM + PHYSARUM_LAND_SPREAD * shape.z;
+  return clamp((tin * PHYSARUM_ENTER - delay) / PHYSARUM_LAND_SECONDS, 0.0, 1.0);
+}
+
 // Every flake on the dish, in the palette's manner. Returns their cover; near rises to 1 within a
 // couple of radii of a flake.
-float physarumNodes(vec2 p, float aspect, float px, int palette, inout vec3 col, inout float near) {
+float physarumNodes(vec2 p, float aspect, float px, int palette, float tin, vec2 heart, inout vec3 col, inout float near) {
   if (uSimOn.z < 0.5) return 0.0;
   float cover = 0.0;
   for (int i = 0; i < PHYSARUM_FOOD; i++) {
@@ -223,6 +256,11 @@ float physarumNodes(vec2 p, float aspect, float px, int palette, inout vec3 col,
     if (presence < 0.002) continue;
     vec2 c = vec2((node.x - 0.5) * aspect, node.y - 0.5);
     if (length(p - c) > 5.0 * node.z + 0.01) continue;
+    // Entrance: the flake lands (at rest tin is 1 and this is skipped).
+    if (tin < 1.0) {
+      presence = min(presence, physarumLanding(texelFetch(uSim2, ivec2(i, 1), 0), c, heart, tin));
+      if (presence < 0.002) continue;
+    }
     bool eaten = node.w < 0.0;
     near = max(near, presence * (1.0 - smoothstep(1.2 * node.z, 2.6 * node.z, length(p - c))));
     if (palette == 1) cover = max(cover, physarumDot(p, c, node.z, presence, eaten, px, col));
@@ -230,6 +268,64 @@ float physarumNodes(vec2 p, float aspect, float px, int palette, inout vec3 col,
     else cover = max(cover, physarumOat(p, c, node.z, texelFetch(uSim2, ivec2(i, 1), 0), presence, eaten, px, col));
   }
   return cover;
+}
+
+// Clear space from p to the nearest flake on the dish (heights), 0 inside one.
+float physarumFoodDistance(vec2 p, float aspect) {
+  float best = 1e3;
+  for (int i = 0; i < PHYSARUM_FOOD; i++) {
+    vec4 node = texelFetch(uSim2, ivec2(i, 0), 0);
+    if (abs(node.w) < 0.002) continue;
+    vec2 c = vec2((node.x - 0.5) * aspect, node.y - 0.5);
+    best = min(best, length(p - c) - node.z);
+  }
+  return max(best, 0.0);
+}
+
+// The mould's entrance and exit, applied to the fields before they are drawn. Cells are cut whole
+// (hardEdge at two decorrelated thresholds: one for whether the plasmodium has reached a cell, one
+// for whether it has thickened yet), so the front is a dithered edge that flips each cell once.
+void physarumPassage(inout PhysarumField f, vec2 p, vec2 cell, float aspect, float dishR, vec2 heart, float grown) {
+  float tout = passageOut();
+  if (grown >= 1.0 && tout <= 0.0) return;
+  if (uSimOn.x < 0.5) return;
+  float th = edgeThreshold(cell, vec2(0.0));
+  float th2 = edgeThreshold(cell, vec2(23.0, 41.0));
+  // Veins (and trunks) follow the veins' front, the lace between the lace's: the vein-ness of a point.
+  float vt = smoothstep(0.3, 0.55, f.dens);
+  float reached = 1.0;
+  float thick = 1.0;
+  if (grown < 1.0) {
+    float t = grown * PHYSARUM_ENTER;
+    float away = length(p - heart);
+    float along = f.dist < 0.9 * PHYSARUM_FAR ? f.dist : 1.35 * away + 0.15;
+    float sv = clamp((t - PHYSARUM_GROW_FROM) / PHYSARUM_GROW_SECONDS, 0.0, 1.0);
+    float sl = clamp((t - PHYSARUM_LACE_FROM) / PHYSARUM_LACE_SECONDS, 0.0, 1.0);
+    float fv = (2.0 * dishR + 0.2) * sv * sv * (3.0 - 2.0 * sv);
+    float fl = (1.9 * dishR + 0.2) * sl * sl * (3.0 - 2.0 * sl);
+    float coverVein = smoothstep(0.0, 0.1, fv - along);
+    float coverLace = smoothstep(0.0, 0.3, fl - 1.25 * away);
+    reached *= hardEdge(mix(coverLace, coverVein, vt), th);
+    // Strands reach out thin, then thicken behind the front.
+    float thicken = mix(1.0, smoothstep(0.1, 0.55, fv - along), vt);
+    thick *= mix(PHYSARUM_THIN, 1.0, hardEdge(thicken, th2));
+  }
+  if (tout > 0.0) {
+    float e = 1.0 - pow(1.0 - tout, 2.2);
+    float gap = uSimOn.z > 0.5 ? physarumFoodDistance(p, aspect) : length(p - heart);
+    // The lace goes first (it counts as farther from food), then the strands draw back.
+    float lag = gap * mix(1.6, 1.0, vt);
+    float coverBack = smoothstep(0.0, 0.08, PHYSARUM_DRAW * (1.0 - e) - lag);
+    reached *= hardEdge(coverBack, th);
+    thick *= mix(PHYSARUM_THIN, 1.0, hardEdge(1.0 - smoothstep(0.0, 0.55, e), th2));
+  }
+  float shown = reached * thick;
+  f.dens *= shown;
+  f.glow *= shown;
+  f.lee *= shown;
+  f.grad *= shown;
+  // Slime is left behind on the way out, but is not there before the mould is.
+  if (grown < 1.0) f.memory *= shown;
 }
 
 Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
@@ -245,6 +341,11 @@ Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
   // The petri dish: centred, its glass wall cutting the frame's corners. 'facing' is how squarely
   // the wall (or the meniscus) at this bearing faces the lamp: the far side catches it.
   float dishR = PHYSARUM_DISH * 0.5 * length(vec2(aspect, 1.0));
+  // The mould's entrance and exit (nothing at rest): where it began, and what has grown or drawn back.
+  float tin = passageIn();
+  float grown = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(2, 2), 0).x : 1.0;
+  vec2 heart = vec2((state.z - 0.5) * aspect, state.w - 0.5);
+  physarumPassage(f, p, cell, aspect, dishR, heart, grown);
   float rr = length(p);
   float inside = 1.0 - smoothstep(dishR - px, dishR + px, rr);
   float wall = smoothstep(dishR - px, dishR + px, rr) * (1.0 - smoothstep(dishR + PHYSARUM_WALL - px, dishR + PHYSARUM_WALL + px, rr));
@@ -296,7 +397,7 @@ Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
     float pool = K_relief * smoothstep(0.12, 0.45, length(f.grad));
     vec3 ink = mix(PHYSARUM_BLEED * 0.55, PHYSARUM_SUMI, max(core, pool)) * (1.0 - 0.6 * surge);
     col = mix(col, ink, body);
-    nodes = physarumNodes(p, aspect, px, 1, col, near);
+    nodes = physarumNodes(p, aspect, px, 1, tin, heart, col, near);
     col = mix(col, PHYSARUM_SUMI, 0.8 * (1.0 - smoothstep(0.4 * px, 1.3 * px, abs(rr - dishR))));
   } else if (palette == 2) {
     // Rail: a night transit map, a faint graticule, the lace minor lines in dim amber, trunks the
@@ -314,7 +415,7 @@ Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
     vec3 line = mix(PHYSARUM_LINE, PHYSARUM_LINECORE, core) * relief * (1.0 + surge);
     col = mix(col, line, body);
     col = mix(col, PHYSARUM_STATION * 0.6, 0.6 * dust);
-    nodes = physarumNodes(p, aspect, px, 2, col, near);
+    nodes = physarumNodes(p, aspect, px, 2, tin, heart, col, near);
     col = mix(PHYSARUM_SEA * 0.6, col, inside);
     col = mix(col, PHYSARUM_COAST, 1.0 - smoothstep(0.4 * px, 1.3 * px, abs(rr - dishR)));
   } else {
@@ -332,7 +433,7 @@ Shade scenePhysarum(vec2 uv, vec2 cell, float t) {
     col += PHYSARUM_SLIME * track;
     col *= (1.0 - 0.35 * damp) * (1.0 - 0.4 * lee);
     col = mix(col, PHYSARUM_OAT * 0.8, 0.8 * dust);
-    nodes = physarumNodes(p, aspect, px, 0, col, near);
+    nodes = physarumNodes(p, aspect, px, 0, tin, heart, col, near);
     col = mix(col, PHYSARUM_SALT * (grain.y > 0.5 ? 1.08 : 0.9), grain.x);
     float veil = 1.0 - 0.7 * nodes;
     float plain = 1.0 - near;
