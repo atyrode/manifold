@@ -5,19 +5,22 @@
 // the mountains), and now and then a station glides past under its lamps, a level crossing flashes,
 // a bridge's girders flick by over a misty valley, or a tunnel turns the window into a mirror.
 // sim.ts runs the journey (distance, speed, the timetable, the cars alongside); shader.ts paints it.
+// The `line` knob picks the country and its timetable together: the country line as it always ran,
+// a rural branch line or a mountain line (sim.ts TRAIN_LINES, shader.ts trainLine).
 // The passage is the line's own: the train comes out of a tunnel (dark wall streaming past, the
 // mouth sweeping by, the cutting's rock sinking away to open the country, the tea settling from the
 // jolt) and, leaving, runs into one.
-import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { trainGlsl } from "./shader.ts";
-import { TRAIN_PASSAGE, trainSim } from "./sim.ts";
+import { TRAIN_LINES, TRAIN_PASSAGE, trainSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("journey", "speed", "speed", 0.4, "How fast the train runs, from a crawl to an express; the default is a slow night train, about 43 km/h. Near things blur past and the wires dip and rise quicker, the wheels clack faster, the far hills hardly move.", { min: 0.1, max: 1 }),
   range("journey", "rhythm", "rail rhythm", 0.5, "How hard the wheels knock over the rail joints, da-dum ... da-dum: the tea shivers in rings, the spoon rattles, the lamp's reflection trembles and the carriage rocks the curtain. Low: smooth welded rails."),
   seed("journey", "route", "route", "The country along the line (hills, fields, farms, the river) and where the journey starts; re-seed for another line."),
+  choice("journey", "line", "line", TRAIN_LINES, 0, "The country the line runs through, and what passes the window there (the frequencies below still say how often). Country: the night line as it always ran, through farmland and forested hills, a station now and then, level crossings, an iron bridge over a valley, a tunnel through a hill. Rural: a slower branch line across low, open farmland, farms and hedgerow trees all round; short halts where the train all but stops, most with a farm road crossing at the platform's end, crossings everywhere, little girder bridges over streams, no tunnels. Mountain: climbing slowly under high snowy peaks, through forest and alpine pasture; long tunnels, often straight out of one onto a stone viaduct over a deep gorge and into the next, few stations, hardly a road to cross. Changing it starts a fresh journey."),
   feature("line", "stations", "stations", true, "frequency", 0.5, "Now and then a small country station: the train slows right down and the platform glides past under its lamps, the station house with its lit waiting room, a clock under the canopy, a passenger waiting, the stationmaster with his lamp. Now: the next stop.", { trigger: 0 }),
   feature("line", "crossings", "level crossings", true, "frequency", 0.5, "A road across the line: the flashers wig-wag red (a bell you can see), a car waits at the lowered barrier with its lights on you, and the road runs off into the fields under its lamps. Now: one just ahead.", { trigger: 1 }),
   feature("line", "bridges", "bridges", true, "frequency", 0.4, "Over a valley on an old iron bridge, slowly: girders flicking past the window and between them the river far below, winding away under the mist. Now: a bridge.", { trigger: 2 }),
@@ -29,7 +32,7 @@ const params: readonly ParamDef[] = [
   range("compartment", "reflection", "reflections", 0.5, "How strongly the window mirrors the lit compartment over the night: the lamp, the luggage rack, the seats, your own dark head (it leans as you move the pointer). In a tunnel the glass becomes a mirror."),
   feature("compartment", "tea", "glass of tea", true, "steam", 0.5, "A glass of tea in a silver holder, a slice of lemon, a spoon: the surface rings at every clack and sloshes as the train brakes, and the tea glows amber when lamps pass behind it. Click to knock on the table. The amount is how much it steams."),
   feature("compartment", "curtain", "curtain", true, "sway", 0.5, "A red velvet curtain gathered at the window's edge, swaying with the carriage's rocking and swinging forward as the train brakes."),
-  ...skyKnobs({ time: 0.15 }),
+  ...skyKnobs({ time: 0.15, stars: 0.75, moon: 1 }),
   feature("sky", "clouds", "clouds", true, "cover", 0.3, "A deck of cloud drifting back over the train, silvered round the moon. Rain or snow closes it over, low and grey, whatever the cover."),
   feature("sky", "meteors", "shooting stars", true, "frequency", 0.3, "Now and then a shooting star streaks across the window's patch of sky. Now: one.", { trigger: 5 }),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, aurora: true }),
@@ -58,4 +61,6 @@ export const trainScene: SceneDef = {
   sim: trainSim(params),
   // Entrance: out of a tunnel into the night country, the tea settling from the jolt. Exit: into a tunnel.
   passage: TRAIN_PASSAGE,
+  // The shared moon in its phase (K_moon).
+  features: { SKY_MOON_PHASE: 1 },
 };
