@@ -119,6 +119,8 @@ Overlooking rolling hills with a village in the distance and forest around.
 - Landscape: a deterministic arrangement number changes hills, field borders and village placement
   together. Zero preserves the original view; changing field type, season or weather keeps the
   selected arrangement. Field type and landscape round-trip through URLs and saved setups.
+- Presets: the original crop baseline, flower valley, lavender rows, sunflowers and mixed patchwork.
+  Their replay arrows point to the actual feature revision on which these setups were tuned.
 
 ## Murmuration
 

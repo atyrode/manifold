@@ -16,6 +16,36 @@ export const presets: readonly Preset[] = [
     query: "scene=orbit&dither=ign&levels=4&motion=0.45&accent=%23ff004e",
     savedAt: "2026-10-13",
   },
+  {
+    name: "Countryside · crops (baseline)",
+    commit: "8aecfb26",
+    query: "scene=country",
+    savedAt: "2026-10-14",
+  },
+  {
+    name: "Countryside · flower valley",
+    commit: "8aecfb26",
+    query: "scene=country&time=0.58&clouds=0.25&season=0&fieldType=1&landscape=17",
+    savedAt: "2026-10-14",
+  },
+  {
+    name: "Countryside · lavender rows",
+    commit: "8aecfb26",
+    query: "scene=country&season=0&fieldType=2",
+    savedAt: "2026-10-14",
+  },
+  {
+    name: "Countryside · sunflowers",
+    commit: "8aecfb26",
+    query: "scene=country&season=0&fieldType=3",
+    savedAt: "2026-10-14",
+  },
+  {
+    name: "Countryside · mixed patchwork",
+    commit: "8aecfb26",
+    query: "scene=country&season=0&fieldType=4",
+    savedAt: "2026-10-14",
+  },
 ];
 
 const LOCAL_PRESETS = "landing.presets";
