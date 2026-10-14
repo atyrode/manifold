@@ -22,8 +22,8 @@ export interface ChladniMetal {
 
 /** In `sand` knob order. */
 export const chladniSands: readonly ChladniColor[] = [
-  { label: "quartz", color: "#e6dcc6" },
-  { label: "desert", color: "#e2ab6c" },
+  { label: "quartz", color: "#d6c093" },
+  { label: "desert", color: "#d9964f" },
   { label: "salt", color: "#e4ebf2" },
   { label: "coral", color: "#eda89c" },
 ];
@@ -56,6 +56,7 @@ const vec3 CHLADNI_ROOM = vec3(0.3, 0.32, 0.35);        // the light when the co
 const vec3 CHLADNI_STEEL = vec3(0.2, 0.21, 0.23);       // the hub's washer, nut and rod
 const float CHLADNI_HEAP = 2.0;                         // grains per texel to heap the sand up to cover
 const float CHLADNI_DUST = 4.0;                         // grains per texel for a full veil of dancing sand
+const vec3 CHLADNI_LAMP_DIR = vec3(-0.4998, 0.6247, 0.6); // unit: toward the lamp, 37 degrees above the plate
 
 vec3 chladniSandColor() {
 ${glslPick("sand", chladniSands.map((sand) => glslVec3(sand.color)), "vec3(0.9)")}
@@ -118,6 +119,28 @@ vec3 chladniHub(vec3 col, vec2 q, float px, vec3 light) {
   return mix(col, CHLADNI_STEEL * 0.6 + light * 0.18 * max(dot(dir, toward), 0.0), rod);
 }
 
+// Grains per texel at st, smoothed over about three texels (five taps, four of them bilinear and
+// offset diagonally): the density of a ridge, wide enough to take the grain out of it.
+float chladniDepth(vec2 st) {
+  float o = 0.8 / CHLADNI_TEXELS;
+  float sum = 2.0 * texture(uSim0, st).r
+    + texture(uSim0, st + vec2(o, o)).r + texture(uSim0, st + vec2(-o, o)).r
+    + texture(uSim0, st + vec2(o, -o)).r + texture(uSim0, st + vec2(-o, -o)).r;
+  return sum / 6.0;
+}
+
+// The height a depth of sand heaps to: it keeps rising where the depth is already great, so a deep
+// ridge stays rounded rather than flat topped.
+float chladniLift(float depth) {
+  return depth / (depth + 3.0);
+}
+
+// Sand of colour albedo under the lamp's light at a Lambert term of lamb: dim room light and the
+// lamp's own, held toward grey (soft).
+vec3 chladniSandLit(vec3 albedo, vec3 soft, float lamb) {
+  return albedo * (vec3(0.2) + soft * 1.5 * lamb);
+}
+
 Shade sceneChladni(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
@@ -134,11 +157,15 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
   vec3 soft = mix(vec3(dot(light, LUMA)), light, 0.3);
   vec4 state = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(0), 0) : vec4(0.0, 1.0, 1.0, 0.0);
 
-  // The cloth: near black, lit a little toward the lamp, enough for the plate's soft shadow,
-  // thrown down and to the right, to show on it.
+  // The cloth the plate stands on: near black, a pool of the lamp's light on it toward the lamp,
+  // and the plate's shadow thrown down and to the right, long (the lamp is low) and soft: a wide
+  // penumbra, with a tighter, darker contact shadow along the plate's own edge.
   vec2 pool = p - toward * (0.9 * size);
-  vec3 col = CHLADNI_CLOTH * (0.9 + 0.2 * vnoise(cell / 11.0)) + soft * 0.05 * exp(-1.4 * dot(pool, pool));
-  col *= 1.0 - 0.85 * (1.0 - smoothstep(-0.05, 0.2, chladniPlateDistance(q + toward * 0.09, disc)));
+  float poolLight = exp(-1.2 * dot(pool, pool));
+  vec3 col = CHLADNI_CLOTH * (0.9 + 0.2 * vnoise(cell / 11.0)) * (0.7 + 1.2 * poolLight) + soft * 0.17 * poolLight;
+  float thrown = 1.0 - smoothstep(-0.02, 0.26, chladniPlateDistance(q + toward * 0.13, disc));
+  float contact = 1.0 - smoothstep(0.0, 0.07, chladniPlateDistance(q, disc));
+  col *= 1.0 - max(0.82 * thrown, 0.5 * contact);
 
   float sd = chladniPlateDistance(q, disc);
   float accent = 0.0;
@@ -148,111 +175,139 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
     vec3 metal = chladniMetal();
     vec3 tint = chladniSheen();
 
-    // One calm sheet of metal. The lamp's light falls across all of it, stronger toward the lamp:
-    // the gradient that gives the plate its depth. Its grain is fine, faint and long, along the
-    // brushing (straight across the square, round and round the turned disc), and shows mostly in
-    // the reflection. The reflection is drawn out across the grain, as brushed metal reflects: a
-    // broad, soft band to the lamp's side of the square; a soft bow-tie along the lamp's bearing
-    // on the disc.
+    // One calm sheet of brushed metal. The lamp's light falls across all of it, stronger toward
+    // the lamp: a broad gradient that gives the plate its depth. The grain is fine and long, along
+    // the brushing (straight across the square, round and round the turned disc), and shows
+    // mostly in the reflection. The reflection is drawn out across the grain, as brushed metal
+    // reflects: a broad, soft band to the lamp's side of the square; a soft bow-tie along the
+    // lamp's bearing on the disc.
     float fall = smoothstep(-1.5, 1.3, dot(q, toward));
     float grooves;
     float band;
     if (disc) {
-      grooves = vnoise(vec2(r / px * 0.3, 0.0) + dir * 1.7);
+      grooves = 0.6 * vnoise(vec2(r / px * 0.3, 0.0) + dir * 1.7) + 0.4 * vnoise(vec2(r / px * 0.9, 5.0) + dir * 3.1);
       float bearing = abs(dot(dir, toward));
       band = pow(bearing, 5.0) * smoothstep(0.0, 0.6, r) * (0.6 + 0.4 * dot(dir, toward));
     } else {
-      grooves = vnoise(vec2(q.x * 1.5, q.y / px * 0.3));
-      float across = (q.x + 0.5) / 0.65;
+      grooves = 0.6 * vnoise(vec2(q.x * 1.5, q.y / px * 0.3)) + 0.4 * vnoise(vec2(q.x * 3.0 + 9.0, q.y / px * 0.9));
+      float across = (q.x + 0.5) / 0.95;
       band = exp(-across * across) * (0.55 + 0.45 * fall);
     }
-    float sheen = (0.4 * fall + 0.6 * band) * (0.9 + 0.2 * grooves);
+    float sheen = 0.35 * fall * fall + 0.8 * band;
 
-    // Where the plate swings hardest its reflection blurs into a faint glow: the shape of the tone,
-    // breathing slowly, on the bare metal.
-    float haze = 0.0;
+    // The plate's swing at this point, from the figure it is in (0 without the field): where it
+    // swings hardest its reflection blurs into a faint glow, the shape of the tone, breathing
+    // slowly on the bare metal, and a few loose grains lie in those antinodes.
+    float swing = 0.0;
     if (uSimOn.y > 0.5) {
       float nodes = float(textureSize(uSim1, 0).x);
       vec2 f = texture(uSim1, (q * 0.5 + 0.5) * ((nodes - 1.0) / nodes) + 0.5 / nodes).rg;
-      float swing = abs(mix(f.r, f.g, state.x)) * state.y * state.z;
-      haze = smoothstep(0.35, 1.3, swing) * K_shimmer * (0.8 + 0.2 * sin(tm * 0.7));
+      swing = abs(mix(f.r, f.g, state.x)) * state.y * state.z;
     }
-    vec3 plate = metal * (0.75 + 0.55 * fall) * (0.95 + 0.1 * grooves) + soft * tint * (0.26 * sheen * (1.0 + 0.6 * haze) + 0.04 * haze);
+    float haze = smoothstep(0.35, 1.3, swing) * K_shimmer * (0.8 + 0.2 * sin(tm * 0.7));
+    vec3 plate = metal * (0.8 + 0.6 * fall) * (0.92 + 0.16 * grooves)
+      + soft * tint * (0.95 * sheen * (0.8 + 0.4 * grooves) * (1.0 + 0.6 * haze) + 0.06 + 0.05 * haze);
 
     // The sand: R heaped at rest, G a veil of grains in the air, read wide so it moves smoothly.
-    float heap = 0.0;
+    float ridge = 0.0;
     float dust = 0.0;
     float shade = 0.0;
-    vec2 slope = vec2(0.0);
+    float lamb = 0.6;
+    float crest = 0.0;
     if (uSimOn.x > 0.5) {
       vec2 st = q * 0.5 + 0.5;
-      float tx = 1.5 / CHLADNI_TEXELS;
+      float tx = 1.0 / CHLADNI_TEXELS;
+      float depth = chladniDepth(st);
+      // A ridge is where the smoothed depth passes about a grain per texel: a few cells wide, with
+      // one narrow ramp for the cell threshold to cut, so its edge is hard and has no loose fringe.
+      ridge = smoothstep(0.7, 1.1, depth);
+      crest = chladniLift(depth);
+      // The sand's own surface: its slope from the smoothed depth, lit from the lamp. A flank that
+      // faces the lamp falls away toward it.
+      float g = 1.6 * tx;
+      vec2 slope = vec2(
+        chladniLift(chladniDepth(st + vec2(g, 0.0))) - chladniLift(chladniDepth(st - vec2(g, 0.0))),
+        chladniLift(chladniDepth(st + vec2(0.0, g))) - chladniLift(chladniDepth(st - vec2(0.0, g)))
+      );
+      lamb = clamp(dot(normalize(vec3(-3.0 * slope, 1.0)), CHLADNI_LAMP_DIR), 0.0, 1.0);
       vec2 c = texture(uSim0, st).rg;
       vec2 e = texture(uSim0, st + vec2(tx, 0.0)).rg;
       vec2 w = texture(uSim0, st - vec2(tx, 0.0)).rg;
       vec2 n = texture(uSim0, st + vec2(0.0, tx)).rg;
       vec2 s = texture(uSim0, st - vec2(0.0, tx)).rg;
-      heap = 1.0 - exp(-c.r / CHLADNI_HEAP);
-      slope = vec2(exp(-w.r / CHLADNI_HEAP) - exp(-e.r / CHLADNI_HEAP), exp(-s.r / CHLADNI_HEAP) - exp(-n.r / CHLADNI_HEAP));
       float wide = 1.7 * tx;
       float air = 2.0 * c.g + e.g + w.g + n.g + s.g
         + texture(uSim0, st + vec2(wide, wide)).g + texture(uSim0, st + vec2(-wide, wide)).g
         + texture(uSim0, st + vec2(wide, -wide)).g + texture(uSim0, st - vec2(wide, wide)).g;
       dust = 1.0 - exp(-air / (10.0 * CHLADNI_DUST));
       // Each ridge shades the metal beside it, on the side away from the lamp.
-      vec2 lampward = toward / CHLADNI_TEXELS;
-      float behind = texture(uSim0, st + 2.0 * lampward).r + texture(uSim0, st + 4.0 * lampward).r;
-      shade = 1.0 - exp(-0.5 * behind / CHLADNI_HEAP);
+      vec2 lampward = toward * tx;
+      shade = 1.0 - exp(-0.5 * (chladniDepth(st + 2.0 * lampward) + chladniDepth(st + 3.6 * lampward)) / CHLADNI_HEAP);
     }
-    plate *= 1.0 - 0.7 * shade * (1.0 - heap);
+    plate *= 1.0 - 0.6 * shade * (1.0 - ridge);
 
-    // A ridge is solid where the sand lies deep and breaks up into loose grains where only a few
-    // lie. Each cell holds a grain once the sand there is deep enough for its own threshold, so the
-    // edge is grains rather than a screen, and a cell changes at most once as sand comes and goes.
-    // The thresholds stay clear of 0, so bare metal never shows a grain.
     float g1 = hash12(cell);
     float g2 = hash12(cell + 17.31);
     float g3 = hash12(cell + 53.7);
     float g4 = hash12(cell + 91.3);
-    float t1 = 0.06 + 0.9 * g1;
-    float t2 = 0.1 + 0.85 * g2;
-    float grain = smoothstep(t1 - 0.05, t1 + 0.05, smoothstep(0.15, 0.7, heap));
-    float flying = smoothstep(t2 - 0.08, t2 + 0.08, dust) * (1.0 - grain);
-    // Lit on the flank toward the lamp, darker on the far one.
-    float lit = clamp(0.8 + 2.4 * dot(slope, toward), 0.45, 1.3);
-    vec3 sand = chladniSandColor() * (0.8 + 0.32 * g3) * lit * (g3 > 0.94 ? 0.55 : 1.0) + soft * 0.1 * max(lit - 0.9, 0.0);
+    float g5 = hash12(cell + 29.7);
+    vec3 albedo = chladniSandColor();
+
+    // Heaped sand: the ridge cut per cell, lit on the flank toward the lamp, shaded on the far one,
+    // a little paler along the crest, each grain of the surface a touch lighter or darker. A few
+    // specks lie darker.
+    float body = hardEdge(ridge);
+    vec3 sand = chladniSandLit(albedo, soft, lamb) * (0.82 + 0.35 * crest) * (0.92 + 0.16 * g3) * (g3 > 0.95 ? 0.7 : 1.0);
 
     // The sand gathered into the Manifold M warms toward the lamp's colour.
     float mark = 0.0;
     if (state.w > 0.001) {
       float d = markDistance((q - vec2(0.0, CHLADNI_MARK_Y)) / CHLADNI_MARK_SIZE) * CHLADNI_MARK_SIZE;
       mark = state.w * (1.0 - smoothstep(0.03, 0.11, d));
-      sand = mix(sand, sand * 0.6 + hue * 0.55, 0.5 * mark);
+      sand = mix(sand, sand * 0.6 + hue * 0.45, 0.5 * mark);
     }
 
-    // A few grains of quartz catch the lamp, slowly, one at a time.
-    float twinkle = 0.5 + 0.5 * sin(tm * (0.5 + 0.7 * g2) + g1 * 40.0);
-    float glint = step(0.986, g4) * grain * smoothstep(0.5, 1.0, heap) * twinkle * twinkle;
+    // Loose grains: a sparse, still sprinkling on the bare metal where the plate swings hardest.
+    // Each cell holds a grain once the swing there passes its own threshold, so as the figure
+    // changes a cell changes once.
+    float spread = 0.05 * smoothstep(0.5, 1.2, swing) * smoothstep(1.5 * CHLADNI_HUB, 3.0 * CHLADNI_HUB, r);
+    float loose = hardEdge(spread, g5) * (1.0 - body);
+    vec3 looseSand = chladniSandLit(albedo, soft, 0.62) * (0.85 + 0.3 * g1);
 
-    vec3 top = mix(plate, sand, grain);
-    top = mix(top, chladniSandColor() * 1.08 + soft * 0.06, 0.85 * flying);
+    // Sand in the air, over metal and heap alike: each cell holds a grain once the veil is thick
+    // enough for its own threshold.
+    float flying = hardEdge(dust, 0.1 + 0.85 * g2) * (1.0 - body);
+    vec3 flyingSand = chladniSandLit(albedo, soft, 0.7);
+
+    // A few grains of quartz catch the lamp, slowly, one at a time, only on the lamp's flank.
+    float twinkle = 0.5 + 0.5 * sin(tm * (0.5 + 0.7 * g2) + g1 * 40.0);
+    float glint = step(0.986, g4) * body * smoothstep(0.62, 0.9, lamb) * twinkle * twinkle;
+
+    vec3 top = mix(plate, looseSand, loose);
+    top = mix(top, flyingSand, 0.85 * flying);
+    top = mix(top, sand, body);
     top += (light * 0.6 + 0.3) * glint;
 
-    // The plate's edge, bevelled: a narrow face catching the lamp on the near sides and falling
-    // dark on the far ones.
+    // The plate's edge, bevelled: a narrow face catching the lamp on the near sides, with a bright
+    // line along its rim, and falling dark on the far ones. Its inner edge is cut per cell.
     vec2 corner = abs(q) - vec2(0.96);
     vec2 outward = disc ? dir
       : corner.x > 0.0 && corner.y > 0.0 ? normalize(corner) * sign(q)
       : corner.x > corner.y ? vec2(sign(q.x), 0.0) : vec2(0.0, sign(q.y));
-    float facing = max(dot(outward, toward), 0.0);
-    float bevel = 1.0 - smoothstep(0.5 * px, 2.5 * px, -sd);
-    top = mix(top, metal * (0.55 + 0.9 * facing) + soft * tint * 0.6 * facing * (0.6 + 0.4 * fall), bevel);
+    float facing = dot(outward, toward);
+    float lit = max(facing, 0.0);
+    float away = max(-facing, 0.0);
+    float bevel = hardEdge(1.0 - smoothstep(5.0 * px, 7.0 * px, -sd));
+    float rim = 1.0 - smoothstep(0.8 * px, 2.2 * px, -sd);
+    vec3 edge = metal * (0.55 + 0.9 * lit) * (1.0 - 0.5 * away)
+      + soft * tint * ((0.1 + 0.9 * lit) * (0.6 + 0.4 * fall) + 0.5 * lit * rim);
+    top = mix(top, edge, bevel);
 
     top = chladniHub(top, q, px, light);
 
     float cover = softFill(sd, px);
     col = mix(col, top, cover);
-    accent = cover * (0.6 * smoothstep(0.3, 0.95, band) * step(0.001, K_lamp) * (1.0 - max(grain, flying)) + grain * mark);
+    accent = cover * (0.6 * smoothstep(0.3, 0.95, band) * step(0.001, K_lamp) * (1.0 - max(body, flying)) + body * mark);
     accent *= smoothstep(CHLADNI_HUB, CHLADNI_HUB + 2.0 * px, r);
   }
 
