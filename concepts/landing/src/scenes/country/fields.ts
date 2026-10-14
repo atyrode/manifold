@@ -3,14 +3,16 @@
 export const countryFieldsGlsl = /* glsl */ `
 // 6 wildflower meadow, 7 lavender, 8 sunflowers; 0..5 remain the seasonal crop catalogue.
 float countryFieldCrop(float h, float season) {
-  float crop = countryCrop(h, season);
-  if (K_fieldType < 0.5) return crop;
-  if (K_fieldType < 1.5) return 6.0;
-  if (K_fieldType < 2.5) return 7.0;
-  if (K_fieldType < 3.5) return 8.0;
-  // Whole fields share a material, never a per-pixel mixture. Existing crops remain in the patchwork.
-  if (h < 0.3) return crop;
-  return h < 0.58 ? 6.0 : (h < 0.8 ? 7.0 : 8.0);
+  vec4 weights = vec4(K_crops, K_wildflowers, K_lavender, K_sunflowers);
+  float total = dot(weights, vec4(1.0));
+  if (total <= 0.0) return countryCrop(h, season);
+  vec3 edges = vec3(weights.x, weights.x + weights.y, weights.x + weights.y + weights.z) / total;
+  // Keep the field hash/layout fixed while tuning. Remap the crop interval so a small crop share
+  // still includes the full seasonal catalogue, rather than only its lowest-hash crop.
+  if (h < edges.x) return countryCrop(h / edges.x, season);
+  if (h < edges.y) return 6.0;
+  if (h < edges.z) return 7.0;
+  return 8.0;
 }
 
 vec3 countryFlowerMaterial(float crop, float h, float season, vec2 w, vec2 r, vec2 px,

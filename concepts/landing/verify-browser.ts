@@ -88,6 +88,72 @@ export function verify(): Record<string, unknown> {
   );
   result.clockBytes = clockValues;
   gl.deleteProgram(clock);
+  // Exercise actual GLSL selection: relative ratios, zero-weight exclusion, crop diversity,
+  // scale invariance and the all-zero fallback. This catches normalization/interval regressions.
+  const fields = program(
+    gl,
+    fragmentSourceFor({
+      ...sceneDefs.country,
+      entry: "regressionFields",
+      glsl:
+        sceneDefs.country.glsl +
+        `
+      Shade regressionFields(vec2 uv, vec2 cell, float t) {
+        float crop = countryFieldCrop(gl_FragCoord.x / uRes.x, K_season);
+        return shadeOf(vec3(crop / 8.0), crop / 8.0, 0.0);
+      }`,
+    }),
+  );
+  gl.canvas.width = 400;
+  gl.canvas.height = 1;
+  gl.useProgram(fields);
+  gl.viewport(0, 0, 400, 1);
+  gl.uniform2f(gl.getUniformLocation(fields, "uRes"), 400, 1);
+  gl.uniform1i(gl.getUniformLocation(fields, "uView"), 1);
+  const drawFields = (weights: readonly number[], season = 1): number[] => {
+    const knobs = {
+      ...paramDefaults("country"),
+      season,
+      crops: weights[0] ?? 0,
+      wildflowers: weights[1] ?? 0,
+      lavender: weights[2] ?? 0,
+      sunflowers: weights[3] ?? 0,
+    };
+    gl.uniform1fv(
+      gl.getUniformLocation(fields, "uParams"),
+      Float32Array.from(renderSettings(defaultsFor("country"), knobs).params),
+    );
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const output = pixels(gl, 400, 1);
+    return Array.from({ length: 400 }, (_, index) =>
+      Math.round(((output[index * 4] ?? 0) * 8) / 255),
+    );
+  };
+  const mixture = drawFields([2, 1, 0, 1]);
+  const counts = [0, 0, 0, 0];
+  for (const crop of mixture) {
+    const index = crop < 6 ? 0 : crop - 5;
+    counts[index] = (counts[index] ?? 0) + 1;
+  }
+  check(counts.join(",") === "200,100,0,100", `Wrong field shares/exclusion: ${counts}`);
+  check(
+    drawFields([100, 50, 0, 50]).every((crop, i) => crop === mixture[i]),
+    "Scaling all field weights changed the composition",
+  );
+  check(new Set(mixture.slice(0, 200)).size === 5, "Crop share lost seasonal crop diversity");
+  for (const season of [0, 1, 2]) {
+    const crops = drawFields([100, 0, 0, 0], season);
+    check(
+      drawFields([0, 0, 0, 0], season).every((crop, i) => crop === crops[i]),
+      `All-zero field weights lost crop fallback in season ${season}`,
+    );
+  }
+  check(
+    drawFields([0, 0, 1, 0]).every((crop) => crop === 7),
+    "Isolated lavender included another type",
+  );
+  result.fieldShares = counts;
+  gl.deleteProgram(fields);
 
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
