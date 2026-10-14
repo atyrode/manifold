@@ -20,7 +20,6 @@ import {
   DEW_BEAD_HANG,
   DEW_BEAD_R,
   DEW_BEAD_SCALE,
-  DEW_BIN_SLOTS,
   DEW_BLUR_MAX,
   DEW_CODE,
   DEW_DOF,
@@ -42,6 +41,7 @@ import {
   DEW_WALK,
   DEW_WET_LEVELS,
 } from "./sim.ts";
+import { binListsGlsl } from "../../sims/bins.ts";
 import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
 
 export const dewGlsl = `
@@ -49,7 +49,7 @@ export const dewGlsl = `
 // sizes), K_dof, K_spider, K_backdrop, K_mark and the sky (K_time, K_cycle). Textures: sim.ts.
 const int DEW_SEG_TEXELS = ${DEW_SEG_TEXELS};
 const int DEW_SEG_ROW = ${DEW_SEG_ROW};
-const int DEW_BIN_SLOTS = ${DEW_BIN_SLOTS};
+${binListsGlsl}
 const float DEW_CODE = ${glslFloat(DEW_CODE)};
 const float DEW_KIND_SPIRAL = ${glslFloat(DEW_KIND_SPIRAL)};
 const float DEW_KIND_FRAME = ${glslFloat(DEW_KIND_FRAME)};
@@ -613,6 +613,8 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   v.stir = 0.0;
   float turn = 0.0;
   float webR = 0.4;
+  // Pages of bin lists: one unless a dense patch (the hub of a small or portrait frame) needs more.
+  int binPages = 1;
   if (uSimOn.w > 0.5) {
     vec4 h0 = texelFetch(uSim3, ivec2(0, 0), 0);
     vec4 h1 = texelFetch(uSim3, ivec2(1, 0), 0);
@@ -622,6 +624,7 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
     turn = h1.z;
     webR = h1.w;
     v.stir = h2.x + 0.5 * h2.y;
+    binPages = max(1, int(h2.z + 0.5));
   }
 
   // Behind, shifting a little against the web as the viewer moves.
@@ -636,11 +639,10 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   acc.spark = 0.0;
   acc.stem = vec4(0.0);
   if (uSimOn.x > 0.5 && uSimOn.y > 0.5 && uSimOn.z > 0.5) {
-    ivec2 size = textureSize(uSim1, 0);
-    int rows = size.x / DEW_BIN_SLOTS;
-    ivec2 bin = clamp(ivec2(floor(v.p * float(rows))), ivec2(0), ivec2(size.y - 1, rows - 1));
-    for (int k = 0; k < DEW_BIN_SLOTS; k++) {
-      float id = texelFetch(uSim1, ivec2(bin.y * DEW_BIN_SLOTS + k, bin.x), 0).r;
+    ivec3 bin = binListsAt(uSim1, binPages, v.p);
+    int slots = BIN_PAGE * binPages;
+    for (int k = 0; k < slots; k++) {
+      float id = binListsEntry(uSim1, bin, k);
       if (id == 0.0) break;
       if (id > 0.0) dewSegment(int(id + 0.5) - 1, lt, view, v, acc);
       else dewDrop(int(-id + 0.5) - 1, lt, view, v, acc);
