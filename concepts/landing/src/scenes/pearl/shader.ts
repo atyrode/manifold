@@ -1,12 +1,14 @@
 // The pearl fluid's picture: the flakes the sim (sim.ts) carries, lit by a lamp as satin.
 //   uSim0  the flakes: q = S (cos 2θ, sin 2θ), θ their direction, S 0..1 how well they agree
 //   uSim1  the dye: r pigment, g temperature (convection), b the Manifold M's trace
-//   uSim2  5×1 props: texels 0-2 the braid rods, 3 the Manifold rod (x, y in frame heights, shown,
-//          radius), 4 the pigment nozzle (x, y, shown) with the share of convection in w
+//   uSim2  7×1 props: texels 0-2 the braid rods, 3 the Manifold rod (x, y in frame heights, shown,
+//          radius), 4 the pigment nozzle (x, y, shown) with the share of convection in w, 5 the
+//          entrance's stirring rod (as the rods), 6 the entrance's front (x radius, w 1 while arriving)
 // Without the sim (no float render targets) the flakes are laid along the streamlines of a few
 // slowly drifting eddies, drawn here.
 // Knobs read here: K_palette, K_lamp, K_contrast, K_nacre.
-import { glslVec3 } from "../../shaders/glsl.ts";
+import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
+import { PEARL_REVEAL_BAND, PEARL_REVEAL_WOBBLE, PEARL_REVEAL_X, PEARL_REVEAL_Y } from "./sim.ts";
 
 /** A fluid: its flakes edge-on, at random and turned to the lamp, and the pigment dripped into it. */
 export interface PearlPalette {
@@ -45,6 +47,11 @@ const paletteCases = pearlPalettes
 
 export const pearlGlsl = `
 const vec3 PEARL_NACRE = vec3(0.36, -0.14, 0.16);  // rose on one flank of a bright band, sea-green on the other
+// The entrance's front (see sim.ts): where the stirred satin has unfolded; ahead of it the tank is
+// a calm, uniform milk.
+const vec2 PEARL_REVEAL_AT = vec2(${glslFloat(PEARL_REVEAL_X)}, ${glslFloat(PEARL_REVEAL_Y)});
+const float PEARL_REVEAL_BAND = ${glslFloat(PEARL_REVEAL_BAND)};
+const float PEARL_REVEAL_WOBBLE = ${glslFloat(PEARL_REVEAL_WOBBLE)};
 const vec3 PEARL_GLASS = vec3(0.03, 0.035, 0.045);  // the glass rods' own dark tint
 const vec3 PEARL_HEATER = vec3(1.0, 0.5, 0.18);     // the heater glowing along the floor
 
@@ -120,6 +127,16 @@ Shade scenePearl(vec2 uv, vec2 cell, float t) {
   vec4 nozzle = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(4, 0), 0) : vec4(0.0);
   float convect = nozzle.w;
 
+  // The entrance: the flakes show only inside the front the stirring rod drives through the tank, cut
+  // cell by cell (a stipple a band wide, steady as it moves) along a fixed ripple; ahead of it they
+  // read as a calm jumble. At rest (stage.w 0) the whole tank shows.
+  vec4 stage = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(6, 0), 0) : vec4(0.0);
+  if (stage.w > 0.5) {
+    float ripple = PEARL_REVEAL_WOBBLE * (0.6 * sin(7.0 * p.y + 1.7) + 0.4 * sin(12.0 * p.y - 2.0 * p.x + 0.6));
+    float reached = (stage.x - length(p - PEARL_REVEAL_AT) - ripple) / PEARL_REVEAL_BAND;
+    q *= hardEdge(clamp(reached, 0.0, 1.0));
+  }
+
   // Satin: flakes turned to the lamp glint, edge-on ones go dark, a jumble stays milky. The
   // contrast knob steepens the step between them (gently: a band edge spans many cells, so a
   // slight turn of the flakes never flips a cell back and forth) and adds a glint along each
@@ -162,6 +179,7 @@ Shade scenePearl(vec2 uv, vec2 cell, float t) {
   if (uSimOn.z > 0.5) {
     float aa = 1.0 / uRes.y;
     for (int i = 0; i < 4; i++) col = pearlRod(col, p, texelFetch(uSim2, ivec2(i, 0), 0), lamp, aa);
+    col = pearlRod(col, p, texelFetch(uSim2, ivec2(5, 0), 0), lamp, aa);
     col = pearlRod(col, p, vec4(nozzle.xy, nozzle.z, 0.009), lamp, aa);
   }
 

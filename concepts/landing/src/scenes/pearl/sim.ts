@@ -39,16 +39,29 @@
 // eddies stir every mode: a few vortex forces wandering on slow Lissajous paths, each waxing,
 // waning and turning about over a minute or two.
 //
-// Textures: uSim0 the flakes (rg16f q), uSim1 the dye (rgba16f), uSim2 the props (rgba32f, 5×1):
+// The passage (SceneDef.passage, PEARL_ENTER / PEARL_EXIT). A sim built while the scene comes in plays
+// an entrance: the tank stands calm and uniform (the shader shows the flakes as a milky jumble) until a
+// glass rod is drawn in from the left edge in a gentle arc and stirs it. A bow wave runs just ahead of
+// the rod and on to the far corners; behind it the satin currents unfold (the shader reveals the flakes
+// cell by cell along that front, PEARL_REVEAL_*), the rod's real wake winding fresh bands. The rod lifts
+// out at the end of its arc. The entrance runs on its own clock, started once the pour's prewarm is done,
+// and the fluid keeps pace 1 until it eases back to the speed knob. On the way out a strong swirl is
+// forced over the whole tank (a wide Gaussian vortex force swelling over the exit) and sweeps the fluid
+// and the flakes round. Neither touches the pour or its random draws; at rest every passage term is
+// exactly neutral (no grip, no sweep, the whole tank shown).
+//
+// Textures: uSim0 the flakes (rg16f q), uSim1 the dye (rgba16f), uSim2 the props (rgba32f, 7×1):
 // texels 0–2 the braid rods and 3 the Manifold rod (x, y in frame heights, shown 0..1, radius),
-// texel 4 the pigment nozzle (x, y, shown) with the share of convection in w.
+// texel 4 the pigment nozzle (x, y, shown) with the share of convection in w, texel 5 the entrance's
+// stirring rod (as the rods), texel 6 the entrance's front: x its radius about (PEARL_REVEAL_X,
+// PEARL_REVEAL_Y), w 1 while the tank is arriving (0 at rest).
 // Without float render targets the scene returns no textures and the shader draws still eddies.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex } from "../../mark.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
 import { GpuCompute, GpuError, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
-import { hash31, smoothstep } from "../../sims/math.ts";
+import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -139,6 +152,54 @@ const SWIRL_JITTER = 20;
 /** Turned back on, the next swirl comes no sooner than this. */
 const SWIRL_RESUME = 4;
 
+// ---- the passage ----------------------------------------------------------------------------------
+
+/** Seconds the scene's entrance and exit take (SceneDef.passage in index.ts). */
+export const PEARL_ENTER = 3;
+export const PEARL_EXIT = 1.5;
+
+/**
+ * Entrance, on the arrival clock (seconds since the pour was ready). The stirring rod: radius, when
+ * it starts to move, how long its stroke takes, how long it takes to lift out afterwards, where it
+ * starts (frame heights; off the left edge), how far it reaches (share of the width), the height of
+ * its stroke and how far the stroke arcs up.
+ */
+const PADDLE_RADIUS = 0.03;
+const PADDLE_FROM = 0.25;
+const PADDLE_SECONDS = 1.7;
+const PADDLE_LIFT = 0.4;
+const PADDLE_X0 = -0.06;
+const PADDLE_REACH = 0.62;
+const PADDLE_Y = 0.38;
+const PADDLE_ARC = 0.16;
+/**
+ * The front of unfolded satin: a circle about (PEARL_REVEAL_X, PEARL_REVEAL_Y), its edge a band
+ * PEARL_REVEAL_BAND wide cut cell by cell, bent by a fixed ripple of up to PEARL_REVEAL_WOBBLE. It
+ * runs REVEAL_LEAD ahead of the rod (arriving over REVEAL_LEAD_FROM..TO), then spreads on to the far
+ * corners over REVEAL_SPREAD_FROM..TO.
+ */
+export const PEARL_REVEAL_X = -0.12;
+export const PEARL_REVEAL_Y = 0.4;
+export const PEARL_REVEAL_BAND = 0.12;
+export const PEARL_REVEAL_WOBBLE = 0.035;
+const REVEAL_LEAD = 0.12;
+const REVEAL_LEAD_FROM = 0.3;
+const REVEAL_LEAD_TO = 0.9;
+const REVEAL_SPREAD_FROM = 0.9;
+const REVEAL_SPREAD_TO = 2.8;
+/** The flow runs at pace 1 through the entrance's stroke, then eases to the speed knob by its end. */
+const PACE_EASE_FROM = 1.8;
+
+/**
+ * Exit: the swirl's peak angular acceleration (rad/s²), radius (about half the tank's height, so it
+ * takes the whole tank), the share of the exit it swells over, and the share the flow's pace takes to
+ * rise to at least 1.
+ */
+const SWEEP_ACCEL = 2.5;
+const SWEEP_RADIUS = 0.55;
+const SWEEP_RAMP = 0.35;
+const SWEEP_PACE_RAMP = 0.25;
+
 /** The Manifold rod: radius, peak speed, seconds lowering in and lifting out, schedule. */
 const MARK_ROD_RADIUS = 0.02;
 const MARK_SPEED = 0.2;
@@ -178,7 +239,7 @@ const NOZZLE_RADIUS = 0.008;
 const PIGMENT_BASE = 1;
 const PIGMENT_RATE = 4;
 
-const PROP_TEXELS = 5;
+const PROP_TEXELS = 7;
 const TAU = 2 * Math.PI;
 
 // ---- GLSL -----------------------------------------------------------------------------------------
@@ -188,9 +249,10 @@ const FORCE = `
 uniform float uPearlEuler;     // turntable: dOmega/dt (rad/s^2)
 uniform float uPearlBuoyancy;  // lift per unit of temperature
 uniform float uPearlWallDrag;  // per second, at the walls
-uniform vec4 uPearlRods[4];    // centre, velocity (frame heights, per second)
-uniform vec2 uPearlGrip[4];    // grip 0..1, radius
+uniform vec4 uPearlRods[5];    // centre, velocity (frame heights, per second)
+uniform vec2 uPearlGrip[5];    // grip 0..1, radius
 uniform vec4 uPearlSwirl;      // centre, angular acceleration (rad/s^2), radius
+uniform vec4 uPearlSweep;      // the exit's swirl: the same
 uniform vec4 uPearlDrift[${DRIFTERS}];   // drifting eddies: centre, angular acceleration, radius
 
 vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
@@ -210,6 +272,8 @@ vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
   force.y += uPearlBuoyancy * dye.g;
   vec2 s = p - uPearlSwirl.xy;
   force += uPearlSwirl.z * vec2(-s.y, s.x) * exp(-dot(s, s) / (uPearlSwirl.w * uPearlSwirl.w));
+  vec2 sweep = p - uPearlSweep.xy;
+  force += uPearlSweep.z * vec2(-sweep.y, sweep.x) * exp(-dot(sweep, sweep) / (uPearlSweep.w * uPearlSweep.w));
   for (int i = 0; i < ${DRIFTERS}; i++) {
     vec4 drift = uPearlDrift[i];
     vec2 d = p - drift.xy;
@@ -218,7 +282,7 @@ vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
   // The rods carry the fluid inside them at their own velocity (penalisation, at most all of the
   // way in one step).
   float grab = 1.0 / max(uDt, 1e-3);
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 5; i++) {
     vec4 rod = uPearlRods[i];
     vec2 grip = uPearlGrip[i];
     float inside = 1.0 - smoothstep(0.5 * grip.y, 1.2 * grip.y, length(p - rod.xy));
@@ -406,6 +470,72 @@ function braidRods(time: number, aspect: number, a: Rod, b: Rod, c: Rod): void {
   c.shown = 1;
 }
 
+/**
+ * The entrance's stirring rod at arrival time `time`: drawn in from the left edge along an arc, eased
+ * in and out, then lifted out (`shown` falls to 0 once it stops).
+ */
+function paddleRod(time: number, aspect: number, out: Rod): void {
+  const u = clamp((time - PADDLE_FROM) / PADDLE_SECONDS, 0, 1);
+  const e = 0.5 - 0.5 * Math.cos(Math.PI * u);
+  const de = u > 0 && u < 1 ? (0.5 * Math.PI * Math.sin(Math.PI * u)) / PADDLE_SECONDS : 0;
+  const reach = PADDLE_REACH * aspect - PADDLE_X0;
+  out.x = PADDLE_X0 + reach * e;
+  out.y = PADDLE_Y + PADDLE_ARC * Math.sin(Math.PI * e);
+  out.vx = reach * de;
+  out.vy = PADDLE_ARC * Math.PI * Math.cos(Math.PI * e) * de;
+  const stop = PADDLE_FROM + PADDLE_SECONDS;
+  out.shown = 1 - smoothstep(stop, stop + PADDLE_LIFT, time);
+}
+
+/**
+ * Radius of the entrance's front at arrival time `time`: the rod's distance from the front's centre
+ * (so the rod rides its inner edge) plus the lead, then the spread that takes it past the far
+ * corners (the band and the ripple included) by REVEAL_SPREAD_TO. 0 at time 0, so nothing is shown
+ * at first. `probe` is scratch.
+ */
+function revealRadius(time: number, aspect: number, probe: Rod): number {
+  paddleRod(0, aspect, probe);
+  const start = Math.hypot(probe.x - PEARL_REVEAL_X, probe.y - PEARL_REVEAL_Y);
+  paddleRod(time, aspect, probe);
+  const run = Math.hypot(probe.x - PEARL_REVEAL_X, probe.y - PEARL_REVEAL_Y) - start;
+  paddleRod(PADDLE_FROM + PADDLE_SECONDS, aspect, probe);
+  const runEnd = Math.hypot(probe.x - PEARL_REVEAL_X, probe.y - PEARL_REVEAL_Y) - start;
+  const far = Math.hypot(aspect - PEARL_REVEAL_X, Math.max(PEARL_REVEAL_Y, 1 - PEARL_REVEAL_Y));
+  const spread = Math.max(0, far + PEARL_REVEAL_WOBBLE + PEARL_REVEAL_BAND - runEnd - REVEAL_LEAD);
+  return run + REVEAL_LEAD * smoothstep(REVEAL_LEAD_FROM, REVEAL_LEAD_TO, time) + spread * smoothstep(REVEAL_SPREAD_FROM, REVEAL_SPREAD_TO, time);
+}
+
+/**
+ * The entrance's clock, on the sim's own: it starts when the pour is ready and runs on frame time (the
+ * renderer caps it per frame), so a slow first frame or a long prewarm delays the entrance instead of
+ * using it up. Only a sim built while the scene comes in arrives; any other never plays one.
+ */
+class Arrival {
+  /** Whether the entrance was still playing when this frame began. */
+  playing = false;
+  /** Arrival seconds when this frame began and when it ended. */
+  from = 0;
+  to = 0;
+  #arriving: boolean | undefined = undefined;
+  #seconds = 0;
+
+  /** Whether the entrance is still playing after this frame. */
+  get active(): boolean {
+    return this.#arriving === true;
+  }
+
+  advance(frame: SimFrame, ready: boolean): void {
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
+    this.playing = this.#arriving;
+    this.from = this.#seconds;
+    if (this.#arriving) {
+      if (ready) this.#seconds += Math.max(0, frame.dt);
+      if (this.#seconds >= PEARL_ENTER) this.#arriving = false;
+    }
+    this.to = this.#seconds;
+  }
+}
+
 interface MarkStroke {
   ax: number;
   ay: number;
@@ -549,6 +679,7 @@ type ForceUniforms = {
   uPearlRods: Float32Array;
   uPearlGrip: Float32Array;
   uPearlSwirl: Float32Array;
+  uPearlSweep: Float32Array;
   uPearlDrift: Float32Array;
 };
 
@@ -589,9 +720,10 @@ class PearlTank implements SceneSim {
     uPearlEuler: 0,
     uPearlBuoyancy: 0,
     uPearlWallDrag: WALL_DRAG,
-    uPearlRods: new Float32Array(16),
-    uPearlGrip: new Float32Array([0, ROD_RADIUS, 0, ROD_RADIUS, 0, ROD_RADIUS, 0, MARK_ROD_RADIUS]),
+    uPearlRods: new Float32Array(20),
+    uPearlGrip: new Float32Array([0, ROD_RADIUS, 0, ROD_RADIUS, 0, ROD_RADIUS, 0, MARK_ROD_RADIUS, 0, PADDLE_RADIUS]),
     uPearlSwirl: new Float32Array([0, 0, 0, SWIRL_RADIUS]),
+    uPearlSweep: new Float32Array([0, 0, 0, SWEEP_RADIUS]),
     uPearlDrift: new Float32Array(DRIFTERS * 4),
   };
   readonly #flakeUniforms: FlakeUniforms = {
@@ -627,6 +759,9 @@ class PearlTank implements SceneSim {
   readonly #rodB = rod();
   readonly #rodC = rod();
   readonly #rodM = rod();
+  readonly #rodP = rod();
+  readonly #probe = rod();
+  readonly #arrival = new Arrival();
   readonly #propData = new Float32Array(PROP_TEXELS * 4);
 
   // The knobs, as of this frame.
@@ -635,6 +770,8 @@ class PearlTank implements SceneSim {
   #vorticity = 0;
   #drift = 0;
   #pigment = 0;
+  /** How far the scene has gone out, 0..1 (0 unless leaving). */
+  #exit = 0;
 
   /** The pour on show; undefined until the first frame pours one. */
   #pour: number | undefined;
@@ -685,13 +822,20 @@ class PearlTank implements SceneSim {
     this.#read(frame);
     this.#layout(frame.width, frame.height);
     const pour = Math.round(this.#knobs.value(frame, "pour"));
-    if (pour !== this.#pour) this.#reset(pour);
+    const poured = pour !== this.#pour;
+    if (poured) this.#reset(pour);
     this.#events(frame);
-    const h = Math.max(0, frame.dt) * frame.motion * this.#speed;
+    const arrival = this.#arrival;
+    arrival.advance(frame, !poured);
+    this.#exit = clamp(frame.passage.exit, 0, 1);
+    const h = Math.max(0, frame.dt) * frame.motion * this.#pace();
     this.#stir(frame, h);
     if (h > 0) {
       const steps = Math.min(MAX_STEPS, Math.ceil(h / MAX_STEP));
-      for (let i = 0; i < steps; i++) this.#advance(h / steps);
+      for (let i = 0; i < steps; i++) {
+        if (arrival.playing) this.#advance(h / steps, lerp(arrival.from, arrival.to, i / steps), lerp(arrival.from, arrival.to, (i + 1) / steps));
+        else this.#advance(h / steps);
+      }
     }
     this.#writeProps();
     const textures = this.#textures;
@@ -898,6 +1042,26 @@ class PearlTank implements SceneSim {
     return swirl.strength * bump * bump;
   }
 
+  /**
+   * The flow's pace (simulated seconds per second, before the frame's motion share): the speed knob
+   * at rest. The entrance runs at 1 until it eases back to the knob, and the exit raises it to at
+   * least 1, so both play the same at any speed.
+   */
+  #pace(): number {
+    let pace = this.#speed;
+    if (this.#arrival.playing) pace = lerp(1, pace, smoothstep(PACE_EASE_FROM, PEARL_ENTER, this.#arrival.to));
+    if (this.#exit > 0) pace = lerp(pace, Math.max(pace, 1), smoothstep(0, SWEEP_PACE_RAMP, this.#exit));
+    return pace;
+  }
+
+  /** The exit's swirl: 0 unless leaving, swelling over the first SWEEP_RAMP of the exit; its sense follows the pour. */
+  #sweepAcceleration(): number {
+    const exit = this.#exit;
+    if (exit <= 0) return 0;
+    const sense = (this.#pour ?? 0) % 2 === 0 ? 1 : -1;
+    return sense * SWEEP_ACCEL * smoothstep(0, SWEEP_RAMP, exit);
+  }
+
   /** Ease the forcing shares, the braid rods and the nozzle toward the knobs by share `k` (1: at once). */
   #ease(k: number): void {
     let turn = 0;
@@ -1000,8 +1164,11 @@ class PearlTank implements SceneSim {
     return true;
   }
 
-  /** One step of `h` seconds: sources, fluid, flakes. */
-  #advance(h: number): void {
+  /**
+   * One step of `h` seconds: sources, fluid, flakes. `arrival0`..`arrival1` (arrival seconds at the
+   * step's start and end; negative: none) put the entrance's stirring rod in the fluid.
+   */
+  #advance(h: number, arrival0 = -1, arrival1 = -1): void {
     const fluid = this.#fluid;
     const aspect = fluid.aspect;
     const t0 = this.#clock;
@@ -1021,10 +1188,18 @@ class PearlTank implements SceneSim {
     if (run) markRod(mid - run.start, run.size, aspect, m);
     else m.shown = 0;
     this.#grip(3, m, m.shown);
+    const paddle = this.#rodP;
+    if (arrival0 >= 0) paddleRod(0.5 * (arrival0 + arrival1), aspect, paddle);
+    else paddle.shown = 0;
+    this.#grip(4, paddle, paddle.shown);
     const swirl = force.uPearlSwirl;
     swirl[0] = 0.5 * aspect;
     swirl[1] = 0.5;
     swirl[2] = this.#swirlAcceleration(mid);
+    const sweep = force.uPearlSweep;
+    sweep[0] = 0.5 * aspect;
+    sweep[1] = 0.5;
+    sweep[2] = this.#sweepAcceleration();
     const drift = force.uPearlDrift;
     const strength = DRIFT_ACCEL * this.#drift;
     let at = 0;
@@ -1073,11 +1248,18 @@ class PearlTank implements SceneSim {
     if (run) markRod(this.#clock - run.start, run.size, aspect, m);
     else m.shown = 0;
     this.#prop(3, m, m.shown, MARK_ROD_RADIUS);
+    const arriving = this.#arrival.active;
+    const paddle = this.#rodP;
+    if (arriving) paddleRod(this.#arrival.to, aspect, paddle);
+    else paddle.shown = 0;
+    this.#prop(5, paddle, paddle.shown, PADDLE_RADIUS);
     const data = this.#propData;
     data[16] = NOZZLE_X * aspect;
     data[17] = NOZZLE_Y;
     data[18] = this.#nozzleShare;
     data[19] = this.#convectShare;
+    data[24] = arriving ? revealRadius(this.#arrival.to, aspect, this.#probe) : 0;
+    data[27] = arriving ? 1 : 0;
     this.#props.seed(data);
   }
 

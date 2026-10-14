@@ -9,11 +9,12 @@
 //   uSim3  dust motes
 // Without uSim0 (no float render targets) an analytic plume stands in for the fluid.
 // Knobs read here: K_stick, K_window, K_angle, K_tint, K_room, K_dust, K_candle, K_mark.
-import { incenseLayoutGlsl, incenseShapesGlsl } from "./sim.ts";
+import { incenseLayoutGlsl, incensePassageGlsl, incenseShapesGlsl } from "./sim.ts";
 
 export const incenseGlsl = `
 ${incenseLayoutGlsl}
 ${incenseShapesGlsl}
+${incensePassageGlsl}
 #define INCENSE_TABLE_BACK (INCENSE_FLOOR + 0.07)  // where the table top meets the wall
 #define INCENSE_TABLE_FRONT 0.045   // the table top's front edge; its front face below
 #define INCENSE_DEPTH 0.12          // how far in front of the wall the incense stands, along the light
@@ -159,10 +160,21 @@ vec4 incenseAnalytic(vec2 p) {
   float rise = smoothstep(0.08, 0.45, h);
   float axis = src.x - 0.03 * h + 0.025 * h * sin(0.21 * tm) + 0.02 * rise * sin(19.0 * h - 0.8 * tm);
   axis += 0.07 * rise * min(1.0, h / 0.45) * (vnoise(vec2(3.0 * p.x, 4.0 * p.y - 0.25 * tm)) - 0.5) + 0.12 * smoothstep(0.35, 0.65, h);
+  // The exit's draught leans the whole plume over to the right.
+  float outU = passageOut();
+  if (outU > 0.0) axis += outU * outU * 1.2 * (h + 0.1);
   float w = 0.0035 + 0.09 * rise * min(1.0, h / 0.5);
   float dx = (p.x - axis) / w;
   float veil = mix(1.0, 0.25 + 1.5 * vnoise(vec2(14.0 * p.x, 10.0 * p.y - 0.4 * tm)), rise);
   float r = 0.5 * pow(0.0035 / w, 0.6) * exp(-dx * dx) * veil * smoothstep(-0.005, 0.004, h) * (1.0 - smoothstep(0.93, 1.0, p.y));
+  // The entrance: the head climbs out of the ember (sim.ts riseHead); the exit cuts the thread off above the ember, the cut climbing away.
+  float inU = passageIn();
+  if (inU < 1.0) {
+    float s = clamp((inU - INCENSE_RISE_FROM) / (INCENSE_RISE_TO - INCENSE_RISE_FROM), 0.0, 1.0);
+    float head = max(INCENSE_RISE_TOP - src.y, 0.0) * (1.0 - (1.0 - s) * (1.0 - s));
+    r *= 1.0 - smoothstep(head - 0.03, head, h);
+  }
+  if (outU > 0.0) r *= 1.0 - smoothstep(0.0, INCENSE_BREAK, outU) * (1.0 - smoothstep(0.0, 0.05, h - 0.5 * outU));
   return vec4(r, 0.0, r * exp(-3.2 * max(h, 0.0)), 0.0);
 }
 

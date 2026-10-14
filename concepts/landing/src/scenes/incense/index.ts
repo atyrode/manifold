@@ -6,7 +6,7 @@ import { choice, feature, range, toggle, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { incenseGlsl } from "./shader.ts";
-import { incenseKinds, incenseSim } from "./sim.ts";
+import { INCENSE_PASSAGE, incenseKinds, incenseSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("incense", "stick", "incense", incenseKinds.map((label, value) => ({ label, value })), 0, "Stick: a slim stick in a glazed dish, its ash curling and dropping off. Cone: a small cone, an ember ring creeping down it. Coil: a temple coil on a little stand, the ember travelling round the spiral. Waterfall: a backflow cone on a ceramic mountain, its smoke pouring down the ledges like water."),
@@ -31,6 +31,7 @@ export const incenseScene: SceneDef = {
   blurb: "A thread of smoke rising through a shaft of light, curling into veils.",
   accent: "#ff6a1f",
   look: { color: "full", levels: 4 },
+  passage: INCENSE_PASSAGE,
   params,
   groups: {
     incense: { title: "Incense", blurb: "What burns, how much it smokes, and a fresh one when it has burnt down." },

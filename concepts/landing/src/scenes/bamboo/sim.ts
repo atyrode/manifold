@@ -8,6 +8,10 @@
 //   basin, swings back and clacks on the stone with a small bounce.
 // - Leaves letting go of the canopy and gliding down; some land on the basin and float.
 // - Rings on the basin's water: the pour, the clack, a leaf landing, a click.
+// - The passage (BAMBOO_PASSAGE): entering, the tube starts empty and fills to where the warm-up left
+//   it as the spout's first water arrives; leaving, the spout rushes so the tube brims, tips and
+//   clacks, a fast gust front crosses the grove and a couple of leaves let go. The culms' lean in and
+//   out is the shader's (it needs no state).
 // The shader (shader.ts) reads three textures:
 //   uSim0  rg16f, BAMBOO_CELLS x layers, linear: per culm (column = grid cell + BAMBOO_CELLS / 2, row =
 //          depth layer) its deflection in metres at BAMBOO_SWAY_HEIGHT, and the gust on it 0..1.
@@ -23,6 +27,15 @@ import { hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the same). The
+ * entrance: the culms sway in from the frame edges while the spout starts to run and the tube fills.
+ * The exit: the tube is filled to the brim, tips and clacks, and a gust sways the grove.
+ */
+export const BAMBOO_PASSAGE = { enter: 2.8, exit: 1.7 } as const;
+/** Seconds into the entrance at which the spout's first water leaves its lip (the shader's stream starts here). */
+export const BAMBOO_STREAM_START = 0.7;
 
 // ---- geometry shared with shader.ts ----
 
@@ -210,6 +223,14 @@ const CYCLE_OVERHEAD = 2.2;
 /** A "now": the spout gushes at this extra fill per second until the tube tips (or this long). */
 const GUSH_RATE = 0.8;
 const GUSH_LIMIT = 6;
+/** The exit: the spout rushes this much extra fill per second for up to this long, so the tube brims and tips at once. */
+const EXIT_RUSH = 6;
+const EXIT_RUSH_TIME = 0.5;
+/** The exit's gust front, faster than any natural one so it sweeps the grove within the exit (m/s), and its crest in metres of deflection. */
+const EXIT_GUST_SPEED = 22;
+const EXIT_GUST_SWAY = 0.9;
+/** The entrance: seconds the first water takes to fall from the lip into the tube's mouth. */
+const STREAM_REACH = 0.5;
 /** Seconds between rings while the pour lands. */
 const RIPPLE_EVERY = 0.11;
 
@@ -236,6 +257,28 @@ const LEAF_FAR = 8;
 const TAU = 2 * Math.PI;
 
 export class BambooSimError extends Error {}
+
+/**
+ * The entrance's own clock. The warm-up runs inside the sim's first frame, which can be slow; the
+ * entrance counts only frames after it, so a slow first frame does not use the filling up. Seconds
+ * into the entrance, exactly BAMBOO_PASSAGE.enter once it is over and from the start when the scene
+ * was not entered with a passage.
+ */
+class EntranceClock {
+  #arriving: boolean | undefined = undefined;
+  #seconds = 0;
+
+  advance(frame: SimFrame, ready: boolean): number {
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
+    if (!this.#arriving) return BAMBOO_PASSAGE.enter;
+    if (ready) this.#seconds += Math.max(0, frame.dt);
+    if (this.#seconds >= BAMBOO_PASSAGE.enter) {
+      this.#arriving = false;
+      return BAMBOO_PASSAGE.enter;
+    }
+    return this.#seconds;
+  }
+}
 
 interface Culm {
   readonly layer: number;
@@ -345,6 +388,10 @@ class BambooSim implements SceneSim {
   #clackAt = -60;
   #clackStrength = 0;
   #lastPourRipple = -1;
+  #restFill = 0;
+  #rushLeft = 0;
+  #leaving = false;
+  readonly #entrance = new EntranceClock();
 
   // The pointer.
   #pointerX: number | undefined;
@@ -369,15 +416,33 @@ class BambooSim implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
     this.#readKnobs(frame);
-    if (!this.#warm) {
+    const warming = !this.#warm;
+    if (warming) {
       this.#prewarm(aspect);
       this.#warm = true;
     }
+    // The entrance's clock starts after the warm-up frame; once over it is exactly BAMBOO_PASSAGE.enter.
+    const entering = this.#entrance.advance(frame, !warming);
+    const arriving = entering < BAMBOO_PASSAGE.enter;
+    if (warming && arriving) {
+      // The tube starts empty and fills to where the warm-up left it as the entrance ends.
+      this.#restFill = this.#fill;
+      this.#fill = 0;
+      this.#slosh = waterUp(0);
+    }
     this.#watchTriggers(frame.fired, aspect);
     this.#trackPointer(frame.pointer, frame.dt, aspect);
+    if (frame.passage.exit > 0 && !this.#leaving) {
+      this.#leaving = true;
+      this.#leave(aspect);
+    }
 
     const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), 0.25);
     if (advance > 0) this.#advance(advance, aspect);
+    // The water arrives with the stream and fills the tube (a floor: a "now" can still fill it faster).
+    if (arriving) {
+      this.#fill = Math.max(this.#fill, this.#restFill * smoothstep(BAMBOO_STREAM_START + STREAM_REACH, BAMBOO_PASSAGE.enter, entering));
+    }
     if (advance > 0 || this.#dirty) {
       this.#pack(aspect);
       this.#groveTexture.upload(this.#groveData);
@@ -498,17 +563,35 @@ class BambooSim implements SceneSim {
     return far * (SKEW_SIN - (aspect / 2 + 0.3) * SKEW_COS) - 2;
   }
 
-  #launchGust(from: number, origin: number, strength: number): void {
+  #launchGust(from: number, origin: number, strength: number, speed: number = windSpeed(this.#wind)): void {
     const tail = 4 + 3 * this.#random();
     this.#gusts.push({
       born: this.#clock,
       from,
       origin,
       heading: this.#wind < 0 ? -1 : 1,
-      speed: windSpeed(this.#wind),
+      speed,
       gain: strength / pulsePeak(tail),
       tail,
     });
+  }
+
+  /**
+   * The exit, as it begins: the spout rushes so the tube brims and tips at once (its clack is the
+   * last thing the grove does), a gust front sweeps the grove, and a couple of leaves let go.
+   */
+  #leave(aspect: number): void {
+    if (this.#period > 0) {
+      this.#gushLeft = GUSH_LIMIT;
+      this.#rushLeft = EXIT_RUSH_TIME;
+    }
+    if (this.#gustRate > 0) {
+      this.#launchGust(this.#gustStart(aspect), Number.NEGATIVE_INFINITY, Math.max(1, EXIT_GUST_SWAY / windSway(this.#wind)), EXIT_GUST_SPEED);
+    }
+    if (this.#leafAmount > 0) {
+      this.#release(aspect, false);
+      this.#release(aspect, false);
+    }
   }
 
   #scheduleGusts(aspect: number): void {
@@ -571,7 +654,13 @@ class BambooSim implements SceneSim {
         this.#gushLeft -= ht;
         if (this.#angle < BAMBOO_TUBE.rest - 0.15) this.#gushLeft = 0;
       }
-      poured += this.#stepTube(ht, steady + (gushing ? GUSH_RATE : 0), aspect);
+      let inflow = steady + (gushing ? GUSH_RATE : 0);
+      if (this.#rushLeft > 0) {
+        this.#rushLeft -= ht;
+        if (this.#angle < BAMBOO_TUBE.rest - 0.15) this.#rushLeft = 0;
+        inflow += EXIT_RUSH;
+      }
+      poured += this.#stepTube(ht, inflow, aspect);
     }
     this.#outflow = poured / total;
     if (this.#outflow > 0.3 && this.#clock - this.#lastPourRipple > RIPPLE_EVERY) {

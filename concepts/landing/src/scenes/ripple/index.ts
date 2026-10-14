@@ -6,7 +6,7 @@ import { choice, feature, range, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { rippleExperimentLabels } from "./layout.ts";
 import { rippleGlsl, rippleLights } from "./shader.ts";
-import { rippleSim } from "./sim.ts";
+import { RIPPLE_ENTER, RIPPLE_EXIT, rippleSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -38,6 +38,8 @@ export const rippleScene: SceneDef = {
     light: { title: "Light", blurb: "How the tank is seen." },
     manifold: { title: "Manifold mark", blurb: "An M-shaped dipper." },
   },
+  // Entrance: still water, then the dippers start and the first wavefronts spread across the tank. Exit: the dippers stop and the last waves run out.
+  passage: { enter: RIPPLE_ENTER, exit: RIPPLE_EXIT },
   glsl: rippleGlsl,
   entry: "sceneRipple",
   sim: rippleSim(params),

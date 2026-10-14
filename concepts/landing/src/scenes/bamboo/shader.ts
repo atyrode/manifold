@@ -9,6 +9,7 @@
 // The sim (sim.ts) moves the culms, the tube, the leaves and the ripples; its textures are described
 // there. Knobs read here: K_stems, K_mist, K_groveSeed, K_shafts, K_lantern, K_time, K_cycle,
 // K_rain, K_wind, K_mark (trigger 2 summons the M).
+import { glslFloat } from "../../shaders/glsl.ts";
 import {
   BAMBOO_BASIN,
   BAMBOO_CELLS,
@@ -20,10 +21,12 @@ import {
   BAMBOO_LAYERS,
   BAMBOO_LIP,
   BAMBOO_MAX_LEAVES,
+  BAMBOO_PASSAGE,
   BAMBOO_POST_X,
   BAMBOO_POUR,
   BAMBOO_RIPPLES,
   BAMBOO_SPOUT,
+  BAMBOO_STREAM_START,
   BAMBOO_STRIKE,
   BAMBOO_SWAY_HEIGHT,
   BAMBOO_TUBE,
@@ -75,6 +78,17 @@ const float BAMBOO_LANTERN_DEPTH = ${f(BAMBOO_LANTERN.depth)};
 const int BAMBOO_RIPPLES = ${BAMBOO_RIPPLES};
 const int BAMBOO_LEAVES = ${BAMBOO_MAX_LEAVES};
 
+// Passage (BAMBOO_PASSAGE, in seconds). The entrance: culms near the frame's edges start leaned out
+// of frame (BAMBOO_LEAN_IN metres of deflection at BAMBOO_SWAY_HEIGHT) and sway in, settling with a
+// small swing past upright, side by side layer by layer; the spout's first water leaves its lip at
+// BAMBOO_STREAM_START and falls into the tube. The exit: a gust front sweeps downwind across the
+// grove and leaves the culms bowed BAMBOO_LEAN_OUT metres.
+const float BAMBOO_ENTER = ${glslFloat(BAMBOO_PASSAGE.enter)};
+const float BAMBOO_EXIT = ${glslFloat(BAMBOO_PASSAGE.exit)};
+const float BAMBOO_STREAM_START = ${glslFloat(BAMBOO_STREAM_START)};
+const float BAMBOO_LEAN_IN = 4.5;
+const float BAMBOO_LEAN_OUT = 2.2;
+
 const vec3 BAMBOO_YOUNG = vec3(0.20, 0.54, 0.22);     // a young culm: jade
 const vec3 BAMBOO_OLD = vec3(0.50, 0.56, 0.22);       // an old one, gone olive-gold
 const vec3 BAMBOO_WAX = vec3(0.72, 0.78, 0.70);       // the white bloom below a young culm's nodes
@@ -115,6 +129,9 @@ float bambooRaySlant;  // the rays' angle from straight down, + falling toward -
 vec2 bambooLanternAt;  // the lantern's window, in screen units
 float bambooLanternLit;
 float bambooLanternFoot; // screen y of the lantern's foot
+float bambooEnterT;     // seconds into the entrance (BAMBOO_ENTER once arrived)
+float bambooExitT;      // seconds into the exit (0 unless leaving)
+bool bambooPassing;     // an entrance or exit is playing: false at rest, so every passage term is skipped
 
 // The mist as the sky lights it: dark cool jade low in the grove's depths, brightening to green-gold
 // up toward the canopy where the light comes in through the leaves, a little warmer on the sun's side,
@@ -206,6 +223,33 @@ vec3 bambooLeafColor(float tone, vec2 at, float z) {
   return col + BAMBOO_LEAF_LIT * bambooKey * (0.05 + 0.95 * bambooBeam) * behind * (0.3 + 0.5 * tone);
 }
 
+// The passage's lean of the culms (m of deflection at BAMBOO_SWAY_HEIGHT, the same bend as the sway)
+// of a stem standing at screen x xs in layer 'layer'; exactly 0 at rest. Stems are moved whole, per
+// culm, so their edges are hardened per cell like the sway's.
+// Entrance: stems in the outer half of the frame start leaned out of it, more the nearer the edge,
+// and sway in with a small swing past upright; the right edge a beat after the left, near rows first
+// (done by 2.75 s). Exit: a gust front crosses the grove downwind (upwind edge at 0.1 s, the far
+// edge by 1.4 s), each stem bowing to BAMBOO_LEAN_OUT with a little spring past it.
+float bambooPassLean(float xs, int layer) {
+  float fl = float(layer);
+  float lean = 0.0;
+  if (bambooEnterT < BAMBOO_ENTER) {
+    float edgeW = smoothstep(0.2, 1.0, clamp(abs(xs) / (0.5 * bambooAspect), 0.0, 1.0));
+    float delay = (xs > 0.0 ? 0.3 : 0.0) + 0.05 * fl;
+    float a = clamp((bambooEnterT - 0.15 - delay) / 2.1, 0.0, 1.0);
+    float e = a * a * (3.0 - 2.0 * a);
+    lean += (xs > 0.0 ? 1.0 : -1.0) * BAMBOO_LEAN_IN * edgeW * (1.0 - e) * cos(3.0 * e);
+  }
+  if (bambooExitT > 0.0) {
+    float heading = K_wind < 0.0 ? -1.0 : 1.0;
+    float pos = clamp(0.5 + heading * xs / bambooAspect, 0.0, 1.0);
+    float b = clamp((bambooExitT - 0.1 - 0.55 * pos - 0.04 * fl) / 0.7, 0.0, 1.0);
+    float c = b - 1.0;
+    lean += heading * BAMBOO_LEAN_OUT * (1.0 + 2.3 * c * c * c + 1.3 * c * c);
+  }
+  return lean;
+}
+
 // The chance that a cell of layer i holds a culm, for a culm at screen x: thinned by the stems knob;
 // none of the second layer stand just in front of the lantern, and few behind the water clock.
 float bambooOccupancy(int i, float xs) {
@@ -244,6 +288,12 @@ vec4 bambooCulms(vec2 q, int i, float tm, out float height, out float depth, out
   // the local sway moved it, so even a storm's bend of more than a cell finds its stem.
   float local = 0.0;
   if (uSimOn.x > 0.5) local = texture(uSim0, vec2((xw / sp + 0.5 * cells) / cells, (float(i) + 0.5) / float(BAMBOO_LAYERS))).r;
+  if (bambooPassing) {
+    // The passage's lean moves a stem by a good deal more than the sway, and by more at the edges:
+    // find where this point stood before it, twice over, to land in the right cell.
+    float leanHere = bambooPassLean(q.x, i);
+    local += bambooPassLean(q.x - leanHere * bend / z, i);
+  }
   float k0 = floor((xw - local * bend) / sp);
   float wind = abs(K_wind);
   float windDir = K_wind < 0.0 ? -1.0 : 1.0;
@@ -266,6 +316,7 @@ vec4 bambooCulms(vec2 q, int i, float tm, out float height, out float depth, out
     vec2 sim = vec2(0.0);
     if (uSimOn.x > 0.5) sim = texelFetch(uSim0, ivec2(clamp(int(k) + BAMBOO_CELLS / 2, 0, BAMBOO_CELLS - 1), i), 0).rg;
     // Of the near culm we only see its foot, which hardly moves however its top sways.
+    if (bambooPassing) sim.x += bambooPassLean(x0 / z, i);
     if (i == 0) sim.x *= 0.4;
     float lean = (fract(hk * 113.9) - 0.5) * 0.07;
     float bow = (fract(hk * 61.3) - 0.5) * 0.004;
@@ -406,7 +457,7 @@ vec4 bambooSprays(vec2 q, int i, float tm) {
     sway = texture(uSim0, vec2((w.x / BAMBOO_SPACING[i] + 0.5 * cells) / cells, (float(i) + 0.5) / float(BAMBOO_LAYERS))).rg;
   }
   // The sprays hang from tops far above the frame, carried along by a share of the stems' sway.
-  w.x -= 0.2 * sway.x;
+  w.x -= 0.2 * sway.x + (bambooPassing ? 0.15 * bambooPassLean(q.x, i) : 0.0);
   float gust = sway.y;
   float wind = abs(K_wind);
   float windDir = K_wind < 0.0 ? -1.0 : 1.0;
@@ -717,6 +768,14 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
   float fill = st.y;
   float pour = st.z;
   float flow = st.w;
+  // Arriving: the spout's first water leaves its lip, falls as a thin line (its head a drop's free
+  // fall) into the tube's mouth, and thickens to the steady trickle.
+  float streamFall = 1e3;
+  if (passageIn() < 1.0) {
+    float ts = max(passageIn() * BAMBOO_ENTER - BAMBOO_STREAM_START, 0.0);
+    flow *= smoothstep(0.0, 0.12, ts);
+    streamFall = 0.004 + 0.5 * BAMBOO_POUR_GRAVITY * ts * ts;
+  }
   vec2 cs = vec2(cos(theta), sin(theta));
   vec2 nrm = vec2(-cs.y, cs.x);
   vec3 lantern = bambooLanternLight(p, BAMBOO_DEVICE_DEPTH);
@@ -783,7 +842,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       if (a > BAMBOO_FRONT - BAMBOO_CUT) yEnd -= BAMBOO_RADIUS;
     }
     float drop = BAMBOO_LIP.y - d.y;
-    if (drop > 0.0 && d.y > yEnd) {
+    if (drop > 0.0 && d.y > yEnd && drop < streamFall) {
       float x = BAMBOO_LIP.x - 0.006 * sqrt(drop / 0.04);
       float hw = max(0.0035 * sqrt(flow), 0.9 * aa);
       float cv = hardEdge(1.0 - smoothstep(hw - 0.6 * aa, hw + 0.6 * aa, abs(d.x - x)));
@@ -792,7 +851,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
     }
     float bead = 1.0 - smoothstep(0.0045 - aa, 0.0045 + aa, length((d - BAMBOO_LIP - vec2(0.0, -0.002)) * vec2(1.0, 0.8)));
     col = mix(col, water * 1.2, bead);
-    splashAt = vec2(BAMBOO_LIP.x - 0.006 * sqrt(max(BAMBOO_LIP.y - yEnd, 0.0) / 0.04), yEnd + 0.004);
+    if (BAMBOO_LIP.y - yEnd < streamFall) splashAt = vec2(BAMBOO_LIP.x - 0.006 * sqrt(max(BAMBOO_LIP.y - yEnd, 0.0) / 0.04), yEnd + 0.004);
   }
 
   // The tube (tsutsu): cane on a pivot, closed at the back by a node, its mouth cut obliquely so the
@@ -998,6 +1057,12 @@ float bambooDrip(vec2 q, float tm, float amount, float z, float salt) {
 Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   bambooAspect = aspect;
+  // Passage: only while an entrance or exit plays; at rest every term it feeds is skipped.
+  float passIn = passageIn();
+  float passOut = passageOut();
+  bambooPassing = passIn < 1.0 || passOut > 0.0;
+  bambooEnterT = passIn * BAMBOO_ENTER;
+  bambooExitT = passOut * BAMBOO_EXIT;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   float tm = uMotionTime;
   Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));

@@ -32,6 +32,16 @@
 // Knobs: K_size, K_period (surf); K_glow, K_sparkles, K_stir, K_fish (bioluminescence; fish fire
 // on trigger 0); K_time, K_cycle (sky); K_rain, K_fog, K_wind, K_lightning (weather; lightning on
 // trigger 1); K_mark (the M in the sand). uWeather.x: how wet the beach is from the rain.
+//
+// The passage is played in the beach itself. The whole surf (every crest, bore, swash and the
+// waterline with them) is one rigid pattern, and the entrance has it stand out to sea (SHORE_SURGE_IN
+// metres) and run in on a decelerating curve, the way a swash runs up the sand and stops, while the
+// plankton in the disturbed water flashes, and the camera, which starts tilted down at the sand,
+// comes up to the horizon with a touch of give. The exit draws the pattern back out to sea
+// (SHORE_SURGE_OUT), the sand it uncovers still wet and, where the plankton is stranded, sparking.
+// The camera is a vertical lens shift of the whole frame (the sky, the moon, the lightning and the
+// rain are all built from the shifted uv, so they stay in one projection with the sea). All of it is
+// exactly 0 at rest, where uv == screenUv, and none of it touches the waves' own clock.
 
 export const shoreGlsl = `
 const float SHORE_HORIZON = 0.6;  // screen height of the horizon
@@ -48,6 +58,9 @@ const float SHORE_FACING = 0.506;
 const vec2 SHORE_MARK = vec2(2.0, 7.5);       // the M's centre on the sand (x, z)
 const vec2 SHORE_MARK_SIZE = vec2(1.3, 3.0);  // drawn long, like road lettering, so it reads from here
 const vec3 SHORE_BIO = vec3(0.16, 0.9, 1.0);  // Noctiluca blue
+const float SHORE_SURGE_IN = 10.0;   // passage: metres the surf stands out to sea as the entrance begins
+const float SHORE_SURGE_OUT = 9.0;   // passage: metres it has drawn back by the end of the exit
+const float SHORE_TILT = 0.085;      // passage: the camera's tilt down at the sand at the start, in screen heights
 
 struct ShoreWave {
   float zc;     // crest, or the bore's front once broken (metres ahead)
@@ -366,7 +379,48 @@ float shoreFish(vec2 p, float age, float seed, float camX, float halfSpan, float
   return wake;
 }
 
-Shade sceneShore(vec2 uv, vec2 cell, float t) {
+// The passage, in the beach (see the header). How far out to sea of its place the whole surf stands,
+// in metres: it runs in on a decelerating curve like a swash, and goes back out accelerating then
+// easing, as the sea is drawn out. Exactly 0 at rest.
+float shoreSurge() {
+  float pin = passageIn();
+  float pout = passageOut();
+  float surge = 0.0;
+  if (pin < 1.0) {
+    float u = 1.0 - pin;
+    surge += SHORE_SURGE_IN * u * u;
+  }
+  if (pout > 0.0) surge += SHORE_SURGE_OUT * pout * pout * (3.0 - 2.0 * pout);
+  return surge;
+}
+
+// The camera's vertical lens shift in screen heights: starts tilted down at the sand (the frame's
+// content is read lower in uv) and comes up to the horizon, with a little overshoot. 0 at rest.
+float shoreLens() {
+  float pin = passageIn();
+  if (pin >= 1.0) return 0.0;
+  float u = clamp((pin - 0.04) / 0.96, 0.0, 1.0) - 1.0;
+  float settle = 1.0 + 2.7 * u * u * u + 1.7 * u * u; // ease out with a little overshoot
+  return -SHORE_TILT * (1.0 - settle);
+}
+
+// The plankton's flash in the disturbed water: the surf running in lights it as it goes, and the
+// water drawn back out lights a little. Multiplies the surf's light as 1 + 1.4 * flash. 0 at rest.
+float shoreFlash() {
+  float pin = passageIn();
+  float pout = passageOut();
+  float flash = 0.0;
+  if (pin < 1.0) flash += smoothstep(0.1, 0.3, pin) * (1.0 - smoothstep(0.38, 0.9, pin));
+  if (pout > 0.0) flash += 0.6 * smoothstep(0.0, 0.3, pout) * (1.0 - smoothstep(0.6, 1.0, pout));
+  return flash;
+}
+
+Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
+  // The camera's tilt (the passage): everything of the world is built from uv; only the pointer's
+  // wake, which lives in the frame, reads screenUv.
+  vec2 uv = screenUv;
+  float lens = shoreLens();
+  if (lens != 0.0) uv.y += lens;
   float m = uMotion;
   float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
@@ -450,12 +504,14 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     float camX = uPointer.x * 0.35 * m; // a step along the beach with the pointer
     float zPlane = min(SHORE_EYE / q, 4000.0);
     float size = mix(0.35, 1.5, K_size);
+    float surge = shoreSurge(); // the passage: how far out to sea the whole surf stands (0 at rest)
     float kNow = floor(tm / K_period);
 
     // Oldest first, which is nearest the beach first.
     ShoreWave waves[SHORE_WAVES];
     for (int i = 0; i < SHORE_WAVES; i++) {
       waves[i] = shoreWave(kNow - float(SHORE_WAVES - 1 - i), camX, slopeX, tm, K_period, size);
+      waves[i].zc += surge; // every crest and bore moves out whole, with its swash (e below)
     }
 
     // Where the ray meets the water: test each wave's hump, nearest first, between where the ray
@@ -493,7 +549,8 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     // Ground covered by one cell, depthwise and across: for antialiasing and level of detail.
     float cellZ = hz * hz / (SHORE_EYE * focal * uRes.y);
     float cellX = hz / (focal * uRes.y);
-    float e = SHORE_LINE - hz; // metres up the beach from the still-water line
+    float e0 = SHORE_LINE - hz;  // metres up the beach from the still-water line, where the beach is
+    float e = e0 + surge;        // the same for the surf's pattern, which stands surge metres further out
 
     // The waterline is the most advanced of the bores coming in and the swashes running up. Each
     // swash also leaves a thin line of foam at the top of its run, until a later one washes over it,
@@ -579,7 +636,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
 
       // Water: dark blue offshore, turquoise over the sand in the shallows (muted at night), the
       // sand itself showing through the thin sheet of the swash.
-      float shallow = (1.0 - smoothstep(SHORE_LINE, SHORE_LINE + 14.0, hz)) * mix(0.35, 1.0, sky.day);
+      float shallow = (1.0 - smoothstep(SHORE_LINE, SHORE_LINE + 14.0, hz - surge)) * mix(0.35, 1.0, sky.day);
       vec3 body = mix(vec3(0.01, 0.06, 0.12), vec3(0.04, 0.38, 0.38), shallow) * lit;
       body = mix(body, vec3(0.36, 0.3, 0.23) * lit, (1.0 - clamp(edge / 2.2, 0.0, 1.0)) * 0.85);
       vec3 sea = mix(body, mirror, fres) + shine;
@@ -677,7 +734,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       // bores, tearing into streaks as they age.
       float trailFoam = 0.0;
       if (trail > 0.01) {
-        trailFoam = shoreFoamCover(fbmLod(vec2(hx * 0.45, (hz + 0.6 * tm) * 1.4), max(cellX * 0.45, cellZ * 1.4), 4), trail);
+        trailFoam = shoreFoamCover(fbmLod(vec2(hx * 0.45, (hz - surge + 0.6 * tm) * 1.4), max(cellX * 0.45, cellZ * 1.4), 4), trail);
         surf += trailFoam * 0.12;
       }
 
@@ -712,6 +769,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       // Rain on the water: ring crests catching the grey light, and where there is plankton every
       // drop that strikes lights a spark.
       col += ring * 0.25 * (mirror + air);
+      surf *= 1.0 + 1.4 * shoreFlash();
       glow = surf * (0.55 + 0.7 * churn) + ring * 0.25;
       if (rain > 0.0) glow += shoreRainSparks(gp, tm, mix(0.03, 0.22, rain), SHORE_EYE * focal * uRes.y, th) * 0.8;
 
@@ -727,7 +785,7 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       // glow, and near the water the plankton's light), brighter the more the view grazes it;
       // puddles gather in its hollows, drops ring in them and splash all over the near beach.
       float usual = 0.9 + 1.3 * size;
-      float soaked = 1.0 - smoothstep(0.4, 1.0, e / usual);
+      float soaked = 1.0 - smoothstep(0.4, 1.0, e0 / usual);
       float film = exp(-drained / 2.5);
       wet = max(soaked * 0.55, exp(-drained / 6.0));
       float rained = uWeather.x;
@@ -785,6 +843,11 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
       if (K_sparkles > 0.0) {
         glow += shoreSparks(g, tm, K_sparkles * 0.9) * exp(-drained / 4.0) * 1.3;
       }
+      // Drawing back out to sea (the exit): the sand the water has just left, behind its edge, is
+      // alive with bursting bubbles of stranded plankton.
+      if (surge > 0.0 && passageOut() > 0.0 && K_sparkles > 0.0) {
+        glow += shoreSparks(g, tm, K_sparkles * 0.9) * exp(-max(e, 0.0) / 1.5) * smoothstep(0.0, 0.2, passageOut()) * 1.3;
+      }
       glow += ring * 0.4 * film;
       // Drops splashing: crowns of 3-6 cm, brightest on wet, packed sand and in the puddles (dry
       // sand swallows them), and lit blue where the backwash has just left plankton stranded. Their
@@ -806,9 +869,9 @@ Shade sceneShore(vec2 uv, vec2 cell, float t) {
     // glows solid; an older one breaks into filaments as it fades. Only where there is plankton:
     // in the water, and stranded on wet sand.
     if (K_stir > 0.5 && uSimOn.x > 0.5) {
-      float trail = textureLod(uSim0, uv, 0.0).r;
+      float trail = textureLod(uSim0, screenUv, 0.0).r;
       if (trail > 0.004) {
-        vec2 s = vec2(uv.x * aspect, uv.y * 2.2) * 7.0;
+        vec2 s = vec2(screenUv.x * aspect, screenUv.y * 2.2) * 7.0;
         vec2 warp = s + 1.6 * vec2(vnoise(s * 0.5 + vec2(tm * 0.3, 3.1)), vnoise(s * 0.5 + vec2(7.7, -tm * 0.27)));
         float ridge = 1.0 - abs(2.0 * vnoise(warp * 1.8) - 1.0);
         float stir = trail * mix(smoothstep(0.6, 0.92, ridge), 1.0, smoothstep(0.4, 0.95, trail));

@@ -8,7 +8,7 @@ import { feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { bambooGlsl } from "./shader.ts";
-import { bambooSim } from "./sim.ts";
+import { BAMBOO_PASSAGE, bambooSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   feature("clock", "clock", "water clock", true, "seconds", 20, "A bamboo tube on a pivot fills slowly from the spout, lifts off its stone, tips past its balance point to pour into the basin, then swings back and clacks: the grove's heartbeat, about this many seconds apart. Off: the spout runs dry and the tube rests. Now: the spout gushes and it tips at once.", { min: 10, max: 40, step: 1, trigger: 0 }),
@@ -41,5 +41,8 @@ export const bambooScene: SceneDef = {
   },
   glsl: bambooGlsl,
   entry: "sceneBamboo",
+  // The culms sway in from the frame edges and the spout starts to run; on leaving, the tube brims,
+  // tips and clacks while a gust bows the grove.
+  passage: BAMBOO_PASSAGE,
   sim: bambooSim(params),
 };

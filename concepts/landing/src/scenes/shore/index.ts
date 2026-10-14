@@ -6,7 +6,7 @@ import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { shoreGlsl } from "./shader.ts";
-import { shoreSim } from "./sim.ts";
+import { SHORE_PASSAGE, shoreSim } from "./sim.ts";
 
 const params: ParamDef[] = [
   range("surf", "size", "wave size", 0.5, "How tall the breakers stand: small ones spill close in, big ones curl over further out and run higher up the sand."),
@@ -39,6 +39,9 @@ export const shoreScene: SceneDef = {
   glsl: shoreGlsl,
   entry: "sceneShore",
   sim: shoreSim,
+  // Entrance: the camera settles from the sand up to the horizon as the surf, stood out to sea, runs
+  // in and up the beach, the plankton flashing blue as it comes. Exit: the surf draws back out to sea.
+  passage: SHORE_PASSAGE,
   // A sunlit beach is bright sand and sea: the copy needs dark ink on it, from the time the sun is
   // about 12 degrees up (full daylight in the sky library) until it sinks back there. With the day
   // cycle running the light keeps changing, so the page stays on the night theme. The shader's ink

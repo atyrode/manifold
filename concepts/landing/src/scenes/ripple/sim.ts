@@ -35,6 +35,13 @@
 // stepped PREWARM times, so the first frame looks finished. A scheduled change seeds the next tank
 // PREP seconds early and runs it PREP_RATE times faster, so it has settled for real by the time it
 // crossfades in over FADE seconds.
+//
+// The passage (RIPPLE_ENTER, RIPPLE_EXIT). A sim built while the scene comes in leaves the first
+// tank's water flat (no seed, no prewarm), the dippers off; they swell up over a few beats and the
+// first wavefronts spread out, the tank run in time-lapse that eases back to its own pace as the
+// entrance ends. On the way out the dippers stop and the last waves run out in time-lapse to the
+// sponges (the Doppler dipper's carriage halts). It is the same water at the same step, only more
+// steps a frame and the dippers' strength differ, and at rest (no passage) neither is touched.
 import type { ParamDef } from "../../params.ts";
 import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -122,6 +129,23 @@ const HOLD = [150, 40] as const;
 /** Most steps a frame takes for the shown tank and for one being prepared. */
 const MAX_STEPS = 4;
 const MAX_PREP_STEPS = 10;
+/**
+ * The scene's passage (index.ts `passage`): seconds the entrance and the exit take. Both play the
+ * tank in time-lapse, since its waves crawl at 0.028 short sides a second: the entrance starts from
+ * still water, the dippers swell up over PASSAGE_SWELL beats and the first wavefronts rush out,
+ * slowing to the tank's own pace as the entrance ends; the exit stops the dippers over
+ * PASSAGE_STOP of a beat and the last waves run out ever faster to the sponges. The water is the
+ * same simulation throughout; only how many steps a frame takes (and the dippers' strength) differs.
+ */
+export const RIPPLE_ENTER = 3;
+export const RIPPLE_EXIT = 1.4;
+/** The time-lapse's top rate (× real time) and the most steps a frame takes during a passage. */
+const PASSAGE_RATE = 22;
+const PASSAGE_STEPS = 24;
+/** Beats the dippers take to swell up, and to stop; the share of the exit the time-lapse takes to reach its top rate. */
+const PASSAGE_SWELL = 3;
+const PASSAGE_STOP = 0.5;
+const EXIT_EASE = 0.35;
 /** A pebble from a tap and a drip from the faucet: height, radius in wavelengths. */
 const PEBBLE = { height: -3, radius: 0.3 } as const;
 const DRIP = { height: -1.8, radius: 0.22 } as const;
@@ -551,6 +575,11 @@ function mulberry32(seed: number): () => number {
 
 const lerp = (range: readonly [number, number], t: number): number => range[0] + (range[1] - range[0]) * t;
 
+const smooth = (from: number, to: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - from) / (to - from)));
+  return t * t * (3 - 2 * t);
+};
+
 /** The tank's water and its experiments on the GPU. */
 class RippleLab implements SceneSim {
   readonly #gpu: GpuCompute;
@@ -605,6 +634,17 @@ class RippleLab implements SceneSim {
   #grabbed: number | undefined;
   #finger: Point | undefined;
   #pressedAt: Point = { x: 0, y: 0 };
+  // The passage (see RIPPLE_ENTER): whether this sim is built for an entrance (decided on its first
+  // frame), the seconds of it that have run on the sim's own clock (the building frame is not
+  // counted, so a slow first frame does not use the entrance up), the time-lapse's rate now, how far
+  // the dippers have swelled (1 at rest), and the beats run since the dippers started or stopped.
+  #arriving: boolean | undefined;
+  #arrived = 0;
+  #leaving = false;
+  #rate = 1;
+  #drive = 1;
+  #driveAtExit = 1;
+  #lapse = 0;
 
   constructor(gpu: GpuCompute, at: Slots, defaults: readonly number[]) {
     this.#gpu = gpu;
@@ -628,12 +668,18 @@ class RippleLab implements SceneSim {
     this.#frameSize[1] = physics.frame.height;
 
     let tanks = this.#tanks;
+    let created = false;
     if (!tanks) {
+      created = true;
       tanks = [new Tank(this.#gpu, width, height), new Tank(this.#gpu, width, height)];
       this.#tanks = tanks;
       const fixed = this.#fixed(frame);
       const first = this.#value(frame, this.#at.mark) > 0 ? MARK : (fixed ?? TWO);
-      this.#start(tanks[0], first, 0, PREWARM);
+      // Entered through a passage the water starts out still, the dippers off; otherwise the
+      // experiment is seeded and prewarmed so the first frame looks finished.
+      this.#arriving = frame.passage.enter < 1 && frame.motion > 0;
+      if (this.#arriving) this.#drive = 0;
+      this.#start(tanks[0], first, 0, this.#arriving ? 0 : PREWARM, this.#arriving);
       this.#hold = this.#holdFor(frame);
       this.#experimentKnob = Math.round(this.#value(frame, this.#at.experiment));
       this.#markOn = this.#value(frame, this.#at.mark) > 0;
@@ -650,6 +696,7 @@ class RippleLab implements SceneSim {
     }
 
     const seconds = Math.max(0, frame.dt) * Math.max(0, frame.motion);
+    this.#passage(frame, seconds, created);
     this.#schedule(frame, seconds);
     this.#pebbleCount = 0;
     this.#pebbles.fill(0);
@@ -665,9 +712,13 @@ class RippleLab implements SceneSim {
       if (fading) this.#touch.run(coming.state, { textures: { uState: coming.state } });
     }
     this.#easeTrack(shown, seconds);
-    this.#advance(shown, seconds, MAX_STEPS, this.#finger);
-    if (fading) this.#advance(coming, seconds, MAX_STEPS, undefined);
-    else if (this.#preparing) this.#advance(coming, seconds * PREP_RATE, MAX_PREP_STEPS, undefined);
+    const passing = this.#arriving === true || this.#leaving;
+    this.#advance(shown, seconds * this.#rate, passing ? PASSAGE_STEPS : MAX_STEPS, this.#finger, this.#drive);
+    if (fading) {
+      // The coming tank is a fresh experiment, at full strength, unless the scene is leaving.
+      if (this.#leaving) this.#advance(coming, seconds * this.#rate, PASSAGE_STEPS, undefined, this.#drive);
+      else this.#advance(coming, seconds, MAX_STEPS, undefined, 1);
+    } else if (this.#preparing) this.#advance(coming, seconds * PREP_RATE, MAX_PREP_STEPS, undefined, 1);
     this.#render(frame, shown, this.#finger);
     if (fading) this.#render(frame, coming, undefined);
     this.#publish(shown, coming);
@@ -676,6 +727,51 @@ class RippleLab implements SceneSim {
 
   dispose(): void {
     this.#gpu.dispose();
+  }
+
+  /**
+   * The passage's rate (× real time) and the dippers' strength for this frame, in `#rate` and
+   * `#drive`: both 1 at rest. Entering: the clock runs on frame time once the tank is built; the
+   * rate rises from 1 to PASSAGE_RATE and back as a sine's square, and the dippers swell up over
+   * PASSAGE_SWELL beats of the time-lapsed water. Leaving (the exit's own progress): the rate rises
+   * to PASSAGE_RATE over the first EXIT_EASE of it, and the dippers stop over PASSAGE_STOP of a beat.
+   */
+  #passage(frame: SimFrame, seconds: number, created: boolean): void {
+    const beat = TAU / this.#need().omega;
+    if (frame.passage.exit > 0) {
+      if (!this.#leaving) {
+        this.#leaving = true;
+        this.#arriving = false;
+        this.#lapse = 0;
+        this.#driveAtExit = this.#drive;
+      }
+      this.#rate = 1 + (PASSAGE_RATE - 1) * smooth(0, EXIT_EASE, Math.min(1, frame.passage.exit));
+      this.#lapse += seconds * this.#rate;
+      this.#drive = this.#driveAtExit * (1 - smooth(0, PASSAGE_STOP * beat, this.#lapse));
+      return;
+    }
+    if (this.#leaving) {
+      // The exit was called off: the dippers are back at full strength.
+      this.#leaving = false;
+      this.#rate = 1;
+      this.#drive = 1;
+      return;
+    }
+    if (!this.#arriving) {
+      this.#rate = 1;
+      this.#drive = 1;
+      return;
+    }
+    if (!created) this.#arrived += Math.max(0, frame.dt);
+    if (this.#arrived >= RIPPLE_ENTER) {
+      this.#arriving = false;
+      this.#rate = 1;
+      this.#drive = 1;
+      return;
+    }
+    this.#rate = 1 + (PASSAGE_RATE - 1) * Math.sin((Math.PI * this.#arrived) / RIPPLE_ENTER) ** 2;
+    if (!created) this.#lapse += seconds * this.#rate;
+    this.#drive = smooth(0, PASSAGE_SWELL * beat, this.#lapse);
   }
 
   #value(frame: SimFrame, index: number): number {
@@ -806,8 +902,11 @@ class RippleLab implements SceneSim {
     this.#grabbed = undefined;
   }
 
-  /** Seed `tank` with `experiment`'s steady state at `time` seconds into it, then run it `prewarm` steps. */
-  #start(tank: Tank, experiment: Experiment, time: number, prewarm: number): void {
+  /**
+   * Seed `tank` with `experiment`'s steady state at `time` seconds into it, then run it `prewarm`
+   * steps; `still` leaves the water flat instead (the dippers have yet to start).
+   */
+  #start(tank: Tank, experiment: Experiment, time: number, prewarm: number, still = false): void {
     const physics = this.#need();
     tank.experiment = experiment;
     tank.time = time;
@@ -818,6 +917,12 @@ class RippleLab implements SceneSim {
     tank.layoutKey = "";
     const layout = this.#ensureLayout(tank);
     this.#seedUniforms(layout, tank, physics);
+    if (still) {
+      this.#points.fill(0);
+      this.#drives.fill(0);
+      this.#movingDrive.fill(0);
+      this.#mark.fill(0);
+    }
     this.#seed.run(tank.state, {
       uniforms: {
         uFrame: this.#frameSize,
@@ -839,7 +944,7 @@ class RippleLab implements SceneSim {
       },
     });
     this.#runMedia(tank, layout, physics);
-    for (let i = 0; i < prewarm; i++) this.#stepTank(tank, undefined);
+    for (let i = 0; i < prewarm; i++) this.#stepTank(tank, undefined, 1);
   }
 
   #need(): Physics {
@@ -945,34 +1050,39 @@ class RippleLab implements SceneSim {
     if (mark) this.#mark.set([mark.x, mark.y, mark.height, mark.amp]);
   }
 
-  /** Step a tank through `seconds` of its time, at most `most` steps (a slow machine's tank runs slow). */
-  #advance(tank: Tank, seconds: number, most: number, finger: Point | undefined): void {
+  /**
+   * Step a tank through `seconds` of its time, at most `most` steps (a slow machine's tank runs
+   * slow), its dippers at `gain` of their strength.
+   */
+  #advance(tank: Tank, seconds: number, most: number, finger: Point | undefined, gain: number): void {
     const physics = this.#need();
     tank.pending += seconds / physics.step;
     const steps = Math.min(Math.floor(tank.pending), most);
-    for (let i = 0; i < steps; i++) this.#stepTank(tank, finger);
+    for (let i = 0; i < steps; i++) this.#stepTank(tank, finger, gain);
     tank.pending = Math.min(tank.pending - steps, 0.999);
   }
 
-  /** One step: move the dippers to where they are now and push the water. */
-  #stepTank(tank: Tank, finger: Point | undefined): void {
+  /** One step: move the dippers to where they are now and push the water, the dippers at `gain` of their strength. */
+  #stepTank(tank: Tank, finger: Point | undefined, gain: number): void {
     const physics = this.#need();
     const layout = tank.layout;
     if (!layout) return;
-    tank.time += physics.step;
+    // The Doppler dipper's carriage stands still while the last waves run out.
+    if (!this.#leaving) tank.time += physics.step;
     tank.phase = (tank.phase + physics.omega * physics.step) % TAU;
     const C2 = physics.courant * physics.courant;
     const sigma = SIGMA * physics.n;
     // Pushes per step for a ring 1 high a wavelength out, and for plane waves 1 high.
-    const pointPush = (4 * C2) / (sigma * sigma);
-    const linePush = (2 * physics.omega * physics.step * physics.courant) / (sigma * Math.sqrt(Math.PI));
+    const pointUnit = (4 * C2) / (sigma * sigma);
+    const pointPush = pointUnit * gain;
+    const linePush = ((2 * physics.omega * physics.step * physics.courant) / (sigma * Math.sqrt(Math.PI))) * gain;
     this.#dippers.fill(0);
     this.#places(tank).forEach((place, i) => {
       if (i >= DIPPERS - 1) return;
       const amp = layout.dippers[i]?.amp ?? layout.track?.amp ?? 0;
       this.#dippers.set([place.x, place.y, amp * pointPush, 0], i * 4);
     });
-    if (finger) this.#dippers.set([finger.x, finger.y, FINGER * pointPush, 0], (DIPPERS - 1) * 4);
+    if (finger) this.#dippers.set([finger.x, finger.y, FINGER * pointUnit, 0], (DIPPERS - 1) * 4);
     const bar = layout.bar;
     if (bar) this.#bar.set([bar.ax, bar.ay, bar.bx, bar.by]);
     const mark = layout.mark;

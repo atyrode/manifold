@@ -5,7 +5,7 @@ import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { pearlGlsl, pearlPalettes } from "./shader.ts";
-import { pearlForcings, pearlSim } from "./sim.ts";
+import { PEARL_ENTER, PEARL_EXIT, pearlForcings, pearlSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("tank", "forcing", "currents", pearlForcings.map((label, value) => ({ label, value })), 0, "What keeps the fluid moving. Turntable: the tank slowly turns an eighth of a turn, rests and turns back; the fluid lags behind the glass and curls off its walls. Convection: the tank stands upright over a gentle heater; warm fluid rises in plumes and rolls over. Rods: three glass rods trade places in a slow braid, folding the fluid like taffy."),
@@ -37,6 +37,8 @@ export const pearlScene: SceneDef = {
   glsl: pearlGlsl,
   entry: "scenePearl",
   sim: pearlSim(params),
+  // Entrance: the tank stands calm and uniform until a glass rod is drawn in from the left edge and stirs it, and the satin currents unfold behind it. Exit: a strong swirl sweeps everything round.
+  passage: { enter: PEARL_ENTER, exit: PEARL_EXIT },
   // Pearl is a light fluid: the page copy goes dark on it (the shader's `pagePaper()` follows this).
   theme: paletteTheme(params, "palette", (palette) => pearlPalettes[palette]?.paper === true),
 };

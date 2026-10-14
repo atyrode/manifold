@@ -14,6 +14,11 @@
 // Each burns down over minutes (the stick's ash curling and dropping into the dish), goes out, and
 // a fresh one is set down and lit (trigger 1: at once).
 //
+// Entering, the room starts empty: the ember takes light and the thread of smoke is drawn up out of
+// it (Plume.#rise) to fray into the veils, the fluid carrying it on. Leaving, a draught sweeps
+// through from the left, cuts the ember's smoke off and carries the thread and veils off (Plume.#blow).
+// Without a passage the scene opens on the seeded, prewarmed plume as ever (INCENSE_PASSAGE).
+//
 // Textures for the shader (shader.ts):
 //   uSim0  the dye, rgba16f over the frame: r smoke, g heat (negative: the backflow's cold smoke),
 //          b fresh smoke (faded faster than r, so b / r says how young the smoke is), a unused
@@ -253,6 +258,63 @@ const DOOR_FIRST = 45;
 const PREWARM_DT = 0.05;
 const PREWARM_STEPS = 48;
 const PREWARM_MS = 150;
+
+// ---- the passage -------------------------------------------------------------------------------
+
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage), both played by the simulation.
+ * Entrance: the room starts empty, the ember takes light, and the smoke thread climbs out of it
+ * (Plume.#rise draws its head up, the fluid carries it on) until it frays into the veils under the
+ * ceiling. Exit: a draught sweeps through the room from the left (Plume.#blow), shears the thread
+ * through above the ember and carries the veils off to the right.
+ */
+export const INCENSE_PASSAGE: { enter: number; exit: number } = { enter: 3, exit: 1.5 };
+
+/** Shares of the entrance: the ember takes light from the first to the second; the thread's head climbs between the next two. */
+const KINDLE_FROM = 0.06;
+const KINDLE_TO = 0.36;
+const RISE_FROM = 0.22;
+const RISE_TO = 0.92;
+/** Where the head climbs to (frame heights, up in the layered air under the ceiling). */
+const RISE_TOP = 0.88;
+/** The thread at its foot: half width, how much it flares, and the upward speed it is drawn with (as in seedPlume) over this half width. */
+const THREAD_W = 0.0035;
+const THREAD_FLARE = 0.008;
+const THREAD_LIFT = 0.06;
+const THREAD_LIFT_W = 0.02;
+/** The head is drawn in steps of this many frame heights, at most this many a frame (a slow frame catches up over the next). */
+const RISE_STEP = 0.005;
+const RISE_MAX_STEPS = 80;
+/** Veils are laid from this height above the ember, a row every VEIL_STEP, each of this many soft patches across. */
+const VEIL_FROM = 0.22;
+const VEIL_STEP = 0.02;
+const VEIL_BLOBS = 5;
+
+/** The exit's draught: speed (frame heights per second), how firmly the air follows, and shares of the exit: it rises over, its front crosses the room in, it cuts the ember's smoke off in. */
+const DRAUGHT_SPEED = 0.9;
+const DRAUGHT_RATE = 5;
+const DRAUGHT_RISE = 0.25;
+const DRAUGHT_SWEEP = 0.3;
+const DRAUGHT_BREAK = 0.18;
+
+/** The entrance's beats as GLSL defines, for the analytic plume (shader.ts) that stands in without float targets. */
+export const incensePassageGlsl = `
+#define INCENSE_RISE_FROM ${glslFloat(RISE_FROM)}
+#define INCENSE_RISE_TO ${glslFloat(RISE_TO)}
+#define INCENSE_RISE_TOP ${glslFloat(RISE_TOP)}
+#define INCENSE_BREAK ${glslFloat(DRAUGHT_BREAK)}
+`;
+
+/** How far the ember has taken light, 0..1, at this progress of the entrance. */
+function kindle(progress: number): number {
+  return smoothstep(KINDLE_FROM, KINDLE_TO, progress);
+}
+
+/** How far the thread's head has climbed above a source at height sourceY, at this progress of the entrance (fast out of the ember, easing in under the ceiling). */
+function riseHead(progress: number, sourceY: number): number {
+  const s = clamp((progress - RISE_FROM) / (RISE_TO - RISE_FROM), 0, 1);
+  return Math.max(0, RISE_TOP - sourceY) * (1 - (1 - s) * (1 - s));
+}
 
 /** Dust motes: the particle grid (one mote per texel), their point size in field texels. */
 const MOTES_X = 24;
@@ -726,6 +788,11 @@ class Motes {
 
 // ---- the smoke ---------------------------------------------------------------------------------
 
+/** How far the thread's axis has swayed off its lean at height h above the source (see seedPlume). */
+function threadSway(h: number): number {
+  return 0.02 * smoothstep(0.1, 0.32, h) * Math.sin(70 * h + 0.7 + 5 * fbm3(5.3, 9 * h));
+}
+
 /**
  * A plume as it stands after a while of burning, painted straight into the fluid on the first
  * frame so the scene opens on one (the prewarm steps that follow then only settle it, however slow the machine): a
@@ -736,7 +803,7 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
   const aspect = fluid.aspect;
   // The thread's axis and width h above the source, and how much of it is still a thread.
   const thread = (x: number, h: number): { dx: number; width: number; share: number } => {
-    const sway = 0.02 * smoothstep(0.1, 0.32, h) * Math.sin(70 * h + 0.7 + 5 * fbm3(5.3, 9 * h));
+    const sway = threadSway(h);
     return { dx: x - source.x + 0.03 * h - sway, width: 0.0035 + 0.008 * smoothstep(0.1, 0.4, h), share: 1 - smoothstep(0.28, 0.42, h) };
   };
   // The veils' middle and breadth.
@@ -799,6 +866,34 @@ type SnippetUniforms = {
   uHolder: Float32Array;
 };
 
+/**
+ * The entrance's clock: 0..1 over INCENSE_PASSAGE.enter seconds of frame time (which the renderer
+ * caps per frame, so a slow first frame delays the entrance instead of using it up). Exactly 1 once
+ * arrived, and from the start when the scene was not entered with a passage or has no motion to
+ * play it with.
+ */
+class Arrival {
+  #arriving: boolean | undefined = undefined;
+  #seconds = 0;
+  progress = 1;
+
+  get active(): boolean {
+    return this.progress < 1;
+  }
+
+  advance(frame: SimFrame): void {
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1 && frame.motion > 0;
+    if (!this.#arriving) return;
+    this.#seconds += Math.max(0, frame.dt);
+    if (this.#seconds >= INCENSE_PASSAGE.enter) {
+      this.#arriving = false;
+      this.progress = 1;
+      return;
+    }
+    this.progress = this.#seconds / INCENSE_PASSAGE.enter;
+  }
+}
+
 class Plume {
   readonly fluid: FluidSim;
   readonly motes: Motes;
@@ -810,6 +905,12 @@ class Plume {
   #handed = false;
   #handX = 0;
   #handY = 0;
+  /** The entrance's thread: how high its head has been drawn, and the last row of veils (heights above the source). */
+  #headH = 0;
+  #veilH = VEIL_FROM - VEIL_STEP;
+  /** The exit's progress 0..1 (0 unless leaving), and the draught as the force snippet's uGust. */
+  #leave = 0;
+  readonly #draught = new Float32Array([0, 0, 1, 0]);
   readonly #air = new Float32Array(4);
   readonly #source = new Float32Array(4);
   readonly #stir = new Float32Array(4);
@@ -858,15 +959,21 @@ class Plume {
     return this.#seeded && this.#warmed < PREWARM_STEPS;
   }
 
-  frame(frame: SimFrame, burner: Burner, doors: Doors, settings: Settings): void {
+  frame(frame: SimFrame, burner: Burner, doors: Doors, settings: Settings, arrival: Arrival): void {
     const fluid = this.fluid;
     fluid.resize(frame.width, frame.height);
     const aspect = fluid.aspect;
     if (!this.#seeded) {
       this.#seeded = true;
-      // The opening plume: painted in, then PREWARM_STEPS real steps to settle it.
-      const source = burner.source();
-      seedPlume(fluid, { x: ANCHOR_X * aspect + source.x, y: FLOOR + source.y }, settings.smoke);
+      if (arrival.active) {
+        // An entrance: the room starts empty and the thread is drawn out of the ember as it takes
+        // light (#rise), so there is no plume to paint in or settle.
+        this.#warmed = PREWARM_STEPS;
+      } else {
+        // The opening plume: painted in, then PREWARM_STEPS real steps to settle it.
+        const source = burner.source();
+        seedPlume(fluid, { x: ANCHOR_X * aspect + source.x, y: FLOOR + source.y }, settings.smoke);
+      }
     }
     if (this.#warmed < PREWARM_STEPS) {
       // A count of steps, the same on every machine: the budget only spreads them over frames.
@@ -876,9 +983,91 @@ class Plume {
 
     const dt = frame.dt * frame.motion;
     this.#touch(frame, dt, aspect, settings.hand);
+    this.#leave = frame.passage.exit;
+    if (this.#leave > 0) this.#blow(aspect);
+    else if (arrival.active) this.#rise(arrival.progress, burner, settings, aspect);
     const steps = dt > 0 ? Math.min(MAX_STEPS, Math.ceil(dt / MAX_STEP - 1e-6)) : 0;
     for (let i = 0; i < steps; i++) this.#step(dt / steps, burner, doors, settings, aspect);
     if (settings.dust) this.motes.frame(dt, this.#clock, aspect);
+  }
+
+  /**
+   * The entrance: the thread's head climbs out of the ember to riseHead, drawn into the fluid slice
+   * by slice with the dye, heat and lift a thread has at that height (seedPlume's profile), the
+   * fresh thread fraying out above its first hand-span, and from VEIL_FROM up, rows of soft patches
+   * laid where the veils lie. The fluid carries it from there: it leans, sways, curls and
+   * stratifies as ever. The backflow's smoke pours down from its outlet instead, started by the
+   * ember's light alone.
+   */
+  #rise(progress: number, burner: Burner, settings: Settings, aspect: number): void {
+    if (burner.kind === "waterfall") return;
+    const fluid = this.fluid;
+    const source = burner.source();
+    const sx = ANCHOR_X * aspect + source.x;
+    const sy = FLOOR + source.y;
+    const head = riseHead(progress, sy);
+    const light = kindle(progress);
+    const dye = this.#dye;
+    const push = this.#push;
+    for (let steps = 0; this.#headH < head && steps < RISE_MAX_STEPS; steps++) {
+      const h = Math.min(head, this.#headH + RISE_STEP);
+      const ds = h - this.#headH;
+      this.#headH = h;
+      const y = sy + h;
+
+      // A slice of thread: a Gaussian of half width w, spaced ds apart, adds up to the profile seedPlume paints.
+      const w = THREAD_W + THREAD_FLARE * smoothstep(0.1, 0.4, h);
+      const share = (1 - smoothstep(0.28, 0.42, h)) * light;
+      if (share > 0) {
+        const x = sx - 0.03 * h + threadSway(h);
+        const slice = (ds / (w * Math.sqrt(Math.PI))) * share;
+        const fresh = 0.4 * settings.smoke * (THREAD_W / w) ** 0.7;
+        const age = h / 0.07;
+        dye[0] = fresh * slice;
+        dye[1] = 0.6 * Math.exp(-age * HEAT_FADE) * slice;
+        dye[2] = fresh * Math.exp(-age * (FRESH_FADE - SMOKE_FADE)) * slice;
+        fluid.splat(x / aspect, y, w, this.#splatDye);
+        push[0] = 0;
+        push[1] = THREAD_LIFT * (ds / (THREAD_LIFT_W * Math.sqrt(Math.PI))) * share;
+        fluid.splat(x / aspect, y, THREAD_LIFT_W, this.#splatHand);
+      }
+
+      // A row of veil patches across the veils' breadth (seedPlume's `old`): each Gaussian of radius
+      // half the veil's half width, 1.1 radii apart across, a row apart up.
+      if (h >= VEIL_FROM && h - this.#veilH >= VEIL_STEP) {
+        const rows = h - this.#veilH;
+        this.#veilH = h;
+        const width = 0.03 + 0.1 * smoothstep(0.25, 0.6, h);
+        const centre = sx - 0.02 + 0.12 * smoothstep(0.35, 0.65, h) + 0.08 * (fbm3(3 * sx + 5.1, 4 * y) - 0.5);
+        const radius = 0.5 * width;
+        const grow = 0.16 * settings.smoke * smoothstep(0.22, 0.38, h) * (1 - smoothstep(0.95, 1, y));
+        const patch = (rows * 1.1) / (Math.PI * radius);
+        for (let i = 0; i < VEIL_BLOBS; i++) {
+          const t = (2 * i) / (VEIL_BLOBS - 1) - 1;
+          const x = centre + 1.1 * width * t;
+          const amount = grow * Math.exp(-((1.1 * t) ** 2)) * (0.3 + 1.4 * fbm3(14 * x + 1.3, 10 * y - 2.1)) * patch;
+          dye[0] = amount;
+          dye[1] = 0;
+          dye[2] = 0.15 * amount;
+          fluid.splat(x / aspect, y, radius, this.#splatDye);
+        }
+      }
+    }
+  }
+
+  /**
+   * The exit: a draught from the left, its front crossing the room within DRAUGHT_SWEEP of the exit
+   * and its wind rising over DRAUGHT_RISE. It takes the force snippet's uGust (a door's draft's
+   * place), so the same wind bends the candle's flame and fans the ember.
+   */
+  #blow(aspect: number): void {
+    const leave = this.#leave;
+    const strength = smoothstep(0, DRAUGHT_RISE, leave);
+    const draught = this.#draught;
+    draught[0] = DRAUGHT_SPEED * strength;
+    draught[1] = -FRONT_SOFT + (aspect + 2 * FRONT_SOFT) * clamp(leave / DRAUGHT_SWEEP, 0, 1);
+    draught[2] = 1;
+    draught[3] = DRAUGHT_RATE * Math.min(1, 3 * strength);
   }
 
   /** A hand moving through the air pushes it along. */
@@ -909,7 +1098,8 @@ class Plume {
     const source = burner.source();
     const sx = anchor + source.x;
     const sy = FLOOR + source.y;
-    const glow = burner.glow;
+    // Leaving, the draught cuts the ember's smoke off: the thread is not fed past its first moments.
+    const glow = this.#leave > 0 ? burner.glow * (1 - smoothstep(0, DRAUGHT_BREAK, this.#leave)) : burner.glow;
 
     if (glow > 0) {
       const smoke = EMIT_SMOKE * settings.smoke * glow * dt;
@@ -974,7 +1164,7 @@ class Plume {
     holder[1] = settings.candle ? 1 : 0;
 
     const uniforms = this.#uniforms;
-    uniforms.uGust = doors.uniform;
+    uniforms.uGust = this.#leave > 0 ? this.#draught : doors.uniform;
     const step = this.#fluidStep;
     step.dt = dt;
     step.time = t;
@@ -995,6 +1185,7 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
     const state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
     const stateData = new Float32Array(12);
     const doors = new Doors();
+    const arrival = new Arrival();
     const settings: Settings = { kind: "stick", smoke: 0, renew: false, draft: 0, turbulence: 0, doors: 0, hand: false, candle: false, dust: false };
     const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
     let burner: Burner | undefined;
@@ -1015,6 +1206,7 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
     return {
       frame(frame) {
         readSettings(settings, frame, knobs);
+        arrival.advance(frame);
         // While the opening plume warms up over several frames, the burner holds still with it.
         const dt = plume?.warming ? 0 : frame.dt * frame.motion;
         if (!burner) burner = new Burner(settings.kind);
@@ -1022,9 +1214,11 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
 
         if (frame.fired[renewSlot] === true) burner.renew();
         burner.step(dt, settings.renew);
+        // Entering, the ember takes light first: the stick stands in the dish, unlit.
+        if (arrival.active) burner.glow = Math.min(burner.glow, kindle(arrival.progress));
 
         if (frame.fired[doorSlot] === true) doors.open();
-        plume?.frame(frame, burner, doors, settings);
+        plume?.frame(frame, burner, doors, settings, arrival);
 
         burner.write(stateData);
         state.upload(stateData);
