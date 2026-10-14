@@ -20,6 +20,7 @@
 // (uWeather.y): first on the high far ridges, then down to the near fields, roofs and tree tops.
 
 import { countryFieldsGlsl } from "./fields.ts";
+import { countryWildlifeGlsl } from "./wildlife.ts";
 
 export const countryGlsl = /* glsl */ `
 const float COUNTRY_HORIZON = 0.62;      // eye level, uv.y
@@ -761,6 +762,8 @@ vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float w
   return vec2(1.0 - clear, belly);
 }
 
+${countryWildlifeGlsl}
+
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float m = uMotion;
   float tm = uMotionTime;
@@ -1198,6 +1201,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     col += COUNTRY_AMBER * village.glow * 0.12 * dark * (1.0 - village.lamp) * (1.0 + 1.5 * wet);
     col = mix(col, vec3(0.8, 0.8, 0.83) * air, village.smoke * 0.75);
   }
+
+  // Birds and the starling murmuration (wildlife.ts), in the air in front of the shaded surface.
+  countryWildlife(col, seen, accent, p, uv, spots, sky, haze, tod, overcast);
 
   // Lightning over the far hills: bolts to the fourth ridge, behind the rain.
   if (age < 2.0 && hit >= 4) {
