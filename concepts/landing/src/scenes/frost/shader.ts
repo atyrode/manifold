@@ -4,15 +4,22 @@
 // frame. Behind it, out of focus and blurred further wherever the frost is thick: a snowy street
 // with lit windows and lamps, or a cabin among spruces. Snow falls through that world in depth (the
 // shared snowFall, hidden behind whatever is nearer), lit by the lamps and windows, and lies on its
-// roofs, boughs, rails, sills, lamp cap and the outside sill as deep as uWeather.y says.
+// roofs, boughs, rails, sills, lamp cap and the outside sill as deep as uWeather.y says. Over it, the
+// shared sky components (src/scenes/README.md, "Composing components"): stars, the moon in its phase
+// (SKY_MOON_PHASE), the aurora and shooting stars, each hidden by the cloud deck and whatever stands
+// in front, softened by the blur, and lighting the snow, the air and the frost.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FROST_EMERGE_FROM, FROST_EMERGE_TO, FROST_FRAME, FROST_START, FUR_RIPEN, FUR_SCALE, FUR_SLOW_FERN, FUR_SLOW_FUR, MELT_CLEAR, RIME_GROWN, WIDTH_SCALE } from "./sim.ts";
 
+/** Trigger slot of the shooting stars' "now" button (slot 0 is the traced M's). */
+export const FROST_METEOR_TRIGGER = 1;
+
 export const frostGlsl = `
 // Knobs: K_speed, K_pattern, K_warmth and K_mark drive the simulation (sim.ts); the shader reads
-// K_style, K_sparkle, K_condensation, K_outside, the sky (K_time, K_cycle) and weather (K_snow,
-// K_wind, and uWeather.y for the snow lying outside). Simulation textures (layouts in sim.ts): uSim0
-// crystals, uSim1 melt, uSim2 growth clock, uSim3 crystal detail.
+// K_style, K_sparkle, K_condensation, K_outside, the sky (K_time, K_cycle, K_stars, K_moon,
+// K_meteors) and weather (K_snow, K_wind, K_aurora, and uWeather.y for the snow lying outside).
+// Simulation textures (layouts in sim.ts): uSim0 crystals, uSim1 melt, uSim2 growth clock, uSim3
+// crystal detail.
 const float FROST_FRAME = ${glslFloat(FROST_FRAME)};
 const float FROST_CLEAR = ${glslFloat(MELT_CLEAR)};
 const float FROST_RIPEN = ${glslFloat(FUR_RIPEN)};
@@ -34,6 +41,10 @@ const float FROST_BARB_LAG = 160.0;
 // uv height of the far kerb (street) or the clearing's far edge (cabin).
 const float FROST_HORIZON = 0.3;
 const vec3 FROST_LAMP = vec3(1.0, 0.68, 0.36);
+// The shooting stars' trigger, and where they set out: bearing -0.6..0.6 rad and 0.42..0.6 rad up
+// (skyAngles), the sky over the roofs and treetops in any aspect from 4:3 to 16:9.
+const int FROST_METEOR_SLOT = ${FROST_METEOR_TRIGGER};
+const vec4 FROST_METEOR_FIELD = vec4(-0.6, 0.42, 1.2, 0.18);
 
 // Metres to the ground seen at screen height y: the eye looks out level at screen height 'eye',
 // and 'lift' (eye height in metres times the focal length in screen heights) sets how fast the
@@ -94,9 +105,11 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   // Lit windows and lamps fade out as the day comes up.
   float lights = 1.0 - 0.85 * smoothstep(0.2, 0.8, sky.day);
   // Light on the land: the sky, the moon (diffused by the snow cloud), light bouncing between
-  // lying snow and a low cloud, and over the town the streets' own light thrown back down by it.
+  // lying snow and a low cloud, over the town the streets' own light thrown back down by it, and
+  // the aurora's green, which the snow cloud shuts out as it closes.
   vec3 town = street ? vec3(0.06, 0.04, 0.025) * lights * overcast : vec3(0.0);
-  vec3 lit = sky.ambient * 1.7 + sky.moonColor * 0.5 * (1.0 - 0.4 * overcast) + 0.015 + town + vec3(0.02, 0.022, 0.03) * overcast * lying;
+  vec3 lit = sky.ambient * 1.7 + sky.moonColor * 0.5 * (1.0 - 0.4 * overcast) + 0.015 + town + vec3(0.02, 0.022, 0.03) * overcast * lying
+           + auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
   vec3 snowLit = vec3(0.82, 0.88, 1.0) * lit;
   vec2 key = frostKeyLight(aspect);
   // Snow on flat tops (roofs, sills, rails, the lamp cap), 0..1 of its full depth: a patchy dusting
@@ -108,13 +121,25 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   vec3 beam = vec3(0.0);
 
   // Sky: the snow cloud closes in with the snowfall and darkens toward a blizzard (over the town
-  // it glows with the streets' light); stars only in its gaps and through clear glass.
+  // it glows with the streets' light); stars only in its gaps and through clear glass, fewer over
+  // the town than over the woods. The aurora and shooting stars show where the deck leaves the sky
+  // open; houses, trees and lamps drawn after hide them. foot is one dither cell in radians (the
+  // view spans one radian of height): the components' level of detail, coarsened by the blur
+  // behind the frost so the aurora's rays and a meteor's streak go soft with everything else.
   vec3 dir = viewRay(uv, aspect, FROST_HORIZON, 1.0);
+  float foot = 1.0 / uRes.y;
   vec3 col = skyColor(sky, dir);
   vec4 cloud = skyClouds(sky, dir, t, 0.3 + 0.7 * overcast, K_wind);
   col = mix(col, cloud.rgb * (1.0 - 0.4 * heavy) + town, cloud.a);
-  float stars = skyStars(sky, dir, street ? 0.5 : 0.85) * (1.0 - cloud.a) * (1.0 - smoothstep(0.01, 0.03, blur));
+  float sharp = 1.0 - smoothstep(0.01, 0.03, blur);
+  float stars = skyStars(sky, dir, street ? K_stars : K_stars * 1.7, foot) * (1.0 - cloud.a) * sharp;
   col += SKY_STAR_TINT * stars;
+  float open = auroraSeen(sky, cloud.a);
+  col += auroraM(dir, tm, K_aurora, max(foot, blur)) * open;
+  float meteorSeed;
+  float meteorAt = meteorAge(tm, K_meteors, FROST_METEOR_SLOT, meteorSeed);
+  float meteor = meteorStreak(skyAngles(dir), FROST_METEOR_FIELD, meteorAt, meteorSeed, max(foot, 0.5 * blur));
+  col += vec3(0.9, 0.95, 1.0) * hardEdge(meteor * open * sharp);
   if (street) {
     // The town's light, caught low in the snowy air.
     col += vec3(0.55, 0.32, 0.16) * 0.12 * lights * exp(-max(uv.y - FROST_HORIZON, 0.0) * 5.0) * (0.5 + 0.5 * cloud.a);
@@ -402,7 +427,8 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   // One dither cell, in frame heights: the finest line worth drawing.
   float px = 1.0 / uRes.y;
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  // The moon in its phase: its disc, halo and light on the land, the clouds and the room follow.
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : FROST_START;
   // 0 on the glass as the entrance opens, exactly 1 for every clock at rest.
   float emerge = smoothstep(FROST_EMERGE_FROM, FROST_EMERGE_TO, clock);
