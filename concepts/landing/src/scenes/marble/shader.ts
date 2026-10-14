@@ -129,11 +129,86 @@ vec3 marbleTool(vec3 col, vec2 q, vec2 m, vec2 n, float spacing, float shown, fl
   return col;
 }
 
+// Sheen: the window mirrored in the wet surface, its panes bent a little by the swell and the wake,
+// and its broad, steady glow. Added to the tray, and to the clean bath a print is peeled off.
+vec3 marbleSheen(vec2 p, float aspect, vec2 swell, vec2 wake) {
+  vec2 r = p - vec2(-0.3 * aspect, 0.27);
+  float win = marbleWindow(r + swell * 0.8 + wake * 1.5);
+  float glow = exp(-2.5 * dot(r, r));
+  return K_sheen * (0.09 * win + 0.035 * glow) * vec3(0.86, 0.91, 1.0);
+}
+
+// The exit's sheet of paper: laid on the tray from one edge, then peeled off from that edge,
+// taking the ink and leaving a clean bath. Both fronts sweep the frame along a slightly tilted
+// line whose edge wanders a little (still: it never crawls). Shares of passageOut(): the sheet is
+// down by MARBLE_LAID and starts to peel at MARBLE_LIFT (a print is already down, so it peels from
+// MARBLE_PRINT_LIFT); the strip rolled up behind the peeling edge, MARBLE_CURL wide, shows the
+// pattern on the sheet's underside.
+const float MARBLE_LAID = 0.42;
+const float MARBLE_LIFT = 0.36;
+const float MARBLE_PRINT_LIFT = 0.06;
+const float MARBLE_CURL = 0.075;
+
+struct MarbleSheet {
+  float down;   // the sheet has come down here
+  float off;    // ... and been peeled away again
+  float curl;   // the rolled-up strip behind the peeling edge
+  float roll;   // the crest of the roll, catching the light
+  float lip;    // the sheet's edge as it lands and as it lifts
+  float shade;  // 1 less the shadow of the lowering sheet and of the roll, falling toward the lower right
+};
+
+MarbleSheet marbleSheet(vec2 p, vec2 cell, float pout, bool print) {
+  float aa = 1.5 / uRes.y;
+  float aspect = uRes.x / uRes.y;
+  vec2 dir = normalize(vec2(1.0, -0.3));
+  vec2 across = vec2(-dir.y, dir.x);
+  float reach = 0.5 * (aspect * dir.x + abs(dir.y));
+  float along = dot(p, across);
+  float s = dot(p, dir) + 0.022 * sin(along * 8.0 + 1.3) + 0.011 * sin(along * 21.0 + 0.4);
+  float layT = print ? 1.0 : clamp(pout / MARBLE_LAID, 0.0, 1.0);
+  float liftFrom = print ? MARBLE_PRINT_LIFT : MARBLE_LIFT;
+  float liftT = clamp((pout - liftFrom) / (1.0 - liftFrom), 0.0, 1.0);
+  float front = mix(-reach - 0.1, reach + 0.1, smoothstep(0.0, 1.0, layT));
+  float peel = mix(-reach - MARBLE_CURL - 0.08, reach + 0.08, smoothstep(0.0, 1.0, liftT));
+  float th2 = edgeThreshold(cell, vec2(17.0, 5.0));
+
+  MarbleSheet sh;
+  sh.down = hardFill(s - front, aa);
+  sh.off = hardFill(s - peel, aa);
+  float rolled = hardFill(s - (peel + MARBLE_CURL), aa);
+  sh.curl = sh.down * (1.0 - sh.off) * rolled;
+  sh.roll = sh.curl * hardFill(abs(s - (peel + 0.35 * MARBLE_CURL)) - 0.1 * MARBLE_CURL, aa);
+  float landing = sh.down * (1.0 - sh.off) * (1.0 - hardFill(s - (front - 0.007), aa));
+  float peeling = sh.down * (1.0 - sh.off) * hardFill(s - (peel + 0.007), aa);
+  sh.lip = max(landing, peeling);
+
+  // Shadows, each cut per cell in two layers: on the tray ahead of the sheet coming down, and on
+  // the sheet beyond the roll.
+  float ahead = 1.0 - sh.down;
+  float after = sh.down * (1.0 - sh.off) * (1.0 - rolled);
+  float dark = ahead * (0.3 * hardFill(s - (front + 0.05), aa) + 0.25 * hardFill(s - (front + 0.016), aa, th2))
+    + after * (0.3 * hardFill(s - (peel + MARBLE_CURL + 0.05), aa) + 0.25 * hardFill(s - (peel + MARBLE_CURL + 0.016), aa, th2));
+  sh.shade = 1.0 - dark;
+  return sh;
+}
+
+// The sheet's paper, mottled and fibrous in cell space.
+vec3 marblePaperTone(vec2 cell) {
+  float mottle = fbm(cell / 160.0 + vec2(5.3, 1.7)) - 0.5;
+  return MARBLE_PAPER * (1.0 + 0.1 * K_fibre * mottle) + 0.035 * marbleFibre(cell) * K_fibre;
+}
+
 Shade sceneMarble(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   bool print = K_medium > 0.5;
   bool rings = marbleRings();
+
+  // The exit's sheet of paper (none at rest: passageOut() is 0).
+  float leave = passageOut();
+  MarbleSheet sheet = MarbleSheet(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+  if (leave > 0.0) sheet = marbleSheet(p, cell, leave, print);
 
   vec4 tool = vec4(0.0);
   vec4 toolDir = vec4(1.0, 0.0, 0.0, 0.0);
@@ -145,7 +220,7 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
   float keep = 1.0 - clamp(tool.w, 0.0, 1.0);
 
   // The tool, in the tray only, in the frame of its nearest tine: q = (along its path, across).
-  bool held = !print && tool.z > 0.001;
+  bool held = !print && tool.z > 0.001 && sheet.down < 0.5;
   vec2 m = normalize(toolDir.xy + vec2(1e-5, 0.0));
   vec2 n = vec2(-m.y, m.x);
   float spacing = toolDir.z;
@@ -175,6 +250,13 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
   }
   ink *= keep;
   rim *= keep;
+  // The ink the sheet has come down on is covered, or gone with it.
+  float inkCover = ink.a;
+  float rimCover = rim;
+  if (!print) {
+    inkCover *= 1.0 - sheet.down;
+    rimCover *= 1.0 - sheet.down;
+  }
   vec3 inkColor = ink.rgb / max(ink.a, 0.001);
 
   vec3 col;
@@ -189,21 +271,36 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
   } else {
     vec2 vq = p / vec2(0.5 * aspect, 0.5);
     vec3 water = (rings ? MARBLE_BASIN : MARBLE_SIZE) * (1.0 - 0.18 * dot(vq, vq));
-    col = mix(water, inkColor * MARBLE_FLOAT, ink.a);
-    col *= 1.0 - 0.35 * rim;
+    col = mix(water, inkColor * MARBLE_FLOAT, inkCover);
+    col *= 1.0 - 0.35 * rimCover;
     // The tool's wake catches the light from the window, high on the left.
     col *= 1.0 + 4.0 * dot(wake, MARBLE_LIGHT);
-    // Sheen: the window mirrored in the wet surface, its panes bent a little by the swell and the
-    // wake, and its broad, steady glow.
-    vec2 r = p - vec2(-0.3 * aspect, 0.27);
-    float win = marbleWindow(r + swell * 0.8 + wake * 1.5);
-    float glow = exp(-2.5 * dot(r, r));
-    col += K_sheen * (0.09 * win + 0.035 * glow) * vec3(0.86, 0.91, 1.0);
+    // Sheen: the window mirrored in the wet surface.
+    col += marbleSheen(p, aspect, swell, wake);
     if (held) col = marbleTool(col, q, m, n, spacing, tool.z, 1.0 / uRes.y);
   }
 
+  if (leave > 0.0) {
+    vec3 paper = marblePaperTone(cell);
+    if (print) {
+      // The print is peeled off the bath: the pattern goes with it, the clean size shows behind.
+      vec2 bq = p / vec2(0.5 * aspect, 0.5);
+      vec3 bath = (rings ? MARBLE_BASIN : MARBLE_SIZE) * (1.0 - 0.18 * dot(bq, bq)) + marbleSheen(p, aspect, vec2(0.0), vec2(0.0));
+      col *= (1.0 + 0.22 * sheet.roll) * (1.0 + 0.18 * sheet.lip);
+      col = mix(col, bath, sheet.off);
+    } else {
+      // The sheet laid on the tray, blank on its back; behind the peeling edge its underside, with
+      // the pattern, rolls up.
+      vec3 lit = paper * MARBLE_FLOAT * 0.85;
+      vec3 under = mix(paper, inkColor * (paper / MARBLE_PAPER), clamp(ink.a, 0.0, 1.0)) * MARBLE_FLOAT * 0.85 * (1.0 + 0.3 * sheet.roll);
+      vec3 face = mix(lit, under, sheet.curl) * (1.0 + 0.18 * sheet.lip);
+      col = mix(col, face, sheet.down * (1.0 - sheet.off));
+    }
+    col *= sheet.shade;
+  }
+
   // The page theme (paper for print and the pale basin, see index.ts) turns the ink dark there.
-  float accent = ink.a * (1.0 - smoothstep(0.07, 0.18, distance(inkColor, marbleAccentInk())));
+  float accent = (print ? ink.a * (1.0 - sheet.off) : inkCover) * (1.0 - smoothstep(0.07, 0.18, distance(inkColor, marbleAccentInk())));
   return shadeOf(col, inkOf(col, 1.3, 1.0), accent);
 }
 `;

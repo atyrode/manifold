@@ -5,7 +5,7 @@ import { choice, feature, knobValue, range, seed, type ParamDef } from "../../pa
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { marbleGlsl } from "./shader.ts";
-import { marblePalettes, marblePatterns, marbleSim } from "./sim.ts";
+import { MARBLE_PASSAGE, marblePalettes, marblePatterns, marbleSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("sheet", "pattern", "pattern", marblePatterns.map((label, value) => ({ label, value })), 3, "What the tray is worked into. Stone: drops alone, packed into veined stones. Gel-git: a stylus drawn back and forth across them. Nonpareil: then a fine comb, raising rows of small arches. Bouquet: then a wavy comb back down, fanning them into sprays. Chevron: a comb up and back down between its own tracks."),
@@ -37,6 +37,7 @@ export const marbleScene: SceneDef = {
   glsl: marbleGlsl,
   entry: "sceneMarble",
   sim: marbleSim(params),
+  passage: MARBLE_PASSAGE,
   // Paper, and suminagashi's pale basin, are light: the page copy goes dark on them (the shader's
   // `pagePaper()` follows this).
   theme: paletteTheme(params, "medium", (medium, values) => medium > 0 || marblePalettes[Math.round(knobValue(params, values, "palette"))]?.rings === true),

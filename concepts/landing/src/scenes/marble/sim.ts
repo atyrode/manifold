@@ -101,6 +101,22 @@ const PREROLL_SLOW_SHARE = 1 / 3;
 const PREROLL_BUDGET_MAX_MS = 40;
 /** A prerolled sheet fades up from the bare tray over this many seconds. */
 const ARRIVE_SECONDS = 0.8;
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the exit's share).
+ * Entrance: the first sheet's drops land and spread on a clean bath, then the combs go to work.
+ * Exit: a sheet of paper is laid on the tray and lifted off, taking the ink and leaving a clean bath.
+ */
+export const MARBLE_PASSAGE: { enter: number; exit: number } = { enter: 3.2, exit: 1.6 };
+/**
+ * An entered scene plays the first sheet's sprinkling live instead of prerolling it out of sight and
+ * fading it up. It starts SPRINKLE_DELAY in, spreads the ground drop alone over SPRINKLE_LEAD_SECONDS
+ * (it is the bath the colours land on), then lands the rest at a nearly even rate over the remaining
+ * time, leaving SPRINKLE_SETTLE of the entrance for the last drops to spread out.
+ */
+const SPRINKLE_DELAY = 0.1;
+const SPRINKLE_SETTLE = 0.2;
+const SPRINKLE_LEAD_SECONDS = 0.8;
+const SPRINKLE_SECONDS = MARBLE_PASSAGE.enter - SPRINKLE_DELAY - SPRINKLE_SETTLE;
 /** Tool fade in and out, seconds. */
 const TOOL_FADE = 0.3;
 /** Share of a stroke's time the tool spends getting up to its even pace, and again slowing down. */
@@ -433,7 +449,12 @@ interface Routine {
   ops: Op[];
   /** Routine time at which the sprinkling is done. */
   sprinkled: number;
+  /** Routine time the first drop (the stones' ground) has the tray to itself; 0 when there is none. */
+  lead: number;
 }
+
+/** The stones' ground drop spreads alone over this many routine seconds; the colours follow. */
+const GROUND_SECONDS = 3;
 
 /**
  * Ebru's stone ground (battal). The first colour spreads over the whole tray; then colour after
@@ -451,12 +472,12 @@ function sprinkleStones(ops: Op[], spec: RoutineSpec): number {
   const gx = (2 * rand() - 1) * reachX * 0.5;
   const gy = (2 * rand() - 1) * reachY * 0.5;
   const ground = Math.hypot(reachX + 0.1 + Math.abs(gx), reachY + 0.1 + Math.abs(gy));
-  ops.push({ ...drop(0, gx, gy, ground, pick(inks, rand)), duration: 3 });
+  ops.push({ ...drop(0, gx, gy, ground, pick(inks, rand)), duration: GROUND_SECONDS });
   const layers = [...inks, pick(inks.slice(0, -1), rand)];
   const weight = (layer: number): number => Math.pow(1.3, layers.length - 1 - layer);
   const total = 4 * reachX * reachY * 1.9;
   const weights = layers.reduce((sum, _color, layer) => sum + weight(layer), 0);
-  let t = 3;
+  let t = GROUND_SECONDS;
   layers.forEach((color, layer) => {
     const r = 0.1 * spec.scale * Math.pow(0.9, layers.length - 1 - layer);
     const count = Math.max(5, Math.round((total * weight(layer)) / weights / (Math.PI * r * r)));
@@ -628,7 +649,7 @@ function buildRoutine(spec: RoutineSpec): Routine {
     }
   }
   if (spec.mark > 0) ops.push(...markStrokes(spec.mark, t + STAGE_GAP));
-  return { ops, sprinkled };
+  return { ops, sprinkled, lead: spec.palette.rings ? 0 : GROUND_SECONDS };
 }
 
 /** Ops on one clock, handed their progress in start order. */
@@ -706,6 +727,20 @@ interface Settings {
 
 const markHeight = (amount: number): number => 0.35 + 0.45 * amount;
 
+/**
+ * Routine time the entrance's sprinkling has reached `seconds` into the entrance: the ground drop
+ * spreads alone for SPRINKLE_LEAD_SECONDS, then the drops flicked onto it land at a nearly even
+ * rate (a touch slower at both ends, so the first are seen singly and the last settle).
+ */
+function sprinkleAt(seconds: number, lead: number, sprinkled: number): number {
+  const t = seconds - SPRINKLE_DELAY;
+  if (!(t > 0)) return 0;
+  const leadSeconds = lead > 0 ? SPRINKLE_LEAD_SECONDS : 0;
+  if (t < leadSeconds) return lead * (t / leadSeconds);
+  const u = clamp((t - leadSeconds) / (SPRINKLE_SECONDS - leadSeconds), 0, 1);
+  return lead + (sprinkled - lead) * (0.7 * u + 0.3 * smoothstep(0, 1, u));
+}
+
 interface ShownTool {
   x: number;
   y: number;
@@ -746,6 +781,19 @@ class MarbleSim implements SceneSim {
   #prerollTo = 0;
   /** 0..1: a prerolled sheet fading up from the bare tray once it is laid (1: nothing to fade). */
   #arrive = 1;
+  /**
+   * Entered with a passage (decided on the first frame): the first sheet's sprinkling is played live
+   * on `#stageClock` (frame time since the sheet began) instead of being prerolled out of sight.
+   */
+  #entering: boolean | undefined = undefined;
+  #stageNext = false;
+  #staging = false;
+  #stageClock = 0;
+  #stageTarget = 0;
+  /** Routine seconds the sheet's ground drop has the tray to itself (Routine.lead). */
+  #lead = 0;
+  /** The scene is leaving: the sheet on the tray is not renewed under the paper that takes it. */
+  #exiting = false;
   /** performance.now() at the previous frame, and the real interval before this one (0: unknown). */
   #frameAt = 0;
   #frameMs = 0;
@@ -801,6 +849,8 @@ class MarbleSim implements SceneSim {
     this.#frameAt = now;
     const settings = this.#read(frame);
     this.#fit(frame.aspect);
+    if (this.#entering === undefined) this.#entering = frame.passage.enter < 1;
+    this.#exiting = frame.passage.exit > 0;
     this.#follow(settings);
 
     if (frame.fired[this.#renewSlot] === true) this.#startLift(settings, QUICK_LIFT_SECONDS, true, false);
@@ -878,6 +928,7 @@ class MarbleSim implements SceneSim {
     this.#signature = signature;
     if (first) {
       this.#fresh = true;
+      this.#stageNext = this.#entering === true;
       this.#newSheet(settings);
     } else {
       this.#startLift(settings, QUICK_LIFT_SECONDS, true, true);
@@ -949,7 +1000,7 @@ class MarbleSim implements SceneSim {
   }
 
   #choreograph(dt: number, motion: number, settings: Settings): boolean {
-    if (this.#prerolling) return this.#fastForward();
+    if (this.#prerolling) return this.#staging ? this.#sprinkle(dt) : this.#fastForward();
     const busy = this.#idle < IDLE_RESUME || this.#pressing || !this.#events.finished;
     const step = busy ? 0 : dt * motion * settings.tempo;
     const phase = this.#phase;
@@ -963,14 +1014,14 @@ class MarbleSim implements SceneSim {
         return moved;
       }
       case "rest":
-        if (settings.rest !== undefined) {
+        if (settings.rest !== undefined && !this.#exiting) {
           this.#rested += step;
           if (this.#rested >= settings.rest) this.#startLift(settings, LIFT_SECONDS, false, false);
         }
         return false;
       case "lift":
         this.#lift = Math.min(1, this.#lift + (this.#liftNow ? dt : step) / this.#liftSeconds);
-        if (this.#lift >= 1) this.#newSheet(settings);
+        if (this.#lift >= 1 && !this.#exiting) this.#newSheet(settings);
         return false;
       default: {
         const unreachable: never = phase;
@@ -996,6 +1047,40 @@ class MarbleSim implements SceneSim {
     runBudgeted(this.#prerollStep, budget, steps);
     return this.#prerollMoved;
   }
+
+  /**
+   * The entrance's sprinkling, played live: the very steps of the hidden fast-forward, in the same
+   * order, so the sheet ends where the fast-forward leaves it, paced by the entrance's own clock
+   * (frame time, so a slow frame delays the sprinkling instead of using it up).
+   */
+  #sprinkle(dt: number): boolean {
+    this.#stageClock += dt;
+    const target = sprinkleAt(this.#stageClock, this.#lead, this.#prerollTo);
+    if (this.#routine.clock >= target - 1e-6) return false;
+    this.#stageTarget = target;
+    const budget = Math.min(PREROLL_BUDGET_MAX_MS, Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs));
+    const steps = Math.ceil((this.#prerollTo - this.#routine.clock) / PREROLL_STEP) + 1;
+    this.#prerollMoved = false;
+    runBudgeted(this.#sprinkleStep, budget, steps);
+    return this.#prerollMoved;
+  }
+
+  /**
+   * One step toward the entrance's target. The ground drop is alone on the tray until `lead`, so it
+   * may take any step (one a frame, spreading smoothly); from there on the preroll's own grid.
+   */
+  readonly #sprinkleStep = (): boolean => {
+    const clock = this.#routine.clock;
+    if (clock < this.#lead - 1e-6) {
+      if (this.#routine.advance(Math.min(this.#stageTarget, this.#lead) - clock, this.#apply)) {
+        this.#refine();
+        this.#prerollMoved = true;
+      }
+    } else {
+      this.#prerollStep();
+    }
+    return !this.#prerolling || this.#routine.clock >= this.#stageTarget - 1e-6;
+  };
 
   /** One fast-forward step; true once the sprinkling is laid. */
   readonly #prerollStep = (): boolean => {
@@ -1038,8 +1123,13 @@ class MarbleSim implements SceneSim {
       rand: mulberry32(sheetSeed(settings.seed, this.#sheet)),
     });
     this.#routine.reset(routine.ops);
+    const staged = this.#fresh && this.#stageNext;
+    this.#stageNext = false;
+    this.#staging = staged;
+    this.#stageClock = 0;
+    this.#lead = routine.lead;
     this.#prerollTo = this.#fresh ? routine.sprinkled : 0;
-    this.#arrive = this.#fresh ? 0 : 1;
+    this.#arrive = this.#fresh && !staged ? 0 : 1;
     this.#fresh = false;
     this.#events.reset();
     this.#user.reset();
@@ -1221,7 +1311,7 @@ class MarbleSim implements SceneSim {
 
   #render(): void {
     // A sheet still being prerolled is drawn once, when it is laid, not step by step.
-    if (!this.#dirty || this.#prerolling) return;
+    if (!this.#dirty || (this.#prerolling && !this.#staging)) return;
     const now = performance.now();
     if (!this.#force && now - this.#drawnAt < REDRAW_MS) return;
     this.#draw();
