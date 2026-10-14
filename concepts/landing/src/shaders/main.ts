@@ -14,10 +14,6 @@ void main() {
 
   Shade s = ${entry}(uv, cell, t);
 
-  s.ink *= uReveal;
-  s.accent *= uReveal;
-  s.rgb = mix(uBg, s.rgb, uReveal);
-
   float th = threshold(cell);
   // Shimmer re-rolls the threshold 7 times a second; it stills with the motion.
   th = fract(th + s.shimmer * uMotion * hash12(cell + floor(uTime * 7.0)));

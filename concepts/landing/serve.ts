@@ -8,7 +8,7 @@
 // Builds come from `git archive`, so uncommitted edits never reach the public origin, and a saved
 // setup can always be replayed on the commit it was tuned on. Bun's HMR server refuses any
 // Host/Origin but its bind address, so --dev only works when browsing the loopback port.
-import { mkdir, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import index from "./index.html";
@@ -89,9 +89,6 @@ async function buildCommit(sha: string): Promise<string> {
       const workerResult = await Bun.build({ entrypoints: [worker], outdir: join(work, "out"), naming: "sheet-worker.js", minify: true });
       if (!workerResult.success) throw new BuildError(workerResult.logs.map(String).join("\n"));
     }
-    for (const file of await readdir(join(source, "art"))) {
-      await Bun.write(join(work, "out", "art", file), Bun.file(join(source, "art", file)));
-    }
     const html = await Bun.file(join(work, "out", "index.html")).text();
     await Bun.write(join(work, "out", "index.html"), html.replace("</head>", `<meta name="landing-build" content="${short}"></head>`));
     await mkdir(cacheRoot, { recursive: true });
@@ -128,8 +125,8 @@ async function committed(request: Request): Promise<Response> {
     const sha = await head();
     if (!sha) return new Response(`no committed lab on ${branch}`, { status: 503 });
     if (url.pathname === "/") return await serveFile(await built(sha), "", false);
-    // Builds before pinning fetched artwork from the root; the head page loads its worker there too.
-    if (url.pathname.startsWith("/art/") || url.pathname === "/sheet-worker.js") return await serveFile(await built(sha), url.pathname.slice(1), false);
+    // The head page is served from the root, so its worker loads from there.
+    if (url.pathname === "/sheet-worker.js") return await serveFile(await built(sha), "sheet-worker.js", false);
     return new Response("not found", { status: 404 });
   } catch (error: unknown) {
     console.error("evt=landing.build_failed", error);
@@ -137,7 +134,6 @@ async function committed(request: Request): Promise<Response> {
   }
 }
 
-const art = new URL("./art/", import.meta.url);
 const server = args.includes("--dev")
   ? Bun.serve({
       hostname: "127.0.0.1",
@@ -150,11 +146,6 @@ const server = args.includes("--dev")
           const [output] = result.outputs;
           if (!result.success || !output) return new Response(result.logs.map(String).join("\n"), { status: 500 });
           return new Response(await output.text(), { headers: { "content-type": "text/javascript", "cache-control": "no-store" } });
-        },
-        "/art/:file": (request) => {
-          const { file } = request.params;
-          if (!/^[a-z0-9-]+\.jpg$/.test(file)) return new Response("not found", { status: 404 });
-          return new Response(Bun.file(new URL(file, art)));
         },
       },
       fetch: () => new Response("not found", { status: 404 }),

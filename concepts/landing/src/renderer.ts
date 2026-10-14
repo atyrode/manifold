@@ -1,4 +1,3 @@
-import { artworks, floodBackdrop, flowField, raster, type Artwork, type Raster } from "./artwork.ts";
 import { constellationUniforms } from "./constellations.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
@@ -33,10 +32,7 @@ export interface RenderSettings {
   view: ViewId;
 }
 
-/** Must match `MAX_STARS` in the fragment shader. */
-const MAX_STARS = 16;
-/** Texture units: 0..2 the artwork (image, backdrop, flow), then `uSim0..uSim3`. */
-const SIM_UNIT = 3;
+/** Texture units: `uSim0..uSim3`, one per sim slot. */
 const SIM_SLOTS = 4;
 /** Scene-clock time of a trigger or press that has not happened. */
 const NEVER = -1e4;
@@ -45,8 +41,7 @@ const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [r
 
 const uniformNames = [
   "uRes", "uTime", "uMotionTime", "uDither", "uColor", "uLevels", "uMotion", "uPointer", "uMouse",
-  "uBg", "uInk", "uAccent", "uImage", "uBackdrop", "uFlow", "uImageSize", "uFocus", "uReveal",
-  "uStars", "uStarCount", "uParams", "uView",
+  "uBg", "uInk", "uAccent", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
   "uProgress", "uTriggers", "uSim0", "uSim1", "uSim2", "uSim3", "uSimOn", "uWeather",
 ] as const;
@@ -68,14 +63,6 @@ interface ActiveScene {
   sim: SceneSim | undefined;
   rain: number;
   snow: number;
-}
-
-interface LoadedArt {
-  texture: WebGLTexture;
-  backdrop: WebGLTexture | undefined;
-  flow: WebGLTexture;
-  size: [number, number];
-  loadedAt: number;
 }
 
 export class RendererError extends Error {}
@@ -110,19 +97,6 @@ function rgb(hex: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-/** Pulsing vortices as shader uniforms: image uv with y up, radius in image heights. */
-function starUniform(art: Artwork | undefined): { data: Float32Array; count: number } {
-  const stars = (art?.vortices ?? []).filter((v) => v.pulse).slice(0, MAX_STARS);
-  const data = new Float32Array(MAX_STARS * 4);
-  stars.forEach((star, i) => data.set([star.x, 1 - star.y, star.r, star.spin], i * 4));
-  return { data, count: stars.length };
-}
-
-const noStars = starUniform(undefined);
-const starsByScene: Readonly<Record<string, { data: Float32Array; count: number }>> = Object.fromEntries(
-  Object.entries(artworks).map(([scene, art]) => [scene, starUniform(art)]),
-);
-
 export class DitherRenderer {
   readonly #gl: WebGL2RenderingContext;
   readonly #canvas: HTMLCanvasElement;
@@ -131,7 +105,6 @@ export class DitherRenderer {
   /** Each scene's program, built on first use; undefined once it has failed (logged). */
   readonly #programs = new Map<SceneId, SceneProgram | undefined>();
   #scene: ActiveScene | undefined;
-  readonly #textures = new Map<string, LoadedArt>();
   readonly #blank: WebGLTexture;
   /** Smoothed parallax (-1..1 over the window), eased toward the target `tx`, `ty`. */
   readonly #pointer = { x: 0, y: 0, tx: 0, ty: 0 };
@@ -230,7 +203,6 @@ export class DitherRenderer {
     window.addEventListener("pointerout", (event) => {
       if (event.relatedTarget === null) mouse.inside = false;
     });
-    for (const art of Object.values(artworks)) this.#load(art);
   }
 
   /** Fire one occurrence of the current scene's occasional effect in `slot` right now. */
@@ -269,51 +241,6 @@ export class DitherRenderer {
     requestAnimationFrame(tick);
   }
 
-  #upload(source: TexImageSource | Raster): WebGLTexture {
-    const gl = this.#gl;
-    const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if (!("data" in source)) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-      gl.generateMipmap(gl.TEXTURE_2D);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    } else if (source.data instanceof Float32Array) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, source.width, source.height, 0, gl.RG, gl.FLOAT, source.data);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, source.width, source.height, 0, gl.RED, gl.UNSIGNED_BYTE, source.data);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    }
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    return texture;
-  }
-
-  #load(art: Artwork): void {
-    const image = new Image();
-    image.decoding = "async";
-    image.src = art.url;
-    image.decode().then(() => {
-      const started = performance.now();
-      const px = raster(image, 480);
-      const backdrop = art.backdrop ? floodBackdrop(px, art.clear) : undefined;
-      const flow = flowField(px, art, backdrop);
-      console.info(`evt=landing.artwork.analysed url=${art.url} ms=${Math.round(performance.now() - started)}`);
-      this.#textures.set(art.url, {
-        texture: this.#upload(image),
-        backdrop: backdrop ? this.#upload(backdrop) : undefined,
-        flow: this.#upload(flow),
-        size: [image.naturalWidth, image.naturalHeight],
-        loadedAt: performance.now(),
-      });
-    }, (error: unknown) => {
-      console.error("evt=landing.artwork.load_failed", art.url, error);
-    });
-  }
-
   /** Compile and link a scene's program; throws RendererError (with the info log) on failure. */
   #link(id: SceneId): SceneProgram {
     const gl = this.#gl;
@@ -343,10 +270,7 @@ export class DitherRenderer {
     gl.uniform1i(uniforms.uConLineCount, figures.lineCount);
     gl.uniform1i(uniforms.uConMarkStar, figures.markStar);
     gl.uniform1i(uniforms.uConMarkLine, figures.markLine);
-    gl.uniform1i(uniforms.uImage, 0);
-    gl.uniform1i(uniforms.uBackdrop, 1);
-    gl.uniform1i(uniforms.uFlow, 2);
-    [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) => gl.uniform1i(location, SIM_UNIT + slot));
+    [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) => gl.uniform1i(location, slot));
     return { program, uniforms };
   }
 
@@ -468,18 +392,10 @@ export class DitherRenderer {
 
     gl.viewport(0, 0, width, height);
     gl.useProgram(program.program);
-    const art = artworks[s.scene];
-    const loaded = art ? this.#textures.get(art.url) : undefined;
-    const textures = [loaded?.texture, loaded?.backdrop, loaded?.flow];
-    textures.forEach((texture, unit) => {
-      gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, texture ?? this.#blank);
-    });
     for (let slot = 0; slot < SIM_SLOTS; slot++) {
-      gl.activeTexture(gl.TEXTURE0 + SIM_UNIT + slot);
+      gl.activeTexture(gl.TEXTURE0 + slot);
       gl.bindTexture(gl.TEXTURE_2D, simTextures[slot] ?? this.#blank);
     }
-    const stars = starsByScene[s.scene] ?? noStars;
 
     const u = program.uniforms;
     gl.uniform2f(u.uRes, width, height);
@@ -494,11 +410,6 @@ export class DitherRenderer {
     gl.uniform3f(u.uBg, ...rgb(s.bg));
     gl.uniform3f(u.uInk, ...rgb(s.ink));
     gl.uniform3f(u.uAccent, ...rgb(s.accent));
-    gl.uniform2f(u.uImageSize, loaded?.size[0] ?? 1, loaded?.size[1] ?? 1);
-    gl.uniform2f(u.uFocus, art?.focus[0] ?? 0.5, art?.focus[1] ?? 0.5);
-    gl.uniform1f(u.uReveal, !art ? 1 : loaded ? Math.min(1, (now - loaded.loadedAt) / 1400) : 0);
-    gl.uniform4fv(u.uStars, stars.data);
-    gl.uniform1i(u.uStarCount, stars.count);
     gl.uniform1fv(u.uParams, this.#params);
     gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     gl.uniform1f(u.uProgress, this.#progress);

@@ -40,7 +40,7 @@ export interface LabState {
 }
 
 export const defaults: LabState = {
-  scene: "wave",
+  scene: "pond",
   mode: "landing",
   dither: "bayer8",
   color: "accent",
@@ -92,7 +92,7 @@ export interface Palette {
 }
 
 const NIGHT: Palette = { bg: "#07080b", ink: "#e8e6df", muted: "#8b8a85", line: "rgb(232 230 223 / 0.14)" };
-/** The "paper" theme (the wave's ink on paper): the print's paper with dark ink. */
+/** The "paper" theme, for scenes in daylight or drawn on paper: a warm paper page with dark ink. */
 const PAPER: Palette = { bg: "#ebe2cc", ink: "#1b2235", muted: "#5d5a52", line: "rgb(27 34 53 / 0.18)" };
 
 export function palette(state: LabState, params: Params): Palette {

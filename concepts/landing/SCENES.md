@@ -1,6 +1,6 @@
 # Scene backlog
 
-Scene ideas beyond the first five (wave, starry, orbit, swell, pond). Each is a dithered shader
+Scene ideas beyond the first three (orbit, swell, pond). Each is a dithered shader
 scene: animated, tweakable in the lab, with a standalone Manifold landmark that fits the scene.
 How to write one: `src/scenes/README.md`.
 

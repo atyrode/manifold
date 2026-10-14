@@ -45,16 +45,12 @@ import { shanshuiScene } from "./shanshui/index.ts";
 import { shoreScene } from "./shore/index.ts";
 import { sillScene } from "./sill/index.ts";
 import { skywardScene } from "./skyward/index.ts";
-import { starryScene } from "./starry/index.ts";
 import { streetScene } from "./street/index.ts";
 import { swellScene } from "./swell/index.ts";
 import { trainScene } from "./train/index.ts";
 import type { SceneDef } from "./types.ts";
-import { waveScene } from "./wave/index.ts";
 
 export const sceneDefs = {
-  wave: waveScene,
-  starry: starryScene,
   orbit: orbitScene,
   swell: swellScene,
   pond: pondScene,

@@ -95,7 +95,6 @@ body.ui-hidden .overlay { display: none; }
   background: radial-gradient(closest-side, color-mix(in srgb, var(--bg) 82%, transparent), color-mix(in srgb, var(--bg) 55%, transparent) 60%, transparent);
   pointer-events: none;
 }
-body[data-scene="wave"] .hero { justify-self: end; align-self: start; padding-top: clamp(24px, 9vh, 110px); }
 body[data-scene="orbit"] .hero { align-self: start; padding-top: clamp(24px, 12vh, 140px); }
 body[data-scene="swell"] .hero { justify-self: end; align-self: start; padding-top: clamp(16px, 6vh, 80px); }
 
@@ -198,5 +197,4 @@ h1 {
 @media (max-width: 720px) {
   .nav nav a:not(.nav-cta) { display: none; }
   body[data-scene] .hero { justify-self: start; }
-  body[data-scene="wave"] .hero { align-self: end; padding-top: 0; }
 }

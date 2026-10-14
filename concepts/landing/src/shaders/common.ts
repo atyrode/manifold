@@ -171,7 +171,6 @@ ${markGlsl}`;
 export const common = `#version 300 es
 precision highp float;
 
-#define MAX_STARS 16
 #define MAX_PARAMS ${MAX_PARAMS}
 #define MAX_CON_STARS 48
 #define MAX_CON_LINES 48
@@ -192,14 +191,6 @@ uniform float uProgress; // loading page progress 0..1, -1 elsewhere
 uniform vec3 uBg;
 uniform vec3 uInk;
 uniform vec3 uAccent;
-uniform sampler2D uImage;
-uniform sampler2D uBackdrop; // R: 1 where the painting's paper/sky is dropped to black
-uniform sampler2D uFlow;     // RG: brushstroke velocity in image uv per cycle, y up
-uniform vec2 uImageSize;
-uniform vec2 uFocus;
-uniform float uReveal;
-uniform vec4 uStars[MAX_STARS]; // image uv (y up), radius in image heights, spin
-uniform int uStarCount;
 uniform float uParams[MAX_PARAMS];
 uniform vec4 uConStars[MAX_CON_STARS]; // anchor (half-width fraction, y), offset
 uniform float uConBright[MAX_CON_STARS];
@@ -289,15 +280,6 @@ vec4 hardRamp(float b, float cover, vec3 tint, float th) {
     k = 1.0;
   }
   return vec4(floor(k * tint + 0.5) / n, hardEdge(alpha, th));
-}
-
-// Cover-fit the artwork, keeping the focal point in frame.
-vec2 coverUV(vec2 uv, float zoom, vec2 pan) {
-  float sa = uRes.x / uRes.y;
-  float ia = uImageSize.x / uImageSize.y;
-  vec2 scale = (sa > ia ? vec2(1.0, ia / sa) : vec2(sa / ia, 1.0)) / zoom;
-  vec2 c = clamp(uFocus + pan, scale * 0.5, 1.0 - scale * 0.5);
-  return c + (uv - 0.5) * scale;
 }
 
 // Mostly steady stars that dim now and then. 'twinkle' sets the rate (0 = steady); 'scatter'
