@@ -11,13 +11,20 @@
 // 0.32 as tall). Light is one warm source at the fire, falling off as 1 / (1 + (d / r0)^2)^2, breathing
 // a few percent; every surface is albedo * (sky ambient + warm * firelight).
 //
-// Nothing here is a simulation. Moving edges (flame layers, smoke, sparks, shooting stars) are cut per
-// cell with hardEdge / hardFill so a passing edge flips a cell once; the flames' noise advects upward at
-// well under a flame height per second, the sparks drift at ~25 px/s, so nothing flickers cell by cell.
-// Knobs read here: K_flame, K_lively, K_sparks, K_smoke, K_marshmallow, K_reach, K_camp, K_time,
-// K_cycle, K_stars, K_planet, K_shooting (trigger 0), K_wind, K_fog, K_mark.
+// The picture itself is no simulation. Moving edges (flame layers, smoke, sparks, shooting stars) are
+// cut per cell with hardEdge / hardFill so a passing edge flips a cell once; the flames' noise advects
+// upward at well under a flame height per second, the sparks drift at ~25 px/s, so nothing flickers
+// cell by cell. With K_fuel on, the logs burn down (sim.ts, a FuelBed in uSim0): the flames, the
+// firelight, the coals, the smoke and the sparks follow the bed, and each log chars, thins, slumps and
+// crumbles away; off, the fire is exactly the steady one it always was.
+// Knobs read here: K_flame, K_lively, K_sparks, K_smoke, K_marshmallow, K_fuel (K_tend: sim.ts,
+// trigger 1), K_reach, K_camp, K_time, K_cycle, K_stars, K_planet, K_shooting (trigger 0), K_wind,
+// K_fog, K_mark.
+import { CAMPFIRE_LOGS } from "./sim.ts";
+
 export const campfireGlsl = `
 // ---- campfire ----
+const int CAMPFIRE_LOGS = ${CAMPFIRE_LOGS};      // the fuel's log texels (sim.ts), the bed's after them
 const float CAMPFIRE_HORIZON = 0.37;   // screen height of the far horizon (the pines hide it)
 const float CAMPFIRE_FOV = 1.0;
 const float CAMPFIRE_FLAME = 0.30;     // the full flame's height, in the fire's own units
@@ -38,6 +45,14 @@ float campfireLit;      // how far the firelight has spread 0..1 (1 at rest)
 float campfireSparkG;   // sparks gate 0..1
 float campfireSmokeG;   // smoke column strength 0..1
 float campfireCoalK;    // coal glow gain, 0.6 (low embers) .. 1
+float campfireSparkK;   // share of the spark slots flying (K_sparks, or the bed's)
+float campfireSmokeK;   // smoke density gain (1, or the bed's)
+// The fuel (K_fuel, sim.ts): per log x wood left (0 burnt away), y char, z slump, w laid on; the bed
+// x heat, y embers, z smoke, w spark burst. Off: whole fresh logs over a steady bed, vec4(1, 0, 0, 1)
+// and vec4(1, 1, 0, 0), which change nothing.
+bool campfireFuelOn;
+vec4 campfireFuelLog[CAMPFIRE_LOGS];
+vec4 campfireFuelBed;
 
 float campfireSmin(float a, float b, float k) {
   float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
@@ -81,6 +96,26 @@ void campfireSetup(float aspect) {
   campfireCoalK = mix(0.6, 1.0, campfireLit);
   campfireBreath *= mix(0.12, 1.0, campfireLit);
   campfireAmb *= mix(0.6, 1.0, campfireLit);
+  campfireSparkK = K_sparks;
+  campfireSmokeK = 1.0;
+  campfireFuelOn = K_fuel > 0.0 && uSimOn.x > 0.5;
+  campfireFuelBed = vec4(1.0, 1.0, 0.0, 0.0);
+  for (int i = 0; i < CAMPFIRE_LOGS; i++) campfireFuelLog[i] = vec4(1.0, 0.0, 0.0, 1.0);
+  if (campfireFuelOn) {
+    for (int i = 0; i < CAMPFIRE_LOGS; i++) campfireFuelLog[i] = texelFetch(uSim0, ivec2(i, 0), 0);
+    campfireFuelBed = texelFetch(uSim0, ivec2(CAMPFIRE_LOGS, 0), 0);
+    float heat = campfireFuelBed.x;
+    float embers = campfireFuelBed.y;
+    // The flames follow the flaming wood (a fresh armful flares past the usual fire, coals alone have
+    // none); the firelight follows the flames, or the coals where they glow brighter; the coals glow
+    // with the bed. Sparks fly with the flames and shower when a log slumps or lands; a fresh log
+    // smokes until it catches.
+    campfireFlameG *= min(heat, 1.3);
+    campfireBreath *= 0.06 + 0.94 * max(min(heat, 1.25), 0.6 * min(embers, 1.0));
+    campfireCoalK *= mix(0.15, 1.1, smoothstep(0.0, 0.6, embers));
+    campfireSparkK = min(1.0, K_sparks * clamp(heat, 0.0, 1.2) + 0.6 * campfireFuelBed.w);
+    campfireSmokeK = clamp(0.85 * min(heat, 1.2) + 1.6 * campfireFuelBed.z, 0.0, 2.2);
+  }
   campfireGlow = 0.0;
 }
 
@@ -367,6 +402,8 @@ void campfireMug(vec2 p, float px, inout vec3 col) {
 void campfireCoals(vec2 p, float px, inout vec3 col) {
   vec2 q = p - (campfireF + vec2(0.0, 0.02));
   float k = 0.75 + 0.25 * campfireS;
+  // A burning-down fire's bed grows with its embers (fuel only).
+  if (campfireFuelOn) k *= mix(0.8, 1.08, clamp(campfireFuelBed.y / 1.2, 0.0, 1.0));
   if (hardFill(sdEllipse(q, vec2(0.125, 0.036) * k), px) < 0.5) return;
   vec2 cp = p * vec2(55.0, 95.0);
   float lump = 0.6 * vnoise(cp) + 0.4 * vnoise(cp * 2.1 + 3.3);
@@ -376,31 +413,61 @@ void campfireCoals(vec2 p, float px, inout vec3 col) {
   vec2 e = q / vec2(0.1, 0.03);
   float centre = exp(-dot(e, e));
   vec3 ember = mix(vec3(0.55, 0.10, 0.03), vec3(1.0, 0.45, 0.08), glow);
-  vec3 ash = vec3(0.05, 0.04, 0.04) + CAMPFIRE_WARM * 0.06 * centre;
+  vec3 ash = vec3(0.05, 0.04, 0.04) + CAMPFIRE_WARM * 0.06 * centre * min(campfireFuelBed.y, 1.0);
   col = mix(ash, ember, clamp(glow * (0.5 + 0.8 * centre), 0.0, 1.0));
   campfireGlow = max(campfireGlow, glow * 0.7);
 }
 
 // A log from a to b (radius ra to rb): bark furrows, lit from the fire's side, glowing cracks where it
-// burns near the flames.
-void campfireLog(vec2 p, vec2 a, vec2 b, float ra, float rb, float seed, float px, inout vec3 col) {
+// burns near the flames. fuel (campfireFuelLog, used while the fuel is on): laid on from above, it
+// slumps into the coals as it burns through, thins where the flames are hottest until it breaks there,
+// and chars black and crazed, its cracks glowing, greying with ash once the flames die down.
+void campfireLog(vec2 p, vec2 a, vec2 b, float ra, float rb, float seed, vec4 fuel, float px, inout vec3 col) {
+  float wood = 1.0;
+  if (campfireFuelOn) {
+    if (fuel.x <= 0.0) return;
+    float lower = 0.016 * fuel.z - 0.07 * (1.0 - fuel.w) * (1.0 - fuel.w);
+    a.y -= lower;
+    b.y -= lower;
+    // The radius shrinks steadily in time while the mass, burning at its surface, falls as its cube.
+    wood = pow(fuel.x, 1.0 / 3.0);
+  }
   float t;
   float d = sdTaperCapsule(p, a, b, ra, rb, t);
+  float radius = mix(ra, rb, t);
+  vec2 fireTop = campfireF + vec2(0.0, 0.045);
+  if (campfireFuelOn) {
+    vec2 ha = (mix(a, b, t) - fireTop) / vec2(0.11, 0.05);
+    float thin = (1.0 - wood) * mix(0.35, 1.15, exp(-dot(ha, ha)));
+    d += radius * thin;
+    radius *= max(1.0 - thin, 0.05);
+  }
   if (hardFill(d, px) < 0.5) return;
   vec2 ba = b - a;
   float len = length(ba);
   vec2 axis = ba / len;
   vec2 nrm = vec2(-axis.y, axis.x);
-  float across = clamp(dot(p - a, nrm) / mix(ra, rb, t), -1.0, 1.0);
+  float across = clamp(dot(p - a, nrm) / radius, -1.0, 1.0);
   float along = t * len;
   float bark = vnoise(vec2(across * 3.2 + seed * 5.0, along * 38.0));
   vec3 alb = mix(vec3(0.085, 0.05, 0.03), vec3(0.15, 0.10, 0.065), bark);
   vec2 toFire = normalize(campfireF + vec2(0.0, 0.07) - p);
   float facing = clamp(0.55 + 0.6 * dot(nrm * across, toFire), 0.0, 1.0);
-  vec3 c = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 2.8 * campfireLight(p, 0.85) * facing);
-  vec2 hc = (p - (campfireF + vec2(0.0, 0.045))) / vec2(0.11, 0.05);
+  vec2 hc = (p - fireTop) / vec2(0.11, 0.05);
   float heat = exp(-dot(hc, hc));
   float crack = smoothstep(0.52, 0.72, vnoise(vec2(across * 4.0 + seed * 3.0, along * 60.0 + campfireTm * 0.02)));
+  if (campfireFuelOn) {
+    // Char: black, crazed into blocks along the grain; the cracks between them glow farther from the
+    // flames the deeper the char, and a grey skin of ash forms on the blocks as the flames die down.
+    float charK = fuel.y;
+    float crazed = smoothfall(0.075, 0.035, abs(vnoise(vec2(across * 2.6 + seed * 7.0, along * 32.0)) - 0.5));
+    alb = mix(alb, vec3(0.024, 0.02, 0.018), smoothstep(0.1, 0.6, charK));
+    float ashy = charK * charK * (1.0 - clamp(campfireFuelBed.x, 0.0, 1.0));
+    alb = mix(alb, vec3(0.2, 0.19, 0.18), 0.55 * ashy * (1.0 - crazed));
+    heat = exp(-dot(hc, hc) / (1.0 + 2.0 * charK));
+    crack = max(crack, crazed * smoothstep(0.3, 0.8, charK));
+  }
+  vec3 c = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 2.8 * campfireLight(p, 0.85) * facing);
   float breath = 0.55 + 0.45 * sin(campfireTm * 0.7 + seed * 4.0 + along * 25.0);
   c = c * (1.0 - 0.5 * heat) + vec3(1.0, 0.36, 0.07) * (crack * heat * breath * 1.3 * campfireCoalK);
   col = c;
@@ -484,7 +551,7 @@ void campfireSmoke(vec2 p, float px, inout vec3 col) {
   if (abs(z) > 3.0) return;
   float nz = fbm3(vec2(z * 1.1 + 3.0, u * 8.0 - tm * 0.5));
   float fade = smoothstep(0.0, 0.07, u) * exp(-u * 2.4);
-  float dens = exp(-1.3 * z * z) * (0.25 + 1.1 * nz) * fade * (0.55 + 0.9 * K_smoke) * 0.6 * campfireSmokeG;
+  float dens = exp(-1.3 * z * z) * (0.25 + 1.1 * nz) * fade * (0.55 + 0.9 * K_smoke) * 0.6 * campfireSmokeG * campfireSmokeK;
   float cover = hardEdge(dens);
   if (cover < 0.5) return;
   float nearFire = bell(u / 0.30);
@@ -502,7 +569,7 @@ void campfireSparks(vec2 p, float px, inout vec3 col) {
   float on = 0.0;
   for (int i = 0; i < 22; i++) {
     float fi = float(i);
-    if (hash12(vec2(fi, 31.7)) > K_sparks) continue;
+    if (hash12(vec2(fi, 31.7)) > campfireSparkK) continue;
     float sg = clamp((campfireSparkG - 0.85 * hash12(vec2(fi, 55.1))) / 0.15, 0.0, 1.0);
     if (sg <= 0.0) continue;
     float life = 5.5 + 4.0 * hash12(vec2(fi, 8.3));
@@ -647,13 +714,13 @@ Shade sceneCampfire(vec2 uv, vec2 cell, float t) {
   campfirePack(p, px, col);
   campfireStones(p, px, false, col);
   campfireCoals(p, px, col);
-  campfireLog(p, campfireF + vec2(-0.125, 0.036), campfireF + vec2(0.115, 0.056), 0.0155, 0.0145, 1.0, px, col);
+  campfireLog(p, campfireF + vec2(-0.125, 0.036), campfireF + vec2(0.115, 0.056), 0.0155, 0.0145, 1.0, campfireFuelLog[0], px, col);
   campfireFlames(p, px, col);
   campfireSmoke(p, px, col);
 
   // The two front logs crossed over the flames' foot, the near stones, the mug, the stick, the bench.
-  campfireLog(p, campfireF + vec2(-0.135, -0.014), campfireF + vec2(0.03, 0.052), 0.0175, 0.0145, 2.0, px, col);
-  campfireLog(p, campfireF + vec2(0.145, -0.010), campfireF + vec2(-0.02, 0.05), 0.0165, 0.0140, 3.0, px, col);
+  campfireLog(p, campfireF + vec2(-0.135, -0.014), campfireF + vec2(0.03, 0.052), 0.0175, 0.0145, 2.0, campfireFuelLog[1], px, col);
+  campfireLog(p, campfireF + vec2(0.145, -0.010), campfireF + vec2(-0.02, 0.05), 0.0165, 0.0140, 3.0, campfireFuelLog[2], px, col);
   campfireStones(p, px, true, col);
   campfireMug(p, px, col);
   campfireStick(p, px, col);
