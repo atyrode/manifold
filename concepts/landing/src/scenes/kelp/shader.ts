@@ -28,8 +28,8 @@
 // canopy), uSim2 the hand's trail. Units: screen heights, x from the frame's centre, y up from its
 // bottom; a depth layer at perspective scale s shows world lengths times s ("world" = screen
 // heights at the nearest layer).
-// Knobs read here: K_haze, K_rays, K_caustics, K_surface, K_density, K_kelpSeed, K_understory,
-// K_marineSnow, K_jellies, K_plankton, K_mark, K_time, K_cycle.
+// Knobs read here: K_haze, K_rays, K_caustics, K_surface, K_density, K_kelpSeed, K_species,
+// K_understory, K_marineSnow, K_jellies, K_plankton, K_mark, K_time, K_cycle.
 import { fishGlsl } from "../../sims/fish.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
@@ -149,6 +149,14 @@ const float KELP_STIPE_HALF = 0.006;
 const float KELP_BLADDER = 0.0075;
 const float KELP_REACH = 0.3;                          // how far blades reach past the stipe's points
 const float KELP_HANG = 0.17;                          // how deep the canopy's blades hang under the surface
+const float KELP_BULB = 0.022;                         // bull kelp: its gas bulb's radius
+const int KELP_STRAPS = 8;                             // the strap blades streaming from the bulb,
+const float KELP_STRAP_LEN = 0.22;                     // their length (within KELP_REACH with the bulb),
+const float KELP_STRAP_HALF = 0.011;                   // half-width: narrow straps,
+const float KELP_STRAP_FAN = 0.7;                      // the angle the fan opens over (radians),
+const float KELP_STRAP_STREAM = 2.6;                   // how far the water past the bulb swings it (per radian of lean)
+const float KELP_STRAP_DROOP = 0.9;                    // and how far a strap leaning off upright bows over toward its tip
+const float KELP_BULL_MATS = 0.12;                     // how much a bull kelp forest thins the canopy mats overhead
 
 // ---- life ----
 const vec3 KELP_SILVER = vec3(0.85, 0.92, 0.95);
@@ -342,7 +350,10 @@ float kelpCaustic(vec2 p, float t, float blur) {
 float kelpCanopy(vec2 w, KelpEnv e) {
   vec2 p = vec2(w.x * 2.2 - 0.3 * kelpShift(w.x, e), w.y * 1.6) + 9.1;
   float n = 0.55 * vnoise(p) + 0.3 * vnoise(p * 2.1 + 5.3) + 0.15 * vnoise(p * 4.3 + 1.7);
-  return n - mix(0.6, 0.42, K_density);
+  float cut = mix(0.6, 0.42, K_density);
+  // Bull kelp leaves the surface open but for its bulbs and straps: few mats (fewer in a mixed forest).
+  if (K_species > 0.5) cut += KELP_BULL_MATS * (K_species > 1.5 ? 0.5 : 1.0);
+  return n - cut;
 }
 
 // The shafts: beams fanning from the vanishing point, falling through the canopy's gaps (looked up
@@ -546,6 +557,7 @@ void kelpBackdrop(float s, float salt, vec2 P, vec3 water, float aa, KelpEnv e, 
   // The canopy: a band under the surface, thicker and thinner, with gaps, drifting with the surge.
   float mat = vnoise(vec2((P.x / s - 0.5 * kelpShift(P.x / s, e)) * 5.0 + salt, salt));
   float band = s * (0.015 + 0.05 * mat) * smoothstep(0.3, 0.45, mat + 0.25 * K_density);
+  if (K_species > 0.5) band *= K_species > 1.5 ? 0.6 : 0.25;
   float cover = 1.0 - smoothstep(band - aa, band + aa, surfaceY - P.y);
   for (int d = -1; d <= 1; d++) {
     float c = cell + float(d);
@@ -658,12 +670,53 @@ void kelpHoldfast(vec2 hr, float px, float plant, float salt, inout vec4 paint) 
   paint = kelpOver(paint, KELP_HOLDFAST * (0.55 + 0.5 * smoothstep(0.004, 0.045, hr.y)), hold);
 }
 
+// Bull kelp's crown at the top of its stipe (top: the top point, its w the lean sim.ts gives the
+// water past it; below: the point under it): a gas bulb, a little long along the stipe, and a fan of
+// narrow strap blades leaving it around the stipe's direction, swung round with the water past the
+// bulb, each bowing over toward its tip the farther it leans off upright (a willow, not a palm), and
+// rippling. Adds to paint (premultiplied albedo, cover) and lit (premultiplied glow, shine) as
+// kelpBladePair does.
+void kelpBullCrown(vec2 P, vec4 top, vec2 below, float s, float aa, float tc, float salt, inout vec4 paint, inout vec2 lit) {
+  vec2 T = normalize(top.xy - below + vec2(0.0, 1e-6));
+  float rb = KELP_BULB * s;
+  vec2 r = P - (top.xy + T * 0.6 * rb);
+  float reach = KELP_STRAP_LEN * s * 1.25 + 2.0 * rb;
+  if (dot(r, r) > reach * reach) return;
+  float axis = atan(T.x, T.y) + clamp(top.w * KELP_STRAP_STREAM, -1.4, 1.4);
+  for (int j = 0; j < KELP_STRAPS; j++) {
+    float fj = float(j);
+    float hb = hash12(vec2(fj + 0.5, salt + 5.0));
+    float spread = (fj / float(KELP_STRAPS - 1) - 0.5) * KELP_STRAP_FAN + 0.15 * (hb - 0.5);
+    float a = axis + spread + 0.08 * sin(tc * 0.5 + fj * 1.7 + salt);
+    vec2 d = vec2(sin(a), cos(a));
+    float len = KELP_STRAP_LEN * s * (0.75 + 0.5 * hb);
+    float q = (dot(r, d) - 0.5 * rb) / len;
+    if (q < 0.0 || q > 1.0) continue;
+    float halfW = KELP_STRAP_HALF * s * (0.8 + 0.4 * fract(hb * 7.31));
+    // Bowing over (clockwise for a strap leaning right, d's right-hand side), rippling as the water
+    // runs along it.
+    float centre = KELP_STRAP_DROOP * clamp(a, -1.5, 1.5) * len * q * q + 0.4 * halfW * q * sin(q * 6.5 - tc * 0.7 + hb * 40.0);
+    float tip = max(q - 0.7, 0.0) / 0.3;
+    float w = halfW * (0.3 + 0.7 * smoothstep(0.0, 0.12, q)) * sqrt(max(1.0 - tip * tip, 0.0));
+    w *= 1.0 + 0.16 * sin(q * 26.0 + hb * 17.0);
+    float cover = 1.0 - smoothstep(w - aa, w + aa, abs(dot(r, vec2(d.y, -d.x)) - centre));
+    paint = kelpOver(paint, KELP_OLIVE * (1.0 + 0.2 * (hb - 0.5)) * (0.95 + 0.1 * q), cover);
+    lit = vec2((0.6 + 0.4 * q) * (1.0 + 0.2 * (hb - 0.5)), 0.0) * cover + lit * (1.0 - cover);
+  }
+  // The bulb over the straps' feet, glinting like a giant's bladders but brighter: a big float.
+  vec2 b = vec2(dot(r, T) / 1.25, dot(r, vec2(-T.y, T.x)));
+  float bulb = 1.0 - smoothstep(rb - aa, rb + aa, length(b));
+  paint = kelpOver(paint, KELP_OLIVE * 1.3, bulb);
+  lit = vec2(0.55, 0.6) * bulb + lit * (1.0 - bulb);
+}
+
 // Stipe i (in a layer at scale s, its surface at surfaceY) at P. The rising part: a Hermite spine
 // through its points from the holdfast to where it reaches the surface, blades on alternate sides
 // (the downstream ones streaming out, the upstream ones pressed to the stipe, as sim.ts leans
 // them), a knobby holdfast gripping a boulder. The floating part (grown plants): the top lying
-// along the surface, its blades hanging and trailing downstream, the canopy.
-KelpHit kelpStipe(int i, float s, float surfaceY, vec2 P, float aa, float tc, bool wantStir, bool rising, bool floating) {
+// along the surface, its blades hanging and trailing downstream, the canopy. Bull kelp (bull): a
+// bare stipe thickening toward its crown (kelpBullCrown) instead of blades all the way up.
+KelpHit kelpStipe(int i, float s, float surfaceY, vec2 P, float aa, float tc, bool wantStir, bool rising, bool floating, bool bull) {
   KelpHit h = KelpHit(0.0, vec3(0.0), 0.0, 0.0, 0.0);
   int first = i * KELP_POINTS;
   vec4 canopy = kelpState(i, KELP_ROW_CANOPY);
@@ -727,10 +780,10 @@ KelpHit kelpStipe(int i, float s, float surfaceY, vec2 P, float aa, float tc, bo
     float thOther = KELP_BLADE_REST + side * lean * KELP_BLADE_STREAM + wobble;
     vec4 blades = vec4(0.0);
     vec2 bladeLit = vec2(0.0);
-    if (thMine > 0.0) {
+    if (!bull && thMine > 0.0) {
       kelpBladePair(an, t, clamp(thMine, KELP_BLADE_FOLD, KELP_BLADE_OPEN), side > 0.0 ? 0.0 : 0.5, 0.12 * len, len, salt + side * 0.37, s, aa, tc, 0.7 * len, 1.0, blades, bladeLit);
     }
-    if (thOther < 0.0) {
+    if (!bull && thOther < 0.0) {
       kelpBladePair(an, t, clamp(-thOther, KELP_BLADE_FOLD, KELP_BLADE_OPEN), side > 0.0 ? 0.5 : 0.0, 0.12 * len, len, salt - side * 0.37, s, aa, tc, 0.7 * len, 1.0, blades, bladeLit);
     }
     // Nothing of the rising part shows above its surface.
@@ -739,10 +792,19 @@ KelpHit kelpStipe(int i, float s, float surfaceY, vec2 P, float aa, float tc, bo
     lit = bladeLit * under + lit * (1.0 - blades.a * under);
 
     // The stipe itself, from inside the holdfast up to the surface: thin, olive, a little light
-    // coming through it too.
-    float body = (1.0 - smoothstep(hwS - aa, hwS + aa, an)) * smoothstep(0.02 * s, 0.03 * s, t) * (1.0 - smoothstep(len - aa, len + aa, t)) * under;
-    paint = kelpOver(paint, KELP_STIPE, body);
-    lit = vec2(0.3, 0.0) * body + lit * (1.0 - body);
+    // coming through it too. Bull kelp's is a whip, thickening toward its bulb.
+    float hw = hwS;
+    vec3 stipe = KELP_STIPE;
+    float stipeGlow = 0.3;
+    if (bull) {
+      hw = max(hwS * (0.5 + 1.1 * clamp(t / len, 0.0, 1.0)), aa);
+      stipe = KELP_OLIVE * 0.8;
+      stipeGlow = 0.45;
+    }
+    float body = (1.0 - smoothstep(hw - aa, hw + aa, an)) * smoothstep(0.02 * s, 0.03 * s, t) * (1.0 - smoothstep(len - aa, len + aa, t)) * under;
+    paint = kelpOver(paint, stipe, body);
+    lit = vec2(stipeGlow, 0.0) * body + lit * (1.0 - body);
+    if (bull) kelpBullCrown(P, top, kelpNode(first + m - 1).xy, s, aa, tc, salt, paint, lit);
 
     if (wantStir) {
       float speed = mix(kelpNodeSpeed(first + k), kelpNodeSpeed(first + k + 1), u) / s;
@@ -818,8 +880,9 @@ void kelpForest(int l, vec2 P, vec3 water, float aa, float tc, KelpEnv e, bool w
       floating = canopy.x < float(KELP_SEGMENTS) - 0.5 && P.x > min(canopy.y, canopy.z) - reach && P.x < max(canopy.y, canopy.z) + reach;
     }
     if (!rising && !floating) continue;
-    float si = kelpState(i, KELP_ROW_SCALE).x;
-    KelpHit h = kelpStipe(i, si, KELP_HORIZON + KELP_SURFACE * si, P + vec2(0.0, (si - s) * kelpDrop), aa, tc, wantStir, rising, floating);
+    vec4 placed = kelpState(i, KELP_ROW_SCALE);
+    float si = placed.x;
+    KelpHit h = kelpStipe(i, si, KELP_HORIZON + KELP_SURFACE * si, P + vec2(0.0, (si - s) * kelpDrop), aa, tc, wantStir, rising, floating, placed.y > 0.5);
     stir = max(stir, h.stir * box.w);
     float alpha = hardEdge(h.cover * smoothstep(0.0, 0.3, box.w), kelpTh);
     if (alpha <= 0.0) continue;
