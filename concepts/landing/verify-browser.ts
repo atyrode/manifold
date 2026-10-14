@@ -3,6 +3,7 @@ import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
 import { sceneDefs } from "./src/scenes/index.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
+import { fallsGorgeCheck } from "./src/scenes/falls/gorge.verify.ts";
 import { skywardSnowCheck } from "./src/scenes/skyward/snow.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 
@@ -253,6 +254,7 @@ export function verify(): Record<string, unknown> {
   );
   gl.deleteProgram(terrain);
   result.skywardSnow = skywardSnowCheck(gl);
+  result.fallsGorge = fallsGorgeCheck(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
