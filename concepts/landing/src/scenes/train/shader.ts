@@ -326,7 +326,7 @@ vec4 trainClouds(vec3 dir, float t, bool fine) {
 // its strokes, twinkling gently, with the faintest of chart lines between them. 0..1.
 float trainMarkStars(vec3 dir) {
   if (K_mark <= 0.0 || dir.y <= 0.05) return 0.0;
-  vec2 q = vec2((atan(dir.x, dir.z) + TRAIN_YAW - 0.3) * 0.946, asin(dir.y) - 0.33) / 0.11;
+  vec2 q = vec2((atan(dir.x, dir.z) + TRAIN_YAW - 0.42) * 0.946, asin(dir.y) - 0.33) / 0.11;
   if (abs(q.x) > 0.75 || abs(q.y) > 0.8) return 0.0;
   float cellM = trainPx / (TRAIN_F * 0.11);
   float s = 0.0;
@@ -373,12 +373,23 @@ float trainMeteor(vec3 dir, float t) {
   return max(m, trainStreak(dir, sinceTrigger(5), uTriggers[5]));
 }
 
+// By night the eye adapts and the air low over the land holds the moon's light: a pale band along
+// the horizon, brightest toward the moon, so hills, trees and roofs stand dark against it and water
+// mirrors it as a bright ribbon. Light to add to the sky in direction dir.
+vec3 trainNightGlow(vec3 dir) {
+  float up = max(dir.y, 0.0);
+  float toward = 0.5 + 0.5 * dot(normalize(dir.xz + 1e-6), normalize(trainSky.moon.xz + 1e-6));
+  float moon = smoothstep(-0.05, 0.1, trainSky.moon.y) * toward * toward * exp(-up * 4.0);
+  return trainSky.night * (1.0 - 0.6 * trainOver) * (vec3(0.07, 0.085, 0.13) * exp(-up * 7.0) + vec3(0.12, 0.13, 0.15) * moon);
+}
+
 // The night sky behind the glass, for a direction in the sky's own frame: the shared dome with the
-// moon, stars, the M asterism, shooting stars, aurora, the deck; under rain a low grey sky with
-// shafts of heavier rain hanging near the horizon. Reflections skip the fine things.
+// moon, the moonlit band low over the land, stars, the M asterism, shooting stars, aurora, the deck;
+// under rain a low grey sky with shafts of heavier rain hanging near the horizon. Reflections skip
+// the fine things.
 vec3 trainSkyCol(vec3 dir, float t, bool detail, inout float accent) {
   Sky s = trainSky;
-  vec3 col = skyColor(s, dir);
+  vec3 col = skyColor(s, dir) + trainNightGlow(dir);
   float clear = 1.0 - trainOver;
   float mark = 0.0;
   if (detail) {
@@ -584,13 +595,13 @@ vec2 trainWindows(vec2 q, float w, float wall, float id, float aa, inout vec3 gl
   float storey = wall > 5.3 && q.y > 2.6 ? 1.0 : 0.0;
   float cy = storey > 0.5 ? 3.7 : 1.55;
   float h = trainHash(id * 1.37 + col * 7.0 + storey * 31.0, 57.0);
-  float lit = step(h, 0.75 * K_lights) * trainLampsOn;
+  float lit = step(h, 0.9 * K_lights) * trainLampsOn;
   float kind = fract(h * 19.3);
   tint = kind > 0.9 ? vec3(0.55, 0.7, 1.0) : (kind > 0.55 ? vec3(1.0, 0.5, 0.2) : vec3(1.0, 0.72, 0.38));
   vec2 size = vec2(max(0.42, 1.1 * aa), max(0.5, 1.1 * aa));
   vec2 wq = q - vec2(cx, cy);
   float cover = trainSolid(max(abs(wq.x) - size.x, abs(wq.y) - size.y), aa);
-  glow += tint * lit * 0.22 * exp(-dot(wq, wq) / 1.6);
+  glow += tint * lit * 0.3 * exp(-dot(wq, wq) / max(1.6, 9.0 * aa * aa));
   return vec2(cover, lit);
 }
 
@@ -651,7 +662,7 @@ vec4 trainRow(float k, float z, float d, float hr, bool bank, inout vec3 glow, i
     float Lh = z < 120.0 ? 128.0 : 256.0;
     vec2 th = trainTile(d + 57.0 * k, Lh);
     float hh = trainHash(th.x, salt + 5.0);
-    if (hh < 0.54 && hh < 0.14 + 0.4 * smoothstep(0.55, 0.8, trainNoise(d, 1024.0, 7.0))) {
+    if (hh < 0.6 && hh < 0.2 + 0.4 * smoothstep(0.55, 0.8, trainNoise(d, 1024.0, 7.0))) {
       float w = 7.0 + 7.0 * fract(hh * 9.1);
       float wall = 4.6 + 1.6 * fract(hh * 6.7);
       vec2 q = vec2(th.y - (0.32 + 0.36 * fract(hh * 4.3)) * Lh, hr);
@@ -670,7 +681,7 @@ vec4 trainRow(float k, float z, float d, float hr, bool bank, inout vec3 glow, i
         chimney = max(abs(q.x - 0.45 * hw) - 0.35, max(wall + 1.0 - q.y, q.y - wall - 3.9));
       }
       float house = min(min(body, roof), chimney);
-      if (abs(q.x) < hw + 3.0 && q.y < wall + 2.0) {
+      if (abs(q.x) < hw + 3.0 + 3.0 * aa && q.y < wall + 2.0 + 3.0 * aa) {
         vec3 tint;
         trainWindows(q, w, wall, th.x, aa, glow, tint);
       }
@@ -730,7 +741,7 @@ vec4 trainRow(float k, float z, float d, float hr, bool bank, inout vec3 glow, i
 // in close for a while, its near bank just across the road (the roadside hedge gives way to reeds
 // there), then off across the fields, out of sight.
 vec2 trainRiverBanks(float d) {
-  float near = 33.0 + 860.0 * smoothstep(0.45, 0.72, trainNoise(d, 1024.0, 61.0)) + 10.0 * trainNoise(d, 128.0, 62.0);
+  float near = 33.0 + 860.0 * smoothstep(0.58, 0.8, trainNoise(d, 1024.0, 61.0)) + 10.0 * trainNoise(d, 128.0, 62.0);
   return vec2(near, near + 20.0 + 18.0 * trainNoise(d, 256.0, 63.0));
 }
 
@@ -763,7 +774,7 @@ vec4 trainCarSide(vec2 o, vec3 car, inout vec3 glow, inout float accent) {
   if (trainSolid(dist, aa) < 0.5) return vec4(0.0);
   vec3 paint = heading > 0.0 ? vec3(0.08, 0.1, 0.13) : vec3(0.22, 0.06, 0.05);
   vec3 c = trainLit(wetten(paint, trainWet, 0.0), vec3(0.0, 0.5, -0.86));
-  c += trainMoonLight * 0.3 * smoothstep(1.3, 1.45, h);
+  c += trainMoonLight * 0.12 * smoothstep(1.3, 1.45, h);
   if (cabin < 0.0 && body > 0.0) {
     // the windows: dark glass, the dashboard's faint glow
     c = vec3(0.02, 0.025, 0.035) + vec3(0.25, 0.4, 0.3) * 0.15 * trainBell((x - 0.5) / 0.3) * step(h, 1.05);
@@ -905,7 +916,7 @@ bool trainValley(vec2 o, float zg, float dg, float t, out vec3 col, out float z)
     col = trainLit(vec3(0.03, 0.045, 0.035), n);
     col = mix(col, trainLit(TRAIN_SNOW * 0.8, n), 0.7 * snowCover(n, vec2(x, zf) * 0.15, trainLying));
   }
-  vec3 mist = trainAmbient * 1.6 + trainMoonLight * 0.9 + trainAir * 0.5;
+  vec3 mist = trainAmbient * 0.6 + trainMoonLight * 0.15 + trainAir * 0.4;
   col = mix(col, mist, fogAmount(0.35 + K_fog, clamp(z / 700.0, 0.0, 1.0), 0.15));
   col = trainFade(col, z, 0.0);
   return true;
@@ -1738,14 +1749,15 @@ vec4 trainPaneRain(vec2 q, float t, float amount) {
 }
 
 // What the glass mirrors: the lit compartment behind you, as if beyond the window. The far wall's
-// laminate in the lamp's pool, the luggage rack with a suitcase, the seat's white headrest cloths,
-// the door with the corridor's cool light, the reading lamp itself, and you: a dark head and
-// shoulders rimmed by the lamp behind, leaning as you lean (the pointer). The table and the glass of
-// tea stand on the window's sill. jolt makes the lamp's reflection tremble at each clack.
+// laminate in the lamp's pool, the luggage rack with a suitcase, the seat's back and its white
+// headrest cloths, the door with the corridor's cool light, and you: head and shoulders, your face
+// lit from the side by the reading lamp, leaning as you lean (the pointer). The lamp itself shows as
+// a small bright bulb with the faint outline of its shade, trembling at each clack (jolt). The
+// table and the glass of tea stand on the window's sill.
 vec3 trainMirror(vec2 q, float aspect, float jolt, float teaX, inout float accent) {
   vec2 room = q + uPointer * vec2(0.012, 0.006);
-  vec2 me = q - uPointer * vec2(0.05, 0.025);
-  vec2 lampAt = vec2(0.3 * aspect, 0.29);
+  vec2 me = q - uPointer * vec2(0.05, 0.025) - vec2(0.12 * aspect, 0.0);
+  vec2 lampAt = vec2(0.33 * aspect, 0.31);
   vec2 dl = (room - lampAt) * vec2(1.0, 1.3);
   float pool = K_lamp / (1.0 + dot(dl, dl) * 7.0);
   vec3 c = vec3(0.42, 0.28, 0.17) * (0.1 + 0.9 * pool) + vec3(0.02, 0.025, 0.035);
@@ -1760,34 +1772,44 @@ vec3 trainMirror(vec2 q, float aspect, float jolt, float teaX, inout float accen
     c = vec3(0.3, 0.2, 0.12) * (0.1 + pool * 0.6);
     if (trainBox(room - vec2(-0.41 * aspect, 0.2), vec2(0.04 * aspect, 0.14), 0.01) < 0.0) c = vec3(0.16, 0.2, 0.24) * 0.8;
   }
-  // The seat's back: velour, three white headrest cloths.
-  float seat = trainBox(room - vec2(-0.02 * aspect, -0.08), vec2(0.36 * aspect, 0.18), 0.05);
-  if (seat < 0.0) {
+  // The seat's back behind you: velour, white headrest cloths.
+  vec2 sq = room - vec2(0.12 * aspect, 0.0);
+  if (trainBox(sq, vec2(0.36 * aspect, 0.17), 0.05) < 0.0) {
     c = vec3(0.17, 0.09, 0.08) * (0.25 + 1.2 * pool);
-    float xs = room.x + 0.02 * aspect;
-    float slot = clamp(floor(xs / (0.24 * aspect) + 0.5), -1.0, 1.0);
-    if (trainBox(room - vec2(slot * 0.24 * aspect - 0.02 * aspect, 0.05), vec2(0.055, 0.045), 0.008) < 0.0) c = vec3(0.82, 0.8, 0.74) * (0.25 + 1.2 * pool);
+    float slot = clamp(floor(sq.x / (0.26 * aspect) + 0.5), -1.0, 1.0);
+    if (trainBox(sq - vec2(slot * 0.26 * aspect, 0.12), vec2(0.06, 0.045), 0.008) < 0.0) c = vec3(0.82, 0.8, 0.74) * (0.25 + 1.2 * pool);
   }
-  // You.
-  float head = length((me - vec2(0.0, 0.05)) / vec2(0.058, 0.074)) - 1.0;
-  float body = length((me - vec2(0.0, -0.21)) / vec2(0.2, 0.13)) - 1.0;
-  float neck = max(abs(me.x) - 0.026, abs(me.y + 0.04) - 0.05) / 0.05;
-  float you = min(min(head, body), neck);
-  if (you < 0.0) {
-    c = vec3(0.06, 0.045, 0.04) * (0.4 + 0.6 * K_lamp);
-    c += TRAIN_LAMP * K_lamp * 0.35 * smoothstep(-0.25, 0.0, you) * smoothstep(-0.3, 0.6, (me.x * 0.7 + me.y));
+  // You: dark hair, a face lit from the lamp's side, a sweater with the lamp along one shoulder.
+  vec2 hq = (me - vec2(0.0, 0.19)) / vec2(0.06, 0.078);
+  float head = length(hq) - 1.0;
+  float body = length((me - vec2(0.0, -0.01)) / vec2(0.2, 0.1)) - 1.0;
+  float neck = max(abs(me.x) - 0.028, abs(me.y - 0.1) - 0.03) / 0.05;
+  if (min(min(head, body), neck) < 0.0) {
+    float lit = K_lamp * smoothstep(-0.6, 0.9, hq.x + 0.3 * hq.y);
+    if (head < 0.0 || neck < 0.0) {
+      c = vec3(0.55, 0.38, 0.3) * (0.2 + 1.5 * lit);
+      if (head < 0.0 && hq.y > 0.45 - 0.25 * hq.x * hq.x) c = vec3(0.12, 0.08, 0.06) * (0.4 + lit);
+      vec2 eye = vec2(abs(hq.x) - 0.36, hq.y - 0.05) / vec2(0.15, 0.07);
+      c *= 1.0 - 0.35 * step(dot(eye, eye), 1.0);
+    } else {
+      c = vec3(0.2, 0.17, 0.2) * (0.25 + 0.6 * K_lamp) + TRAIN_LAMP * K_lamp * 0.5 * smoothstep(-0.25, 0.0, body) * smoothstep(0.0, 0.15, me.x);
+    }
   }
-  // The lamp: a small fabric shade glowing, its bulb, a halo; it shivers at each clack.
-  vec2 bulb = room - lampAt - vec2(0.0, jolt * 0.003);
-  float shade = trainBox(bulb, vec2(0.028, 0.02), 0.012);
-  float core = 1.0 - smoothstep(-0.002, 0.004, shade);
-  c += TRAIN_LAMP * K_lamp * (9.0 * core + 1.2 * exp(-dot(bulb, bulb) * 680.0));
+  // The lamp: a small bright bulb, a soft glow, the faint outline of its shade above it.
+  vec2 b = room - lampAt - vec2(0.0, jolt * 0.003);
+  float r2 = dot(b, b);
+  float core = 1.0 - smoothstep(0.0035, 0.006, sqrt(r2));
+  float dome = length((b - vec2(0.0, 0.004)) / vec2(0.026, 0.022)) - 1.0;
+  float rim = 1.4 * trainPx / 0.024;
+  float shade = step(-0.002, b.y) * (1.0 - smoothstep(0.6 * rim, rim, abs(dome)));
+  shade = max(shade, (1.0 - smoothstep(0.0012, 0.003, abs(b.y + 0.002))) * step(abs(b.x), 0.026));
+  c += TRAIN_LAMP * K_lamp * (7.0 * core + 1.0 * exp(-r2 / 0.0004) + 1.6 * shade + 0.6 * step(dome, 0.0) * step(-0.002, b.y));
   accent = max(accent, core * K_lamp);
   // The table along the sill, and the glass of tea on it, a little further off.
   float sill = q.y + 0.22;
-  if (sill < 0.035) c = mix(c, vec3(0.5, 0.46, 0.4) * (0.2 + 0.8 * K_lamp), smoothstep(0.035, 0.0, sill));
-  vec2 tq = q - vec2(teaX + 0.012, -0.215);
-  if (abs(tq.x) < 0.03 && tq.y > 0.0 && tq.y < 0.085) c = tq.y < 0.045 ? vec3(0.5, 0.48, 0.45) * (0.2 + K_lamp) : vec3(0.42, 0.17, 0.05) * (0.2 + K_lamp);
+  if (sill < 0.035) c = mix(c, vec3(0.46, 0.27, 0.15) * (0.2 + 1.0 * K_lamp), smoothstep(0.035, 0.0, sill));
+  vec2 tq = q - vec2(teaX + 0.015, -0.215);
+  if (abs(tq.x) < 0.04 && tq.y > 0.0 && tq.y < 0.12) c = tq.y < 0.065 ? vec3(0.6, 0.58, 0.55) * (0.2 + K_lamp) : vec3(0.5, 0.2, 0.05) * (0.2 + K_lamp);
   return c;
 }
 
@@ -1797,67 +1819,89 @@ vec3 trainMirror(vec2 q, float aspect, float jolt, float teaX, inout float accen
 // lamps of whatever passes (the station's sweep across the table, the crossing's red, a tunnel's
 // lamps flicking by).
 vec3 trainSpill(float x, float tm) {
-  vec3 s = (trainAmbient * 0.5 + trainMoonLight * 0.25 + trainSunLight * 0.35) * (1.0 - 0.85 * trainTunnelIn);
+  vec3 s = (trainAmbient * 0.25 + trainMoonLight * 0.06 + trainSunLight * 0.35) * (1.0 - 0.85 * trainTunnelIn);
   float d = (x + TRAIN_F * trainLook) * 4.0 / TRAIN_F + trainEyeOff.x;
   return s + trainEventLight(d, 3.0, 0.0, tm) * 0.3;
 }
 
-// The glass of tea in its silver holder, seen a little from above. q from the holder's foot (screen
-// heights). Its surface rings at every clack of the wheels (and at a knock on the table: a click),
-// sloshes as the carriage rocks and brakes, and holds the lamp's reflection, a slice of lemon and
-// the spoon, which rattles; lit from behind (a station's lamps), the tea glows amber. back: the
-// light behind it. Colour and cover.
+// The glass of tea in its silver holder, seen a little from above: a faceted tea glass, deep amber
+// tea up near the brim with a slice of lemon floating and a spoon standing in it, set in a silver
+// openwork holder with a flared foot, a scalloped rim and a looped handle. q from the middle of the
+// holder's foot (screen heights). The surface rings at every clack of the wheels (and at a knock on
+// the table: a click), sloshes as the carriage rocks and brakes and holds the lamp's reflection; lit
+// from behind (a station's lamps) the tea glows. light: the room's light here; back: the light
+// behind it. Colour and cover.
 vec4 trainTea(vec2 q, vec3 light, vec3 back, vec4 knock, float press, float slosh, float jolt) {
-  float R = 0.04;
-  float k = 0.3;
-  float hold = 0.075;
-  float top = 0.13;
-  float level = 0.114;
+  float R = 0.056;      // the glass at its brim
+  float k = 0.36;       // the ellipses' squash: how far we look down on it
+  float hold = 0.104;   // the holder's height at the front
+  float top = 0.19;     // the brim's middle
+  float level = 0.166;  // the tea's middle
   float px = trainPx;
-  float rim = top + k * R * sqrt(max(1.0 - (q.x / R) * (q.x / R), 0.0));
-  // The spoon: its handle out over the rim to the right, rattling at each clack.
-  vec2 pivot = vec2(0.026, top);
-  vec2 sq = rotate(q - pivot, jolt * 0.06) + pivot;
-  float spoon = segmentDistance(sq, vec2(0.008, level - 0.004), vec2(0.04, top + 0.052)) - 0.0024;
-  spoon = min(spoon, length((sq - vec2(0.04, top + 0.054)) / vec2(1.0, 1.6)) - 0.0042);
-  // The holder's handle: a loop on the right.
-  vec2 hq = q - vec2(R + 0.018, 0.04);
-  float handle = abs(length(hq / vec2(1.0, 1.4)) - 0.017) - 0.0035;
-  handle = max(handle, R - 0.002 - q.x);
-  float holderR = R + 0.004 * (1.0 - smoothstep(0.0, 0.014, q.y));
-  float holder = max(abs(q.x) - holderR, max(-k * holderR * sqrt(max(1.0 - (q.x / holderR) * (q.x / holderR), 0.0)) - q.y, q.y - hold));
-  float glass = max(abs(q.x) - R, max(hold - 0.004 - q.y, q.y - rim));
+  float rx = R - 0.006 * clamp(1.0 - q.y / top, 0.0, 1.0);
+  float hr = R + 0.005;
+  float fr = hr + 0.009 * (1.0 - smoothstep(0.004, 0.02, q.y));
+  float sqR = sqrt(max(1.0 - (q.x / R) * (q.x / R), 0.0));
+  float sqH = sqrt(max(1.0 - (q.x / hr) * (q.x / hr), 0.0));
+  float theta = asin(clamp(q.x / hr, -1.0, 1.0));
+  // The holder, its foot flared and its upper edge scalloped; the handle, a D-shaped loop.
+  float scallop = 0.005 * (0.5 + 0.5 * cos(theta * 14.0));
+  float holder = max(abs(q.x) - fr, max(-k * fr * sqrt(max(1.0 - (q.x / fr) * (q.x / fr), 0.0)) - q.y, q.y - (hold - k * hr * sqH) - scallop));
+  vec2 hq = q - vec2(hr + 0.02, 0.055);
+  float handle = max(abs(length(hq / vec2(0.026, 0.038)) - 1.0) * 0.03 - 0.005, hr - 0.004 - q.x);
+  // The glass, up to the far side of its brim.
+  float glass = max(abs(q.x) - rx, max(0.02 - q.y, q.y - (top + k * R * sqR)));
+  // The spoon: its handle out over the brim to the right, rattling at each clack.
+  vec2 pivot = vec2(0.036, top);
+  vec2 sp = rotate(q - pivot, jolt * 0.06) + pivot;
+  float spoon = segmentDistance(sp, vec2(0.016, level), vec2(0.058, top + 0.075)) - max(0.0026, 1.1 * px);
+  spoon = min(spoon, length((sp - vec2(0.06, top + 0.08)) / vec2(1.0, 1.5)) - 0.0055);
   float d = min(min(holder, glass), min(handle, spoon));
   float cover = smoothstep(px, -px, d);
   if (cover <= 0.0) return vec4(0.0);
-  float nx = clamp(q.x / R, -1.0, 1.0);
-  vec3 c;
   float alpha = cover;
+  float u = clamp(q.x / rx, -1.0, 1.0);
+  // The tea through the glass: deep amber, glowing where light comes through from behind.
+  vec3 tea = vec3(0.55, 0.19, 0.04) * (0.18 + 0.5 * light) + vec3(1.0, 0.46, 0.12) * (back * 0.9 + light * 0.08);
+  vec3 c;
   if (holder < 0.0 || handle < 0.0) {
-    // Silver: a bright stripe toward the lamp, dark edges, a fluted band, a beaded rim and foot.
-    float cyl = 0.35 + 0.65 * smoothstep(-0.6, 0.55, nx) * (1.0 - smoothstep(0.75, 1.0, nx));
-    float flutes = 0.85 + 0.15 * sin(asin(nx) * 18.0);
-    float bands = (abs(q.y - hold + 0.006) < 0.006 || q.y < 0.01) ? 1.25 : 1.0;
-    c = vec3(0.62, 0.6, 0.56) * light * cyl * flutes * bands + vec3(0.9, 0.85, 0.75) * light * 0.6 * trainBell((nx - 0.45) / 0.12);
-    c += back * 0.25 * smoothstep(-0.2, -1.0, nx);
-    if (handle < 0.0 && holder >= 0.0) c = vec3(0.6, 0.58, 0.54) * light * (0.6 + 0.6 * smoothstep(-0.02, 0.02, hq.y));
+    // Silver: bright toward the lamp (upper right), dark where it turns away, the window's cool
+    // light on its far side; openwork arches showing the tea's glow, an engraved line round each;
+    // plain bands at the foot and under the scalloped rim.
+    float uh = theta / 1.5708;
+    float vh = (q.y + k * hr * sqH) / hold;
+    vec3 silver = vec3(0.74, 0.72, 0.68);
+    c = silver * light * (0.22 + 0.8 * smoothstep(-0.75, 0.45, uh) * (1.0 - smoothstep(0.82, 1.0, uh)));
+    c += vec3(1.0, 0.92, 0.8) * light * 0.9 * trainBell((uh - 0.42) / 0.09);
+    c += back * 0.35 * smoothstep(-0.55, -0.95, uh);
+    if (vh > 0.16 && vh < 0.82 && abs(uh) < 0.9) {
+      vec2 f = vec2(fract(theta * 6.0 / 3.14159 + 0.5) - 0.5, (vh - 0.49) / 0.3);
+      float arch = length(vec2(f.x / 0.3, f.y)) - 1.0;
+      if (arch < 0.0) c = tea * (0.45 + 0.4 * sqH);
+      else if (arch < 0.35) c *= 0.55;
+    }
+    if (handle < 0.0 && holder >= 0.0) {
+      float side = smoothstep(-0.02, 0.03, hq.y + hq.x * 0.5);
+      c = silver * light * (0.35 + 0.8 * side) + vec3(1.0, 0.92, 0.8) * light * 0.5 * trainBell((hq.x - 0.02) / 0.006);
+    }
   } else {
-    // The glass above the holder: tea up to its trembling level, clear glass above it.
-    float tilt = slosh * 0.25;
-    float line = level + tilt * q.x;
+    // The glass above the holder: its facets catching the lamp in thin upright lines, deep tea up to
+    // its trembling level, clear glass above it with the window showing through.
+    float facet = fract((asin(u) / 3.14159 + 0.5) * 9.0);
+    float edgeLine = trainBell((facet - 0.5) / 0.08) * smoothstep(-0.2, 0.7, u);
+    float line = level - k * (R - 0.004) * sqR + slosh * 0.25 * q.x;
     if (q.y < line) {
-      vec3 tea = vec3(0.32, 0.11, 0.025) * (0.25 + 0.5 * light) + vec3(0.9, 0.38, 0.08) * (back * 0.9 + light * 0.15);
-      c = tea * (0.85 + 0.25 * smoothstep(-0.8, 0.6, nx));
+      c = tea * (0.55 + 0.45 * sqrt(1.0 - u * u)) * (0.92 + 0.08 * facet);
     } else {
-      c = light * 0.08 + back * 0.15;
+      c = light * 0.06 + back * 0.12;
       alpha = cover * 0.3;
     }
-    c += light * 0.35 * trainBell((nx - 0.62) / 0.1) + light * 0.15 * trainBell((nx + 0.85) / 0.08);
+    c += light * (0.4 * trainBell((u - 0.58) / 0.08) + 0.12 * trainBell((u + 0.86) / 0.06) + 0.18 * edgeLine);
   }
-  // The tea's surface: an ellipse inside the rim, ringing at the clacks.
-  vec2 sc = vec2(q.x, (q.y - level - slosh * 0.25 * q.x) / k) / (R * 0.93);
+  // Over the brim, into the glass: the tea's surface, ringing at the clacks.
+  vec2 sc = vec2(q.x, (q.y - level - slosh * 0.25 * q.x) / k) / (R - 0.004);
   float r = length(sc);
-  if (r < 1.0 && holder > 0.0 && handle > 0.0) {
+  if (r < 1.0 && holder > 0.0 && handle > 0.0 && q.y > hold) {
     float h = 0.0;
     float slope = 0.0;
     float beat = K_rhythm * smoothstep(0.5, 6.0, trainV);
@@ -1871,45 +1915,45 @@ vec4 trainTea(vec2 q, vec3 light, vec3 back, vec4 knock, float press, float slos
     float pe = exp(-press * 3.0) * smoothstep(0.0, 0.05, press);
     h += 1.6 * pe * sin(TAU * (3.0 * (1.0 - r) - 5.0 * press));
     slope += 1.6 * pe * cos(TAU * (3.0 * (1.0 - r) - 5.0 * press));
-    vec3 surface = vec3(0.2, 0.07, 0.02) * (0.3 + 0.7 * light) + vec3(0.6, 0.25, 0.05) * back * 0.5;
-    surface *= 1.0 + 0.18 * h;
+    vec3 surface = (vec3(0.3, 0.1, 0.025) * (0.25 + 0.6 * light) + vec3(0.8, 0.32, 0.06) * back * 0.5) * (1.0 + 0.2 * h);
     // the lamp's reflection, broken by the rings, drifting as the tea sloshes
-    vec2 hl = sc - vec2(0.35 - slosh * 0.6, 0.3) + normalize(sc + 1e-4) * slope * 0.12;
-    float spec = exp(-dot(hl, hl) / 0.035);
-    surface += TRAIN_LAMP * K_lamp * 1.5 * trainHard(spec);
-    // the slice of lemon
-    vec2 lq = sc - vec2(-0.32 + 0.05 * sin(slosh * 3.0), -0.1) - normalize(sc + 1e-4) * h * 0.02;
-    float lemon = length(lq) - 0.36;
-    if (lemon < 0.0) {
-      float seg = abs(fract(atan(lq.y, lq.x) * 7.0 / TAU) - 0.5);
-      surface = vec3(0.85, 0.7, 0.2) * (0.25 + 0.75 * light) * (lemon > -0.06 ? 0.85 : 1.0 - 0.25 * step(seg, 0.08) * step(0.08, length(lq)));
+    vec2 hl = sc - vec2(0.38 - slosh * 0.6, 0.32) + normalize(sc + 1e-4) * slope * 0.12;
+    surface += TRAIN_LAMP * K_lamp * 1.6 * trainHard(exp(-dot(hl, hl) / 0.03));
+    // the slice of lemon: rind, pith, pulp in segments
+    vec2 lq = sc - vec2(-0.3 + 0.05 * sin(slosh * 3.0), -0.08) - normalize(sc + 1e-4) * h * 0.02;
+    float lr = length(lq) / 0.44;
+    if (lr < 1.0) {
+      float seg = abs(fract(atan(lq.y, lq.x) * 8.0 / TAU) - 0.5);
+      vec3 pulp = vec3(0.98, 0.82, 0.3) * (1.0 - 0.3 * step(seg, 0.07) * step(0.15, lr));
+      surface = (lr > 0.86 ? vec3(0.8, 0.75, 0.2) : (lr > 0.74 ? vec3(0.95, 0.93, 0.8) : pulp)) * (0.25 + 0.75 * light);
     }
-    float lip = smoothstep(0.88, 1.0, r);
-    c = mix(surface, light * 0.9 + 0.05, lip * 0.6);
+    c = mix(surface, light * 0.85 + 0.04, smoothstep(0.9, 1.0, r) * 0.6);
     alpha = cover;
   }
-  // The rim's lip; the spoon, standing out of the tea.
+  // The brim's lip; the spoon, standing out of the tea.
   float lipD = abs(length(vec2(q.x, (q.y - top) / k)) - R);
-  c += (light * 0.6 + back * 0.3) * (1.0 - smoothstep(0.0015, 0.0035, lipD)) * step(hold, q.y);
-  if (spoon < 0.0 && sq.y > level + 0.002 && holder > 0.0) {
-    c = vec3(0.75, 0.73, 0.7) * light * (0.6 + 0.6 * smoothstep(0.0, 0.05, sq.y - top));
+  c += (light * 0.7 + back * 0.3) * (1.0 - smoothstep(0.0018, 0.004, lipD)) * step(hold, q.y);
+  if (spoon < 0.0 && sp.y > level + 0.003 && holder > 0.0) {
+    float along = clamp((sp.y - level) / (top + 0.08 - level), 0.0, 1.0);
+    c = vec3(0.78, 0.76, 0.72) * light * (0.55 + 0.6 * along) + TRAIN_LAMP * K_lamp * 0.3 * step(0.6, along);
     alpha = cover;
   }
   return vec4(c, alpha);
 }
 
-// Steam off the tea: two ribbons curling up, leaning with the carriage's rock and its braking,
-// thinning into wisps. q from the middle of the rim.
+// Steam off the tea: three ribbons curling up, leaning with the carriage's rock and its braking,
+// thinning into wisps. q from the middle of the brim.
 float trainSteam(vec2 q, float tm, float amount, float lean) {
-  if (amount <= 0.0 || q.y < 0.0 || q.y > 0.16 || abs(q.x) > 0.09) return 0.0;
+  if (amount <= 0.0 || q.y < 0.0 || q.y > 0.24 || abs(q.x) > 0.13) return 0.0;
   float s = 0.0;
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < 3; i++) {
     float fi = float(i);
-    float x = (fi - 0.5) * 0.012 + (0.004 + 0.08 * q.y) * sin(q.y * 26.0 - tm * (1.2 + 0.3 * fi) + fi * 2.1) + lean * q.y * q.y * 6.0;
-    float across = (q.x - x) / (0.005 + 0.025 * q.y);
-    s += exp(-across * across) * mix(1.0, smoothstep(0.3, 0.7, vnoise(vec2(q.y * 30.0 - tm * 0.8, fi * 5.3 + q.x * 40.0))), smoothstep(0.02, 0.08, q.y));
+    float x = (fi - 1.0) * 0.014 + (0.005 + 0.07 * q.y) * sin(q.y * 20.0 - tm * (1.0 + 0.25 * fi) + fi * 2.1) + lean * q.y * q.y * 5.0;
+    float across = (q.x - x) / (0.007 + 0.03 * q.y);
+    float wisps = smoothstep(0.3, 0.7, vnoise(vec2(q.y * 14.0 - tm * 0.4, fi * 5.3 + q.x * 22.0)));
+    s += exp(-across * across) * mix(1.0, wisps, smoothstep(0.02, 0.1, q.y)) * (1.0 - 0.25 * fi);
   }
-  return clamp(s * (1.0 - smoothstep(0.04, 0.06 + 0.1 * amount, q.y)) * smoothstep(0.0, 0.01, q.y) * (0.4 + 0.6 * amount), 0.0, 1.0);
+  return clamp(s * (1.0 - smoothstep(0.05, 0.08 + 0.14 * amount, q.y)) * smoothstep(0.0, 0.015, q.y) * (0.45 + 0.55 * amount), 0.0, 1.0);
 }
 
 // The curtain at the left of the window: deep red velvet on rings from a brass rod, gathered by a
@@ -1943,6 +1987,66 @@ vec4 trainCurtain(vec2 p, float aspect, float swing, vec3 light, vec3 spill) {
   return vec4(c, cover);
 }
 
+// The table under the window: walnut veneer, its grain running along it, warm in the reading lamp's
+// pool, the window's light along its back edge and a soft gleam of the lamp in the varnish. The glass
+// of tea casts its shadow back toward the window with a little amber light through the tea at its
+// heart; a train ticket lies there (the railway's red band, the route and fare printed, a violet
+// date stamp, a perforated stub, a punched hole) beside two wrapped sugar lumps. depth: 0 at the
+// front edge .. 1 at the window.
+vec3 trainTableTop(vec2 p, float aspect, float depth, vec3 room, vec3 spill, vec2 teaFoot) {
+  float grain = 0.8 + 0.2 * vnoise(vec2(p.x * 5.0 + 3.0 * vnoise(vec2(p.x * 1.7, p.y * 25.0)), p.y * 150.0));
+  vec3 wood = vec3(0.46, 0.26, 0.13) * grain;
+  vec2 pc = (p - vec2(0.24 * aspect, -0.33)) / vec2(0.38 * aspect, 0.15);
+  vec3 lit = room + TRAIN_LAMP * K_lamp * 1.4 * exp(-dot(pc, pc));
+  vec3 c = wood * lit;
+  vec2 gq = (p - vec2(0.3 * aspect, -0.29)) / vec2(0.1, 0.022);
+  c += TRAIN_LAMP * K_lamp * 0.2 * exp(-dot(gq, gq));
+  c += spill * 0.45 * smoothstep(0.55, 1.0, depth);
+  if (K_tea > 0.0) {
+    vec2 sv = (p - teaFoot - vec2(-0.05, 0.024)) / vec2(0.09, 0.026);
+    c *= 1.0 - 0.5 * smoothstep(1.0, 0.4, length(sv));
+    vec2 cv = (p - teaFoot - vec2(-0.045, 0.022)) / vec2(0.032, 0.01);
+    c += vec3(1.0, 0.45, 0.1) * K_lamp * 0.35 * exp(-dot(cv, cv));
+  }
+  // The ticket.
+  vec2 kq = rotate(p - vec2(-0.07 * aspect, -0.35), 0.14);
+  if (trainBox(kq, vec2(0.062, 0.03), 0.003) < 0.0) {
+    vec3 paper = vec3(0.88, 0.84, 0.7);
+    vec3 ink = paper;
+    if (kq.y > 0.015) {
+      // the railway's red band, white lettering across it
+      ink = mix(vec3(0.72, 0.16, 0.1), paper, step(abs(kq.y - 0.0225), 0.0028) * step(0.4, fract(kq.x / 0.009)) * step(abs(kq.x + 0.01), 0.04));
+    } else {
+      float row = (kq.y + 0.027) / 0.0085;
+      float reach = 0.028 - 0.03 * fract(floor(row) * 0.37);
+      float printed = step(0.35, fract(row)) * step(fract(row), 0.72) * step(kq.x, reach) * step(-0.054, kq.x) * step(row, 4.9);
+      ink = mix(paper, vec3(0.18, 0.16, 0.2), printed * 0.85);
+      float stamp = abs(length(kq - vec2(0.036, -0.008)) - 0.012) - 0.0019;
+      ink = mix(ink, vec3(0.42, 0.28, 0.6), step(stamp, 0.0) * 0.85);
+    }
+    if (abs(kq.x - 0.046) < 0.0012 && fract(kq.y / 0.005) > 0.5) ink *= 0.65;
+    c = ink * lit;
+    if (length(kq - vec2(-0.05, -0.016)) < 0.0045) c = wood * lit * 0.85;
+  } else {
+    c *= 1.0 - 0.35 * smoothstep(0.005, 0.0, trainBox(kq - vec2(-0.004, 0.004), vec2(0.062, 0.03), 0.003));
+  }
+  // Two sugar lumps in their wrappers: a lit top, a shaded front, a blue band over both, a red mark.
+  for (int i = 0; i < 2; i++) {
+    vec2 bq = p - teaFoot - vec2(-0.112 - 0.036 * float(i), -0.006 + 0.014 * float(i));
+    float topFace = trainBox(bq - vec2(0.0, 0.008), vec2(0.017, 0.007), 0.002);
+    float frontFace = trainBox(bq + vec2(0.0, 0.004), vec2(0.017, 0.006), 0.0015);
+    if (min(topFace, frontFace) < 0.0) {
+      bool upper = topFace < 0.0;
+      vec3 wrap = abs(bq.x) < 0.004 ? vec3(0.2, 0.32, 0.62) : vec3(0.92, 0.9, 0.86);
+      if (upper && length(bq - vec2(0.009, 0.009)) < 0.0025) wrap = vec3(0.75, 0.15, 0.12);
+      c = wrap * lit * (upper ? 1.05 : 0.62);
+    } else {
+      c *= 1.0 - 0.3 * smoothstep(0.006, 0.0, trainBox(bq - vec2(-0.006, 0.008), vec2(0.019, 0.012), 0.004));
+    }
+  }
+  return c;
+}
+
 Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   float tm = t * uMotion;
   float aspect = uRes.x / uRes.y;
@@ -1965,14 +2069,16 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   vec2 sc = rotate(trainSky.sun.xz, -TRAIN_YAW);
   trainSunC = vec3(sc.x, trainSky.sun.y, sc.y);
   // By night the eye adapts: moonlight counts for more and a cool skylight lifts the land, so
-  // moonlit stubble reads around 0.15 and snow a pale blue, while hedges and woods stay silhouettes.
-  trainMoonLight = trainSky.moonColor * (1.0 - 0.8 * trainOver) * 2.0;
+  // moonlit stubble reads around 0.25, plain fields 0.1 and snow a pale blue, while hedges and woods
+  // stay silhouettes against the moonlit band low in the sky.
+  trainMoonLight = trainSky.moonColor * (1.0 - 0.8 * trainOver) * 3.0;
   trainSunLight = trainSky.sunColor * (1.0 - 0.8 * trainOver);
   trainAmbient = mix(trainSky.ambient, vec3(dot(trainSky.ambient, LUMA)), 0.5 * trainOver) * (1.0 - 0.35 * trainStorm)
-               + trainSky.night * vec3(0.09, 0.11, 0.17) * (1.0 - 0.4 * trainOver);
+               + trainSky.night * vec3(0.12, 0.14, 0.2) * (1.0 - 0.4 * trainOver);
   trainLampsOn = clamp(1.0 - trainSky.day * (1.0 - 0.45 * trainStorm), 0.0, 1.0);
   vec2 hz = rotate(vec2(0.0, 1.0), TRAIN_YAW);
-  trainAir = skyColor(trainSky, normalize(vec3(hz.x, 0.03, hz.y)));
+  vec3 hzDir = normalize(vec3(hz.x, 0.03, hz.y));
+  trainAir = skyColor(trainSky, hzDir) + trainNightGlow(hzDir);
   trainAir = mix(trainAir, vec3(dot(trainAir, LUMA)) * vec3(0.92, 0.95, 1.0), 0.7 * trainOver) * (1.0 - 0.25 * trainStorm);
   trainAir += trainMoonLight * 0.05 + vec3(0.02, 0.022, 0.03) * K_fog;
 
@@ -2001,8 +2107,8 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   vec2 gH = vec2(0.4 * aspect, 0.32);
   float gR = 0.075;
   float sdG = trainBox(p - gC, gH, gR);
-  float teaX = 0.2 * aspect;
-  vec2 teaFoot = vec2(teaX, -0.345);
+  float teaX = 0.22 * aspect;
+  vec2 teaFoot = vec2(teaX, -0.395);
 
   // The compartment's light: the reading lamp above and to the right, a little night light, and
   // what comes in through the window.
@@ -2072,7 +2178,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
       col *= 1.0 - 0.5 * step(abs(abs(p.x) - (gH.x + 0.11)), 0.0025);
       // the curtain rod
       if (abs(p.y - 0.478) < 0.0045 && p.x < 0.46 * aspect) col = vec3(0.75, 0.55, 0.25) * (room * 1.2 + 0.02) * (0.7 + 0.5 * smoothstep(0.0045, -0.002, p.y - 0.478));
-      // The table under the window: laminate with a chrome edge, the window's light along its back.
+      // The table under the window: walnut veneer with an aluminium edge.
       float tx = p.x - 0.03 * aspect;
       float tableW = 0.34 * aspect;
       if (p.y < gC.y - gH.y - 0.04 && p.y > -0.445 && abs(tx) < tableW) {
@@ -2080,26 +2186,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
         float cornerD = trainBox(vec2(tx, p.y + 0.36), vec2(tableW, 0.085), 0.03);
         if (cornerD < 0.0 || p.y > -0.36) {
           if (p.y > -0.425) {
-            col = vec3(0.5, 0.46, 0.4) * room * (0.85 + 0.15 * depth);
-            col += (spill * 0.35 + room * 0.05) * smoothstep(0.6, 1.0, depth);
-            // the glass's shadow, cast back toward the window, with a little amber light through
-            // the tea at its heart
-            vec2 sv = (p - teaFoot - vec2(-0.03, 0.016)) / vec2(0.055, 0.016);
-            float shadow = smoothstep(1.0, 0.45, length(sv));
-            col *= 1.0 - 0.45 * shadow;
-            vec2 cv = (p - teaFoot - vec2(-0.028, 0.014)) / vec2(0.02, 0.007);
-            col += vec3(0.9, 0.42, 0.1) * K_lamp * 0.25 * exp(-dot(cv, cv)) * K_tea;
-            // a train ticket and two wrapped sugar lumps
-            vec2 kq = rotate(p - vec2(-0.06 * aspect, -0.375), 0.12);
-            if (trainBox(kq, vec2(0.045, 0.022), 0.003) < 0.0) {
-              col = vec3(0.78, 0.72, 0.6) * room;
-              col *= 1.0 - 0.35 * step(abs(fract(kq.y / 0.0075) - 0.5), 0.15) * step(abs(kq.x + 0.005), 0.03) * step(abs(kq.y), 0.015);
-              if (length(kq - vec2(0.032, 0.0)) < 0.004) col = vec3(0.5, 0.46, 0.4) * room * 0.9;
-            }
-            for (int i = 0; i < 2; i++) {
-              vec2 bq = p - vec2(teaX - 0.09 - 0.032 * float(i), -0.385 + 0.006 * float(i));
-              if (trainBox(bq, vec2(0.014, 0.01), 0.002) < 0.0) col = mix(vec3(0.85, 0.83, 0.8), vec3(0.2, 0.3, 0.6), step(abs(bq.y), 0.0025)) * room;
-            }
+            col = trainTableTop(p, aspect, depth, room, spill, teaFoot);
           } else {
             // the chrome edge, a line of lamp light along it
             col = vec3(0.55, 0.55, 0.56) * room * 0.6 + TRAIN_LAMP * K_lamp * 0.35 * smoothstep(0.004, 0.0, abs(p.y + 0.43));
@@ -2113,11 +2200,12 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
 
   // The glass of tea, its steam over the window.
   if (K_tea > 0.0) {
-    vec4 tea = trainTea(p - teaFoot, room, spill, knock, press, brake * 0.5 + rock * 0.08, jolt);
+    // It stands in the lamp's pool on the table.
+    vec4 tea = trainTea(p - teaFoot, room + TRAIN_LAMP * K_lamp * 0.9, spill, knock, press, brake * 0.5 + rock * 0.08, jolt);
     col = mix(col, tea.rgb, tea.a);
     accent *= 1.0 - tea.a;
-    float steam = trainSteam(p - teaFoot - vec2(0.0, 0.142), tm, K_tea, 0.4 * rock + 0.6 * brake);
-    col += (vec3(0.74, 0.7, 0.66) * (0.25 + 0.6 * K_lamp) + spill * 0.2) * steam * 0.55;
+    float steam = trainSteam(p - teaFoot - vec2(0.0, 0.2), tm, K_tea, 0.4 * rock + 0.6 * brake);
+    col += (vec3(0.78, 0.74, 0.7) * (0.25 + 0.6 * K_lamp) + spill * 0.25) * steam * 0.7;
   }
 
   // The curtain: it rocks with the carriage, swings forward as the train brakes, shivers at a clack.

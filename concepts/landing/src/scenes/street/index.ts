@@ -16,7 +16,7 @@ const params: readonly ParamDef[] = [
   range("traffic", "traffic", "traffic", 0.5, "Cars, taxis, kei cars, vans and bicycles: they queue at the red with their brake lights on and flow on the green; eastbound cars turn into the side street, and the side street's turn out onto the avenue."),
   range("city", "signs", "sign glow", 0.7, "How brightly the blade signs, the fascias, the konbini and the shop windows glow, and how much light they spill onto the sidewalks."),
   range("city", "windows", "lit windows", 0.5, "Windows lit in the rooms over the shops, switching on and off now and then; in the rain the wet street mirrors them too."),
-  ...skyKnobs({ time: 0.785 }),
+  ...skyKnobs({ time: 0.81 }),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true }),
   toggle("manifold", "mark", "zebra M", false, "The diagonal crosswalks repainted as a V between the two straight ones, so that from up here the zebras spell the Manifold M across the crossing, in the accent colour; the crowd still crosses over it every way."),
 ];
@@ -44,7 +44,7 @@ export const streetScene: SceneDef = {
   // changing, so the page stays on the night theme. The shader repeats this test to turn its ink
   // dark on the paper theme: keep the two in step.
   theme: (values) => {
-    const time = values.time ?? 0.785;
+    const time = values.time ?? 0.81;
     const cycling = (values.cycle ?? 0) > 0.5;
     return !cycling && time > 0.33 && time < 0.67 ? "paper" : "night";
   },
