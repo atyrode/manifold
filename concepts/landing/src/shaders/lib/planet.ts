@@ -1,7 +1,11 @@
 // Shared giant planet: one implementation of a ringed gas giant that any sky composes, whether as its
 // subject (orbit: ink and accent coverage, every feature) or as a decoration (campfire: RGB over the
-// sky, behind its pines). Compiled into every scene program after the aurora library; the contract
-// and conventions are in src/scenes/README.md ("The giant planet").
+// sky, behind its pines). The contract and conventions are in src/scenes/README.md ("The giant
+// planet").
+//
+// Opt-in, unlike the libraries in `libs`: a scene that composes the planet puts `planetGlsl` in its
+// own GLSL (at its top, before the functions that call it), so no other scene's program compiles it.
+// It reads no knob defines: the scene passes every value.
 //
 // What is shared: the sphere and its phase lighting (the sun circling it), the surface (turbulent
 // belts or storm-swirled bands, a cloud deck, night-side storms), the atmosphere (a sunward limb halo

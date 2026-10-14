@@ -21,9 +21,11 @@
 // trigger 1), K_reach, K_camp, K_time, K_cycle, K_stars, K_planet and its shared options
 // (K_planetMoons, K_planetEclipses, K_planetAurora, K_planetAuroraSize, K_planetLights,
 // K_planetLightsTwinkle, K_planetDaycycle), K_shooting (trigger 0), K_wind, K_fog, K_mark.
+import { planetGlsl } from "../../shaders/lib/planet.ts";
 import { CAMPFIRE_LOGS } from "./sim.ts";
 
 export const campfireGlsl = `
+${planetGlsl}
 // ---- campfire ----
 const int CAMPFIRE_LOGS = ${CAMPFIRE_LOGS};      // the fuel's log texels (sim.ts), the bed's after them
 const float CAMPFIRE_HORIZON = 0.37;   // screen height of the far horizon (the pines hide it)

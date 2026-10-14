@@ -23,9 +23,10 @@ All of the ideas below have a first implementation in the lab:
 
 The shared options became libraries every outdoor scene can use: sky and time of day, weather,
 lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`). The
-giant ringed planet is one too (`src/shaders/lib/planet.ts`, knobs `src/scenes/planet.ts`): `orbit`
-draws it as its subject with every feature (belts, clouds, storms, aurora, city lights, day cycle,
-banded rings, moons), `campfire` as scenery over its pines.
+giant ringed planet is an opt-in one (`src/shaders/lib/planet.ts`, included by the scenes that draw
+it; knobs `src/scenes/planet.ts`): `orbit` draws it as its subject with every feature (belts,
+clouds, storms, aurora, city lights, day cycle, banded rings, moons), `campfire` as scenery over its
+pines.
 The notes below are the original briefs.
 
 ## Zen batch

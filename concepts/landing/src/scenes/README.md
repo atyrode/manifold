@@ -230,14 +230,23 @@ vec3 aurora(vec3 dir, float t, float strength);                // curtains of li
 Name scene-local GLSL functions with the scene id as a prefix (`dunesHeight`, `sillCat`) so they can
 never collide with common or library functions.
 
+**Opt-in components.** `libs` is compiled into every scene's program, so it holds only what most
+scenes use. A component few scenes compose is a GLSL string of its own that each consumer
+interpolates into its `glsl`, at the top or at least before the functions that call it, so no
+other program pays for it: `planetGlsl` and `birdsGlsl` (`src/shaders/lib/`), `windWaterGlsl` and
+`causticsGlsl` (`src/shaders/`). Such a component reads no knob defines (they are the scene's own):
+the scene passes every value as an argument, and its knobs come from a shared builder where the
+component has one (`planetKnobs`).
+
 ### The giant planet (`src/shaders/lib/planet.ts`)
 
 One ringed gas giant, one implementation, that any sky composes: Orbit's subject and Campfire's
-scenery. The library decides the planet and what moves where (belts, clouds, storms, the aurora's
-oval, city lights, the ring plane, the moons' orbits); the scene decides placement, size, the sun's
-direction, the palette, which features it composes, what stands in front and how it composites.
-Frame: planet radii from its centre, x right, y up, z toward the eye; `planetAt` maps the scene's
-flat units into it.
+scenery. It is opt-in: put `${planetGlsl}` at the top of the scene's GLSL, as both of them do. The
+library decides the planet and what moves where (belts, clouds, storms, the aurora's oval, city
+lights, the ring plane, the moons' orbits); the scene decides placement, size, the sun's direction,
+the palette, which features it composes, what stands in front and how it composites. Frame: planet
+radii from its centre, x right, y up, z toward the eye; `planetAt` maps the scene's flat units into
+it.
 
 - **Two tiers.** A hero composes the functions one by one and maps their outputs to its own picture
   (Orbit: ink and accent coverage). A decoration calls `planetOver(col, p, px, look, tm, t)`, which

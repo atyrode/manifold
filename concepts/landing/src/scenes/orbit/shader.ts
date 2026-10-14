@@ -1,11 +1,14 @@
-// The orbit scene: the shared giant planet (shaders/lib/planet.ts) as the subject, with every
-// feature (surface, clouds, storms, aurora, city lights, day cycle, ring system, moons), drawn in ink
-// and accent coverage; plus constellations, shooting stars, captured meteors and the M city lights.
+// The orbit scene: the shared giant planet (shaders/lib/planet.ts, included at the top of its GLSL)
+// as the subject, with every feature (surface, clouds, storms, aurora, city lights, day cycle, ring
+// system, moons), drawn in ink and accent coverage; plus constellations, shooting stars, captured
+// meteors and the M city lights.
+import { planetGlsl } from "../../shaders/lib/planet.ts";
 
 /** Seconds of the orbit's entrance and exit (SceneDef.passage). */
 export const ORBIT_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 
 export const orbitGlsl = `
+${planetGlsl}
 // Real constellations, plus the optional Manifold asterism, drifting with the sky.
 vec2 orbitConstellations(vec2 sky, float aspect, float px, bool figures, bool lines, bool mark, float tm) {
   float star = 0.0;
