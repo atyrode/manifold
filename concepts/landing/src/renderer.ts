@@ -458,6 +458,7 @@ export class DitherRenderer {
       triggers: this.#triggers,
       fired: this.#fired,
       pointer,
+      parallax: p,
       passage,
     }) ?? [];
 

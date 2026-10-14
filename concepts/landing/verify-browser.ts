@@ -334,6 +334,7 @@ export function verify(): Record<string, unknown> {
     fired: [],
     passage: { enter: 1, exit: 0 },
     pointer: { x: 0.5, y: 0.5, inside: true, down: false, pressed: false, released: false },
+    parallax: { x: 0, y: 0 },
   };
   function mask(): Uint8Array {
     frame.values = renderSettings(defaultsFor("frost"), knobs).params;

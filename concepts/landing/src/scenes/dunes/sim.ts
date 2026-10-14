@@ -17,6 +17,7 @@
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { runBudgeted } from "../../sims/clock.ts";
+import { marchHeight, sampleRepeat, type HeightMarch, type RayHit } from "../../sims/heightray.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -94,9 +95,17 @@ const RELAYOUT_MS = 250;
  * right and toward the viewer and the ridges run slantwise across the view, one behind the other
  * to the horizon. `look` turns the sky the same way (sky.xz = rotate(view.xz, look)): the camera
  * faces 29° left of the sky library's "ahead", so the setting sun stands in the picture and its
- * light rakes across the dunes rather than straight into the lens.
+ * light rakes across the dunes rather than straight into the lens. `parallax` is how far (radians)
+ * the view turns toward the pointer's side at full parallax (view.xz turned by -uPointer.x times it).
  */
-export const DUNES_CAMERA = { x: 186, z: 88, height: 14, rise: 1.6, horizon: 0.66, fov: 0.8, turn: 0.7, look: 0.5 } as const;
+export const DUNES_CAMERA = { x: 186, z: 88, height: 14, rise: 1.6, horizon: 0.66, fov: 0.8, turn: 0.7, look: 0.5, parallax: 0.035 } as const;
+/**
+ * How the shader ray-marches the sand, and the pointer's ray with it (sims/heightray.ts): no sand
+ * stands above `top` cells, rays give up `far` cells out (the dust has the horizon by then), no
+ * sand is steeper than about `slope`, and the shortest step is 1% of the distance, so the far field
+ * is reached within `steps`; then `refine` bisections.
+ */
+export const DUNES_MARCH: HeightMarch = { top: 16, far: 900, slope: 0.75, minStep: 0.02, relStep: 0.01, steps: 48, refine: 5 };
 /** The overhead view: cells per screen height, centred on the M, wind left to right. */
 export const DUNES_MAP = { span: 150 } as const;
 
@@ -631,27 +640,92 @@ function boxTransposed(src: Float32Array, dst: Float32Array, r: number): void {
   }
 }
 
+/** The M's signed distance at (x, y, z) in grid space, for an M `height` cells tall: the shader's dunesMarkSdf. */
+function markSdf(x: number, y: number, z: number, height: number): number {
+  const qx = x - DUNES_MARK.x;
+  const qz = z - DUNES_MARK.z;
+  const c = Math.cos(DUNES_MARK.yaw);
+  const s = Math.sin(DUNES_MARK.yaw);
+  const my = y / height - 0.5;
+  const stroke = DUNES_MARK.stroke * (1 - DUNES_MARK.scour * (1 - smoothstep(-0.5, -0.2, my)));
+  const wx = (markDistance((c * qx + s * qz) / height, my) - stroke) * height;
+  const wy = Math.abs(-s * qx + c * qz) - DUNES_MARK.depth * height;
+  return Math.min(Math.max(wx, wy), 0) + Math.hypot(Math.max(wx, 0), Math.max(wy, 0));
+}
+
+/** Where the unit ray meets the M before `far`, or -1: the shader's dunesMarkHit, step for step. */
+function markHit(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, height: number, far: number): number {
+  const cx = ox - DUNES_MARK.x;
+  const cy = oy - 0.5 * height;
+  const cz = oz - DUNES_MARK.z;
+  const b = cx * dx + cy * dy + cz * dz;
+  const disc = b * b - (cx * cx + cy * cy + cz * cz) + 0.81 * height * height;
+  if (disc < 0) return -1;
+  const root = Math.sqrt(disc);
+  let t = Math.max(-b - root, 0);
+  const end = Math.min(-b + root, far);
+  for (let i = 0; i < 40; i++) {
+    if (t > end) return -1;
+    const d = markSdf(ox + dx * t, oy + dy * t, oz + dz * t, height);
+    if (d < 0.002 * t + 0.01) return t;
+    t += d;
+  }
+  return -1;
+}
+
+/** Scratch for dunesPointerCell's march: the pointer's ray meeting the sand. */
+const sandHit: RayHit = { t: 0, x: 0, y: 0, z: 0 };
+
 /**
- * The grid cell under the pointer, written to `out`. Aerial: where its ray (viewRay's lens-shifted
- * pinhole, turned into grid space) meets the mean sand level, `drop` below the eye; false at and
- * above the horizon. Overhead: a straight map centred on the M.
+ * The grid point under the pointer, written to `out`; false where there is no sand to pour on.
+ * Overhead: a straight map centred on the M. Aerial: the pointer's ray as the shader casts it
+ * (viewRay's lens-shifted pinhole, turned by the pointer's parallax and on into grid space), marched
+ * with DUNES_MARCH against `ground`, the surface as last uploaded, so the point is the one the
+ * picture shows under the pointer: the face of the dune in front, not the mean level behind it.
+ * Where the M stands in front of the sand, the point on its face (sand poured there runs down to its
+ * foot). Sky, and the far field the march gives up on, give false. `sand` is the supply knob (it
+ * sets the eye's height) and `mark` the M's size knob, 0 while off. The shader's heat shimmer, a
+ * few rows' waver along the horizon under a high sun, is left out.
  */
-function pointerCell(frame: SimFrame, view: number, drop: number, out: { x: number; y: number }): boolean {
+export function dunesPointerCell(
+  frame: SimFrame,
+  view: number,
+  sand: number,
+  mark: number,
+  ground: (x: number, z: number) => number,
+  out: { x: number; y: number },
+): boolean {
   const { x, y } = frame.pointer;
   if (view >= 0.5) {
     out.x = DUNES_MARK.x + (x - 0.5) * frame.aspect * DUNES_MAP.span;
     out.y = DUNES_MARK.z + (y - 0.5) * DUNES_MAP.span;
     return true;
   }
-  const down = DUNES_CAMERA.horizon - y;
-  if (down < 0.01) return false;
-  const reach = drop / down;
-  const right = (x - 0.5) * frame.aspect * reach;
-  const ahead = (0.5 / Math.tan(DUNES_CAMERA.fov * 0.5)) * reach;
-  const c = Math.cos(DUNES_CAMERA.turn);
-  const s = Math.sin(DUNES_CAMERA.turn);
-  out.x = DUNES_CAMERA.x + c * right - s * ahead;
-  out.y = DUNES_CAMERA.z + s * right + c * ahead;
+  const vx = (x - 0.5) * frame.aspect;
+  const vy = y - DUNES_CAMERA.horizon;
+  const vz = 0.5 / Math.tan(DUNES_CAMERA.fov * 0.5);
+  const length = Math.hypot(vx, vy, vz);
+  // viewRay, turned by -uPointer.x * parallax and then by turn into grid space: one turn by their sum.
+  const yaw = DUNES_CAMERA.turn - frame.parallax.x * DUNES_CAMERA.parallax;
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const dx = (c * vx - s * vz) / length;
+  const dy = vy / length;
+  const dz = (s * vx + c * vz) / length;
+  const ox = DUNES_CAMERA.x;
+  const oy = DUNES_CAMERA.height + DUNES_CAMERA.rise * dunesMeanSlabs(sand) * DUNES_SLAB;
+  const oz = DUNES_CAMERA.z;
+  const onSand = marchHeight(ground, ox, oy, oz, dx, dy, dz, DUNES_MARCH, sandHit);
+  const height = mark > 0 ? DUNES_MARK.small + (DUNES_MARK.large - DUNES_MARK.small) * mark : 0;
+  const t = height > 0 ? markHit(ox, oy, oz, dx, dy, dz, height, onSand ? sandHit.t : DUNES_MARCH.far) : -1;
+  if (t >= 0) {
+    out.x = ox + dx * t;
+    out.y = oz + dz * t;
+    return true;
+  }
+  if (!onSand) return false;
+  out.x = sandHit.x;
+  out.y = sandHit.z;
   return true;
 }
 
@@ -666,6 +740,8 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
     const shape = new DataTexture(gl, { width: DUNES_GRID, height: DUNES_GRID, format: "rgba16f", wrap: "repeat" });
     const textures: readonly WebGLTexture[] = [heights.texture, shape.texture];
     const cell = { x: 0, y: 0 };
+    // The sand as the shader last saw it, for the pointer's ray.
+    const ground = (x: number, z: number): number => sampleRepeat(surface.heights, DUNES_GRID, DUNES_GRID, x, z);
     // The knobs the laid-out field was made from, and the pair seen last frame (with when it first showed).
     let laid = false;
     let laidSand = 0;
@@ -737,8 +813,7 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
         const resting = frame.passage.enter >= 1 && frame.passage.exit <= 0;
         if (resting && pointer.inside && (pointer.pressed || pointer.down)) {
           const slabs = pointer.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
-          const drop = DUNES_CAMERA.height + (DUNES_CAMERA.rise - 1) * dunesMeanSlabs(sand) * DUNES_SLAB;
-          if (slabs > 0 && pointerCell(frame, knobs.value(frame, "camera"), drop, cell)) field.pour(cell.x, cell.y, slabs);
+          if (slabs > 0 && dunesPointerCell(frame, knobs.value(frame, "camera"), sand, markSize, ground, cell)) field.pour(cell.x, cell.y, slabs);
         }
 
         // While the sand creeps an upload every UPLOAD_EVERY is plenty; the finished warm-up shows at once.

@@ -32,7 +32,7 @@ mathematics. All have a first implementation in the lab:
 
 | Idea | Scene id | Simulation | Shared engine |
 |---|---|---|---|
-| Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves | `HeightField` |
+| Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves; fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms | `HeightField`, `AgeField` |
 | Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube | |
 | Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step | `separateDiscs` |
 | Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population | |
@@ -41,7 +41,7 @@ mathematics. All have a first implementation in the lab:
 | Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds | |
 | Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist | |
 | Incense smoke | `incense` | Buoyant smoke, laminar to turbulent | `FluidSim` |
-| Sand table | `sandtable` | Theta–rho ball and sand pendulum on a height field | `HeightField` |
+| Sand table | `sandtable` | Theta–rho ball and sand pendulum on a height field; the relief is re-sent every frame while a machine outruns it, so a groove's head stays under the ball | `HeightField` |
 | Chladni plate | `chladni` | Sand grains drifting to the nodal lines of plate modes | |
 | Ferrofluid | `ferro` | Rosensweig spike lattice, sloshing blob | |
 | Soap film | `film` | Thin-film interference, gravity drainage, pops | `FluidSim` |
@@ -184,6 +184,8 @@ Wind over a sand sea.
 
 - Ripples and dune crests migrating downwind, sand blowing off the crests, long low-sun shadows.
 - Possibly a height-field simulation (saltation and avalanching).
+- Clicks pour where the pointer's line of sight meets the sand as drawn (`marchHeight` with the
+  shader's own march numbers, turned with the pointer parallax), or at the sandstone M's face.
 
 ## Ice and frost
 

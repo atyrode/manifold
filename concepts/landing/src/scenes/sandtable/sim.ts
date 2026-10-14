@@ -1729,8 +1729,16 @@ const MAX_STEP = 0.1;
 const RELAX_RATE = 3;
 /** Rows relaxed per frame: a full pass every eight frames. */
 const RELAX_ROWS = 40;
-/** The heights are re-uploaded at most this often while the sand changes. */
+/** The heights are re-uploaded at most this often while the sand changes... */
 const UPLOAD_MS = 1000 / 30;
+/**
+ * ...unless a machine has got further than this (field units, a quarter of the ball's radius) from
+ * where it stood when they last went up: the ball, the stream while it pours, or the straight edge.
+ * Its tool state goes to the shader every frame, so the head of the groove, the line or the scrape
+ * then always lies under the ball, stream or bar. The ball at the default drawing speed moves less
+ * than this between throttled uploads; a fast ball or edge has the heights sent every frame.
+ */
+const SYNC_LAG = 0.25 * SANDTABLE.ball;
 
 class SandtableSim implements SceneSim {
   readonly #knobs: KnobReader<Knob>;
@@ -1751,6 +1759,8 @@ class SandtableSim implements SceneSim {
   #machine: Machine | undefined;
   #uploadedAt = -Infinity;
   #force = true;
+  /** The tools as they stood at the last heights upload: ball or funnel centre, and the edge's offset. */
+  readonly #shown = { x: 0, y: 0, edge: 0 };
   /** What the machines are told of the scene's passage, rewritten each frame. */
   readonly #passage: Passage = { arrive: Infinity, leave: 0, aspect: 16 / 9 };
   /** Whether the scene is arriving (decided on the first frame), and seconds since its table was laid. */
@@ -1810,10 +1820,22 @@ class SandtableSim implements SceneSim {
     this.#field.relax(TALUS, RELAX_RATE, dt, RELAX_ROWS);
 
     const now = performance.now();
-    // While the machines move in or out the sand is shown as it is, every frame.
+    // While the machines move in or out the sand is shown as it is, every frame; so it is while a
+    // tool has run on past SYNC_LAG since the last upload.
     const moving = passage.arrive !== Infinity || passage.leave > 0;
-    if (this.#force || moving || now - this.#uploadedAt >= UPLOAD_MS) {
+    const state = this.#stateData;
+    const shown = this.#shown;
+    const pouring = machine === "ball" || (state[3] ?? 0) > 0;
+    const lead = Math.max(
+      pouring ? Math.hypot((state[0] ?? 0) - shown.x, (state[1] ?? 0) - shown.y) : 0,
+      (state[7] ?? 0) > 0 ? Math.abs((state[6] ?? 0) - shown.edge) : 0,
+    );
+    if (this.#force || moving || lead > SYNC_LAG || now - this.#uploadedAt >= UPLOAD_MS) {
       if (this.#field.upload(this.#heights)) this.#uploadedAt = now;
+      // Uploaded or unchanged, the sand on screen is the sand as it is, with the tools where they are.
+      shown.x = state[0] ?? 0;
+      shown.y = state[1] ?? 0;
+      shown.edge = state[6] ?? 0;
       this.#force = false;
     }
     this.#state.upload(this.#stateData);
