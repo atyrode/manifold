@@ -7,8 +7,8 @@
 // Rain closes the sky, greys and thickens the mist, and (through uWeather.x, how wet the grove is)
 // darkens and glosses every surface, pools on the floor and keeps the leaves dripping as it dries.
 // The sim (sim.ts) moves the culms, the tube, the leaves and the ripples; its textures are described
-// there. Knobs read here: K_stems, K_mist, K_groveSeed, K_shafts, K_lantern, K_time, K_cycle,
-// K_rain, K_wind, K_mark (trigger 2 summons the M).
+// there. Knobs read here: K_stems, K_mist, K_groveSeed, K_shafts, K_lantern, K_knock, K_time,
+// K_cycle, K_rain, K_wind, K_mark (trigger 2 summons the M).
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   BAMBOO_BASIN,
@@ -788,20 +788,23 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
   float solid = 0.0;
 
   // The striking stone under the tube's closed end: moss on its shoulders, worn pale and wet on top
-  // where it is struck.
+  // where it is struck. The knock knob turned down lays a cushion of moss there instead, standing a
+  // little proud of the stone, wider and deeper the softer the knock (none at 1: bare stone).
   {
+    float pad = (1.0 - K_knock) * bell((d.x - BAMBOO_STRIKE.x) / 0.03);
     vec2 c = d - vec2(BAMBOO_STRIKE.x, BAMBOO_STRIKE.y - 0.13);
     vec2 box = abs(c) - vec2(0.05 - 0.035, 0.13 - 0.035);
-    float sd = length(max(box, 0.0)) + min(max(box.x, box.y), 0.0) - 0.035 + 0.004 * (vnoise(d * 30.0) - 0.5);
+    float sd = length(max(box, 0.0)) + min(max(box.x, box.y), 0.0) - 0.035 + 0.004 * (vnoise(d * 30.0) - 0.5) - 0.005 * pad;
     float cv = 1.0 - smoothstep(-aa, aa, sd);
     if (cv > 0.0) {
       float up = clamp((d.y - (BAMBOO_STRIKE.y - 0.06)) / 0.06, 0.0, 1.0);
       float side = clamp(0.5 + 0.5 * face * c.x / 0.05, 0.0, 1.0);
       vec3 albedo = wetten(BAMBOO_GRANITE * (0.75 + 0.35 * vnoise(d * 60.0)), bambooWet, 0.45);
-      float worn = bell((d.x - BAMBOO_STRIKE.x) / 0.02) * smoothstep(BAMBOO_STRIKE.y - 0.015, BAMBOO_STRIKE.y, d.y);
+      float worn = bell((d.x - BAMBOO_STRIKE.x) / 0.02) * smoothstep(BAMBOO_STRIKE.y - 0.015, BAMBOO_STRIKE.y, d.y) * (1.0 - pad);
       albedo = mix(albedo, vec3(0.55, 0.54, 0.5), worn * 0.6);
       vec3 c2 = albedo * light * (0.5 + 0.3 * side + 0.45 * up) + bambooRainOnStone(d, up, t, lantern);
       float moss = bambooMoss(d, 0.55 * (1.0 - worn)) * (1.0 - smoothstep(0.7, 1.0, up));
+      moss = max(moss, smoothstep(0.25, 0.6, pad) * smoothstep(0.55, 0.85, up));
       col = mix(col, mix(c2, mossCol * mossLight * (0.6 + 0.4 * side), moss), cv);
       solid = max(solid, cv);
     }
@@ -904,16 +907,17 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
   }
 
   // At the clack the tube stops dead and the last water in its mouth flies on: a few drops leap from
-  // the lip and fall back, smaller for the softer knock of the bounce.
+  // the lip and fall back, smaller for the softer knock of the bounce, and smaller still the more of
+  // the stop a pad of moss takes up (K_knock), until at 0 the tube eases down and none leave it.
   vec4 knock = uSimOn.y > 0.5 ? texelFetch(uSim1, ivec2(1, 0), 0) : vec4(60.0, 0.0, 0.0, 0.0);
-  if (knock.x < 0.7 && knock.y > 0.0) {
+  if (knock.x < 0.7 && knock.y > 0.0 && K_knock > 0.0) {
     vec2 lip = BAMBOO_PIVOT + (BAMBOO_FRONT - BAMBOO_CUT) * cs + BAMBOO_RADIUS * nrm;
     float shown = 1.0 - smoothstep(0.4, 0.7, knock.x);
     for (int i = 0; i < 5; i++) {
       float fi = float(i);
       vec2 launch = vec2(0.03 + 0.05 * fract(fi * 0.618 + 0.3), 0.22 + 0.12 * fract(fi * 0.382 + 0.7)) * (0.5 + 0.5 * knock.y);
       vec2 at = lip + launch * knock.x - vec2(0.0, 0.5 * BAMBOO_POUR_GRAVITY * knock.x * knock.x);
-      float r = 0.0035 * (1.0 - 0.4 * knock.x);
+      float r = 0.0035 * (1.0 - 0.4 * knock.x) * K_knock;
       col = mix(col, water * 1.2, hardEdge((1.0 - smoothstep(r - aa, r + aa, length(d - at))) * shown));
     }
   }

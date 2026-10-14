@@ -5,7 +5,8 @@
 // - The shishi-odoshi: a bamboo tube on a pivot, a damped rotational oscillator whose torque comes
 //   from its own weight (heavier behind the pivot) and the water filling its mouth. It fills, lifts
 //   off its stone, tips past its balance point as the water rushes to the mouth, pours into the
-//   basin, swings back and clacks on the stone with a small bounce.
+//   basin, swings back and clacks on the stone with a small bounce; or, the knock knob turned down,
+//   eases onto a pad of moss on the stone with a soft knock, too soft to bounce or startle a leaf.
 // - Leaves letting go of the canopy and gliding down; some land on the basin and float.
 // - Rings on the basin's water: the pour, the clack, a leaf landing, a click.
 // - The passage (BAMBOO_PASSAGE): entering, the tube starts empty and fills to where the warm-up left
@@ -202,6 +203,14 @@ const WATER_DRAG = 0.04;
 /** Bounce off the striking stone, and off the soft stop below. */
 const RESTITUTION = 0.32;
 const SOFT_RESTITUTION = 0.15;
+/**
+ * The knock knob's pad of moss on the striking stone, soft enough to take up the last PAD_SPAN
+ * radians of the swing back: squashed, it damps the return in proportion to how far it is squashed
+ * (N m s when squashed flat, at knock 0), so the tube eases onto the stone, and it swallows the
+ * bounce. At knock 1 there is no pad: bare stone.
+ */
+const PAD_SPAN = 0.2;
+const PAD_DAMPING = 1.8;
 /** Impact speeds (rad/s): slower is a silent touch, this fast a full clack. */
 const CLACK_MIN = 0.25;
 const CLACK_FULL = 3;
@@ -345,7 +354,7 @@ interface Ripple {
   strength: number;
 }
 
-type KnobKey = "clock" | "gusts" | "leaves" | "groveSeed" | "wind";
+type KnobKey = "clock" | "knock" | "gusts" | "leaves" | "groveSeed" | "wind";
 
 class BambooSim implements SceneSim {
   readonly #groveTexture: DataTexture;
@@ -365,6 +374,8 @@ class BambooSim implements SceneSim {
 
   // Knobs, as the sim follows them.
   #period = 20;
+  /** 1 bare stone .. 0 the thickest pad of moss on it. */
+  #knock = 1;
   #gustRate = 0.4;
   #leafAmount = 0.4;
   #wind = 0.2;
@@ -398,7 +409,7 @@ class BambooSim implements SceneSim {
   #pointerSpeed = 0;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader("bamboo", params, ["clock", "gusts", "leaves", "groveSeed", "wind"]);
+    this.#knobs = new KnobReader("bamboo", params, ["clock", "knock", "gusts", "leaves", "groveSeed", "wind"]);
     this.#groveTexture = new DataTexture(gl, { width: BAMBOO_CELLS, height: BAMBOO_LAYERS.length, format: "rg16f" });
     this.#deviceTexture = new DataTexture(gl, { width: 2 + BAMBOO_RIPPLES, height: 1, format: "rgba16f", filter: "nearest" });
     this.#leafTexture = new DataTexture(gl, { width: 2, height: BAMBOO_MAX_LEAVES, format: "rgba16f", filter: "nearest" });
@@ -465,6 +476,7 @@ class BambooSim implements SceneSim {
   #readKnobs(frame: SimFrame): void {
     const knobs = this.#knobs;
     this.#period = knobs.value(frame, "clock");
+    this.#knock = knobs.value(frame, "knock");
     this.#gustRate = knobs.value(frame, "gusts");
     this.#leafAmount = knobs.value(frame, "leaves");
     this.#wind = knobs.value(frame, "wind");
@@ -710,7 +722,13 @@ class BambooSim implements SceneSim {
     const settle = waterDown(this.#fill) + (waterUp(this.#fill) - waterDown(this.#fill)) * upright;
     this.#slosh += (settle - this.#slosh) * (1 - Math.exp(-h / SLOSH_TIME));
     const inertia = TUBE_INERTIA + mass * this.#slosh * this.#slosh;
-    const torque = -GRAVITY * Math.cos(this.#angle) * (TUBE_MOMENT + mass * this.#slosh) - (PIVOT_DAMPING + WATER_DRAG * mass) * this.#spin;
+    let torque = -GRAVITY * Math.cos(this.#angle) * (TUBE_MOMENT + mass * this.#slosh) - (PIVOT_DAMPING + WATER_DRAG * mass) * this.#spin;
+    const pad = 1 - this.#knock;
+    if (pad > 0 && this.#spin > 0) {
+      // Coming back down onto the moss: the deeper it squashes the pad, the harder the pad holds it back.
+      const squash = Math.min(1, Math.max(0, (this.#angle - BAMBOO_TUBE.rest + PAD_SPAN) / PAD_SPAN));
+      torque -= PAD_DAMPING * pad * squash * this.#spin;
+    }
     this.#spin += (torque / inertia) * h;
     this.#angle += this.#spin * h;
 
@@ -719,7 +737,7 @@ class BambooSim implements SceneSim {
       this.#angle = BAMBOO_TUBE.rest;
       if (this.#spin > CLACK_MIN) {
         this.#clack(Math.min(1, this.#spin / CLACK_FULL), aspect);
-        this.#spin *= -RESTITUTION;
+        this.#spin *= -RESTITUTION * this.#knock;
       } else if (this.#spin > 0) {
         this.#spin = 0;
       }

@@ -20,8 +20,9 @@
 //
 // Motion: the prism rocks about minimum deviation (or spins), now and then turning far enough that
 // total internal reflection swallows the rainbow; a drag turns it by hand. A second prism, turned
-// the other way (Newton's recombination), can slide in from above, and Newton's shutter can be cut
-// as the Manifold M.
+// the other way (Newton's recombination), can slide in along the fan; set close, it backs off along
+// the fan while a turn would swing the first prism into it. Newton's shutter can be cut as the
+// Manifold M.
 //
 // Passage (PRISM_PASSAGE): entering, the sunbeam swings about the M's hole from above its rest
 // line down onto the glass, so the angle of incidence climbs from total internal reflection to
@@ -225,14 +226,20 @@ const ECLIPSE_OFTEN = 75;
 const ECLIPSE_FIRST = 0.45;
 /**
  * Second prism: gap along the fan (screen heights) at gap 0 and 1, the time it takes to follow a
- * change of set-up, slide time, a visit, and its drop height.
+ * change of set-up, slide time and a visit. It slides in along the fan from just beyond the picture.
  */
 const GAP_NEAR = 0.03;
 const GAP_FAR = 0.5;
 const SETTLE = 0.8;
 const SLIDE = 4;
 const VISIT = 40;
-const DROP = 1.1;
+/**
+ * The least the second prism stands from the first (screen heights, on a wide screen): an eclipse
+ * or a drag can turn the first prism far enough to swing its faces through a close-set second one,
+ * which then backs off along the fan to keep this gap (#backOff). An eclipse at the default gap and
+ * dispersion brings them no closer than about 0.005, so that set-up never moves.
+ */
+const CLEARANCE = 0.004;
 /** M shutter: distance up the beam from the prism, height at size 0 and 1, fade time and a visit. */
 const MARK_DISTANCE = 0.42;
 const MARK_SMALL = 0.06;
@@ -766,6 +773,7 @@ class PrismSim implements SceneSim {
     // The second prism: set up for minimum deviation, turning in step with the first.
     const exit = this.#exit;
     let active = this.#secondShown > 0 && this.#centralExit(exit);
+    this.#setPrism(0, this.#centreX, this.#centreY, this.#angle, true);
     if (active) {
       const radius = this.#side / Math.sqrt(3);
       const ex = exit[0] ?? 0;
@@ -773,7 +781,8 @@ class PrismSim implements SceneSim {
       const ux = exit[2] ?? 1;
       const uy = exit[3] ?? 0;
       // Half the gap along the ray is the centre of symmetry. Spinning, it must stay clear of
-      // prism 1 at any turn; rocking, the turns are small and the prisms may stand close.
+      // prism 1 at any turn; rocking, the prisms may stand close, and the second backs off only
+      // while a turn (an eclipse, a drag) would swing the first one's faces into it (#backOff).
       let half = 0.5 * (GAP_NEAR + (GAP_FAR - GAP_NEAR) * this.#gap) * this.#scale;
       if (this.#spinning) {
         const vx = ex - this.#centreX;
@@ -788,13 +797,48 @@ class PrismSim implements SceneSim {
       const follow = Number.isNaN(this.#restX) || this.#secondShown < 1 ? 1 : 1 - Math.exp(-dt / SETTLE);
       this.#restX = Number.isNaN(this.#restX) ? restX : this.#restX + (restX - this.#restX) * follow;
       this.#restY += (restY - this.#restY) * follow;
-      this.#secondX = this.#restX;
-      this.#secondY = this.#restY + DROP * (1 - smoothstep(0, 1, this.#secondShown));
-      active = this.#secondY - radius < 0.5 + VIEW_MARGIN;
+      // Prism 2 is prism 1 mirrored through the centre of symmetry, so moving it along the fan keeps
+      // every colour leaving parallel to the sunbeam: it slides in that way from just beyond the
+      // picture, recombining the colours as it comes and never passing through the first prism.
+      const slide = this.#beyondView(this.#restX, this.#restY, radius, ux, uy) * (1 - smoothstep(0, 1, this.#secondShown));
+      const x = this.#restX + slide * ux;
+      const y = this.#restY + slide * uy;
+      const back = this.#backOff(0.5 * (x + this.#centreX), 0.5 * (y + this.#centreY), ux, uy);
+      this.#secondX = x + 2 * back * ux;
+      this.#secondY = y + 2 * back * uy;
+      active = Math.abs(this.#secondX) < this.#aspect / 2 + VIEW_MARGIN + radius && Math.abs(this.#secondY) < 0.5 + VIEW_MARGIN + radius;
     }
     this.#secondActive = active;
-    this.#setPrism(0, this.#centreX, this.#centreY, this.#angle, true);
     this.#setPrism(1, this.#secondX, this.#secondY, this.#angle + Math.PI, active);
+  }
+
+  /** How far a circle of radius r at (x, y) must move along (ux, uy) to lie wholly beyond the view (0 if it already does). */
+  #beyondView(x: number, y: number, r: number, ux: number, uy: number): number {
+    const hx = this.#aspect / 2 + VIEW_MARGIN + r;
+    const hy = 0.5 + VIEW_MARGIN + r;
+    const sx = ux > 1e-9 ? (hx - x) / ux : ux < -1e-9 ? (-hx - x) / ux : Number.POSITIVE_INFINITY;
+    const sy = uy > 1e-9 ? (hy - y) / uy : uy < -1e-9 ? (-hy - y) / uy : Number.POSITIVE_INFINITY;
+    return Math.max(0, Math.min(sx, sy));
+  }
+
+  /**
+   * How far the centre of symmetry (sx, sy) must move along the fan (ux, uy) to stand half of
+   * CLEARANCE outside one of prism 1's faces as it is turned now (faces 0..2 in place); 0 when it
+   * already does. A point that far outside a face of the first prism puts its mirror image, the
+   * second prism, twice as far beyond that face.
+   */
+  #backOff(sx: number, sy: number, ux: number, uy: number): number {
+    const clear = 0.5 * CLEARANCE * this.#scale;
+    let outside = Number.NEGATIVE_INFINITY;
+    let back = Number.POSITIVE_INFINITY;
+    for (let m = 0; m < 3; m++) {
+      const face = this.#faceAt(m);
+      const height = face.nx * (sx - face.ax) + face.ny * (sy - face.ay);
+      outside = Math.max(outside, height);
+      const rate = face.nx * ux + face.ny * uy;
+      if (rate > 1e-6) back = Math.min(back, (clear - height) / rate);
+    }
+    return outside >= clear || !Number.isFinite(back) ? 0 : back;
   }
 
   // ---- tracing ---------------------------------------------------------------------------------
