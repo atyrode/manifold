@@ -25,6 +25,7 @@ const params: readonly ParamDef[] = [
   ),
   feature("aurora", "corona", "corona", true, "frequency", 0.35, "Now and then the curtains gather overhead into a corona: rays streaming down from a point high in the sky, for half a minute or so. Now: one at once.", { trigger: 0 }),
   range("water", "ice", "ice", 0, "Open still water, mirroring the whole sky, to the left; to the right the fjord freezes over, first in plates with dark leads between them, then wholly: dull dark ice, hairline cracks, snow lying in patches."),
+  range("water", "ripples", "wind ripples", 0, "0: a still fjord, a clear mirror of the sky. Higher lets the wind (under Weather) ruffle the open water: cat's-paws drift downwind and break the reflections into long vertical streaks. Ice stays still."),
   range("night", "stars", "stars", 0.7, "How many stars show: none to the left, a dark northern sky to the right. The aurora outshines the ones behind it."),
   feature("night", "moon", "crescent moon", true, "phase", 0.25, "A moon low over the mountains: a thin crescent to a full disc. It lights the snow and draws a path of glints down the water."),
   toggle("night", "cabin", "cabin", true, "A small red cabin on the far shore with its window lit by the fire, its light drawn down the water, and a thread of smoke leaning with the wind."),

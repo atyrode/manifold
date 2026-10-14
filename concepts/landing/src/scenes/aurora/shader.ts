@@ -1,15 +1,17 @@
 // A northern night, drawn: a still fjord under slow curtains of aurora, snowy mountains going straight
 // into the water, a small red cabin on the far shore with its window lit and a thread of smoke
 // climbing from the chimney, birches on the near bank. No simulation: everything moves on smooth
-// functions of the motion clock, slowly enough that no cell steps more than a few times a minute.
+// functions of the motion clock, slowly enough that no cell steps more than a few times a minute
+// (a breeze's ripples, when the ripples knob is up, a little livelier).
 //
 // The camera is a side-on pinhole with the horizon (and the far shore's waterline) at AUR_HZ. The
 // sky, the mountains, the far shore and the cabin are one function, aurFar, of a screen point above
 // the horizon. The water below it is that same function looked up at the mirrored point, shifted by
-// slow ripple noise (still water) or by frozen undulations (ice), then dimmed by a Fresnel-like
-// share; the cabin's window and the moon draw their light paths down it. Reflected edges move a
-// fraction of a cell at a time; every crisp edge (disc, window, trunk, smoke) is cut per cell
-// against the dither threshold, so each cell flips once as it passes.
+// slow ripple noise (still water), by a breeze's ripples (the ripples knob, shaders/windWater.ts) or
+// by frozen undulations (ice), then dimmed by a Fresnel-like share; the cabin's window and the moon
+// draw their light paths down it. Reflected edges move a fraction of a cell at a time; every crisp
+// edge (disc, window, trunk, smoke) is cut per cell against the dither threshold, so each cell flips
+// once as it passes.
 //
 // The aurora: up to three curtains hang along arcs at growing distances (a ray meets each at a
 // depth that folds in and out along its length; where the sheet turns edge-on it glows more). Light
@@ -22,6 +24,7 @@
 // layer, the mirrored water and the horizon move as one), the curtains unfurl from faint high arcs
 // or roll back up into them, and on the way in the chimney's smoke climbs. All gated to nothing at rest.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
+import { windWaterGlsl } from "../../shaders/windWater.ts";
 
 /** The aurora's low (oxygen green) and high (violet, red) colours by the `hue` knob, where the change begins and ends, and its gain. */
 const AURORA_LOW = ["vec3(0.28, 1.0, 0.50)", "vec3(0.28, 1.0, 0.50)", "vec3(0.45, 1.0, 0.32)"] as const;
@@ -30,13 +33,15 @@ const AURORA_FROM = [0.35, 0.3, 0.08] as const;
 const AURORA_TO = [1.0, 0.85, 0.65] as const;
 const AURORA_GAIN = [1.0, 1.0, 1.2] as const;
 
-/** Horizon (screen height) and vertical field of view (rad) of the pinhole camera. */
-const HORIZON = 0.32;
+/** Horizon (screen height, at rest) and vertical field of view (rad) of the pinhole camera. */
+export const AURORA_HORIZON = 0.32;
 const FOV = 1.3;
 
 export const auroraGlsl = `
-const float AUR_HZ = ${glslFloat(HORIZON)};
+${windWaterGlsl}
+const float AUR_HZ = ${glslFloat(AURORA_HORIZON)};
 const float AUR_F = ${glslFloat(0.5 / Math.tan(FOV / 2))};
+const float AUR_EYE = 1.7; // metres above the water
 const vec3 AUR_SNOW = vec3(0.86, 0.9, 1.0);
 const vec3 AUR_WINDOW = vec3(1.0, 0.62, 0.26);
 const vec3 AUR_WALL = vec3(0.80, 0.12, 0.08);
@@ -453,12 +458,13 @@ vec3 aurFar(vec2 q, bool mirror) {
 
 // The water at screen point p below the horizon: the far world mirrored (the ray's reach grows as
 // 1 / h below the horizon, so ripples are laid out in that depth and fade out where they would be
-// finer than a cell), dimmer the nearer it lies; the window's light and the moon's drawn down it;
-// and, as the ice knob rises, plates of ice in it: static, dimmer mirrors, hairline cracks and
-// patches of snow. range: metres to the water here.
+// finer than a cell), dimmer the nearer it lies; with the ripples knob, cat's-paws of wind ripples
+// streaking it; the window's light and the moon's drawn down it; and, as the ice knob rises, plates
+// of ice in it: static, dimmer mirrors, hairline cracks and patches of snow. range: metres to the
+// water here.
 vec3 aurWater(vec2 p, out float range) {
   float h = max(AUR_HZ - p.y, 0.002);
-  range = 1.7 * AUR_F / h;
+  range = AUR_EYE * AUR_F / h;
   vec2 g = vec2(p.x * 1.6 / (0.25 + 2.0 * h), log(0.04 + h) * 3.0);
   float iceMask = 0.0;
   if (K_ice > 0.0) {
@@ -475,6 +481,14 @@ vec3 aurWater(vec2 p, out float range) {
   float dy = amp * h * (w1 * fade1 + 0.5 * w2 * fade2);
   float dx = 0.02 * h * w2 * fade2;
   vec2 q = vec2(p.x + dx, max(AUR_HZ + h + dy, AUR_HZ + 0.0006));
+  // A breeze on open water (the ripples knob, blowing with the wind): its ripples tip the mirror and
+  // stretch what it shows into vertical streaks; the ripples too fine to draw smear it, each cell
+  // looking a little up or down for the dither to average.
+  if (K_ripples > 0.0 && iceMask < 0.5) {
+    vec4 rip = windRipples(planeAt(vec2(p.x / (2.0 * aurHW) + 0.5, p.y), 2.0 * aurHW, AUR_HZ, AUR_EYE, AUR_F), aurT, K_wind, K_ripples);
+    vec2 shift = windMirror(rip, h, AUR_F) + vec2(0.0, (cellTh - 0.5) * 2.0 * windMirrorSpread(rip, AUR_F));
+    q = vec2(q.x + shift.x, max(q.y + shift.y, AUR_HZ + 0.0006));
+  }
 
   float low = exp(-h * 9.0);
   float fres = mix(0.55 + 0.35 * low, 0.22 + 0.22 * low, iceMask);
