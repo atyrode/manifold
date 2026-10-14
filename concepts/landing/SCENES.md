@@ -123,6 +123,11 @@ The view from a plane window: a sea of clouds below, open sky above.
 - Options: **aurora** over the night side (reuse orbit's aurora curtains, seen from inside the
   atmosphere), **lightning** flickering inside distant cumulonimbus (trigger + random), the moon,
   contrails, a distant wingtip in the corner.
+- Level of detail: the march steps grow with distance, and the cauliflower relief that shapes the
+  tops' normals fades out as a cell's footprint on the deck grows; once fully faded it is not
+  computed at all, for the same picture. The macro field the march, normals and shadows trace keeps
+  its full shape at every distance: fading it would reshape the far deck, and a projected-size floor
+  under the march step saves only a few percent of steps, even skimming low over a full deck.
 
 ## Waterfall
 
@@ -247,6 +252,9 @@ Wind over a sand sea.
 - **Bioluminescence** as an option: blue glow where water is disturbed (breaking waves, the
   pointer stirring the water, fish darting).
 - Day mode as an ordinary seaside scene.
+- Every wave is intersected in full wherever it shows: rows of surf too far out to stand two cells
+  tall take about 3% of the intersection work at the default wave size (under 10% at the smallest),
+  too little to justify a cheaper path beside the near breakers.
 
 ## Window sill
 

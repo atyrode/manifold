@@ -19,6 +19,7 @@ import { verifyRuntime } from "./src/runtime.verify.ts";
 import { fallsGorgeCheck } from "./src/scenes/falls/gorge.verify.ts";
 import { skywardSnowCheck } from "./src/scenes/skyward/snow.verify.ts";
 import { mobileVerify } from "./src/scenes/mobile/mobile.verify.ts";
+import { verifyCloudsDetail } from "./src/scenes/clouds/detail.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
@@ -292,6 +293,7 @@ export function verify(): Record<string, unknown> {
   result.physics = { film: verifyFilmRupture(gl), pendula: verifyPendulaSwing(gl) };
   result.frostSky = verifyFrostSky(gl);
   Object.assign(result, verifyCountryRoutes(gl));
+  result.cloudsDetail = verifyCloudsDetail(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
