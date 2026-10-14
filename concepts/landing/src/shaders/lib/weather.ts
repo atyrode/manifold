@@ -206,17 +206,44 @@ vec2 weatherSnowLayer(vec2 q, float t, float m, float fall, float drift, float f
 // flurry (0.1-0.2) is a few lazy flakes; steady snow (0.5) fills every layer with a soft veil
 // behind; a blizzard (1.0) is dense, wind-driven and streaked, swirling hard, with gust surges and a
 // whiteout veil that closes in even near the eye.
-Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth) {
+//
+// snowFall assumes a level camera: the flakes come down the frame, drifting with the wind. A scene
+// whose camera tilts passes where the flakes' paths meet instead (snowFallSeen with rainVanish of
+// snowFallDir), as for rain. Looking up, the flakes stream out of the point they fall from, small
+// and slow near it, larger and faster toward the edges of the frame; looking down they close in on
+// the point under the eye. Each layer is then laid out about that point in log-polar coordinates
+// (angle, log of the distance), which keeps every flake round and its lattice cells square: a cell
+// at distance r from the point is r / r0 times the level camera's, r0 about half a screen height
+// (more for a point far outside the frame, so the layers meet snowFall's as the camera levels). The
+// wind is in the point's offset, so the layers swirl in place rather than drift, and they thin out
+// near the point where their cells would crowd into specks. A vanish whose point lies beyond ~50
+// screen heights (z = 0: parallel paths) is snowFall exactly.
+
+// The direction the flakes fall in the world (x: downwind, y: up), unit length: snowFall's nearest
+// layer, its pace down and its drift with the wind.
+vec3 snowFallDir(float amount, float wind) {
+  float a = clamp(amount, 0.0, 1.0);
+  return normalize(vec3(wind * (0.15 + 0.45 * a), -0.2 * mix(0.85, 1.3, a), 0.0));
+}
+
+Precip snowFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish) {
   Precip o = Precip(0.0, 0.0, 0.0);
   if (amount <= 0.0) return o;
   float a = clamp(amount, 0.0, 1.0);
   float tm = t * uMotion;
   float storm = smoothstep(0.55, 1.0, a);
-  float push = wind * (0.15 + 0.45 * a); // sideways drift of the nearest layer, screen heights/s
+  bool level = abs(vanish.z) * 50.0 <= length(vanish.xy);
+  float push = level ? wind * (0.15 + 0.45 * a) : 0.0; // sideways drift of the nearest layer, screen heights/s
   float swirl = mix(0.03, 0.09, a) * (0.6 + 0.4 * abs(wind));
   float gusty = smoothstep(0.45, 1.0, a) * (0.4 + 0.6 * abs(wind));
   float th = weatherThreshold();
   vec2 q = vec2((uv.x - 0.5) * aspect, uv.y);
+  // Seen: the frame about its centre, the point the paths meet at, and r0 (see above). Looking up
+  // (vanish.z < 0) the flakes come toward the eye and stream out of the point.
+  vec2 p = vec2(q.x, uv.y - 0.5);
+  vec2 point = level ? vec2(0.0) : vanish.xy / vanish.z;
+  float r0 = sqrt(dot(point, point) + 0.25);
+  float outward = vanish.z < 0.0 ? 1.0 : -1.0;
   float clear = 1.0;
   float nearCover = 0.0;
   for (int i = 0; i < 5; i++) {
@@ -229,8 +256,27 @@ Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float 
     float fall = 0.2 * m * mix(0.85, 1.3, a);
     float drift = push * m;
     float stretch = 1.0 + storm * clamp(length(vec2(drift, fall)) * 2.0, 0.0, 0.8);
-    vec2 r = weatherSnowLayer(q, tm, m, fall, drift, min(fill, 0.9), swirl, stretch, i == 0 ? 0.15 : 0.5,
-                              vec2(weatherDepth(z / 1.48), weatherDepth(z * 1.48)), depth, f * 5.1 + 2.0);
+    float salt = f * 5.1 + 2.0;
+    vec2 lattice = q;
+    float eddies = swirl;
+    if (!level) {
+      // r0 rounded so the layer's columns go round the point a whole number of times (no seam),
+      // the swirl applied on screen (the angle jumps where it wraps), scaled down with the cells.
+      float cells = min(5.0 / m, uRes.y / 5.0);
+      float ring = max(round(TAU * r0 * cells), 1.0) / (TAU * cells);
+      vec2 d = p - point;
+      float freq = 2.0 / m;
+      d += (vec2(vnoise(p * freq + vec2(tm * 0.07, salt)), vnoise(p * freq + vec2(salt + 4.1, -tm * 0.06))) - 0.5) * swirl * m * min(length(d) / ring, 1.0);
+      float dist = max(length(d), 1e-4);
+      lattice = vec2((atan(d.y, d.x) + 0.5 * TAU) * ring, -outward * ring * log(dist / ring));
+      eddies = 0.0;
+      // No denser on screen than the level camera's layer, and no flake much under a cell across.
+      float scale = dist / ring;
+      float least = max(0.03 * pow(m, 1.3), 1.1 / uRes.y) * uRes.y * scale;
+      fill *= min(scale * scale, 1.0) * smoothstep(0.5, 1.1, least);
+    }
+    vec2 r = weatherSnowLayer(lattice, tm, m, fall, drift, min(fill, 0.9), eddies, stretch, i == 0 ? 0.15 : 0.5,
+                              vec2(weatherDepth(z / 1.48), weatherDepth(z * 1.48)), depth, salt);
     float c = (r.x > th ? 1.0 : 0.0) * r.y * (i == 0 ? 0.6 : 1.05 - 0.1 * f);
     if (i == 0) nearCover = c;
     clear *= 1.0 - c;
@@ -241,6 +287,11 @@ Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float 
   k *= 1.0 + gusty * (1.4 * weatherGust(q.x, mix(2.0, 22.0, depth), tm, wind) - 0.5);
   o.veil = 1.0 - exp(-k * depth * (0.4 + 0.6 * depth));
   return o;
+}
+
+// Snow seen by a level camera: the flakes come down the frame, drifting with the wind.
+Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth) {
+  return snowFallSeen(uv, aspect, t, amount, wind, depth, vec3(0.0, -1.0, 0.0));
 }
 
 // Rain or snow over a shaded colour, as "Weather in the world" in the README asks: the veil toward

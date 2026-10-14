@@ -14,6 +14,8 @@ import { verifyBarLastCall } from "./src/scenes/bar/lastcall.verify.ts";
 import { verifyDewBins } from "./src/scenes/dew/bins.verify.ts";
 import { verifyTidepoolExchange } from "./src/scenes/tidepool/exchange.verify.ts";
 import { verifyRuntime } from "./src/runtime.verify.ts";
+import { fallsGorgeCheck } from "./src/scenes/falls/gorge.verify.ts";
+import { skywardSnowCheck } from "./src/scenes/skyward/snow.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
@@ -277,6 +279,8 @@ export function verify(): Record<string, unknown> {
   result.materials = { rippleEdges: rippleEdgesVerify(gl), incenseVent: incenseVentVerify(gl) };
   result.runtime = verifyRuntime(gl);
   Object.assign(result, verifyCountryAnimals(gl));
+  result.skywardSnow = skywardSnowCheck(gl);
+  result.fallsGorge = fallsGorgeCheck(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

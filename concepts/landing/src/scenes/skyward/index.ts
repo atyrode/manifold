@@ -18,6 +18,7 @@ const params: readonly ParamDef[] = [
   range("air", "birds", "birds", 0.5, "A flock of pigeons wheeling over the street and a few swifts higher up, by day and in the golden hour."),
   feature("air", "planes", "airliners", true, "frequency", 0.4, "Planes crossing the strip of sky far overhead, a contrail growing behind each, spreading and fading over a minute or two."),
   ...weatherKnobs({ clouds: 0.35, rain: true, snow: true, fog: true, wind: true }),
+  toggle("weather", "snowOverhead", "snow from overhead", false, "How the snow comes at you. On, as it does lying on your back: the flakes stream out of the patch of sky they fall from (off the zenith, downwind), small and slow there, larger and faster toward the edges. Off, they come down the frame as for a camera looking ahead.", { when: "snow" }),
   toggle("manifold", "mark", "banner M", false, "A cloth banner strung across the crossroads on four cables, the Manifold M painted on it in the accent colour, lit from within at night."),
 ];
 

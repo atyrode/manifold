@@ -208,6 +208,8 @@ vec3 rainVanish(vec3 dir, vec3 right, vec3 up, vec3 fwd, float focal);
 Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish);
 float weatherRainClock(float t);                          // real time for gravity-driven things once motion > 0.4
 Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth);
+vec3 snowFallDir(float amount, float wind);               // the flakes' world direction, for rainVanish
+Precip snowFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish); // tilted camera: flakes stream out of (or into) the vanishing point; vanish.z = 0 is snowFall
 vec3 precipOver(vec3 col, vec3 air, vec3 dropLight, Precip p); // the veil toward air, then the drops toward dropLight (see below)
 
 // Surfaces (p in the scene's own ground units, roughly metres; scale freely):
@@ -348,6 +350,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick`.
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`).
+- `LevelCamera` (`camera.ts`): world ↔ screen for the level side-on camera (horizon, eye height,
+  focal): move things in the world and project them, so receding slows them across the frame and
+  draws them to the horizon (meadow's seeds).
 - `FixedStep` and `runBudgeted` (`clock.ts`): a fixed-step accumulator (`advance` returns the steps
   due; `alpha`, `lag(i)`), and warm-ups counted in steps, which a time budget only spreads over
   frames, so the opening picture never depends on the machine's speed.

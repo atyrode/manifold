@@ -71,6 +71,11 @@ float fallsHalfWidth(float d, float flow) {
   return mix(0.02, 0.15, flow) * (1.0 + 0.3 * fall + 0.7 * fall * fall) + 0.02 * fall;
 }
 
+// Where the river comes over the lip, x on the frame: a little right of centre on wide screens.
+float fallsAt(float aspect) {
+  return 0.09 * min(aspect, 2.0);
+}
+
 // Middle of the sheet after dropping d: a steady wind pushes the water aside by ~ a tau^2 / 2.
 float fallsCentre(float d, float fx, float flow, float wind) {
   float tau = fallsTau(d, fallsV0(flow));
@@ -230,33 +235,71 @@ float fallsCrowns(float x, float size, float seed) {
   return h;
 }
 
-// The bedding: s counts couplets up the cliff, each a hard bed (a lava flow) with a soft bed
-// (ash, scoria) lying on it. The beds dip gently to the right and sag in broad, shared folds; a
-// slow warp along the column, different for each bed and changing along x, makes them thicken and
-// thin (pinch and swell). dsdy = ds/dy, to turn fractions of a bed into screen heights.
+// ---- the rock: three gorges (K_gorge) ----
+// Two layered rocks and one massive one. Basalt flows (0, the original cliff): couplets of a hard
+// lava flow and the soft ash or scoria on it, dipping and folded, the flows standing out as ledges.
+// Sandstone ledges (1): many thinner, nearly level beds of buff and red sandstone parted by thin
+// shale, cross-bedded, the sandstone standing far out as stepped ledges. A limestone slot (2): a few
+// thick, pale, level beds parted by thin bedding planes, barely standing out, fluted by runnels and
+// striped with dark streaks under the lips, crusted with tufa where the water runs; the walls close
+// in on both sides (fallsSlot), leaving a slit of sky. Set once per pixel by fallsSetGorge.
+struct FallsGeology {
+  float kind;      // 0 basalt flows, 1 sandstone ledges, 2 limestone slot
+  float beds;      // couplets per screen height
+  float dip;       // rise of the bedding per unit x
+  float fold;      // share of the broad, shared folds
+  float warp;      // share of the pinch and swell
+  vec3 split;      // the hard bed's share of a couplet: base, spread between beds, wobble along a bed...
+  vec2 splitRange; // ...kept within this
+  vec3 proud;      // how far a hard bed stands out: base, spread between beds, wobble along a bed
+  vec3 block0;     // fallen blocks: the darkest stone...
+  vec3 block1;     // ...and the palest
+};
+FallsGeology fallsGeo;
+
+void fallsSetGorge(float gorge) {
+  fallsGeo = FallsGeology(0.0, FALLS_BEDS, 0.6, 1.0, 1.0, vec3(0.4, 0.42, 0.32), vec2(0.3, 0.95), vec3(0.15, 0.85, 0.7), vec3(0.16, 0.16, 0.17), vec3(0.32, 0.3, 0.27));
+  if (gorge > 1.5) fallsGeo = FallsGeology(2.0, 4.2, 0.04, 0.12, 0.3, vec3(0.86, 0.08, 0.06), vec2(0.8, 0.96), vec3(0.06, 0.22, 0.3), vec3(0.5, 0.48, 0.43), vec3(0.78, 0.75, 0.66));
+  else if (gorge > 0.5) fallsGeo = FallsGeology(1.0, 10.0, 0.2, 0.4, 0.7, vec3(0.5, 0.4, 0.3), vec2(0.35, 0.92), vec3(0.25, 0.75, 0.8), vec3(0.3, 0.2, 0.15), vec3(0.55, 0.42, 0.3));
+}
+
+// The bedding: s counts couplets up the cliff, each a hard bed (a lava flow, a sandstone, a
+// limestone) with a soft bed (ash, scoria, shale, a bedding plane) lying on it. The beds dip gently
+// to the right and sag in broad, shared folds; a slow warp along the column, different for each bed
+// and changing along x, makes them thicken and thin (pinch and swell). dsdy = ds/dy, to turn
+// fractions of a bed into screen heights.
 float fallsLayer(vec2 q, out float dsdy) {
-  float s0 = q.y * FALLS_BEDS + 0.6 * q.x + 1.3 * vnoise1(q.x * 0.9, 1.3).x + 0.45 * vnoise1(q.x * 2.7, 2.9).x;
+  float s0 = q.y * fallsGeo.beds + fallsGeo.dip * q.x + fallsGeo.fold * 1.3 * vnoise1(q.x * 0.9, 1.3).x + fallsGeo.fold * 0.45 * vnoise1(q.x * 2.7, 2.9).x;
   vec2 w = vnoiseD(vec2(s0 * 1.1, q.x * 1.6)).xy;
-  dsdy = FALLS_BEDS * (1.0 + 0.55 * w.y);
-  return s0 + 0.5 * (w.x - 0.5);
+  dsdy = fallsGeo.beds * (1.0 + fallsGeo.warp * 0.55 * w.y);
+  return s0 + fallsGeo.warp * 0.5 * (w.x - 0.5);
 }
 
 // The share of couplet c the hard bed takes up at x (the soft bed on it has the rest), varying
 // along the bed so the soft partings now and then all but pinch out.
 float fallsSplit(float c, float x) {
-  return clamp(0.4 + 0.42 * hash12(vec2(c, 2.7)) + 0.32 * (vnoise1(x * 1.9 + c * 3.7, c + 0.5).x - 0.5), 0.3, 0.95);
+  return clamp(fallsGeo.split.x + fallsGeo.split.y * hash12(vec2(c, 2.7)) + fallsGeo.split.z * (vnoise1(x * 1.9 + c * 3.7, c + 0.5).x - 0.5), fallsGeo.splitRange.x, fallsGeo.splitRange.y);
 }
 
-// How far couplet c's hard bed stands out from the soft beds about it at x, 0..1: some flows
-// stand out as ledges and overhangs, some barely, and erosion bites in and out along each.
+// How far couplet c's hard bed stands out from the soft beds about it at x, 0..1: some beds stand
+// out as ledges and overhangs, some barely, and erosion bites in and out along each.
 float fallsProud(float c, float x) {
-  return clamp(0.15 + 0.85 * hash12(vec2(c, 3.1)) + 0.7 * (vnoise1(x * 2.3 + c * 5.1, c + 7.5).x - 0.5), 0.0, 1.0);
+  return clamp(fallsGeo.proud.x + fallsGeo.proud.y * hash12(vec2(c, 3.1)) + fallsGeo.proud.z * (vnoise1(x * 2.3 + c * 5.1, c + 7.5).x - 0.5), 0.0, 1.0);
 }
 
-// A bed's stone: the hard beds dark basalt, some greyer or browner; the soft beds rusty scoria,
-// pale ash or dark rubble.
+// A bed's stone. Basalt: the hard beds dark basalt, some greyer or browner; the soft beds rusty
+// scoria, pale ash or dark rubble. Sandstone: buff, red or pale sandstone on grey-violet shale.
+// Limestone: cream, grey or warm limestone, the bedding planes a shade darker.
 vec3 fallsStone(float c, bool hard) {
   float kind = hash12(vec2(c, hard ? 5.3 : 6.1));
+  if (fallsGeo.kind > 1.5) {
+    if (hard) return kind < 0.45 ? vec3(0.8, 0.77, 0.68) : kind < 0.8 ? vec3(0.74, 0.73, 0.68) : vec3(0.82, 0.72, 0.56);
+    return vec3(0.56, 0.53, 0.47);
+  }
+  if (fallsGeo.kind > 0.5) {
+    if (hard) return kind < 0.4 ? vec3(0.55, 0.42, 0.28) : kind < 0.75 ? vec3(0.5, 0.3, 0.21) : vec3(0.6, 0.53, 0.42);
+    return kind < 0.6 ? vec3(0.27, 0.25, 0.27) : vec3(0.33, 0.28, 0.27);
+  }
   if (hard) return kind < 0.5 ? vec3(0.22, 0.22, 0.23) : kind < 0.8 ? vec3(0.3, 0.29, 0.28) : vec3(0.29, 0.25, 0.21);
   return kind < 0.45 ? vec3(0.38, 0.26, 0.19) : kind < 0.8 ? vec3(0.37, 0.33, 0.27) : vec3(0.21, 0.19, 0.19);
 }
@@ -316,6 +359,23 @@ vec3 fallsRock(vec2 q, float s, float dsdy, vec3 ray, FallsLight L, float wet, f
     overhang = proudUp * smoothstep(1.0 - reach - 0.15, 1.0 - reach + 0.1, f + 0.2 * (g1 - 0.5));
     layering = smoothstep(0.5, 0.9, abs(fract(sr * 7.0 + 0.4 * g1) - 0.5) * 2.0) * 0.6;
   }
+  if (fallsGeo.kind > 1.5) {
+    // Limestone: runnels flute the face from each lip down, fading down the bed, and joints split
+    // the massive beds from top to bottom, a few to a screen height, each wandering a little.
+    float flute = sin(q.x * 150.0 + 4.0 * vnoise(vec2(q.x * 14.0, sr * 0.7)));
+    n.x += 0.22 * flute * (hard ? 1.0 - 0.6 * f : 0.3);
+    float dx = (fract(q.x * 2.3 + 0.15 * vnoise(vec2(q.y * 4.0, 2.0)) + 0.3) - 0.5) / 2.3;
+    joint = max(joint, 1.0 - smoothstep(0.0015, 0.004, abs(dx)));
+    groove = max(groove, 1.0 - smoothstep(0.004, 0.014, abs(dx)));
+    n.x += sign(dx) * 0.5 * groove;
+  } else if (fallsGeo.kind > 0.5 && hard) {
+    // Sandstone: cross-bedding, thin laminae slanting through each bed, one way or the other in
+    // each stretch of it.
+    float set = floor(q.x * 2.6 + hash12(vec2(c, 9.1)) * 5.0);
+    float slope = (hash12(vec2(set, c + 0.7)) - 0.5) * 0.9;
+    float lamina = abs(fract((f * thick - slope * q.x) * 110.0) - 0.5);
+    layering = max(layering, 0.6 * smoothstep(0.36, 0.5, lamina) * smoothstep(0.02, 0.05, thick));
+  }
   n = normalize(n);
   n = normalize(mix(n, vec3(0.0, 0.85, -0.53), lip));
   n = normalize(mix(n, vec3(0.0, -0.8, -0.6), tuck));
@@ -355,6 +415,13 @@ vec3 fallsRock(vec2 q, float s, float dsdy, vec3 ray, FallsLight L, float wet, f
   albedo = mix(albedo, vec3(0.05, 0.06, 0.045), 0.45 * stain);
   albedo = mix(albedo, lichenCol, 0.75 * lichen);
   albedo = mix(albedo, mossCol * mix(1.0, 0.8, damp), moss);
+  if (fallsGeo.kind > 1.5) {
+    // Dark streaks (algae) hang down the face below the lips, and tufa crusts the rock the water
+    // keeps wet, cream to orange.
+    float tint = smoothstep(0.55, 0.8, vnoise(vec2(q.x * 26.0, c * 3.1))) * smoothstep(0.25, 0.6, vnoise(vec2(q.x * 26.0, sr * 1.3 + 4.0)));
+    albedo = mix(albedo, vec3(0.13, 0.13, 0.12), 0.55 * tint * (1.0 - moss));
+    albedo = mix(albedo, vec3(0.74, 0.62, 0.45), 0.5 * smoothstep(0.3, 0.8, wet) * smoothstep(0.4, 0.7, g1) * (1.0 - moss));
+  }
   float occlusion = (1.0 - 0.7 * overhang) * (1.0 - 0.8 * joint) * (1.0 - 0.25 * groove) * (1.0 - 0.5 * tuck) * (1.0 - 0.3 * layering) * (hard ? 1.0 : 0.85);
   vec3 col = albedo * fallsLit(L, n) * occlusion;
 
@@ -511,7 +578,7 @@ float fallsBoulders(vec2 q, float clearX, float clearW, out vec3 n, out float k,
 // rainWet soaks the stone the water leaves dry and glosses the tops.
 vec3 fallsBlock(vec2 q, vec3 n, float k, float h, FallsLight L, vec3 skyLight, float wet, float rainWet, float green, float dark) {
   float grain = vnoise(q * 64.0 + k * 40.0);
-  vec3 stone = mix(vec3(0.16, 0.16, 0.17), vec3(0.32, 0.3, 0.27), k) * (0.8 + 0.4 * grain);
+  vec3 stone = mix(fallsGeo.block0, fallsGeo.block1, k) * (0.8 + 0.4 * grain);
   float damp = max(wet, 1.0 - smoothstep(0.0, 0.5, h));
   float moss = smoothstep(0.4, 0.8, n.y + 0.6 * (grain - 0.5)) * smoothstep(0.05, 0.6, green);
   stone = wetten(stone * mix(1.0, 0.5, damp), rainWet * (1.0 - damp), 0.2);
@@ -533,6 +600,16 @@ vec3 fallsMark(vec2 q, vec2 at, float size) {
   return vec3(groove, lit, wall * groove);
 }
 
+// Down in the limestone slot the back wall at height y sees only a strip of sky, and the sun reaches
+// only its top; the other gorges stand open.
+FallsLight fallsSlotShade(FallsLight L, float y) {
+  if (fallsGeo.kind > 1.5) {
+    L.amb *= 0.75 + 0.25 * smoothstep(FALLS_POOL, 0.9, y);
+    L.sunCol *= smoothstep(0.4, 0.75, y);
+  }
+  return L;
+}
+
 // What the pool mirrors at q (a point on the cliff above the waterline): the stone, the fallen
 // blocks, the falling water and the plunge, done cheaply (no ferns, joints or carving): the
 // ripples smear it anyway. rainWet soaks its stone as it does the cliff's.
@@ -549,8 +626,9 @@ vec3 fallsMirror(vec2 q, FallsLight L, vec3 skyLight, vec3 glow, float fx, float
   float wet = max(exp(-max(beside, 0.0) / (0.04 + 0.08 * flow)), smoothfall(FALLS_POOL + 0.035, FALLS_POOL, q.y));
   float lip = hard ? smoothstep(0.7, 1.0, f) * fallsProud(c, q.x) : 0.0;
   vec3 n = normalize(vec3(0.0, hard ? (f - 0.5) * 0.5 : 0.0, -1.0));
-  vec3 col = wetten(fallsStone(c, hard) * (0.72 + 0.45 * vnoise(q * vec2(28.0, 46.0))) * mix(1.0, 0.5, wet), 0.85 * rainWet * (1.0 - wet), hard ? 0.25 : 0.7) * fallsLit(L, n) * (hard ? 1.0 : 0.8);
-  col = mix(col, wetten(vec3(0.2, 0.36, 0.1), rainWet, 1.0) * fallsLit(L, vec3(0.0, 0.85, -0.53)), lip * smoothstep(0.0, 0.15, green) * 0.8);
+  FallsLight Ls = fallsSlotShade(L, q.y);
+  vec3 col = wetten(fallsStone(c, hard) * (0.72 + 0.45 * vnoise(q * vec2(28.0, 46.0))) * mix(1.0, 0.5, wet), 0.85 * rainWet * (1.0 - wet), hard ? 0.25 : 0.7) * fallsLit(Ls, n) * (hard ? 1.0 : 0.8);
+  col = mix(col, wetten(vec3(0.2, 0.36, 0.1), rainWet, 1.0) * fallsLit(Ls, vec3(0.0, 0.85, -0.53)), lip * smoothstep(0.0, 0.15, green) * 0.8);
   col += skyLight * lip * 0.22 * dark;
   float drop = FALLS_LIP - FALLS_POOL;
   float footX = fallsCentre(drop, fx, flow, wind);
@@ -651,6 +729,76 @@ float fallsBankFerns(vec2 q, float aspect, float green, float sway, float tm, fl
   return cover;
 }
 
+// ---- the slot (the limestone gorge) ----
+// Its walls are two vertical planes running from the back wall toward the eye on either side of the
+// slot's axis, undulating where the water has carved them and leaning in toward the top. A point on
+// screen at q lies on a wall at depth t (1 at the back wall, less nearer: the plane x = X / t) and
+// height h = FALLS_EYE + (q.y - FALLS_EYE) * t, both measured on the back wall's scale, where the
+// waterline is FALLS_POOL. Walking along a wall toward the eye, a unit of t is FALLS_SLOT_RUN screen
+// heights of the back wall's scale, so the wall's face unrolls from the corner, its beds continuing
+// the back wall's and running away to the vanishing point.
+const float FALLS_SLOT_X = 0.06;   // the slot's axis, a little toward the fall...
+const float FALLS_SLOT_W = 0.44;   // ...and its half-width at the waterline, on a 16:9 frame
+const float FALLS_SLOT_RUN = 1.04; // FALLS_CLIFF_Z / FALLS_CLIFF_M
+
+// How much of its 16:9 width the slot keeps on a narrower frame, so its walls stay in view.
+float fallsSlotFit(float aspect) {
+  return clamp(aspect / 1.78, 0.62, 1.0);
+}
+
+// The slot's half-width at height h and depth t on the side of the axis given: narrowing upward,
+// bulging in and out along and up the wall.
+float fallsSlotHalf(float h, float t, float side) {
+  return FALLS_SLOT_W * (1.0 - 0.32 * smoothstep(FALLS_POOL, 0.95, h)) + 0.06 * (fbm3(vec2(h * 3.5 + side * 4.0, t * 2.2)) - 0.5);
+}
+
+// The top of a wall at depth t, on the back wall's scale: level with the back wall's rim.
+float fallsSlotTop(float t, float side) {
+  return 0.86 + 0.05 * (fbm3(vec2(t * 3.0 + side * 2.0, 9.0)) - 0.5);
+}
+
+// The wall seen at q on a frame fitted by fit (fallsSlotFit), if any: x the side (-1 left, 1 right,
+// 0 none: the back wall shows), y its depth t, z the height h (below FALLS_POOL: the water in front of
+// the wall; above fallsSlotTop: over it), w the wall's unrolled coordinate (the back wall's x at the
+// corner).
+vec4 fallsSlot(vec2 q, float fit) {
+  float side = q.x < FALLS_SLOT_X * fit ? -1.0 : 1.0;
+  float x = (FALLS_SLOT_X + side * FALLS_SLOT_W * 0.85) * fit;
+  if (q.x * x <= 0.0) return vec4(0.0);
+  float t = x / q.x;
+  x = (FALLS_SLOT_X + side * fallsSlotHalf(FALLS_EYE + (q.y - FALLS_EYE) * t, t, side)) * fit;
+  t = x / q.x;
+  if (q.x * x <= 0.0 || t >= 1.0) return vec4(0.0);
+  return vec4(side, t, FALLS_EYE + (q.y - FALLS_EYE) * t, x + side * (1.0 - t) * FALLS_SLOT_RUN);
+}
+
+// A slot wall's light: the camera-frame light turned into the wall's own frame (fallsRock's, the face
+// toward -z), dimmed toward the water where the slot sees only a strip of sky and the sun reaches
+// only the upper walls.
+FallsLight fallsSlotLight(FallsLight L, vec4 slot) {
+  vec3 along = vec3(0.0, 0.0, -slot.x);
+  vec3 into = vec3(slot.x, 0.0, 0.0);
+  FallsLight w = L;
+  w.sun = vec3(dot(L.sun, along), L.sun.y, dot(L.sun, into));
+  w.moon = vec3(dot(L.moon, along), L.moon.y, dot(L.moon, into));
+  w.amb *= 0.6 + 0.4 * smoothstep(FALLS_POOL, 0.9, slot.z);
+  w.sunCol *= smoothstep(0.45, 0.8, slot.z);
+  return w;
+}
+
+// What the pool mirrors of a slot wall (slot at the mirrored height): its stone and beds, flat-lit.
+vec3 fallsSlotMirror(vec4 slot, FallsLight L, vec3 haze, float rainWet) {
+  if (slot.z > fallsSlotTop(slot.y, slot.x)) return haze;
+  vec2 wq = vec2(slot.w, slot.z);
+  float dsdy = 0.0;
+  float s = fallsLayer(wq, dsdy);
+  float c = floor(s);
+  bool hard = s - c < fallsSplit(c, wq.x);
+  float wet = smoothfall(FALLS_POOL + 0.035, FALLS_POOL, slot.z);
+  vec3 stone = wetten(fallsStone(c, hard) * (0.72 + 0.45 * vnoise(wq * vec2(28.0, 46.0))) * mix(1.0, 0.5, wet), 0.85 * rainWet * (1.0 - wet), 0.25);
+  return stone * fallsLit(fallsSlotLight(L, slot), vec3(0.0, 0.0, -1.0)) * (hard ? 1.0 : 0.8);
+}
+
 // ---- passage ----
 // The entrance: the camera starts up at the lip and tilts down the fall to the pool (a lens shift of
 // uv, as the countryside does), settling a touch past rest and back; then the ferns on the bank
@@ -672,9 +820,10 @@ float fallsSpring(float x) {
   return 1.0 + u * u * (2.2 * u + 1.2);
 }
 
-// Waterfall knobs: K_flow, K_mist, K_rainbow, K_greenery, K_fireflies, K_time, K_cycle, K_rain,
-// K_fog, K_wind, K_mark; uWeather.x is how wet the rain has left the place.
+// Waterfall knobs: K_flow, K_mist, K_rainbow, K_gorge, K_greenery, K_fireflies, K_time, K_cycle,
+// K_rain, K_fog, K_wind, K_mark; uWeather.x is how wet the rain has left the place.
 Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
+  fallsSetGorge(K_gorge);
   float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
   float arrive = passageIn();
@@ -690,8 +839,7 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   float rainWet = uWeather.x;
   float wind = K_wind;
   float mark = K_mark;
-  // The fall stands a little right of centre on wide screens.
-  float fx = 0.09 * min(aspect, 2.0);
+  float fx = fallsAt(aspect);
   float drop = FALLS_LIP - FALLS_POOL;
   float footX = fallsCentre(drop, fx, flow, wind);
   float footW = fallsHalfWidth(drop, flow);
@@ -768,7 +916,28 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   float spray = 0.0;       // spray thrown off the sheet, for the shimmer
   float markAccent = 0.0;
   float rim = fallsRim(qc.x, fx, mark);
-  if (qc.y > rim) {
+  // The limestone slot's walls stand in front of the back wall at the sides, the woods over their tops.
+  vec4 slot = fallsGeo.kind > 1.5 ? fallsSlot(qc, fallsSlotFit(aspect)) : vec4(0.0);
+  float slotTop = slot.x != 0.0 ? fallsSlotTop(slot.y, slot.x) : 0.0;
+  float slotWoods = slot.x != 0.0 ? 0.006 + 0.7 * fallsCrowns(slot.w, 0.05, 23.0) : 0.0;
+  if (slot.x != 0.0 && slot.z >= FALLS_POOL && slot.z < slotTop + slotWoods) {
+    if (slot.z < slotTop) {
+      // The wall, shaded as the back wall is in its own frame (fallsSlotLight), wet at its foot.
+      vec2 wq = vec2(slot.w, slot.z);
+      float dsdy = 0.0;
+      float s = fallsLayer(wq, dsdy);
+      float wet = smoothfall(FALLS_POOL + 0.035, FALLS_POOL, slot.z);
+      vec3 rayWall = vec3(-slot.x * rayCam.z, rayCam.y, slot.x * rayCam.x);
+      col = fallsRock(wq, s, dsdy, rayWall, fallsSlotLight(L, slot), wet, rainWet, dripAmt, rainLight, green, dark, tm, t, glint);
+    } else {
+      // The woods leaning over the top of the wall, seen from below.
+      float clump = 0.6 * vnoise(vec2(slot.w, slot.z) * vec2(60.0, 70.0)) + 0.4 * vnoise(qc * vec2(150.0, 160.0));
+      vec3 leaf = wetten(mix(vec3(0.03, 0.08, 0.04), vec3(0.12, 0.24, 0.09), clump), rainWet, 0.5);
+      col = leaf * fallsLit(L, normalize(vec3(clump - 0.5, -0.4, -1.0)));
+    }
+    fogDist = mix(0.15, 0.55, slot.y);
+    zm = slot.y * FALLS_CLIFF_Z;
+  } else if (qc.y > rim) {
     // Above the cliff: trees along its top, the woods upstream through the notch, then the sky.
     float notch = 1.0 - smoothstep(0.17, 0.25, abs(qc.x - fx));
     float lean = (0.002 + 0.004 * abs(wind)) * sin(tm * 0.5 + qc.x * 3.0);
@@ -828,6 +997,7 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
     FallsLight Lr = L;
     Lr.sunCol *= 1.0 - shade * (0.5 + 0.4 * flow);
     Lr.amb *= 1.0 - 0.35 * smoothfall(0.0, -0.02, beside) * step(0.0, d);
+    Lr = fallsSlotShade(Lr, qc.y);
     col = fallsRock(qc, s, dsdy, rayCam, Lr, wet, rainWet, dripAmt, rainLight, green, dark, tm, t, glint);
     if (green > 0.0) {
       // The fall's draught stirs the ferns beside it.
@@ -892,7 +1062,10 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
     // The mirror image: a vertical cliff at the pool's far edge reflects about the waterline
     // exactly; the tilted surface smears it, mostly up and down.
     vec2 mq = vec2(qc.x + slope.x * 0.012, 2.0 * FALLS_POOL - qc.y + slope.y * 0.03);
-    mirror = fallsMirror(mq, L, skyLight, glow, fx, flow, green, mark, wind, rainWet, dark, tm);
+    // In front of a slot wall the water mirrors the wall, about the waterline at the wall's depth.
+    mirror = slot.x != 0.0
+      ? fallsSlotMirror(vec4(slot.xy, 2.0 * FALLS_POOL - slot.z + slope.y * 0.03 * slot.y, slot.w + slope.x * 0.012 * slot.y), L, haze, rainWet)
+      : fallsMirror(mq, L, skyLight, glow, fx, flow, green, mark, wind, rainWet, dark, tm);
     // Schlick's Fresnel: a mirror at grazing angles far off, dark water underfoot.
     float fresnel = fresnelSchlick(-rayCam.y + slope.y * 0.03, 0.02, 0.02);
     float aerated = exp(-r * 0.35) * (0.35 + 0.65 * flow);
@@ -935,6 +1108,8 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   if (qc.y > FALLS_POOL && qc.y < FALLS_LIP + 0.012) {
     float sheen = 0.0;
     vec4 sheet = fallsCurtain(qc, fx, flow, mark, wind, tm, sheen);
+    // A slot wall stands in front of the back wall: it hides whatever falls or boils behind it.
+    if (slot.x != 0.0) sheet.x = 0.0;
     if (sheet.x > 0.0) {
       vec3 water = fallsWater(sheet, sheen, L, skyLight, glow);
       // Where it curves over the lip the water mirrors the sky in one bright line.
@@ -948,7 +1123,7 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   }
 
   // The plunge.
-  vec2 churn = fallsChurn(qc, footX, footW, flow, tm);
+  vec2 churn = slot.x != 0.0 ? vec2(0.0) : fallsChurn(qc, footX, footW, flow, tm);
   if (churn.x > 0.0) {
     col = mix(col, fallsFoam(L, glow, churn.y), churn.x);
     white = max(white, churn.x);
