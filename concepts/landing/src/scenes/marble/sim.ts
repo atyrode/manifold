@@ -34,26 +34,44 @@ import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 export const marblePatterns = ["stone", "gel-git", "nonpareil", "bouquet", "chevron"] as const;
 export type MarblePattern = (typeof marblePatterns)[number];
 
+/**
+ * How the ink is laid and moved. Ebru: a ground colour spread over the size, then colours flicked
+ * from a brush into packed stones, which the pattern's stylus and combs then work. Suminagashi: two
+ * brushes touched to the water in turn, one with ink and one with clear water, so every drop pushes
+ * the last out into a ring; left uncombed (the stone pattern), breath and a fan turn the rings.
+ */
+export const marblePractices = ["ebru", "suminagashi"] as const;
+export type MarblePractice = (typeof marblePractices)[number];
+/** The `practice` knob, in order: the inks' own practice, then each practice by name. */
+export const marblePracticeChoices = ["by inks", ...marblePractices] as const;
+
 export interface MarblePalette {
   label: string;
   /** CSS colours the routines draw from. */
   inks: readonly string[];
   /** The ink painted in the lab's accent colour by the two-tone palette. */
   accent: string;
-  /** Suminagashi: drops land in concentric rings, ink alternating with clear water. */
-  rings: boolean;
+  /** The practice these inks belong to: what the `practice` knob's "by inks" follows. */
+  practice: MarblePractice;
+  /** Dark inks: floated on clear water over a pale tray (and the page goes light), not on dark size. */
+  basin: boolean;
 }
 
 // Ebru's pigments, kept clear and saturated so the dither keeps them rich: deep indigo, ochre gold,
 // madder rust, cream and lamp black.
-const EBRU: MarblePalette = { label: "ebru", inks: ["#1f3a96", "#dca12c", "#b5401f", "#f2e4c2", "#151419"], accent: "#1f3a96", rings: false };
+const EBRU: MarblePalette = { label: "ebru", inks: ["#1f3a96", "#dca12c", "#b5401f", "#f2e4c2", "#151419"], accent: "#1f3a96", practice: "ebru", basin: false };
 // Sumi and indigo, each pushed out into a ring by a drop of clear water.
-const SUMINAGASHI: MarblePalette = { label: "suminagashi", inks: ["#1d1c21", "#2c3a6e"], accent: "#2c3a6e", rings: true };
+const SUMINAGASHI: MarblePalette = { label: "suminagashi", inks: ["#1d1c21", "#2c3a6e"], accent: "#2c3a6e", practice: "suminagashi", basin: true };
 // Risograph spot inks: fluorescent pink, teal, sunflower, medium blue, midnight.
-const RISO: MarblePalette = { label: "riso", inks: ["#ff5c98", "#00a29a", "#ffd03d", "#3e52d0", "#1e1b3b"], accent: "#3e52d0", rings: false };
+const RISO: MarblePalette = { label: "riso", inks: ["#ff5c98", "#00a29a", "#ffd03d", "#3e52d0", "#1e1b3b"], accent: "#3e52d0", practice: "ebru", basin: false };
 
 /** In `palette` knob order. */
 export const marblePalettes: readonly MarblePalette[] = [EBRU, SUMINAGASHI, RISO];
+
+/** The practice the `practice` knob's value picks for these inks: 0 follows them, 1.. names one. */
+export function marblePractice(choice: number, palette: MarblePalette): MarblePractice {
+  return marblePractices[Math.round(choice) - 1] ?? palette.practice;
+}
 
 const TAU = Math.PI * 2;
 
@@ -434,9 +452,11 @@ function shuffled<T>(items: readonly T[], rand: () => number): T[] {
   return out;
 }
 
-interface RoutineSpec {
+export interface RoutineSpec {
   pattern: MarblePattern;
   palette: MarblePalette;
+  /** How the ink is laid, and moved when the pattern combs nothing (see marblePractices). */
+  practice: MarblePractice;
   /** Drop sizes and comb spacings scale with this, 0.6..1.4. */
   scale: number;
   aspect: number;
@@ -445,7 +465,7 @@ interface RoutineSpec {
   rand: () => number;
 }
 
-interface Routine {
+export interface Routine {
   ops: Op[];
   /** Routine time at which the sprinkling is done. */
   sprinkled: number;
@@ -617,15 +637,19 @@ function markStrokes(height: number, start: number): StrokeOp[] {
   return out;
 }
 
-/** One sheet's choreography: sprinkle, then the pattern's strokes, then (optionally) the M. */
-function buildRoutine(spec: RoutineSpec): Routine {
+/**
+ * One sheet's choreography: the practice's sprinkling, then the pattern's strokes (or, for an
+ * uncombed suminagashi sheet, breath and the fan), then (optionally) the M.
+ */
+export function buildRoutine(spec: RoutineSpec): Routine {
   const ops: Op[] = [];
-  const sprinkled = spec.palette.rings ? sprinkleRings(ops, spec) : sprinkleStones(ops, spec);
+  const rings = spec.practice === "suminagashi";
+  const sprinkled = rings ? sprinkleRings(ops, spec) : sprinkleStones(ops, spec);
   let t = sprinkled + STAGE_GAP;
   const pattern = spec.pattern;
   switch (pattern) {
     case "stone":
-      if (spec.palette.rings) t = fan(ops, spec, t);
+      if (rings) t = fan(ops, spec, t);
       break;
     case "gel-git":
       t = gelGit(ops, spec, t);
@@ -649,7 +673,7 @@ function buildRoutine(spec: RoutineSpec): Routine {
     }
   }
   if (spec.mark > 0) ops.push(...markStrokes(spec.mark, t + STAGE_GAP));
-  return { ops, sprinkled, lead: spec.palette.rings ? 0 : GROUND_SECONDS };
+  return { ops, sprinkled, lead: rings ? 0 : GROUND_SECONDS };
 }
 
 /** Ops on one clock, handed their progress in start order. */
@@ -708,11 +732,12 @@ class Timeline {
 
 // ---- the simulation ----------------------------------------------------------------------------
 
-type MarbleKnob = "pattern" | "palette" | "tempo" | "scale" | "renew" | "sheetSeed" | "stylus";
+type MarbleKnob = "pattern" | "palette" | "practice" | "tempo" | "scale" | "renew" | "sheetSeed" | "stylus";
 
 interface Settings {
   pattern: MarblePattern;
   palette: MarblePalette;
+  practice: MarblePractice;
   tempo: number;
   /** Drop sizes and comb spacings, 0.6..1.4. */
   scale: number;
@@ -800,14 +825,15 @@ class MarbleSim implements SceneSim {
   #sheet = 0;
   #signature: string | undefined;
   /** What the previous frame's settings were, so the unchanged frame builds no signature string. */
-  readonly #seen: { pattern: MarblePattern | undefined; palette: MarblePalette | undefined; scale: number; seed: number } = {
+  readonly #seen: { pattern: MarblePattern | undefined; palette: MarblePalette | undefined; practice: MarblePractice | undefined; scale: number; seed: number } = {
     pattern: undefined,
     palette: undefined,
+    practice: undefined,
     scale: Number.NaN,
     seed: Number.NaN,
   };
   /** The frame's settings, rewritten in place each frame. */
-  readonly #settings: Settings = { pattern: "bouquet", palette: EBRU, tempo: 1, scale: 1, seed: 0, rest: undefined, mark: 0, markNow: 0 };
+  readonly #settings: Settings = { pattern: "bouquet", palette: EBRU, practice: "ebru", tempo: 1, scale: 1, seed: 0, rest: undefined, mark: 0, markNow: 0 };
   readonly #renewSlot: number;
   readonly #stylusSlot: number;
   /** Whether the fast-forward step in progress moved the ink. */
@@ -889,6 +915,7 @@ class MarbleSim implements SceneSim {
     const stylus = knobs.value(frame, "stylus");
     settings.pattern = knobs.pick(frame, "pattern", marblePatterns, "bouquet");
     settings.palette = knobs.pick(frame, "palette", marblePalettes, EBRU);
+    settings.practice = marblePractice(knobs.value(frame, "practice"), settings.palette);
     settings.tempo = Math.max(0.05, knobs.value(frame, "tempo"));
     settings.scale = 0.6 + 0.8 * knobs.value(frame, "scale");
     settings.seed = Math.round(knobs.value(frame, "sheetSeed"));
@@ -913,16 +940,17 @@ class MarbleSim implements SceneSim {
     this.#force = true;
   }
 
-  /** A new pattern, palette, scale or seed lifts the sheet at once and starts the new one. */
+  /** A new pattern, palette, practice, scale or seed lifts the sheet at once and starts the new one. */
   #follow(settings: Settings): void {
     const seen = this.#seen;
-    if (seen.pattern === settings.pattern && seen.palette === settings.palette && seen.scale === settings.scale && seen.seed === settings.seed) return;
+    if (seen.pattern === settings.pattern && seen.palette === settings.palette && seen.practice === settings.practice && seen.scale === settings.scale && seen.seed === settings.seed) return;
     seen.pattern = settings.pattern;
     seen.palette = settings.palette;
+    seen.practice = settings.practice;
     seen.scale = settings.scale;
     seen.seed = settings.seed;
     // The scale counts to three places: a change finer than that does not start a new sheet.
-    const signature = `${settings.pattern}|${settings.palette.label}|${settings.scale.toFixed(3)}|${settings.seed}`;
+    const signature = `${settings.pattern}|${settings.palette.label}|${settings.practice}|${settings.scale.toFixed(3)}|${settings.seed}`;
     if (signature === this.#signature) return;
     const first = this.#signature === undefined;
     this.#signature = signature;
@@ -992,7 +1020,7 @@ class MarbleSim implements SceneSim {
   #dropAt(at: { x: number; y: number }, settings: Settings): void {
     const inks = settings.palette.inks;
     // Suminagashi alternates each ink with clear water, so repeated clicks raise rings.
-    const sequence: readonly (string | null)[] = settings.palette.rings ? inks.flatMap((ink) => [ink, null]) : inks;
+    const sequence: readonly (string | null)[] = settings.practice === "suminagashi" ? inks.flatMap((ink) => [ink, null]) : inks;
     const color = sequence[this.#nextInk % sequence.length] ?? null;
     this.#nextInk++;
     const radius = CLICK_RADIUS * settings.scale * (0.85 + 0.3 * this.#jitter());
@@ -1117,6 +1145,7 @@ class MarbleSim implements SceneSim {
     const routine = buildRoutine({
       pattern: settings.pattern,
       palette: settings.palette,
+      practice: settings.practice,
       scale: settings.scale,
       aspect: this.#aspect,
       mark: settings.mark,
@@ -1376,6 +1405,6 @@ class MarbleSim implements SceneSim {
 
 /** The marbling tray, for a scene whose `params` carry the knobs `MarbleKnob` names. */
 export function marbleSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<MarbleKnob>("marble", params, ["pattern", "palette", "tempo", "scale", "renew", "sheetSeed", "stylus"]);
+  const knobs = new KnobReader<MarbleKnob>("marble", params, ["pattern", "palette", "practice", "tempo", "scale", "renew", "sheetSeed", "stylus"]);
   return (gl) => new MarbleSim(gl, knobs);
 }

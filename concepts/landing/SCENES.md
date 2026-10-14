@@ -218,6 +218,44 @@ Ink dropped on water, combed and swirled, as in ebru / suminagashi.
   drops and tine strokes are closed-form deformations of the ink boundaries, so patterns stay crisp.
 - Interaction: click to drop ink, drag to comb; presets for traditional patterns (nonpareil,
   chevron, bouquet).
+- Practice, inks and pattern are independent. `practice` picks how the ink is laid: ebru (a
+  ground colour over the tray, then brush-flicked stones) or suminagashi (an ink brush and a water
+  brush touched in turn, raising rings; an uncombed sheet is turned only by breath and a fan).
+  "By inks" (the default) keeps each palette's own practice, so existing setups are unchanged;
+  clicks follow the practice. The ground follows the inks, not the practice: suminagashi's sumi
+  and indigo float on clear water over a pale tray, the other palettes on dark size.
+
+## Petri dish
+
+Gray–Scott Turing patterns or Belousov–Zhabotinsky spirals in a glass dish (`petri`).
+
+- Regimes: `regime` holds the Turing dish at one of Pearson's classes, from the shared catalogue
+  in `src/sims/grayscott.ts` (fingerprints, coral, worms, mitosis, spots, mazes, holes); "wander"
+  (the default) drifts through them as before. A new regime starts a fresh dish: its labyrinth
+  seed settles at the loop's start and is eased over to the regime in four chemistry seconds,
+  because most classes starve a fresh seed at once, and a settled dish of one class often dies
+  outright when switched to another (holes to anything sparser, mazes to coral).
+- Advanced: `own feed & kill` (off by default) sets the two rates by hand, in thousandths (feed
+  10–90, kill 45–70, starting at fingerprints' 37 and 60). Switching it on starts a fresh dish; the
+  sliders then move the living one. Most of the map grows nothing or a solid wash.
+
+## Slime mould
+
+Jeff Jones's agent model of Physarum linking oat flakes on agar (`physarum`).
+
+- Habits: sensor reach, sensor angle and evaporation act together, and three coupled settings
+  read as distinct networks (proposed as lab presets rather than a knob, so the three sliders stay
+  the only controls):
+  - lace: reach 4, angle 60°, evaporation 15%. A fine, curly lace over the whole dish; the flakes
+    pool gold with thin links between some of them.
+  - woven: reach 9, angle 12°, evaporation 10%. Straight threads knit an even, open polygon mesh;
+    pooled flakes, thin links.
+  - routes: reach 18, angle 22°, evaporation 75%. A few bold trunks meeting in star-shaped
+    junctions at the flakes, and almost no lace; with the Tokyo food and the rail palette, a
+    transit map.
+  The default (reach 9, angle 35°, evaporation 40%) sits between: trunks over a faint lace. At
+  short and middle reach, low evaporation lets the lace win and trunks barely form; a wide angle
+  curls the filaments and a narrow one straightens them.
 
 ## Dunes
 

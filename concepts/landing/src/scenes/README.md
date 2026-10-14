@@ -488,6 +488,10 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   renderer expects (framebuffer unbound, blending off, the renderer's vertex array bound).
 - `FluidSim` (`fluid.ts`): 2D stable fluids on `GpuCompute` with MacCormack dye, vorticity, walls,
   a GLSL force snippet, an obstacle SDF, splats and `advect` for extra fields (incense, film, pearl).
+- `grayScottRegimes`, `grayScottAlong` and `grayScottGlsl` (`grayscott.ts`): Gray–Scott
+  reaction–diffusion's curated Pearson classes (feed, kill, what grows), an eased loop through them,
+  and the reaction step for a `GpuCompute` pass (petri). Seed a dish at the first regime's levels
+  and ease it over: most classes starve a fresh seed.
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick`.
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`).
