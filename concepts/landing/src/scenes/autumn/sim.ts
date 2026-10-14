@@ -17,6 +17,11 @@
 // path and sets them flying again. The Manifold M is leaves swept together into a road-marking M along
 // the path (the cells under its strokes fill with gold leaves, the cells round them are cleared).
 //
+// The scene's passage (layout.ts AUTUMN_PASSAGE) is played here too: as it comes in a gust blows a flurry of
+// leaves in from beyond the windward edge of the frame, and as it leaves a stronger gust and a vortex lift
+// leaves off the carpet and whirl them up across the frame, with a shower from the canopy. At rest none of
+// it runs.
+//
 // Uploads (all rgba16f, nearest):
 //   uSim0  4 x AUTUMN_SLOTS  one row per leaf, four texels:
 //          (x, y, radius, alpha)  screen position from the horizon's centre and radius, in screen heights;
@@ -35,7 +40,7 @@ import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { AUTUMN_CARPET, AUTUMN_MARK, AUTUMN_PATH, AUTUMN_SLOTS, AUTUMN_TREE, AUTUMN_VIEW, autumnPathX } from "./layout.ts";
+import { AUTUMN_CARPET, AUTUMN_MARK, AUTUMN_PASSAGE, AUTUMN_PATH, AUTUMN_SLOTS, AUTUMN_TREE, AUTUMN_VIEW, AUTUMN_WHIRL, autumnFlurry, autumnPathX } from "./layout.ts";
 
 type Knob = "species" | "fall" | "gusts" | "season" | "wind" | "mark" | "parkSeed";
 const KNOBS: readonly Knob[] = ["species", "fall", "gusts", "season", "wind", "mark", "parkSeed"];
@@ -103,6 +108,32 @@ const SWIRL_REACH = 2.4;
 const SWIRL_PICKUP = 1.5;
 /** Most leaves a swirl lifts at once (of the slots). */
 const SWIRL_LEAVES = 14;
+
+// ---- the passage ----
+
+/** The entrance's flurry: leaves blown in from beyond the windward edge, and the gust's drift (m/s) at full strength. */
+const FLURRY_LEAVES = 16;
+const FLURRY_DRIFT = 5;
+/**
+ * The exit's whirl: its drift (m/s), a vortex's core radius, peak turn, lift and reach (as the swirl's), an
+ * updraft over the whole park, where the vortex starts (metres upwind of the path) and its depth, how fast it
+ * crosses (m/s), the radius it lifts leaves from, the attempts per second, most leaves lifted at once.
+ */
+const WHIRL_DRIFT = 4.5;
+const WHIRL_CORE = 2;
+const WHIRL_TURN = 4.5;
+const WHIRL_LIFT = 3.4;
+const WHIRL_REACH = 3.2;
+const WHIRL_UPDRAFT = 1.2;
+const WHIRL_FROM = 6.5;
+const WHIRL_Z = 8.5;
+const WHIRL_SPEED = 6.5;
+const WHIRL_PICKUP = 3.2;
+const WHIRL_RATE = 80;
+const WHIRL_LEAVES = 22;
+/** The canopy lets go of this many leaves over the first moments of the exit. */
+const EXIT_SHOWER = 8;
+const EXIT_SHOWER_SECONDS = 0.7;
 
 // ---- leaves -------------------------------------------------------------------------------------
 
@@ -226,6 +257,17 @@ class AutumnSim implements SceneSim {
   #nextGust = 25;
   #wind = 0;
 
+  // The passage: whether its first frame has passed, the gust's strength and the way it blows, the whirl's core.
+  #entered = false;
+  #blow = 0;
+  #blowSign = 1;
+  #whirl = 0;
+  #whirlX = 0;
+  #whirlPickup = 0;
+  #exiting = false;
+  #exitShower = 0;
+  #exitSeconds = 0;
+
   // The carpet: two layers of CELLS, index = layer * CELLS + cell.
   readonly #ox = new Float32Array(2 * CELLS);
   readonly #oz = new Float32Array(2 * CELLS);
@@ -287,10 +329,14 @@ class AutumnSim implements SceneSim {
     this.#species = clamp(species, 0, SPECIES.length - 1);
 
     const real = clamp(frame.dt, 0, 0.1);
+    const enter = clamp(frame.passage.enter, 0, 1);
+    const exit = clamp(frame.passage.exit, 0, 1);
+    this.#passage(frame.aspect, enter, exit);
     if (frame.fired[this.#gustSlot]) this.#startGust(true, knobs.amount(frame, "gusts"));
     if (frame.fired[this.#markSlot]) this.#markHold = MARK_HOLD;
     const busy = this.#gustAge < GUST_BUSY;
-    const dt = real * Math.max(frame.motion, busy ? 1 : 0);
+    // A passage plays in real time whatever the motion, like a gust.
+    const dt = real * Math.max(frame.motion, busy || enter < 1 || exit > 0 ? 1 : 0);
     this.#clock += dt;
 
     // Gusts come now and then on their own while the feature is on: the busier, the oftener.
@@ -414,6 +460,53 @@ class AutumnSim implements SceneSim {
     this.#hurry = HURRY_SECONDS;
   }
 
+  // ---- the passage ---------------------------------------------------------------------------------
+
+  /**
+   * The scene's entrance and exit, from the simulation's side: a flurry of leaves blown through from beyond
+   * the windward edge as the scene comes in, a whirl lifting the leaves off the ground as it goes out. Both
+   * are zero at rest, and nothing here draws on the random stream then.
+   */
+  #passage(aspect: number, enter: number, exit: number): void {
+    this.#blowSign = this.#wind < -0.05 ? -1 : 1;
+    if (!this.#entered) {
+      this.#entered = true;
+      if (enter < 1) this.#startFlurry(aspect > 0 ? aspect : 16 / 9);
+    }
+    this.#blow = enter < 1 ? autumnFlurry(enter * AUTUMN_PASSAGE.enter) : 0;
+    this.#whirl = exit > 0 ? smoothstep(0, AUTUMN_WHIRL.rise, exit) : 0;
+    if (exit > 0) {
+      this.#exitSeconds = exit * AUTUMN_PASSAGE.exit;
+      this.#whirlX = autumnPathX(WHIRL_Z) + this.#blowSign * (WHIRL_SPEED * this.#exitSeconds - WHIRL_FROM);
+      if (!this.#exiting) {
+        this.#exiting = true;
+        this.#exitShower = EXIT_SHOWER;
+      }
+    }
+  }
+
+  /** Leaves already streaming in: spread beyond the windward edge of the frame, at depths through the canopy, each arriving as the gust reaches it. */
+  #startFlurry(aspect: number): void {
+    const kind = SPECIES[this.#species] ?? SPECIES[0];
+    if (kind === undefined) return;
+    const { horizon, eye, focal } = AUTUMN_VIEW;
+    const half = 0.5 * Math.max(aspect, 1.45);
+    const rand = this.#rand;
+    for (let n = 0; n < FLURRY_LEAVES; n++) {
+      const i = this.#freeSlot();
+      if (i < 0) return;
+      const z = 3.6 + 6.4 * Math.pow(rand(), 1.2);
+      const sx = -this.#blowSign * (half + 0.2 + 1.4 * rand());
+      const sy = 0.42 + 0.7 * rand();
+      this.#x[i] = (sx * z) / focal;
+      this.#y[i] = eye + ((sy - horizon) * z) / focal;
+      this.#z[i] = z;
+      this.#begin(i, kind, false);
+      // Off the frame already: no dissolve in.
+      this.#alpha[i] = 1;
+    }
+  }
+
   // ---- gusts -----------------------------------------------------------------------------------
 
   /** A gust begins: a push along the wind, a shower from the tree and (often) a swirl up the path. */
@@ -455,6 +548,28 @@ class AutumnSim implements SceneSim {
         vy += SWIRL_LIFT * strength * Math.exp(-(r * r) / (SWIRL_REACH * SWIRL_REACH)) * (1 - smoothstep(1.2, 3.2, y));
       }
     }
+    if (this.#blow > 0) {
+      // The entrance's gust: a strong push along the wind, buffeting a little.
+      vx += this.#blowSign * FLURRY_DRIFT * this.#blow * (0.8 + 0.2 * Math.sin(1.7 * phase + 2 * this.#clock));
+      vy += 0.5 * this.#blow * Math.sin(1.3 * this.#clock + 2.1 * phase);
+      vz += 0.4 * this.#blow * Math.sin(0.9 * this.#clock + 3.1 * phase);
+    }
+    if (this.#whirl > 0) {
+      // The exit's gust: a harder push, an updraft over the park, and a vortex crossing the path that
+      // turns the leaves round its core and throws them up.
+      vx += this.#blowSign * WHIRL_DRIFT * this.#whirl * (0.75 + 0.25 * Math.sin(1.7 * phase + 2 * this.#clock));
+      vy += WHIRL_UPDRAFT * this.#whirl * (1 - smoothstep(3, 7, y));
+      const dx = x - this.#whirlX;
+      const dz = z - WHIRL_Z;
+      const r = Math.hypot(dx, dz) + 1e-6;
+      if (r < 4 * WHIRL_CORE) {
+        const q = r / WHIRL_CORE;
+        const turn = ((WHIRL_TURN * 2 * q) / (1 + q * q)) * this.#whirl;
+        vx += (-dz / r) * turn - (dx / r) * 0.25 * turn;
+        vz += (dx / r) * turn - (dz / r) * 0.25 * turn;
+        vy += WHIRL_LIFT * this.#whirl * Math.exp(-(r * r) / (WHIRL_REACH * WHIRL_REACH)) * (1 - smoothstep(2.5, 6.5, y));
+      }
+    }
     this.#air[0] = vx;
     this.#air[1] = vy;
     this.#air[2] = vz;
@@ -488,6 +603,11 @@ class AutumnSim implements SceneSim {
       while (this.#shower > due && this.#spawn(false) >= 0) this.#shower--;
     }
     if (this.#swirlOn) this.#pickUp(dt);
+    if (this.#exitShower > 0 && inUse < AMBIENT_SLOTS) {
+      const due = Math.ceil(EXIT_SHOWER * (1 - Math.min(1, this.#exitSeconds / EXIT_SHOWER_SECONDS)));
+      while (this.#exitShower > due && this.#spawn(false) >= 0) this.#exitShower--;
+    }
+    if (this.#whirl > 0) this.#whirlUp(dt);
 
     for (let i = 0; i < SLOTS; i++) {
       const state = this.#state[i];
@@ -723,25 +843,49 @@ class AutumnSim implements SceneSim {
       const z = this.#swirlZ + r * Math.sin(a);
       const found = this.#takeLeaf(x, z);
       if (found === undefined) continue;
-      const slot = this.#freeSlot();
-      if (slot < 0) return;
-      const kind = SPECIES[this.#species] ?? SPECIES[0];
-      if (kind === undefined) return;
-      this.#x[slot] = found.x;
-      this.#y[slot] = LEAF_LIFT + 0.02;
-      this.#z[slot] = found.z;
-      this.#begin(slot, kind, true);
-      this.#hue[slot] = found.hue;
-      this.#radius[slot] = kind.radius * (0.9 + 0.2 * (found.hue * 7.3 - Math.floor(found.hue * 7.3)));
-      // Lying flat in the pose the carpet had: the chord axis along the leaf's heading, face as it lay.
-      const down = found.face < 0;
-      this.#th[slot] = down ? Math.PI : 0;
-      this.#psi[slot] = rand() * TAU;
-      this.#sigma[slot] = down ? at(this.#psi, slot) + Math.PI - found.angle : found.angle - at(this.#psi, slot);
-      this.#roll[slot] = 0;
-      this.#rollRate[slot] = 1.4 + 1.4 * rand();
+      if (!this.#launch(found)) return;
       lifted++;
     }
+  }
+
+  /** The exit's whirl lifts leaves off the carpet round its core, as the swirl does but harder and wider. */
+  #whirlUp(dt: number): void {
+    this.#whirlPickup += dt * WHIRL_RATE;
+    let lifted = 0;
+    for (let i = 0; i < SLOTS; i++) if (this.#lifted[i] === 1 && this.#state[i] !== FREE) lifted++;
+    const rand = this.#rand;
+    while (this.#whirlPickup >= 1) {
+      this.#whirlPickup -= 1;
+      if (lifted >= WHIRL_LEAVES || this.#whirl <= 0.15) continue;
+      const r = WHIRL_PICKUP * Math.sqrt(rand());
+      const a = rand() * TAU;
+      const found = this.#takeLeaf(this.#whirlX + r * Math.cos(a), WHIRL_Z + r * Math.sin(a));
+      if (found === undefined) continue;
+      if (!this.#launch(found)) return;
+      lifted++;
+    }
+  }
+
+  /** Stand a leaf taken off the carpet up as a plate in a free slot, in the pose it lay in: the chord axis along its heading, the face as it lay. False when no slot is free. */
+  #launch(found: { x: number; z: number; angle: number; hue: number; face: number }): boolean {
+    const rand = this.#rand;
+    const slot = this.#freeSlot();
+    if (slot < 0) return false;
+    const kind = SPECIES[this.#species] ?? SPECIES[0];
+    if (kind === undefined) return false;
+    this.#x[slot] = found.x;
+    this.#y[slot] = LEAF_LIFT + 0.02;
+    this.#z[slot] = found.z;
+    this.#begin(slot, kind, true);
+    this.#hue[slot] = found.hue;
+    this.#radius[slot] = kind.radius * (0.9 + 0.2 * (found.hue * 7.3 - Math.floor(found.hue * 7.3)));
+    const down = found.face < 0;
+    this.#th[slot] = down ? Math.PI : 0;
+    this.#psi[slot] = rand() * TAU;
+    this.#sigma[slot] = down ? at(this.#psi, slot) + Math.PI - found.angle : found.angle - at(this.#psi, slot);
+    this.#roll[slot] = 0;
+    this.#rollRate[slot] = 1.4 + 1.4 * rand();
+    return true;
   }
 
   /** Take the layer-A leaf of the carpet cell under (x, z) off the ground, if it holds one: where it lay, which way, its colour. */

@@ -8,6 +8,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
+import { AUTUMN_PASSAGE } from "./layout.ts";
 import { autumnGlsl } from "./shader.ts";
 import { autumnSim } from "./sim.ts";
 
@@ -42,4 +43,8 @@ export const autumnScene: SceneDef = {
   entry: "sceneAutumn",
   sim: autumnSim(params),
   theme: skyTheme(params, { rainBelow: 0.4 }),
+  // Entrance: the camera lowers from the canopy onto the path as a gust blows a flurry of leaves through
+  // the swaying boughs. Exit: a stronger gust whirls the leaves up across the frame as the camera tilts
+  // up into the canopy.
+  passage: AUTUMN_PASSAGE,
 };

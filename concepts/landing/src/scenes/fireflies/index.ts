@@ -5,7 +5,7 @@
 import { counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { firefliesGlsl } from "./shader.ts";
-import { firefliesSim } from "./sim.ts";
+import { FIREFLIES_PASSAGE, firefliesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("swarm", "coupling", "coupling", 0.5, "How strongly each firefly answers the flashes it sees. Low: everyone keeps their own time and the bank twinkles. High: the beat spreads within seconds and the whole forest pulses as one."),
@@ -38,4 +38,8 @@ export const firefliesScene: SceneDef = {
   glsl: firefliesGlsl,
   entry: "sceneFireflies",
   sim: firefliesSim(params),
+  // Entrance: the bank is dark, a few fireflies blink out of step in the first trees, more join tree
+  // by tree, the clusters begin to fall into step, and the camera drifts along the river into place.
+  // Exit: the beat is lost, the crowns go dark tree by tree, the camera drifts on.
+  passage: FIREFLIES_PASSAGE,
 };

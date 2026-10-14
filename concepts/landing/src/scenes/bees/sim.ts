@@ -33,6 +33,12 @@
 // A thing is drawn in the cell its projection falls in, and only changes cell once it has clearly left
 // it (hysteresis), so a hovering bee never flickers between two.
 //
+// Passage (BEES_PASSAGE). An entrance skips the pre-run: the colony starts asleep and nearly every bee
+// comes out of its hive within the first two seconds and flies at once for its flowers (a little hurried,
+// easing to the usual pace), while the butterflies fly in over the edges of the screen. An exit sends the
+// foragers home at speed, files the crowd at the entrances in, keeps everyone inside and has the
+// butterflies bolt for the nearest edge. At rest none of it applies and the random draws are unchanged.
+//
 // Texture:
 //   uSim0  rg8, one texel per dither cell (rows bottom to top, the shader's `cell`): R a BEES_CODE value
 //          (0 nothing), G the depth of what is drawn there in BEES_DEPTH_STEP-ths of a metre.
@@ -53,6 +59,9 @@ export const BEES_MAX_BEES = 64;
 export const BEES_MAX_BUTTERFLIES = 6;
 /** Bytes of depth per metre in the map's second channel. */
 export const BEES_DEPTH_STEP = 4;
+
+/** Seconds the scene's entrance and its exit take (SceneDef.passage; the shader reads the same). */
+export const BEES_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
 
 /** Screen heights per metre of the garden at row y. */
 export function beesScale(y: number): number {
@@ -203,6 +212,8 @@ interface Bee {
   fly: boolean;
   /** On its way out it first flies a pass close to the lens. */
   via: boolean;
+  /** Its first time out of the hive (an entrance): straight for the flowers. */
+  pour: boolean;
   /** Where it is drawn: cell, hysteretic (NaN: not yet placed). */
   cx: number;
   cy: number;
@@ -244,7 +255,7 @@ interface Butterfly {
 function newBee(hive: number): Bee {
   return {
     hive, mode: "inside", hold: 0, t: 0, age: 0, x: 0, z: 10, h: 0, vx: 0, vz: 0, vh: 0, tx: 0, tz: 10, th: 0, patch: 0,
-    visits: 0, load: 0, phase: 0, pace: 1, newbie: false, resting: false, fly: false, via: false, cx: Number.NaN, cy: Number.NaN,
+    visits: 0, load: 0, phase: 0, pace: 1, newbie: false, resting: false, fly: false, via: false, pour: false, cx: Number.NaN, cy: Number.NaN,
   };
 }
 
@@ -291,6 +302,15 @@ class BeesSim implements SceneSim {
   #butterflyCount = 0;
   #warm = false;
   #dirty = true;
+  #born = false;
+  /** The sim's first frame fell inside an entrance: the colony opens asleep and pours out of the hives, the butterflies come in from the edges. */
+  #arriving = false;
+  /** The scene is leaving: the foragers fly home, the butterflies bolt for the edge of the frame and nobody comes out. */
+  #leaving = false;
+  #aspect = 1;
+  /** Speed multipliers (bees on their way out and home, butterflies): 1 at rest, more while the scene arrives or leaves. */
+  #rush = 1;
+  #flit = 1;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader<BeesKnob>("bees", params, ["bees", "butterflies"]);
@@ -314,12 +334,17 @@ class BeesSim implements SceneSim {
       for (const butterfly of this.#butterflies) butterfly.cx = Number.NaN;
       this.#dirty = true;
     }
-    this.#setStage(beesStage(frame.aspect > 0 ? frame.aspect : width / height));
+    const aspect = frame.aspect > 0 ? frame.aspect : width / height;
+    this.#aspect = aspect;
+    this.#setStage(beesStage(aspect));
+    this.#passage(frame);
     this.#wake();
     if (!this.#warm) {
-      for (let i = 0; i < WARM_STEPS; i++) this.#step(STEP);
+      // An entrance skips the pre-run: the colony is to be seen coming out of its hives.
+      if (!this.#arriving) for (let i = 0; i < WARM_STEPS; i++) this.#step(STEP);
       this.#warm = true;
     }
+    this.#arriving = false;
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
     const steps = this.#clock.advance(advance);
     for (let i = 0; i < steps; i++) this.#step(STEP);
@@ -359,7 +384,9 @@ class BeesSim implements SceneSim {
         g.active = true;
         const side = rand.next() < 0.5 ? -1 : 1;
         g.z = rand.range(4.5, 10);
-        g.x = side * (this.#stage + 0.03) * g.z;
+        // Arriving, they come in over the very edge of the screen, not of the stage.
+        const edge = this.#arriving ? 0.5 * this.#aspect + 0.04 : this.#stage + 0.03;
+        g.x = side * edge * g.z;
         g.h = rand.range(0.6, 1.5);
         g.vx = -side * 0.3;
         g.vz = 0;
@@ -392,6 +419,10 @@ class BeesSim implements SceneSim {
       bee.pace = rand.range(0.9, 1.12);
       bee.phase = rand.next() * TAU;
       bee.patch = this.#pickPatch(false);
+    }
+    if (this.#arriving) {
+      this.#pourOut();
+      return;
     }
     for (const g of this.#butterflies) {
       if (!g.active) continue;
@@ -462,6 +493,71 @@ class BeesSim implements SceneSim {
     const r = Math.sqrt(rand.next()) * 0.85;
     const a = rand.next() * TAU;
     this.#patchPoint(index, r * Math.cos(a), r * Math.sin(a));
+  }
+
+  // ---- the passage -------------------------------------------------------------------------------
+
+  /** Where the scene stands in its entrance and exit: how hurried the traffic is, and the moment the exit begins. */
+  #passage(frame: SimFrame): void {
+    const enter = clamp(frame.passage.enter, 0, 1);
+    const leave = clamp(frame.passage.exit, 0, 1);
+    if (!this.#born) {
+      this.#born = true;
+      this.#arriving = enter < 1;
+    }
+    const leaving = leave > 0;
+    if (leaving && !this.#leaving) this.#recall();
+    this.#leaving = leaving;
+    this.#rush = 1;
+    this.#flit = 1;
+    if (leaving) {
+      this.#rush = 1 + 5 * smoothstep(0, 0.2, leave);
+      this.#flit = 1 + 6 * smoothstep(0, 0.25, leave);
+    } else if (enter < 1) {
+      // Quick at first, easing back to their ordinary pace over the last of the entrance.
+      this.#rush = 1 + 1.5 * (1 - smoothstep(0.7, 1, enter));
+      this.#flit = 1 + 2 * (1 - smoothstep(0.5, 1, enter));
+    }
+  }
+
+  /** An entrance opens on a colony yet to come out: nearly every bee leaves its hive within the first two seconds, young ones to loop before it. */
+  #pourOut(): void {
+    const rand = this.#random;
+    for (const [i, bee] of this.#bees.entries()) {
+      if (i >= this.#beeCount) continue;
+      if (bee.newbie) {
+        bee.hold = rand.range(0.6, 2.2);
+      } else if (rand.next() < 0.85) {
+        bee.pour = true;
+        bee.hold = rand.range(0.3, 2.2);
+      }
+    }
+  }
+
+  /** The exit begins: foragers and young bees turn for their hive, the crowd at the entrances files in, the butterflies bolt for the nearest edge. */
+  #recall(): void {
+    const rand = this.#random;
+    for (const bee of this.#bees) {
+      if (bee.mode === "out" || bee.mode === "forage" || bee.mode === "orient") {
+        this.#home(bee);
+        bee.t = 1;
+      } else if (bee.mode === "mill") {
+        bee.hold = Math.min(bee.hold, rand.range(0.1, 0.9));
+      }
+    }
+    const edge = 0.5 * this.#aspect + 0.4;
+    for (const g of this.#butterflies) {
+      if (!g.active) continue;
+      if (g.mode !== "fly") {
+        g.mode = "fly";
+        g.vh = 0.4;
+      }
+      g.gliding = false;
+      g.glideLeft = 99;
+      g.tz = clamp(g.z * 0.7, 3, 14);
+      g.tx = (g.x < 0 ? -1 : 1) * edge * g.tz;
+      g.th = g.h + 0.8;
+    }
   }
 
   // ---- stepping -----------------------------------------------------------------------------------
@@ -584,7 +680,7 @@ class BeesSim implements SceneSim {
     b.t += dt;
     switch (b.mode) {
       case "inside": {
-        if (i >= this.#beeCount) break;
+        if (i >= this.#beeCount || this.#leaving) break;
         b.hold -= dt;
         if (b.hold > 0) break;
         this.#locate(b.hive);
@@ -599,6 +695,10 @@ class BeesSim implements SceneSim {
           this.#begin(b, "orient", rand.range(9, 16));
           b.fly = true;
           b.phase = rand.next() * TAU;
+        } else if (b.pour) {
+          b.pour = false;
+          this.#depart(b);
+          b.t = 0.6;
         } else if (rand.next() < 0.4) {
           this.#begin(b, "mill", rand.range(4, 10));
           this.#millTarget(b);
@@ -612,7 +712,8 @@ class BeesSim implements SceneSim {
         this.#steerMill(b, dt);
         if (b.age % 1.7 < dt) this.#millTarget(b);
         if (b.hold <= 0) {
-          if (!b.newbie && i < this.#beeCount && rand.next() < 0.6) this.#depart(b);
+          if (this.#leaving) this.#enter(b, i);
+          else if (!b.newbie && i < this.#beeCount && rand.next() < 0.6) this.#depart(b);
           else this.#enter(b, i);
         }
         break;
@@ -633,7 +734,7 @@ class BeesSim implements SceneSim {
         break;
       }
       case "out": {
-        if (this.#steer(b, CRUISE, 0.3, dt) < ARRIVE * (b.via ? 4 : 1)) {
+        if (this.#steer(b, CRUISE * this.#rush, 0.3, dt) < ARRIVE * (b.via ? 4 : 1)) {
           if (b.via) {
             b.via = false;
             this.#flowerPoint(b.patch);
@@ -674,7 +775,7 @@ class BeesSim implements SceneSim {
         break;
       }
       case "home": {
-        if (this.#steer(b, CRUISE, 0.3, dt) < ARRIVE) {
+        if (this.#steer(b, CRUISE * this.#rush, 0.3, dt) < ARRIVE) {
           b.fly = false;
           this.#begin(b, "land", rand.range(0.5, 1.2));
         }
@@ -682,6 +783,7 @@ class BeesSim implements SceneSim {
       }
       case "land": {
         b.hold -= dt;
+        if (this.#leaving && b.hold > 0.15) b.hold = 0.15;
         const k = 1 - Math.exp(-dt * 5);
         b.x += (b.tx - b.x) * k;
         b.z += (b.tz - b.z) * k;
@@ -690,7 +792,7 @@ class BeesSim implements SceneSim {
         b.vz = 0;
         b.vh = 0;
         if (b.hold <= 0) {
-          if (rand.next() < 0.65) {
+          if (!this.#leaving && rand.next() < 0.65) {
             this.#begin(b, "mill", rand.range(4, 9));
             this.#millTarget(b);
             b.load = 0;
@@ -809,11 +911,12 @@ class BeesSim implements SceneSim {
     let speed: number;
     if (g.mode === "fly") {
       g.wayLeft -= dt;
-      if (dist < 0.5 || g.wayLeft <= 0) this.#waypoint(g, true);
+      if (!this.#leaving && (dist < 0.5 || g.wayLeft <= 0)) this.#waypoint(g, true);
       speed = lerp(BUTTERFLY_SPEED, BUTTERFLY_GLIDE_SPEED, g.glide);
     } else {
       speed = 0.3 * smoothstep(0, 0.8, dist) + 0.08;
     }
+    speed *= this.#flit;
     const pace = depthPace(g.z);
     const dx = g.tx - g.x;
     const dz = g.tz - g.z;
@@ -824,7 +927,7 @@ class BeesSim implements SceneSim {
     const uh = dh / dist;
     const flat = Math.hypot(ux, uz) + 1e-6;
     const meander = (0.5 * Math.sin(TAU * 0.31 * g.age + g.phase) + 0.3 * Math.sin(TAU * 0.83 * g.age + 2.1 * g.phase)) * (g.mode === "approach" ? smoothstep(0.2, 1.2, dist) : 1);
-    const k = 1 - Math.exp(-dt / 0.55);
+    const k = 1 - Math.exp(-dt / (this.#leaving ? 0.3 : 0.55));
     g.vx += (ux * speed * pace - (uz / flat) * meander * pace - g.vx) * k;
     g.vz += (uz * speed * pace + (ux / flat) * meander * pace - g.vz) * k;
     g.vh += (uh * speed * pace - 0.1 * g.glide - g.vh) * k;

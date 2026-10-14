@@ -9,7 +9,7 @@ import { counts, feature, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { beesGlsl } from "./shader.ts";
-import { beesSim } from "./sim.ts";
+import { BEES_PASSAGE, beesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   feature("life", "bees", "bees", true, "colony", 48, "How many bees are about, each flying in the garden's space at its real size (a speck of a cell at the hives, a little bigger close to you): foragers leave the hives for the flowers in a nearly straight line, now and then passing close by, hop from flower to flower, and fly home loaded with pollen; some mill at the entrances, and young bees fly orientation loops in front of their hive.", { options: counts(16, 32, 48, 64) }),
@@ -38,6 +38,10 @@ export const beesScene: SceneDef = {
   glsl: beesGlsl,
   entry: "sceneBees",
   sim: beesSim(params),
+  // The cumulus drift into place, the bees pour out of the hives and fan out to the flowers, butterflies
+  // flutter in from the edges and the near stalks and grass spring up; leaving, the bees stream home and
+  // the butterflies flutter off.
+  passage: BEES_PASSAGE,
   // A bright afternoon is a light page: dark copy from morning to evening on a still clock.
   theme: skyTheme(params, { from: 0.31, to: 0.74 }),
 };

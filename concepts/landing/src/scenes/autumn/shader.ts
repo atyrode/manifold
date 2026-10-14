@@ -13,6 +13,10 @@
 // that shadows still reach the path; the sun stands behind the scene, so leaves are lit from behind
 // and glow.
 //
+// The passage is part of the park: the camera is a lens shift of the image plane (raised into the canopy at
+// the start of the entrance, tilting up into it at the exit), the canopy leans before the passage's gust, and
+// the leaves it blows come from the simulation. All of it is exactly off at rest.
+//
 // Knobs read here: K_species, K_season, K_parkSeed, K_lamp, K_time, K_cycle, K_clouds, K_rain, K_fog,
 // K_wind (the others, K_fall, K_gusts and K_mark, live in the simulation). Textures: see sim.ts.
 import { autumnLayoutGlsl } from "./layout.ts";
@@ -33,6 +37,9 @@ float autumnOvercast;
 float autumnWet;
 float autumnTm;       // the motion clock
 float autumnGust;     // signed gust strength
+float autumnBlow;     // the passage's gust 0..1.3 (0 at rest) and the way it blows (+1 right, -1 left)
+float autumnBlowDir;
+float autumnPassT;    // seconds into the passage, the phase of the canopy's sway before the gust
 float autumnThin;     // 0..1: how much of the canopy has gone
 float autumnGreen;    // 0..1: how green the leaves still are
 float autumnLate;     // 0..1: how brown the season has turned them
@@ -632,6 +639,12 @@ vec4 autumnCanopyLayer(vec2 p, float cs, float salt, float density, float shadeK
     if (h2 >= bestK) continue;
     float ph = h * 18.85;
     vec2 sway = vec2(sin(autumnTm * 0.55 + ph), cos(autumnTm * 0.43 + ph * 1.3)) * cs * (0.05 + 0.06 * abs(K_wind) + 0.14 * abs(autumnGust));
+    // The passage's gust leans the leaves along it, each a little ahead of or behind its neighbours, with a
+    // slow flutter; the whole sprite moves, so that its edge is cut per cell as ever.
+    if (autumnBlow > 0.0) {
+      float lean = 0.55 + 0.35 * sin(ph * 1.7 + 5.0 * autumnPassT - 3.0 * autumnBlowDir * cp.x);
+      sway += vec2(autumnBlowDir * lean, 0.15 * cos(ph + 4.0 * autumnPassT)) * cs * 0.9 * autumnBlow;
+    }
     vec2 d = p - cp - sway;
     float r = cs * 0.62 * autumnLeafScale(h2);
     if (dot(d, d) > r * r * 2.4) continue;
@@ -735,12 +748,23 @@ void autumnSetup(float t) {
   autumnCarpet = 0.2 + 0.9 * pow(season, 0.7);
   autumnLampOn = K_lamp * (1.0 - smoothstep(0.1, 0.34, dot(autumnAmb, LUMA) + 0.2 * dot(autumnSun, LUMA)));
   autumnGust = uSimOn.w > 0.5 ? texelFetch(uSim3, ivec2(0, 0), 0).x : 0.0;
+  // The passage's gust sways the canopy's shadows with it.
+  autumnBlow = autumnPassageBlow();
+  autumnBlowDir = K_wind < -0.05 ? -1.0 : 1.0;
+  autumnPassT = passageIn() * AUTUMN_PASSAGE.x + passageOut() * AUTUMN_PASSAGE.y;
+  if (autumnBlow > 0.0) autumnGust += autumnBlowDir * 0.8 * autumnBlow;
 }
 
-Shade sceneAutumn(vec2 uv, vec2 cell, float t) {
+Shade sceneAutumn(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   // The park is laid out for a wide frame; a narrower one squeezes it rather than lose the tree.
   float aspectE = max(aspect, 1.45);
+  // The camera's passage is a lens shift of the whole image plane (a level camera, so the rain's paths stay
+  // parallel): it starts the entrance raised into the canopy and tilts up into it again at the exit. The
+  // shift is exactly 0 at rest, where uv == screenUv. Everything below, the loose leaves included, is built
+  // from uv, so the world and the simulation stay in one projection.
+  vec2 uv = screenUv;
+  if (passageIn() < 1.0 || passageOut() > 0.0) uv.y += autumnLensShift();
   vec2 p = vec2((uv.x - 0.5) * aspectE, uv.y);
   autumnSetup(t);
   vec3 dir = viewRay(uv, aspectE, AUTUMN_HORIZON, AUTUMN_FOV);

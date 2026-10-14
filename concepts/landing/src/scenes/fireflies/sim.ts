@@ -46,7 +46,7 @@
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { runBudgeted } from "../../sims/clock.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -241,6 +241,46 @@ const BOKEH_WANDER_Z = 0.1;
 /** Their phase response to the bank's mean flash at coupling 1. */
 const NEAR_COUPLING = 0.8;
 
+// ---- Passage (entrance and exit) ----
+//
+// Arriving, the bank is dark and the fireflies come in tree by tree: a few blink out of step in the
+// first trees, more join crown after crown (each tree at its own time, the sweep running from the
+// right edge, the way the camera drifts, each crown filling up firefly by firefly), and while they
+// join the neighbours answer one another harder, so the clusters begin to fall into step. The camera
+// settles in the shader. Leaving, the beat is lost (every firefly detunes, the coupling lets go) and
+// the crowns go dark tree by tree. At rest every gate is exactly open and none of this runs.
+
+/** Seconds the scene's entrance and exit take (its `passage`). */
+export const FIREFLIES_PASSAGE = { enter: 2.8, exit: 1.5 };
+/**
+ * A crown's firefly opens between these shares of the entrance: ENTER_START plus ENTER_SPAN times
+ * its tree's turn (0 first, 1 last), plus up to ENTER_LATE for the firefly itself; the opening is
+ * ENTER_RAMP wide. A tree's turn is TREE_RANDOM luck, the rest its place from the right edge.
+ */
+const ENTER_START = 0.04;
+const ENTER_SPAN = 0.46;
+const ENTER_LATE = 0.14;
+const ENTER_RAMP = 0.1;
+const TREE_RANDOM = 0.55;
+/** Leaving: the same, with the trees' turns reversed (the last in is the first out). */
+const EXIT_START = 0.04;
+const EXIT_SPAN = 0.44;
+const EXIT_LATE = 0.12;
+const EXIT_RAMP = 0.12;
+/** Seconds over which a firefly arrives or leaves while the scene does (shorter than PRESENCE_EASE). */
+const PASSAGE_EASE = 0.35;
+/** Extra coupling while they join (a share of the usual, at its height around the middle of the entrance). */
+const ENTER_BOOST = 2.5;
+/** Leaving: how far the rates scatter (a share of the natural rate) as the beat is lost. */
+const EXIT_DETUNE = 1.6;
+/** The lights nearer than the bank join and leave at their own times, as shares of the passage. */
+const NEAR_IN_FROM = 0.25;
+const NEAR_IN_SPAN = 0.4;
+const NEAR_IN_RAMP = 0.12;
+const NEAR_OUT_FROM = 0.05;
+const NEAR_OUT_SPAN = 0.5;
+const NEAR_OUT_RAMP = 0.2;
+
 type KnobKey = "coupling" | "density" | "period" | "drift" | "unrest" | "lantern" | "mark" | "seed";
 
 interface Knobs {
@@ -399,6 +439,10 @@ class FirefliesSim implements SceneSim {
   #wanderSpeed = new Float32Array(0);
   #habitat = new Float32Array(0);
   #bright = new Float32Array(0);
+  // The passage: each cell's own lateness (0..1), its column's turn and the tree under each profile texel.
+  #late = new Float32Array(0);
+  #arrival = new Float32Array(0);
+  #treeAt = new Int32Array(0);
   // The M: how much each cell belongs to it, and the place on its strokes it gathers to.
   #member = new Float32Array(0);
   #snapX = new Float32Array(0);
@@ -427,6 +471,9 @@ class FirefliesSim implements SceneSim {
   /** The bank's mean phase (cycles) and how much in step it is (0..1): the Kuramoto order parameter. */
   #theta = 0;
   #sync = 0;
+  /** How far the scene has come in (0..1, 1 at rest) and gone out (0 at rest). */
+  #arrive = 1;
+  #leave = 0;
 
   // The foreground fireflies: anchors (share of the frame width, height m, distance m), wander, rhythm.
   readonly #nearAnchorX = new Float64Array(FIREFLIES_NEAR);
@@ -478,6 +525,8 @@ class FirefliesSim implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const knobs = this.#read(frame);
     if (frame.aspect > 0) this.#aspect = frame.aspect;
+    this.#arrive = clamp(frame.passage.enter, 0, 1);
+    this.#leave = clamp(frame.passage.exit, 0, 1);
     const dt = Math.max(0, frame.dt);
     if (knobs.seed !== this.#seed) this.#grow(knobs);
     else this.#fit(knobs);
@@ -490,7 +539,7 @@ class FirefliesSim implements SceneSim {
       this.#steerLantern(frame.pointer, knobs, dt);
 
       // Motion runs the swarm; a breeze or an M under way still plays while motion is 0.
-      const busy = this.#breeze || this.#mark;
+      const busy = this.#breeze || this.#mark || this.#arrive < 1 || this.#leave > 0;
       const advance = dt * (frame.motion > 0 ? frame.motion : busy ? 1 : 0);
       let left = advance;
       while (left > 1e-6) {
@@ -654,6 +703,7 @@ class FirefliesSim implements SceneSim {
     this.#wanderSpeed = new Float32Array(2 * n);
     this.#habitat = new Float32Array(n);
     this.#bright = new Float32Array(n);
+    this.#late = new Float32Array(n);
     this.#member = new Float32Array(n);
     this.#snapX = new Float32Array(n);
     this.#snapY = new Float32Array(n);
@@ -675,6 +725,14 @@ class FirefliesSim implements SceneSim {
 
     const salt = this.#seed * 16;
     const half = cols / 2;
+    this.#arrival = new Float32Array(cols);
+    for (let c = 0; c < cols; c++) {
+      const tree = this.#treeAt[c * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2] ?? -1;
+      const x = tree >= 0 ? (this.#trees[tree]?.x ?? 0) : (c + 0.5 - half) * FIREFLIES_CELL;
+      const fromRight = clamp((this.#aspect / 2 - x) / this.#aspect, 0, 1);
+      const luck = cellHash(tree >= 0 ? tree : c - half, 5, salt + 19);
+      this.#arrival[c] = TREE_RANDOM * luck + (1 - TREE_RANDOM) * fromRight;
+    }
     for (let i = 0; i < n; i++) {
       const column = (i % cols) - half;
       const row = Math.floor(i / cols);
@@ -692,6 +750,7 @@ class FirefliesSim implements SceneSim {
       this.#wanderSpeed[2 * i + 1] = WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 14);
       this.#habitat[i] = this.#habitatAt(i);
       this.#bright[i] = BRIGHT_MIN + BRIGHT_RANGE * cellHash(column, row, salt + 16) ** BRIGHT_SKEW;
+      this.#late[i] = cellHash(column, row, salt + 18);
       // Columns still in view keep their firefly's rhythm; new ones arrive in their places.
       const oldColumn = column + oldCols / 2;
       if (oldCols > 0 && oldColumn >= 0 && oldColumn < oldCols) {
@@ -700,7 +759,7 @@ class FirefliesSim implements SceneSim {
         this.#present[i] = oldPresent[j] ?? 0;
       } else {
         this.#phase[i] = cellHash(column, row, salt + 10);
-        this.#present[i] = this.#target(i, knobs.density);
+        this.#present[i] = this.#target(i, knobs.density) * this.#gate(i);
       }
     }
     if (this.#mark) this.#placeMark();
@@ -716,6 +775,7 @@ class FirefliesSim implements SceneSim {
     const top = new Float32Array(width).fill(-1);
     const under = new Float32Array(width).fill(2);
     const host = new Float32Array(width);
+    const treeAt = new Int32Array(width).fill(-1);
     const profile = new Float32Array(width * 2 * 4);
     for (const lump of this.#lumps) {
       const tree = this.#trees[lump.tree];
@@ -727,6 +787,7 @@ class FirefliesSim implements SceneSim {
         const crown = lump.y + Math.sqrt(Math.max(0, lump.r * lump.r - off * off));
         if (crown > (top[k] ?? -1)) {
           top[k] = crown;
+          treeAt[k] = lump.tree;
           profile[4 * k + 2] = tree.shade;
           profile[4 * k + 3] = tree.roots;
         }
@@ -765,6 +826,7 @@ class FirefliesSim implements SceneSim {
     this.#top = top;
     this.#under = under;
     this.#host = host;
+    this.#treeAt = treeAt;
     this.#forestTexture.resize(width, 2);
     this.#forestTexture.upload(profile);
   }
@@ -786,6 +848,18 @@ class FirefliesSim implements SceneSim {
   /** Whether a cell holds a firefly now (0 or 1), before the M calls more in. */
   #target(i: number, density: number): number {
     return (this.#rank[i] ?? 1) < density * (this.#habitat[i] ?? 0) ? 1 : 0;
+  }
+
+  /**
+   * Whether cell i's firefly has joined (1) or gone (0) with the passage: its crown's turn plus its
+   * own lateness, in and out. 1 at rest.
+   */
+  #gate(i: number): number {
+    const turn = this.#arrival[i % this.#cols] ?? 0;
+    const late = this.#late[i] ?? 0;
+    const inAt = ENTER_START + ENTER_SPAN * turn + ENTER_LATE * late;
+    const outAt = EXIT_START + EXIT_SPAN * (1 - turn) + EXIT_LATE * late;
+    return smoothstep(inAt, inAt + ENTER_RAMP, this.#arrive) * (1 - smoothstep(outAt, outAt + EXIT_RAMP, this.#leave));
   }
 
   /** Centre the M for this frame's aspect and work out which fireflies draw it and where. */
@@ -827,7 +901,8 @@ class FirefliesSim implements SceneSim {
     const n = this.#n;
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
     const mark = this.#mark ? this.#markStrength : 0;
-    const ease = 1 - Math.exp(-h / PRESENCE_EASE);
+    const passing = this.#arrive < 1 || this.#leave > 0;
+    const ease = 1 - Math.exp(-h / (passing ? PASSAGE_EASE : PRESENCE_EASE));
     const phase = this.#phase;
     const present = this.#present;
     const glowIn = this.#glowIn;
@@ -842,7 +917,7 @@ class FirefliesSim implements SceneSim {
     let presAll = 0;
     for (let i = 0; i < n; i++) {
       const a = mark * (member[i] ?? 0);
-      const want = Math.max(this.#target(i, knobs.density), a);
+      const want = Math.max(this.#target(i, knobs.density) * (passing ? this.#gate(i) : 1), a);
       const p = (present[i] ?? 0) + (want - (present[i] ?? 0)) * ease;
       present[i] = p;
       const e = p * flash((phase[i] ?? 0) * span) * (1 - (hush[i] ?? 0));
@@ -860,8 +935,10 @@ class FirefliesSim implements SceneSim {
     this.#box(presIn, this.#count, BOX);
 
     // The phases.
-    const kLocal = COUPLING_LOCAL * knobs.coupling;
-    const kGlobal = COUPLING_GLOBAL * knobs.coupling * mean;
+    // While they join, the neighbours answer harder (1 at rest).
+    const boost = 1 + ENTER_BOOST * smoothstep(0.08, 0.3, this.#arrive) * (1 - smoothstep(0.75, 1, this.#arrive));
+    const kLocal = COUPLING_LOCAL * knobs.coupling * boost;
+    const kGlobal = COUPLING_GLOBAL * knobs.coupling * mean * boost;
     const omega = 1 / knobs.period;
     // Refractory through its own flash: a firefly only answers in the dark part of its cycle, so a
     // bank flashing together never holds its own flashes back. Over the dark part the response is
@@ -980,6 +1057,16 @@ class FirefliesSim implements SceneSim {
           this.#calm[i] = (this.#calm[i] ?? 1) * (1 - g);
           this.#detune[i] = (this.#detune[i] ?? 0) + BREEZE_SCATTER * g * noise;
         }
+      }
+    }
+
+    if (this.#leave > 0) {
+      // Leaving: every firefly drifts off its own rate and the beat stops pulling them back.
+      const scatter = EXIT_DETUNE * smoothstep(0, 0.7, this.#leave);
+      const calm = 1 - smoothstep(0, 0.5, this.#leave);
+      for (let i = 0; i < this.#n; i++) {
+        this.#detune[i] = (this.#detune[i] ?? 0) + scatter * (this.#scatter[i] ?? 0);
+        this.#calm[i] = (this.#calm[i] ?? 1) * calm;
       }
     }
   }
@@ -1139,6 +1226,15 @@ class FirefliesSim implements SceneSim {
     for (let i = 0; i < n; i++) data[4 * i + 3] = (this.#haloSum[i] ?? 0) / 9;
   }
 
+  /** Whether foreground light j has come in with the passage (1 at rest); each at its own time. */
+  #nearGate(j: number): number {
+    if (this.#arrive >= 1 && this.#leave <= 0) return 1;
+    const turn = (j * 0.6180339887) % 1;
+    const inAt = NEAR_IN_FROM + NEAR_IN_SPAN * turn;
+    const outAt = NEAR_OUT_FROM + NEAR_OUT_SPAN * (1 - turn);
+    return smoothstep(inAt, inAt + NEAR_IN_RAMP, this.#arrive) * (1 - smoothstep(outAt, outAt + NEAR_OUT_RAMP, this.#leave));
+  }
+
   /** The lights nearer than the bank, the lantern and the bank, for uSim2. */
   #packState(knobs: Knobs): void {
     const state = this.#state;
@@ -1162,7 +1258,7 @@ class FirefliesSim implements SceneSim {
       state[4 * j + 1] = y;
       // A drifter the density leaves out is marked by a negative distance.
       state[4 * j + 2] = drifter && j >= drifters ? -z : z;
-      state[4 * j + 3] = flash((this.#nearPhase[j] ?? 0) * span) * (1 - hush);
+      state[4 * j + 3] = flash((this.#nearPhase[j] ?? 0) * span) * (1 - hush) * this.#nearGate(j);
     }
     let at = 4 * FIREFLIES_STATE_LANTERN;
     state[at] = this.#lanternX;

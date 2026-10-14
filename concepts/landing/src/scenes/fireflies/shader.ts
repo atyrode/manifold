@@ -45,6 +45,15 @@ const float FIREFLIES_FOCAL = ${glslFloat(FIREFLIES_FOCAL)};
 const float FIREFLIES_DISTANCE = ${glslFloat(FIREFLIES_BANK)};
 const float FIREFLIES_APERTURE = ${glslFloat(FIREFLIES_APERTURE)};
 
+// The camera settling in on arriving and drifting on as the scene leaves: ZOOM is the share of the
+// frame given up (about the waterline), PAN the share of the room that zoom leaves at the edges the
+// camera slides into; nearer lights slide against the bank by their parallax, at most PARALLAX times
+// as far.
+const float FIREFLIES_ZOOM_IN = 0.06;
+const float FIREFLIES_ZOOM_OUT = 0.035;
+const float FIREFLIES_PAN = 0.85;
+const float FIREFLIES_PARALLAX = 7.0;
+
 // A bank firefly's glow radius in cells at size 1 (its place stays 0.06 inside its cell, so at the
 // largest size, 1.2, every glow reaching a point lies in the 3×3 cells around it).
 const float FIREFLIES_REACH = 0.85;
@@ -224,7 +233,21 @@ float firefliesSwarm(vec2 q, float x0, float cols, float stretch, out float reac
 // K_near, K_seed, K_reflections, K_mist and K_stars are read.
 Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
-  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
+  vec2 ps = vec2((uv.x - 0.5) * aspect, uv.y);
+  // The camera. Arriving, it starts a little in, looking to the left of where it rests, and glides
+  // right and out to a stop (the bank slides left and widens); leaving, it drifts on the same way.
+  // The zoom is about the waterline and only ever zooms in, so the lattice and the forest profile
+  // always cover the view, and the pan stays inside what the zoom leaves. 'pan' is the offset of
+  // the bank's x, kept for the nearer lights. Both are exactly 0 at rest, where p == ps.
+  vec2 p = ps;
+  float pan = 0.0;
+  float arrive = pow(max(1.0 - passageIn(), 0.0), 2.5);
+  float leave = smoothstep(0.0, 1.0, passageOut());
+  if (arrive + leave > 0.0) {
+    float zoom = FIREFLIES_ZOOM_IN * arrive + FIREFLIES_ZOOM_OUT * leave;
+    pan = 0.5 * aspect * FIREFLIES_PAN * (FIREFLIES_ZOOM_OUT * leave - FIREFLIES_ZOOM_IN * arrive);
+    p = vec2(ps.x * (1.0 - zoom) + pan, FIREFLIES_WATER + (ps.y - FIREFLIES_WATER) * (1.0 - zoom));
+  }
   float tm = uMotionTime;
   bool sim = uSimOn.x > 0.5 && uSimOn.z > 0.5;
   float cols = sim ? float(textureSize(uSim0, 0).x) : 2.0;
@@ -291,7 +314,8 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
     if (k < FIREFLIES_DRIFTERS) {
       if (f.z < 0.0) continue;
       float r = clamp(0.09 / f.z, 0.0028, 0.0065);
-      vec2 d = (p - f.xy) / r;
+      vec2 pn = vec2(p.x + pan * (min(FIREFLIES_DISTANCE / f.z, FIREFLIES_PARALLAX) - 1.0), p.y);
+      vec2 d = (pn - f.xy) / r;
       float r2 = dot(d, d);
       if (r2 < 1.0) {
         float kk = (1.0 - r2) * (1.0 - r2);
@@ -301,7 +325,7 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
       }
       float surface = FIREFLIES_HORIZON - FIREFLIES_EYE * FIREFLIES_FOCAL / f.z;
       if (p.y < surface) {
-        vec2 dm = vec2(p.x + wobble - f.x, (p.y - (2.0 * surface - f.y)) / FIREFLIES_STRETCH) / r;
+        vec2 dm = vec2(pn.x + wobble - f.x, (p.y - (2.0 * surface - f.y)) / FIREFLIES_STRETCH) / r;
         float m2 = dot(dm, dm);
         if (m2 < 1.0) {
           float km = (1.0 - m2) * (1.0 - m2);
@@ -312,7 +336,8 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
     } else {
       if (k - FIREFLIES_DRIFTERS >= bokeh) continue;
       float r = FIREFLIES_APERTURE * FIREFLIES_FOCAL * (1.0 / f.z - 1.0 / FIREFLIES_DISTANCE);
-      float dist = length(p - f.xy) / r;
+      vec2 pn = vec2(p.x + pan * (min(FIREFLIES_DISTANCE / f.z, FIREFLIES_PARALLAX) - 1.0), p.y);
+      float dist = length(pn - f.xy) / r;
       if (dist >= 1.0) continue;
       nearLight += f.w * FIREFLIES_BOKEH_GAIN * smoothfall(1.0, 0.15, dist);
       disc = max(disc, smoothfall(1.0, 0.9, dist));
@@ -324,12 +349,12 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
   float lamp = 0.0;
   if (lantern.z > 0.004) {
     float flame = 1.0 + 0.05 * sin(tm * 2.1) + 0.03 * sin(tm * 3.4 + 1.3);
-    vec2 dl = p - lantern.xy;
+    vec2 dl = ps - lantern.xy;
     lamp = smoothfall(1.0, 0.6, length(dl / vec2(0.0055, 0.0075))) * lantern.z;
     float warm = exp(-length(dl) / (0.03 + 0.04 * lantern.w)) * (0.22 + 0.7 * lantern.w) * flame;
     float surface = min(lantern.y, FIREFLIES_WATER) - 0.05;
-    if (p.y < surface) {
-      warm += 0.4 * K_reflections * flame * exp(-abs(p.x - 3.0 * wobble - lantern.x) / 0.006) * exp(-abs(p.y - (2.0 * surface - lantern.y)) / 0.05);
+    if (ps.y < surface) {
+      warm += 0.4 * K_reflections * flame * exp(-abs(ps.x - 3.0 * wobble - lantern.x) / 0.006) * exp(-abs(ps.y - (2.0 * surface - lantern.y)) / 0.05);
     }
     col += FIREFLIES_WARM * warm * lantern.z;
   }

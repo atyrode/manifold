@@ -15,6 +15,11 @@
 // against the dither, so a passing edge flips each cell once. Wind runs through the grass as slow
 // travelling swells of paler light (`beesGust`).
 //
+// Passage (BEES_PASSAGE): the cumulus (and their shadows) drift in from the sides and settle, then the
+// near foxgloves, poppies, daisies and blades of grass at the bottom edge spring up into the frame, each
+// after its own delay, with a small overshoot; the bees and butterflies are the simulation's. On the
+// way out the clouds drift on a little. At rest every term is exactly 0.
+//
 // Knobs read here: K_time, K_cycle, K_clouds, K_wind, K_scenerySeed, K_mark (the M painted on the
 // middle hive's front).
 import { glslFloat } from "../../shaders/glsl.ts";
@@ -29,6 +34,7 @@ import {
   BEES_HIVES,
   BEES_LAVENDER,
   BEES_PATCHES,
+  BEES_PASSAGE,
   BEES_POPPY,
   BEES_STAGE_MIN,
   BEES_WILD,
@@ -147,6 +153,8 @@ const int BEES_C_BLUE_DIM = ${BEES_CODE.blueDim};
 const int BEES_C_DIM = ${BEES_CODE.beeDim};
 const int BEES_C_FAINT = ${BEES_CODE.beeFaint};
 const float BEES_DEPTH_STEP = ${glslFloat(BEES_DEPTH_STEP)};
+// Seconds of the entrance and the exit (BEES_PASSAGE).
+const float BEES_ENTER = ${glslFloat(BEES_PASSAGE.enter)};
 // The crown of an old apple tree: lobes (x, y, radius) in metres from the foot of the trunk, spreading
 // wide; each tree jitters, stretches and resizes them by its seed.
 const vec3 BEES_CROWN[9] = vec3[9](vec3(-2.7, 2.7, 1.15), vec3(-1.5, 3.1, 1.3), vec3(-0.2, 3.5, 1.45), vec3(1.2, 3.2, 1.3), vec3(2.6, 2.8, 1.1), vec3(-1.1, 3.9, 1.0), vec3(0.5, 4.0, 1.05), vec3(-2.0, 2.2, 0.8), vec3(2.0, 2.3, 0.85));
@@ -179,6 +187,23 @@ float beesZ = 1e4;
 
 float beesS(float y) {
   return max(BEES_YH - y, 0.012) / BEES_CAM;
+}
+
+// 1 - ease-out cubic of the entrance: how far the cumulus still have to drift in, 1 down to 0 (exactly 0 once arrived).
+float beesDriftIn() {
+  float u = 1.0 - clamp(passageIn(), 0.0, 1.0);
+  return u * u * u;
+}
+
+// How far a plant of the foreground is still below the frame, as a share of its travel: 1 while it waits,
+// then down through 0 (a little below, the overshoot) as it springs up, 0 for good once arrived. 'key'
+// sets its delay (0.4 to 0.8 s into the entrance) so they do not rise as one.
+float beesRise(float key) {
+  if (passageIn() >= 1.0) return 0.0;
+  float tin = passageIn() * BEES_ENTER;
+  float t = clamp((tin - 0.4 - 0.4 * hash12(vec2(key, 83.0))) / 1.3, 0.0, 1.0);
+  float u = t - 1.0;
+  return -(2.2 * u * u * u + 1.2 * u * u);
 }
 
 // An albedo in the afternoon light: the sky's ambient plus the warm sun, more of it on a surface turned
@@ -262,7 +287,8 @@ vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
     bool puff = i < BEES_CLOUD_PUFFS;
     if (!puff && i == BEES_CLOUD_N - 2 && cover < 0.2) continue;
     float s = BEES_CLOUD_S[i] * (puff ? 1.0 : mix(0.65, 1.08, cover));
-    float x = mod(BEES_CLOUD_F[i] * beesW + tm * 0.0035 + 0.5 * span, span) - 0.5 * span;
+    float lead = (0.22 + 0.04 * float(i)) * beesDriftIn() + 0.1 * smoothstep(0.0, 1.0, passageOut());
+    float x = mod(BEES_CLOUD_F[i] * beesW + tm * 0.0035 + 0.5 * span, span) - 0.5 * span + sign(BEES_CLOUD_F[i]) * lead;
     vec4 cl = beesCloudAt(p, x, BEES_CLOUD_Y[i], s, BEES_CLOUD_T[i], BEES_CLOUD_SEED[i]);
     col = mix(col, cl.rgb, cl.a);
   }
@@ -271,7 +297,7 @@ vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
 
 // The shadow of the clouds on the land, drifting slowly: 1 in shadow, per cell.
 float beesCloudShadow(vec2 p, float tm) {
-  vec2 q = vec2(p.x * 0.75 - tm * 0.011, p.y * 2.4);
+  vec2 q = vec2(p.x * 0.75 - tm * 0.011 + 0.2 * (beesDriftIn() + 0.5 * smoothstep(0.0, 1.0, passageOut())), p.y * 2.4);
   float n = 0.65 * vnoise(q + vec2(5.0 + beesSeed, 1.0)) + 0.35 * vnoise(q * 2.3 + vec2(9.0, 3.0));
   return hardEdge(smoothstep(0.54, 0.7, n));
 }
@@ -736,6 +762,8 @@ void beesFoxglove(int i, vec2 p, float tm, inout vec3 col) {
   float S = beesS(y0);
   float hgt = BEES_FOX_H[i] * S;
   float x0 = BEES_FOX_F[i] * beesW;
+  // The near ones spring up from below the frame; the far ones stand where they are.
+  if (y0 < 0.15) p.y += (y0 + 1.1 * hgt) * beesRise(float(i));
   float t = (p.y - y0) / hgt;
   if (t < -0.05 || t > 1.08 || abs(p.x - x0) > 0.45 * hgt) return;
   float fi = float(i);
@@ -770,6 +798,7 @@ void beesBloomNear(int i, vec2 p, float tm, inout vec3 col) {
   float S = beesS(yh);
   float R = 0.13 * S;
   float fi = float(i);
+  p.y += (yh + 0.03 + 1.5 * R) * beesRise(fi + 10.0);
   vec2 head = vec2(BEES_BLOOM_F[i] * beesW + 0.004 * (0.5 + abs(K_wind)) * sin(tm * 0.5 + fi * 2.3), yh);
   if (abs(p.x - head.x) > 3.0 * R || p.y > yh + 1.4 * R || p.y < -0.03) return;
   float tt = clamp((p.y + 0.03) / (yh + 0.03), 0.0, 1.0);
@@ -817,9 +846,10 @@ void beesBlades(vec2 p, float tm, inout vec3 col) {
     float lean = (hash12(vec2(id, 2.2)) - 0.5) * 0.12;
     float sway = (vnoise1(tm * 0.22 + id * 3.7, 5.0).x - 0.5) * (0.02 + 0.07 * (0.3 + abs(K_wind)));
     vec2 a = vec2(root, -0.03);
+    vec2 pk = vec2(p.x, p.y + 0.24 * beesRise(id + 100.0));
     vec2 tip = vec2(root + lean + sway, height);
     vec2 mid = vec2(root + 0.3 * (lean + sway), 0.55 * height);
-    float d = min(sdTaperCapsule(p, a, mid, 0.011, 0.007), sdTaperCapsule(p, mid, tip, 0.007, 0.001));
+    float d = min(sdTaperCapsule(pk, a, mid, 0.011, 0.007), sdTaperCapsule(pk, mid, tip, 0.007, 0.001));
     if (hardFill(d, beesAa) > 0.5) {
       vec3 green = mix(vec3(0.12, 0.26, 0.07), vec3(0.42, 0.56, 0.16), h2.y);
       col = beesShade(green, clamp((p.x - root) * 90.0, -1.0, 1.0)) + beesGlow(green, 0.3);
