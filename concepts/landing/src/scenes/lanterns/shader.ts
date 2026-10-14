@@ -413,22 +413,6 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
   return col;
 }
 
-// The river's surface: five trains of ripples, crests mostly along the current, running slowly
-// across it and carried downstream by drift (m). Returns the slope (dh/dx, dh/dz) of the trains
-// these cells can draw and, in z, the slope variance of those too fine to draw, which roughen the
-// mirror instead (as LEAN mapping does, Olano & Baker 2010). A train is drawn only once its
-// wavelength spans a dozen cells; finer ones would crawl through the dither.
-vec3 lanternsRipples(vec2 p, float tm, vec2 cellSize, float amp, float drift) {
-  vec3 sum = vec3(0.0);
-  for (int i = 0; i < 5; i++) {
-    float fi = float(i);
-    float turn = 0.5 * sin(fi * 2.4 + 0.7);
-    // Deep-water waves, slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz.
-    sum += rippleTrain(p + vec2(drift, 0.0), tm, cellSize, 6.0 * pow(0.53, fi), vec2(sin(turn), cos(turn)), amp * (0.06 - 0.007 * fi), 0.14 * (1.0 - 0.1 * fi), fi * 1.9, vec2(7.0, 14.0));
-  }
-  return sum;
-}
-
 // Rows of wave facets that can catch a light. A light mirrored at a slope the ripples only now and
 // then reach is seen in the few facets tilted just right, and those lie along the crests: its
 // reflection breaks into short horizontal dashes stacked down the water. The rows are spaced in
@@ -685,7 +669,13 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     zp = g.p.y;
     cellX = g.foot.x;
     cellZ = g.foot.y;
-    vec3 rip = lanternsRipples(g.p, tm, g.foot, rippled, 0.6 * current * tm);
+    // The river's surface: five trains of ripples, crests mostly along the current (rocking half a
+    // radian about it), running slowly across it, carried downstream at 0.6 of the stream (toward
+    // -x), and slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz. xy: the
+    // slope the cells draw, z: the variance of the trains too fine to draw, which roughens the
+    // mirror instead (rippleSpectrum).
+    vec3 rip = rippleSpectrum(waterDrift(g.p, vec2(-0.6 * current, 0.0), tm), tm, g.foot, rippled,
+                              RippleFan(5, vec2(6.0, 0.53), vec2(0.06, 0.007), vec2(0.14, 0.1), vec2(0.0), vec3(0.5, 2.4, 0.7), 1.9, vec2(7.0, 14.0)));
     glint = lanternsGlitter(g.p, tm);
 
     // The stones: glassy water in the lee of each, a wake opening behind it in two arms that catch
@@ -730,11 +720,10 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
       hidden += K_rain * 0.008 * (1.0 - rainFade);
     }
 
-    vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
     float spread = sqrt(0.0012 + hidden + 0.003 * K_rain);
-    fres = fresnelSchlick(dot(n, -dir), 0.02, spread * 0.6);
-    refl = reflect(dir, n);
-    refl = vec3(refl.x, max(refl.y, 0.002), max(refl.z, 0.05));
+    WaterMirror river = waterMirror(dir, slope, spread * 0.6);
+    fres = river.fresnel;
+    refl = vec3(river.ray.x, max(river.ray.y, 0.002), max(river.ray.z, 0.05));
     sigma = (0.04 + 0.16 * K_reflection) * (0.45 + 0.55 * min(rippled, 1.0)) + 0.5 * spread;
     // The sky, hills and bank are mirrored by the same ripples tipped more steeply, so the long
     // swells fold the afterglow low over the bank and the dark bank and upper sky into broad

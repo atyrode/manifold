@@ -823,6 +823,13 @@ vec4 islFarClouds(vec2 sp, float zScene) {
 
 // ---- the sea ----
 
+// The wind ripples: four trains crossing at odd angles, the longest 4 units, at a slowed .35 of the
+// deep-water pace.
+const RippleTable ISL_RIPPLES = RippleTable(4,
+  vec4[RIPPLE_TRAINS](vec4(4.0, 0.03, 0.35, 1.0), vec4(1.5, 0.035, 0.35, 0.0), vec4(0.9, 0.03, 0.35, 2.0), vec4(0.55, 0.025, 0.35, 4.0), vec4(0.0)),
+  vec2[RIPPLE_TRAINS](normalize(vec2(0.25, 1.0)), normalize(vec2(1.0, 0.35)), normalize(vec2(-0.5, 1.0)), normalize(vec2(0.7, -0.7)), vec2(0.0)),
+  vec2(7.0, 14.0));
+
 vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   // Past ~140 units everything below is faded flat anyway; keep the coordinates sane.
   vec3 P = t > 140.0 ? islRo + rd * 140.0 : Pfull;
@@ -868,21 +875,18 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   vec3 col = base * lm * 1.1;
 
   // Wind ripples and a long swell: the slope tilts the mirror of the sky; the rain rings add their own.
-  vec3 sl = rippleTrain(P.xz, islT, foot, 4.0, normalize(vec2(0.25, 1.0)), 0.03, 0.35, 1.0, vec2(7.0, 14.0))
-          + rippleTrain(P.xz, islT, foot, 1.5, normalize(vec2(1.0, 0.35)), 0.035, 0.35, 0.0, vec2(7.0, 14.0))
-          + rippleTrain(P.xz, islT, foot, 0.9, normalize(vec2(-0.5, 1.0)), 0.03, 0.35, 2.0, vec2(7.0, 14.0))
-          + rippleTrain(P.xz, islT, foot, 0.55, normalize(vec2(0.7, -0.7)), 0.025, 0.35, 4.0, vec2(7.0, 14.0));
+  vec3 sl = rippleSpectrum(P.xz, islT, foot, 1.0, ISL_RIPPLES);
   float ringFade = 1.0 - smoothstep(10.0, 20.0, t);
   vec3 rr3 = vec3(0.0);
   if (K_rain > 0.0) {
     rr3 = rainRipples(P.xz * 2.4, islTime, K_rain);
     sl.xy += rr3.xy * 0.5 * ringFade;
   }
-  vec3 nrm = normalize(vec3(-sl.x, 1.0, -sl.y));
-  vec3 rr = reflect(rd, nrm);
+  WaterMirror sea = waterMirror(rd, sl.xy, 0.12);
+  vec3 rr = sea.ray;
   rr.y = max(rr.y, 0.02);
   rr = normalize(rr);
-  float fres = clamp(1.3 * fresnelSchlick(dot(nrm, -rd), 0.02, 0.12), 0.0, 0.9);
+  float fres = clamp(1.3 * sea.fresnel, 0.0, 0.9);
   col = mix(col, islSkyCol(rr), fres);
 
   // Foam: a ragged swash lapping the beach, a thin line at the waterline, and long soft swell

@@ -22,8 +22,8 @@ All of the ideas below have a first implementation in the lab:
 | Window sill | `sill` | |
 
 The shared options became libraries every outdoor scene can use: sky and time of day, weather,
-lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`).
-The notes below are the original briefs.
+lightning, aurora and water in tiers (`src/shaders/lib/`), with shared lab knobs
+(`src/scenes/atmosphere.ts`). The notes below are the original briefs.
 
 ## Zen batch
 
@@ -34,7 +34,7 @@ mathematics. All have a first implementation in the lab:
 |---|---|---|---|
 | Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves; fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms | `HeightField`, `AgeField` |
 | Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube; a moss pad on its stone softens the knock for a quiet clock | |
-| Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step | `separateDiscs` |
+| Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step; the river's ripples ride the current | `separateDiscs`, water `flow` tier (`rippleSpectrum`, `waterDrift`, `waterMirror`) |
 | Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population | |
 | Kelp forest | `kelp` | Buoyant Verlet stipes in surge: giant kelp, or bull kelp held up by one gas bulb (or a mix); boids school | `VerletSystem`, `fishGlsl` |
 | Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling; paged bin lists keep the dense hub whole | `VerletSystem`, `BinLists` |
@@ -77,8 +77,8 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Harmonograph | `harmonograph` | Damped, slightly detuned pendulums drive a pen; the figure precesses and spirals inward, then a fresh sheet slides in |
 | Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out |
 | Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment; or real ones, released by a board and slowed by their own wide swing (`sims/pendulum.ts`), drifting off the realignment |
-| A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below |
-| Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: `shaders/windWater.ts`), a red cabin, falling and lying snow |
+| A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below; the sea is the shared water's `mirror` tier (four hand-placed ripple trains) |
+| Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: the shared water's `ripples` tier, `shaders/windWater.ts`), a red cabin, falling and lying snow |
 | Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies. Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it |
 | Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, birds; rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`) |
 | Autumn park | `autumn` | Leaves flutter and tumble down (quasi-steady plate model), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts lift swirls of the top leaves off the path |
@@ -102,8 +102,9 @@ top. Prototype (issue #1082, N1), built from shared parts rather than scene code
   hard surge or a touch closes the anemones; they reopen over ~10 s) and wetness (rock drying over
   half a minute). Kelp and surfgrass stream and flutter with the flow at their holdfasts; anemones
   lean with it and close when the water leaves them.
-- **Caustics:** `src/shaders/caustics.ts`: the swell's caustic focus from the sim's surface Hessian
-  times analytic wind ripples', both det(I + D·H), D a quarter of the depth.
+- **Caustics:** the shared water's `caustics` tier (`src/shaders/lib/water.ts` over
+  `src/shaders/caustics.ts`): the swell's caustic focus from the sim's surface Hessian times
+  analytic wind ripples', both det(I + D·H), D a quarter of the depth (`waterCaustic`).
 - **Passage:** entering, the last of a wave's white water drains back up the frame and the anemones
   unfurl; leaving, a wave breaks in from the sea and sweeps down over everything.
 - Knobs: tide (and a tide cycle), swell, wave length, direction, sets (with "now"), pace, foam;
@@ -293,6 +294,9 @@ Wind over a sand sea.
 - Every wave is intersected in full wherever it shows: rows of surf too far out to stand two cells
   tall take about 3% of the intersection work at the default wave size (under 10% at the smallest),
   too little to justify a cheaper path beside the near breakers.
+- The open sea's wind ripples and mirror are the shared water's `mirror` tier (`rippleSpectrum`
+  over four trains by the golden angle, `waterMirror`); the breakers, swash and glitter are the
+  scene's own.
 
 ## Window sill
 
