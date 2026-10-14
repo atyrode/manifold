@@ -20,7 +20,9 @@
 // Lanterns take up the water's velocity with a little inertia, push one another apart where they
 // touch (so they bunch against a rock and in slack water, and spread again in the stream), turn
 // with the water's spin (half its vorticity, as any small floating body does) and with the knocks
-// they take, and slide off the rocks.
+// they take, and slide off the rocks. Both kinds of contact are settled after each step: rocks by
+// setting a lantern back on the stone's face, and lanterns sunk into one another past their walls
+// (one set down on top of another) by moving them apart (sims/discs.ts).
 //
 // So the lanterns make a procession: a loose ribbon from small far points of light near the far
 // bank on the right, growing as it sweeps in past the near stone, drifting off to the left, and a
@@ -50,6 +52,7 @@
 //                      (-1 left .. 1 right)
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
+import { separateDiscs } from "../../sims/discs.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -159,6 +162,15 @@ const DRAG = 1.6;
 /** Contact springs (1/s²) and the damping of lanterns running into each other (1/s). */
 const CONTACT = 6;
 const CONTACT_DAMP = 2;
+/**
+ * The springs let lanterns sink into one another a little. Past the point where their walls meet
+ * (centres a side apart, CONTACT_GIVE of the contact distance in) they are moved apart after the
+ * step, at up to PART_SPEED (m/s), so two set down on one spot glide off each other within a second.
+ * At the default current the river's own drift never brings them that close; at the fastest it
+ * now and then does.
+ */
+const CONTACT_GIVE = 1 - LANTERN_HALF / RADIUS;
+const PART_SPEED = 0.6;
 /** How hard a glancing knock turns a lantern (rad/s² per m/s of slip, per m of radius⁻¹). */
 const KNOCK = 0.4;
 /** Seconds to settle into the water's spin; each lantern's own slow turn at most (rad/s). */
@@ -917,7 +929,14 @@ class LanternRiver implements SceneSim {
       lantern.vz += lantern.az * h;
       lantern.x += lantern.vx * h;
       lantern.z += lantern.vz * h;
+    }
 
+    // Lanterns sunk into one another past their walls (set down on top of one another, or a
+    // flotilla pushed off onto the last) glide apart; the springs above handle ordinary contact.
+    separateDiscs(all, { give: CONTACT_GIVE, limit: PART_SPEED * h });
+
+    for (const lantern of all) {
+      if (!lantern.alive) continue;
       // Rocks are solid: a lantern meeting one is set back on its face and eased round it.
       for (const rock of ROCKS) {
         const dx = lantern.x - rock.x;

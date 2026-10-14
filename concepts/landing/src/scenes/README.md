@@ -338,6 +338,14 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   frames, so the opening picture never depends on the machine's speed.
 - `toHalf` and `splitHalf` (`half.ts`): a number as two half floats (hi + lo) for a 16f texture,
   decoded in GLSL by `unsplitHalfGlsl`.
+- `BinLists` (`bins.ts`): per-bin lists of the segments and points that reach each square bin of
+  the frame, for a shader that walks only its cell's list (dew); a list grows by pages of
+  `BIN_PAGE` entries, so a dense patch never drops one. Read in GLSL with `binListsGlsl`.
+- `separateDiscs` (`discs.ts`): after an integration step, moves apart bodies that touch as discs on
+  a plane and have sunk into one another past a given share, a limited distance per step, coincident
+  ones included; for soft-contact crowds (lanterns).
+- `HeadlessGl` (`headless.ts`): a stand-in context for `bun test` that runs a CPU sim's
+  `DataTexture`s and keeps each texture's last upload, to check what the shader would receive.
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and

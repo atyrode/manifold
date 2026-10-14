@@ -32,18 +32,18 @@
 //          kind × DEW_CODE + beads along it. Stems (stalk, leaf blades, seed head, awns; sim.ts
 //          #packStems): wet = the radius at b in DEW_STEM_UNIT + DEW_CODE × the piece (DEW_PIECE_*),
 //          code = kind × DEW_CODE + the radius at a in DEW_STEM_UNIT.
-//   uSim1  r16f bins: a grid of square bins one 1/rows of the frame height across, from the frame's
-//          bottom-left corner; bin (i, j) lists what reaches into it at texels
-//          (j × DEW_BIN_SLOTS + k, i), k < DEW_BIN_SLOTS: s + 1 for segment s, -(d + 1) for drop d,
-//          0 ends the list. rows = width / DEW_BIN_SLOTS, columns = height.
+//   uSim1  r16f bins (sims/bins.ts BinLists): a grid of square bins one 1/rows of the frame height
+//          across, from the frame's bottom-left corner, each listing what reaches into it: s + 1 for
+//          segment s, -(d + 1) for drop d, 0 ends the list. As many pages of BIN_PAGE entries as the
+//          fullest bin needs (header t2.z), so the hub, where every radius meets, keeps them all.
 //   uSim2  rgba16f drops, two texels each: (x, y) hi, (x, y) lo of the centre; (radius, z,
 //          stretch, squash). Radius 0 = no drop.
 //   uSim3  rgba16f header: t0 = hub (x, y) hi, lo; t1 = (hub z, focus z, the hub's turn (radians),
-//          web radius); t2 = (gust 0..1, breeze 0..1, 0, 0).
+//          web radius); t2 = (gust 0..1, breeze 0..1, pages of bin lists, 0).
 //
 // Units: frame heights, x from the frame's left edge, y up from its bottom, z toward the viewer.
-import { segmentDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { BinLists } from "../../sims/bins.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { VerletSystem, type VerletForce, type VerletStepOptions, type WebLayout } from "../../sims/verlet.ts";
@@ -53,7 +53,6 @@ import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export const DEW_SEG_TEXELS = 3;
 export const DEW_SEG_ROW = 512;
-export const DEW_BIN_SLOTS = 32;
 export const DEW_DROPS = 48;
 /** A segment's code: kind × DEW_CODE + beads (threads) or radius (stems). */
 export const DEW_CODE = 64;
@@ -239,10 +238,16 @@ const PLUCK_SHAKE = 0.12;
 
 // ---- bins -------------------------------------------------------------------------------------------
 
-/** About this many cells per bin, between these many rows. */
+/**
+ * About this many cells per bin, between these many rows; a bin's list grows by pages of BIN_PAGE
+ * entries up to BIN_PAGES. At 540 rows the fullest bin of a 16:9 frame holds about 26 entries; small
+ * or portrait frames, where the web's threads lie a few cells apart, need two or three pages near
+ * the hub (four below about 90 rows).
+ */
 const BIN_CELLS = 14;
 const BIN_ROWS_MIN = 12;
 const BIN_ROWS_MAX = 64;
+const BIN_PAGES = 4;
 
 // ---- helpers ----------------------------------------------------------------------------------------
 
@@ -528,15 +533,10 @@ class DewSim implements SceneSim {
   readonly #dropTex: DataTexture;
   readonly #headTex: DataTexture;
   #segData = new Float32Array(4);
-  #binData = new Float32Array(1);
-  #binCount = new Uint8Array(1);
+  /** What reaches into each bin of the frame, for uSim1. */
+  readonly #lists = new BinLists(BIN_PAGES);
   readonly #dropData = new Float32Array(DEW_DROPS * 2 * 4);
   readonly #headData = new Float32Array(3 * 4);
-  #rows = 0;
-  #cols = 0;
-  /** One bin's side and its half diagonal, frame heights. */
-  #binSize = 1;
-  #binHalf = Math.SQRT1_2;
   readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
 
   #web: DewWeb;
@@ -597,7 +597,8 @@ class DewSim implements SceneSim {
     this.#knobs = knobs;
     this.#gustSlot = knobs.trigger("breeze");
     this.#segTex = new DataTexture(gl, { width: DEW_SEG_ROW * DEW_SEG_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
-    this.#binTex = new DataTexture(gl, { width: DEW_BIN_SLOTS, height: 1, format: "r16f", filter: "nearest" });
+    // Sized to the bin lists before each upload.
+    this.#binTex = new DataTexture(gl, { width: 1, height: 1, format: "r16f", filter: "nearest" });
     this.#dropTex = new DataTexture(gl, { width: DEW_DROPS * 2, height: 1, format: "rgba16f", filter: "nearest" });
     this.#headTex = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
     const seed = Math.round(knobs.initial("webSeed"));
@@ -684,15 +685,7 @@ class DewSim implements SceneSim {
 
   #fitBins(heightCells: number, aspect: number): void {
     const rows = Math.min(BIN_ROWS_MAX, Math.max(BIN_ROWS_MIN, Math.round(heightCells / BIN_CELLS)));
-    const cols = Math.ceil(aspect * rows);
-    if (rows === this.#rows && cols === this.#cols) return;
-    this.#rows = rows;
-    this.#cols = cols;
-    this.#binSize = 1 / rows;
-    this.#binHalf = this.#binSize * Math.SQRT1_2;
-    this.#binTex.resize(rows * DEW_BIN_SLOTS, cols);
-    this.#binData = new Float32Array(rows * DEW_BIN_SLOTS * cols);
-    this.#binCount = new Uint8Array(rows * cols);
+    this.#lists.fit(rows, Math.ceil(aspect * rows));
   }
 
   // ---- the breeze ---------------------------------------------------------------------------------
@@ -1032,28 +1025,6 @@ class DewSim implements SceneSim {
     return Math.min(DEW_BLUR_MAX, Math.abs(z - this.#focus) * (DEW_DOF * this.#dof));
   }
 
-  /** Lists id in every bin the segment a–b reaches, within margin; a full bin drops it. */
-  #bin(id: number, ax: number, ay: number, bx: number, by: number, margin: number): void {
-    const rows = this.#rows;
-    const size = this.#binSize;
-    const bins = this.#binData;
-    const counts = this.#binCount;
-    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - margin) / size));
-    const i1 = Math.min(this.#cols - 1, Math.floor((Math.max(ax, bx) + margin) / size));
-    const j0 = Math.max(0, Math.floor((Math.min(ay, by) - margin) / size));
-    const j1 = Math.min(rows - 1, Math.floor((Math.max(ay, by) + margin) / size));
-    for (let i = i0; i <= i1; i++) {
-      for (let j = j0; j <= j1; j++) {
-        if (segmentDistance((i + 0.5) * size, (j + 0.5) * size, ax, ay, bx, by) > this.#binHalf + margin) continue;
-        const bin = i * rows + j;
-        const k = counts[bin] ?? 0;
-        if (k >= DEW_BIN_SLOTS) continue;
-        bins[bin * DEW_BIN_SLOTS + k] = id;
-        counts[bin] = k + 1;
-      }
-    }
-  }
-
   /** One stem capsule a–b (raw positions, depths az and bz) of the given piece, radius ra at a and rb at b; seen with the web's perspective. */
   #piece(seg: Float32Array, id: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number, ra: number, rb: number, piece: number, cx: number, cell: number, dew: number): void {
     const ga = 1 + az / CAMERA_DISTANCE;
@@ -1065,7 +1036,7 @@ class DewSim implements SceneSim {
     const codeA = Math.min(DEW_CODE - 1, Math.max(1, Math.round(ra / DEW_STEM_UNIT)));
     const codeB = Math.min(DEW_CODE - 1, Math.max(1, Math.round(rb / DEW_STEM_UNIT)));
     this.#writeSegment(seg, id, pax, pay, az, pbx, pby, bz, codeB + DEW_CODE * piece, DEW_KIND_STEM * DEW_CODE + codeA);
-    this.#bin(id + 1, pax, pay, pbx, pby, Math.max(codeA, codeB) * DEW_STEM_UNIT + dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 + Math.max(this.#blurAt(az), this.#blurAt(bz)) + 2 * cell);
+    this.#lists.add(id + 1, pax, pay, pbx, pby, Math.max(codeA, codeB) * DEW_STEM_UNIT + dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 + Math.max(this.#blurAt(az), this.#blurAt(bz)) + 2 * cell);
   }
 
   /**
@@ -1245,11 +1216,9 @@ class DewSim implements SceneSim {
     if (this.#segTex.height !== segRows) this.#segTex.resize(segWidth, segRows);
     if (this.#segData.length !== segWidth * segRows * 4) this.#segData = new Float32Array(segWidth * segRows * 4);
     const seg = this.#segData;
-    const bins = this.#binData;
-    const counts = this.#binCount;
-    bins.fill(0);
-    counts.fill(0);
-    // Drops first, so a crowded bin never loses one.
+    const lists = this.#lists;
+    lists.clear();
+    // Drops first, so a bin fuller than its last page never loses one.
     const drop = this.#dropData;
     drop.fill(0);
     const clock = this.#clock;
@@ -1287,7 +1256,7 @@ class DewSim implements SceneSim {
       drop[o + 6] = stretch;
       drop[o + 7] = squash;
       const reach = r * stretch * (1 + Math.abs(squash)) * 1.25 + this.#blurAt(z) + 1.5 * cell;
-      this.#bin(-(d + 1), x, y, x, y, reach);
+      lists.add(-(d + 1), x, y, x, y, reach);
     }
 
     // Stems: stalk, leaf blades, seed head and its awns.
@@ -1310,10 +1279,11 @@ class DewSim implements SceneSim {
       this.#writeSegment(seg, c, ax, ay, az, bx, by, bz, wet, kind * DEW_CODE + (web.beads[c] ?? 0));
       const silk = ((kind === DEW_KIND_FRAME ? DEW_FRAME_HALF : DEW_SILK_HALF) * (1 + DEW_GLINT_SWELL) + 1) * cell;
       const bead = dewBeadMax(kind, dew) * (1 + DEW_BEAD_HANG) + cell;
-      this.#bin(c + 1, ax, ay, bx, by, Math.max(silk, bead) + Math.max(this.#blurAt(az), this.#blurAt(bz)));
+      lists.add(c + 1, ax, ay, bx, by, Math.max(silk, bead) + Math.max(this.#blurAt(az), this.#blurAt(bz)));
     }
     this.#segTex.upload(seg);
-    this.#binTex.upload(bins);
+    this.#binTex.resize(lists.width, lists.height);
+    this.#binTex.upload(lists.data);
     this.#dropTex.upload(drop);
 
     // The header: the hub, the focus, how the hub has turned (for the spider and her M).
@@ -1333,7 +1303,7 @@ class DewSim implements SceneSim {
     head[7] = web.radius;
     head[8] = this.#gust;
     head[9] = this.#breeze;
-    head[10] = 0;
+    head[10] = lists.pages;
     head[11] = 0;
     this.#headTex.upload(head);
   }

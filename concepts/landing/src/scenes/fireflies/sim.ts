@@ -20,8 +20,11 @@
 // the top of the frame and as wide as the frame, centred: columns are counted from the middle of the
 // view, so a resize keeps every firefly that stays in view. Whether a cell holds one depends on the
 // forest (most live in the crowns, the tall Sonneratia "firefly trees" above all) and on the density
-// knob. Each crawls a little about a jittered place in its cell. A few more drift low over the river
-// between us and the bank, and a few hang close to us, out of focus, in the upper corners.
+// knob. The habitat knob's open bank grows low scrub along a wide mud bank instead and spreads the
+// fireflies low over all of it, exactly as many as the dense crowns would hold (#matchOpenBank), so
+// the two layouts compare at one population. Each crawls a little about a jittered place in its
+// cell. A few more drift low over the river between us and the bank, and a few hang close to us, out
+// of focus, in the upper corners.
 //
 // Disturbances: the pointer's lantern (fireflies near a light lose the beat, and right beside it
 // stop flashing, as real ones do under a street lamp), a click (the lantern flares and scatters the
@@ -141,6 +144,15 @@ const SKY_HABITAT = 0.002;
 const GAP_HABITAT = 0.2;
 const RIM_HABITAT = 0.15;
 const RIM_REACH = 0.025;
+/**
+ * The open bank (habitat knob): the fireflies hover low over the whole bank instead, thinning with
+ * height over about OPEN_REACH (screen heights), a little less among the leaves and less still
+ * under them; host trees count for nothing there. It holds exactly as many fireflies as the dense
+ * crowns would (see #matchOpenBank).
+ */
+const OPEN_REACH = 0.09;
+const OPEN_LEAVES = 0.7;
+const OPEN_UNDER = 0.5;
 /** A firefly's brightness (it also feeds its soft halo): most are modest, a few blaze. */
 const BRIGHT_MIN = 0.55;
 const BRIGHT_RANGE = 0.8;
@@ -160,6 +172,9 @@ const FOREST_HALF = 2.6;
 const GAP_MIN = 0.016;
 /** Half width of a Sonneratia trunk (screen heights). */
 const TRUNK_HALF = 0.0055;
+/** The open bank's share of lone Sonneratia among its scrub, and the chance of open mud after each clump. */
+const OPEN_GRAND = 0.12;
+const OPEN_GAPS = 0.6;
 
 // The lantern.
 /** Spring that the hanging lantern follows the pointer with (rad/s) and its damping ratio. */
@@ -281,12 +296,14 @@ const NEAR_OUT_FROM = 0.05;
 const NEAR_OUT_SPAN = 0.5;
 const NEAR_OUT_RAMP = 0.2;
 
-type KnobKey = "coupling" | "density" | "period" | "drift" | "unrest" | "lantern" | "mark" | "seed";
+type KnobKey = "coupling" | "density" | "habitat" | "period" | "drift" | "unrest" | "lantern" | "mark" | "seed";
 
 interface Knobs {
   coupling: number;
   density: number;
   period: number;
+  /** The open bank (habitat 1) instead of the dense crowns. */
+  open: boolean;
   drift: number;
   /** Breeze frequency 0..1; 0 while the breeze is off. */
   unrest: number;
@@ -357,22 +374,29 @@ function markNearest(x: number, y: number, out: Float64Array): number {
   return best;
 }
 
+/** A bank of trees: the clumps of their crowns and the trees they belong to. */
+interface Bank {
+  lumps: Lump[];
+  trees: Tree[];
+}
+
 /**
- * The far bank, left to right: Rhizophora mangroves, broad rounded crowns standing on arching prop
- * roots and packed into a wall, and now and then a tall Sonneratia, the trees the fireflies gather
- * in, with a bare trunk under a higher, ragged crown. Each crown is a cluster of round clumps,
- * taller in the middle; a gap now and then shows the low mud bank.
+ * The far bank, left to right. Dense crowns (the default): Rhizophora mangroves, broad rounded
+ * crowns standing on arching prop roots and packed into a wall, and now and then a tall Sonneratia,
+ * the trees the fireflies gather in, with a bare trunk under a higher, ragged crown; a gap now and
+ * then shows the low mud bank. Open bank: low mangrove scrub in clumps along a wide mud bank, with
+ * a lone Sonneratia here and there. Each crown is a cluster of round clumps, taller in the middle.
  */
-function growForest(seed: number): { lumps: Lump[]; trees: Tree[] } {
+function growForest(seed: number, open: boolean): Bank {
   const rand = mulberry32((Math.imul(seed + 1, 0x9e3779b1) ^ 0x6f1e5a3) >>> 0);
   const lumps: Lump[] = [];
   const trees: Tree[] = [];
   let x = -FOREST_HALF - 0.15;
   while (x < FOREST_HALF + 0.15) {
-    const grand = rand() < 0.17;
-    const width = grand ? 0.2 + 0.14 * rand() : 0.09 + 0.1 * rand();
-    const height = grand ? 0.21 + 0.14 * rand() : 0.09 + 0.12 * rand();
-    const base = FIREFLIES_WATER + (grand ? 0.05 + 0.04 * rand() : 0.022 + 0.026 * rand());
+    const grand = rand() < (open ? OPEN_GRAND : 0.17);
+    const width = grand ? 0.2 + 0.14 * rand() : open ? 0.05 + 0.07 * rand() : 0.09 + 0.1 * rand();
+    const height = grand ? 0.21 + 0.14 * rand() : open ? 0.025 + 0.04 * rand() : 0.09 + 0.12 * rand();
+    const base = FIREFLIES_WATER + (grand ? 0.05 + 0.04 * rand() : open ? 0.01 + 0.01 * rand() : 0.022 + 0.026 * rand());
     const tree = trees.length;
     const centre = x + width * 0.5;
     trees.push({ x: centre, base, host: grand ? 0.95 + 0.05 * rand() : 0.35 + 0.5 * rand(), shade: rand(), roots: grand ? 0.35 : 1, trunk: grand });
@@ -387,8 +411,8 @@ function growForest(seed: number): { lumps: Lump[]; trees: Tree[] } {
       const ly = base + height * dome - r * 0.9 + tier;
       lumps.push({ x: lx, y: Math.max(ly, base + r * 0.25), r, tree });
     }
-    const gap = rand() < 0.1;
-    x += gap ? width + 0.02 + 0.06 * rand() : width * (0.5 + 0.3 * rand());
+    const gap = rand() < (open ? OPEN_GAPS : 0.1);
+    x += gap ? width + (open ? 0.03 + 0.15 * rand() : 0.02 + 0.06 * rand()) : width * (0.5 + 0.3 * rand());
   }
   return { lumps, trees };
 }
@@ -397,6 +421,80 @@ function growForest(seed: number): { lumps: Lump[]; trees: Tree[] } {
 function lowBank(x: number, seed: number): number {
   const s = (seed % 97) * 0.37;
   return 0.011 + 0.004 * Math.sin(x * 37 + s) + 0.002 * Math.sin(x * 91 + 2.3 * s);
+}
+
+/**
+ * A bank's profile over a lattice of `cols` columns, FIREFLIES_PROFILE_RES texels each: the canopy's
+ * top and underside (uv heights), how much the fireflies like the trees there and which tree it is
+ * (-1: open mud), and the uSim1 texels (see the file header).
+ */
+interface Profile {
+  top: Float32Array;
+  under: Float32Array;
+  host: Float32Array;
+  treeAt: Int32Array;
+  texels: Float32Array;
+}
+
+const emptyProfile: Profile = { top: new Float32Array(0), under: new Float32Array(0), host: new Float32Array(0), treeAt: new Int32Array(0), texels: new Float32Array(0) };
+
+function profileOf(bank: Bank, cols: number, seed: number): Profile {
+  const res = FIREFLIES_PROFILE_RES;
+  const width = cols * res;
+  const x0 = -0.5 * cols * FIREFLIES_CELL;
+  const dx = FIREFLIES_CELL / res;
+  const top = new Float32Array(width).fill(-1);
+  const under = new Float32Array(width).fill(2);
+  const host = new Float32Array(width);
+  const treeAt = new Int32Array(width).fill(-1);
+  const texels = new Float32Array(width * 2 * 4);
+  for (const lump of bank.lumps) {
+    const tree = bank.trees[lump.tree];
+    if (tree === undefined) continue;
+    const k0 = Math.max(0, Math.ceil((lump.x - lump.r - x0) / dx - 0.5));
+    const k1 = Math.min(width - 1, Math.floor((lump.x + lump.r - x0) / dx - 0.5));
+    for (let k = k0; k <= k1; k++) {
+      const off = x0 + (k + 0.5) * dx - lump.x;
+      const crown = lump.y + Math.sqrt(Math.max(0, lump.r * lump.r - off * off));
+      if (crown > (top[k] ?? -1)) {
+        top[k] = crown;
+        treeAt[k] = lump.tree;
+        texels[4 * k + 2] = tree.shade;
+        texels[4 * k + 3] = tree.roots;
+      }
+      under[k] = Math.min(under[k] ?? 2, tree.base);
+      host[k] = Math.max(host[k] ?? 0, tree.host);
+    }
+  }
+  for (const tree of bank.trees) {
+    if (!tree.trunk) continue;
+    const k0 = Math.max(0, Math.floor((tree.x - 2 * TRUNK_HALF - x0) / dx));
+    const k1 = Math.min(width - 1, Math.ceil((tree.x + 2 * TRUNK_HALF - x0) / dx));
+    for (let k = k0; k <= k1; k++) {
+      const off = Math.abs(x0 + (k + 0.5) * dx - tree.x);
+      const at = 4 * (width + k);
+      texels[at] = Math.max(texels[at] ?? 0, 1 - smoothstep(TRUNK_HALF * 0.7, TRUNK_HALF * 1.3, off));
+    }
+  }
+  for (let k = 0; k < width; k++) {
+    const low = FIREFLIES_WATER + lowBank(x0 + (k + 0.5) * dx, seed);
+    let t = top[k] ?? -1;
+    let u = under[k] ?? 2;
+    if (t < low || u > t) {
+      // No crown here: the mud bank, solid to the water.
+      t = Math.max(t, low);
+      u = low;
+      texels[4 * k + 3] = 0;
+      host[k] = 0;
+    } else {
+      u = Math.max(u, FIREFLIES_WATER + GAP_MIN);
+    }
+    top[k] = t;
+    under[k] = u;
+    texels[4 * k] = t;
+    texels[4 * k + 1] = u;
+  }
+  return { top, under, host, treeAt, texels };
 }
 
 class FirefliesSim implements SceneSim {
@@ -412,17 +510,18 @@ class FirefliesSim implements SceneSim {
   /** One prewarm step, as runBudgeted calls it. */
   readonly #warmStep = (): void => this.#step(MAX_STEP, this.#knobs);
   #warmed = 0;
-  readonly #knobs: Knobs = { coupling: 0.5, density: 0.7, period: 3, drift: 0.35, unrest: 0, lantern: true, mark: 0, markNow: 5, seed: 0 };
+  readonly #knobs: Knobs = { coupling: 0.5, density: 0.7, period: 3, open: false, drift: 0.35, unrest: 0, lantern: true, mark: 0, markNow: 5, seed: 0 };
   readonly #nearest = new Float64Array(2);
 
-  // The forest, grown once per seed.
+  // The banks, grown once per seed: the dense crowns, and the open bank.
   #seed = -1;
-  #lumps: Lump[] = [];
-  #trees: Tree[] = [];
-  /** The canopy's top, underside and how much the fireflies like it, per profile texel. */
-  #top = new Float32Array(1);
-  #under = new Float32Array(1);
-  #host = new Float32Array(1);
+  #crowns: Bank = { lumps: [], trees: [] };
+  #openBank: Bank = { lumps: [], trees: [] };
+  /** The lattice is laid out on the open bank (the habitat knob, as last fitted). */
+  #open = false;
+  /** The profiles over the lattice: the bank on show, and the dense crowns', which set how many live. */
+  #shown: Profile = emptyProfile;
+  #crownProfile: Profile = emptyProfile;
 
   // The lattice: cols × FIREFLIES_ROWS cells, row-major from the waterline up.
   #cols = 0;
@@ -437,12 +536,13 @@ class FirefliesSim implements SceneSim {
   #jitterY = new Float32Array(0);
   #wanderPhase = new Float32Array(0);
   #wanderSpeed = new Float32Array(0);
+  /** How much each cell of the dense crowns suits a firefly; on the open bank, the cell each takes the place of. */
   #habitat = new Float32Array(0);
+  #partner = new Int32Array(0);
   #bright = new Float32Array(0);
-  // The passage: each cell's own lateness (0..1), its column's turn and the tree under each profile texel.
+  // The passage: each cell's own lateness (0..1) and its column's turn.
   #late = new Float32Array(0);
   #arrival = new Float32Array(0);
-  #treeAt = new Int32Array(0);
   // The M: how much each cell belongs to it, and the place on its strokes it gathers to.
   #member = new Float32Array(0);
   #snapX = new Float32Array(0);
@@ -514,7 +614,7 @@ class FirefliesSim implements SceneSim {
   #markNow = false;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#reader = new KnobReader("fireflies", params, ["coupling", "density", "period", "drift", "unrest", "lantern", "mark", "seed"]);
+    this.#reader = new KnobReader("fireflies", params, ["coupling", "density", "habitat", "period", "drift", "unrest", "lantern", "mark", "seed"]);
     this.#breezeSlot = this.#reader.trigger("unrest");
     this.#markSlot = this.#reader.trigger("mark");
     this.#swarmTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
@@ -575,6 +675,7 @@ class FirefliesSim implements SceneSim {
     const knobs = this.#knobs;
     knobs.coupling = reader.value(frame, "coupling");
     knobs.density = reader.value(frame, "density");
+    knobs.open = reader.value(frame, "habitat") > 0.5;
     knobs.period = Math.max(0.5, reader.value(frame, "period"));
     knobs.drift = reader.value(frame, "drift");
     knobs.unrest = reader.value(frame, "unrest");
@@ -642,9 +743,8 @@ class FirefliesSim implements SceneSim {
   /** A new seed: grow its forest and a fresh, unsynchronised swarm, and run its first seconds. */
   #grow(knobs: Knobs): void {
     this.#seed = knobs.seed;
-    const forest = growForest(knobs.seed);
-    this.#lumps = forest.lumps;
-    this.#trees = forest.trees;
+    this.#crowns = growForest(knobs.seed, false);
+    this.#openBank = growForest(knobs.seed, true);
     this.#cols = 0;
     this.#fit(knobs);
     const near = mulberry32((Math.imul(knobs.seed + 7, 0x85ebca6b) ^ 0x2545f491) >>> 0);
@@ -683,10 +783,14 @@ class FirefliesSim implements SceneSim {
     this.#dirty = true;
   }
 
-  /** Fit the lattice to the frame's aspect, keeping every firefly whose column stays in view. */
+  /**
+   * Fit the lattice to the frame's aspect and the habitat knob's bank, keeping every firefly whose
+   * column stays in view (all of them when only the bank changes: they move over to their new places).
+   */
   #fit(knobs: Knobs): void {
     const cols = Math.min(MAX_COLS, 2 * Math.ceil(this.#aspect / 2 / FIREFLIES_CELL + 1));
-    if (cols === this.#cols) return;
+    if (cols === this.#cols && knobs.open === this.#open) return;
+    this.#open = knobs.open;
     const oldCols = this.#cols;
     const oldPhase = this.#phase;
     const oldPresent = this.#present;
@@ -702,6 +806,7 @@ class FirefliesSim implements SceneSim {
     this.#wanderPhase = new Float32Array(2 * n);
     this.#wanderSpeed = new Float32Array(2 * n);
     this.#habitat = new Float32Array(n);
+    this.#partner = new Int32Array(n);
     this.#bright = new Float32Array(n);
     this.#late = new Float32Array(n);
     this.#member = new Float32Array(n);
@@ -725,18 +830,24 @@ class FirefliesSim implements SceneSim {
 
     const salt = this.#seed * 16;
     const half = cols / 2;
+    const trees = (this.#open ? this.#openBank : this.#crowns).trees;
     this.#arrival = new Float32Array(cols);
     for (let c = 0; c < cols; c++) {
-      const tree = this.#treeAt[c * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2] ?? -1;
-      const x = tree >= 0 ? (this.#trees[tree]?.x ?? 0) : (c + 0.5 - half) * FIREFLIES_CELL;
+      const tree = this.#shown.treeAt[c * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2] ?? -1;
+      const x = tree >= 0 ? (trees[tree]?.x ?? 0) : (c + 0.5 - half) * FIREFLIES_CELL;
       const fromRight = clamp((this.#aspect / 2 - x) / this.#aspect, 0, 1);
       const luck = cellHash(tree >= 0 ? tree : c - half, 5, salt + 19);
       this.#arrival[c] = TREE_RANDOM * luck + (1 - TREE_RANDOM) * fromRight;
     }
+    // How many live where: the dense crowns decide it, and the open bank takes the same count.
+    for (let i = 0; i < n; i++) {
+      this.#rank[i] = cellHash((i % cols) - half, Math.floor(i / cols), salt + 1);
+      this.#habitat[i] = this.#habitatAt(i);
+    }
+    if (this.#open) this.#matchOpenBank(salt);
     for (let i = 0; i < n; i++) {
       const column = (i % cols) - half;
       const row = Math.floor(i / cols);
-      this.#rank[i] = cellHash(column, row, salt + 1);
       const stubborn = cellHash(column, row, salt + 3) < STUBBORN_SHARE;
       const spread = cellHash(column, row, salt + 2) + cellHash(column, row, salt + 9) - 1;
       this.#rate[i] = 1 + (stubborn ? STUBBORN_SPREAD * Math.sign(spread || 1) : RATE_SPREAD * spread);
@@ -748,7 +859,6 @@ class FirefliesSim implements SceneSim {
       this.#wanderPhase[2 * i + 1] = TAU * cellHash(column, row, salt + 8);
       this.#wanderSpeed[2 * i] = WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 13);
       this.#wanderSpeed[2 * i + 1] = WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 14);
-      this.#habitat[i] = this.#habitatAt(i);
       this.#bright[i] = BRIGHT_MIN + BRIGHT_RANGE * cellHash(column, row, salt + 16) ** BRIGHT_SKEW;
       this.#late[i] = cellHash(column, row, salt + 18);
       // Columns still in view keep their firefly's rhythm; new ones arrive in their places.
@@ -766,88 +876,65 @@ class FirefliesSim implements SceneSim {
     this.#dirty = true;
   }
 
-  /** The bank's profile over the lattice's span, uploaded as uSim1; kept per texel for habitats. */
+  /** The bank on show and the dense crowns over the lattice's span; uploads the one on show as uSim1. */
   #paintForest(): void {
-    const res = FIREFLIES_PROFILE_RES;
-    const width = this.#cols * res;
-    const x0 = -0.5 * this.#cols * FIREFLIES_CELL;
-    const dx = FIREFLIES_CELL / res;
-    const top = new Float32Array(width).fill(-1);
-    const under = new Float32Array(width).fill(2);
-    const host = new Float32Array(width);
-    const treeAt = new Int32Array(width).fill(-1);
-    const profile = new Float32Array(width * 2 * 4);
-    for (const lump of this.#lumps) {
-      const tree = this.#trees[lump.tree];
-      if (tree === undefined) continue;
-      const k0 = Math.max(0, Math.ceil((lump.x - lump.r - x0) / dx - 0.5));
-      const k1 = Math.min(width - 1, Math.floor((lump.x + lump.r - x0) / dx - 0.5));
-      for (let k = k0; k <= k1; k++) {
-        const off = x0 + (k + 0.5) * dx - lump.x;
-        const crown = lump.y + Math.sqrt(Math.max(0, lump.r * lump.r - off * off));
-        if (crown > (top[k] ?? -1)) {
-          top[k] = crown;
-          treeAt[k] = lump.tree;
-          profile[4 * k + 2] = tree.shade;
-          profile[4 * k + 3] = tree.roots;
-        }
-        under[k] = Math.min(under[k] ?? 2, tree.base);
-        host[k] = Math.max(host[k] ?? 0, tree.host);
-      }
-    }
-    for (const tree of this.#trees) {
-      if (!tree.trunk) continue;
-      const k0 = Math.max(0, Math.floor((tree.x - 2 * TRUNK_HALF - x0) / dx));
-      const k1 = Math.min(width - 1, Math.ceil((tree.x + 2 * TRUNK_HALF - x0) / dx));
-      for (let k = k0; k <= k1; k++) {
-        const off = Math.abs(x0 + (k + 0.5) * dx - tree.x);
-        const at = 4 * (width + k);
-        profile[at] = Math.max(profile[at] ?? 0, 1 - smoothstep(TRUNK_HALF * 0.7, TRUNK_HALF * 1.3, off));
-      }
-    }
-    for (let k = 0; k < width; k++) {
-      const low = FIREFLIES_WATER + lowBank(x0 + (k + 0.5) * dx, this.#seed);
-      let t = top[k] ?? -1;
-      let u = under[k] ?? 2;
-      if (t < low || u > t) {
-        // No crown here: the mud bank, solid to the water.
-        t = Math.max(t, low);
-        u = low;
-        profile[4 * k + 3] = 0;
-        host[k] = 0;
-      } else {
-        u = Math.max(u, FIREFLIES_WATER + GAP_MIN);
-      }
-      top[k] = t;
-      under[k] = u;
-      profile[4 * k] = t;
-      profile[4 * k + 1] = u;
-    }
-    this.#top = top;
-    this.#under = under;
-    this.#host = host;
-    this.#treeAt = treeAt;
-    this.#forestTexture.resize(width, 2);
-    this.#forestTexture.upload(profile);
+    this.#crownProfile = profileOf(this.#crowns, this.#cols, this.#seed);
+    this.#shown = this.#open ? profileOf(this.#openBank, this.#cols, this.#seed) : this.#crownProfile;
+    this.#forestTexture.resize(this.#cols * FIREFLIES_PROFILE_RES, 2);
+    this.#forestTexture.upload(this.#shown.texels);
   }
 
-  /** How much a cell suits a firefly (0..1): the crowns' outer leaves, a few in the air and roots. */
+  /** How much a cell of the dense crowns suits a firefly (0..1): the crowns' outer leaves, a few in the air and roots. */
   #habitatAt(i: number): number {
     const column = i % this.#cols;
     const row = Math.floor(i / this.#cols);
     const k = column * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2;
     const y = FIREFLIES_WATER + (row + 0.5) * FIREFLIES_CELL;
-    const top = this.#top[k] ?? 0;
-    const under = this.#under[k] ?? 0;
-    const host = this.#host[k] ?? 0;
+    const profile = this.#crownProfile;
+    const top = profile.top[k] ?? 0;
+    const under = profile.under[k] ?? 0;
+    const host = profile.host[k] ?? 0;
     if (y < under) return GAP_HABITAT;
     if (y <= top) return host * (1 - 0.35 * smoothstep(0.06, 0.18, top - y));
     return host * RIM_HABITAT * Math.max(0, 1 - (y - top) / RIM_REACH) + SKY_HABITAT;
   }
 
+  /** How much a cell of the open bank suits a firefly: the air low over the bank, thinning with height. */
+  #openHabitatAt(i: number): number {
+    const column = i % this.#cols;
+    const row = Math.floor(i / this.#cols);
+    const k = column * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2;
+    const y = FIREFLIES_WATER + (row + 0.5) * FIREFLIES_CELL;
+    const air = Math.exp(-(((y - FIREFLIES_WATER) / OPEN_REACH) ** 2));
+    if (y < (this.#shown.under[k] ?? 0)) return OPEN_UNDER * air;
+    if (y <= (this.#shown.top[k] ?? 0)) return OPEN_LEAVES * air;
+    return air;
+  }
+
+  /**
+   * The open bank holds as many fireflies as the dense crowns at every density: rank the cells of
+   * each (a cell's chance over how well it suits a firefly, as #target thresholds them), and let the
+   * open bank's k-th cell stand in for the dense crowns' k-th, so it fills exactly when that one would.
+   */
+  #matchOpenBank(salt: number): void {
+    const n = this.#n;
+    const cols = this.#cols;
+    const half = cols / 2;
+    const crown = new Float64Array(n);
+    const open = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      crown[i] = (this.#rank[i] ?? 1) / (this.#habitat[i] ?? 0);
+      open[i] = cellHash((i % cols) - half, Math.floor(i / cols), salt + 20) / this.#openHabitatAt(i);
+    }
+    const byCrown = Uint32Array.from({ length: n }, (_, i) => i).sort((a, b) => (crown[a] ?? 0) - (crown[b] ?? 0) || a - b);
+    const byOpen = Uint32Array.from({ length: n }, (_, i) => i).sort((a, b) => (open[a] ?? 0) - (open[b] ?? 0) || a - b);
+    for (let m = 0; m < n; m++) this.#partner[byOpen[m] ?? 0] = byCrown[m] ?? 0;
+  }
+
   /** Whether a cell holds a firefly now (0 or 1), before the M calls more in. */
   #target(i: number, density: number): number {
-    return (this.#rank[i] ?? 1) < density * (this.#habitat[i] ?? 0) ? 1 : 0;
+    const j = this.#open ? (this.#partner[i] ?? i) : i;
+    return (this.#rank[j] ?? 1) < density * (this.#habitat[j] ?? 0) ? 1 : 0;
   }
 
   /**
