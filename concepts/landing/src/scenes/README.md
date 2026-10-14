@@ -528,6 +528,12 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `Mobile`, `designMobile`, `MobileTexture`, `mobileGlsl` (`mobile.ts`): a balanced hanging mobile on
   `VerletSystem` with plate drag and contacts, and GLSL tracing its plates, wires and links and the
   shadows they throw from a round lamp (mobile).
+- `Boids` and `boidRules` (`boids.ts`): topological boids in 3D for flocks and schools of a few
+  thousand: separation, cohesion and alignment with each boid's K nearest, found through a spatial
+  hash with a bounded search (refreshed by turns), plus cruise, level flight, a home to wheel over,
+  a threat, wind and noise, and startles relayed through the neighbours as a wave. Deterministic
+  for a seed; the rules are one mutable object the caller sets each step (the murmuration's
+  emergent flight).
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and

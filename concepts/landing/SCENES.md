@@ -13,7 +13,7 @@ All of the ideas below have a first implementation in the lab:
 | Above the clouds | `clouds` | Aurora and lightning come from the shared weather layer. |
 | Waterfall | `falls` | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. |
 | Countryside | `country` | Relative weights for seasonal crops, wildflower meadows, lavender rows and sunflowers; reproducible landscape seeds. |
-| Murmuration | `flock` | CPU boids, topological neighbours. |
+| Murmuration | `flock` | Authored deforming sheet on the CPU; optional emergent topological boids (`Boids`). |
 | Paper marbling | `marble` | Mathematical marbling engine. |
 | Dunes | `dunes` | Werner slab model. |
 | Ice and frost | `frost` | Frost on a window pane; snowfall from the weather layer; the shared sky components (stars, moon phase, aurora, shooting stars) in the window. |
@@ -205,9 +205,41 @@ A Calder mobile turning in a quiet room, its shadows thrown large across the wal
 
 A sky scene whose subject is a starling murmuration.
 
-- Simulation: boids (separation, alignment, cohesion) with the topological rule of starlings
-  (each bird tracks ~7 neighbours), predator passes as a trigger, the flock folding and pulsing.
-- Thousands of birds: GPU simulation in textures, or CPU for a few thousand with spatial hashing.
+- Simulation, by default: an authored sheet on the CPU (`flock/sim.ts`). Each bird keeps a place on
+  a disc that slow sums of sines carry through the sky in 3D: stretched into a ribbon and gathered,
+  bowed, cupped, bent by a travelling wave, banked and twisted, turned into depth, parted into two
+  lobes and merged. Turns sweep head to tail (Attanasi et al. 2014), agitation rings run over the
+  sheet (Procaccini et al. 2011), and the falcon pushes birds aside on springs. No bird reacts to
+  another: the shape is choreographed.
+- Emergent flight (`emergent`, off by default; its amount, 3–12, is how many neighbours each bird
+  watches, 7 by default): the same birds as topological boids (`src/sims/boids.ts`). Each steers by
+  separation, cohesion and alignment with its K nearest (Ballerini et al. 2008), found through a
+  spatial hash whose search is bounded (at most 96 candidates) and refreshed by a third of the
+  flock each step. It also cruises at the speed knob's pace, holds a level plane seen from below,
+  is pulled back over the band of sky, drifts downwind and flees the falcon, and startles relay bird
+  to bird as a wave. Cohesion sets the spacing and pull, chaos the noise and how weakly the birds
+  align. The ink, falcon, M and passage are shared with the sheet, and switching either way hands
+  the birds over where they are.
+- Comparison (measured headless on a shared 12-core machine at load ~32, so absolute numbers run
+  high; the modes ran interleaved, median of three runs of 1200 frames at 60 fps):
+
+  | Birds | Sheet ms/frame (median, CPU mean) | Boids ms/frame (median, CPU mean) |
+  |---|---|---|
+  | 1500 | 0.33, 0.37 | 0.95, 0.94 |
+  | 3000 | 0.59, 0.65 | 1.85, 1.71 |
+  | 5000 | 1.01, 0.98 | 3.37, 2.95 |
+
+  Boids that search every step instead of by turns take a median 1.9, 5.3 and 9.4 ms. Visually, the
+  sheet is sculptural: a smooth veil with crisp dark folds and rims, always framed, its pace
+  calm and predictable. The boids have life the sheet lacks. Birds stream through the flock, which
+  wheels at the edges of its sky and knots dark as it turns. It strings into streams that part and
+  rejoin, and startles visibly travel. They are grainier (clumps speckle under the dither), have no
+  folds or edge-on darks (nothing banks), sometimes mill into rings, and cannot be paced.
+- Decision: the authored sheet stays the default, unchanged byte for byte. It is the dependable,
+  readable and cheaper silhouette a landing page needs. Emergent flight is adopted as an optional
+  mode, through the lab, its URL and its reset, and `Boids` is shared for any CPU flock or school.
+  The countryside flies the sheet (its FlockSetup omits `emergent`) and could name the control to
+  fly boids.
 - Sky at dusk; a low skyline at the bottom edge, never the focus.
 
 ## Paper marbling
