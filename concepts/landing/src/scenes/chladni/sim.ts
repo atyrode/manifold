@@ -29,6 +29,13 @@
 // off the deepest heaps and lets them fall anywhere on the plate again (most on the way to the M,
 // whose few strokes must be fed evenly to read).
 //
+// The grain (sims/granular.ts, the grainSize knob): dry sand at the knob's middle, finer or coarser
+// either side. Finer grains have less grip (θ scaled by the grain's grip, spread by its exponent:
+// they settle closer to the line, in a tight core) and are held back by the air (the drift by its
+// pace) and thrown less far (the dance by its hop); grit grips more, spreads into a halo, and is
+// thrown further and faster. A new grain is a new batch: it is strewn over the plate again and
+// sung into the figure. The shader raises the ridges by the grain's angle of repose (uSim2).
+//
 // Clicking pours a pinch of sand at the pointer and dragging pours a trail; the grains are taken up
 // at random from the plate, so the amount of sand stays as set. The grains are splatted into a
 // density field (cloud-in-cell) and uploaded only when something moved: settled sand costs nothing.
@@ -46,10 +53,12 @@
 //   uSim1  rg16f MODE_NODES² over the same square: R the figure the plate comes from, G the one it
 //          goes to (each at RMS 0.5).
 //   uSim2  rgba16f 2×1, nearest. Texel 0: eased crossfade s, norm, swing A, share of the M in the field.
-//          Texel 1: the passage: the strewn veil (0 at rest), the plate's tilt, the veil's gain.
+//          Texel 1: the passage: the strewn veil (0 at rest), the plate's tilt, the veil's gain; and
+//          the grain's relief, its angle of repose's tangent over dry sand's (1 for dry sand).
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex, segmentDistance } from "../../mark.ts";
 import { runBudgeted } from "../../sims/clock.ts";
+import { grainAt, SAND, type Grain } from "../../sims/granular.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -83,22 +92,22 @@ const MODE_SIZE = MODE_NODES * MODE_NODES;
 
 // The sand.
 /**
- * Grains' thresholds θ = THRESHOLD_MAX·r^THRESHOLD_CURVE (r uniform): most rest close to the line
- * (a tight core), a sparse few well off it (a halo of loose grains).
+ * Grains' thresholds θ = THRESHOLD_MAX·grip·r^spread (r uniform, grip and spread the grain's; dry
+ * sand's spread is 3): most rest close to the line (a tight core), a sparse few well off it (a halo
+ * of loose grains).
  */
 const THRESHOLD_MAX = 0.22;
-const THRESHOLD_CURVE = 3;
 /** The plate's swing A at vibration 0 and 1 (geometric in between, 1 at the middle). */
 const SWING_GENTLE = 0.55;
 const SWING_HARD = 1.8;
-/** Drift down the slope of |u|: plate units per second at full excess, and the excess that gets half of it. */
+/** Drift down the slope of |u| for dry sand (× the grain's pace): plate units per second at full excess, and the excess that gets half of it. */
 const DRIFT = 0.09;
 const DRIFT_EASE = 0.15;
 /** Slope of A|u| (per plate unit) under which the drift fades: on a crest a grain has no way down. */
 const DRIFT_FLAT = 0.2;
 /** A step covers at most this share of the (linearised) way to the grain's contour: no overshoot. */
 const DRIFT_REACH = 0.5;
-/** The dance: speed (plate units per second at excess 1) and memory (s) of the smooth random walk. */
+/** The dance for dry sand (× the grain's hop): speed (plate units per second at excess 1) and memory (s) of the smooth random walk. */
 const DANCE = 0.03;
 const DANCE_MEMORY = 0.4;
 /** Excess under which a grain comes to rest, and at which it counts as fully on the move (G channel). */
@@ -139,6 +148,8 @@ const MOVE_SLOW = 18;
 const MOVE_FAST = 7;
 /** After a "now" (or a new plate) the sand runs at full pace, even with motion off, for the move and this long after. */
 const URGENT_SETTLE = 4;
+/** After a new grain is strewn the sand runs at full pace, even with motion off, this long: about as long as it takes to gather. */
+const REGRAIN_SETTLE = 10;
 /** Figures between two Ms at frequency 0 and 1. */
 const MARK_RARE = 8;
 const MARK_OFTEN = 2;
@@ -421,7 +432,7 @@ function fillFigure(out: Float32Array, figure: Figure, turn: number, round: bool
 
 // ---- the simulation ------------------------------------------------------------------------------
 
-type ChladniKnob = "shape" | "sweep" | "vibration" | "plateSeed" | "grains" | "mark";
+type ChladniKnob = "shape" | "sweep" | "vibration" | "plateSeed" | "grains" | "grainSize" | "mark";
 
 class ChladniSim implements SceneSim {
   readonly #knobs: KnobReader<ChladniKnob>;
@@ -435,7 +446,7 @@ class ChladniSim implements SceneSim {
   readonly #sand = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
   readonly #shown = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
   readonly #modes = new Float32Array(MODE_SIZE * 2);
-  /** Texel 0: crossfade, norm, swing, M share. Texel 1: the strewn veil, the plate's tilt, the veil's gain. */
+  /** Texel 0: crossfade, norm, swing, M share. Texel 1: the strewn veil, the plate's tilt, the veil's gain, the grain's relief. */
   readonly #state = new Float32Array(8);
 
   // The grains, all MAX_GRAINS laid out (the first #count are on the plate).
@@ -444,6 +455,11 @@ class ChladniSim implements SceneSim {
   readonly #vx = new Float32Array(MAX_GRAINS);
   readonly #vy = new Float32Array(MAX_GRAINS);
   readonly #threshold = new Float32Array(MAX_GRAINS);
+  /** Each grain's uniform draw r for its threshold, kept so a new grain size can re-grade the batch. */
+  readonly #draw = new Float64Array(MAX_GRAINS);
+  /** The grain the plate is strewn with (sims/granular.ts), and the knob it was read at. */
+  readonly #grain: Grain = grainAt(0.5);
+  #grainSize = Number.NaN;
   /** 0 at rest, up to 1 on the move. */
   readonly #airborne = new Float32Array(MAX_GRAINS);
   #count = 0;
@@ -511,7 +527,7 @@ class ChladniSim implements SceneSim {
   readonly #homeY = new Float32Array(MAX_GRAINS);
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader<ChladniKnob>("chladni", params, ["shape", "sweep", "vibration", "plateSeed", "grains", "mark"]);
+    this.#knobs = new KnobReader<ChladniKnob>("chladni", params, ["shape", "sweep", "vibration", "plateSeed", "grains", "grainSize", "mark"]);
     this.#sweepTrigger = this.#knobs.trigger("sweep");
     this.#markTrigger = this.#knobs.trigger("mark");
     this.#sandTexture = new DataTexture(gl, { width: CHLADNI_SAND_TEXELS, height: CHLADNI_SAND_TEXELS, format: "rg16f" });
@@ -528,6 +544,8 @@ class ChladniSim implements SceneSim {
     const count = Math.min(MAX_GRAINS, Math.max(1000, Math.round(knobs.value(frame, "grains"))));
     const sweep = Math.min(1, Math.max(0, knobs.value(frame, "sweep")));
     const mark = knobs.value(frame, "mark");
+    const grainSize = clamp(knobs.value(frame, "grainSize"), 0, 1);
+    grainAt(grainSize, this.#grain);
     this.#amp = SWING_GENTLE * Math.pow(SWING_HARD / SWING_GENTLE, Math.min(1, Math.max(0, knobs.value(frame, "vibration"))));
     this.#holdSeconds = HOLD_SLOW + (HOLD_FAST - HOLD_SLOW) * sweep;
     this.#moveSeconds = MOVE_SLOW + (MOVE_FAST - MOVE_SLOW) * sweep;
@@ -555,6 +573,7 @@ class ChladniSim implements SceneSim {
     }
 
     if (seed !== this.#seed) {
+      this.#grainSize = grainSize;
       this.#reset(seed, round, count);
     } else {
       if (round !== this.#round) this.#reshape(round);
@@ -564,6 +583,8 @@ class ChladniSim implements SceneSim {
         this.#count = count;
         this.#sandDirty = true;
       }
+      // A new grain: a fresh batch of it, strewn and sung into the figure.
+      if (grainSize !== this.#grainSize && !leaving) this.#regrain(grainSize);
     }
     // Settle a new plate's opening figure in steps; a slow machine takes more frames, not a different picture.
     if (this.#warmed < PREWARM_STEPS) {
@@ -625,6 +646,7 @@ class ChladniSim implements SceneSim {
     state[4] = leaving ? smoothstep(0, 0.2, exit) : this.#arriving ? 1 - smoothstep(VEIL_FROM, VEIL_TO, this.#clock) : 0;
     state[5] = leaving ? smoothstep(0, 0.7, exit) : 0;
     state[6] = (STREW_REFERENCE / this.#count) * (this.#round ? 4 / Math.PI : 1);
+    state[7] = this.#grain.talus / SAND.talus;
     this.#stateTexture.upload(state);
     return this.#textures;
   }
@@ -649,8 +671,9 @@ class ChladniSim implements SceneSim {
     this.#shedDebt = 0;
     for (let i = 0; i < MAX_GRAINS; i++) {
       this.#strewEvenly(i, plan);
-      this.#threshold[i] = THRESHOLD_MAX * Math.pow(plan.next(), THRESHOLD_CURVE);
+      this.#draw[i] = plan.next();
     }
+    this.#grade();
     this.#index = (seed + FIRST_FIGURE) % this.#figures.length;
     this.#direction = 1;
     this.#sinceMark = 0;
@@ -670,6 +693,24 @@ class ChladniSim implements SceneSim {
     this.#snap = true;
     this.#modesDirty = true;
     if (this.#arriving) this.#beginArrival();
+  }
+
+  /** Each grain's threshold from its draw, for the grain the plate is strewn with (see THRESHOLD_MAX). */
+  #grade(): void {
+    const { grip, spread } = this.#grain;
+    for (let i = 0; i < MAX_GRAINS; i++) this.#threshold[i] = THRESHOLD_MAX * grip * Math.pow(this.#draw[i] ?? 0, spread);
+  }
+
+  /**
+   * A new grain size: a fresh batch of that grain, graded anew, strewn evenly over the plate and sung
+   * into the figure at full pace even while motion is off.
+   */
+  #regrain(grainSize: number): void {
+    this.#grainSize = grainSize;
+    this.#grade();
+    for (let i = 0; i < MAX_GRAINS; i++) this.#strewEvenly(i, this.#hand);
+    this.#urgent = Math.max(this.#urgent, REGRAIN_SETTLE);
+    this.#sandDirty = true;
   }
 
   /**
@@ -847,7 +888,7 @@ class ChladniSim implements SceneSim {
     const still = !this.#moving && this.#amp === this.#steppedAmp;
     this.#steppedAmp = this.#amp;
     if (this.#moving) this.#shed(dt);
-    if (this.#advance(dt, DANCE * (1 + 0.5 * (this.#pace - 1)), still) > 0) this.#sandDirty = true;
+    if (this.#advance(dt, DANCE * this.#grain.hop * (1 + 0.5 * (this.#pace - 1)), still) > 0) this.#sandDirty = true;
     if (this.#moving && this.#mix >= 1) {
       // Arrived: the target becomes the figure the plate holds.
       const from = this.#from;
@@ -875,6 +916,7 @@ class ChladniSim implements SceneSim {
     const thresholds = this.#threshold;
     const airborne = this.#airborne;
     const boost = this.#pace;
+    const drift = DRIFT * this.#grain.pace;
     const from = this.#from;
     const to = this.#to;
     const s = this.#moving ? smoothstep(0, 1, this.#mix) : 0;
@@ -936,7 +978,7 @@ class ChladniSim implements SceneSim {
         continue;
       }
       const slope = Math.sqrt(sx * sx + sy * sy) + 1e-6;
-      const pace = (DRIFT * boost * excess) / (excess + DRIFT_EASE);
+      const pace = (drift * boost * excess) / (excess + DRIFT_EASE);
       // Distance down the slope this step, as a multiple of the slope vector.
       const down = Math.min((pace * dt * slope) / (slope + DRIFT_FLAT), (DRIFT_REACH * excess) / slope) / slope;
       noise ^= noise << 13;

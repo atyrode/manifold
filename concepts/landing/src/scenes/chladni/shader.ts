@@ -2,8 +2,10 @@
 // the sand the simulation (sim.ts) throws into figures.
 //   uSim0  sand per texel over the plate's square: R at rest, G on the move
 //   uSim1  the plate's field over the same square: R the figure it comes from, G the one it goes to
-//   uSim2  texel 0: eased crossfade s, norm, swing A, share of the M in the field; texel 1: the passage
-// Knobs read here: K_shape, K_tone, K_sand, K_lamp, K_lampHue, K_shimmer (the rest drive the sim).
+//   uSim2  texel 0: eased crossfade s, norm, swing A, share of the M in the field; texel 1: the
+//          passage (xyz) and the grain's relief (w)
+// Knobs read here: K_shape, K_tone, K_sand, K_lamp, K_lampHue, K_shimmer, K_grainSize (its look:
+// the sim reads its physics); the rest drive the sim.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { CHLADNI_HUB, CHLADNI_MARK_SIZE, CHLADNI_MARK_Y, CHLADNI_PLATE, CHLADNI_PLATE_FIT, CHLADNI_SAND_TEXELS } from "./sim.ts";
 
@@ -222,9 +224,13 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
       vec2 st = q * 0.5 + 0.5;
       float tx = 1.0 / CHLADNI_TEXELS;
       float depth = chladniDepth(st);
+      // The grain's relief (sim): its angle of repose over dry sand's, so grit's ridges stand steeper.
+      float relief = uSimOn.z > 0.5 ? stage.w : 1.0;
       // A ridge is where the smoothed depth passes about a grain per texel: a few cells wide, with
       // one narrow ramp for the cell threshold to cut, so its edge is hard and has no loose fringe.
       ridge = smoothstep(0.7, 1.1, depth);
+      // Grit heaps into rough ridges: their edge breaks up in specks two cells across.
+      if (K_grainSize > 0.5) ridge = smoothstep(0.7, 1.1, depth + 0.45 * smoothstep(0.5, 1.0, K_grainSize) * (hash12(floor(cell * 0.5) + 53.7) - 0.5));
       crest = chladniLift(depth);
       // The sand's own surface: its slope from the smoothed depth, lit from the lamp. A flank that
       // faces the lamp falls away toward it.
@@ -233,7 +239,7 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
         chladniLift(chladniDepth(st + vec2(g, 0.0))) - chladniLift(chladniDepth(st - vec2(g, 0.0))),
         chladniLift(chladniDepth(st + vec2(0.0, g))) - chladniLift(chladniDepth(st - vec2(0.0, g)))
       );
-      lamb = clamp(dot(normalize(vec3(-3.0 * slope, 1.0)), CHLADNI_LAMP_DIR), 0.0, 1.0);
+      lamb = clamp(dot(normalize(vec3(-3.0 * relief * slope, 1.0)), CHLADNI_LAMP_DIR), 0.0, 1.0);
       vec2 c = texture(uSim0, st).rg;
       vec2 e = texture(uSim0, st + vec2(tx, 0.0)).rg;
       vec2 w = texture(uSim0, st - vec2(tx, 0.0)).rg;
@@ -252,7 +258,7 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
       }
       // Each ridge shades the metal beside it, on the side away from the lamp.
       vec2 lampward = toward * tx;
-      shade = 1.0 - exp(-0.5 * (chladniDepth(st + 2.0 * lampward) + chladniDepth(st + 3.6 * lampward)) / CHLADNI_HEAP);
+      shade = 1.0 - exp(-0.5 * relief * (chladniDepth(st + 2.0 * lampward) + chladniDepth(st + 3.6 * lampward)) / CHLADNI_HEAP);
     }
     plate *= 1.0 - 0.6 * shade * (1.0 - ridge);
 
@@ -267,7 +273,16 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
     // a little paler along the crest, each grain of the surface a touch lighter or darker. A few
     // specks lie darker.
     float body = hardEdge(ridge);
-    vec3 sand = chladniSandLit(albedo, soft, lamb) * (0.82 + 0.35 * crest) * (0.92 + 0.16 * g3) * (g3 > 0.95 ? 0.7 : 1.0);
+    vec3 heap = chladniSandLit(albedo, soft, lamb) * (0.82 + 0.35 * crest);
+    vec3 sand = heap * (0.92 + 0.16 * g3) * (g3 > 0.95 ? 0.7 : 1.0);
+    // The grain shows in the heap's surface: grit in coarse specks two cells across, some dark;
+    // fine sand an even, smooth surface.
+    if (K_grainSize > 0.5) {
+      float gb = hash12(floor(cell * 0.5) + 53.7);
+      sand = mix(sand, heap * (0.76 + 0.48 * gb) * (gb > 0.86 ? 0.55 : 1.0), smoothstep(0.5, 1.0, K_grainSize));
+    } else if (K_grainSize < 0.5) {
+      sand = mix(sand, heap * (0.97 + 0.06 * g3), smoothfall(0.5, 0.0, K_grainSize));
+    }
 
     // The sand gathered into the Manifold M warms toward the lamp's colour.
     float mark = 0.0;
