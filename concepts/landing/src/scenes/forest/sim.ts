@@ -104,6 +104,16 @@ export const FOREST_MOTE_ROWS = 30;
 /** The mist field's grid over the screen. */
 export const FOREST_FOG = { width: 64, height: 36 } as const;
 
+/**
+ * The scene's passage (SceneDef.passage), one source for index.ts, the shader and the sim. Coming in,
+ * the camera starts `back` m behind where it rests and dollies forward between the trunks over `settle`
+ * s (slow start, a small overshoot, a settle), and the spirits pop up on their perches one after
+ * another as it comes to rest; going out, the spirits turn their heads and vanish one by one while the
+ * camera drifts `drift` m back into the mist.
+ */
+export const FOREST_PASSAGE = { enter: 3.2, exit: 1.6 } as const;
+export const FOREST_DOLLY = { back: 2.6, settle: 2.0, drift: 1.4 } as const;
+
 /** Height (m, in the torii's own frame) of the top of its top beam at x (m from its centre): the ends sweep up. */
 export function forestKasagiTop(x: number): number {
   const k = (Math.abs(x) / (FOREST_TORII.span + FOREST_TORII.overhang)) ** 4;
@@ -229,6 +239,20 @@ const CHORUS_AFTER = 4;
 /** Spirit heights (m). */
 const SIZE_MIN = 0.24;
 const SIZE_MAX = 0.34;
+
+// The passage's spirits. Seconds are into the entrance / the exit (the scene's passage clock, not the sim's).
+/** Entrance: the first spirit pops up at POP_FROM, the rest every POP_GAP (squeezed into POP_SPAN in all), each taking POP_RISE to come up out of the moss. */
+const POP_FROM = 1.7;
+const POP_SPAN = 0.8;
+const POP_GAP = 0.3;
+const POP_RISE = 0.7;
+/** Spirits an entrance shows at least (at spirits frequency 0.5; fewer when it is lower). */
+const POP_MIN = 3;
+/** Exit: each spirit turns its head at its turn (every LEAVE_GAP, squeezed into LEAVE_SPAN in all), and LEAVE_TURN later dissolves over LEAVE_FADE. */
+const LEAVE_SPAN = 0.7;
+const LEAVE_GAP = 0.2;
+const LEAVE_TURN = 0.32;
+const LEAVE_FADE = 0.5;
 
 // The stag.
 const STAG_SPEED = 1.05; // m/s
@@ -376,6 +400,14 @@ interface Spirit {
   yawHold: number;
   /** 0..1: how hard it is clicking now (it brightens). */
   rattle: number;
+  /** Entrance: seconds into it at which this spirit pops up (it is hidden until then), or -1. */
+  popAt: number;
+  /** Seconds it takes to rise out of the moss, and to dissolve. */
+  rise: number;
+  fade: number;
+  /** Exit: seconds into it at which this spirit turns its head and then goes, or -1. */
+  leaveAt: number;
+  turned: boolean;
 }
 
 interface Pending {
@@ -479,6 +511,10 @@ class ForestSim implements SceneSim {
   #fogDue = 0;
   #fogShift = 0;
   #chorusAt = Number.POSITIVE_INFINITY;
+  /** The passage (FOREST_PASSAGE): the spirits are being brought in, or sent away, and nothing else appears. */
+  #arriving = false;
+  #leaving = false;
+  #quiet = false;
   #warm = false;
   #dirty = true;
 
@@ -512,6 +548,7 @@ class ForestSim implements SceneSim {
       this.#spirits.push({
         state: "free", perch: 0, age: 0, stay: 0, size: SIZE_MIN, variant: 0, breath: 0, tilt: 0, turnFrom: 0,
         turnTo: 0, turnAge: -1, ticks: 3, sinceTurn: 0, nextTurn: 0, yaw: 0, yawTo: 0, yawHold: 0, rattle: 0,
+        popAt: -1, rise: RISE_TIME, fade: FADE_TIME, leaveAt: -1, turned: false,
       });
     }
     for (let i = 0; i < MAX_MOTES; i++) {
@@ -527,7 +564,11 @@ class ForestSim implements SceneSim {
     if (!this.#warm) {
       this.#prewarm(aspect);
       this.#warm = true;
+      // Only a sim built while the scene comes in plays the entrance (the prewarm and its draws are unchanged).
+      this.#arriving = frame.passage.enter < 1;
+      if (this.#arriving) this.#stageEntrance();
     }
+    this.#playPassage(frame.passage.enter, frame.passage.exit);
     this.#watchTriggers(frame.triggers, aspect);
     this.#trackPointer(frame.pointer, frame.dt, aspect);
 
@@ -802,6 +843,11 @@ class ForestSim implements SceneSim {
     spirit.yawTo = (r() - 0.5) * 0.5;
     spirit.yawHold = 0;
     spirit.rattle = 0;
+    spirit.popAt = -1;
+    spirit.rise = RISE_TIME;
+    spirit.fade = FADE_TIME;
+    spirit.leaveAt = -1;
+    spirit.turned = false;
     if (companion && r() < COMPANION) this.#pending.push({ at: this.#clock + 1.2 + 1.8 * r(), near: perch, exact: -1 });
     return spirit;
   }
@@ -833,7 +879,7 @@ class ForestSim implements SceneSim {
 
   #stepSpirits(h: number): void {
     const rate = this.#rate();
-    if (rate > 0 && this.#random() < rate * h) this.#appear(-1, -1, true);
+    if (!this.#quiet && rate > 0 && this.#random() < rate * h) this.#appear(-1, -1, true);
     for (let i = this.#pending.length - 1; i >= 0; i--) {
       const pending = this.#pending[i];
       if (!pending || pending.at > this.#clock) continue;
@@ -855,9 +901,9 @@ class ForestSim implements SceneSim {
 
     const ease = 1 - Math.exp(-h / 0.3);
     for (const spirit of this.#spirits) {
-      if (spirit.state === "free") continue;
+      if (spirit.state === "free" || spirit.popAt >= 0) continue;
       spirit.age += h;
-      if (spirit.state === "rising" && spirit.age >= RISE_TIME) {
+      if (spirit.state === "rising" && spirit.age >= spirit.rise) {
         spirit.state = "present";
         spirit.age = 0;
       } else if (spirit.state === "present" && spirit.age >= spirit.stay) {
@@ -865,7 +911,7 @@ class ForestSim implements SceneSim {
         spirit.age = 0;
         // Some give a last rattle as they go.
         if (spirit.turnAge < 0 && this.#random() < 0.45) this.#turn(spirit, (this.#random() - 0.5) * 1.1);
-      } else if (spirit.state === "fading" && spirit.age >= FADE_TIME) {
+      } else if (spirit.state === "fading" && spirit.age >= spirit.fade) {
         spirit.state = "free";
         continue;
       }
@@ -903,6 +949,93 @@ class ForestSim implements SceneSim {
         }
       }
       spirit.yaw += (spirit.yawTo - spirit.yaw) * ease;
+    }
+  }
+
+  // ---- the passage ----
+
+  /** The live spirits, ordered by their perch's screen x (ascending for sign 1, descending for -1). */
+  #inOrder(sign: number): Spirit[] {
+    const x = (s: Spirit): number => this.#perches[s.perch]?.x ?? 0;
+    return this.#spirits.filter((s) => s.state !== "free").sort((a, b) => sign * (x(a) - x(b)));
+  }
+
+  /**
+   * The entrance: the spirits the prewarm seated (and a few more, so that there is something to see by
+   * day) stay hidden, and pop up one after another from POP_FROM, left to right.
+   */
+  #stageEntrance(): void {
+    if (this.#spiritRate > 0) {
+      let live = this.#spirits.filter((s) => s.state !== "free").length;
+      const wanted = Math.min(POP_MIN, Math.ceil((POP_MIN * this.#spiritRate) / 0.5));
+      while (live < wanted && this.#appear(-1, -1, false)) live++;
+    }
+    const order = this.#inOrder(1);
+    const gap = order.length > 1 ? Math.min(POP_GAP, POP_SPAN / (order.length - 1)) : 0;
+    for (const [k, spirit] of order.entries()) {
+      spirit.state = "rising";
+      spirit.age = 0;
+      spirit.rise = POP_RISE;
+      spirit.popAt = POP_FROM + k * gap;
+    }
+    this.#dirty = true;
+  }
+
+  /** The exit: the spirits go one after another, right to left (a hidden one that never came is dropped). */
+  #stageExit(): void {
+    for (const spirit of this.#spirits) {
+      if (spirit.popAt < 0) continue;
+      spirit.popAt = -1;
+      spirit.state = "free";
+    }
+    this.#pending.length = 0;
+    this.#chorusAt = Number.POSITIVE_INFINITY;
+    const order = this.#inOrder(-1);
+    const gap = order.length > 1 ? Math.min(LEAVE_GAP, LEAVE_SPAN / (order.length - 1)) : 0;
+    for (const [k, spirit] of order.entries()) {
+      spirit.leaveAt = k * gap;
+      spirit.turned = false;
+    }
+  }
+
+  /** Where the passage stands: `enter` and `exit` are SimFrame.passage's progress 0..1. */
+  #playPassage(enter: number, exit: number): void {
+    if (exit > 0) {
+      if (!this.#leaving) {
+        this.#leaving = true;
+        this.#arriving = false;
+        this.#stageExit();
+      }
+      this.#playExit(Math.min(1, exit) * FOREST_PASSAGE.exit);
+    } else if (this.#arriving) {
+      const done = enter >= 1;
+      this.#playEntrance(done ? Number.POSITIVE_INFINITY : Math.max(0, enter) * FOREST_PASSAGE.enter);
+      if (done) this.#arriving = false;
+    }
+    this.#quiet = this.#arriving || this.#leaving;
+  }
+
+  #playEntrance(seconds: number): void {
+    for (const spirit of this.#spirits) {
+      if (spirit.popAt < 0 || seconds < spirit.popAt) continue;
+      spirit.popAt = -1;
+      this.#dirty = true;
+    }
+  }
+
+  #playExit(seconds: number): void {
+    for (const spirit of this.#spirits) {
+      if (spirit.state === "free" || spirit.leaveAt < 0 || seconds < spirit.leaveAt) continue;
+      if (!spirit.turned) {
+        spirit.turned = true;
+        spirit.nextTurn = Number.POSITIVE_INFINITY;
+        this.#turn(spirit, (this.#random() < 0.5 ? -1 : 1) * (0.4 + 0.2 * this.#random()));
+      }
+      if (seconds >= spirit.leaveAt + LEAVE_TURN && spirit.state !== "fading") {
+        spirit.state = "fading";
+        spirit.age = 0;
+        spirit.fade = LEAVE_FADE;
+      }
     }
   }
 
@@ -1171,15 +1304,15 @@ class ForestSim implements SceneSim {
     data.fill(0);
     for (const [i, spirit] of this.#spirits.entries()) {
       const perch = this.#perches[spirit.perch];
-      if (spirit.state === "free" || !perch) continue;
+      if (spirit.state === "free" || spirit.popAt >= 0 || !perch) continue;
       let alpha = 1;
       let sink = 0;
       if (spirit.state === "rising") {
-        const x = Math.min(1, spirit.age / RISE_TIME);
+        const x = Math.min(1, spirit.age / spirit.rise);
         alpha = smoothstep(0, 1, x);
         sink = (1 - x) * (1 - x);
       } else if (spirit.state === "fading") {
-        alpha = 1 - smoothstep(0, 1, spirit.age / FADE_TIME);
+        alpha = 1 - smoothstep(0, 1, spirit.age / spirit.fade);
       }
       const glow = 0.72 + 0.14 * Math.sin(this.#clock * 0.8 + spirit.breath) + 0.3 * spirit.rattle;
       data.set([perch.x, perch.y, perch.z, alpha, spirit.tilt, spirit.yaw, glow, spirit.variant, sink, spirit.size, 0, 0], i * 12);

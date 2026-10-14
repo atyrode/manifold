@@ -16,6 +16,12 @@
 // with drops it meets and falls when it gets too heavy, is shaken loose by a gust or a pluck, or
 // hangs at a low point too long.
 //
+// The scene's passage (DEW_PASSAGE, #swingWeb): the web is drawn swung on a long pendulum above the
+// frame. It comes in from beyond the right edge on its anchor threads, the moorings staying on their
+// stems so the threads stretch, over the middle with a small overshoot, settling as a gust dies away;
+// a gust swings it out the same way at the exit. The Verlet net itself is not moved, no drop is shaken
+// loose while it swings, and at rest none of this runs.
+//
 // Textures (all nearest, read with texelFetch):
 //   uSim0  rgba16f segments, DEW_SEG_TEXELS texels each, DEW_SEG_ROW per row; segment s starts at
 //          (3 (s % DEW_SEG_ROW), s / DEW_SEG_ROW). Positions are split hi + lo (hi a multiple of
@@ -83,6 +89,25 @@ export const DEW_DROP_HANG = 0.55;
 export const DEW_SILK_HALF = 0.5;
 export const DEW_FRAME_HALF = 0.6;
 export const DEW_GLINT_SWELL = 0.6;
+
+// ---- the passage ------------------------------------------------------------------------------------
+
+/** Seconds the scene's entrance and exit take (SceneDef.passage); the shader reads the same. */
+export const DEW_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+/**
+ * The spider's walk down the top radius to the hub, in seconds into the entrance (she sets off and
+ * arrives), and where she starts (web radii above the hub). The M she weaves there finishes with the entrance.
+ */
+export const DEW_WALK = { from: 0.7, to: 2.4, start: 1.25 } as const;
+/** The swing's pendulum: its length above the hub (frame heights), and the angle's phase (radians) that brings the web over the middle a third of the way through. */
+const SWING_LENGTH = 6;
+const SWING_PHI = 4.9;
+/** Seconds the lowest points of the web lag the highest, and the room (frame heights) left beyond the frame's edge when the web is out. */
+const SWING_LAG = 0.16;
+const SWING_MARGIN = 0.25;
+/** The gusts of the entrance (as it dies away) and the exit (as it takes hold), × a full gust's pressure. */
+const ENTER_GUST = 0.7;
+const EXIT_GUST = 0.9;
 
 /** Largest bead radius the shader can draw for a kind at this dew (its own variation peaks at 1.15). */
 export function dewBeadMax(kind: number, dew: number): number {
@@ -226,6 +251,17 @@ function hi(x: number): number {
   return Math.floor(x * 64) / 64;
 }
 
+/** The swing's progress 0..1 (1: carried out of frame, 0: at rest) on the way in: out of frame, over the middle in about a third of the time, a small overshoot, then to rest with no velocity. */
+function swingIn(u: number): number {
+  const r = 1 - u;
+  return r * r * Math.cos(SWING_PHI * u);
+}
+
+/** The swing's progress on the way out: from rest with no velocity, gathering speed as the gust takes it; 1 is out of frame. */
+function swingOut(u: number): number {
+  return u * u * (0.8 + 0.2 * u);
+}
+
 export class DewError extends Error {}
 
 /** A leaf blade on a stem: where it leaves the stalk (u), which side, its length and half-width (frame heights), its launch angle off the vertical and how far it bends over (radians). */
@@ -322,6 +358,9 @@ class DewWeb {
   readonly sys = new VerletSystem({ points: 1 + SPOKES * (TURNS + 1) + CORNERS.length * 2, constraints: SPOKES * (TURNS + 1) + SPOKES * TURNS + SPOKES + CORNERS.length * 2 });
   readonly layout: WebLayout;
   readonly radius: number;
+  /** Where the hub was spun (frame heights). */
+  readonly hubX: number;
+  readonly hubY: number;
   /** Constraints: the threads drawn and ridden (stems come after them in the segment records). */
   readonly threads: number;
   readonly kind: Uint8Array;
@@ -354,6 +393,8 @@ class DewWeb {
     const leftX = Math.min(edgeLeft, hx - span * radius);
     const rightX = Math.max(edgeRight, hx + span * radius);
     this.radius = radius;
+    this.hubX = hx;
+    this.hubY = hy;
     this.stems = [
       { x0: leftX - 0.035, y0: -0.06, x1: leftX + 0.04, y1: 0.92, bow: -0.03, r0: 0.0075, r1: 0.003, phase: rand() * TAU, sx: 0, sz: 0, head: 0.085, nod: 0.3, leaves: [{ u: 0.28, side: -1, length: 0.24, width: 0.0055, lift: 0.5, droop: 1.9 }, { u: 0.5, side: 1, length: 0.19, width: 0.005, lift: 0.65, droop: 1.8 }] },
       { x0: rightX + 0.02, y0: -0.06, x1: rightX - 0.045, y1: 0.87, bow: 0.035, r0: 0.007, r1: 0.003, phase: rand() * TAU, sx: 0, sz: 0, head: 0.07, nod: -0.32, leaves: [{ u: 0.33, side: -1, length: 0.21, width: 0.0052, lift: 0.55, droop: 1.9 }, { u: 0.57, side: 1, length: 0.15, width: 0.0048, lift: 0.7, droop: 1.7 }] },
@@ -521,6 +562,14 @@ class DewSim implements SceneSim {
   #strumY = 0;
   #prewarming = false;
 
+  // The passage (see #swingWeb): the progress of the entrance and exit, whether either is playing, and
+  // whether the gust of each has been blown.
+  #enter = 1;
+  #exit = 0;
+  #passing = false;
+  #born = false;
+  #leaving = false;
+
   // The drop pool (structure of arrays).
   readonly #state = new Uint8Array(DEW_DROPS);
   readonly #seg = new Int32Array(DEW_DROPS);
@@ -570,6 +619,22 @@ class DewSim implements SceneSim {
     if (Math.abs(aspect - this.#web.aspect) > 1e-3 || seed !== this.#web.seed) this.#web = this.#spin(aspect, seed);
     this.#fitBins(frame.height, aspect);
 
+    // The passage: the web swings in on its anchor threads as a gust settles, and out again on another.
+    // None of it runs at rest, and the web's own simulation is untouched.
+    const enter = Math.min(1, Math.max(0, frame.passage.enter));
+    const exit = Math.min(1, Math.max(0, frame.passage.exit));
+    if (!this.#born) {
+      this.#born = true;
+      if (enter < 1) this.#blow(GUST_SECONDS - DEW_PASSAGE.enter, ENTER_GUST);
+    }
+    if (exit > 0 && !this.#leaving) {
+      this.#leaving = true;
+      this.#blow(0, EXIT_GUST);
+    }
+    this.#enter = enter;
+    this.#exit = exit;
+    this.#passing = enter < 1 || exit > 0;
+
     const dt = Math.min(Math.max(frame.dt, 0), 0.1);
     const sdt = dt * Math.min(1, Math.max(0, frame.motion));
     if (frame.fired[this.#gustSlot] === true) {
@@ -577,7 +642,7 @@ class DewSim implements SceneSim {
       this.#gustAmp = 1;
     }
     this.#advance(sdt);
-    this.#play(frame.pointer, aspect);
+    if (!this.#passing) this.#play(frame.pointer, aspect);
 
     this.#pack(frame.height);
     this.#textures[0] = this.#segTex.texture;
@@ -599,6 +664,7 @@ class DewSim implements SceneSim {
   /** Spin a web, let it settle, and fast-forward its dew so the first frame already glistens. */
   #spin(aspect: number, seed: number): DewWeb {
     const web = new DewWeb(aspect, seed);
+    this.#passing = false;
     this.#web = web;
     this.#rand = mulberry32((Math.imul(seed + 7, 0x85ebca6b) ^ 0x6472) >>> 0);
     this.#load = new Float32Array(web.sys.count);
@@ -922,6 +988,8 @@ class DewSim implements SceneSim {
   /** Let a drop go: it falls, and its thread springs up. */
   #fall(d: number): void {
     if (this.#state[d] !== RIDING) return;
+    // Nothing is shaken loose while the web swings: it is drawn displaced from where the sim holds it.
+    if (this.#passing) return;
     const sys = this.#web.sys;
     const c = this.#seg[d] ?? 0;
     const t = this.#t[d] ?? 0;
@@ -1095,6 +1163,52 @@ class DewSim implements SceneSim {
     }
   }
 
+  // ---- the passage --------------------------------------------------------------------------------
+
+  /** Start a gust `age` seconds into its course, at this share of a full one's pressure. */
+  #blow(age: number, amplitude: number): void {
+    this.#gustAt = this.#clock - age;
+    this.#gustAmp = amplitude;
+  }
+
+  /**
+   * The passage's swing, applied to the drawn points. The web hangs from a long pendulum above the
+   * frame; a gust has carried it out past the right edge, and the entrance brings it back in, over
+   * the middle with a small overshoot and to rest (swingIn), while the exit is the next gust taking it
+   * out the same way (swingOut). The moorings stay on their stems and the twig, so the anchor threads
+   * stretch and the web comes in on them; the beads and the drops on it go along. Lower points lag the
+   * upper ones a little, so the web flexes instead of turning as a board. The sim's own points are
+   * not touched.
+   */
+  #swingWeb(drawn: Float32Array): void {
+    const web = this.#web;
+    const sys = web.sys;
+    const reach = web.radius * (CORNER_REACH + CORNER_REACH_JITTER) + SWING_MARGIN;
+    const theta0 = Math.asin(Math.min(0.95, (web.aspect - web.hubX + reach) / SWING_LENGTH));
+    const px = web.hubX;
+    const py = web.hubY + SWING_LENGTH;
+    const span = web.radius * 1.4;
+    const inSeconds = this.#enter * DEW_PASSAGE.enter;
+    const outSeconds = this.#exit * DEW_PASSAGE.exit;
+    for (let i = 0, n = sys.count; i < n; i++) {
+      if (sys.isPinned(i)) continue;
+      const o = i * 3;
+      const x = drawn[o] ?? 0;
+      const y = drawn[o + 1] ?? 0;
+      const lag = SWING_LAG * Math.min(1, Math.max(0, 0.5 + (0.5 * (web.hubY - y)) / span));
+      let s = 0;
+      if (this.#enter < 1) s = swingIn(Math.min(1, Math.max(0, (inSeconds - lag) / (DEW_PASSAGE.enter - SWING_LAG))));
+      if (this.#exit > 0) s += (1 - s) * swingOut(Math.min(1, Math.max(0, (outSeconds - lag) / (DEW_PASSAGE.exit - SWING_LAG))));
+      const theta = theta0 * s;
+      const c = Math.cos(theta);
+      const sn = Math.sin(theta);
+      const dx = x - px;
+      const dy = y - py;
+      drawn[o] = px + dx * c - dy * sn;
+      drawn[o + 1] = py + dx * sn + dy * c;
+    }
+  }
+
   // ---- packing ------------------------------------------------------------------------------------
 
   #pack(heightCells: number): void {
@@ -1124,6 +1238,7 @@ class DewSim implements SceneSim {
       drawn[i + 1] = 0.5 + (y - 0.5) * grow;
       drawn[i + 2] = z;
     }
+    if (this.#passing) this.#swingWeb(drawn);
 
     const segRows = Math.ceil((web.threads + web.stems.reduce((n, stem) => n + STEM_SEGMENTS + stem.leaves.length * LEAF_SEGMENTS + HEAD_SEGMENTS * 3, 0)) / DEW_SEG_ROW);
     const segWidth = DEW_SEG_ROW * DEW_SEG_TEXELS;

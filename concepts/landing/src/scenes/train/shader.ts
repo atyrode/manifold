@@ -23,7 +23,13 @@
 // Positions along the line arrive as whole 256 m blocks plus metres (half floats hold whole
 // numbers exactly); trainTile turns them into exact tile numbers and offsets, so the landscape never
 // jitters however far the train has run.
-import { TRAIN_BLOCK, TRAIN_BLOCKS, TRAIN_BRIDGE, TRAIN_CAR_SLOTS, TRAIN_CROSSING, TRAIN_EVENT_SLOTS, TRAIN_FOCAL, TRAIN_ROAD_Z, TRAIN_STATION, TRAIN_TUNNEL } from "./sim.ts";
+//
+// The passage is the line's own: the train comes out of a tunnel (the dark wall streaming past, a
+// lamp flicking by, the mouth sweeping across the window, the cutting's rock sinking away to open the
+// country, the tea sloshing and settling from the jolt) and, leaving, runs into one (the cutting
+// rises, the mouth sweeps in, the window turns to a mirror). trainPassage lays a tunnel of its own
+// over the timetable while it plays; all of it is exactly off at rest.
+import { TRAIN_BLOCK, TRAIN_BLOCKS, TRAIN_BRIDGE, TRAIN_CAR_SLOTS, TRAIN_CROSSING, TRAIN_EVENT_SLOTS, TRAIN_FOCAL, TRAIN_PASSAGE, TRAIN_ROAD_Z, TRAIN_STATION, TRAIN_TUNNEL } from "./sim.ts";
 
 /** A number as a GLSL float literal. */
 const glslFloat = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
@@ -65,6 +71,19 @@ const vec3 TRAIN_SODIUM = vec3(1.0, 0.52, 0.18); // road and tunnel lamps
 const vec3 TRAIN_SIGNAL = vec3(1.0, 0.1, 0.05);  // the crossing's flashers, the mast's light
 const vec3 TRAIN_SNOW = vec3(0.86, 0.9, 0.97);
 
+// ---- The passage: out of a tunnel, into a tunnel (see trainPassage) ----
+const float TRAIN_ENTER = ${glslFloat(TRAIN_PASSAGE.enter)};  // seconds the entrance takes
+const float TRAIN_EXIT = ${glslFloat(TRAIN_PASSAGE.exit)};    // and the exit
+const float TRAIN_ENTER_MOUTH = 1.05; // the second the tunnel's mouth sweeps across the window
+const float TRAIN_ENTER_LAMP = 0.6;   // the second a tunnel lamp flicks by before it
+const float TRAIN_ENTER_SINK = 1.2;   // seconds the cutting's rim takes to sink away after the mouth
+const float TRAIN_EXIT_MOUTH = 0.95;  // the second the mouth sweeps in across the window
+const float TRAIN_EXIT_RISE = 0.9;    // seconds the cutting takes to rise before it
+const float TRAIN_RIM_HIGH = 4.5;     // the cutting's rim above the eye (m): over the window / below it
+const float TRAIN_RIM_LOW = -4.0;
+const float TRAIN_PASS_LEN = 600.0;   // the passage tunnel's length (m)
+const float TRAIN_NO_CUT = 1000.0;    // trainPassCut's value when no passage plays
+
 // ---- This pixel's journey (set by trainRead and sceneTrain) ----
 float trainBlockN;     // whole odometer blocks
 float trainInto;       // metres into the block, exact
@@ -95,6 +114,10 @@ vec4 trainCrossing;
 vec4 trainBridge;
 vec4 trainTunnel;
 vec3 trainCars[TRAIN_CARS]; // metres ahead, heading +1 / -1, 1 while there
+float trainPassCut;    // passage: the cutting's rim above the eye (m), TRAIN_NO_CUT unless a passage plays
+float trainPassAge;    // passage: seconds since the jolt, -1 before it and at rest
+float trainPassSlosh;  // passage: the jolt's slosh of the tea, the steam and the curtain (0 at rest)
+float trainPassRattle; // passage: the spoon's rattle (0 at rest)
 
 // ---- The odometer, the timetable ----
 
@@ -138,6 +161,53 @@ void trainRead(float t) {
     for (int i = 0; i < TRAIN_CARS; i++) trainCars[i] = texelFetch(uSim0, ivec2(2 + 2 * TRAIN_EVENTS + i, 0), 0).xyz;
   }
   trainS = trainBlockN * TRAIN_BLOCK + trainInto;
+}
+
+// The passage, in the world. The train comes out of a tunnel: the window is first all tunnel wall
+// (the mortar courses holding still, a lamp flicking by), then the mouth sweeps across it at the
+// train's speed, the cutting's rock beyond sinks away to open the country, and the jolt of coming
+// out sets the tea sloshing. Leaving, the cutting rises, the mouth sweeps in the other way and the
+// wall takes the window. The tunnel is a virtual one laid over the timetable (the sim commits real
+// ones a kilometre ahead, never in view at the start) and is skipped if the train is in a real one;
+// the cutting's rim follows the passage's own clock so it does not depend on the speed. Must follow
+// trainRead; nothing at rest.
+void trainPassage() {
+  trainPassCut = TRAIN_NO_CUT;
+  trainPassAge = -1.0;
+  trainPassSlosh = 0.0;
+  trainPassRattle = 0.0;
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return;
+  bool real = trainTunnel.x < 0.0 && trainTunnel.x + trainTunnel.y > 0.0;
+  float run = max(trainV, 5.0);
+  float age;
+  float strength = 1.0;
+  if (pout > 0.0) {
+    float s = pout * TRAIN_EXIT;
+    if (!real) {
+      trainPassCut = mix(TRAIN_RIM_LOW, TRAIN_RIM_HIGH, smoothstep(0.0, TRAIN_EXIT_RISE, s));
+      trainTunnel = vec4(-run * (s - TRAIN_EXIT_MOUTH), TRAIN_PASS_LEN, 0.5, 0.0);
+    }
+    age = s - TRAIN_EXIT_MOUTH;
+    strength = 0.5;
+  } else {
+    float s = pin * TRAIN_ENTER;
+    if (!real) {
+      trainPassCut = mix(TRAIN_RIM_HIGH, TRAIN_RIM_LOW, smoothstep(TRAIN_ENTER_MOUTH, TRAIN_ENTER_MOUTH + TRAIN_ENTER_SINK, s));
+      // The tunnel's lamps are 48 m apart; the length puts one run * (MOUTH - LAMP) m inside the mouth,
+      // so that it flicks by at TRAIN_ENTER_LAMP whatever the speed.
+      float len = TRAIN_PASS_LEN + run * (TRAIN_ENTER_MOUTH - TRAIN_ENTER_LAMP);
+      trainTunnel = vec4(run * (TRAIN_ENTER_MOUTH - s) - len, len, 0.5, 0.0);
+    }
+    age = s - TRAIN_ENTER_MOUTH;
+  }
+  if (age > 0.0) {
+    float env = exp(-age * 2.6) * (1.0 - smoothstep(1.0, 1.7, age)) * strength;
+    trainPassAge = age;
+    trainPassSlosh = 0.8 * env * sin(age * 9.0);
+    trainPassRattle = 0.7 * env * exp(-age * 1.9) * sin(age * 40.0);
+  }
 }
 
 // A point d metres along the line from the train (+ ahead): which tile of length L (a power of two,
@@ -1614,7 +1684,13 @@ vec3 trainTunnelScene(vec2 o, float t, vec3 col, inout float hitZ) {
     float d = o.x * z / TRAIN_F + trainEyeOff.x;
     float y = rise * z / TRAIN_F + trainEyeOff.y;
     float into = d < tn.x + 0.5 * tn.y ? smoothstep(tn.x - 110.0, tn.x - 8.0, d) : smoothstep(tn.x + tn.y + 110.0, tn.x + tn.y + 8.0, d);
-    float top = mix(-7.0, 14.0, into) + 3.0 * (trainProfile(d, 16.0, z, 280.0, 2) - 0.5);
+    float rim = mix(-7.0, 14.0, into);
+    if (trainPassCut < TRAIN_NO_CUT) {
+      // The passage's own cutting: its rim by the passage's clock (rising into a tunnel, sinking out of one).
+      into = 1.0;
+      rim = trainPassCut;
+    }
+    float top = rim + 3.0 * (trainProfile(d, 16.0, z, 280.0, 2) - 0.5);
     if (into > 0.0 && trainSolid(y - top, trainAA(z)) > 0.5) {
       hitZ = z;
       float strata = 0.85 + 0.15 * sin(y * 5.0 + 2.0 * trainNoise(d, 64.0, 281.0));
@@ -2056,6 +2132,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   trainRead(t);
   trainSalt = mod(K_route, 1000.0) * 0.731;
+  trainPassage();
 
   // The sky and the light it gives. Rain or snow closes it over: the moon fades behind the deck,
   // the light flattens, the lamps count for more.
@@ -2098,7 +2175,9 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   float jolt = 0.0;
   for (int i = 0; i < 4; i++) jolt += exp(-knock[i] * 14.0) * sin(knock[i] * 70.0);
   jolt *= 0.5 * beat;
+  jolt += trainPassRattle;
   float press = t - uMouse.w;
+  if (trainPassAge >= 0.0) press = min(press, trainPassAge);
   float rock = (0.3 + 0.7 * K_rhythm) * smoothstep(1.0, 10.0, trainV) * (0.6 * sin(tm * 1.7 + 0.8 * sin(tm * 0.23)) + 0.4 * sin(tm * 2.9 + 1.3));
   float brake = clamp(-trainAcc, -1.5, 1.5);
 
@@ -2201,16 +2280,16 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   // The glass of tea, its steam over the window.
   if (K_tea > 0.0) {
     // It stands in the lamp's pool on the table.
-    vec4 tea = trainTea(p - teaFoot, room + TRAIN_LAMP * K_lamp * 0.9, spill, knock, press, brake * 0.5 + rock * 0.08, jolt);
+    vec4 tea = trainTea(p - teaFoot, room + TRAIN_LAMP * K_lamp * 0.9, spill, knock, press, brake * 0.5 + rock * 0.08 + trainPassSlosh, jolt);
     col = mix(col, tea.rgb, tea.a);
     accent *= 1.0 - tea.a;
-    float steam = trainSteam(p - teaFoot - vec2(0.0, 0.2), tm, K_tea, 0.4 * rock + 0.6 * brake);
+    float steam = trainSteam(p - teaFoot - vec2(0.0, 0.2), tm, K_tea, 0.4 * rock + 0.6 * brake + 0.5 * trainPassSlosh);
     col += (vec3(0.78, 0.74, 0.7) * (0.25 + 0.6 * K_lamp) + spill * 0.25) * steam * 0.7;
   }
 
   // The curtain: it rocks with the carriage, swings forward as the train brakes, shivers at a clack.
   if (K_curtain > 0.0) {
-    vec4 curtain = trainCurtain(p, aspect, (0.012 * rock + 0.02 * brake + 0.008 * jolt) * K_curtain * 2.0, room, spill);
+    vec4 curtain = trainCurtain(p, aspect, (0.012 * rock + 0.02 * brake + 0.008 * jolt + 0.03 * trainPassSlosh) * K_curtain * 2.0, room, spill);
     col = mix(col, curtain.rgb, curtain.a);
     accent *= 1.0 - curtain.a;
   }

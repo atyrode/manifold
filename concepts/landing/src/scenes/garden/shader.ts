@@ -15,7 +15,7 @@
 // stands in the grooves, drops burst on hard faces and drip from the eaves and the maple; snow
 // settles on whatever faces up, the gravel's crests first.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { GARDEN, GARDEN_CANOPY, GARDEN_GROOVE, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_STONES } from "./sim.ts";
+import { GARDEN, GARDEN_CANOPY, GARDEN_GROOVE, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_PASSAGE, GARDEN_STONES } from "./sim.ts";
 
 /**
  * The maple's limbs, garden space, as polylines of (x, y, z, radius): the trunk stands beyond the
@@ -67,6 +67,7 @@ const float GARDEN_EYE_Y = ${glslFloat(GARDEN.eyeY)};
 const float GARDEN_SPAN = ${glslFloat(GARDEN.span)};
 const float GARDEN_HIGH = ${glslFloat(GARDEN.overheadHeight)};
 const float GARDEN_ABOVE_Y = ${glslFloat(GARDEN.overheadY)};
+const float GARDEN_EXIT = ${glslFloat(GARDEN_PASSAGE.exit)};
 // Weather scales. The library's ground functions work in metres: a garden depth is ten. A splash
 // unit (garden depths: its crowns some 5-10 cm, larger than life so they hold a few cells); the
 // largest ripple ring in standing water (garden depths); drips' spacing along an edge, in cells
@@ -268,6 +269,33 @@ vec3 gardenSway(int k, float tm, float t, float gust) {
   return vec3(breeze + lean + toss, 0.0, 0.4 * breeze + 0.5 * toss);
 }
 
+// How far from where they hang the maple's boughs stand at point p while the scene comes in or goes
+// out (nothing at rest: the early return keeps every term exact). They swing in from over the top
+// of the frame, those reaching furthest from the trunk a little later, overshoot a touch and settle
+// with a last sway; on leaving, the gust takes the far ones first and carries them off up and
+// downwind. The same offset for any point of a bough, so limbs and foliage stay joined. Veranda: up
+// and aside; from above: away from the veranda, up the frame.
+vec3 gardenBough(vec3 p) {
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return vec3(0.0);
+  float reach = smoothstep(-0.2, 1.1, p.x);
+  float weight = 0.55 + 0.45 * reach;
+  float dir = K_wind < -0.05 ? -1.0 : 1.0;
+  // In: how far still out (1 .. 0, past 0 a little), and the settling sway.
+  float xin = clamp((pin - 0.2 * reach) / 0.8, 0.0, 1.0);
+  float u = xin - 1.0;
+  float away = -(2.7 * u * u * u + 1.7 * u * u);
+  float rock = sin(xin * 11.0 + 2.0 * reach) * (1.0 - xin) * (1.0 - xin);
+  // Out: how far gone (0 .. 1), and the toss as the gust takes them.
+  float xout = clamp((pout - 0.18 * (1.0 - reach)) / 0.82, 0.0, 1.0);
+  float gone = xout * xout * (3.0 - 2.0 * xout);
+  float toss = sin(xout * 9.0 + 3.0 * reach) * 4.0 * xout * (1.0 - xout);
+  float aside = -0.12 * away + 0.03 * rock + dir * (0.1 * gone + 0.03 * toss);
+  if (K_camera > 0.5) return weight * vec3(aside, 0.4 * away + 0.45 * gone, 0.0);
+  return weight * vec3(aside, 0.0, 0.3 * away + 0.012 * rock + 0.34 * gone);
+}
+
 // Screen uv of garden point p in this view, and screen heights per garden depth there (z).
 vec3 gardenProject(vec3 p, float aspect, bool above) {
   if (above) {
@@ -405,7 +433,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   bool above = K_camera > 0.5;
   float season = floor(K_season + 0.5);
   float winter = step(2.5, season);
-  float gust = gardenGust(sinceTrigger(0)) * (K_wind < -0.05 ? -1.0 : 1.0);
+  float gust = max(gardenGust(sinceTrigger(0)), gardenGust(passageOut() * GARDEN_EXIT)) * (K_wind < -0.05 ? -1.0 : 1.0);
   float markSize = K_mark > 0.0 ? GARDEN_MARK_SIZE.x + GARDEN_MARK_SIZE.y * K_mark : 0.0;
   float clock = texelFetch(uSim1, ivec2(GARDEN_ISLAND_COUNT, 0), 0).x;
 
@@ -921,13 +949,15 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   float barkTop = 0.0;
   // Below the maple's lowest reach (most of the frame) these loops would find nothing; while it
   // drips, its drops fall some five drip spacings further.
-  bool maple = uv.y > (above ? GARDEN_MAPLE_LOW.y : GARDEN_MAPLE_LOW.x - (dripping > 0.0 ? 5.2 * dripGap : 0.0));
+  // The boughs may be carried well below their place while they come in or leave (and swing past it).
+  float boughDip = (passageIn() < 1.0 || passageOut() > 0.0) ? 0.07 : 0.0;
+  bool maple = uv.y > (above ? GARDEN_MAPLE_LOW.y : GARDEN_MAPLE_LOW.x - (dripping > 0.0 ? 5.2 * dripGap : 0.0)) - boughDip;
   for (int k = 0; k < GARDEN_LIMB_COUNT && maple; k++) {
     vec4 a = GARDEN_LIMB_A[k];
     vec4 b = GARDEN_LIMB_B[k];
     vec3 sway = gardenSway(k, tm, t, gust);
-    vec3 pa = gardenProject(a.xyz + 0.3 * sway, aspect, above);
-    vec3 pb = gardenProject(b.xyz + sway, aspect, above);
+    vec3 pa = gardenProject(a.xyz + 0.3 * sway + gardenBough(a.xyz), aspect, above);
+    vec3 pb = gardenProject(b.xyz + sway + gardenBough(b.xyz), aspect, above);
     vec2 A = vec2(pa.x * aspect, pa.y);
     vec2 ab = vec2(pb.x * aspect, pb.y) - A;
     float h = clamp(dot(sp - A, ab) / max(dot(ab, ab), 1e-9), 0.0, 1.0);
@@ -948,7 +978,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   float summer = step(0.5, season) * (1.0 - step(1.5, season));
   for (int k = 0; k < GARDEN_CLUMP_COUNT && maple; k++) {
     vec4 c = GARDEN_CLUMPS[k];
-    vec3 C = c.xyz + gardenSway(k, tm, t, gust);
+    vec3 C = c.xyz + gardenSway(k, tm, t, gust) + gardenBough(c.xyz);
     vec3 pr = gardenProject(C, aspect, above);
     float R = c.w * pr.z;
     vec2 q = (sp - vec2(pr.x * aspect, pr.y)) / R;

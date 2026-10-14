@@ -5,11 +5,14 @@
 // the mountains), and now and then a station glides past under its lamps, a level crossing flashes,
 // a bridge's girders flick by over a misty valley, or a tunnel turns the window into a mirror.
 // sim.ts runs the journey (distance, speed, the timetable, the cars alongside); shader.ts paints it.
+// The passage is the line's own: the train comes out of a tunnel (dark wall streaming past, the
+// mouth sweeping by, the cutting's rock sinking away to open the country, the tea settling from the
+// jolt) and, leaving, runs into one.
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { trainGlsl } from "./shader.ts";
-import { trainSim } from "./sim.ts";
+import { TRAIN_PASSAGE, trainSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("journey", "speed", "speed", 0.4, "How fast the train runs, from a crawl to an express; the default is a slow night train, about 43 km/h. Near things blur past and the wires dip and rise quicker, the wheels clack faster, the far hills hardly move.", { min: 0.1, max: 1 }),
@@ -53,4 +56,6 @@ export const trainScene: SceneDef = {
   glsl: trainGlsl,
   entry: "sceneTrain",
   sim: trainSim(params),
+  // Entrance: out of a tunnel into the night country, the tea settling from the jolt. Exit: into a tunnel.
+  passage: TRAIN_PASSAGE,
 };

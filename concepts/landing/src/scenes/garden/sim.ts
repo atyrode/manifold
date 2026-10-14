@@ -267,6 +267,28 @@ const LANDED_MAX = 12;
 /** The share of lying leaves (the lightest, by hue) a full gust picks up and blows away. */
 const GUST_CARRY = 0.4;
 
+/** Where a passage's leaf lets go (see #spawn). */
+type SpawnMode = "entrance" | "flurry";
+
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the exit's, to
+ * time the gust). Entrance: the maple's boughs sway in from the top of the frame and a few leaves
+ * drift down and land. Exit: a gust blows a flurry of leaves across the gravel while the boughs
+ * sway out of the frame.
+ */
+export const GARDEN_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+/**
+ * The entrance's leaves: up to this many (fewer in the sparse seasons) let go from the boughs, the
+ * first this far into the entrance, the rest this far apart (seconds).
+ */
+const ENTRANCE_LEAVES = 5;
+const ENTRANCE_FIRST = 0.1;
+const ENTRANCE_GAP = 0.2;
+/** The exit's flurry: this many leaves blown in from upwind over this many seconds of the gust, which pushes them this many times harder than a "now" gust does. */
+const FLURRY_LEAVES = 14;
+const FLURRY_SPAN = 0.6;
+const FLURRY_BOOST = 4;
+
 // ---- small helpers -------------------------------------------------------------------------------
 
 /** A gust's strength `age` seconds after it was called: rises over GUST_RISE, then dies away (the shader's gardenGust). */
@@ -835,6 +857,16 @@ class GardenSim implements SceneSim {
   #gustAge = Infinity;
   #gustSign = 1;
   #shower = 0;
+  // The scene's passage (see GARDEN_PASSAGE): the leaves it adds draw from their own sequence.
+  readonly #passageRand = mulberry32(0x70617373);
+  /** Whether this sim was built while the scene came in; undefined until its first frame. */
+  #arriving: boolean | undefined = undefined;
+  /** Entrance leaves let go so far, and flurry leaves. */
+  #strewn = 0;
+  #flurried = 0;
+  #leaving = false;
+  /** How many times harder than a "now" gust the current one pushes leaves: 1, but the exit's flurry. */
+  #gustPush = 1;
 
   #aspect = 16 / 9;
   #overhead = false;
@@ -872,6 +904,7 @@ class GardenSim implements SceneSim {
     if (settings.season !== this.#season) this.#reskin(settings.season);
 
     this.#watchGust(frame.fired, settings);
+    this.#passage(frame, settings);
     const step = dt * frame.motion;
     this.#clock += step;
     if (this.#clock > 2 * FRESH_REBASE) this.#rebaseClock();
@@ -1333,6 +1366,45 @@ class GardenSim implements SceneSim {
     this.#shower = GUST_SHOWER;
   }
 
+  /**
+   * The scene's passage. A sim built while the scene comes in lets a few leaves go from the boughs
+   * as it arrives; once it leaves, a gust (the "now" gust, on the exit's clock, so the shader's
+   * boughs lean with it) blows a flurry of leaves in from upwind and carries off the ones lying on
+   * the gravel. Nothing here runs at rest.
+   */
+  #passage(frame: SimFrame, settings: Settings): void {
+    const { enter, exit } = frame.passage;
+    if (this.#arriving === undefined) this.#arriving = enter < 1;
+    if (this.#arriving) {
+      if (enter >= 1) {
+        this.#arriving = false;
+      } else {
+        const total = settings.leaves > 0 ? Math.round(ENTRANCE_LEAVES * Math.min(1, 2 * FALL_RATE[settings.season])) : 0;
+        const seconds = enter * GARDEN_PASSAGE.enter;
+        while (this.#strewn < total && seconds >= ENTRANCE_FIRST + ENTRANCE_GAP * this.#strewn) {
+          this.#strewn++;
+          this.#spawn(settings, false, this.#passageRand, "entrance");
+        }
+      }
+    }
+    if (exit > 0) {
+      const seconds = exit * GARDEN_PASSAGE.exit;
+      if (!this.#leaving) {
+        this.#leaving = true;
+        this.#gustSign = settings.wind < -0.05 ? -1 : 1;
+        this.#gustPush = FLURRY_BOOST;
+      }
+      this.#gustAge = seconds;
+      while (this.#flurried < FLURRY_LEAVES && seconds >= (FLURRY_SPAN * this.#flurried) / FLURRY_LEAVES) {
+        this.#flurried++;
+        this.#spawn(settings, false, this.#passageRand, "flurry");
+      }
+    } else if (this.#leaving) {
+      this.#leaving = false;
+      this.#gustPush = 1;
+    }
+  }
+
   /** Give the leaves on the ground (and in the air) the new season's colours. */
   #reskin(season: GardenSeason): void {
     this.#season = season;
@@ -1368,8 +1440,8 @@ class GardenSim implements SceneSim {
     if (landed > LANDED_MAX) this.#retireOldest();
 
     const gust = gustAt(this.#gustAge) * this.#gustSign;
-    const windX = settings.wind * WIND_DRIFT + gust * GUST_DRIFT;
-    const lift = Math.abs(gust) * GUST_LIFT;
+    const windX = settings.wind * WIND_DRIFT + gust * GUST_DRIFT * this.#gustPush;
+    const lift = Math.abs(gust) * GUST_LIFT * this.#gustPush;
     for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
       const state = this.#state[i];
       if (state === FALLING) {
@@ -1408,16 +1480,32 @@ class GardenSim implements SceneSim {
 
   /**
    * A leaf lets go: from the maple's foliage, or (on the veranda) from the boughs overhead, out of
-   * frame; a gust also brings some in from upwind. Returns its slot, if one was free.
+   * frame; a gust also brings some in from upwind. The passage's leaves (`mode`) draw from their
+   * own `rand`, so the garden's leaf sequence is the same with or without a passage: an entrance's
+   * let go from the boughs over the gravel's left half, an exit's are blown in low, from upwind.
+   * Returns its slot, if one was free.
    */
-  #spawn(settings: Settings, gust: boolean): number | undefined {
+  #spawn(settings: Settings, gust: boolean, rand: () => number = this.#leafRand, mode?: SpawnMode): number | undefined {
     const i = this.#slot();
     if (i === undefined) return undefined;
-    const rand = this.#leafRand;
     const kind = SEASON_KIND[settings.season];
     const spec = SPECS[kind];
     const zone = rand();
-    if (!settings.overhead && zone < 0.55) {
+    if (mode === "entrance" && !settings.overhead) {
+      // Over the gravel's left, under the boughs swinging in, above the veranda's frame.
+      const y = 0.08 + 0.4 * rand();
+      const half = 0.5 * this.#aspect * (y - GARDEN.eyeY) / GARDEN.focal;
+      this.#x[i] = OX + half * (1.5 * rand() - 1);
+      this.#y[i] = y;
+      this.#z[i] = GARDEN.eyeHeight + 0.03 + 0.03 * (y - GARDEN.eyeY) + 0.05 * rand();
+    } else if (mode === "flurry") {
+      // Past the frame's upwind edge, low: the gust carries it across.
+      const y = 0.12 + 0.6 * rand();
+      const half = settings.overhead ? 0.5 * this.#aspect * GARDEN.span : 0.5 * this.#aspect * (y - GARDEN.eyeY) / GARDEN.focal;
+      this.#x[i] = OX - this.#gustSign * (half + 0.02 + 0.2 * rand());
+      this.#y[i] = y;
+      this.#z[i] = 0.08 + 0.2 * rand();
+    } else if (!settings.overhead && zone < 0.55) {
       // Overhead boughs, above the veranda's frame.
       const y = 0.06 + 0.42 * rand();
       this.#x[i] = OX + (rand() - 0.5) * 1.1 * (y - GARDEN.eyeY) * 1.4;
@@ -1583,12 +1671,12 @@ class GardenSim implements SceneSim {
       // Skitter downwind a little, turning, each leaf by its own share; at the gust's height the
       // lightest are carried off along the gravel.
       const share = 0.15 + 0.35 * (this.#hue[i] ?? 0);
-      this.#x[i] = (this.#x[i] ?? 0) + gust * GUST_DRIFT * share * dt;
+      this.#x[i] = (this.#x[i] ?? 0) + gust * GUST_DRIFT * this.#gustPush * share * dt;
       this.#sigma[i] = (this.#sigma[i] ?? 0) + gust * share * 2.5 * dt;
       this.#z[i] = this.#groundAt(this.#x[i] ?? 0, this.#y[i] ?? 0, settings.moss) + LEAF_LIFT;
       if (Math.abs(gust) > 0.7 && (this.#hue[i] ?? 0) > 1 - GUST_CARRY) {
         this.#state[i] = LEAVING;
-        this.#vx[i] = gust * GUST_DRIFT * 2 * share;
+        this.#vx[i] = gust * GUST_DRIFT * 2 * share * this.#gustPush;
         this.#vy[i] = 0;
       }
     }

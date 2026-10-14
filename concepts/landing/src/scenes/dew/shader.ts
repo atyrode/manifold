@@ -9,6 +9,9 @@
 // even spacing along the threads and the big drops, each a small ball lens with a lit body holding
 // the scene behind it upside down, and a spark of the low sun.
 //
+// The entrance's spider is drawn here: she comes down the top radius to the hub in a walking gait and
+// spins her M or ribbon out from it on arriving (DEW_WALK). The web's swing is in sim.ts.
+//
 // Fine features are dithered here, whole: a cell takes a feature's colour snapped to the palette's
 // levels, or nothing, decided against the cell's own dither threshold (a feature fainter than the
 // first level becomes a sparse, still stipple). A slowly moving edge then flips each cell once, and
@@ -26,6 +29,7 @@ import {
   DEW_KIND_FRAME,
   DEW_KIND_SPIRAL,
   DEW_KIND_STEM,
+  DEW_PASSAGE,
   DEW_PIECE_AWN,
   DEW_PIECE_HEAD,
   DEW_PIECE_LEAF,
@@ -35,6 +39,7 @@ import {
   DEW_SEG_TEXELS,
   DEW_SILK_HALF,
   DEW_STEM_UNIT,
+  DEW_WALK,
   DEW_WET_LEVELS,
 } from "./sim.ts";
 import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
@@ -64,6 +69,12 @@ const float DEW_BEAD_HANG = ${glslFloat(DEW_BEAD_HANG)};
 const float DEW_SILK_HALF = ${glslFloat(DEW_SILK_HALF)};
 const float DEW_FRAME_HALF = ${glslFloat(DEW_FRAME_HALF)};
 const float DEW_GLINT_SWELL = ${glslFloat(DEW_GLINT_SWELL)};
+// The entrance: its length, and the spider's walk down the top radius to the hub (the seconds she
+// sets off and arrives, and the web radii above the hub she starts).
+const float DEW_ENTER = ${glslFloat(DEW_PASSAGE.enter)};
+const float DEW_WALK_FROM = ${glslFloat(DEW_WALK.from)};
+const float DEW_WALK_TO = ${glslFloat(DEW_WALK.to)};
+const float DEW_WALK_START = ${glslFloat(DEW_WALK.start)};
 
 // The backdrop's camera: the horizon's height in the frame, the hedge's crown, the field of view.
 const float DEW_HORIZON = 0.4;
@@ -442,7 +453,7 @@ void dewDrop(int d, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
 // carapace, a shield of cream, gold and black bands, dark legs ringed gold at the joints, every edge
 // toward the low sun rimmed with light. 'q' in her units (y up the web), 'cells' per unit. Returns
 // colour (linear) and coverage.
-vec4 dewSpider(vec2 q, float cells, DewLight lt, float tm) {
+vec4 dewSpider(vec2 q, float cells, DewLight lt, float tm, vec2 gait) {
   if (dot(q, q) > 11.0) return vec4(0.0);
   float aa = 0.7 / cells;
   float thin = 0.8 / cells;
@@ -463,7 +474,9 @@ vec4 dewSpider(vec2 q, float cells, DewLight lt, float tm) {
     // Root angle from her head, femur, the bend at the knee, tibia and the rest.
     // Pairs: legs I and II held together reaching down either side, III and IV together up either side, an X.
     vec4 leg = k == 0 ? vec4(0.5, 1.0, 0.18, 1.1) : k == 1 ? vec4(0.82, 0.95, -0.05, 1.0) : k == 2 ? vec4(2.15, 0.85, 0.2, 0.95) : vec4(2.5, 1.0, -0.1, 1.0);
-    float raise = i == twitch ? 0.28 * lift : 0.0;
+    // Walking, the legs swing in alternation: the amplitude and phase come in as 'gait' (zero at rest).
+    float stride = gait.x * 0.22 * sin(gait.y + 3.14159265 * float(k + i % 2));
+    float raise = (i == twitch ? 0.28 * lift : 0.0) + stride;
     vec2 d1 = vec2(side * sin(leg.x + raise), -cos(leg.x + raise));
     vec2 d2 = vec2(side * sin(leg.x + leg.z + raise * 0.5), -cos(leg.x + leg.z + raise * 0.5));
     vec2 root = vec2(0.0, -0.36) + d1 * 0.16;
@@ -643,6 +656,24 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   // At the hub: a mat of dense silk under her, her M of zig-zag silk.
   vec2 local = rotate(v.p - v.hub, -turn);
   float unit = webR * DEW_SPIDER;
+  // The entrance: she walks head down along the top radius from the frame to the hub (up the web from
+  // the hub she is 'walkUnits' of her own), her legs in a gait that follows the ground she covers, and
+  // on arrival spins her M or her ribbon out from the hub (the 'weave' reach, in her units and the M's
+  // size). All of it is off at rest.
+  float walkUnits = 0.0;
+  vec2 gait = vec2(0.0);
+  float weaveM = 1000.0;
+  float weaveZ = 1000.0;
+  if (passageIn() < 1.0) {
+    float te = passageIn() * DEW_ENTER;
+    float walkX = clamp((te - DEW_WALK_FROM) / (DEW_WALK_TO - DEW_WALK_FROM), 0.0, 1.0);
+    float pos = walkX * walkX * (3.0 - 2.0 * walkX);
+    walkUnits = (1.0 - pos) * DEW_WALK_START / DEW_SPIDER;
+    gait = vec2(min(1.0, 6.0 * walkX * (1.0 - walkX)), walkUnits * 2.4);
+    float weave = clamp((te - DEW_WALK_TO) / (DEW_ENTER - DEW_WALK_TO), 0.0, 1.0);
+    weaveM = weave * 0.95;
+    weaveZ = weave * 6.0;
+  }
   vec3 silkWhite = vec3(0.95, 0.93, 0.88) * (lt.sky * 1.6 + lt.color * 0.45 * (0.5 + 0.5 * lt.back) + 0.08);
   if (K_spider > 0.5) {
     float mat = (1.0 - smoothstep(0.7, 1.0, length(local) / (unit * DEW_MAT))) * 0.35;
@@ -651,12 +682,13 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   }
   float markOn = 0.0;
   if (K_mark > 0.0) {
-    vec4 band = hardRamp(dewBright(silkWhite), dewStabilimentum(local, webR * mix(DEW_MARK_MIN, DEW_MARK_MAX, K_mark), v.px), tint, cellTh);
+    float markSize = webR * mix(DEW_MARK_MIN, DEW_MARK_MAX, K_mark);
+    vec4 band = hardRamp(dewBright(silkWhite), dewStabilimentum(local, markSize, v.px) * step(length(local), weaveM * markSize), tint, cellTh);
     markOn = band.a;
     if (markOn > 0.5) col = band.rgb;
   } else if (K_spider > 0.5) {
     // Her own stabilimentum: the zig-zag ribbon above and below the hub.
-    vec4 band = hardRamp(dewBright(silkWhite), dewZigzag(local, unit, v.px), tint, cellTh);
+    vec4 band = hardRamp(dewBright(silkWhite), dewZigzag(local, unit, v.px) * step(abs(local.y), weaveZ * unit), tint, cellTh);
     if (band.a > 0.5) col = band.rgb;
   }
 
@@ -668,7 +700,7 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
 
   if (K_spider > 0.5) {
     // She is opaque: her colour snapped to the palette, black where she is dark, a silhouette on the mat.
-    vec4 spider = dewSpider(local / unit, unit / v.px, lt, tm);
+    vec4 spider = dewSpider(local / unit - vec2(0.0, walkUnits), unit / v.px, lt, tm, gait);
     if (hardEdge(spider.a) > 0.5) {
       col = snapLevel(dewTone(spider.rgb));
       markOn = 0.0;

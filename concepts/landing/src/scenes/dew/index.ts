@@ -7,7 +7,7 @@ import { choice, feature, range, seed, toggle, type ParamDef } from "../../param
 import { atmosphereGroups, paletteTheme, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { dewGlsl } from "./shader.ts";
-import { dewSim } from "./sim.ts";
+import { DEW_PASSAGE, dewSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("web", "breeze", "breeze", 0.35, "How hard the breeze presses on the web. Still air to the left; to the right the web billows and ripples out of its plane and the grass stems nod. Now: a gust, shaking a few heavy drops loose.", { trigger: 0 }),
@@ -36,6 +36,9 @@ export const dewScene: SceneDef = {
   glsl: dewGlsl,
   entry: "sceneDew",
   sim: dewSim(params),
+  // Entrance: the web swings in on its anchor threads as a gust settles, the dew swinging with it, and
+  // the spider walks down to the hub. Exit: a gust swings the web aside and out of frame.
+  passage: DEW_PASSAGE,
   // Mist is pale: the page copy goes dark on it.
   theme: paletteTheme(params, "backdrop", (index) => index === 2),
 };

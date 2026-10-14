@@ -5,11 +5,14 @@
 // roots, stones and branches, rattling their heads round and fading, glowing mushrooms, drifting
 // spores, and now and then a great stag crossing far off between the trunks. The spirits, the stag,
 // the spores and the mist's banks live in sim.ts; shader.ts paints the forest around them.
+// Passage: the camera dollies slowly forward between the trunks and settles, then the spirits pop up
+// one by one on their perches; on the way out they turn their heads and vanish one by one while the
+// camera drifts back into the mist (FOREST_PASSAGE in sim.ts).
 import { feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { forestGlsl } from "./shader.ts";
-import { forestSim } from "./sim.ts";
+import { FOREST_PASSAGE, forestSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   feature("spirits", "spirits", "forest spirits", true, "frequency", 0.5, "Kodama: small pale spirits appearing on the mossy boulders, the fallen log, the beech's branch, the torii and the stepping stones, rising out of the moss as they take shape. Each sits a while, now and then turning its head in a few quick rattling clicks, glows softly at dusk and night, and dissolves. Far more come after sunset than by day. Bring the pointer near and they turn to look at it; click near a perch to call one. Now: a gathering, and then they all turn their heads together.", { trigger: 0 }),
@@ -41,6 +44,7 @@ export const forestScene: SceneDef = {
     manifold: { title: "Manifold mark", blurb: "An M of roots on the near boulder, glowing with the spirits' light." },
   },
   glsl: forestGlsl,
+  passage: FOREST_PASSAGE,
   entry: "sceneForest",
   sim: forestSim(params),
 };

@@ -11,12 +11,19 @@
 // Rain closes the sky, greys and thickens the mist, and (through uWeather.x, how wet the forest is)
 // darkens and glosses every surface, pools on the floor, rings the stream and keeps the beards, the
 // torii and the canopy dripping as it dries.
+// The passage is the camera's: coming in it starts FOREST_DOLLY.back m behind its resting place and
+// dollies forward between the trunks (slow start, a small overshoot, a settle) while the spirits (the
+// sim's) pop up one by one; going out it drifts back into the mist. Every layer is placed at its own
+// depth by forestAt (nearer things slide further, the pointer's parallax too), the floor and the mist
+// by the camera's true distance. All of it is exactly off at rest (forestCamD == 0).
 // The sim (sim.ts) moves the spirits, the stag, the motes and the mist field; its textures are
 // described there. Knobs read here: K_spirits (via the sim), K_mushrooms, K_spores, K_stream, K_mist,
 // K_shafts, K_forestSeed, K_time, K_cycle, K_rain, K_wind, K_mark; triggers 2 (the M) and 3 (spores).
+import { glslFloat } from "../../shaders/glsl.ts";
 import {
   FOREST_BEARD_SPACING,
   FOREST_BRANCH,
+  FOREST_DOLLY,
   FOREST_ELDER,
   FOREST_EYE,
   FOREST_GATE_SHROOMS,
@@ -26,6 +33,7 @@ import {
   FOREST_MARK,
   FOREST_MIN_ASPECT,
   FOREST_MOTE_ROWS,
+  FOREST_PASSAGE,
   FOREST_ROCK_LEFT,
   FOREST_ROCK_RIGHT,
   FOREST_SPIRITS,
@@ -44,6 +52,10 @@ export const forestGlsl = `
 const float FOREST_HORIZON = ${f(FOREST_HORIZON)};
 const float FOREST_EYE = ${f(FOREST_EYE)};
 const float FOREST_MIN_ASPECT = ${f(FOREST_MIN_ASPECT)};
+// The passage (sim.ts FOREST_PASSAGE, FOREST_DOLLY): seconds the entrance takes (the exit needs only its
+// progress); metres the camera starts back, seconds its dolly takes, metres it drifts back on the way out.
+const float FOREST_ENTER = ${glslFloat(FOREST_PASSAGE.enter)};
+const vec3 FOREST_DOLLY = vec3(${glslFloat(FOREST_DOLLY.back)}, ${glslFloat(FOREST_DOLLY.settle)}, ${glslFloat(FOREST_DOLLY.drift)});
 // The stream: centre - swing sin((z - from) rate), half-width half + widen z (see sim.ts).
 const vec4 FOREST_STREAM = vec4(${f(FOREST_STREAM.centre)}, ${f(FOREST_STREAM.swing)}, ${f(FOREST_STREAM.rate)}, ${f(FOREST_STREAM.from)});
 const vec2 FOREST_STREAM_W = vec2(${f(FOREST_STREAM.half)}, ${f(FOREST_STREAM.widen)});
@@ -153,6 +165,50 @@ vec2 forestPar;        // parallax: nearer things slide further (divided by dept
 float forestHeroX;     // screen x of the great cedar's axis
 float forestElderX;    // screen x of the beech's axis
 float forestToriiX;    // world x (m) of the torii's centre
+float forestCamD;      // the camera's advance (m) from where it rests: 0 at rest, - while it is behind
+float forestCamMove;   // 0..1: how fast it is moving (the floor's fine pattern would crawl past, so it calms)
+
+// The dolly's progress 0..1 over x = 0..1: a slow start, an arrival a little early with a small
+// overshoot (to about 1.05) and a settle back, exactly 1 from x = 1.
+float forestSettle(float x) {
+  x = clamp(x, 0.0, 1.0);
+  float bob = smoothstep(0.5, 1.0, x);
+  return smoothstep(0.0, 0.8, x) + 0.05 * sin(0.5 * TAU * bob);
+}
+
+// The camera's advance (m) from where it rests, set once at the top of sceneForest (with forestCamMove):
+// exactly 0 at rest.
+float forestCamera() {
+  float pin = passageIn();
+  float pout = passageOut();
+  forestCamMove = 0.0;
+  if (pin >= 1.0 && pout <= 0.0) return 0.0;
+  float d = 0.0;
+  if (pin < 1.0) {
+    float x = pin * FOREST_ENTER / FOREST_DOLLY.y;
+    float u = clamp(x / 0.8, 0.0, 1.0);
+    d -= FOREST_DOLLY.x * (1.0 - forestSettle(x));
+    forestCamMove = 4.0 * u * (1.0 - u);
+  }
+  if (pout > 0.0) {
+    d -= FOREST_DOLLY.z * pout * pout * (3.0 - 2.0 * pout);
+    forestCamMove = max(forestCamMove, 4.0 * pout * (1.0 - pout));
+  }
+  return d;
+}
+
+// Screen point p as the resting camera would see the same world point of a layer at depth z (m): the
+// camera's advance scales the view about the vanishing point (the horizon, the middle), more for what
+// is near. forestAt adds the pointer's parallax.
+vec2 forestScale(vec2 p, float z) {
+  if (forestCamD == 0.0) return p;
+  vec2 c = vec2(0.0, FOREST_HORIZON);
+  return c + (p - c) * (1.0 - forestCamD / z);
+}
+
+vec2 forestAt(vec2 p, float z) {
+  return forestScale(p, z) + forestPar / z;
+}
 
 // The coverage of something that moves, made all-or-nothing against this cell's dither threshold, so
 // a passing edge flips each cell once instead of stepping its three colour channels apart.
@@ -217,7 +273,7 @@ vec3 forestMistColor(vec2 p) {
 float forestTransmit(float z, float height) {
   float rain = 0.04 * smoothstep(0.0, 0.15, forestRain) + 0.07 * forestRain * forestRain;
   float dens = (0.01 + 0.075 * K_mist + rain) * forestWisp;
-  return exp(-dens * z * (1.0 + 0.6 * exp(-max(height, 0.0) / 1.1)));
+  return exp(-dens * (z - forestCamD) * (1.0 + 0.6 * exp(-max(height, 0.0) / 1.1)));
 }
 
 // The shafts: three beams falling from gaps in the canopy (forestRaySrc) at forestRaySlant, narrow at
@@ -913,7 +969,8 @@ vec4 forestMotes(vec2 p, float hitZ) {
   if (uSimOn.y < 0.5) return vec4(0.0);
   ivec2 size = textureSize(uSim1, 0);
   int cols = size.x / 2;
-  vec2 g = vec2((p.x + 0.5 * forestAspect) * FOREST_MOTE_ROWS, p.y * FOREST_MOTE_ROWS);
+  vec2 pm = forestScale(p, 6.0);
+  vec2 g = vec2((pm.x + 0.5 * forestAspect) * FOREST_MOTE_ROWS, pm.y * FOREST_MOTE_ROWS);
   ivec2 b0 = ivec2(floor(g - 0.5));
   float cellsPerBin = uRes.y / FOREST_MOTE_ROWS;
   float best = 0.0;
@@ -937,7 +994,7 @@ vec4 forestMotes(vec2 p, float hitZ) {
   float nearShroom = 0.0;
   for (int i = 0; i < 6; i++) {
     vec4 site = forestShroom[i];
-    vec2 v = p + forestPar / site.z - site.xy - vec2(0.0, 0.05);
+    vec2 v = forestAt(p, site.z) - site.xy - vec2(0.0, 0.05);
     nearShroom = max(nearShroom, exp(-dot(v, v) / 0.025));
   }
   float show = clamp(1.5 * forestBeam * step(0.001, K_shafts) + forestNight * (0.1 + 0.9 * nearShroom), 0.0, 1.0);
@@ -987,10 +1044,11 @@ vec3 forestWater(vec2 q, vec2 w, float zg, float t, float tm, float keep, vec3 b
   // floor round it gives back; the bed shows through only close by.
   float fres = mix(0.6, 0.95, smoothstep(3.0, 14.0, zg));
   vec3 refl = mix(forestMistColor(vec2(q.x + tilt.x * 0.02, min(2.0 * FOREST_HORIZON - q.y + tilt.y * 0.03, 0.98))), forestSheen, 0.45) * 1.15;
-  if (zg < FOREST_TORII_Z) {
-    // The reflected ray reaches this height at the torii's depth.
-    float h = FOREST_EYE * (FOREST_TORII_Z / zg - 1.0);
-    vec2 qr = vec2(q.x + tilt.x * 0.02, FOREST_HORIZON + (h - FOREST_EYE) / FOREST_TORII_Z);
+  float zt = FOREST_TORII_Z - forestCamD;
+  if (zg < zt) {
+    // The reflected ray reaches this height at the torii's depth (from the camera).
+    float h = FOREST_EYE * (zt / zg - 1.0);
+    vec2 qr = vec2((q.x + tilt.x * 0.02) * (zt / FOREST_TORII_Z), FOREST_HORIZON + (h - FOREST_EYE) / FOREST_TORII_Z);
     vec4 tr = forestTorii(forestToriiFrame(qr), FOREST_TORII_Z / uRes.y);
     refl = mix(refl, mix(forestMist, tr.rgb, forestTransmit(FOREST_TORII_Z, 2.0)), tr.a * 0.85);
   }
@@ -1020,22 +1078,28 @@ vec3 forestWater(vec2 q, vec2 w, float zg, float t, float tm, float keep, vec3 b
 // mushrooms; the stream (or, with it off, its dry stony bed) winding through with a wet mossy lip;
 // pools gathering in the rain, mirroring the mist. zg out: its depth.
 vec3 forestGround(vec2 p, float t, float tm, out float zg) {
-  zg = FOREST_EYE / max(FOREST_HORIZON - p.y, 1e-3);
-  vec2 q = p + forestPar / zg;
-  zg = FOREST_EYE / max(FOREST_HORIZON - q.y, 1e-3);
-  vec2 w = vec2(q.x * zg, zg);
-  float foot = zg * zg / (FOREST_EYE * uRes.y);
+  float zc = FOREST_EYE / max(FOREST_HORIZON - p.y, 1e-3);
+  vec2 q = p + forestPar / zc;
+  zc = FOREST_EYE / max(FOREST_HORIZON - q.y, 1e-3);
+  // The floor point in the world: its distance from the camera is zc, its depth zg (the same at rest).
+  vec2 w = vec2(q.x * zc, zc + forestCamD);
+  zg = w.y;
+  float foot = zc * zc / (FOREST_EYE * uRes.y);
   float keep = 1.0 - smoothstep(0.03, 0.18, foot);
   float s = (w.x - forestStreamX(zg)) / forestStreamHalf(zg);
   float n1 = vnoise(w * vec2(1.1, 1.6) + K_forestSeed);
   float n2 = vnoise(w * vec2(3.4, 5.2) + 7.0);
   float mossy = smoothstep(0.32, 0.62, n1 + 0.25 * (1.0 - smoothstep(1.0, 2.2, abs(s))));
-  vec3 albedo = mix(FOREST_LITTER, FOREST_MOSS * 0.85, mossy) * (0.78 + 0.44 * mix(0.5, n2, keep));
+  float calm = keep * (1.0 - 0.7 * forestCamMove);
+  vec3 albedo = mix(FOREST_LITTER, FOREST_MOSS * 0.85, mossy) * (0.78 + 0.44 * mix(0.5, n2, calm));
   float rl = abs(vnoise(w * vec2(0.7, 1.1) + 3.3) - 0.5);
-  float root = (1.0 - smoothstep(0.018, 0.034, rl)) * keep * smoothstep(0.35, 0.6, vnoise(w * 0.35 + 9.0));
+  float root = (1.0 - smoothstep(0.018, 0.034, rl)) * calm * smoothstep(0.35, 0.6, vnoise(w * 0.35 + 9.0));
   albedo = mix(albedo, FOREST_CEDAR * 0.55, root * 0.7);
   albedo = wetten(albedo, forestWet, 0.85);
-  vec3 light = forestFill * 0.45 + forestTop * 0.9 + forestKey * (0.1 + 1.4 * forestBeam) * 0.8 + forestShroomLight(q, zg) * 1.3;
+  // Where the resting camera would see this floor point, for the mushrooms' light (none behind it).
+  vec2 qs = q;
+  if (forestCamD != 0.0) qs = zg > 0.2 ? vec2(w.x / zg, FOREST_HORIZON - FOREST_EYE / zg) : vec2(1e3);
+  vec3 light = forestFill * 0.45 + forestTop * 0.9 + forestKey * (0.1 + 1.4 * forestBeam) * 0.8 + forestShroomLight(qs, zg) * 1.3;
   vec3 col = albedo * light;
   if (forestWet > 0.35 && abs(s) > 1.25) {
     // Pools a metre or two across, only where the floor is not too foreshortened to hold them.
@@ -1053,7 +1117,7 @@ vec3 forestGround(vec2 p, float t, float tm, out float zg) {
     float pebble = (1.0 - smoothstep(0.25, 0.42, length(fract(bp) - 0.5 - cen))) * keep;
     vec3 bedLight = forestFill * 1.1 + forestTop * 0.5 + forestKey * forestBeam * 0.6;
     vec3 bed = mix(FOREST_LITTER * 0.6, FOREST_ROCK * (0.5 + 0.45 * hb), pebble) * bedLight;
-    vec3 inner = K_stream > 0.0 ? forestWater(q, w, zg, t, tm, keep, wetten(bed, 1.0, 0.3) * 0.7) : wetten(bed, forestWet, 0.3);
+    vec3 inner = K_stream > 0.0 ? forestWater(q, w, zc, t, tm, keep, wetten(bed, 1.0, 0.3) * 0.7) : wetten(bed, forestWet, 0.3);
     float lip = forestBell((abs(s) - 1.0) / 0.09);
     col = mix(inner, col, smoothstep(0.92, 1.18, abs(s)));
     col = mix(col, wetten(FOREST_MOSS_DEEP, 1.0, 0.9) * light, lip * 0.75 * keep);
@@ -1104,6 +1168,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   forestLA = max(aspect, FOREST_MIN_ASPECT);
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   float tm = t * uMotion;
+  forestCamD = forestCamera();
   forestTh = threshold(cell);
   Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
   // The rain's cloud closes over the sky as the rain sets in: a drizzle still lets some sun through,
@@ -1227,7 +1292,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // in front of the second.
   for (int i = 2; i >= 0; i--) {
     float z = FOREST_TREE_Z[i];
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     float height;
     float depth;
     vec4 tree = forestTrees(q, i, depth, height);
@@ -1242,7 +1307,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       if (sa.w > 0.0) {
         vec4 sb = texelFetch(uSim0, ivec2(1, FOREST_SPIRITS), 0);
         float sz = FOREST_STAG_Z;
-        vec2 sq = p + forestPar / sz;
+        vec2 sq = forestAt(p, sz);
         float xw = sq.x * sz;
         float hgt = (sq.y - FOREST_HORIZON) * sz + FOREST_EYE;
         float aa = sz / uRes.y;
@@ -1279,7 +1344,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     if (i == 1) {
       // The torii, the mushrooms glowing on the moss mound at its foot, and the drips off its top beam.
       float tz = FOREST_TORII_Z;
-      vec2 tq = p + forestPar / tz;
+      vec2 tq = forestAt(p, tz);
       if ((tq.y - FOREST_HORIZON) * tz + FOREST_EYE >= -0.02) {
         vec2 P = forestToriiFrame(tq);
         vec4 torii = forestTorii(P, tz / uRes.y);
@@ -1308,7 +1373,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The fallen log and its mushrooms.
   {
     float z = FOREST_LOG.z;
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     float up;
     vec4 fallen = forestLog(q, up);
     if (forestHard(fallen.a) > 0.0) {
@@ -1329,7 +1394,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The old beech and its branch.
   {
     float z = FOREST_ELDER_Z;
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     if (abs(q.x - forestElderX) < 0.4) {
       float height;
       float u;
@@ -1353,7 +1418,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   for (int k = ${FOREST_STONES.length - 1}; k >= 0; k--) {
     vec4 st = FOREST_STONE[k];
     float z = st.x;
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     vec2 c = vec2((forestStreamX(z) + st.y) / z, FOREST_HORIZON - FOREST_EYE / z);
     vec2 rs = st.zw / z;
     float up;
@@ -1367,7 +1432,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The boulder on the right bank, and its mushrooms.
   {
     float z = FOREST_ROCKR.y;
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     float up;
     vec4 rock = forestRock(q, rockRC, rockRR, z, FOREST_HORIZON - FOREST_EYE / (z - 0.6), 4.1, 0.85, t, up);
     if (forestHard(rock.a) > 0.0) {
@@ -1386,7 +1451,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The great cedar with its rope: the whole massive bole in view, buttresses splaying at its foot.
   {
     float z = FOREST_HERO_Z;
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     if (abs(q.x - forestHeroX) < 0.66) {
       float height;
       float u;
@@ -1403,7 +1468,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The near boulder, the roots gripping it (or the M), and its mushrooms.
   {
     float z = FOREST_ROCKL.y;
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     float up;
     vec4 rock = forestRock(q, rockLC, rockLR, z, -1.0, 2.3, 1.0, t, up);
     if (forestHard(rock.a) > 0.0) {
@@ -1430,7 +1495,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // Ferns in the near corners.
   {
     float z = 2.3;
-    vec2 q = p + forestPar / z;
+    vec2 q = forestAt(p, z);
     vec4 fern = forestFern(q, vec2(0.5 * forestLA - 0.07, -0.05), 0.42, 1.0, tm);
     vec4 fern2 = forestFern(q, vec2(-0.5 * forestLA + 0.07, -0.06), 0.34, 5.0, tm);
     if (fern2.a > fern.a) fern = fern2;
@@ -1449,7 +1514,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       vec4 sa = texelFetch(uSim0, ivec2(0, s), 0);
       if (sa.w <= 0.003) continue;
       float z = sa.z;
-      vec2 q = p + forestPar / z;
+      vec2 q = forestAt(p, z);
       vec4 sc = texelFetch(uSim0, ivec2(2, s), 0);
       float hs = sc.y / z;
       vec2 l = (q - sa.xy) / hs;
@@ -1477,17 +1542,17 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   col += FOREST_GLOW * spiritHalo * 0.1 * forestNight * (0.5 + K_mist);
   for (int i = 0; i < 6; i++) {
     vec4 site = forestShroom[i];
-    vec2 v = (p + forestPar / site.z - site.xy) * site.z - vec2(0.0, 0.06);
+    vec2 v = (forestAt(p, site.z) - site.xy) * site.z - vec2(0.0, 0.06);
     float halo = exp(-dot(v, v) / (0.05 + 0.08 * K_mist)) * (hitZ > site.z - 0.5 ? 1.0 : 0.3);
     col += FOREST_SHROOM_GLOW * forestShroomGlow * site.w * halo * (0.06 + 0.22 * K_mist) * forestTransmit(site.z, 0.3);
   }
   if (markGlow * markShow > 0.0) {
-    vec2 mv = (p + forestPar / FOREST_ROCKL.y - rockLC - vec2(0.0, FOREST_MARK.x * rockLR.y)) / (FOREST_MARK.y * rockLR.y);
+    vec2 mv = (forestAt(p, FOREST_ROCKL.y) - rockLC - vec2(0.0, FOREST_MARK.x * rockLR.y)) / (FOREST_MARK.y * rockLR.y);
     col += FOREST_GLOW * markGlow * markShow * exp(-dot(mv, mv) / 0.5) * (0.04 + 0.12 * K_mist) * (hitZ > FOREST_ROCKL.y - 0.5 ? 1.0 : 0.3);
   }
 
   // The mist's banks drifting across, in front of everything but the nearest things.
-  float bank = K_mist * 0.3 * smoothstep(1.0, 1.5, forestWisp) * (1.0 - exp(-min(hitZ, 40.0) / 9.0));
+  float bank = K_mist * 0.3 * smoothstep(1.0, 1.5, forestWisp) * (1.0 - exp(-min(max(hitZ - forestCamD, 0.0), 40.0) / 9.0));
   col = mix(col, mist * 1.05, bank);
 
   // Spores and motes.
@@ -1502,14 +1567,14 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   float dripAmount = forestWet * (0.3 + 0.5 * clamp(1.6 * K_rain, 0.0, 1.0));
   if (dripAmount > 0.0) {
     float drip = 0.0;
-    if (hitZ > FOREST_ELDER_Z) drip = forestDrip(p + forestPar / FOREST_ELDER_Z, tm, dripAmount, FOREST_ELDER_Z, 1.0);
-    if (hitZ > FOREST_TREE_Z[0]) drip = max(drip, 0.75 * forestDrip(p + forestPar / FOREST_TREE_Z[0], tm, 0.75 * dripAmount, FOREST_TREE_Z[0], 2.0));
+    if (hitZ > FOREST_ELDER_Z) drip = forestDrip(forestAt(p, FOREST_ELDER_Z), tm, dripAmount, FOREST_ELDER_Z, 1.0);
+    if (hitZ > FOREST_TREE_Z[0]) drip = max(drip, 0.75 * forestDrip(forestAt(p, FOREST_TREE_Z[0]), tm, 0.75 * dripAmount, FOREST_TREE_Z[0], 2.0));
     col = mix(col, forestDropLit * 1.1, forestHard(drip) * 0.85);
   }
   // The rain, in depth: each layer of drops hidden behind the first surface along this pixel, its
   // unresolved haze laid over the distance like the mist, the nearest, out of focus, fainter.
   if (forestRain > 0.0) {
-    Precip rain = rainFall(uv, aspect, t, forestRainHere, K_wind, 1.0 - exp(-hitZ / 30.0));
+    Precip rain = rainFall(uv, aspect, t, forestRainHere, K_wind, 1.0 - exp(-max(hitZ - forestCamD, 0.0) / 30.0));
     col = mix(col, mist, rain.veil);
     col = mix(col, forestDropLit, rain.cover * mix(0.9, 0.55, rain.near));
   }

@@ -6,7 +6,7 @@ import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { gardenGlsl } from "./shader.ts";
-import { GARDEN_PAPER, gardenPatterns, gardenSeasons, gardenSim } from "./sim.ts";
+import { GARDEN_PAPER, GARDEN_PASSAGE, gardenPatterns, gardenSeasons, gardenSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("garden", "pattern", "raked pattern", gardenPatterns.map((label, value) => ({ label, value })), 0, "Waves: parallel lines meandering across the garden like a slow current, five rings round each island. Straight: the still-water lines of the classic gardens, rings round the islands. Circles: rings spreading out from every stone until they meet the next stone's. The garden is laid out afresh; the rake then keeps it."),
@@ -43,6 +43,7 @@ export const gardenScene: SceneDef = {
   glsl: gardenGlsl,
   entry: "sceneGarden",
   sim: gardenSim(params),
+  passage: GARDEN_PASSAGE,
   // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
   // just after sunrise to just before sunset, on a still clock, unless steady rain greys it. The
   // shader follows the page (pagePaper in inkOf).
