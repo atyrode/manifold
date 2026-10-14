@@ -1,15 +1,22 @@
 // The lab sidebar. Built entirely from the scene catalogue and knob definitions: every change goes
-// through the host as a URL query, so links, presets and undo all share one representation.
+// through the host as a URL query, so links, presets and undo all share one representation. Its
+// session tools, an A/B comparison (compare.ts) and a scene tour (tour.ts), sit beside the setup
+// in the URL (`sessionQuery`) and never inside it.
+import { otherSlot, readComparison, setupDifferences, slots, TapOrHold, writeComparison, type Comparison, type Slot } from "./compare.ts";
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "./params.ts";
 import { loadLocalPresets, parsePresets, presets, saveLocalPresets, type Preset } from "./presets.ts";
 import { colorIds, ditherIds, viewIds, type DitherRenderer } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
-import { accentOf, carryLook, defaults, defaultsFor, modeIds, paramDefaults, serialise, type LabState, type Params } from "./state.ts";
+import { accentOf, carryLook, defaults, defaultsFor, modeIds, paramDefaults, readState, serialise, type LabState, type Params } from "./state.ts";
+import { clampDwell, readTour, TOUR_DWELL, TourPlayer, writeTour, type TourStep } from "./tour.ts";
 
 export interface LabHost {
   current(): { state: LabState; params: Params };
-  /** Replace the whole setup. The host re-renders, then calls `Lab.sync()`. */
-  apply(query: URLSearchParams): void;
+  /**
+   * Replace the whole setup. The host re-renders, then calls `Lab.sync()`. `cut`: switch scenes at
+   * once, without the passage (an A/B flip).
+   */
+  apply(query: URLSearchParams, options?: { cut?: boolean }): void;
   renderer(): DitherRenderer | undefined;
   /** Commit the page was built from; empty for a working tree. */
   build: string;
@@ -47,6 +54,13 @@ const ICONS = {
   dice: "M3 3h10v10H3zM6 6h.01M10 6h.01M8 8h.01M6 10h.01M10 10h.01",
   bolt: "M9 2 4 9h4l-1 5 5-7H8z",
   trash: "M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 8.5h6l.5-8.5",
+  previous: "M11 4 6 8l5 4M4.5 4v8",
+  next: "M5 4l5 4-5 4M11.5 4v8",
+  up: "M8 13V3M4 7l4-4 4 4",
+  down: "M8 3v10M4 9l4 4 4-4",
+  plus: "M8 3v10M3 8h10",
+  cross: "M4 4l8 8M12 4l-8 8",
+  compare: "M2 3h5v10H2zM9 3h5v10H9z",
 } as const;
 
 function icon(name: keyof typeof ICONS): SVGSVGElement {
@@ -65,13 +79,20 @@ const VIEW_LABEL: Record<(typeof viewIds)[number], string> = { dithered: "Dither
 const DITHER_LABEL: Record<(typeof ditherIds)[number], string> = { bayer8: "Bayer 8", bayer4: "Bayer 4", ign: "Noise", none: "None" };
 const COLOR_LABEL: Record<(typeof colorIds)[number], string> = { accent: "Accent", mono: "Mono", full: "Full" };
 const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6df"] as const;
+/** The lab's own settings as an A/B comparison names them. */
+const SETTING_LABEL: Record<keyof LabState, string> = {
+  scene: "scene", mode: "page on top", dither: "dither", color: "colour", pixel: "dot size", levels: "tones", motion: "motion",
+  accent: "accent", instance: "instance name", mouse: "follow mouse", view: "view", dim: "dim", blur: "blur", transitions: "transitions",
+};
 
 const SHORTCUTS: readonly (readonly [string, string])[] = [
-  ["[  ]", "previous / next scene"],
+  ["[  ]", "previous / next scene (tour step while a tour plays)"],
   ["l", "show or hide the lab"],
   ["/", "find a control"],
   ["h", "hide the page on top"],
   ["p", "pause or play"],
+  ["b", "flip between A and B; hold to peek"],
+  ["t", "play or pause the tour"],
   ["Ctrl Z", "undo"],
   ["Ctrl ⇧ Z", "redo"],
 ];
@@ -115,6 +136,23 @@ function reveal(child: HTMLElement, isOpen: () => boolean): Built {
   return { el, sync: () => el.classList.toggle("open", isOpen()) };
 }
 
+/** One slot's undo history: setups (minimal queries) before and after the committed one. */
+interface History {
+  undo: string[];
+  redo: string[];
+  committed: string;
+}
+
+/** Make `query` the history's committed setup, the old one an undo step; false when unchanged. */
+function record(history: History, query: string): boolean {
+  if (query === history.committed) return false;
+  history.undo.push(history.committed);
+  if (history.undo.length > 100) history.undo.shift();
+  history.redo.length = 0;
+  history.committed = query;
+  return true;
+}
+
 export class Lab {
   readonly #root: HTMLElement;
   readonly #opener: HTMLButtonElement;
@@ -124,9 +162,23 @@ export class Lab {
   #sceneSyncers: (() => void)[] = [];
   readonly #sceneSlot = h("div", { class: "scene-sections" });
   #builtScene: SceneId | undefined;
-  readonly #undoStack: string[] = [];
-  readonly #redoStack: string[] = [];
-  #committed: string;
+  /** The undo history of the setup on screen (with a comparison, the live slot's). */
+  #history: History;
+  /** An A/B comparison, and the hidden slot's own undo history once it has been on screen. */
+  #comparison: Comparison | undefined;
+  #hiddenHistory: History | undefined;
+  readonly #flip = new TapOrHold();
+  /** Shows which slot is on screen, over the page, while comparing; a click flips. */
+  readonly #badge = h("button", { type: "button", class: "ab-badge", hidden: true, title: "Flip between A and B (b; hold to peek)", "aria-live": "polite" });
+  /** A scene tour, and its clock's pending frame and last frame time while it plays. */
+  #tour: TourPlayer | undefined;
+  #tourFrame: number | undefined;
+  #tourLast: number | undefined;
+  /** Seconds per tour step without its own (the tour's, kept while no tour is set). */
+  #tourDwell: number = TOUR_DWELL.fallback;
+  readonly #tourStatus = h("p", { class: "tour-status" });
+  readonly #tourProgress = h("progress", { max: 1, value: 0, "aria-label": "Time on this scene" });
+  readonly #reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
   readonly #search: HTMLInputElement;
   readonly #undoButton: HTMLButtonElement;
   readonly #redoButton: HTMLButtonElement;
@@ -137,7 +189,22 @@ export class Lab {
     this.#root = root;
     this.#opener = opener;
     this.#host = host;
-    this.#committed = this.#query();
+    this.#history = { undo: [], redo: [], committed: this.#query() };
+    // The page's query as opened (main.ts applies it after building the lab): a shared comparison
+    // or tour comes back with it.
+    const opened = new URLSearchParams(location.search);
+    this.#comparison = readComparison(opened);
+    const tour = readTour(opened);
+    if (tour) {
+      this.#tour = new TourPlayer(tour, false);
+      this.#tourDwell = tour.dwell;
+      // Once the page has applied its setup. Under reduced motion it shows the tour's scene and waits for play.
+      queueMicrotask(() => this.#beginTour(!this.#reducedMotion));
+    }
+    this.#badge.addEventListener("click", () => {
+      if (this.#comparison) this.#showSlot(otherSlot(this.#comparison.live));
+    });
+    document.body.append(this.#badge);
     document.documentElement.style.setProperty("--lab-width", `${this.#prefs.width}px`);
     root.classList.toggle("explain", this.#prefs.explain);
 
@@ -172,6 +239,8 @@ export class Lab {
       this.#lookSection(),
       this.#motionSection(),
       this.#presetsSection(),
+      this.#compareSection(),
+      this.#tourSection(),
       this.#keysSection(),
       h("p", { class: "lab-empty" }, "Nothing matches. Try another word, or press Esc."),
     );
@@ -180,7 +249,7 @@ export class Lab {
       h("div", { class: "lab-actions" },
         this.#textButton("shuffle", "Shuffle", "Randomise this scene's knobs (camera stays put)", () => this.#shuffle()),
         this.#textButton("reset", "Reset", "Back to this scene's defaults", () => this.#change(Object.fromEntries([["scene", this.#current().state.scene]]), true, true)),
-        this.#textButton("link", "Copy link", "Copy a link that replays this exact setup on this build", (button) => this.#copyLink(button)),
+        this.#textButton("link", "Copy link", "Copy a link that replays this exact setup on this build, with its A/B comparison and tour", (button) => this.#copyLink(button)),
       ),
       this.#status,
     );
@@ -216,6 +285,8 @@ export class Lab {
   /** Reflect the host's current state into every control. */
   sync(): void {
     const { state } = this.#current();
+    // A step of the tour (its own switch or the user's) becomes the current one; another scene holds it.
+    this.#tour?.follow(state.scene);
     if (this.#builtScene !== state.scene) this.#buildScene(state.scene);
     this.#sceneLabel.textContent = sceneDefs[state.scene].title;
     for (const sync of this.#syncers) sync();
@@ -226,29 +297,66 @@ export class Lab {
 
   /** Record the current setup as one undo step (sliders commit on release). */
   commit(): void {
-    const now = this.#query();
-    if (now === this.#committed) return;
-    this.#undoStack.push(this.#committed);
-    if (this.#undoStack.length > 100) this.#undoStack.shift();
-    this.#redoStack.length = 0;
-    this.#committed = now;
-    this.#syncHistory();
+    if (record(this.#history, this.#query())) this.#syncHistory();
   }
 
   undo(): void {
-    const previous = this.#undoStack.pop();
+    const history = this.#history;
+    const previous = history.undo.pop();
     if (previous === undefined) return;
-    this.#redoStack.push(this.#committed);
-    this.#committed = previous;
+    history.redo.push(history.committed);
+    history.committed = previous;
     this.#host.apply(new URLSearchParams(previous));
   }
 
   redo(): void {
-    const next = this.#redoStack.pop();
+    const history = this.#history;
+    const next = history.redo.pop();
     if (next === undefined) return;
-    this.#undoStack.push(this.#committed);
-    this.#committed = next;
+    history.undo.push(history.committed);
+    history.committed = next;
     this.#host.apply(new URLSearchParams(next));
+  }
+
+  /** The session tools' URL keys (comparison, tour), for the host to write beside the setup. */
+  sessionQuery(): URLSearchParams {
+    const query = new URLSearchParams();
+    if (this.#comparison) writeComparison(this.#comparison, query);
+    if (this.#tour) writeTour(this.#tour.tour, query);
+    return query;
+  }
+
+  /** The compare key went down (`event.timeStamp`): flip to the other slot; a tap keeps it. */
+  pressCompare(now: number): void {
+    const comparison = this.#comparison;
+    if (!comparison) return;
+    this.#flip.press(now);
+    this.#showSlot(otherSlot(comparison.live));
+  }
+
+  /** The compare key came up: after a hold, flip back. */
+  releaseCompare(now: number): void {
+    const comparison = this.#comparison;
+    if (this.#flip.release(now) && comparison) this.#showSlot(otherSlot(comparison.live));
+  }
+
+  /** Play or pause the tour; nothing without one. */
+  toggleTour(): void {
+    const tour = this.#tour;
+    if (!tour) return;
+    if (!tour.playing) {
+      this.#beginTour(true);
+      return;
+    }
+    tour.playing = false;
+    this.sync();
+  }
+
+  /** While a tour plays, go to its previous or next step and return true; otherwise false. */
+  skipTour(by: number): boolean {
+    if (!this.#tour?.playing) return false;
+    this.#stepTour(by);
+    return true;
   }
 
   // ---- state plumbing -------------------------------------------------------------------------
@@ -285,8 +393,8 @@ export class Lab {
   }
 
   #syncHistory(): void {
-    this.#undoButton.disabled = this.#undoStack.length === 0;
-    this.#redoButton.disabled = this.#redoStack.length === 0;
+    this.#undoButton.disabled = this.#history.undo.length === 0;
+    this.#redoButton.disabled = this.#history.redo.length === 0;
   }
 
   #syncStatus(): void {
@@ -667,6 +775,209 @@ export class Lab {
     });
   }
 
+  #compareSection(): HTMLElement {
+    const start = this.#textButton("compare", "Compare from here", "Keep this setup as A and edit a copy of it as B", () => this.#startCompare());
+    start.classList.add("wide");
+    const slotButtons = slots.map((slot) => {
+      const scene = h("span", { class: "slot-scene" });
+      const button = h("button", { type: "button", "data-value": slot }, h("span", { class: "slot-letter" }, slot.toUpperCase()), scene);
+      button.addEventListener("click", () => this.#showSlot(slot));
+      return { slot, button, scene };
+    });
+    const onScreen = h("div", { class: "segments slots", role: "group", "aria-label": "Setup on screen" }, ...slotButtons.map(({ button }) => button));
+    const onRow = this.#row({
+      label: "On screen",
+      help: "Each slot is a complete setup: scene, knobs, look, motion and page. Edits change the slot on screen, and each slot keeps its own undo. Tap b, click a slot or the badge over the page to flip; hold b to peek at the other slot and let go to come back. Flips cut instead of playing passages, so a flip between two scenes starts the other one afresh.",
+      block: onScreen,
+    });
+    const differs = h("p", { class: "differs" });
+    const copyLabel = h("span", {});
+    const copy = h("button", { type: "button", class: "text-button", title: "Make the other slot this exact setup (undo there brings its old one back)" }, icon("redo"), copyLabel);
+    copy.addEventListener("click", () => this.#copyToHidden());
+    const stop = this.#textButton("cross", "Stop", "Stop comparing and keep the setup on screen", () => this.#stopCompare());
+    const active = h("div", { class: "compare-active" }, onRow.el, differs, h("div", { class: "lab-actions" }, copy, stop));
+    const sync = () => {
+      const comparison = this.#comparison;
+      start.hidden = comparison !== undefined;
+      active.hidden = comparison === undefined;
+      this.#badge.hidden = comparison === undefined;
+      if (!comparison) return;
+      const here = this.#query();
+      const live = this.#current().state.scene;
+      const hidden = readState(new URLSearchParams(comparison.other)).scene;
+      for (const { slot, button, scene } of slotButtons) {
+        button.setAttribute("aria-pressed", String(slot === comparison.live));
+        scene.textContent = sceneDefs[slot === comparison.live ? live : hidden].title;
+      }
+      const keys = setupDifferences(here, comparison.other);
+      differs.textContent = keys.length === 0
+        ? "A and B are the same setup: change the one on screen."
+        : `They differ in ${keys.map((key) => this.#settingLabel(key, [live, hidden])).join(", ")}.`;
+      copyLabel.textContent = `Copy to ${otherSlot(comparison.live).toUpperCase()}`;
+      this.#badge.textContent = `${comparison.live.toUpperCase()} · ${sceneDefs[live].title}`;
+    };
+    this.#syncers.push(sync, onRow.sync);
+    return this.#section({
+      id: "compare",
+      title: "Compare",
+      blurb: "Hold two complete setups, A and B, and flip between them.",
+      open: false,
+      content: [start, active],
+      summary: () => {
+        const comparison = this.#comparison;
+        if (!comparison) return [];
+        const count = setupDifferences(this.#query(), comparison.other).length;
+        return [`showing ${comparison.live.toUpperCase()}`, count === 0 ? "same" : `${count} ${count === 1 ? "difference" : "differences"}`];
+      },
+      syncers: this.#syncers,
+    });
+  }
+
+  /** A URL key in words: a lab setting, or a knob of one of `scenes` (a feature's amount after its name). */
+  #settingLabel(key: string, scenes: readonly SceneId[]): string {
+    if (Object.hasOwn(SETTING_LABEL, key)) return SETTING_LABEL[key as keyof LabState];
+    const amount = key.endsWith("-amount");
+    const knob = amount ? key.slice(0, -"-amount".length) : key;
+    for (const scene of scenes) {
+      const def = sceneDefs[scene].params.find((candidate) => candidate.key === knob);
+      if (def) return amount && def.kind === "feature" ? `${def.label} ${def.amountLabel}` : def.label;
+    }
+    return key;
+  }
+
+  #tourSection(): HTMLElement {
+    const steps = h("ol", { class: "tour-steps", "aria-label": "Scenes on the tour" });
+    let rendered = "";
+    const picker = h("select", { class: "tour-picker", "aria-label": "Scene to add" });
+    let offered = "";
+    const add = this.#textButton("plus", "Add", "Add the chosen scene at the end of the tour", () => {
+      const scene = sceneIds.find((id) => id === picker.value);
+      if (scene) this.#editTour([...(this.#tour?.tour.steps ?? []), { scene }]);
+    });
+    const addAll = this.#textButton("plus", "All", "Add every scene not on the tour yet, in the lab's order", () => {
+      const on = this.#tour?.tour.steps ?? [];
+      this.#editTour([...on, ...sceneIds.filter((id) => !on.some((step) => step.scene === id)).map((scene) => ({ scene }))]);
+    });
+    const scenesRow = this.#row({
+      label: "Scenes",
+      help: "The tour plays these in order and starts over after the last. Give a scene its own seconds, or leave it empty for the tour's. Click a name to go there now.",
+      block: h("div", { class: "tour-build" }, steps, h("div", { class: "tour-add" }, picker, add, addAll)),
+    });
+    const dwell = this.#slider("Seconds per scene", TOUR_DWELL.min, 180, 5, () => this.#tourDwell, (value) => this.#editTour(this.#tour?.tour.steps ?? [], value));
+    const dwellRow = this.#row({
+      label: "Each scene",
+      help: "Seconds on each scene without its own, counted from the switch to it, on the scene clock: nothing passes while the clock is paused, and a slow frame counts at most a tenth of a second, so slow machines still give a growing scene its time.",
+      block: dwell.el,
+      readout: () => `${this.#tourDwell} s`,
+      modified: () => this.#tourDwell !== TOUR_DWELL.fallback,
+      reset: () => this.#editTour(this.#tour?.tour.steps ?? [], TOUR_DWELL.fallback),
+    });
+    const previous = this.#iconButton("previous", "Previous scene on the tour ([ while it plays)", () => this.#stepTour(-1));
+    const play = h("button", { type: "button", class: "text-button tour-play", title: "Play or pause the tour (t)" });
+    play.addEventListener("click", () => this.toggleTour());
+    const next = this.#iconButton("next", "Next scene on the tour (] while it plays)", () => this.#stepTour(1));
+    const clear = this.#iconButton("trash", "Remove the tour", () => this.#editTour([]));
+    const playRow = this.#row({
+      label: "Play",
+      help: this.#reducedMotion
+        ? "Your system asks for reduced motion: a tour link waits for play here, and scenes cut and stand still instead of passing."
+        : "Scenes come and go through their own passages (cuts with transitions off or at motion 0). A tour link starts playing as it opens; choosing a scene that is not on the tour pauses it.",
+      block: h("div", { class: "tour-clock" }, h("div", { class: "tour-transport" }, previous, play, next, h("span", { class: "spacer" }), clear), this.#tourProgress, this.#tourStatus),
+    });
+
+    const sync = () => {
+      const tour = this.#tour;
+      const list = tour?.tour.steps ?? [];
+      const signature = JSON.stringify(tour?.tour ?? null);
+      if (signature !== rendered) {
+        rendered = signature;
+        // Keep the keyboard where it was across the re-render (a moved step's button, an edited dwell).
+        const focus = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.focus : undefined;
+        steps.replaceChildren(...list.map((step, index) => this.#tourStepRow(step, index, list)));
+        if (focus !== undefined) steps.querySelector<HTMLElement>(`[data-focus="${focus}"]`)?.focus();
+      }
+      for (const [index, item] of [...steps.children].entries()) {
+        if (index === tour?.index) item.setAttribute("aria-current", "step");
+        else item.removeAttribute("aria-current");
+      }
+      const available = sceneIds.filter((id) => !list.some((step) => step.scene === id));
+      const { scene } = this.#current().state;
+      if (available.join() !== offered) {
+        offered = available.join();
+        picker.replaceChildren(...available.map((id) => h("option", { value: id }, sceneDefs[id].title)));
+      }
+      if (document.activeElement !== picker && available.includes(scene)) picker.value = scene;
+      for (const control of [picker, add, addAll]) control.disabled = available.length === 0;
+      play.replaceChildren(icon(tour?.playing ? "pause" : "play"), h("span", {}, tour?.playing ? "Pause" : "Play"));
+      for (const button of [previous, play, next, clear]) button.disabled = tour === undefined;
+      this.#syncTourClock();
+    };
+    this.#syncers.push(sync, scenesRow.sync, dwell.sync, dwellRow.sync, playRow.sync);
+    return this.#section({
+      id: "tour",
+      title: "Tour",
+      blurb: "Play chosen scenes one after another, each for a while.",
+      open: false,
+      content: [scenesRow.el, dwellRow.el, playRow.el],
+      summary: () => {
+        const tour = this.#tour;
+        return tour ? [`${tour.tour.steps.length} ${tour.tour.steps.length === 1 ? "scene" : "scenes"}`, tour.playing ? "playing" : "paused"] : [];
+      },
+      modified: () => this.#tour !== undefined,
+      reset: () => this.#editTour([], TOUR_DWELL.fallback),
+      syncers: this.#syncers,
+    });
+  }
+
+  #tourStepRow(step: TourStep, index: number, list: readonly TourStep[]): HTMLElement {
+    const { title, accent } = sceneDefs[step.scene];
+    const go = h("button", { type: "button", class: "tour-title", title: `Show ${title} now`, "data-focus": `go:${step.scene}` }, h("span", { class: "scene-dot" }), h("span", {}, title));
+    go.style.setProperty("--dot", accent);
+    go.addEventListener("click", () => {
+      this.#setScene(step.scene);
+      this.sync();
+    });
+    const seconds = h("input", {
+      type: "number", class: "tour-seconds", min: String(TOUR_DWELL.min), max: String(TOUR_DWELL.max), step: "1",
+      placeholder: String(this.#tourDwell), value: step.dwell === undefined ? "" : String(step.dwell),
+      "aria-label": `Seconds on ${title} (empty: the tour's ${this.#tourDwell})`, "data-focus": `dwell:${step.scene}`,
+    });
+    seconds.addEventListener("change", () => {
+      const raw = seconds.value.trim();
+      this.#editTour(list.map((entry, at) => (at !== index ? entry : raw === "" ? { scene: entry.scene } : { scene: entry.scene, dwell: clampDwell(Number(raw)) })));
+    });
+    const move = (by: number) => {
+      const next = [...list];
+      next.splice(index + by, 0, ...next.splice(index, 1));
+      this.#editTour(next);
+    };
+    const up = this.#iconButton("up", `Move ${title} earlier`, () => move(-1));
+    up.dataset.focus = `up:${step.scene}`;
+    up.disabled = index === 0;
+    const down = this.#iconButton("down", `Move ${title} later`, () => move(1));
+    down.dataset.focus = `down:${step.scene}`;
+    down.disabled = index === list.length - 1;
+    const remove = this.#iconButton("cross", `Remove ${title} from the tour`, () => this.#editTour(list.filter((_, at) => at !== index)));
+    return h("li", { class: "tour-step" }, go, seconds, h("span", { class: "tour-unit" }, "s"), up, down, remove);
+  }
+
+  /** The tour's place in words and as a bar; runs every frame while it plays. */
+  #syncTourClock(): void {
+    const tour = this.#tour;
+    const status = this.#tourStatus;
+    const progress = this.#tourProgress;
+    progress.hidden = tour === undefined;
+    if (!tour) {
+      status.textContent = "Add scenes to build a tour.";
+      return;
+    }
+    const where = tour.step.scene !== this.#current().state.scene ? "paused: off the tour" : tour.playing ? `${Math.ceil(tour.dwell - tour.elapsed)} s left` : "paused";
+    const text = `${tour.index + 1} / ${tour.tour.steps.length} · ${sceneDefs[tour.step.scene].title} · ${where}`;
+    if (status.textContent !== text) status.textContent = text;
+    const share = Math.round((tour.elapsed / tour.dwell) * 200) / 200;
+    if (progress.value !== share) progress.value = share;
+  }
+
   #keysSection(): HTMLElement {
     const table = h("dl", { class: "keys" }, ...SHORTCUTS.flatMap(([key, what]) => [h("dt", {}, h("kbd", {}, key)), h("dd", {}, what)]));
     return this.#section({
@@ -679,6 +990,95 @@ export class Lab {
       syncers: this.#syncers,
     });
   }
+
+  // ---- session tools: A/B comparison and tour -------------------------------------------------
+
+  /** Keep the setup on screen as A and go on editing a copy of it as B, with the history so far. */
+  #startCompare(): void {
+    this.commit();
+    const here = this.#query();
+    this.#comparison = { live: "b", other: here };
+    this.#hiddenHistory = { undo: [], redo: [], committed: here };
+    this.#host.apply(new URLSearchParams(here));
+  }
+
+  #stopCompare(): void {
+    this.#comparison = undefined;
+    this.#hiddenHistory = undefined;
+    this.#host.apply(new URLSearchParams(this.#query()));
+  }
+
+  /** Show `slot`'s setup at once; the one on screen waits in its own slot, with its own undo. */
+  #showSlot(slot: Slot): void {
+    const comparison = this.#comparison;
+    if (!comparison || comparison.live === slot) return;
+    this.commit();
+    const leaving = this.#history;
+    this.#history = this.#hiddenHistory ?? { undo: [], redo: [], committed: comparison.other };
+    this.#hiddenHistory = leaving;
+    this.#comparison = { live: slot, other: leaving.committed };
+    this.#host.apply(new URLSearchParams(comparison.other), { cut: true });
+  }
+
+  /** Make the hidden slot the setup on screen, as an undo step of the hidden slot's own. */
+  #copyToHidden(): void {
+    const comparison = this.#comparison;
+    if (!comparison) return;
+    this.commit();
+    const here = this.#query();
+    const hidden = this.#hiddenHistory ?? { undo: [], redo: [], committed: comparison.other };
+    record(hidden, here);
+    this.#hiddenHistory = hidden;
+    this.#comparison = { live: comparison.live, other: here };
+    this.#host.apply(new URLSearchParams(here));
+  }
+
+  /** Show the tour's scene (the current step unless the page already shows one) and play or hold it. */
+  #beginTour(play: boolean): void {
+    const tour = this.#tour;
+    if (!tour) return;
+    if (!tour.follow(this.#current().state.scene)) this.#setScene(tour.step.scene);
+    tour.playing = play;
+    this.#runTour();
+    this.sync();
+  }
+
+  /** Go `by` steps along the tour, playing or not. */
+  #stepTour(by: number): void {
+    const tour = this.#tour;
+    if (!tour) return;
+    this.#setScene(tour.skip(by));
+    this.sync();
+  }
+
+  /** Replace the tour's steps (none removes it) and its dwell, and write it to the URL. */
+  #editTour(steps: readonly TourStep[], dwell = this.#tourDwell): void {
+    this.#tourDwell = dwell;
+    if (steps.length === 0) this.#tour = undefined;
+    else if (this.#tour) this.#tour.edit({ steps, dwell });
+    else this.#tour = new TourPlayer({ steps, dwell }, false);
+    this.#host.apply(new URLSearchParams(this.#query()));
+  }
+
+  /** Start the tour's frame clock if it plays and is not running yet. */
+  #runTour(): void {
+    if (!this.#tour?.playing || this.#tourFrame !== undefined) return;
+    this.#tourLast = undefined;
+    this.#tourFrame = requestAnimationFrame(this.#tourTick);
+  }
+
+  /** One frame of the tour's clock: it stops once the tour pauses or is removed. */
+  readonly #tourTick = (now: number): void => {
+    this.#tourFrame = undefined;
+    const tour = this.#tour;
+    if (!tour?.playing) return;
+    const seconds = this.#tourLast === undefined ? 0 : (now - this.#tourLast) / 1000;
+    this.#tourLast = now;
+    const next = tour.tick(seconds, this.#host.renderer()?.paused ?? false);
+    if (next !== undefined) this.#setScene(next);
+    this.#syncTourClock();
+    this.#tourFrame = requestAnimationFrame(this.#tourTick);
+  };
 
   // ---- scene sections -------------------------------------------------------------------------
 
@@ -888,7 +1288,9 @@ export class Lab {
   }
 
   #copyLink(button: HTMLButtonElement): void {
-    const query = this.#query();
+    const setup = new URLSearchParams(this.#query());
+    for (const [key, value] of this.sessionQuery()) setup.append(key, value);
+    const query = setup.toString();
     const url = this.#host.build ? `${location.origin}/@${this.#host.build}/${query ? `?${query}` : ""}` : location.href;
     navigator.clipboard.writeText(url).then(() => this.#flash(button, "Copied"), () => this.#flash(button, "Copy failed"));
   }

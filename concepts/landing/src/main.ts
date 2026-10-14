@@ -44,12 +44,16 @@ try {
   console.error("evt=landing.renderer.unavailable", error);
 }
 
-function apply(query: URLSearchParams): void {
+function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   state = readState(query);
   params = readParams(state.scene, query);
-  const minimal = serialise(state, params).toString();
-  history.replaceState(null, "", `${location.pathname}${minimal ? `?${minimal}` : ""}`);
-  renderer?.update(renderSettings(state, params));
+  // The lab's session tools (an A/B comparison, a tour) ride beside the setup in the URL.
+  const minimal = serialise(state, params);
+  for (const [key, value] of lab?.sessionQuery() ?? []) minimal.append(key, value);
+  const search = minimal.toString();
+  history.replaceState(null, "", `${location.pathname}${search ? `?${search}` : ""}`);
+  const settings = renderSettings(state, params);
+  renderer?.update(options.cut ? { ...settings, passage: false } : settings);
 
   document.body.dataset.scene = state.scene;
   document.body.dataset.mode = state.mode;
@@ -95,6 +99,8 @@ window.addEventListener("keydown", (event) => {
   }
   if (mod || event.altKey) return;
   if (event.key === "[" || event.key === "]") {
+    // While a tour plays, the keys step along it instead of the whole catalogue.
+    if (lab?.skipTour(event.key === "]" ? 1 : -1)) return;
     const step = event.key === "]" ? 1 : sceneIds.length - 1;
     const scene = sceneIds[(sceneIds.indexOf(state.scene) + step) % sceneIds.length] ?? state.scene;
     apply(serialise(carryLook(state, scene), paramDefaults(scene)));
@@ -110,10 +116,18 @@ window.addEventListener("keydown", (event) => {
   } else if (event.key === "p") {
     renderer?.setPaused(!renderer.paused);
     lab?.sync();
+  } else if (event.key === "b") {
+    // Tap to flip between A and B, hold to peek (released in the keyup listener below).
+    if (!event.repeat) lab?.pressCompare(event.timeStamp);
+  } else if (event.key === "t") {
+    lab?.toggleTour();
   } else if (event.key === "/") {
     event.preventDefault();
     lab?.focusSearch();
   }
+});
+window.addEventListener("keyup", (event) => {
+  if (event.key === "b") lab?.releaseCompare(event.timeStamp);
 });
 
 // Loading-page choreography: a stepped bar and the boot phases a hub actually goes through.

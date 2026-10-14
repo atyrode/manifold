@@ -316,6 +316,53 @@ body.lab-open .lab-opener { display: none; }
 .import { display: grid; gap: 6px; padding-top: 2px; }
 .import textarea { padding: 8px; resize: vertical; background: none; border: 1px solid var(--line); }
 
+/* A/B comparison: the slots, what differs, and the badge over the page */
+.compare-active { display: grid; gap: 12px; }
+.segments.slots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.slots button { display: flex; align-items: baseline; justify-content: center; gap: 8px; padding-inline: 8px; }
+.slot-letter { font-weight: 600; }
+.slot-scene { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.differs { margin: 0; font: 12px/1.5 var(--sans); color: var(--muted); }
+.ab-badge {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  padding: 6px 10px;
+  font: 12px var(--mono);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  border: 1px solid var(--accent);
+  cursor: pointer;
+}
+.ab-badge:hover { background: var(--bg); }
+.ab-badge:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+body.ui-hidden .ab-badge { display: none; }
+
+/* tour */
+.tour-build, .tour-clock { display: grid; gap: 8px; }
+.tour-steps { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.tour-steps:empty { display: none; }
+.tour-step { display: grid; grid-template-columns: minmax(0, 1fr) 52px auto auto auto auto; align-items: center; gap: 2px; border: 1px solid var(--line); }
+.tour-step[aria-current="step"] { border-color: var(--accent); }
+.tour-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 8px; text-align: left; background: none; border: 0; }
+.tour-title .scene-dot { flex: none; }
+.tour-title span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tour-title:hover { color: var(--accent); }
+.tour-seconds { width: 100%; padding: 3px 4px; text-align: right; font-variant-numeric: tabular-nums; background: none; border: 1px solid var(--line); }
+.tour-seconds::placeholder { color: var(--muted); }
+.tour-unit { margin-right: 4px; color: var(--muted); }
+.tour-step .icon-button { width: 24px; height: 24px; }
+.tour-add { display: flex; gap: 6px; }
+.tour-picker { flex: 1; min-width: 0; padding: 6px 8px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); }
+.tour-transport { display: flex; align-items: center; gap: 4px; }
+.tour-play { min-width: 92px; }
+.tour-status { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lab progress { width: 100%; height: 2px; appearance: none; border: 0; background: var(--line); }
+.lab progress::-webkit-progress-bar { background: var(--line); }
+.lab progress::-webkit-progress-value { background: var(--accent); }
+.lab progress::-moz-progress-bar { background: var(--accent); }
+
 /* buttons with text */
 .text-button {
   display: inline-flex;
@@ -328,6 +375,7 @@ body.lab-open .lab-opener { display: none; }
   border: 1px solid var(--line);
   transition: border-color 120ms, color 120ms;
 }
+.text-button:disabled { opacity: 0.35; cursor: default; }
 .text-button:hover { border-color: var(--ink); }
 .text-button.wide { width: 100%; }
 .lab-actions { display: flex; gap: 6px; }
