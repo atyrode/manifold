@@ -11,7 +11,7 @@ All of the ideas below have a first implementation in the lab:
 | Idea | Scene id | Notes |
 |---|---|---|
 | Above the clouds | `clouds` | Aurora and lightning come from the shared weather layer. |
-| Waterfall | `falls` | |
+| Waterfall | `falls` | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. |
 | Countryside | `country` | Relative weights for seasonal crops, wildflower meadows, lavender rows and sunflowers; reproducible landscape seeds. |
 | Murmuration | `flock` | CPU boids, topological neighbours. |
 | Paper marbling | `marble` | Mathematical marbling engine. |
@@ -38,7 +38,7 @@ mathematics. All have a first implementation in the lab:
 | Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice | |
 | Kelp forest | `kelp` | Buoyant Verlet stipes in surge, boids school | `VerletSystem` |
 | Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling | `VerletSystem` |
-| Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds | |
+| Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds carried in the world along the gust direction | `LevelCamera` |
 | Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist | |
 | Incense smoke | `incense` | Buoyant smoke, laminar to turbulent | `FluidSim` |
 | Sand table | `sandtable` | Theta–rho ball and sand pendulum on a height field | `HeightField` |
@@ -80,7 +80,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below |
 | Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in water or ice, a red cabin, falling and lying snow |
 | Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies |
-| Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, birds; rain streams out of the sky overhead |
+| Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, birds; rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`) |
 | Autumn park | `autumn` | Leaves flutter and tumble down (quasi-steady plate model), build a carpet, and gusts lift swirls off the path |
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
@@ -105,6 +105,13 @@ A cliff face with a waterfall as the focus.
   pool with ripples.
 - Rock strata, moss and ferns on the ledges (reuse the pond's botany), rainbow in the spray when
   the sun is behind the viewer.
+- Gorges (`gorge`): the layered forms share one bedding model with different beds, dip, folds,
+  ledges and stone: basalt flows on rusty ash (the default), or thin, level sandstone ledges on
+  shale, cross-bedded. The pale limestone slot is a different form: a few thick, flush beds fluted
+  by runnels, split by through-going joints, streaked dark under the lips and crusted with tufa by
+  the water, and two side walls running from the back wall toward the eye (unrolled from it, their
+  beds converging on the vanishing point), mirrored in the pool, shading the slot's floor and
+  leaving a strip of sky over the fall.
 
 ## Countryside
 
