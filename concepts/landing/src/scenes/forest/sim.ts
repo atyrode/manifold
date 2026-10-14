@@ -599,8 +599,8 @@ class ForestSim implements SceneSim {
     this.#wind = values[index.wind] ?? this.#wind;
     this.#time = values[index.time] ?? this.#time;
     this.#cycle = values[index.cycle] ?? this.#cycle;
-    // The same clock as the shader's timeOfDay(K_time, K_cycle, uTime).
-    const tod = this.#time + (this.#cycle * frame.motion * frame.time) / 240;
+    // The same clock as the shader's timeOfDayM(K_time, K_cycle, uMotionTime).
+    const tod = this.#time + (this.#cycle * frame.motionTime) / 240;
     const t = tod - Math.floor(tod);
     this.#dark = 1 - smoothstep(0.24, 0.31, t) * (1 - smoothstep(0.69, 0.76, t));
     const seed = Math.round(values[index.forestSeed] ?? 0);

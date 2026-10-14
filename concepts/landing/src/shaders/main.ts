@@ -37,7 +37,8 @@ void main() {
   if (uDissolve.x > 0.0) {
     vec2 q = (cell - 0.5 * uRes) / uRes.y;
     float order = 0.75 * bayer8(cell) + 0.25 * (1.0 - min(length(q) * 1.3, 1.0));
-    if (order < uDissolve.x) col = uDissolve.y > 0.5 ? texelFetch(uLeaving, ivec2(cell), 0).rgb : uBg;
+    // The saved frame can have a different cell size or viewport: map it over the current frame.
+    if (order < uDissolve.x) col = uDissolve.y > 0.5 ? texture(uLeaving, uv).rgb : uBg;
   }
   outColor = vec4(col, 1.0);
 }

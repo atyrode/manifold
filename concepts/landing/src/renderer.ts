@@ -359,9 +359,11 @@ export class DitherRenderer {
 
   #draw(now: number): void {
     const gl = this.#gl;
-    const dt = this.#lastFrame === 0 ? 0 : Math.min((now - this.#lastFrame) / 1000, 0.1);
+    const elapsed = this.#lastFrame === 0 ? 0 : (now - this.#lastFrame) / 1000;
+    const dt = Math.min(elapsed, 0.1);
     this.#lastFrame = now;
-    if (dt > 0) this.fps = this.fps === 0 ? 1 / dt : this.fps * 0.92 + (1 / dt) * 0.08;
+    // Cap simulation catch-up, not the footer's measurement of actual frame delivery.
+    if (elapsed > 0) this.fps = this.fps === 0 ? 1 / elapsed : this.fps * 0.92 + (1 / elapsed) * 0.08;
     const step = this.#paused || this.#frozen ? 0 : dt;
     const seconds = now / 1000;
     const leaving = this.#leaving;

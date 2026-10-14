@@ -968,7 +968,19 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
 
         // A new pattern frosts over afresh from the opening state; a new frame shape regrows it.
         const seed = Math.round(knobs.value(frame, "pattern"));
-        if (pattern !== undefined && seed !== pattern) clock = FROST_START;
+        if (pattern !== undefined && seed !== pattern) {
+          clock = FROST_START;
+          // Recreate both trails too: clearing only their bytes would leave hidden warmth and
+          // stroke endpoints behind. The new field is uploaded below even when dt is zero.
+          melt = undefined;
+          hasLast = false;
+          lastX = 0;
+          lastY = 0;
+          traceStart = undefined;
+          traceSize = 0.4;
+          nextTrace = undefined;
+          breath = undefined;
+        }
         pattern = seed;
         const size = growthSize(aspect);
         const key = `${seed}|${size.width}x${size.height}`;

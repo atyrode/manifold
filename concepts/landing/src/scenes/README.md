@@ -83,9 +83,10 @@ scene changes. Anything that moves at the lab's motion pace reads `uMotionTime` 
 origin as `uTime`. It equals `t * uMotion` while the slider stands still, and moving the slider
 changes the pace instead of jumping every phase, as `t * uMotion` does (with the day cycle on, by
 hours after a few minutes). Never write `t * uMotion` in new code; `uMotion` alone is for
-amplitudes. Library functions with a `tm` or `motionTime` parameter take `uMotionTime`; the older
-ones that take `t` scale it by `uMotion` themselves, so pass them `t`. `main` already stills
-`shimmer` with the motion: don't multiply it by `uMotion` again.
+amplitudes. The sky uses `timeOfDayM(K_time, K_cycle, uMotionTime)` in every scene; CPU
+day/night decisions use the same `frame.motionTime / 240` phase. Other library functions with a
+`tm` or `motionTime` parameter take `uMotionTime`; those that take `t` still scale it themselves.
+`main` already stills `shimmer` with the motion: don't multiply it by `uMotion` again.
 
 ### Entrances and exits
 
@@ -94,6 +95,9 @@ exit, drawn with its own settings. Its last frame is then kept, and the incoming
 with a new sim, dissolves out of it over 0.9 s, cell by cell in ordered-dither order, the middle
 first. The entrance's clock starts on its second frame, because the first one is spent compiling the
 program and shows only the old frame. Every scene gets the dissolve for free.
+The saved frame is sampled in normalized stage coordinates with nearest filtering, so changing the
+viewport or pixel size during the dissolve stretches the whole saved image rather than fetching
+outside it.
 
 Every scene makes the passage its own, in the world rather than by fading:
 - Set `passage: { enter, exit }` (seconds, about 2–3.2 in and 1–1.8 out) on its `SceneDef`, from a
@@ -164,7 +168,6 @@ Coordinates: `viewRay` gives x right, y up, z into the scene.
 
 ```glsl
 float timeOfDayM(float time, float cycle, float motionTime); // K_time, K_cycle, uMotionTime -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset)
-float timeOfDay(float time, float cycle, float t);        // the older form on t * uMotion: jumps when the motion slider moves
 struct Sky { vec3 sun; vec3 moon; float day; float twilight; float night; vec3 sunColor; vec3 ambient; vec3 moonColor; };
 Sky skyAt(float tod);                                     // sun rises on the right, crosses high, sets on the left; moon opposite
 vec3 viewRay(vec2 uv, float aspect, float horizon, float fov); // side-on camera, horizon at screen height `horizon`
@@ -299,6 +302,10 @@ When a scene needs state (particles, a height field, ink, a growing crystal, the
 give it a `sim: (gl) => SceneSim`. Each frame the renderer calls `frame(SimFrame)` (dt, time,
 motionTime, motion, size, knob values, raw params, triggers, fired, pointer, passage) and binds the
 returned textures as `uSim0..uSim3` (`uSimOn` says which are set).
+Simulation catch-up is capped at 0.1 s per frame; the FPS footer measures uncapped frame delivery.
+Reseeding a stateful scene must reset its associated interaction history as well as its geometry:
+Frost starts a fresh pane with no old warmth, melt mask, finger stroke, or active mark trace, even
+when the seed changes while paused.
 
 Read knobs through a `KnobReader` (`src/params.ts`): `new KnobReader("<scene>", params, keys)`
 throws a KnobError at once for a missing key; then `value(frame, key)` is the knob as the shader
@@ -358,3 +365,12 @@ Knob keys share the URL with the lab's own settings, so a knob may not be called
 - Every effect is a knob with plain-language help; occasional events get a "now" trigger.
 - Performance: one full-screen pass at ~960×540 cells must hold 60 fps on an integrated GPU. Keep
   loops short (≤ 32 iterations in the common path), no nested loops over many items.
+
+## Correctness checks
+
+Run `bun concepts/landing/verify.ts` from the repository root with system Chromium available
+(`MANIFOLD_CHROMIUM` can select its binary). The isolated browser exercises actual WebGL output:
+Forest's sky phase across motion changes, inherited GPU blending and preserving resize, Frost's
+warmth/trace reset while paused and after resume, uncapped FPS, and saved-frame dissolve sampling
+across larger, smaller, aspect-changed, and unchanged render sizes. Software WebGL is deliberate;
+this check is not a real-device performance qualification.

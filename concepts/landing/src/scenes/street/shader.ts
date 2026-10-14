@@ -1866,7 +1866,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
 
   // The hour, and the weather over it: rain or snow close the sky, flatten and dim the light; at
   // night the city's own light bounces about, warmer under low cloud.
-  streetSky = skyAt(timeOfDay(K_time, K_cycle, t));
+  streetSky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
   float storm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
   streetOver = clamp(storm * 8.0, 0.0, 1.0) * (0.65 + 0.35 * storm);
   streetSky.sunColor *= 1.0 - 0.85 * streetOver;

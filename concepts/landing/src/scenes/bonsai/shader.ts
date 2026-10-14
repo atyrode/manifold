@@ -823,7 +823,7 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
 
   // The light: the sky's sun, turned so it comes in from the front at the knob's angle and
   // sweeping across with the hours; lower and colder in winter. Its sky dims under snow cloud.
-  Sky sky = skyAt(timeOfDay(K_time, K_cycle, t));
+  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
   float az = clamp(K_light * 1.0 + sky.sun.x * 0.5, -1.3, 1.3);
   float elev = asin(clamp(sky.sun.y, -1.0, 1.0)) * mix(1.0, 0.55, bonsaiCold);
   float ce = cos(max(elev, 0.03));

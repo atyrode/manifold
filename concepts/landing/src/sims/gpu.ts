@@ -885,9 +885,11 @@ abstract class GpuProgram implements Releasable {
     gl.viewport(0, 0, target.width, target.height);
     switch (blend) {
       case "none":
+        gl.disable(gl.BLEND);
         break;
       case "add":
         gl.enable(gl.BLEND);
+        gl.blendEquation(gl.FUNC_ADD);
         gl.blendFunc(gl.ONE, gl.ONE);
         break;
       case "max":
@@ -900,11 +902,9 @@ abstract class GpuProgram implements Releasable {
       }
     }
     gl.drawArrays(mode === "points" ? gl.POINTS : gl.TRIANGLES, 0, count);
-    if (blend !== "none") {
-      gl.disable(gl.BLEND);
-      gl.blendEquation(gl.FUNC_ADD);
-      gl.blendFunc(gl.ONE, gl.ZERO);
-    }
+    gl.disable(gl.BLEND);
+    gl.blendEquation(gl.FUNC_ADD);
+    gl.blendFunc(gl.ONE, gl.ZERO);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -1075,7 +1075,10 @@ export class GpuCompute {
     gl.bindTexture(gl.TEXTURE_2D, source);
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.viewport(0, 0, width, height);
+    gl.disable(gl.BLEND);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.blendEquation(gl.FUNC_ADD);
+    gl.blendFunc(gl.ONE, gl.ZERO);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 }

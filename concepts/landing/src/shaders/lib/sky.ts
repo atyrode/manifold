@@ -7,16 +7,8 @@ export const skyGlsl = `
 // ---- sky ----
 
 // The clock: K_time and K_cycle -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset). At cycle 1 a
-// whole day passes in four minutes; uMotion slows it with the rest of the scene. This rescales the
-// whole elapsed time by uMotion, so moving the motion slider jumps the time of day: new code uses
-// timeOfDayM.
-float timeOfDay(float time, float cycle, float t) {
-  return fract(time + cycle * uMotion * t / 240.0);
-}
-
-// timeOfDay driven by the motion clock: motionTime = uMotionTime (the scene clock integrated with
-// uMotion), so the motion slider changes how fast the day passes without jumping the time of day.
-// Equal to timeOfDay while motion stays constant.
+// whole day passes in four minutes. motionTime = uMotionTime is the scene clock integrated with
+// uMotion, so the motion slider changes how fast the day passes without jumping the time of day.
 float timeOfDayM(float time, float cycle, float motionTime) {
   return fract(time + cycle * motionTime / 240.0);
 }

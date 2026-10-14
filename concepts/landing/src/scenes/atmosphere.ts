@@ -23,7 +23,7 @@ export interface SkyOptions {
 
 /**
  * K_time: time of day 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset).
- * K_cycle: day-cycle speed (0 = the clock stands at K_time); pass both to `timeOfDay`.
+ * K_cycle: day-cycle speed (0 = the clock stands at K_time); pass both with uMotionTime to `timeOfDayM`.
  * K_stars (only with `stars`): star density for `skyStars`.
  */
 export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
