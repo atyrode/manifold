@@ -9,7 +9,8 @@
 //   uSim0  the wax parcels: row 2k (x, y, radius, temperature), row 2k + 1 (vx, vy, M glow) for
 //          lamp k (0 the lamp, 1 its twin), in glass units (the liquid 1 tall, gx across)
 //   uSim1  the coarse wax picture: r how much wax, g the bulb's light left after the wax below
-//   uSim2  per lamp: parcels in use, bulb 0..1, warm-up 0..1, the wax's share of the glass
+//   uSim2  per lamp (texels 0, 1): parcels in use, bulb 0..1, warm-up 0..1, the wax's share of the
+//          glass; texel 2: the wax's body, its metaball reach and teardrop stretch (× classic wax's)
 // Knobs read here: K_wax, K_spill, K_moon, K_hand, K_twin, K_sleeve, K_shelf, K_badge; the rest
 // drive the simulation.
 import { lavaLayoutGlsl } from "./sim.ts";
@@ -50,6 +51,9 @@ struct LavaLamp {
   float bulb;   // 0 off .. 1 on
   float warm;   // 0 cold .. 1 warmed through
   float share;  // how much of the glass the wax covers in the picture
+  float blend;   // the wax's body (sim): metaball reach × LAVA_REACH,
+  float stretch; // teardrop stretch × LAVA_STRETCH,
+  float iso;     // and the field's level at a lone parcel's rim
   LavaInk ink;
 };
 
@@ -111,6 +115,12 @@ LavaLamp lavaLamp(int k, float aspect) {
   L.bulb = s.y;
   L.warm = s.z;
   L.share = s.w;
+  vec4 body = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(2, 0), 0) : vec4(1.0, 1.0, 0.0, 0.0);
+  L.blend = body.x;
+  L.stretch = body.y;
+  // A lone parcel's surface sits at its radius whatever the reach: the field (1 - s²)³ there.
+  float reach = LAVA_REACH * body.x;
+  L.iso = body.x == 1.0 ? LAVA_ISO : pow(1.0 - 1.0 / (reach * reach), 3.0);
   float pal = floor(K_wax + 0.5);
   L.ink = lavaInk(k == 0 ? pal : mod(pal + 1.0, 4.0));
   // The more of the glass the wax covers (spread out, not merged), the more of its colour is in the
@@ -129,7 +139,7 @@ vec2 lavaGrid(int lamp, vec2 g) {
 
 // The wax at glass point q: each parcel a metaball, drawn out behind it into a teardrop as it moves
 // (a rising blob trails a tail, a sinking one hangs a drip).
-LavaField lavaField(vec2 q, int row, int n) {
+LavaField lavaField(vec2 q, int row, int n, float blend, float stretch) {
   LavaField w;
   w.f = 0.0;
   w.grad = vec2(0.0);
@@ -139,14 +149,14 @@ LavaField lavaField(vec2 q, int row, int n) {
   for (int i = 0; i < LAVA_MAX; i++) {
     if (i >= n) break;
     vec4 a = texelFetch(uSim0, ivec2(i, row), 0);
-    float R = a.z * LAVA_REACH;
+    float R = a.z * LAVA_REACH * blend;
     vec2 d = q - a.xy;
     if (R <= 0.0 || dot(d, d) > 3.0 * R * R) continue;
     vec4 b = texelFetch(uSim0, ivec2(i, row + 1), 0);
     float sp = length(b.xy);
     vec2 dir = sp > 1e-4 ? b.xy / sp : vec2(0.0, 1.0);
     vec2 side = vec2(dir.y, -dir.x);
-    float st = min(sp * LAVA_STRETCH, 0.5);
+    float st = min(sp * LAVA_STRETCH * stretch, 0.5);
     float along = dot(d, dir);
     float ka = along < 0.0 ? 1.0 / (1.0 + 1.3 * st) : 1.0 / (1.0 + 0.1 * st);
     float kc = 1.0 + 0.25 * st;
@@ -325,8 +335,8 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
   // more saturated where thick, glowing along its thin, back-lit edges; pale and matte while solid;
   // brighter in the M.
   if (L.count > 0) {
-    LavaField w = lavaField(q, 2 * L.lamp, L.count);
-    float depth = w.f - LAVA_ISO;
+    LavaField w = lavaField(q, 2 * L.lamp, L.count, L.blend, L.stretch);
+    float depth = w.f - L.iso;
     float cell = aa / LAVA_GLASS_H * 0.5 * (1.0 + LAVA_LENS + 3.0 * (1.0 - LAVA_LENS) * xi * xi);
     float cover = clamp(0.5 + depth / (max(length(w.grad), 1e-3) * cell), 0.0, 1.0);
     if (cover > lavaTh) {

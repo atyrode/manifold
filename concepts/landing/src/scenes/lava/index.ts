@@ -24,6 +24,7 @@ const params: readonly ParamDef[] = [
   ),
   range("lamp", "heat", "bulb heat", 0.5, "How hot the bulb runs. Left: a lazy lamp, a blob tearing free of the heap on the coil now and then. Right: a busy one, wax rising and falling all the time."),
   range("lamp", "fill", "wax", 0.5, "How much wax is in the lamp: a few small blobs to the left, a deep heap and crowded traffic to the right."),
+  range("lamp", "viscosity", "wax body", 0.5, "How the wax holds together. Left: silky, runny wax that slides through itself, draws out long thin necks before it lets go, trails long tails and merges into smooth blobs. Middle: the classic lamp. Right: chunky, stiff wax that moves in knobbly lumps, tears off short and keeps its shape."),
   toggle("lamp", "cold", "cold start", false, "The lamp has just been switched on: the wax sits in a solid, pale heap on the coil and the liquid is cloudy. Over a minute or so the liquid clears, the heap softens and stirs, and the first blobs tear free and rise. Now: switch it off and on again.", { trigger: 0 }),
   seed("lamp", "pour", "pour", "How the wax was poured: the sizes of its blobs and where they are when the scene opens."),
   toggle("lamp", "hand", "warm with your hand", true, "Hold the button on the glass: your hand warms the wax under it, which softens, swells and starts to rise."),
@@ -44,7 +45,7 @@ export const lavaScene: SceneDef = {
   look: { color: "full", levels: 4 },
   params,
   groups: {
-    lamp: { title: "Lamp", blurb: "Its colours, how hot it runs, how much wax it holds, and a cold start. Hold the button on the glass to warm the wax." },
+    lamp: { title: "Lamp", blurb: "Its colours, how hot it runs, how much wax it holds and how that wax flows, and a cold start. Hold the button on the glass to warm the wax." },
     room: { title: "Room", blurb: "The light the lamp throws about, the moon at the window, and what stands around it." },
     manifold: { title: "Manifold mark", blurb: "An M etched in the lamp's base, and now and then an M of wax." },
   },
