@@ -43,6 +43,7 @@ import { sandtableScene } from "./sandtable/index.ts";
 import { shanshuiScene } from "./shanshui/index.ts";
 import { shoreScene } from "./shore/index.ts";
 import { sillScene } from "./sill/index.ts";
+import { skywardScene } from "./skyward/index.ts";
 import { starryScene } from "./starry/index.ts";
 import { streetScene } from "./street/index.ts";
 import { swellScene } from "./swell/index.ts";
@@ -99,6 +100,7 @@ export const sceneDefs = {
   island: islandScene,
   aurora: auroraScene,
   bees: beesScene,
+  skyward: skywardScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
