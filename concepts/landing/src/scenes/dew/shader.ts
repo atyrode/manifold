@@ -26,6 +26,9 @@ import {
   DEW_KIND_FRAME,
   DEW_KIND_SPIRAL,
   DEW_KIND_STEM,
+  DEW_PIECE_AWN,
+  DEW_PIECE_HEAD,
+  DEW_PIECE_LEAF,
   DEW_PRESENCE_BASE,
   DEW_PRESENCE_DEW,
   DEW_SEG_ROW,
@@ -47,6 +50,9 @@ const float DEW_KIND_SPIRAL = ${glslFloat(DEW_KIND_SPIRAL)};
 const float DEW_KIND_FRAME = ${glslFloat(DEW_KIND_FRAME)};
 const float DEW_KIND_STEM = ${glslFloat(DEW_KIND_STEM)};
 const float DEW_STEM_UNIT = ${glslFloat(DEW_STEM_UNIT)};
+const float DEW_PIECE_LEAF = ${glslFloat(DEW_PIECE_LEAF)};
+const float DEW_PIECE_HEAD = ${glslFloat(DEW_PIECE_HEAD)};
+const float DEW_PIECE_AWN = ${glslFloat(DEW_PIECE_AWN)};
 const float DEW_WET_LEVELS = ${glslFloat(DEW_WET_LEVELS)};
 const float DEW_DOF = ${glslFloat(DEW_DOF)};
 const float DEW_BLUR_MAX = ${glslFloat(DEW_BLUR_MAX)};
@@ -61,7 +67,7 @@ const float DEW_GLINT_SWELL = ${glslFloat(DEW_GLINT_SWELL)};
 
 // The backdrop's camera: the horizon's height in the frame, the hedge's crown, the field of view.
 const float DEW_HORIZON = 0.4;
-const float DEW_HEDGE = 0.78;
+const float DEW_HEDGE = 0.56;
 const float DEW_FOV = 0.6;
 // The camera keeps the sun beyond the frame's right edge, this share of the frame's width right of
 // its centre (so the sun's glow comes in from the edge but its disc stays out of the frame); the
@@ -90,7 +96,7 @@ const float DEW_STEM_BEADS = 0.014;
 const float DEW_STEM_WET = 0.5;
 // The spider's unit (her body is about 1.6 long) as a share of the web's radius; the hub's mat of
 // dense silk under her (spider units); her M's height (web radii) at the smallest and largest size.
-const float DEW_SPIDER = 0.055;
+const float DEW_SPIDER = 0.11;
 const float DEW_MAT = 1.2;
 const float DEW_MARK_MIN = 0.4;
 const float DEW_MARK_MAX = 0.8;
@@ -156,72 +162,71 @@ DewLight dewLight(Sky view, float aspect) {
   return lt;
 }
 
-// Out-of-focus glints on leaves and wet grass: at most one disc per cell of a jittered grid, a
-// rounded hexagon (a six-bladed aperture) with a faint rim, soft at its edge, each breathing slowly
-// as its leaf turns.
-float dewBokeh(vec2 q, float size, float density, float tm, float seed) {
-  vec2 g = q / size;
-  vec2 base = floor(g);
-  float sum = 0.0;
-  for (int k = 0; k < 9; k++) {
-    vec2 c = base + vec2(float(k % 3) - 1.0, float(k / 3) - 1.0);
-    float h = hash12(c + seed);
-    if (h > density) continue;
-    vec2 at = c + 0.5 + (vec2(hash12(c + seed + 3.7), hash12(c + seed + 8.1)) - 0.5) * 0.5
-      + 0.03 * vec2(sin(tm * 0.09 + h * 50.0), cos(tm * 0.07 + h * 70.0));
-    float r = 0.26 + 0.18 * fract(h * 37.0);
-    vec2 v = g - at;
-    vec2 a = abs(v);
-    float d = mix(length(v), max(a.x * 0.866 + a.y * 0.5, a.y), 0.5);
-    float disc = 1.0 - smoothstep(r * 0.55, r, d);
-    float ring = smoothstep(r * 0.6, r * 0.92, d) * disc;
-    float breathe = 0.65 + 0.35 * sin(tm * (0.08 + 0.1 * fract(h * 13.0)) + h * 80.0);
-    sum += (0.75 * disc + 0.25 * ring) * breathe * (0.4 + 0.6 * fract(h * 91.0));
+// Out-of-focus highlights on the dewy leaves and grass far behind: a few big soft discs, faint, warm
+// where they face the low sun and pale elsewhere, each swelling and fading very slowly. 'q' in frame
+// heights, 'sun' where the key light sits in the same, 'key' its strength, 'land' how much of this
+// height is foliage (discs only light leaves, not the sky), 'aspect' the frame's width in heights.
+vec3 dewBokeh(vec2 q, vec2 sun, float key, float land, float tm, float aspect) {
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < 10; i++) {
+    float fi = float(i);
+    vec2 h = hash22(vec2(fi, 3.7));
+    float h3 = hash12(vec2(fi, 9.1));
+    float h4 = hash12(vec2(fi, 14.3));
+    vec2 at = vec2((h.x * 1.1 - 0.05) * aspect, 0.2 + 0.4 * h.y) + 0.012 * vec2(sin(tm * 0.05 + fi * 2.0), cos(tm * 0.04 + fi * 3.0));
+    float r = 0.035 + 0.055 * h3;
+    float d = length(q - at) / r;
+    if (d > 1.0) continue;
+    float disc = 1.0 - smoothstep(0.55, 1.0, d);
+    float ring = smoothstep(0.6, 0.95, d) * disc;
+    float breathe = 0.8 + 0.2 * sin(tm * (0.04 + 0.03 * h4) + fi * 7.0);
+    float warm = clamp(h4 * 0.5 + exp(-length(at - sun) * 1.4) * 0.9, 0.0, 1.0);
+    vec3 tint = mix(vec3(0.85, 0.95, 0.82), vec3(1.0, 0.68, 0.28), warm);
+    float amount = (0.05 + 0.07 * fract(h3 * 7.0) + 0.16 * warm) * (0.25 + 0.75 * key);
+    sum += tint * amount * (0.75 * disc + 0.25 * ring) * breathe;
   }
-  return sum;
+  return sum * land;
 }
 
-// What lies behind the web, far out of focus: a meadow, a hedge, the dawn sky and the sun's glow
-// (or the hedge in deep shadow, or mist). 'detail' adds the blurred grass and the bokeh; the water
-// drops' tiny inverted views go without.
-vec3 dewBackdrop(vec2 uv, float aspect, Sky view, DewLight lt, float tm, float stir, bool detail) {
+// What lies behind the web, far out of focus, nothing in it finer than a few cells: the dawn sky
+// graded from the gold haze at the horizon to blue overhead; a low hedge as a soft, hazy crown; the
+// mist lying over the meadow, catching the low sun; the meadow's grass tops as a broad dark band
+// that fades up into the mist with no line; a few big soft bokeh discs. Also what the water drops
+// hold, upside down.
+vec3 dewBackdrop(vec2 uv, float aspect, Sky view, DewLight lt, float tm, float stir) {
   int mode = int(K_backdrop + 0.5);
   float x = uv.x * aspect;
   vec3 dir = viewRay(uv, aspect, DEW_HORIZON, DEW_FOV);
-  vec3 air = horizonHaze(view, dir, max(dir.y, 0.0) + 0.04);
   vec2 toLight = (uv - lt.glow) * vec2(aspect, 1.0);
   float near = exp(-length(toLight) * 1.6);
+  float key = min(dot(lt.color, vec3(0.333)), 1.5);
   vec3 glow = lt.color * (0.3 * near + 0.6 * near * near);
 
-  // The hedge across the back, its crown a run of soft rounded bushes lit from behind.
-  float top = DEW_HEDGE + 0.1 * vnoise(vec2(x * 1.6 + 7.0, 1.5)) + 0.05 * vnoise(vec2(x * 3.9 + 1.0, 4.5)) - 0.075;
-  if (mode == 1) top += 0.4;
-  float hedge = 1.0 - smoothstep(top - 0.08, top + 0.08, uv.y);
-  float leafy = 0.75 + 0.5 * vnoise(vec2(x, uv.y) * 5.0 + 11.0);
-  vec3 leaves = (vec3(0.016, 0.03, 0.022) + lt.sky * 0.07) * leafy + lt.color * near * 0.12;
-  // The meadow below the horizon, mist lying on it and catching the low sun.
-  float ground = 1.0 - smoothstep(DEW_HORIZON - 0.06, DEW_HORIZON + 0.04, uv.y);
-  vec3 grass = vec3(0.05, 0.065, 0.028) * (0.55 + 0.8 * clamp(uv.y / DEW_HORIZON, 0.0, 1.0)) + lt.sky * 0.05 + lt.color * near * 0.1;
+  // The sky, its height stretched so the gradient from haze to blue shows within the frame.
+  vec3 air = skyColor(view, normalize(vec3(dir.x, max(dir.y, 0.0) * 2.0 + 0.03, dir.z)));
+  vec3 col = air + glow;
 
-  vec3 col = mix(air + glow, leaves, hedge);
-  col += lt.color * vec3(1.0, 0.8, 0.5) * exp(-abs(uv.y - top) / 0.05) * near * 0.3;
-  if (detail) {
-    // Grass blades in the middle distance, blurred into soft upright streaks, barely nodding.
-    float sway = sin(tm * 0.21 + x * 2.0) * (0.05 + 0.25 * stir);
-    grass *= 0.8 + 0.4 * vnoise(vec2(x * 12.0 + sway, uv.y * 1.4 + 3.0));
-  }
+  // The hedge across the back: a low crown of rounded bushes, hazed toward the sky, its top lit.
+  float top = DEW_HEDGE + 0.06 * vnoise(vec2(x * 1.3 + 7.0, 1.5)) + 0.03 * vnoise(vec2(x * 2.9 + 1.0, 4.5)) - 0.045;
+  if (mode == 1) top += 0.4;
+  float hedge = 1.0 - smoothstep(top - 0.1, top + 0.1, uv.y);
+  vec3 leaves = mix(vec3(0.02, 0.04, 0.03) + lt.sky * 0.05, air * 0.5, 0.3) + lt.color * near * 0.1;
+  col = mix(col, leaves, hedge * 0.9);
+  col += lt.color * vec3(1.0, 0.8, 0.5) * exp(-abs(uv.y - top) / 0.08) * near * 0.25;
+
+  // The meadow: its grass tops sway a hair in the breeze; dark below, thinning into the mist above.
+  float sway = sin(tm * 0.21 + x * 2.0) * (0.004 + 0.02 * stir);
+  float grassTop = DEW_HORIZON - 0.065 + 0.05 * vnoise(vec2(x * 1.7 + 3.0, 2.0)) + sway;
+  float ground = 1.0 - smoothstep(grassTop - 0.2, grassTop + 0.12, uv.y);
+  vec3 grass = vec3(0.05, 0.065, 0.028) * (0.45 + 0.9 * clamp(uv.y / DEW_HORIZON, 0.0, 1.0)) + lt.sky * 0.05 + lt.color * near * 0.1;
+  grass += lt.color * vec3(1.0, 0.85, 0.4) * bell((uv.y - grassTop) / 0.1) * near * 0.15;
   col = mix(col, grass, ground);
-  float mist = exp(-abs(uv.y - DEW_HORIZON - 0.02) / 0.07);
-  col += (lt.sky * 0.5 + lt.color * (0.12 + 0.5 * near)) * mist * (mode == 1 ? 0.06 : 0.22);
-  if (detail) {
-    // Dawn-gold glints toward the sun, leaf-green away from it; few, soft.
-    vec2 q = vec2(x, uv.y);
-    float key = min(dot(lt.color, vec3(0.333)), 1.5);
-    vec3 warm = mix(vec3(0.42, 0.56, 0.18), vec3(1.0, 0.66, 0.24), near) * (0.25 + 0.75 * key);
-    float leafGlints = hedge > 0.0 ? dewBokeh(q, 0.12, mode == 1 ? 0.14 : 0.24, tm, 0.0) * hedge * (0.05 + 0.4 * near) : 0.0;
-    float grassGlints = ground > 0.0 ? dewBokeh(q, 0.085, 0.28, tm, 17.0) * ground * (0.04 + 0.3 * near) : 0.0;
-    col += warm * (leafGlints + grassGlints);
-  }
+
+  // The mist, lying just over the grass tops, lit from the sun's side.
+  float mist = bell((uv.y - grassTop - 0.07) / 0.1);
+  col += (lt.sky * 0.5 + lt.color * (0.12 + 0.5 * near)) * mist * (mode == 1 ? 0.06 : 0.3);
+
+  col += dewBokeh(vec2(x, uv.y), lt.glow * vec2(aspect, 1.0), key, hedge, tm, aspect);
   if (mode == 2) {
     vec3 fog = lt.sky * 1.3 + vec3(0.33, 0.32, 0.3) + lt.color * (0.1 + 0.45 * near);
     col = mix(col, fog, 0.82);
@@ -249,7 +254,7 @@ vec4 dewWater(vec2 off, vec2 radii, float blur, vec2 center, float lit, DewLight
   if (cover <= 0.0) return vec4(0.0);
   vec2 oc = o / max(rr, 1.0);
   vec2 behind = vec2(center.x / v.aspect, center.y) - oc * vec2(DEW_LENS / v.aspect, DEW_LENS);
-  vec3 seen = dewBackdrop(behind, v.aspect, view, lt, v.tm, 0.0, false);
+  vec3 seen = dewBackdrop(behind, v.aspect, view, lt, v.tm, 0.0);
   // The dark lens rim only shows on drops big enough to hold it; small beads stay solid.
   float rim = smoothstep(0.45, 1.0, length(oc)) * smoothstep(2.0, 4.0, rc);
   vec2 g = oc + lt.L.xy * 0.45;
@@ -261,26 +266,47 @@ vec4 dewWater(vec2 off, vec2 radii, float blur, vec2 center, float lit, DewLight
   return vec4(body, cover);
 }
 
-// A grass stem, rounded: dark green, its edge toward the low sun lit gold, beads of dew along it.
-void dewStem(vec2 a, vec2 ab, float tt, float radius, float blur, float id, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
+// A piece of grass, rounded: stalk, leaf blade, the seed head's spindle or one of its awns (piece).
+// Lit from the low sun: its own colour, a soft key on the side that faces the light, leaves and
+// the head glowing where the light comes through them, a gold rim, and beads of dew on stalk and leaf.
+void dewStem(vec2 a, vec2 ab, float tt, float radius, float piece, float blur, float id, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
   float len = max(length(ab), 1e-6);
   vec2 dir = ab / len;
   vec2 n = vec2(-dir.y, dir.x);
   vec2 pq = v.p - (a + ab * tt);
-  float across = dot(pq, n);
   float d = length(pq);
   float e = 0.6 * v.px + blur;
   float cover = 1.0 - smoothstep(radius - e, radius + e, d);
   if (cover > 0.0 && cover > acc.stem.a) {
-    float u = clamp(sign(across) * d / radius, -1.0, 1.0);
-    vec3 nrm = vec3(n * u, sqrt(1.0 - u * u));
+    float u = clamp(dot(pq, n) / radius, -1.0, 1.0);
+    float nz = sqrt(1.0 - u * u);
+    vec3 nrm = vec3(n * u, nz);
+    float diff = max(dot(nrm, normalize(lt.L)), 0.0);
     float rim = pow(max(dot(nrm.xy, normalize(lt.L.xy + 1e-4)), 0.0), 2.0) * smoothstep(0.35, 0.95, abs(u));
-    vec3 green = vec3(0.16, 0.22, 0.07) * (0.9 + 0.1 * sin(u * 9.0));
-    vec3 col = green * (lt.sky * 1.3 * (0.4 + 0.6 * nrm.z) + lt.color * 0.08 * lt.back + 0.01)
+    vec3 albedo;
+    float through = 0.0;
+    if (piece < DEW_PIECE_LEAF - 0.5) {
+      // The stalk: green, going to straw toward the top, a darker node every so often.
+      float node = smoothstep(0.93, 1.0, abs(fract(v.p.y * 6.0 + floor(v.p.x) * 0.37) - 0.5) * 2.0);
+      albedo = mix(vec3(0.16, 0.23, 0.07), vec3(0.3, 0.26, 0.09), smoothstep(0.5, 1.0, v.p.y)) * (1.0 - 0.3 * node);
+    } else if (piece < DEW_PIECE_HEAD - 0.5) {
+      // The blade: a paler midrib, light through it.
+      albedo = vec3(0.13, 0.26, 0.06) * (1.0 + 0.5 * exp(-u * u * 14.0));
+      through = 0.5;
+    } else if (piece < DEW_PIECE_AWN - 0.5) {
+      // The head: tawny, banded by its spikelets.
+      float seeds = 0.65 + 0.35 * smoothstep(0.2, 0.8, abs(fract((id + tt) * 3.0) - 0.5) * 2.0);
+      albedo = vec3(0.36, 0.26, 0.09) * seeds;
+      through = 0.35;
+    } else {
+      albedo = vec3(0.5, 0.38, 0.15);
+      through = 1.0;
+    }
+    vec3 col = albedo * (lt.sky * 1.3 * (0.4 + 0.6 * nz) + lt.color * (0.08 * lt.back + 0.22 * diff + through * lt.back * 0.3) + 0.01)
       + lt.color * vec3(1.0, 0.85, 0.45) * rim * (0.25 + 0.35 * lt.back);
     acc.stem = vec4(col, cover);
   }
-  if (v.dew <= 0.0) return;
+  if (v.dew <= 0.0 || piece > DEW_PIECE_LEAF + 0.5) return;
   float j = floor(tt * len / DEW_STEM_BEADS);
   float h = hash12(vec2(id * 7.1, j));
   if (h > DEW_STEM_WET * v.dew) return;
@@ -331,7 +357,10 @@ void dewSegment(int s, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
   float kind = floor(m.w / DEW_CODE + 0.001);
   float extra = m.w - kind * DEW_CODE;
   if (kind > DEW_KIND_STEM - 0.5) {
-    dewStem(a, ab, tt, extra * DEW_STEM_UNIT, blur, float(s), lt, view, v, acc);
+    // A stem's piece: its radius at b rides in the wet slot, with the piece's kind (sim.ts #piece).
+    float piece = floor(m.z / DEW_CODE + 0.001);
+    float radiusB = m.z - piece * DEW_CODE;
+    dewStem(a, ab, tt, max(mix(extra, radiusB, tt) * DEW_STEM_UNIT, 1e-4), piece, blur, float(s), lt, view, v, acc);
     return;
   }
 
@@ -414,7 +443,7 @@ void dewDrop(int d, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
 // toward the low sun rimmed with light. 'q' in her units (y up the web), 'cells' per unit. Returns
 // colour (linear) and coverage.
 vec4 dewSpider(vec2 q, float cells, DewLight lt, float tm) {
-  if (dot(q, q) > 7.5) return vec4(0.0);
+  if (dot(q, q) > 11.0) return vec4(0.0);
   float aa = 0.7 / cells;
   float thin = 0.8 / cells;
   float epoch = floor(tm / 23.0);
@@ -432,7 +461,8 @@ vec4 dewSpider(vec2 q, float cells, DewLight lt, float tm) {
     int k = i / 2;
     float side = i % 2 == 0 ? 1.0 : -1.0;
     // Root angle from her head, femur, the bend at the knee, tibia and the rest.
-    vec4 leg = k == 0 ? vec4(0.47, 0.95, 0.2, 1.05) : k == 1 ? vec4(0.68, 0.85, -0.03, 0.95) : k == 2 ? vec4(1.62, 0.42, 0.5, 0.4) : vec4(2.6, 0.85, -0.16, 0.92);
+    // Pairs: legs I and II held together reaching down either side, III and IV together up either side, an X.
+    vec4 leg = k == 0 ? vec4(0.5, 1.0, 0.18, 1.1) : k == 1 ? vec4(0.82, 0.95, -0.05, 1.0) : k == 2 ? vec4(2.15, 0.85, 0.2, 0.95) : vec4(2.5, 1.0, -0.1, 1.0);
     float raise = i == twitch ? 0.28 * lift : 0.0;
     vec2 d1 = vec2(side * sin(leg.x + raise), -cos(leg.x + raise));
     vec2 d2 = vec2(side * sin(leg.x + leg.z + raise * 0.5), -cos(leg.x + leg.z + raise * 0.5));
@@ -513,6 +543,31 @@ float dewStabilimentum(vec2 q, float size, float px) {
   return max(silk, sheet * 0.22);
 }
 
+// The orb weaver's own stabilimentum: a ribbon of zig-zag silk up and down the web through the hub,
+// above and below the spider, narrowing toward its ends. 'q' in frame heights about the hub (y up
+// the web), 'unit' her unit in the same. Returns the silk's coverage.
+float dewZigzag(vec2 q, float unit, float px) {
+  float y = abs(q.y);
+  float y0 = 1.1 * unit;
+  float y1 = 5.6 * unit;
+  float amp = max(0.3 * unit, 3.5 * px);   // half-width of the zig-zag
+  float stride = max(0.2 * unit, 2.6 * px); // one zig (half a period)
+  if (y < y0 - 2.0 * px || y > y1 + 2.0 * px || abs(q.x) > amp + 2.0 * px) return 0.0;
+  float last = floor((y1 - y0) / stride);
+  float k0 = clamp(floor((y - y0) / stride), 0.0, last - 1.0);
+  float silk = 0.0;
+  for (int j = -1; j <= 1; j++) {
+    float k = clamp(k0 + float(j), 0.0, last - 1.0);
+    float s0 = mod(k, 2.0) < 0.5 ? -1.0 : 1.0;
+    float ak = amp * (1.0 - 0.5 * smoothstep(0.55, 1.0, k / last));
+    float bk = amp * (1.0 - 0.5 * smoothstep(0.55, 1.0, (k + 1.0) / last));
+    float dz = segmentDistance(vec2(q.x, y), vec2(s0 * ak, y0 + k * stride), vec2(-s0 * bk, y0 + (k + 1.0) * stride)) / px;
+    silk = max(silk, clamp(1.25 - dz, 0.0, 1.0));
+  }
+  float sheet = (1.0 - smoothstep(amp * 0.8, amp * 1.05, abs(q.x))) * step(y0, y) * step(y, y1);
+  return max(silk, sheet * 0.2);
+}
+
 Shade sceneDew(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   float tm = uMotionTime;
@@ -557,7 +612,7 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   }
 
   // Behind, shifting a little against the web as the viewer moves.
-  vec3 col = dewTone(dewBackdrop(uv - uPointer * vec2(0.008, 0.005), aspect, view, lt, tm, v.stir, true));
+  vec3 col = dewTone(dewBackdrop(uv - uPointer * vec2(0.008, 0.005), aspect, view, lt, tm, v.stir));
 
   DewAcc acc;
   acc.silk = vec3(0.0);
@@ -599,6 +654,10 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
     vec4 band = hardRamp(dewBright(silkWhite), dewStabilimentum(local, webR * mix(DEW_MARK_MIN, DEW_MARK_MAX, K_mark), v.px), tint, cellTh);
     markOn = band.a;
     if (markOn > 0.5) col = band.rgb;
+  } else if (K_spider > 0.5) {
+    // Her own stabilimentum: the zig-zag ribbon above and below the hub.
+    vec4 band = hardRamp(dewBright(silkWhite), dewZigzag(local, unit, v.px), tint, cellTh);
+    if (band.a > 0.5) col = band.rgb;
   }
 
   // Dew: the bead or drop's body, then its spark.

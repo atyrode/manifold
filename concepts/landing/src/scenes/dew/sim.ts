@@ -23,8 +23,9 @@
 //          t0 = (a.x, a.y, b.x, b.y) hi; t1 = the same, lo; t2 = (a.z, b.z, wet, code). Threads:
 //          wet = round(wetness × DEW_WET_LEVELS) + 0.5 + 0.45 × dry, where dry > 0 means beads at
 //          t < dry are gone and dry < 0 beads at t > -dry (a drop is sweeping the thread); code =
-//          kind × DEW_CODE + beads along it. Stems: wet = 0, code = kind × DEW_CODE + radius in
-//          DEW_STEM_UNIT.
+//          kind × DEW_CODE + beads along it. Stems (stalk, leaf blades, seed head, awns; sim.ts
+//          #packStems): wet = the radius at b in DEW_STEM_UNIT + DEW_CODE × the piece (DEW_PIECE_*),
+//          code = kind × DEW_CODE + the radius at a in DEW_STEM_UNIT.
 //   uSim1  r16f bins: a grid of square bins one 1/rows of the frame height across, from the frame's
 //          bottom-left corner; bin (i, j) lists what reaches into it at texels
 //          (j × DEW_BIN_SLOTS + k, i), k < DEW_BIN_SLOTS: s + 1 for segment s, -(d + 1) for drop d,
@@ -56,6 +57,11 @@ export const DEW_KIND_FRAME = 2;
 export const DEW_KIND_STEM = 3;
 /** A stem's radius unit in its code, frame heights. */
 export const DEW_STEM_UNIT = 1 / 4000;
+/** What a stem capsule is: the stalk, a leaf blade, the seed head's spindle, an awn (a bristle of the head). */
+export const DEW_PIECE_STALK = 0;
+export const DEW_PIECE_LEAF = 1;
+export const DEW_PIECE_HEAD = 2;
+export const DEW_PIECE_AWN = 3;
 export const DEW_WET_LEVELS = 31;
 /** Depth of field: blur radius (frame heights) per unit of depth off the focus at full knob; its cap. */
 export const DEW_DOF = 1.2;
@@ -222,7 +228,17 @@ function hi(x: number): number {
 
 export class DewError extends Error {}
 
-/** A grass stem at the frame's edge: a gently bowed line from below the frame to above it. */
+/** A leaf blade on a stem: where it leaves the stalk (u), which side, its length and half-width (frame heights), its launch angle off the vertical and how far it bends over (radians). */
+interface Leaf {
+  u: number;
+  side: number;
+  length: number;
+  width: number;
+  lift: number;
+  droop: number;
+}
+
+/** A grass stem at the frame's edge: a gently bowed line from below the frame to above it, with leaves and a seed head. */
 interface Stem {
   x0: number;
   y0: number;
@@ -230,6 +246,7 @@ interface Stem {
   y1: number;
   /** Sideways bulge at mid-height (to the right of its upward direction). */
   bow: number;
+  /** Stalk radius at the bottom and at the tip (frame heights). */
   r0: number;
   r1: number;
   /** Phases of its own nodding. */
@@ -237,6 +254,10 @@ interface Stem {
   /** This frame's sway of the tip: x in the frame, z toward the viewer. */
   sx: number;
   sz: number;
+  /** The seed head's length (frame heights) and how far it nods over along it (radians, positive toward +x). */
+  head: number;
+  nod: number;
+  leaves: readonly Leaf[];
 }
 
 /** A frame corner's mooring: the pinned point, the stem it is tied to (-1: a twig above the frame) at u. */
@@ -249,6 +270,18 @@ interface Mooring {
 }
 
 const STEM_SEGMENTS = 10;
+const LEAF_SEGMENTS = 5;
+const HEAD_SEGMENTS = 4;
+/** The seed head's radius at each of its joints (the first is the stalk's own tip), then the awns' length, spread off the head (radians) and radius. */
+const HEAD_RADII: readonly number[] = [0, 0.0052, 0.0056, 0.0042, 0.0008];
+const AWN_LENGTH = 0.022;
+const AWN_SPREAD = 0.55;
+const AWN_RADIUS = 0.0012;
+
+/** A leaf blade's half-width along it (t: 0 at the stalk, 1 at the tip), as a share of its full half-width: narrow at the base, widest a quarter along, then drawn out to a point. */
+function leafProfile(t: number): number {
+  return (0.6 + 0.4 * Math.min(1, t * 4)) * Math.pow(1 - t, 0.7);
+}
 
 function stemAt(stem: Stem, u: number, out: Float64Array): void {
   const dx = stem.x1 - stem.x0;
@@ -322,8 +355,8 @@ class DewWeb {
     const rightX = Math.max(edgeRight, hx + span * radius);
     this.radius = radius;
     this.stems = [
-      { x0: leftX - 0.02, y0: -0.06, x1: leftX + 0.03, y1: 1.12, bow: -0.025, r0: 0.0135, r1: 0.008, phase: rand() * TAU, sx: 0, sz: 0 },
-      { x0: rightX + 0.015, y0: -0.06, x1: rightX - 0.035, y1: 1.12, bow: 0.03, r0: 0.0125, r1: 0.0075, phase: rand() * TAU, sx: 0, sz: 0 },
+      { x0: leftX - 0.035, y0: -0.06, x1: leftX + 0.04, y1: 0.92, bow: -0.03, r0: 0.0075, r1: 0.003, phase: rand() * TAU, sx: 0, sz: 0, head: 0.085, nod: 0.3, leaves: [{ u: 0.28, side: -1, length: 0.24, width: 0.0055, lift: 0.5, droop: 1.9 }, { u: 0.5, side: 1, length: 0.19, width: 0.005, lift: 0.65, droop: 1.8 }] },
+      { x0: rightX + 0.02, y0: -0.06, x1: rightX - 0.045, y1: 0.87, bow: 0.035, r0: 0.007, r1: 0.003, phase: rand() * TAU, sx: 0, sz: 0, head: 0.07, nod: -0.32, leaves: [{ u: 0.33, side: -1, length: 0.21, width: 0.0052, lift: 0.55, droop: 1.9 }, { u: 0.57, side: 1, length: 0.15, width: 0.0048, lift: 0.7, droop: 1.7 }] },
     ];
 
     const layout = sys.addWeb({
@@ -953,6 +986,115 @@ class DewSim implements SceneSim {
     }
   }
 
+  /** One stem capsule a–b (raw positions, depths az and bz) of the given piece, radius ra at a and rb at b; seen with the web's perspective. */
+  #piece(seg: Float32Array, id: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number, ra: number, rb: number, piece: number, cx: number, cell: number, dew: number): void {
+    const ga = 1 + az / CAMERA_DISTANCE;
+    const gb = 1 + bz / CAMERA_DISTANCE;
+    const pax = cx + (ax - cx) * ga;
+    const pay = 0.5 + (ay - 0.5) * ga;
+    const pbx = cx + (bx - cx) * gb;
+    const pby = 0.5 + (by - 0.5) * gb;
+    const codeA = Math.min(DEW_CODE - 1, Math.max(1, Math.round(ra / DEW_STEM_UNIT)));
+    const codeB = Math.min(DEW_CODE - 1, Math.max(1, Math.round(rb / DEW_STEM_UNIT)));
+    this.#writeSegment(seg, id, pax, pay, az, pbx, pby, bz, codeB + DEW_CODE * piece, DEW_KIND_STEM * DEW_CODE + codeA);
+    this.#bin(id + 1, pax, pay, pbx, pby, Math.max(codeA, codeB) * DEW_STEM_UNIT + dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 + Math.max(this.#blurAt(az), this.#blurAt(bz)) + 2 * cell);
+  }
+
+  /**
+   * Every stem's capsules, after the threads' records: the stalk (tapering from r0 to r1), the leaf
+   * blades (a long arc that lifts, bends over and comes to a point), the seed head (a spindle nodding
+   * off the stalk's tip) and its awns (bristles either side). Leaves and head sway a little more than
+   * the stalk they grow from.
+   */
+  #packStems(seg: Float32Array, cx: number, cell: number, dew: number): void {
+    const web = this.#web;
+    const at = this.#at;
+    let id = web.threads;
+    for (const stem of web.stems) {
+      stemAt(stem, 0, at);
+      let ax = at[0] ?? 0;
+      let ay = at[1] ?? 0;
+      let az = at[2] ?? 0;
+      for (let k = 0; k < STEM_SEGMENTS; k++) {
+        const u0 = k / STEM_SEGMENTS;
+        const u1 = (k + 1) / STEM_SEGMENTS;
+        stemAt(stem, u1, at);
+        const bx = at[0] ?? 0;
+        const by = at[1] ?? 0;
+        const bz = at[2] ?? 0;
+        this.#piece(seg, id++, ax, ay, az, bx, by, bz, stem.r0 + (stem.r1 - stem.r0) * u0, stem.r0 + (stem.r1 - stem.r0) * u1, DEW_PIECE_STALK, cx, cell, dew);
+        ax = bx;
+        ay = by;
+        az = bz;
+      }
+
+      for (const leaf of stem.leaves) {
+        stemAt(stem, leaf.u, at);
+        const rz = at[2] ?? 0;
+        let px = at[0] ?? 0;
+        let py = at[1] ?? 0;
+        let ex = px;
+        let ey = py;
+        let ez = rz;
+        const step = leaf.length / LEAF_SEGMENTS;
+        for (let j = 0; j < LEAF_SEGMENTS; j++) {
+          const t0 = j / LEAF_SEGMENTS;
+          const t1 = (j + 1) / LEAF_SEGMENTS;
+          const angle = leaf.lift + leaf.droop * Math.pow((t0 + t1) / 2, 1.4);
+          px += leaf.side * Math.sin(angle) * step;
+          py += Math.cos(angle) * step;
+          const swing = 0.5 * t1 * t1;
+          const nx = px + stem.sx * swing;
+          const nz = rz + stem.sz * swing;
+          this.#piece(seg, id++, ex, ey, ez, nx, py, nz, leaf.width * leafProfile(t0), leaf.width * leafProfile(t1), DEW_PIECE_LEAF, cx, cell, dew);
+          ex = nx;
+          ey = py;
+          ez = nz;
+        }
+      }
+
+      // The seed head carries on from the stalk's tip, along its tangent, nodding further over.
+      stemAt(stem, 1, at);
+      const tipX = at[0] ?? 0;
+      const tipY = at[1] ?? 0;
+      const tipZ = at[2] ?? 0;
+      stemAt(stem, 0.96, at);
+      const lean = Math.atan2(tipX - (at[0] ?? 0), tipY - (at[1] ?? 0));
+      const headStep = stem.head / HEAD_SEGMENTS;
+      let hx = tipX;
+      let hy = tipY;
+      let hz = tipZ;
+      for (let j = 0; j < HEAD_SEGMENTS; j++) {
+        const t0 = j / HEAD_SEGMENTS;
+        const t1 = (j + 1) / HEAD_SEGMENTS;
+        const angle = lean + stem.nod * (t0 + t1) * 0.5;
+        const dx = Math.sin(angle);
+        const dy = Math.cos(angle);
+        const nx = hx + dx * headStep + stem.sx * 0.4 * (t1 * t1 - t0 * t0);
+        const ny = hy + dy * headStep;
+        const nz = tipZ + stem.sz * 0.4 * t1 * t1;
+        const r0 = j === 0 ? stem.r1 : HEAD_RADII[j] ?? 0.001;
+        const r1 = HEAD_RADII[j + 1] ?? 0.001;
+        this.#piece(seg, id++, hx, hy, hz, nx, ny, nz, r0, r1, DEW_PIECE_HEAD, cx, cell, dew);
+        const rad = (r0 + r1) * 0.5;
+        const mx = (hx + nx) * 0.5;
+        const my = (hy + ny) * 0.5;
+        const mz = (hz + nz) * 0.5;
+        for (let s = 0; s < 2; s++) {
+          const side = s === 0 ? -1 : 1;
+          // The normal (-dy, dx) is to the left of the head's direction; the awn leans out that way.
+          const ax = mx - dy * side * rad * 0.6;
+          const ay = my + dx * side * rad * 0.6;
+          const out = angle - side * AWN_SPREAD;
+          this.#piece(seg, id++, ax, ay, mz, ax + Math.sin(out) * AWN_LENGTH, ay + Math.cos(out) * AWN_LENGTH, mz, AWN_RADIUS, AWN_RADIUS * 0.4, DEW_PIECE_AWN, cx, cell, dew);
+        }
+        hx = nx;
+        hy = ny;
+        hz = nz;
+      }
+    }
+  }
+
   // ---- packing ------------------------------------------------------------------------------------
 
   #pack(heightCells: number): void {
@@ -983,7 +1125,7 @@ class DewSim implements SceneSim {
       drawn[i + 2] = z;
     }
 
-    const segRows = Math.ceil((web.threads + web.stems.length * STEM_SEGMENTS) / DEW_SEG_ROW);
+    const segRows = Math.ceil((web.threads + web.stems.reduce((n, stem) => n + STEM_SEGMENTS + stem.leaves.length * LEAF_SEGMENTS + HEAD_SEGMENTS * 3, 0)) / DEW_SEG_ROW);
     const segWidth = DEW_SEG_ROW * DEW_SEG_TEXELS;
     if (this.#segTex.height !== segRows) this.#segTex.resize(segWidth, segRows);
     if (this.#segData.length !== segWidth * segRows * 4) this.#segData = new Float32Array(segWidth * segRows * 4);
@@ -1033,32 +1175,8 @@ class DewSim implements SceneSim {
       this.#bin(-(d + 1), x, y, x, y, reach);
     }
 
-    // Stems.
-    const at = this.#at;
-    for (let s = 0; s < web.stems.length; s++) {
-      const stem = web.stems[s];
-      if (stem === undefined) continue;
-      stemAt(stem, 0, at);
-      let ax = cx + ((at[0] ?? 0) - cx) * (1 + (at[2] ?? 0) / CAMERA_DISTANCE);
-      let ay = 0.5 + ((at[1] ?? 0) - 0.5) * (1 + (at[2] ?? 0) / CAMERA_DISTANCE);
-      let az = at[2] ?? 0;
-      for (let k = 0; k < STEM_SEGMENTS; k++) {
-        const u1 = (k + 1) / STEM_SEGMENTS;
-        stemAt(stem, u1, at);
-        const bz = at[2] ?? 0;
-        const grow = 1 + bz / CAMERA_DISTANCE;
-        const bx = cx + ((at[0] ?? 0) - cx) * grow;
-        const by = 0.5 + ((at[1] ?? 0) - 0.5) * grow;
-        const radius = stem.r0 + (stem.r1 - stem.r0) * ((k + 0.5) / STEM_SEGMENTS);
-        const code = Math.min(DEW_CODE - 1, Math.round(radius / DEW_STEM_UNIT));
-        const id = web.threads + s * STEM_SEGMENTS + k;
-        this.#writeSegment(seg, id, ax, ay, az, bx, by, bz, 0, DEW_KIND_STEM * DEW_CODE + code);
-        this.#bin(id + 1, ax, ay, bx, by, code * DEW_STEM_UNIT + dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 + Math.max(this.#blurAt(az), this.#blurAt(bz)) + 2 * cell);
-        ax = bx;
-        ay = by;
-        az = bz;
-      }
-    }
+    // Stems: stalk, leaf blades, seed head and its awns.
+    this.#packStems(seg, cx, cell, dew);
 
     // Threads.
     const ca = sys.constraintA;
