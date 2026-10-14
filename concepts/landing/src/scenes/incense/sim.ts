@@ -5,7 +5,9 @@
 // currents (a divergence-free stir acting only where there is smoke) and vorticity confinement roll
 // it into Kelvin–Helmholtz curls. Higher up the cooled smoke meets the warmer air under the ceiling
 // (the frame's top is a wall), stops rising and spreads into slow layered veils that a faint
-// ceiling draft carries off to the right, out through the open side.
+// ceiling draft carries off to the right, out through the open side. A ceiling vent (its own knob)
+// draws that layer off harder, toward an extractor high on the right wall, without reaching down
+// to the thread, which the room's draft would bend as it carried the veils.
 // Now and then a door opens somewhere and a draft sweeps across the room (trigger 0); the pointer
 // is a hand moving the air. Dust motes drift in the light: GPU particles carried by the same air.
 //
@@ -219,6 +221,14 @@ const CEILING_DRIFT = 0.075;
 const CEILING_FROM = 0.65;
 const STRATIFY = 0.6;
 const STRATIFY_FROM = 0.86;
+/**
+ * The ceiling vent, at full draw: its pull along the ceiling toward the extractor on the right
+ * (frame heights per second at the frame's right edge, half that at its left), the height it reaches
+ * down to (above the thread, which frays out below it), and how firmly the layer follows it.
+ */
+const VENT_SPEED = 0.16;
+const VENT_FROM = 0.72;
+const VENT_RATE = 0.8;
 /** The backflow: cold (negative heat) and smoke per second at the outlet, its push out, and the wisp from the cone's tip. */
 const BACKFLOW_COLD = 9;
 const BACKFLOW_SMOKE = 1.4;
@@ -330,6 +340,7 @@ uniform vec4 uGust;       // a door's draft: x velocity, front x, direction (+1 
 uniform vec4 uSource;     // where the smoke leaves the ember (p), laminar span, laminar coupling per second
 uniform vec4 uStir;       // the room's faint currents: strength, height above the source, ramp, smoke gain
 uniform vec4 uCeiling;    // under the ceiling: drift speed, height it starts; stratification, height it starts
+uniform vec4 uVent;       // the ceiling vent: pull at the right edge (0: shut), height it reaches down to, coupling per second, 0
 
 vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
   // Warm air rises; under the ceiling the air is warmer still, so cooled smoke stops rising there
@@ -343,6 +354,14 @@ vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
   float swept = smoothstep(-${glslFloat(FRONT_SOFT)}, ${glslFloat(FRONT_SOFT)}, uGust.z * (uGust.y - p.x));
   target += swept * uGust.x * mix(1.0, 0.55, smoothstep(0.15, 0.9, p.y));
   rate += swept * uGust.w;
+
+  // The ceiling vent draws the layer under the ceiling off to the right, harder toward its
+  // extractor; it never reaches down to the thread.
+  if (uVent.x > 0.0) {
+    float layer = smoothstep(uVent.y, 1.0, p.y);
+    target += layer * uVent.x * (0.5 + 0.5 * p.x / uDomain.x);
+    rate += layer * uVent.z;
+  }
 
   // Just above the ember the air keeps firmly to the draft: the thread rises laminar, leaning.
   vec2 s = p - uSource.xy;
@@ -445,7 +464,7 @@ interface Point {
 
 // ---- the knobs ---------------------------------------------------------------------------------
 
-type IncenseKnob = "stick" | "smoke" | "renew" | "draft" | "turbulence" | "door" | "hand" | "candle" | "dust";
+type IncenseKnob = "stick" | "smoke" | "renew" | "draft" | "turbulence" | "vent" | "door" | "hand" | "candle" | "dust";
 
 interface Settings {
   kind: IncenseKind;
@@ -454,6 +473,8 @@ interface Settings {
   renew: boolean;
   draft: number;
   turbulence: number;
+  /** The ceiling vent's draw, 0 (shut) to 1. */
+  vent: number;
   /** How often doors open, 0 (never by themselves) to 1. */
   doors: number;
   hand: boolean;
@@ -468,6 +489,7 @@ function readSettings(out: Settings, frame: SimFrame, knobs: KnobReader<IncenseK
   out.renew = knobs.value(frame, "renew") > 0.5;
   out.draft = clamp(knobs.value(frame, "draft"), 0, 1);
   out.turbulence = clamp(knobs.value(frame, "turbulence"), 0, 1);
+  out.vent = clamp(knobs.value(frame, "vent"), 0, 1);
   out.doors = clamp(knobs.value(frame, "door"), 0, 1);
   out.hand = knobs.value(frame, "hand") > 0.5;
   out.candle = knobs.value(frame, "candle") > 0.5;
@@ -863,6 +885,7 @@ type SnippetUniforms = {
   uSource: Float32Array;
   uStir: Float32Array;
   uCeiling: Float32Array;
+  uVent: Float32Array;
   uHolder: Float32Array;
 };
 
@@ -915,6 +938,7 @@ class Plume {
   readonly #source = new Float32Array(4);
   readonly #stir = new Float32Array(4);
   readonly #ceiling = new Float32Array(4);
+  readonly #vent = new Float32Array(4);
   readonly #holder = new Float32Array(2);
   readonly #dye = new Float32Array(4);
   readonly #push = new Float32Array(2);
@@ -930,6 +954,7 @@ class Plume {
     uSource: this.#source,
     uStir: this.#stir,
     uCeiling: this.#ceiling,
+    uVent: this.#vent,
     uHolder: this.#holder,
   };
   readonly #fluidStep: FluidStep = {
@@ -1159,6 +1184,10 @@ class Plume {
     ceiling[1] = CEILING_FROM;
     ceiling[2] = STRATIFY;
     ceiling[3] = STRATIFY_FROM;
+    const vent = this.#vent;
+    vent[0] = VENT_SPEED * settings.vent;
+    vent[1] = VENT_FROM;
+    vent[2] = VENT_RATE;
     const holder = this.#holder;
     holder[0] = incenseKinds.indexOf(burner.kind);
     holder[1] = settings.candle ? 1 : 0;
@@ -1178,7 +1207,7 @@ class Plume {
 
 /** The incense, for a scene whose `params` carry the knobs IncenseKnob names. */
 export function incenseSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<IncenseKnob>("incense", params, ["stick", "smoke", "renew", "draft", "turbulence", "door", "hand", "candle", "dust"]);
+  const knobs = new KnobReader<IncenseKnob>("incense", params, ["stick", "smoke", "renew", "draft", "turbulence", "vent", "door", "hand", "candle", "dust"]);
   const renewSlot = knobs.trigger("renew");
   const doorSlot = knobs.trigger("door");
   return (gl): SceneSim => {
@@ -1186,7 +1215,7 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
     const stateData = new Float32Array(12);
     const doors = new Doors();
     const arrival = new Arrival();
-    const settings: Settings = { kind: "stick", smoke: 0, renew: false, draft: 0, turbulence: 0, doors: 0, hand: false, candle: false, dust: false };
+    const settings: Settings = { kind: "stick", smoke: 0, renew: false, draft: 0, turbulence: 0, vent: 0, doors: 0, hand: false, candle: false, dust: false };
     const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
     let burner: Burner | undefined;
 

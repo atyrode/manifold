@@ -30,6 +30,12 @@
 // ends and the lamp runs on as ever. On the way out the coil lets go, the wax cools, grows heavy and
 // sinks, merging back into the pool at the bottom, and any M lets go. At rest none of it runs.
 //
+// The wax's body (the viscosity knob, sims/material.ts conventions): the classic wax at the knob's
+// middle, silky to the left and chunky to the right, on the same parcels. Silky wax holds together
+// more loosely but further (cohesion, the bonds' break distance), slides through itself (the bonds'
+// viscosity), trails long tails and merges smoothly (the shader's teardrop stretch and metaball
+// reach); chunky wax binds hard, tears off short, moves as one lump and keeps its knobbly parcels.
+//
 // Units: glass units (the liquid is 1 tall), seconds of scene time × motion.
 //
 // Textures:
@@ -38,14 +44,14 @@
 //   uSim1  rg16f, LAVA_GRID_X × 2·LAVA_GRID_Y, linear: a coarse picture of the wax over the glass
 //          (gx in ±LAVA_GRID_HALF, gy 0..1), lamp A below lamp B: r how much wax (soft), g how much
 //          of the bulb's light still gets up through the wax below.
-//   uSim2  rgba16f, 2 × 1, nearest: per lamp, the parcels in use, the bulb 0..1, the warm-up 0..1
-//          (cold liquid is cloudy) and the share of the glass the wax covers in the picture.
-import type { ParamDef } from "../../params.ts";
+//   uSim2  rgba16f, 3 × 1, nearest: per lamp (texels 0, 1), the parcels in use, the bulb 0..1, the
+//          warm-up 0..1 (cold liquid is cloudy) and the share of the glass the wax covers in the
+//          picture; texel 2, the wax's body for the shader: its metaball reach and teardrop stretch
+//          (× the classic wax's), 0, 0.
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { materialAt } from "../../sims/material.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
-
-/** A scene whose knobs do not match what the simulation reads. */
-export class LavaError extends Error {}
 
 // ---- the lamp's shape and the room's layout, shared with the shader -----------------------------
 
@@ -222,6 +228,26 @@ const PASS_HI = 0.3;
 const WALL = 40;
 const WALL_GIVE = 0.15;
 
+/**
+ * The wax's body, each property × the classic wax's (the constants above): cohesion (COHESION),
+ * reach (how far a neck draws out before it snaps, BREAK), viscosity (VISCOSITY: bonded parcels
+ * moving as one), stretch (the shader's teardrop, LAVA_STRETCH) and blend (the shader's metaball
+ * reach, LAVA_REACH: high merges parcels into smooth blobs, low leaves each a lump of its own).
+ */
+interface WaxBody {
+  cohesion: number;
+  reach: number;
+  viscosity: number;
+  stretch: number;
+  blend: number;
+}
+/** Silky, runny wax: loose and far-reaching bonds, slipping through itself, long tails, smooth merges. */
+const SILKY: Readonly<WaxBody> = { cohesion: 0.35, reach: 1.3, viscosity: 0.15, stretch: 1.7, blend: 1.15 };
+/** The classic wax every constant above was tuned on, at the knob's middle. */
+const CLASSIC: Readonly<WaxBody> = { cohesion: 1, reach: 1, viscosity: 1, stretch: 1, blend: 1 };
+/** Chunky, stiff wax: hard, short bonds that snap early, moving in lumps that keep their knobbly parcels. */
+const CHUNKY: Readonly<WaxBody> = { cohesion: 3, reach: 0.9, viscosity: 6, stretch: 0.45, blend: 0.86 };
+
 /** Your hand on the glass: its warmth (1/s toward HAND_T) and reach (glass units). */
 const HAND_RATE = 0.9;
 const HAND_T = 1.3;
@@ -358,43 +384,8 @@ function markTargets(count: number): { x: number; y: number }[] {
 
 // ---- knobs -------------------------------------------------------------------------------------
 
-type LavaKnob = "heat" | "fill" | "cold" | "pour" | "hand" | "twin" | "mark";
-
-interface KnobSlot {
-  /** Position in the scene's `params` (and so in `SimFrame.values`). */
-  index: number;
-  /** The knob's default (a feature's default amount). */
-  fallback: number;
-}
-
-/** Reads the scene's knobs by key, through their position in the scene's `params`. */
-class LavaKnobs {
-  readonly #slots: Record<LavaKnob, KnobSlot>;
-
-  constructor(params: readonly ParamDef[]) {
-    const slot = (key: LavaKnob): KnobSlot => {
-      const index = params.findIndex((def) => def.key === key);
-      const def = params[index];
-      if (def === undefined) throw new LavaError(`lava: the scene has no ${key} knob`);
-      return { index, fallback: def.value };
-    };
-    this.#slots = {
-      heat: slot("heat"),
-      fill: slot("fill"),
-      cold: slot("cold"),
-      pour: slot("pour"),
-      hand: slot("hand"),
-      twin: slot("twin"),
-      mark: slot("mark"),
-    };
-  }
-
-  /** As the shader sees it: a feature reads its amount while on, 0 while off. */
-  value(frame: SimFrame, key: LavaKnob): number {
-    const slot = this.#slots[key];
-    return frame.values[slot.index] ?? slot.fallback;
-  }
-}
+type LavaKnob = "heat" | "fill" | "viscosity" | "cold" | "pour" | "hand" | "twin" | "mark";
+const LAVA_KNOBS: readonly LavaKnob[] = ["heat", "fill", "viscosity", "cold", "pour", "hand", "twin", "mark"];
 
 interface Settings {
   /** 0..1 bulb heat: how hot the coil runs and how fast it heats the wax on it. */
@@ -407,6 +398,8 @@ interface Settings {
   twin: boolean;
   /** Seconds between Ms of wax; 0 while the M is off. */
   markEvery: number;
+  /** The wax's body, 0 silky .. 0.5 classic .. 1 chunky. */
+  viscosity: number;
 }
 
 /** Where a hand rests on a lamp's glass, in glass units, if it does. */
@@ -467,6 +460,8 @@ class Lamp {
   /** Seconds into an M (-1: none), and seconds until the next one. */
   markAge = -1;
   markWait = MARK_FIRST;
+  /** The wax's body (WaxBody), shared with the other lamp and set by the sim before it steps. */
+  body: Readonly<WaxBody> = CLASSIC;
   readonly #index: number;
   #random = lavaRandom(0);
 
@@ -736,7 +731,10 @@ class Lamp {
       if (w.y > ceiling) w.ay -= WALL * (w.y - ceiling);
     }
 
-    // Bonds between neighbours.
+    // Bonds between neighbours, as the wax's body has them.
+    const breakAt = BREAK * this.body.reach;
+    const cohesion = COHESION * this.body.cohesion;
+    const viscosity = VISCOSITY * this.body.viscosity;
     for (let i = 0; i < n; i++) {
       const a = wax[i];
       if (a === undefined || a.r <= 1e-4) continue;
@@ -746,7 +744,7 @@ class Lamp {
         if (b === undefined || b.r <= 1e-4) continue;
         const dx = b.x - a.x;
         const dy = b.y - a.y;
-        const reach = BREAK * (a.r + b.r);
+        const reach = breakAt * (a.r + b.r);
         const d2 = dx * dx + dy * dy;
         if (d2 >= reach * reach) continue;
         const d = Math.sqrt(d2) + 1e-6;
@@ -771,14 +769,14 @@ class Lamp {
         if (d < rest) f = (-REPEL * pass * (rest - d)) / rest;
         else {
           const u = (d - rest) / (reach - rest);
-          f = COHESION * bond * (1 - TEAR * apart) * 4 * u * (1 - u);
+          f = cohesion * bond * (1 - TEAR * apart) * 4 * u * (1 - u);
         }
         a.ax += (f * m * nx) / ma;
         a.ay += (f * m * ny) / ma;
         b.ax -= (f * m * nx) / mb;
         b.ay -= (f * m * ny) / mb;
         const near = 1 - d / reach;
-        const vis = VISCOSITY * bond * pass * near * m;
+        const vis = viscosity * bond * pass * near * m;
         const rvx = b.vx - a.vx;
         const rvy = b.vy - a.vy;
         a.ax += (vis * rvx) / ma;
@@ -903,14 +901,16 @@ function handOn(pointer: PointerState, aspect: number, index: number): Hand | un
 }
 
 class LavaSim implements SceneSim {
-  readonly #knobs: LavaKnobs;
+  readonly #knobs: KnobReader<LavaKnob>;
   readonly #lamps = [new Lamp(0), new Lamp(1)] as const;
   readonly #parcels: DataTexture;
   readonly #grid: DataTexture;
   readonly #state: DataTexture;
   readonly #parcelData = new Float32Array(LAVA_MAX * 4 * 4);
   readonly #gridData = new Float32Array(LAVA_GRID_X * LAVA_GRID_Y * 2 * 2);
-  readonly #stateData = new Float32Array(2 * 4);
+  readonly #stateData = new Float32Array(3 * 4);
+  /** The wax's body both lamps step with, re-read from the viscosity knob every frame. */
+  readonly #body: WaxBody = { ...CLASSIC };
   readonly #dens = new Float32Array(LAVA_GRID_X * LAVA_GRID_Y);
   readonly #light = new Float32Array(LAVA_GRID_X * LAVA_GRID_Y);
   #seed = -1;
@@ -928,15 +928,17 @@ class LavaSim implements SceneSim {
   #triggers: number[] | undefined;
   #signature = "";
 
-  constructor(gl: WebGL2RenderingContext, knobs: LavaKnobs) {
+  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<LavaKnob>) {
     this.#knobs = knobs;
     this.#parcels = new DataTexture(gl, { width: LAVA_MAX, height: 4, format: "rgba16f", filter: "nearest" });
     this.#grid = new DataTexture(gl, { width: LAVA_GRID_X, height: 2 * LAVA_GRID_Y, format: "rg16f" });
-    this.#state = new DataTexture(gl, { width: 2, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    for (const lamp of this.#lamps) lamp.body = this.#body;
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const settings = this.#read(frame);
+    materialAt(settings.viscosity, SILKY, CLASSIC, CHUNKY, this.#body);
     const enter = clamp(frame.passage.enter, 0, 1);
     const exit = clamp(frame.passage.exit, 0, 1);
     // Only a sim built while the scene comes in, warm, plays the entrance.
@@ -1018,7 +1020,8 @@ class LavaSim implements SceneSim {
     const shareA = a.writeGrid(this.#gridData, 0, this.#dens, this.#light);
     const shareB = b.writeGrid(this.#gridData, LAVA_GRID_Y, this.#dens, this.#light);
     const state = this.#stateData;
-    state.set([a.used, a.bulb, a.warm, shareA, b.used, b.bulb, b.warm, shareB]);
+    const body = this.#body;
+    state.set([a.used, a.bulb, a.warm, shareA, b.used, b.bulb, b.warm, shareB, body.blend, body.stretch, 0, 0]);
     this.#parcels.upload(this.#parcelData);
     this.#grid.upload(this.#gridData);
     this.#state.upload(state);
@@ -1043,6 +1046,7 @@ class LavaSim implements SceneSim {
       hand: knobs.value(frame, "hand") > 0.5,
       twin: knobs.value(frame, "twin") > 0.5,
       markEvery: mark > 0 ? MARK_EVERY_RARE + (MARK_EVERY_OFTEN - MARK_EVERY_RARE) * clamp(mark, 0, 1) : 0,
+      viscosity: clamp(knobs.value(frame, "viscosity"), 0, 1),
     };
   }
 
@@ -1083,6 +1087,6 @@ function twinCount(count: number): number {
 
 /** The lava lamps, for a scene whose `params` carry the knobs `LavaKnob` names. */
 export function lavaSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new LavaKnobs(params);
+  const knobs = new KnobReader<LavaKnob>("lava", params, LAVA_KNOBS);
   return (gl) => new LavaSim(gl, knobs);
 }

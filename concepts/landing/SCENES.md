@@ -40,9 +40,9 @@ mathematics. All have a first implementation in the lab:
 | Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling; paged bin lists keep the dense hub whole | `VerletSystem`, `BinLists` |
 | Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds | |
 | Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist, four seasons' washes; painted in sections joined by mounting silk so days of unrolling stay precise | |
-| Incense smoke | `incense` | Buoyant smoke, laminar to turbulent | `FluidSim` |
+| Incense smoke | `incense` | Buoyant smoke, laminar to turbulent; a ceiling vent draws the layered veils off without bending the thread | `FluidSim` |
 | Sand table | `sandtable` | Theta–rho ball and sand pendulum on a height field; the relief is re-sent every frame while a machine outruns it, so a groove's head stays under the ball | `HeightField` |
-| Chladni plate | `chladni` | Sand grains drifting to the nodal lines of plate modes | |
+| Chladni plate | `chladni` | Sand grains drifting to the nodal lines of plate modes; grain size from fine sand (thin, crisp lines, slow to gather) to grit (broad, rough, steep ridges, quick) | `grainAt` |
 | Ferrofluid | `ferro` | Rosensweig spike lattice, sloshing blob | |
 | Soap film | `film` | Thin-film interference, gravity drainage, pops | `FluidSim` |
 | Pearlescent fluid (rheoscopic) | `pearl` | Flake orientation advected and turned by the flow | `FluidSim` |
@@ -63,8 +63,8 @@ A third batch built on the shared foundations (weather in the world, hard edges,
 | City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain |
 | Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint |
 | Mystic forest | `forest` | Kodama spirits appearing and turning their heads, curious of the pointer or (a tunable share) shy of it and ducking into the moss (`sims/temperament.ts`); spores on curl-noise air, a stag crossing |
-| Ripple tank | `ripple` | GPU wave equation: interference, double slit, lens, Doppler, standing waves; projected caustics |
-| Lava lamp | `lava` | Heated wax blobs with buoyancy, necks and merging |
+| Ripple tank | `ripple` | GPU wave equation: interference, double slit, lens, Doppler, standing waves; projected caustics; edge absorption from beaches that swallow every wave to bare walls that reflect them, apart from open-water damping |
+| Lava lamp | `lava` | Heated wax blobs with buoyancy, necks and merging; a wax body from silky (smaller blobs slipping through each other, long tails, smooth merges) to chunky (fewer, slower, knobbly lumps) |
 | Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles; lying snow from wind-packed crust to fresh powder at the same cover |
 | Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning |
 

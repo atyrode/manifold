@@ -13,6 +13,7 @@ const params: readonly ParamDef[] = [
   choice("plate", "tone", "metal", chladniMetals.map((metal, value) => ({ label: metal.label, value })), 1, "The plate: black anodised, brushed steel, or brass."),
   seed("plate", "plateSeed", "figures", "Which figure the sweep starts from, how the round figures are turned and how the sand first falls; re-seed for another run."),
   choice("sand", "grains", "sand", counts(...CHLADNI_GRAINS), 25000, "How many grains are on the plate: a dusting that draws fine lines, or enough to heap them into ridges."),
+  range("sand", "grainSize", "grain size", 0.5, "How coarse the sand is. Left: fine sand, set moving by the least swing and held back by the air: it creeps into thin, crisp lines. Middle: ordinary dry sand. Right: grit, thrown far and quick to arrive, heaping into broad, rough, steep ridges with loose grains scattered round them. A new grain is a fresh batch, strewn over the plate and sung into the figure."),
   choice("sand", "sand", "colour", chladniSands.map((sand, value) => ({ label: sand.label, value })), 0, "Pale quartz, warm desert sand, white salt, or pink coral sand."),
   feature("light", "lamp", "coloured lamp", true, "brightness", 0.6, "One coloured lamp, low on the left: its reflection streaks across the grain of the metal, rakes the ridges of sand and glints in a few grains. Off: a dim, neutral room light."),
   choice("light", "lampHue", "lamp colour", chladniLamps.map((lamp, value) => ({ label: lamp.label, value })), 0, "Amber, sea green, violet, or a cool moonlight.", { when: "lamp" }),
