@@ -349,6 +349,12 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `separateDiscs` (`discs.ts`): after an integration step, moves apart bodies that touch as discs on
   a plane and have sunk into one another past a given share, a limited distance per step, coincident
   ones included; for soft-contact crowds (lanterns).
+- `Boids` and `boidRules` (`boids.ts`): topological boids in 3D for flocks and schools of a few
+  thousand: separation, cohesion and alignment with each boid's K nearest, found through a spatial
+  hash with a bounded search (refreshed by turns), plus cruise, level flight, a home to wheel over,
+  a threat, wind and noise, and startles relayed through the neighbours as a wave. Deterministic
+  for a seed; the rules are one mutable object the caller sets each step (the murmuration's
+  emergent flight).
 - `HeadlessGl` (`headless.ts`): a stand-in context for `bun test` that runs a CPU sim's
   `DataTexture`s and keeps each texture's last upload, to check what the shader would receive.
 

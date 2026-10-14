@@ -9,7 +9,10 @@
 // down over its ground, the occlusion test (BirdHit.depth against the depth of its own first surface)
 // and the lighting (BirdHit.albedo under its sky light, hazed by BirdHit.depth). The countryside
 // (scenes/country/wildlife.ts) is the reference consumer. For a murmuration, fly the Murmuration
-// scene's flock instead (flockSim with a FlockSetup, inked with flockSheet).
+// scene's flock instead (flockSim with a FlockSetup, inked with flockSheet): its authored sheet, or
+// with the setup's `emergent` control genuine topological boids. Birds that must react to one
+// another rather than fly hashed paths are a CPU job for `Boids` (sims/boids.ts), drawn from a sim
+// texture as the flock is.
 //
 // Coordinates: the screen point p is (x across from the frame's centre, y = uv.y), both in screen
 // heights; the world is x across, y up from the ground datum, z away from the eye, in the scene's own
