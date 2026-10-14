@@ -26,6 +26,7 @@
 // Content units: half the screen height, origin at the centre, after the pan.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
+import { ElasticPan } from "../../sims/pan.ts";
 import type { PointerState, SceneDef, ScenePassageProgress, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 /** The `mode` knob's values, in order. */
@@ -80,9 +81,16 @@ const PASSAGE_REACH: readonly PassageReach[] = [
 ];
 
 // The pointer.
-/** Seconds for the hover nudge to follow the pointer, and the half-life of a released drag. */
+/**
+ * Seconds for the hover nudge to follow the pointer, and the half-life of a released drag. The
+ * drag keeps the picture's centre within the frame: it meets a rubber band's resistance there and
+ * can stretch it at most PAN_GIVE (content units) further; an overshoot springs back in about
+ * PAN_SNAP seconds once let go.
+ */
 const NUDGE_EASE = 1.2;
 const PAN_HALF_LIFE = 6;
+const PAN_GIVE = 0.3;
+const PAN_SNAP = 0.25;
 /** Seconds over which velocities are smoothed (they only set how much detail softens as it moves). */
 const VELOCITY_EASE = 0.3;
 
@@ -440,7 +448,7 @@ class FractalSim implements SceneSim {
 
   // Pointer.
   #nudge: Complex = [0, 0];
-  #pan: Complex = [0, 0];
+  readonly #pan = new ElasticPan({ halfLife: PAN_HALF_LIFE, give: PAN_GIVE, snap: PAN_SNAP });
   #dragFrom: Complex | undefined;
 
   // Julia: the station c rests at (or glides from), how far along the glide (−1: resting), how
@@ -528,18 +536,27 @@ class FractalSim implements SceneSim {
     this.#row.dispose();
   }
 
-  /** Hover nudges (eased); a drag pans the picture, which drifts home once let go. */
+  /**
+   * Hover nudges (eased); a drag pans the picture, which drifts home once let go. The pan keeps the
+   * picture's centre within the frame, and the nudge, measured from that centre, reaches no further
+   * than the frame's half-diagonal, as it would unpanned: no stack of drags flings the picture off
+   * screen or drives c far off its walk.
+   */
   #steer(pointer: PointerState, dt: number): void {
-    const at: Complex = [(pointer.x - 0.5) * this.#aspect * 2, (pointer.y - 0.5) * 2];
+    const aspect = this.#aspect;
+    const at: Complex = [(pointer.x - 0.5) * aspect * 2, (pointer.y - 0.5) * 2];
     const dragging = pointer.down && pointer.inside;
     if (dragging) {
-      if (this.#dragFrom) this.#pan = add(this.#pan, sub(at, this.#dragFrom));
+      if (this.#dragFrom) this.#pan.drag(at[0] - this.#dragFrom[0], at[1] - this.#dragFrom[1], aspect, 1);
       this.#dragFrom = at;
     } else {
       this.#dragFrom = undefined;
-      if (dt > 0) this.#pan = scale(this.#pan, Math.pow(0.5, dt / PAN_HALF_LIFE));
+      this.#pan.release(dt, aspect, 1);
     }
-    const target: Complex = pointer.inside && !dragging ? sub(at, this.#pan) : [0, 0];
+    let target: Complex = pointer.inside && !dragging ? sub(at, this.#pan.offset) : [0, 0];
+    const reach = Math.hypot(target[0], target[1]);
+    const most = Math.hypot(aspect, 1);
+    if (reach > most) target = scale(target, most / reach);
     if (dt > 0) this.#nudge = add(this.#nudge, scale(sub(target, this.#nudge), follow(dt, NUDGE_EASE)));
   }
 
@@ -748,7 +765,7 @@ class FractalSim implements SceneSim {
     // The pebble: the hovering pointer, as one more (lighter) root.
     const reach = GARDEN_REACH / knobs.zoom;
     const hovering = pointer.inside && !pointer.down && this.#incoming.mode === MODE_GARDEN;
-    const at: Complex = scale(sub([(pointer.x - 0.5) * this.#aspect * 2, (pointer.y - 0.5) * 2], this.#pan), reach);
+    const at: Complex = scale(sub([(pointer.x - 0.5) * this.#aspect * 2, (pointer.y - 0.5) * 2], this.#pan.offset), reach);
     if (real > 0) {
       if (hovering) this.#pebble = this.#pebbleWeight < 0.02 ? at : add(this.#pebble, scale(sub(at, this.#pebble), follow(real, GARDEN_PEBBLE_EASE)));
       this.#pebbleWeight += ((hovering ? GARDEN_PEBBLE : 0) - this.#pebbleWeight) * follow(real, NUDGE_EASE);
@@ -810,7 +827,8 @@ class FractalSim implements SceneSim {
    * Where the camera falls into and rises from, in content units: a point where the fractal is all
    * fine detail. Julia: the repelling fixed point β = 1 − α, on the set, where it is self-similar.
    * Gasket: the kiss of the two big circles A and B, at (1/2, 1/2) in the band. Garden: the balance
-   * of the stones' pulls, where their basins braid. Kept in view.
+   * of the stones' pulls, where their basins braid. Kept in view: on screen it stands at `at` plus
+   * the pan, so that is what is held within the margins.
    */
   #passageFocus(): Complex {
     let at: Complex = [0, 0];
@@ -833,7 +851,9 @@ class FractalSim implements SceneSim {
         break;
     }
     if (!Number.isFinite(at[0]) || !Number.isFinite(at[1])) return [0, 0];
-    return [clamp(at[0], -PASSAGE_FOCUS_MARGIN * this.#aspect, PASSAGE_FOCUS_MARGIN * this.#aspect), clamp(at[1], -PASSAGE_FOCUS_MARGIN, PASSAGE_FOCUS_MARGIN)];
+    const [panX, panY] = this.#pan.offset;
+    const rangeX = PASSAGE_FOCUS_MARGIN * this.#aspect;
+    return [clamp(at[0] + panX, -rangeX, rangeX) - panX, clamp(at[1] + panY, -PASSAGE_FOCUS_MARGIN, PASSAGE_FOCUS_MARGIN) - panY];
   }
 
   #write(): void {
@@ -848,14 +868,14 @@ class FractalSim implements SceneSim {
     const soft = this.#wipe === "loop" ? LOOP_SOFT : SWAP_SOFT;
     let reach = 0;
     for (const corner of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-      reach = Math.max(reach, Math.hypot(corner[0] * this.#aspect - this.#pan[0] - centre[0], corner[1] - this.#pan[1] - centre[1]));
+      reach = Math.max(reach, Math.hypot(corner[0] * this.#aspect - this.#pan.offset[0] - centre[0], corner[1] - this.#pan.offset[1] - centre[1]));
     }
     // Margins of a softness either side keep the wobbling front clear of both ends.
     const radius = outgoing && this.#wipe ? -2 * soft + (reach + 4 * soft) * this.#wipeProgress : 1e4;
     data.set([centre[0], centre[1], radius, soft], 0);
     // The dive leans a little toward a hovering pointer: parallax, as if looking past its edge.
     const lean: Complex = this.#incoming.mode === MODE_DIVE ? scale(this.#nudge, DIVE_NUDGE) : [0, 0];
-    data.set([this.#pan[0] + lean[0], this.#pan[1] + lean[1], this.#markStrength, knobs.mark > 0 ? knobs.mark : 0.5], 4);
+    data.set([this.#pan.offset[0] + lean[0], this.#pan.offset[1] + lean[1], this.#markStrength, knobs.mark > 0 ? knobs.mark : 0.5], 4);
     if (this.#depth > 0 && this.#incoming.mode !== MODE_DIVE) {
       const fall = this.#passageFocus();
       data.set([Math.exp(-this.#depth), fall[0], fall[1], this.#depthRate], 8);
