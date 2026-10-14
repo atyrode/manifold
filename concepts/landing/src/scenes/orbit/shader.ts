@@ -79,8 +79,10 @@ bool orbitBehindPlanet(vec3 p, float r) {
 }
 
 // Captured meteor 'tau' seconds after it appears: spirals inward around the planet and burns up
-// in the atmosphere. Returns (ink, accent).
-vec2 orbitCapturedEvent(vec2 dp, float r, float tau, float id, float px) {
+// in the atmosphere. ringZ, ringOpacity: the ring at this pixel (its depth toward the viewer and how
+// much it hides, see orbitRingOver); the meteor dims behind ring material nearer the eye. Returns
+// (ink, accent).
+vec2 orbitCapturedEvent(vec2 dp, float r, float tau, float id, float px, float ringZ, float ringOpacity) {
   vec2 acc = vec2(0.0);
   float duration = 8.0;
   if (tau < 0.0 || tau > duration + 1.4) return acc;
@@ -95,25 +97,27 @@ vec2 orbitCapturedEvent(vec2 dp, float r, float tau, float id, float px) {
     vec3 pos = orbitInclined(start + turn * TAU * 1.4 * pow(tt, 0.8), mix(3.4, 1.02, pow(tt, 1.25)) * r, tilt, roll);
     if (orbitBehindPlanet(pos, r) || tau - back > duration) continue;
     float d = length(dp - pos.xy) / px;
-    acc.x = max(acc.x, step(d, i == 0 ? 1.4 : 0.75) * (1.0 - float(i) / 16.0));
+    float seen = ringZ > pos.z ? 1.0 - ringOpacity : 1.0;
+    acc.x = max(acc.x, step(d, i == 0 ? 1.4 : 0.75) * (1.0 - float(i) / 16.0) * seen);
   }
   if (tau > duration) {
     vec3 end = orbitInclined(start + turn * TAU * 1.4, 1.02 * r, tilt, roll);
     float f = (tau - duration) / 1.4;
     float d = length(dp - end.xy) / px;
     float flash = (1.0 - f) * smoothfall(3.0 + 30.0 * f, 0.0, d);
-    if (!orbitBehindPlanet(end, r)) acc.y = max(acc.y, flash);
+    float seen = ringZ > end.z ? 1.0 - ringOpacity : 1.0;
+    if (!orbitBehindPlanet(end, r)) acc.y = max(acc.y, flash * seen);
   }
   return acc;
 }
 
 // Scheduled captures at the chosen frequency; trigger slot 1 starts one now.
-vec2 orbitCaptured(vec2 dp, float r, float tm, float freq, float px) {
-  vec2 acc = orbitCapturedEvent(dp, r, sinceTrigger(1), 1000.0 + uTriggers[1], px);
+vec2 orbitCaptured(vec2 dp, float r, float tm, float freq, float px, float ringZ, float ringOpacity) {
+  vec2 acc = orbitCapturedEvent(dp, r, sinceTrigger(1), 1000.0 + uTriggers[1], px, ringZ, ringOpacity);
   if (freq <= 0.0) return acc;
   float slot = mix(40.0, 10.0, freq);
   float k = tm / slot;
-  return max(acc, orbitCapturedEvent(dp, r, fract(k) * slot, floor(k), px));
+  return max(acc, orbitCapturedEvent(dp, r, fract(k) * slot, floor(k), px, ringZ, ringOpacity));
 }
 
 // Auroral oval around a pole tipped toward the viewer: a band at a set distance from the pole,
@@ -176,6 +180,22 @@ float orbitRingCover(vec3 point, vec3 n, float tm, out float inkTone) {
   int tone = int(K_ringTone + 0.5);
   inkTone = tone == 1 ? 1.0 : tone == 2 ? mod(band, 2.0) : 0.0;
   return inBand * material * (0.6 + 0.4 * hash12(vec2(band, 5.0)));
+}
+
+// How much of what lies behind it the ring's cover (orbitRingCover, after shadow and veiling) hides.
+float orbitRingOpacity(float ring) {
+  return min(ring * 1.4, 1.0);
+}
+
+// The ring over whatever this pixel shows behind it: its cover hides that, then it shines in ink or
+// the accent. Drawn over the sky and planet, and again over a moon it passes in front of.
+void orbitRingOver(inout Shade o, float ring, float ringInk) {
+  if (ring <= 0.0) return;
+  float opacity = orbitRingOpacity(ring);
+  o.ink *= 1.0 - opacity;
+  o.accent *= 1.0 - opacity;
+  if (ringInk > 0.5) o.ink = max(o.ink, ring * 0.8);
+  else o.accent = max(o.accent, ring * 0.75);
 }
 
 // Share of a body's way still to go as the camera swings it in and settles: 1 at the start, easing
@@ -304,7 +324,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   } else {
     // Atmosphere glow. Ring material in front of the planet hides it; glow veils rings behind.
     float halo = exp(-(d - 1.0) * r * 26.0) * sunSide;
-    float cover = min(ring * 1.4, 1.0);
+    float cover = orbitRingOpacity(ring);
     if (ringZ > 0.0) halo *= 1.0 - cover;
     else ring *= 1.0 - 0.8 * min(halo, 1.0);
     if (K_aurora > 0.0) {
@@ -316,13 +336,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     o.accent += halo * 0.9;
     o.ink *= 1.0 - min(halo, 1.0);
   }
-  if (ring > 0.0) {
-    float opacity = min(ring * 1.4, 1.0);
-    o.ink *= 1.0 - opacity;
-    o.accent *= 1.0 - opacity;
-    if (ringInk > 0.5) o.ink = max(o.ink, ring * 0.8);
-    else o.accent = max(o.accent, ring * 0.75);
-  }
+  orbitRingOver(o, ring, ringInk);
 
   // Moons on inclined orbits: they rise from behind the planet, cross the sky and set again,
   // and can cast their shadow onto it.
@@ -349,10 +363,12 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
       float lit = max(dot(mn, L), 0.0);
       o.ink = 0.08 + 0.85 * lit * (0.7 + 0.3 * vnoise(mq * 4.0 + fi * 9.0));
       o.accent = 0.0;
+      // Ring material nearer the eye than this point of the moon passes in front of it.
+      if (ringZ > moon.z + mn.z * size) orbitRingOver(o, ring, ringInk);
     }
   }
 
-  vec2 meteor = orbitCaptured(dp, r, tm, K_captures, px * zoom);
+  vec2 meteor = orbitCaptured(dp, r, tm, K_captures, px * zoom, ringZ, orbitRingOpacity(ring));
   o.ink = max(o.ink, meteor.x);
   o.accent = max(o.accent, meteor.y);
 
