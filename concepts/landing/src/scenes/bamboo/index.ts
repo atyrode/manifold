@@ -12,6 +12,7 @@ import { BAMBOO_PASSAGE, bambooSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   feature("clock", "clock", "water clock", true, "seconds", 20, "A bamboo tube on a pivot fills slowly from the spout, lifts off its stone, tips past its balance point to pour into the basin, then swings back and clacks: the grove's heartbeat, about this many seconds apart. Off: the spout runs dry and the tube rests. Now: the spout gushes and it tips at once.", { min: 10, max: 40, step: 1, trigger: 0 }),
+  range("clock", "knock", "knock", 1, "How hard the tube comes down on its stone. Right: bare stone and a sharp clack: the tube bounces, drops leap from its mouth, a ring runs across the basin and a full knock can startle a leaf from the canopy. Left: a quiet clock: a pad of moss on the stone takes up the end of the swing, so the tube settles with a soft knock, no bounce and no drops, the water barely stirs and no leaf is startled.", { when: "clock" }),
   feature("grove", "gusts", "gusts", true, "frequency", 0.4, "Gusts sweep through the grove as visible fronts: the stems bow one after another, the front rows first, sway on after it has passed, and the leaves shiver harder. Now: a gust.", { trigger: 1 }),
   feature("grove", "leaves", "falling leaves", true, "amount", 0.4, "Now and then a leaf lets go and glides down, swinging side to side; more in a gust, and sometimes at the clack. Some land on the basin and float a while. Now: a few let go.", { trigger: 3 }),
   range("grove", "stems", "stems", 0.6, "How thickly the culms stand, from a few scattered stems to a dense grove."),
@@ -32,7 +33,7 @@ export const bambooScene: SceneDef = {
   look: { color: "full", levels: 4 },
   params,
   groups: {
-    clock: { title: "Water clock", blurb: "The shishi-odoshi: a bamboo tube that fills from the spout, tips into the stone basin and clacks back on its stone." },
+    clock: { title: "Water clock", blurb: "The shishi-odoshi: a bamboo tube that fills from the spout, tips into the stone basin and knocks back on its stone, sharply or softly." },
     grove: { title: "Grove", blurb: "The stems, the mist between them, the gusts and the falling leaves. Brush the stems with the pointer; click to send a gust, or click the basin to ring it." },
     light: { title: "Light", blurb: "God rays through the canopy, and the stone lantern beside the water clock." },
     sky: atmosphereGroups.sky,
