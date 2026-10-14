@@ -6,7 +6,7 @@
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { lavaGlsl } from "./shader.ts";
-import { lavaSim } from "./sim.ts";
+import { LAVA_PASSAGE, lavaSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -51,4 +51,7 @@ export const lavaScene: SceneDef = {
   glsl: lavaGlsl,
   entry: "sceneLava",
   sim: lavaSim(params),
+  // Entrance: the wax lies pooled and pale at the bottom, warms, and the first blob tears free and rises.
+  // Exit: the coil lets go and the blobs cool, sink and merge back into the pool.
+  passage: LAVA_PASSAGE,
 };

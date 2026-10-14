@@ -23,6 +23,11 @@
 // the other way (Newton's recombination), can slide in from above, and Newton's shutter can be cut
 // as the Manifold M.
 //
+// Passage (PRISM_PASSAGE): entering, the sunbeam swings about the M's hole from above its rest
+// line down onto the glass, so the angle of incidence climbs from total internal reflection to
+// rest and the fan sweeps down the wall into place; leaving, the glass turns until total internal
+// reflection swallows the colours as the fan is thrown up the wall and off it.
+//
 // World units: screen heights, origin at the centre of the view, y up; x spans ±aspect / 2.
 //
 // Textures:
@@ -243,6 +248,24 @@ const GRIP_OUTER = 0.12;
 /** Longest step simulated at once. */
 const MAX_STEP = 0.1;
 
+// ---- passage -------------------------------------------------------------------------------------
+
+/** Seconds of the scene's entrance and exit (SceneDef.passage). */
+export const PRISM_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
+/**
+ * Entrance: the sunbeam starts turned this far above its rest direction, pivoting about the M's
+ * hole, so it skims over the glass and lands on the wall; it swings down onto the prism, the
+ * angle of incidence climbing and the colours coming out of total internal reflection (red first)
+ * as the fan swings down the wall to its place, overshooting a little and settling.
+ */
+const ENTER_SWEEP = 26 * DEG;
+const ENTER_SETTLE = 1.1;
+/** Exit: the glass turns this far (incidence falling), throwing the fan up the wall and off it as total internal reflection swallows the colours. */
+const EXIT_TURN = 26 * DEG;
+
+/** Ease-out with a small overshoot: 0 → 1, passing 1 by a few per cent on the way to rest. */
+const settleBack = (p: number): number => 1 + (ENTER_SETTLE + 1) * (p - 1) ** 3 + ENTER_SETTLE * (p - 1) ** 2;
+
 /** An angle wrapped into (-span / 2, span / 2]. */
 const wrap = (angle: number, span: number): number => angle - span * Math.round(angle / span);
 
@@ -389,6 +412,13 @@ class PrismSim implements SceneSim {
   #markX = 0;
   #markY = 0;
   #beamWidth = BEAM_THIN;
+  /** The sunbeam as traced and drawn: the rest line, or swung about the M's hole while entering. */
+  #lightX = 0;
+  #lightY = 0;
+  #lightDX = Math.cos(BEAM_ANGLE);
+  #lightDY = Math.sin(BEAM_ANGLE);
+  /** The prism's extra turn while it leaves (radians, 0 at rest). */
+  #leaveTurn = 0;
   #screenX = 0;
 
   // Motion.
@@ -495,6 +525,22 @@ class PrismSim implements SceneSim {
     const along = clamp(Math.min(MARK_DISTANCE * this.#scale, reachX, reachY), 0.6 * this.#side, MARK_DISTANCE);
     this.#markX = px - dx * along;
     this.#markY = py - dy * along;
+    // Passage. Entering, the beam swings about the M's hole from above its rest line down onto
+    // the glass; leaving, the glass turns away (see #advance). At rest both are exactly off.
+    const enter = frame.passage.enter;
+    const leave = frame.passage.exit;
+    this.#lightX = this.#sourceX;
+    this.#lightY = this.#sourceY;
+    this.#lightDX = dx;
+    this.#lightDY = dy;
+    if (enter < 1) {
+      const swing = BEAM_ANGLE + ENTER_SWEEP * (1 - settleBack(clamp(enter, 0, 1)));
+      this.#lightDX = Math.cos(swing);
+      this.#lightDY = Math.sin(swing);
+      this.#lightX = this.#markX - (4 - along) * this.#lightDX;
+      this.#lightY = this.#markY - (4 - along) * this.#lightDY;
+    }
+    this.#leaveTurn = leave > 0 ? -EXIT_TURN * smoothstep(0, 1, leave) : 0;
   }
 
   /** A "now" button fires its feature's one occurrence at once (frame.fired is true on the frame after the press). */
@@ -574,7 +620,7 @@ class PrismSim implements SceneSim {
 
     const pose = base + this.#user;
     const shade = this.#eclipseEnvelope();
-    this.#angle = pose + shade * (this.#eclipseTarget - pose);
+    this.#angle = pose + shade * (this.#eclipseTarget - pose) + this.#leaveTurn;
 
     // The second prism and the M slide and fade on the scene clock, whatever the motion.
     this.#secondVisit = Math.max(0, this.#secondVisit - dt);
@@ -764,10 +810,10 @@ class PrismSim implements SceneSim {
     source.depth = 0;
     source.ghost = 0;
     for (const ray of source.rays) {
-      ray.x = this.#sourceX;
-      ray.y = this.#sourceY;
-      ray.dx = this.#beamDX;
-      ray.dy = this.#beamDY;
+      ray.x = this.#lightX;
+      ray.y = this.#lightY;
+      ray.dx = this.#lightDX;
+      ray.dy = this.#lightDY;
       ray.power = 1;
       ray.width = this.#beamWidth;
     }
@@ -885,9 +931,9 @@ class PrismSim implements SceneSim {
     fan.kind = bundle.face < 0 ? PRISM_KIND_SOURCE : glass ? PRISM_KIND_GLASS + bundle.medium : PRISM_KIND_AIR;
     const side = glass ? -1 : 1;
     if (bundle.face < 0) {
-      fan.startX = this.#beamDX;
-      fan.startY = this.#beamDY;
-      fan.startC = -(this.#beamDX * this.#sourceX + this.#beamDY * this.#sourceY);
+      fan.startX = this.#lightDX;
+      fan.startY = this.#lightDY;
+      fan.startC = -(this.#lightDX * this.#lightX + this.#lightDY * this.#lightY);
     } else {
       const from = this.#faceAt(bundle.face);
       fan.startX = side * from.nx;
@@ -1238,8 +1284,8 @@ class PrismSim implements SceneSim {
     data[19] = this.#glow[1] ?? 0;
     splitHalf(data, 20, this.#markX);
     splitHalf(data, 22, this.#markY);
-    data[24] = this.#beamDX;
-    data[25] = this.#beamDY;
+    data[24] = this.#lightDX;
+    data[25] = this.#lightDY;
     data[26] = smoothstep(0, 1, this.#markShown);
     data[27] = (MARK_SMALL + (MARK_LARGE - MARK_SMALL) * this.#markSize) * this.#scale;
     data[28] = this.#beamWidth;

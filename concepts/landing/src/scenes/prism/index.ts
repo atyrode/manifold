@@ -5,7 +5,7 @@
 import { choice, feature, range, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { prismGlsl } from "./shader.ts";
-import { prismSim } from "./sim.ts";
+import { PRISM_PASSAGE, prismSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("light", "turn", "motion", [{ label: "rock", value: 0 }, { label: "spin", value: 1 }], 0, "Rock: the prism sways slowly about minimum deviation, where the fan swings, pauses and swings back. Spin: it turns round and round, and the light finds every way through the glass. Drag the page to turn it by hand."),
@@ -37,4 +37,6 @@ export const prismScene: SceneDef = {
   glsl: prismGlsl,
   entry: "scenePrism",
   sim: prismSim(params),
+  // Entrance: the sunbeam swings down onto the glass and the spectrum sweeps down the wall into place. Exit: the glass turns and the spectrum is thrown up the wall and off it.
+  passage: { enter: PRISM_PASSAGE.enter, exit: PRISM_PASSAGE.exit },
 };

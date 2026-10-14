@@ -6,7 +6,7 @@ import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef, SceneSim, SimFrame } from "../types.ts";
-import { sillGlsl } from "./shader.ts";
+import { SILL_PASSAGE, sillGlsl } from "./shader.ts";
 
 /** How far (in screen heights) the pointer must stray from where the cat is looking before it turns. */
 const GAZE_SLACK = 0.05;
@@ -102,4 +102,6 @@ export const sillScene: SceneDef = {
   glsl: sillGlsl,
   entry: "sceneSill",
   sim: sillGaze,
+  // Entrance: the cat hops up onto the sill and settles, its tail curling round. Exit: it stretches and hops down out of frame.
+  passage: SILL_PASSAGE,
 };

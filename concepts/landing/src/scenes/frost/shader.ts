@@ -6,7 +6,7 @@
 // shared snowFall, hidden behind whatever is nearer), lit by the lamps and windows, and lies on its
 // roofs, boughs, rails, sills, lamp cap and the outside sill as deep as uWeather.y says.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { FROST_FRAME, FROST_START, FUR_RIPEN, FUR_SCALE, FUR_SLOW_FERN, FUR_SLOW_FUR, MELT_CLEAR, RIME_GROWN, WIDTH_SCALE } from "./sim.ts";
+import { FROST_EMERGE_FROM, FROST_EMERGE_TO, FROST_FRAME, FROST_START, FUR_RIPEN, FUR_SCALE, FUR_SLOW_FERN, FUR_SLOW_FUR, MELT_CLEAR, RIME_GROWN, WIDTH_SCALE } from "./sim.ts";
 
 export const frostGlsl = `
 // Knobs: K_speed, K_pattern, K_warmth and K_mark drive the simulation (sim.ts); the shader reads
@@ -20,6 +20,11 @@ const float FROST_FUR_FERN = ${glslFloat(FUR_SLOW_FERN)};
 const float FROST_FUR_FUR = ${glslFloat(FUR_SLOW_FUR)};
 const float FROST_START = ${glslFloat(FROST_START)};
 const float FROST_RIME_GROWN = ${glslFloat(RIME_GROWN)};
+// The entrance's start: growth seconds over which the frame's rime and the condensation form
+// (sim.ts runs the clock up from FROST_EMERGE_FROM; both are fully there by FROST_EMERGE_TO,
+// which every clock at rest is past).
+const float FROST_EMERGE_FROM = ${glslFloat(FROST_EMERGE_FROM)};
+const float FROST_EMERGE_TO = ${glslFloat(FROST_EMERGE_TO)};
 const float FROST_FUR_SCALE = ${glslFloat(FUR_SCALE)};
 const float FROST_WIDTH_SCALE = ${glslFloat(WIDTH_SCALE)};
 // Barbs: their spacing along a branch, frame heights, and the growth seconds per frame height
@@ -368,11 +373,13 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
 // frost's depth (under 1: inside it), by growth second 'clock'. It lies deepest along the bottom,
 // where the glass is coldest, thinner up the sides and least along the top, and fills the corners
 // in round.
-float frostRime(vec2 uv, float aspect, float clock) {
+float frostRime(vec2 uv, float aspect, float clock, float emerge) {
   float grown = smoothstep(-40.0, FROST_RIME_GROWN, clock);
-  float bottom = (uv.y - FROST_FRAME) / (0.03 + 0.055 * grown);
-  float top = (1.0 - uv.y - FROST_FRAME) / (0.008 + 0.02 * grown);
-  float side = (min(uv.x, 1.0 - uv.x) * aspect - FROST_FRAME) / ((0.012 + 0.03 * grown) * (1.5 - uv.y));
+  // Entering, the frost along the frame starts as a hairline on clear glass and thickens out.
+  float spread = max(emerge, 0.02);
+  float bottom = (uv.y - FROST_FRAME) / ((0.03 + 0.055 * grown) * spread);
+  float top = (1.0 - uv.y - FROST_FRAME) / ((0.008 + 0.02 * grown) * spread);
+  float side = (min(uv.x, 1.0 - uv.x) * aspect - FROST_FRAME) / ((0.012 + 0.03 * grown) * (1.5 - uv.y) * spread);
   float rail = min(bottom, top);
   float h = max(1.3 - abs(rail - side), 0.0) / 1.3;
   return min(rail, side) - h * h * 0.325;
@@ -397,6 +404,8 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   float px = 1.0 / uRes.y;
   Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
   float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : FROST_START;
+  // 0 on the glass as the entrance opens, exactly 1 for every clock at rest.
+  float emerge = smoothstep(FROST_EMERGE_FROM, FROST_EMERGE_TO, clock);
   // Seconds the fur frost takes to spread a frame height: the style knob, fern to fur.
   float slow = FROST_FUR_FERN * pow(FROST_FUR_FUR / FROST_FUR_FERN, K_style);
 
@@ -453,7 +462,7 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   float fibre = vnoise(vec2(phase * 2.2, n / pitch * 0.6));
   float low = 1.0 - smoothstep(0.04, 0.32, uv.y);
   // Rime: thick, opaque frost along the frame, ragged at its edge, reaching out along the fronds.
-  float q = frostRime(uv, aspect, clock) + (vnoise(p * 16.0) - 0.5) * 0.7 + (fibre - 0.5) * 0.3;
+  float q = frostRime(uv, aspect, clock, emerge) + (vnoise(p * 16.0) - 0.5) * 0.7 + (fibre - 0.5) * 0.3;
   q -= 0.35 * (1.0 - smoothstep(0.0, reach + 0.012, lag)) * smoothstep(0.0, 3.0, since);
   float rime = 1.0 - smoothstep(0.7, 1.15, q);
   float deep = 1.0 - smoothstep(0.2, 0.8, q);
@@ -482,7 +491,7 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
 
   // Condensation: a milky film, heavier low on the pane; the warmth of a touch fogs the glass
   // around it, and a fingertip wipes it away where it melts the frost.
-  float haze = K_condensation * (0.45 + 0.55 * fbm(p * 2.2 + vec2(0.0, tm * 0.004))) * (1.0 - 0.45 * smoothstep(0.05, 0.7, uv.y));
+  float haze = K_condensation * emerge * (0.45 + 0.55 * fbm(p * 2.2 + vec2(0.0, tm * 0.004))) * (1.0 - 0.45 * smoothstep(0.05, 0.7, uv.y));
   haze = max(haze, smoothstep(0.03, 0.4, melt.b) * 0.7) * (1.0 - 0.9 * clear);
 
   // The world outside, seen through it all (and shifting a little as the viewer moves).

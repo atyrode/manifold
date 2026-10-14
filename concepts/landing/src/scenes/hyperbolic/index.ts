@@ -13,6 +13,7 @@ import {
   HYPERBOLIC_MODELS,
   HYPERBOLIC_MOTIFS,
   HYPERBOLIC_PALETTES,
+  HYPERBOLIC_PASSAGE,
   HYPERBOLIC_TILINGS,
   hyperbolicSim,
 } from "./sim.ts";
@@ -39,6 +40,7 @@ export const hyperbolicScene: SceneDef = {
   blurb: "An endless plane, woven tile to tile, gliding through a circle.",
   accent: "#ffb347",
   look: { color: "full", levels: 4 },
+  passage: HYPERBOLIC_PASSAGE,
   params,
   groups: {
     tiling: { title: "Tiling", blurb: "The shape of the tiles and the strands woven through them." },

@@ -23,6 +23,13 @@
 // strokes for a few seconds while the rest flows round it. Lamps run on fixed steps (deterministic
 // for a seed).
 //
+// The scene's passage (LAVA_PASSAGE; the shader needs no change, it draws whatever the wax does). A sim
+// built while the scene comes in skips the prewarm: the wax lies in a cool, solid heap at the bottom
+// of a lit lamp, warms toward the liquid's temperature while the coil's heating is boosted, and the
+// heap on the coil tears its first blob free and sends it up; the boost eases out before the entrance
+// ends and the lamp runs on as ever. On the way out the coil lets go, the wax cools, grows heavy and
+// sinks, merging back into the pool at the bottom, and any M lets go. At rest none of it runs.
+//
 // Units: glass units (the liquid is 1 tall), seconds of scene time × motion.
 //
 // Textures:
@@ -238,6 +245,38 @@ const MARK_FIRST = 0.5;
 const GRID_REACH = 1.5;
 const GRID_KAPPA = 7;
 
+// ---- the passage -------------------------------------------------------------------------------
+
+/** Seconds the entrance and the exit take (SceneDef.passage). Both play in the simulation: the
+ * shader draws whatever the wax does. */
+export const LAVA_PASSAGE = { enter: 3, exit: 1.8 } as const;
+/** Entrance: the pooled wax starts cool and solid at this temperature (plus a little spread); the
+ * lamp is lit and its liquid clear. It then warms (every parcel toward the liquid's temperature,
+ * pull 1/s, between these seconds, easing out again later) while the coil's heating is multiplied
+ * (up to 1 + ENTER_COIL, between these seconds, easing out later), so the heap on the coil gets hot
+ * enough to tear a first blob free within the entrance. The lamp runs quicker through it. */
+const ENTER_T0 = 0.1;
+const ENTER_T_SPREAD = 0.02;
+const ENTER_WARM = 2;
+const ENTER_WARM_IN = [0.3, 0.75] as const;
+const ENTER_WARM_OUT = [1.8, 2.4] as const;
+const ENTER_COIL = 7;
+const ENTER_COIL_IN = [0.35, 0.8] as const;
+const ENTER_COIL_OUT = [2.2, 3] as const;
+const ENTER_PACE = 0.9;
+/** Exit: the coil lets go (over this many seconds), every parcel cools toward EXIT_T (1/s at most)
+ * and the wax grows heavy: between these seconds it falls at up to EXIT_FALL (glass units/s), its
+ * drag rising by EXIT_DRAG times that share so it gets up to speed, slowing toward the pool (between
+ * these heights). The M lets go at once. The lamp runs a little quicker through it. */
+const EXIT_T = 0.27;
+const EXIT_COOL = 3.5;
+const EXIT_COIL_OFF = 0.3;
+const EXIT_FALL = 0.8;
+const EXIT_FALL_IN = [0.05, 0.45] as const;
+const EXIT_DRAG = 2;
+const EXIT_FALL_POOL = [0.02, 0.4] as const;
+const EXIT_PACE = 0.4;
+
 // ---- helpers -----------------------------------------------------------------------------------
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
@@ -404,6 +443,18 @@ const blankWax = (): Wax => ({
   x: 0, y: 0, vx: 0, vy: 0, r: 0, size: R0, present: false, T: 0, inMark: false, tx: 0, ty: 0, glow: 0, ax: 0, ay: 0, dT: 0,
 });
 
+/** How the passage bends a lamp's physics this step: all neutral (and absent) at rest. */
+interface Stage {
+  /** Multiple of the coil's heating rate. */
+  coil: number;
+  /** Pull (1/s) of every parcel's temperature toward the liquid's. */
+  warm: number;
+  /** Pull (1/s) of every parcel's temperature toward EXIT_T. */
+  cool: number;
+  /** 0..1: how heavy the wax has grown. */
+  fall: number;
+}
+
 class Lamp {
   readonly wax: Wax[] = Array.from({ length: LAVA_MAX }, blankWax);
   /** Slots in use: present parcels and ones still melting away. */
@@ -424,7 +475,7 @@ class Lamp {
   }
 
   /** A fresh pour: sizes from the seed; warm and running (prewarmed), or a cold heap. */
-  reset(seed: number, count: number, cold: boolean, heat: number): void {
+  reset(seed: number, count: number, cold: boolean, heat: number, arrive = false): void {
     this.#random = lavaRandom(seed * 7919 + this.#index * 104729);
     const random = this.#random;
     this.markAge = -1;
@@ -441,6 +492,13 @@ class Lamp {
     this.#heap();
     if (cold) {
       this.warm = 0;
+      return;
+    }
+    // An entrance: the heap lies cool and solid at the bottom of a lit lamp (no prewarm); the
+    // passage warms it from there. The same draws as the warm lamp's, in the same order.
+    if (arrive) {
+      this.warm = 1;
+      for (const w of this.wax) w.T = ENTER_T0 + ENTER_T_SPREAD * random();
       return;
     }
     // A warm lamp: the heap at its liquid's temperature, run until the coil has sent up a stream of
@@ -542,6 +600,12 @@ class Lamp {
     this.markWait = Number.POSITIVE_INFINITY;
   }
 
+  /** Let go of the M at once (the scene is leaving). */
+  dropMark(): void {
+    this.markAge = -1;
+    for (const w of this.wax) w.inMark = false;
+  }
+
   /** How strongly the M holds its parcels now, 0..1. */
   markPull(): number {
     const age = this.markAge;
@@ -605,7 +669,7 @@ class Lamp {
    * and the wax on its coil faster and hotter, stirs the liquid a little more and lifts warm wax a
    * little harder (a lazy lamp sends up fewer blobs, not weaker ones).
    */
-  step(h: number, heat: number, hand: Hand | undefined, markPull: number, settling = false): void {
+  step(h: number, heat: number, hand: Hand | undefined, markPull: number, settling = false, stage?: Stage): void {
     const wax = this.wax;
     const n = this.used;
     const quick = 0.75 + 0.5 * heat;
@@ -629,12 +693,13 @@ class Lamp {
       if (!settling) {
         let dT = EXCHANGE * scale * (liquidTemperature(w.y, warm) - w.T);
         const contact = smoothstep(COIL_REACH, 0, w.y - w.r) * Math.exp(-((w.x / COIL_HALF) ** 2));
-        dT += COIL_RATE * quick * contact * (coilT - w.T);
+        dT += COIL_RATE * quick * (stage === undefined ? 1 : stage.coil) * contact * (coilT - w.T);
         dT += CAP_RATE * smoothstep(CAP_REACH, 0, 1 - w.y - w.r) * (CAP_T - w.T);
         if (hand !== undefined) {
           const d2 = (w.x - hand.x) ** 2 + (w.y - hand.y) ** 2;
           dT += HAND_RATE * Math.exp(-d2 / (HAND_REACH * HAND_REACH)) * (HAND_T - w.T);
         }
+        if (stage !== undefined) dT += stage.warm * (liquidTemperature(w.y, warm) - w.T) + stage.cool * (EXIT_T - w.T);
         if (w.inMark) dT += 2 * markPull * (NEUTRAL - w.T);
         w.dT = dT;
       }
@@ -642,7 +707,7 @@ class Lamp {
       // at the floor, so it never lifts the heap), the M's pull.
       const hold = w.inMark ? markPull : 0;
       const solid = settling ? 0 : 1 - smoothstep(SOLID_LO, SOLID_HI, w.T);
-      const drag = DRAG * Math.sqrt(scale) * (1 + SOLID_DRAG * solid);
+      const drag = DRAG * Math.sqrt(scale) * (1 + SOLID_DRAG * solid) * (stage === undefined ? 1 : 1 + EXIT_DRAG * stage.fall);
       const R = innerRadius(w.y);
       const xi = clamp(w.x / R, -1, 1);
       const yc = clamp(w.y, 0, 1);
@@ -652,8 +717,10 @@ class Lamp {
       const fy = flow * Math.cos(Math.PI * xi) * rise * rise;
       const T = settling ? 0 : w.T;
       const neutral = NEUTRAL + (RELEASE - NEUTRAL) * smoothstep(COIL_REACH, 0, w.y - w.r);
+      // The passage's exit: the wax grows heavy and falls, easing toward the pool.
+      const fallV = stage === undefined ? 0 : EXIT_FALL * stage.fall * smoothstep(EXIT_FALL_POOL[0], EXIT_FALL_POOL[1], w.y);
       w.ax += drag * (fx - w.vx);
-      w.ay += drag * (fy - w.vy) + lift * (T - neutral) * (1 - hold);
+      w.ay += drag * (fy - fallV - w.vy) + lift * (T - neutral) * (1 - hold);
       if (hold > 0) {
         w.ax += hold * (MARK_PULL * (w.tx - w.x) - MARK_DAMP * w.vx);
         w.ay += hold * (MARK_PULL * (w.ty - w.y) - MARK_DAMP * w.vy);
@@ -850,6 +917,10 @@ class LavaSim implements SceneSim {
   #cold = false;
   #count = -1;
   #primed = false;
+  /** The first build came in with the scene and is still playing the entrance's start-up. */
+  #arriving = false;
+  /** The exit has begun. */
+  #leaving = false;
   /** Lamp time not yet stepped (s). */
   #carry = 0;
   /** A cold restart in progress: the bulbs are fading out. */
@@ -866,6 +937,10 @@ class LavaSim implements SceneSim {
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const settings = this.#read(frame);
+    const enter = clamp(frame.passage.enter, 0, 1);
+    const exit = clamp(frame.passage.exit, 0, 1);
+    // Only a sim built while the scene comes in, warm, plays the entrance.
+    if (!this.#primed) this.#arriving = enter < 1 && !settings.cold;
     const fired = this.#fired(frame.triggers);
     const [a, b] = this.#lamps;
     const textures = [this.#parcels.texture, this.#grid.texture, this.#state.texture] as const;
@@ -876,8 +951,11 @@ class LavaSim implements SceneSim {
       this.#count = settings.count;
       this.#cold = settings.cold;
       this.#restarting = false;
-      a.reset(settings.seed, settings.count, settings.cold, settings.heat);
-      b.reset(settings.seed, twinCount(settings.count), settings.cold, settings.heat);
+      // A new pour mid-scene is a plain prewarmed lamp: only the first build comes in from the pool.
+      const arrive = this.#arriving && !this.#primed;
+      this.#arriving = arrive;
+      a.reset(settings.seed, settings.count, settings.cold, settings.heat, arrive);
+      b.reset(settings.seed, twinCount(settings.count), settings.cold, settings.heat, arrive);
       this.#carry = 0;
     }
     // "Now", or cold start switched on: off, and back on from cold.
@@ -885,6 +963,7 @@ class LavaSim implements SceneSim {
     this.#cold = settings.cold;
     if (this.#primed && (fired[0] === true || coldOn)) {
       this.#restarting = true;
+      this.#arriving = false;
       // Off: the bulbs fade; once dark, the restart below swaps in the cold heaps.
       a.bulbOn = false;
       b.bulbOn = false;
@@ -895,6 +974,10 @@ class LavaSim implements SceneSim {
       b.setCount(twinCount(settings.count));
     }
     if (fired[1] === true && a.markAge < 0) a.startMark();
+    if (exit > 0 && !this.#leaving) {
+      this.#leaving = true;
+      a.dropMark();
+    }
 
     const dt = Math.max(frame.dt, 0);
     const signature = `${frame.values.join(",")}|${frame.aspect}`;
@@ -915,12 +998,14 @@ class LavaSim implements SceneSim {
     const pressing = settings.hand && pointer.inside && pointer.down;
     const handA = pressing ? handOn(pointer, frame.aspect, 0) : undefined;
     const handB = pressing && settings.twin ? handOn(pointer, frame.aspect, 1) : undefined;
-    this.#carry += dt * Math.max(0, frame.motion);
+    const stage = this.#stage(enter, exit);
+    // A passage plays in real time whatever the motion, and the lamp hurries through it.
+    this.#carry += dt * (stage === undefined ? Math.max(0, frame.motion) : Math.max(1, frame.motion) * this.#pace(enter, exit));
     let steps = 0;
     while (this.#carry >= STEP && steps < MAX_STEPS) {
-      a.tickMark(STEP, settings.markEvery);
-      a.step(STEP, settings.heat, handA, a.markPull());
-      b.step(STEP, settings.heat, handB, 0);
+      if (stage === undefined) a.tickMark(STEP, settings.markEvery);
+      a.step(STEP, settings.heat, handA, a.markPull(), false, stage);
+      b.step(STEP, settings.heat, handB, 0, false, stage);
       this.#carry -= STEP;
       steps += 1;
     }
@@ -966,6 +1051,28 @@ class LavaSim implements SceneSim {
     const previous = this.#triggers;
     this.#triggers = [...triggers];
     return triggers.map((at, slot) => previous !== undefined && at !== previous[slot] && at > -1e3);
+  }
+
+  /** The passage's bend of the physics now (seconds into the entrance or the exit), or none at rest. */
+  #stage(enter: number, exit: number): Stage | undefined {
+    if (exit > 0) {
+      const t = exit * LAVA_PASSAGE.exit;
+      const cool = smoothstep(0, EXIT_COIL_OFF, t);
+      return { coil: 1 - cool, warm: 0, cool: EXIT_COOL * cool, fall: smoothstep(EXIT_FALL_IN[0], EXIT_FALL_IN[1], t) };
+    }
+    if (this.#arriving && enter < 1) {
+      const t = enter * LAVA_PASSAGE.enter;
+      const warm = smoothstep(ENTER_WARM_IN[0], ENTER_WARM_IN[1], t) * (1 - smoothstep(ENTER_WARM_OUT[0], ENTER_WARM_OUT[1], t));
+      const coil = smoothstep(ENTER_COIL_IN[0], ENTER_COIL_IN[1], t) * (1 - smoothstep(ENTER_COIL_OUT[0], ENTER_COIL_OUT[1], t));
+      return { coil: 1 + ENTER_COIL * coil, warm: ENTER_WARM * warm, cool: 0, fall: 0 };
+    }
+    return undefined;
+  }
+
+  /** How much quicker than real time the lamp runs through the passage. */
+  #pace(enter: number, exit: number): number {
+    if (exit > 0) return 1 + EXIT_PACE * smoothstep(0, 0.2, exit);
+    return 1 + ENTER_PACE * (1 - smoothstep(0, 1, enter));
   }
 }
 

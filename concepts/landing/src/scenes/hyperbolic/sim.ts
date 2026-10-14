@@ -15,7 +15,7 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PointerState, SceneSim, ScenePassageProgress, SimFactory, SimFrame } from "../types.ts";
 
 // ---- Complex numbers ------------------------------------------------------------------------------
 
@@ -678,6 +678,18 @@ const MARK_HIDE = 0.035;
 const BREATHS = [43, 71] as const;
 
 /**
+ * Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the plane slides in along
+ * the flow's own line from `PASSAGE_IN_REACH` hyperbolic units behind (under a tile), slowing to
+ * the glide (a tiling looks the same from every tile, so it is simply a faster glide that settles).
+ * Exit: it picks up speed and slides on `PASSAGE_OUT_REACH` units in the glide's direction. The
+ * reaches are short and the passage speed is not given to the shader's motion blur, so the tiling
+ * stays sharp and readable throughout (at most about 1.5 units a second).
+ */
+export const HYPERBOLIC_PASSAGE: { enter: number; exit: number } = { enter: 2.6, exit: 1.4 };
+const PASSAGE_IN_REACH = 0.8;
+const PASSAGE_OUT_REACH = 0.7;
+
+/**
  * Detail fades, shared with the shader. Toward the rim tiles shrink without end, and (however slow
  * the glide is at the centre) sweep past ever faster; detail dissolves before it shimmers.
  */
@@ -799,26 +811,45 @@ class HyperbolicSim implements SceneSim {
     this.#tendMark(knobs, frame.fired[this.#markTrigger] === true, dt, aspect, frame.height, ambient);
     this.#tendPulse(knobs, frame.fired[this.#pulseTrigger] === true, dt, frame.motion);
 
+    // The passage's extra travel on top of the glide (none at rest: the motion goes out as it is).
+    const travel = this.#travel(frame.passage);
+    const seen = travel.speed > 0 ? compose(this.#motion, shift(scaled(this.#heading(knobs.model), Math.tanh(travel.lead / 2)))) : this.#motion;
+    const flow = faster(ambient, this.#steer * clamp(frame.motion, 0, 1));
     const glow = knobs.mark > 0 ? knobs.mark : 0.5;
     const rimward = this.#source(knobs);
     const pulseStrength = this.#pulsing ? smoothstep(0, 0.4, this.#pulseRadius) * (1 - smoothstep(2, PULSE_END, this.#pulseRadius)) : 0;
     writeState(this.#data, {
-      motion: this.#motion,
-      mark: this.#markTile === undefined ? undefined : compose(inverse(this.#markTile), this.#motion),
+      motion: seen,
+      mark: this.#markTile === undefined ? undefined : compose(inverse(this.#markTile), seen),
       strands: this.#strands,
       source: rimward.at,
       focus: rimward.glow,
       shown: this.#markShown,
       glow,
-      pulse: carry(inverse(this.#motion), this.#pulseAt),
+      pulse: carry(inverse(seen), this.#pulseAt),
       pulseRadius: this.#pulseRadius,
       pulseStrength,
       breath: [Math.sin((2 * Math.PI * this.#clock) / BREATHS[0]), Math.sin((2 * Math.PI * this.#clock) / BREATHS[1] + 1.7)],
       flip: this.#flip,
-      flow: faster(ambient, this.#steer * clamp(frame.motion, 0, 1)),
+      flow,
     });
     this.#texture.upload(this.#data);
     return [this.#texture.texture];
+  }
+
+  /**
+   * The passage's travel along the glide's line. `lead` is how far ahead (hyperbolic units, signed)
+   * the screen looks beyond the glide's own view: positive on the way in, so the picture sits
+   * toward the rim the tiles come from; negative on the way out, so it has gone off the far side.
+   * `speed` is how fast the picture moves along the glide's direction, units a second; 0 at rest.
+   */
+  #travel(passage: Readonly<ScenePassageProgress>): { lead: number; speed: number } {
+    const arriving = 1 - clamp(passage.enter, 0, 1);
+    const leaving = clamp(passage.exit, 0, 1);
+    // Cubic ease-out in, cubic ease-in out: the distance is reach · (1 − s)³ in, reach · u³ out.
+    const lead = PASSAGE_IN_REACH * arriving ** 3 - PASSAGE_OUT_REACH * leaving ** 3;
+    const speed = (3 * PASSAGE_IN_REACH * arriving ** 2) / HYPERBOLIC_PASSAGE.enter + (3 * PASSAGE_OUT_REACH * leaving ** 2) / HYPERBOLIC_PASSAGE.exit;
+    return { lead, speed };
   }
 
   dispose(): void {

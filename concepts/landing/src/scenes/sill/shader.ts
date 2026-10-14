@@ -7,6 +7,15 @@
 // them: an overcast sky, wet roofs and brick, drips and splashes, snow settling (uWeather).
 // The cat's gaze is eased on the CPU (./index.ts) and read from uSim0.
 
+import { glslFloat } from "../../shaders/glsl.ts";
+
+/**
+ * Seconds the entrance and the exit take (SceneDef.passage; the shader reads the same). In: the cat
+ * hops up onto the sill and settles, its tail curling round. Out: it stretches and hops down out of
+ * frame. At rest the cat is exactly as it always was.
+ */
+export const SILL_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
+
 export const sillGlsl = `
 // Layout in screen heights from the centre, y up. The sill's top runs from the window (SILL_BACK)
 // to its front edge (SILL_FRONT), then the nosing; things on it stand at SILL_SEAT. The lower sash
@@ -710,6 +719,83 @@ vec4 sillCurtain(vec2 p, float aspect, float tm, float breeze, float xw0, vec3 l
   return vec4(c, cover);
 }
 
+// ---- The passage
+
+// Seconds the entrance and the exit take (SceneDef.passage), shared with index.ts.
+const float SILL_ENTER = ${glslFloat(SILL_PASSAGE.enter)};
+const float SILL_EXIT = ${glslFloat(SILL_PASSAGE.exit)};
+
+// The cat's passage pose, lengths in cat units (its sitting height is 1) and all of it identity at rest
+// (passageIn() 1, passageOut() 0): lift above its place on the sill, squash and stretch about its
+// foot, the head tipped up, the tail raised and curling, how much its outline is moving (0..1) and
+// how much of its shadow lies on the sill.
+struct SillHop {
+  float lift;
+  vec2 scale;
+  float look;
+  float up;
+  float curl;
+  float move;
+  float shade;
+};
+
+// In: it springs up from below the frame (stretching as it rises, tail held up), tops out a little
+// above the sill, lands with a squash that rings out, and the tail comes down and hooks round as it
+// settles. Out: it rises into a long stretch, crouches, springs, and drops away below the frame.
+SillHop sillPassage() {
+  SillHop h;
+  h.lift = 0.0;
+  h.scale = vec2(1.0);
+  h.look = 0.0;
+  h.up = 0.0;
+  h.curl = 0.0;
+  h.move = 0.0;
+  h.shade = 1.0;
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pout > 0.0) {
+    float s = pout * SILL_EXIT;
+    float stretch = smoothstep(0.0, 0.5, s);
+    float sy = 1.0 + 0.14 * stretch;
+    sy = mix(sy, 0.86, smoothstep(0.5, 0.64, s));
+    float u = clamp((s - 0.64) / (SILL_EXIT - 0.64), 0.0, 1.0);
+    sy = mix(sy, 1.16, smoothstep(0.0, 0.1, u));
+    sy = mix(sy, 1.04, smoothstep(0.1, 0.6, u));
+    h.lift = 1.4 * u - 4.4 * u * u;
+    h.scale = vec2(inversesqrt(sy), sy);
+    h.look = 0.55 * stretch;
+    h.up = max(0.35 * stretch, 0.8 * smoothstep(0.1, 0.5, u));
+    h.move = clamp(6.0 * abs(sy - 1.0) + 3.0 * h.up + abs(h.lift), 0.0, 1.0);
+  } else if (pin < 1.0) {
+    float s = pin * SILL_ENTER;
+    float launch = 0.1;
+    float apexAt = 0.95;
+    float apex = 0.35;
+    float g = (apex + 3.2) / ((apexAt - launch) * (apexAt - launch));
+    float land = apexAt + sqrt(apex / g);
+    float sy = 1.0;
+    float air = 0.0;
+    float tau = max(s - land, 0.0);
+    if (s < land) {
+      float tt = max(s, launch) - apexAt;
+      h.lift = apex - g * tt * tt;
+      sy = 1.0 + 0.016 * clamp(-2.0 * g * tt, 0.0, 9.0);
+      air = 1.0;
+      h.up = 1.0;
+    } else {
+      float env = 1.0 - clamp(tau / (SILL_ENTER - land), 0.0, 1.0);
+      sy = 1.0 - 0.15 * env * env * cos(11.0 * tau) * smoothstep(0.0, 0.05, tau);
+      h.up = 1.0 - smoothstep(0.0, 0.7, tau);
+      h.curl = sin(3.14159265 * clamp((tau - 0.3) / (SILL_ENTER - land - 0.3), 0.0, 1.0));
+    }
+    h.scale = vec2(inversesqrt(sy), sy);
+    h.look = 0.45 * (1.0 - smoothstep(0.0, 0.4, tau));
+    h.move = clamp(air + 6.0 * abs(sy - 1.0) + 1.5 * h.up + 2.0 * h.curl, 0.0, 1.0);
+  }
+  h.shade = smoothstep(-0.25, 0.0, h.lift) * (1.0 - 0.5 * smoothstep(0.0, 0.35, h.lift));
+  return h;
+}
+
 // ---- The cat
 
 // The cat's pose this frame, in cat units (its sitting height to the top of the head is about 1).
@@ -725,6 +811,8 @@ struct SillCat {
   float flick;  // tail-tip flick, signed
   float turn;   // the look back over the shoulder, 0..1
   float tip;    // radius of the tail's tip, kept to a cell or more so it never breaks up
+  float up;     // passage: the tail held up and out for balance, 0..1 (0 at rest)
+  float curl;   // passage: the tip hooking round as it settles, 0..1 (0 at rest)
 };
 
 // One ear: a rounded triangle whose corners are 3D points (x out to 'side', y up, z toward the
@@ -795,7 +883,7 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
   for (int i = 0; i < 6; i++) {
     float fi = float(i);
     float w = (fi + 1.0) / 6.0;
-    float ang = c.sway * (0.5 + 0.5 * w) + c.lash * sin(c.wave - fi * 0.8) * w + 0.95 * smoothstep(0.45, 1.0, w) + c.flick * w * w * 1.5;
+    float ang = mix(c.sway * (0.5 + 0.5 * w) + c.lash * sin(c.wave - fi * 0.8) * w + 0.95 * smoothstep(0.45, 1.0, w) + c.flick * w * w * 1.5, 1.0 + 1.9 * w, c.up) - 1.6 * c.curl * smoothstep(0.3, 1.0, w);
     vec2 to = from + vec2(sin(ang), -cos(ang)) * 0.068;
     float r1 = max(0.044 * (1.0 - 0.2 * w) * (1.0 - 0.75 * smoothstep(0.45, 1.0, w)), c.tip);
     float sd = sdTaperCapsule(q, from, to, r0, r1, u);
@@ -923,6 +1011,9 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   vec3 wall = vec3(0.27, 0.24, 0.29);
   // The cat's size, a little smaller on narrow screens so it leaves the props in view.
   float S = 0.29 * mix(0.72, 1.28, K_cat) * clamp(0.3 + 0.6 * aspect, 0.72, 1.0);
+  // The passage: the cat hops up onto the sill and settles, or stretches and hops down out of frame.
+  // Identity at rest.
+  SillHop hop = sillPassage();
 
   if (!(inOpen || inGlass)) {
     if (p.y < SILL_BACK) {
@@ -940,7 +1031,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         shadow = max(shadow, 0.5 * smoothfall(1.0, 0.4, length((p - vec2(booksX - 0.03, SILL_SEAT - 0.006)) / vec2(0.1, 0.014))));
         if (K_plant > 0.5) shadow = max(shadow, 0.5 * smoothfall(1.0, 0.3, length((p - vec2(plantX - 0.015, SILL_SEAT - 0.006)) / vec2(0.06, 0.012))));
         if (K_cat > 0.0) {
-          shadow = max(shadow, 0.55 * smoothfall(1.0, 0.35, length((p - vec2(catX - 0.15 * S, SILL_SEAT - 0.006)) / vec2(0.5 * S, 0.03))));
+          shadow = max(shadow, 0.55 * hop.shade * smoothfall(1.0, 0.35, length((p - vec2(catX - 0.15 * S, SILL_SEAT - 0.006)) / vec2(0.5 * S, 0.03))));
         }
         col *= 1.0 - shadow;
         // Rain blowing in wets the sill by the window: it catches the city and the neon.
@@ -1029,7 +1120,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     float since = sinceTrigger(0);
     cat.turn = smoothstep(0.0, 0.8, since) * (1.0 - smoothstep(4.4, 5.6, since));
     cat.yaw = mix(yaw, 2.5, cat.turn);
-    cat.pitch = mix(pitch, -0.1, cat.turn);
+    cat.pitch = mix(pitch, -0.1, cat.turn) + hop.look;
     cat.head = vec2(0.03 * sin(cat.yaw) + 0.025 * cat.turn, 0.88 + 0.045 * cat.pitch);
     // Ears: each twitches on its own now and then (sometimes twice), both flick at a click, they
     // prick up when the gaze jumps.
@@ -1055,10 +1146,12 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     float blink = sillTwitch(sillEvent(tm, mix(8.0, 4.5, restless), 41.0, pickB), 0.3, 0.3, 0.6);
     blink = max(blink, sillTwitch(since - 2.0, 0.45, 0.6, 0.9));
 
-    vec2 q = (p - base) / S;
+    vec2 q = (p - vec2(catX, SILL_SEAT + hop.lift * S)) / (S * hop.scale);
     vec4 part = vec4(0.0);
     float edgeQ = (SILL_FRONT - base.y) / S;
     cat.tip = max(0.011, 1.2 * px / S);
+    cat.up = hop.up;
+    cat.curl = hop.curl;
     float d = sillCatDist(q, cat, edgeQ, part);
     float aa = 1.1 * px / S;
     // Fur along the outline: tufts standing a cell or so proud of it, fixed to the cat (on the
@@ -1070,6 +1163,8 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       d -= max(0.008, 1.3 * px / S) * tuft * (part.x >= 0.0 ? 0.4 : smoothstep(-0.01, 0.04, q.y));
     }
     float cover = softFill(d, aa);
+    // While it moves, its edge is cut per cell, so the outline does not crawl through the dither.
+    cover = mix(cover, hardEdge(cover), hop.move);
     if (cover > 0.0) {
       // Shading normals by forward differences (smooth from pixel to pixel, where screen-space
       // derivatives would be constant over each 2x2 quad): from the ears' own field where an ear

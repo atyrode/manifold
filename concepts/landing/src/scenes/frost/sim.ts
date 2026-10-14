@@ -72,6 +72,27 @@ export const FUR_RIPEN = 15;
 export const FROST_START = 18;
 /** Growth-clock seconds by which the thick frost along the frame has reached its full depth. */
 export const RIME_GROWN = 150;
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the glass opens clear
+ * and the frost grows in from the frame (the growth clock is run up from FROST_EMERGE_FROM to the
+ * opening state, FROST_START, in these seconds, quickly at first and settling). Exit: a warm breath
+ * clears a small patch that spreads over the whole pane.
+ */
+export const FROST_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.6 };
+/** Growth seconds the entrance starts behind the opening state; the clock is FROST_EMERGE_FROM then. */
+const ENTER_LEAD = 34;
+export const FROST_EMERGE_FROM = FROST_START - ENTER_LEAD;
+/** Growth second by which the frame's rime and the condensation are fully formed (the shader's). */
+export const FROST_EMERGE_TO = FROST_START - 0.3 * ENTER_LEAD;
+/**
+ * The breath: where on the pane it lands when the pointer is not on it (uv), the radius it starts
+ * from (frame heights), how far it spreads as a multiple of the distance to the pane's farthest
+ * corner (the cleared edge runs behind the warmth's reach), and the share of the exit it takes.
+ */
+const BREATH_AT = [0.46, 0.5] as const;
+const BREATH_START = 0.05;
+const BREATH_REACH = 1.7;
+const BREATH_SPREAD = 0.8;
 /** uSim3 scales: fur lag in frame heights × FUR_SCALE; half-width in units of WIDTH_SCALE. */
 export const FUR_SCALE = 4;
 export const WIDTH_SCALE = 0.004;
@@ -831,6 +852,11 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
     let traceStart: number | undefined;
     let traceSize = 0.4;
     let nextTrace: number | undefined;
+    /** Whether the entrance is still on, and seconds of it gone since the first field was on show. */
+    let arriving: boolean | undefined;
+    let arrived = 0;
+    /** Where the exit's breath landed. */
+    let breath: { x: number; y: number } | undefined;
 
     const show = (next: GrowthField): void => {
       field = next;
@@ -896,6 +922,40 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
       }
     };
 
+    /**
+     * Growth seconds the shown clock is behind the real one: FROST_EMERGE_FROM's worth at the start
+     * of the entrance, easing to exactly 0 over FROST_PASSAGE.enter seconds that begin once the first
+     * field is up (so a slow first frame does not use the entrance up). 0 when not entered with a passage.
+     */
+    const enterLead = (frame: SimFrame): number => {
+      if (arriving === undefined) arriving = frame.passage.enter < 1;
+      if (!arriving) return 0;
+      if (field) arrived += Math.max(0, frame.dt);
+      const progress = arrived / FROST_PASSAGE.enter;
+      if (progress >= 1) {
+        arriving = false;
+        return 0;
+      }
+      return ENTER_LEAD * (1 - progress) * (1 - progress);
+    };
+
+    /** The exit: a warm breath lands on the glass and its warmth spreads, melting the frost out of its way. */
+    const breathe = (frame: SimFrame, glass: MeltField): void => {
+      const { exit } = frame.passage;
+      if (!(exit > 0)) {
+        breath = undefined;
+        return;
+      }
+      if (frame.dt <= 0) return;
+      const { pointer, aspect } = frame;
+      breath ??= pointer.inside ? { x: pointer.x, y: pointer.y } : { x: BREATH_AT[0], y: BREATH_AT[1] };
+      const far = Math.hypot(Math.max(breath.x, 1 - breath.x) * aspect, Math.max(breath.y, 1 - breath.y));
+      const radius = BREATH_START + (BREATH_REACH * far - BREATH_START) * smoothstep(0, 1, exit / BREATH_SPREAD);
+      glass.heat.lift();
+      glass.heat.stroke(breath.x, breath.y, radius, Math.min(1, frame.dt * 40) * 0.9, aspect);
+      glass.heat.lift();
+    };
+
     return {
       frame(frame) {
         const now = performance.now();
@@ -943,10 +1003,11 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         clock += elapsed * frame.motion * knobs.value(frame, "speed");
         if (field) clock = Math.min(clock, Math.max(RIME_GROWN, field.latest + field.reach * furSlowness(knobs.value(frame, "style")) + FUR_RIPEN + 5));
         clock = Math.min(clock, 60000);
-        if (clock !== uploadedClock) {
-          clockData[0] = clock;
+        const shown = clock - enterLead(frame);
+        if (shown !== uploadedClock) {
+          clockData[0] = shown;
           clockTexture.upload(clockData);
-          uploadedClock = clock;
+          uploadedClock = shown;
         }
 
         const meltWidth = Math.ceil(size.width / 2);
@@ -958,6 +1019,7 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
           hasLast = false;
         }
         touch(frame, melt);
+        breathe(frame, melt);
         trace(frame, melt);
         if (melt.step(frame.dt, frame.dt * frame.motion)) meltTexture.upload(melt.bytes);
 

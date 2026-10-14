@@ -2,12 +2,14 @@
 // branches and their fur in uSim0 and uSim3; the shader adds their feathery barbs, the rime along
 // the frame and the glints), melted by a warm fingertip and refreezing (uSim1), on a growth clock
 // (uSim2) that opens on a pane already frosted along its bottom. Behind the glass, out of focus:
-// a snowy street or a cabin in the woods, under the shared sky and snowfall.
+// a snowy street or a cabin in the woods, under the shared sky and snowfall. Entering, the glass
+// starts clear and the frost grows in from the frame; leaving, a warm breath clears a patch that
+// spreads over the pane (FROST_PASSAGE).
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { frostGlsl } from "./shader.ts";
-import { frostSim } from "./sim.ts";
+import { FROST_PASSAGE, frostSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("frost", "speed", "growth speed", 1, "How fast the frost creeps over the glass: fern fronds first, then the finer frost between them.", { min: 0.2, max: 4, step: 0.1 }),
@@ -39,5 +41,6 @@ export const frostScene: SceneDef = {
   },
   glsl: frostGlsl,
   entry: "sceneFrost",
+  passage: FROST_PASSAGE,
   sim: frostSim(params),
 };
