@@ -112,11 +112,13 @@ Overlooking rolling hills with a village in the distance and forest around.
 
 - Layered hills with atmospheric perspective, patchwork fields, hedgerows, a winding road or river.
 - Village: a few roofs and a church spire, chimney smoke.
-- Woodland: distant woods mix rounded broadleaf crowns with tapered, tiered pines (25% by default,
-  0–100%). Pines stay evergreen in autumn. Treetops raise the visible skyline and occlude what is
-  behind them, but the ground's field mapping and lighting follow only the bare terrain, so canopy
-  bumps never corrugate the hillsides. Unresolved distant crowns use an area-mean colour instead of
-  per-crown detail.
+- Woodland: `woodland cover` grows or clears the distant woods at their edges (50% is the original
+  valley, 0 clears every wood); `pine mix` sets how many trees are tapered evergreen pines (25% by
+  default). Woods are drawn as whole trees of varied size, with up to two per crown cell, ragged
+  edges and clearings, over a shaded forest floor — never as a translucent overlay. Pines stay
+  evergreen in autumn. Treetops raise the visible skyline and occlude what is behind them, but the
+  ground's fields and lighting follow only the bare terrain, and pixels inside the treeline are
+  always canopy. Unresolved distant crowns use an area-mean colour instead of per-crown detail.
 - Day cycle and weather (cloud shadows sweeping over the fields).
 - Fields: independently weight original seasonal crops, wildflowers, lavender and sunflowers from
   0–100. Weights are relative, not area percentages: 2:1:1:0 gives approximately half crop fields,
