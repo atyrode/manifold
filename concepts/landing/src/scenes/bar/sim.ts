@@ -23,6 +23,15 @@
 // call nears), stands and looks out at the rain, or leans over to chat. A click on the bar brings
 // him over to you; the "now" buttons send in a new patron or have him shake a cocktail.
 //
+// Last call (the `night` knob's "now"). It is called when the bartender rings it: as soon as his
+// hands are free he lifts a brass hand bell and rings it (ACT.bell), and the house lights blink twice
+// (the shader, from the call's clock). With the bartender off, someone in the back flicks the
+// lights at once and there is no bell. Everyone at the bar looks up, takes a last sip, and (if
+// there is anyone to serve them) some order one for the road; with nobody at the bar he comes over
+// to you instead. From then on it is closing time whatever the clock said (CLOSING_NIGHT): nobody
+// new comes in, the room empties one by one (a regular last), the lamps go down and the OPEN sign
+// goes dark. Moving the `night` knob ends it; the evening follows the knob again.
+//
 // The candle on your table bends with the air a pointer sweeping past it pushes, then rights itself.
 //
 // Time runs in fixed steps of STEP seconds of simulated time (scene seconds times the lab's
@@ -40,7 +49,8 @@
 //   10 + i       patron: talking 0..1, carrying a closed umbrella 0/1, wet coat 0..1
 //   14 + i       glass at stool i: fill 0..1 (-1 no glass), kind (0 tumbler, 1 wine, 2 coupe,
 //                3 highball), x (m, on the counter at GLASS_Z), source slot (-1 a cocktail)
-//   18           candle: draught x, y (-1..1); the ceiling fan's angle (rad, 0..2π)
+//   18           candle: draught x, y (-1..1); the ceiling fan's angle (rad, 0..2π); seconds since
+//                last call was called (-1: not called)
 import type { ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -103,6 +113,7 @@ export const ACT = {
   strain: 8,
   wipe: 9,
   clear: 10,
+  bell: 11,
 } as const;
 type Act = (typeof ACT)[keyof typeof ACT];
 
@@ -124,6 +135,12 @@ export const CLEAR_TAKE = 0.9;
 /** Seconds a patron takes to climb onto or down from a stool, and a sip from start to finish. */
 export const SIT_TIME = 1.6;
 export const SIP_TIME = 4.5;
+/** Last call: how long he rings the bell (s), the house lights' two blinks (seconds after it is
+ *  called: off from each start for BLINK_OFF), and the time of night it then is, whatever the knob. */
+export const BELL_TIME = 3.2;
+export const BLINKS = [2.7, 3.35] as const;
+export const BLINK_OFF = 0.25;
+export const CLOSING_NIGHT = 0.95;
 
 export const TEXELS = 19;
 
@@ -163,9 +180,13 @@ const SEED = 0x6ba7;
 type KnobKey = "night" | "patrons" | "bartender" | "rain" | "fan";
 const KNOB_KEYS: readonly KnobKey[] = ["night", "patrons", "bartender", "rain", "fan"];
 
-/** Trigger slots (index.ts): a cocktail now, a new patron now. */
+/** Trigger slots (index.ts): a cocktail now, a new patron now, last call now. */
 const TRIGGER_COCKTAIL = 0;
 const TRIGGER_ARRIVAL = 4;
+const TRIGGER_LAST_CALL = 5;
+/** At last call: where he stands to talk to you, how many of those at the bar order one for the road. */
+const YOUR_END = 0;
+const ONE_FOR_THE_ROAD = 0.5;
 
 export class BarSimError extends Error {}
 
@@ -335,6 +356,11 @@ class BarEvening implements SceneSim {
   #nextLeave = 0;
   #visitX = Number.NaN;
   #cocktail = false;
+  /** Last call: asked for and waiting for his hands to be free; the clock when it was called (NaN:
+   *  not called), so closing time from then on; the time of night it was asked for at. */
+  #callPending = false;
+  #callAt = Number.NaN;
+  #callNight = Number.NaN;
   /** The glass he will set down for the pour he has planned. */
   #pourKind: number = GLASS.tumbler;
 
@@ -363,12 +389,16 @@ class BarEvening implements SceneSim {
     this.#rain = clamp(values[this.#index.rain] ?? 0, 0, 1);
     this.#fan = clamp(values[this.#index.fan] ?? 0, 0, 1);
     if (frame.aspect > 0) this.#aspect = frame.aspect;
+    // Moving the time of night after last call ends it: the evening follows the knob again.
+    if (Number.isFinite(this.#callNight) && this.#night !== this.#callNight) this.#endCall();
 
     // A clock that went backwards (the lab restarted the scene) starts the evening over.
     if (!this.#started || frame.time < this.#lastTime - 0.5) this.#reset(frame);
     this.#lastTime = frame.time;
 
     this.#watchTriggers(frame.triggers);
+    // With nobody behind the bar, last call is the lights flicked from the back, at once.
+    if (this.#callPending && !this.#serving) this.#startCall();
     this.#follow(frame);
 
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
@@ -389,16 +419,21 @@ class BarEvening implements SceneSim {
     this.#texture.dispose();
   }
 
+  /** The time of night the evening keeps: the knob's, or closing time once last call has been called. */
+  #lateness(): number {
+    return Number.isFinite(this.#callAt) ? Math.max(this.#night, CLOSING_NIGHT) : this.#night;
+  }
+
   /** How many stools should be taken now: the knob, thinned toward last call, one regular staying on. */
   #target(): number {
     if (this.#crowd === 0) return 0;
-    const share = 1 - 0.8 * smooth(0.35, 0.95, this.#night);
+    const share = 1 - 0.8 * smooth(0.35, 0.95, this.#lateness());
     return Math.max(1, Math.round(this.#crowd * share));
   }
 
   /** Minutes a patron stays: shorter as the night gets late. */
   #stay(): number {
-    return this.#rng.range(STAY) * (1 - 0.45 * this.#night);
+    return this.#rng.range(STAY) * (1 - 0.45 * this.#lateness());
   }
 
   /** An evening already under way: stools taken, drinks half drunk, the bartender polishing. */
@@ -411,6 +446,7 @@ class BarEvening implements SceneSim {
     this.#started = true;
     this.#visitX = Number.NaN;
     this.#cocktail = false;
+    this.#endCall();
     const target = this.#target();
     const order = [1, 2, 0, 3];
     this.#patrons.forEach((patron, seat) => {
@@ -456,6 +492,7 @@ class BarEvening implements SceneSim {
       this.#interrupt();
     }
     if (this.#fired(triggers, TRIGGER_ARRIVAL)) this.#arrive(true);
+    if (this.#fired(triggers, TRIGGER_LAST_CALL)) this.#call();
     this.#seen.length = triggers.length;
     for (let slot = 0; slot < triggers.length; slot++) this.#seen[slot] = triggers[slot] ?? -1e4;
   }
@@ -463,6 +500,37 @@ class BarEvening implements SceneSim {
   #fired(triggers: readonly number[], slot: number): boolean {
     const stamp = triggers[slot] ?? -1e4;
     return stamp !== (this.#seen[slot] ?? -1e4) && stamp > -1e3;
+  }
+
+  /** Last call is asked for: he rings it as soon as his hands are free (#think), or, with nobody behind the bar, it is called at once (frame). */
+  #call(): void {
+    this.#callPending = true;
+    this.#callNight = this.#night;
+    if (this.#serving) this.#interrupt();
+  }
+
+  /** Last call is called (the lights blink in the shader): everyone at the bar looks up and takes a last sip, and some order one for the road while there is someone to pour it. */
+  #startCall(): void {
+    const clock = this.#clock;
+    this.#callPending = false;
+    this.#callAt = clock;
+    for (const [seat, patron] of this.#patrons.entries()) {
+      if (patron.state !== "seated") continue;
+      patron.turnTo = 0;
+      patron.nextLook = clock + this.#rng.range([4, 9]);
+      patron.nextSip = Math.min(patron.nextSip, clock + this.#rng.range([2, 7]));
+      const drink = this.#drinks[seat];
+      if (this.#serving && drink && drink.fill < 0.45 && patron.wantsAt === Number.POSITIVE_INFINITY && this.#rng.next() < ONE_FOR_THE_ROAD) {
+        patron.wantsAt = clock + this.#rng.range([3, 10]);
+        patron.leaveAt = Math.max(patron.leaveAt, clock + 90);
+      }
+    }
+  }
+
+  #endCall(): void {
+    this.#callPending = false;
+    this.#callAt = Number.NaN;
+    this.#callNight = Number.NaN;
   }
 
   /** The pointer: a click on the bar calls the bartender over; moving near the candle bends its flame. */
@@ -538,7 +606,8 @@ class BarEvening implements SceneSim {
       if (patron.state !== "empty" && patron.state !== "seated") moving = true;
     }
     const target = this.#target();
-    if (present < target && clock >= this.#nextArrival && !moving) this.#arrive(false);
+    // At closing time nobody new comes in (unless sent in with "now").
+    if (present < target && clock >= this.#nextArrival && !moving && !Number.isFinite(this.#callAt)) this.#arrive(false);
     if (present > target && clock >= this.#nextLeave) {
       let first: Patron | undefined;
       for (const patron of this.#patrons) {
@@ -566,7 +635,7 @@ class BarEvening implements SceneSim {
       umbrella: this.#rain > 0.05 ? 1 : 0,
       wet: this.#rain > 0 ? 0.5 + 0.5 * this.#rain : 0,
     } satisfies Partial<Patron>);
-    const gap = this.#rng.range(ARRIVAL_GAP) * (1 + this.#night);
+    const gap = this.#rng.range(ARRIVAL_GAP) * (1 + this.#lateness());
     this.#nextArrival = this.#clock + (now ? Math.max(gap, 25) : gap);
   }
 
@@ -618,7 +687,7 @@ class BarEvening implements SceneSim {
         patron.facingTo = -1;
         if (patron.x <= DOOR_X) {
           Object.assign(patron, blankPatron());
-          this.#nextArrival = Math.max(this.#nextArrival, clock + this.#rng.range(ARRIVAL_GAP) * (1 + this.#night));
+          this.#nextArrival = Math.max(this.#nextArrival, clock + this.#rng.range(ARRIVAL_GAP) * (1 + this.#lateness()));
         }
         break;
       }
@@ -699,7 +768,7 @@ class BarEvening implements SceneSim {
 
     // Where he looks: at whoever he is serving or chatting with (straight ahead, across the counter),
     // at you when he comes over, otherwise now and then along the bar or out at the rain.
-    if (bar.act === ACT.chat || bar.act === ACT.pour || bar.act === ACT.strain || bar.act === ACT.clear) bar.lookTo = 0;
+    if (bar.act === ACT.chat || bar.act === ACT.pour || bar.act === ACT.strain || bar.act === ACT.clear || bar.act === ACT.bell) bar.lookTo = 0;
     else if (clock >= bar.nextLook) {
       const r = this.#rng.next();
       bar.lookTo = r < 0.2 ? -1 : r < 0.55 ? (this.#rng.next() - 0.5) * 1.2 : 0;
@@ -755,6 +824,7 @@ class BarEvening implements SceneSim {
       case ACT.walk:
       case ACT.chat:
       case ACT.wipe:
+      case ACT.bell:
         break;
       default: {
         const never: never = bar.act;
@@ -774,6 +844,7 @@ class BarEvening implements SceneSim {
     bar.target = step.x;
     bar.dur = step.act === ACT.walk ? Math.max(0.6, Math.abs(step.x - bar.x) / BARTENDER_PACE + 0.3) : step.dur;
     if (step.act === ACT.pour || step.act === ACT.strain) bar.pourTo = 0.72 + 0.18 * this.#rng.next();
+    if (step.act === ACT.bell) this.#startCall();
   }
 
   /** Decide what comes next: you, an order, a glass to clear, or something to do meanwhile. */
@@ -786,6 +857,15 @@ class BarEvening implements SceneSim {
     };
     if (!this.#serving) {
       plan.push({ act: ACT.idle, dur: 4, x: bar.x, seat: -1 });
+      return;
+    }
+    if (this.#callPending) {
+      plan.push({ act: ACT.bell, dur: BELL_TIME, x: bar.x, seat: -1 });
+      // Nobody at the bar to call it to: he comes over to you.
+      if (!this.#patrons.some((patron) => patron.state === "seated")) {
+        walkTo(YOUR_END);
+        plan.push({ act: ACT.chat, dur: 6, x: YOUR_END, seat: -1 });
+      }
       return;
     }
     if (Number.isFinite(this.#visitX)) {
@@ -827,7 +907,7 @@ class BarEvening implements SceneSim {
     }
     // Meanwhile: polishing, wiping (more toward last call), a stroll along the bar, a word with someone.
     const r = this.#rng.next();
-    const wipe = 0.12 + 0.55 * smooth(0.5, 1, this.#night);
+    const wipe = 0.12 + 0.55 * smooth(0.5, 1, this.#lateness());
     const seated: number[] = [];
     this.#patrons.forEach((patron, seat) => {
       if (patron.state === "seated") seated.push(seat);
@@ -892,7 +972,7 @@ class BarEvening implements SceneSim {
       this.#put(10 + seat, patron.talk, patron.umbrella, patron.wet, 0);
       this.#put(14 + seat, drink.fill, drink.kind, drink.x, drink.source);
     }
-    this.#put(18, this.#draftX, this.#draftY, this.#fanAngle, 0);
+    this.#put(18, this.#draftX, this.#draftY, this.#fanAngle, Number.isFinite(this.#callAt) ? Math.min(this.#clock - this.#callAt, 60) : -1);
     this.#texture.upload(this.#data);
   }
 }

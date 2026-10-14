@@ -43,16 +43,22 @@
 // Knobs: K_night (the sim thins the room; here the lamps dim and OPEN goes dark at last call),
 // K_patrons and K_bartender (sim), K_warmth, K_bokeh, K_fan (the sim turns it), K_candle, K_steam,
 // K_whisky, K_traffic, K_sign, K_jukebox, K_rain, K_wind, K_drops, K_mark. Triggers: 1 a taxi,
-// 2 a new record on the jukebox, 3 the M (0 and 4 are the sim's: a cocktail, a newcomer).
+// 2 a new record on the jukebox, 3 the M (0, 4 and 5 are the sim's: a cocktail, a newcomer, last
+// call). Last call (barMisc.w, seconds since it was called): the bartender's bell (ACT.bell), the
+// lamps blinking twice, then closing time: the lamps, the shelf glow and OPEN as at CLOSING_NIGHT.
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   ACT,
   BARTENDER_Z,
+  BELL_TIME,
+  BLINK_OFF,
+  BLINKS,
   CANDLE_X,
   CANDLE_Y,
   CANDLE_Z,
   CARRY,
   CLEAR_TAKE,
+  CLOSING_NIGHT,
   DOOR_X,
   EYE,
   FAN_FAST,
@@ -111,6 +117,12 @@ const int BAR_SHAKE = ${ACT.shake};
 const int BAR_STRAIN = ${ACT.strain};
 const int BAR_WIPE = ${ACT.wipe};
 const int BAR_CLEAR = ${ACT.clear};
+const int BAR_BELL = ${ACT.bell};
+const float BAR_BELL_TIME = ${glslFloat(BELL_TIME)};
+const float BAR_BLINK0 = ${glslFloat(BLINKS[0])};
+const float BAR_BLINK1 = ${glslFloat(BLINKS[1])};
+const float BAR_BLINK_OFF = ${glslFloat(BLINK_OFF)};
+const float BAR_CLOSING_NIGHT = ${glslFloat(CLOSING_NIGHT)};
 const float BAR_CARRY_BOTTLE = ${glslFloat(CARRY.bottle)};
 const float BAR_CARRY_SHAKER = ${glslFloat(CARRY.shaker)};
 const float BAR_CARRY_GLASS = ${glslFloat(CARRY.glass)};
@@ -212,7 +224,7 @@ vec4 barP0[4];      // patrons: x, z, sitting, gait
 vec4 barP1[4];      // seed, facing, head turn, sip
 vec4 barP2[4];      // talking, umbrella, wet coat
 vec4 barGl[4];      // glasses on the counter: fill, kind, x, source slot
-vec4 barMisc;       // candle draught xy, fan angle
+vec4 barMisc;       // candle draught xy, fan angle, seconds since last call (-1: none)
 
 // ---- Helpers
 
@@ -325,12 +337,12 @@ float barEvent(float t, float period, float salt, out float pick) {
 }
 
 // A simulation texel. Without the simulation: a still evening, three at the bar, the bartender
-// polishing a glass.
+// polishing a glass, no last call.
 vec4 barSimTexel(int i) {
   if (uSimOn.x > 0.5) return texelFetch(uSim0, ivec2(i, 0), 0);
   if (i == 0) return vec4(1.2, float(BAR_POLISH), 5.0, 60.0);
   if (i == 1) return vec4(0.0, -1.0, 0.0, 0.0);
-  if (i >= 18) return vec4(0.0);
+  if (i >= 18) return vec4(0.0, 0.0, 0.0, -1.0);
   int k = (i - 2) % 4;
   bool here = k < 3;
   if (i < 6) return here ? vec4(BAR_STOOL_X[k], BAR_STOOL_Z, 1.0, 0.0) : vec4(BAR_DOOR_X, BAR_WALK_Z, 0.0, 0.0);
@@ -1417,6 +1429,13 @@ BarTender barTenderPose() {
     tb = mix(mix(restB, vec2(BAR_POUR_REACH, 1.12), reach), vec2(0.22, 1.22), smoothstep(BAR_CLEAR_TAKE, BAR_CLEAR_TAKE + 0.5, age));
     tb = mix(tb, vec2(0.24, 0.92), smoothstep(1.5, 2.0, age));
     T.pitch = -0.2;
+  } else if (act == BAR_BELL) {
+    // last call: standing tall, the brass hand bell lifted high in his right hand and rung, his
+    // left on the counter, looking out over the room
+    tb = vec2(0.27, 1.74);
+    ta = vec2(-0.24, 1.1);
+    T.pitch = 0.12;
+    T.yaw = 0.0;
   }
   T.ha = mix(restA, ta, env);
   T.hb = mix(restB, tb, env);
@@ -1501,7 +1520,7 @@ vec3 barTenderAlbedo(vec2 q, BarTender T, float part) {
 
 // The bartender at p, if he is on, over col: his figure lit by the lamps in front of him and
 // rimmed by the bottles' glow behind, and what he holds: the glass and towel he polishes, the
-// bottle from the shelf (the stream as he pours), the shaker, a glass he clears.
+// bottle from the shelf (the stream as he pours), the shaker, a glass he clears, the last-call bell.
 void barTender(vec2 p, inout vec3 col) {
   if (K_bartender < 0.5) return;
   vec2 q = barWorld(p, BAR_BT_Z) - vec2(barB0.x, 0.0);
@@ -1562,6 +1581,20 @@ void barTender(vec2 p, inout vec3 col) {
   if (abs(carry - BAR_CARRY_GLASS) < 0.5) {
     float glass = barBox(q - T.hb - vec2(0.0, 0.05), vec2(0.035, 0.045)) - 0.004;
     col = mix(col, col * 0.5 + lit * 0.35, barHard(barFill(glass, pxm)));
+  }
+  if (act == BAR_BELL) {
+    // The bell hangs from the hand by its wooden handle, swinging as he rings it.
+    float ring = smoothstep(0.5, 0.8, barB0.z) * (1.0 - smoothstep(BAR_BELL_TIME - 1.0, BAR_BELL_TIME - 0.5, barB0.z));
+    float swing = 0.55 * sin(barB0.z * TAU * 2.3) * ring;
+    vec2 down = vec2(sin(swing), -cos(swing));
+    vec2 rel = q - T.hb;
+    vec2 l = vec2(dot(rel, vec2(-down.y, down.x)), dot(rel, down));
+    float handle = barSeg(l, vec2(0.0, -0.035), vec2(0.0, 0.025), 0.011, 0.009);
+    float flare = clamp((l.y - 0.025) / 0.07, 0.0, 1.0);
+    float bell = min(max(abs(l.x) - mix(0.02, 0.043, flare * flare), max(0.025 - l.y, l.y - 0.095)), length(l - vec2(0.0, 0.03)) - 0.021);
+    vec3 brass = vec3(0.7, 0.5, 0.18) * (lit * 1.5 + 0.06) + barShelf * 0.25 * smoothstep(0.0, 0.04, l.x);
+    col = mix(col, vec3(0.16, 0.08, 0.04) * (lit + 0.05), barHard(barFill(handle, pxm)));
+    col = mix(col, brass, barHard(barFill(bell, pxm)));
   }
 }
 
@@ -2136,17 +2169,28 @@ Shade sceneBar(vec2 uv, vec2 cell, float t) {
 
   // The light: the lamps' warmth and the room dimming toward last call; the night outside, a
   // little brighter under rain cloud lit by the city; the OPEN sign switched off at last call.
-  barLevel = mix(1.0, 0.55, smoothstep(0.55, 1.0, K_night));
+  // Once last call has been called (barMisc.w seconds ago) the house lights blink twice and, over
+  // the next few seconds, the room goes to closing time whatever the knob says (the back bar's
+  // shelf glow and the sign are on circuits of their own and do not blink).
+  float night = K_night;
+  float blink = 1.0;
+  float since = barMisc.w;
+  if (since >= 0.0) {
+    night = mix(K_night, max(K_night, BAR_CLOSING_NIGHT), smoothstep(BAR_BLINK1 + 1.0, BAR_BLINK1 + 7.0, since));
+    float off = step(BAR_BLINK0, since) * step(since, BAR_BLINK0 + BAR_BLINK_OFF) + step(BAR_BLINK1, since) * step(since, BAR_BLINK1 + BAR_BLINK_OFF);
+    blink = 1.0 - 0.8 * off;
+  }
+  barLevel = mix(1.0, 0.55, smoothstep(0.55, 1.0, night)) * blink;
   vec3 warm = mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 0.6, 0.3), K_warmth);
   // The lamps warm on a little as you arrive (exactly 1 at rest).
   float lampK = 1.0 - 0.14 * (1.0 - smoothstep(0.1, 0.85, passageIn()));
   barLamp = warm * barLevel * 1.3 * lampK;
-  barShelf = mix(vec3(1.0, 0.72, 0.42), warm, 0.5) * 0.85 * mix(1.0, 0.5, smoothstep(0.6, 1.0, K_night));
+  barShelf = mix(vec3(1.0, 0.72, 0.42), warm, 0.5) * 0.85 * mix(1.0, 0.5, smoothstep(0.6, 1.0, night));
   barFanCol = vec3(1.0, 0.82, 0.62) * 0.4 * barLevel;
   barAmbient = vec3(0.05, 0.04, 0.036) * (0.6 + 0.4 * barLevel);
   barCity = vec3(0.11, 0.1, 0.115) * (1.0 + 0.3 * K_rain);
   barWet = uWeather.x;
-  barSign = K_sign * (1.0 - smoothstep(0.9, 0.94, K_night));
+  barSign = K_sign * (1.0 - smoothstep(0.9, 0.94, night));
 
   vec3 col;
   float accent = 0.0;
