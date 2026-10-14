@@ -1,6 +1,8 @@
 // The handscroll's clockwork. The landscape itself is a pure function of the scroll position (see
 // shader.ts); what a shader alone cannot keep is integrated here on the CPU, in double precision:
 //   - how far the scroll has unrolled (eased toward the speed knob, so turning it never jumps),
+//     handed over within its section (SHANSHUI_SECTION heights), which keeps the shader's float32
+//     painting coordinate small however long the scroll runs,
 //   - how far the mist has drifted along it and how far its billows have reshaped,
 //   - the skein of wild geese crossing the sky (when it sets off, where it is, how many birds),
 //   - the seal last pressed onto the paper (with "now" or a click), carried along with the scroll,
@@ -8,9 +10,11 @@
 //
 // uSim0, rgba16f, 4 x 1, nearest. Half floats hold integers exactly to 2048 but only ~11 bits of
 // fraction, so positions are split (see `split3`/`split2`) and rebuilt in the shader:
-//   texel 0  scroll in screen heights:  (k, hi, lo, mist clock mod 256: the shader only uses it in
-//            whole cycles of sines, and it also swings the boats along their water)
-//   texel 1  mist drift along the scroll: (k, hi, lo, 0)        value = k * 32 + (hi + lo) / 64
+//   texel 0  scroll within its section, in screen heights: (k, hi, lo, mist clock mod 256: the
+//            shader only uses it in whole cycles of sines, and it also swings the boats along their
+//            water)
+//   texel 1  mist drift along the scroll: (k, hi, lo, section)  value = k * 32 + (hi + lo) / 64;
+//            section: its number mod SHANSHUI_SECTIONS, plus SHANSHUI_SECTIONS after the first
 //   texel 2  geese: leader x (hi, lo) in screen heights, leader y (uv), skein number
 //   texel 3  seal: x (hi, lo) in screen heights, y (uv), seconds since pressed (-1: none yet)
 //            value = (hi + lo) / 64
@@ -22,6 +26,7 @@ import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { SHANSHUI_SECTION, SHANSHUI_SECTIONS } from "./shader.ts";
 
 /** Screen heights per second of scroll at the speed knob's top. */
 const SPEED_MAX = 0.016;
@@ -81,7 +86,11 @@ class ShanshuiSim implements SceneSim {
 
   #seed = Number.NaN;
   #rate = Number.NaN;
+  /** Screen heights unrolled since the scroll began (seeded), and at the start of this section. */
   #scroll = 0;
+  #sectionStart = 0;
+  /** Sections begun since the scroll began. */
+  #section = 0;
   #drift = 0;
   #morph = 0;
   #clock = 0;
@@ -124,16 +133,23 @@ class ShanshuiSim implements SceneSim {
     this.#drift += step * drift * DRIFT_MAX;
     this.#morph = (this.#morph + step * (0.15 + drift)) % 256;
     this.#clock += step;
+    // A new section begins once this one is a section long: its painting restarts from its own
+    // origin, while the one before runs on beyond the join (shader.ts).
+    const sections = Math.floor((this.#scroll - this.#sectionStart) / SHANSHUI_SECTION);
+    if (sections > 0) {
+      this.#sectionStart += sections * SHANSHUI_SECTION;
+      this.#section += sections;
+    }
 
     this.#flyGeese(dt, frame.motion, birds, aspect, frame.fired[this.#geeseSlot] === true);
     this.#pressSeal(frame, dt, seal, aspect, frame.fired[this.#sealSlot] === true);
     this.#breathe(frame, aspect);
 
     const out = this.#texels;
-    split3(out, 0, this.#scroll);
+    split3(out, 0, this.#scroll - this.#sectionStart);
     out[3] = this.#morph;
     split3(out, 4, this.#drift);
-    out[7] = 0;
+    out[7] = this.#section === 0 ? 0 : SHANSHUI_SECTIONS + (this.#section % SHANSHUI_SECTIONS);
     split2(out, 8, Number.isFinite(this.#geeseX) ? this.#geeseX : -9);
     out[10] = this.#geeseY;
     out[11] = Number.isFinite(this.#geeseX) ? this.#skein : 0;
@@ -161,6 +177,8 @@ class ShanshuiSim implements SceneSim {
     this.#random.seed(Math.imul((seed + 1) | 0, 0x9e3779b1) ^ 0x5eed5a17);
     this.#rate = speed * SPEED_MAX;
     this.#scroll = 0;
+    this.#sectionStart = 0;
+    this.#section = 0;
     this.#drift = 0;
     this.#morph = 0;
     this.#clock = 0;

@@ -1,7 +1,8 @@
 // The handscroll's picture. Everything painted is a pure function of P = (x along the scroll, y),
 // in screen heights; the sim (sim.ts) says how far the scroll has unrolled:
-//   uSim0  texel 0 scroll (k, hi, lo, mist reshaping clock); texel 1 mist drift (k, hi, lo, -)
-//          texel 2 geese leader (x hi, x lo, y, skein number); texel 3 seal (x hi, x lo, y, age)
+//   uSim0  texel 0 scroll within its section (k, hi, lo, mist reshaping clock); texel 1 mist drift
+//          (k, hi, lo, section number); texel 2 geese leader (x hi, x lo, y, skein number); texel 3
+//          seal (x hi, x lo, y, age)
 //   uSim1  the pointer's breath over the page (uv), thinning the mist.
 // Five layers of forms are painted front to back: river banks, the near peaks, a middle range and
 // two far ranges. Each layer is a row of overlapping mountain forms on a lattice along the scroll,
@@ -9,8 +10,16 @@
 // covering it is painted (contour, wash, fold lines with texture strokes hung beneath them, moss
 // dots), so forms stack and outline one another as in a painting. Mist is bare paper: bands of it
 // fade what lies behind them. Ink is laid as a density and turned into colour through the paper.
-// Knobs read here: K_seed, K_detail, K_palette, K_density, K_wetness, K_cun, K_age, K_mist,
-// K_boats, K_dwellings, K_falls, K_inscription, K_seal (K_speed, K_drift, K_birds: in the sim).
+// Knobs read here: K_seed, K_detail, K_palette, K_season, K_density, K_wetness, K_cun, K_age,
+// K_mist, K_boats, K_dwellings, K_falls, K_inscription, K_seal (K_speed, K_drift, K_birds: sim).
+// The scroll comes in sections of SHANSHUI_SECTION heights, each painted from its own origin (and
+// its own row of the seed's hash plane) and joined to the one before by a strip of mounting silk,
+// the paintings either side dissolving into bare paper toward it, as separators join the sections
+// of a long handscroll. So P stays small however long the scroll unrolls: measured on a 540-row
+// frame, from ~4000 heights out a float32 P only moved every few frames, from ~32000 the frame
+// froze between one-cell jumps and seal strokes broke into two-cell columns, and the half floats
+// handing over the scroll run out at 65536.
+import { glslFloat } from "../../shaders/glsl.ts";
 
 /**
  * Seconds of the scroll's entrance (it is drawn open from its roll, the painting riding in behind
@@ -18,7 +27,23 @@
  */
 export const SHANSHUI_PASSAGE = { enter: 3, exit: 1.4 } as const;
 
+/**
+ * Screen heights of one section of the scroll (at the default speed about six days of unrolling,
+ * at the fastest a day and a half), and how many sections the seed rows cycle through. Texel 1's
+ * alpha is the section number modulo SHANSHUI_SECTIONS, plus SHANSHUI_SECTIONS once there is an
+ * earlier section to join on to.
+ */
+export const SHANSHUI_SECTION = 2048;
+export const SHANSHUI_SECTIONS = 1024;
+
 export const shanshuiGlsl = `
+const float SHAN_SECTION = ${glslFloat(SHANSHUI_SECTION)};
+const float SHAN_SECTIONS = ${glslFloat(SHANSHUI_SECTIONS)};
+// The join with the section before: where it lies on the new section's painting (so it enters off
+// the left edge), the silk's half width, and the bare paper either side.
+const float SHAN_JOIN_AT = -0.4;
+const float SHAN_JOIN_SILK = 0.026;
+const float SHAN_JOIN_FADE = 0.3;
 const vec3 SHAN_PAPER_NEW = vec3(0.949, 0.925, 0.851); // fresh paper
 const vec3 SHAN_PAPER_OLD = vec3(0.851, 0.769, 0.604); // tea-coloured with age
 const vec3 SHAN_ABSORB = vec3(0.94, 1.0, 1.12);        // sumi: dilute it greys a little warm
@@ -26,11 +51,19 @@ const vec3 SHAN_CINNABAR = vec3(0.77, 0.19, 0.12);     // seal paste
 const vec3 SHAN_AZURITE = vec3(0.21, 0.42, 0.63);
 const vec3 SHAN_MALACHITE = vec3(0.27, 0.55, 0.45);
 const vec3 SHAN_OCHRE = vec3(0.77, 0.56, 0.35);
+const vec3 SHAN_BLOSSOM = vec3(0.93, 0.66, 0.7);      // peach blossom (spring)
+const vec3 SHAN_MAPLE = vec3(0.8, 0.36, 0.16);        // maple leaves (autumn)
 const float SHAN_SHEET = 1.9;  // width of one sheet of paper along the scroll, in screen heights
 
 // Set once per pixel by the entry: the seed's hash row and one dither cell in screen heights.
 float shanSeed = 0.0;
 float shanPx = 0.001;
+
+// The seed's row on the hash plane for a section of the scroll: each seed reads the plane at its
+// own offset, scattered by an irrational step, and each section after the first steps on again.
+float shanSeedOf(float section) {
+  return 0.5 + fract(floor(K_seed + 0.5) * 0.7548777 + section * 0.618034) * 640.0;
+}
 
 float shanHash(float x, float row) {
   return hash12(vec2(x, row + shanSeed));
@@ -278,6 +311,19 @@ float shanDots(vec2 P, float d, float slope, float px, float scale) {
   return dots;
 }
 
+// The season's light colour wash on a form (K_season 1 spring .. 4 winter), as Guo Xi saw them:
+// spring hills pale as if smiling, blossom pink at the foot and young green up the slopes;
+// summer's deep green as if dripping; autumn clear and bright as if made up, ochre at the foot
+// turning russet toward the crest; winter asleep under snow, with no colour at all. crestward: 0
+// at the foot .. 1 at the crest. rgb colour, a cover.
+vec4 shanSeasonTint(int layer, float crestward, float fall, float seed) {
+  bool far = layer >= 3;
+  if (K_season < 1.5) return far ? vec4(0.66, 0.76, 0.64, 0.2) : vec4(mix(vec3(0.92, 0.7, 0.7), vec3(0.54, 0.74, 0.42), smoothstep(0.15, 0.6, crestward)), 0.32 + 0.18 * fall);
+  if (K_season < 2.5) return far ? vec4(0.44, 0.58, 0.6, 0.28) : vec4(mix(vec3(0.44, 0.58, 0.38), vec3(0.26, 0.46, 0.36), crestward), 0.42 + 0.2 * fall);
+  if (K_season < 3.5) return far ? vec4(0.78, 0.66, 0.54, 0.2) : vec4(mix(vec3(0.82, 0.62, 0.36), vec3(0.76, 0.36, 0.18), smoothstep(0.3, 0.9, crestward) * (0.6 + 0.4 * seed)), 0.4 + 0.2 * fall);
+  return vec4(0.0);
+}
+
 // Ink of one form at P: sumi density (x) and mineral colour cover (y; its colour in 'mineral').
 vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
   float px = shanPx;
@@ -360,17 +406,49 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
     water = hardEdge(water * (1.0 - 0.3 * smoothstep(0.62, 0.8, vnoise(vec2((P.x - xw) / hw * 1.6, P.y * 9.0)))));
   }
 
+  // Winter: snow settles as on any surface, by the slope of the crest above (the weather library's
+  // snowCover), but the painter keeps it to the upper faces and each ledge of stacked rock: below,
+  // the rock stays dark and its wash deepens to set the snow off.
+  float snow = 0.0;
+  if (K_season > 3.5) {
+    float tops = 1.0 - smoothstep(0.18, 0.42, depth + 0.25 * (vnoise(P * vec2(14.0, 34.0) + f.seed * 9.0) - 0.5));
+    float ledge = m >= 1.0 ? 0.85 * (1.0 - smoothstep(0.08, 0.4, fb)) : 0.0;
+    snow = hardEdge(max(tops, ledge) * snowCover(vec3(-top.y, 1.0, 0.0) * slopeN, P * 24.0 + f.seed * 7.0, 0.6));
+    wash *= mix(1.5, 0.0, snow);
+    tex *= 1.0 - snow;
+    dots *= 1.0 - snow;
+  } else if (K_season > 1.5 && K_season < 2.5) {
+    wash *= 1.15;
+  }
+  // Spring blossom and autumn leaves: some clusters of the dots open in colour.
+  float flower = 0.0;
+  if (abs(K_season - 1.0) < 0.5 || abs(K_season - 3.0) < 0.5) {
+    flower = dots * hardEdge(smoothstep(0.36, 0.5, vnoise(P * 26.0 + f.seed * 31.0)));
+    dots -= flower;
+  }
+
   float ink = style.w * (2.4 * line + bleed + wash * (1.0 - 0.45 * blue) + 1.2 * tex + 1.1 * fold + 2.4 * dots);
   ink = ink * (1.0 - water) + 1.6 * lips;
 
   // Blue-green: ochre at the foot, malachite up the slopes, azurite capping the peaks.
   float cover = 0.0;
+  float crestward = clamp(1.0 - dz / (H * 0.9), 0.0, 1.0);
   if (blue > 0.5) {
-    float crestward = clamp(1.0 - dz / (H * 0.9), 0.0, 1.0);
     mineral = mix(SHAN_OCHRE, SHAN_MALACHITE, smoothstep(0.1, 0.45, crestward));
     mineral = mix(mineral, SHAN_AZURITE, smoothstep(0.55, 0.9, crestward) * (0.5 + 0.5 * f.seed));
     if (layer >= 3) mineral = mix(SHAN_AZURITE, vec3(0.6, 0.7, 0.78), layer == 4 ? 0.55 : 0.35);
     cover = (layer >= 3 ? 0.4 : 0.55 + 0.3 * fall) * clamp(mottle, 0.0, 1.0) * (1.0 - water);
+  }
+  // The season's wash: the only colour over the ink, a glaze over the minerals; none on snow.
+  if (K_season > 0.5) {
+    vec4 tint = shanSeasonTint(layer, crestward, fall, f.seed);
+    tint.a *= clamp(mottle, 0.0, 1.0) * (1.0 - water);
+    if (tint.a > 0.0) mineral = cover > 0.0 ? mix(mineral, tint.rgb, 0.5) : tint.rgb;
+    cover = max(cover, tint.a) * (1.0 - snow);
+    if (flower > 0.0) {
+      mineral = K_season < 1.5 ? SHAN_BLOSSOM : SHAN_MAPLE;
+      cover = 0.95;
+    }
   }
   return vec2(ink, cover);
 }
@@ -857,12 +935,11 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   float px = 1.0 / uRes.y;
   shanPx = px;
-  // Each seed reads the hash plane at its own offset, scattered by an irrational step.
-  shanSeed = 0.5 + fract(floor(K_seed + 0.5) * 0.7548777) * 640.0;
 
   float scroll = uMotionTime * 0.0048;
   float drift = uMotionTime * 0.0021;
   float morph = uMotionTime * 0.45;
+  float section = 0.0;
   vec4 geese = vec4(-9.0, 0.0, 0.0, 0.0);
   vec4 stamp = vec4(-9.0, 0.0, 0.0, -1.0);
   float breath = 0.0;
@@ -870,7 +947,9 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
     vec4 s0 = texelFetch(uSim0, ivec2(0, 0), 0);
     scroll = shanUnsplit(s0);
     morph = s0.w;
-    drift = shanUnsplit(texelFetch(uSim0, ivec2(1, 0), 0));
+    vec4 s1 = texelFetch(uSim0, ivec2(1, 0), 0);
+    drift = shanUnsplit(s1);
+    section = s1.w;
     vec4 g = texelFetch(uSim0, ivec2(2, 0), 0);
     geese = vec4((g.x + g.y) / 64.0, g.z, g.w, 0.0);
     vec4 s = texelFetch(uSim0, ivec2(3, 0), 0);
@@ -891,6 +970,18 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
     shift = un.front - SHAN_FRONT_END;
   }
   vec2 P = vec2(S.x - scroll - shift, S.y);
+  // Right of the join lies the section before, its painting running on from where it was when
+  // this one began (so the change of origin moves nothing on screen), on its own row of the seed.
+  bool joined = section > SHAN_SECTIONS - 0.5;
+  float number = joined ? section - SHAN_SECTIONS : section;
+  float join = P.x - SHAN_JOIN_AT;
+  if (joined && join > 0.0) {
+    P.x -= SHAN_SECTION;
+    number = mod(number + SHAN_SECTIONS - 1.0, SHAN_SECTIONS);
+  }
+  shanSeed = shanSeedOf(number);
+  // Toward the join both paintings dissolve into bare paper, as mist.
+  float apart = joined ? smoothstep(SHAN_JOIN_SILK, SHAN_JOIN_SILK + SHAN_JOIN_FADE, abs(join)) : 1.0;
 
   // The paper: its tone and age, a broad mottling, each sheet a shade apart with a faint lap where
   // two are pasted together, and its fibres.
@@ -933,21 +1024,34 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   shanPaintLayer(3, P, vis, ink, mineral);
   vis *= 1.0 - 0.7 * shanMistBand(P.y, field, 0.52, 0.04, breath);
   shanPaintLayer(4, P, vis, ink, mineral);
+  // A winter scroll washes its sky and water grey, so that the snow left as bare paper shines.
+  if (K_season > 3.5) ink += 0.32 * vis;
 
   // An inscription now and then, faint, in the sky of a sheet.
   ink += 0.8 * shanInscription(P);
 
   // Wild geese high over everything.
   ink += 2.2 * shanGeese(S, geese.xyz, t);
+  ink *= apart;
+  mineral *= apart;
 
   // Ink through the paper.
   vec3 base = mineral.a > 0.0 ? mix(paper, mineral.rgb / mineral.a, clamp(mineral.a, 0.0, 1.0)) : paper;
   float k = mix(0.55, 1.6, K_density);
   vec3 col = base * exp(-ink * k * SHAN_ABSORB);
 
+  if (joined && abs(join) < SHAN_JOIN_SILK + 3.0 * px) {
+    // The join itself: a strip of the mount's brocade between the two sheets, a fine shadow along
+    // each edge where the paper is pasted over it.
+    float silk = hardFill(abs(join) - SHAN_JOIN_SILK, 0.75 * px);
+    float lip = hardEdge(1.0 - smoothstep(0.5 * px, 2.0 * px, abs(abs(join) - SHAN_JOIN_SILK)));
+    col = mix(col, shanMount(cell), silk) * (1.0 - 0.16 * lip);
+  }
+
   // The seals. A collector's rides each join of the sheets near the foot of the scroll, a little
   // askew; the painter's own sits high in the sky of every stretch of the scroll; the last one
-  // pressed by hand travels with the scroll from where it was put.
+  // pressed by hand travels with the scroll from where it was put. The painted ones keep off the
+  // silk of a join between sections; one pressed by hand may ride it, as collectors' seals do.
   float seal = 0.0;
   if (K_seal > 0.0) {
     float size = mix(0.04, 0.09, K_seal);
@@ -955,8 +1059,9 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
     float h = shanHash(j, 80.0);
     vec2 c = vec2(j * SHAN_SHEET + (h - 0.5) * 0.3 * size, 0.035 + 0.6 * size + 0.02 * fract(h * 13.1));
     vec2 q = rotate(P - c, (fract(h * 7.7) - 0.5) * 0.09) / size;
+    bool onSilk = joined && abs(join + c.x - P.x) < SHAN_JOIN_SILK + 0.75 * size;
     // Only joins well inside the frame show their seal, so no seal is ever cut by an edge.
-    if (max(abs(q.x), abs(q.y)) < 0.6) seal = shanSealShown(c.x + S.x - P.x, size, aspect) * shanSealInk(q, h, px / size);
+    if (max(abs(q.x), abs(q.y)) < 0.6 && !onSilk) seal = shanSealShown(c.x + S.x - P.x, size, aspect) * shanSealInk(q, h, px / size);
     // The painter's seals come one to every stretch of the scroll a frame wide, less the margins
     // in which a seal is not yet wholly shown, so one is always fully in view. Each sits high in
     // the empty sky, or beneath an inscription's columns when it falls among them, as a writer's
@@ -966,7 +1071,7 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
     float spacing = max(0.97 * (aspect - 2.0 * reach - 0.1), 0.25);
     float i = floor(P.x / spacing - 0.3);
     float sx = (i + 0.8) * spacing;
-    if (abs(P.x - sx) < 0.65 * ps) {
+    if (abs(P.x - sx) < 0.65 * ps && !(joined && abs(join + sx - P.x) < SHAN_JOIN_SILK + reach)) {
       float hs = shanHash(i, 83.0);
       float sy = min(0.8 + 0.06 * hs, 1.0 - reach - 0.06);
       ShanInscription s = shanInscriptionOn(floor(sx / SHAN_SHEET));

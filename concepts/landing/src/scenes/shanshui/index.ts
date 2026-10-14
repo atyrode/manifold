@@ -15,6 +15,7 @@ const params: readonly ParamDef[] = [
   seed("scroll", "seed", "scroll", "Another scroll: a different run of mountains, waters, pavilions and boats."),
   range("scroll", "detail", "detail", 0.55, "How much the painter puts in. Left: a few contours, sparse dots and a great deal of bare paper, as in Ni Zan. Right: dense texture strokes, moss dots and pines, as in Fan Kuan."),
   choice("ink", "palette", "palette", [{ label: "ink", value: 0 }, { label: "blue-green", value: 1 }], 0, "Ink: sumi alone, in graded greys. Blue-green (qinglü): mineral azurite and malachite washed over the peaks, with ochre on the lower slopes, as in the court landscapes of the Tang and Song."),
+  choice("ink", "season", "season", [{ label: "none", value: 0 }, { label: "spring", value: 1 }, { label: "summer", value: 2 }, { label: "autumn", value: 3 }, { label: "winter", value: 4 }], 0, "Light colour washed over the ink, as Guo Xi saw the year: spring hills pale as if smiling, blossom pink at the foot and young green up the slopes, with peach blossom among the dots; summer hills a deep green as if dripping; autumn hills clear and bright as if made up, ochre turning russet toward the crests, with maple leaves among the dots; winter hills asleep under snow, left as bare paper on the tops and ledges while the sky and water are washed grey. Over the blue-green palette the season lies as a glaze. None: the palette alone."),
   range("ink", "density", "ink density", 0.55, "How heavy the ink is: pale, airy washes to the left; dark, bold strokes and deep shadows to the right."),
   range("ink", "wetness", "wetness", 0.35, "Dry brush to the left: crisp contours broken by streaks of 'flying white' where the brush ran dry. Wet to the right: soft edges bleeding into the paper, with pale tide lines where the wash dried."),
   choice("ink", "cun", "texture strokes", [{ label: "hemp-fibre", value: 0 }, { label: "axe-cut", value: 1 }, { label: "both", value: 2 }], 2, "The cun strokes that model the rock. Hemp-fibre: long, soft, wavering lines running down rounded earthen hills. Axe-cut: hard, angular side-brush wedges on sheer cliffs. Both: each mountain in its own manner."),
@@ -39,7 +40,7 @@ export const shanshuiScene: SceneDef = {
   params,
   groups: {
     scroll: { title: "Scroll", blurb: "How fast the handscroll unrolls, which scroll it is, and how much the painter puts in." },
-    ink: { title: "Ink and paper", blurb: "The palette, how heavy and how wet the brush, the strokes that model the rock, and the paper's age." },
+    ink: { title: "Ink and paper", blurb: "The palette and the season's washes, how heavy and how wet the brush, the strokes that model the rock, and the paper's age." },
     mist: { title: "Mist", blurb: "The clouds between the mountains, left as bare paper. Move the pointer to blow them aside." },
     life: { title: "Life", blurb: "Geese, a boatman, pavilions, waterfalls and inscriptions along the way." },
     manifold: { title: "Manifold mark", blurb: "Red seals with the M in seal script: the painter's in the sky, collectors' on the joins of the paper. Click to press one." },
