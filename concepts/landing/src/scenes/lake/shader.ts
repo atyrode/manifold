@@ -521,54 +521,93 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
   return col;
 }
 
-// The ice under this pixel: packed snow where the sim's patches (with crisp, world-anchored edges
-// and any snow that has fallen) cover it, else clear ice; a bare black channel along the M, so it
-// reads through the snow; drifting snow streaming over everything, and the far ice greying into
-// the haze at the far shore.
-vec3 lakeIce(vec2 uv, float aspect, vec3 dir, float range, out float glow) {
-  glow = 0.0;
-  Ground g = planeAt(uv, aspect, LAKE_HORIZON, LAKE_EYE, LAKE_FOCAL);
-  vec2 P = g.p;
+// The snow lying on the ice under a pixel: the sim's patches (with crisp, world-anchored edges) and
+// any snow that has fallen, except along the M's bare channel.
+struct LakeSnow {
+  Ground g;      // the ice under the pixel
+  vec4 sn;       // the sim's snow there (uSim3): lying depth, drifting snow, loose share
+  vec4 near;     // the crack field there (uSim0) and its ids (uSim1)
+  vec4 ids;
+  float fine;    // 1 while the ice's finer detail still resolves, 0 far off
+  float th0;     // the depth at which the patches begin (K_cover)
+  float amount;  // the sim's depth with its edge
+  float lying;   // fallen snow (uWeather.y)
+  float powder;  // how much of the surface is fresh powder (K_fresh, freshest where the sim's snow is loose)
+  bool bare;     // in the M's channel
+  float cover;   // 1 where snow covers this cell
+};
+
+LakeSnow lakeSnowAt(vec2 uv, float aspect) {
+  LakeSnow s;
+  s.g = planeAt(uv, aspect, LAKE_HORIZON, LAKE_EYE, LAKE_FOCAL);
+  vec2 P = s.g.p;
   float fu = (uv.x - 0.5) * aspect;
   float fv = LAKE_HORIZON - uv.y;
   vec2 fuv = vec2(fu / (2.0 * LAKE_FU) + 0.5, fv / LAKE_FV);
-  vec3 snowLight = lakeAmb * 2.6 + lakeMoonLight * 0.9 + lakeAurLight * 2.2;
-
-  vec4 sn = uSimOn.w > 0.5 ? texture(uSim3, fuv) : vec4(0.0);
-  float depth = sn.r * LAKE_SNOW_MAX;
-  float drift = sn.g * LAKE_DRIFT_MAX;
-  float fine = 1.0 - smoothstep(0.05, 0.14, max(g.foot.x, g.foot.y));
-  float edge = 0.62 * vnoise(P * vec2(0.9, 2.6)) + 0.38 * mix(0.5, vnoise(P * vec2(3.1, 7.3) + 4.0), fine);
-  float th0 = mix(1.0, 0.1, K_cover);
-  float amount = depth + (edge - 0.5) * 0.5 * smoothstep(0.0, 0.25, depth);
-  float lying = uWeather.y > 0.0 ? snowCover(vec3(0.0, 1.0, 0.0), P, uWeather.y) : 0.0;
-  vec4 near = vec4(1.0, 1.0, 0.0, 0.0);
-  vec4 ids = vec4(0.0);
+  s.sn = uSimOn.w > 0.5 ? texture(uSim3, fuv) : vec4(0.0);
+  float depth = s.sn.r * LAKE_SNOW_MAX;
+  s.fine = 1.0 - smoothstep(0.05, 0.14, max(s.g.foot.x, s.g.foot.y));
+  float edge = 0.62 * vnoise(P * vec2(0.9, 2.6)) + 0.38 * mix(0.5, vnoise(P * vec2(3.1, 7.3) + 4.0), s.fine);
+  s.th0 = mix(1.0, 0.1, K_cover);
+  s.amount = depth + (edge - 0.5) * 0.5 * smoothstep(0.0, 0.25, depth);
+  s.lying = uWeather.y > 0.0 ? snowCover(vec3(0.0, 1.0, 0.0), P, uWeather.y) : 0.0;
+  s.near = vec4(1.0, 1.0, 0.0, 0.0);
+  s.ids = vec4(0.0);
   if (uSimOn.x > 0.5) {
-    near = texture(uSim0, fuv);
-    ids = texelFetch(uSim1, ivec2(clamp(fuv, vec2(0.0), vec2(0.9999)) * LAKE_FIELD), 0);
+    s.near = texture(uSim0, fuv);
+    s.ids = texelFetch(uSim1, ivec2(clamp(fuv, vec2(0.0), vec2(0.9999)) * LAKE_FIELD), 0);
   }
-  bool bare = ids.r * 255.0 > LAKE_MARK - 0.5 && near.r * LAKE_DIST * uRes.y < 4.0 + 2.0 * lakeTh;
-  float cover = bare ? 0.0 : max(lakeHard(smoothstep(th0 - 0.05, th0 + 0.05, amount)), lakeHard(lying));
+  s.bare = s.ids.r * 255.0 > LAKE_MARK - 0.5 && s.near.r * LAKE_DIST * uRes.y < 4.0 + 2.0 * lakeTh;
+  s.powder = K_fresh * (0.65 + 0.35 * s.sn.b);
+  // Powder feathers the patches' edges into a stipple, evenly either side of where they begin, so
+  // about as much of the ice stays covered.
+  float feather = 0.05 + 0.12 * s.powder;
+  s.cover = s.bare ? 0.0 : max(lakeHard(smoothstep(s.th0 - feather, s.th0 + feather, s.amount)), lakeHard(s.lying));
+  return s;
+}
+
+// The light of lying snow, as a share of the snow-lit white: packed snow carved by the wind into low
+// ridges and darker where it lies thin, loose snow brighter; fresh powder smooths the ridges away,
+// lies brighter still and stays white where it is thin.
+float lakeSnowShade(LakeSnow s) {
+  float ridges = vnoise(s.g.p * vec2(0.7, 3.4) + 1.3);
+  float thin = smoothstep(s.th0, s.th0 + 0.35, max(s.amount, 2.0 * s.lying));
+  float shade = (0.82 + 0.28 * ridges * (0.5 + 0.5 * s.fine) + 0.12 * s.sn.b) * mix(0.78, 1.0, thin);
+  if (s.powder > 0.0) {
+    float relief = mix(ridges, 0.5, 0.85 * s.powder);
+    shade = (0.82 + 0.28 * relief * (0.5 + 0.5 * s.fine) + 0.12 * s.sn.b + 0.12 * s.powder) * mix(mix(0.78, 0.92, s.powder), 1.0, thin);
+  }
+  return shade;
+}
+
+// The ice under this pixel: the lying snow where it covers it, else clear ice; drifting snow
+// streaming over everything, and the far ice greying into the haze at the far shore.
+vec3 lakeIce(vec2 uv, float aspect, vec3 dir, float range, out float glow) {
+  glow = 0.0;
+  LakeSnow s = lakeSnowAt(uv, aspect);
+  Ground g = s.g;
+  vec2 P = g.p;
+  float fu = (uv.x - 0.5) * aspect;
+  float fv = LAKE_HORIZON - uv.y;
+  vec3 snowLight = lakeAmb * 2.6 + lakeMoonLight * 0.9 + lakeAurLight * 2.2;
+  float drift = s.sn.g * LAKE_DRIFT_MAX;
 
   vec3 col;
-  if (cover > 0.5) {
-    // Packed snow carved by the wind into low ridges across it; loose snow brighter.
-    float ridges = vnoise(P * vec2(0.7, 3.4) + 1.3);
-    float shade = (0.82 + 0.28 * ridges * (0.5 + 0.5 * fine) + 0.12 * sn.b) * mix(0.78, 1.0, smoothstep(th0, th0 + 0.35, max(amount, 2.0 * lying)));
-    col = LAKE_SNOW * snowLight * shade;
-    // A few crystals catching the moon, now and then.
+  if (s.cover > 0.5) {
+    col = LAKE_SNOW * snowLight * lakeSnowShade(s);
+    // A few crystals catching the moon, now and then; more in fresh powder.
     vec2 gc = floor(P / 0.05);
     float hg = hash12(gc + 9.1);
-    if (hg > 0.975 && g.foot.x < 0.016) {
+    if (hg > 0.975 - 0.035 * s.powder && g.foot.x < 0.016) {
       vec2 c = (gc + 0.3 + 0.4 * vec2(fract(hg * 57.0), fract(hg * 91.0))) * 0.05;
       float dd = length((P - c) / max(g.foot, vec2(0.004)));
       float twinkle = 0.55 + 0.45 * sin(lakeTm * (0.3 + 0.5 * fract(hg * 13.0)) + hg * 70.0);
       col = mix(col, LAKE_SNOW * (snowLight * 1.6 + lakeMoonLight * 2.0), lakeHard((1.0 - smoothstep(0.5, 1.4, dd)) * twinkle));
     }
   } else {
-    float dust = bare ? 0.0 : smoothstep(th0 - 0.45, th0, amount) * 0.45;
-    col = lakeClearIce(g, fu, fv, range, dir, snowLight, dust, near, ids, glow);
+    // A dusting blown off the patches, wider round fresh powder.
+    float dust = s.bare ? 0.0 : smoothstep(s.th0 - 0.45, s.th0, s.amount) * 0.45 * (1.0 + 0.6 * s.powder);
+    col = lakeClearIce(g, fu, fv, range, dir, snowLight, dust, s.near, s.ids, glow);
   }
 
   // Drifting snow: long thin streamers riding downwind (the sim's offset), snaking across the
