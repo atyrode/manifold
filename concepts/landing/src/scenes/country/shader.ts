@@ -19,6 +19,8 @@
 // sky, drops bouncing off the track and dimpling the river. Snow falls the same way and settles
 // (uWeather.y): first on the high far ridges, then down to the near fields, roofs and tree tops.
 
+import { countryFieldsGlsl } from "./fields.ts";
+
 export const countryGlsl = /* glsl */ `
 const float COUNTRY_HORIZON = 0.62;      // eye level, uv.y
 const float COUNTRY_EYE = 0.36;          // eye height above the valley floor (world unit: a screen height at depth 1)
@@ -31,6 +33,8 @@ const vec2 COUNTRY_FIELDS = vec2(3.0, 4.2); // fields per world unit across, dow
 const float COUNTRY_LANE = 0.014;        // half-width of the farm track over the near field, world units
 const vec3 COUNTRY_AMBER = vec3(1.0, 0.7, 0.3);
 const vec3 COUNTRY_SNOW = vec3(0.9, 0.92, 0.95);
+// One deterministic domain offset per fragment; seed zero leaves the original landscape untouched.
+vec2 countrySeed;
 
 // Ridge i: x depth, y silhouette baseline on screen, z swell, w silhouette frequency per screen unit.
 vec4 countryLayer(float i) {
@@ -43,7 +47,7 @@ float countryRidge(float x, float row) {
   float n = 0.0;
   float a = 0.5;
   for (int k = 0; k < 4; k++) {
-    n += a * vnoise(vec2(x, row + 3.1 * float(k)));
+    n += a * vnoise(vec2(x, row + 3.1 * float(k)) + countrySeed);
     x = x * 2.07 + 1.3;
     a *= 0.5;
   }
@@ -62,7 +66,7 @@ vec2 countrySpots(float x, vec2 spots) {
 float countryWoods(float i, float wx, float wv, vec2 near) {
   if (i < 1.5) return 0.0;
   float lean = i < 2.5 ? -0.1 : (i < 4.5 ? 0.06 : 0.14);
-  float n = 0.65 * vnoise(vec2(wx * 1.1, wv * 1.6 + 7.3 * i)) + 0.35 * vnoise(vec2(wx * 2.9 + 4.1, wv * 3.3 + 2.9 * i));
+  float n = 0.65 * vnoise(vec2(wx * 1.1, wv * 1.6 + 7.3 * i) + countrySeed) + 0.35 * vnoise(vec2(wx * 2.9 + 4.1, wv * 3.3 + 2.9 * i) + countrySeed);
   float keep = i < 2.5 ? 1.0 - near.x : (i < 3.5 ? 1.0 - near.y : 1.0);
   return smoothstep(0.5, 0.56, n + lean + 0.12 * exp(-3.0 * wv)) * keep;
 }
@@ -100,7 +104,7 @@ float countryDownRate(float s, float d) {
 // Field space for ridge i: slope coordinates in fields, offset per ridge and domain-warped so the
 // borders wander like old enclosures.
 vec2 countryFieldSpace(float i, vec2 w) {
-  vec2 f = w * COUNTRY_FIELDS + vec2(31.7 * i, 7.3 * i);
+  vec2 f = w * COUNTRY_FIELDS + vec2(31.7 * i, 7.3 * i) + countrySeed;
   return f + 0.5 * (vec2(vnoise(f * 0.55 + 3.1), vnoise(f * 0.55 + 8.7)) - 0.5);
 }
 
@@ -161,6 +165,8 @@ float countryCrop(float h, float season) {
 float countryRows(vec2 r, vec2 dir, float period, vec2 px) {
   return 0.5 + 0.5 * countryHold(period, dir, px) * sin(dot(r, dir) * TAU / period);
 }
+
+${countryFieldsGlsl}
 
 // The crop's colour at slope point w (world). r: row space, w with x taken at the ground's own
 // depth, so rows running down the slope converge into the distance while rows along the contour
@@ -528,7 +534,7 @@ CountryVillage countryVillage(vec2 q, float vx, float knoll, float tod, float da
   }
   for (int k = 0; k < 11; k++) {
     float fk = float(k);
-    float hj = hash12(vec2(fk, 4.3));
+    float hj = hash12(vec2(fk, 4.3) + countrySeed);
     float u = (fk - 5.0) / 5.0;
     float side = mod(fk, 2.0) < 0.5 ? 1.0 : -1.0;
     float down = max(0.04 + 0.02 * sin(u * 2.3 + 0.9) + 0.01 * side + 0.008 * (hj - 0.5), 0.014);
@@ -682,6 +688,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   // The village a third in from the left, the chalk down right of centre (screen x).
   vec2 spots = vec2(-0.2, 0.24) * aspect;
+  countrySeed = K_landscape < 0.5 ? vec2(0.0) : (hash22(vec2(K_landscape, 17.3)) - 0.5) * 32.0;
+  spots += countrySeed * 0.004 * aspect;
   float wind = K_wind;
   float season = K_season;
   float rain = K_rain;
@@ -882,12 +890,18 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       vec2 axis = vec2(0.0);
       vec2 f = countryFieldSpace(i, w);
       vec2 field = countryCells(f, site, other, axis);
-      float crop = countryCrop(field.y, season);
-      albedo = countryCropColor(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen);
+      float crop = countryFieldCrop(field.y, season);
+      albedo = crop < 5.5
+        ? countryCropColor(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen)
+        : countryFlowerMaterial(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen);
       // Bare earth soaks rain up and darkens most; standing crops and grass, whose leaves shed it,
       // keep their colour and only deepen it.
       porous = crop > 1.5 && crop < 2.5 ? 0.85 : (crop > 3.5 && crop < 4.5 ? 0.55 : (crop > 4.5 && season > 1.5 ? 0.7 : 0.35));
-      if (hit < 2 && (crop > 0.5 && crop < 1.5 || crop > 3.5 && crop < 4.5 && season > 0.5 && season < 1.5)) {
+      if (crop > 5.5) {
+        float under = 0.0;
+        vec4 flowers = countryFlowers(crop, field.y, season, rows, z, down, wind, 1.0 - buried, tm, under);
+        albedo = mix(albedo * (1.0 - under), flowers.rgb, flowers.a);
+      } else if (hit < 2 && (crop > 0.5 && crop < 1.5 || crop > 3.5 && crop < 4.5 && season > 0.5 && season < 1.5)) {
         float under = 0.0;
         vec4 dots = countryDots(crop, w, d, down, tm, under);
         albedo = mix(albedo * (1.0 - under), dots.rgb, dots.a);

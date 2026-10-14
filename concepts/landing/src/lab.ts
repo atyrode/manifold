@@ -347,7 +347,9 @@ export class Lab {
       return button;
     });
     const el = h("div", { class: "segments", role: "group", "aria-label": label }, ...buttons);
-    el.style.setProperty("--count", String(options.length));
+    // Let long choices wrap into rows instead of truncating their names in the sidebar.
+    const width = options.reduce((longest, option) => Math.max(longest, option.label.length), 0) + 2;
+    el.style.setProperty("--option-width", `${width}ch`);
     return { el, sync: () => { for (const button of buttons) button.setAttribute("aria-pressed", String(button.dataset.value === get())); } };
   }
 

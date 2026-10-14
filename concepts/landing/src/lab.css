@@ -221,7 +221,7 @@ body.lab-open .lab-opener { display: none; }
 .lab input[type="range"]:active::-moz-range-thumb { background: var(--accent); }
 
 /* segmented choices */
-.segments { display: grid; grid-template-columns: repeat(var(--count), 1fr); border: 1px solid var(--line); }
+.segments { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--option-width)), 1fr)); gap: 1px; border: 1px solid var(--line); }
 .segments button {
   min-width: 0;
   padding: 6px 2px;
@@ -231,9 +231,9 @@ body.lab-open .lab-opener { display: none; }
   color: var(--muted);
   background: none;
   border: 0;
+  outline: 1px solid var(--line);
   transition: background 120ms, color 120ms;
 }
-.segments button + button { border-left: 1px solid var(--line); }
 .segments button:hover { color: var(--ink); }
 .segments button[aria-pressed="true"] { color: var(--bg); background: var(--accent); }
 

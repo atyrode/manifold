@@ -2,7 +2,7 @@
 // in the middle distance and woods beyond, under the shared sky and weather. Rain and snow leave their
 // mark through the renderer's weather state (uWeather): the land, the farm track and the roofs
 // wetten while it rains and dry after, and the land turns white while it snows and thaws after.
-import { choice, feature, range, toggle } from "../../params.ts";
+import { choice, feature, range, seed, toggle } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { countryGlsl } from "./shader.ts";
@@ -15,12 +15,25 @@ const params = [
     "fields", "season", "season",
     [{ label: "summer", value: 0 }, { label: "harvest", value: 1 }, { label: "autumn", value: 2 }],
     1,
-    "Summer: green wheat and yellow rapeseed. Harvest: golden wheat, stubble and bales. Autumn: ploughed earth and the trees on the turn.",
+    "The farming year, separate from field type. Summer: green wheat and yellow rapeseed. Harvest: golden wheat, stubble and bales. Autumn: ploughed earth and the trees on the turn.",
   ),
   feature("village", "lights", "village lights", true, "windows lit", 0.7, "Windows light up one by one as dusk falls, and most go dark late at night."),
   feature("village", "smoke", "chimney smoke", true, "amount", 0.5, "Smoke curling up from the chimneys and leaning with the wind."),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 0 }),
   toggle("manifold", "chalk", "chalk M", false, "A giant M cut into the turf of a far hillside, in the manner of the Uffington White Horse."),
+  choice(
+    "fields", "fieldType", "field type",
+    [
+      { label: "Crops", value: 0 },
+      { label: "Wildflowers", value: 1 },
+      { label: "Lavender", value: 2 },
+      { label: "Sunflowers", value: 3 },
+      { label: "Mixed", value: 4 },
+    ],
+    0,
+    "Crops: the original patchwork through the farming year. Wildflowers: colourful meadow drifts. Lavender: purple rows. Sunflowers: golden flower heads. Mixed: crop and flower fields together.",
+  ),
+  seed("fields", "landscape", "landscape", "The arrangement of the hills, fields and village; the same number always returns to the same valley. Zero keeps the original countryside. Re-seed for another view."),
 ];
 
 export const countryScene: SceneDef = {
@@ -34,7 +47,7 @@ export const countryScene: SceneDef = {
   groups: {
     sky: atmosphereGroups.sky,
     clouds: { title: "Clouds", blurb: "How much cloud drifts over, and the shadows it sweeps across the fields." },
-    fields: { title: "Fields", blurb: "The patchwork through the farming year." },
+    fields: { title: "Fields", blurb: "Choose crops or flowers, follow the farming year, and re-seed the valley's landscape." },
     village: { title: "Village", blurb: "Signs of life: windows lighting up at dusk, smoke from the chimneys." },
     weather: atmosphereGroups.weather,
     manifold: { title: "Manifold mark", blurb: "A chalk figure of the M, cut into the turf of a far hillside." },

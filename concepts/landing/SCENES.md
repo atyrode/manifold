@@ -12,7 +12,7 @@ All of the ideas below have a first implementation in the lab:
 |---|---|---|
 | Above the clouds | `clouds` | Aurora and lightning come from the shared weather layer. |
 | Waterfall | `falls` | |
-| Countryside | `country` | |
+| Countryside | `country` | Seasonal crops, wildflower meadows, lavender rows, sunflowers, mixed patchwork; reproducible landscape seeds. |
 | Murmuration | `flock` | CPU boids, topological neighbours. |
 | Paper marbling | `marble` | Mathematical marbling engine. |
 | Dunes | `dunes` | Werner slab model. |
@@ -113,6 +113,12 @@ Overlooking rolling hills with a village in the distance and forest around.
 - Layered hills with atmospheric perspective, patchwork fields, hedgerows, a winding road or river.
 - Village: a few roofs and a church spire, chimney smoke; forest canopy as dithered texture.
 - Day cycle and weather (cloud shadows sweeping over the fields).
+- Fields: keep the original seasonal crops, or choose wildflowers, lavender, sunflowers, or a mixed
+  crop/flower patchwork. Nearby plants have rooted stems, flower heads, spikes or leaves; distant
+  detail resolves to the field material rather than a screen-space speckle.
+- Landscape: a deterministic arrangement number changes hills, field borders and village placement
+  together. Zero preserves the original view; changing field type, season or weather keeps the
+  selected arrangement. Field type and landscape round-trip through URLs and saved setups.
 
 ## Murmuration
 
