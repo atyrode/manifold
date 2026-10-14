@@ -679,6 +679,11 @@ uncapped FPS, and saved-frame dissolve sampling across larger, smaller, aspect-c
 unchanged render sizes. Software WebGL is deliberate; this check is not a real-device
 performance qualification.
 
+CI runs these checks (gate group `landing-webgl`) and the lab's TypeScript and unit tests
+(`landing-concept`) for every pull request that changes `concepts/landing/` or a source the lab
+imports, and on every full run (each push to `main`, each manual dispatch).
+`bun scripts/gate.ts --only landing-webgl` or `--only landing-concept` runs the same slice locally.
+
 To add a check, write `<topic>.verify.ts` in the scene's folder exporting a function that takes a
 `WebGL2RenderingContext`, throws on a regression and returns what it measured as plain JSON data,
 then register it in `concepts/landing/verify-browser.ts` with one import and one

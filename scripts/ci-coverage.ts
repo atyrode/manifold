@@ -20,6 +20,8 @@ const expectedChecks = [
   "budgets",
   "pwa",
   "axioms",
+  "landing-concept",
+  "landing-webgl",
   "runtime-jobs",
   "runtime-browser",
   "preview-environment",
