@@ -128,7 +128,9 @@ Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, fl
   float den = vanish.y - p.y * vanish.z;
   if (abs(den) < 1e-3) return o;
   float spread = abs(vanish.y / den);
-  vec2 q = vec2(p.x - p.y * (vanish.x - p.x * vanish.z) / den, uv.y);
+  // The drops run down the frame (q.y falling) wherever den < 0; past a vanishing point inside the
+  // frame (the zenith of a camera looking straight up, say) they run up it instead.
+  vec2 q = vec2(p.x - p.y * (vanish.x - p.x * vanish.z) / den, den < 0.0 ? uv.y : -uv.y);
   float clear = 1.0;
   float nearCover = 0.0;
   for (int i = 0; i < 6; i++) {
