@@ -2,7 +2,7 @@
 // in the middle distance and woods beyond, under the shared sky and weather. Rain and snow leave their
 // mark through the renderer's weather state (uWeather): the land, the farm track and the roofs
 // wetten while it rains and dry after, and the land turns white while it snows and thaws after.
-import { choice, feature, range, seed, toggle } from "../../params.ts";
+import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { countryGlsl } from "./shader.ts";
@@ -21,6 +21,10 @@ const params = [
   range("woodland", "pines", "pine mix", 0.25, "The proportion of the distant woodland made of evergreen pines: zero is all broadleaf, 100% is pine woodland. Tapered crowns stay green through autumn; the ground and tree arrangement do not change. Field-edge trees remain broadleaf.", { step: 0.01 }),
   feature("village", "lights", "village lights", true, "windows lit", 0.7, "Windows light up one by one as dusk falls, and most go dark late at night."),
   feature("village", "smoke", "chimney smoke", true, "amount", 0.5, "Smoke curling up from the chimneys and leaning with the wind."),
+  range("routes", "river", "river width", 0.5, "How broad the river winding down toward the near field runs. 50% is the original stream; lower narrows it to a brook and zero dries it up; higher widens it into a broad river with shingle at its edges and wider reed beds, and hedgerow trees in its way give way. Its course stays put.", { step: 0.01 }),
+  range("routes", "tracks", "tracks", 0, "How much of the road network shows. Zero keeps only the farm track over the near field. Raising it brings in the track's way on to the village (up the river's west bank, over the saddle and along the street between the cottages), then from 20% the road along the valley and a farm track over a stone bridge, then from 40% a hill track and a chalk track up the far down. Each grows plainer toward 100%; hedges open and hedgerow trees give way where tracks pass.", { step: 0.01 }),
+  feature("activity", "walkers", "walkers", false, "busy", 0.5, "People out walking the tracks, sized by their distance: from one party to six as it gets busier, more of them in twos and threes. Half the parties stop now and then to take in the view, and some carry lanterns after dark. With no extra tracks they come over the brow on the near farm track and turn back.", { step: 0.05 }),
+  feature("activity", "carts", "carts", false, "carts", 2, "Horses and carts and tractors with trailers on the roads and tracks, easing up the steep slopes, lamps lit after dark. With no extra tracks they come over the brow on the near farm track to a field gate and turn back.", { options: counts(1, 2, 3) }),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 0 }),
   toggle("manifold", "chalk", "chalk M", false, "A giant M cut into the turf of a far hillside, in the manner of the Uffington White Horse."),
   range("fields", "crops", "crops weight", 100, "Relative weight of the original seasonal crops. Weights are normalized together: 2 crops and 1 wildflowers gives about two crop fields for each flower field. Zero excludes a type; all zero restores crops.", { max: 100, step: 1 }),
@@ -44,6 +48,8 @@ export const countryScene: SceneDef = {
     fields: { title: "Fields", blurb: "Mix crops and flowers with relative weights, follow the farming year, and re-seed the valley. Zero excludes a type; all zero uses crops. Shares are approximate across the visible fields, not exact screen-area percentages." },
     woodland: { title: "Woodland", blurb: "How much of the far hills is wooded, and how many of the trees are evergreen pines." },
     village: { title: "Village", blurb: "Signs of life: windows lighting up at dusk, smoke from the chimneys." },
+    routes: { title: "River & tracks", blurb: "How broad the river runs, and how much of the network of tracks shows, from the farm track on to the village to the roads and tracks over the far hills." },
+    activity: { title: "People & carts", blurb: "Walkers and carts going about the tracks; they stand still while motion is off." },
     weather: atmosphereGroups.weather,
     manifold: { title: "Manifold mark", blurb: "A chalk figure of the M, cut into the turf of a far hillside." },
   },
