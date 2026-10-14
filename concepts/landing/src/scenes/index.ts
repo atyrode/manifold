@@ -32,6 +32,7 @@ import { lanternsScene } from "./lanterns/index.ts";
 import { lavaScene } from "./lava/index.ts";
 import { marbleScene } from "./marble/index.ts";
 import { meadowScene } from "./meadow/index.ts";
+import { mobileScene } from "./mobile/index.ts";
 import { orbitScene } from "./orbit/index.ts";
 import { pearlScene } from "./pearl/index.ts";
 import { pendulaScene } from "./pendula/index.ts";
@@ -99,6 +100,7 @@ export const sceneDefs = {
   bees: beesScene,
   skyward: skywardScene,
   autumn: autumnScene,
+  mobile: mobileScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
