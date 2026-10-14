@@ -37,6 +37,7 @@ import { shanshuiScene } from "./shanshui/index.ts";
 import { shoreScene } from "./shore/index.ts";
 import { sillScene } from "./sill/index.ts";
 import { starryScene } from "./starry/index.ts";
+import { streetScene } from "./street/index.ts";
 import { swellScene } from "./swell/index.ts";
 import type { SceneDef } from "./types.ts";
 import { waveScene } from "./wave/index.ts";
@@ -81,6 +82,7 @@ export const sceneDefs = {
   lake: lakeScene,
   ripple: rippleScene,
   bonsai: bonsaiScene,
+  street: streetScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;

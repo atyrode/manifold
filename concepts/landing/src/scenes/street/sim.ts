@@ -1,0 +1,2242 @@
+// The city crossing's simulation: a scramble crossing where a side street meets an avenue, seen
+// from a high window, run on the CPU and handed to the shader (shader.ts) as three textures.
+//
+// World units are metres: x right along the avenue, y up, z away from the window. The eye is
+// CAM_H up at x = CAM_X, z = 0, looking up the side street and down at the crossing. The avenue
+// runs across the view (kerbs at KERB_NEAR and KERB_FAR, traffic on the left as in Japan:
+// eastbound on the far half, westbound on the near half); the side street leaves it straight
+// ahead between two blocks (kerbs at ±SIDE_KERB, facades at ±SIDE_FACADE), so the junction is a
+// T. Five crosswalks meet in it: W and E across the avenue, N across the side street's mouth, and
+// two diagonals across the middle (D1 from the near left to the far right corner, D2 mirrored).
+//
+// The lights run one cycle (the `signal` knob, in seconds): the avenue's traffic goes (and its
+// eastbound cars may turn left into the side street), amber, all red; the side street's traffic
+// comes down and turns either way, amber, all red; then every crosswalk turns green at once (the
+// scramble), flashes, all red. A click on the street or the knob's "now" button cuts the phase
+// that is running short.
+//
+// Walkers. Each comes out of somewhere (an edge of the view, the station stairs under the window,
+// a shop under it, the konbini or the café door, the far end of the side street) and is going
+// somewhere else. A route is a handful of waypoints: along its sidewalk (round the corner of the
+// far blocks if need be) to a kerb, across, and on to its exit; between the near sidewalk and a
+// far corner it takes the straight crosswalk or the diagonal, whichever is shorter (with a little
+// whim). At the kerb it waits for the green man: it picks a free spot in the crowd gathering
+// there (the first-comers at the kerb, later ones behind), stands still, faces the street and
+// now and then looks about. When the green man comes on the crowd steps off front first, each a
+// beat after the one in front (a reaction time plus about half a second per metre behind the
+// kerb), so the wave runs back through it. Walking is the social force model (D. Helbing and P.
+// Molnár, "Social force model for pedestrian dynamics", Phys. Rev. E 51, 1995): a pull toward the
+// next waypoint at the walker's own pace, exponential repulsion from the people near it, stronger
+// from those ahead than behind, a firm push on contact, and a sidestep to the left from people
+// coming the other way, which sorts counterflowing crowds into lanes on the crossing. Walkers
+// keep to their sidewalk (soft walls, the corners rounded) except on a crossing, step round the
+// lamp and signal poles and the vending machines, and a share of them come in pairs, keeping
+// beside each other. People on the crossing when the green man flashes hurry. Standing walkers
+// are frozen in place until somebody squeezes past: under the dither, a fidgeting crowd would
+// shimmer.
+//
+// Rain or snow: each walker with an umbrella (most have one) opens it a few seconds after the
+// fall starts (some at the first drops, some only when it is coming down properly) and closes it
+// a while after it stops; walkers arriving in the rain come with it open.
+//
+// The pointer: walkers within LOOK_RADIUS of the point on the street under it look up at the
+// window after a moment (tilting their umbrella back), and walk on a little slower; a click
+// changes the lights.
+//
+// The school outing (a feature with a "now" trigger): a teacher leads small children in yellow
+// hats two by two, each following the child ahead, an assistant at the end of the line; they wait
+// and cross with everyone else.
+//
+// Vehicles follow paths (straight lanes and turning arcs, sampled every PATH_STEP metres), their
+// speed set by the intelligent driver model (M. Treiber, A. Hennecke, D. Helbing, "Congested
+// traffic states in empirical observations and microscopic simulations", Phys. Rev. E 62, 2000):
+// a free-road pace, eased on bends, a safe gap to the vehicle ahead in the lanes their path runs
+// along, a stop line that is a standing obstacle while their light is red (or amber, if they can
+// still stop), and any walker still on the street in front of them. Cars, taxis, kei cars, vans
+// and bicycles come in from the three ends at random (the `traffic` knob) and queue at the red.
+//
+// Time runs in fixed steps of STEP seconds of simulated time (motion-scaled), so the street depends
+// only on the knobs, the seed and simulated time, not on the frame rate; positions are
+// interpolated between the last two steps for drawing. The first frame lays the street out a few
+// seconds before the scramble (crowds waiting at the kerbs, the avenue's traffic queued at its red
+// light) and runs it for PREWARM seconds. Nothing is allocated per frame.
+//
+// Textures:
+//   uSim0  rgba16f, MAX_AGENTS × 2, nearest. Slot i (walkers first, then vehicles):
+//          row 0: x, z − Z_REF (m), heading (rad: direction cos, sin in x, z), kind (KIND_*; 0 empty)
+//          row 1: walkers and bicycles: umbrella open 0..1, looking up 0..1, gait phase 0..1, seed;
+//                 motor vehicles: brake 0..1, blinker (+1 left, −1 right, 0), speed (m/s), seed
+//   uSim1  rgba8, TILES_X·TILE_TEXELS × TILES_Z, nearest: for each TILE-metre square of the street,
+//          the first TILE_BODIES / 4 texels hold up to TILE_BODIES agent slots + 1 (0: none) whose
+//          bodies may be seen through it (seen from the window, a body covers the ground from its
+//          feet to where the ray past its top lands), nearest the window first; the next
+//          TILE_LIGHTS / 4 texels up to TILE_LIGHTS vehicles whose lamps light it (beams, tail
+//          glow, their halo and their reflection).
+//   uSim2  rgba16f, 3 × 1, nearest: texel 0 the avenue's lights (green, amber, red, 0), texel 1 the
+//          side street's, texel 2 the walk signals (green man, red man, 0, 0), each eased over
+//          LAMP_FADE seconds; the green man blinks while the walk phase runs out.
+import type { ParamDef } from "../../params.ts";
+import { DataTexture } from "../../sims/texture.ts";
+import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+
+// ---- The view and the street, shared with the shader ----
+
+/** The eye: x (m), height (m), pitch below the horizontal (rad, 42°), focal length (screen heights
+ *  per unit of slope: a 37° vertical field of view). The window is a little left of the side
+ *  street, so the crossing sits right of centre and the lower left (the page's copy) looks down
+ *  the quieter avenue with its queue of cars. */
+export const CAM_X = -5;
+export const CAM_H = 28;
+export const PITCH = 0.733;
+export const FOCAL = 1.5;
+/** Positions go to the shader as z − Z_REF, which keeps them small for half floats. */
+export const Z_REF = 40;
+
+/** The avenue's kerbs, the near buildings (out of view below the frame), the far facades. */
+export const KERB_NEAR = 22;
+export const KERB_FAR = 40;
+export const FACADE_NEAR = 14;
+export const FACADE_FAR = 45;
+/** The side street: kerbs and facades at ±these x; the far corners' kerbs are rounded. */
+export const SIDE_KERB = 6;
+export const SIDE_FACADE = 9;
+export const CORNER_RADIUS = 2;
+/** The avenue's centre line, and its lanes (z; the bicycles ride along the kerb). */
+export const AVENUE_MID = 31;
+export const LANE_EB_IN = 33.85;
+export const LANE_EB_OUT = 37.15;
+export const LANE_EB_BIKE = 38.75;
+export const LANE_WB_IN = 28.15;
+export const LANE_WB_OUT = 24.85;
+export const LANE_WB_BIKE = 23.25;
+/** The side street's lanes (x): coming down to the junction, its bicycles, and going up. */
+export const LANE_SB = 3;
+export const LANE_SB_BIKE = 4.9;
+export const LANE_NB = -3;
+/** Stop lines: where the eastbound and westbound fronts stop (x), and the southbound (z). */
+export const STOP_EB = -12.4;
+export const STOP_WB = 12.4;
+export const STOP_SB = 47.4;
+/** Crosswalks: W and E centred at x = ∓CROSS_WE, N centred at z = CROSS_N, all 2·CROSS_HALF wide;
+ *  the diagonals run from x = ±DIAG_NEAR on the near kerb to (∓DIAG_FAR, DIAG_FAR_Z) on the far
+ *  corners. */
+export const CROSS_WE = 9.5;
+export const CROSS_HALF = 2;
+export const CROSS_N = 44.5;
+export const DIAG_NEAR = 6.6;
+export const DIAG_FAR = 6.75;
+export const DIAG_FAR_Z = 40.6;
+/** The zebra M (the landmark): W and E are its legs, its V dips to (0, MARK_APEX_Z). */
+export const MARK_APEX_Z = 29.6;
+
+/** A pole on the sidewalk: base (m), height (m); walkers step round it. */
+export interface Pole {
+  readonly x: number;
+  readonly z: number;
+  readonly height: number;
+}
+
+/** Street lamps: on the kerbs, their arms reaching over the road (toward the avenue's middle, or
+ *  the side street's), LED white along the avenue, old sodium amber up the side street. The four on
+ *  the signal poles light the crossings. */
+export interface Lamp extends Pole {
+  /** Where the head hangs, over the road. */
+  readonly hx: number;
+  readonly hz: number;
+  readonly warm: boolean;
+}
+
+export const LAMPS: readonly Lamp[] = [
+  { x: -25.5, z: 21.6, height: 7.2, hx: -25.5, hz: 23.2, warm: false },
+  { x: -1.0, z: 21.6, height: 7.2, hx: -1.0, hz: 23.2, warm: false },
+  { x: 23.5, z: 21.6, height: 7.2, hx: 23.5, hz: 23.2, warm: false },
+  { x: -12.4, z: 21.55, height: 8.0, hx: -10.6, hz: 23.5, warm: false },
+  { x: 12.4, z: 21.55, height: 8.0, hx: 10.6, hz: 23.5, warm: false },
+  { x: -12.4, z: 40.45, height: 8.0, hx: -10.6, hz: 38.5, warm: false },
+  { x: 12.4, z: 40.45, height: 8.0, hx: 10.6, hz: 38.5, warm: false },
+  { x: -23.0, z: 40.4, height: 7.2, hx: -23.0, hz: 38.8, warm: false },
+  { x: 21.0, z: 40.4, height: 7.2, hx: 21.0, hz: 38.8, warm: false },
+  { x: -6.4, z: 61.0, height: 6.4, hx: -5.3, hz: 61.0, warm: true },
+  { x: 6.4, z: 72.0, height: 6.4, hx: 5.3, hz: 72.0, warm: true },
+];
+
+/** Signal poles at the corners, and two small ones for the N crosswalk's walk signals. */
+export const SIGNAL_POLES: readonly Pole[] = [
+  { x: -12.4, z: 21.55, height: 6.0 },
+  { x: 12.4, z: 21.55, height: 6.0 },
+  { x: -12.4, z: 40.45, height: 6.0 },
+  { x: 12.4, z: 40.45, height: 6.0 },
+  { x: -6.45, z: 47.6, height: 3.1 },
+  { x: 6.45, z: 47.6, height: 3.1 },
+];
+
+/** Vending machines against the walls: x0, x1, z0, z1 (m). Walkers step round them. */
+export const VENDING: readonly (readonly [number, number, number, number])[] = [
+  [-14.65, -12.95, 44.25, 45.0],
+  [8.25, 9.0, 50.0, 51.6],
+];
+
+/** Doors walkers use: the café on the far left block, the konbini on the far right corner. */
+export const CAFE_DOOR = -17.5;
+export const KONBINI_DOOR = 14.0;
+
+// ---- Agents ----
+
+/** Kinds in uSim0 row 0 .w. */
+export const KIND_ADULT = 1;
+export const KIND_CHILD = 2;
+export const KIND_BIKE = 3;
+export const KIND_SEDAN = 4;
+export const KIND_TAXI = 5;
+export const KIND_KEI = 6;
+export const KIND_VAN = 7;
+
+/** A vehicle's box seen from above: length, width (m), the top of its body and of its cabin (m),
+ *  and where its cabin runs along it (m from its centre, rear and front). Bicycles: the rider's
+ *  head height as `top`. Indexed by kind. */
+export interface VehicleShape {
+  readonly length: number;
+  readonly width: number;
+  readonly body: number;
+  readonly top: number;
+  readonly cabinBack: number;
+  readonly cabinFront: number;
+}
+
+export const SHAPES: readonly VehicleShape[] = [
+  { length: 0, width: 0, body: 0, top: 0, cabinBack: 0, cabinFront: 0 },
+  { length: 0, width: 0, body: 0, top: 0, cabinBack: 0, cabinFront: 0 },
+  { length: 0, width: 0, body: 0, top: 0, cabinBack: 0, cabinFront: 0 },
+  { length: 1.75, width: 0.6, body: 0.95, top: 1.5, cabinBack: -0.3, cabinFront: 0.2 },
+  { length: 4.5, width: 1.76, body: 0.92, top: 1.45, cabinBack: -1.4, cabinFront: 0.85 },
+  { length: 4.6, width: 1.7, body: 0.92, top: 1.5, cabinBack: -1.35, cabinFront: 0.9 },
+  { length: 3.4, width: 1.48, body: 0.85, top: 1.68, cabinBack: -1.55, cabinFront: 0.95 },
+  { length: 4.7, width: 1.72, body: 0.95, top: 1.98, cabinBack: -2.25, cabinFront: 1.15 },
+];
+
+/** Walker and vehicle slots: walkers first. */
+export const MAX_WALKERS = 160;
+export const MAX_VEHICLES = 40;
+export const MAX_AGENTS = MAX_WALKERS + MAX_VEHICLES;
+
+/** The tile grid over the street (m): origin, size, count; slots per tile. */
+export const TILE_X0 = -38;
+export const TILE_Z0 = 12;
+export const TILE = 1;
+export const TILES_X = 72;
+export const TILES_Z = 72;
+export const TILE_BODIES = 12;
+export const TILE_LIGHTS = 12;
+export const TILE_TEXELS = (TILE_BODIES + TILE_LIGHTS) / 4;
+
+/** The tallest a walker stands with an open umbrella over it (m); its widest reach from its feet
+ *  (m: an umbrella tipped forward, into the wind and back to look up). */
+const WALKER_TOP = 2.3;
+const WALKER_REACH = 0.9;
+/** How far a car's low beam lights the road ahead (m), a bicycle lamp's, and the tail glow behind. */
+export const BEAM_REACH = 12;
+export const BIKE_BEAM_REACH = 6;
+const TAIL_REACH = 3;
+/** How far a lamp's reflection on wet asphalt runs toward the window (m), beyond the beam. */
+const STREAK_REACH = 7;
+
+// ---- Signals ----
+
+const PHASES = ["avenue", "avenueAmber", "clearA", "side", "sideAmber", "clearB", "walk", "flash", "clearC"] as const;
+type Phase = (typeof PHASES)[number];
+type Light = "green" | "amber" | "red";
+
+/** Fixed parts of the cycle (s): amber, all red, the green man flashing. */
+const AMBER = 3;
+const ALL_RED = 2;
+const FLASH = 5;
+const FIXED = 2 * AMBER + 3 * ALL_RED + FLASH;
+/** How the rest of the cycle is shared: avenue, side street, walk. */
+const SHARE_AVENUE = 0.45;
+const SHARE_SIDE = 0.2;
+const SHARE_WALK = 0.35;
+/** Seconds a lamp takes to come on or go off (LEDs, but the dither should see one step). */
+const LAMP_FADE = 0.12;
+
+function phaseLength(phase: Phase, cycle: number): number {
+  const flex = Math.max(cycle - FIXED, 24);
+  switch (phase) {
+    case "avenue":
+      return SHARE_AVENUE * flex;
+    case "side":
+      return SHARE_SIDE * flex;
+    case "walk":
+      return SHARE_WALK * flex;
+    case "avenueAmber":
+    case "sideAmber":
+      return AMBER;
+    case "flash":
+      return FLASH;
+    case "clearA":
+    case "clearB":
+    case "clearC":
+      return ALL_RED;
+    default: {
+      const unreachable: never = phase;
+      throw new StreetSimError(`street: unknown signal phase ${String(unreachable)}`);
+    }
+  }
+}
+
+class Signals {
+  index = 0;
+  elapsed = 0;
+  cycle = 80;
+  /** Lamp brightness, eased: avenue green/amber/red, side green/amber/red, green man, red man. */
+  readonly lamps = new Float64Array(8);
+  readonly #targets = new Float64Array(8);
+
+  get phase(): Phase {
+    return PHASES[this.index] ?? "avenue";
+  }
+
+  get length(): number {
+    return phaseLength(this.phase, this.cycle);
+  }
+
+  get remaining(): number {
+    return this.length - this.elapsed;
+  }
+
+  get walk(): boolean {
+    return this.phase === "walk";
+  }
+
+  get flash(): boolean {
+    return this.phase === "flash";
+  }
+
+  avenue(): Light {
+    const phase = this.phase;
+    return phase === "avenue" ? "green" : phase === "avenueAmber" ? "amber" : "red";
+  }
+
+  side(): Light {
+    const phase = this.phase;
+    return phase === "side" ? "green" : phase === "sideAmber" ? "amber" : "red";
+  }
+
+  /** Advance the clock; returns true when the walk phase has just begun. */
+  step(dt: number): boolean {
+    this.elapsed += dt;
+    let walkBegan = false;
+    while (this.elapsed >= this.length) {
+      this.elapsed -= this.length;
+      this.index = (this.index + 1) % PHASES.length;
+      if (this.phase === "walk") walkBegan = true;
+    }
+    this.#ease(dt);
+    return walkBegan;
+  }
+
+  /** Cut the running phase short: a green goes to amber (or the green man to flashing) at once; a
+   *  clearance phase gives way to the next green. Returns true if the walk phase began. */
+  changeNow(): boolean {
+    this.index = (this.index + 1) % PHASES.length;
+    this.elapsed = 0;
+    return this.phase === "walk";
+  }
+
+  #ease(dt: number): void {
+    const avenue = this.avenue();
+    const side = this.side();
+    const blink = this.flash && this.elapsed % 1 >= 0.5;
+    const targets = this.#targets;
+    targets[0] = avenue === "green" ? 1 : 0;
+    targets[1] = avenue === "amber" ? 1 : 0;
+    targets[2] = avenue === "red" ? 1 : 0;
+    targets[3] = side === "green" ? 1 : 0;
+    targets[4] = side === "amber" ? 1 : 0;
+    targets[5] = side === "red" ? 1 : 0;
+    targets[6] = this.walk || (this.flash && !blink) ? 1 : 0;
+    targets[7] = this.walk || this.flash ? 0 : 1;
+    const k = dt > 0 ? Math.min(1, dt / LAMP_FADE) : 0;
+    for (let i = 0; i < 8; i++) {
+      const lamp = this.lamps[i] ?? 0;
+      this.lamps[i] = lamp + ((targets[i] ?? 0) - lamp) * k;
+    }
+  }
+
+  /** Snap the lamps to the phase (laying the street out). */
+  settle(): void {
+    for (let i = 0; i < 40; i++) this.#ease(LAMP_FADE);
+  }
+}
+
+// ---- Walkers ----
+
+type Region = "near" | "fl" | "fr";
+type WalkerMode = "walk" | "wait" | "cross" | "follow";
+
+/** Where walkers come and go: a point off screen (or behind a door) and its spread (m). */
+interface Portal {
+  readonly region: Region;
+  readonly x: number;
+  readonly z: number;
+  readonly sx: number;
+  readonly sz: number;
+  readonly weight: number;
+}
+
+const PORTALS: readonly Portal[] = [
+  { region: "near", x: -37, z: 18, sx: 0, sz: 2.8, weight: 1.0 },
+  { region: "near", x: 33, z: 18, sx: 0, sz: 2.8, weight: 1.0 },
+  { region: "near", x: -14.0, z: 12.9, sx: 1.6, sz: 0, weight: 1.3 }, // the station stairs below the window
+  { region: "near", x: 15.5, z: 13.2, sx: 1.0, sz: 0, weight: 0.5 }, // a shop below the window
+  { region: "fl", x: -41, z: 42.6, sx: 0, sz: 1.5, weight: 1.0 },
+  { region: "fl", x: -7.5, z: 94, sx: 0.8, sz: 0, weight: 0.8 },
+  { region: "fl", x: CAFE_DOOR, z: 45.9, sx: 0.4, sz: 0, weight: 0.3 },
+  { region: "fr", x: 37, z: 42.6, sx: 0, sz: 1.5, weight: 1.0 },
+  { region: "fr", x: 7.5, z: 94, sx: 0.8, sz: 0, weight: 0.8 },
+  { region: "fr", x: KONBINI_DOOR, z: 45.9, sx: 0.5, sz: 0, weight: 0.6 },
+];
+const PORTAL_WEIGHT = PORTALS.reduce((sum, portal) => sum + portal.weight, 0);
+
+/** A crosswalk between two kerb points (a on region ra, b on rb). */
+interface Crossing {
+  readonly ax: number;
+  readonly az: number;
+  readonly bx: number;
+  readonly bz: number;
+  readonly ra: Region;
+  readonly rb: Region;
+}
+
+const KERB_STEP = 0.3;
+const CROSSINGS: readonly Crossing[] = [
+  { ax: -CROSS_WE, az: KERB_NEAR - KERB_STEP, bx: -CROSS_WE, bz: KERB_FAR + KERB_STEP, ra: "near", rb: "fl" }, // W
+  { ax: CROSS_WE, az: KERB_NEAR - KERB_STEP, bx: CROSS_WE, bz: KERB_FAR + KERB_STEP, ra: "near", rb: "fr" }, // E
+  { ax: -DIAG_NEAR, az: KERB_NEAR - KERB_STEP, bx: DIAG_FAR, bz: DIAG_FAR_Z, ra: "near", rb: "fr" }, // D1
+  { ax: DIAG_NEAR, az: KERB_NEAR - KERB_STEP, bx: -DIAG_FAR, bz: DIAG_FAR_Z, ra: "near", rb: "fl" }, // D2
+  { ax: -SIDE_KERB - KERB_STEP, az: CROSS_N, bx: SIDE_KERB + KERB_STEP, bz: CROSS_N, ra: "fl", rb: "fr" }, // N
+];
+
+const MAX_WAYPOINTS = 8;
+/** Walking pace (m/s): adults, and the outing (teacher and children). */
+const PACE_MIN = 1.1;
+const PACE_MAX = 1.45;
+const OUTING_PACE = 0.95;
+/** Seconds to take up the wanted velocity; the fastest anyone moves (m/s). */
+const RELAX = 0.45;
+const TOP_SPEED = 2.1;
+/** Social force: strength (m/s²), range (m), the share left for people behind, personal space (m). */
+const SOCIAL_A = 1.7;
+const SOCIAL_B = 0.28;
+const SOCIAL_BEHIND = 0.35;
+const SOCIAL_SPACE = 0.14;
+/** A firm push where bodies overlap (m/s² per m), the sidestep from oncoming people (m/s²). */
+const CONTACT = 14;
+const SIDESTEP = 0.8;
+/** Neighbours further than this are ignored (m). */
+const NEAR_RANGE = 2.2;
+/** Margin walkers keep from kerbs and walls (m). */
+const WALL = 0.32;
+/** Waypoints count as reached within this (m); kerb points closer. */
+const REACH = 0.8;
+const REACH_KERB = 0.5;
+/** Waiting: the spot search (tries), how far back the crowd may stand (m), and the space each
+ *  keeps (m). A standing walker settles (stops dead) below this speed near its spot, and is only
+ *  moved again by a push stronger than UNSETTLE (m/s²). */
+const SPOT_TRIES = 10;
+const SPOT_DEPTH = 3.6;
+const SPOT_SPACE = 0.72;
+const SETTLE_SPEED = 0.12;
+const SETTLE_NEAR = 0.3;
+const UNSETTLE = 1.4;
+/** Stepping off: a reaction time (s) plus this many seconds per metre behind the kerb. */
+const STEP_OFF = 0.35;
+const STEP_OFF_PER_METRE = 0.5;
+const STEP_OFF_SPREAD = 0.9;
+/** On the crossing while the green man flashes, walkers hurry by this much. */
+const HURRY = 1.35;
+/** Pairs: the share of arrivals that come as two, the gap they keep (m), how firmly (1/s²). */
+const PAIR_SHARE = 0.2;
+const PAIR_GAP = 0.6;
+const PAIR_PULL = 1.2;
+/** People: the crowd knob maps to this many walkers about. */
+const CROWD_MIN = 8;
+const CROWD_MAX = 140;
+/** Mean seconds a walker spends in the simulated street (for the arrival rate). */
+const DWELL = 75;
+/** Umbrellas: the share who carry one; seconds to open; the rain or snow at which the keenest and
+ *  the most stubborn open theirs; seconds they wait first. */
+const UMBRELLA_SHARE = 0.88;
+const UMBRELLA_OPEN = 0.6;
+const UMBRELLA_KEEN = 0.01;
+const UMBRELLA_STUBBORN = 0.3;
+const UMBRELLA_DELAY_MIN = 1;
+const UMBRELLA_DELAY_MAX = 9;
+/** Looking up at the window: within this of the point under the pointer (m), after a moment (s). */
+const LOOK_RADIUS = 3.4;
+const LOOK_DELAY_MIN = 0.15;
+const LOOK_DELAY_MAX = 0.9;
+const LOOK_EASE = 0.35;
+const LOOK_SLOW = 0.35;
+/** Turning (rad/s): walking, and standing (facing the street, glancing about). */
+const TURN_WALK = 3.5;
+const TURN_STAND = 1.4;
+/** A waiting walker glances away now and then: every this many seconds, for this long, this far (rad). */
+const GLANCE_EVERY_MIN = 7;
+const GLANCE_EVERY_MAX = 22;
+const GLANCE_HOLD = 2.5;
+const GLANCE_ANGLE = 0.6;
+/** Metres per gait cycle (two steps). */
+const STRIDE = 1.4;
+
+/** The outing: children in it, spacing in the line (m), seconds between outings at frequency 0 and
+ *  1 (randomised), and before the first. */
+const OUTING_MIN = 8;
+const OUTING_MAX = 14;
+const OUTING_SPACING = 0.72;
+const OUTING_ROW = 0.34;
+const OUTING_RARE = 320;
+const OUTING_OFTEN = 70;
+const OUTING_FIRST = 30;
+
+/** The neighbour grid: cells (m) over the walkable street. */
+const GRID = 2;
+const GRID_X0 = -48;
+const GRID_Z0 = 8;
+const GRID_W = 50;
+const GRID_H = 46;
+
+// ---- Vehicles ----
+
+/** Path sampling (m). */
+const PATH_STEP = 0.5;
+/** Driving: free-road pace (m/s) for cars and bicycles, comfortable sideways pull on bends (m/s²),
+ *  intelligent driver model's acceleration and braking (m/s²), standstill gap (m), headway (s). */
+const CAR_PACE = 5.2;
+const BIKE_PACE = 3.6;
+const BEND_ACCEL = 1.6;
+const IDM_A = 1.0;
+const IDM_B = 1.8;
+const IDM_HARD = 6;
+const IDM_S0 = 2.0;
+const IDM_S0_BIKE = 1.1;
+const IDM_T = 1.3;
+/** How far ahead a driver looks for others (m), and for people on the street (m, every step). */
+const LOOKAHEAD = 45;
+const YIELD_LOOK = 14;
+const YIELD_STEP = 1.5;
+/** Vehicles per minute from each end at traffic 1: from the west, east, and down the side street. */
+const RATE_EB = 28;
+const RATE_WB = 28;
+const RATE_SB = 14;
+/** Shares: bicycles; eastbound cars turning left; side street cars turning left (else right). */
+const BIKE_SHARE = 0.12;
+const EB_LEFT_SHARE = 0.22;
+const SB_LEFT_SHARE = 0.55;
+/** Kinds of car: cumulative shares of sedan, taxi, kei, van. */
+const CAR_KINDS = [
+  [0.46, KIND_SEDAN],
+  [0.66, KIND_TAXI],
+  [0.88, KIND_KEI],
+  [1.0, KIND_VAN],
+] as const;
+/** Blinkers come on this far before a turn (m). */
+const BLINK_AHEAD = 28;
+
+// ---- Time ----
+
+const STEP = 1 / 30;
+const MAX_STEPS = 6;
+const PREWARM = 12;
+/** Seconds of the side street's green left once the street has been laid out. */
+const OPENING = 3;
+const SEED_BASE = 0x5717ee7;
+const TAU = Math.PI * 2;
+
+type KnobKey = "crowd" | "signal" | "outing" | "traffic" | "rain" | "snow" | "streetSeed";
+
+/** The simulation was set up wrong: a knob it reads is missing, or a phase is unknown. */
+export class StreetSimError extends Error {}
+
+const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
+
+/** Angle a − b wrapped to −π..π. */
+const angleDiff = (a: number, b: number): number => {
+  const d = (a - b) % TAU;
+  return d > Math.PI ? d - TAU : d < -Math.PI ? d + TAU : d;
+};
+
+/** mulberry32: a small seeded generator, so the same seed always gives the same evening (and the
+ *  shader the same city). */
+export class Random {
+  #state = 0;
+
+  seed(seed: number): void {
+    this.#state = seed >>> 0;
+  }
+
+  next(): number {
+    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
+    let t = this.#state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  range(lo: number, hi: number): number {
+    return lo + (hi - lo) * this.next();
+  }
+
+  /** Seconds to the next event of a Poisson process at `rate` per second. */
+  wait(rate: number): number {
+    return rate > 0 ? -Math.log(1 - this.next()) / rate : Number.POSITIVE_INFINITY;
+  }
+}
+
+class Walker {
+  alive = false;
+  child = false;
+  x = 0;
+  z = 0;
+  vx = 0;
+  vz = 0;
+  ax = 0;
+  az = 0;
+  heading = 0;
+  lastX = 0;
+  lastZ = 0;
+  lastHeading = 0;
+  pace = 1.3;
+  radius = 0.25;
+  seed = 0;
+  mode: WalkerMode = "walk";
+  // The route: points, the region each lies in, and at kerbs the crossing (index, +1 a→b, −1 b→a).
+  readonly wx = new Float64Array(MAX_WAYPOINTS);
+  readonly wz = new Float64Array(MAX_WAYPOINTS);
+  readonly region: Region[] = Array.from({ length: MAX_WAYPOINTS }, (): Region => "near");
+  readonly crossing = new Int8Array(MAX_WAYPOINTS);
+  readonly direction = new Int8Array(MAX_WAYPOINTS);
+  count = 0;
+  next = 0;
+  // Waiting at a kerb.
+  spotX = 0;
+  spotZ = 0;
+  depth = 0;
+  faceX = 0;
+  faceZ = 1;
+  goAt = Number.POSITIVE_INFINITY;
+  settled = false;
+  glanceTarget = 0;
+  nextGlance = 0;
+  // Company: a partner walking beside it, or (the outing) the one it follows in line.
+  partner: Walker | undefined = undefined;
+  ahead: Walker | undefined = undefined;
+  row = 0;
+  exitX = 0;
+  exitZ = 0;
+  // Umbrella.
+  hasUmbrella = true;
+  umbrella = 0;
+  umbrellaUp = false;
+  umbrellaClock = 0;
+  umbrellaKeen = 0.1;
+  umbrellaDelay = 3;
+  // Looking up at the window.
+  look = 0;
+  interest = 0;
+  lookDelay = 0.5;
+  looking = false;
+  gait = 0;
+  onRoad = false;
+}
+
+/** A stretch of a path running along one lane, so drivers on different paths see each other there. */
+interface LaneSpan {
+  readonly lane: number;
+  /** Path distance where it starts and ends. */
+  readonly s0: number;
+  readonly s1: number;
+  /** Lane distance at s0. */
+  readonly c0: number;
+}
+
+type Segment =
+  | { readonly kind: "line"; readonly x0: number; readonly z0: number; readonly x1: number; readonly z1: number; readonly lane: number; readonly c0: number }
+  | { readonly kind: "arc"; readonly cx: number; readonly cz: number; readonly r: number; readonly a0: number; readonly a1: number; readonly lane: number; readonly c0: number };
+
+class VehiclePath {
+  readonly xs: Float64Array;
+  readonly zs: Float64Array;
+  readonly hs: Float64Array;
+  /** The fastest it can be taken at each sample (m/s), braking comfortably into bends. */
+  readonly vmax: Float64Array;
+  readonly spans: readonly LaneSpan[];
+  readonly length: number;
+  /** Path distance where the start of the turn is (blinkers), Infinity if none. */
+  readonly turnAt: number;
+  readonly turnSide: number;
+  /** Which light it obeys, and the path distance where the front stops for it. */
+  readonly signal: "avenue" | "side";
+  readonly stop: number;
+
+  constructor(signal: "avenue" | "side", stop: number, segments: readonly Segment[]) {
+    this.signal = signal;
+    this.stop = stop;
+    const lengths = segments.map((seg) => (seg.kind === "line" ? Math.hypot(seg.x1 - seg.x0, seg.z1 - seg.z0) : seg.r * Math.abs(seg.a1 - seg.a0)));
+    this.length = lengths.reduce((a, b) => a + b, 0);
+    const n = Math.ceil(this.length / PATH_STEP) + 2;
+    this.xs = new Float64Array(n);
+    this.zs = new Float64Array(n);
+    this.hs = new Float64Array(n);
+    this.vmax = new Float64Array(n);
+    const spans: LaneSpan[] = [];
+    let s0 = 0;
+    let turnAt = Number.POSITIVE_INFINITY;
+    let turnSide = 0;
+    segments.forEach((seg, i) => {
+      const len = lengths[i] ?? 0;
+      spans.push({ lane: seg.lane, s0, s1: s0 + len, c0: seg.c0 });
+      if (seg.kind === "arc" && !Number.isFinite(turnAt)) {
+        turnAt = s0;
+        turnSide = seg.a1 > seg.a0 ? 1 : -1;
+      }
+      s0 += len;
+    });
+    this.spans = spans;
+    this.turnAt = turnAt;
+    this.turnSide = turnSide;
+    for (let k = 0; k < n; k++) {
+      let s = Math.min(k * PATH_STEP, this.length);
+      let x = 0;
+      let z = 0;
+      let h = 0;
+      let v = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const len = lengths[i] ?? 0;
+        if (!seg) continue;
+        if (s > len && i < segments.length - 1) {
+          s -= len;
+          continue;
+        }
+        const f = len > 0 ? clamp(s / len, 0, 1) : 0;
+        if (seg.kind === "line") {
+          x = seg.x0 + (seg.x1 - seg.x0) * f;
+          z = seg.z0 + (seg.z1 - seg.z0) * f;
+          h = Math.atan2(seg.z1 - seg.z0, seg.x1 - seg.x0);
+        } else {
+          const a = seg.a0 + (seg.a1 - seg.a0) * f;
+          const dir = seg.a1 > seg.a0 ? 1 : -1;
+          x = seg.cx + seg.r * Math.cos(a);
+          z = seg.cz + seg.r * Math.sin(a);
+          h = Math.atan2(dir * Math.cos(a), -dir * Math.sin(a));
+          v = Math.sqrt(BEND_ACCEL * seg.r);
+        }
+        break;
+      }
+      this.xs[k] = x;
+      this.zs[k] = z;
+      this.hs[k] = h;
+      this.vmax[k] = v;
+    }
+    for (let k = n - 2; k >= 0; k--) {
+      const after = this.vmax[k + 1] ?? Number.POSITIVE_INFINITY;
+      this.vmax[k] = Math.min(this.vmax[k] ?? Number.POSITIVE_INFINITY, Math.sqrt(after * after + 2 * IDM_B * PATH_STEP));
+    }
+  }
+
+  /** Position and heading at path distance s, linearly between samples. */
+  at(s: number, out: Float64Array): void {
+    const f = clamp(s / PATH_STEP, 0, this.xs.length - 1.001);
+    const k = Math.floor(f);
+    const u = f - k;
+    out[0] = (this.xs[k] ?? 0) + ((this.xs[k + 1] ?? 0) - (this.xs[k] ?? 0)) * u;
+    out[1] = (this.zs[k] ?? 0) + ((this.zs[k + 1] ?? 0) - (this.zs[k] ?? 0)) * u;
+    const h0 = this.hs[k] ?? 0;
+    out[2] = h0 + angleDiff(this.hs[k + 1] ?? h0, h0) * u;
+  }
+
+  /** Where the lane position (lane, c) falls on this path, NaN if the path does not run there. */
+  locate(lane: number, c: number): number {
+    for (const span of this.spans) {
+      if (span.lane !== lane) continue;
+      const along = c - span.c0;
+      if (along >= -2 && along <= span.s1 - span.s0 + 2) return span.s0 + along;
+    }
+    return Number.NaN;
+  }
+
+  /** The lane span holding path distance s. */
+  span(s: number): LaneSpan | undefined {
+    for (const span of this.spans) if (s < span.s1) return span;
+    return this.spans[this.spans.length - 1];
+  }
+}
+
+// Lanes: straight ones run the length of the street; each turn's arc is a lane of its own.
+const L_EB_IN = 0;
+const L_EB_OUT = 1;
+const L_EB_BIKE = 2;
+const L_WB_IN = 3;
+const L_WB_OUT = 4;
+const L_WB_BIKE = 5;
+const L_SB = 6;
+const L_SB_BIKE = 7;
+const L_NB = 8;
+const L_ARC_EBL = 9;
+const L_ARC_SBL = 10;
+const L_ARC_SBR = 11;
+const L_ARC_SBB = 12;
+
+/** The avenue runs from x = −AVENUE_END to AVENUE_END; the side street comes down from z = SIDE_END. */
+const AVENUE_END = 70;
+const SIDE_END = 95;
+/** Turning arcs: radii, and the z where turns into or out of the side street meet it. */
+const TURN_SMALL = 5.5;
+const TURN_BIKE = 3.9;
+const TURN_Z = KERB_FAR + 2.65;
+
+const line = (x0: number, z0: number, x1: number, z1: number, lane: number, c0: number): Segment => ({ kind: "line", x0, z0, x1, z1, lane, c0 });
+const arc = (cx: number, cz: number, r: number, a0: number, a1: number, lane: number): Segment => ({ kind: "arc", cx, cz, r, a0, a1, lane, c0: 0 });
+
+const HALF_PI = Math.PI / 2;
+const TURN_BIG = TURN_Z - LANE_WB_IN; // the side street's right turn sweeps onto the westbound inner lane
+const PATHS = {
+  ebIn: new VehiclePath("avenue", STOP_EB + AVENUE_END, [line(-AVENUE_END, LANE_EB_IN, AVENUE_END, LANE_EB_IN, L_EB_IN, 0)]),
+  ebOut: new VehiclePath("avenue", STOP_EB + AVENUE_END, [line(-AVENUE_END, LANE_EB_OUT, AVENUE_END, LANE_EB_OUT, L_EB_OUT, 0)]),
+  ebLeft: new VehiclePath("avenue", STOP_EB + AVENUE_END, [
+    line(-AVENUE_END, LANE_EB_OUT, LANE_NB - TURN_SMALL, LANE_EB_OUT, L_EB_OUT, 0),
+    arc(LANE_NB - TURN_SMALL, LANE_EB_OUT + TURN_SMALL, TURN_SMALL, -HALF_PI, 0, L_ARC_EBL),
+    line(LANE_NB, LANE_EB_OUT + TURN_SMALL, LANE_NB, SIDE_END, L_NB, 0),
+  ]),
+  ebBike: new VehiclePath("avenue", STOP_EB + AVENUE_END, [line(-AVENUE_END, LANE_EB_BIKE, AVENUE_END, LANE_EB_BIKE, L_EB_BIKE, 0)]),
+  wbIn: new VehiclePath("avenue", AVENUE_END - STOP_WB, [line(AVENUE_END, LANE_WB_IN, -AVENUE_END, LANE_WB_IN, L_WB_IN, 0)]),
+  wbOut: new VehiclePath("avenue", AVENUE_END - STOP_WB, [line(AVENUE_END, LANE_WB_OUT, -AVENUE_END, LANE_WB_OUT, L_WB_OUT, 0)]),
+  wbBike: new VehiclePath("avenue", AVENUE_END - STOP_WB, [line(AVENUE_END, LANE_WB_BIKE, -AVENUE_END, LANE_WB_BIKE, L_WB_BIKE, 0)]),
+  sbLeft: new VehiclePath("side", SIDE_END - STOP_SB, [
+    line(LANE_SB, SIDE_END, LANE_SB, TURN_Z, L_SB, 0),
+    arc(LANE_SB + TURN_SMALL, TURN_Z, TURN_SMALL, Math.PI, 1.5 * Math.PI, L_ARC_SBL),
+    line(LANE_SB + TURN_SMALL, TURN_Z - TURN_SMALL, AVENUE_END, TURN_Z - TURN_SMALL, L_EB_OUT, LANE_SB + TURN_SMALL + AVENUE_END),
+  ]),
+  sbRight: new VehiclePath("side", SIDE_END - STOP_SB, [
+    line(LANE_SB, SIDE_END, LANE_SB, TURN_Z, L_SB, 0),
+    arc(LANE_SB - TURN_BIG, TURN_Z, TURN_BIG, 0, -HALF_PI, L_ARC_SBR),
+    line(LANE_SB - TURN_BIG, LANE_WB_IN, -AVENUE_END, LANE_WB_IN, L_WB_IN, AVENUE_END - (LANE_SB - TURN_BIG)),
+  ]),
+  sbBike: new VehiclePath("side", SIDE_END - STOP_SB, [
+    line(LANE_SB_BIKE, SIDE_END, LANE_SB_BIKE, TURN_Z, L_SB_BIKE, 0),
+    arc(LANE_SB_BIKE + TURN_BIKE, TURN_Z, TURN_BIKE, Math.PI, 1.5 * Math.PI, L_ARC_SBB),
+    line(LANE_SB_BIKE + TURN_BIKE, TURN_Z - TURN_BIKE, AVENUE_END, TURN_Z - TURN_BIKE, L_EB_BIKE, LANE_SB_BIKE + TURN_BIKE + AVENUE_END),
+  ]),
+} as const;
+type PathName = keyof typeof PATHS;
+
+class Vehicle {
+  alive = false;
+  kind = KIND_SEDAN;
+  path: PathName = "ebIn";
+  s = 0;
+  v = 0;
+  pace = CAR_PACE;
+  seed = 0;
+  brake = 0;
+  /** Decided at amber: false = going through, true = stopping. */
+  stopping = false;
+  sawAmber = false;
+  x = 0;
+  z = 0;
+  heading = 0;
+  lastX = 0;
+  lastZ = 0;
+  lastHeading = 0;
+  lane = 0;
+  laneC = 0;
+  umbrella = 0;
+}
+
+class StreetCrossing implements SceneSim {
+  readonly #agents: DataTexture;
+  readonly #tiles: DataTexture;
+  readonly #state: DataTexture;
+  readonly #agentData = new Float32Array(MAX_AGENTS * 2 * 4);
+  readonly #tileData = new Uint8Array(TILES_X * TILE_TEXELS * TILES_Z * 4);
+  readonly #stateData = new Float32Array(3 * 4);
+  readonly #bodyCount = new Uint8Array(TILES_X * TILES_Z);
+  readonly #lightCount = new Uint8Array(TILES_X * TILES_Z);
+  readonly #order = new Int32Array(MAX_AGENTS);
+  readonly #orderKey = new Float64Array(MAX_AGENTS);
+  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #random = new Random();
+  readonly #walkers: readonly Walker[] = Array.from({ length: MAX_WALKERS }, () => new Walker());
+  readonly #vehicles: readonly Vehicle[] = Array.from({ length: MAX_VEHICLES }, () => new Vehicle());
+  readonly #signals = new Signals();
+  // The neighbour grid: a counting sort of walker indices by cell.
+  readonly #cellStart = new Int32Array(GRID_W * GRID_H + 1);
+  readonly #cellCursor = new Int32Array(GRID_W * GRID_H);
+  readonly #cellItems = new Int32Array(MAX_WALKERS);
+  readonly #cellOf = new Int32Array(MAX_WALKERS);
+  /** Scratch: a point (x, z, heading); a force (x, z); a bounding box (x0, x1, z0, z1). */
+  readonly #point = new Float64Array(3);
+  readonly #point2 = new Float64Array(3);
+  readonly #force = new Float64Array(2);
+  readonly #box = new Float64Array(4);
+
+  #aspect = 16 / 9;
+  #crowd = 0.5;
+  #cycle = 80;
+  #outing = 0.3;
+  #traffic = 0.5;
+  #precip = 0;
+  #seed = Number.NaN;
+
+  #clock = 0;
+  #pending = 0;
+  #nextWalker = 0;
+  readonly #nextVehicle = new Float64Array(3);
+  #nextOuting = Number.POSITIVE_INFINITY;
+
+  #primed = false;
+  #seenSignal = 0;
+  #seenOuting = 0;
+
+  #hover = false;
+  #hoverX = 0;
+  #hoverZ = 0;
+
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+    const index = (key: KnobKey): number => {
+      const at = params.findIndex((def) => def.key === key);
+      if (at < 0) throw new StreetSimError(`street: the scene has no '${key}' knob`);
+      return at;
+    };
+    this.#knobIndex = {
+      crowd: index("crowd"),
+      signal: index("signal"),
+      outing: index("outing"),
+      traffic: index("traffic"),
+      rain: index("rain"),
+      snow: index("snow"),
+      streetSeed: index("streetSeed"),
+    };
+    this.#agents = new DataTexture(gl, { width: MAX_AGENTS, height: 2, format: "rgba16f", filter: "nearest" });
+    this.#tiles = new DataTexture(gl, { width: TILES_X * TILE_TEXELS, height: TILES_Z, format: "rgba8", filter: "nearest" });
+    this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+  }
+
+  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+    const values = frame.values;
+    const index = this.#knobIndex;
+    this.#crowd = clamp(values[index.crowd] ?? 0.5, 0, 1);
+    this.#cycle = clamp(values[index.signal] ?? 80, 30, 200);
+    this.#outing = clamp(values[index.outing] ?? 0, 0, 1);
+    this.#traffic = clamp(values[index.traffic] ?? 0.5, 0, 1);
+    this.#precip = Math.max(clamp(values[index.rain] ?? 0, 0, 1), 0.8 * clamp(values[index.snow] ?? 0, 0, 1));
+    this.#signals.cycle = this.#cycle;
+    if (frame.aspect > 0) this.#aspect = frame.aspect;
+
+    const seed = Math.round(values[index.streetSeed] ?? 0);
+    if (seed !== this.#seed) this.#reset(seed);
+
+    // Outings on their own: a fresh wait whenever the feature comes on, none while it is off.
+    if (this.#outing <= 0) this.#nextOuting = Number.POSITIVE_INFINITY;
+    else if (!Number.isFinite(this.#nextOuting)) this.#nextOuting = this.#clock + OUTING_FIRST;
+
+    this.#watchTriggers(frame.triggers);
+    this.#follow(frame.pointer);
+
+    const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
+    this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
+    while (this.#pending >= STEP) {
+      this.#step(STEP);
+      this.#pending -= STEP;
+    }
+    this.#upload(this.#pending / STEP);
+    return [this.#agents.texture, this.#tiles.texture, this.#state.texture];
+  }
+
+  dispose(): void {
+    this.#agents.dispose();
+    this.#tiles.dispose();
+    this.#state.dispose();
+  }
+
+  /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
+  #watchTriggers(triggers: readonly number[]): void {
+    const signal = triggers[0] ?? -1e4;
+    const outing = triggers[1] ?? -1e4;
+    if (this.#primed) {
+      if (signal !== this.#seenSignal && signal > -1e3) this.#changeLights();
+      if (outing !== this.#seenOuting && outing > -1e3) this.#startOuting();
+    }
+    this.#primed = true;
+    this.#seenSignal = signal;
+    this.#seenOuting = outing;
+  }
+
+  /** The pointer: where on the street it points (walkers near it look up); a click changes the lights. */
+  #follow(pointer: PointerState): void {
+    this.#hover = pointer.inside && this.#toGround(pointer.x, pointer.y);
+    if (this.#hover) {
+      this.#hoverX = this.#point[0] ?? 0;
+      this.#hoverZ = this.#point[1] ?? 0;
+    }
+    if (pointer.inside && pointer.pressed) this.#changeLights();
+  }
+
+  #changeLights(): void {
+    if (this.#signals.changeNow()) this.#walkBegins();
+  }
+
+  /** The point on the street (y = 0) under screen point (px, py) into #point. */
+  #toGround(px: number, py: number): boolean {
+    const sx = (px - 0.5) * this.#aspect;
+    const sy = py - 0.5;
+    const dy = sy * Math.cos(PITCH) - FOCAL * Math.sin(PITCH);
+    const dz = sy * Math.sin(PITCH) + FOCAL * Math.cos(PITCH);
+    if (dy >= -1e-4) return false;
+    const t = CAM_H / -dy;
+    this.#point[0] = CAM_X + sx * t;
+    this.#point[1] = dz * t;
+    return true;
+  }
+
+  /** Lay a fresh street out for this seed: a few seconds before the scramble, people waiting at the
+   *  kerbs and walking along the sidewalks, the avenue's traffic queued at its red light. */
+  #reset(seed: number): void {
+    const random = this.#random;
+    random.seed(SEED_BASE ^ Math.imul(seed + 1, 0x9e3779b1));
+    this.#seed = seed;
+    for (const walker of this.#walkers) walker.alive = false;
+    for (const vehicle of this.#vehicles) vehicle.alive = false;
+    this.#clock = 0;
+    this.#pending = 0;
+
+    const signals = this.#signals;
+    signals.cycle = this.#cycle;
+    signals.index = PHASES.indexOf("side");
+    signals.elapsed = signals.length - (OPENING + PREWARM);
+    signals.settle();
+
+    const target = this.#crowdTarget();
+    for (let k = 0; k < target; k++) this.#scatterWalker();
+    // The avenue's queues at the red, and a car or two coming down the side street.
+    const queue = Math.round(this.#traffic * 5);
+    for (const name of ["ebIn", "ebOut", "wbIn", "wbOut"] as const) {
+      const path = PATHS[name];
+      let front = path.stop - random.range(0.5, 1.5);
+      const n = Math.round(queue * random.range(0.5, 1.2));
+      for (let k = 0; k < n; k++) {
+        const vehicle = this.#launchVehicle(name, this.#pickCar());
+        if (!vehicle) break;
+        const shape = SHAPES[vehicle.kind] ?? SHAPES[KIND_SEDAN];
+        const length = shape?.length ?? 4.5;
+        vehicle.s = front - length / 2;
+        vehicle.v = 0;
+        front -= length + IDM_S0 + random.range(0.2, 1.2);
+        this.#placeVehicle(vehicle);
+      }
+    }
+    for (let k = 0; k < Math.round(this.#traffic * 3); k++) {
+      const vehicle = this.#launchVehicle(random.next() < SB_LEFT_SHARE ? "sbLeft" : "sbRight", this.#pickCar());
+      if (!vehicle) break;
+      vehicle.s = random.range(5, 40);
+      vehicle.v = vehicle.pace * 0.8;
+      this.#placeVehicle(vehicle);
+    }
+    for (let e = 0; e < 3; e++) this.#nextVehicle[e] = random.wait(this.#vehicleRate(e));
+    this.#nextWalker = random.wait(this.#walkerRate());
+    this.#nextOuting = this.#outing > 0 ? OUTING_FIRST : Number.POSITIVE_INFINITY;
+
+    for (let s = 0; s < PREWARM / STEP; s++) this.#step(STEP);
+    for (const walker of this.#walkers) {
+      walker.lastX = walker.x;
+      walker.lastZ = walker.z;
+      walker.lastHeading = walker.heading;
+    }
+    for (const vehicle of this.#vehicles) {
+      vehicle.lastX = vehicle.x;
+      vehicle.lastZ = vehicle.z;
+      vehicle.lastHeading = vehicle.heading;
+    }
+  }
+
+  #crowdTarget(): number {
+    return Math.round(CROWD_MIN + (CROWD_MAX - CROWD_MIN) * Math.pow(this.#crowd, 1.2));
+  }
+
+  #walkerRate(): number {
+    return this.#crowdTarget() / DWELL;
+  }
+
+  /** Vehicles per second from end e (0 west, 1 east, 2 down the side street). */
+  #vehicleRate(e: number): number {
+    const perMinute = e === 0 ? RATE_EB : e === 1 ? RATE_WB : RATE_SB;
+    return (perMinute * this.#traffic) / 60;
+  }
+
+  // ---- The step ----
+
+  #step(dt: number): void {
+    this.#clock += dt;
+    for (const w of this.#walkers) {
+      w.lastX = w.x;
+      w.lastZ = w.z;
+      w.lastHeading = w.heading;
+    }
+    for (const v of this.#vehicles) {
+      v.lastX = v.x;
+      v.lastZ = v.z;
+      v.lastHeading = v.heading;
+    }
+    const signals = this.#signals;
+    if (signals.step(dt)) this.#walkBegins();
+    this.#spawn();
+    this.#stepWalkers(dt);
+    this.#stepVehicles(dt);
+  }
+
+  #spawn(): void {
+    const random = this.#random;
+    const clock = this.#clock;
+    let alive = 0;
+    for (const walker of this.#walkers) if (walker.alive && !walker.child && !walker.ahead) alive++;
+    if (clock >= this.#nextWalker) {
+      if (alive < this.#crowdTarget()) {
+        const first = this.#spawnWalker(undefined);
+        if (first && random.next() < PAIR_SHARE) {
+          const second = this.#spawnWalker(first);
+          if (second) first.partner = second;
+        }
+      }
+      this.#nextWalker = clock + random.wait(this.#walkerRate() * (alive < 0.7 * this.#crowdTarget() ? 2 : 1));
+    }
+    for (let e = 0; e < 3; e++) {
+      if (clock < (this.#nextVehicle[e] ?? 0)) continue;
+      const bike = random.next() < BIKE_SHARE;
+      let name: PathName;
+      if (e === 0) name = bike ? "ebBike" : random.next() < EB_LEFT_SHARE ? "ebLeft" : random.next() < 0.5 ? "ebIn" : "ebOut";
+      else if (e === 1) name = bike ? "wbBike" : random.next() < 0.5 ? "wbIn" : "wbOut";
+      else name = bike ? "sbBike" : random.next() < SB_LEFT_SHARE ? "sbLeft" : "sbRight";
+      // The way in must be clear; otherwise try again next step.
+      const path = PATHS[name];
+      const span = path.spans[0];
+      let clear = true;
+      if (span) {
+        for (const other of this.#vehicles) {
+          if (other.alive && other.lane === span.lane && other.laneC - span.c0 < 12) clear = false;
+        }
+      }
+      if (!clear) continue;
+      const vehicle = this.#launchVehicle(name, bike ? KIND_BIKE : this.#pickCar());
+      if (vehicle) {
+        vehicle.s = 0;
+        vehicle.v = vehicle.pace;
+        this.#placeVehicle(vehicle);
+      }
+      this.#nextVehicle[e] = clock + random.wait(this.#vehicleRate(e));
+    }
+    if (clock >= this.#nextOuting) {
+      this.#startOuting();
+      const often = OUTING_RARE + (OUTING_OFTEN - OUTING_RARE) * this.#outing;
+      this.#nextOuting = clock + often * random.range(0.6, 1.4);
+    }
+  }
+
+  // ---- Walkers ----
+
+  #freeWalker(): Walker | undefined {
+    for (const walker of this.#walkers) if (!walker.alive) return walker;
+    return undefined;
+  }
+
+  /** A portal by weight, other than `not`. */
+  #pickPortal(not: Portal | undefined): Portal {
+    const random = this.#random;
+    for (let tries = 0; tries < 8; tries++) {
+      let u = random.next() * PORTAL_WEIGHT;
+      for (const portal of PORTALS) {
+        u -= portal.weight;
+        if (u <= 0) {
+          if (portal !== not) return portal;
+          break;
+        }
+      }
+    }
+    const other = PORTALS.find((portal) => portal !== not);
+    if (!other) throw new StreetSimError("street: no portal to walk to");
+    return other;
+  }
+
+  /** A new walker at a portal (or, with a companion given, beside it on the same route). */
+  #spawnWalker(companion: Walker | undefined): Walker | undefined {
+    const walker = this.#freeWalker();
+    if (!walker) return undefined;
+    const random = this.#random;
+    this.#dress(walker, false);
+    if (companion) {
+      this.#copyRoute(walker, companion);
+      walker.x = companion.x + random.range(-0.5, 0.5);
+      walker.z = companion.z + random.range(-0.5, 0.5);
+      walker.pace = companion.pace;
+      walker.partner = companion;
+    } else {
+      const from = this.#pickPortal(undefined);
+      const to = this.#pickPortal(from);
+      walker.x = from.x + from.sx * random.range(-1, 1);
+      walker.z = from.z + from.sz * random.range(-1, 1);
+      this.#plan(walker, from, to);
+    }
+    this.#launchWalker(walker);
+    return walker;
+  }
+
+  /** Who a walker is: pace, size, looks, umbrella habits. */
+  #dress(walker: Walker, child: boolean): void {
+    const random = this.#random;
+    walker.alive = true;
+    walker.child = child;
+    walker.seed = random.next();
+    walker.pace = child ? OUTING_PACE : random.range(PACE_MIN, PACE_MAX) * (random.next() < 0.08 ? 0.72 : 1);
+    walker.radius = child ? 0.17 : random.range(0.23, 0.28);
+    walker.hasUmbrella = child || random.next() < UMBRELLA_SHARE;
+    walker.umbrellaKeen = child ? UMBRELLA_KEEN : random.range(UMBRELLA_KEEN, UMBRELLA_STUBBORN);
+    walker.umbrellaDelay = random.range(UMBRELLA_DELAY_MIN, UMBRELLA_DELAY_MAX);
+    walker.lookDelay = random.range(LOOK_DELAY_MIN, LOOK_DELAY_MAX);
+    walker.partner = undefined;
+    walker.ahead = undefined;
+    walker.row = 0;
+    walker.mode = "walk";
+    walker.count = 0;
+    walker.next = 0;
+    walker.goAt = Number.POSITIVE_INFINITY;
+    walker.settled = false;
+    walker.glanceTarget = 0;
+    walker.nextGlance = this.#clock + random.range(GLANCE_EVERY_MIN, GLANCE_EVERY_MAX);
+    walker.look = 0;
+    walker.interest = 0;
+    walker.looking = false;
+    walker.gait = random.next();
+    walker.umbrellaClock = 0;
+    walker.umbrellaUp = walker.hasUmbrella && this.#precip > walker.umbrellaKeen;
+    walker.umbrella = walker.umbrellaUp ? 1 : 0;
+  }
+
+  /** Start moving toward the first waypoint, already facing it. */
+  #launchWalker(walker: Walker): void {
+    const tx = walker.wx[walker.next] ?? walker.x;
+    const tz = walker.wz[walker.next] ?? walker.z;
+    walker.heading = Math.atan2(tz - walker.z, tx - walker.x);
+    walker.vx = Math.cos(walker.heading) * walker.pace;
+    walker.vz = Math.sin(walker.heading) * walker.pace;
+    walker.lastX = walker.x;
+    walker.lastZ = walker.z;
+    walker.lastHeading = walker.heading;
+  }
+
+  #copyRoute(walker: Walker, from: Walker): void {
+    const random = this.#random;
+    walker.count = from.count;
+    walker.next = from.next;
+    for (let i = 0; i < from.count; i++) {
+      walker.wx[i] = (from.wx[i] ?? 0) + random.range(-0.3, 0.3);
+      walker.wz[i] = (from.wz[i] ?? 0) + random.range(-0.3, 0.3);
+      walker.region[i] = from.region[i] ?? "near";
+      walker.crossing[i] = from.crossing[i] ?? -1;
+      walker.direction[i] = from.direction[i] ?? 0;
+    }
+  }
+
+  #push(walker: Walker, x: number, z: number, region: Region, crossing: number, direction: number): void {
+    if (walker.count >= MAX_WAYPOINTS) return;
+    const i = walker.count++;
+    walker.wx[i] = x;
+    walker.wz[i] = z;
+    walker.region[i] = region;
+    walker.crossing[i] = crossing;
+    walker.direction[i] = direction;
+  }
+
+  /** Along a sidewalk from (x0, z0) to (x1, z1): round the corner of a far block if one end is up the
+   *  side street and the other along the avenue. */
+  #pushAlong(walker: Walker, region: Region, x0: number, z0: number, x1: number, z1: number): void {
+    if (region === "near") return;
+    const s = region === "fl" ? -1 : 1;
+    const up0 = z0 > FACADE_FAR - 0.2 && s * x0 < SIDE_FACADE + 0.5;
+    const up1 = z1 > FACADE_FAR - 0.2 && s * x1 < SIDE_FACADE + 0.5;
+    const along0 = s * x0 > SIDE_FACADE + 0.2;
+    const along1 = s * x1 > SIDE_FACADE + 0.2;
+    if ((up0 && along1) || (along0 && up1)) {
+      this.#push(walker, s * (SIDE_KERB + 1.6) + this.#random.range(-0.4, 0.4), KERB_FAR + 2.7, region, -1, 0);
+    }
+  }
+
+  /** A route from one portal to another: along the sidewalk, across (the shorter of the crossings
+   *  that join the two sidewalks, with a little whim), and on. */
+  #plan(walker: Walker, from: Portal, to: Portal): void {
+    const random = this.#random;
+    walker.count = 0;
+    walker.next = 0;
+    const ex = to.x + to.sx * random.range(-1, 1);
+    const ez = to.z + to.sz * random.range(-1, 1);
+    if (from.region === to.region) {
+      this.#pushAlong(walker, from.region, walker.x, walker.z, ex, ez);
+      this.#push(walker, ex, ez, to.region, -1, 0);
+      return;
+    }
+    let best = -1;
+    let bestDir = 1;
+    let bestCost = Number.POSITIVE_INFINITY;
+    for (let c = 0; c < CROSSINGS.length; c++) {
+      const crossing = CROSSINGS[c];
+      if (!crossing) continue;
+      let dir = 0;
+      if (crossing.ra === from.region && crossing.rb === to.region) dir = 1;
+      else if (crossing.rb === from.region && crossing.ra === to.region) dir = -1;
+      if (dir === 0) continue;
+      const sx = dir > 0 ? crossing.ax : crossing.bx;
+      const sz = dir > 0 ? crossing.az : crossing.bz;
+      const fx = dir > 0 ? crossing.bx : crossing.ax;
+      const fz = dir > 0 ? crossing.bz : crossing.az;
+      const cost = Math.hypot(sx - walker.x, sz - walker.z) + Math.hypot(fx - sx, fz - sz) + Math.hypot(ex - fx, ez - fz) + random.range(0, 5);
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = c;
+        bestDir = dir;
+      }
+    }
+    const crossing = CROSSINGS[best];
+    if (!crossing) {
+      this.#push(walker, ex, ez, to.region, -1, 0);
+      return;
+    }
+    const sx = bestDir > 0 ? crossing.ax : crossing.bx;
+    const sz = bestDir > 0 ? crossing.az : crossing.bz;
+    const fx = bestDir > 0 ? crossing.bx : crossing.ax;
+    const fz = bestDir > 0 ? crossing.bz : crossing.az;
+    // Spread over the crosswalk's width, a little to the left of the walking direction; both ends
+    // kept on their sidewalks (the diagonals land on the rounded corners).
+    const len = Math.hypot(fx - sx, fz - sz);
+    const tx = -(fz - sz) / len;
+    const tz = (fx - sx) / len;
+    const across = CROSS_HALF * (0.85 * (random.next() + random.next() - 1) + 0.15);
+    const point = this.#point;
+    point[0] = sx + tx * across;
+    point[1] = sz + tz * across;
+    clampRegion(from.region, point);
+    const kx = point[0] ?? sx;
+    const kz = point[1] ?? sz;
+    point[0] = fx + tx * across;
+    point[1] = fz + tz * across;
+    clampRegion(to.region, point);
+    const lx = point[0] ?? fx;
+    const lz = point[1] ?? fz;
+    this.#pushAlong(walker, from.region, walker.x, walker.z, kx, kz);
+    this.#push(walker, kx, kz, from.region, best, bestDir);
+    this.#push(walker, lx, lz, to.region, -1, 0);
+    this.#pushAlong(walker, to.region, lx, lz, ex, ez);
+    this.#push(walker, ex, ez, to.region, -1, 0);
+  }
+
+  /** Put a walker somewhere along a route as if the evening had been going on a while: on a
+   *  sidewalk, or (a good share) already waiting at its kerb for the green man. */
+  #scatterWalker(): void {
+    const walker = this.#freeWalker();
+    if (!walker) return;
+    const random = this.#random;
+    this.#dress(walker, false);
+    const from = this.#pickPortal(undefined);
+    const to = this.#pickPortal(from);
+    walker.x = from.x + from.sx * random.range(-1, 1);
+    walker.z = from.z + from.sz * random.range(-1, 1);
+    this.#plan(walker, from, to);
+    let kerb = -1;
+    for (let i = 0; i < walker.count; i++) if ((walker.crossing[i] ?? -1) >= 0) kerb = i;
+    if (kerb >= 0 && random.next() < 0.6) {
+      walker.next = kerb;
+      walker.x = walker.wx[kerb] ?? walker.x;
+      walker.z = walker.wz[kerb] ?? walker.z;
+      this.#startWaiting(walker);
+      walker.x = walker.spotX;
+      walker.z = walker.spotZ;
+      walker.vx = 0;
+      walker.vz = 0;
+      walker.heading = Math.atan2(walker.faceZ, walker.faceX);
+      walker.settled = true;
+      return;
+    }
+    // Somewhere on a sidewalk leg (not on a crossing): between two waypoints of the same region.
+    const legs: number[] = [];
+    for (let i = 0; i < walker.count; i++) {
+      if (i === 0 || (walker.crossing[i - 1] ?? -1) < 0) legs.push(i);
+    }
+    const leg = legs[Math.floor(random.next() * legs.length)] ?? 0;
+    const ax = leg > 0 ? (walker.wx[leg - 1] ?? walker.x) : walker.x;
+    const az = leg > 0 ? (walker.wz[leg - 1] ?? walker.z) : walker.z;
+    const f = random.range(0.1, 0.9);
+    walker.x = ax + ((walker.wx[leg] ?? ax) - ax) * f;
+    walker.z = az + ((walker.wz[leg] ?? az) - az) * f;
+    walker.next = leg;
+    this.#keepToSidewalk(walker, walker.region[leg] ?? "near");
+    this.#launchWalker(walker);
+  }
+
+  /** The school outing: a teacher, children two by two, an assistant at the end of the line. */
+  #startOuting(): void {
+    const random = this.#random;
+    const teacher = this.#freeWalker();
+    if (!teacher) return;
+    this.#dress(teacher, false);
+    teacher.pace = OUTING_PACE;
+    teacher.hasUmbrella = true;
+    teacher.umbrellaKeen = UMBRELLA_KEEN;
+    teacher.umbrellaUp = this.#precip > UMBRELLA_KEEN;
+    teacher.umbrella = teacher.umbrellaUp ? 1 : 0;
+    // From one side of the avenue to the other: the near sidewalk and a far corner.
+    const nearSide = PORTALS.filter((portal) => portal.region === "near" && portal.sz > 0);
+    const farSide = PORTALS.filter((portal) => portal.region !== "near" && portal.sz > 0);
+    const near = nearSide[Math.floor(random.next() * nearSide.length)];
+    const far = farSide[Math.floor(random.next() * farSide.length)];
+    if (!near || !far) {
+      teacher.alive = false;
+      return;
+    }
+    const outbound = random.next() < 0.5;
+    const from = outbound ? near : far;
+    const to = outbound ? far : near;
+    teacher.x = from.x;
+    teacher.z = from.z;
+    this.#plan(teacher, from, to);
+    this.#launchWalker(teacher);
+    const exitX = teacher.wx[teacher.count - 1] ?? to.x;
+    const exitZ = teacher.wz[teacher.count - 1] ?? to.z;
+    const back = from.x < 0 ? -1 : 1;
+    const kids = 2 * Math.round(random.range(OUTING_MIN, OUTING_MAX) / 2);
+    const line: Walker[] = [];
+    for (let k = 0; k < kids; k++) {
+      const child = this.#freeWalker();
+      if (!child) break;
+      this.#dress(child, true);
+      const row = k % 2 === 0 ? -1 : 1;
+      child.row = row;
+      child.mode = "follow";
+      child.ahead = k < 2 ? teacher : line[k - 2];
+      child.exitX = exitX;
+      child.exitZ = exitZ;
+      child.x = from.x + back * (0.9 + OUTING_SPACING * Math.floor(k / 2));
+      child.z = from.z + row * OUTING_ROW;
+      child.heading = teacher.heading;
+      child.lastX = child.x;
+      child.lastZ = child.z;
+      child.lastHeading = child.heading;
+      line.push(child);
+    }
+    const assistant = this.#freeWalker();
+    const last = line[line.length - 1];
+    if (assistant && last) {
+      this.#dress(assistant, false);
+      assistant.pace = OUTING_PACE;
+      assistant.mode = "follow";
+      assistant.ahead = last;
+      assistant.row = 0;
+      assistant.exitX = exitX;
+      assistant.exitZ = exitZ;
+      assistant.x = last.x + back * OUTING_SPACING;
+      assistant.z = from.z;
+      assistant.heading = teacher.heading;
+      assistant.lastX = assistant.x;
+      assistant.lastZ = assistant.z;
+      assistant.lastHeading = assistant.heading;
+    }
+  }
+
+  /** The green man has come on: everyone waiting steps off, front first. */
+  #walkBegins(): void {
+    const random = this.#random;
+    for (const walker of this.#walkers) {
+      if (!walker.alive || walker.mode !== "wait") continue;
+      walker.goAt = this.#clock + STEP_OFF + STEP_OFF_PER_METRE * walker.depth + STEP_OFF_SPREAD * random.next();
+    }
+    // Partners step off together.
+    for (const walker of this.#walkers) {
+      const partner = walker.partner;
+      if (walker.alive && walker.mode === "wait" && partner?.alive && partner.mode === "wait") {
+        walker.goAt = Math.min(walker.goAt, partner.goAt + 0.15);
+      }
+    }
+  }
+
+  /** Arrived at a kerb with the green man off: find a place in the crowd there and wait. */
+  #startWaiting(walker: Walker): void {
+    const random = this.#random;
+    const c = walker.crossing[walker.next] ?? -1;
+    const dir = walker.direction[walker.next] ?? 1;
+    const crossing = CROSSINGS[c];
+    if (!crossing) return;
+    const sx = dir > 0 ? crossing.ax : crossing.bx;
+    const sz = dir > 0 ? crossing.az : crossing.bz;
+    const fx = dir > 0 ? crossing.bx : crossing.ax;
+    const fz = dir > 0 ? crossing.bz : crossing.az;
+    const len = Math.hypot(fx - sx, fz - sz);
+    const dx = (fx - sx) / len;
+    const dz = (fz - sz) / len;
+    const region = dir > 0 ? crossing.ra : crossing.rb;
+    const partner = walker.partner;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let tries = 0; tries < SPOT_TRIES; tries++) {
+      let depth = SPOT_DEPTH * Math.pow(random.next(), 1.6);
+      let side = (CROSS_HALF + 0.7) * (2 * random.next() - 1);
+      if (partner?.alive && partner.mode === "wait") {
+        // Beside its partner.
+        depth = Math.max(0, partner.depth + random.range(-0.2, 0.2));
+        side = (partner.spotX - sx) * -dz + (partner.spotZ - sz) * dx + (random.next() < 0.5 ? -PAIR_GAP : PAIR_GAP);
+      }
+      this.#point[0] = sx - dx * (0.15 + depth) - dz * side;
+      this.#point[1] = sz - dz * (0.15 + depth) + dx * side;
+      clampRegion(region, this.#point);
+      const px = this.#point[0] ?? sx;
+      const pz = this.#point[1] ?? sz;
+      let score = depth + 0.3 * Math.abs(side);
+      for (const other of this.#walkers) {
+        if (other === walker || !other.alive || (other.mode !== "wait" && !other.child)) continue;
+        const ox = other.mode === "wait" ? other.spotX : other.x;
+        const oz = other.mode === "wait" ? other.spotZ : other.z;
+        const d = Math.hypot(ox - px, oz - pz);
+        if (d < SPOT_SPACE) score += (SPOT_SPACE - d) * 14;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        walker.spotX = px;
+        walker.spotZ = pz;
+        walker.depth = Math.max(0, (sx - px) * dx + (sz - pz) * dz);
+      }
+    }
+    walker.faceX = dx;
+    walker.faceZ = dz;
+    walker.mode = "wait";
+    walker.settled = false;
+    walker.goAt = Number.POSITIVE_INFINITY;
+  }
+
+  #stepWalkers(dt: number): void {
+    const walkers = this.#walkers;
+    this.#buildGrid();
+    for (const w of walkers) {
+      if (!w.alive) continue;
+      w.onRoad = w.z > KERB_NEAR + 0.1 && (w.z < KERB_FAR - 0.1 || Math.abs(w.x) < SIDE_KERB - 0.1);
+    }
+    // Forces from where everyone is now; then everyone moves.
+    for (let i = 0; i < walkers.length; i++) {
+      const w = walkers[i];
+      if (!w?.alive) continue;
+      this.#decide(w);
+      if (!w.alive) continue;
+      this.#forces(w, i);
+    }
+    for (const w of walkers) {
+      if (!w.alive) continue;
+      this.#move(w, dt);
+    }
+    this.#weatherAndPointer(dt);
+  }
+
+  /** Waypoints reached, kerbs, stepping off, leaving. */
+  #decide(w: Walker): void {
+    const signals = this.#signals;
+    const clock = this.#clock;
+    if (w.mode === "follow") {
+      const ahead = w.ahead;
+      if (ahead && !ahead.alive) w.ahead = undefined;
+      if (!w.ahead && Math.hypot(w.exitX - w.x, w.exitZ - w.z) < 1.2) this.#retire(w);
+      return;
+    }
+    if (w.mode === "wait") {
+      // Nobody sets off once the green man flashes.
+      if (clock >= w.goAt && signals.walk) {
+        w.mode = "cross";
+        w.settled = false;
+        w.next++;
+      }
+      return;
+    }
+    const tx = w.wx[w.next] ?? w.x;
+    const tz = w.wz[w.next] ?? w.z;
+    const kerb = (w.crossing[w.next] ?? -1) >= 0 && w.mode === "walk";
+    const dist = Math.hypot(tx - w.x, tz - w.z);
+    if (dist > (kerb ? REACH_KERB : REACH)) return;
+    if (kerb) {
+      const crossing = CROSSINGS[w.crossing[w.next] ?? 0];
+      const len = crossing ? Math.hypot(crossing.bx - crossing.ax, crossing.bz - crossing.az) : 18;
+      const brave = signals.flash && signals.remaining > len / (w.pace * HURRY) && (w.seed * 13.7) % 1 < 0.35;
+      if (signals.walk || brave) {
+        w.mode = "cross";
+        w.next++;
+      } else {
+        this.#startWaiting(w);
+      }
+      return;
+    }
+    if (w.next >= w.count - 1) {
+      // Gone (an outing's children make their own way to the exit behind it).
+      this.#retire(w);
+      return;
+    }
+    w.next++;
+    if (w.mode === "cross") w.mode = "walk";
+  }
+
+  #retire(w: Walker): void {
+    w.alive = false;
+    w.partner = undefined;
+    for (const other of this.#walkers) if (other.partner === w) other.partner = undefined;
+  }
+
+  #forces(w: Walker, i: number): void {
+    const signals = this.#signals;
+    // The pull: toward the next waypoint, the waiting spot, or the place in line.
+    let tx = w.x;
+    let tz = w.z;
+    let speed = w.pace;
+    let arrive = false;
+    switch (w.mode) {
+      case "walk":
+        tx = w.wx[w.next] ?? w.x;
+        tz = w.wz[w.next] ?? w.z;
+        break;
+      case "cross":
+        tx = w.wx[w.next] ?? w.x;
+        tz = w.wz[w.next] ?? w.z;
+        if (signals.flash || (!signals.walk && w.onRoad)) speed *= HURRY;
+        break;
+      case "wait":
+        tx = w.spotX;
+        tz = w.spotZ;
+        speed *= 0.8;
+        arrive = true;
+        break;
+      case "follow": {
+        const ahead = w.ahead;
+        if (ahead) {
+          const hx = Math.cos(ahead.heading);
+          const hz = Math.sin(ahead.heading);
+          const gap = ahead.child ? OUTING_SPACING : OUTING_SPACING + 0.2;
+          const side = ahead.child ? 0 : w.row * OUTING_ROW;
+          tx = ahead.x - hx * gap - hz * side;
+          tz = ahead.z - hz * gap + hx * side;
+        } else {
+          tx = w.exitX;
+          tz = w.exitZ;
+        }
+        speed *= 1.35;
+        arrive = true;
+        break;
+      }
+      default: {
+        const unreachable: never = w.mode;
+        throw new StreetSimError(`street: unknown walker mode ${String(unreachable)}`);
+      }
+    }
+    let dx = tx - w.x;
+    let dz = tz - w.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > 1e-6) {
+      dx /= dist;
+      dz /= dist;
+    }
+    let want = arrive ? Math.min(speed, dist * 1.2) : speed;
+    want *= 1 - LOOK_SLOW * w.look;
+    let ax = (dx * want - w.vx) / RELAX;
+    let az = (dz * want - w.vz) / RELAX;
+
+    // Pairs keep beside each other while they walk.
+    const partner = w.partner;
+    if (partner?.alive && (w.mode === "walk" || w.mode === "cross") && partner.mode === w.mode) {
+      const hx = Math.cos(partner.heading);
+      const hz = Math.sin(partner.heading);
+      const side = (w.x - partner.x) * -hz + (w.z - partner.z) * hx >= 0 ? 1 : -1;
+      const px = partner.x - hz * side * PAIR_GAP - w.x;
+      const pz = partner.z + hx * side * PAIR_GAP - w.z;
+      const pull = Math.min(Math.hypot(px, pz), 1.5) * PAIR_PULL;
+      const pd = Math.hypot(px, pz) || 1;
+      ax += (px / pd) * pull;
+      az += (pz / pd) * pull;
+    }
+
+    // Everyone near: exponential repulsion, weaker from behind; contact; a sidestep to the left
+    // from people coming the other way.
+    const moving = Math.hypot(w.vx, w.vz);
+    const ex = moving > 0.1 ? w.vx / moving : Math.cos(w.heading);
+    const ez = moving > 0.1 ? w.vz / moving : Math.sin(w.heading);
+    let sx = 0;
+    let sz = 0;
+    const cx = Math.floor((w.x - GRID_X0) / GRID);
+    const cz = Math.floor((w.z - GRID_Z0) / GRID);
+    for (let gz = cz - 1; gz <= cz + 1; gz++) {
+      if (gz < 0 || gz >= GRID_H) continue;
+      for (let gx = cx - 1; gx <= cx + 1; gx++) {
+        if (gx < 0 || gx >= GRID_W) continue;
+        const cell = gz * GRID_W + gx;
+        const end = this.#cellStart[cell + 1] ?? 0;
+        for (let k = this.#cellStart[cell] ?? 0; k < end; k++) {
+          const j = this.#cellItems[k] ?? -1;
+          if (j === i) continue;
+          const o = this.#walkers[j];
+          if (!o?.alive) continue;
+          let nx = w.x - o.x;
+          let nz = w.z - o.z;
+          const d = Math.sqrt(nx * nx + nz * nz);
+          if (d > NEAR_RANGE || d < 1e-6) continue;
+          nx /= d;
+          nz /= d;
+          const rr = w.radius + o.radius;
+          const ahead = -(ex * nx + ez * nz); // 1: o is straight ahead
+          const weight = SOCIAL_BEHIND + (1 - SOCIAL_BEHIND) * 0.5 * (1 + ahead);
+          // The outing keeps close together; the crowd at a kerb stands a little closer than walkers pass.
+          const space = (w.child && o.child) || w.ahead === o || o.ahead === w ? 0 : w.mode === "wait" && o.mode === "wait" ? SOCIAL_SPACE * 0.4 : SOCIAL_SPACE;
+          let f = SOCIAL_A * Math.exp((rr + space - d) / SOCIAL_B) * weight;
+          if (d < rr) f += CONTACT * (rr - d);
+          sx += nx * f;
+          sz += nz * f;
+          // Oncoming: sidestep to the left of the walking direction.
+          if (moving > 0.3 && ahead > 0.5 && d < 3) {
+            const om = Math.hypot(o.vx, o.vz);
+            if (om > 0.3 && (o.vx * ex + o.vz * ez) / om < -0.3) {
+              const push = SIDESTEP * (1 - d / 3);
+              sx += -ez * push;
+              sz += ex * push;
+            }
+          }
+        }
+      }
+    }
+    // Poles and vending machines.
+    const force = this.#force;
+    force[0] = sx;
+    force[1] = sz;
+    for (const pole of LAMPS) this.#avoidPoint(w, pole.x, pole.z, 0.14);
+    for (const pole of SIGNAL_POLES) this.#avoidPoint(w, pole.x, pole.z, 0.16);
+    for (const box of VENDING) this.#avoidPoint(w, clamp(w.x, box[0], box[1]), clamp(w.z, box[2], box[3]), 0);
+    sx = force[0] ?? sx;
+    sz = force[1] ?? sz;
+    // A walker caught on the street keeps clear of the vehicles.
+    if (w.onRoad) {
+      for (const vehicle of this.#vehicles) {
+        if (!vehicle.alive) continue;
+        const shape = SHAPES[vehicle.kind];
+        const reach = (shape?.length ?? 4) / 2 + 0.6;
+        const dx2 = w.x - vehicle.x;
+        const dz2 = w.z - vehicle.z;
+        const d = Math.hypot(dx2, dz2);
+        if (d < reach && d > 1e-6) {
+          sx += (dx2 / d) * 2.5 * (reach - d);
+          sz += (dz2 / d) * 2.5 * (reach - d);
+        }
+      }
+    }
+    if (w.settled) {
+      // Standing still until pushed properly.
+      if (Math.hypot(sx, sz) < UNSETTLE) {
+        w.ax = 0;
+        w.az = 0;
+        return;
+      }
+      w.settled = false;
+    }
+    w.ax = ax + sx;
+    w.az = az + sz;
+  }
+
+  /** Add the repulsion from a fixed point (a pole's centre, the nearest point of a box) of radius r
+   *  to #force. */
+  #avoidPoint(w: Walker, px: number, pz: number, r: number): void {
+    const nx = w.x - px;
+    const nz = w.z - pz;
+    const d = Math.sqrt(nx * nx + nz * nz);
+    if (d > 1.6 || d < 1e-6) return;
+    const f = SOCIAL_A * 1.2 * Math.exp((w.radius + r + 0.08 - d) / SOCIAL_B) + (d < w.radius + r ? CONTACT * (w.radius + r - d) : 0);
+    this.#force[0] = (this.#force[0] ?? 0) + (nx / d) * f;
+    this.#force[1] = (this.#force[1] ?? 0) + (nz / d) * f;
+  }
+
+  #move(w: Walker, dt: number): void {
+    const clock = this.#clock;
+    if (!w.settled) {
+      w.vx += w.ax * dt;
+      w.vz += w.az * dt;
+      const speed = Math.hypot(w.vx, w.vz);
+      if (speed > TOP_SPEED) {
+        w.vx *= TOP_SPEED / speed;
+        w.vz *= TOP_SPEED / speed;
+      }
+      w.x += w.vx * dt;
+      w.z += w.vz * dt;
+      if (w.mode === "walk" || w.mode === "wait") this.#keepToSidewalk(w, w.region[w.next] ?? "near");
+      // Settle: on the spot, or wherever the crowd has come to rest round it.
+      const fromSpot = Math.hypot(w.spotX - w.x, w.spotZ - w.z);
+      if (w.mode === "wait" && ((fromSpot < SETTLE_NEAR && speed < SETTLE_SPEED) || (fromSpot < 1.2 && speed < 0.05))) {
+        w.settled = true;
+        w.vx = 0;
+        w.vz = 0;
+      }
+      // The gait runs with the distance walked; slowing to a stop, the feet come together (the
+      // nearest half cycle, where the legs pass each other).
+      if (speed > 0.25) w.gait = (w.gait + (speed * dt) / STRIDE) % 1;
+      else w.gait += (Math.round(w.gait * 2) / 2 - w.gait) * Math.min(1, dt * 3);
+    }
+    // Facing: along the way when walking; the street when standing, glancing about now and then.
+    const speed = Math.hypot(w.vx, w.vz);
+    let target = w.heading;
+    let rate = TURN_WALK;
+    if (w.mode === "wait" && (w.settled || speed < 0.25)) {
+      if (clock >= w.nextGlance) {
+        w.glanceTarget = w.glanceTarget !== 0 ? 0 : (this.#random.next() < 0.5 ? -1 : 1) * GLANCE_ANGLE * this.#random.range(0.4, 1);
+        w.nextGlance = clock + (w.glanceTarget !== 0 ? GLANCE_HOLD * this.#random.range(0.6, 1.6) : this.#random.range(GLANCE_EVERY_MIN, GLANCE_EVERY_MAX));
+      }
+      target = Math.atan2(w.faceZ, w.faceX) + w.glanceTarget;
+      rate = TURN_STAND;
+    } else if (speed > 0.2) {
+      target = Math.atan2(w.vz, w.vx);
+    }
+    const turn = angleDiff(target, w.heading);
+    w.heading += clamp(turn, -rate * dt, rate * dt);
+    if (w.heading > Math.PI) w.heading -= TAU;
+    if (w.heading < -Math.PI) w.heading += TAU;
+  }
+
+  /** Clamp a walker into its sidewalk. */
+  #keepToSidewalk(w: Walker, region: Region): void {
+    this.#point2[0] = w.x;
+    this.#point2[1] = w.z;
+    clampRegion(region, this.#point2);
+    const x = this.#point2[0] ?? w.x;
+    const z = this.#point2[1] ?? w.z;
+    if (x !== w.x) w.vx *= 0.5;
+    if (z !== w.z) w.vz *= 0.5;
+    w.x = x;
+    w.z = z;
+  }
+
+  /** Umbrellas follow the rain or snow; heads turn up toward the pointer's window. */
+  #weatherAndPointer(dt: number): void {
+    const precip = this.#precip;
+    for (const w of this.#walkers) {
+      if (!w.alive) continue;
+      const wants = w.hasUmbrella && precip > w.umbrellaKeen * (w.umbrellaUp ? 0.5 : 1);
+      if (wants !== w.umbrellaUp) {
+        w.umbrellaClock += dt;
+        if (w.umbrellaClock > w.umbrellaDelay * (wants ? 1 : 1.6)) {
+          w.umbrellaUp = wants;
+          w.umbrellaClock = 0;
+        }
+      } else {
+        w.umbrellaClock = 0;
+      }
+      w.umbrella = clamp(w.umbrella + (w.umbrellaUp ? dt : -dt) / UMBRELLA_OPEN, 0, 1);
+
+      const near = this.#hover && Math.hypot(this.#hoverX - w.x, this.#hoverZ - w.z) < LOOK_RADIUS;
+      w.interest = clamp(w.interest + (near ? dt : -0.7 * dt), 0, 2.5);
+      if (!w.looking && w.interest > w.lookDelay) w.looking = true;
+      if (w.looking && w.interest < 0.05) w.looking = false;
+      w.look = clamp(w.look + ((w.looking ? 1 : 0) - w.look) * Math.min(1, dt / LOOK_EASE), 0, 1);
+    }
+  }
+
+  #buildGrid(): void {
+    const start = this.#cellStart;
+    start.fill(0);
+    const walkers = this.#walkers;
+    for (let i = 0; i < walkers.length; i++) {
+      const w = walkers[i];
+      let cell = -1;
+      if (w?.alive) {
+        const gx = Math.floor((w.x - GRID_X0) / GRID);
+        const gz = Math.floor((w.z - GRID_Z0) / GRID);
+        if (gx >= 0 && gx < GRID_W && gz >= 0 && gz < GRID_H) cell = gz * GRID_W + gx;
+      }
+      this.#cellOf[i] = cell;
+      if (cell >= 0) start[cell + 1] = (start[cell + 1] ?? 0) + 1;
+    }
+    for (let c = 0; c < GRID_W * GRID_H; c++) start[c + 1] = (start[c + 1] ?? 0) + (start[c] ?? 0);
+    const cursor = this.#cellCursor;
+    for (let c = 0; c < GRID_W * GRID_H; c++) cursor[c] = start[c] ?? 0;
+    for (let i = 0; i < walkers.length; i++) {
+      const cell = this.#cellOf[i] ?? -1;
+      if (cell < 0) continue;
+      const at = cursor[cell] ?? 0;
+      this.#cellItems[at] = i;
+      cursor[cell] = at + 1;
+    }
+  }
+
+  // ---- Vehicles ----
+
+  #pickCar(): number {
+    const u = this.#random.next();
+    for (const [share, kind] of CAR_KINDS) if (u <= share) return kind;
+    return KIND_SEDAN;
+  }
+
+  #launchVehicle(name: PathName, kind: number): Vehicle | undefined {
+    const vehicle = this.#vehicles.find((v) => !v.alive);
+    if (!vehicle) return undefined;
+    const random = this.#random;
+    vehicle.alive = true;
+    vehicle.kind = kind;
+    vehicle.path = name;
+    vehicle.seed = random.next();
+    vehicle.pace = (kind === KIND_BIKE ? BIKE_PACE : CAR_PACE) * random.range(0.88, 1.1);
+    vehicle.brake = 0;
+    vehicle.stopping = false;
+    vehicle.sawAmber = false;
+    vehicle.umbrella = kind === KIND_BIKE && this.#precip > 0.15 && random.next() < 0.6 ? 1 : 0;
+    return vehicle;
+  }
+
+  #placeVehicle(vehicle: Vehicle): void {
+    const path = PATHS[vehicle.path];
+    path.at(vehicle.s, this.#point);
+    vehicle.x = this.#point[0] ?? 0;
+    vehicle.z = this.#point[1] ?? 0;
+    vehicle.heading = this.#point[2] ?? 0;
+    const span = path.span(vehicle.s);
+    vehicle.lane = span?.lane ?? -1;
+    vehicle.laneC = span ? span.c0 + (vehicle.s - span.s0) : 0;
+    vehicle.lastX = vehicle.x;
+    vehicle.lastZ = vehicle.z;
+    vehicle.lastHeading = vehicle.heading;
+  }
+
+  #stepVehicles(dt: number): void {
+    const vehicles = this.#vehicles;
+    const signals = this.#signals;
+    for (const me of vehicles) {
+      if (!me.alive) continue;
+      const path = PATHS[me.path];
+      const shape = SHAPES[me.kind] ?? SHAPES[KIND_SEDAN];
+      const length = shape?.length ?? 4.5;
+      const width = shape?.width ?? 1.7;
+      const bike = me.kind === KIND_BIKE;
+      const front = me.s + length / 2;
+      let gap = Number.POSITIVE_INFINITY;
+      let lead = 0;
+
+      // The stop line, while the light says stop.
+      const light = path.signal === "avenue" ? signals.avenue() : signals.side();
+      const toLine = path.stop - front;
+      if (toLine > -0.5) {
+        if (light === "amber" && !me.sawAmber) {
+          me.sawAmber = true;
+          me.stopping = toLine > (me.v * me.v) / (2 * IDM_B) + 1;
+        }
+        if (light !== "amber") me.sawAmber = false;
+        if (light === "red" || (light === "amber" && me.stopping)) {
+          if (toLine < gap) {
+            gap = Math.max(toLine, 0);
+            lead = 0;
+          }
+        }
+      }
+
+      // Vehicles ahead along the lanes this path runs on; one turning off it, by where it is.
+      const hx = Math.cos(me.heading);
+      const hz = Math.sin(me.heading);
+      for (const other of vehicles) {
+        if (other === me || !other.alive) continue;
+        const otherShape = SHAPES[other.kind];
+        const otherLength = otherShape?.length ?? 4.5;
+        let at = path.locate(other.lane, other.laneC);
+        if (Number.isNaN(at) && other.lane >= L_ARC_EBL) {
+          const along = (other.x - me.x) * hx + (other.z - me.z) * hz;
+          const across = Math.abs((other.z - me.z) * hx - (other.x - me.x) * hz);
+          if (along > 0 && across < (width + (otherShape?.width ?? 1.7)) / 2 + 0.3) at = me.s + along;
+        }
+        if (Number.isNaN(at) || at <= me.s || at - me.s > LOOKAHEAD) continue;
+        const g = at - me.s - (length + otherLength) / 2;
+        if (g < gap) {
+          gap = g;
+          lead = other.v;
+        }
+      }
+
+      // Anyone still on the street in front.
+      for (const w of this.#walkers) {
+        if (!w.alive || !w.onRoad) continue;
+        if (Math.hypot(w.x - me.x, w.z - me.z) > YIELD_LOOK + length) continue;
+        for (let ds = 0.5; ds <= YIELD_LOOK; ds += YIELD_STEP) {
+          path.at(front + ds, this.#point2);
+          if (Math.hypot(w.x - (this.#point2[0] ?? 0), w.z - (this.#point2[1] ?? 0)) < width / 2 + 0.8) {
+            if (ds - 0.5 < gap) {
+              gap = ds - 0.5;
+              lead = 0;
+            }
+            break;
+          }
+        }
+      }
+
+      // The intelligent driver model, with the bend ahead as a speed limit.
+      const v = me.v;
+      const ahead = clamp(Math.round((front + v * 1.5) / PATH_STEP), 0, path.vmax.length - 1);
+      const limit = Math.min(me.pace, path.vmax[ahead] ?? me.pace);
+      const s0 = bike ? IDM_S0_BIKE : IDM_S0;
+      let acc = IDM_A * (1 - Math.pow(v / Math.max(limit, 0.5), 4));
+      if (Number.isFinite(gap)) {
+        const sStar = s0 + Math.max(0, v * IDM_T + (v * (v - lead)) / (2 * Math.sqrt(IDM_A * IDM_B)));
+        acc -= IDM_A * Math.pow(sStar / Math.max(gap, 0.05), 2);
+      }
+      acc = Math.max(acc, -IDM_HARD);
+      me.v = Math.max(0, v + acc * dt);
+      me.s += me.v * dt;
+      me.brake = clamp(me.brake + ((acc < -0.35 || (me.v < 0.3 && gap < 12) ? 1 : 0) - me.brake) * Math.min(1, dt / 0.15), 0, 1);
+      if (me.s > path.length - 1) {
+        me.alive = false;
+        continue;
+      }
+      path.at(me.s, this.#point);
+      me.x = this.#point[0] ?? me.x;
+      me.z = this.#point[1] ?? me.z;
+      me.heading = this.#point[2] ?? me.heading;
+      const span = path.span(me.s);
+      me.lane = span?.lane ?? -1;
+      me.laneC = span ? span.c0 + (me.s - span.s0) : 0;
+      if (bike) me.umbrella = clamp(me.umbrella + (this.#precip > 0.15 && me.seed < 0.6 ? dt : -dt) / UMBRELLA_OPEN, 0, 1);
+    }
+  }
+
+  // ---- Upload ----
+
+  #upload(alpha: number): void {
+    const data = this.#agentData;
+    const walkers = this.#walkers;
+    const vehicles = this.#vehicles;
+    const row1 = MAX_AGENTS * 4;
+    data.fill(0);
+    const order = this.#order;
+    const key = this.#orderKey;
+    let n = 0;
+    for (let i = 0; i < MAX_WALKERS; i++) {
+      const w = walkers[i];
+      if (!w?.alive) continue;
+      const x = w.lastX + (w.x - w.lastX) * alpha;
+      const z = w.lastZ + (w.z - w.lastZ) * alpha;
+      const o = i * 4;
+      data[o] = x;
+      data[o + 1] = z - Z_REF;
+      data[o + 2] = w.lastHeading + angleDiff(w.heading, w.lastHeading) * alpha;
+      data[o + 3] = w.child ? KIND_CHILD : KIND_ADULT;
+      data[row1 + o] = w.umbrella;
+      data[row1 + o + 1] = w.look;
+      data[row1 + o + 2] = w.gait;
+      data[row1 + o + 3] = w.seed;
+      order[n] = i;
+      key[n] = Math.hypot(x - CAM_X, z);
+      n++;
+    }
+    for (let k = 0; k < MAX_VEHICLES; k++) {
+      const v = vehicles[k];
+      if (!v?.alive) continue;
+      const i = MAX_WALKERS + k;
+      const x = v.lastX + (v.x - v.lastX) * alpha;
+      const z = v.lastZ + (v.z - v.lastZ) * alpha;
+      const o = i * 4;
+      data[o] = x;
+      data[o + 1] = z - Z_REF;
+      data[o + 2] = v.lastHeading + angleDiff(v.heading, v.lastHeading) * alpha;
+      data[o + 3] = v.kind;
+      if (v.kind === KIND_BIKE) {
+        data[row1 + o] = v.umbrella;
+        data[row1 + o + 1] = 0;
+        data[row1 + o + 2] = (v.s / 2.1) % 1;
+      } else {
+        const path = PATHS[v.path];
+        const front = v.s + (SHAPES[v.kind]?.length ?? 4.5) / 2;
+        const turning = front > path.turnAt - BLINK_AHEAD && v.s < path.turnAt + 8;
+        data[row1 + o] = v.brake;
+        data[row1 + o + 1] = turning ? path.turnSide : 0;
+        data[row1 + o + 2] = v.v;
+      }
+      data[row1 + o + 3] = v.seed;
+      order[n] = i;
+      key[n] = Math.hypot(x - CAM_X, z);
+      n++;
+    }
+    this.#agents.upload(data);
+
+    // Nearest the window first, so a full tile keeps the nearest.
+    for (let a = 1; a < n; a++) {
+      const id = order[a] ?? 0;
+      const k = key[a] ?? 0;
+      let b = a - 1;
+      while (b >= 0 && (key[b] ?? 0) > k) {
+        order[b + 1] = order[b] ?? 0;
+        key[b + 1] = key[b] ?? 0;
+        b--;
+      }
+      order[b + 1] = id;
+      key[b + 1] = k;
+    }
+    this.#tileData.fill(0);
+    this.#bodyCount.fill(0);
+    this.#lightCount.fill(0);
+    for (let a = 0; a < n; a++) {
+      const id = order[a] ?? 0;
+      const o = id * 4;
+      const x = data[o] ?? 0;
+      const z = (data[o + 1] ?? 0) + Z_REF;
+      const heading = data[o + 2] ?? 0;
+      const kind = data[o + 3] ?? 0;
+      if (kind === KIND_ADULT || kind === KIND_CHILD) {
+        this.#binProjected(id, x, z, WALKER_TOP, WALKER_REACH, WALKER_REACH, 0);
+      } else {
+        const shape = SHAPES[kind];
+        if (!shape) continue;
+        const bike = kind === KIND_BIKE;
+        // A taxi's roof sign, a cyclist's umbrella.
+        const top = shape.top + (kind === KIND_TAXI ? 0.25 : 0) + (bike ? 0.45 : 0);
+        this.#binProjected(id, x, z, top, shape.length / 2 + 0.15, bike ? WALKER_REACH : shape.width / 2 + 0.15, heading);
+        this.#binLights(id, x, z, heading, shape, bike);
+      }
+    }
+    this.#tiles.upload(this.#tileData);
+
+    // The signals' lamps.
+    const state = this.#stateData;
+    const lamps = this.#signals.lamps;
+    state.fill(0);
+    state[0] = lamps[0] ?? 0;
+    state[1] = lamps[1] ?? 0;
+    state[2] = lamps[2] ?? 0;
+    state[4] = lamps[3] ?? 0;
+    state[5] = lamps[4] ?? 0;
+    state[6] = lamps[5] ?? 0;
+    state[8] = lamps[6] ?? 0;
+    state[9] = lamps[7] ?? 0;
+    this.#state.upload(state);
+  }
+
+  /** Bin an agent's body: a box (half extents along and across its heading) standing `top` high,
+   *  over the ground it covers seen from the window (from its footprint to where the rays past its
+   *  top land). */
+  #binProjected(id: number, x: number, z: number, top: number, halfLong: number, halfWide: number, heading: number): void {
+    const k = CAM_H / (CAM_H - top);
+    const c = Math.cos(heading);
+    const s = Math.sin(heading);
+    this.#box.set(EMPTY_BOX);
+    for (let corner = 0; corner < 4; corner++) {
+      const u = corner & 1 ? halfLong : -halfLong;
+      const v = corner & 2 ? halfWide : -halfWide;
+      const px = x + c * u - s * v;
+      const pz = z + s * u + c * v;
+      this.#extend(px, pz, 0);
+      this.#extend(CAM_X + (px - CAM_X) * k, pz * k, 0);
+    }
+    this.#binBox(id, false);
+  }
+
+  /** Bin a vehicle's lamps: the beam ahead, the glow behind, and their reflections toward the window. */
+  #binLights(id: number, x: number, z: number, heading: number, shape: VehicleShape, bike: boolean): void {
+    const c = Math.cos(heading);
+    const s = Math.sin(heading);
+    const half = shape.length / 2;
+    const reach = bike ? BIKE_BEAM_REACH : BEAM_REACH;
+    const side = shape.width / 2 + 0.5;
+    const spread = shape.width / 2 + reach * 0.42;
+    const fx = x + c * half;
+    const fz = z + s * half;
+    const bx = x - c * half;
+    const bz = z - s * half;
+    const rx = x - c * (half + TAIL_REACH);
+    const rz = z - s * (half + TAIL_REACH);
+    this.#box.set(EMPTY_BOX);
+    this.#extend(fx - s * side, fz + c * side, 0);
+    this.#extend(fx + s * side, fz - c * side, 0);
+    this.#extend(fx + c * reach - s * spread, fz + s * reach + c * spread, 0);
+    this.#extend(fx + c * reach + s * spread, fz + s * reach - c * spread, 0);
+    this.#extend(rx - s * 2, rz + c * 2, 0);
+    this.#extend(rx + s * 2, rz - c * 2, 0);
+    // Reflections run from under each lamp toward the window.
+    const df = Math.hypot(CAM_X - fx, fz) || 1;
+    this.#extend(fx + ((CAM_X - fx) / df) * STREAK_REACH, fz - (fz / df) * STREAK_REACH, 1);
+    const db = Math.hypot(CAM_X - bx, bz) || 1;
+    this.#extend(bx + ((CAM_X - bx) / db) * STREAK_REACH, bz - (bz / db) * STREAK_REACH, 1);
+    this.#binBox(id, true);
+  }
+
+  /** Grow #box (x0, x1, z0, z1) to hold a point and a margin round it. */
+  #extend(x: number, z: number, pad: number): void {
+    const box = this.#box;
+    box[0] = Math.min(box[0] ?? x, x - pad);
+    box[1] = Math.max(box[1] ?? x, x + pad);
+    box[2] = Math.min(box[2] ?? z, z - pad);
+    box[3] = Math.max(box[3] ?? z, z + pad);
+  }
+
+  /** List agent `id` in every tile under #box, among the bodies or the lights. */
+  #binBox(id: number, light: boolean): void {
+    const box = this.#box;
+    const tx0 = Math.max(0, Math.floor(((box[0] ?? 0) - TILE_X0) / TILE));
+    const tx1 = Math.min(TILES_X - 1, Math.floor(((box[1] ?? 0) - TILE_X0) / TILE));
+    const tz0 = Math.max(0, Math.floor(((box[2] ?? 0) - TILE_Z0) / TILE));
+    const tz1 = Math.min(TILES_Z - 1, Math.floor(((box[3] ?? 0) - TILE_Z0) / TILE));
+    const counts = light ? this.#lightCount : this.#bodyCount;
+    const cap = light ? TILE_LIGHTS : TILE_BODIES;
+    const first = light ? TILE_BODIES : 0;
+    const tiles = this.#tileData;
+    for (let tz = tz0; tz <= tz1; tz++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const tile = tz * TILES_X + tx;
+        const count = counts[tile] ?? 0;
+        if (count >= cap) continue;
+        const slot = first + count;
+        tiles[(tile * TILE_TEXELS + (slot >> 2)) * 4 + (slot & 3)] = id + 1;
+        counts[tile] = count + 1;
+      }
+    }
+  }
+}
+
+/** An empty bounding box (x0, x1, z0, z1) to grow. */
+const EMPTY_BOX = [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY] as const;
+
+/** Clamp a point (x, z in p[0], p[1]) into a region's walkable sidewalk: the near sidewalk, or a far
+ *  corner's L (along the avenue, up the side street, the corner's kerb rounded; doors let walkers
+ *  through the facades). */
+function clampRegion(region: Region, p: Float64Array): void {
+  let x = p[0] ?? 0;
+  let z = p[1] ?? 0;
+  if (region === "near") {
+    p[1] = clamp(z, FACADE_NEAR - 1.6, KERB_NEAR - WALL);
+    return;
+  }
+  const sign = region === "fl" ? -1 : 1;
+  let u = sign * x;
+  const inner = SIDE_KERB + WALL;
+  const outer = SIDE_FACADE - WALL;
+  const front = KERB_FAR + WALL;
+  const door = Math.abs(x - CAFE_DOOR) < 0.9 || Math.abs(x - KONBINI_DOOR) < 0.9;
+  const back = door ? FACADE_FAR + 1.5 : FACADE_FAR - WALL;
+  if (u < inner) u = inner;
+  if (z < front) z = front;
+  if (z > back && u > outer) {
+    if (z - back < u - outer) z = back;
+    else u = outer;
+  }
+  const cu = SIDE_KERB + CORNER_RADIUS;
+  const cz = KERB_FAR + CORNER_RADIUS;
+  if (u < cu && z < cz) {
+    const du = u - cu;
+    const dz = z - cz;
+    const d = Math.hypot(du, dz);
+    const lim = CORNER_RADIUS - WALL;
+    if (d > lim) {
+      u = cu + (du * lim) / d;
+      z = cz + (dz * lim) / d;
+    }
+  }
+  x = sign * u;
+  p[0] = x;
+  p[1] = z;
+}
+
+/** The crossing's simulation for a scene whose knobs are `params` (looked up by key). */
+export function streetSim(params: readonly ParamDef[]): SimFactory {
+  return (gl) => new StreetCrossing(gl, params);
+}
