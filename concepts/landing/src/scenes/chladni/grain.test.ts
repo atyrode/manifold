@@ -1,30 +1,7 @@
 import { expect, test } from "bun:test";
-import { effective } from "../../params.ts";
-import type { SimFrame } from "../types.ts";
+import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { chladniScene } from "./index.ts";
 import { CHLADNI_SAND_TEXELS } from "./sim.ts";
-
-/** A GL that keeps the last image uploaded to each texture: the sim's real output, without a GPU. */
-function recordingGl(): { gl: WebGL2RenderingContext; uploads: Map<object, Float32Array> } {
-  const uploads = new Map<object, Float32Array>();
-  let bound: object | undefined;
-  const gl = new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        if (prop === "createTexture") return () => ({});
-        if (prop === "bindTexture") return (_slot: unknown, texture: object) => (bound = texture);
-        if (prop === "texSubImage2D") {
-          return (...args: unknown[]) => {
-            if (bound !== undefined && args[8] instanceof Float32Array) uploads.set(bound, Float32Array.from(args[8]));
-          };
-        }
-        return () => undefined;
-      },
-    },
-  ) as WebGL2RenderingContext;
-  return { gl, uploads };
-}
 
 interface Sand {
   /** Texels holding at least a grain at rest: how wide the lines lie. */
@@ -41,39 +18,20 @@ interface Sand {
 
 /**
  * The plate at the default seed, built with `grainSize`, then (optionally) switched to `next` and
- * run `seconds` at motion 0 with the clock running, as a user dragging the knob on a still lab.
+ * run `seconds` at motion 0 with the clock running, as a user dragging the knob on a still lab. Read
+ * on the headless stand-in: the sim's real output, without a GPU.
  */
 function plate(grainSize: number, next?: number, seconds = 0): Sand {
-  const { gl, uploads } = recordingGl();
-  const sim = chladniScene.sim?.(gl);
-  if (sim === undefined) throw new Error("chladni has no sim");
-  let raw: Record<string, number> = { grainSize };
-  const frame: SimFrame = {
-    dt: 0,
-    time: 0,
-    motionTime: 0,
-    motion: 0,
-    width: 640,
-    height: 360,
-    aspect: 16 / 9,
-    values: chladniScene.params.map((def) => effective(def, raw)),
-    params: raw,
-    triggers: Array.from({ length: 8 }, () => -1e4),
-    fired: Array.from({ length: 8 }, () => false),
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
-    passage: { enter: 1, exit: 0 },
-  };
-  let textures = sim.frame(frame);
+  const sim = new HeadlessSim(chladniScene);
+  const frame: HeadlessFrame = { dt: 0, motion: 0, aspect: 16 / 9, height: 360, knobs: { grainSize }, pointer: { inside: false } };
+  // Paused frames finish the (time-budgeted) settling of the opening figure: a slow machine takes more.
+  sim.step(frame);
+  while (!sim.uploaded(0)) sim.step(frame);
   if (next !== undefined) {
-    raw = { grainSize: next };
-    frame.params = raw;
-    frame.values = chladniScene.params.map((def) => effective(def, raw));
-    frame.dt = 0.05;
-    for (let t = 0; t < seconds; t += frame.dt) textures = sim.frame(frame);
+    for (let t = 0; t < seconds; t += 0.05) sim.step({ ...frame, dt: 0.05, knobs: { grainSize: next } });
   }
-  const sand = uploads.get(textures[0] ?? {});
-  const state = uploads.get(textures[2] ?? {});
-  if (sand === undefined || state === undefined) throw new Error("chladni uploaded no sand or state");
+  const sand = sim.upload(0).data;
+  const state = sim.upload(2).data;
   let occupied = 0;
   let peak = 0;
   let resting = 0;

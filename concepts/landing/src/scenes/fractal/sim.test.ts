@@ -4,9 +4,9 @@ import { FRACTAL_GLOBAL_TEXELS } from "./sim.ts";
 import { fractalScene } from "./index.ts";
 
 // The state row (sim.ts): texel 1 the pan, texel 2 the passage's focus, the incoming layer's +1 c.
-const row = (frame: unknown[]): Float32Array => frame[0] as Float32Array;
-const pan = (state: Float32Array): [number, number] => [state[4] ?? 0, state[5] ?? 0];
-const juliaC = (state: Float32Array): [number, number] => [state[(FRACTAL_GLOBAL_TEXELS + 1) * 4] ?? 0, state[(FRACTAL_GLOBAL_TEXELS + 1) * 4 + 1] ?? 0];
+const row = (sim: HeadlessSim): ArrayLike<number> => sim.upload(0).data;
+const pan = (state: ArrayLike<number>): [number, number] => [state[4] ?? 0, state[5] ?? 0];
+const juliaC = (state: ArrayLike<number>): [number, number] => [state[(FRACTAL_GLOBAL_TEXELS + 1) * 4] ?? 0, state[(FRACTAL_GLOBAL_TEXELS + 1) * 4 + 1] ?? 0];
 
 const aspect = 16 / 9;
 const knobs = { kind: 0, wander: 0 };

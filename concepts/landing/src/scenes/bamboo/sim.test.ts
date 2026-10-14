@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SimHarness } from "../../sims/harness.ts";
+import { HeadlessSim } from "../../sims/headless.ts";
 import { bambooScene } from "./index.ts";
 import { BAMBOO_DEVICE_DEPTH, BAMBOO_MAX_LEAVES } from "./sim.ts";
 
@@ -13,14 +13,15 @@ interface Knock {
   startled: number;
 }
 
-/** Every knock of the tube on its stone over `seconds`, read from the textures the shader samples. */
-function knocks(query: string, seconds: number): Knock[] {
-  const run = new SimHarness(bambooScene, query);
+/** Every knock of the tube on its stone over `seconds` at the lab's motion, read from the textures the shader samples. */
+function knocks(knobs: Record<string, number>, seconds: number): Knock[] {
+  const sim = new HeadlessSim(bambooScene);
   const out: Knock[] = [];
   let since = 60;
-  while (run.time < seconds) {
-    const [, device, leaves] = run.step(STEP);
-    if (device === undefined || leaves === undefined) throw new Error("bamboo: the sim bound no device or leaf texture");
+  while (sim.time < seconds) {
+    sim.step({ dt: STEP, motion: 0.6, knobs, pointer: { inside: false } });
+    const device = sim.upload(1).data;
+    const leaves = sim.upload(2).data;
     // Device texel 1: seconds since the last knock (60 before the first), its strength.
     const age = device[4] ?? 60;
     if (age < since) {
@@ -31,11 +32,11 @@ function knocks(query: string, seconds: number): Knock[] {
         const row = i * 8;
         if (leaves[row + 7] === 1 && leaves[row + 5] === Math.fround(BAMBOO_DEVICE_DEPTH) && (leaves[row + 6] ?? 1) < 0.05) startled++;
       }
-      out.push({ at: run.time, strength: device[5] ?? 0, startled });
+      out.push({ at: sim.time, strength: device[5] ?? 0, startled });
     }
     since = age;
   }
-  run.dispose();
+  sim.dispose();
   return out;
 }
 
@@ -45,7 +46,7 @@ function swings(list: readonly Knock[]): Knock[] {
 }
 
 test("on bare stone the tube clacks hard, bounces, and its knock startles leaves above the basin", () => {
-  const all = knocks("leaves-amount=1", 200);
+  const all = knocks({ "leaves-amount": 1 }, 200);
   const main = swings(all);
   expect(main.length).toBeGreaterThanOrEqual(5);
   for (const knock of main) expect(knock.strength).toBeGreaterThan(0.6);
@@ -59,8 +60,8 @@ test("on bare stone the tube clacks hard, bounces, and its knock startles leaves
 });
 
 test("a quiet clock eases onto its moss: a soft knock on the same beat, no bounce, no startled leaf", () => {
-  const bare = swings(knocks("leaves-amount=1", 200));
-  const quiet = knocks("knock=0&leaves-amount=1", 200);
+  const bare = swings(knocks({ "leaves-amount": 1 }, 200));
+  const quiet = knocks({ knock: 0, "leaves-amount": 1 }, 200);
   // It still keeps time: one knock per swing, at the bare stone's moments.
   expect(quiet.length).toBe(bare.length);
   quiet.forEach((knock, i) => {

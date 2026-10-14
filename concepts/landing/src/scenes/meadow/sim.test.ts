@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import type { SimFrame } from "../types.ts";
+import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { meadowScene } from "./index.ts";
 import { MAX_SEEDS, MEADOW_FOCAL, MEADOW_GUST } from "./sim.ts";
 
@@ -24,40 +23,21 @@ interface Motion {
 }
 
 /**
- * Runs the real meadow simulation (textures go to a stand-in GL that keeps the last seed upload) and
- * follows the airborne seeds from sample to sample, summing their world-space motion over the ground
- * per depth band: x from the packed uv and depth through the level camera, z the depth itself.
+ * Runs the real meadow simulation on the headless stand-in and follows the airborne seeds (uSim0, as
+ * last uploaded) from sample to sample, summing their world-space motion over the ground per depth
+ * band: x from the packed uv and depth through the level camera, z the depth itself.
  */
 function seedMotion(wind: number): Record<string, Motion> {
-  let upload: Float32Array | undefined;
-  const gl = new Proxy({}, {
-    get(_target, key) {
-      if (key === "texSubImage2D") {
-        return (...args: unknown[]) => {
-          const data = args[8];
-          if (args[4] === MAX_SEEDS && args[5] === 3 && data instanceof Float32Array) upload = data.slice();
-        };
-      }
-      return typeof key === "string" && /^[A-Z0-9_]+$/.test(key) ? 1 : () => ({});
-    },
-  }) as unknown as WebGL2RenderingContext;
-  const sim = meadowScene.sim?.(gl);
-  if (!sim) throw new Error("meadow has no simulation");
-  const knobs = { ...paramDefaults("meadow"), wind };
-  const values = renderSettings(defaultsFor("meadow"), knobs).params;
-  const pointer = { x: 0, y: 0, inside: false, down: false, pressed: false, released: false };
+  const sim = new HeadlessSim(meadowScene);
+  const frame: HeadlessFrame = { dt: DT, aspect: ASPECT, height: ROWS, knobs: { wind }, pointer: { x: 0, y: 0, inside: false } };
   const side = wind < 0 ? -1 : 1;
   const bands: Record<string, Motion> = {};
   let previous: Seen[] = [];
   for (let f = 1; f <= 120 * 60; f++) {
-    const time = f * DT;
-    const frame: SimFrame = {
-      dt: DT, time, motionTime: time, motion: 1, width: Math.round(ROWS * ASPECT), height: ROWS, aspect: ASPECT,
-      values, params: knobs, triggers: new Array<number>(8).fill(-1e4), fired: new Array<boolean>(8).fill(false),
-      pointer, passage: { enter: 1, exit: 0 },
-    };
-    sim.frame(frame);
-    if (f % SPAN !== 0 || !upload) continue;
+    sim.step(frame);
+    // Until its time-budgeted warm-up is done the sim hands over seeds it has not sent yet.
+    if (f % SPAN !== 0 || !sim.uploaded(0)) continue;
+    const upload = sim.upload(0).data;
     const seen: Seen[] = [];
     for (let n = 0; n < MAX_SEEDS; n++) {
       if ((upload[n * 4 + 2] ?? 0) <= 0) continue;

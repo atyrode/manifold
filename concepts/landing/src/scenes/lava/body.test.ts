@@ -1,30 +1,7 @@
 import { expect, test } from "bun:test";
-import { effective } from "../../params.ts";
-import type { SimFrame } from "../types.ts";
+import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { lavaScene } from "./index.ts";
 import { LAVA_MAX } from "./sim.ts";
-
-/** A GL that keeps the last image uploaded to each texture: the sim's real output, without a GPU. */
-function recordingGl(): { gl: WebGL2RenderingContext; uploads: Map<object, Float32Array> } {
-  const uploads = new Map<object, Float32Array>();
-  let bound: object | undefined;
-  const gl = new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        if (prop === "createTexture") return () => ({});
-        if (prop === "bindTexture") return (_slot: unknown, texture: object) => (bound = texture);
-        if (prop === "texSubImage2D") {
-          return (...args: unknown[]) => {
-            if (bound !== undefined && args[8] instanceof Float32Array) uploads.set(bound, Float32Array.from(args[8]));
-          };
-        }
-        return () => undefined;
-      },
-    },
-  ) as WebGL2RenderingContext;
-  return { gl, uploads };
-}
 
 interface Flow {
   /** Separate blobs in the lamp (parcels within 1.4 radii of each other are one blob), per frame. */
@@ -40,36 +17,18 @@ interface Flow {
   stretch: number;
 }
 
-/** Lamp A over `seconds` of lamp time at this wax body, averaged over pours 0..4. */
+/** Lamp A over `seconds` of lamp time at this wax body, averaged over pours 0..4, read on the headless stand-in. */
 function flow(viscosity: number, seconds: number): Flow {
   const totals = { blobs: 0, frames: 0, rising: 0, risingParcels: 0, slip: 0, pairs: 0, speed: 0, parcels: 0 };
   let blend = Number.NaN;
   let stretch = Number.NaN;
   for (let pour = 0; pour < 5; pour++) {
-    const { gl, uploads } = recordingGl();
-    const sim = lavaScene.sim?.(gl);
-    if (sim === undefined) throw new Error("lava has no sim");
-    const raw = { viscosity, pour };
-    const frame: SimFrame = {
-      dt: 0.1,
-      time: 0,
-      motionTime: 0,
-      motion: 1,
-      width: 640,
-      height: 360,
-      aspect: 16 / 9,
-      values: lavaScene.params.map((def) => effective(def, raw)),
-      params: raw,
-      triggers: Array.from({ length: 8 }, () => -1e4),
-      fired: Array.from({ length: 8 }, () => false),
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
-      passage: { enter: 1, exit: 0 },
-    };
-    for (let t = 0; t < seconds; t += frame.dt) {
-      const textures = sim.frame(frame);
-      const parcels = uploads.get(textures[0] ?? {});
-      const state = uploads.get(textures[2] ?? {});
-      if (parcels === undefined || state === undefined) throw new Error("lava uploaded no parcels or state");
+    const sim = new HeadlessSim(lavaScene);
+    const frame: HeadlessFrame = { dt: 0.1, aspect: 16 / 9, height: 360, knobs: { viscosity, pour }, pointer: { inside: false } };
+    for (let t = 0; t < seconds; t += 0.1) {
+      sim.step(frame);
+      const parcels = sim.upload(0).data;
+      const state = sim.upload(2).data;
       blend = state[8] ?? Number.NaN;
       stretch = state[9] ?? Number.NaN;
       const wax: { x: number; y: number; r: number; t: number; vx: number; vy: number }[] = [];

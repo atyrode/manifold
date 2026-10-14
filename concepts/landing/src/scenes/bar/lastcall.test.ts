@@ -1,61 +1,44 @@
 import { expect, test } from "bun:test";
-import { effective } from "../../params.ts";
-import type { SceneSim, SimFrame } from "../types.ts";
+import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { barScene } from "./index.ts";
 import { ACT, SEATS } from "./sim.ts";
 
-const LAST_CALL = barScene.params.find((def) => def.key === "night")?.trigger ?? -1;
-
-/** The bar's sim on a WebGL stand-in that keeps the texels it uploads, driven a frame at a time. */
+/** The bar's sim on the headless stand-in, driven a frame at a time, the pointer away. */
 class Evening {
-  readonly #sim: SceneSim;
-  readonly #frame: SimFrame;
-  #texels = new Float32Array(0);
+  readonly #sim = new HeadlessSim(barScene);
+  #knobs: Record<string, number>;
+  #now: string[] = [];
 
   constructor(knobs: Record<string, number>) {
-    const gl = new Proxy({} as Record<string | symbol, unknown>, {
-      get: (_, key) => {
-        if (key === "texSubImage2D") return (...args: unknown[]) => void (this.#texels = (args[8] as Float32Array).slice());
-        if (typeof key === "string" && /^[A-Z0-9_]+$/.test(key)) return 1;
-        return () => ({});
-      },
-    }) as unknown as WebGL2RenderingContext;
-    const sim = barScene.sim?.(gl);
-    if (!sim) throw new Error("the bar has no sim");
-    this.#sim = sim;
-    this.#frame = {
-      dt: 0, time: 0, motionTime: 0, motion: 1, width: 640, height: 360, aspect: 16 / 9,
-      values: [], params: {}, triggers: Array.from({ length: 8 }, () => -1e4), fired: Array.from({ length: 8 }, () => false),
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
-      passage: { enter: 1, exit: 0 },
-    };
-    this.set(knobs);
-    this.#sim.frame(this.#frame);
+    this.#knobs = knobs;
+    this.#sim.step(this.#frame(0));
   }
 
   set(knobs: Record<string, number>): void {
-    this.#frame.params = { ...this.#frame.params, ...knobs };
-    this.#frame.values = barScene.params.map((def) => effective(def, this.#frame.params as Record<string, number>));
+    this.#knobs = { ...this.#knobs, ...knobs };
   }
 
+  /** Last call ("now" on the time of night), felt on the next frame. */
   lastCall(): void {
-    const triggers = this.#frame.triggers as number[];
-    triggers[LAST_CALL] = this.#frame.time;
+    this.#now = ["night"];
   }
 
   /** Run `seconds` in tenths, calling `each` after every frame. */
   run(seconds: number, each?: () => void): void {
     for (let i = 0; i < Math.round(seconds * 10); i++) {
-      this.#frame.dt = 0.1;
-      this.#frame.time += 0.1;
-      this.#frame.motionTime += 0.1;
-      this.#sim.frame(this.#frame);
+      this.#sim.step(this.#frame(0.1));
       each?.();
     }
   }
 
   texel(i: number, c: number): number {
-    return this.#texels[i * 4 + c] ?? Number.NaN;
+    return this.#sim.upload(0).data[i * 4 + c] ?? Number.NaN;
+  }
+
+  #frame(dt: number): HeadlessFrame {
+    const now = this.#now;
+    this.#now = [];
+    return { dt, aspect: 16 / 9, height: 360, knobs: this.#knobs, now, pointer: { inside: false } };
   }
 
   get action(): number {
