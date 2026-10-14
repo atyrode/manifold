@@ -47,6 +47,7 @@ import { sillScene } from "./sill/index.ts";
 import { skywardScene } from "./skyward/index.ts";
 import { streetScene } from "./street/index.ts";
 import { swellScene } from "./swell/index.ts";
+import { tidepoolScene } from "./tidepool/index.ts";
 import { trainScene } from "./train/index.ts";
 import type { SceneDef } from "./types.ts";
 
@@ -99,6 +100,7 @@ export const sceneDefs = {
   bees: beesScene,
   skyward: skywardScene,
   autumn: autumnScene,
+  tidepool: tidepoolScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
