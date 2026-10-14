@@ -3,6 +3,7 @@
 import { bambooScene } from "./bamboo/index.ts";
 import { barScene } from "./bar/index.ts";
 import { bonsaiScene } from "./bonsai/index.ts";
+import { campfireScene } from "./campfire/index.ts";
 import { cloudsScene } from "./clouds/index.ts";
 import { chladniScene } from "./chladni/index.ts";
 import { countryScene } from "./country/index.ts";
@@ -29,6 +30,7 @@ import { marbleScene } from "./marble/index.ts";
 import { meadowScene } from "./meadow/index.ts";
 import { orbitScene } from "./orbit/index.ts";
 import { pearlScene } from "./pearl/index.ts";
+import { pendulaScene } from "./pendula/index.ts";
 import { petriScene } from "./petri/index.ts";
 import { physarumScene } from "./physarum/index.ts";
 import { pondScene } from "./pond/index.ts";
@@ -89,6 +91,8 @@ export const sceneDefs = {
   train: trainScene,
   bar: barScene,
   harmonograph: harmonographScene,
+  campfire: campfireScene,
+  pendula: pendulaScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
