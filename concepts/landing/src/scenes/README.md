@@ -366,6 +366,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   ones included; for soft-contact crowds (lanterns).
 - `HeadlessGl` (`headless.ts`): a stand-in context for `bun test` that runs a CPU sim's
   `DataTexture`s and keeps each texture's last upload, to check what the shader would receive.
+- `Errand` (`errand.ts`): a kerbside errand's choreography (a vehicle pulls in, hazards on, a porter
+  carries loads to a door in trips, climbs back in, the vehicle leaves); the scene drives and walks
+  them and reports arrivals (street's late delivery).
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and

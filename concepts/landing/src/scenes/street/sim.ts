@@ -47,6 +47,15 @@
 // hats two by two, each following the child ahead, an assistant at the end of the line; they wait
 // and cross with everyone else.
 //
+// The late delivery (a feature with a "now" trigger, off by default): now and then a white van comes
+// along the avenue, crosses the junction and pulls in to the far kerb past the konbini, beyond the
+// crossing and its crosswalks, blinker on; at the kerb its hazards blink while its driver wheels
+// crates on a hand truck across the sidewalk to the konbini's service door and back, a few trips,
+// then climbs in and the van pulls out into the traffic again (sims/errand.ts runs the episode's
+// steps). The driver walks with the crowd's social force, so walkers step round the loaded trolley
+// and it waits for them; cars pass the parked van close by, cyclists in the kerb lane swing out
+// round it (waiting behind it while a car is coming), and the cars behind make room.
+//
 // Vehicles follow paths (straight lanes and turning arcs, sampled every PATH_STEP metres), their
 // speed set by the intelligent driver model (M. Treiber, A. Hennecke, D. Helbing, "Congested
 // traffic states in empirical observations and microscopic simulations", Phys. Rev. E 62, 2000):
@@ -71,8 +80,9 @@
 // Textures:
 //   uSim0  rgba16f, MAX_AGENTS × 2, nearest. Slot i (walkers first, then vehicles):
 //          row 0: x, z − Z_REF (m), heading (rad: direction cos, sin in x, z), kind (KIND_*; 0 empty)
-//          row 1: walkers and bicycles: umbrella open 0..1, looking up 0..1, gait phase 0..1, seed;
-//                 motor vehicles: brake 0..1, blinker (+1 left, −1 right, 0), speed (m/s), seed
+//          row 1: walkers and bicycles: umbrella open 0..1, looking up 0..1 (a porter: crates on its
+//                 trolley), gait phase 0..1, seed;
+//                 motor vehicles: brake 0..1, blinker (+1 left, −1 right, 2 hazards, 0), speed (m/s), seed
 //   uSim1  rgba8, TILES_X·TILE_TEXELS × TILES_Z, nearest: for each TILE-metre square of the street,
 //          the first TILE_BODIES / 4 texels hold up to TILE_BODIES agent slots + 1 (0: none) whose
 //          bodies may be seen through it (seen from the window, a body covers the ground from its
@@ -84,6 +94,8 @@
 //          LAMP_FADE seconds; the green man blinks while the walk phase runs out.
 import type { ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
+import { Errand } from "../../sims/errand.ts";
+import { smoothstep } from "../../sims/math.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- The view and the street, shared with the shader ----
@@ -197,6 +209,8 @@ export const KIND_SEDAN = 4;
 export const KIND_TAXI = 5;
 export const KIND_KEI = 6;
 export const KIND_VAN = 7;
+/** The late delivery's driver on foot, wheeling a hand truck (drawn as a walker). */
+export const KIND_PORTER = 8;
 
 /** A vehicle's box seen from above: length, width (m), the top of its body and of its cabin (m),
  *  and where its cabin runs along it (m from its centre, rear and front). Bicycles: the rider's
@@ -219,6 +233,7 @@ export const SHAPES: readonly VehicleShape[] = [
   { length: 4.6, width: 1.7, body: 0.92, top: 1.5, cabinBack: -1.35, cabinFront: 0.9 },
   { length: 3.4, width: 1.48, body: 0.85, top: 1.68, cabinBack: -1.55, cabinFront: 0.95 },
   { length: 4.7, width: 1.72, body: 0.95, top: 1.98, cabinBack: -2.25, cabinFront: 1.15 },
+  { length: 0, width: 0, body: 0, top: 0, cabinBack: 0, cabinFront: 0 },
 ];
 
 /** Walker and vehicle slots: walkers first. */
@@ -240,6 +255,8 @@ export const TILE_TEXELS = (TILE_BODIES + TILE_LIGHTS) / 4;
  *  (m: an umbrella tipped forward, into the wind and back to look up). */
 const WALKER_TOP = 2.3;
 const WALKER_REACH = 0.9;
+/** A porter's reach from its feet with the hand truck before it (the shader's truck ends 0.98 m out). */
+const PORTER_TRUCK_REACH = 1.1;
 /** How far a car's low beam lights the road ahead (m), a bicycle lamp's, and the tail glow behind. */
 export const BEAM_REACH = 12;
 export const BIKE_BEAM_REACH = 6;
@@ -378,7 +395,7 @@ class Signals {
 // ---- Walkers ----
 
 type Region = "near" | "fl" | "fr";
-type WalkerMode = "walk" | "wait" | "cross" | "follow";
+type WalkerMode = "walk" | "wait" | "cross" | "follow" | "errand";
 
 /** Where walkers come and go: a point off screen (or behind a door) and its spread (m). */
 interface Portal {
@@ -549,6 +566,56 @@ const CAR_KINDS = [
 /** Blinkers come on this far before a turn (m). */
 const BLINK_AHEAD = 28;
 
+// ---- The late delivery ----
+
+/** Where the van stops: its centre on the far kerb east of the junction (x), its back 4 m past the
+ *  stop line and so clear of the E crosswalk, its front still in a 16:9 frame; over the kerbside
+ *  bicycle lane (z, 9 cm off the kerb). */
+const DELIVERY_X = 18.8;
+const DELIVERY_Z = KERB_FAR - 0.95;
+/** The konbini's service door in its glass front (x), and how far in the driver sets the crates down (m). */
+const SERVICE_DOOR = 16.6;
+const SERVICE_INSIDE = 1.2;
+/** Where the driver stands on the sidewalk: by the van's back and by its kerbside cab door (m along
+ *  the van from its centre), a step from the kerb (z). */
+const PORTER_BACK = -2.7;
+const PORTER_CAB = 1.2;
+const PORTER_KERB = KERB_FAR + 0.45;
+/** Within this of where it is going the driver has got there (m); or within PORTER_NEAR and held
+ *  up there by people passing (slower than PORTER_STUCK m/s), so a crowd cannot keep it from its
+ *  work. */
+const PORTER_REACH = 0.3;
+const PORTER_NEAR = 1;
+const PORTER_STUCK = 0.25;
+/** The driver's pace empty and wheeling a load (m/s); its radius alone and with the loaded trolley
+ *  before it (m), which is what walkers keep clear of. */
+const PORTER_PACE = 1.3;
+const PORTER_LOADED = 0.85;
+const PORTER_RADIUS = 0.26;
+const PORTER_TROLLEY = 0.48;
+/** The van's seed: white paint in the shader's streetPaint. */
+const DELIVERY_SEED = 0.06;
+/** Seconds between deliveries at the frequency knob's ends (randomised ±40%), and before the first
+ *  once the feature is switched on. */
+const DELIVERY_RARE = 600;
+const DELIVERY_OFTEN = 120;
+const DELIVERY_FIRST = 25;
+/** The blinker comes on this far before the stop (m), and the van pulls in over the last PULL_IN
+ *  metres and out over the first PULL_OUT: both begin past the junction's stop line and crosswalk,
+ *  so it crosses straight and never signals a turn in it. */
+const DELIVERY_SIGNAL = 6;
+const PULL_IN = 6;
+const PULL_OUT = 12;
+/** It pulls out once its lane is clear this far behind it and ahead of it (m). */
+const CLEAR_BEHIND = 32;
+const CLEAR_AHEAD = 6;
+/** A cyclist in the kerb lane swings out round the parked van by this much (m), easing out and back
+ *  over SWERVE_RAMP metres, and waits behind it while a car in the next lane is within SWERVE_WAIT
+ *  metres behind it or alongside. */
+const BIKE_SWERVE = 1.7;
+const SWERVE_RAMP = 4;
+const SWERVE_WAIT = 10;
+
 // ---- Time ----
 
 const STEP = 1 / 30;
@@ -559,7 +626,7 @@ const OPENING = 3;
 const SEED_BASE = 0x5717ee7;
 const TAU = Math.PI * 2;
 
-type KnobKey = "crowd" | "signal" | "outing" | "traffic" | "rain" | "snow" | "streetSeed";
+type KnobKey = "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" | "snow" | "streetSeed";
 
 /** The simulation was set up wrong: a knob it reads is missing, or a phase is unknown. */
 export class StreetSimError extends Error {}
@@ -695,6 +762,10 @@ class Walker {
   looking = false;
   gait = 0;
   onRoad = false;
+  /** The late delivery's driver, on its errand (mode "errand"), going to (goalX, goalZ). */
+  porter = false;
+  goalX = 0;
+  goalZ = 0;
 }
 
 /** A stretch of a path running along one lane, so drivers on different paths see each other there. */
@@ -834,6 +905,8 @@ const L_ARC_EBL = 9;
 const L_ARC_SBL = 10;
 const L_ARC_SBR = 11;
 const L_ARC_SBB = 12;
+/** Where the delivery van stands at the kerb: no path runs along it, so nobody queues behind it. */
+const L_KERB = 13;
 
 /** The avenue runs from x = −AVENUE_END to AVENUE_END; the side street comes down from z = SIDE_END. */
 const AVENUE_END = 70;
@@ -899,6 +972,14 @@ class Vehicle {
   lane = 0;
   laneC = 0;
   umbrella = 0;
+  /** The delivery van: it stops at the kerb past the junction, then goes on. */
+  delivery = false;
+  /** How far it has moved off its lane toward the kerb (m, to its left). */
+  offset = 0;
+  /** Where its pull-out began (path distance; NaN until it pulls out). */
+  pullOut = Number.NaN;
+  /** A bicycle: how far round the parked van it has swung, 0..1. */
+  swerve = 0;
 }
 
 class StreetCrossing implements SceneSim {
@@ -946,9 +1027,21 @@ class StreetCrossing implements SceneSim {
   readonly #nextVehicle = new Float64Array(3);
   #nextOuting = Number.POSITIVE_INFINITY;
 
+  // The late delivery: its knob, when the next sets out, the episode, the van and its driver on
+  // foot. Its own generator, so switching it on leaves everyone else's draws as they were.
+  #delivery = 0;
+  #nextDelivery = Number.POSITIVE_INFINITY;
+  readonly #errand = new Errand();
+  readonly #deliveryRandom = new Random();
+  #van: Vehicle | undefined;
+  #porter: Walker | undefined;
+  /** A delivery is due to set out as soon as the avenue's way in is clear. */
+  #deliveryDue = false;
+
   #primed = false;
   #seenSignal = 0;
   #seenOuting = 0;
+  #seenDelivery = 0;
 
   #hover = false;
   #hoverX = 0;
@@ -965,6 +1058,7 @@ class StreetCrossing implements SceneSim {
       signal: index("signal"),
       outing: index("outing"),
       traffic: index("traffic"),
+      delivery: index("delivery"),
       rain: index("rain"),
       snow: index("snow"),
       streetSeed: index("streetSeed"),
@@ -981,6 +1075,7 @@ class StreetCrossing implements SceneSim {
     this.#cycle = clamp(values[index.signal] ?? 80, 30, 200);
     this.#outing = clamp(values[index.outing] ?? 0, 0, 1);
     this.#traffic = clamp(values[index.traffic] ?? 0.5, 0, 1);
+    this.#delivery = clamp(values[index.delivery] ?? 0, 0, 1);
     this.#precip = Math.max(clamp(values[index.rain] ?? 0, 0, 1), 0.8 * clamp(values[index.snow] ?? 0, 0, 1));
     this.#signals.cycle = this.#cycle;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
@@ -994,6 +1089,9 @@ class StreetCrossing implements SceneSim {
     // Outings on their own: a fresh wait whenever the feature comes on, none while it is off.
     if (this.#outing <= 0) this.#nextOuting = Number.POSITIVE_INFINITY;
     else if (!Number.isFinite(this.#nextOuting)) this.#nextOuting = this.#clock + OUTING_FIRST;
+    // Deliveries the same way.
+    if (this.#delivery <= 0) this.#nextDelivery = Number.POSITIVE_INFINITY;
+    else if (!Number.isFinite(this.#nextDelivery)) this.#nextDelivery = this.#clock + DELIVERY_FIRST;
 
     this.#watchTriggers(frame.triggers);
     this.#follow(frame.pointer);
@@ -1018,13 +1116,16 @@ class StreetCrossing implements SceneSim {
   #watchTriggers(triggers: readonly number[]): void {
     const signal = triggers[0] ?? -1e4;
     const outing = triggers[1] ?? -1e4;
+    const delivery = triggers[2] ?? -1e4;
     if (this.#primed) {
       if (signal !== this.#seenSignal && signal > -1e3) this.#changeLights();
       if (outing !== this.#seenOuting && outing > -1e3) this.#startOuting();
+      if (delivery !== this.#seenDelivery && delivery > -1e3) this.#startDelivery();
     }
     this.#primed = true;
     this.#seenSignal = signal;
     this.#seenOuting = outing;
+    this.#seenDelivery = delivery;
   }
 
   /** The pointer: where on the street it points (walkers near it look up); a click changes the lights. */
@@ -1065,6 +1166,11 @@ class StreetCrossing implements SceneSim {
     for (const vehicle of this.#vehicles) vehicle.alive = false;
     this.#clock = 0;
     this.#pending = 0;
+    this.#errand.stop();
+    this.#van = undefined;
+    this.#porter = undefined;
+    this.#deliveryDue = false;
+    this.#deliveryRandom.seed(SEED_BASE ^ 0xde1ae7 ^ Math.imul(seed + 1, 0x85ebca6b));
 
     const signals = this.#signals;
     signals.cycle = this.#cycle;
@@ -1101,6 +1207,7 @@ class StreetCrossing implements SceneSim {
     for (let e = 0; e < 3; e++) this.#nextVehicle[e] = random.wait(this.#vehicleRate(e));
     this.#nextWalker = random.wait(this.#walkerRate());
     this.#nextOuting = this.#outing > 0 ? OUTING_FIRST : Number.POSITIVE_INFINITY;
+    this.#nextDelivery = this.#delivery > 0 ? DELIVERY_FIRST : Number.POSITIVE_INFINITY;
 
     for (let s = 0; s < PREWARM / STEP; s++) this.#step(STEP);
     for (const walker of this.#walkers) {
@@ -1146,6 +1253,7 @@ class StreetCrossing implements SceneSim {
     const signals = this.#signals;
     if (signals.step(dt)) this.#walkBegins();
     this.#spawn();
+    if (this.#errand.stage !== "idle") this.#stepDelivery(dt);
     this.#stepWalkers(dt);
     this.#stepVehicles(dt);
   }
@@ -1154,7 +1262,7 @@ class StreetCrossing implements SceneSim {
     const random = this.#random;
     const clock = this.#clock;
     let alive = 0;
-    for (const walker of this.#walkers) if (walker.alive && !walker.child && !walker.ahead) alive++;
+    for (const walker of this.#walkers) if (walker.alive && !walker.child && !walker.ahead && !walker.porter) alive++;
     if (clock >= this.#nextWalker) {
       if (alive < this.#crowdTarget()) {
         const first = this.#spawnWalker(undefined);
@@ -1195,6 +1303,12 @@ class StreetCrossing implements SceneSim {
       const often = OUTING_RARE + (OUTING_OFTEN - OUTING_RARE) * this.#outing;
       this.#nextOuting = clock + often * random.range(0.6, 1.4);
     }
+    if (clock >= this.#nextDelivery) {
+      this.#startDelivery();
+      const often = DELIVERY_RARE + (DELIVERY_OFTEN - DELIVERY_RARE) * this.#delivery;
+      this.#nextDelivery = clock + often * this.#deliveryRandom.range(0.6, 1.4);
+    }
+    if (this.#deliveryDue) this.#launchDelivery();
   }
 
   // ---- Walkers ----
@@ -1274,6 +1388,7 @@ class StreetCrossing implements SceneSim {
     walker.umbrellaClock = 0;
     walker.umbrellaUp = walker.hasUmbrella && this.#precip > walker.umbrellaKeen;
     walker.umbrella = walker.umbrellaUp ? 1 : 0;
+    walker.porter = false;
   }
 
   /** Start moving toward the first waypoint, already facing it. */
@@ -1504,6 +1619,152 @@ class StreetCrossing implements SceneSim {
     }
   }
 
+  // ---- The late delivery ----
+
+  /** A delivery sets out (by the knob's schedule or its "now"), unless one is under way. */
+  #startDelivery(): void {
+    if (this.#errand.stage === "idle") this.#deliveryDue = true;
+  }
+
+  /** The van comes in from the west along the avenue's outer lane, once that way in is clear. Its
+   *  looks and pace are fixed, so it draws nothing from the street's generator. */
+  #launchDelivery(): void {
+    for (const other of this.#vehicles) if (other.alive && other.lane === L_EB_OUT && other.laneC < 12) return;
+    const van = this.#vehicles.find((v) => !v.alive);
+    if (!van) return;
+    van.alive = true;
+    van.kind = KIND_VAN;
+    van.path = "ebOut";
+    van.seed = DELIVERY_SEED;
+    van.pace = CAR_PACE * 0.95;
+    van.brake = 0;
+    van.stopping = false;
+    van.sawAmber = false;
+    van.umbrella = 0;
+    van.delivery = true;
+    van.offset = 0;
+    van.pullOut = Number.NaN;
+    van.swerve = 0;
+    van.s = 0;
+    van.v = van.pace;
+    this.#placeVehicle(van);
+    this.#van = van;
+    this.#deliveryDue = false;
+    this.#errand.start(this.#deliveryRandom);
+  }
+
+  /** The episode's step: what the van and its driver are doing goes to the errand, which says what
+   *  comes next; the driver gets out of the cab once the van is parked and back in at the end. */
+  #stepDelivery(dt: number): void {
+    const errand = this.#errand;
+    const van = this.#van;
+    if (!van?.alive || !van.delivery) {
+      // Driven off the end of the avenue.
+      this.#retirePorter();
+      errand.stop();
+      this.#van = undefined;
+      return;
+    }
+    const porter = this.#porter;
+    const away = porter ? Math.hypot(porter.goalX - porter.x, porter.goalZ - porter.z) : Number.POSITIVE_INFINITY;
+    const there = porter !== undefined && (away < PORTER_REACH || (away < PORTER_NEAR && Math.hypot(porter.vx, porter.vz) < PORTER_STUCK));
+    const parked = van.lane === L_KERB && van.v < 0.05 && Math.abs(van.s - (DELIVERY_X + AVENUE_END)) < 0.6;
+    errand.step(dt, { parked, porterThere: there });
+    if (errand.porterOut && !this.#porter) this.#letOutPorter(van);
+    if (!errand.porterOut) this.#retirePorter();
+    const p = this.#porter;
+    if (!p) return;
+    switch (errand.goal) {
+      case "vehicle":
+        p.goalX = van.x + PORTER_BACK;
+        p.goalZ = PORTER_KERB;
+        p.faceX = 0.35;
+        p.faceZ = -1;
+        break;
+      case "door":
+        p.goalX = SERVICE_DOOR;
+        p.goalZ = FACADE_FAR + SERVICE_INSIDE;
+        p.faceX = 0;
+        p.faceZ = 1;
+        break;
+      case "cab":
+        p.goalX = van.x + PORTER_CAB;
+        p.goalZ = PORTER_KERB;
+        p.faceX = 0;
+        p.faceZ = -1;
+        break;
+      default: {
+        const unreachable: never = errand.goal;
+        throw new StreetSimError(`street: unknown errand goal ${String(unreachable)}`);
+      }
+    }
+    p.pace = errand.load > 0 ? PORTER_LOADED : PORTER_PACE;
+    p.radius = errand.load > 0 ? PORTER_TROLLEY : PORTER_RADIUS;
+  }
+
+  /** The driver steps out of the kerbside cab door onto the sidewalk; without a free walker the
+   *  delivery is called off and the van leaves. */
+  #letOutPorter(van: Vehicle): void {
+    const w = this.#freeWalker();
+    if (!w) {
+      this.#errand.stop();
+      return;
+    }
+    w.alive = true;
+    w.child = false;
+    w.porter = true;
+    w.mode = "errand";
+    w.seed = DELIVERY_SEED;
+    w.pace = PORTER_PACE;
+    w.radius = PORTER_RADIUS;
+    w.hasUmbrella = false;
+    w.umbrellaUp = false;
+    w.umbrella = 0;
+    w.umbrellaClock = 0;
+    w.look = 0;
+    w.interest = 0;
+    w.looking = false;
+    w.gait = 0;
+    w.partner = undefined;
+    w.ahead = undefined;
+    w.row = 0;
+    w.count = 0;
+    w.next = 0;
+    w.goAt = Number.POSITIVE_INFINITY;
+    w.settled = false;
+    w.glanceTarget = 0;
+    w.nextGlance = Number.POSITIVE_INFINITY;
+    w.x = van.x + PORTER_CAB;
+    w.z = PORTER_KERB;
+    w.vx = 0;
+    w.vz = 0;
+    w.ax = 0;
+    w.az = 0;
+    w.heading = Math.PI;
+    w.lastX = w.x;
+    w.lastZ = w.z;
+    w.lastHeading = w.heading;
+    w.goalX = w.x;
+    w.goalZ = w.z;
+    w.faceX = -1;
+    w.faceZ = 0;
+    this.#porter = w;
+  }
+
+  #retirePorter(): void {
+    if (!this.#porter) return;
+    this.#retire(this.#porter);
+    this.#porter = undefined;
+  }
+
+  /** The van's blinker: left as it pulls in, hazards while parked, right as it waits and pulls out. */
+  #vanBlinker(van: Vehicle): number {
+    const errand = this.#errand;
+    if (errand.hazards) return 2;
+    if (errand.stage === "arriving") return DELIVERY_X + AVENUE_END - van.s < DELIVERY_SIGNAL ? 1 : 0;
+    return van.offset > 0.2 ? -1 : 0;
+  }
+
   /** The green man has come on: everyone waiting steps off, front first. */
   #walkBegins(): void {
     const random = this.#random;
@@ -1598,6 +1859,8 @@ class StreetCrossing implements SceneSim {
   #decide(w: Walker): void {
     const signals = this.#signals;
     const clock = this.#clock;
+    // The delivery's driver goes where its errand sends it (#stepDelivery).
+    if (w.mode === "errand") return;
     if (w.mode === "follow") {
       const ahead = w.ahead;
       if (ahead && !ahead.alive) w.ahead = undefined;
@@ -1685,6 +1948,11 @@ class StreetCrossing implements SceneSim {
         arrive = true;
         break;
       }
+      case "errand":
+        tx = w.goalX;
+        tz = w.goalZ;
+        arrive = true;
+        break;
       default: {
         const unreachable: never = w.mode;
         throw new StreetSimError(`street: unknown walker mode ${String(unreachable)}`);
@@ -1825,6 +2093,7 @@ class StreetCrossing implements SceneSim {
       w.x += w.vx * dt;
       w.z += w.vz * dt;
       if (w.mode === "walk" || w.mode === "wait") this.#keepToSidewalk(w, w.region[w.next] ?? "near");
+      else if (w.mode === "errand") this.#keepToSidewalk(w, "fr", SERVICE_DOOR);
       // Settle: on the spot, or wherever the crowd has come to rest round it.
       const fromSpot = Math.hypot(w.spotX - w.x, w.spotZ - w.z);
       if (w.mode === "wait" && ((fromSpot < SETTLE_NEAR && speed < SETTLE_SPEED) || (fromSpot < 1.2 && speed < 0.05))) {
@@ -1848,6 +2117,10 @@ class StreetCrossing implements SceneSim {
       }
       target = Math.atan2(w.faceZ, w.faceX) + w.glanceTarget;
       rate = TURN_STAND;
+    } else if (w.mode === "errand" && speed < 0.2) {
+      // Standing at the van or at its door: facing what it is doing.
+      target = Math.atan2(w.faceZ, w.faceX);
+      rate = TURN_STAND;
     } else if (speed > 0.2) {
       target = Math.atan2(w.vz, w.vx);
     }
@@ -1857,11 +2130,11 @@ class StreetCrossing implements SceneSim {
     if (w.heading < -Math.PI) w.heading += TAU;
   }
 
-  /** Clamp a walker into its sidewalk. */
-  #keepToSidewalk(w: Walker, region: Region): void {
+  /** Clamp a walker into its sidewalk (and through `door`, a door only it may use). */
+  #keepToSidewalk(w: Walker, region: Region, door = Number.NaN): void {
     this.#point2[0] = w.x;
     this.#point2[1] = w.z;
-    clampRegion(region, this.#point2);
+    clampRegion(region, this.#point2, door);
     const x = this.#point2[0] ?? w.x;
     const z = this.#point2[1] ?? w.z;
     if (x !== w.x) w.vx *= 0.5;
@@ -1874,7 +2147,7 @@ class StreetCrossing implements SceneSim {
   #weatherAndPointer(dt: number): void {
     const precip = this.#precip;
     for (const w of this.#walkers) {
-      if (!w.alive) continue;
+      if (!w.alive || w.porter) continue;
       const wants = w.hasUmbrella && precip > w.umbrellaKeen * (w.umbrellaUp ? 0.5 : 1);
       if (wants !== w.umbrellaUp) {
         w.umbrellaClock += dt;
@@ -1943,6 +2216,10 @@ class StreetCrossing implements SceneSim {
     vehicle.stopping = false;
     vehicle.sawAmber = false;
     vehicle.umbrella = kind === KIND_BIKE && this.#precip > 0.15 && random.next() < 0.6 ? 1 : 0;
+    vehicle.delivery = false;
+    vehicle.offset = 0;
+    vehicle.pullOut = Number.NaN;
+    vehicle.swerve = 0;
     return vehicle;
   }
 
@@ -1963,8 +2240,17 @@ class StreetCrossing implements SceneSim {
   #stepVehicles(dt: number): void {
     const vehicles = this.#vehicles;
     const signals = this.#signals;
+    // The delivery van while it stands over the kerb lane, for the cyclists coming up behind it.
+    const van = this.#van;
+    const kerbVan = van !== undefined && van.alive && van.delivery && van.lane === L_KERB ? van : undefined;
     for (const me of vehicles) {
       if (!me.alive) continue;
+      // The delivery van stands at the kerb while its driver is out, then until it can pull out.
+      if (me.delivery && this.#vanHolds(me)) {
+        me.v = 0;
+        me.brake = 0;
+        continue;
+      }
       const path = PATHS[me.path];
       const shape = SHAPES[me.kind] ?? SHAPES[KIND_SEDAN];
       const length = shape?.length ?? 4.5;
@@ -1991,6 +2277,29 @@ class StreetCrossing implements SceneSim {
         }
       }
 
+      // The delivery van's stop at the kerb: a standing obstacle the standstill gap beyond it.
+      if (me.delivery && this.#errand.stage === "arriving") {
+        const toStop = DELIVERY_X + AVENUE_END + IDM_S0 - me.s;
+        if (toStop < gap) {
+          gap = Math.max(toStop, 0);
+          lead = 0;
+        }
+      }
+      // A cyclist in the kerb lane waits behind the parked van while a car comes up the next lane.
+      if (bike && kerbVan && me.lane === L_EB_BIKE && me.swerve === 0) {
+        const toSwerve = kerbVan.laneC - (SHAPES[KIND_VAN]?.length ?? 4.7) / 2 - SWERVE_RAMP - front - (me.laneC - me.s);
+        if (toSwerve > -0.5 && toSwerve < 12) {
+          let busy = false;
+          for (const other of vehicles) {
+            if (other.alive && other.kind !== KIND_BIKE && other.lane === L_EB_OUT && other.laneC > me.laneC - SWERVE_WAIT && other.laneC < me.laneC + 3) busy = true;
+          }
+          if (busy && toSwerve < gap) {
+            gap = Math.max(toSwerve, 0);
+            lead = 0;
+          }
+        }
+      }
+
       // Vehicles ahead along the lanes this path runs on; one turning off it, by where it is.
       const hx = Math.cos(me.heading);
       const hz = Math.sin(me.heading);
@@ -1999,7 +2308,10 @@ class StreetCrossing implements SceneSim {
         const otherShape = SHAPES[other.kind];
         const otherLength = otherShape?.length ?? 4.5;
         let at = path.locate(other.lane, other.laneC);
-        if (Number.isNaN(at) && other.lane >= L_ARC_EBL) {
+        // Round the parked delivery van a cyclist rides in the outer lane for a while.
+        if (Number.isNaN(at) && other.swerve > 0.35) at = path.locate(L_EB_OUT, other.laneC);
+        if (Number.isNaN(at) && me.swerve > 0.35 && other.lane === L_EB_OUT) at = me.s + other.laneC - me.laneC;
+        if (Number.isNaN(at) && other.lane >= L_ARC_EBL && other.lane <= L_ARC_SBB) {
           const along = (other.x - me.x) * hx + (other.z - me.z) * hz;
           const across = Math.abs((other.z - me.z) * hx - (other.x - me.x) * hz);
           if (along > 0 && across < (width + (otherShape?.width ?? 1.7)) / 2 + 0.3) at = me.s + along;
@@ -2041,6 +2353,8 @@ class StreetCrossing implements SceneSim {
       acc = Math.max(acc, -IDM_HARD);
       me.v = Math.max(0, v + acc * dt);
       me.s += me.v * dt;
+      // The van comes to rest at its stop.
+      if (me.delivery && this.#errand.stage === "arriving" && Math.abs(DELIVERY_X + AVENUE_END - me.s) < 0.6 && me.v < 0.4) me.v = 0;
       me.brake = clamp(me.brake + ((acc < -0.35 || (me.v < 0.3 && gap < 12) ? 1 : 0) - me.brake) * Math.min(1, dt / 0.15), 0, 1);
       if (me.s > path.length - 1) {
         me.alive = false;
@@ -2053,8 +2367,60 @@ class StreetCrossing implements SceneSim {
       const span = path.span(me.s);
       me.lane = span?.lane ?? -1;
       me.laneC = span ? span.c0 + (me.s - span.s0) : 0;
-      if (bike) me.umbrella = clamp(me.umbrella + (this.#precip > 0.15 && me.seed < 0.6 ? dt : -dt) / UMBRELLA_OPEN, 0, 1);
+      if (me.delivery) this.#pullOver(me);
+      if (bike) {
+        me.umbrella = clamp(me.umbrella + (this.#precip > 0.15 && me.seed < 0.6 ? dt : -dt) / UMBRELLA_OPEN, 0, 1);
+        this.#swerve(me, kerbVan, dt);
+      }
     }
+  }
+
+  /** Whether the delivery van stands at the kerb this step: while its driver is out, and afterwards,
+   *  blinker on, until its lane is clear behind and ahead (then it notes where it set off). */
+  #vanHolds(van: Vehicle): boolean {
+    const stage = this.#errand.stage;
+    if (stage === "arriving") return false;
+    if (stage === "unloading") return true;
+    if (!Number.isNaN(van.pullOut) || van.lane !== L_KERB) return false;
+    for (const other of this.#vehicles) {
+      if (other === van || !other.alive) continue;
+      if (other.lane === L_EB_OUT && other.laneC > van.laneC - CLEAR_BEHIND && other.laneC < van.laneC + CLEAR_AHEAD) return true;
+      if (other.swerve > 0 && Math.abs(other.laneC - van.laneC) < 8) return true;
+    }
+    van.pullOut = van.s;
+    return false;
+  }
+
+  /** How far the delivery van is off its lane toward the kerb at path distance s: easing in over the
+   *  last PULL_IN metres to its stop, and out over the first PULL_OUT metres once it sets off. */
+  #vanOffset(van: Vehicle, s: number): number {
+    const pull = DELIVERY_Z - LANE_EB_OUT;
+    const stop = DELIVERY_X + AVENUE_END;
+    if (Number.isNaN(van.pullOut)) return pull * smoothstep(stop - PULL_IN, stop - 0.3, s);
+    return pull * (1 - smoothstep(van.pullOut, van.pullOut + PULL_OUT, s));
+  }
+
+  /** Move the van off its lane by its offset (to its left, the kerb), turned along the way it is
+   *  going; standing over the kerb lane it is in a lane of its own, which nobody queues behind. */
+  #pullOver(van: Vehicle): void {
+    van.offset = this.#vanOffset(van, van.s);
+    const slope = (this.#vanOffset(van, van.s + 0.5) - van.offset) / 0.5;
+    van.x -= Math.sin(van.heading) * van.offset;
+    van.z += Math.cos(van.heading) * van.offset;
+    van.heading += Math.atan(slope);
+    if (Number.isNaN(van.pullOut) && van.offset > 1.0) van.lane = L_KERB;
+  }
+
+  /** A cyclist in the kerb lane swings out (to its right) round the delivery van parked over it, and
+   *  eases back in once past; if the van leaves first it eases back where it is. */
+  #swerve(bike: Vehicle, kerbVan: Vehicle | undefined, dt: number): void {
+    const round = bike.lane === L_EB_BIKE ? kerbVan : undefined;
+    const target = round ? swerveRound(round, bike.laneC) : 0;
+    bike.swerve = target >= bike.swerve ? target : Math.max(target, bike.swerve - dt);
+    if (bike.swerve <= 0) return;
+    const next = round ? swerveRound(round, bike.laneC + 0.5) : target;
+    bike.z -= BIKE_SWERVE * bike.swerve;
+    bike.heading -= Math.atan((BIKE_SWERVE * (next - target)) / 0.5);
   }
 
   // ---- The crowd's walk-in ----
@@ -2117,9 +2483,9 @@ class StreetCrossing implements SceneSim {
       data[o] = x;
       data[o + 1] = z - Z_REF;
       data[o + 2] = heading;
-      data[o + 3] = w.child ? KIND_CHILD : KIND_ADULT;
+      data[o + 3] = w.child ? KIND_CHILD : w.porter ? KIND_PORTER : KIND_ADULT;
       data[row1 + o] = w.umbrella;
-      data[row1 + o + 1] = w.look;
+      data[row1 + o + 1] = w.porter ? this.#errand.load : w.look;
       data[row1 + o + 2] = gait;
       data[row1 + o + 3] = w.seed;
       order[n] = i;
@@ -2146,7 +2512,7 @@ class StreetCrossing implements SceneSim {
         const front = v.s + (SHAPES[v.kind]?.length ?? 4.5) / 2;
         const turning = front > path.turnAt - BLINK_AHEAD && v.s < path.turnAt + 8;
         data[row1 + o] = v.brake;
-        data[row1 + o + 1] = turning ? path.turnSide : 0;
+        data[row1 + o + 1] = v.delivery ? this.#vanBlinker(v) : turning ? path.turnSide : 0;
         data[row1 + o + 2] = v.v;
       }
       data[row1 + o + 3] = v.seed;
@@ -2179,8 +2545,10 @@ class StreetCrossing implements SceneSim {
       const z = (data[o + 1] ?? 0) + Z_REF;
       const heading = data[o + 2] ?? 0;
       const kind = data[o + 3] ?? 0;
-      if (kind === KIND_ADULT || kind === KIND_CHILD) {
-        this.#binProjected(id, x, z, WALKER_TOP, WALKER_REACH, WALKER_REACH, 0);
+      if (kind === KIND_ADULT || kind === KIND_CHILD || kind === KIND_PORTER) {
+        // A porter's hand truck reaches a metre before its feet.
+        const reach = kind === KIND_PORTER ? PORTER_TRUCK_REACH : WALKER_REACH;
+        this.#binProjected(id, x, z, WALKER_TOP, reach, reach, 0);
       } else {
         const shape = SHAPES[kind];
         if (!shape) continue;
@@ -2292,10 +2660,18 @@ class StreetCrossing implements SceneSim {
 /** An empty bounding box (x0, x1, z0, z1) to grow. */
 const EMPTY_BOX = [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY] as const;
 
+/** How far a cyclist at lane position c in the kerb lane has swung out round the delivery van
+ *  parked over it: 0 clear of it, 1 alongside, easing over SWERVE_RAMP metres before and after. */
+function swerveRound(van: Vehicle, c: number): number {
+  const half = (SHAPES[KIND_VAN]?.length ?? 4.7) / 2;
+  return smoothstep(van.laneC - half - SWERVE_RAMP, van.laneC - half - 0.5, c) * (1 - smoothstep(van.laneC + half + 0.5, van.laneC + half + SWERVE_RAMP, c));
+}
+
 /** Clamp a point (x, z in p[0], p[1]) into a region's walkable sidewalk: the near sidewalk, or a far
  *  corner's L (along the avenue, up the side street, the corner's kerb rounded; doors let walkers
- *  through the facades). */
-function clampRegion(region: Region, p: Float64Array): void {
+ *  through the facades, and `door` (x) lets one more through: the konbini's service door, for the
+ *  delivery's driver only). */
+function clampRegion(region: Region, p: Float64Array, door = Number.NaN): void {
   let x = p[0] ?? 0;
   let z = p[1] ?? 0;
   if (region === "near") {
@@ -2307,8 +2683,8 @@ function clampRegion(region: Region, p: Float64Array): void {
   const inner = SIDE_KERB + WALL;
   const outer = SIDE_FACADE - WALL;
   const front = KERB_FAR + WALL;
-  const door = Math.abs(x - CAFE_DOOR) < 0.9 || Math.abs(x - KONBINI_DOOR) < 0.9;
-  const back = door ? FACADE_FAR + 1.5 : FACADE_FAR - WALL;
+  const doorway = Math.abs(x - CAFE_DOOR) < 0.9 || Math.abs(x - KONBINI_DOOR) < 0.9 || Math.abs(x - door) < 0.9;
+  const back = doorway ? FACADE_FAR + 1.5 : FACADE_FAR - WALL;
   if (u < inner) u = inner;
   if (z < front) z = front;
   if (z > back && u > outer) {

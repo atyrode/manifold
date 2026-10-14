@@ -60,13 +60,13 @@ A third batch built on the shared foundations (weather in the world, hard edges,
 | Idea | Scene id | Simulation |
 |---|---|---|
 | Late-night bar | `bar` | Patrons arrive, sip and leave; the bartender pours, shakes, polishes; rain and traffic outside the window. Last call (the time-of-night "now"): a hand bell and two blinks of the lamps (just the blinks with the bartender off), last sips, one for the road or a word with you if the bar is empty, then closing time until the time of night is moved |
-| City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain |
-| Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint |
+| City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain; optional late delivery (a van at the kerb past the crossing, hazards on, its driver wheeling crates to the konbini through the crowd, cyclists swinging out round it) |
+| Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint; everything that moves with the motion clock (clouds, lamps, flashers, station clock, the carriage's rock) keeps its phase when Motion changes |
 | Mystic forest | `forest` | Kodama spirits appearing and turning their heads, curious of the pointer or (a tunable share) shy of it and ducking into the moss (`sims/temperament.ts`); spores on curl-noise air, a stag crossing |
 | Ripple tank | `ripple` | GPU wave equation: interference, double slit, lens, Doppler, standing waves; projected caustics; edge absorption from beaches that swallow every wave to bare walls that reflect them, apart from open-water damping |
 | Lava lamp | `lava` | Heated wax blobs with buoyancy, necks and merging; a wax body from silky (smaller blobs slipping through each other, long tails, smooth merges) to chunky (fewer, slower, knobbly lumps) |
 | Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles; lying snow from wind-packed crust to fresh powder at the same cover |
-| Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning |
+| Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning; with the breeze off the pads hang still until a gust, snip or hover |
 
 ## Quiet places and small machines
 
