@@ -7,7 +7,7 @@ import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { kelpGlsl } from "./shader.ts";
-import { kelpSim } from "./sim.ts";
+import { KELP_PASSAGE, kelpSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("sea", "surge", "surge", 0.3, "How far the swell's surge sways the forest back and forth. It travels across as a long, slow wave, so near and far plants lean in turn."),
@@ -48,5 +48,9 @@ export const kelpScene: SceneDef = {
   },
   glsl: kelpGlsl,
   entry: "sceneKelp",
+  // Entrance: the camera sinks from just under the surface into the forest, a surge bends the fronds
+  // over and they swing into place, and the school streams in from the side and forms up. Exit: the
+  // school turns and leaves the frame, a surge sweeps the fronds and the camera rises toward the light.
+  passage: KELP_PASSAGE,
   sim: kelpSim(params),
 };

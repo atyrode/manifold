@@ -6,7 +6,7 @@ import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { meadowGlsl } from "./shader.ts";
-import { GUST_TRIGGER, MARK_TRIGGER, MAX_CLOCKS, meadowSim } from "./sim.ts";
+import { GUST_TRIGGER, MARK_TRIGGER, MAX_CLOCKS, MEADOW_PASSAGE, meadowSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("meadow", "grassHeight", "grass height", 0.6, "How tall the grass stands around you: low leaves an open view across the field, high rises past the horizon."),
@@ -38,6 +38,8 @@ export const meadowScene: SceneDef = {
     manifold: { title: "Manifold mark", blurb: "The M mown into a far hillside." },
   },
   glsl: meadowGlsl,
+  // Arriving, the camera lowers into the grass and a first gust lifts the seeds; leaving, a strong gust carries a burst of them and the camera rises over the grass.
+  passage: MEADOW_PASSAGE,
   entry: "sceneMeadow",
   sim: meadowSim(params),
 };

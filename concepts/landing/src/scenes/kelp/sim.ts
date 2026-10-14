@@ -26,6 +26,13 @@
 // scattering from the hand; a sea lion gliding past far off now and then; and the hand's fading
 // trail, where the night plankton sparks.
 //
+// Passage (entrance and exit, see KELP_PASSAGE): the camera sinks from just under the surface into
+// the forest and, leaving, rises toward the light (shader.ts, KELP_CAMERA); a surge rolls through
+// the forest as it arrives, bending the fronds over and letting them swing back into place, and
+// sweeps them over as it leaves (#passageFlow); the school streams in from the downstream edge and
+// eases into its boids' places, and on leaving turns and swims out through the nearer edge (School
+// arrive / depart: only where the fish are drawn, the boids fly on unseen). At rest all of it is off.
+//
 // Textures:
 //   uSim0  rgba16f PointTexture, two texels per point, KELP_POINTS per stipe in stipe order:
 //          xyz = position − KELP_ORIGIN, w = blade lean (radians, from the stipe toward screen +x);
@@ -42,7 +49,7 @@
 //   uSim2  r8 the hand's fading trail (TrailField), linear, uv.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
@@ -125,6 +132,25 @@ export const KELP_VISITOR = { scale: 0.5, length: 0.095 } as const;
  * strokes plus the stones on them). The plants nearer than it give it a clearing.
  */
 export const KELP_MARK = { scale: 0.62, x: 0.52, low: 0.15, high: 0.32, halfWidth: 0.6 } as const;
+
+/** Seconds of the scene's entrance and exit (SceneDef.passage). */
+export const KELP_PASSAGE = { enter: 3, exit: 1.8 } as const;
+/**
+ * The camera's passage, in world units of height above its resting place (the shader works out the
+ * parallax): the entrance starts it `drop` up, just under the surface, after `delay` seconds it
+ * sinks into place, settling `dip` past it from `dipFrom` seconds on; the exit lifts it `rise`
+ * toward the light.
+ */
+export const KELP_CAMERA = { delay: 0.3, dipFrom: 1.5, drop: 0.5, dip: 0.025, rise: 0.6 } as const;
+/**
+ * The passage's surge (world units/s at the nearest layer, along the current's way). Arriving, a
+ * pulse of `speed` · sin(2πq) · sin²(πq) (the forest is pushed over, then swings back) rolls
+ * through from upstream: it starts `start` seconds in, reaches the far side `delay` later and lasts
+ * `span` seconds at each place (q runs 0 to 1 over it), all inside KELP_PASSAGE.enter. Leaving, a
+ * sweep of `speed` · smoothstep(q) that builds over `span` seconds, `delay` later downstream.
+ */
+const ENTRY_SURGE = { speed: 0.9, start: 0.1, delay: 0.6, span: 1.9 } as const;
+const EXIT_SURGE = { speed: 0.6, delay: 0.4, span: 1.0 } as const;
 
 /**
  * The surge, in world units (screen heights at the nearest layer): u(x, t) = speed · surge knob ·
@@ -258,6 +284,20 @@ const FISH_FLEE = 0.18;
 /** Seconds a fright lasts, and a fish takes to fade in or out when the count changes. */
 const FISH_FRIGHT_TIME = 2;
 const FISH_FADE = 1.2;
+/**
+ * Passage: the school swims in (and out) over ARRIVE_TIME (LEAVE_TIME) seconds, each fish after a
+ * delay of up to ARRIVE_STAGGER (LEAVE_STAGGER), from (to) FISH_EDGE beyond the frame's edge plus
+ * up to FISH_ROW more, FISH_ARC off its height; leaving, a fish accelerates as q^LEAVE_POWER.
+ * Both finish inside KELP_PASSAGE.
+ */
+const ARRIVE_TIME = 2.3;
+const ARRIVE_STAGGER = 0.45;
+const LEAVE_TIME = 1.4;
+const LEAVE_STAGGER = 0.3;
+const LEAVE_POWER = 1.6;
+const FISH_EDGE = 0.06;
+const FISH_ROW = 0.14;
+const FISH_ARC = 0.12;
 
 type KnobKey = "surge" | "period" | "current" | "swell" | "density" | "kelpSeed" | "fish" | "visitor" | "mark";
 const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "density", "kelpSeed", "fish", "visitor", "mark"];
@@ -272,6 +312,13 @@ interface Hand {
   vx: number;
   vy: number;
   on: number;
+}
+
+/** Where a fish is drawn (screen heights) and which way it points, while the school passes. */
+interface FishPose {
+  x: number;
+  y: number;
+  heading: number;
 }
 
 /**
@@ -339,6 +386,50 @@ class School {
       this.vy[i] = (this.vy[i] ?? 0) + (dy / d) * k;
     }
     this.#fright = 1;
+  }
+
+  /**
+   * Fish i's drawn pose `seconds` into the entrance, the school coming in from `side` (+1 the
+   * right edge): it starts just beyond the frame's edge, at about its own height, and eases into
+   * the place its boid has, pointing the way it is moving, so the school streams in and turns
+   * to its own headings as it forms up. At q = 1 this is the boid's own pose.
+   */
+  arrive(i: number, seconds: number, side: number, aspect: number, pose: FishPose): void {
+    const x = this.x[i] ?? 0;
+    const y = this.y[i] ?? 0;
+    const u = this.#phase[i] ?? 0;
+    const late = ((this.#spread[i] ?? 1) - 0.7) / 0.6;
+    const q = clamp((seconds - ARRIVE_STAGGER * late) / ARRIVE_TIME, 0, 1);
+    const e = q * q * (3 - 2 * q);
+    const de = (6 * q * (1 - q)) / ARRIVE_TIME;
+    const dx = side * (0.5 * aspect + FISH_EDGE + FISH_ROW * u) - x;
+    const dy = FISH_ARC * (2 * u - 1);
+    pose.x = x + (1 - e) * dx;
+    pose.y = y + (1 - e) * dy;
+    const mx = e * (this.vx[i] ?? 0) - de * dx;
+    const my = (this.vy[i] ?? 0) - de * dy;
+    pose.heading = Math.hypot(mx, my) > 1e-6 ? Math.atan2(my, mx) : (this.heading[i] ?? 0);
+  }
+
+  /**
+   * Fish i's drawn pose `seconds` into the exit, the school leaving through `side`'s edge: it
+   * swims on as its boid does, then turns toward the edge and quickens out of the frame.
+   */
+  depart(i: number, seconds: number, side: number, aspect: number, pose: FishPose): void {
+    const x = this.x[i] ?? 0;
+    const y = this.y[i] ?? 0;
+    const u = this.#phase[i] ?? 0;
+    const late = ((this.#spread[i] ?? 1) - 0.7) / 0.6;
+    const q = clamp((seconds - LEAVE_STAGGER * late) / LEAVE_TIME, 0, 1);
+    const e = q ** LEAVE_POWER;
+    const de = (LEAVE_POWER * q ** (LEAVE_POWER - 1)) / LEAVE_TIME;
+    const dx = side * (0.5 * aspect + FISH_EDGE + FISH_ROW * u) - x;
+    const dy = FISH_ARC * (2 * u - 1);
+    pose.x = x + e * dx;
+    pose.y = y + e * dy;
+    const mx = (1 - e) * (this.vx[i] ?? 0) + de * dx;
+    const my = (this.vy[i] ?? 0) + de * dy;
+    pose.heading = Math.hypot(mx, my) > 1e-6 ? Math.atan2(my, mx) : (this.heading[i] ?? 0);
   }
 
   advance(dt: number, count: number, aspect: number, hand: Hand): void {
@@ -503,6 +594,7 @@ class KelpSim implements SceneSim {
   readonly #school = new School();
   readonly #hand: Hand = { x: 0, y: 0.5, vx: 0, vy: 0, on: 0 };
   readonly #stepOptions: VerletStepOptions;
+  readonly #pose: FishPose = { x: 0, y: 0, heading: 0 };
 
   // Per stipe: when the density knob shows it (rank), how far it has emerged from the haze, and
   // the length of its links.
@@ -532,6 +624,12 @@ class KelpSim implements SceneSim {
   #downstream = 1;
   #swellAge = -1;
   #swellDir = 1;
+  // Passage: seconds into the entrance (the entrance's length once arrived) and into the exit (0
+  // until leaving), whether either is running, and the edge the school leaves by (0 until chosen).
+  #enterT: number = KELP_PASSAGE.enter;
+  #exitT = 0;
+  #passing = false;
+  #exitSide = 0;
 
   #seed = -1;
   #aspect = 16 / 9;
@@ -580,6 +678,10 @@ class KelpSim implements SceneSim {
     this.#applyKnobs();
     const seed = Math.round(knob.kelpSeed);
     if (seed !== this.#seed) this.#build(seed);
+    this.#enterT = frame.passage.enter * KELP_PASSAGE.enter;
+    this.#exitT = frame.passage.exit * KELP_PASSAGE.exit;
+    this.#passing = frame.passage.enter < 1 || frame.passage.exit > 0;
+    if (this.#exitT > 0) this.#latchExit();
     this.#watchTriggers(frame.fired);
 
     // Motion scales everything; a swell or a visitor fired with "now" plays even while it is 0.
@@ -664,12 +766,22 @@ class KelpSim implements SceneSim {
     this.#flowTime = sys.time;
     this.#swellAge = -1;
     this.#school.place(random, this.#aspect, Math.round(this.#knob.fish));
+    // The prewarm is always the forest at rest, whatever passage is running.
+    const enterT = this.#enterT;
+    const exitT = this.#exitT;
+    const passing = this.#passing;
+    this.#enterT = KELP_PASSAGE.enter;
+    this.#exitT = 0;
+    this.#passing = false;
     for (let t = 0; t < PREWARM; t += PREWARM_STEP) {
       sys.step(PREWARM_STEP, this.#stepOptions);
       this.#settleBlades(PREWARM_STEP);
     }
     const fish = Math.round(this.#knob.fish);
     for (let t = 0; t < 2 * PREWARM; t += PREWARM_STEP) this.#school.advance(PREWARM_STEP, fish, this.#aspect, this.#hand);
+    this.#enterT = enterT;
+    this.#exitT = exitT;
+    this.#passing = passing;
   }
 
   #applyKnobs(): void {
@@ -705,6 +817,32 @@ class KelpSim implements SceneSim {
   }
 
   /**
+   * The passage's surge (world units/s, downstream positive) at world x: arriving, a pulse rolls
+   * through from upstream that pushes the forest downstream and then back, so the fronds bend over
+   * and swing into place; leaving, a sweep builds and stays, carrying the fronds over. Zero once
+   * the entrance is done, so a forest at rest is untouched.
+   */
+  #passageFlow(xw: number): number {
+    const along = clamp((this.#downstream * xw + HALF_SPAN) / (2 * HALF_SPAN), 0, 1);
+    if (this.#exitT > 0) {
+      const q = (this.#exitT - EXIT_SURGE.delay * along) / EXIT_SURGE.span;
+      return this.#downstream * EXIT_SURGE.speed * smoothstep(0, 1, q);
+    }
+    const q = (this.#enterT - ENTRY_SURGE.start - ENTRY_SURGE.delay * along) / ENTRY_SURGE.span;
+    if (q <= 0 || q >= 1) return 0;
+    return this.#downstream * ENTRY_SURGE.speed * Math.sin(TAU * q) * Math.sin(Math.PI * q) ** 2;
+  }
+
+  /** The school leaves by the edge it is nearer to, chosen once when the exit starts. */
+  #latchExit(): void {
+    if (this.#exitSide !== 0) return;
+    const school = this.#school;
+    let sum = 0;
+    for (let i = 0; i < KELP_FISH.max; i++) if ((school.shown[i] ?? 0) > 0) sum += school.x[i] ?? 0;
+    this.#exitSide = sum >= 0 ? 1 : -1;
+  }
+
+  /**
    * Bladders lift every point; drag pulls it toward the flow, the hand's wake included. In the band
    * just under the surface the lift fades out (and pushes down above it), with extra damping of
    * the up-and-down motion, so a grown plant's top comes to lie along the surface.
@@ -718,6 +856,7 @@ class KelpSim implements SceneSim {
     const a2 = this.#phase2 - KELP_SURGE.k2 * xw + KELP_SURGE.phase2;
     let surge = this.#surgeSpeed * (Math.sin(a1) + KELP_SURGE.second * Math.sin(a2));
     if (this.#swellAge >= 0) surge += this.#swellFlow(xw);
+    if (this.#passing) surge += this.#passageFlow(xw);
     const band = SURFACE_BAND * s;
     const over = (y - ((this.#pointSurface[i] ?? 1) - band)) / band;
     const floating = Math.min(1, Math.max(0, over));
@@ -945,9 +1084,17 @@ class KelpSim implements SceneSim {
     let maxY = -Infinity;
     for (let i = 0; i < KELP_FISH.max; i++) {
       const shown = school.shown[i] ?? 0;
-      const x = school.x[i] ?? 0;
-      const y = school.y[i] ?? 0;
-      const angle = school.heading[i] ?? 0;
+      let x = school.x[i] ?? 0;
+      let y = school.y[i] ?? 0;
+      let angle = school.heading[i] ?? 0;
+      if (this.#passing && shown > 0) {
+        const pose = this.#pose;
+        if (this.#exitT > 0) school.depart(i, this.#exitT, this.#exitSide, this.#aspect, pose);
+        else school.arrive(i, this.#enterT, this.#downstream, this.#aspect, pose);
+        x = pose.x;
+        y = pose.y;
+        angle = pose.heading;
+      }
       const size = school.size[i] ?? 0;
       this.#put(KELP_ROW.fishPose, i, x, y, Math.cos(angle), Math.sin(angle));
       this.#put(KELP_ROW.fishLook, i, shown > 0 ? size * (0.4 + 0.6 * shown) : 0, school.flash[i] ?? 0, school.flank[i] ?? 1, shown);

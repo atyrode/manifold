@@ -33,16 +33,24 @@
 // at random from the plate, so the amount of sand stays as set. The grains are splatted into a
 // density field (cloud-in-cell) and uploaded only when something moved: settled sand costs nothing.
 //
+// The passage. A sim built while the scene comes in plays its entrance in place of settling the
+// opening figure: sand is poured evenly over the still plate (grains land in a front sweeping down
+// the slope), then the plate begins to sing, its swing swelling to the knob's, and the sand runs
+// into the figure's lines at a boosted pace that eases back to 1 as the entrance ends. On the way
+// out the plate stops singing and tilts, and the sand slips (downhill first) and slides off its
+// low edge. Neither touches the sim's random draws; at rest every passage term is exactly neutral.
+//
 // Textures (plate units: the plate spans [-1, 1] on both axes, the round plate is the unit disc, y up):
 //   uSim0  rg16f CHLADNI_SAND_TEXELS² over the plate's square: R grains at rest per texel, G grains
 //          on the move, eased over SHOWN_MEMORY seconds so passing grains never flicker.
 //   uSim1  rg16f MODE_NODES² over the same square: R the figure the plate comes from, G the one it
 //          goes to (each at RMS 0.5).
-//   uSim2  rgba16f 1×1, nearest: eased crossfade s, norm, swing A, share of the M in the field.
+//   uSim2  rgba16f 2×1, nearest. Texel 0: eased crossfade s, norm, swing A, share of the M in the field.
+//          Texel 1: the passage: the strewn veil (0 at rest), the plate's tilt, the veil's gain.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex, segmentDistance } from "../../mark.ts";
 import { runBudgeted } from "../../sims/clock.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -155,6 +163,43 @@ const PINCH_RADIUS = 0.05;
 const POUR_PER_UNIT = 5000;
 const POUR_PER_SECOND = 700;
 const POUR_RADIUS = 0.03;
+
+// The scene's passage (index.ts `passage`).
+/** Seconds the entrance and the exit take. */
+export const CHLADNI_ENTER = 3;
+export const CHLADNI_EXIT = 1.6;
+/**
+ * The entrance, in seconds: sand is poured over the still plate in a front sweeping down the slope
+ * (POUR_FRONT of a grain's landing time follows the front, the rest is its own), then the plate
+ * begins to sing and its swing swells to full, and the sand runs into the lines at ARRIVE_PACE
+ * times its pace, easing back to 1 as the entrance ends. The sparse strewn sand is drawn as
+ * single grains (the shader's veil) until it has gathered, VEIL_FROM..VEIL_TO.
+ */
+const POUR_FROM = 0.4;
+const POUR_SPAN = 0.9;
+const POUR_FRONT = 0.8;
+const SING_FROM = 1.15;
+const SING_TO = 2.1;
+const ARRIVE_PACE = 3.5;
+const VEIL_FROM = 2;
+const VEIL_TO = 2.9;
+/**
+ * The exit: the plate stops singing and tilts down toward SLIDE (a unit vector, plate units) and
+ * the sand lets go: a grain slips from SLIP_FROM + SLIP_SPAN·(its slot on the slope, mostly: the
+ * downhill sand first, then a little by its own grip), then slides at SLIDE_ACCEL (plate units
+ * per s²) off the plate's edge. SLIDE_SPAN is the plate's longest reach along SLIDE.
+ */
+const SLIDE_X = 0.3827;
+const SLIDE_Y = -0.9239;
+const SLIDE_SPAN = 1.31;
+const SLIDE_ACCEL = 5;
+const SLIP_FROM = 0.1;
+const SLIP_SPAN = 0.4;
+const SLIP_ROW = 0.7;
+/** Memory (s) of the sand field as shown while it comes and goes: closer to the grains than SHOWN_MEMORY. */
+const PASSAGE_MEMORY = 0.3;
+/** The grain count the shader's veil is tuned for; it is scaled for other counts. */
+const STREW_REFERENCE = 25000;
 
 /** Each stroke's pull on the sand in the M's 'mode' (its distance is scaled by this): the leg, the inner strokes, the leg. */
 const MARK_PULL = [1, 0.6, 0.6, 1] as const;
@@ -390,7 +435,8 @@ class ChladniSim implements SceneSim {
   readonly #sand = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
   readonly #shown = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
   readonly #modes = new Float32Array(MODE_SIZE * 2);
-  readonly #state = new Float32Array(4);
+  /** Texel 0: crossfade, norm, swing, M share. Texel 1: the strewn veil, the plate's tilt, the veil's gain. */
+  readonly #state = new Float32Array(8);
 
   // The grains, all MAX_GRAINS laid out (the first #count are on the plate).
   readonly #x = new Float32Array(MAX_GRAINS);
@@ -448,13 +494,29 @@ class ChladniSim implements SceneSim {
   #snap = true;
   #modesDirty = true;
 
+  // The scene's passage (see the header). All off, and `#pace` 1, once the entrance is over (or never was).
+  #born = false;
+  #arriving = false;
+  /** Grains are still landing: those whose `#land` time is after `#clock` are not on the plate yet. */
+  #landing = false;
+  /** Seconds into the entrance. */
+  #clock = 0;
+  /** The sand's pace and dance, times the plate's own, while it gathers into the first figure. */
+  #pace = 1;
+  /** Each grain's landing time (s into the entrance). */
+  readonly #land = new Float32Array(MAX_GRAINS);
+  /** The exit has begun: each grain's place when it did, which it slides from. */
+  #sliding = false;
+  readonly #homeX = new Float32Array(MAX_GRAINS);
+  readonly #homeY = new Float32Array(MAX_GRAINS);
+
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader<ChladniKnob>("chladni", params, ["shape", "sweep", "vibration", "plateSeed", "grains", "mark"]);
     this.#sweepTrigger = this.#knobs.trigger("sweep");
     this.#markTrigger = this.#knobs.trigger("mark");
     this.#sandTexture = new DataTexture(gl, { width: CHLADNI_SAND_TEXELS, height: CHLADNI_SAND_TEXELS, format: "rg16f" });
     this.#modeTexture = new DataTexture(gl, { width: MODE_NODES, height: MODE_NODES, format: "rg16f" });
-    this.#stateTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#stateTexture = new DataTexture(gl, { width: 2, height: 1, format: "rgba16f", filter: "nearest" });
     this.#textures = [this.#sandTexture.texture, this.#modeTexture.texture, this.#stateTexture.texture];
   }
 
@@ -469,6 +531,28 @@ class ChladniSim implements SceneSim {
     this.#amp = SWING_GENTLE * Math.pow(SWING_HARD / SWING_GENTLE, Math.min(1, Math.max(0, knobs.value(frame, "vibration"))));
     this.#holdSeconds = HOLD_SLOW + (HOLD_FAST - HOLD_SLOW) * sweep;
     this.#moveSeconds = MOVE_SLOW + (MOVE_FAST - MOVE_SLOW) * sweep;
+
+    // The scene's passage. Only a sim built while the scene is coming in plays the entrance.
+    if (!this.#born) {
+      this.#born = true;
+      this.#arriving = frame.passage.enter < 1;
+    }
+    const leaving = frame.passage.exit > 0;
+    const exit = clamp(frame.passage.exit, 0, 1);
+    if (this.#arriving && !leaving) {
+      if (frame.passage.enter >= 1) {
+        this.#arriving = false;
+        this.#landing = false;
+        this.#pace = 1;
+      } else {
+        const enter = clamp(frame.passage.enter, 0, 1);
+        this.#clock = enter * CHLADNI_ENTER;
+        // The plate begins to sing, its swing swelling to the knob's.
+        this.#amp *= smoothstep(SING_FROM, SING_TO, this.#clock);
+        this.#pace = 1 + (ARRIVE_PACE - 1) * (1 - smoothstep(0.8, 1, enter));
+        if (this.#clock >= POUR_FROM + POUR_SPAN) this.#landing = false;
+      }
+    }
 
     if (seed !== this.#seed) {
       this.#reset(seed, round, count);
@@ -490,26 +574,32 @@ class ChladniSim implements SceneSim {
     if (mark > 0 && this.#markWas <= 0) this.#markQueued = true;
     this.#markWas = mark;
 
-    if (frame.fired[this.#markTrigger] === true) this.#moveTo(this.#target(true, mark), true);
-    else if (frame.fired[this.#sweepTrigger] === true) this.#moveTo(this.#target(false, mark), true);
+    if (leaving) {
+      this.#slide(exit);
+    } else {
+      if (frame.fired[this.#markTrigger] === true) this.#moveTo(this.#target(true, mark), true);
+      else if (frame.fired[this.#sweepTrigger] === true) this.#moveTo(this.#target(false, mark), true);
 
-    this.#pourAt(frame.pointer, dt, frame.aspect);
+      this.#pourAt(frame.pointer, dt, frame.aspect);
 
-    // Motion scales the plate; a "now" plays out even while motion is 0.
-    const span = dt * Math.max(frame.motion, this.#urgent > 0 ? 1 : 0);
-    this.#urgent = Math.max(0, this.#urgent - dt);
-    if (span > 0) {
-      const steps = Math.ceil(span / MAX_STEP);
-      for (let k = 0; k < steps; k++) this.#tick(span / steps, mark);
+      // Motion scales the plate; a "now" plays out even while motion is 0, and so does the entrance.
+      const span = dt * Math.max(frame.motion, this.#arriving || this.#urgent > 0 ? 1 : 0);
+      this.#urgent = Math.max(0, this.#urgent - dt);
+      if (span > 0) {
+        const steps = Math.ceil(span / MAX_STEP);
+        for (let k = 0; k < steps; k++) this.#tick(span / steps, mark);
+      }
     }
 
+    if (this.#landing || this.#sliding) this.#sandDirty = true;
     if (this.#sandDirty) {
       this.#splat();
       this.#sandDirty = false;
       this.#easing = true;
     }
     if (this.#easing) {
-      this.#ease(this.#snap || dt <= 0 ? 0 : Math.exp(-dt / SHOWN_MEMORY));
+      const memory = this.#arriving || this.#sliding ? PASSAGE_MEMORY : SHOWN_MEMORY;
+      this.#ease(this.#snap || dt <= 0 ? 0 : Math.exp(-dt / memory));
       this.#snap = false;
       this.#sandTexture.upload(this.#shown);
     }
@@ -528,8 +618,13 @@ class ChladniSim implements SceneSim {
     const state = this.#state;
     state[0] = s;
     state[1] = this.#norm;
-    state[2] = this.#amp;
+    // The plate stops singing as it tilts.
+    state[2] = leaving ? this.#amp * (1 - smoothstep(0, 0.25, exit)) : this.#amp;
     state[3] = this.#fromMark * (1 - s) + this.#toMark * s;
+    // The strewn veil: the sand drawn as single grains while it is spread thin, and the plate's tilt.
+    state[4] = leaving ? smoothstep(0, 0.2, exit) : this.#arriving ? 1 - smoothstep(VEIL_FROM, VEIL_TO, this.#clock) : 0;
+    state[5] = leaving ? smoothstep(0, 0.7, exit) : 0;
+    state[6] = (STREW_REFERENCE / this.#count) * (this.#round ? 4 / Math.PI : 1);
     this.#stateTexture.upload(state);
     return this.#textures;
   }
@@ -574,6 +669,56 @@ class ChladniSim implements SceneSim {
     this.#sandDirty = true;
     this.#snap = true;
     this.#modesDirty = true;
+    if (this.#arriving) this.#beginArrival();
+  }
+
+  /**
+   * The entrance, in place of settling the opening figure: the sand lies strewn evenly on the still
+   * plate (at rest, so nothing moves until the plate begins to sing) and lands in a front sweeping
+   * down the slope, each grain at its own time.
+   */
+  #beginArrival(): void {
+    this.#warmed = PREWARM_STEPS;
+    this.#airborne.fill(0);
+    this.#landing = true;
+    this.#sandDirty = true;
+    for (let i = 0; i < MAX_GRAINS; i++) {
+      // 0 at the top of the slope, 1 at the foot.
+      const row = clamp(0.5 + (0.5 * ((this.#x[i] ?? 0) * SLIDE_X + (this.#y[i] ?? 0) * SLIDE_Y)) / SLIDE_SPAN, 0, 1);
+      this.#land[i] = POUR_FROM + POUR_SPAN * (POUR_FRONT * row + (1 - POUR_FRONT) * hash31(i, 0, 0x51ed));
+    }
+  }
+
+  /**
+   * The exit, at progress `exit`: the plate tilts and the sand slides off its low edge (see
+   * SLIDE_X). Each grain's place is worked out from where it lay when the exit began.
+   */
+  #slide(exit: number): void {
+    const count = this.#count;
+    const xs = this.#x;
+    const ys = this.#y;
+    const homeX = this.#homeX;
+    const homeY = this.#homeY;
+    if (!this.#sliding) {
+      this.#sliding = true;
+      homeX.set(xs);
+      homeY.set(ys);
+      // The sand slides as one heap, not a cloud: at rest, for the shader.
+      this.#airborne.fill(0);
+    }
+    const now = exit * CHLADNI_EXIT;
+    const thresholds = this.#threshold;
+    for (let i = 0; i < count; i++) {
+      const x0 = homeX[i] ?? 0;
+      const y0 = homeY[i] ?? 0;
+      // 0 at the foot of the slope (it goes first), 1 at the top.
+      const top = 1 - clamp(0.5 + (0.5 * (x0 * SLIDE_X + y0 * SLIDE_Y)) / SLIDE_SPAN, 0, 1);
+      const grip = Math.cbrt((thresholds[i] ?? 0) / THRESHOLD_MAX);
+      const slid = now - (SLIP_FROM + SLIP_SPAN * (SLIP_ROW * top + (1 - SLIP_ROW) * grip));
+      const run = slid > 0 ? 0.5 * SLIDE_ACCEL * slid * slid : 0;
+      xs[i] = x0 + SLIDE_X * run;
+      ys[i] = y0 + SLIDE_Y * run;
+    }
   }
 
   /** Drop grain i anywhere on the plate, evenly (the round plate's by radius √r so the disc fills evenly). */
@@ -702,7 +847,7 @@ class ChladniSim implements SceneSim {
     const still = !this.#moving && this.#amp === this.#steppedAmp;
     this.#steppedAmp = this.#amp;
     if (this.#moving) this.#shed(dt);
-    if (this.#advance(dt, DANCE, still) > 0) this.#sandDirty = true;
+    if (this.#advance(dt, DANCE * (1 + 0.5 * (this.#pace - 1)), still) > 0) this.#sandDirty = true;
     if (this.#moving && this.#mix >= 1) {
       // Arrived: the target becomes the figure the plate holds.
       const from = this.#from;
@@ -729,6 +874,7 @@ class ChladniSim implements SceneSim {
     const vys = this.#vy;
     const thresholds = this.#threshold;
     const airborne = this.#airborne;
+    const boost = this.#pace;
     const from = this.#from;
     const to = this.#to;
     const s = this.#moving ? smoothstep(0, 1, this.#mix) : 0;
@@ -790,7 +936,7 @@ class ChladniSim implements SceneSim {
         continue;
       }
       const slope = Math.sqrt(sx * sx + sy * sy) + 1e-6;
-      const pace = (DRIFT * excess) / (excess + DRIFT_EASE);
+      const pace = (DRIFT * boost * excess) / (excess + DRIFT_EASE);
       // Distance down the slope this step, as a multiple of the slope vector.
       const down = Math.min((pace * dt * slope) / (slope + DRIFT_FLAT), (DRIFT_REACH * excess) / slope) / slope;
       noise ^= noise << 13;
@@ -908,7 +1054,14 @@ class ChladniSim implements SceneSim {
     const xs = this.#x;
     const ys = this.#y;
     const airborne = this.#airborne;
+    const landing = this.#landing;
+    const clock = this.#clock;
+    const land = this.#land;
+    const sliding = this.#sliding;
     for (let i = 0; i < this.#count; i++) {
+      // Grains still to be poured are not on the plate; those slid off its edge are gone.
+      if (landing && (land[i] ?? 0) > clock) continue;
+      if (sliding && !this.#onPlate(xs[i] ?? 0, ys[i] ?? 0)) continue;
       const gx = ((xs[i] ?? 0) + 1) * half - 0.5;
       const gy = ((ys[i] ?? 0) + 1) * half - 0.5;
       const i0 = Math.min(last, Math.max(0, Math.floor(gx)));

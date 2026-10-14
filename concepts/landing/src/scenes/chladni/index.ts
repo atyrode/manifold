@@ -4,7 +4,7 @@
 import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { chladniGlsl, chladniLamps, chladniMetals, chladniSands } from "./shader.ts";
-import { CHLADNI_GRAINS, chladniSim } from "./sim.ts";
+import { CHLADNI_ENTER, CHLADNI_EXIT, CHLADNI_GRAINS, chladniSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("plate", "shape", "plate", [{ label: "square", value: 0 }, { label: "round", value: 1 }], 0, "Square: Chladni's own plate, its figures stars, diamonds, crosses and rings. Round: rings with petals, spokes and curls."),
@@ -36,5 +36,7 @@ export const chladniScene: SceneDef = {
   },
   glsl: chladniGlsl,
   entry: "sceneChladni",
+  // Entrance: sand strewn over the still plate, then the plate sings it into its lines. Exit: the plate tilts and the sand slides off.
+  passage: { enter: CHLADNI_ENTER, exit: CHLADNI_EXIT },
   sim: chladniSim(params),
 };

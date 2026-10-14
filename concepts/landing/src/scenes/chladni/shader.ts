@@ -2,7 +2,7 @@
 // the sand the simulation (sim.ts) throws into figures.
 //   uSim0  sand per texel over the plate's square: R at rest, G on the move
 //   uSim1  the plate's field over the same square: R the figure it comes from, G the one it goes to
-//   uSim2  texel 0: eased crossfade s, norm, swing A, share of the M in the field
+//   uSim2  texel 0: eased crossfade s, norm, swing A, share of the M in the field; texel 1: the passage
 // Knobs read here: K_shape, K_tone, K_sand, K_lamp, K_lampHue, K_shimmer (the rest drive the sim).
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { CHLADNI_HUB, CHLADNI_MARK_SIZE, CHLADNI_MARK_Y, CHLADNI_PLATE, CHLADNI_PLATE_FIT, CHLADNI_SAND_TEXELS } from "./sim.ts";
@@ -156,6 +156,9 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
   // light dithers into single-channel specks, so it is held well toward grey.
   vec3 soft = mix(vec3(dot(light, LUMA)), light, 0.3);
   vec4 state = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(0), 0) : vec4(0.0, 1.0, 1.0, 0.0);
+  // The passage, from the sim: x the veil of strewn sand, y how far the plate has tilted (its
+  // shadow lengthens), z the veil's gain for the grain count. All 0 at rest.
+  vec4 stage = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(1, 0), 0) : vec4(0.0);
 
   // The cloth the plate stands on: near black, a pool of the lamp's light on it toward the lamp,
   // and the plate's shadow thrown down and to the right, long (the lamp is low) and soft: a wide
@@ -163,7 +166,7 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
   vec2 pool = p - toward * (0.9 * size);
   float poolLight = exp(-1.2 * dot(pool, pool));
   vec3 col = CHLADNI_CLOTH * (0.9 + 0.2 * vnoise(cell / 11.0)) * (0.7 + 1.2 * poolLight) + soft * 0.17 * poolLight;
-  float thrown = 1.0 - smoothstep(-0.02, 0.26, chladniPlateDistance(q + toward * 0.13, disc));
+  float thrown = 1.0 - smoothstep(-0.02, 0.26, chladniPlateDistance(q + toward * (0.13 + 0.12 * stage.y), disc));
   float contact = 1.0 - smoothstep(0.0, 0.07, chladniPlateDistance(q, disc));
   col *= 1.0 - max(0.82 * thrown, 0.5 * contact);
 
@@ -213,6 +216,7 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
     float dust = 0.0;
     float shade = 0.0;
     float lamb = 0.6;
+    float strewn = 0.0;
     float crest = 0.0;
     if (uSimOn.x > 0.5) {
       vec2 st = q * 0.5 + 0.5;
@@ -240,6 +244,12 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
         + texture(uSim0, st + vec2(wide, wide)).g + texture(uSim0, st + vec2(-wide, wide)).g
         + texture(uSim0, st + vec2(wide, -wide)).g + texture(uSim0, st - vec2(wide, wide)).g;
       dust = 1.0 - exp(-air / (10.0 * CHLADNI_DUST));
+      // The veil: while the sand lies thin (strewn on the still plate, or sliding off), each grain
+      // of it shows, over about three texels; heaped sand has the ridge.
+      if (stage.x > 0.0) {
+        vec2 around = 2.0 * c + e + w + n + s;
+        strewn = stage.x * 0.8 * smoothstep(0.12, 0.8, (around.x + around.y) * stage.z / 6.0);
+      }
       // Each ridge shades the metal beside it, on the side away from the lamp.
       vec2 lampward = toward * tx;
       shade = 1.0 - exp(-0.5 * (chladniDepth(st + 2.0 * lampward) + chladniDepth(st + 3.6 * lampward)) / CHLADNI_HEAP);
@@ -279,11 +289,16 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
     float flying = hardEdge(dust, 0.1 + 0.85 * g2) * (1.0 - body);
     vec3 flyingSand = chladniSandLit(albedo, soft, 0.7);
 
+    // Strewn sand (the passage's veil, absent at rest): single grains where the sand lies thin, each
+    // cell holding one once the smoothed density passes its own threshold.
+    float strewnCell = strewn > 0.0 ? hardEdge(strewn, hash12(cell + 7.7)) * (1.0 - body) : 0.0;
+
     // A few grains of quartz catch the lamp, slowly, one at a time, only on the lamp's flank.
     float twinkle = 0.5 + 0.5 * sin(tm * (0.5 + 0.7 * g2) + g1 * 40.0);
     float glint = step(0.986, g4) * body * smoothstep(0.62, 0.9, lamb) * twinkle * twinkle;
 
-    vec3 top = mix(plate, looseSand, loose);
+    float grainy = max(loose, strewnCell);
+    vec3 top = mix(plate, looseSand, grainy);
     top = mix(top, flyingSand, 0.85 * flying);
     top = mix(top, sand, body);
     top += (light * 0.6 + 0.3) * glint;
