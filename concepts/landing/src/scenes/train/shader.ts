@@ -129,7 +129,7 @@ void trainRead(float t) {
   for (int i = 0; i < TRAIN_CARS; i++) trainCars[i] = vec3(0.0);
   if (uSimOn.x < 0.5) {
     // No simulation yet: a steady run from a fixed point on the line.
-    float s = 4096.0 + 12.0 * t * uMotion;
+    float s = 4096.0 + 12.0 * uMotionTime;
     trainBlockN = floor(s / TRAIN_BLOCK);
     trainInto = s - trainBlockN * TRAIN_BLOCK;
     trainV = 12.0;
@@ -374,7 +374,7 @@ vec4 trainClouds(vec3 dir, float t, bool fine) {
   float cover = max(K_clouds, trainOver * (0.6 + 0.4 * trainStorm));
   if (dir.y <= 0.012 || cover <= 0.0) return vec4(0.0);
   vec2 run = vec2(cos(TRAIN_YAW), sin(TRAIN_YAW));
-  vec2 q = dir.xz / dir.y + run * (trainS / 1500.0) - vec2(0.09 * K_wind, -0.01) * t * uMotion;
+  vec2 q = dir.xz / dir.y + run * (trainS / 1500.0) - vec2(0.09 * K_wind, -0.01) * uMotionTime;
   float detail = fine ? 1.0 - smoothstep(0.08, 0.3, 1.3 / (uRes.y * dir.y * dir.y)) : 0.0;
   float n = 0.62 * vnoise(q * 0.55 + 4.3) + 0.38 * mix(0.5, vnoise(q * 1.3 + 9.1), detail);
   float th = mix(0.66, 0.26, clamp(cover, 0.0, 1.0));
@@ -402,7 +402,7 @@ float trainMarkStars(vec3 dir) {
   float s = 0.0;
   for (int i = 0; i < 5; i++) {
     vec2 v = markVertex(i);
-    float tw = 0.82 + 0.18 * sin(uTime * uMotion * (0.5 + 0.11 * float(i)) + float(i) * 2.3);
+    float tw = 0.82 + 0.18 * sin(uMotionTime * (0.5 + 0.11 * float(i)) + float(i) * 2.3);
     s = max(s, (1.0 - smoothstep(0.9, 2.0, length(q - v) / cellM)) * tw);
     if (i < 4) {
       vec2 w = mix(v, markVertex(i + 1), 0.5);
@@ -436,7 +436,7 @@ float trainMeteor(vec3 dir, float t) {
   float m = 0.0;
   if (K_meteors > 0.0) {
     float period = mix(70.0, 9.0, K_meteors);
-    float tm = t * uMotion;
+    float tm = uMotionTime;
     float k = floor(tm / period);
     m = trainStreak(dir, tm - (k + 0.1 + 0.75 * hash12(vec2(k, 71.3))) * period, k);
   }
@@ -477,7 +477,7 @@ vec3 trainSkyCol(vec3 dir, float t, bool detail, inout float accent) {
   accent = max(accent, mark);
   if (K_rain > 0.0 && dir.y < 0.3) {
     float az = atan(dir.x, dir.z) + trainS / 6000.0;
-    float shaft = smoothstep(0.35, 0.8, 0.65 * vnoise(vec2(az * 9.0 - t * uMotion * 0.02 * K_wind, 3.1)) + 0.35 * vnoise(vec2(az * 23.0, 8.3)));
+    float shaft = smoothstep(0.35, 0.8, 0.65 * vnoise(vec2(az * 9.0 - uMotionTime * 0.02 * K_wind, 3.1)) + 0.35 * vnoise(vec2(az * 23.0, 8.3)));
     col = mix(col, trainAir * 1.1, shaft * K_rain * (0.3 + 0.5 * K_rain) * smoothstep(0.3, 0.0, dir.y));
   }
   return col;
@@ -560,7 +560,7 @@ vec3 trainVillage(vec2 o, inout float accent) {
     float core = trainHard(1.0 - smoothstep(0.7, 1.4, r));
     float kind = fract(hi * 29.3);
     vec3 tint = kind > 0.85 ? vec3(0.7, 0.82, 1.0) : (kind > 0.6 ? TRAIN_SODIUM : TRAIN_GLOW);
-    float tw = 0.8 + 0.2 * sin(uTime * uMotion * (0.6 + fract(hi * 3.3)) + hi * 40.0);
+    float tw = 0.8 + 0.2 * sin(uMotionTime * (0.6 + fract(hi * 3.3)) + hi * 40.0);
     c += tint * (core * 0.9 * tw + 0.12 * exp(-r * r / 9.0));
     accent = max(accent, core * 0.8);
   }
@@ -577,7 +577,7 @@ vec4 trainMast(float d, float h, inout float accent) {
   if (abs(x) > 3.0 * cellM) return vec4(0.0);
   float top = trainRidgeH(d - x) + 75.0;
   float bar = trainHard(clamp(0.5 - (abs(x) - 0.6 * cellM) / cellM, 0.0, 1.0)) * step(h, top);
-  float phase = fract(uTime * uMotion / 1.6 + hm * 7.0);
+  float phase = fract(uMotionTime / 1.6 + hm * 7.0);
   float blink = smoothstep(0.0, 0.08, phase) * (1.0 - smoothstep(0.42, 0.52, phase)) * trainLampsOn;
   float light = trainHard(1.0 - smoothstep(0.7, 1.5, length(vec2(x, h - top - 2.0)) / cellM)) * blink;
   vec3 c = mix(trainFade(vec3(0.02, 0.022, 0.03), TRAIN_RIDGE_Z, h), TRAIN_SIGNAL * 1.2, light);
@@ -629,7 +629,7 @@ vec3 trainFar(vec2 o, float t, bool detail, inout float hitZ, inout float accent
 // body under a glancing sheen, and the moon's broken path: facets tilted just so send its light to
 // the eye, in rows of long glints.
 vec3 trainWater(vec2 o, float z, float d, float t) {
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float rough = 0.4 + 0.6 * abs(K_wind) + 0.8 * K_rain;
   float row = floor(o.y / (3.0 * trainPx));
   float wob = trainNoise(d + tm * 0.5, 16.0, 150.0 + row) - 0.5;
@@ -883,7 +883,7 @@ vec3 trainCrossingGround(float dg, float zg, float tm) {
 // its cars' headlight beams, the fields; the crossing's road across them. Wet ground darkens and
 // gathers puddles mirroring the sky; snow lies on all of it.
 vec3 trainGround(vec2 o, float zg, float dg, float t) {
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   vec3 up = vec3(0.0, 1.0, 0.0);
   float cellZ = trainPx * zg * zg / (TRAIN_EYE * TRAIN_F);
   vec3 alb;
@@ -1200,7 +1200,6 @@ vec3 trainStationScene(vec2 o, float t, vec3 col, inout float hitZ, inout float 
   float mid = 0.5 * L;
   float rise = o.y - TRAIN_HORIZON;
   float seed = st.z;
-  float tm = t * uMotion;
   vec3 up = vec3(0.0, 1.0, 0.0);
   vec3 front = vec3(0.0, 0.0, -1.0);
   // The platform.
@@ -1476,7 +1475,7 @@ vec3 trainStationScene(vec2 o, float t, vec3 col, inout float hitZ, inout float 
 vec3 trainCrossingScene(vec2 o, float t, vec3 col, inout float hitZ, inout float accent, inout vec3 glow) {
   float c = trainCrossing.x;
   if (abs(c) > 400.0) return col;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float rise = o.y - TRAIN_HORIZON;
   vec2 flash = trainFlash(tm);
   // The road's lamps, receding up it.
@@ -1582,7 +1581,7 @@ float trainPoleAt(float id) {
 // distances, sagging between the poles, rising and dipping as the train runs.
 vec3 trainPoles(vec2 o, float t, vec3 col, inout float hitZ) {
   if (hitZ < 3.3) return col;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float rise = o.y - TRAIN_HORIZON;
   float z = TRAIN_POLE_Z;
   float d = o.x * z / TRAIN_F + trainEyeOff.x;
@@ -1676,7 +1675,7 @@ vec3 trainTruss(vec2 o, vec3 col, inout float hitZ) {
 vec3 trainTunnelScene(vec2 o, float t, vec3 col, inout float hitZ) {
   vec4 tn = trainTunnel;
   if (tn.x > 140.0 || tn.x + tn.y < -140.0) return col;
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float rise = o.y - TRAIN_HORIZON;
   // The cutting, 4.6 m out.
   if (hitZ > TRAIN_CUT_Z) {
@@ -1734,7 +1733,7 @@ vec3 trainTunnelScene(vec2 o, float t, vec3 col, inout float hitZ) {
 vec3 trainOutside(vec2 o, vec2 rainUV, float aspect, float t, inout float accent) {
   float hitZ = 1e6;
   vec3 glow = vec3(0.0);
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   vec3 col = trainLand(o, t, hitZ, accent, glow);
   col = trainVerge(o, t, col, hitZ);
   col = trainStationScene(o, t, col, hitZ, accent, glow);
@@ -1778,7 +1777,7 @@ vec3 trainOutside(vec2 o, vec2 rainUV, float aspect, float t, inout float accent
 // q in screen heights. Returns xy refraction offset (screen heights), z drop cover, w bead cover.
 vec4 trainPaneRain(vec2 q, float t, float amount) {
   if (amount <= 0.0) return vec4(0.0);
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   float push = 0.0095;
   float runB = trainBlockN * push * TRAIN_BLOCK;
   float runI = push * trainInto + 0.012 * tm;
@@ -2123,13 +2122,10 @@ vec3 trainTableTop(vec2 p, float aspect, float depth, vec3 room, vec3 spill, vec
   return c;
 }
 
-Shade sceneTrain(vec2 uv, vec2 cell, float t) {
-  float tm = t * uMotion;
-  float aspect = uRes.x / uRes.y;
+// This cell's journey, sky and light, and the line's swing: the globals everything outside reads.
+void trainSetup(vec2 cell, float t) {
   trainPx = 1.0 / uRes.y;
   trainTh = threshold(cell);
-  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
-  Shade o = blankShade();
   trainRead(t);
   trainSalt = mod(K_route, 1000.0) * 0.731;
   trainPassage();
@@ -2167,6 +2163,14 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   trainRoll = 60.0 * (0.16 / 1900.0 * cos(sw) + 0.07 / 730.0 * cos(sw2));
   trainEyeOff = uPointer * vec2(0.25, 0.1);
   trainTunnelIn = trainTunnel.x < 0.0 && trainTunnel.x + trainTunnel.y > 0.0 ? smoothstep(0.0, 3.0, -trainTunnel.x) * smoothstep(0.0, 3.0, trainTunnel.x + trainTunnel.y) : 0.0;
+}
+
+Shade sceneTrain(vec2 uv, vec2 cell, float t) {
+  float tm = uMotionTime;
+  float aspect = uRes.x / uRes.y;
+  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
+  Shade o = blankShade();
+  trainSetup(cell, t);
 
   // The rails' rhythm: seconds since each of the carriage's four axles last crossed a joint, and
   // what that does: a jolt, the carriage's slow rock.
