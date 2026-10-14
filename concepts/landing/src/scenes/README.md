@@ -3,9 +3,9 @@
 A scene is one folder, `src/scenes/<id>/`, whose `index.ts` exports a `SceneDef` (see `types.ts`).
 The registry `src/scenes/index.ts` lists scenes in lab order. Everything a scene needs is in its
 folder; shared pieces live in `src/shaders/common.ts` and `src/shaders/lib/` (GLSL),
-`src/scenes/atmosphere.ts` (shared knobs, page themes), `src/params.ts` (knob builders,
-`KnobReader`), `src/sims/` (simulation helpers, CPU and GPU), `src/mark.ts` (the Manifold M) and
-`src/shaders/glsl.ts` (GLSL literals from TS).
+`src/scenes/atmosphere.ts` (shared knobs, page themes), `src/scenes/planet.ts` (the giant planet's
+knobs), `src/params.ts` (knob builders, `KnobReader`), `src/sims/` (simulation helpers, CPU and
+GPU), `src/mark.ts` (the Manifold M) and `src/shaders/glsl.ts` (GLSL literals from TS).
 
 ```
 src/scenes/<id>/index.ts    SceneDef: title, blurb, accent, look, params, groups, glsl, entry, sim
@@ -383,6 +383,92 @@ The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `ha
 `hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,
 `prism`, `ripple`, `sandtable`, `shanshui`.
 
+**Opt-in components.** `libs` is compiled into every scene's program, so it holds only what most
+scenes use. A component few scenes compose is a GLSL string of its own that each consumer
+interpolates into its `glsl`, at the top or at least before the functions that call it, so no
+other program pays for it: `planetGlsl` and `birdsGlsl` (`src/shaders/lib/`), `windWaterGlsl` and
+`causticsGlsl` (`src/shaders/`). Such a component reads no knob defines (they are the scene's own):
+the scene passes every value as an argument, and its knobs come from a shared builder where the
+component has one (`planetKnobs`).
+### The giant planet (`src/shaders/lib/planet.ts`)
+One ringed gas giant, one implementation, that any sky composes: Orbit's subject and Campfire's
+scenery. It is opt-in: put `${planetGlsl}` at the top of the scene's GLSL, as both of them do. The
+library decides the planet and what moves where (belts, clouds, storms, the aurora's oval, city
+lights, the ring plane, the moons' orbits); the scene decides placement, size, the sun's direction,
+the palette, which features it composes, what stands in front and how it composites. Frame: planet
+radii from its centre, x right, y up, z toward the eye; `planetAt` maps the scene's flat units into
+it.
+- **Two tiers.** A hero composes the functions one by one and maps their outputs to its own picture
+  (Orbit: ink and accent coverage). A decoration calls `planetOver(col, p, px, look, tm, t)`, which
+  draws the whole giant over an RGB sky; `planetGiant(centre, radius, light)` fills a `PlanetLook`
+  (Campfire's teal bands and thin ring, every feature off) for the scene to adjust field by field,
+  and the scene draws its foreground over it afterwards.
+- **Level of detail.** Every detailed function takes `foot`, one dither cell in planet radii (the
+  scene's cell over the radius). Detail spanning a cell or more is the full-detail result bit for
+  bit, so a planet that already resolved its detail draws the same picture; finer belts and cloud
+  octaves fade to their mean, aurora folds blur, ring grooves and boulders fade to their mean cover,
+  city lights and storm cells merge into fewer, larger cells (each lit as often as any of the towns
+  it covers), and a moon never shrinks below a cell. The same planet works filling the frame or a
+  few dozen cells across.
+- **Controls.** `planetKnobs(options)` (`src/scenes/planet.ts`) gives the planet's knobs with shared
+  labels, help and defaults: `clouds`, `storms` (with its trigger slot), `aurora` and `auroraSize`,
+  `lights` and `lightsTwinkle`, `daycycle`, `moons` and `eclipses`, and the ring system (`ring`,
+  `ringCount` .. `ringSpin`), each only if asked for and all starting off, so adopting one never
+  changes the picture. `prefix` keeps a sky's keys apart from its own (`prefix: "planet"` gives
+  `planetMoons`, read as `K_planetMoons`); `groups` and `when` place them in the lab;
+  `planetGroups` has the planet's headings. Placement and size stay the scene's knobs.
+struct PlanetPoint { vec2 q; float d; vec3 normal; };            // q radii from the centre, d = |q|, the sphere's normal while d < 1
+PlanetPoint planetAt(vec2 p, vec2 centre, float radius);         // p, centre, radius in the scene's units
+float planetLod(float size, float foot);                         // 1 while size (radii) spans a cell, 0 at half a cell
+vec3 planetSun(vec3 light, float sweep);                         // the sun turned about the planet's axis: a day cycle or a phase
+float planetSunward(vec2 q, vec3 light);                         // -1..1 toward the sunward limb
+float planetNight(float diffuse);                                // 0..1 the night side from the clamped sun cosine
+float planetRim(vec3 normal);                                    // grazing light at the limb
+float planetHalo(float d, float radius, float falloff);          // a thin limb halo, falloff per scene unit (orbit)
+float planetGlow(float d, float width);                          // a broad airglow round the limb (campfire)
+float planetLongitude(vec3 normal, float drift, float swing);    // longitude, turned by the surface's drift and a camera swing
+float planetBelts(vec3 normal, float lon, float foot);           // turbulent belts 0..1 (orbit)
+vec2 planetSwirl(vec2 q, float roll, float tm);                  // storm-swirled bands: x band, y storm eye (campfire)
+vec3 planetBandColor(vec2 swirl, vec3 deep, vec3 mid, vec3 pale, vec3 eye);
+float planetClouds(vec3 normal, float lon, float tm, float foot); // the cloud deck 0..1
+float planetStorms(vec3 normal, float lon, float t, float level, float cloud, float diffuse, float foot); // night-side lightning 0..1
+float planetCityLights(vec3 normal, float lon, float t, float twinkle, float foot); // 0..1, times planetNight
+float planetAurora(vec3 n, vec3 pole, float size, float tm, float foot); // the oval round a pole the scene picks
+float planetAuroraCurtain(vec2 q, float d, vec3 pole, float size, float tm, float foot); // its curtains off the limb (d > 1)
+struct PlanetRing { float facing; float roll; };                 // a plane through the centre: cos of its tilt to the eye, its turn on screen
+vec3 planetRingNormal(PlanetRing ring);                          // the planet's axis
+vec3 planetRingAt(PlanetRing ring, vec2 q);                      // the plane on this line of sight: xy in-plane (radii), z depth toward the eye
+vec2 planetRingPlane(PlanetRing ring, vec3 point);               // a 3D point of the plane in the same coordinates
+bool planetShadowed(vec3 point, vec3 light);                     // in the planet's shadow (the ring behind it)
+bool planetRingShadowAt(PlanetRing ring, vec3 normal, vec3 light, out vec2 plane); // where the sun ray from the surface meets the plane
+float planetRingOpacity(float cover);                            // how much a ring's cover hides behind it
+struct PlanetRingBands { float inner; float outer; float count; float spacing; float density; float texture; float spin; };
+float planetRingBands(vec2 plane, PlanetRingBands b, float tm, float foot, out float band); // the banded system's cover (orbit)
+float planetRingThin(float rho, out float streak);               // a thin streaked ring with a gap (campfire)
+struct PlanetMoon { float rate; float phase; float distance; float size; float tilt; float roll; };
+PlanetMoon planetMoon(int i, PlanetRing frame);                  // moon 0..2 of a family orbiting near the plane `frame`
+vec3 planetOrbit(float angle, float radius, float tilt, float roll); // a point on an inclined orbit
+bool planetBehind(vec3 p);                                       // hidden behind the disc
+vec3 planetMoonAt(PlanetMoon m, float tm, float swing, float spread); // its centre (a passage may swing and spread it)
+vec3 planetMoonDisc(vec2 q, vec3 centre, float size, vec3 light, float seed, float foot); // x cover, y light, z surface depth
+float planetMoonShadow(vec2 q, vec3 centre, float size, vec3 light); // its eclipse on the disc 0..1
+PlanetLook planetGiant(vec2 centre, float radius, vec3 light);   // the decoration: palette, thin ring, features off
+vec3 planetOver(vec3 col, vec2 p, float px, PlanetLook look, float tm, float t); // the decoration over an RGB sky
+| Feature | `orbit` (hero) | `campfire` (decoration) |
+|---|---|---|
+| Surface | turbulent belts, rim light | swirled teal bands, rim light |
+| Atmosphere | sunward halo | airglow |
+| Clouds, storms | knobs | — |
+| Aurora | knob; pole tipped toward the eye | knob; pole on the ring's axis |
+| City lights | knob (+ the M, its own) | knob |
+| Day cycle | knob | knob |
+| Ring | banded system, knobs | thin ring, fixed |
+| Moons | knob; near face-on orbits | knob; on the ring plane, crossing in front of and behind the disc |
+Another sky adds it in a few lines, its own foreground drawn after:
+PlanetLook look = planetGiant(vec2(-0.4, 0.75), 0.12, normalize(vec3(-0.6, 0.4, 0.7)));
+look.visible = sky.night;
+look.moons = K_planetMoons;                                     // from planetKnobs({ prefix: "planet", moons: true })
+col = planetOver(col, p, 1.0 / uRes.y, look, uMotionTime, uTime);
 ### Weather in the world
 
 Rain and snow belong to the scene: they come from its sky, fall through its depth, stop at its
@@ -580,3 +666,7 @@ hold); a simulation that throws while starting or drawing, and a shader that doe
 the frame loop scheduled, report the failure and recover by retry or by another scene; uniforms are
 sent only when they change, including a look change made while another scene drew; and the Lab
 never applies a setup while it is being built.
+The shared giant planet has its own check (`campfire/planet.verify.ts`): its ring geometry agrees
+between the line of sight, the plane and the shadow on the planet; its level of detail leaves
+resolved belts bit for bit and merges far city lights into blocks; and Campfire's composed moons,
+aurora, lights and day cycle show only where the planet does, with a moon behind it hidden.

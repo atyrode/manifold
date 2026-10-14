@@ -5,9 +5,11 @@
 // them dark pines, a giant ringed planet low on the horizon, the Milky Way and a vast starry sky with
 // the odd shooting star. The picture is procedural in shader.ts: the flames, sparks and smoke are noise
 // and analytic arcs advected slowly, cut per cell so nothing shimmers under the dither. With `fuel` on,
-// sim.ts burns the logs down (sims/fuel.ts) and the shader follows it.
+// sim.ts burns the logs down (sims/fuel.ts) and the shader follows it. The planet is the shared one
+// (shaders/lib/planet.ts, knobs from ../planet.ts), composed as scenery with a few of its features.
 import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
+import { planetKnobs } from "../planet.ts";
 import type { SceneDef } from "../types.ts";
 import { campfireGlsl } from "./shader.ts";
 import { campfireSim } from "./sim.ts";
@@ -23,7 +25,9 @@ const params: readonly ParamDef[] = [
   range("camp", "reach", "firelight reach", 0.5, "How far the firelight carries: a tight pool on the stones, or a warm glow reaching the tent, the bench and the pack."),
   toggle("camp", "camp", "tent & pack", true, "A little tent at the edge of the light with a lantern glowing inside, and a backpack leaning by the stones."),
   ...skyKnobs({ time: 0.8, stars: 0.8 }),
-  feature("sky", "planet", "giant planet", true, "size", 0.55, "A giant banded planet with a storm swirl and a thin ring, low over the far pines, half hidden by the trees; it fades into the sky by day.", { min: 0.2, max: 1 }),
+  feature("planet", "planet", "giant planet", true, "size", 0.55, "A giant banded planet with a storm swirl and a thin ring, low over the far pines, half hidden by the trees; it fades into the sky by day.", { min: 0.2, max: 1 }),
+  // The shared planet's features this sky composes, all off: no clouds, storms or ring system.
+  ...planetKnobs({ prefix: "planet", groups: { planet: "planet", moons: "planet" }, when: "planet", aurora: true, lights: true, daycycle: true, moons: true }),
   feature("sky", "shooting", "shooting stars", true, "frequency", 0.4, "A shooting star now and then, drawn across the dark sky in a second or so. Higher: every few seconds. Now: one at once.", { trigger: 0 }),
   ...weatherKnobs({ wind: true, fog: true }),
   feature("manifold", "mark", "carved M", false, "glow", 0.7, "The Manifold M carved into the log bench, its grooves glowing like embers in the firelight and breathing slowly with the coals."),
@@ -39,7 +43,8 @@ export const campfireScene: SceneDef = {
   groups: {
     fire: { title: "Fire", blurb: "The flames, the sparks and the smoke, a marshmallow toasting over them, and the logs burning down if you let them." },
     camp: { title: "Camp", blurb: "How far the firelight reaches, and the tent and pack at the edge of it." },
-    sky: { title: atmosphereGroups.sky.title, blurb: "From dusk to deep night, the stars and the Milky Way, a giant planet low on the horizon and shooting stars. Run the day cycle and dawn comes to the clearing." },
+    sky: { title: atmosphereGroups.sky.title, blurb: "From dusk to deep night, the stars and the Milky Way, and shooting stars. Run the day cycle and dawn comes to the clearing." },
+    planet: { title: "Giant planet", blurb: "The ringed giant low over the pines, and what else it can show: moons, an aurora, city lights on its night side, its own day sweeping round it." },
     weather: { title: atmosphereGroups.weather.title, blurb: "The breeze leans the flames, bends the smoke, drifts the sparks and sways the pines; mist settles between the trees." },
     manifold: { title: "Manifold mark", blurb: "An M carved in the log bench, glowing in the firelight." },
   },
