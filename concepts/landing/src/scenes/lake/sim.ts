@@ -2,11 +2,12 @@
 // wind drifts across the ice, and the aurora's substorms (the scene is index.ts, the picture
 // shader.ts).
 //
-// Field coordinates. The ice is addressed by where it shows on screen with the camera at rest:
-// fu = F x / z, screen heights right of the centre, and fv = E F / z, screen heights below the
-// horizon (x across and z ahead on the ice in metres, F the focal length in screen heights, E the
-// eye's height). A texel is then about a dither cell near and far, a straight crack on the ice is a
-// straight line in the field, and the shader finds a pixel's texel at its own screen position.
+// Field coordinates. The ice is addressed by where it shows on screen with the camera at rest
+// (CAMERA, a LevelCamera, sims/camera.ts): fu = F x / z (screenX), screen heights right of the
+// centre, and fv = E F / z (groundDrop), screen heights below the horizon (x across and z ahead on the
+// ice in metres, F the focal length in screen heights, E the eye's height). A texel is then about a
+// dither cell near and far, a straight crack on the ice is a straight line in the field, and the
+// shader finds a pixel's texel at its own screen position.
 //
 // The crack network. Lake ice shrinks as the night deepens and cracks: long pressure cracks run
 // right across the lake, branches leave them at steep angles and stop where they meet another
@@ -57,6 +58,7 @@
 // stamps a few segments and uploads the few columns they touch. A change of seed, fractures or the
 // M re-stamps the whole field (~10 ms). Nothing is allocated per frame outside those events.
 import type { ParamDef } from "../../params.ts";
+import { LevelCamera } from "../../sims/camera.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -68,6 +70,8 @@ export const FOV = 1.08;
 export const FOCAL = 0.5 / Math.tan(FOV / 2);
 /** The eye's height over the ice (m). */
 export const EYE = 1.6;
+/** The eye at rest, which lays out the fields: world on the ice ↔ field (screen) coordinates. */
+const CAMERA = new LevelCamera({ horizon: HORIZON, eye: EYE, focal: FOCAL });
 /** Refractive index of ice, and how far down the deepest fracture planes and bubbles reach (m). */
 export const ICE_INDEX = 1.31;
 export const ICE_DEPTH = 0.7;
@@ -517,12 +521,12 @@ class DriftingSnow {
   constructor() {
     for (let j = 0; j < SNOW_H; j++) {
       const fv = ((j + 0.5) / SNOW_H) * FIELD_FV;
-      const z = (EYE * FOCAL) / fv;
+      const z = CAMERA.groundDepth(fv);
       this.#rowRate[j] = fv / EYE / SNOW_TEXEL_U;
       for (let i = 0; i < SNOW_W; i++) {
         const fu = (i + 0.5) * SNOW_TEXEL_U - FIELD_FU;
         const k = j * SNOW_W + i;
-        this.#x[k] = (fu * z) / FOCAL;
+        this.#x[k] = CAMERA.worldX(fu, z);
         this.#z[k] = z;
       }
     }
@@ -535,7 +539,7 @@ class DriftingSnow {
       const x = this.#x[k] ?? 0;
       const z = this.#z[k] ?? 1;
       // The ice one texel spans (m): octaves finer than a few texels give way to their mean.
-      const across = SNOW_TEXEL_U * (z / FOCAL);
+      const across = CAMERA.worldX(SNOW_TEXEL_U, z);
       const along = (FIELD_FV / SNOW_H) * ((z * z) / (EYE * FOCAL));
       const n =
         0.5 * patchOctave(x, z, across, along, 9, 3, salt) +
@@ -610,8 +614,8 @@ class DriftingSnow {
     const reach = SWEEP_RADIUS * SWEEP_HEAP;
     const zNear = Math.max(Math.min(z0, z1) - reach, 0.5);
     const zFar = Math.max(z0, z1) + reach;
-    const jA = clamp(Math.floor(((EYE * FOCAL) / zFar / FIELD_FV) * SNOW_H - 0.5), 0, SNOW_H - 1);
-    const jB = clamp(Math.ceil(((EYE * FOCAL) / zNear / FIELD_FV) * SNOW_H - 0.5), 0, SNOW_H - 1);
+    const jA = clamp(Math.floor((CAMERA.groundDrop(zFar) / FIELD_FV) * SNOW_H - 0.5), 0, SNOW_H - 1);
+    const jB = clamp(Math.ceil((CAMERA.groundDrop(zNear) / FIELD_FV) * SNOW_H - 0.5), 0, SNOW_H - 1);
     const xMin = Math.min(x0, x1) - reach;
     const xMax = Math.max(x0, x1) + reach;
     const dx = x1 - x0;
@@ -622,9 +626,9 @@ class DriftingSnow {
     for (let pass = 0; pass < 2; pass++) {
       for (let j = jA; j <= jB; j++) {
         const fv = ((j + 0.5) / SNOW_H) * FIELD_FV;
-        const z = (EYE * FOCAL) / fv;
-        const iA = clamp(Math.floor(((xMin * FOCAL) / z + FIELD_FU) / SNOW_TEXEL_U - 0.5), 0, SNOW_W - 1);
-        const iB = clamp(Math.ceil(((xMax * FOCAL) / z + FIELD_FU) / SNOW_TEXEL_U - 0.5), 0, SNOW_W - 1);
+        const z = CAMERA.groundDepth(fv);
+        const iA = clamp(Math.floor((CAMERA.screenX(xMin, z) + FIELD_FU) / SNOW_TEXEL_U - 0.5), 0, SNOW_W - 1);
+        const iB = clamp(Math.ceil((CAMERA.screenX(xMax, z) + FIELD_FU) / SNOW_TEXEL_U - 0.5), 0, SNOW_W - 1);
         for (let i = iA; i <= iB; i++) {
           const k = j * SNOW_W + i;
           const px = (this.#x[k] ?? 0) - x0;
@@ -865,7 +869,7 @@ class FrozenLake implements SceneSim {
     const mains = 1 + Math.round((MAINS_MAX - 1) * f);
     for (let m = 0; m < mains; m++) {
       const z = 4.5 * Math.pow(14, (m + 0.2 + 0.6 * random.next()) / mains);
-      const x = ((random.next() - 0.5) * 1.1 * z) / FOCAL;
+      const x = CAMERA.worldX((random.next() - 0.5) * 1.1, z);
       const angle = (random.next() - 0.5) * 1.7;
       const crack = this.#newCrack(1);
       if (!crack) break;
@@ -947,8 +951,8 @@ class FrozenLake implements SceneSim {
     let z = sprout.z;
     let heading = sprout.angle;
     let bend = random.gauss() * BEND;
-    let u = (x * FOCAL) / z;
-    let v = (EYE * FOCAL) / z;
+    let u = CAMERA.screenX(x, z);
+    let v = CAMERA.groundDrop(z);
     crack.add(u, v);
     let run = 0;
     const stop = Math.round(stopBelow * 255);
@@ -965,8 +969,8 @@ class FrozenLake implements SceneSim {
       const nx = x + Math.cos(a) * len;
       const nz = z + Math.sin(a) * len;
       if (nz > Z_FAR) break;
-      const nu = (nx * FOCAL) / Math.max(nz, 0.5);
-      const nv = (EYE * FOCAL) / Math.max(nz, 0.5);
+      const nu = CAMERA.screenX(nx, Math.max(nz, 0.5));
+      const nv = CAMERA.groundDrop(Math.max(nz, 0.5));
       let hit = false;
       let hu = nu;
       let hv = nv;
@@ -1016,14 +1020,14 @@ class FrozenLake implements SceneSim {
       const v = host.v[i] ?? 0;
       if (Math.abs(u) > half || v < nearV || v > FIELD_FV - 0.02) continue;
       // The host's heading on the ice there.
-      const za = (EYE * FOCAL) / (host.v[i - 1] ?? v);
-      const zb = (EYE * FOCAL) / (host.v[i + 1] ?? v);
-      const xa = ((host.u[i - 1] ?? u) * za) / FOCAL;
-      const xb = ((host.u[i + 1] ?? u) * zb) / FOCAL;
-      const z = (EYE * FOCAL) / v;
+      const za = CAMERA.groundDepth(host.v[i - 1] ?? v);
+      const zb = CAMERA.groundDepth(host.v[i + 1] ?? v);
+      const xa = CAMERA.worldX(host.u[i - 1] ?? u, za);
+      const xb = CAMERA.worldX(host.u[i + 1] ?? u, zb);
+      const z = CAMERA.groundDepth(v);
       const side = random.next() < 0.5 ? -1 : 1;
       return {
-        x: (u * z) / FOCAL,
+        x: CAMERA.worldX(u, z),
         z,
         angle: Math.atan2(zb - za, xb - xa) + side * (Math.PI / 2 + (random.next() - 0.5) * 0.8),
         cls,
@@ -1050,8 +1054,8 @@ class FrozenLake implements SceneSim {
         const side = random.next() < 0.5 ? -1 : 1;
         const u = side * (this.#aspect / 2 + 0.02);
         const v = 0.05 + 0.27 * random.next();
-        const z = (EYE * FOCAL) / v;
-        sprout = { x: (u * z) / FOCAL, z, angle: (side > 0 ? Math.PI : 0) + (random.next() - 0.5) * 0.9, cls: 0.85, reach: 4, parent: 0 };
+        const z = CAMERA.groundDepth(v);
+        sprout = { x: CAMERA.worldX(u, z), z, angle: (side > 0 ? Math.PI : 0) + (random.next() - 0.5) * 0.9, cls: 0.85, reach: 4, parent: 0 };
         stopBelow = 0.7;
       }
       if (sprout && this.#songFrom(sprout, stopBelow)) return;
@@ -1068,7 +1072,7 @@ class FrozenLake implements SceneSim {
       this.#songFrom({ x, z, angle: angle + Math.PI + (random.next() - 0.5) * 0.6, cls: 0.7, reach: 0.2 + 0.25 * random.next(), parent: 0 }, 0);
       return;
     }
-    const k = this.#field.at((x * FOCAL) / z, (EYE * FOCAL) / z);
+    const k = this.#field.at(CAMERA.screenX(x, z), CAMERA.groundDrop(z));
     this.#singAgain(k >= 0 && (this.#field.dist[k] ?? 1) < DIST_RANGE ? this.#byId[this.#field.id[k] ?? 0] : undefined);
   }
 
@@ -1187,7 +1191,7 @@ class FrozenLake implements SceneSim {
   #follow(frame: SimFrame): void {
     const pointer = frame.pointer;
     const u = (pointer.x - 0.5) * this.#aspect;
-    const v = HORIZON - pointer.y;
+    const v = CAMERA.horizon - pointer.y;
     const onIce = pointer.inside && v > POINTER_FAR && v < FIELD_FV;
     if (pointer.pressed && onIce) {
       this.#pressing = true;
@@ -1200,9 +1204,9 @@ class FrozenLake implements SceneSim {
     if (this.#pressing && pointer.down && onIce) {
       this.#moved = Math.max(this.#moved, Math.hypot(u - this.#pressU, v - this.#pressV));
       if (this.#moved > KNOCK_MOVE) {
-        const z0 = (EYE * FOCAL) / this.#lastV;
-        const z1 = (EYE * FOCAL) / v;
-        this.#snow.sweep((this.#lastU * z0) / FOCAL, z0, (u * z1) / FOCAL, z1);
+        const z0 = CAMERA.groundDepth(this.#lastV);
+        const z1 = CAMERA.groundDepth(v);
+        this.#snow.sweep(CAMERA.worldX(this.#lastU, z0), z0, CAMERA.worldX(u, z1), z1);
       }
       this.#lastU = u;
       this.#lastV = v;
@@ -1210,8 +1214,8 @@ class FrozenLake implements SceneSim {
     if (this.#pressing && (pointer.released || !pointer.down)) {
       this.#pressing = false;
       if (this.#moved <= KNOCK_MOVE) {
-        const z = (EYE * FOCAL) / this.#pressV;
-        this.#knock((this.#pressU * z) / FOCAL, z);
+        const z = CAMERA.groundDepth(this.#pressV);
+        this.#knock(CAMERA.worldX(this.#pressU, z), z);
       }
     }
   }
