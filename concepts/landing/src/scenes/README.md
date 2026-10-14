@@ -95,18 +95,27 @@ with a new sim, dissolves out of it over 0.9 s, cell by cell in ordered-dither o
 first. The entrance's clock starts on its second frame, because the first one is spent compiling the
 program and shows only the old frame. Every scene gets the dissolve for free.
 
-A scene can make the passage its own:
-- Set `passage: { enter, exit }` (seconds) on its `SceneDef`.
+Every scene makes the passage its own, in the world rather than by fading:
+- Set `passage: { enter, exit }` (seconds, about 2–3.2 in and 1–1.8 out) on its `SceneDef`, from a
+  constant the shader also reads (through `glslFloat`) when it needs seconds.
 - Read `passageIn()` and `passageOut()` in GLSL, or `frame.passage.enter` and `.exit` in a sim.
   - `passageIn()` runs linearly 0→1 over `enter` and then stays 1.
   - `passageOut()` is 0 until the scene leaves, then 0→1 over `exit`.
   - Ease them yourself.
-- Make it part of the world: a camera settling (`country`), a fire catching (`campfire`), koi
-  swimming in from beyond the frame (`pond`), lanterns arriving and lighting (`lanterns`), a sheet
-  sliding in under the pen (`harmonograph`).
-- Keep the interesting part after the first ~0.9 s, which the dissolve half covers, and end an exit
-  dimmer or simpler.
-- At rest (`passageIn() == 1`, `passageOut() == 0`) the scene must be exactly what it was.
+- Things move into place, enter or leave the frame, a camera settles, a process starts up. Some examples:
+  - The border plants of `pond` close in from the edges as the koi swim into view.
+  - `country` tilts down from the sky onto the valley.
+  - `chladni` strews sand on a still plate that then starts singing; on exit the plate tilts and the sand slides off.
+  - `sill`'s cat hops up onto the sill.
+  - `train` comes out of a tunnel.
+  - `shanshui` unrolls its scroll.
+  - `ferro` raises its spikes out of a flat pool.
+  Light changes are at most an accent.
+- A sim that warms up over several frames runs its growth on a clock of its own that starts after
+  the warm-up (physarum's `GrowthClock`), so a slow first frame doesn't use up the entrance.
+- Put the readable part after ~0.5 s, which the dissolve half covers.
+- At rest (`passageIn() == 1`, `passageOut() == 0`) the scene must be exactly what it was: gate
+  every change, and keep the sim's prewarm and random draws as they were.
 
 Passages run in real time whatever the motion. The lab's Motion section switches them off (`&transitions=off`)
 and replays the current scene's exit and entrance with "now". They are skipped at motion 0 and under
