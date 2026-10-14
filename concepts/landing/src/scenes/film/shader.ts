@@ -5,6 +5,8 @@
 //   uSim1  the interference colours by thickness (linear sRGB, 1 = the first-order white)
 //   uSim2  texel 0: the break (q), seconds since, 1 while bursting
 //          texel 1: the drawing line (or the blown bubble's radius), 1 while drawing, unused, 1 while there is a film
+//   uSim3  r: seconds after the break the burst's rim reaches each point, made as the film breaks
+//          (missing without float render targets: the rim then runs straight out at the local speed)
 // Knobs read here: K_shape, K_colour, K_backdrop, K_mark, K_filmSeed.
 import { filmCommonGlsl } from "./sim.ts";
 
@@ -96,10 +98,11 @@ Shade sceneFilm(vec2 uv, vec2 cell, float t) {
 
   // Thickness (µm) and cover from the sim, or else the analytic film.
   vec2 qs = filmInside(q, shape, ol, FILM_INSET);
+  vec2 us = vec2(qs.x / aspect + 0.5, qs.y + 0.5);
   float h;
   float present;
   if (uSimOn.x > 0.5) {
-    vec2 s = texture(uSim0, vec2(qs.x / aspect + 0.5, qs.y + 0.5)).rg;
+    vec2 s = texture(uSim0, us).rg;
     h = s.x;
     present = clamp(s.y, 0.0, 1.0);
   } else {
@@ -108,11 +111,15 @@ Shade sceneFilm(vec2 uv, vec2 cell, float t) {
   }
 
   // Crisp where the grid is soft: the outline, the line drawing the film, the burst's rim (which
-  // runs fast through thin film and slowly through thick, Taylor–Culick).
+  // runs fast through thin film and slowly through thick, Taylor–Culick). ahead: how far the rim
+  // still has to come, from when it reaches here (sim.ts) at the speed it will have here.
   float inside = 1.0 - smoothstep(-px, px, bubble ? length(q - ol.xy) - radius : edge);
   float drawn = drawing ? filmDrawn(q, shape, ol, life.x, px) : 1.0;
   float ahead = 1.0;
-  if (hole.w > 0.5) ahead = length(q - hole.xy) - hole.z * filmRimSpeed(h * present);
+  if (hole.w > 0.5) {
+    float speed = filmRimSpeed(h * present);
+    ahead = uSimOn.w > 0.5 ? (texture(uSim3, us).r - hole.z) * speed : length(q - hole.xy) - hole.z * speed;
+  }
   float film = present * inside * drawn * smoothstep(-px, px, ahead);
 
   // The wires' meniscus: the film thickens toward the outline's wire and the M, drawing fine

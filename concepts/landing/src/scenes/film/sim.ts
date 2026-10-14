@@ -14,6 +14,8 @@
 //                   broke, 1 while the hole is opening
 //          texel 1  the liquid line drawing a new film (its height where it meets the wire), or the
 //                   radius of a bubble being blown; 1 while drawing; unused; 1 while there is a film
+// uSim3  the burst's arrival field (sims/front.ts), rg16f at the film's size, made as the film breaks:
+//          r  seconds after the break the rim reaches the texel; g its slowness there
 //
 // Thickness, after each fluid step (the physics pass):
 //   drainage       gravity pulls the film's water down at DRAIN × h^1.5 (thick film falls fastest),
@@ -33,6 +35,10 @@
 //
 // Life: a film lives a few minutes, then bursts at its black top (or at "now"). The hole's rim runs
 // out at the Taylor–Culick speed, ∝ 1/√h: it races through the black film and slows in the thick.
+// The moment it breaks, the time the rim takes to reach every point is worked out through the film
+// as it stands (sims/front.ts: the least time along the straight line from the break, eased round
+// slow patches), so the hole is always one piece growing from the break: a thin patch beyond a
+// thick band opens only once the rim has crossed the band, never ahead of it.
 // Once all is gone a liquid line rises from the bottom wire drawing up a fresh film, thin at the
 // top that left the bath first (a bubble is blown again, growing from its middle).
 //
@@ -48,7 +54,8 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
-import { GpuCompute, GpuError, type Pass } from "../../sims/gpu.ts";
+import { ArrivalField } from "../../sims/front.ts";
+import { GpuCompute, GpuError, type Pass, type RunOptions } from "../../sims/gpu.ts";
 import { clamp } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -382,6 +389,7 @@ vec2 fluidForce(vec2 uv, vec2 p, vec2 velocity, vec4 dye) {
 const PHYSICS_GLSL = `
 #define FILM_SPOTS ${SPOTS}
 uniform sampler2D uFilmDye;
+uniform sampler2D uFilmArrival;
 uniform vec2 uFilmDomain;
 uniform float uFilmShape;
 uniform float uFilmSeed;
@@ -438,10 +446,11 @@ void main() {
     h = max(h * exp(-s.w * uFilmDt * exp(-dot(e, e) / (s.z * s.z))), min(h, FILM_SPOT_FLOOR));
   }
 
-  // A burst: the film is gone wherever the rim has passed.
+  // A burst: the film is gone wherever the rim has passed. ahead: how far the rim still has to come,
+  // its arrival time from now at the speed it will have here.
   if (uFilmHole.w > 0.5) {
-    float reach = uFilmHole.z * filmRimSpeed(h * present);
-    float gone = 1.0 - smoothstep(-uTexel.y, uTexel.y, length(q - uFilmHole.xy) - reach);
+    float ahead = (texture(uFilmArrival, vUv).r - uFilmHole.z) * filmRimSpeed(h * present);
+    float gone = 1.0 - smoothstep(-uTexel.y, uTexel.y, ahead);
     present *= 1.0 - gone;
     h *= 1.0 - gone;
   }
@@ -467,6 +476,17 @@ void main() {
   vec4 o = filmOutline(uFilmShape, uFilmDomain.x);
   float inside = step(filmEdge(q, uFilmShape, o), 0.0);
   fragColor = vec4(filmAnalytic(q, o, uFilmSeed, 0.0) * inside, inside, 0.0, 1.0);
+}
+`;
+
+/** The rim's speed for the burst's arrival field (sims/front.ts): Taylor–Culick in the film as it stands. */
+const RIM_GLSL = `
+uniform sampler2D uFilmDye;
+${gpuCommonGlsl}
+${filmCommonGlsl}
+float frontSpeed(vec2 uv) {
+  vec2 film = texture(uFilmDye, uv).rg;
+  return filmRimSpeed(film.r * clamp(film.g, 0.0, 1.0));
 }
 `;
 
@@ -653,9 +673,12 @@ class FilmLife {
   since = 0;
   /** Seconds since the film on show was drawn. */
   age = OPENING_AGE;
-  /** Where the film broke (q). */
+  /** Where the film broke (q), and the farthest point of the outline from there (frame heights). */
   breakX = 0;
   breakY = 0;
+  reach = 0;
+  /** Bursts so far: each new one needs its rim's arrival field. */
+  bursts = 0;
   /** The drawing line's height where it meets the wire, or the bubble's radius. */
   front = 0;
   /** Whether the scene is being entered: the film on show is drawn at the entrance's pace. */
@@ -708,6 +731,8 @@ class FilmLife {
       this.breakY = o.y + reach * Math.sin(angle);
       far = Math.hypot(this.breakX - o.x, this.breakY - o.y) + o.hw;
     }
+    this.reach = far;
+    this.bursts++;
     this.#burstSeconds = far / rimSpeed(MAX_THICKNESS) + 0.15;
     this.phase = "burst";
     this.since = 0;
@@ -885,13 +910,18 @@ type PhysicsUniforms = {
   uFilmSpotCount: number;
 };
 
-/** The fluid carrying the film and the passes for its thickness. */
+/** The fluid carrying the film, the passes for its thickness and the arrival field of its burst. */
 class FilmFlow {
   readonly gpu: GpuCompute;
   readonly fluid: FluidSim;
+  /** When the rim of the latest burst reaches each texel (uSim3). */
+  readonly rim: ArrivalField;
   readonly #physics: Pass;
   readonly #seeder: Pass;
   readonly #domain = new Float32Array(2);
+  readonly #breakUv: [number, number] = [0, 0];
+  readonly #rimDomain: [number, number] = [1, 1];
+  readonly #rimInputs: RunOptions;
   readonly #snippet: SnippetUniforms = { uFilmShape: 0, uFilmMark: 0, uFilmBuoyancy: BUOYANCY, uFilmStir: 0 };
   readonly #fluidStep: FluidStep = { dt: 0, time: 0, velocityDissipation: VELOCITY_DISSIPATION, uniforms: this.#snippet };
   readonly #physicsUniforms: PhysicsUniforms = {
@@ -919,7 +949,19 @@ class FilmFlow {
     });
     this.#physics = gpu.pass(PHYSICS_GLSL, "film physics");
     this.#seeder = gpu.pass(SEED_GLSL, "film seed");
-    this.#physics.bind({ uFilmDye: this.fluid.dye });
+    this.rim = new ArrivalField(gpu, { speed: RIM_GLSL, name: "film rim" });
+    this.#rimInputs = { textures: { uFilmDye: this.fluid.dye } };
+    this.#physics.bind({ uFilmDye: this.fluid.dye, uFilmArrival: this.rim.source });
+  }
+
+  /** The film breaks at q (frame heights from the view's centre): when its rim will reach every texel, `reach` the farthest point. */
+  breakAt(x: number, y: number, reach: number): void {
+    const aspect = this.fluid.aspect;
+    this.#breakUv[0] = x / aspect + 0.5;
+    this.#breakUv[1] = y + 0.5;
+    this.#rimDomain[0] = aspect;
+    const dye = this.fluid.dye;
+    this.rim.compute(dye.width, dye.height, this.#breakUv, reach, this.#rimDomain, this.#rimInputs);
   }
 
   /** A still film well into its life (filmAnalytic). */
@@ -1023,7 +1065,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     const flowStep: FlowStep = { dt: 0, time: 0, tuning, hole, draw, spots, spotCount: 0 };
     const breath = { x: 0, y: 0, radius: BLOW_SPOT_RADIUS, rate: 0 };
     const impulse = { velocity: new Float32Array(2) };
-    const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
+    const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
     let time = 0;
     let shownShape: FilmShape | undefined;
     let shownSeed: number | undefined;
@@ -1033,9 +1075,16 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     let lastY = 0;
     /** Whether the scene was entered through a passage (decided on the first frame), until its film is drawn. */
     let arriving: boolean | undefined;
+    /** The burst the rim's arrival field was made for. */
+    let rimFor = life.bursts;
 
     const advance = (dt: number, breathing: boolean): void => {
       if (life.advance(dt, tuning)) flow?.fluid.clear();
+      // A new burst: when its rim reaches every point, through the film as it stands at the break.
+      if (life.bursts !== rimFor) {
+        rimFor = life.bursts;
+        flow?.breakAt(life.breakX, life.breakY, life.reach);
+      }
       life.packState(stateData);
       time += dt;
       if (!flow) return;
@@ -1114,6 +1163,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
         textures[0] = flow?.fluid.dye.texture;
         textures[1] = colours.texture;
         textures[2] = state.texture;
+        textures[3] = flow?.rim.texture;
         return textures;
       },
       dispose() {
