@@ -30,6 +30,7 @@
 // heights at the nearest layer).
 // Knobs read here: K_haze, K_rays, K_caustics, K_surface, K_density, K_kelpSeed, K_understory,
 // K_marineSnow, K_jellies, K_plankton, K_mark, K_time, K_cycle.
+import { fishGlsl } from "../../sims/fish.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   KELP_CAMERA,
@@ -57,7 +58,7 @@ const glslArray = (type: "float" | "int", values: readonly number[]): string =>
 
 const layerCount = KELP_LAYERS.length;
 
-export const kelpGlsl = `
+export const kelpGlsl = `${fishGlsl}
 // ---- shared with the simulation (sim.ts) ----
 const float KELP_HORIZON = ${num(KELP_VIEW.horizon)};
 const float KELP_FLOOR = ${num(KELP_VIEW.floor)};
@@ -1029,10 +1030,11 @@ void kelpJellies(vec2 P, float aspect, vec3 water, float aa, float tc, KelpEnv e
   }
 }
 
-// The school: small spindle-shaped fish a few cells long, pointed at the snout and forked at the
-// tail, silver along the flank and dark along the back, swimming loosely at slightly different
-// depths (and so sizes). A fish turning toward or away from the eye shows less of its side; each
-// flank catches the light by its heading, and a fish rolling into a turn flashes bright.
+// The school: small spindle-shaped fish a few cells long (the shared fishSide, sims/fish.ts),
+// pointed at the snout and forked at the tail, silver along the flank and dark along the back,
+// swimming loosely at slightly different depths (and so sizes). A fish turning toward or away from
+// the eye shows less of its side; each flank catches the light by its heading, and a fish rolling
+// into a turn flashes bright.
 void kelpFish(vec2 P, vec3 water, float aa, KelpEnv e, inout vec3 col, inout float rays, inout float accent) {
   if (uSimOn.y < 0.5) return;
   vec4 box = kelpState(KELP_G_SCHOOL, KELP_ROW_GLOBALS);
@@ -1055,12 +1057,8 @@ void kelpFish(vec2 P, vec3 water, float aa, KelpEnv e, inout vec3 col, inout flo
     // swims.
     float up = pose.z >= 0.0 ? 1.0 : -1.0;
     vec2 q = vec2(dot(d, pose.zw) / max(look.z, 0.3), dot(d, vec2(-pose.w, pose.z)) * up) / len;
-    float bx = (q.x - 0.1) / 0.4;
-    float body = 0.2 * (1.0 - bx * bx) - abs(q.y);
-    float tl = -0.3 - q.x;
-    float fin = min(min(0.02 + 0.75 * tl - abs(q.y), 0.18 - tl), tl + 0.03);
     float px = aa / len;
-    if (hardEdge(smoothstep(-px, px, max(body, fin)) * min(look.w * 1.5, 1.0), kelpTh) <= 0.0) continue;
+    if (hardEdge(smoothstep(-px, px, fishSide(q)) * min(look.w * 1.5, 1.0), kelpTh) <= 0.0) continue;
     float sheen = 0.7 + 0.35 * cos(2.0 * atan(pose.w, pose.z) + float(f) * 1.7);
     vec3 flank = KELP_SILVER * (light * 0.95 * sheen + beam * (0.3 + 1.4 * look.y));
     fishCol = mix(flank, KELP_FISH_BACK * light * 1.3, step(0.03, q.y));

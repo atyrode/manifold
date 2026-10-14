@@ -330,6 +330,10 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   renderer expects (framebuffer unbound, blending off, the renderer's vertex array bound).
 - `FluidSim` (`fluid.ts`): 2D stable fluids on `GpuCompute` with MacCormack dye, vorticity, walls,
   a GLSL force snippet, an obstacle SDF, splats and `advect` for extra fields (incense, film, pearl).
+- `FishGroup`, `FishTexture` and `fishGlsl` (`fish.ts`): fish that swim the way they face and never
+  slide (follow a moving point, gather at one, flee, wander, school, keep personal space, soft
+  walls) for a species' speeds and turning, packed for the shader; GLSL to read their poses and draw
+  them from above with a koi coat or side-on (pond, kelp). The scene supplies the water and light.
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick`.
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`).

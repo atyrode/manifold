@@ -1,12 +1,14 @@
-// The pond scene: water, floor, koi, lilies, foliage, sun and canopy.
+// The pond scene: water, floor, koi, lilies, foliage, sun and canopy. The koi are drawn with the
+// shared fish (sims/fish.ts); while they are drawn to the pointer the sim steers them (koi.ts).
 
 import { CANOPY_MARGIN } from "../../decor.ts";
+import { fishGlsl } from "../../sims/fish.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 
 /** Seconds of the pond's entrance and exit (SceneDef.passage). */
 export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;
 
-export const pondGlsl = `
+export const pondGlsl = `${fishGlsl}
 // One layer of animated cellular light: bright where neighbouring cells meet.
 float pondCausticLayer(vec2 x, float t) {
   vec2 i = floor(x);
@@ -43,7 +45,7 @@ float pondPebbles(vec2 x) {
   return smoothstep(0.02, 0.12, f2 - f1) * (0.35 + 0.65 * shade) * (1.0 - 0.5 * f1);
 }
 
-// Smooth looping swim path for koi number i at path time s.
+// Smooth looping swim path for koi number i at path time s (mirrored for steering in koi.ts).
 vec2 pondKoiPath(float i, float s, float aspect) {
   float a = 0.13 + 0.07 * hash12(vec2(i, 1.0));
   float b = 0.11 + 0.08 * hash12(vec2(i, 2.0));
@@ -52,26 +54,6 @@ vec2 pondKoiPath(float i, float s, float aspect) {
     sin(s * a + ph) * 0.42 * aspect + sin(s * a * 2.3 + ph * 1.7) * 0.12,
     sin(s * b + ph * 0.7) * 0.34 + cos(s * b * 1.9 + ph) * 0.1
   );
-}
-
-// Where koi i is: its own loop, pulled toward the lure when following the pointer.
-vec2 pondKoiAt(float i, float s, float aspect, vec2 lure, float follow) {
-  return mix(pondKoiPath(i, s, aspect), lure + (vec2(hash12(vec2(i, 4.0)), hash12(vec2(i, 5.0))) - 0.5) * 0.25, follow);
-}
-
-// A koi in its own frame (x forward from the nose, y across): 0 outside, 1 body, 2 fin.
-float pondKoiShape(vec2 q, float len, float swim) {
-  float u = (0.3 * len - q.x) / len; // 0 at the nose, 1 at the tail tip
-  if (u < 0.0 || u > 1.05) return 0.0;
-  q.y -= len * 0.09 * sin(u * 5.0 - swim) * u * u;
-  float body = len * 0.17 * pow(sin(3.14159 * clamp(u / 0.74, 0.0, 1.0)), 0.6) * (1.0 - 0.35 * u);
-  if (u < 0.74 && abs(q.y) < body) return 1.0;
-  float tail = len * (0.04 + 0.2 * smoothstep(0.7, 1.02, u));
-  bool notch = u > 0.95 && abs(q.y) < (u - 0.95) * len * 0.9;
-  if (u > 0.68 && abs(q.y) < tail && !notch) return 2.0;
-  vec2 fin = vec2((u - 0.26) / 0.07, (abs(q.y) - len * 0.2) / (len * 0.06));
-  if (dot(fin, fin) < 1.0) return 2.0;
-  return 0.0;
 }
 
 // Lily pad i: centre (xy) and radius (z); 'anchor' is where its stem is rooted in the floor.
@@ -386,10 +368,9 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   }
   col = mix(col, vec3(0.16, 0.36, 0.17), stem * 0.75);
 
-  // Koi, their shadows on the floor, and the lure when they follow the pointer.
+  // Koi and their shadows on the floor. Each swims its own loop; while they are drawn to the
+  // pointer the sim steers them (uSim2, koi.ts), and tag.x says how much of that to show.
   int count = int(K_koi + 0.5);
-  vec2 lure = uPointer * vec2(aspect * 0.5, 0.5);
-  float follow = K_follow > 0.5 ? 0.55 : 0.0;
   float swimTime = tm * (0.6 + 2.4 * K_swim);
   float shadow = 0.0;
   float fish = 0.0;
@@ -402,43 +383,42 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     if (i >= count) break;
     float fi = float(i);
     float s = swimTime + fi * 11.0;
-    vec2 pos = pondKoiAt(fi, s, aspect, lure, follow);
-    vec2 pathDiff = pondKoiAt(fi, s + 0.05, aspect, lure, follow) - pondKoiAt(fi, s - 0.05, aspect, lure, follow);
+    vec2 pos = pondKoiPath(fi, s, aspect);
+    vec2 pathDiff = pondKoiPath(fi, s + 0.05, aspect) - pondKoiPath(fi, s - 0.05, aspect);
     vec2 dir = normalize(pathDiff + 1e-5);
+    // How fast it goes per second of the scene clock, for the passage's heading.
+    vec2 vel = pathDiff * (10.0 * (0.6 + 2.4 * K_swim) * m);
+    if (uSimOn.z > 0.5) {
+      FishPose steered = fishPose(uSim2, i);
+      float w = steered.tag.x;
+      pos = mix(pos, steered.at, w);
+      dir = normalize(mix(dir, steered.dir, w) + 1e-5);
+      vel = mix(vel, steered.dir * steered.speed * m, w);
+    }
     float len = 0.11 + 0.06 * hash12(vec2(fi, 6.0));
     if (passing) {
       // Gliding in from or out past the frame's edge: head the way it is actually going.
       vec2 slide;
       pos += pondKoiPassage(fi, pos, len, aspect, slide);
-      dir = normalize(pathDiff * (10.0 * (0.6 + 2.4 * K_swim) * m) + slide + 1e-5);
+      dir = normalize(vel + slide + 1e-5);
     }
     vec2 side = vec2(-dir.y, dir.x);
     float swim = tm * (3.0 + 4.0 * K_swim) + fi;
     vec2 rel = p - pos;
     vec2 q = vec2(dot(rel, dir), dot(rel, side));
     vec2 rs = rel - shadowOffset;
-    shadow = max(shadow, step(0.5, pondKoiShape(vec2(dot(rs, dir), dot(rs, side)), len, swim)));
-    float shape = pondKoiShape(q, len, swim);
+    shadow = max(shadow, step(0.5, fishTop(vec2(dot(rs, dir), dot(rs, side)), len, swim, FISH_KOI)));
+    float shape = fishTop(q, len, swim, FISH_KOI);
     if (shape > 0.0) {
       onFish = true;
       float u = (0.3 * len - q.x) / len;
-      float style = hash12(vec2(fi, 9.0));
       float marking = vnoise(vec2(u * 4.0, q.y / len * 6.0) + fi * 13.0);
-      // Ogon (gold), showa (black with red and white), kohaku (white with red), or plain orange.
-      vec3 red = vec3(1.0, 0.4, 0.1);
-      vec3 white = vec3(0.97, 0.95, 0.9);
-      vec3 black = vec3(0.07, 0.07, 0.08);
-      vec3 gold = vec3(1.0, 0.78, 0.3);
       float tone; // 0 dark, 1 white, 2 colour
-      if (style > 0.75) { fishCol = gold; tone = 2.0; }
-      else if (style > 0.45) { tone = marking > 0.6 ? 2.0 : marking < 0.35 ? 1.0 : 0.0; fishCol = tone > 1.5 ? red : tone > 0.5 ? white : black; }
-      else if (style > 0.2) { tone = marking > 0.5 ? 2.0 : 1.0; fishCol = tone > 1.5 ? red : white; }
-      else { fishCol = red * (0.9 + 0.2 * marking); tone = 2.0; }
+      fishCol = fishKoiCoat(hash12(vec2(fi, 9.0)), marking, tone);
       fish = tone > 0.5 && tone < 1.5 ? 0.92 : 0.0;
       fishAccent = tone > 1.5 ? 0.95 : 0.0;
-      if (shape > 1.5) { fish = 0.45; fishAccent = 0.0; fishCol = mix(water, white, 0.55); }
-      // Eyes, set wide on the head as seen from above.
-      if (abs(u - 0.07) < 0.025 && abs(abs(q.y) - len * 0.085) < len * 0.03) { fish = 0.0; fishAccent = 0.0; fishCol = black; }
+      if (shape > 1.5) { fish = 0.45; fishAccent = 0.0; fishCol = mix(water, vec3(0.97, 0.95, 0.9), 0.55); }
+      if (fishTopEye(q, len)) { fish = 0.0; fishAccent = 0.0; fishCol = vec3(0.07, 0.07, 0.08); }
     }
   }
 

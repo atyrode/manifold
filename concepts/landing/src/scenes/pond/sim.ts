@@ -1,10 +1,12 @@
-// The pond's foliage sheets: the border plants (uSim0) and the overhead canopy (uSim1), painted on
-// the CPU by botany.ts/decor.ts into data textures (see sheet.ts). A sheet is repainted whenever its
-// knobs or the frame's shape change; the last finished one stays bound meanwhile.
+// The pond's sim: the foliage sheets, the border plants (uSim0) and the overhead canopy (uSim1),
+// painted on the CPU by botany.ts/decor.ts into data textures (see sheet.ts), and the koi while they
+// are drawn to the pointer (uSim2, koi.ts). A sheet is repainted whenever its knobs or the frame's
+// shape change; the last finished one stays bound meanwhile.
 import { CANOPY_MARGIN, canopyKey, decorKey, type CanopyConfig, type ClumpSpecies, type DecorConfig } from "../../decor.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { SheetPainter } from "../../sheet.ts";
 import type { SceneSim } from "../types.ts";
+import { PondKoi } from "./koi.ts";
 
 /** Milliseconds per frame a sheet may spend painting on the page: more while nothing is shown yet. */
 const SHEET_BUDGET_MS = 6;
@@ -26,7 +28,8 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
   const knobs = new KnobReader<Knob>("pond", params, KNOBS);
   const decor = new SheetPainter(gl);
   const canopy = new SheetPainter(gl);
-  const textures: (WebGLTexture | undefined)[] = [undefined, undefined];
+  const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
+  const koi = new PondKoi(params, gl);
   // The sheets' inputs as last seen (every knob, then the frame's aspect): configs, keys and sizes
   // are rebuilt only when one moves, so a steady frame allocates nothing.
   const seen = new Float64Array(KNOBS.length + 1).fill(Number.NaN);
@@ -81,11 +84,13 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
       if (leaves) canopy.advance(canopy.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS);
       textures[0] = plants ? decor.texture : undefined;
       textures[1] = leaves ? canopy.texture : undefined;
+      textures[2] = koi.frame(frame);
       return textures;
     },
     dispose() {
       decor.dispose();
       canopy.dispose();
+      koi.dispose();
     },
   };
 }
