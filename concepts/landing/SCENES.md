@@ -34,10 +34,10 @@ mathematics. All have a first implementation in the lab:
 |---|---|---|---|
 | Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves | `HeightField` |
 | Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube | |
-| Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, contacts | |
-| Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice | |
+| Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step | `separateDiscs` |
+| Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population | |
 | Kelp forest | `kelp` | Buoyant Verlet stipes in surge, boids school | `VerletSystem` |
-| Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling | `VerletSystem` |
+| Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling; paged bin lists keep the dense hub whole | `VerletSystem`, `BinLists` |
 | Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds | |
 | Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist | |
 | Incense smoke | `incense` | Buoyant smoke, laminar to turbulent | `FluidSim` |
