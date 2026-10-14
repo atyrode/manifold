@@ -20,12 +20,12 @@
 // plan: each texel takes the groove phase the plan leaves there, with a weathered profile, rounded
 // by one smoothing pass. The rake then starts left of centre and re-cuts it for real, crisp.
 //
-// Leaves fall as flat plates (Andersen, Pesavento & Wang, "Unsteady aerodynamics of fluttering and
-// tumbling plates", J. Fluid Mech. 541, 2005: the quasi-steady model with added mass, circulation
-// lift, quadratic drag and a rotational damping torque), each in its own vertical plane that slowly
-// turns, carried by the wind. Light leaves flutter, swinging from side to side and gliding up at the
-// end of each swing; heavier ones tumble end over end. They land, settle flat, lie a while and fade,
-// or are pushed away by the rake. The leaves are packed into an rgba16f texture, four texels a leaf.
+// Leaves fall as flat plates (the shared fluttering-plate model, sims/flutter.ts, as autumn's leaves
+// fall), each in its own vertical plane that slowly turns, carried by the wind and the gusts (the
+// shared gust pulse, sims/wind.ts). Light leaves flutter, swinging from side to side and gliding up
+// at the end of each swing; heavier ones tumble end over end. They land, settle flat, lie a while and
+// fade, or are pushed away by the rake. The leaves are packed into an rgba16f texture, four texels a
+// leaf.
 //
 // Uploads: uSim0 r16f heights (GARDEN.cols × rows); uSim1 rgba16f islands and stones (8 × 4) plus
 // the drying clock; uSim2 rgba16f leaves (4 × GARDEN_LEAF_SLOTS); uSim3 r16f when each spot was
@@ -33,10 +33,12 @@
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { AgeField, dryingPace } from "../../sims/agefield.ts";
+import { FlutterPlates } from "../../sims/flutter.ts";
 import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
+import { gustPulse, windSign } from "../../sims/wind.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export const gardenPatterns = ["waves", "straight", "circles"] as const;
@@ -190,20 +192,6 @@ const RELAYOUT_MS = 220;
 
 // ---- the leaves ----------------------------------------------------------------------------------
 
-// The plate model in units of the plate's chord, the air's density and gravity (the paper's model
-// with C_T = 1.2, C_R = π, drag A = 1.4, B = 1.0; added masses of a thin ellipse; a weak damping
-// torque, which lets light plates flutter widely and heavy ones tumble).
-const PLATE_CT = 1.2;
-const PLATE_CR = Math.PI;
-const PLATE_A = 1.4;
-const PLATE_B = 1.0;
-const PLATE_MU = 0.02;
-const PLATE_M11 = 0.02;
-const PLATE_M22 = Math.PI / 4;
-const PLATE_IA = Math.PI / 128;
-/** Model time per substep (stable to ~0.06 with the midpoint rule). */
-const PLATE_STEP = 0.03;
-
 interface LeafSpec {
   /** Drawn radius, garden depths. */
   radius: number;
@@ -242,11 +230,12 @@ const FALLING = 1;
 const LANDED = 2;
 const LEAVING = 3;
 
-/** Wind drift (garden depths per second) at wind = 1; a gust's peak, rise time, and updraft. */
+/** Wind drift (garden depths per second) at wind = 1; a gust's peak and updraft. */
 const WIND_DRIFT = 0.12;
 const GUST_DRIFT = 0.22;
-const GUST_RISE = 1.0;
 const GUST_LIFT = 0.03;
+/** Seconds a gust (sims/wind.ts gustPulse) takes to rise to its peak: the leaves here, the maple's sway in the shader. */
+export const GARDEN_GUST_RISE = 1.0;
 /** Seconds a gust keeps shaking leaves loose, how many, and how long it keeps the leaves moving at motion 0. */
 const GUST_SHAKE = 1.8;
 const GUST_SHOWER = 12;
@@ -291,13 +280,6 @@ const FLURRY_SPAN = 0.6;
 const FLURRY_BOOST = 4;
 
 // ---- small helpers -------------------------------------------------------------------------------
-
-/** A gust's strength `age` seconds after it was called: rises over GUST_RISE, then dies away (the shader's gardenGust). */
-const gustAt = (age: number): number => {
-  if (!(age > 0 && age < 12 * GUST_RISE)) return 0;
-  const a = age / GUST_RISE;
-  return a * a * Math.exp(2 * (1 - a));
-};
 
 /** The meander of the "waves" passes at X. */
 const waveAt = (x: number): number => WAVE_AMPLITUDE * Math.sin((TAU * x) / WAVE_LENGTH);
@@ -817,8 +799,6 @@ class GardenSim implements SceneSim {
   readonly #segB = new Float64Array(2);
   /** The garden point under the pointer (x, y), written by #groundUnder. */
   readonly #ground = new Float64Array(2);
-  /** Scratch for the plate model's rates. */
-  readonly #rates = new Float64Array(3);
 
   // The pointer's hand rake.
   #handOn = false;
@@ -831,23 +811,13 @@ class GardenSim implements SceneSim {
   readonly #x = new Float64Array(GARDEN_LEAF_SLOTS);
   readonly #y = new Float64Array(GARDEN_LEAF_SLOTS);
   readonly #z = new Float64Array(GARDEN_LEAF_SLOTS);
-  /** Fall-plane azimuth and its slow turn per second. */
-  readonly #psi = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #dpsi = new Float64Array(GARDEN_LEAF_SLOTS);
-  /** Body-frame velocity along the chord and normal to it, and the pitch rate (model units). */
-  readonly #u = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #v = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #w = new Float64Array(GARDEN_LEAF_SLOTS);
-  /** Pitch of the plate in its plane. */
-  readonly #th = new Float64Array(GARDEN_LEAF_SLOTS);
-  /** The leaf's turn within its own plane, and its rate. */
-  readonly #sigma = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #dsigma = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #roll = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #rollRate = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #mass = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #chord = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #pace = new Float64Array(GARDEN_LEAF_SLOTS);
+  /** Each leaf's plate in flight: its plane, pitch, spin, rock, mass, chord, pace and the pitch it lands and rests at. */
+  readonly #plates = new FlutterPlates(GARDEN_LEAF_SLOTS, ROLL);
+  /** A leaf's position for the plates (x, y, z), and its frame from them (#packLeaves). */
+  readonly #pos = new Float64Array(3);
+  readonly #frame = new Float64Array(9);
+  /** Where a falling leaf touches down: on the gravel, a moss cushion or a stone, as it lies there. */
+  readonly #floor = (x: number, y: number): number => this.#groundAt(x, y, this.#current.moss) + LEAF_LIFT;
   readonly #radius = new Float64Array(GARDEN_LEAF_SLOTS);
   readonly #hue = new Float64Array(GARDEN_LEAF_SLOTS);
   /** Seconds since it landed. */
@@ -857,11 +827,6 @@ class GardenSim implements SceneSim {
   /** Slide velocity on the gravel (swept by the rake or skittering in a gust). */
   readonly #vx = new Float64Array(GARDEN_LEAF_SLOTS);
   readonly #vy = new Float64Array(GARDEN_LEAF_SLOTS);
-  /** Model time not yet stepped. */
-  readonly #debt = new Float64Array(GARDEN_LEAF_SLOTS);
-  /** Pitch it settles to on the gravel, and its pitch as it touched down. */
-  readonly #rest = new Float64Array(GARDEN_LEAF_SLOTS);
-  readonly #touch = new Float64Array(GARDEN_LEAF_SLOTS);
   readonly #leafData = new Float32Array(GARDEN_LEAF_SLOTS * 4 * 4);
   readonly #leafTexture: DataTexture;
   #leafRand = mulberry32(1);
@@ -1353,7 +1318,7 @@ class GardenSim implements SceneSim {
   #watchGust(fired: readonly boolean[], settings: Settings): void {
     if (!fired[this.#gustSlot]) return;
     this.#gustAge = 0;
-    this.#gustSign = settings.wind < -0.05 ? -1 : 1;
+    this.#gustSign = windSign(settings.wind);
     this.#shower = GUST_SHOWER;
   }
 
@@ -1382,7 +1347,7 @@ class GardenSim implements SceneSim {
       const seconds = exit * GARDEN_PASSAGE.exit;
       if (!this.#leaving) {
         this.#leaving = true;
-        this.#gustSign = settings.wind < -0.05 ? -1 : 1;
+        this.#gustSign = windSign(settings.wind);
         this.#gustPush = FLURRY_BOOST;
       }
       this.#gustAge = seconds;
@@ -1430,7 +1395,7 @@ class GardenSim implements SceneSim {
     for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) if (this.#state[i] === LANDED && (this.#lain[i] ?? 0) < (this.#life[i] ?? 0)) landed++;
     if (landed > LANDED_MAX) this.#retireOldest();
 
-    const gust = gustAt(this.#gustAge) * this.#gustSign;
+    const gust = gustPulse(this.#gustAge, GARDEN_GUST_RISE) * this.#gustSign;
     const windX = settings.wind * WIND_DRIFT + gust * GUST_DRIFT * this.#gustPush;
     const lift = Math.abs(gust) * GUST_LIFT * this.#gustPush;
     for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) {
@@ -1518,112 +1483,45 @@ class GardenSim implements SceneSim {
       this.#y[i] = Math.min(cy + Math.sin(a) * d, 0.99);
       this.#z[i] = cz - 0.3 * r * rand();
     }
+    const p = this.#plates;
     this.#state[i] = FALLING;
     this.#kind[i] = kind;
     const tumbles = rand() < spec.tumbling;
     const range = tumbles ? spec.tumble : spec.flutter;
-    this.#mass[i] = lerp(range[0], range[1], rand());
-    this.#chord[i] = spec.chord * (0.85 + 0.3 * rand());
-    this.#pace[i] = spec.pace * (0.9 + 0.2 * rand());
+    p.mass[i] = lerp(range[0], range[1], rand());
+    p.chord[i] = spec.chord * (0.85 + 0.3 * rand());
+    p.pace[i] = spec.pace * (0.9 + 0.2 * rand());
     this.#radius[i] = spec.radius * (0.85 + 0.3 * rand());
-    this.#psi[i] = rand() * TAU;
-    this.#dpsi[i] = (rand() - 0.5) * 0.6;
-    this.#u[i] = 0;
-    this.#v[i] = 0;
-    this.#w[i] = 0;
-    this.#th[i] = (rand() - 0.5) * 1.2;
-    this.#sigma[i] = rand() * TAU;
-    this.#dsigma[i] = (rand() - 0.5) * 0.9;
-    this.#roll[i] = rand() * TAU;
-    this.#rollRate[i] = 1.2 + 1.6 * rand();
+    p.psi[i] = rand() * TAU;
+    p.dpsi[i] = (rand() - 0.5) * 0.6;
+    p.start(i);
+    p.th[i] = (rand() - 0.5) * 1.2;
+    p.sigma[i] = rand() * TAU;
+    p.dsigma[i] = (rand() - 0.5) * 0.9;
+    p.roll[i] = rand() * TAU;
+    p.rollRate[i] = 1.2 + 1.6 * rand();
     this.#hue[i] = rand();
     this.#lain[i] = 0;
     this.#life[i] = lerp(spec.life[0], spec.life[1], rand());
     this.#alpha[i] = 0;
     this.#vx[i] = 0;
     this.#vy[i] = 0;
-    this.#debt[i] = 0;
-    this.#rest[i] = (rand() - 0.5) * 0.14;
+    p.rest[i] = (rand() - 0.5) * 0.14;
     return i;
   }
 
-  /**
-   * Andersen, Pesavento & Wang's quasi-steady plate, per unit span, in units of chord, air density
-   * and gravity: the rates of the body-frame velocity along the chord (u) and normal to it (v) and
-   * of the pitch rate (w), at pitch th, into #rates. Circulation Γ = -½ C_T uv/|V| + ½ C_R w lifts
-   * across the flow; drag ½ (A - B cos 2α) |V| opposes it; added masses couple u, v and w; a weak
-   * damping torque lets light plates swing wide.
-   */
-  #plate(m: number, inertia: number, u: number, v: number, w: number, th: number): void {
-    const speed = Math.hypot(u, v) + 1e-9;
-    const gamma = -0.5 * PLATE_CT * ((u * v) / speed) + 0.5 * PLATE_CR * w;
-    const drag = 0.5 * (PLATE_A - (PLATE_B * (u * u - v * v)) / (speed * speed)) * speed;
-    const torque = PLATE_MU * (1 + Math.abs(w)) * w;
-    const out = this.#rates;
-    out[0] = ((m + PLATE_M22) * v * w - gamma * v - m * Math.sin(th) - drag * u) / (m + PLATE_M11);
-    out[1] = (-(m + PLATE_M11) * u * w + gamma * u - m * Math.cos(th) - drag * v) / (m + PLATE_M22);
-    out[2] = ((PLATE_M11 - PLATE_M22) * u * v - torque) / inertia;
-  }
-
-  /** Flutter or tumble down: the plate model in the leaf's plane, the plane turning, the wind carrying it. */
+  /** Flutter or tumble down: the plate in the leaf's plane, the plane turning, the wind carrying it. */
   #fall(i: number, dt: number, windX: number, lift: number, settings: Settings): void {
-    const m = this.#mass[i] ?? 0.3;
-    const chord = this.#chord[i] ?? 0.04;
-    const pace = this.#pace[i] ?? 0.17;
-    const inertia = m / 12 + PLATE_IA;
-    let u = this.#u[i] ?? 0;
-    let v = this.#v[i] ?? 0;
-    let w = this.#w[i] ?? 0;
-    let th = this.#th[i] ?? 0;
-    let x = this.#x[i] ?? 0;
-    let y = this.#y[i] ?? 0;
-    let z = this.#z[i] ?? 0;
-    let psi = this.#psi[i] ?? 0;
-    let debt = (this.#debt[i] ?? 0) + dt / pace;
-    const real = PLATE_STEP * pace;
-    const dpsi = this.#dpsi[i] ?? 0;
-    const rates = this.#rates;
-    const h = 0.5 * PLATE_STEP;
-    let landed = false;
-    let guard = 0;
-    while (debt >= PLATE_STEP && guard++ < 64) {
-      debt -= PLATE_STEP;
-      // The midpoint rule.
-      this.#plate(m, inertia, u, v, w, th);
-      const uMid = u + h * (rates[0] ?? 0);
-      const vMid = v + h * (rates[1] ?? 0);
-      const wMid = w + h * (rates[2] ?? 0);
-      const thMid = th + h * w;
-      this.#plate(m, inertia, uMid, vMid, wMid, thMid);
-      u += PLATE_STEP * (rates[0] ?? 0);
-      v += PLATE_STEP * (rates[1] ?? 0);
-      w += PLATE_STEP * (rates[2] ?? 0);
-      th += PLATE_STEP * wMid;
-      // Motion in the plane, in chords, from the midpoint state; then into the garden.
-      const ct = Math.cos(thMid);
-      const st = Math.sin(thMid);
-      const along = (uMid * ct - vMid * st) * PLATE_STEP * chord;
-      const rise = (uMid * st + vMid * ct) * PLATE_STEP * chord;
-      x += along * Math.cos(psi) + windX * real;
-      y += along * Math.sin(psi);
-      z += rise + lift * real;
-      psi += dpsi * real;
-      if (z <= this.#groundAt(x, y, settings.moss) + LEAF_LIFT) {
-        landed = true;
-        break;
-      }
-    }
-    this.#debt[i] = Math.min(debt, 2 * PLATE_STEP);
-    this.#sigma[i] = (this.#sigma[i] ?? 0) + (this.#dsigma[i] ?? 0) * dt;
-    this.#roll[i] = (this.#roll[i] ?? 0) + (this.#rollRate[i] ?? 0) * dt;
-    this.#u[i] = u;
-    this.#v[i] = v;
-    this.#w[i] = w;
-    this.#th[i] = th;
+    const pos = this.#pos;
+    pos[0] = this.#x[i] ?? 0;
+    pos[1] = this.#y[i] ?? 0;
+    pos[2] = this.#z[i] ?? 0;
+    const landed = this.#plates.fly(i, dt, pos, windX, 0, lift, this.#floor);
+    const x = pos[0] ?? 0;
+    const y = pos[1] ?? 0;
     this.#x[i] = x;
     this.#y[i] = y;
-    this.#z[i] = Math.min(z, 0.8);
-    this.#psi[i] = psi;
+    this.#z[i] = Math.min(pos[2] ?? 0, 0.8);
     if (x < -0.3 || x > GA + 0.3 || y < -0.25 || y > 1.4) {
       this.#state[i] = FREE;
       return;
@@ -1643,9 +1541,7 @@ class GardenSim implements SceneSim {
     }
     this.#state[i] = LANDED;
     this.#z[i] = this.#groundAt(x, y, settings.moss) + LEAF_LIFT;
-    // Pitch wrapped into (-π, π]: it settles face up from whichever side it came down on.
-    const th = this.#th[i] ?? 0;
-    this.#touch[i] = Math.atan2(Math.sin(th), Math.cos(th));
+    this.#plates.touchDown(i);
     this.#lain[i] = 0;
   }
 
@@ -1653,17 +1549,15 @@ class GardenSim implements SceneSim {
   #lie(i: number, dt: number, gust: number, settings: Settings): void {
     const lain = (this.#lain[i] ?? 0) + dt;
     this.#lain[i] = lain;
-    const touch = this.#touch[i] ?? 0;
-    const rest = this.#rest[i] ?? 0;
     // Face up or face down, whichever is nearer.
-    const target = Math.abs(touch) > Math.PI / 2 ? Math.sign(touch) * Math.PI + rest : rest;
-    this.#th[i] = lerp(touch, target, smoothstep(0, SETTLE_SECONDS, lain));
+    const p = this.#plates;
+    p.settle(i, smoothstep(0, SETTLE_SECONDS, lain));
     if (Math.abs(gust) > 0.05) {
       // Skitter downwind a little, turning, each leaf by its own share; at the gust's height the
       // lightest are carried off along the gravel.
       const share = 0.15 + 0.35 * (this.#hue[i] ?? 0);
       this.#x[i] = (this.#x[i] ?? 0) + gust * GUST_DRIFT * this.#gustPush * share * dt;
-      this.#sigma[i] = (this.#sigma[i] ?? 0) + gust * share * 2.5 * dt;
+      p.sigma[i] = (p.sigma[i] ?? 0) + gust * share * 2.5 * dt;
       this.#z[i] = this.#groundAt(this.#x[i] ?? 0, this.#y[i] ?? 0, settings.moss) + LEAF_LIFT;
       if (Math.abs(gust) > 0.7 && (this.#hue[i] ?? 0) > 1 - GUST_CARRY) {
         this.#state[i] = LEAVING;
@@ -1683,7 +1577,8 @@ class GardenSim implements SceneSim {
     this.#y[i] = (this.#y[i] ?? 0) + (this.#vy[i] ?? 0) * dt;
     this.#vx[i] = (this.#vx[i] ?? 0) * Math.exp(-1.5 * dt);
     this.#vy[i] = (this.#vy[i] ?? 0) * Math.exp(-1.5 * dt);
-    this.#sigma[i] = (this.#sigma[i] ?? 0) + (this.#dsigma[i] ?? 0) * 2 * dt;
+    const p = this.#plates;
+    p.sigma[i] = (p.sigma[i] ?? 0) + (p.dsigma[i] ?? 0) * 2 * dt;
     this.#alpha[i] = Math.max(0, (this.#alpha[i] ?? 0) - dt / SWEEP_SECONDS);
     if ((this.#alpha[i] ?? 0) <= 0) this.#state[i] = FREE;
   }
@@ -1735,7 +1630,7 @@ class GardenSim implements SceneSim {
       }
       this.#x[i] = x;
       this.#y[i] = y;
-      this.#th[i] = (this.#rest[i] ?? 0) + (rand() < 0.3 ? Math.PI : 0);
+      this.#plates.th[i] = (this.#plates.rest[i] ?? 0) + (rand() < 0.3 ? Math.PI : 0);
       this.#land(i, settings);
       if (this.#state[i] !== LANDED) continue;
       this.#lain[i] = (this.#life[i] ?? 60) * rand();
@@ -1758,37 +1653,21 @@ class GardenSim implements SceneSim {
         data.fill(0, o, o + 16);
         continue;
       }
-      const psi = this.#psi[i] ?? 0;
-      const th = this.#th[i] ?? 0;
-      const ce = Math.cos(psi);
-      const se = Math.sin(psi);
-      const ct = Math.cos(th);
-      const st = Math.sin(th);
-      // Chord axis, span axis and normal of the plate, the span rocked about the chord.
-      const tx = ct * ce;
-      const ty = ct * se;
-      const tz = st;
+      // The plate's chord and span axes (x, y, z), its rock about the chord fading as it settles.
       const settle = state === FALLING ? 1 : 1 - smoothstep(0, SETTLE_SECONDS, this.#lain[i] ?? 0);
-      const rho = ROLL * Math.sin(this.#roll[i] ?? 0) * settle;
-      const cr = Math.cos(rho);
-      const sr = Math.sin(rho);
-      const sx = -se * cr - st * ce * sr;
-      const sy = ce * cr - st * se * sr;
-      const sz = ct * sr;
-      const sigma = this.#sigma[i] ?? 0;
-      const cs = Math.cos(sigma);
-      const ss = Math.sin(sigma);
+      const f = this.#frame;
+      this.#plates.orient(i, settle, f);
       data[o] = (this.#x[i] ?? 0) - OX;
       data[o + 1] = (this.#y[i] ?? 0) - OY;
       data[o + 2] = this.#z[i] ?? 0;
       data[o + 3] = this.#alpha[i] ?? 0;
-      data[o + 4] = cs * tx + ss * sx;
-      data[o + 5] = cs * ty + ss * sy;
-      data[o + 6] = cs * tz + ss * sz;
+      data[o + 4] = f[0] ?? 0;
+      data[o + 5] = f[1] ?? 0;
+      data[o + 6] = f[2] ?? 0;
       data[o + 7] = this.#radius[i] ?? 0.01;
-      data[o + 8] = -ss * tx + cs * sx;
-      data[o + 9] = -ss * ty + cs * sy;
-      data[o + 10] = -ss * tz + cs * sz;
+      data[o + 8] = f[3] ?? 0;
+      data[o + 9] = f[4] ?? 0;
+      data[o + 10] = f[5] ?? 0;
       data[o + 11] = this.#kind[i] ?? 0;
       data[o + 12] = this.#hue[i] ?? 0;
       data[o + 13] = state === FALLING ? 0 : clamp((this.#lain[i] ?? 0) / Math.max(this.#life[i] ?? 60, 1), 0, 1);

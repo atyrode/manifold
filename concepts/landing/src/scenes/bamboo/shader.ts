@@ -1070,16 +1070,16 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   float tm = uMotionTime;
   Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
-  // The rain's cloud closes over the sky as the rain sets in: a drizzle still lets some sun through,
-  // and from about a quarter of the rain knob up the sun and moon are gone, rays and all. The cloud
-  // deck is lit from above, so the grove's light turns soft and grey but stays bright: as much as
-  // the open sky gave, plus a share of the sun it hides, dimming only in the heaviest rain.
-  bambooRain = K_rain;
-  bambooOvercast = smoothstep(0.0, 0.25, K_rain);
-  bambooCloud = (dot(sky.ambient, LUMA) + 0.3 * dot(sky.sunColor, LUMA)) * (1.0 - 0.3 * K_rain * K_rain);
-  sky.sunColor *= 1.0 - bambooOvercast;
-  sky.moonColor *= 1.0 - bambooOvercast;
-  sky.ambient = mix(sky.ambient, vec3(0.95, 0.98, 1.0) * bambooCloud, bambooOvercast);
+  // The rain's cloud closes over the sky as the rain sets in (the shared canopy weather): a drizzle
+  // still lets some sun through, and from about a quarter of the rain knob up the sun and moon are
+  // gone, rays and all. The cloud deck is lit from above, so the grove's light turns soft and grey but
+  // stays bright: as much as the open sky gave, plus a share of the sun it hides, dimming only in the
+  // heaviest rain.
+  CanopyWeather weather = canopyWeather(sky, K_rain);
+  sky = weather.sky;
+  bambooRain = weather.rain;
+  bambooOvercast = weather.overcast;
+  bambooCloud = weather.cloud;
   bambooSky = sky;
   bambooWet = clamp(uWeather.x, 0.0, 1.0);
   bambooGloss = wetGloss(bambooWet, 0.0);
@@ -1097,28 +1097,16 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   bambooLevel = max(dot(sky.ambient, LUMA), 0.02);
   bambooFill = bambooLevel * vec3(0.78, 1.0, 0.88) * mix(1.15, 1.45, bambooOvercast) + sky.moonColor * 0.3;
   bambooKey = sky.sunColor * BAMBOO_FILTER + sky.moonColor * vec3(0.7, 0.85, 0.95) * 1.2;
-  float sunLevel = dot(sky.sunColor, LUMA);
-  float moonLevel = dot(sky.moonColor, LUMA) * 1.3;
-  vec2 keySide = sky.sun.xz * sunLevel + sky.moon.xz * moonLevel;
-  bambooKeySide = dot(keySide, keySide) > 1e-8 ? normalize(keySide) : vec2(0.6, 0.8);
+  bambooKeySide = weather.keySide;
 
   // The god rays: three, crossing mid-frame at seed-chosen places, drifting very slowly.
-  vec3 toLight = normalize(sky.sun * sunLevel + sky.moon * moonLevel + vec3(0.0, 1e-4, 0.0));
-  bambooRaySlant = clamp(atan(toLight.x, max(toLight.y, 0.0) + 0.35), -0.85, 0.85);
-  vec3 jitter = vec3(
-    hash12(vec2(1.0, K_groveSeed * 0.913 + 5.0)),
-    hash12(vec2(4.7, K_groveSeed * 0.913 + 5.0)),
-    hash12(vec2(8.4, K_groveSeed * 0.913 + 5.0))
-  );
-  bambooRaySrc = (vec3(-0.32, -0.02, 0.28) + (jitter - 0.5) * 0.12) * aspect + 0.02 * sin(tm * 0.011 + jitter * 6.0) + tan(bambooRaySlant) * 0.42;
+  bambooRaySlant = weather.slant;
+  bambooRaySrc = canopyRaySources(vec3(-0.32, -0.02, 0.28), 0.12, K_groveSeed, aspect, tm, bambooRaySlant);
   vec2 rays = K_shafts > 0.0 ? bambooRays(p, tm) : vec2(0.0);
   // The canopy shelters the grove: under its leaves half the rain gets through (the rest gathers on
   // them and drips); it pours in full through the gaps, the same gaps the rays come through, in
   // columns slanting with the wind.
-  float gapX = p.x - K_wind * 0.35 * (1.0 - p.y);
-  float gap = smoothstep(0.5, 0.75, vnoise(vec2(gapX * 2.2 + K_groveSeed * 0.37, 7.3)));
-  for (int r = 0; r < BAMBOO_RAYS; r++) gap = max(gap, bell((gapX - bambooRaySrc[r]) / 0.09));
-  bambooRainHere = K_rain * mix(0.5, 1.0, gap);
+  bambooRainHere = K_rain * mix(0.5, 1.0, canopyGap(p, K_wind, K_groveSeed, bambooRaySrc));
   // The canopy's gaps open and close a little as gusts pass.
   float flutter = 1.0 - 0.25 * gustAll * (0.5 + 0.5 * sin(tm * 1.1 + dot(p, vec2(7.0, 3.0))));
   bambooBeam = K_shafts > 0.0 ? rays.x * flutter : 0.3;
@@ -1158,13 +1146,10 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   if (p.y > 0.6) {
     vec3 dir = viewRay(uv, aspect, BAMBOO_HORIZON, 1.0);
     vec3 sk = skyColor(sky, dir);
-    vec3 gapCol = mix(vec3(dot(sk, LUMA)), sk, 0.3) * vec3(0.95, 1.02, 0.92) * 1.1 + sky.sunColor * BAMBOO_FILTER * 0.12;
-    gapCol += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, 0.5) * (1.0 - bambooOvercast);
-    // Under rain cloud the gaps show the cloud deck, grey-white and lit from above, a little darker
-    // in the heaviest rain, with shafts of heavier rain hanging from it, slanting with the wind.
-    float shafts = smoothstep(0.45, 0.8, vnoise(vec2((p.x - K_wind * 0.3 * p.y) * 5.0 + K_groveSeed, 3.7)));
-    vec3 grey = vec3(0.94, 0.97, 1.0) * bambooCloud * 1.3 * (1.0 - 0.2 * shafts * K_rain);
-    gapCol = mix(gapCol, grey, 0.9 * bambooOvercast);
+    vec3 washed = mix(vec3(dot(sk, LUMA)), sk, 0.3) * vec3(0.95, 1.02, 0.92) * 1.1 + sky.sunColor * BAMBOO_FILTER * 0.12;
+    // Stars on a clear night; under rain cloud the deck, grey-white and lit from above, a little
+    // darker in the heaviest rain, with shafts of heavier rain hanging from it.
+    vec3 gapCol = canopyGapSky(weather, washed, dir, 0.5, p, K_wind, K_groveSeed, 1.3);
     col = mix(col, max(gapCol, mist), smoothstep(0.76, 1.0, p.y));
     vec4 canopy = bambooCanopy(p);
     col = mix(col, mix(mist, canopy.rgb, bambooTransmit(5.0, 8.0)), canopy.a);
