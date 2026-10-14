@@ -300,8 +300,9 @@ surfaces and change them. Never paste them over the frame as a flat layer.
 
 When a scene needs state (particles, a height field, ink, a growing crystal, the pointer's wake),
 give it a `sim: (gl) => SceneSim`. Each frame the renderer calls `frame(SimFrame)` (dt, time,
-motionTime, motion, size, knob values, raw params, triggers, fired, pointer, passage) and binds the
-returned textures as `uSim0..uSim3` (`uSimOn` says which are set).
+motionTime, motion, size, knob values, raw params, triggers, fired, pointer, parallax, passage) and
+binds the returned textures as `uSim0..uSim3` (`uSimOn` says which are set). `parallax` is the
+shader's `uPointer`: a sim casting the pointer through a camera the shader turns with it turns it too.
 Simulation catch-up is capped at 0.1 s per frame; the FPS footer measures uncapped frame delivery.
 Reseeding a stateful scene must reset its associated interaction history as well as its geometry:
 Frost starts a fresh pane with no old warmth, melt mask, finger stroke, or active mark trace, even
@@ -324,6 +325,10 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   webs with impulses and nearest-point queries, packed into a texture for `texelFetch` (kelp, dew).
 - `HeightField` (`heightfield.ts`): stamps, grooves and rakes with side ridges, angle-of-repose
   slumping, smoothing, upload to r16f (garden, sand table).
+- `marchHeight` and `sampleRepeat` (`heightray.ts`): a ray against a height field on the CPU with a
+  shader's own march numbers, so a click lands on the ground drawn under the pointer (dunes).
+- `AgeField` and `dryingPace` (`agefield.ts`): when each spot was last disturbed, on a clock the
+  scene drives (a drying clock that hurries in sun and wind, stops in rain), for r16f (garden).
 - `GpuCompute` (`gpu.ts`): float render targets, ping-pong grids, fullscreen passes and point
   scatters for GPU simulations (petri, physarum, delta). `create` returns undefined without float
   render targets: the scene must then draw a still picture instead. It leaves the GL state the
