@@ -11,7 +11,7 @@ const params: readonly ParamDef[] = [
   feature("koi", "koi", "koi", true, "count", 5, "Koi gliding beneath the surface.", { options: counts(3, 5, 8) }),
   range("koi", "swim", "swim speed", 0.4, "How fast the koi swim.", { when: "koi" }),
   toggle("koi", "follow", "drawn to mouse", false, "The koi notice the pointer moving over the pond and swim over one after another, milling about it noses in rather than piling up; when it rests a while or leaves, they drift back to their own loops.", { when: "koi" }),
-  range("koi", "spacing", "personal space", 0.5, "How much room each koi keeps while they crowd round the pointer: 0 lets them slide over one another, 1 keeps about a body and a half between them.", { when: "follow" }),
+  range("koi", "spacing", "personal space", 0.5, "How much room each koi keeps while they crowd round the pointer: 0 lets them slide over one another, 1 keeps them about a body length or more apart.", { when: "follow" }),
   range("koi", "eager", "eagerness", 0.5, "How far off the koi notice the pointer, how quickly they come, and how long they wait once it stops moving.", { when: "follow" }),
   feature("light", "caustics", "caustics", true, "strength", 0.6, "Light patterns rippling across the pond floor."),
   feature("light", "rays", "god rays", true, "strength", 0.5, "Beams of light from the sun; leaves and canopy break them into shafts."),
