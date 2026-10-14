@@ -3,6 +3,9 @@ import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
 import { sceneDefs } from "./src/scenes/index.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
+import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
+import { verifySwellRelief } from "./src/scenes/swell/relief.verify.ts";
+import { verifyAuroraRipples } from "./src/scenes/aurora/ripples.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 
 function check(ok: boolean, message: string): void {
@@ -252,6 +255,9 @@ export function verify(): Record<string, unknown> {
   );
   gl.deleteProgram(terrain);
 
+  result.orbitRingDepth = verifyOrbitRingDepth(gl);
+  result.swellRelief = verifySwellRelief(gl);
+  result.auroraRipples = verifyAuroraRipples(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
