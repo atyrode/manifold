@@ -3,6 +3,7 @@
 import { auroraScene } from "./aurora/index.ts";
 import { bambooScene } from "./bamboo/index.ts";
 import { barScene } from "./bar/index.ts";
+import { beesScene } from "./bees/index.ts";
 import { bonsaiScene } from "./bonsai/index.ts";
 import { campfireScene } from "./campfire/index.ts";
 import { cloudsScene } from "./clouds/index.ts";
@@ -97,6 +98,7 @@ export const sceneDefs = {
   pendula: pendulaScene,
   island: islandScene,
   aurora: auroraScene,
+  bees: beesScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
