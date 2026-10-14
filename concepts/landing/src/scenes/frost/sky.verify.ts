@@ -144,7 +144,7 @@ const luma = (pixels: Float32Array, i: number): number => 0.2126 * (pixels[i * 4
 const same = (a: Float32Array, b: Float32Array): boolean => a.every((value, i) => value === b[i]);
 
 /** Frost's knobs as the shader reads them, with overrides keyed as in the URL. */
-function frostParams(over: Record<string, number>): number[] {
+function frostParams(over: Record<string, number>): readonly number[] {
   return renderSettings(defaultsFor("frost"), { ...paramDefaults("frost"), ...over }).params;
 }
 
