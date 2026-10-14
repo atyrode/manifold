@@ -47,9 +47,14 @@ import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- The room, shared with the shader ----
 
-/** Focal length (screen heights) and eye height over the floor (m). */
+/** Focal length (screen heights) and eye height over the floor (m): the booth sits raised, so the
+ *  counter top shows as a band of polished wood. The eye level sits HORIZON screen heights above
+ *  the frame's middle. */
 export const FOCAL = 0.85;
-export const EYE = 1.22;
+export const EYE = 1.5;
+export const HORIZON = 0.03;
+/** Your table is a foreground plate seen from closer, leaning in over it: its own eye height (m). */
+export const TABLE_EYE = 1.09;
 /** Narrow frames pan left toward the window: by PAN_RATE screen heights per unit of aspect below PAN_FROM. */
 export const PAN_FROM = 1.6;
 export const PAN_RATE = 0.3;
@@ -72,10 +77,10 @@ export const POUR_REACH = 0.13;
 /** Bottle slots on the shelves: their width and where the first one starts (m along the shelf). */
 export const SLOT_W = 0.12;
 export const SLOT_X0 = -1.9;
-/** The candle's flame on your table (m). */
-export const CANDLE_X = 0.42;
+/** The candle's flame on your table (m, in the table plate's view). */
+export const CANDLE_X = 0.36;
 export const CANDLE_Y = 0.83;
-export const CANDLE_Z = 0.85;
+export const CANDLE_Z = 0.72;
 /** The ceiling fan's pace at either end of its knob (turns per second): lazy; even the fastest leaves a second between blades. */
 export const FAN_SLOW = 0.04;
 export const FAN_FAST = 0.25;
@@ -144,7 +149,7 @@ const TALK_TIME = 1.5;
 const COAT_DRY = 90;
 /** The candle's lean: how hard pointer speed (screen heights/s) pushes it, how near it must pass, and how fast it leans and recovers (s). */
 const DRAUGHT_GAIN = 0.6;
-const DRAUGHT_REACH = 0.09;
+const DRAUGHT_REACH = 0.12;
 const DRAUGHT_LEAN = 0.12;
 const DRAUGHT_SETTLE = 0.7;
 /** Fixed seed: the same evening every time the scene opens. */
@@ -458,8 +463,9 @@ class BarEvening implements SceneSim {
     const pointer = frame.pointer;
     const pan = -Math.max(0, PAN_FROM - this.#aspect) * PAN_RATE;
     const px = (pointer.x - 0.5) * this.#aspect + pan;
-    const py = pointer.y - 0.5;
-    if (pointer.inside && pointer.pressed && this.#serving && py > -0.07 && py < 0.17 && px > -0.34) {
+    const py = pointer.y - 0.5 - HORIZON;
+    // The bar: from the counter top up to the shelves' bottles, right of the counter's end.
+    if (pointer.inside && pointer.pressed && this.#serving && py > -0.12 && py < 0.12 && px > -0.34) {
       this.#visitX = clamp((px * BARTENDER_Z) / FOCAL, BARTENDER_MIN, BARTENDER_MAX);
       this.#interrupt();
     }
@@ -468,7 +474,7 @@ class BarEvening implements SceneSim {
     let pushY = 0;
     if (pointer.inside && dt > 0 && Number.isFinite(this.#prevX)) {
       const cx = (FOCAL * CANDLE_X) / CANDLE_Z;
-      const cy = (FOCAL * (CANDLE_Y - EYE)) / CANDLE_Z;
+      const cy = (FOCAL * (CANDLE_Y - TABLE_EYE)) / CANDLE_Z;
       const d2 = (px - cx) ** 2 + (py - cy) ** 2;
       const near = Math.exp(-d2 / (2 * DRAUGHT_REACH * DRAUGHT_REACH));
       pushX = clamp(((px - this.#prevX) / dt) * DRAUGHT_GAIN * near, -1, 1);
