@@ -20,6 +20,7 @@
 // (uWeather.y): first on the high far ridges, then down to the near fields, roofs and tree tops.
 
 import { countryFieldsGlsl } from "./fields.ts";
+import { countrySettlementsGlsl } from "./settlements.ts";
 
 export const countryGlsl = /* glsl */ `
 const float COUNTRY_HORIZON = 0.62;      // eye level, uv.y
@@ -70,9 +71,11 @@ float countryWoodScore(float i, float wx, float wv) {
 }
 
 // Never on the near fields, the village knoll or the chalk down: the exclusion lowers the score,
-// so the woods' edge there still follows the land instead of a straight cut.
+// so the woods' edge there still follows the land instead of a straight cut. The castle on the
+// down's top (settlements.ts) clears the hilltop around its walls.
 float countryWoodKeep(float i, vec2 near) {
   if (i < 1.5 || K_woodland <= 0.0) return 0.0;
+  if (i > 2.5 && i < 3.5 && K_castle > 0.5) return min(1.0 - near.y, 1.0 - smoothstep(0.19, 0.6, near.y));
   return i < 2.5 ? 1.0 - near.x : (i < 3.5 ? 1.0 - near.y : 1.0);
 }
 float countryWoodStand(float i, float wx, float wv, vec2 near) {
@@ -472,231 +475,6 @@ vec4 countryClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
   return vec4(m.rgb / max(m.a, 1e-4), m.a);
 }
 
-// Whether a window is lit (0/1). h: the window's hash. Windows come on one by one as the light
-// fails (or on a dark stormy day), most go dark between half past ten and two, and a few early
-// risers light up again before dawn; only \`share\` of them ever light.
-float countryWindow(float h, float tod, float dark, float share) {
-  if (fract(h * 7.31) >= share) return 0.0;
-  float on = step(0.12 + 0.6 * fract(h * 3.17), dark);
-  float clock = tod < 0.5 ? tod + 1.0 : tod;   // from noon: 1.0 midnight, 1.25 dawn
-  float bed = 0.94 + 0.14 * fract(h * 5.71);
-  float rise = fract(h * 9.13) < 0.3 ? 1.2 + 0.05 * fract(h * 2.9) : 1.6;
-  return on * (1.0 - step(bed, clock) * step(clock, rise));
-}
-
-// Where a cottage's chimney stands (its top), in cottage units; see countryCottage.
-vec2 countryStack(float len, float wall, float rise) {
-  vec2 eave = vec2(0.08, wall - 0.07);
-  vec2 rafter = vec2(-0.5, wall + rise + 0.05) - eave;
-  vec2 run = vec2(len + 0.06, (len + 0.06) * COUNTRY_RECEDE);
-  return eave + 0.82 * rafter + 0.72 * run + vec2(0.0, 0.3);
-}
-
-// A building seen corner-on, in its own units: the gable end (1 wide, eaves \`wall\` up, ridge
-// \`rise\` above them) faces front-left; the long wall (\`len\`) faces front-right and runs away up
-// the screen; the roof over it is the gable's right-hand rafter swept along the house. q has x
-// mirrored for buildings facing the other way. Returns the face under q: 0 none, 1 gable end,
-// 2 long wall, 3 roof, 4 chimney; pane gets 1..3 on a window.
-float countryCottage(vec2 q, float len, float wall, float rise, bool stack, out float pane) {
-  pane = 0.0;
-  vec2 ridge = vec2(-0.5, wall + rise);
-  vec2 eave = vec2(0.08, wall - 0.07);
-  vec2 rafter = ridge + vec2(0.0, 0.05) - eave;
-  vec2 run = vec2(len + 0.06, (len + 0.06) * COUNTRY_RECEDE);
-  if (stack) {
-    vec2 top = countryStack(len, wall, rise);
-    if (abs(q.x - top.x) < 0.085 && q.y > top.y - 0.5 && q.y < top.y) return 4.0;
-  }
-  // Roof: q = eave + a * rafter + b * run, inside for a, b in 0..1.
-  vec2 rel = q - eave;
-  float det = rafter.x * run.y - rafter.y * run.x;
-  float a = (rel.x * run.y - rel.y * run.x) / det;
-  float b = (rafter.x * rel.y - rafter.y * rel.x) / det;
-  if (a >= 0.0 && a <= 1.0 && b >= 0.0 && b <= 1.0) return 3.0;
-  // Gable end, edged by the verge of the roof along its left-hand rafter.
-  if (q.x >= -1.06 && q.x <= 0.0 && q.y >= 0.0) {
-    if (segmentDistance(q, vec2(-1.06, wall - 0.07), ridge + vec2(0.0, 0.05)) < 0.07) return 3.0;
-    float top = wall + rise * (1.0 - abs(q.x + 0.5) / 0.5);
-    if (q.x >= -1.0 && q.y <= top) {
-      if (abs(q.x + 0.5) < 0.16 && q.y > 0.38 * wall && q.y < 0.75 * wall) pane = 1.0;
-      return 1.0;
-    }
-  }
-  // Long wall, its windows a third and two thirds along.
-  float up = q.y - q.x * COUNTRY_RECEDE;
-  if (q.x > 0.0 && q.x <= len && up >= 0.0 && up <= wall) {
-    if (up > 0.38 * wall && up < 0.75 * wall) {
-      if (abs(q.x - 0.3 * len) < 0.14) pane = 2.0;
-      if (abs(q.x - 0.72 * len) < 0.14) pane = 3.0;
-    }
-    return 2.0;
-  }
-  return 0.0;
-}
-
-// The church: a long nave, a square west tower in front of its gable end and a spire on the tower.
-// Faces as for cottages, plus 5 tower front, 6 tower side, 7 and 8 the spire's two faces, 9 the
-// belfry opening.
-float countryChurch(vec2 q, out float pane) {
-  pane = 0.0;
-  float tower = 2.3;
-  vec2 apex = vec2(-0.42, tower + 2.08);
-  if (q.y > tower && q.y < apex.y) {
-    float k = (q.y - tower) / (apex.y - tower);
-    float corner = mix(-0.16, apex.x, k);
-    if (q.x > mix(-0.9, apex.x, k) && q.x < mix(0.08, apex.x, k)) return q.x < corner ? 7.0 : 8.0;
-  }
-  if (q.x >= -0.86 && q.x <= -0.16 && q.y >= 0.0 && q.y <= tower) {
-    if (abs(q.x + 0.51) < 0.13 && q.y > tower - 0.5 && q.y < tower - 0.18) return 9.0;
-    return 5.0;
-  }
-  if (q.x > -0.16 && q.x <= 0.06) {
-    float up = q.y - (q.x + 0.16) * COUNTRY_RECEDE;
-    if (up >= 0.0 && up <= tower) return 6.0;
-  }
-  return countryCottage(q, 2.5, 1.0, 0.62, false, pane);
-}
-
-// Chimney smoke from \`top\` (screen units), rising \`tall\`: a plume that curls, widens and thins as
-// it climbs and leans downwind, more so higher up where the wind is stronger. Density 0..1.
-float countrySmoke(vec2 q, vec2 top, float tall, float seed, float t, float wind) {
-  float h = (q.y - top.y) / tall;
-  if (h < 0.0 || h > 1.0) return 0.0;
-  float lean = wind * (0.5 * h + 1.1 * h * h);
-  float curl = 0.06 * sin(h * 8.0 - t * 1.1 + seed * 6.3) * smoothstep(0.0, 0.35, h) * (1.0 - 0.5 * abs(wind));
-  float x = (q.x - top.x) / tall - lean - curl;
-  float width = 0.03 + 0.14 * h;
-  float body = exp(-x * x / (width * width));
-  float puffs = vnoise(vec2(x * 9.0 + seed * 17.0, h * 6.0 - t * 0.7));
-  return body * (0.45 + 0.75 * puffs) * smoothstep(0.0, 0.04, h) * (1.0 - smoothstep(0.35, 1.0, h));
-}
-
-struct CountryVillage {
-  float hit;     // 1 on a building
-  vec3 albedo;
-  vec3 normal;
-  float roof;    // 1 roofs, 0.5 the spire, 0 walls: where snow can lie and how much a wet face shines
-  float porous;  // how much rain soaks in and darkens it: 0 slate, lead, glass .. 1 thatch
-  float lamp;    // 1 on a lit window
-  float smoke;   // chimney smoke in front of whatever is behind, 0..1
-  float glow;    // warm spill from lit windows nearby
-};
-
-CountryVillage countryNoVillage() {
-  CountryVillage v;
-  v.hit = 0.0;
-  v.albedo = vec3(0.0);
-  v.normal = vec3(0.0, 1.0, 0.0);
-  v.roof = 0.0;
-  v.porous = 0.6;
-  v.lamp = 0.0;
-  v.smoke = 0.0;
-  v.glow = 0.0;
-  return v;
-}
-
-// The village on the knoll of the third ridge (q in that ridge's frame): eleven cottages along a
-// lane, either side, and the church up the knoll; nearer (lower) buildings stand in front.
-CountryVillage countryVillage(vec2 q, float vx, float knoll, float tod, float dark, float t, float wind) {
-  CountryVillage v = countryNoVillage();
-  if (abs(q.x - vx) > 0.26 || q.y < knoll - 0.1 || q.y > knoll + 0.18) return v;
-  float front = 2.0;
-  float face = 0.0;
-  float pane = 0.0;
-  float flip = 1.0;
-  float which = 0.37;
-  float church = 0.0;
-  float lights = K_lights;
-  float smoke = 0.0;
-  float glow = 0.0;
-  vec2 c = (q - vec2(vx + 0.018, knoll - 0.02)) / 0.019;
-  if (c.x > -1.2 && c.x < 2.8 && c.y > -0.05 && c.y < 4.6) {
-    float pn = 0.0;
-    float f = countryChurch(c, pn);
-    if (f > 0.0) {
-      face = f;
-      pane = pn;
-      front = knoll - 0.02;
-      church = 1.0;
-    }
-  }
-  for (int k = 0; k < 11; k++) {
-    float fk = float(k);
-    float hj = hash12(vec2(fk, 4.3) + countrySeed);
-    float u = (fk - 5.0) / 5.0;
-    float side = mod(fk, 2.0) < 0.5 ? 1.0 : -1.0;
-    float down = max(0.04 + 0.02 * sin(u * 2.3 + 0.9) + 0.01 * side + 0.008 * (hj - 0.5), 0.014);
-    vec2 base = vec2(vx + u * 0.12 + 0.014 * (hj - 0.5), knoll - down);
-    float size = 0.014 + 0.1 * (down - 0.014);
-    float len = 1.2 + 0.8 * fract(hj * 7.1);
-    vec2 h = (q - base) / size;
-    h.x *= side;
-    if (base.y < front && h.x > -1.15 && h.x < len + 0.15 && h.y > -0.05 && h.y < 1.75 + len * COUNTRY_RECEDE) {
-      float pn = 0.0;
-      float f = countryCottage(h, len, 0.75, 0.55, true, pn);
-      if (f > 0.0) {
-        face = f;
-        pane = pn;
-        front = base.y;
-        flip = side;
-        which = hj;
-        church = 0.0;
-      }
-    }
-    // Lit windows warm the walls and ground around them.
-    float lit = countryWindow(fract(hj * 91.0 + 0.13), tod, dark, lights) + countryWindow(fract(hj * 91.0 + 0.57), tod, dark, lights) + countryWindow(fract(hj * 91.0 + 0.89), tod, dark, lights);
-    vec2 g = h - vec2(0.3, 0.4);
-    glow += lit * exp(-dot(g, g) * 0.3);
-    // Every third cottage has its fire lit.
-    if (abs(mod(fk, 3.0) - 1.0) < 0.5) {
-      vec2 top = countryStack(len, 0.75, 0.55);
-      smoke = max(smoke, countrySmoke(q, base + size * vec2(side * top.x, top.y), 0.1, hj, t, wind));
-    }
-  }
-  v.smoke = smoke * (K_smoke > 0.0 ? 0.35 + 0.85 * K_smoke : 0.0);
-  v.glow = min(glow, 1.5);
-  if (face < 0.5) return v;
-  v.hit = 1.0;
-  float hw = fract(which * 11.3);
-  float hr = fract(which * 23.7);
-  vec3 wall = church > 0.5 ? vec3(0.7, 0.68, 0.62) : (hw < 0.35 ? vec3(0.84, 0.77, 0.62) : (hw < 0.6 ? vec3(0.88, 0.87, 0.82) : (hw < 0.85 ? vec3(0.62, 0.36, 0.26) : vec3(0.6, 0.6, 0.57))));
-  vec3 roof = church > 0.5 ? vec3(0.27, 0.29, 0.33) : (hr < 0.5 ? vec3(0.56, 0.26, 0.17) : (hr < 0.8 ? vec3(0.26, 0.28, 0.32) : vec3(0.58, 0.48, 0.3)));
-  vec3 gableNormal = vec3(-0.62, 0.0, -0.78);
-  vec3 wallNormal = vec3(0.78, 0.0, -0.62);
-  if (face < 1.5 || (face > 4.5 && face < 5.5)) {
-    v.albedo = wall;
-    v.normal = gableNormal;
-  } else if (face < 2.5 || (face > 5.5 && face < 6.5)) {
-    v.albedo = wall * 0.97;
-    v.normal = wallNormal;
-  } else if (face < 3.5) {
-    v.albedo = roof;
-    v.normal = normalize(vec3(0.42, 0.78, -0.46));
-    v.roof = 1.0;
-    // Clay tiles drink a little rain, slate none, thatch a lot.
-    v.porous = church > 0.5 || (hr >= 0.5 && hr < 0.8) ? 0.05 : (hr < 0.5 ? 0.35 : 0.85);
-  } else if (face < 4.5) {
-    v.albedo = vec3(0.5, 0.3, 0.22);
-    v.normal = gableNormal;
-  } else if (face < 8.5) {
-    v.albedo = vec3(0.45, 0.47, 0.5);
-    v.normal = face < 7.5 ? normalize(vec3(-0.55, 0.45, -0.7)) : normalize(vec3(0.6, 0.45, -0.66));
-    v.roof = 0.5;
-    v.porous = 0.05;
-  } else {
-    v.albedo = vec3(0.08, 0.07, 0.07);
-    v.normal = gableNormal;
-  }
-  v.normal.x *= flip;
-  if (pane > 0.5) {
-    float lit = countryWindow(fract(which * 91.0 + (pane < 1.5 ? 0.13 : (pane < 2.5 ? 0.57 : 0.89))), tod, dark, church > 0.5 ? 0.5 * lights : lights);
-    v.albedo = vec3(0.1, 0.12, 0.16);
-    v.porous = 0.0;
-    v.lamp = lit;
-  }
-  return v;
-}
-
 // Any rain at all hangs a grey deck over the sky, 0..1.
 float countryGrey(float rain) {
   return smoothstep(0.0, 0.05, rain);
@@ -760,6 +538,8 @@ vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float w
   }
   return vec2(1.0 - clear, belly);
 }
+
+${countrySettlementsGlsl}
 
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float m = uMotion;
@@ -825,8 +605,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float object = 0.0;
   vec4 crown = vec4(0.0);
   float treeShadow = 0.0;
+  // The building hit, if any, and the smoke and window glow of every ridge passed (settlements.ts).
   CountryVillage village = countryNoVillage();
-  bool villageSeen = false;
   // How far off the surface the pixel sees is (world): the falling rain and snow stop there.
   float seen = 1e3;
   for (int k = 0; k < 6; k++) {
@@ -837,19 +617,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     vec2 qi = p + uPointer * m * vec2(0.022, 0.01) / L.x;
     float terrain = 0.0;
     float c = countryCrest(i, qi.x, spots, terrain);
-    if (k == 2) {
-      village = countryVillage(qi, spots.x, L.y + 0.012, tod, dark, uMotionTime, wind);
-      villageSeen = true;
-      if (village.hit > 0.5) {
-        hit = k;
-        crest = c;
-        groundCrest = terrain;
-        q = qi;
-        object = 2.0;
-        seen = 0.9 * L.x;
-        break;
-      }
-    }
+    // Buildings standing on this ridge: the village, hamlets, the castle, farms.
+    village = countryNearer(village, countrySettlements(i, qi, terrain, L, spots, tod, dark, uMotionTime, wind));
     if (k < 2) {
       // Hedgerow trees, rooted on the face below and standing up over it (and over the crest).
       float r = 0.018 / L.x;
@@ -862,7 +631,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         vec2 scale = vec2(L.x, countryDownRate(sRoot, L.x)) * COUNTRY_FIELDS;
         float density = 0.3 * (1.0 - 0.8 * countrySpots(qi.x, spots).x);
         crown = countryTrees(fQ, scale, r, density, max(-sQ, 0.0), sky.sun, treeShadow);
-        if (crown.z > 0.5) {
+        // A building standing nearer than the tree's root hides it.
+        if (crown.z > 0.5 && !countryHidesCrown(village, crown, qi.y, r)) {
           hit = k;
           crest = c;
           groundCrest = terrain;
@@ -872,6 +642,16 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           break;
         }
       }
+    }
+    if (village.hit > 0.5) {
+      hit = k;
+      crest = c;
+      groundCrest = terrain;
+      q = qi;
+      object = 2.0;
+      seen = 0.9 * L.x;
+      treeShadow = 0.0;
+      break;
     }
     if (qi.y < c) {
       hit = k;
@@ -1192,12 +972,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     col = mix(col, countryMist(sky, p.x, 2.0, overcast), fogAmount(min(fog, 1.0), 1.0, max(p.y - valley, 0.0) * 12.0 / 0.25));
   }
 
-  // The village's life: warm light around lit windows (pooling on wet ground), smoke drifting over
-  // whatever lies behind.
-  if (villageSeen && hit >= 2) {
-    col += COUNTRY_AMBER * village.glow * 0.12 * dark * (1.0 - village.lamp) * (1.0 + 1.5 * wet);
-    col = mix(col, vec3(0.8, 0.8, 0.83) * air, village.smoke * 0.75);
-  }
+  // The settlements' life: warm light around lit windows (pooling on wet ground), smoke drifting
+  // over whatever lies behind.
+  col += COUNTRY_AMBER * village.glow * 0.12 * dark * (1.0 - village.lamp) * (1.0 + 1.5 * wet);
+  col = mix(col, vec3(0.8, 0.8, 0.83) * air, village.smoke * 0.75);
 
   // Lightning over the far hills: bolts to the fourth ridge, behind the rain.
   if (age < 2.0 && hit >= 4) {
