@@ -333,6 +333,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick`.
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`).
+- `LevelCamera` (`camera.ts`): world ↔ screen for the level side-on camera (horizon, eye height,
+  focal): move things in the world and project them, so receding slows them across the frame and
+  draws them to the horizon (meadow's seeds).
 - `FixedStep` and `runBudgeted` (`clock.ts`): a fixed-step accumulator (`advance` returns the steps
   due; `alpha`, `lag(i)`), and warm-ups counted in steps, which a time budget only spreads over
   frames, so the opening picture never depends on the machine's speed.
