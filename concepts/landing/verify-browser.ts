@@ -29,6 +29,7 @@ import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
 import { petriRegimesVerify } from "./src/scenes/petri/regimes.verify.ts";
 import { verifyPondKoi } from "./src/scenes/pond/koi.verify.ts";
 import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
+import { streetSnowCheck } from "./src/scenes/street/snow.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -300,6 +301,7 @@ export function verify(): Record<string, unknown> {
   result.petriRegimes = petriRegimesVerify(gl);
   result.pondKoi = verifyPondKoi(gl);
   result.planet = verifyPlanet(gl);
+  result.streetSnow = streetSnowCheck(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

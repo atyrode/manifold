@@ -530,6 +530,11 @@ surfaces and change them. Never paste them over the frame as a flat layer.
   steady snow, faster in a blizzard, and melts over ~90 s, faster in rain. Mix every exposed
   upward-facing surface (roofs, ledges, branches, stones, ground) toward lit snow white by
   `snowCover(n, p.xz, uWeather.y)`, so the land turns white.
+- **A tilted camera.** `rainFall` and `snowFall` assume a level camera, paths straight down the
+  frame. A camera pitched up or down passes the vanishing point of the fall instead:
+  `rainFallSeen` / `snowFallSeen` with `rainVanish(rainFallDir(...))` / `rainVanish(snowFallDir(...))`
+  and the camera's own axes, so rain and snow agree (island and tidepool for rain; skyward looking
+  up and street looking down from a window for both, street through one `streetVanish`).
 - **Intensity.** Amount 0.1 is drizzle (slow faint streaks, mostly veil), 0.4 steady rain, 0.7
   heavy rain with near drops and gust sheets, and 1.0 a downpour: dense sheets sweeping with the
   wind, loud splashes, and visibility falling. Let the sky, the light, the wetness and the splashes
@@ -583,11 +588,14 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   walls) for a species' speeds and turning, packed for the shader; GLSL to read their poses and draw
   them from above with a koi coat or side-on (pond, kelp). The scene supplies the water and light.
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
-  so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick`.
-- `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`).
+  so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick` and re-seeds in place.
+  Import it rather than carrying a copy (ferro's xorshift is deliberate: its pours depend on it).
+- `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`): import them rather than a local copy.
 - `LevelCamera` (`camera.ts`): world ↔ screen for the level side-on camera (horizon, eye height,
   focal): move things in the world and project them, so receding slows them across the frame and
-  draws them to the horizon (meadow's seeds).
+  draws them to the horizon; `groundDrop` / `groundDepth` map ground depth to the screen height
+  below the horizon and back (meadow's seeds, bees' insects and their targets, fireflies' near
+  lights, lake's crack and snow fields).
 - `FixedStep` and `runBudgeted` (`clock.ts`): a fixed-step accumulator (`advance` returns the steps
   due; `alpha`, `lag(i)`), and warm-ups counted in steps, which a time budget only spreads over
   frames, so the opening picture never depends on the machine's speed.
@@ -596,6 +604,11 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `BinLists` (`bins.ts`): per-bin lists of the segments and points that reach each square bin of
   the frame, for a shader that walks only its cell's list (dew); a list grows by pages of
   `BIN_PAGE` entries, so a dense patch never drops one. Read in GLSL with `binListsGlsl`.
+- `SpeckMap` and `followCell` (`specks.ts`): creatures a cell or a few across drawn into an rg8 map,
+  one per dither cell with its depth, the nearest winning the cell whatever the plotting order, so
+  the shader hides each behind only what stands in front of it; `followCell` keeps a hovering speck
+  from flickering between two cells (bees). Not for a fixed slot per lattice cell (fireflies), a
+  list the shader walks (lanterns), or per-tile lists sorted nearest first (street).
 - `separateDiscs` (`discs.ts`): after an integration step, moves apart bodies that touch as discs on
   a plane and have sunk into one another past a given share, a limited distance per step, coincident
   ones included; for soft-contact crowds (lanterns).

@@ -52,6 +52,8 @@
 //   18           candle: draught x, y (-1..1); the ceiling fan's angle (rad, 0..2π); seconds since
 //                last call was called (-1: not called)
 import type { ParamDef } from "../../params.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -190,32 +192,6 @@ const ONE_FOR_THE_ROAD = 0.5;
 
 export class BarSimError extends Error {}
 
-/** A small seeded generator (mulberry32), so the evening replays the same for the same knobs. */
-class BarRandom {
-  #state: number;
-
-  constructor(seed: number) {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
-  range(bounds: readonly [number, number]): number {
-    return bounds[0] + (bounds[1] - bounds[0]) * this.next();
-  }
-}
-
-const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
-const smooth = (a: number, b: number, x: number): number => {
-  const u = clamp((x - a) / (b - a), 0, 1);
-  return u * u * (3 - 2 * u);
-};
 const ease = (value: number, to: number, dt: number, tau: number): number => value + (to - value) * (1 - Math.exp(-dt / tau));
 
 type PatronState = "empty" | "arriving" | "sitting" | "seated" | "rising" | "leaving";
@@ -337,7 +313,8 @@ class BarEvening implements SceneSim {
   readonly #drinks: readonly Drink[] = Array.from({ length: SEATS }, (_, seat) => ({ fill: -1, kind: 0, x: glassX(seat), source: -1, abandoned: false }));
   readonly #plan: Step[] = [];
   readonly #bar: Bartender = openingBartender();
-  #rng = new BarRandom(SEED);
+  /** The evening's chance: the same evening every time the scene opens (SEED). */
+  readonly #rng = new Random(SEED);
 
   #clock = 0;
   #pending = 0;
@@ -404,7 +381,7 @@ class BarEvening implements SceneSim {
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
     // The fan turns at the knob's pace, carrying on from where it was when the knob moves; on the
     // entrance it starts from a standstill (exactly 1 once arrived).
-    const spin = frame.passage.enter >= 1 ? 1 : smooth(FAN_SPIN_FROM, FAN_SPIN_TO, frame.passage.enter * PASSAGE.enter);
+    const spin = frame.passage.enter >= 1 ? 1 : smoothstep(FAN_SPIN_FROM, FAN_SPIN_TO, frame.passage.enter * PASSAGE.enter);
     if (this.#fan > 0) this.#fanAngle = (this.#fanAngle + advance * spin * 2 * Math.PI * (FAN_SLOW + (FAN_FAST - FAN_SLOW) * this.#fan)) % (2 * Math.PI);
     this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
     while (this.#pending >= STEP) {
@@ -427,18 +404,18 @@ class BarEvening implements SceneSim {
   /** How many stools should be taken now: the knob, thinned toward last call, one regular staying on. */
   #target(): number {
     if (this.#crowd === 0) return 0;
-    const share = 1 - 0.8 * smooth(0.35, 0.95, this.#lateness());
+    const share = 1 - 0.8 * smoothstep(0.35, 0.95, this.#lateness());
     return Math.max(1, Math.round(this.#crowd * share));
   }
 
   /** Minutes a patron stays: shorter as the night gets late. */
   #stay(): number {
-    return this.#rng.range(STAY) * (1 - 0.45 * this.#lateness());
+    return this.#rng.range(STAY[0], STAY[1]) * (1 - 0.45 * this.#lateness());
   }
 
   /** An evening already under way: stools taken, drinks half drunk, the bartender polishing. */
   #reset(frame: SimFrame): void {
-    this.#rng = new BarRandom(SEED);
+    this.#rng.seed(SEED);
     this.#clock = 0;
     this.#pending = 0;
     this.#plan.length = 0;
@@ -461,17 +438,17 @@ class BarEvening implements SceneSim {
       if (!patron || !drink) continue;
       Object.assign(patron, {
         state: "seated",
-        since: -this.#rng.range([30, 200]),
+        since: -this.#rng.range(30, 200),
         x: STOOL_X[seat] ?? 0,
         z: STOOL_Z,
         sit: 1,
         seed: 0.05 + 0.9 * this.#rng.next(),
         facing: 0,
         facingTo: 0,
-        nextLook: this.#rng.range([2, 12]),
-        nextSip: this.#rng.range([4, 30]),
+        nextLook: this.#rng.range(2, 12),
+        nextSip: this.#rng.range(4, 30),
         // Staggered, so the first change comes within a minute or two and the rest spread out.
-        leaveAt: 45 + k * this.#rng.range([60, 140]) + this.#rng.range([0, 60]),
+        leaveAt: 45 + k * this.#rng.range(60, 140) + this.#rng.range(0, 60),
       } satisfies Partial<Patron>);
       Object.assign(drink, {
         fill: 0.3 + 0.55 * this.#rng.next(),
@@ -480,7 +457,7 @@ class BarEvening implements SceneSim {
         abandoned: false,
       } satisfies Partial<Drink>);
     }
-    this.#nextArrival = this.#rng.range([20, 50]);
+    this.#nextArrival = this.#rng.range(20, 50);
     this.#nextLeave = 0;
     Object.assign(this.#bar, openingBartender());
   }
@@ -517,11 +494,11 @@ class BarEvening implements SceneSim {
     for (const [seat, patron] of this.#patrons.entries()) {
       if (patron.state !== "seated") continue;
       patron.turnTo = 0;
-      patron.nextLook = clock + this.#rng.range([4, 9]);
-      patron.nextSip = Math.min(patron.nextSip, clock + this.#rng.range([2, 7]));
+      patron.nextLook = clock + this.#rng.range(4, 9);
+      patron.nextSip = Math.min(patron.nextSip, clock + this.#rng.range(2, 7));
       const drink = this.#drinks[seat];
       if (this.#serving && drink && drink.fill < 0.45 && patron.wantsAt === Number.POSITIVE_INFINITY && this.#rng.next() < ONE_FOR_THE_ROAD) {
-        patron.wantsAt = clock + this.#rng.range([3, 10]);
+        patron.wantsAt = clock + this.#rng.range(3, 10);
         patron.leaveAt = Math.max(patron.leaveAt, clock + 90);
       }
     }
@@ -613,8 +590,8 @@ class BarEvening implements SceneSim {
       for (const patron of this.#patrons) {
         if (patron.state === "seated" && (!first || patron.leaveAt < first.leaveAt)) first = patron;
       }
-      if (first && first.leaveAt > clock + 12) first.leaveAt = clock + this.#rng.range([3, 12]);
-      this.#nextLeave = clock + this.#rng.range([10, 25]);
+      if (first && first.leaveAt > clock + 12) first.leaveAt = clock + this.#rng.range(3, 12);
+      this.#nextLeave = clock + this.#rng.range(10, 25);
     }
   }
 
@@ -635,7 +612,7 @@ class BarEvening implements SceneSim {
       umbrella: this.#rain > 0.05 ? 1 : 0,
       wet: this.#rain > 0 ? 0.5 + 0.5 * this.#rain : 0,
     } satisfies Partial<Patron>);
-    const gap = this.#rng.range(ARRIVAL_GAP) * (1 + this.#lateness());
+    const gap = this.#rng.range(ARRIVAL_GAP[0], ARRIVAL_GAP[1]) * (1 + this.#lateness());
     this.#nextArrival = this.#clock + (now ? Math.max(gap, 25) : gap);
   }
 
@@ -656,14 +633,14 @@ class BarEvening implements SceneSim {
       }
       case "sitting": {
         const u = clamp(age / SIT_TIME, 0, 1);
-        patron.z = WALK_Z + (STOOL_Z - WALK_Z) * smooth(0, 0.6, u);
-        patron.sit = smooth(0.25, 1, u);
+        patron.z = WALK_Z + (STOOL_Z - WALK_Z) * smoothstep(0, 0.6, u);
+        patron.sit = smoothstep(0.25, 1, u);
         patron.facingTo = u < 0.15 ? 1 : 0;
         if (u >= 1) {
           this.#enter(patron, "seated", clock);
           patron.leaveAt = clock + this.#stay();
-          patron.nextLook = clock + this.#rng.range([3, 10]);
-          patron.nextSip = clock + this.#rng.range([15, 30]);
+          patron.nextLook = clock + this.#rng.range(3, 10);
+          patron.nextSip = clock + this.#rng.range(15, 30);
           // A newcomer orders a drink of their own; the glass left on this spot gets cleared first.
           patron.wantsAt = clock;
         }
@@ -674,8 +651,8 @@ class BarEvening implements SceneSim {
         break;
       case "rising": {
         const u = clamp(age / SIT_TIME, 0, 1);
-        patron.z = STOOL_Z + (WALK_Z - STOOL_Z) * smooth(0.4, 1, u);
-        patron.sit = 1 - smooth(0, 0.75, u);
+        patron.z = STOOL_Z + (WALK_Z - STOOL_Z) * smoothstep(0.4, 1, u);
+        patron.sit = 1 - smoothstep(0, 0.75, u);
         patron.facingTo = u > 0.7 ? -1 : 0;
         patron.turnTo = 0;
         if (u >= 1) this.#enter(patron, "leaving", clock);
@@ -687,7 +664,7 @@ class BarEvening implements SceneSim {
         patron.facingTo = -1;
         if (patron.x <= DOOR_X) {
           Object.assign(patron, blankPatron());
-          this.#nextArrival = Math.max(this.#nextArrival, clock + this.#rng.range(ARRIVAL_GAP) * (1 + this.#lateness()));
+          this.#nextArrival = Math.max(this.#nextArrival, clock + this.#rng.range(ARRIVAL_GAP[0], ARRIVAL_GAP[1]) * (1 + this.#lateness()));
         }
         break;
       }
@@ -719,7 +696,7 @@ class BarEvening implements SceneSim {
       if (r < LOOK_NEIGHBOUR && (left || right)) patron.turnTo = left && (!right || this.#rng.next() < 0.5) ? -1 : 1;
       else if (r < LOOK_NEIGHBOUR + LOOK_WINDOW) patron.turnTo = -1.4;
       else patron.turnTo = (this.#rng.next() - 0.5) * 0.3;
-      patron.nextLook = clock + this.#rng.range(LOOK_GAP);
+      patron.nextLook = clock + this.#rng.range(LOOK_GAP[0], LOOK_GAP[1]);
     }
     // Being served: they face the bartender.
     if (this.#bar.seat === seat && this.#bar.act === ACT.chat) patron.turnTo = 0;
@@ -727,12 +704,12 @@ class BarEvening implements SceneSim {
       patron.sipAt = clock;
       patron.sipDrunk = false;
       patron.turnTo = 0;
-      patron.nextSip = clock + SIP_TIME + this.#rng.range(SIP_GAP);
+      patron.nextSip = clock + SIP_TIME + this.#rng.range(SIP_GAP[0], SIP_GAP[1]);
     }
     if (!patron.sipDrunk && clock - patron.sipAt > SIP_TIME * 0.5 && drink && drink.fill > -0.5) {
-      drink.fill = Math.max(0.02, drink.fill - this.#rng.range(SIP_DRINK));
+      drink.fill = Math.max(0.02, drink.fill - this.#rng.range(SIP_DRINK[0], SIP_DRINK[1]));
       patron.sipDrunk = true;
-      if (drink.fill < 0.1 && patron.leaveAt - clock > 50 && patron.wantsAt === Number.POSITIVE_INFINITY) patron.wantsAt = clock + this.#rng.range([4, 15]);
+      if (drink.fill < 0.1 && patron.leaveAt - clock > 50 && patron.wantsAt === Number.POSITIVE_INFINITY) patron.wantsAt = clock + this.#rng.range(4, 15);
     }
     if (clock >= patron.leaveAt && !sipping && !this.#planned(seat)) {
       this.#enter(patron, "rising", clock);
@@ -772,7 +749,7 @@ class BarEvening implements SceneSim {
     else if (clock >= bar.nextLook) {
       const r = this.#rng.next();
       bar.lookTo = r < 0.2 ? -1 : r < 0.55 ? (this.#rng.next() - 0.5) * 1.2 : 0;
-      bar.nextLook = clock + this.#rng.range([4, 14]);
+      bar.nextLook = clock + this.#rng.range(4, 14);
     }
     bar.look = ease(bar.look, bar.lookTo, STEP, TURN_TIME);
     bar.attend = ease(bar.attend, bar.act === ACT.chat && bar.seat < 0 ? 1 : 0, STEP, 0.6);
@@ -799,7 +776,7 @@ class BarEvening implements SceneSim {
         if (drink && bar.age >= POUR_SET && (drink.fill < -0.5 || drink.abandoned)) {
           Object.assign(drink, { fill: 0, kind: this.#pourKind, source: bar.taken, abandoned: false } satisfies Partial<Drink>);
         }
-        if (drink && drink.fill > -0.5 && bar.age > POUR_FLOW[0]) drink.fill = Math.max(drink.fill, bar.pourTo * smooth(POUR_FLOW[0], POUR_FLOW[1], bar.age));
+        if (drink && drink.fill > -0.5 && bar.age > POUR_FLOW[0]) drink.fill = Math.max(drink.fill, bar.pourTo * smoothstep(POUR_FLOW[0], POUR_FLOW[1], bar.age));
         break;
       case ACT.shake:
         bar.carry = CARRY.shaker;
@@ -808,7 +785,7 @@ class BarEvening implements SceneSim {
         if (drink && bar.age >= STRAIN_SET && (drink.fill < -0.5 || drink.abandoned)) {
           Object.assign(drink, { fill: 0, kind: GLASS.coupe, source: -1, abandoned: false } satisfies Partial<Drink>);
         }
-        if (drink && drink.fill > -0.5 && bar.age > STRAIN_FLOW[0]) drink.fill = Math.max(drink.fill, bar.pourTo * smooth(STRAIN_FLOW[0], STRAIN_FLOW[1], bar.age));
+        if (drink && drink.fill > -0.5 && bar.age > STRAIN_FLOW[0]) drink.fill = Math.max(drink.fill, bar.pourTo * smoothstep(STRAIN_FLOW[0], STRAIN_FLOW[1], bar.age));
         if (bar.age >= bar.dur - 0.4) bar.carry = CARRY.none;
         break;
       case ACT.clear:
@@ -902,28 +879,28 @@ class BarEvening implements SceneSim {
     const stale = this.#drinks.findIndex((drink, seat) => drink.fill > -0.5 && (drink.abandoned || this.#patrons[seat]?.state === "empty"));
     if (stale >= 0) {
       walkTo(pourX(stale));
-      plan.push({ act: ACT.clear, dur: 2.2, x: bar.x, seat: stale }, { act: ACT.wipe, dur: this.#rng.range([4, 7]), x: bar.x, seat: -1 });
+      plan.push({ act: ACT.clear, dur: 2.2, x: bar.x, seat: stale }, { act: ACT.wipe, dur: this.#rng.range(4, 7), x: bar.x, seat: -1 });
       return;
     }
     // Meanwhile: polishing, wiping (more toward last call), a stroll along the bar, a word with someone.
     const r = this.#rng.next();
-    const wipe = 0.12 + 0.55 * smooth(0.5, 1, this.#lateness());
+    const wipe = 0.12 + 0.55 * smoothstep(0.5, 1, this.#lateness());
     const seated: number[] = [];
     this.#patrons.forEach((patron, seat) => {
       if (patron.state === "seated") seated.push(seat);
     });
     if (r < wipe) {
       if (this.#rng.next() < 0.5) walkTo(BARTENDER_MIN + (BARTENDER_MAX - BARTENDER_MIN) * this.#rng.next());
-      plan.push({ act: ACT.wipe, dur: this.#rng.range([6, 12]), x: bar.x, seat: -1 });
+      plan.push({ act: ACT.wipe, dur: this.#rng.range(6, 12), x: bar.x, seat: -1 });
     } else if (r < wipe + 0.15 && seated.length > 0) {
       const seat = seated[Math.floor(this.#rng.next() * seated.length)] ?? 0;
       walkTo(pourX(seat));
-      plan.push({ act: ACT.chat, dur: this.#rng.range([6, 12]), x: bar.x, seat });
+      plan.push({ act: ACT.chat, dur: this.#rng.range(6, 12), x: bar.x, seat });
     } else if (r < wipe + 0.3) {
       walkTo(BARTENDER_MIN + (BARTENDER_MAX - BARTENDER_MIN) * this.#rng.next());
-      plan.push({ act: ACT.idle, dur: this.#rng.range([4, 9]), x: bar.x, seat: -1 });
+      plan.push({ act: ACT.idle, dur: this.#rng.range(4, 9), x: bar.x, seat: -1 });
     } else {
-      plan.push({ act: ACT.polish, dur: this.#rng.range([10, 24]), x: bar.x, seat: -1 });
+      plan.push({ act: ACT.polish, dur: this.#rng.range(10, 24), x: bar.x, seat: -1 });
     }
   }
 
@@ -937,7 +914,7 @@ class BarEvening implements SceneSim {
     const x = pourX(seat);
     if (Math.abs(x - this.#bar.x) > 0.05) plan.push({ act: ACT.walk, dur: 0, x, seat: -1 });
     if (drink.fill > -0.5) plan.push({ act: ACT.clear, dur: 2.2, x, seat });
-    plan.push({ act: ACT.chat, dur: this.#rng.range([2.5, 4]), x, seat });
+    plan.push({ act: ACT.chat, dur: this.#rng.range(2.5, 4), x, seat });
     if (cocktail) {
       plan.push({ act: ACT.shake, dur: 5, x, seat }, { act: ACT.strain, dur: 3.2, x, seat });
     } else {
@@ -966,7 +943,7 @@ class BarEvening implements SceneSim {
       const drink = this.#drinks[seat];
       if (!patron || !drink) continue;
       const sipU = clamp((clock - patron.sipAt) / SIP_TIME, 0, 1);
-      const sip = smooth(0, 0.3, sipU) * (1 - smooth(0.7, 1, sipU));
+      const sip = smoothstep(0, 0.3, sipU) * (1 - smoothstep(0.7, 1, sipU));
       this.#put(2 + seat, patron.x, patron.z, patron.sit, (patron.stride % GAIT) / GAIT);
       this.#put(6 + seat, patron.state === "empty" ? 0 : patron.seed, patron.facing, patron.turn, sip);
       this.#put(10 + seat, patron.talk, patron.umbrella, patron.wet, 0);

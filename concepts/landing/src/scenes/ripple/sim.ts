@@ -46,6 +46,8 @@
 // steps a frame and the dippers' strength differ, and at rest (no passage) neither is touched.
 import type { ParamDef } from "../../params.ts";
 import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import { lerp, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
   MARK,
@@ -569,25 +571,6 @@ class Tank {
   }
 }
 
-/** Mulberry32: a small, fast, seedable PRNG. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const lerp = (range: readonly [number, number], t: number): number => range[0] + (range[1] - range[0]) * t;
-
-const smooth = (from: number, to: number, x: number): number => {
-  const t = Math.min(1, Math.max(0, (x - from) / (to - from)));
-  return t * t * (3 - 2 * t);
-};
-
 /** The tank's water and its experiments on the GPU. */
 class RippleLab implements SceneSim {
   readonly #gpu: GpuCompute;
@@ -753,9 +736,9 @@ class RippleLab implements SceneSim {
         this.#lapse = 0;
         this.#driveAtExit = this.#drive;
       }
-      this.#rate = 1 + (PASSAGE_RATE - 1) * smooth(0, EXIT_EASE, Math.min(1, frame.passage.exit));
+      this.#rate = 1 + (PASSAGE_RATE - 1) * smoothstep(0, EXIT_EASE, Math.min(1, frame.passage.exit));
       this.#lapse += seconds * this.#rate;
-      this.#drive = this.#driveAtExit * (1 - smooth(0, PASSAGE_STOP * beat, this.#lapse));
+      this.#drive = this.#driveAtExit * (1 - smoothstep(0, PASSAGE_STOP * beat, this.#lapse));
       return;
     }
     if (this.#leaving) {
@@ -779,7 +762,7 @@ class RippleLab implements SceneSim {
     }
     this.#rate = 1 + (PASSAGE_RATE - 1) * Math.sin((Math.PI * this.#arrived) / RIPPLE_ENTER) ** 2;
     if (!created) this.#lapse += seconds * this.#rate;
-    this.#drive = smooth(0, PASSAGE_SWELL * beat, this.#lapse);
+    this.#drive = smoothstep(0, PASSAGE_SWELL * beat, this.#lapse);
   }
 
   #value(frame: SimFrame, index: number): number {
@@ -793,7 +776,7 @@ class RippleLab implements SceneSim {
   }
 
   #holdFor(frame: SimFrame): number {
-    return lerp(HOLD, Math.min(1, Math.max(0, this.#value(frame, this.#at.pace))));
+    return lerp(HOLD[0], HOLD[1], Math.min(1, Math.max(0, this.#value(frame, this.#at.pace))));
   }
 
   #physicsFor(frame: SimFrame): Physics {
@@ -1151,7 +1134,7 @@ class RippleLab implements SceneSim {
     const physics = this.#need();
     const k = (TAU / physics.lambda) / physics.n;
     const focus = Math.min(1, Math.max(0, this.#value(frame, this.#at.focus)));
-    const kappa = lerp(RIPPLE_FOCUS, focus) * (tank.layout?.contrast ?? 1);
+    const kappa = lerp(RIPPLE_FOCUS[0], RIPPLE_FOCUS[1], focus) * (tank.layout?.contrast ?? 1);
     this.#near.fill(0);
     this.#places(tank).forEach((place, i) => {
       if (i < DIPPERS - 1) this.#near.set([place.x, place.y, 1, 0], i * 4);
@@ -1191,7 +1174,7 @@ class RippleLab implements SceneSim {
       this.#untilDrip -= seconds;
       if (this.#untilDrip <= 0) {
         fall = true;
-        this.#untilDrip = lerp(DRIP_INTERVAL, Math.min(1, rate)) * (0.6 + 0.8 * this.#random());
+        this.#untilDrip = lerp(DRIP_INTERVAL[0], DRIP_INTERVAL[1], Math.min(1, rate)) * (0.6 + 0.8 * this.#random());
       }
     }
     if (!fall) return;

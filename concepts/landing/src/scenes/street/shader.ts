@@ -30,14 +30,16 @@
 // Lamps, signals and vehicle lamps glow in the air round them, more in rain and fog.
 //
 // Rain (the weather contract in scenes/README.md): the sky in the puddles closes over, rain falls
-// in depth (the ray's distance to what it meets), splashes crown on the street and the sidewalks
+// in depth (the ray's distance to what it meets) along paths that converge below the street, as a
+// camera pitched down sees them (streetVanish), splashes crown on the street and the sidewalks
 // except under the awnings, which drip; as the street wets it darkens and mirrors: the reflected
 // ray is traced to the facades and the sky above the roofs, its blur growing with the distance and
 // the asphalt's roughness so every lit window and sign smears into a long streak toward the eye;
 // the lamps, signals and vehicle lamps add their own streaks (from the point where their mirror
 // image sits on the street, toward the eye); puddles mirror sharply, ringed by drops; tyres throw
-// spray. Snow settles on the street (except the wheel tracks and where people walk), on roofs of
-// cars, on umbrellas, awnings, signs and lamps.
+// spray. Snow falls the same way (streetSnow: the flakes close in on the point under the eye) and
+// settles on the street (except the wheel tracks and where people walk), on roofs of cars, on
+// umbrellas, awnings, signs and lamps.
 //
 // Under the dither: walkers, vehicles and their parts are hit or missed per cell with no soft
 // edges, so a moving outline flips each cell once; their colours are flat per part; nothing else
@@ -1905,6 +1907,19 @@ float streetTiltAt() {
   return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * leave;
 }
 
+// Where rain or snow falling along dir seems to come from or go to, seen from the window: the
+// camera is pitched down (cp, sp: the cosine and sine of the pitch a cell was traced with, the
+// passage's tilt included), so the paths converge below the street, and the point moves with the
+// camera.
+vec3 streetVanish(vec3 dir, float cp, float sp) {
+  return rainVanish(dir, vec3(1.0, 0.0, 0.0), vec3(0.0, cp, sp), vec3(0.0, -sp, cp), STREET_FOCAL);
+}
+
+// Snow past the window: the flakes close in on the point under the eye, as the rain's paths do.
+Precip streetSnow(vec2 uv, float aspect, float t, float depth, float cp, float sp) {
+  return snowFallSeen(uv, aspect, t, K_snow, K_wind, depth, streetVanish(snowFallDir(K_snow, K_wind), cp, sp));
+}
+
 // The hour, and the weather over it: rain or snow close the sky, flatten and dim the light; at
 // night the city's own light bounces about, warmer under low cloud. Sets the clock, sky and light
 // globals above for everything the cell then draws.
@@ -2204,17 +2219,14 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
   float depth = weatherDepth(hit.t);
   if (K_rain > 0.0) {
     // From the window the rain falls past a camera pitched down: its paths converge below the street.
-    // cp and sp are the pitch the cell was traced with, the passage's tilt included, so the vanishing
-    // point moves with the camera.
-    vec3 vanish = rainVanish(rainFallDir(K_rain, K_wind), vec3(1.0, 0.0, 0.0), vec3(0.0, cp, sp), vec3(0.0, -sp, cp), STREET_FOCAL);
-    Precip pr = rainFallSeen(uv, aspect, t, K_rain, K_wind, depth, vanish);
+    Precip pr = rainFallSeen(uv, aspect, t, K_rain, K_wind, depth, streetVanish(rainFallDir(K_rain, K_wind), cp, sp));
     vec3 air = streetDeck * 0.9 + streetBounce + glow * 0.25;
     col = mix(col, air, pr.veil);
     // At the window there are no drops at arm's length.
     col = mix(col, dropLight * 1.1, pr.cover * (1.0 - pr.near));
   }
   if (K_snow > 0.0) {
-    Precip ps = snowFall(uv, aspect, t, K_snow, K_wind, depth);
+    Precip ps = streetSnow(uv, aspect, t, depth, cp, sp);
     vec3 air = mix(streetDeck * 1.3, vec3(0.75, 0.78, 0.85) * (streetAmbient + 0.1), 0.5) + glow * 0.3;
     col = mix(col, air, ps.veil);
     col = mix(col, max(vec3(0.8, 0.83, 0.9) * (streetDeck * 1.6 + E * 0.4 + glow * 0.5), vec3(0.1)), ps.cover);
