@@ -5,6 +5,7 @@ import { verifyCountryWildlife } from "./src/scenes/country/wildlife.verify.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyCountryAnimals } from "./src/scenes/country/animals.verify.ts";
+import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
 import { verifyCountryRoutes } from "./src/scenes/country/routes.verify.ts";
@@ -285,6 +286,7 @@ function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
 // GpuCompute passes: every blend mode applies its own blending and leaves blending off, with the
 // default equation and factors, whatever the caller had set; a preserving resize does not inherit it.
 function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
+  result.harmonographPrewarm = verifyHarmonographPrewarm(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
