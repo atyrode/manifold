@@ -10,9 +10,9 @@ import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneDef } from "../types.ts";
 import { sceneDefs } from "../index.ts";
-import { TRAIN_CROSSING, TRAIN_STATION } from "./sim.ts";
+import { TRAIN_CROSSING, TRAIN_STATION, TRAIN_TEXELS } from "./sim.ts";
 
-interface Clocks {
+export interface Clocks {
   /** uTime, the scene clock. */
   time: number;
   /** uMotionTime, the motion clock. */
@@ -21,16 +21,16 @@ interface Clocks {
   motion: number;
 }
 
-const WIDTH = 64;
-const HEIGHT = 36;
+export const WIDTH = 64;
+export const HEIGHT = 36;
 /** A motion clock that the scene clock times no tested motion amount reproduces (600 × 1, 0.25, 0). */
-const BASE: Clocks = { time: 600, motionTime: 240, motion: 1 };
+export const BASE: Clocks = { time: 600, motionTime: 240, motion: 1 };
 
 function fail(message: string): never {
   throw new Error(`motion clock: ${message}`);
 }
 
-function compile(gl: WebGL2RenderingContext, scene: SceneDef, entry: string, glsl: string): WebGLProgram {
+export function compile(gl: WebGL2RenderingContext, scene: SceneDef, entry: string, glsl: string): WebGLProgram {
   const linked = gl.createProgram();
   for (const [type, source] of [[gl.VERTEX_SHADER, vertexSource], [gl.FRAGMENT_SHADER, fragmentSourceFor({ ...scene, entry, glsl: scene.glsl + glsl })]] as const) {
     const shader = gl.createShader(type);
@@ -47,7 +47,7 @@ function compile(gl: WebGL2RenderingContext, scene: SceneDef, entry: string, gls
 }
 
 /** One source-view frame of `linked` at `clocks` with the knobs `values`, uSim0 = `sim` if given. */
-function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, values: readonly number[], sim: WebGLTexture | undefined, clocks: Clocks): Uint8Array {
+export function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, values: readonly number[], sim: WebGLTexture | undefined, clocks: Clocks): Uint8Array {
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -153,13 +153,13 @@ function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
       return shadeOf(trainGround(o, zg, o.x * zg / TRAIN_F, t), 0.0, 0.0);
     }`,
   );
-  const events = new Float32Array(12 * 4);
+  const events = new Float32Array(TRAIN_TEXELS * 4);
   // 20 blocks and 100 m along at 4 m/s; a 170 m platform starting 85 m back, so its middle is level
   // with us; a level crossing right here.
   events.set([20, 100, 0, 4], 0);
   events.set([20, 15, 170, TRAIN_STATION, 0.3, 220, 0, 0], 8);
   events.set([20, 100, 0, TRAIN_CROSSING, 0.3, 130, 0, 0], 16);
-  const sim = new DataTexture(gl, { width: 12, height: 1, format: "rgba16f", filter: "nearest" });
+  const sim = new DataTexture(gl, { width: TRAIN_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
   sim.upload(events);
   const part = gl.getUniformLocation(linked, "regressionPart");
   try {

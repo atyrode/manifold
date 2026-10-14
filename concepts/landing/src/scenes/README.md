@@ -368,7 +368,7 @@ no knob.
 | `shore` | over the sea, in wet sand | fixed 0.6 | full (moonrise) | open | open |
 | `sill` | over the city | fixed 0.5 | full | open | open |
 | `skyward` | a strip between roofs | knob 0.3 | full | open | open |
-| `train` | through the window | fixed 0.75 | full + night glow | knob (`aurora()`) | own: `K_meteors`, trigger 5, window and tunnel |
+| `train` | through the window | knob 0.75 | knob (phase) + night glow | knob (`aurora()`) | own: `K_meteors`, trigger 5, window and tunnel |
 | `campfire` | above the pines | knob 0.8 + own Milky Way | — (the giant planet replaces it) | open | own: `K_shooting`, trigger 0, under the planet |
 | `lake` | over the ice, mirrored | own `K_stars` + Milky Way | own phase, fixed bearing | knob (`aurora()` on the sim's substorm clock, rough-ice tap) | open |
 | `aurora` | the subject | own `K_stars` on a fixed night | own crescent | own curtains | open |

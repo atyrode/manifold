@@ -26,6 +26,7 @@ import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
 import { verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
+import { verifyTrainLine } from "./src/scenes/train/line.verify.ts";
 import { verifyFilmRupture } from "./src/scenes/film/rupture.verify.ts";
 import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
 import { petriRegimesVerify } from "./src/scenes/petri/regimes.verify.ts";
@@ -287,6 +288,7 @@ function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
 // default equation and factors, whatever the caller had set; a preserving resize does not inherit it.
 function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
   result.harmonographPrewarm = verifyHarmonographPrewarm(gl);
+  Object.assign(result, verifyTrainLine(gl));
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

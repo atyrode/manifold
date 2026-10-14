@@ -12,7 +12,10 @@
 // fields with eight rows of hedges, trees and farmhouses, a river that comes and goes alongside
 // catching the moon, the road with its cars, the verge's thickets and fence, telegraph poles with
 // their sagging wires, and whatever the line passes: a station, a level crossing, a bridge over a
-// misty valley, a tunnel.
+// misty valley, a tunnel. The line the train runs on (K_line, trainLine) shapes that land to match the
+// timetable sim.ts runs for it: low open farmland on the rural line, high forested hills, snowy peaks,
+// alpine pasture and deep gorges under stone viaducts on the mountain line, and on both the hill each
+// tunnel goes through rising round it; the country line draws exactly what it always drew.
 //
 // Flicker: everything that moves is drawn with a hard edge against the cell's own threshold
 // (trainHard), and any detail the train would carry past a cell in under about half a second, or
@@ -29,12 +32,12 @@
 // country, the tea sloshing and settling from the jolt) and, leaving, runs into one (the cutting
 // rises, the mouth sweeps in, the window turns to a mirror). trainPassage lays a tunnel of its own
 // over the timetable while it plays; all of it is exactly off at rest.
-import { TRAIN_BLOCK, TRAIN_BLOCKS, TRAIN_BRIDGE, TRAIN_CAR_SLOTS, TRAIN_CROSSING, TRAIN_EVENT_SLOTS, TRAIN_FOCAL, TRAIN_PASSAGE, TRAIN_ROAD_Z, TRAIN_STATION, TRAIN_TUNNEL } from "./sim.ts";
-
-/** A number as a GLSL float literal. */
-const glslFloat = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
+import { glslFloat } from "../../shaders/glsl.ts";
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { TRAIN_BLOCK, TRAIN_BLOCKS, TRAIN_BRIDGE, TRAIN_CAR_SLOTS, TRAIN_CROSSING, TRAIN_EVENT_SLOTS, TRAIN_FOCAL, TRAIN_LINES, TRAIN_PASSAGE, TRAIN_ROAD_Z, TRAIN_STATION, TRAIN_TUNNEL } from "./sim.ts";
 
 export const trainGlsl = `
+${birdsGlsl}
 // ---- The view ----
 const float TRAIN_F = ${glslFloat(TRAIN_FOCAL)};
 const float TRAIN_HORIZON = 0.05;     // the horizon's height on screen (centre 0)
@@ -61,7 +64,9 @@ const float TRAIN_ROAD_Z = ${glslFloat(TRAIN_ROAD_Z)};
 const float TRAIN_HILLS_Z = 900.0;
 const float TRAIN_VILLAGE_Z = 2600.0;
 const float TRAIN_RIDGE_Z = 3600.0;
-const float TRAIN_VALLEY = 26.0;      // a bridged valley's floor below the fields (m)
+const float TRAIN_VALLEY = 26.0;      // a bridged valley's floor below the fields on the country line (m)
+const float TRAIN_RURAL = ${glslFloat(TRAIN_LINES[1].value)};      // K_line
+const float TRAIN_MOUNTAIN = ${glslFloat(TRAIN_LINES[2].value)};
 const float TRAIN_PANE_G = 2.4;       // the pane's drop lattice repeats every this many screen heights
 const int TRAIN_ROWS = 8;
 const float TRAIN_ROW_Z[8] = float[8](31.0, 48.0, 74.0, 115.0, 178.0, 276.0, 428.0, 663.0);
@@ -119,6 +124,58 @@ float trainPassAge;    // passage: seconds since the jolt, -1 before it and at r
 float trainPassSlosh;  // passage: the jolt's slosh of the tea, the steam and the curtain (0 at rest)
 float trainPassRattle; // passage: the spoon's rattle (0 at rest)
 
+// ---- The line's character (sim.ts TRAIN_LINES, K_line), set by trainLine ----
+float trainHillsLift;  // the hills' heights, times
+float trainRidgeLift;  // the ridge's
+float trainTunnelHill; // how far (m) the hills rise round a tunnel: the hill it goes through
+float trainOpen;       // farmland on the hills: more fields (+) or more forest (-)
+float trainFarms;      // farmhouses and lit farm windows, times
+float trainTrees;      // the chance of a tree in a row's tile
+float trainConifers;   // and of its being a conifer
+float trainGorge;      // a bridged valley's floor below the fields (m)
+bool trainMeadows;     // the fields are pasture and meadow
+bool trainViaduct;     // bridges are stone viaducts, their parapet below the window: no girders
+vec2 trainTunnels[TRAIN_EVENTS]; // every tunnel in the timetable: metres to its start, length (0: none)
+
+// The land the line runs through. Country is the line as it always ran (every factor neutral, so
+// it draws exactly as before); rural lies low and open, farms and hedgerow trees all round, a stream
+// under a short bridge; the mountain line runs under high snowy peaks through forest and alpine
+// pasture, out of tunnels onto viaducts over deep gorges. On those two the hills rise round a tunnel
+// (the hill it goes through; the rural line only meets one when "now" sends it).
+void trainLine() {
+  trainHillsLift = 1.0;
+  trainRidgeLift = 1.0;
+  trainTunnelHill = 0.0;
+  trainOpen = 0.0;
+  trainFarms = 1.0;
+  trainTrees = 0.42;
+  trainConifers = 0.3;
+  trainGorge = TRAIN_VALLEY;
+  trainMeadows = false;
+  trainViaduct = false;
+  if (abs(K_line - TRAIN_RURAL) < 0.5) {
+    trainHillsLift = 0.45;
+    trainRidgeLift = 0.4;
+    trainTunnelHill = 45.0;
+    trainOpen = 0.18;
+    trainFarms = 1.5;
+    trainTrees = 0.5;
+    trainConifers = 0.15;
+    trainGorge = 7.0;
+  } else if (abs(K_line - TRAIN_MOUNTAIN) < 0.5) {
+    trainHillsLift = 2.4;
+    trainRidgeLift = 1.8;
+    trainTunnelHill = 70.0;
+    trainOpen = -0.2;
+    trainFarms = 0.35;
+    trainTrees = 0.7;
+    trainConifers = 0.85;
+    trainGorge = 70.0;
+    trainMeadows = true;
+    trainViaduct = true;
+  }
+}
+
 // ---- The odometer, the timetable ----
 
 void trainRead(float t) {
@@ -127,6 +184,7 @@ void trainRead(float t) {
   trainBridge = vec4(1e5, 0.0, 0.0, 0.0);
   trainTunnel = vec4(1e5, 0.0, 0.0, 0.0);
   for (int i = 0; i < TRAIN_CARS; i++) trainCars[i] = vec3(0.0);
+  for (int k = 0; k < TRAIN_EVENTS; k++) trainTunnels[k] = vec2(0.0);
   if (uSimOn.x < 0.5) {
     // No simulation yet: a steady run from a fixed point on the line.
     float s = 4096.0 + 12.0 * uMotionTime;
@@ -155,7 +213,10 @@ void trainRead(float t) {
       } else if (abs(e.w - TRAIN_IS_BRIDGE) < 0.5) {
         if (mid < abs(trainBridge.x + 0.5 * trainBridge.y)) trainBridge = ev;
       } else if (abs(e.w - TRAIN_IS_TUNNEL) < 0.5) {
-        if (mid < abs(trainTunnel.x + 0.5 * trainTunnel.y)) trainTunnel = ev;
+        // The nearest by its stretch rather than its middle: coming out of one tunnel onto a
+        // viaduct with the next just across it, the train is still in the one it is in.
+        if (max(max(ev.x, -ev.x - ev.y), 0.0) < max(max(trainTunnel.x, -trainTunnel.x - trainTunnel.y), 0.0)) trainTunnel = ev;
+        trainTunnels[k] = ev.xy;
       }
     }
     for (int i = 0; i < TRAIN_CARS; i++) trainCars[i] = texelFetch(uSim0, ivec2(2 + 2 * TRAIN_EVENTS + i, 0), 0).xyz;
@@ -444,12 +505,14 @@ float trainMeteor(vec3 dir, float t) {
 }
 
 // By night the eye adapts and the air low over the land holds the moon's light: a pale band along
-// the horizon, brightest toward the moon, so hills, trees and roofs stand dark against it and water
-// mirrors it as a bright ribbon. Light to add to the sky in direction dir.
+// the horizon, brightest toward the moon (as bright as the moon's phase lets it), so hills, trees and
+// roofs stand dark against it and water mirrors it as a bright ribbon. Light to add to the sky in
+// direction dir.
 vec3 trainNightGlow(vec3 dir) {
   float up = max(dir.y, 0.0);
   float toward = 0.5 + 0.5 * dot(normalize(dir.xz + 1e-6), normalize(trainSky.moon.xz + 1e-6));
   float moon = smoothstep(-0.05, 0.1, trainSky.moon.y) * toward * toward * exp(-up * 4.0);
+  if (trainSky.moonPhase < 1.0) moon *= skyMoonPhaseLight(trainSky.moonPhase);
   return trainSky.night * (1.0 - 0.6 * trainOver) * (vec3(0.07, 0.085, 0.13) * exp(-up * 7.0) + vec3(0.12, 0.13, 0.15) * moon);
 }
 
@@ -463,7 +526,7 @@ vec3 trainSkyCol(vec3 dir, float t, bool detail, inout float accent) {
   float clear = 1.0 - trainOver;
   float mark = 0.0;
   if (detail) {
-    col += vec3(0.85, 0.9, 1.0) * skyStars(s, dir, 0.75) * clear;
+    col += vec3(0.85, 0.9, 1.0) * skyStars(s, dir, K_stars) * clear;
     mark = trainMarkStars(dir) * clear * s.night;
     col += vec3(0.9, 0.95, 1.0) * trainMeteor(dir, t) * clear * s.night;
     if (K_aurora > 0.0) col += aurora(dir, t, K_aurora) * s.night * clear;
@@ -486,24 +549,34 @@ vec3 trainSkyCol(vec3 dir, float t, bool detail, inout float accent) {
 // ---- The far country: a ridge with a village at its foot, forested hills ----
 
 // The ridge's height above the fields (m), d metres along the line at its distance: long swells
-// with sharper peaks.
+// with sharper peaks; low downs on the rural line, high peaks on the mountain line.
 float trainRidgeH(float d) {
   float base = trainProfile(d, 2048.0, TRAIN_RIDGE_Z, 3.0, 3);
   float crest = 1.0 - abs(2.0 * trainProfile(d, 512.0, TRAIN_RIDGE_Z, 7.0, 3) - 1.0);
-  return 70.0 + 280.0 * base + 200.0 * crest * crest * smoothstep(0.35, 0.7, base);
+  return (70.0 + 280.0 * base + 200.0 * crest * crest * smoothstep(0.35, 0.7, base)) * trainRidgeLift;
 }
 
 // The hills' skyline (m): ranges of forested hills with open country between them, where the ridge
-// and the village at its foot show.
+// and the village at its foot show; the line's lift, and the hill each tunnel goes through rising
+// over its stretch and falling away a few hundred metres beyond its mouths.
 float trainHillsH(float d) {
-  return 4.0 + 62.0 * smoothstep(0.3, 0.8, trainProfile(d, 512.0, TRAIN_HILLS_Z, 11.0, 4)) + 7.0 * trainProfile(d, 16.0, TRAIN_HILLS_Z, 13.0, 2);
+  float h = (4.0 + 62.0 * smoothstep(0.3, 0.8, trainProfile(d, 512.0, TRAIN_HILLS_Z, 11.0, 4)) + 7.0 * trainProfile(d, 16.0, TRAIN_HILLS_Z, 13.0, 2)) * trainHillsLift;
+  if (trainTunnelHill > 0.0) {
+    float hill = 0.0;
+    for (int k = 0; k < TRAIN_EVENTS; k++) {
+      vec2 tn = trainTunnels[k];
+      if (tn.y > 0.0) hill = max(hill, smoothfall(420.0, 60.0, max(tn.x - d, d - tn.x - tn.y)));
+    }
+    h += trainTunnelHill * hill;
+  }
+  return h;
 }
 
 // The hills at d along the line, h above the fields, under a skyline at top: dark forest with
 // clearings and farmland lower down, the skyline catching the moon behind it, a farm's lit window.
 vec3 trainHillsCol(float d, float h, float top, bool detail, inout float accent) {
   float below = top - h;
-  float fields = smoothstep(0.45, 0.6, trainNoise(d, 128.0, 17.0)) * smoothstep(6.0, 18.0, below);
+  float fields = smoothstep(0.45 - trainOpen, 0.6 - trainOpen, trainNoise(d, 128.0, 17.0)) * smoothstep(6.0, 18.0, below);
   vec3 n = normalize(vec3(0.0, 0.55, -0.85));
   vec3 c = trainLit(mix(vec3(0.03, 0.045, 0.04), vec3(0.09, 0.1, 0.07), fields), n);
   c += trainMoonLight * 0.12 * exp(-below / 3.0);
@@ -513,7 +586,7 @@ vec3 trainHillsCol(float d, float h, float top, bool detail, inout float accent)
   if (detail && K_lights > 0.0) {
     vec2 tl = trainTile(d, 128.0);
     float hf = trainHash(tl.x, 19.0);
-    if (hf < 0.35 * K_lights + 0.05) {
+    if (hf < (0.35 * K_lights + 0.05) * trainFarms) {
       float cellM = trainPx * TRAIN_HILLS_Z / TRAIN_F;
       vec2 dv = vec2(tl.y - (0.2 + 0.6 * fract(hf * 13.1)) * 128.0, below - 6.0 - 22.0 * fract(hf * 7.7)) / cellM;
       float r = length(dv);
@@ -591,7 +664,7 @@ vec3 trainFar(vec2 o, float t, bool detail, inout float hitZ, inout float accent
   float eyeH = TRAIN_EYE + trainEyeOff.y;
   float rise = o.y - TRAIN_HORIZON;
   float hH = rise * TRAIN_HILLS_Z / TRAIN_F + eyeH;
-  if (hH < 80.0) {
+  if (hH < 80.0 * trainHillsLift + trainTunnelHill) {
     float dH = o.x * TRAIN_HILLS_Z / TRAIN_F + trainEyeOff.x;
     float top = trainHillsH(dH);
     if (trainHard(clamp((top - hH) / (trainPx * TRAIN_HILLS_Z / TRAIN_F) + 0.5, 0.0, 1.0)) > 0.5) {
@@ -600,7 +673,7 @@ vec3 trainFar(vec2 o, float t, bool detail, inout float hitZ, inout float accent
     }
   }
   float hR = rise * TRAIN_RIDGE_Z / TRAIN_F + eyeH;
-  if (hR < 650.0) {
+  if (hR < 575.0 * trainRidgeLift + 75.0) {
     float dR = o.x * TRAIN_RIDGE_Z / TRAIN_F + trainEyeOff.x;
     float top = trainRidgeH(dR);
     if (trainHard(clamp((top - hR) / (trainPx * TRAIN_RIDGE_Z / TRAIN_F) + 0.5, 0.0, 1.0)) > 0.5) {
@@ -676,9 +749,9 @@ vec2 trainWindows(vec2 q, float w, float wall, float id, float aa, inout vec3 gl
 }
 
 // One row along the fields z metres out (or a river bank): a hedge with gaps, a tree in a tile now
-// and then (round crowns, a few conifers), and, in hamlets, farmhouses. hr: the sight line's height
-// above the fields there (m); d: metres along the line. Colour and hard cover; lit windows' halos go
-// to glow.
+// and then (round crowns, a few conifers: as many as the line's trainTrees and trainConifers say),
+// and, in hamlets, farmhouses (trainFarms). hr: the sight line's height above the fields there (m);
+// d: metres along the line. Colour and hard cover; lit windows' halos go to glow.
 vec4 trainRow(float k, float z, float d, float hr, bool bank, inout vec3 glow, inout float accent) {
   float aa = trainAA(z);
   // On a river bank (k 20 the near one, 21 the far): reeds and rough grass instead of a hedge, now and
@@ -704,11 +777,11 @@ vec4 trainRow(float k, float z, float d, float hr, bool bank, inout vec3 glow, i
   float ht = trainHash(tt.x, salt + 3.0);
   float r = mix(2.2, min(5.5, 0.18 * Lt), fract(ht * 3.3));
   float tall = r * (1.7 + fract(ht * 5.9));
-  if (ht < (bank ? (k < 20.5 ? 0.12 : 0.75) : 0.42) && hr < tall + 0.5) {
+  if (ht < (bank ? (k < 20.5 ? 0.12 : 0.75) : trainTrees) && hr < tall + 0.5) {
     float xc = (0.3 + 0.4 * fract(ht * 7.7)) * Lt;
     vec2 q = vec2(tt.y - xc, hr);
     float tree;
-    if (!bank && fract(ht * 11.3) < 0.3) {
+    if (!bank && fract(ht * 11.3) < trainConifers) {
       // A conifer: three drooping tiers.
       float u = clamp(q.y / tall, 0.0, 1.0);
       float w = r * 0.85 * (1.0 - u) * (0.72 + 0.28 * (1.0 - fract(u * 3.0)));
@@ -732,7 +805,7 @@ vec4 trainRow(float k, float z, float d, float hr, bool bank, inout vec3 glow, i
     float Lh = z < 120.0 ? 128.0 : 256.0;
     vec2 th = trainTile(d + 57.0 * k, Lh);
     float hh = trainHash(th.x, salt + 5.0);
-    if (hh < 0.6 && hh < 0.2 + 0.4 * smoothstep(0.55, 0.8, trainNoise(d, 1024.0, 7.0))) {
+    if (hh < 0.6 * trainFarms && hh < (0.2 + 0.4 * smoothstep(0.55, 0.8, trainNoise(d, 1024.0, 7.0))) * trainFarms) {
       float w = 7.0 + 7.0 * fract(hh * 9.1);
       float wall = 4.6 + 1.6 * fract(hh * 6.7);
       vec2 q = vec2(th.y - (0.32 + 0.36 * fract(hh * 4.3)) * Lh, hr);
@@ -927,6 +1000,8 @@ vec3 trainGround(vec2 o, float zg, float dg, float t) {
     float L = band < 4.0 ? 128.0 : 256.0;
     vec2 tl = trainTile(dg + 41.0 * band, L);
     float h = trainHash(tl.x, 210.0 + band);
+    // Up in the mountains: pasture, and rough meadow gone pale.
+    if (trainMeadows) h = fract(h * 7.3) < 0.75 ? 0.4 : 0.9;
     if (h < 0.28) alb = vec3(0.14, 0.11, 0.085);       // ploughed
     else if (h < 0.52) alb = vec3(0.11, 0.15, 0.085);  // pasture
     else if (h < 0.72) alb = vec3(0.36, 0.31, 0.2);    // stubble, pale under the moon
@@ -952,7 +1027,7 @@ vec3 trainGround(vec2 o, float zg, float dg, float t) {
   return trainFade(c, zg, 0.0);
 }
 
-// The valley under a bridge: the sight line drops past the fields' edge to its floor TRAIN_VALLEY
+// The valley under a bridge: the sight line drops past the fields' edge to its floor trainGorge
 // below, where a river winds away toward the hills under a breath of moonlit mist; the sides are
 // wooded. False where the sight line stays on the fields.
 bool trainValley(vec2 o, float zg, float dg, float t, out vec3 col, out float z) {
@@ -961,7 +1036,7 @@ bool trainValley(vec2 o, float zg, float dg, float t, out vec3 col, out float z)
   z = zg;
   if (dg < b.x - 14.0 || dg > b.x + b.y + 14.0) return false;
   float rise = TRAIN_HORIZON - o.y;
-  float zf = (TRAIN_EYE + TRAIN_VALLEY + trainEyeOff.y) * TRAIN_F / rise;
+  float zf = (TRAIN_EYE + trainGorge + trainEyeOff.y) * TRAIN_F / rise;
   float x = o.x * zf / TRAIN_F + trainEyeOff.x - b.x;
   vec3 up = vec3(0.0, 1.0, 0.0);
   if (x > 9.0 && x < b.y - 9.0) {
@@ -976,7 +1051,7 @@ bool trainValley(vec2 o, float zg, float dg, float t, out vec3 col, out float z)
       col = trainLit(alb, up);
       col = mix(col, trainLit(TRAIN_SNOW, up), snowCover(up, vec2(x, zf) * 0.1, trainLying));
       // a cottage by the water, its window lit
-      vec2 lv = vec2((x - c - w - 6.0) * TRAIN_F / zf, o.y - (TRAIN_HORIZON - (TRAIN_EYE + TRAIN_VALLEY - 1.5) * TRAIN_F / 160.0));
+      vec2 lv = vec2((x - c - w - 6.0) * TRAIN_F / zf, o.y - (TRAIN_HORIZON - (TRAIN_EYE + trainGorge - 1.5) * TRAIN_F / 160.0));
       col += TRAIN_GLOW * trainLampsOn * K_lights * trainHard(1.0 - smoothstep(1.0, 2.0, length(lv) / trainPx)) * step(abs(zf - 160.0), 40.0);
     }
   } else {
@@ -1640,10 +1715,11 @@ vec3 trainPoles(vec2 o, float t, vec3 col, inout float hitZ) {
 
 // A bridge's through truss right outside the window (the train slowed for it), verticals and
 // diagonals whipping past as soft smears, warm where the carriage's light catches their flanges,
-// dark against the misty valley beyond.
+// dark against the misty valley beyond. A mountain line's stone viaduct has none: its parapet lies
+// below the window, which looks straight out over the gorge.
 vec3 trainTruss(vec2 o, vec3 col, inout float hitZ) {
   vec4 b = trainBridge;
-  if (b.x > 8.0 || b.x + b.y < -8.0) return col;
+  if (trainViaduct || b.x > 8.0 || b.x + b.y < -8.0) return col;
   float z = TRAIN_TRUSS_Z;
   float x = o.x * z / TRAIN_F + trainEyeOff.x - b.x;
   float y = (o.y - TRAIN_HORIZON) * z / TRAIN_F + trainEyeOff.y;
@@ -1683,6 +1759,8 @@ vec3 trainTunnelScene(vec2 o, float t, vec3 col, inout float hitZ) {
     float d = o.x * z / TRAIN_F + trainEyeOff.x;
     float y = rise * z / TRAIN_F + trainEyeOff.y;
     float into = d < tn.x + 0.5 * tn.y ? smoothstep(tn.x - 110.0, tn.x - 8.0, d) : smoothstep(tn.x + tn.y + 110.0, tn.x + tn.y + 8.0, d);
+    // Out of the mouth straight onto a viaduct (or off one into the next mouth): none over the bridge.
+    into *= 1.0 - step(trainBridge.x - 2.0, d) * step(d, trainBridge.x + trainBridge.y + 2.0);
     float rim = mix(-7.0, 14.0, into);
     if (trainPassCut < TRAIN_NO_CUT) {
       // The passage's own cutting: its rim by the passage's clock (rising into a tunnel, sinking out of one).
@@ -1727,9 +1805,37 @@ vec3 trainTunnelScene(vec2 o, float t, vec3 col, inout float hitZ) {
   return mix(c, TRAIN_SODIUM * 1.3, lamp);
 }
 
+// Birds over the line's country by day (the shared birds, shaders/lib/birds.ts), flying in the
+// window's own frame as the land is drawn: their kinds follow the line unless the knob picks one
+// (rooks and geese over the country line; rooks, swallows, gulls and pigeons over the rural fields;
+// choughs, swifts and a buzzard circling in the mountains), none at night, fewer in snow, none in
+// steady rain; a swooping party comes down to a few metres over the fields. The nearest bird at o.
+BirdHit trainBirds(vec2 o) {
+  if (K_birds <= 0.0) return birdNone();
+  float calm = smoothfall(0.5, 0.1, K_rain) * (1.0 - 0.5 * smoothstep(0.2, 0.8, K_snow));
+  // Lanes from 40 m out to the hills, and from just over the horizon to near the window's top (uv.y).
+  BirdSky sky = birdSky(K_birds * calm, K_birdKind, K_birdFormation - 1.0, vec2(40.0, 900.0), TRAIN_HORIZON + 0.5 + vec2(0.03, 0.3), vec2(trainSalt, 3.7 * K_line));
+  sky.mixA = vec4(0.45, 0.1, 0.15, 0.2);
+  sky.mixB = vec3(0.1, 0.0, 0.0);
+  if (abs(K_line - TRAIN_RURAL) < 0.5) {
+    sky.mixA = vec4(0.4, 0.25, 0.15, 0.05);
+    sky.mixB = vec3(0.05, 0.1, 0.0);
+  } else if (abs(K_line - TRAIN_MOUNTAIN) < 0.5) {
+    sky.mixA = vec4(0.35, 0.0, 0.0, 0.05);
+    sky.mixB = vec3(0.4, 0.0, 0.2);
+  }
+  sky.hours = vec4(0.22, 0.26, 0.8, 0.84);
+  sky.clock = vec2(K_time, K_cycle);
+  sky.swoopTo = 5.0;
+  sky.parallax = trainEyeOff * TRAIN_F;
+  BirdCamera cam = BirdCamera(TRAIN_HORIZON + 0.5, TRAIN_F, TRAIN_EYE, 1.0, 1.0);
+  return birdFlights(vec2(o.x, o.y + 0.5), sky, cam, uMotionTime, trainPx);
+}
+
 // What the window shows at image point o: the land, the verge, then whatever passes close (station,
-// crossing, cutting, poles, girders, a tunnel's wall), the glow of lights in the air, and the rain or
-// snow falling through it all in depth, stopped by the first thing it meets.
+// crossing, cutting, poles, girders, a tunnel's wall), birds in the air in front of whatever lies
+// beyond them, the glow of lights in the air, and the rain or snow falling through it all in depth,
+// stopped by the first thing it meets.
 vec3 trainOutside(vec2 o, vec2 rainUV, float aspect, float t, inout float accent) {
   float hitZ = 1e6;
   vec3 glow = vec3(0.0);
@@ -1741,6 +1847,11 @@ vec3 trainOutside(vec2 o, vec2 rainUV, float aspect, float t, inout float accent
   col = trainTunnelScene(o, t, col, hitZ);
   col = trainPoles(o, t, col, hitZ);
   col = trainTruss(o, col, hitZ);
+  BirdHit bird = trainBirds(o);
+  if (bird.cover > 0.5 && bird.depth < hitZ) {
+    hitZ = bird.depth;
+    col = trainFade(trainLit(bird.albedo, vec3(0.0, 0.0, -1.0)), bird.depth, (o.y - TRAIN_HORIZON) * bird.depth / TRAIN_F + TRAIN_EYE);
+  }
   col += glow * (1.0 + 1.5 * K_fog + 1.2 * max(K_rain, K_snow));
   if (hitZ <= TRAIN_WALL_Z + 0.01) return col;
   // The rain stops at whatever it meets first: the canopy's front edge shelters what lies under it.
@@ -2127,12 +2238,13 @@ void trainSetup(vec2 cell, float t) {
   trainPx = 1.0 / uRes.y;
   trainTh = threshold(cell);
   trainRead(t);
+  trainLine();
   trainSalt = mod(K_route, 1000.0) * 0.731;
   trainPassage();
 
   // The sky and the light it gives. Rain or snow closes it over: the moon fades behind the deck,
   // the light flattens, the lamps count for more.
-  trainSky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  trainSky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   trainStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
   trainOver = clamp(trainStorm * 10.0, 0.0, 1.0) * (0.65 + 0.35 * trainStorm);
   trainWet = uWeather.x;
