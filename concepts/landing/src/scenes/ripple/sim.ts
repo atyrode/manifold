@@ -1,6 +1,8 @@
 // The ripple tank's water, stepped on the GPU (sims/gpu.ts): the damped wave equation on a grid
 // over the whole frame, driven by the experiment's dippers (layout.ts), walled by its barriers,
-// slowed over its lens plate and soaked up at the tank's edges by sponges.
+// slowed over its lens plate and soaked up at the tank's edges by sponges (the beaches real tanks
+// line their rims with), as strongly as the edge absorption knob asks: at 0 the frame's edges are
+// bare walls that reflect every wave, independently of the open-water damping.
 //
 // uSim0  the shown tank's view, rgba16f at grid size (linear), frame uv: x how hard the screen
 //        focuses here (× the knob's; softened round each dipper, split at the double slit's
@@ -110,7 +112,10 @@ const DAMP_MAX = 0.22;
  * which comes off the open-water damping.
  */
 const VISCOSITY = 0.04;
-/** Sponges: width in wavelengths, bounded (short sides), and their damping rate at the very edge (1/s). */
+/**
+ * Sponges: width in wavelengths, bounded (short sides), and their damping rate at the very edge
+ * (1/s) at full edge absorption; the knob scales the rate down to 0, where the edges reflect.
+ */
 const SPONGE_WAVES = 1.2;
 const SPONGE_WIDTH = [0.12, 0.24] as const;
 const SPONGE_RATE = 6;
@@ -512,6 +517,7 @@ interface Slots {
   frequency: number;
   speed: number;
   damping: number;
+  edges: number;
   drips: number;
   focus: number;
   mark: number;
@@ -534,6 +540,8 @@ interface Physics {
    */
   fade: number;
   damp: number;
+  /** The sponges' damping rate at the very edge (1/s): SPONGE_RATE × the edge absorption knob. */
+  sponge: number;
   /** The M's size knob (its middle while the M is off but called up by 'now'). */
   markSize: number;
 }
@@ -812,6 +820,7 @@ class RippleLab implements SceneSim {
       fade,
       damp: fade - (VISCOSITY * k * k) / step,
       markSize: mark > 0 ? mark : 0.5,
+      sponge: SPONGE_RATE * Math.min(1, Math.max(0, this.#value(frame, this.#at.edges))),
     };
   }
 
@@ -1091,7 +1100,7 @@ class RippleLab implements SceneSim {
     else this.#mark.fill(0);
     const edge = Math.min(Math.max(SPONGE_WAVES * physics.lambda, SPONGE_WIDTH[0]), SPONGE_WIDTH[1]);
     this.#sponge[0] = edge;
-    this.#sponge[1] = SPONGE_RATE * physics.step;
+    this.#sponge[1] = physics.sponge * physics.step;
     this.#step.run(tank.state, {
       textures: { uState: tank.state },
       uniforms: {
@@ -1319,6 +1328,7 @@ export function rippleSim(knobs: readonly ParamDef[]): SimFactory {
     frequency: slot("frequency"),
     speed: slot("speed"),
     damping: slot("damping"),
+    edges: slot("edges"),
     drips: slot("drips"),
     focus: slot("focus"),
     mark: slot("mark"),
