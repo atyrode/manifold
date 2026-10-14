@@ -4,6 +4,7 @@ import { sceneDefs } from "./src/scenes/index.ts";
 import { verifyCountryWildlife } from "./src/scenes/country/wildlife.verify.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
+import { verifyCountryAnimals } from "./src/scenes/country/animals.verify.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
@@ -275,6 +276,7 @@ export function verify(): Record<string, unknown> {
   Object.assign(result, verifyCountryWildlife(gl));
   result.materials = { rippleEdges: rippleEdgesVerify(gl), incenseVent: incenseVentVerify(gl) };
   result.runtime = verifyRuntime(gl);
+  Object.assign(result, verifyCountryAnimals(gl));
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

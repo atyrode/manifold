@@ -1,10 +1,11 @@
 // Flower-field materials and rooted plants. Coordinates and LOD follow the countryside slope,
 // not the screen: rows converge, nearby heads have structure, distant plants become field masses.
 export const countryFieldsGlsl = /* glsl */ `
-// 6 wildflower meadow, 7 lavender, 8 sunflowers; 0..5 remain the seasonal crop catalogue.
+// 6 wildflower meadow, 7 lavender, 8 sunflowers, 9 pasture enclosure (animals.ts); 0..5 remain the
+// seasonal crop catalogue.
 float countryFieldCrop(float h, float season) {
   vec4 weights = vec4(K_crops, K_wildflowers, K_lavender, K_sunflowers);
-  float total = dot(weights, vec4(1.0));
+  float total = dot(weights, vec4(1.0)) + K_pasture;
   if (total <= 0.0) return countryCrop(h, season);
   vec3 edges = vec3(weights.x, weights.x + weights.y, weights.x + weights.y + weights.z) / total;
   // Keep the field hash/layout fixed while tuning. Remap the crop interval so a small crop share
@@ -12,7 +13,9 @@ float countryFieldCrop(float h, float season) {
   if (h < edges.x) return countryCrop(h / edges.x, season);
   if (h < edges.y) return 6.0;
   if (h < edges.z) return 7.0;
-  return 8.0;
+  // Pasture takes the top of the range, so a zero weight leaves every other field as it was.
+  if (K_pasture <= 0.0 || h < 1.0 - K_pasture / total) return 8.0;
+  return 9.0;
 }
 
 vec3 countryFlowerMaterial(float crop, float h, float season, vec2 w, vec2 r, vec2 px,

@@ -19,6 +19,7 @@
 // sky, drops bouncing off the track and dimpling the river. Snow falls the same way and settles
 // (uWeather.y): first on the high far ridges, then down to the near fields, roofs and tree tops.
 
+import { countryAnimalsGlsl } from "./animals.ts";
 import { countryFieldsGlsl } from "./fields.ts";
 import { countryWildlifeGlsl } from "./wildlife.ts";
 
@@ -764,6 +765,7 @@ vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float w
 
 ${countryWildlifeGlsl}
 
+${countryAnimalsGlsl}
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float m = uMotion;
   float tm = uMotionTime;
@@ -988,11 +990,13 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       float crop = countryFieldCrop(field.y, season);
       albedo = crop < 5.5
         ? countryCropColor(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen)
-        : countryFlowerMaterial(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen);
+        : (crop < 8.5
+          ? countryFlowerMaterial(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen)
+          : countryPastureColor(field.y, season, w, pxr, relief, sheen));
       // Bare earth soaks rain up and darkens most; standing crops and grass, whose leaves shed it,
       // keep their colour and only deepen it.
       porous = crop > 1.5 && crop < 2.5 ? 0.85 : (crop > 3.5 && crop < 4.5 ? 0.55 : (crop > 4.5 && season > 1.5 ? 0.7 : 0.35));
-      if (crop > 5.5) {
+      if (crop > 5.5 && crop < 8.5) {
         float under = 0.0;
         vec4 flowers = countryFlowers(crop, field.y, season, rows, z, down, wind, 1.0 - buried, tm, under);
         albedo = mix(albedo * (1.0 - under), flowers.rgb, flowers.a);
@@ -1116,6 +1120,21 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           water = 0.85;
           settles = 0.0;
           glint = smoothstep(0.6, 0.9, ripple) * (1.0 - grey);
+        }
+      }
+      // Pasture enclosures (animals.ts): their post-and-rail fences and grazing herds, standing in
+      // front of the grass, hedges, track and river behind them; snow settles on their backs.
+      if (K_pasture > 0.0 && hit < 3 && !treetop) {
+        CountryStock stock = countryStock(i, q, s, lean, w, down, f, field, site, axis, crop, season, hedgeMean, spots);
+        albedo = mix(albedo * (1.0 - stock.shadow), stock.albedo, stock.cover);
+        if (stock.cover > 0.0) {
+          n = normalize(mix(n, stock.normal, stock.cover));
+          snowy = mix(buried * settles * (0.8 + 0.2 * relief), stock.snow * snowCover(stock.normal, w * 300.0, lyingHere), stock.cover);
+          porous = mix(porous, stock.porous, stock.cover);
+          glossy = mix(glossy, 0.1, stock.cover);
+          sheen *= 1.0 - stock.cover;
+          onLane *= 1.0 - stock.cover;
+          water *= 1.0 - stock.cover;
         }
       }
       // The chalk figure: an M cut through the turf of the down, foreshortened on its slope like
