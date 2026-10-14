@@ -1,6 +1,8 @@
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
 import { sceneDefs } from "./src/scenes/index.ts";
+import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
+import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
@@ -252,6 +254,7 @@ export function verify(): Record<string, unknown> {
   );
   gl.deleteProgram(terrain);
 
+  result.materials = { rippleEdges: rippleEdgesVerify(gl), incenseVent: incenseVentVerify(gl) };
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
