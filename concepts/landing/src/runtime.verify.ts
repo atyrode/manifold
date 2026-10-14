@@ -60,7 +60,9 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
   };
   const uniform = (name: string): unknown => {
     const program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
-    return gl.getUniform(program, gl.getUniformLocation(program, name));
+    const location = gl.getUniformLocation(program, name);
+    if (location === null) throw new Error(`Missing uniform ${name}`);
+    return gl.getUniform(program, location);
   };
   const pixels = (x: number, y: number, width: number, height: number): Uint8Array => {
     const bytes = new Uint8Array(width * height * 4);
@@ -258,7 +260,7 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     result.labBuiltWithoutApply = true;
   } finally {
     console.error = errorLog;
-    dunes.sim = dunesSim;
+    if (dunesSim !== undefined) dunes.sim = dunesSim;
     aurora.glsl = auroraGlsl;
     window.requestAnimationFrame = nativeRaf;
     canvas.remove();
