@@ -883,9 +883,14 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       float grainSeen = 1.0 - smoothstep(0.4, 1.0, max(foot.x, foot.y) * grainScale);
       float speck = step(0.95, hash12(floor(S.xy * grainScale * 0.5)));
       albedo = vec3(0.88, 0.86, 0.81) * (1.0 + grainSeen * (0.08 * (vnoise(S.xy * grainScale) - 0.5) - 0.18 * speck) + 0.05 * (vnoise(S.xy * 18.0) - 0.5));
-      // Freshly turned gravel is damp and darker, drying back over a minute or two.
-      float age = clock - texture(uSim3, fuv).r;
-      albedo *= 1.0 - 0.13 * exp(-max(age, 0.0) / 45.0) * uSimOn.w;
+      // Freshly turned gravel is damp and darker, drying back over a minute or two of the sim's
+      // drying clock. Drying with the weather (K_drying, its dampness), the damp lingers in the groove
+      // bottoms while the crests pale first, and the sim runs the clock at the weather's pace.
+      float age = max(clock - texture(uSim3, fuv).r, 0.0);
+      float damp = K_drying > 0.0
+        ? 0.26 * K_drying * exp(-age / (45.0 * mix(1.6, 0.4, 0.5 + 0.5 * ridge)))
+        : 0.13 * exp(-age / 45.0);
+      albedo *= 1.0 - damp * uSimOn.w;
       // A patchy fringe of moss in the smooth gravel along the slate M's edge, before its rings.
       if (markEdge < 0.012) {
         float fringe = smoothfall(0.003 + 0.004 * vnoise(S.xy * 70.0), 0.0, markEdge) * smoothstep(0.35, 0.6, vnoise(S.xy * 45.0 + 8.0) + 0.25 * K_moss);

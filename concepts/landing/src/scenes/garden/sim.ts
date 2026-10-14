@@ -11,7 +11,9 @@
 // short pieces so the banks stay even round a bend. Behind it the grooves slump to the angle of
 // repose (relax, a band of rows per frame) and soften slowly (smooth, every couple of seconds), so
 // the garden is crisp where the rake has just been and softer the longer since it passed. A coarser
-// grid remembers when each spot was last raked: freshly turned gravel is darker and dries back.
+// grid (an AgeField) remembers when each spot was last raked: freshly turned gravel is darker and
+// dries back on a drying clock, which runs with garden time, or, drying with the weather, faster
+// with the weathering knob, in sun and wind, slower at dusk and night, not at all in rain.
 //
 // Raking the whole garden through the tool would cost a few hundred milliseconds, so a layout (at
 // construction, and when the pattern, the stones or the M change) is laid straight from the same
@@ -30,6 +32,7 @@
 // last raked, on the drying clock (half resolution).
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { AgeField, dryingPace } from "../../sims/agefield.ts";
 import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
@@ -111,10 +114,8 @@ export const GARDEN_LEAF_SLOTS = 24;
 /** uSim1's size: a row of islands (and the drying clock), then a row per stone, two texels each. */
 const STONE_COLUMNS = 2 * GARDEN_ISLANDS;
 const STONE_ROWS = 1 + GARDEN_STONES;
-/** The "when was it raked" grid: half the height field's resolution. */
+/** The "when was it raked" grid (an AgeField): half the height field's resolution. */
 const GARDEN_FRESH = { cols: 336, rows: 140 } as const;
-/** The drying clock wraps back by this much once it passes twice that, so r16f keeps it to seconds. */
-const FRESH_REBASE = 3000;
 
 /** Leaf kinds, as packed for the shader. */
 export const GARDEN_LEAF_KIND = { maple: 0, petal: 1, green: 2, withered: 3 } as const;
@@ -713,8 +714,8 @@ function grooveProfile(phase: number): number {
 
 // ---- the simulation ------------------------------------------------------------------------------
 
-type GardenKnob = "pattern" | "speed" | "soften" | "moss" | "stones" | "season" | "leaves" | "camera" | "wind" | "mark";
-const KNOBS: readonly GardenKnob[] = ["pattern", "speed", "soften", "moss", "stones", "season", "leaves", "camera", "wind", "mark"];
+type GardenKnob = "pattern" | "speed" | "soften" | "drying" | "moss" | "stones" | "season" | "leaves" | "camera" | "time" | "cycle" | "rain" | "wind" | "mark";
+const KNOBS: readonly GardenKnob[] = ["pattern", "speed", "soften", "drying", "moss", "stones", "season", "leaves", "camera", "time", "cycle", "rain", "wind", "mark"];
 
 interface Settings {
   pattern: GardenPattern;
@@ -724,10 +725,18 @@ interface Settings {
   speed: number;
   /** Diffusion per second for weathering. */
   soften: number;
+  /** The weathering knob itself, 0..1. */
+  weathering: number;
+  /** "Drying with weather": its dampness while on, 0 while off. */
+  drying: number;
   moss: number;
   /** Leaf-fall knob 0..1. */
   leaves: number;
   overhead: boolean;
+  /** The sky clock's knobs and the rain, for the drying pace. */
+  time: number;
+  cycle: number;
+  rain: number;
   wind: number;
   /** The M's height, 0 when off. */
   mark: number;
@@ -746,9 +755,14 @@ class GardenSim implements SceneSim {
     seed: 0,
     speed: 0,
     soften: 0,
+    weathering: 0,
+    drying: 0,
     moss: 0,
     leaves: 0,
     overhead: false,
+    time: 0,
+    cycle: 0,
+    rain: 0,
     wind: 0,
     mark: 0,
     signature: "",
@@ -763,13 +777,14 @@ class GardenSim implements SceneSim {
   // The gravel, the drying grid and their textures.
   readonly #field = new HeightField(GARDEN.cols, GARDEN.rows, GA);
   readonly #heights: DataTexture;
-  readonly #fresh = new Float32Array(GARDEN_FRESH.cols * GARDEN_FRESH.rows);
+  /**
+   * When each spot was last raked, on the drying clock: seconds of garden time (dt × motion), or,
+   * drying with the weather, run at the weather's pace (#dryingRate).
+   */
+  readonly #fresh = new AgeField(GARDEN_FRESH.cols, GARDEN_FRESH.rows, GA, 1);
   readonly #freshTexture: DataTexture;
-  #freshDirty = true;
   #freshAt = -Infinity;
   #heightsAt = -Infinity;
-  /** The drying clock: seconds of garden time (dt × motion), wrapped back now and then. */
-  #clock = 0;
 
   // Islands and stones.
   readonly #stoneData = new Float32Array(STONE_COLUMNS * STONE_ROWS * 4);
@@ -906,8 +921,7 @@ class GardenSim implements SceneSim {
     this.#watchGust(frame.fired, settings);
     this.#passage(frame, settings);
     const step = dt * frame.motion;
-    this.#clock += step;
-    if (this.#clock > 2 * FRESH_REBASE) this.#rebaseClock();
+    this.#fresh.advance(settings.drying > 0 ? step * this.#dryingRate(frame, settings) : step);
 
     this.#tend(step, settings);
     this.#handRake(frame.pointer, settings);
@@ -917,11 +931,7 @@ class GardenSim implements SceneSim {
     if (this.#gustAge < GUST_BUSY) this.#gustAge += dt;
 
     if (now - this.#heightsAt >= UPLOAD_EVERY_MS && this.#field.upload(this.#heights)) this.#heightsAt = now;
-    if (this.#freshDirty && now - this.#freshAt >= UPLOAD_EVERY_MS) {
-      this.#freshTexture.upload(this.#fresh);
-      this.#freshDirty = false;
-      this.#freshAt = now;
-    }
+    if (now - this.#freshAt >= UPLOAD_EVERY_MS && this.#fresh.upload(this.#freshTexture)) this.#freshAt = now;
     this.#packStones();
     this.#packLeaves();
     return this.#textures;
@@ -947,9 +957,14 @@ class GardenSim implements SceneSim {
     s.seed = seed;
     s.speed = RAKE_SPEED * clamp(this.#knob(frame, "speed"), 0, 1);
     s.soften = SMOOTH_RATE * clamp(this.#knob(frame, "soften"), 0, 1);
+    s.weathering = clamp(this.#knob(frame, "soften"), 0, 1);
+    s.drying = this.#knob(frame, "drying");
     s.moss = clamp(this.#knob(frame, "moss"), 0, 1);
     s.leaves = clamp(this.#knob(frame, "leaves"), 0, 1);
     s.overhead = this.#knob(frame, "camera") > 0.5;
+    s.time = this.#knob(frame, "time");
+    s.cycle = this.#knob(frame, "cycle");
+    s.rain = this.#knob(frame, "rain");
     s.wind = clamp(this.#knob(frame, "wind"), -1, 1);
     s.mark = mark;
     if (pattern !== this.#signedPattern || seed !== this.#signedSeed || mark !== this.#signedMark) {
@@ -966,6 +981,17 @@ class GardenSim implements SceneSim {
     return frame === undefined ? this.#knobs.initial(key) : this.#knobs.value(frame, key);
   }
 
+  /**
+   * The drying clock's pace while drying with the weather: dryingPace for the sky's hour (the
+   * shader's timeOfDayM), the wind and the rain, times the weathering knob's own pace, 1 at its
+   * default and doubling with every 0.3 more, so the one knob ages a mark's relief and its damp alike.
+   */
+  #dryingRate(frame: SimFrame, settings: Settings): number {
+    const tod = settings.time + (settings.cycle * frame.motionTime) / 240;
+    const weathering = 2 ** ((settings.weathering - this.#knobs.initial("soften")) / 0.3);
+    return weathering * dryingPace(tod, settings.wind, settings.rain);
+  }
+
   // ---- laying out ----------------------------------------------------------------------------------
 
   /** A fresh garden: islands, the plan, the gravel laid from it, the rake set down to begin. */
@@ -977,9 +1003,7 @@ class GardenSim implements SceneSim {
     this.#layout = { pattern: settings.pattern, islands, mark: settings.mark };
     this.#plan = buildPlan(this.#layout);
     this.#lay();
-    this.#fresh.fill(-FRESH_REBASE);
-    this.#freshDirty = true;
-    this.#clock = 0;
+    this.#fresh.reset();
     this.#smoothDue = SMOOTH_EVERY;
     this.#rakeOn = false;
     this.#packStones();
@@ -1150,7 +1174,7 @@ class GardenSim implements SceneSim {
   #rakePiece(ax: number, ay: number, bx: number, by: number): void {
     this.#field.rake(ax / GA, ay, bx / GA, by, RAKE);
     const length = Math.hypot(bx - ax, by - ay);
-    this.#stampFresh(ax, ay, bx, by, LEVEL_HALF);
+    this.#fresh.stamp(ax, ay, bx, by, LEVEL_HALF);
     if (length > 1e-9) {
       this.#rakeDX = (bx - ax) / length;
       this.#rakeDY = (by - ay) / length;
@@ -1203,39 +1227,6 @@ class GardenSim implements SceneSim {
     field.touch();
   }
 
-  /** Note that the gravel within `half` of a raked piece was turned over now. */
-  #stampFresh(ax: number, ay: number, bx: number, by: number, half: number): void {
-    const cols = GARDEN_FRESH.cols;
-    const rows = GARDEN_FRESH.rows;
-    const cw = GA / cols;
-    const ch = 1 / rows;
-    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - half) / cw));
-    const i1 = Math.min(cols - 1, Math.floor((Math.max(ax, bx) + half) / cw));
-    const j0 = Math.max(0, Math.floor((Math.min(ay, by) - half) / ch));
-    const j1 = Math.min(rows - 1, Math.floor((Math.max(ay, by) + half) / ch));
-    const ex = bx - ax;
-    const ey = by - ay;
-    const l2 = ex * ex + ey * ey;
-    const now = this.#clock;
-    for (let j = j0; j <= j1; j++) {
-      const py = (j + 0.5) * ch;
-      for (let i = i0; i <= i1; i++) {
-        const px = (i + 0.5) * cw;
-        const t = l2 > 0 ? clamp(((px - ax) * ex + (py - ay) * ey) / l2, 0, 1) : 0;
-        if (Math.hypot(px - ax - t * ex, py - ay - t * ey) < half) this.#fresh[j * cols + i] = now;
-      }
-    }
-    this.#freshDirty = true;
-  }
-
-  /** Wind the drying clock back, and every mark on it, so half floats keep it to the second. */
-  #rebaseClock(): void {
-    this.#clock -= FRESH_REBASE;
-    const fresh = this.#fresh;
-    for (let k = 0; k < fresh.length; k++) fresh[k] = Math.max(-FRESH_REBASE, (fresh[k] ?? 0) - FRESH_REBASE);
-    this.#freshDirty = true;
-  }
-
   /** Drag on the gravel: rake your own lines with a hand rake. */
   #handRake(pointer: PointerState, settings: Settings): void {
     const at = this.#ground;
@@ -1255,7 +1246,7 @@ class GardenSim implements SceneSim {
     if (length < HAND_STEP) return;
     this.#level(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
     this.#field.rake(this.#handX / GA, this.#handY, x / GA, y, HAND);
-    this.#stampFresh(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
+    this.#fresh.stamp(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
     this.#sweep(x, y, (x - this.#handX) / length, (y - this.#handY) / length, HAND_LEVEL_HALF, Math.max(settings.speed, 0.05));
     this.#handX = x;
     this.#handY = y;
@@ -1353,7 +1344,7 @@ class GardenSim implements SceneSim {
       data[k + 2] = island.clear;
       data[k + 3] = 1.03 * tallest + 0.004;
     }
-    data[GARDEN_ISLANDS * 4] = this.#clock;
+    data[GARDEN_ISLANDS * 4] = this.#fresh.clock;
     this.#stoneTexture.upload(data);
   }
 
