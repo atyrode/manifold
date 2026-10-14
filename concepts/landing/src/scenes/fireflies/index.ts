@@ -2,7 +2,7 @@
 // oscillator nudged by the flashes it sees (sim.ts), drift out of their own rhythms into one, the
 // way Pteroptyx do along Malaysian rivers. The bank, the mirror of the water, the foreground bokeh
 // and the lantern the pointer carries are drawn in shader.ts.
-import { counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { firefliesGlsl } from "./shader.ts";
 import { FIREFLIES_PASSAGE, firefliesSim } from "./sim.ts";
@@ -10,6 +10,7 @@ import { FIREFLIES_PASSAGE, firefliesSim } from "./sim.ts";
 const params: readonly ParamDef[] = [
   range("swarm", "coupling", "coupling", 0.5, "How strongly each firefly answers the flashes it sees. Low: everyone keeps their own time and the bank twinkles. High: the beat spreads within seconds and the whole forest pulses as one."),
   range("swarm", "density", "fireflies", 0.65, "How many fireflies settle in the mangroves, from a few scattered sparks to crowns full of them, with a few more drifting low over the water.", { min: 0.1, max: 1 }),
+  choice("swarm", "habitat", "bank", [{ label: "dense crowns", value: 0 }, { label: "open bank", value: 1 }], 0, "Where the fireflies gather. Dense crowns: a wall of mangroves, the fireflies packed into the crowns of the tall trees, so each pulse lights the trees from within. Open bank: low scrub along a wide mud bank with a lone tree here and there, the fireflies hovering low over all of it, so each pulse is a band of light along the waterline, doubled in the river. Both hold the same number of fireflies at any setting of 'fireflies'."),
   range("swarm", "period", "flash period", 3, "Seconds from one flash to the next. A flash lasts under a second; the rest is dark.", { min: 1.5, max: 6, step: 0.1 }),
   range("swarm", "drift", "drift", 0.35, "How far each firefly wanders about its leaf."),
   feature("swarm", "near", "close fireflies", true, "how many", 3, "Fireflies close to you, out of focus up at the sides: soft warm-green discs that pulse with the rest.", { options: counts(1, 3, 6) }),
