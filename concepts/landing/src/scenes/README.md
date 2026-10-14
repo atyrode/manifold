@@ -88,6 +88,16 @@ day/night decisions use the same `frame.motionTime / 240` phase. Other library f
 `tm` or `motionTime` parameter take `uMotionTime`; those that take `t` still scale it themselves.
 `main` already stills `shimmer` with the motion: don't multiply it by `uMotion` again.
 
+Under reduced motion the scene holds still but interactions still end. The scene clock and the
+motion clock stand still, sims get `dt` 0, weather sits where it leads and there are no passages.
+A press over the page or a "now" trigger is stamped on a clock that keeps real time, and reaches
+the shader (`uMouse.w`, `uTriggers`) and sims (`frame.triggers`) moved back by as much, so
+`t - uMouse.w`, `sinceTrigger(slot)` and `frame.time - frame.triggers[slot]` count real seconds
+since it happened. Key a press's or a trigger's response to that age and bound it, so it plays
+once and settles (Dunes' pouring streak fades 0.6 s after the press, and is held only while the
+button is down); anything driven by `t` or `uMotionTime` stays put. Sims see the press and release
+edges and `fired`, but no time, so their response is one still step. Paused, every age holds.
+
 ### Entrances and exits
 
 Switching scenes (or first loading the page) is a passage, not a cut. The outgoing scene plays its
@@ -387,3 +397,10 @@ Forest's sky phase across motion changes, inherited GPU blending and preserving 
 warmth/trace reset while paused and after resume, uncapped FPS, and saved-frame dissolve sampling
 across larger, smaller, aspect-changed, and unchanged render sizes. Software WebGL is deliberate;
 this check is not a real-device performance qualification.
+
+`src/runtime.verify.ts` adds the renderer's runtime: under reduced motion a press and a trigger
+age in real time while the clocks stand still (Dunes' streak clears after release; paused, ages
+hold); a simulation that throws while starting or drawing, and a shader that does not build, keep
+the frame loop scheduled, report the failure and recover by retry or by another scene; uniforms are
+sent only when they change, including a look change made while another scene drew; and the Lab
+never applies a setup while it is being built.

@@ -12,6 +12,7 @@ import { verifyAuroraRipples } from "./src/scenes/aurora/ripples.verify.ts";
 import { verifyBarLastCall } from "./src/scenes/bar/lastcall.verify.ts";
 import { verifyDewBins } from "./src/scenes/dew/bins.verify.ts";
 import { verifyTidepoolExchange } from "./src/scenes/tidepool/exchange.verify.ts";
+import { verifyRuntime } from "./src/runtime.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
@@ -273,6 +274,7 @@ export function verify(): Record<string, unknown> {
   result.shanshui = verifyShanshui(gl);
   Object.assign(result, verifyCountryWildlife(gl));
   result.materials = { rippleEdges: rippleEdgesVerify(gl), incenseVent: incenseVentVerify(gl) };
+  result.runtime = verifyRuntime(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

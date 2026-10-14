@@ -2,7 +2,7 @@
 // through the host as a URL query, so links, presets and undo all share one representation.
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "./params.ts";
 import { loadLocalPresets, parsePresets, presets, saveLocalPresets, type Preset } from "./presets.ts";
-import { colorIds, ditherIds, viewIds, type DitherRenderer } from "./renderer.ts";
+import { colorIds, ditherIds, viewIds, type DitherRenderer, type SceneFailure } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import { accentOf, carryLook, defaults, defaultsFor, modeIds, paramDefaults, serialise, type LabState, type Params } from "./state.ts";
 
@@ -64,6 +64,7 @@ const MODE_LABEL: Record<(typeof modeIds)[number], string> = { landing: "Landing
 const VIEW_LABEL: Record<(typeof viewIds)[number], string> = { dithered: "Dithered", source: "Source", split: "Split" };
 const DITHER_LABEL: Record<(typeof ditherIds)[number], string> = { bayer8: "Bayer 8", bayer4: "Bayer 4", ign: "Noise", none: "None" };
 const COLOR_LABEL: Record<(typeof colorIds)[number], string> = { accent: "Accent", mono: "Mono", full: "Full" };
+const FAILURE_LABEL: Record<SceneFailure["stage"], string> = { build: "its shader did not build", start: "its simulation did not start", frame: "it stopped while drawing" };
 const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6df"] as const;
 
 const SHORTCUTS: readonly (readonly [string, string])[] = [
@@ -132,6 +133,7 @@ export class Lab {
   readonly #redoButton: HTMLButtonElement;
   readonly #sceneLabel = h("span", { class: "lab-scene" });
   readonly #status = h("div", { class: "lab-status" });
+  readonly #failure: Built;
 
   constructor(root: HTMLElement, opener: HTMLButtonElement, host: LabHost) {
     this.#root = root;
@@ -176,7 +178,9 @@ export class Lab {
       h("p", { class: "lab-empty" }, "Nothing matches. Try another word, or press Esc."),
     );
 
+    this.#failure = this.#failureAlert();
     const footer = h("footer", { class: "lab-footer" },
+      this.#failure.el,
       h("div", { class: "lab-actions" },
         this.#textButton("shuffle", "Shuffle", "Randomise this scene's knobs (camera stays put)", () => this.#shuffle()),
         this.#textButton("reset", "Reset", "Back to this scene's defaults", () => this.#change(Object.fromEntries([["scene", this.#current().state.scene]]), true, true)),
@@ -299,6 +303,34 @@ export class Lab {
     ].filter(Boolean);
     this.#status.textContent = parts.join(" · ");
     this.#status.title = `${parts.join(" · ")}\n${gpu}`;
+    this.#failure.sync();
+  }
+
+  /** Shown while the scene on screen has failed (polled with the status): what broke, a retry, and a way on. */
+  #failureAlert(): Built {
+    const what = h("p");
+    const detail = h("p", { class: "lab-failure-detail" });
+    const retry = this.#textButton("reset", "Retry", "Build this scene again from scratch", () => {
+      this.#host.renderer()?.retry();
+      el.hidden = true;
+    });
+    const next = this.#textButton("chevron", "Next scene", "Go on to the next scene", () => {
+      const { state } = this.#current();
+      this.#setScene(sceneIds[(sceneIds.indexOf(state.scene) + 1) % sceneIds.length] ?? state.scene);
+      el.hidden = true;
+    });
+    const el = h("div", { class: "lab-failure", role: "alert", hidden: true }, what, detail, h("div", { class: "lab-actions" }, retry, next));
+    return {
+      el,
+      sync: () => {
+        const failure = this.#host.renderer()?.failure;
+        el.hidden = failure === undefined;
+        if (failure === undefined) return;
+        what.textContent = `${sceneDefs[failure.scene].title}: ${FAILURE_LABEL[failure.stage]}.`;
+        detail.textContent = failure.message.split("\n")[0] ?? "";
+        el.title = `${failure.message}\n\nThe console has the full error (evt=landing.renderer.scene_failed).`;
+      },
+    };
   }
 
   // ---- primitives -----------------------------------------------------------------------------

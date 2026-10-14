@@ -53,20 +53,38 @@ const uniformNames = [
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
-/** One scene's linked program and where its uniforms live. */
+/**
+ * One scene's linked program, where its uniforms live, and what they hold. Uniforms keep their values
+ * per program, so a frame sends again only what changed since this program last drew: `settings`
+ * is the settings object its look and knobs were sent from (`update` installs a new object for
+ * every change, so identity is the version), then the loading progress, the trigger stamps as the
+ * shader reads them, and which sim slots are bound (bit per slot).
+ */
 interface SceneProgram {
   program: WebGLProgram;
   uniforms: Record<UniformName, WebGLUniformLocation | null>;
+  sent: { settings: RenderSettings | undefined; progress: number; triggers: number[]; simOn: number };
+}
+
+/** Why the scene on screen is not drawing: the background shows instead and the frame loop goes on. */
+export interface SceneFailure {
+  scene: SceneId;
+  /** build: its shader did not compile or link; start: its simulation threw while starting; frame: drawing it threw. */
+  stage: "build" | "start" | "frame";
+  /** The error's message (a build failure's carries the annotated info log). */
+  message: string;
 }
 
 /**
- * The scene being drawn: its program (undefined when it failed to build), its simulation, and where
- * its `rain` and `snow` knobs sit in `params` (-1 when it has none, which reads as 0).
+ * The scene being drawn: its program (undefined when it failed to build), its simulation, what
+ * stopped it (see `DitherRenderer.failure`), and where its `rain` and `snow` knobs sit in `params`
+ * (-1 when it has none, which reads as 0).
  */
 interface ActiveScene {
   id: SceneId;
   program: SceneProgram | undefined;
   sim: SceneSim | undefined;
+  failure: SceneFailure | undefined;
   rain: number;
   snow: number;
 }
@@ -108,9 +126,13 @@ export class DitherRenderer {
   readonly #canvas: HTMLCanvasElement;
   /** Shared by every scene's program. */
   readonly #vertex: WebGLShader;
-  /** Each scene's program, built on first use; undefined once it has failed (logged). */
-  readonly #programs = new Map<SceneId, SceneProgram | undefined>();
+  /** The vertex array every draw uses; bound again after a failed frame (see `#fail`). */
+  readonly #vertexArray: WebGLVertexArrayObject;
+  /** Each scene's program, built on first use, or why it failed to build (logged). */
+  readonly #programs = new Map<SceneId, SceneProgram | SceneFailure>();
   #scene: ActiveScene | undefined;
+  /** Set by `retry`: the next frame enters the current scene afresh. */
+  #rebuild = false;
   readonly #blank: WebGLTexture;
   /** Smoothed parallax (-1..1 over the window), eased toward the target `tx`, `ty`. */
   readonly #pointer = { x: 0, y: 0, tx: 0, ty: 0 };
@@ -123,12 +145,28 @@ export class DitherRenderer {
     /** Edges since the previous frame. */
     pressed: false,
     released: false,
-    /** Scene-clock time of the last press that started over the page. */
+    /** Interaction-clock time of the last press that started over the page. */
     pressedAt: NEVER,
   };
   #settings: RenderSettings;
-  /** Scene clock in seconds; stands still while paused. Never reset: scenes share it. */
+  /** Scene clock in seconds; stands still while paused or frozen. Never reset: scenes share it. */
   #clock = 0;
+  /**
+   * Interaction clock: what a press or a "now" trigger is stamped with. It stands still only while
+   * paused, so it is the scene clock unless frozen. Stamps reach the shader (`uMouse.w`,
+   * `uTriggers`) and sims (`SimFrame.triggers`) moved back by how far this clock has run ahead of
+   * the scene clock.
+   *
+   * Reduced-motion policy (frozen): what moves on its own holds still (the scene and motion clocks,
+   * sim steps, weather approach, passages), and a discrete interaction plays its bounded response
+   * and settles. A stamp lands as far behind the still scene clock as real time has run since, so
+   * `t - uMouse.w` and `sinceTrigger` count real seconds: a press's fade or a trigger's event ends
+   * instead of holding its first frame, and what is held only while the button is down ends at
+   * release. Sims see the press and release edges and `fired` but no time (dt 0), so whatever they
+   * do in response is one still step. Unfrozen, the two clocks are equal and stamps reach the
+   * shader exactly as stamped.
+   */
+  #interactionClock = 0;
   /**
    * Motion clock (`uMotionTime`, `SimFrame.motionTime`): each scene-clock step times the motion
    * amount, summed on the same origin as `#clock`, so it equals `#clock * motion` while motion holds
@@ -139,10 +177,13 @@ export class DitherRenderer {
   #paused = false;
   /** Smoothed frames per second, for the lab footer. */
   fps = 0;
-  #frozen: boolean;
+  /** Reduced motion: see `#interactionClock`. */
+  readonly #frozen: boolean;
   readonly #params = new Float32Array(MAX_PARAMS);
-  /** Shader time each trigger slot last fired; far in the past when idle. */
+  /** Interaction-clock time each trigger slot last fired; far in the past when idle. */
   readonly #triggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
+  /** `uTriggers` and `SimFrame.triggers`: the stamps on the scene clock, rewritten in place each frame. */
+  readonly #shownTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** Each slot's stamp as the current scene's sim last saw it, to find the next frame's presses. */
   readonly #seenTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** `SimFrame.fired`, rewritten in place each frame. */
@@ -180,7 +221,8 @@ export class DitherRenderer {
     this.#frozen = frozen;
 
     this.#vertex = compile(gl, gl.VERTEX_SHADER, vertexSource, "vertex");
-    gl.bindVertexArray(gl.createVertexArray());
+    this.#vertexArray = gl.createVertexArray();
+    gl.bindVertexArray(this.#vertexArray);
     const debug = gl.getExtension("WEBGL_debug_renderer_info");
     const gpu: unknown = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
     this.glInfo = `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`;
@@ -217,7 +259,7 @@ export class DitherRenderer {
       if (!event.isPrimary || event.button !== 0 || !mouse.inside) return;
       mouse.down = true;
       mouse.pressed = true;
-      mouse.pressedAt = this.#clock;
+      mouse.pressedAt = this.#interactionClock;
     });
     window.addEventListener("pointerup", (event) => {
       if (event.isPrimary && event.button === 0) lift();
@@ -233,7 +275,7 @@ export class DitherRenderer {
 
   /** Fire one occurrence of the current scene's occasional effect in `slot` right now. */
   trigger(slot: number): void {
-    if (slot >= 0 && slot < MAX_TRIGGERS) this.#triggers[slot] = this.#clock;
+    if (slot >= 0 && slot < MAX_TRIGGERS) this.#triggers[slot] = this.#interactionClock;
   }
 
   get paused(): boolean {
@@ -254,6 +296,10 @@ export class DitherRenderer {
     this.#leaving = { settings: this.#settings, start: Number.NaN };
   }
 
+  /**
+   * Draw with `settings` from the next frame. Pass a new object for every change: a program sends
+   * its look and knobs again only when the object differs from the one it last drew with.
+   */
   update(settings: RenderSettings): void {
     const previous = this.#settings;
     this.#settings = settings;
@@ -276,10 +322,30 @@ export class DitherRenderer {
 
   start(): void {
     const tick = (now: number) => {
-      this.#draw(now);
+      // Asked for first, so a frame that throws cannot end the loop.
       requestAnimationFrame(tick);
+      try {
+        this.#draw(now);
+      } catch (error: unknown) {
+        const scene = this.#scene;
+        if (scene !== undefined && scene.failure === undefined) this.#fail(scene, "frame", error);
+        else console.error("evt=landing.renderer.frame_failed", error);
+      }
     };
     requestAnimationFrame(tick);
+  }
+
+  /** Why the scene on screen is not drawing (the background shows instead), or undefined while it draws. */
+  get failure(): SceneFailure | undefined {
+    return this.#scene?.failure;
+  }
+
+  /** After a failure, enter the scene again from scratch on the next frame (a cut), rebuilding its program if that failed. */
+  retry(): void {
+    const failure = this.#scene?.failure;
+    if (failure === undefined) return;
+    if (failure.stage === "build") this.#programs.delete(failure.scene);
+    this.#rebuild = true;
   }
 
   /** Compile and link a scene's program; throws RendererError (with the info log) on failure. */
@@ -313,31 +379,73 @@ export class DitherRenderer {
     gl.uniform1i(uniforms.uConMarkLine, figures.markLine);
     [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) => gl.uniform1i(location, slot));
     gl.uniform1i(uniforms.uLeaving, LEAVING_UNIT);
-    return { program, uniforms };
+    // Nothing sent yet: NaN and -1 differ from every value the first frame sends.
+    const triggers = Array.from({ length: MAX_TRIGGERS }, () => Number.NaN);
+    return { program, uniforms, sent: { settings: undefined, progress: Number.NaN, triggers, simOn: -1 } };
   }
 
-  /** Leave the current scene (disposing its simulation) and enter `id`, building its program once. */
+  /**
+   * Leave the current scene (disposing its simulation) and enter `id`, building its program once.
+   * A program that fails to build or a simulation that throws while starting leaves the scene
+   * entered but failed (see `failure`).
+   */
   #enter(id: SceneId): ActiveScene {
-    this.#scene?.sim?.dispose();
-    if (!this.#programs.has(id)) {
-      let built: SceneProgram | undefined;
+    this.#release(this.#scene);
+    let built = this.#programs.get(id);
+    if (built === undefined) {
       try {
         built = this.#link(id);
       } catch (error: unknown) {
-        console.error(`evt=landing.renderer.scene_failed scene=${id}`, error);
+        console.error(`evt=landing.renderer.scene_failed scene=${id} stage=build`, error);
+        built = { scene: id, stage: "build", message: error instanceof Error ? error.message : String(error) };
       }
       this.#programs.set(id, built);
     }
-    const program = this.#programs.get(id);
     const params = sceneDefs[id].params;
-    this.#scene = {
+    const scene: ActiveScene = {
       id,
-      program,
-      sim: program ? sceneDefs[id].sim?.(this.#gl) : undefined,
+      program: "program" in built ? built : undefined,
+      sim: undefined,
+      failure: "stage" in built ? built : undefined,
       rain: params.findIndex((def) => def.key === "rain"),
       snow: params.findIndex((def) => def.key === "snow"),
     };
-    return this.#scene;
+    this.#scene = scene;
+    if (scene.program !== undefined) {
+      try {
+        scene.sim = sceneDefs[id].sim?.(this.#gl);
+      } catch (error: unknown) {
+        this.#fail(scene, "start", error);
+      }
+    }
+    return scene;
+  }
+
+  /**
+   * Stop drawing `scene` after its simulation (or its frame) threw: log it, release the simulation
+   * and put back the GL state a half-run sim may have left (framebuffer, blending, vertex array), so
+   * the loop goes on drawing the background until `retry` or another scene.
+   */
+  #fail(scene: ActiveScene, stage: "start" | "frame", error: unknown): void {
+    console.error(`evt=landing.renderer.scene_failed scene=${scene.id} stage=${stage}`, error);
+    scene.failure = { scene: scene.id, stage, message: error instanceof Error ? error.message : String(error) };
+    this.#release(scene);
+    const gl = this.#gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(this.#vertexArray);
+  }
+
+  /** Dispose `scene`'s simulation, once; a dispose that throws is logged, not passed on. */
+  #release(scene: ActiveScene | undefined): void {
+    const sim = scene?.sim;
+    if (scene === undefined || sim === undefined) return;
+    scene.sim = undefined;
+    try {
+      sim.dispose();
+    } catch (error: unknown) {
+      console.error(`evt=landing.renderer.sim_dispose_failed scene=${scene.id}`, error);
+    }
   }
 
   /** The pointer in stage uv for this frame; consumes the press and release edges. */
@@ -364,7 +472,9 @@ export class DitherRenderer {
     this.#lastFrame = now;
     // Cap simulation catch-up, not the footer's measurement of actual frame delivery.
     if (elapsed > 0) this.fps = this.fps === 0 ? 1 / elapsed : this.fps * 0.92 + (1 / elapsed) * 0.08;
-    const step = this.#paused || this.#frozen ? 0 : dt;
+    // The interaction clock stands still only while paused; the scene clock also while frozen.
+    const live = this.#paused ? 0 : dt;
+    const step = this.#frozen ? 0 : live;
     const seconds = now / 1000;
     const leaving = this.#leaving;
     if (leaving !== undefined && Number.isNaN(leaving.start)) leaving.start = seconds;
@@ -372,6 +482,7 @@ export class DitherRenderer {
     const s = leaving?.settings ?? this.#settings;
     const motion = this.#frozen ? 0 : s.motion;
     this.#clock += step;
+    this.#interactionClock += live;
     this.#motionClock += step * motion;
     const width = Math.max(1, Math.ceil(this.#canvas.clientWidth / s.pixel));
     const height = Math.max(1, Math.ceil(this.#canvas.clientHeight / s.pixel));
@@ -388,7 +499,7 @@ export class DitherRenderer {
     const pointer = this.#pointerState();
 
     const current = this.#scene;
-    const scene = current && current.id === s.scene && !this.#reenter ? current : this.#enter(s.scene);
+    const scene = current && current.id === s.scene && !this.#reenter && !this.#rebuild ? current : this.#enter(s.scene);
     const entered = scene !== current;
     const arrival = this.#arrival;
     if (entered) {
@@ -400,6 +511,7 @@ export class DitherRenderer {
       arrival.start = passed || (current === undefined && this.#passing(s)) ? Number.NaN : -Infinity;
       arrival.fromFrame = passed;
       this.#reenter = false;
+      this.#rebuild = false;
     } else if (Number.isNaN(arrival.start)) {
       arrival.start = seconds;
     }
@@ -410,15 +522,13 @@ export class DitherRenderer {
     passage.exit = leaving === undefined ? 0 : (choreography?.exit ?? 0) <= 0 ? 1 : Math.min(1, (seconds - leaving.start) / (choreography?.exit ?? 1));
     const dissolve = Math.max(0, 1 - since / PASSAGE_DISSOLVE);
     const program = scene.program;
-    if (!program) {
+    if (program === undefined || scene.failure !== undefined) {
       gl.viewport(0, 0, width, height);
       gl.clearColor(...rgb(s.bg), 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (leaving !== undefined) this.#left(width, height);
       return;
     }
-    const params = this.#params;
-    for (let i = 0; i < MAX_PARAMS; i++) params[i] = s.params[i] ?? 0;
     // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
     // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
     // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s
@@ -439,11 +549,16 @@ export class DitherRenderer {
     // A slot fired when its stamp moved to a real press since the sim's previous frame. A scene just
     // entered has a fresh sim with nothing to compare against: its first frame reports no presses
     // (stamps were reset to idle when the scene changed, so an earlier visit's never replay).
+    // Stamps reach the shader and sims on the scene clock (`#interactionClock`); `lag` is 0 unfrozen.
+    const lag = this.#interactionClock - this.#clock;
+    const shown = this.#shownTriggers;
     for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
       const stamp = this.#triggers[slot] ?? NEVER;
       this.#fired[slot] = !entered && stamp > NEVER && stamp !== this.#seenTriggers[slot];
       this.#seenTriggers[slot] = stamp;
+      shown[slot] = stamp > NEVER ? stamp - lag : NEVER;
     }
+    const pressedAt = this.#mouse.pressedAt > NEVER ? this.#mouse.pressedAt - lag : NEVER;
     // Simulations upload (and so bind) their textures: step them before binding this frame's units.
     const simTextures = scene.sim?.frame({
       dt: step,
@@ -455,7 +570,7 @@ export class DitherRenderer {
       aspect: width / height,
       values: s.params,
       params: s.knobs,
-      triggers: this.#triggers,
+      triggers: shown,
       fired: this.#fired,
       pointer,
       parallax: p,
@@ -475,23 +590,43 @@ export class DitherRenderer {
     gl.uniform2f(u.uRes, width, height);
     gl.uniform1f(u.uTime, this.#clock);
     gl.uniform1f(u.uMotionTime, this.#motionClock);
-    gl.uniform1i(u.uDither, ditherIds.indexOf(s.dither));
-    gl.uniform1i(u.uColor, colorIds.indexOf(s.color));
-    gl.uniform1f(u.uLevels, s.levels);
-    gl.uniform1f(u.uMotion, motion);
     gl.uniform2f(u.uPointer, p.x, p.y);
-    gl.uniform4f(u.uMouse, pointer.x, pointer.y, pointer.down ? 1 : 0, this.#mouse.pressedAt);
-    gl.uniform3f(u.uBg, ...rgb(s.bg));
-    gl.uniform3f(u.uInk, ...rgb(s.ink));
-    gl.uniform3f(u.uAccent, ...rgb(s.accent));
-    gl.uniform1fv(u.uParams, this.#params);
-    gl.uniform1i(u.uView, viewIds.indexOf(s.view));
-    gl.uniform1f(u.uProgress, this.#progress);
-    gl.uniform1fv(u.uTriggers, this.#triggers);
-    gl.uniform4f(u.uSimOn, simTextures[0] ? 1 : 0, simTextures[1] ? 1 : 0, simTextures[2] ? 1 : 0, simTextures[3] ? 1 : 0);
+    gl.uniform4f(u.uMouse, pointer.x, pointer.y, pointer.down ? 1 : 0, pressedAt);
     gl.uniform2f(u.uWeather, weather.wet, weather.lying);
     gl.uniform2f(u.uPassage, passage.enter, passage.exit);
     gl.uniform2f(u.uDissolve, dissolve, arrival.fromFrame ? 1 : 0);
+    // The rest only when it changed since this program last drew (see SceneProgram).
+    const sent = program.sent;
+    if (sent.settings !== s) {
+      sent.settings = s;
+      const params = this.#params;
+      for (let i = 0; i < MAX_PARAMS; i++) params[i] = s.params[i] ?? 0;
+      gl.uniform1i(u.uDither, ditherIds.indexOf(s.dither));
+      gl.uniform1i(u.uColor, colorIds.indexOf(s.color));
+      gl.uniform1f(u.uLevels, s.levels);
+      gl.uniform1f(u.uMotion, motion);
+      gl.uniform3f(u.uBg, ...rgb(s.bg));
+      gl.uniform3f(u.uInk, ...rgb(s.ink));
+      gl.uniform3f(u.uAccent, ...rgb(s.accent));
+      gl.uniform1fv(u.uParams, params);
+      gl.uniform1i(u.uView, viewIds.indexOf(s.view));
+    }
+    if (sent.progress !== this.#progress) {
+      sent.progress = this.#progress;
+      gl.uniform1f(u.uProgress, this.#progress);
+    }
+    let triggersChanged = false;
+    for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
+      if (sent.triggers[slot] === shown[slot]) continue;
+      sent.triggers[slot] = shown[slot] ?? NEVER;
+      triggersChanged = true;
+    }
+    if (triggersChanged) gl.uniform1fv(u.uTriggers, shown);
+    const simOn = (simTextures[0] ? 1 : 0) | (simTextures[1] ? 2 : 0) | (simTextures[2] ? 4 : 0) | (simTextures[3] ? 8 : 0);
+    if (sent.simOn !== simOn) {
+      sent.simOn = simOn;
+      gl.uniform4f(u.uSimOn, simOn & 1, (simOn >> 1) & 1, (simOn >> 2) & 1, (simOn >> 3) & 1);
+    }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     if (leaving !== undefined && passage.exit >= 1) this.#left(width, height);
   }
