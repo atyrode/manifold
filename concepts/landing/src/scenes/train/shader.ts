@@ -32,12 +32,12 @@
 // country, the tea sloshing and settling from the jolt) and, leaving, runs into one (the cutting
 // rises, the mouth sweeps in, the window turns to a mirror). trainPassage lays a tunnel of its own
 // over the timetable while it plays; all of it is exactly off at rest.
+import { glslFloat } from "../../shaders/glsl.ts";
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { TRAIN_BLOCK, TRAIN_BLOCKS, TRAIN_BRIDGE, TRAIN_CAR_SLOTS, TRAIN_CROSSING, TRAIN_EVENT_SLOTS, TRAIN_FOCAL, TRAIN_LINES, TRAIN_PASSAGE, TRAIN_ROAD_Z, TRAIN_STATION, TRAIN_TUNNEL } from "./sim.ts";
 
-/** A number as a GLSL float literal. */
-const glslFloat = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
-
 export const trainGlsl = `
+${birdsGlsl}
 // ---- The view ----
 const float TRAIN_F = ${glslFloat(TRAIN_FOCAL)};
 const float TRAIN_HORIZON = 0.05;     // the horizon's height on screen (centre 0)
@@ -1805,9 +1805,37 @@ vec3 trainTunnelScene(vec2 o, float t, vec3 col, inout float hitZ) {
   return mix(c, TRAIN_SODIUM * 1.3, lamp);
 }
 
+// Birds over the line's country by day (the shared birds, shaders/lib/birds.ts), flying in the
+// window's own frame as the land is drawn: their kinds follow the line unless the knob picks one
+// (rooks and geese over the country line; rooks, swallows, gulls and pigeons over the rural fields;
+// choughs, swifts and a buzzard circling in the mountains), none at night, fewer in snow, none in
+// steady rain; a swooping party comes down to a few metres over the fields. The nearest bird at o.
+BirdHit trainBirds(vec2 o) {
+  if (K_birds <= 0.0) return birdNone();
+  float calm = smoothfall(0.5, 0.1, K_rain) * (1.0 - 0.5 * smoothstep(0.2, 0.8, K_snow));
+  // Lanes from 40 m out to the hills, and from just over the horizon to near the window's top (uv.y).
+  BirdSky sky = birdSky(K_birds * calm, K_birdKind, K_birdFormation - 1.0, vec2(40.0, 900.0), TRAIN_HORIZON + 0.5 + vec2(0.03, 0.3), vec2(trainSalt, 3.7 * K_line));
+  sky.mixA = vec4(0.45, 0.1, 0.15, 0.2);
+  sky.mixB = vec3(0.1, 0.0, 0.0);
+  if (abs(K_line - TRAIN_RURAL) < 0.5) {
+    sky.mixA = vec4(0.4, 0.25, 0.15, 0.05);
+    sky.mixB = vec3(0.05, 0.1, 0.0);
+  } else if (abs(K_line - TRAIN_MOUNTAIN) < 0.5) {
+    sky.mixA = vec4(0.35, 0.0, 0.0, 0.05);
+    sky.mixB = vec3(0.4, 0.0, 0.2);
+  }
+  sky.hours = vec4(0.22, 0.26, 0.8, 0.84);
+  sky.clock = vec2(K_time, K_cycle);
+  sky.swoopTo = 5.0;
+  sky.parallax = trainEyeOff * TRAIN_F;
+  BirdCamera cam = BirdCamera(TRAIN_HORIZON + 0.5, TRAIN_F, TRAIN_EYE, 1.0, 1.0);
+  return birdFlights(vec2(o.x, o.y + 0.5), sky, cam, uMotionTime, trainPx);
+}
+
 // What the window shows at image point o: the land, the verge, then whatever passes close (station,
-// crossing, cutting, poles, girders, a tunnel's wall), the glow of lights in the air, and the rain or
-// snow falling through it all in depth, stopped by the first thing it meets.
+// crossing, cutting, poles, girders, a tunnel's wall), birds in the air in front of whatever lies
+// beyond them, the glow of lights in the air, and the rain or snow falling through it all in depth,
+// stopped by the first thing it meets.
 vec3 trainOutside(vec2 o, vec2 rainUV, float aspect, float t, inout float accent) {
   float hitZ = 1e6;
   vec3 glow = vec3(0.0);
@@ -1819,6 +1847,11 @@ vec3 trainOutside(vec2 o, vec2 rainUV, float aspect, float t, inout float accent
   col = trainTunnelScene(o, t, col, hitZ);
   col = trainPoles(o, t, col, hitZ);
   col = trainTruss(o, col, hitZ);
+  BirdHit bird = trainBirds(o);
+  if (bird.cover > 0.5 && bird.depth < hitZ) {
+    hitZ = bird.depth;
+    col = trainFade(trainLit(bird.albedo, vec3(0.0, 0.0, -1.0)), bird.depth, (o.y - TRAIN_HORIZON) * bird.depth / TRAIN_F + TRAIN_EYE);
+  }
   col += glow * (1.0 + 1.5 * K_fog + 1.2 * max(K_rain, K_snow));
   if (hitZ <= TRAIN_WALL_Z + 0.01) return col;
   // The rain stops at whatever it meets first: the canopy's front edge shelters what lies under it.

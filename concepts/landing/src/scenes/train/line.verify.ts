@@ -5,8 +5,9 @@
 // exactly what it drew with or without a tunnel in its timetable. Out of a tunnel's mouth straight
 // onto a viaduct, no cutting rock stands over the bridge (it does where there is none); and coming
 // out of a long tunnel with the next one just across a viaduct, the train is still in the one it is
-// in, though the next one's middle is nearer. Small entries draw those parts on their own, from a
-// uSim0 timetable laid out as sim.ts documents.
+// in, though the next one's middle is nearer. The shared birds fly over the line's country by day
+// (some cross the window over a few minutes of the motion clock) and not at night or while off.
+// Small entries draw those parts on their own, from a uSim0 timetable laid out as sim.ts documents.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { sceneDefs } from "../index.ts";
@@ -32,9 +33,9 @@ function timetable(gl: WebGL2RenderingContext, events: readonly (readonly [numbe
   return texture;
 }
 
-/** The knobs at noon on a line. */
-function onLine(line: number): readonly number[] {
-  return renderSettings(defaultsFor("train"), { ...paramDefaults("train"), time: 0.5, line }).params;
+/** The knobs at noon on a line, and any others. */
+function onLine(line: number, more: Readonly<Record<string, number>> = {}): readonly number[] {
+  return renderSettings(defaultsFor("train"), { ...paramDefaults("train"), time: 0.5, line, ...more }).params;
 }
 
 /** One row's red and green channels, column by column. */
@@ -71,8 +72,10 @@ export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unkn
         float d = (uv.x - 0.5) * 2400.0;
         return shadeOf(vec3(trainHillsH(d) / 255.0, trainRidgeH(d) / 2550.0, 0.0), 0.0, 0.0);
       }
-      // What stands right outside the window: the tunnel's wall in red, the cutting in green.
       vec2 o = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
+      // The birds crossing the window, in red.
+      if (regressionPart == 2) return shadeOf(vec3(trainBirds(o).cover, 0.0, 0.0), 0.0, 0.0);
+      // What stands right outside the window: the tunnel's wall in red, the cutting in green.
       float hitZ = 1e6;
       trainTunnelScene(o, t, vec3(0.0), hitZ);
       return shadeOf(vec3(abs(hitZ - TRAIN_WALL_Z) < 0.01 ? 1.0 : 0.0, abs(hitZ - TRAIN_CUT_Z) < 0.01 ? 1.0 : 0.0, 0.0), 0.0, 0.0);
@@ -122,7 +125,25 @@ export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unkn
     if (byMouth < 0.3) fail(`no cutting outside a tunnel's mouth without a viaduct (${(byMouth * 100).toFixed(0)}%): the check would be vacuous`);
     const inTunnel = share(pair, 0);
     if (inTunnel < 0.9) fail(`10 m before a tunnel's end the window shows its wall on only ${(inTunnel * 100).toFixed(0)}%`);
-    return { trainLine: { hillsTop: { rural: highest(rural.r), country: highest(country.r), mountain: highest(mountain.r) }, cutByMouth: byMouth, wallInTunnel: inTunnel } };
+
+    gl.uniform1i(part, 2);
+    // Bird pixels over the window across ten minutes of the motion clock, a frame every 15 s.
+    const birds = (more: Readonly<Record<string, number>>): number => {
+      let n = 0;
+      for (let m = 15; m <= 600; m += 15) {
+        const bytes = draw(gl, linked, onLine(1, more), none.texture, { time: m, motionTime: m, motion: 1 });
+        for (let i = 0; i < bytes.length; i += 4) if ((bytes[i] ?? 0) > 127) n++;
+      }
+      return n;
+    };
+    const on = { birds: 1, "birds-amount": 1 };
+    const byDay = birds(on);
+    if (byDay === 0) fail("no bird crossed the rural line's window in ten minutes of a day");
+    const atNight = birds({ ...on, time: 0 });
+    if (atNight > 0) fail(`${atNight} bird pixels at midnight`);
+    const off = birds({});
+    if (off > 0) fail(`${off} bird pixels with the birds off`);
+    return { trainLine: { hillsTop: { rural: highest(rural.r), country: highest(country.r), mountain: highest(mountain.r) }, cutByMouth: byMouth, wallInTunnel: inTunnel, birdPixelsByDay: byDay } };
   } finally {
     gl.deleteProgram(linked);
     for (const texture of [none, tunnel, viaduct, mouth, pair]) texture.dispose();

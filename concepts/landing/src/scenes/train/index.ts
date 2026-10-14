@@ -11,6 +11,7 @@
 // mouth sweeping by, the cutting's rock sinking away to open the country, the tea settling from the
 // jolt) and, leaving, runs into one.
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { trainGlsl } from "./shader.ts";
@@ -28,6 +29,11 @@ const params: readonly ParamDef[] = [
   feature("line", "cars", "cars", true, "traffic", 0.4, "Cars on the country road alongside, headlights sweeping the road ahead; now and then one keeps pace with the train for a while before it falls behind or pulls away. Now: a car overtakes.", { trigger: 4 }),
   feature("country", "lights", "lit windows", true, "lit", 0.4, "Lights in the night: farmhouse windows, a village strung along the foot of the mountains, a farm high on the hills, a radio mast's slow red blink. How many windows are lit."),
   toggle("country", "river", "river", true, "A river that comes alongside the line for a while, the moon breaking on it in a long path of glints and the far bank's trees mirrored, then wanders off across the fields."),
+  ...birdKnobs({
+    kind: "mixed",
+    mixed: "the line's own: rooks and skeins of geese over the country line; rooks, swallows low over the fields, gulls and pigeons on the rural line; choughs, swifts and a buzzard circling in the mountains.",
+    help: "Birds crossing the country outside by day, from the fields to the far hills: nearer trees, houses and hills hide them, and a party swoops down over the fields now and then. None at night, fewer in snow, none in steady rain.",
+  }),
   range("compartment", "lamp", "reading lamp", 0.7, "The warm lamp above your seat: it lights the wall, the table and the tea, and shows in the glass. Low: a dark compartment, and the night outside comes clearer."),
   range("compartment", "reflection", "reflections", 0.5, "How strongly the window mirrors the lit compartment over the night: the lamp, the luggage rack, the seats, your own dark head (it leans as you move the pointer). In a tunnel the glass becomes a mirror."),
   feature("compartment", "tea", "glass of tea", true, "steam", 0.5, "A glass of tea in a silver holder, a slice of lemon, a spoon: the surface rings at every clack and sloshes as the train brakes, and the tea glows amber when lamps pass behind it. Click to knock on the table. The amount is how much it steams."),
@@ -52,6 +58,7 @@ export const trainScene: SceneDef = {
     line: { title: "Along the line", blurb: "What the train passes now and then, and how often: stations, level crossings, bridges, tunnels, and the cars on the road alongside." },
     country: { title: "Country", blurb: "The land outside: lit windows in the night, and the river that comes and goes alongside." },
     compartment: { title: "Compartment", blurb: "Your side of the glass: the reading lamp, its reflection, the glass of tea and the curtain." },
+    birds: birdsGroup,
     sky: atmosphereGroups.sky,
     weather: { title: atmosphereGroups.weather.title, blurb: "Rain closes the sky, wets the land (the platforms and roads shine with the lamps) and is driven back along the pane; snow streams past the window and settles on the fields, the roofs and the foot of the glass. Fog lies in the hollows; the train's own speed slants whatever falls." },
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: the M as a constellation over the country, and on the stations' boards." },
