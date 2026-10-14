@@ -39,7 +39,7 @@ mathematics. All have a first implementation in the lab:
 | Kelp forest | `kelp` | Buoyant Verlet stipes in surge, boids school | `VerletSystem` |
 | Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling | `VerletSystem` |
 | Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds | |
-| Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist | |
+| Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist, four seasons' washes; painted in sections joined by mounting silk so days of unrolling stay precise | |
 | Incense smoke | `incense` | Buoyant smoke, laminar to turbulent | `FluidSim` |
 | Sand table | `sandtable` | Theta–rho ball and sand pendulum on a height field | `HeightField` |
 | Chladni plate | `chladni` | Sand grains drifting to the nodal lines of plate modes | |
@@ -48,9 +48,9 @@ mathematics. All have a first implementation in the lab:
 | Pearlescent fluid (rheoscopic) | `pearl` | Flake orientation advected and turned by the flow | `FluidSim` |
 | Petri dish | `petri` | Gray–Scott Turing patterns, Barkley BZ spirals | `GpuCompute` |
 | Slime mould network (Physarum) | `physarum` | Jones agent model linking oat flakes | `GpuCompute` |
-| Hyperbolic tiling | `hyperbolic` | Möbius glide over a {p,q} weave | |
+| Hyperbolic tiling | `hyperbolic` | Möbius glide over a {p,q} weave; drags re-grip when the map or screen shape changes | |
 | River delta from above | `delta` | Shallow water erosion and deposition | `GpuCompute` |
-| Fractals | `fractal` | Julia walk, Mandelbrot dive, Apollonian gasket, Newton garden | |
+| Fractals | `fractal` | Julia walk, Mandelbrot dive, Apollonian gasket, Newton garden; drag pan tethered to the frame | `ElasticPan` |
 | Prism | `prism` | Dispersion through glass, total internal reflection | |
 
 ## Slices of life and more

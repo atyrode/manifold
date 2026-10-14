@@ -34,7 +34,7 @@ export const fractalScene: SceneDef = {
   passage: FRACTAL_PASSAGE,
   params,
   groups: {
-    fractal: { title: "Fractal", blurb: "Which fractal, and how it lives. Hover to nudge it, drag to pan; let go and it drifts home." },
+    fractal: { title: "Fractal", blurb: "Which fractal, and how it lives. Hover to nudge it, drag to pan (past the frame's edge it pulls back like elastic); let go and it drifts home." },
     ink: { title: "Ink & light", blurb: "The palette, the outline, and the lines and filigree drawn around the set." },
     manifold: { title: "Manifold mark", blurb: "The M as an orbit trap, woven into the fractal." },
   },
