@@ -32,6 +32,7 @@ import {
   BEES_POPPY,
   BEES_STAGE_MIN,
   BEES_WILD,
+  BEES_DEPTH_STEP,
   BEES_YH,
 } from "./sim.ts";
 
@@ -143,7 +144,9 @@ const int BEES_C_BLUE = ${BEES_CODE.blue};
 const int BEES_C_ORANGE_DIM = ${BEES_CODE.orangeDim};
 const int BEES_C_WHITE_DIM = ${BEES_CODE.whiteDim};
 const int BEES_C_BLUE_DIM = ${BEES_CODE.blueDim};
-const int BEES_C_TRAIL = ${BEES_CODE.trail};
+const int BEES_C_DIM = ${BEES_CODE.beeDim};
+const int BEES_C_FAINT = ${BEES_CODE.beeFaint};
+const float BEES_DEPTH_STEP = ${glslFloat(BEES_DEPTH_STEP)};
 // The crown of an old apple tree: lobes (x, y, radius) in metres from the foot of the trunk, spreading
 // wide; each tree jitters, stretches and resizes them by its seed.
 const vec3 BEES_CROWN[9] = vec3[9](vec3(-2.7, 2.7, 1.15), vec3(-1.5, 3.1, 1.3), vec3(-0.2, 3.5, 1.45), vec3(1.2, 3.2, 1.3), vec3(2.6, 2.8, 1.1), vec3(-1.1, 3.9, 1.0), vec3(0.5, 4.0, 1.05), vec3(-2.0, 2.2, 0.8), vec3(2.0, 2.3, 0.85));
@@ -170,6 +173,9 @@ float beesAa = 0.002;
 float beesAspect = 1.78;
 float beesSeed = 0.0;
 float beesCut = 0.0;
+// The depth (m) of the nearest thing drawn at this cell that can hide a bee behind it: the wall, a tree, a
+// hive, the foreground flowers. 1e4 for the sky, the hills and the ground (a bee is always in front of that).
+float beesZ = 1e4;
 
 float beesS(float y) {
   return max(BEES_YH - y, 0.012) / BEES_CAM;
@@ -827,9 +833,10 @@ void beesBlades(vec2 p, float tm, inout vec3 col) {
 // glint of its wing, the dotted line it leaves in the air, a butterfly's wings and body.
 vec3 beesSpeck(int code, vec3 under) {
   if (code == BEES_C_BEE) return vec3(0.05, 0.03, 0.02);
+  if (code == BEES_C_DIM) return mix(under, vec3(0.05, 0.03, 0.02), 0.6);
+  if (code == BEES_C_FAINT) return mix(under, vec3(0.05, 0.03, 0.02), 0.4);
   if (code == BEES_C_LOADED) return vec3(1.0, 0.75, 0.10);
   if (code == BEES_C_WING) return mix(under, vec3(1.0, 1.0, 0.94), 0.95);
-  if (code == BEES_C_TRAIL) return mix(under, vec3(0.05, 0.03, 0.02), 0.5);
   if (code == BEES_C_BODY) return vec3(0.12, 0.08, 0.06);
   if (code == BEES_C_ORANGE) return vec3(1.0, 0.55, 0.05);
   if (code == BEES_C_WHITE) return vec3(1.0, 1.0, 0.97);
@@ -905,17 +912,40 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
     beesCut = cloudCut;
   }
 
-  for (int k = 0; k < BEES_TREE_N; k++) beesTree(k, p, col);
+  // What can hide a bee: each thing drawn that changes the cell notes its depth in beesZ.
+  vec3 before = col;
+  for (int k = 0; k < BEES_TREE_N; k++) {
+    before = col;
+    beesTree(k, p, col);
+    if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_TREE_Y[k]);
+  }
+  before = col;
   beesWall(p, col);
+  if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
   if (y < g) {
     beesCut = max(cloudCut, hardEdge(gs));
     beesPatch(3, p, gust, tm, col);
     beesCut = cloudCut;
   }
-  for (int k = 0; k < BEES_HIVE_N; k++) beesHive(BEES_HIVE_ORDER[k], p, col, accent);
-  for (int i = 0; i < BEES_FOX_N; i++) beesFoxglove(i, p, tm, col);
-  for (int i = 0; i < BEES_BLOOM_N; i++) beesBloomNear(i, p, tm, col);
+  for (int k = 0; k < BEES_HIVE_N; k++) {
+    int hi = BEES_HIVE_ORDER[k];
+    before = col;
+    beesHive(hi, p, col, accent);
+    if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_HIVE_Y[hi]);
+  }
+  for (int i = 0; i < BEES_FOX_N; i++) {
+    before = col;
+    beesFoxglove(i, p, tm, col);
+    if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_FOX_Y[i]);
+  }
+  for (int i = 0; i < BEES_BLOOM_N; i++) {
+    before = col;
+    beesBloomNear(i, p, tm, col);
+    if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_BLOOM_Y[i]);
+  }
+  before = col;
   beesBlades(p, tm, col);
+  if (col != before) beesZ = 3.0;
 
   // The golden haze the low sun scatters toward the eye, and a soft darkening toward the corners.
   col += beesSun * 0.07 * exp(-5.0 * length(dir - sky.sun)) * (1.0 + 0.4 * (1.0 - smoothstep(0.4, 0.7, y)));
@@ -926,8 +956,9 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   ivec2 ic = ivec2(cell);
   ivec2 size = textureSize(uSim0, 0);
   if (uSimOn.x > 0.5 && ic.x < size.x && ic.y < size.y) {
-    int code = int(texelFetch(uSim0, ic, 0).r * 255.0 + 0.5);
-    if (code > 0) col = snapLevel(beesSpeck(code, col));
+    vec2 tex = texelFetch(uSim0, ic, 0).rg;
+    int code = int(tex.r * 255.0 + 0.5);
+    if (code > 0 && tex.g * 255.0 / BEES_DEPTH_STEP < beesZ) col = snapLevel(beesSpeck(code, col));
   }
   return shadeOf(col, inkOf(col, 1.25, 1.0), clamp(accent, 0.0, 1.0));
 }
