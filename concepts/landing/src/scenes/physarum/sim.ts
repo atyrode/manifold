@@ -25,7 +25,9 @@
 //   - Salt (dragged across the dish), light (the sea on the Tokyo map, lit in the experiment so
 //     the mould would shun it) and the dish's glass wall repel it, block it and kill the trail.
 //   - Sensing saturates: where the plasmodium crowds onto a flake every sensor reads the same, so
-//     specks cross it in straight lines and leave along the veins instead of circling it forever.
+//     specks cross it in straight lines and leave along the veins instead of circling it forever;
+//     and every filament above a third of the trunk level reads alike, so the specks spread over
+//     the mesh rather than piling into a few heavy bands.
 // Per frame the trail is normalised by its trunk level (Σt³ / Σt² outside the flakes, followed
 // over a second or two), so the picture is the same at any population or evaporation and the
 // shader can draw trunks bright and the lace dim; smoothed over half a second, so the specks'
@@ -34,11 +36,14 @@
 // the shuttle streaming: a slow brightness wave running out along the veins, easing to a stop and
 // running back every minute or so.
 //
-// The first frame opens on a grown network: a sketch of one (see "the sketch" below) seeds the
-// trail and the view, the specks are spread over it, and a GPU prewarm (a fixed count of steps, spread
-// over frames on a slow machine) lets the mould take it over. The view crosses over from the sketch to
-// the live mould as the steps come in, and the sketch lingers a while as slime. Without float render
-// targets the scene shows the sketch, still, with its streaming.
+// The first frame opens on a grown network: a web of one (see "the sketch" below: trunks joining the
+// flakes, thinner veins between, a fine lace over the dish, widths by flow) seeds the trail and the
+// view, the specks are spread over it, and a GPU prewarm (a fixed count of steps, spread over frames
+// on a slow machine) lets the mould take it over. The view crosses over from the sketch to the live
+// mould as the steps come in. The web's lace and thin veins stay on as a faint film the trail never
+// falls below (see DIFFUSE), so the mould's own trunks form and reorganise over a fine net that does
+// not condense away; it fades while an M is laid. Without float render targets the scene shows the
+// sketch, still, with its streaming.
 //
 // Textures:
 //   uSim0  rg16f over the trail grid (the frame plus PHYSARUM_MARGIN texels on every side): R the
@@ -60,7 +65,7 @@ import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { runBudgeted } from "../../sims/clock.ts";
 import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget, type Scatter } from "../../sims/gpu.ts";
-import { clamp } from "../../sims/math.ts";
+import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -108,8 +113,12 @@ const SPEED = 1;
 const WANDER = 0.08;
 /** Rotation per step (degrees): Jones's 45°, or the sensor angle where that is wider. */
 const TURN_MIN = 45;
-/** Sensed trail saturates here (× the trunk level): crowds on a flake read flat, so specks cross them. */
-const SENSE_CAP = 1.5;
+/**
+ * Sensed trail saturates here (× the trunk level): every filament above it smells alike, so specks
+ * spread over the mesh instead of piling into a few heavy bands that starve the rest, and a crowd on
+ * a flake reads flat, so they cross it.
+ */
+const SENSE_CAP = 0.3;
 /**
  * Food as sensed (× the trunk level) by a fed and by a hungry speck (hungry: under HUNGRY of LIFE
  * left): a halo round each flake, flat over its pool and falling off linearly over HALO_REACH sensor
@@ -136,10 +145,10 @@ const FEED_SCALE = 1.3;
 /** Evaporation per step at evaporation 0 and 1 (log-spaced between; Jones's ~10% at 0.5). */
 const LOSS_MIN = 0.03;
 const LOSS_MAX = 0.3;
-/** Specks seeded along the sketch's trunks, along its fans and at the flakes; the rest anywhere on the dish. */
-const SEED_TRUNKS = 0.3;
-const SEED_FANS = 0.12;
-const SEED_FLAKES = 0.18;
+/** Specks seeded along the sketch's web, along its fans and at the flakes; the rest anywhere on the dish. */
+const SEED_EDGES = 0.6;
+const SEED_FANS = 0.1;
+const SEED_FLAKES = 0.12;
 
 // ---- the view ---------------------------------------------------------------------------------
 
@@ -207,18 +216,18 @@ const PREWARM_STEPS = PREWARM_FIRST + PREWARM_CHUNK * Math.ceil((320 - PREWARM_F
 
 // ---- the sketch -------------------------------------------------------------------------------
 
-/** How far trunks wander off their chord (share of its length). */
-const TRUNK_WANDER = 0.07;
 /** Tributaries fanning out of each flake: how many, how far (heights), how much they wander. */
 const FAN_MIN = 4;
 const FAN_MAX = 8;
 const FAN_SHORT = 0.03;
 const FAN_LONG = 0.08;
 const FAN_WANDER = 0.12;
-/** The lace: Voronoi cell size (heights), level (sketch units: trunks ~1.3) and line half-width (texels). */
-const LACE_CELL = 0.07;
-const LACE_LEVEL = 0.2;
-const LACE_SIGMA = 0.6;
+/**
+ * The film (stampFilm): the trail never falls below the sketch's lace and thin veins, at FILM_GAIN
+ * times their level (× the trunk level). Weak enough that the mould lays its own trunks over it,
+ * strong enough that the lace is smelt and the specks ride it. It fades away under the M.
+ */
+const FILM_GAIN = 1;
 
 // ---- the dish ---------------------------------------------------------------------------------
 
@@ -1067,12 +1076,16 @@ class FoodBook {
 
 // ---- the sketch: a grown network for the first frame --------------------------------------------
 //
-// What the mould looks like once it has spread, drawn on the CPU so the first frame (and a machine
-// without float targets) shows one: a faint reticulated lace over the dish (the edges of a jittered
-// Voronoi tiling, patchy), trunks wandering between neighbouring flakes (their relative-
-// neighbourhood graph, the sparse network a Physarum approximates; the minimum spanning tree's
-// links thickest, every one swelling and narrowing along its length) and a fan of fine tributaries
-// round each flake. The live mould starts from it and grows its own network out of it.
+// What the mould looks like once it has spread, built on the CPU so the first frame (and a machine
+// without float targets) shows one. A web of junctions (the flakes, and a jittered scatter of points,
+// finer round the flakes and toward the dish's wall) is joined by a Delaunay mesh, and flow is routed
+// over it: the flakes' spanning tree from the heart (each link carrying the flakes it feeds), the
+// loops of their relative-neighbourhood graph and a few hubs out in the gaps, big links first so that
+// the rest merge into the trunks already laid. Veins are drawn by Murray's law, their radius with the
+// cube root of their flow: trunks joining the flakes, thinner veins between, and wherever no flow runs
+// the mesh is thinned at random into a fine lace of polygonal cells (patchy over the dish, with
+// feeders beside the veins). A fan of tributaries leaves each flake. The live mould starts from it,
+// and its lace and thin veins stay on as the film (stampFilm).
 
 /** A vein of the sketch, as points ~0.7 texel apart (trail texels). */
 interface Path {
@@ -1080,7 +1093,7 @@ interface Path {
   readonly ys: Float64Array;
   /** Texels along it. */
   readonly length: number;
-  /** The flake it leaves, and the one it reaches (-1: a tributary, petering out in the agar). */
+  /** The web node it leaves (the flakes come first), and the one it reaches (-1: a tributary, petering out in the agar). */
   readonly from: number;
   readonly to: number;
   /** Trail level (sketch units) and profile width (texels); a tributary tapers from these to nothing. */
@@ -1089,8 +1102,49 @@ interface Path {
 }
 
 interface SketchPaths {
-  readonly trunks: readonly Path[];
+  /** The web's junctions in trail texels: the flakes first, in their order, then the lace's. */
+  readonly nodes: readonly Point[];
+  /** The web's veins between junctions, lace included. */
+  readonly edges: readonly Path[];
+  /** Tributaries fanning out of each flake. */
   readonly fans: readonly Path[];
+}
+
+/** Whether the mould keeps out of a point (trail texels): the lit sea. */
+type Blocked = (x: number, y: number) => boolean;
+
+/** A link to route over the mesh: junctions a and b, carrying this much flow (flakes fed). */
+interface Link {
+  readonly a: number;
+  readonly b: number;
+  readonly flow: number;
+}
+
+/** Junction spacing in open agar (heights), the share of it round flakes and by the wall, and the longest mesh edge (heights). */
+const WEB_SPACING = 0.062;
+const WEB_FINE = 0.62;
+const WEB_LONGEST = 0.2;
+/** Hubs: junctions out in the gaps tied in by thin veins: how many, how far apart (heights), and their flows. */
+const WEB_HUBS = 10;
+const HUB_GAP = 0.16;
+const HUB_FLOW = 0.6;
+const HUB_LOOP = 0.45;
+/** Lace: level (sketch units), the share of the mesh's other edges kept in the open (more in patches and beside veins), and the cap on a feeder's level. */
+const LACE_LEVEL = 0.2;
+const LACE_KEEP = 0.34;
+const FEEDER_MAX = 0.36;
+/** A slow drift over the whole web (heights), and how far a vein wanders off its curve (share of its length). */
+const WEB_DRIFT = 0.03;
+const WEB_WANDER = 0.02;
+/** Veins at or above this sketch level are the web's own, to keep or lose; fainter ones are lace. */
+const VEIN_LEVEL = 0.4;
+/** The film keeps the lace and the veins below this sketch level: the trunks are the mould's to lay. */
+const FILM_TRUNK = 0.8;
+
+/** The film's level (× the trunk level) for a path of this sketch level: lace at half of it, thin veins at ~0.4–0.6. */
+function filmLevel(level: number): number {
+  if (level >= FILM_TRUNK) return 0;
+  return level < VEIN_LEVEL ? 0.5 * level : Math.max(0.2, 0.38 + 0.63 * (level - 0.45));
 }
 
 /** Relative-neighbourhood graph: i–j unless some k is nearer to both than they are to each other. */
@@ -1114,22 +1168,21 @@ function neighbourhood(points: readonly Point[]): (readonly [number, number])[] 
   return edges;
 }
 
-/** Edges of the minimum spanning tree (Prim), as i * 64 + j keys with i < j. */
-function spanningTree(points: readonly Point[]): Set<number> {
+/** Prim's tree over the points from `root`: each point's parent (-1 for the root) and the size of its subtree. */
+function flowTree(points: readonly Point[], root: number): { parent: Int32Array; size: Float64Array } {
   const n = points.length;
-  const tree = new Set<number>();
-  if (n < 2) return tree;
+  const parent = new Int32Array(n).fill(-1);
+  const size = new Float64Array(n).fill(1);
   const inTree = new Uint8Array(n);
   const best = new Float64Array(n).fill(Infinity);
-  const from = new Int32Array(n).fill(-1);
-  best[0] = 0;
+  const order: number[] = [];
+  best[root] = 0;
   for (let round = 0; round < n; round++) {
     let next = -1;
     for (let i = 0; i < n; i++) if (inTree[i] === 0 && (next < 0 || (best[i] ?? Infinity) < (best[next] ?? Infinity))) next = i;
     if (next < 0) break;
     inTree[next] = 1;
-    const parent = from[next] ?? -1;
-    if (parent >= 0) tree.add(Math.min(parent, next) * 64 + Math.max(parent, next));
+    order.push(next);
     const p = item(points, next);
     for (let i = 0; i < n; i++) {
       if (inTree[i] === 1) continue;
@@ -1137,11 +1190,269 @@ function spanningTree(points: readonly Point[]): Set<number> {
       const d = Math.hypot(p.x - q.x, p.y - q.y);
       if (d < (best[i] ?? Infinity)) {
         best[i] = d;
-        from[i] = next;
+        parent[i] = next;
       }
     }
   }
-  return tree;
+  for (let k = order.length - 1; k > 0; k--) {
+    const i = order[k] ?? 0;
+    const up = parent[i] ?? -1;
+    if (up >= 0) size[up] = (size[up] ?? 0) + (size[i] ?? 0);
+  }
+  return { parent, size };
+}
+
+/** Value noise 0..1, one lattice cell per `scale` texels. */
+function patchNoise(x: number, y: number, scale: number, seed: number): number {
+  const gx = x / scale;
+  const gy = y / scale;
+  const ix = Math.floor(gx);
+  const iy = Math.floor(gy);
+  const fx = smoothstep(0, 1, gx - ix);
+  const fy = smoothstep(0, 1, gy - iy);
+  const top = hash31(ix, iy, seed) * (1 - fx) + hash31(ix + 1, iy, seed) * fx;
+  const bottom = hash31(ix, iy + 1, seed) * (1 - fx) + hash31(ix + 1, iy + 1, seed) * fx;
+  return top * (1 - fy) + bottom * fy;
+}
+
+/**
+ * The lace's junctions: dart-thrown points over the dish, at least a spacing apart and from the
+ * flakes (the spacing shrinks to WEB_FINE of itself round the flakes and toward the wall, where the
+ * mould's fans advance), none in blocked ground.
+ */
+function scatterLace(flakes: readonly SketchNode[], grid: Grid, blocked: Blocked, rand: () => number): Point[] {
+  const cx = grid.trailX(0.5);
+  const cy = grid.trailY(0.5);
+  const dish = grid.dish - 3;
+  const perHeight = grid.perHeight;
+  const base = WEB_SPACING * perHeight;
+  const cols = Math.ceil(grid.width / base) + 1;
+  const rows = Math.ceil(grid.height / base) + 1;
+  const cells: number[][] = Array.from({ length: cols * rows }, () => []);
+  const all: Point[] = [];
+  const put = (p: Point): void => {
+    const cell = clamp(Math.floor(p.y / base), 0, rows - 1) * cols + clamp(Math.floor(p.x / base), 0, cols - 1);
+    item(cells, cell).push(all.length);
+    all.push(p);
+  };
+  for (const flake of flakes) put({ x: flake.x, y: flake.y });
+  const spacing = (x: number, y: number): number => {
+    let near = Infinity;
+    for (const flake of flakes) near = Math.min(near, Math.hypot(x - flake.x, y - flake.y) - flake.r);
+    const round = 1 - smoothstep(0.05 * perHeight, 0.16 * perHeight, near);
+    const rim = smoothstep(0.7 * dish, 0.97 * dish, Math.hypot(x - cx, y - cy));
+    return base * (1 - (1 - WEB_FINE) * Math.max(round, rim));
+  };
+  const lace: Point[] = [];
+  for (let attempt = 0; attempt < 16000; attempt++) {
+    const a = rand() * TAU;
+    const r = dish * Math.sqrt(rand());
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    if (blocked(x, y)) continue;
+    const gap = spacing(x, y);
+    const ci = clamp(Math.floor(x / base), 0, cols - 1);
+    const cj = clamp(Math.floor(y / base), 0, rows - 1);
+    let free = true;
+    for (let j = Math.max(0, cj - 1); j <= Math.min(rows - 1, cj + 1) && free; j++) {
+      for (let i = Math.max(0, ci - 1); i <= Math.min(cols - 1, ci + 1) && free; i++) {
+        for (const q of item(cells, j * cols + i)) {
+          const p = item(all, q);
+          if (Math.hypot(p.x - x, p.y - y) < gap) {
+            free = false;
+            break;
+          }
+        }
+      }
+    }
+    if (!free) continue;
+    const p = { x, y };
+    put(p);
+    lace.push(p);
+  }
+  return lace;
+}
+
+/** Delaunay edges of the points (Bowyer–Watson), as [i, j] with i < j. */
+function delaunay(points: readonly Point[]): (readonly [number, number])[] {
+  const n = points.length;
+  const stride = n + 3;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  const span = 40 * Math.max(maxX - minX, maxY - minY, 1);
+  const mx = (minX + maxX) / 2;
+  const my = (minY + maxY) / 2;
+  const xs = new Float64Array(stride);
+  const ys = new Float64Array(stride);
+  points.forEach((p, i) => {
+    xs[i] = p.x;
+    ys[i] = p.y;
+  });
+  xs[n] = mx - span;
+  ys[n] = my - span;
+  xs[n + 1] = mx + span;
+  ys[n + 1] = my - span;
+  xs[n + 2] = mx;
+  ys[n + 2] = my + span;
+  // Triangles: three vertices and the circle through them (centre, squared radius).
+  const va: number[] = [];
+  const vb: number[] = [];
+  const vc: number[] = [];
+  const ox: number[] = [];
+  const oy: number[] = [];
+  const or2: number[] = [];
+  const add = (a: number, b: number, c: number): void => {
+    const ax = xs[a] ?? 0;
+    const ay = ys[a] ?? 0;
+    const bx = xs[b] ?? 0;
+    const by = ys[b] ?? 0;
+    const cx = xs[c] ?? 0;
+    const cy = ys[c] ?? 0;
+    const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    va.push(a);
+    vb.push(b);
+    vc.push(c);
+    if (Math.abs(d) < 1e-9) {
+      // Flat: it contains every point, so the next one removes it.
+      ox.push(0);
+      oy.push(0);
+      or2.push(Infinity);
+      return;
+    }
+    const a2 = ax * ax + ay * ay;
+    const b2 = bx * bx + by * by;
+    const c2 = cx * cx + cy * cy;
+    const ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d;
+    const uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d;
+    ox.push(ux);
+    oy.push(uy);
+    or2.push((ax - ux) * (ax - ux) + (ay - uy) * (ay - uy));
+  };
+  add(n, n + 1, n + 2);
+  const hole = new Map<number, number>();
+  const edge = (a: number, b: number): void => {
+    const key = Math.min(a, b) * stride + Math.max(a, b);
+    hole.set(key, (hole.get(key) ?? 0) + 1);
+  };
+  for (let p = 0; p < n; p++) {
+    const px = xs[p] ?? 0;
+    const py = ys[p] ?? 0;
+    hole.clear();
+    // The triangles whose circle holds the point go; the hole they leave is fanned out from it.
+    for (let t = 0; t < va.length; ) {
+      const dx = px - (ox[t] ?? 0);
+      const dy = py - (oy[t] ?? 0);
+      if (dx * dx + dy * dy >= (or2[t] ?? 0)) {
+        t++;
+        continue;
+      }
+      edge(va[t] ?? 0, vb[t] ?? 0);
+      edge(vb[t] ?? 0, vc[t] ?? 0);
+      edge(vc[t] ?? 0, va[t] ?? 0);
+      const last = va.length - 1;
+      va[t] = va[last] ?? 0;
+      vb[t] = vb[last] ?? 0;
+      vc[t] = vc[last] ?? 0;
+      ox[t] = ox[last] ?? 0;
+      oy[t] = oy[last] ?? 0;
+      or2[t] = or2[last] ?? 0;
+      va.pop();
+      vb.pop();
+      vc.pop();
+      ox.pop();
+      oy.pop();
+      or2.pop();
+    }
+    for (const [key, count] of hole) {
+      if (count === 1) add(Math.floor(key / stride), key % stride, p);
+    }
+  }
+  const seen = new Set<number>();
+  const edges: (readonly [number, number])[] = [];
+  const keep = (a: number, b: number): void => {
+    if (a >= n || b >= n) return;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    const key = lo * stride + hi;
+    if (seen.has(key)) return;
+    seen.add(key);
+    edges.push([lo, hi]);
+  };
+  for (let t = 0; t < va.length; t++) {
+    keep(va[t] ?? 0, vb[t] ?? 0);
+    keep(vb[t] ?? 0, vc[t] ?? 0);
+    keep(vc[t] ?? 0, va[t] ?? 0);
+  }
+  return edges;
+}
+
+/** The cheapest chain of mesh edges from `from` to `to` (edge indices; empty if there is none). */
+function shortestRoute(adjacent: readonly (readonly number[])[], ends: Int32Array, cost: Float64Array, from: number, to: number): number[] {
+  const dist = new Float64Array(adjacent.length).fill(Infinity);
+  const via = new Int32Array(adjacent.length).fill(-1);
+  // A binary heap of (distance, node), stale entries skipped as they surface.
+  const keys: number[] = [0];
+  const nodes: number[] = [from];
+  dist[from] = 0;
+  while (keys.length > 0) {
+    const top = nodes[0] ?? 0;
+    const topKey = keys[0] ?? 0;
+    const lastKey = keys.pop() ?? 0;
+    const lastNode = nodes.pop() ?? 0;
+    if (keys.length > 0) {
+      let i = 0;
+      for (;;) {
+        let c = 2 * i + 1;
+        if (c >= keys.length) break;
+        if (c + 1 < keys.length && (keys[c + 1] ?? 0) < (keys[c] ?? 0)) c++;
+        if ((keys[c] ?? 0) >= lastKey) break;
+        keys[i] = keys[c] ?? 0;
+        nodes[i] = nodes[c] ?? 0;
+        i = c;
+      }
+      keys[i] = lastKey;
+      nodes[i] = lastNode;
+    }
+    if (topKey > (dist[top] ?? Infinity)) continue;
+    if (top === to) break;
+    for (const e of adjacent[top] ?? []) {
+      const a = ends[2 * e] ?? 0;
+      const other = a === top ? (ends[2 * e + 1] ?? 0) : a;
+      const d = topKey + (cost[e] ?? Infinity);
+      if (d >= (dist[other] ?? Infinity)) continue;
+      dist[other] = d;
+      via[other] = e;
+      let i = keys.length;
+      keys.push(d);
+      nodes.push(other);
+      while (i > 0) {
+        const parent = (i - 1) >> 1;
+        if ((keys[parent] ?? 0) <= d) break;
+        keys[i] = keys[parent] ?? 0;
+        nodes[i] = nodes[parent] ?? 0;
+        i = parent;
+      }
+      keys[i] = d;
+      nodes[i] = other;
+    }
+  }
+  const route: number[] = [];
+  if (!Number.isFinite(dist[to] ?? Infinity)) return route;
+  for (let at = to; at !== from; ) {
+    const e = via[at] ?? -1;
+    route.push(e);
+    const a = ends[2 * e] ?? 0;
+    at = a === at ? (ends[2 * e + 1] ?? 0) : a;
+  }
+  return route;
 }
 
 /** A line from a to b wandering off to its side: a bow and two slow waves, pinned at both ends. */
@@ -1176,15 +1487,282 @@ function wander(ax: number, ay: number, bx: number, by: number, amplitude: numbe
   return { xs, ys, length };
 }
 
-/** The sketch's veins: trunks along the flakes' neighbourhood graph, and tributaries fanning out of each flake. */
-function sketchPaths(points: readonly SketchNode[], grid: Grid, rand: () => number): SketchPaths {
-  const tree = spanningTree(points);
-  const trunks = neighbourhood(points).map(([i, j]): Path => {
-    const a = item(points, i);
-    const b = item(points, j);
-    const main = tree.has(i * 64 + j);
-    return { ...wander(a.x, a.y, b.x, b.y, TRUNK_WANDER, rand), from: i, to: j, level: main ? 1.3 : 0.6, sigma: main ? 1.3 : 0.9 };
-  });
+/** A vein from a leaving along (tax, tay) to b arriving against (tbx, tby): a Hermite curve, wandering a little off it. */
+function curve(ax: number, ay: number, bx: number, by: number, tax: number, tay: number, tbx: number, tby: number, amplitude: number, rand: () => number): { xs: Float64Array; ys: Float64Array; length: number } {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const span = Math.max(Math.hypot(dx, dy), 1e-6);
+  const bow = (rand() - 0.5) * 1.2 * amplitude;
+  const a1 = amplitude * (0.5 + rand());
+  const f1 = 1 + rand();
+  const p1 = rand() * TAU;
+  const n = Math.max(2, Math.ceil(span / 0.7));
+  const xs = new Float64Array(n + 1);
+  const ys = new Float64Array(n + 1);
+  const m0x = tax * span;
+  const m0y = tay * span;
+  const m1x = -tbx * span;
+  const m1y = -tby * span;
+  let length = 0;
+  let px = ax;
+  let py = ay;
+  for (let k = 0; k <= n; k++) {
+    const t = k / n;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    const side = span * Math.sin(Math.PI * t) * (bow + a1 * Math.sin(TAU * f1 * t + p1));
+    const x = h00 * ax + h10 * m0x + h01 * bx + h11 * m1x - (dy / span) * side;
+    const y = h00 * ay + h10 * m0y + h01 * by + h11 * m1y + (dx / span) * side;
+    length += Math.hypot(x - px, y - py);
+    xs[k] = x;
+    ys[k] = y;
+    px = x;
+    py = y;
+  }
+  return { xs, ys, length };
+}
+
+/** The web: junctions (the flakes first) and the veins and lace between them. */
+function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, blocked: Blocked, seed: number): { nodes: Point[]; edges: Path[] } {
+  const rand = mulberry32(seed);
+  const perHeight = grid.perHeight;
+  const n = flakes.length;
+  const lace = scatterLace(flakes, grid, blocked, rand);
+  const nodes: Point[] = [...flakes.map((flake): Point => ({ x: flake.x, y: flake.y })), ...lace];
+  const total = nodes.length;
+  // The mesh: Delaunay edges that are not overlong and keep out of blocked ground.
+  const ea: number[] = [];
+  const eb: number[] = [];
+  const lengths: number[] = [];
+  for (const [i, j] of delaunay(nodes)) {
+    const a = item(nodes, i);
+    const b = item(nodes, j);
+    const length = Math.hypot(a.x - b.x, a.y - b.y);
+    if (length > WEB_LONGEST * perHeight) continue;
+    if (blocked((a.x + b.x) / 2, (a.y + b.y) / 2) || blocked(a.x * 0.75 + b.x * 0.25, a.y * 0.75 + b.y * 0.25) || blocked(a.x * 0.25 + b.x * 0.75, a.y * 0.25 + b.y * 0.75)) continue;
+    ea.push(i);
+    eb.push(j);
+    lengths.push(length);
+  }
+  const count = ea.length;
+  const ends = new Int32Array(count * 2);
+  const adjacent: number[][] = Array.from({ length: total }, () => []);
+  const base = new Float64Array(count);
+  for (let e = 0; e < count; e++) {
+    ends[2 * e] = ea[e] ?? 0;
+    ends[2 * e + 1] = eb[e] ?? 0;
+    item(adjacent, ea[e] ?? 0).push(e);
+    item(adjacent, eb[e] ?? 0).push(e);
+    base[e] = (lengths[e] ?? 0) * (0.85 + 0.3 * rand());
+  }
+  const cost = Float64Array.from(base);
+  // Links to route: the flakes' spanning tree from the heart (a link feeds every flake beyond it),
+  // the loops of their neighbourhood graph, and hubs in the gaps tied to their two nearest.
+  const links: Link[] = [];
+  if (n >= 2) {
+    const { parent, size } = flowTree(flakes, heart >= 0 && heart < n ? heart : 0);
+    const inTree = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      const up = parent[i] ?? -1;
+      if (up < 0) continue;
+      inTree.add(Math.min(up, i) * 64 + Math.max(up, i));
+      links.push({ a: up, b: i, flow: size[i] ?? 1 });
+    }
+    for (const [i, j] of neighbourhood(flakes)) {
+      if (inTree.has(i * 64 + j)) continue;
+      links.push({ a: i, b: j, flow: clamp(0.35 * Math.min(size[i] ?? 1, size[j] ?? 1), 0.8, 4) });
+    }
+  }
+  if (n >= 1) {
+    const candidates: number[] = [];
+    for (let i = n; i < total; i++) {
+      const p = item(nodes, i);
+      let near = Infinity;
+      for (const flake of flakes) near = Math.min(near, Math.hypot(p.x - flake.x, p.y - flake.y));
+      if (near > 0.09 * perHeight) candidates.push(i);
+    }
+    for (let k = candidates.length - 1; k > 0; k--) {
+      const j = Math.floor(rand() * (k + 1));
+      const swap = candidates[k] ?? 0;
+      candidates[k] = candidates[j] ?? 0;
+      candidates[j] = swap;
+    }
+    const tied: number[] = flakes.map((_, i) => i);
+    let hubs = 0;
+    for (const c of candidates) {
+      if (hubs >= WEB_HUBS) break;
+      const p = item(nodes, c);
+      const ranked = tied.map((t) => ({ t, d: Math.hypot(item(nodes, t).x - p.x, item(nodes, t).y - p.y) })).sort((x, y) => x.d - y.d);
+      if (ranked.some((r) => r.t >= n && r.d < HUB_GAP * perHeight)) continue;
+      const first = ranked[0];
+      const second = ranked[1];
+      if (first === undefined) continue;
+      links.push({ a: first.t, b: c, flow: HUB_FLOW });
+      if (second !== undefined && second.d < 0.3 * perHeight) links.push({ a: second.t, b: c, flow: HUB_LOOP });
+      tied.push(c);
+      hubs++;
+    }
+  }
+  // Big links first: the rest find the trunks laid cheaper to follow and merge into them.
+  links.sort((x, y) => y.flow - x.flow);
+  const flow = new Float64Array(count);
+  for (const link of links) {
+    for (const e of shortestRoute(adjacent, ends, cost, link.a, link.b)) {
+      flow[e] = (flow[e] ?? 0) + link.flow;
+      cost[e] = (base[e] ?? 0) * (1 - 0.3 * Math.min(1, (flow[e] ?? 0) / 4));
+    }
+  }
+  // Junctions the veins pass (hop 0), and those beside them (1): their lace thickens into feeders.
+  const hop = new Int32Array(total).fill(9);
+  let thickest = 1;
+  for (let e = 0; e < count; e++) {
+    if ((flow[e] ?? 0) <= 0) continue;
+    thickest = Math.max(thickest, Math.cbrt(flow[e] ?? 0));
+    hop[ea[e] ?? 0] = 0;
+    hop[eb[e] ?? 0] = 0;
+  }
+  for (let e = 0; e < count; e++) {
+    const a = ea[e] ?? 0;
+    const b = eb[e] ?? 0;
+    if ((hop[a] ?? 9) === 0 && (hop[b] ?? 9) > 1) hop[b] = 1;
+    if ((hop[b] ?? 9) === 0 && (hop[a] ?? 9) > 1) hop[a] = 1;
+  }
+  // Widths. Murray's law: radius with the cube root of the flow, from the thinnest vein to the
+  // thickest trunk; lace where none runs, kept at random.
+  const noiseSeed = seed & 0xffff;
+  const kept = new Uint8Array(count);
+  const level = new Float64Array(count);
+  const sigma = new Float64Array(count);
+  for (let e = 0; e < count; e++) {
+    const f = flow[e] ?? 0;
+    if (f > 0) {
+      const share = clamp((Math.cbrt(f) - 0.8) / Math.max(thickest - 0.8, 0.5), 0, 1);
+      kept[e] = 1;
+      level[e] = 0.45 + 0.9 * Math.pow(share, 0.9);
+      sigma[e] = 0.8 + 0.55 * share;
+      continue;
+    }
+    const a = item(nodes, ea[e] ?? 0);
+    const b = item(nodes, eb[e] ?? 0);
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const patch = patchNoise(mx, my, 0.3 * perHeight, noiseSeed) * 0.6 + patchNoise(mx, my, 0.11 * perHeight, noiseSeed + 5) * 0.4;
+    const near = Math.min(hop[ea[e] ?? 0] ?? 9, hop[eb[e] ?? 0] ?? 9);
+    const keep = LACE_KEEP + 0.35 * smoothstep(0.3, 0.7, patch) + (near === 0 ? 0.25 : near === 1 ? 0.1 : 0);
+    if (rand() > keep) continue;
+    kept[e] = 1;
+    level[e] = Math.min(FEEDER_MAX, LACE_LEVEL * (0.75 + 0.5 * rand()) * (0.6 + 0.6 * patch) * (near === 0 ? 1.7 : near === 1 ? 1.3 : 1));
+    sigma[e] = 0.6;
+  }
+  // Straighten the veins: a junction with just two veins through it moves toward the middle of their
+  // far ends; then a slow drift bends the whole web together, so no vein wanders on its own.
+  const spot = nodes.map((p): Point => ({ x: p.x, y: p.y }));
+  const through: number[][] = Array.from({ length: total }, () => []);
+  for (let e = 0; e < count; e++) {
+    if ((flow[e] ?? 0) <= 0) continue;
+    item(through, ea[e] ?? 0).push(e);
+    item(through, eb[e] ?? 0).push(e);
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    for (let v = n; v < total; v++) {
+      const pair = item(through, v);
+      if (pair.length !== 2) continue;
+      const far = pair.map((e) => item(spot, (ea[e] ?? 0) === v ? (eb[e] ?? 0) : (ea[e] ?? 0)));
+      const p = item(spot, v);
+      const f0 = item(far, 0);
+      const f1 = item(far, 1);
+      p.x += 0.5 * ((f0.x + f1.x) / 2 - p.x);
+      p.y += 0.5 * ((f0.y + f1.y) / 2 - p.y);
+    }
+  }
+  for (let v = n; v < total; v++) {
+    const p = item(spot, v);
+    p.x += (patchNoise(p.x, p.y, 0.4 * perHeight, noiseSeed + 11) - 0.5) * 2 * WEB_DRIFT * perHeight;
+    p.y += (patchNoise(p.x, p.y, 0.4 * perHeight, noiseSeed + 23) - 0.5) * 2 * WEB_DRIFT * perHeight;
+  }
+  for (let e = 0; e < count; e++) {
+    const a = item(spot, ea[e] ?? 0);
+    const b = item(spot, eb[e] ?? 0);
+    lengths[e] = Math.hypot(a.x - b.x, a.y - b.y);
+  }
+  // Tangents: at each junction the two strongest veins run on through it, the rest leave at an angle.
+  const incident: number[][] = Array.from({ length: total }, () => []);
+  const chord = new Float64Array(count * 2);
+  for (let e = 0; e < count; e++) {
+    if (kept[e] === 0) continue;
+    const a = item(spot, ea[e] ?? 0);
+    const b = item(spot, eb[e] ?? 0);
+    const length = Math.max(lengths[e] ?? 1, 1e-6);
+    chord[2 * e] = (b.x - a.x) / length;
+    chord[2 * e + 1] = (b.y - a.y) / length;
+    item(incident, ea[e] ?? 0).push(e);
+    item(incident, eb[e] ?? 0).push(e);
+  }
+  // Per edge: the unit tangent leaving its first junction (x, y), then leaving its second (x, y).
+  const tangent = new Float64Array(count * 4);
+  for (let e = 0; e < count; e++) {
+    tangent[4 * e] = chord[2 * e] ?? 0;
+    tangent[4 * e + 1] = chord[2 * e + 1] ?? 0;
+    tangent[4 * e + 2] = -(chord[2 * e] ?? 0);
+    tangent[4 * e + 3] = -(chord[2 * e + 1] ?? 0);
+  }
+  const outward = (e: number, v: number): [number, number] => {
+    const sign = (ea[e] ?? 0) === v ? 1 : -1;
+    return [sign * (chord[2 * e] ?? 0), sign * (chord[2 * e + 1] ?? 0)];
+  };
+  const leave = (e: number, v: number, x: number, y: number): void => {
+    const at = (ea[e] ?? 0) === v ? 4 * e : 4 * e + 2;
+    tangent[at] = x;
+    tangent[at + 1] = y;
+  };
+  for (let v = 0; v < total; v++) {
+    const around = [...item(incident, v)].sort((x, y) => (level[y] ?? 0) - (level[x] ?? 0));
+    const first = around[0];
+    if (first === undefined || around.length < 2) continue;
+    const [u1x, u1y] = outward(first, v);
+    let second = -1;
+    let bestScore = -Infinity;
+    for (const e of around.slice(1)) {
+      const [ux, uy] = outward(e, v);
+      const score = -(u1x * ux + u1y * uy) + 0.5 * ((level[e] ?? 0) / Math.max(level[first] ?? 1, 1e-6));
+      if (score > bestScore) {
+        bestScore = score;
+        second = e;
+      }
+    }
+    if (second < 0) continue;
+    const [u2x, u2y] = outward(second, v);
+    const spread = Math.hypot(u1x - u2x, u1y - u2y);
+    if (spread < 1e-6) continue;
+    const tx = (u1x - u2x) / spread;
+    const ty = (u1y - u2y) / spread;
+    const o1x = 0.5 * u1x + 0.5 * tx;
+    const o1y = 0.5 * u1y + 0.5 * ty;
+    const o2x = 0.5 * u2x - 0.5 * tx;
+    const o2y = 0.5 * u2y - 0.5 * ty;
+    const l1 = Math.max(Math.hypot(o1x, o1y), 1e-6);
+    const l2 = Math.max(Math.hypot(o2x, o2y), 1e-6);
+    leave(first, v, o1x / l1, o1y / l1);
+    leave(second, v, o2x / l2, o2y / l2);
+  }
+  const edges: Path[] = [];
+  for (let e = 0; e < count; e++) {
+    if (kept[e] === 0) continue;
+    const a = item(spot, ea[e] ?? 0);
+    const b = item(spot, eb[e] ?? 0);
+    const line = curve(a.x, a.y, b.x, b.y, tangent[4 * e] ?? 0, tangent[4 * e + 1] ?? 0, tangent[4 * e + 2] ?? 0, tangent[4 * e + 3] ?? 0, (flow[e] ?? 0) > 0 ? WEB_WANDER : 0.6 * WEB_WANDER, rand);
+    edges.push({ ...line, from: ea[e] ?? 0, to: eb[e] ?? 0, level: level[e] ?? 0, sigma: sigma[e] ?? 0.6 });
+  }
+  return { nodes: spot, edges };
+}
+
+/** The sketch's web and the fans of tributaries leaving each flake; `seed` fixes the web, `rand` the fans. */
+function sketchPaths(points: readonly SketchNode[], heart: number, grid: Grid, blocked: Blocked, seed: number, rand: () => number): SketchPaths {
+  const web = buildWeb(points, heart, grid, blocked, seed);
   const fans: Path[] = [];
   points.forEach((p, i) => {
     const count = FAN_MIN + Math.floor(rand() * (FAN_MAX - FAN_MIN + 1));
@@ -1196,7 +1774,19 @@ function sketchPaths(points: readonly SketchNode[], grid: Grid, rand: () => numb
       fans.push({ ...wander(x, y, x + Math.cos(a) * reach, y + Math.sin(a) * reach, FAN_WANDER, rand), from: i, to: -1, level: 0.35, sigma: 0.8 });
     }
   });
-  return { trunks, fans };
+  return { nodes: web.nodes, edges: web.edges, fans };
+}
+
+/** The lit sea is closed to the sketch (not once an M has put the lights out). */
+function seaBlocked(cover: Float32Array, grid: Grid, lit: boolean): Blocked {
+  if (!lit) return () => false;
+  return (x, y) => seaAt(cover, grid, (x - PHYSARUM_MARGIN) / grid.frameWidth, (y - PHYSARUM_MARGIN) / grid.frameHeight) > 0.15;
+}
+
+/** The random numbers for a sketch of the dish with this seed: one number fixing the web, a stream for the rest. */
+function sketchSeeds(seed: number): { web: number; rand: () => number } {
+  const web = (Math.imul(seed + 7, 0x85ebca6b) ^ 0x6a09e667) >>> 0;
+  return { web, rand: mulberry32(web ^ 0x5bd1e995) };
 }
 
 /** A soft dot of sketch trail at (x, y) (trail texels), keeping the larger value. */
@@ -1230,71 +1820,45 @@ function stampPath(field: Float32Array, grid: Grid, path: Path, taper: boolean):
   }
 }
 
-/** A faint reticulated lace: the edges of a jittered Voronoi tiling LACE_CELL across, patchy. */
-function stampLace(field: Float32Array, grid: Grid, rand: () => number): void {
-  const cell = LACE_CELL * grid.perHeight;
-  const cols = Math.ceil(grid.width / cell) + 2;
-  const rows = Math.ceil(grid.height / cell) + 2;
-  const fx = new Float64Array(cols * rows);
-  const fy = new Float64Array(cols * rows);
-  const patch = new Float64Array(cols * rows);
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols; i++) {
-      const at = j * cols + i;
-      fx[at] = (i - 1 + 0.15 + 0.7 * rand()) * cell;
-      fy[at] = (j - 1 + 0.15 + 0.7 * rand()) * cell;
-      patch[at] = 0.3 + 0.7 * rand();
-    }
-  }
-  for (let y = 0; y < grid.height; y++) {
-    for (let x = 0; x < grid.width; x++) {
-      const px = x + 0.5;
-      const py = y + 0.5;
-      const ci = Math.floor(px / cell) + 1;
-      const cj = Math.floor(py / cell) + 1;
-      let d1 = Infinity;
-      let d2 = Infinity;
-      let i1 = 0;
-      let i2 = 0;
-      for (let dj = -1; dj <= 1; dj++) {
-        for (let di = -1; di <= 1; di++) {
-          const at = (cj + dj) * cols + ci + di;
-          const ex = (fx[at] ?? 0) - px;
-          const ey = (fy[at] ?? 0) - py;
-          const d = ex * ex + ey * ey;
-          if (d < d1) {
-            d2 = d1;
-            i2 = i1;
-            d1 = d;
-            i1 = at;
-          } else if (d < d2) {
-            d2 = d;
-            i2 = at;
-          }
-        }
-      }
-      // Distance to the bisector of the two nearest sites: an edge of the tiling, even in width.
-      const gap = (d2 - d1) / (2 * Math.max(Math.hypot((fx[i2] ?? 0) - (fx[i1] ?? 0), (fy[i2] ?? 0) - (fy[i1] ?? 0)), 1e-6));
-      const v = LACE_LEVEL * 0.5 * ((patch[i1] ?? 0) + (patch[i2] ?? 0)) * Math.exp(-(gap * gap) / (2 * LACE_SIGMA * LACE_SIGMA));
-      const at = y * grid.width + x;
-      if (v > (field[at] ?? 0)) field[at] = v;
-    }
-  }
-}
-
-/** The sketch as trail, in sketch units (lace ≤ 0.2, fans ~0.35, branches ~0.6, trunks ~1.3, the crowd on a flake 1); nothing past the dish's wall. */
-function stampSketch(paths: SketchPaths, points: readonly SketchNode[], grid: Grid, rand: () => number): Float32Array {
-  const field = new Float32Array(grid.width * grid.height);
-  stampLace(field, grid, rand);
-  for (const path of paths.trunks) stampPath(field, grid, path, false);
-  for (const path of paths.fans) stampPath(field, grid, path, true);
-  for (const p of points) splat(field, grid, p.x, p.y, 1, Math.max(1, 0.7 * p.r));
+/** Nothing grows past the dish's wall. */
+function clipToDish(field: Float32Array, grid: Grid): void {
   const cx = grid.trailX(0.5);
   const cy = grid.trailY(0.5);
   const dish = grid.dish;
   for (let y = 0; y < grid.height; y++) {
     for (let x = 0; x < grid.width; x++) if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) > dish) field[y * grid.width + x] = 0;
   }
+}
+
+/**
+ * The sketch as trail, in sketch units (lace ≤ 0.2, feeders and fans ~0.35, thin veins ~0.5, trunks
+ * to ~1.35, the crowd on a flake 1, with a faint pad of plasmodium round it).
+ */
+function stampSketch(paths: SketchPaths, points: readonly SketchNode[], grid: Grid): Float32Array {
+  const field = new Float32Array(grid.width * grid.height);
+  for (const path of paths.edges) stampPath(field, grid, path, false);
+  for (const path of paths.fans) stampPath(field, grid, path, true);
+  for (const p of points) {
+    splat(field, grid, p.x, p.y, 1, Math.max(1, 0.7 * p.r));
+    splat(field, grid, p.x, p.y, 0.3, 1.6 * p.r);
+  }
+  clipToDish(field, grid);
+  return field;
+}
+
+/**
+ * The film: the sketch's lace, feeders, tributaries and thin veins as the level (× the trunk level)
+ * the trail never falls below (DIFFUSE). The specks ride it, so the mould's own trunks form and
+ * reorganise over a fine net that does not condense away.
+ */
+function stampFilm(paths: SketchPaths, grid: Grid): Float32Array {
+  const field = new Float32Array(grid.width * grid.height);
+  for (const path of paths.edges) {
+    const level = filmLevel(path.level);
+    if (level > 0) stampPath(field, grid, { ...path, level }, false);
+  }
+  for (const path of paths.fans) stampPath(field, grid, { ...path, level: filmLevel(path.level) }, true);
+  clipToDish(field, grid);
   return field;
 }
 
@@ -1318,7 +1882,7 @@ function sketchLevel(sketch: Float32Array): { level: number; share: number } {
   return { level, share: lit > 0 ? sum / lit / level : LACE_TONE };
 }
 
-/** Distance along the sketch from the heart (screen heights) at half resolution; PHYSARUM_FAR elsewhere. */
+/** Distance along the sketch's veins from the heart (screen heights) at half resolution; PHYSARUM_FAR elsewhere. */
 function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart: number, grid: Grid): Float32Array {
   const ew = grid.envWidth;
   const eh = grid.envHeight;
@@ -1328,8 +1892,14 @@ function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart:
   const sy = eh / grid.height;
   const unitX = 1 / (sx * grid.perHeight);
   const unitY = 1 / (sy * grid.perHeight);
-  // Dijkstra over the trunks, in heights along them.
-  const n = points.length;
+  // Dijkstra over the veins (not the lace), in heights along them.
+  const veins = paths.edges.filter((path) => path.level >= VEIN_LEVEL);
+  const n = paths.nodes.length;
+  const joined: Path[][] = Array.from({ length: n }, () => []);
+  for (const path of veins) {
+    item(joined, path.from).push(path);
+    item(joined, path.to).push(path);
+  }
   const along = new Float64Array(n).fill(Infinity);
   const done = new Uint8Array(n);
   along[heart] = 0;
@@ -1338,8 +1908,7 @@ function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart:
     for (let i = 0; i < n; i++) if (done[i] === 0 && Number.isFinite(along[i] ?? Infinity) && (next < 0 || (along[i] ?? 0) < (along[next] ?? 0))) next = i;
     if (next < 0) break;
     done[next] = 1;
-    for (const path of paths.trunks) {
-      if (path.from !== next && path.to !== next) continue;
+    for (const path of item(joined, next)) {
       const other = path.from === next ? path.to : path.from;
       const d = (along[next] ?? 0) + path.length / grid.perHeight;
       if (d < (along[other] ?? Infinity)) along[other] = d;
@@ -1358,7 +1927,7 @@ function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart:
       }
     }
   };
-  for (const path of [...paths.trunks, ...paths.fans]) {
+  for (const path of [...veins, ...paths.fans]) {
     const from = along[path.from] ?? Infinity;
     const to = path.to < 0 ? Infinity : (along[path.to] ?? Infinity);
     if (!Number.isFinite(from) && !Number.isFinite(to)) continue;
@@ -1377,24 +1946,24 @@ function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart:
 }
 
 /**
- * The specks for a sketch: SEED_TRUNKS laid along its trunks heading either way, SEED_FANS out
- * along its tributaries, SEED_FLAKES at the flakes heading out, the rest anywhere on the dish, any
- * way; ages spread so they do not all starve at once. Also returns the trail level (raw units) they
- * will keep up on the trunks, to scale the seeded trail by.
+ * The specks for a sketch: SEED_EDGES laid along its web, in proportion to each vein's length and
+ * level, heading either way, SEED_FANS out along its tributaries, SEED_FLAKES at the flakes heading
+ * out, the rest anywhere on the dish, any way; ages spread so they do not all starve at once. Also
+ * returns the trail level (raw units per sketch unit) they will keep up, to scale the seeded trail by.
  */
 function seedAgents(shape: { width: number; height: number }, paths: SketchPaths, points: readonly SketchNode[], grid: Grid, rand: () => number): { data: Float32Array; level: number } {
   const total = shape.width * shape.height;
   const data = new Float32Array(total * 4);
-  const trunks = paths.trunks;
+  const edges = paths.edges;
   const fans = paths.fans;
-  let length = 0;
-  const ends = new Float64Array(trunks.length);
-  trunks.forEach((path, i) => {
-    length += path.length;
-    ends[i] = length;
+  let mass = 0;
+  const ends = new Float64Array(edges.length);
+  edges.forEach((path, i) => {
+    mass += path.length * path.level;
+    ends[i] = mass;
   });
-  const onTrunks = length > 0 ? Math.floor(total * SEED_TRUNKS) : 0;
-  const onFans = onTrunks + (fans.length > 0 ? Math.floor(total * SEED_FANS) : 0);
+  const onEdges = mass > 0 ? Math.floor(total * SEED_EDGES) : 0;
+  const onFans = onEdges + (fans.length > 0 ? Math.floor(total * SEED_FANS) : 0);
   const atFlakes = onFans + (points.length > 0 ? Math.floor(total * SEED_FLAKES) : 0);
   const cx = grid.trailX(0.5);
   const cy = grid.trailY(0.5);
@@ -1405,16 +1974,16 @@ function seedAgents(shape: { width: number; height: number }, paths: SketchPaths
     let heading: number;
     if (i < onFans) {
       let path: Path;
-      if (i < onTrunks) {
-        const pick = rand() * length;
+      if (i < onEdges) {
+        const pick = rand() * mass;
         let lo = 0;
-        let hi = trunks.length - 1;
+        let hi = edges.length - 1;
         while (lo < hi) {
           const mid = (lo + hi) >> 1;
           if ((ends[mid] ?? 0) < pick) lo = mid + 1;
           else hi = mid;
         }
-        path = item(trunks, lo);
+        path = item(edges, lo);
       } else {
         path = item(fans, Math.min(fans.length - 1, Math.floor(rand() * fans.length)));
       }
@@ -1448,8 +2017,8 @@ function seedAgents(shape: { width: number; height: number }, paths: SketchPaths
     data[o + 2] = ((heading % TAU) + TAU) % TAU;
     data[o + 3] = LIFE * (0.2 + 0.8 * rand());
   }
-  // Specks per texel across a trunk about three texels wide, each keeping up AGENT_UNIT × REF / N.
-  const level = length > 0 ? (AGENT_UNIT * REFERENCE_AGENTS * onTrunks) / (total * 3 * length) : AGENT_UNIT;
+  // Specks per texel along a vein of level 1, each keeping up AGENT_UNIT × REF / N over about three texels' width.
+  const level = mass > 0 ? (AGENT_UNIT * REFERENCE_AGENTS * onEdges) / (total * 3 * mass) : AGENT_UNIT;
   return { data, level };
 }
 
@@ -1576,11 +2145,17 @@ bool particle(int id, out vec2 uv, out vec4 value) {
 }
 `;
 
-/** The trail spreads and evaporates; salt, light and the dish's wall kill it. */
+/**
+ * The trail spreads and evaporates, but never falls below the film (the sketch's lace and thin veins,
+ * in trunk levels, uFilm; the gain fades it under the M); salt, light and the dish's wall kill it.
+ */
 const DIFFUSE = `
 uniform sampler2D uTrail;
 uniform sampler2D uEnv;
+uniform sampler2D uFilm;
+uniform sampler2D uRef;
 uniform float uKeep;
+uniform float uFilmGain;
 void main() {
   float sum = 0.0;
   for (int y = -1; y <= 1; y++) {
@@ -1588,6 +2163,7 @@ void main() {
   }
   vec4 env = texture(uEnv, vUv);
   float trail = uKeep * sum / 9.0;
+  trail = max(trail, uFilmGain * texelFetch(uRef, ivec2(0), 0).r * texture(uFilm, vUv).r);
   trail *= 1.0 - clamp(1.6 * (env.g + env.a), 0.0, 1.0);
   fragColor = vec4(trail, 0.0, 0.0, 1.0);
 }
@@ -1806,6 +2382,7 @@ class PhysarumSim implements SceneSim {
   #agents: PingPong;
   #agentCount: number;
   readonly #trail: PingPong;
+  readonly #film: RenderTarget;
   readonly #view: PingPong;
   readonly #env: RenderTarget;
   readonly #salt: PingPong;
@@ -1852,6 +2429,7 @@ class PhysarumSim implements SceneSim {
     this.#agentCount = REFERENCE_AGENTS;
     this.#agents = gpu.pingPong({ ...agentShape(REFERENCE_AGENTS), format: "rgba32f", filter: "nearest" });
     this.#trail = gpu.pingPong({ ...field, format: "r16f" });
+    this.#film = gpu.target({ ...field, format: "r16f" });
     this.#view = gpu.pingPong({ ...field, format: "rg16f" });
     this.#env = gpu.target({ ...half, format: "rgba16f" });
     this.#salt = gpu.pingPong({ ...half, format: "r16f" });
@@ -1874,7 +2452,7 @@ class PhysarumSim implements SceneSim {
 
     this.#move.bind({ uAgents: this.#agents, uTrail: this.#trail, uEnv: this.#env, uRef: this.#level });
     this.#deposit.bind({ uAgents: this.#agents });
-    this.#diffuse.bind({ uTrail: this.#trail, uEnv: this.#env });
+    this.#diffuse.bind({ uTrail: this.#trail, uEnv: this.#env, uFilm: this.#film, uRef: this.#level });
     this.#envPass.bind({ uSalt: this.#salt, uSea: this.#sea });
     this.#saltPass.bind({ uSalt: this.#salt });
     this.#distPass.bind({ uDist: this.#dist, uView: this.#view });
@@ -1977,10 +2555,10 @@ class PhysarumSim implements SceneSim {
     this.#replaceAgents(settings.agents);
 
     const { points, heart } = this.#food.sketchNodes(grid);
-    const rand = mulberry32((Math.imul(settings.seed + 7, 0x85ebca6b) ^ 0x6a09e667) >>> 0);
-    const paths = sketchPaths(points, grid, rand);
-    const sketch = stampSketch(paths, points, grid, rand);
-    const agents = seedAgents(this.#agents, paths, points, grid, rand);
+    const seeds = sketchSeeds(settings.seed);
+    const paths = sketchPaths(points, heart, grid, seaBlocked(this.#seaCover, grid, mark === undefined), seeds.web, seeds.rand);
+    const sketch = stampSketch(paths, points, grid);
+    const agents = seedAgents(this.#agents, paths, points, grid, seeds.rand);
     this.#agents.seed(agents.data);
     // The trail, the view and the measured levels agree: trail / trunk level = sketch / its level.
     const measured = sketchLevel(sketch);
@@ -1993,6 +2571,7 @@ class PhysarumSim implements SceneSim {
       view[2 * i + 1] = view[2 * i] ?? 0;
     }
     this.#trail.seed(raw);
+    this.#film.seed(stampFilm(paths, grid));
     this.#view.seed(view);
     this.#dist.seed(stampDistance(paths, points, heart, grid));
     this.#level.seed(Float32Array.of(agents.level * measured.level, measured.share));
@@ -2040,6 +2619,7 @@ class PhysarumSim implements SceneSim {
   #resize(grid: Grid, keep: boolean): void {
     this.#grid = grid;
     this.#trail.resize(grid.width, grid.height, keep);
+    this.#film.resize(grid.width, grid.height, keep);
     this.#view.resize(grid.width, grid.height, keep);
     this.#env.resize(grid.envWidth, grid.envHeight);
     this.#salt.resize(grid.envWidth, grid.envHeight, keep);
@@ -2078,9 +2658,11 @@ class PhysarumSim implements SceneSim {
   /** A new population, spread over a sketch of the flakes on the dish now; the trail stays. */
   #reseedAgents(count: number): void {
     this.#replaceAgents(count);
-    const { points } = this.#food.sketchNodes(this.#grid);
+    const { points, heart } = this.#food.sketchNodes(this.#grid);
+    const seeds = sketchSeeds(this.#seed);
     const rand = mulberry32((Math.imul(count, 0x9e3779b1) ^ this.#stepCount) >>> 0);
-    this.#agents.seed(seedAgents(this.#agents, sketchPaths(points, this.#grid, rand), points, this.#grid, rand).data);
+    const paths = sketchPaths(points, heart, this.#grid, seaBlocked(this.#seaCover, this.#grid, this.#food.markSize === undefined), seeds.web, seeds.rand);
+    this.#agents.seed(seedAgents(this.#agents, paths, points, this.#grid, rand).data);
   }
 
   /** On and off at once; a new size only once the knob has rested, so a slider drag lays one M. */
@@ -2190,7 +2772,7 @@ class PhysarumSim implements SceneSim {
       uFoodCount: count,
     });
     this.#deposit.set({ uDeposit: (settings.loss * AGENT_UNIT * REFERENCE_AGENTS) / this.#agentCount });
-    this.#diffuse.set({ uKeep: 1 - settings.loss });
+    this.#diffuse.set({ uKeep: 1 - settings.loss, uFilmGain: FILM_GAIN * (1 - food.markShown) });
     this.#envPass.set({
       uGrid: this.#gridUniform,
       uFood: this.#foodUniform,
@@ -2290,9 +2872,9 @@ class PhysarumStill implements SceneSim {
     const cover = seaCover(map, grid);
     this.#food.reset(settings.layout, settings.seed, aspect, map, (u, v) => seaAt(cover, grid, u, v), settings.mark);
     const { points, heart } = this.#food.sketchNodes(grid);
-    const rand = mulberry32((Math.imul(settings.seed + 7, 0x85ebca6b) ^ 0x6a09e667) >>> 0);
-    const paths = sketchPaths(points, grid, rand);
-    const sketch = stampSketch(paths, points, grid, rand);
+    const seeds = sketchSeeds(settings.seed);
+    const paths = sketchPaths(points, heart, grid, seaBlocked(cover, grid, settings.mark === undefined), seeds.web, seeds.rand);
+    const sketch = stampSketch(paths, points, grid);
     const measured = sketchLevel(sketch);
     const view = new Float32Array(sketch.length * 2);
     for (let i = 0; i < sketch.length; i++) {

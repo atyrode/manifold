@@ -14,7 +14,7 @@ const PALETTES = ["agar", "ink", "rail"] as const;
 const INK = PALETTES.indexOf("ink");
 
 const params: readonly ParamDef[] = [
-  choice("mould", "agents", "plasmodium", physarumAgentCounts.map((count, value) => ({ label: `${count / 1024}k`, value })), PHYSARUM_AGENTS_DEFAULT, "How many specks of plasmodium crawl the dish. Fewer: a sparse, airy lace. More: a fuller lace and thicker trunks, until at the most it starts to condense into a few heavy bands."),
+  choice("mould", "agents", "plasmodium", physarumAgentCounts.map((count, value) => ({ label: `${count / 1024}k`, value })), PHYSARUM_AGENTS_DEFAULT, "How many specks of plasmodium crawl the dish. Fewer: a sparse, airy mesh, the trunks fine. More: a fuller mesh and thicker trunks, the lace denser round them."),
   range("mould", "angle", "sensor angle", 35, "How far to either side each speck smells before it turns (it turns at least 45° at a time), in degrees. Narrow: long filaments in wide, open meshes. Wide: a tighter, curlier lace.", { min: 10, max: 80, step: 1 }),
   range("mould", "reach", "sensor reach", 9, "How far ahead each speck smells, in steps. Short: a fine lace of thin filaments. Long: a few broad, sweeping trunks.", { min: 3, max: 20, step: 1 }),
   range("mould", "decay", "evaporation", 0.4, "How quickly the mould's trail fades. Low: a dense lace where many paths survive. High: only the busiest trunks are kept, and abandoned ones vanish fast."),
