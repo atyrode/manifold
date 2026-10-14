@@ -18,7 +18,7 @@ const params: readonly ParamDef[] = [
   toggle("fire", "marshmallow", "marshmallow", true, "A marshmallow on a stick resting over the fire from the bench, slowly toasting from pale to golden to brown and back as it is lifted away and lowered again, over a couple of minutes."),
   range("camp", "reach", "firelight reach", 0.5, "How far the firelight carries: a tight pool on the stones, or a warm glow reaching the tent, the bench and the pack."),
   toggle("camp", "camp", "tent & pack", true, "A little tent at the edge of the light with a lantern glowing inside, and a backpack leaning by the stones."),
-  ...skyKnobs({ time: 0.86, stars: 0.8 }),
+  ...skyKnobs({ time: 0.8, stars: 0.8 }),
   feature("sky", "planet", "giant planet", true, "size", 0.55, "A giant banded planet with a storm swirl and a thin ring, low over the far pines, half hidden by the trees; it fades into the sky by day.", { min: 0.2, max: 1 }),
   feature("sky", "shooting", "shooting stars", true, "frequency", 0.4, "A shooting star now and then, drawn across the dark sky in a second or so. Higher: every few seconds. Now: one at once.", { trigger: 0 }),
   ...weatherKnobs({ wind: true, fog: true }),
