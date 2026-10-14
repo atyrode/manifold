@@ -22,6 +22,7 @@ import { gardenScene } from "./garden/index.ts";
 import { harmonographScene } from "./harmonograph/index.ts";
 import { hyperbolicScene } from "./hyperbolic/index.ts";
 import { incenseScene } from "./incense/index.ts";
+import { islandScene } from "./island/index.ts";
 import { kelpScene } from "./kelp/index.ts";
 import { lakeScene } from "./lake/index.ts";
 import { lanternsScene } from "./lanterns/index.ts";
@@ -93,6 +94,7 @@ export const sceneDefs = {
   harmonograph: harmonographScene,
   campfire: campfireScene,
   pendula: pendulaScene,
+  island: islandScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
