@@ -15,10 +15,13 @@
 // speed over open water) with the isotropic 9-point Laplacian (Patra & Karttunen), stable to a
 // Courant number of 0.87 and kept under COURANT. Walls reflect (a wall texel reads as its
 // neighbour's own height: no flow through it); the lens plate's shallow water carries waves at 0.62
-// of the speed, so its waves are shorter and bend; damping is a drag on the surface's speed. Dippers
-// push a small Gaussian of the surface up and down at the drive frequency; the bar and the M push
-// along a line. Their pushes are scaled so a dipper's ring is 1 high a wavelength out and the bar's
-// plane waves are their `amp` high (calibrated against the 2D and 1D Green's functions).
+// of the speed, so its waves are shorter and bend; damping is a drag on the surface's speed, and
+// viscosity a drag on its curvature's change, which spares the long waves and stills the short ones
+// fast (as water does): the grid's own short ripples, from a barrier's corners or a seed's seams,
+// would otherwise linger and the screen's focus would turn them into speckle. Dippers push a small
+// Gaussian of the surface up and down at the drive frequency; the bar and the M push along a line.
+// Their pushes are scaled so a dipper's ring is 1 high a wavelength out and the bar's plane waves
+// are their `amp` high (calibrated against the 2D and 1D Green's functions).
 //
 // Pace. Real ripple tanks are watched under a strobe that slows the waves to a crawl; here the
 // dippers beat at a quarter hertz and the waves crawl at 0.028 short sides a second, so the screen
@@ -94,6 +97,12 @@ const GRID_ROUND = 16;
 const SIGMA = 0.009;
 /** Open-water damping rate (1/s) at the damping knob's 1; it grows as the knob's 1.5th power. */
 const DAMP_MAX = 0.22;
+/**
+ * Viscosity per step (× the Laplacian of the surface's speed): stable to 0.18, it stills a ripple
+ * a sixth of a wavelength long within a second while costing the waves themselves about 0.03 / s,
+ * which comes off the open-water damping.
+ */
+const VISCOSITY = 0.04;
 /** Sponges: width in wavelengths, bounded (short sides), and their damping rate at the very edge (1/s). */
 const SPONGE_WAVES = 1.2;
 const SPONGE_WIDTH = [0.12, 0.24] as const;
@@ -195,11 +204,12 @@ uniform vec4 uDippers[${DIPPERS}]; // x, y (short sides), push per step (0: none
 uniform vec4 uBar;          // the bar's ends
 uniform float uBarPush;     // per step (0: none)
 uniform vec4 uMark;         // the M's centre, height (short sides), push per step (0: none)
+uniform float uViscosity;   // per step, × the Laplacian of the surface's change
 ${PASS_COMMON}
-// A neighbour's height; a wall reads as the texel's own, so nothing flows through it.
-float rippleTap(ivec2 q, float here) {
+// A neighbour's height now and a step ago; a wall reads as the texel's own, so nothing flows through it.
+vec2 rippleTap(ivec2 q, vec2 here) {
   vec4 s = texelFetch(uState, clamp(q, ivec2(0), ivec2(uSize) - 1), 0);
-  return s.z > 0.75 ? here : s.x;
+  return s.z > 0.75 ? here : s.xy;
 }
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
@@ -209,11 +219,13 @@ void main() {
     return;
   }
   float u = c.x;
-  float side = rippleTap(ij + ivec2(1, 0), u) + rippleTap(ij - ivec2(1, 0), u)
-             + rippleTap(ij + ivec2(0, 1), u) + rippleTap(ij - ivec2(0, 1), u);
-  float corner = rippleTap(ij + ivec2(1, 1), u) + rippleTap(ij + ivec2(-1, 1), u)
-               + rippleTap(ij + ivec2(1, -1), u) + rippleTap(ij - ivec2(1, 1), u);
-  float lap = (4.0 * side + corner - 20.0 * u) / 6.0;
+  float prev = u - (u - c.y) * uPrevScale;
+  vec2 here = vec2(u, prev);
+  vec2 side = rippleTap(ij + ivec2(1, 0), here) + rippleTap(ij - ivec2(1, 0), here)
+            + rippleTap(ij + ivec2(0, 1), here) + rippleTap(ij - ivec2(0, 1), here);
+  vec2 corner = rippleTap(ij + ivec2(1, 1), here) + rippleTap(ij + ivec2(-1, 1), here)
+              + rippleTap(ij + ivec2(1, -1), here) + rippleTap(ij - ivec2(1, 1), here);
+  vec2 lap = (4.0 * side + corner - 20.0 * here) / 6.0;
   vec2 p = vUv * uFrame;
   vec2 e = min(p, uFrame - p);
   float sponge = max(1.0 - min(e.x, e.y) / uSponge.x, 0.0);
@@ -234,8 +246,7 @@ void main() {
     float d = rippleMark((p - uMark.xy) / uMark.z) * uMark.z;
     push += uMark.w * exp(-d * d / s2) * sin(uPhase);
   }
-  float prev = u - (u - c.y) * uPrevScale;
-  float next = u + (u - prev) * (1.0 - damp) + uC2 * c.w * c.w * lap + push;
+  float next = u + (u - prev) * (1.0 - damp) + uC2 * c.w * c.w * lap.x + uViscosity * (lap.x - lap.y) + push;
   fragColor = vec4(next, u, c.z, c.w);
 }
 `;
@@ -493,7 +504,11 @@ interface Physics {
   n: number;
   step: number;
   courant: number;
-  /** Open-water damping rate (1/s). */
+  /**
+   * The waves' damping rate (1/s) as the knob asks, and the part of it left to the open-water drag
+   * once viscosity has taken its share.
+   */
+  fade: number;
   damp: number;
   /** The M's size knob (its middle while the M is off but called up by 'now'). */
   markSize: number;
@@ -687,6 +702,9 @@ class RippleLab implements SceneSim {
     const n = Math.min(Math.max(wanted, GRID_MIN), GRID_MAX, Math.max(96, Math.round(cells / GRID_ROUND) * GRID_ROUND));
     const step = Math.min(STEP, COURANT / (speed * n));
     const mark = Math.max(0, this.#value(frame, this.#at.mark));
+    // Viscosity damps a wave of wavenumber k (per texel) at VISCOSITY k² per step.
+    const k = (TAU / lambda) / n;
+    const fade = Math.max(DAMP_MAX * Math.min(1, Math.max(0, this.#value(frame, this.#at.damping))) ** 1.5, (VISCOSITY * k * k) / step);
     return {
       frame: tank,
       speed,
@@ -695,7 +713,8 @@ class RippleLab implements SceneSim {
       n,
       step,
       courant: speed * n * step,
-      damp: DAMP_MAX * Math.min(1, Math.max(0, this.#value(frame, this.#at.damping))) ** 1.5,
+      fade,
+      damp: fade - (VISCOSITY * k * k) / step,
       markSize: mark > 0 ? mark : 0.5,
     };
   }
@@ -806,7 +825,7 @@ class RippleLab implements SceneSim {
         uLambda: physics.lambda,
         uPhase: tank.phase,
         uPhaseStep: physics.omega * physics.step,
-        uAtten: physics.damp / (2 * physics.speed),
+        uAtten: physics.fade / (2 * physics.speed),
         uPoints: this.#points,
         uPointSide: this.#sides,
         uPlanes: this.#planes,
@@ -907,7 +926,7 @@ class RippleLab implements SceneSim {
         // Past it, each slit is a dipper fed by the wave that reached it: a ring SLIT_RING × (that
         // wave's height × slit width / wavelength) high, a quarter turn ahead of it.
         const phase = -k * (slits.far - from);
-        const reached = bar.amp * Math.exp((-physics.damp / (2 * physics.speed)) * (slits.far - from));
+        const reached = bar.amp * Math.exp((-physics.fade / (2 * physics.speed)) * (slits.far - from));
         for (const centre of slits.centres) {
           if (points >= SEED_POINTS) break;
           this.#points.set([centre.x, centre.y, (SLIT_RING * reached * slits.width) / physics.lambda, phase], points * 4);
@@ -969,6 +988,7 @@ class RippleLab implements SceneSim {
         uFrame: this.#frameSize,
         uC2: C2,
         uDamp: physics.damp * physics.step,
+        uViscosity: VISCOSITY,
         uSponge: this.#sponge,
         uPrevScale: tank.prevScale,
         uPhase: tank.phase,

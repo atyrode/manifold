@@ -39,6 +39,7 @@ import { sillScene } from "./sill/index.ts";
 import { starryScene } from "./starry/index.ts";
 import { streetScene } from "./street/index.ts";
 import { swellScene } from "./swell/index.ts";
+import { trainScene } from "./train/index.ts";
 import type { SceneDef } from "./types.ts";
 import { waveScene } from "./wave/index.ts";
 
@@ -83,6 +84,7 @@ export const sceneDefs = {
   ripple: rippleScene,
   bonsai: bonsaiScene,
   street: streetScene,
+  train: trainScene,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;
