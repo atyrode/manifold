@@ -84,6 +84,11 @@ export const CANDLE_Z = 0.72;
 /** The ceiling fan's pace at either end of its knob (turns per second): lazy; even the fastest leaves a second between blades. */
 export const FAN_SLOW = 0.04;
 export const FAN_FAST = 0.25;
+/** Seconds the scene's entrance and exit take (SceneDef.passage), shared with the shader. */
+export const PASSAGE = { enter: 2.8, exit: 1.7 } as const;
+/** The fan stands still as you sit down and spins up between these seconds of the entrance. */
+const FAN_SPIN_FROM = 0.6;
+const FAN_SPIN_TO = 2.7;
 
 /** What the bartender is doing. */
 export const ACT = {
@@ -367,8 +372,10 @@ class BarEvening implements SceneSim {
     this.#follow(frame);
 
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
-    // The fan turns at the knob's pace, carrying on from where it was when the knob moves.
-    if (this.#fan > 0) this.#fanAngle = (this.#fanAngle + advance * 2 * Math.PI * (FAN_SLOW + (FAN_FAST - FAN_SLOW) * this.#fan)) % (2 * Math.PI);
+    // The fan turns at the knob's pace, carrying on from where it was when the knob moves; on the
+    // entrance it starts from a standstill (exactly 1 once arrived).
+    const spin = frame.passage.enter >= 1 ? 1 : smooth(FAN_SPIN_FROM, FAN_SPIN_TO, frame.passage.enter * PASSAGE.enter);
+    if (this.#fan > 0) this.#fanAngle = (this.#fanAngle + advance * spin * 2 * Math.PI * (FAN_SLOW + (FAN_FAST - FAN_SLOW) * this.#fan)) % (2 * Math.PI);
     this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
     while (this.#pending >= STEP) {
       this.#step();

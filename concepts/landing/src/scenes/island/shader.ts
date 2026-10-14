@@ -18,6 +18,11 @@
 // Calm under the dither: moving edges (foam, swell lines, cloud shadows, sprites, sparkle, glints)
 // are cut per cell with hardEdge / hardFill, and every noise is faded out where a cell outgrows it.
 
+import { glslFloat } from "../../shaders/glsl.ts";
+
+/** Seconds of the island's entrance (the camera swoops down, the gull glides in) and exit (the camera lifts away) (SceneDef.passage). */
+export const ISLAND_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+
 export const islandGlsl = /* glsl */ `
 const float ISL_SINP = 0.34202;
 const float ISL_COSP = 0.93969;
@@ -25,6 +30,16 @@ const float ISL_FOCAL = 1.2;
 const float ISL_LENS = 0.277;
 const vec3 ISL_TARGET = vec3(0.0, 0.35, 0.1);
 const float ISL_YAW = 2.2;
+
+// Passage (ISLAND_PASSAGE): the camera comes down from higher and farther, pitched further over the
+// sea, and settles into the usual framing; on the way out it lifts and backs away again.
+const float ISL_ENTER = ${glslFloat(ISLAND_PASSAGE.enter)};
+const float ISL_EXIT = ${glslFloat(ISLAND_PASSAGE.exit)};
+const float ISL_PITCH = 0.349066;
+const float ISL_SWOOP_PITCH = 0.2443;
+const float ISL_SWOOP_DIST = 0.42;
+const float ISL_LIFT_PITCH = 0.2094;
+const float ISL_LIFT_DIST = 0.4;
 const float ISL_METRES = 2.2;
 const float ISL_RS = 2.4;
 const float ISL_TOP = 0.98;
@@ -80,6 +95,7 @@ float islGullOn;
 vec3 islBall;
 float islBallOn;
 float islBallHue;
+float islBallDir;
 // What the last islAlbedo call found.
 float islPorous;
 float islHardS;
@@ -943,6 +959,14 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   return mix(col, islHaze(rd) * vec3(0.92, 0.96, 1.0), 0.85 * hz);
 }
 
+// ---- passage ----
+
+// 0 -> 1 as k does: slow start, a brisk middle and a gentle settle that overshoots by about 5%.
+float islSettle(float k) {
+  float m = smoothstep(0.0, 1.0, k) - 1.0;
+  return 1.0 + 2.2 * m * m * m + 1.2 * m * m;
+}
+
 // ---- tiny life ----
 
 vec3 islGullAt(float tm) {
@@ -957,6 +981,7 @@ void islBalloonSetup(float tm, float since) {
   islBallOn = 0.0;
   islBall = vec3(0.0);
   islBallHue = 0.0;
+  islBallDir = 1.0;
   float P = mix(200.0, 70.0, clamp(K_balloon, 0.0, 1.0));
   float span = 0.5 * P;
   float prog = -1.0;
@@ -975,6 +1000,7 @@ void islBalloonSetup(float tm, float since) {
   }
   if (prog < 0.0) return;
   float dirS = hs < 0.5 ? 1.0 : -1.0;
+  islBallDir = dirS;
   islBall = vec3(dirS * (prog - 0.5) * 26.0, 2.9 + 0.6 * fract(hs * 7.31) + 0.1 * sin(tm * 0.6), -1.0 + 5.0 * fract(hs * 13.7));
   islBallHue = hs;
   islBallOn = 1.0;
@@ -1076,11 +1102,52 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   islBalloonSetup(islT, sinceTrigger(0));
   if (rain > 0.7) islBallOn = 0.0;
 
-  // The camera.
+  // Passage: the camera's swoop (1 at the start, 0 once settled; it dips a little below 0 in the
+  // overshoot) and lift away, the gull gliding in along a bearing of its own and out the
+  // other way, the balloon drifting in along its heading and rising away. Nothing below runs at rest.
+  float pin = passageIn();
+  float pout = passageOut();
+  bool passing = pin < 1.0 || pout > 0.0;
+  float sinP = ISL_SINP;
+  float cosP = ISL_COSP;
   float D = 7.0 * max(1.0, 1.65 / aspect);
-  islFwd = vec3(0.0, -ISL_SINP, ISL_COSP);
+  if (passing) {
+    float swoop = 1.0 - islSettle(pin);
+    float away = smoothstep(0.0, 1.0, pout);
+    float pitch = ISL_PITCH + swoop * ISL_SWOOP_PITCH + away * ISL_LIFT_PITCH;
+    sinP = sin(pitch);
+    cosP = cos(pitch);
+    D *= 1.0 + swoop * ISL_SWOOP_DIST + away * ISL_LIFT_DIST;
+    float tin = pin * ISL_ENTER;
+    float tout = pout * ISL_EXIT;
+    if (islGullOn > 0.0) {
+      float sgn = hash12(vec2(K_isle, 41.0)) < 0.5 ? 1.0 : -1.0;
+      // Gull: a quadratic glide in from beyond the frame's edge (decelerating to the orbit), the
+      // heading taken from its velocity so it flies the way it travels.
+      vec3 vIn = vec3(-sgn * 16.0, 1.5, -1.0);
+      float fin = 1.0 - clamp(tin / ISL_ENTER, 0.0, 1.0);
+      vec3 gOff = vIn * (fin * fin);
+      vec3 gVel = vIn * (-2.0 * fin / ISL_ENTER);
+      if (pout > 0.0) {
+        vec3 vOut = vec3(sgn * 18.0, 2.5, 1.0);
+        float fout = tout / ISL_EXIT;
+        gOff += vOut * (fout * fout);
+        gVel += vOut * (2.0 * fout / ISL_EXIT);
+      }
+      islGull += gOff;
+      islGullAhead += gOff + 0.6 * gVel;
+    }
+    if (islBallOn > 0.0) {
+      float fb = 1.0 - clamp((tin - 0.2) / (ISL_ENTER - 0.2), 0.0, 1.0);
+      islBall += vec3(-islBallDir * 14.0, 0.6, 0.0) * (fb * fb) + vec3(islBallDir * 5.0, 5.0, 0.0) * (pout * pout);
+    }
+  }
+
+  // The camera.
+  islFwd = vec3(0.0, -sinP, cosP);
   islRgt = vec3(1.0, 0.0, 0.0);
-  islUp = vec3(0.0, ISL_COSP, ISL_SINP);
+  islUp = vec3(0.0, cosP, sinP);
+
   // Aim a little below the island so it sits in the lower middle of the frame, under the horizon.
   islRo = ISL_TARGET - islUp * (0.1314 * D) - islFwd * D;
   vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
@@ -1125,7 +1192,7 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
 
   if (!onIsland && uv.y > 0.55) {
     vec4 fc = islFarClouds(sp, zScene);
-    float hor = 0.5 + ISL_FOCAL * ISL_SINP / ISL_COSP - ISL_LENS;
+    float hor = 0.5 + ISL_FOCAL * sinP / cosP - ISL_LENS;
     if (fc.a > 0.0) col = mix(col, mix(fc.rgb, islHaze(rd), mix(0.5, 0.12, smoothstep(0.0, 0.2, uv.y - hor))), fc.a);
   }
 

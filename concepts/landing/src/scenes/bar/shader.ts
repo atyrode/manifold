@@ -34,10 +34,17 @@
 // bodies are flat inside or banded along their motion. Everything else is still or changes slowly.
 // No shimmer.
 //
+// Passage: you sit down in the booth (the eye starts a little high and looking toward the door,
+// lowers and turns to rest with a little give; the bartender looks up from his glass and nods; the
+// fan, spun up in sim.ts, starts turning; the lamps warm on a touch) and, leaving, stand (the eye
+// rises and turns to the door; he gives a small wave). The pane's drops and the rain move with the
+// window. At rest every term is exactly zero or one.
+//
 // Knobs: K_night (the sim thins the room; here the lamps dim and OPEN goes dark at last call),
 // K_patrons and K_bartender (sim), K_warmth, K_bokeh, K_fan (the sim turns it), K_candle, K_steam,
 // K_whisky, K_traffic, K_sign, K_jukebox, K_rain, K_wind, K_drops, K_mark. Triggers: 1 a taxi,
 // 2 a new record on the jukebox, 3 the M (0 and 4 are the sim's: a cocktail, a newcomer).
+import { glslFloat } from "../../shaders/glsl.ts";
 import {
   ACT,
   BARTENDER_Z,
@@ -57,6 +64,7 @@ import {
   HORIZON,
   PAN_FROM,
   PAN_RATE,
+  PASSAGE,
   POUR_FLOW,
   POUR_REACH,
   POUR_SET,
@@ -70,9 +78,6 @@ import {
   TABLE_EYE,
   WALK_Z,
 } from "./sim.ts";
-
-/** A number as a GLSL float literal. */
-const glslFloat = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
 
 export const barGlsl = `
 // ---- Shared with the simulation (sim.ts)
@@ -118,6 +123,8 @@ const float BAR_STRAIN_SET = ${glslFloat(STRAIN_SET)};
 const float BAR_STRAIN_FLOW0 = ${glslFloat(STRAIN_FLOW[0])};
 const float BAR_STRAIN_FLOW1 = ${glslFloat(STRAIN_FLOW[1])};
 const float BAR_CLEAR_TAKE = ${glslFloat(CLEAR_TAKE)};
+const float BAR_ENTER = ${glslFloat(PASSAGE.enter)};
+const float BAR_EXIT = ${glslFloat(PASSAGE.exit)};
 
 // ---- The room (m)
 
@@ -188,6 +195,8 @@ float barPx;        // one cell, screen heights
 float barT;         // the scene clock (for the weather library, which applies uMotion itself)
 float barTm;        // the scene clock × motion
 vec2 barEye;        // the eye's offset (m), from the pointer
+vec2 barPassEye;    // the passage's lift of the eye (m)
+vec2 barPassTurn;   // the passage's turn of the view (screen heights)
 vec3 barLamp;       // the pendants' light, by warmth and the time of night
 vec3 barShelf;      // the back bar's own glow (strips under the shelves)
 vec3 barFanCol;     // the fan's bowl light
@@ -211,6 +220,36 @@ vec4 barMisc;       // candle draught xy, fan angle
 // edge flips each cell once, all three channels together; half coverage still dithers half.
 float barHard(float cover) {
   return cover > barTh ? 1.0 : 0.0;
+}
+
+// ---- Passage (the entrance and exit: you sit down in the booth, you stand up to leave)
+
+// Ease-out with a gentle overshoot: 0 at x = 0, a few percent past 1 near the end, exactly 1 from x = 1.
+float barSettle(float x) {
+  float u = clamp(x, 0.0, 1.0);
+  u = u * u * (3.0 - 2.0 * u);
+  float d = u - 1.0;
+  return 1.0 + 3.2 * d * d * d + 2.2 * d * d;
+}
+
+// The camera's passage: the eye's lift (m, into barEye) and the view's turn (screen heights, added
+// to p). Sitting down, the eye starts high and looking down toward the door, and lowers and turns
+// to rest with a little give; leaving, it rises and turns to the door again. Both exactly zero at rest.
+void barPassage() {
+  barPassEye = vec2(0.0);
+  barPassTurn = vec2(0.0);
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin < 1.0) {
+    float tin = pin * BAR_ENTER;
+    barPassEye.y += 0.13 * (1.0 - barSettle((tin - 0.2) / 2.2));
+    barPassTurn += vec2(-0.05, -0.02) * (1.0 - barSettle((tin - 0.4) / 2.2));
+  }
+  if (pout > 0.0) {
+    float tout = pout * BAR_EXIT;
+    barPassEye.y += 0.18 * smoothstep(0.0, 1.0, clamp((tout - 0.1) / 1.5, 0.0, 1.0));
+    barPassTurn += vec2(-0.06, 0.025) * smoothstep(0.0, 1.0, clamp((tout - 0.3) / 1.4, 0.0, 1.0));
+  }
 }
 
 // The screen point of something at depth z as the unmoved eye would see it.
@@ -1382,6 +1421,23 @@ BarTender barTenderPose() {
   T.ha = mix(restA, ta, env);
   T.hb = mix(restB, tb, env);
   T.lean = lean * env;
+  // Passage: arriving, he looks up from what he is doing and nods hello; leaving, he gives a small
+  // wave with his free hand (screen left) and looks your way. Nothing at rest.
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin < 1.0 || pout > 0.0) {
+    float tin = pin * BAR_ENTER;
+    float tout = pout * BAR_EXIT;
+    float facing = 1.0 - T.back;
+    float look = smoothstep(0.7, 1.2, tin) * (1.0 - smoothstep(2.3, BAR_ENTER, tin));
+    float nod = sin(BAR_PI * clamp((tin - 1.3) / 0.8, 0.0, 1.0));
+    float wave = smoothstep(0.1, 0.5, tout) * facing;
+    float gaze = max(look * facing, wave);
+    T.yaw = mix(T.yaw, -0.5, gaze);
+    T.pitch = mix(T.pitch, 0.2, gaze);
+    T.lean += 0.05 * nod * facing;
+    T.ha = mix(T.ha, vec2(-0.3 + 0.07 * sin(barTm * 8.0), 1.5), wave);
+  }
   float ys = 1.45 - T.lean;
   float w = 0.19 * T.width;
   T.ea = barElbow(vec2(-w + 0.05, ys - 0.065), T.ha, 0.3, 0.29, -1.0);
@@ -2058,11 +2114,15 @@ Shade sceneBar(vec2 uv, vec2 cell, float t) {
   barPx = 1.0 / uRes.y;
   barT = t;
   barTm = t * uMotion;
-  barEye = uPointer * vec2(0.06, 0.025);
+  barPassage();
+  barEye = uPointer * vec2(0.06, 0.025) + barPassEye;
   float pan = -max(0.0, BAR_PAN_FROM - aspect) * BAR_PAN_RATE;
-  // Screen heights from the eye level (BAR_HORIZON above the frame's middle), x from the middle.
-  vec2 p = (uv - 0.5) * vec2(aspect, 1.0) + vec2(pan, -BAR_HORIZON);
-  float xl = -0.5 * aspect + pan;
+  // Screen heights from the eye level (BAR_HORIZON above the frame's middle), x from the middle;
+  // the passage's turn of the view is added (exactly zero at rest).
+  vec2 p = (uv - 0.5) * vec2(aspect, 1.0) + vec2(pan, -BAR_HORIZON) + barPassTurn;
+  float xl = -0.5 * aspect + pan + barPassTurn.x;
+  // The pane belongs to the room: its drops, and the rain seen through it, move with the window.
+  vec2 uvGlass = uv + (barPassTurn + BAR_F * barPassEye * (1.0 / BAR_WIN_Z - 1.0 / BAR_FOCUS)) / vec2(aspect, 1.0);
   barB0 = barSimTexel(0);
   barB1 = barSimTexel(1);
   for (int k = 0; k < 4; k++) {
@@ -2078,7 +2138,9 @@ Shade sceneBar(vec2 uv, vec2 cell, float t) {
   // little brighter under rain cloud lit by the city; the OPEN sign switched off at last call.
   barLevel = mix(1.0, 0.55, smoothstep(0.55, 1.0, K_night));
   vec3 warm = mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 0.6, 0.3), K_warmth);
-  barLamp = warm * barLevel * 1.3;
+  // The lamps warm on a little as you arrive (exactly 1 at rest).
+  float lampK = 1.0 - 0.14 * (1.0 - smoothstep(0.1, 0.85, passageIn()));
+  barLamp = warm * barLevel * 1.3 * lampK;
   barShelf = mix(vec3(1.0, 0.72, 0.42), warm, 0.5) * 0.85 * mix(1.0, 0.5, smoothstep(0.6, 1.0, K_night));
   barFanCol = vec3(1.0, 0.82, 0.62) * 0.4 * barLevel;
   barAmbient = vec3(0.05, 0.04, 0.036) * (0.6 + 0.4 * barLevel);
@@ -2091,7 +2153,7 @@ Shade sceneBar(vec2 uv, vec2 cell, float t) {
   float colX = barWorld(p, BAR_COL_Z).x;
   if (colX < BAR_COL_X1) {
     // The front wall and the column, the floor before them.
-    col = colX < BAR_COL_X0 ? barFrontWall(p, uv, aspect, xl) : barColumn(p);
+    col = colX < BAR_COL_X0 ? barFrontWall(p, uvGlass, aspect, xl) : barColumn(p);
     if (barAt(p, BAR_WIN_Z).y < -BAR_F * BAR_EYE / BAR_WIN_Z) col = barFloor(p);
   } else {
     // The room: ceiling, back wall or floor, then the bartender, the counter, the glasses standing

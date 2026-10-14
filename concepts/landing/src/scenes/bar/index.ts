@@ -8,7 +8,7 @@ import { choice, counts, feature, range, toggle, type ParamDef } from "../../par
 import { atmosphereGroups, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { barGlsl } from "./shader.ts";
-import { barSim } from "./sim.ts";
+import { barSim, PASSAGE } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("bar", "night", "time of night", 0.3, "Early in the evening the stools fill up and the lamps burn bright; toward last call people drift home one by one, the lights go down, the bartender wipes down the counter and the OPEN sign in the window goes dark."),
@@ -51,6 +51,10 @@ export const barScene: SceneDef = {
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: the M on the back bar's mirror." },
   },
   glsl: barGlsl,
+  // You sit down in the booth: the view lowers and turns to rest, the bartender looks up from his
+  // glass and nods, the fan starts turning, the lamps warm up a little. Leaving, you stand: the view
+  // rises and turns to the door as he gives a small wave.
+  passage: PASSAGE,
   entry: "sceneBar",
   sim: barSim(params),
 };

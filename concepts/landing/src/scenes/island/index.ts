@@ -8,7 +8,7 @@
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { islandGlsl } from "./shader.ts";
+import { ISLAND_PASSAGE, islandGlsl } from "./shader.ts";
 
 const params: readonly ParamDef[] = [
   range("island", "trees", "fruit trees", 0.65, "How many leafy fruit trees stand on the lawn: none to the left, six to the right. Light comes through their crowns, and each bears its own fruit."),
@@ -40,4 +40,7 @@ export const islandScene: SceneDef = {
   entry: "sceneIsland",
   // A bright island by day is a light page: dark copy from morning to evening on a still clock, unless steady rain greys it.
   theme: skyTheme(params, { from: 0.31, to: 0.69, rainBelow: 0.3 }),
+  // Entrance: the camera swoops down from higher and farther and settles into the framing while the gull
+  // glides in and a balloon drifts into frame. Exit: the camera lifts and backs away.
+  passage: ISLAND_PASSAGE,
 };
