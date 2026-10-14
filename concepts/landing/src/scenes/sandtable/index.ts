@@ -6,7 +6,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { sandtableGlsl } from "./shader.ts";
-import { sandtableFigures, sandtableMachines, sandtablePatterns, sandtableSim } from "./sim.ts";
+import { SANDTABLE_PASSAGE, sandtableFigures, sandtableMachines, sandtablePatterns, sandtableSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("table", "machine", "machine", sandtableMachines.map((label, value) => ({ label, value })), 0, "Ball: a steel ball, pulled by a magnet hidden under the table (after Bruce Shapiro's Sisyphus tables), ploughs slow drawings through fine sand, erasing the last one wherever it crosses it. Pendulum: a funnel swinging on a string trickles sand onto dark slate, drawing a rosette as the swing dies away; then a straight edge wipes the slate and it swings again."),
@@ -39,4 +39,5 @@ export const sandtableScene: SceneDef = {
   glsl: sandtableGlsl,
   entry: "sceneSandtable",
   sim: sandtableSim(params),
+  passage: SANDTABLE_PASSAGE,
 };

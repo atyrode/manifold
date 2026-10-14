@@ -3,7 +3,8 @@
 // dark floor; and on it the steel ball, or the pendulum's funnel, string and wiping edge.
 //   uSim0  heights, field units (r16f), the field square centred on the table
 //   uSim1  texel 0: ball or funnel centre (field units from the table's centre), shown, stream
-//          texel 1: wiping edge normal, offset of its middle along it, shown
+//          texel 1: wiping edge normal, offset of its middle along it, shown (the pendulum's wipe;
+//          for the ball only while the scene leaves)
 //          texel 2: M lit, M height (field units), ball: M drawn so far (mark units, signed by the
 //          foot it set off from) / pendulum: funnel fill
 // Field space: x right, y up, field units from the table's centre; the screen shows SANDTABLE.span
@@ -376,9 +377,10 @@ Shade sceneSandtable(vec2 uv, vec2 cell, float t) {
   vec3 around = (pendulum ? SANDTABLE_SLATE : sand) * (SANDTABLE_ROOM + 0.42 * SANDTABLE_LAMP);
 
   // What stands on or hangs over the table shades the lamp on everything beneath it.
-  float vis = pendulum
-    ? (1.0 - sandtablePendulumShadow(p, s0, lamp, px)) * (1.0 - sandtableEdgeShadow(p, s1, lamp, rimOut))
-    : 1.0 - sandtableBallShadow(p, s0, ballR, lamp, sinE);
+  float vis = (pendulum
+    ? 1.0 - sandtablePendulumShadow(p, s0, lamp, px)
+    : 1.0 - sandtableBallShadow(p, s0, ballR, lamp, sinE))
+    * (1.0 - sandtableEdgeShadow(p, s1, lamp, rimOut));
 
   float inRim = framed ? smoothstep(SANDTABLE_SAND - px, SANDTABLE_SAND + px, r) : 0.0;
   float outRim = framed ? smoothstep(rimOut - px, rimOut + px, r) : 0.0;
@@ -405,10 +407,10 @@ Shade sceneSandtable(vec2 uv, vec2 cell, float t) {
   }
   if (outRim > 0.0) col += outRim * sandtableFloor(p, r, lamp, sinE, rimOut, vis);
 
-  // On top: the ball; or the wiping edge, the funnel's string and the funnel.
+  // On top: the wiping edge, then the ball; or the funnel's string and the funnel.
   float spark = 0.0;
+  col = sandtableEdgeBar(col, p, s1, lamp, sinE, around, px, rimOut, spark);
   if (pendulum) {
-    col = sandtableEdgeBar(col, p, s1, lamp, sinE, around, px, rimOut, spark);
     col = sandtableString(col, p, s0, px);
     col = sandtableFunnel(col, p, s0, s2.z, lamp, sinE, sand, around, px, spark);
   } else {

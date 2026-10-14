@@ -63,13 +63,14 @@ float dunesStreak(vec3 q, float tm, float windSign, float gale, float across) {
   return smoothstep(0.52, 0.85, n);
 }
 
-// The passage's veil: strands of sand like dunesStreak's, drawn out along the wind, but carried a
-// given distance 'travel' downwind (cells) rather than at a rate, so the pace can change while
-// the strands keep their shape.
-float dunesVeilStreak(vec3 q, float travel, float windSign, float across) {
-  vec2 s = vec2((q.x * windSign - travel) * 0.16, q.z * across + q.y * 0.5);
-  float n = 0.6 * vnoise(s) + 0.4 * vnoise(s * vec2(1.7, 2.9) + 4.1);
-  return smoothstep(0.5, 0.8, n);
+// The passage's veil: soft broken sheets of blown sand at ground point p, stretched a little along
+// the wind, bent by a warp and carried a given distance 'travel' downwind (cells) rather than at a
+// rate, so the pace can change while the sheets keep their shape.
+float dunesVeilSheet(vec2 p, float travel, float windSign) {
+  vec2 s = vec2((p.x * windSign - travel) * 0.04, p.y * 0.1);
+  s += 0.7 * (vec2(vnoise(s * 1.6 + 3.1), vnoise(s * 1.6 + 8.2)) - 0.5);
+  float n = 0.65 * vnoise(s) + 0.35 * vnoise(s * 2.3 + 5.0);
+  return smoothstep(0.58, 0.82, n);
 }
 
 // The M as a slab of sandstone: the glyph extruded through its depth (Quilez's extrusion of a 2D
@@ -252,8 +253,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     ro = vec3(g.x, DUNES_TOP + 24.0, g.y);
     rd = vec3(0.0, -1.0, 0.0);
   }
-  // The veil of the passage is drawn from where the camera comes to rest, so it travels with the view.
-  vec3 veilRo = ro;
+
   if (passing && !overhead && pin < 1.0) {
     // Arriving: the eye glides forward from upwind and low, rising to its place with the faintest
     // overshoot (an ease-out-back), and never dips into the sand under it.
@@ -431,11 +431,11 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     col = mix(col, dust, clamp(sheets * storm * 1.3, 0.0, 0.9));
   }
 
-  // The passage's veil: strands of blown sand streaming downwind across the view at three depths.
-  // Arriving, the wind drops: a front of the veil clears from upwind (left) across the picture to
-  // the right and the strands slow. Leaving, the wind rises: strands stream in from the left and
-  // thicken until they cover it. Each strand is cut per cell (hardEdge), its pattern carried
-  // whole, so nothing crawls. The front is exactly off at rest.
+  // The passage's veil: low drifts of blown sand hugging the ground and streaming off the crests,
+  // soft broken sheets and wisps, never up in the sky. Arriving, the wind drops: a front of the
+  // veil clears from upwind (left) across the picture to the right and the drifts slow. Leaving,
+  // the wind rises: drifts stream in from the left and thicken. Each is cut per cell (hardEdge)
+  // and its pattern carried whole, so nothing crawls. The front is exactly off at rest.
   if (passing) {
     float x = uv.x + 0.12 * (vnoise(vec2(uv.y * 5.0, 3.0)) - 0.5);
     float density = 0.0;
@@ -447,20 +447,28 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     } else {
       float cleared = 1.0 - (1.0 - pin) * (1.0 - pin);
       float e = mix(-0.4, 1.5, cleared);
-      density = 0.85 * smoothstep(e, e + 0.45, x);
+      density = smoothstep(e, e + 0.45, x);
       travel = ${glslFloat(DUNES_PASSAGE.enter)} * 26.0 * (pin - 0.5 * pin * pin);
     }
-    if (density > 0.0) {
+    // Aerial, the veil thins out within 0.15 of the screen above the horizon; the far field has none.
+    float reachV = hitT > 0.0 ? hitT : 240.0;
+    float skyLow = overhead ? 1.0 : smoothfall(0.15, 0.0, uv.y - DUNES_HORIZON);
+    float distant = smoothfall(700.0, 350.0, reachV);
+    if (density > 0.0 && skyLow > 0.0 && distant > 0.0) {
       float veil = 0.0;
-      for (int k = 0; k < 3; k++) {
-        float d = overhead ? veilRo.y - 6.0 + 2.5 * float(k) : 18.0 * pow(2.2, float(k));
-        if (hitT > 0.0 && d > hitT) break;
-        vec3 q = veilRo + rd * d;
-        float strand = dunesVeilStreak(q + vec3(0.0, 0.0, 11.0 * float(k)), travel * (1.5 - 0.35 * float(k)), windSign, overhead ? 0.9 : 1.6);
-        veil = max(veil, strand * exp(-max(q.y, 0.0) / 26.0));
+      for (int k = 0; k < 4; k++) {
+        // Points along the last stretch of the ray before it meets the sand, weighted by how close
+        // to the sand they lie, and by crests just upwind that the sand streams off.
+        vec3 q = ro + rd * (reachV * (0.97 - 0.12 * float(k) * float(k) / 3.0));
+        float hug = exp(-max(q.y - dunesHeight(q.xz), 0.0) / 3.5);
+        float crest = max(
+          smoothstep(0.08, 0.24, -dunesShape(q.xz - vec2(windSign * 3.0, 0.0)).z),
+          0.7 * smoothstep(0.08, 0.24, -dunesShape(q.xz - vec2(windSign * 9.0, 0.0)).z)
+        );
+        veil = max(veil, hug * (0.35 + 0.65 * crest) * dunesVeilSheet(q.xz, travel * (1.25 - 0.12 * float(k)), windSign));
       }
       vec3 veilColor = mix(grains, dust, 0.35);
-      col = mix(col, veilColor, 0.7 * hardEdge(veil * density));
+      col = mix(col, veilColor, 0.65 * hardEdge(0.75 * veil * density * skyLow * distant));
     }
   }
 

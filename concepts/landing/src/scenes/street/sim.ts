@@ -61,6 +61,13 @@
 // seconds before the scramble (crowds waiting at the kerbs, the avenue's traffic queued at its red
 // light) and runs it for PREWARM seconds. Nothing is allocated per frame.
 //
+// The scene's passage (SceneDef.passage, STREET_PASSAGE): the camera comes down from the skyline onto
+// the crossing as the crowd walks in along its sidewalks to where it gathers, and on the way out it
+// tilts up again. The tilt (passageTilt) is the window's pitch raised above its rest value; the shader
+// reads the same tilt from passageIn() / passageOut(), and the pointer is traced with it. The crowd's
+// walk-in only moves where walkers are drawn (and binned), never the simulation, and draws no random
+// numbers. Both are exactly off at rest.
+//
 // Textures:
 //   uSim0  rgba16f, MAX_AGENTS × 2, nearest. Slot i (walkers first, then vehicles):
 //          row 0: x, z − Z_REF (m), heading (rad: direction cos, sin in x, z), kind (KIND_*; 0 empty)
@@ -565,6 +572,47 @@ const angleDiff = (a: number, b: number): number => {
   return d > Math.PI ? d - TAU : d < -Math.PI ? d + TAU : d;
 };
 
+// ---- The passage ----
+
+/** Seconds the entrance and the exit take (SceneDef.passage). The shader eases the same tilt from
+ *  passageIn() and passageOut() with the constants below: keep passageTilt and its GLSL twin in step. */
+export const STREET_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+/** How far the window's pitch is raised (rad, 31.5°) when the entrance starts, with the skyline in
+ *  view and the crossing below the frame, and where the exit ends. */
+export const TILT_IN = 0.55;
+export const TILT_OUT = 0.55;
+/** The share of the entrance the camera takes to come down and settle. */
+export const TILT_ARRIVE = 0.8;
+
+/** How far the camera is raised above its rest pitch (rad), from the passage's progress (0..1 each):
+ *  coming in it comes down with a little overshoot, then settles; going out it eases up. Exactly 0 at rest. */
+export function passageTilt(enter: number, exit: number): number {
+  if (enter >= 1 && exit <= 0) return 0;
+  const x = clamp(enter / TILT_ARRIVE, 0, 1);
+  const eased = x * x * (3 - 2 * x);
+  const back = eased - 1;
+  const settle = 1 + 1.8 * back * back * back + 0.8 * back * back;
+  const leave = exit * exit * (3 - 2 * exit);
+  return TILT_IN * (1 - settle) + TILT_OUT * leave;
+}
+
+/** The crowd's walk-in: each walker sets off after at most this share of the entrance, arrives between
+ *  the second and third shares, at a pace in this range (m/s), so it comes in from that far along its
+ *  sidewalk (a few metres). */
+const ARRIVE_START_MAX = 0.12;
+const ARRIVE_END_MIN = 0.72;
+const ARRIVE_END_MAX = 0.94;
+const ARRIVE_PACE_MIN = 1.15;
+const ARRIVE_PACE_MAX = 1.6;
+/** The last share of its walk in which a walker turns from its way in to its own heading. */
+const ARRIVE_TURN = 0.2;
+
+/** A repeatable number 0..1 from a walker's index and a salt (no draw from the simulation's random numbers). */
+const hash01 = (n: number, salt: number): number => {
+  const s = Math.sin(n * 127.1 + salt * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+};
+
 /** mulberry32: a small seeded generator, so the same seed always gives the same evening (and the
  *  shader the same city). */
 export class Random {
@@ -887,6 +935,10 @@ class StreetCrossing implements SceneSim {
   #traffic = 0.5;
   #precip = 0;
   #seed = Number.NaN;
+  #enter = 1;
+  #tilt = 0;
+  /** Scratch: an arriving walker as drawn (x, z, heading, gait). */
+  readonly #arrived = new Float64Array(4);
 
   #clock = 0;
   #pending = 0;
@@ -932,6 +984,9 @@ class StreetCrossing implements SceneSim {
     this.#precip = Math.max(clamp(values[index.rain] ?? 0, 0, 1), 0.8 * clamp(values[index.snow] ?? 0, 0, 1));
     this.#signals.cycle = this.#cycle;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
+    const enter = clamp(frame.passage.enter, 0, 1);
+    this.#enter = enter;
+    this.#tilt = passageTilt(enter, clamp(frame.passage.exit, 0, 1));
 
     const seed = Math.round(values[index.streetSeed] ?? 0);
     if (seed !== this.#seed) this.#reset(seed);
@@ -990,8 +1045,9 @@ class StreetCrossing implements SceneSim {
   #toGround(px: number, py: number): boolean {
     const sx = (px - 0.5) * this.#aspect;
     const sy = py - 0.5;
-    const dy = sy * Math.cos(PITCH) - FOCAL * Math.sin(PITCH);
-    const dz = sy * Math.sin(PITCH) + FOCAL * Math.cos(PITCH);
+    const pitch = PITCH - this.#tilt;
+    const dy = sy * Math.cos(pitch) - FOCAL * Math.sin(pitch);
+    const dz = sy * Math.sin(pitch) + FOCAL * Math.cos(pitch);
     if (dy >= -1e-4) return false;
     const t = CAM_H / -dy;
     this.#point[0] = CAM_X + sx * t;
@@ -2001,6 +2057,36 @@ class StreetCrossing implements SceneSim {
     }
   }
 
+  // ---- The crowd's walk-in ----
+
+  /** Walker `index` as drawn `enter` (0..1) of the way into the entrance: it walks in from a few metres
+   *  along its sidewalk (away from the middle of the window's view; down the side street it comes down
+   *  it), each at its own time and pace, and turns to its own heading as it arrives, its legs
+   *  swinging with the distance. Written to #arrived (x, z, heading, gait). */
+  #arrive(index: number, walker: Walker, enter: number, x: number, z: number, heading: number, gait: number): void {
+    // A pair keeps together: it takes the earlier partner's times.
+    let key = index;
+    if (walker.partner) {
+      const at = this.#walkers.indexOf(walker.partner);
+      if (at >= 0 && at < key) key = at;
+    }
+    const start = ARRIVE_START_MAX * hash01(key, 1);
+    const end = ARRIVE_END_MIN + (ARRIVE_END_MAX - ARRIVE_END_MIN) * hash01(key, 2);
+    const pace = ARRIVE_PACE_MIN + (ARRIVE_PACE_MAX - ARRIVE_PACE_MIN) * hash01(key, 3);
+    const done = clamp((enter - start) / (end - start), 0, 1);
+    const left = pace * (end - start) * STREET_PASSAGE.enter * (1 - done);
+    const sideStreet = z > FACADE_FAR && Math.abs(x) < SIDE_FACADE;
+    const dx = sideStreet ? 0 : x < CAM_X ? -1 : 1;
+    const dz = sideStreet ? 1 : 0;
+    const walking = Math.atan2(-dz, -dx);
+    const turn = clamp((done - (1 - ARRIVE_TURN)) / ARRIVE_TURN, 0, 1);
+    const arrived = this.#arrived;
+    arrived[0] = x + dx * left;
+    arrived[1] = z + dz * left;
+    arrived[2] = walking + angleDiff(heading, walking) * (turn * turn * (3 - 2 * turn));
+    arrived[3] = (gait + left / STRIDE) % 1;
+  }
+
   // ---- Upload ----
 
   #upload(alpha: number): void {
@@ -2012,19 +2098,29 @@ class StreetCrossing implements SceneSim {
     const order = this.#order;
     const key = this.#orderKey;
     let n = 0;
+    const arriving = this.#enter < 1;
     for (let i = 0; i < MAX_WALKERS; i++) {
       const w = walkers[i];
       if (!w?.alive) continue;
-      const x = w.lastX + (w.x - w.lastX) * alpha;
-      const z = w.lastZ + (w.z - w.lastZ) * alpha;
+      let x = w.lastX + (w.x - w.lastX) * alpha;
+      let z = w.lastZ + (w.z - w.lastZ) * alpha;
+      let heading = w.lastHeading + angleDiff(w.heading, w.lastHeading) * alpha;
+      let gait = w.gait;
+      if (arriving && !w.onRoad && w.mode !== "cross") {
+        this.#arrive(i, w, this.#enter, x, z, heading, gait);
+        x = this.#arrived[0] ?? x;
+        z = this.#arrived[1] ?? z;
+        heading = this.#arrived[2] ?? heading;
+        gait = this.#arrived[3] ?? gait;
+      }
       const o = i * 4;
       data[o] = x;
       data[o + 1] = z - Z_REF;
-      data[o + 2] = w.lastHeading + angleDiff(w.heading, w.lastHeading) * alpha;
+      data[o + 2] = heading;
       data[o + 3] = w.child ? KIND_CHILD : KIND_ADULT;
       data[row1 + o] = w.umbrella;
       data[row1 + o + 1] = w.look;
-      data[row1 + o + 2] = w.gait;
+      data[row1 + o + 2] = gait;
       data[row1 + o + 3] = w.seed;
       order[n] = i;
       key[n] = Math.hypot(x - CAM_X, z);

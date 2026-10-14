@@ -6,7 +6,7 @@
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { skywardGlsl } from "./shader.ts";
+import { SKYWARD_PASSAGE, skywardGlsl } from "./shader.ts";
 
 const params: readonly ParamDef[] = [
   range("city", "towers", "glass towers", 0.4, "The mix of the street: from old stone and brick houses with balconies and window boxes to glass towers that mirror the clouds, the opposite roofline and, now and then, the sun."),
@@ -39,4 +39,7 @@ export const skywardScene: SceneDef = {
   entry: "sceneSkyward",
   // A sunlit sky puts the page in its paper theme (ink dark on light); pagePaper() follows it.
   theme: skyTheme(params, { from: 0.33, to: 0.67, rainBelow: 0.2 }),
+  // Lying down, the view tips back from street level up to the zenith and the facades swing into
+  // their lean; leaving, you sit back up and it tips down toward the street.
+  passage: SKYWARD_PASSAGE,
 };

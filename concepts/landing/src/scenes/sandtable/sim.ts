@@ -20,6 +20,13 @@
 //
 // Throughout, the sand slumps to its angle of repose (HeightField.relax).
 //
+// Passages (SANDTABLE_PASSAGE), in the world and on the sim's own clock: the ball rolls in from the
+// side of the frame and ploughs along its track as far as the opening table has it (or, with the M
+// track on, draws the M as far as it is drawn at first); the funnel is carried in on its string and
+// starts to pour. On the way out a straight edge sweeps the table from the far side of the frame,
+// leaving the sand smooth (the pendulum's shoves its berm off the table), the ball pushed ahead of it
+// out of the frame and the funnel carried off before it. At rest none of it exists.
+//
 // Field space, shared with the shader: the height field spans a square one field unit across,
 // centred on the table, heights in field units too (a HeightField at aspect 1). The shader draws it
 // SANDTABLE.span view heights across, so the grid never changes with the window. Tracks are laid in
@@ -577,6 +584,86 @@ function drawingTrack(drawing: Drawing, rand: Rand, fromX: number, fromY: number
   }
 }
 
+// ---- entrances and exits -------------------------------------------------------------------------
+
+/**
+ * Seconds the scene's entrance and exit take (SceneDef.passage). The sim runs the entrance on its
+ * own clock, which starts once the opening table is laid, so a slow first frame cannot use it up.
+ */
+export const SANDTABLE_PASSAGE: { enter: number; exit: number } = { enter: 2.6, exit: 1.6 };
+
+/** What the sim tells a machine of the scene's passage each frame. */
+interface Passage {
+  /** Seconds since the table was laid, while the scene is arriving; Infinity when it is not. */
+  arrive: number;
+  /** The exit's progress: 0 until the scene leaves, then 0→1. */
+  leave: number;
+  /** The frame's width over its height. */
+  aspect: number;
+}
+
+/** The machine sets off this long after the table is laid and takes this long to arrive (well inside the entrance). */
+const ARRIVE_DELAY = 0.15;
+const ARRIVE_SECONDS = 1.7;
+/** How far past the frame's edge (field units) a machine starts from, and the straight edge starts and ends. */
+const OFF_FRAME = 0.08;
+/** The ball ploughs its roll-in in strokes this long (field units). */
+const ROLL_STEP = 0.01;
+/** The ball's wipe sets off this far into the exit (0..1). */
+const BALL_SWEEP_FROM = 0.05;
+/**
+ * The pendulum's exit: the stream shuts over SHUT_SECONDS, the funnel is carried off between
+ * CARRY_FROM (once the stream is shut) and CARRY_TO of the exit, and the edge sweeps from SWEEP_FROM on.
+ */
+const SHUT_SECONDS = 0.25;
+const CARRY_FROM = SHUT_SECONDS / SANDTABLE_PASSAGE.exit;
+const CARRY_TO = 0.7;
+const SWEEP_FROM = 0.3;
+/** The last stretch behind the ball's wipe is levelled again each step (field units): slumping may creep in behind it. */
+const SWEEP_BACK = 0.012;
+
+const aspectOf = (frame: SimFrame): number => (Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9);
+
+/** Half the frame's width and height in field units (the shader's mapping, inverted). */
+function frameHalf(aspect: number): { w: number; h: number } {
+  const scale = SANDTABLE.span * Math.min(1, aspect);
+  return { w: (0.5 * aspect) / scale, h: 0.5 / scale };
+}
+
+/** Rolls in fast and settles: the mean of an ease-out and a smoothstep. */
+const settleEase = (u: number): number => 0.5 * (smoothstep(0, 1, u) + 1 - (1 - u) * (1 - u));
+/** Sets off gently and goes on at pace: the mean of an ease-in and a smoothstep. */
+const departEase = (u: number): number => 0.5 * (smoothstep(0, 1, u) + u * u);
+
+/**
+ * The ball's roll-in: from off the frame's side to where its track starts, then along the track as
+ * far as the opening table has it (`run`, field units along the track), ploughing as it goes.
+ */
+interface Entry {
+  sx: number;
+  sy: number;
+  tx: number;
+  ty: number;
+  approach: number;
+  run: number;
+  total: number;
+  /** Distance rolled so far along the whole path. */
+  at: number;
+}
+
+/** The ball's wipe: the straight edge's direction, the ball where it was found, and the edge's face. */
+interface Wipe {
+  nx: number;
+  ny: number;
+  bx: number;
+  by: number;
+  /** The ball's coordinate along the edge's direction. */
+  bn: number;
+  lead0: number;
+  end: number;
+  lead: number;
+}
+
 // ---- the ball ------------------------------------------------------------------------------------
 
 /**
@@ -652,6 +739,10 @@ class Ball {
   /** The M track knob was on last frame (switching it on draws the M at once). */
   #markOn = false;
   #signature = "";
+  /** The roll-in while the scene arrives, and the wipe while it leaves. */
+  #entry: Entry | undefined;
+  #wipe: Wipe | undefined;
+  readonly #span = { from: 0, to: -1 };
 
   constructor(field: HeightField) {
     this.#field = field;
@@ -659,9 +750,11 @@ class Ball {
 
   /**
    * A fresh table: a bed groomed, one drawing finished on it, and the ball just setting off on the
-   * next; or, with the M track on, already part way up the M.
+   * next; or, with the M track on, already part way up the M. With an `aspect` (the scene is
+   * arriving) the ball is left off the frame's side instead, to roll in and take those last
+   * moments up.
    */
-  reset(settings: Settings): void {
+  reset(settings: Settings, aspect: number | undefined): void {
     this.#field.fill(0);
     this.#magnet.x = 0;
     this.#magnet.y = 0;
@@ -673,6 +766,8 @@ class Ball {
     this.#queue = [];
     this.#held = false;
     this.#away = false;
+    this.#entry = undefined;
+    this.#wipe = undefined;
     this.#markLive = false;
     this.#markFading = false;
     this.#markOn = settings.mark > 0;
@@ -686,18 +781,37 @@ class Ball {
       this.#drawMark(settings.markNow);
       this.#next(settings);
       const track = this.#track;
-      if (track !== undefined) this.#runOut(track.lead + PREWARM_MARK * (track.length - track.lead));
+      if (track !== undefined) {
+        const reach = track.lead + PREWARM_MARK * (track.length - track.lead);
+        if (aspect === undefined) this.#runOut(reach);
+        else this.#beginEntry(aspect, reach);
+      }
     } else {
       this.#next(settings);
-      this.#drive(PREWARM_LEAD, GROOVE_STEP);
+      const track = this.#track;
+      if (aspect === undefined) this.#drive(PREWARM_LEAD, GROOVE_STEP);
+      else if (track !== undefined) this.#beginEntry(aspect, Math.min(track.length, PREWARM_LEAD * BALL_SPEED * track.pace));
     }
     for (let pass = 0; pass < 2; pass++) this.#field.relax(TALUS, 30, 1);
   }
 
-  frame(dt: number, motion: number, touch: Touch, settings: Settings, next: boolean, markNow: boolean): void {
+  frame(dt: number, motion: number, touch: Touch, settings: Settings, next: boolean, markNow: boolean, passage: Passage): void {
     this.#retune(settings);
-    // A new pattern or run of drawings starts at once, with the chosen pattern rather than an erase.
+    if (passage.leave > 0) {
+      this.#leave(passage);
+      return;
+    }
     const signature = `${settings.pattern}|${settings.seed}`;
+    const markOn = settings.mark > 0;
+    // Rolling in, the ball is left to it until something changes the table's course.
+    if (this.#entry !== undefined) {
+      if (signature === this.#signature && !next && !markNow && !(markOn && !this.#markOn)) {
+        this.#roll(passage.arrive);
+        return;
+      }
+      this.#entry = undefined;
+    }
+    // A new pattern or run of drawings starts at once, with the chosen pattern rather than an erase.
     if (signature !== this.#signature) {
       this.#signature = signature;
       this.#drawing = 1;
@@ -709,7 +823,6 @@ class Ball {
       this.#next(settings);
     }
     // The M at once when asked for, or when its knob is switched on.
-    const markOn = settings.mark > 0;
     if (markNow || (markOn && !this.#markOn)) {
       this.#drawMark(settings.markNow);
       this.#next(settings);
@@ -754,14 +867,15 @@ class Ball {
       const lag = Math.hypot(this.#ball.x - this.#magnet.x, this.#ball.y - this.#magnet.y);
       this.#markDrawn = Math.max(this.#markDrawn, track.drawn + this.#s - track.lead - lag);
     }
+    const wipe = this.#wipe;
     data[0] = this.#ball.x;
     data[1] = this.#ball.y;
     data[2] = 1;
     data[3] = 0;
-    data[4] = 1;
-    data[5] = 0;
-    data[6] = 0;
-    data[7] = 0;
+    data[4] = wipe === undefined ? 1 : wipe.nx;
+    data[5] = wipe === undefined ? 0 : wipe.ny;
+    data[6] = wipe === undefined ? 0 : wipe.lead - 0.5 * SANDTABLE.edge;
+    data[7] = wipe === undefined ? 0 : 1;
     data[8] = this.#markShown();
     data[9] = this.#markHeight;
     data[10] = this.#markHeight > 0 ? (this.#markSign * this.#markDrawn) / this.#markHeight : 0;
@@ -967,6 +1081,123 @@ class Ball {
     this.#segment = 0;
     this.#stop = 0;
   }
+
+  /**
+   * The table as laid stops `run` field units along its track (the drawn part of the M, or the
+   * erase spiral's first stretch). The ball is put off the frame's longer side, level with where
+   * the track starts, to roll in to it and on along the track.
+   */
+  #beginEntry(aspect: number, run: number): void {
+    const track = this.#track;
+    if (track === undefined) return;
+    const m = this.#magnet;
+    const half = frameHalf(aspect);
+    const sideways = aspect >= 1;
+    const sx = sideways ? (m.x < 0 ? -1 : 1) * (half.w + OFF_FRAME) : m.x;
+    const sy = sideways ? m.y : (m.y < 0 ? -1 : 1) * (half.h + OFF_FRAME);
+    const inbound = Math.hypot(m.x - sx, m.y - sy);
+    this.#entry = { sx, sy, tx: m.x, ty: m.y, approach: inbound, run, total: inbound + run, at: 0 };
+    Object.assign(this.#ball, { x: sx, y: sy, vx: 0, vy: 0 });
+    m.x = sx;
+    m.y = sy;
+    this.#cut.x = sx;
+    this.#cut.y = sy;
+    this.#s = 0;
+    this.#segment = 0;
+    this.#stop = 0;
+    this.#wait = 0;
+  }
+
+  /** The roll-in at `arrive` seconds: the ball carried on along its path, ploughing as it goes. */
+  #roll(arrive: number): void {
+    const entry = this.#entry;
+    const track = this.#track;
+    if (entry === undefined || track === undefined) return;
+    const u = clamp((arrive - ARRIVE_DELAY) / ARRIVE_SECONDS, 0, 1);
+    const from = entry.at;
+    const goal = Math.max(from, settleEase(u) * entry.total);
+    const n = Math.max(1, Math.ceil((goal - from) / ROLL_STEP));
+    for (let k = 1; k <= n; k++) {
+      this.#rollTo(entry, track, from + ((goal - from) * k) / n);
+      this.#carve(0);
+    }
+    entry.at = goal;
+    if (u >= 1) this.#land(entry, track);
+  }
+
+  /** The ball, and the magnet with it, at `distance` along the roll-in's path. */
+  #rollTo(entry: Entry, track: Track, distance: number): void {
+    const b = this.#ball;
+    if (distance <= entry.approach) {
+      const f = entry.approach > 0 ? distance / entry.approach : 1;
+      b.x = entry.sx + (entry.tx - entry.sx) * f;
+      b.y = entry.sy + (entry.ty - entry.sy) * f;
+      this.#s = 0;
+    } else {
+      const s = Math.min(distance - entry.approach, entry.run);
+      this.#segment = locate(track, s, this.#segment);
+      trackPoint(track, this.#segment, s, this.#point);
+      b.x = this.#point.x * SANDTABLE.track;
+      b.y = this.#point.y * SANDTABLE.track;
+      this.#s = s;
+    }
+    b.vx = 0;
+    b.vy = 0;
+    this.#magnet.x = b.x;
+    this.#magnet.y = b.y;
+  }
+
+  /** Arrived: the ball stands where the opening table has it, at rest, to be led on along the track. */
+  #land(entry: Entry, track: Track): void {
+    this.#entry = undefined;
+    this.#rollTo(entry, track, entry.total);
+    let passed = 0;
+    while (passed < track.stops.length && (track.stops[passed]?.at ?? Infinity) <= entry.run) passed++;
+    this.#stop = passed;
+    this.#wait = 0;
+    this.#cut.x = this.#ball.x;
+    this.#cut.y = this.#ball.y;
+  }
+
+  /**
+   * The exit at `passage.leave`: a straight edge sweeps the table from the far side of the frame,
+   * levelling the sand behind its face and pushing the ball, which has stopped where it was, ahead
+   * of it out of the frame.
+   */
+  #leave(passage: Passage): void {
+    this.#entry = undefined;
+    this.#held = false;
+    this.#away = false;
+    const wipe = this.#wipe ?? this.#beginWipe(passage.aspect);
+    const sweep = departEase(clamp((passage.leave - BALL_SWEEP_FROM) / (1 - BALL_SWEEP_FROM), 0, 1));
+    const lead = wipe.lead0 + (wipe.end - wipe.lead0) * sweep;
+    if (lead > wipe.lead) {
+      flatten(this.#field, wipe.nx, wipe.ny, wipe.lead - SWEEP_BACK, lead, this.#span);
+      wipe.lead = lead;
+    }
+    const pushed = Math.max(wipe.bn, wipe.lead + SANDTABLE.ball);
+    const b = this.#ball;
+    b.x = wipe.bx + wipe.nx * (pushed - wipe.bn);
+    b.y = wipe.by + wipe.ny * (pushed - wipe.bn);
+    b.vx = 0;
+    b.vy = 0;
+    this.#magnet.x = b.x;
+    this.#magnet.y = b.y;
+  }
+
+  /** The edge sweeps across the frame's shorter side, from the far side toward the one the ball is on. */
+  #beginWipe(aspect: number): Wipe {
+    const half = frameHalf(aspect);
+    const b = this.#ball;
+    const across = aspect < 1;
+    const nx = across ? (b.x < 0 ? -1 : 1) : 0;
+    const ny = across ? 0 : (b.y < 0 ? -1 : 1);
+    const support = across ? half.w : half.h;
+    const lead0 = -(support + SANDTABLE.edge + OFF_FRAME);
+    const wipe: Wipe = { nx, ny, bx: b.x, by: b.y, bn: nx * b.x + ny * b.y, lead0, end: support + OFF_FRAME, lead: lead0 };
+    this.#wipe = wipe;
+    return wipe;
+  }
 }
 
 // ---- the pendulum --------------------------------------------------------------------------------
@@ -1025,6 +1256,48 @@ function bandColumns(nx: number, ny: number, y: number, a: number, b: number, ou
   out.to = Math.min(grid - 1, Math.ceil((Math.max(xa, xb) + 0.5) * grid - 0.5));
 }
 
+/**
+ * Level the sand behind a straight edge's face: every texel whose coordinate along (nx, ny) lies
+ * from `from` up to `to` is set to the bed's height.
+ */
+function flatten(field: HeightField, nx: number, ny: number, from: number, to: number, span: { from: number; to: number }): void {
+  const grid = SANDTABLE.grid;
+  const data = field.data;
+  let any = false;
+  for (let j = 0; j < grid; j++) {
+    const y = (j + 0.5) / grid - 0.5;
+    bandColumns(nx, ny, y, from, to, span);
+    for (let i = span.from; i <= span.to; i++) {
+      const d = nx * ((i + 0.5) / grid - 0.5) + ny * y;
+      if (d < from || d >= to) continue;
+      const k = j * grid + i;
+      if ((data[k] ?? 0) !== 0) {
+        data[k] = 0;
+        any = true;
+      }
+    }
+  }
+  if (any) field.touch();
+}
+
+/** The pointer when a hand is not to take the funnel. */
+const NO_TOUCH: Touch = { x: 0, y: 0, pressed: false, down: false };
+
+/** The funnel carried in from off the frame's side: the side it comes from and how far off it starts. */
+interface Arrival {
+  dx: number;
+  dy: number;
+  reach: number;
+}
+
+/** The funnel carried off, and the edge's start. */
+interface Leaving {
+  nx: number;
+  ny: number;
+  reach: number;
+  lead0: number;
+}
+
 class Pendulum {
   readonly #field: HeightField;
   /** The swing in its own axes (turned by #cos, #sin from the table's), and their parameters. */
@@ -1055,17 +1328,32 @@ class Pendulum {
   readonly #weights = new Float64Array(LANES);
   readonly #span = { from: 0, to: -1 };
   #signature = "";
+  /**
+   * The funnel is shown this far from where it hangs (field units), carried in or off by hand; the
+   * stream pours at the true place, so it is shut while the two differ.
+   */
+  #offX = 0;
+  #offY = 0;
+  #arrival: Arrival | undefined;
+  #leaving: Leaving | undefined;
 
   constructor(field: HeightField) {
     this.#field = field;
   }
 
-  /** A fresh slate with a figure part drawn, the funnel still swinging wide. */
-  reset(settings: Settings): void {
+  /**
+   * A fresh slate with a figure part drawn, the funnel still swinging wide; or, with an `aspect`
+   * (the scene is arriving), the funnel off the frame's side with its stream shut, to be carried in.
+   */
+  reset(settings: Settings, aspect: number | undefined): void {
     this.#field.fill(0);
     this.#figure = 0;
     this.#held = false;
     this.#edge.shown = 0;
+    this.#arrival = undefined;
+    this.#leaving = undefined;
+    this.#offX = 0;
+    this.#offY = 0;
     this.#signature = `${settings.figure}|${settings.seed}`;
     this.#setup(settings);
     this.#release();
@@ -1077,11 +1365,19 @@ class Pendulum {
       if (t % 8 === 7) this.#field.relax(TALUS, 30, 1);
     }
     this.#field.relax(TALUS, 30, 1);
+    if (aspect !== undefined) this.#beginArrival(aspect);
   }
 
-  frame(dt: number, motion: number, touch: Touch, settings: Settings, next: boolean): void {
+  frame(dt: number, motion: number, pointer: Touch, settings: Settings, next: boolean, passage: Passage): void {
+    if (passage.leave > 0) {
+      this.#leave(dt, motion, settings, passage);
+      return;
+    }
     // A new figure or run starts over: wipe, and swing the first of the new choice.
     const signature = `${settings.figure}|${settings.seed}`;
+    // That, or a press of "next", ends the entrance where it is; and no hand takes the funnel on its way in.
+    if (this.#arrival !== undefined && (signature !== this.#signature || next)) this.#carryIn(Infinity);
+    const touch = this.#arrival === undefined ? pointer : NO_TOUCH;
     if (signature !== this.#signature) {
       this.#signature = signature;
       this.#figure = 0;
@@ -1101,7 +1397,7 @@ class Pendulum {
     const phase = this.#phase;
     switch (phase) {
       case "swing": {
-        this.#stream = approach(this.#stream, this.#fill > 0 ? 1 : 0, time / STREAM_FADE);
+        this.#stream = approach(this.#stream, this.#fill > 0 && this.#arrival === undefined ? 1 : 0, time / STREAM_FADE);
         this.#swing(time, flow, this.#held ? touch : undefined);
         // Both axes' amplitudes together: the turn trades swing between them but does no work, so
         // this dies away evenly, on time.
@@ -1146,11 +1442,12 @@ class Pendulum {
       }
     }
     this.#edge.shown = approach(this.#edge.shown, this.#phase === "wipe" ? 1 : 0, dt / EDGE_FADE);
+    this.#carryIn(passage.arrive);
   }
 
   write(data: Float32Array): void {
-    data[0] = this.#x;
-    data[1] = this.#y;
+    data[0] = this.#x + this.#offX;
+    data[1] = this.#y + this.#offY;
     data[2] = 1;
     data[3] = this.#stream * Math.min(1, 6 * this.#fill);
     const edge = this.#edge;
@@ -1302,6 +1599,77 @@ class Pendulum {
     this.#phase = "launch";
   }
 
+  /** The funnel starts off the frame's longer side, on the side it hangs, its stream shut. */
+  #beginArrival(aspect: number): void {
+    const half = frameHalf(aspect);
+    const sideways = aspect >= 1;
+    const dx = sideways ? (this.#x < 0 ? -1 : 1) : 0;
+    const dy = sideways ? 0 : (this.#y < 0 ? -1 : 1);
+    this.#stream = 0;
+    this.#arrival = { dx, dy, reach: (sideways ? half.w : half.h) + OFF_FRAME + SANDTABLE.track };
+    this.#carryIn(0);
+  }
+
+  /**
+   * The funnel carried in at `arrive` seconds, settling onto its swing; once it is there the arrival
+   * is over and the stream opens.
+   */
+  #carryIn(arrive: number): void {
+    const arrival = this.#arrival;
+    if (arrival === undefined) return;
+    const u = clamp((arrive - ARRIVE_DELAY) / ARRIVE_SECONDS, 0, 1);
+    if (u >= 1) {
+      this.#arrival = undefined;
+      this.#offX = 0;
+      this.#offY = 0;
+      return;
+    }
+    const left = arrival.reach * (1 - settleEase(u));
+    this.#offX = arrival.dx * left;
+    this.#offY = arrival.dy * left;
+  }
+
+  /**
+   * The exit at `passage.leave`: the stream shuts, the funnel is carried off the frame's side it hangs
+   * on, and the edge sweeps the slate clean after it, shoving the berm off the far side. A wipe
+   * already under way carries on, faster, in its own direction.
+   */
+  #leave(dt: number, motion: number, settings: Settings, passage: Passage): void {
+    this.#carryIn(Infinity);
+    this.#held = false;
+    const leaving = this.#leaving ?? this.#beginLeave(passage.aspect);
+    if (this.#phase !== "launch") this.#swing(dt * motion * settings.speed, flowOf(settings.depth), undefined);
+    this.#stream = approach(this.#stream, 0, dt / SHUT_SECONDS);
+    const carried = clamp((passage.leave - CARRY_FROM) / (CARRY_TO - CARRY_FROM), 0, 1);
+    const away = leaving.reach * carried * carried;
+    this.#offX = leaving.nx * away;
+    this.#offY = leaving.ny * away;
+    const edge = this.#edge;
+    const lead = leaving.lead0 + (edge.end - leaving.lead0) * departEase(clamp((passage.leave - SWEEP_FROM) / (1 - SWEEP_FROM), 0, 1));
+    if (lead > edge.lead) {
+      this.#scrape(edge.lead, lead);
+      edge.lead = lead;
+    }
+  }
+
+  /** The edge waits off the frame on the far side from the funnel, across the shorter side. */
+  #beginLeave(aspect: number): Leaving {
+    const half = frameHalf(aspect);
+    const edge = this.#edge;
+    if (this.#phase !== "wipe") {
+      const across = aspect < 1;
+      edge.nx = across ? (this.#x < 0 ? -1 : 1) : 0;
+      edge.ny = across ? 0 : (this.#y < 0 ? -1 : 1);
+      edge.lead = -((across ? half.w : half.h) + SANDTABLE.edge + OFF_FRAME);
+    }
+    const support = half.w * Math.abs(edge.nx) + half.h * Math.abs(edge.ny);
+    edge.end = support + OFF_FRAME;
+    edge.shown = 1;
+    const leaving: Leaving = { nx: edge.nx, ny: edge.ny, reach: support + OFF_FRAME + SANDTABLE.track, lead0: edge.lead };
+    this.#leaving = leaving;
+    return leaving;
+  }
+
   /**
    * The straight edge's face moves from `from` to `to` along its normal: everything from under it to
    * the front of its berm is gathered, lane by lane, and laid back as the berm just ahead of it.
@@ -1383,6 +1751,11 @@ class SandtableSim implements SceneSim {
   #machine: Machine | undefined;
   #uploadedAt = -Infinity;
   #force = true;
+  /** What the machines are told of the scene's passage, rewritten each frame. */
+  readonly #passage: Passage = { arrive: Infinity, leave: 0, aspect: 16 / 9 };
+  /** Whether the scene is arriving (decided on the first frame), and seconds since its table was laid. */
+  #arriving: boolean | undefined;
+  #arrived = 0;
 
   constructor(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>) {
     this.#knobs = knobs;
@@ -1400,18 +1773,33 @@ class SandtableSim implements SceneSim {
     const settings = this.#settings;
     readSettings(this.#knobs, frame, settings);
     const touch = this.#readTouch(frame);
+    const passage = this.#passage;
+    passage.aspect = aspectOf(frame);
+    passage.leave = clamp(frame.passage.exit, 0, 1);
+    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
     // The opening table is laid out on the first frame, the first time the page's knobs are known,
-    // and afresh whenever the machine changes.
-    if (settings.machine !== this.#machine) this.#lay(settings);
+    // and afresh whenever the machine changes. Only the first has an entrance.
+    let laid = false;
+    if (settings.machine !== this.#machine) {
+      const first = this.#machine === undefined;
+      this.#lay(settings, first && this.#arriving ? passage.aspect : undefined);
+      if (!first) this.#arriving = false;
+      laid = true;
+    }
+    if (this.#arriving) {
+      if (!laid) this.#arrived += dt;
+      if (this.#arrived >= SANDTABLE_PASSAGE.enter) this.#arriving = false;
+    }
+    passage.arrive = this.#arriving ? this.#arrived : Infinity;
 
     const machine = settings.machine;
     switch (machine) {
       case "ball":
-        this.#ball.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true, frame.fired[this.#markSlot] === true);
+        this.#ball.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true, frame.fired[this.#markSlot] === true, passage);
         this.#ball.write(this.#stateData);
         break;
       case "pendulum":
-        this.#pendulum.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true);
+        this.#pendulum.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true, passage);
         this.#pendulum.write(this.#stateData);
         break;
       default: {
@@ -1422,7 +1810,9 @@ class SandtableSim implements SceneSim {
     this.#field.relax(TALUS, RELAX_RATE, dt, RELAX_ROWS);
 
     const now = performance.now();
-    if (this.#force || now - this.#uploadedAt >= UPLOAD_MS) {
+    // While the machines move in or out the sand is shown as it is, every frame.
+    const moving = passage.arrive !== Infinity || passage.leave > 0;
+    if (this.#force || moving || now - this.#uploadedAt >= UPLOAD_MS) {
       if (this.#field.upload(this.#heights)) this.#uploadedAt = now;
       this.#force = false;
     }
@@ -1435,18 +1825,18 @@ class SandtableSim implements SceneSim {
     this.#state.dispose();
   }
 
-  /** A fresh table for the settings' machine, already part way through its work. */
-  #lay(settings: Settings): void {
+  /** A fresh table for the settings' machine, already part way through its work (or, arriving, short of its last moments). */
+  #lay(settings: Settings, aspect: number | undefined): void {
     this.#machine = settings.machine;
-    if (settings.machine === "ball") this.#ball.reset(settings);
-    else this.#pendulum.reset(settings);
+    if (settings.machine === "ball") this.#ball.reset(settings, aspect);
+    else this.#pendulum.reset(settings, aspect);
     this.#force = true;
   }
 
   /** The pointer in field units from the table's centre (the shader's mapping, inverted). */
   #readTouch(frame: SimFrame): Touch {
     const pointer = frame.pointer;
-    const aspect = Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9;
+    const aspect = aspectOf(frame);
     const scale = SANDTABLE.span * Math.min(1, aspect);
     const touch = this.#touch;
     touch.x = ((pointer.x - 0.5) * aspect) / scale;

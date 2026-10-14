@@ -3,9 +3,11 @@
 // The landscape is a pure function of the position along the scroll (shader.ts): layered peaks with
 // texture strokes, pines, thread waterfalls, pavilions and a boatman, with mist left as bare paper.
 // The scroll's clock, the geese, the seal and the pointer's breath over the mist live in sim.ts.
+// Its passage is in the shader: the scroll is drawn open from its roll on a silk mount, the painting
+// riding in behind the roller, and wound up again on the way out.
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { shanshuiGlsl } from "./shader.ts";
+import { SHANSHUI_PASSAGE, shanshuiGlsl } from "./shader.ts";
 import { shanshuiSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -46,4 +48,5 @@ export const shanshuiScene: SceneDef = {
   entry: "sceneShanshui",
   sim: shanshuiSim(params),
   theme: () => "paper",
+  passage: SHANSHUI_PASSAGE,
 };

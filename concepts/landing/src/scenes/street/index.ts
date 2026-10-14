@@ -6,7 +6,7 @@ import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { streetGlsl } from "./shader.ts";
-import { streetSim } from "./sim.ts";
+import { STREET_PASSAGE, streetSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("crossing", "crowd", "crowd", 0.5, "How many people are out: a few late walkers, an evening's comings and goings, or a Friday-night crowd that floods every crosswalk at once when the lights turn."),
@@ -39,6 +39,9 @@ export const streetScene: SceneDef = {
   glsl: streetGlsl,
   entry: "sceneStreet",
   sim: streetSim(params),
+  // Entrance: the camera comes down from the skyline onto the crossing as the crowd walks in along its
+  // sidewalks to gather. Exit: the camera tilts up to the skyline again (the rain follows the pitch).
+  passage: STREET_PASSAGE,
   // A sunlit street is bright paving and paint: the copy needs dark ink on it, from the time the
   // sun is about 12 degrees up until it sinks back there. With the day cycle running the light keeps
   // changing, so the page stays on the night theme. The shader repeats this test to turn its ink

@@ -18,6 +18,9 @@
 // Knobs (index.ts): K_towers, K_windows, K_greenery, K_traffic, K_citySeed (city); K_time, K_cycle,
 // K_stars (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind (weather); K_mark.
 
+/** Seconds of the entrance (the view tips back from street level to the zenith) and the exit (it tips down toward the street again) (SceneDef.passage). */
+export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+
 export const skywardGlsl = `
 // ---- The frame ----
 const float SKYWARD_A = 11.0;        // the avenue's walls stand at x = +-A
@@ -26,6 +29,8 @@ const vec3 SKYWARD_RO = vec3(0.0, 0.2, 0.0);
 const float SKYWARD_FOCAL = 0.5367;  // 0.5 / tan(fov / 2), fov 1.5 rad
 const float SKYWARD_YAW = 0.55;
 const float SKYWARD_PITCH = 0.28;
+const float SKYWARD_STREET = 1.05;   // the pitch the entrance starts at and the exit ends at: the street a sliver at the foot of the frame
+const float SKYWARD_WALK = 3.0;      // the sidewalks' width along the facades, m
 const float SKYWARD_SKY_YAW = -3.19;
 const float SKYWARD_LOT = 26.0;
 const float SKYWARD_FAR = 100000.0;
@@ -897,6 +902,72 @@ vec3 skywardBirds(vec3 rd, float tw, vec3 col) {
   return col;
 }
 
+// ---- The street under you, seen only while the view is tipped toward it ----
+
+// The road, the kerb and sidewalks at the foot of the facades, the zebra and the lane dashes. The
+// camera lies in the middle of the crossing looking up, so at rest no ray reaches it; the entrance
+// and the exit tip the view down to it. Every edge is a hard per-cell cut of a world-fixed shape,
+// and the detail drops out with distance rather than aliasing.
+vec3 skywardGround(vec3 rd, float tg, SkywardHit h) {
+  vec2 q = SKYWARD_RO.xz + rd.xz * tg;
+  vec2 a = abs(q);
+  float foot = skywardPx * tg / max(-rd.y, 0.04);
+  float aa = 0.5 * foot;
+  float fine = 1.0 - smoothstep(0.2, 0.8, foot);
+  float finer = 1.0 - smoothstep(0.08, 0.3, foot);
+  // The sidewalks: the strips along every facade, widening into the corners (d < 0 inside).
+  float dWalk = -min(a.x - (SKYWARD_A - SKYWARD_WALK), a.y - (SKYWARD_B - SKYWARD_WALK));
+  float walk = hardFill(dWalk, aa, skywardThB);
+  float kerb = hardEdge(softFill(abs(dWalk) - 0.12, aa) * fine, skywardThC);
+  vec2 g = abs(fract(q / 1.4 + 0.5) - 0.5) * 1.4;
+  float joint = hardEdge(softFill(min(g.x, g.y) - 0.02, aa) * finer, skywardThC) * walk;
+  // Paint: a zebra across each arm's mouth and dashed centre lines beyond it.
+  float zebraAve = sdBox(vec2(q.x, a.y - (SKYWARD_B - SKYWARD_WALK + 1.95)), vec2(SKYWARD_A - SKYWARD_WALK - 0.8, 1.25), 0.0);
+  float zebraX = abs(fract(q.x / 1.2) - 0.5) * 1.2 - 0.3;
+  float zebraCross = sdBox(vec2(a.x - (SKYWARD_A - SKYWARD_WALK + 1.35), q.y), vec2(1.15, SKYWARD_B - SKYWARD_WALK - 0.8), 0.0);
+  float zebraZ = abs(fract(q.y / 1.2) - 0.5) * 1.2 - 0.3;
+  float dashAve = sdBox(vec2(q.x, (fract(q.y / 6.0) - 0.5) * 6.0), vec2(0.08, 1.5), 0.0);
+  float dashCross = sdBox(vec2((fract(q.x / 6.0) - 0.5) * 6.0, q.y), vec2(1.5, 0.08), 0.0);
+  float dPaint = min(max(zebraAve, zebraX), max(zebraCross, zebraZ));
+  dPaint = min(dPaint, max(dashAve, SKYWARD_B - SKYWARD_WALK + 3.8 - a.y));
+  dPaint = min(dPaint, max(dashCross, SKYWARD_A + 0.8 - a.x));
+  float paint = hardEdge(softFill(dPaint, aa) * fine, skywardThB) * (1.0 - walk);
+
+  vec3 asphalt = vec3(0.3, 0.3, 0.315);
+  vec3 stone = vec3(0.62, 0.6, 0.55);
+  vec3 alb = mix(asphalt, stone, walk);
+  alb = mix(alb, stone * 0.62, joint);
+  alb = mix(alb, vec3(0.66, 0.64, 0.6), kerb * walk);
+  alb = mix(alb, vec3(0.82, 0.8, 0.74), paint);
+  alb = wetten(alb, skywardWet, 0.25);
+
+  SkywardHit gh = h;
+  gh.p = vec3(q.x, 0.0, q.y);
+  gh.n = vec3(0.0, 1.0, 0.0);
+  // The open sky lights the road almost whole: skywardLight's wall ao is lifted back, its lamp warmth kept.
+  vec3 E = skywardLight(gh.n, 1.0, skywardSunLit(gh)) + skywardAmbient * 0.35;
+  vec3 col = alb * E;
+  // Wet road mirrors what stands over it, more so at a grazing angle.
+  float gloss = wetGloss(skywardWet, 1.0) * (1.0 - 0.7 * walk);
+  if (gloss > 0.01) {
+    vec3 mr = vec3(rd.x, -rd.y, rd.z);
+    SkywardHit rh = skywardTrace(gh.p, mr);
+    vec3 seen = rh.hit ? skywardCheap(rh) : skywardSkyDirect(mr);
+    float fres = 0.05 + 0.95 * pow(1.0 - clamp(-rd.y, 0.0, 1.0), 5.0);
+    col = mix(col, seen, gloss * clamp(0.15 + 0.7 * fres, 0.0, 1.0));
+  }
+  if (skywardLying > 0.0) {
+    float sn = clamp(skywardLying * (0.55 + 0.5 * walk), 0.0, 1.0);
+    col = mix(col, vec3(0.8, 0.84, 0.92) * (E * 0.9 + 0.05), sn);
+  }
+  // Distance haze, as on the facades but heavier: the road runs away grazing, into the haze.
+  vec3 haze = skyColor(skywardSky, normalize(vec3(rd.x, 0.14, rd.z)));
+  haze = mix(haze, skywardDeck, skywardOver * 0.9);
+  col = mix(col, haze, 0.75 * (1.0 - exp(-tg / 14.0)));
+  if (K_fog > 0.0) col = mix(col, haze * 0.85 + 0.02, fogAmount(K_fog * 1.4, tg / 120.0, 0.0));
+  return col;
+}
+
 // ---- The picture ----
 
 Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
@@ -925,8 +996,19 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   skywardLying = uWeather.y;
 
   // The camera lies on its back, tilted toward the feet, the screen's top toward the heading h.
+  // The entrance tips the view back from street level to the zenith, buildings swinging into their
+  // lean (a short settle past the mark); the exit sits up again, tipping it down toward the street.
+  // Both are exactly 0 at rest.
+  bool passing = passageIn() < 1.0 || passageOut() > 0.0;
+  float tilt = 0.0;
+  if (passing) {
+    float pin = passageIn();
+    float sx = clamp((pin - 0.7) / 0.3, 0.0, 1.0);
+    float arrived = smoothstep(0.0, 0.8, pin) + 0.06 * sin(3.14159265 * sx) * sin(3.14159265 * sx);
+    tilt = (SKYWARD_STREET - SKYWARD_PITCH) * ((1.0 - arrived) + smoothstep(0.0, 1.0, passageOut()));
+  }
   float yaw = SKYWARD_YAW + 0.05 * uPointer.x;
-  float pitch = SKYWARD_PITCH + 0.04 * uPointer.y;
+  float pitch = SKYWARD_PITCH + 0.04 * uPointer.y + tilt;
   vec3 hd = vec3(sin(yaw), 0.0, cos(yaw));
   skywardF = normalize(vec3(-sin(pitch) * hd.x, cos(pitch), -sin(pitch) * hd.z));
   skywardU = normalize(hd - skywardF * dot(hd, skywardF));
@@ -935,8 +1017,11 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   vec3 rd = normalize(skywardR * s.x + skywardU * s.y + skywardF * SKYWARD_FOCAL);
 
   SkywardHit hit = skywardTrace(SKYWARD_RO, rd);
-  float tw = hit.hit ? hit.t : SKYWARD_FAR;
-  vec3 col = hit.hit ? skywardFacade(hit, rd) : skywardSkyDirect(rd);
+  // Tipped toward the street, a ray looking down reaches the road before any wall.
+  float tg = (passing && rd.y < -1e-3) ? SKYWARD_RO.y / -rd.y : SKYWARD_FAR;
+  bool ground = tg < (hit.hit ? hit.t : SKYWARD_FAR);
+  float tw = ground ? tg : (hit.hit ? hit.t : SKYWARD_FAR);
+  vec3 col = ground ? skywardGround(rd, tg, hit) : hit.hit ? skywardFacade(hit, rd) : skywardSkyDirect(rd);
 
   // Overhead, far to near.
   col = skywardBirds(rd, tw, col);
@@ -969,7 +1054,7 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
     col = mix(col, air, ps.veil);
     col = mix(col, max(vec3(0.8, 0.83, 0.9) * (skywardDeck * 1.6 + skywardAmbient * 0.4), vec3(0.1)), ps.cover);
   }
-  if (!hit.hit) stars = skyStars(skywardSky, rd, K_stars) * (1.0 - skywardOver);
+  if (!hit.hit && !ground) stars = skyStars(skywardSky, rd, K_stars) * (1.0 - skywardOver);
 
   Shade o = shadeOf(col, inkOf(col, 1.15, 0.85), clamp(accent, 0.0, 1.0));
   o.shimmer = stars * 0.4; // main scales it by the motion

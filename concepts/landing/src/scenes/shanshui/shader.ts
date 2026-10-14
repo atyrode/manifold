@@ -12,6 +12,12 @@
 // Knobs read here: K_seed, K_detail, K_palette, K_density, K_wetness, K_cun, K_age, K_mist,
 // K_boats, K_dwellings, K_falls, K_inscription, K_seal (K_speed, K_drift, K_birds: in the sim).
 
+/**
+ * Seconds of the scroll's entrance (it is drawn open from its roll, the painting riding in behind
+ * its roller) and exit (it is wound up again) (SceneDef.passage).
+ */
+export const SHANSHUI_PASSAGE = { enter: 3, exit: 1.4 } as const;
+
 export const shanshuiGlsl = `
 const vec3 SHAN_PAPER_NEW = vec3(0.949, 0.925, 0.851); // fresh paper
 const vec3 SHAN_PAPER_OLD = vec3(0.851, 0.769, 0.604); // tea-coloured with age
@@ -764,6 +770,89 @@ float shanSealShown(float x, float size, float aspect) {
   return smoothstep(0.012, 0.05, min(x - reach, aspect - x - reach));
 }
 
+// ---- passage ----
+// The scroll is laid open on a mount of pale silk brocade. At the start it is still rolled up near
+// the right edge, its free end tied to a wooden roller that lies against the roll. The roller is
+// drawn out to the left and the paper pays out from the roll behind it, so the painting slides in
+// with the roller at its leading edge, which keeps going until it has left the frame and the
+// painting lies as it always does. The roll thins and slips away off the right edge. The exit is
+// the same, run back: the roller comes in from the left and the paper winds up onto the roll, which
+// ends near the right edge. Everything below is inert (and never evaluated) at rest: passageIn() 1
+// and passageOut() 0.
+const vec3 SHAN_MOUNT = vec3(0.8, 0.765, 0.69);      // the brocade the scroll lies on: near the paper's value
+const vec3 SHAN_WOOD = vec3(0.21, 0.125, 0.08);      // the roller
+const float SHAN_ROD = 0.028;                        // the roller's radius, in screen heights
+const float SHAN_ROLL = 0.125;                       // the rolled-up scroll's radius at the start
+const float SHAN_ROLL_END = 0.022;                   // and when nearly all of it has been paid out
+const float SHAN_FRONT_END = -0.32;                  // the roller's x once it has left the frame
+
+struct ShanUnroll {
+  float front;  // the roller's x (screen heights)
+  float rollX;  // the roll's axis
+  float rollR;  // the roll's radius
+};
+
+// How far the scroll is open: 0 rolled up, 1 laid out. The pull starts briskly (about four fifths
+// of the way out after a third of the entrance), runs past a little and settles back; the winding
+// up eases in and out.
+float shanOpen() {
+  float v = clamp(passageIn(), 0.0, 1.0) - 1.0;
+  float arrive = 1.0 + 1.9 * v * v * v + 0.9 * v * v;
+  float x = clamp(passageOut(), 0.0, 1.0);
+  return arrive * (1.0 - x * x * (3.0 - 2.0 * x));
+}
+
+ShanUnroll shanUnroll(float aspect) {
+  float e = shanOpen();
+  float ec = clamp(e, 0.0, 1.0);
+  ShanUnroll un;
+  un.rollR = sqrt(mix(SHAN_ROLL_END * SHAN_ROLL_END, SHAN_ROLL * SHAN_ROLL, 1.0 - ec));
+  un.rollX = aspect - 0.09 + 0.32 * ec;
+  un.front = mix(aspect - 0.09 - SHAN_ROLL - SHAN_ROD, SHAN_FRONT_END, e);
+  return un;
+}
+
+// The brocade, fixed to the dither cells so it never crawls: a basket weave of threads, small
+// checks of warp and weft, and over it a lattice of lozenges with a dot at the heart of each.
+vec3 shanMount(vec2 cell) {
+  vec2 c3 = floor(cell / 3.0);
+  float warp = mod(c3.x + c3.y, 2.0);
+  vec2 t = mod(cell, 3.0);
+  float thread = warp > 0.5 ? t.x : t.y;
+  float weave = 0.025 * (warp - 0.5) - 0.03 * step(thread, 0.5);
+  vec2 f = abs(fract(cell / 30.0) - 0.5);
+  float lozenge = 1.0 - step(1.4 / 30.0, abs(f.x + f.y - 0.25));
+  float heart = 1.0 - step(2.0 / 30.0, f.x + f.y);
+  float motif = -0.055 * lozenge + 0.04 * heart;
+  return SHAN_MOUNT * (1.0 + weave + motif + 0.008 * shanFibre(cell));
+}
+
+// The bare mount as the scene's result: what lies beyond the paper, left of the roller.
+Shade shanMountShade(vec2 cell) {
+  vec3 m = shanMount(cell);
+  float ref = dot(mix(SHAN_PAPER_NEW, SHAN_PAPER_OLD, K_age), LUMA);
+  return shadeOf(m, clamp((1.0 - dot(m, LUMA) / max(ref, 0.2)) * 1.25, 0.0, 1.0), 0.0);
+}
+
+// A roller lit from the upper left, in three bands cut per cell so that it never flickers as it
+// moves: u runs -1..1 across it; gloss adds a hard highlight.
+vec3 shanCylinder(vec3 base, float u, float gloss) {
+  float a = clamp(u, -1.0, 1.0);
+  float n = sqrt(max(1.0 - a * a, 0.0));
+  float l = 0.5 + 0.5 * dot(vec2(a, n), vec2(-0.5, 0.866));
+  float tone = 0.55 + 0.27 * hardEdge(smoothstep(0.22, 0.5, l)) + 0.2 * hardEdge(smoothstep(0.6, 0.88, l));
+  return base * tone + gloss * 0.3 * hardEdge(smoothstep(0.93, 0.995, l));
+}
+
+// The shade a roller of radius r at c casts on what lies beside it, per cell: long to its right
+// (the light is from the upper left), short to its left. 1 where shaded.
+float shanRollShadow(float x, float c, float r) {
+  float d = abs(x - c) - r;
+  if (d <= 0.0) return 0.0;
+  float reach = (x > c ? 1.0 : 0.35) * r + 0.012;
+  return hardEdge(0.8 * (1.0 - smoothstep(0.0, reach, d)));
+}
+
 Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   float px = 1.0 / uRes.y;
@@ -791,7 +880,17 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
 
   // P: on the painting. The scroll is read right to left, so the painting slides right.
   vec2 S = vec2(uv.x * aspect, uv.y);
-  vec2 P = vec2(S.x - scroll, S.y);
+  // The passage: while the scroll is being unrolled or wound up the painting rides with its roller.
+  bool passing = passageIn() < 1.0 || passageOut() > 0.0;
+  ShanUnroll un = ShanUnroll(0.0, 0.0, 0.0);
+  float shift = 0.0;
+  if (passing) {
+    un = shanUnroll(aspect);
+    // Beyond the roller there is only the mount.
+    if (S.x < un.front - SHAN_ROD - 0.05) return shanMountShade(cell);
+    shift = un.front - SHAN_FRONT_END;
+  }
+  vec2 P = vec2(S.x - scroll - shift, S.y);
 
   // The paper: its tone and age, a broad mottling, each sheet a shade apart with a faint lap where
   // two are pasted together, and its fibres.
@@ -896,6 +995,21 @@ Shade sceneShanshui(vec2 uv, vec2 cell, float t) {
   }
 
   float paperLum = dot(paper, LUMA);
+  if (passing) {
+    // Paper lies between the roller and the roll; the roller and the roll stand over its ends.
+    float onPaper = (S.x > un.front && S.x < un.rollX) ? 1.0 : 0.0;
+    vec3 surface = mix(shanMount(cell), col, onPaper);
+    float shaded = max(shanRollShadow(S.x, un.front, SHAN_ROD), shanRollShadow(S.x, un.rollX, un.rollR));
+    surface *= 1.0 - 0.26 * shaded;
+    float rod = hardFill(abs(S.x - un.front) - SHAN_ROD, 1.5 * px);
+    float roll = hardFill(abs(S.x - un.rollX) - un.rollR, 1.5 * px);
+    surface = mix(surface, shanCylinder(SHAN_WOOD, (S.x - un.front) / SHAN_ROD, 1.0), rod);
+    surface = mix(surface, shanCylinder(SHAN_PAPER_NEW * 0.94, (S.x - un.rollX) / un.rollR, 0.0), roll);
+    float shown = onPaper * (1.0 - rod) * (1.0 - roll);
+    seal *= shown;
+    col = surface;
+    paperLum = mix(dot(mix(SHAN_PAPER_NEW, SHAN_PAPER_OLD, K_age), LUMA), paperLum, shown);
+  }
   return shadeOf(col, clamp((1.0 - dot(col, LUMA) / max(paperLum, 0.2)) * 1.25, 0.0, 1.0) * (1.0 - seal), seal);
 }
 `;

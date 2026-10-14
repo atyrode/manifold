@@ -43,8 +43,16 @@
 // edges, so a moving outline flips each cell once; their colours are flat per part; nothing else
 // moves except the slow window lights, the signals and the weather. No shimmer.
 //
+// The passage is the window's pitch: raised toward the skyline at the start of the entrance and
+// coming down onto the crossing, raised again as the scene leaves (STREET_TILT_*, the twin of sim.ts's
+// passageTilt; the pointer and the rain's vanishing point follow it). Raised, the view reaches the
+// roofs and over them the sky and the city beyond (streetBeyond: two ranks of hazy towers whose
+// windows light at dusk), and the far end of the avenue and the side street fade into the haze. All of
+// it is gated on the tilt, which is exactly 0 at rest.
+//
 // Knobs: K_signs, K_windows (the city), K_mark (the zebra M), K_time, K_cycle, K_rain, K_snow,
 // K_fog, K_wind; the crowd, traffic and lights are the simulation's.
+import { glslFloat } from "../../shaders/glsl.ts";
 import {
   BEAM_REACH,
   BIKE_BEAM_REACH,
@@ -93,6 +101,9 @@ import {
   TILE_Z0,
   TILES_X,
   TILES_Z,
+  TILT_ARRIVE,
+  TILT_IN,
+  TILT_OUT,
   VENDING,
   Z_REF,
   AVENUE_MID,
@@ -248,6 +259,9 @@ const float STREET_CAM_X = ${f(CAM_X)};
 const float STREET_CAM_H = ${f(CAM_H)};
 const float STREET_PITCH = ${f(PITCH)};
 const float STREET_FOCAL = ${f(FOCAL)};
+const float STREET_TILT_IN = ${glslFloat(TILT_IN)};
+const float STREET_TILT_OUT = ${glslFloat(TILT_OUT)};
+const float STREET_TILT_ARRIVE = ${glslFloat(TILT_ARRIVE)};
 const float STREET_ZREF = ${f(Z_REF)};
 const float STREET_KERB_NEAR = ${f(KERB_NEAR)};
 const float STREET_KERB_FAR = ${f(KERB_FAR)};
@@ -396,6 +410,7 @@ vec3 streetDeck;      // the cloud base
 vec3 streetG;         // where the cell's ray meets the street
 vec2 streetLean;      // how the ray's ground point moves per metre up (toward the eye)
 vec4 streetSignal[3]; // avenue (green, amber, red), side street, walk (green man, red man, progress)
+float streetTilt;     // the passage: how far the camera is raised above its rest pitch (rad), 0 at rest
 
 // ---- Small helpers ----
 
@@ -768,6 +783,42 @@ vec3 streetSkyLight(vec3 dir) {
   vec3 c = skyColor(streetSky, dir);
   c += vec3(skyStars(streetSky, dir, 0.55)) * (1.0 - streetOver);
   return mix(c, streetDeck, streetOver * 0.92);
+}
+
+// The air at the horizon in a direction: what the far city and the end of the streets fade into.
+vec3 streetHaze(vec3 d) {
+  return streetSkyLight(normalize(vec3(d.x, 0.0, max(d.z, 1e-3))));
+}
+
+// One rank of far towers at distance D (m): the direction's azimuth picks a column of the rank, whose
+// roof stands from lo up to lo + span metres. x is 1 where the ray, at that distance, is inside a
+// tower; y the light of a window there (a coarse grid of lit ones, by the windows knob).
+vec2 streetTowers(float az, float slope, float D, float freq, float lo, float span, float seed) {
+  float h = hash12(vec2(floor(az * freq), seed));
+  float y = STREET_CAM_H + slope * D;
+  if (y > lo + span * h * h) return vec2(0.0);
+  vec2 g = vec2(az * freq * 2.0, y / 4.0);
+  vec2 fg = fract(g);
+  float win = step(0.25, fg.x) * step(fg.x, 0.75) * step(0.3, fg.y) * step(fg.y, 0.7);
+  float lit = step(hash12(floor(g) + seed * 7.3), 0.8 * streetLit);
+  return vec2(1.0, win * lit);
+}
+
+// The city beyond the near blocks, seen over their roofs when the camera is raised: the sky above,
+// two ranks of towers in the haze below it. A function of the ray's direction alone, so it moves
+// rigidly with the camera.
+vec3 streetBeyond(vec3 d) {
+  float slope = d.y / max(length(d.xz), 1e-3);
+  float az = atan(d.x, max(d.z, 1e-3));
+  vec3 haze = streetHaze(d);
+  vec3 col = d.y > 0.0 ? streetSkyLight(d) : haze;
+  vec3 body = mix(vec3(0.2, 0.21, 0.25), vec3(0.03, 0.035, 0.05), streetDark);
+  vec3 window = vec3(1.0, 0.74, 0.46) * streetDark;
+  vec2 rank = streetTowers(az, slope, 380.0, 23.0, 20.0, 50.0, 5.0);
+  if (rank.x > 0.5) col = mix(body, haze, 0.8) + window * rank.y * 0.1;
+  rank = streetTowers(az, slope, 150.0, 38.0, 12.0, 28.0, 2.0);
+  if (rank.x > 0.5) col = mix(body, haze, 0.55) + window * rank.y * 0.2;
+  return col;
 }
 
 // What the wet street mirrors at ground point g along the reflected ray rr: the facade it meets
@@ -1157,7 +1208,7 @@ void streetStatics(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 h
   if (rd.z > 0.0) {
     float t = (STREET_FACADE_FAR - ro.z) / rd.z;
     vec3 q = ro + rd * t;
-    if (abs(q.x) >= STREET_SIDE_FACADE && q.y >= 0.0 && t < hit.t) {
+    if (abs(q.x) >= STREET_SIDE_FACADE && q.y >= 0.0 && t < hit.t && (streetTilt <= 0.0 || q.y < STREET_BLD_A[streetBuildingAt(q.x < 0.0 ? 0 : 1, abs(q.x) - STREET_SIDE_FACADE)].z)) {
       hit.t = t;
       hit.kind = STREET_K_FACADE;
       hit.n = vec3(0.0, 0.0, -1.0);
@@ -1169,7 +1220,7 @@ void streetStatics(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 h
     float wx = rd.x < 0.0 ? -STREET_SIDE_FACADE : STREET_SIDE_FACADE;
     float t = (wx - ro.x) / (abs(rd.x) > 1e-5 ? rd.x : 1e-5);
     vec3 q = ro + rd * t;
-    if (t > 0.0 && q.z >= STREET_FACADE_FAR && q.y >= 0.0 && t < hit.t) {
+    if (t > 0.0 && q.z >= STREET_FACADE_FAR && q.y >= 0.0 && t < hit.t && (streetTilt <= 0.0 || q.y < STREET_BLD_A[streetBuildingAt(rd.x < 0.0 ? 2 : 3, q.z - STREET_FACADE_FAR)].z)) {
       hit.t = t;
       hit.kind = STREET_K_FACADE;
       hit.n = vec3(rd.x < 0.0 ? 1.0 : -1.0, 0.0, 0.0);
@@ -1796,6 +1847,19 @@ void streetLamps(float code, vec3 p, vec3 n, vec3 ro, vec3 rd, float tHit, float
   }
 }
 
+// The passage's tilt of the camera (rad above its rest pitch; sim.ts passageTilt is its twin): coming
+// down from the skyline with a touch of overshoot, then settled; going out it eases up. 0 at rest.
+float streetTiltAt() {
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return 0.0;
+  float x = clamp(pin / STREET_TILT_ARRIVE, 0.0, 1.0);
+  float back = x * x * (3.0 - 2.0 * x) - 1.0;
+  float settle = 1.0 + 1.8 * back * back * back + 0.8 * back * back;
+  float leave = pout * pout * (3.0 - 2.0 * pout);
+  return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * leave;
+}
+
 Shade sceneStreet(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   streetTm = t * uMotion;
@@ -1831,10 +1895,20 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
 
   // The cell's ray from the window, and where it meets the street.
   vec2 s = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+  streetTilt = streetTiltAt();
   float cp = cos(STREET_PITCH);
   float sp = sin(STREET_PITCH);
+  if (streetTilt != 0.0) {
+    cp = cos(STREET_PITCH - streetTilt);
+    sp = sin(STREET_PITCH - streetTilt);
+  }
   vec3 ro = vec3(STREET_CAM_X, STREET_CAM_H, 0.0);
-  vec3 rd = normalize(vec3(s.x, s.y * cp - STREET_FOCAL * sp, s.y * sp + STREET_FOCAL * cp));
+  vec3 rdView = normalize(vec3(s.x, s.y * cp - STREET_FOCAL * sp, s.y * sp + STREET_FOCAL * cp));
+  // Raised, the view can reach the horizon and the sky: those cells are traced as a ray just under
+  // the horizon (so nothing below divides by a ray that never meets the street) and replaced by the
+  // city beyond once shaded.
+  bool skyward = streetTilt > 0.0 && rdView.y > -0.004;
+  vec3 rd = skyward ? normalize(vec3(rdView.x, -0.004, rdView.z)) : rdView;
   vec3 inv = streetInv(rd);
   float tg = -ro.y / rd.y;
   vec3 G = ro + rd * tg;
@@ -1864,6 +1938,8 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
       streetAgent(ids.w, ro, rd, hit, veil);
     }
   }
+  // Beyond the near blocks: the sky, and whatever a ray lands on behind the blocks' roofs.
+  bool beyond = skyward || (streetTilt > 0.0 && hit.kind == STREET_K_GROUND && G.z > STREET_FACADE_FAR && abs(G.x) > STREET_SIDE_FACADE);
 
   vec3 P = ro + rd * hit.t;
   vec3 n = hit.n;
@@ -2056,6 +2132,18 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
     }
   }
 
+  // Raised toward the skyline: over the roofs the city beyond and its sky; what is far in the
+  // streets fades into the haze (nothing at rest reaches that far).
+  if (streetTilt > 0.0) {
+    if (beyond) {
+      col = streetBeyond(rdView);
+      accent = 0.0;
+      glow = vec3(0.0);
+      hit.t = 800.0;
+    } else if (hit.t > 130.0) {
+      col = mix(col, streetHaze(rdView), smoothstep(130.0, 520.0, hit.t));
+    }
+  }
   // The air: lamp glow, then fog, then the falling rain or snow.
   float wetAir = 1.0 + 1.5 * max(K_fog, storm);
   col += glow * wetAir;
@@ -2067,6 +2155,8 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
   float depth = weatherDepth(hit.t);
   if (K_rain > 0.0) {
     // From the window the rain falls past a camera pitched down: its paths converge below the street.
+    // cp and sp are the pitch the cell was traced with, the passage's tilt included, so the vanishing
+    // point moves with the camera.
     vec3 vanish = rainVanish(rainFallDir(K_rain, K_wind), vec3(1.0, 0.0, 0.0), vec3(0.0, cp, sp), vec3(0.0, -sp, cp), STREET_FOCAL);
     Precip pr = rainFallSeen(uv, aspect, t, K_rain, K_wind, depth, vanish);
     vec3 air = streetDeck * 0.9 + bounce + glow * 0.25;
