@@ -159,7 +159,7 @@ const BEE_LOAD = 1;
 const BUTTERFLY_LOAD = 0.4;
 
 // Creatures.
-const BEE_LENGTH = 0.052;
+const BEE_LENGTH = 0.058;
 const BUTTERFLY_SPAN = 0.064;
 const FADE_TIME = 1.5;
 /** A resting creature is this much nearer than its flower (depth). */
@@ -273,7 +273,7 @@ interface Butterfly {
   restTilt: number;
 }
 
-type BeesKnob = "bees" | "butterflies" | "palette" | "flowers" | "gardenSeed" | "breeze";
+type BeesKnob = "bees" | "butterflies" | "palette" | "flowers" | "gardenSeed" | "breeze" | "focus";
 
 export class BeesSimError extends Error {}
 
@@ -315,11 +315,12 @@ class BeesSim implements SceneSim {
   #layoutKey = "";
   #aspect = 16 / 9;
   #breeze = 0.4;
+  #focus = 0.5;
   #time = 0;
   #dirty = true;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader<BeesKnob>("bees", params, ["bees", "butterflies", "palette", "flowers", "gardenSeed", "breeze"]);
+    this.#knobs = new KnobReader<BeesKnob>("bees", params, ["bees", "butterflies", "palette", "flowers", "gardenSeed", "breeze", "focus"]);
     this.#flowerTexture = new DataTexture(gl, { width: BEES_FLOWER_TEXELS, height: BEES_MAX_FLOWERS, format: "rgba16f", filter: "nearest" });
     this.#agentTexture = new DataTexture(gl, { width: BEES_AGENT_TEXELS, height: BEES_AGENTS, format: "rgba16f", filter: "nearest" });
     this.#textures = [this.#flowerTexture.texture, this.#agentTexture.texture];
@@ -328,6 +329,7 @@ class BeesSim implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const knobs = this.#knobs;
     this.#breeze = clamp(knobs.value(frame, "breeze"), 0, 1);
+    this.#focus = clamp(knobs.value(frame, "focus"), 0, 1);
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     const arrangement = Math.round(knobs.value(frame, "gardenSeed"));
     const palette = Math.round(knobs.value(frame, "palette"));
@@ -442,8 +444,12 @@ class BeesSim implements SceneSim {
   }
 
 
-  /** A free flower in view near (x, y, z), chosen at random weighted by closeness; -1 when none is free. */
-  #pickFlower(x: number, y: number, z: number, exclude: number): number {
+  /**
+   * A free flower in view near (x, y), chosen at random weighted by closeness and, by `bias` 0..1, by
+   * how near it lies to the focus depth (bees keep to the sharp zone, where they can be seen); -1 when
+   * none is free.
+   */
+  #pickFlower(x: number, y: number, bias: number, exclude: number): number {
     const weights = this.#weights;
     let total = 0;
     let nearest = -1;
@@ -456,9 +462,9 @@ class BeesSim implements SceneSim {
           nearestDist = dist;
           nearest = j;
         }
-        const dz = Math.abs(f.depth - z);
         const visible = Math.abs(f.hx) < 0.5 * this.#aspect - 0.04 && f.hy > 0.1 && f.hy < 0.92;
-        if (visible && dz <= 0.5) w = Math.exp(-dist / 0.45) * (1 - 0.8 * dz);
+        const focused = ((f.depth - this.#focus) / 0.2) ** 2;
+        if (visible) w = Math.exp(-dist / 0.5) * (1 - bias + bias * (0.1 + Math.exp(-focused)));
       }
       weights[j] = w;
       total += w;
@@ -520,7 +526,7 @@ class BeesSim implements SceneSim {
     b.mode = "fly";
     b.timer = 2;
     b.walk = rand.next() * TAU;
-    b.z = 0.1 + 0.8 * rand.next();
+    b.z = clamp(this.#focus + (rand.next() - 0.5) * 0.4, 0.05, 0.95);
     b.y = 0.3 + 0.45 * rand.next();
     if (inView) {
       b.x = (rand.next() * 2 - 1) * 0.4 * this.#aspect;
@@ -542,7 +548,7 @@ class BeesSim implements SceneSim {
   #beeTarget(b: Bee, id: number, exclude: number): void {
     b.mode = "fly";
     b.timer = 0;
-    const j = this.#pickFlower(b.x, b.y, b.z, exclude);
+    const j = this.#pickFlower(b.x, b.y, 1, exclude);
     const f = j >= 0 ? this.#flowers[j] : undefined;
     if (f === undefined) {
       b.flower = -1;
@@ -795,7 +801,7 @@ class BeesSim implements SceneSim {
     const rand = this.#random;
     g.wayTimer = rand.range(3, 6);
     if (mayPerch && rand.next() < 0.4) {
-      const j = this.#pickFlower(g.x, g.y, g.z, -1);
+      const j = this.#pickFlower(g.x, g.y, 0.4, -1);
       const f = j >= 0 ? this.#flowers[j] : undefined;
       if (f !== undefined) {
         f.claim = id;

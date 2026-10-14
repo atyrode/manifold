@@ -61,10 +61,17 @@ float beesBlur(float depth) {
   return max(abs(depth - K_focus) - BEES_SHARP, 0.0) * BEES_BLUR_MAX;
 }
 
-// An albedo in the afternoon light: the sky's blue ambient plus the low sun's gold, more of it on a
+// An albedo in the afternoon light: the sky's ambient plus the low sun's gold, more of it on a
 // surface that faces the sun (facing -1 .. 1).
 vec3 beesLit(vec3 albedo, float facing) {
-  return albedo * (beesAmb * 0.55 + beesSun * (0.42 + 0.38 * clamp(facing, -1.0, 1.0)));
+  return albedo * (beesAmb * 0.55 + beesSun * (0.4 + 0.45 * clamp(facing, -1.0, 1.0)));
+}
+
+// Light the low sun shines through a thin petal or leaf toward the eye (we look toward the sun, so
+// everything is backlit): the albedo squared, for a saturated glow, plus a bright edge where the
+// surface turns toward the sun (rim 0 .. 1).
+vec3 beesBack(vec3 albedo, float rim) {
+  return albedo * albedo * beesSun * 0.5 + beesSun * vec3(1.0, 0.85, 0.6) * rim * 0.5;
 }
 
 // Whether this cell is inside d (an SDF in the units soft is in), cut against its own threshold; alpha
@@ -75,53 +82,99 @@ float beesCut(float d, float soft, float alpha) {
 
 // ---- the backdrop ----------------------------------------------------------------------------
 
-// The hedge in deep shade with the sun coming through it: a dark leafy mass, and two sizes of
-// out-of-focus bokeh, each disc a leaf or a gap of sky catching the light.
-vec3 beesHedge(vec2 p, float glow, float tm) {
-  float n = fbm3(p * vec2(3.0, 4.5) + vec2(7.0, 2.0));
-  vec3 col = mix(vec3(0.06, 0.13, 0.05), vec3(0.22, 0.38, 0.09), smoothstep(0.3, 0.75, n));
-  col *= beesAmb * 0.75 + beesSun * 0.5;
-  col *= mix(0.55, 1.1, smoothstep(0.0, 0.6, p.y));
-  for (int k = 0; k < 2; k++) {
-    float g = k == 0 ? 0.072 : 0.125;
-    vec2 off = vec2(0.31, 0.17) * float(k);
+// What stands behind the border, out of focus: a soft green-gold meadow strip low down (lit by the low
+// sun), the hedge above it in deep shade, its top catching a warm rim of sunlit leaves, and a few
+// sparse bokeh discs of sun through its leaves, of all sizes and only high up, strongest near the sun.
+vec3 beesHedge(vec2 p, float hedgeTop, float glow) {
+  float y = p.y;
+  float n = fbm3(p * vec2(2.2, 3.0) + vec2(7.0, 2.0));
+  float into = clamp((hedgeTop - y) / 0.16, 0.0, 1.0);
+  vec3 field = mix(vec3(0.05, 0.11, 0.04), vec3(0.34, 0.44, 0.10), smoothstep(0.0, 0.3, y));
+  field = mix(field, vec3(0.52, 0.46, 0.13), 0.35 * smoothstep(0.12, 0.34, y) * (0.4 + 0.6 * n));
+  vec3 hedge = mix(vec3(0.26, 0.37, 0.08), vec3(0.04, 0.10, 0.04), smoothstep(0.0, 0.85, into));
+  hedge *= 0.65 + 0.7 * n;
+  vec3 col = mix(field, hedge, smoothstep(0.26, 0.46, y));
+  col *= beesAmb * 0.7 + beesSun * 0.65;
+  float rim = 1.0 - smoothstep(0.0, 0.05, hedgeTop - y);
+  col += beesSun * vec3(0.55, 0.38, 0.08) * rim * (0.35 + 0.8 * glow) * (0.5 + 0.5 * n);
+  for (int k = 0; k < 3; k++) {
+    float g = k == 0 ? 0.23 : k == 1 ? 0.16 : 0.31;
+    vec2 off = vec2(0.37, 0.11) * float(k);
     vec2 id = floor((p + off) / g);
     vec2 f = (p + off) / g - id;
-    vec2 h = hash22(id + float(k) * 31.7);
-    float b = hash12(id + vec2(91.0 + float(k) * 7.0, 13.0));
-    if (b < 0.35) continue;
-    vec2 c = vec2(0.3) + h * 0.4;
-    float rad = 0.14 + 0.1 * hash12(id * 1.37 + 5.1);
-    float d = (length(f - c) - rad) * g;
-    float cov = softFill(d, 0.3 * rad * g);
-    float breathe = 0.9 + 0.1 * sin(tm * 0.2 + b * 20.0);
-    float lit = clamp(b * 0.8 + glow * 0.7, 0.0, 1.0);
-    vec3 dc = mix(vec3(0.40, 0.58, 0.14), vec3(0.98, 0.86, 0.38), smoothstep(0.35, 1.0, lit));
-    dc *= beesAmb * 0.6 + beesSun * 0.75;
-    col = mix(col, dc, hardEdge(cov * (0.4 + 0.45 * b) * breathe));
+    if (hash12(id + vec2(17.0 * float(k), 5.0)) < 0.78) continue;
+    float s2 = hash12(id * 1.7 + 3.1);
+    float rr = mix(0.01, 0.05, s2 * s2);
+    float rc = rr / g;
+    vec2 cc = vec2(rc) + (1.0 - 2.0 * rc) * hash22(id + 9.0);
+    float d = (length(f - cc) - rc) * g;
+    float zone = smoothstep(0.34, 0.52, y) * (0.25 + 0.75 * clamp(glow * 1.6 + 0.3 * s2, 0.0, 1.0));
+    vec3 dc = mix(vec3(0.6, 0.66, 0.2), vec3(1.0, 0.8, 0.36), hash12(id + 4.4)) * (beesAmb * 0.5 + beesSun);
+    col = mix(col, dc, hardEdge(softFill(d, 0.45 * rr) * 0.55 * zone));
   }
   return col;
 }
 
-// The sky, the far trees and the hedge, with the M's blossoms on the hedge.
+// Masses of leaves and grass behind and between the stems, two soft layers, varied greens, darker
+// low down and warm where the sun catches them: it makes the border dense and layered.
+void beesFoliage(vec2 p, float tm, float glow, inout vec3 col) {
+  for (int layer = 0; layer < 2; layer++) {
+    float lf = float(layer);
+    float cw = layer == 0 ? 0.13 : 0.085;
+    float soft = beesAa + (layer == 0 ? 0.02 : 0.011);
+    float base = floor(p.x / cw);
+    for (int k = -1; k <= 1; k++) {
+      float ci = base + float(k);
+      vec2 id = vec2(ci, 3.3 + lf * 40.0);
+      float h3 = hash12(id);
+      if (h3 < 0.2) continue;
+      vec2 h = hash22(id + 7.7);
+      float root = (ci + 0.15 + 0.7 * h.x) * cw;
+      float rootY = -0.04 + 0.22 * h.y * h.y;
+      float height = (layer == 0 ? 0.12 : 0.08) + 0.2 * h3;
+      float lean = (h.x - 0.5) * 0.22 + (vnoise1(tm * 0.2 + ci * 2.9, 11.0).x - 0.5) * (0.01 + 0.04 * K_breeze);
+      if (p.y > rootY + height + 0.05 || p.y < rootY - 0.05 || abs(p.x - root) > 0.15) continue;
+      vec2 a = vec2(root, rootY);
+      vec2 tipP = vec2(root + lean, rootY + height);
+      vec2 mid = vec2(root + 0.35 * lean, rootY + 0.5 * height);
+      float rw = (layer == 0 ? 0.028 : 0.016) * (0.6 + 0.8 * h3);
+      float d = min(sdTaperCapsule(p, a, mid, rw * 0.7, rw), sdTaperCapsule(p, mid, tipP, rw, 0.002));
+      if (beesCut(d, soft, 0.85) > 0.0) {
+        vec3 gc = mix(vec3(0.1, 0.22, 0.06), vec3(0.44, 0.58, 0.14), h3 * h3 + 0.3 * h.y);
+        gc *= mix(0.5, 1.0, smoothstep(0.0, 0.5, p.y));
+        float face = clamp((p.x - root) / rw * beesSunDir.x, -1.0, 1.0);
+        col = beesLit(gc, face) + beesSun * 0.25 * smoothstep(0.3, 1.0, face) * (0.3 + glow);
+      }
+    }
+  }
+}
+
+// The sky, the far trees, the hedge (irregular, with gaps of sky) and the foliage in front of it, with
+// the M's blossoms on the hedge.
 vec3 beesBackdrop(vec2 p, vec3 dir, Sky sky, float glow, float t, float tm, inout float accent) {
+  float x = p.x;
   float y = p.y;
-  float treeTop = 0.66 + 0.10 * vnoise1(p.x * 1.1 + 3.0, 3.0).x + 0.035 * vnoise1(p.x * 4.7 + 1.0, 4.0).x;
-  float hedgeTop = 0.55 + 0.07 * vnoise1(p.x * 2.1 + 11.3, 1.0).x + 0.02 * vnoise1(p.x * 8.3 + 5.0, 2.0).x;
-  vec3 col = vec3(0.0);
-  if (y > hedgeTop - 0.04) {
-    col = skyColor(sky, dir);
+  float treeTop = 0.7 + 0.1 * vnoise1(x * 0.9 + 3.0, 3.0).x + 0.05 * vnoise1(x * 3.1 + 1.0, 4.0).x + 0.02 * vnoise1(x * 9.0 + 4.0, 8.0).x;
+  float hedgeTop = 0.5 + 0.1 * vnoise1(x * 1.5 + 11.3, 1.0).x + 0.045 * vnoise1(x * 5.3 + 5.0, 2.0).x + 0.02 * vnoise1(x * 14.0 + 2.0, 9.0).x;
+  vec3 behind = vec3(0.0);
+  float gap = 0.0;
+  if (y > hedgeTop - 0.2) {
+    behind = skyColor(sky, dir);
     vec4 cl = skyClouds(sky, dir, t, 0.3, 0.3);
-    col = mix(col, cl.rgb, cl.a);
-    col += skyStarLight(sky, dir, 0.5) * (1.0 - cl.a);
-    if (y < treeTop + 0.04) {
+    behind = mix(behind, cl.rgb, cl.a);
+    behind += skyStarLight(sky, dir, 0.5) * (1.0 - cl.a);
+    if (y < treeTop + 0.05) {
       vec3 haze = horizonHaze(sky, dir, 0.012);
       float leaves = fbm3(p * vec2(4.0, 7.0) + vec2(2.0, 9.0));
       vec3 trees = mix(haze, vec3(0.16, 0.28, 0.12) * (beesAmb * 0.7 + beesSun * 0.4) * (0.75 + 0.5 * leaves), 0.55);
-      col = mix(col, trees, hardEdge(softFill(y - treeTop, 0.02)));
+      trees += beesSun * vec3(0.5, 0.35, 0.1) * 0.25 * (1.0 - smoothstep(0.0, 0.06, treeTop - y)) * (0.3 + glow);
+      behind = mix(behind, trees, hardEdge(softFill(y - treeTop, 0.035)));
     }
+    gap = smoothstep(0.6, 0.7, fbm3(p * vec2(7.0, 11.0) + vec2(5.0, 1.0))) * smoothstep(hedgeTop - 0.17, hedgeTop - 0.05, y);
   }
-  col = mix(col, beesHedge(p, glow, tm), hardEdge(softFill(y - hedgeTop, 0.012)));
+  vec3 col = behind;
+  if (hardEdge(softFill(y - hedgeTop, 0.03) * (1.0 - gap)) > 0.5) col = beesHedge(p, hedgeTop, glow);
+  beesFoliage(p, tm, glow, col);
   return col;
 }
 
@@ -200,7 +253,8 @@ void beesStem(vec2 p, vec2 head, float rootX, float sc, float blur, float hash, 
   if (cover > 0.0) {
     vec3 green = mix(vec3(0.20, 0.38, 0.10), vec3(0.36, 0.52, 0.14), fract(hash * 5.7));
     float face = clamp((p.x - xc) / w * beesSunDir.x, -1.0, 1.0);
-    col = mix(col, beesLit(green, face), cover);
+    vec3 lit = beesLit(green, face) + beesSun * vec3(1.0, 0.8, 0.5) * 0.4 * smoothstep(0.2, 1.0, face);
+    col = mix(col, lit, cover);
   }
 }
 
@@ -227,7 +281,7 @@ void beesLeaves(vec2 p, vec2 head, float rootX, float sc, float blur, float hash
     if (beesCut(d, soft, alpha) > 0.0) {
       vec3 green = mix(vec3(0.18, 0.36, 0.10), vec3(0.32, 0.50, 0.14), fract(hash * 3.3 + kf * 0.37));
       float face = beesSunDir.x * side * 0.6 + 0.3 * q.y / wid;
-      col = mix(col, beesLit(green, face), 1.0);
+      col = mix(col, beesLit(green, face) + beesBack(green, clamp(face, 0.0, 1.0) * 0.5), 1.0);
     }
   }
 }
@@ -269,7 +323,7 @@ void beesHead(vec2 p, vec2 head, float R, float tilt, float blur, float type, fl
         floret *= 1.0 - 0.25 * det * (1.0 - smoothstep(0.0, 0.16, min(whorl, 1.0 - whorl)));
         floret = mix(floret, vec3(0.45, 0.55, 0.38), (1.0 - smoothstep(-0.8, -0.5, vv)) * det);
         float facing = clamp(sp.x / max(hw, 1e-4) * ls.x, -1.0, 1.0) * 0.8 + 0.2 * vv * ls.y;
-        col = mix(col, beesLit(floret, facing), 1.0);
+        col = mix(col, beesLit(floret, facing) + beesBack(floret, max(facing, 0.0) * 0.6), 1.0);
       }
     }
     return;
@@ -286,7 +340,7 @@ void beesHead(vec2 p, vec2 head, float R, float tilt, float blur, float type, fl
     if (beesCut((r - edge) * R, soft, con) > 0.0) {
       vec3 c = mix(petal, tip, smoothstep(0.35, 1.0, r));
       c *= 1.0 - det * 0.3 * pow(1.0 - lobe, 3.0) * smoothstep(0.3, 0.9, r);
-      col = mix(col, beesLit(c, f) + petal * beesSun * 0.1, 1.0);
+      col = mix(col, beesLit(c, f) + beesBack(c, smoothstep(0.65, 1.0, r) * clamp(f, 0.0, 1.0)), 1.0);
     }
     if (beesCut((r - 0.24) * R, soft, con * det) > 0.0) {
       vec3 eye = r < 0.12 ? vec3(0.80, 0.46, 0.08) : vec3(0.96, 0.74, 0.14);
@@ -307,7 +361,7 @@ void beesHead(vec2 p, vec2 head, float R, float tilt, float blur, float type, fl
       vec3 c = mix(petal, tip, smoothstep(0.4, 1.0, r));
       c = mix(c, vec3(0.14, 0.03, 0.09), (1.0 - smoothstep(0.3, 0.62, r)) * 0.85 * det);
       c *= 1.0 - det * 0.1 * (0.5 + 0.5 * cos(14.0 * th + ph * 3.0)) * smoothstep(0.3, 0.9, r);
-      col = mix(col, beesLit(c, f) + petal * beesSun * 0.12, 1.0);
+      col = mix(col, beesLit(c, f) + beesBack(c, smoothstep(0.65, 1.0, r) * clamp(f, 0.0, 1.0)), 1.0);
     }
     if (beesCut((r - 0.3) * R, soft, con * det) > 0.0) {
       float stamens = pow(0.5 + 0.5 * cos(18.0 * th), 5.0) * smoothstep(0.15, 0.2, r);
@@ -327,7 +381,8 @@ void beesHead(vec2 p, vec2 head, float R, float tilt, float blur, float type, fl
     if (beesCut((r - edge) * R, soft, con) > 0.0) {
       vec3 c = mix(petal, tip, smoothstep(0.35, 1.0, r));
       c *= 1.0 - det * 0.22 * (1.0 - a) * smoothstep(0.3, 0.8, r);
-      col = mix(col, beesLit(c, dot(qq / R, ls)) + petal * beesSun * 0.1, 1.0);
+      float fa = dot(qq / R, ls);
+      col = mix(col, beesLit(c, fa) + beesBack(c, smoothstep(0.65, 1.0, r) * clamp(fa, 0.0, 1.0)), 1.0);
     }
     vec2 cq = (qq - vec2(0.0, 0.1 * R)) / (0.36 * R);
     float cedge = 1.0 + 0.07 * cos(17.0 * atan(cq.y, cq.x + 1e-5) + ph);
@@ -352,7 +407,7 @@ void beesHead(vec2 p, vec2 head, float R, float tilt, float blur, float type, fl
     float bumps = 0.5 + 0.5 * cos(5.5 * n2.x + ph) * cos(5.5 * n2.y + ph * 1.7);
     vec3 c = mix(petal, tip, clamp(smoothstep(0.55, 1.0, r) * 0.7 + bumps * 0.35 * det, 0.0, 1.0));
     c *= 1.0 - 0.16 * det * (1.0 - bumps);
-    col = mix(col, beesLit(c, f), 1.0);
+    col = mix(col, beesLit(c, f) + beesBack(c, smoothstep(0.7, 1.0, r) * clamp(f, 0.0, 1.0)), 1.0);
   }
 }
 
@@ -364,7 +419,7 @@ void beesHead(vec2 p, vec2 head, float R, float tilt, float blur, float type, fl
 void beesBee(vec2 p, vec4 a, vec4 b, vec4 c, vec4 e, inout vec3 col, inout float accent) {
   float L = a.z;
   float blur = beesBlur(b.x);
-  float con = a.w / (1.0 + 2.4 * blur / L);
+  float con = a.w / (1.0 + 1.1 * blur / L);
   float det = 1.0 - smoothstep(0.1 * L, 0.5 * L, blur);
   float sgn = c.x < 0.0 ? -1.0 : 1.0;
   vec2 q = p - a.xy;
@@ -396,7 +451,7 @@ void beesBee(vec2 p, vec4 a, vec4 b, vec4 c, vec4 e, inout vec3 col, inout float
   float stripe = step(0.2, sin((q.x + 0.49) * 28.0 + 0.4)) * det;
   col = mix(col, beesLit(mix(vec3(0.95, 0.66, 0.14), vec3(0.12, 0.08, 0.04), stripe), lit), cA);
   float cT = beesCut(sdEllipse(q - vec2(0.12, 0.015), vec2(0.175, 0.16)), soft, con);
-  col = mix(col, beesLit(vec3(0.66, 0.42, 0.12), lit), cT);
+  col = mix(col, beesLit(vec3(0.66, 0.42, 0.12), lit) + beesBack(vec3(0.66, 0.42, 0.12), clamp(lit, 0.0, 1.0)), cT);
   float cH = beesCut(sdEllipse(q - vec2(0.335, -0.01), vec2(0.095, 0.088)), soft, con);
   col = mix(col, beesLit(dark, lit), cH);
   accent = max(accent, max(cA, max(cT, cH)) * con);
@@ -421,7 +476,7 @@ void beesButterfly(vec2 p, vec4 a, vec4 b, vec4 c, inout vec3 col) {
   float S = a.z;
   float kind = b.y;
   float blur = beesBlur(b.x);
-  float con = a.w / (1.0 + 1.6 * blur / S);
+  float con = a.w / (1.0 + 0.9 * blur / S);
   float det = 1.0 - smoothstep(0.1 * S, 0.5 * S, blur);
   vec2 q = rotate(p - a.xy, -c.x) / S;
   float soft = (beesAa + blur) / S;
@@ -468,7 +523,7 @@ void beesButterfly(vec2 p, vec4 a, vec4 b, vec4 c, inout vec3 col) {
     }
     vec3 wing = mix(topc, undc, clamp(c.z, 0.0, 1.0));
     wing *= 1.0 - 0.4 * smoothstep(-0.05, -0.012, dW) * det;
-    col = mix(col, beesLit(wing, 0.4) + wing * beesSun * 0.12, 1.0);
+    col = mix(col, beesLit(wing, 0.4) + beesBack(wing, smoothstep(-0.12, -0.02, dW) * 0.8), 1.0);
   }
   float dB = min(sdTaperCapsule(q, vec2(0.0, 0.32), vec2(0.0, -0.46), 0.045, 0.028), length(q - vec2(0.0, 0.4)) - 0.055);
   float rA = max(0.012, 0.5 * soft);
@@ -587,7 +642,7 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
 
   Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
   beesSun = sky.sunColor;
-  beesAmb = sky.ambient + vec3(0.03);
+  beesAmb = sky.ambient * vec3(1.0, 0.9, 0.78) + vec3(0.03);
   vec3 cam = viewRay(uv, beesAspect, BEES_HORIZON, BEES_FOV);
   vec3 dir = skyFacing(cam, BEES_TURN);
   vec3 sunCam = skyFacing(sky.sun, -BEES_TURN);

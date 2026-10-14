@@ -11,7 +11,7 @@ import { beesGlsl } from "./shader.ts";
 import { BEES_MARK_TRIGGER, beesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  feature("border", "bees", "bees", true, "how many", 3, "Bees foraging: each flies a calm curved path to a flower, hovers, lands (the flower dips under its weight and springs back), crawls a while carrying pollen on its legs, then goes on to the next.", { options: counts(1, 2, 3, 4, 6) }),
+  feature("border", "bees", "bees", true, "how many", 4, "Bees foraging: each flies a calm curved path to a flower in the sharp zone, hovers, lands (the flower dips under its weight and springs back), crawls a while carrying pollen on its legs, then goes on to the next.", { options: counts(1, 2, 3, 4, 6) }),
   feature("border", "butterflies", "butterflies", true, "how many", 2, "A peacock, a cabbage white and a swallowtail, in that order: a lazy erratic flutter with glides between bursts of wingbeats, now and then settling on a flower with the wings slowly opening and closing.", { options: counts(1, 2, 3) }),
   choice("border", "palette", "flower mix", [
     { label: "cottage", value: 0 },
@@ -23,7 +23,7 @@ const params: readonly ParamDef[] = [
   range("air", "breeze", "breeze", 0.4, "How much the stems sway: a still afternoon to the swell of a gentle breeze, passing along the border."),
   range("lens", "focus", "focus depth", 0.5, "Which depth is sharp: toward the left the flowers close to you, in the middle the middle of the border, toward the right the far flowers. Everything else softens into out-of-focus colour; the hedge is always far out of focus."),
   range("lens", "glow", "golden haze", 0.45, "The low sun's gold scattered through the air, softening the picture around it."),
-  ...skyKnobs({ time: 0.7 }),
+  ...skyKnobs({ time: 0.72 }),
   feature("manifold", "mark", "M in clematis", false, "bloom", 0.8, "The Manifold M trained over the hedge in violet clematis: a thin vine and a blossom at nineteen places along its strokes, soft out of focus behind the flowers. A pulse of light runs along it now and then; 'Now' sends one at once.", { trigger: BEES_MARK_TRIGGER }),
 ];
 
