@@ -256,6 +256,16 @@ vec3 aurora(vec3 dir, float t, float strength);                  // auroraM on t
 // Shooting stars: when, and the streak in the scene's own flat sky frame (skyAngles for a dome).
 float meteorAge(float tm, float rate, int slot, out float seed); // seconds since the latest one (random at `rate` while motion > 0, or slot's "now")
 float meteorStreak(vec2 q, vec4 field, float age, float seed, float foot); // 0..1 coverage; starts in field (xy corner, zw size)
+
+// Weather under a closed canopy (canopy.ts; bamboo, forest). The scene keeps its tint, fill, shelter, rays and mist.
+struct CanopyWeather { Sky sky; float rain; float overcast; float cloud; vec2 keySide; float slant; };
+CanopyWeather canopyWeather(Sky clear, float rain);       // the sky under the rain's cloud (sun and moon gone from rain 0.25, ambient
+                                                          // toward the deck's grey), overcast 0..1, the deck's luminance, the key
+                                                          // light's level heading (x, z) and its shafts' slant from straight down
+vec3 canopyRaySources(vec3 base, float spread, float seed, float aspect, float tm, float slant); // screen x of three shafts at the top
+float canopyGap(vec2 p, float wind, float seed, vec3 raySrc); // 0 under the leaves .. 1 open overhead (always under a shaft), leaning with the wind
+vec3 canopyGapSky(CanopyWeather w, vec3 washed, vec3 dir, float stars, vec2 p, float wind, float seed, float deck);
+                                                          // the sky in a gap: the scene's washed sky, stars while clear, the rain deck (gain deck) with shafts
 ```
 
 Name scene-local GLSL functions with the scene id as a prefix (`dunesHeight`, `sillCat`) so they can
@@ -311,8 +321,12 @@ Random events stop at motion 0 (still pictures, reduced motion), and "now" still
 | Moon | `skyKnobs({ moon })`: `K_moon` | `SKY_MOON_PHASE` | `skyMoonPhase(sky, K_moon)`: the disc and halo in `skyColor`, the light in `sky.moonColor` and `sky.ambient`, the glare in `skyStars`; `skyMoonCover(sky, dir)` coverage |
 | Aurora | `weatherKnobs({ aurora })`: `K_aurora` | `AURORA_CURTAINS` (3) | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility |
 | Meteors | `skyKnobs({ meteors: { trigger } })`: `K_meteors` | | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome) |
+| Canopy weather | `weatherKnobs({ rain, wind })`: `K_rain`, `K_wind`; the scene's seed knob | | `canopyWeather(sky, K_rain)` light (the sky under the rain's cloud, the deck's brightness, the key's side and slant); `canopyRaySources`, `canopyGap(p, wind, seed, raySrc)` coverage (where the rain pours in); `canopyGapSky(w, washed, dir, stars, p, wind, seed, deck)` radiance |
 
-Frost composes all four in the sky through its window (`frost/index.ts`, `frost/shader.ts`):
+Bamboo and Forest compose the canopy weather under their leaves, each with its own tint on the
+washed sky, deck gain (1.3, 1.25), shelter (half, 45% of the rain under the leaves) and ray bases.
+
+Frost composes the four sky components through its window (`frost/index.ts`, `frost/shader.ts`):
 
 ```ts
 ...skyKnobs({ time: 0.9, stars: 0.5, moon: 1, meteors: { trigger: FROST_METEOR_TRIGGER } }),
@@ -621,9 +635,14 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `Errand` (`errand.ts`): a kerbside errand's choreography (a vehicle pulls in, hazards on, a porter
   carries loads to a door in trips, climbs back in, the vehicle leaves); the scene drives and walks
   them and reports arrivals (street's late delivery).
-- `gustPulse`, `GustTrain`, `windSign`, `windNoise` (`wind.ts`): the lab's wind conventions (K_wind
-  -1..1, gusts blowing with it), the gust pulse garden and autumn use, a seeded gust scheduler with
-  "now", and smooth eddy noise (mobile).
+- `gustPulse`, `gustPulseGlsl`, `GustTrain`, `windSign`, `gustWait`, `windNoise` (`wind.ts`): the
+  lab's wind conventions (K_wind -1..1, gusts blowing with it), the gust pulse garden and autumn use
+  (garden's maple sways with its GLSL twin), a seeded gust scheduler with "now", and smooth eddy
+  noise (mobile).
+- `FlutterPlates` (`flutter.ts`): falling leaves and petals as rigid plates that flutter or tumble
+  (Andersen, Pesavento & Wang's quasi-steady model, fixed midpoint steps), carried by the scene's air
+  onto the scene's floor, then eased flat; per-slot state in typed arrays the scene seeds in its own
+  draw order, and each plate's frame for packing (autumn, garden).
 - `Mobile`, `designMobile`, `MobileTexture`, `mobileGlsl` (`mobile.ts`): a balanced hanging mobile on
   `VerletSystem` with plate drag and contacts, and GLSL tracing its plates, wires and links and the
   shadows they throw from a round lamp (mobile).
@@ -675,7 +694,6 @@ results as JSON keyed by check name, and stops at the first failure (a throw or 
 sky phase across motion changes, inherited GPU blending and preserving resize, Frost's
 warmth/trace reset while paused and after resume, the shared sky components' outputs (stars, the
 moon's phase, aurora, meteors) and their coupling in Frost's picture (`frost/sky.verify.ts`),
-uncapped FPS, and saved-frame dissolve sampling across larger, smaller, aspect-changed, and
 unchanged render sizes. Software WebGL is deliberate; this check is not a real-device
 performance qualification.
 
@@ -687,6 +705,8 @@ array bound, the canvas at its default size): size the canvas for what it reads 
 in a `finally` any global or shared definition it patches (`window.requestAnimationFrame`, a
 scene's `glsl` or `sim`). Keep each check well under the deadline in software WebGL on a busy
 machine; split a slower one into several entries.
+the canopy weather (`forest/canopy.verify.ts`), uncapped FPS, and saved-frame dissolve sampling
+across larger, smaller, aspect-changed, and unchanged render sizes. Software WebGL is deliberate;
 
 `src/runtime.verify.ts` adds the renderer's runtime: under reduced motion a press and a trigger
 age in real time while the clocks stand still (Dunes' streak clears after release; paused, ages

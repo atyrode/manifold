@@ -33,6 +33,7 @@ import { petriRegimesVerify } from "./src/scenes/petri/regimes.verify.ts";
 import { verifyPondKoi } from "./src/scenes/pond/koi.verify.ts";
 import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
 import { streetSnowCheck } from "./src/scenes/street/snow.verify.ts";
+import { verifyCanopy } from "./src/scenes/forest/canopy.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -289,6 +290,7 @@ function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
 function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
   result.harmonographPrewarm = verifyHarmonographPrewarm(gl);
   Object.assign(result, verifyTrainLine(gl));
+  result.canopy = verifyCanopy(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

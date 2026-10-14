@@ -1171,17 +1171,16 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   forestCamD = forestCamera();
   forestTh = threshold(cell);
   Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
-  // The rain's cloud closes over the sky as the rain sets in: a drizzle still lets some sun through,
-  // from about a quarter of the knob up the sun and moon are gone, shafts and all. The deck is lit
-  // from above, so the light turns soft and grey but stays, dimming only in the heaviest rain; and on
-  // such a dark day the mushrooms and spirits show a little.
-  forestRain = K_rain;
-  forestOvercast = smoothstep(0.0, 0.25, K_rain);
-  forestCloud = (dot(sky.ambient, LUMA) + 0.3 * dot(sky.sunColor, LUMA)) * (1.0 - 0.3 * K_rain * K_rain);
+  // The rain's cloud closes over the sky as the rain sets in (the shared canopy weather): a drizzle
+  // still lets some sun through, from about a quarter of the knob up the sun and moon are gone,
+  // shafts and all. The deck is lit from above, so the light turns soft and grey but stays, dimming
+  // only in the heaviest rain; and on such a dark day the mushrooms and spirits show a little.
+  CanopyWeather weather = canopyWeather(sky, K_rain);
+  sky = weather.sky;
+  forestRain = weather.rain;
+  forestOvercast = weather.overcast;
+  forestCloud = weather.cloud;
   forestNight = max(1.0 - smoothstep(0.0, 0.55, sky.day), 0.4 * forestOvercast * sky.day);
-  sky.sunColor *= 1.0 - forestOvercast;
-  sky.moonColor *= 1.0 - forestOvercast;
-  sky.ambient = mix(sky.ambient, vec3(0.95, 0.98, 1.0) * forestCloud, forestOvercast);
   forestSky = sky;
   forestWet = clamp(uWeather.x, 0.0, 1.0);
   forestGloss = wetGloss(forestWet, 0.0);
@@ -1195,21 +1194,12 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   forestFill = forestLevel * vec3(0.82, 0.92, 0.84) * mix(0.6, 1.0, forestOvercast) + sky.moonColor * 0.2;
   forestTop = forestLevel * vec3(0.9, 1.0, 0.85) * mix(1.0, 0.85, forestOvercast) + sky.moonColor * 0.25;
   forestKey = sky.sunColor * FOREST_SUNLIT + sky.moonColor * vec3(0.7, 0.85, 0.95) * 1.2;
-  float sunLevel = dot(sky.sunColor, LUMA);
-  float moonLevel = dot(sky.moonColor, LUMA) * 1.3;
-  vec2 keySide = sky.sun.xz * sunLevel + sky.moon.xz * moonLevel;
-  forestKeySide = dot(keySide, keySide) > 1e-8 ? normalize(keySide) : vec2(0.6, 0.8);
+  forestKeySide = weather.keySide;
   forestKeyDir = normalize(vec3(forestKeySide.x, 0.8, forestKeySide.y));
 
   // The shafts: three, at seed-chosen places, drifting very slowly.
-  vec3 toLight = normalize(sky.sun * sunLevel + sky.moon * moonLevel + vec3(0.0, 1e-4, 0.0));
-  forestRaySlant = clamp(atan(toLight.x, max(toLight.y, 0.0) + 0.35), -0.85, 0.85);
-  vec3 jitter = vec3(
-    hash12(vec2(1.0, K_forestSeed * 0.913 + 5.0)),
-    hash12(vec2(4.7, K_forestSeed * 0.913 + 5.0)),
-    hash12(vec2(8.4, K_forestSeed * 0.913 + 5.0))
-  );
-  forestRaySrc = (vec3(-0.3, 0.04, 0.32) + (jitter - 0.5) * 0.1) * aspect + 0.02 * sin(tm * 0.011 + jitter * 6.0) + tan(forestRaySlant) * 0.42;
+  forestRaySlant = weather.slant;
+  forestRaySrc = canopyRaySources(vec3(-0.3, 0.04, 0.32), 0.1, K_forestSeed, aspect, tm, forestRaySlant);
   vec2 rays = K_shafts > 0.0 ? forestRays(p, tm) : vec2(0.0);
   forestBeam = K_shafts > 0.0 ? rays.x : 0.3;
   forestRayLight = sky.sunColor * FOREST_SUNLIT + sky.moonColor * vec3(0.6, 0.8, 0.95) * 1.6;
@@ -1217,10 +1207,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
 
   // The canopy shelters the forest: under it less than half the rain gets through (the rest gathers
   // and drips); through its gaps, where the shafts come, it pours, slanting with the wind.
-  float gapX = p.x - K_wind * 0.35 * (1.0 - p.y);
-  float gap = smoothstep(0.5, 0.75, vnoise(vec2(gapX * 2.2 + K_forestSeed * 0.37, 7.3)));
-  for (int r = 0; r < 3; r++) gap = max(gap, forestBell((gapX - forestRaySrc[r]) / 0.09));
-  forestRainHere = K_rain * mix(0.45, 1.0, gap);
+  forestRainHere = K_rain * mix(0.45, 1.0, canopyGap(p, K_wind, K_forestSeed, forestRaySrc));
   forestDropLit = max(vec3(0.94, 0.97, 1.0) * forestCloud * 1.2, vec3(0.08)) + forestKey * forestBeam * 0.5;
 
   // The mist, thick and thin as the sim's field carries its banks.
@@ -1267,12 +1254,10 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   if (p.y > 0.7) {
     vec3 dir = viewRay(uv, aspect, FOREST_HORIZON, 1.0);
     vec3 sk = skyColor(sky, dir);
-    vec3 gapCol = mix(vec3(dot(sk, LUMA)), sk, 0.45) * 1.05 + sky.sunColor * FOREST_SUNLIT * 0.1;
-    gapCol += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, 0.5) * (1.0 - forestOvercast);
+    vec3 washed = mix(vec3(dot(sk, LUMA)), sk, 0.45) * 1.05 + sky.sunColor * FOREST_SUNLIT * 0.1;
     // Under rain cloud the gaps show the deck, grey-white and lit from above, with shafts of heavier
     // rain hanging from it, slanting with the wind.
-    float rainShafts = smoothstep(0.45, 0.8, vnoise(vec2((p.x - K_wind * 0.3 * p.y) * 5.0 + K_forestSeed, 3.7)));
-    gapCol = mix(gapCol, vec3(0.94, 0.97, 1.0) * forestCloud * 1.25 * (1.0 - 0.2 * rainShafts * K_rain), 0.9 * forestOvercast);
+    vec3 gapCol = canopyGapSky(weather, washed, dir, 0.5, p, K_wind, K_forestSeed, 1.25);
     col = mix(col, max(gapCol, mist), smoothstep(0.78, 1.0, p.y));
     vec4 canopy = forestCanopy(p, tm);
     if (forestHard(canopy.a) > 0.0) {

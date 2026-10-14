@@ -1,13 +1,11 @@
 // An autumn park: the leaves of the great tree let go, fall as the flat plates they are, and lie.
 //
-// Falling leaves are rigid plates in a vertical plane (Andersen, Pesavento & Wang, "Unsteady
-// aerodynamics of fluttering and tumbling plates", J. Fluid Mech. 541, 2005: the quasi-steady model
-// with added mass, circulation lift, quadratic drag and a rotational damping torque, as the garden
-// scene integrates it). Light leaves flutter, swinging from side to side and gliding up at the end of
-// each swing; heavier ones tumble end over end. Each leaf's plane turns slowly, the leaf rocks about
-// its chord and spins in its own plane, and the wind, the gusts and the swirl of a gust carry it. A
-// leaf that touches down eases flat (face up or face down, whichever is nearer) and is then handed to
-// the carpet.
+// Falling leaves are rigid plates in a vertical plane (the shared fluttering-plate model,
+// sims/flutter.ts, as the garden's leaves fall). Light leaves flutter, swinging from side to side and
+// gliding up at the end of each swing; heavier ones tumble end over end. Each leaf's plane turns
+// slowly, the leaf rocks about its chord and spins in its own plane, and the wind, the gusts (the
+// shared gust pulse, sims/wind.ts) and the swirl of a gust carry it. A leaf that touches down eases
+// flat (face up or face down, whichever is nearer) and is then handed to the carpet.
 //
 // The carpet is the accumulation (the shared ground-litter lattice, sims/litter.ts): 0.3 m cells over
 // the ground in two layers (the second shifted half a cell and lying beneath), each cell holding at
@@ -37,10 +35,12 @@
 //   uSim3  2 x 1: (gust, swirl x, swirl z, swirl strength), (M gathered 0..1, 0, 0, 0).
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { FlutterPlates } from "../../sims/flutter.ts";
 import { CLEARED, Litter, PINNED, type LitterItem } from "../../sims/litter.ts";
 import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
+import { gustPulse, gustWait, windSign } from "../../sims/wind.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { AUTUMN_CARPET, AUTUMN_MARK, AUTUMN_PASSAGE, AUTUMN_PATH, AUTUMN_SLOTS, AUTUMN_TREE, AUTUMN_VIEW, AUTUMN_WHIRL, autumnFlurry, autumnPathX } from "./layout.ts";
 
@@ -53,21 +53,7 @@ const COLS = AUTUMN_CARPET.cols;
 const ROWS = AUTUMN_CARPET.rows;
 const CELLS = COLS * ROWS;
 
-// ---- the plate model -----------------------------------------------------------------------------
-
-// In units of the plate's chord, the air's density and gravity: C_T = 1.2, C_R = pi, drag A = 1.4,
-// B = 1.0, the added masses of a thin ellipse, and a weak damping torque (which lets light plates
-// flutter widely and heavy ones tumble).
-const PLATE_CT = 1.2;
-const PLATE_CR = Math.PI;
-const PLATE_A = 1.4;
-const PLATE_B = 1.0;
-const PLATE_MU = 0.02;
-const PLATE_M11 = 0.02;
-const PLATE_M22 = Math.PI / 4;
-const PLATE_IA = Math.PI / 128;
-/** Model time per substep (stable to ~0.06 with the midpoint rule). */
-const PLATE_STEP = 0.03;
+// ---- the leaves in flight (sims/flutter.ts) -----------------------------------------------------
 
 interface Species {
   /** Drawn radius, metres. */
@@ -181,13 +167,6 @@ function noise2(x: number, z: number, salt: number): number {
   return lerp(lerp(hash31(i, j, salt), hash31(i + 1, j, salt), ux), lerp(hash31(i, j + 1, salt), hash31(i + 1, j + 1, salt), ux), uz);
 }
 
-/** A gust's strength `age` seconds after it began: rises over GUST_RISE, then dies away (the shader reads it from uSim3). */
-function gustAt(age: number): number {
-  if (!(age > 0 && age < 12 * GUST_RISE)) return 0;
-  const a = age / GUST_RISE;
-  return a * a * Math.exp(2 * (1 - a));
-}
-
 /** How busy the tree is letting go of leaves along the season (0 early, a long peak, a few stragglers at the end). */
 function activity(season: number): number {
   return 0.25 + 0.75 * smoothstep(0, 0.25, season) * (1 - 0.7 * smoothstep(0.75, 1, season));
@@ -208,38 +187,23 @@ class AutumnSim implements SceneSim {
   readonly #x = new Float64Array(SLOTS);
   readonly #y = new Float64Array(SLOTS);
   readonly #z = new Float64Array(SLOTS);
-  /** The plane's azimuth and its slow turn per second. */
-  readonly #psi = new Float64Array(SLOTS);
-  readonly #dpsi = new Float64Array(SLOTS);
-  /** Body-frame velocity along the chord and normal to it, the pitch rate (model units), the pitch. */
-  readonly #u = new Float64Array(SLOTS);
-  readonly #v = new Float64Array(SLOTS);
-  readonly #w = new Float64Array(SLOTS);
-  readonly #th = new Float64Array(SLOTS);
-  /** The leaf's turn in its own plane and its rate; the rock about the chord and its rate. */
-  readonly #sigma = new Float64Array(SLOTS);
-  readonly #dsigma = new Float64Array(SLOTS);
-  readonly #roll = new Float64Array(SLOTS);
-  readonly #rollRate = new Float64Array(SLOTS);
-  readonly #mass = new Float64Array(SLOTS);
-  readonly #chord = new Float64Array(SLOTS);
-  readonly #pace = new Float64Array(SLOTS);
+  /** Each leaf's plate in flight: its plane, pitch, spin, rock, mass, chord, pace and the pitch it lands and rests at. */
+  readonly #plates = new FlutterPlates(SLOTS, ROLL);
   readonly #radius = new Float64Array(SLOTS);
   readonly #hue = new Float64Array(SLOTS);
   readonly #seed = new Float64Array(SLOTS);
   readonly #alpha = new Float64Array(SLOTS);
-  /** Model time not yet stepped; seconds since touchdown; pitch at touchdown; the pitch it rests at; eddy phase. */
-  readonly #debt = new Float64Array(SLOTS);
+  /** Seconds since touchdown; eddy phase. */
   readonly #lain = new Float64Array(SLOTS);
-  readonly #touch = new Float64Array(SLOTS);
-  readonly #rest = new Float64Array(SLOTS);
   readonly #phase = new Float64Array(SLOTS);
   /** 1 for a leaf a swirl lifted off the path. */
   readonly #lifted = new Uint8Array(SLOTS);
-  readonly #rates = new Float64Array(3);
-  /** The air at a leaf (x, y, z) and the plate's frame (t, s, n) written by #orient. */
+  /** The air at a leaf (x, y, z); its position for the plates, (x, z, y); its frame from the plates, (x, z, y) each, written by #orient. */
   readonly #air = new Float64Array(3);
+  readonly #pos = new Float64Array(3);
   readonly #frame = new Float64Array(9);
+  /** Where a falling leaf touches down: the lawn and the path are level. */
+  readonly #floor = (): number => LEAF_LIFT;
   #rand = mulberry32(1);
   #nextLeaf = 1;
   #clock = 0;
@@ -450,7 +414,7 @@ class AutumnSim implements SceneSim {
    * are zero at rest, and nothing here draws on the random stream then.
    */
   #passage(aspect: number, enter: number, exit: number): void {
-    this.#blowSign = this.#wind < -0.05 ? -1 : 1;
+    this.#blowSign = windSign(this.#wind);
     if (!this.#entered) {
       this.#entered = true;
       if (enter < 1) this.#startFlurry(aspect > 0 ? aspect : 16 / 9);
@@ -495,10 +459,10 @@ class AutumnSim implements SceneSim {
   #startGust(swirl: boolean, amount: number): void {
     const rand = this.#rand;
     this.#gustAge = 0;
-    this.#gustSign = this.#wind < -0.05 ? -1 : 1;
+    this.#gustSign = windSign(this.#wind);
     this.#gustPower = 0.55 + 0.45 * clamp(amount, 0, 1);
     this.#shower = GUST_SHOWER;
-    this.#nextGust = (45 / (0.4 + 1.2 * clamp(amount, 0, 1))) * (0.6 + 0.8 * rand());
+    this.#nextGust = gustWait(45 / (0.4 + 1.2 * clamp(amount, 0, 1)), rand());
     this.#swirlOn = swirl;
     this.#swirlPickup = 0;
     if (swirl) {
@@ -511,7 +475,7 @@ class AutumnSim implements SceneSim {
   /** The air at (x, y, z) for leaf i: the wind, a gust, slow eddies and the swirl, written to #air. */
   #airAt(i: number, x: number, y: number, z: number): void {
     const phase = at(this.#phase, i);
-    const gust = gustAt(this.#gustAge) * this.#gustPower * this.#gustSign;
+    const gust = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower * this.#gustSign;
     let vx = this.#wind * WIND_DRIFT + gust * GUST_DRIFT + 0.3 * Math.sin(0.9 * this.#clock + phase);
     let vy = 0.12 * Math.sin(0.7 * this.#clock + 1.7 * phase);
     let vz = 0.2 * Math.sin(0.6 * this.#clock + 2.3 * phase) - 0.15 * Math.abs(gust);
@@ -630,183 +594,78 @@ class AutumnSim implements SceneSim {
   /** Fresh plate state for slot i at its position. */
   #begin(i: number, kind: Species, lifted: boolean): void {
     const rand = this.#rand;
+    const p = this.#plates;
     this.#state[i] = FALLING;
     this.#lifted[i] = lifted ? 1 : 0;
     const range = rand() < kind.tumbling ? TUMBLE_MASS : FLUTTER_MASS;
-    this.#mass[i] = lerp(range[0], range[1], rand());
-    this.#chord[i] = kind.chord * (0.85 + 0.3 * rand());
-    this.#pace[i] = PACE * (0.9 + 0.2 * rand());
+    p.mass[i] = lerp(range[0], range[1], rand());
+    p.chord[i] = kind.chord * (0.85 + 0.3 * rand());
+    p.pace[i] = PACE * (0.9 + 0.2 * rand());
     this.#hue[i] = rand();
     this.#radius[i] = kind.radius * (0.9 + 0.2 * ((this.#hue[i] ?? 0) * 7.3 - Math.floor((this.#hue[i] ?? 0) * 7.3)));
     this.#seed[i] = rand();
-    this.#psi[i] = rand() * TAU;
-    this.#dpsi[i] = (rand() - 0.5) * 0.5;
-    this.#u[i] = 0;
-    this.#v[i] = 0;
-    this.#w[i] = 0;
-    this.#th[i] = (rand() - 0.5) * 1.2;
-    this.#sigma[i] = rand() * TAU;
-    this.#dsigma[i] = (rand() - 0.5) * 0.9;
-    this.#roll[i] = rand() * TAU;
-    this.#rollRate[i] = 1.0 + 1.4 * rand();
+    p.psi[i] = rand() * TAU;
+    p.dpsi[i] = (rand() - 0.5) * 0.5;
+    p.start(i);
+    p.th[i] = (rand() - 0.5) * 1.2;
+    p.sigma[i] = rand() * TAU;
+    p.dsigma[i] = (rand() - 0.5) * 0.9;
+    p.roll[i] = rand() * TAU;
+    p.rollRate[i] = 1.0 + 1.4 * rand();
     this.#phase[i] = rand() * TAU;
-    this.#debt[i] = 0;
     this.#lain[i] = 0;
-    this.#rest[i] = (rand() - 0.5) * 0.1;
+    p.rest[i] = (rand() - 0.5) * 0.1;
     this.#alpha[i] = lifted ? 1 : 0;
   }
 
-  /** The plate's rates of change (into #rates): the body-frame velocity along the chord (u) and normal to it (v), and the pitch rate (w). */
-  #plate(m: number, inertia: number, u: number, v: number, w: number, th: number): void {
-    const speed = Math.hypot(u, v) + 1e-9;
-    // Circulation lifts across the flow, drag opposes it, the added masses couple u, v and w.
-    const gamma = -0.5 * PLATE_CT * ((u * v) / speed) + 0.5 * PLATE_CR * w;
-    const drag = 0.5 * (PLATE_A - (PLATE_B * (u * u - v * v)) / (speed * speed)) * speed;
-    const torque = PLATE_MU * (1 + Math.abs(w)) * w;
-    const out = this.#rates;
-    out[0] = ((m + PLATE_M22) * v * w - gamma * v - m * Math.sin(th) - drag * u) / (m + PLATE_M11);
-    out[1] = (-(m + PLATE_M11) * u * w + gamma * u - m * Math.cos(th) - drag * v) / (m + PLATE_M22);
-    out[2] = ((PLATE_M11 - PLATE_M22) * u * v - torque) / inertia;
-  }
-
-  /** Flutter or tumble down: the plate in its plane, the plane turning, the air carrying it. */
+  /** Flutter or tumble down: the plate in its plane, the plane turning, the air where it starts the step carrying it. */
   #fall(i: number, dt: number): void {
-    const m = at(this.#mass, i);
-    const chord = at(this.#chord, i);
-    const pace = at(this.#pace, i);
-    const inertia = m / 12 + PLATE_IA;
-    let u = at(this.#u, i);
-    let v = at(this.#v, i);
-    let w = at(this.#w, i);
-    let th = at(this.#th, i);
-    let x = at(this.#x, i);
-    let y = at(this.#y, i);
-    let z = at(this.#z, i);
-    let psi = at(this.#psi, i);
-    let debt = at(this.#debt, i) + dt / pace;
-    const real = PLATE_STEP * pace;
-    const dpsi = at(this.#dpsi, i);
-    const rates = this.#rates;
-    const h = 0.5 * PLATE_STEP;
-    let landed = false;
-    let guard = 0;
-    this.#airAt(i, x, y, z);
+    this.#airAt(i, at(this.#x, i), at(this.#y, i), at(this.#z, i));
     const air = this.#air;
-    const ax = air[0] ?? 0;
-    const ay = air[1] ?? 0;
-    const az = air[2] ?? 0;
-    while (debt >= PLATE_STEP && guard++ < 64) {
-      debt -= PLATE_STEP;
-      // The midpoint rule.
-      this.#plate(m, inertia, u, v, w, th);
-      const uMid = u + h * (rates[0] ?? 0);
-      const vMid = v + h * (rates[1] ?? 0);
-      const wMid = w + h * (rates[2] ?? 0);
-      const thMid = th + h * w;
-      this.#plate(m, inertia, uMid, vMid, wMid, thMid);
-      u += PLATE_STEP * (rates[0] ?? 0);
-      v += PLATE_STEP * (rates[1] ?? 0);
-      w += PLATE_STEP * (rates[2] ?? 0);
-      th += PLATE_STEP * wMid;
-      // Motion in the plane, in chords, from the midpoint state; then into the park.
-      const ct = Math.cos(thMid);
-      const st = Math.sin(thMid);
-      const along = (uMid * ct - vMid * st) * PLATE_STEP * chord;
-      const rise = (uMid * st + vMid * ct) * PLATE_STEP * chord;
-      x += along * Math.cos(psi) + ax * real;
-      z += along * Math.sin(psi) + az * real;
-      y += rise + ay * real;
-      psi += dpsi * real;
-      if (y <= LEAF_LIFT) {
-        landed = true;
-        y = LEAF_LIFT;
-        break;
-      }
-    }
-    this.#debt[i] = Math.min(debt, 2 * PLATE_STEP);
-    this.#sigma[i] = at(this.#sigma, i) + at(this.#dsigma, i) * dt;
-    this.#roll[i] = at(this.#roll, i) + at(this.#rollRate, i) * dt;
-    this.#u[i] = u;
-    this.#v[i] = v;
-    this.#w[i] = w;
-    this.#th[i] = th;
+    const pos = this.#pos;
+    pos[0] = at(this.#x, i);
+    pos[1] = at(this.#z, i);
+    pos[2] = at(this.#y, i);
+    const landed = this.#plates.fly(i, dt, pos, air[0] ?? 0, air[2] ?? 0, air[1] ?? 0, this.#floor);
+    const x = pos[0] ?? 0;
+    const z = pos[1] ?? 0;
     this.#x[i] = x;
-    this.#y[i] = Math.min(y, 12);
+    this.#y[i] = Math.min(pos[2] ?? 0, 12);
     this.#z[i] = z;
-    this.#psi[i] = psi;
     if (x < -40 || x > 40 || z < 1.5 || z > 60) {
       this.#state[i] = FREE;
       return;
     }
     if (landed) {
       this.#state[i] = SETTLING;
-      this.#touch[i] = Math.atan2(Math.sin(th), Math.cos(th));
+      this.#plates.touchDown(i);
       this.#lain[i] = 0;
     }
   }
 
   /** Down: ease flat (face up or face down, whichever is nearer), then lie in the carpet. */
   #settle(i: number, dt: number): void {
+    const p = this.#plates;
     const lain = at(this.#lain, i) + dt;
     this.#lain[i] = lain;
     const k = smoothstep(0, SETTLE_SECONDS, lain);
-    const touch = at(this.#touch, i);
-    const rest = at(this.#rest, i);
-    const target = Math.abs(touch) > Math.PI / 2 ? Math.sign(touch) * Math.PI + rest : rest;
-    this.#th[i] = lerp(touch, target, k);
-    this.#sigma[i] = at(this.#sigma, i) + at(this.#dsigma, i) * dt * (1 - k);
+    p.settle(i, k);
+    p.sigma[i] = at(p.sigma, i) + at(p.dsigma, i) * dt * (1 - k);
     this.#y[i] = LEAF_LIFT;
     if (lain < SETTLE_SECONDS) return;
     this.#orient(i);
     const f = this.#frame;
-    this.#carpet.deposit(at(this.#x, i), at(this.#z, i), Math.atan2(f[2] ?? 0, f[0] ?? 1), at(this.#hue, i), (f[7] ?? 1) >= 0 ? 1 : -1, this.#rand);
+    this.#carpet.deposit(at(this.#x, i), at(this.#z, i), Math.atan2(f[1] ?? 0, f[0] ?? 1), at(this.#hue, i), (f[8] ?? 1) >= 0 ? 1 : -1, this.#rand);
     this.#state[i] = FREE;
   }
 
   /**
-   * Leaf i's frame in the world into #frame: its chord axis t (0..2), its span axis s (3..5) and the
-   * upward plate normal n (6..8). The plate pitches in its vertical plane (azimuth psi), rocks about its
-   * chord, then spins about its normal.
+   * Leaf i's frame into #frame (FlutterPlates.orient, each axis (x, z, y)): its chord axis (0..2), its
+   * span axis (3..5) and the upward plate normal (6..8), its rock fading as it settles.
    */
   #orient(i: number): void {
-    const psi = at(this.#psi, i);
-    const th = at(this.#th, i);
-    const ce = Math.cos(psi);
-    const se = Math.sin(psi);
-    const ct = Math.cos(th);
-    const st = Math.sin(th);
     const settle = this.#state[i] === SETTLING ? 1 - smoothstep(0, SETTLE_SECONDS, at(this.#lain, i)) : 1;
-    const rho = ROLL * Math.sin(at(this.#roll, i)) * settle;
-    const cr = Math.cos(rho);
-    const sr = Math.sin(rho);
-    const cs = Math.cos(at(this.#sigma, i));
-    const ss = Math.sin(at(this.#sigma, i));
-    // Chord axis, the horizontal axis across the plane, the plate's normal in its own plane.
-    const tx = ct * ce;
-    const ty = st;
-    const tz = ct * se;
-    const bx = -se;
-    const bz = ce;
-    const nx = -st * ce;
-    const ny = ct;
-    const nz = -st * se;
-    // The span axis rocked toward the normal, the normal with it.
-    const sx = bx * cr + nx * sr;
-    const sy = ny * sr;
-    const sz = bz * cr + nz * sr;
-    const mx = nx * cr - bx * sr;
-    const my = ny * cr;
-    const mz = nz * cr - bz * sr;
-    const f = this.#frame;
-    f[0] = cs * tx + ss * sx;
-    f[1] = cs * ty + ss * sy;
-    f[2] = cs * tz + ss * sz;
-    f[3] = -ss * tx + cs * sx;
-    f[4] = -ss * ty + cs * sy;
-    f[5] = -ss * tz + cs * sz;
-    f[6] = mx;
-    f[7] = my;
-    f[8] = mz;
+    this.#plates.orient(i, settle, this.#frame);
   }
 
   /** A swirl passing over the path lifts leaves off it: plates stood up from the carpet, in the pose they lay in. */
@@ -861,12 +720,13 @@ class AutumnSim implements SceneSim {
     this.#begin(slot, kind, true);
     this.#hue[slot] = found.hue;
     this.#radius[slot] = kind.radius * (0.9 + 0.2 * (found.hue * 7.3 - Math.floor(found.hue * 7.3)));
+    const p = this.#plates;
     const down = found.face < 0;
-    this.#th[slot] = down ? Math.PI : 0;
-    this.#psi[slot] = rand() * TAU;
-    this.#sigma[slot] = down ? at(this.#psi, slot) + Math.PI - found.angle : found.angle - at(this.#psi, slot);
-    this.#roll[slot] = 0;
-    this.#rollRate[slot] = 1.4 + 1.4 * rand();
+    p.th[slot] = down ? Math.PI : 0;
+    p.psi[slot] = rand() * TAU;
+    p.sigma[slot] = down ? at(p.psi, slot) + Math.PI - found.angle : found.angle - at(p.psi, slot);
+    p.roll[slot] = 0;
+    p.rollRate[slot] = 1.4 + 1.4 * rand();
     return true;
   }
 
@@ -957,14 +817,14 @@ class AutumnSim implements SceneSim {
       data[o + 2] = at(this.#radius, i) * scale;
       data[o + 3] = at(this.#alpha, i);
       // The axes with the view's perspective folded in: a point `a` along an axis moves its screen
-      // image by (ax - wx az, ay - wy az) times the scale.
-      data[o + 4] = (f[0] ?? 0) - wx * (f[2] ?? 0);
-      data[o + 5] = (f[1] ?? 0) - wy * (f[2] ?? 0);
-      data[o + 6] = (f[3] ?? 0) - wx * (f[5] ?? 0);
-      data[o + 7] = (f[4] ?? 0) - wy * (f[5] ?? 0);
+      // image by (ax - wx az, ay - wy az) times the scale. The frame's axes are (x, z, y).
+      data[o + 4] = (f[0] ?? 0) - wx * (f[1] ?? 0);
+      data[o + 5] = (f[2] ?? 0) - wy * (f[1] ?? 0);
+      data[o + 6] = (f[3] ?? 0) - wx * (f[4] ?? 0);
+      data[o + 7] = (f[5] ?? 0) - wy * (f[4] ?? 0);
       data[o + 8] = f[6] ?? 0;
-      data[o + 9] = f[7] ?? 1;
-      data[o + 10] = f[8] ?? 0;
+      data[o + 9] = f[8] ?? 1;
+      data[o + 10] = f[7] ?? 0;
       data[o + 11] = z;
       data[o + 12] = at(this.#hue, i);
       data[o + 13] = at(this.#seed, i);
@@ -982,7 +842,7 @@ class AutumnSim implements SceneSim {
     }
 
     const state = this.#stateData;
-    state[0] = gustAt(this.#gustAge) * this.#gustPower * this.#gustSign;
+    state[0] = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower * this.#gustSign;
     state[1] = this.#swirlX;
     state[2] = this.#swirlZ;
     state[3] = this.#swirlOn ? smoothstep(0, 2, this.#gustAge) * (1 - smoothstep(SWIRL_LIFE - 4, SWIRL_LIFE, this.#gustAge)) * this.#gustPower : 0;

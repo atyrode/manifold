@@ -15,7 +15,8 @@
 // stands in the grooves, drops burst on hard faces and drip from the eaves and the maple; snow
 // settles on whatever faces up, the gravel's crests first.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { GARDEN, GARDEN_CANOPY, GARDEN_GROOVE, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_PASSAGE, GARDEN_STONES } from "./sim.ts";
+import { gustPulseGlsl } from "../../sims/wind.ts";
+import { GARDEN, GARDEN_CANOPY, GARDEN_GROOVE, GARDEN_GUST_RISE, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_PASSAGE, GARDEN_STONES } from "./sim.ts";
 
 /**
  * The maple's limbs, garden space, as polylines of (x, y, z, radius): the trunk stands beyond the
@@ -68,6 +69,7 @@ const float GARDEN_SPAN = ${glslFloat(GARDEN.span)};
 const float GARDEN_HIGH = ${glslFloat(GARDEN.overheadHeight)};
 const float GARDEN_ABOVE_Y = ${glslFloat(GARDEN.overheadY)};
 const float GARDEN_EXIT = ${glslFloat(GARDEN_PASSAGE.exit)};
+const float GARDEN_GUST_RISE = ${glslFloat(GARDEN_GUST_RISE)};
 // Weather scales. The library's ground functions work in metres: a garden depth is ten. A splash
 // unit (garden depths: its crowns some 5-10 cm, larger than life so they hold a few cells); the
 // largest ripple ring in standing water (garden depths); drips' spacing along an edge, in cells
@@ -253,11 +255,9 @@ float gardenStoneShade(vec3 p, vec3 L, int skip) {
 
 // ---- the maple ----
 
-// A "now" gust (sim.ts gustAt): rises over a second, then dies away.
-float gardenGust(float age) {
-  if (age <= 0.0 || age >= 12.0) return 0.0;
-  return age * age * exp(2.0 * (1.0 - age));
-}
+// A "now" gust: the shared pulse (sims/wind.ts) at the sim's rise, as its leaves feel it:
+// windGustPulse(age, GARDEN_GUST_RISE).
+${gustPulseGlsl}
 
 // How far clump k of the foliage leans now: a slow sway on the breeze, livelier with the wind,
 // tossed by a gust (on the scene clock, so a gust plays with motion off).
@@ -433,7 +433,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   bool above = K_camera > 0.5;
   float season = floor(K_season + 0.5);
   float winter = step(2.5, season);
-  float gust = max(gardenGust(sinceTrigger(0)), gardenGust(passageOut() * GARDEN_EXIT)) * (K_wind < -0.05 ? -1.0 : 1.0);
+  float gust = max(windGustPulse(sinceTrigger(0), GARDEN_GUST_RISE), windGustPulse(passageOut() * GARDEN_EXIT, GARDEN_GUST_RISE)) * (K_wind < -0.05 ? -1.0 : 1.0);
   float markSize = K_mark > 0.0 ? GARDEN_MARK_SIZE.x + GARDEN_MARK_SIZE.y * K_mark : 0.0;
   float clock = texelFetch(uSim1, ivec2(GARDEN_ISLAND_COUNT, 0), 0).x;
 
