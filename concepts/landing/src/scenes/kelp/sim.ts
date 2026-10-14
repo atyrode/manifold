@@ -74,11 +74,11 @@ const LAYER_SCALES = [1, 0.7, 0.48, 0.32] as const;
 const LAYER_SHIFT = [0, 0.37, 0.71, 0.13] as const;
 /**
  * Stipe length over the water's depth. A grown plant is longer than the water is deep: its top
- * reaches the surface and lies along it, and its blades hang there as the canopy. A young plant
- * (YOUNG_SHARE of them) stops short in mid-water.
+ * reaches the surface and trails along it downstream, some a little way, some far, and its blades
+ * hang there as the canopy. A young plant (YOUNG_SHARE of them) stops short in mid-water.
  */
-const GROWN_MIN = 1.08;
-const GROWN_MAX = 1.32;
+const GROWN_MIN = 1.05;
+const GROWN_MAX = 1.6;
 const YOUNG_MIN = 0.5;
 const YOUNG_MAX = 0.85;
 const YOUNG_SHARE = 0.22;
@@ -116,7 +116,7 @@ export const KELP_POINT_ROW = 2 * POINT_COUNT;
 export const KELP_ORIGIN = [0, 0.5, 0] as const;
 
 /** The school: its depth (perspective scale), most fish, and the band of water it keeps to. */
-export const KELP_FISH = { scale: 0.8, max: 32, low: 0.24, high: 0.8 } as const;
+export const KELP_FISH = { scale: 0.8, max: 32, low: 0.3, high: 0.76 } as const;
 /** The sea lion: its depth and length (screen heights). */
 export const KELP_VISITOR = { scale: 0.5, length: 0.095 } as const;
 /**
@@ -172,6 +172,14 @@ const SURFACE_BAND = 0.04;
 const SURFACE_DAMP = 14;
 /** Extra drag (1/s) on a floating top's sideways motion: the canopy follows the surge only in part. */
 const CANOPY_DRAG = 4;
+/** Share of the surge (and of a swell) a floating top is sheltered from, so the drift beats it. */
+const CANOPY_SHELTER = 0.7;
+/**
+ * The surface drift (world units/s, each plant 0.6–1.4 of it): a steady flow along the surface in
+ * the current's direction (to the right while it is still), stronger than the surge there, so every
+ * floating top trails downstream, all to one side, instead of folding back and forth.
+ */
+const SURFACE_DRIFT = 0.16;
 /**
  * Lift per layer, near to far, as a share of BUOYANCY: the near plants hold more upright, so the
  * largest kelp in the frame sways least across the dither and frames the page calmly.
@@ -227,9 +235,9 @@ const FISH_MAX_STEPS = 8;
  * Neighbour radii (screen heights): keep apart (each fish its own, ±30%), swim alike, keep
  * together; and how strongly. A loose school: they align, but not in ranks.
  */
-const FISH_SEPARATION = 0.03;
-const FISH_ALIGN = 0.09;
-const FISH_COHESION = 0.16;
+const FISH_SEPARATION = 0.04;
+const FISH_ALIGN = 0.12;
+const FISH_COHESION = 0.2;
 const FISH_ALIGN_PULL = 0.9;
 const FISH_COHESION_PULL = 0.5;
 /** Each fish's own slow wandering (screen heights/s²), so headings and spacing vary. */
@@ -243,7 +251,7 @@ const FISH_FRIGHT_SPEED = 0.32;
  * Body length (screen heights at the school's depth): small fish, a few cells long, varied ±20%
  * and ±25% more by how near or far in the school's depth each swims.
  */
-const FISH_LENGTH = 0.0135;
+const FISH_LENGTH = 0.024;
 /** A click scatters fish within this radius; dragging the hand repels them within FLEE. */
 const FISH_SCATTER = 0.35;
 const FISH_FLEE = 0.18;
@@ -338,11 +346,11 @@ class School {
     for (let i = 0; i < steps; i++) this.#step(FISH_STEP, count, aspect, hand);
   }
 
-  /** Where the school is drawn toward: a slow figure wandering the open water. */
+  /** Where the school is drawn toward: a slow figure wandering the middle of the frame, never off it. */
   #aim(aspect: number): void {
     const c = this.#clock;
-    this.#tx = 0.5 * aspect * (0.42 * Math.sin(c * 0.043 + 0.7) + 0.16 * Math.sin(c * 0.11 + 2.3));
-    this.#ty = 0.52 + 0.12 * Math.sin(c * 0.067 + 1.9);
+    this.#tx = 0.5 * aspect * (0.34 * Math.sin(c * 0.043 + 0.7) + 0.12 * Math.sin(c * 0.11 + 2.3));
+    this.#ty = 0.54 + 0.09 * Math.sin(c * 0.067 + 1.9);
   }
 
   #step(h: number, count: number, aspect: number, hand: Hand): void {
@@ -352,7 +360,7 @@ class School {
     this.#aim(aspect);
     const tx = this.#tx;
     const ty = this.#ty;
-    const half = 0.5 * aspect - 0.06;
+    const half = 0.5 * aspect - 0.12;
     const n = KELP_FISH.max;
     const { x, y, vx, vy } = this;
     const ax = this.#ax;
@@ -407,13 +415,14 @@ class School {
       const phase = (this.#phase[i] ?? 0) * TAU;
       fx += FISH_WANDER * Math.sin(this.#clock * 0.37 + phase);
       fy += 0.8 * FISH_WANDER * Math.cos(this.#clock * 0.29 + 1.4 * phase);
-      // Toward the wander target, gently and capped, so the school drifts rather than homes in.
-      let gx = (tx - xi) * 0.25;
-      let gy = (ty - yi) * 0.25;
+      // Toward the wander target, firmly enough to keep the school in frame, capped so it drifts
+      // rather than homes in.
+      let gx = (tx - xi) * 0.4;
+      let gy = (ty - yi) * 0.4;
       const g = Math.hypot(gx, gy);
-      if (g > 0.05) {
-        gx *= 0.05 / g;
-        gy *= 0.05 / g;
+      if (g > 0.08) {
+        gx *= 0.08 / g;
+        gy *= 0.08 / g;
       }
       fx += gx;
       fy += gy;
@@ -502,12 +511,13 @@ class KelpSim implements SceneSim {
   readonly #link = new Float32Array(KELP_STIPES);
   readonly #scale = new Float32Array(KELP_STIPES);
   readonly #baseX = new Float32Array(KELP_STIPES);
-  // Per point: its layer's scale, floor and surface, the flow it was last dragged toward (screen
-  // heights/s) and its blade's lean.
+  // Per point: its layer's scale, floor and surface, how hard the surface drift takes its plant's
+  // top, the flow it was last dragged toward (screen heights/s) and its blade's lean.
   readonly #pointScale = new Float32Array(POINT_COUNT);
   readonly #pointFloor = new Float32Array(POINT_COUNT);
   readonly #pointSurface = new Float32Array(POINT_COUNT);
   readonly #pointLayer = new Uint8Array(POINT_COUNT);
+  readonly #pointDrift = new Float32Array(POINT_COUNT);
   readonly #flowX = new Float32Array(POINT_COUNT);
   readonly #lean = new Float32Array(POINT_COUNT);
 
@@ -518,6 +528,8 @@ class KelpSim implements SceneSim {
   #omega1 = TAU / 8;
   #surgeSpeed = 0;
   #currentSpeed = 0;
+  /** The way the floating tops trail: the current's (+1 while it is still). */
+  #downstream = 1;
   #swellAge = -1;
   #swellDir = 1;
 
@@ -611,7 +623,7 @@ class KelpSim implements SceneSim {
     const sys = this.#system;
     sys.clear();
     // Grown plants are laid out as they will float: up to the surface, then along it downstream.
-    const downstream = this.#knob.current < 0 ? -1 : 1;
+    const downstream = this.#downstream;
     for (const [l, layer] of KELP_LAYERS.entries()) {
       for (let k = 0; k < layer.slots; k++) {
         const stipe = layer.first + k;
@@ -623,6 +635,7 @@ class KelpSim implements SceneSim {
         const grown = random.next() >= YOUNG_SHARE;
         const r = random.next();
         const length = (surfaceY - floorY) * (grown ? GROWN_MIN + (GROWN_MAX - GROWN_MIN) * r : YOUNG_MIN + (YOUNG_MAX - YOUNG_MIN) * r);
+        const drift = 0.6 + 0.8 * random.next();
         let rank = random.next();
         // The nearest plants keep the middle of the frame clear until the forest is dense.
         if (l === 0) rank += (0.92 + 0.07 * rank - rank) * (1 - smoothstep(0.25, 0.7, Math.abs(x)));
@@ -641,6 +654,7 @@ class KelpSim implements SceneSim {
           this.#pointFloor[p] = floorY;
           this.#pointSurface[p] = surfaceY;
           this.#pointLayer[p] = l;
+          this.#pointDrift[p] = drift;
           this.#flowX[p] = 0;
           this.#lean[p] = 0;
         }
@@ -663,6 +677,7 @@ class KelpSim implements SceneSim {
     this.#omega1 = TAU / Math.max(1, knob.period);
     this.#surgeSpeed = KELP_SURGE.speed * knob.surge;
     this.#currentSpeed = KELP_SURGE.current * knob.current;
+    this.#downstream = knob.current < 0 ? -1 : 1;
   }
 
   /** Advance the surge's phases and the swell to the system's clock (once per substep). */
@@ -701,11 +716,16 @@ class KelpSim implements SceneSim {
     const xw = x / s;
     const a1 = this.#phase1 - KELP_SURGE.k1 * xw;
     const a2 = this.#phase2 - KELP_SURGE.k2 * xw + KELP_SURGE.phase2;
-    let u = this.#surgeSpeed * (Math.sin(a1) + KELP_SURGE.second * Math.sin(a2)) + this.#currentSpeed;
-    if (this.#swellAge >= 0) u += this.#swellFlow(xw);
+    let surge = this.#surgeSpeed * (Math.sin(a1) + KELP_SURGE.second * Math.sin(a2));
+    if (this.#swellAge >= 0) surge += this.#swellFlow(xw);
+    const band = SURFACE_BAND * s;
+    const over = (y - ((this.#pointSurface[i] ?? 1) - band)) / band;
+    const floating = Math.min(1, Math.max(0, over));
+    // The surge (and a swell) reach a floating top only in part, so the steady drift decides which
+    // way it trails; the current runs the whole depth.
     // The surge's orbit turns elliptical toward the surface: a little bob at the crown.
     const rise = Math.min(1, Math.max(0, (y - (this.#pointFloor[i] ?? 0)) / ((KELP_VIEW.floor + KELP_VIEW.surface) * s)));
-    let fx = u * s;
+    let fx = (surge * (1 - CANOPY_SHELTER * floating) + this.#currentSpeed) * s;
     let fy = ORBIT * this.#surgeSpeed * Math.cos(a1) * rise * s;
     const hand = this.#hand;
     if (hand.on > 0) {
@@ -721,17 +741,15 @@ class KelpSim implements SceneSim {
     this.#flowX[i] = fx;
     let lift = BUOYANCY * s * (LAYER_LIFT[this.#pointLayer[i] ?? 0] ?? 1);
     let push = DRAG * fx;
-    const band = SURFACE_BAND * s;
-    const over = (y - ((this.#pointSurface[i] ?? 1) - band)) / band;
     if (over > 0) {
       // Floating, its lift fades; its bobbing is damped, and so is its sloshing: the mat of fronds
       // at the surface, held by its neighbours, follows the water only part of the way.
       const prev = this.#system.previous;
       const rate = 1 / this.#system.substep;
-      const floating = Math.min(1, over);
       lift *= 1 - over;
       lift -= SURFACE_DAMP * (y - (prev[3 * i + 1] ?? y)) * rate * floating;
       push -= CANOPY_DRAG * (x - (prev[3 * i] ?? x)) * rate * floating;
+      push += DRAG * this.#downstream * SURFACE_DRIFT * (this.#pointDrift[i] ?? 1) * s * floating;
     }
     out[0] = push;
     out[1] = lift + DRAG * fy;
@@ -913,7 +931,7 @@ class KelpSim implements SceneSim {
       let end = start;
       for (let j = rising + 1; j <= KELP_SEGMENTS; j++) {
         const x = pos[3 * (first + j)] ?? 0;
-        if (Math.abs(x - start) > Math.abs(end - start)) end = x;
+        if ((x - end) * this.#downstream > 0) end = x;
       }
       this.#put(KELP_ROW.stipes, stipe, minX, maxX, pos[3 * (first + rising) + 1] ?? 0, this.#presence[stipe] ?? 0);
       this.#put(KELP_ROW.canopy, stipe, rising, start, end, this.#link[stipe] ?? 0);

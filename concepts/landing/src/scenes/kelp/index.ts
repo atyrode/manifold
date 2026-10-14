@@ -12,7 +12,7 @@ import { kelpSim } from "./sim.ts";
 const params: readonly ParamDef[] = [
   range("sea", "surge", "surge", 0.3, "How far the swell's surge sways the forest back and forth. It travels across as a long, slow wave, so near and far plants lean in turn."),
   range("sea", "period", "surge period", 10, "Seconds for one sway, there and back.", { min: 5, max: 14, step: 0.5 }),
-  range("sea", "current", "current", 0.25, "A steady current through the forest, to the left or the right: the kelp leans downstream and the snow drifts with it.", { min: -1, max: 1 }),
+  range("sea", "current", "current", 0.35, "A steady current through the forest, to the left or the right: the kelp leans downstream, the floating tops trail along the surface with it and the snow drifts with it.", { min: -1, max: 1 }),
   feature("sea", "swell", "big swells", true, "frequency", 0.3, "Now and then a big swell rolls through: the whole forest bows in a wave from one side to the other, swings back and settles.", { trigger: 0 }),
   range("forest", "density", "kelp density", 0.6, "How many plants stand in the forest, and how closely the canopy covers the surface. Low: a few stipes in open water. High: a dense forest that closes in on the middle of the frame."),
   seed("forest", "kelpSeed", "arrangement", "Where the plants stand; re-seed for another stretch of forest."),

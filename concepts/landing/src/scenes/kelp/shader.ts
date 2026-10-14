@@ -9,8 +9,9 @@
 //
 // Giant kelp (Macrocystis) as it grows: a thin, flexible stipe; long, wide, wavy-edged blades, one
 // at a time on alternate sides, each on a small gas bladder, streaming with the water past them
-// (sim.ts leans them) and rippling; a knobby holdfast gripping a boulder; and in grown plants a top
-// that bends over at the surface and lies along it, its blades hanging as the canopy.
+// (sim.ts leans them) and rippling; a holdfast of branching haptera gripping a small rock; and in
+// grown plants a top that bends over at the surface and trails along it downstream, its blades
+// hanging as the canopy.
 //
 // One light model throughout: the shared sky's sun, moon and sky glow enter at the surface; the
 // water absorbs red first (KELP_ABSORB per world unit of depth) and scatters what is left into the
@@ -589,6 +590,41 @@ void kelpBladePair(float an, float t, float th, float phase, float from, float t
   }
 }
 
+// The holdfast at hr (world units from the stipe's foot): a small lumpy rock and, gripping it, a
+// tangle of haptera: thin, branching root-strands that leave the stipe's swollen base, arch out over
+// the stone and down to the floor, a little wider than the stipe. px: one cell in world units.
+void kelpHoldfast(vec2 hr, float px, float plant, float salt, inout vec4 paint) {
+  float ground = step(0.0, hr.y);
+  vec2 rc = vec2((plant - 0.5) * 0.02, 0.0);
+  vec2 rq = (hr - rc) / vec2(0.062, 0.034);
+  float lump = 0.1 * (vnoise(hr * 40.0 + plant * 7.0) - 0.5) + 0.05 * sin(rq.x * 5.0 + plant * 20.0);
+  float rock = (1.0 - smoothstep(-px, px, (length(rq) - 1.0 + lump) * 0.034)) * ground;
+  paint = kelpOver(paint, KELP_ROCK * (0.4 + 0.7 * smoothstep(-0.6, 0.9, rq.y)), rock);
+  // The stipe's base, swollen where the haptera spring from it.
+  float roots = sdTaperCapsule(hr, vec2(0.0, 0.026), vec2(0.0, 0.06), max(0.0085, 0.8 * px), max(0.0055, 0.8 * px));
+  for (int j = 0; j < 9; j++) {
+    float fj = float(j);
+    float hj = hash12(vec2(fj, salt) + 3.1);
+    float hk = fract(hj * 7.13);
+    float side = (fj + 0.5) / 4.5 - 1.0;
+    float away = hj < 0.5 ? -1.0 : 1.0;
+    float mx = rc.x + side * 0.036 + (hj - 0.5) * 0.006;
+    float over = (mx - rc.x) / 0.062;
+    // From the base, over the stone's shoulder, down to where the strand grips the floor.
+    vec2 base = vec2((hk - 0.5) * 0.008, 0.038 + 0.01 * hj);
+    vec2 mid = vec2(mx, 0.034 * sqrt(max(1.0 - over * over, 0.04)) + 0.003 + 0.004 * hk);
+    vec2 foot = vec2(rc.x + side * (0.062 + 0.012 * hk) + (hk - 0.5) * 0.008, 0.001 + 0.005 * hj);
+    vec2 twig = mid + vec2(away * (0.009 + 0.006 * hk), -0.009 - 0.004 * hj);
+    twig.y = max(twig.y, 0.002);
+    float r0 = max(0.0042 - 0.0007 * abs(side), 0.7 * px);
+    roots = min(roots, sdTaperCapsule(hr, base, mid, r0, 0.8 * r0));
+    roots = min(roots, sdTaperCapsule(hr, mid, foot, 0.8 * r0, max(0.4 * r0, 0.5 * px)));
+    roots = min(roots, sdTaperCapsule(hr, mid, twig, 0.55 * r0, max(0.3 * r0, 0.5 * px)));
+  }
+  float hold = (1.0 - smoothstep(-px, px, roots)) * ground;
+  paint = kelpOver(paint, KELP_HOLDFAST * (0.55 + 0.5 * smoothstep(0.004, 0.045, hr.y)), hold);
+}
+
 // Stipe i (in a layer at scale s, its surface at surfaceY) at P. The rising part: a Hermite spine
 // through its points from the holdfast to where it reaches the surface, blades on alternate sides
 // (the downstream ones streaming out, the upstream ones pressed to the stipe, as sim.ts leans
@@ -644,23 +680,9 @@ KelpHit kelpStipe(int i, float s, float surfaceY, vec2 P, float aa, float tc, bo
     float an = abs(n);
     float side = n >= 0.0 ? 1.0 : -1.0;
 
-    // The holdfast: a clump of knobby root-ends on a boulder.
+    // The holdfast: a tangle of haptera on a small rock.
     vec2 hr = (P - root.xy) / s;
-    if (hr.y < 0.07 && abs(hr.x) < 0.1) {
-      float px = aa / s;
-      vec2 rq = (hr - vec2((plant - 0.5) * 0.03, -0.022)) / vec2(0.07, 0.045);
-      float rock = (1.0 - smoothstep(-px / 0.045, px / 0.045, length(rq) - 1.0 + 0.1 * (vnoise(hr * 45.0 + plant * 7.0) - 0.5))) * step(0.0, hr.y);
-      paint = kelpOver(paint, KELP_ROCK * (0.45 + 0.75 * smoothstep(-0.5, 0.9, rq.y)), rock);
-      float knobs = 1e3;
-      for (int j = 0; j < 6; j++) {
-        float fj = float(j);
-        float hj = hash12(vec2(fj, salt) + 3.1);
-        vec2 c = vec2((fj - 2.5) * 0.009 + (hj - 0.5) * 0.006, 0.02 + 0.012 * fract(hj * 5.3) - abs(fj - 2.5) * 0.003);
-        knobs = min(knobs, length(hr - c) - (0.0075 + 0.004 * hj));
-      }
-      float hold = 1.0 - smoothstep(-px, px, knobs);
-      paint = kelpOver(paint, KELP_HOLDFAST * (0.6 + 0.6 * smoothstep(0.01, 0.035, hr.y)), hold);
-    }
+    if (hr.y < 0.075 && abs(hr.x) < 0.1) kelpHoldfast(hr, aa / s, plant, salt, paint);
 
     // Blades, leaning with the water as sim.ts says and wavering slowly up the stipe. Each side's
     // blades leave at an angle toward their own side; once the water past them swings that angle
@@ -1007,7 +1029,7 @@ void kelpFish(vec2 P, vec3 water, float aa, KelpEnv e, inout vec3 col, inout flo
     float px = aa / len;
     if (hardEdge(smoothstep(-px, px, max(body, fin)) * min(look.w * 1.5, 1.0), kelpTh) <= 0.0) continue;
     float sheen = 0.7 + 0.35 * cos(2.0 * atan(pose.w, pose.z) + float(f) * 1.7);
-    vec3 flank = KELP_SILVER * (light * 0.7 * sheen + beam * (0.2 + 1.2 * look.y));
+    vec3 flank = KELP_SILVER * (light * 0.95 * sheen + beam * (0.3 + 1.4 * look.y));
     fishCol = mix(flank, KELP_FISH_BACK * light * 1.3, step(0.03, q.y));
     flash = look.y;
     cover = 1.0;

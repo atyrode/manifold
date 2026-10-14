@@ -440,6 +440,8 @@ vec4 bambooSprays(vec2 q, int i, float tm) {
       twigged = leaf >= twig ? 0.0 : 1.0;
     }
   }
+  // Cut per cell: a fluttering leaf's edge flips each cell once as it passes, never back and forth.
+  cover = hardEdge(cover);
   if (cover <= 0.0) return vec4(0.0);
   vec3 twigColor = BAMBOO_CANE * 0.45 * (bambooFill + bambooKey * bambooBeam * 0.3);
   return vec4(mix(bambooLeafColor(tone, q, z), twigColor, twigged), cover);
