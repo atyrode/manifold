@@ -282,9 +282,6 @@ function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
   return { exposedGroundPixels, evergreenPixels, clearedPixels };
 }
 
-  result.planet = verifyPlanet(gl);
-  result.streetSnow = streetSnowCheck(gl);
-  Object.assign(result, verifyCountrySettlements(gl));
 // GpuCompute passes: every blend mode applies its own blending and leaves blending off, with the
 // default equation and factors, whatever the caller had set; a preserving resize does not inherit it.
 function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
@@ -582,6 +579,9 @@ export const checks: readonly Check[] = [
   ["cloudsDetail", verifyCloudsDetail],
   ["petriRegimes", petriRegimesVerify],
   ["pondKoi", verifyPondKoi],
+  ["planet", verifyPlanet],
+  ["streetSnow", streetSnowCheck],
+  ["countrySettlements", verifyCountrySettlements],
 ];
 
 /**
