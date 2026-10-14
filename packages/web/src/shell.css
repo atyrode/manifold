@@ -276,8 +276,8 @@
 /*
  * THE CREATION CONTROL (`core.shell.creators`). At rest a quiet "+ New…" row, drawn as the
  * empty slot an entry would fill; pressed, the same slot becomes the DRAFT — the chosen
- * creator's mark, a borderless name field, the titles to choose from and a one-line hint —
- * so nothing jumps: the row grows in place into the thing being named.
+ * creator's mark, a borderless name field and a Create button, with flat text choices below.
+ * Only the name row is underlined: this is an entry being written, not a separate card.
  */
 .sidebar-creator {
   display: flex;
@@ -316,12 +316,10 @@
 
 .sidebar-draft {
   display: grid;
-  gap: 0.4rem;
+  gap: 0.25rem;
   margin: 0;
-  border: 1px solid #4c6ef5;
-  border-radius: 0.5rem;
-  padding: 0.3rem 0.4rem 0.35rem;
-  background: #121417;
+  padding: 0.25rem 0.55rem;
+  background: transparent;
 }
 
 .sidebar-draft[aria-busy="true"] {
@@ -333,6 +331,12 @@
   min-width: 0;
   align-items: center;
   gap: 0.4rem;
+  min-height: 2rem;
+  border-bottom: 1px solid #495057;
+}
+
+.sidebar-draft-line:focus-within {
+  border-bottom-color: #748ffc;
 }
 
 .sidebar-draft-mark {
@@ -342,14 +346,14 @@
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: 0.35rem;
-  color: #bac8ff;
-  background: #1f2433;
+  border-radius: 0;
+  color: #868e96;
+  background: transparent;
   cursor: pointer;
 }
 
 .sidebar-draft-mark:hover {
-  background: #283049;
+  color: #bac8ff;
 }
 
 .sidebar-draft-name {
@@ -364,7 +368,7 @@
   outline: none;
 }
 
-/* The draft's own border is the focus indication; the field inside it draws no second ring. */
+/* The name row's underline indicates focus; the field draws no second ring. */
 .sidebar-draft-name:focus,
 .sidebar-draft-name:focus-visible {
   outline: none;
@@ -384,18 +388,43 @@
   cursor: pointer;
 }
 
+.sidebar-draft-submit {
+  flex: 0 0 auto;
+  min-height: 1.8rem;
+  border: 0;
+  border-radius: 0.2rem;
+  padding: 0.2rem 0.4rem;
+  color: #bac8ff;
+  background: #252c40;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.sidebar-draft-submit:hover,
+.sidebar-draft-submit:focus-visible {
+  color: #fff;
+  background: #364fc7;
+}
+
+.sidebar-draft-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .sidebar-draft-choices {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem;
+  gap: 0.65rem;
+  padding-inline-start: 2rem;
 }
 
 .sidebar-draft-choice {
   display: inline-flex;
   align-items: center;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 0.12rem 0.55rem;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  padding: 0.2rem 0;
   color: #868e96;
   background: transparent;
   font-size: 0.74rem;
@@ -404,19 +433,12 @@
 
 .sidebar-draft-choice:hover {
   color: #dee2e6;
-  background: #1c1f25;
+  border-bottom-color: #495057;
 }
 
 .sidebar-draft-choice[aria-checked="true"] {
-  border-color: #364fc7;
-  color: #dbe4ff;
-  background: #1f2433;
-}
-
-.sidebar-draft-hint {
-  margin: 0;
-  color: #5c636a;
-  font-size: 0.68rem;
+  border-bottom-color: #748ffc;
+  color: #bac8ff;
 }
 
 .workspace.is-collapsed .sidebar {

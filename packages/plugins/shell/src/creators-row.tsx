@@ -211,6 +211,15 @@ export function CreatorsRow({ host }: SectionProps): ReactElement | null {
             onChange={(event) => setName(event.target.value)}
           />
         )}
+        <button
+          className="sidebar-draft-submit"
+          type="submit"
+          disabled={creating}
+          aria-label={`Create ${chosen.title}`}
+          title="Create (Enter)"
+        >
+          Create
+        </button>
       </div>
       {creators.length > 1 ? (
         <div className="sidebar-draft-choices" role="radiogroup" aria-label="What to create">
@@ -231,7 +240,7 @@ export function CreatorsRow({ host }: SectionProps): ReactElement | null {
           ))}
         </div>
       ) : null}
-      <p className="sidebar-draft-hint" id={hintId}>
+      <p className="sr-only" id={hintId}>
         {creators.length > 1 ? "Tab switch · ↵ create · Esc cancel" : "↵ create · Esc cancel"}
       </p>
     </form>

@@ -1785,8 +1785,9 @@ the made thing's name (its declared value is the default name). Assembly refuses
 assembled plugin declares and a `setting` that is not the plugin's own boolean, naming both; on
 the hold path a plugin whose creator runs a held plugin's door is held with
 `held_by_dependency`. The browser offers a reader every creator whose owner is enabled and whose
-setting does not read false (`visibleCreators`); `core.shell` lists them in one draft entry and
-runs the chosen one through `WorkspaceShell.runCreator`, which dispatches the declared action as
+setting does not read false (`visibleCreators`); `core.shell` lists them in one draft entry.
+Its Create button and Enter run the same path, using the default name when the field is empty.
+It runs the chosen one through `WorkspaceShell.runCreator`, which dispatches the declared action as
 the presser with the typed name in its `nameInput`, raises a notice on refusal, paints nothing
 first, lands in a container the answer names, and resolves whether anything was made so the
 draft keeps its name on refusal. No component is registered, so trusted, in-realm and hardened

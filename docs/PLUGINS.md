@@ -1473,7 +1473,8 @@ their work invisible without deleting it, which is the one outcome worse than a 
   came for (`core.index` declares it for Index). Once a reader folds or unfolds a row, that
   choice is remembered on their device and outranks the declaration. Absent ≡ folded.
 - **`creators`** are offers to make something, listed in the shell's one draft entry: "+ New…"
-  opens an unsaved row with a name field and every creator's title listed under it. A creator
+  opens an unsaved row with a name field, a Create button and every creator's title listed under
+  it. Create and Enter run the same action, using the default name when the field is empty. A creator
   is DATA — `{ id, title, icon, order, action, input?, nameInput?, setting? }` — and you
   register no component for it, so a hardened plugin offers one exactly as a trusted one does.
   `title` names the THING ("Canvas"), not the act: the shell owns the verb and lists titles
