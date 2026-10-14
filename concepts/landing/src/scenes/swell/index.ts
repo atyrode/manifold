@@ -15,6 +15,7 @@ export const swellScene: SceneDef = {
     range("sky", "moon", "moon", 0.5, "Moon size."),
     range("sky", "stars", "stars", 0.35, "How many stars."),
     toggle("manifold", "mmoon", "M on the moon", false, "The moon's dark seas form the Manifold M."),
+    range("sea", "relief", "relief", 0, "0: the waves are painted on a flat sea. Higher gives the nearer waves real height: crests hide the troughs behind them and the arriving swell stands up. Far waves stay flat."),
   ],
   groups: {
     sea: { title: "Sea", blurb: "The swell and its surface chop." },
