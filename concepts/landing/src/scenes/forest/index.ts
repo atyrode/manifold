@@ -16,6 +16,7 @@ import { FOREST_PASSAGE, forestSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   feature("spirits", "spirits", "forest spirits", true, "frequency", 0.5, "Kodama: small pale spirits appearing on the mossy boulders, the fallen log, the beech's branch, the torii and the stepping stones, rising out of the moss as they take shape. Each sits a while, now and then turning its head in a few quick rattling clicks, glows softly at dusk and night, and dissolves. Far more come after sunset than by day. Bring the pointer near and they turn to look at it; click near a perch to call one. Now: a gathering, and then they all turn their heads together.", { trigger: 0 }),
+  range("spirits", "shy", "shy spirits", 0, "How many of the spirits are shy. None: every spirit is curious and turns to look at the pointer when it comes near. Higher: that share of them duck into the moss instead when the pointer comes close, faces turned away and their glow drawn in, only their eyes peeking over the moss, and creep back up a little while after it has gone. All: every spirit hides from the pointer.", { when: "spirits" }),
   feature("spirits", "stag", "the stag", true, "frequency", 0.3, "Now and then a great stag walks across the far forest between the trunks, stops once (often framed by the torii) to raise its head and look toward you, then walks on; small lights bloom where it has stepped. A dark shape in the mist by day, a glowing presence at night. Higher: it passes more often, from every few minutes to about once a minute. Now: it sets out at once.", { trigger: 1 }),
   feature("forest", "mushrooms", "glowing mushrooms", true, "glow", 0.6, "Clusters of small mushrooms on the boulders, the fallen log and the moss mound at the torii's foot: pale by day; at dusk their caps and gills glow green, lighting the moss round them and the mist."),
   feature("forest", "spores", "spores", true, "amount", 0.5, "Spores and motes drifting on a gentle swirling air: dust that lights up in the shafts by day; at night pale green sparks rising round the mushrooms, fading as they drift away. Move the pointer through them to stir them, and the mist with them. Now: the mushrooms breathe out a puff of glowing spores.", { trigger: 3 }),
@@ -36,7 +37,7 @@ export const forestScene: SceneDef = {
   look: { color: "full", levels: 4 },
   params,
   groups: {
-    spirits: { title: "Spirits", blurb: "The kodama on their perches and the stag far off between the trunks. Bring the pointer near a spirit and it looks; click near a perch to call one." },
+    spirits: { title: "Spirits", blurb: "The kodama on their perches and the stag far off between the trunks. Bring the pointer near a spirit and it looks, or ducks into the moss if it is shy; click near a perch to call one." },
     forest: { title: "Forest", blurb: "The glowing mushrooms, the spores in the air, the stream and the mist. Move the pointer to stir the mist and the spores." },
     light: { title: "Light", blurb: "Shafts of sun or moon through the canopy." },
     sky: atmosphereGroups.sky,

@@ -2,8 +2,9 @@
 // - Spirits (kodama): a small population. Each appears on a perch (the mossy boulders, the fallen
 //   log, the beech's branch, the torii's top beam, a stepping stone, the floor between the trunks),
 //   rising out of the moss as it materialises; sits a while, breathing, its head now and then
-//   turning in a few quick rattling ticks; looks toward the pointer when it comes near; then
-//   dissolves. Far more at dusk and night than by day, and often a companion follows.
+//   turning in a few quick rattling ticks; when the pointer comes near, a curious one looks toward
+//   it and a shy one (the shyness knob's share) ducks into the moss looking away until it has gone;
+//   then dissolves. Far more at dusk and night than by day, and often a companion follows.
 // - The stag: now and then it walks across the far forest, stops once (often framed by the torii)
 //   to raise its head and look toward you, and walks on; small lights bloom where it has stepped.
 // - Spores and motes on a gentle curl-noise wind (divergence-free, so they swirl and never bunch),
@@ -13,8 +14,9 @@
 // The shader (shader.ts) reads three textures (rows bottom to top):
 //   uSim0  rgba16f, 3 x (FOREST_SPIRITS + 1), nearest: one row per spirit, (screen x, screen y of its
 //          feet, depth m, alpha 0..1), (head tilt rad + = its top to the left, yaw -1..1 + = its face
-//          to the right, glow, variant 0..1), (sink 0..1 while rising out of the moss, height m, 0,
-//          0); all 0 for a free slot. The last row is the stag: (x m, gait phase 0..1, heading +-1,
+//          to the right, glow, variant 0..1), (sink: 0..1 while rising out of the moss, up to
+//          DUCK_SINK ducked away from the pointer, in 0.45 of its height; height m, 0, 0); all 0 for
+//          a free slot. The last row is the stag: (x m, gait phase 0..1, heading +-1,
 //          alpha), (look 0..1, head up 0..1, x where it set out m, distance walked m), (standing 0..1:
 //          1 - its speed / its walking pace, 0, 0, 0).
 //   uSim1  rgba16f, (2 x bins) x FOREST_MOTE_ROWS, nearest: the motes, binned on square bins
@@ -23,6 +25,8 @@
 //   uSim2  r16f, FOREST_FOG.width x FOREST_FOG.height over the screen's uv, linear: how thick the
 //          mist is here, about 1.
 import type { ParamDef } from "../../params.ts";
+import { hash31 } from "../../sims/math.ts";
+import { atEase, facing, isShy, stepShrink, type Shrink } from "../../sims/temperament.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -233,6 +237,9 @@ const TURN_MAX = 11;
 /** How near the pointer must come to a spirit's head to draw its look, and how near a click calls one (screen heights). */
 const CURIOUS_REACH = 0.22;
 const CALL_REACH = 0.3;
+/** How near the pointer may come before a shy spirit ducks (screen heights), and how far it sinks then (its heights x 0.45: the eyes still peek over the moss). */
+const SHY_REACH = 0.26;
+const DUCK_SINK = 1.2;
 /** Spirits a gathering ("now") calls, and seconds after it starts that they all turn together. */
 const GATHERING = 6;
 const CHORUS_AFTER = 4;
@@ -408,6 +415,10 @@ interface Spirit {
   /** Exit: seconds into it at which this spirit turns its head and then goes, or -1. */
   leaveAt: number;
   turned: boolean;
+  /** Its own stable number 0..1: shy while it is under the shyness knob (sims/temperament.ts). */
+  trait: number;
+  /** How far a shy spirit has ducked into the moss from the pointer. */
+  shrink: Shrink;
 }
 
 interface Pending {
@@ -469,7 +480,7 @@ interface Stir {
   age: number;
 }
 
-type KnobKey = "spirits" | "stag" | "spores" | "wind" | "time" | "cycle" | "forestSeed";
+type KnobKey = "spirits" | "shy" | "stag" | "spores" | "wind" | "time" | "cycle" | "forestSeed";
 
 class ForestSim implements SceneSim {
   readonly #beingTexture: DataTexture;
@@ -497,6 +508,7 @@ class ForestSim implements SceneSim {
 
   // Knobs, as the sim follows them.
   #spiritRate = 0.5;
+  #shyness = 0;
   #stagRate = 0.3;
   #spores = 0.5;
   #wind = 0.2;
@@ -538,7 +550,7 @@ class ForestSim implements SceneSim {
       return at;
     };
     this.#knobIndex = {
-      spirits: index("spirits"), stag: index("stag"), spores: index("spores"), wind: index("wind"),
+      spirits: index("spirits"), shy: index("shy"), stag: index("stag"), spores: index("spores"), wind: index("wind"),
       time: index("time"), cycle: index("cycle"), forestSeed: index("forestSeed"),
     };
     this.#beingTexture = new DataTexture(gl, { width: 3, height: FOREST_SPIRITS + 1, format: "rgba16f", filter: "nearest" });
@@ -548,7 +560,7 @@ class ForestSim implements SceneSim {
       this.#spirits.push({
         state: "free", perch: 0, age: 0, stay: 0, size: SIZE_MIN, variant: 0, breath: 0, tilt: 0, turnFrom: 0,
         turnTo: 0, turnAge: -1, ticks: 3, sinceTurn: 0, nextTurn: 0, yaw: 0, yawTo: 0, yawHold: 0, rattle: 0,
-        popAt: -1, rise: RISE_TIME, fade: FADE_TIME, leaveAt: -1, turned: false,
+        popAt: -1, rise: RISE_TIME, fade: FADE_TIME, leaveAt: -1, turned: false, trait: 1, shrink: atEase(),
       });
     }
     for (let i = 0; i < MAX_MOTES; i++) {
@@ -594,6 +606,7 @@ class ForestSim implements SceneSim {
     const values = frame.values;
     const index = this.#knobIndex;
     this.#spiritRate = values[index.spirits] ?? this.#spiritRate;
+    this.#shyness = values[index.shy] ?? this.#shyness;
     this.#stagRate = values[index.stag] ?? this.#stagRate;
     this.#spores = values[index.spores] ?? this.#spores;
     this.#wind = values[index.wind] ?? this.#wind;
@@ -848,6 +861,10 @@ class ForestSim implements SceneSim {
     spirit.fade = FADE_TIME;
     spirit.leaveAt = -1;
     spirit.turned = false;
+    // Its temperament comes from its own variant, so the knob never shifts the seeded draws.
+    spirit.trait = hash31(Math.floor(spirit.variant * 16777216), 0x6b6f, 0x7368);
+    spirit.shrink.amount = 0;
+    spirit.shrink.calm = Number.POSITIVE_INFINITY;
     if (companion && r() < COMPANION) this.#pending.push({ at: this.#clock + 1.2 + 1.8 * r(), near: perch, exact: -1 });
     return spirit;
   }
@@ -927,19 +944,24 @@ class ForestSim implements SceneSim {
       spirit.rattle += ((spirit.turnAge >= 0 ? 1 : 0) - spirit.rattle) * (1 - Math.exp(-h / 0.15));
       spirit.yawHold = Math.max(0, spirit.yawHold - h);
 
+      // The pointer near its head: a curious spirit turns to look at it, a shy one ducks into the moss
+      // looking away, and peeps back up a while after the pointer has gone (sims/temperament.ts).
       const perch = this.#perches[spirit.perch];
-      let curious = false;
+      const shy = isShy(spirit.trait, this.#shyness);
+      let engaged = false;
       if (perch && this.#pointerX !== undefined && spirit.state !== "fading") {
         const dx = this.#pointerX - perch.x;
         const dy = this.#pointerY - (perch.y + (0.75 * spirit.size) / perch.z);
-        if (dx * dx + dy * dy < CURIOUS_REACH * CURIOUS_REACH) {
-          curious = true;
-          spirit.yawTo = clamp(dx / 0.1, -1, 1);
-          const want = -Math.sign(dx) * 0.3 * (0.8 + 0.4 * spirit.variant);
+        const reach = shy ? SHY_REACH : CURIOUS_REACH;
+        if (dx * dx + dy * dy < reach * reach) {
+          engaged = true;
+          spirit.yawTo = facing(dx, 0.1, shy);
+          const want = (shy ? 1 : -1) * Math.sign(dx) * 0.3 * (0.8 + 0.4 * spirit.variant);
           if (spirit.turnAge < 0 && spirit.sinceTurn > 0.8 && Math.abs(spirit.turnTo - want) > 0.25) this.#turn(spirit, want);
         }
       }
-      if (!curious && spirit.state !== "fading") {
+      if (shy || spirit.shrink.amount > 0) stepShrink(spirit.shrink, h, shy && engaged);
+      if (!engaged && spirit.state !== "fading") {
         spirit.nextTurn -= h;
         if (spirit.nextTurn <= 0 && spirit.turnAge < 0) {
           const r = this.#random();
@@ -1314,7 +1336,13 @@ class ForestSim implements SceneSim {
       } else if (spirit.state === "fading") {
         alpha = 1 - smoothstep(0, 1, spirit.age / spirit.fade);
       }
-      const glow = 0.72 + 0.14 * Math.sin(this.#clock * 0.8 + spirit.breath) + 0.3 * spirit.rattle;
+      let glow = 0.72 + 0.14 * Math.sin(this.#clock * 0.8 + spirit.breath) + 0.3 * spirit.rattle;
+      const duck = spirit.shrink.amount;
+      if (duck > 0) {
+        // Ducked: down in the moss to its eyes, its glow drawn in.
+        sink = Math.max(sink, DUCK_SINK * duck);
+        glow *= 1 - 0.6 * duck;
+      }
       data.set([perch.x, perch.y, perch.z, alpha, spirit.tilt, spirit.yaw, glow, spirit.variant, sink, spirit.size, 0, 0], i * 12);
     }
     const st = this.#stag;

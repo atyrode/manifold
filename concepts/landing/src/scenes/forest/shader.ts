@@ -1506,8 +1506,9 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   }
 
   // The spirits on their perches: each dissolves in and out cell by cell, rises out of the moss as it
-  // comes, and stands with its feet in the moss; chalky white by day, glowing from within at dusk, its
-  // face three dark holes; hidden by whatever stands nearer. At night each wears a faint halo.
+  // comes (and a shy one ducks back into it, to its eyes, from the pointer), and stands with its feet in
+  // the moss; chalky white by day, glowing from within at dusk, its face three dark holes; hidden by
+  // whatever stands nearer. At night each wears a faint halo.
   float spiritHalo = 0.0;
   if (uSimOn.x > 0.5) {
     for (int s = 0; s < FOREST_SPIRITS; s++) {

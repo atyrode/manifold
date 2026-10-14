@@ -10,6 +10,7 @@ import { verifyBarLastCall } from "./src/scenes/bar/lastcall.verify.ts";
 import { verifyDewBins } from "./src/scenes/dew/bins.verify.ts";
 import { verifyTidepoolExchange } from "./src/scenes/tidepool/exchange.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
+import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -264,6 +265,7 @@ export function verify(): Record<string, unknown> {
   result.barLastCall = verifyBarLastCall(gl);
   result.dewBins = verifyDewBins(gl);
   result.tidepoolExchange = verifyTidepoolExchange(gl);
+  result.lakeFreshSnow = verifyLakeFreshSnow(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

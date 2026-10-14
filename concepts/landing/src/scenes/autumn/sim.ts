@@ -9,13 +9,14 @@
 // leaf that touches down eases flat (face up or face down, whichever is nearer) and is then handed to
 // the carpet.
 //
-// The carpet is the accumulation: a lattice of 0.3 m cells over the ground, two layers (the second
-// shifted half a cell), each cell holding at most one leaf: its offset inside the cell, its angle, its
-// colour, which face is up, and a fade level. Landed leaves are written there; a slow sweep over the
-// lattice lets the carpet settle toward the season's density (more leaves as the season runs on, more
-// under the tree, fewer on the path) by fading leaves in and out; a gust's swirl lifts leaves off the
-// path and sets them flying again. The Manifold M is leaves swept together into a road-marking M along
-// the path (the cells under its strokes fill with gold leaves, the cells round them are cleared).
+// The carpet is the accumulation (the shared ground-litter lattice, sims/litter.ts): 0.3 m cells over
+// the ground in two layers (the second shifted half a cell and lying beneath), each cell holding at
+// most one leaf: its offset inside the cell, its angle, its colour, which face is up, and a fade level.
+// Landed leaves are written there; a slow sweep over the lattice lets the carpet settle toward the
+// season's density (more leaves as the season runs on, more under the tree, fewer on the path) by
+// fading leaves in and out; a gust's swirl lifts the leaves lying on top off the path and sets them
+// flying again. The Manifold M is leaves swept together into a road-marking M along the path (the cells
+// under its strokes fill with gold leaves, the cells round them are cleared).
 //
 // The scene's passage (layout.ts AUTUMN_PASSAGE) is played here too: as it comes in a gust blows a flurry of
 // leaves in from beyond the windward edge of the frame, and as it leaves a stronger gust and a vortex lift
@@ -36,6 +37,7 @@
 //   uSim3  2 x 1: (gust, swirl x, swirl z, swirl strength), (M gathered 0..1, 0, 0, 0).
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { CLEARED, Litter, PINNED, type LitterItem } from "../../sims/litter.ts";
 import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -268,27 +270,14 @@ class AutumnSim implements SceneSim {
   #exitShower = 0;
   #exitSeconds = 0;
 
-  // The carpet: two layers of CELLS, index = layer * CELLS + cell.
-  readonly #ox = new Float32Array(2 * CELLS);
-  readonly #oz = new Float32Array(2 * CELLS);
-  readonly #ang = new Float32Array(2 * CELLS);
-  readonly #cHue = new Float32Array(2 * CELLS);
-  readonly #face = new Int8Array(2 * CELLS);
-  readonly #isMark = new Uint8Array(2 * CELLS);
-  readonly #level = new Uint8Array(2 * CELLS);
-  readonly #goal = new Uint8Array(2 * CELLS);
-  readonly #fading = new Set<number>();
-  /** Per cell: the shape of its density; 1 = holds the M, 2 = kept clear for it. */
+  // The carpet (sims/litter.ts): layer 0 the lattice on top, layer 1 the shifted one beneath.
+  readonly #carpet = new Litter(AUTUMN_CARPET, LEVELS);
+  /** Per cell: the shape of the carpet's density. */
   readonly #shape = new Float32Array(CELLS);
-  readonly #protect = new Uint8Array(CELLS);
-  readonly #dataA = new Float32Array(CELLS * 4);
-  readonly #dataB = new Float32Array(CELLS * 4);
   readonly #carpetA: DataTexture;
   readonly #carpetB: DataTexture;
-  #carpetDirty = true;
   #uploadedAt = -Infinity;
   #fadeClock = 0;
-  #scanAt = 0;
   #scanDebt = 0;
   #season = -1;
   #base = 0;
@@ -382,13 +371,7 @@ class AutumnSim implements SceneSim {
 
     this.#state.fill(FREE);
     this.#lifted.fill(0);
-    this.#level.fill(0);
-    this.#isMark.fill(0);
-    this.#dataA.fill(0);
-    this.#dataB.fill(0);
-    this.#goal.fill(0);
-    this.#fading.clear();
-    this.#protect.fill(0);
+    this.#carpet.clear();
     this.#markShown = 0;
     this.#season = season;
     this.#base = carpetBase(season);
@@ -410,7 +393,7 @@ class AutumnSim implements SceneSim {
     }
     for (let cell = 0; cell < CELLS; cell++) {
       for (let layer = 0; layer < 2; layer++) {
-        if (this.#wants(cell, layer)) this.#setLeaf(layer * CELLS + cell, rand(), rand(), rand(), rand(), false, LEVELS, LEVELS);
+        if (this.#wants(cell, layer)) this.#carpet.place(layer * CELLS + cell, rand(), rand(), rand(), rand(), false, LEVELS, LEVELS, rand);
       }
     }
 
@@ -433,7 +416,6 @@ class AutumnSim implements SceneSim {
       this.#strokeCells[k] = this.#strokeCells[m] ?? 0;
       this.#strokeCells[m] = a;
     }
-    this.#carpetDirty = true;
     this.#uploadedAt = -Infinity;
 
     // Leaves already on their way down, caught in their swing.
@@ -449,10 +431,10 @@ class AutumnSim implements SceneSim {
   }
 
   /** Whether the carpet, in its sweep, wants a leaf in this layer's cell at the season's density. */
-  #wants(cell: number, layer: number): boolean {
+  readonly #wants = (cell: number, layer: number): boolean => {
     const density = Math.min(0.95, at(this.#shape, cell) * this.#base) * (layer === 0 ? 1 : 0.65);
     return hash31(cell, layer, this.#seedKnob) < density;
-  }
+  };
 
   #changeSeason(season: number): void {
     this.#season = season;
@@ -777,7 +759,7 @@ class AutumnSim implements SceneSim {
     if (lain < SETTLE_SECONDS) return;
     this.#orient(i);
     const f = this.#frame;
-    this.#deposit(at(this.#x, i), at(this.#z, i), Math.atan2(f[2] ?? 0, f[0] ?? 1), at(this.#hue, i), (f[7] ?? 1) >= 0 ? 1 : -1);
+    this.#carpet.deposit(at(this.#x, i), at(this.#z, i), Math.atan2(f[2] ?? 0, f[0] ?? 1), at(this.#hue, i), (f[7] ?? 1) >= 0 ? 1 : -1, this.#rand);
     this.#state[i] = FREE;
   }
 
@@ -841,7 +823,7 @@ class AutumnSim implements SceneSim {
       const a = rand() * TAU;
       const x = this.#swirlX + r * Math.cos(a);
       const z = this.#swirlZ + r * Math.sin(a);
-      const found = this.#takeLeaf(x, z);
+      const found = this.#carpet.take(x, z);
       if (found === undefined) continue;
       if (!this.#launch(found)) return;
       lifted++;
@@ -859,7 +841,7 @@ class AutumnSim implements SceneSim {
       if (lifted >= WHIRL_LEAVES || this.#whirl <= 0.15) continue;
       const r = WHIRL_PICKUP * Math.sqrt(rand());
       const a = rand() * TAU;
-      const found = this.#takeLeaf(this.#whirlX + r * Math.cos(a), WHIRL_Z + r * Math.sin(a));
+      const found = this.#carpet.take(this.#whirlX + r * Math.cos(a), WHIRL_Z + r * Math.sin(a));
       if (found === undefined) continue;
       if (!this.#launch(found)) return;
       lifted++;
@@ -867,7 +849,7 @@ class AutumnSim implements SceneSim {
   }
 
   /** Stand a leaf taken off the carpet up as a plate in a free slot, in the pose it lay in: the chord axis along its heading, the face as it lay. False when no slot is free. */
-  #launch(found: { x: number; z: number; angle: number; hue: number; face: number }): boolean {
+  #launch(found: LitterItem): boolean {
     const rand = this.#rand;
     const slot = this.#freeSlot();
     if (slot < 0) return false;
@@ -888,94 +870,7 @@ class AutumnSim implements SceneSim {
     return true;
   }
 
-  /** Take the layer-A leaf of the carpet cell under (x, z) off the ground, if it holds one: where it lay, which way, its colour. */
-  #takeLeaf(x: number, z: number): { x: number; z: number; angle: number; hue: number; face: number } | undefined {
-    const A = AUTUMN_CARPET;
-    const i = Math.floor((x - A.x0) / A.cell);
-    const j = Math.floor((z - A.z0) / A.cell);
-    if (i < 0 || j < 0 || i >= COLS || j >= ROWS) return undefined;
-    const cell = j * COLS + i;
-    if (this.#protect[cell] === 1 || at(this.#level, cell) < LEVELS || at(this.#goal, cell) === 0) return undefined;
-    const found = {
-      x: A.x0 + (i + 0.5 + at(this.#ox, cell)) * A.cell,
-      z: A.z0 + (j + 0.5 + at(this.#oz, cell)) * A.cell,
-      angle: at(this.#ang, cell),
-      hue: at(this.#cHue, cell),
-      face: at(this.#face, cell),
-    };
-    this.#goal[cell] = 0;
-    this.#level[cell] = 0;
-    this.#fading.delete(cell);
-    this.#sync(cell);
-    return found;
-  }
-
   // ---- the carpet --------------------------------------------------------------------------------
-
-  /** Write a leaf into carpet slot idx (layer * CELLS + cell) at the given fade level, heading for goal. */
-  #setLeaf(idx: number, ox: number, oz: number, turn: number, hue: number, mark: boolean, level: number, goal: number): void {
-    const rand = this.#rand;
-    this.#ox[idx] = (ox - 0.5) * 0.7;
-    this.#oz[idx] = (oz - 0.5) * 0.7;
-    this.#ang[idx] = turn * TAU;
-    this.#cHue[idx] = mark ? 0.3 + 0.7 * rand() : hue;
-    this.#face[idx] = rand() < 0.82 ? 1 : -1;
-    this.#isMark[idx] = mark ? 1 : 0;
-    this.#level[idx] = level;
-    this.#goal[idx] = goal;
-    if (level !== goal) this.#fading.add(idx);
-    else this.#fading.delete(idx);
-    this.#sync(idx);
-  }
-
-  /** Copy slot idx into its texture's data. */
-  #sync(idx: number): void {
-    const layer = idx >= CELLS ? 1 : 0;
-    const cell = idx - layer * CELLS;
-    const data = layer === 0 ? this.#dataA : this.#dataB;
-    const level = at(this.#level, idx);
-    const o = cell * 4;
-    data[o] = at(this.#ox, idx);
-    data[o + 1] = at(this.#oz, idx);
-    data[o + 2] = at(this.#ang, idx);
-    data[o + 3] = level === 0 ? 0 : at(this.#face, idx) * (level + 16 * at(this.#isMark, idx) + 0.98 * at(this.#cHue, idx));
-    this.#carpetDirty = true;
-  }
-
-  /** A leaf that has come to rest at (x, z), heading `angle` (the tip's heading in the ground plane): into the carpet. */
-  #deposit(x: number, z: number, angle: number, hue: number, face: number): void {
-    const A = AUTUMN_CARPET;
-    const gx = (x - A.x0) / A.cell;
-    const gz = (z - A.z0) / A.cell;
-    const i = Math.floor(gx);
-    const j = Math.floor(gz);
-    if (i < 0 || j < 0 || i >= COLS || j >= ROWS) return;
-    const cell = j * COLS + i;
-    if (this.#protect[cell] === 1) return;
-    let layer = 0;
-    let ci = i;
-    let cj = j;
-    if (at(this.#goal, cell) > 0) {
-      // Taken: the half-shifted lattice, or else lie on top of what is there.
-      const bi = Math.floor(gx - 0.5);
-      const bj = Math.floor(gz - 0.5);
-      if (bi >= 0 && bj >= 0 && bi < COLS && bj < ROWS && at(this.#goal, CELLS + bj * COLS + bi) === 0) {
-        layer = 1;
-        ci = bi;
-        cj = bj;
-      }
-    }
-    const idx = layer * CELLS + cj * COLS + ci;
-    const centreX = ci + 0.5 + 0.5 * layer;
-    const centreZ = cj + 0.5 + 0.5 * layer;
-    this.#setLeaf(idx, 0, 0, 0, hue, false, LEVELS, LEVELS);
-    this.#ox[idx] = clamp(gx - centreX, -0.5, 0.5);
-    this.#oz[idx] = clamp(gz - centreZ, -0.5, 0.5);
-    this.#ang[idx] = angle;
-    this.#cHue[idx] = hue;
-    this.#face[idx] = face;
-    this.#sync(idx);
-  }
 
   /** The sweep: visit cells in turn and let the carpet drift toward the season's density, a leaf fading in or out now and then. */
   #sweep(real: number): void {
@@ -985,23 +880,7 @@ class AutumnSim implements SceneSim {
     this.#scanDebt -= visits;
     const add = this.#hurry > 0 ? HURRY_CHANCE : ADD_CHANCE;
     const remove = this.#hurry > 0 ? HURRY_CHANCE : REMOVE_CHANCE;
-    const rand = this.#rand;
-    for (let n = 0; n < visits; n++) {
-      const cell = this.#scanAt;
-      this.#scanAt = (this.#scanAt + 1) % CELLS;
-      if (this.#protect[cell] !== 0) continue;
-      for (let layer = 0; layer < 2; layer++) {
-        const idx = layer * CELLS + cell;
-        const has = at(this.#goal, idx) > 0;
-        const wants = this.#wants(cell, layer);
-        if (wants && !has) {
-          if (rand() < add) this.#setLeaf(idx, rand(), rand(), rand(), rand(), false, 0, LEVELS);
-        } else if (!wants && has && rand() < remove) {
-          this.#goal[idx] = 0;
-          this.#fading.add(idx);
-        }
-      }
-    }
+    this.#carpet.tend(visits, add, remove, this.#wants, this.#rand);
   }
 
   /** Step the fading leaves a level toward their goals every LEVEL_EVERY seconds. */
@@ -1009,14 +888,7 @@ class AutumnSim implements SceneSim {
     this.#fadeClock += real;
     if (this.#fadeClock < LEVEL_EVERY) return;
     this.#fadeClock = 0;
-    for (const idx of this.#fading) {
-      const level = at(this.#level, idx);
-      const goal = at(this.#goal, idx);
-      const next = level < goal ? level + 1 : level - 1;
-      this.#level[idx] = next;
-      if (next === goal) this.#fading.delete(idx);
-      this.#sync(idx);
-    }
+    this.#carpet.fade();
   }
 
   /** The M: gold leaves swept together cell by cell under its strokes, the cells round it cleared; or scattered again. */
@@ -1032,37 +904,32 @@ class AutumnSim implements SceneSim {
     const ending = before > 0 && this.#markShown === 0;
     if (to === from && !starting && !ending) return;
     const rand = this.#rand;
+    const carpet = this.#carpet;
     if (starting) {
       // Sweeping starts: the ring round the M is cleared, and kept clear.
       for (const cell of this.#marginCells) {
-        this.#protect[cell] = 2;
+        carpet.protect[cell] = CLEARED;
         for (let layer = 0; layer < 2; layer++) {
           const idx = layer * CELLS + cell;
-          if (at(this.#goal, idx) > 0) {
-            this.#goal[idx] = 0;
-            this.#fading.add(idx);
-          }
+          if (at(carpet.goal, idx) > 0) carpet.release(idx);
         }
       }
     }
     for (let k = from; k < to; k++) {
       const cell = this.#strokeCells[k];
       if (cell === undefined) continue;
-      this.#protect[cell] = 1;
-      for (let layer = 0; layer < 2; layer++) this.#setLeaf(layer * CELLS + cell, rand(), rand(), rand(), 0, true, 0, LEVELS);
+      carpet.protect[cell] = PINNED;
+      for (let layer = 0; layer < 2; layer++) carpet.place(layer * CELLS + cell, rand(), rand(), rand(), 0, true, 0, LEVELS, rand);
     }
     for (let k = from - 1; k >= to; k--) {
       const cell = this.#strokeCells[k];
       if (cell === undefined) continue;
-      this.#protect[cell] = 2;
-      for (let layer = 0; layer < 2; layer++) {
-        this.#goal[layer * CELLS + cell] = 0;
-        this.#fading.add(layer * CELLS + cell);
-      }
+      carpet.protect[cell] = CLEARED;
+      for (let layer = 0; layer < 2; layer++) carpet.release(layer * CELLS + cell);
     }
     if (this.#markShown === 0) {
-      for (const cell of this.#marginCells) this.#protect[cell] = 0;
-      for (const cell of this.#strokeCells) this.#protect[cell] = 0;
+      for (const cell of this.#marginCells) carpet.protect[cell] = 0;
+      for (const cell of this.#strokeCells) carpet.protect[cell] = 0;
     }
   }
 
@@ -1107,10 +974,10 @@ class AutumnSim implements SceneSim {
     this.#leafTexture.upload(data);
 
     const now = performance.now();
-    if (this.#carpetDirty && now - this.#uploadedAt >= UPLOAD_EVERY_MS) {
-      this.#carpetA.upload(this.#dataA);
-      this.#carpetB.upload(this.#dataB);
-      this.#carpetDirty = false;
+    if (this.#carpet.dirty && now - this.#uploadedAt >= UPLOAD_EVERY_MS) {
+      this.#carpetA.upload(this.#carpet.layers[0]);
+      this.#carpetB.upload(this.#carpet.layers[1]);
+      this.#carpet.dirty = false;
       this.#uploadedAt = now;
     }
 

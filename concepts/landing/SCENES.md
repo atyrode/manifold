@@ -62,10 +62,10 @@ A third batch built on the shared foundations (weather in the world, hard edges,
 | Late-night bar | `bar` | Patrons arrive, sip and leave; the bartender pours, shakes, polishes; rain and traffic outside the window. Last call (the time-of-night "now"): a hand bell and two blinks of the lamps (just the blinks with the bartender off), last sips, one for the road or a word with you if the bar is empty, then closing time until the time of night is moved |
 | City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain |
 | Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint |
-| Mystic forest | `forest` | Kodama spirits appearing and turning their heads, spores on curl-noise air, a stag crossing |
+| Mystic forest | `forest` | Kodama spirits appearing and turning their heads, curious of the pointer or (a tunable share) shy of it and ducking into the moss (`sims/temperament.ts`); spores on curl-noise air, a stag crossing |
 | Ripple tank | `ripple` | GPU wave equation: interference, double slit, lens, Doppler, standing waves; projected caustics |
 | Lava lamp | `lava` | Heated wax blobs with buoyancy, necks and merging |
-| Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles |
+| Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles; lying snow from wind-packed crust to fresh powder at the same cover |
 | Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning |
 
 ## Quiet places and small machines
@@ -81,7 +81,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: `shaders/windWater.ts`), a red cabin, falling and lying snow |
 | Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies. Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it |
 | Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, birds; rain streams out of the sky overhead |
-| Autumn park | `autumn` | Leaves flutter and tumble down (quasi-steady plate model), build a carpet, and gusts lift swirls off the path |
+| Autumn park | `autumn` | Leaves flutter and tumble down (quasi-steady plate model), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts lift swirls of the top leaves off the path |
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
 sees it (`rainFallSeen`), whatever the calm of the rest of the scene.
