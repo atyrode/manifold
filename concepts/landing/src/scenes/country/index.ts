@@ -27,7 +27,10 @@ const params = [
   range("fields", "wildflowers", "wildflowers weight", 0, "Relative weight of colourful meadow fields among all fields; zero excludes them.", { max: 100, step: 1 }),
   range("fields", "lavender", "lavender weight", 0, "Relative weight of purple lavender-row fields among all fields; zero excludes them.", { max: 100, step: 1 }),
   range("fields", "sunflowers", "sunflowers weight", 0, "Relative weight of golden sunflower fields among all fields; zero excludes them.", { max: 100, step: 1 }),
+  range("fields", "pasture", "pasture weight", 0, "Relative weight of fenced pasture enclosures, where herds of cattle or sheep graze, among all fields; zero excludes them. Enclosure fields take the place of other fields without moving any field border.", { max: 100, step: 1 }),
   seed("fields", "landscape", "landscape", "The arrangement of the hills, fields and village; the same number always returns to the same valley. Zero keeps the original countryside. Re-seed for another view."),
+  range("livestock", "cows", "cattle share", 0.5, "The share of pasture enclosures grazed by cattle (black-and-white, brown or black herds) rather than sheep. Each enclosure keeps one kind; changing the share swaps only the herds it must.", { step: 0.05 }),
+  range("livestock", "herd", "herd size", 0.5, "How many animals graze each enclosure, up to what its field has room for: zero empties the enclosures, 50% is a few cattle or about half a dozen sheep, 100% roughly doubles that.", { step: 0.05 }),
 ];
 
 export const countryScene: SceneDef = {
@@ -41,9 +44,10 @@ export const countryScene: SceneDef = {
   groups: {
     sky: atmosphereGroups.sky,
     clouds: { title: "Clouds", blurb: "How much cloud drifts over, and the shadows it sweeps across the fields." },
-    fields: { title: "Fields", blurb: "Mix crops and flowers with relative weights, follow the farming year, and re-seed the valley. Zero excludes a type; all zero uses crops. Shares are approximate across the visible fields, not exact screen-area percentages." },
+    fields: { title: "Fields", blurb: "Mix crops, flowers and pasture enclosures with relative weights, follow the farming year, and re-seed the valley. Zero excludes a type; all zero uses crops. Shares are approximate across the visible fields, not exact screen-area percentages." },
     woodland: { title: "Woodland", blurb: "How much of the far hills is wooded, and how many of the trees are evergreen pines." },
     village: { title: "Village", blurb: "Signs of life: windows lighting up at dusk, smoke from the chimneys." },
+    livestock: { title: "Livestock", blurb: "The herds in the pasture enclosures (fields: pasture weight). They graze, wander, lie in the warm afternoon sun and at night, and bunch up standing in rain and snow; each stays inside its fence." },
     weather: atmosphereGroups.weather,
     manifold: { title: "Manifold mark", blurb: "A chalk figure of the M, cut into the turf of a far hillside." },
   },
