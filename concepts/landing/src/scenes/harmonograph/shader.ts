@@ -110,7 +110,7 @@ vec3 harmonographSheet(vec2 q, vec2 cell, float px, float pool, float lamp, out 
   vec2 c4 = textureLod(uSim0, uv + vec2(-o.x, -o.y), 0.0).rg;
   vec2 avg = 0.2 * (c0 + c1 + c2 + c3 + c4);
   vec2 top = max(max(max(c0, c1), max(c2, c3)), c4);
-  vec2 cover = clamp(1.4 * avg + 0.4 * top, 0.0, 1.0);
+  vec2 cover = clamp(1.05 * avg + 0.25 * top, 0.0, 1.0);
 
   float fibre = 0.6 * vnoise(q * 110.0 + 3.7) + 0.4 * vnoise(q * 38.0 + 9.1);
   float lit = (0.62 + 0.5 * pool) * lamp;
@@ -121,7 +121,7 @@ vec3 harmonographSheet(vec2 q, vec2 cell, float px, float pool, float lamp, out 
 
   float inkLight = 0.55 + 0.45 * clamp(lit, 0.0, 1.2);
   float mid = hardEdge(cover.x);
-  float deep = mid * hardEdge((top.x - 0.7) * 6.0, edgeThreshold(cell, vec2(23.0, 7.0)));
+  float deep = mid * hardEdge((top.x - 0.62) * 5.0, edgeThreshold(cell, vec2(23.0, 7.0)));
   col = mix(col, harmonographInkMid() * inkLight, mid);
   col = mix(col, harmonographInkDeep() * inkLight, deep);
 

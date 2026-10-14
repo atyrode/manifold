@@ -10,8 +10,8 @@ import { harmonographGlsl } from "./shader.ts";
 
 const params: readonly ParamDef[] = [
   choice("drawing", "figure", "pendulums", harmonographFigures.map((label, value) => ({ label, value })), 0, "How the two pendulums' swings beat against each other: 1:2 draws figure-eights, 2:3 and 3:4 knotted rosettes, 4:5 and 3:5 fine lace. Every ratio is a hair off the whole numbers, so the figure slowly turns as it is drawn. Random: a different one on each sheet."),
-  range("drawing", "lasting", "damping", 0.4, "How long a drawing lasts. Left: the swing dies away in under a minute, a loose figure. Right: it rings for minutes, filling the sheet with fine lines before it settles.", { step: 0.01 }),
-  range("drawing", "swing", "swing speed", 1, "How fast the pendulums swing; the whole drawing runs at this pace.", { min: 0.5, max: 2, step: 0.05 }),
+  range("drawing", "lasting", "damping", 0.4, "How long a drawing lasts. Left: the swing dies away within a couple of minutes, a looser nest of loops. Right: it rings on for several minutes, a dense lace of hundreds of loops spiralling in.", { step: 0.01 }),
+  range("drawing", "swing", "swing speed", 1, "How fast the pendulums swing; the whole drawing runs at this pace.", { min: 0.4, max: 1.5, step: 0.05 }),
   feature("drawing", "rotary", "rotary pendulum", true, "swing", 0.5, "A third pendulum that turns the pen round in a circle as well, tangling the figure into rosettes and spirograph loops. Its swing dies faster than the others'.", { min: 0.1, max: 0.8 }),
   feature("drawing", "renew", "next sheet", true, "pause", 0.3, "When the swing has died, rest a while (up to 40 seconds), then slide the sheet off, slide a fresh one in and swing the pendulums again. Off: the finished drawing stays. Now: change the sheet at once.", { trigger: 0 }),
   seed("drawing", "drawings", "drawings", "The run of drawings: their frequencies, phases, damping and how each sheet lies on the desk. Re-seed for another run; the first sheet restarts at once."),

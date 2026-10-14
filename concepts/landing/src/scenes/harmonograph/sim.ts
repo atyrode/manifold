@@ -89,8 +89,8 @@ function readSettings(knobs: KnobReader<Knob>, frame: SimFrame, out: Settings): 
 // ---- timing --------------------------------------------------------------------------------------
 
 /** The fixed step, seconds, and the most steps a frame may run. */
-const STEP = 1 / 60;
-const MAX_STEPS = 12;
+const STEP = 1 / 120;
+const MAX_STEPS = 24;
 /** A frame never advances more than this, seconds. */
 const MAX_FRAME = 0.1;
 /** A sheet rests REST_MIN + REST_RANGE * (the "pause" amount) seconds when it is done. */
@@ -118,12 +118,12 @@ const END_REACH = 0.035;
 /** The rotary pendulum's radius at amount 1, p units. */
 const ROTARY_RADIUS = 0.2;
 /** Seconds for the swing to fall to 1/e at "lasting" 0, and the factor per unit of lasting. */
-const DECAY_BASE = 28;
-const DECAY_GROWTH = 6;
-/** A fresh load starts this far into a drawing (seconds of swing, capped at this share of the decay time). */
-const PREWARM_MIN = 14;
-const PREWARM_MAX = 46;
-const PREWARM_SHARE = 0.6;
+const DECAY_BASE = 45;
+const DECAY_GROWTH = 3.5;
+/** A fresh load starts this far into a drawing: seconds of swing, PREWARM_SHARE of the decay time within these bounds. */
+const PREWARM_MIN = 30;
+const PREWARM_MAX = 90;
+const PREWARM_SHARE = 0.9;
 
 const RATIOS: readonly (readonly [number, number])[] = [[1, 2], [2, 3], [3, 4], [4, 5], [3, 5]];
 /** "Random" picks from here: the simple ratios twice, so the figures stay open and the rest are rare. */
@@ -160,15 +160,16 @@ function makePlan(seed: number, index: number, figure: number, previous: Plan | 
   const preset = figure >= 1 ? RATIOS[figure - 1] : undefined;
   const pool = RANDOM_RATIOS.filter(([a, b]) => previous === undefined || a !== previous.a || b !== previous.b);
   const [a, b] = preset ?? rng.pick(pool);
-  const fastest = rng.range(0.17, 0.23);
+  // Pendulum periods of about 1.3 to 1.8 s for the fastest swing: a hundred cycles over a drawing.
+  const fastest = rng.range(0.55, 0.75);
   const unit = fastest / b;
-  const detune = (): number => (rng.next() < 0.5 ? -1 : 1) * rng.range(0.005, 0.016);
+  const detune = (): number => (rng.next() < 0.5 ? -1 : 1) * rng.range(0.0012, 0.004);
   const fx = a * unit * (1 + detune());
   const fy = b * unit * (1 + detune());
   // The rotary pendulum turns at a small whole multiple of the base frequency, no faster than the fastest swing.
   const multiples = [...new Set([1, a, b, 2 * a])].filter((m) => m * unit <= 1.3 * fastest);
   const fr = rng.pick(multiples) * unit * (1 + detune());
-  const ax = rng.range(0.25, 0.28);
+  const ax = rng.range(0.27, 0.29);
   return {
     a, b, fx, fy, fr,
     px: rng.range(0, TAU),
@@ -176,8 +177,8 @@ function makePlan(seed: number, index: number, figure: number, previous: Plan | 
     pr: rng.range(0, TAU),
     ax,
     ay: ax * rng.range(0.84, 1),
-    dx: rng.range(0.85, 1.2),
-    dy: rng.range(0.85, 1.2),
+    dx: rng.range(0.88, 1.12),
+    dy: rng.range(0.88, 1.12),
     dr: rng.range(1, 1.5),
     spin: rng.next() < 0.5 ? -1 : 1,
     tilt: rng.range(-0.03, 0.03),
@@ -238,9 +239,9 @@ class Swing {
 
 /** Texels per p unit. */
 const TEXELS = HARMONOGRAPH.grid / (2 * HARMONOGRAPH.half);
-/** Nib diameter in texels at "nib" 0 and 1: thin lines, about a dither cell wide. */
-const NIB_THIN = 2.4;
-const NIB_BOLD = 5.2;
+/** Nib diameter in texels at "nib" 0 and 1: about one dither cell wide at the default. */
+const NIB_THIN = 1.8;
+const NIB_BOLD = 4.8;
 
 /** The ink the pen has laid on the sheet, two channels (figure, signature). */
 class InkSheet {
@@ -584,9 +585,10 @@ class HarmonographSim implements SceneSim {
       const t = this.#drawT;
       // Pressure drifts slowly; ink pools and the line swells where the pen lingers; the pen runs dry.
       const pressure = 0.92 + 0.1 * Math.sin(0.7 * t + 1.3) + 0.06 * Math.sin(1.9 * t + 0.4);
-      const slow = clamp(1 - (Math.hypot(pos.x - this.#lastX, pos.y - this.#lastY) * TEXELS) / 7, 0, 1);
+      const slow = clamp(1 - (Math.hypot(pos.x - this.#lastX, pos.y - this.#lastY) * TEXELS) / 4, 0, 1);
       const radius = 0.5 * lerp(NIB_THIN, NIB_BOLD, st.nib) * pressure * (1 + 0.25 * slow);
-      const alpha = Math.min(1, (0.62 + 0.33 * this.#swing.fullness(plan)) * (1 + 0.12 * slow));
+      // Light ink, so the many overlapping passes of a dense figure build tone.
+      const alpha = Math.min(1, (0.36 + 0.2 * this.#swing.fullness(plan)) * (1 + 0.15 * slow));
       this.#ink.stroke(0, this.#lastX, this.#lastY, pos.x, pos.y, radius, alpha, true);
     }
     this.#lastX = pos.x;
