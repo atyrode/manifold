@@ -119,7 +119,8 @@ Shade regressionKoiLoop(vec2 uv, vec2 cell, float t) {
   const [k1x, k1y] = loopAt[1] ?? [0, 0];
   // Somewhere clear of every koi's loop position.
   const target: [number, number] = ox > 0 ? [-0.55, -oy * 0.5] : [0.55, -oy * 0.5];
-  for (const [x, y] of [[k1x, k1y], loopAt[2] ?? [0, 0], target]) {
+  const others: readonly (readonly [number, number])[] = [[k1x, k1y], loopAt[2] ?? [0, 0], target];
+  for (const [x, y] of others) {
     if (Math.hypot(x - ox, y - oy) < 0.25) fail("fixture: koi 0's loop position is crowded at this clock; pick another");
   }
   if (Math.hypot(target[0] - k1x, target[1] - k1y) < 0.25) fail("fixture: the steered spot is crowded; pick another");
