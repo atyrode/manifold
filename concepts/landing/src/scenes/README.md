@@ -367,9 +367,18 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `HeadlessSim` and `HeadlessGl` (`headless.ts`): the one harness for sim regressions. `HeadlessGl`
   is a stand-in context that takes a sim's `DataTexture` calls and keeps each texture's size and last
   upload (anything else throws, naming the call); `HeadlessSim` drives a scene's real sim on it (or
-  on a real context) with frames built as the renderer builds them: knobs read as from a URL, "now"
+  on a real context) with frames built as the renderer builds them: knobs over their defaults, "now"
   presses by knob, pointer, passage. `step(frame).upload(slot)` is what the shader would sample.
   Tests use it rather than a stand-in context of their own (dew, fractal, sand table, prism...).
+- `Errand` (`errand.ts`): a kerbside errand's choreography (a vehicle pulls in, hazards on, a porter
+  carries loads to a door in trips, climbs back in, the vehicle leaves); the scene drives and walks
+  them and reports arrivals (street's late delivery).
+- `gustPulse`, `GustTrain`, `windSign`, `windNoise` (`wind.ts`): the lab's wind conventions (K_wind
+  -1..1, gusts blowing with it), the gust pulse garden and autumn use, a seeded gust scheduler with
+  "now", and smooth eddy noise (mobile).
+- `Mobile`, `designMobile`, `MobileTexture`, `mobileGlsl` (`mobile.ts`): a balanced hanging mobile on
+  `VerletSystem` with plate drag and contacts, and GLSL tracing its plates, wires and links and the
+  shadows they throw from a round lamp (mobile).
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and

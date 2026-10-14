@@ -1,17 +1,29 @@
 // The pendulum wave: a row of pendulums of slowly increasing length hung from a beam over a dark
 // table, lit by one lamp. Pendulum n makes N0 + n swings in one cycle (N0 = 2 (count - 1)), so they
 // start in line, drift into travelling waves, a double helix and apparent chaos, and realign. The
-// motion is analytic (small angle), so the scene needs no simulation: everything is traced per pixel
-// from one camera, and moving edges (bobs, threads, shadows, trails) are cut per cell.
-// Knobs read here: K_count, K_cycle, K_swing, K_release, K_camera, K_trail, K_material, K_beam,
-// K_lamp, K_mark.
+// motion is analytic, so the scene needs no simulation: everything is traced per pixel from one
+// camera, and moving edges (bobs, threads, shadows, trails) are cut per cell.
+// Physics (K_physics): ideal, the default, is exact small-angle motion, so the row realigns on the
+// dot at any swing. Real swings each pendulum as a real one swings (sims/pendulum.ts): a board
+// draws every bob back as far as the longest swings, so the shorter ones swing wider, and a wide
+// swing takes longer than the small one its thread was cut for: the row drifts off its schedule.
+// Knobs read here: K_count, K_cycle, K_swing, K_release, K_physics, K_camera, K_trail, K_material,
+// K_beam, K_lamp, K_mark.
 // Passage (PENDULA_PASSAGE): entrance, the bobs hang gathered under the beam, drop together on their
 // threads (a gentle stretch at the end) and the swing builds up in its wave; exit, the row is hoisted
 // back up to the beam in a ripple while the swing dies away. At rest it all reduces to nothing.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
+import { pendulumGlsl } from "../../sims/pendulum.ts";
 
 /** Seconds of the entrance and exit (SceneDef.passage). */
 export const PENDULA_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+
+/**
+ * The swing: the longest pendulum's angle (radians) at the swing knob's least and most; the release's
+ * run-down (the swing falls as e^(-decay · cycles)), the cycles between re-releases and the cycles the
+ * push before one takes.
+ */
+export const PENDULA_SWING = { least: 0.14, most: 0.4, decay: 0.2, release: 3, push: 0.06 } as const;
 
 export interface PendulaCamera {
   label: string;
@@ -66,11 +78,15 @@ const cameraFit = glslPick(
 );
 
 export const pendulaGlsl = `
+${pendulumGlsl}
 const float PENDULA_PIVOT = 1.7;       // height of the pivot line: the beam's underside
 const float PENDULA_SPAN = 2.6;        // the row's length
 const float PENDULA_LMAX = 1.42;       // the longest pendulum
-const float PENDULA_DECAY = 0.2;       // amplitude lost per cycle while a release is running down
-const float PENDULA_RELEASE = 3.0;     // cycles between gentle re-releases
+const float PENDULA_LEAST = ${glslFloat(PENDULA_SWING.least)};    // the longest pendulum's swing at the knob's least...
+const float PENDULA_MOST = ${glslFloat(PENDULA_SWING.most)};      // ...and most, radians
+const float PENDULA_DECAY = ${glslFloat(PENDULA_SWING.decay)};    // the swing's run-down per cycle while a release is running down
+const float PENDULA_RELEASE = ${glslFloat(PENDULA_SWING.release)}; // cycles between gentle re-releases
+const float PENDULA_PUSH = ${glslFloat(PENDULA_SWING.push)};      // cycles the push before a re-release takes
 const vec3 PENDULA_LAMP_POS = vec3(-0.8, 4.1, 1.3);
 const vec3 PENDULA_LAMP_COL = vec3(1.0, 0.9, 0.74);
 const vec3 PENDULA_TABLE = vec3(0.3, 0.19, 0.105);
@@ -154,9 +170,50 @@ vec3 pendulaBackdrop(vec2 p, float ry) {
   return c + vec3(0.02, 0.018, 0.014) * exp(-1.4 * dot(s, s));
 }
 
-// Position of pendulum swing at a phase (in cycles): the bob, hung from piv by a thread of length L.
-vec3 pendulaBobAt(vec3 piv, float L, float amp, float k, float f) {
-  float th = amp * cos(TAU * fract(k * f));
+// The run-down of a release (K_release): the share of the swing left f cycles into a release, the
+// gentle push over its last PENDULA_PUSH cycles bringing it back to 1.
+float pendulaEnvelope(float f) {
+  return mix(exp(-PENDULA_DECAY * f), 1.0, smoothstep(PENDULA_RELEASE - PENDULA_PUSH, PENDULA_RELEASE, f));
+}
+
+// Real pendulums: the swings (in cycles of small swings) a bob released at a radians has made f
+// cycles into a release, its swing running down as the release does: the run-down in closed form,
+// the push by Simpson's rule.
+float pendulaRealSwings(float a, float f) {
+  float push = PENDULA_RELEASE - PENDULA_PUSH;
+  if (f <= push) return pendulumFadingSwings(a, PENDULA_DECAY, f);
+  float m = 0.5 * (push + f);
+  return pendulumFadingSwings(a, PENDULA_DECAY, push) + (f - push) / 6.0 * (
+    1.0 / pendulumStretch(a * pendulaEnvelope(push)) + 4.0 / pendulumStretch(a * pendulaEnvelope(m)) + 1.0 / pendulumStretch(a * pendulaEnvelope(f)));
+}
+
+// Pendulum k (thread L) c cycles in (fc: the fraction), the longest one swinging to amp and the
+// release leaving env of it: x the angle it swings to, y its phase (swings since the row was let
+// go; only the fraction counts), z its swings per cycle now.
+// Ideal: exact small-angle motion, k swings per cycle at any width. Real: a board draws every bob
+// back as far as the longest, so the shorter ones swing wider, and each takes pendulumStretch longer
+// per swing than the small swing its thread was cut for.
+vec3 pendulaSwing(float k, float L, float c, float fc, float amp, float env) {
+  if (K_physics < 0.5) return vec3(amp * env, k * fc, k);
+  float a = asin(min(PENDULA_LMAX / L * sin(amp), 1.0));
+  if (K_release < 0.5) {
+    float stretch = pendulumStretch(a);
+    return vec3(a, k * c / stretch, k / stretch);
+  }
+  float r = c / PENDULA_RELEASE;
+  float swings = floor(r) * pendulaRealSwings(a, PENDULA_RELEASE) + pendulaRealSwings(a, fract(r) * PENDULA_RELEASE);
+  return vec3(a * env, k * swings, k / pendulumStretch(a * env));
+}
+
+// The phase of swing sw (pendulaSwing of pendulum k at fc) dc cycles earlier.
+float pendulaPhaseAgo(vec3 sw, float k, float fc, float dc) {
+  return K_physics < 0.5 ? k * (fc - dc) : sw.y - sw.z * dc;
+}
+
+// The bob of a pendulum hung from piv by a thread of length L, swinging to amp, at a phase (swings
+// since release; only the fraction counts): as a small swing (ideal) or a real pendulum swings.
+vec3 pendulaBobAt(vec3 piv, float L, float amp, float phase) {
+  float th = K_physics < 0.5 ? amp * cos(TAU * fract(phase)) : pendulumAngle(amp, phase);
   return piv + vec3(0.0, -cos(th), sin(th)) * L;
 }
 
@@ -217,7 +274,7 @@ float pendulaFrameShadow(vec2 q) {
 }
 
 // Shadows of the bobs on the table at q: the largest coverage of any, penumbra and all.
-float pendulaBobShadow(vec2 q, float cnt, float n0, float sp, float br, float fc, float amp) {
+float pendulaBobShadow(vec2 q, float cnt, float n0, float sp, float br, float c, float fc, float amp, float env) {
   float cov = 0.0;
   for (int i = 0; i < 24; i++) {
     float fi = float(i);
@@ -225,7 +282,8 @@ float pendulaBobShadow(vec2 q, float cnt, float n0, float sp, float br, float fc
     float k = n0 + fi;
     float L = PENDULA_LMAX * (n0 / k) * (n0 / k);
     vec2 ps = pendulaPassage(L, br, fi, cnt);
-    vec3 bob = pendulaBobAt(vec3((fi + 0.5 - 0.5 * cnt) * sp, PENDULA_PIVOT, 0.0), ps.x, amp * ps.y, k, fc);
+    vec3 sw = pendulaSwing(k, L, c, fc, amp, env);
+    vec3 bob = pendulaBobAt(vec3((fi + 0.5 - 0.5 * cnt) * sp, PENDULA_PIVOT, 0.0), ps.x, sw.x * ps.y, sw.y);
     vec3 s = pendulaCast(bob);
     cov = max(cov, softFill(length(q - s.xy) - br * s.z, pendulaPen(bob.y)));
   }
@@ -394,11 +452,8 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
   float c = uMotionTime / K_cycle;
   float fc = fract(c);
   float env = 1.0;
-  if (K_release > 0.5) {
-    float f = fract(c / PENDULA_RELEASE) * PENDULA_RELEASE;
-    env = mix(exp(-PENDULA_DECAY * f), 1.0, smoothstep(PENDULA_RELEASE - 0.06, PENDULA_RELEASE, f));
-  }
-  float amp = mix(0.14, 0.4, K_swing) * env;
+  if (K_release > 0.5) env = pendulaEnvelope(fract(c / PENDULA_RELEASE) * PENDULA_RELEASE);
+  float amp = mix(PENDULA_LEAST, PENDULA_MOST, K_swing);
 
   // The surface behind everything: the studio's dark, or the table.
   vec3 col = pendulaBackdrop(p, rd.y);
@@ -408,7 +463,7 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
     vec3 tp = ro + rd * tTable;
     float shadow = pendulaFrameShadow(tp.xz);
     // The bobs' shadows fall only in a patch of table, away from the lamp.
-    if (tp.x > -2.1 && tp.x < 3.3 && tp.z > -1.5 && tp.z < 0.7) shadow = max(shadow, pendulaBobShadow(tp.xz, cnt, n0, sp, br, fc, amp));
+    if (tp.x > -2.1 && tp.x < 3.3 && tp.z > -1.5 && tp.z < 0.7) shadow = max(shadow, pendulaBobShadow(tp.xz, cnt, n0, sp, br, c, fc, amp, env));
     float cut = hardEdge(shadow);
     col = pendulaTableColor(tp, rd, tTable, tTable * cellW, cut, pendulaBackdrop(p, 0.0));
     depth = tTable;
@@ -458,10 +513,11 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
     float L = PENDULA_LMAX * (n0 / k) * (n0 / k);
     vec2 ps = pendulaPassage(L, br, fi, cnt);
     float Lp = ps.x;
-    float ampP = amp * ps.y;
+    vec3 sw = pendulaSwing(k, L, c, fc, amp, env);
+    float ampP = sw.x * ps.y;
     float x = (fi + 0.5 - 0.5 * cnt) * sp;
     vec3 piv = vec3(x, PENDULA_PIVOT, 0.0);
-    vec3 bob = pendulaBobAt(piv, Lp, ampP, k, fc);
+    vec3 bob = pendulaBobAt(piv, Lp, ampP, sw.y);
     vec3 dir = (bob - piv) / Lp;
     vec3 eye = piv + dir * (Lp - br);
     vec3 tint = pendulaBobTint(fi / max(cnt - 1.0, 1.0));
@@ -469,9 +525,9 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
     // Where the bob has just been: three straight pieces along its arc.
     if (K_trail > 0.0) {
       float dc = (0.12 + 0.5 * K_trail) / k / 3.0;
-      vec3 q1 = pendulaBobAt(piv, Lp, ampP, k, fc - dc);
-      vec3 q2 = pendulaBobAt(piv, Lp, ampP, k, fc - 2.0 * dc);
-      vec3 q3 = pendulaBobAt(piv, Lp, ampP, k, fc - 3.0 * dc);
+      vec3 q1 = pendulaBobAt(piv, Lp, ampP, pendulaPhaseAgo(sw, k, fc, dc));
+      vec3 q2 = pendulaBobAt(piv, Lp, ampP, pendulaPhaseAgo(sw, k, fc, 2.0 * dc));
+      vec3 q3 = pendulaBobAt(piv, Lp, ampP, pendulaPhaseAgo(sw, k, fc, 3.0 * dc));
       vec3 mid = 0.25 * (bob + q1 + q2 + q3);
       float reach = max(max(length(bob - mid), length(q1 - mid)), max(length(q2 - mid), length(q3 - mid))) + 0.04;
       vec3 om = ro - mid;

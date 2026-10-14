@@ -73,6 +73,7 @@ import {
   KIND_BIKE,
   KIND_CHILD,
   KIND_KEI,
+  KIND_PORTER,
   KIND_TAXI,
   LAMPS,
   LANE_EB_BIKE,
@@ -305,6 +306,7 @@ const int STREET_KIND_CHILD = ${KIND_CHILD};
 const int STREET_KIND_BIKE = ${KIND_BIKE};
 const int STREET_KIND_TAXI = ${KIND_TAXI};
 const int STREET_KIND_KEI = ${KIND_KEI};
+const int STREET_KIND_PORTER = ${KIND_PORTER};
 const vec4 STREET_SIZE[${SHAPES.length}] = vec4[${SHAPES.length}](${sizes}); // length, width, body, top
 const vec2 STREET_CABIN[${SHAPES.length}] = vec2[${SHAPES.length}](${cabins}); // cabin back, front
 const float STREET_TILE_X0 = ${f(TILE_X0)};
@@ -396,10 +398,12 @@ StreetHit streetMiss() {
   return h;
 }
 
-// The hour, set once per cell by sceneStreet.
+// The hour, set once per cell by streetHour.
 Sky streetSky;
 float streetDark;     // 0 day .. 1 night (a heavy sky darkens the day)
 float streetOver;     // 0 clear .. 1 overcast
+float streetStorm;    // the rain's or snow's weight 0..1
+vec3 streetBounce;   // the city's own warm light bounced about at night
 float streetWet;      // uWeather.x
 float streetLying;    // uWeather.y
 float streetLit;      // share of the windows lit
@@ -1452,18 +1456,20 @@ float streetUmbrella(vec3 ro, vec3 rd, vec2 c, float y, float r, float spin, out
 }
 
 // A walker (agent id, its two texels): head, coat, legs, bag, and umbrella. A clear vinyl umbrella
-// goes to veil, to be laid over what is under it.
+// goes to veil, to be laid over what is under it. The late delivery's driver (a porter) wears a work
+// jacket and cap and wheels a hand truck before it, with a1.y crates stacked on it.
 void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
   vec3 F = vec3(a0.x, 0.0, a0.y + STREET_ZREF);
   bool child = int(a0.w + 0.5) == STREET_KIND_CHILD;
+  bool porter = int(a0.w + 0.5) == STREET_KIND_PORTER;
   float seed = a1.w;
   float open = a1.x;
-  if (streetNear(F.xz, 2.3) > (open > 0.02 ? 0.95 : 0.5)) return;
+  if (streetNear(F.xz, 2.3) > (porter ? 1.15 : open > 0.02 ? 0.95 : 0.5)) return;
   float h = child ? 1.06 + 0.12 * fract(seed * 7.13) : 1.56 + 0.26 * fract(seed * 7.13);
   float k = h / 1.7;
   vec2 fw = vec2(cos(a0.z), sin(a0.z));
   vec2 lf = vec2(-fw.y, fw.x);
-  float look = a1.y;
+  float look = porter ? 0.0 : a1.y;
   float best = hit.t;
   int part = -1;
   vec3 nb = vec3(0.0, 1.0, 0.0);
@@ -1559,6 +1565,34 @@ void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hi
       nb = vec3(bn.x * fw.x + bn.z * lf.x, bn.y, bn.x * fw.y + bn.z * lf.y);
     }
   }
+  // The porter's hand truck: two rails up to a handle, the nose plate at their foot, and the crates
+  // stacked on it, all turned to its heading.
+  float crateY = 0.0;
+  if (porter) {
+    vec3 po = ro - F;
+    vec3 pl = vec3(dot(po.xz, fw), po.y, dot(po.xz, lf));
+    vec3 pinv = streetInv(ld);
+    vec3 pn;
+    for (int r = 0; r < 4; r++) {
+      vec3 lo3 = r == 0 ? vec3(0.36, 0.0, 0.17) : r == 1 ? vec3(0.36, 0.0, -0.23) : r == 2 ? vec3(0.3, 1.04, -0.23) : vec3(0.44, 0.0, -0.24);
+      vec3 hi3 = r == 0 ? vec3(0.42, 1.12, 0.23) : r == 1 ? vec3(0.42, 1.12, -0.17) : r == 2 ? vec3(0.42, 1.12, 0.23) : vec3(0.98, 0.05, 0.24);
+      float tp = streetBox(pl, ld, pinv, lo3, hi3, pn);
+      if (tp > 0.0 && tp < best) {
+        best = tp;
+        part = 5;
+        nb = vec3(pn.x * fw.x + pn.z * lf.x, pn.y, pn.x * fw.y + pn.z * lf.y);
+      }
+    }
+    if (a1.y > 0.5) {
+      float tp = streetBox(pl, ld, pinv, vec3(0.46, 0.05, -0.21), vec3(0.96, 0.05 + 0.29 * floor(a1.y + 0.5), 0.21), pn);
+      if (tp > 0.0 && tp < best) {
+        best = tp;
+        part = 6;
+        nb = vec3(pn.x * fw.x + pn.z * lf.x, pn.y, pn.x * fw.y + pn.z * lf.y);
+        crateY = pl.y + ld.y * tp;
+      }
+    }
+  }
   if (part < 0) return;
   hit.t = best;
   hit.kind = STREET_K_AGENT;
@@ -1567,7 +1601,7 @@ void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hi
   hit.emit = vec3(0.0);
   hit.gloss = 0.15;
   hit.snow = 0.0;
-  vec3 coat = child ? (fract(seed * 2.9) < 0.6 ? vec3(0.55, 0.75, 0.92) : vec3(0.95, 0.6, 0.62)) : STREET_COAT[int(fract(seed * 3.71) * 8.0)];
+  vec3 coat = porter ? vec3(0.16, 0.27, 0.22) : child ? (fract(seed * 2.9) < 0.6 ? vec3(0.55, 0.75, 0.92) : vec3(0.95, 0.6, 0.62)) : STREET_COAT[int(fract(seed * 3.71) * 8.0)];
   if (part == 0) {
     vec3 c = STREET_BROLLY[colour];
     if (colour == 9) {
@@ -1587,6 +1621,7 @@ void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hi
     hit.albedo = mix(hair, vec3(0.86, 0.66, 0.53), face);
     // The outing's yellow hats; a few adults in a knit cap.
     if (child) hit.albedo = mix(vec3(0.98, 0.82, 0.08), hit.albedo, face * step(nb.y, 0.55));
+    else if (porter) hit.albedo = mix(hit.albedo, vec3(0.1, 0.16, 0.13), step(0.3, nb.y) * (1.0 - face));
     else if (fract(seed * 11.3) < 0.1) hit.albedo = mix(hit.albedo, STREET_COAT[int(fract(seed * 4.3) * 8.0)] + 0.08, step(0.3, nb.y) * (1.0 - face));
     hit.snow = 0.4;
   } else if (part == 2) {
@@ -1594,9 +1629,19 @@ void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hi
     hit.snow = 0.25;
   } else if (part == 3) {
     hit.albedo = child ? vec3(0.08, 0.1, 0.2) : fract(seed * 8.7) < 0.3 ? vec3(0.13, 0.17, 0.3) : vec3(0.05, 0.05, 0.06);
-  } else {
+  } else if (part == 4) {
     float kind = fract(seed * 9.31);
     hit.albedo = child ? vec3(0.7, 0.1, 0.1) : kind < 0.22 ? vec3(0.08, 0.08, 0.09) : kind < 0.34 ? vec3(0.35, 0.22, 0.12) : vec3(0.92, 0.92, 0.9);
+  } else if (part == 5) {
+    hit.albedo = vec3(0.42, 0.44, 0.47);
+    hit.gloss = 0.5;
+  } else {
+    // Folding crates, a colour a crate, each with a darker rim.
+    float level = floor((crateY - 0.05) / 0.29);
+    vec3 crate = mod(level, 3.0) < 0.5 ? vec3(0.1, 0.33, 0.78) : mod(level, 3.0) < 1.5 ? vec3(0.12, 0.55, 0.3) : vec3(0.95, 0.72, 0.1);
+    hit.albedo = crate * (fract((crateY - 0.05) / 0.29) > 0.84 ? 0.6 : 1.0);
+    hit.gloss = 0.3;
+    hit.snow = nb.y > 0.5 ? 1.0 : 0.0;
   }
 }
 
@@ -1768,7 +1813,7 @@ void streetAgent(float code, vec3 ro, vec3 rd, inout StreetHit hit, inout Street
   vec4 a1 = texelFetch(uSim0, ivec2(id, 1), 0);
   int kind = int(a0.w + 0.5);
   if (kind <= 0) return;
-  if (kind <= STREET_KIND_CHILD) streetWalker(id, a0, a1, ro, rd, hit, veil);
+  if (kind <= STREET_KIND_CHILD || kind == STREET_KIND_PORTER) streetWalker(id, a0, a1, ro, rd, hit, veil);
   else if (kind == STREET_KIND_BIKE) streetBike(id, a0, a1, ro, rd, hit, veil);
   else streetCar(id, a0, a1, ro, rd, hit);
 }
@@ -1785,7 +1830,7 @@ void streetLamps(float code, vec3 p, vec3 n, vec3 ro, vec3 rd, float tHit, float
   vec4 a0 = texelFetch(uSim0, ivec2(id, 0), 0);
   vec4 a1 = texelFetch(uSim0, ivec2(id, 1), 0);
   int kind = int(a0.w + 0.5);
-  if (kind < STREET_KIND_BIKE) return;
+  if (kind < STREET_KIND_BIKE || kind == STREET_KIND_PORTER) return;
   bool bike = kind == STREET_KIND_BIKE;
   float seed = a1.w;
   float on = smoothstep(0.18 + 0.12 * fract(seed * 7.7), 0.3 + 0.12 * fract(seed * 7.7), streetDark);
@@ -1827,8 +1872,8 @@ void streetLamps(float code, vec3 p, vec3 n, vec3 ro, vec3 rd, float tHit, float
     float g = streetGlow(ro, rd, L, 0.6 + 0.4 * streetWet, tHit);
     glow += c * (step(th, min(g, 1.0)) * 0.4 + step(1.0, g) * 1.1);
     if (ground && rough >= 0.0) streaks += c * step(th, streetStreak(p.xz, L, rough)) * (isHead ? 0.45 : 0.65);
-    // Blinkers: amber on the turning side, front and back.
-    if (!bike && a1.y != 0.0 && s == a1.y) {
+    // Blinkers: amber on the turning side, front and back; hazards (2) on both sides at once.
+    if (!bike && a1.y != 0.0 && (s == a1.y || a1.y > 1.5)) {
       float blink = step(0.5, fract(streetTm * 1.5 + seed * 3.0));
       glow += STREET_AMBER * blink * step(th, min(streetGlow(ro, rd, L + vec3(isHead ? -0.05 : 0.05, 0.0, 0.0), 0.3, tHit), 1.0)) * 0.6;
     }
@@ -1860,29 +1905,33 @@ float streetTiltAt() {
   return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * leave;
 }
 
-Shade sceneStreet(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  streetTm = t * uMotion;
-
-  // The hour, and the weather over it: rain or snow close the sky, flatten and dim the light; at
-  // night the city's own light bounces about, warmer under low cloud.
+// The hour, and the weather over it: rain or snow close the sky, flatten and dim the light; at
+// night the city's own light bounces about, warmer under low cloud. Sets the clock, sky and light
+// globals above for everything the cell then draws.
+void streetHour() {
+  streetTm = uMotionTime;
   streetSky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
-  float storm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
-  streetOver = clamp(storm * 8.0, 0.0, 1.0) * (0.65 + 0.35 * storm);
+  streetStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
+  streetOver = clamp(streetStorm * 8.0, 0.0, 1.0) * (0.65 + 0.35 * streetStorm);
   streetSky.sunColor *= 1.0 - 0.85 * streetOver;
   streetSky.moonColor *= 1.0 - 0.75 * streetOver;
-  streetSky.ambient = mix(streetSky.ambient, vec3(dot(streetSky.ambient, LUMA)), 0.5 * streetOver) * (1.0 - 0.35 * storm);
+  streetSky.ambient = mix(streetSky.ambient, vec3(dot(streetSky.ambient, LUMA)), 0.5 * streetOver) * (1.0 - 0.35 * streetStorm);
   streetDark = clamp(1.0 - streetSky.day * (1.0 - 0.5 * streetOver), 0.0, 1.0);
   streetSun = streetSky.sunColor * 1.5;
   // At night the sky's light all but goes: the street is lit by its own lamps, shops, signs and
   // headlights, with only a faint warm bounce between them (more under low cloud, which the city
   // lights from below).
-  vec3 bounce = vec3(0.034, 0.028, 0.024) * streetDark * (1.0 + 0.8 * streetOver);
-  streetAmbient = streetSky.ambient * mix(1.4, 0.4, streetDark) + bounce;
-  streetDeck = mix(vec3(dot(streetSky.ambient, LUMA)) * 1.5, vec3(0.13, 0.1, 0.09), streetDark) * (1.0 - 0.3 * storm);
+  streetBounce = vec3(0.034, 0.028, 0.024) * streetDark * (1.0 + 0.8 * streetOver);
+  streetAmbient = streetSky.ambient * mix(1.4, 0.4, streetDark) + streetBounce;
+  streetDeck = mix(vec3(dot(streetSky.ambient, LUMA)) * 1.5, vec3(0.13, 0.1, 0.09), streetDark) * (1.0 - 0.3 * streetStorm);
   streetWet = uWeather.x;
   streetLying = uWeather.y;
   streetLit = clamp(K_windows * (0.35 + 0.65 * streetDark), 0.0, 1.0);
+}
+
+Shade sceneStreet(vec2 uv, vec2 cell, float t) {
+  float aspect = uRes.x / uRes.y;
+  streetHour();
   if (uSimOn.z > 0.5) {
     streetSignal[0] = texelFetch(uSim2, ivec2(0, 0), 0);
     streetSignal[1] = texelFetch(uSim2, ivec2(1, 0), 0);
@@ -1955,7 +2004,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
 
   // Light on the point: sky, sun, street lamps, shops; the lamps' glow along the ray and their
   // streaks in the wet street; then the vehicles' lamps.
-  vec3 E = streetAmbient * (0.55 + 0.45 * n.y) + bounce * 0.35;
+  vec3 E = streetAmbient * (0.55 + 0.45 * n.y) + streetBounce * 0.35;
   if (streetSky.sun.y > 0.0) E += streetSun * max(dot(n, streetSky.sun), 0.0) * streetSunlit(P);
   vec3 glow = signHalo;
   vec3 streaks = vec3(0.0);
@@ -1980,7 +2029,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
     float dd = length(G.xz + streetLean * yy - L.xz);
     float rad = 0.2 + 0.72 * (L.y - yy);
     float shown = (ro.y - yy) / -rd.y < hit.t ? 1.0 : 0.0;
-    glow += c * exp(-dd * dd / (rad * rad)) * shown * (0.02 + 0.1 * max(K_fog, storm)) * smoothstep(0.0, 1.0, L.y - yy);
+    glow += c * exp(-dd * dd / (rad * rad)) * shown * (0.02 + 0.1 * max(K_fog, streetStorm)) * smoothstep(0.0, 1.0, L.y - yy);
     if (ground && wet > 0.05) streaks += c * streetStreak(P.xz, L, rough) * 0.35;
   }
   E += streetSpill(P) * (0.5 + 0.5 * max(n.y, 0.0) + 0.4 * max(n.z, 0.0));
@@ -2145,11 +2194,11 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
     }
   }
   // The air: lamp glow, then fog, then the falling rain or snow.
-  float wetAir = 1.0 + 1.5 * max(K_fog, storm);
+  float wetAir = 1.0 + 1.5 * max(K_fog, streetStorm);
   col += glow * wetAir;
   accent += green * 0.6;
   if (K_fog > 0.0) {
-    vec3 fogCol = streetAmbient * 1.4 + bounce * 2.0 + glow * 0.3;
+    vec3 fogCol = streetAmbient * 1.4 + streetBounce * 2.0 + glow * 0.3;
     col = mix(col, fogCol, fogAmount(K_fog * 1.4, hit.t / 90.0, P.y / 12.0));
   }
   float depth = weatherDepth(hit.t);
@@ -2159,7 +2208,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
     // point moves with the camera.
     vec3 vanish = rainVanish(rainFallDir(K_rain, K_wind), vec3(1.0, 0.0, 0.0), vec3(0.0, cp, sp), vec3(0.0, -sp, cp), STREET_FOCAL);
     Precip pr = rainFallSeen(uv, aspect, t, K_rain, K_wind, depth, vanish);
-    vec3 air = streetDeck * 0.9 + bounce + glow * 0.25;
+    vec3 air = streetDeck * 0.9 + streetBounce + glow * 0.25;
     col = mix(col, air, pr.veil);
     // At the window there are no drops at arm's length.
     col = mix(col, dropLight * 1.1, pr.cover * (1.0 - pr.near));

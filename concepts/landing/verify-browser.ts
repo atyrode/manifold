@@ -16,9 +16,13 @@ import { verifyTidepoolExchange } from "./src/scenes/tidepool/exchange.verify.ts
 import { verifyRuntime } from "./src/runtime.verify.ts";
 import { fallsGorgeCheck } from "./src/scenes/falls/gorge.verify.ts";
 import { skywardSnowCheck } from "./src/scenes/skyward/snow.verify.ts";
+import { mobileVerify } from "./src/scenes/mobile/mobile.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
+import { verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
+import { verifyFilmRupture } from "./src/scenes/film/rupture.verify.ts";
+import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -266,6 +270,7 @@ export function verify(): Record<string, unknown> {
     "Woodland cover 0 left trees standing",
   );
   gl.deleteProgram(terrain);
+  result.mobile = mobileVerify(gl);
 
   result.orbitRingDepth = verifyOrbitRingDepth(gl);
   result.swellRelief = verifySwellRelief(gl);
@@ -281,6 +286,8 @@ export function verify(): Record<string, unknown> {
   Object.assign(result, verifyCountryAnimals(gl));
   result.skywardSnow = skywardSnowCheck(gl);
   result.fallsGorge = fallsGorgeCheck(gl);
+  Object.assign(result, verifyMotionClocks(gl));
+  result.physics = { film: verifyFilmRupture(gl), pendula: verifyPendulaSwing(gl) };
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

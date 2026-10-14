@@ -56,6 +56,10 @@ const PAD_HZ = [0.32, 0.55] as const;
 const PAD_DAMPING = 0.16;
 /** Deflection (units) per unit of breeze at the knob's top. */
 const BREEZE_SWAY = 0.016;
+/** A gust (scheduled, a "now", the stand leaving) blows at least this much breeze's worth, so it still
+ *  shakes the pads in air that is otherwise still; the breeze's own waves scale with the knob and stop
+ *  when it is off. */
+const GUST_FLOOR = 0.08;
 /** The pointer's push: force per unit of pointer speed (units/s), its reach (pad radii), and the cap. */
 const HOVER_GAIN = 0.3;
 const HOVER_REACH = 1.5;
@@ -631,16 +635,18 @@ class BonsaiSim implements SceneSim {
 
   #stepPads(h: number, push: number): void {
     const t = this.#clock;
-    const amp = BREEZE_SWAY * Math.max(this.#breeze, 0.08);
+    const amp = BREEZE_SWAY * Math.max(this.#breeze, GUST_FLOOR);
+    // The breeze's share of that: all of it from GUST_FLOOR up, fading to none with the breeze off.
+    const calm = Math.min(1, Math.max(0, this.#breeze) / GUST_FLOOR);
     const px = this.#pointerX;
     for (const [i, s] of this.#pads.entries()) {
       const pad = this.#tree.pads[i];
       if (!pad) continue;
       // The breeze: slow waves rolling across from the left, each pad feeling them a little late.
       const lag = t - pad.x * 1.6;
-      const wind = 0.5 * Math.sin(0.62 * lag + s.phase * 0.25) + 0.3 * Math.sin(1.07 * lag + 1.3) + 0.2 * Math.sin(0.29 * lag + s.phase) + 1.6 * gustPulse(t - this.#gustAt - pad.x * 1.2) * this.#gustStrength;
+      const wind = calm * (0.5 * Math.sin(0.62 * lag + s.phase * 0.25) + 0.3 * Math.sin(1.07 * lag + 1.3) + 0.2 * Math.sin(0.29 * lag + s.phase)) + 1.6 * gustPulse(t - this.#gustAt - pad.x * 1.2) * this.#gustStrength;
       let fx = s.omega * s.omega * amp * wind * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
-      let fy = s.omega * s.omega * amp * 0.3 * Math.sin(0.83 * lag + s.phase);
+      let fy = s.omega * s.omega * amp * 0.3 * calm * Math.sin(0.83 * lag + s.phase);
       if (push !== 0) fx -= push * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
       if (px !== undefined) {
         const ex = (px - s.sx) / s.rx;
