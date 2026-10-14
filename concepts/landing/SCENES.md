@@ -33,7 +33,7 @@ mathematics. All have a first implementation in the lab:
 | Idea | Scene id | Simulation | Shared engine |
 |---|---|---|---|
 | Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves | `HeightField` |
-| Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube | |
+| Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube; a moss pad on its stone softens the knock for a quiet clock | |
 | Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, contacts | |
 | Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice | |
 | Kelp forest | `kelp` | Buoyant Verlet stipes in surge, boids school | `VerletSystem` |
@@ -51,7 +51,7 @@ mathematics. All have a first implementation in the lab:
 | Hyperbolic tiling | `hyperbolic` | Möbius glide over a {p,q} weave | |
 | River delta from above | `delta` | Shallow water erosion and deposition | `GpuCompute` |
 | Fractals | `fractal` | Julia walk, Mandelbrot dive, Apollonian gasket, Newton garden | |
-| Prism | `prism` | Dispersion through glass, total internal reflection | |
+| Prism | `prism` | Dispersion through glass, total internal reflection; Newton's recombination by a second prism that slides in along the fan and steps back when the first turns into it | |
 
 ## Slices of life and more
 
@@ -189,6 +189,9 @@ the spirit of lo-fi study streams.
   to deep night, rain on the glass or snow as options (shared with the weather layer).
 - Interior hints at the frame edges: curtain stirring in the breeze, a plant or a mug on the sill,
   warm lamp light spilling onto the sill against the cool city.
+- A quiet shelter needs no mode of its own: rain falling outside, a cat at peace, steam rising
+  straight and a curtain barely stirring are the existing knobs
+  (`restless=0.1&steam-amount=0.8&curtain-amount=0.25&rain=1&rain-amount=0.4&wind=0.05`).
 
 ## Shared options worth building once
 
