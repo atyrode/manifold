@@ -30,10 +30,15 @@ export interface RenderSettings {
   knobs: Params;
   followPointer: boolean;
   view: ViewId;
+  /** Scenes enter and leave with their own choreography and a dissolve, instead of cutting. */
+  passage: boolean;
 }
 
-/** Texture units: `uSim0..uSim3`, one per sim slot. */
+/** Texture units: `uSim0..uSim3`, one per sim slot, then `uLeaving`. */
 const SIM_SLOTS = 4;
+const LEAVING_UNIT = SIM_SLOTS;
+/** Seconds over which the outgoing scene's last frame dissolves into the incoming scene. */
+export const PASSAGE_DISSOLVE = 0.9;
 /** Scene-clock time of a trigger or press that has not happened. */
 const NEVER = -1e4;
 /** Presses on these belong to the lab or the page's own controls, not to the scene. */
@@ -44,6 +49,7 @@ const uniformNames = [
   "uBg", "uInk", "uAccent", "uParams", "uView",
   "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
   "uProgress", "uTriggers", "uSim0", "uSim1", "uSim2", "uSim3", "uSimOn", "uWeather",
+  "uPassage", "uDissolve", "uLeaving",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
@@ -147,6 +153,21 @@ export class DitherRenderer {
   #progress = -1;
   /** `uWeather`: how wet the world is and how much snow lies, 0..1 each, on the scene clock. */
   readonly #weather = { wet: 0, lying: 0 };
+  /**
+   * Scene passage, in real seconds (`requestAnimationFrame` time) so it plays whatever the motion:
+   * while `#leaving` is set the outgoing scene keeps drawing with its own settings, playing its exit
+   * (its `start` is NaN until the first frame stamps it); its last frame is then kept in
+   * `#leavingFrame` and the next scene, built afresh (`#reenter`, even the same one replayed),
+   * enters, dissolving out of that frame. `#arrival.start`: NaN on an entrance's first frame (see
+   * `#draw`), -Infinity when arrived without one (a cut).
+   */
+  #leaving: { settings: RenderSettings; start: number } | undefined;
+  readonly #arrival = { start: -Infinity, fromFrame: false };
+  #reenter = false;
+  readonly #leavingFrame: WebGLTexture;
+  /** `SimFrame.passage` and `uPassage`, rewritten in place each frame. */
+  readonly #passage = { enter: 1, exit: 0 };
+  readonly #reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   /** WebGL version and renderer, for diagnosing remote reports. */
   glInfo = "";
 
@@ -157,7 +178,6 @@ export class DitherRenderer {
     this.#canvas = canvas;
     this.#settings = settings;
     this.#frozen = frozen;
-    this.#params.set(settings.params.slice(0, MAX_PARAMS));
 
     this.#vertex = compile(gl, gl.VERTEX_SHADER, vertexSource, "vertex");
     gl.bindVertexArray(gl.createVertexArray());
@@ -168,6 +188,12 @@ export class DitherRenderer {
     this.#blank = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    // The outgoing scene's last frame, copied from the canvas when its exit ends.
+    this.#leavingFrame = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.#leavingFrame);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0]));
 
     const mouse = this.#mouse;
     const track = (event: PointerEvent) => {
@@ -222,15 +248,30 @@ export class DitherRenderer {
     this.#progress = progress;
   }
 
+  /** Play the current scene's exit, then its entrance with a fresh simulation, even with passages off. */
+  replayPassage(): void {
+    if (this.#scene === undefined || this.#leaving !== undefined || this.#frozen) return;
+    this.#leaving = { settings: this.#settings, start: Number.NaN };
+  }
+
   update(settings: RenderSettings): void {
+    const previous = this.#settings;
     this.#settings = settings;
+    // A new scene: the one on screen leaves first, with the settings it was drawn with. A switch
+    // while it is already leaving only changes where it goes.
+    if (settings.scene !== previous.scene && this.#scene !== undefined && this.#leaving === undefined && this.#passing(settings)) {
+      this.#leaving = { settings: previous, start: Number.NaN };
+    }
     if (settings.scene !== this.#triggerScene) {
       this.#triggerScene = settings.scene;
       this.#triggers.fill(NEVER);
       this.#mouse.pressedAt = NEVER;
     }
-    this.#params.fill(0);
-    this.#params.set(settings.params.slice(0, MAX_PARAMS));
+  }
+
+  /** Whether scenes pass in and out at all: off when asked, frozen, still, or under reduced motion. */
+  #passing(settings: RenderSettings): boolean {
+    return settings.passage && !this.#frozen && settings.motion > 0 && !this.#reducedMotion.matches;
   }
 
   start(): void {
@@ -271,6 +312,7 @@ export class DitherRenderer {
     gl.uniform1i(uniforms.uConMarkStar, figures.markStar);
     gl.uniform1i(uniforms.uConMarkLine, figures.markLine);
     [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) => gl.uniform1i(location, slot));
+    gl.uniform1i(uniforms.uLeaving, LEAVING_UNIT);
     return { program, uniforms };
   }
 
@@ -321,7 +363,11 @@ export class DitherRenderer {
     this.#lastFrame = now;
     if (dt > 0) this.fps = this.fps === 0 ? 1 / dt : this.fps * 0.92 + (1 / dt) * 0.08;
     const step = this.#paused || this.#frozen ? 0 : dt;
-    const s = this.#settings;
+    const seconds = now / 1000;
+    const leaving = this.#leaving;
+    if (leaving !== undefined && Number.isNaN(leaving.start)) leaving.start = seconds;
+    // A leaving scene draws as it was set when it began to leave.
+    const s = leaving?.settings ?? this.#settings;
     const motion = this.#frozen ? 0 : s.motion;
     this.#clock += step;
     this.#motionClock += step * motion;
@@ -340,15 +386,37 @@ export class DitherRenderer {
     const pointer = this.#pointerState();
 
     const current = this.#scene;
-    const scene = current && current.id === s.scene ? current : this.#enter(s.scene);
+    const scene = current && current.id === s.scene && !this.#reenter ? current : this.#enter(s.scene);
     const entered = scene !== current;
+    const arrival = this.#arrival;
+    if (entered) {
+      // After a passage it dissolves out of the kept frame; on the page's first frame out of the bare
+      // page; after a cut it is simply there. A passing entrance's clock starts on its second frame:
+      // the first one compiles the program on the GPU (drivers do it at the first draw), which can take
+      // longer than the whole dissolve, so it is shown as the dissolve's start, the old frame.
+      const passed = this.#reenter;
+      arrival.start = passed || (current === undefined && this.#passing(s)) ? Number.NaN : -Infinity;
+      arrival.fromFrame = passed;
+      this.#reenter = false;
+    } else if (Number.isNaN(arrival.start)) {
+      arrival.start = seconds;
+    }
+    const choreography = sceneDefs[scene.id].passage;
+    const since = Number.isNaN(arrival.start) ? 0 : Math.max(0, seconds - arrival.start);
+    const passage = this.#passage;
+    passage.enter = Math.min(1, since / Math.max(choreography?.enter ?? PASSAGE_DISSOLVE, 1e-3));
+    passage.exit = leaving === undefined ? 0 : (choreography?.exit ?? 0) <= 0 ? 1 : Math.min(1, (seconds - leaving.start) / (choreography?.exit ?? 1));
+    const dissolve = Math.max(0, 1 - since / PASSAGE_DISSOLVE);
     const program = scene.program;
     if (!program) {
       gl.viewport(0, 0, width, height);
       gl.clearColor(...rgb(s.bg), 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
+      if (leaving !== undefined) this.#left(width, height);
       return;
     }
+    const params = this.#params;
+    for (let i = 0; i < MAX_PARAMS; i++) params[i] = s.params[i] ?? 0;
     // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
     // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
     // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s
@@ -388,6 +456,7 @@ export class DitherRenderer {
       triggers: this.#triggers,
       fired: this.#fired,
       pointer,
+      passage,
     }) ?? [];
 
     gl.viewport(0, 0, width, height);
@@ -396,6 +465,8 @@ export class DitherRenderer {
       gl.activeTexture(gl.TEXTURE0 + slot);
       gl.bindTexture(gl.TEXTURE_2D, simTextures[slot] ?? this.#blank);
     }
+    gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.#leavingFrame);
 
     const u = program.uniforms;
     gl.uniform2f(u.uRes, width, height);
@@ -416,6 +487,19 @@ export class DitherRenderer {
     gl.uniform1fv(u.uTriggers, this.#triggers);
     gl.uniform4f(u.uSimOn, simTextures[0] ? 1 : 0, simTextures[1] ? 1 : 0, simTextures[2] ? 1 : 0, simTextures[3] ? 1 : 0);
     gl.uniform2f(u.uWeather, weather.wet, weather.lying);
+    gl.uniform2f(u.uPassage, passage.enter, passage.exit);
+    gl.uniform2f(u.uDissolve, dissolve, arrival.fromFrame ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (leaving !== undefined && passage.exit >= 1) this.#left(width, height);
+  }
+
+  /** The exit has played: keep its last frame to dissolve out of, and enter the scene now set. */
+  #left(width: number, height: number): void {
+    const gl = this.#gl;
+    gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.#leavingFrame);
+    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGB, 0, 0, width, height, 0);
+    this.#leaving = undefined;
+    this.#reenter = true;
   }
 }

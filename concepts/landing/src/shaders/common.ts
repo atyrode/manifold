@@ -206,6 +206,9 @@ uniform sampler2D uSim2;
 uniform sampler2D uSim3;
 uniform vec4 uSimOn;      // 1 in each component whose uSim texture the simulation supplied
 uniform vec2 uWeather;    // x: how wet the world is 0..1 (rises while it rains, dries after); y: how much snow lies 0..1 (settles while it snows, melts after)
+uniform vec2 uPassage;    // x: how far the scene has come in 0..1 (1 once arrived, and with passages off); y: how far it has gone out 0..1 (0 unless leaving)
+uniform vec2 uDissolve;   // x: share of the previous frame still showing 1..0; y: 1 when that is uLeaving's kept frame, 0 for the bare page (uBg)
+uniform sampler2D uLeaving; // the outgoing scene's last frame
 
 out vec4 outColor;
 
@@ -298,6 +301,14 @@ float starfield(vec2 cell, float density, float twinkle, float scatter) {
 // Seconds since a "now" button fired (negative or huge when idle).
 float sinceTrigger(int slot) {
   return uTime - uTriggers[slot];
+}
+
+// A scene's entrance and exit (scenes/types.ts SceneDef.passage), linear in real time: ease them.
+float passageIn() {
+  return uPassage.x;
+}
+float passageOut() {
+  return uPassage.y;
 }
 
 struct Shade {

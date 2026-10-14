@@ -42,4 +42,7 @@ export const campfireScene: SceneDef = {
   glsl: campfireGlsl,
   entry: "sceneCampfire",
   theme: skyTheme(params),
+  // Entrance: embers in a dark night, a flame catches and grows, the firelight spreads, sparks start.
+  // Exit: the fire dies down to embers and a last curl of smoke, the firelight withdraws.
+  passage: { enter: 4.5, exit: 2.2 },
 };

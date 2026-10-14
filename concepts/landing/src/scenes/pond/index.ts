@@ -2,7 +2,7 @@
 // an overhead canopy. The plants and canopy are painted on the CPU (sim.ts) and read as uSim0/uSim1.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { pondGlsl } from "./shader.ts";
+import { POND_PASSAGE, pondGlsl } from "./shader.ts";
 import { pondSim } from "./sim.ts";
 
 // Knobs, in uParams order; the sim reads them by key (KnobReader).
@@ -78,5 +78,8 @@ export const pondScene: SceneDef = {
   },
   glsl: pondGlsl,
   entry: "scenePond",
+  // The koi swim in from beyond the frame and the light comes up; on leaving they glide out and a
+  // breeze crosses the water.
+  passage: POND_PASSAGE,
   sim: (gl) => pondSim(gl, params),
 };

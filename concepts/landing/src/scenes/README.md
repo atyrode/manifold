@@ -87,6 +87,31 @@ amplitudes. Library functions with a `tm` or `motionTime` parameter take `uMotio
 ones that take `t` scale it by `uMotion` themselves, so pass them `t`. `main` already stills
 `shimmer` with the motion: don't multiply it by `uMotion` again.
 
+### Entrances and exits
+
+Switching scenes (or first loading the page) is a passage, not a cut. The outgoing scene plays its
+exit, drawn with its own settings. Its last frame is then kept, and the incoming scene, built afresh
+with a new sim, dissolves out of it over 0.9 s, cell by cell in ordered-dither order, the middle
+first. The entrance's clock starts on its second frame, because the first one is spent compiling the
+program and shows only the old frame. Every scene gets the dissolve for free.
+
+A scene can make the passage its own:
+- Set `passage: { enter, exit }` (seconds) on its `SceneDef`.
+- Read `passageIn()` and `passageOut()` in GLSL, or `frame.passage.enter` and `.exit` in a sim.
+  - `passageIn()` runs linearly 0→1 over `enter` and then stays 1.
+  - `passageOut()` is 0 until the scene leaves, then 0→1 over `exit`.
+  - Ease them yourself.
+- Make it part of the world: a camera settling (`country`), a fire catching (`campfire`), koi
+  swimming in from beyond the frame (`pond`), lanterns arriving and lighting (`lanterns`), a sheet
+  sliding in under the pen (`harmonograph`).
+- Keep the interesting part after the first ~0.9 s, which the dissolve half covers, and end an exit
+  dimmer or simpler.
+- At rest (`passageIn() == 1`, `passageOut() == 0`) the scene must be exactly what it was.
+
+Passages run in real time whatever the motion. The lab's Motion section switches them off (`&transitions=off`)
+and replays the current scene's exit and entrance with "now". They are skipped at motion 0 and under
+reduced motion.
+
 ### Hard edges
 
 Moving hard edges flicker under the dither when a soft edge steps each colour channel at its own
@@ -263,8 +288,8 @@ surfaces and change them. Never paste them over the frame as a flat layer.
 
 When a scene needs state (particles, a height field, ink, a growing crystal, the pointer's wake),
 give it a `sim: (gl) => SceneSim`. Each frame the renderer calls `frame(SimFrame)` (dt, time,
-motionTime, motion, size, knob values, raw params, triggers, fired, pointer) and binds the returned
-textures as `uSim0..uSim3` (`uSimOn` says which are set).
+motionTime, motion, size, knob values, raw params, triggers, fired, pointer, passage) and binds the
+returned textures as `uSim0..uSim3` (`uSimOn` says which are set).
 
 Read knobs through a `KnobReader` (`src/params.ts`): `new KnobReader("<scene>", params, keys)`
 throws a KnobError at once for a missing key; then `value(frame, key)` is the knob as the shader

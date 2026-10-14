@@ -558,12 +558,16 @@ export class Lab {
       renderer?.setPaused(!renderer.paused);
       this.sync();
     });
+    const transitions = this.#switch("Scene transitions", () => this.#current().state.transitions === "on", (on) => this.#change({ transitions: on ? "on" : "off" }, true));
+    const replay = h("button", { type: "button", class: "fire", title: "Play this scene's exit, then its entrance, right now" }, icon("bolt"), h("span", {}, "now"));
+    replay.addEventListener("click", () => this.#host.renderer()?.replayPassage());
     const rows = [
       this.#row({ label: "Amount", help: "Overall animation. 0 is a still frame; triggered events still play.", block: motion.el, readout: () => (this.#current().state.motion === 0 ? "still" : `${Math.round(this.#current().state.motion * 100)}%`), modified: () => this.#current().state.motion !== this.#base().motion, reset: () => this.#change({ motion: this.#base().motion }, true) }),
       this.#row({ label: "Follow mouse", help: "Tilt and parallax the scene gently toward the pointer.", inline: [follow.el], modified: () => this.#current().state.mouse !== this.#base().mouse, reset: () => this.#change({ mouse: this.#base().mouse }, true) }),
+      this.#row({ label: "Transitions", help: "Scenes come in and leave gracefully: the old frame dissolves away in dither order, and many scenes play their own entrance and exit (a camera settling, a fire catching, lanterns arriving). Off: a straight cut. Skipped at motion 0 and under reduced motion; now plays it anyway.", inline: [replay, transitions.el], modified: () => this.#current().state.transitions !== this.#base().transitions, reset: () => this.#change({ transitions: this.#base().transitions }, true) }),
       this.#row({ label: "Clock", help: "Freeze time to study a frame (p). Unlike motion 0, a paused frame keeps its current pose.", block: play }),
     ];
-    this.#syncers.push(motion.sync, follow.sync, ...rows.map((row) => row.sync), () => {
+    this.#syncers.push(motion.sync, follow.sync, transitions.sync, ...rows.map((row) => row.sync), () => {
       const paused = this.#host.renderer()?.paused ?? false;
       play.replaceChildren(icon(paused ? "play" : "pause"), h("span", {}, paused ? "Play" : "Pause"));
     });
@@ -577,8 +581,8 @@ export class Lab {
         const { state } = this.#current();
         return [this.#host.renderer()?.paused ? "paused" : state.motion === 0 ? "still" : `${Math.round(state.motion * 100)}%`, state.mouse === "follow" ? "follows mouse" : "fixed camera"];
       },
-      modified: () => this.#current().state.motion !== this.#base().motion || this.#current().state.mouse !== this.#base().mouse,
-      reset: () => this.#change({ motion: this.#base().motion, mouse: this.#base().mouse }, true),
+      modified: () => this.#current().state.motion !== this.#base().motion || this.#current().state.mouse !== this.#base().mouse || this.#current().state.transitions !== this.#base().transitions,
+      reset: () => this.#change({ motion: this.#base().motion, mouse: this.#base().mouse, transitions: this.#base().transitions }, true),
       syncers: this.#syncers,
     });
   }

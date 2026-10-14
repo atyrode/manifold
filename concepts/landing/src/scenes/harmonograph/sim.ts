@@ -106,6 +106,8 @@ const HOVER_SECONDS = 2.0;
 const HOVER_LOWER = 0.8;
 /** Seconds to lower the pen onto a fresh sheet. */
 const LOWER_SECONDS = 1.0;
+/** Of the entrance's progress, the share the blank sheet takes to slide in; the pen then lowers and the figure begins. */
+const ARRIVE_SHARE = 0.7;
 /** How briskly the pen rises and falls (per second). */
 const LIFT_RATE = 5;
 /** The pen marks the paper below this lift. */
@@ -350,8 +352,11 @@ function markPoint(distance: number, size: number, out: Point): void {
  * slideOut  the sheet leaves; the pen drifts to the next figure's start
  * slideIn   a fresh sheet arrives
  * lower     the pen comes down on it
+ * arrive    the scene's entrance: a blank sheet slides in on the passage clock, then "lower" as after a sheet change
+ *
+ * The scene's exit is not a phase: the sim stops and the pen lifts as the sheet slides off (#leave).
  */
-type Phase = "draw" | "hover" | "sign" | "rest" | "slideOut" | "slideIn" | "lower";
+type Phase = "draw" | "hover" | "sign" | "rest" | "slideOut" | "slideIn" | "lower" | "arrive";
 type HoverTo = "mark" | "start";
 
 const ease = (s: number): number => 0.5 - 0.5 * Math.cos(Math.PI * clamp(s, 0, 1));
@@ -393,6 +398,13 @@ class HarmonographSim implements SceneSim {
   #renewEvent = false;
   #signed = false;
   #figureStarted = true;
+  /** Set on the first frame when the scene is entering: the first sheet arrives blank instead of part drawn. */
+  #arriving = false;
+  #born = false;
+  /** The entrance's progress, 0..1, as of this frame. */
+  #enterP = 1;
+  /** Where the sheet stood when the exit began (share of the slide distance); undefined until it begins. */
+  #leaveFrom: number | undefined;
   /** The sheet's centre, as a share of the slide distance (-1 gone left, 0 in place, +1 waiting right), and its tilt. */
   #u = 0;
   #tilt = 0;
@@ -430,6 +442,17 @@ class HarmonographSim implements SceneSim {
     // How far the sheet must slide to be wholly off screen.
     this.#slide = (0.5 * aspect) / harmonographScale(aspect) + HARMONOGRAPH.half * 1.04 + 0.1;
 
+    if (!this.#born) {
+      this.#born = true;
+      this.#arriving = frame.passage.enter < 1;
+    }
+    this.#enterP = clamp(frame.passage.enter, 0, 1);
+    if (frame.passage.exit > 0) {
+      this.#leave(frame);
+      this.#writeState();
+      return this.#textures;
+    }
+
     const markOn = st.mark > 0;
     if (markOn && !this.#markWas) this.#markEvent = true;
     if (!markOn && this.#markWas) this.#unsign();
@@ -460,14 +483,33 @@ class HarmonographSim implements SceneSim {
     this.#stateTexture.dispose();
   }
 
+  /** The scene's exit: the pen lifts and the finished sheet slides off, whatever it was doing. */
+  #leave(frame: SimFrame): void {
+    if (this.#leaveFrom === undefined) {
+      this.#leaveFrom = this.#u;
+      this.#liftTarget = 1;
+      this.#lastDown = false;
+    }
+    const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_FRAME);
+    this.#bob += dt * TAU * 0.31;
+    this.#lift += (this.#liftTarget - this.#lift) * (1 - Math.exp(-dt * LIFT_RATE));
+    this.#u = lerp(this.#leaveFrom, -1, ease(clamp(frame.passage.exit, 0, 1)));
+  }
+
   // ---- sheets ------------------------------------------------------------------------------------
 
   /** The first sheet of a run, already part way through its drawing so the picture is there at once. */
   #restart(st: Settings): void {
+    const arriving = this.#arriving;
+    this.#arriving = false;
     this.#sheet = 0;
     this.#plan = makePlan(st.seed, 0, st.figure, undefined);
     this.#next = undefined;
     this.#beginSheet();
+    if (arriving) {
+      this.#beginArrival(st);
+      return;
+    }
     this.#gain = st.rotary;
     this.#lift = 0;
     this.#liftTarget = 0;
@@ -484,6 +526,23 @@ class HarmonographSim implements SceneSim {
       if (this.#swing.reach(this.#plan, ROTARY_RADIUS * this.#gain) < END_REACH) break;
       this.#drawStep(STEP, st);
     }
+  }
+
+  /** The entrance: a blank sheet waits off screen, the pen lifted over where the figure will begin. */
+  #beginArrival(st: Settings): void {
+    this.#gain = st.rotary;
+    this.#lift = 1;
+    this.#liftTarget = 1;
+    this.#phase = "arrive";
+    this.#phaseT = 0;
+    this.#figureStarted = false;
+    this.#markEvent = st.mark > 0;
+    this.#renewEvent = false;
+    this.#clock.reset();
+    this.#u = 1;
+    const start = this.#startOf(this.#plan);
+    this.#penX = start.x;
+    this.#penY = start.y;
   }
 
   /** A blank sheet for the current plan, the pendulums at rest at their start. */
@@ -541,6 +600,9 @@ class HarmonographSim implements SceneSim {
         break;
       case "lower":
         this.#stepLower(st);
+        break;
+      case "arrive":
+        this.#stepArrive();
         break;
       default: {
         const unreachable: never = phase;
@@ -727,6 +789,19 @@ class HarmonographSim implements SceneSim {
   #stepSlideIn(): void {
     const s = this.#phaseT / SLIDE_SECONDS;
     this.#u = 1 - ease(s);
+    const start = this.#startOf(this.#plan);
+    this.#penX = start.x;
+    this.#penY = start.y;
+    if (s < 1) return;
+    this.#u = 0;
+    this.#phase = "lower";
+    this.#phaseT = 0;
+  }
+
+  #stepArrive(): void {
+    const s = clamp(this.#enterP / ARRIVE_SHARE, 0, 1);
+    this.#u = 1 - ease(s);
+    this.#liftTarget = 1;
     const start = this.#startOf(this.#plan);
     this.#penX = start.x;
     this.#penY = start.y;

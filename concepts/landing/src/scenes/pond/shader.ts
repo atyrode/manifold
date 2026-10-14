@@ -1,6 +1,10 @@
 // The pond scene: water, floor, koi, lilies, foliage, sun and canopy.
 
 import { CANOPY_MARGIN } from "../../decor.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
+
+/** Seconds of the koi's entrance and exit (SceneDef.passage). */
+export const POND_PASSAGE = { enter: 4.8, exit: 2.5 } as const;
 
 export const pondGlsl = `
 // One layer of animated cellular light: bright where neighbouring cells meet.
@@ -118,6 +122,42 @@ vec4 pondPaperBoat(vec2 q, float litSide) {
   return vec4(paper * shade, 1.0);
 }
 
+// Passage, in seconds (POND_PASSAGE).
+const float POND_ENTER = ${glslFloat(POND_PASSAGE.enter)};
+const float POND_EXIT = ${glslFloat(POND_PASSAGE.exit)};
+
+// Koi i's glide in from, or out beyond, the frame's edge while the scene passes. 'base' is where its
+// swim path has it; the koi comes and goes along a fixed bearing of its own, from or to just clear of
+// the frame, with an eased glide. 'slideVel' is the glide's velocity, for the heading.
+// Entrance: staggered, ending by 4.6 s. Exit: staggered, ending by 2.4 s.
+vec2 pondKoiPassage(float fi, vec2 base, float len, float aspect, out vec2 slideVel) {
+  float tin = passageIn() * POND_ENTER;
+  float tout = passageOut() * POND_EXIT;
+  float stagger = hash12(vec2(fi, 71.0));
+  float bearing = hash12(vec2(fi, 72.0)) * TAU;
+  vec2 n = vec2(cos(bearing), sin(bearing));
+  // How far along the bearing before the koi, nose to tail, is clear of the frame.
+  vec2 reach = vec2(aspect * 0.5, 0.5) + (len * 1.05 + 0.04);
+  vec2 room = (reach - base * sign(n)) / max(abs(n), vec2(1e-4));
+  float clear = max(min(room.x, room.y), 0.0);
+  float arrive = clamp((tin - 0.2 - 0.8 * stagger) / 3.6, 0.0, 1.0);
+  float leave = clamp((tout - 0.4 * stagger) / 2.0, 0.0, 1.0);
+  float comingIn = arrive > 0.0 && arrive < 1.0 ? 1.0 : 0.0;
+  float goingOut = leave > 0.0 && leave < 1.0 ? 1.0 : 0.0;
+  slideVel = n * clear * (-2.0 * (1.0 - arrive) / 3.6 * comingIn + 6.0 * leave * (1.0 - leave) / 2.0 * goingOut);
+  return n * clear * ((1.0 - arrive) * (1.0 - arrive) + leave * leave * (3.0 - 2.0 * leave));
+}
+
+// A lily pad's drift while the scene passes: settling in from a little way off, then carried off
+// downwind with the breeze.
+vec2 pondPadPassage(float fi) {
+  float settle = 1.0 - clamp((passageIn() * POND_ENTER - 0.6) / 3.8, 0.0, 1.0);
+  float bearing = hash12(vec2(fi, 73.0)) * TAU;
+  float gust = smoothstep(0.0, 1.0, passageOut());
+  return vec2(cos(bearing), sin(bearing)) * (0.04 + 0.04 * hash12(vec2(fi, 74.0))) * settle * settle
+    + vec2(0.9, 0.4) * (0.02 + 0.02 * hash12(vec2(fi, 75.0))) * gust;
+}
+
 Shade scenePond(vec2 uv, vec2 cell, float t) {
   float m = uMotion;
   float tm = uMotionTime;
@@ -133,6 +173,20 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   float power = K_sunPower;
   vec2 towardSun = normalize(sunP - p + 1e-5);
   Shade o = blankShade();
+  // Passage: the light rises or falls and the water is ruffled, the koi and pads move, only while
+  // arriving or leaving; at rest every term below is exactly 1 or off.
+  float pin = passageIn();
+  float pout = passageOut();
+  bool passing = pin < 1.0 || pout > 0.0;
+  float tin = pin * POND_ENTER;
+  float lightK = 1.0;
+  float causticK = 1.0;
+  if (passing) {
+    float up = smoothstep(0.0, 1.0, pin);
+    float down = smoothstep(0.0, 1.0, pout);
+    lightK = mix(0.8, 1.0, up) * mix(1.0, 0.82, down);
+    causticK = mix(0.4, 1.0, up) * mix(1.0, 0.5, down);
+  }
 
   // Surface: rings spreading from drops, carried by the current; used for refraction and glints.
   float surface = 0.0;
@@ -163,6 +217,21 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     float fade = exp(-dropAge * 0.9);
     surface += sin((dist - radius) * 160.0) * bell((dist - radius) / 0.012) * fade;
     ringLight = max(ringLight, (smoothfall(0.004, 0.0, abs(dist - radius)) + 0.6 * smoothfall(0.003, 0.0, abs(dist - radius * 0.6))) * fade);
+  }
+  // Arriving: a few drops ring the water as the koi swim in, each ring dying away before the end.
+  if (pin < 1.0) {
+    float ringsFade = 1.0 - smoothstep(3.4, 4.6, tin);
+    for (int k = 0; k < 3; k++) {
+      float fk = float(k);
+      float age = tin - (0.5 + 0.7 * fk);
+      if (age < 0.0) continue;
+      vec2 drop = (vec2(hash12(vec2(fk, 81.0)), hash12(vec2(fk, 82.0))) - 0.5) * vec2(aspect * 0.8, 0.8);
+      float dist = length(p - drop);
+      float radius = age * 0.07;
+      float fade = exp(-age * 1.2) * ringsFade * smoothstep(0.0, 0.3, age);
+      float line = smoothfall(0.004, 0.0, abs(dist - radius)) + 0.6 * smoothfall(0.003, 0.0, abs(dist - radius * 0.6));
+      ringLight = max(ringLight, 0.9 * hardEdge(line * fade));
+    }
   }
   vec2 bend = vec2(dFdx(surface), dFdy(surface)) * 0.01 + vec2(sin(p.y * 9.0 + tm * 0.7), cos(p.x * 8.0 + tm * 0.6)) * 0.0025 * m;
   vec2 floorP = p + bend;
@@ -212,6 +281,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     float b = pondCausticLayer((floorP - drift) * 5.6 + vec2(4.0, -tm * 0.025), tm * 0.9 + 2.0);
     caustic = (a * 0.3 + b * 0.2 + a * b * 0.9) * K_caustics * (1.0 - depth * 0.45) * (0.6 + 0.9 * power);
   }
+  caustic *= causticK;
   col += vec3(0.7, 1.0, 0.92) * caustic * 0.55;
 
   // Water weeds: clumps of blades radiating from the floor, swaying and bent downstream.
@@ -248,6 +318,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     if (i >= pads) break;
     vec2 anchor;
     padAt[i] = pondPadState(float(i), aspect, tm, flow, turbulence, K_lilySeed, K_lilyDrift, tethered, anchor);
+    padAt[i].xy += pondPadPassage(float(i));
     padRoot[i] = anchor;
   }
   for (int pass = 0; pass < 2; pass++) {
@@ -295,9 +366,16 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     float fi = float(i);
     float s = swimTime + fi * 11.0;
     vec2 pos = pondKoiAt(fi, s, aspect, lure, follow);
-    vec2 dir = normalize(pondKoiAt(fi, s + 0.05, aspect, lure, follow) - pondKoiAt(fi, s - 0.05, aspect, lure, follow) + 1e-5);
-    vec2 side = vec2(-dir.y, dir.x);
+    vec2 pathDiff = pondKoiAt(fi, s + 0.05, aspect, lure, follow) - pondKoiAt(fi, s - 0.05, aspect, lure, follow);
+    vec2 dir = normalize(pathDiff + 1e-5);
     float len = 0.11 + 0.06 * hash12(vec2(fi, 6.0));
+    if (passing) {
+      // Gliding in from or out past the frame's edge: head the way it is actually going.
+      vec2 slide;
+      pos += pondKoiPassage(fi, pos, len, aspect, slide);
+      dir = normalize(pathDiff * (10.0 * (0.6 + 2.4 * K_swim) * m) + slide + 1e-5);
+    }
+    vec2 side = vec2(-dir.y, dir.x);
     float swim = tm * (3.0 + 4.0 * K_swim) + fi;
     vec2 rel = p - pos;
     vec2 q = vec2(dot(rel, dir), dot(rel, side));
@@ -567,6 +645,19 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       o.accent = red ? 0.6 + 0.35 * leaf.g : 0.0;
       o.shimmer = 0.0;
     }
+  }
+
+  if (passing) {
+    if (pout > 0.0) {
+      // A breeze crossing the surface: a band of ruffled, darker water sweeping over, cut per cell.
+      vec2 gustDir = normalize(vec2(0.9, 0.4));
+      float span = 0.5 * (aspect * abs(gustDir.x) + abs(gustDir.y));
+      float front = mix(-span - 0.55, span + 0.55, pout);
+      lightK *= 1.0 - 0.12 * hardEdge(bell((dot(p, gustDir) - front) / 0.2) * 0.9);
+    }
+    col *= lightK;
+    o.ink *= lightK;
+    o.accent *= lightK;
   }
 
   o.shimmer = max(o.shimmer, caustic * 0.15);

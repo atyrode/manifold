@@ -33,6 +33,11 @@ float campfireTm;       // the motion clock
 float campfireBreath;   // firelight gain, breathing a few percent
 float campfireHalf;     // half the frame width, kept in 0.5 .. 0.9 for the layout
 float campfireGlow;     // what should glow in the accent colour
+float campfireFlameG;   // flame growth 0..1 (1 at rest): the flame catches on entry and dies on exit
+float campfireLit;      // how far the firelight has spread 0..1 (1 at rest)
+float campfireSparkG;   // sparks gate 0..1
+float campfireSmokeG;   // smoke column strength 0..1
+float campfireCoalK;    // coal glow gain, 0.6 (low embers) .. 1
 
 float campfireSmin(float a, float b, float k) {
   float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
@@ -44,7 +49,7 @@ float campfireSmin(float a, float b, float k) {
 float campfireLight(vec2 p, float lift) {
   vec2 d = p - (campfireF + vec2(0.0, 0.085 * campfireS));
   d.y /= mix(0.34, 1.0, lift);
-  float r0 = (0.28 + 0.42 * K_reach) * (0.8 + 0.2 * campfireS);
+  float r0 = (0.28 + 0.42 * K_reach) * (0.8 + 0.2 * campfireS) * mix(0.5, 1.0, campfireLit);
   float l = 1.0 / (1.0 + dot(d, d) / (r0 * r0));
   return l * (0.3 + 0.7 * l) * campfireBreath;
 }
@@ -64,6 +69,18 @@ void campfireSetup(float aspect) {
   float slow = 0.5 + 0.5 * sin(campfireTm * 0.9 + 1.3 * sin(campfireTm * 0.37));
   float lick = vnoise1(campfireTm * 0.8, 11.0).x;
   campfireBreath = (0.55 + 0.45 * campfireS) * (0.90 + 0.06 * slow + 0.06 * (lick - 0.5));
+  // Passage (all exactly 1 at rest). Entrance: embers in a dark night, a flame catches and grows, the
+  // firelight spreads, then sparks and smoke. Exit: sparks go, the flame dies down, the light withdraws,
+  // a last curl of smoke. The sky is never touched.
+  float pin = passageIn();
+  float pout = passageOut();
+  campfireFlameG = smoothstep(0.20, 0.72, pin) * (1.0 - smoothstep(0.10, 0.70, pout));
+  campfireLit = smoothstep(0.24, 0.98, pin) * (1.0 - smoothstep(0.30, 1.00, pout));
+  campfireSparkG = smoothstep(0.58, 1.00, pin) * (1.0 - smoothstep(0.00, 0.35, pout));
+  campfireSmokeG = smoothstep(0.40, 0.90, pin) * (1.0 - smoothstep(0.62, 1.00, pout));
+  campfireCoalK = mix(0.6, 1.0, campfireLit);
+  campfireBreath *= mix(0.12, 1.0, campfireLit);
+  campfireAmb *= mix(0.6, 1.0, campfireLit);
   campfireGlow = 0.0;
 }
 
@@ -355,7 +372,7 @@ void campfireCoals(vec2 p, float px, inout vec3 col) {
   float lump = 0.6 * vnoise(cp) + 0.4 * vnoise(cp * 2.1 + 3.3);
   float phase = vnoise(p * vec2(9.0, 15.0) + 1.0) * 12.0;
   float breath = 0.5 + 0.5 * sin(campfireTm * 0.65 + phase);
-  float glow = smoothstep(0.42, 0.72, lump) * (0.35 + 0.65 * breath);
+  float glow = smoothstep(0.42, 0.72, lump) * (0.35 + 0.65 * breath) * campfireCoalK;
   vec2 e = q / vec2(0.1, 0.03);
   float centre = exp(-dot(e, e));
   vec3 ember = mix(vec3(0.55, 0.10, 0.03), vec3(1.0, 0.45, 0.08), glow);
@@ -385,7 +402,7 @@ void campfireLog(vec2 p, vec2 a, vec2 b, float ra, float rb, float seed, float p
   float heat = exp(-dot(hc, hc));
   float crack = smoothstep(0.52, 0.72, vnoise(vec2(across * 4.0 + seed * 3.0, along * 60.0 + campfireTm * 0.02)));
   float breath = 0.55 + 0.45 * sin(campfireTm * 0.7 + seed * 4.0 + along * 25.0);
-  c = c * (1.0 - 0.5 * heat) + vec3(1.0, 0.36, 0.07) * (crack * heat * breath * 1.3);
+  c = c * (1.0 - 0.5 * heat) + vec3(1.0, 0.36, 0.07) * (crack * heat * breath * 1.3 * campfireCoalK);
   col = c;
 }
 
@@ -430,7 +447,9 @@ float campfireTongues(vec2 q, float wk, float hk) {
 }
 
 void campfireFlames(vec2 p, float px, inout vec3 col) {
-  float s = campfireS;
+  float g = campfireFlameG;
+  if (g < 0.03) return;
+  float s = campfireS * g;
   vec2 q = (p - (campfireF + vec2(0.0, 0.032))) / s;
   if (abs(q.x) > 0.42 || q.y < -0.06 || q.y > 0.66) return;
   float aa = px * 5.0 / s;
@@ -453,9 +472,9 @@ void campfireFlames(vec2 p, float px, inout vec3 col) {
 // A thin column from the flame tips: it meanders, widens and thins as it climbs, leans with the wind,
 // lit warm near the fire and by the sky higher up. Cut per cell, so its edge flips each cell once.
 void campfireSmoke(vec2 p, float px, inout vec3 col) {
-  if (K_smoke <= 0.0) return;
+  if (K_smoke <= 0.0 || campfireSmokeG <= 0.0) return;
   float tm = campfireTm;
-  float u = p.y - campfireF.y - 0.26 * campfireS;
+  float u = p.y - campfireF.y - 0.26 * campfireS * mix(0.3, 1.0, campfireFlameG);
   if (u < 0.0) return;
   float meander = 0.020 * sin(u * 6.5 - tm * 0.42) + 0.012 * sin(u * 13.0 - tm * 0.7 + 1.3);
   float xc = campfireF.x + meander * (0.3 + 2.0 * u) + K_wind * (0.07 * u + 0.75 * u * u);
@@ -465,7 +484,7 @@ void campfireSmoke(vec2 p, float px, inout vec3 col) {
   if (abs(z) > 3.0) return;
   float nz = fbm3(vec2(z * 1.1 + 3.0, u * 8.0 - tm * 0.5));
   float fade = smoothstep(0.0, 0.07, u) * exp(-u * 2.4);
-  float dens = exp(-1.3 * z * z) * (0.25 + 1.1 * nz) * fade * (0.55 + 0.9 * K_smoke) * 0.6;
+  float dens = exp(-1.3 * z * z) * (0.25 + 1.1 * nz) * fade * (0.55 + 0.9 * K_smoke) * 0.6 * campfireSmokeG;
   float cover = hardEdge(dens);
   if (cover < 0.5) return;
   float nearFire = bell(u / 0.30);
@@ -476,7 +495,7 @@ void campfireSmoke(vec2 p, float px, inout vec3 col) {
 // Sparks: each slot flies one slow arc (rising, swaying, leaning with the wind), winks out, and is
 // re-rolled for its next flight. Few cells wide, moving about a quarter of a cell a frame.
 void campfireSparks(vec2 p, float px, inout vec3 col) {
-  if (K_sparks <= 0.0 || p.y < campfireF.y + 0.1 * campfireS || abs(p.x - campfireF.x) > 0.75) return;
+  if (K_sparks <= 0.0 || campfireSparkG <= 0.0 || p.y < campfireF.y + 0.1 * campfireS || abs(p.x - campfireF.x) > 0.75) return;
   float tm = campfireTm;
   float s = campfireS;
   vec3 hit = vec3(0.0);
@@ -484,6 +503,8 @@ void campfireSparks(vec2 p, float px, inout vec3 col) {
   for (int i = 0; i < 22; i++) {
     float fi = float(i);
     if (hash12(vec2(fi, 31.7)) > K_sparks) continue;
+    float sg = clamp((campfireSparkG - 0.85 * hash12(vec2(fi, 55.1))) / 0.15, 0.0, 1.0);
+    if (sg <= 0.0) continue;
     float life = 5.5 + 4.0 * hash12(vec2(fi, 8.3));
     float ph = tm / life + hash12(vec2(fi, 2.9));
     float cyc = floor(ph);
@@ -498,7 +519,7 @@ void campfireSparks(vec2 p, float px, inout vec3 col) {
     vec2 dd = p - pos;
     if (dot(dd, dd) > 144.0 * px * px) continue;
     float b = smoothstep(0.0, 0.05, u) * (1.0 - smoothstep(0.45, 0.95, u));
-    b *= 0.8 + 0.2 * sin(age * 1.9 + fi * 2.3);
+    b *= (0.8 + 0.2 * sin(age * 1.9 + fi * 2.3)) * sg;
     float rad = px * (1.1 + 0.9 * h.y) * (0.45 + 0.55 * b);
     if (hardFill(length(dd) - rad, px * 0.7) > 0.5) {
       hit = mix(vec3(0.85, 0.18, 0.05), vec3(1.0, 0.78, 0.30), b);

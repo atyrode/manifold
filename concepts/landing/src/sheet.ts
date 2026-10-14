@@ -1,6 +1,7 @@
 // Data textures painted on the CPU: the pond's plant and canopy sheets. Painting runs on a worker
 // thread so it never competes with the frame loop; if the worker is unavailable, it runs on the
-// page in small steps between frames instead. The last finished sheet stays bound meanwhile.
+// page in small steps between frames instead. The last finished sheet stays bound meanwhile, and
+// outlives its painter for a while, so a scene entered again shows its sheets at once.
 
 import { paintCanopy, paintDecor, type CanopyConfig, type DecorConfig } from "./decor.ts";
 
@@ -94,14 +95,25 @@ function sheetWorker(): SheetWorker | undefined {
 }
 
 interface LocalJob {
+  key: string;
   sheet: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
   steps: Generator<void, void>;
 }
 
+/**
+ * Finished sheets of disposed painters by key, oldest first, so a scene entered afresh (a replayed
+ * entrance, a quick return) adopts them instead of repainting while it comes in. Bounded: the
+ * oldest beyond KEPT_SHEETS is freed.
+ */
+const kept = new Map<string, WebGLTexture>();
+const KEPT_SHEETS = 2;
+
 export class SheetPainter {
   readonly #gl: WebGL2RenderingContext;
   #texture: WebGLTexture | undefined;
+  /** The key `#texture` was painted for (the requested `#key` may be newer, still painting). */
+  #textureKey = "";
   #key = "";
   #local: LocalJob | undefined;
 
@@ -119,30 +131,49 @@ export class SheetPainter {
     if (key === this.#key) return;
     this.#key = key;
     this.#local = undefined;
+    const ready = kept.get(key);
+    if (ready !== undefined) {
+      kept.delete(key);
+      if (this.#texture !== undefined) this.#gl.deleteTexture(this.#texture);
+      this.#texture = ready;
+      this.#textureKey = key;
+      return;
+    }
     const worker = sheetWorker();
     if (!worker) {
-      this.#paintHere(width, height, job);
+      this.#paintHere(key, width, height, job);
       return;
     }
     worker.paint(job, width, height).then(
       (reply) => {
-        if (this.#key === key) this.#upload(reply.width, reply.height, new Uint8Array(reply.pixels));
+        if (this.#key === key) this.#upload(key, reply.width, reply.height, new Uint8Array(reply.pixels));
       },
       () => {
-        if (this.#key === key) this.#paintHere(width, height, job);
+        if (this.#key === key) this.#paintHere(key, width, height, job);
       },
     );
   }
 
   /**
-   * Free the texture and drop any painting in progress. Back to the unrequested key, so a worker
-   * reply still in flight no longer matches and never uploads into the deleted texture.
+   * Drop any painting in progress and hand the finished sheet to `kept` (freeing the oldest kept).
+   * Back to the unrequested key, so a worker reply still in flight no longer matches and never
+   * uploads into a texture this painter no longer owns.
    */
   dispose(): void {
     this.#key = "";
     this.#local = undefined;
-    if (this.#texture) this.#gl.deleteTexture(this.#texture);
+    const texture = this.#texture;
     this.#texture = undefined;
+    if (texture === undefined) return;
+    const previous = kept.get(this.#textureKey);
+    if (previous !== undefined) this.#gl.deleteTexture(previous);
+    kept.delete(this.#textureKey);
+    kept.set(this.#textureKey, texture);
+    for (const [key, old] of kept) {
+      if (kept.size <= KEPT_SHEETS) break;
+      this.#gl.deleteTexture(old);
+      kept.delete(key);
+    }
   }
 
   /** Paint on the page for up to `budget` milliseconds, when the worker could not. */
@@ -153,20 +184,20 @@ export class SheetPainter {
     while (performance.now() - start < budget) {
       if (job.steps.next().done) {
         this.#local = undefined;
-        this.#upload(job.sheet.width, job.sheet.height, new Uint8Array(job.ctx.getImageData(0, 0, job.sheet.width, job.sheet.height).data.buffer));
+        this.#upload(job.key, job.sheet.width, job.sheet.height, new Uint8Array(job.ctx.getImageData(0, 0, job.sheet.width, job.sheet.height).data.buffer));
         return;
       }
     }
   }
 
-  #paintHere(width: number, height: number, job: SheetJob): void {
+  #paintHere(key: string, width: number, height: number, job: SheetJob): void {
     const sheet = new OffscreenCanvas(width, height);
     const ctx = sheet.getContext("2d");
     if (!ctx) throw new Error("landing: 2d canvas unavailable");
-    this.#local = { sheet, ctx, steps: paintJob(ctx, width, height, job) };
+    this.#local = { key, sheet, ctx, steps: paintJob(ctx, width, height, job) };
   }
 
-  #upload(width: number, height: number, pixels: Uint8Array): void {
+  #upload(key: string, width: number, height: number, pixels: Uint8Array): void {
     const gl = this.#gl;
     const texture = this.#texture ?? gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -178,5 +209,6 @@ export class SheetPainter {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     this.#texture = texture;
+    this.#textureKey = key;
   }
 }

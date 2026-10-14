@@ -67,6 +67,17 @@ export interface SimFrame {
    */
   fired: readonly boolean[];
   pointer: PointerState;
+  /**
+   * How far the scene has come in (`enter`, 0→1 over `SceneDef.passage.enter` seconds of real time,
+   * then 1; always 1 when passages are off) and gone out (`exit`, 0 until it leaves, then 0→1), as
+   * the shader's `passageIn()` and `passageOut()`. A sim is built afresh for every entrance.
+   */
+  passage: Readonly<ScenePassageProgress>;
+}
+
+export interface ScenePassageProgress {
+  enter: number;
+  exit: number;
 }
 
 /**
@@ -104,6 +115,13 @@ export interface SceneDef {
   sim?: SimFactory;
   /** Page theme behind the copy; night unless the scene says otherwise. */
   theme?: SceneTheme;
+  /**
+   * Seconds the scene's own entrance and exit take, when it choreographs them (read through
+   * `passageIn()` / `passageOut()` or `SimFrame.passage`). Every entrance also dissolves out of the
+   * previous scene's last frame over its first PASSAGE_DISSOLVE (0.9 s); without this the dissolve
+   * is the whole entrance and there is no exit.
+   */
+  passage?: { enter: number; exit: number };
 }
 
 export type PageTheme = "night" | "paper";

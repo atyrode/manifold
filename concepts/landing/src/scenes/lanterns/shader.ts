@@ -638,6 +638,11 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   float overcast = sqrt(max(K_rain, 0.0));
   lit *= 1.0 - 0.35 * overcast;
   haze = greyed(haze, vec3(0.9), 0.55 * overcast);
+  // Entering, the dusk light settles in from a deeper blue hour; leaving, it sinks again with the
+  // flames. Exactly 1 once arrived and while staying.
+  float dusk = mix(0.42, 1.0, smoothstep(0.0, 0.55, passageIn())) * mix(1.0, 0.4, smoothstep(0.1, 1.0, passageOut()));
+  lit *= dusk;
+  haze *= dusk;
   // (Distance haze in the rain is the shared veil's; here rain only thickens the mist a little.)
   float mist = clamp(K_mist + 0.15 * K_rain, 0.0, 1.0);
   // In heavy rain the candles gutter.
@@ -673,6 +678,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     col = lanternsBeyond(vec3(0.0, LANTERNS_EYE, 0.0), dir, 0.0, sky, lit, haze, dark, tm, bankFoot, 0.0, true, bankLamp);
     col += LANTERNS_LAMP * bankLamp.x;
     lamp = bankLamp.x;
+    col *= dusk;
   } else {
     Ground g = groundHit(dir, LANTERNS_EYE, LANTERNS_FOCAL);
     xp = g.p.x;
@@ -742,6 +748,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     // The bank's lamps mirrored: each a wavering image, and under it glints in the rows of facets.
     float lampSeen = bankLamp.x + glint.x * smoothstep(0.35, 0.6, glint.y) * bankLamp.y * 3.0;
     mirror += LANTERNS_LAMP * lampSeen;
+    mirror *= dusk;
     lamp = lampSeen * fres * 1.3;
     vec3 body = vec3(0.004, 0.012, 0.018) + lit * 0.03; // the river's own dark green-blue
     // Darker toward our bank, where the water mirrors the high, dim sky and lies in our bank's shade.

@@ -28,6 +28,7 @@ export const harmonographScene: SceneDef = {
   blurb: "Two swinging pendulums draw a slowly dying figure in ink on paper.",
   accent: "#e2553a",
   look: { color: "full", levels: 4 },
+  passage: { enter: 5, exit: 2.4 },
   params,
   groups: {
     drawing: { title: "Pendulums", blurb: "The swings that guide the pen, how long they last, and how the sheets follow one another." },

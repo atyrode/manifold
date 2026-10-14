@@ -37,6 +37,10 @@
 // the last two steps for drawing. The first frame lays the river out and lets it run for PREWARM
 // seconds, so the scene opens on an evening already under way. Nothing is allocated per frame.
 //
+// Passage: arriving, the river opens with its lanterns unlit (the prewarm stops short by the
+// entrance's own seconds, so the last arrivals are still upstream), and their candles catch in a
+// wave from the right edge to the left; leaving, the flames gutter out one by one (see #flame).
+//
 // Texture (rgba16f, TEXTURE_WIDTH × 1, nearest):
 //   texel i            lantern slot i: x, z (m; z = 0 marks an empty slot), turn (rad, 0..2π),
 //                      candle 0..1
@@ -231,6 +235,28 @@ const MAX_STEPS = 8;
 const PREWARM = 20;
 const SEED_BASE = 0x70a0a6;
 
+// ---- Passage (entrance and exit) ----
+
+/** Seconds the entrance and the exit take (the scene's `passage`). */
+export const PASSAGE_ENTER = 4.5;
+export const PASSAGE_EXIT = 2.2;
+/** The river opens unlit. The candles then catch in a wave that sweeps from the right edge to the
+ *  left over these seconds of the entrance (after the old scene's dissolve has cleared), each a
+ *  little ahead or behind by up to KINDLE_JITTER of the view's half-width. A lantern still beyond
+ *  the right edge waits and catches as it comes in, KINDLE_EDGE of the half-width out. */
+const KINDLE_FROM = 0.9;
+const KINDLE_TO = 3.7;
+const KINDLE_JITTER = 0.18;
+const KINDLE_EDGE = 1.02;
+/** The wave starts and ends this far (share of the view's half-width) to the right and left of the middle. */
+const KINDLE_START_U = 1.15;
+const KINDLE_END_U = -1.25;
+/** On the way out each flame goes at its own time: it starts guttering between these shares of the
+ *  exit and takes GUTTER_SPAN of it to go out. */
+const GUTTER_FIRST = 0.04;
+const GUTTER_LAST = 0.58;
+const GUTTER_SPAN = 0.36;
+
 type KnobKey = "lanterns" | "current" | "flotilla" | "lanternSeed" | "wind" | "mark";
 
 /** The simulation was set up wrong: a knob it reads is missing, or it ran out of lantern slots. */
@@ -272,6 +298,8 @@ export const ROCK_DOWNSTREAM: readonly { readonly x: number; readonly z: number 
 
 class Lantern {
   alive = false;
+  /** False while the river is opening: the candle waits unlit until the entrance's wave reaches it. */
+  kindled = true;
   mark = false;
   /** Set down by hand or in a flotilla: on top of the procession's count, not part of it. */
   extra = false;
@@ -346,6 +374,12 @@ class LanternRiver implements SceneSim {
   #crossing = 120;
   #crossingKey = Number.NaN;
 
+  /** The entrance is playing: lanterns the river opened with, or that come round the bend, wait unlit. */
+  #veil = false;
+  /** How far the entrance's wave of kindling has got (0..1), and how far the exit has gone (0..1). */
+  #wave = 0;
+  #leave = 0;
+
   #hand = false;
   #handHeld = false;
   #handX = 0;
@@ -370,10 +404,13 @@ class LanternRiver implements SceneSim {
     this.#flotilla = clamp(knobs.value(frame, "flotilla"), 0, 1);
     this.#markOn = knobs.value(frame, "mark") > 0.5;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
+    this.#leave = clamp(frame.passage.exit, 0, 1);
+    this.#wave = clamp((frame.passage.enter * PASSAGE_ENTER - KINDLE_FROM) / (KINDLE_TO - KINDLE_FROM), 0, 1);
 
     this.#refreshCrossing();
     const seed = Math.round(knobs.value(frame, "lanternSeed"));
-    if (seed !== this.#seed) this.#reset(seed);
+    if (seed !== this.#seed) this.#reset(seed, frame.passage.enter < 1, frame.motion);
+    else if (this.#veil && frame.passage.enter >= 1) this.#endVeil();
 
     // Flotillas on their own: a fresh wait whenever the knob comes on, none while it is off.
     if (this.#flotilla <= 0) this.#nextFlotilla = Number.POSITIVE_INFINITY;
@@ -447,7 +484,7 @@ class LanternRiver implements SceneSim {
   }
 
   /** Lay a fresh river out for this seed and let it run a while. */
-  #reset(seed: number): void {
+  #reset(seed: number, entering: boolean, motion: number): void {
     const random = this.#random;
     random.seed(SEED_BASE ^ Math.imul(seed + 1, 0x9e3779b1));
     this.#seed = seed;
@@ -472,7 +509,10 @@ class LanternRiver implements SceneSim {
     // The evening is already under way: the procession all across the view, settled into the
     // current. The M lantern floats in the near water right of centre, drifting into the middle.
     for (let k = 0; k < this.#target; k++) this.#scatter();
-    for (let s = 0; s < PREWARM / STEP; s++) this.#step();
+    // Arriving, the river runs on for the entrance's own seconds in real time, so what has to come
+    // round the bend by the end of it is still upstream of the view when it opens.
+    const prewarm = Math.max(0, PREWARM - (entering ? PASSAGE_ENTER * Math.max(0, motion) : 0));
+    for (let s = 0; s < prewarm / STEP; s++) this.#step();
     if (this.#markOn) {
       const x = 0.25 * this.#halfWidth(MARK_Z);
       this.#flow(x, MARK_Z);
@@ -484,8 +524,45 @@ class LanternRiver implements SceneSim {
       lantern.lastAngle = lantern.angle;
       lantern.age = AGE_KEPT;
     }
+    this.#veil = entering;
+    if (entering) {
+      for (const lantern of this.#all) if (lantern.alive) this.#unlit(lantern);
+    }
     this.#nextFlotilla = this.#flotilla > 0 ? this.#clock + FLOTILLA_FIRST : Number.POSITIVE_INFINITY;
     this.#markWasOn = this.#markOn;
+  }
+
+  /** A lantern that is there while the river is opening waits unlit. */
+  #unlit(lantern: Lantern): void {
+    lantern.kindled = false;
+    lantern.light = 0;
+  }
+
+  /** The entrance is over: whatever has not caught yet is out beyond the view; light it. */
+  #endVeil(): void {
+    this.#veil = false;
+    for (const lantern of this.#all) {
+      if (lantern.kindled) continue;
+      lantern.kindled = true;
+      lantern.light = 1;
+    }
+  }
+
+  /** The flame the shader sees: the candle, guttering out in its turn as the scene leaves. */
+  #flame(lantern: Lantern): number {
+    if (this.#leave <= 0) return lantern.light;
+    const start = GUTTER_FIRST + (GUTTER_LAST - GUTTER_FIRST) * lantern.seed;
+    return lantern.light * (1 - smoothstep(start, start + GUTTER_SPAN, this.#leave));
+  }
+
+  /** Whether the entrance's wave has reached an unlit lantern: it is in view (or at its right edge)
+   *  and the wave, sweeping from the right edge to the left, has passed its place. */
+  #kindles(lantern: Lantern): boolean {
+    const u = lantern.x / this.#halfWidth(lantern.z);
+    if (u > KINDLE_EDGE) return false;
+    if (this.#wave >= 1) return true;
+    const front = KINDLE_START_U + (KINDLE_END_U - KINDLE_START_U) * this.#wave;
+    return u + 2 * KINDLE_JITTER * (lantern.seed - 0.5) >= front;
   }
 
   /** Put a lantern somewhere on its streamline in view, evenly across the screen as the stream's
@@ -602,6 +679,7 @@ class LanternRiver implements SceneSim {
     lantern.light = light;
     lantern.age = age;
     lantern.extra = false;
+    lantern.kindled = true;
   }
 
   /** A lantern coming round the bend upstream on its streamline, now and then with one or two
@@ -621,6 +699,7 @@ class LanternRiver implements SceneSim {
       const vx = this.#water[0] ?? 0;
       const vz = this.#water[1] ?? 0;
       this.#launch(lantern, x, z, vx, vz, 1, AGE_KEPT);
+      if (this.#veil) this.#unlit(lantern);
       let arrived = 1;
       const companions = random.next() < PAIR_CHANCE ? 1 + Math.floor(2 * random.next()) : 0;
       for (let k = 1; k <= companions && this.#count() <= this.#target; k++) {
@@ -630,6 +709,7 @@ class LanternRiver implements SceneSim {
         const companion = this.#freeSlot();
         if (!companion || this.#crowded(x2, z2, 0.5)) continue;
         this.#launch(companion, x2, z2, vx, vz, 1, AGE_KEPT);
+        if (this.#veil) this.#unlit(companion);
         arrived++;
       }
       return arrived;
@@ -867,7 +947,8 @@ class LanternRiver implements SceneSim {
         lantern.angle -= turns;
         lantern.lastAngle -= turns;
       }
-      lantern.light = Math.min(1, lantern.light + h / LIGHT_UP);
+      if (lantern.kindled) lantern.light = Math.min(1, lantern.light + h / LIGHT_UP);
+      else if (this.#kindles(lantern)) lantern.kindled = true;
       lantern.age = Math.min(AGE_KEPT, lantern.age + h);
 
       // Gone downstream past the left edge (or blown far upstream): let it go.
@@ -947,7 +1028,7 @@ class LanternRiver implements SceneSim {
       data[o] = lantern.lastX + (lantern.x - lantern.lastX) * alpha;
       data[o + 1] = lantern.lastZ + (lantern.z - lantern.lastZ) * alpha;
       data[o + 2] = angle - TAU * Math.floor(angle / TAU);
-      data[o + 3] = lantern.light;
+      data[o + 3] = this.#flame(lantern);
       data[k] = lantern.seed;
       data[k + 1] = lantern.mark ? 1 : 0;
       data[k + 2] = lantern.age;
@@ -966,7 +1047,7 @@ class LanternRiver implements SceneSim {
         const dz = lantern.z - rock.z;
         const gap = Math.max(Math.hypot(dx, dz) - rock.radius, 0) / ROCK_GLOW_REACH;
         const front = 0.25 + 0.75 * smoothstep(rock.radius, -rock.radius, dz);
-        const share = (lantern.light * lantern.size * front) / (1 + gap * gap);
+        const share = (this.#flame(lantern) * lantern.size * front) / (1 + gap * gap);
         light += share;
         side += share * clamp(dx / (rock.radius + gap * ROCK_GLOW_REACH), -1, 1);
       }

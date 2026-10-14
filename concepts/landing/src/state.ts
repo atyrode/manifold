@@ -16,6 +16,8 @@ export const modeIds = ["landing", "loading", "instance", "bare"] as const;
 export type ModeId = (typeof modeIds)[number];
 export const mouseIds = ["follow", "still"] as const;
 export type MouseId = (typeof mouseIds)[number];
+export const passageIds = ["on", "off"] as const;
+export type PassageId = (typeof passageIds)[number];
 
 export type Params = Record<string, number>;
 
@@ -37,6 +39,8 @@ export interface LabState {
   dim: number;
   /** 0..1: soften the scene behind the page. */
   blur: number;
+  /** Whether scenes enter and leave with their passages, or cut. */
+  transitions: PassageId;
 }
 
 export const defaults: LabState = {
@@ -53,6 +57,7 @@ export const defaults: LabState = {
   view: "dithered",
   dim: 0,
   blur: 0,
+  transitions: "on",
 };
 
 export class KnobKeyError extends Error {}
@@ -130,6 +135,7 @@ export function readState(q: URLSearchParams): LabState {
     view: pick(viewIds, q.get("view"), defaults.view),
     dim: readNumber(q.get("dim"), 0, 1, defaults.dim),
     blur: readNumber(q.get("blur"), 0, 1, defaults.blur),
+    transitions: pick(passageIds, q.get("transitions"), defaults.transitions),
   };
 }
 
@@ -204,5 +210,6 @@ export function renderSettings(state: LabState, params: Params): RenderSettings 
     knobs: params,
     followPointer: state.mouse === "follow",
     view: state.view,
+    passage: state.transitions === "on",
   };
 }

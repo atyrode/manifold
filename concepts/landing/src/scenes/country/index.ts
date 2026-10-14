@@ -41,4 +41,7 @@ export const countryScene: SceneDef = {
   },
   glsl: countryGlsl,
   entry: "sceneCountry",
+  // Enter: the camera comes down from the sky and settles on the valley as the haze thins. Exit: it
+  // drifts back up toward the clouds as the light goes grey.
+  passage: { enter: 4.2, exit: 2.0 },
 };

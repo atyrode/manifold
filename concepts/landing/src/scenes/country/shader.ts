@@ -667,11 +667,18 @@ vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float w
   return vec2(1.0 - clear, belly);
 }
 
-Shade sceneCountry(vec2 uv, vec2 cell, float t) {
+Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float m = uMotion;
   float tm = uMotionTime;
   float aspect = uRes.x / uRes.y;
   float pxl = 1.0 / uRes.y;
+  // Entrance and exit are one camera move: a vertical lens shift of the whole frame (the horizon
+  // slides down the screen as the camera looks up), so the land, the sky, the cloud deck, its
+  // shadows and the falling rain, all built from uv, stay in one projection. The camera arrives
+  // from the sky and leaves toward it. arrive/leave are exactly 0 at rest, where uv == screenUv.
+  float arrive = 1.0 - smoothstep(0.0, 1.0, passageIn());
+  float leave = smoothstep(0.0, 1.0, passageOut());
+  vec2 uv = screenUv + vec2(0.0, 0.3 * arrive + 0.3 * leave);
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   // The village a third in from the left, the chalk down right of centre (screen x).
   vec2 spots = vec2(-0.2, 0.24) * aspect;
@@ -1050,6 +1057,9 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
       tau *= (hit == 0 ? 0.3 : 1.0) * (0.75 + 0.5 * vnoise(vec2(w.x * 1.3 - tm * 0.01, hy * 12.0 + 2.0 * i)));
       col = mix(col, countryMist(sky, q.x, hy / fogTop, overcast), min(1.0 - exp(-tau), 0.97));
     }
+    // The morning haze thinning as the camera comes down: the horizon's colour over the land,
+    // heaviest on the far ridges.
+    if (arrive > 0.0) col = mix(col, haze, arrive * (0.3 + 0.45 * i / 5.0));
   } else {
     vec3 dir = viewRay(uv, aspect, COUNTRY_HORIZON, COUNTRY_FOV);
     col = countryDome(sky, dir, rain);
@@ -1105,6 +1115,11 @@ Shade sceneCountry(vec2 uv, vec2 cell, float t) {
     col = mix(col, flake, clamp(ps.cover, 0.0, 1.0) * (0.85 - 0.2 * ps.near) * contrast);
   }
 
+  // Light coming up on arrival; on leaving, the cloud's grey closing over and the light dimming.
+  if (arrive > 0.0 || leave > 0.0) {
+    col *= 1.0 - 0.16 * arrive - 0.3 * leave;
+    col = mix(col, vec3(dot(col, LUMA)), 0.55 * leave);
+  }
   vec3 rgb = clamp(col, 0.0, 1.0);
   Shade o = shadeOf(rgb, inkOf(rgb, 1.1, 1.0), clamp(accent, 0.0, 1.0));
   o.shimmer = glint * 0.3;

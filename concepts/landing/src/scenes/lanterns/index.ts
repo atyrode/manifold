@@ -6,7 +6,7 @@ import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { lanternsGlsl } from "./shader.ts";
-import { LANTERN_COUNTS, lanternsSim } from "./sim.ts";
+import { LANTERN_COUNTS, PASSAGE_ENTER, PASSAGE_EXIT, lanternsSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice("river", "lanterns", "lanterns", counts(...LANTERN_COUNTS), 24, "How many lanterns float on the river at once: a procession from small lights far out by the far bank, sweeping in past the near stone, and a second string drifting by close in front of you. As they drift away downstream, new ones come round the bend."),
@@ -37,6 +37,10 @@ export const lanternsScene: SceneDef = {
   },
   glsl: lanternsGlsl,
   entry: "sceneLanterns",
+  // Arriving: the river opens at deep dusk and unlit, the dusk settles, the candles catch in a wave
+  // from upstream and new lanterns come round the bend lit as they come in. Leaving: the flames
+  // gutter out one by one and the river darkens.
+  passage: { enter: PASSAGE_ENTER, exit: PASSAGE_EXIT },
   sim: lanternsSim(params),
   // A sunlit river is bright water and sky: the copy needs dark ink on it, from the time the sun is
   // about 12 degrees up until it sinks back there. With the day cycle running the light keeps
