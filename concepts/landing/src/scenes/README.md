@@ -338,6 +338,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   frames, so the opening picture never depends on the machine's speed.
 - `toHalf` and `splitHalf` (`half.ts`): a number as two half floats (hi + lo) for a 16f texture,
   decoded in GLSL by `unsplitHalfGlsl`.
+- `Errand` (`errand.ts`): a kerbside errand's choreography (a vehicle pulls in, hazards on, a porter
+  carries loads to a door in trips, climbs back in, the vehicle leaves); the scene drives and walks
+  them and reports arrivals (street's late delivery).
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and
