@@ -26,6 +26,8 @@ type Group =
   | "budgets"
   | "pwa"
   | "axioms"
+  | "landing-concept"
+  | "landing-webgl"
   | "nix";
 type Phase = "prepare" | "build" | "static" | "post-static" | "convergence" | "browser";
 
@@ -247,6 +249,25 @@ const tasks: readonly GateTask[] = [
     phase: "browser",
     command: fixed("bun", "scripts/verify-axioms.ts"),
     usesDist: true,
+  },
+  {
+    name: "tsc concepts/landing",
+    group: "landing-concept",
+    phase: "static",
+    command: fixed("bunx", "tsc", "-p", "concepts/landing"),
+  },
+  {
+    name: "landing concept tests",
+    group: "landing-concept",
+    phase: "static",
+    command: fixed("bun", "test", "concepts/landing"),
+  },
+  {
+    // Every real-WebGL regression on a fresh page, each bounded by LANDING_CHECK_SECONDS.
+    name: "verify:landing-webgl",
+    group: "landing-webgl",
+    phase: "browser",
+    command: fixed("bun", "concepts/landing/verify.ts"),
   },
 ];
 
