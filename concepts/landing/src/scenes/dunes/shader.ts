@@ -7,7 +7,7 @@
 // and toward the viewer; the sky library's frame is the camera's turned by DUNES_CAMERA.look, and
 // its sun and moon are turned on into grid space to light the sand.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { DUNES_CAMERA, DUNES_GRID, DUNES_MAP, DUNES_MARK, DUNES_SAND, DUNES_SLAB } from "./sim.ts";
+import { DUNES_CAMERA, DUNES_GRID, DUNES_MAP, DUNES_MARCH, DUNES_MARK, DUNES_SAND, DUNES_SLAB } from "./sim.ts";
 
 /**
  * Seconds of the dunes' entrance and exit (SceneDef.passage). Arriving, the camera glides in low
@@ -19,9 +19,9 @@ export const DUNES_PASSAGE = { enter: 2.6, exit: 1.5 } as const;
 export const dunesGlsl = `
 const float DUNES_GRID = ${glslFloat(DUNES_GRID)};
 // No sand stands higher than this (cells); rays above it and climbing can stop.
-const float DUNES_TOP = 16.0;
+const float DUNES_TOP = ${glslFloat(DUNES_MARCH.top)};
 // Rays give up here: the dust has the horizon by then.
-const float DUNES_FAR = 900.0;
+const float DUNES_FAR = ${glslFloat(DUNES_MARCH.far)};
 const vec2 DUNES_EYE = vec2(${glslFloat(DUNES_CAMERA.x)}, ${glslFloat(DUNES_CAMERA.z)});
 const float DUNES_EYE_HEIGHT = ${glslFloat(DUNES_CAMERA.height)};
 const float DUNES_EYE_RISE = ${glslFloat(DUNES_CAMERA.rise)};
@@ -29,6 +29,7 @@ const float DUNES_HORIZON = ${glslFloat(DUNES_CAMERA.horizon)};
 const float DUNES_FOV = ${glslFloat(DUNES_CAMERA.fov)};
 const float DUNES_TURN = ${glslFloat(DUNES_CAMERA.turn)};
 const float DUNES_LOOK = ${glslFloat(DUNES_CAMERA.look)};
+const float DUNES_PARALLAX = ${glslFloat(DUNES_CAMERA.parallax)};
 const float DUNES_MAP_SPAN = ${glslFloat(DUNES_MAP.span)};
 const vec2 DUNES_MARK_AT = vec2(${glslFloat(DUNES_MARK.x)}, ${glslFloat(DUNES_MARK.z)});
 const float DUNES_MARK_YAW = ${glslFloat(DUNES_MARK.yaw)};
@@ -155,12 +156,13 @@ float dunesShadow(vec3 p, vec3 l, float markHeight, float coarse) {
 // steeper than about 0.75), never shorter than 1% of the distance so the far field is reached
 // within 48 steps, then bisect the last one. Returns the hit distance, or -1 for none before
 // DUNES_FAR. 'skim' notes where the ray passes closest over a crest (xyz, closeness in w), where
-// sand blowing off it would be seen against what lies beyond.
+// sand blowing off it would be seen against what lies beyond. The numbers are DUNES_MARCH's, which
+// the sim's pointer ray marches with too (marchHeight), so a click lands on the sand drawn under it.
 float dunesMarch(vec3 ro, vec3 rd, float t, out vec4 skim) {
   skim = vec4(0.0);
   float last = t;
   bool hit = false;
-  for (int i = 0; i < 48; i++) {
+  for (int i = 0; i < ${DUNES_MARCH.steps}; i++) {
     vec3 p = ro + rd * t;
     float gap = p.y - dunesHeight(p.xz);
     if (gap < 0.0) {
@@ -173,14 +175,14 @@ float dunesMarch(vec3 ro, vec3 rd, float t, out vec4 skim) {
     }
     if (rd.y >= 0.0 && p.y > DUNES_TOP) return -1.0;
     last = t;
-    t += max(gap / (0.75 + abs(rd.y)), 0.01 * t + 0.02);
+    t += max(gap / (${glslFloat(DUNES_MARCH.slope)} + abs(rd.y)), ${glslFloat(DUNES_MARCH.relStep)} * t + ${glslFloat(DUNES_MARCH.minStep)});
     if (t > DUNES_FAR) return -1.0;
   }
   // Out of steps short of the far field: grazing the sand somewhere ahead; call it there.
   if (!hit) return t;
   float lo = last;
   float hi = t;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < ${DUNES_MARCH.refine}; i++) {
     float mid = 0.5 * (lo + hi);
     vec3 p = ro + rd * mid;
     if (p.y > dunesHeight(p.xz)) lo = mid;
@@ -234,7 +236,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   ) - 0.5;
   vec2 at = overhead ? uv : uv + waver * vec2(0.004, 0.014) * band * heat;
   vec3 view = viewRay(at, aspect, DUNES_HORIZON, DUNES_FOV);
-  view.xz = rotate(view.xz, -uPointer.x * 0.035);
+  view.xz = rotate(view.xz, -uPointer.x * DUNES_PARALLAX);
   vec3 skyward = skyFacing(view, DUNES_LOOK);
   vec3 ro = vec3(DUNES_EYE.x, DUNES_EYE_HEIGHT + DUNES_EYE_RISE * mean, DUNES_EYE.y);
   vec3 rd = skyFacing(view, DUNES_TURN);
