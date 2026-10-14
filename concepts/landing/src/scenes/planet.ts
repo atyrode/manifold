@@ -42,7 +42,7 @@ export function planetKnobs(options: PlanetKnobOptions): ParamDef[] {
   const planet = options.groups?.planet ?? "planet";
   const moons = options.groups?.moons ?? "moons";
   const ring = options.groups?.ring ?? "ring";
-  const top = { when: options.when };
+  const top: { when?: string } = options.when === undefined ? {} : { when: options.when };
   const knobs: ParamDef[] = [];
   if (options.clouds) knobs.push(feature(planet, key("clouds"), "clouds", false, "cover", 0.6, "Cloud decks drifting over the day side.", top));
   if (options.storms) {
