@@ -1056,7 +1056,11 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   }
   float dep = 1.0 - exp(-zScene * ISL_METRES / 30.0);
   if (rain > 0.0) {
-    Precip pr = rainFall(uv, aspect, t, rain, islWind, dep);
+    // The camera looks down on the island: the rain's paths converge toward the sea below it (the
+    // lens shift moves the frame's centre ISL_LENS up the image plane).
+    vec3 vanish = rainVanish(rainFallDir(rain, islWind), islRgt, islUp, islFwd, ISL_FOCAL);
+    vanish.y -= ISL_LENS * vanish.z;
+    Precip pr = rainFallSeen(uv, aspect, t, rain, islWind, dep, vanish);
     vec3 air = mix(vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.0), haze, 0.4);
     vec3 dropCol = max(greyed(haze, vec3(1.0), 0.5) * 1.2, vec3(0.08));
     col = precipOver(col, air, dropCol * (1.0 - 0.2 * pr.near), pr);

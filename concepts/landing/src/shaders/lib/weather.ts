@@ -88,26 +88,52 @@ const float weatherRainLevel[6] = float[6](0.8, 0.9, 0.75, 0.6, 0.45, 0.35);
 // gravity does not slow down with the motion knob, so the rain keeps real time once motion is above
 // 0.4 (and still stops at motion 0). The frame is about as tall as the distance to it (~53 degrees),
 // so a drop at z metres crosses the screen at v / z screen heights per second.
-Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float depth) {
+//
+// rainFall assumes a level camera, so the drops fall straight down the frame (slanted by the wind).
+// A scene whose camera tilts passes where the rain's paths meet instead (rainFallSeen with
+// rainVanish): looking down, the paths converge toward the point under the eye; looking up, they
+// stream out of the point overhead, as rain seen from under it does.
+
+// The direction the drops fall in the world (x: downwind, y: up), unit length; wind -1..1 drifts
+// them sideways at up to ~6 m/s.
+vec3 rainFallDir(float amount, float wind) {
+  float fall = mix(4.0, 9.0, smoothstep(0.05, 0.85, clamp(amount, 0.0, 1.0)));
+  return normalize(vec3(wind * 6.0, -fall, 0.0));
+}
+
+// Where the paths of drops falling along dir meet in the frame, as homogeneous coordinates in screen
+// heights about the frame's centre (x right, y up): (x, y, 1) scaled for a point in the frame, or
+// (dx, dy, 0) when the paths are parallel. right, up, fwd: the camera's axes in the world; focal: the
+// distance of the image plane in screen heights (a view ray is fwd * focal + right * x + up * y).
+vec3 rainVanish(vec3 dir, vec3 right, vec3 up, vec3 fwd, float focal) {
+  return vec3(focal * dot(dir, right), focal * dot(dir, up), dot(dir, fwd));
+}
+
+Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish) {
   Precip o = Precip(0.0, 0.0, 0.0);
   if (amount <= 0.0) return o;
   float a = clamp(amount, 0.0, 1.0);
   float tm = t * uMotion;
   float tr = weatherRainClock(t);
   float fall = mix(4.0, 9.0, smoothstep(0.05, 0.85, a)); // m/s: drizzle drifts, a downpour hurtles
-  float slant = clamp(atan(wind * 6.0 / fall), -1.1, 1.1);
   float bright = mix(0.75, 1.0, smoothstep(0.05, 0.7, a));
   float thick = mix(0.8, 1.35, a);
   float sheet = 1.0 + 0.5 * smoothstep(0.7, 1.0, a); // a downpour closes into sheets
   float gusty = smoothstep(0.25, 0.95, a) * (0.35 + 0.65 * abs(wind));
   float th = weatherThreshold();
-  vec2 q0 = vec2((uv.x - 0.5) * aspect, uv.y);
+  // Each drop's path is a line through the vanishing point; it is told apart by where it crosses
+  // the frame's middle row (q.x), and runs down the frame (q.y). Paths bunch up toward the vanishing
+  // point, so a streak's width there is scaled by how fast q.x changes across the frame (spread).
+  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+  float den = vanish.y - p.y * vanish.z;
+  if (abs(den) < 1e-3) return o;
+  float spread = abs(vanish.y / den);
+  vec2 q = vec2(p.x - p.y * (vanish.x - p.x * vanish.z) / den, uv.y);
   float clear = 1.0;
   float nearCover = 0.0;
   for (int i = 0; i < 6; i++) {
     float f = float(i);
     float z = pow(2.0, f);
-    vec2 q = rotate(q0, -slant * (1.08 - 0.03 * f));
     // Far layers fill in first (drizzle is fine and distant), near drops only in real rain.
     float fill = weatherRainFill[i] * sheet * smoothstep(0.15 - 0.1 * f, 1.0 - 0.08 * f, a);
     fill *= 1.0 + gusty * (1.5 * weatherGust(q.x, z, tm, wind) - 0.55);
@@ -115,7 +141,7 @@ Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float 
     // for far ones (0.1 s at 32 m) so that the fine rain still reads as streaks, not dots.
     float speed = fall / z;
     vec2 r = weatherRainLayer(q, tr, min(6.0 * pow(z, 1.25), uRes.y / 7.0), speed, speed * 0.033 * pow(z, 0.32),
-                              2.5 - 0.1 * f, 0.011 * pow(z, -0.8) * thick, i == 0 ? 0.15 : 0.6, min(fill, 0.95),
+                              2.5 - 0.1 * f, 0.011 * pow(z, -0.8) * thick * spread, i == 0 ? 0.15 : 0.6, min(fill, 0.95),
                               vec2(weatherDepth(z / 1.41), weatherDepth(z * 1.41)), depth, f * 7.3 + 1.0);
     float c = (r.x > th ? 1.0 : 0.0) * r.y * bright * weatherRainLevel[i];
     if (i == 0) nearCover = c;
@@ -126,9 +152,15 @@ Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float 
   // The rain too fine and far to resolve: a grey veil thickening with distance and amount, and
   // heavier where a gust curtain passes (the curtains lean with the rain).
   float k = 0.22 * smoothstep(0.0, 0.12, a) + 0.3 * a + 0.87 * a * a * a;
-  k *= 1.0 + gusty * (1.3 * weatherGust(rotate(q0, -slant).x, mix(2.0, 22.0, depth), tm, wind) - 0.45);
+  k *= 1.0 + gusty * (1.3 * weatherGust(q.x, mix(2.0, 22.0, depth), tm, wind) - 0.45);
   o.veil = 1.0 - exp(-k * depth * (0.4 + 0.6 * depth));
   return o;
+}
+
+// Rain seen by a level camera: the paths are parallel, straight down the frame and slanted by the wind.
+Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float depth) {
+  vec3 dir = rainFallDir(amount, wind);
+  return rainFallSeen(uv, aspect, t, amount, wind, depth, vec3(dir.xy, 0.0));
 }
 
 // One depth layer of snow, q in screen heights, scale m (1 nearest .. ~0.15 farthest). Cells hold at

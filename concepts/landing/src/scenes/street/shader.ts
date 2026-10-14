@@ -2066,7 +2066,9 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
   }
   float depth = weatherDepth(hit.t);
   if (K_rain > 0.0) {
-    Precip pr = rainFall(uv, aspect, t, K_rain, K_wind, depth);
+    // From the window the rain falls past a camera pitched down: its paths converge below the street.
+    vec3 vanish = rainVanish(rainFallDir(K_rain, K_wind), vec3(1.0, 0.0, 0.0), vec3(0.0, cp, sp), vec3(0.0, -sp, cp), STREET_FOCAL);
+    Precip pr = rainFallSeen(uv, aspect, t, K_rain, K_wind, depth, vanish);
     vec3 air = streetDeck * 0.9 + bounce + glow * 0.25;
     col = mix(col, air, pr.veil);
     // At the window there are no drops at arm's length.
