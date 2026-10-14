@@ -406,13 +406,14 @@ vec2 shanFormInk(int layer, ShanForm f, vec2 top, vec2 P, out vec3 mineral) {
     water = hardEdge(water * (1.0 - 0.3 * smoothstep(0.62, 0.8, vnoise(vec2((P.x - xw) / hw * 1.6, P.y * 9.0)))));
   }
 
-  // Winter: snow lies on the upper faces, on each ledge of stacked rock and on the gentler slopes;
-  // sheer rock stays dark, and the wash below the snow deepens to set it off.
+  // Winter: snow settles as on any surface, by the slope of the crest above (the weather library's
+  // snowCover), but the painter keeps it to the upper faces and each ledge of stacked rock: below,
+  // the rock stays dark and its wash deepens to set the snow off.
   float snow = 0.0;
   if (K_season > 3.5) {
-    float lying = 1.0 - smoothstep(0.18, 0.42, depth + 0.25 * (vnoise(P * vec2(14.0, 34.0) + f.seed * 9.0) - 0.5));
+    float tops = 1.0 - smoothstep(0.18, 0.42, depth + 0.25 * (vnoise(P * vec2(14.0, 34.0) + f.seed * 9.0) - 0.5));
     float ledge = m >= 1.0 ? 0.85 * (1.0 - smoothstep(0.08, 0.4, fb)) : 0.0;
-    snow = hardEdge(max(lying, ledge) * (1.0 - smoothstep(0.8, 1.8, abs(top.y))));
+    snow = hardEdge(max(tops, ledge) * snowCover(vec3(-top.y, 1.0, 0.0) * slopeN, P * 24.0 + f.seed * 7.0, 0.6));
     wash *= mix(1.5, 0.0, snow);
     tex *= 1.0 - snow;
     dots *= 1.0 - snow;
