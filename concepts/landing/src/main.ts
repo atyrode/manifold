@@ -74,8 +74,10 @@ function apply(query: URLSearchParams): void {
   lab?.sync();
 }
 
-let lab: Lab | undefined;
-lab = new Lab(element("#lab", HTMLElement), element("#lab-open", HTMLButtonElement), {
+// `apply` reads `lab`, so nothing may apply before this line has run: the first call is the last
+// line of this module, and the Lab only calls `host.apply` from user actions, never while it is
+// being built (it reads `host.current()` then).
+const lab = new Lab(element("#lab", HTMLElement), element("#lab-open", HTMLButtonElement), {
   current: () => ({ state, params }),
   apply,
   renderer: () => renderer,
