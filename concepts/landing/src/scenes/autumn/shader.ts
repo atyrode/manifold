@@ -49,7 +49,7 @@ float autumnLeafScale(float h) {
 }
 
 float autumnLeafRadius() {
-  return K_species < 0.5 ? 0.11 : (K_species < 1.5 ? 0.09 : 0.10);
+  return K_species < 0.5 ? 0.15 : (K_species < 1.5 ? 0.12 : 0.14);
 }
 
 // A leaf's upper face for hue h (0..1) at this season: maple crimson to gold, ginkgo butter to lemon,
@@ -145,7 +145,7 @@ vec3 autumnLeafColour(float h, bool top, vec3 nv, float lit, float vein, float m
   float back = max(dot(-nv, autumnL), 0.0);
   vec3 sun = autumnSun * lit;
   vec3 col = face * (autumnAmb * 0.9 + sun * (front + 0.5 * back));
-  col += face * face * sun * back * 1.1;
+  col += face * face * sun * (back + 0.45 * front) * 1.1;
   col += autumnAmb * 0.3 * wetGloss(autumnWet, nv.y);
   return col;
 }
@@ -160,7 +160,7 @@ float autumnShadow(vec3 P) {
   float lit = 1.0;
   float rise = max(AUTUMN_BOUGHS + 1.5 - P.y, 0.1);
   float dt = segmentDistance(P.xz, AUTUMN_TREE.xy, AUTUMN_TREE.xy - sh * rise);
-  lit *= smoothstep(0.34, 0.5 + 0.01 * rise, dt);
+  lit *= smoothstep(0.4, 0.7 + 0.012 * rise, dt);
   float lr = max(AUTUMN_LAMP.z - P.y, 0.1);
   float dl = segmentDistance(P.xz, AUTUMN_LAMP.xy, AUTUMN_LAMP.xy - sh * lr);
   lit *= smoothstep(0.02, 0.07 + 0.01 * lr, dl);
@@ -175,7 +175,7 @@ float autumnShadow(vec3 P) {
   for (int k = 0; k < 2; k++) {
     float hc = k == 0 ? 5.0 : 7.4;
     vec2 shift = sh * (hc - P.y);
-    shift *= min(1.0, 10.0 / max(length(shift), 1e-4));
+    shift *= min(1.0, 7.0 / max(length(shift), 1e-4));
     vec2 Q = P.xz + shift;
     float fp = 1.0 - smoothstep(0.55, 1.0, length((Q - AUTUMN_CANOPY.xy) / (AUTUMN_CANOPY.z * vec2(1.0, 0.85))));
     if (fp <= 0.0) continue;
@@ -250,24 +250,31 @@ vec3 autumnGround(vec2 uv, float aspect, float t, out float depthZ, out float ma
   float aa = 0.8 * sqrt(g.foot.x * g.foot.y);
   float lod = g.foot.y;
 
-  // The path: gravel with a ragged edge.
-  float wob = vnoise(vec2(w.y * 1.9 + 3.0, 7.0)) - 0.5;
-  float dPath = abs(w.x - autumnPathX(w.y)) - AUTUMN_PATH_HALF * (1.0 + 0.18 * wob);
-  float onPath = 1.0 - smoothstep(-0.1, 0.18, dPath);
+  // The path: gravel worn pale down its middle, darker and ragged at the edges, with two faint ruts.
+  float across = w.x - autumnPathX(w.y);
+  float wob = vnoise(vec2(w.y * 1.9 + 3.0, 7.0)) - 0.5 + 0.35 * (vnoise(vec2(w.y * 6.0, 2.0)) - 0.5);
+  float dPath = abs(across) - AUTUMN_PATH_HALF * (1.0 + 0.2 * wob);
+  float onPath = 1.0 - smoothstep(-0.1, 0.2, dPath);
+  float centre = 1.0 - smoothstep(0.0, AUTUMN_PATH_HALF, abs(across));
 
-  float broad = fbm3(w * 0.45 + K_parkSeed * 1.3);
-  vec3 grass = mix(vec3(0.24, 0.32, 0.09), vec3(0.50, 0.46, 0.16), smoothstep(0.35, 0.75, broad));
+  // The lawn: sun-bleached and lush drifts, patches, tufts close by.
   float fineFade = (1.0 - smoothstep(0.02, 0.06, g.foot.x)) * (1.0 - smoothstep(0.05, 0.15, g.foot.y));
-  grass *= 1.0 + (vnoise(w * 3.0) - 0.5) * 0.2 * fineFade;
-  vec3 gravel = mix(vec3(0.56, 0.47, 0.35), vec3(0.70, 0.61, 0.46), vnoise(w * 2.2));
-  gravel *= 1.0 + (hash12(floor(w * 14.0)) - 0.5) * 0.14 * fineFade;
+  float broad = fbm3(w * 0.35 + K_parkSeed * 1.3);
+  float lush = fbm3(w * vec2(1.6, 1.0) + vec2(4.0, K_parkSeed));
+  vec3 grass = mix(vec3(0.20, 0.30, 0.08), vec3(0.52, 0.47, 0.17), smoothstep(0.3, 0.75, broad));
+  grass = mix(grass, vec3(0.32, 0.40, 0.12), 0.4 * smoothstep(0.4, 0.7, lush));
+  grass *= 0.85 + 0.3 * mix(0.5, vnoise(w * 7.0), fineFade) + (vnoise(w * 2.3) - 0.5) * 0.2;
+  vec3 gravel = mix(vec3(0.50, 0.41, 0.30), vec3(0.72, 0.63, 0.48), smoothstep(0.2, 0.8, 0.6 * vnoise(w * vec2(1.4, 0.5)) + 0.4 * centre));
+  gravel *= 1.0 + (hash12(floor(w * 16.0)) - 0.5) * 0.18 * fineFade + (vnoise(w * 3.5) - 0.5) * 0.15;
+  gravel *= 1.0 - 0.1 * smoothfall(0.22, 0.0, abs(abs(across) - 0.5));
   vec3 albedo = mix(grass, gravel, onPath);
-  albedo *= 1.0 - 0.25 * smoothfall(0.12, 0.0, abs(dPath));
+  albedo *= 1.0 - 0.3 * smoothfall(0.4, 0.0, abs(dPath));
 
   // Litter: finer than the carpet's leaves, a mottle of leaf colours that thickens with the season,
   // under the tree, and off the path; far away it is averaged into the colour.
   vec2 tc = w - AUTUMN_CANOPY.xy;
-  float shape = (0.8 + 0.5 * exp(-dot(tc, tc) / 98.0)) * (1.0 - 0.35 * onPath);
+  float edgeBand = exp(-(dPath / 0.8) * (dPath / 0.8));
+  float shape = ((0.75 + 0.9 * exp(-dot(tc, tc) / 60.5)) * (1.0 - 0.3 * onPath) + 0.55 * edgeBand) * (0.7 + 0.6 * vnoise(w * 0.28 + K_parkSeed));
   float dens = min(0.95, autumnCarpet * shape);
   vec2 gs = w / 0.17;
   vec2 sid = floor(gs);
@@ -281,8 +288,12 @@ vec3 autumnGround(vec2 uv, float aspect, float t, out float depthZ, out float ma
   albedo = wetten(albedo, autumnWet, mix(0.8, 0.45, onPath));
 
   float lit = hardEdge(autumnShadow(vec3(w.x, 0.0, w.y)));
+  // Contact shadows where things stand: round the bench, the lamp's foot and the trunk's roots.
+  float ao = 1.0 - 0.55 * (1.0 - smoothstep(0.0, 0.45, sdBox(w - AUTUMN_BENCH_AT - vec2(0.0, 0.2), vec2(0.95, 0.4), 0.1)));
+  ao *= 1.0 - 0.6 * (1.0 - smoothstep(0.0, 0.5, length(w - AUTUMN_LAMP.xy) - 0.12));
+  ao *= 1.0 - 0.5 * (1.0 - smoothstep(0.0, 1.0, length(w - AUTUMN_TREE.xy) - AUTUMN_TREE.z * 1.3));
   vec3 light = autumnAmb * 0.95 + autumnSun * (autumnL.y * lit * 1.25) + autumnLampLight(w);
-  vec3 col = albedo * light;
+  vec3 col = albedo * light * ao;
 
   // Water pools on the path and low in the lawn, mirroring the sky; rings spread in it while it rains.
   float pool = rainPuddles(w * 0.8, autumnWet) * (0.4 + 0.6 * onPath);
@@ -303,16 +314,56 @@ vec3 autumnGround(vec2 uv, float aspect, float t, out float depthZ, out float ma
   float m1 = 0.0;
   float m2 = 0.0;
   vec4 lb = autumnCarpetLayer(w, 1.0, aa, lit, lod, m2);
-  col = mix(col, lb.rgb, lb.a);
+  col = mix(col, lb.rgb * ao, lb.a);
   vec4 la = autumnCarpetLayer(w, 0.0, aa, lit, lod, m1);
-  col = mix(col, la.rgb, la.a);
+  col = mix(col, la.rgb * ao, la.a);
   markCov = max(m2 * lb.a, m1 * la.a);
 
   // The haze takes the far lawn.
-  return mix(col, autumnHaze, 1.0 - exp(-w.y * 0.012));
+  return mix(col, autumnHaze, 1.0 - exp(-w.y * 0.016));
 }
 
 // ---- the sky and the far trees ----
+
+// One row of far trees, nearest (k = 0) to farthest (k = 2): lumpy crowns that dip between one
+// another, a few tall dark conifers, the silhouette broken up by leafy noise, the sun's side lit and
+// the whole lost in haze. Returns rgb and cover.
+vec4 autumnFarRow(vec2 p, float k) {
+  float w = 0.17 - 0.03 * k;
+  float hMax = 0.105 - 0.025 * k;
+  float gx = (p.x + 0.31 * k + K_parkSeed * 0.013) / w;
+  float id = floor(gx);
+  float fx = gx - id;
+  float h = hash12(vec2(id, k * 7.0 + K_parkSeed));
+  float h2 = hash12(vec2(id * 1.7, k * 3.0 + 1.0));
+  float h3 = hash12(vec2(id * 2.3, k * 5.0 + 2.0));
+  float u = 2.0 * fx - 1.0;
+  float height = hMax * (0.5 + 0.6 * h2) * (0.45 + 0.55 * pow(sqrt(max(1.0 - u * u, 0.0)), 0.7));
+  bool conifer = h3 > 0.8;
+  if (conifer) {
+    float spire = pow(max(1.0 - abs(u) * 1.7, 0.0), 0.8);
+    height = max(height * 0.55, hMax * (0.95 + 0.4 * h2) * spire);
+  }
+  height += hMax * 0.3 * (vnoise(vec2(p.x * 26.0 / (1.0 + 0.3 * k) + k * 3.0, 1.0)) - 0.5);
+  height = max(height, 0.0);
+  float edge = AUTUMN_HORIZON - 0.004 + height;
+  float broken = vnoise(p * vec2(70.0, 90.0) + k * 5.0) - 0.5;
+  float c = clamp((edge - p.y) / 0.014 + 0.5 + broken * 1.3, 0.0, 1.0);
+  if (hardEdge(c) <= 0.0) return vec4(0.0);
+  float tone = hash12(vec2(id * 1.3, k + 4.1));
+  vec3 col;
+  if (conifer) {
+    col = vec3(0.09, 0.17, 0.11);
+  } else {
+    col = autumnLeafTop(clamp(tone * 1.1 + 0.25 * (vnoise(p * vec2(18.0, 24.0) + k) - 0.5), 0.0, 1.0)) * (0.75 + 0.35 * h);
+  }
+  float sideLit = autumnL.x < 0.0 ? smoothfall(0.8, 0.1, fx) : smoothstep(0.2, 0.9, fx);
+  float topLit = clamp((p.y - AUTUMN_HORIZON) / max(height, 0.01), 0.0, 1.0);
+  col *= (0.45 + 0.5 * sideLit + 0.35 * topLit) * (0.8 + 0.4 * vnoise(p * vec2(120.0, 140.0) + k * 9.0));
+  vec3 lit = col * (autumnAmb * 0.8 + autumnSun * 0.55) + col * col * autumnSun * 0.3 * sideLit;
+  lit = mix(lit, vec3(dot(lit, LUMA)), 0.2 * k);
+  return vec4(mix(lit, autumnHaze, 0.36 + 0.2 * k), 1.0);
+}
 
 vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, float t, out float depthZ) {
   vec3 sk = skyColor(autumnSky, dir);
@@ -327,39 +378,12 @@ vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, float t, out float depthZ) {
   }
   vec3 col = sk;
   // Three rows of far crowns, far to near, each lost a little more in haze.
-  if (p.y < AUTUMN_HORIZON + 0.14) {
+  if (p.y < AUTUMN_HORIZON + 0.16) {
     for (int k = 2; k >= 0; k--) {
-      float fk = float(k);
-      float w = 0.20 - 0.045 * fk;
-      float hMax = 0.10 - 0.025 * fk;
-      float zk = 38.0 + 30.0 * fk + 10.0 * fk * fk;
-      float aerial = 0.45 + 0.17 * fk;
-      float gx = (p.x + 0.31 * fk + K_parkSeed * 0.01) / w;
-      float id0 = floor(gx);
-      float best = 0.0;
-      vec3 treeCol = vec3(0.0);
-      for (int j = -1; j <= 1; j++) {
-        float tid = id0 + float(j);
-        float h = hash12(vec2(tid, fk * 7.0 + K_parkSeed));
-        float h2 = hash12(vec2(tid * 1.7, fk * 3.0 + 1.0));
-        float h3 = hash12(vec2(tid * 2.3, fk * 5.0 + 2.0));
-        float cx = (tid + 0.5 + (h - 0.5) * 0.4) * w - 0.31 * fk - K_parkSeed * 0.01;
-        float hgt = hMax * (0.45 + 0.75 * h2);
-        float a = w * (0.5 + 0.3 * h3);
-        float d = sdEllipse(vec2(p.x - cx, p.y - (AUTUMN_HORIZON - 0.004 + 0.5 * hgt)), vec2(a, 0.5 * hgt));
-        float cov = hardFill(d, 0.0012);
-        if (cov > 0.0) {
-          best = 1.0;
-          float tone = hash12(vec2(tid * 1.3, fk + 4.1));
-          vec3 c = tone > 0.84 ? vec3(0.10, 0.20, 0.12) : autumnLeafTop(tone / 0.84) * (0.7 + 0.3 * h);
-          float top = clamp((p.y - AUTUMN_HORIZON) / hgt, 0.0, 1.0);
-          c *= (0.9 + 0.25 * top) * (0.88 + 0.24 * vnoise(p * 70.0));
-          treeCol = c * (autumnAmb * 0.8 + autumnSun * 0.55);
-        }
-      }
-      if (best > 0.0) {
-        col = mix(treeCol, autumnHaze, aerial);
-        depthZ = zk;
+      vec4 row = autumnFarRow(p, float(k));
+      if (row.a > 0.0) {
+        col = row.rgb;
+        depthZ = 38.0 + 30.0 * float(k) + 10.0 * float(k * k);
       }
     }
   }
@@ -393,7 +417,9 @@ vec4 autumnLampPost(vec2 p, out float glass) {
   if (cov <= 0.0) return vec4(0.0);
   float nx = clamp(q.x / max(r, 0.02), -1.0, 1.0);
   vec3 N = vec3(nx, 0.0, -sqrt(max(1.0 - nx * nx, 0.0)));
-  vec3 iron = vec3(0.09, 0.10, 0.09) * (autumnAmb * 0.9 + autumnSun * max(dot(N, autumnL), 0.0) * 0.7 + 0.04);
+  vec3 iron = vec3(0.11, 0.12, 0.11) * (autumnAmb * 0.9 + autumnSun * max(dot(N, autumnL), 0.0) * 0.9 + 0.04);
+  iron += autumnSun * 0.3 * pow(max(dot(N, autumnL), 0.0), 4.0) * (1.0 - 0.5 * smoothstep(0.5, 1.5, q.y));
+  iron *= 1.0 - 0.25 * smoothfall(0.02, 0.0, abs(q.y - 1.4));
   if (dBody < 0.0 && dGlass < 0.0 && dIron > 0.0) {
     glass = 1.0;
     vec3 lamp = vec3(1.0, 0.78, 0.42) * 1.2;
@@ -422,12 +448,17 @@ vec4 autumnBench(vec2 p) {
   float dIron = min(legs, arm);
   float cov = hardFill(min(dWood, dIron), aa);
   if (cov <= 0.0) return vec4(0.0);
-  vec3 wood = vec3(0.45, 0.29, 0.15) * (0.82 + 0.3 * vnoise(vec2(q.x * 2.0, q.y * 40.0)));
+  float tone = (bi < -0.5 || bi > 2.5) ? 0.9 : 0.8 + 0.3 * hash12(vec2(bi, K_parkSeed + 3.0));
+  float grain = vnoise(vec2(q.x * 1.6 + bi * 3.7, q.y * 75.0));
+  vec3 wood = vec3(0.47, 0.30, 0.15) * tone * (0.72 + 0.4 * grain);
+  wood = mix(wood, vec3(0.52, 0.46, 0.38), 0.3 * smoothstep(0.55, 0.8, vnoise(vec2(q.x * 3.0 + 2.0, q.y * 20.0))));
   float sunLit = hardEdge(autumnShadow(vec3(AUTUMN_BENCH_AT.x + q.x, 0.5, AUTUMN_BENCH_AT.y)));
   wood = wetten(wood, autumnWet, 0.7);
   vec3 col;
   if (dIron < dWood) {
-    col = vec3(0.07, 0.08, 0.07) * (autumnAmb * 0.9 + autumnSun * sunLit * 0.25);
+    float post = q.x < 0.0 ? -0.8 : 0.8;
+    col = vec3(0.09, 0.10, 0.09) * (autumnAmb * 0.9 + autumnSun * sunLit * 0.25);
+    col += autumnSun * sunLit * 0.35 * smoothfall(0.012, 0.0, abs(q.x - post + 0.018));
   } else if (seatTop <= seatFront && seatTop < board) {
     // The seat's top, lit from above, with a line between its slats and the leaves that have settled.
     col = wood * 1.1 * (autumnAmb + autumnSun * (autumnL.y * 1.2 * sunLit));
@@ -441,9 +472,11 @@ vec4 autumnBench(vec2 p) {
       }
     }
   } else {
-    // The faces toward the viewer lie in the sun's shade: ambient, and a bright edge on top.
-    col = wood * (autumnAmb * 0.75 + autumnSun * (max(-autumnL.z, 0.0) * 0.5 * sunLit));
-    col += autumnSun * sunLit * 0.45 * smoothfall(0.016, 0.0, abs(fy - 0.045)) * step(board, min(seatFront, seatTop));
+    // The faces toward the viewer take the low sun from the side, and a bright edge on top.
+    col = wood * (autumnAmb * 0.75 + autumnSun * (max(-autumnL.z, 0.0) * 1.3 * sunLit));
+    float onBoard = step(board, min(seatFront, seatTop));
+    col += autumnSun * sunLit * 0.45 * smoothfall(0.016, 0.0, abs(fy - 0.045)) * onBoard;
+    col *= 1.0 - 0.35 * smoothstep(0.034, 0.045, abs(fy)) * onBoard;
   }
   return vec4(col, cov);
 }
@@ -451,29 +484,37 @@ vec4 autumnBench(vec2 p) {
 // ---- the tree ----
 
 // The trunk and its boughs at the tree's depth, as a signed distance in metres: q = (across from the
-// trunk's foot, height).
+// trunk's foot, height). The trunk flares into roots that spread over the ground and forks into
+// boughs that climb into the canopy.
 float autumnTreeD(vec2 q) {
   float lean = 0.16 * sin(0.55 * q.y + 1.0) - 0.03 * q.y;
-  float rt = AUTUMN_TREE.z * (1.0 + 0.9 * exp(-q.y * 2.2)) * (1.0 - 0.06 * q.y);
-  float d = max(abs(q.x - lean) - rt, max(-0.2 - q.y, q.y - 4.0));
-  if (q.y > 2.4) {
-    d = min(d, sdTaperCapsule(q, vec2(-0.1, 2.9), vec2(-1.9, 4.3), 0.26, 0.15));
-    d = min(d, sdTaperCapsule(q, vec2(-1.9, 4.3), vec2(-4.6, 5.4), 0.15, 0.07));
-    d = min(d, sdTaperCapsule(q, vec2(-1.9, 4.3), vec2(-2.6, 6.4), 0.12, 0.06));
-    d = min(d, sdTaperCapsule(q, vec2(0.1, 3.1), vec2(1.8, 4.5), 0.24, 0.14));
-    d = min(d, sdTaperCapsule(q, vec2(1.8, 4.5), vec2(4.4, 5.2), 0.14, 0.06));
-    d = min(d, sdTaperCapsule(q, vec2(1.8, 4.5), vec2(2.4, 6.6), 0.10, 0.05));
-    d = min(d, sdTaperCapsule(q, vec2(0.0, 3.3), vec2(0.35, 6.2), 0.24, 0.11));
-    d = min(d, sdTaperCapsule(q, vec2(-0.3, 3.6), vec2(-0.9, 6.0), 0.16, 0.07));
+  float rt = AUTUMN_TREE.z * (1.0 + 1.4 * exp(-q.y * 2.8)) * (1.0 - 0.05 * q.y);
+  float d = max(abs(q.x - lean) - rt, q.y - 4.0);
+  d = min(d, sdTaperCapsule(q, vec2(-0.3, 0.3), vec2(-1.6, 0.0), 0.28, 0.06));
+  d = min(d, sdTaperCapsule(q, vec2(0.35, 0.3), vec2(1.8, 0.0), 0.3, 0.06));
+  d = min(d, sdTaperCapsule(q, vec2(0.1, 0.25), vec2(0.7, -0.02), 0.2, 0.05));
+  d = max(d, -0.06 - q.y);
+  if (q.y > 2.3) {
+    d = min(d, sdTaperCapsule(q, vec2(-0.1, 2.9), vec2(-1.9, 4.3), 0.3, 0.17));
+    d = min(d, sdTaperCapsule(q, vec2(-1.9, 4.3), vec2(-4.6, 5.4), 0.17, 0.08));
+    d = min(d, sdTaperCapsule(q, vec2(-1.9, 4.3), vec2(-2.6, 6.4), 0.14, 0.07));
+    d = min(d, sdTaperCapsule(q, vec2(0.1, 3.1), vec2(1.8, 4.5), 0.28, 0.16));
+    d = min(d, sdTaperCapsule(q, vec2(1.8, 4.5), vec2(4.4, 5.2), 0.16, 0.07));
+    d = min(d, sdTaperCapsule(q, vec2(1.8, 4.5), vec2(2.4, 6.6), 0.12, 0.06));
+    d = min(d, sdTaperCapsule(q, vec2(0.0, 3.3), vec2(0.35, 6.2), 0.28, 0.13));
+    d = min(d, sdTaperCapsule(q, vec2(-0.3, 3.6), vec2(-0.9, 6.0), 0.18, 0.08));
+    d = min(d, sdTaperCapsule(q, vec2(-0.2, 2.5), vec2(-3.0, 3.7), 0.22, 0.09));
+    d = min(d, sdTaperCapsule(q, vec2(0.2, 2.6), vec2(3.0, 3.8), 0.22, 0.09));
   }
   return d;
 }
 
-// The trunk and boughs (rgb, cover): bark ridged and mossy at the foot, lit on the side toward the sun.
+// The trunk and boughs (rgb, cover): furrowed, cracked bark with lichen and moss, dark where it meets
+// the ground, lit on the side toward the sun with a warm rim.
 vec4 autumnTrunk(vec2 p) {
   float s = AUTUMN_FOCAL / AUTUMN_TREE.y;
   vec2 q = vec2(p.x / s - AUTUMN_TREE.x, (p.y - (AUTUMN_HORIZON - AUTUMN_EYE * s)) / s);
-  if (q.y < -0.3) return vec4(0.0);
+  if (q.y < -0.1) return vec4(0.0);
   float aa = 0.8 / (uRes.y * s);
   float d = autumnTreeD(q);
   if (d > 0.1) return vec4(0.0);
@@ -484,39 +525,95 @@ vec4 autumnTrunk(vec2 p) {
   vec2 grad = vec2(autumnTreeD(q + vec2(e, 0.0)) - autumnTreeD(q - vec2(e, 0.0)), autumnTreeD(q + vec2(0.0, e)) - autumnTreeD(q - vec2(0.0, e)));
   float gl = length(grad);
   vec2 gdir = gl > 1e-5 ? grad / gl : vec2(0.0, 1.0);
-  float rad = mix(AUTUMN_TREE.z * 1.2, 0.14, smoothstep(2.6, 3.4, q.y));
+  float rad = mix(AUTUMN_TREE.z * 1.3, 0.16, smoothstep(2.6, 3.4, q.y));
   float m = clamp(1.0 + d / rad, 0.0, 1.0);
   vec3 N = vec3(gdir * m, -sqrt(max(1.0 - m * m, 0.0)));
   vec3 bark = K_species < 0.5 ? vec3(0.36, 0.30, 0.25) : (K_species < 1.5 ? vec3(0.42, 0.37, 0.31) : vec3(0.26, 0.21, 0.17));
-  float fineBark = 1.0 - smoothstep(0.08, 0.2, 1.0 / (uRes.y * s) * 8.0);
-  float ridge = 0.6 * smoothstep(0.35, 0.65, vnoise(vec2(q.x * 10.0, q.y * 0.9 + 3.0))) + 0.4 * mix(0.5, vnoise(vec2(q.x * 22.0, q.y * 2.0)), fineBark);
-  vec3 albedo = bark * (0.65 + 0.55 * ridge);
-  float moss = 0.5 * smoothfall(1.4, 0.2, q.y) * smoothstep(0.4, 0.7, vnoise(vec2(q.x * 5.0, q.y * 3.0)));
-  albedo = mix(albedo, vec3(0.22, 0.30, 0.10), moss);
+  float fine = 1.0 - smoothstep(0.05, 0.12, 4.0 / (uRes.y * s));
+  float warp = 0.1 * vnoise(vec2(q.y * 1.3, 5.0));
+  float f1 = vnoise(vec2((q.x + warp) * 13.0, q.y * 0.45 + 2.0));
+  float f2 = vnoise(vec2((q.x + warp) * 34.0, q.y * 1.6));
+  float ridge = 0.65 * f1 + 0.35 * mix(0.5, f2, fine);
+  float crack = smoothfall(0.38, 0.22, f1);
+  vec3 albedo = bark * (0.5 + 0.95 * ridge) * (1.0 - 0.5 * crack);
+  float lichen = smoothstep(0.6, 0.76, vnoise(vec2(q.x * 3.0, q.y * 2.0) + 9.0));
+  albedo = mix(albedo, vec3(0.58, 0.60, 0.46), 0.3 * lichen);
+  float moss = smoothfall(1.6, 0.2, q.y) * smoothstep(0.35, 0.7, vnoise(vec2(q.x * 5.0, q.y * 3.0)));
+  albedo = mix(albedo, vec3(0.22, 0.30, 0.10), 0.5 * moss);
+  albedo *= 0.55 + 0.45 * smoothstep(-0.05, 0.7, q.y);
   albedo = wetten(albedo, autumnWet, 0.6);
   float sunLit = hardEdge(autumnShadow(vec3(AUTUMN_TREE.x + q.x, q.y, AUTUMN_TREE.y)));
-  vec3 col = albedo * (autumnAmb * 0.75 + autumnSun * sunLit * (max(dot(N, autumnL), 0.0) * 1.2 + 0.1));
+  float diff = max(dot(N, autumnL), 0.0);
+  vec3 col = albedo * (autumnAmb * (0.6 + 0.25 * N.y) + autumnSun * sunLit * (diff * 1.25 + 0.08));
+  col += albedo * vec3(0.30, 0.22, 0.10) * smoothfall(1.2, 0.0, q.y) * 0.25;
+  col += autumnSun * sunLit * 0.3 * smoothstep(0.6, 1.0, m) * max(dot(N.xy, normalize(vec2(autumnL.x, 0.5))), 0.0);
   return vec4(col, cov);
 }
 
 // ---- the canopy ----
 
-// How much canopy there is at screen point p: 0 sky .. 1 solid. Its underside is ragged and droops
-// round the trunk; holes open and the whole thins as the season runs on.
-float autumnMass(vec2 p) {
+// The underside of the canopy at screen x: ragged, drooping round the trunk.
+float autumnCanopyEdge(float x) {
   float seed = K_parkSeed;
-  float edge = 0.70 + 0.05 * sin(p.x * 2.1 + 1.3 + seed * 0.7) + 0.04 * sin(p.x * 5.3 + seed) + 0.08 * (fbm3(vec2(p.x * 2.2 + seed * 1.7, 2.0)) - 0.5);
-  float tx = (p.x - AUTUMN_TREE.x / AUTUMN_TREE.y * AUTUMN_FOCAL) / 0.55;
-  edge -= 0.09 * exp(-tx * tx);
-  float base = smoothstep(edge - 0.02, edge + 0.10, p.y);
-  float holes = fbm3(p * 2.6 + vec2(seed * 3.1, 1.7));
-  float cut = mix(0.55, 1.25, autumnThin);
-  return base * smoothstep(cut, cut + 0.12, holes + 0.25 * base);
+  float edge = 0.70 + 0.05 * sin(x * 2.1 + 1.3 + seed * 0.7) + 0.04 * sin(x * 5.3 + seed) + 0.08 * (fbm3(vec2(x * 2.2 + seed * 1.7, 2.0)) - 0.5);
+  float tx = (x - AUTUMN_TREE.x / AUTUMN_TREE.y * AUTUMN_FOCAL) / 0.55;
+  return edge - 0.07 * exp(-tx * tx);
 }
 
-// One layer of the canopy's leaves: a jittered lattice of cs-wide cells in screen space, a leaf in
-// each cell where there is canopy, each swaying a little; shadeK dims the layer (the far ones).
-vec4 autumnCanopyLayer(vec2 p, float cs, float salt, float shadeK) {
+// The canopy at screen point p: x how much there is (0 sky .. 1 solid), y how thin it is (1 at the
+// edge and round the holes, where the light shines through). Holes open, and the whole thins, as the
+// season runs on.
+vec2 autumnMassField(vec2 p) {
+  float edge = autumnCanopyEdge(p.x);
+  float base = smoothstep(edge - 0.02, edge + 0.12, p.y);
+  float holes = 0.6 * fbm3(p * 2.6 + vec2(K_parkSeed * 3.1, 1.7)) + 0.4 * fbm3(p * 1.25 + vec2(7.3, K_parkSeed * 1.3));
+  float cut = mix(0.6, 1.25, autumnThin);
+  float v = holes + 0.25 * base;
+  float mass = base * smoothstep(cut, cut + 0.1, v);
+  float thin = 1.0 - smoothstep(cut + 0.05, cut + 0.3, v) * smoothstep(edge, edge + 0.2, p.y);
+  return vec2(mass, thin);
+}
+
+// The colour cluster of the canopy at p: crimson, orange and gold in patches a boughs-width across.
+float autumnCanopyHue(vec2 p) {
+  float n = fbm3(p * 5.5 + vec2(K_parkSeed * 2.7, 8.0));
+  return clamp(n * 1.5 - 0.25 + 0.3 * (vnoise(p * 48.0) - 0.5), 0.0, 1.0);
+}
+
+// A bumpy height for the canopy's clumps.
+float autumnCanopyBump(vec2 p) {
+  return fbm3(p * 4.2 + vec2(K_parkSeed * 1.9, 4.0)) + 0.35 * vnoise(p * 11.0 + 3.0);
+}
+
+// How lit the canopy is at p, about 0.25 in deep shade to 1.1 in full sun: clumps that face the sun
+// are bright, their far flanks and the underside of the canopy dark, the top of the frame brighter.
+float autumnCanopyLight(vec2 p) {
+  vec2 toSun = normalize(vec2(autumnL.x, 0.55));
+  float facing = clamp(0.5 + (autumnCanopyBump(p) - autumnCanopyBump(p + toSun * 0.04)) * 3.2, 0.0, 1.0);
+  float under = smoothstep(0.0, 0.28, p.y - autumnCanopyEdge(p.x));
+  float top = smoothstep(0.7, 1.05, p.y);
+  return (0.25 + 0.85 * facing) * (0.5 + 0.5 * under) * (0.9 + 0.3 * top);
+}
+
+// The canopy's body: clumps of leaves in patches of red, orange and gold, lit on the sun's side and
+// dark under it, a fine leafy grain, and the sun glowing through where it is thin.
+vec4 autumnCanopyBody(vec2 p) {
+  vec2 mf = autumnMassField(p);
+  if (hardEdge(mf.x) <= 0.0) return vec4(0.0);
+  float lightK = autumnCanopyLight(p);
+  vec3 base = autumnLeafTop(autumnCanopyHue(p));
+  float speck = 0.5 + 0.5 * smoothstep(0.3, 0.65, vnoise(p * 95.0 + 5.0));
+  vec3 col = base * (autumnAmb * 0.5 + autumnSun * lightK * 0.8);
+  col += base * base * autumnSun * (0.25 + 0.9 * mf.y) * (0.4 + 0.6 * lightK);
+  col *= speck;
+  col = wetten(col, autumnWet * 0.7, 0.5);
+  return vec4(col, 1.0);
+}
+
+// One layer of leaves over the canopy's body: a jittered lattice of cs-wide cells in screen space, a
+// leaf in some cells (more at the edge and round the holes), each swaying a little and coloured by the
+// clump it hangs in; shadeK dims the layer (the far ones). density: how many cells hold a leaf.
+vec4 autumnCanopyLayer(vec2 p, float cs, float salt, float density, float shadeK) {
   vec2 off = vec2(salt * 0.37, salt * 0.61);
   vec2 g = p / cs + off;
   vec2 i0 = floor(g);
@@ -528,36 +625,31 @@ vec4 autumnCanopyLayer(vec2 p, float cs, float salt, float shadeK) {
   for (int k = 0; k < 4; k++) {
     vec2 id = i0 + vec2(float(k - 2 * (k / 2)) * nb.x, float(k / 2) * nb.y);
     float h = hash12(id + salt * 11.3);
+    if (h > density * 1.7) continue;
     vec2 jit = hash22(id + salt * 5.7);
     vec2 cp = (id + 0.5 + (jit - 0.5) * 0.6 - off) * cs;
-    if (h > autumnMass(cp) * 0.95) continue;
     float h2 = hash12(id * 1.7 + salt);
+    if (h2 >= bestK) continue;
     float ph = h * 18.85;
     vec2 sway = vec2(sin(autumnTm * 0.55 + ph), cos(autumnTm * 0.43 + ph * 1.3)) * cs * (0.05 + 0.06 * abs(K_wind) + 0.14 * abs(autumnGust));
     vec2 d = p - cp - sway;
     float r = cs * 0.62 * autumnLeafScale(h2);
     if (dot(d, d) > r * r * 2.4) continue;
+    vec2 mf = autumnMassField(cp);
+    if (h > mf.x * density * (0.7 + mf.y)) continue;
     float ang = (hash12(id + 9.1 + salt) - 0.5) * 6.2831 + 0.12 * sin(autumnTm * 0.31 + ph);
     vec2 q = rotate(d, -ang) / r;
-    if (h2 >= bestK) continue;
     float cov = hardFill(autumnLeafD(q, h2) * r, aa);
     if (cov <= 0.0) continue;
-    bool top = hash12(id + 3.3 + salt) < 0.55;
-    float hue = hash12(id * 0.37 + salt * 2.1);
+    float lightK = autumnCanopyLight(cp);
+    float hue = clamp(autumnCanopyHue(cp) + (hash12(id * 0.37 + salt * 2.1) - 0.5) * 0.3, 0.0, 1.0);
+    bool top = hash12(id + 3.3 + salt) < 0.5;
     vec3 nv = normalize(vec3((jit.x - 0.5) * 1.4, (jit.y - 0.5) * 1.2 + 0.25, -1.0));
-    float lit = hash12(id + 13.1 + salt) > 0.18 ? 1.0 : 0.0;
-    best = vec4(autumnLeafColour(hue, top, nv, lit, 0.0, 0.0) * shadeK, 1.0);
+    float lit = lightK > 0.55 ? 1.0 : 0.0;
+    best = vec4(autumnLeafColour(hue, top, nv, lit, 0.0, 0.0) * shadeK * (0.55 + 0.6 * lightK), 1.0);
     bestK = h2;
   }
   return best;
-}
-
-// The canopy's solid mass behind its leaves: shadowy leaves and boughs lit through.
-vec4 autumnCanopyMass(vec2 p) {
-  float mass = autumnMass(p);
-  if (mass <= 0.0) return vec4(0.0);
-  vec3 c = autumnLeafTop(fract(vnoise(p * 9.0) * 1.7 + 0.1)) * 0.3 * (autumnAmb * 0.7 + autumnSun * 0.45);
-  return vec4(c, hardEdge(mass));
 }
 
 // ---- loose leaves ----
@@ -625,6 +717,10 @@ void autumnSetup(float t) {
   float elev = 0.25 + 0.55 * max(key.y, 0.0);
   vec2 hz = key.xz;
   hz = dot(hz, hz) > 1e-6 ? normalize(hz) : vec2(-0.8, 0.6);
+  // The light comes in from the side and a little toward the viewer, so that the shadows of the tree,
+  // the bench and the lamp run across the path and away into the park, and the trunk's near face is lit.
+  float hx = abs(hz.x) < 0.5 ? (hz.x < 0.0 ? -0.5 : 0.5) : hz.x;
+  hz = normalize(vec2(hx, -0.4));
   autumnL = normalize(vec3(hz.x * cos(elev), sin(elev), hz.y * cos(elev)));
   autumnSh = autumnL.xz / autumnL.y;
   autumnSun = keyCol * (1.0 - 0.9 * autumnOvercast) * 1.2;
@@ -636,7 +732,7 @@ void autumnSetup(float t) {
   autumnThin = smoothstep(0.3, 1.0, season);
   autumnGreen = 1.0 - smoothstep(0.05, 0.4, season);
   autumnLate = smoothstep(0.55, 1.0, season);
-  autumnCarpet = 0.14 + 0.86 * pow(season, 0.85);
+  autumnCarpet = 0.2 + 0.9 * pow(season, 0.7);
   autumnLampOn = K_lamp * (1.0 - smoothstep(0.1, 0.34, dot(autumnAmb, LUMA) + 0.2 * dot(autumnSun, LUMA)));
   autumnGust = uSimOn.w > 0.5 ? texelFetch(uSim3, ivec2(0, 0), 0).x : 0.0;
 }
@@ -683,10 +779,11 @@ Shade sceneAutumn(vec2 uv, vec2 cell, float t) {
 
   bool high = uv.y > 0.4;
   if (high) {
-    // Back: the mass and the farthest leaves, 9.5 m off.
-    vec4 mass = autumnCanopyMass(p);
-    vec4 back = autumnCanopyLayer(p, 0.030, 1.0, 0.62);
-    vec4 c = back.a > 0.5 ? back : mass;
+    // Back: the canopy's body (clumps lit on the sun's side, the light glowing through where it thins)
+    // and the farthest leaves, 9.5 m off.
+    vec4 body = autumnCanopyBody(p);
+    vec4 back = autumnCanopyLayer(p, 0.020, 1.0, 0.45, 0.6);
+    vec4 c = back.a > 0.5 ? back : body;
     if (c.a > 0.0) {
       col = mix(col, c.rgb, c.a);
       hitZ = min(hitZ, 9.5);
@@ -694,7 +791,7 @@ Shade sceneAutumn(vec2 uv, vec2 cell, float t) {
   }
   col = mix(col, autumnBin[3].rgb, autumnBin[3].a);
   if (high) {
-    vec4 mid = autumnCanopyLayer(p, 0.040, 2.0, 0.9);
+    vec4 mid = autumnCanopyLayer(p, 0.026, 2.0, 0.6, 0.85);
     if (mid.a > 0.0) {
       col = mix(col, mid.rgb, mid.a);
       hitZ = min(hitZ, 7.0);
@@ -709,7 +806,7 @@ Shade sceneAutumn(vec2 uv, vec2 cell, float t) {
   }
   col = mix(col, autumnBin[1].rgb, autumnBin[1].a);
   if (high) {
-    vec4 front = autumnCanopyLayer(p, 0.052, 3.0, 1.0);
+    vec4 front = autumnCanopyLayer(p, 0.034, 3.0, 0.3, 1.0);
     if (front.a > 0.0) {
       col = mix(col, front.rgb, front.a);
       hitZ = min(hitZ, 4.2);

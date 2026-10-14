@@ -73,9 +73,9 @@ interface Species {
 
 /** Maple, ginkgo, oak. */
 const SPECIES: readonly Species[] = [
-  { radius: 0.11, chord: 0.38, tumbling: 0.16 },
-  { radius: 0.09, chord: 0.3, tumbling: 0.08 },
-  { radius: 0.1, chord: 0.36, tumbling: 0.28 },
+  { radius: 0.15, chord: 0.4, tumbling: 0.16 },
+  { radius: 0.12, chord: 0.32, tumbling: 0.08 },
+  { radius: 0.14, chord: 0.38, tumbling: 0.28 },
 ];
 const FLUTTER_MASS: readonly [number, number] = [0.2, 0.42];
 const TUMBLE_MASS: readonly [number, number] = [0.72, 0.9];
@@ -114,10 +114,10 @@ const LEAF_LIFT = 0.012;
 const SETTLE_SECONDS = 0.7;
 const FADE_IN = 0.9;
 /** Leaves per second at the leaf-fall knob's full travel and the season's busiest. */
-const FALL_RATE = 2.4;
+const FALL_RATE = 3.4;
 /** Ambient leaves leave this many slots for a swirl. */
 const AMBIENT_SLOTS = SLOTS - 8;
-const PREWARM_FALLING = 7;
+const PREWARM_FALLING = 12;
 
 // ---- the carpet ----------------------------------------------------------------------------------
 
@@ -162,7 +162,7 @@ function activity(season: number): number {
 
 /** The carpet's overall density at the season: a few leaves early on, a thick one at the end. */
 function carpetBase(season: number): number {
-  return 0.14 + 0.86 * Math.pow(clamp(season, 0, 1), 0.85);
+  return 0.2 + 0.9 * Math.pow(clamp(season, 0, 1), 0.7);
 }
 
 class AutumnSim implements SceneSim {
@@ -355,9 +355,11 @@ class AutumnSim implements SceneSim {
         const path = 1 - smoothstep(AUTUMN_PATH.half * 0.8, AUTUMN_PATH.half * 1.3, Math.abs(x - autumnPathX(z)));
         const dx = x - AUTUMN_TREE.canopyX;
         const dz = z - AUTUMN_TREE.canopyZ;
-        const tree = Math.exp(-(dx * dx + dz * dz) / (2 * 7 * 7));
+        const tree = Math.exp(-(dx * dx + dz * dz) / (2 * 5.5 * 5.5));
         const drift = noise2(x * 0.28, z * 0.28, seed + 11);
-        this.#shape[j * COLS + i] = (0.8 + 0.5 * tree) * (1 - 0.35 * path) * (0.7 + 0.6 * drift);
+        // Leaves lie thickest under the tree and gather along the edges of the path.
+        const edge = (Math.abs(x - autumnPathX(z)) - AUTUMN_PATH.half) / 0.8;
+        this.#shape[j * COLS + i] = ((0.75 + 0.9 * tree) * (1 - 0.3 * path) + 0.55 * Math.exp(-edge * edge)) * (0.7 + 0.6 * drift);
       }
     }
     for (let cell = 0; cell < CELLS; cell++) {
@@ -464,12 +466,18 @@ class AutumnSim implements SceneSim {
     if (!(dt > 0)) return;
     const rand = this.#rand;
     let inUse = 0;
-    for (let i = 0; i < SLOTS; i++) if (this.#state[i] !== FREE) inUse++;
+    let airborne = 0;
+    for (let i = 0; i < SLOTS; i++) {
+      if (this.#state[i] !== FREE) inUse++;
+      if (this.#state[i] === FALLING) airborne++;
+    }
 
     // Let go: at the knob's pace (a Poisson clock), and a gust's shower over its first moments.
     const rate = fall * FALL_RATE * activity(season);
     if (rate > 0 && inUse < AMBIENT_SLOTS) {
       this.#nextLeaf -= dt;
+      // There are always a few in the air: when fewer than six are falling, the next lets go soon.
+      if (airborne < 6 && this.#nextLeaf > 0.45) this.#nextLeaf = 0.45;
       if (this.#nextLeaf <= 0) {
         this.#spawn(false);
         this.#nextLeaf = -Math.log(1 - 0.999 * rand()) / rate;
@@ -505,9 +513,11 @@ class AutumnSim implements SceneSim {
     const kind = SPECIES[this.#species] ?? SPECIES[0];
     if (kind === undefined) return -1;
     const { horizon, eye, focal } = AUTUMN_VIEW;
-    const z = 4.4 + 8.6 * Math.pow(rand(), 1.3);
+    // A fifth let go close to the viewer, above the frame, and come into it large; the rest higher in
+    // the canopy, a little way behind the nearest boughs.
+    const z = rand() < 0.22 ? 2.6 + 1.6 * rand() : 4.4 + 6.6 * Math.pow(rand(), 1.2);
     const sx = -1.15 + 2.3 * rand();
-    const sy = 0.78 + 0.5 * rand();
+    const sy = z < 4.3 ? 1.0 + 0.3 * rand() : 0.64 + 0.45 * rand();
     this.#x[i] = (sx * z) / focal - this.#wind * 1.5;
     this.#y[i] = eye + ((sy - horizon) * z) / focal;
     this.#z[i] = z;

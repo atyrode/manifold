@@ -26,7 +26,7 @@ export function autumnPathX(z: number): number {
   return AUTUMN_PATH.x - AUTUMN_PATH.swing * Math.sin(AUTUMN_PATH.rate * (z - AUTUMN_PATH.from));
 }
 
-export const AUTUMN_TREE = { x: -3.3, z: 5.0, radius: 0.55, boughs: 3.0, canopyX: -2.2, canopyZ: 7.0, canopyRadius: 9.5 } as const;
+export const AUTUMN_TREE = { x: -3.3, z: 5.0, radius: 0.55, boughs: 3.0, canopyX: -1.0, canopyZ: 7.0, canopyRadius: 11.5 } as const;
 
 export const AUTUMN_BENCH = { x: 2.6, z: 7.6, half: 0.9, depth: 0.5, height: 0.9, seat: 0.45 } as const;
 
