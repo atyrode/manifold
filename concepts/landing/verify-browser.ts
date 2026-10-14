@@ -24,6 +24,7 @@ import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
 import { verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
 import { verifyFilmRupture } from "./src/scenes/film/rupture.verify.ts";
 import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
+import { streetSnowCheck } from "./src/scenes/street/snow.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -290,6 +291,7 @@ export function verify(): Record<string, unknown> {
   Object.assign(result, verifyMotionClocks(gl));
   result.physics = { film: verifyFilmRupture(gl), pendula: verifyPendulaSwing(gl) };
   result.frostSky = verifyFrostSky(gl);
+  result.streetSnow = streetSnowCheck(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
