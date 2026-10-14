@@ -1267,9 +1267,9 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
         section={section}
         path={node.path}
         grow={grow}
-        collapsed={sidebarOpen && isFolded(section, folds)}
+        collapsed={isFolded(section, folds)}
         onCollapsedChange={(id, collapsed) => {
-          // The icon rail force-opens its one body; that is layout, not a choice.
+          // Only a visible disclosure header changes the reader's fold choice.
           if (!sidebarOpen) return;
           setFolds((current) =>
             current[id] === collapsed ? current : { ...current, [id]: collapsed },
@@ -1330,6 +1330,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
           type="button"
           title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
           aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          aria-expanded={sidebarOpen}
           onClick={() => setSidebarOpen(!sidebarOpen)}
         >
           <ControlIcon kind={sidebarOpen ? "sidebarCollapse" : "sidebarExpand"} />

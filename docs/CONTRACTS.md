@@ -720,11 +720,18 @@ field on the tile holding the sidebar panel, committed at release through
 `core.space.setLayout` — so an arrangement follows the principal across devices, a section the
 manifests stopped declaring leaves no gap, and a newly contributed section appears after the
 arrangement rather than displacing a chosen slot. Folder membership and tree order are durable
-server state; sidebar WIDTH
-is the workspace layout's root ratio (`core.space.setLayout`), collapse is presence
-(`vantage.sidebarCollapsed`, with a device-local mirror for first paint), and terminal-row
-visibility plus folder expansion stay device-local (`REGISTRY.md` §Device-local register). The
-server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
+server state; expanded sidebar WIDTH is the workspace layout's ratio (`core.space.setLayout`),
+while collapse is presence (`vantage.sidebarCollapsed`, with a device-local mirror for first
+paint). Collapse pins a sidebar pane in a horizontal split to a 3.25rem icon rail and disables
+its resize seam without changing the stored layout. Expanding restores the previous width
+and section folds; collapsing never force-opens a folded section. The compact Index retains
+named, tooltip-labelled navigation icons but
+omits row menus, terminal details and indentation; a folder icon opens the full rail and its
+folder, and F2 opens the full rail for rename. New opens the full rail with its draft focused.
+On narrow viewports the open sidebar overlays the view; its pane remains rail-width, so
+neither toggling nor resizing the viewport rewrites desktop ratios. Terminal-row visibility
+and folder expansion stay device-local (`REGISTRY.md` §Device-local register). The server
+SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
 fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client
 after capturing it in document memory; recovery keys are never written to browser storage.
 

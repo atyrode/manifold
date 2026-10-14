@@ -30,6 +30,7 @@ import {
   FALLBACK_POLL_MS,
   INDEX_RESOURCE,
   TERMINALS_RESOURCE,
+  useWorkspaceShell,
   type ItemDropAssessment,
 } from "@manifold/plugin/hooks";
 import { DEFAULT_CANVAS_DROP, placementItemFor } from "@manifold/protocol";
@@ -58,11 +59,10 @@ import { useHeadlessTree } from "./use-headless-tree.ts";
 
 /**
  * The workspace index's browser half — the sidebar's largest section, and the plugin that
- * proves the boundary is real: it holds no shell state, receives no props but `host`, and
- * every question it asks (what exists, who is where, which terminals are alive) and every
- * write it performs (rename, delete, move, kill) goes through a door a stranger's agent has
- * too. What used to be 900 lines fused into the shell is now a plugin the shell only knows
- * the ORDER of.
+ * proves the boundary is real: it receives no props but `host`, reads rail presentation from
+ * the shared shell context, and every question it asks (what exists, who is where, which
+ * terminals are alive) and every write it performs (rename, delete, move, kill) goes through
+ * a door a stranger's agent has too. The shell only knows the ORDER of these contributed rows.
  *
  * The index reads four collections, and each one is a SUBSCRIPTION on the collection's own
  * node (ADR 0012, wave 2): it reads once at mount and then only when an event says the world
@@ -150,6 +150,7 @@ function IndexSkeleton(): ReactElement {
 export function IndexSection({ host }: SectionProps): ReactElement {
   const client = host.client;
   const activeContainerId = host.containerId;
+  const { sidebarOpen, setSidebarOpen } = useWorkspaceShell();
 
   const [failure, setFailure] = useState<string | null>(null);
   const report = useCallback((reason: unknown, fallback: string): void => {
@@ -646,6 +647,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
         : "canvas";
 
   const openRename = (container: Container): void => {
+    setSidebarOpen(true);
     setActionContainerId(null);
     setRenameTargetId(container.id);
     setRenameName(rowName(container));
@@ -876,7 +878,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     const rowDrop = dropRow?.containerId === container.id ? dropRow.assessment : null;
 
     const row =
-      renameTargetId === container.id ? (
+      sidebarOpen && renameTargetId === container.id ? (
         renderContainerRenameRow(container, active)
       ) : (
         <div
@@ -906,9 +908,11 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             }}
           >
             {containerMark(container)}
-            <span className="sidebar-container-name">{rowName(container)}</span>
-            {terminal === undefined ? null : terminalDirectory(terminal.cwd)}
-            {runningCount > 0 ? (
+            {sidebarOpen ? (
+              <span className="sidebar-container-name">{rowName(container)}</span>
+            ) : null}
+            {sidebarOpen && terminal !== undefined ? terminalDirectory(terminal.cwd) : null}
+            {sidebarOpen && runningCount > 0 ? (
               <span
                 className="sidebar-terminal-count"
                 title={`${runningCount} open ${runningCount === 1 ? "terminal" : "terminals"}`}
@@ -916,7 +920,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
                 {runningCount}
               </span>
             ) : null}
-            {principals.length > 0 ? (
+            {sidebarOpen && principals.length > 0 ? (
               <span
                 className="sidebar-presence"
                 aria-label={`${principals.length} present in ${rowName(container)}`}
@@ -939,14 +943,14 @@ export function IndexSection({ host }: SectionProps): ReactElement {
               </span>
             ) : null}
           </button>
-          {renderContainerActions(container)}
+          {sidebarOpen ? renderContainerActions(container) : null}
         </div>
       );
 
     return (
       <>
         {row}
-        {showTerminals
+        {sidebarOpen && showTerminals
           ? summaries.map((terminal) => (
               <div
                 className={`sidebar-terminal is-summary${terminal.status === "exited" ? " is-exited" : ""}`}
@@ -1030,7 +1034,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
     item: ItemInstance<IndexEntry>,
   ): ReactNode => {
     const actionId = `folder:${folder.id}`;
-    if (renamingFolderId === folder.id) {
+    if (sidebarOpen && renamingFolderId === folder.id) {
       return (
         <div className="sidebar-row is-editing">
           <span className="sidebar-folder-icon" aria-hidden="true">
@@ -1077,10 +1081,21 @@ export function IndexSection({ host }: SectionProps): ReactElement {
           <button
             className="sidebar-folder-toggle"
             type="button"
-            aria-label={`${item.isExpanded() ? "Collapse" : "Expand"} folder ${folder.name}`}
-            aria-expanded={item.isExpanded()}
+            title={folder.name}
+            aria-label={
+              sidebarOpen
+                ? `${item.isExpanded() ? "Collapse" : "Expand"} folder ${folder.name}`
+                : `Open folder ${folder.name}`
+            }
+            aria-expanded={sidebarOpen && item.isExpanded()}
             onClick={(event) => {
               event.stopPropagation();
+              if (!sidebarOpen) {
+                setSidebarOpen(true);
+                item.expand();
+                renderSettledTreeState();
+                return;
+              }
               if (item.isExpanded()) item.collapse();
               else item.expand();
               renderSettledTreeState();
@@ -1149,7 +1164,9 @@ export function IndexSection({ host }: SectionProps): ReactElement {
             ) : null}
           </div>
         </div>
-        {folderCreateParentId === folder.id ? renderFolderCreateForm(folder.id) : null}
+        {sidebarOpen && folderCreateParentId === folder.id
+          ? renderFolderCreateForm(folder.id)
+          : null}
       </>
     );
   };
@@ -1157,7 +1174,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
   const containerCount = indexedTreeItems?.filter((item) => item.kind === "container").length ?? 0;
 
   return (
-    <Stack className="index-section" gap="0">
+    <Stack className={`index-section${sidebarOpen ? "" : " is-compact"}`} gap="0">
       <Cluster className="index-section-bar" justify="space-between" gap="0.3rem">
         <span className="sidebar-section-count">{containerCount}</span>
         <button
@@ -1200,7 +1217,9 @@ export function IndexSection({ host }: SectionProps): ReactElement {
         {...unplacedDropProps}
       >
         {indexedTreeItems === null ? <IndexSkeleton /> : null}
-        {indexedTreeItems?.length === 0 ? <p className="sidebar-muted">Nothing here yet</p> : null}
+        {sidebarOpen && indexedTreeItems?.length === 0 ? (
+          <p className="sidebar-muted">Nothing here yet</p>
+        ) : null}
         {indexedTreeItems === null
           ? null
           : tree.getItems().map((item) => {
@@ -1212,7 +1231,9 @@ export function IndexSection({ host }: SectionProps): ReactElement {
                   className="index-item"
                   data-tree-kind={data.kind}
                   data-tree-id={treeItemId(data)}
-                  style={{ marginInlineStart: `${item.getItemMeta().level * 0.75}rem` }}
+                  style={{
+                    marginInlineStart: sidebarOpen ? `${item.getItemMeta().level * 0.75}rem` : 0,
+                  }}
                   key={item.getId()}
                 >
                   {data.kind === "container"

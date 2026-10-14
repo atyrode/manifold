@@ -94,6 +94,11 @@
   padding: 0 0.25rem 0.2rem;
 }
 
+/* In the icon rail, hover titles and accessible button names identify the same live rows. */
+.index-section.is-compact .index-section-bar {
+  display: none;
+}
+
 /* A section that cannot load says so in its own body, in the same red the plugin
    manager's failure row uses (packages/plugins/plugin-manager/src/styles.css).
    Prose WRAPS — its declared overflow contract. */

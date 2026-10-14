@@ -59,7 +59,7 @@ function defaultName(creator: AssemblyCreator): string | null {
  *
  * Nothing offered, nothing drawn: the row renders null and the stack keeps its seat. Collapsed
  * to icons, the control is a lone "+" that opens the rail with the draft, because a name is
- * typed in a field nobody can read at 64 pixels.
+ * typed in a field nobody can read in the narrow icon rail.
  */
 export function CreatorsRow({ host }: SectionProps): ReactElement | null {
   const { creating, runCreator, setSidebarOpen, sidebarOpen } = useWorkspaceShell();

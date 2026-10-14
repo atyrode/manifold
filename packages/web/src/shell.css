@@ -69,8 +69,24 @@
  * the collapse lasts. `:has()` is what lets the rail be presentation rather than a second,
  * competing copy of the tree.
  */
-.workspace.is-collapsed .workspace-pane:has(> .tile-content-host > .sidebar) {
+.workspace.is-collapsed
+  .workspace-split.is-row
+  > .workspace-pane:has(> .tile-content-host > .sidebar) {
   flex: 0 0 3.25rem;
+  /* The tree writes this longhand inline; collapse temporarily overrides that share. */
+  flex-grow: 0 !important;
+}
+
+/* A fixed-width rail has no resize gesture. Keep the seam's geometry, but not its hit target. */
+.workspace.is-collapsed
+  .workspace-split.is-row
+  > .workspace-pane:has(> .tile-content-host > .sidebar)
+  + .workspace-divider,
+.workspace.is-collapsed
+  .workspace-split.is-row
+  > .workspace-divider:has(+ .workspace-pane > .tile-content-host > .sidebar) {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /*
@@ -442,7 +458,7 @@
 }
 
 .workspace.is-collapsed .sidebar {
-  padding-inline: 0.6rem;
+  padding-inline: 0.5rem;
 }
 
 .workspace.is-collapsed .sidebar-brand {
@@ -769,6 +785,18 @@
 }
 
 .workspace.is-collapsed .sidebar-link {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
+}
+
+.workspace.is-collapsed .sidebar-actions,
+.workspace.is-collapsed .sidebar-folder-chevron,
+.workspace.is-collapsed .sidebar-folder-toggle > strong {
+  display: none;
+}
+
+.workspace.is-collapsed .sidebar-folder-toggle {
   justify-content: center;
   gap: 0;
   padding-inline: 0;
@@ -1638,8 +1666,20 @@ button.sidebar-terminal.is-summary > small {
    * container view, rather than letting the stored ratio eat the screen. The tree is untouched:
    * this is presentation, so a phone and a monitor read the same stored layout.
    */
-  .workspace .workspace-pane:has(> .tile-content-host > .sidebar) {
+  .workspace .workspace-split.is-row > .workspace-pane:has(> .tile-content-host > .sidebar) {
     flex: 0 0 3.25rem;
+    flex-grow: 0 !important;
+  }
+
+  .workspace
+    .workspace-split.is-row
+    > .workspace-pane:has(> .tile-content-host > .sidebar)
+    + .workspace-divider,
+  .workspace
+    .workspace-split.is-row
+    > .workspace-divider:has(+ .workspace-pane > .tile-content-host > .sidebar) {
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .sidebar {

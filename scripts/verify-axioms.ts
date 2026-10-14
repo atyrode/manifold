@@ -3422,6 +3422,59 @@ try {
         : `ratios ${moved ? "changed" : "unchanged"} after ${String(commits)} core.space.setLayout dispatch(es)`,
     );
 
+    // Collapse is presence, not a resize. Measure the painted rail, not just its state class:
+    // an inline flex-grow used to beat the stylesheet and make the "collapsed" rail wider.
+    const railGeometry = (): Promise<{ width: number; target: number; seamHidden: boolean }> =>
+      browser!.evaluate(
+        `(() => {
+          const rail = document.querySelector('.sidebar');
+          const pane = rail?.closest('.workspace-pane');
+          const seam = pane?.nextElementSibling;
+          return {
+            width: rail?.getBoundingClientRect().width ?? 0,
+            target: parseFloat(getComputedStyle(document.documentElement).fontSize) * 3.25,
+            seamHidden: seam !== null && seam !== undefined &&
+              getComputedStyle(seam).visibility === 'hidden'
+          };
+        })()`,
+      );
+    const expanded = await railGeometry();
+    const layoutBeforeCollapse = LayoutResponseSchema.parse(
+      await getJson("/api/layout", viewer.token),
+    ).layout;
+    const collapseCommits = actionLog.filter(
+      (entry) => entry.name === "core.space.setLayout",
+    ).length;
+    await browser.evaluate(`document.querySelector('[aria-label="Collapse sidebar"]')?.click()`);
+    const narrow = await settles(async () => {
+      const geometry = await railGeometry();
+      return Math.abs(geometry.width - geometry.target) < 1 && geometry.seamHidden;
+    }, 5_000);
+    const compact = await railGeometry();
+    await browser.evaluate(`document.querySelector('[aria-label="Expand sidebar"]')?.click()`);
+    // Let finite row transitions finish before the arrange snapshot; liveness pulses never end.
+    const restored = await settles(async () => {
+      const still = await browser!.evaluate<boolean>(
+        `Array.from(document.querySelector('.sidebar')?.getAnimations({ subtree: true }) ?? [])
+          .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+          .every((animation) => animation.playState !== 'running')`,
+      );
+      return still && Math.abs((await railGeometry()).width - expanded.width) < 1;
+    }, 5_000);
+    const layoutAfterCollapse = LayoutResponseSchema.parse(
+      await getJson("/api/layout", viewer.token),
+    ).layout;
+    const collapseWrites =
+      actionLog.filter((entry) => entry.name === "core.space.setLayout").length - collapseCommits;
+    check(
+      "R4 sidebar collapse reclaims width without editing layout",
+      narrow &&
+        restored &&
+        collapseWrites === 0 &&
+        JSON.stringify(layoutAfterCollapse) === JSON.stringify(layoutBeforeCollapse),
+      `rail ${String(expanded.width)} → ${String(compact.width)} → ${String((await railGeometry()).width)}px; restored=${String(restored)}; resize seam ${compact.seamHidden ? "hidden" : "live"}; ${String(collapseWrites)} layout writes; layout retained=${String(JSON.stringify(layoutAfterCollapse) === JSON.stringify(layoutBeforeCollapse))}`,
+    );
+
     const other = await mint({
       principal: { name: "axiom-bystander", kind: "human" },
       caps: ["containers:read"],
