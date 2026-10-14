@@ -68,6 +68,24 @@ A third batch built on the shared foundations (weather in the world, hard edges,
 | Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles |
 | Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning |
 
+## Quiet places and small machines
+
+A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than any game's look:
+
+| Idea | Scene id | Simulation |
+|---|---|---|
+| Harmonograph | `harmonograph` | Damped, slightly detuned pendulums drive a pen; the figure precesses and spirals inward, then a fresh sheet slides in |
+| Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky |
+| Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment |
+| A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below |
+| Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in water or ice, a red cabin, falling and lying snow |
+| Bees in a flower border | `bees` | Foraging bees landing on flowers that dip and spring back, fluttering butterflies, depth of field |
+| Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, birds; rain streams out of the sky overhead |
+| Autumn park | `autumn` | Leaves flutter and tumble down (quasi-steady plate model), build a carpet, and gusts lift swirls off the path |
+
+Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
+sees it (`rainFallSeen`), whatever the calm of the rest of the scene.
+
 ## Above the clouds
 
 The view from a plane window: a sea of clouds below, open sky above.
