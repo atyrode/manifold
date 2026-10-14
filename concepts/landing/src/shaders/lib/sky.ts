@@ -1,7 +1,9 @@
 // Shared sky: the clock, sun and moon, a side-on camera ray, an analytic sky dome with sun and moon
 // discs, stars, and a cloud deck seen from below; helpers to turn the sky to a scene's facing, mirror
-// it for reflections, sample the horizon haze and tint the stars. Compiled into every scene program
-// right after the common preamble; the contract and conventions are in src/scenes/README.md.
+// it for reflections, sample the horizon haze and tint the stars, and the moon's coverage. With the
+// SKY_MOON_PHASE feature (SceneDef.features) the moon also takes a phase (skyMoonPhase). Compiled into
+// every scene program right after the common preamble; the contract and conventions are in
+// src/scenes/README.md.
 
 export const skyGlsl = `
 // ---- sky ----
@@ -22,6 +24,9 @@ struct Sky {
   vec3 sunColor;  // direct sunlight, reddened by the air mass; 0 once the sun has set
   vec3 ambient;   // light from the whole sky, for shading; never 0
   vec3 moonColor; // direct moonlight, cool and soft; 0 below the horizon and by day
+#ifdef SKY_MOON_PHASE
+  float moonPhase; // lit share of the moon's disc: 1 full (skyAt) .. 0 no moon (skyMoonPhase)
+#endif
 };
 
 // Sun and moon ride the daily circles of a low-latitude sky (15 degrees) seen facing the equator,
@@ -78,6 +83,9 @@ Sky skyAt(float tod) {
   // Dusk light is warm while the sun is up and turns blue once it has set (the blue hour).
   vec3 dusk = mix(vec3(0.12, 0.15, 0.30), vec3(0.36, 0.25, 0.30), smoothstep(-0.1, 0.03, e));
   s.ambient = vec3(0.030, 0.038, 0.075) + vec3(0.40, 0.48, 0.62) * s.day + dusk * s.twilight * (1.0 - s.day) + s.moonColor * 0.3;
+#ifdef SKY_MOON_PHASE
+  s.moonPhase = 1.0;
+#endif
   return s;
 }
 
@@ -103,6 +111,59 @@ Sky skyMirror(Sky sky) {
   sky.moon = vec3(-sky.moon.x, sky.moon.y, -sky.moon.z);
   return sky;
 }
+
+// How much of the moon's disc lies over dir, 0..1, its unlit part included: hide what the scene draws
+// behind the moon with it (its own star layers, a Milky Way, an asterism); skyStars already does.
+// 0 below the horizon, so also 0 for a sky whose moon is put away (moon = (0, -1, 0)).
+float skyMoonCover(Sky sky, vec3 dir) {
+  return (1.0 - smoothstep(0.82 * SKY_MOON_RADIUS, SKY_MOON_RADIUS, length(dir - sky.moon))) * smoothstep(-0.004, 0.004, dir.y);
+}
+
+// A direction as angles on the sky: x its bearing from straight ahead (radians, positive right), y its
+// elevation. A flat frame for things drawn across the dome, such as meteorStreak.
+vec2 skyAngles(vec3 dir) {
+  return vec2(atan(dir.x, dir.z), asin(clamp(dir.y, -1.0, 1.0)));
+}
+
+#ifdef SKY_MOON_PHASE
+// The moon's light at a phase (its lit share, 0..1) relative to full: a Lambert sphere seen at phase
+// angle a, where the lit share is (1 + cos a) / 2. Half lit gives 0.32, a quarter 0.11, a tenth 0.03.
+float skyMoonPhaseLight(float phase) {
+  float a = acos(clamp(2.0 * phase - 1.0, -1.0, 1.0));
+  return (sin(a) + (3.14159265 - a) * cos(a)) / 3.14159265;
+}
+
+// The sky with its moon in a phase: 1 full (the sky unchanged), down to a thin crescent, 0 no moon
+// (put away below the horizon, as scenes without one do). Its light on the land (moonColor, its share
+// of ambient), the moonlit blue round it and its halo scale with skyMoonPhaseLight; skyColor draws
+// the lit share of the disc on the side toward the sun, skyStars lets stars nearer a dim moon.
+Sky skyMoonPhase(Sky sky, float phase) {
+  if (phase >= 1.0) return sky;
+  float p = max(phase, 0.0);
+  vec3 light = p > 0.0 ? sky.moonColor * skyMoonPhaseLight(p) : vec3(0.0);
+  sky.ambient += (light - sky.moonColor) * 0.3;
+  sky.moonColor = light;
+  sky.moonPhase = p;
+  if (p <= 0.0) sky.moon = vec3(0.0, -1.0, 0.0);
+  return sky;
+}
+
+// A partial moon's disc at q (disc radii along right and up, skyColor's frame): its lit share on the
+// side toward the sun, over an unlit part that shows the sky in front of it (behind) lifted faintly by
+// earthshine, strongest for a thin crescent. The terminator softens to stay a cell wide; under ~3
+// cells of radius it gives way to the lit share as an even tint (radius against 1 / uRes.y radians a
+// cell, a screen height taken as ~1 radian of view, as skyClouds does).
+vec3 skyMoonPhaseFace(Sky sky, vec2 q, vec3 right, vec3 up, vec3 face, vec3 behind) {
+  vec2 toSun = vec2(dot(sky.sun, right), dot(sky.sun, up));
+  toSun = dot(toSun, toSun) > 1e-8 ? normalize(toSun) : vec2(1.0, 0.0);
+  vec2 r = vec2(dot(q, toSun), dot(q, vec2(-toSun.y, toSun.x)));
+  float cells = SKY_MOON_RADIUS * uRes.y;
+  float soft = max(0.06, 1.0 / cells);
+  float terminator = (1.0 - 2.0 * sky.moonPhase) * sqrt(max(1.0 - r.y * r.y, 0.0));
+  float lit = mix(sky.moonPhase, smoothstep(terminator - soft, terminator + soft, r.x), smoothstep(1.5, 3.0, cells));
+  return mix(behind + face * 0.04 * (1.0 - sky.moonPhase), face, lit);
+}
+#endif
 
 // Side-on pinhole camera with a shifted lens (no pitch): verticals stay vertical and the horizon is
 // the straight line uv.y = horizon. fov is the full vertical field of view in radians.
@@ -171,6 +232,9 @@ vec3 skyColor(Sky sky, vec3 dir) {
 
   // Night: moonlight turns the sky blue; airglow lifts a faint green band a few degrees up.
   float moonVis = smoothstep(-0.02, 0.04, sky.moon.y) * (1.0 - sky.day);
+#ifdef SKY_MOON_PHASE
+  if (sky.moonPhase < 1.0) moonVis *= skyMoonPhaseLight(sky.moonPhase); // a partial moon lights less sky
+#endif
   col += vec3(0.018, 0.028, 0.060) * moonVis * sky.night * (0.6 + 0.4 * exp(-hh * 3.0));
   col += vec3(0.012, 0.026, 0.020) * sky.night * hh * exp(-hh * 12.0) * 30.0;
 
@@ -182,7 +246,8 @@ vec3 skyColor(Sky sky, vec3 dir) {
   col += sky.sunColor * (0.30 * exp(-a * 1400.0) + 0.16 * exp(-a * 90.0) + 0.07 * exp(-a * 10.0));
   col += sky.sunColor * (1.0 - smoothstep(SKY_SUN_RADIUS * 0.8, SKY_SUN_RADIUS, length(dv))) * horizonCut * 2.5;
 
-  // Moon: a cool halo, then a disc with soft maria and limb darkening (no phase), gold when low.
+  // Moon: a cool halo, then a disc with soft maria and limb darkening, gold when low; full unless the
+  // scene gave it a phase (skyMoonPhase).
   vec3 mv = dir - sky.moon;
   float am = 0.5 * dot(mv, mv);
   col += vec3(0.30, 0.36, 0.52) * (0.20 * exp(-am * 2500.0) + 0.06 * exp(-am * 120.0)) * moonVis;
@@ -195,6 +260,9 @@ vec3 skyColor(Sky sky, vec3 dir) {
     float maria = vnoise(q * 2.3 + 4.7) * 0.65 + vnoise(q * 5.1 + 1.3) * 0.35;
     float shade = (1.0 - 0.3 * smoothstep(0.45, 0.68, maria)) * (0.8 + 0.2 * sqrt(max(1.0 - l * l, 0.0)));
     vec3 face = vec3(0.95, 0.94, 0.90) * shade * sqrt(skyTransmit(sky.moon.y));
+#ifdef SKY_MOON_PHASE
+    if (sky.moonPhase < 1.0) face = skyMoonPhaseFace(sky, q, right, up, face, col);
+#endif
     col = mix(col, face, (1.0 - smoothstep(0.82, 1.0, l)) * horizonCut * mix(1.0, 0.35, sky.day));
   }
 
@@ -243,14 +311,49 @@ float skyStarLayer(vec3 dir, float cells, float fill, float size, float salt) {
   return star * (1.0 - depth * wave);
 }
 
+// Where stars show at all, 0..1: by night, rising from the horizon, and away from the moon's disc and
+// glare. A partial moon (SKY_MOON_PHASE) keeps hiding its disc but glares over less of the sky.
+float skyStarFade(Sky sky, vec3 dir) {
+  float d = length(dir - sky.moon);
+#ifdef SKY_MOON_PHASE
+  float moon = sky.moonPhase < 1.0
+    ? smoothstep(0.03, mix(0.035, 0.1, skyMoonPhaseLight(sky.moonPhase)), d)
+    : smoothstep(0.03, 0.1, d);
+#else
+  float moon = smoothstep(0.03, 0.1, d);
+#endif
+  return sky.night * smoothstep(0.0, 0.22, dir.y) * moon;
+}
+
 // Stars for a view ray, 0..1: a dense layer of faint stars and a sparse one of bright stars. density
 // 0..1 (1 is a dark-site sky). Already faded by daylight, toward the horizon and around the moon.
 float skyStars(Sky sky, vec3 dir, float density) {
   if (dir.y <= 0.0 || sky.night <= 0.0 || density <= 0.0) return 0.0;
   float s = skyStarLayer(dir, 120.0, 0.22 * density, 0.2, 0.0)
           + skyStarLayer(dir, 44.0, 0.1 * density, 0.09, 7.0) * 1.3;
-  float fade = sky.night * smoothstep(0.0, 0.22, dir.y) * smoothstep(0.03, 0.1, length(dir - sky.moon));
-  return clamp(s * fade, 0.0, 1.0);
+  return clamp(s * skyStarFade(sky, dir), 0.0, 1.0);
+}
+
+// One star layer at a footprint (foot: radians one dither cell spans): once its grid cells, (pi / 2) /
+// cells radians, shrink toward a single dither cell the stars can no longer stand apart and the layer
+// fades to its mean glow, mean per unit of fill (what fbmLod does with noise octaves).
+float skyStarLayerLod(vec3 dir, float cells, float fill, float size, float salt, float foot, float mean) {
+  float keep = smoothstep(0.75, 1.25, 1.5707963 / (cells * max(foot, 1e-6)));
+  if (keep <= 0.0) return mean * fill;
+  float s = skyStarLayer(dir, cells, fill, size, salt);
+  return keep < 1.0 ? mix(mean * fill, s, keep) : s;
+}
+
+// skyStars with a level of detail for the view's footprint, foot: the radians one dither cell spans
+// along dir (about the vertical field of view over uRes.y). The faint layer keeps its stars while its
+// grid cells span 1.25 dither cells or more (a 1-radian view at 96 rows or finer), the bright layer
+// down to 35 rows; there it is exactly skyStars(sky, dir, density). Coarser, a layer fades to its
+// faint mean glow instead of crawling as single cells.
+float skyStars(Sky sky, vec3 dir, float density, float foot) {
+  if (dir.y <= 0.0 || sky.night <= 0.0 || density <= 0.0) return 0.0;
+  float s = skyStarLayerLod(dir, 120.0, 0.22 * density, 0.2, 0.0, foot, 0.0064)
+          + skyStarLayerLod(dir, 44.0, 0.1 * density, 0.09, 7.0, foot, 0.0013) * 1.3;
+  return clamp(s * skyStarFade(sky, dir), 0.0, 1.0);
 }
 
 // The cool white most scenes give their stars.
