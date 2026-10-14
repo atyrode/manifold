@@ -62,10 +62,18 @@ export const defaults: LabState = {
 
 export class KnobKeyError extends Error {}
 
+/**
+ * URL keys of the lab's session tools, kept beside the setup and never inside it, so presets and
+ * undo steps stay setups: an A/B comparison (`compare.ts`, which also prefixes the hidden slot's
+ * keys with `a.` or `b.`) and a scene tour (`tour.ts`). The page's URL and "copy link" carry both.
+ */
+export const sessionKeys = { compare: "compare", tour: "tour", dwell: "dwell" } as const;
+const reservedKeys: readonly string[] = [...Object.keys(defaults), ...Object.values(sessionKeys)];
+
 // Scene knobs share the URL with the lab's own settings, so no knob may take one of their names.
 for (const id of sceneIds) {
   for (const def of sceneDefs[id].params) {
-    if (def.key in defaults || `${def.key}-amount` in defaults) {
+    if (reservedKeys.includes(def.key) || reservedKeys.includes(`${def.key}-amount`)) {
       throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with the lab setting of that name`);
     }
   }

@@ -224,3 +224,23 @@ the spirit of lo-fi study streams.
 - **Lightning**: branching bolts (stochastic L-system or dielectric-breakdown model), sky flash,
   trigger with a "now" button like the meteors.
 - **Weather and time of day** as a common layer across outdoor scenes.
+
+## Lab: comparing setups and touring scenes
+
+Two session tools sit beside the setup in the URL, never inside it, so presets and undo stay
+setups and "copy link" carries both:
+
+- **Compare** (`compare=a|b` names the slot on screen; the hidden slot's keys follow with an `a.`
+  or `b.` prefix): two complete setups, each a scene with its knobs, look, motion and page. The one
+  on screen is edited as usual, with its own undo. Tap `b` (or click a slot or the badge over the
+  page) to flip, hold `b` to peek and let go to come back. A flip cuts without passages, so between
+  two scenes the other one starts afresh: the page has one renderer and one simulation. This is not
+  the source/split view, which shows one setup's picture before and after dithering. Example:
+  `?scene=forest&rain=1&compare=b&a.scene=forest`.
+- **Tour** (`tour=<scene>[-<seconds>].<scene>…`, `dwell=<seconds>` for the rest, 10–600, 30 by
+  default): scenes played in order through their passages, starting over after the last. A step
+  lasts from the switch to it to the next switch, counted on the scene clock's pace (nothing while
+  paused, at most 0.1 s per frame), so a slow machine still gives a growing scene its time. `t`
+  plays or pauses, `[` and `]` step along it while it plays, and choosing a scene off the tour
+  pauses it. A tour link plays as it opens, except under reduced motion, where it waits for play
+  and cuts. Example: `?mode=bare&tour=physarum-60.petri-45.delta-60.frost-45`.
