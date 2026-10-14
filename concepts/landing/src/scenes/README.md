@@ -350,7 +350,8 @@ Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) a
 
 Knob keys share the URL with the lab's own settings, so a knob may not be called `accent`,
 `scene`, `mode`, `dither`, `color`, `pixel`, `levels`, `motion`, `instance`, `mouse`, `view`,
-`dim` or `blur` (`state.ts` refuses to load such a scene).
+`dim`, `blur` or `transitions`, nor take the keys of the lab's session tools, `compare`, `tour`
+and `dwell` (`state.ts` refuses to load such a scene).
 
 ## Art direction
 
