@@ -78,8 +78,8 @@ export const pondScene: SceneDef = {
   },
   glsl: pondGlsl,
   entry: "scenePond",
-  // The koi swim in from beyond the frame and the light comes up; on leaving they glide out and a
-  // breeze crosses the water.
+  // The border plants and canopy move in from beyond the frame edges as the koi swim in; on leaving
+  // they part outward again, the koi glide off and a breeze crosses the water.
   passage: POND_PASSAGE,
   sim: (gl) => pondSim(gl, params),
 };

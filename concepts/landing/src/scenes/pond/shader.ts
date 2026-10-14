@@ -3,8 +3,8 @@
 import { CANOPY_MARGIN } from "../../decor.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 
-/** Seconds of the koi's entrance and exit (SceneDef.passage). */
-export const POND_PASSAGE = { enter: 4.8, exit: 2.5 } as const;
+/** Seconds of the pond's entrance and exit (SceneDef.passage). */
+export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;
 
 export const pondGlsl = `
 // One layer of animated cellular light: bright where neighbouring cells meet.
@@ -129,7 +129,8 @@ const float POND_EXIT = ${glslFloat(POND_PASSAGE.exit)};
 // Koi i's glide in from, or out beyond, the frame's edge while the scene passes. 'base' is where its
 // swim path has it; the koi comes and goes along a fixed bearing of its own, from or to just clear of
 // the frame, with an eased glide. 'slideVel' is the glide's velocity, for the heading.
-// Entrance: staggered, ending by 4.6 s. Exit: staggered, ending by 2.4 s.
+// Entrance: starts 0.5-1.0 s, glides for 2.1 s, so each has arrived by 3.1 s, as the plants settle.
+// Exit: starts 0-0.3 s, glides for 1.4 s, so each is gone by 1.7 s.
 vec2 pondKoiPassage(float fi, vec2 base, float len, float aspect, out vec2 slideVel) {
   float tin = passageIn() * POND_ENTER;
   float tout = passageOut() * POND_EXIT;
@@ -140,22 +141,51 @@ vec2 pondKoiPassage(float fi, vec2 base, float len, float aspect, out vec2 slide
   vec2 reach = vec2(aspect * 0.5, 0.5) + (len * 1.05 + 0.04);
   vec2 room = (reach - base * sign(n)) / max(abs(n), vec2(1e-4));
   float clear = max(min(room.x, room.y), 0.0);
-  float arrive = clamp((tin - 0.2 - 0.8 * stagger) / 3.6, 0.0, 1.0);
-  float leave = clamp((tout - 0.4 * stagger) / 2.0, 0.0, 1.0);
+  float arrive = clamp((tin - 0.5 - 0.5 * stagger) / 2.1, 0.0, 1.0);
+  float leave = clamp((tout - 0.3 * stagger) / 1.4, 0.0, 1.0);
   float comingIn = arrive > 0.0 && arrive < 1.0 ? 1.0 : 0.0;
   float goingOut = leave > 0.0 && leave < 1.0 ? 1.0 : 0.0;
-  slideVel = n * clear * (-2.0 * (1.0 - arrive) / 3.6 * comingIn + 6.0 * leave * (1.0 - leave) / 2.0 * goingOut);
+  slideVel = n * clear * (-2.0 * (1.0 - arrive) / 2.1 * comingIn + 6.0 * leave * (1.0 - leave) / 1.4 * goingOut);
   return n * clear * ((1.0 - arrive) * (1.0 - arrive) + leave * leave * (3.0 - 2.0 * leave));
 }
 
-// A lily pad's drift while the scene passes: settling in from a little way off, then carried off
-// downwind with the breeze.
+// A lily pad's drift while the scene passes: settling in from a little way off (done by 2.7 s),
+// then carried off downwind with the breeze.
 vec2 pondPadPassage(float fi) {
-  float settle = 1.0 - clamp((passageIn() * POND_ENTER - 0.6) / 3.8, 0.0, 1.0);
+  float settle = 1.0 - clamp((passageIn() * POND_ENTER - 0.3) / 2.4, 0.0, 1.0);
   float bearing = hash12(vec2(fi, 73.0)) * TAU;
   float gust = smoothstep(0.0, 1.0, passageOut());
   return vec2(cos(bearing), sin(bearing)) * (0.04 + 0.04 * hash12(vec2(fi, 74.0))) * settle * settle
     + vec2(0.9, 0.4) * (0.02 + 0.02 * hash12(vec2(fi, 75.0))) * gust;
+}
+
+// How far the foliage at each edge (left, right, bottom, top, in sheet UV) is held out beyond the
+// frame: 'amount' at the start of the entrance, easing in to 0 with a small overshoot past rest, edge
+// by edge (each runs 1.9 s from its own delay, plus 'lag'); and out again on exit.
+vec4 pondFoliageShift(float tin, float tout, float lag, float amount) {
+  vec4 delay = vec4(0.0, 0.25, 0.4, 0.1);
+  vec4 a = clamp((vec4(tin) - delay - lag) / 1.9, 0.0, 1.0);
+  vec4 u = a * a * (3.0 - 2.0 * a);
+  vec4 b = clamp((vec4(tout) - 0.5 * delay) / 1.3, 0.0, 1.0);
+  return amount * ((1.0 - u) * cos(u * 2.51327) + b * b);
+}
+
+// One edge's push on a lookup, strongest at the edge and gone 0.4 into the frame. Overshoot (the
+// negative side) fades out toward the edge so the lookup never leaves the sheet there.
+float pondEdgeShift(float dist, float amount) {
+  float w = 1.0 - smoothstep(0.0, 0.4, dist);
+  if (amount < 0.0) w *= smoothstep(0.0, 0.15, dist);
+  return amount * w;
+}
+
+// A sheet lookup with each side's foliage held out (or let in) by its shift: plants near the left
+// edge come from the left, and so on. 'scale' lets near layers move a little more than far ones.
+vec2 pondFoliageWarp(vec2 at, vec4 shift, float scale) {
+  if (shift == vec4(0.0)) return at;
+  return at + vec2(
+    pondEdgeShift(at.x, shift.x * scale) - pondEdgeShift(1.0 - at.x, shift.y * scale),
+    pondEdgeShift(at.y, shift.z * scale) - pondEdgeShift(1.0 - at.y, shift.w * scale)
+  );
 }
 
 Shade scenePond(vec2 uv, vec2 cell, float t) {
@@ -173,19 +203,26 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   float power = K_sunPower;
   vec2 towardSun = normalize(sunP - p + 1e-5);
   Shade o = blankShade();
-  // Passage: the light rises or falls and the water is ruffled, the koi and pads move, only while
-  // arriving or leaving; at rest every term below is exactly 1 or off.
+  // Passage: the foliage moves in from beyond the frame and the koi follow, the water settles; only
+  // while arriving or leaving. At rest every term below is exactly 0, 1 or off.
   float pin = passageIn();
   float pout = passageOut();
   bool passing = pin < 1.0 || pout > 0.0;
   float tin = pin * POND_ENTER;
+  float tout = pout * POND_EXIT;
   float lightK = 1.0;
   float causticK = 1.0;
+  vec4 plantShift = vec4(0.0);
+  vec4 canopyShift = vec4(0.0);
   if (passing) {
     float up = smoothstep(0.0, 1.0, pin);
     float down = smoothstep(0.0, 1.0, pout);
-    lightK = mix(0.8, 1.0, up) * mix(1.0, 0.82, down);
-    causticK = mix(0.4, 1.0, up) * mix(1.0, 0.5, down);
+    // Barely a breath of light: the motion carries the passage.
+    lightK = mix(0.96, 1.0, up) * mix(1.0, 0.96, down);
+    causticK = mix(0.95, 1.0, up) * mix(1.0, 0.95, down);
+    plantShift = pondFoliageShift(tin, tout, 0.0, 0.2);
+    // The canopy lowers in a moment after the plants.
+    canopyShift = pondFoliageShift(tin, tout, 0.5, 0.12);
   }
 
   // Surface: rings spreading from drops, carried by the current; used for refraction and glints.
@@ -220,10 +257,10 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   }
   // Arriving: a few drops ring the water as the koi swim in, each ring dying away before the end.
   if (pin < 1.0) {
-    float ringsFade = 1.0 - smoothstep(3.4, 4.6, tin);
+    float ringsFade = 1.0 - smoothstep(2.2, 3.1, tin);
     for (int k = 0; k < 3; k++) {
       float fk = float(k);
-      float age = tin - (0.5 + 0.7 * fk);
+      float age = tin - (0.5 + 0.5 * fk);
       if (age < 0.0) continue;
       vec2 drop = (vec2(hash12(vec2(fk, 81.0)), hash12(vec2(fk, 82.0))) - 0.5) * vec2(aspect * 0.8, 0.8);
       float dist = length(p - drop);
@@ -565,12 +602,12 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   float softness = K_canopySoft;
   float shadeAmount = 0.0;
   if (uSimOn.y > 0.5) {
-    vec2 canopyUV = (uv + sunwardUV * (0.05 + 0.08 * softness) + sway * 2.2 + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan;
+    vec2 canopyUV = (pondFoliageWarp(uv + sunwardUV * (0.05 + 0.08 * softness) + sway * 2.2, canopyShift, 1.0) + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan;
     float leaves = textureLod(uSim1, canopyUV, 0.3 + softness * 2.6).r;
     shadeAmount = max(shadeAmount, smoothstep(0.25 - 0.12 * softness, 0.6, leaves) * (0.85 - 0.25 * softness));
   }
   if (uSimOn.x > 0.5 && style != 1) {
-    vec4 hanging = textureLod(uSim0, uv + sunwardUV * 0.035 + sway * 1.6, 2.5);
+    vec4 hanging = textureLod(uSim0, pondFoliageWarp(uv + sunwardUV * 0.035 + sway * 1.6, plantShift, 1.0), 2.5);
     shadeAmount = max(shadeAmount, smoothstep(0.08, 0.6, hanging.r) * 0.8);
   }
   col *= 1.0 - 0.6 * shadeAmount;
@@ -587,8 +624,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     for (int i = 0; i < 24; i++) {
       at += marchStep;
       float block = 0.0;
-      if (uSimOn.x > 0.5) block = textureLod(uSim0, at + sway, 2.0).r;
-      if (uSimOn.y > 0.5) block = max(block, smoothstep(0.15, 0.6, textureLod(uSim1, (at + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan, 2.5).r));
+      if (uSimOn.x > 0.5) block = textureLod(uSim0, pondFoliageWarp(at + sway, plantShift, 1.0), 2.0).r;
+      if (uSimOn.y > 0.5) block = max(block, smoothstep(0.15, 0.6, textureLod(uSim1, (pondFoliageWarp(at, canopyShift, 1.0) + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan, 2.5).r));
       lit += (1.0 - block) * weight;
       total += weight;
       weight *= 0.93;
@@ -611,7 +648,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     vec4 leaf = vec4(0.0);
     float layer = 0.0;
     for (int l = 2; l >= 0; l--) {
-      vec4 texel = pondDecorTexel(uv + sway * (0.5 + 0.5 * float(l)));
+      vec4 texel = pondDecorTexel(pondFoliageWarp(uv + sway * (0.5 + 0.5 * float(l)), plantShift, 0.7 + 0.15 * float(l)));
       if (texel.r > 0.5 && floor(mod(floor(texel.b * 255.0 + 0.5), 16.0) / 4.0) == float(l)) {
         leaf = texel;
         layer = float(l);
@@ -653,7 +690,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       vec2 gustDir = normalize(vec2(0.9, 0.4));
       float span = 0.5 * (aspect * abs(gustDir.x) + abs(gustDir.y));
       float front = mix(-span - 0.55, span + 0.55, pout);
-      lightK *= 1.0 - 0.12 * hardEdge(bell((dot(p, gustDir) - front) / 0.2) * 0.9);
+      lightK *= 1.0 - 0.08 * hardEdge(bell((dot(p, gustDir) - front) / 0.2) * 0.9);
     }
     col *= lightK;
     o.ink *= lightK;

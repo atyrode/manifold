@@ -1059,7 +1059,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     }
     // The morning haze thinning as the camera comes down: the horizon's colour over the land,
     // heaviest on the far ridges.
-    if (arrive > 0.0) col = mix(col, haze, arrive * (0.3 + 0.45 * i / 5.0));
+    if (arrive > 0.0) col = mix(col, haze, arrive * (0.12 + 0.2 * i / 5.0));
   } else {
     vec3 dir = viewRay(uv, aspect, COUNTRY_HORIZON, COUNTRY_FOV);
     col = countryDome(sky, dir, rain);
@@ -1117,8 +1117,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
 
   // Light coming up on arrival; on leaving, the cloud's grey closing over and the light dimming.
   if (arrive > 0.0 || leave > 0.0) {
-    col *= 1.0 - 0.16 * arrive - 0.3 * leave;
-    col = mix(col, vec3(dot(col, LUMA)), 0.55 * leave);
+    col *= 1.0 - 0.06 * arrive - 0.06 * leave;
+    col = mix(col, vec3(dot(col, LUMA)), 0.22 * leave);
   }
   vec3 rgb = clamp(col, 0.0, 1.0);
   Shade o = shadeOf(rgb, inkOf(rgb, 1.1, 1.0), clamp(accent, 0.0, 1.0));
