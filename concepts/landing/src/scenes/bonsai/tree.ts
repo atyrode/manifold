@@ -7,6 +7,7 @@
 // those of its twigs, r^3 = sum of the children's r^3, thickened where bonsai growers build
 // taper. Then the nebari (surface roots) over the moss, and for pines sometimes a jin of bleached
 // deadwood. Tufts of foliage sit on the outer twigs. Deterministic for a species and seed.
+import { mulberry32 } from "../../sims/random.ts";
 import { BONSAI_MAPLE, BONSAI_REGION, BONSAI_SOIL_Y, BONSAI_TRUNK, bonsaiMound } from "./geometry.ts";
 
 export type NodeKind = "trunk" | "branch" | "twig" | "root" | "jin";
@@ -98,18 +99,6 @@ const SHAPES: readonly Shape[] = [
 const PIPE = 3;
 /** Keep pads this far inside the map's edges. */
 const MARGIN = 0.05;
-
-/** Mulberry32: a small seedable generator, so a seed always grows the same tree. */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 class Grower {
   readonly nodes: TreeNode[] = [];
