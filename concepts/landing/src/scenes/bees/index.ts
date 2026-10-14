@@ -1,46 +1,39 @@
-// Bees in the border: a close, low view into a cottage-garden flower border on a golden afternoon.
-// Lavender, cosmos, poppies, echinacea and clover sway in the breeze in front of a hedge and trees
-// melted into bokeh. Bees fly curved paths from flower to flower, hover, land (the head dips under
-// their weight and springs back), crawl and go on; a few butterflies flutter between the flowers and
-// now and then settle with their wings slowly opening and closing. The creatures are steered on the
-// CPU (sim.ts) and drawn as sprites in the shader (shader.ts); the lens is focused at one depth.
-import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, skyTheme } from "../atmosphere.ts";
+// Bees on the hillside: a painted summer landscape, eye level and warm, with the insects as tiny
+// moving specks you know by their motion. Cumulus towers over hazy hills (a farmhouse, a windmill),
+// an old orchard behind a dry-stone wall, a path and three pastel hives in a garden of lavender
+// rows, poppies, daisies and foxgloves, the wind running through the grass and the shadows of clouds
+// drifting over it all. Dozens of bees work the hives (sim.ts): foragers beeline to a flower drift,
+// hop from flower to flower and fly home loaded with pollen; a crowd mills at each entrance and young
+// bees fly orientation loops before it. A few butterflies flutter between the flowers and settle.
+import { counts, feature, seed, type ParamDef } from "../../params.ts";
+import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { beesGlsl } from "./shader.ts";
-import { BEES_MARK_TRIGGER, beesSim } from "./sim.ts";
+import { beesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  feature("border", "bees", "bees", true, "how many", 4, "Bees foraging: each flies a calm curved path to a flower in the sharp zone, hovers, lands (the flower dips under its weight and springs back), crawls a while carrying pollen on its legs, then goes on to the next.", { options: counts(1, 2, 3, 4, 6) }),
-  feature("border", "butterflies", "butterflies", true, "how many", 2, "A peacock, a cabbage white and a swallowtail, in that order: a lazy erratic flutter with glides between bursts of wingbeats, now and then settling on a flower with the wings slowly opening and closing.", { options: counts(1, 2, 3) }),
-  choice("border", "palette", "flower mix", [
-    { label: "cottage", value: 0 },
-    { label: "warm", value: 1 },
-    { label: "cool", value: 2 },
-  ], 0, "Which flowers fill the border: a cottage mix of lavender, cosmos, poppies, echinacea and clover; a warm one of poppies, orange cosmos and yellow coneflowers; a cool one of blue, violet and white."),
-  range("border", "flowers", "flowers", 0.75, "How full the border is, from a few scattered flowers to a thick bed."),
-  seed("border", "gardenSeed", "arrangement", "Where each flower stands, how tall, and of what kind; re-seed for another stretch of border."),
-  range("air", "breeze", "breeze", 0.4, "How much the stems sway: a still afternoon to the swell of a gentle breeze, passing along the border."),
-  range("lens", "focus", "focus depth", 0.5, "Which depth is sharp: toward the left the flowers close to you, in the middle the middle of the border, toward the right the far flowers. Everything else softens into out-of-focus colour; the hedge is always far out of focus."),
-  range("lens", "glow", "golden haze", 0.45, "The low sun's gold scattered through the air, softening the picture around it."),
-  ...skyKnobs({ time: 0.72 }),
-  feature("manifold", "mark", "M in clematis", false, "bloom", 0.8, "The Manifold M trained over the hedge in violet clematis: a thin vine and a blossom at nineteen places along its strokes, soft out of focus behind the flowers. A pulse of light runs along it now and then; 'Now' sends one at once.", { trigger: BEES_MARK_TRIGGER }),
+  feature("life", "bees", "bees", true, "colony", 48, "How many bees are about: foragers leave the hives for the flowers in a nearly straight line, hop from flower to flower, and fly home loaded with pollen, leaving a dotted line in the air; some mill at the entrances, and young bees fly orientation loops in front of their hive.", { options: counts(16, 32, 48, 64) }),
+  feature("life", "butterflies", "butterflies", true, "how many", 5, "Orange, white and blue butterflies: a lazy, bobbing flutter with the odd glide, the wingbeat seen as the size of the speck, now and then settling on a flower with the wings slowly opening and closing.", { options: counts(3, 4, 5, 6) }),
+  seed("scenery", "scenerySeed", "landscape", "The shape of the hills and their fields, the clouds, and the flowers in the drifts; re-seed for another view of the valley."),
+  ...weatherKnobs({ group: "air", wind: true, clouds: 0.55 }),
+  ...skyKnobs({ time: 0.64 }),
+  feature("manifold", "mark", "M on the hive", false, "boldness", 0.8, "The Manifold M painted on the front of the middle hive, in ochre on its powder-blue boxes.", {}),
 ];
 
 export const beesScene: SceneDef = {
   id: "bees",
   title: "Bees",
-  blurb: "A flower border on a golden afternoon: bees foraging, butterflies settling, the hedge soft behind.",
-  // The pale gold of afternoon light, and of a bee's pollen.
+  blurb: "A summer hillside at an orchard's edge: bees and butterflies at work among the hives and flowers.",
+  // The gold of afternoon light, and of pollen.
   accent: "#f2b632",
   look: { color: "full", levels: 4 },
   params,
   groups: {
-    border: { title: "The border", blurb: "The flowers, and the bees and butterflies that visit them." },
-    air: { title: "Air", blurb: "The breeze that sways the stems." },
-    lens: { title: "Lens", blurb: "Where the focus lies, and the haze of low sunlight." },
+    life: { title: "Bees & butterflies", blurb: "The insects: a colony working three hives and a few butterflies." },
+    scenery: { title: "Landscape", blurb: "Which valley you are looking over." },
+    air: { title: "Air", blurb: "The wind through the grass and the cumulus building over the hills." },
     sky: atmosphereGroups.sky,
-    manifold: { title: "Manifold mark", blurb: "The M in clematis, over the hedge." },
+    manifold: { title: "Manifold mark", blurb: "The M, painted on a hive." },
   },
   glsl: beesGlsl,
   entry: "sceneBees",
