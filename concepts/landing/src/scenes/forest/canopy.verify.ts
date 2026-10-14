@@ -174,7 +174,10 @@ export function verifyCanopy(gl: WebGL2RenderingContext): Record<string, unknown
   };
   const still = rays(0, 3, 0.4);
   [-0.3, 0.04, 0.32].forEach((base, i) => check(Math.abs((still[i] ?? 0) - base * 1.5 - Math.tan(0.4) * 0.42) <= 0.0201, `ray ${i} at ${still[i]} away from its base`));
-  check(rays(0.1, 3, 0).every((x, i) => x === rays(0.1, 3, 0)[i]) && rays(0.1, 4, 0).some((x, i) => x !== rays(0.1, 3, 0)[i]), "ray sources not seeded");
+  const seeded = rays(0.1, 3, 0);
+  const again = rays(0.1, 3, 0);
+  const reseeded = rays(0.1, 4, 0);
+  check(seeded.every((x, i) => x === again[i]) && reseeded.some((x, i) => x !== seeded[i]), "ray sources not seeded");
 
   // The gap sky: stars on a clear night, none through the rain's deck, whose grey scales with its gain.
   const S = 48;
