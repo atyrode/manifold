@@ -11,6 +11,9 @@
 // sea); K_window, K_wing, K_contrail (window seat, trigger slot 1); K_wind, K_lightning (trigger
 // slot 0), K_aurora (weather); K_livery (manifold).
 
+/** Seconds of the climb out of the deck and of the sinking back in (SceneDef.passage). */
+export const CLOUDS_PASSAGE = { enter: 3.0, exit: 1.5 } as const;
+
 export const cloudsGlsl = `
 const float cloudsHorizon = 0.08; // horizon line above the screen centre, in screen heights (~58% up)
 const float cloudsFocal = 1.2;    // lens: about 45 degrees of vertical field of view
@@ -477,13 +480,74 @@ vec4 cloudsWing(vec2 w, float cellW, vec3 rdCam, Sky sky, CloudsLight li, float 
   return vec4(c, cov);
 }
 
+// ---- Passage -------------------------------------------------------------------------------------
+// The entrance is the climb out of the cloud deck: wisps stream past the pane, the tops sink away
+// below as the aircraft levels off, the horizon rocks level and the wing settles. The exit is the
+// reverse: a bank and a sinking back into the tops under streaming vapour. At rest (passageIn() 1,
+// passageOut() 0) every term below is exactly 0.
+
+// Climb progress 0..1 (1 at rest); the dissolve over the first moments is spent in the cloud.
+float cloudsLevel() {
+  return clamp((passageIn() - 0.05) / 0.9, 0.0, 1.0);
+}
+
+// 1 deep in the tops (starting the climb, ending the dive) .. 0 at cruise altitude.
+float cloudsSink() {
+  float x = cloudsLevel();
+  float po = passageOut();
+  return clamp(1.0 - x * x * (3.0 - 2.0 * x) + po * po, 0.0, 1.0);
+}
+
+// How far the world has slid past: grows through the exit (accelerating into the cloud), and runs
+// forward through the entrance from a negative start, slowing as the aircraft levels off.
+float cloudsStream() {
+  float x = cloudsLevel();
+  float po = passageOut();
+  return 2.0 * po * po - 2.6 * (1.0 - x * x * (3.0 - 2.0 * x));
+}
+
+// The horizon's extra roll in radians: the climb's tilt rocks level past a hair, the exit banks.
+float cloudsBank() {
+  float x = cloudsLevel();
+  float a = 1.0 - x;
+  float po = passageOut();
+  return 0.12 * a * a * cos(4.5 * x) + 0.15 * po * po;
+}
+
+// The wing's flex, in wing units (positive lifts it): loaded in the climb, easing back with a small
+// overshoot, and dipping a little as the aircraft banks away.
+float cloudsWingFlex() {
+  float x = cloudsLevel();
+  float a = 1.0 - x;
+  float po = passageOut();
+  return 0.08 * a * a * cos(3.5 * x) - 0.05 * po * po;
+}
+
+// How much vapour is about: thick when the climb starts, thinning away; building through the exit.
+float cloudsWispAmount() {
+  return max(1.0 - smoothstep(0.2, 0.85, passageIn()), smoothstep(0.3, 1.0, passageOut()));
+}
+
+// Streaks of vapour streaming sideways over the pane in two layers, the nearer one faster. Coverage
+// 0..1; the caller cuts it per cell so the moving edges never flicker.
+float cloudsWisps(vec2 p, float stream, float amount) {
+  vec2 a = vec2(p.x * 0.8 + stream, p.y * 9.0);
+  vec2 b = vec2(p.x * 1.3 + stream * 1.8, p.y * 15.0 + 4.7);
+  float na = 0.6 * vnoise(a + vec2(3.1, 7.7)) + 0.4 * vnoise(a * vec2(2.3, 1.7) + vec2(9.3, 1.1));
+  float nb = vnoise(b + vec2(5.3, 2.9));
+  float th = mix(0.8, 0.3, amount);
+  float ca = smoothstep(th, th + 0.18, na);
+  float cb = smoothstep(th + 0.06, th + 0.24, nb);
+  return max(ca, cb) * smoothstep(0.0, 0.12, amount);
+}
+
 // Everything beyond the pane: sky, thunderheads, the passing plane, the cloud sea, the wing.
 // 'frame' is the half-size of what frames the view (the porthole, or the screen without it).
 vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky sky, CloudsLight li, out float stars, out float accent) {
   stars = 0.0;
   accent = 0.0;
   // The world rolls a fraction of a degree as the aircraft rides the air; wing and window don't.
-  float roll = 0.006 * sin(tm * 0.21) + 0.004 * sin(tm * 0.083 + 1.3);
+  float roll = 0.006 * sin(tm * 0.21) + 0.004 * sin(tm * 0.083 + 1.3) + cloudsBank();
   vec2 hv = rotate(p, roll) - vec2(0.0, cloudsHorizon);
   vec3 rd = normalize(vec3(hv, cloudsFocal));
   // The sky; below the horizon, the horizon colour the far deck dissolves into. Rays are held just
@@ -568,8 +632,12 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
   if (rd.y < 0.0) {
     // The cloud sea. Its scale is fixed: flying higher shrinks the billows toward a fine grain.
     float drop = 0.4 + 4.0 * K_altitude;
+    // Climbing out of the deck, or sinking back into it: the tops rise to meet the eye.
+    float sink = cloudsSink();
+    if (sink > 0.0) drop *= pow(0.06 / drop, sink);
     float tFar = 35.0 * drop;
     vec2 drift = vec2(tm * (0.45 * K_drift - 0.1 * K_wind), tm * 0.015);
+    drift.x += 0.2 * cloudsStream();
     float boil = tm * (0.025 + 0.02 * abs(K_wind));
     float tHit = cloudsMarch(rd, drift, K_cover, boil, drop, tFar);
     if (tHit > 0.0) {
@@ -604,11 +672,23 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
     col += cloudsBoltLight * flash * exp(-dot(dg, dg) * 700.0) * (towersOn ? 0.45 : 0.9);
   }
 
+  // Passage: cloud vapour streaming over the pane while the aircraft climbs out of, or sinks back
+  // into, the deck. Exactly absent at rest.
+  float wisp = cloudsWispAmount();
+  if (wisp > 0.0) {
+    float cover = cloudsWisps(p, cloudsStream(), wisp);
+    vec3 vapour = cloudsShoulder(cloudsAmbient(li, vec3(0.0, 0.7, -0.7)) * 0.95 + li.key * (0.2 + 0.35 * max(li.dir.y, 0.0)));
+    col = mix(col, vapour, hardEdge(cover) * 0.85);
+  }
+
   if (K_wing > 0.5) {
     // Sized by the frame's height, shrunk on narrow frames so the winglet stays inside.
     float scale = min(frame.y, frame.x * 1.25);
     float cellW = px / scale;
     vec2 w = (p + head * 0.004 - vec2(frame.x, -frame.y)) / scale;
+    // Passing through the deck the wing flexes (exactly 0 at rest); its edge is then cut per cell.
+    float flex = cloudsWingFlex();
+    w.y -= flex;
     if (w.x > -1.75 && w.y < 1.45) {
       vec3 rdCam = normalize(vec3(p.x, p.y - cloudsHorizon, cloudsFocal));
       // Anti-collision strobe: a double flash every 1.5 s (none at all with motion off).
@@ -619,7 +699,8 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
       vec3 glow = vec3(0.0);
       float mark = 0.0;
       vec4 wing = cloudsWing(w, cellW, rdCam, sky, li, strobe, nav, K_livery > 0.5, glow, mark);
-      col = mix(col, wing.rgb, wing.a) + glow;
+      float wingCover = abs(flex) > 0.0005 ? hardEdge(wing.a) : wing.a;
+      col = mix(col, wing.rgb, wingCover) + glow;
       accent = max(accent, mark);
     }
   }

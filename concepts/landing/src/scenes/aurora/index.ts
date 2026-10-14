@@ -48,4 +48,7 @@ export const auroraScene: SceneDef = {
   },
   glsl: auroraGlsl,
   entry: "sceneAurora",
+  // Entering, the camera comes down from the stars while the curtains unfurl and the smoke climbs;
+  // leaving, the curtains roll up into faint arcs and the camera lifts to the stars.
+  passage: { enter: 2.8, exit: 1.4 },
 };

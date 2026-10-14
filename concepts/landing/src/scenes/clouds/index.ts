@@ -2,7 +2,7 @@
 import { feature, knobValue, range, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { cloudsGlsl } from "./shader.ts";
+import { CLOUDS_PASSAGE, cloudsGlsl } from "./shader.ts";
 
 const params: ParamDef[] = [
   ...skyKnobs({ time: 0.72 }),
@@ -35,4 +35,7 @@ export const cloudsScene: SceneDef = {
   entry: "sceneClouds",
   // Daylight fills the screen only without the dark cabin around it, and only on a still clock.
   theme: skyTheme(params, { from: 0.3, to: 0.68, when: (values) => knobValue(params, values, "window") < 0.5 }),
+  // Entrance: climbing out through the deck, wisps streaming past and the tops sinking below as the
+  // plane levels off; exit: banking and sinking back into the tops under streaming vapour.
+  passage: CLOUDS_PASSAGE,
 };

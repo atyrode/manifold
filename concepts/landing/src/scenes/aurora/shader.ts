@@ -17,6 +17,10 @@
 // fading slowly along their height), a pulse of brightness travelling along the arc, lit stretches
 // and dark gaps; green low, violet or red toward the top. A corona (rays streaming from a point high
 // in the sky) gathers now and then. The sky's glow lights the snow and the cabin's walls.
+//
+// Passage (aurPassage): the camera tilts between the stars and the fjord (a shift of uv, so every
+// layer, the mirrored water and the horizon move as one), the curtains unfurl from faint high arcs
+// or roll back up into them, and on the way in the chimney's smoke climbs. All gated to nothing at rest.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 
 /** The aurora's low (oxygen green) and high (violet, red) colours by the `hue` knob, where the change begins and ends, and its gain. */
@@ -50,6 +54,10 @@ float aurFrom;
 float aurTo;
 float aurGain;
 vec3 aurLight;       // the aurora's light on the land
+float aurTilt;       // passage: the camera's tilt up from rest, in screen heights (0 at rest)
+float aurUnfurl[3];  // passage: how far each curtain has come down (1 at rest)
+float aurSmokeFront; // passage: how far up the chimney smoke has climbed (1 at rest)
+float aurGlowGate;   // passage: the land's share of the sky's glow while the curtains are furled (1 at rest)
 vec3 aurMoonLight;   // the moon's
 vec3 aurAmb;         // light from the whole sky
 vec3 aurHaze;        // the air above the far shore
@@ -107,23 +115,39 @@ vec3 aurTint(float hn) {
 // where its ray coordinate s bunches up (ds/dx small) the sheet turns edge-on and glows brighter.
 // A pulse of brightness travels along it; lit stretches alternate with dark gaps. A faint veil
 // lies under the hem. Returns the light (x) and how far up the sheet (y, 0..1).
-vec2 aurRibbon(vec2 q, float y0, float L, float salt, float T) {
+vec2 aurRibbon(vec2 q, float y0, float L, float salt, float T, float unf) {
   float act = K_activity;
   float x = q.x;
   float amp = 0.03 + 0.05 * act;
   float hem = y0 + amp * (sin(x * 1.9 + T * 0.014 + salt) + 0.55 * sin(x * 3.7 - T * 0.021 + salt * 2.1) + 0.2 * sin(x * 7.3 + T * 0.030 + salt * 3.3));
+  // unf < 1: the curtain is unfurling or rolling up. A wave sweeps along the arc (ux: how far this
+  // stretch has come down), the hem hanging higher the less unfurled it is.
+  float ux = 1.0;
+  if (unf < 1.0) {
+    float xw = clamp(0.5 + 0.5 * x / aurHW, 0.0, 1.0);
+    if (salt > 3.0 && salt < 5.0) xw = 1.0 - xw;
+    ux = smoothstep(0.0, 1.0, clamp(unf * 1.5 - 0.5 * xw, 0.0, 1.0));
+    hem += 0.10 * (1.0 - ux);
+  }
   float fa = 0.10 + 0.08 * act;
   float s = x + fa * sin(x * 3.3 - T * 0.017 + salt * 1.7) + 0.5 * fa * sin(x * 7.1 + T * 0.026 + salt);
   float ds = 1.0 + fa * 3.3 * cos(x * 3.3 - T * 0.017 + salt * 1.7) + 0.5 * fa * 7.1 * cos(x * 7.1 + T * 0.026 + salt);
   float hh0 = q.y - hem;
   if (hh0 < -0.12 || hh0 > 2.4 * L + 0.02) return vec2(0.0);
   float sx = s + 0.10 * hh0;
+  // Each ray drops at its own moment (static along the arc), so the drape comes down ragged and
+  // settles: Le is how far the light reaches up here.
+  float Le = L;
+  if (unf < 1.0) {
+    float rp = vnoise(vec2(sx * 31.0 + salt * 7.0, salt + 2.0));
+    Le = L * mix(0.14, 1.0, clamp(ux * 1.4 - 0.4 * rp, 0.0, 1.0));
+  }
   float fine = vnoise(vec2(sx * 75.0 - T * 0.012 + salt * 9.0, salt + hh0 * 2.0 - T * 0.015));
   float mid = vnoise(vec2(sx * 28.0 + T * 0.008, salt * 3.0 + hh0 * 0.8));
   float rays = smoothstep(0.25, 0.85, 0.6 * fine + 0.4 * mid);
   float hh = hh0 + 0.014 * (0.5 - fine);
   float edge = smoothstep(-0.004, 0.006, hh);
-  float up = max(hh, 0.0) / L;
+  float up = max(hh, 0.0) / Le;
   float body = exp(-up * 3.2) * (0.55 + 0.45 * rays) + 0.5 * rays * exp(-up * 1.1);
   float stretch = smoothstep(0.2, 0.65, vnoise(vec2(x * 1.1 + T * 0.008, salt + 7.0)));
   float w = 0.5 + 0.5 * sin(x * 3.0 - T * 0.13 + salt * 1.7);
@@ -131,7 +155,8 @@ vec2 aurRibbon(vec2 q, float y0, float L, float salt, float T) {
   float fold = clamp(1.0 / max(ds, 0.35), 0.7, 2.0);
   float lum = edge * body * (1.0 - smoothstep(1.2, 2.4, up)) * pulse * mix(0.2, 1.0, stretch) * fold
             + (1.0 - edge) * 0.10 * exp(min(hh, 0.0) / 0.04) * stretch;
-  return vec2(lum, clamp(up / 1.4, 0.0, 1.0));
+  // The colour follows the full-height curtain, so a furled arc stays the low green.
+  return vec2(lum, clamp(max(hh, 0.0) / L / 1.4, 0.0, 1.0));
 }
 
 // The aurora for a screen point, to add to the sky: three ribbons, the main one hanging mid-sky
@@ -145,7 +170,10 @@ vec3 aurAurora(vec2 q, float T) {
     if (gain > 0.0) {
       float y0 = i == 0 ? 0.57 : (i == 1 ? 0.45 : 0.74);
       float len = i == 0 ? 0.17 : (i == 1 ? 0.11 : 0.14);
-      vec2 cu = aurRibbon(q, y0, len, float(i) * 2.7 + 1.3, T);
+      float unf = aurUnfurl[i];
+      // A curtain still furled is a faint arc: a little dimmer, mostly just short.
+      if (unf < 1.0) gain *= 0.6 + 0.4 * unf;
+      vec2 cu = aurRibbon(q, y0, len, float(i) * 2.7 + 1.3, T, unf);
       c += aurTint(cu.y) * cu.x * gain;
     }
   }
@@ -383,7 +411,10 @@ float aurSmoke(vec2 q) {
   float r = (q.x - xc) / w;
   if (abs(r) > 2.5) return 0.0;
   float puffs = 0.45 + 0.55 * vnoise(vec2(s * 20.0 - aurT * 0.20, r * 0.8 + 3.0));
-  return exp(-r * r) * puffs * (1.0 - smoothstep(0.12, 0.36, s)) * smoothstep(-0.003, 0.012, s);
+  float sm = exp(-r * r) * puffs * (1.0 - smoothstep(0.12, 0.36, s)) * smoothstep(-0.003, 0.012, s);
+  // On the way in the thread climbs from the chimney: a front rising through it, cut per cell.
+  if (aurSmokeFront < 1.0) sm *= 1.0 - smoothstep(0.40 * aurSmokeFront - 0.04, 0.40 * aurSmokeFront, s);
+  return sm;
 }
 
 // Everything beyond the water, at screen point q at or above the horizon (mirror: reflected).
@@ -577,9 +608,45 @@ vec4 aurForeground(vec2 p, out float depth) {
   return vec4(0.0);
 }
 
+// The passage, in the world: on the way in the camera comes down from the stars and settles on the
+// fjord (a touch of overshoot) while the three curtains unfurl one after another, each sweeping
+// along its arc from a faint high arc to its full drape as the rays drop ray by ray; the cabin's
+// smoke then climbs. On the way out the curtains roll back up into faint arcs (the far end first)
+// and the camera lifts to the stars. Everything keeps its rest value (tilt 0, unfurl 1, smoke 1,
+// glow gate 1) when nothing is passing.
+void aurPassage() {
+  aurTilt = 0.0;
+  aurUnfurl[0] = 1.0;
+  aurUnfurl[1] = 1.0;
+  aurUnfurl[2] = 1.0;
+  aurSmokeFront = 1.0;
+  aurGlowGate = 1.0;
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return;
+  float x = clamp(pin / 0.82, 0.0, 1.0);
+  float x2 = x * x * (3.0 - 2.0 * x);
+  float back = x2 - 1.0;
+  float settle = 1.0 + 2.1 * back * back * back + 1.1 * back * back;
+  float leave = pout * pout * (3.0 - 2.0 * pout);
+  aurTilt = 0.22 * (1.0 - settle) + 0.26 * leave;
+  float glow = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    float inU = clamp((pin - 0.10 - 0.08 * fi) / 0.62, 0.0, 1.0);
+    float outU = 1.0 - clamp((pout - 0.06 * fi) / 0.70, 0.0, 1.0);
+    aurUnfurl[i] = min(inU, outU);
+    glow += aurUnfurl[i] / 3.0;
+  }
+  aurGlowGate = 0.7 + 0.3 * glow;
+  float sf = clamp((pin - 0.35) / 0.65, 0.0, 1.0);
+  aurSmokeFront = 1.0 - (1.0 - sf) * (1.0 - sf);
+}
+
 // The night's frame: placements, aurora colours, the light on the land and the corona's envelope.
 void aurSetup(float aspect) {
   aurT = uMotionTime;
+  aurPassage();
   aurPx = 1.0 / uRes.y;
   aurHW = 0.5 * aspect;
   aurSx = clamp(aspect / 1.78, 0.45, 1.0);
@@ -592,7 +659,7 @@ void aurSetup(float aspect) {
   aurFrom = aurFromAt();
   aurTo = aurToAt();
   aurGain = aurGainAt();
-  aurLight = aurLow * K_glow * 0.075 * aurVis * (0.92 + 0.08 * sin(aurT * 0.11));
+  aurLight = aurLow * K_glow * 0.075 * aurVis * (0.92 + 0.08 * sin(aurT * 0.11)) * aurGlowGate;
   aurMoonLight = vec3(0.30, 0.36, 0.52) * K_moon * 0.55 * (1.0 - 0.8 * aurOver);
   aurAmb = vec3(0.035, 0.050, 0.095) * (1.0 - 0.3 * aurOver) + aurLight + aurMoonLight * 0.25;
   aurHaze = vec3(0.030, 0.060, 0.090) + aurLight * 1.1 + aurMoonLight * 0.2;
@@ -601,9 +668,12 @@ void aurSetup(float aspect) {
   aurCorona = aurCoronaEnv() * aurVis;
 }
 
-Shade sceneAurora(vec2 uv, vec2 cell, float t) {
+Shade sceneAurora(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   aurSetup(aspect);
+  // The camera's tilt (zero at rest, where uv == screenUv). The snow is weather in front of the
+  // lens and stays in screen space.
+  vec2 uv = screenUv + vec2(0.0, aurTilt);
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   aurAccent = 0.0;
   float depth = 1.0;
@@ -636,7 +706,7 @@ Shade sceneAurora(vec2 uv, vec2 cell, float t) {
   }
   // Falling snow, in depth to the first thing the eye meets.
   if (K_snow > 0.0) {
-    Precip pr = snowFall(uv, aspect, t, K_snow, K_wind, depth);
+    Precip pr = snowFall(screenUv, aspect, t, K_snow, K_wind, depth);
     vec3 air = AUR_SNOW * (aurAmb * 2.4 + aurMoonLight * 0.6 + aurLight * 1.5);
     col = precipOver(col, air, max(air * 1.3, vec3(0.08)), pr);
     aurAccent *= 1.0 - pr.veil;
