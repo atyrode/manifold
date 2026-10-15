@@ -361,14 +361,6 @@ export async function verifySceneFeatures(
     const before = context.image();
     context.armed = true;
 
-    // Changes expected (the lab open): nothing is built ahead.
-    renderer.expectChanges(true);
-    for (let i = 0; i < 3; i++) frame();
-    check(
-      context.links === 1 && context.drawing() === plain,
-      `A software rasteriser built ${context.links - 1} programs ahead of any change`,
-    );
-
     // The castle on: its own program is built in the background and takes over, drawing the castle
     // on the chalk down (right of the middle, its hill's woods cleared around it); until then the
     // old frame holds.
@@ -429,6 +421,14 @@ export async function verifySceneFeatures(
       context.drawing() === plain && context.links === 5,
       "The default program was freed though it was drawn more recently than the castle's",
     );
+
+    // Changes expected (the lab open): nothing is built ahead.
+    renderer.expectChanges(true);
+    for (let i = 0; i < 3; i++) frame();
+    check(
+      context.links === 5 && context.drawing() === plain,
+      `A software rasteriser built ${context.links - 5} programs ahead of any change`,
+    );
     check(
       context.waits.length === 0,
       `Knob changes waited on a build: ${context.waits.join(", ")}`,
@@ -487,8 +487,13 @@ function drawTurns(
   const drawn = new Map<string, Uint8Array>();
   for (const view of VIEWS)
     for (const [index, knobs] of turns.entries()) {
+      const links = context.links;
       renderer.update(settings(scene, knobs, view));
       frame();
+      check(
+        context.links === links,
+        `${scene}: ${JSON.stringify(knobs)} built a program of its own`,
+      );
       check(
         renderer.failure === undefined && context.drawing() === full,
         `${scene}: ${JSON.stringify(knobs)} did not draw at once with the all-features program`,
