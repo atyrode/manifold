@@ -553,8 +553,10 @@ The scene owns how they look: its projection, palette, light, what hides them an
   where it is resolved.
 - **Composition.** An organ on the site may spring from a point `offset` from it (a tree's prop
   roots along its crown); `PlantClimate.wind` adds air the scene moves itself (a breeze front of its
-  own, the garden's gust crossing as a front) to the breeze; an organ with a negative slot is never
-  packed (one the scene draws its own way, as fireflies' crowns through the bank's profile);
+  own, the garden's gust crossing as a front) to the breeze, and is told each organ's plant, for air
+  that differs from plant to plant (the countryside's gust bands per field, the meadow's gust field
+  at each clump's foot); an organ with a negative slot is never packed (one the scene draws its own
+  way, as fireflies' crowns through the bank's profile);
   `PlantTexture.pack(a, b)` writes two systems into one texture (the garden's woods and border, each
   in its own frame, after the scene's own rows); `plantPoint` (GLSL) finds a point along a posed
   organ (a swaying stem's tip).
@@ -568,9 +570,13 @@ The scene owns how they look: its projection, palette, light, what hides them an
   from grid-slotted records), garden (a stem under every crown of the woods over the wall, the
   shader drawing its old silhouette where the stems' tips carry the crowns, `plantPoint`; and an
   optional border of fern and mondo grass in the wall-foot gutter, binned records drawn per fragment
-  with `plantFrond` and `plantArc`, following the maple's season choice; not the maple). Next: meadow
-  (near grass and dandelion stems on its own gust field), country (near hedgerows only), kelp
-  (stipes stay on Verlet).
+  with `plantFrond` and `plantArc`, following the maple's season choice; not the maple), country
+  (optional verges, `verges`: clumps of cow parsley, red campion and tussock grass at the hedges'
+  foot on the two near ridges, slotted by field border in a window of field cells per ridge, swaying
+  with the wind and the crops' gust bands, following the farming season, compiled in only while on),
+  meadow (optional `wildflowers`: clumps of daisies, buttercups, knapweed and scabious bowed by its
+  own gust field, compiled in only while on). Next: meadow's near grass and dandelion stems (on
+  their own springs), kelp (stipes stay on Verlet).
 
 ### The giant planet (`src/shaders/lib/planet.ts`)
 

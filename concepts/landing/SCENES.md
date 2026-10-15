@@ -194,6 +194,17 @@ season choice (pale young fronds in spring, ferns turning gold in autumn and hal
 winter, the evergreen grass dulling, snow on them); from above they lie out toward the gravel. The
 maple, moss, rake, leaves and drying are unchanged.
 
+## Meadow wildflowers
+
+`meadow`'s optional `wildflowers` (off) are clumps of the shared plant component
+(`meadow/wildflowers.ts`): ox-eye daisies, buttercups, knapweed and field scabious, three stems and
+heads a clump, standing out of the grass 4.5 to 11 m away, rooted under the sea of grass's camera
+and hidden by the grass nearer than them. The meadow's own gust field (`meadowGust`, the 'now' and
+passage gusts included) bows each clump at its foot through `PlantClimate.wind`; once there is no
+gust and no wind they come to rest exactly as clumps grown in still air. Compiled in only while on
+(`MEADOW_HAS_WILDFLOWERS`); the meadow's own simulation, textures and default picture are unchanged
+(`meadowWildflowers` check, `wildflowers.test.ts`).
+
 ## Waterfall
 
 A cliff face with a waterfall as the focus.
@@ -244,6 +255,17 @@ Overlooking rolling hills with a village in the distance and forest around.
   `countryRouteDistance` for every animal), as for the tracks.
 - Walkers and carts keep to the tracks in any weather: lamps lit after dark and under a heavy sky,
   wetted by rain, and under lying snow the tracks they use show trodden down through it.
+- Verges (`verges`, off): clumps of cow parsley, red campion and tussock grass at the foot of the
+  hedges on the two near ridges, grown by the shared plant component (`country/verges.ts`), two
+  slots a field border, drawn twice life size as the birds are. They sway with the wind and bow as
+  the crops' gust bands reach them (the band of the field each grows into), follow the farming
+  season (white umbels in summer, the parsley seeded and browning at harvest with the campion still
+  flowering, no flowers in autumn), carry lying snow, keep off the lane, tracks, farm tracks, the
+  river and its reeds and the farmsteads, and grow away from grazed pastures (none between two). A
+  clump rooted nearer than a hedgerow tree, a building or a walker stands in front of it. Compiled
+  in only while on (`COUNTRY_HAS_VERGES`, kept out of `COUNTRY_FULL`); checked by `countryVerges`.
+  At the default pixel size they are a few cells tall, a sprinkle along the hedges; they read best
+  at finer pixel sizes.
 - Cost: every optional part (walkers and carts, the track network, hedgerow clearing, village
   growth, hamlets, farms and castle, the farm tracks, flower and pasture fields, herds and fences,
   birds and the murmuration, the chalk M, falling rain and snow, fog, wind ripples, a moon below
