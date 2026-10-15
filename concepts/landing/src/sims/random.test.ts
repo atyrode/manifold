@@ -19,6 +19,18 @@ test("wait draws Street's Poisson gaps as its own copy did, and nothing at a rat
   expect(never.next()).toBe(0.39340261183679104);
 });
 
+test("gauss draws the frozen lake's crack walks as its own copy did: three draws, summed, less 1.5, doubled", () => {
+  // The lake's growth stream for ice seed 0 (SEED_BASE ^ Math.imul(1, 0x9e3779b1)), as its own
+  // Random drew it before moving here.
+  const growth = new Random(0x1ce1a4e ^ Math.imul(1, 0x9e3779b1));
+  expect([growth.next(), growth.gauss(), growth.gauss(), growth.gauss()]).toEqual([0.3832890228368342, -0.3683317922987044, -1.8787409700453281, 0.607474347576499]);
+  // Exactly three draws: the stream carries on from the fourth.
+  const draws = mulberry32(42);
+  const random = new Random(42);
+  expect(random.gauss()).toBe((draws() + draws() + draws() - 1.5) * 2);
+  expect(random.next()).toBe(draws());
+});
+
 test("Random is mulberry32 re-seeded in place, and a seed counts by its low 32 bits", () => {
   const random = new Random(7);
   const generator = mulberry32(7);

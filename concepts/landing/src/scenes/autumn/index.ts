@@ -6,6 +6,7 @@
 // and the gusts live in sim.ts; shader.ts paints the park around them, and layout.ts holds the
 // geometry the two share.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { AUTUMN_PASSAGE } from "./layout.ts";
@@ -20,7 +21,7 @@ const params: readonly ParamDef[] = [
   feature("leaves", "gusts", "gusts", true, "strength", 0.5, "A gust now and then: the canopy sways, a shower of leaves is shaken loose, and often a swirl of the fallen leaves is lifted off the path and carried along it before it settles. Higher: stronger and more often. Now: a gust.", { trigger: 0 }),
   feature("park", "lamp", "lamp post", true, "glow", 0.7, "The cast-iron lamp beside the path lights as the day fades or a storm darkens it, throwing a warm pool on the leaves."),
   ...skyKnobs({ time: 0.69, stars: 0.5, moon: 1, meteors: { trigger: AUTUMN_METEOR_TRIGGER } }),
-  ...weatherKnobs({ clouds: 0.3, rain: true, fog: true, wind: true, aurora: true }),
+  ...weatherKnobs({ clouds: 0.3, shadows: true, rain: true, fog: true, wind: true, aurora: true }),
   feature("manifold", "mark", "leaf M", false, "amount", 0.8, "The wind sweeps a Manifold M together out of the fallen leaves, gold ones laid out along the path like a road marking; the ground round it is cleared. It gathers over about ten seconds. Now: gather it (even while off), and it scatters again after a while.", { trigger: 1 }),
 ];
 
@@ -36,7 +37,7 @@ export const autumnScene: SceneDef = {
     leaves: { title: "Leaves", blurb: "How the leaves let go and fall, and the gusts that carry them." },
     park: { title: "Park", blurb: "The lamp post beside the path." },
     sky: atmosphereGroups.skyNight,
-    weather: { title: atmosphereGroups.weather.title, blurb: "Rain greys the light and darkens the canopy; the path and the leaves turn dark and glossy, pools gather on the gravel and rings spread in them. Fog fades the far trees. The wind leans the leaves as they fall and carries the gusts. On a clear night the aurora may hang over the far trees." },
+    weather: { title: atmosphereGroups.weather.title, blurb: "Clouds drift over, and if you like their shadows sweep across the park. Rain greys the light and darkens the canopy; the path and the leaves turn dark and glossy, pools gather on the gravel and rings spread in them. Fog fades the far trees. The wind leans the leaves as they fall and carries the gusts. On a clear night the aurora may hang over the far trees." },
     manifold: { title: "Manifold mark", blurb: "An M of gold leaves swept together on the path." },
   },
   glsl: autumnGlsl,
@@ -47,6 +48,6 @@ export const autumnScene: SceneDef = {
   // the swaying boughs. Exit: a stronger gust whirls the leaves up across the frame as the camera tilts
   // up into the canopy.
   passage: AUTUMN_PASSAGE,
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
+  // The moon takes a phase (K_moon) in the shared sky; the clouds' shadows are the shared deck's.
+  features: { SKY_MOON_PHASE: 1, CLOUD_TIER: CLOUD_TIERS.shadows },
 };

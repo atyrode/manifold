@@ -1,9 +1,9 @@
 // Shared sky: the clock, sun and moon, a side-on camera ray, an analytic sky dome with sun and moon
-// discs, stars, and a cloud deck seen from below; helpers to turn the sky to a scene's facing, mirror
-// it for reflections, sample the horizon haze and tint the stars, and the moon's coverage. With the
-// SKY_MOON_PHASE feature (SceneDef.features) the moon also takes a phase (skyMoonPhase). Compiled into
-// every scene program right after the common preamble; the contract and conventions are in
-// src/scenes/README.md.
+// discs, and stars; helpers to turn the sky to a scene's facing, mirror it for reflections, sample the
+// horizon haze and tint the stars, and the moon's coverage. With the SKY_MOON_PHASE feature
+// (SceneDef.features) the moon also takes a phase (skyMoonPhase). The cloud deck is clouds.ts, compiled
+// right after it. Compiled into every scene program right after the common preamble; the contract and
+// conventions are in src/scenes/README.md.
 
 export const skyGlsl = `
 // ---- sky ----
@@ -363,78 +363,5 @@ const vec3 SKY_STAR_TINT = vec3(0.85, 0.9, 1.0);
 // Starlight to add to the sky for a view ray: skyStars in SKY_STAR_TINT.
 vec3 skyStarLight(Sky sky, vec3 dir, float density) {
   return SKY_STAR_TINT * skyStars(sky, dir, density);
-}
-
-// Cloud density on the deck: rotated fbm octaves over a slowly evolving domain warp (Quilez, "Domain
-// warping", 2002). foot is the pixel footprint in deck units: octaves finer than ~3 pixels give way to
-// their mean, so cloud near the horizon stays smooth instead of crawling as it drifts.
-float skyCloudField(vec2 p, float foot, float t) {
-  vec2 w = vec2(vnoise(p * 0.6 + vec2(t * 0.011, 5.2)), vnoise(p * 0.6 + vec2(1.7, 9.4 - t * 0.009)));
-  vec2 q = (p + (w - 0.5) * 0.9) * 1.4;
-  float s = 0.0;
-  float a = 0.5;
-  float f = 1.4;
-  for (int i = 0; i < 5; i++) {
-    float keep = 1.0 - smoothstep(0.18, 0.45, foot * f);
-    if (keep <= 0.0) {
-      s += a; // the remaining octaves at their mean: 0.5 x (a + a/2 + ...)
-      break;
-    }
-    s += a * mix(0.5, vnoise(q), keep);
-    q = mat2(1.6, 1.2, -1.2, 1.6) * q + vec2(3.1, 7.7);
-    f *= 2.0;
-    a *= 0.5;
-  }
-  return s;
-}
-
-// A cloud deck seen from below: the ray meets a plane one unit up (deck point = dir.xz / dir.y, in
-// cloud-base heights, eye at the origin). cover 0..1: 0 clear, ~.35 fair-weather cumulus, .6 broken,
-// 1 overcast. wind -1..1 drifts it sideways; it always evolves and creeps closer a little. Lit by the
-// sun on the flanks that face it, silver-lined where the sun or moon is behind thin cloud, gold and
-// then pink underneath around sunset, moonlit at night. Returns straight (not premultiplied) rgb and
-// alpha, which fades out toward the horizon: col = mix(col, c.rgb, c.a).
-vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
-  if (dir.y <= 0.015 || cover <= 0.0) return vec4(0.0);
-  float tm = t * uMotion;
-  vec2 p = dir.xz / dir.y - vec2(0.09 * wind, -0.01) * tm;
-  // Deck units per pixel, taking a screen height as ~1 radian of view.
-  float foot = 1.0 / (uRes.y * dir.y * dir.y);
-  float n = skyCloudField(p, foot, tm);
-  float th = mix(0.74, 0.2, clamp(cover, 0.0, 1.0));
-  float alpha = smoothstep(th, th + 0.18, n);
-  if (alpha <= 0.0) return vec4(0.0);
-  float thick = smoothstep(th, th + 0.42, n);
-  float thin = 1.0 - smoothstep(0.0, 0.55, thick);
-
-  // Light across the deck from the sun (by day and dusk) or the moon: brighter where the cloud thins
-  // toward the light, from a second, coarse density tap a step toward it.
-  vec3 light = sky.sun.y > -0.1 ? sky.sun : sky.moon;
-  vec2 lxz = normalize(light.xz); // neither body ever reaches the zenith
-  float n2 = skyCloudField(p + lxz * 0.22, max(foot, 0.12), tm);
-  float side = clamp(0.5 + (n - n2) * 3.5, 0.0, 1.0);
-
-  float e = sky.sun.y;
-  vec2 dxz = dir.xz;
-  vec2 sxz = sky.sun.xz;
-  float toward = 0.5 + 0.5 * dot(dxz, sxz) * inversesqrt(max(dot(dxz, dxz) * dot(sxz, sxz), 1e-8));
-  // Undersides lit by the sky dome, greyed: clouds are white and pass less of the sky's blue.
-  vec3 amb = mix(vec3(dot(sky.ambient, LUMA)), sky.ambient, 0.5);
-  vec3 col = amb * 0.95 * (1.0 - 0.45 * thick);
-  // Direct sun on the flanks that face it.
-  col += sky.sunColor * (0.1 + 0.4 * side) * (1.0 - 0.6 * thick);
-  // A low sun reaches under the deck: gold, then orange (sunColor reddens by itself).
-  col += sky.sunColor * (1.0 - smoothstep(0.03, 0.3, e)) * (0.3 + 0.7 * toward) * 0.6;
-  // Afterglow: still lit from below the horizon, undersides go orange, then pink, then grey.
-  vec3 glow = mix(vec3(0.70, 0.26, 0.42), vec3(1.0, 0.46, 0.20), smoothstep(-0.08, 0.02, e));
-  col += glow * sky.twilight * (1.0 - smoothstep(0.02, 0.2, e)) * (0.3 + 0.7 * toward) * (1.0 - 0.5 * thick) * 0.55;
-  // Silver lining: forward scattering lights thin edges near the sun or moon (lobe ~16 degrees).
-  vec3 dv = dir - sky.sun;
-  vec3 mv = dir - sky.moon;
-  col += sky.sunColor * exp(-dot(dv, dv) * 12.0) * thin * 2.2;
-  col += sky.moonColor * exp(-dot(mv, mv) * 16.0) * thin * 2.0;
-  // Moonlit body.
-  col += sky.moonColor * (0.45 + 0.4 * side) * (1.0 - 0.5 * thick);
-  return vec4(col, alpha * smoothstep(0.015, 0.16, dir.y));
 }
 `;

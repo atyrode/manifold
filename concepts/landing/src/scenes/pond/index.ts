@@ -3,6 +3,7 @@
 // into uSim0 (sim.ts, plants.ts); the canopy is painted on the CPU into uSim1; while the koi are
 // drawn to the pointer they are steered fish (koi.ts, sims/fish.ts) in uSim2.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
 import { POND_PASSAGE, pondGlsl } from "./shader.ts";
@@ -88,5 +89,8 @@ export const pondScene: SceneDef = {
   // The border plants and canopy move in from beyond the frame edges as the koi swim in; on leaving
   // they part outward again, the koi glide off and a breeze crosses the water.
   passage: POND_PASSAGE,
+  // The floor's caustics: the shared water's cellular net (causticCells), carried by the current
+  // (waterDrift).
+  features: { WATER_TIER: WATER_TIERS.caustics },
   sim: (gl) => pondSim(gl, params),
 };

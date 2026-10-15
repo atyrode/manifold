@@ -428,16 +428,16 @@ vec3 trainEventLight(float d, float z, float y, float tm) {
 
 // ---- The sky ----
 
-// The cloud deck, straight rgb and alpha. Two broad octaves, calm by night (finer detail reads as
-// harsh moonlit swirls); it drifts back as the train runs under it (a base ~1.5 km up) and with the
-// wind; moonlit and silvered round the moon, lit by day, grey and low under rain or snow.
+// The cloud deck, straight rgb and alpha: the shared clouds' calm deck (cloudFlatField, its finer
+// octave dropped toward the horizon and calm by night, where it reads as harsh moonlit swirls); it
+// drifts back as the train runs under it (a base ~1.5 km up) and with the wind; moonlit and silvered
+// round the moon, lit by day, grey and low under rain or snow.
 vec4 trainClouds(vec3 dir, float t, bool fine) {
   float cover = max(K_clouds, trainOver * (0.6 + 0.4 * trainStorm));
   if (dir.y <= 0.012 || cover <= 0.0) return vec4(0.0);
   vec2 run = vec2(cos(TRAIN_YAW), sin(TRAIN_YAW));
-  vec2 q = dir.xz / dir.y + run * (trainS / 1500.0) - vec2(0.09 * K_wind, -0.01) * uMotionTime;
-  float detail = fine ? 1.0 - smoothstep(0.08, 0.3, 1.3 / (uRes.y * dir.y * dir.y)) : 0.0;
-  float n = 0.62 * vnoise(q * 0.55 + 4.3) + 0.38 * mix(0.5, vnoise(q * 1.3 + 9.1), detail);
+  vec2 q = cloudDeckPoint(dir, run * (trainS / 1500.0), uMotionTime, K_wind);
+  float n = cloudFlatField(q, fine ? cloudFlatFine(dir) : 0.0);
   float th = mix(0.66, 0.26, clamp(cover, 0.0, 1.0));
   float alpha = smoothstep(th - 0.05, th + 0.24, n) * smoothstep(0.012, 0.2, dir.y);
   if (alpha <= 0.0) return vec4(0.0);

@@ -1,7 +1,9 @@
 // The pond scene: water, floor, koi, lilies, foliage, sun and canopy. The koi are drawn with the
 // shared fish (sims/fish.ts); while they are drawn to the pointer the sim steers them (koi.ts). The
 // border plants come drawn in the plant sheet (uSim0, sims/plantsheet.ts), coloured here by
-// material, and turned by the year with the plant component's colours (shaders/lib/plants.ts).
+// material, and turned by the year with the plant component's colours (shaders/lib/plants.ts). The
+// floor's caustics are the shared water's cellular net, carried by the current (its caustics tier,
+// shaders/caustics.ts and shaders/lib/water.ts).
 
 import { CANOPY_MARGIN } from "../../decor.ts";
 import { fishGlsl } from "../../sims/fish.ts";
@@ -13,24 +15,6 @@ import { plantsGlsl } from "../../shaders/lib/plants.ts";
 export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;
 
 export const pondGlsl = `${fishGlsl}${plantsGlsl}${plantSheetGlsl}
-// One layer of animated cellular light: bright where neighbouring cells meet.
-float pondCausticLayer(vec2 x, float t) {
-  vec2 i = floor(x);
-  vec2 f = fract(x);
-  float f1 = 8.0;
-  float f2 = 8.0;
-  for (int y = -1; y <= 1; y++) {
-    for (int k = -1; k <= 1; k++) {
-      vec2 g = vec2(float(k), float(y));
-      vec2 o = vec2(hash12(i + g), hash12(i + g + 19.1));
-      o = 0.5 + 0.45 * sin(t + TAU * o);
-      float d = length(g + o - f);
-      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
-    }
-  }
-  return 1.0 - smoothstep(0.0, 0.06, f2 - f1);
-}
-
 // Pebble floor: cells with dark seams, each stone its own shade. Returns brightness.
 float pondPebbles(vec2 x) {
   vec2 i = floor(x);
@@ -304,10 +288,11 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   vec3 col = mix(floorCol, water, 0.52 + 0.3 * depth) * (0.75 + 0.7 * power);
   float caustic = 0.0;
   if (K_caustics > 0.0) {
-    // Two drifting layers; light gathers where their seams cross. The current carries them.
-    vec2 drift = flow * tm * 0.03;
-    float a = pondCausticLayer((floorP - drift) * 4.2 + vec2(tm * 0.03, 0.0), tm * 0.7);
-    float b = pondCausticLayer((floorP - drift) * 5.6 + vec2(4.0, -tm * 0.025), tm * 0.9 + 2.0);
+    // Two layers of the water's cellular caustic net (its caustics tier); light gathers where their
+    // seams cross. The current carries them (waterDrift).
+    vec2 drifted = waterDrift(floorP, 0.03 * flow, tm);
+    float a = causticCells(drifted * 4.2 + vec2(tm * 0.03, 0.0), tm * 0.7, 4.2 / uRes.y);
+    float b = causticCells(drifted * 5.6 + vec2(4.0, -tm * 0.025), tm * 0.9 + 2.0, 5.6 / uRes.y);
     caustic = (a * 0.3 + b * 0.2 + a * b * 0.9) * K_caustics * (1.0 - depth * 0.45) * (0.6 + 0.9 * power);
   }
   caustic *= causticK;

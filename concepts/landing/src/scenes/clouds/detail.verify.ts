@@ -1,8 +1,8 @@
 // GPU check (verify-browser.ts): the cloud tops' fine relief fades out with the cell footprint and is
-// skipped once fully faded (cloudsSurface). Skipping is only safe while "fully faded" means "adds
-// nothing" and any detail above zero still shapes the tops; this draws the real GLSL over a grid of
-// deck points and fails if an early-out ever drops relief that is still meant to show, or if the
-// faded surface stops being the bare macro field.
+// skipped once fully faded (cloudSeaSurface, the shared clouds' volume tier the scene draws).
+// Skipping is only safe while "fully faded" means "adds nothing" and any detail above zero still
+// shapes the tops; this draws the real GLSL over a grid of deck points and fails if an early-out ever
+// drops relief that is still meant to show, or if the faded surface stops being the bare macro field.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { cloudsScene } from "./index.ts";
 
@@ -13,10 +13,10 @@ Shade cloudsDetailCheck(vec2 uv, vec2 cell, float t) {
   vec2 w = (cell - 0.5) * 0.173 + vec2(3.1, -7.4);
   float cover = 0.75;
   float boil = 1.3;
-  float macro = cloudsMacro(w, cover, boil);
-  float off = cloudsSurface(w, cover, boil, 0.0);
-  float faint = cloudsSurface(w, cover, boil, 1.0 / 64.0);
-  float full = cloudsSurface(w, cover, boil, 1.0);
+  float macro = cloudSeaMacro(w, cover, boil);
+  float off = cloudSeaSurface(w, cover, boil, 0.0);
+  float faint = cloudSeaSurface(w, cover, boil, 1.0 / 64.0);
+  float full = cloudSeaSurface(w, cover, boil, 1.0);
   // r: fully faded, the surface is the macro field. g: on tops tall enough to carry relief (0 where
   // none is due), 1 if a 1/64 share of it still shows, 0.5 if it was dropped. b: the relief grows
   // from nothing in proportion to the detail, never more than its amplitude 0.16 * 0.6.
