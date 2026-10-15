@@ -14,7 +14,7 @@ import { flash, iconButton, textButton } from "./controls.ts";
 import { h, reveal, type LabContext } from "./dom.ts";
 import { families, sceneFamily } from "./families.ts";
 import { icon } from "./icons.ts";
-import type { Thumbs } from "./thumbs.ts";
+import { standIn, thumbUrl } from "./thumbs.ts";
 
 export interface BrowserHost {
   setScene(scene: SceneId): void;
@@ -32,7 +32,6 @@ export class SceneBrowser {
   readonly el: HTMLElement;
   readonly #ctx: LabContext;
   readonly #host: BrowserHost;
-  readonly #thumbs: Thumbs;
   readonly #search: HTMLInputElement;
   readonly #cards = new Map<SceneId, { card: HTMLButtonElement; image: HTMLImageElement }>();
   readonly #shelves: { el: HTMLElement; scenes: SceneId[]; title: string }[] = [];
@@ -42,10 +41,9 @@ export class SceneBrowser {
   #tab: Tab = "scenes";
   #shown: SceneId | undefined;
 
-  constructor(ctx: LabContext, host: BrowserHost, thumbs: Thumbs) {
+  constructor(ctx: LabContext, host: BrowserHost) {
     this.#ctx = ctx;
     this.#host = host;
-    this.#thumbs = thumbs;
     this.#search = h("input", {
       type: "search",
       placeholder: "Find a scene…",
@@ -84,12 +82,6 @@ export class SceneBrowser {
     }
     gallery.append(this.#empty);
     gallery.addEventListener("keydown", (event) => this.#roam(event));
-    thumbs.onChange((scene) => {
-      const entry = this.#cards.get(scene);
-      if (!entry) return;
-      entry.image.src = this.#src(scene);
-      entry.image.classList.add("shot");
-    });
 
     const scenesBody = h(
       "div",
@@ -165,18 +157,18 @@ export class SceneBrowser {
     for (const sync of this.#syncers) sync();
   }
 
-  #src(scene: SceneId): string {
-    return this.#thumbs.src(scene, sceneDefs[scene].accent, sceneFamily[scene]);
-  }
-
   #card(id: SceneId): HTMLButtonElement {
     const scene = sceneDefs[id];
     const image = h("img", {
       alt: "",
-      src: this.#src(id),
-      class: this.#thumbs.captured(id) ? "shot" : "",
+      src: thumbUrl(id),
+      loading: "lazy",
       decoding: "async",
       draggable: false,
+    });
+    // A build without this scene's thumbnail shows its stand-in.
+    image.addEventListener("error", () => (image.src = standIn(scene.accent, sceneFamily[id])), {
+      once: true,
     });
     const card = h(
       "button",
@@ -275,13 +267,19 @@ export class SceneBrowser {
       maxLength: 60,
       "aria-label": "Preset name",
     });
-    const save = h("button", { type: "submit", class: "text-button" }, icon("plus"), h("span", {}, "Save"));
+    const save = h(
+      "button",
+      { type: "submit", class: "text-button" },
+      icon("plus"),
+      h("span", {}, "Save"),
+    );
     const form = h("form", { class: "save-row" }, name, save);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const { state } = this.#ctx.current();
       const preset: Preset = {
-        name: name.value.trim() || `${sceneDefs[state.scene].title} · ${new Date().toLocaleString()}`,
+        name:
+          name.value.trim() || `${sceneDefs[state.scene].title} · ${new Date().toLocaleString()}`,
         commit: this.#host.build || "working-tree",
         query: this.#host.query(),
         savedAt: new Date().toISOString().slice(0, 10),
@@ -323,10 +321,15 @@ export class SceneBrowser {
         );
       },
     );
-    const importButton = textButton("redo", "Import", "Add setups exported from another browser", () => {
-      importing = !importing;
-      importReveal.sync();
-    });
+    const importButton = textButton(
+      "redo",
+      "Import",
+      "Add setups exported from another browser",
+      () => {
+        importing = !importing;
+        importReveal.sync();
+      },
+    );
 
     let rendered = "";
     this.#syncers.push(importReveal.sync, () => {

@@ -205,6 +205,11 @@ draws the knob, never its URL keys, values, reset, shuffle or presets:
 Icons come from `src/lab/icons.ts`, one line set: a knob's `icon` (or a group's `Blurb.icon`) picks
 one, otherwise the first word of its key or label that names one does.
 
+The scene browser's thumbnails are committed files, `concepts/landing/thumbs/<id>.webp`: each scene
+at its defaults, settled, dithered at 240 x 150 as the page draws it. After changing how a scene
+looks at rest (or adding one), run `bun concepts/landing/scripts/thumbs.ts <id>` and commit the
+file; a scene without one shows a stand-in in its accent.
+
 ### Page theme
 
 The copy sits on the scene, so a light scene needs the paper theme (dark copy). Decide it once, in

@@ -46,7 +46,11 @@ export function flash(button: HTMLButtonElement, text: string): void {
   }, 1500);
 }
 
-export function switchControl(label: string, get: () => boolean, set: (on: boolean) => void): Built {
+export function switchControl(
+  label: string,
+  get: () => boolean,
+  set: (on: boolean) => void,
+): Built {
   const el = h(
     "button",
     { type: "button", role: "switch", class: "switch", "aria-label": label },
@@ -211,7 +215,12 @@ export function row(spec: {
 export function dice(label: string, roll: () => void): HTMLButtonElement {
   const button = h(
     "button",
-    { type: "button", class: "dice", title: `Roll another ${label}`, "aria-label": `Roll ${label}` },
+    {
+      type: "button",
+      class: "dice",
+      title: `Roll another ${label}`,
+      "aria-label": `Roll ${label}`,
+    },
     icon("dice"),
     h("span", {}, "roll"),
   );

@@ -4,5 +4,5 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["bun"]
   },
-  "include": ["serve.ts", "verify.ts", "verify-browser.ts", "src"]
+  "include": ["serve.ts", "verify.ts", "verify-browser.ts", "scripts", "src"]
 }

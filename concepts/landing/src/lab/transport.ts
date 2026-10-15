@@ -72,7 +72,9 @@ export class Popover {
     this.place();
     if (focus)
       this.el
-        .querySelector<HTMLElement>("button:not(:disabled), input, select, textarea, [tabindex='0']")
+        .querySelector<HTMLElement>(
+          "button:not(:disabled), input, select, textarea, [tabindex='0']",
+        )
         ?.focus();
   }
 

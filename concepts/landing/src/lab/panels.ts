@@ -88,10 +88,18 @@ export class Panel {
         );
     this.el = h(
       "section",
-      { class: `panel${spec.bar ? " is-bar" : ""}`, "data-panel": spec.id, "aria-label": spec.title },
+      {
+        class: `panel${spec.bar ? " is-bar" : ""}`,
+        "data-panel": spec.id,
+        "aria-label": spec.title,
+      },
       head,
       spec.bar ? null : body,
-      spec.bar ? null : h("div", { class: "panel-resize", "aria-hidden": "true" }),
+      ...(spec.bar
+        ? []
+        : (["x", "y", "both"] as const).map((axis) =>
+            h("div", { class: "panel-resize", "data-axis": axis, "aria-hidden": "true" }),
+          )),
     );
     this.chip = h(
       "button",
@@ -116,7 +124,10 @@ function clampLayout(raw: unknown, fallback: PanelLayout, spec: PanelSpec): Pane
     typeof value === "number" && Number.isFinite(value) ? value : otherwise;
   return {
     dock,
-    ax: record.ax === "left" || record.ax === "right" || record.ax === "center" ? record.ax : fallback.ax,
+    ax:
+      record.ax === "left" || record.ax === "right" || record.ax === "center"
+        ? record.ax
+        : fallback.ax,
     x: num(record.x, fallback.x),
     ay: record.ay === "top" || record.ay === "bottom" ? record.ay : fallback.ay,
     y: Math.max(0, num(record.y, fallback.y)),
@@ -217,9 +228,13 @@ export class Workspace {
     panel.chip.addEventListener("click", (event) => {
       if (event.detail === 0) this.#fold(panel, false);
     });
-    panel.el.querySelector(".panel-resize")?.addEventListener("pointerdown", (event) => {
-      if (event instanceof PointerEvent && event.button === 0) this.#resize(panel, event);
-    });
+    for (const handle of panel.el.querySelectorAll<HTMLElement>(".panel-resize")) {
+      const { axis } = handle.dataset;
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.button === 0)
+          this.#resize(panel, event, axis === "x" || axis === "y" ? axis : "both");
+      });
+    }
     if (!spec.bar) {
       const tab = h(
         "button",
@@ -302,24 +317,40 @@ export class Workspace {
     const right = column("right");
     const top = column("top");
     const bottom = column("bottom");
-    const width = (list: Panel[]) => list.reduce((most, panel) => Math.max(most, panel.layout.w), 0);
+    const width = (list: Panel[]) =>
+      list.reduce((most, panel) => Math.max(most, panel.layout.w), 0);
     this.#docked.left = width(left);
     this.#docked.right = width(right);
     // Bars measure themselves: placed first, so their height is known.
     for (const panel of [...top, ...bottom]) {
-      this.#place(panel, { left: this.#docked.left, top: 0, width: vw - this.#docked.left - this.#docked.right, height: 0 });
+      this.#place(panel, {
+        left: this.#docked.left,
+        top: 0,
+        width: vw - this.#docked.left - this.#docked.right,
+        height: 0,
+      });
     }
     this.#docked.top = top.reduce((sum, panel) => sum + panel.el.offsetHeight, 0);
     this.#docked.bottom = bottom.reduce((sum, panel) => sum + panel.el.offsetHeight, 0);
     let y = 0;
     for (const panel of top) {
-      this.#place(panel, { left: this.#docked.left, top: y, width: vw - this.#docked.left - this.#docked.right, height: 0 });
+      this.#place(panel, {
+        left: this.#docked.left,
+        top: y,
+        width: vw - this.#docked.left - this.#docked.right,
+        height: 0,
+      });
       y += panel.el.offsetHeight;
     }
     y = vh;
     for (const panel of bottom) {
       y -= panel.el.offsetHeight;
-      this.#place(panel, { left: this.#docked.left, top: y, width: vw - this.#docked.left - this.#docked.right, height: 0 });
+      this.#place(panel, {
+        left: this.#docked.left,
+        top: y,
+        width: vw - this.#docked.left - this.#docked.right,
+        height: 0,
+      });
     }
     for (const [list, side] of [
       [left, "left"],
@@ -328,7 +359,12 @@ export class Workspace {
       const share = vh / Math.max(1, list.length);
       list.forEach((panel, index) => {
         const w = this.#docked[side];
-        this.#place(panel, { left: side === "left" ? 0 : vw - w, top: index * share, width: w, height: share });
+        this.#place(panel, {
+          left: side === "left" ? 0 : vw - w,
+          top: index * share,
+          width: w,
+          height: share,
+        });
       });
     }
     for (const panel of this.#panels) {
@@ -336,7 +372,8 @@ export class Workspace {
       panel.chip.hidden = !panel.layout.collapsed;
       panel.el.dataset.dock = panel.layout.dock;
       panel.el.dataset.anchor = panel.layout.ax;
-      if (panel.layout.dock === "float" && !panel.layout.collapsed) this.#place(panel, this.#floatRect(panel));
+      if (panel.layout.dock === "float" && !panel.layout.collapsed)
+        this.#place(panel, this.#floatRect(panel));
     }
     // Folded panels sit where their panel stood: a floating one at its corner, a docked one along its edge.
     const stacks = { left: 0, right: 0, top: 0, bottom: 0 };
@@ -357,7 +394,10 @@ export class Workspace {
             ? { left: GAP, top: GAP + index * (size + 8) }
             : dock === "right"
               ? { left: vw - size - GAP, top: GAP + index * (size + 8) }
-              : { left: vw / 2 - size / 2 + index * (size + 8), top: dock === "top" ? GAP : vh - size - GAP };
+              : {
+                  left: vw / 2 - size / 2 + index * (size + 8),
+                  top: dock === "top" ? GAP : vh - size - GAP,
+                };
       }
       panel.chip.style.left = `${Math.round(Math.min(vw - size, Math.max(0, at.left)))}px`;
       panel.chip.style.top = `${Math.round(Math.min(vh - size, Math.max(0, at.top)))}px`;
@@ -372,7 +412,11 @@ export class Workspace {
     const width = spec.bar ? panel.el.offsetWidth || layout.w : Math.min(layout.w, vw - GAP * 2);
     const height = spec.bar ? panel.el.offsetHeight || layout.h : Math.min(layout.h, vh - GAP * 2);
     const left =
-      layout.ax === "left" ? layout.x : layout.ax === "right" ? vw - layout.x - width : (vw - width) / 2 + layout.x;
+      layout.ax === "left"
+        ? layout.x
+        : layout.ax === "right"
+          ? vw - layout.x - width
+          : (vw - width) / 2 + layout.x;
     const top = layout.ay === "top" ? layout.y : vh - layout.y - height;
     return {
       left: Math.min(vw - width, Math.max(0, left)),
@@ -455,7 +499,11 @@ export class Workspace {
     let rect: Rect = { left: start.left, top: start.top, width: start.width, height: start.height };
     // A docked panel floats off at its own size, under the pointer.
     if (panel.layout.dock !== "float" && !panel.spec.bar) {
-      rect = { ...rect, width: panel.layout.w, height: Math.min(panel.layout.h, window.innerHeight - GAP * 2) };
+      rect = {
+        ...rect,
+        width: panel.layout.w,
+        height: Math.min(panel.layout.h, window.innerHeight - GAP * 2),
+      };
       offset.x = Math.min(offset.x, rect.width - 24);
     }
     panel.el.classList.add("moving");
@@ -513,7 +561,8 @@ export class Workspace {
         const width = panel.spec.bar ? panel.el.offsetWidth || panel.layout.w : panel.layout.w;
         const left = chip.left + chip.width / 2 < vw / 2 ? chip.left : chip.right - width;
         const height = panel.spec.bar ? 44 : panel.layout.h;
-        const top = chip.top + chip.height / 2 < window.innerHeight / 2 ? chip.top : chip.bottom - height;
+        const top =
+          chip.top + chip.height / 2 < window.innerHeight / 2 ? chip.top : chip.bottom - height;
         this.#anchor(panel, { left, top, width, height });
         this.#persist();
         this.arrange();
@@ -521,20 +570,25 @@ export class Workspace {
     );
   }
 
-  #resize(panel: Panel, event: PointerEvent): void {
+  /** Drag a resize handle: `x` the inner side edge, `y` the bottom edge, `both` the corner. */
+  #resize(panel: Panel, event: PointerEvent, axis: "x" | "y" | "both"): void {
     event.preventDefault();
     const start = { x: event.clientX, y: event.clientY, w: panel.layout.w, h: panel.layout.h };
-    const fromLeft = panel.layout.dock === "right" || (panel.layout.dock === "float" && panel.layout.ax === "right");
+    const { dock, ax, ay } = panel.layout;
+    const fromLeft = dock === "right" || (dock === "float" && ax === "right");
     document.body.classList.add("resizing");
     drag(
       event,
       event.currentTarget instanceof HTMLElement ? event.currentTarget : panel.el,
       (pointer) => {
-        const dx = (pointer.clientX - start.x) * (fromLeft ? -1 : 1);
-        panel.layout.w = Math.round(Math.min(panel.spec.max.w, Math.max(panel.spec.min.w, start.w + dx)));
-        if (panel.layout.dock === "float") {
-          const dy = (pointer.clientY - start.y) * (panel.layout.ay === "bottom" ? -1 : 1);
-          panel.layout.h = Math.round(Math.max(panel.spec.min.h, start.h + dy));
+        const { min, max } = panel.spec;
+        if (axis !== "y") {
+          const dx = (pointer.clientX - start.x) * (fromLeft ? -1 : 1);
+          panel.layout.w = Math.round(Math.min(max.w, Math.max(min.w, start.w + dx)));
+        }
+        if (axis !== "x" && dock === "float") {
+          const dy = (pointer.clientY - start.y) * (ay === "bottom" ? -1 : 1);
+          panel.layout.h = Math.round(Math.max(min.h, start.h + dy));
         }
         this.arrange();
       },
@@ -569,7 +623,12 @@ export class Workspace {
       const [dx, dy] = arrow;
       const step = event.shiftKey ? STEP * 4 : STEP;
       const rect = panel.el.getBoundingClientRect();
-      this.#anchor(panel, { left: rect.left + dx * step, top: rect.top + dy * step, width: rect.width, height: rect.height });
+      this.#anchor(panel, {
+        left: rect.left + dx * step,
+        top: rect.top + dy * step,
+        width: rect.width,
+        height: rect.height,
+      });
     } else return;
     this.#persist();
     this.arrange();

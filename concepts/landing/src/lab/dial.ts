@@ -205,7 +205,10 @@ export function skyDial(
       sun.setAttribute("transform", `translate(${sunAt.x.toFixed(2)} ${sunAt.y.toFixed(2)})`);
       sun.classList.toggle("below", height < -0.02);
       const moonAt = at(angle + Math.PI);
-      moonGroup.setAttribute("transform", `translate(${moonAt.x.toFixed(2)} ${moonAt.y.toFixed(2)})`);
+      moonGroup.setAttribute(
+        "transform",
+        `translate(${moonAt.x.toFixed(2)} ${moonAt.y.toFixed(2)})`,
+      );
       // The lit side faces the sun.
       moonBody.setAttribute("transform", `rotate(${((-angle * 180) / Math.PI).toFixed(1)})`);
       moonGroup.classList.toggle("below", height > 0.02);
