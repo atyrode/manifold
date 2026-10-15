@@ -430,10 +430,17 @@ The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `ha
 **Opt-in components.** `libs` is compiled into every scene's program, so it holds only what most
 scenes use. A component few scenes compose is a GLSL string of its own that each consumer
 interpolates into its `glsl`, at the top or at least before the functions that call it, so no
-other program pays for it: `planetGlsl` and `birdsGlsl` (`src/shaders/lib/`), `windWaterGlsl` and
-`causticsGlsl` (`src/shaders/`). Such a component reads no knob defines (they are the scene's own):
-the scene passes every value as an argument, and its knobs come from a shared builder where the
-component has one (`planetKnobs`).
+other program pays for it: `planetGlsl`, `birdsGlsl` and `figuresGlsl` (`src/shaders/lib/`),
+`windWaterGlsl` and `causticsGlsl` (`src/shaders/`). Such a component reads no knob defines (they
+are the scene's own): the scene passes every value as an argument, and its knobs come from a shared
+builder where the component has one (`planetKnobs`).
+
+`figuresGlsl` draws small people and land vehicles at their world size (a walker, a horse and cart,
+a tractor and trailer), cut per cell and never under a cell, a faint cell below ~1.6 cells tall,
+on analytic stroll and shuttle clocks (country's lanes). It has no boats, and neither island nor
+shore draws a figure for it to replace: island's distant movers are a gull and a balloon, shore's
+the surf, its plankton and fish. A scene that gains people (island's pier, shore's tideline) or a
+harbour's boats would start from it, boats as a new shape beside `figureCart`.
 ### Rooted plants (`src/sims/plants.ts`, `src/shaders/lib/plants.ts`, `src/scenes/plants.ts`)
 One plant component for every scene that grows things. The CPU side (`RootedPlants`) owns what
 happens: a scene lays out sites (where, which way, how lush and wet, under water or not) and picks
@@ -639,8 +646,9 @@ surfaces and change them. Never paste them over the frame as a flat layer.
 - **A tilted camera.** `rainFall` and `snowFall` assume a level camera, paths straight down the
   frame. A camera pitched up or down passes the vanishing point of the fall instead:
   `rainFallSeen` / `snowFallSeen` with `rainVanish(rainFallDir(...))` / `rainVanish(snowFallDir(...))`
-  and the camera's own axes, so rain and snow agree (island and tidepool for rain; skyward looking
-  up and street looking down from a window for both, street through one `streetVanish`).
+  and the camera's own axes, so rain and snow agree (tidepool for rain; skyward looking up, and
+  street from a window and island from above looking down, for both, each through one vanishing
+  helper of its own, `streetVanish` and `islVanish`).
 - **Intensity.** Amount 0.1 is drizzle (slow faint streaks, mostly veil), 0.4 steady rain, 0.7
   heavy rain with near drops and gust sheets, and 1.0 a downpour: dense sheets sweeping with the
   wind, loud splashes, and visibility falling. Let the sky, the light, the wetness and the splashes

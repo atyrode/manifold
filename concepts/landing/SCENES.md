@@ -82,7 +82,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Harmonograph | `harmonograph` | Damped, slightly detuned pendulums drive a pen; the figure precesses and spirals inward, then a fresh sheet slides in |
 | Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out. The giant planet is the shared one (`shaders/lib/planet.ts`, decoration tier): optional moons on its ring plane (crossing in front of and behind it, casting shadows), an aurora, night-side city lights and its own day cycle |
 | Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment; or real ones, released by a board and slowed by their own wide swing (`sims/pendulum.ts`), drifting off the realignment |
-| A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below; the sea is the shared water's `mirror` tier (four hand-placed ripple trains) |
+| A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain and snow seen from above both converge below the sea (`rainFallSeen`, `snowFallSeen` through one `islVanish`); the sea is the shared water's `mirror` tier (four hand-placed ripple trains) |
 | Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: the shared water's `ripples` tier, `shaders/windWater.ts`), a red cabin, falling and lying snow |
 | Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies, all flying in the garden's world and projected through its eye (`LevelCamera`). Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it |
 | Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, birds; rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`) |
@@ -91,7 +91,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
 sees it (`rainFallSeen`), whatever the calm of the rest of the scene; snow does the same where the
-camera tilts (`snowFallSeen`: skyward looking up, street looking down).
+camera tilts (`snowFallSeen`: skyward looking up, street and island looking down).
 
 ## Pond plants
 
