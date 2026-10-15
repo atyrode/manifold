@@ -3,7 +3,12 @@
 // river and the sky all show, the same frame draws bit for bit the same twice, and another
 // landscape draws another picture. Sizes are small: software WebGL runs every line of the march.
 import { paramDefaults, renderSettings, defaultsFor } from "../../state.ts";
-import { fragmentSourceFor, sceneFeatures, shaderValues, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  sceneFeatures,
+  shaderValues,
+  vertexSource,
+} from "../../shaders/index.ts";
 import type { SimFrame } from "../types.ts";
 import { valleyScene } from "./index.ts";
 
@@ -72,7 +77,8 @@ export function verifyValleyTerrain(gl: WebGL2RenderingContext): Record<string, 
         textures = sim.frame(frame);
         frames++;
       }
-      if (textures.length !== 4) throw new Error(`valley: the sim bound ${textures.length} textures`);
+      if (textures.length !== 4)
+        throw new Error(`valley: the sim bound ${textures.length} textures`);
       gl.canvas.width = WIDTH;
       gl.canvas.height = HEIGHT;
       gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -130,7 +136,8 @@ export function verifyValleyTerrain(gl: WebGL2RenderingContext): Record<string, 
     const top = WIDTH * Math.round(0.2 * HEIGHT);
     const bottom = WIDTH * Math.round(0.4 * HEIGHT);
     if (sky < 0.8 * top) throw new Error(`valley: the sky shows in ${sky} of ${top} top pixels`);
-    if (land < 0.8 * bottom) throw new Error(`valley: the land shows in ${land} of ${bottom} pixels`);
+    if (land < 0.8 * bottom)
+      throw new Error(`valley: the land shows in ${land} of ${bottom} pixels`);
     if (water < 4) throw new Error(`valley: no river in sight (${water} pixels)`);
     return { buildFrames: first.frames, sky, land, water, hash: fnv(first.bytes) };
   } finally {

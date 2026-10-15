@@ -32,7 +32,9 @@ import {
 } from "../../sims/terrain.ts";
 
 const kinds = (names: readonly string[], prefix: string): string =>
-  names.map((name, index) => `const float ${prefix}_${name.toUpperCase()} = ${index}.0;`).join("\n");
+  names
+    .map((name, index) => `const float ${prefix}_${name.toUpperCase()} = ${index}.0;`)
+    .join("\n");
 
 export const terrainGlsl = /* glsl */ `
 // ---- terrain (shaders/lib/terrain.ts over sims/terrain.ts) ----

@@ -6,6 +6,7 @@ import {
   sampleGrid,
   type Terrain,
   TERRAIN_ROAD_MAX_SLOPE,
+  TERRAIN_BASES,
   TerrainBuilder,
 } from "./terrain.ts";
 
@@ -76,7 +77,9 @@ describe("terrain", () => {
           [road.to, road.x.length - 1],
         ] as const) {
           const s = t.settlements[end];
-          expect(Math.hypot((road.x[k] ?? 0) - (s?.x ?? 0), (road.z[k] ?? 0) - (s?.z ?? 0))).toBeLessThan(1);
+          expect(
+            Math.hypot((road.x[k] ?? 0) - (s?.x ?? 0), (road.z[k] ?? 0) - (s?.z ?? 0)),
+          ).toBeLessThan(1);
         }
       }
       const roots = new Set(t.settlements.map((_, i) => find(i)));
@@ -94,7 +97,10 @@ describe("terrain", () => {
       const t = built(seed);
       for (const road of t.roads) {
         for (let k = 1; k < road.y.length; k++) {
-          const run = Math.hypot((road.x[k] ?? 0) - (road.x[k - 1] ?? 0), (road.z[k] ?? 0) - (road.z[k - 1] ?? 0));
+          const run = Math.hypot(
+            (road.x[k] ?? 0) - (road.x[k - 1] ?? 0),
+            (road.z[k] ?? 0) - (road.z[k - 1] ?? 0),
+          );
           const rise = Math.abs((road.y[k] ?? 0) - (road.y[k - 1] ?? 0));
           expect(rise).toBeLessThanOrEqual(TERRAIN_ROAD_MAX_SLOPE * Math.max(run, 4) + 1e-3);
         }
@@ -108,6 +114,39 @@ describe("terrain", () => {
           count++;
         }
         expect(near / Math.max(count, 1)).toBeGreaterThan(0.85);
+      }
+    }
+  });
+
+  test("every base relief builds a level river, every settlement on a road, a bridge over water", () => {
+    for (const base of TERRAIN_BASES) {
+      const t = generateTerrain({ seed: 2, size: 256, base });
+      const { level } = t.river;
+      for (let k = 1; k < level.length; k++)
+        expect(level[k] ?? 0).toBeLessThanOrEqual(level[k - 1] ?? 0);
+      // Every settlement is the end of some road or track.
+      t.settlements.forEach((_, index) => {
+        expect(t.roads.some((road) => road.from === index || road.to === index)).toBe(true);
+      });
+      const b = t.bridge;
+      if (b) {
+        const at = (f: number, of: Float32Array) =>
+          sampleGrid(of, t.size, t.extent, b.x0 + (b.x1 - b.x0) * f, b.z0 + (b.z1 - b.z0) * f);
+        // Water under its middle, dry land at both ends, the deck over the water.
+        expect(at(0.5, t.level)).toBeGreaterThan(at(0.5, t.ground));
+        expect(at(0, t.level)).toBeLessThan(at(0, t.ground));
+        expect(at(1, t.level)).toBeLessThan(at(1, t.ground));
+        expect(Math.min(b.deck0, b.deck1)).toBeGreaterThan(b.water + 1);
+      }
+      if (base === "coast") {
+        // The sea: water at sea level along the map's edge somewhere.
+        let sea = 0;
+        for (let q = 0; q < t.size; q++) {
+          if ((t.level[q] ?? -1) === 0 && (t.ground[q] ?? 0) < 0) sea++;
+          const r = q * t.size;
+          if ((t.level[r] ?? -1) === 0 && (t.ground[r] ?? 0) < 0) sea++;
+        }
+        expect(sea).toBeGreaterThan(0);
       }
     }
   });

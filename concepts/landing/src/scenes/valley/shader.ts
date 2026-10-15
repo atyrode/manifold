@@ -62,7 +62,7 @@ vec3 valleyToCamera(vec3 d) {
 // cleared from water, streams, roads (while drawn) and yards.
 float valleyWoods(vec4 ground, vec4 cover) {
   if (K_woodland <= 0.0) return 0.0;
-  float on = smoothstep(valleyWoodTh, valleyWoodTh + 0.07, cover.z - 1.5 * max(cover.w, 0.0));
+  float on = smoothstep(valleyWoodTh, valleyWoodTh + 0.14, cover.z - 1.5 * max(cover.w, 0.0));
   on *= smoothstep(0.5, 3.5, cover.y) * smoothstep(-0.3, -1.5, terrainWater(ground));
   if (K_roads > 0.5) on *= smoothstep(1.5, 5.0, cover.x);
   return on;
@@ -71,7 +71,8 @@ float valleyWoods(vec4 ground, vec4 cover) {
 // What stands on the ground: the woods' canopy (crowns about 7 m across) or a lone tree in a hedge
 // or on a bank (the yard channel's -1 texels, rounded by the filtering), metres.
 float valleyCanopy(vec2 p, vec4 cover, float woods) {
-  float lone = K_woodland > 0.0 ? 10.0 * smoothstep(0.12, 0.75, -cover.w) : 0.0;
+  // A lone tree's texel filters to a tent; its square root rounds it into a crown.
+  float lone = K_woodland > 0.0 ? 11.0 * sqrt(clamp((-cover.w - 0.1) / 0.9, 0.0, 1.0)) : 0.0;
   return max(woods * VALLEY_CANOPY * (0.62 + 0.38 * vnoise(p / 6.5)), lone);
 }
 
@@ -469,7 +470,7 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
       // Coursed stone, the voussoirs of its arch darker.
       vec2 s = bridgeLocal / vec2(1.1, 0.45);
       float course = step(0.08, fract(s.y)) * step(0.06, fract(s.x + 0.5 * floor(s.y)));
-      albedo = vec3(0.56, 0.53, 0.47) * (0.86 + 0.14 * course);
+      albedo = vec3(0.7, 0.66, 0.57) * (0.86 + 0.14 * course);
       porous = 0.15;
       glossy = 0.1;
       shade = valleyShadow(p + n * 1.0, sun);
@@ -537,9 +538,18 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
         }
 #if VALLEY_HAS_ROADS
         if (K_roads > 0.5) {
-          // The roads: pale packed gravel, never thinner than about half a cell so they hold far off.
-          float road = hardFill(c.x - max(0.0, 0.45 * foot / max(abs(rd.y), 0.25) - 2.0), max(foot, 0.3) * 0.6);
-          vec3 gravel = mix(vec3(0.68, 0.62, 0.5), vec3(0.58, 0.52, 0.42), vnoise(p.xz / 3.0));
+          // The roads: pale gravel ribbons with a grass verge and a hedge either side (not in the
+          // villages), each held to about half a cell across however the road turns to the view.
+          vec2 across = vec2(terrainCover(uSim1, p.xz + vec2(2.0, 0.0), VALLEY_EXTENT).x, terrainCover(uSim1, p.xz + vec2(0.0, 2.0), VALLEY_EXTENT).x) - c.x;
+          across /= max(length(across), 1e-3);
+          float footRoad = foot * length(vec2(dot(across, valleyRight.xz), dot(across, valleyFwd.xz) / max(abs(rd.y), 0.08)));
+          float road = hardFill(c.x - max(0.0, 0.6 * footRoad - 2.0), 0.5 * footRoad);
+          float lined = (1.0 - smoothstep(0.2, 0.5, max(c.w, 0.0))) * (1.0 - smoothstep(14.0, 30.0, footRoad));
+          float roadHedge = hardFill(abs(c.x - 3.2 - 0.3 * footRoad) - max(0.9, 0.4 * footRoad), 0.5 * footRoad) * lined;
+          float roadVerge = (1.0 - smoothstep(0.0, 2.4, c.x)) * step(0.0, c.x);
+          vec3 gravel = mix(vec3(0.8, 0.74, 0.6), vec3(0.7, 0.64, 0.52), vnoise(p.xz / 3.0));
+          albedo = mix(albedo, vec3(0.42, 0.52, 0.24), roadVerge * 0.7);
+          albedo = mix(albedo, vec3(0.11, 0.19, 0.08), roadHedge * (1.0 - road));
           albedo = mix(albedo, gravel, road);
           porous = mix(porous, 0.3, road);
           glossy = mix(glossy, 0.25, road);

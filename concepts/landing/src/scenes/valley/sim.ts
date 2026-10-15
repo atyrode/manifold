@@ -9,7 +9,7 @@
 // before the first build: the shader shows the sky meanwhile, which the entrance looks into.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { runBudgeted } from "../../sims/clock.ts";
-import { packTerrain, TERRAIN_RECORDS, TerrainBuilder } from "../../sims/terrain.ts";
+import { packTerrain, TERRAIN_BASES, TERRAIN_RECORDS, TerrainBuilder } from "../../sims/terrain.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -25,7 +25,7 @@ export const VALLEY_MAP = { size: 512, extent: 3200 } as const;
  */
 const BUDGET = { share: 0.25, least: 8, first: 24, most: 120 } as const;
 
-type Knob = "landscape" | "relief" | "erosion" | "river" | "settlements";
+type Knob = "shape" | "landscape" | "relief" | "erosion" | "river" | "settlements";
 
 class ValleySim implements SceneSim {
   readonly #knobs: KnobReader<Knob>;
@@ -47,6 +47,7 @@ class ValleySim implements SceneSim {
       "erosion",
       "river",
       "settlements",
+      "shape",
     ]);
     const { size } = VALLEY_MAP;
     this.#ground = new DataTexture(gl, { width: size, height: size, format: "rgba16f" });
@@ -74,6 +75,7 @@ class ValleySim implements SceneSim {
       erosion: this.#knobs.value(frame, "erosion"),
       river: this.#knobs.value(frame, "river"),
       settlements: Math.round(this.#knobs.value(frame, "settlements")),
+      base: this.#knobs.pick(frame, "shape", TERRAIN_BASES, "valley"),
     };
     const key = JSON.stringify(options);
     if (key !== this.#key) {
@@ -100,7 +102,12 @@ class ValleySim implements SceneSim {
       }
     }
     if (!this.#shown) return [];
-    return [this.#ground.texture, this.#cover.texture, this.#parcels.texture, this.#records.texture];
+    return [
+      this.#ground.texture,
+      this.#cover.texture,
+      this.#parcels.texture,
+      this.#records.texture,
+    ];
   }
 
   dispose(): void {
