@@ -30,7 +30,11 @@ test("at equal depth the later plot wins, so a creature's detail goes over its b
   map.resize(8, 4);
   map.block(2, 0, 3, 1, 1, 20);
   map.block(4, 0, 1, 1, 3, 20);
-  expect([cell(map, 2, 0), cell(map, 3, 0), cell(map, 4, 0)]).toEqual([[1, 20], [1, 20], [3, 20]]);
+  expect([cell(map, 2, 0), cell(map, 3, 0), cell(map, 4, 0)]).toEqual([
+    [1, 20],
+    [1, 20],
+    [3, 20],
+  ]);
 });
 
 test("clear empties every plotted cell, so a farther speck can take the cell next frame", () => {

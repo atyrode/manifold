@@ -22,7 +22,9 @@
 /** The cloud tiers, cheapest first; a tier includes every one below it (SceneDef.features CLOUD_TIER). */
 export const CLOUD_TIERS = { flat: 0, lit: 1, shadows: 2, volume: 3 } as const;
 
-const tierDefines = Object.entries(CLOUD_TIERS).map(([name, value]) => `#define CLOUD_${name.toUpperCase()} ${value}`).join("\n");
+const tierDefines = Object.entries(CLOUD_TIERS)
+  .map(([name, value]) => `#define CLOUD_${name.toUpperCase()} ${value}`)
+  .join("\n");
 
 export const cloudDeckGlsl = `
 // ---- clouds (shaders/lib/clouds.ts) ----

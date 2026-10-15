@@ -25,19 +25,30 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     return shader;
   });
   const linked = gl.createProgram();
   for (const shader of shaders) gl.attachShader(linked, shader);
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
 
 // Draws the full frame, or only the cells inside 'box' (x, y, width, height) with the rest cleared.
-function draw(gl: WebGL2RenderingContext, width: number, height: number, box?: readonly [number, number, number, number]): Uint8Array {
+function draw(
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+  box?: readonly [number, number, number, number],
+): Uint8Array {
   gl.canvas.width = width;
   gl.canvas.height = height;
   gl.viewport(0, 0, width, height);
@@ -98,7 +109,14 @@ Shade regressionPlanet(vec2 uv, vec2 cell, float t) {
 }`;
 
 export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const component = program(gl, fragmentSourceFor({ ...campfireScene, entry: "regressionPlanet", glsl: campfireScene.glsl + COMPONENT }));
+  const component = program(
+    gl,
+    fragmentSourceFor({
+      ...campfireScene,
+      entry: "regressionPlanet",
+      glsl: campfireScene.glsl + COMPONENT,
+    }),
+  );
   gl.useProgram(component);
   const caseAt = gl.getUniformLocation(component, "regressionCase");
   gl.uniform1i(gl.getUniformLocation(component, "uView"), 1);
@@ -111,7 +129,10 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
     const channels = ["plane coordinates", "plane", "shadow on the planet"];
     for (let pixel = 0; pixel < 240 * 135; pixel++) {
       for (const [channel, what] of channels.entries()) {
-        check((bytes[pixel * 4 + channel] ?? 0) === 255, `Planet ring geometry (${name} ring): ${what} disagree at pixel ${pixel}`);
+        check(
+          (bytes[pixel * 4 + channel] ?? 0) === 255,
+          `Planet ring geometry (${name} ring): ${what} disagree at pixel ${pixel}`,
+        );
       }
     }
   }
@@ -127,14 +148,21 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   gl.uniform1f(radiusAt, 300);
   const near = draw(gl, 64, 64);
   for (let pixel = 0; pixel < 64 * 64; pixel++) {
-    check((near[pixel * 4] ?? 0) === 255, `Resolved planet belts differ from fbm at pixel ${pixel}: level of detail touched a resolved surface`);
+    check(
+      (near[pixel * 4] ?? 0) === 255,
+      `Resolved planet belts differ from fbm at pixel ${pixel}: level of detail touched a resolved surface`,
+    );
   }
   gl.uniform1i(caseAt, 3);
   const planetOf = (radius: number) => {
     gl.uniform1f(radiusAt, radius);
     const bytes = draw(gl, 64, 64);
-    const inDisc = (x: number, y: number) => (x + 0.5 - 32) ** 2 + (y + 0.5 - 32) ** 2 < (radius - 1) ** 2;
-    return { inDisc, at: (x: number, y: number, channel: number) => bytes[(y * 64 + x) * 4 + channel] ?? 0 };
+    const inDisc = (x: number, y: number) =>
+      (x + 0.5 - 32) ** 2 + (y + 0.5 - 32) ** 2 < (radius - 1) ** 2;
+    return {
+      inDisc,
+      at: (x: number, y: number, channel: number) => bytes[(y * 64 + x) * 4 + channel] ?? 0,
+    };
   };
   const tiny = planetOf(5);
   const beltValues = new Set<number>();
@@ -146,7 +174,10 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
       fbmValues.add(tiny.at(x, y, 2));
     }
   }
-  check(beltValues.size === 1 && fbmValues.size > 4, `A planet 10 cells across shows ${beltValues.size} belt levels (fbm ${fbmValues.size}): sub-cell belts should be their mean`);
+  check(
+    beltValues.size === 1 && fbmValues.size > 4,
+    `A planet 10 cells across shows ${beltValues.size} belt levels (fbm ${fbmValues.size}): sub-cell belts should be their mean`,
+  );
   const lights = planetOf(30);
   let lit = 0;
   let isolated = 0;
@@ -154,11 +185,22 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
     for (let x = 1; x < 63; x++) {
       if (!lights.inDisc(x, y) || lights.at(x, y, 0) < 128) continue;
       lit++;
-      if ([[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx = 0, dy = 0]) => lights.at(x + dx, y + dy, 0) < 128)) isolated++;
+      if (
+        [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ].every(([dx = 0, dy = 0]) => lights.at(x + dx, y + dy, 0) < 128)
+      )
+        isolated++;
     }
   }
   check(lit >= 40, `A far planet lost its city lights: ${lit} lit cells`);
-  check(isolated < 0.3 * lit, `A far planet's city lights shimmer as single cells: ${isolated} of ${lit} isolated`);
+  check(
+    isolated < 0.3 * lit,
+    `A far planet's city lights shimmer as single cells: ${isolated} of ${lit} isolated`,
+  );
   gl.deleteProgram(component);
 
   // Campfire's sky: the default planet, then each composed feature. Only the cells round the planet
@@ -168,10 +210,18 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   const where = (name: string) => gl.getUniformLocation(scene, name);
   const WIDTH = 320;
   const HEIGHT = 180;
-  const centre = { x: WIDTH / 2 + 0.58 * Math.min(Math.max(WIDTH / HEIGHT / 2, 0.5), 0.9) * HEIGHT, y: 0.57 * HEIGHT };
+  const centre = {
+    x: WIDTH / 2 + 0.58 * Math.min(Math.max(WIDTH / HEIGHT / 2, 0.5), 0.9) * HEIGHT,
+    y: 0.57 * HEIGHT,
+  };
   const radius = (0.07 + 0.13 * 0.55) * HEIGHT;
   const reach = Math.ceil(2.6 * radius);
-  const box = [Math.floor(centre.x) - reach, Math.floor(centre.y) - reach, 2 * reach, 2 * reach] as const;
+  const box = [
+    Math.floor(centre.x) - reach,
+    Math.floor(centre.y) - reach,
+    2 * reach,
+    2 * reach,
+  ] as const;
   gl.uniform2f(where("uRes"), WIDTH, HEIGHT);
   gl.uniform1i(where("uView"), 1);
   gl.uniform1f(where("uMotion"), 1);
@@ -181,11 +231,18 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   const render = (knobs: Record<string, number>, time: number): Uint8Array => {
     gl.uniform1f(where("uTime"), time);
     gl.uniform1f(where("uMotionTime"), time);
-    gl.uniform1fv(where("uParams"), Float32Array.from(renderSettings(defaultsFor("campfire"), { ...paramDefaults("campfire"), ...knobs }).params));
+    gl.uniform1fv(
+      where("uParams"),
+      Float32Array.from(
+        renderSettings(defaultsFor("campfire"), { ...paramDefaults("campfire"), ...knobs }).params,
+      ),
+    );
     return draw(gl, WIDTH, HEIGHT, box);
   };
   const differs = (a: Uint8Array, b: Uint8Array, pixel: number) =>
-    a[pixel * 4] !== b[pixel * 4] || a[pixel * 4 + 1] !== b[pixel * 4 + 1] || a[pixel * 4 + 2] !== b[pixel * 4 + 2];
+    a[pixel * 4] !== b[pixel * 4] ||
+    a[pixel * 4 + 1] !== b[pixel * 4 + 1] ||
+    a[pixel * 4 + 2] !== b[pixel * 4 + 2];
   const TIME = 40;
   const bare = render({ planet: 0 }, TIME);
   const plain = render({}, TIME);
@@ -201,7 +258,10 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
     let changed = 0;
     for (let pixel = 0; pixel < WIDTH * HEIGHT; pixel++) {
       if (!differs(picture, plain, pixel)) continue;
-      check(differs(plain, bare, pixel), `Campfire's planet ${name} drew outside the planet or over its foreground at pixel ${pixel}`);
+      check(
+        differs(plain, bare, pixel),
+        `Campfire's planet ${name} drew outside the planet or over its foreground at pixel ${pixel}`,
+      );
       changed++;
     }
     check(changed >= 10, `Campfire's planet ${name} does not show: ${changed} pixels`);
@@ -211,19 +271,33 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   // The third moon orbits edge-on through the planet's centre (campfire's ring plane, 0.032 rad/s
   // from phase 3, 1.56 radii out): at 53.5 s it crosses in front of the disc's centre, at 151.7 s
   // behind it. Eclipses off, so only the moon itself can differ between two and three moons.
-  const moons = (count: number) => ({ planetMoons: 1, "planetMoons-amount": count, planetEclipses: 0 });
+  const moons = (count: number) => ({
+    planetMoons: 1,
+    "planetMoons-amount": count,
+    planetEclipses: 0,
+  });
   const changedPixels = (a: Uint8Array, b: Uint8Array, discOnly: boolean) => {
     let changed = 0;
     for (let pixel = 0; pixel < WIDTH * HEIGHT; pixel++) {
-      const onDisc = Math.hypot((pixel % WIDTH) + 0.5 - centre.x, Math.floor(pixel / WIDTH) + 0.5 - centre.y) < radius - 1;
+      const onDisc =
+        Math.hypot((pixel % WIDTH) + 0.5 - centre.x, Math.floor(pixel / WIDTH) + 0.5 - centre.y) <
+        radius - 1;
       if ((onDisc || !discOnly) && differs(a, b, pixel)) changed++;
     }
     return changed;
   };
   const transit = changedPixels(render(moons(3), 53.5), render(moons(2), 53.5), true);
   const hidden = changedPixels(render(moons(3), 151.7), render(moons(2), 151.7), false);
-  check(transit >= 6, `A moon crossing in front of Campfire's planet was not drawn over it: ${transit} pixels`);
+  check(
+    transit >= 6,
+    `A moon crossing in front of Campfire's planet was not drawn over it: ${transit} pixels`,
+  );
   check(hidden === 0, `A moon behind Campfire's planet showed through it: ${hidden} pixels`);
   gl.deleteProgram(scene);
-  return { featurePixels: shown, transitPixels: transit, farLights: { lit, isolated }, tinyFbmLevels: fbmValues.size };
+  return {
+    featurePixels: shown,
+    transitPixels: transit,
+    farLights: { lit, isolated },
+    tinyFbmLevels: fbmValues.size,
+  };
 }

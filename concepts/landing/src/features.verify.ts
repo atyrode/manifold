@@ -19,16 +19,36 @@ function check(ok: boolean, message: string): void {
 }
 
 function settings(knobs: Params): RenderSettings {
-  return renderSettings({ ...defaultsFor("country"), pixel: 1, motion: 1, view: "source", mouse: "still", transitions: "off" }, knobs);
+  return renderSettings(
+    {
+      ...defaultsFor("country"),
+      pixel: 1,
+      motion: 1,
+      view: "source",
+      mouse: "still",
+      transitions: "off",
+    },
+    knobs,
+  );
 }
 
-export async function verifySceneFeatures(_gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
+export async function verifySceneFeatures(
+  _gl: WebGL2RenderingContext,
+): Promise<Record<string, unknown>> {
   const country = sceneDefs.country;
   const defaults = paramDefaults("country");
   // The default setting compiles no optional part in.
-  const gates = Object.entries(sceneFeatures(country)).filter(([name]) => name.startsWith("COUNTRY_HAS_"));
-  check(gates.length > 0 && gates.every(([, value]) => value === 0), `Default countryside compiles optional parts in: ${JSON.stringify(gates)}`);
-  check(sceneFeatures(country, shaderValues(country, { castle: 1 })).COUNTRY_HAS_SETTLEMENTS === 1, "The castle knob does not gate the settlements in");
+  const gates = Object.entries(sceneFeatures(country)).filter(([name]) =>
+    name.startsWith("COUNTRY_HAS_"),
+  );
+  check(
+    gates.length > 0 && gates.every(([, value]) => value === 0),
+    `Default countryside compiles optional parts in: ${JSON.stringify(gates)}`,
+  );
+  check(
+    sceneFeatures(country, shaderValues(country, { castle: 1 })).COUNTRY_HAS_SETTLEMENTS === 1,
+    "The castle knob does not gate the settlements in",
+  );
 
   const nativeRaf = window.requestAnimationFrame;
   let scheduled: FrameRequestCallback | undefined;
@@ -63,7 +83,10 @@ export async function verifySceneFeatures(_gl: WebGL2RenderingContext): Promise<
     const extension = gl.getExtension.bind(gl);
     const parameter = gl.getProgramParameter.bind(gl);
     const polls = new WeakMap<WebGLProgram, number>();
-    gl.getExtension = ((name: string) => (name === "KHR_parallel_shader_compile" ? { COMPLETION_STATUS_KHR } : extension(name))) as typeof gl.getExtension;
+    gl.getExtension = ((name: string) =>
+      name === "KHR_parallel_shader_compile"
+        ? { COMPLETION_STATUS_KHR }
+        : extension(name)) as typeof gl.getExtension;
     gl.getProgramParameter = (program: WebGLProgram, name: number): unknown => {
       if (name !== COMPLETION_STATUS_KHR) return parameter(program, name);
       const poll = (polls.get(program) ?? 0) + 1;
@@ -108,9 +131,15 @@ export async function verifySceneFeatures(_gl: WebGL2RenderingContext): Promise<
     for (;;) {
       frame();
       if (drawing() !== from) return heldFrames;
-      check(changed(image(), held).count === 0, "The frame changed while the new program was still building");
+      check(
+        changed(image(), held).count === 0,
+        "The frame changed while the new program was still building",
+      );
       heldFrames++;
-      check(performance.now() - start < BUILD_SECONDS * 1000, `No program switch within ${BUILD_SECONDS} s`);
+      check(
+        performance.now() - start < BUILD_SECONDS * 1000,
+        `No program switch within ${BUILD_SECONDS} s`,
+      );
       const pause = Promise.withResolvers<void>();
       setTimeout(pause.resolve, 50);
       await pause.promise;
@@ -122,7 +151,10 @@ export async function verifySceneFeatures(_gl: WebGL2RenderingContext): Promise<
     const renderer = new DitherRenderer(canvas, settings(defaults), true);
     renderer.start();
     frame();
-    check(renderer.failure === undefined && links === 1, `The default countryside built ${links} programs: ${JSON.stringify(renderer.failure)}`);
+    check(
+      renderer.failure === undefined && links === 1,
+      `The default countryside built ${links} programs: ${JSON.stringify(renderer.failure)}`,
+    );
     const plain = drawing();
     const before = image();
 
@@ -130,24 +162,42 @@ export async function verifySceneFeatures(_gl: WebGL2RenderingContext): Promise<
     // (right of the middle, its hill's woods cleared around it); until then the old frame holds.
     renderer.update(settings({ ...defaults, castle: 1 }));
     const heldFrames = await switchFrom(plain, before);
-    check(heldFrames >= 1, "The castle's program took over on the frame its build began: nothing was built in the background");
+    check(
+      heldFrames >= 1,
+      "The castle's program took over on the frame its build began: nothing was built in the background",
+    );
     const castled = drawing();
     const castle = changed(before, image());
-    check(renderer.failure === undefined && links === 2, `The castle took ${links - 1} more programs to build`);
-    check(castle.count >= 6 && (castle.box[0] ?? 0) > WIDTH * 0.55, `The castle program drew ${castle.count} changed cells at ${castle.box.join(",")}, not the castle right of the middle`);
+    check(
+      renderer.failure === undefined && links === 2,
+      `The castle took ${links - 1} more programs to build`,
+    );
+    check(
+      castle.count >= 6 && (castle.box[0] ?? 0) > WIDTH * 0.55,
+      `The castle program drew ${castle.count} changed cells at ${castle.box.join(",")}, not the castle right of the middle`,
+    );
 
     // Off again: the default program is still kept, and draws the same frame at once.
     renderer.update(settings(defaults));
     frame();
-    check(drawing() === plain && links === 2 && changed(before, image()).count === 0, "Turning the castle off did not return to the kept default program");
+    check(
+      drawing() === plain && links === 2 && changed(before, image()).count === 0,
+      "Turning the castle off did not return to the kept default program",
+    );
 
     // A setup turning three gated parts on at once builds one program, which draws them all.
     renderer.update(settings({ ...defaults, castle: 1, chalk: 1, fog: 0.6 }));
     await switchFrom(plain, before);
-    check(renderer.failure === undefined && links === 3, `A setup turning three gated knobs on built ${links - 2} programs`);
+    check(
+      renderer.failure === undefined && links === 3,
+      `A setup turning three gated knobs on built ${links - 2} programs`,
+    );
     check(drawing() !== castled, "Three gated knobs drew with the castle's program");
     const three = changed(before, image()).count;
-    check(three > castle.count, `Castle, chalk figure and fog changed ${three} cells, the castle alone ${castle.count}`);
+    check(
+      three > castle.count,
+      `Castle, chalk figure and fog changed ${three} cells, the castle alone ${castle.count}`,
+    );
 
     // Past PROGRAMS_PER_SCENE (4) sets the least recently drawn program is freed, never the one drawing.
     renderer.update(settings({ ...defaults, chalk: 1 }));
@@ -157,8 +207,18 @@ export async function verifySceneFeatures(_gl: WebGL2RenderingContext): Promise<
     check(links === 5 && frees === 1, `Five sets built ${links} programs and freed ${frees}`);
     renderer.update(settings(defaults));
     frame();
-    check(drawing() === plain && links === 5, "The default program was freed though it was drawn more recently than the castle's");
-    return { parallelCompile: parallel !== null, heldFrames, castleCells: castle.count, threeCells: three, links, frees };
+    check(
+      drawing() === plain && links === 5,
+      "The default program was freed though it was drawn more recently than the castle's",
+    );
+    return {
+      parallelCompile: parallel !== null,
+      heldFrames,
+      castleCells: castle.count,
+      threeCells: three,
+      links,
+      frees,
+    };
   } finally {
     window.requestAnimationFrame = nativeRaf;
     canvas.remove();

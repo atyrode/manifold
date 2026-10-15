@@ -267,7 +267,17 @@ const STREAK_REACH = 7;
 
 // ---- Signals ----
 
-const PHASES = ["avenue", "avenueAmber", "clearA", "side", "sideAmber", "clearB", "walk", "flash", "clearC"] as const;
+const PHASES = [
+  "avenue",
+  "avenueAmber",
+  "clearA",
+  "side",
+  "sideAmber",
+  "clearB",
+  "walk",
+  "flash",
+  "clearC",
+] as const;
 type Phase = (typeof PHASES)[number];
 type Light = "green" | "amber" | "red";
 
@@ -434,11 +444,32 @@ interface Crossing {
 
 const KERB_STEP = 0.3;
 const CROSSINGS: readonly Crossing[] = [
-  { ax: -CROSS_WE, az: KERB_NEAR - KERB_STEP, bx: -CROSS_WE, bz: KERB_FAR + KERB_STEP, ra: "near", rb: "fl" }, // W
-  { ax: CROSS_WE, az: KERB_NEAR - KERB_STEP, bx: CROSS_WE, bz: KERB_FAR + KERB_STEP, ra: "near", rb: "fr" }, // E
+  {
+    ax: -CROSS_WE,
+    az: KERB_NEAR - KERB_STEP,
+    bx: -CROSS_WE,
+    bz: KERB_FAR + KERB_STEP,
+    ra: "near",
+    rb: "fl",
+  }, // W
+  {
+    ax: CROSS_WE,
+    az: KERB_NEAR - KERB_STEP,
+    bx: CROSS_WE,
+    bz: KERB_FAR + KERB_STEP,
+    ra: "near",
+    rb: "fr",
+  }, // E
   { ax: -DIAG_NEAR, az: KERB_NEAR - KERB_STEP, bx: DIAG_FAR, bz: DIAG_FAR_Z, ra: "near", rb: "fr" }, // D1
   { ax: DIAG_NEAR, az: KERB_NEAR - KERB_STEP, bx: -DIAG_FAR, bz: DIAG_FAR_Z, ra: "near", rb: "fl" }, // D2
-  { ax: -SIDE_KERB - KERB_STEP, az: CROSS_N, bx: SIDE_KERB + KERB_STEP, bz: CROSS_N, ra: "fl", rb: "fr" }, // N
+  {
+    ax: -SIDE_KERB - KERB_STEP,
+    az: CROSS_N,
+    bx: SIDE_KERB + KERB_STEP,
+    bz: CROSS_N,
+    ra: "fl",
+    rb: "fr",
+  }, // N
 ];
 
 const MAX_WAYPOINTS = 8;
@@ -627,7 +658,8 @@ const OPENING = 3;
 const SEED_BASE = 0x5717ee7;
 const TAU = Math.PI * 2;
 
-type KnobKey = "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" | "snow" | "streetSeed";
+type KnobKey =
+  "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" | "snow" | "streetSeed";
 
 /** The simulation was set up wrong: a knob it reads is missing, or a phase is unknown. */
 export class StreetSimError extends Error {}
@@ -673,7 +705,8 @@ const ARRIVE_PACE_MAX = 1.6;
 const ARRIVE_TURN = 0.2;
 
 /** A repeatable number 0..1 from a walker's index and a salt (no draw from the simulation's random numbers). */
-const hash01 = (n: number, salt: number): number => fract(Math.sin(n * 127.1 + salt * 311.7) * 43758.5453);
+const hash01 = (n: number, salt: number): number =>
+  fract(Math.sin(n * 127.1 + salt * 311.7) * 43758.5453);
 
 class Walker {
   alive = false;
@@ -747,8 +780,25 @@ interface LaneSpan {
 }
 
 type Segment =
-  | { readonly kind: "line"; readonly x0: number; readonly z0: number; readonly x1: number; readonly z1: number; readonly lane: number; readonly c0: number }
-  | { readonly kind: "arc"; readonly cx: number; readonly cz: number; readonly r: number; readonly a0: number; readonly a1: number; readonly lane: number; readonly c0: number };
+  | {
+      readonly kind: "line";
+      readonly x0: number;
+      readonly z0: number;
+      readonly x1: number;
+      readonly z1: number;
+      readonly lane: number;
+      readonly c0: number;
+    }
+  | {
+      readonly kind: "arc";
+      readonly cx: number;
+      readonly cz: number;
+      readonly r: number;
+      readonly a0: number;
+      readonly a1: number;
+      readonly lane: number;
+      readonly c0: number;
+    };
 
 class VehiclePath {
   readonly xs: Float64Array;
@@ -768,7 +818,11 @@ class VehiclePath {
   constructor(signal: "avenue" | "side", stop: number, segments: readonly Segment[]) {
     this.signal = signal;
     this.stop = stop;
-    const lengths = segments.map((seg) => (seg.kind === "line" ? Math.hypot(seg.x1 - seg.x0, seg.z1 - seg.z0) : seg.r * Math.abs(seg.a1 - seg.a0)));
+    const lengths = segments.map((seg) =>
+      seg.kind === "line"
+        ? Math.hypot(seg.x1 - seg.x0, seg.z1 - seg.z0)
+        : seg.r * Math.abs(seg.a1 - seg.a0),
+    );
     this.length = lengths.reduce((a, b) => a + b, 0);
     const n = Math.ceil(this.length / PATH_STEP) + 2;
     this.xs = new Float64Array(n);
@@ -827,7 +881,10 @@ class VehiclePath {
     }
     for (let k = n - 2; k >= 0; k--) {
       const after = this.vmax[k + 1] ?? Number.POSITIVE_INFINITY;
-      this.vmax[k] = Math.min(this.vmax[k] ?? Number.POSITIVE_INFINITY, Math.sqrt(after * after + 2 * IDM_B * PATH_STEP));
+      this.vmax[k] = Math.min(
+        this.vmax[k] ?? Number.POSITIVE_INFINITY,
+        Math.sqrt(after * after + 2 * IDM_B * PATH_STEP),
+      );
     }
   }
 
@@ -884,37 +941,86 @@ const TURN_SMALL = 5.5;
 const TURN_BIKE = 3.9;
 const TURN_Z = KERB_FAR + 2.65;
 
-const line = (x0: number, z0: number, x1: number, z1: number, lane: number, c0: number): Segment => ({ kind: "line", x0, z0, x1, z1, lane, c0 });
-const arc = (cx: number, cz: number, r: number, a0: number, a1: number, lane: number): Segment => ({ kind: "arc", cx, cz, r, a0, a1, lane, c0: 0 });
+const line = (
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  lane: number,
+  c0: number,
+): Segment => ({ kind: "line", x0, z0, x1, z1, lane, c0 });
+const arc = (cx: number, cz: number, r: number, a0: number, a1: number, lane: number): Segment => ({
+  kind: "arc",
+  cx,
+  cz,
+  r,
+  a0,
+  a1,
+  lane,
+  c0: 0,
+});
 
 const HALF_PI = Math.PI / 2;
 const TURN_BIG = TURN_Z - LANE_WB_IN; // the side street's right turn sweeps onto the westbound inner lane
 const PATHS = {
-  ebIn: new VehiclePath("avenue", STOP_EB + AVENUE_END, [line(-AVENUE_END, LANE_EB_IN, AVENUE_END, LANE_EB_IN, L_EB_IN, 0)]),
-  ebOut: new VehiclePath("avenue", STOP_EB + AVENUE_END, [line(-AVENUE_END, LANE_EB_OUT, AVENUE_END, LANE_EB_OUT, L_EB_OUT, 0)]),
+  ebIn: new VehiclePath("avenue", STOP_EB + AVENUE_END, [
+    line(-AVENUE_END, LANE_EB_IN, AVENUE_END, LANE_EB_IN, L_EB_IN, 0),
+  ]),
+  ebOut: new VehiclePath("avenue", STOP_EB + AVENUE_END, [
+    line(-AVENUE_END, LANE_EB_OUT, AVENUE_END, LANE_EB_OUT, L_EB_OUT, 0),
+  ]),
   ebLeft: new VehiclePath("avenue", STOP_EB + AVENUE_END, [
     line(-AVENUE_END, LANE_EB_OUT, LANE_NB - TURN_SMALL, LANE_EB_OUT, L_EB_OUT, 0),
     arc(LANE_NB - TURN_SMALL, LANE_EB_OUT + TURN_SMALL, TURN_SMALL, -HALF_PI, 0, L_ARC_EBL),
     line(LANE_NB, LANE_EB_OUT + TURN_SMALL, LANE_NB, SIDE_END, L_NB, 0),
   ]),
-  ebBike: new VehiclePath("avenue", STOP_EB + AVENUE_END, [line(-AVENUE_END, LANE_EB_BIKE, AVENUE_END, LANE_EB_BIKE, L_EB_BIKE, 0)]),
-  wbIn: new VehiclePath("avenue", AVENUE_END - STOP_WB, [line(AVENUE_END, LANE_WB_IN, -AVENUE_END, LANE_WB_IN, L_WB_IN, 0)]),
-  wbOut: new VehiclePath("avenue", AVENUE_END - STOP_WB, [line(AVENUE_END, LANE_WB_OUT, -AVENUE_END, LANE_WB_OUT, L_WB_OUT, 0)]),
-  wbBike: new VehiclePath("avenue", AVENUE_END - STOP_WB, [line(AVENUE_END, LANE_WB_BIKE, -AVENUE_END, LANE_WB_BIKE, L_WB_BIKE, 0)]),
+  ebBike: new VehiclePath("avenue", STOP_EB + AVENUE_END, [
+    line(-AVENUE_END, LANE_EB_BIKE, AVENUE_END, LANE_EB_BIKE, L_EB_BIKE, 0),
+  ]),
+  wbIn: new VehiclePath("avenue", AVENUE_END - STOP_WB, [
+    line(AVENUE_END, LANE_WB_IN, -AVENUE_END, LANE_WB_IN, L_WB_IN, 0),
+  ]),
+  wbOut: new VehiclePath("avenue", AVENUE_END - STOP_WB, [
+    line(AVENUE_END, LANE_WB_OUT, -AVENUE_END, LANE_WB_OUT, L_WB_OUT, 0),
+  ]),
+  wbBike: new VehiclePath("avenue", AVENUE_END - STOP_WB, [
+    line(AVENUE_END, LANE_WB_BIKE, -AVENUE_END, LANE_WB_BIKE, L_WB_BIKE, 0),
+  ]),
   sbLeft: new VehiclePath("side", SIDE_END - STOP_SB, [
     line(LANE_SB, SIDE_END, LANE_SB, TURN_Z, L_SB, 0),
     arc(LANE_SB + TURN_SMALL, TURN_Z, TURN_SMALL, Math.PI, 1.5 * Math.PI, L_ARC_SBL),
-    line(LANE_SB + TURN_SMALL, TURN_Z - TURN_SMALL, AVENUE_END, TURN_Z - TURN_SMALL, L_EB_OUT, LANE_SB + TURN_SMALL + AVENUE_END),
+    line(
+      LANE_SB + TURN_SMALL,
+      TURN_Z - TURN_SMALL,
+      AVENUE_END,
+      TURN_Z - TURN_SMALL,
+      L_EB_OUT,
+      LANE_SB + TURN_SMALL + AVENUE_END,
+    ),
   ]),
   sbRight: new VehiclePath("side", SIDE_END - STOP_SB, [
     line(LANE_SB, SIDE_END, LANE_SB, TURN_Z, L_SB, 0),
     arc(LANE_SB - TURN_BIG, TURN_Z, TURN_BIG, 0, -HALF_PI, L_ARC_SBR),
-    line(LANE_SB - TURN_BIG, LANE_WB_IN, -AVENUE_END, LANE_WB_IN, L_WB_IN, AVENUE_END - (LANE_SB - TURN_BIG)),
+    line(
+      LANE_SB - TURN_BIG,
+      LANE_WB_IN,
+      -AVENUE_END,
+      LANE_WB_IN,
+      L_WB_IN,
+      AVENUE_END - (LANE_SB - TURN_BIG),
+    ),
   ]),
   sbBike: new VehiclePath("side", SIDE_END - STOP_SB, [
     line(LANE_SB_BIKE, SIDE_END, LANE_SB_BIKE, TURN_Z, L_SB_BIKE, 0),
     arc(LANE_SB_BIKE + TURN_BIKE, TURN_Z, TURN_BIKE, Math.PI, 1.5 * Math.PI, L_ARC_SBB),
-    line(LANE_SB_BIKE + TURN_BIKE, TURN_Z - TURN_BIKE, AVENUE_END, TURN_Z - TURN_BIKE, L_EB_BIKE, LANE_SB_BIKE + TURN_BIKE + AVENUE_END),
+    line(
+      LANE_SB_BIKE + TURN_BIKE,
+      TURN_Z - TURN_BIKE,
+      AVENUE_END,
+      TURN_Z - TURN_BIKE,
+      L_EB_BIKE,
+      LANE_SB_BIKE + TURN_BIKE + AVENUE_END,
+    ),
   ]),
 } as const;
 type PathName = keyof typeof PATHS;
@@ -964,7 +1070,10 @@ class StreetCrossing implements SceneSim {
   readonly #knobIndex: Readonly<Record<KnobKey, number>>;
   readonly #random = new Random();
   readonly #walkers: readonly Walker[] = Array.from({ length: MAX_WALKERS }, () => new Walker());
-  readonly #vehicles: readonly Vehicle[] = Array.from({ length: MAX_VEHICLES }, () => new Vehicle());
+  readonly #vehicles: readonly Vehicle[] = Array.from(
+    { length: MAX_VEHICLES },
+    () => new Vehicle(),
+  );
   readonly #signals = new Signals();
   // The neighbour grid: a counting sort of walker indices by cell.
   readonly #cellStart = new Int32Array(GRID_W * GRID_H + 1);
@@ -1031,9 +1140,24 @@ class StreetCrossing implements SceneSim {
       snow: index("snow"),
       streetSeed: index("streetSeed"),
     };
-    this.#agents = new DataTexture(gl, { width: MAX_AGENTS, height: 2, format: "rgba16f", filter: "nearest" });
-    this.#tiles = new DataTexture(gl, { width: TILES_X * TILE_TEXELS, height: TILES_Z, format: "rgba8", filter: "nearest" });
-    this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#agents = new DataTexture(gl, {
+      width: MAX_AGENTS,
+      height: 2,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#tiles = new DataTexture(gl, {
+      width: TILES_X * TILE_TEXELS,
+      height: TILES_Z,
+      format: "rgba8",
+      filter: "nearest",
+    });
+    this.#state = new DataTexture(gl, {
+      width: 3,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -1044,7 +1168,10 @@ class StreetCrossing implements SceneSim {
     this.#outing = clamp(values[index.outing] ?? 0, 0, 1);
     this.#traffic = clamp(values[index.traffic] ?? 0.5, 0, 1);
     this.#delivery = clamp(values[index.delivery] ?? 0, 0, 1);
-    this.#precip = Math.max(clamp(values[index.rain] ?? 0, 0, 1), 0.8 * clamp(values[index.snow] ?? 0, 0, 1));
+    this.#precip = Math.max(
+      clamp(values[index.rain] ?? 0, 0, 1),
+      0.8 * clamp(values[index.snow] ?? 0, 0, 1),
+    );
     this.#signals.cycle = this.#cycle;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     const enter = clamp(frame.passage.enter, 0, 1);
@@ -1059,7 +1186,8 @@ class StreetCrossing implements SceneSim {
     else if (!Number.isFinite(this.#nextOuting)) this.#nextOuting = this.#clock + OUTING_FIRST;
     // Deliveries the same way.
     if (this.#delivery <= 0) this.#nextDelivery = Number.POSITIVE_INFINITY;
-    else if (!Number.isFinite(this.#nextDelivery)) this.#nextDelivery = this.#clock + DELIVERY_FIRST;
+    else if (!Number.isFinite(this.#nextDelivery))
+      this.#nextDelivery = this.#clock + DELIVERY_FIRST;
 
     this.#watchTriggers(frame.triggers);
     this.#follow(frame.pointer);
@@ -1166,7 +1294,10 @@ class StreetCrossing implements SceneSim {
       }
     }
     for (let k = 0; k < Math.round(this.#traffic * 3); k++) {
-      const vehicle = this.#launchVehicle(random.next() < SB_LEFT_SHARE ? "sbLeft" : "sbRight", this.#pickCar());
+      const vehicle = this.#launchVehicle(
+        random.next() < SB_LEFT_SHARE ? "sbLeft" : "sbRight",
+        this.#pickCar(),
+      );
       if (!vehicle) break;
       vehicle.s = random.range(5, 40);
       vehicle.v = vehicle.pace * 0.8;
@@ -1230,7 +1361,8 @@ class StreetCrossing implements SceneSim {
     const random = this.#random;
     const clock = this.#clock;
     let alive = 0;
-    for (const walker of this.#walkers) if (walker.alive && !walker.child && !walker.ahead && !walker.porter) alive++;
+    for (const walker of this.#walkers)
+      if (walker.alive && !walker.child && !walker.ahead && !walker.porter) alive++;
     if (clock >= this.#nextWalker) {
       if (alive < this.#crowdTarget()) {
         const first = this.#spawnWalker(undefined);
@@ -1239,13 +1371,21 @@ class StreetCrossing implements SceneSim {
           if (second) first.partner = second;
         }
       }
-      this.#nextWalker = clock + random.wait(this.#walkerRate() * (alive < 0.7 * this.#crowdTarget() ? 2 : 1));
+      this.#nextWalker =
+        clock + random.wait(this.#walkerRate() * (alive < 0.7 * this.#crowdTarget() ? 2 : 1));
     }
     for (let e = 0; e < 3; e++) {
       if (clock < (this.#nextVehicle[e] ?? 0)) continue;
       const bike = random.next() < BIKE_SHARE;
       let name: PathName;
-      if (e === 0) name = bike ? "ebBike" : random.next() < EB_LEFT_SHARE ? "ebLeft" : random.next() < 0.5 ? "ebIn" : "ebOut";
+      if (e === 0)
+        name = bike
+          ? "ebBike"
+          : random.next() < EB_LEFT_SHARE
+            ? "ebLeft"
+            : random.next() < 0.5
+              ? "ebIn"
+              : "ebOut";
       else if (e === 1) name = bike ? "wbBike" : random.next() < 0.5 ? "wbIn" : "wbOut";
       else name = bike ? "sbBike" : random.next() < SB_LEFT_SHARE ? "sbLeft" : "sbRight";
       // The way in must be clear; otherwise try again next step.
@@ -1333,7 +1473,9 @@ class StreetCrossing implements SceneSim {
     walker.alive = true;
     walker.child = child;
     walker.seed = random.next();
-    walker.pace = child ? OUTING_PACE : random.range(PACE_MIN, PACE_MAX) * (random.next() < 0.08 ? 0.72 : 1);
+    walker.pace = child
+      ? OUTING_PACE
+      : random.range(PACE_MIN, PACE_MAX) * (random.next() < 0.08 ? 0.72 : 1);
     walker.radius = child ? 0.17 : random.range(0.23, 0.28);
     walker.hasUmbrella = child || random.next() < UMBRELLA_SHARE;
     walker.umbrellaKeen = child ? UMBRELLA_KEEN : random.range(UMBRELLA_KEEN, UMBRELLA_STUBBORN);
@@ -1384,7 +1526,14 @@ class StreetCrossing implements SceneSim {
     }
   }
 
-  #push(walker: Walker, x: number, z: number, region: Region, crossing: number, direction: number): void {
+  #push(
+    walker: Walker,
+    x: number,
+    z: number,
+    region: Region,
+    crossing: number,
+    direction: number,
+  ): void {
     if (walker.count >= MAX_WAYPOINTS) return;
     const i = walker.count++;
     walker.wx[i] = x;
@@ -1404,7 +1553,14 @@ class StreetCrossing implements SceneSim {
     const along0 = s * x0 > SIDE_FACADE + 0.2;
     const along1 = s * x1 > SIDE_FACADE + 0.2;
     if ((up0 && along1) || (along0 && up1)) {
-      this.#push(walker, s * (SIDE_KERB + 1.6) + this.#random.range(-0.4, 0.4), KERB_FAR + 2.7, region, -1, 0);
+      this.#push(
+        walker,
+        s * (SIDE_KERB + 1.6) + this.#random.range(-0.4, 0.4),
+        KERB_FAR + 2.7,
+        region,
+        -1,
+        0,
+      );
     }
   }
 
@@ -1435,7 +1591,11 @@ class StreetCrossing implements SceneSim {
       const sz = dir > 0 ? crossing.az : crossing.bz;
       const fx = dir > 0 ? crossing.bx : crossing.ax;
       const fz = dir > 0 ? crossing.bz : crossing.az;
-      const cost = Math.hypot(sx - walker.x, sz - walker.z) + Math.hypot(fx - sx, fz - sz) + Math.hypot(ex - fx, ez - fz) + random.range(0, 5);
+      const cost =
+        Math.hypot(sx - walker.x, sz - walker.z) +
+        Math.hypot(fx - sx, fz - sz) +
+        Math.hypot(ex - fx, ez - fz) +
+        random.range(0, 5);
       if (cost < bestCost) {
         bestCost = cost;
         best = c;
@@ -1597,7 +1757,8 @@ class StreetCrossing implements SceneSim {
   /** The van comes in from the west along the avenue's outer lane, once that way in is clear. Its
    *  looks and pace are fixed, so it draws nothing from the street's generator. */
   #launchDelivery(): void {
-    for (const other of this.#vehicles) if (other.alive && other.lane === L_EB_OUT && other.laneC < 12) return;
+    for (const other of this.#vehicles)
+      if (other.alive && other.lane === L_EB_OUT && other.laneC < 12) return;
     const van = this.#vehicles.find((v) => !v.alive);
     if (!van) return;
     van.alive = true;
@@ -1634,9 +1795,15 @@ class StreetCrossing implements SceneSim {
       return;
     }
     const porter = this.#porter;
-    const away = porter ? Math.hypot(porter.goalX - porter.x, porter.goalZ - porter.z) : Number.POSITIVE_INFINITY;
-    const there = porter !== undefined && (away < PORTER_REACH || (away < PORTER_NEAR && Math.hypot(porter.vx, porter.vz) < PORTER_STUCK));
-    const parked = van.lane === L_KERB && van.v < 0.05 && Math.abs(van.s - (DELIVERY_X + AVENUE_END)) < 0.6;
+    const away = porter
+      ? Math.hypot(porter.goalX - porter.x, porter.goalZ - porter.z)
+      : Number.POSITIVE_INFINITY;
+    const there =
+      porter !== undefined &&
+      (away < PORTER_REACH ||
+        (away < PORTER_NEAR && Math.hypot(porter.vx, porter.vz) < PORTER_STUCK));
+    const parked =
+      van.lane === L_KERB && van.v < 0.05 && Math.abs(van.s - (DELIVERY_X + AVENUE_END)) < 0.6;
     errand.step(dt, { parked, porterThere: there });
     if (errand.porterOut && !this.#porter) this.#letOutPorter(van);
     if (!errand.porterOut) this.#retirePorter();
@@ -1729,7 +1896,8 @@ class StreetCrossing implements SceneSim {
   #vanBlinker(van: Vehicle): number {
     const errand = this.#errand;
     if (errand.hazards) return 2;
-    if (errand.stage === "arriving") return DELIVERY_X + AVENUE_END - van.s < DELIVERY_SIGNAL ? 1 : 0;
+    if (errand.stage === "arriving")
+      return DELIVERY_X + AVENUE_END - van.s < DELIVERY_SIGNAL ? 1 : 0;
     return van.offset > 0.2 ? -1 : 0;
   }
 
@@ -1738,7 +1906,11 @@ class StreetCrossing implements SceneSim {
     const random = this.#random;
     for (const walker of this.#walkers) {
       if (!walker.alive || walker.mode !== "wait") continue;
-      walker.goAt = this.#clock + STEP_OFF + STEP_OFF_PER_METRE * walker.depth + STEP_OFF_SPREAD * random.next();
+      walker.goAt =
+        this.#clock +
+        STEP_OFF +
+        STEP_OFF_PER_METRE * walker.depth +
+        STEP_OFF_SPREAD * random.next();
     }
     // Partners step off together.
     for (const walker of this.#walkers) {
@@ -1772,7 +1944,10 @@ class StreetCrossing implements SceneSim {
       if (partner?.alive && partner.mode === "wait") {
         // Beside its partner.
         depth = Math.max(0, partner.depth + random.range(-0.2, 0.2));
-        side = (partner.spotX - sx) * -dz + (partner.spotZ - sz) * dx + (random.next() < 0.5 ? -PAIR_GAP : PAIR_GAP);
+        side =
+          (partner.spotX - sx) * -dz +
+          (partner.spotZ - sz) * dx +
+          (random.next() < 0.5 ? -PAIR_GAP : PAIR_GAP);
       }
       this.#point[0] = sx - dx * (0.15 + depth) - dz * side;
       this.#point[1] = sz - dz * (0.15 + depth) + dx * side;
@@ -1852,7 +2027,8 @@ class StreetCrossing implements SceneSim {
     if (kerb) {
       const crossing = CROSSINGS[w.crossing[w.next] ?? 0];
       const len = crossing ? Math.hypot(crossing.bx - crossing.ax, crossing.bz - crossing.az) : 18;
-      const brave = signals.flash && signals.remaining > len / (w.pace * HURRY) && (w.seed * 13.7) % 1 < 0.35;
+      const brave =
+        signals.flash && signals.remaining > len / (w.pace * HURRY) && (w.seed * 13.7) % 1 < 0.35;
       if (signals.walk || brave) {
         w.mode = "cross";
         w.next++;
@@ -1982,7 +2158,12 @@ class StreetCrossing implements SceneSim {
           const ahead = -(ex * nx + ez * nz); // 1: o is straight ahead
           const weight = SOCIAL_BEHIND + (1 - SOCIAL_BEHIND) * 0.5 * (1 + ahead);
           // The outing keeps close together; the crowd at a kerb stands a little closer than walkers pass.
-          const space = (w.child && o.child) || w.ahead === o || o.ahead === w ? 0 : w.mode === "wait" && o.mode === "wait" ? SOCIAL_SPACE * 0.4 : SOCIAL_SPACE;
+          const space =
+            (w.child && o.child) || w.ahead === o || o.ahead === w
+              ? 0
+              : w.mode === "wait" && o.mode === "wait"
+                ? SOCIAL_SPACE * 0.4
+                : SOCIAL_SPACE;
           let f = SOCIAL_A * Math.exp((rr + space - d) / SOCIAL_B) * weight;
           if (d < rr) f += CONTACT * (rr - d);
           sx += nx * f;
@@ -2005,7 +2186,8 @@ class StreetCrossing implements SceneSim {
     force[1] = sz;
     for (const pole of LAMPS) this.#avoidPoint(w, pole.x, pole.z, 0.14);
     for (const pole of SIGNAL_POLES) this.#avoidPoint(w, pole.x, pole.z, 0.16);
-    for (const box of VENDING) this.#avoidPoint(w, clamp(w.x, box[0], box[1]), clamp(w.z, box[2], box[3]), 0);
+    for (const box of VENDING)
+      this.#avoidPoint(w, clamp(w.x, box[0], box[1]), clamp(w.z, box[2], box[3]), 0);
     sx = force[0] ?? sx;
     sz = force[1] ?? sz;
     // A walker caught on the street keeps clear of the vehicles.
@@ -2043,7 +2225,9 @@ class StreetCrossing implements SceneSim {
     const nz = w.z - pz;
     const d = Math.sqrt(nx * nx + nz * nz);
     if (d > 1.6 || d < 1e-6) return;
-    const f = SOCIAL_A * 1.2 * Math.exp((w.radius + r + 0.08 - d) / SOCIAL_B) + (d < w.radius + r ? CONTACT * (w.radius + r - d) : 0);
+    const f =
+      SOCIAL_A * 1.2 * Math.exp((w.radius + r + 0.08 - d) / SOCIAL_B) +
+      (d < w.radius + r ? CONTACT * (w.radius + r - d) : 0);
     this.#force[0] = (this.#force[0] ?? 0) + (nx / d) * f;
     this.#force[1] = (this.#force[1] ?? 0) + (nz / d) * f;
   }
@@ -2060,11 +2244,15 @@ class StreetCrossing implements SceneSim {
       }
       w.x += w.vx * dt;
       w.z += w.vz * dt;
-      if (w.mode === "walk" || w.mode === "wait") this.#keepToSidewalk(w, w.region[w.next] ?? "near");
+      if (w.mode === "walk" || w.mode === "wait")
+        this.#keepToSidewalk(w, w.region[w.next] ?? "near");
       else if (w.mode === "errand") this.#keepToSidewalk(w, "fr", SERVICE_DOOR);
       // Settle: on the spot, or wherever the crowd has come to rest round it.
       const fromSpot = Math.hypot(w.spotX - w.x, w.spotZ - w.z);
-      if (w.mode === "wait" && ((fromSpot < SETTLE_NEAR && speed < SETTLE_SPEED) || (fromSpot < 1.2 && speed < 0.05))) {
+      if (
+        w.mode === "wait" &&
+        ((fromSpot < SETTLE_NEAR && speed < SETTLE_SPEED) || (fromSpot < 1.2 && speed < 0.05))
+      ) {
         w.settled = true;
         w.vx = 0;
         w.vz = 0;
@@ -2080,8 +2268,15 @@ class StreetCrossing implements SceneSim {
     let rate = TURN_WALK;
     if (w.mode === "wait" && (w.settled || speed < 0.25)) {
       if (clock >= w.nextGlance) {
-        w.glanceTarget = w.glanceTarget !== 0 ? 0 : (this.#random.next() < 0.5 ? -1 : 1) * GLANCE_ANGLE * this.#random.range(0.4, 1);
-        w.nextGlance = clock + (w.glanceTarget !== 0 ? GLANCE_HOLD * this.#random.range(0.6, 1.6) : this.#random.range(GLANCE_EVERY_MIN, GLANCE_EVERY_MAX));
+        w.glanceTarget =
+          w.glanceTarget !== 0
+            ? 0
+            : (this.#random.next() < 0.5 ? -1 : 1) * GLANCE_ANGLE * this.#random.range(0.4, 1);
+        w.nextGlance =
+          clock +
+          (w.glanceTarget !== 0
+            ? GLANCE_HOLD * this.#random.range(0.6, 1.6)
+            : this.#random.range(GLANCE_EVERY_MIN, GLANCE_EVERY_MAX));
       }
       target = Math.atan2(w.faceZ, w.faceX) + w.glanceTarget;
       rate = TURN_STAND;
@@ -2210,7 +2405,8 @@ class StreetCrossing implements SceneSim {
     const signals = this.#signals;
     // The delivery van while it stands over the kerb lane, for the cyclists coming up behind it.
     const van = this.#van;
-    const kerbVan = van !== undefined && van.alive && van.delivery && van.lane === L_KERB ? van : undefined;
+    const kerbVan =
+      van !== undefined && van.alive && van.delivery && van.lane === L_KERB ? van : undefined;
     for (const me of vehicles) {
       if (!me.alive) continue;
       // The delivery van stands at the kerb while its driver is out, then until it can pull out.
@@ -2255,11 +2451,23 @@ class StreetCrossing implements SceneSim {
       }
       // A cyclist in the kerb lane waits behind the parked van while a car comes up the next lane.
       if (bike && kerbVan && me.lane === L_EB_BIKE && me.swerve === 0) {
-        const toSwerve = kerbVan.laneC - (SHAPES[KIND_VAN]?.length ?? 4.7) / 2 - SWERVE_RAMP - front - (me.laneC - me.s);
+        const toSwerve =
+          kerbVan.laneC -
+          (SHAPES[KIND_VAN]?.length ?? 4.7) / 2 -
+          SWERVE_RAMP -
+          front -
+          (me.laneC - me.s);
         if (toSwerve > -0.5 && toSwerve < 12) {
           let busy = false;
           for (const other of vehicles) {
-            if (other.alive && other.kind !== KIND_BIKE && other.lane === L_EB_OUT && other.laneC > me.laneC - SWERVE_WAIT && other.laneC < me.laneC + 3) busy = true;
+            if (
+              other.alive &&
+              other.kind !== KIND_BIKE &&
+              other.lane === L_EB_OUT &&
+              other.laneC > me.laneC - SWERVE_WAIT &&
+              other.laneC < me.laneC + 3
+            )
+              busy = true;
           }
           if (busy && toSwerve < gap) {
             gap = Math.max(toSwerve, 0);
@@ -2278,11 +2486,13 @@ class StreetCrossing implements SceneSim {
         let at = path.locate(other.lane, other.laneC);
         // Round the parked delivery van a cyclist rides in the outer lane for a while.
         if (Number.isNaN(at) && other.swerve > 0.35) at = path.locate(L_EB_OUT, other.laneC);
-        if (Number.isNaN(at) && me.swerve > 0.35 && other.lane === L_EB_OUT) at = me.s + other.laneC - me.laneC;
+        if (Number.isNaN(at) && me.swerve > 0.35 && other.lane === L_EB_OUT)
+          at = me.s + other.laneC - me.laneC;
         if (Number.isNaN(at) && other.lane >= L_ARC_EBL && other.lane <= L_ARC_SBB) {
           const along = (other.x - me.x) * hx + (other.z - me.z) * hz;
           const across = Math.abs((other.z - me.z) * hx - (other.x - me.x) * hz);
-          if (along > 0 && across < (width + (otherShape?.width ?? 1.7)) / 2 + 0.3) at = me.s + along;
+          if (along > 0 && across < (width + (otherShape?.width ?? 1.7)) / 2 + 0.3)
+            at = me.s + along;
         }
         if (Number.isNaN(at) || at <= me.s || at - me.s > LOOKAHEAD) continue;
         const g = at - me.s - (length + otherLength) / 2;
@@ -2298,7 +2508,10 @@ class StreetCrossing implements SceneSim {
         if (Math.hypot(w.x - me.x, w.z - me.z) > YIELD_LOOK + length) continue;
         for (let ds = 0.5; ds <= YIELD_LOOK; ds += YIELD_STEP) {
           path.at(front + ds, this.#point2);
-          if (Math.hypot(w.x - (this.#point2[0] ?? 0), w.z - (this.#point2[1] ?? 0)) < width / 2 + 0.8) {
+          if (
+            Math.hypot(w.x - (this.#point2[0] ?? 0), w.z - (this.#point2[1] ?? 0)) <
+            width / 2 + 0.8
+          ) {
             if (ds - 0.5 < gap) {
               gap = ds - 0.5;
               lead = 0;
@@ -2315,15 +2528,27 @@ class StreetCrossing implements SceneSim {
       const s0 = bike ? IDM_S0_BIKE : IDM_S0;
       let acc = IDM_A * (1 - Math.pow(v / Math.max(limit, 0.5), 4));
       if (Number.isFinite(gap)) {
-        const sStar = s0 + Math.max(0, v * IDM_T + (v * (v - lead)) / (2 * Math.sqrt(IDM_A * IDM_B)));
+        const sStar =
+          s0 + Math.max(0, v * IDM_T + (v * (v - lead)) / (2 * Math.sqrt(IDM_A * IDM_B)));
         acc -= IDM_A * Math.pow(sStar / Math.max(gap, 0.05), 2);
       }
       acc = Math.max(acc, -IDM_HARD);
       me.v = Math.max(0, v + acc * dt);
       me.s += me.v * dt;
       // The van comes to rest at its stop.
-      if (me.delivery && this.#errand.stage === "arriving" && Math.abs(DELIVERY_X + AVENUE_END - me.s) < 0.6 && me.v < 0.4) me.v = 0;
-      me.brake = clamp(me.brake + ((acc < -0.35 || (me.v < 0.3 && gap < 12) ? 1 : 0) - me.brake) * Math.min(1, dt / 0.15), 0, 1);
+      if (
+        me.delivery &&
+        this.#errand.stage === "arriving" &&
+        Math.abs(DELIVERY_X + AVENUE_END - me.s) < 0.6 &&
+        me.v < 0.4
+      )
+        me.v = 0;
+      me.brake = clamp(
+        me.brake +
+          ((acc < -0.35 || (me.v < 0.3 && gap < 12) ? 1 : 0) - me.brake) * Math.min(1, dt / 0.15),
+        0,
+        1,
+      );
       if (me.s > path.length - 1) {
         me.alive = false;
         continue;
@@ -2337,7 +2562,11 @@ class StreetCrossing implements SceneSim {
       me.laneC = span ? span.c0 + (me.s - span.s0) : 0;
       if (me.delivery) this.#pullOver(me);
       if (bike) {
-        me.umbrella = clamp(me.umbrella + (this.#precip > 0.15 && me.seed < 0.6 ? dt : -dt) / UMBRELLA_OPEN, 0, 1);
+        me.umbrella = clamp(
+          me.umbrella + (this.#precip > 0.15 && me.seed < 0.6 ? dt : -dt) / UMBRELLA_OPEN,
+          0,
+          1,
+        );
         this.#swerve(me, kerbVan, dt);
       }
     }
@@ -2352,7 +2581,12 @@ class StreetCrossing implements SceneSim {
     if (!Number.isNaN(van.pullOut) || van.lane !== L_KERB) return false;
     for (const other of this.#vehicles) {
       if (other === van || !other.alive) continue;
-      if (other.lane === L_EB_OUT && other.laneC > van.laneC - CLEAR_BEHIND && other.laneC < van.laneC + CLEAR_AHEAD) return true;
+      if (
+        other.lane === L_EB_OUT &&
+        other.laneC > van.laneC - CLEAR_BEHIND &&
+        other.laneC < van.laneC + CLEAR_AHEAD
+      )
+        return true;
       if (other.swerve > 0 && Math.abs(other.laneC - van.laneC) < 8) return true;
     }
     van.pullOut = van.s;
@@ -2397,7 +2631,15 @@ class StreetCrossing implements SceneSim {
    *  along its sidewalk (away from the middle of the window's view; down the side street it comes down
    *  it), each at its own time and pace, and turns to its own heading as it arrives, its legs
    *  swinging with the distance. Written to #arrived (x, z, heading, gait). */
-  #arrive(index: number, walker: Walker, enter: number, x: number, z: number, heading: number, gait: number): void {
+  #arrive(
+    index: number,
+    walker: Walker,
+    enter: number,
+    x: number,
+    z: number,
+    heading: number,
+    gait: number,
+  ): void {
     // A pair keeps together: it takes the earlier partner's times.
     let key = index;
     if (walker.partner) {
@@ -2523,7 +2765,15 @@ class StreetCrossing implements SceneSim {
         const bike = kind === KIND_BIKE;
         // A taxi's roof sign, a cyclist's umbrella.
         const top = shape.top + (kind === KIND_TAXI ? 0.25 : 0) + (bike ? 0.45 : 0);
-        this.#binProjected(id, x, z, top, shape.length / 2 + 0.15, bike ? WALKER_REACH : shape.width / 2 + 0.15, heading);
+        this.#binProjected(
+          id,
+          x,
+          z,
+          top,
+          shape.length / 2 + 0.15,
+          bike ? WALKER_REACH : shape.width / 2 + 0.15,
+          heading,
+        );
         this.#binLights(id, x, z, heading, shape, bike);
       }
     }
@@ -2547,7 +2797,15 @@ class StreetCrossing implements SceneSim {
   /** Bin an agent's body: a box (half extents along and across its heading) standing `top` high,
    *  over the ground it covers seen from the window (from its footprint to where the rays past its
    *  top land). */
-  #binProjected(id: number, x: number, z: number, top: number, halfLong: number, halfWide: number, heading: number): void {
+  #binProjected(
+    id: number,
+    x: number,
+    z: number,
+    top: number,
+    halfLong: number,
+    halfWide: number,
+    heading: number,
+  ): void {
     const k = CAM_H / (CAM_H - top);
     const c = Math.cos(heading);
     const s = Math.sin(heading);
@@ -2564,7 +2822,14 @@ class StreetCrossing implements SceneSim {
   }
 
   /** Bin a vehicle's lamps: the beam ahead, the glow behind, and their reflections toward the window. */
-  #binLights(id: number, x: number, z: number, heading: number, shape: VehicleShape, bike: boolean): void {
+  #binLights(
+    id: number,
+    x: number,
+    z: number,
+    heading: number,
+    shape: VehicleShape,
+    bike: boolean,
+  ): void {
     const c = Math.cos(heading);
     const s = Math.sin(heading);
     const half = shape.length / 2;
@@ -2626,13 +2891,21 @@ class StreetCrossing implements SceneSim {
 }
 
 /** An empty bounding box (x0, x1, z0, z1) to grow. */
-const EMPTY_BOX = [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY] as const;
+const EMPTY_BOX = [
+  Number.POSITIVE_INFINITY,
+  Number.NEGATIVE_INFINITY,
+  Number.POSITIVE_INFINITY,
+  Number.NEGATIVE_INFINITY,
+] as const;
 
 /** How far a cyclist at lane position c in the kerb lane has swung out round the delivery van
  *  parked over it: 0 clear of it, 1 alongside, easing over SWERVE_RAMP metres before and after. */
 function swerveRound(van: Vehicle, c: number): number {
   const half = (SHAPES[KIND_VAN]?.length ?? 4.7) / 2;
-  return smoothstep(van.laneC - half - SWERVE_RAMP, van.laneC - half - 0.5, c) * (1 - smoothstep(van.laneC + half + 0.5, van.laneC + half + SWERVE_RAMP, c));
+  return (
+    smoothstep(van.laneC - half - SWERVE_RAMP, van.laneC - half - 0.5, c) *
+    (1 - smoothstep(van.laneC + half + 0.5, van.laneC + half + SWERVE_RAMP, c))
+  );
 }
 
 /** Clamp a point (x, z in p[0], p[1]) into a region's walkable sidewalk: the near sidewalk, or a far
@@ -2651,7 +2924,8 @@ function clampRegion(region: Region, p: Float64Array, door = Number.NaN): void {
   const inner = SIDE_KERB + WALL;
   const outer = SIDE_FACADE - WALL;
   const front = KERB_FAR + WALL;
-  const doorway = Math.abs(x - CAFE_DOOR) < 0.9 || Math.abs(x - KONBINI_DOOR) < 0.9 || Math.abs(x - door) < 0.9;
+  const doorway =
+    Math.abs(x - CAFE_DOOR) < 0.9 || Math.abs(x - KONBINI_DOOR) < 0.9 || Math.abs(x - door) < 0.9;
   const back = doorway ? FACADE_FAR + 1.5 : FACADE_FAR - WALL;
   if (u < inner) u = inner;
   if (z < front) z = front;

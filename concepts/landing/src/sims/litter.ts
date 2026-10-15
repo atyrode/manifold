@@ -115,7 +115,17 @@ export class Litter {
     this.dirty = true;
   }
 
-  place(slot: number, ox: number, oz: number, turn: number, hue: number, mark: boolean, level: number, goal: number, rand: () => number): void {
+  place(
+    slot: number,
+    ox: number,
+    oz: number,
+    turn: number,
+    hue: number,
+    mark: boolean,
+    level: number,
+    goal: number,
+    rand: () => number,
+  ): void {
     this.ox[slot] = (ox - 0.5) * 0.7;
     this.oz[slot] = (oz - 0.5) * 0.7;
     this.angle[slot] = turn * TAU;
@@ -134,7 +144,14 @@ export class Litter {
     this.fading.add(slot);
   }
 
-  deposit(x: number, z: number, angle: number, hue: number, face: number, rand: () => number): void {
+  deposit(
+    x: number,
+    z: number,
+    angle: number,
+    hue: number,
+    face: number,
+    rand: () => number,
+  ): void {
     const { cell: size, x0, z0, cols, rows } = this.lattice;
     const gx = (x - x0) / size;
     const gz = (z - z0) / size;
@@ -150,7 +167,13 @@ export class Litter {
       // Taken: the shifted cell under it, or else over what lies there.
       const bi = Math.floor(gx - 0.5);
       const bj = Math.floor(gz - 0.5);
-      if (bi >= 0 && bj >= 0 && bi < cols && bj < rows && (this.goal[this.cells + bj * cols + bi] ?? 0) === 0) {
+      if (
+        bi >= 0 &&
+        bj >= 0 &&
+        bi < cols &&
+        bj < rows &&
+        (this.goal[this.cells + bj * cols + bi] ?? 0) === 0
+      ) {
         layer = 1;
         ci = bi;
         cj = bj;
@@ -174,7 +197,12 @@ export class Litter {
     const j = Math.floor((z - z0) / size);
     if (i < 0 || j < 0 || i >= cols || j >= rows) return undefined;
     const cell = j * cols + i;
-    if (this.protect[cell] === PINNED || (this.level[cell] ?? 0) < this.levels || (this.goal[cell] ?? 0) === 0) return undefined;
+    if (
+      this.protect[cell] === PINNED ||
+      (this.level[cell] ?? 0) < this.levels ||
+      (this.goal[cell] ?? 0) === 0
+    )
+      return undefined;
     const item = {
       x: x0 + (i + 0.5 + (this.ox[cell] ?? 0)) * size,
       z: z0 + (j + 0.5 + (this.oz[cell] ?? 0)) * size,
@@ -189,7 +217,13 @@ export class Litter {
     return item;
   }
 
-  tend(visits: number, add: number, remove: number, wants: (cell: number, layer: number) => boolean, rand: () => number): void {
+  tend(
+    visits: number,
+    add: number,
+    remove: number,
+    wants: (cell: number, layer: number) => boolean,
+    rand: () => number,
+  ): void {
     for (let n = 0; n < visits; n++) {
       const cell = this.#scan;
       this.#scan = (this.#scan + 1) % this.cells;
@@ -199,7 +233,8 @@ export class Litter {
         const has = (this.goal[slot] ?? 0) > 0;
         const want = wants(cell, layer);
         if (want && !has) {
-          if (rand() < add) this.place(slot, rand(), rand(), rand(), rand(), false, 0, this.levels, rand);
+          if (rand() < add)
+            this.place(slot, rand(), rand(), rand(), rand(), false, 0, this.levels, rand);
         } else if (!want && has && rand() < remove) {
           this.release(slot);
         }
@@ -226,7 +261,11 @@ export class Litter {
     data[o] = this.ox[slot] ?? 0;
     data[o + 1] = this.oz[slot] ?? 0;
     data[o + 2] = this.angle[slot] ?? 0;
-    data[o + 3] = level === 0 ? 0 : (this.face[slot] ?? 0) * (level + 16 * (this.mark[slot] ?? 0) + 0.98 * (this.hue[slot] ?? 0));
+    data[o + 3] =
+      level === 0
+        ? 0
+        : (this.face[slot] ?? 0) *
+          (level + 16 * (this.mark[slot] ?? 0) + 0.98 * (this.hue[slot] ?? 0));
     this.dirty = true;
   }
 }

@@ -65,7 +65,12 @@ export function atEase(): Shrink {
 }
 
 /** Advance a shy creature's reaction by h seconds: shrink while startled, come back out once it has been calm for `wait`. */
-export function stepShrink(state: Shrink, h: number, startled: boolean, timing: ShyTiming = SHY_TIMING): void {
+export function stepShrink(
+  state: Shrink,
+  h: number,
+  startled: boolean,
+  timing: ShyTiming = SHY_TIMING,
+): void {
   if (!(h > 0)) return;
   if (startled) {
     state.calm = 0;

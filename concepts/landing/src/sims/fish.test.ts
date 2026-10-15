@@ -8,7 +8,10 @@ function closestPair(group: FishGroup, count: number): number {
   let closest = Infinity;
   for (let i = 0; i < count; i++) {
     for (let j = i + 1; j < count; j++) {
-      const d = Math.hypot((group.x[i] ?? 0) - (group.x[j] ?? 0), (group.y[i] ?? 0) - (group.y[j] ?? 0));
+      const d = Math.hypot(
+        (group.x[i] ?? 0) - (group.x[j] ?? 0),
+        (group.y[i] ?? 0) - (group.y[j] ?? 0),
+      );
       closest = Math.min(closest, d / (0.5 * ((group.length[i] ?? 0) + (group.length[j] ?? 0))));
     }
   }
@@ -20,7 +23,15 @@ function crowd(species: FishSpecies, seconds: number): FishGroup {
   const group = new FishGroup(species, 8);
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2;
-    group.place(i, 0.6 * Math.cos(a), 0.4 * Math.sin(a), a + Math.PI * 0.9, species.cruise, 0.12 + 0.005 * i, i / 8);
+    group.place(
+      i,
+      0.6 * Math.cos(a),
+      0.4 * Math.sin(a),
+      a + Math.PI * 0.9,
+      species.cruise,
+      0.12 + 0.005 * i,
+      i / 8,
+    );
   }
   for (let t = 0; t < seconds; t += H) {
     group.clear(8);
@@ -64,7 +75,12 @@ describe("FishGroup", () => {
     for (let k = 0; k < 120; k++) {
       group.clear(1);
       // The point it wants lies straight behind it.
-      group.gather(0, (group.x[0] ?? 0) - Math.cos(group.heading[0] ?? 0), (group.y[0] ?? 0) - Math.sin(group.heading[0] ?? 0), 0.1);
+      group.gather(
+        0,
+        (group.x[0] ?? 0) - Math.cos(group.heading[0] ?? 0),
+        (group.y[0] ?? 0) - Math.sin(group.heading[0] ?? 0),
+        0.1,
+      );
       group.swim(1, H);
       let turned = (group.heading[0] ?? 0) - previous;
       turned -= 2 * Math.PI * Math.round(turned / (2 * Math.PI));
@@ -80,7 +96,8 @@ describe("FishGroup", () => {
     // stay apart by more than half a body length, still gathered round the point.
     expect(closestPair(piled, 8)).toBeLessThan(0.2);
     expect(closestPair(spaced, 8)).toBeGreaterThan(0.5);
-    for (let i = 0; i < 8; i++) expect(Math.hypot(spaced.x[i] ?? 0, spaced.y[i] ?? 0)).toBeLessThan(0.35);
+    for (let i = 0; i < 8; i++)
+      expect(Math.hypot(spaced.x[i] ?? 0, spaced.y[i] ?? 0)).toBeLessThan(0.35);
   });
 
   test("follow keeps up with a point moving round a loop", () => {
@@ -91,9 +108,22 @@ describe("FishGroup", () => {
     for (let k = 0; k < 900; k++) {
       const t = k * H;
       group.clear(1);
-      group.follow(0, 0.3 * Math.cos(w * t), 0.3 * Math.sin(w * t), -0.3 * w * Math.sin(w * t), 0.3 * w * Math.cos(w * t));
+      group.follow(
+        0,
+        0.3 * Math.cos(w * t),
+        0.3 * Math.sin(w * t),
+        -0.3 * w * Math.sin(w * t),
+        0.3 * w * Math.cos(w * t),
+      );
       group.swim(1, H);
-      if (t > 5) worst = Math.max(worst, Math.hypot((group.x[0] ?? 0) - 0.3 * Math.cos(w * (t + H)), (group.y[0] ?? 0) - 0.3 * Math.sin(w * (t + H))));
+      if (t > 5)
+        worst = Math.max(
+          worst,
+          Math.hypot(
+            (group.x[0] ?? 0) - 0.3 * Math.cos(w * (t + H)),
+            (group.y[0] ?? 0) - 0.3 * Math.sin(w * (t + H)),
+          ),
+        );
     }
     expect(worst).toBeLessThan(0.01);
   });
@@ -101,7 +131,8 @@ describe("FishGroup", () => {
   test("a school lines up; a solitary species does not", () => {
     const run = (species: FishSpecies): number => {
       const group = new FishGroup(species, 6);
-      for (let i = 0; i < 6; i++) group.place(i, 0.03 * i, 0.02 * (i % 2), i * 1.1, species.cruise, 0.03, i / 6);
+      for (let i = 0; i < 6; i++)
+        group.place(i, 0.03 * i, 0.02 * (i % 2), i * 1.1, species.cruise, 0.03, i / 6);
       for (let k = 0; k < 480; k++) {
         group.clear(6);
         group.school(6);

@@ -33,17 +33,26 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string): WebG
   if (!shader) throw new Error("clouds detail: shader allocation failed");
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? "clouds detail: compile failed");
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(shader) ?? "clouds detail: compile failed");
   return shader;
 }
 
 export function verifyCloudsDetail(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const fragment = fragmentSourceFor({ ...cloudsScene, entry: "cloudsDetailCheck", glsl: cloudsScene.glsl + checkGlsl });
-  const shaders = [compile(gl, gl.VERTEX_SHADER, vertexSource), compile(gl, gl.FRAGMENT_SHADER, fragment)];
+  const fragment = fragmentSourceFor({
+    ...cloudsScene,
+    entry: "cloudsDetailCheck",
+    glsl: cloudsScene.glsl + checkGlsl,
+  });
+  const shaders = [
+    compile(gl, gl.VERTEX_SHADER, vertexSource),
+    compile(gl, gl.FRAGMENT_SHADER, fragment),
+  ];
   const program = gl.createProgram();
   for (const shader of shaders) gl.attachShader(program, shader);
   gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? "clouds detail: link failed");
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(program) ?? "clouds detail: link failed");
   for (const shader of shaders) gl.deleteShader(shader);
 
   gl.canvas.width = SIZE;
@@ -61,13 +70,19 @@ export function verifyCloudsDetail(gl: WebGL2RenderingContext): Record<string, u
   let tall = 0;
   let shown = 0;
   for (let at = 0; at < bytes.length; at += 4) {
-    if (bytes[at] !== 255) throw new Error(`clouds detail: fully faded relief changed the tops at point ${at / 4}`);
-    if (bytes[at + 2] !== 255) throw new Error(`clouds detail: relief out of proportion to its detail at point ${at / 4}`);
+    if (bytes[at] !== 255)
+      throw new Error(`clouds detail: fully faded relief changed the tops at point ${at / 4}`);
+    if (bytes[at + 2] !== 255)
+      throw new Error(`clouds detail: relief out of proportion to its detail at point ${at / 4}`);
     const g = bytes[at + 1] ?? 0;
     if (g > 64) tall++;
     if (g === 255) shown++;
   }
-  if (tall < SIZE * SIZE * 0.2) throw new Error(`clouds detail: fixture lacked tall tops (${tall})`);
-  if (shown < tall * 0.9) throw new Error(`clouds detail: faint relief was dropped on ${tall - shown} of ${tall} tall tops`);
+  if (tall < SIZE * SIZE * 0.2)
+    throw new Error(`clouds detail: fixture lacked tall tops (${tall})`);
+  if (shown < tall * 0.9)
+    throw new Error(
+      `clouds detail: faint relief was dropped on ${tall - shown} of ${tall} tall tops`,
+    );
   return { tallTops: tall, faintReliefShown: shown };
 }

@@ -19,12 +19,27 @@ interface Flow {
 
 /** Lamp A over `seconds` of lamp time at this wax body, averaged over pours 0..4, read on the headless stand-in. */
 function flow(viscosity: number, seconds: number): Flow {
-  const totals = { blobs: 0, frames: 0, rising: 0, risingParcels: 0, slip: 0, pairs: 0, speed: 0, parcels: 0 };
+  const totals = {
+    blobs: 0,
+    frames: 0,
+    rising: 0,
+    risingParcels: 0,
+    slip: 0,
+    pairs: 0,
+    speed: 0,
+    parcels: 0,
+  };
   let blend = Number.NaN;
   let stretch = Number.NaN;
   for (let pour = 0; pour < 5; pour++) {
     const sim = new HeadlessSim(lavaScene);
-    const frame: HeadlessFrame = { dt: 0.1, aspect: 16 / 9, height: 360, knobs: { viscosity, pour }, pointer: { inside: false } };
+    const frame: HeadlessFrame = {
+      dt: 0.1,
+      aspect: 16 / 9,
+      height: 360,
+      knobs: { viscosity, pour },
+      pointer: { inside: false },
+    };
     for (let t = 0; t < seconds; t += 0.1) {
       sim.step(frame);
       const parcels = sim.upload(0).data;
@@ -36,7 +51,14 @@ function flow(viscosity: number, seconds: number): Flow {
         const r = parcels[i * 4 + 2] ?? 0;
         if (r <= 0) continue;
         const v = (LAVA_MAX + i) * 4;
-        wax.push({ x: parcels[i * 4] ?? 0, y: parcels[i * 4 + 1] ?? 0, r, t: parcels[i * 4 + 3] ?? 0, vx: parcels[v] ?? 0, vy: parcels[v + 1] ?? 0 });
+        wax.push({
+          x: parcels[i * 4] ?? 0,
+          y: parcels[i * 4 + 1] ?? 0,
+          r,
+          t: parcels[i * 4 + 3] ?? 0,
+          vx: parcels[v] ?? 0,
+          vy: parcels[v + 1] ?? 0,
+        });
       }
       const blob = wax.map((_, i) => i);
       const root = (i: number): number => {

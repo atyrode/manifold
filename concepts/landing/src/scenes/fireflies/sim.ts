@@ -62,7 +62,15 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
 import { runBudgeted } from "../../sims/clock.ts";
 import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
-import { PlantHabit, PlantRole, PlantTexture, plantClimate, RootedPlants, type PlantBuilder, type PlantSpecies } from "../../sims/plants.ts";
+import {
+  PlantHabit,
+  PlantRole,
+  PlantTexture,
+  plantClimate,
+  RootedPlants,
+  type PlantBuilder,
+  type PlantSpecies,
+} from "../../sims/plants.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -91,13 +99,18 @@ export const FIREFLIES_FOCAL = 1.2;
 export const FIREFLIES_BANK = 60;
 export const FIREFLIES_APERTURE = 0.15;
 /** The true horizon, hidden behind the far bank: where the river would meet the sky. */
-export const FIREFLIES_HORIZON = FIREFLIES_WATER + (FIREFLIES_EYE / FIREFLIES_BANK) * FIREFLIES_FOCAL;
+export const FIREFLIES_HORIZON =
+  FIREFLIES_WATER + (FIREFLIES_EYE / FIREFLIES_BANK) * FIREFLIES_FOCAL;
 /** uSim2 texels: the foreground fireflies, then the lantern and the bank. */
 export const FIREFLIES_STATE_LANTERN = FIREFLIES_NEAR;
 export const FIREFLIES_STATE_BANK = FIREFLIES_NEAR + 1;
 const STATE_TEXELS = FIREFLIES_NEAR + 2;
 /** The eye the lights nearer than the bank move about in front of (sims/camera.ts). */
-const CAMERA = new LevelCamera({ horizon: FIREFLIES_HORIZON, eye: FIREFLIES_EYE, focal: FIREFLIES_FOCAL });
+const CAMERA = new LevelCamera({
+  horizon: FIREFLIES_HORIZON,
+  eye: FIREFLIES_EYE,
+  focal: FIREFLIES_FOCAL,
+});
 
 const TAU = Math.PI * 2;
 /** Widest frame aspect the lattice grows for; wider frames repeat the edge columns. */
@@ -199,7 +212,8 @@ const ROOT_MARGIN = 3;
 /** How far a root goes on below the waterline, so its foot stays in the water as it gives. */
 const ROOT_SINK = 0.003;
 /** Root records: a left and a right root per bin, for the widest lattice. */
-const ROOT_RECORDS = 2 * (Math.floor((MAX_COLS * FIREFLIES_CELL) / FIREFLIES_ROOT_PITCH) + 2 * ROOT_MARGIN + 2);
+const ROOT_RECORDS =
+  2 * (Math.floor((MAX_COLS * FIREFLIES_CELL) / FIREFLIES_ROOT_PITCH) + 2 * ROOT_MARGIN + 2);
 /** The plants' organs: every tree's stem and crown clumps, every root. */
 const TREE_ORGANS = 4096;
 /** The breeze's push on the trees at its middle (push units), and how long they swing on after it (s). */
@@ -326,7 +340,8 @@ const NEAR_OUT_FROM = 0.05;
 const NEAR_OUT_SPAN = 0.5;
 const NEAR_OUT_RAMP = 0.2;
 
-type KnobKey = "coupling" | "density" | "habitat" | "period" | "drift" | "unrest" | "lantern" | "mark" | "seed";
+type KnobKey =
+  "coupling" | "density" | "habitat" | "period" | "drift" | "unrest" | "lantern" | "mark" | "seed";
 
 interface Knobs {
   coupling: number;
@@ -375,7 +390,10 @@ function flash(u: number): number {
 
 /** A stable number 0..1 for a lattice cell (world column, row) and a salt: survives resizes. */
 function cellHash(column: number, row: number, salt: number): number {
-  let h = Math.imul(column | 0, 0x27d4eb2d) ^ Math.imul((row | 0) + 0x3c6ef372, 0x165667b1) ^ Math.imul(salt | 0, 0x9e3779b1);
+  let h =
+    Math.imul(column | 0, 0x27d4eb2d) ^
+    Math.imul((row | 0) + 0x3c6ef372, 0x165667b1) ^
+    Math.imul(salt | 0, 0x9e3779b1);
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
@@ -425,11 +443,24 @@ function growForest(seed: number, open: boolean): Bank {
   while (x < FOREST_HALF + 0.15) {
     const grand = rand() < (open ? OPEN_GRAND : 0.17);
     const width = grand ? 0.2 + 0.14 * rand() : open ? 0.05 + 0.07 * rand() : 0.09 + 0.1 * rand();
-    const height = grand ? 0.21 + 0.14 * rand() : open ? 0.025 + 0.04 * rand() : 0.09 + 0.12 * rand();
-    const base = FIREFLIES_WATER + (grand ? 0.05 + 0.04 * rand() : open ? 0.01 + 0.01 * rand() : 0.022 + 0.026 * rand());
+    const height = grand
+      ? 0.21 + 0.14 * rand()
+      : open
+        ? 0.025 + 0.04 * rand()
+        : 0.09 + 0.12 * rand();
+    const base =
+      FIREFLIES_WATER +
+      (grand ? 0.05 + 0.04 * rand() : open ? 0.01 + 0.01 * rand() : 0.022 + 0.026 * rand());
     const tree = trees.length;
     const centre = x + width * 0.5;
-    trees.push({ x: centre, base, host: grand ? 0.95 + 0.05 * rand() : 0.35 + 0.5 * rand(), shade: rand(), roots: grand ? 0.35 : 1, trunk: grand });
+    trees.push({
+      x: centre,
+      base,
+      host: grand ? 0.95 + 0.05 * rand() : 0.35 + 0.5 * rand(),
+      shade: rand(),
+      roots: grand ? 0.35 : 1,
+      trunk: grand,
+    });
     const count = grand ? 7 + Math.floor(4 * rand()) : 4 + Math.floor(3 * rand());
     for (let k = 0; k < count; k++) {
       const u = k / (count - 1) - 0.5;
@@ -442,7 +473,9 @@ function growForest(seed: number, open: boolean): Bank {
       lumps.push({ x: lx, y: Math.max(ly, base + r * 0.25), r, tree });
     }
     const gap = rand() < (open ? OPEN_GAPS : 0.1);
-    x += gap ? width + (open ? 0.03 + 0.15 * rand() : 0.02 + 0.06 * rand()) : width * (0.5 + 0.3 * rand());
+    x += gap
+      ? width + (open ? 0.03 + 0.15 * rand() : 0.02 + 0.06 * rand())
+      : width * (0.5 + 0.3 * rand());
   }
   return { lumps, trees };
 }
@@ -467,7 +500,13 @@ interface Profile {
 }
 
 function blankProfile(width: number): Profile {
-  return { top: new Float32Array(width), under: new Float32Array(width), host: new Float32Array(width), treeAt: new Int32Array(width), texels: new Float32Array(width * 2 * 4) };
+  return {
+    top: new Float32Array(width),
+    under: new Float32Array(width),
+    host: new Float32Array(width),
+    treeAt: new Int32Array(width),
+    texels: new Float32Array(width * 2 * 4),
+  };
 }
 
 const emptyProfile: Profile = blankProfile(0);
@@ -482,7 +521,13 @@ function profileOf(bank: Bank, cols: number, seed: number): Profile {
  * Paints `profile` (sized for `cols`) from the bank, its crowns' clumps where they stand, or, given
  * `centres` (x, y per clump), where their stems carry them.
  */
-function paintProfile(profile: Profile, bank: Bank, cols: number, seed: number, centres?: Float64Array): void {
+function paintProfile(
+  profile: Profile,
+  bank: Bank,
+  cols: number,
+  seed: number,
+  centres?: Float64Array,
+): void {
   const res = FIREFLIES_PROFILE_RES;
   const width = cols * res;
   const x0 = -0.5 * cols * FIREFLIES_CELL;
@@ -520,7 +565,10 @@ function paintProfile(profile: Profile, bank: Bank, cols: number, seed: number, 
     for (let k = k0; k <= k1; k++) {
       const off = Math.abs(x0 + (k + 0.5) * dx - tree.x);
       const at = 4 * (width + k);
-      texels[at] = Math.max(texels[at] ?? 0, 1 - smoothstep(TRUNK_HALF * 0.7, TRUNK_HALF * 1.3, off));
+      texels[at] = Math.max(
+        texels[at] ?? 0,
+        1 - smoothstep(TRUNK_HALF * 0.7, TRUNK_HALF * 1.3, off),
+      );
     }
   }
   for (let k = 0; k < width; k++) {
@@ -581,7 +629,16 @@ function buildTree(plant: PlantBuilder, layout: TreeLayout): void {
     const lump = bank.lumps[l];
     if (lump === undefined) continue;
     const dx = lump.x - tree.x;
-    layout.lumpOrgan[l] = plant.organ({ parent: stem, at: (lump.y - FIREFLIES_WATER) / height, angle: dx >= 0 ? -Math.PI / 2 : Math.PI / 2, length: Math.abs(dx), habit: PlantHabit.rigid, give: 0, form: 0, slot: -1 });
+    layout.lumpOrgan[l] = plant.organ({
+      parent: stem,
+      at: (lump.y - FIREFLIES_WATER) / height,
+      angle: dx >= 0 ? -Math.PI / 2 : Math.PI / 2,
+      length: Math.abs(dx),
+      habit: PlantHabit.rigid,
+      give: 0,
+      form: 0,
+      slot: -1,
+    });
   }
   for (const apex of layout.apexesOf[t] ?? []) {
     const drop = apex.rise + ROOT_SINK;
@@ -591,8 +648,28 @@ function buildTree(plant: PlantBuilder, layout: TreeLayout): void {
     const turn = Math.PI / 2 - beta;
     const length = (drop / Math.cos(beta)) * turn;
     const offset = [apex.x - tree.x, apex.rise] as const;
-    plant.organ({ offset, angle: Math.PI + beta, length, curl: turn, a: turn, form: 0, side: -1, role: PlantRole.root, slot: 2 * apex.bin });
-    plant.organ({ offset, angle: -beta, length, curl: -turn, a: -turn, form: 0, side: 1, role: PlantRole.root, slot: 2 * apex.bin + 1 });
+    plant.organ({
+      offset,
+      angle: Math.PI + beta,
+      length,
+      curl: turn,
+      a: turn,
+      form: 0,
+      side: -1,
+      role: PlantRole.root,
+      slot: 2 * apex.bin,
+    });
+    plant.organ({
+      offset,
+      angle: -beta,
+      length,
+      curl: -turn,
+      a: -turn,
+      form: 0,
+      side: 1,
+      role: PlantRole.root,
+      slot: 2 * apex.bin + 1,
+    });
   }
 }
 
@@ -603,8 +680,24 @@ function mangroves(layout: TreeLayout): { rhizophora: PlantSpecies; sonneratia: 
   const life = { unfold: 10, span: 600 };
   const detail = { simple: 3, min: 1.5 };
   return {
-    rhizophora: { id: "rhizophora", moisture: [0.8, 1], sway: { hz: 0.6, damping: 0.3, give: 0.07, limit: 0.25 }, year: evergreen, life, detail, build },
-    sonneratia: { id: "sonneratia", moisture: [0.7, 1], sway: { hz: 0.5, damping: 0.25, give: 0.08, limit: 0.25 }, year: evergreen, life, detail, build },
+    rhizophora: {
+      id: "rhizophora",
+      moisture: [0.8, 1],
+      sway: { hz: 0.6, damping: 0.3, give: 0.07, limit: 0.25 },
+      year: evergreen,
+      life,
+      detail,
+      build,
+    },
+    sonneratia: {
+      id: "sonneratia",
+      moisture: [0.7, 1],
+      sway: { hz: 0.5, damping: 0.25, give: 0.08, limit: 0.25 },
+      year: evergreen,
+      life,
+      detail,
+      build,
+    },
   };
 }
 
@@ -617,7 +710,11 @@ const NO_DRAWS = (): number => 0;
  * (fewer under a Sonneratia, none over open mud) and size it to the root gap above the water there.
  * Returns the first bin and how many there are.
  */
-function layRoots(layout: TreeLayout, profile: Profile, cols: number): { first: number; bins: number } {
+function layRoots(
+  layout: TreeLayout,
+  profile: Profile,
+  cols: number,
+): { first: number; bins: number } {
   const res = FIREFLIES_PROFILE_RES;
   const width = cols * res;
   const x0 = -0.5 * cols * FIREFLIES_CELL;
@@ -632,9 +729,15 @@ function layRoots(layout: TreeLayout, profile: Profile, cols: number): { first: 
     const tree = layout.bank.trees[t];
     const top = profile.top[texel] ?? 0;
     const under = profile.under[texel] ?? 0;
-    if (tree === undefined || top - under < 0.004 || glslHash12(k, 61.3) > 0.15 + 0.55 * tree.roots) continue;
+    if (tree === undefined || top - under < 0.004 || glslHash12(k, 61.3) > 0.15 + 0.55 * tree.roots)
+      continue;
     const rise = (under - FIREFLIES_WATER) * (0.8 + 0.4 * h2) + 0.004;
-    layout.apexesOf[t]?.push({ bin: k - first, x, rise, spread: FIREFLIES_ROOT_PITCH * (0.9 + 1.5 * glslHash12(k, 64.1)) });
+    layout.apexesOf[t]?.push({
+      bin: k - first,
+      x,
+      rise,
+      spread: FIREFLIES_ROOT_PITCH * (0.9 + 1.5 * glslHash12(k, 64.1)),
+    });
   }
   return { first, bins: last - first + 1 };
 }
@@ -652,7 +755,18 @@ class FirefliesSim implements SceneSim {
   /** One prewarm step, as runBudgeted calls it. */
   readonly #warmStep = (): void => this.#step(MAX_STEP, this.#knobs);
   #warmed = 0;
-  readonly #knobs: Knobs = { coupling: 0.5, density: 0.7, period: 3, open: false, drift: 0.35, unrest: 0, lantern: true, mark: 0, markNow: 5, seed: 0 };
+  readonly #knobs: Knobs = {
+    coupling: 0.5,
+    density: 0.7,
+    period: 3,
+    open: false,
+    drift: 0.35,
+    unrest: 0,
+    lantern: true,
+    mark: 0,
+    markNow: 5,
+    seed: 0,
+  };
   readonly #nearest = new Float64Array(2);
 
   // The banks, grown once per seed: the dense crowns, and the open bank.
@@ -670,7 +784,12 @@ class FirefliesSim implements SceneSim {
   readonly #trees = new RootedPlants(TREE_ORGANS, 0);
   readonly #roots: PlantTexture;
   readonly #treeClimate = plantClimate();
-  readonly #layout: TreeLayout = { bank: { lumps: [], trees: [] }, lumpsOf: [], apexesOf: [], lumpOrgan: new Int32Array(0) };
+  readonly #layout: TreeLayout = {
+    bank: { lumps: [], trees: [] },
+    lumpsOf: [],
+    apexesOf: [],
+    lumpOrgan: new Int32Array(0),
+  };
   readonly #species = mangroves(this.#layout);
   #rootFirst = 0;
   #rootBins = 0;
@@ -773,12 +892,27 @@ class FirefliesSim implements SceneSim {
   #markNow = false;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#reader = new KnobReader("fireflies", params, ["coupling", "density", "habitat", "period", "drift", "unrest", "lantern", "mark", "seed"]);
+    this.#reader = new KnobReader("fireflies", params, [
+      "coupling",
+      "density",
+      "habitat",
+      "period",
+      "drift",
+      "unrest",
+      "lantern",
+      "mark",
+      "seed",
+    ]);
     this.#breezeSlot = this.#reader.trigger("unrest");
     this.#markSlot = this.#reader.trigger("mark");
     this.#swarmTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
     this.#forestTexture = new DataTexture(gl, { width: 1, height: 2, format: "rgba16f" });
-    this.#stateTexture = new DataTexture(gl, { width: STATE_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#stateTexture = new DataTexture(gl, {
+      width: STATE_TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#roots = new PlantTexture(gl, ROOT_RECORDS, { rowBase: 1 });
     // The breeze is the trees' only air: a front crossing the bank, pushing downwind.
     this.#treeClimate.wind = (x, _y, out) => {
@@ -807,7 +941,8 @@ class FirefliesSim implements SceneSim {
     }
     // The opening seconds run in whole steps (a few frames of them on a slow machine) before the
     // swarm moves on its own.
-    if (this.#warmed < PREWARM_STEPS) this.#warmed = runBudgeted(this.#warmStep, PREWARM_BUDGET_MS, PREWARM_STEPS, this.#warmed);
+    if (this.#warmed < PREWARM_STEPS)
+      this.#warmed = runBudgeted(this.#warmStep, PREWARM_BUDGET_MS, PREWARM_STEPS, this.#warmed);
     this.#watchTriggers(frame.fired, knobs);
     if (this.#warmed >= PREWARM_STEPS) {
       this.#schedule(knobs);
@@ -880,11 +1015,13 @@ class FirefliesSim implements SceneSim {
   #schedule(knobs: Knobs): void {
     const clock = this.#clock;
     if (knobs.unrest <= 0) this.#nextBreeze = Number.POSITIVE_INFINITY;
-    else if (!Number.isFinite(this.#nextBreeze)) this.#nextBreeze = clock + this.#breezeInterval(knobs.unrest);
+    else if (!Number.isFinite(this.#nextBreeze))
+      this.#nextBreeze = clock + this.#breezeInterval(knobs.unrest);
     if (this.#breezeNow || (!this.#breeze && !this.#mark && clock >= this.#nextBreeze)) {
       this.#breezeNow = false;
       this.#startBreeze();
-      this.#nextBreeze = knobs.unrest > 0 ? clock + this.#breezeInterval(knobs.unrest) : Number.POSITIVE_INFINITY;
+      this.#nextBreeze =
+        knobs.unrest > 0 ? clock + this.#breezeInterval(knobs.unrest) : Number.POSITIVE_INFINITY;
     }
 
     const on = knobs.mark > 0;
@@ -944,7 +1081,8 @@ class FirefliesSim implements SceneSim {
         const side = (k - FIREFLIES_DRIFTERS) % 2 === 0 ? -1 : 1;
         const z = BOKEH_Z_MIN + (BOKEH_Z_MAX - BOKEH_Z_MIN) * near();
         const y = BOKEH_Y_MIN + (BOKEH_Y_MAX - BOKEH_Y_MIN) * near();
-        this.#nearAnchorX[k] = 0.5 * side * (BOKEH_SIDE_MIN + (BOKEH_SIDE_MAX - BOKEH_SIDE_MIN) * near());
+        this.#nearAnchorX[k] =
+          0.5 * side * (BOKEH_SIDE_MIN + (BOKEH_SIDE_MAX - BOKEH_SIDE_MIN) * near());
         this.#nearAnchorY[k] = CAMERA.worldY(y, z);
         this.#nearAnchorZ[k] = z;
       }
@@ -1033,15 +1171,18 @@ class FirefliesSim implements SceneSim {
       const row = Math.floor(i / cols);
       const stubborn = cellHash(column, row, salt + 3) < STUBBORN_SHARE;
       const spread = cellHash(column, row, salt + 2) + cellHash(column, row, salt + 9) - 1;
-      this.#rate[i] = 1 + (stubborn ? STUBBORN_SPREAD * Math.sign(spread || 1) : RATE_SPREAD * spread);
+      this.#rate[i] =
+        1 + (stubborn ? STUBBORN_SPREAD * Math.sign(spread || 1) : RATE_SPREAD * spread);
       this.#pull[i] = stubborn ? STUBBORN_PULL : 1;
       this.#scatter[i] = 2 * cellHash(column, row, salt + 4) - 1;
       this.#jitterX[i] = 0.3 + 0.4 * cellHash(column, row, salt + 5);
       this.#jitterY[i] = 0.3 + 0.4 * cellHash(column, row, salt + 6);
       this.#wanderPhase[2 * i] = TAU * cellHash(column, row, salt + 7);
       this.#wanderPhase[2 * i + 1] = TAU * cellHash(column, row, salt + 8);
-      this.#wanderSpeed[2 * i] = WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 13);
-      this.#wanderSpeed[2 * i + 1] = WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 14);
+      this.#wanderSpeed[2 * i] =
+        WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 13);
+      this.#wanderSpeed[2 * i + 1] =
+        WANDER_SLOW + (WANDER_FAST - WANDER_SLOW) * cellHash(column, row, salt + 14);
       this.#bright[i] = BRIGHT_MIN + BRIGHT_RANGE * cellHash(column, row, salt + 16) ** BRIGHT_SKEW;
       this.#late[i] = cellHash(column, row, salt + 18);
       // Columns still in view keep their firefly's rhythm; new ones arrive in their places.
@@ -1062,7 +1203,9 @@ class FirefliesSim implements SceneSim {
   /** The bank on show and the dense crowns over the lattice's span; its trees grown on the one on show (uSim1, uSim3). */
   #paintForest(): void {
     this.#crownProfile = profileOf(this.#crowns, this.#cols, this.#seed);
-    this.#shown = this.#open ? profileOf(this.#openBank, this.#cols, this.#seed) : this.#crownProfile;
+    this.#shown = this.#open
+      ? profileOf(this.#openBank, this.#cols, this.#seed)
+      : this.#crownProfile;
     this.#forestTexture.resize(this.#cols * FIREFLIES_PROFILE_RES, 2);
     this.#growTrees();
   }
@@ -1082,7 +1225,11 @@ class FirefliesSim implements SceneSim {
     const trees = this.#trees;
     trees.clear();
     bank.trees.forEach((tree, t) => {
-      trees.add(tree.trunk ? this.#species.sonneratia : this.#species.rhizophora, { x: tree.x, y: FIREFLIES_WATER, heading: Math.PI / 2, moisture: 1, kind: t, slot: 0 }, NO_DRAWS);
+      trees.add(
+        tree.trunk ? this.#species.sonneratia : this.#species.rhizophora,
+        { x: tree.x, y: FIREFLIES_WATER, heading: Math.PI / 2, moisture: 1, kind: t, slot: 0 },
+        NO_DRAWS,
+      );
     });
     this.#drawn = blankProfile(this.#cols * FIREFLIES_PROFILE_RES);
     this.#centres = new Float64Array(2 * bank.lumps.length);
@@ -1168,10 +1315,15 @@ class FirefliesSim implements SceneSim {
     const open = new Float64Array(n);
     for (let i = 0; i < n; i++) {
       crown[i] = (this.#rank[i] ?? 1) / (this.#habitat[i] ?? 0);
-      open[i] = cellHash((i % cols) - half, Math.floor(i / cols), salt + 20) / this.#openHabitatAt(i);
+      open[i] =
+        cellHash((i % cols) - half, Math.floor(i / cols), salt + 20) / this.#openHabitatAt(i);
     }
-    const byCrown = Uint32Array.from({ length: n }, (_, i) => i).sort((a, b) => (crown[a] ?? 0) - (crown[b] ?? 0) || a - b);
-    const byOpen = Uint32Array.from({ length: n }, (_, i) => i).sort((a, b) => (open[a] ?? 0) - (open[b] ?? 0) || a - b);
+    const byCrown = Uint32Array.from({ length: n }, (_, i) => i).sort(
+      (a, b) => (crown[a] ?? 0) - (crown[b] ?? 0) || a - b,
+    );
+    const byOpen = Uint32Array.from({ length: n }, (_, i) => i).sort(
+      (a, b) => (open[a] ?? 0) - (open[b] ?? 0) || a - b,
+    );
     for (let m = 0; m < n; m++) this.#partner[byOpen[m] ?? 0] = byCrown[m] ?? 0;
   }
 
@@ -1190,7 +1342,10 @@ class FirefliesSim implements SceneSim {
     const late = this.#late[i] ?? 0;
     const inAt = ENTER_START + ENTER_SPAN * turn + ENTER_LATE * late;
     const outAt = EXIT_START + EXIT_SPAN * (1 - turn) + EXIT_LATE * late;
-    return smoothstep(inAt, inAt + ENTER_RAMP, this.#arrive) * (1 - smoothstep(outAt, outAt + EXIT_RAMP, this.#leave));
+    return (
+      smoothstep(inAt, inAt + ENTER_RAMP, this.#arrive) *
+      (1 - smoothstep(outAt, outAt + EXIT_RAMP, this.#leave))
+    );
   }
 
   /** Centre the M for this frame's aspect and work out which fireflies draw it and where. */
@@ -1217,7 +1372,10 @@ class FirefliesSim implements SceneSim {
         const sx = markX + (nearest[0] ?? 0) * MARK_HEIGHT;
         const sy = MARK_Y + (nearest[1] ?? 0) * MARK_HEIGHT;
         this.#snapX[i] = Math.min(0.92, Math.max(0.08, (sx - x0) / FIREFLIES_CELL - column));
-        this.#snapY[i] = Math.min(0.92, Math.max(0.08, (sy - FIREFLIES_WATER) / FIREFLIES_CELL - row));
+        this.#snapY[i] = Math.min(
+          0.92,
+          Math.max(0.08, (sy - FIREFLIES_WATER) / FIREFLIES_CELL - row),
+        );
       }
     }
   }
@@ -1267,7 +1425,9 @@ class FirefliesSim implements SceneSim {
 
     // The phases.
     // While they join, the neighbours answer harder (1 at rest).
-    const boost = 1 + ENTER_BOOST * smoothstep(0.08, 0.3, this.#arrive) * (1 - smoothstep(0.75, 1, this.#arrive));
+    const boost =
+      1 +
+      ENTER_BOOST * smoothstep(0.08, 0.3, this.#arrive) * (1 - smoothstep(0.75, 1, this.#arrive));
     const kLocal = COUPLING_LOCAL * knobs.coupling * boost;
     const kGlobal = COUPLING_GLOBAL * knobs.coupling * mean * boost;
     const omega = 1 / knobs.period;
@@ -1280,12 +1440,15 @@ class FirefliesSim implements SceneSim {
     for (let i = 0; i < n; i++) {
       const own = glowIn[i] ?? 0;
       const ownCount = presIn[i] ?? 0;
-      const light = ((this.#sum[i] ?? 0) - own) / Math.max((this.#count[i] ?? 0) - ownCount, COUNT_FLOOR);
+      const light =
+        ((this.#sum[i] ?? 0) - own) / Math.max((this.#count[i] ?? 0) - ownCount, COUNT_FLOOR);
       const a = mark * (member[i] ?? 0);
-      const drive = (kLocal * light + kGlobal) * (this.#pull[i] ?? 1) * (this.#calm[i] ?? 1) * (1 - a);
+      const drive =
+        (kLocal * light + kGlobal) * (this.#pull[i] ?? 1) * (this.#calm[i] ?? 1) * (1 - a);
       let f = phase[i] ?? 0;
       const response = f < refractory ? 0 : -Math.sin(TAU * (f - refractory) * receptive);
-      let rate = omega * (this.#rate[i] ?? 1) * Math.max(0.2, 1 + (this.#detune[i] ?? 0)) + drive * response;
+      let rate =
+        omega * (this.#rate[i] ?? 1) * Math.max(0.2, 1 + (this.#detune[i] ?? 0)) + drive * response;
       if (a > 0) rate += a * MARK_PULL * Math.sin(TAU * (psi - f));
       // A held-back firefly can stall but never runs backwards through its flash.
       f += h * Math.max(0, rate);
@@ -1351,11 +1514,15 @@ class FirefliesSim implements SceneSim {
     if (shown > 0.005) {
       // Over the river the lantern's light reaches the trees it mirrors: it acts at its reflection.
       const lx = this.#lanternX;
-      const ly = this.#lanternY < FIREFLIES_WATER ? 2 * FIREFLIES_WATER - this.#lanternY : this.#lanternY;
+      const ly =
+        this.#lanternY < FIREFLIES_WATER ? 2 * FIREFLIES_WATER - this.#lanternY : this.#lanternY;
       const c0 = Math.max(0, Math.floor((lx - LANTERN_REACH - x0) / FIREFLIES_CELL));
       const c1 = Math.min(cols - 1, Math.ceil((lx + LANTERN_REACH - x0) / FIREFLIES_CELL));
       const r0 = Math.max(0, Math.floor((ly - LANTERN_REACH - FIREFLIES_WATER) / FIREFLIES_CELL));
-      const r1 = Math.min(FIREFLIES_ROWS - 1, Math.ceil((ly + LANTERN_REACH - FIREFLIES_WATER) / FIREFLIES_CELL));
+      const r1 = Math.min(
+        FIREFLIES_ROWS - 1,
+        Math.ceil((ly + LANTERN_REACH - FIREFLIES_WATER) / FIREFLIES_CELL),
+      );
       for (let r = r0; r <= r1; r++) {
         const dy = FIREFLIES_WATER + (r + 0.5) * FIREFLIES_CELL - ly;
         for (let c = c0; c <= c1; c++) {
@@ -1416,7 +1583,8 @@ class FirefliesSim implements SceneSim {
       const rise = MARK_RISE * period;
       const hold = rise + this.#markBeats * period;
       const end = hold + MARK_RELEASE * period;
-      this.#markStrength = smoothstep(0, rise, this.#markAge) * (1 - smoothstep(hold, end, this.#markAge));
+      this.#markStrength =
+        smoothstep(0, rise, this.#markAge) * (1 - smoothstep(hold, end, this.#markAge));
       // The M keeps half a cycle off the forest's beat, so it flashes in the dark between pulses.
       let lag = this.#theta + 0.5 - this.#markPsi;
       lag -= Math.round(lag);
@@ -1434,11 +1602,16 @@ class FirefliesSim implements SceneSim {
     const omega = 1 / knobs.period;
     const k = NEAR_COUPLING * knobs.coupling * mean;
     for (let j = 0; j < FIREFLIES_NEAR; j++) {
-      const d = Math.hypot((this.#nearX[j] ?? 0) - this.#lanternX, (this.#nearY[j] ?? 0) - this.#lanternY);
+      const d = Math.hypot(
+        (this.#nearX[j] ?? 0) - this.#lanternX,
+        (this.#nearY[j] ?? 0) - this.#lanternY,
+      );
       const w = this.#lanternShown * Math.max(0, 1 - d / LANTERN_REACH);
       let f = this.#nearPhase[j] ?? 0;
       const detune = 1 + LANTERN_SCATTER * w * (j % 2 === 0 ? 1 : -1);
-      f += h * Math.max(0, omega * (this.#nearRate[j] ?? 1) * detune - k * (1 - w) * Math.sin(TAU * f));
+      f +=
+        h *
+        Math.max(0, omega * (this.#nearRate[j] ?? 1) * detune - k * (1 - w) * Math.sin(TAU * f));
       this.#nearPhase[j] = f - Math.floor(f);
     }
   }
@@ -1461,12 +1634,15 @@ class FirefliesSim implements SceneSim {
       const steps = Math.ceil(dt / 0.02);
       const h = dt / steps;
       for (let s = 0; s < steps; s++) {
-        this.#lanternVX += h * (w * w * (x - this.#lanternX) - 2 * LANTERN_DAMPING * w * this.#lanternVX);
-        this.#lanternVY += h * (w * w * (y - this.#lanternY) - 2 * LANTERN_DAMPING * w * this.#lanternVY);
+        this.#lanternVX +=
+          h * (w * w * (x - this.#lanternX) - 2 * LANTERN_DAMPING * w * this.#lanternVX);
+        this.#lanternVY +=
+          h * (w * w * (y - this.#lanternY) - 2 * LANTERN_DAMPING * w * this.#lanternVY);
         this.#lanternX += h * this.#lanternVX;
         this.#lanternY += h * this.#lanternVY;
       }
-      this.#lanternShown += ((on ? 1 : 0) - this.#lanternShown) * (1 - Math.exp(-dt / LANTERN_FADE));
+      this.#lanternShown +=
+        ((on ? 1 : 0) - this.#lanternShown) * (1 - Math.exp(-dt / LANTERN_FADE));
       this.#flare *= Math.exp(-dt / FLARE_FADE);
     }
     if (on && pointer.pressed) {
@@ -1487,7 +1663,10 @@ class FirefliesSim implements SceneSim {
     const c0 = Math.max(0, Math.floor((x - CLICK_REACH - x0) / FIREFLIES_CELL));
     const c1 = Math.min(cols - 1, Math.ceil((x + CLICK_REACH - x0) / FIREFLIES_CELL));
     const r0 = Math.max(0, Math.floor((ly - CLICK_REACH - FIREFLIES_WATER) / FIREFLIES_CELL));
-    const r1 = Math.min(FIREFLIES_ROWS - 1, Math.ceil((ly + CLICK_REACH - FIREFLIES_WATER) / FIREFLIES_CELL));
+    const r1 = Math.min(
+      FIREFLIES_ROWS - 1,
+      Math.ceil((ly + CLICK_REACH - FIREFLIES_WATER) / FIREFLIES_CELL),
+    );
     for (let r = r0; r <= r1; r++) {
       const dy = FIREFLIES_WATER + (r + 0.5) * FIREFLIES_CELL - ly;
       for (let c = c0; c <= c1; c++) {
@@ -1535,8 +1714,17 @@ class FirefliesSim implements SceneSim {
       const bright = (this.#bright[i] ?? 1) + (MARK_BRIGHT - (this.#bright[i] ?? 1)) * a;
       const lit = Math.max(flash((this.#phase[i] ?? 0) * span), MARK_EMBER * a);
       const e = p * bright * lit * (1 - (this.#hush[i] ?? 0));
-      let ox = (this.#jitterX[i] ?? 0.5) + wander * Math.sin(clock * (this.#wanderSpeed[2 * i] ?? 0) + (this.#wanderPhase[2 * i] ?? 0));
-      let oy = (this.#jitterY[i] ?? 0.5) + wander * 0.7 * Math.sin(clock * (this.#wanderSpeed[2 * i + 1] ?? 0) + (this.#wanderPhase[2 * i + 1] ?? 0));
+      let ox =
+        (this.#jitterX[i] ?? 0.5) +
+        wander *
+          Math.sin(clock * (this.#wanderSpeed[2 * i] ?? 0) + (this.#wanderPhase[2 * i] ?? 0));
+      let oy =
+        (this.#jitterY[i] ?? 0.5) +
+        wander *
+          0.7 *
+          Math.sin(
+            clock * (this.#wanderSpeed[2 * i + 1] ?? 0) + (this.#wanderPhase[2 * i + 1] ?? 0),
+          );
       if (this.#breeze) {
         const u = (x0 + ((i % cols) + 0.5) * FIREFLIES_CELL - this.#breezeFront) / BREEZE_WIDTH;
         ox += this.#breezeDir * BREEZE_SWAY * Math.exp(-u * u);
@@ -1563,7 +1751,10 @@ class FirefliesSim implements SceneSim {
     const turn = (j * 0.6180339887) % 1;
     const inAt = NEAR_IN_FROM + NEAR_IN_SPAN * turn;
     const outAt = NEAR_OUT_FROM + NEAR_OUT_SPAN * (1 - turn);
-    return smoothstep(inAt, inAt + NEAR_IN_RAMP, this.#arrive) * (1 - smoothstep(outAt, outAt + NEAR_OUT_RAMP, this.#leave));
+    return (
+      smoothstep(inAt, inAt + NEAR_IN_RAMP, this.#arrive) *
+      (1 - smoothstep(outAt, outAt + NEAR_OUT_RAMP, this.#leave))
+    );
   }
 
   /** The lights nearer than the bank, the lantern and the bank, for uSim2. */
@@ -1574,12 +1765,22 @@ class FirefliesSim implements SceneSim {
     const drifters = Math.round(FIREFLIES_DRIFTERS * Math.min(1, knobs.density * DRIFT_DENSITY));
     for (let j = 0; j < FIREFLIES_NEAR; j++) {
       const drifter = j < FIREFLIES_DRIFTERS;
-      const wanderX = Math.sin(clock * (this.#nearWander[j * 6 + 3] ?? 0) + (this.#nearWander[j * 6] ?? 0));
-      const wanderY = Math.sin(clock * (this.#nearWander[j * 6 + 4] ?? 0) + (this.#nearWander[j * 6 + 1] ?? 0));
-      const wanderZ = Math.sin(clock * (this.#nearWander[j * 6 + 5] ?? 0) + (this.#nearWander[j * 6 + 2] ?? 0));
-      const z = (this.#nearAnchorZ[j] ?? 6) * (1 + (drifter ? DRIFT_WANDER_Z : BOKEH_WANDER_Z) * wanderZ);
-      const height = (this.#nearAnchorY[j] ?? 1) + (drifter ? DRIFT_WANDER_Y : BOKEH_WANDER_Y) * wanderY;
-      const x = (this.#nearAnchorX[j] ?? 0) * this.#aspect + CAMERA.screenX((drifter ? DRIFT_WANDER_X : BOKEH_WANDER_X) * wanderX, z);
+      const wanderX = Math.sin(
+        clock * (this.#nearWander[j * 6 + 3] ?? 0) + (this.#nearWander[j * 6] ?? 0),
+      );
+      const wanderY = Math.sin(
+        clock * (this.#nearWander[j * 6 + 4] ?? 0) + (this.#nearWander[j * 6 + 1] ?? 0),
+      );
+      const wanderZ = Math.sin(
+        clock * (this.#nearWander[j * 6 + 5] ?? 0) + (this.#nearWander[j * 6 + 2] ?? 0),
+      );
+      const z =
+        (this.#nearAnchorZ[j] ?? 6) * (1 + (drifter ? DRIFT_WANDER_Z : BOKEH_WANDER_Z) * wanderZ);
+      const height =
+        (this.#nearAnchorY[j] ?? 1) + (drifter ? DRIFT_WANDER_Y : BOKEH_WANDER_Y) * wanderY;
+      const x =
+        (this.#nearAnchorX[j] ?? 0) * this.#aspect +
+        CAMERA.screenX((drifter ? DRIFT_WANDER_X : BOKEH_WANDER_X) * wanderX, z);
       const y = CAMERA.screenY(height, z);
       this.#nearX[j] = x;
       this.#nearY[j] = y;

@@ -25,7 +25,10 @@ for (const change of changes) {
     for (let i = 0; i < 20; i++) sim.step({ knobs, pointer: at });
     const held = motionOf(sim.step({ knobs, pointer: at }));
 
-    const after = { aspect: change.aspect, knobs: { ...knobs, model: HYPERBOLIC_MODELS.indexOf(change.model) } };
+    const after = {
+      aspect: change.aspect,
+      knobs: { ...knobs, model: HYPERBOLIC_MODELS.indexOf(change.model) },
+    };
     expect(motionOf(sim.step({ ...after, pointer: at }))).toEqual(held);
     sim.step({ ...after, pointer: at });
     sim.step({ ...after, pointer: { ...at, down: false, released: true } });

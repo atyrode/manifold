@@ -15,16 +15,21 @@ function fail(message: string): never {
 
 function compile(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   const linked = gl.createProgram();
-  for (const [type, source] of [[gl.VERTEX_SHADER, vertexSource], [gl.FRAGMENT_SHADER, fragment]] as const) {
+  for (const [type, source] of [
+    [gl.VERTEX_SHADER, vertexSource],
+    [gl.FRAGMENT_SHADER, fragment],
+  ] as const) {
     const shader = gl.createShader(type) ?? fail("shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) fail(gl.getShaderInfoLog(shader) ?? "compile failed");
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      fail(gl.getShaderInfoLog(shader) ?? "compile failed");
     gl.attachShader(linked, shader);
     gl.deleteShader(shader);
   }
   gl.linkProgram(linked);
-  if (!gl.getProgramParameter(linked, gl.LINK_STATUS)) fail(gl.getProgramInfoLog(linked) ?? "link failed");
+  if (!gl.getProgramParameter(linked, gl.LINK_STATUS))
+    fail(gl.getProgramInfoLog(linked) ?? "link failed");
   return linked;
 }
 
@@ -40,16 +45,27 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
   const knobs = { ...paramDefaults("lake"), cover: 0.45 };
   const sim = lakeScene.sim?.(gl) ?? fail("no sim");
   const frame: SimFrame = {
-    dt: 0, time: 0, motionTime: 0, motion: 1, width: WIDTH, height: HEIGHT, aspect: WIDTH / HEIGHT,
-    values: renderSettings(defaultsFor("lake"), knobs).params, params: knobs, triggers: [], fired: [],
+    dt: 0,
+    time: 0,
+    motionTime: 0,
+    motion: 1,
+    width: WIDTH,
+    height: HEIGHT,
+    aspect: WIDTH / HEIGHT,
+    values: renderSettings(defaultsFor("lake"), knobs).params,
+    params: knobs,
+    triggers: [],
+    fired: [],
     passage: { enter: 1, exit: 0 },
     pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
   };
   const textures = sim.frame(frame);
-  const linked = compile(gl, fragmentSourceFor({
-    ...lakeScene,
-    entry: "regressionLakeSnow",
-    glsl: `${lakeScene.glsl}
+  const linked = compile(
+    gl,
+    fragmentSourceFor({
+      ...lakeScene,
+      entry: "regressionLakeSnow",
+      glsl: `${lakeScene.glsl}
     Shade regressionLakeSnow(vec2 uv, vec2 cell, float t) {
       float aspect = uRes.x / uRes.y;
       lakeTh = threshold(cell);
@@ -58,12 +74,14 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
       LakeSnow s = lakeSnowAt(uv, aspect);
       return shadeOf(vec3(s.cover, s.cover > 0.5 ? lakeSnowShade(s) / 1.5 : 0.0, 0.0), 0.0, 0.0);
     }`,
-  }));
+    }),
+  );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
   gl.useProgram(linked);
-  const uniform = (name: string): WebGLUniformLocation | null => gl.getUniformLocation(linked, name);
+  const uniform = (name: string): WebGLUniformLocation | null =>
+    gl.getUniformLocation(linked, name);
   gl.uniform2f(uniform("uRes"), WIDTH, HEIGHT);
   gl.uniform1i(uniform("uView"), 1);
   gl.uniform1f(uniform("uTime"), 30);
@@ -79,7 +97,10 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
   gl.uniform4f(uniform("uSimOn"), 1, 1, 1, 1);
 
   const draw = (fresh: number): SnowStats => {
-    gl.uniform1fv(uniform("uParams"), Float32Array.from(renderSettings(defaultsFor("lake"), { ...knobs, fresh }).params));
+    gl.uniform1fv(
+      uniform("uParams"),
+      Float32Array.from(renderSettings(defaultsFor("lake"), { ...knobs, fresh }).params),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -98,7 +119,11 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
     }
     if (ice < (WIDTH * HEIGHT) / 4) fail(`only ${ice} ice pixels`);
     const mean = covered > 0 ? sum / covered : 0;
-    return { covered: covered / ice, mean, spread: covered > 0 ? Math.sqrt(Math.max(0, squares / covered - mean * mean)) : 0 };
+    return {
+      covered: covered / ice,
+      mean,
+      spread: covered > 0 ? Math.sqrt(Math.max(0, squares / covered - mean * mean)) : 0,
+    };
   };
   const old = draw(0);
   const fresh = draw(1);
@@ -110,9 +135,12 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
   }
   gl.activeTexture(gl.TEXTURE0);
 
-  if (old.covered < 0.05 || old.covered > 0.95) fail(`the fixture's snow covers ${old.covered} of the ice`);
-  if (Math.abs(fresh.covered - old.covered) > 0.1 * old.covered) fail(`fresh snow moved the cover from ${old.covered} to ${fresh.covered}`);
+  if (old.covered < 0.05 || old.covered > 0.95)
+    fail(`the fixture's snow covers ${old.covered} of the ice`);
+  if (Math.abs(fresh.covered - old.covered) > 0.1 * old.covered)
+    fail(`fresh snow moved the cover from ${old.covered} to ${fresh.covered}`);
   if (fresh.mean < old.mean + 8) fail(`fresh powder is not brighter: ${old.mean} -> ${fresh.mean}`);
-  if (fresh.spread > 0.8 * old.spread) fail(`fresh powder kept the wind ridges: spread ${old.spread} -> ${fresh.spread}`);
+  if (fresh.spread > 0.8 * old.spread)
+    fail(`fresh powder kept the wind ridges: spread ${old.spread} -> ${fresh.spread}`);
   return { old, fresh };
 }

@@ -20,13 +20,19 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     return shader;
   });
   const linked = gl.createProgram();
   for (const shader of shaders) gl.attachShader(linked, shader);
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
@@ -52,7 +58,12 @@ export function verifyAuroraRipples(gl: WebGL2RenderingContext): Record<string, 
     gl.uniform1i(at("uView"), view);
     gl.uniform1f(at("uTime"), time);
     gl.uniform1f(at("uMotionTime"), time);
-    gl.uniform1fv(at("uParams"), Float32Array.from(renderSettings(defaultsFor("aurora"), { ...paramDefaults("aurora"), ...knobs }).params));
+    gl.uniform1fv(
+      at("uParams"),
+      Float32Array.from(
+        renderSettings(defaultsFor("aurora"), { ...paramDefaults("aurora"), ...knobs }).params,
+      ),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -60,7 +71,9 @@ export function verifyAuroraRipples(gl: WebGL2RenderingContext): Record<string, 
     return bytes;
   };
   const differs = (a: Uint8Array, b: Uint8Array, pixel: number) =>
-    a[pixel * 4] !== b[pixel * 4] || a[pixel * 4 + 1] !== b[pixel * 4 + 1] || a[pixel * 4 + 2] !== b[pixel * 4 + 2];
+    a[pixel * 4] !== b[pixel * 4] ||
+    a[pixel * 4 + 1] !== b[pixel * 4 + 1] ||
+    a[pixel * 4 + 2] !== b[pixel * 4 + 2];
   // Rows of cells wholly above the waterline (at rest) and wholly below it; rows run bottom to top.
   const waterRows = Math.floor(AURORA_HORIZON * HEIGHT);
   const skyFrom = Math.ceil(AURORA_HORIZON * HEIGHT);
@@ -80,7 +93,8 @@ export function verifyAuroraRipples(gl: WebGL2RenderingContext): Record<string, 
   const frozen = draw({ ice: 1 }, 30, 1);
   const frozenRuffled = draw({ ice: 1, ripples: 1 }, 30, 1);
   let iceChanged = 0;
-  for (let pixel = 0; pixel < WIDTH * HEIGHT; pixel++) if (differs(frozen, frozenRuffled, pixel)) iceChanged++;
+  for (let pixel = 0; pixel < WIDTH * HEIGHT; pixel++)
+    if (differs(frozen, frozenRuffled, pixel)) iceChanged++;
   check(iceChanged === 0, `Wind ripples moved ${iceChanged} cells of a frozen fjord`);
 
   // The strongest breeze, as the dither shows it, over one 30 fps frame at two moments.
@@ -88,10 +102,14 @@ export function verifyAuroraRipples(gl: WebGL2RenderingContext): Record<string, 
   for (const time of [30, 75.5]) {
     const before = draw({ ripples: 1, wind: 1 }, time, 0);
     const after = draw({ ripples: 1, wind: 1 }, time + 1 / 30, 0);
-    for (let pixel = 0; pixel < WIDTH * waterRows; pixel++) if (differs(before, after, pixel)) flips++;
+    for (let pixel = 0; pixel < WIDTH * waterRows; pixel++)
+      if (differs(before, after, pixel)) flips++;
   }
   const share = flips / (2 * WIDTH * waterRows);
-  check(share <= 0.05, `Wind ripples flicker: ${(share * 100).toFixed(1)}% of water cells change per frame`);
+  check(
+    share <= 0.05,
+    `Wind ripples flicker: ${(share * 100).toFixed(1)}% of water cells change per frame`,
+  );
   gl.deleteProgram(linked);
   return { rippledWaterCells: water, waterFlipsPerFrame: Number(share.toFixed(4)) };
 }

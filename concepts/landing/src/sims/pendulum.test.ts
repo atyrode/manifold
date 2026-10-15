@@ -37,7 +37,9 @@ test("a wide swing takes as long as the integrated pendulum's and follows its pa
     }
     expect((4 * quarter) / (2 * Math.PI)).toBeCloseTo(stretch, 6);
     for (let i = 0; i < path.length; i += 37) {
-      expect(Math.abs((path[i] ?? 0) - pendulumAngle(amplitude, (i * h) / (2 * Math.PI * stretch)))).toBeLessThan(1e-5);
+      expect(
+        Math.abs((path[i] ?? 0) - pendulumAngle(amplitude, (i * h) / (2 * Math.PI * stretch))),
+      ).toBeLessThan(1e-5);
     }
   }
   // A mirror release swings the other way.
@@ -47,14 +49,22 @@ test("a wide swing takes as long as the integrated pendulum's and follows its pa
 test("a small swing is the small-angle cosine, and its period is the small-angle period", () => {
   // The period stretch is 1 + θ²/16 + …: 6.25e-10 above 1 at θ = 1e-4.
   expect(pendulumStretch(1e-4)).toBeCloseTo(1 + 1e-8 / 16, 12);
-  for (const phase of [0, 0.1, 0.25, 0.6, 3.85]) expect(pendulumAngle(0.002, phase)).toBeCloseTo(0.002 * Math.cos(2 * Math.PI * phase), 9);
+  for (const phase of [0, 0.1, 0.25, 0.6, 3.85])
+    expect(pendulumAngle(0.002, phase)).toBeCloseTo(0.002 * Math.cos(2 * Math.PI * phase), 9);
 });
 
 test("swings while the amplitude fades are the integral of the inverse stretch", () => {
-  for (const [amplitude, decay, time] of [[0.4, 0.05, 10], [1.07, 0.1, 6], [0.8, 0, 5]] as const) {
+  for (const [amplitude, decay, time] of [
+    [0.4, 0.05, 10],
+    [1.07, 0.1, 6],
+    [0.8, 0, 5],
+  ] as const) {
     let swings = 0;
     const n = 4000;
-    for (let i = 0; i < n; i++) swings += time / n / pendulumStretch(amplitude * Math.exp((-decay * (i + 0.5) * time) / n));
-    expect(Math.abs(pendulumFadingSwings(amplitude, decay, time) - swings) / time).toBeLessThan(1e-6);
+    for (let i = 0; i < n; i++)
+      swings += time / n / pendulumStretch(amplitude * Math.exp((-decay * (i + 0.5) * time) / n));
+    expect(Math.abs(pendulumFadingSwings(amplitude, decay, time) - swings) / time).toBeLessThan(
+      1e-6,
+    );
   }
 });

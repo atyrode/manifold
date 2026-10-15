@@ -47,7 +47,13 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { runBudgeted } from "../../sims/clock.ts";
-import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import {
+  GpuCompute,
+  gridSize,
+  type Pass,
+  type PingPong,
+  type RenderTarget,
+} from "../../sims/gpu.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -178,7 +184,20 @@ const VIEW_EASE = 0.35;
 
 // ---- knobs -------------------------------------------------------------------------------------------
 
-const DELTA_KNOBS = ["discharge", "sediment", "erosion", "floods", "speed", "landscape", "seaLevel", "tide", "current", "vegetation", "tool", "mark"] as const;
+const DELTA_KNOBS = [
+  "discharge",
+  "sediment",
+  "erosion",
+  "floods",
+  "speed",
+  "landscape",
+  "seaLevel",
+  "tide",
+  "current",
+  "vegetation",
+  "tool",
+  "mark",
+] as const;
 type DeltaKnob = (typeof DELTA_KNOBS)[number];
 
 // ---- noise ---------------------------------------------------------------------------------------------
@@ -225,16 +244,30 @@ function fbm(x: number, y: number, seed: number, octaves: number): number {
  * by Catmull–Rom interpolation (smooth slopes: hill shading shows no lattice), which keeps a fresh
  * layout quick.
  */
-function noiseField(columns: number, rows: number, step: number, scale: number, seed: number, octaves: number): Float32Array {
+function noiseField(
+  columns: number,
+  rows: number,
+  step: number,
+  scale: number,
+  seed: number,
+  octaves: number,
+): Float32Array {
   // Samples at (i - 1) · step, one spare beyond either end for the cubic's outer taps.
   const lx = Math.ceil(columns / step) + 4;
   const ly = Math.ceil(rows / step) + 4;
   const samples = new Float32Array(lx * ly);
-  for (let j = 0; j < ly; j++) for (let i = 0; i < lx; i++) samples[j * lx + i] = fbm(((i - 1) * step) / scale, ((j - 1) * step) / scale, seed, octaves);
+  for (let j = 0; j < ly; j++)
+    for (let i = 0; i < lx; i++)
+      samples[j * lx + i] = fbm(((i - 1) * step) / scale, ((j - 1) * step) / scale, seed, octaves);
   const weights = (t: number): [number, number, number, number] => {
     const t2 = t * t;
     const t3 = t2 * t;
-    return [-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1, -1.5 * t3 + 2 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2];
+    return [
+      -0.5 * t3 + t2 - 0.5 * t,
+      1.5 * t3 - 2.5 * t2 + 1,
+      -1.5 * t3 + 2 * t2 + 0.5 * t,
+      0.5 * t3 - 0.5 * t2,
+    ];
   };
   // Along x for every sample row, then along y.
   const rowsX = new Float32Array(columns * ly);
@@ -243,7 +276,11 @@ function noiseField(columns: number, rows: number, step: number, scale: number, 
     const [w0, w1, w2, w3] = weights(x / step - i);
     for (let j = 0; j < ly; j++) {
       const k = j * lx + i;
-      rowsX[j * columns + x] = w0 * (samples[k] ?? 0) + w1 * (samples[k + 1] ?? 0) + w2 * (samples[k + 2] ?? 0) + w3 * (samples[k + 3] ?? 0);
+      rowsX[j * columns + x] =
+        w0 * (samples[k] ?? 0) +
+        w1 * (samples[k + 1] ?? 0) +
+        w2 * (samples[k + 2] ?? 0) +
+        w3 * (samples[k + 3] ?? 0);
     }
   }
   const out = new Float32Array(columns * rows);
@@ -252,7 +289,11 @@ function noiseField(columns: number, rows: number, step: number, scale: number, 
     const [w0, w1, w2, w3] = weights(y / step - j);
     for (let x = 0; x < columns; x++) {
       const k = j * columns + x;
-      out[y * columns + x] = w0 * (rowsX[k] ?? 0) + w1 * (rowsX[k + columns] ?? 0) + w2 * (rowsX[k + 2 * columns] ?? 0) + w3 * (rowsX[k + 3 * columns] ?? 0);
+      out[y * columns + x] =
+        w0 * (rowsX[k] ?? 0) +
+        w1 * (rowsX[k + columns] ?? 0) +
+        w2 * (rowsX[k + 2 * columns] ?? 0) +
+        w3 * (rowsX[k + 3 * columns] ?? 0);
     }
   }
   return out;
@@ -261,16 +302,26 @@ function noiseField(columns: number, rows: number, step: number, scale: number, 
 /** Blur a field in place: a box of radius r along x, then along y, twice (close to a Gaussian). */
 function boxBlur(field: Float32Array, columns: number, rows: number, r: number): void {
   const scratch = new Float32Array(field.length);
-  const pass = (from: Float32Array, to: Float32Array, length: number, lines: number, step: number, stride: number): void => {
+  const pass = (
+    from: Float32Array,
+    to: Float32Array,
+    length: number,
+    lines: number,
+    step: number,
+    stride: number,
+  ): void => {
     const span = 2 * r + 1;
     for (let line = 0; line < lines; line++) {
       const start = line * stride;
       // A running sum over the window, the ends held at the edge values.
       let sum = 0;
-      for (let k = -r; k <= r; k++) sum += from[start + Math.max(0, Math.min(length - 1, k)) * step] ?? 0;
+      for (let k = -r; k <= r; k++)
+        sum += from[start + Math.max(0, Math.min(length - 1, k)) * step] ?? 0;
       for (let i = 0; i < length; i++) {
         to[start + i * step] = sum / span;
-        sum += (from[start + Math.min(length - 1, i + r + 1) * step] ?? 0) - (from[start + Math.max(0, i - r) * step] ?? 0);
+        sum +=
+          (from[start + Math.min(length - 1, i + r + 1) * step] ?? 0) -
+          (from[start + Math.max(0, i - r) * step] ?? 0);
       }
     }
   };
@@ -440,7 +491,14 @@ export interface DeltaLayout {
  * (-1..1, positive to the right) bending its plumes. Everything scales with the short side; the
  * river enters at the top, the sea lies along the bottom.
  */
-export function layDelta(columns: number, rows: number, seed: number, sea: number, plants: boolean, drift: number): DeltaLayout {
+export function layDelta(
+  columns: number,
+  rows: number,
+  seed: number,
+  sea: number,
+  plants: boolean,
+  drift: number,
+): DeltaLayout {
   const n = columns * rows;
   const rand = mulberry32((Math.round(seed) + 1) * 7919);
   const s = Math.min(columns, rows) / 256;
@@ -459,7 +517,9 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
   // The coast before the delta: a wide bay under the apex. Coastal plain above it, shelf below.
   const plain = (x: number, y: number): number => {
     const t = y - (H * 0.56 + H * 0.12 * ((x - xApex) / (0.5 * W)) ** 2);
-    return t > 0 ? (0.022 / s) * t + 0.45 * (1 - Math.exp(-t / (4 * s))) : -3.4 * (1 - Math.exp(t / (0.12 * H)));
+    return t > 0
+      ? (0.022 / s) * t + 0.45 * (1 - Math.exp(-t / (4 * s)))
+      : -3.4 * (1 - Math.exp(t / (0.12 * H)));
   };
 
   // The river: x as a smooth function of the way down, meandering in its valley.
@@ -473,21 +533,39 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
   for (let i = 0; i <= points; i++) {
     const t = i / points;
     const e = t * t * (3 - 2 * t);
-    rx.push(xIn + (xApex - xIn) * e + amp * Math.sin(Math.PI * t) * Math.sin(2 * Math.PI * waves * t + phase));
+    rx.push(
+      xIn +
+        (xApex - xIn) * e +
+        amp * Math.sin(Math.PI * t) * Math.sin(2 * Math.PI * waves * t + phase),
+    );
     ry.push(H + 3 + (yApex - H - 3) * t);
   }
   const along = [0];
-  for (let i = 1; i <= points; i++) along.push((along[i - 1] ?? 0) + Math.hypot((rx[i] ?? 0) - (rx[i - 1] ?? 0), (ry[i] ?? 0) - (ry[i - 1] ?? 0)));
+  for (let i = 1; i <= points; i++)
+    along.push(
+      (along[i - 1] ?? 0) +
+        Math.hypot((rx[i] ?? 0) - (rx[i - 1] ?? 0), (ry[i] ?? 0) - (ry[i - 1] ?? 0)),
+    );
   const total = along[points] ?? 0;
   for (let i = 0; i < points; i++) {
     river.push({
-      ax: rx[i] ?? 0, ay: ry[i] ?? 0, bx: rx[i + 1] ?? 0, by: ry[i + 1] ?? 0,
-      za: zApex + riverSlope * (total - (along[i] ?? 0)), zb: zApex + riverSlope * (total - (along[i + 1] ?? 0)),
-      width: riverWidth, depth: 1.25, lobe: 0, cut: true,
+      ax: rx[i] ?? 0,
+      ay: ry[i] ?? 0,
+      bx: rx[i + 1] ?? 0,
+      by: ry[i + 1] ?? 0,
+      za: zApex + riverSlope * (total - (along[i] ?? 0)),
+      zb: zApex + riverSlope * (total - (along[i + 1] ?? 0)),
+      width: riverWidth,
+      depth: 1.25,
+      lobe: 0,
+      cut: true,
     });
   }
   const inletBank = zApex + riverSlope * total;
-  const apexAngle = Math.atan2((ry[points] ?? 0) - (ry[points - 4] ?? 0), (rx[points] ?? 0) - (rx[points - 4] ?? 0));
+  const apexAngle = Math.atan2(
+    (ry[points] ?? 0) - (ry[points - 4] ?? 0),
+    (rx[points] ?? 0) - (rx[points - 4] ?? 0),
+  );
 
   // The distributaries: each splits in two (now and then it runs on alone) down to the mouths,
   // keeping its heading, so the mouths spread round the fan's rim. A live channel then runs on
@@ -498,7 +576,18 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
   const outlets: Reach[] = [];
   const mouths: { x: number; y: number; angle: number; width: number }[] = [];
   const fork = { x: xApex, y: yApex, z: zApex, angle: -Math.PI / 2 };
-  const branch = (into: Reach[], x: number, y: number, heading: number, width: number, depth: number, level: number, length: number, z: number, skip: number): void => {
+  const branch = (
+    into: Reach[],
+    x: number,
+    y: number,
+    heading: number,
+    width: number,
+    depth: number,
+    level: number,
+    length: number,
+    z: number,
+    skip: number,
+  ): void => {
     const lobe = (16 + 5 * level) * s;
     const drift = Math.floor(rand() * 1e6);
     // Each channel bends to and fro about its course (mild sinuosity), its course itself drifting.
@@ -508,13 +597,30 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
     let walked = 0;
     let i = 0;
     while (walked < length && y > yFront) {
-      heading += 0.06 * (valueNoise(walked * 0.05, level * 3.1, drift) - 0.5) + 0.004 * (-Math.PI / 2 - heading);
+      heading +=
+        0.06 * (valueNoise(walked * 0.05, level * 3.1, drift) - 0.5) +
+        0.004 * (-Math.PI / 2 - heading);
       heading = Math.max(0.35 - Math.PI, Math.min(-0.35, heading));
-      const angle = heading + bend * Math.sin((2 * Math.PI * walked) / wavelength + phase) * Math.min(1, walked / (6 * s));
+      const angle =
+        heading +
+        bend *
+          Math.sin((2 * Math.PI * walked) / wavelength + phase) *
+          Math.min(1, walked / (6 * s));
       const nx = x + 2 * s * Math.cos(angle);
       const ny = y + 2 * s * Math.sin(angle);
       const nz = z - deltaSlope * 2 * s;
-      into.push({ ax: x, ay: y, bx: nx, by: ny, za: z, zb: nz, width, depth, lobe, cut: i >= skip });
+      into.push({
+        ax: x,
+        ay: y,
+        bx: nx,
+        by: ny,
+        za: z,
+        zb: nz,
+        width,
+        depth,
+        lobe,
+        cut: i >= skip,
+      });
       x = nx;
       y = ny;
       z = nz;
@@ -527,7 +633,18 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
         const nx = x + 2 * s * Math.cos(heading);
         const ny = y + 2 * s * Math.sin(heading);
         const nz = z - 3 * deltaSlope * 2 * s;
-        outlets.push({ ax: x, ay: y, bx: nx, by: ny, za: z, zb: nz, width, depth, lobe: 0, cut: true });
+        outlets.push({
+          ax: x,
+          ay: y,
+          bx: nx,
+          by: ny,
+          za: z,
+          zb: nz,
+          width,
+          depth,
+          lobe: 0,
+          cut: true,
+        });
         x = nx;
         y = ny;
         z = nz;
@@ -544,13 +661,46 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
       const side = share > 0.5 ? 1 : -1;
       const turnBig = side * (0.15 + 0.3 * rand());
       const turnSmall = -side * (0.4 + 0.35 * rand());
-      branch(into, x, y, heading + turnBig, width * (0.45 + 0.6 * big), depth * (0.8 + 0.15 * big), level + 1, length * (0.6 + 0.4 * big), z, 0);
-      branch(into, x, y, heading + turnSmall, width * (0.45 + 0.6 * small), depth * (0.8 + 0.15 * small), level + 1, length * (0.6 + 0.4 * small), z, 0);
+      branch(
+        into,
+        x,
+        y,
+        heading + turnBig,
+        width * (0.45 + 0.6 * big),
+        depth * (0.8 + 0.15 * big),
+        level + 1,
+        length * (0.6 + 0.4 * big),
+        z,
+        0,
+      );
+      branch(
+        into,
+        x,
+        y,
+        heading + turnSmall,
+        width * (0.45 + 0.6 * small),
+        depth * (0.8 + 0.15 * small),
+        level + 1,
+        length * (0.6 + 0.4 * small),
+        z,
+        0,
+      );
     } else {
       branch(into, x, y, heading, width * 0.9, depth * 0.95, level + 1, length * 0.8, z, 0);
     }
   };
-  branch(live, xApex, yApex, 0.3 * apexAngle - 0.35 * Math.PI, 3 * s, 1.15, 0, 0.22 * span, zApex, 0);
+  branch(
+    live,
+    xApex,
+    yApex,
+    0.3 * apexAngle - 0.35 * Math.PI,
+    3 * s,
+    1.15,
+    0,
+    0.22 * span,
+    zApex,
+    0,
+  );
   // An older lobe off the first fork, abandoned: its channel silted shut where it left, its marsh
   // a little lower than the live plain.
   const side = rand() < 0.5 ? -1 : 1;
@@ -613,7 +763,11 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
     const cx = m.x + ca * 3 * m.width;
     const cy = m.y + sa * 3 * m.width;
     for (let y = Math.max(0, Math.floor(cy - reach)); y < Math.min(H, Math.ceil(cy + reach)); y++) {
-      for (let x = Math.max(0, Math.floor(cx - reach)); x < Math.min(W, Math.ceil(cx + reach)); x++) {
+      for (
+        let x = Math.max(0, Math.floor(cx - reach));
+        x < Math.min(W, Math.ceil(cx + reach));
+        x++
+      ) {
         const px = x + 0.5 - cx;
         const py = y + 0.5 - cy;
         const ahead = px * ca + py * sa;
@@ -626,7 +780,8 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
         const off = Math.hypot(px - ca * a - drift * 0.5 * a, py - sa * a);
         const spread = 3 * m.width + 0.45 * a;
         const fade = behind * (1 - smoothstep(2.4 * fadeLength, reach, Math.hypot(px, py)));
-        plume[c] = (plume[c] ?? 0) + fade * Math.exp(-a / fadeLength) * Math.exp(-((off / spread) ** 2));
+        plume[c] =
+          (plume[c] ?? 0) + fade * Math.exp(-a / fadeLength) * Math.exp(-((off / spread) ** 2));
       }
     }
   }
@@ -661,9 +816,14 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
       const fine = grain[c] ?? 0.5;
       const rd = nearRiver.distance[c] ?? Infinity;
       const valley = 1 - smoothstep(0.035 * W, 0.15 * W, rd);
-      let base = plain(x, y) + 5 * upland * (1 - valley) * (0.5 + hillNoise) + 0.3 * (hillNoise - 0.5);
+      let base =
+        plain(x, y) + 5 * upland * (1 - valley) * (0.5 + hillNoise) + 0.3 * (hillNoise - 0.5);
       // The valley floor stands a little above the river's banks and rises gently to the hills.
-      const floor = (nearRiver.level[c] ?? 0) + 0.45 + 1.2 * smoothstep(0.02 * W, 0.15 * W, rd) + 0.15 * (fine - 0.5);
+      const floor =
+        (nearRiver.level[c] ?? 0) +
+        0.45 +
+        1.2 * smoothstep(0.02 * W, 0.15 * W, rd) +
+        0.15 * (fine - 0.5);
       base += (floor - base) * valley * valleyFloor;
 
       let h = base;
@@ -674,8 +834,12 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
       const lobe = lobes[c] ?? 0;
       const platform = platforms[c] ?? 0;
       // The abandoned lobe, a marsh just above the tides; the live delta plain, falling away from its channels.
-      if (oldLobe > 0) h += (Math.max(h, (nearOld.level[c] ?? 0) - 0.05 + tex) - h) * oldLobe * (1 - lobe);
-      if (lobe > 0) h += (Math.max(h, (nearLive.level[c] ?? 0) - 0.12 * smoothstep(3 * s, 14 * s, ld) + tex) - h) * lobe;
+      if (oldLobe > 0)
+        h += (Math.max(h, (nearOld.level[c] ?? 0) - 0.05 + tex) - h) * oldLobe * (1 - lobe);
+      if (lobe > 0)
+        h +=
+          (Math.max(h, (nearLive.level[c] ?? 0) - 0.12 * smoothstep(3 * s, 14 * s, ld) + tex) - h) *
+          lobe;
       if (base < -0.55) h = Math.max(h, base + (-0.55 - base) * platform);
       const lw = nearLive.width[c] ?? 1;
       const levee = Math.exp(-(((ld - 1.5 * lw) / (0.8 * lw)) ** 2));
@@ -691,12 +855,28 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
       const depth = Math.max(0, sea - h, stage - h);
       const dry = smoothstep(0.05, 0.3, h - sea) * (1 - smoothstep(0, 0.05, depth));
       // How much plant cover the ground can carry: patchy on the plain, wooded on the hills.
-      const fertile = Math.max(Math.min(1, Math.max(0.3, 0.45 + 0.75 * smoothstep(0.35, 0.65, hillNoise) + 0.2 * (fine - 0.5))), 0.9 * upland);
-      const veg = plants ? Math.min(fertile, dry * (1 - 0.8 * ch) * (0.15 + 0.6 * young + upland) * (0.6 + 0.8 * fine) * (1 - 0.6 * levee * lobe)) : 0;
+      const fertile = Math.max(
+        Math.min(
+          1,
+          Math.max(0.3, 0.45 + 0.75 * smoothstep(0.35, 0.65, hillNoise) + 0.2 * (fine - 0.5)),
+        ),
+        0.9 * upland,
+      );
+      const veg = plants
+        ? Math.min(
+            fertile,
+            dry *
+              (1 - 0.8 * ch) *
+              (0.15 + 0.6 * young + upland) *
+              (0.6 + 0.8 * fine) *
+              (1 - 0.6 * levee * lobe),
+          )
+        : 0;
       // Silt: the river's load in the channels across the land; in the sea a faint turbid halo along
       // the delta front and the jets off the mouths, merging into it.
       const turbid = 0.05 * (platform - lobe) + 0.16 * Math.min(plume[c] ?? 0, 1.5);
-      const fines = depth > 0 ? Math.max(silt * Math.max(turbid, 0), cut > 0.25 && onLand ? silt : 0) : 0;
+      const fines =
+        depth > 0 ? Math.max(silt * Math.max(turbid, 0), cut > 0.25 && onLand ? silt : 0) : 0;
 
       terrain[c * 4] = h;
       terrain[c * 4 + 1] = fines;
@@ -706,12 +886,29 @@ export function layDelta(columns: number, rows: number, seed: number, sea: numbe
       water[c * 4 + 3] = depth > 0.03 ? 1 : 0;
       ground[c * 4] = base;
       ground[c * 4 + 1] = smoothstep(1.3 * riverWidth, 2.6 * riverWidth, rd) * banksHold;
-      ground[c * 4 + 2] = y >= H - 10 * s ? (y >= H - 2 && Math.abs(x + 0.5 - xIn) < 1.2 * riverWidth ? 3 : 2) : x === 0 || x === W - 1 || y === 0 ? 1 : 0;
+      ground[c * 4 + 2] =
+        y >= H - 10 * s
+          ? y >= H - 2 && Math.abs(x + 0.5 - xIn) < 1.2 * riverWidth
+            ? 3
+            : 2
+          : x === 0 || x === W - 1 || y === 0
+            ? 1
+            : 0;
       ground[c * 4 + 3] = fertile;
     }
   }
   const markY = yApex - 0.45 * span;
-  return { columns: W, rows: H, terrain, water, ground, inletBank, markX: xApex, markY, markTop: zApex - deltaSlope * 0.45 * span + MARK_RISE };
+  return {
+    columns: W,
+    rows: H,
+    terrain,
+    water,
+    ground,
+    inletBank,
+    markX: xApex,
+    markY,
+    markTop: zApex - deltaSlope * 0.45 * span + MARK_RISE,
+  };
 }
 
 // ---- GPU passes -----------------------------------------------------------------------------------------
@@ -978,7 +1175,8 @@ function seasonalFlood(clock: number, seed: number): number {
   // The flood of this cycle and the tail of the last one.
   for (let k = cycle - 1; k <= cycle; k++) {
     if (k < 0) continue;
-    const start = k * FLOOD_EVERY + FLOOD_EVERY * 0.35 + FLOOD_JITTER * (lattice(k, 7, seed) - 0.5) * 2;
+    const start =
+      k * FLOOD_EVERY + FLOOD_EVERY * 0.35 + FLOOD_JITTER * (lattice(k, 7, seed) - 0.5) * 2;
     level = Math.max(level, floodShape(clock - start));
   }
   return level;
@@ -1000,7 +1198,13 @@ interface DeltaEnv {
 }
 
 /** Map pointer uv to grid uv, the way the shader cover-fits the grid to the frame. */
-function gridUv(u: number, v: number, frameAspect: number, gridAspect: number, out: { x: number; y: number }): void {
+function gridUv(
+  u: number,
+  v: number,
+  frameAspect: number,
+  gridAspect: number,
+  out: { x: number; y: number },
+): void {
   const sx = frameAspect > gridAspect ? 1 : frameAspect / gridAspect;
   const sy = frameAspect > gridAspect ? gridAspect / frameAspect : 1;
   out.x = 0.5 + (u - 0.5) * sx;
@@ -1029,7 +1233,14 @@ class DeltaField {
   #layout: DeltaLayout;
   #mark: MarkPlace = { x: 0, y: 0, size: 0 };
   // Uniform records the brush and the views rewrite each time, so a frame allocates nothing.
-  readonly #brushUniforms = { uFrom: new Float32Array(2), uTo: new Float32Array(2), uRadius: 0, uAmount: 0, uTarget: 0, uDig: 0 };
+  readonly #brushUniforms = {
+    uFrom: new Float32Array(2),
+    uTo: new Float32Array(2),
+    uRadius: 0,
+    uAmount: 0,
+    uTarget: 0,
+    uDig: 0,
+  };
   readonly #brushRun = { uniforms: this.#brushUniforms };
   readonly #viewUniforms = { uBlend: 1 };
   readonly #viewRun = { uniforms: this.#viewUniforms };
@@ -1080,7 +1291,14 @@ class DeltaField {
   /** Start over from a fresh layout (resizing the grid to it). */
   reset(layout: DeltaLayout): void {
     this.#layout = layout;
-    for (const pair of [this.#terrain, this.#water, this.#flow, this.#viewGround, this.#viewSurface]) pair.resize(layout.columns, layout.rows);
+    for (const pair of [
+      this.#terrain,
+      this.#water,
+      this.#flow,
+      this.#viewGround,
+      this.#viewSurface,
+    ])
+      pair.resize(layout.columns, layout.rows);
     this.#original.resize(layout.columns, layout.rows);
     this.#ground.resize(layout.columns, layout.rows);
     this.#seed(layout);
@@ -1099,7 +1317,8 @@ class DeltaField {
   setMark(size: number): void {
     const layout = this.#layout;
     const mark: MarkPlace = { x: layout.markX, y: layout.markY, size };
-    const appears = size > 0 && (this.#mark.size !== size || this.#mark.x !== mark.x || this.#mark.y !== mark.y);
+    const appears =
+      size > 0 && (this.#mark.size !== size || this.#mark.x !== mark.x || this.#mark.y !== mark.y);
     this.#mark = mark;
     this.#stampGround();
     if (appears) this.#raise.run(this.#terrain);
@@ -1107,7 +1326,10 @@ class DeltaField {
 
   /** Stamp the M (or its absence) into the ground; the passes that draw or raise it learn where it is. */
   #stampGround(): void {
-    const uniforms = { uMark: [this.#mark.x, this.#mark.y, this.#mark.size], uTop: this.#layout.markTop };
+    const uniforms = {
+      uMark: [this.#mark.x, this.#mark.y, this.#mark.size],
+      uTop: this.#layout.markTop,
+    };
     this.#raise.set(uniforms);
     this.#viewSurfacePass.set({ uMark: uniforms.uMark });
     this.#stamp.run(this.#ground, { uniforms });
@@ -1115,10 +1337,19 @@ class DeltaField {
 
   /** The river, the sea and the knobs for the coming steps. */
   setEnvironment(env: DeltaEnv): void {
-    this.#waterPass.set({ uSea: env.sea, uStage: this.#layout.inletBank + env.stage, uCurrent: env.current });
+    this.#waterPass.set({
+      uSea: env.sea,
+      uStage: this.#layout.inletBank + env.stage,
+      uCurrent: env.current,
+    });
     this.#morph.set({
-      uSea: env.sea, uMorph: env.morph, uSupply: env.supply, uSilt: env.silt,
-      uHold: env.hold, uGrow: env.grow, uWilt: env.wilt,
+      uSea: env.sea,
+      uMorph: env.morph,
+      uSupply: env.supply,
+      uSilt: env.silt,
+      uHold: env.hold,
+      uGrow: env.grow,
+      uWilt: env.wilt,
     });
     this.#viewGroundPass.set({ uSeaBase: env.seaBase });
   }
@@ -1130,7 +1361,13 @@ class DeltaField {
   }
 
   /** Dig (or bank up) along a stretch of the pointer's path, in cells. */
-  brush(from: { x: number; y: number }, to: { x: number; y: number }, amount: number, dig: boolean, seaBase: number): void {
+  brush(
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    amount: number,
+    dig: boolean,
+    seaBase: number,
+  ): void {
     const scale = Math.min(this.#layout.columns, this.#layout.rows) / 256;
     const uniforms = this.#brushUniforms;
     uniforms.uFrom[0] = from.x;
@@ -1177,9 +1414,15 @@ class DeltaField {
 // ---- the scene's sim --------------------------------------------------------------------------------------
 
 /** Everything a frame's steps need from the knobs. */
-function environment(frame: SimFrame, knobs: KnobReader<DeltaKnob>, clock: number, flood: number): DeltaEnv {
+function environment(
+  frame: SimFrame,
+  knobs: KnobReader<DeltaKnob>,
+  clock: number,
+  flood: number,
+): DeltaEnv {
   const seaBase = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
-  const tide = TIDE_RANGE * knobs.value(frame, "tide") * Math.sin((2 * Math.PI * clock) / TIDE_PERIOD);
+  const tide =
+    TIDE_RANGE * knobs.value(frame, "tide") * Math.sin((2 * Math.PI * clock) / TIDE_PERIOD);
   const discharge = knobs.value(frame, "discharge");
   const sediment = knobs.value(frame, "sediment");
   const plants = knobs.value(frame, "vegetation");
@@ -1189,7 +1432,8 @@ function environment(frame: SimFrame, knobs: KnobReader<DeltaKnob>, clock: numbe
     seaBase,
     stage: STAGE_LOW + (STAGE_HIGH - STAGE_LOW) * discharge + FLOOD_STAGE * flood,
     silt: (SILT_LOW + (SILT_HIGH - SILT_LOW) * sediment) * (1 + FLOOD_SILT * flood),
-    supply: (SAND_LOW + (SAND_HIGH - SAND_LOW) * sediment) * (1 - FLOOD_SAND * Math.min(flood, 0.6)),
+    supply:
+      (SAND_LOW + (SAND_HIGH - SAND_LOW) * sediment) * (1 - FLOOD_SAND * Math.min(flood, 0.6)),
     morph: MORPH * (0.25 + 1.5 * knobs.value(frame, "erosion")),
     hold: Math.min(0.9, 1.4 * plants),
     grow: 2 * GROW * plants,
@@ -1224,7 +1468,11 @@ function gridFor(frame: SimFrame, current: LayoutKey | undefined, out: LayoutKey
 }
 
 /** The views of a layout as they stand, for machines without float render targets. */
-function staticViews(layout: DeltaLayout, sea: number, mark: MarkPlace): { ground: Float32Array; surface: Float32Array } {
+function staticViews(
+  layout: DeltaLayout,
+  sea: number,
+  mark: MarkPlace,
+): { ground: Float32Array; surface: Float32Array } {
   const n = layout.columns * layout.rows;
   const ground = new Float32Array(n * 4);
   const surface = new Float32Array(n * 4);
@@ -1263,7 +1511,14 @@ function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<DeltaKnob>): Sce
       want.seed = knobs.value(frame, "landscape");
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
       if (key === undefined || layout === undefined || !sameKey(key, want)) {
-        layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0, knobs.value(frame, "current"));
+        layout = layDelta(
+          want.columns,
+          want.rows,
+          want.seed,
+          sea,
+          knobs.value(frame, "vegetation") > 0,
+          knobs.value(frame, "current"),
+        );
         key = { ...want };
         shownSea = Number.NaN;
       }
@@ -1317,7 +1572,14 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     /** Lay out afresh for the grid in `want`; the frame then runs the warm-up. */
     const relayout = (frame: SimFrame): DeltaField => {
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
-      const layout = layDelta(want.columns, want.rows, want.seed, sea, knobs.value(frame, "vegetation") > 0, knobs.value(frame, "current"));
+      const layout = layDelta(
+        want.columns,
+        want.rows,
+        want.seed,
+        sea,
+        knobs.value(frame, "vegetation") > 0,
+        knobs.value(frame, "current"),
+      );
       if (field === undefined) field = new DeltaField(gpu, layout);
       else field.reset(layout);
       key = { ...want };
@@ -1361,7 +1623,11 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
         if (frame.fired[floodSlot] === true) manualFlood = clock;
         const seasonal = knobs.value(frame, "floods");
         const strength = seasonal > 0 ? seasonal : knobs.amount(frame, "floods");
-        const flood = Math.max(seasonal > 0 ? seasonalFlood(clock, want.seed) : 0, floodShape(clock - manualFlood)) * strength;
+        const flood =
+          Math.max(
+            seasonal > 0 ? seasonalFlood(clock, want.seed) : 0,
+            floodShape(clock - manualFlood),
+          ) * strength;
         const env = environment(frame, knobs, clock, flood);
         owed += lapse * STEPS_PER_SECOND;
         const steps = Math.min(MAX_FRAME_STEPS, Math.floor(owed));
@@ -1377,7 +1643,13 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
           cell.x = at.x * layout.columns;
           cell.y = at.y * layout.rows;
           const amount = 1 - Math.exp(-BRUSH_RATE * Math.max(frame.dt, 1 / 120));
-          sim.brush(dragging ? last : cell, cell, amount, knobs.value(frame, "tool") < 0.5, env.seaBase);
+          sim.brush(
+            dragging ? last : cell,
+            cell,
+            amount,
+            knobs.value(frame, "tool") < 0.5,
+            env.seaBase,
+          );
           last.x = cell.x;
           last.y = cell.y;
           dragging = true;

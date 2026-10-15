@@ -11,17 +11,22 @@ const H = 180;
 
 function program(gl: WebGL2RenderingContext): WebGLProgram {
   const linked = gl.createProgram();
-  for (const [type, source] of [[gl.VERTEX_SHADER, vertexSource], [gl.FRAGMENT_SHADER, fragmentSourceFor(barScene)]] as const) {
+  for (const [type, source] of [
+    [gl.VERTEX_SHADER, vertexSource],
+    [gl.FRAGMENT_SHADER, fragmentSourceFor(barScene)],
+  ] as const) {
     const shader = gl.createShader(type);
     if (!shader) throw new Error("bar last call: shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? "bar last call: compile failed");
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      throw new Error(gl.getShaderInfoLog(shader) ?? "bar last call: compile failed");
     gl.attachShader(linked, shader);
     gl.deleteShader(shader);
   }
   gl.linkProgram(linked);
-  if (!gl.getProgramParameter(linked, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(linked) ?? "bar last call: link failed");
+  if (!gl.getProgramParameter(linked, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(linked) ?? "bar last call: link failed");
   return linked;
 }
 
@@ -67,8 +72,17 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
     if (!sim) throw new Error("bar last call: the scene has no sim");
     const triggers = Array.from({ length: 8 }, () => -1e4);
     const frame: SimFrame = {
-      dt: 0, time: 0, motionTime: 0, motion: 1, width: W, height: H, aspect: W / H, params: knobs, values: params,
-      triggers, fired: Array.from({ length: 8 }, () => false),
+      dt: 0,
+      time: 0,
+      motionTime: 0,
+      motion: 1,
+      width: W,
+      height: H,
+      aspect: W / H,
+      params: knobs,
+      values: params,
+      triggers,
+      fired: Array.from({ length: 8 }, () => false),
       pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
       passage: { enter: 1, exit: 0 },
     };
@@ -87,8 +101,14 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
   try {
     const lit = neon(open.texture, 30);
     const dark = neon(closing.texture, 30);
-    if (lit < 10) throw new Error(`bar last call: the OPEN sign showed only ${lit} neon pixels early in the evening`);
-    if (dark !== 0) throw new Error(`bar last call: ${dark} neon pixels of the OPEN sign still lit twenty-five seconds after last call`);
+    if (lit < 10)
+      throw new Error(
+        `bar last call: the OPEN sign showed only ${lit} neon pixels early in the evening`,
+      );
+    if (dark !== 0)
+      throw new Error(
+        `bar last call: ${dark} neon pixels of the OPEN sign still lit twenty-five seconds after last call`,
+      );
     return { neonPixels: { open: lit, afterLastCall: dark } };
   } finally {
     gl.bindTexture(gl.TEXTURE_2D, null);

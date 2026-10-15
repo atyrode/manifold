@@ -10,7 +10,13 @@ export const BONSAI_TILT = 0.14;
 
 /** Where the display sits in the frame: rim centre `right` screen heights right of centre on wide
  *  frames, at screen height `rimY`; narrower than `fitAspect` it shrinks and rises by `lift`. */
-export const BONSAI_FRAME = { right: 0.17, wideAspect: 1.78, fitAspect: 1.35, rimY: 0.3, lift: 0.22 } as const;
+export const BONSAI_FRAME = {
+  right: 0.17,
+  wideAspect: 1.78,
+  fitAspect: 1.35,
+  rimY: 0.3,
+  lift: 0.22,
+} as const;
 
 export interface BonsaiPlacement {
   x: number;
@@ -22,17 +28,35 @@ export interface BonsaiPlacement {
 export function bonsaiPlacement(aspect: number): BonsaiPlacement {
   const scale = Math.min(1, aspect / BONSAI_FRAME.fitAspect);
   const wide = Math.min(1, Math.max(0, (aspect - 1) / (BONSAI_FRAME.wideAspect - 1)));
-  return { x: BONSAI_FRAME.right * wide, y: BONSAI_FRAME.rimY + (1 - scale) * BONSAI_FRAME.lift, scale };
+  return {
+    x: BONSAI_FRAME.right * wide,
+    y: BONSAI_FRAME.rimY + (1 - scale) * BONSAI_FRAME.lift,
+    scale,
+  };
 }
 
 /** The pot: half width a and half depth b at the rim, height (rim to base), feet, lip, taper at the base. */
-export const BONSAI_POT = { a: 0.235, b: 0.15, height: 0.072, foot: 0.011, lip: 0.01, taper: 0.02 } as const;
+export const BONSAI_POT = {
+  a: 0.235,
+  b: 0.15,
+  height: 0.072,
+  foot: 0.011,
+  lip: 0.01,
+  taper: 0.02,
+} as const;
 /** The soil surface inside the pot, below the rim. */
 export const BONSAI_SOIL_Y = -0.008;
 /** The moss mound round the trunk's foot: height and radius. */
 export const BONSAI_MOUND = { height: 0.016, radius: 0.13 } as const;
 /** The stand: top surface height, half width and depth, slab thickness, apron, leg width. */
-export const BONSAI_STAND = { top: -0.083, halfWidth: 0.37, halfDepth: 0.165, slab: 0.022, apron: 0.017, leg: 0.03 } as const;
+export const BONSAI_STAND = {
+  top: -0.083,
+  halfWidth: 0.37,
+  halfDepth: 0.165,
+  slab: 0.022,
+  apron: 0.017,
+  leg: 0.03,
+} as const;
 /** The veranda floor and the wall behind. */
 export const BONSAI_FLOOR_Y = -0.235;
 export const BONSAI_WALL_Z = 0.36;
@@ -51,10 +75,16 @@ export const BONSAI_PER_UNIT = BONSAI_MAP.width / (BONSAI_REGION.x1 - BONSAI_REG
 /** The atlas (uSim2): the litter on the moss, stand and floor, then two sprites of cut twigs. */
 export const BONSAI_LITTER = { x0: -0.62, y0: -0.345, width: 640, height: 192 } as const;
 export const BONSAI_SPRITE = { size: 128, span: 128 / BONSAI_PER_UNIT } as const;
-export const BONSAI_ATLAS = { width: BONSAI_LITTER.width + 2 * BONSAI_SPRITE.size, height: BONSAI_LITTER.height } as const;
+export const BONSAI_ATLAS = {
+  width: BONSAI_LITTER.width + 2 * BONSAI_SPRITE.size,
+  height: BONSAI_LITTER.height,
+} as const;
 
 /** The data texture (uSim3): rows of the low-res field (sway, silhouettes), then tables. */
-export const BONSAI_FIELD = { width: BONSAI_MAP.width / 4, height: Math.round(BONSAI_MAP.height / 4) } as const;
+export const BONSAI_FIELD = {
+  width: BONSAI_MAP.width / 4,
+  height: Math.round(BONSAI_MAP.height / 4),
+} as const;
 export const BONSAI_MAX_TUFTS = 960;
 export const BONSAI_MAX_SHOOTS = 48;
 export const BONSAI_MAX_MOTES = 24;
@@ -86,7 +116,10 @@ export const BONSAI_SAKURA = 2;
 export function bonsaiMound(x: number, z: number): number {
   const dx = x - BONSAI_TRUNK.x;
   const dz = (z - BONSAI_TRUNK.z) * 1.4;
-  return BONSAI_MOUND.height * Math.exp(-(dx * dx + dz * dz) / (BONSAI_MOUND.radius * BONSAI_MOUND.radius));
+  return (
+    BONSAI_MOUND.height *
+    Math.exp(-(dx * dx + dz * dz) / (BONSAI_MOUND.radius * BONSAI_MOUND.radius))
+  );
 }
 
 /** The first surface below a falling thing at (x, z): moss, pot rim, stand top or floor. */
@@ -98,6 +131,7 @@ export function bonsaiSurface(x: number, z: number): number {
   const ib = b - BONSAI_POT.lip;
   if ((x * x) / (ia * ia) + (z * z) / (ib * ib) < 1) return BONSAI_SOIL_Y + bonsaiMound(x, z);
   if (e < 1) return 0;
-  if (Math.abs(x) < BONSAI_STAND.halfWidth && Math.abs(z) < BONSAI_STAND.halfDepth) return BONSAI_STAND.top;
+  if (Math.abs(x) < BONSAI_STAND.halfWidth && Math.abs(z) < BONSAI_STAND.halfDepth)
+    return BONSAI_STAND.top;
   return BONSAI_FLOOR_Y;
 }

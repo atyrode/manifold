@@ -17,17 +17,24 @@ function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("dew bins: shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? "dew bins: compile failed");
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      throw new Error(gl.getShaderInfoLog(shader) ?? "dew bins: compile failed");
     gl.attachShader(program, shader);
     gl.deleteShader(shader);
   }
   gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? "dew bins: link failed");
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(program) ?? "dew bins: link failed");
   return program;
 }
 
 export function verifyDewBins(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const frame: HeadlessFrame = { dt: 1 / 30, aspect: 480 / 270, height: 270, pointer: { inside: false } };
+  const frame: HeadlessFrame = {
+    dt: 1 / 30,
+    aspect: 480 / 270,
+    height: 270,
+    pointer: { inside: false },
+  };
   const twin = new HeadlessSim(dewScene);
   const sim = new HeadlessSim(dewScene, gl);
   let textures: readonly (WebGLTexture | undefined)[] = [];
@@ -93,7 +100,10 @@ export function verifyDewBins(gl: WebGL2RenderingContext): Record<string, unknow
       let count = 0;
       let sum = 0;
       for (let k = 0; k < BIN_PAGE * pages; k++) {
-        const id = lists.data[(i + Math.floor(k / BIN_PAGE) * cols) * lists.width + j * BIN_PAGE + (k % BIN_PAGE)] ?? 0;
+        const id =
+          lists.data[
+            (i + Math.floor(k / BIN_PAGE) * cols) * lists.width + j * BIN_PAGE + (k % BIN_PAGE)
+          ] ?? 0;
         if (id === 0) break;
         count++;
         sum = (sum + Math.abs(id)) % 251;
@@ -102,10 +112,13 @@ export function verifyDewBins(gl: WebGL2RenderingContext): Record<string, unknow
       const at = (j * cols + i) * 4;
       const seen = [pixels[at], pixels[at + 1], pixels[at + 2]];
       if (seen[0] !== count || seen[1] !== sum || seen[2] !== pages) {
-        throw new Error(`dew bins: bin ${i},${j} walked ${seen.join("/")} on the GPU, built ${count}/${sum}/${pages}`);
+        throw new Error(
+          `dew bins: bin ${i},${j} walked ${seen.join("/")} on the GPU, built ${count}/${sum}/${pages}`,
+        );
       }
     }
   }
-  if (fullest <= BIN_PAGE) throw new Error(`dew bins: the fixture's fullest bin holds ${fullest}, not past one page`);
+  if (fullest <= BIN_PAGE)
+    throw new Error(`dew bins: the fixture's fullest bin holds ${fullest}, not past one page`);
   return { bins: `${cols}x${rows}`, pages, fullest };
 }

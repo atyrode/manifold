@@ -36,8 +36,21 @@ export const mobilePaints: readonly MobilePaint[] = [
       ["#e6e1d4", 1],
     ],
   },
-  { label: "black", colours: [["#0d0d10", 0.86], [MOBILE_RED, 1]] },
-  { label: "white", colours: [["#e9e5db", 0.82], ["#0d0d10", 0.94], [MOBILE_RED, 1]] },
+  {
+    label: "black",
+    colours: [
+      ["#0d0d10", 0.86],
+      [MOBILE_RED, 1],
+    ],
+  },
+  {
+    label: "white",
+    colours: [
+      ["#e9e5db", 0.82],
+      ["#0d0d10", 0.94],
+      [MOBILE_RED, 1],
+    ],
+  },
   { label: "brass", colours: [["#c99a45", 1]] },
 ];
 
@@ -46,7 +59,9 @@ const paintBody = mobilePaints
   .map((paint, i) => {
     const lines = paint.colours.map(([hex, upTo], j) => {
       const red = hex === MOBILE_RED ? "1.0" : "0.0";
-      return j === paint.colours.length - 1 ? `    return vec4(${glslVec3(hex)}, ${red});` : `    if (h < ${upTo.toFixed(2)}) return vec4(${glslVec3(hex)}, ${red});`;
+      return j === paint.colours.length - 1
+        ? `    return vec4(${glslVec3(hex)}, ${red});`
+        : `    if (h < ${upTo.toFixed(2)}) return vec4(${glslVec3(hex)}, ${red});`;
     });
     return `  if (K_palette < ${i}.5) {\n${lines.join("\n")}\n  }`;
   })

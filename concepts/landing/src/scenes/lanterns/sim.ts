@@ -298,15 +298,20 @@ const ROCK_STREAM = ROCKS.map((rock) => {
   const lane = Math.exp(-off * off);
   const pace = paceAt(rock.z) + (paceAt(centre) - paceAt(rock.z)) * lane;
   const speed = (LANE_SLACK + (1 - LANE_SLACK) * lane) * pace;
-  const turn = smoothstep(LANE_NEAR, LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN), rock.z);
+  const turn = smoothstep(
+    LANE_NEAR,
+    LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN),
+    rock.z,
+  );
   return { x: -speed, z: -speed * laneSlope(rock.x) * turn };
 });
 
 /** The unit vector downstream from each rock (x, z), for the wakes the shader draws. */
-export const ROCK_DOWNSTREAM: readonly { readonly x: number; readonly z: number }[] = ROCK_STREAM.map((stream) => {
-  const length = Math.hypot(stream.x, stream.z);
-  return { x: stream.x / length, z: stream.z / length };
-});
+export const ROCK_DOWNSTREAM: readonly { readonly x: number; readonly z: number }[] =
+  ROCK_STREAM.map((stream) => {
+    const length = Math.hypot(stream.x, stream.z);
+    return { x: stream.x / length, z: stream.z / length };
+  });
 
 class Lantern {
   alive = false;
@@ -359,7 +364,10 @@ class LanternRiver implements SceneSim {
   /** The textures handed to the renderer every frame. */
   readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #random = new Random();
-  readonly #regular: readonly Lantern[] = Array.from({ length: MAX_LANTERNS - 1 }, () => new Lantern());
+  readonly #regular: readonly Lantern[] = Array.from(
+    { length: MAX_LANTERNS - 1 },
+    () => new Lantern(),
+  );
   readonly #mark = new Lantern();
   /** Every slot in texture order: the regular lanterns, then the M lantern. */
   readonly #all: readonly Lantern[] = [...this.#regular, this.#mark];
@@ -400,24 +408,41 @@ class LanternRiver implements SceneSim {
   #handVZ = 0;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader("lanterns", params, ["lanterns", "current", "flotilla", "lanternSeed", "wind", "mark"]);
+    this.#knobs = new KnobReader("lanterns", params, [
+      "lanterns",
+      "current",
+      "flotilla",
+      "lanternSeed",
+      "wind",
+      "mark",
+    ]);
     this.#flotillaSlot = this.#knobs.trigger("flotilla");
     this.#markSlot = this.#knobs.trigger("mark");
     this.#mark.mark = true;
-    this.#texture = new DataTexture(gl, { width: TEXTURE_WIDTH, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: TEXTURE_WIDTH,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#textures = [this.#texture.texture];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const knobs = this.#knobs;
     this.#target = clamp(Math.round(knobs.value(frame, "lanterns")), 0, MAX_LANTERNS - 1);
-    this.#current = CURRENT_SLOW + (CURRENT_FAST - CURRENT_SLOW) * clamp(knobs.value(frame, "current"), 0, 1);
+    this.#current =
+      CURRENT_SLOW + (CURRENT_FAST - CURRENT_SLOW) * clamp(knobs.value(frame, "current"), 0, 1);
     this.#wind = clamp(knobs.value(frame, "wind"), -1, 1);
     this.#flotilla = clamp(knobs.value(frame, "flotilla"), 0, 1);
     this.#markOn = knobs.value(frame, "mark") > 0.5;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#leave = clamp(frame.passage.exit, 0, 1);
-    this.#wave = clamp((frame.passage.enter * PASSAGE_ENTER - KINDLE_FROM) / (KINDLE_TO - KINDLE_FROM), 0, 1);
+    this.#wave = clamp(
+      (frame.passage.enter * PASSAGE_ENTER - KINDLE_FROM) / (KINDLE_TO - KINDLE_FROM),
+      0,
+      1,
+    );
 
     this.#refreshCrossing();
     const seed = Math.round(knobs.value(frame, "lanternSeed"));
@@ -426,7 +451,8 @@ class LanternRiver implements SceneSim {
 
     // Flotillas on their own: a fresh wait whenever the knob comes on, none while it is off.
     if (this.#flotilla <= 0) this.#nextFlotilla = Number.POSITIVE_INFINITY;
-    else if (!Number.isFinite(this.#nextFlotilla)) this.#nextFlotilla = this.#clock + FLOTILLA_FIRST;
+    else if (!Number.isFinite(this.#nextFlotilla))
+      this.#nextFlotilla = this.#clock + FLOTILLA_FIRST;
     // Switching the M lantern on sets it on the water from our bank, so it shows at once.
     if (this.#markOn && !this.#markWasOn && !this.#mark.alive) this.#releaseMark();
     this.#markWasOn = this.#markOn;
@@ -540,7 +566,8 @@ class LanternRiver implements SceneSim {
     if (entering) {
       for (const lantern of this.#all) if (lantern.alive) this.#unlit(lantern);
     }
-    this.#nextFlotilla = this.#flotilla > 0 ? this.#clock + FLOTILLA_FIRST : Number.POSITIVE_INFINITY;
+    this.#nextFlotilla =
+      this.#flotilla > 0 ? this.#clock + FLOTILLA_FIRST : Number.POSITIVE_INFINITY;
     this.#markWasOn = this.#markOn;
   }
 
@@ -585,7 +612,9 @@ class LanternRiver implements SceneSim {
       this.#place(2.1 * random.next() - 1, 0);
       const x = this.#point[0] ?? 0;
       const z = this.#point[1] ?? NEAR_Z;
-      const onRock = ROCKS.some((rock) => Math.hypot(x - rock.x, z - rock.z) < rock.radius + RADIUS + 0.2);
+      const onRock = ROCKS.some(
+        (rock) => Math.hypot(x - rock.x, z - rock.z) < rock.radius + RADIUS + 0.2,
+      );
       if (onRock || this.#crowded(x, z, 0.6)) continue;
       const lantern = this.#freeSlot();
       if (!lantern) return;
@@ -631,7 +660,8 @@ class LanternRiver implements SceneSim {
     let outside = 200 * side;
     for (let i = 0; i < 24; i++) {
       const x = 0.5 * (inside + outside);
-      if (side * (x - frac * this.#halfWidth(Math.max(laneZ(x) + offset, LANE_NEAR))) - margin > 0) outside = x;
+      if (side * (x - frac * this.#halfWidth(Math.max(laneZ(x) + offset, LANE_NEAR))) - margin > 0)
+        outside = x;
       else inside = x;
     }
     return outside;
@@ -675,7 +705,15 @@ class LanternRiver implements SceneSim {
   }
 
   /** Put a lantern on the water. */
-  #launch(lantern: Lantern, x: number, z: number, vx: number, vz: number, light: number, age: number): void {
+  #launch(
+    lantern: Lantern,
+    x: number,
+    z: number,
+    vx: number,
+    vz: number,
+    light: number,
+    age: number,
+  ): void {
     const random = this.#random;
     lantern.alive = true;
     lantern.x = lantern.lastX = x;
@@ -685,7 +723,9 @@ class LanternRiver implements SceneSim {
     lantern.seed = random.next();
     lantern.size = lantern.mark ? MARK_SIZE : 0.9 + 0.2 * random.next();
     lantern.radius = RADIUS * lantern.size;
-    lantern.angle = lantern.lastAngle = lantern.mark ? (random.next() - 0.5) * 0.6 : random.next() * TAU;
+    lantern.angle = lantern.lastAngle = lantern.mark
+      ? (random.next() - 0.5) * 0.6
+      : random.next() * TAU;
     lantern.ownSpin = lantern.mark ? 0 : (random.next() * 2 - 1) * OWN_SPIN;
     lantern.spin = lantern.ownSpin;
     lantern.light = light;
@@ -738,7 +778,15 @@ class LanternRiver implements SceneSim {
       const x = centre + (k - (count - 1) / 2) * RELEASE_SPACING + (random.next() - 0.5) * 0.2;
       const z = RELEASE_Z + 0.35 * random.next();
       this.#flow(x, z);
-      this.#launch(lantern, x, z, 0.5 * (this.#water[0] ?? 0), RELEASE_PUSH * (0.8 + 0.4 * random.next()), 1, AGE_KEPT);
+      this.#launch(
+        lantern,
+        x,
+        z,
+        0.5 * (this.#water[0] ?? 0),
+        RELEASE_PUSH * (0.8 + 0.4 * random.next()),
+        1,
+        AGE_KEPT,
+      );
       lantern.extra = extra;
     }
   }
@@ -791,13 +839,29 @@ class LanternRiver implements SceneSim {
     const dSpeed = (-(1 - LANE_SLACK) * 2 * off * lane) / LANE_WIDTH;
     const lanePace = paceAt(centre);
     const pace = paceAt(z) + (lanePace - paceAt(z)) * lane;
-    const dPace = lanePace > PACE_MIN && lanePace < PACE_MAX ? (PACE_POWER * lanePace * slope * lane) / Math.max(centre, 1) : 0;
-    const turn = smoothstep(LANE_NEAR, LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN), z);
+    const dPace =
+      lanePace > PACE_MIN && lanePace < PACE_MAX
+        ? (PACE_POWER * lanePace * slope * lane) / Math.max(centre, 1)
+        : 0;
+    const turn = smoothstep(
+      LANE_NEAR,
+      LANE_NEAR + Math.max(0.6 * (centre - LANE_NEAR), BANK_TURN),
+      z,
+    );
     const across = (z - NEAR_Z) / NEAR_WIDTH;
     const nearStream = NEAR_PACE * Math.exp(-across * across);
-    let u = -stream * (speed * pace + nearStream + BANK_DRIFT * (1 - smoothstep(LANE_NEAR + 1, LANE_NEAR + 4.5, z)));
-    let w = -stream * speed * pace * slope * turn + OUTFLOW * Math.exp(-(z - LANE_NEAR) / OUTFLOW_REACH);
-    let vorticity = stream * (pace * (dSpeed * (1 + slope * slope) - speed * curve) - speed * dPace * slope - (2 * nearStream * across) / NEAR_WIDTH);
+    let u =
+      -stream *
+      (speed * pace +
+        nearStream +
+        BANK_DRIFT * (1 - smoothstep(LANE_NEAR + 1, LANE_NEAR + 4.5, z)));
+    let w =
+      -stream * speed * pace * slope * turn + OUTFLOW * Math.exp(-(z - LANE_NEAR) / OUTFLOW_REACH);
+    let vorticity =
+      stream *
+      (pace * (dSpeed * (1 + slope * slope) - speed * curve) -
+        speed * dPace * slope -
+        (2 * nearStream * across) / NEAR_WIDTH);
 
     // Eddies: velocity = curl(e psi) = (d(e psi)/dz, -d(e psi)/dx), vorticity = -laplacian(e psi),
     // the envelope e strongest along our bank.
@@ -852,8 +916,12 @@ class LanternRiver implements SceneSim {
       const downstream = dx * ax + dz * az;
       if (downstream > 0) {
         const side = (ax * dz - az * dx) / (1.3 * reach);
-        const shade = Math.exp(-side * side) * Math.exp(-downstream / (WAKE_LENGTH * reach)) * smoothstep(0, reach, downstream);
-        const sway = mag * WAKE_SWAY * Math.sin((downstream * 1.2) / reach - t * 0.5 + rock.x) * shade;
+        const shade =
+          Math.exp(-side * side) *
+          Math.exp(-downstream / (WAKE_LENGTH * reach)) *
+          smoothstep(0, reach, downstream);
+        const sway =
+          mag * WAKE_SWAY * Math.sin((downstream * 1.2) / reach - t * 0.5 + rock.x) * shade;
         u += -a * WAKE_DEFICIT * shade - az * sway;
         w += -b * WAKE_DEFICIT * shade + ax * sway;
       }
@@ -880,7 +948,8 @@ class LanternRiver implements SceneSim {
       if (lantern.z < LANE_NEAR) lantern.az += (LANE_NEAR - lantern.z) * BANK_PUSH;
       else if (lantern.z > LANE_FAR) lantern.az -= (lantern.z - LANE_FAR) * BANK_PUSH;
       // The M lantern keeps to the near water, where its M reads.
-      if (lantern.mark) lantern.az += clamp((MARK_Z - lantern.z) * MARK_HOLD, -MARK_PULL, MARK_PULL);
+      if (lantern.mark)
+        lantern.az += clamp((MARK_Z - lantern.z) * MARK_HOLD, -MARK_PULL, MARK_PULL);
       if (this.#hand) {
         const d = Math.hypot(lantern.x - this.#handX, lantern.z - this.#handZ);
         if (d < HAND_RADIUS) {
@@ -958,7 +1027,9 @@ class LanternRiver implements SceneSim {
       }
 
       // Turning: toward half the water's vorticity plus its own slow turn, and the knocks it takes.
-      lantern.spin += (0.5 * lantern.vorticity + lantern.ownSpin - lantern.spin) * (h / SPIN_EASE) + lantern.torque * h;
+      lantern.spin +=
+        (0.5 * lantern.vorticity + lantern.ownSpin - lantern.spin) * (h / SPIN_EASE) +
+        lantern.torque * h;
       if (lantern.mark) lantern.spin -= FACE_PULL * Math.sin(2 * lantern.angle) * h;
       lantern.angle += lantern.spin * h;
       if (Math.abs(lantern.angle) > 64) {
@@ -974,7 +1045,8 @@ class LanternRiver implements SceneSim {
       const half = this.#halfWidth(lantern.z);
       if (lantern.x < -half - EXIT_MARGIN || lantern.x > half + SPAWN_MARGIN + STRAY) {
         lantern.alive = false;
-        if (lantern.mark && this.#markOn) this.#nextMark = this.#clock + 2 + 4 * this.#random.next();
+        if (lantern.mark && this.#markOn)
+          this.#nextMark = this.#clock + 2 + 4 * this.#random.next();
       }
     }
 
@@ -1010,7 +1082,8 @@ class LanternRiver implements SceneSim {
     } else {
       const arrived = this.#spawnUpstream();
       const lean = count < this.#target - 1 ? 0.7 : 1.2;
-      this.#nextSpawn = this.#clock + gap * Math.max(arrived, 1) * lean * (0.7 + 0.6 * random.next());
+      this.#nextSpawn =
+        this.#clock + gap * Math.max(arrived, 1) * lean * (0.7 + 0.6 * random.next());
     }
   }
 

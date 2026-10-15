@@ -20,13 +20,19 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     return shader;
   });
   const linked = gl.createProgram();
   for (const shader of shaders) gl.attachShader(linked, shader);
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
@@ -50,7 +56,14 @@ Shade regressionFallsBirds(vec2 uv, vec2 cell, float t) {
 }`;
 
 export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const scene = program(gl, fragmentSourceFor({ ...sceneDefs.falls, entry: "regressionFallsBirds", glsl: sceneDefs.falls.glsl + wrapper }));
+  const scene = program(
+    gl,
+    fragmentSourceFor({
+      ...sceneDefs.falls,
+      entry: "regressionFallsBirds",
+      glsl: sceneDefs.falls.glsl + wrapper,
+    }),
+  );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -65,12 +78,21 @@ export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unk
   gl.uniform4f(at("uSimOn"), 0, 0, 0, 0);
   const calm: Params = { ...paramDefaults("falls"), time: 0.5, rain: 0, fog: 0 };
   const swifts: Params = { ...calm, birds: 1, "birds-amount": 1 };
-  const draw = (knobs: Params, mode: number, motionTime: number, clock = motionTime, motion = 1): Uint8Array => {
+  const draw = (
+    knobs: Params,
+    mode: number,
+    motionTime: number,
+    clock = motionTime,
+    motion = 1,
+  ): Uint8Array => {
     gl.uniform1i(at("regressionMode"), mode);
     gl.uniform1f(at("uTime"), clock);
     gl.uniform1f(at("uMotionTime"), motionTime);
     gl.uniform1f(at("uMotion"), motion);
-    gl.uniform1fv(at("uParams"), Float32Array.from(renderSettings(defaultsFor("falls"), knobs).params));
+    gl.uniform1fv(
+      at("uParams"),
+      Float32Array.from(renderSettings(defaultsFor("falls"), knobs).params),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -103,29 +125,33 @@ export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unk
   // (b) The formation knob reaches the sky: the same flights flown as loose parties (three to seven
   // swifts) make at least twice as many separate marks (4-connected groups of covered pixels) as
   // flown solo. (A V of swifts this near spreads most of its arms off the frame.)
-  const marks = (knobs: Params) => TIMES.reduce((sum, time) => {
-    const mask = draw(knobs, 1, time);
-    const seen = new Uint8Array(pixels);
-    let n = 0;
-    for (let start = 0; start < pixels; start++) {
-      if (seen[start] || !raw(mask, start)) continue;
-      n++;
-      const stack = [start];
-      seen[start] = 1;
-      for (let i = stack.pop(); i !== undefined; i = stack.pop()) {
-        const x = i % WIDTH;
-        for (const j of [x > 0 ? i - 1 : -1, x < WIDTH - 1 ? i + 1 : -1, i - WIDTH, i + WIDTH]) {
-          if (j < 0 || j >= pixels || seen[j] || !raw(mask, j)) continue;
-          seen[j] = 1;
-          stack.push(j);
+  const marks = (knobs: Params) =>
+    TIMES.reduce((sum, time) => {
+      const mask = draw(knobs, 1, time);
+      const seen = new Uint8Array(pixels);
+      let n = 0;
+      for (let start = 0; start < pixels; start++) {
+        if (seen[start] || !raw(mask, start)) continue;
+        n++;
+        const stack = [start];
+        seen[start] = 1;
+        for (let i = stack.pop(); i !== undefined; i = stack.pop()) {
+          const x = i % WIDTH;
+          for (const j of [x > 0 ? i - 1 : -1, x < WIDTH - 1 ? i + 1 : -1, i - WIDTH, i + WIDTH]) {
+            if (j < 0 || j >= pixels || seen[j] || !raw(mask, j)) continue;
+            seen[j] = 1;
+            stack.push(j);
+          }
         }
       }
-    }
-    return sum + n;
-  }, 0);
+      return sum + n;
+    }, 0);
   const solo = marks({ ...swifts, birdFormation: 1 });
   const party = marks({ ...swifts, birdFormation: 2 });
-  check(solo > 0 && party >= 2 * solo, `Formation knob: ${solo} marks flown solo, ${party} as parties`);
+  check(
+    solo > 0 && party >= 2 * solo,
+    `Formation knob: ${solo} marks flown solo, ${party} as parties`,
+  );
 
   // (c) The birds are fixed by the motion clock: the same motion time draws the same birds (the
   // actual frame with birds against the one without) at another scene clock and motion amount, and
@@ -133,12 +159,17 @@ export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unk
   const birdsAt = (motionTime: number, clock: number, motion: number): boolean[] => {
     const on = draw(swifts, 0, motionTime, clock, motion);
     const off = draw(calm, 0, motionTime, clock, motion);
-    return Array.from({ length: pixels }, (_, i) => [0, 1, 2].some((c) => on[i * 4 + c] !== off[i * 4 + c]));
+    return Array.from({ length: pixels }, (_, i) =>
+      [0, 1, 2].some((c) => on[i * 4 + c] !== off[i * 4 + c]),
+    );
   };
   const time = TIMES[0] ?? 100;
   const still = birdsAt(time, time, 1);
   check(still.some(Boolean), "No birds in the clock fixture");
-  check(birdsAt(time, time * 2.7 + 11, 0.35).every((bird, i) => bird === still[i]), "Birds moved with the scene clock or the motion amount at a fixed motion time");
+  check(
+    birdsAt(time, time * 2.7 + 11, 0.35).every((bird, i) => bird === still[i]),
+    "Birds moved with the scene clock or the motion amount at a fixed motion time",
+  );
   const moved = birdsAt(time + 1.5, time, 1).filter((bird, i) => bird !== still[i]).length;
   check(moved > 0, "Birds did not move as the motion clock advanced");
   gl.deleteProgram(scene);

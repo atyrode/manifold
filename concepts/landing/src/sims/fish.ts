@@ -79,7 +79,12 @@ export interface FishSpecies {
   readonly spacing: number;
   readonly spacingPull: number;
   /** A school: neighbours within `align` body lengths are matched in velocity (share 0..1), those within `cohere` drawn together (per second); undefined for a solitary fish. */
-  readonly school?: { readonly align: number; readonly cohere: number; readonly alignPull: number; readonly coherePull: number };
+  readonly school?: {
+    readonly align: number;
+    readonly cohere: number;
+    readonly alignPull: number;
+    readonly coherePull: number;
+  };
   /** Each fish's own weave: sideways want as a share of cruising speed, and its rate (radians per second). */
   readonly wander: number;
   readonly wanderRate: number;
@@ -141,7 +146,8 @@ export class FishGroup {
   readonly #wy: Float64Array;
 
   constructor(species: FishSpecies, capacity: number) {
-    if (!(Number.isInteger(capacity) && capacity >= 1)) throw new FishError(`a fish group holds a whole number ≥ 1 of fish, got ${capacity}`);
+    if (!(Number.isInteger(capacity) && capacity >= 1))
+      throw new FishError(`a fish group holds a whole number ≥ 1 of fish, got ${capacity}`);
     this.capacity = capacity;
     this.species = species;
     this.x = new Float64Array(capacity);
@@ -157,7 +163,15 @@ export class FishGroup {
   }
 
   /** Put fish i somewhere, facing `heading` at `speed`, with its body length and salt. */
-  place(i: number, x: number, y: number, heading: number, speed: number, length: number, salt: number): void {
+  place(
+    i: number,
+    x: number,
+    y: number,
+    heading: number,
+    speed: number,
+    length: number,
+    salt: number,
+  ): void {
     this.x[i] = x;
     this.y[i] = y;
     this.heading[i] = heading;
@@ -194,7 +208,8 @@ export class FishGroup {
     const dy = ty - (this.y[i] ?? 0);
     const d = Math.hypot(dx, dy);
     if (d < 1e-9) return;
-    const v = (this.species.cruise * this.pace * Math.min(1, d / Math.max(radius, 1e-9)) * weight) / d;
+    const v =
+      (this.species.cruise * this.pace * Math.min(1, d / Math.max(radius, 1e-9)) * weight) / d;
     this.#add(i, dx * v, dy * v);
   }
 
@@ -211,7 +226,12 @@ export class FishGroup {
   /** A slow sideways weave of the fish's own at `clock` (seconds). */
   wander(i: number, clock: number, weight = 1): void {
     const sp = this.species;
-    const a = sp.wander * sp.cruise * this.pace * weight * Math.sin(clock * sp.wanderRate + (this.salt[i] ?? 0) * TAU);
+    const a =
+      sp.wander *
+      sp.cruise *
+      this.pace *
+      weight *
+      Math.sin(clock * sp.wanderRate + (this.salt[i] ?? 0) * TAU);
     const h = this.heading[i] ?? 0;
     this.#add(i, -Math.sin(h) * a, Math.cos(h) * a);
   }
@@ -251,7 +271,12 @@ export class FishGroup {
         }
       }
       if (na > 0) this.#add(i, (s.alignPull * weight * ax) / na, (s.alignPull * weight * ay) / na);
-      if (nc > 0) this.#add(i, (s.coherePull * this.pace * weight * cx) / nc, (s.coherePull * this.pace * weight * cy) / nc);
+      if (nc > 0)
+        this.#add(
+          i,
+          (s.coherePull * this.pace * weight * cx) / nc,
+          (s.coherePull * this.pace * weight * cy) / nc,
+        );
     }
   }
 
@@ -353,7 +378,12 @@ export class FishTexture {
 
   constructor(gl: WebGL2RenderingContext, capacity: number) {
     this.capacity = capacity;
-    this.#texture = new DataTexture(gl, { width: capacity, height: 3, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: capacity,
+      height: 3,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#data = new Float32Array(capacity * 3 * 4);
   }
 

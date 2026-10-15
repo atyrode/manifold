@@ -68,11 +68,26 @@ const int KELP_SEGMENTS = ${KELP_SEGMENTS};
 const int KELP_POINTS = ${KELP_POINTS};
 const int KELP_POINT_ROW = ${KELP_POINT_ROW};
 const vec3 KELP_ORIGIN = vec3(${KELP_ORIGIN.map(num).join(", ")});
-const float KELP_LAYER_SCALE[${layerCount}] = ${glslArray("float", KELP_LAYERS.map((l) => l.scale))};
-const float KELP_LAYER_LEFT[${layerCount}] = ${glslArray("float", KELP_LAYERS.map((l) => l.left))};
-const float KELP_LAYER_SPACING[${layerCount}] = ${glslArray("float", KELP_LAYERS.map((l) => l.spacing))};
-const int KELP_LAYER_SLOTS[${layerCount}] = ${glslArray("int", KELP_LAYERS.map((l) => l.slots))};
-const int KELP_LAYER_FIRST[${layerCount}] = ${glslArray("int", KELP_LAYERS.map((l) => l.first))};
+const float KELP_LAYER_SCALE[${layerCount}] = ${glslArray(
+  "float",
+  KELP_LAYERS.map((l) => l.scale),
+)};
+const float KELP_LAYER_LEFT[${layerCount}] = ${glslArray(
+  "float",
+  KELP_LAYERS.map((l) => l.left),
+)};
+const float KELP_LAYER_SPACING[${layerCount}] = ${glslArray(
+  "float",
+  KELP_LAYERS.map((l) => l.spacing),
+)};
+const int KELP_LAYER_SLOTS[${layerCount}] = ${glslArray(
+  "int",
+  KELP_LAYERS.map((l) => l.slots),
+)};
+const int KELP_LAYER_FIRST[${layerCount}] = ${glslArray(
+  "int",
+  KELP_LAYERS.map((l) => l.first),
+)};
 const int KELP_ROW_STIPES = ${KELP_ROW.stipes};
 const int KELP_ROW_FISH_POSE = ${KELP_ROW.fishPose};
 const int KELP_ROW_FISH_LOOK = ${KELP_ROW.fishLook};

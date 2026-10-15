@@ -85,7 +85,12 @@ function faded(rate: number, time: number): number {
 export function pendulumFadingSwings(amplitude: number, decay: number, time: number): number {
   const a2 = amplitude * amplitude;
   const [c2, c4, c6] = INVERSE_STRETCH;
-  return time - c2 * a2 * faded(2 * decay, time) + c4 * a2 * a2 * faded(4 * decay, time) - c6 * a2 * a2 * a2 * faded(6 * decay, time);
+  return (
+    time -
+    c2 * a2 * faded(2 * decay, time) +
+    c4 * a2 * a2 * faded(4 * decay, time) -
+    c6 * a2 * a2 * a2 * faded(6 * decay, time)
+  );
 }
 
 /** The functions above in GLSL, the same names and maths. Needs nothing but GLSL builtins. */

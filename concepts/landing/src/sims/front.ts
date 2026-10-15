@@ -131,7 +131,14 @@ export class ArrivalField {
    * Arrival times on a width × height grid from `source` (uv), straight steps spanning `reach`
    * domain units, positions p = uv * domain; `inputs` feeds the speed snippet.
    */
-  compute(width: number, height: number, source: readonly [number, number], reach: number, domain: readonly [number, number], inputs: RunOptions = {}): void {
+  compute(
+    width: number,
+    height: number,
+    source: readonly [number, number],
+    reach: number,
+    domain: readonly [number, number],
+    inputs: RunOptions = {},
+  ): void {
     this.#field.resize(width, height);
     this.#source[0] = source[0];
     this.#source[1] = source[1];
@@ -139,7 +146,13 @@ export class ArrivalField {
     this.#domain[1] = domain[1];
     if (inputs.textures) this.#straight.bind(inputs.textures);
     if (inputs.uniforms) this.#straight.set(inputs.uniforms);
-    this.#straight.run(this.#field, { uniforms: { uFrontSource: this.#source, uFrontDomain: this.#domain, uFrontStep: Math.max(reach, 1e-6) / this.#samples } });
+    this.#straight.run(this.#field, {
+      uniforms: {
+        uFrontSource: this.#source,
+        uFrontDomain: this.#domain,
+        uFrontStep: Math.max(reach, 1e-6) / this.#samples,
+      },
+    });
     this.#relax.set({ uFrontDomain: this.#domain });
     for (let i = 0; i < this.#sweeps; i++) this.#relax.run(this.#field);
   }

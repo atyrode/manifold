@@ -67,7 +67,8 @@ export function grayScottAlong(position: number, out: Float32Array, at: number):
   const i = Math.floor(wrapped);
   const from = grayScottRegimes[i];
   const to = grayScottRegimes[(i + 1) % count];
-  if (from === undefined || to === undefined) throw new Error(`grayscott: no regime at stop ${i} of ${count}`);
+  if (from === undefined || to === undefined)
+    throw new Error(`grayscott: no regime at stop ${i} of ${count}`);
   const e = smoothstep(0, 1, wrapped - i);
   out[at] = from.feed + (to.feed - from.feed) * e;
   out[at + 1] = from.kill + (to.kill - from.kill) * e;

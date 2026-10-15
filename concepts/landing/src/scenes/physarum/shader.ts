@@ -23,7 +23,14 @@
 // (passageOut): the lace thins away, then the strands thin and draw back into the nearest flakes,
 // leaving the slime they laid; the flakes stay. At rest none of it is drawn.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { PHYSARUM_DISH, PHYSARUM_FAR, PHYSARUM_MARGIN, PHYSARUM_MAX_FOOD, PHYSARUM_PASSAGE, PHYSARUM_WAVE } from "./sim.ts";
+import {
+  PHYSARUM_DISH,
+  PHYSARUM_FAR,
+  PHYSARUM_MARGIN,
+  PHYSARUM_MAX_FOOD,
+  PHYSARUM_PASSAGE,
+  PHYSARUM_WAVE,
+} from "./sim.ts";
 
 export const physarumGlsl = `
 const float PHYSARUM_MARGIN = ${glslFloat(PHYSARUM_MARGIN)};

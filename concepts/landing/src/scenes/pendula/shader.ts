@@ -23,7 +23,13 @@ export const PENDULA_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
  * run-down (the swing falls as e^(-decay · cycles)), the cycles between re-releases and the cycles the
  * push before one takes.
  */
-export const PENDULA_SWING = { least: 0.14, most: 0.4, decay: 0.2, release: 3, push: 0.06 } as const;
+export const PENDULA_SWING = {
+  least: 0.14,
+  most: 0.4,
+  decay: 0.2,
+  release: 3,
+  push: 0.06,
+} as const;
 
 export interface PendulaCamera {
   label: string;
@@ -43,9 +49,33 @@ export interface PendulaCamera {
 
 /** In `camera` knob order. The extents were measured from the beam, posts, feet and the bobs' reach. */
 export const pendulaCameras: readonly PendulaCamera[] = [
-  { label: "side", yaw: 62, pitch: 6, dist: 5, aim: 0.95, centre: [0.0347, -0.0479], half: [0.1951, 0.2466] },
-  { label: "3/4", yaw: 38, pitch: 17, dist: 5, aim: 0.95, centre: [0.0498, -0.0426], half: [0.2751, 0.2365] },
-  { label: "top", yaw: 0, pitch: 80, dist: 5, aim: 0.55, centre: [0, -0.0065], half: [0.4126, 0.0822] },
+  {
+    label: "side",
+    yaw: 62,
+    pitch: 6,
+    dist: 5,
+    aim: 0.95,
+    centre: [0.0347, -0.0479],
+    half: [0.1951, 0.2466],
+  },
+  {
+    label: "3/4",
+    yaw: 38,
+    pitch: 17,
+    dist: 5,
+    aim: 0.95,
+    centre: [0.0498, -0.0426],
+    half: [0.2751, 0.2365],
+  },
+  {
+    label: "top",
+    yaw: 0,
+    pitch: 80,
+    dist: 5,
+    aim: 0.55,
+    centre: [0, -0.0065],
+    half: [0.4126, 0.0822],
+  },
 ];
 
 export interface PendulaBeam {
@@ -68,12 +98,18 @@ export const pendulaSteel = "#c4cddb";
 
 const cameraPose = glslPick(
   "camera",
-  pendulaCameras.map((c) => `vec4(${glslFloat(c.yaw)}, ${glslFloat(c.pitch)}, ${glslFloat(c.dist)}, ${glslFloat(c.aim)})`),
+  pendulaCameras.map(
+    (c) =>
+      `vec4(${glslFloat(c.yaw)}, ${glslFloat(c.pitch)}, ${glslFloat(c.dist)}, ${glslFloat(c.aim)})`,
+  ),
   "vec4(38.0, 17.0, 5.0, 0.95)",
 );
 const cameraFit = glslPick(
   "camera",
-  pendulaCameras.map((c) => `vec4(${glslFloat(c.centre[0])}, ${glslFloat(c.centre[1])}, ${glslFloat(c.half[0])}, ${glslFloat(c.half[1])})`),
+  pendulaCameras.map(
+    (c) =>
+      `vec4(${glslFloat(c.centre[0])}, ${glslFloat(c.centre[1])}, ${glslFloat(c.half[0])}, ${glslFloat(c.half[1])})`,
+  ),
   "vec4(0.0498, -0.0426, 0.2751, 0.2365)",
 );
 
@@ -109,11 +145,19 @@ ${cameraFit}
 }
 
 vec3 pendulaBeamColor() {
-${glslPick("beam", pendulaBeams.map((b) => glslVec3(b.color)), "vec3(0.5)")}
+${glslPick(
+  "beam",
+  pendulaBeams.map((b) => glslVec3(b.color)),
+  "vec3(0.5)",
+)}
 }
 
 float pendulaBeamGloss() {
-${glslPick("beam", pendulaBeams.map((b) => glslFloat(b.gloss)), "0.0")}
+${glslPick(
+  "beam",
+  pendulaBeams.map((b) => glslFloat(b.gloss)),
+  "0.0",
+)}
 }
 
 // The bob's metal: brass, steel, or anodised, a pale hue per bob along the row (h 0..1).

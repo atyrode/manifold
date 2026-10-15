@@ -50,11 +50,38 @@ const PROGRAMS_PER_SCENE = 4;
 const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [role=switch]";
 
 const uniformNames = [
-  "uRes", "uTime", "uMotionTime", "uDither", "uColor", "uLevels", "uMotion", "uPointer", "uMouse",
-  "uBg", "uInk", "uAccent", "uParams", "uView",
-  "uConStars", "uConBright", "uConLines", "uConStarCount", "uConLineCount", "uConMarkStar", "uConMarkLine",
-  "uProgress", "uTriggers", "uSim0", "uSim1", "uSim2", "uSim3", "uSimOn", "uWeather",
-  "uPassage", "uDissolve", "uLeaving",
+  "uRes",
+  "uTime",
+  "uMotionTime",
+  "uDither",
+  "uColor",
+  "uLevels",
+  "uMotion",
+  "uPointer",
+  "uMouse",
+  "uBg",
+  "uInk",
+  "uAccent",
+  "uParams",
+  "uView",
+  "uConStars",
+  "uConBright",
+  "uConLines",
+  "uConStarCount",
+  "uConLineCount",
+  "uConMarkStar",
+  "uConMarkLine",
+  "uProgress",
+  "uTriggers",
+  "uSim0",
+  "uSim1",
+  "uSim2",
+  "uSim3",
+  "uSimOn",
+  "uWeather",
+  "uPassage",
+  "uDissolve",
+  "uLeaving",
 ] as const;
 type UniformName = (typeof uniformNames)[number];
 
@@ -70,7 +97,12 @@ interface SceneProgram {
   key: string;
   program: WebGLProgram;
   uniforms: Record<UniformName, WebGLUniformLocation | null>;
-  sent: { settings: RenderSettings | undefined; progress: number; triggers: number[]; simOn: number };
+  sent: {
+    settings: RenderSettings | undefined;
+    progress: number;
+    triggers: number[];
+    simOn: number;
+  };
 }
 
 /** A program compiling and linking, in the background where KHR_parallel_shader_compile allows. */
@@ -121,13 +153,23 @@ export class RendererError extends Error {}
  */
 function annotate(log: string, source: string): string {
   const lines = source.split("\n");
-  return log.split("\n").map((entry) => {
-    const line = /^ERROR: \d+:(\d+):/.exec(entry)?.[1];
-    return line === undefined ? entry : `${entry}\n    > ${(lines[Number(line) - 1] ?? "").trim()}`;
-  }).join("\n");
+  return log
+    .split("\n")
+    .map((entry) => {
+      const line = /^ERROR: \d+:(\d+):/.exec(entry)?.[1];
+      return line === undefined
+        ? entry
+        : `${entry}\n    > ${(lines[Number(line) - 1] ?? "").trim()}`;
+    })
+    .join("\n");
 }
 
-function compile(gl: WebGL2RenderingContext, type: number, source: string, what: string): WebGLShader {
+function compile(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+  what: string,
+): WebGLShader {
   const shader = gl.createShader(type);
   if (!shader) throw new RendererError(`${what}: could not allocate shader`);
   gl.shaderSource(shader, source);
@@ -246,7 +288,11 @@ export class DitherRenderer {
   glInfo = "";
 
   constructor(canvas: HTMLCanvasElement, settings: RenderSettings, frozen: boolean) {
-    const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: false });
+    const gl = canvas.getContext("webgl2", {
+      antialias: false,
+      alpha: false,
+      preserveDrawingBuffer: false,
+    });
     if (!gl) throw new RendererError("WebGL2 unavailable");
     this.#gl = gl;
     this.#canvas = canvas;
@@ -258,18 +304,40 @@ export class DitherRenderer {
     gl.bindVertexArray(this.#vertexArray);
     this.#parallel = gl.getExtension("KHR_parallel_shader_compile");
     const debug = gl.getExtension("WEBGL_debug_renderer_info");
-    const gpu: unknown = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    const gpu: unknown = debug
+      ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
+      : gl.getParameter(gl.RENDERER);
     this.glInfo = `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`;
 
     this.#blank = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      1,
+      1,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 255]),
+    );
     // The outgoing scene's last frame, copied from the canvas when its exit ends.
     this.#leavingFrame = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#leavingFrame);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0]));
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGB,
+      1,
+      1,
+      0,
+      gl.RGB,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0]),
+    );
 
     const mouse = this.#mouse;
     const track = (event: PointerEvent) => {
@@ -339,7 +407,12 @@ export class DitherRenderer {
     this.#settings = settings;
     // A new scene: the one on screen leaves first, with the settings it was drawn with. A switch
     // while it is already leaving only changes where it goes.
-    if (settings.scene !== previous.scene && this.#scene !== undefined && this.#leaving === undefined && this.#passing(settings)) {
+    if (
+      settings.scene !== previous.scene &&
+      this.#scene !== undefined &&
+      this.#leaving === undefined &&
+      this.#passing(settings)
+    ) {
       this.#leaving = { settings: previous, start: Number.NaN };
     }
     if (settings.scene !== this.#triggerScene) {
@@ -390,7 +463,10 @@ export class DitherRenderer {
     const wanted = this.#wanted;
     if (wanted.settings !== s) {
       const def = sceneDefs[s.scene];
-      const values = def.featuresFor === undefined ? undefined : Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]));
+      const values =
+        def.featuresFor === undefined
+          ? undefined
+          : Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]));
       wanted.features = sceneFeatures(def, values);
       wanted.key = featureKey(wanted.features);
       wanted.settings = s;
@@ -403,7 +479,12 @@ export class DitherRenderer {
     const gl = this.#gl;
     const source = fragmentSourceFor(sceneDefs[id], wanted.features);
     const fragment = gl.createShader(gl.FRAGMENT_SHADER);
-    if (!fragment) return this.#failed(id, wanted.key, new RendererError(`scene ${id}: could not allocate shader`));
+    if (!fragment)
+      return this.#failed(
+        id,
+        wanted.key,
+        new RendererError(`scene ${id}: could not allocate shader`),
+      );
     gl.shaderSource(fragment, source);
     gl.compileShader(fragment);
     const program = gl.createProgram();
@@ -422,7 +503,11 @@ export class DitherRenderer {
       const log = (compiled ? gl.getProgramInfoLog(program) : gl.getShaderInfoLog(fragment)) ?? "";
       gl.deleteShader(fragment);
       gl.deleteProgram(program);
-      throw new RendererError(compiled ? `scene ${id}: program link failed\n${log}` : `scene ${id}: shader compile failed\n${annotate(log, building.source)}`);
+      throw new RendererError(
+        compiled
+          ? `scene ${id}: program link failed\n${log}`
+          : `scene ${id}: shader compile failed\n${annotate(log, building.source)}`,
+      );
     }
     // Only flagged while attached: freed together with the program.
     gl.deleteShader(fragment);
@@ -440,11 +525,18 @@ export class DitherRenderer {
     gl.uniform1i(uniforms.uConLineCount, figures.lineCount);
     gl.uniform1i(uniforms.uConMarkStar, figures.markStar);
     gl.uniform1i(uniforms.uConMarkLine, figures.markLine);
-    [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) => gl.uniform1i(location, slot));
+    [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) =>
+      gl.uniform1i(location, slot),
+    );
     gl.uniform1i(uniforms.uLeaving, LEAVING_UNIT);
     // Nothing sent yet: NaN and -1 differ from every value the first frame sends.
     const triggers = Array.from({ length: MAX_TRIGGERS }, () => Number.NaN);
-    return { key: building.key, program, uniforms, sent: { settings: undefined, progress: Number.NaN, triggers, simOn: -1 } };
+    return {
+      key: building.key,
+      program,
+      uniforms,
+      sent: { settings: undefined, progress: Number.NaN, triggers, simOn: -1 },
+    };
   }
 
   /** Finish a build and keep what came of it: the program, or why it failed to build. */
@@ -462,7 +554,11 @@ export class DitherRenderer {
   /** Log and keep why a scene's program failed to build. */
   #failed(id: SceneId, key: string, error: unknown): SceneFailure {
     console.error(`evt=landing.renderer.scene_failed scene=${id} stage=build`, error);
-    const failure: SceneFailure = { scene: id, stage: "build", message: error instanceof Error ? error.message : String(error) };
+    const failure: SceneFailure = {
+      scene: id,
+      stage: "build",
+      message: error instanceof Error ? error.message : String(error),
+    };
     this.#keep(id, key, failure);
     return failure;
   }
@@ -499,7 +595,10 @@ export class DitherRenderer {
   #settle(): void {
     const building = this.#building;
     if (building === undefined || this.#parallel === null) return;
-    if (this.#gl.getProgramParameter(building.program, this.#parallel.COMPLETION_STATUS_KHR) !== true) return;
+    if (
+      this.#gl.getProgramParameter(building.program, this.#parallel.COMPLETION_STATUS_KHR) !== true
+    )
+      return;
     this.#building = undefined;
     this.#finish(building);
   }
@@ -567,7 +666,11 @@ export class DitherRenderer {
    */
   #fail(scene: ActiveScene, stage: "start" | "frame", error: unknown): void {
     console.error(`evt=landing.renderer.scene_failed scene=${scene.id} stage=${stage}`, error);
-    scene.failure = { scene: scene.id, stage, message: error instanceof Error ? error.message : String(error) };
+    scene.failure = {
+      scene: scene.id,
+      stage,
+      message: error instanceof Error ? error.message : String(error),
+    };
     this.#release(scene);
     const gl = this.#gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -610,7 +713,8 @@ export class DitherRenderer {
     const dt = Math.min(elapsed, 0.1);
     this.#lastFrame = now;
     // Cap simulation catch-up, not the footer's measurement of actual frame delivery.
-    if (elapsed > 0) this.fps = this.fps === 0 ? 1 / elapsed : this.fps * 0.92 + (1 / elapsed) * 0.08;
+    if (elapsed > 0)
+      this.fps = this.fps === 0 ? 1 / elapsed : this.fps * 0.92 + (1 / elapsed) * 0.08;
     // The interaction clock stands still only while paused; the scene clock also while frozen.
     const live = this.#paused ? 0 : dt;
     const step = this.#frozen ? 0 : live;
@@ -638,7 +742,10 @@ export class DitherRenderer {
     const pointer = this.#pointerState();
 
     const current = this.#scene;
-    const scene = current && current.id === s.scene && !this.#reenter && !this.#rebuild ? current : this.#enter(s);
+    const scene =
+      current && current.id === s.scene && !this.#reenter && !this.#rebuild
+        ? current
+        : this.#enter(s);
     const entered = scene !== current;
     const arrival = this.#arrival;
     if (entered) {
@@ -647,7 +754,8 @@ export class DitherRenderer {
       // the first one compiles the program on the GPU (drivers do it at the first draw), which can take
       // longer than the whole dissolve, so it is shown as the dissolve's start, the old frame.
       const passed = this.#reenter;
-      arrival.start = passed || (current === undefined && this.#passing(s)) ? Number.NaN : -Infinity;
+      arrival.start =
+        passed || (current === undefined && this.#passing(s)) ? Number.NaN : -Infinity;
       arrival.fromFrame = passed;
       this.#reenter = false;
       this.#rebuild = false;
@@ -658,7 +766,12 @@ export class DitherRenderer {
     const since = Number.isNaN(arrival.start) ? 0 : Math.max(0, seconds - arrival.start);
     const passage = this.#passage;
     passage.enter = Math.min(1, since / Math.max(choreography?.enter ?? PASSAGE_DISSOLVE, 1e-3));
-    passage.exit = leaving === undefined ? 0 : (choreography?.exit ?? 0) <= 0 ? 1 : Math.min(1, (seconds - leaving.start) / (choreography?.exit ?? 1));
+    passage.exit =
+      leaving === undefined
+        ? 0
+        : (choreography?.exit ?? 0) <= 0
+          ? 1
+          : Math.min(1, (seconds - leaving.start) / (choreography?.exit ?? 1));
     const dissolve = Math.max(0, 1 - since / PASSAGE_DISSOLVE);
     // Knobs that change the program's compile-time features (SceneDef.featuresFor): until the
     // program for the new set is built, the one on screen goes on drawing the settings it drew last
@@ -667,7 +780,8 @@ export class DitherRenderer {
     this.#settle();
     if (scene.program !== undefined && scene.failure === undefined) {
       const wanted = this.#want(s);
-      const next = scene.program.key === wanted.key ? scene.program : this.#programSoon(scene.id, wanted);
+      const next =
+        scene.program.key === wanted.key ? scene.program : this.#programSoon(scene.id, wanted);
       if (next === undefined) {
         s = scene.program.sent.settings ?? s;
       } else if ("stage" in next) {
@@ -699,8 +813,12 @@ export class DitherRenderer {
       weather.wet = wetTo;
       weather.lying = lyingTo;
     } else {
-      weather.wet = wetTo + (weather.wet - wetTo) * Math.exp(-step / (weather.wet < wetTo ? 1.2 / rain : 25));
-      weather.lying = lyingTo + (weather.lying - lyingTo) * Math.exp(-step / (weather.lying < lyingTo ? 3 / snow : 30 / (1 + 4 * rain)));
+      weather.wet =
+        wetTo + (weather.wet - wetTo) * Math.exp(-step / (weather.wet < wetTo ? 1.2 / rain : 25));
+      weather.lying =
+        lyingTo +
+        (weather.lying - lyingTo) *
+          Math.exp(-step / (weather.lying < lyingTo ? 3 / snow : 30 / (1 + 4 * rain)));
     }
     // A slot fired when its stamp moved to a real press since the sim's previous frame. A scene just
     // entered has a fresh sim with nothing to compare against: its first frame reports no presses
@@ -716,22 +834,23 @@ export class DitherRenderer {
     }
     const pressedAt = this.#mouse.pressedAt > NEVER ? this.#mouse.pressedAt - lag : NEVER;
     // Simulations upload (and so bind) their textures: step them before binding this frame's units.
-    const simTextures = scene.sim?.frame({
-      dt: step,
-      time: this.#clock,
-      motionTime: this.#motionClock,
-      motion,
-      width,
-      height,
-      aspect: width / height,
-      values: s.params,
-      params: s.knobs,
-      triggers: shown,
-      fired: this.#fired,
-      pointer,
-      parallax: p,
-      passage,
-    }) ?? [];
+    const simTextures =
+      scene.sim?.frame({
+        dt: step,
+        time: this.#clock,
+        motionTime: this.#motionClock,
+        motion,
+        width,
+        height,
+        aspect: width / height,
+        values: s.params,
+        params: s.knobs,
+        triggers: shown,
+        fired: this.#fired,
+        pointer,
+        parallax: p,
+        passage,
+      }) ?? [];
 
     gl.viewport(0, 0, width, height);
     gl.useProgram(program.program);
@@ -778,7 +897,11 @@ export class DitherRenderer {
       triggersChanged = true;
     }
     if (triggersChanged) gl.uniform1fv(u.uTriggers, shown);
-    const simOn = (simTextures[0] ? 1 : 0) | (simTextures[1] ? 2 : 0) | (simTextures[2] ? 4 : 0) | (simTextures[3] ? 8 : 0);
+    const simOn =
+      (simTextures[0] ? 1 : 0) |
+      (simTextures[1] ? 2 : 0) |
+      (simTextures[2] ? 4 : 0) |
+      (simTextures[3] ? 8 : 0);
     if (sent.simOn !== simOn) {
       sent.simOn = simOn;
       gl.uniform4f(u.uSimOn, simOn & 1, (simOn >> 1) & 1, (simOn >> 2) & 1, (simOn >> 3) & 1);

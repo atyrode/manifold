@@ -33,7 +33,10 @@ export const AUTUMN_FLURRY = { rise0: 0.2, rise1: 1.1, fall0: 1.7 } as const;
 
 /** The entrance's gust strength `seconds` into the entrance (exactly 0 at its end); the shader repeats this. */
 export function autumnFlurry(seconds: number): number {
-  return smoothstep(AUTUMN_FLURRY.rise0, AUTUMN_FLURRY.rise1, seconds) * (1 - smoothstep(AUTUMN_FLURRY.fall0, AUTUMN_PASSAGE.enter, seconds));
+  return (
+    smoothstep(AUTUMN_FLURRY.rise0, AUTUMN_FLURRY.rise1, seconds) *
+    (1 - smoothstep(AUTUMN_FLURRY.fall0, AUTUMN_PASSAGE.enter, seconds))
+  );
 }
 
 /** The exit's gust rises over the first `rise` of the exit; `canopy` is how hard it leans the canopy, against the entrance's gust at 1. */
@@ -55,15 +58,37 @@ export function autumnPathX(z: number): number {
   return AUTUMN_PATH.x - AUTUMN_PATH.swing * Math.sin(AUTUMN_PATH.rate * (z - AUTUMN_PATH.from));
 }
 
-export const AUTUMN_TREE = { x: -3.3, z: 5.0, radius: 0.55, boughs: 3.0, canopyX: -1.0, canopyZ: 7.0, canopyRadius: 11.5 } as const;
+export const AUTUMN_TREE = {
+  x: -3.3,
+  z: 5.0,
+  radius: 0.55,
+  boughs: 3.0,
+  canopyX: -1.0,
+  canopyZ: 7.0,
+  canopyRadius: 11.5,
+} as const;
 
-export const AUTUMN_BENCH = { x: 2.6, z: 7.6, half: 0.9, depth: 0.5, height: 0.9, seat: 0.45 } as const;
+export const AUTUMN_BENCH = {
+  x: 2.6,
+  z: 7.6,
+  half: 0.9,
+  depth: 0.5,
+  height: 0.9,
+  seat: 0.45,
+} as const;
 
 export const AUTUMN_LAMP = { x: -2.7, z: 10.0, height: 3.8 } as const;
 
 export const AUTUMN_CARPET = { cell: 0.3, x0: -14, z0: 3.3, cols: 100, rows: 96 } as const;
 
-export const AUTUMN_MARK = { x: -0.9, z: 11.5, width: 2.8, depth: 11, stroke: 0.12, margin: 0.22 } as const;
+export const AUTUMN_MARK = {
+  x: -0.9,
+  z: 11.5,
+  width: 2.8,
+  depth: 11,
+  stroke: 0.12,
+  margin: 0.22,
+} as const;
 
 /** Leaves in the air at once (the falling-leaf texture's rows). */
 export const AUTUMN_SLOTS = 36;

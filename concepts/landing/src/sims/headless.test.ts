@@ -55,7 +55,12 @@ test("frames carry the knobs over the scene's defaults, and a 'now' fires on one
   const knobs = { ...paramDefaults("bar"), patrons: 2, night: 1.5 };
   expect(second?.params).toEqual(knobs);
   expect(second?.values).toEqual(barScene.params.map((def) => effective(def, knobs)));
-  expect(second).toMatchObject({ time: 1 / 60 + 0.5, motionTime: 1 / 60 + 0.5, width: 960, height: 540 });
+  expect(second).toMatchObject({
+    time: 1 / 60 + 0.5,
+    motionTime: 1 / 60 + 0.5,
+    width: 960,
+    height: 540,
+  });
   expect(sim.upload(0).data[0]).toBe(3);
   expect(sim.uploaded(0)).toBe(true);
   expect(() => sim.upload(1)).toThrow(HeadlessError);

@@ -60,7 +60,14 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex } from "../../mark.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
-import { GpuCompute, GpuError, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import {
+  GpuCompute,
+  GpuError,
+  gridSize,
+  type Pass,
+  type PingPong,
+  type RenderTarget,
+} from "../../sims/gpu.ts";
 import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -436,7 +443,14 @@ function turntableAcceleration(time: number, seed: number): number {
   return (angle * Math.PI * Math.PI * Math.cos(Math.PI * s)) / (2 * TURN_SECONDS * TURN_SECONDS);
 }
 
-function orbit(out: Rod, cx: number, cy: number, radius: number, angle: number, rate: number): void {
+function orbit(
+  out: Rod,
+  cx: number,
+  cy: number,
+  radius: number,
+  angle: number,
+  rate: number,
+): void {
   out.x = cx + radius * Math.cos(angle);
   out.y = cy + radius * Math.sin(angle);
   out.vx = -radius * rate * Math.sin(angle);
@@ -502,7 +516,11 @@ function revealRadius(time: number, aspect: number, probe: Rod): number {
   const runEnd = Math.hypot(probe.x - PEARL_REVEAL_X, probe.y - PEARL_REVEAL_Y) - start;
   const far = Math.hypot(aspect - PEARL_REVEAL_X, Math.max(PEARL_REVEAL_Y, 1 - PEARL_REVEAL_Y));
   const spread = Math.max(0, far + PEARL_REVEAL_WOBBLE + PEARL_REVEAL_BAND - runEnd - REVEAL_LEAD);
-  return run + REVEAL_LEAD * smoothstep(REVEAL_LEAD_FROM, REVEAL_LEAD_TO, time) + spread * smoothstep(REVEAL_SPREAD_FROM, REVEAL_SPREAD_TO, time);
+  return (
+    run +
+    REVEAL_LEAD * smoothstep(REVEAL_LEAD_FROM, REVEAL_LEAD_TO, time) +
+    spread * smoothstep(REVEAL_SPREAD_FROM, REVEAL_SPREAD_TO, time)
+  );
 }
 
 /**
@@ -624,7 +642,13 @@ interface Eddy {
  * The pour's velocity at (x, y): the eddies' stream functions, times sin(πx / aspect) sin(πy) so it
  * vanishes on the walls and nothing flows through them. Writes (u, v) = (∂ψ/∂y, −∂ψ/∂x).
  */
-function pourVelocity(eddies: readonly Eddy[], aspect: number, x: number, y: number, out: Float64Array): void {
+function pourVelocity(
+  eddies: readonly Eddy[],
+  aspect: number,
+  x: number,
+  y: number,
+  out: Float64Array,
+): void {
   let g = 0;
   let gx = 0;
   let gy = 0;
@@ -667,7 +691,8 @@ interface Drifter {
 
 // ---- knobs --------------------------------------------------------------------------------------
 
-type PearlKnob = "forcing" | "speed" | "vorticity" | "drift" | "swirl" | "pour" | "pigment" | "mark";
+type PearlKnob =
+  "forcing" | "speed" | "vorticity" | "drift" | "swirl" | "pour" | "pigment" | "mark";
 
 // ---- the tank -----------------------------------------------------------------------------------
 
@@ -721,7 +746,18 @@ class PearlTank implements SceneSim {
     uPearlBuoyancy: 0,
     uPearlWallDrag: WALL_DRAG,
     uPearlRods: new Float32Array(20),
-    uPearlGrip: new Float32Array([0, ROD_RADIUS, 0, ROD_RADIUS, 0, ROD_RADIUS, 0, MARK_ROD_RADIUS, 0, PADDLE_RADIUS]),
+    uPearlGrip: new Float32Array([
+      0,
+      ROD_RADIUS,
+      0,
+      ROD_RADIUS,
+      0,
+      ROD_RADIUS,
+      0,
+      MARK_ROD_RADIUS,
+      0,
+      PADDLE_RADIUS,
+    ]),
     uPearlSwirl: new Float32Array([0, 0, 0, SWIRL_RADIUS]),
     uPearlSweep: new Float32Array([0, 0, 0, SWEEP_RADIUS]),
     uPearlDrift: new Float32Array(DRIFTERS * 4),
@@ -813,8 +849,15 @@ class PearlTank implements SceneSim {
     });
     this.#fluid = fluid;
     this.#flakes = gpu.pingPong({ ...gridSize(fluid.aspect, FLAKE_RESOLUTION), format: "rg16f" });
-    this.#props = gpu.target({ width: PROP_TEXELS, height: 1, format: "rgba32f", filter: "nearest" });
-    this.#comb = gpu.pass(FLAKES, "pearl flakes").bind({ uDirector: this.#flakes, uVelocity: fluid.velocity });
+    this.#props = gpu.target({
+      width: PROP_TEXELS,
+      height: 1,
+      format: "rgba32f",
+      filter: "nearest",
+    });
+    this.#comb = gpu
+      .pass(FLAKES, "pearl flakes")
+      .bind({ uDirector: this.#flakes, uVelocity: fluid.velocity });
     this.#source = gpu.pass(SOURCES, "pearl sources").bind({ uDye: fluid.dye });
   }
 
@@ -833,7 +876,12 @@ class PearlTank implements SceneSim {
     if (h > 0) {
       const steps = Math.min(MAX_STEPS, Math.ceil(h / MAX_STEP));
       for (let i = 0; i < steps; i++) {
-        if (arrival.playing) this.#advance(h / steps, lerp(arrival.from, arrival.to, i / steps), lerp(arrival.from, arrival.to, (i + 1) / steps));
+        if (arrival.playing)
+          this.#advance(
+            h / steps,
+            lerp(arrival.from, arrival.to, i / steps),
+            lerp(arrival.from, arrival.to, (i + 1) / steps),
+          );
         else this.#advance(h / steps);
       }
     }
@@ -911,7 +959,10 @@ class PearlTank implements SceneSim {
       const spin = rand() < 0.5 ? -1 : 1;
       const a = (spin * (0.6 + 0.6 * rand()) * POUR_SPIN * r * r) / 4;
       // Small eddies wind less, so their innermost rings stay a few cells wide.
-      const twist = spin * (POUR_TWIST_MIN + (POUR_TWIST_MAX - POUR_TWIST_MIN) * rand()) * Math.min(1, r / 0.12);
+      const twist =
+        spin *
+        (POUR_TWIST_MIN + (POUR_TWIST_MAX - POUR_TWIST_MIN) * rand()) *
+        Math.min(1, r / 0.12);
       eddies.push({ x, y, r, a, twist });
     }
     const drifters: Drifter[] = [];
@@ -975,7 +1026,11 @@ class PearlTank implements SceneSim {
         }
         // Doubled angles: the silk turns a full circle across a broad noise cell and half one
         // across a fine one, and a flake turned by θ turns its doubled angle by 2θ.
-        const phi = TAU * (valueNoise(px / 0.45, py / 0.45, silk) + 0.5 * valueNoise(px / 0.18, py / 0.18, ripple)) + 2 * turned;
+        const phi =
+          TAU *
+            (valueNoise(px / 0.45, py / 0.45, silk) +
+              0.5 * valueNoise(px / 0.18, py / 0.18, ripple)) +
+          2 * turned;
         const order = 0.5 + 0.45 * valueNoise(px / 0.3, py / 0.3, sheen);
         const k = 2 * (j * flakes.width + i);
         q[k] = order * Math.cos(phi);
@@ -991,7 +1046,8 @@ class PearlTank implements SceneSim {
         const y = (j + 0.5) / dye.height;
         for (let i = 0; i < dye.width; i++) {
           const x = ((i + 0.5) / dye.width) * aspect;
-          const warm = WARM_FLOOR * Math.exp(-y / 0.05) * (0.7 + 0.6 * valueNoise(x / 0.2, 3.7, silk));
+          const warm =
+            WARM_FLOOR * Math.exp(-y / 0.05) * (0.7 + 0.6 * valueNoise(x / 0.2, 3.7, silk));
           d[4 * (j * dye.width + i) + 1] = warm - 0.5 * Math.exp(-(1 - y) / 0.05);
         }
       }
@@ -1012,11 +1068,13 @@ class PearlTank implements SceneSim {
 
     const mark = knobs.value(frame, "mark");
     if (frame.fired[this.#markSlot] === true) this.#startMark(knobs.amount(frame, "mark"));
-    else if (mark > 0 && this.#nextMark !== undefined && clock >= this.#nextMark) this.#startMark(mark);
+    else if (mark > 0 && this.#nextMark !== undefined && clock >= this.#nextMark)
+      this.#startMark(mark);
     if (mark <= 0) this.#nextMark = undefined;
     else if (this.#nextMark === undefined) this.#nextMark = clock + MARK_FIRST;
     const run = this.#mark;
-    if (run && !markRod(clock - run.start, run.size, this.#fluid.aspect, this.#rodM)) this.#mark = undefined;
+    if (run && !markRod(clock - run.start, run.size, this.#fluid.aspect, this.#rodM))
+      this.#mark = undefined;
   }
 
   /** A swirl from the centre, turning the other way each time so the tank never winds up. */
@@ -1024,7 +1082,8 @@ class PearlTank implements SceneSim {
     const sense = this.#swirls % 2 === 0 ? 1 : -1;
     this.#swirl = { start: this.#clock, strength: sense * SWIRL_ACCEL * (0.4 + 1.2 * amount) };
     this.#swirls++;
-    this.#nextSwirl = this.#clock + SWIRL_EVERY + SWIRL_JITTER * (hash31(this.#swirls, 17, this.#pour ?? 0) - 0.5);
+    this.#nextSwirl =
+      this.#clock + SWIRL_EVERY + SWIRL_JITTER * (hash31(this.#swirls, 17, this.#pour ?? 0) - 0.5);
   }
 
   #startMark(amount: number): void {
@@ -1049,8 +1108,10 @@ class PearlTank implements SceneSim {
    */
   #pace(): number {
     let pace = this.#speed;
-    if (this.#arrival.playing) pace = lerp(1, pace, smoothstep(PACE_EASE_FROM, PEARL_ENTER, this.#arrival.to));
-    if (this.#exit > 0) pace = lerp(pace, Math.max(pace, 1), smoothstep(0, SWEEP_PACE_RAMP, this.#exit));
+    if (this.#arrival.playing)
+      pace = lerp(1, pace, smoothstep(PACE_EASE_FROM, PEARL_ENTER, this.#arrival.to));
+    if (this.#exit > 0)
+      pace = lerp(pace, Math.max(pace, 1), smoothstep(0, SWEEP_PACE_RAMP, this.#exit));
     return pace;
   }
 
@@ -1213,7 +1274,8 @@ class PearlTank implements SceneSim {
 
     const painting = this.#paint(t0, t1);
     const heat = this.#convectShare * HEAT;
-    const drip = this.#pigment > 0 ? (PIGMENT_BASE + PIGMENT_RATE * this.#pigment) * this.#nozzleShare : 0;
+    const drip =
+      this.#pigment > 0 ? (PIGMENT_BASE + PIGMENT_RATE * this.#pigment) * this.#nozzleShare : 0;
     if (heat > 1e-3 || drip > 0 || painting) {
       const source = this.#sourceUniforms;
       source.uDt = h;
@@ -1281,7 +1343,16 @@ const stillTank: SceneSim = {
 
 /** The tank of pearl fluid, for a scene whose `params` carry the knobs `PearlKnob` names. */
 export function pearlSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<PearlKnob>("pearl", params, ["forcing", "speed", "vorticity", "drift", "swirl", "pour", "pigment", "mark"]);
+  const knobs = new KnobReader<PearlKnob>("pearl", params, [
+    "forcing",
+    "speed",
+    "vorticity",
+    "drift",
+    "swirl",
+    "pour",
+    "pigment",
+    "mark",
+  ]);
   return (gl) => {
     const gpu = GpuCompute.create(gl);
     if (!gpu) return stillTank;

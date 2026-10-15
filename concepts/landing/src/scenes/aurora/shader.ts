@@ -31,8 +31,16 @@ import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 
 /** The aurora's low (oxygen green) and high (violet, red) colours by the `hue` knob, where the change begins and ends, and its gain. */
-const AURORA_LOW = ["vec3(0.28, 1.0, 0.50)", "vec3(0.28, 1.0, 0.50)", "vec3(0.45, 1.0, 0.32)"] as const;
-const AURORA_HIGH = ["vec3(0.12, 0.85, 0.72)", "vec3(0.66, 0.22, 0.92)", "vec3(1.0, 0.10, 0.22)"] as const;
+const AURORA_LOW = [
+  "vec3(0.28, 1.0, 0.50)",
+  "vec3(0.28, 1.0, 0.50)",
+  "vec3(0.45, 1.0, 0.32)",
+] as const;
+const AURORA_HIGH = [
+  "vec3(0.12, 0.85, 0.72)",
+  "vec3(0.66, 0.22, 0.92)",
+  "vec3(1.0, 0.10, 0.22)",
+] as const;
 const AURORA_FROM = [0.35, 0.3, 0.08] as const;
 const AURORA_TO = [1.0, 0.85, 0.65] as const;
 const AURORA_GAIN = [1.0, 1.0, 1.2] as const;

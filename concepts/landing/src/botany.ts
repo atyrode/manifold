@@ -87,7 +87,9 @@ function at(shape: BladeShape, j: number, t: number, side: 1 | -1): Point {
   const half = side > 0 ? shape.upper : shape.lower;
   const clamped = Math.min(1, Math.max(0, j));
   const { length, slope } = vector(half, clamped);
-  const teeth = shape.crenate ? 1 - shape.crenate.depth * Math.abs(Math.sin(Math.PI * shape.crenate.count * clamped)) ** 0.6 : 1;
+  const teeth = shape.crenate
+    ? 1 - shape.crenate.depth * Math.abs(Math.sin(Math.PI * shape.crenate.count * clamped)) ** 0.6
+    : 1;
   const theta = Math.atan(slope);
   const r = t * Math.max(0, length) * teeth * half.width;
   const x = clamped + r * Math.sin(theta);
@@ -119,7 +121,13 @@ function region(shape: BladeShape, side: 1 | -1, points: readonly Point[]): Path
 }
 
 /** Stroke a curve given in blade coordinates. */
-function trace(ctx: Context, shape: BladeShape, side: 1 | -1, curve: (u: number) => Point, steps = 24): void {
+function trace(
+  ctx: Context,
+  shape: BladeShape,
+  side: 1 | -1,
+  curve: (u: number) => Point,
+  steps = 24,
+): void {
   ctx.beginPath();
   for (let i = 0; i <= steps; i++) {
     const [j, t] = curve(i / steps);
@@ -131,7 +139,13 @@ function trace(ctx: Context, shape: BladeShape, side: 1 | -1, curve: (u: number)
 }
 
 /** Fill both halves, one a little darker: blades fold along the midrib and catch light unevenly. */
-function fillBlade(ctx: Context, shape: BladeShape, material: MaterialId, brush: Brush, rand: Rand): void {
+function fillBlade(
+  ctx: Context,
+  shape: BladeShape,
+  material: MaterialId,
+  brush: Brush,
+  rand: Rand,
+): void {
   const lit = rand() < 0.5 ? 1 : -1;
   for (const side of [1, -1] as const) {
     const shade = brush.shade * (side === lit ? 1.08 : 0.86);
@@ -147,14 +161,35 @@ function fillBlade(ctx: Context, shape: BladeShape, material: MaterialId, brush:
 /** Natural variation: every parameter nudged by up to ±amount. */
 function vary(half: HalfBlade, rand: Rand, amount: number): HalfBlade {
   const n = (value: number) => value * (1 + (rand() * 2 - 1) * amount);
-  return { width: n(half.width), jd: n(half.jd), k1: n(half.k1), k2: n(half.k2), b1: n(half.b1), p1: n(half.p1), b2: n(half.b2), p2: n(half.p2) };
+  return {
+    width: n(half.width),
+    jd: n(half.jd),
+    k1: n(half.k1),
+    k2: n(half.k2),
+    b1: n(half.b1),
+    p1: n(half.p1),
+    b2: n(half.b2),
+    p2: n(half.p2),
+  };
 }
 
-function midrib(ctx: Context, shape: BladeShape, material: MaterialId, brush: Brush, shade: number, width: number, end = 0.97): void {
+function midrib(
+  ctx: Context,
+  shape: BladeShape,
+  material: MaterialId,
+  brush: Brush,
+  shade: number,
+  width: number,
+  end = 0.97,
+): void {
   ctx.strokeStyle = ink(material, brush, shade);
   ctx.lineCap = "round";
   // Tapering: three passes, each thinner and shorter.
-  for (const [scale, reach] of [[1, end * 0.45], [0.7, end * 0.75], [0.45, end]] as const) {
+  for (const [scale, reach] of [
+    [1, end * 0.45],
+    [0.7, end * 0.75],
+    [0.45, end],
+  ] as const) {
     ctx.lineWidth = width * scale;
     trace(ctx, shape, 1, (u) => [u * reach, 0], 16);
   }
@@ -167,7 +202,16 @@ function midrib(ctx: Context, shape: BladeShape, material: MaterialId, brush: Br
  * Cordate-ovate, about as broad as long (25–90 × 25–75 cm), the base lobes reaching back past the
  * petiole, a short point at the tip.
  */
-const MONSTERA: HalfBlade = { width: 0.47, jd: 0.38, k1: 3.5, k2: 1.25, b1: 2, p1: 0.6, b2: 0.3, p2: 2 };
+const MONSTERA: HalfBlade = {
+  width: 0.47,
+  jd: 0.38,
+  k1: 3.5,
+  k2: 1.25,
+  b1: 2,
+  p1: 0.6,
+  b2: 0.3,
+  p2: 2,
+};
 
 /**
  * A mature Monstera leaf: primary veins arc from the midrib toward the margin, sweeping to the tip.
@@ -176,7 +220,11 @@ const MONSTERA: HalfBlade = { width: 0.47, jd: 0.38, k1: 3.5, k2: 1.25, b1: 2, p
  * lobes and the tip stay entire. `maturity` 0..1 sets how incised and perforated the leaf is.
  */
 export function monsteraLeaf(ctx: Context, brush: Brush, rand: Rand, maturity: number): void {
-  const shape: BladeShape = { upper: vary(MONSTERA, rand, 0.06), lower: vary(MONSTERA, rand, 0.06), bend: (rand() - 0.5) * 0.08 };
+  const shape: BladeShape = {
+    upper: vary(MONSTERA, rand, 0.06),
+    lower: vary(MONSTERA, rand, 0.06),
+    bend: (rand() - 0.5) * 0.08,
+  };
   fillBlade(ctx, shape, Material.monstera, brush, rand);
   const veins = 8 + Math.floor(rand() * 3);
   // Where primary vein k leaves the midrib, and how it sweeps toward the tip on its way out.
@@ -188,7 +236,8 @@ export function monsteraLeaf(ctx: Context, brush: Brush, rand: Rand, maturity: n
     ctx.strokeStyle = ink(Material.monstera, brush, Math.min(1, brush.shade * 1.35));
     ctx.lineWidth = 0.007;
     ctx.lineCap = "round";
-    for (let k = 0; k <= veins; k++) trace(ctx, shape, side, (u) => [course(origin(k), u * 0.98), u * 0.98]);
+    for (let k = 0; k <= veins; k++)
+      trace(ctx, shape, side, (u) => [course(origin(k), u * 0.98), u * 0.98]);
     ctx.restore();
   }
   midrib(ctx, shape, Material.monstera, brush, Math.min(1, brush.shade * 1.5), 0.024);
@@ -204,7 +253,10 @@ export function monsteraLeaf(ctx: Context, brush: Brush, rand: Rand, maturity: n
         const gap = spacing * (0.16 + 0.14 * rand());
         const edge = (t: number, sign: number): Point => {
           const open = Math.sqrt(Math.max(0, (t - depth) / (1 - depth)));
-          return [course(jm, t) + sign * gap * (0.35 + 0.65 * open) * 0.5 * Math.min(1, open * 3), t];
+          return [
+            course(jm, t) + sign * gap * (0.35 + 0.65 * open) * 0.5 * Math.min(1, open * 3),
+            t,
+          ];
         };
         const points: Point[] = [];
         for (let i = 0; i <= 16; i++) points.push(edge(depth + ((1.25 - depth) * i) / 16, -1));
@@ -233,7 +285,16 @@ export function monsteraLeaf(ctx: Context, brush: Brush, rand: Rand, maturity: n
 // Musa (banana)
 
 /** Oblong, 2.4–3 times longer than wide, rounded base, blunt truncate apex. */
-const BANANA: HalfBlade = { width: 0.185, jd: 0.45, k1: 2.4, k2: 3.4, b1: 0.8, p1: 2.5, b2: 1.1, p2: 3 };
+const BANANA: HalfBlade = {
+  width: 0.185,
+  jd: 0.45,
+  k1: 2.4,
+  k2: 3.4,
+  b1: 0.8,
+  p1: 2.5,
+  b2: 1.1,
+  p2: 3,
+};
 
 /**
  * A banana leaf: the petiole continues as a stout pale midrib; unbranched lamina veins run
@@ -241,10 +302,15 @@ const BANANA: HalfBlade = { width: 0.185, jd: 0.45, k1: 2.4, k2: 3.4, b1: 0.8, p
  * them from the margin inward, splitting it into strips. `wear` 0..1 sets how torn it is.
  */
 export function bananaLeaf(ctx: Context, brush: Brush, rand: Rand, wear: number): void {
-  const shape: BladeShape = { upper: vary(BANANA, rand, 0.05), lower: vary({ ...BANANA, width: BANANA.width * 0.92 }, rand, 0.05), bend: (rand() - 0.5) * 0.06 };
+  const shape: BladeShape = {
+    upper: vary(BANANA, rand, 0.05),
+    lower: vary({ ...BANANA, width: BANANA.width * 0.92 }, rand, 0.05),
+    bend: (rand() - 0.5) * 0.06,
+  };
   fillBlade(ctx, shape, Material.banana, brush, rand);
   // The long S: leaving the midrib toward the tip, crossing nearly square, curving tipward again at the margin.
-  const course = (j0: number, t: number): number => j0 + 0.018 * Math.min(1, t / 0.12) + 0.05 * t ** 4;
+  const course = (j0: number, t: number): number =>
+    j0 + 0.018 * Math.min(1, t / 0.12) + 0.05 * t ** 4;
   const veins = 54;
   for (const side of [1, -1] as const) {
     ctx.save();
@@ -287,8 +353,26 @@ export function bananaLeaf(ctx: Context, brush: Brush, rand: Rand, wear: number)
  * A pinna (leaflet): linear-lanceolate and slightly sickle-shaped, with an auricle (ear) on the
  * side facing the frond tip and a finely scalloped margin.
  */
-const PINNA_UPPER: HalfBlade = { width: 0.21, jd: 0.25, k1: 1.6, k2: 1.9, b1: 1.6, p1: 0.6, b2: 0.2, p2: 2 };
-const PINNA_LOWER: HalfBlade = { width: 0.17, jd: 0.3, k1: 1.4, k2: 1.9, b1: 0.3, p1: 1, b2: 0.2, p2: 2 };
+const PINNA_UPPER: HalfBlade = {
+  width: 0.21,
+  jd: 0.25,
+  k1: 1.6,
+  k2: 1.9,
+  b1: 1.6,
+  p1: 0.6,
+  b2: 0.2,
+  p2: 2,
+};
+const PINNA_LOWER: HalfBlade = {
+  width: 0.17,
+  jd: 0.3,
+  k1: 1.4,
+  k2: 1.9,
+  b1: 0.3,
+  p1: 1,
+  b2: 0.2,
+  p2: 2,
+};
 
 /**
  * A Boston fern frond: a bare stipe, then an arching rachis carrying alternate pinnae, nearly
@@ -310,7 +394,8 @@ export function fernFrond(ctx: Context, brush: Brush, rand: Rand): void {
       const u = (i + (side > 0 ? 0 : 0.5)) / pairs;
       const s = stipe + (1 - stipe) * u * 0.98;
       const [x, y, heading] = rachis(s);
-      const length = 0.15 * Math.sin(Math.PI * Math.min(1, 0.06 + u * 0.94)) ** 0.7 * (1.05 - 0.35 * u) + 0.012;
+      const length =
+        0.15 * Math.sin(Math.PI * Math.min(1, 0.06 + u * 0.94)) ** 0.7 * (1.05 - 0.35 * u) + 0.012;
       const shape: BladeShape = {
         upper: vary(PINNA_UPPER, rand, 0.08),
         lower: vary(PINNA_LOWER, rand, 0.08),
@@ -349,12 +434,34 @@ export function fernFrond(ctx: Context, brush: Brush, rand: Rand): void {
 // Epipremnum (pothos)
 
 /** Cordate-ovate with a drawn-out (acuminate) tip, noticeably lopsided. */
-const POTHOS_UPPER: HalfBlade = { width: 0.36, jd: 0.34, k1: 3.2, k2: 0.85, b1: 1.8, p1: 0.6, b2: -0.15, p2: 1.5 };
-const POTHOS_LOWER: HalfBlade = { width: 0.31, jd: 0.31, k1: 3.0, k2: 0.85, b1: 1.5, p1: 0.6, b2: -0.15, p2: 1.5 };
+const POTHOS_UPPER: HalfBlade = {
+  width: 0.36,
+  jd: 0.34,
+  k1: 3.2,
+  k2: 0.85,
+  b1: 1.8,
+  p1: 0.6,
+  b2: -0.15,
+  p2: 1.5,
+};
+const POTHOS_LOWER: HalfBlade = {
+  width: 0.31,
+  jd: 0.31,
+  k1: 3.0,
+  k2: 0.85,
+  b1: 1.5,
+  p1: 0.6,
+  b2: -0.15,
+  p2: 1.5,
+};
 
 /** A pothos leaf: glossy, cordate, a few arcuate veins curving toward the tip. */
 export function pothosLeaf(ctx: Context, brush: Brush, rand: Rand): void {
-  const shape: BladeShape = { upper: vary(POTHOS_UPPER, rand, 0.08), lower: vary(POTHOS_LOWER, rand, 0.08), bend: (rand() - 0.5) * 0.12 };
+  const shape: BladeShape = {
+    upper: vary(POTHOS_UPPER, rand, 0.08),
+    lower: vary(POTHOS_LOWER, rand, 0.08),
+    bend: (rand() - 0.5) * 0.12,
+  };
   fillBlade(ctx, shape, Material.pothos, brush, rand);
   for (const side of [1, -1] as const) {
     ctx.save();
@@ -388,11 +495,20 @@ export function grassTuft(ctx: Context, brush: Brush, rand: Rand, blades: number
     const root: Point = [(rand() - 0.5) * 0.06, (rand() - 0.5) * 0.06];
     const dx = Math.cos(facing);
     const dy = Math.sin(facing);
-    const control: Point = [root[0] + dx * length * 0.55 - dy * bend * length * 0.3, root[1] + dy * length * 0.55 + dx * bend * length * 0.3];
-    const tip: Point = [root[0] + dx * length - dy * bend * length, root[1] + dy * length + dx * bend * length];
+    const control: Point = [
+      root[0] + dx * length * 0.55 - dy * bend * length * 0.3,
+      root[1] + dy * length * 0.55 + dx * bend * length * 0.3,
+    ];
+    const tip: Point = [
+      root[0] + dx * length - dy * bend * length,
+      root[1] + dy * length + dx * bend * length,
+    ];
     const point = (t: number): Point => {
       const u = 1 - t;
-      return [u * u * root[0] + 2 * u * t * control[0] + t * t * tip[0], u * u * root[1] + 2 * u * t * control[1] + t * t * tip[1]];
+      return [
+        u * u * root[0] + 2 * u * t * control[0] + t * t * tip[0],
+        u * u * root[1] + 2 * u * t * control[1] + t * t * tip[1],
+      ];
     };
     const left: Point[] = [];
     const right: Point[] = [];
@@ -415,7 +531,9 @@ export function grassTuft(ctx: Context, brush: Brush, rand: Rand, blades: number
     gradient.addColorStop(1, ink(Material.grass, brush, Math.min(1, shade * 1.15)));
     ctx.fillStyle = gradient;
     ctx.beginPath();
-    [...left, ...right.reverse()].forEach(([x, y], index) => (index === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+    [...left, ...right.reverse()].forEach(([x, y], index) =>
+      index === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y),
+    );
     ctx.closePath();
     ctx.fill();
   }
@@ -425,7 +543,16 @@ export function grassTuft(ctx: Context, brush: Brush, rand: Rand, blades: number
 // Flowers
 
 /** Hibiscus petal: obovate, narrow at the base, broad rounded apex. */
-const HIBISCUS_PETAL: HalfBlade = { width: 0.46, jd: 0.68, k1: 0.9, k2: 2.6, b1: 0, p1: 1, b2: 0.6, p2: 2 };
+const HIBISCUS_PETAL: HalfBlade = {
+  width: 0.46,
+  jd: 0.68,
+  k1: 0.9,
+  k2: 2.6,
+  b1: 0,
+  p1: 1,
+  b2: 0.6,
+  p2: 2,
+};
 
 /**
  * Hibiscus rosa-sinensis: five obovate petals overlapping in a spiral (contorted), each with a
@@ -453,7 +580,8 @@ export function hibiscusFlower(ctx: Context, brush: Brush, rand: Rand): void {
     ctx.fill(halfPath(shape, -1));
     ctx.strokeStyle = ink(Material.hibiscus, brush, brush.shade * 0.7);
     ctx.lineWidth = 0.008;
-    for (let k = -3; k <= 3; k++) trace(ctx, shape, k < 0 ? -1 : 1, (u) => [0.08 + u * 0.82, (Math.abs(k) / 3.5) * u * 0.9], 8);
+    for (let k = -3; k <= 3; k++)
+      trace(ctx, shape, k < 0 ? -1 : 1, (u) => [0.08 + u * 0.82, (Math.abs(k) / 3.5) * u * 0.9], 8);
     // The overlapping edge of the next petal reads as a soft fold.
     ctx.strokeStyle = ink(Material.hibiscus, brush, brush.shade * 0.6);
     ctx.lineWidth = 0.02;
@@ -482,14 +610,38 @@ export function hibiscusFlower(ctx: Context, brush: Brush, rand: Rand): void {
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2;
     ctx.beginPath();
-    ctx.arc(cx * 1.12 + Math.cos(a) * 0.055, cy * 1.12 + Math.sin(a) * 0.055, 0.035, 0, Math.PI * 2);
+    ctx.arc(
+      cx * 1.12 + Math.cos(a) * 0.055,
+      cy * 1.12 + Math.sin(a) * 0.055,
+      0.035,
+      0,
+      Math.PI * 2,
+    );
     ctx.fill();
   }
 }
 
 /** Frangipani petal: spatulate, lopsided, narrowing to a slender claw. */
-const FRANGIPANI_WIDE: HalfBlade = { width: 0.38, jd: 0.7, k1: 0.75, k2: 2.2, b1: 0, p1: 1, b2: 0.5, p2: 2 };
-const FRANGIPANI_NARROW: HalfBlade = { width: 0.24, jd: 0.66, k1: 0.75, k2: 2.2, b1: 0, p1: 1, b2: 0.4, p2: 2 };
+const FRANGIPANI_WIDE: HalfBlade = {
+  width: 0.38,
+  jd: 0.7,
+  k1: 0.75,
+  k2: 2.2,
+  b1: 0,
+  p1: 1,
+  b2: 0.5,
+  p2: 2,
+};
+const FRANGIPANI_NARROW: HalfBlade = {
+  width: 0.24,
+  jd: 0.66,
+  k1: 0.75,
+  k2: 2.2,
+  b1: 0,
+  p1: 1,
+  b2: 0.4,
+  p2: 2,
+};
 
 /**
  * Plumeria (frangipani): five waxy, lopsided petals twisted into a pinwheel (contorted), each
@@ -498,7 +650,11 @@ const FRANGIPANI_NARROW: HalfBlade = { width: 0.24, jd: 0.66, k1: 0.75, k2: 2.2,
 export function frangipaniFlower(ctx: Context, brush: Brush, rand: Rand): void {
   const turn = rand() * Math.PI * 2;
   for (let i = 0; i < 5; i++) {
-    const shape: BladeShape = { upper: vary(FRANGIPANI_WIDE, rand, 0.05), lower: vary(FRANGIPANI_NARROW, rand, 0.05), bend: -0.12 };
+    const shape: BladeShape = {
+      upper: vary(FRANGIPANI_WIDE, rand, 0.05),
+      lower: vary(FRANGIPANI_NARROW, rand, 0.05),
+      bend: -0.12,
+    };
     ctx.save();
     // The pinwheel twist: each petal's axis is turned off the radius.
     ctx.rotate(turn + (i / 5) * Math.PI * 2);
@@ -509,8 +665,22 @@ export function frangipaniFlower(ctx: Context, brush: Brush, rand: Rand): void {
     ctx.fillStyle = ink(Material.frangipani, brush, brush.shade * 0.93);
     ctx.fill(halfPath(shape, -1));
     ctx.fillStyle = ink(Material.pollen, brush, 0.95);
-    ctx.fill(region(shape, 1, [[0, 0], [0.36, 0], [0.32, 1.05], [0, 1.05]]));
-    ctx.fill(region(shape, -1, [[0, 0], [0.3, 0], [0.26, 1.05], [0, 1.05]]));
+    ctx.fill(
+      region(shape, 1, [
+        [0, 0],
+        [0.36, 0],
+        [0.32, 1.05],
+        [0, 1.05],
+      ]),
+    );
+    ctx.fill(
+      region(shape, -1, [
+        [0, 0],
+        [0.3, 0],
+        [0.26, 1.05],
+        [0, 1.05],
+      ]),
+    );
     ctx.strokeStyle = ink(Material.frangipani, brush, brush.shade * 0.82);
     ctx.lineWidth = 0.014;
     trace(ctx, shape, 1, (u) => [0.2 + u * 0.75, 1], 16);

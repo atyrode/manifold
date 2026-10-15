@@ -17,13 +17,19 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     return shader;
   });
   const linked = gl.createProgram();
   for (const shader of shaders) gl.attachShader(linked, shader);
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
@@ -32,7 +38,11 @@ const WIDTH = 160;
 const HEIGHT = 90;
 
 /** The source view's summed luminance, drawn into a float target. */
-function light(gl: WebGL2RenderingContext, linked: WebGLProgram, params: readonly number[]): number {
+function light(
+  gl: WebGL2RenderingContext,
+  linked: WebGLProgram,
+  params: readonly number[],
+): number {
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, WIDTH, HEIGHT, 0, gl.RGBA, gl.FLOAT, null);
@@ -41,7 +51,10 @@ function light(gl: WebGL2RenderingContext, linked: WebGLProgram, params: readonl
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
   // Unbound, so no uSim sampler (all on unit 0) reads the target it renders into.
   gl.bindTexture(gl.TEXTURE_2D, null);
-  check(gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE, "float target incomplete");
+  check(
+    gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE,
+    "float target incomplete",
+  );
   gl.useProgram(linked);
   gl.viewport(0, 0, WIDTH, HEIGHT);
   const at = (name: string) => gl.getUniformLocation(linked, name);
@@ -61,7 +74,9 @@ function light(gl: WebGL2RenderingContext, linked: WebGLProgram, params: readonl
   gl.deleteFramebuffer(framebuffer);
   gl.deleteTexture(texture);
   let sum = 0;
-  for (let i = 0; i < WIDTH * HEIGHT; i++) sum += 0.2126 * (out[i * 4] ?? 0) + 0.7152 * (out[i * 4 + 1] ?? 0) + 0.0722 * (out[i * 4 + 2] ?? 0);
+  for (let i = 0; i < WIDTH * HEIGHT; i++)
+    sum +=
+      0.2126 * (out[i * 4] ?? 0) + 0.7152 * (out[i * 4 + 1] ?? 0) + 0.0722 * (out[i * 4 + 2] ?? 0);
   return sum;
 }
 
@@ -69,12 +84,28 @@ export function verifyStarsKnob(gl: WebGL2RenderingContext): Record<string, unkn
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const result: Record<string, number[]> = {};
   // The density each drew before the knob, and a clear night with the most sky in view.
-  for (const [id, before, night] of [["clouds", 0.75, { time: 0, window: 0 }], ["flock", 0.45, { time: 0 }], ["shore", 0.6, { time: 0 }]] as const) {
-    check(paramDefaults(id)["stars"] === before, `${id} does not start at its former density ${before}`);
+  for (const [id, before, night] of [
+    ["clouds", 0.75, { time: 0, window: 0 }],
+    ["flock", 0.45, { time: 0 }],
+    ["shore", 0.6, { time: 0 }],
+  ] as const) {
+    check(
+      paramDefaults(id)["stars"] === before,
+      `${id} does not start at its former density ${before}`,
+    );
     const linked = program(gl, fragmentSourceFor(sceneDefs[id]));
-    const sums = [0, before, 1].map((stars) => light(gl, linked, renderSettings(defaultsFor(id), { ...paramDefaults(id), ...night, stars }).params));
+    const sums = [0, before, 1].map((stars) =>
+      light(
+        gl,
+        linked,
+        renderSettings(defaultsFor(id), { ...paramDefaults(id), ...night, stars }).params,
+      ),
+    );
     const [none = 0, own = 0, dark = 0] = sums;
-    check(own - none > 2e-4 * none && dark - own > 2e-4 * own, `${id}'s night does not brighten with its stars: ${sums.map((x) => x.toFixed(3)).join(", ")}`);
+    check(
+      own - none > 2e-4 * none && dark - own > 2e-4 * own,
+      `${id}'s night does not brighten with its stars: ${sums.map((x) => x.toFixed(3)).join(", ")}`,
+    );
     result[id] = sums.map((x) => Number(x.toFixed(3)));
     gl.deleteProgram(linked);
   }

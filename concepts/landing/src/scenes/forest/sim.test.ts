@@ -21,7 +21,14 @@ interface SpiritRow {
 function approach(shy: number): { near: SpiritRow; away: SpiritRow[] } {
   const sim = new HeadlessSim(forestScene);
   const aspect = 16 / 9;
-  const pointer: PointerState = { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false };
+  const pointer: PointerState = {
+    x: 0.5,
+    y: 0.5,
+    inside: false,
+    down: false,
+    pressed: false,
+    released: false,
+  };
   const step = (): void => {
     sim.step({ aspect, height: 360, knobs: { shy }, pointer });
   };
@@ -29,10 +36,20 @@ function approach(shy: number): { near: SpiritRow; away: SpiritRow[] } {
   const row = (i: number): SpiritRow => {
     const data = sim.upload(0).data;
     const o = i * 12;
-    return { x: data[o] ?? 0, y: data[o + 1] ?? 0, z: data[o + 2] ?? 1, alpha: data[o + 3] ?? 0, yaw: data[o + 5] ?? 0, sink: data[o + 8] ?? 0, size: data[o + 9] ?? 0 };
+    return {
+      x: data[o] ?? 0,
+      y: data[o + 1] ?? 0,
+      z: data[o + 2] ?? 1,
+      alpha: data[o + 3] ?? 0,
+      yaw: data[o + 5] ?? 0,
+      sink: data[o + 8] ?? 0,
+      size: data[o + 9] ?? 0,
+    };
   };
   step();
-  const seated = Array.from({ length: FOREST_SPIRITS }, (_, i) => i).find((i) => row(i).alpha >= 1 && row(i).sink === 0);
+  const seated = Array.from({ length: FOREST_SPIRITS }, (_, i) => i).find(
+    (i) => row(i).alpha >= 1 && row(i).sink === 0,
+  );
   if (seated === undefined) throw new Error("no spirit seated at night");
   const at = row(seated);
   pointer.inside = true;

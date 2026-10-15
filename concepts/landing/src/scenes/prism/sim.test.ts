@@ -45,7 +45,11 @@ function separation(a: readonly Point[], b: readonly Point[]): number {
 }
 
 /** One frame at the lab's motion, the pointer away; the state texture (uSim1) the shader samples after it. */
-function stepState(sim: HeadlessSim, knobs: Record<string, number>, now: readonly string[] = []): ArrayLike<number> {
+function stepState(
+  sim: HeadlessSim,
+  knobs: Record<string, number>,
+  now: readonly string[] = [],
+): ArrayLike<number> {
   return sim.step({ dt: STEP, motion: 0.6, knobs, now, pointer: { inside: false } }).upload(1).data;
 }
 

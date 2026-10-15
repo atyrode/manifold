@@ -55,13 +55,15 @@ export const presets: readonly Preset[] = [
   {
     name: "Countryside · woodland valley",
     commit: "f1ca6557",
-    query: "scene=country&time=0.64&season=2&woodland=1&pines=0.4&songbirds=1&songbirds-amount=0.8&flights=5&crops=40&pasture=60",
+    query:
+      "scene=country&time=0.64&season=2&woodland=1&pines=0.4&songbirds=1&songbirds-amount=0.8&flights=5&crops=40&pasture=60",
     savedAt: "2026-10-15",
   },
   {
     name: "Countryside · riverside",
     commit: "f1ca6557",
-    query: "scene=country&time=0.72&season=0&cows=1&songbirds=1&songbirds-amount=0.8&murmuration=1&river=1&tracks=0.6&walkers=1&walkers-amount=0.7&carts=1&crops=65&pasture=35",
+    query:
+      "scene=country&time=0.72&season=0&cows=1&songbirds=1&songbirds-amount=0.8&murmuration=1&river=1&tracks=0.6&walkers=1&walkers-amount=0.7&carts=1&crops=65&pasture=35",
     savedAt: "2026-10-15",
   },
   {
@@ -115,7 +117,8 @@ export const presets: readonly Preset[] = [
   {
     name: "Sill · quiet shelter",
     commit: "f1ca6557",
-    query: "scene=sill&restless=0.1&steam-amount=0.8&curtain-amount=0.25&rain=1&rain-amount=0.4&wind=0.05",
+    query:
+      "scene=sill&restless=0.1&steam-amount=0.8&curtain-amount=0.25&rain=1&rain-amount=0.4&wind=0.05",
     savedAt: "2026-10-15",
   },
   {
@@ -317,8 +320,12 @@ const LOCAL_PRESETS = "landing.presets";
 function isPreset(entry: unknown): entry is Preset {
   if (typeof entry !== "object" || entry === null) return false;
   const record = entry as Record<string, unknown>;
-  return typeof record.name === "string" && typeof record.commit === "string"
-    && typeof record.query === "string" && typeof record.savedAt === "string";
+  return (
+    typeof record.name === "string" &&
+    typeof record.commit === "string" &&
+    typeof record.query === "string" &&
+    typeof record.savedAt === "string"
+  );
 }
 
 /** Setups saved in this browser. */

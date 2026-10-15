@@ -17,14 +17,39 @@
 // Texture: uSim0, the MobileTexture (layout in the sims/mobile.ts header).
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { smoothstep } from "../../sims/math.ts";
-import { designMobile, Mobile, MOBILE_SETTLE, MobileTexture, type MobileAir, type MobilePose } from "../../sims/mobile.ts";
+import {
+  designMobile,
+  Mobile,
+  MOBILE_SETTLE,
+  MobileTexture,
+  type MobileAir,
+  type MobilePose,
+} from "../../sims/mobile.ts";
 import { Random } from "../../sims/random.ts";
 import { GustTrain, windNoise } from "../../sims/wind.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { MOBILE_ANCHOR, MOBILE_EYE, MOBILE_HOIST, MOBILE_LOWER, MOBILE_PASSAGE, MOBILE_SPAN, MOBILE_TEX_ORIGIN, MOBILE_TOP_LINK, mobileRay } from "./layout.ts";
+import {
+  MOBILE_ANCHOR,
+  MOBILE_EYE,
+  MOBILE_HOIST,
+  MOBILE_LOWER,
+  MOBILE_PASSAGE,
+  MOBILE_SPAN,
+  MOBILE_TEX_ORIGIN,
+  MOBILE_TOP_LINK,
+  mobileRay,
+} from "./layout.ts";
 
 type Knob = "arms" | "shapes" | "clearance" | "mobileSeed" | "wind" | "gusts" | "drift";
-const KNOBS: readonly Knob[] = ["arms", "shapes", "clearance", "mobileSeed", "wind", "gusts", "drift"];
+const KNOBS: readonly Knob[] = [
+  "arms",
+  "shapes",
+  "clearance",
+  "mobileSeed",
+  "wind",
+  "gusts",
+  "drift",
+];
 
 /** The plate outlines each `shapes` choice draws from (indices into MOBILE_SHAPES): leaves, discs, all. */
 export const MOBILE_SHAPE_SETS: readonly (readonly number[])[] = [[1, 2, 3], [0], [0, 1, 2, 3]];
@@ -87,7 +112,9 @@ class MobileSim implements SceneSim {
     const eddy = EDDY * this.#drift;
     out[0] = DRAFT * this.#wind + gust + eddy * windNoise(t / EDDY_PERIOD[0] + EDDY_SPAN * x, 11);
     out[1] = 0.3 * eddy * windNoise(t / EDDY_PERIOD[1] + 1.3 * y, 12);
-    out[2] = Math.abs(gust) * this.#gustZ + eddy * windNoise(t / EDDY_PERIOD[2] + EDDY_SPAN * z + 0.6 * x, 13);
+    out[2] =
+      Math.abs(gust) * this.#gustZ +
+      eddy * windNoise(t / EDDY_PERIOD[2] + EDDY_SPAN * z + 0.6 * x, 13);
   };
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
@@ -118,7 +145,8 @@ class MobileSim implements SceneSim {
     this.#busy = Math.max(0, this.#busy - frame.dt);
     const pace = frame.motion > 0 ? frame.motion : smoothstep(0, BUSY_EASE, this.#busy);
     const dt = frame.dt * pace;
-    if (dt > 0 && this.#gusts.step(dt, gusts > 0 ? mean : Infinity, this.#wind, power)) this.#gustZ = (this.#random.next() - 0.5) * 0.8;
+    if (dt > 0 && this.#gusts.step(dt, gusts > 0 ? mean : Infinity, this.#wind, power))
+      this.#gustZ = (this.#random.next() - 0.5) * 0.8;
     mobile.step(dt, this.#air);
 
     this.#texture.upload(mobile, passing ? this.#pose(enter, exit) : undefined);
@@ -141,10 +169,24 @@ class MobileSim implements SceneSim {
     this.#key = key;
     this.#random.seed(Math.imul(seed + 1, 0x9e3779b1) ^ 0x6d6f6273);
     const next = this.#random.next();
-    this.#gusts = new GustTrain(() => this.#random.next(), GUST_RISE, FIRST_GUST * (0.8 + 0.4 * next));
+    this.#gusts = new GustTrain(
+      () => this.#random.next(),
+      GUST_RISE,
+      FIRST_GUST * (0.8 + 0.4 * next),
+    );
     this.#gustZ = 0;
     this.#busy = 0;
-    const mobile = new Mobile(designMobile({ seed, arms, anchor: MOBILE_ANCHOR, span: MOBILE_SPAN, clearance, shapes, top: MOBILE_TOP_LINK }));
+    const mobile = new Mobile(
+      designMobile({
+        seed,
+        arms,
+        anchor: MOBILE_ANCHOR,
+        span: MOBILE_SPAN,
+        clearance,
+        shapes,
+        top: MOBILE_TOP_LINK,
+      }),
+    );
     this.#mobile = mobile;
     mobile.settle(MOBILE_SETTLE, this.#air);
     return mobile;
@@ -157,7 +199,11 @@ class MobileSim implements SceneSim {
 
   /** A click blows on the plate under the pointer, along the view. */
   #puff(mobile: Mobile, frame: SimFrame): void {
-    const rd = mobileRay((frame.pointer.x - 0.5) * frame.aspect, frame.pointer.y - 0.5, frame.aspect);
+    const rd = mobileRay(
+      (frame.pointer.x - 0.5) * frame.aspect,
+      frame.pointer.y - 0.5,
+      frame.aspect,
+    );
     const plate = mobile.pick(MOBILE_EYE, rd, PUFF_SLACK);
     if (plate < 0) return;
     mobile.kick(plate, rd[0] * PUFF, rd[1] * PUFF, rd[2] * PUFF);

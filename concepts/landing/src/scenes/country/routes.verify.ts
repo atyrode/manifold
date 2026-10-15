@@ -64,12 +64,14 @@ function link(gl: WebGL2RenderingContext, entry: string, glsl: string): WebGLPro
     if (!shader) fail("shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) fail(gl.getShaderInfoLog(shader) ?? "compile failed");
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      fail(gl.getShaderInfoLog(shader) ?? "compile failed");
     gl.attachShader(program, shader);
     gl.deleteShader(shader);
   }
   gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) fail(gl.getProgramInfoLog(program) ?? "link failed");
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+    fail(gl.getProgramInfoLog(program) ?? "link failed");
   return program;
 }
 
@@ -93,8 +95,18 @@ function draw(gl: WebGL2RenderingContext, program: WebGLProgram, frame: Frame): 
   gl.uniform1f(at("uTime"), frame.time ?? frame.motionTime ?? 120);
   gl.uniform1i(at("regressionProbe"), frame.probe ?? 0);
   // Still air and a fixed sun, so only the routes' own knobs move anything.
-  const knobs = { ...paramDefaults("country"), clouds: 0, shadows: 0, wind: 0, fog: 0, ...frame.knobs };
-  gl.uniform1fv(at("uParams"), Float32Array.from(renderSettings(defaultsFor("country"), knobs).params));
+  const knobs = {
+    ...paramDefaults("country"),
+    clouds: 0,
+    shadows: 0,
+    wind: 0,
+    fog: 0,
+    ...frame.knobs,
+  };
+  gl.uniform1fv(
+    at("uParams"),
+    Float32Array.from(renderSettings(defaultsFor("country"), knobs).params),
+  );
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
   gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -135,13 +147,23 @@ export function verifyCountryRoutes(gl: WebGL2RenderingContext): Record<string, 
       const bare = draw(gl, scene, { knobs: { tracks: 1 }, motionTime });
       const moved = changed(shown, bare);
       const stray = moved.filter((pixel) => !near.has(pixel));
-      if (stray.length > 0) fail(`at ${motionTime}s ${stray.length} walker/cart pixels off every route, e.g. ${stray.slice(0, 5).join(",")}`);
+      if (stray.length > 0)
+        fail(
+          `at ${motionTime}s ${stray.length} walker/cart pixels off every route, e.g. ${stray.slice(0, 5).join(",")}`,
+        );
       agentPixels += moved.length;
       const later = draw(gl, scene, { knobs: busy, motionTime, time: motionTime + 30 });
-      if (changed(shown, later).length > 0) fail(`walkers or carts moved with the scene clock while the motion clock stood at ${motionTime}s`);
+      if (changed(shown, later).length > 0)
+        fail(
+          `walkers or carts moved with the scene clock while the motion clock stood at ${motionTime}s`,
+        );
     }
-    if (agentPixels < 6) fail(`walkers and carts left only ${agentPixels} pixels over ${moments.length} moments`);
-    const moving = changed(draw(gl, scene, { knobs: busy, motionTime: 140 }), draw(gl, scene, { knobs: busy, motionTime: 150 }));
+    if (agentPixels < 6)
+      fail(`walkers and carts left only ${agentPixels} pixels over ${moments.length} moments`);
+    const moving = changed(
+      draw(gl, scene, { knobs: busy, motionTime: 140 }),
+      draw(gl, scene, { knobs: busy, motionTime: 150 }),
+    );
     if (moving.length === 0) fail("walkers and carts did not move with the motion clock");
 
     // The river knob: open water by the API is water in the render at every width (its ripples move
@@ -155,28 +177,40 @@ export function verifyCountryRoutes(gl: WebGL2RenderingContext): Record<string, 
       const rippled = new Set(changed(wet, draw(gl, scene, { knobs: { river }, motionTime: 133 })));
       const water = marked(draw(gl, probe, { knobs: { river }, probe: 1 }));
       const live = water.filter((pixel) => rippled.has(pixel)).length;
-      if (water.length > 0 && live < 0.7 * water.length) fail(`river ${river}: only ${live} of ${water.length} open-water pixels drawn as water`);
-      if (river >= 0.5 && water.length < 20) fail(`river ${river}: only ${water.length} open-water pixels`);
+      if (water.length > 0 && live < 0.7 * water.length)
+        fail(`river ${river}: only ${live} of ${water.length} open-water pixels drawn as water`);
+      if (river >= 0.5 && water.length < 20)
+        fail(`river ${river}: only ${water.length} open-water pixels`);
     }
     for (let k = 1; k < coverage.length; k++) {
-      if ((coverage[k] ?? 0) <= (coverage[k - 1] ?? 0)) fail(`river footprint did not grow with the knob: ${coverage.join(",")}`);
+      if ((coverage[k] ?? 0) <= (coverage[k - 1] ?? 0))
+        fail(`river footprint did not grow with the knob: ${coverage.join(",")}`);
     }
-    if (marked(draw(gl, probe, { knobs: { river: 0 }, probe: 1 })).length > 0) fail("river 0 still reports open water");
+    if (marked(draw(gl, probe, { knobs: { river: 0 }, probe: 1 })).length > 0)
+      fail("river 0 still reports open water");
 
     // Tracks: at zero only the lane exists; raised, the network appears on the farther ridges and
     // the lane itself is untouched.
-    if (marked(draw(gl, probe, { knobs: { tracks: 0 }, probe: 2 })).length > 0) fail("tracks 0 reports a route beyond the near field");
+    if (marked(draw(gl, probe, { knobs: { tracks: 0 }, probe: 2 })).length > 0)
+      fail("tracks 0 reports a route beyond the near field");
     const network = marked(draw(gl, probe, { knobs: { tracks: 1 }, probe: 2 }));
     const without = draw(gl, scene, { knobs: { tracks: 0 } });
     const withNet = draw(gl, scene, { knobs: { tracks: 1 } });
     const drawn = new Set(changed(withNet, without));
     const networkShown = network.filter((pixel) => drawn.has(pixel)).length;
-    if (networkShown < 0.6 * network.length || networkShown < 40) fail(`tracks 1 drew ${networkShown} of ${network.length} network pixels`);
+    if (networkShown < 0.6 * network.length || networkShown < 40)
+      fail(`tracks 1 drew ${networkShown} of ${network.length} network pixels`);
     const lane = marked(draw(gl, probe, { knobs: { tracks: 0 }, probe: 3 }));
     if (lane.length < 40) fail(`the lane covers only ${lane.length} pixels`);
     const laneChanged = lane.filter((pixel) => drawn.has(pixel)).length;
-    if (laneChanged > 0.02 * lane.length) fail(`raising tracks changed ${laneChanged} of ${lane.length} lane pixels`);
-    return { routesAgentPixels: agentPixels, routesRiverCoverage: coverage, routesNetworkPixels: networkShown, routesLanePixels: lane.length };
+    if (laneChanged > 0.02 * lane.length)
+      fail(`raising tracks changed ${laneChanged} of ${lane.length} lane pixels`);
+    return {
+      routesAgentPixels: agentPixels,
+      routesRiverCoverage: coverage,
+      routesNetworkPixels: networkShown,
+      routesLanePixels: lane.length,
+    };
   } finally {
     gl.deleteProgram(scene);
     gl.deleteProgram(probe);

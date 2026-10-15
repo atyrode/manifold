@@ -9,9 +9,12 @@
   --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   margin: 0;
   height: 100%;
   background: var(--bg);
@@ -21,7 +24,9 @@ html, body {
   overflow: hidden;
 }
 
-a { color: inherit; }
+a {
+  color: inherit;
+}
 
 #stage {
   position: fixed;
@@ -41,15 +46,26 @@ a { color: inherit; }
   padding: clamp(18px, 3vw, 40px);
   pointer-events: none;
 }
-.overlay > * { grid-column: 1; }
-.overlay a, .overlay button { pointer-events: auto; }
+.overlay > * {
+  grid-column: 1;
+}
+.overlay a,
+.overlay button {
+  pointer-events: auto;
+}
 
-[hidden] { display: none !important; }
-body.ui-hidden .overlay { display: none; }
+[hidden] {
+  display: none !important;
+}
+body.ui-hidden .overlay {
+  display: none;
+}
 
 /* nav */
 .nav {
-  text-shadow: 0 0 12px var(--bg), 0 0 2px var(--bg);
+  text-shadow:
+    0 0 12px var(--bg),
+    0 0 2px var(--bg);
   display: flex;
   grid-row: 1;
   align-items: center;
@@ -65,7 +81,8 @@ body.ui-hidden .overlay { display: none; }
   text-decoration: none;
   font-size: 15px;
 }
-.wordmark svg, .loading .mark {
+.wordmark svg,
+.loading .mark {
   width: 22px;
   height: 22px;
   fill: none;
@@ -73,10 +90,24 @@ body.ui-hidden .overlay { display: none; }
   stroke-width: 3;
   stroke-linecap: square;
 }
-.nav nav { display: flex; gap: clamp(14px, 2.4vw, 28px); align-items: center; }
-.nav nav a { text-decoration: none; color: var(--muted); transition: color 120ms; }
-.nav nav a:hover { color: var(--ink); }
-.nav nav .nav-cta { color: var(--ink); border: 1px solid var(--line); padding: 6px 12px; }
+.nav nav {
+  display: flex;
+  gap: clamp(14px, 2.4vw, 28px);
+  align-items: center;
+}
+.nav nav a {
+  text-decoration: none;
+  color: var(--muted);
+  transition: color 120ms;
+}
+.nav nav a:hover {
+  color: var(--ink);
+}
+.nav nav .nav-cta {
+  color: var(--ink);
+  border: 1px solid var(--line);
+  padding: 6px 12px;
+}
 
 /* hero */
 .hero {
@@ -92,11 +123,23 @@ body.ui-hidden .overlay { display: none; }
   position: absolute;
   inset: -12% -18%;
   z-index: -1;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--bg) 82%, transparent), color-mix(in srgb, var(--bg) 55%, transparent) 60%, transparent);
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--bg) 82%, transparent),
+    color-mix(in srgb, var(--bg) 55%, transparent) 60%,
+    transparent
+  );
   pointer-events: none;
 }
-body[data-scene="orbit"] .hero { align-self: start; padding-top: clamp(24px, 12vh, 140px); }
-body[data-scene="swell"] .hero { justify-self: end; align-self: start; padding-top: clamp(16px, 6vh, 80px); }
+body[data-scene="orbit"] .hero {
+  align-self: start;
+  padding-top: clamp(24px, 12vh, 140px);
+}
+body[data-scene="swell"] .hero {
+  justify-self: end;
+  align-self: start;
+  padding-top: clamp(16px, 6vh, 80px);
+}
 
 .eyebrow {
   font-family: var(--mono);
@@ -130,7 +173,11 @@ h1 {
   margin: 0 0 28px;
   max-width: 30rem;
 }
-.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .button {
   display: inline-block;
   font-family: var(--mono);
@@ -140,15 +187,29 @@ h1 {
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg) 60%, transparent);
   backdrop-filter: blur(2px);
-  transition: border-color 120ms, background 120ms;
+  transition:
+    border-color 120ms,
+    background 120ms;
 }
-.button:hover { border-color: var(--ink); }
-.button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
-.button.primary:hover { background: transparent; color: var(--ink); }
+.button:hover {
+  border-color: var(--ink);
+}
+.button.primary {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+.button.primary:hover {
+  background: transparent;
+  color: var(--ink);
+}
 
 /* text legibility over busy dither without a soft gradient: a hard-edged pane */
-.hero > *, .card {
-  text-shadow: 0 0 18px var(--bg), 0 0 2px var(--bg);
+.hero > *,
+.card {
+  text-shadow:
+    0 0 18px var(--bg),
+    0 0 2px var(--bg);
 }
 
 .credit {
@@ -168,20 +229,39 @@ h1 {
   gap: 22px;
   font-family: var(--mono);
 }
-.loading .mark { width: 34px; height: 34px; }
+.loading .mark {
+  width: 34px;
+  height: 34px;
+}
 .bar {
   display: grid;
   grid-template-columns: repeat(32, 6px);
   gap: 2px;
   height: 6px;
 }
-.bar i { background: var(--line); }
-.bar i.on { background: var(--ink); }
-.bar i.head { background: var(--accent); }
-.status { margin: 0; font-size: 12px; color: var(--muted); letter-spacing: 0.04em; min-height: 1em; }
+.bar i {
+  background: var(--line);
+}
+.bar i.on {
+  background: var(--ink);
+}
+.bar i.head {
+  background: var(--accent);
+}
+.status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  min-height: 1em;
+}
 
 /* private instance */
-.instance { display: grid; grid-row: 1 / -1; place-self: center; }
+.instance {
+  display: grid;
+  grid-row: 1 / -1;
+  place-self: center;
+}
 .card {
   width: min(380px, 86vw);
   padding: 32px 30px 26px;
@@ -189,12 +269,32 @@ h1 {
   border: 1px solid var(--line);
   backdrop-filter: blur(3px);
 }
-.card h2 { font-weight: 400; font-size: 30px; letter-spacing: -0.02em; margin: 0 0 12px; }
-.card .lede { font-size: 15px; margin-bottom: 24px; }
-.card .button { width: 100%; text-align: center; }
-.fine { font-family: var(--mono); font-size: 11px; color: var(--muted); margin: 18px 0 0; }
+.card h2 {
+  font-weight: 400;
+  font-size: 30px;
+  letter-spacing: -0.02em;
+  margin: 0 0 12px;
+}
+.card .lede {
+  font-size: 15px;
+  margin-bottom: 24px;
+}
+.card .button {
+  width: 100%;
+  text-align: center;
+}
+.fine {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin: 18px 0 0;
+}
 
 @media (max-width: 720px) {
-  .nav nav a:not(.nav-cta) { display: none; }
-  body[data-scene] .hero { justify-self: start; }
+  .nav nav a:not(.nav-cta) {
+    display: none;
+  }
+  body[data-scene] .hero {
+    justify-self: start;
+  }
 }

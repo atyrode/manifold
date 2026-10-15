@@ -513,7 +513,9 @@ function lobe(nm: number, mean: number, below: number, above: number): number {
  */
 function matching(nm: number): readonly [number, number, number] {
   return [
-    1.056 * lobe(nm, 599.8, 37.9, 31.0) + 0.362 * lobe(nm, 442.0, 16.0, 26.7) - 0.065 * lobe(nm, 501.1, 20.4, 26.2),
+    1.056 * lobe(nm, 599.8, 37.9, 31.0) +
+      0.362 * lobe(nm, 442.0, 16.0, 26.7) -
+      0.065 * lobe(nm, 501.1, 20.4, 26.2),
     0.821 * lobe(nm, 568.8, 46.9, 40.5) + 0.286 * lobe(nm, 530.9, 16.3, 31.1),
     1.217 * lobe(nm, 437.0, 11.8, 36.0) + 0.681 * lobe(nm, 459.0, 26.0, 13.8),
   ];
@@ -527,7 +529,11 @@ function planck(nm: number, kelvin: number): number {
 
 /** CIE XYZ to linear sRGB (D65). */
 function linearRgb(x: number, y: number, z: number): [number, number, number] {
-  return [3.2406 * x - 1.5372 * y - 0.4986 * z, -0.9689 * x + 1.8758 * y + 0.0415 * z, 0.0557 * x - 0.204 * y + 1.057 * z];
+  return [
+    3.2406 * x - 1.5372 * y - 0.4986 * z,
+    -0.9689 * x + 1.8758 * y + 0.0415 * z,
+    0.0557 * x - 0.204 * y + 1.057 * z,
+  ];
 }
 
 /**
@@ -542,7 +548,12 @@ function filmSpectrumTable(): Float32Array {
   for (let nm = LAMBDA_FROM; nm <= LAMBDA_TO; nm += LAMBDA_STEP) {
     const power = planck(nm, LIGHT_KELVIN);
     const [x, y, z] = matching(nm);
-    bands.push({ k: (2 * Math.PI * REFRACTIVE_INDEX) / nm, x: power * x, y: power * y, z: power * z });
+    bands.push({
+      k: (2 * Math.PI * REFRACTIVE_INDEX) / nm,
+      x: power * x,
+      y: power * y,
+      z: power * z,
+    });
   }
   let wx = 0;
   let wy = 0;
@@ -615,7 +626,10 @@ function outlineInto(out: Outline, shape: FilmShape, aspect: number): void {
     case "loop":
     case "bubble": {
       const loop = shape === "loop";
-      const r = Math.max(Math.min(loop ? LOOP_RADIUS : BUBBLE_RADIUS, 0.5 * aspect - ROUND_MARGIN), 0.05);
+      const r = Math.max(
+        Math.min(loop ? LOOP_RADIUS : BUBBLE_RADIUS, 0.5 * aspect - ROUND_MARGIN),
+        0.05,
+      );
       out.y = loop ? LOOP_Y : BUBBLE_Y;
       out.hw = r;
       out.hh = r;
@@ -723,7 +737,10 @@ class FilmLife {
     if (o.shape === "frame") {
       this.breakX = o.x + (share * 1.4 - 0.7) * o.hw;
       this.breakY = o.y + o.hh - BREAK_INSET;
-      far = Math.max(Math.hypot(o.x - o.hw - this.breakX, o.y - o.hh - this.breakY), Math.hypot(o.x + o.hw - this.breakX, o.y - o.hh - this.breakY));
+      far = Math.max(
+        Math.hypot(o.x - o.hw - this.breakX, o.y - o.hh - this.breakY),
+        Math.hypot(o.x + o.hw - this.breakX, o.y - o.hh - this.breakY),
+      );
     } else {
       const angle = Math.PI / 2 + (share - 0.5) * 1.1;
       const reach = o.hw - BREAK_INSET;
@@ -745,7 +762,12 @@ class FilmLife {
     switch (this.phase) {
       case "film":
         this.age += dt;
-        if (tuning.pop > 0 && this.age >= this.#lifeShare * (LIFETIME_LONG + (LIFETIME_SHORT - LIFETIME_LONG) * tuning.pop)) this.burst(tuning.outline);
+        if (
+          tuning.pop > 0 &&
+          this.age >=
+            this.#lifeShare * (LIFETIME_LONG + (LIFETIME_SHORT - LIFETIME_LONG) * tuning.pop)
+        )
+          this.burst(tuning.outline);
         break;
       case "burst":
         this.since += this.leaving ? dt * EXIT_PACE : dt;
@@ -796,7 +818,8 @@ class FilmLife {
       count++;
     };
     if (extra) put(extra, extra.rate);
-    for (const plume of this.#plumes) put(plume, plume.rate * Math.sin(Math.PI * Math.min(plume.age / plume.duration, 1)));
+    for (const plume of this.#plumes)
+      put(plume, plume.rate * Math.sin(Math.PI * Math.min(plume.age / plume.duration, 1)));
     return count;
   }
 
@@ -815,7 +838,9 @@ class FilmLife {
   }
 
   #newFilm(): void {
-    this.#rand = mulberry32(Math.imul(this.#seed + 1, 0x9e3779b1) ^ Math.imul(this.#films + 1, 0x85ebca6b));
+    this.#rand = mulberry32(
+      Math.imul(this.#seed + 1, 0x9e3779b1) ^ Math.imul(this.#films + 1, 0x85ebca6b),
+    );
     this.#films++;
     this.#lifeShare = 0.75 + 0.5 * this.#rand();
     this.#plumeClock = 0;
@@ -868,7 +893,8 @@ class FilmLife {
       }
     } else {
       // Angles from +x, counter-clockwise: low on the left, low on the right, or the bottom.
-      const angle = side < 0.4 ? 3.49 + 0.79 * along : side < 0.8 ? 5.15 + 0.79 * along : 4.36 + 0.7 * along;
+      const angle =
+        side < 0.4 ? 3.49 + 0.79 * along : side < 0.8 ? 5.15 + 0.79 * along : 4.36 + 0.7 * along;
       x = o.x + (o.hw - inset) * Math.cos(angle);
       y = o.y + (o.hw - inset) * Math.sin(angle);
     }
@@ -922,8 +948,18 @@ class FilmFlow {
   readonly #breakUv: [number, number] = [0, 0];
   readonly #rimDomain: [number, number] = [1, 1];
   readonly #rimInputs: RunOptions;
-  readonly #snippet: SnippetUniforms = { uFilmShape: 0, uFilmMark: 0, uFilmBuoyancy: BUOYANCY, uFilmStir: 0 };
-  readonly #fluidStep: FluidStep = { dt: 0, time: 0, velocityDissipation: VELOCITY_DISSIPATION, uniforms: this.#snippet };
+  readonly #snippet: SnippetUniforms = {
+    uFilmShape: 0,
+    uFilmMark: 0,
+    uFilmBuoyancy: BUOYANCY,
+    uFilmStir: 0,
+  };
+  readonly #fluidStep: FluidStep = {
+    dt: 0,
+    time: 0,
+    velocityDissipation: VELOCITY_DISSIPATION,
+    uniforms: this.#snippet,
+  };
   readonly #physicsUniforms: PhysicsUniforms = {
     uFilmDomain: this.#domain,
     uFilmShape: 0,
@@ -967,7 +1003,13 @@ class FilmFlow {
   /** A still film well into its life (filmAnalytic). */
   reseed(shape: FilmShape, seed: number): void {
     this.fluid.clear();
-    this.#seeder.run(this.fluid.dye, { uniforms: { uFilmDomain: this.#updateDomain(), uFilmShape: filmShapes.indexOf(shape), uFilmSeed: seed } });
+    this.#seeder.run(this.fluid.dye, {
+      uniforms: {
+        uFilmDomain: this.#updateDomain(),
+        uFilmShape: filmShapes.indexOf(shape),
+        uFilmSeed: seed,
+      },
+    });
   }
 
   step(step: FlowStep): void {
@@ -1009,7 +1051,8 @@ type FilmKnob = "shape" | "pop" | "filmSeed" | "drainage" | "swirl" | "plumes" |
 
 /** Write what the knobs ask of the film this frame into `out`. */
 function tune(out: Tuning, frame: SimFrame, knobs: KnobReader<FilmKnob>): void {
-  const shape = filmShapes[clamp(Math.round(knobs.value(frame, "shape")), 0, filmShapes.length - 1)] ?? "loop";
+  const shape =
+    filmShapes[clamp(Math.round(knobs.value(frame, "shape")), 0, filmShapes.length - 1)] ?? "loop";
   const pace = DRAIN_RANGE ** (2 * knobs.value(frame, "drainage") - 1);
   const mark = knobs.value(frame, "mark");
   out.shape = shape;
@@ -1025,12 +1068,26 @@ function tune(out: Tuning, frame: SimFrame, knobs: KnobReader<FilmKnob>): void {
 
 /** The soap film, for a scene whose `params` carry the knobs `FilmKnob` names. */
 export function filmSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<FilmKnob>("film", params, ["shape", "pop", "filmSeed", "drainage", "swirl", "plumes", "blow", "mark"]);
+  const knobs = new KnobReader<FilmKnob>("film", params, [
+    "shape",
+    "pop",
+    "filmSeed",
+    "drainage",
+    "swirl",
+    "plumes",
+    "blow",
+    "mark",
+  ]);
   const popSlot = knobs.trigger("pop");
   return (gl): SceneSim => {
     const colours = new DataTexture(gl, { width: LUT_SIZE, height: 1, format: "rgba16f" });
     colours.upload(filmSpectrumTable());
-    const state = new DataTexture(gl, { width: 2, height: 1, format: "rgba16f", filter: "nearest" });
+    const state = new DataTexture(gl, {
+      width: 2,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     const stateData = new Float32Array(8);
     // The physics pass reads the break and the drawing line straight from the state.
     const hole = stateData.subarray(0, 4);
@@ -1152,7 +1209,9 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
           }
           breath.x = (pointer.x - 0.5) * frame.aspect;
           breath.y = pointer.y - 0.5;
-          breath.rate = amount * (BLOW_THIN * Math.min(1, speed / BLOW_FULL_SPEED) + (pointer.down ? BLOW_HOLD : 0));
+          breath.rate =
+            amount *
+            (BLOW_THIN * Math.min(1, speed / BLOW_FULL_SPEED) + (pointer.down ? BLOW_HOLD : 0));
           breathing = true;
         }
 

@@ -32,13 +32,26 @@ export const LENS = 2;
 export const DOPPLER = 3;
 export const BOX = 4;
 export const MARK = 5;
-export type Experiment = typeof TWO | typeof SLIT | typeof LENS | typeof DOPPLER | typeof BOX | typeof MARK;
+export type Experiment =
+  typeof TWO | typeof SLIT | typeof LENS | typeof DOPPLER | typeof BOX | typeof MARK;
 export const RIPPLE_EXPERIMENTS: readonly Experiment[] = [TWO, SLIT, LENS, DOPPLER, BOX];
 /** Labels of the experiment knob after "cycle", in RIPPLE_EXPERIMENTS order. */
-export const rippleExperimentLabels = ["interference", "double slit", "lens", "Doppler", "standing"] as const;
+export const rippleExperimentLabels = [
+  "interference",
+  "double slit",
+  "lens",
+  "Doppler",
+  "standing",
+] as const;
 
 /** The Manifold M in mark units (common's markDistance): x in [-0.47, 0.47], y in [-0.5, 0.5]. */
-export const RIPPLE_M: readonly (readonly [number, number])[] = [[-0.47, -0.5], [-0.47, 0.5], [0, -0.08], [0.47, 0.5], [0.47, -0.5]];
+export const RIPPLE_M: readonly (readonly [number, number])[] = [
+  [-0.47, -0.5],
+  [-0.47, 0.5],
+  [0, -0.08],
+  [0.47, 0.5],
+  [0.47, -0.5],
+];
 
 export interface TankFrame {
   /** Frame size in short sides. */
@@ -160,7 +173,10 @@ function segmentAt(frame: TankFrame, a0: number, b0: number, a1: number, b1: num
  * Where the Doppler dipper is at `time` seconds into its experiment, and its velocity. It starts
  * on the near straight heading along the long axis, turns at the far end and comes back.
  */
-export function trackAt(track: Track, time: number): { x: number; y: number; vx: number; vy: number } {
+export function trackAt(
+  track: Track,
+  time: number,
+): { x: number; y: number; vx: number; vy: number } {
   const straight = 2 * track.reach;
   const turn = Math.PI * track.radius;
   const loop = 2 * straight + 2 * turn;
@@ -207,7 +223,13 @@ export function trackAt(track: Track, time: number): { x: number; y: number; vx:
  * experiment shows its effect at any frequency: slits a wavelength wide and three apart, a box a
  * whole number of half-waves on each side so it rings.
  */
-export function rippleLayout(experiment: Experiment, frame: TankFrame, lambda: number, waveSpeed: number, markSize: number): Layout {
+export function rippleLayout(
+  experiment: Experiment,
+  frame: TankFrame,
+  lambda: number,
+  waveSpeed: number,
+  markSize: number,
+): Layout {
   const L = frame.long;
   const layout: Layout = {
     experiment,
@@ -228,14 +250,22 @@ export function rippleLayout(experiment: Experiment, frame: TankFrame, lambda: n
   // Slit and lens: a straight bar near the tank's end sends plane waves along it.
   const barAt = 0.2;
   if (experiment === SLIT || experiment === LENS) {
-    layout.bar = { ...segmentAt(frame, barAt, -0.3, barAt, 1.3), amp: 0.5, nx: along.x, ny: along.y };
+    layout.bar = {
+      ...segmentAt(frame, barAt, -0.3, barAt, 1.3),
+      amp: 0.5,
+      nx: along.x,
+      ny: along.y,
+    };
   }
   switch (experiment) {
     case TWO: {
       // Two dippers on one beam, in step: the fan of calm lines between them.
       const a = 0.3 * L;
       const d = Math.min(3.5 * lambda, 0.6);
-      layout.dippers.push({ ...place(frame, a, 0.5 - d / 2), amp: 1 }, { ...place(frame, a, 0.5 + d / 2), amp: 1 });
+      layout.dippers.push(
+        { ...place(frame, a, 0.5 - d / 2), amp: 1 },
+        { ...place(frame, a, 0.5 + d / 2), amp: 1 },
+      );
       layout.beam = segmentAt(frame, a, 0.5 - d / 2 - 0.05, a, 1.3);
       break;
     }
@@ -248,8 +278,13 @@ export function rippleLayout(experiment: Experiment, frame: TankFrame, lambda: n
       const lo = 0.5 - d / 2;
       const hi = 0.5 + d / 2;
       // The walls' rounded ends sit back from the gaps by their half-width, so each slit is w clear.
-      const spans: [number, number][] = [[-0.3, lo - w / 2 - h], [lo + w / 2 + h, hi - w / 2 - h], [hi + w / 2 + h, 1.3]];
-      for (const [b0, b1] of spans) layout.walls.push({ ...segmentAt(frame, ab, b0, ab, b1), half: h });
+      const spans: [number, number][] = [
+        [-0.3, lo - w / 2 - h],
+        [lo + w / 2 + h, hi - w / 2 - h],
+        [hi + w / 2 + h, 1.3],
+      ];
+      for (const [b0, b1] of spans)
+        layout.walls.push({ ...segmentAt(frame, ab, b0, ab, b1), half: h });
       layout.slits = {
         centres: [place(frame, ab + h, lo), place(frame, ab + h, hi)],
         width: w,
@@ -294,7 +329,12 @@ export function rippleLayout(experiment: Experiment, frame: TankFrame, lambda: n
       const ac = L / 2;
       const p0 = place(frame, ac - ha, 0.5 - hb);
       const p1 = place(frame, ac + ha, 0.5 + hb);
-      layout.box = { x0: Math.min(p0.x, p1.x), y0: Math.min(p0.y, p1.y), x1: Math.max(p0.x, p1.x), y1: Math.max(p0.y, p1.y) };
+      layout.box = {
+        x0: Math.min(p0.x, p1.x),
+        y0: Math.min(p0.y, p1.y),
+        x1: Math.max(p0.x, p1.x),
+        y1: Math.max(p0.y, p1.y),
+      };
       const ea = ha + h;
       const eb = hb + h;
       layout.walls.push(
@@ -309,7 +349,9 @@ export function rippleLayout(experiment: Experiment, frame: TankFrame, lambda: n
     }
     case MARK: {
       // A strip bent into the M, dipping along its whole length: its waves leave M-shaped and round off.
-      const height = RIPPLE_MARK_SIZE[0] + (RIPPLE_MARK_SIZE[1] - RIPPLE_MARK_SIZE[0]) * Math.min(1, Math.max(0, markSize));
+      const height =
+        RIPPLE_MARK_SIZE[0] +
+        (RIPPLE_MARK_SIZE[1] - RIPPLE_MARK_SIZE[0]) * Math.min(1, Math.max(0, markSize));
       layout.mark = { x: frame.width / 2, y: frame.height / 2, height, amp: 0.6 };
       layout.contrast = 0.9;
       break;

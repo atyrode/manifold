@@ -32,7 +32,12 @@ function table(knobs: Record<string, number>): Table {
 }
 
 /** Run `seconds` of 60 Hz frames with ±0.3 ms jitter, calling `each` after every frame. */
-function play(tables: readonly { table: Table; offset: number }[], seconds: number, next: (frame: number) => boolean, each: () => void): void {
+function play(
+  tables: readonly { table: Table; offset: number }[],
+  seconds: number,
+  next: (frame: number) => boolean,
+  each: () => void,
+): void {
   let seed = 7;
   clock = 1000;
   for (let n = 0; n < seconds * 60; n++) {
@@ -56,18 +61,23 @@ test("a fast ball never runs ahead of the groove the shader shows: its head stay
   let worst = 0;
   let moving = 0;
   let last: [number, number] | undefined;
-  play([{ table: ball, offset: 0 }], 75, () => false, () => {
-    const s = ball.state();
-    const at: [number, number] = [s[0] ?? 0, s[1] ?? 0];
-    const heights = ball.heights();
-    if (heights !== shown) {
-      shown = heights;
-      shownAt = at;
-    }
-    if (last && Math.hypot(at[0] - last[0], at[1] - last[1]) > 0.01) moving++;
-    last = at;
-    if (shownAt) worst = Math.max(worst, Math.hypot(at[0] - shownAt[0], at[1] - shownAt[1]));
-  });
+  play(
+    [{ table: ball, offset: 0 }],
+    75,
+    () => false,
+    () => {
+      const s = ball.state();
+      const at: [number, number] = [s[0] ?? 0, s[1] ?? 0];
+      const heights = ball.heights();
+      if (heights !== shown) {
+        shown = heights;
+        shownAt = at;
+      }
+      if (last && Math.hypot(at[0] - last[0], at[1] - last[1]) > 0.01) moving++;
+      last = at;
+      if (shownAt) worst = Math.max(worst, Math.hypot(at[0] - shownAt[0], at[1] - shownAt[1]));
+    },
+  );
   expect(moving).toBeGreaterThan(60 * 20);
   expect(worst).toBeLessThan(0.5 * SANDTABLE.ball);
 });
@@ -85,32 +95,44 @@ test("a fast wipe's edge and the funnel's stream never run ahead of the sand the
   let streamWorst = 0;
   let shownAt: [number, number] | undefined;
   let shown: Float32Array | Uint8Array | undefined;
-  play([{ table: shownTable, offset: 0 }, { table: liveTable, offset: 1000 }], 15, (frame) => frame === 1, () => {
-    const s = shownTable.state();
-    const heights = shownTable.heights();
-    const live = liveTable.heights();
-    if (heights !== shown) {
-      shown = heights;
-      shownAt = [s[0] ?? 0, s[1] ?? 0];
-    }
-    // The bar, while it is out: the sand within a bar's width of it either side, shown against live.
-    if ((s[7] ?? 0) > 0.5) {
-      edgeFrames++;
-      const nx = s[4] ?? 1;
-      const ny = s[5] ?? 0;
-      const middle = (s[6] ?? 0) + 0.5 * SANDTABLE.edge;
-      for (let k = 0; k < n * n; k++) {
-        const x = ((k % n) + 0.5) / n - 0.5;
-        const y = (Math.floor(k / n) + 0.5) / n - 0.5;
-        if (Math.abs(x * nx + y * ny - middle) <= SANDTABLE.edge) edgeWorst = Math.max(edgeWorst, Math.abs((heights[k] ?? 0) - (live[k] ?? 0)));
+  play(
+    [
+      { table: shownTable, offset: 0 },
+      { table: liveTable, offset: 1000 },
+    ],
+    15,
+    (frame) => frame === 1,
+    () => {
+      const s = shownTable.state();
+      const heights = shownTable.heights();
+      const live = liveTable.heights();
+      if (heights !== shown) {
+        shown = heights;
+        shownAt = [s[0] ?? 0, s[1] ?? 0];
       }
-    }
-    // The stream, while it pours: how far the funnel has got from where the shown line ends.
-    if ((s[3] ?? 0) > 0 && shownAt) {
-      streamFrames++;
-      streamWorst = Math.max(streamWorst, Math.hypot((s[0] ?? 0) - shownAt[0], (s[1] ?? 0) - shownAt[1]));
-    }
-  });
+      // The bar, while it is out: the sand within a bar's width of it either side, shown against live.
+      if ((s[7] ?? 0) > 0.5) {
+        edgeFrames++;
+        const nx = s[4] ?? 1;
+        const ny = s[5] ?? 0;
+        const middle = (s[6] ?? 0) + 0.5 * SANDTABLE.edge;
+        for (let k = 0; k < n * n; k++) {
+          const x = ((k % n) + 0.5) / n - 0.5;
+          const y = (Math.floor(k / n) + 0.5) / n - 0.5;
+          if (Math.abs(x * nx + y * ny - middle) <= SANDTABLE.edge)
+            edgeWorst = Math.max(edgeWorst, Math.abs((heights[k] ?? 0) - (live[k] ?? 0)));
+        }
+      }
+      // The stream, while it pours: how far the funnel has got from where the shown line ends.
+      if ((s[3] ?? 0) > 0 && shownAt) {
+        streamFrames++;
+        streamWorst = Math.max(
+          streamWorst,
+          Math.hypot((s[0] ?? 0) - shownAt[0], (s[1] ?? 0) - shownAt[1]),
+        );
+      }
+    },
+  );
   expect(edgeFrames).toBeGreaterThan(60);
   expect(edgeWorst).toBeLessThan(0.25 * depth);
   expect(streamFrames).toBeGreaterThan(60);

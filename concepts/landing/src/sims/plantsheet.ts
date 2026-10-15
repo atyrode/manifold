@@ -168,7 +168,9 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string): WebG
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     const log = gl.getShaderInfoLog(shader) ?? "";
     gl.deleteShader(shader);
-    throw new PlantSheetError(`plant sheet: ${type === gl.VERTEX_SHADER ? "vertex" : "fragment"} shader failed: ${log}`);
+    throw new PlantSheetError(
+      `plant sheet: ${type === gl.VERTEX_SHADER ? "vertex" : "fragment"} shader failed: ${log}`,
+    );
   }
   return shader;
 }
@@ -200,7 +202,8 @@ export class PlantSheet {
     gl.linkProgram(program);
     gl.deleteShader(vertex);
     gl.deleteShader(fragment);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new PlantSheetError(`plant sheet: link failed: ${gl.getProgramInfoLog(program) ?? ""}`);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+      throw new PlantSheetError(`plant sheet: link failed: ${gl.getProgramInfoLog(program) ?? ""}`);
     this.#program = program;
     gl.useProgram(program);
     gl.uniform1i(gl.getUniformLocation(program, "uPrims"), 0);
@@ -208,7 +211,8 @@ export class PlantSheet {
     this.#sheetSize = gl.getUniformLocation(program, "uSheet");
     this.#prims = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#prims);
-    for (const name of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, name, gl.NEAREST);
+    for (const name of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+      gl.texParameteri(gl.TEXTURE_2D, name, gl.NEAREST);
     this.#sheet = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#sheet);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
@@ -227,7 +231,13 @@ export class PlantSheet {
    * Draws `plants` into the sheet, organ `order[0]` first (the back); `families[form]` is the sprite
    * family of rigid organs of that form; `atlas` holds their cells, mipmapped.
    */
-  draw(plants: RootedPlants, order: Int32Array, families: readonly (PlantSheetFamily | undefined)[], atlas: WebGLTexture, view: PlantSheetView): void {
+  draw(
+    plants: RootedPlants,
+    order: Int32Array,
+    families: readonly (PlantSheetFamily | undefined)[],
+    atlas: WebGLTexture,
+    view: PlantSheetView,
+  ): void {
     const gl = this.#gl;
     const count = this.#pack(plants, order, families, view.scale);
     this.count = count;
@@ -235,13 +245,25 @@ export class PlantSheet {
       this.#width = view.width;
       this.#height = view.height;
       gl.bindTexture(gl.TEXTURE_2D, this.#sheet);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, view.width, view.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA8,
+        view.width,
+        view.height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null,
+      );
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.#framebuffer);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.#sheet, 0);
       const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
       if (status !== gl.FRAMEBUFFER_COMPLETE) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        throw new PlantSheetError(`plant sheet: a ${view.width}×${view.height} sheet is not renderable here (status 0x${status.toString(16)})`);
+        throw new PlantSheetError(
+          `plant sheet: a ${view.width}×${view.height} sheet is not renderable here (status 0x${status.toString(16)})`,
+        );
       }
     }
     const rows = Math.max(1, Math.ceil(count / ROW)) * 4;
@@ -252,9 +274,29 @@ export class PlantSheet {
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     if (rows !== this.#rows) {
       this.#rows = rows;
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, ROW, rows, 0, gl.RGBA, gl.FLOAT, this.#data.subarray(0, ROW * rows * 4));
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA32F,
+        ROW,
+        rows,
+        0,
+        gl.RGBA,
+        gl.FLOAT,
+        this.#data.subarray(0, ROW * rows * 4),
+      );
     } else {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, ROW, rows, gl.RGBA, gl.FLOAT, this.#data.subarray(0, ROW * rows * 4));
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        ROW,
+        rows,
+        gl.RGBA,
+        gl.FLOAT,
+        this.#data.subarray(0, ROW * rows * 4),
+      );
     }
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, atlas);
@@ -283,7 +325,12 @@ export class PlantSheet {
   }
 
   /** Writes the primitives, back to front; returns how many. */
-  #pack(plants: RootedPlants, order: Int32Array, families: readonly (PlantSheetFamily | undefined)[], scale: number): number {
+  #pack(
+    plants: RootedPlants,
+    order: Int32Array,
+    families: readonly (PlantSheetFamily | undefined)[],
+    scale: number,
+  ): number {
     let n = 0;
     const at = this.#at;
     const to = this.#to;
@@ -299,7 +346,8 @@ export class PlantSheet {
       if (habit === PlantHabit.rigid) {
         const family = families[plants.form[i] ?? 0];
         if (!family || family.cells.length === 0) continue;
-        const cell = family.cells[((plants.variant[i] ?? 0) + (plants.cycle[i] ?? 0)) % family.cells.length];
+        const cell =
+          family.cells[((plants.variant[i] ?? 0) + (plants.cycle[i] ?? 0)) % family.cells.length];
         if (!cell) continue;
         const data = this.#reserve(n);
         const t = (n % ROW) * 4 + Math.floor(n / ROW) * ROW * 16;
@@ -324,7 +372,10 @@ export class PlantSheet {
       if (width <= 0) continue;
       const end = (plants.a[i] ?? 0) > 0 ? (plants.a[i] ?? 1) : 1;
       const turn = Math.abs(plants.turn[i] ?? 0);
-      const segments = turn < 0.05 ? 1 : Math.min(SEGMENTS, Math.max(1, Math.ceil(length / SEGMENT_PX), Math.ceil(turn / 0.25)));
+      const segments =
+        turn < 0.05
+          ? 1
+          : Math.min(SEGMENTS, Math.max(1, Math.ceil(length / SEGMENT_PX), Math.ceil(turn / 0.25)));
       plants.pointAt(i, 0, at);
       for (let s = 1; s <= segments; s++) {
         plants.pointAt(i, s / segments, to);

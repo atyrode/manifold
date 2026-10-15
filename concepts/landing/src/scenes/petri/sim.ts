@@ -83,7 +83,13 @@ export const PETRI_ARRIVAL_TEXEL = 6;
  * the dish (`spreadStart` seconds in, over `spread` seconds of the sim's own clock, which starts
  * after the prewarm). Exit: the dish slides off to the left, gathering speed.
  */
-export const PETRI_PASSAGE = { enter: 2.8, exit: 1.4, slide: 1.5, spreadStart: 0.6, spread: 1.8 } as const;
+export const PETRI_PASSAGE = {
+  enter: 2.8,
+  exit: 1.4,
+  slide: 1.5,
+  spreadStart: 0.6,
+  spread: 1.8,
+} as const;
 /**
  * A drop's ripples: ring speed in dish diameters per second, width of the wave packet and how far
  * it bends the view of the bottom (dish diameters), seconds until it has died away.
@@ -489,7 +495,19 @@ interface Ripple {
 }
 
 /** The knobs the sim reads. */
-type Knob = "chemistry" | "regime" | "tempo" | "drift" | "scale" | "drops" | "pattern" | "size" | "mark" | "custom" | "feed" | "kill";
+type Knob =
+  | "chemistry"
+  | "regime"
+  | "tempo"
+  | "drift"
+  | "scale"
+  | "drops"
+  | "pattern"
+  | "size"
+  | "mark"
+  | "custom"
+  | "feed"
+  | "kill";
 
 /** A point of the (feed, kill) map the whole dish is held at. */
 export interface PetriHold {
@@ -511,7 +529,12 @@ export function gridFor(diameterCells: number, scale: number): number {
  * kill, the whole dish is taken from there to that one point as `arrived` runs 0..1, and then stays
  * there whatever the drift.
  */
-export function petriFeedKill(out: Float32Array, drift: number, hold: PetriHold | undefined, arrived: number): void {
+export function petriFeedKill(
+  out: Float32Array,
+  drift: number,
+  hold: PetriHold | undefined,
+  arrived: number,
+): void {
   const e = hold === undefined ? 0 : smoothstep(0, 1, arrived);
   if (e < 1) {
     grayScottAlong(drift - TURING_LEAD, out, 0);
@@ -552,7 +575,8 @@ function seedTuring(data: Float32Array, n: number, random: () => number, markHei
       data[i] = 1;
       if (dx * dx + dy * dy >= inside) continue;
       let sum = 0;
-      for (let w = 0; w < waves.length; w += 3) sum += Math.cos((waves[w] ?? 0) * x + (waves[w + 1] ?? 0) * y + (waves[w + 2] ?? 0));
+      for (let w = 0; w < waves.length; w += 3)
+        sum += Math.cos((waves[w] ?? 0) * x + (waves[w + 1] ?? 0) * y + (waves[w + 2] ?? 0));
       let field = sum * norm;
       if (markHeight > 0) {
         const d = markDistance(dx / (markHeight * n), dy / (markHeight * n)) * markHeight * n;
@@ -600,7 +624,14 @@ function seedBz(data: Float32Array, n: number, random: () => number): Pacemaker[
     const period = lerp(BZ_PACE_SEEDED[0], BZ_PACE_SEEDED[1], random());
     const phase = random();
     phases.push(phase);
-    pacemakers.push({ x: x / n, y: y / n, period, next: (1 - phase) * period, born: -Infinity, dies: Infinity });
+    pacemakers.push({
+      x: x / n,
+      y: y / n,
+      period,
+      next: (1 - phase) * period,
+      born: -Infinity,
+      dies: Infinity,
+    });
   }
 
   const excitedV = 1 - Math.exp(-BZ_EXCITED);
@@ -611,7 +642,10 @@ function seedBz(data: Float32Array, n: number, random: () => number): Pacemaker[
       const py = y + 0.5;
       if ((px - half) ** 2 + (py - half) ** 2 >= inside) continue;
       let nearest = Math.hypot(px - mx, py - my);
-      let phase = (Math.atan2(py - ay, px - ax) - Math.atan2(py - by, px - bx)) / TAU - nearest / spiral + spin;
+      let phase =
+        (Math.atan2(py - ay, px - ax) - Math.atan2(py - by, px - bx)) / TAU -
+        nearest / spiral +
+        spin;
       let period = BZ_SPIRAL_PERIOD;
       for (let j = 0; j < pacemakers.length; j++) {
         const pacemaker = pacemakers[j];
@@ -731,7 +765,12 @@ class PetriLab implements SceneSim {
     this.#bz.set({ uModel: this.#model4 });
     this.#touch = gpu.pass(TOUCH_PASS, "petri touch").bind({ uState: this.#state });
     this.#shade = gpu.pass(VIEW_PASS, "petri view").bind({ uState: this.#state });
-    this.#eventTexture = new DataTexture(gpu.gl, { width: EVENT_WIDTH, height: 2, format: "rgba16f", filter: "nearest" });
+    this.#eventTexture = new DataTexture(gpu.gl, {
+      width: EVENT_WIDTH,
+      height: 2,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#eventTexture.upload(this.#eventShown);
   }
 
@@ -745,7 +784,10 @@ class PetriLab implements SceneSim {
     // A dish settled in one regime can die outright when switched to another (holes to anything
     // sparser, mazes to coral), so a new regime, or wandering again, starts a fresh dish; the
     // Advanced feed and kill move the live one (`hold` stays the same object while they change).
-    const reseeded = chemistry !== this.#chemistry || pattern !== this.#pattern || (chemistry === TURING && hold !== this.#hold);
+    const reseeded =
+      chemistry !== this.#chemistry ||
+      pattern !== this.#pattern ||
+      (chemistry === TURING && hold !== this.#hold);
     this.#hold = hold;
     if (reseeded) {
       this.#reseed(chemistry, pattern, n, this.#knobs.value(frame, "mark"));
@@ -760,8 +802,15 @@ class PetriLab implements SceneSim {
     // This frame's chemistry: model time in equal steps, capped, so a slow machine's dish runs slow.
     const rate = turing ? TURING_RATE : BZ_RATE;
     const longest = turing ? TURING_STEP : BZ_STEP;
-    const wanted = Math.max(0, frame.dt) * Math.max(0, frame.motion) * Math.max(0, this.#knobs.value(frame, "tempo")) * rate;
-    const steps = wanted > 0 ? Math.min(turing ? TURING_STEPS : BZ_STEPS, Math.ceil(wanted / longest - 1e-6)) : 0;
+    const wanted =
+      Math.max(0, frame.dt) *
+      Math.max(0, frame.motion) *
+      Math.max(0, this.#knobs.value(frame, "tempo")) *
+      rate;
+    const steps =
+      wanted > 0
+        ? Math.min(turing ? TURING_STEPS : BZ_STEPS, Math.ceil(wanted / longest - 1e-6))
+        : 0;
     const model = steps > 0 ? Math.min(wanted, steps * longest) : 0;
     const seconds = model / rate;
     this.#clock += seconds;
@@ -822,7 +871,9 @@ class PetriLab implements SceneSim {
     this.#pattern = pattern;
     this.#state.resize(n, n);
     this.#view.resize(n, n);
-    this.#random = mulberry32((Math.imul(pattern + 1, 0x9e3779b1) ^ Math.imul(chemistry + 1, 0x85ebca6b)) >>> 0);
+    this.#random = mulberry32(
+      (Math.imul(pattern + 1, 0x9e3779b1) ^ Math.imul(chemistry + 1, 0x85ebca6b)) >>> 0,
+    );
     const data = new Float32Array(n * n * 4);
     const ridge = chemistry === TURING && mark > 0 ? petriMarkHeight(mark) : 0;
     if (chemistry === TURING) {
@@ -881,7 +932,12 @@ class PetriLab implements SceneSim {
     petriFeedKill(this.#feedKill, this.#drift, hold, this.#clock / TURING_APPROACH);
     this.#turingVary[0] = this.#drift * 0.9;
     this.#turingVary[1] = this.#heading + this.#drift * 0.35;
-    this.#turing.set({ uDt: dt, uFeedKill: this.#feedKill, uVary: this.#turingVary, uMark: this.#ridge });
+    this.#turing.set({
+      uDt: dt,
+      uFeedKill: this.#feedKill,
+      uVary: this.#turingVary,
+      uMark: this.#ridge,
+    });
   }
 
   /** Barkley's uniforms: the step, and the excitability field sliding and turning with the drift. */
@@ -920,7 +976,13 @@ class PetriLab implements SceneSim {
     const { x, y } = this.#somewhere();
     this.#ripple(x, y, 1);
     if (turing) {
-      this.#spreads.push({ x, y, radius: lerp(TURING_DROP[0], TURING_DROP[1], this.#random()), seed: TURING_SEED / n, start: this.#clock });
+      this.#spreads.push({
+        x,
+        y,
+        radius: lerp(TURING_DROP[0], TURING_DROP[1], this.#random()),
+        seed: TURING_SEED / n,
+        start: this.#clock,
+      });
       return;
     }
     this.#addTouch(x, y, BZ_DROP / n, 0);
@@ -929,15 +991,25 @@ class PetriLab implements SceneSim {
 
   #addPacemaker(x: number, y: number): void {
     const now = this.#clock;
-    const dropped = this.#pacemakers.filter((p) => p.dies !== Infinity && p.dies - BUBBLE_DISSOLVE > now);
+    const dropped = this.#pacemakers.filter(
+      (p) => p.dies !== Infinity && p.dies - BUBBLE_DISSOLVE > now,
+    );
     const oldest = dropped[0];
-    if (oldest && dropped.length >= BZ_TEMPORARY) oldest.dies = Math.min(oldest.dies, now + BUBBLE_DISSOLVE);
+    if (oldest && dropped.length >= BZ_TEMPORARY)
+      oldest.dies = Math.min(oldest.dies, now + BUBBLE_DISSOLVE);
     if (this.#pacemakers.length >= PETRI_BUBBLES) {
       const gone = this.#pacemakers.findIndex((p) => p.dies !== Infinity);
       this.#pacemakers.splice(gone < 0 ? 0 : gone, 1);
     }
     const period = lerp(BZ_PACE[0], BZ_PACE[1], this.#random());
-    this.#pacemakers.push({ x, y, period, next: this.#model + period, born: now, dies: now + lerp(BZ_LIFE[0], BZ_LIFE[1], this.#random()) });
+    this.#pacemakers.push({
+      x,
+      y,
+      period,
+      next: this.#model + period,
+      born: now,
+      dies: now + lerp(BZ_LIFE[0], BZ_LIFE[1], this.#random()),
+    });
   }
 
   /** The 'now' buttons, the scheduled drops, the pacemakers' rings, the M and spreading drops. */
@@ -951,7 +1023,9 @@ class PetriLab implements SceneSim {
       this.#untilDrop -= seconds;
       if (this.#untilDrop <= 0) {
         this.#drop(turing, n);
-        this.#untilDrop = lerp(DROP_INTERVAL[0], DROP_INTERVAL[1], clamp(rate, 0, 1)) * (0.7 + 0.6 * this.#random());
+        this.#untilDrop =
+          lerp(DROP_INTERVAL[0], DROP_INTERVAL[1], clamp(rate, 0, 1)) *
+          (0.7 + 0.6 * this.#random());
       }
     }
 
@@ -967,7 +1041,13 @@ class PetriLab implements SceneSim {
         ridge[0] = height;
         ridge[1] = 0;
         this.#ridgeUntil = this.#clock + TURING_MARK_LINGER;
-        this.#spreads.push({ x: 0.5, y: 0.5, radius: Math.min(TURING_MARK_CLEAR * height, TURING_MARK_CLEAR_MAX), seed: 0, start: this.#clock });
+        this.#spreads.push({
+          x: 0.5,
+          y: 0.5,
+          radius: Math.min(TURING_MARK_CLEAR * height, TURING_MARK_CLEAR_MAX),
+          seed: 0,
+          start: this.#clock,
+        });
         this.#ripple(0.5, 0.5, 0.7);
       } else if (on) {
         if (ridge[0] === 0) ridge[1] = 0;
@@ -1055,7 +1135,9 @@ class PetriLab implements SceneSim {
     let i = 0;
     for (const pacemaker of this.#pacemakers) {
       if (i >= PETRI_BUBBLES) break;
-      const presence = clamp((this.#clock - pacemaker.born) / BUBBLE_GROW, 0, 1) * clamp((pacemaker.dies - this.#clock) / BUBBLE_DISSOLVE, 0, 1);
+      const presence =
+        clamp((this.#clock - pacemaker.born) / BUBBLE_GROW, 0, 1) *
+        clamp((pacemaker.dies - this.#clock) / BUBBLE_DISSOLVE, 0, 1);
       if (presence <= 0) continue;
       data[i * 4] = pacemaker.x;
       data[i * 4 + 1] = pacemaker.y;
@@ -1097,7 +1179,20 @@ class PetriLab implements SceneSim {
  * a still dish of its own.
  */
 export function petriSim(knobs: readonly ParamDef[]): SimFactory {
-  const reader = new KnobReader<Knob>("petri", knobs, ["chemistry", "regime", "tempo", "drift", "scale", "drops", "pattern", "size", "mark", "custom", "feed", "kill"]);
+  const reader = new KnobReader<Knob>("petri", knobs, [
+    "chemistry",
+    "regime",
+    "tempo",
+    "drift",
+    "scale",
+    "drops",
+    "pattern",
+    "size",
+    "mark",
+    "custom",
+    "feed",
+    "kill",
+  ]);
   return (gl): SceneSim => {
     const gpu = GpuCompute.create(gl);
     if (!gpu) return { frame: () => [], dispose: () => undefined };

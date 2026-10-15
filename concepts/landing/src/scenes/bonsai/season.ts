@@ -11,7 +11,11 @@ import { lerp, smoothstep } from "../../sims/math.ts";
 import { BONSAI_MAPLE, BONSAI_PINE, BONSAI_SAKURA } from "./geometry.ts";
 
 /** When a deciduous tuft's leaves come out, turn and fall (year phase). */
-function timing(species: number, r1: number, outer: number): { out: number; turn: number; fall: number } {
+function timing(
+  species: number,
+  r1: number,
+  outer: number,
+): { out: number; turn: number; fall: number } {
   if (species === BONSAI_SAKURA) {
     const out = 0.1 + 0.04 * r1;
     const turn = 0.55 + 0.06 * r1 - 0.04 * outer;
@@ -24,7 +28,13 @@ function timing(species: number, r1: number, outer: number): { out: number; turn
 
 /** How much of a tuft's foliage is on it, 0..1. Pine keeps its needles; a tuft regrowing after a
  *  cut fills in through spring whatever the species. */
-export function bonsaiLeafiness(species: number, y: number, r1: number, outer: number, regrow: boolean): number {
+export function bonsaiLeafiness(
+  species: number,
+  y: number,
+  r1: number,
+  outer: number,
+  regrow: boolean,
+): number {
   if (species === BONSAI_PINE) return regrow ? smoothstep(0.05 + 0.05 * r1, 0.2, y) : 1;
   const k = timing(species, r1, outer);
   return smoothstep(k.out, k.out + 0.09, y) * (1 - smoothstep(k.fall, k.fall + 0.075, y));
@@ -44,7 +54,13 @@ export function bonsaiShedding(species: number, y: number, r1: number, outer: nu
 }
 
 /** The palette position of a tuft's foliage now. */
-export function bonsaiHue(species: number, y: number, r1: number, r2: number, outer: number): number {
+export function bonsaiHue(
+  species: number,
+  y: number,
+  r1: number,
+  r2: number,
+  outer: number,
+): number {
   if (species === BONSAI_PINE) {
     // Needles: fresh tips in late spring, a little gold in the old inner needles in autumn.
     const fresh = smoothstep(0.12, 0.2, y) * (1 - smoothstep(0.3, 0.42, y));

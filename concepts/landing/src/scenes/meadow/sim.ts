@@ -205,7 +205,10 @@ export function meadowPassageGust(out: PassageGust, enter: number, exit: number)
     const tin = enter * MEADOW_PASSAGE.enter;
     const t = tin - M.gustInAt;
     out.front = M.gustFrom + M.gustInSpeed * t;
-    out.amp = M.gustInAmp * smoothstep(0, M.gustInRise, t) * (1 - smoothstep(MEADOW_PASSAGE.enter - M.gustInFade, MEADOW_PASSAGE.enter, tin));
+    out.amp =
+      M.gustInAmp *
+      smoothstep(0, M.gustInRise, t) *
+      (1 - smoothstep(MEADOW_PASSAGE.enter - M.gustInFade, MEADOW_PASSAGE.enter, tin));
   }
   return out;
 }
@@ -229,7 +232,14 @@ export interface MeadowWind {
 }
 
 /** Fill `out` from the knobs: wind -1..1, gusts 0..1, gust frequency 0..1; and the passage's gust. */
-export function meadowWind(out: MeadowWind, wind: number, gusts: number, rate: number, nowAge: number, pass: Readonly<PassageGust>): MeadowWind {
+export function meadowWind(
+  out: MeadowWind,
+  wind: number,
+  gusts: number,
+  rate: number,
+  nowAge: number,
+  pass: Readonly<PassageGust>,
+): MeadowWind {
   const G = MEADOW_GUST;
   const side = wind < 0 ? -1 : 1;
   const length = Math.sqrt(G.dirX * G.dirX + G.dirZ * G.dirZ);
@@ -252,7 +262,9 @@ function meadowFront(f: number, b: number): number {
   const width = Math.sqrt(G.reboundWidth * G.reboundWidth + b * b);
   let df = f - G.reboundAt;
   df -= Math.floor(df + 0.5);
-  return rise * fall - G.rebound * (G.reboundWidth / width) * Math.exp((-df * df) / (width * width));
+  return (
+    rise * fall - G.rebound * (G.reboundWidth / width) * Math.exp((-df * df) / (width * width))
+  );
 }
 
 /**
@@ -270,12 +282,20 @@ export function meadowGust(w: MeadowWind, x: number, z: number, tm: number, blur
     const wobK = G.wobK[k] ?? 0;
     const wobW = G.wobW[k] ?? 0;
     const wobP = G.wobP[k] ?? 0;
-    const wob = (G.wobA[k] ?? 0) * (Math.sin(c * wobK + tm * wobW + wobP) + G.wobSecond * Math.sin(c * wobK * 2.3 - tm * wobW * 1.4 + wobP * 2 + 1));
+    const wob =
+      (G.wobA[k] ?? 0) *
+      (Math.sin(c * wobK + tm * wobW + wobP) +
+        G.wobSecond * Math.sin(c * wobK * 2.3 - tm * wobW * 1.4 + wobP * 2 + 1));
     const u = (s - w.speed * tm + wob) / lambda + (G.offset[k] ?? 0);
     const b = blur / lambda;
     const raw = meadowFront(u - Math.floor(u), b);
     const front = raw + (G.frontMean - raw) * smoothstep(G.blurFrom, G.blurTo, b);
-    const n = Math.sin(GLSL_TAU * (G.gateStep[k] ?? 0) * u + c * (G.gateK[k] ?? 0) + tm * (G.gateW[k] ?? 0) + (G.gateP[k] ?? 0));
+    const n = Math.sin(
+      GLSL_TAU * (G.gateStep[k] ?? 0) * u +
+        c * (G.gateK[k] ?? 0) +
+        tm * (G.gateW[k] ?? 0) +
+        (G.gateP[k] ?? 0),
+    );
     sum += (G.weight[k] ?? 0) * smoothstep(w.threshold, w.threshold + G.gateSoft, n) * front;
   }
   let g = (w.strength * sum) / (1 + G.softclip * Math.max(sum, 0));
@@ -283,13 +303,18 @@ export function meadowGust(w: MeadowWind, x: number, z: number, tm: number, blur
     const at = G.nowStart + G.nowPace * w.speed * w.nowAge;
     const d = at - s - G.nowWob * Math.sin(c * G.nowWobK + G.nowWobP);
     const edge = G.nowEdge + blur;
-    const life = smoothstep(0, G.nowRise, w.nowAge) * (1 - smoothstep(G.nowLife * 0.6, G.nowLife, w.nowAge));
+    const life =
+      smoothstep(0, G.nowRise, w.nowAge) * (1 - smoothstep(G.nowLife * 0.6, G.nowLife, w.nowAge));
     g += G.nowGain * life * smoothstep(0, edge, d) * Math.exp(-Math.max(d - edge, 0) / G.nowTail);
   }
   if (w.passAmp > 0) {
     const d = w.passFront - s - G.nowWob * Math.sin(c * G.nowWobK + G.nowWobP);
     const edge = MEADOW_MOVE.gustEdge + blur;
-    g += MEADOW_MOVE.gustGain * w.passAmp * smoothstep(0, edge, d) * Math.exp(-Math.max(d - edge, 0) / MEADOW_MOVE.gustTail);
+    g +=
+      MEADOW_MOVE.gustGain *
+      w.passAmp *
+      smoothstep(0, edge, d) *
+      Math.exp(-Math.max(d - edge, 0) / MEADOW_MOVE.gustTail);
   }
   return g;
 }
@@ -324,9 +349,35 @@ export interface MeadowLayer {
 export const MEADOW_LAYERS: readonly MeadowLayer[] = [
   // The nearest grass: wide dark blades and seed heads, tall at the sides where they rise past the
   // horizon, short along the bottom in the middle, so they frame the view without closing it.
-  { z: 1.6, root: -0.06, pitch: 0.036, hMin: 0.16, hMax: 0.7, width: 0.012, spike: 0.06, spikeWidth: 0.008, centre: 0.6, low: 0.3, stalks: 0.3, shade: 0.65 },
+  {
+    z: 1.6,
+    root: -0.06,
+    pitch: 0.036,
+    hMin: 0.16,
+    hMax: 0.7,
+    width: 0.012,
+    spike: 0.06,
+    spikeWidth: 0.008,
+    centre: 0.6,
+    low: 0.3,
+    stalks: 0.3,
+    shade: 0.65,
+  },
   // A little further: mostly flowering grasses, their seed heads against the bright field.
-  { z: 3, root: -0.03, pitch: 0.045, hMin: 0.12, hMax: 0.34, width: 0.006, spike: 0.045, spikeWidth: 0.0055, centre: 0.45, low: 0.6, stalks: 0.65, shade: 0.9 },
+  {
+    z: 3,
+    root: -0.03,
+    pitch: 0.045,
+    hMin: 0.12,
+    hMax: 0.34,
+    width: 0.006,
+    spike: 0.045,
+    spikeWidth: 0.0055,
+    centre: 0.45,
+    low: 0.6,
+    stalks: 0.65,
+    shade: 0.9,
+  },
 ];
 
 /** Grass height knob k scales every blade by MEADOW_HEIGHT_MIN + MEADOW_HEIGHT_SPAN × k. */
@@ -338,15 +389,25 @@ export const MEADOW_AWAY_MAX = 0.7;
 export const MEADOW_BEND_SHAPE = 0.6;
 export const MEADOW_BOW = 0.45;
 /** How far a blade's centreline can stray from its root, per screen height above the roots. */
-export const MEADOW_REACH = (MEADOW_BEND_SHAPE * MEADOW_LEAN_MAX) / (1 - MEADOW_BOW * MEADOW_AWAY_MAX);
+export const MEADOW_REACH =
+  (MEADOW_BEND_SHAPE * MEADOW_LEAN_MAX) / (1 - MEADOW_BOW * MEADOW_AWAY_MAX);
 /** Extra reach per layer: a leaning seed head and the blade's own width. */
-export const MEADOW_LAYER_PAD: readonly number[] = MEADOW_LAYERS.map((layer) => layer.spike * (MEADOW_HEIGHT_MIN + MEADOW_HEIGHT_SPAN) * 0.8 + layer.width * 1.5 + layer.spikeWidth);
+export const MEADOW_LAYER_PAD: readonly number[] = MEADOW_LAYERS.map(
+  (layer) =>
+    layer.spike * (MEADOW_HEIGHT_MIN + MEADOW_HEIGHT_SPAN) * 0.8 +
+    layer.width * 1.5 +
+    layer.spikeWidth,
+);
 /** Columns either side of the frame in uSim1, enough for the tallest blades leaning their furthest. */
-export const MEADOW_MARGIN = 1 + Math.max(...MEADOW_LAYERS.map((layer, l) => {
-  const scale = MEADOW_HEIGHT_MIN + MEADOW_HEIGHT_SPAN;
-  const top = (layer.hMax + layer.spike) * scale;
-  return Math.ceil((MEADOW_REACH * top + (MEADOW_LAYER_PAD[l] ?? 0)) / layer.pitch);
-}));
+export const MEADOW_MARGIN =
+  1 +
+  Math.max(
+    ...MEADOW_LAYERS.map((layer, l) => {
+      const scale = MEADOW_HEIGHT_MIN + MEADOW_HEIGHT_SPAN;
+      const top = (layer.hMax + layer.spike) * scale;
+      return Math.ceil((MEADOW_REACH * top + (MEADOW_LAYER_PAD[l] ?? 0)) / layer.pitch);
+    }),
+  );
 
 // ---- clocks and seeds (shared with shader.ts) ---------------------------------------------------
 
@@ -480,7 +541,11 @@ const SEED_REF_DEPTH = 3;
 /** World units per screen height at SEED_REF_DEPTH: turns the paces above into world speeds. */
 const SEED_AIR = SEED_REF_DEPTH / MEADOW_FOCAL;
 /** The eye at its rest height: the seeds live in the world and are projected through it. */
-const CAMERA = new LevelCamera({ horizon: MEADOW_HORIZON, eye: MEADOW_GROUND, focal: MEADOW_FOCAL });
+const CAMERA = new LevelCamera({
+  horizon: MEADOW_HORIZON,
+  eye: MEADOW_GROUND,
+  focal: MEADOW_FOCAL,
+});
 /** Life (s): at least, plus up to; fading out over the last FADE seconds. Depth over which seeds fade into the haze. */
 const SEED_LIFE = 26;
 const SEED_LIFE_SPAN = 18;
@@ -637,7 +702,16 @@ class MeadowSim implements SceneSim {
   #bladeData = new Float32Array(2 * 2);
   #bladeWidth = 1;
   readonly #random = new Random();
-  readonly #wind: MeadowWind = { dirX: 1, dirZ: 0, speed: 1, strength: 0, threshold: 1, nowAge: -1, passFront: 0, passAmp: 0 };
+  readonly #wind: MeadowWind = {
+    dirX: 1,
+    dirZ: 0,
+    speed: 1,
+    strength: 0,
+    threshold: 1,
+    nowAge: -1,
+    passFront: 0,
+    passAmp: 0,
+  };
   /** This frame's passage: the gust, how freely seeds come away (x), the burst rate per clock, the air's extra push and lift on seeds, and the camera's height above rest. */
   readonly #pass: PassageGust = { front: 0, amp: 0 };
   #boost = 1;
@@ -648,12 +722,41 @@ class MeadowSim implements SceneSim {
 
   readonly #blades: Blade[][] = MEADOW_LAYERS.map(() => []);
   readonly #clocks: Clock[] = Array.from({ length: MAX_CLOCKS }, (): Clock => ({
-    phase: "gone", timer: GONE_HOLD, presence: 0, open: 0, wilt: 0, share: 0, head: 0, radius: 0, z: 1,
-    counts: new Array<number>(SECTORS).fill(0), shown: new Array<number>(SECTORS).fill(0),
-    lean: { x: 0, v: 0 }, bow: { x: 0, v: 0 }, phaseOffset: 0, headX: 0, headY: 0, headVX: 0, headVY: 0,
+    phase: "gone",
+    timer: GONE_HOLD,
+    presence: 0,
+    open: 0,
+    wilt: 0,
+    share: 0,
+    head: 0,
+    radius: 0,
+    z: 1,
+    counts: new Array<number>(SECTORS).fill(0),
+    shown: new Array<number>(SECTORS).fill(0),
+    lean: { x: 0, v: 0 },
+    bow: { x: 0, v: 0 },
+    phaseOffset: 0,
+    headX: 0,
+    headY: 0,
+    headVX: 0,
+    headVY: 0,
   }));
   readonly #seeds: Seed[] = Array.from({ length: MAX_SEEDS }, (): Seed => ({
-    live: false, x: 0, y: 0, z: 1, vx: 0, vy: 0, vz: 0, sx: 0, age: 0, life: 1, size: SEED_RADIUS, tumble: 0, tumbleRate: 0, drift: 0, tilt: 0,
+    live: false,
+    x: 0,
+    y: 0,
+    z: 1,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    sx: 0,
+    age: 0,
+    life: 1,
+    size: SEED_RADIUS,
+    tumble: 0,
+    tumbleRate: 0,
+    drift: 0,
+    tilt: 0,
   }));
   readonly #sorted: Seed[] = [];
 
@@ -690,11 +793,37 @@ class MeadowSim implements SceneSim {
   #pushY = 0;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader<MeadowKnob>("meadow", params, ["wind", "gusts", "gustRate", "dandelions", "meadowSeed", "rain"]);
-    this.#seedTexture = new DataTexture(gl, { width: MAX_SEEDS, height: SEED_ROWS, format: "rgba16f", filter: "nearest" });
-    this.#bladeTexture = new DataTexture(gl, { width: 1, height: 2, format: "rg16f", filter: "nearest" });
-    this.#clockTexture = new DataTexture(gl, { width: CLOCK_TEXELS, height: MAX_CLOCKS, format: "rgba16f", filter: "nearest" });
-    this.#textures = [this.#seedTexture.texture, this.#bladeTexture.texture, this.#clockTexture.texture];
+    this.#knobs = new KnobReader<MeadowKnob>("meadow", params, [
+      "wind",
+      "gusts",
+      "gustRate",
+      "dandelions",
+      "meadowSeed",
+      "rain",
+    ]);
+    this.#seedTexture = new DataTexture(gl, {
+      width: MAX_SEEDS,
+      height: SEED_ROWS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#bladeTexture = new DataTexture(gl, {
+      width: 1,
+      height: 2,
+      format: "rg16f",
+      filter: "nearest",
+    });
+    this.#clockTexture = new DataTexture(gl, {
+      width: CLOCK_TEXELS,
+      height: MAX_CLOCKS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#textures = [
+      this.#seedTexture.texture,
+      this.#bladeTexture.texture,
+      this.#clockTexture.texture,
+    ];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -722,7 +851,13 @@ class MeadowSim implements SceneSim {
       // Pre-run PREWARM seconds up to the clock of the first frame, a step count over as many
       // frames as the budget needs; until it is done nothing else moves.
       if (Number.isNaN(this.#warmClock)) this.#warmClock = tmNow;
-      this.#warmFrom = runBudgeted((k) => this.#prewarmStep(k), PREWARM_BUDGET_MS, PREWARM_STEPS, this.#warmFrom, 32);
+      this.#warmFrom = runBudgeted(
+        (k) => this.#prewarmStep(k),
+        PREWARM_BUDGET_MS,
+        PREWARM_STEPS,
+        this.#warmFrom,
+        32,
+      );
       if (this.#warmFrom < PREWARM_STEPS) return this.#textures;
       this.#warm = true;
       // Arriving, the sky starts clear of the pre-run's seeds: the first gust lifts the first ones.
@@ -767,8 +902,14 @@ class MeadowSim implements SceneSim {
       blades.length = 0;
       for (let j = 0; j < columns; j++) {
         const column = j - MEADOW_MARGIN;
-        const omega = TAU * (BLADE_FREQ_MIN + (BLADE_FREQ_MAX - BLADE_FREQ_MIN) * hash01(column, l));
-        blades.push({ lean: { x: 0, v: 0 }, bow: { x: 0, v: 0 }, omega, phase: TAU * hash01(column, l + 17) });
+        const omega =
+          TAU * (BLADE_FREQ_MIN + (BLADE_FREQ_MAX - BLADE_FREQ_MIN) * hash01(column, l));
+        blades.push({
+          lean: { x: 0, v: 0 },
+          bow: { x: 0, v: 0 },
+          omega,
+          phase: TAU * hash01(column, l + 17),
+        });
       }
       this.#dirty = true;
     });
@@ -826,7 +967,13 @@ class MeadowSim implements SceneSim {
 
   /** Pre-run step k of PREWARM_STEPS, ending at the clock the pre-run began at (the blades only the last BLADE_PREWARM). */
   #prewarmStep(k: number): void {
-    this.#step(this.#warmClock - (PREWARM_STEPS - 1 - k) * STEP, -1, PREWARM_DETACH, k >= BLADE_FROM, NO_PASSAGE_GUST);
+    this.#step(
+      this.#warmClock - (PREWARM_STEPS - 1 - k) * STEP,
+      -1,
+      PREWARM_DETACH,
+      k >= BLADE_FROM,
+      NO_PASSAGE_GUST,
+    );
   }
 
   /** This frame's part of the passage: its gust, the seeds' freedom, burst and lift, and the camera's height. */
@@ -838,7 +985,11 @@ class MeadowSim implements SceneSim {
     const sweep = enter < 1 && !leaving ? pass.amp / MEADOW_MOVE.gustInAmp : 0;
     const rise = smoothstep(0.05, 0.45, tout);
     this.#boost = 1 + ENTRY_DETACH * sweep;
-    this.#burst = leaving ? EXIT_BURST * smoothstep(EXIT_BURST_FROM, EXIT_BURST_FROM + 0.15, tout) * (1 - smoothstep(EXIT_BURST_TO - 0.2, EXIT_BURST_TO, tout)) : 0;
+    this.#burst = leaving
+      ? EXIT_BURST *
+        smoothstep(EXIT_BURST_FROM, EXIT_BURST_FROM + 0.15, tout) *
+        (1 - smoothstep(EXIT_BURST_TO - 0.2, EXIT_BURST_TO, tout))
+      : 0;
     this.#push = leaving ? EXIT_PUSH * rise : 0;
     this.#lift = leaving ? EXIT_LIFT * rise : ENTRY_LIFT * sweep;
     const drop = meadowDrop(enter, exit);
@@ -848,7 +999,13 @@ class MeadowSim implements SceneSim {
     }
   }
 
-  #step(tm: number, nowAge: number, detachBoost: number, blades: boolean, pass: Readonly<PassageGust>): void {
+  #step(
+    tm: number,
+    nowAge: number,
+    detachBoost: number,
+    blades: boolean,
+    pass: Readonly<PassageGust>,
+  ): void {
     const wind = meadowWind(this.#wind, this.#windKnob, this.#gusts, this.#gustRate, nowAge, pass);
     const closing = this.#rain > 0 ? Math.min(1, CLOSE_DRIZZLE + CLOSE_PER_RAIN * this.#rain) : 0;
     this.#closed += (closing - this.#closed) * (1 - Math.exp(-STEP / CLOSE_TIME));
@@ -869,8 +1026,22 @@ class MeadowSim implements SceneSim {
         const g = meadowGust(wind, CAMERA.worldX(x - 0.5 * aspect, layer.z), layer.z, tm, 0);
         const push = this.#breathAt(x, breathY);
         const sway = flutter * Math.sin(tm * blade.omega * 0.37 + blade.phase);
-        spring(blade.lean, clamp(wind.dirX * BLADE_BEND * g + sway + this.#pushX * push * BREATH_BEND, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX), blade.omega, BLADE_DAMPING);
-        spring(blade.bow, clamp(wind.dirZ * BLADE_BOW * g + push * BREATH_BOW, -0.2, MEADOW_AWAY_MAX), blade.omega, BLADE_DAMPING);
+        spring(
+          blade.lean,
+          clamp(
+            wind.dirX * BLADE_BEND * g + sway + this.#pushX * push * BREATH_BEND,
+            -MEADOW_LEAN_MAX,
+            MEADOW_LEAN_MAX,
+          ),
+          blade.omega,
+          BLADE_DAMPING,
+        );
+        spring(
+          blade.bow,
+          clamp(wind.dirZ * BLADE_BOW * g + push * BREATH_BOW, -0.2, MEADOW_AWAY_MAX),
+          blade.omega,
+          BLADE_DAMPING,
+        );
       });
     });
   }
@@ -887,11 +1058,38 @@ class MeadowSim implements SceneSim {
       this.#live(clock, i, wanted);
       if (clock.phase === "gone" && clock.presence <= 0) return;
 
-      const g = meadowGust(wind, CAMERA.worldX(clock.headX - 0.5 * aspect, clock.z), clock.z, tm, 0);
+      const g = meadowGust(
+        wind,
+        CAMERA.worldX(clock.headX - 0.5 * aspect, clock.z),
+        clock.z,
+        tm,
+        0,
+      );
       const push = this.#breathAt(clock.headX, clock.headY);
       const sway = CLOCK_FLUTTER * Math.sin(tm * 1.3 + clock.phaseOffset);
-      spring(clock.lean, clamp(wind.dirX * CLOCK_BEND * g + sway + this.#pushX * push * BREATH_CLOCK + side * WILT_LEAN * clock.wilt, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX), omega, CLOCK_DAMPING);
-      spring(clock.bow, clamp(wind.dirZ * CLOCK_BOW * g + push * BREATH_BOW + WILT_DROOP * clock.wilt, -0.2, MEADOW_AWAY_MAX), omega, CLOCK_DAMPING);
+      spring(
+        clock.lean,
+        clamp(
+          wind.dirX * CLOCK_BEND * g +
+            sway +
+            this.#pushX * push * BREATH_CLOCK +
+            side * WILT_LEAN * clock.wilt,
+          -MEADOW_LEAN_MAX,
+          MEADOW_LEAN_MAX,
+        ),
+        omega,
+        CLOCK_DAMPING,
+      );
+      spring(
+        clock.bow,
+        clamp(
+          wind.dirZ * CLOCK_BOW * g + push * BREATH_BOW + WILT_DROOP * clock.wilt,
+          -0.2,
+          MEADOW_AWAY_MAX,
+        ),
+        omega,
+        CLOCK_DAMPING,
+      );
       const x0 = clock.headX;
       const y0 = clock.headY;
       this.#placeHead(clock);
@@ -902,7 +1100,11 @@ class MeadowSim implements SceneSim {
         const left = remaining(clock);
         if (left > 0) {
           const load = Math.max(g, 0) + push * BREATH_DETACH;
-          const rate = (DETACH_CALM + DETACH_GUST * smoothstep(DETACH_FROM, DETACH_TO, load)) * (0.35 + (0.65 * left) / CLOCK_SEEDS) * (1 - this.#closed) * detachBoost;
+          const rate =
+            (DETACH_CALM + DETACH_GUST * smoothstep(DETACH_FROM, DETACH_TO, load)) *
+            (0.35 + (0.65 * left) / CLOCK_SEEDS) *
+            (1 - this.#closed) *
+            detachBoost;
           if (this.#random.next() < rate * STEP) this.#detach(clock, downwind, 0, 0);
           if (this.#burst > 0 && this.#random.next() < this.#burst * STEP) {
             const kick = EXIT_KICK * (0.6 + 0.8 * this.#random.next());
@@ -975,7 +1177,8 @@ class MeadowSim implements SceneSim {
     clock.wilt = 0;
     clock.share = at.share + (random.next() - 0.5) * CLOCK_JITTER_SHARE;
     clock.head = at.head + (random.next() - 0.5) * CLOCK_JITTER_HEAD;
-    clock.radius = at.radius * (1 - 0.5 * CLOCK_JITTER_RADIUS + CLOCK_JITTER_RADIUS * random.next());
+    clock.radius =
+      at.radius * (1 - 0.5 * CLOCK_JITTER_RADIUS + CLOCK_JITTER_RADIUS * random.next());
     clock.z = at.z;
     clock.counts.fill(SEEDS_PER_SECTOR);
     clock.shown.fill(0);
@@ -1011,7 +1214,10 @@ class MeadowSim implements SceneSim {
     clock.counts.forEach((count, k) => {
       if (count <= 0) return;
       const angle = ((k + 0.5) / SECTORS) * TAU;
-      const score = (1.25 + Math.cos(angle - toward)) * (0.4 + this.#random.next()) * (0.5 + count / SEEDS_PER_SECTOR);
+      const score =
+        (1.25 + Math.cos(angle - toward)) *
+        (0.4 + this.#random.next()) *
+        (0.5 + count / SEEDS_PER_SECTOR);
       if (score > bestScore) {
         bestScore = score;
         best = k;
@@ -1068,10 +1274,22 @@ class MeadowSim implements SceneSim {
       const across = (breeze + SEED_GUST * Math.max(g, -0.1) + this.#push) * SEED_AIR;
       const along = across / Math.abs(wind.dirX);
       let airX = wind.dirX * along + SEED_EDDY * Math.sin(eddy) * SEED_AIR;
-      let airY = (SEED_LIFT * lift + SEED_THERMAL - sink + SEED_EDDY * Math.cos(eddy * 0.77 + seed.drift) + this.#lift) * SEED_AIR;
+      let airY =
+        (SEED_LIFT * lift +
+          SEED_THERMAL -
+          sink +
+          SEED_EDDY * Math.cos(eddy * 0.77 + seed.drift) +
+          this.#lift) *
+        SEED_AIR;
       const airZ = wind.dirZ * along;
       // The breath blows in the frame: the same push on screen whatever the seed's depth.
-      const push = (this.#breathAt(CAMERA.screenX(seed.x, seed.z) + 0.5 * aspect, CAMERA.screenY(seed.y, seed.z)) * BREATH_SEED) / CAMERA.scale(seed.z);
+      const push =
+        (this.#breathAt(
+          CAMERA.screenX(seed.x, seed.z) + 0.5 * aspect,
+          CAMERA.screenY(seed.y, seed.z),
+        ) *
+          BREATH_SEED) /
+        CAMERA.scale(seed.z);
       airX += this.#pushX * push;
       airY += this.#pushY * push;
       seed.vx += (airX - seed.vx) * follow;
@@ -1083,11 +1301,14 @@ class MeadowSim implements SceneSim {
       seed.age += STEP;
       seed.tumble += seed.tumbleRate * STEP;
       // The tuft leads, the seed hangs behind it: the stalk tilts with the drift across the frame.
-      const tilt = clamp(-CAMERA.screenVX(seed.x, seed.z, seed.vx, seed.vz) * SEED_TILT, -0.7, 0.7) + 0.12 * Math.sin(seed.tumble);
+      const tilt =
+        clamp(-CAMERA.screenVX(seed.x, seed.z, seed.vx, seed.vz) * SEED_TILT, -0.7, 0.7) +
+        0.12 * Math.sin(seed.tumble);
       seed.tilt += (tilt - seed.tilt) * turn;
       const sx = CAMERA.screenX(seed.x, seed.z);
       const sy = CAMERA.screenY(seed.y, seed.z);
-      const out = Math.abs(sx) > 0.5 * aspect + SEED_MARGIN || sy < -SEED_MARGIN || sy > 1 + SEED_MARGIN;
+      const out =
+        Math.abs(sx) > 0.5 * aspect + SEED_MARGIN || sy < -SEED_MARGIN || sy > 1 + SEED_MARGIN;
       if (out || seed.age >= seed.life || seed.z >= SEED_DEPTH_FADE_TO) seed.live = false;
     }
   }
@@ -1098,13 +1319,20 @@ class MeadowSim implements SceneSim {
     const x = pointer.x * this.#aspect;
     const y = pointer.y;
     let speed = 0;
-    if (pointer.inside && this.#hadPointer) speed = Math.hypot(x - this.#lastX, y - this.#lastY) / dt;
+    if (pointer.inside && this.#hadPointer)
+      speed = Math.hypot(x - this.#lastX, y - this.#lastY) / dt;
     this.#hadPointer = pointer.inside;
     this.#lastX = x;
     this.#lastY = y;
-    this.#speed += (Math.min(speed, 2 * BREATH_FULL_SPEED) - this.#speed) * (1 - Math.exp(-dt / BREATH_FOLLOW));
-    this.#presence += ((pointer.inside ? 1 : 0) - this.#presence) * (1 - Math.exp(-dt / (pointer.inside ? BREATH_IN : BREATH_OUT)));
-    const target = this.#presence * (BREATH_REST + (1 - BREATH_REST) * Math.min(1, this.#speed / BREATH_FULL_SPEED)) + (pointer.inside && pointer.down ? BREATH_HELD : 0);
+    this.#speed +=
+      (Math.min(speed, 2 * BREATH_FULL_SPEED) - this.#speed) * (1 - Math.exp(-dt / BREATH_FOLLOW));
+    this.#presence +=
+      ((pointer.inside ? 1 : 0) - this.#presence) *
+      (1 - Math.exp(-dt / (pointer.inside ? BREATH_IN : BREATH_OUT)));
+    const target =
+      this.#presence *
+        (BREATH_REST + (1 - BREATH_REST) * Math.min(1, this.#speed / BREATH_FULL_SPEED)) +
+      (pointer.inside && pointer.down ? BREATH_HELD : 0);
     this.#breath += (target - this.#breath) * (1 - Math.exp(-dt / BREATH_FOLLOW));
     if (pointer.inside) {
       this.#breathX = x;
@@ -1134,7 +1362,12 @@ class MeadowSim implements SceneSim {
     let best: Clock | undefined;
     let nearest = Number.POSITIVE_INFINITY;
     for (const clock of this.#clocks) {
-      if (clock.presence < 0.5 || (clock.phase !== "ripe" && clock.phase !== "bare") || remaining(clock) === 0) continue;
+      if (
+        clock.presence < 0.5 ||
+        (clock.phase !== "ripe" && clock.phase !== "bare") ||
+        remaining(clock) === 0
+      )
+        continue;
       const d = Math.hypot(clock.headX - x, clock.headY - y);
       if (d < nearest) {
         nearest = d;
@@ -1147,7 +1380,15 @@ class MeadowSim implements SceneSim {
     for (let n = 0; n < CLICK_BURST; n++) {
       const speed = CLICK_SPEED * (0.6 + 0.8 * random.next());
       const spread = (random.next() - 0.5) * 0.9;
-      if (!this.#detach(best, away, Math.cos(away + spread) * speed, Math.sin(away + spread) * speed + CLICK_LIFT)) break;
+      if (
+        !this.#detach(
+          best,
+          away,
+          Math.cos(away + spread) * speed,
+          Math.sin(away + spread) * speed + CLICK_LIFT,
+        )
+      )
+        break;
     }
     best.lean.v += Math.cos(away) * CLICK_SHOVE;
     best.bow.v += 0.5 * CLICK_SHOVE;
@@ -1179,7 +1420,9 @@ class MeadowSim implements SceneSim {
     sorted.forEach((seed, n) => {
       const y = CAMERA.screenY(seed.y - drop, seed.z);
       const radius = Math.max((seed.size * MEADOW_FOCAL) / seed.z, minRadius);
-      const alpha = (1 - smoothstep(seed.life - SEED_FADE, seed.life, seed.age)) * (1 - smoothstep(SEED_DEPTH_FADE_FROM, SEED_DEPTH_FADE_TO, seed.z));
+      const alpha =
+        (1 - smoothstep(seed.life - SEED_FADE, seed.life, seed.age)) *
+        (1 - smoothstep(SEED_DEPTH_FADE_FROM, SEED_DEPTH_FADE_TO, seed.z));
       const u = seed.sx / aspect + 0.5;
       const o0 = n * 4;
       seeds[o0] = u;

@@ -9,7 +9,10 @@ const tour = (query: string): Tour => {
 
 test("a tour link reads back exactly as the lab writes it", () => {
   const read = tour("tour=physarum-60.petri.delta&dwell=40");
-  expect(read).toEqual({ steps: [{ scene: "physarum", dwell: 60 }, { scene: "petri" }, { scene: "delta" }], dwell: 40 });
+  expect(read).toEqual({
+    steps: [{ scene: "physarum", dwell: 60 }, { scene: "petri" }, { scene: "delta" }],
+    dwell: 40,
+  });
   const written = new URLSearchParams();
   writeTour(read, written);
   expect(written.toString()).toBe("tour=physarum-60.petri.delta&dwell=40");
@@ -21,7 +24,11 @@ test("a tour link reads back exactly as the lab writes it", () => {
 
 test("unknown and repeated scenes are dropped and dwells kept within bounds", () => {
   expect(tour("tour=pond.nowhere.pond.Forest.lake-x.forest-1.orbit-99999&dwell=abc")).toEqual({
-    steps: [{ scene: "pond" }, { scene: "forest", dwell: TOUR_DWELL.min }, { scene: "orbit", dwell: TOUR_DWELL.max }],
+    steps: [
+      { scene: "pond" },
+      { scene: "forest", dwell: TOUR_DWELL.min },
+      { scene: "orbit", dwell: TOUR_DWELL.max },
+    ],
     dwell: TOUR_DWELL.fallback,
   });
   expect(tour("tour=pond&dwell=3").dwell).toBe(TOUR_DWELL.min);

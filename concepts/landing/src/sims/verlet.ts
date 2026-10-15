@@ -52,7 +52,13 @@ export type Vec3 = readonly [number, number, number];
  * divided by the point's mass (at the default inverse mass 1, force = acceleration). Called once
  * per free point per substep.
  */
-export type VerletForce = (index: number, x: number, y: number, z: number, out: Float32Array) => void;
+export type VerletForce = (
+  index: number,
+  x: number,
+  y: number,
+  z: number,
+  out: Float32Array,
+) => void;
 
 export interface VerletStepOptions {
   /** Acceleration on every free point, units per second². */
@@ -336,7 +342,8 @@ export class VerletSystem {
 
   /** Retune a constraint (a tension or stiffness knob) without rebuilding. */
   setConstraint(c: number, rest: number, stiffness: number): void {
-    if (!(Number.isInteger(c) && c >= 0 && c < this.#constraintCount)) throw new VerletError(`no constraint ${c}`);
+    if (!(Number.isInteger(c) && c >= 0 && c < this.#constraintCount))
+      throw new VerletError(`no constraint ${c}`);
     this.#rest[c] = Math.max(0, rest);
     this.#stiffness[c] = Math.min(1, Math.max(0, stiffness));
     this.#kIterations = 0;
@@ -356,9 +363,16 @@ export class VerletSystem {
     const invMass = options.invMass ?? 1;
     for (let s = 0; s <= n; s++) {
       const f = s / n;
-      this.addPoint(from[0] + (to[0] - from[0]) * f, from[1] + (to[1] - from[1]) * f, from[2] + (to[2] - from[2]) * f, invMass);
+      this.addPoint(
+        from[0] + (to[0] - from[0]) * f,
+        from[1] + (to[1] - from[1]) * f,
+        from[2] + (to[2] - from[2]) * f,
+        invMass,
+      );
     }
-    const link = (Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) / n) * (options.restScale ?? 1);
+    const link =
+      (Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) / n) *
+      (options.restScale ?? 1);
     const stiffness = options.stiffness ?? 1;
     for (let s = 0; s < n; s++) {
       this.addConstraint(first + s, first + s + 1, stiffness, link);
@@ -366,15 +380,25 @@ export class VerletSystem {
     }
     if (options.pinFirst === true) this.pin(first);
     if (options.pinLast === true) this.pin(first + n);
-    return { first, points: n + 1, firstConstraint, constraints: this.#constraintCount - firstConstraint };
+    return {
+      first,
+      points: n + 1,
+      firstConstraint,
+      constraints: this.#constraintCount - firstConstraint,
+    };
   }
 
   /** Any net: `points` added in order, `edges` as index pairs into `points`. */
-  addNet(points: readonly Vec3[], edges: readonly (readonly [number, number])[], options: NetOptions = {}): VerletRange {
+  addNet(
+    points: readonly Vec3[],
+    edges: readonly (readonly [number, number])[],
+    options: NetOptions = {},
+  ): VerletRange {
     const first = this.#count;
     const firstConstraint = this.#constraintCount;
     for (const [a, b] of edges) {
-      if (!(a >= 0 && a < points.length && b >= 0 && b < points.length)) throw new VerletError(`net edge ${a}–${b} is outside its ${points.length} points`);
+      if (!(a >= 0 && a < points.length && b >= 0 && b < points.length))
+        throw new VerletError(`net edge ${a}–${b} is outside its ${points.length} points`);
     }
     this.#reservePoints(first + points.length);
     this.#reserveConstraints(firstConstraint + edges.length);
@@ -382,9 +406,16 @@ export class VerletSystem {
     for (const [x, y, z] of points) this.addPoint(x, y, z, invMass);
     const stiffness = options.stiffness ?? 1;
     const restScale = options.restScale ?? 1;
-    for (const [a, b] of edges) this.addConstraint(first + a, first + b, stiffness, this.distance(first + a, first + b) * restScale);
+    for (const [a, b] of edges)
+      this.addConstraint(
+        first + a,
+        first + b,
+        stiffness,
+        this.distance(first + a, first + b) * restScale,
+      );
     for (const p of options.pinned ?? []) {
-      if (!(p >= 0 && p < points.length)) throw new VerletError(`net pin ${p} is outside its ${points.length} points`);
+      if (!(p >= 0 && p < points.length))
+        throw new VerletError(`net pin ${p} is outside its ${points.length} points`);
       this.pin(first + p);
     }
     return { first, points: points.length, firstConstraint, constraints: edges.length };
@@ -415,7 +446,10 @@ export class VerletSystem {
     this.#reserveConstraints(firstConstraint + spokes * (turns + 1) + spiralLinks);
 
     // A spider spaces its radii by eye: each angle wanders up to 0.3 of the even spacing.
-    const angles = Array.from({ length: spokes }, (_, s) => Math.PI / 2 + ((s + 0.3 * jag * jitter(seed, s)) * TAU) / spokes);
+    const angles = Array.from(
+      { length: spokes },
+      (_, s) => Math.PI / 2 + ((s + 0.3 * jag * jitter(seed, s)) * TAU) / spokes,
+    );
     const hub = this.addPoint(cx, cy, cz, invMass);
     const spiral = this.#count;
     for (let s = 0; s < spokes; s++) {
@@ -424,7 +458,8 @@ export class VerletSystem {
       const uy = Math.sin(a);
       for (let k = 0; k < turns; k++) {
         // Spiral spacing wanders up to 0.3 of the pitch, so crossings stay in order along a radius.
-        const r = inner + pitch * (k + s / spokes + 0.3 * jag * jitter(seed, spokes + s * turns + k));
+        const r =
+          inner + pitch * (k + s / spokes + 0.3 * jag * jitter(seed, spokes + s * turns + k));
         this.addPoint(cx + ux * r, cy + uy * r, cz, invMass);
       }
     }
@@ -448,7 +483,8 @@ export class VerletSystem {
       for (let s = 0; s < spokes; s++) {
         const here = spiral + s * turns + k;
         const next = s + 1 < spokes ? here + turns : k + 1 < turns ? spiral + k + 1 : -1;
-        if (next >= 0) this.addConstraint(here, next, spiralStiffness, this.distance(here, next) * restScale);
+        if (next >= 0)
+          this.addConstraint(here, next, spiralStiffness, this.distance(here, next) * restScale);
       }
     }
     return {
@@ -540,7 +576,11 @@ export class VerletSystem {
     const pos = this.#pos;
     const oa = a * 3;
     const ob = b * 3;
-    return Math.hypot((pos[ob] ?? 0) - (pos[oa] ?? 0), (pos[ob + 1] ?? 0) - (pos[oa + 1] ?? 0), (pos[ob + 2] ?? 0) - (pos[oa + 2] ?? 0));
+    return Math.hypot(
+      (pos[ob] ?? 0) - (pos[oa] ?? 0),
+      (pos[ob + 1] ?? 0) - (pos[oa + 1] ?? 0),
+      (pos[ob + 2] ?? 0) - (pos[oa + 2] ?? 0),
+    );
   }
 
   /** Velocity of point i (units per second) into out[0..2]. */
@@ -567,7 +607,15 @@ export class VerletSystem {
    * (1 - d²/r²)² to nothing at the edge. A velocity change, not a momentum: heavy and light points
    * jump alike. Returns the summed falloff (0 = nothing in reach).
    */
-  impulse(x: number, y: number, z: number, radius: number, vx: number, vy: number, vz: number): number {
+  impulse(
+    x: number,
+    y: number,
+    z: number,
+    radius: number,
+    vx: number,
+    vy: number,
+    vz: number,
+  ): number {
     return this.#kick(x, y, z, 1, radius, vx, vy, vz);
   }
 
@@ -708,7 +756,14 @@ export class VerletSystem {
     this.#kIterations = iterations;
   }
 
-  #nearest(x: number, y: number, z: number, zWeight: number, maxDistance: number, freeOnly: boolean): number {
+  #nearest(
+    x: number,
+    y: number,
+    z: number,
+    zWeight: number,
+    maxDistance: number,
+    freeOnly: boolean,
+  ): number {
     const pos = this.#pos;
     const inv = this.#invMass;
     let best = -1;
@@ -728,7 +783,16 @@ export class VerletSystem {
     return best;
   }
 
-  #kick(x: number, y: number, z: number, zWeight: number, radius: number, vx: number, vy: number, vz: number): number {
+  #kick(
+    x: number,
+    y: number,
+    z: number,
+    zWeight: number,
+    radius: number,
+    vx: number,
+    vy: number,
+    vz: number,
+  ): number {
     if (!(radius > 0)) return 0;
     const pos = this.#pos;
     const prev = this.#prev;
@@ -763,7 +827,8 @@ export class VerletSystem {
   }
 
   #check(i: number): void {
-    if (!(Number.isInteger(i) && i >= 0 && i < this.#count)) throw new VerletError(`no point ${i} (count ${this.#count})`);
+    if (!(Number.isInteger(i) && i >= 0 && i < this.#count))
+      throw new VerletError(`no point ${i} (count ${this.#count})`);
   }
 
   /** Position, previous position and glide target all at (x, y, z): there, and still. */
@@ -830,12 +895,19 @@ export class PointTexture {
     const texels = this.points * this.stride;
     const width = options.width ?? Math.min(texels, MAX_ROW);
     if (!(Number.isInteger(width) && width >= this.stride && width % this.stride === 0)) {
-      throw new VerletError(`point texture width ${width} must be a positive multiple of ${this.stride}`);
+      throw new VerletError(
+        `point texture width ${width} must be a positive multiple of ${this.stride}`,
+      );
     }
     this.width = width;
     this.height = Math.ceil(texels / width);
     this.#data = new Float32Array(this.width * this.height * 4);
-    this.#texture = new DataTexture(gl, { width: this.width, height: this.height, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: this.width,
+      height: this.height,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#origin = options.origin ?? [0, 0, 0];
   }
 

@@ -75,12 +75,21 @@ export const FERRO_PASSAGE = { enter: 3, exit: 1.7 } as const;
  * running out from the middle blob. Height (dish units), speed (units/s), seconds into the exit it
  * starts, the packet's width and wavelength.
  */
-export const FERRO_RIPPLE = { height: 0.007, speed: 0.75, start: 0.2, width: 0.17, wavelength: 0.2 } as const;
+export const FERRO_RIPPLE = {
+  height: 0.007,
+  speed: 0.75,
+  start: 0.2,
+  width: 0.17,
+  wavelength: 0.2,
+} as const;
 
 /** Height of the pool's surface without its spikes, for the blob field φ (1 at the edge). */
 export function ferroBase(phi: number): number {
   const x = Math.max(phi - 1, 0);
-  return FERRO_SHAPE.puddle * Math.sqrt(1 - Math.exp(-x / FERRO_SHAPE.edge)) + (FERRO_SHAPE.mound * x * x) / (x + FERRO_SHAPE.moundSoft);
+  return (
+    FERRO_SHAPE.puddle * Math.sqrt(1 - Math.exp(-x / FERRO_SHAPE.edge)) +
+    (FERRO_SHAPE.mound * x * x) / (x + FERRO_SHAPE.moundSoft)
+  );
 }
 
 // ---- tuning ----------------------------------------------------------------------------------
@@ -152,7 +161,8 @@ const SLUMP_DAMPING = 1;
 const TAU = Math.PI * 2;
 
 /** Move `value` toward `target` with time constant `tau` over `dt` seconds. */
-const approach = (value: number, target: number, dt: number, tau: number): number => value + (target - value) * (1 - Math.exp(-dt / tau));
+const approach = (value: number, target: number, dt: number, tau: number): number =>
+  value + (target - value) * (1 - Math.exp(-dt / tau));
 
 /** Xorshift32 stream in [0, 1), seeded from the pour knob. */
 function ferroRandom(seed: number): () => number {
@@ -193,7 +203,12 @@ function markScale(spacing: number): number {
  * Where the pointer (uv, y up) falls on the dish floor, through the same camera as the shader;
  * undefined if its ray never comes down.
  */
-function ferroGround(x: number, y: number, aspect: number, above: boolean): { x: number; y: number } | undefined {
+function ferroGround(
+  x: number,
+  y: number,
+  aspect: number,
+  above: boolean,
+): { x: number; y: number } | undefined {
   const sx = (x - 0.5) * aspect * 2;
   const sy = (y - 0.5) * 2;
   if (above) {
@@ -230,7 +245,14 @@ interface Body {
 }
 
 /** Step a damped spring pulling `body` toward (tx, ty): semi-implicit Euler, h seconds. */
-function spring(body: Body, tx: number, ty: number, omega: number, damping: number, h: number): void {
+function spring(
+  body: Body,
+  tx: number,
+  ty: number,
+  omega: number,
+  damping: number,
+  h: number,
+): void {
   const k = omega * omega;
   const c = 2 * damping * omega;
   body.vx += (k * (tx - body.x) - c * body.vx) * h;
@@ -255,8 +277,29 @@ interface Blob extends Body {
 
 // ---- knobs -----------------------------------------------------------------------------------
 
-type FerroKnob = "strength" | "breath" | "drift" | "follow" | "size" | "spacing" | "sharpness" | "pour" | "camera" | "mark";
-const FERRO_KNOBS: readonly FerroKnob[] = ["strength", "breath", "drift", "follow", "size", "spacing", "sharpness", "pour", "camera", "mark"];
+type FerroKnob =
+  | "strength"
+  | "breath"
+  | "drift"
+  | "follow"
+  | "size"
+  | "spacing"
+  | "sharpness"
+  | "pour"
+  | "camera"
+  | "mark";
+const FERRO_KNOBS: readonly FerroKnob[] = [
+  "strength",
+  "breath",
+  "drift",
+  "follow",
+  "size",
+  "spacing",
+  "sharpness",
+  "pour",
+  "camera",
+  "mark",
+];
 
 interface Settings {
   /** The field over the magnet at the top of a breath (1: the crown just reaches the pool's edge). */
@@ -299,7 +342,19 @@ class FerroSim implements SceneSim {
   /** Settled at the first frame: everything starts at rest on its target, the crown already up. */
   #primed = false;
   /** The knobs, the one record `#read` fills in each frame, and the last frame's knobs and aspect (see `#sameAsLast`). */
-  readonly #settings: Settings = { peak: 0, breathing: false, rate: 0, drift: 0, follow: false, size: 1, spacing: 0, height: 0, seed: 0, above: false, markEvery: 0 };
+  readonly #settings: Settings = {
+    peak: 0,
+    breathing: false,
+    rate: 0,
+    drift: 0,
+    follow: false,
+    size: 1,
+    spacing: 0,
+    height: 0,
+    seed: 0,
+    above: false,
+    markEvery: 0,
+  };
   readonly #lastValues: number[] = [];
   /** The field's passage gate last frame (see `frame`). */
   #lastGate = 1;
@@ -321,10 +376,26 @@ class FerroSim implements SceneSim {
     this.#knobs = knobs;
     this.#markTrigger = knobs.trigger("mark");
     this.#blobs = Array.from({ length: FERRO_BLOBS }, () => ({
-      x: 0, y: 0, vx: 0, vy: 0, angle: 0, reach: 0, weight: 1, omega: 1, damping: 1, wobble: 0, wobbleRate: 0, wobblePhase: 0,
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      reach: 0,
+      weight: 1,
+      omega: 1,
+      damping: 1,
+      wobble: 0,
+      wobbleRate: 0,
+      wobblePhase: 0,
     }));
     this.#field = new DataTexture(gl, { width: FERRO_GRID, height: FERRO_GRID, format: "rgba16f" });
-    this.#state = new DataTexture(gl, { width: FERRO_STATE_HEAD + FERRO_BLOBS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#state = new DataTexture(gl, {
+      width: FERRO_STATE_HEAD + FERRO_BLOBS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#textures = [this.#field.texture, this.#state.texture];
   }
 
@@ -338,7 +409,9 @@ class FerroSim implements SceneSim {
     const enterSeconds = clamp(frame.passage.enter, 0, 1) * FERRO_PASSAGE.enter;
     const exitSeconds = clamp(frame.passage.exit, 0, 1) * FERRO_PASSAGE.exit;
     // The passage gate on the magnet's field: 0 while the pool lies flat, 1 at rest.
-    const gate = smoothstep(FIELD_ON_FROM, FIELD_ON_TO, enterSeconds) * (1 - smoothstep(0, FIELD_OFF, exitSeconds));
+    const gate =
+      smoothstep(FIELD_ON_FROM, FIELD_ON_TO, enterSeconds) *
+      (1 - smoothstep(0, FIELD_OFF, exitSeconds));
     const leaving = exitSeconds > 0;
     const unchanged = this.#sameAsLast(frame) && gate === this.#lastGate;
     this.#lastGate = gate;
@@ -364,7 +437,11 @@ class FerroSim implements SceneSim {
 
     // The magnet's field: it breathes (or holds), an M breath lets it rest, a press boosts it.
     const breathField = settings.breathing ? (this.#markBreath ? 0 : breath) : 1;
-    const field = settings.peak * (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField) * (1 + PRESS_BOOST * this.#press) * gate;
+    const field =
+      settings.peak *
+      (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField) *
+      (1 + PRESS_BOOST * this.#press) *
+      gate;
     const pull = clamp((field - 0.3) / 0.9, 0, 1) * (1 - mark);
 
     this.#move(frame, settings, dt, mark, pull);
@@ -376,10 +453,31 @@ class FerroSim implements SceneSim {
     const originY = lerp(this.#magnet.y, 0, mark);
     const blobRadius = this.#blobRadius(settings.size, mark);
     const scale = markScale(markSpacing);
-    const { phiMax, ampMax, reach } = this.#spikes(settings, dt, field, mark, spacing, scale, blobRadius, leaving);
+    const { phiMax, ampMax, reach } = this.#spikes(
+      settings,
+      dt,
+      field,
+      mark,
+      spacing,
+      scale,
+      blobRadius,
+      leaving,
+    );
     this.#primed = true;
 
-    this.#writeState(originX, originY, spacing, mark, blobRadius, scale, reach, ferroBase(phiMax * 1.03) + Math.max(ampMax, 0) * 1.05 + 0.005 + (leaving ? FERRO_RIPPLE.height : 0));
+    this.#writeState(
+      originX,
+      originY,
+      spacing,
+      mark,
+      blobRadius,
+      scale,
+      reach,
+      ferroBase(phiMax * 1.03) +
+        Math.max(ampMax, 0) * 1.05 +
+        0.005 +
+        (leaving ? FERRO_RIPPLE.height : 0),
+    );
     this.#field.upload(this.#fieldData);
     this.#state.upload(this.#stateData);
     return this.#textures;
@@ -468,7 +566,10 @@ class FerroSim implements SceneSim {
   /** The magnet after the pointer (or its drift), the middle blob after the magnet, the ring after it. */
   #move(frame: SimFrame, settings: Settings, dt: number, mark: number, pull: number): void {
     const pointer = frame.pointer;
-    const ground = settings.follow && pointer.inside ? ferroGround(pointer.x, pointer.y, frame.aspect, settings.above) : undefined;
+    const ground =
+      settings.follow && pointer.inside
+        ? ferroGround(pointer.x, pointer.y, frame.aspect, settings.above)
+        : undefined;
     const [w0, w1, w2] = this.#wanderPhase;
     const c = this.#clock;
     const aim = ground ?? {
@@ -489,7 +590,10 @@ class FerroSim implements SceneSim {
       magnet.x = target.x;
       magnet.y = target.y;
       for (const blob of blobs) {
-        const r = blob.reach * ringReach * (1 + blob.wobble * Math.sin(blob.wobbleRate * c + blob.wobblePhase));
+        const r =
+          blob.reach *
+          ringReach *
+          (1 + blob.wobble * Math.sin(blob.wobbleRate * c + blob.wobblePhase));
         blob.x = lerp(target.x, 0, mark) + Math.cos(blob.angle) * r;
         blob.y = lerp(target.y, 0, mark) + Math.sin(blob.angle) * r;
       }
@@ -500,12 +604,29 @@ class FerroSim implements SceneSim {
     const h = steps > 0 ? dt / steps : 0;
     for (let step = 0; step < steps; step++) {
       spring(magnet, target.x, target.y, MAGNET_OMEGA, 1, h);
-      spring(middle, lerp(magnet.x, 0, mark), lerp(magnet.y, 0, mark), middle.omega, middle.damping, h);
+      spring(
+        middle,
+        lerp(magnet.x, 0, mark),
+        lerp(magnet.y, 0, mark),
+        middle.omega,
+        middle.damping,
+        h,
+      );
       for (let i = 1; i < blobs.length; i++) {
         const blob = blobs[i];
         if (blob === undefined) continue;
-        const r = blob.reach * ringReach * (1 + blob.wobble * Math.sin(blob.wobbleRate * c + blob.wobblePhase));
-        spring(blob, middle.x + Math.cos(blob.angle) * r, middle.y + Math.sin(blob.angle) * r, blob.omega, blob.damping, h);
+        const r =
+          blob.reach *
+          ringReach *
+          (1 + blob.wobble * Math.sin(blob.wobbleRate * c + blob.wobblePhase));
+        spring(
+          blob,
+          middle.x + Math.cos(blob.angle) * r,
+          middle.y + Math.sin(blob.angle) * r,
+          blob.omega,
+          blob.damping,
+          h,
+        );
       }
     }
   }
@@ -515,7 +636,16 @@ class FerroSim implements SceneSim {
    * spring carrying the height toward it, and the lean. Returns the largest φ and height, and how
    * far the fluid reaches from the middle blob: the shader's bounds on the surface.
    */
-  #spikes(settings: Settings, dt: number, field: number, mark: number, spacing: number, scale: number, blobRadius: number, leaving: boolean): { phiMax: number; ampMax: number; reach: number } {
+  #spikes(
+    settings: Settings,
+    dt: number,
+    field: number,
+    mark: number,
+    spacing: number,
+    scale: number,
+    blobRadius: number,
+    leaving: boolean,
+  ): { phiMax: number; ampMax: number; reach: number } {
     const n = FERRO_GRID;
     const texel = (2 * FERRO_SPAN) / n;
     const blobs = this.#blobs;
@@ -631,7 +761,16 @@ class FerroSim implements SceneSim {
     return { phiMax, ampMax, reach: Math.sqrt(reach2) + 1.5 * texel };
   }
 
-  #writeState(originX: number, originY: number, spacing: number, mark: number, blobRadius: number, scale: number, reach: number, top: number): void {
+  #writeState(
+    originX: number,
+    originY: number,
+    spacing: number,
+    mark: number,
+    blobRadius: number,
+    scale: number,
+    reach: number,
+    top: number,
+  ): void {
     const data = this.#stateData;
     const blobs = this.#blobs;
     data[0] = originX;

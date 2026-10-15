@@ -1,13 +1,27 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { firefliesScene } from "./index.ts";
-import { FIREFLIES_CELL, FIREFLIES_PROFILE_RES, FIREFLIES_ROOT_PITCH, FIREFLIES_STATE_BANK, FIREFLIES_WATER } from "./sim.ts";
+import {
+  FIREFLIES_CELL,
+  FIREFLIES_PROFILE_RES,
+  FIREFLIES_ROOT_PITCH,
+  FIREFLIES_STATE_BANK,
+  FIREFLIES_WATER,
+} from "./sim.ts";
 
 /** A frame at these knobs: a thirtieth of a second at motion 0.6, the pointer away. */
-const frameAt = (knobs: Record<string, number>): HeadlessFrame => ({ dt: 1 / 30, motion: 0.6, knobs, pointer: { inside: false } });
+const frameAt = (knobs: Record<string, number>): HeadlessFrame => ({
+  dt: 1 / 30,
+  motion: 0.6,
+  knobs,
+  pointer: { inside: false },
+});
 
 /** The bank's fireflies as uSim0 has them after one more frame: how many, and their mean height above the waterline. */
-function census(sim: HeadlessSim, knobs: Record<string, number>): { count: number; height: number } {
+function census(
+  sim: HeadlessSim,
+  knobs: Record<string, number>,
+): { count: number; height: number } {
   const swarm = sim.step(frameAt(knobs)).upload(0);
   let count = 0;
   let height = 0;
@@ -68,7 +82,8 @@ function propRoots(sim: HeadlessSim): { first: number; roots: Root[] } {
   const bins = data[1] ?? 0;
   const roots: Root[] = [];
   for (let r = 0; r < 2 * bins; r++) {
-    const texel = (row: number): number => ((1 + 4 * Math.floor(r / width) + row) * width + (r % width)) * 4;
+    const texel = (row: number): number =>
+      ((1 + 4 * Math.floor(r / width) + row) * width + (r % width)) * 4;
     const [t0, t1, t2, t3] = [texel(0), texel(1), texel(2), texel(3)];
     if ((data[t3 + 3] ?? 0) <= 0) continue;
     const x = (data[t0] ?? 0) + (data[t0 + 1] ?? 0);
@@ -78,7 +93,10 @@ function propRoots(sim: HeadlessSim): { first: number; roots: Root[] } {
     // Its turn in the scene's frame (curl in a, plus the bend), as the shader's plantPoint reads it.
     const half = 0.5 * ((data[t2 + 1] ?? 0) + (data[t2] ?? 0));
     const chord = (data[t1 + 2] ?? 0) * (Math.abs(half) < 1e-4 ? 1 : Math.sin(half) / half);
-    const foot: [number, number] = [x + chord * (cos * Math.cos(half) - sin * Math.sin(half)), y + chord * (cos * Math.sin(half) + sin * Math.cos(half))];
+    const foot: [number, number] = [
+      x + chord * (cos * Math.cos(half) - sin * Math.sin(half)),
+      y + chord * (cos * Math.sin(half) + sin * Math.cos(half)),
+    ];
     roots.push({ bin: Math.floor(r / 2), side: r % 2 === 0 ? -1 : 1, apex: [x, y], foot });
   }
   return { first, roots };
@@ -89,7 +107,13 @@ function propRoots(sim: HeadlessSim): { first: number; roots: Root[] } {
  * (screen heights from the middle): the whole number of profile texels the resting canopy's top
  * must slide by to match it best; 0 where the stretch is not all in the profile, or matches as is.
  */
-function crownShift(rest: ArrayLike<number>, now: ArrayLike<number>, width: number, x0: number, x1: number): number {
+function crownShift(
+  rest: ArrayLike<number>,
+  now: ArrayLike<number>,
+  width: number,
+  x0: number,
+  x1: number,
+): number {
   const dx = FIREFLIES_CELL / FIREFLIES_PROFILE_RES;
   const k0 = Math.floor(Math.min(x0, x1) / dx + width / 2);
   const k1 = Math.ceil(Math.max(x0, x1) / dx + width / 2);
@@ -133,7 +157,13 @@ test("prop roots stand in pairs from an apex in their bin under the crowns, down
 test("a breeze bows the crowns downwind as it crosses, and the bank then stands exactly as laid out", () => {
   for (const seed of [0, 4]) {
     const knobs = { seed };
-    const at = (now?: string[]): HeadlessFrame => ({ dt: 1 / 30, motion: 1, knobs, pointer: { inside: false }, ...(now ? { now } : {}) });
+    const at = (now?: string[]): HeadlessFrame => ({
+      dt: 1 / 30,
+      motion: 1,
+      knobs,
+      pointer: { inside: false },
+      ...(now ? { now } : {}),
+    });
     const sim = settled(knobs);
     const profile = sim.upload(1);
     const rest = Float32Array.from(profile.data);
@@ -153,7 +183,13 @@ test("a breeze bows the crowns downwind as it crosses, and the bank then stands 
         // The trees the front has just passed, a little behind it.
         downwind = Math.sign((state[bank + 1] ?? 0) - front);
         front = state[bank + 1] ?? 0;
-        const shift = crownShift(rest, now, profile.width, front - 0.05 * downwind, front - 0.25 * downwind);
+        const shift = crownShift(
+          rest,
+          now,
+          profile.width,
+          front - 0.05 * downwind,
+          front - 0.25 * downwind,
+        );
         bow += shift;
         deepest = Math.max(deepest, shift * downwind);
       }

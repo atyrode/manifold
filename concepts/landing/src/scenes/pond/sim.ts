@@ -4,7 +4,13 @@
 // overhead canopy (uSim1), a sheet painted on the worker whenever its knobs or the frame's shape
 // change; and the koi while they are drawn to the pointer (uSim2, koi.ts). The last finished canopy
 // stays bound while a new one paints; the plants show as soon as the atlas is ready.
-import { canopyKey, CANOPY_MARGIN, PLANT_ATLAS_SIZE, plantAtlasFamilies, type CanopyConfig } from "../../decor.ts";
+import {
+  canopyKey,
+  CANOPY_MARGIN,
+  PLANT_ATLAS_SIZE,
+  plantAtlasFamilies,
+  type CanopyConfig,
+} from "../../decor.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { SheetPainter } from "../../sheet.ts";
 import { PlantSheet } from "../../sims/plantsheet.ts";
@@ -12,7 +18,13 @@ import { PLANT_SUMMER, plantClimate, RootedPlants } from "../../sims/plants.ts";
 import { windNoise } from "../../sims/wind.ts";
 import type { SceneSim } from "../types.ts";
 import { PondKoi } from "./koi.ts";
-import { growPondPlants, POND_ORGANS, pondPlantKey, type ClumpSpecies, type PondPlantConfig } from "./plants.ts";
+import {
+  growPondPlants,
+  POND_ORGANS,
+  pondPlantKey,
+  type ClumpSpecies,
+  type PondPlantConfig,
+} from "./plants.ts";
 
 /** Milliseconds per frame a sheet may spend painting on the page: more while nothing is shown yet. */
 const SHEET_BUDGET_MS = 6;
@@ -32,15 +44,36 @@ const ATLAS_KEY = "plant-atlas";
 const GUST_FRONT = 0.3;
 
 const KNOBS = [
-  "plants", "monstera", "ferns", "banana", "vines", "flowers", "grass", "bushiness", "plantSeed",
-  "lushTop", "lushRight", "lushBottom", "lushLeft", "canopy", "canopySeed", "wind", "gusts", "season", "growth",
+  "plants",
+  "monstera",
+  "ferns",
+  "banana",
+  "vines",
+  "flowers",
+  "grass",
+  "bushiness",
+  "plantSeed",
+  "lushTop",
+  "lushRight",
+  "lushBottom",
+  "lushLeft",
+  "canopy",
+  "canopySeed",
+  "wind",
+  "gusts",
+  "season",
+  "growth",
 ] as const;
 type Knob = (typeof KNOBS)[number];
 /** How many of KNOBS (the first) the canopy sheet and the plants' layout depend on; the rest only move the plants. */
 const LAYOUT_KNOBS = 15;
 
 /** Which toggle grows which clump species, in the order the layout lays them out. */
-const SPECIES: readonly (readonly [ClumpSpecies, Knob])[] = [["monstera", "monstera"], ["fern", "ferns"], ["banana", "banana"]];
+const SPECIES: readonly (readonly [ClumpSpecies, Knob])[] = [
+  ["monstera", "monstera"],
+  ["fern", "ferns"],
+  ["banana", "banana"],
+];
 
 export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): SceneSim {
   const knobs = new KnobReader<Knob>("pond", params, KNOBS);
@@ -66,7 +99,12 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
   /** Rebuild the plants and the canopy's request from this frame's knobs. */
   function request(read: (key: Knob) => number, aspect: number): void {
     const shape = aspect.toFixed(2);
-    const sides = [read("lushTop"), read("lushRight"), read("lushBottom"), read("lushLeft")] as const;
+    const sides = [
+      read("lushTop"),
+      read("lushRight"),
+      read("lushBottom"),
+      read("lushLeft"),
+    ] as const;
     plantsOn = read("plants") > 0;
     if (plantsOn) {
       atlas.request(ATLAS_KEY, PLANT_ATLAS_SIZE, PLANT_ATLAS_SIZE, { kind: "atlas" });
@@ -92,7 +130,12 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
       const config: CanopyConfig = { coverage: read("canopy"), sides, seed: read("canopySeed") };
       // Leaves are sized against the visible frame, which is 1/span of this sheet.
       const span = 1 + 2 * CANOPY_MARGIN;
-      canopy.request(`${canopyKey(config)}|${shape}`, CANOPY_WIDTH, Math.max(1, Math.round(CANOPY_WIDTH / aspect)), { kind: "canopy", config, span });
+      canopy.request(
+        `${canopyKey(config)}|${shape}`,
+        CANOPY_WIDTH,
+        Math.max(1, Math.round(CANOPY_WIDTH / aspect)),
+        { kind: "canopy", config, span },
+      );
     }
   }
 
@@ -135,7 +178,10 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
         const texture = atlas.texture;
         if (texture && (!drawn || climate.dt > 0 || climate.air.gustNow || moved)) {
           sheet ??= new PlantSheet(gl);
-          let width = Math.min(PLANT_SHEET_WIDTH, Math.max(256, Math.round(frame.width * SHEET_PER_CELL)));
+          let width = Math.min(
+            PLANT_SHEET_WIDTH,
+            Math.max(256, Math.round(frame.width * SHEET_PER_CELL)),
+          );
           let height = Math.max(1, Math.round(width / frame.aspect));
           const over = Math.max(width, height) / maxSize;
           if (over > 1) {

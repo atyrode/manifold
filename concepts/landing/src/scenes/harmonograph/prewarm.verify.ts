@@ -100,11 +100,20 @@ export function verifyHarmonographPrewarm(gl: WebGL2RenderingContext): Record<st
   const fast = script(gl, 0);
   const slow = script(gl, 1000);
   if (fast.inked < 1000) throw new Error(`Harmonograph fixture drew only ${fast.inked} texels`);
-  if (fast.reseeded === fast.first) throw new Error("Harmonograph reseed fixture drew the same sheet");
+  if (fast.reseeded === fast.first)
+    throw new Error("Harmonograph reseed fixture drew the same sheet");
   if (slow.first !== fast.first) throw new Error("Budgeted warm-up changed the first sheet");
-  if (slow.reseeded !== fast.reseeded) throw new Error("Budgeted warm-up changed a reseeded sheet or followed a knob moved during it");
-  if (fast.heldOnReseed !== fast.reseeded) throw new Error("A fast machine did not finish a reseed's warm-up in one frame");
-  if (slow.heldOnReseed !== slow.first) throw new Error("A reseed replaced the sheet on screen before its warm-up was done");
-  if (slow.leaving !== fast.leaving || fast.leaving === fast.reseeded) throw new Error("An exit during a warm-up did not slide off the finished sheet");
-  return { sheets: [fast.first, fast.reseeded, fast.leaving], inked: fast.inked, heldOnSlowReseed: true };
+  if (slow.reseeded !== fast.reseeded)
+    throw new Error("Budgeted warm-up changed a reseeded sheet or followed a knob moved during it");
+  if (fast.heldOnReseed !== fast.reseeded)
+    throw new Error("A fast machine did not finish a reseed's warm-up in one frame");
+  if (slow.heldOnReseed !== slow.first)
+    throw new Error("A reseed replaced the sheet on screen before its warm-up was done");
+  if (slow.leaving !== fast.leaving || fast.leaving === fast.reseeded)
+    throw new Error("An exit during a warm-up did not slide off the finished sheet");
+  return {
+    sheets: [fast.first, fast.reseeded, fast.leaving],
+    inked: fast.inked,
+    heldOnSlowReseed: true,
+  };
 }

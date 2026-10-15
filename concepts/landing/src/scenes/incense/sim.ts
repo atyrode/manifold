@@ -36,7 +36,15 @@ import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { runBudgeted } from "../../sims/clock.ts";
 import { FluidSim, type FluidStep, type SplatImpulse } from "../../sims/fluid.ts";
-import { GpuCompute, GpuError, gridSize, type Pass, type PingPong, type RenderTarget, type Scatter } from "../../sims/gpu.ts";
+import {
+  GpuCompute,
+  GpuError,
+  gridSize,
+  type Pass,
+  type PingPong,
+  type RenderTarget,
+  type Scatter,
+} from "../../sims/gpu.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -454,7 +462,11 @@ function valueNoise(x: number, y: number): number {
 }
 
 function fbm3(x: number, y: number): number {
-  return 0.55 * valueNoise(x, y) + 0.3 * valueNoise(2.03 * x + 17.1, 2.03 * y + 9.2) + 0.15 * valueNoise(4.1 * x + 3.7, 4.1 * y + 21.4);
+  return (
+    0.55 * valueNoise(x, y) +
+    0.3 * valueNoise(2.03 * x + 17.1, 2.03 * y + 9.2) +
+    0.15 * valueNoise(4.1 * x + 3.7, 4.1 * y + 21.4)
+  );
 }
 
 interface Point {
@@ -464,7 +476,17 @@ interface Point {
 
 // ---- the knobs ---------------------------------------------------------------------------------
 
-type IncenseKnob = "stick" | "smoke" | "renew" | "draft" | "turbulence" | "vent" | "door" | "hand" | "candle" | "dust";
+type IncenseKnob =
+  | "stick"
+  | "smoke"
+  | "renew"
+  | "draft"
+  | "turbulence"
+  | "vent"
+  | "door"
+  | "hand"
+  | "candle"
+  | "dust";
 
 interface Settings {
   kind: IncenseKind;
@@ -484,7 +506,9 @@ interface Settings {
 
 /** Write this frame's settings into `out`. */
 function readSettings(out: Settings, frame: SimFrame, knobs: KnobReader<IncenseKnob>): void {
-  out.kind = incenseKinds[clamp(Math.round(knobs.value(frame, "stick")), 0, incenseKinds.length - 1)] ?? "stick";
+  out.kind =
+    incenseKinds[clamp(Math.round(knobs.value(frame, "stick")), 0, incenseKinds.length - 1)] ??
+    "stick";
   out.smoke = 0.25 + 1.5 * clamp(knobs.value(frame, "smoke"), 0, 1);
   out.renew = knobs.value(frame, "renew") > 0.5;
   out.draft = clamp(knobs.value(frame, "draft"), 0, 1);
@@ -501,9 +525,19 @@ function readSettings(out: Settings, frame: SimFrame, knobs: KnobReader<IncenseK
 type BurnPhase = "arriving" | "lighting" | "burning" | "dying" | "out" | "leaving";
 
 /** Minutes of burning, by kind (seconds on the scene's motion clock). */
-const BURN_SECONDS: Readonly<Record<IncenseKind, number>> = { stick: 360, cone: 210, coil: 900, waterfall: 210 };
+const BURN_SECONDS: Readonly<Record<IncenseKind, number>> = {
+  stick: 360,
+  cone: 210,
+  coil: 900,
+  waterfall: 210,
+};
 /** How far the first incense has burnt when the scene opens. */
-const OPENING_PROGRESS: Readonly<Record<IncenseKind, number>> = { stick: 0.12, cone: 0.22, coil: 0.06, waterfall: 0.22 };
+const OPENING_PROGRESS: Readonly<Record<IncenseKind, number>> = {
+  stick: 0.12,
+  cone: 0.22,
+  coil: 0.06,
+  waterfall: 0.22,
+};
 /** Seconds: set down (fading in), lit (glow rising), going out, resting cold, taken away. */
 const ARRIVE_SECONDS = 2.5;
 const LIGHT_SECONDS = 2.5;
@@ -640,7 +674,10 @@ class Burner {
     switch (kind) {
       case "stick": {
         const ember = this.ember();
-        return { x: ember.x + Math.sin(STICK_LEAN) * 0.005, y: ember.y + Math.cos(STICK_LEAN) * 0.005 };
+        return {
+          x: ember.x + Math.sin(STICK_LEAN) * 0.005,
+          y: ember.y + Math.cos(STICK_LEAN) * 0.005,
+        };
       }
       case "cone":
         return { x: 0, y: CONE_BASE + CONE_H * (1 - CONE_CRUMBLE * s) + 0.003 };
@@ -689,7 +726,12 @@ class Burner {
     // The ash breaks off and drops into the dish; the next piece curls the other way, or not.
     const ember = this.ember();
     const lean = STICK_LEAN + 0.5 * this.curl;
-    this.falling = { age: 0, x: ember.x + 0.5 * this.ash * Math.sin(lean), y: ember.y + 0.5 * this.ash * Math.cos(lean), length: this.ash };
+    this.falling = {
+      age: 0,
+      x: ember.x + 0.5 * this.ash * Math.sin(lean),
+      y: ember.y + 0.5 * this.ash * Math.cos(lean),
+      length: this.ash,
+    };
     this.ash = 0;
     this.#breakAt = lerp(ASH_BREAK[0], ASH_BREAK[1], this.#rand());
     this.curl = this.#newCurl();
@@ -737,7 +779,11 @@ class Doors {
     this.#clock += dt;
     const now = this.#clock;
     if (often <= 0) this.#next = undefined;
-    else if (this.#next === undefined) this.#next = Math.max(DOOR_FIRST, now + lerp(DOOR_RARE, DOOR_OFTEN, often) * (0.6 + 0.8 * this.#rand()));
+    else if (this.#next === undefined)
+      this.#next = Math.max(
+        DOOR_FIRST,
+        now + lerp(DOOR_RARE, DOOR_OFTEN, often) * (0.6 + 0.8 * this.#rand()),
+      );
     else if (now >= this.#next) this.open();
 
     const u = this.uniform;
@@ -751,7 +797,11 @@ class Doors {
     // The draft rises, falls away, and swings back a little as the door swings shut.
     const tau = now - gust.start;
     const swing = (tau - GUST_SWING_AT) / GUST_SWING_WIDTH;
-    const strength = (tau < GUST_RISE ? smoothstep(0, 1, tau / GUST_RISE) : Math.exp(-(tau - GUST_RISE) / GUST_FALL)) - GUST_SWING * Math.exp(-swing * swing);
+    const strength =
+      (tau < GUST_RISE
+        ? smoothstep(0, 1, tau / GUST_RISE)
+        : Math.exp(-(tau - GUST_RISE) / GUST_FALL)) -
+      GUST_SWING * Math.exp(-swing * swing);
     u[0] = gust.dir * GUST_SPEED * strength;
     u[1] = (gust.dir > 0 ? -FRONT_SOFT : aspect + FRONT_SOFT) + gust.dir * FRONT_SPEED * tau;
     u[2] = gust.dir;
@@ -768,12 +818,21 @@ class Motes {
   readonly #deposit: Scatter;
   readonly #moveUniforms = { uDt: 0, uTime: 0, uAspect: 1 };
   readonly #depositUniforms = { uTime: 0 };
-  readonly #depositRun = { count: MOTES_X * MOTES_Y, pointSize: MOTE_SIZE, uniforms: this.#depositUniforms };
+  readonly #depositRun = {
+    count: MOTES_X * MOTES_Y,
+    pointSize: MOTE_SIZE,
+    uniforms: this.#depositUniforms,
+  };
   #aspect: number;
 
   constructor(gpu: GpuCompute, aspect: number, velocity: PingPong) {
     this.#aspect = aspect;
-    this.#state = gpu.pingPong({ width: MOTES_X, height: MOTES_Y, format: "rgba32f", filter: "nearest" });
+    this.#state = gpu.pingPong({
+      width: MOTES_X,
+      height: MOTES_Y,
+      format: "rgba32f",
+      filter: "nearest",
+    });
     const rand = mulberry32(0x0d057);
     const start = new Float32Array(MOTES_X * MOTES_Y * 4);
     for (let i = 0; i < MOTES_X * MOTES_Y; i++) {
@@ -784,8 +843,12 @@ class Motes {
     }
     this.#state.seed(start);
     this.field = gpu.target({ ...gridSize(aspect, DYE_RES), format: "r16f" });
-    this.#move = gpu.pass(MOTE_MOVE_GLSL, "incense motes move").bind({ uMotes: this.#state, uVelocity: velocity });
-    this.#deposit = gpu.scatter(MOTE_DEPOSIT_GLSL, { name: "incense motes deposit", shape: "soft" }).bind({ uMotes: this.#state });
+    this.#move = gpu
+      .pass(MOTE_MOVE_GLSL, "incense motes move")
+      .bind({ uMotes: this.#state, uVelocity: velocity });
+    this.#deposit = gpu
+      .scatter(MOTE_DEPOSIT_GLSL, { name: "incense motes deposit", shape: "soft" })
+      .bind({ uMotes: this.#state });
     this.#move.set({ uLow: MOTE_LOW });
   }
 
@@ -826,11 +889,20 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
   // The thread's axis and width h above the source, and how much of it is still a thread.
   const thread = (x: number, h: number): { dx: number; width: number; share: number } => {
     const sway = threadSway(h);
-    return { dx: x - source.x + 0.03 * h - sway, width: 0.0035 + 0.008 * smoothstep(0.1, 0.4, h), share: 1 - smoothstep(0.28, 0.42, h) };
+    return {
+      dx: x - source.x + 0.03 * h - sway,
+      width: 0.0035 + 0.008 * smoothstep(0.1, 0.4, h),
+      share: 1 - smoothstep(0.28, 0.42, h),
+    };
   };
   // The veils' middle and breadth.
   const veil = (x: number, y: number, h: number): { dx: number; width: number } => ({
-    dx: x - source.x + 0.02 - 0.12 * smoothstep(0.35, 0.65, h) - 0.08 * (fbm3(3 * x + 5.1, 4 * y) - 0.5),
+    dx:
+      x -
+      source.x +
+      0.02 -
+      0.12 * smoothstep(0.35, 0.65, h) -
+      0.08 * (fbm3(3 * x + 5.1, 4 * y) - 0.5),
     width: 0.03 + 0.1 * smoothstep(0.25, 0.6, h),
   });
 
@@ -846,8 +918,11 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
       if (Math.abs(x - source.x) > 0.45) continue;
       const t = thread(x, h);
       const v = veil(x, y, h);
-      const rise = 0.06 * Math.exp(-((t.dx / 0.02) ** 2)) * t.share + 0.03 * Math.exp(-((v.dx / v.width) ** 2)) * smoothstep(0.2, 0.35, h);
-      velocity[(j * vw + i) * 2 + 1] = rise * smoothstep(-0.01, 0.02, h) * (1 - smoothstep(0.8, 1, y));
+      const rise =
+        0.06 * Math.exp(-((t.dx / 0.02) ** 2)) * t.share +
+        0.03 * Math.exp(-((v.dx / v.width) ** 2)) * smoothstep(0.2, 0.35, h);
+      velocity[(j * vw + i) * 2 + 1] =
+        rise * smoothstep(-0.01, 0.02, h) * (1 - smoothstep(0.8, 1, y));
     }
   }
 
@@ -863,8 +938,20 @@ function seedPlume(fluid: FluidSim, source: Point, smoke: number): void {
       if (Math.abs(x - source.x) > 0.45) continue;
       const t = thread(x, h);
       const v = veil(x, y, h);
-      const fresh = 0.4 * smoke * (0.0035 / t.width) ** 0.7 * Math.exp(-((t.dx / t.width) ** 2)) * t.share * smoothstep(-0.004, 0.004, h);
-      const old = 0.16 * smoke * smoothstep(0.22, 0.38, h) * Math.exp(-((v.dx / v.width) ** 2)) * (0.3 + 1.4 * fbm3(14 * x + 1.3, 10 * y - 2.1)) * (1 - smoothstep(0.95, 1, y));
+      const fresh =
+        0.4 *
+        smoke *
+        (0.0035 / t.width) ** 0.7 *
+        Math.exp(-((t.dx / t.width) ** 2)) *
+        t.share *
+        smoothstep(-0.004, 0.004, h);
+      const old =
+        0.16 *
+        smoke *
+        smoothstep(0.22, 0.38, h) *
+        Math.exp(-((v.dx / v.width) ** 2)) *
+        (0.3 + 1.4 * fbm3(14 * x + 1.3, 10 * y - 2.1)) *
+        (1 - smoothstep(0.95, 1, y));
       if (fresh + old < 1e-4) continue;
       const age = Math.max(0, h) / 0.07;
       const k = (j * dw + i) * 4;
@@ -1002,7 +1089,12 @@ class Plume {
     }
     if (this.#warmed < PREWARM_STEPS) {
       // A count of steps, the same on every machine: the budget only spreads them over frames.
-      this.#warmed = runBudgeted(() => this.#step(PREWARM_DT, burner, doors, settings, aspect), PREWARM_MS, PREWARM_STEPS, this.#warmed);
+      this.#warmed = runBudgeted(
+        () => this.#step(PREWARM_DT, burner, doors, settings, aspect),
+        PREWARM_MS,
+        PREWARM_STEPS,
+        this.#warmed,
+      );
       if (this.#warmed < PREWARM_STEPS) return;
     }
 
@@ -1063,14 +1155,20 @@ class Plume {
         const rows = h - this.#veilH;
         this.#veilH = h;
         const width = 0.03 + 0.1 * smoothstep(0.25, 0.6, h);
-        const centre = sx - 0.02 + 0.12 * smoothstep(0.35, 0.65, h) + 0.08 * (fbm3(3 * sx + 5.1, 4 * y) - 0.5);
+        const centre =
+          sx - 0.02 + 0.12 * smoothstep(0.35, 0.65, h) + 0.08 * (fbm3(3 * sx + 5.1, 4 * y) - 0.5);
         const radius = 0.5 * width;
-        const grow = 0.16 * settings.smoke * smoothstep(0.22, 0.38, h) * (1 - smoothstep(0.95, 1, y));
+        const grow =
+          0.16 * settings.smoke * smoothstep(0.22, 0.38, h) * (1 - smoothstep(0.95, 1, y));
         const patch = (rows * 1.1) / (Math.PI * radius);
         for (let i = 0; i < VEIL_BLOBS; i++) {
           const t = (2 * i) / (VEIL_BLOBS - 1) - 1;
           const x = centre + 1.1 * width * t;
-          const amount = grow * Math.exp(-((1.1 * t) ** 2)) * (0.3 + 1.4 * fbm3(14 * x + 1.3, 10 * y - 2.1)) * patch;
+          const amount =
+            grow *
+            Math.exp(-((1.1 * t) ** 2)) *
+            (0.3 + 1.4 * fbm3(14 * x + 1.3, 10 * y - 2.1)) *
+            patch;
           dye[0] = amount;
           dye[1] = 0;
           dye[2] = 0.15 * amount;
@@ -1114,7 +1212,12 @@ class Plume {
     vy *= scale;
     this.#push[0] = vx;
     this.#push[1] = vy;
-    this.fluid.splat(pointer.x, pointer.y, pointer.down ? 1.4 * HAND_RADIUS : HAND_RADIUS, this.#splatHand);
+    this.fluid.splat(
+      pointer.x,
+      pointer.y,
+      pointer.down ? 1.4 * HAND_RADIUS : HAND_RADIUS,
+      this.#splatHand,
+    );
   }
 
   #step(dt: number, burner: Burner, doors: Doors, settings: Settings, aspect: number): void {
@@ -1124,7 +1227,8 @@ class Plume {
     const sx = anchor + source.x;
     const sy = FLOOR + source.y;
     // Leaving, the draught cuts the ember's smoke off: the thread is not fed past its first moments.
-    const glow = this.#leave > 0 ? burner.glow * (1 - smoothstep(0, DRAUGHT_BREAK, this.#leave)) : burner.glow;
+    const glow =
+      this.#leave > 0 ? burner.glow * (1 - smoothstep(0, DRAUGHT_BREAK, this.#leave)) : burner.glow;
 
     if (glow > 0) {
       const smoke = EMIT_SMOKE * settings.smoke * glow * dt;
@@ -1139,7 +1243,12 @@ class Plume {
         dye[2] = 0.3 * dye[0];
         this.#push[0] = BACKFLOW_PUSH * glow * dt;
         this.#push[1] = 0;
-        fluid.splat((anchor + OUTLET_X) / aspect, FLOOR + OUTLET_Y, BACKFLOW_RADIUS, this.#splatBackflow);
+        fluid.splat(
+          (anchor + OUTLET_X) / aspect,
+          FLOOR + OUTLET_Y,
+          BACKFLOW_RADIUS,
+          this.#splatBackflow,
+        );
         dye[0] = WISP_SMOKE * smoke;
         dye[1] = WISP_HEAT * heat;
         dye[2] = dye[0];
@@ -1155,7 +1264,12 @@ class Plume {
       dye[0] = 0;
       dye[1] = CANDLE_HEAT * dt;
       dye[2] = 0;
-      fluid.splat((anchor + CANDLE_DX) / aspect, FLOOR + CANDLE_Y + CANDLE_H + FLAME_BASE + 0.6 * FLAME_H, 0.007, this.#splatDye);
+      fluid.splat(
+        (anchor + CANDLE_DX) / aspect,
+        FLOOR + CANDLE_Y + CANDLE_H + FLAME_BASE + 0.6 * FLAME_H,
+        0.007,
+        this.#splatDye,
+      );
     }
 
     // The room's draft: a slow sway, sheared with height (see FORCE_GLSL).
@@ -1207,15 +1321,42 @@ class Plume {
 
 /** The incense, for a scene whose `params` carry the knobs IncenseKnob names. */
 export function incenseSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<IncenseKnob>("incense", params, ["stick", "smoke", "renew", "draft", "turbulence", "vent", "door", "hand", "candle", "dust"]);
+  const knobs = new KnobReader<IncenseKnob>("incense", params, [
+    "stick",
+    "smoke",
+    "renew",
+    "draft",
+    "turbulence",
+    "vent",
+    "door",
+    "hand",
+    "candle",
+    "dust",
+  ]);
   const renewSlot = knobs.trigger("renew");
   const doorSlot = knobs.trigger("door");
   return (gl): SceneSim => {
-    const state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    const state = new DataTexture(gl, {
+      width: 3,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     const stateData = new Float32Array(12);
     const doors = new Doors();
     const arrival = new Arrival();
-    const settings: Settings = { kind: "stick", smoke: 0, renew: false, draft: 0, turbulence: 0, vent: 0, doors: 0, hand: false, candle: false, dust: false };
+    const settings: Settings = {
+      kind: "stick",
+      smoke: 0,
+      renew: false,
+      draft: 0,
+      turbulence: 0,
+      vent: 0,
+      doors: 0,
+      hand: false,
+      candle: false,
+      dust: false,
+    };
     const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
     let burner: Burner | undefined;
 

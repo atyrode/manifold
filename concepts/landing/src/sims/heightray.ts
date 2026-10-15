@@ -98,7 +98,13 @@ export function marchHeight(
 }
 
 /** Bilinear height at (x, z) in texel units of a repeating `width` × `rows` grid (see the header). */
-export function sampleRepeat(data: Float32Array, width: number, rows: number, x: number, z: number): number {
+export function sampleRepeat(
+  data: Float32Array,
+  width: number,
+  rows: number,
+  x: number,
+  z: number,
+): number {
   const fx = x - 0.5;
   const fz = z - 0.5;
   const i = Math.floor(fx);

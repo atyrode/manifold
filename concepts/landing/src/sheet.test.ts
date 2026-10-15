@@ -33,7 +33,14 @@ function seedOf(request: SheetRequest): number {
 async function paint(request: SheetRequest | undefined): Promise<void> {
   const worker = FakeWorker.current;
   if (!request || !worker?.onmessage) throw new Error("no such request on the worker");
-  worker.onmessage({ data: { id: request.id, width: 1, height: 1, pixels: new Uint8Array([seedOf(request), 0, 0, 255]).buffer } });
+  worker.onmessage({
+    data: {
+      id: request.id,
+      width: 1,
+      height: 1,
+      pixels: new Uint8Array([seedOf(request), 0, 0, 255]).buffer,
+    },
+  });
   await Promise.resolve();
 }
 
@@ -66,7 +73,10 @@ const globals = ["document", "Worker"] as const;
 const saved = globals.map((name) => Object.getOwnPropertyDescriptor(globalThis, name));
 
 beforeAll(() => {
-  Object.defineProperty(globalThis, "document", { configurable: true, value: { baseURI: "http://lab.test/" } });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { baseURI: "http://lab.test/" },
+  });
   Object.defineProperty(globalThis, "Worker", { configurable: true, value: FakeWorker });
 });
 

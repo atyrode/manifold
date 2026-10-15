@@ -18,7 +18,16 @@
 // threshold, so as a band of light passes, each cell changes once per step and all its channels
 // together, never through stray hues. The M, a strip of coloured acrylic, throws accent light.
 // Knobs read here: K_render, K_light, K_focus, K_speed, K_frequency.
-import { RIPPLE_BAR, RIPPLE_BEAM_HEIGHT, RIPPLE_DIPPER, RIPPLE_FREQUENCY, RIPPLE_LAMP, RIPPLE_LAMP_HEIGHT, RIPPLE_MARK_HALF, RIPPLE_SPEED } from "./layout.ts";
+import {
+  RIPPLE_BAR,
+  RIPPLE_BEAM_HEIGHT,
+  RIPPLE_DIPPER,
+  RIPPLE_FREQUENCY,
+  RIPPLE_LAMP,
+  RIPPLE_LAMP_HEIGHT,
+  RIPPLE_MARK_HALF,
+  RIPPLE_SPEED,
+} from "./layout.ts";
 import { RIPPLE_FOCUS, RIPPLE_LENS_GLSL, RIPPLE_TEXELS } from "./sim.ts";
 
 const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String(x));
@@ -29,10 +38,38 @@ const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String
  * moonlight.
  */
 const LIGHTS: readonly (readonly (readonly [number, readonly [number, number, number]])[])[] = [
-  [[0, [0, 0, 0]], [0.4, [0, 1, 1]], [0.6, [1, 2, 2]], [0.8, [3, 3, 2]], [1, [3, 3, 3]], [1, [3, 3, 3]]],
-  [[0, [0, 0, 0]], [0.38, [0, 0, 1]], [0.55, [1, 1, 1]], [0.7, [2, 2, 1]], [0.85, [3, 3, 2]], [1, [3, 3, 3]]],
-  [[0, [0, 0, 0]], [0.4, [1, 0, 0]], [0.58, [2, 1, 0]], [0.75, [3, 2, 1]], [0.9, [3, 3, 2]], [1, [3, 3, 3]]],
-  [[0, [0, 0, 0]], [0.4, [0, 0, 1]], [0.6, [1, 1, 2]], [0.8, [2, 2, 3]], [1, [3, 3, 3]], [1, [3, 3, 3]]],
+  [
+    [0, [0, 0, 0]],
+    [0.4, [0, 1, 1]],
+    [0.6, [1, 2, 2]],
+    [0.8, [3, 3, 2]],
+    [1, [3, 3, 3]],
+    [1, [3, 3, 3]],
+  ],
+  [
+    [0, [0, 0, 0]],
+    [0.38, [0, 0, 1]],
+    [0.55, [1, 1, 1]],
+    [0.7, [2, 2, 1]],
+    [0.85, [3, 3, 2]],
+    [1, [3, 3, 3]],
+  ],
+  [
+    [0, [0, 0, 0]],
+    [0.4, [1, 0, 0]],
+    [0.58, [2, 1, 0]],
+    [0.75, [3, 2, 1]],
+    [0.9, [3, 3, 2]],
+    [1, [3, 3, 3]],
+  ],
+  [
+    [0, [0, 0, 0]],
+    [0.4, [0, 0, 1]],
+    [0.6, [1, 1, 2]],
+    [0.8, [2, 2, 3]],
+    [1, [3, 3, 3]],
+    [1, [3, 3, 3]],
+  ],
 ];
 export const rippleLights = ["sea", "lamp", "safelight", "moon"] as const;
 

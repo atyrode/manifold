@@ -27,7 +27,14 @@
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { ElasticPan } from "../../sims/pan.ts";
-import type { PointerState, SceneDef, ScenePassageProgress, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type {
+  PointerState,
+  SceneDef,
+  ScenePassageProgress,
+  SceneSim,
+  SimFactory,
+  SimFrame,
+} from "../types.ts";
 
 /** The `mode` knob's values, in order. */
 export const fractalModes = ["julia", "dive", "gasket", "garden"] as const;
@@ -109,7 +116,10 @@ const JULIA_STATIONS: readonly (readonly [number, number])[] = [
   (() => {
     const radius = 0.97;
     const angle = TAU * 0.381966;
-    return [0.5 * radius * Math.cos(angle) - 0.25 * radius * radius * Math.cos(2 * angle), 0.5 * radius * Math.sin(angle) - 0.25 * radius * radius * Math.sin(2 * angle)] as const;
+    return [
+      0.5 * radius * Math.cos(angle) - 0.25 * radius * radius * Math.cos(2 * angle),
+      0.5 * radius * Math.sin(angle) - 0.25 * radius * radius * Math.sin(2 * angle),
+    ] as const;
   })(),
   [-0.5043, 0.5628], // centre of the 2/5 bulb: a five-armed star
   [-0.7269, 0.1889], // just outside the set by seahorse valley: a spiral galaxy of dust
@@ -176,10 +186,34 @@ const GASKET_LEAN = 0.12;
 // The garden: Newton's method for Π (z − r_k)^{w_k}, stones at the roots. Arrangements are
 // [x, y, weight] (z units); a weight of 0 hides a stone (its basin closes as the weight falls).
 const GARDEN_ARRANGEMENTS = [
-  [[-0.95, 0.35, 1], [0.25, -0.45, 1.08], [1.05, 0.5, 0.94], [-1.6, -0.6, 0], [1.7, -0.3, 0]],
-  [[-1.35, 0.25, 1], [-0.95, -0.38, 0.9], [0.15, 0.55, 1.1], [0.95, -0.25, 1], [1.45, 0.38, 0.92]],
-  [[-0.75, -0.22, 1.05], [-0.2, 0.55, 0.95], [0.62, -0.5, 1], [1.3, 0.2, 1.06], [1.9, -0.6, 0]],
-  [[-1.2, -0.1, 1], [0, 0.28, 1.12], [1.15, -0.22, 0.9], [-0.3, -0.9, 0], [0.5, 1.0, 0]],
+  [
+    [-0.95, 0.35, 1],
+    [0.25, -0.45, 1.08],
+    [1.05, 0.5, 0.94],
+    [-1.6, -0.6, 0],
+    [1.7, -0.3, 0],
+  ],
+  [
+    [-1.35, 0.25, 1],
+    [-0.95, -0.38, 0.9],
+    [0.15, 0.55, 1.1],
+    [0.95, -0.25, 1],
+    [1.45, 0.38, 0.92],
+  ],
+  [
+    [-0.75, -0.22, 1.05],
+    [-0.2, 0.55, 0.95],
+    [0.62, -0.5, 1],
+    [1.3, 0.2, 1.06],
+    [1.9, -0.6, 0],
+  ],
+  [
+    [-1.2, -0.1, 1],
+    [0, 0.28, 1.12],
+    [1.15, -0.22, 0.9],
+    [-0.3, -0.9, 0],
+    [0.5, 1.0, 0],
+  ],
 ] as const;
 const GARDEN_STONES = 5;
 /** Each stone circles its place: radius (z units) and period (s of drift) per stone. */
@@ -206,9 +240,15 @@ const MARK_FADE = 2.5;
 type Complex = readonly [number, number];
 const add = (a: Complex, b: Complex): Complex => [a[0] + b[0], a[1] + b[1]];
 const sub = (a: Complex, b: Complex): Complex => [a[0] - b[0], a[1] - b[1]];
-const mul = (a: Complex, b: Complex): Complex => [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]];
+const mul = (a: Complex, b: Complex): Complex => [
+  a[0] * b[0] - a[1] * b[1],
+  a[0] * b[1] + a[1] * b[0],
+];
 const scale = (a: Complex, k: number): Complex => [a[0] * k, a[1] * k];
-const polar = (radius: number, angle: number): Complex => [radius * Math.cos(angle), radius * Math.sin(angle)];
+const polar = (radius: number, angle: number): Complex => [
+  radius * Math.cos(angle),
+  radius * Math.sin(angle),
+];
 
 function div(a: Complex, b: Complex): Complex {
   const d = b[0] * b[0] + b[1] * b[1];
@@ -421,7 +461,15 @@ class FractalSim implements SceneSim {
   readonly #reader: KnobReader<KnobKey>;
   readonly #nextTrigger: number;
   readonly #markTrigger: number;
-  readonly #knobs: Knobs = { mode: 0, pace: 1, breath: 0.5, wander: 0.4, zoom: 1, detail: 0.5, mark: 0 };
+  readonly #knobs: Knobs = {
+    mode: 0,
+    pace: 1,
+    breath: 0.5,
+    wander: 0.4,
+    zoom: 1,
+    detail: 0.5,
+    mark: 0,
+  };
 
   #aspect = 16 / 9;
   #height = 540;
@@ -485,7 +533,15 @@ class FractalSim implements SceneSim {
   #summonedUntil = -1;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#reader = new KnobReader<KnobKey>("fractal", params, ["kind", "pace", "breath", "wander", "zoom", "detail", "mark"]);
+    this.#reader = new KnobReader<KnobKey>("fractal", params, [
+      "kind",
+      "pace",
+      "breath",
+      "wander",
+      "zoom",
+      "detail",
+      "mark",
+    ]);
     this.#nextTrigger = this.#reader.trigger("wander");
     this.#markTrigger = this.#reader.trigger("mark");
     this.#row = new StateRow(gl, FRACTAL_TEXELS);
@@ -547,7 +603,8 @@ class FractalSim implements SceneSim {
     const at: Complex = [(pointer.x - 0.5) * aspect * 2, (pointer.y - 0.5) * 2];
     const dragging = pointer.down && pointer.inside;
     if (dragging) {
-      if (this.#dragFrom) this.#pan.drag(at[0] - this.#dragFrom[0], at[1] - this.#dragFrom[1], aspect, 1);
+      if (this.#dragFrom)
+        this.#pan.drag(at[0] - this.#dragFrom[0], at[1] - this.#dragFrom[1], aspect, 1);
       this.#dragFrom = at;
     } else {
       this.#dragFrom = undefined;
@@ -557,7 +614,8 @@ class FractalSim implements SceneSim {
     const reach = Math.hypot(target[0], target[1]);
     const most = Math.hypot(aspect, 1);
     if (reach > most) target = scale(target, most / reach);
-    if (dt > 0) this.#nudge = add(this.#nudge, scale(sub(target, this.#nudge), follow(dt, NUDGE_EASE)));
+    if (dt > 0)
+      this.#nudge = add(this.#nudge, scale(sub(target, this.#nudge), follow(dt, NUDGE_EASE)));
   }
 
   /** Bloom from the current picture into a mode's own (a running wipe snaps to its incoming side). */
@@ -582,7 +640,11 @@ class FractalSim implements SceneSim {
           return;
         }
         this.#diveSite = (this.#incoming.site + 1) % DIVE_SITES.length;
-        this.#startSwap(this.#incoming, { mode: MODE_DIVE, site: this.#diveSite, phase: DIVE_ENTRY });
+        this.#startSwap(this.#incoming, {
+          mode: MODE_DIVE,
+          site: this.#diveSite,
+          phase: DIVE_ENTRY,
+        });
         return;
       }
       case MODE_GASKET: {
@@ -615,14 +677,17 @@ class FractalSim implements SceneSim {
   #advanceLayers(drift: number, real: number): void {
     const knobs = this.#knobs;
     const outgoing = this.#outgoing;
-    if (this.#incoming.mode === MODE_DIVE) this.#incoming.phase += drift * this.#diveRate(this.#incoming.site);
+    if (this.#incoming.mode === MODE_DIVE)
+      this.#incoming.phase += drift * this.#diveRate(this.#incoming.site);
     if (outgoing?.mode === MODE_DIVE) outgoing.phase += drift * this.#diveRate(outgoing.site);
     if (this.#wipe === "swap") {
       this.#wipeProgress = Math.min(1, this.#wipeProgress + real / SWAP_SECONDS);
       if (this.#wipeProgress >= 1) this.#endWipe();
     } else if (this.#wipe === "loop") {
       const outgoing = this.#outgoing;
-      this.#wipeProgress = outgoing ? smoothstep(0, 1, (outgoing.phase - (1 - DIVE_BLEND)) / DIVE_BLEND) : 1;
+      this.#wipeProgress = outgoing
+        ? smoothstep(0, 1, (outgoing.phase - (1 - DIVE_BLEND)) / DIVE_BLEND)
+        : 1;
       if (!outgoing || outgoing.phase >= 1) {
         this.#endWipe();
         this.#loops++;
@@ -654,7 +719,9 @@ class FractalSim implements SceneSim {
   #diveRate(site: number): number {
     const dive = DIVE_SITES[site] ?? DIVE_SITES[0];
     if (!dive) return 0;
-    const breath = 1 + DIVE_BREATH * this.#knobs.breath * Math.sin((this.#breathClock * TAU) / DIVE_BREATH_PERIOD);
+    const breath =
+      1 +
+      DIVE_BREATH * this.#knobs.breath * Math.sin((this.#breathClock * TAU) / DIVE_BREATH_PERIOD);
     return (DIVE_ZOOM * breath) / -dive.logScale[0];
   }
 
@@ -670,7 +737,8 @@ class FractalSim implements SceneSim {
     }
     if (this.#glide >= 0) {
       const [from, to] = this.#juliaLeg();
-      const length = JULIA_GLIDE_BASE + JULIA_GLIDE_SPAN * Math.hypot(to[0] - from[0], to[1] - from[1]);
+      const length =
+        JULIA_GLIDE_BASE + JULIA_GLIDE_SPAN * Math.hypot(to[0] - from[0], to[1] - from[1]);
       this.#glide += (this.#glideNow ? real : drift) / length;
       if (this.#glide >= 1) {
         this.#station = (this.#station + 1) % JULIA_STATIONS.length;
@@ -691,7 +759,10 @@ class FractalSim implements SceneSim {
   /** The station c rests at (or glides from) and the next. */
   #juliaLeg(): [Complex, Complex] {
     const count = JULIA_STATIONS.length;
-    return [JULIA_STATIONS[this.#station % count] ?? [0, 0], JULIA_STATIONS[(this.#station + 1) % count] ?? [0, 0]];
+    return [
+      JULIA_STATIONS[this.#station % count] ?? [0, 0],
+      JULIA_STATIONS[(this.#station + 1) % count] ?? [0, 0],
+    ];
   }
 
   /** The breath, in radians. */
@@ -716,14 +787,28 @@ class FractalSim implements SceneSim {
     const wrapped = this.#flow >= 2;
     this.#flow -= 2 * Math.floor(this.#flow / 2);
     this.#turn = (this.#turn + drift * GASKET_TURN) % TAU;
-    if (this.#lensMorph < 1) this.#lensMorph = Math.min(1, this.#lensMorph + real / GASKET_MORPH_SECONDS);
+    if (this.#lensMorph < 1)
+      this.#lensMorph = Math.min(1, this.#lensMorph + real / GASKET_MORPH_SECONDS);
     this.#gasketClock += drift;
-    if (knobs.wander > 0 && this.#incoming.mode === MODE_GASKET && this.#gasketClock > REARRANGE_RARE + (REARRANGE_OFTEN - REARRANGE_RARE) * knobs.wander) this.#next();
+    if (
+      knobs.wander > 0 &&
+      this.#incoming.mode === MODE_GASKET &&
+      this.#gasketClock > REARRANGE_RARE + (REARRANGE_OFTEN - REARRANGE_RARE) * knobs.wander
+    )
+      this.#next();
     const map = this.#gasketMap();
     const previous = this.#gasketNow;
     // ±m is the same map: keep the sign continuous so the frame-to-frame difference is the flow.
-    const flip = previous && map.a[0] * previous.a[0] + map.a[1] * previous.a[1] + map.d[0] * previous.d[0] + map.d[1] * previous.d[1] < 0;
-    const signed: Mobius = flip ? { a: scale(map.a, -1), b: scale(map.b, -1), c: scale(map.c, -1), d: scale(map.d, -1) } : map;
+    const flip =
+      previous &&
+      map.a[0] * previous.a[0] +
+        map.a[1] * previous.a[1] +
+        map.d[0] * previous.d[0] +
+        map.d[1] * previous.d[1] <
+        0;
+    const signed: Mobius = flip
+      ? { a: scale(map.a, -1), b: scale(map.b, -1), c: scale(map.c, -1), d: scale(map.d, -1) }
+      : map;
     const entries = [...signed.a, ...signed.b, ...signed.c, ...signed.d];
     if (this.#shows(MODE_GASKET) && !wrapped) this.#gasketRate.track(entries, real);
     else this.#gasketRate.rebase(entries);
@@ -740,8 +825,17 @@ class FractalSim implements SceneSim {
   #gasketMap(): Mobius {
     const knobs = this.#knobs;
     const breath = (this.#breathClock * TAU) / GASKET_BREATH_PERIOD;
-    const sway: Complex = [GASKET_BREATH * knobs.breath * Math.cos(breath), GASKET_BREATH * knobs.breath * Math.sin(breath * 0.7)];
-    let lens = add(add(this.#lensAt(), sway), scale(this.#incoming.mode === MODE_GASKET ? this.#nudge : [0, 0], GASKET_LEAN / GASKET_RADIUS));
+    const sway: Complex = [
+      GASKET_BREATH * knobs.breath * Math.cos(breath),
+      GASKET_BREATH * knobs.breath * Math.sin(breath * 0.7),
+    ];
+    let lens = add(
+      add(this.#lensAt(), sway),
+      scale(
+        this.#incoming.mode === MODE_GASKET ? this.#nudge : [0, 0],
+        GASKET_LEAN / GASKET_RADIUS,
+      ),
+    );
     const reach = Math.hypot(lens[0], lens[1]);
     if (reach > 0.75) lens = scale(lens, 0.75 / reach);
     const radius = GASKET_RADIUS * knobs.zoom;
@@ -758,17 +852,31 @@ class FractalSim implements SceneSim {
     this.#dance += drift;
     this.#rake += drift / GARDEN_RAKE;
     this.#rake -= Math.floor(this.#rake);
-    if (this.#arrangementMorph < 1) this.#arrangementMorph = Math.min(1, this.#arrangementMorph + real / GARDEN_MORPH_SECONDS);
+    if (this.#arrangementMorph < 1)
+      this.#arrangementMorph = Math.min(1, this.#arrangementMorph + real / GARDEN_MORPH_SECONDS);
     this.#gardenClock += drift;
-    if (knobs.wander > 0 && this.#incoming.mode === MODE_GARDEN && this.#gardenClock > REARRANGE_RARE + (REARRANGE_OFTEN - REARRANGE_RARE) * knobs.wander) this.#next();
+    if (
+      knobs.wander > 0 &&
+      this.#incoming.mode === MODE_GARDEN &&
+      this.#gardenClock > REARRANGE_RARE + (REARRANGE_OFTEN - REARRANGE_RARE) * knobs.wander
+    )
+      this.#next();
 
     // The pebble: the hovering pointer, as one more (lighter) root.
     const reach = GARDEN_REACH / knobs.zoom;
     const hovering = pointer.inside && !pointer.down && this.#incoming.mode === MODE_GARDEN;
-    const at: Complex = scale(sub([(pointer.x - 0.5) * this.#aspect * 2, (pointer.y - 0.5) * 2], this.#pan.offset), reach);
+    const at: Complex = scale(
+      sub([(pointer.x - 0.5) * this.#aspect * 2, (pointer.y - 0.5) * 2], this.#pan.offset),
+      reach,
+    );
     if (real > 0) {
-      if (hovering) this.#pebble = this.#pebbleWeight < 0.02 ? at : add(this.#pebble, scale(sub(at, this.#pebble), follow(real, GARDEN_PEBBLE_EASE)));
-      this.#pebbleWeight += ((hovering ? GARDEN_PEBBLE : 0) - this.#pebbleWeight) * follow(real, NUDGE_EASE);
+      if (hovering)
+        this.#pebble =
+          this.#pebbleWeight < 0.02
+            ? at
+            : add(this.#pebble, scale(sub(at, this.#pebble), follow(real, GARDEN_PEBBLE_EASE)));
+      this.#pebbleWeight +=
+        ((hovering ? GARDEN_PEBBLE : 0) - this.#pebbleWeight) * follow(real, NUDGE_EASE);
     }
     const stones = this.#gardenStones();
     const tracked = [...stones.slice(0, GARDEN_STONES * 2), ...this.#gardenRelax()];
@@ -788,7 +896,10 @@ class FractalSim implements SceneSim {
       const b: readonly [number, number, number] = to[k] ?? [0, 0, 0];
       const period = GARDEN_DANCE_PERIODS[k] ?? 80;
       const angle = (this.#dance / period) * TAU + k * 2.4;
-      positions.push(a[0] + (b[0] - a[0]) * t + GARDEN_DANCE_RADIUS * Math.cos(angle), a[1] + (b[1] - a[1]) * t + 0.7 * GARDEN_DANCE_RADIUS * Math.sin(angle));
+      positions.push(
+        a[0] + (b[0] - a[0]) * t + GARDEN_DANCE_RADIUS * Math.cos(angle),
+        a[1] + (b[1] - a[1]) * t + 0.7 * GARDEN_DANCE_RADIUS * Math.sin(angle),
+      );
       weights.push(a[2] + (b[2] - a[2]) * t);
     }
     return [...positions, ...weights];
@@ -796,12 +907,20 @@ class FractalSim implements SceneSim {
 
   /** The relaxation of Newton's step: 1 plus a breathing imaginary twist that swirls the rake. */
   #gardenRelax(): [number, number] {
-    return [1, GARDEN_TWIST * this.#knobs.breath * Math.sin((this.#breathClock * TAU) / GARDEN_BREATH_PERIOD)];
+    return [
+      1,
+      GARDEN_TWIST *
+        this.#knobs.breath *
+        Math.sin((this.#breathClock * TAU) / GARDEN_BREATH_PERIOD),
+    ];
   }
 
   #advanceMark(real: number): void {
     const target = this.#knobs.mark > 0 || this.#time < this.#summonedUntil ? 1 : 0;
-    if (real > 0) this.#markStrength += Math.sign(target - this.#markStrength) * Math.min(Math.abs(target - this.#markStrength), real / MARK_FADE);
+    if (real > 0)
+      this.#markStrength +=
+        Math.sign(target - this.#markStrength) *
+        Math.min(Math.abs(target - this.#markStrength), real / MARK_FADE);
   }
 
   /** The camera's depth, its speed and the iterations' share, from how far in and out the scene is. */
@@ -810,17 +929,25 @@ class FractalSim implements SceneSim {
     const entered = clamp(passage.enter, 0, 1);
     const left = clamp(passage.exit, 0, 1);
     const coming = 1 - entered;
-    this.#depth = reach.enter * Math.pow(coming, PASSAGE_CURVE) + reach.exit * Math.pow(left, PASSAGE_CURVE);
+    this.#depth =
+      reach.enter * Math.pow(coming, PASSAGE_CURVE) + reach.exit * Math.pow(left, PASSAGE_CURVE);
     let rate = 0;
-    if (coming > 0) rate += (reach.enter * PASSAGE_CURVE * Math.pow(coming, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.enter;
-    if (left > 0) rate += (reach.exit * PASSAGE_CURVE * Math.pow(left, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.exit;
+    if (coming > 0)
+      rate +=
+        (reach.enter * PASSAGE_CURVE * Math.pow(coming, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.enter;
+    if (left > 0)
+      rate +=
+        (reach.exit * PASSAGE_CURVE * Math.pow(left, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.exit;
     this.#depthRate = rate;
-    this.#iterShare = coming > 0 ? reach.floor + (1 - reach.floor) * smoothstep(PASSAGE_ITER_FROM, 1, entered) : 1;
+    this.#iterShare =
+      coming > 0 ? reach.floor + (1 - reach.floor) * smoothstep(PASSAGE_ITER_FROM, 1, entered) : 1;
   }
 
   /** An iteration count with the passage's share of it (itself at rest). */
   #iterations(count: number): number {
-    return this.#iterShare < 1 ? Math.max(PASSAGE_MIN_ITERATIONS, Math.round(count * this.#iterShare)) : count;
+    return this.#iterShare < 1
+      ? Math.max(PASSAGE_MIN_ITERATIONS, Math.round(count * this.#iterShare))
+      : count;
   }
 
   /**
@@ -853,7 +980,10 @@ class FractalSim implements SceneSim {
     if (!Number.isFinite(at[0]) || !Number.isFinite(at[1])) return [0, 0];
     const [panX, panY] = this.#pan.offset;
     const rangeX = PASSAGE_FOCUS_MARGIN * this.#aspect;
-    return [clamp(at[0] + panX, -rangeX, rangeX) - panX, clamp(at[1] + panY, -PASSAGE_FOCUS_MARGIN, PASSAGE_FOCUS_MARGIN) - panY];
+    return [
+      clamp(at[0] + panX, -rangeX, rangeX) - panX,
+      clamp(at[1] + panY, -PASSAGE_FOCUS_MARGIN, PASSAGE_FOCUS_MARGIN) - panY,
+    ];
   }
 
   #write(): void {
@@ -864,18 +994,40 @@ class FractalSim implements SceneSim {
 
     // The wipe's front: from the incoming dive's focus (or the centre) out past the farthest corner.
     let centre: Complex = [0, 0];
-    if (this.#wipe && this.#incoming.mode === MODE_DIVE) centre = this.#diveFocus(this.#incoming.site);
+    if (this.#wipe && this.#incoming.mode === MODE_DIVE)
+      centre = this.#diveFocus(this.#incoming.site);
     const soft = this.#wipe === "loop" ? LOOP_SOFT : SWAP_SOFT;
     let reach = 0;
-    for (const corner of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-      reach = Math.max(reach, Math.hypot(corner[0] * this.#aspect - this.#pan.offset[0] - centre[0], corner[1] - this.#pan.offset[1] - centre[1]));
+    for (const corner of [
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+      [1, 1],
+    ] as const) {
+      reach = Math.max(
+        reach,
+        Math.hypot(
+          corner[0] * this.#aspect - this.#pan.offset[0] - centre[0],
+          corner[1] - this.#pan.offset[1] - centre[1],
+        ),
+      );
     }
     // Margins of a softness either side keep the wobbling front clear of both ends.
-    const radius = outgoing && this.#wipe ? -2 * soft + (reach + 4 * soft) * this.#wipeProgress : 1e4;
+    const radius =
+      outgoing && this.#wipe ? -2 * soft + (reach + 4 * soft) * this.#wipeProgress : 1e4;
     data.set([centre[0], centre[1], radius, soft], 0);
     // The dive leans a little toward a hovering pointer: parallax, as if looking past its edge.
-    const lean: Complex = this.#incoming.mode === MODE_DIVE ? scale(this.#nudge, DIVE_NUDGE) : [0, 0];
-    data.set([this.#pan.offset[0] + lean[0], this.#pan.offset[1] + lean[1], this.#markStrength, knobs.mark > 0 ? knobs.mark : 0.5], 4);
+    const lean: Complex =
+      this.#incoming.mode === MODE_DIVE ? scale(this.#nudge, DIVE_NUDGE) : [0, 0];
+    data.set(
+      [
+        this.#pan.offset[0] + lean[0],
+        this.#pan.offset[1] + lean[1],
+        this.#markStrength,
+        knobs.mark > 0 ? knobs.mark : 0.5,
+      ],
+      4,
+    );
     if (this.#depth > 0 && this.#incoming.mode !== MODE_DIVE) {
       const fall = this.#passageFocus();
       data.set([Math.exp(-this.#depth), fall[0], fall[1], this.#depthRate], 8);
@@ -922,7 +1074,9 @@ class FractalSim implements SceneSim {
     const velocity = this.#juliaRate.value;
     const alpha = scale(sub([1, 0], csqrt(sub([1, 0], scale(c, 4)))), 0.5);
     const mu = scale(alpha, 2);
-    const iterations = this.#iterations(Math.min(128, Math.max(32, Math.round(this.#budget(44, 84)))));
+    const iterations = this.#iterations(
+      Math.min(128, Math.max(32, Math.round(this.#budget(44, 84)))),
+    );
     // The rings round the set need no sway of their own: they follow c as it breathes.
     data.set([MODE_JULIA, iterations, 0, JULIA_REACH / knobs.zoom], at);
     data.set([c[0], c[1], velocity[0] ?? 0, velocity[1] ?? 0], at + 4);
@@ -947,14 +1101,27 @@ class FractalSim implements SceneSim {
     const s = layer.phase;
     // The passage runs the loop's phase deeper than usual (a stretch of the dive's own zoom).
     const deeper = this.#incoming.mode === MODE_DIVE ? 1 / -dive.logScale[0] : 0;
-    const power = polar(Math.exp((s + this.#depth * deeper) * dive.logScale[0]), (s + this.#depth * deeper) * dive.logScale[1]);
+    const power = polar(
+      Math.exp((s + this.#depth * deeper) * dive.logScale[0]),
+      (s + this.#depth * deeper) * dive.logScale[1],
+    );
     const height = dive.height / this.#knobs.zoom;
     const centre = add(sub(dive.focus, dive.nucleus), mul(power, sub(dive.start, dive.focus)));
     const step = scale(power, height);
     const focus = this.#diveFocus(layer.site);
-    const iterations = this.#iterations(Math.min(128, Math.max(32, Math.round(this.#budget(22, 14) * Math.pow(dive.period, Math.max(0, s))))));
+    const iterations = this.#iterations(
+      Math.min(
+        128,
+        Math.max(32, Math.round(this.#budget(22, 14) * Math.pow(dive.period, Math.max(0, s)))),
+      ),
+    );
     // The zoom's speed in e-folds (and turns) per second of the scene clock, for softening moving detail.
-    const speed = this.#diveRate(layer.site) * Math.hypot(dive.logScale[0], dive.logScale[1]) * this.#motion * this.#knobs.pace + this.#depthRate * deeper * Math.hypot(dive.logScale[0], dive.logScale[1]);
+    const speed =
+      this.#diveRate(layer.site) *
+        Math.hypot(dive.logScale[0], dive.logScale[1]) *
+        this.#motion *
+        this.#knobs.pace +
+      this.#depthRate * deeper * Math.hypot(dive.logScale[0], dive.logScale[1]);
     data.set([MODE_DIVE, iterations, 0, speed], at);
     data.set([dive.nucleus[0], dive.nucleus[1], centre[0], centre[1]], at + 4);
     data.set([step[0], step[1], dive.scale[0], dive.scale[1]], at + 8);
@@ -982,10 +1149,13 @@ class FractalSim implements SceneSim {
     const gamma = sub(mul(da, map.c), mul(map.a, dc));
     const beta = sub(add(mul(da, map.d), mul(db, map.c)), add(mul(map.a, dd), mul(map.b, dc)));
     const alpha = sub(mul(db, map.d), mul(map.b, dd));
-    const iterations = this.#iterations(Math.min(64, Math.max(24, Math.round(this.#budget(30, 34)))));
+    const iterations = this.#iterations(
+      Math.min(64, Math.max(24, Math.round(this.#budget(30, 34)))),
+    );
     // The growth rings swell and ebb a little with the breath; +4 z carries how fast (rings per second).
     const breath = (this.#breathClock * TAU) / GASKET_BREATH_PERIOD;
-    const rings = (0.15 * TAU * this.#motion * this.#knobs.pace * Math.cos(breath)) / GASKET_BREATH_PERIOD;
+    const rings =
+      (0.15 * TAU * this.#motion * this.#knobs.pace * Math.cos(breath)) / GASKET_BREATH_PERIOD;
     data.set([MODE_GASKET, iterations, 0.15 * Math.sin(breath), 0], at);
     data.set([map.a[0], map.a[1], map.b[0], map.b[1]], at + 4);
     data.set([map.c[0], map.c[1], map.d[0], map.d[1]], at + 8);
@@ -1006,7 +1176,15 @@ class FractalSim implements SceneSim {
     const rate = this.#gardenRate.value;
     const relax = this.#gardenRelax();
     const weights = stones.slice(GARDEN_STONES * 2);
-    data.set([MODE_GARDEN, this.#iterations(Math.min(40, Math.max(18, Math.round(this.#budget(20, 16))))), this.#rake, GARDEN_REACH / knobs.zoom], at);
+    data.set(
+      [
+        MODE_GARDEN,
+        this.#iterations(Math.min(40, Math.max(18, Math.round(this.#budget(20, 16))))),
+        this.#rake,
+        GARDEN_REACH / knobs.zoom,
+      ],
+      at,
+    );
     data.set([...stones.slice(0, GARDEN_STONES * 2), this.#pebble[0], this.#pebble[1]], at + 4);
     data.set([...weights, this.#pebbleWeight, relax[0], relax[1]], at + 16);
     data.set([...rate.slice(0, GARDEN_STONES * 2), rate[10] ?? 0, rate[11] ?? 0], at + 24);

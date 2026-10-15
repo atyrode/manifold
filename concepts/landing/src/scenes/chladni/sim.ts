@@ -299,7 +299,9 @@ const MARK: MarkFigure = { kind: "mark" };
 
 /** Samples of the Bessel integral below; enough for x up to ~60 at double precision. */
 const BESSEL_SAMPLES = 128;
-const BESSEL_SIN = Float64Array.from({ length: BESSEL_SAMPLES }, (_, k) => Math.sin((k / BESSEL_SAMPLES) * TAU));
+const BESSEL_SIN = Float64Array.from({ length: BESSEL_SAMPLES }, (_, k) =>
+  Math.sin((k / BESSEL_SAMPLES) * TAU),
+);
 
 /**
  * J_n(x) = (1/2π)∫ cos(nτ − x sin τ) dτ over a full turn (Bessel's integral). The trapezoid rule
@@ -307,7 +309,8 @@ const BESSEL_SIN = Float64Array.from({ length: BESSEL_SAMPLES }, (_, k) => Math.
  */
 function besselJ(n: number, x: number): number {
   let sum = 0;
-  for (let k = 0; k < BESSEL_SAMPLES; k++) sum += Math.cos(n * (k / BESSEL_SAMPLES) * TAU - x * (BESSEL_SIN[k] ?? 0));
+  for (let k = 0; k < BESSEL_SAMPLES; k++)
+    sum += Math.cos(n * (k / BESSEL_SAMPLES) * TAU - x * (BESSEL_SIN[k] ?? 0));
   return sum / BESSEL_SAMPLES;
 }
 
@@ -354,7 +357,8 @@ function fillSquare(out: Float32Array, figure: SquareFigure): void {
   for (let j = 0; j < MODE_NODES; j++) {
     const nj = cn[j] ?? 0;
     const mj = cm[j] ?? 0;
-    for (let i = 0; i < MODE_NODES; i++) out[j * MODE_NODES + i] = (cn[i] ?? 0) * mj + figure.sign * (cm[i] ?? 0) * nj;
+    for (let i = 0; i < MODE_NODES; i++)
+      out[j * MODE_NODES + i] = (cn[i] ?? 0) * mj + figure.sign * (cm[i] ?? 0) * nj;
   }
 }
 
@@ -527,13 +531,38 @@ class ChladniSim implements SceneSim {
   readonly #homeY = new Float32Array(MAX_GRAINS);
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader<ChladniKnob>("chladni", params, ["shape", "sweep", "vibration", "plateSeed", "grains", "grainSize", "mark"]);
+    this.#knobs = new KnobReader<ChladniKnob>("chladni", params, [
+      "shape",
+      "sweep",
+      "vibration",
+      "plateSeed",
+      "grains",
+      "grainSize",
+      "mark",
+    ]);
     this.#sweepTrigger = this.#knobs.trigger("sweep");
     this.#markTrigger = this.#knobs.trigger("mark");
-    this.#sandTexture = new DataTexture(gl, { width: CHLADNI_SAND_TEXELS, height: CHLADNI_SAND_TEXELS, format: "rg16f" });
-    this.#modeTexture = new DataTexture(gl, { width: MODE_NODES, height: MODE_NODES, format: "rg16f" });
-    this.#stateTexture = new DataTexture(gl, { width: 2, height: 1, format: "rgba16f", filter: "nearest" });
-    this.#textures = [this.#sandTexture.texture, this.#modeTexture.texture, this.#stateTexture.texture];
+    this.#sandTexture = new DataTexture(gl, {
+      width: CHLADNI_SAND_TEXELS,
+      height: CHLADNI_SAND_TEXELS,
+      format: "rg16f",
+    });
+    this.#modeTexture = new DataTexture(gl, {
+      width: MODE_NODES,
+      height: MODE_NODES,
+      format: "rg16f",
+    });
+    this.#stateTexture = new DataTexture(gl, {
+      width: 2,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#textures = [
+      this.#sandTexture.texture,
+      this.#modeTexture.texture,
+      this.#stateTexture.texture,
+    ];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -546,7 +575,12 @@ class ChladniSim implements SceneSim {
     const mark = knobs.value(frame, "mark");
     const grainSize = clamp(knobs.value(frame, "grainSize"), 0, 1);
     grainAt(grainSize, this.#grain);
-    this.#amp = SWING_GENTLE * Math.pow(SWING_HARD / SWING_GENTLE, Math.min(1, Math.max(0, knobs.value(frame, "vibration"))));
+    this.#amp =
+      SWING_GENTLE *
+      Math.pow(
+        SWING_HARD / SWING_GENTLE,
+        Math.min(1, Math.max(0, knobs.value(frame, "vibration"))),
+      );
     this.#holdSeconds = HOLD_SLOW + (HOLD_FAST - HOLD_SLOW) * sweep;
     this.#moveSeconds = MOVE_SLOW + (MOVE_FAST - MOVE_SLOW) * sweep;
 
@@ -599,7 +633,8 @@ class ChladniSim implements SceneSim {
       this.#slide(exit);
     } else {
       if (frame.fired[this.#markTrigger] === true) this.#moveTo(this.#target(true, mark), true);
-      else if (frame.fired[this.#sweepTrigger] === true) this.#moveTo(this.#target(false, mark), true);
+      else if (frame.fired[this.#sweepTrigger] === true)
+        this.#moveTo(this.#target(false, mark), true);
 
       this.#pourAt(frame.pointer, dt, frame.aspect);
 
@@ -643,7 +678,11 @@ class ChladniSim implements SceneSim {
     state[2] = leaving ? this.#amp * (1 - smoothstep(0, 0.25, exit)) : this.#amp;
     state[3] = this.#fromMark * (1 - s) + this.#toMark * s;
     // The strewn veil: the sand drawn as single grains while it is spread thin, and the plate's tilt.
-    state[4] = leaving ? smoothstep(0, 0.2, exit) : this.#arriving ? 1 - smoothstep(VEIL_FROM, VEIL_TO, this.#clock) : 0;
+    state[4] = leaving
+      ? smoothstep(0, 0.2, exit)
+      : this.#arriving
+        ? 1 - smoothstep(VEIL_FROM, VEIL_TO, this.#clock)
+        : 0;
     state[5] = leaving ? smoothstep(0, 0.7, exit) : 0;
     state[6] = (STREW_REFERENCE / this.#count) * (this.#round ? 4 / Math.PI : 1);
     state[7] = this.#grain.talus / SAND.talus;
@@ -698,7 +737,8 @@ class ChladniSim implements SceneSim {
   /** Each grain's threshold from its draw, for the grain the plate is strewn with (see THRESHOLD_MAX). */
   #grade(): void {
     const { grip, spread } = this.#grain;
-    for (let i = 0; i < MAX_GRAINS; i++) this.#threshold[i] = THRESHOLD_MAX * grip * Math.pow(this.#draw[i] ?? 0, spread);
+    for (let i = 0; i < MAX_GRAINS; i++)
+      this.#threshold[i] = THRESHOLD_MAX * grip * Math.pow(this.#draw[i] ?? 0, spread);
   }
 
   /**
@@ -725,8 +765,13 @@ class ChladniSim implements SceneSim {
     this.#sandDirty = true;
     for (let i = 0; i < MAX_GRAINS; i++) {
       // 0 at the top of the slope, 1 at the foot.
-      const row = clamp(0.5 + (0.5 * ((this.#x[i] ?? 0) * SLIDE_X + (this.#y[i] ?? 0) * SLIDE_Y)) / SLIDE_SPAN, 0, 1);
-      this.#land[i] = POUR_FROM + POUR_SPAN * (POUR_FRONT * row + (1 - POUR_FRONT) * hash31(i, 0, 0x51ed));
+      const row = clamp(
+        0.5 + (0.5 * ((this.#x[i] ?? 0) * SLIDE_X + (this.#y[i] ?? 0) * SLIDE_Y)) / SLIDE_SPAN,
+        0,
+        1,
+      );
+      this.#land[i] =
+        POUR_FROM + POUR_SPAN * (POUR_FRONT * row + (1 - POUR_FRONT) * hash31(i, 0, 0x51ed));
     }
   }
 
@@ -781,7 +826,8 @@ class ChladniSim implements SceneSim {
 
   /** Lift a share of the grains off the deepest heaps and let them fall anywhere on the plate (see the header). */
   #shed(dt: number): void {
-    this.#shedDebt += (this.#count * (this.#toMark > 0 ? MARK_SHED : SHED) * dt) / this.#moveSeconds;
+    this.#shedDebt +=
+      (this.#count * (this.#toMark > 0 ? MARK_SHED : SHED) * dt) / this.#moveSeconds;
     const grains = Math.floor(this.#shedDebt);
     this.#shedDebt -= grains;
     const size = CHLADNI_SAND_TEXELS;
@@ -790,8 +836,14 @@ class ChladniSim implements SceneSim {
       // A few draws for a grain in a deep heap; if none turns up, nothing is shed.
       for (let draw = 0; draw < SHED_DRAWS; draw++) {
         const i = Math.min(this.#count - 1, Math.floor(hand.next() * this.#count));
-        const tx = Math.min(size - 1, Math.max(0, Math.floor(((this.#x[i] ?? 0) + 1) * 0.5 * size)));
-        const ty = Math.min(size - 1, Math.max(0, Math.floor(((this.#y[i] ?? 0) + 1) * 0.5 * size)));
+        const tx = Math.min(
+          size - 1,
+          Math.max(0, Math.floor(((this.#x[i] ?? 0) + 1) * 0.5 * size)),
+        );
+        const ty = Math.min(
+          size - 1,
+          Math.max(0, Math.floor(((this.#y[i] ?? 0) + 1) * 0.5 * size)),
+        );
         const k = (ty * size + tx) * 2;
         if ((this.#sand[k] ?? 0) + (this.#sand[k + 1] ?? 0) < SHED_HEAP) continue;
         this.#strewEvenly(i, hand);
@@ -817,7 +869,8 @@ class ChladniSim implements SceneSim {
     const hand = this.#hand;
     const corners = 1 - Math.PI / 4;
     for (let i = 0; i < MAX_GRAINS; i++) {
-      if (round ? Math.hypot(this.#x[i] ?? 0, this.#y[i] ?? 0) <= RIM : hand.next() >= corners) continue;
+      if (round ? Math.hypot(this.#x[i] ?? 0, this.#y[i] ?? 0) <= RIM : hand.next() >= corners)
+        continue;
       let x = 0;
       let y = 0;
       do {
@@ -845,7 +898,8 @@ class ChladniSim implements SceneSim {
       return MARK;
     }
     const last = this.#figures.length - 1;
-    if (this.#index + this.#direction < 0 || this.#index + this.#direction > last) this.#direction = -this.#direction;
+    if (this.#index + this.#direction < 0 || this.#index + this.#direction > last)
+      this.#direction = -this.#direction;
     this.#index = Math.min(last, Math.max(0, this.#index + this.#direction));
     this.#sinceMark++;
     return this.#figures[this.#index] ?? MARK;
@@ -880,7 +934,9 @@ class ChladniSim implements SceneSim {
       this.#mix = Math.min(1, this.#mix + dt / this.#moveSeconds);
       const s = smoothstep(0, 1, this.#mix);
       // Two figures at RMS 0.5 mix to 0.5·√((1 − s)² + s² + 2s(1 − s)c): lift the mix back to 0.5.
-      this.#norm = 1 / Math.sqrt(Math.max(0.05, (1 - s) * (1 - s) + s * s + 2 * s * (1 - s) * this.#correlation));
+      this.#norm =
+        1 /
+        Math.sqrt(Math.max(0.05, (1 - s) * (1 - s) + s * s + 2 * s * (1 - s) * this.#correlation));
     } else {
       this.#held += dt;
       if (this.#held >= this.#holdSeconds) this.#moveTo(this.#target(false, mark), false);
@@ -888,7 +944,8 @@ class ChladniSim implements SceneSim {
     const still = !this.#moving && this.#amp === this.#steppedAmp;
     this.#steppedAmp = this.#amp;
     if (this.#moving) this.#shed(dt);
-    if (this.#advance(dt, DANCE * this.#grain.hop * (1 + 0.5 * (this.#pace - 1)), still) > 0) this.#sandDirty = true;
+    if (this.#advance(dt, DANCE * this.#grain.hop * (1 + 0.5 * (this.#pace - 1)), still) > 0)
+      this.#sandDirty = true;
     if (this.#moving && this.#mix >= 1) {
       // Arrived: the target becomes the figure the plate holds.
       const from = this.#from;
@@ -980,7 +1037,9 @@ class ChladniSim implements SceneSim {
       const slope = Math.sqrt(sx * sx + sy * sy) + 1e-6;
       const pace = (drift * boost * excess) / (excess + DRIFT_EASE);
       // Distance down the slope this step, as a multiple of the slope vector.
-      const down = Math.min((pace * dt * slope) / (slope + DRIFT_FLAT), (DRIFT_REACH * excess) / slope) / slope;
+      const down =
+        Math.min((pace * dt * slope) / (slope + DRIFT_FLAT), (DRIFT_REACH * excess) / slope) /
+        slope;
       noise ^= noise << 13;
       noise ^= noise >>> 17;
       noise ^= noise << 5;
@@ -1055,8 +1114,10 @@ class ChladniSim implements SceneSim {
     for (let g = 0; g < grains; g++) {
       const along = (g + hand.next()) / Math.max(1, grains);
       // Twice the sum of three uniforms less 1.5: a rounded heap, one radius wide (σ), never past three.
-      const x = x0 + (x1 - x0) * along + radius * 2 * (hand.next() + hand.next() + hand.next() - 1.5);
-      const y = y0 + (y1 - y0) * along + radius * 2 * (hand.next() + hand.next() + hand.next() - 1.5);
+      const x =
+        x0 + (x1 - x0) * along + radius * 2 * (hand.next() + hand.next() + hand.next() - 1.5);
+      const y =
+        y0 + (y1 - y0) * along + radius * 2 * (hand.next() + hand.next() + hand.next() - 1.5);
       if (!this.#onPlate(x, y)) continue;
       const i = Math.min(count - 1, Math.floor(hand.next() * count));
       this.#x[i] = x;

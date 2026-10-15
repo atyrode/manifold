@@ -23,12 +23,18 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     gl.attachShader(linked, shader);
     return shader;
   });
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
@@ -66,12 +72,13 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
   // 2: one field hash per pixel across, its type out (crop / 9).
   const scene = program(
     gl,
-    fragmentSourceFor({
-      ...country,
-      entry: "regressionHerds",
-      glsl:
-        country.glsl +
-        `
+    fragmentSourceFor(
+      {
+        ...country,
+        entry: "regressionHerds",
+        glsl:
+          country.glsl +
+          `
       uniform int regressionMode;
       Shade regressionHerds(vec2 uv, vec2 cell, float t) {
         if (regressionMode == 2) {
@@ -99,7 +106,9 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
         }
         return shadeOf(vec3(0.0), 0.0, 0.0);
       }`,
-    }, COUNTRY_FULL),
+      },
+      COUNTRY_FULL,
+    ),
   );
   gl.useProgram(scene);
   const uniform = (name: string) => gl.getUniformLocation(scene, name);
@@ -111,7 +120,9 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
   const settle = (knobs: Record<string, number>): void => {
     gl.uniform1fv(
       uniform("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("country"), { ...paramDefaults("country"), ...knobs }).params),
+      Float32Array.from(
+        renderSettings(defaultsFor("country"), { ...paramDefaults("country"), ...knobs }).params,
+      ),
     );
   };
 
@@ -126,7 +137,9 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
     settle({ season, crops, wildflowers, lavender, sunflowers, pasture });
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const output = pixels(gl, 400, 1);
-    return Array.from({ length: 400 }, (_, index) => Math.round(((output[index * 4] ?? 0) * 9) / 255));
+    return Array.from({ length: 400 }, (_, index) =>
+      Math.round(((output[index * 4] ?? 0) * 9) / 255),
+    );
   };
   const shares = (types: readonly number[]): number[] => {
     const counts = [0, 0, 0, 0, 0];
@@ -143,10 +156,19 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
     drawFields([100, 50, 0, 50, 50]).every((type, i) => type === mixture[i]),
     "Scaling all field weights changed the composition with pasture",
   );
-  check(new Set(mixture.filter((type) => type < 6)).size === 5, "Pasture squeezed out the seasonal crop catalogue");
+  check(
+    new Set(mixture.filter((type) => type < 6)).size === 5,
+    "Pasture squeezed out the seasonal crop catalogue",
+  );
   const without = shares(drawFields([2, 1, 0, 1, 0]));
-  check(without.join(",") === "200,100,0,100,0", `Zero pasture weight still took fields: ${without}`);
-  check(drawFields([0, 0, 0, 0, 1]).every((type) => type === 9), "Pasture alone included another field type");
+  check(
+    without.join(",") === "200,100,0,100,0",
+    `Zero pasture weight still took fields: ${without}`,
+  );
+  check(
+    drawFields([0, 0, 0, 0, 1]).every((type) => type === 9),
+    "Pasture alone included another field type",
+  );
   for (const season of [0, 1, 2]) {
     const crops = drawFields([100, 0, 0, 0, 0], season);
     check(
@@ -180,13 +202,21 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
   // (b) Field interiors as the scene itself draws them: where a field's own material shows, the
   // colour follows its type, while hedges, hedgerow trees, the track, the river and the village
   // look the same whatever grows in the fields.
-  const interior = differing(drawScene({ crops: 0, lavender: 1 }, 0), drawScene({ crops: 0, sunflowers: 1 }, 0));
+  const interior = differing(
+    drawScene({ crops: 0, lavender: 1 }, 0),
+    drawScene({ crops: 0, sunflowers: 1 }, 0),
+  );
   const herds = { crops: 50, pasture: 50, herd: 1 };
   const pens = drawScene(herds, 0, { mode: 1 });
   const masks: Uint8Array[] = [];
   for (const motionTime of [9.5, 23.75, 187.3]) {
-    const animals = differing(drawScene(herds, motionTime), drawScene({ ...herds, herd: 0 }, motionTime));
-    const stray = animals.findIndex((value, at) => value === 1 && (interior[at] === 0 || pens[at * 4] !== 255));
+    const animals = differing(
+      drawScene(herds, motionTime),
+      drawScene({ ...herds, herd: 0 }, motionTime),
+    );
+    const stray = animals.findIndex(
+      (value, at) => value === 1 && (interior[at] === 0 || pens[at * 4] !== 255),
+    );
     check(
       stray < 0,
       `An animal at motion time ${motionTime} covers pixel ${stray % WIDTH},${HEIGHT - 1 - Math.floor(stray / WIDTH)} outside an enclosure's interior`,
@@ -194,7 +224,10 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
     masks.push(animals);
   }
   const herdPixels = masks.map(count);
-  check(herdPixels.every((pixelCount) => pixelCount >= 30), `Too few animals drawn to judge confinement: ${herdPixels}`);
+  check(
+    herdPixels.every((pixelCount) => pixelCount >= 30),
+    `Too few animals drawn to judge confinement: ${herdPixels}`,
+  );
   result.herdPixels = herdPixels;
 
   // (c) At motion 0 the frame holds still while the scene clock runs; advancing the motion clock
@@ -205,7 +238,8 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
     "The countryside with herds changed at motion 0",
   );
   const [first, second] = masks;
-  const moved = first && second ? first.reduce((sum, value, at) => sum + (value === second[at] ? 0 : 1), 0) : 0;
+  const moved =
+    first && second ? first.reduce((sum, value, at) => sum + (value === second[at] ? 0 : 1), 0) : 0;
   check(moved >= 10, `Advancing the motion clock 14 s moved no animal: ${moved} pixels`);
   result.herdMotionPixels = moved;
   gl.disable(gl.SCISSOR_TEST);

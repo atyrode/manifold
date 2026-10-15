@@ -45,7 +45,8 @@ async function resolve(ref: string): Promise<string | undefined> {
 
 let headCache: { sha: Promise<string | undefined>; at: number } | undefined;
 function head(): Promise<string | undefined> {
-  if (!headCache || performance.now() - headCache.at > 3000) headCache = { sha: resolve(branch), at: performance.now() };
+  if (!headCache || performance.now() - headCache.at > 3000)
+    headCache = { sha: resolve(branch), at: performance.now() };
   return headCache.sha;
 }
 
@@ -70,10 +71,15 @@ async function buildCommit(sha: string): Promise<string> {
   await rm(work, { recursive: true, force: true });
   await mkdir(join(work, "src"), { recursive: true });
   try {
-    const archive = Bun.spawn(["git", "-C", await git("rev-parse", "--show-toplevel"), "archive", sha, "concepts/landing"], { stdout: "pipe", stderr: "pipe" });
+    const archive = Bun.spawn(
+      ["git", "-C", await git("rev-parse", "--show-toplevel"), "archive", sha, "concepts/landing"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
     const untar = Bun.spawn(["tar", "-x", "-C", join(work, "src")], { stdin: archive.stdout });
     if ((await archive.exited) !== 0 || (await untar.exited) !== 0) {
-      throw new BuildError(`could not extract ${short}: ${(await new Response(archive.stderr).text()).trim()}`);
+      throw new BuildError(
+        `could not extract ${short}: ${(await new Response(archive.stderr).text()).trim()}`,
+      );
     }
     const source = join(work, "src", "concepts", "landing");
     const result = await Bun.build({
@@ -86,11 +92,19 @@ async function buildCommit(sha: string): Promise<string> {
     // The sheet worker is its own bundle, loaded next to the page (builds before it have none).
     const worker = join(source, "src", "sheet-worker.ts");
     if (await Bun.file(worker).exists()) {
-      const workerResult = await Bun.build({ entrypoints: [worker], outdir: join(work, "out"), naming: "sheet-worker.js", minify: true });
+      const workerResult = await Bun.build({
+        entrypoints: [worker],
+        outdir: join(work, "out"),
+        naming: "sheet-worker.js",
+        minify: true,
+      });
       if (!workerResult.success) throw new BuildError(workerResult.logs.map(String).join("\n"));
     }
     const html = await Bun.file(join(work, "out", "index.html")).text();
-    await Bun.write(join(work, "out", "index.html"), html.replace("</head>", `<meta name="landing-build" content="${short}"></head>`));
+    await Bun.write(
+      join(work, "out", "index.html"),
+      html.replace("</head>", `<meta name="landing-build" content="${short}"></head>`),
+    );
     await mkdir(cacheRoot, { recursive: true });
     await rm(dist, { recursive: true, force: true });
     await rename(join(work, "out"), dist);
@@ -107,7 +121,12 @@ async function serveFile(dist: string, path: string, immutable: boolean): Promis
   }
   const file = Bun.file(join(dist, path || "index.html"));
   if (!(await file.exists())) return new Response("not found", { status: 404 });
-  const cache = path === "" || path === "index.html" ? "no-cache" : immutable ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+  const cache =
+    path === "" || path === "index.html"
+      ? "no-cache"
+      : immutable
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=3600";
   return new Response(file, { headers: { "cache-control": cache } });
 }
 
@@ -126,7 +145,8 @@ async function committed(request: Request): Promise<Response> {
     if (!sha) return new Response(`no committed lab on ${branch}`, { status: 503 });
     if (url.pathname === "/") return await serveFile(await built(sha), "", false);
     // The head page is served from the root, so its worker loads from there.
-    if (url.pathname === "/sheet-worker.js") return await serveFile(await built(sha), "sheet-worker.js", false);
+    if (url.pathname === "/sheet-worker.js")
+      return await serveFile(await built(sha), "sheet-worker.js", false);
     return new Response("not found", { status: 404 });
   } catch (error: unknown) {
     console.error("evt=landing.build_failed", error);
@@ -142,14 +162,21 @@ const server = args.includes("--dev")
       routes: {
         "/": index,
         "/sheet-worker.js": async () => {
-          const result = await Bun.build({ entrypoints: [new URL("./src/sheet-worker.ts", import.meta.url).pathname] });
+          const result = await Bun.build({
+            entrypoints: [new URL("./src/sheet-worker.ts", import.meta.url).pathname],
+          });
           const [output] = result.outputs;
-          if (!result.success || !output) return new Response(result.logs.map(String).join("\n"), { status: 500 });
-          return new Response(await output.text(), { headers: { "content-type": "text/javascript", "cache-control": "no-store" } });
+          if (!result.success || !output)
+            return new Response(result.logs.map(String).join("\n"), { status: 500 });
+          return new Response(await output.text(), {
+            headers: { "content-type": "text/javascript", "cache-control": "no-store" },
+          });
         },
       },
       fetch: () => new Response("not found", { status: 404 }),
     })
   : Bun.serve({ hostname: "127.0.0.1", port, fetch: committed });
 
-console.log(`evt=landing.serve url=${server.url} mode=${args.includes("--dev") ? "dev" : "committed"} branch=${branch}`);
+console.log(
+  `evt=landing.serve url=${server.url} mode=${args.includes("--dev") ? "dev" : "committed"} branch=${branch}`,
+);

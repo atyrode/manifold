@@ -53,10 +53,20 @@ export function forestScreenY(height: number, z: number): number {
 }
 
 /** The stream: its centre line x = centre - swing sin((z - from) rate) (m) and half-width half + widen z (m). */
-export const FOREST_STREAM = { centre: 0.6, swing: 1.5, rate: 0.2, from: 3, half: 0.6, widen: 0.012 } as const;
+export const FOREST_STREAM = {
+  centre: 0.6,
+  swing: 1.5,
+  rate: 0.2,
+  from: 3,
+  half: 0.6,
+  widen: 0.012,
+} as const;
 
 export function forestStreamX(z: number): number {
-  return FOREST_STREAM.centre - FOREST_STREAM.swing * Math.sin((z - FOREST_STREAM.from) * FOREST_STREAM.rate);
+  return (
+    FOREST_STREAM.centre -
+    FOREST_STREAM.swing * Math.sin((z - FOREST_STREAM.from) * FOREST_STREAM.rate)
+  );
 }
 
 export function forestStreamHalf(z: number): number {
@@ -68,15 +78,37 @@ export function forestStreamHalf(z: number): number {
  * shows: its radius (m), how much wider its buttressed foot is (a share), over how many metres up that
  * flare fades, and its lean (m across per m up).
  */
-export const FOREST_HERO = { edge: 0.33, z: 3.8, radius: 0.95, flare: 0.8, flareHeight: 0.7, lean: 0.04 } as const;
+export const FOREST_HERO = {
+  edge: 0.33,
+  z: 3.8,
+  radius: 0.95,
+  flare: 0.8,
+  flareHeight: 0.7,
+  lean: 0.04,
+} as const;
 /** The old beech on the right, its axis `edge` in from the right edge; it puts out the branch. */
-export const FOREST_ELDER = { edge: 0.17, z: 7, radius: 0.85, flare: 0.8, flareHeight: 0.6, lean: -0.02 } as const;
+export const FOREST_ELDER = {
+  edge: 0.17,
+  z: 7,
+  radius: 0.85,
+  flare: 0.8,
+  flareHeight: 0.6,
+  lean: -0.02,
+} as const;
 /**
  * The beech's branch, in metres at its depth: it leaves the trunk `root` radii left of the axis at
  * `height`; along s = 0..1 of its `length` its centre line rises by rise s - sag s^2 and its radius
  * narrows from `radius` to `tip`.
  */
-export const FOREST_BRANCH = { height: 3.05, length: 3.3, rise: 0.75, sag: 0.45, radius: 0.17, tip: 0.07, root: 0.55 } as const;
+export const FOREST_BRANCH = {
+  height: 3.05,
+  length: 3.3,
+  rise: 0.75,
+  sag: 0.45,
+  radius: 0.17,
+  tip: 0.07,
+  root: 0.55,
+} as const;
 /** Moss beards hang from the branch in lanes this far apart (m); the drips fall from their tips. */
 export const FOREST_BEARD_SPACING = 0.2;
 /** Mossy boulders: centre `edge` screen heights in from the left / right edge, depth, radii across and up (m), centre height (m). */
@@ -89,7 +121,14 @@ export const FOREST_LOG = { from: 0.95, to: 5.8, z: 8.5, radius: 0.34 } as const
  * up `beam` m, overhanging the pillars by `overhang`; leaning `lean` rad to the left about its right
  * foot, the left foot sunk in a mound of moss.
  */
-export const FOREST_TORII = { z: 13, span: 1.55, height: 3.05, beam: 0.25, overhang: 0.75, lean: 0.05 } as const;
+export const FOREST_TORII = {
+  z: 13,
+  span: 1.55,
+  height: 3.05,
+  beam: 0.25,
+  overhang: 0.75,
+  lean: 0.05,
+} as const;
 /** A cluster of mushrooms on the moss mound swallowing the torii's left foot, in the torii's own frame (m). */
 export const FOREST_GATE_SHROOMS = { x: -1.15, y: 0.42 } as const;
 /** Stepping stones across the stream: depth, offset from the stream's centre, radius, height above the water (m). */
@@ -135,7 +174,11 @@ interface Rock {
 
 /** A point on top of a boulder centred at screen x cx, u (-1..1) of its half-width across. */
 function onRock(rock: Rock, cx: number, u: number): [number, number, number] {
-  return [cx + (u * rock.rx) / rock.z, forestScreenY(rock.centre, rock.z) + (rock.ry / rock.z) * Math.sqrt(1 - u * u), rock.z];
+  return [
+    cx + (u * rock.rx) / rock.z,
+    forestScreenY(rock.centre, rock.z) + (rock.ry / rock.z) * Math.sqrt(1 - u * u),
+    rock.z,
+  ];
 }
 
 /** A point of the torii's own frame (m: x from its centre, y up from its feet), leaning with it, on screen. */
@@ -144,7 +187,11 @@ function onTorii(x: number, y: number): [number, number, number] {
   const c = Math.cos(t.lean);
   const s = Math.sin(t.lean);
   const px = x - t.span;
-  return [(forestStreamX(t.z) + t.span + c * px - s * y) / t.z, forestScreenY(s * px + c * y, t.z), t.z];
+  return [
+    (forestStreamX(t.z) + t.span + c * px - s * y) / t.z,
+    forestScreenY(s * px + c * y, t.z),
+    t.z,
+  ];
 }
 
 /**
@@ -185,19 +232,32 @@ function forestPerches(aspect: number): Perch[] {
   const right = 0.5 * la - FOREST_ROCK_RIGHT.edge;
   for (const u of [-0.32, 0.3]) add(onRock(FOREST_ROCK_RIGHT, right, u));
   // On the log's moss.
-  for (const x of [1.55, 2.6, 3.5]) add([x / FOREST_LOG.z, forestScreenY(2 * FOREST_LOG.radius - 0.02, FOREST_LOG.z), FOREST_LOG.z]);
+  for (const x of [1.55, 2.6, 3.5])
+    add([
+      x / FOREST_LOG.z,
+      forestScreenY(2 * FOREST_LOG.radius - 0.02, FOREST_LOG.z),
+      FOREST_LOG.z,
+    ]);
   // Along the beech's branch.
   const b = FOREST_BRANCH;
   const rootX = (0.5 * la - FOREST_ELDER.edge) * FOREST_ELDER.z - b.root * FOREST_ELDER.radius;
   for (const s of [0.42, 0.74]) {
     const top = b.height + b.rise * s - b.sag * s * s + b.radius + (b.tip - b.radius) * s;
-    add([(rootX - s * b.length) / FOREST_ELDER.z, forestScreenY(top - 0.02, FOREST_ELDER.z), FOREST_ELDER.z]);
+    add([
+      (rootX - s * b.length) / FOREST_ELDER.z,
+      forestScreenY(top - 0.02, FOREST_ELDER.z),
+      FOREST_ELDER.z,
+    ]);
   }
   // On the torii's top beam, leaning with it.
   for (const lx of [-0.75, 0.8]) add(onTorii(lx, forestKasagiTop(lx) + 0.03));
   // Two of the stepping stones.
   for (const stone of [FOREST_STONES[0], FOREST_STONES[2]]) {
-    add([(forestStreamX(stone.z) + stone.offset) / stone.z, forestScreenY(stone.height - 0.01, stone.z), stone.z]);
+    add([
+      (forestStreamX(stone.z) + stone.offset) / stone.z,
+      forestScreenY(stone.height - 0.01, stone.z),
+      stone.z,
+    ]);
   }
   // The floor: on the right bank before the torii, at the beech's foot, on both banks nearer the torii.
   const elderX = (0.5 * la - FOREST_ELDER.edge) * FOREST_ELDER.z;
@@ -470,8 +530,23 @@ class ForestSim implements SceneSim {
   readonly #waves: Wave[] = [];
   readonly #stirs: Stir[] = [];
   readonly #stag: Stag = {
-    active: false, x: 0, dir: 1, startX: 0, walked: 0, gait: 0, speed: 0, pauseAt: 0, pauseFor: 0, stopped: false,
-    mode: "walk", timer: 0, look: 0, headUp: 0.35, alpha: 0, lastDir: -1, next: Number.POSITIVE_INFINITY,
+    active: false,
+    x: 0,
+    dir: 1,
+    startX: 0,
+    walked: 0,
+    gait: 0,
+    speed: 0,
+    pauseAt: 0,
+    pauseFor: 0,
+    stopped: false,
+    mode: "walk",
+    timer: 0,
+    look: 0,
+    headUp: 0.35,
+    alpha: 0,
+    lastDir: -1,
+    next: Number.POSITIVE_INFINITY,
   };
   #perches: Perch[] = [];
   #shroomSites: [number, number, number][] = [];
@@ -522,21 +597,74 @@ class ForestSim implements SceneSim {
       return at;
     };
     this.#knobIndex = {
-      spirits: index("spirits"), shy: index("shy"), stag: index("stag"), spores: index("spores"), wind: index("wind"),
-      time: index("time"), cycle: index("cycle"), forestSeed: index("forestSeed"),
+      spirits: index("spirits"),
+      shy: index("shy"),
+      stag: index("stag"),
+      spores: index("spores"),
+      wind: index("wind"),
+      time: index("time"),
+      cycle: index("cycle"),
+      forestSeed: index("forestSeed"),
     };
-    this.#beingTexture = new DataTexture(gl, { width: 3, height: FOREST_SPIRITS + 1, format: "rgba16f", filter: "nearest" });
-    this.#moteTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f", filter: "nearest" });
-    this.#fogTexture = new DataTexture(gl, { width: FOREST_FOG.width, height: FOREST_FOG.height, format: "r16f" });
+    this.#beingTexture = new DataTexture(gl, {
+      width: 3,
+      height: FOREST_SPIRITS + 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#moteTexture = new DataTexture(gl, {
+      width: 1,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#fogTexture = new DataTexture(gl, {
+      width: FOREST_FOG.width,
+      height: FOREST_FOG.height,
+      format: "r16f",
+    });
     for (let i = 0; i < FOREST_SPIRITS; i++) {
       this.#spirits.push({
-        state: "free", perch: 0, age: 0, stay: 0, size: SIZE_MIN, variant: 0, breath: 0, tilt: 0, turnFrom: 0,
-        turnTo: 0, turnAge: -1, ticks: 3, sinceTurn: 0, nextTurn: 0, yaw: 0, yawTo: 0, yawHold: 0, rattle: 0,
-        popAt: -1, rise: RISE_TIME, fade: FADE_TIME, leaveAt: -1, turned: false, trait: 1, shrink: atEase(),
+        state: "free",
+        perch: 0,
+        age: 0,
+        stay: 0,
+        size: SIZE_MIN,
+        variant: 0,
+        breath: 0,
+        tilt: 0,
+        turnFrom: 0,
+        turnTo: 0,
+        turnAge: -1,
+        ticks: 3,
+        sinceTurn: 0,
+        nextTurn: 0,
+        yaw: 0,
+        yawTo: 0,
+        yawHold: 0,
+        rattle: 0,
+        popAt: -1,
+        rise: RISE_TIME,
+        fade: FADE_TIME,
+        leaveAt: -1,
+        turned: false,
+        trait: 1,
+        shrink: atEase(),
       });
     }
     for (let i = 0; i < MAX_MOTES; i++) {
-      this.#motes.push({ alive: false, puff: false, x: 0, y: 0, z: 5, age: 0, life: 1, base: 0, kickX: 0, kickY: 0 });
+      this.#motes.push({
+        alive: false,
+        puff: false,
+        x: 0,
+        y: 0,
+        z: 5,
+        age: 0,
+        life: 1,
+        base: 0,
+        kickX: 0,
+        kickY: 0,
+      });
     }
     for (let i = 0; i < WAVES; i++) this.#waves.push({ kx: 0, ky: 0, omega: 0, phase: 0, amp: 0 });
   }
@@ -625,7 +753,8 @@ class ForestSim implements SceneSim {
     const w = FOREST_FOG.width;
     const h = FOREST_FOG.height;
     for (let j = 0; j < h; j++) {
-      for (let i = 0; i < w; i++) this.#fog[j * w + i] = this.#fogTarget(((i + 0.5) / w - 0.5) * aspect, (j + 0.5) / h);
+      for (let i = 0; i < w; i++)
+        this.#fog[j * w + i] = this.#fogTarget(((i + 0.5) / w - 0.5) * aspect, (j + 0.5) / h);
     }
     const target = Math.round(this.#spores * MOTE_TARGET);
     for (let i = 0; i < target; i++) {
@@ -640,7 +769,9 @@ class ForestSim implements SceneSim {
       spirit.state = "present";
       spirit.age = this.#random() * spirit.stay * 0.8;
     }
-    if (this.#stagRate > 0) this.#stag.next = this.#clock + STAG_FIRST_MIN + (STAG_FIRST_MAX - STAG_FIRST_MIN) * this.#random();
+    if (this.#stagRate > 0)
+      this.#stag.next =
+        this.#clock + STAG_FIRST_MIN + (STAG_FIRST_MAX - STAG_FIRST_MIN) * this.#random();
     const steps = Math.round(PREWARM_SECONDS / STEP);
     for (let s = 0; s < steps; s++) this.#step(STEP, aspect);
   }
@@ -688,7 +819,12 @@ class ForestSim implements SceneSim {
     this.#puff(px, py, 5, 8, 0.03, 0.5);
     for (let i = 0; i < 4; i++) {
       const a = (i + 0.5) * (TAU / 4);
-      this.#addStir(px + 0.02 * Math.cos(a), py + 0.02 * Math.sin(a), 0.08 * Math.cos(a), 0.08 * Math.sin(a));
+      this.#addStir(
+        px + 0.02 * Math.cos(a),
+        py + 0.02 * Math.sin(a),
+        0.08 * Math.cos(a),
+        0.08 * Math.sin(a),
+      );
     }
     const perch = this.#nearestFreePerch(px, py, CALL_REACH);
     if (perch >= 0) {
@@ -774,7 +910,8 @@ class ForestSim implements SceneSim {
   }
 
   #occupied(index: number): boolean {
-    for (const spirit of this.#spirits) if (spirit.state !== "free" && spirit.perch === index) return true;
+    for (const spirit of this.#spirits)
+      if (spirit.state !== "free" && spirit.perch === index) return true;
     return false;
   }
 
@@ -808,7 +945,8 @@ class ForestSim implements SceneSim {
       if (p) perch = this.#nearestFreePerch(p.x, p.y, COMPANION_REACH);
     } else {
       const free: number[] = [];
-      for (const [i, p] of this.#perches.entries()) if (this.#visible(p) && !this.#occupied(i)) free.push(i);
+      for (const [i, p] of this.#perches.entries())
+        if (this.#visible(p) && !this.#occupied(i)) free.push(i);
       perch = free[Math.floor(this.#random() * free.length)] ?? -1;
     }
     if (perch < 0) return undefined;
@@ -837,7 +975,8 @@ class ForestSim implements SceneSim {
     spirit.trait = hash31(Math.floor(spirit.variant * 16777216), 0x6b6f, 0x7368);
     spirit.shrink.amount = 0;
     spirit.shrink.calm = Number.POSITIVE_INFINITY;
-    if (companion && r() < COMPANION) this.#pending.push({ at: this.#clock + 1.2 + 1.8 * r(), near: perch, exact: -1 });
+    if (companion && r() < COMPANION)
+      this.#pending.push({ at: this.#clock + 1.2 + 1.8 * r(), near: perch, exact: -1 });
     return spirit;
   }
 
@@ -853,7 +992,8 @@ class ForestSim implements SceneSim {
   /** A gathering: spirits appear on free perches one after another, then all turn their heads together. */
   #gather(): void {
     const free: number[] = [];
-    for (const [i, p] of this.#perches.entries()) if (this.#visible(p) && !this.#occupied(i)) free.push(i);
+    for (const [i, p] of this.#perches.entries())
+      if (this.#visible(p) && !this.#occupied(i)) free.push(i);
     for (let i = free.length - 1; i > 0; i--) {
       const j = Math.floor(this.#random() * (i + 1));
       const a = free[i] ?? 0;
@@ -861,7 +1001,11 @@ class ForestSim implements SceneSim {
       free[j] = a;
     }
     for (const [k, perch] of free.slice(0, GATHERING).entries()) {
-      this.#pending.push({ at: this.#clock + 0.35 * k + 0.2 * this.#random(), near: -1, exact: perch });
+      this.#pending.push({
+        at: this.#clock + 0.35 * k + 0.2 * this.#random(),
+        near: -1,
+        exact: perch,
+      });
     }
     this.#chorusAt = this.#clock + CHORUS_AFTER;
   }
@@ -899,7 +1043,8 @@ class ForestSim implements SceneSim {
         spirit.state = "fading";
         spirit.age = 0;
         // Some give a last rattle as they go.
-        if (spirit.turnAge < 0 && this.#random() < 0.45) this.#turn(spirit, (this.#random() - 0.5) * 1.1);
+        if (spirit.turnAge < 0 && this.#random() < 0.45)
+          this.#turn(spirit, (this.#random() - 0.5) * 1.1);
       } else if (spirit.state === "fading" && spirit.age >= spirit.fade) {
         spirit.state = "free";
         continue;
@@ -910,7 +1055,8 @@ class ForestSim implements SceneSim {
       if (spirit.turnAge >= 0) {
         spirit.turnAge += h;
         const x = spirit.turnAge / (spirit.ticks * TICK);
-        spirit.tilt = spirit.turnFrom + (spirit.turnTo - spirit.turnFrom) * rattleEase(x, spirit.ticks);
+        spirit.tilt =
+          spirit.turnFrom + (spirit.turnTo - spirit.turnFrom) * rattleEase(x, spirit.ticks);
         if (x >= 1) spirit.turnAge = -1;
       }
       spirit.rattle += ((spirit.turnAge >= 0 ? 1 : 0) - spirit.rattle) * (1 - Math.exp(-h / 0.15));
@@ -929,7 +1075,8 @@ class ForestSim implements SceneSim {
           engaged = true;
           spirit.yawTo = facing(dx, 0.1, shy);
           const want = (shy ? 1 : -1) * Math.sign(dx) * 0.3 * (0.8 + 0.4 * spirit.variant);
-          if (spirit.turnAge < 0 && spirit.sinceTurn > 0.8 && Math.abs(spirit.turnTo - want) > 0.25) this.#turn(spirit, want);
+          if (spirit.turnAge < 0 && spirit.sinceTurn > 0.8 && Math.abs(spirit.turnTo - want) > 0.25)
+            this.#turn(spirit, want);
         }
       }
       if (shy || spirit.shrink.amount > 0) stepShrink(spirit.shrink, h, shy && engaged);
@@ -1003,7 +1150,9 @@ class ForestSim implements SceneSim {
       this.#playExit(Math.min(1, exit) * FOREST_PASSAGE.exit);
     } else if (this.#arriving) {
       const done = enter >= 1;
-      this.#playEntrance(done ? Number.POSITIVE_INFINITY : Math.max(0, enter) * FOREST_PASSAGE.enter);
+      this.#playEntrance(
+        done ? Number.POSITIVE_INFINITY : Math.max(0, enter) * FOREST_PASSAGE.enter,
+      );
       if (done) this.#arriving = false;
     }
     this.#quiet = this.#arriving || this.#leaving;
@@ -1054,7 +1203,11 @@ class ForestSim implements SceneSim {
     st.gait = this.#random();
     st.speed = STAG_SPEED;
     const gate = (forestStreamX(FOREST_TORII.z) / FOREST_TORII.z) * z;
-    st.pauseAt = clamp(atGate ? gate + (this.#random() - 0.5) * 0.6 : (this.#random() - 0.5) * 1.2 * half, -0.7 * half, 0.7 * half);
+    st.pauseAt = clamp(
+      atGate ? gate + (this.#random() - 0.5) * 0.6 : (this.#random() - 0.5) * 1.2 * half,
+      -0.7 * half,
+      0.7 * half,
+    );
     st.pauseFor = STAG_PAUSE_MIN + (STAG_PAUSE_MAX - STAG_PAUSE_MIN) * this.#random();
     st.stopped = false;
     st.mode = "walk";
@@ -1138,7 +1291,10 @@ class ForestSim implements SceneSim {
     const r = this.#random;
     mote.alive = true;
     mote.puff = false;
-    const site = r() < MOTE_FROM_SHROOMS ? this.#shroomSites[Math.floor(r() * this.#shroomSites.length)] : undefined;
+    const site =
+      r() < MOTE_FROM_SHROOMS
+        ? this.#shroomSites[Math.floor(r() * this.#shroomSites.length)]
+        : undefined;
     if (site) {
       const [x, y, z] = site;
       mote.x = x + (r() - 0.5) * 0.12;
@@ -1241,9 +1397,14 @@ class ForestSim implements SceneSim {
 
   /** The banks the mist relaxes toward: thickest in a band low over the far floor and the stream. */
   #fogTarget(x: number, y: number): number {
-    const band = 0.8 + 0.45 * Math.exp(-(((y - 0.3) / 0.13) ** 2)) + 0.15 * Math.exp(-(((y - 0.05) / 0.1) ** 2));
+    const band =
+      0.8 +
+      0.45 * Math.exp(-(((y - 0.3) / 0.13) ** 2)) +
+      0.15 * Math.exp(-(((y - 0.05) / 0.1) ** 2));
     const shift = this.#fogShift;
-    const n = 0.6 * valueNoise(x * 1.6 - shift, y * 3.2 + 0.7, 11) + 0.4 * valueNoise(x * 3.7 - 1.6 * shift, y * 6 + 2.1, 12);
+    const n =
+      0.6 * valueNoise(x * 1.6 - shift, y * 3.2 + 0.7, 11) +
+      0.4 * valueNoise(x * 3.7 - 1.6 * shift, y * 6 + 2.1, 12);
     return band * (0.62 + 0.76 * n);
   }
 
@@ -1315,11 +1476,40 @@ class ForestSim implements SceneSim {
         sink = Math.max(sink, DUCK_SINK * duck);
         glow *= 1 - 0.6 * duck;
       }
-      data.set([perch.x, perch.y, perch.z, alpha, spirit.tilt, spirit.yaw, glow, spirit.variant, sink, spirit.size, 0, 0], i * 12);
+      data.set(
+        [
+          perch.x,
+          perch.y,
+          perch.z,
+          alpha,
+          spirit.tilt,
+          spirit.yaw,
+          glow,
+          spirit.variant,
+          sink,
+          spirit.size,
+          0,
+          0,
+        ],
+        i * 12,
+      );
     }
     const st = this.#stag;
     if (st.active) {
-      data.set([st.x, st.gait, st.dir, st.alpha, st.look, st.headUp, st.startX, st.walked, 1 - st.speed / STAG_SPEED], FOREST_SPIRITS * 12);
+      data.set(
+        [
+          st.x,
+          st.gait,
+          st.dir,
+          st.alpha,
+          st.look,
+          st.headUp,
+          st.startX,
+          st.walked,
+          1 - st.speed / STAG_SPEED,
+        ],
+        FOREST_SPIRITS * 12,
+      );
     }
 
     const motes = this.#moteData;

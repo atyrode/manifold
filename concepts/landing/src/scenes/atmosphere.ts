@@ -8,7 +8,15 @@
 //
 // The page theme is decided here too (skyTheme, paletteTheme), once, from the knobs: the shader reads
 // the outcome with pagePaper() instead of repeating the test.
-import { effective, feature, knobDef, KnobError, range, type Blurb, type ParamDef } from "../params.ts";
+import {
+  effective,
+  feature,
+  knobDef,
+  KnobError,
+  range,
+  type Blurb,
+  type ParamDef,
+} from "../params.ts";
 import type { SceneTheme } from "./types.ts";
 
 export interface SkyComponentOptions {
@@ -50,17 +58,59 @@ export interface SkyOptions extends SkyComponentOptions {
 export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";
   const knobs: ParamDef[] = [];
-  if (options.stars !== undefined) knobs.push(range(group, "stars", "stars", options.stars, "How many stars come out once the sky is dark: none to the left, a dark country sky to the right."));
+  if (options.stars !== undefined)
+    knobs.push(
+      range(
+        group,
+        "stars",
+        "stars",
+        options.stars,
+        "How many stars come out once the sky is dark: none to the left, a dark country sky to the right.",
+      ),
+    );
   if (options.milkyWay !== undefined) {
     const { on = false, value = 1 } = options.milkyWay;
-    knobs.push(feature(group, "milkyWay", "Milky Way", on, "brightness", value, "The band of our galaxy across the dark sky: soft clouds of stars split by a dark lane of dust, more stars crowding into it than the sky around it. Faint to the left, twice as bright to the right. Off: no band, the stars as thin everywhere as they are away from it.", { min: 0.1, max: 2 }));
+    knobs.push(
+      feature(
+        group,
+        "milkyWay",
+        "Milky Way",
+        on,
+        "brightness",
+        value,
+        "The band of our galaxy across the dark sky: soft clouds of stars split by a dark lane of dust, more stars crowding into it than the sky around it. Faint to the left, twice as bright to the right. Off: no band, the stars as thin everywhere as they are away from it.",
+        { min: 0.1, max: 2 },
+      ),
+    );
   }
   if (options.moon !== undefined) {
-    knobs.push(feature(group, "moon", "moon", true, "phase", options.moon, "The moon on its nightly path, from a thin crescent to full, its lit side toward the sun: a slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.", { min: 0.05, max: 1 }));
+    knobs.push(
+      feature(
+        group,
+        "moon",
+        "moon",
+        true,
+        "phase",
+        options.moon,
+        "The moon on its nightly path, from a thin crescent to full, its lit side toward the sun: a slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.",
+        { min: 0.05, max: 1 },
+      ),
+    );
   }
   if (options.meteors !== undefined) {
     const { trigger, on = false, value = 0.3 } = options.meteors;
-    knobs.push(feature(group, "meteors", "shooting stars", on, "frequency", value, "Now and then a shooting star streaks across the open night sky: one every minute or two at the left end, every ten seconds or so at the right. Now: one at once.", { trigger }));
+    knobs.push(
+      feature(
+        group,
+        "meteors",
+        "shooting stars",
+        on,
+        "frequency",
+        value,
+        "Now and then a shooting star streaks across the open night sky: one every minute or two at the left end, every ten seconds or so at the right. Now: one at once.",
+        { trigger },
+      ),
+    );
   }
   return knobs;
 }
@@ -76,8 +126,23 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
 export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";
   return [
-    range(group, "time", "time of day", options.time ?? 0.78, "Midnight at the left end, noon in the middle: sunrise, day, golden hour, dusk, night.", { steady: true }),
-    feature(group, "cycle", "day cycle", false, "speed", 0.3, "The sun and moon keep moving: days pass at this pace."),
+    range(
+      group,
+      "time",
+      "time of day",
+      options.time ?? 0.78,
+      "Midnight at the left end, noon in the middle: sunrise, day, golden hour, dusk, night.",
+      { steady: true },
+    ),
+    feature(
+      group,
+      "cycle",
+      "day cycle",
+      false,
+      "speed",
+      0.3,
+      "The sun and moon keep moving: days pass at this pace.",
+    ),
     ...skyComponentKnobs({ ...options, group }),
   ];
 }
@@ -118,24 +183,106 @@ export function weatherKnobs(options: WeatherOptions): ParamDef[] {
   const group = options.group ?? "weather";
   const on = options.on ?? {};
   const knobs: ParamDef[] = [];
-  if (options.clouds !== undefined) knobs.push(range(group, "clouds", "cloud cover", options.clouds, "Cloud in fair weather, from a clear sky to a full deck; rain and snow close it further."));
-  if (options.shadows) knobs.push(feature(group, "shadows", "cloud shadows", on.shadows ?? false, "darkness", 0.6, "Shadows of the clouds drifting over the ground wherever the deck crosses the sun, and how dark they fall."));
-  if (options.rain) knobs.push(feature(group, "rain", "rain", on.rain ?? false, "amount", 0.5, "Rain falling through the scene in depth, from drizzle to a downpour; surfaces get wet and drip."));
-  if (options.snow) knobs.push(feature(group, "snow", "snow", on.snow ?? false, "amount", 0.5, "Snow falling through the scene in depth, from a flurry to a blizzard; it settles on the scene."));
-  if (options.fog) knobs.push(range(group, "fog", "fog", 0, "Mist settling in: distance fades first."));
-  if (options.wind) knobs.push(range(group, "wind", "wind", 0.2, "Which way and how hard the wind blows: slants rain, drifts snow and cloud.", { min: -1, max: 1 }));
+  if (options.clouds !== undefined)
+    knobs.push(
+      range(
+        group,
+        "clouds",
+        "cloud cover",
+        options.clouds,
+        "Cloud in fair weather, from a clear sky to a full deck; rain and snow close it further.",
+      ),
+    );
+  if (options.shadows)
+    knobs.push(
+      feature(
+        group,
+        "shadows",
+        "cloud shadows",
+        on.shadows ?? false,
+        "darkness",
+        0.6,
+        "Shadows of the clouds drifting over the ground wherever the deck crosses the sun, and how dark they fall.",
+      ),
+    );
+  if (options.rain)
+    knobs.push(
+      feature(
+        group,
+        "rain",
+        "rain",
+        on.rain ?? false,
+        "amount",
+        0.5,
+        "Rain falling through the scene in depth, from drizzle to a downpour; surfaces get wet and drip.",
+      ),
+    );
+  if (options.snow)
+    knobs.push(
+      feature(
+        group,
+        "snow",
+        "snow",
+        on.snow ?? false,
+        "amount",
+        0.5,
+        "Snow falling through the scene in depth, from a flurry to a blizzard; it settles on the scene.",
+      ),
+    );
+  if (options.fog)
+    knobs.push(range(group, "fog", "fog", 0, "Mist settling in: distance fades first."));
+  if (options.wind)
+    knobs.push(
+      range(
+        group,
+        "wind",
+        "wind",
+        0.2,
+        "Which way and how hard the wind blows: slants rain, drifts snow and cloud.",
+        { min: -1, max: 1 },
+      ),
+    );
   if (options.lightning !== undefined) {
-    knobs.push(feature(group, "lightning", "lightning", on.lightning ?? false, "frequency", 0.35, "Forked bolts now and then, lighting up the sky.", { trigger: options.lightning }));
+    knobs.push(
+      feature(
+        group,
+        "lightning",
+        "lightning",
+        on.lightning ?? false,
+        "frequency",
+        0.35,
+        "Forked bolts now and then, lighting up the sky.",
+        { trigger: options.lightning },
+      ),
+    );
   }
-  if (options.aurora) knobs.push(feature(group, "aurora", "aurora", on.aurora ?? false, "strength", 0.6, "Curtains of green and violet light rippling across the night sky."));
+  if (options.aurora)
+    knobs.push(
+      feature(
+        group,
+        "aurora",
+        "aurora",
+        on.aurora ?? false,
+        "strength",
+        0.6,
+        "Curtains of green and violet light rippling across the night sky.",
+      ),
+    );
   return knobs;
 }
 
 /** Lab headings for the shared groups: `skyNight` for a sky group that also holds sky components. */
 export const atmosphereGroups: Readonly<Record<"sky" | "skyNight" | "weather", Blurb>> = {
   sky: { title: "Sky", blurb: "Time of day, and whether the days pass." },
-  skyNight: { title: "Sky", blurb: "Time of day, whether the days pass, and the night sky: its stars, the moon's phase, the odd shooting star." },
-  weather: { title: "Weather", blurb: "Rain, snow, fog, wind, lightning and aurora, shared by every outdoor scene." },
+  skyNight: {
+    title: "Sky",
+    blurb:
+      "Time of day, whether the days pass, and the night sky: its stars, the moon's phase, the odd shooting star.",
+  },
+  weather: {
+    title: "Weather",
+    blurb: "Rain, snow, fog, wind, lightning and aurora, shared by every outdoor scene.",
+  },
 };
 
 export interface SkyThemeOptions {
@@ -159,7 +306,10 @@ export function skyTheme(params: readonly ParamDef[], options: SkyThemeOptions =
   const time = knobDef("skyTheme", params, "time");
   const cycle = knobDef("skyTheme", params, "cycle");
   const { from = 0.33, to = 0.67, when } = options;
-  const rain = options.rainBelow === undefined ? undefined : { def: knobDef("skyTheme", params, "rain"), below: options.rainBelow };
+  const rain =
+    options.rainBelow === undefined
+      ? undefined
+      : { def: knobDef("skyTheme", params, "rain"), below: options.rainBelow };
   return (values) => {
     const hour = effective(time, values);
     const daylight = effective(cycle, values) <= 0 && hour > from && hour < to;
@@ -180,6 +330,7 @@ export function paletteTheme(
   isPaper: (index: number, values: Readonly<Record<string, number>>) => boolean,
 ): SceneTheme {
   const def = knobDef("paletteTheme", params, key);
-  if (def.kind !== "choice" && def.kind !== "toggle") throw new KnobError(`paletteTheme: '${key}' is a ${def.kind}, not a choice or toggle`);
+  if (def.kind !== "choice" && def.kind !== "toggle")
+    throw new KnobError(`paletteTheme: '${key}' is a ${def.kind}, not a choice or toggle`);
   return (values) => (isPaper(Math.round(effective(def, values)), values) ? "paper" : "night");
 }

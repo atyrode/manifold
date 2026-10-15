@@ -6,7 +6,13 @@ import { stillWater } from "./shallow.ts";
  * at 2 below it, and on the platform a 4 × 4 basin floored at -1 inside a rim at 3, with a notch in
  * its top side at 1 opening onto a channel at 1 that runs up to the sea.
  */
-function shore(): { bed: Float32Array; sea: Uint8Array; width: number; height: number; at: (x: number, y: number) => number } {
+function shore(): {
+  bed: Float32Array;
+  sea: Uint8Array;
+  width: number;
+  height: number;
+  at: (x: number, y: number) => number;
+} {
   const width = 14;
   const height = 12;
   const bed = new Float32Array(width * height).fill(2);
@@ -55,6 +61,8 @@ describe("stillWater", () => {
 
   test("without an outlet nothing holds water", () => {
     const { bed, width, height } = shore();
-    expect(Array.from(stillWater(bed, width, height, new Uint8Array(width * height), 10))).toEqual(Array.from(bed));
+    expect(Array.from(stillWater(bed, width, height, new Uint8Array(width * height), 10))).toEqual(
+      Array.from(bed),
+    );
   });
 });

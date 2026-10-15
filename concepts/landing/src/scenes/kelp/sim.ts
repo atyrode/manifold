@@ -59,7 +59,12 @@ import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
-import { PointTexture, VerletSystem, type VerletForce, type VerletStepOptions } from "../../sims/verlet.ts";
+import {
+  PointTexture,
+  VerletSystem,
+  type VerletForce,
+  type VerletStepOptions,
+} from "../../sims/verlet.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 const TAU = Math.PI * 2;
@@ -132,7 +137,13 @@ export const KELP_LAYERS: readonly KelpLayer[] = (() => {
   LAYER_SCALES.forEach((scale, l) => {
     const spacing = SPACING * scale;
     const slots = Math.ceil((2 * HALF_SPAN) / spacing);
-    layers.push({ scale, spacing, left: (-0.5 * slots + (LAYER_SHIFT[l] ?? 0)) * spacing, slots, first });
+    layers.push({
+      scale,
+      spacing,
+      left: (-0.5 * slots + (LAYER_SHIFT[l] ?? 0)) * spacing,
+      slots,
+      first,
+    });
     first += slots;
   });
   return layers;
@@ -179,17 +190,38 @@ const EXIT_SURGE = { speed: 0.6, delay: 0.4, span: 1.0 } as const;
  * (sin(φ1 − k1·x) + second · sin(φ2 − k2·x + phase2)), with φ2 turning `ratio` times as fast as φ1.
  * Wavelengths of 5.2 and 8.9: the sway travels across the forest without ever lining up.
  */
-export const KELP_SURGE = { speed: 0.32, k1: TAU / 5.2, k2: TAU / 8.9, second: 0.35, ratio: 1 / 2.37, phase2: 1.3, current: 0.16 } as const;
+export const KELP_SURGE = {
+  speed: 0.32,
+  k1: TAU / 5.2,
+  k2: TAU / 8.9,
+  second: 0.35,
+  ratio: 1 / 2.37,
+  phase2: 1.3,
+  current: 0.16,
+} as const;
 /**
  * A big swell: a displacement amplitude · sin²(π τ / span) · sin(2π τ / period) of the water, its
  * front starting `start` world units upstream and running at `speed`; τ is the time since the
  * front passed.
  */
-export const KELP_SWELL = { amplitude: 0.62, period: 10, span: 15, start: 4.8, speed: 1.3 } as const;
+export const KELP_SWELL = {
+  amplitude: 0.62,
+  period: 10,
+  span: 15,
+  start: 4.8,
+  speed: 1.3,
+} as const;
 const SWELL_END = KELP_SWELL.span + (2 * KELP_SWELL.start) / KELP_SWELL.speed;
 
 /** State texture rows, and the columns of the globals row. */
-export const KELP_ROW = { stipes: 0, fishPose: 1, fishLook: 2, globals: 3, canopy: 4, scale: 5 } as const;
+export const KELP_ROW = {
+  stipes: 0,
+  fishPose: 1,
+  fishLook: 2,
+  globals: 3,
+  canopy: 4,
+  scale: 5,
+} as const;
 /**
  * Globals (row 3):
  *   phases       cos φ1, sin φ1, cos φ2, sin φ2 of the surge
@@ -198,7 +230,13 @@ export const KELP_ROW = { stipes: 0, fishPose: 1, fishLook: 2, globals: 3, canop
  *   visitorPose  the sea lion: x, y, heading (rad), shown 0..1
  *   visitorLook  fore-flipper stroke 0..1, facing (±1), swell direction (±1), 0
  */
-export const KELP_GLOBAL = { phases: 0, flow: 1, school: 2, visitorPose: 3, visitorLook: 4 } as const;
+export const KELP_GLOBAL = {
+  phases: 0,
+  flow: 1,
+  school: 2,
+  visitorPose: 3,
+  visitorLook: 4,
+} as const;
 export const KELP_STATE_WIDTH = Math.max(KELP_STIPES, KELP_FISH.max, 5);
 const STATE_ROWS = 6;
 
@@ -321,8 +359,29 @@ const FISH_EDGE = 0.06;
 const FISH_ROW = 0.14;
 const FISH_ARC = 0.12;
 
-type KnobKey = "surge" | "period" | "current" | "swell" | "density" | "kelpSeed" | "species" | "fish" | "visitor" | "mark";
-const KNOB_KEYS: readonly KnobKey[] = ["surge", "period", "current", "swell", "density", "kelpSeed", "species", "fish", "visitor", "mark"];
+type KnobKey =
+  | "surge"
+  | "period"
+  | "current"
+  | "swell"
+  | "density"
+  | "kelpSeed"
+  | "species"
+  | "fish"
+  | "visitor"
+  | "mark";
+const KNOB_KEYS: readonly KnobKey[] = [
+  "surge",
+  "period",
+  "current",
+  "swell",
+  "density",
+  "kelpSeed",
+  "species",
+  "fish",
+  "visitor",
+  "mark",
+];
 
 /** Fixed base seed: the same arrangement number always grows the same forest. */
 const SEED = 0x6b31f00d;
@@ -589,11 +648,13 @@ class School {
       this.turn[i] = (this.turn[i] ?? 0) + (da / h - (this.turn[i] ?? 0)) * ease;
       const turning = Math.min(1, Math.max(0, (Math.abs(this.turn[i] ?? 0) - 0.25) * 1.2));
       // Now and then a glint sweeps across the school as it wheels in the light.
-      const wheel = Math.max(0, Math.sin(this.#clock * 0.17 + (x[i] ?? 0) * 3 + (y[i] ?? 0) * 1.3)) ** 24;
+      const wheel =
+        Math.max(0, Math.sin(this.#clock * 0.17 + (x[i] ?? 0) * 3 + (y[i] ?? 0) * 1.3)) ** 24;
       const target = Math.max(turning, 0.8 * wheel);
       this.flash[i] = (this.flash[i] ?? 0) + (target - (this.flash[i] ?? 0)) * flashEase;
       // Turning toward or away from the eye now and then, slowly.
-      this.flank[i] = 0.55 + 0.45 * Math.abs(Math.cos(this.#clock * 0.11 + (this.#phase[i] ?? 0) * TAU));
+      this.flank[i] =
+        0.55 + 0.45 * Math.abs(Math.cos(this.#clock * 0.11 + (this.#phase[i] ?? 0) * TAU));
       const shown = this.shown[i] ?? 0;
       this.shown[i] = i < count ? Math.min(1, shown + fade) : Math.max(0, shown - fade);
     }
@@ -691,10 +752,23 @@ class KelpSim implements SceneSim {
       visitor: knobs.initial("visitor"),
       mark: knobs.initial("mark"),
     };
-    this.#system = new VerletSystem({ points: POINT_COUNT, constraints: KELP_STIPES * (2 * KELP_SEGMENTS - 1) });
+    this.#system = new VerletSystem({
+      points: POINT_COUNT,
+      constraints: KELP_STIPES * (2 * KELP_SEGMENTS - 1),
+    });
     this.#stepOptions = { gravity: [0, 0, 0], damping: DRAG, iterations: 4, force: this.#force };
-    this.#points = new PointTexture(gl, { points: POINT_COUNT, velocity: true, width: KELP_POINT_ROW, origin: KELP_ORIGIN });
-    this.#state = new DataTexture(gl, { width: KELP_STATE_WIDTH, height: STATE_ROWS, format: "rgba16f", filter: "nearest" });
+    this.#points = new PointTexture(gl, {
+      points: POINT_COUNT,
+      velocity: true,
+      width: KELP_POINT_ROW,
+      origin: KELP_ORIGIN,
+    });
+    this.#state = new DataTexture(gl, {
+      width: KELP_STATE_WIDTH,
+      height: STATE_ROWS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#trailTexture = new DataTexture(gl, { width: TRAIL_W, height: TRAIL_H, format: "r8" });
     this.#textures = [this.#points.texture, this.#state.texture, this.#trailTexture.texture];
     this.#applyKnobs();
@@ -726,7 +800,8 @@ class KelpSim implements SceneSim {
     this.#settleBlades(advance);
     this.#updatePresence(advance);
     this.#school.advance(advance, Math.round(knob.fish), this.#aspect, this.#hand);
-    if (frame.pointer.pressed && frame.pointer.inside) this.#school.scatter((frame.pointer.x - 0.5) * this.#aspect, frame.pointer.y);
+    if (frame.pointer.pressed && frame.pointer.inside)
+      this.#school.scatter((frame.pointer.x - 0.5) * this.#aspect, frame.pointer.y);
     this.#advanceVisitor(advance);
 
     this.#trail.decay(advance, TRAIL_HALF_LIFE);
@@ -770,7 +845,12 @@ class KelpSim implements SceneSim {
         const r = random.next();
         const bull = this.#isBull(stipe, seed);
         const depth = surfaceY - floorY;
-        const length = bull ? depth * (BULL_MIN + (BULL_MAX - BULL_MIN) * r) : depth * (grown ? GROWN_MIN + (GROWN_MAX - GROWN_MIN) * r : YOUNG_MIN + (YOUNG_MAX - YOUNG_MIN) * r);
+        const length = bull
+          ? depth * (BULL_MIN + (BULL_MAX - BULL_MIN) * r)
+          : depth *
+            (grown
+              ? GROWN_MIN + (GROWN_MAX - GROWN_MIN) * r
+              : YOUNG_MIN + (YOUNG_MAX - YOUNG_MIN) * r);
         const drift = 0.6 + 0.8 * random.next();
         let rank = random.next();
         // The nearest plants keep the middle of the frame clear until the forest is dense.
@@ -780,10 +860,14 @@ class KelpSim implements SceneSim {
         this.#link[stipe] = length / KELP_SEGMENTS;
         this.#scale[stipe] = s;
         this.#baseX[stipe] = x;
-        const chain = sys.addChain([x, floorY, 0], [x, floorY + length, 0], KELP_SEGMENTS, { bend: BEND, pinFirst: true });
+        const chain = sys.addChain([x, floorY, 0], [x, floorY + length, 0], KELP_SEGMENTS, {
+          bend: BEND,
+          pinFirst: true,
+        });
         for (let j = 1; j <= KELP_SEGMENTS; j++) {
           const along = (j * length) / KELP_SEGMENTS;
-          if (along > rise) sys.place(chain.first + j, x + downstream * (along - rise), floorY + rise, 0);
+          if (along > rise)
+            sys.place(chain.first + j, x + downstream * (along - rise), floorY + rise, 0);
         }
         for (let p = chain.first; p < chain.first + chain.points; p++) {
           this.#pointScale[p] = s;
@@ -820,7 +904,8 @@ class KelpSim implements SceneSim {
       this.#settleBlades(PREWARM_STEP);
     }
     const fish = Math.round(this.#knob.fish);
-    for (let t = 0; t < 2 * PREWARM; t += PREWARM_STEP) this.#school.advance(PREWARM_STEP, fish, this.#aspect, this.#hand);
+    for (let t = 0; t < 2 * PREWARM; t += PREWARM_STEP)
+      this.#school.advance(PREWARM_STEP, fish, this.#aspect, this.#hand);
     this.#enterT = enterT;
     this.#exitT = exitT;
     this.#passing = passing;
@@ -911,7 +996,10 @@ class KelpSim implements SceneSim {
     // The surge (and a swell) reach a floating top only in part, so the steady drift decides which
     // way it trails; the current runs the whole depth.
     // The surge's orbit turns elliptical toward the surface: a little bob at the crown.
-    const rise = Math.min(1, Math.max(0, (y - (this.#pointFloor[i] ?? 0)) / ((KELP_VIEW.floor + KELP_VIEW.surface) * s)));
+    const rise = Math.min(
+      1,
+      Math.max(0, (y - (this.#pointFloor[i] ?? 0)) / ((KELP_VIEW.floor + KELP_VIEW.surface) * s)),
+    );
     let fx = (surge * (1 - CANOPY_SHELTER * floating) + this.#currentSpeed) * s;
     let fy = ORBIT * this.#surgeSpeed * Math.cos(a1) * rise * s;
     const hand = this.#hand;
@@ -920,7 +1008,11 @@ class KelpSim implements SceneSim {
       const dy = y - hand.y;
       const d2 = dx * dx + dy * dy;
       if (d2 < 9 * HAND_RADIUS * HAND_RADIUS) {
-        const k = HAND_GAIN * hand.on * (HAND_REACH[this.#pointLayer[i] ?? 0] ?? 0) * Math.exp(-d2 / (HAND_RADIUS * HAND_RADIUS));
+        const k =
+          HAND_GAIN *
+          hand.on *
+          (HAND_REACH[this.#pointLayer[i] ?? 0] ?? 0) *
+          Math.exp(-d2 / (HAND_RADIUS * HAND_RADIUS));
         fx += hand.vx * k;
         fy += hand.vy * k;
       }
@@ -972,12 +1064,18 @@ class KelpSim implements SceneSim {
         const i = first + j;
         const below = 3 * (first + Math.max(0, j - 1));
         const above = 3 * (first + Math.min(KELP_SEGMENTS, j + 1));
-        const spine = Math.atan2((pos[above] ?? 0) - (pos[below] ?? 0), (pos[above + 1] ?? 0) - (pos[below + 1] ?? 0));
+        const spine = Math.atan2(
+          (pos[above] ?? 0) - (pos[below] ?? 0),
+          (pos[above + 1] ?? 0) - (pos[below + 1] ?? 0),
+        );
         // The pinned holdfast has no flow of its own: it takes its neighbour's.
         const flow = this.#flowX[j === 0 ? i + 1 : i] ?? 0;
         const vx = ((pos[3 * i] ?? 0) - (prev[3 * i] ?? 0)) * rate;
         const s = this.#pointScale[i] ?? 1;
-        const lean = Math.max(-BLADE_MAX, Math.min(BLADE_MAX, Math.atan((BLADE_STREAM * (flow - vx)) / s)));
+        const lean = Math.max(
+          -BLADE_MAX,
+          Math.min(BLADE_MAX, Math.atan((BLADE_STREAM * (flow - vx)) / s)),
+        );
         const current = this.#lean[i] ?? 0;
         this.#lean[i] = current + (lean - spine - current) * ease;
       }
@@ -993,13 +1091,20 @@ class KelpSim implements SceneSim {
     const step = dt > 0 ? dt / PRESENCE_EASE : 1;
     const mark = this.#knob.mark;
     const markX = KELP_MARK.x * KELP_MARK.scale;
-    const markHalf = KELP_MARK.halfWidth * (KELP_MARK.low + (KELP_MARK.high - KELP_MARK.low) * mark) * KELP_MARK.scale;
+    const markHalf =
+      KELP_MARK.halfWidth *
+      (KELP_MARK.low + (KELP_MARK.high - KELP_MARK.low) * mark) *
+      KELP_MARK.scale;
     for (let stipe = 0; stipe < KELP_STIPES; stipe++) {
       const s = this.#scale[stipe] ?? 1;
-      const inFront = mark > 0 && s > KELP_MARK.scale && Math.abs((this.#baseX[stipe] ?? 0) - markX) < markHalf + 0.18 * s;
+      const inFront =
+        mark > 0 &&
+        s > KELP_MARK.scale &&
+        Math.abs((this.#baseX[stipe] ?? 0) - markX) < markHalf + 0.18 * s;
       const want = (this.#rank[stipe] ?? 1) < density && !inFront ? 1 : 0;
       const have = this.#presence[stipe] ?? 0;
-      this.#presence[stipe] = want > have ? Math.min(want, have + step) : Math.max(want, have - step);
+      this.#presence[stipe] =
+        want > have ? Math.min(want, have + step) : Math.max(want, have - step);
     }
   }
 
@@ -1056,14 +1161,18 @@ class KelpSim implements SceneSim {
     const swell = this.#knob.swell;
     if (swell > 0 && this.#clock >= this.#nextSwell) {
       if (this.#swellAge < 0) this.#startSwell();
-      this.#nextSwell = this.#clock + (SWELL_RARE + (SWELL_OFTEN - SWELL_RARE) * swell) * (0.6 + 0.8 * random.next());
+      this.#nextSwell =
+        this.#clock +
+        (SWELL_RARE + (SWELL_OFTEN - SWELL_RARE) * swell) * (0.6 + 0.8 * random.next());
     } else if (swell <= 0) {
       this.#nextSwell = Math.max(this.#nextSwell, this.#clock + SWELL_FIRST);
     }
     const visitor = this.#knob.visitor;
     if (visitor > 0 && this.#clock >= this.#nextVisitor) {
       if (this.#visitorAge < 0) this.#startVisitor();
-      this.#nextVisitor = this.#clock + (VISITOR_RARE + (VISITOR_OFTEN - VISITOR_RARE) * visitor) * (0.6 + 0.8 * random.next());
+      this.#nextVisitor =
+        this.#clock +
+        (VISITOR_RARE + (VISITOR_OFTEN - VISITOR_RARE) * visitor) * (0.6 + 0.8 * random.next());
     } else if (visitor <= 0) {
       this.#nextVisitor = Math.max(this.#nextVisitor, this.#clock + VISITOR_FIRST);
     }
@@ -1073,7 +1182,8 @@ class KelpSim implements SceneSim {
     this.#swellAge = 0;
     // Swells roll in downstream when a current runs, else from either side.
     const current = this.#knob.current;
-    this.#swellDir = Math.abs(current) > 0.1 ? Math.sign(current) : this.#random.next() < 0.5 ? -1 : 1;
+    this.#swellDir =
+      Math.abs(current) > 0.1 ? Math.sign(current) : this.#random.next() < 0.5 ? -1 : 1;
   }
 
   #startVisitor(): void {
@@ -1133,7 +1243,14 @@ class KelpSim implements SceneSim {
         const x = pos[3 * (first + j)] ?? 0;
         if ((x - end) * this.#downstream > 0) end = x;
       }
-      this.#put(KELP_ROW.stipes, stipe, minX, maxX, pos[3 * (first + rising) + 1] ?? 0, this.#presence[stipe] ?? 0);
+      this.#put(
+        KELP_ROW.stipes,
+        stipe,
+        minX,
+        maxX,
+        pos[3 * (first + rising) + 1] ?? 0,
+        this.#presence[stipe] ?? 0,
+      );
       this.#put(KELP_ROW.canopy, stipe, rising, start, end, this.#link[stipe] ?? 0);
       this.#put(KELP_ROW.scale, stipe, s, this.#bull[stipe] ?? 0, 0, 0);
     }
@@ -1158,7 +1275,14 @@ class KelpSim implements SceneSim {
       }
       const size = school.size[i] ?? 0;
       this.#put(KELP_ROW.fishPose, i, x, y, Math.cos(angle), Math.sin(angle));
-      this.#put(KELP_ROW.fishLook, i, shown > 0 ? size * (0.4 + 0.6 * shown) : 0, school.flash[i] ?? 0, school.flank[i] ?? 1, shown);
+      this.#put(
+        KELP_ROW.fishLook,
+        i,
+        shown > 0 ? size * (0.4 + 0.6 * shown) : 0,
+        school.flash[i] ?? 0,
+        school.flank[i] ?? 1,
+        shown,
+      );
       if (shown <= 0) continue;
       minX = Math.min(minX, x - size);
       maxX = Math.max(maxX, x + size);
@@ -1168,8 +1292,22 @@ class KelpSim implements SceneSim {
     if (minX > maxX) this.#put(KELP_ROW.globals, KELP_GLOBAL.school, 1, 1, -1, -1);
     else this.#put(KELP_ROW.globals, KELP_GLOBAL.school, minX, minY, maxX, maxY);
 
-    this.#put(KELP_ROW.globals, KELP_GLOBAL.phases, Math.cos(this.#phase1), Math.sin(this.#phase1), Math.cos(this.#phase2), Math.sin(this.#phase2));
-    this.#put(KELP_ROW.globals, KELP_GLOBAL.flow, this.#surgeSpeed, this.#omega1, this.#currentSpeed, this.#swellAge);
+    this.#put(
+      KELP_ROW.globals,
+      KELP_GLOBAL.phases,
+      Math.cos(this.#phase1),
+      Math.sin(this.#phase1),
+      Math.cos(this.#phase2),
+      Math.sin(this.#phase2),
+    );
+    this.#put(
+      KELP_ROW.globals,
+      KELP_GLOBAL.flow,
+      this.#surgeSpeed,
+      this.#omega1,
+      this.#currentSpeed,
+      this.#swellAge,
+    );
 
     if (this.#visitorAge >= 0) {
       const travel = 2 * (0.5 * this.#aspect + VISITOR_MARGIN);
@@ -1180,7 +1318,8 @@ class KelpSim implements SceneSim {
       // A long, lazy dip and a slow undulation: a sea lion idling across the forest.
       const wave = TAU * 1.3 * p + this.#visitorPhase;
       const y = this.#visitorY + 0.035 * Math.sin(wave) - 0.05 * Math.sin(Math.PI * p);
-      const dy = (0.035 * TAU * 1.3 * Math.cos(wave) - 0.05 * Math.PI * Math.cos(Math.PI * p)) / travel;
+      const dy =
+        (0.035 * TAU * 1.3 * Math.cos(wave) - 0.05 * Math.PI * Math.cos(Math.PI * p)) / travel;
       const heading = Math.atan2(dy, dir);
       const shown = smoothstep(0, 0.08, p) * (1 - smoothstep(0.92, 1, p));
       const phase = (age % VISITOR_STROKE) / VISITOR_STROKE;

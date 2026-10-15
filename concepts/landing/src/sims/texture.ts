@@ -28,7 +28,13 @@ function formatInfo(gl: WebGL2RenderingContext, format: DataFormat): FormatInfo 
     case "rg8":
       return { internal: gl.RG8, format: gl.RG, type: gl.UNSIGNED_BYTE, channels: 2, float: false };
     case "rgba8":
-      return { internal: gl.RGBA8, format: gl.RGBA, type: gl.UNSIGNED_BYTE, channels: 4, float: false };
+      return {
+        internal: gl.RGBA8,
+        format: gl.RGBA,
+        type: gl.UNSIGNED_BYTE,
+        channels: 4,
+        float: false,
+      };
     case "r16f":
       return { internal: gl.R16F, format: gl.RED, type: gl.FLOAT, channels: 1, float: true };
     case "rg16f":
@@ -87,13 +93,25 @@ export class DataTexture {
   upload(data: Uint8Array | Float32Array): void {
     const info = this.#info;
     const expected = this.#width * this.#height * info.channels;
-    if (data.length !== expected) throw new DataTextureError(`texture data has ${data.length} values, expected ${expected}`);
-    if (info.float !== data instanceof Float32Array) throw new DataTextureError("texture data type does not match its format");
+    if (data.length !== expected)
+      throw new DataTextureError(`texture data has ${data.length} values, expected ${expected}`);
+    if (info.float !== data instanceof Float32Array)
+      throw new DataTextureError("texture data type does not match its format");
     const gl = this.#gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.#width, this.#height, info.format, info.type, data);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      this.#width,
+      this.#height,
+      info.format,
+      info.type,
+      data,
+    );
   }
 
   /**
@@ -101,7 +119,8 @@ export class DataTexture {
    * so a scene can draw with ordinary canvas coordinates.
    */
   uploadImage(source: TexImageSource & { width: number; height: number }): void {
-    if (this.#info.internal !== this.#gl.RGBA8) throw new DataTextureError("uploadImage needs an rgba8 texture");
+    if (this.#info.internal !== this.#gl.RGBA8)
+      throw new DataTextureError("uploadImage needs an rgba8 texture");
     const gl = this.#gl;
     this.#width = source.width;
     this.#height = source.height;
@@ -119,6 +138,16 @@ export class DataTexture {
     const gl = this.#gl;
     const info = this.#info;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, info.internal, this.#width, this.#height, 0, info.format, info.type, null);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      info.internal,
+      this.#width,
+      this.#height,
+      0,
+      info.format,
+      info.type,
+      null,
+    );
   }
 }

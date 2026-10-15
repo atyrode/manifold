@@ -45,7 +45,13 @@
 // sponges (the Doppler dipper's carriage halts). It is the same water at the same step, only more
 // steps a frame and the dippers' strength differ, and at rest (no passage) neither is touched.
 import type { ParamDef } from "../../params.ts";
-import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
+import {
+  GpuCompute,
+  gridSize,
+  type Pass,
+  type PingPong,
+  type RenderTarget,
+} from "../../sims/gpu.ts";
 import { lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -186,7 +192,9 @@ const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String
 const TAU = Math.PI * 2;
 
 /** The M's vertices as GLSL constants. */
-const MARK_GLSL = RIPPLE_M.map(([x, y], i) => `const vec2 RIPPLE_M${i} = vec2(${x.toFixed(2)}, ${y.toFixed(2)});`).join("\n");
+const MARK_GLSL = RIPPLE_M.map(
+  ([x, y], i) => `const vec2 RIPPLE_M${i} = vec2(${x.toFixed(2)}, ${y.toFixed(2)});`,
+).join("\n");
 
 /**
  * How far inside the lens plate p lies (short sides; negative outside): the lesser of the depth
@@ -618,7 +626,11 @@ class RippleLab implements SceneSim {
   #pebbleCount = 0;
   #random = mulberry32(0x5eed);
   #untilDrip = DRIP_FIRST;
-  #seen: [number | undefined, number | undefined, number | undefined] = [undefined, undefined, undefined];
+  #seen: [number | undefined, number | undefined, number | undefined] = [
+    undefined,
+    undefined,
+    undefined,
+  ];
   #experimentKnob: number | undefined;
   #markOn: boolean | undefined;
   /** What the pointer holds: a dipper (0..3) or the M (4); and the finger it draws through open water. */
@@ -646,13 +658,21 @@ class RippleLab implements SceneSim {
     this.#touch = gpu.pass(TOUCH_PASS, "ripple touch");
     this.#shade = gpu.pass(VIEW_PASS, "ripple view");
     this.#seed = gpu.pass(SEED_PASS, "ripple seed");
-    this.#layoutTarget = gpu.target({ width: RIPPLE_LAYOUT_WIDTH, height: 2, format: "rgba32f", filter: "nearest" });
+    this.#layoutTarget = gpu.target({
+      width: RIPPLE_LAYOUT_WIDTH,
+      height: 2,
+      format: "rgba32f",
+      filter: "nearest",
+    });
     this.#layoutTarget.seed(this.#layoutShown);
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const physics = this.#physicsFor(frame);
-    const { width, height } = gridSize(frame.aspect > 0 && Number.isFinite(frame.aspect) ? frame.aspect : 16 / 9, physics.n);
+    const { width, height } = gridSize(
+      frame.aspect > 0 && Number.isFinite(frame.aspect) ? frame.aspect : 16 / 9,
+      physics.n,
+    );
     const previous = this.#physics;
     this.#physics = physics;
     this.#frameSize[0] = physics.frame.width;
@@ -674,7 +694,11 @@ class RippleLab implements SceneSim {
       this.#hold = this.#holdFor(frame);
       this.#experimentKnob = Math.round(this.#value(frame, this.#at.experiment));
       this.#markOn = this.#value(frame, this.#at.mark) > 0;
-      this.#seen = [frame.triggers[0] ?? -1e4, frame.triggers[1] ?? -1e4, frame.triggers[2] ?? -1e4];
+      this.#seen = [
+        frame.triggers[0] ?? -1e4,
+        frame.triggers[1] ?? -1e4,
+        frame.triggers[2] ?? -1e4,
+      ];
     } else {
       for (const tank of tanks) {
         if (tank.state.width !== width || tank.state.height !== height) {
@@ -682,7 +706,8 @@ class RippleLab implements SceneSim {
           tank.state.resize(width, height, true);
           tank.view.resize(width, height);
         }
-        if (previous && previous.step !== physics.step) tank.prevScale = physics.step / previous.step;
+        if (previous && previous.step !== physics.step)
+          tank.prevScale = physics.step / previous.step;
       }
     }
 
@@ -699,17 +724,28 @@ class RippleLab implements SceneSim {
     this.#ensureLayout(shown);
     if (this.#preparing || fading) this.#ensureLayout(coming);
     if (this.#pebbleCount > 0) {
-      this.#touch.run(shown.state, { textures: { uState: shown.state }, uniforms: { uFrame: this.#frameSize, uPebbles: this.#pebbles } });
+      this.#touch.run(shown.state, {
+        textures: { uState: shown.state },
+        uniforms: { uFrame: this.#frameSize, uPebbles: this.#pebbles },
+      });
       if (fading) this.#touch.run(coming.state, { textures: { uState: coming.state } });
     }
     this.#easeTrack(shown, seconds);
     const passing = this.#arriving === true || this.#leaving;
-    this.#advance(shown, seconds * this.#rate, passing ? PASSAGE_STEPS : MAX_STEPS, this.#finger, this.#drive);
+    this.#advance(
+      shown,
+      seconds * this.#rate,
+      passing ? PASSAGE_STEPS : MAX_STEPS,
+      this.#finger,
+      this.#drive,
+    );
     if (fading) {
       // The coming tank is a fresh experiment, at full strength, unless the scene is leaving.
-      if (this.#leaving) this.#advance(coming, seconds * this.#rate, PASSAGE_STEPS, undefined, this.#drive);
+      if (this.#leaving)
+        this.#advance(coming, seconds * this.#rate, PASSAGE_STEPS, undefined, this.#drive);
       else this.#advance(coming, seconds, MAX_STEPS, undefined, 1);
-    } else if (this.#preparing) this.#advance(coming, seconds * PREP_RATE, MAX_PREP_STEPS, undefined, 1);
+    } else if (this.#preparing)
+      this.#advance(coming, seconds * PREP_RATE, MAX_PREP_STEPS, undefined, 1);
     this.#render(frame, shown, this.#finger);
     if (fading) this.#render(frame, coming, undefined);
     this.#publish(shown, coming);
@@ -736,7 +772,8 @@ class RippleLab implements SceneSim {
         this.#lapse = 0;
         this.#driveAtExit = this.#drive;
       }
-      this.#rate = 1 + (PASSAGE_RATE - 1) * smoothstep(0, EXIT_EASE, Math.min(1, frame.passage.exit));
+      this.#rate =
+        1 + (PASSAGE_RATE - 1) * smoothstep(0, EXIT_EASE, Math.min(1, frame.passage.exit));
       this.#lapse += seconds * this.#rate;
       this.#drive = this.#driveAtExit * (1 - smoothstep(0, PASSAGE_STOP * beat, this.#lapse));
       return;
@@ -786,12 +823,19 @@ class RippleLab implements SceneSim {
     const lambda = speed / hertz;
     const cells = Math.min(frame.width, frame.height);
     const wanted = Math.round(PER_WAVE / lambda / GRID_ROUND) * GRID_ROUND;
-    const n = Math.min(Math.max(wanted, GRID_MIN), GRID_MAX, Math.max(96, Math.round(cells / GRID_ROUND) * GRID_ROUND));
+    const n = Math.min(
+      Math.max(wanted, GRID_MIN),
+      GRID_MAX,
+      Math.max(96, Math.round(cells / GRID_ROUND) * GRID_ROUND),
+    );
     const step = Math.min(STEP, COURANT / (speed * n));
     const mark = Math.max(0, this.#value(frame, this.#at.mark));
     // Viscosity damps a wave of wavenumber k (per texel) at VISCOSITY k² per step.
-    const k = (TAU / lambda) / n;
-    const fade = Math.max(DAMP_MAX * Math.min(1, Math.max(0, this.#value(frame, this.#at.damping))) ** 1.5, (VISCOSITY * k * k) / step);
+    const k = TAU / lambda / n;
+    const fade = Math.max(
+      DAMP_MAX * Math.min(1, Math.max(0, this.#value(frame, this.#at.damping))) ** 1.5,
+      (VISCOSITY * k * k) / step,
+    );
     return {
       frame: tank,
       speed,
@@ -829,7 +873,10 @@ class RippleLab implements SceneSim {
   #upcoming(frame: SimFrame, shown: Experiment): Experiment | undefined {
     const fixed = this.#fixed(frame);
     if (fixed !== undefined) return shown === fixed ? undefined : fixed;
-    const order: Experiment[] = this.#value(frame, this.#at.mark) > 0 ? [...RIPPLE_EXPERIMENTS, MARK] : [...RIPPLE_EXPERIMENTS];
+    const order: Experiment[] =
+      this.#value(frame, this.#at.mark) > 0
+        ? [...RIPPLE_EXPERIMENTS, MARK]
+        : [...RIPPLE_EXPERIMENTS];
     const at = order.indexOf(shown);
     return order[(at + 1) % order.length] ?? TWO;
   }
@@ -845,7 +892,8 @@ class RippleLab implements SceneSim {
     if (markNow || (markOn && this.#markOn === false)) now = MARK;
     else if (nextNow) now = this.#upcoming(frame, shown.experiment) ?? shown.experiment;
     else if (knob !== this.#experimentKnob && knob >= 1) now = this.#fixed(frame);
-    else if (!markOn && this.#markOn === true && shown.experiment === MARK) now = this.#upcoming(frame, MARK) ?? TWO;
+    else if (!markOn && this.#markOn === true && shown.experiment === MARK)
+      now = this.#upcoming(frame, MARK) ?? TWO;
     if (knob !== this.#experimentKnob && knob === 0) this.#hold = this.#holdFor(frame);
     this.#experimentKnob = knob;
     this.#markOn = markOn;
@@ -941,7 +989,8 @@ class RippleLab implements SceneSim {
 
   #need(): Physics {
     const physics = this.#physics;
-    if (!physics) throw new Error("landing: the ripple tank's physics were used before its first frame");
+    if (!physics)
+      throw new Error("landing: the ripple tank's physics were used before its first frame");
     return physics;
   }
 
@@ -951,7 +1000,13 @@ class RippleLab implements SceneSim {
     const { frame } = physics;
     const key = `${tank.experiment}|${frame.width.toFixed(5)}|${frame.height.toFixed(5)}|${physics.lambda.toFixed(6)}|${physics.speed.toFixed(6)}|${physics.markSize.toFixed(3)}|${tank.state.width}x${tank.state.height}`;
     if (tank.layout && key === tank.layoutKey) return tank.layout;
-    const layout = rippleLayout(tank.experiment, frame, physics.lambda, physics.speed, physics.markSize);
+    const layout = rippleLayout(
+      tank.experiment,
+      frame,
+      physics.lambda,
+      physics.speed,
+      physics.markSize,
+    );
     tank.layout = layout;
     tank.layoutKey = key;
     this.#runMedia(tank, layout, physics);
@@ -1023,10 +1078,14 @@ class RippleLab implements SceneSim {
         // Past it, each slit is a dipper fed by the wave that reached it: a ring SLIT_RING × (that
         // wave's height × slit width / wavelength) high, a quarter turn ahead of it.
         const phase = -k * (slits.far - from);
-        const reached = bar.amp * Math.exp((-physics.fade / (2 * physics.speed)) * (slits.far - from));
+        const reached =
+          bar.amp * Math.exp((-physics.fade / (2 * physics.speed)) * (slits.far - from));
         for (const centre of slits.centres) {
           if (points >= SEED_POINTS) break;
-          this.#points.set([centre.x, centre.y, (SLIT_RING * reached * slits.width) / physics.lambda, phase], points * 4);
+          this.#points.set(
+            [centre.x, centre.y, (SLIT_RING * reached * slits.width) / physics.lambda, phase],
+            points * 4,
+          );
           this.#sides.set([bar.nx, bar.ny, slits.far, 0], points * 4);
           points++;
         }
@@ -1046,7 +1105,13 @@ class RippleLab implements SceneSim {
    * Step a tank through `seconds` of its time, at most `most` steps (a slow machine's tank runs
    * slow), its dippers at `gain` of their strength.
    */
-  #advance(tank: Tank, seconds: number, most: number, finger: Point | undefined, gain: number): void {
+  #advance(
+    tank: Tank,
+    seconds: number,
+    most: number,
+    finger: Point | undefined,
+    gain: number,
+  ): void {
     const physics = this.#need();
     tank.pending += seconds / physics.step;
     const steps = Math.min(Math.floor(tank.pending), most);
@@ -1067,7 +1132,8 @@ class RippleLab implements SceneSim {
     // Pushes per step for a ring 1 high a wavelength out, and for plane waves 1 high.
     const pointUnit = (4 * C2) / (sigma * sigma);
     const pointPush = pointUnit * gain;
-    const linePush = ((2 * physics.omega * physics.step * physics.courant) / (sigma * Math.sqrt(Math.PI))) * gain;
+    const linePush =
+      ((2 * physics.omega * physics.step * physics.courant) / (sigma * Math.sqrt(Math.PI))) * gain;
     this.#dippers.fill(0);
     this.#places(tank).forEach((place, i) => {
       if (i >= DIPPERS - 1) return;
@@ -1079,9 +1145,18 @@ class RippleLab implements SceneSim {
     if (bar) this.#bar.set([bar.ax, bar.ay, bar.bx, bar.by]);
     const mark = layout.mark;
     const markOffset = tank.offsets[4];
-    if (mark) this.#mark.set([mark.x + (markOffset?.x ?? 0), mark.y + (markOffset?.y ?? 0), mark.height, mark.amp * linePush]);
+    if (mark)
+      this.#mark.set([
+        mark.x + (markOffset?.x ?? 0),
+        mark.y + (markOffset?.y ?? 0),
+        mark.height,
+        mark.amp * linePush,
+      ]);
     else this.#mark.fill(0);
-    const edge = Math.min(Math.max(SPONGE_WAVES * physics.lambda, SPONGE_WIDTH[0]), SPONGE_WIDTH[1]);
+    const edge = Math.min(
+      Math.max(SPONGE_WAVES * physics.lambda, SPONGE_WIDTH[0]),
+      SPONGE_WIDTH[1],
+    );
     this.#sponge[0] = edge;
     this.#sponge[1] = physics.sponge * physics.step;
     this.#step.run(tank.state, {
@@ -1120,7 +1195,10 @@ class RippleLab implements SceneSim {
   #places(tank: Tank): Point[] {
     const layout = tank.layout;
     if (!layout) return [];
-    const places = layout.dippers.map((dipper, i) => ({ x: dipper.x + (tank.offsets[i]?.x ?? 0), y: dipper.y + (tank.offsets[i]?.y ?? 0) }));
+    const places = layout.dippers.map((dipper, i) => ({
+      x: dipper.x + (tank.offsets[i]?.x ?? 0),
+      y: dipper.y + (tank.offsets[i]?.y ?? 0),
+    }));
     if (layout.track) {
       const at = trackAt(layout.track, tank.time);
       const offset = tank.offsets[places.length];
@@ -1132,7 +1210,7 @@ class RippleLab implements SceneSim {
   /** The view: the screen's focus here, the light's focus through the surface, the slope. */
   #render(frame: SimFrame, tank: Tank, finger: Point | undefined): void {
     const physics = this.#need();
-    const k = (TAU / physics.lambda) / physics.n;
+    const k = TAU / physics.lambda / physics.n;
     const focus = Math.min(1, Math.max(0, this.#value(frame, this.#at.focus)));
     const kappa = lerp(RIPPLE_FOCUS[0], RIPPLE_FOCUS[1], focus) * (tank.layout?.contrast ?? 1);
     this.#near.fill(0);
@@ -1174,7 +1252,9 @@ class RippleLab implements SceneSim {
       this.#untilDrip -= seconds;
       if (this.#untilDrip <= 0) {
         fall = true;
-        this.#untilDrip = lerp(DRIP_INTERVAL[0], DRIP_INTERVAL[1], Math.min(1, rate)) * (0.6 + 0.8 * this.#random());
+        this.#untilDrip =
+          lerp(DRIP_INTERVAL[0], DRIP_INTERVAL[1], Math.min(1, rate)) *
+          (0.6 + 0.8 * this.#random());
       }
     }
     if (!fall) return;
@@ -1199,7 +1279,10 @@ class RippleLab implements SceneSim {
       return;
     }
     const p = { x: pointer.x * physics.frame.width, y: pointer.y * physics.frame.height };
-    const homes: (Point | undefined)[] = layout.dippers.map((dipper) => ({ x: dipper.x, y: dipper.y }));
+    const homes: (Point | undefined)[] = layout.dippers.map((dipper) => ({
+      x: dipper.x,
+      y: dipper.y,
+    }));
     if (layout.track) homes.push(trackAt(layout.track, shown.time));
     while (homes.length < 4) homes.push(undefined);
     homes.push(layout.mark ? { x: layout.mark.x, y: layout.mark.y } : undefined);
@@ -1218,7 +1301,8 @@ class RippleLab implements SceneSim {
         }
       });
       this.#pressedAt = p;
-      if (this.#grabbed === undefined) this.#addPebble(p.x, p.y, PEBBLE.radius * physics.lambda, PEBBLE.height);
+      if (this.#grabbed === undefined)
+        this.#addPebble(p.x, p.y, PEBBLE.radius * physics.lambda, PEBBLE.height);
     }
     if (!pointer.down) {
       this.#grabbed = undefined;
@@ -1231,7 +1315,8 @@ class RippleLab implements SceneSim {
       shown.offsets[grabbed] = { x: p.x - home.x, y: p.y - home.y };
       return;
     }
-    if (this.#finger || Math.hypot(p.x - this.#pressedAt.x, p.y - this.#pressedAt.y) > DIP) this.#finger = p;
+    if (this.#finger || Math.hypot(p.x - this.#pressedAt.x, p.y - this.#pressedAt.y) > DIP)
+      this.#finger = p;
   }
 
   /** The layout texture: each tank's fixtures where they are now, and how far the coming one has faded in. */
@@ -1241,7 +1326,8 @@ class RippleLab implements SceneSim {
     const physics = this.#need();
     const fade = this.#fade;
     this.#writeRow(data, 0, shown, 1, physics);
-    if (fade !== undefined) this.#writeRow(data, 1, coming, Math.min(1, Math.max(0, fade)), physics);
+    if (fade !== undefined)
+      this.#writeRow(data, 1, coming, Math.min(1, Math.max(0, fade)), physics);
     let changed = false;
     for (let i = 0; i < data.length; i++) {
       if (data[i] !== this.#layoutShown[i]) {
@@ -1267,7 +1353,12 @@ class RippleLab implements SceneSim {
     const riding = dippers[layout.dippers.length];
     if (layout.track && riding) {
       // The Doppler dipper rides on an arm reaching in from the tank's near side.
-      beam = { ax: riding.x, ay: riding.y, bx: riding.x - layout.track.wx, by: riding.y - layout.track.wy };
+      beam = {
+        ax: riding.x,
+        ay: riding.y,
+        bx: riding.x - layout.track.wx,
+        by: riding.y - layout.track.wy,
+      };
     }
     dippers.forEach((dipper, i) => {
       if (i < 4) put(RIPPLE_TEXELS.dippers + i, dipper.x, dipper.y, RIPPLE_DIPPER, 1);
@@ -1289,7 +1380,8 @@ class RippleLab implements SceneSim {
     }
     const mark = layout.mark;
     const offset = tank.offsets[4];
-    if (mark) put(RIPPLE_TEXELS.mark, mark.x + (offset?.x ?? 0), mark.y + (offset?.y ?? 0), mark.height, 1);
+    if (mark)
+      put(RIPPLE_TEXELS.mark, mark.x + (offset?.x ?? 0), mark.y + (offset?.y ?? 0), mark.height, 1);
     put(RIPPLE_TEXELS.flags, beam ? 1 : 0, bar ? 1 : 0, 0, 0);
   }
 }
@@ -1316,7 +1408,9 @@ export function rippleSim(knobs: readonly ParamDef[]): SimFactory {
     focus: slot("focus"),
     mark: slot("mark"),
   };
-  const defaults = knobs.map((knob) => (knob.kind === "feature" ? (knob.on ? knob.value : 0) : knob.value));
+  const defaults = knobs.map((knob) =>
+    knob.kind === "feature" ? (knob.on ? knob.value : 0) : knob.value,
+  );
   return (gl): SceneSim => {
     const gpu = GpuCompute.create(gl);
     if (!gpu) return { frame: () => [], dispose: () => undefined };

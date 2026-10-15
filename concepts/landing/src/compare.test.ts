@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { HOLD_MS, readComparison, setupDifferences, TapOrHold, writeComparison } from "./compare.ts";
+import {
+  HOLD_MS,
+  readComparison,
+  setupDifferences,
+  TapOrHold,
+  writeComparison,
+} from "./compare.ts";
 import { readParams, readState, serialise } from "./state.ts";
 import { readTour, writeTour } from "./tour.ts";
 
@@ -14,7 +20,9 @@ test("a compare link keeps the hidden slot apart from the setup on screen", () =
   const query = pageQuery("scene=forest&rain=1&motion=0.3", (q) =>
     writeComparison({ live: "b", other: "scene=forest&color=mono&rain=0&dim=0.4" }, q),
   );
-  expect(query.toString()).toBe("scene=forest&rain=1&motion=0.3&compare=b&a.scene=forest&a.color=mono&a.rain=0&a.dim=0.4");
+  expect(query.toString()).toBe(
+    "scene=forest&rain=1&motion=0.3&compare=b&a.scene=forest&a.color=mono&a.rain=0&a.dim=0.4",
+  );
   // The page reads its own setup: the a.-prefixed keys never leak into it.
   const state = readState(query);
   const params = readParams(state.scene, query);
@@ -26,7 +34,11 @@ test("a compare link keeps the hidden slot apart from the setup on screen", () =
 });
 
 test("the hidden slot is normalised like any setup, and defaults need no keys", () => {
-  const read = readComparison(new URLSearchParams("scene=orbit&compare=a&b.scene=pond&b.motion=7&b.nonsense=1&b.dither=sparkle"));
+  const read = readComparison(
+    new URLSearchParams(
+      "scene=orbit&compare=a&b.scene=pond&b.motion=7&b.nonsense=1&b.dither=sparkle",
+    ),
+  );
   expect(read).toEqual({ live: "a", other: "motion=1" });
   const both = new URLSearchParams();
   writeComparison({ live: "a", other: "" }, both);
@@ -37,7 +49,10 @@ test("the hidden slot is normalised like any setup, and defaults need no keys", 
 });
 
 test("a page with a comparison and a tour reads back its setup and both session tools", () => {
-  const tour = { steps: [{ scene: "orbit" as const, dwell: 45 }, { scene: "swell" as const }], dwell: 20 };
+  const tour = {
+    steps: [{ scene: "orbit" as const, dwell: 45 }, { scene: "swell" as const }],
+    dwell: 20,
+  };
   const query = pageQuery("scene=orbit&pixel=3", (q) => {
     writeComparison({ live: "a", other: "scene=swell&levels=4" }, q);
     writeTour(tour, q);
@@ -49,7 +64,11 @@ test("a page with a comparison and a tour reads back its setup and both session 
 });
 
 test("differences name the scene first, then every key either setup changes", () => {
-  expect(setupDifferences("scene=forest&rain=1&pixel=3", "pixel=3&color=mono")).toEqual(["scene", "rain", "color"]);
+  expect(setupDifferences("scene=forest&rain=1&pixel=3", "pixel=3&color=mono")).toEqual([
+    "scene",
+    "rain",
+    "color",
+  ]);
   expect(setupDifferences("scene=forest&rain=1", "scene=forest&rain=1")).toEqual([]);
   expect(setupDifferences("rain=1", "rain=0.5")).toEqual(["rain"]);
 });

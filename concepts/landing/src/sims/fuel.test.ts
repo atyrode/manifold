@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { FUEL_STEP, FuelBed, STEADY_FIRE } from "./fuel.ts";
 
 /** Run `seconds` of motion time in fixed steps, calling `each` after every step with the elapsed time. */
-function run(bed: FuelBed, seconds: number, burnTime: number, tend: boolean, each?: (time: number) => void): void {
+function run(
+  bed: FuelBed,
+  seconds: number,
+  burnTime: number,
+  tend: boolean,
+  each?: (time: number) => void,
+): void {
   const steps = Math.round(seconds / FUEL_STEP);
   for (let i = 1; i <= steps; i++) {
     bed.step(FUEL_STEP, burnTime, tend);
@@ -11,7 +17,13 @@ function run(bed: FuelBed, seconds: number, burnTime: number, tend: boolean, eac
 }
 
 function snapshot(bed: FuelBed): number[] {
-  return [bed.heat, bed.embers, bed.smoke, bed.burst, ...bed.logs.flatMap((log) => [log.mass, log.lit, log.char, log.settle, log.placed])];
+  return [
+    bed.heat,
+    bed.embers,
+    bed.smoke,
+    bed.burst,
+    ...bed.logs.flatMap((log) => [log.mass, log.lit, log.char, log.settle, log.placed]),
+  ];
 }
 
 test("an untended fire burns down to a glowing bed, then goes out", () => {

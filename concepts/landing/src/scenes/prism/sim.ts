@@ -65,7 +65,10 @@ const LAMBDA_MAX = 690;
 const SPECTRUM_DESATURATE = 0.5;
 const SPECTRUM_LIFT = 0.55;
 
-const WAVELENGTHS: readonly number[] = Array.from({ length: PRISM_SAMPLES }, (_, i) => LAMBDA_MIN + ((LAMBDA_MAX - LAMBDA_MIN) * i) / (PRISM_SAMPLES - 1));
+const WAVELENGTHS: readonly number[] = Array.from(
+  { length: PRISM_SAMPLES },
+  (_, i) => LAMBDA_MIN + ((LAMBDA_MAX - LAMBDA_MIN) * i) / (PRISM_SAMPLES - 1),
+);
 
 function lobe(x: number, mu: number, below: number, above: number): number {
   const s = (x - mu) / (x < mu ? below : above);
@@ -78,10 +81,17 @@ function lobe(x: number, mu: number, below: number, above: number): number {
  * Matching Functions", JCGT 2(2), 2013), then XYZ to sRGB primaries.
  */
 function spectralRgb(nm: number): [number, number, number] {
-  const x = 1.056 * lobe(nm, 599.8, 37.9, 31.0) + 0.362 * lobe(nm, 442.0, 16.0, 26.7) - 0.065 * lobe(nm, 501.1, 20.4, 26.2);
+  const x =
+    1.056 * lobe(nm, 599.8, 37.9, 31.0) +
+    0.362 * lobe(nm, 442.0, 16.0, 26.7) -
+    0.065 * lobe(nm, 501.1, 20.4, 26.2);
   const y = 0.821 * lobe(nm, 568.8, 46.9, 40.5) + 0.286 * lobe(nm, 530.9, 16.3, 31.1);
   const z = 1.217 * lobe(nm, 437.0, 11.8, 36.0) + 0.681 * lobe(nm, 459.0, 26.0, 13.8);
-  return [3.2406 * x - 1.5372 * y - 0.4986 * z, -0.9689 * x + 1.8758 * y + 0.0415 * z, 0.0557 * x - 0.204 * y + 1.057 * z];
+  return [
+    3.2406 * x - 1.5372 * y - 0.4986 * z,
+    -0.9689 * x + 1.8758 * y + 0.0415 * z,
+    0.0557 * x - 0.204 * y + 1.057 * z,
+  ];
 }
 
 /**
@@ -100,12 +110,17 @@ export const prismSpectrum: readonly (readonly [number, number, number])[] = (()
     const k = Math.max(r, g, b, 1e-6) ** -SPECTRUM_LIFT;
     return [r * k, g * k, b * k];
   });
-  const at = (i: number): readonly [number, number, number] => lifted[Math.min(PRISM_SAMPLES - 1, Math.max(0, i))] ?? [0, 0, 0];
+  const at = (i: number): readonly [number, number, number] =>
+    lifted[Math.min(PRISM_SAMPLES - 1, Math.max(0, i))] ?? [0, 0, 0];
   const soft = lifted.map((_, i): [number, number, number] => {
     const a = at(i - 1);
     const b = at(i);
     const c = at(i + 1);
-    return [0.25 * a[0] + 0.5 * b[0] + 0.25 * c[0], 0.25 * a[1] + 0.5 * b[1] + 0.25 * c[1], 0.25 * a[2] + 0.5 * b[2] + 0.25 * c[2]];
+    return [
+      0.25 * a[0] + 0.5 * b[0] + 0.25 * c[0],
+      0.25 * a[1] + 0.5 * b[1] + 0.25 * c[1],
+      0.25 * a[2] + 0.5 * b[2] + 0.25 * c[2],
+    ];
   });
   const sum = [0, 0, 0];
   soft.forEach((c, i) => {
@@ -113,7 +128,9 @@ export const prismSpectrum: readonly (readonly [number, number, number])[] = (()
     for (let k = 0; k < 3; k++) sum[k] = (sum[k] ?? 0) + w * (c[k] ?? 0);
   });
   const scale = sum.map((s) => (PRISM_SAMPLES - 1) / Math.max(s, 1e-6));
-  return soft.map((c) => [c[0] * (scale[0] ?? 1), c[1] * (scale[1] ?? 1), c[2] * (scale[2] ?? 1)] as const);
+  return soft.map(
+    (c) => [c[0] * (scale[0] ?? 1), c[1] * (scale[1] ?? 1), c[2] * (scale[2] ?? 1)] as const,
+  );
 })();
 
 // ---- texture layout ------------------------------------------------------------------------------
@@ -271,7 +288,8 @@ const ENTER_SETTLE = 1.1;
 const EXIT_TURN = 26 * DEG;
 
 /** Ease-out with a small overshoot: 0 → 1, passing 1 by a few per cent on the way to rest. */
-const settleBack = (p: number): number => 1 + (ENTER_SETTLE + 1) * (p - 1) ** 3 + ENTER_SETTLE * (p - 1) ** 2;
+const settleBack = (p: number): number =>
+  1 + (ENTER_SETTLE + 1) * (p - 1) ** 3 + ENTER_SETTLE * (p - 1) ** 2;
 
 /** An angle wrapped into (-span / 2, span / 2]. */
 const wrap = (angle: number, span: number): number => angle - span * Math.round(angle / span);
@@ -287,7 +305,8 @@ function fresnel(n1: number, n2: number, cosI: number, cosT: number): number {
 const cauchy = (nm: number, b: number): number => N_MID + b * (1e6 / (nm * nm) - 1 / 0.3025);
 
 /** The angle of incidence below which light of index n cannot leave by the second face (60° apex). */
-const swallowedBelow = (n: number): number => Math.asin(clamp(n * Math.sin(Math.PI / 3 - Math.asin(1 / n)), -1, 1));
+const swallowedBelow = (n: number): number =>
+  Math.asin(clamp(n * Math.sin(Math.PI / 3 - Math.asin(1 / n)), -1, 1));
 
 // ---- rays ----------------------------------------------------------------------------------------
 
@@ -365,7 +384,16 @@ const byWeight = (a: Fan, b: Fan): number => b.weight - a.weight;
 
 // ---- the simulation ------------------------------------------------------------------------------
 
-type KnobKey = "turn" | "speed" | "dispersion" | "beam" | "eclipse" | "second" | "reflections" | "mark" | "screen";
+type KnobKey =
+  | "turn"
+  | "speed"
+  | "dispersion"
+  | "beam"
+  | "eclipse"
+  | "second"
+  | "reflections"
+  | "mark"
+  | "screen";
 
 class PrismSim implements SceneSim {
   readonly #fanTexture: DataTexture;
@@ -455,13 +483,33 @@ class PrismSim implements SceneSim {
   #secondActive = false;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader<KnobKey>("prism", params, ["turn", "speed", "dispersion", "beam", "eclipse", "second", "reflections", "mark", "screen"]);
+    this.#knobs = new KnobReader<KnobKey>("prism", params, [
+      "turn",
+      "speed",
+      "dispersion",
+      "beam",
+      "eclipse",
+      "second",
+      "reflections",
+      "mark",
+      "screen",
+    ]);
     this.#eclipseTrigger = this.#knobs.trigger("eclipse");
     this.#secondTrigger = this.#knobs.trigger("second");
     this.#markTrigger = this.#knobs.trigger("mark");
     this.#free.push(...this.#bundles);
-    this.#fanTexture = new DataTexture(gl, { width: PRISM_ROW, height: PRISM_FANS, format: "rgba16f", filter: "nearest" });
-    this.#stateTexture = new DataTexture(gl, { width: STATE_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#fanTexture = new DataTexture(gl, {
+      width: PRISM_ROW,
+      height: PRISM_FANS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#stateTexture = new DataTexture(gl, {
+      width: STATE_TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     // Rocking or spinning, the prism starts at minimum deviation, the fan at rest, swinging away
     // from the eclipse.
     this.#rock = Math.asin(-(ROCK_ABOVE - ROCK_BELOW) / (ROCK_ABOVE + ROCK_BELOW));
@@ -493,7 +541,8 @@ class PrismSim implements SceneSim {
     const knobs = this.#knobs;
     this.#spinning = knobs.value(frame, "turn") > 0.5;
     this.#speed = clamp(knobs.value(frame, "speed"), 0, 1);
-    this.#cauchyB = CAUCHY_MIN + (CAUCHY_MAX - CAUCHY_MIN) * clamp(knobs.value(frame, "dispersion"), 0, 1);
+    this.#cauchyB =
+      CAUCHY_MIN + (CAUCHY_MAX - CAUCHY_MIN) * clamp(knobs.value(frame, "dispersion"), 0, 1);
     this.#ghost = GHOST_GAIN * clamp(knobs.value(frame, "reflections"), 0, 1);
     this.#eclipseRate = clamp(knobs.value(frame, "eclipse"), 0, 1);
     const second = knobs.value(frame, "second");
@@ -505,7 +554,8 @@ class PrismSim implements SceneSim {
     this.#markSize = clamp(this.#markOn ? mark : knobs.amount(frame, "mark"), 0, 1);
     this.#beam = clamp(knobs.value(frame, "beam"), 0, 1);
     this.#screenOn = knobs.value(frame, "screen") > 0;
-    for (let i = 0; i < PRISM_SAMPLES; i++) this.#index[i] = cauchy(WAVELENGTHS[i] ?? 550, this.#cauchyB);
+    for (let i = 0; i < PRISM_SAMPLES; i++)
+      this.#index[i] = cauchy(WAVELENGTHS[i] ?? 550, this.#cauchyB);
   }
 
   #layout(frame: SimFrame): void {
@@ -526,10 +576,21 @@ class PrismSim implements SceneSim {
     this.#sourceX = px - 4 * dx;
     this.#sourceY = py - 4 * dy;
     // The M sits up the beam, kept inside the picture.
-    const half = 0.5 * (MARK_SMALL + (MARK_LARGE - MARK_SMALL) * this.#markSize) * this.#scale + 0.04;
-    const reachX = dx < 0 ? (this.#aspect / 2 - half - px) / -dx : dx > 0 ? (px + this.#aspect / 2 - half) / dx : Number.POSITIVE_INFINITY;
-    const reachY = dy < 0 ? (0.5 - half - py) / -dy : dy > 0 ? (py + 0.5 - half) / dy : Number.POSITIVE_INFINITY;
-    const along = clamp(Math.min(MARK_DISTANCE * this.#scale, reachX, reachY), 0.6 * this.#side, MARK_DISTANCE);
+    const half =
+      0.5 * (MARK_SMALL + (MARK_LARGE - MARK_SMALL) * this.#markSize) * this.#scale + 0.04;
+    const reachX =
+      dx < 0
+        ? (this.#aspect / 2 - half - px) / -dx
+        : dx > 0
+          ? (px + this.#aspect / 2 - half) / dx
+          : Number.POSITIVE_INFINITY;
+    const reachY =
+      dy < 0 ? (0.5 - half - py) / -dy : dy > 0 ? (py + 0.5 - half) / dy : Number.POSITIVE_INFINITY;
+    const along = clamp(
+      Math.min(MARK_DISTANCE * this.#scale, reachX, reachY),
+      0.6 * this.#side,
+      MARK_DISTANCE,
+    );
     this.#markX = px - dx * along;
     this.#markY = py - dy * along;
     // Passage. Entering, the beam swings about the M's hole from above its rest line down onto
@@ -608,19 +669,27 @@ class PrismSim implements SceneSim {
 
     // Switching between rock and spin hands the difference to the user offset, so nothing jumps.
     const base = this.#restingTurn();
-    if (Number.isFinite(this.#base) && this.#spinning !== this.#wasSpinning) this.#user += wrap(this.#base - base, THIRD);
+    if (Number.isFinite(this.#base) && this.#spinning !== this.#wasSpinning)
+      this.#user += wrap(this.#base - base, THIRD);
     this.#wasSpinning = this.#spinning;
     this.#base = base;
 
     // Eclipses come on their own while rocking; "now" plays one at any time, even with motion off.
     const interval = ECLIPSE_RARE * (ECLIPSE_OFTEN / ECLIPSE_RARE) ** this.#eclipseRate;
     if (Number.isNaN(this.#nextEclipse)) this.#nextEclipse = ECLIPSE_FIRST * interval;
-    if (this.#eclipseRate > 0 && !this.#spinning && !this.#dragging && this.#clock >= this.#nextEclipse && this.#eclipseAge >= ECLIPSE_LENGTH) {
+    if (
+      this.#eclipseRate > 0 &&
+      !this.#spinning &&
+      !this.#dragging &&
+      this.#clock >= this.#nextEclipse &&
+      this.#eclipseAge >= ECLIPSE_LENGTH
+    ) {
       this.#startEclipse(false);
       const jitter = 0.85 + 0.3 * ((Math.imul(this.#eclipses, 0x9e3779b1) >>> 0) / 4294967296);
       this.#nextEclipse = this.#clock + interval * jitter;
     }
-    if (this.#eclipseRate <= 0 && this.#clock >= this.#nextEclipse) this.#nextEclipse = this.#clock + interval;
+    if (this.#eclipseRate <= 0 && this.#clock >= this.#nextEclipse)
+      this.#nextEclipse = this.#clock + interval;
     if (this.#eclipseAge < ECLIPSE_LENGTH) this.#eclipseAge += this.#eclipseNow ? dt : calm;
 
     this.#turnByHand(dt, pointer);
@@ -634,8 +703,16 @@ class PrismSim implements SceneSim {
     this.#markVisit = Math.max(0, this.#markVisit - dt);
     const secondWanted = this.#secondOn || this.#secondVisit > 0 ? 1 : 0;
     const markWanted = this.#markOn || this.#markVisit > 0 ? 1 : 0;
-    this.#secondShown = clamp(this.#secondShown + Math.sign(secondWanted - this.#secondShown) * (dt / SLIDE), 0, 1);
-    this.#markShown = clamp(this.#markShown + Math.sign(markWanted - this.#markShown) * (dt / MARK_FADE), 0, 1);
+    this.#secondShown = clamp(
+      this.#secondShown + Math.sign(secondWanted - this.#secondShown) * (dt / SLIDE),
+      0,
+      1,
+    );
+    this.#markShown = clamp(
+      this.#markShown + Math.sign(markWanted - this.#markShown) * (dt / MARK_FADE),
+      0,
+      1,
+    );
   }
 
   /**
@@ -789,24 +866,34 @@ class PrismSim implements SceneSim {
         const vy = ey - this.#centreY;
         const clear = 1.05 * radius;
         const along = vx * ux + vy * uy;
-        half = Math.max(half, -along + Math.sqrt(Math.max(0, along * along - (vx * vx + vy * vy - clear * clear))));
+        half = Math.max(
+          half,
+          -along + Math.sqrt(Math.max(0, along * along - (vx * vx + vy * vy - clear * clear))),
+        );
       }
       const restX = 2 * (ex + ux * half) - this.#centreX;
       const restY = 2 * (ey + uy * half) - this.#centreY;
       // A change of set-up (gap, motion, screen) moves it over a moment rather than at once.
-      const follow = Number.isNaN(this.#restX) || this.#secondShown < 1 ? 1 : 1 - Math.exp(-dt / SETTLE);
-      this.#restX = Number.isNaN(this.#restX) ? restX : this.#restX + (restX - this.#restX) * follow;
+      const follow =
+        Number.isNaN(this.#restX) || this.#secondShown < 1 ? 1 : 1 - Math.exp(-dt / SETTLE);
+      this.#restX = Number.isNaN(this.#restX)
+        ? restX
+        : this.#restX + (restX - this.#restX) * follow;
       this.#restY += (restY - this.#restY) * follow;
       // Prism 2 is prism 1 mirrored through the centre of symmetry, so moving it along the fan keeps
       // every colour leaving parallel to the sunbeam: it slides in that way from just beyond the
       // picture, recombining the colours as it comes and never passing through the first prism.
-      const slide = this.#beyondView(this.#restX, this.#restY, radius, ux, uy) * (1 - smoothstep(0, 1, this.#secondShown));
+      const slide =
+        this.#beyondView(this.#restX, this.#restY, radius, ux, uy) *
+        (1 - smoothstep(0, 1, this.#secondShown));
       const x = this.#restX + slide * ux;
       const y = this.#restY + slide * uy;
       const back = this.#backOff(0.5 * (x + this.#centreX), 0.5 * (y + this.#centreY), ux, uy);
       this.#secondX = x + 2 * back * ux;
       this.#secondY = y + 2 * back * uy;
-      active = Math.abs(this.#secondX) < this.#aspect / 2 + VIEW_MARGIN + radius && Math.abs(this.#secondY) < 0.5 + VIEW_MARGIN + radius;
+      active =
+        Math.abs(this.#secondX) < this.#aspect / 2 + VIEW_MARGIN + radius &&
+        Math.abs(this.#secondY) < 0.5 + VIEW_MARGIN + radius;
     }
     this.#secondActive = active;
     this.#setPrism(1, this.#secondX, this.#secondY, this.#angle + Math.PI, active);
@@ -935,7 +1022,11 @@ class PrismSim implements SceneSim {
   #exitDistance(ray: Ray): number {
     const hx = this.#aspect / 2 + VIEW_MARGIN;
     const hy = 0.5 + VIEW_MARGIN;
-    if ((Math.abs(ray.dx) < 1e-12 && Math.abs(ray.x) > hx) || (Math.abs(ray.dy) < 1e-12 && Math.abs(ray.y) > hy)) return 0;
+    if (
+      (Math.abs(ray.dx) < 1e-12 && Math.abs(ray.x) > hx) ||
+      (Math.abs(ray.dy) < 1e-12 && Math.abs(ray.y) > hy)
+    )
+      return 0;
     const ax = (-hx - ray.x) / ray.dx;
     const bx = (hx - ray.x) / ray.dx;
     const ay = (-hy - ray.y) / ray.dy;
@@ -972,7 +1063,12 @@ class PrismSim implements SceneSim {
     if (fan === undefined) return;
     this.#fanCount++;
     const glass = bundle.medium >= 0;
-    fan.kind = bundle.face < 0 ? PRISM_KIND_SOURCE : glass ? PRISM_KIND_GLASS + bundle.medium : PRISM_KIND_AIR;
+    fan.kind =
+      bundle.face < 0
+        ? PRISM_KIND_SOURCE
+        : glass
+          ? PRISM_KIND_GLASS + bundle.medium
+          : PRISM_KIND_AIR;
     const side = glass ? -1 : 1;
     if (bundle.face < 0) {
       fan.startX = this.#lightDX;

@@ -487,7 +487,11 @@ interface FluidPasses {
  * Compile the solver's passes for these edges and snippets; if one fails (a snippet that does not
  * compile), the ones already built are freed before the error goes on.
  */
-function buildPasses(gpu: GpuCompute, edges: Edges, options: FluidOptions): { passes: FluidPasses; all: readonly Pass[] } {
+function buildPasses(
+  gpu: GpuCompute,
+  edges: Edges,
+  options: FluidOptions,
+): { passes: FluidPasses; all: readonly Pass[] } {
   const head = `#define FLUID_LEFT ${EDGE_CODE[edges.left]}
 #define FLUID_RIGHT ${EDGE_CODE[edges.right]}
 #define FLUID_BOTTOM ${EDGE_CODE[edges.bottom]}
@@ -502,7 +506,10 @@ ${EDGE_TESTS}`;
     return built;
   };
   try {
-    const obstacle = options.obstacle === undefined ? undefined : pass(OBSTACLE_HEAD + options.obstacle + OBSTACLE_MAIN, "fluid obstacle");
+    const obstacle =
+      options.obstacle === undefined
+        ? undefined
+        : pass(OBSTACLE_HEAD + options.obstacle + OBSTACLE_MAIN, "fluid obstacle");
     const passes: FluidPasses = {
       obstacle,
       curl: pass(CURL, "fluid curl"),
@@ -556,8 +563,16 @@ export class FluidSim {
   readonly #scratch = new Map<string, RenderTarget>();
   readonly #domain = new Float32Array(2);
   readonly #keep = new Float32Array(4);
-  readonly #velocitySplats: SplatBatch = { at: new Float32Array(SPLATS * 4), value: new Float32Array(SPLATS * 4), count: 0 };
-  readonly #dyeSplats: SplatBatch = { at: new Float32Array(SPLATS * 4), value: new Float32Array(SPLATS * 4), count: 0 };
+  readonly #velocitySplats: SplatBatch = {
+    at: new Float32Array(SPLATS * 4),
+    value: new Float32Array(SPLATS * 4),
+    count: 0,
+  };
+  readonly #dyeSplats: SplatBatch = {
+    at: new Float32Array(SPLATS * 4),
+    value: new Float32Array(SPLATS * 4),
+    count: 0,
+  };
   #aspect: number;
   /** Seconds of the last step, for `advect`. */
   #lastDt = 0;
@@ -575,11 +590,19 @@ export class FluidSim {
     const wrapX = edges.left === "wrap";
     const wrapY = edges.bottom === "wrap";
     if (wrapX !== (edges.right === "wrap") || wrapY !== (edges.top === "wrap")) {
-      throw new FluidError("fluid: an edge wraps only onto the opposite edge: make both left and right (or bottom and top) wrap");
+      throw new FluidError(
+        "fluid: an edge wraps only onto the opposite edge: make both left and right (or bottom and top) wrap",
+      );
     }
     const wrap: TargetWrap = wrapX ? (wrapY ? "repeat" : "repeat-x") : wrapY ? "repeat-y" : "clamp";
-    this.#velocityResolution = Math.max(MIN_RESOLUTION, Math.round(options.velocityResolution ?? DEFAULT_VELOCITY_RESOLUTION));
-    this.#dyeResolution = Math.max(MIN_RESOLUTION, Math.round(options.dyeResolution ?? DEFAULT_DYE_RESOLUTION));
+    this.#velocityResolution = Math.max(
+      MIN_RESOLUTION,
+      Math.round(options.velocityResolution ?? DEFAULT_VELOCITY_RESOLUTION),
+    );
+    this.#dyeResolution = Math.max(
+      MIN_RESOLUTION,
+      Math.round(options.dyeResolution ?? DEFAULT_DYE_RESOLUTION),
+    );
     this.#dyeScheme = options.dyeScheme ?? "maccormack";
     const width = options.width ?? gpu.gl.drawingBufferWidth;
     const height = options.height ?? gpu.gl.drawingBufferHeight;
@@ -596,7 +619,8 @@ export class FluidSim {
     this.pressure = gpu.pingPong({ ...v, format: "r16f", wrap });
     this.curl = gpu.target({ ...v, format: "r16f", wrap });
     this.#divergence = gpu.target({ ...v, format: "rg16f", wrap });
-    this.solid = options.obstacle === undefined ? undefined : gpu.target({ ...v, format: "r8", wrap });
+    this.solid =
+      options.obstacle === undefined ? undefined : gpu.target({ ...v, format: "r8", wrap });
     this.dye = gpu.pingPong({ ...d, format: options.dyeFormat ?? "rgba16f", wrap });
 
     // Every pass reads the same fields: bound once (a PingPong resolves to its current side when
@@ -608,8 +632,14 @@ export class FluidSim {
     p.correct.bind({ uVelocity: this.velocity });
     p.divergence.bind({ uVelocity: this.velocity });
     p.jacobi.bind({ uPressure: this.pressure, uDivergence: this.#divergence });
-    p.project.bind({ uVelocity: this.velocity, uPressure: this.pressure, uDivergence: this.#divergence });
-    if (this.solid) for (const reader of [p.advect, p.correct, p.divergence, p.project]) reader.bind({ uSolid: this.solid });
+    p.project.bind({
+      uVelocity: this.velocity,
+      uPressure: this.pressure,
+      uDivergence: this.#divergence,
+    });
+    if (this.solid)
+      for (const reader of [p.advect, p.correct, p.divergence, p.project])
+        reader.bind({ uSolid: this.solid });
     this.#setDomain();
   }
 
@@ -626,7 +656,8 @@ export class FluidSim {
   splat(x: number, y: number, radius: number, impulse: SplatImpulse): void {
     this.#check();
     const inverse = 1 / Math.max(radius * radius, 1e-10);
-    if (impulse.velocity) this.#queue(this.#velocitySplats, this.velocity, x, y, inverse, impulse.velocity);
+    if (impulse.velocity)
+      this.#queue(this.#velocitySplats, this.velocity, x, y, inverse, impulse.velocity);
     if (impulse.dye) this.#queue(this.#dyeSplats, this.dye, x, y, inverse, impulse.dye);
   }
 
@@ -653,7 +684,9 @@ export class FluidSim {
 
     if (p.obstacle && this.solid) p.obstacle.run(this.solid, { uniforms: { uTime: time } });
     p.curl.run(this.curl);
-    p.forces.run(this.velocity, { uniforms: { uDt: dt, uTime: time, uVorticity: step.vorticity ?? 0 } });
+    p.forces.run(this.velocity, {
+      uniforms: { uDt: dt, uTime: time, uVorticity: step.vorticity ?? 0 },
+    });
     this.#keep.fill(Math.exp(-Math.max(0, step.velocityDissipation ?? 0) * dt));
     p.advect.run(this.velocity, {
       uniforms: { uDt: dt, uKeep: this.#keep, uClean: 0, uMask: 1 },
@@ -662,7 +695,8 @@ export class FluidSim {
     p.divergence.run(this.#divergence);
     const iterations = Math.max(0, Math.round(step.iterations ?? DEFAULT_ITERATIONS));
     const retain = Math.min(1, Math.max(0, step.pressureRetain ?? DEFAULT_PRESSURE_RETAIN));
-    for (let i = 0; i < iterations; i++) p.jacobi.run(this.pressure, { uniforms: { uRetain: i === 0 ? retain : 1 } });
+    for (let i = 0; i < iterations; i++)
+      p.jacobi.run(this.pressure, { uniforms: { uRetain: i === 0 ? retain : 1 } });
     p.project.run(this.velocity);
     this.#advect(this.dye, dt, step.dyeDissipation ?? 0, this.#dyeScheme);
   }
@@ -692,8 +726,11 @@ export class FluidSim {
     }
     const v = gridSize(aspect, this.#velocityResolution);
     const d = gridSize(aspect, this.#dyeResolution);
-    const same = v.width === this.velocity.width && v.height === this.velocity.height &&
-      d.width === this.dye.width && d.height === this.dye.height;
+    const same =
+      v.width === this.velocity.width &&
+      v.height === this.velocity.height &&
+      d.width === this.dye.width &&
+      d.height === this.dye.height;
     if (same) return false;
     this.velocity.resize(v.width, v.height, keep);
     this.pressure.resize(v.width, v.height, keep);
@@ -748,7 +785,14 @@ export class FluidSim {
     for (const built of this.#all) built.set({ uDomain: this.#domain });
   }
 
-  #queue(batch: SplatBatch, field: PingPong, x: number, y: number, inverse: number, values: ArrayLike<number>): void {
+  #queue(
+    batch: SplatBatch,
+    field: PingPong,
+    x: number,
+    y: number,
+    inverse: number,
+    values: ArrayLike<number>,
+  ): void {
     if (batch.count === SPLATS) this.#flush(batch, field);
     const k = batch.count * 4;
     batch.at[k] = x * this.#aspect;
@@ -768,7 +812,12 @@ export class FluidSim {
     batch.count = 0;
   }
 
-  #advect(field: PingPong, dt: number, dissipation: number | ArrayLike<number>, scheme: AdvectScheme): void {
+  #advect(
+    field: PingPong,
+    dt: number,
+    dissipation: number | ArrayLike<number>,
+    scheme: AdvectScheme,
+  ): void {
     const keep = this.#keep;
     for (let i = 0; i < 4; i++) {
       const rate = typeof dissipation === "number" ? dissipation : (dissipation[i] ?? 0);
@@ -777,7 +826,10 @@ export class FluidSim {
     const p = this.#passes;
     switch (scheme) {
       case "linear":
-        p.advect.run(field, { uniforms: { uDt: dt, uKeep: keep, uClean: 1, uMask: 1 }, textures: { uSource: field } });
+        p.advect.run(field, {
+          uniforms: { uDt: dt, uKeep: keep, uClean: 1, uMask: 1 },
+          textures: { uSource: field },
+        });
         return;
       case "maccormack": {
         const read = field.read;
@@ -788,8 +840,14 @@ export class FluidSim {
           forward = this.gpu.target({ width, height, format, filter, wrap });
           this.#scratch.set(key, forward);
         }
-        p.advect.run(forward, { uniforms: { uDt: dt, uKeep: KEEP_ALL, uClean: 1, uMask: 0 }, textures: { uSource: field } });
-        p.correct.run(field, { uniforms: { uDt: dt, uKeep: keep, uClean: 1 }, textures: { uSource: field, uForward: forward } });
+        p.advect.run(forward, {
+          uniforms: { uDt: dt, uKeep: KEEP_ALL, uClean: 1, uMask: 0 },
+          textures: { uSource: field },
+        });
+        p.correct.run(field, {
+          uniforms: { uDt: dt, uKeep: keep, uClean: 1 },
+          textures: { uSource: field, uForward: forward },
+        });
         return;
       }
       default: {

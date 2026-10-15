@@ -23,12 +23,20 @@ interface Sand {
  */
 function plate(grainSize: number, next?: number, seconds = 0): Sand {
   const sim = new HeadlessSim(chladniScene);
-  const frame: HeadlessFrame = { dt: 0, motion: 0, aspect: 16 / 9, height: 360, knobs: { grainSize }, pointer: { inside: false } };
+  const frame: HeadlessFrame = {
+    dt: 0,
+    motion: 0,
+    aspect: 16 / 9,
+    height: 360,
+    knobs: { grainSize },
+    pointer: { inside: false },
+  };
   // Paused frames finish the (time-budgeted) settling of the opening figure: a slow machine takes more.
   sim.step(frame);
   while (!sim.uploaded(0)) sim.step(frame);
   if (next !== undefined) {
-    for (let t = 0; t < seconds; t += 0.05) sim.step({ ...frame, dt: 0.05, knobs: { grainSize: next } });
+    for (let t = 0; t < seconds; t += 0.05)
+      sim.step({ ...frame, dt: 0.05, knobs: { grainSize: next } });
   }
   const sand = sim.upload(0).data;
   const state = sim.upload(2).data;

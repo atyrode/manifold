@@ -43,18 +43,69 @@ interface FractalPalette {
 /** The `palette` knob's values, in order. */
 export const fractalPalettes: readonly FractalPalette[] = [
   // Moonlit: silver lines on a night-blue ground, pale gold pearls, a gold M.
-  { label: "moonlit", paper: false, bg: "#060a16", glow: "#1f335c", line: "#7394c2", edge: "#dfe9f8", body: "#070c18", lit: "#1b2d52", bodyLine: "#5874a6", gild: "#efcd82", seal: "#ffd277" },
+  {
+    label: "moonlit",
+    paper: false,
+    bg: "#060a16",
+    glow: "#1f335c",
+    line: "#7394c2",
+    edge: "#dfe9f8",
+    body: "#070c18",
+    lit: "#1b2d52",
+    bodyLine: "#5874a6",
+    gild: "#efcd82",
+    seal: "#ffd277",
+  },
   // Gilt: gold on black lacquer, as maki-e, with a vermilion M.
-  { label: "gilt", paper: false, bg: "#070504", glow: "#3a2610", line: "#9a7434", edge: "#f6d98e", body: "#050302", lit: "#2a1b0a", bodyLine: "#8a6a32", gild: "#ffe2a0", seal: "#d0482c" },
+  {
+    label: "gilt",
+    paper: false,
+    bg: "#070504",
+    glow: "#3a2610",
+    line: "#9a7434",
+    edge: "#f6d98e",
+    body: "#050302",
+    lit: "#2a1b0a",
+    bodyLine: "#8a6a32",
+    gild: "#ffe2a0",
+    seal: "#d0482c",
+  },
   // Sumi: ink on paper, ochre-gold filigree, a cinnabar seal for the M.
-  { label: "sumi", paper: true, bg: "#ece6d8", glow: "#cfc6b4", line: "#8f877a", edge: "#1a1918", body: "#2b2927", lit: "#5a5650", bodyLine: "#9d968a", gild: "#b08636", seal: "#c0392b" },
+  {
+    label: "sumi",
+    paper: true,
+    bg: "#ece6d8",
+    glow: "#cfc6b4",
+    line: "#8f877a",
+    edge: "#1a1918",
+    body: "#2b2927",
+    lit: "#5a5650",
+    bodyLine: "#9d968a",
+    gild: "#b08636",
+    seal: "#c0392b",
+  },
   // Porcelain: cobalt on white glaze, gilded.
-  { label: "porcelain", paper: true, bg: "#eef1f5", glow: "#c9d6ec", line: "#7d95c8", edge: "#14307a", body: "#1d3b8c", lit: "#4a68b8", bodyLine: "#a9bbe3", gild: "#c49a3c", seal: "#a8741e" },
+  {
+    label: "porcelain",
+    paper: true,
+    bg: "#eef1f5",
+    glow: "#c9d6ec",
+    line: "#7d95c8",
+    edge: "#14307a",
+    body: "#1d3b8c",
+    lit: "#4a68b8",
+    bodyLine: "#a9bbe3",
+    gild: "#c49a3c",
+    seal: "#a8741e",
+  },
 ];
 
 const inks = glslPick(
   "palette",
-  fractalPalettes.map((p) => `FractalInk(${[p.bg, p.glow, p.line, p.edge, p.body, p.lit, p.bodyLine, p.gild, p.seal].map(glslVec3).join(", ")})`),
+  fractalPalettes.map(
+    (p) =>
+      `FractalInk(${[p.bg, p.glow, p.line, p.edge, p.body, p.lit, p.bodyLine, p.gild, p.seal].map(glslVec3).join(", ")})`,
+  ),
   "FractalInk(vec3(0.0), vec3(0.2), vec3(0.5), vec3(1.0), vec3(0.0), vec3(0.2), vec3(0.4), vec3(1.0, 0.8, 0.4), vec3(1.0, 0.8, 0.4))",
 );
 

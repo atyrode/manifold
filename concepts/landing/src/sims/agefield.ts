@@ -59,7 +59,8 @@ export class AgeField {
     if (this.#clock <= 2 * AGE_REBASE) return;
     this.#clock -= AGE_REBASE;
     const data = this.data;
-    for (let k = 0; k < data.length; k++) data[k] = Math.max(-AGE_REBASE, (data[k] ?? 0) - AGE_REBASE);
+    for (let k = 0; k < data.length; k++)
+      data[k] = Math.max(-AGE_REBASE, (data[k] ?? 0) - AGE_REBASE);
     this.#dirty = true;
   }
 

@@ -51,7 +51,16 @@ export const harmonographInks = ["sepia", "indigo", "vermilion"] as const;
 export const harmonographPapers = ["cream", "vellum", "kraft"] as const;
 
 type Knob = "figure" | "lasting" | "swing" | "rotary" | "renew" | "drawings" | "nib" | "mark";
-const KNOBS: readonly Knob[] = ["figure", "lasting", "swing", "rotary", "renew", "drawings", "nib", "mark"];
+const KNOBS: readonly Knob[] = [
+  "figure",
+  "lasting",
+  "swing",
+  "rotary",
+  "renew",
+  "drawings",
+  "nib",
+  "mark",
+];
 
 /** The knobs as the sim uses them. */
 interface Settings {
@@ -137,9 +146,23 @@ const FIRST_PREWARM_BUDGET_MS = 90;
 /** Warm-up steps between two looks at the clock. */
 const PREWARM_CHUNK = 32;
 
-const RATIOS: readonly (readonly [number, number])[] = [[1, 2], [2, 3], [3, 4], [4, 5], [3, 5]];
+const RATIOS: readonly (readonly [number, number])[] = [
+  [1, 2],
+  [2, 3],
+  [3, 4],
+  [4, 5],
+  [3, 5],
+];
 /** "Random" picks from here: the simple ratios twice, so the figures stay open and the rest are rare. */
-const RANDOM_RATIOS: readonly (readonly [number, number])[] = [[2, 3], [2, 3], [3, 4], [3, 4], [1, 2], [4, 5], [3, 5]];
+const RANDOM_RATIOS: readonly (readonly [number, number])[] = [
+  [2, 3],
+  [2, 3],
+  [3, 4],
+  [3, 4],
+  [1, 2],
+  [4, 5],
+  [3, 5],
+];
 
 /** One sheet's pendulums. */
 interface Plan {
@@ -168,9 +191,13 @@ interface Plan {
 }
 
 function makePlan(seed: number, index: number, figure: number, previous: Plan | undefined): Plan {
-  const rng = new Random(Math.imul(seed + 1, 0x9e3779b1) ^ Math.imul(index + 1, 0x85ebca6b) ^ 0x2f6c1d);
+  const rng = new Random(
+    Math.imul(seed + 1, 0x9e3779b1) ^ Math.imul(index + 1, 0x85ebca6b) ^ 0x2f6c1d,
+  );
   const preset = figure >= 1 ? RATIOS[figure - 1] : undefined;
-  const pool = RANDOM_RATIOS.filter(([a, b]) => previous === undefined || a !== previous.a || b !== previous.b);
+  const pool = RANDOM_RATIOS.filter(
+    ([a, b]) => previous === undefined || a !== previous.a || b !== previous.b,
+  );
   const [a, b] = preset ?? rng.pick(pool);
   // Pendulum periods of about 1.3 to 1.8 s for the fastest swing: a hundred cycles over a drawing.
   const fastest = rng.range(0.55, 0.75);
@@ -183,7 +210,11 @@ function makePlan(seed: number, index: number, figure: number, previous: Plan | 
   const fr = rng.pick(multiples) * unit * (1 + detune());
   const ax = rng.range(0.27, 0.29);
   return {
-    a, b, fx, fy, fr,
+    a,
+    b,
+    fx,
+    fy,
+    fr,
     px: rng.range(0, TAU),
     py: rng.range(0, TAU),
     pr: rng.range(0, TAU),
@@ -233,7 +264,8 @@ class Swing {
   /** The pen, in the sheet's frame: the x and y pendulums plus the rotary one's circle of `radius`. */
   position(plan: Plan, radius: number, out: Point): void {
     out.x = plan.ax * this.#ex * Math.sin(this.#tx) + radius * this.#er * Math.cos(this.#tr);
-    out.y = plan.ay * this.#ey * Math.sin(this.#ty) + radius * this.#er * plan.spin * Math.sin(this.#tr);
+    out.y =
+      plan.ay * this.#ey * Math.sin(this.#ty) + radius * this.#er * plan.spin * Math.sin(this.#tr);
   }
 
   /** How far the pen can still reach from the middle. */
@@ -277,7 +309,16 @@ class InkSheet {
    * only and adds on top of what lies there, so crossings run deeper and joints do not bead; a
    * round one (the signature, with corners) has round ends and keeps the stronger ink.
    */
-  stroke(channel: 0 | 1, ax: number, ay: number, bx: number, by: number, radius: number, alpha: number, flat: boolean): void {
+  stroke(
+    channel: 0 | 1,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    radius: number,
+    alpha: number,
+    flat: boolean,
+  ): void {
     const size = HARMONOGRAPH.grid;
     const mid = size / 2;
     const x0 = ax * TEXELS + mid;
@@ -386,7 +427,17 @@ class HarmonographSim implements SceneSim {
   readonly #stateData = new Float32Array(8);
   readonly #textures: readonly WebGLTexture[];
   readonly #clock = new FixedStep(STEP, MAX_STEPS);
-  readonly #settings: Settings = { figure: 0, lasting: 0.4, swing: 1, rotary: 0, pause: undefined, seed: 0, nib: 0.5, mark: 0, markSize: 0.23 };
+  readonly #settings: Settings = {
+    figure: 0,
+    lasting: 0.4,
+    swing: 1,
+    rotary: 0,
+    pause: undefined,
+    seed: 0,
+    nib: 0.5,
+    mark: 0,
+    markSize: 0.23,
+  };
   readonly #renewSlot: number;
   readonly #markSlot: number;
   readonly #swing = new Swing();
@@ -456,8 +507,17 @@ class HarmonographSim implements SceneSim {
     this.#knobs = knobs;
     this.#renewSlot = knobs.trigger("renew");
     this.#markSlot = knobs.trigger("mark");
-    this.#inkTexture = new DataTexture(gl, { width: HARMONOGRAPH.grid, height: HARMONOGRAPH.grid, format: "rg8" });
-    this.#stateTexture = new DataTexture(gl, { width: 2, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#inkTexture = new DataTexture(gl, {
+      width: HARMONOGRAPH.grid,
+      height: HARMONOGRAPH.grid,
+      format: "rg8",
+    });
+    this.#stateTexture = new DataTexture(gl, {
+      width: 2,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#textures = [this.#inkTexture.texture, this.#stateTexture.texture];
   }
 
@@ -475,7 +535,14 @@ class HarmonographSim implements SceneSim {
     this.#enterP = clamp(frame.passage.enter, 0, 1);
     if (frame.passage.exit > 0) {
       // The sheet leaves as it is drawn: a warm-up still under way finishes at once.
-      if (this.#warmed < this.#warmSteps) this.#warmed = runBudgeted(this.#warmStep, Number.POSITIVE_INFINITY, this.#warmSteps, this.#warmed, PREWARM_CHUNK);
+      if (this.#warmed < this.#warmSteps)
+        this.#warmed = runBudgeted(
+          this.#warmStep,
+          Number.POSITIVE_INFINITY,
+          this.#warmSteps,
+          this.#warmed,
+          PREWARM_CHUNK,
+        );
       this.#leave(frame);
       this.#upload();
       return this.#textures;
@@ -495,7 +562,13 @@ class HarmonographSim implements SceneSim {
     }
 
     if (this.#warmed < this.#warmSteps) {
-      this.#warmed = runBudgeted(this.#warmStep, this.#shown ? PREWARM_BUDGET_MS : FIRST_PREWARM_BUDGET_MS, this.#warmSteps, this.#warmed, PREWARM_CHUNK);
+      this.#warmed = runBudgeted(
+        this.#warmStep,
+        this.#shown ? PREWARM_BUDGET_MS : FIRST_PREWARM_BUDGET_MS,
+        this.#warmSteps,
+        this.#warmed,
+        PREWARM_CHUNK,
+      );
       // Until it is done the clock holds and the textures keep what they show.
       if (this.#warmed < this.#warmSteps) return this.#textures;
     }
@@ -687,7 +760,11 @@ class HarmonographSim implements SceneSim {
       const t = this.#drawT;
       // Pressure drifts slowly; ink pools and the line swells where the pen lingers; the pen runs dry.
       const pressure = 0.92 + 0.1 * Math.sin(0.7 * t + 1.3) + 0.06 * Math.sin(1.9 * t + 0.4);
-      const slow = clamp(1 - (Math.hypot(pos.x - this.#lastX, pos.y - this.#lastY) * TEXELS) / 4, 0, 1);
+      const slow = clamp(
+        1 - (Math.hypot(pos.x - this.#lastX, pos.y - this.#lastY) * TEXELS) / 4,
+        0,
+        1,
+      );
       const radius = 0.5 * lerp(NIB_THIN, NIB_BOLD, st.nib) * pressure * (1 + 0.25 * slow);
       // Light ink, so the many overlapping passes of a dense figure build tone.
       const alpha = Math.min(1, (0.36 + 0.2 * this.#swing.fullness(plan)) * (1 + 0.15 * slow));
@@ -758,7 +835,8 @@ class HarmonographSim implements SceneSim {
     this.#liftTarget = 0;
     const down = this.#lift < DOWN_LIFT;
     if (down && this.#lastDown) {
-      const radius = 0.55 * lerp(NIB_THIN, NIB_BOLD, st.nib) * (1 + 0.06 * Math.sin(2.1 * this.#phaseT));
+      const radius =
+        0.55 * lerp(NIB_THIN, NIB_BOLD, st.nib) * (1 + 0.06 * Math.sin(2.1 * this.#phaseT));
       this.#ink.stroke(1, this.#lastX, this.#lastY, pos.x, pos.y, radius, 0.96, false);
     }
     this.#lastX = pos.x;
@@ -888,7 +966,10 @@ class HarmonographSim implements SceneSim {
     splitHalf(data, 4, this.#u * this.#slide);
     data[6] = this.#tilt;
     const lift = clamp(this.#lift, 0, 1);
-    data[7] = HARMONOGRAPH.down + 0.0022 * (0.5 + 0.5 * Math.sin(this.#bob)) * (1 - lift) + HARMONOGRAPH.rise * lift;
+    data[7] =
+      HARMONOGRAPH.down +
+      0.0022 * (0.5 + 0.5 * Math.sin(this.#bob)) * (1 - lift) +
+      HARMONOGRAPH.rise * lift;
     this.#stateTexture.upload(data);
   }
 }
@@ -898,4 +979,3 @@ export function harmonographSim(params: readonly ParamDef[]): SimFactory {
   const knobs = new KnobReader<Knob>("harmonograph", params, KNOBS);
   return (gl) => new HarmonographSim(gl, knobs);
 }
-

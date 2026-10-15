@@ -42,13 +42,34 @@ import {
  * the garden, two short ones carry the low foliage over the wall's cap.
  */
 const LIMBS: readonly (readonly (readonly [number, number, number, number])[])[] = [
-  [[-0.2, 1.18, 0.12, 0.016], [0.05, 1.1, 0.25, 0.012], [0.3, 1.03, 0.205, 0.009], [0.62, 0.94, 0.215, 0.007], [0.88, 0.86, 0.24, 0.005], [1.1, 0.79, 0.255, 0.003]],
-  [[0.3, 1.03, 0.205, 0.007], [0.5, 1.0, 0.16, 0.004]],
-  [[0.05, 1.1, 0.25, 0.01], [0.22, 0.92, 0.29, 0.008], [0.46, 0.82, 0.285, 0.006], [0.74, 0.73, 0.3, 0.004]],
-  [[0.3, 1.03, 0.205, 0.006], [0.4, 1.13, 0.14, 0.004]],
+  [
+    [-0.2, 1.18, 0.12, 0.016],
+    [0.05, 1.1, 0.25, 0.012],
+    [0.3, 1.03, 0.205, 0.009],
+    [0.62, 0.94, 0.215, 0.007],
+    [0.88, 0.86, 0.24, 0.005],
+    [1.1, 0.79, 0.255, 0.003],
+  ],
+  [
+    [0.3, 1.03, 0.205, 0.007],
+    [0.5, 1.0, 0.16, 0.004],
+  ],
+  [
+    [0.05, 1.1, 0.25, 0.01],
+    [0.22, 0.92, 0.29, 0.008],
+    [0.46, 0.82, 0.285, 0.006],
+    [0.74, 0.73, 0.3, 0.004],
+  ],
+  [
+    [0.3, 1.03, 0.205, 0.006],
+    [0.4, 1.13, 0.14, 0.004],
+  ],
 ];
-const SEGMENTS = LIMBS.flatMap((limb) => limb.slice(1).map((end, k) => [limb[k] ?? end, end] as const));
-const vec4s = (rows: readonly (readonly number[])[]): string => rows.map((row) => `vec4(${row.map(glslFloat).join(", ")})`).join(",\n  ");
+const SEGMENTS = LIMBS.flatMap((limb) =>
+  limb.slice(1).map((end, k) => [limb[k] ?? end, end] as const),
+);
+const vec4s = (rows: readonly (readonly number[])[]): string =>
+  rows.map((row) => `vec4(${row.map(glslFloat).join(", ")})`).join(",\n  ");
 
 /**
  * The lowest screen height the maple reaches in a view, foliage and limbs (as gardenProject places

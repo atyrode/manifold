@@ -47,7 +47,12 @@ class CampfireFuel implements SceneSim {
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader<CampfireKnob>("campfire", params, ["fuel", "tend"]);
     this.#tendSlot = this.#knobs.trigger("tend");
-    this.#texture = new DataTexture(gl, { width: CAMPFIRE_FUEL_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: CAMPFIRE_FUEL_TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#textures = [this.#texture.texture];
   }
 

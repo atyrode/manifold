@@ -115,14 +115,25 @@ test("down, it eases flat to the nearer face, from where it touched down", () =>
 test("its frame is orthonormal and right-handed, normal up when flat, rocking by rockAngle", () => {
   const p = plate(0.3);
   const f = new Float64Array(9);
-  const dot = (i: number, j: number): number => (f[i] ?? 0) * (f[j] ?? 0) + (f[i + 1] ?? 0) * (f[j + 1] ?? 0) + (f[i + 2] ?? 0) * (f[j + 2] ?? 0);
+  const dot = (i: number, j: number): number =>
+    (f[i] ?? 0) * (f[j] ?? 0) +
+    (f[i + 1] ?? 0) * (f[j + 1] ?? 0) +
+    (f[i + 2] ?? 0) * (f[j + 2] ?? 0);
   for (let k = 0; k < 200; k++) {
     p.psi[0] = 0.37 * k;
     p.th[0] = 0.91 * k;
     p.roll[0] = 1.3 * k;
     p.sigma[0] = 0.53 * k;
     p.orient(0, (k % 5) / 4, f);
-    for (const [i, j, want] of [[0, 0, 1], [3, 3, 1], [6, 6, 1], [0, 3, 0], [0, 6, 0], [3, 6, 0]] as const) expect(dot(i, j)).toBeCloseTo(want, 12);
+    for (const [i, j, want] of [
+      [0, 0, 1],
+      [3, 3, 1],
+      [6, 6, 1],
+      [0, 3, 0],
+      [0, 6, 0],
+      [3, 6, 0],
+    ] as const)
+      expect(dot(i, j)).toBeCloseTo(want, 12);
     // n = t x s.
     expect((f[1] ?? 0) * (f[5] ?? 0) - (f[2] ?? 0) * (f[4] ?? 0)).toBeCloseTo(f[6] ?? 0, 12);
     expect((f[2] ?? 0) * (f[3] ?? 0) - (f[0] ?? 0) * (f[5] ?? 0)).toBeCloseTo(f[7] ?? 0, 12);

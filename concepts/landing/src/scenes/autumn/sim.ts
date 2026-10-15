@@ -42,7 +42,18 @@ import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { gustPulse, gustWait, windSign } from "../../sims/wind.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { AUTUMN_CARPET, AUTUMN_MARK, AUTUMN_PASSAGE, AUTUMN_PATH, AUTUMN_SLOTS, AUTUMN_TREE, AUTUMN_VIEW, AUTUMN_WHIRL, autumnFlurry, autumnPathX } from "./layout.ts";
+import {
+  AUTUMN_CARPET,
+  AUTUMN_MARK,
+  AUTUMN_PASSAGE,
+  AUTUMN_PATH,
+  AUTUMN_SLOTS,
+  AUTUMN_TREE,
+  AUTUMN_VIEW,
+  AUTUMN_WHIRL,
+  autumnFlurry,
+  autumnPathX,
+} from "./layout.ts";
 
 type Knob = "species" | "fall" | "gusts" | "season" | "wind" | "mark" | "parkSeed";
 const KNOBS: readonly Knob[] = ["species", "fall", "gusts", "season", "wind", "mark", "parkSeed"];
@@ -154,7 +165,8 @@ const MARK_SECONDS = 8;
 const MARK_HOLD = 45;
 const UPLOAD_EVERY_MS = 1000 / 24;
 
-const at = (array: Float64Array | Float32Array | Uint8Array | Int8Array, index: number): number => array[index] ?? 0;
+const at = (array: Float64Array | Float32Array | Uint8Array | Int8Array, index: number): number =>
+  array[index] ?? 0;
 
 /** Smooth value noise in two dimensions, 0..1. */
 function noise2(x: number, z: number, salt: number): number {
@@ -164,7 +176,11 @@ function noise2(x: number, z: number, salt: number): number {
   const fz = z - j;
   const ux = fx * fx * (3 - 2 * fx);
   const uz = fz * fz * (3 - 2 * fz);
-  return lerp(lerp(hash31(i, j, salt), hash31(i + 1, j, salt), ux), lerp(hash31(i, j + 1, salt), hash31(i + 1, j + 1, salt), ux), uz);
+  return lerp(
+    lerp(hash31(i, j, salt), hash31(i + 1, j, salt), ux),
+    lerp(hash31(i, j + 1, salt), hash31(i + 1, j + 1, salt), ux),
+    uz,
+  );
 }
 
 /** How busy the tree is letting go of leaves along the season (0 early, a long peak, a few stragglers at the end). */
@@ -264,12 +280,41 @@ class AutumnSim implements SceneSim {
     this.#knobs = new KnobReader("autumn", params, KNOBS);
     this.#gustSlot = this.#knobs.trigger("gusts");
     this.#markSlot = this.#knobs.trigger("mark");
-    this.#leafTexture = new DataTexture(gl, { width: 4, height: SLOTS, format: "rgba16f", filter: "nearest" });
-    this.#carpetA = new DataTexture(gl, { width: COLS, height: ROWS, format: "rgba16f", filter: "nearest" });
-    this.#carpetB = new DataTexture(gl, { width: COLS, height: ROWS, format: "rgba16f", filter: "nearest" });
-    this.#stateTexture = new DataTexture(gl, { width: 2, height: 1, format: "rgba16f", filter: "nearest" });
-    this.#textures = [this.#leafTexture.texture, this.#carpetA.texture, this.#carpetB.texture, this.#stateTexture.texture];
-    this.#layOut(this.#knobs.initial("parkSeed"), this.#knobs.initial("season"), this.#knobs.initial("species"));
+    this.#leafTexture = new DataTexture(gl, {
+      width: 4,
+      height: SLOTS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#carpetA = new DataTexture(gl, {
+      width: COLS,
+      height: ROWS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#carpetB = new DataTexture(gl, {
+      width: COLS,
+      height: ROWS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#stateTexture = new DataTexture(gl, {
+      width: 2,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#textures = [
+      this.#leafTexture.texture,
+      this.#carpetA.texture,
+      this.#carpetB.texture,
+      this.#stateTexture.texture,
+    ];
+    this.#layOut(
+      this.#knobs.initial("parkSeed"),
+      this.#knobs.initial("season"),
+      this.#knobs.initial("species"),
+    );
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -345,19 +390,34 @@ class AutumnSim implements SceneSim {
       for (let i = 0; i < COLS; i++) {
         const x = A.x0 + (i + 0.5) * A.cell;
         const z = A.z0 + (j + 0.5) * A.cell;
-        const path = 1 - smoothstep(AUTUMN_PATH.half * 0.8, AUTUMN_PATH.half * 1.3, Math.abs(x - autumnPathX(z)));
+        const path =
+          1 -
+          smoothstep(AUTUMN_PATH.half * 0.8, AUTUMN_PATH.half * 1.3, Math.abs(x - autumnPathX(z)));
         const dx = x - AUTUMN_TREE.canopyX;
         const dz = z - AUTUMN_TREE.canopyZ;
         const tree = Math.exp(-(dx * dx + dz * dz) / (2 * 5.5 * 5.5));
         const drift = noise2(x * 0.28, z * 0.28, seed + 11);
         // Leaves lie thickest under the tree and gather along the edges of the path.
         const edge = (Math.abs(x - autumnPathX(z)) - AUTUMN_PATH.half) / 0.8;
-        this.#shape[j * COLS + i] = ((0.75 + 0.9 * tree) * (1 - 0.3 * path) + 0.55 * Math.exp(-edge * edge)) * (0.7 + 0.6 * drift);
+        this.#shape[j * COLS + i] =
+          ((0.75 + 0.9 * tree) * (1 - 0.3 * path) + 0.55 * Math.exp(-edge * edge)) *
+          (0.7 + 0.6 * drift);
       }
     }
     for (let cell = 0; cell < CELLS; cell++) {
       for (let layer = 0; layer < 2; layer++) {
-        if (this.#wants(cell, layer)) this.#carpet.place(layer * CELLS + cell, rand(), rand(), rand(), rand(), false, LEVELS, LEVELS, rand);
+        if (this.#wants(cell, layer))
+          this.#carpet.place(
+            layer * CELLS + cell,
+            rand(),
+            rand(),
+            rand(),
+            rand(),
+            false,
+            LEVELS,
+            LEVELS,
+            rand,
+          );
       }
     }
 
@@ -369,7 +429,10 @@ class AutumnSim implements SceneSim {
       for (let i = 0; i < COLS; i++) {
         const x = A.x0 + (i + 0.5) * A.cell;
         const z = A.z0 + (j + 0.5) * A.cell;
-        const d = markDistance((x - AUTUMN_MARK.x) / unitX, (z - AUTUMN_MARK.z) / AUTUMN_MARK.depth);
+        const d = markDistance(
+          (x - AUTUMN_MARK.x) / unitX,
+          (z - AUTUMN_MARK.z) / AUTUMN_MARK.depth,
+        );
         if (d < AUTUMN_MARK.stroke) this.#strokeCells.push(j * COLS + i);
         else if (d < AUTUMN_MARK.margin) this.#marginCells.push(j * COLS + i);
       }
@@ -423,7 +486,8 @@ class AutumnSim implements SceneSim {
     this.#whirl = exit > 0 ? smoothstep(0, AUTUMN_WHIRL.rise, exit) : 0;
     if (exit > 0) {
       this.#exitSeconds = exit * AUTUMN_PASSAGE.exit;
-      this.#whirlX = autumnPathX(WHIRL_Z) + this.#blowSign * (WHIRL_SPEED * this.#exitSeconds - WHIRL_FROM);
+      this.#whirlX =
+        autumnPathX(WHIRL_Z) + this.#blowSign * (WHIRL_SPEED * this.#exitSeconds - WHIRL_FROM);
       if (!this.#exiting) {
         this.#exiting = true;
         this.#exitShower = EXIT_SHOWER;
@@ -476,11 +540,15 @@ class AutumnSim implements SceneSim {
   #airAt(i: number, x: number, y: number, z: number): void {
     const phase = at(this.#phase, i);
     const gust = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower * this.#gustSign;
-    let vx = this.#wind * WIND_DRIFT + gust * GUST_DRIFT + 0.3 * Math.sin(0.9 * this.#clock + phase);
+    let vx =
+      this.#wind * WIND_DRIFT + gust * GUST_DRIFT + 0.3 * Math.sin(0.9 * this.#clock + phase);
     let vy = 0.12 * Math.sin(0.7 * this.#clock + 1.7 * phase);
     let vz = 0.2 * Math.sin(0.6 * this.#clock + 2.3 * phase) - 0.15 * Math.abs(gust);
     if (this.#swirlOn) {
-      const strength = smoothstep(0, 2, this.#gustAge) * (1 - smoothstep(SWIRL_LIFE - 4, SWIRL_LIFE, this.#gustAge)) * this.#gustPower;
+      const strength =
+        smoothstep(0, 2, this.#gustAge) *
+        (1 - smoothstep(SWIRL_LIFE - 4, SWIRL_LIFE, this.#gustAge)) *
+        this.#gustPower;
       const dx = x - this.#swirlX;
       const dz = z - this.#swirlZ;
       const r = Math.hypot(dx, dz) + 1e-6;
@@ -491,19 +559,31 @@ class AutumnSim implements SceneSim {
         const turn = ((SWIRL_TURN * 2 * q) / (1 + q * q)) * strength;
         vx += (-dz / r) * turn - (dx / r) * 0.25 * turn;
         vz += (dx / r) * turn - (dz / r) * 0.25 * turn;
-        vy += SWIRL_LIFT * strength * Math.exp(-(r * r) / (SWIRL_REACH * SWIRL_REACH)) * (1 - smoothstep(1.2, 3.2, y));
+        vy +=
+          SWIRL_LIFT *
+          strength *
+          Math.exp(-(r * r) / (SWIRL_REACH * SWIRL_REACH)) *
+          (1 - smoothstep(1.2, 3.2, y));
       }
     }
     if (this.#blow > 0) {
       // The entrance's gust: a strong push along the wind, buffeting a little.
-      vx += this.#blowSign * FLURRY_DRIFT * this.#blow * (0.8 + 0.2 * Math.sin(1.7 * phase + 2 * this.#clock));
+      vx +=
+        this.#blowSign *
+        FLURRY_DRIFT *
+        this.#blow *
+        (0.8 + 0.2 * Math.sin(1.7 * phase + 2 * this.#clock));
       vy += 0.5 * this.#blow * Math.sin(1.3 * this.#clock + 2.1 * phase);
       vz += 0.4 * this.#blow * Math.sin(0.9 * this.#clock + 3.1 * phase);
     }
     if (this.#whirl > 0) {
       // The exit's gust: a harder push, an updraft over the park, and a vortex crossing the path that
       // turns the leaves round its core and throws them up.
-      vx += this.#blowSign * WHIRL_DRIFT * this.#whirl * (0.75 + 0.25 * Math.sin(1.7 * phase + 2 * this.#clock));
+      vx +=
+        this.#blowSign *
+        WHIRL_DRIFT *
+        this.#whirl *
+        (0.75 + 0.25 * Math.sin(1.7 * phase + 2 * this.#clock));
       vy += WHIRL_UPDRAFT * this.#whirl * (1 - smoothstep(3, 7, y));
       const dx = x - this.#whirlX;
       const dz = z - WHIRL_Z;
@@ -513,7 +593,11 @@ class AutumnSim implements SceneSim {
         const turn = ((WHIRL_TURN * 2 * q) / (1 + q * q)) * this.#whirl;
         vx += (-dz / r) * turn - (dx / r) * 0.25 * turn;
         vz += (dx / r) * turn - (dz / r) * 0.25 * turn;
-        vy += WHIRL_LIFT * this.#whirl * Math.exp(-(r * r) / (WHIRL_REACH * WHIRL_REACH)) * (1 - smoothstep(2.5, 6.5, y));
+        vy +=
+          WHIRL_LIFT *
+          this.#whirl *
+          Math.exp(-(r * r) / (WHIRL_REACH * WHIRL_REACH)) *
+          (1 - smoothstep(2.5, 6.5, y));
       }
     }
     this.#air[0] = vx;
@@ -545,12 +629,15 @@ class AutumnSim implements SceneSim {
       }
     }
     if (this.#shower > 0 && this.#gustAge < GUST_SHAKE + 2 && inUse < AMBIENT_SLOTS) {
-      const due = this.#gustAge < GUST_SHAKE ? Math.ceil(GUST_SHOWER * (1 - this.#gustAge / GUST_SHAKE)) : 0;
+      const due =
+        this.#gustAge < GUST_SHAKE ? Math.ceil(GUST_SHOWER * (1 - this.#gustAge / GUST_SHAKE)) : 0;
       while (this.#shower > due && this.#spawn(false) >= 0) this.#shower--;
     }
     if (this.#swirlOn) this.#pickUp(dt);
     if (this.#exitShower > 0 && inUse < AMBIENT_SLOTS) {
-      const due = Math.ceil(EXIT_SHOWER * (1 - Math.min(1, this.#exitSeconds / EXIT_SHOWER_SECONDS)));
+      const due = Math.ceil(
+        EXIT_SHOWER * (1 - Math.min(1, this.#exitSeconds / EXIT_SHOWER_SECONDS)),
+      );
       while (this.#exitShower > due && this.#spawn(false) >= 0) this.#exitShower--;
     }
     if (this.#whirl > 0) this.#whirlUp(dt);
@@ -602,7 +689,9 @@ class AutumnSim implements SceneSim {
     p.chord[i] = kind.chord * (0.85 + 0.3 * rand());
     p.pace[i] = PACE * (0.9 + 0.2 * rand());
     this.#hue[i] = rand();
-    this.#radius[i] = kind.radius * (0.9 + 0.2 * ((this.#hue[i] ?? 0) * 7.3 - Math.floor((this.#hue[i] ?? 0) * 7.3)));
+    this.#radius[i] =
+      kind.radius *
+      (0.9 + 0.2 * ((this.#hue[i] ?? 0) * 7.3 - Math.floor((this.#hue[i] ?? 0) * 7.3)));
     this.#seed[i] = rand();
     p.psi[i] = rand() * TAU;
     p.dpsi[i] = (rand() - 0.5) * 0.5;
@@ -655,7 +744,14 @@ class AutumnSim implements SceneSim {
     if (lain < SETTLE_SECONDS) return;
     this.#orient(i);
     const f = this.#frame;
-    this.#carpet.deposit(at(this.#x, i), at(this.#z, i), Math.atan2(f[1] ?? 0, f[0] ?? 1), at(this.#hue, i), (f[8] ?? 1) >= 0 ? 1 : -1, this.#rand);
+    this.#carpet.deposit(
+      at(this.#x, i),
+      at(this.#z, i),
+      Math.atan2(f[1] ?? 0, f[0] ?? 1),
+      at(this.#hue, i),
+      (f[8] ?? 1) >= 0 ? 1 : -1,
+      this.#rand,
+    );
     this.#state[i] = FREE;
   }
 
@@ -664,7 +760,8 @@ class AutumnSim implements SceneSim {
    * span axis (3..5) and the upward plate normal (6..8), its rock fading as it settles.
    */
   #orient(i: number): void {
-    const settle = this.#state[i] === SETTLING ? 1 - smoothstep(0, SETTLE_SECONDS, at(this.#lain, i)) : 1;
+    const settle =
+      this.#state[i] === SETTLING ? 1 - smoothstep(0, SETTLE_SECONDS, at(this.#lain, i)) : 1;
     this.#plates.orient(i, settle, this.#frame);
   }
 
@@ -674,7 +771,9 @@ class AutumnSim implements SceneSim {
     let lifted = 0;
     for (let i = 0; i < SLOTS; i++) if (this.#lifted[i] === 1 && this.#state[i] !== FREE) lifted++;
     const rand = this.#rand;
-    const strength = smoothstep(0, 2, this.#gustAge) * (1 - smoothstep(SWIRL_LIFE - 5, SWIRL_LIFE - 2, this.#gustAge));
+    const strength =
+      smoothstep(0, 2, this.#gustAge) *
+      (1 - smoothstep(SWIRL_LIFE - 5, SWIRL_LIFE - 2, this.#gustAge));
     while (this.#swirlPickup >= 1) {
       this.#swirlPickup -= 1;
       if (lifted >= SWIRL_LEAVES || strength <= 0.1) continue;
@@ -719,7 +818,8 @@ class AutumnSim implements SceneSim {
     this.#z[slot] = found.z;
     this.#begin(slot, kind, true);
     this.#hue[slot] = found.hue;
-    this.#radius[slot] = kind.radius * (0.9 + 0.2 * (found.hue * 7.3 - Math.floor(found.hue * 7.3)));
+    this.#radius[slot] =
+      kind.radius * (0.9 + 0.2 * (found.hue * 7.3 - Math.floor(found.hue * 7.3)));
     const p = this.#plates;
     const down = found.face < 0;
     p.th[slot] = down ? Math.PI : 0;
@@ -757,7 +857,8 @@ class AutumnSim implements SceneSim {
     const target = this.#markGoal * total;
     const step = (total / MARK_SECONDS) * real;
     const before = this.#markShown;
-    this.#markShown = target > before ? Math.min(target, before + step) : Math.max(target, before - step);
+    this.#markShown =
+      target > before ? Math.min(target, before + step) : Math.max(target, before - step);
     const from = Math.floor(before);
     const to = Math.floor(this.#markShown);
     const starting = before === 0 && this.#markShown > 0;
@@ -779,7 +880,8 @@ class AutumnSim implements SceneSim {
       const cell = this.#strokeCells[k];
       if (cell === undefined) continue;
       carpet.protect[cell] = PINNED;
-      for (let layer = 0; layer < 2; layer++) carpet.place(layer * CELLS + cell, rand(), rand(), rand(), 0, true, 0, LEVELS, rand);
+      for (let layer = 0; layer < 2; layer++)
+        carpet.place(layer * CELLS + cell, rand(), rand(), rand(), 0, true, 0, LEVELS, rand);
     }
     for (let k = from - 1; k >= to; k--) {
       const cell = this.#strokeCells[k];
@@ -845,7 +947,11 @@ class AutumnSim implements SceneSim {
     state[0] = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower * this.#gustSign;
     state[1] = this.#swirlX;
     state[2] = this.#swirlZ;
-    state[3] = this.#swirlOn ? smoothstep(0, 2, this.#gustAge) * (1 - smoothstep(SWIRL_LIFE - 4, SWIRL_LIFE, this.#gustAge)) * this.#gustPower : 0;
+    state[3] = this.#swirlOn
+      ? smoothstep(0, 2, this.#gustAge) *
+        (1 - smoothstep(SWIRL_LIFE - 4, SWIRL_LIFE, this.#gustAge)) *
+        this.#gustPower
+      : 0;
     state[4] = this.#strokeCells.length > 0 ? this.#markShown / this.#strokeCells.length : 0;
     this.#stateTexture.upload(state);
   }

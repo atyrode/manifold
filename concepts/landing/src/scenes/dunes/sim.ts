@@ -98,14 +98,32 @@ const RELAYOUT_MS = 250;
  * light rakes across the dunes rather than straight into the lens. `parallax` is how far (radians)
  * the view turns toward the pointer's side at full parallax (view.xz turned by -uPointer.x times it).
  */
-export const DUNES_CAMERA = { x: 186, z: 88, height: 14, rise: 1.6, horizon: 0.66, fov: 0.8, turn: 0.7, look: 0.5, parallax: 0.035 } as const;
+export const DUNES_CAMERA = {
+  x: 186,
+  z: 88,
+  height: 14,
+  rise: 1.6,
+  horizon: 0.66,
+  fov: 0.8,
+  turn: 0.7,
+  look: 0.5,
+  parallax: 0.035,
+} as const;
 /**
  * How the shader ray-marches the sand, and the pointer's ray with it (sims/heightray.ts): no sand
  * stands above `top` cells, rays give up `far` cells out (the dust has the horizon by then), no
  * sand is steeper than about `slope`, and the shortest step is 1% of the distance, so the far field
  * is reached within `steps`; then `refine` bisections.
  */
-export const DUNES_MARCH: HeightMarch = { top: 16, far: 900, slope: 0.75, minStep: 0.02, relStep: 0.01, steps: 48, refine: 5 };
+export const DUNES_MARCH: HeightMarch = {
+  top: 16,
+  far: 900,
+  slope: 0.75,
+  minStep: 0.02,
+  relStep: 0.01,
+  steps: 48,
+  refine: 5,
+};
 /** The overhead view: cells per screen height, centred on the M, wind left to right. */
 export const DUNES_MAP = { span: 150 } as const;
 
@@ -119,8 +137,14 @@ const MARK_RIGHT = 8;
  * and how much of the stroke blown sand has scoured away at the foot of the legs.
  */
 export const DUNES_MARK = {
-  x: DUNES_CAMERA.x + MARK_RIGHT * Math.cos(DUNES_CAMERA.turn) - MARK_AHEAD * Math.sin(DUNES_CAMERA.turn),
-  z: DUNES_CAMERA.z + MARK_RIGHT * Math.sin(DUNES_CAMERA.turn) + MARK_AHEAD * Math.cos(DUNES_CAMERA.turn),
+  x:
+    DUNES_CAMERA.x +
+    MARK_RIGHT * Math.cos(DUNES_CAMERA.turn) -
+    MARK_AHEAD * Math.sin(DUNES_CAMERA.turn),
+  z:
+    DUNES_CAMERA.z +
+    MARK_RIGHT * Math.sin(DUNES_CAMERA.turn) +
+    MARK_AHEAD * Math.cos(DUNES_CAMERA.turn),
   yaw: DUNES_CAMERA.turn - 0.3,
   small: 8,
   large: 15,
@@ -141,7 +165,8 @@ function dunesMeanSlabs(sand: number): number {
  * it blows freely under the arch between the legs.
  */
 function stampMark(top: Int16Array, size: number): void {
-  const height = DUNES_MARK.small + (DUNES_MARK.large - DUNES_MARK.small) * Math.min(1, Math.max(0, size));
+  const height =
+    DUNES_MARK.small + (DUNES_MARK.large - DUNES_MARK.small) * Math.min(1, Math.max(0, size));
   const c = Math.cos(DUNES_MARK.yaw);
   const s = Math.sin(DUNES_MARK.yaw);
   const cx = Math.round(DUNES_MARK.x);
@@ -159,7 +184,10 @@ function stampMark(top: Int16Array, size: number): void {
       if (Math.abs(w) > DUNES_MARK.depth || markDistance(u, -0.45) > foot) continue;
       let y = 0.5 + DUNES_MARK.stroke;
       while (y > -0.5 && markDistance(u, y) > DUNES_MARK.stroke) y -= 0.01;
-      top[((gz & MASK) << SHIFT) | (gx & MASK)] = Math.max(1, Math.round(((y + 0.5) * height) / DUNES_SLAB));
+      top[((gz & MASK) << SHIFT) | (gx & MASK)] = Math.max(
+        1,
+        Math.round(((y + 0.5) * height) / DUNES_SLAB),
+      );
     }
   }
 }
@@ -238,7 +266,9 @@ class DuneLayout {
         const e = periodicNoise(lane, z, ridges, humps, arrangement + 5);
         const f = Math.max(0, (e - cut) / (1 - cut));
         // Broad meanders shared with the neighbouring rows, and a finer wander of each crest's own.
-        const meander = 0.7 * (periodicNoise(base, z, 2, 3, arrangement + 3) - 0.5) + 0.6 * (periodicNoise(lane, z, ridges, 7, arrangement + 9) - 0.5);
+        const meander =
+          0.7 * (periodicNoise(base, z, 2, 3, arrangement + 3) - 0.5) +
+          0.6 * (periodicNoise(lane, z, ridges, 7, arrangement + 9) - 0.5);
         this.#at[k * DUNES_GRID + z] = base + meander * spacing + swing * (1 - f);
         this.#rise[k * DUNES_GRID + z] = floor + (1 - floor) * f ** 0.6;
       }
@@ -586,7 +616,12 @@ class DuneSurface {
         shape[o + 1] = ((out[up | x] ?? 0) - (out[down | x] ?? 0)) * 0.5;
         // Laplacian over two cells: the brinks and troughs at dune scale, not slab noise.
         shape[o + 2] =
-          ((out[row | ((x + 2) & MASK)] ?? 0) + (out[row | ((x - 2) & MASK)] ?? 0) + (out[up2 | x] ?? 0) + (out[down2 | x] ?? 0) - 4 * c) * 0.25;
+          ((out[row | ((x + 2) & MASK)] ?? 0) +
+            (out[row | ((x - 2) & MASK)] ?? 0) +
+            (out[up2 | x] ?? 0) +
+            (out[down2 | x] ?? 0) -
+            4 * c) *
+          0.25;
         shape[o + 3] = (raw[row | x] ?? 0) - c;
       }
     }
@@ -654,7 +689,16 @@ function markSdf(x: number, y: number, z: number, height: number): number {
 }
 
 /** Where the unit ray meets the M before `far`, or -1: the shader's dunesMarkHit, step for step. */
-function markHit(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, height: number, far: number): number {
+function markHit(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  height: number,
+  far: number,
+): number {
   const cx = ox - DUNES_MARK.x;
   const cy = oy - 0.5 * height;
   const cz = oz - DUNES_MARK.z;
@@ -717,7 +761,8 @@ export function dunesPointerCell(
   const oz = DUNES_CAMERA.z;
   const onSand = marchHeight(ground, ox, oy, oz, dx, dy, dz, DUNES_MARCH, sandHit);
   const height = mark > 0 ? DUNES_MARK.small + (DUNES_MARK.large - DUNES_MARK.small) * mark : 0;
-  const t = height > 0 ? markHit(ox, oy, oz, dx, dy, dz, height, onSand ? sandHit.t : DUNES_MARCH.far) : -1;
+  const t =
+    height > 0 ? markHit(ox, oy, oz, dx, dy, dz, height, onSand ? sandHit.t : DUNES_MARCH.far) : -1;
   if (t >= 0) {
     out.x = ox + dx * t;
     out.y = oz + dz * t;
@@ -736,12 +781,23 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
     const surface = new DuneSurface();
     // The surface as first laid out, which the uploads morph away from while the field warms up.
     const start = new DuneSurface();
-    const heights = new DataTexture(gl, { width: DUNES_GRID, height: DUNES_GRID, format: "r16f", wrap: "repeat" });
-    const shape = new DataTexture(gl, { width: DUNES_GRID, height: DUNES_GRID, format: "rgba16f", wrap: "repeat" });
+    const heights = new DataTexture(gl, {
+      width: DUNES_GRID,
+      height: DUNES_GRID,
+      format: "r16f",
+      wrap: "repeat",
+    });
+    const shape = new DataTexture(gl, {
+      width: DUNES_GRID,
+      height: DUNES_GRID,
+      format: "rgba16f",
+      wrap: "repeat",
+    });
     const textures: readonly WebGLTexture[] = [heights.texture, shape.texture];
     const cell = { x: 0, y: 0 };
     // The sand as the shader last saw it, for the pointer's ray.
-    const ground = (x: number, z: number): number => sampleRepeat(surface.heights, DUNES_GRID, DUNES_GRID, x, z);
+    const ground = (x: number, z: number): number =>
+      sampleRepeat(surface.heights, DUNES_GRID, DUNES_GRID, x, z);
     // The knobs the laid-out field was made from, and the pair seen last frame (with when it first showed).
     let laid = false;
     let laidSand = 0;
@@ -797,7 +853,10 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
           // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
           // slowly (a software renderer) it takes a share of the time between them instead, so it
           // still ends within a few.
-          const slice = Math.min(WARM_SLICE_MAX_MS, Math.max(WARM_SLICE_MS, WARM_SLICE_SHARE * interval));
+          const slice = Math.min(
+            WARM_SLICE_MAX_MS,
+            Math.max(WARM_SLICE_MS, WARM_SLICE_SHARE * interval),
+          );
           warmed = runBudgeted(() => field.step(WARM_CHUNK), slice, WARM_STEPS, warmed);
         } else if (frame.dt > 0) {
           // Sand flux rises steeply with wind speed; wind 0 leaves the dunes standing.
@@ -813,11 +872,18 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
         const resting = frame.passage.enter >= 1 && frame.passage.exit <= 0;
         if (resting && pointer.inside && (pointer.pressed || pointer.down)) {
           const slabs = pointer.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
-          if (slabs > 0 && dunesPointerCell(frame, knobs.value(frame, "camera"), sand, markSize, ground, cell)) field.pour(cell.x, cell.y, slabs);
+          if (
+            slabs > 0 &&
+            dunesPointerCell(frame, knobs.value(frame, "camera"), sand, markSize, ground, cell)
+          )
+            field.pour(cell.x, cell.y, slabs);
         }
 
         // While the sand creeps an upload every UPLOAD_EVERY is plenty; the finished warm-up shows at once.
-        const due = uploaded < 0 || (warming && warmed === WARM_STEPS) || now - lastUpload >= UPLOAD_EVERY * 1000;
+        const due =
+          uploaded < 0 ||
+          (warming && warmed === WARM_STEPS) ||
+          now - lastUpload >= UPLOAD_EVERY * 1000;
         if (field.version !== uploaded && due) {
           surface.update(field);
           if (warmed < WARM_STEPS) {

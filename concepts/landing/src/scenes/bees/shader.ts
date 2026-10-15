@@ -52,7 +52,9 @@ function ints(values: readonly number[]): string {
 }
 
 /** Hives far to near, so a nearer one is drawn over a farther. */
-const HIVE_ORDER = BEES_HIVES.map((hive, i) => ({ hive, i })).sort((a, b) => b.hive.y - a.hive.y).map((entry) => entry.i);
+const HIVE_ORDER = BEES_HIVES.map((hive, i) => ({ hive, i }))
+  .sort((a, b) => b.hive.y - a.hive.y)
+  .map((entry) => entry.i);
 
 /** Foxgloves in the foreground: x (fraction of the stage), the y of their feet, height (m). */
 const FOXGLOVES: readonly (readonly [number, number, number])[] = [

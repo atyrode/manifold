@@ -30,7 +30,8 @@ const FLOAT_MIN = 1.1754943508222875e-38;
 /** A GLSL float literal that reads back as `x` (see the header). Throws GlslError for 0 < |x| < 2^-126, |x| > float max, NaN. */
 export function glslFloat(x: number): string {
   const size = Math.abs(x);
-  if (!(size <= FLOAT_MAX) || (size > 0 && size < FLOAT_MIN)) throw new GlslError(`glslFloat: ${x} has no exact highp float literal`);
+  if (!(size <= FLOAT_MAX) || (size > 0 && size < FLOAT_MIN))
+    throw new GlslError(`glslFloat: ${x} has no exact highp float literal`);
   if (Object.is(x, -0)) return "-0.0";
   const text = String(x);
   return /[.e]/.test(text) ? text : `${text}.0`;
@@ -42,8 +43,10 @@ export function glslFloat(x: number): string {
  * A tuple writes each number with glslFloat.
  */
 export function glslVec3(colour: string | readonly [number, number, number]): string {
-  if (typeof colour !== "string") return `vec3(${glslFloat(colour[0])}, ${glslFloat(colour[1])}, ${glslFloat(colour[2])})`;
-  if (!/^#[0-9a-f]{6}$/i.test(colour)) throw new GlslError(`glslVec3: '${colour}' is not a #rrggbb colour`);
+  if (typeof colour !== "string")
+    return `vec3(${glslFloat(colour[0])}, ${glslFloat(colour[1])}, ${glslFloat(colour[2])})`;
+  if (!/^#[0-9a-f]{6}$/i.test(colour))
+    throw new GlslError(`glslVec3: '${colour}' is not a #rrggbb colour`);
   const value = Number.parseInt(colour.slice(1), 16);
   const channel = (c: number): string => (c / 255).toFixed(4);
   return `vec3(${channel((value >> 16) & 255)}, ${channel((value >> 8) & 255)}, ${channel(value & 255)})`;

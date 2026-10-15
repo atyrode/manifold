@@ -46,7 +46,12 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { BinLists } from "../../sims/bins.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import { VerletSystem, type VerletForce, type VerletStepOptions, type WebLayout } from "../../sims/verlet.ts";
+import {
+  VerletSystem,
+  type VerletForce,
+  type VerletStepOptions,
+  type WebLayout,
+} from "../../sims/verlet.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- shared with the shader -----------------------------------------------------------------------
@@ -336,7 +341,13 @@ function stemAt(stem: Stem, u: number, out: Float64Array): void {
 }
 
 /** The nearest crossing of the ray from (hx, hy) along (ux, uy) with the closed polygon. */
-function rayHit(hx: number, hy: number, ux: number, uy: number, corners: readonly (readonly [number, number])[]): { t: number; side: number; along: number } {
+function rayHit(
+  hx: number,
+  hy: number,
+  ux: number,
+  uy: number,
+  corners: readonly (readonly [number, number])[],
+): { t: number; side: number; along: number } {
   let best = { t: Infinity, side: -1, along: 0 };
   const n = corners.length;
   for (let i = 0; i < n; i++) {
@@ -360,7 +371,10 @@ function rayHit(hx: number, hy: number, ux: number, uy: number, corners: readonl
 class DewWeb {
   readonly aspect: number;
   readonly seed: number;
-  readonly sys = new VerletSystem({ points: 1 + SPOKES * (TURNS + 1) + CORNERS.length * 2, constraints: SPOKES * (TURNS + 1) + SPOKES * TURNS + SPOKES + CORNERS.length * 2 });
+  readonly sys = new VerletSystem({
+    points: 1 + SPOKES * (TURNS + 1) + CORNERS.length * 2,
+    constraints: SPOKES * (TURNS + 1) + SPOKES * TURNS + SPOKES + CORNERS.length * 2,
+  });
   readonly layout: WebLayout;
   readonly radius: number;
   /** Where the hub was spun (frame heights). */
@@ -394,15 +408,52 @@ class DewWeb {
     const hx = aspect * (aspect >= 1.2 ? 0.58 : 0.5);
     const hy = 0.56;
     const span = CORNER_REACH + CORNER_REACH_JITTER + 0.1;
-    const radius = Math.min(0.46, Math.max(Math.min(hx - edgeLeft, edgeRight - hx) / span, 0.24 * aspect + 0.09));
+    const radius = Math.min(
+      0.46,
+      Math.max(Math.min(hx - edgeLeft, edgeRight - hx) / span, 0.24 * aspect + 0.09),
+    );
     const leftX = Math.min(edgeLeft, hx - span * radius);
     const rightX = Math.max(edgeRight, hx + span * radius);
     this.radius = radius;
     this.hubX = hx;
     this.hubY = hy;
     this.stems = [
-      { x0: leftX - 0.035, y0: -0.06, x1: leftX + 0.04, y1: 0.92, bow: -0.03, r0: 0.0075, r1: 0.003, phase: rand() * TAU, sx: 0, sz: 0, head: 0.085, nod: 0.3, leaves: [{ u: 0.28, side: -1, length: 0.24, width: 0.0055, lift: 0.5, droop: 1.9 }, { u: 0.5, side: 1, length: 0.19, width: 0.005, lift: 0.65, droop: 1.8 }] },
-      { x0: rightX + 0.02, y0: -0.06, x1: rightX - 0.045, y1: 0.87, bow: 0.035, r0: 0.007, r1: 0.003, phase: rand() * TAU, sx: 0, sz: 0, head: 0.07, nod: -0.32, leaves: [{ u: 0.33, side: -1, length: 0.21, width: 0.0052, lift: 0.55, droop: 1.9 }, { u: 0.57, side: 1, length: 0.15, width: 0.0048, lift: 0.7, droop: 1.7 }] },
+      {
+        x0: leftX - 0.035,
+        y0: -0.06,
+        x1: leftX + 0.04,
+        y1: 0.92,
+        bow: -0.03,
+        r0: 0.0075,
+        r1: 0.003,
+        phase: rand() * TAU,
+        sx: 0,
+        sz: 0,
+        head: 0.085,
+        nod: 0.3,
+        leaves: [
+          { u: 0.28, side: -1, length: 0.24, width: 0.0055, lift: 0.5, droop: 1.9 },
+          { u: 0.5, side: 1, length: 0.19, width: 0.005, lift: 0.65, droop: 1.8 },
+        ],
+      },
+      {
+        x0: rightX + 0.02,
+        y0: -0.06,
+        x1: rightX - 0.045,
+        y1: 0.87,
+        bow: 0.035,
+        r0: 0.007,
+        r1: 0.003,
+        phase: rand() * TAU,
+        sx: 0,
+        sz: 0,
+        head: 0.07,
+        nod: -0.32,
+        leaves: [
+          { u: 0.33, side: -1, length: 0.21, width: 0.0052, lift: 0.55, droop: 1.9 },
+          { u: 0.57, side: 1, length: 0.15, width: 0.0048, lift: 0.7, droop: 1.7 },
+        ],
+      },
     ];
 
     const layout = sys.addWeb({
@@ -435,7 +486,11 @@ class DewWeb {
       const hit = rayHit(hx, hy, dx / len, dy / len, corners);
       sys.place(anchor, hx + (dx / len) * hit.t, hy + (dy / len) * hit.t, 0);
       const last = layout.spiral + s * TURNS + TURNS - 1;
-      sys.setConstraint(layout.firstConstraint + s * (TURNS + 1) + TURNS, sys.distance(last, anchor) * TENSION, 1);
+      sys.setConstraint(
+        layout.firstConstraint + s * (TURNS + 1) + TURNS,
+        sys.distance(last, anchor) * TENSION,
+        1,
+      );
       sys.unpin(anchor);
       sides[hit.side]?.push([hit.along, anchor]);
     }
@@ -486,9 +541,17 @@ class DewWeb {
     this.wet = new Float32Array(threads).fill(1);
     this.dry = new Float32Array(threads);
     for (let c = 0; c < threads; c++) {
-      const kind = c < layout.spiralConstraint ? DEW_KIND_SPOKE : c < frameFirst ? DEW_KIND_SPIRAL : DEW_KIND_FRAME;
+      const kind =
+        c < layout.spiralConstraint
+          ? DEW_KIND_SPOKE
+          : c < frameFirst
+            ? DEW_KIND_SPIRAL
+            : DEW_KIND_FRAME;
       this.kind[c] = kind;
-      this.beads[c] = Math.min(DEW_CODE - 1, Math.floor((sys.restLength[c] ?? 0) / TENSION / (BEAD_SPACING[kind] ?? 0.0105)));
+      this.beads[c] = Math.min(
+        DEW_CODE - 1,
+        Math.floor((sys.restLength[c] ?? 0) / TENSION / (BEAD_SPACING[kind] ?? 0.0105)),
+      );
     }
 
     const count = sys.count;
@@ -596,16 +659,36 @@ class DewSim implements SceneSim {
   constructor(gl: WebGL2RenderingContext, knobs: KnobReader<DewKnob>) {
     this.#knobs = knobs;
     this.#gustSlot = knobs.trigger("breeze");
-    this.#segTex = new DataTexture(gl, { width: DEW_SEG_ROW * DEW_SEG_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#segTex = new DataTexture(gl, {
+      width: DEW_SEG_ROW * DEW_SEG_TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     // Sized to the bin lists before each upload.
     this.#binTex = new DataTexture(gl, { width: 1, height: 1, format: "r16f", filter: "nearest" });
-    this.#dropTex = new DataTexture(gl, { width: DEW_DROPS * 2, height: 1, format: "rgba16f", filter: "nearest" });
-    this.#headTex = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#dropTex = new DataTexture(gl, {
+      width: DEW_DROPS * 2,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#headTex = new DataTexture(gl, {
+      width: 3,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     const seed = Math.round(knobs.initial("webSeed"));
     this.#breeze = knobs.initial("breeze");
     this.#dew = knobs.initial("dew");
     this.#dof = knobs.initial("dof");
-    this.#opts = { gravity: [0, GRAVITY, 0], damping: DAMPING, iterations: ITERATIONS, force: this.#force };
+    this.#opts = {
+      gravity: [0, GRAVITY, 0],
+      damping: DAMPING,
+      iterations: ITERATIONS,
+      force: this.#force,
+    };
     // Spun for the usual landscape frame; a different aspect respins it on the first frame.
     this.#web = this.#spin(16 / 9, seed);
   }
@@ -617,7 +700,8 @@ class DewSim implements SceneSim {
     this.#dof = Math.max(0, knobs.value(frame, "dof"));
     const aspect = Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9;
     const seed = Math.round(knobs.value(frame, "webSeed"));
-    if (Math.abs(aspect - this.#web.aspect) > 1e-3 || seed !== this.#web.seed) this.#web = this.#spin(aspect, seed);
+    if (Math.abs(aspect - this.#web.aspect) > 1e-3 || seed !== this.#web.seed)
+      this.#web = this.#spin(aspect, seed);
     this.#fitBins(frame.height, aspect);
 
     // The passage: the web swings in on its anchor threads as a gust settles, and out again on another.
@@ -677,14 +761,18 @@ class DewSim implements SceneSim {
     this.#focus = (web.sys.positions[web.layout.hub * 3 + 2] ?? 0) * 0.8;
     // Seed some dew already gathered into drops, then let them run for a while.
     for (let i = 0; i < 6; i++) this.#spawn(0.4 + 0.6 * this.#rand());
-    for (let time = 0; time < PREWARM_DROPS; time += PREWARM_DROP_STEP) this.#drops(PREWARM_DROP_STEP);
+    for (let time = 0; time < PREWARM_DROPS; time += PREWARM_DROP_STEP)
+      this.#drops(PREWARM_DROP_STEP);
     for (let d = 0; d < DEW_DROPS; d++) if (this.#state[d] === FALLING) this.#state[d] = 0;
     this.#prewarming = false;
     return web;
   }
 
   #fitBins(heightCells: number, aspect: number): void {
-    const rows = Math.min(BIN_ROWS_MAX, Math.max(BIN_ROWS_MIN, Math.round(heightCells / BIN_CELLS)));
+    const rows = Math.min(
+      BIN_ROWS_MAX,
+      Math.max(BIN_ROWS_MIN, Math.round(heightCells / BIN_CELLS)),
+    );
     this.#lists.fit(rows, Math.ceil(aspect * rows));
   }
 
@@ -698,12 +786,16 @@ class DewSim implements SceneSim {
     if (dt > 0 && breeze > 0.02 && clock >= this.#nextGust) {
       this.#gustAt = clock;
       this.#gustAmp = 0.35 + 0.35 * this.#rand();
-      this.#nextGust = clock + (GUST_RARE + (GUST_OFTEN - GUST_RARE) * breeze) * (0.6 + 0.8 * this.#rand());
+      this.#nextGust =
+        clock + (GUST_RARE + (GUST_OFTEN - GUST_RARE) * breeze) * (0.6 + 0.8 * this.#rand());
     }
     const since = clock - this.#gustAt;
     const g = since >= 0 && since < GUST_SECONDS ? Math.sin((Math.PI * since) / GUST_SECONDS) : 0;
     this.#gust = g * g * this.#gustAmp;
-    const swell = 0.6 + 0.25 * Math.sin((clock / SWELL_FAST) * TAU) + 0.15 * Math.sin((clock / SWELL_SLOW) * TAU + 1.3);
+    const swell =
+      0.6 +
+      0.25 * Math.sin((clock / SWELL_FAST) * TAU) +
+      0.15 * Math.sin((clock / SWELL_SLOW) * TAU + 1.3);
     const level = breeze * swell + GUST_GAIN * this.#gust * (0.35 + breeze);
     this.#fz = PRESSURE * level;
     this.#fx = PRESSURE * SIDEWAYS * level;
@@ -711,9 +803,15 @@ class DewSim implements SceneSim {
     const web = this.#web;
     for (const stem of web.stems) {
       const p = stem.phase;
-      const nod = breeze * (0.6 * Math.sin((clock / 11.3) * TAU + p) + 0.4 * Math.sin((clock / 17.9) * TAU + 2 * p));
+      const nod =
+        breeze *
+        (0.6 * Math.sin((clock / 11.3) * TAU + p) + 0.4 * Math.sin((clock / 17.9) * TAU + 2 * p));
       stem.sx = STEM_SWAY * nod + STEM_GUST * this.#gust;
-      stem.sz = STEM_SWAY * breeze * (0.7 * Math.sin((clock / 14.7) * TAU + 3 * p) + 0.3 * Math.sin((clock / 9.1) * TAU + p)) + 0.5 * STEM_GUST * this.#gust;
+      stem.sz =
+        STEM_SWAY *
+          breeze *
+          (0.7 * Math.sin((clock / 14.7) * TAU + 3 * p) + 0.3 * Math.sin((clock / 9.1) * TAU + p)) +
+        0.5 * STEM_GUST * this.#gust;
     }
     const at = this.#at;
     for (const m of web.moorings) {
@@ -731,7 +829,8 @@ class DewSim implements SceneSim {
 
   /** Breeze pressure (out of plane, a ripple running across) and the drops' weight. */
   readonly #force: VerletForce = (i, x, y, _z, out) => {
-    const ripple = 1 + RIPPLE * Math.sin(RIPPLE_K * (0.8 * x + 0.6 * y) - RIPPLE_W * this.#web.sys.time);
+    const ripple =
+      1 + RIPPLE * Math.sin(RIPPLE_K * (0.8 * x + 0.6 * y) - RIPPLE_W * this.#web.sys.time);
     out[0] = this.#fx;
     out[1] = this.#load[i] ?? 0;
     out[2] = this.#fz * ripple;
@@ -767,7 +866,8 @@ class DewSim implements SceneSim {
       const hubZ = web.sys.positions[web.layout.hub * 3 + 2] ?? 0;
       this.#focus += (hubZ * 0.8 - this.#focus) * (1 - Math.exp(-dt / 1.5));
     }
-    for (let d = 0; d < DEW_DROPS; d++) this.#shiver[d] = (this.#shiver[d] ?? 0) * Math.exp(-dt / SHIVER_DECAY);
+    for (let d = 0; d < DEW_DROPS; d++)
+      this.#shiver[d] = (this.#shiver[d] ?? 0) * Math.exp(-dt / SHIVER_DECAY);
   }
 
   // ---- the pointer --------------------------------------------------------------------------------
@@ -797,7 +897,10 @@ class DewSim implements SceneSim {
       const dist = Math.hypot((this.#x[d] ?? 0) - x, (this.#y[d] ?? 0) - y);
       if (dist > PLUCK_SHAKE) continue;
       const near = 1 - dist / PLUCK_SHAKE;
-      this.#shiver[d] = Math.min(SHIVER_MAX, (this.#shiver[d] ?? 0) + SHIVER_MAX * near * (v / PLUCK_V));
+      this.#shiver[d] = Math.min(
+        SHIVER_MAX,
+        (this.#shiver[d] ?? 0) + SHIVER_MAX * near * (v / PLUCK_V),
+      );
       const k = (this.#r[d] ?? 0) / R_FALL;
       if (this.#rand() < near * k * k * 1.2 * (v / PLUCK_V)) this.#fall(d);
     }
@@ -944,7 +1047,8 @@ class DewSim implements SceneSim {
     for (let tries = 0; tries < 10 && c < 0; tries++) {
       const pick = Math.floor(this.#rand() * web.threads);
       const kind = web.kind[pick];
-      if (kind === DEW_KIND_FRAME || (web.wet[pick] ?? 0) < 0.7 || (web.beads[pick] ?? 0) < 2) continue;
+      if (kind === DEW_KIND_FRAME || (web.wet[pick] ?? 0) < 0.7 || (web.beads[pick] ?? 0) < 2)
+        continue;
       if (kind === DEW_KIND_SPOKE && this.#rand() < 0.6) continue;
       c = pick;
     }
@@ -952,7 +1056,11 @@ class DewSim implements SceneSim {
     this.#state[d] = RIDING;
     this.#seg[d] = c;
     const pos = web.sys.positions;
-    const upper = (pos[(web.sys.constraintA[c] ?? 0) * 3 + 1] ?? 0) >= (pos[(web.sys.constraintB[c] ?? 0) * 3 + 1] ?? 0) ? 0 : 1;
+    const upper =
+      (pos[(web.sys.constraintA[c] ?? 0) * 3 + 1] ?? 0) >=
+      (pos[(web.sys.constraintB[c] ?? 0) * 3 + 1] ?? 0)
+        ? 0
+        : 1;
     this.#t[d] = upper === 0 ? 0.04 : 0.96;
     this.#from[d] = upper;
     this.#v[d] = 0;
@@ -974,7 +1082,8 @@ class DewSim implements SceneSim {
     const t = this.#t[d] ?? 0;
     const r = this.#r[d] ?? 0;
     this.#x[d] = (pos[a] ?? 0) + ((pos[b] ?? 0) - (pos[a] ?? 0)) * t;
-    this.#y[d] = (pos[a + 1] ?? 0) + ((pos[b + 1] ?? 0) - (pos[a + 1] ?? 0)) * t - r * DEW_DROP_HANG;
+    this.#y[d] =
+      (pos[a + 1] ?? 0) + ((pos[b + 1] ?? 0) - (pos[a + 1] ?? 0)) * t - r * DEW_DROP_HANG;
     this.#z[d] = (pos[a + 2] ?? 0) + ((pos[b + 2] ?? 0) - (pos[a + 2] ?? 0)) * t;
   }
 
@@ -996,7 +1105,15 @@ class DewSim implements SceneSim {
     const k = (this.#r[d] ?? 0) / R_FALL;
     const x = this.#x[d] ?? 0;
     const y = (this.#y[d] ?? 0) + (this.#r[d] ?? 0) * DEW_DROP_HANG;
-    sys.impulse(x, y, this.#z[d] ?? 0, RECOIL_RADIUS, 0, RECOIL * k * k * k, 0.3 * RECOIL * k * k * k);
+    sys.impulse(
+      x,
+      y,
+      this.#z[d] ?? 0,
+      RECOIL_RADIUS,
+      0,
+      RECOIL * k * k * k,
+      0.3 * RECOIL * k * k * k,
+    );
   }
 
   /** Drops that touch run together into the bigger one. */
@@ -1007,7 +1124,11 @@ class DewSim implements SceneSim {
         if (this.#state[e] !== RIDING) continue;
         const rd = this.#r[d] ?? 0;
         const re = this.#r[e] ?? 0;
-        if (Math.hypot((this.#x[d] ?? 0) - (this.#x[e] ?? 0), (this.#y[d] ?? 0) - (this.#y[e] ?? 0)) > (rd + re) * 0.85) continue;
+        if (
+          Math.hypot((this.#x[d] ?? 0) - (this.#x[e] ?? 0), (this.#y[d] ?? 0) - (this.#y[e] ?? 0)) >
+          (rd + re) * 0.85
+        )
+          continue;
         const keep = rd >= re ? d : e;
         const gone = keep === d ? e : d;
         this.#r[keep] = Math.cbrt(rd * rd * rd + re * re * re);
@@ -1026,7 +1147,22 @@ class DewSim implements SceneSim {
   }
 
   /** One stem capsule a–b (raw positions, depths az and bz) of the given piece, radius ra at a and rb at b; seen with the web's perspective. */
-  #piece(seg: Float32Array, id: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number, ra: number, rb: number, piece: number, cx: number, cell: number, dew: number): void {
+  #piece(
+    seg: Float32Array,
+    id: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    ra: number,
+    rb: number,
+    piece: number,
+    cx: number,
+    cell: number,
+    dew: number,
+  ): void {
     const ga = 1 + az / CAMERA_DISTANCE;
     const gb = 1 + bz / CAMERA_DISTANCE;
     const pax = cx + (ax - cx) * ga;
@@ -1035,8 +1171,29 @@ class DewSim implements SceneSim {
     const pby = 0.5 + (by - 0.5) * gb;
     const codeA = Math.min(DEW_CODE - 1, Math.max(1, Math.round(ra / DEW_STEM_UNIT)));
     const codeB = Math.min(DEW_CODE - 1, Math.max(1, Math.round(rb / DEW_STEM_UNIT)));
-    this.#writeSegment(seg, id, pax, pay, az, pbx, pby, bz, codeB + DEW_CODE * piece, DEW_KIND_STEM * DEW_CODE + codeA);
-    this.#lists.add(id + 1, pax, pay, pbx, pby, Math.max(codeA, codeB) * DEW_STEM_UNIT + dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 + Math.max(this.#blurAt(az), this.#blurAt(bz)) + 2 * cell);
+    this.#writeSegment(
+      seg,
+      id,
+      pax,
+      pay,
+      az,
+      pbx,
+      pby,
+      bz,
+      codeB + DEW_CODE * piece,
+      DEW_KIND_STEM * DEW_CODE + codeA,
+    );
+    this.#lists.add(
+      id + 1,
+      pax,
+      pay,
+      pbx,
+      pby,
+      Math.max(codeA, codeB) * DEW_STEM_UNIT +
+        dewBeadMax(DEW_KIND_SPIRAL, dew) * 2 +
+        Math.max(this.#blurAt(az), this.#blurAt(bz)) +
+        2 * cell,
+    );
   }
 
   /**
@@ -1061,7 +1218,22 @@ class DewSim implements SceneSim {
         const bx = at[0] ?? 0;
         const by = at[1] ?? 0;
         const bz = at[2] ?? 0;
-        this.#piece(seg, id++, ax, ay, az, bx, by, bz, stem.r0 + (stem.r1 - stem.r0) * u0, stem.r0 + (stem.r1 - stem.r0) * u1, DEW_PIECE_STALK, cx, cell, dew);
+        this.#piece(
+          seg,
+          id++,
+          ax,
+          ay,
+          az,
+          bx,
+          by,
+          bz,
+          stem.r0 + (stem.r1 - stem.r0) * u0,
+          stem.r0 + (stem.r1 - stem.r0) * u1,
+          DEW_PIECE_STALK,
+          cx,
+          cell,
+          dew,
+        );
         ax = bx;
         ay = by;
         az = bz;
@@ -1085,7 +1257,22 @@ class DewSim implements SceneSim {
           const swing = 0.5 * t1 * t1;
           const nx = px + stem.sx * swing;
           const nz = rz + stem.sz * swing;
-          this.#piece(seg, id++, ex, ey, ez, nx, py, nz, leaf.width * leafProfile(t0), leaf.width * leafProfile(t1), DEW_PIECE_LEAF, cx, cell, dew);
+          this.#piece(
+            seg,
+            id++,
+            ex,
+            ey,
+            ez,
+            nx,
+            py,
+            nz,
+            leaf.width * leafProfile(t0),
+            leaf.width * leafProfile(t1),
+            DEW_PIECE_LEAF,
+            cx,
+            cell,
+            dew,
+          );
           ex = nx;
           ey = py;
           ez = nz;
@@ -1112,7 +1299,7 @@ class DewSim implements SceneSim {
         const nx = hx + dx * headStep + stem.sx * 0.4 * (t1 * t1 - t0 * t0);
         const ny = hy + dy * headStep;
         const nz = tipZ + stem.sz * 0.4 * t1 * t1;
-        const r0 = j === 0 ? stem.r1 : HEAD_RADII[j] ?? 0.001;
+        const r0 = j === 0 ? stem.r1 : (HEAD_RADII[j] ?? 0.001);
         const r1 = HEAD_RADII[j + 1] ?? 0.001;
         this.#piece(seg, id++, hx, hy, hz, nx, ny, nz, r0, r1, DEW_PIECE_HEAD, cx, cell, dew);
         const rad = (r0 + r1) * 0.5;
@@ -1125,7 +1312,22 @@ class DewSim implements SceneSim {
           const ax = mx - dy * side * rad * 0.6;
           const ay = my + dx * side * rad * 0.6;
           const out = angle - side * AWN_SPREAD;
-          this.#piece(seg, id++, ax, ay, mz, ax + Math.sin(out) * AWN_LENGTH, ay + Math.cos(out) * AWN_LENGTH, mz, AWN_RADIUS, AWN_RADIUS * 0.4, DEW_PIECE_AWN, cx, cell, dew);
+          this.#piece(
+            seg,
+            id++,
+            ax,
+            ay,
+            mz,
+            ax + Math.sin(out) * AWN_LENGTH,
+            ay + Math.cos(out) * AWN_LENGTH,
+            mz,
+            AWN_RADIUS,
+            AWN_RADIUS * 0.4,
+            DEW_PIECE_AWN,
+            cx,
+            cell,
+            dew,
+          );
         }
         hx = nx;
         hy = ny;
@@ -1168,8 +1370,12 @@ class DewSim implements SceneSim {
       const y = drawn[o + 1] ?? 0;
       const lag = SWING_LAG * Math.min(1, Math.max(0, 0.5 + (0.5 * (web.hubY - y)) / span));
       let s = 0;
-      if (this.#enter < 1) s = swingIn(Math.min(1, Math.max(0, (inSeconds - lag) / (DEW_PASSAGE.enter - SWING_LAG))));
-      if (this.#exit > 0) s += (1 - s) * swingOut(Math.min(1, Math.max(0, (outSeconds - lag) / (DEW_PASSAGE.exit - SWING_LAG))));
+      if (this.#enter < 1)
+        s = swingIn(Math.min(1, Math.max(0, (inSeconds - lag) / (DEW_PASSAGE.enter - SWING_LAG))));
+      if (this.#exit > 0)
+        s +=
+          (1 - s) *
+          swingOut(Math.min(1, Math.max(0, (outSeconds - lag) / (DEW_PASSAGE.exit - SWING_LAG))));
       const theta = theta0 * s;
       const c = Math.cos(theta);
       const sn = Math.sin(theta);
@@ -1211,10 +1417,18 @@ class DewSim implements SceneSim {
     }
     if (this.#passing) this.#swingWeb(drawn);
 
-    const segRows = Math.ceil((web.threads + web.stems.reduce((n, stem) => n + STEM_SEGMENTS + stem.leaves.length * LEAF_SEGMENTS + HEAD_SEGMENTS * 3, 0)) / DEW_SEG_ROW);
+    const segRows = Math.ceil(
+      (web.threads +
+        web.stems.reduce(
+          (n, stem) => n + STEM_SEGMENTS + stem.leaves.length * LEAF_SEGMENTS + HEAD_SEGMENTS * 3,
+          0,
+        )) /
+        DEW_SEG_ROW,
+    );
     const segWidth = DEW_SEG_ROW * DEW_SEG_TEXELS;
     if (this.#segTex.height !== segRows) this.#segTex.resize(segWidth, segRows);
-    if (this.#segData.length !== segWidth * segRows * 4) this.#segData = new Float32Array(segWidth * segRows * 4);
+    if (this.#segData.length !== segWidth * segRows * 4)
+      this.#segData = new Float32Array(segWidth * segRows * 4);
     const seg = this.#segData;
     const lists = this.#lists;
     lists.clear();
@@ -1243,9 +1457,11 @@ class DewSim implements SceneSim {
         const b = (sys.constraintB[c] ?? 0) * 3;
         const t = this.#t[d] ?? 0;
         x = (drawn[a] ?? 0) + ((drawn[b] ?? 0) - (drawn[a] ?? 0)) * t;
-        y = (drawn[a + 1] ?? 0) + ((drawn[b + 1] ?? 0) - (drawn[a + 1] ?? 0)) * t - r * DEW_DROP_HANG;
+        y =
+          (drawn[a + 1] ?? 0) + ((drawn[b + 1] ?? 0) - (drawn[a + 1] ?? 0)) * t - r * DEW_DROP_HANG;
       }
-      const squash = (this.#shiver[d] ?? 0) * Math.sin(clock * SHIVER_HZ * TAU + (this.#phase[d] ?? 0));
+      const squash =
+        (this.#shiver[d] ?? 0) * Math.sin(clock * SHIVER_HZ * TAU + (this.#phase[d] ?? 0));
       const o = d * 8;
       drop[o] = hi(x);
       drop[o + 1] = hi(y);
@@ -1276,10 +1492,30 @@ class DewSim implements SceneSim {
       const by = drawn[b + 1] ?? 0;
       const bz = drawn[b + 2] ?? 0;
       const wet = Math.round((web.wet[c] ?? 0) * DEW_WET_LEVELS) + 0.5 + 0.45 * (web.dry[c] ?? 0);
-      this.#writeSegment(seg, c, ax, ay, az, bx, by, bz, wet, kind * DEW_CODE + (web.beads[c] ?? 0));
-      const silk = ((kind === DEW_KIND_FRAME ? DEW_FRAME_HALF : DEW_SILK_HALF) * (1 + DEW_GLINT_SWELL) + 1) * cell;
+      this.#writeSegment(
+        seg,
+        c,
+        ax,
+        ay,
+        az,
+        bx,
+        by,
+        bz,
+        wet,
+        kind * DEW_CODE + (web.beads[c] ?? 0),
+      );
+      const silk =
+        ((kind === DEW_KIND_FRAME ? DEW_FRAME_HALF : DEW_SILK_HALF) * (1 + DEW_GLINT_SWELL) + 1) *
+        cell;
       const bead = dewBeadMax(kind, dew) * (1 + DEW_BEAD_HANG) + cell;
-      lists.add(c + 1, ax, ay, bx, by, Math.max(silk, bead) + Math.max(this.#blurAt(az), this.#blurAt(bz)));
+      lists.add(
+        c + 1,
+        ax,
+        ay,
+        bx,
+        by,
+        Math.max(silk, bead) + Math.max(this.#blurAt(az), this.#blurAt(bz)),
+      );
     }
     this.#segTex.upload(seg);
     this.#binTex.resize(lists.width, lists.height);
@@ -1308,8 +1544,22 @@ class DewSim implements SceneSim {
     this.#headTex.upload(head);
   }
 
-  #writeSegment(data: Float32Array, id: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number, wet: number, code: number): void {
-    const o = ((id % DEW_SEG_ROW) * DEW_SEG_TEXELS + Math.floor(id / DEW_SEG_ROW) * DEW_SEG_ROW * DEW_SEG_TEXELS) * 4;
+  #writeSegment(
+    data: Float32Array,
+    id: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    wet: number,
+    code: number,
+  ): void {
+    const o =
+      ((id % DEW_SEG_ROW) * DEW_SEG_TEXELS +
+        Math.floor(id / DEW_SEG_ROW) * DEW_SEG_ROW * DEW_SEG_TEXELS) *
+      4;
     const hax = hi(ax);
     const hay = hi(ay);
     const hbx = hi(bx);

@@ -12,7 +12,15 @@
 // its variant the shader's frond key.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { fract, glslHash12 } from "../../sims/math.ts";
-import { PLANT_SUMMER, PlantHabit, PlantRole, PlantTexture, plantClimate, RootedPlants, type PlantSpecies } from "../../sims/plants.ts";
+import {
+  PLANT_SUMMER,
+  PlantHabit,
+  PlantRole,
+  PlantTexture,
+  plantClimate,
+  RootedPlants,
+  type PlantSpecies,
+} from "../../sims/plants.ts";
 import type { SceneSim } from "../types.ts";
 
 export const FALLS_CLUMPS = 4;
@@ -64,7 +72,18 @@ function growBank(plants: RootedPlants, green: number, aspect: number): void {
     const side = c % 2 === 0 ? -1 : 1;
     const inward = Math.floor(c / 2);
     const x = side * (0.47 * aspect - 0.04 - 0.2 * inward - 0.06 * glslHash12(c, 81));
-    plants.add(BANK_FERN, { x, y: 0.07 + 0.08 * (1 - inward), heading: Math.PI / 2, moisture: 0.8, kind: c, slot: c * FALLS_FRONDS }, () => 0);
+    plants.add(
+      BANK_FERN,
+      {
+        x,
+        y: 0.07 + 0.08 * (1 - inward),
+        heading: Math.PI / 2,
+        moisture: 0.8,
+        kind: c,
+        slot: c * FALLS_FRONDS,
+      },
+      () => 0,
+    );
   }
 }
 

@@ -7,8 +7,16 @@
 import { glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { marblePalettes } from "./sim.ts";
 
-const accentInks = glslPick("palette", marblePalettes.map((palette) => glslVec3(palette.accent)), "vec3(0.0)");
-const basinPalettes = glslPick("palette", marblePalettes.map((palette) => (palette.basin ? "true" : "false")), "false");
+const accentInks = glslPick(
+  "palette",
+  marblePalettes.map((palette) => glslVec3(palette.accent)),
+  "vec3(0.0)",
+);
+const basinPalettes = glslPick(
+  "palette",
+  marblePalettes.map((palette) => (palette.basin ? "true" : "false")),
+  "false",
+);
 
 export const marbleGlsl = `
 const vec3 MARBLE_SIZE = vec3(0.035, 0.047, 0.058);  // dark size in a dim studio (ebru, riso)

@@ -34,12 +34,17 @@ function aheadOf(p: { x: number; y: number }): number {
 test("an aerial click lands on the face of the dune drawn under it, not on the mean level behind it", () => {
   // Sand rising in a bank 20 cells high from 60 cells ahead of the camera on. A ray a little below
   // the horizon reaches the mean level some 340 cells out, far behind the bank's face.
-  const bank = (x: number, z: number): number => ((x - DUNES_CAMERA.x) * AHEAD.x + (z - DUNES_CAMERA.z) * AHEAD.z >= 60 ? 20 : 0);
+  const bank = (x: number, z: number): number =>
+    (x - DUNES_CAMERA.x) * AHEAD.x + (z - DUNES_CAMERA.z) * AHEAD.z >= 60 ? 20 : 0;
   const out = { x: 0, y: 0 };
-  expect(dunesPointerCell(frameAt(0.5, DUNES_CAMERA.horizon - 0.05), 0, 0, 0, bank, out)).toBe(true);
+  expect(dunesPointerCell(frameAt(0.5, DUNES_CAMERA.horizon - 0.05), 0, 0, 0, bank, out)).toBe(
+    true,
+  );
   expect(Math.abs(aheadOf(out) - 60)).toBeLessThan(1);
   // The sky above the horizon has no sand to pour on.
-  expect(dunesPointerCell(frameAt(0.5, DUNES_CAMERA.horizon + 0.05), 0, 0, 0, bank, out)).toBe(false);
+  expect(dunesPointerCell(frameAt(0.5, DUNES_CAMERA.horizon + 0.05), 0, 0, 0, bank, out)).toBe(
+    false,
+  );
 });
 
 test("an aerial click follows the picture's turn toward the pointer (the shader's parallax)", () => {
@@ -60,7 +65,10 @@ test("a click on the sandstone M lands at the M, not on the sand far behind it",
   const height = DUNES_MARK.small + (DUNES_MARK.large - DUNES_MARK.small) * size;
   // Aim at the middle of its left leg (mark units x = -0.47, half way up).
   const across = { x: Math.cos(DUNES_MARK.yaw), z: Math.sin(DUNES_MARK.yaw) };
-  const leg = { x: DUNES_MARK.x - 0.47 * height * across.x, z: DUNES_MARK.z - 0.47 * height * across.z };
+  const leg = {
+    x: DUNES_MARK.x - 0.47 * height * across.x,
+    z: DUNES_MARK.z - 0.47 * height * across.z,
+  };
   const eye = DUNES_CAMERA.height + DUNES_CAMERA.rise * DUNES_SAND.sparse * DUNES_SLAB;
   const dx = leg.x - DUNES_CAMERA.x;
   const dz = leg.z - DUNES_CAMERA.z;

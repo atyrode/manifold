@@ -60,7 +60,10 @@ export class ElasticPan {
 
   drag(dx: number, dy: number, ex: number, ey: number): void {
     const { give } = this.#options;
-    const stretch = this.#stretch ?? [unband(this.offset[0], ex, give), unband(this.offset[1], ey, give)];
+    const stretch = this.#stretch ?? [
+      unband(this.offset[0], ex, give),
+      unband(this.offset[1], ey, give),
+    ];
     stretch[0] += dx;
     stretch[1] += dy;
     this.#stretch = stretch;

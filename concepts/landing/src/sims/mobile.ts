@@ -252,7 +252,8 @@ const LINK_ROOM = 0.7;
  */
 export function designMobile(options: MobileDesignOptions): MobileDesign {
   const count = Math.min(MOBILE_MAX_ARMS, Math.max(1, Math.round(options.arms)));
-  if (options.shapes.length === 0) throw new MobileError("designMobile: no plate shapes to draw from");
+  if (options.shapes.length === 0)
+    throw new MobileError("designMobile: no plate shapes to draw from");
   const rand = new Random(Math.imul(options.seed + 1, 0x9e3779b1) ^ 0x6d6f6231);
 
   // The tree: which end of which arm each arm hangs from.
@@ -289,7 +290,10 @@ export function designMobile(options: MobileDesignOptions): MobileDesign {
     spans.push(options.span * Math.pow(SPAN_FALL, level) * (0.85 + 0.3 * rand.next()));
     headings.push(rand.next() * Math.PI * 2);
     tilts.push((rand.next() - 0.5) * 2 * TILT);
-    const pair: [MobilePlateDesign | undefined, MobilePlateDesign | undefined] = [undefined, undefined];
+    const pair: [MobilePlateDesign | undefined, MobilePlateDesign | undefined] = [
+      undefined,
+      undefined,
+    ];
     for (const e of [0, 1] as const) {
       if ((child[k]?.[e] ?? -1) >= 0) continue;
       pair[e] = {
@@ -322,7 +326,10 @@ export function designMobile(options: MobileDesignOptions): MobileDesign {
     const mass = [0, 1].map((e) => {
       const plate = plates[k]?.[e];
       const hung = child[k]?.[e] ?? -1;
-      return (plate === undefined ? (hung >= 0 ? (below[hung] ?? 0) : 0) + LOOP : plateMass(plate)) + wire / 2;
+      return (
+        (plate === undefined ? (hung >= 0 ? (below[hung] ?? 0) : 0) + LOOP : plateMass(plate)) +
+        wire / 2
+      );
     });
     const m0 = mass[0] ?? 0;
     const m1 = mass[1] ?? 0;
@@ -332,7 +339,8 @@ export function designMobile(options: MobileDesignOptions): MobileDesign {
   }
 
   // Links: room for the biggest plate on the parent and on the arm itself to pass each other.
-  const biggest = (k: number): number => Math.max(plates[k]?.[0]?.size ?? 0, plates[k]?.[1]?.size ?? 0);
+  const biggest = (k: number): number =>
+    Math.max(plates[k]?.[0]?.size ?? 0, plates[k]?.[1]?.size ?? 0);
   const arms: MobileArmDesign[] = [];
   for (let k = 0; k < count; k++) {
     const p = parent[k] ?? -1;
@@ -415,17 +423,26 @@ export class Mobile {
   #airAt: MobileAir | undefined;
 
   constructor(design: MobileDesign) {
-    if (design.arms.length === 0 || design.arms.length > MOBILE_MAX_ARMS) throw new MobileError(`a mobile has 1..${MOBILE_MAX_ARMS} arms, got ${design.arms.length}`);
+    if (design.arms.length === 0 || design.arms.length > MOBILE_MAX_ARMS)
+      throw new MobileError(`a mobile has 1..${MOBILE_MAX_ARMS} arms, got ${design.arms.length}`);
     this.design = design;
     const arms = design.arms.length;
-    const sys = new VerletSystem({ substep: MOBILE_SUBSTEP, maxSubsteps: 1, points: 1 + 3 * arms, constraints: 4 * arms });
+    const sys = new VerletSystem({
+      substep: MOBILE_SUBSTEP,
+      maxSubsteps: 1,
+      points: 1 + 3 * arms,
+      constraints: 4 * arms,
+    });
     this.system = sys;
     const [ax, ay, az] = design.anchor;
     this.#anchor = sys.addPoint(ax, ay, az, 0);
     this.#ends = new Int32Array(2 * arms);
     this.#loopPoint = new Int32Array(arms);
     this.#topPoint = new Int32Array(arms);
-    const plates = design.arms.reduce((n, arm) => n + (arm.plates[0] ? 1 : 0) + (arm.plates[1] ? 1 : 0), 0);
+    const plates = design.arms.reduce(
+      (n, arm) => n + (arm.plates[0] ? 1 : 0) + (arm.plates[1] ? 1 : 0),
+      0,
+    );
     this.#plateArm = new Int32Array(plates);
     this.#plateEnd = new Int32Array(plates);
     this.#platePoint = new Int32Array(plates);
@@ -448,7 +465,8 @@ export class Mobile {
     for (let k = 0; k < arms; k++) {
       const arm = design.arms[k];
       if (arm === undefined) continue;
-      if (arm.parent >= k) throw new MobileError(`arm ${k} hangs from arm ${arm.parent}: parents come first`);
+      if (arm.parent >= k)
+        throw new MobileError(`arm ${k} hangs from arm ${arm.parent}: parents come first`);
       const top = arm.parent < 0 ? this.#anchor : (this.#ends[2 * arm.parent + arm.end] ?? 0);
       const pos = sys.positions;
       const tx = pos[top * 3] ?? 0;
@@ -462,8 +480,18 @@ export class Mobile {
         const p = arm.plates[e];
         return (p === undefined ? LOOP : plateMass(p)) + wire / 2;
       };
-      const a = sys.addPoint(tx - dx * arm.reach[0], hy - arm.loop, tz - dz * arm.reach[0], 1 / endMass(0));
-      const b = sys.addPoint(tx + dx * arm.reach[1], hy - arm.loop, tz + dz * arm.reach[1], 1 / endMass(1));
+      const a = sys.addPoint(
+        tx - dx * arm.reach[0],
+        hy - arm.loop,
+        tz - dz * arm.reach[0],
+        1 / endMass(0),
+      );
+      const b = sys.addPoint(
+        tx + dx * arm.reach[1],
+        hy - arm.loop,
+        tz + dz * arm.reach[1],
+        1 / endMass(1),
+      );
       const h = sys.addPoint(tx, hy, tz, 1 / LOOP);
       sys.addConstraint(a, h);
       sys.addConstraint(b, h);
@@ -525,12 +553,21 @@ export class Mobile {
 
   /** Point indices of arm k: [end A, end B, loop H, the link's top]. */
   armPoints(k: number): readonly [number, number, number, number] {
-    return [this.#ends[2 * k] ?? 0, this.#ends[2 * k + 1] ?? 0, this.#loopPoint[k] ?? 0, this.#topPoint[k] ?? 0];
+    return [
+      this.#ends[2 * k] ?? 0,
+      this.#ends[2 * k + 1] ?? 0,
+      this.#loopPoint[k] ?? 0,
+      this.#topPoint[k] ?? 0,
+    ];
   }
 
   /** Arm, end and Verlet point of plate i. */
   plate(i: number): { arm: number; end: number; point: number } {
-    return { arm: this.#plateArm[i] ?? 0, end: this.#plateEnd[i] ?? 0, point: this.#platePoint[i] ?? 0 };
+    return {
+      arm: this.#plateArm[i] ?? 0,
+      end: this.#plateEnd[i] ?? 0,
+      point: this.#platePoint[i] ?? 0,
+    };
   }
 
   /**
@@ -567,7 +604,8 @@ export class Mobile {
       const wy = (pos[o + 1] ?? 0) - ro[1];
       const wz = (pos[o + 2] ?? 0) - ro[2];
       const t = wx * rd[0] + wy * rd[1] + wz * rd[2];
-      const d = Math.hypot(wx - rd[0] * t, wy - rd[1] * t, wz - rd[2] * t) - (this.#plateReach[i] ?? 0);
+      const d =
+        Math.hypot(wx - rd[0] * t, wy - rd[1] * t, wz - rd[2] * t) - (this.#plateReach[i] ?? 0);
       if (t > 0 && d < slack && d < bestD) {
         bestD = d;
         best = i;
@@ -581,7 +619,15 @@ export class Mobile {
     const p = this.#platePoint[i];
     if (p === undefined) return;
     const pos = this.system.positions;
-    this.system.impulse(pos[p * 3] ?? 0, pos[p * 3 + 1] ?? 0, pos[p * 3 + 2] ?? 0, 1e-3, vx, vy, vz);
+    this.system.impulse(
+      pos[p * 3] ?? 0,
+      pos[p * 3 + 1] ?? 0,
+      pos[p * 3 + 2] ?? 0,
+      1e-3,
+      vx,
+      vy,
+      vz,
+    );
   }
 
   #substep(): void {
@@ -695,10 +741,12 @@ export class Mobile {
     const now = ++this.#substeps;
     for (let i = 0; i < plates; i++) {
       for (let j = i + 1; j < plates; j++) {
-        if ((this.#plateArm[i] ?? 0) !== (this.#plateArm[j] ?? -1) && this.#platePair(i, j)) this.#touch(i * stride + j, now);
+        if ((this.#plateArm[i] ?? 0) !== (this.#plateArm[j] ?? -1) && this.#platePair(i, j))
+          this.#touch(i * stride + j, now);
       }
       for (let s = 0; s < this.#segArm.length; s++) {
-        if ((this.#segArm[s] ?? -1) !== (this.#plateArm[i] ?? 0) && this.#plateSegment(i, s)) this.#touch(i * stride + plates + s, now);
+        if ((this.#segArm[s] ?? -1) !== (this.#plateArm[i] ?? 0) && this.#plateSegment(i, s))
+          this.#touch(i * stride + plates + s, now);
       }
     }
   }
@@ -718,7 +766,11 @@ export class Mobile {
     const dx = (f[oj] ?? 0) - (f[oi] ?? 0);
     const dy = (f[oj + 1] ?? 0) - (f[oi + 1] ?? 0);
     const dz = (f[oj + 2] ?? 0) - (f[oi + 2] ?? 0);
-    if (Math.hypot(dx, dy, dz) > (this.#plateReach[i] ?? 0) + (this.#plateReach[j] ?? 0) + 2 * MOBILE_SLAB) return false;
+    if (
+      Math.hypot(dx, dy, dz) >
+      (this.#plateReach[i] ?? 0) + (this.#plateReach[j] ?? 0) + 2 * MOBILE_SLAB
+    )
+      return false;
     let depth = 0;
     let dir = 0;
     let along = j;
@@ -737,11 +789,27 @@ export class Mobile {
         const ca = Math.cos(a) * ex;
         const sa = Math.sin(a) * ey;
         const rim = this.#rim;
-        for (let c = 0; c < 3; c++) rim[c] = (f[of + c] ?? 0) + ca * (f[of + 3 + c] ?? 0) + sa * (f[of + 6 + c] ?? 0) - (f[oo + c] ?? 0);
-        const s = (rim[0] ?? 0) * (f[oo + 9] ?? 0) + (rim[1] ?? 0) * (f[oo + 10] ?? 0) + (rim[2] ?? 0) * (f[oo + 11] ?? 0);
+        for (let c = 0; c < 3; c++)
+          rim[c] =
+            (f[of + c] ?? 0) +
+            ca * (f[of + 3 + c] ?? 0) +
+            sa * (f[of + 6 + c] ?? 0) -
+            (f[oo + c] ?? 0);
+        const s =
+          (rim[0] ?? 0) * (f[oo + 9] ?? 0) +
+          (rim[1] ?? 0) * (f[oo + 10] ?? 0) +
+          (rim[2] ?? 0) * (f[oo + 11] ?? 0);
         if (Math.abs(s) >= MOBILE_SLAB) continue;
-        const lx = ((rim[0] ?? 0) * (f[oo + 3] ?? 0) + (rim[1] ?? 0) * (f[oo + 4] ?? 0) + (rim[2] ?? 0) * (f[oo + 5] ?? 0)) / ox;
-        const ly = ((rim[0] ?? 0) * (f[oo + 6] ?? 0) + (rim[1] ?? 0) * (f[oo + 7] ?? 0) + (rim[2] ?? 0) * (f[oo + 8] ?? 0)) / oy;
+        const lx =
+          ((rim[0] ?? 0) * (f[oo + 3] ?? 0) +
+            (rim[1] ?? 0) * (f[oo + 4] ?? 0) +
+            (rim[2] ?? 0) * (f[oo + 5] ?? 0)) /
+          ox;
+        const ly =
+          ((rim[0] ?? 0) * (f[oo + 6] ?? 0) +
+            (rim[1] ?? 0) * (f[oo + 7] ?? 0) +
+            (rim[2] ?? 0) * (f[oo + 8] ?? 0)) /
+          oy;
         if (lx * lx + ly * ly >= 1) continue;
         const d = MOBILE_SLAB - Math.abs(s);
         if (d > depth) {
@@ -798,8 +866,12 @@ export class Mobile {
     const nz = f[o + 11] ?? 0;
     const sn = qx * nx + qy * ny + qz * nz;
     if (Math.abs(sn) >= MOBILE_SLAB) return false;
-    const lx = (qx * (f[o + 3] ?? 0) + qy * (f[o + 4] ?? 0) + qz * (f[o + 5] ?? 0)) / (this.#plateEx[i] ?? 1);
-    const ly = (qx * (f[o + 6] ?? 0) + qy * (f[o + 7] ?? 0) + qz * (f[o + 8] ?? 0)) / (this.#plateEy[i] ?? 1);
+    const lx =
+      (qx * (f[o + 3] ?? 0) + qy * (f[o + 4] ?? 0) + qz * (f[o + 5] ?? 0)) /
+      (this.#plateEx[i] ?? 1);
+    const ly =
+      (qx * (f[o + 6] ?? 0) + qy * (f[o + 7] ?? 0) + qz * (f[o + 8] ?? 0)) /
+      (this.#plateEy[i] ?? 1);
     if (lx * lx + ly * ly >= 1) return false;
     const depth = MOBILE_SLAB - Math.abs(sn);
     const side = sn < 0 ? -1 : 1;
@@ -834,7 +906,12 @@ export class MobileTexture {
   readonly #origin: Vec3;
 
   constructor(gl: WebGL2RenderingContext, origin: Vec3) {
-    this.#texture = new DataTexture(gl, { width: MOBILE_MAX_ARMS * MOBILE_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: MOBILE_MAX_ARMS * MOBILE_TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#origin = origin;
   }
 
@@ -854,7 +931,12 @@ export class MobileTexture {
 }
 
 /** The texture's numbers for `mobile` (MOBILE_MAX_ARMS × MOBILE_TEXELS × 4 into `out`; see the header). */
-export function packMobile(mobile: Mobile, origin: Vec3, out: Float32Array, pose?: MobilePose): void {
+export function packMobile(
+  mobile: Mobile,
+  origin: Vec3,
+  out: Float32Array,
+  pose?: MobilePose,
+): void {
   out.fill(0);
   const sys = mobile.system;
   const pos = sys.positions;
@@ -895,7 +977,12 @@ export function packMobile(mobile: Mobile, origin: Vec3, out: Float32Array, pose
     for (const e of [0, 1] as const) {
       const plate = arm.plates[e];
       const o = (base + 4 + e) * 4;
-      bound = Math.max(bound, arm.reach[e] + arm.loop + (plate === undefined ? 0 : (SHAPE_STATS[plate.shape]?.reach ?? 1) * plate.size));
+      bound = Math.max(
+        bound,
+        arm.reach[e] +
+          arm.loop +
+          (plate === undefined ? 0 : (SHAPE_STATS[plate.shape]?.reach ?? 1) * plate.size),
+      );
       if (plate === undefined) continue;
       out[o] = 1 + plate.shape + (plate.markable ? 8 : 0);
       out[o + 1] = plate.size;
@@ -929,7 +1016,9 @@ export function packMobile(mobile: Mobile, origin: Vec3, out: Float32Array, pose
  *       skipArm/skipEnd leave out one plate (the one P lies on), -1 for none
  */
 export function mobileGlsl(sampler: string, origin: Vec3): string {
-  const centroids = SHAPE_STATS.map((s) => `vec2(${glslFloat(s.cx)}, ${glslFloat(s.cy)})`).join(", ");
+  const centroids = SHAPE_STATS.map((s) => `vec2(${glslFloat(s.cx)}, ${glslFloat(s.cy)})`).join(
+    ", ",
+  );
   return `
 const int MOBILE_ARMS = ${MOBILE_MAX_ARMS};
 const int MOBILE_NONE = 0;

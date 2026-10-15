@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { trainScene } from "./index.ts";
-import { TRAIN_BLOCK, TRAIN_BRIDGE, TRAIN_CROSSING, TRAIN_EVENT_SLOTS, TRAIN_STATION, TRAIN_TUNNEL } from "./sim.ts";
+import {
+  TRAIN_BLOCK,
+  TRAIN_BRIDGE,
+  TRAIN_CROSSING,
+  TRAIN_EVENT_SLOTS,
+  TRAIN_STATION,
+  TRAIN_TUNNEL,
+} from "./sim.ts";
 
 /** An event as the shader is handed it: kind code, odometer reading (m) where it starts, length, seed 0..255. */
 type Seen = [kind: number, start: number, length: number, seed: number];
@@ -19,10 +26,23 @@ interface Journey {
 }
 
 const FRAME = 0.1;
-const MAX = { stations: 1, "stations-amount": 1, crossings: 1, "crossings-amount": 1, bridges: 1, "bridges-amount": 1, tunnels: 1, "tunnels-amount": 1 };
+const MAX = {
+  stations: 1,
+  "stations-amount": 1,
+  crossings: 1,
+  "crossings-amount": 1,
+  bridges: 1,
+  "bridges-amount": 1,
+  tunnels: 1,
+  "tunnels-amount": 1,
+};
 
 /** A journey of `seconds` at 10 frames a second with these knobs and "now" presses ([second, knob]). */
-function journey(knobs: Record<string, number>, seconds: number, presses: readonly (readonly [number, string])[] = []): Journey {
+function journey(
+  knobs: Record<string, number>,
+  seconds: number,
+  presses: readonly (readonly [number, string])[] = [],
+): Journey {
   const sim = new HeadlessSim(trainScene);
   const keys = new Set<string>();
   const out: Journey = { events: [], firstSight: [], run: 0, seconds, last: new Float32Array() };
@@ -69,22 +89,38 @@ function runs(j: Journey, a: number, b: number, gap: readonly [number, number]):
 test("the country line keeps its timetable, draw for draw", () => {
   // Recorded from the train before the line knob: route 0 at the defaults, a tunnel "now" at 60 s
   // and a bridge at 240 s. Any change to the order or number of the journey's dice moves these.
-  const j = journey({}, 600, [[60, "tunnels"], [240, "bridges"]]);
-  expect(j.events).toEqual([
-    [TRAIN_STATION, 4540, 170, 10], [TRAIN_CROSSING, 5607, 0, 103], [TRAIN_TUNNEL, 5065, 314, 135], [TRAIN_BRIDGE, 5933, 115, 210],
-    [TRAIN_STATION, 6475, 181, 201], [TRAIN_BRIDGE, 6323, 93, 146], [TRAIN_STATION, 8543, 186, 55], [TRAIN_CROSSING, 9263, 0, 87],
-    [TRAIN_CROSSING, 9566, 0, 209], [TRAIN_BRIDGE, 9918, 127, 148],
+  const j = journey({}, 600, [
+    [60, "tunnels"],
+    [240, "bridges"],
   ]);
-  expect((j.last[0] ?? 0) * TRAIN_BLOCK + (j.last[1] ?? 0) + (j.last[2] ?? 0)).toBe(9444.879571318626);
+  expect(j.events).toEqual([
+    [TRAIN_STATION, 4540, 170, 10],
+    [TRAIN_CROSSING, 5607, 0, 103],
+    [TRAIN_TUNNEL, 5065, 314, 135],
+    [TRAIN_BRIDGE, 5933, 115, 210],
+    [TRAIN_STATION, 6475, 181, 201],
+    [TRAIN_BRIDGE, 6323, 93, 146],
+    [TRAIN_STATION, 8543, 186, 55],
+    [TRAIN_CROSSING, 9263, 0, 87],
+    [TRAIN_CROSSING, 9566, 0, 209],
+    [TRAIN_BRIDGE, 9918, 127, 148],
+  ]);
+  expect((j.last[0] ?? 0) * TRAIN_BLOCK + (j.last[1] ?? 0) + (j.last[2] ?? 0)).toBe(
+    9444.879571318626,
+  );
 });
 
 test("the rural line: halts with their crossings, crossings everywhere, no tunnels, a slower pace", () => {
   const country = journey({ route: 4 }, 3600);
   const rural = journey({ route: 4, line: 1 }, 3600);
   expect(count(rural, TRAIN_TUNNEL)).toBe(0);
-  expect(count(rural, TRAIN_CROSSING) / rural.run).toBeGreaterThan(2 * (count(country, TRAIN_CROSSING) / country.run));
+  expect(count(rural, TRAIN_CROSSING) / rural.run).toBeGreaterThan(
+    2 * (count(country, TRAIN_CROSSING) / country.run),
+  );
   // Most halts have a farm road crossing just past the platform's end.
-  expect(runs(rural, TRAIN_STATION, TRAIN_CROSSING, [18, 30])).toBeGreaterThanOrEqual(0.5 * count(rural, TRAIN_STATION));
+  expect(runs(rural, TRAIN_STATION, TRAIN_CROSSING, [18, 30])).toBeGreaterThanOrEqual(
+    0.5 * count(rural, TRAIN_STATION),
+  );
   expect(rural.events.filter(([k, , length]) => k === TRAIN_STATION && length > 130)).toEqual([]);
   expect(rural.run).toBeLessThan(0.9 * country.run);
 });
@@ -92,20 +128,31 @@ test("the rural line: halts with their crossings, crossings everywhere, no tunne
 test("the mountain line: out of tunnels onto viaducts and into the next, few crossings", () => {
   const country = journey({ route: 4 }, 3600);
   const mountain = journey({ route: 4, line: 2 }, 3600);
-  expect(count(mountain, TRAIN_TUNNEL) / mountain.run).toBeGreaterThan(2 * (count(country, TRAIN_TUNNEL) / country.run));
-  expect(count(mountain, TRAIN_BRIDGE) / mountain.run).toBeGreaterThan(2 * (count(country, TRAIN_BRIDGE) / country.run));
-  expect(count(mountain, TRAIN_CROSSING) / mountain.run).toBeLessThan(0.5 * (count(country, TRAIN_CROSSING) / country.run));
+  expect(count(mountain, TRAIN_TUNNEL) / mountain.run).toBeGreaterThan(
+    2 * (count(country, TRAIN_TUNNEL) / country.run),
+  );
+  expect(count(mountain, TRAIN_BRIDGE) / mountain.run).toBeGreaterThan(
+    2 * (count(country, TRAIN_BRIDGE) / country.run),
+  );
+  expect(count(mountain, TRAIN_CROSSING) / mountain.run).toBeLessThan(
+    0.5 * (count(country, TRAIN_CROSSING) / country.run),
+  );
   expect(runs(mountain, TRAIN_TUNNEL, TRAIN_BRIDGE, [20, 35])).toBeGreaterThanOrEqual(3);
   expect(runs(mountain, TRAIN_BRIDGE, TRAIN_TUNNEL, [15, 30])).toBeGreaterThanOrEqual(3);
   // Nothing else is ever that close: a run's members only.
-  expect(runs(mountain, TRAIN_BRIDGE, TRAIN_BRIDGE, [0, 89]) + runs(mountain, TRAIN_TUNNEL, TRAIN_TUNNEL, [0, 89])).toBe(0);
+  expect(
+    runs(mountain, TRAIN_BRIDGE, TRAIN_BRIDGE, [0, 89]) +
+      runs(mountain, TRAIN_TUNNEL, TRAIN_TUNNEL, [0, 89]),
+  ).toBe(0);
   expect(mountain.run).toBeLessThan(0.85 * country.run);
 });
 
 test("a now press on the mountain line can bring the viaduct and the next tunnel with it", () => {
   let led = 0;
   for (const route of [1, 2, 3, 5, 6, 8]) {
-    const j = journey({ route, line: 2, tunnels: 0, bridges: 0, stations: 0, crossings: 0 }, 120, [[1, "tunnels"]]);
+    const j = journey({ route, line: 2, tunnels: 0, bridges: 0, stations: 0, crossings: 0 }, 120, [
+      [1, "tunnels"],
+    ]);
     expect(count(j, TRAIN_TUNNEL)).toBeGreaterThanOrEqual(1);
     if (runs(j, TRAIN_TUNNEL, TRAIN_BRIDGE, [20, 35]) > 0) led++;
   }

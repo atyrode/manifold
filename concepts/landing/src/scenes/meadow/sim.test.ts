@@ -29,7 +29,13 @@ interface Motion {
  */
 function seedMotion(wind: number): Record<string, Motion> {
   const sim = new HeadlessSim(meadowScene);
-  const frame: HeadlessFrame = { dt: DT, aspect: ASPECT, height: ROWS, knobs: { wind }, pointer: { x: 0, y: 0, inside: false } };
+  const frame: HeadlessFrame = {
+    dt: DT,
+    aspect: ASPECT,
+    height: ROWS,
+    knobs: { wind },
+    pointer: { x: 0, y: 0, inside: false },
+  };
   const side = wind < 0 ? -1 : 1;
   const bands: Record<string, Motion> = {};
   let previous: Seen[] = [];
@@ -41,13 +47,21 @@ function seedMotion(wind: number): Record<string, Motion> {
     const seen: Seen[] = [];
     for (let n = 0; n < MAX_SEEDS; n++) {
       if ((upload[n * 4 + 2] ?? 0) <= 0) continue;
-      seen.push({ u: upload[n * 4] ?? 0, y: upload[n * 4 + 1] ?? 0, z: upload[(MAX_SEEDS + n) * 4 + 1] ?? 0 });
+      seen.push({
+        u: upload[n * 4] ?? 0,
+        y: upload[n * 4 + 1] ?? 0,
+        z: upload[(MAX_SEEDS + n) * 4 + 1] ?? 0,
+      });
     }
     for (const now of seen) {
       let match: Seen | undefined;
       let nearest = 0.02;
       for (const before of previous) {
-        const d = Math.hypot((before.u - now.u) * ASPECT, before.y - now.y, (before.z - now.z) * 0.05);
+        const d = Math.hypot(
+          (before.u - now.u) * ASPECT,
+          before.y - now.y,
+          (before.z - now.z) * 0.05,
+        );
         if (d < nearest) {
           nearest = d;
           match = before;
@@ -83,7 +97,13 @@ test("airborne seeds travel over the ground along the shared gust direction at e
       if (motion.n < 200) continue;
       const angle = (Math.atan2(motion.away, motion.across) * 180) / Math.PI;
       const within = Math.abs(angle - gustAngle) < (band === "all" ? 2 : 3);
-      expect({ wind, band, angle: Number(angle.toFixed(1)), gustAngle: Number(gustAngle.toFixed(1)), within }).toMatchObject({ wind, band, within: true });
+      expect({
+        wind,
+        band,
+        angle: Number(angle.toFixed(1)),
+        gustAngle: Number(gustAngle.toFixed(1)),
+        within,
+      }).toMatchObject({ wind, band, within: true });
     }
   }
 });

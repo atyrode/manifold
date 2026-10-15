@@ -17,4 +17,13 @@ import { surfaceGlsl } from "./surface.ts";
 import { waterGlsl } from "./water.ts";
 import { weatherGlsl } from "./weather.ts";
 
-export const libs = skyGlsl + cloudDeckGlsl + weatherGlsl + surfaceGlsl + waterGlsl + lightningGlsl + auroraGlsl + meteorsGlsl + canopyGlsl;
+export const libs =
+  skyGlsl +
+  cloudDeckGlsl +
+  weatherGlsl +
+  surfaceGlsl +
+  waterGlsl +
+  lightningGlsl +
+  auroraGlsl +
+  meteorsGlsl +
+  canopyGlsl;

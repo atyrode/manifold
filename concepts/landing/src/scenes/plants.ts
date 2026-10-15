@@ -26,13 +26,46 @@ export function plantKnobs(options: PlantKnobOptions): ParamDef[] {
   const when: { when?: string } = options.when === undefined ? {} : { when: options.when };
   const knobs: ParamDef[] = [];
   if (options.season !== undefined) {
-    knobs.push(feature(options.group, "season", "seasons", false, "time of year", options.season, "The year turns the plants: a flush of pale young leaves in spring, everything out and green in summer, leaves turning gold and brown and the deciduous ones falling in autumn, bare stems among the evergreens in winter; flowers open only in their season. Spring at the left end, then summer, autumn and winter. Off: high summer.", { ...when, steady: true }));
+    knobs.push(
+      feature(
+        options.group,
+        "season",
+        "seasons",
+        false,
+        "time of year",
+        options.season,
+        "The year turns the plants: a flush of pale young leaves in spring, everything out and green in summer, leaves turning gold and brown and the deciduous ones falling in autumn, bare stems among the evergreens in winter; flowers open only in their season. Spring at the left end, then summer, autumn and winter. Off: high summer.",
+        { ...when, steady: true },
+      ),
+    );
   }
   if (options.growth !== undefined) {
-    knobs.push(feature(options.group, "growth", "growth", false, "pace", options.growth, "The plants keep growing: new leaves unfold pale and small, old ones yellow and drop, and each node grows the next in its place. Higher: faster. Off: every leaf holds in its prime.", when));
+    knobs.push(
+      feature(
+        options.group,
+        "growth",
+        "growth",
+        false,
+        "pace",
+        options.growth,
+        "The plants keep growing: new leaves unfold pale and small, old ones yellow and drop, and each node grows the next in its place. Higher: faster. Off: every leaf holds in its prime.",
+        when,
+      ),
+    );
   }
   if (options.gusts !== undefined) {
-    knobs.push(feature(options.gusts.group ?? options.group, "gusts", "gusts", false, "strength", options.gusts.value ?? 0.5, "Now and then a gust crosses as a front: the plants bow one after another as it reaches them, then swing back. Higher: stronger and more often. Now: a gust.", { trigger: options.gusts.trigger }));
+    knobs.push(
+      feature(
+        options.gusts.group ?? options.group,
+        "gusts",
+        "gusts",
+        false,
+        "strength",
+        options.gusts.value ?? 0.5,
+        "Now and then a gust crosses as a front: the plants bow one after another as it reaches them, then swing back. Higher: stronger and more often. Now: a gust.",
+        { trigger: options.gusts.trigger },
+      ),
+    );
   }
   return knobs;
 }

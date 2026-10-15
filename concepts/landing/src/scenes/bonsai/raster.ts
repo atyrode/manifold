@@ -89,11 +89,23 @@ export class TreeMaps {
         this.#stampWood(p.x, p.y, p.z, r0, n.x, n.y, n.z, n.r, n.kind === "jin" ? 1 : 0, n.flex);
       }
     }
-    for (const [index, t] of tree.tufts.entries()) if (!t.removed) this.#stampTuft(t.x, t.y, t.z, t.r, t.flat, index);
+    for (const [index, t] of tree.tufts.entries())
+      if (!t.removed) this.#stampTuft(t.x, t.y, t.z, t.r, t.flat, index);
     this.#fields(tree);
   }
 
-  #stampWood(ax: number, ay: number, az: number, ar: number, bx: number, by: number, bz: number, br: number, dead: number, flex: number): void {
+  #stampWood(
+    ax: number,
+    ay: number,
+    az: number,
+    ar: number,
+    bx: number,
+    by: number,
+    bz: number,
+    br: number,
+    dead: number,
+    flex: number,
+  ): void {
     const wood = this.wood;
     const sa = ay + BONSAI_TILT * az;
     const sb = by + BONSAI_TILT * bz;
@@ -233,7 +245,8 @@ export class TreeMaps {
         let wb = 0;
         for (const [k, pad] of tree.pads.entries()) {
           const sx = (px - pad.x) / (0.85 * Math.max(pad.long, pad.side));
-          const sy = (py - pad.y - BONSAI_TILT * pad.z) / (0.85 * Math.max(2 * pad.tall, 0.5 * pad.long));
+          const sy =
+            (py - pad.y - BONSAI_TILT * pad.z) / (0.85 * Math.max(2 * pad.tall, 0.5 * pad.long));
           const g = Math.exp(-(sx * sx + sy * sy));
           if (g > wa) {
             b = a;
@@ -282,7 +295,8 @@ function dilate(field: Float32Array): void {
       let m = 0;
       for (let dj = -1; dj <= 1; dj++) {
         const y = Math.min(FH - 1, Math.max(0, j + dj));
-        for (let di = -1; di <= 1; di++) m = Math.max(m, copy[y * FW + Math.min(FW - 1, Math.max(0, i + di))] ?? 0);
+        for (let di = -1; di <= 1; di++)
+          m = Math.max(m, copy[y * FW + Math.min(FW - 1, Math.max(0, i + di))] ?? 0);
       }
       field[j * FW + i] = m;
     }
@@ -300,7 +314,16 @@ export interface SpriteLook {
  * in display units: R wood distance (units), G foliage field (> 0 inside), B foliage hue, A 1 where
  * anything was drawn.
  */
-export function drawSprite(atlas: Float32Array, slot: number, tree: Tree, nodes: readonly number[], tufts: readonly number[], px: number, py: number, look: SpriteLook): void {
+export function drawSprite(
+  atlas: Float32Array,
+  slot: number,
+  tree: Tree,
+  nodes: readonly number[],
+  tufts: readonly number[],
+  px: number,
+  py: number,
+  look: SpriteLook,
+): void {
   const S = BONSAI_SPRITE.size;
   const x0 = BONSAI_LITTER.width + slot * S;
   for (let j = 0; j < S; j++) {
@@ -382,7 +405,11 @@ export interface LitterMark {
  * Lying things are seen almost edge-on from the camera, so they are squashed to half height.
  * Returns the texel bounds it touched (x0, y0, x1, y1), or undefined if it landed off the litter.
  */
-export function stampLitter(atlas: Float32Array, mark: LitterMark, shape: (lx: number, ly: number) => number): readonly [number, number, number, number] | undefined {
+export function stampLitter(
+  atlas: Float32Array,
+  mark: LitterMark,
+  shape: (lx: number, ly: number) => number,
+): readonly [number, number, number, number] | undefined {
   const per = PER;
   const ci = (mark.x - BONSAI_LITTER.x0) * per;
   const cj = (mark.y - BONSAI_LITTER.y0) * per;
@@ -415,7 +442,11 @@ export function stampLitter(atlas: Float32Array, mark: LitterMark, shape: (lx: n
 }
 
 /** Erase a litter slot's texels inside the given bounds. */
-export function eraseLitter(atlas: Float32Array, slot: number, bounds: readonly [number, number, number, number]): void {
+export function eraseLitter(
+  atlas: Float32Array,
+  slot: number,
+  bounds: readonly [number, number, number, number],
+): void {
   const [i0, j0, i1, j1] = bounds;
   for (let j = j0; j <= j1; j++) {
     for (let i = i0; i <= i1; i++) {

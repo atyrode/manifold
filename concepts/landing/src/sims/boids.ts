@@ -74,14 +74,19 @@ const CELL_PER_SPACING = 1.25;
  * scanned the nearest cells all round rather than one side. RING_END[r]: where ring r's offsets end.
  */
 const { OFFSETS, RING_END } = (() => {
-  const ring = (dx: number, dy: number, dz: number): number => Math.max(1, Math.abs(dx), Math.abs(dy), Math.abs(dz));
+  const ring = (dx: number, dy: number, dz: number): number =>
+    Math.max(1, Math.abs(dx), Math.abs(dy), Math.abs(dz));
   const cells: [number, number, number][] = [];
   for (let dz = -MAX_RING; dz <= MAX_RING; dz++) {
     for (let dy = -MAX_RING; dy <= MAX_RING; dy++) {
       for (let dx = -MAX_RING; dx <= MAX_RING; dx++) cells.push([dx, dy, dz]);
     }
   }
-  cells.sort((a, b) => ring(...a) - ring(...b) || a[0] * a[0] + a[1] * a[1] + a[2] * a[2] - (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]));
+  cells.sort(
+    (a, b) =>
+      ring(...a) - ring(...b) ||
+      a[0] * a[0] + a[1] * a[1] + a[2] * a[2] - (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]),
+  );
   const ends = new Int32Array(MAX_RING + 1);
   cells.forEach((cell, o) => {
     ends[ring(...cell)] = o + 1;
@@ -209,7 +214,8 @@ export class Boids {
   readonly #bestJ = new Int32Array(BOIDS_MAX_NEIGHBOURS);
 
   constructor(capacity: number) {
-    if (!(Number.isInteger(capacity) && capacity > 0)) throw new BoidsError(`boids: capacity must be a positive whole number, got ${capacity}`);
+    if (!(Number.isInteger(capacity) && capacity > 0))
+      throw new BoidsError(`boids: capacity must be a positive whole number, got ${capacity}`);
     this.capacity = capacity;
     this.x = new Float32Array(capacity);
     this.y = new Float32Array(capacity);
@@ -294,7 +300,8 @@ export class Boids {
    * fewer than k + 1). Reads the hash of the last index() or step().
    */
   nearest(i: number, k: number, out: Int32Array): number {
-    if (!this.#indexed) throw new BoidsError("boids: index() the boids before asking for neighbours");
+    if (!this.#indexed)
+      throw new BoidsError("boids: index() the boids before asking for neighbours");
     const m = this.#search(i, k);
     for (let q = 0; q < m; q++) out[q] = this.#bestJ[q] ?? 0;
     return m;
@@ -320,7 +327,22 @@ export class Boids {
     const stale = k !== this.#listK || n !== this.#listCount;
     this.#listK = k;
     this.#listCount = n;
-    const { spacing, separation, cohesion, alignment, speed, speedHold, maxAccel, level, homePull, threatRadius, flee, relay, startled, refractory } = rules;
+    const {
+      spacing,
+      separation,
+      cohesion,
+      alignment,
+      speed,
+      speedHold,
+      maxAccel,
+      level,
+      homePull,
+      threatRadius,
+      flee,
+      relay,
+      startled,
+      refractory,
+    } = rules;
     const { up, home, reach, threat } = rules;
     const levelK = level * level;
     const levelC = 2 * level;
@@ -494,7 +516,12 @@ export class Boids {
     let o = 0;
     search: for (let r = 1; r <= MAX_RING; r++) {
       for (const ringEnd = RING_END[r] ?? 0; o < ringEnd; o++) {
-        const b = bucketOf(ci + (OFFSETS[3 * o] ?? 0), cj + (OFFSETS[3 * o + 1] ?? 0), ck + (OFFSETS[3 * o + 2] ?? 0), mask);
+        const b = bucketOf(
+          ci + (OFFSETS[3 * o] ?? 0),
+          cj + (OFFSETS[3 * o + 1] ?? 0),
+          ck + (OFFSETS[3 * o + 2] ?? 0),
+          mask,
+        );
         if (stamp[b] === now) continue;
         stamp[b] = now;
         const end = start[b + 1] ?? 0;

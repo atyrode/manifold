@@ -18,13 +18,14 @@ import { glslFloat } from "./shaders/glsl.ts";
 
 export type MarkVertex = readonly [x: number, y: number];
 
-export const MARK_VERTICES: readonly [MarkVertex, MarkVertex, MarkVertex, MarkVertex, MarkVertex] = [
-  [-0.47, -0.5],
-  [-0.47, 0.5],
-  [0, -0.08],
-  [0.47, 0.5],
-  [0.47, -0.5],
-];
+export const MARK_VERTICES: readonly [MarkVertex, MarkVertex, MarkVertex, MarkVertex, MarkVertex] =
+  [
+    [-0.47, -0.5],
+    [-0.47, 0.5],
+    [0, -0.08],
+    [0.47, 0.5],
+    [0.47, -0.5],
+  ];
 
 const [M0, M1, M2, M3, M4] = MARK_VERTICES;
 
@@ -34,7 +35,14 @@ export function markVertex(i: number): MarkVertex {
 }
 
 /** Distance from (px, py) to the segment (ax, ay)–(bx, by); a zero-length segment gives the distance to a. */
-export function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+export function segmentDistance(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
   const ex = bx - ax;
   const ey = by - ay;
   const len2 = ex * ex + ey * ey;
@@ -45,8 +53,14 @@ export function segmentDistance(px: number, py: number, ax: number, ay: number, 
 /** Distance from (x, y) to the M, both in mark units. */
 export function markDistance(x: number, y: number): number {
   return Math.min(
-    Math.min(segmentDistance(x, y, M0[0], M0[1], M1[0], M1[1]), segmentDistance(x, y, M1[0], M1[1], M2[0], M2[1])),
-    Math.min(segmentDistance(x, y, M2[0], M2[1], M3[0], M3[1]), segmentDistance(x, y, M3[0], M3[1], M4[0], M4[1])),
+    Math.min(
+      segmentDistance(x, y, M0[0], M0[1], M1[0], M1[1]),
+      segmentDistance(x, y, M1[0], M1[1], M2[0], M2[1]),
+    ),
+    Math.min(
+      segmentDistance(x, y, M2[0], M2[1], M3[0], M3[1]),
+      segmentDistance(x, y, M3[0], M3[1], M4[0], M4[1]),
+    ),
   );
 }
 

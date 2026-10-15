@@ -154,7 +154,8 @@
 //   diffuse.run(trail, { textures: { uTrail: trail }, uniforms: { uKeep: 0.92 } });
 //   return [trail.texture];
 
-export type TargetFormat = "r8" | "rgba8" | "r16f" | "rg16f" | "rgba16f" | "r32f" | "rg32f" | "rgba32f";
+export type TargetFormat =
+  "r8" | "rgba8" | "r16f" | "rg16f" | "rgba16f" | "r32f" | "rg32f" | "rgba32f";
 export type TargetFilter = "linear" | "nearest";
 /** Edge behaviour of a target when sampled outside 0..1: per axis with "repeat-x" / "repeat-y". */
 export type TargetWrap = "clamp" | "repeat" | "repeat-x" | "repeat-y";
@@ -236,7 +237,12 @@ interface GpuContext {
   /** Scratch for clears. */
   readonly clearValue: Float32Array;
   /** Draw `source` stretched over a framebuffer (keeping content across a resize). */
-  readonly blit: (source: WebGLTexture, framebuffer: WebGLFramebuffer, width: number, height: number) => void;
+  readonly blit: (
+    source: WebGLTexture,
+    framebuffer: WebGLFramebuffer,
+    width: number,
+    height: number,
+  ) => void;
 }
 
 interface FormatSpec {
@@ -253,7 +259,13 @@ function formatSpec(gl: WebGL2RenderingContext, format: TargetFormat): FormatSpe
     case "r8":
       return { internal: gl.R8, format: gl.RED, type: gl.UNSIGNED_BYTE, channels: 1, float: false };
     case "rgba8":
-      return { internal: gl.RGBA8, format: gl.RGBA, type: gl.UNSIGNED_BYTE, channels: 4, float: false };
+      return {
+        internal: gl.RGBA8,
+        format: gl.RGBA,
+        type: gl.UNSIGNED_BYTE,
+        channels: 4,
+        float: false,
+      };
     case "r16f":
       return { internal: gl.R16F, format: gl.RED, type: gl.FLOAT, channels: 1, float: true };
     case "rg16f":
@@ -275,7 +287,14 @@ function formatSpec(gl: WebGL2RenderingContext, format: TargetFormat): FormatSpe
 
 function checkSize(context: GpuContext, width: number, height: number): void {
   const max = context.maxTextureSize;
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > max || height > max) {
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width < 1 ||
+    height < 1 ||
+    width > max ||
+    height > max
+  ) {
     throw new GpuError(`target size ${width}×${height} must be whole texels in 1..${max}`);
   }
 }
@@ -299,7 +318,9 @@ function numbered(source: string, log: string): string {
 /** Names declared `uniform` anywhere in the source (including arrays and comma lists). */
 function declaredUniforms(source: string): Set<string> {
   const names = new Set<string>();
-  for (const match of source.matchAll(/\buniform\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+([^;{}]+);/g)) {
+  for (const match of source.matchAll(
+    /\buniform\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+([^;{}]+);/g,
+  )) {
     for (const part of (match[1] ?? "").split(",")) {
       const name = part.replace(/\[.*$/, "").trim();
       if (name !== "") names.add(name);
@@ -308,7 +329,12 @@ function declaredUniforms(source: string): Set<string> {
   return names;
 }
 
-function compileShader(gl: WebGL2RenderingContext, type: number, source: string, name: string): WebGLShader {
+function compileShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+  name: string,
+): WebGLShader {
   const shader = gl.createShader(type);
   if (!shader) throw new GpuError(`${name}: could not allocate a shader`);
   gl.shaderSource(shader, source);
@@ -317,15 +343,23 @@ function compileShader(gl: WebGL2RenderingContext, type: number, source: string,
     const log = gl.getShaderInfoLog(shader) ?? "";
     gl.deleteShader(shader);
     const stage = type === gl.VERTEX_SHADER ? "vertex" : "fragment";
-    throw new GpuError(`${name}: ${stage} shader compile failed\n${log.trim()}\n${numbered(source, log)}`);
+    throw new GpuError(
+      `${name}: ${stage} shader compile failed\n${log.trim()}\n${numbered(source, log)}`,
+    );
   }
   return shader;
 }
 
 /** Link a program from a shared vertex shader (kept) or vertex source (compiled and owned). */
-function buildProgram(gl: WebGL2RenderingContext, vertex: WebGLShader | string, fragmentSource: string, name: string): WebGLProgram {
+function buildProgram(
+  gl: WebGL2RenderingContext,
+  vertex: WebGLShader | string,
+  fragmentSource: string,
+  name: string,
+): WebGLProgram {
   const owned = typeof vertex === "string";
-  const vertexShader = typeof vertex === "string" ? compileShader(gl, gl.VERTEX_SHADER, vertex, name) : vertex;
+  const vertexShader =
+    typeof vertex === "string" ? compileShader(gl, gl.VERTEX_SHADER, vertex, name) : vertex;
   let fragment: WebGLShader;
   try {
     fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource, name);
@@ -343,9 +377,10 @@ function buildProgram(gl: WebGL2RenderingContext, vertex: WebGLShader | string, 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     const log = gl.getProgramInfoLog(program) ?? "";
     gl.deleteProgram(program);
-    const listing = typeof vertex === "string"
-      ? `vertex:\n${numbered(vertex, "")}\nfragment:\n${numbered(fragmentSource, "")}`
-      : numbered(fragmentSource, "");
+    const listing =
+      typeof vertex === "string"
+        ? `vertex:\n${numbered(vertex, "")}\nfragment:\n${numbered(fragmentSource, "")}`
+        : numbered(fragmentSource, "");
     throw new GpuError(`${name}: program link failed\n${log.trim()}\n${listing}`);
   }
   return program;
@@ -361,16 +396,30 @@ interface UniformSlot {
   readonly send: (count: number) => void;
 }
 
-function uniformSlot(gl: WebGL2RenderingContext, location: WebGLUniformLocation, type: number, size: number): UniformSlot | undefined {
-  const floats = (components: number, send: (data: Float32Array, count: number) => void): UniformSlot => {
+function uniformSlot(
+  gl: WebGL2RenderingContext,
+  location: WebGLUniformLocation,
+  type: number,
+  size: number,
+): UniformSlot | undefined {
+  const floats = (
+    components: number,
+    send: (data: Float32Array, count: number) => void,
+  ): UniformSlot => {
     const data = new Float32Array(components * size);
     return { components, capacity: data.length, data, send: (count) => send(data, count) };
   };
-  const ints = (components: number, send: (data: Int32Array, count: number) => void): UniformSlot => {
+  const ints = (
+    components: number,
+    send: (data: Int32Array, count: number) => void,
+  ): UniformSlot => {
     const data = new Int32Array(components * size);
     return { components, capacity: data.length, data, send: (count) => send(data, count) };
   };
-  const uints = (components: number, send: (data: Uint32Array, count: number) => void): UniformSlot => {
+  const uints = (
+    components: number,
+    send: (data: Uint32Array, count: number) => void,
+  ): UniformSlot => {
     const data = new Uint32Array(components * size);
     return { components, capacity: data.length, data, send: (count) => send(data, count) };
   };
@@ -532,7 +581,8 @@ export class RenderTarget implements Releasable {
     this.format = options.format;
     this.#spec = formatSpec(context.gl, options.format);
     // 32-bit floats filter linearly only with OES_texture_float_linear.
-    const linear = options.filter !== "nearest" && (!options.format.endsWith("32f") || context.floatLinear);
+    const linear =
+      options.filter !== "nearest" && (!options.format.endsWith("32f") || context.floatLinear);
     this.filter = linear ? "linear" : "nearest";
     this.wrap = options.wrap ?? "clamp";
     checkSize(context, options.width, options.height);
@@ -607,16 +657,29 @@ export class RenderTarget implements Releasable {
     this.#check();
     const spec = this.#spec;
     const expected = this.#width * this.#height * spec.channels;
-    if (data.length !== expected) throw new GpuError(`${this.format} seed has ${data.length} values, expected ${expected}`);
+    if (data.length !== expected)
+      throw new GpuError(`${this.format} seed has ${data.length} values, expected ${expected}`);
     if (spec.float !== data instanceof Float32Array) {
-      throw new GpuError(`${this.format} seeds from a ${spec.float ? "Float32Array" : "Uint8Array"}`);
+      throw new GpuError(
+        `${this.format} seeds from a ${spec.float ? "Float32Array" : "Uint8Array"}`,
+      );
     }
     const gl = this.#context.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.#texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.#width, this.#height, spec.format, spec.type, data);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      this.#width,
+      this.#height,
+      spec.format,
+      spec.type,
+      data,
+    );
   }
 
   dispose(): void {
@@ -659,7 +722,9 @@ export class RenderTarget implements Releasable {
     if (status !== gl.FRAMEBUFFER_COMPLETE) {
       gl.deleteFramebuffer(framebuffer);
       gl.deleteTexture(texture);
-      throw new GpuError(`a ${this.format} target of ${width}×${height} is not renderable here (status 0x${status.toString(16)})`);
+      throw new GpuError(
+        `a ${this.format} target of ${width}×${height} is not renderable here (status 0x${status.toString(16)})`,
+      );
     }
     return { texture, framebuffer };
   }
@@ -761,13 +826,20 @@ abstract class GpuProgram implements Releasable {
   readonly #pointSize: WebGLUniformLocation | null;
   #disposed = false;
 
-  protected constructor(context: GpuContext, name: string, vertex: WebGLShader | string, fragment: string) {
+  protected constructor(
+    context: GpuContext,
+    name: string,
+    vertex: WebGLShader | string,
+    fragment: string,
+  ) {
     this.name = name;
     this.#context = context;
     const gl = context.gl;
     const program = buildProgram(gl, vertex, fragment, name);
     this.#program = program;
-    this.#declared = declaredUniforms(typeof vertex === "string" ? `${vertex}\n${fragment}` : fragment);
+    this.#declared = declaredUniforms(
+      typeof vertex === "string" ? `${vertex}\n${fragment}` : fragment,
+    );
     try {
       gl.useProgram(program);
       const active: unknown = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
@@ -779,11 +851,18 @@ abstract class GpuProgram implements Releasable {
         const location = gl.getUniformLocation(program, uniform);
         // Built-ins (gl_DepthRange) and uniform-block members have no location of their own.
         if (location === null) continue;
-        if (info.type === gl.SAMPLER_2D || info.type === gl.INT_SAMPLER_2D || info.type === gl.UNSIGNED_INT_SAMPLER_2D) {
-          if (info.size !== 1) throw new GpuError(`${name}: sampler arrays are not supported (${uniform})`);
+        if (
+          info.type === gl.SAMPLER_2D ||
+          info.type === gl.INT_SAMPLER_2D ||
+          info.type === gl.UNSIGNED_INT_SAMPLER_2D
+        ) {
+          if (info.size !== 1)
+            throw new GpuError(`${name}: sampler arrays are not supported (${uniform})`);
           const unit = this.#samplers.length;
           if (unit >= context.maxTextureUnits) {
-            throw new GpuError(`${name}: more samplers than the ${context.maxTextureUnits} texture units`);
+            throw new GpuError(
+              `${name}: more samplers than the ${context.maxTextureUnits} texture units`,
+            );
           }
           gl.uniform1i(location, unit);
           const slot: SamplerSlot = { name: uniform, unit, source: undefined };
@@ -831,8 +910,10 @@ abstract class GpuProgram implements Releasable {
         this.#write(name, slot, value);
         continue;
       }
-      if (this.#samplerByName.has(name)) throw new GpuError(`${this.name}: ${name} is a sampler: give it in textures`);
-      if (strict && !this.#declared.has(name)) throw new GpuError(`${this.name}: no uniform ${name} is declared`);
+      if (this.#samplerByName.has(name))
+        throw new GpuError(`${this.name}: ${name} is a sampler: give it in textures`);
+      if (strict && !this.#declared.has(name))
+        throw new GpuError(`${this.name}: no uniform ${name} is declared`);
     }
     return this;
   }
@@ -849,7 +930,8 @@ abstract class GpuProgram implements Releasable {
         continue;
       }
       if (this.#uniforms.has(name)) throw new GpuError(`${this.name}: ${name} is not a sampler`);
-      if (strict && !this.#declared.has(name)) throw new GpuError(`${this.name}: no sampler ${name} is declared`);
+      if (strict && !this.#declared.has(name))
+        throw new GpuError(`${this.name}: no sampler ${name} is declared`);
     }
     return this;
   }
@@ -862,19 +944,31 @@ abstract class GpuProgram implements Releasable {
   }
 
   /** Draw into `target`, honouring the GL state contract in the file header. */
-  protected draw(target: RenderTarget, mode: "triangles" | "points", count: number, blend: BlendMode, pointSize: number): void {
+  protected draw(
+    target: RenderTarget,
+    mode: "triangles" | "points",
+    count: number,
+    blend: BlendMode,
+    pointSize: number,
+  ): void {
     this.#check();
     const context = this.#context;
     const gl = context.gl;
     const into = target.texture;
     if (blend !== "none" && target.format.endsWith("32f") && !context.floatBlend) {
-      throw new GpuError(`${this.name}: blending into a ${target.format} target needs EXT_float_blend; use a 16-bit target`);
+      throw new GpuError(
+        `${this.name}: blending into a ${target.format} target needs EXT_float_blend; use a 16-bit target`,
+      );
     }
     gl.useProgram(this.#program);
     for (const slot of this.#samplers) {
-      if (slot.source === undefined) throw new GpuError(`${this.name}: no texture bound to ${slot.name}`);
+      if (slot.source === undefined)
+        throw new GpuError(`${this.name}: no texture bound to ${slot.name}`);
       const texture = textureOf(slot.source);
-      if (texture === into) throw new GpuError(`${this.name}: ${slot.name} reads the target being drawn (use a PingPong)`);
+      if (texture === into)
+        throw new GpuError(
+          `${this.name}: ${slot.name} reads the target being drawn (use a PingPong)`,
+        );
       gl.activeTexture(gl.TEXTURE0 + slot.unit);
       gl.bindTexture(gl.TEXTURE_2D, texture);
     }
@@ -910,14 +1004,17 @@ abstract class GpuProgram implements Releasable {
 
   #write(name: string, slot: UniformSlot, value: UniformValue): void {
     if (typeof value === "number" || typeof value === "boolean") {
-      if (slot.components !== 1) throw new GpuError(`${this.name}: ${name} takes ${slot.components} values, got one`);
+      if (slot.components !== 1)
+        throw new GpuError(`${this.name}: ${name} takes ${slot.components} values, got one`);
       slot.data[0] = Number(value);
       slot.send(1);
       return;
     }
     const count = Math.min(value.length, slot.capacity);
     if (count === 0 || count % slot.components !== 0) {
-      throw new GpuError(`${this.name}: ${name} takes a multiple of ${slot.components} values, got ${value.length}`);
+      throw new GpuError(
+        `${this.name}: ${name} takes a multiple of ${slot.components} values, got ${value.length}`,
+      );
     }
     const data = slot.data;
     for (let i = 0; i < count; i++) data[i] = value[i] ?? 0;
@@ -945,7 +1042,9 @@ export class Pass extends GpuProgram {
     const blend = options.blend ?? "none";
     if (target instanceof PingPong) {
       if (blend !== "none") {
-        throw new GpuError(`${this.name}: blending into a PingPong would land on its stale write side; draw into its read target`);
+        throw new GpuError(
+          `${this.name}: blending into a PingPong would land on its stale write side; draw into its read target`,
+        );
       }
       this.draw(target.write, "triangles", 3, blend, 1);
       target.swap();
@@ -960,8 +1059,15 @@ export class Scatter extends GpuProgram {
   readonly #maxPointSize: number;
 
   constructor(context: GpuContext, body: string, options: ScatterOptions) {
-    const fragment = SCATTER_FRAGMENT_PREAMBLE + (options.fragment ?? (options.shape === "soft" ? SOFT_POINT : SQUARE_POINT));
-    super(context, options.name ?? "scatter", SCATTER_VERTEX_PREAMBLE + body + SCATTER_MAIN, fragment);
+    const fragment =
+      SCATTER_FRAGMENT_PREAMBLE +
+      (options.fragment ?? (options.shape === "soft" ? SOFT_POINT : SQUARE_POINT));
+    super(
+      context,
+      options.name ?? "scatter",
+      SCATTER_VERTEX_PREAMBLE + body + SCATTER_MAIN,
+      fragment,
+    );
     this.#maxPointSize = context.maxPointSize;
   }
 
@@ -970,10 +1076,17 @@ export class Scatter extends GpuProgram {
     if (options.uniforms) this.set(options.uniforms);
     if (options.textures) this.bind(options.textures);
     const count = options.count;
-    if (!Number.isInteger(count) || count < 0) throw new GpuError(`${this.name}: count must be a whole number ≥ 0, got ${count}`);
+    if (!Number.isInteger(count) || count < 0)
+      throw new GpuError(`${this.name}: count must be a whole number ≥ 0, got ${count}`);
     if (count === 0) return;
     const size = Math.min(Math.max(options.pointSize ?? 1, 1), this.#maxPointSize);
-    this.draw(target instanceof PingPong ? target.read : target, "points", count, options.blend ?? "add", size);
+    this.draw(
+      target instanceof PingPong ? target.read : target,
+      "points",
+      count,
+      options.blend ?? "add",
+      size,
+    );
   }
 }
 
@@ -1027,7 +1140,8 @@ export class GpuCompute {
       maxTextureUnits: typeof units === "number" ? units : 16,
       live: new Set(),
       clearValue: new Float32Array(4),
-      blit: (source, framebuffer, width, height) => this.#blitInto(source, framebuffer, width, height),
+      blit: (source, framebuffer, width, height) =>
+        this.#blitInto(source, framebuffer, width, height),
     };
   }
 
@@ -1040,7 +1154,10 @@ export class GpuCompute {
   /** Two render targets as a ping-pong pair, zeroed. */
   pingPong(options: TargetOptions): PingPong {
     this.#check();
-    return new PingPong(new RenderTarget(this.#context, options), new RenderTarget(this.#context, options));
+    return new PingPong(
+      new RenderTarget(this.#context, options),
+      new RenderTarget(this.#context, options),
+    );
   }
 
   /** A fullscreen pass from a fragment body (see the file header for its preamble). */
@@ -1068,7 +1185,12 @@ export class GpuCompute {
     if (this.#disposed) throw new GpuError("the GPU engine was used after dispose");
   }
 
-  #blitInto(source: WebGLTexture, framebuffer: WebGLFramebuffer, width: number, height: number): void {
+  #blitInto(
+    source: WebGLTexture,
+    framebuffer: WebGLFramebuffer,
+    width: number,
+    height: number,
+  ): void {
     const gl = this.gl;
     gl.useProgram(this.#blit);
     gl.activeTexture(gl.TEXTURE0);

@@ -43,14 +43,24 @@ export const shoreSim: SimFactory = (gl) => {
         uploaded = -1;
         hasLast = false;
       }
-      if (texture === undefined) texture = new DataTexture(gl, { width: columns, height: ROWS, format: "r8" });
+      if (texture === undefined)
+        texture = new DataTexture(gl, { width: columns, height: ROWS, format: "r8" });
       texture.resize(columns, ROWS);
 
       const pointer = frame.pointer;
       if (pointer.inside) {
-        const travel = hasLast ? Math.hypot((pointer.x - lastX) * frame.aspect, pointer.y - lastY) : 0;
+        const travel = hasLast
+          ? Math.hypot((pointer.x - lastX) * frame.aspect, pointer.y - lastY)
+          : 0;
         const strength = Math.min(MAX_STROKE, travel * PER_TRAVEL + (pointer.down ? HELD : 0));
-        if (strength > 0.001) field.stroke(pointer.x, pointer.y, pointer.down ? HELD_RADIUS : RADIUS, strength, frame.aspect);
+        if (strength > 0.001)
+          field.stroke(
+            pointer.x,
+            pointer.y,
+            pointer.down ? HELD_RADIUS : RADIUS,
+            strength,
+            frame.aspect,
+          );
         lastX = pointer.x;
         lastY = pointer.y;
         hasLast = true;

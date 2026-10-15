@@ -53,7 +53,8 @@ export class BinLists {
   #dropped = 0;
 
   constructor(maxPages: number) {
-    if (!Number.isInteger(maxPages) || maxPages < 1) throw new BinListsError(`bins: maxPages must be a whole number ≥ 1, got ${maxPages}`);
+    if (!Number.isInteger(maxPages) || maxPages < 1)
+      throw new BinListsError(`bins: maxPages must be a whole number ≥ 1, got ${maxPages}`);
     this.maxPages = maxPages;
   }
 
@@ -94,7 +95,8 @@ export class BinLists {
 
   /** Size the grid: rows bins down the frame, cols across. Returns whether it changed (and emptied). */
   fit(rows: number, cols: number): boolean {
-    if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows < 1 || cols < 1) throw new BinListsError(`bins: a ${rows} × ${cols} grid`);
+    if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows < 1 || cols < 1)
+      throw new BinListsError(`bins: a ${rows} × ${cols} grid`);
     if (rows === this.#rows && cols === this.#cols) return false;
     this.#rows = rows;
     this.#cols = cols;
@@ -102,7 +104,9 @@ export class BinLists {
     this.#reach = this.#size * Math.SQRT1_2;
     const page = rows * BIN_PAGE * cols;
     this.#store = new Float32Array(page * this.maxPages);
-    this.#views = Array.from({ length: this.maxPages }, (_, p) => this.#store.subarray(0, page * (p + 1)));
+    this.#views = Array.from({ length: this.maxPages }, (_, p) =>
+      this.#store.subarray(0, page * (p + 1)),
+    );
     this.#count = new Uint16Array(rows * cols);
     this.#fullest = 0;
     this.#written = 0;
@@ -133,7 +137,11 @@ export class BinLists {
     const j1 = Math.min(rows - 1, Math.floor((Math.max(ay, by) + margin) / size));
     for (let i = i0; i <= i1; i++) {
       for (let j = j0; j <= j1; j++) {
-        if (segmentDistance((i + 0.5) * size, (j + 0.5) * size, ax, ay, bx, by) > this.#reach + margin) continue;
+        if (
+          segmentDistance((i + 0.5) * size, (j + 0.5) * size, ax, ay, bx, by) >
+          this.#reach + margin
+        )
+          continue;
         const bin = i * rows + j;
         const k = count[bin] ?? 0;
         if (k >= capacity) {

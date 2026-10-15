@@ -70,7 +70,10 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   }
   credit.textContent = sceneDefs[state.scene].credit ?? "";
   // Backdrop focus aids: blur and dim the scene behind the page.
-  stage.style.filter = state.dim > 0 || state.blur > 0 ? `blur(${(state.blur * 12).toFixed(1)}px) brightness(${(1 - state.dim * 0.85).toFixed(2)})` : "";
+  stage.style.filter =
+    state.dim > 0 || state.blur > 0
+      ? `blur(${(state.blur * 12).toFixed(1)}px) brightness(${(1 - state.dim * 0.85).toFixed(2)})`
+      : "";
   // Scale up slightly while blurred so the soft edges stay off screen.
   stage.style.transform = state.blur > 0 ? `scale(${(1 + state.blur * 0.05).toFixed(3)})` : "";
   instanceName.textContent = state.instance;
@@ -91,7 +94,12 @@ const lab = new Lab(element("#lab", HTMLElement), element("#lab-open", HTMLButto
 let modeBeforeHide: ModeId = state.mode === "bare" ? "landing" : state.mode;
 window.addEventListener("keydown", (event) => {
   const target = event.target;
-  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  )
+    return;
   const mod = event.metaKey || event.ctrlKey;
   if (mod && event.key.toLowerCase() === "z") {
     event.preventDefault();
@@ -134,7 +142,13 @@ window.addEventListener("keyup", (event) => {
 
 // Loading-page choreography: a stepped bar and the boot phases a hub actually goes through.
 const cells = Array.from({ length: 32 }, () => bar.appendChild(document.createElement("i")));
-const phases = ["resolving hub", "admitting session", "syncing canvas", "attaching terminals", "ready"];
+const phases = [
+  "resolving hub",
+  "admitting session",
+  "syncing canvas",
+  "attaching terminals",
+  "ready",
+];
 let step = 0;
 setInterval(() => {
   if (state.mode !== "loading") return;
@@ -144,7 +158,10 @@ setInterval(() => {
     cell.className = index < filled - 1 ? "on" : index === filled - 1 ? "head" : "";
   });
   renderer?.setProgress(filled / cells.length);
-  status.textContent = phases[Math.min(phases.length - 1, Math.floor((filled / cells.length) * (phases.length - 1)))] ?? "";
+  status.textContent =
+    phases[
+      Math.min(phases.length - 1, Math.floor((filled / cells.length) * (phases.length - 1)))
+    ] ?? "";
 }, 110);
 
 apply(initial);

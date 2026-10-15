@@ -74,7 +74,9 @@ const reservedKeys: readonly string[] = [...Object.keys(defaults), ...Object.val
 for (const id of sceneIds) {
   for (const def of sceneDefs[id].params) {
     if (reservedKeys.includes(def.key) || reservedKeys.includes(`${def.key}-amount`)) {
-      throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with the lab setting of that name`);
+      throw new KnobKeyError(
+        `landing: ${id}'s knob "${def.key}" collides with the lab setting of that name`,
+      );
     }
   }
 }
@@ -82,7 +84,12 @@ for (const id of sceneIds) {
 /** The defaults that apply to a scene: the global ones with its own look on top. */
 export function defaultsFor(scene: SceneId): LabState {
   const look = sceneDefs[scene].look;
-  return { ...defaults, scene, color: look?.color ?? defaults.color, levels: look?.levels ?? defaults.levels };
+  return {
+    ...defaults,
+    scene,
+    color: look?.color ?? defaults.color,
+    levels: look?.levels ?? defaults.levels,
+  };
 }
 
 /** Keep a look knob following the scene's own default unless it was deliberately changed. */
@@ -104,9 +111,19 @@ export interface Palette {
   line: string;
 }
 
-const NIGHT: Palette = { bg: "#07080b", ink: "#e8e6df", muted: "#8b8a85", line: "rgb(232 230 223 / 0.14)" };
+const NIGHT: Palette = {
+  bg: "#07080b",
+  ink: "#e8e6df",
+  muted: "#8b8a85",
+  line: "rgb(232 230 223 / 0.14)",
+};
 /** The "paper" theme, for scenes in daylight or drawn on paper: a warm paper page with dark ink. */
-const PAPER: Palette = { bg: "#ebe2cc", ink: "#1b2235", muted: "#5d5a52", line: "rgb(27 34 53 / 0.18)" };
+const PAPER: Palette = {
+  bg: "#ebe2cc",
+  ink: "#1b2235",
+  muted: "#5d5a52",
+  line: "rgb(27 34 53 / 0.18)",
+};
 
 export function palette(state: LabState, params: Params): Palette {
   return sceneDefs[state.scene].theme?.(params) === "paper" ? PAPER : NIGHT;
@@ -160,7 +177,8 @@ export function readParams(scene: SceneId, q: URLSearchParams): Params {
       case "feature": {
         out[def.key] = Math.round(readNumber(q.get(def.key), 0, 1, def.on ? 1 : 0));
         const amount = readNumber(q.get(`${def.key}-amount`), def.min, def.max, def.value);
-        out[`${def.key}-amount`] = def.options?.some((option) => option.value === amount) === false ? def.value : amount;
+        out[`${def.key}-amount`] =
+          def.options?.some((option) => option.value === amount) === false ? def.value : amount;
         break;
       }
       case "choice": {
@@ -180,8 +198,11 @@ export function readParams(scene: SceneId, q: URLSearchParams): Params {
   }
   // Migrate previously saved countryside selector URLs on read; serialization writes only weights.
   // Explicit new weights win, even when all zero. Pinned historical builds keep the old renderer.
-  if (scene === "country" && q.has("fieldType") &&
-      !["crops", "wildflowers", "lavender", "sunflowers"].some((key) => q.has(key))) {
+  if (
+    scene === "country" &&
+    q.has("fieldType") &&
+    !["crops", "wildflowers", "lavender", "sunflowers"].some((key) => q.has(key))
+  ) {
     const type = q.get("fieldType");
     if (type === "1" || type === "2" || type === "3") {
       out.crops = 0;

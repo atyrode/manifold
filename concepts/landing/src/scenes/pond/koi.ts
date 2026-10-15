@@ -156,7 +156,8 @@ export class PondKoi {
     } else {
       if (this.#homing < 0) this.#homing = 0;
       this.#homing += real;
-      if (this.#homing > HOMING || this.#farthestFromHome(frame.motionTime, pace) < HOME_NEAR) this.#shown = Math.max(0, this.#shown - real / HANDOFF);
+      if (this.#homing > HOMING || this.#farthestFromHome(frame.motionTime, pace) < HOME_NEAR)
+        this.#shown = Math.max(0, this.#shown - real / HANDOFF);
     }
 
     const count = Math.round(knobs.value(frame, "koi"));
@@ -184,7 +185,15 @@ export class PondKoi {
       koiLoop(loop, tm * pace + i * 11, this.#aspect, at);
       const vx = (at[2] ?? 0) * pace;
       const vy = (at[3] ?? 0) * pace;
-      group.place(i, at[0] ?? 0, at[1] ?? 0, Math.atan2(vy, vx), Math.hypot(vx, vy), loop.len, loop.salt);
+      group.place(
+        i,
+        at[0] ?? 0,
+        at[1] ?? 0,
+        Math.atan2(vy, vx),
+        Math.hypot(vx, vy),
+        loop.len,
+        loop.salt,
+      );
       this.#interest[i] = 0;
     }
     this.#clock.reset();
@@ -202,7 +211,10 @@ export class PondKoi {
       const loop = this.#loops[i];
       if (!loop) continue;
       koiLoop(loop, tm * pace + i * 11, this.#aspect, at);
-      far = Math.max(far, Math.hypot((this.group.x[i] ?? 0) - (at[0] ?? 0), (this.group.y[i] ?? 0) - (at[1] ?? 0)));
+      far = Math.max(
+        far,
+        Math.hypot((this.group.x[i] ?? 0) - (at[0] ?? 0), (this.group.y[i] ?? 0) - (at[1] ?? 0)),
+      );
     }
     return far;
   }
@@ -254,11 +266,18 @@ export class PondKoi {
       this.#interest[i] = interest;
       const pull = smoothstep(0, 1, interest);
       koiLoop(loop, tm * pace + i * 11, this.#aspect, at);
-      if (pull < 1) group.follow(i, at[0] ?? 0, at[1] ?? 0, (at[2] ?? 0) * pace, (at[3] ?? 0) * pace, 1 - pull);
+      if (pull < 1)
+        group.follow(i, at[0] ?? 0, at[1] ?? 0, (at[2] ?? 0) * pace, (at[3] ?? 0) * pace, 1 - pull);
       if (pull > 0) {
         // Each aims at its own spot just off the pointer, slowing as it comes: they arrive spread out.
         const spot = SPOT * loop.len;
-        group.gather(i, this.#lureX + loop.spotX * spot, this.#lureY + loop.spotY * spot, SLOW * loop.len, pull * (1 + eager));
+        group.gather(
+          i,
+          this.#lureX + loop.spotX * spot,
+          this.#lureY + loop.spotY * spot,
+          SLOW * loop.len,
+          pull * (1 + eager),
+        );
         group.wander(i, tm, 0.6 * pull);
         group.within(i, -halfX, -0.5 + WALL, halfX, 0.5 - WALL, WALL);
       }

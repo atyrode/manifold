@@ -11,7 +11,8 @@ function gust(knobs: Record<string, number>, motion: number): { peak: number; at
   let peak = 0;
   let at = 0;
   for (let n = 1; n <= 6 * 60; n++) {
-    const value = sim.step({ knobs, motion, now: n === 1 ? ["gusts"] : [] }).upload(3).data[0] ?? Number.NaN;
+    const value =
+      sim.step({ knobs, motion, now: n === 1 ? ["gusts"] : [] }).upload(3).data[0] ?? Number.NaN;
     if (Math.abs(value) > Math.abs(peak)) {
       peak = value;
       at = n / 60;

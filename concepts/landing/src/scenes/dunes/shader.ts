@@ -10,7 +10,15 @@
 // SKY_MOON_PHASE), and in the camera's own frame the aurora (K_aurora) and shooting stars (K_meteors),
 // all swallowed by the dust of a sandstorm.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { DUNES_CAMERA, DUNES_GRID, DUNES_MAP, DUNES_MARCH, DUNES_MARK, DUNES_SAND, DUNES_SLAB } from "./sim.ts";
+import {
+  DUNES_CAMERA,
+  DUNES_GRID,
+  DUNES_MAP,
+  DUNES_MARCH,
+  DUNES_MARK,
+  DUNES_SAND,
+  DUNES_SLAB,
+} from "./sim.ts";
 
 /**
  * Seconds of the dunes' entrance and exit (SceneDef.passage). Arriving, the camera glides in low

@@ -22,13 +22,19 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     return shader;
   });
   const linked = gl.createProgram();
   for (const shader of shaders) gl.attachShader(linked, shader);
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
@@ -196,7 +202,13 @@ Shade waterProbe(vec2 uv, vec2 cell, float t) {
 type Uniforms = Readonly<Record<string, readonly number[]>>;
 
 /** Draws `linked` at width x height into a float target and returns RGBA floats, rows bottom up. */
-function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, width: number, height: number, uniforms: Uniforms): Float32Array {
+function draw(
+  gl: WebGL2RenderingContext,
+  linked: WebGLProgram,
+  width: number,
+  height: number,
+  uniforms: Uniforms,
+): Float32Array {
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, null);
@@ -204,10 +216,19 @@ function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, width: number, h
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
   gl.bindTexture(gl.TEXTURE_2D, null);
-  check(gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE, "float target incomplete");
+  check(
+    gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE,
+    "float target incomplete",
+  );
   gl.useProgram(linked);
   gl.viewport(0, 0, width, height);
-  const all: Uniforms = { uRes: [width, height], uView: [1], uPassage: [1, 0], uTriggers: Array.from({ length: 8 }, () => -1e4), ...uniforms };
+  const all: Uniforms = {
+    uRes: [width, height],
+    uView: [1],
+    uPassage: [1, 0],
+    uTriggers: Array.from({ length: 8 }, () => -1e4),
+    ...uniforms,
+  };
   for (const [name, value] of Object.entries(all)) {
     const at = gl.getUniformLocation(linked, name);
     if (at === null) continue;
@@ -226,30 +247,62 @@ function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, width: number, h
   return out;
 }
 
-const at = (pixels: Float32Array, width: number, x: number, y: number, c: number): number => pixels[(y * width + x) * 4 + c] ?? Number.NaN;
+const at = (pixels: Float32Array, width: number, x: number, y: number, c: number): number =>
+  pixels[(y * width + x) * 4 + c] ?? Number.NaN;
 
 /** A scene whose entry only calls `call`, compiled with `features`. */
 function gate(base: SceneDef, call: string, features: Readonly<Record<string, number>>): string {
-  return fragmentSourceFor({ ...base, features, entry: "waterGate", glsl: `Shade waterGate(vec2 uv, vec2 cell, float t) {\n  ${call};\n  return blankShade();\n}\n` });
+  return fragmentSourceFor({
+    ...base,
+    features,
+    entry: "waterGate",
+    glsl: `Shade waterGate(vec2 uv, vec2 cell, float t) {\n  ${call};\n  return blankShade();\n}\n`,
+  });
 }
 
 export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const island = sceneDefs.island;
-  const probe = program(gl, fragmentSourceFor({ ...island, features: { WATER_TIER: WATER_TIERS.caustics }, entry: "waterProbe", glsl: island.glsl + PROBE }));
+  const probe = program(
+    gl,
+    fragmentSourceFor({
+      ...island,
+      features: { WATER_TIER: WATER_TIERS.caustics },
+      entry: "waterProbe",
+      glsl: island.glsl + PROBE,
+    }),
+  );
   const W = 48;
   const H = 64;
 
   // The three spectra, bit for bit, over footprints from fine to far too coarse, on the default and
   // the strongest knobs, along and across the depth, early and late on the clock.
   let spectra = 0;
-  for (const [stretch, gain, current, tm] of [[1, 0.45, 0.17, 0], [12, 1.6, 0.45, 61.7], [40, 0.6, 0.05, 333.3], [3, 1.5, 0.3, 4096.5]] as const) {
-    const pixels = draw(gl, probe, W, H, { uProbe: [0], uProbeA: [-7.3, 3.1, 0.37, tm], uProbeB: [stretch, gain, current, 0] });
+  for (const [stretch, gain, current, tm] of [
+    [1, 0.45, 0.17, 0],
+    [12, 1.6, 0.45, 61.7],
+    [40, 0.6, 0.05, 333.3],
+    [3, 1.5, 0.3, 4096.5],
+  ] as const) {
+    const pixels = draw(gl, probe, W, H, {
+      uProbe: [0],
+      uProbeA: [-7.3, 3.1, 0.37, tm],
+      uProbeB: [stretch, gain, current, 0],
+    });
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        check(at(pixels, W, x, y, 0) === 0, `Island's spectrum differs from its four trains at (${x}, ${y}), stretch ${stretch}`);
-        check(at(pixels, W, x, y, 1) === 0, `Lanterns' spectrum differs from its former sum at (${x}, ${y}), stretch ${stretch}`);
-        check(at(pixels, W, x, y, 2) === 0, `Shore's spectrum differs from its former sum at (${x}, ${y}), stretch ${stretch}`);
+        check(
+          at(pixels, W, x, y, 0) === 0,
+          `Island's spectrum differs from its four trains at (${x}, ${y}), stretch ${stretch}`,
+        );
+        check(
+          at(pixels, W, x, y, 1) === 0,
+          `Lanterns' spectrum differs from its former sum at (${x}, ${y}), stretch ${stretch}`,
+        );
+        check(
+          at(pixels, W, x, y, 2) === 0,
+          `Shore's spectrum differs from its former sum at (${x}, ${y}), stretch ${stretch}`,
+        );
         spectra++;
       }
     }
@@ -258,8 +311,15 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   // Projected size: a skipped train is exactly the unskipped one; the finest footprints draw
   // slopes, the coarsest only the variance of all five trains.
   const gain = 1.2;
-  const lod = draw(gl, probe, W, H, { uProbe: [1], uProbeA: [2.1, -4.4, 0.29, 47.25], uProbeB: [5, gain, 0, 0] });
-  const variance = [0, 1, 2, 3, 4].reduce((sum, i) => sum + 0.5 * (gain * (0.06 - 0.007 * i)) ** 2, 0);
+  const lod = draw(gl, probe, W, H, {
+    uProbe: [1],
+    uProbeA: [2.1, -4.4, 0.29, 47.25],
+    uProbeB: [5, gain, 0, 0],
+  });
+  const variance = [0, 1, 2, 3, 4].reduce(
+    (sum, i) => sum + 0.5 * (gain * (0.06 - 0.007 * i)) ** 2,
+    0,
+  );
   let drawn = 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -267,18 +327,29 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
       if (y < 4 && at(lod, W, x, y, 1) > 0) drawn++;
       if (y >= H - 4) {
         check(at(lod, W, x, y, 1) === 0, `a far cell (${x}, ${y}) still draws ripple slopes`);
-        check(Math.abs(at(lod, W, x, y, 2) - variance) <= 1e-6 * variance, `a far cell's variance ${at(lod, W, x, y, 2)} is not the five trains' ${variance}`);
+        check(
+          Math.abs(at(lod, W, x, y, 2) - variance) <= 1e-6 * variance,
+          `a far cell's variance ${at(lod, W, x, y, 2)} is not the five trains' ${variance}`,
+        );
       }
     }
   }
   check(drawn >= 3 * W, `near cells barely draw ripples: ${drawn}`);
-  const caustic = draw(gl, probe, W, H, { uProbe: [2], uProbeA: [0.5, 1.5, 0.21, 12.5], uProbeB: [1, 0, 0, 0] });
+  const caustic = draw(gl, probe, W, H, {
+    uProbe: [2],
+    uProbeA: [0.5, 1.5, 0.21, 12.5],
+    uProbeB: [1, 0, 0, 0],
+  });
   let curved = 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       check(at(caustic, W, x, y, 0) === 0, `causticRipples' skip changed the net at (${x}, ${y})`);
       if (y < 4 && at(caustic, W, x, y, 1) > 0) curved++;
-      if (y >= H - 4) check(at(caustic, W, x, y, 1) === 0 && at(caustic, W, x, y, 2) === 0, `a far cell (${x}, ${y}) still draws the caustic net`);
+      if (y >= H - 4)
+        check(
+          at(caustic, W, x, y, 1) === 0 && at(caustic, W, x, y, 2) === 0,
+          `a far cell (${x}, ${y}) still draws the caustic net`,
+        );
     }
   }
   check(curved >= 3 * W, `near cells barely draw the caustic net: ${curved}`);
@@ -288,29 +359,62 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   const M = 33;
   const dir = [0.1, -0.2, 1];
   const len = Math.hypot(dir[0] ?? 0, dir[1] ?? 0, dir[2] ?? 0);
-  const mirror = draw(gl, probe, M, M, { uProbe: [3], uProbeA: [0, 0, 0.01, 0], uProbeB: [...dir, 0] });
+  const mirror = draw(gl, probe, M, M, {
+    uProbe: [3],
+    uProbeA: [0, 0, 0.01, 0],
+    uProbeB: [...dir, 0],
+  });
   const mid = (M - 1) / 2;
-  check(Math.abs(at(mirror, M, mid, mid, 0) - 0.2 / len) < 1e-6, `level water's reflected ray rises ${at(mirror, M, mid, mid, 0)}, not ${0.2 / len}`);
-  check(Math.abs(at(mirror, M, mid, mid, 1) - (0.02 + 0.98 * (1 - 0.2 / len) ** 5)) < 1e-5, `level water's Fresnel ${at(mirror, M, mid, mid, 1)}`);
+  check(
+    Math.abs(at(mirror, M, mid, mid, 0) - 0.2 / len) < 1e-6,
+    `level water's reflected ray rises ${at(mirror, M, mid, mid, 0)}, not ${0.2 / len}`,
+  );
+  check(
+    Math.abs(at(mirror, M, mid, mid, 1) - (0.02 + 0.98 * (1 - 0.2 / len) ** 5)) < 1e-5,
+    `level water's Fresnel ${at(mirror, M, mid, mid, 1)}`,
+  );
   for (let y = 1; y < M; y++) {
-    check(at(mirror, M, mid, y, 0) > at(mirror, M, mid, y - 1, 0), `a facet tipped toward the eye does not throw the ray higher (row ${y})`);
-    check(at(mirror, M, mid, y, 1) < at(mirror, M, mid, y - 1, 1), `a facet tipped toward the eye reflects as much or more (row ${y})`);
+    check(
+      at(mirror, M, mid, y, 0) > at(mirror, M, mid, y - 1, 0),
+      `a facet tipped toward the eye does not throw the ray higher (row ${y})`,
+    );
+    check(
+      at(mirror, M, mid, y, 1) < at(mirror, M, mid, y - 1, 1),
+      `a facet tipped toward the eye reflects as much or more (row ${y})`,
+    );
   }
-  check(at(mirror, M, mid, M - 1, 2) < 0, "a facet rising away from the eye does not lean toward it");
+  check(
+    at(mirror, M, mid, M - 1, 2) < 0,
+    "a facet rising away from the eye does not lean toward it",
+  );
 
   // The flow: no current carries nothing; on a current the mix is continuous through every reset
   // (a single copy jumps by the current times the period), and the copy being put back is hidden.
   const T = 256;
   const step = 4 / T;
-  const still = draw(gl, probe, T, 8, { uProbe: [4], uProbeA: [0.5, step, 0, 0], uProbeB: [0, 0, 2, 0] });
-  for (let i = 0; i < T * 8; i++) check(still[i * 4 + 2] === 0, "waterFlow moved a pattern on still water");
-  const flow = draw(gl, probe, T, 8, { uProbe: [4], uProbeA: [0, step, 0, 0], uProbeB: [0.6, 0.2, 2, 0] });
+  const still = draw(gl, probe, T, 8, {
+    uProbe: [4],
+    uProbeA: [0.5, step, 0, 0],
+    uProbeB: [0, 0, 2, 0],
+  });
+  for (let i = 0; i < T * 8; i++)
+    check(still[i * 4 + 2] === 0, "waterFlow moved a pattern on still water");
+  const flow = draw(gl, probe, T, 8, {
+    uProbe: [4],
+    uProbeA: [0, step, 0, 0],
+    uProbeB: [0.6, 0.2, 2, 0],
+  });
   let largest = 0;
   for (let y = 0; y < 8; y++) {
-    for (let x = 1; x < T; x++) largest = Math.max(largest, Math.abs(at(flow, T, x, y, 0) - at(flow, T, x - 1, y, 0)));
+    for (let x = 1; x < T; x++)
+      largest = Math.max(largest, Math.abs(at(flow, T, x, y, 0) - at(flow, T, x - 1, y, 0)));
     for (let x = 0; x < T; x++) {
       const time = x * step;
-      if (Number.isInteger(time / 2)) check(at(flow, T, x, y, 1) === 1, `the copy being put back at ${time} s still shows (weight ${at(flow, T, x, y, 1)})`);
+      if (Number.isInteger(time / 2))
+        check(
+          at(flow, T, x, y, 1) === 1,
+          `the copy being put back at ${time} s still shows (weight ${at(flow, T, x, y, 1)})`,
+        );
     }
   }
   check(largest < 0.1, `the carried pattern jumps by ${largest} between samples ${step} s apart`);
@@ -319,27 +423,46 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   // Jacobians multiply.
   const light = draw(gl, probe, 4, 1, { uProbe: [5] });
   check(at(light, 4, 0, 0, 0) === 1, `still water's caustic light is ${at(light, 4, 0, 0, 0)}`);
-  check(at(light, 4, 1, 0, 0) === 4, `an unfocused sim's caustic light is ${at(light, 4, 1, 0, 0)}, not capped at 4`);
+  check(
+    at(light, 4, 1, 0, 0) === 4,
+    `an unfocused sim's caustic light is ${at(light, 4, 1, 0, 0)}, not capped at 4`,
+  );
   check(at(light, 4, 2, 0, 0) === 2, `half the sim's focus gives ${at(light, 4, 2, 0, 0)}, not 2`);
-  check(Math.abs(at(light, 4, 3, 0, 0) - 1 / Math.max(Math.abs(at(light, 4, 3, 0, 1)), 0.1)) < 1e-6, "the caustic light is not the two Jacobians' product");
+  check(
+    Math.abs(at(light, 4, 3, 0, 0) - 1 / Math.max(Math.abs(at(light, 4, 3, 0, 1)), 0.1)) < 1e-6,
+    "the caustic light is not the two Jacobians' product",
+  );
 
   // The cellular net: where its seams span a cell or more, the pond's former layer bit for bit;
   // under half a cell only the net's mean (CAUSTIC_CELLS_MEAN, as float32), and between a mix.
   const netMean = Math.fround(0.078);
   let seams = 0;
   for (const tm of [3.7, 211.9]) {
-    const net = draw(gl, probe, W, H, { uProbe: [6], uProbeA: [-11.3, 4.9, 0.137, tm], uProbeB: [1, 0, 0, 0] });
+    const net = draw(gl, probe, W, H, {
+      uProbe: [6],
+      uProbeA: [-11.3, 4.9, 0.137, tm],
+      uProbeB: [1, 0, 0, 0],
+    });
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const cellFoot = at(net, W, x, y, 2);
         const value = at(net, W, x, y, 1);
         if (cellFoot <= 0.06) {
-          check(at(net, W, x, y, 0) === 0, `causticCells differs from the pond's former layer at (${x}, ${y}), ${tm} s`);
+          check(
+            at(net, W, x, y, 0) === 0,
+            `causticCells differs from the pond's former layer at (${x}, ${y}), ${tm} s`,
+          );
           if (value > 0) seams++;
         } else if (cellFoot >= 0.12) {
-          check(value === netMean, `a far cell (${x}, ${y}) is ${value}, not the net's mean ${netMean}`);
+          check(
+            value === netMean,
+            `a far cell (${x}, ${y}) is ${value}, not the net's mean ${netMean}`,
+          );
         } else {
-          check(value >= 0 && value <= 1, `a fading cell (${x}, ${y}) leaves the net's range: ${value}`);
+          check(
+            value >= 0 && value <= 1,
+            `a fading cell (${x}, ${y}) leaves the net's range: ${value}`,
+          );
         }
       }
     }
@@ -348,11 +471,18 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   // Its mean is the resolved net's: averaged over a wide grid at two moments.
   let sum = 0;
   for (const tm of [57.3, 1203.1]) {
-    const wide = draw(gl, probe, 64, 64, { uProbe: [6], uProbeA: [3.1, -7.7, 0.613, tm], uProbeB: [1, 0.001, 0, 0] });
+    const wide = draw(gl, probe, 64, 64, {
+      uProbe: [6],
+      uProbeA: [3.1, -7.7, 0.613, tm],
+      uProbeB: [1, 0.001, 0, 0],
+    });
     for (let i = 0; i < 64 * 64; i++) sum += wide[i * 4 + 1] ?? Number.NaN;
   }
   const netAverage = sum / (2 * 64 * 64);
-  check(Math.abs(netAverage - netMean) < 0.25 * netMean, `the net averages ${netAverage}, far from its mean ${netMean}`);
+  check(
+    Math.abs(netAverage - netMean) < 0.25 * netMean,
+    `the net averages ${netAverage}, far from its mean ${netMean}`,
+  );
   gl.deleteProgram(probe);
 
   // The tiers: each tier's functions exist from that tier up and not below it; rippleSpectrum and
@@ -361,28 +491,65 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     ["ripples", "vec4 r = windRipples(planeAt(uv, 1.0, 0.6, 1.7, 1.2), t, 0.5, 1.0)"],
     ["mirror", "WaterMirror m = waterMirror(vec3(0.0, -0.3, 1.0), vec2(0.0), 0.0)"],
     ["flow", "float w; vec4 f = waterFlow(uv, vec2(1.0, 0.0), t, 2.0, w)"],
-    ["caustics", "vec3 h; vec2 s = causticRipples(uv, t, vec2(1.0, 0.0), 0.1, 0.05, 0.3, 0.001, h)"],
+    [
+      "caustics",
+      "vec3 h; vec2 s = causticRipples(uv, t, vec2(1.0, 0.0), 0.1, 0.05, 0.3, 0.001, h)",
+    ],
     ["caustics", "float c = causticCells(uv * 4.0, t, 0.001)"],
   ];
   for (const [tier, call] of calls) {
     const level = WATER_TIERS[tier];
-    check(compiles(gl, gate(island, call, { WATER_TIER: level })), `${tier} functions missing at their own tier`);
-    check(compiles(gl, gate(island, call, { WATER_TIER: WATER_TIERS.caustics })), `${tier} functions missing at the top tier`);
-    check(!compiles(gl, gate(island, call, { WATER_TIER: level - 1 })), `${tier} functions present a tier below`);
+    check(
+      compiles(gl, gate(island, call, { WATER_TIER: level })),
+      `${tier} functions missing at their own tier`,
+    );
+    check(
+      compiles(gl, gate(island, call, { WATER_TIER: WATER_TIERS.caustics })),
+      `${tier} functions missing at the top tier`,
+    );
+    check(
+      !compiles(gl, gate(island, call, { WATER_TIER: level - 1 })),
+      `${tier} functions present a tier below`,
+    );
     check(!compiles(gl, gate(island, call, {})), `${tier} functions present without WATER_TIER`);
   }
-  const spectrum = "vec3 r = rippleSpectrum(uv, t, vec2(0.01), 1.0, RippleFan(3, vec2(2.0, 0.5), vec2(0.03, 0.0), vec2(1.0, 0.0), vec2(0.0, 2.4), vec3(0.0), 1.0, vec2(7.0, 14.0)))";
+  const spectrum =
+    "vec3 r = rippleSpectrum(uv, t, vec2(0.01), 1.0, RippleFan(3, vec2(2.0, 0.5), vec2(0.03, 0.0), vec2(1.0, 0.0), vec2(0.0, 2.4), vec3(0.0), 1.0, vec2(7.0, 14.0)))";
   check(compiles(gl, gate(island, spectrum, {})), "rippleSpectrum missing without WATER_TIER");
 
   // The adopters: each compiles at the tier it selects, and needs it (one tier lower fails).
   const adopters: readonly [keyof typeof sceneDefs, keyof typeof WATER_TIERS][] = [
-    ["aurora", "ripples"], ["island", "mirror"], ["shore", "mirror"], ["lanterns", "flow"], ["tidepool", "caustics"], ["pond", "caustics"],
+    ["aurora", "ripples"],
+    ["island", "mirror"],
+    ["shore", "mirror"],
+    ["lanterns", "flow"],
+    ["tidepool", "caustics"],
+    ["pond", "caustics"],
   ];
   for (const [id, tier] of adopters) {
     const def = sceneDefs[id];
-    check(def.features?.["WATER_TIER"] === WATER_TIERS[tier], `${id} does not select the ${tier} tier`);
+    check(
+      def.features?.["WATER_TIER"] === WATER_TIERS[tier],
+      `${id} does not select the ${tier} tier`,
+    );
     check(compiles(gl, fragmentSourceFor(def)), `${id} does not compile at its tier`);
-    check(!compiles(gl, fragmentSourceFor({ ...def, features: { ...def.features, WATER_TIER: WATER_TIERS[tier] - 1 } })), `${id} compiles a tier lower: it does not use the ${tier} tier`);
+    check(
+      !compiles(
+        gl,
+        fragmentSourceFor({
+          ...def,
+          features: { ...def.features, WATER_TIER: WATER_TIERS[tier] - 1 },
+        }),
+      ),
+      `${id} compiles a tier lower: it does not use the ${tier} tier`,
+    );
   }
-  return { spectraCells: spectra, nearRippleCells: drawn, nearCausticCells: curved, netSeamCells: seams, netAverage: Number(netAverage.toFixed(4)), flowLargestStep: Number(largest.toFixed(4)) };
+  return {
+    spectraCells: spectra,
+    nearRippleCells: drawn,
+    nearCausticCells: curved,
+    netSeamCells: seams,
+    netAverage: Number(netAverage.toFixed(4)),
+    flowLargestStep: Number(largest.toFixed(4)),
+  };
 }

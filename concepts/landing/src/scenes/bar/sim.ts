@@ -192,7 +192,8 @@ const ONE_FOR_THE_ROAD = 0.5;
 
 export class BarSimError extends Error {}
 
-const ease = (value: number, to: number, dt: number, tau: number): number => value + (to - value) * (1 - Math.exp(-dt / tau));
+const ease = (value: number, to: number, dt: number, tau: number): number =>
+  value + (to - value) * (1 - Math.exp(-dt / tau));
 
 type PatronState = "empty" | "arriving" | "sitting" | "seated" | "rising" | "leaving";
 
@@ -301,7 +302,8 @@ const openingBartender = (): Bartender => ({
 
 /** Where a seat's glass stands on the counter (m), and where the bartender stands to pour into it. */
 const glassX = (seat: number): number => (STOOL_X[seat] ?? 0) + GLASS_OFFSET;
-const pourX = (seat: number): number => clamp(glassX(seat) * (BARTENDER_Z / GLASS_Z) - POUR_REACH, BARTENDER_MIN, BARTENDER_MAX);
+const pourX = (seat: number): number =>
+  clamp(glassX(seat) * (BARTENDER_Z / GLASS_Z) - POUR_REACH, BARTENDER_MIN, BARTENDER_MAX);
 /** The lower-shelf slot right behind the bartender's reaching hand (the shader numbers slots the same way: barBackWall). */
 const slotBehind = (x: number): number => Math.floor((x + POUR_REACH - SLOT_X0) / SLOT_W);
 
@@ -310,7 +312,13 @@ class BarEvening implements SceneSim {
   readonly #data = new Float32Array(TEXELS * 4);
   readonly #index: Readonly<Record<KnobKey, number>>;
   readonly #patrons: readonly Patron[] = Array.from({ length: SEATS }, blankPatron);
-  readonly #drinks: readonly Drink[] = Array.from({ length: SEATS }, (_, seat) => ({ fill: -1, kind: 0, x: glassX(seat), source: -1, abandoned: false }));
+  readonly #drinks: readonly Drink[] = Array.from({ length: SEATS }, (_, seat) => ({
+    fill: -1,
+    kind: 0,
+    x: glassX(seat),
+    source: -1,
+    abandoned: false,
+  }));
   readonly #plan: Step[] = [];
   readonly #bar: Bartender = openingBartender();
   /** The evening's chance: the same evening every time the scene opens (SEED). */
@@ -355,7 +363,12 @@ class BarEvening implements SceneSim {
     const index: Record<KnobKey, number> = { night: 0, patrons: 0, bartender: 0, rain: 0, fan: 0 };
     for (const key of KNOB_KEYS) index[key] = find(key);
     this.#index = index;
-    this.#texture = new DataTexture(gl, { width: TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -381,8 +394,15 @@ class BarEvening implements SceneSim {
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
     // The fan turns at the knob's pace, carrying on from where it was when the knob moves; on the
     // entrance it starts from a standstill (exactly 1 once arrived).
-    const spin = frame.passage.enter >= 1 ? 1 : smoothstep(FAN_SPIN_FROM, FAN_SPIN_TO, frame.passage.enter * PASSAGE.enter);
-    if (this.#fan > 0) this.#fanAngle = (this.#fanAngle + advance * spin * 2 * Math.PI * (FAN_SLOW + (FAN_FAST - FAN_SLOW) * this.#fan)) % (2 * Math.PI);
+    const spin =
+      frame.passage.enter >= 1
+        ? 1
+        : smoothstep(FAN_SPIN_FROM, FAN_SPIN_TO, frame.passage.enter * PASSAGE.enter);
+    if (this.#fan > 0)
+      this.#fanAngle =
+        (this.#fanAngle +
+          advance * spin * 2 * Math.PI * (FAN_SLOW + (FAN_FAST - FAN_SLOW) * this.#fan)) %
+        (2 * Math.PI);
     this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
     while (this.#pending >= STEP) {
       this.#step();
@@ -429,7 +449,8 @@ class BarEvening implements SceneSim {
     this.#patrons.forEach((patron, seat) => {
       Object.assign(patron, blankPatron());
       const drink = this.#drinks[seat];
-      if (drink) Object.assign(drink, { fill: -1, kind: 0, x: glassX(seat), source: -1, abandoned: false });
+      if (drink)
+        Object.assign(drink, { fill: -1, kind: 0, x: glassX(seat), source: -1, abandoned: false });
     });
     for (let k = 0; k < target; k++) {
       const seat = order[k] ?? k;
@@ -497,7 +518,13 @@ class BarEvening implements SceneSim {
       patron.nextLook = clock + this.#rng.range(4, 9);
       patron.nextSip = Math.min(patron.nextSip, clock + this.#rng.range(2, 7));
       const drink = this.#drinks[seat];
-      if (this.#serving && drink && drink.fill < 0.45 && patron.wantsAt === Number.POSITIVE_INFINITY && this.#rng.next() < ONE_FOR_THE_ROAD) {
+      if (
+        this.#serving &&
+        drink &&
+        drink.fill < 0.45 &&
+        patron.wantsAt === Number.POSITIVE_INFINITY &&
+        this.#rng.next() < ONE_FOR_THE_ROAD
+      ) {
         patron.wantsAt = clock + this.#rng.range(3, 10);
         patron.leaveAt = Math.max(patron.leaveAt, clock + 90);
       }
@@ -517,7 +544,14 @@ class BarEvening implements SceneSim {
     const px = (pointer.x - 0.5) * this.#aspect + pan;
     const py = pointer.y - 0.5 - HORIZON;
     // The bar: from the counter top up to the shelves' bottles, right of the counter's end.
-    if (pointer.inside && pointer.pressed && this.#serving && py > -0.12 && py < 0.12 && px > -0.34) {
+    if (
+      pointer.inside &&
+      pointer.pressed &&
+      this.#serving &&
+      py > -0.12 &&
+      py < 0.12 &&
+      px > -0.34
+    ) {
       this.#visitX = clamp((px * BARTENDER_Z) / FOCAL, BARTENDER_MIN, BARTENDER_MAX);
       this.#interrupt();
     }
@@ -535,8 +569,18 @@ class BarEvening implements SceneSim {
     this.#prevX = pointer.inside ? px : Number.NaN;
     this.#prevY = pointer.inside ? py : Number.NaN;
     if (dt > 0) {
-      this.#draftX = ease(this.#draftX, pushX, dt, Math.abs(pushX) > Math.abs(this.#draftX) ? DRAUGHT_LEAN : DRAUGHT_SETTLE);
-      this.#draftY = ease(this.#draftY, pushY, dt, Math.abs(pushY) > Math.abs(this.#draftY) ? DRAUGHT_LEAN : DRAUGHT_SETTLE);
+      this.#draftX = ease(
+        this.#draftX,
+        pushX,
+        dt,
+        Math.abs(pushX) > Math.abs(this.#draftX) ? DRAUGHT_LEAN : DRAUGHT_SETTLE,
+      );
+      this.#draftY = ease(
+        this.#draftY,
+        pushY,
+        dt,
+        Math.abs(pushY) > Math.abs(this.#draftY) ? DRAUGHT_LEAN : DRAUGHT_SETTLE,
+      );
     }
   }
 
@@ -544,12 +588,23 @@ class BarEvening implements SceneSim {
    *  its end over the next 0.6 s, as every action does. */
   #interrupt(): void {
     const bar = this.#bar;
-    const free = bar.act === ACT.idle || bar.act === ACT.polish || bar.act === ACT.wipe || bar.act === ACT.chat || bar.act === ACT.walk;
+    const free =
+      bar.act === ACT.idle ||
+      bar.act === ACT.polish ||
+      bar.act === ACT.wipe ||
+      bar.act === ACT.chat ||
+      bar.act === ACT.walk;
     if (!free || bar.carry !== CARRY.none) return;
     // Orders already planned go back on the waiting list.
     for (const step of this.#plan) {
       const patron = this.#patrons[step.seat];
-      if (patron && patron.state === "seated" && patron.wantsAt === Number.POSITIVE_INFINITY && (this.#drinks[step.seat]?.fill ?? -1) < 0.1) patron.wantsAt = this.#clock;
+      if (
+        patron &&
+        patron.state === "seated" &&
+        patron.wantsAt === Number.POSITIVE_INFINITY &&
+        (this.#drinks[step.seat]?.fill ?? -1) < 0.1
+      )
+        patron.wantsAt = this.#clock;
     }
     this.#plan.length = 0;
     bar.dur = Math.min(bar.dur, bar.age + 0.6);
@@ -579,12 +634,14 @@ class BarEvening implements SceneSim {
     let present = 0;
     let moving = false;
     for (const patron of this.#patrons) {
-      if (patron.state === "seated" || patron.state === "arriving" || patron.state === "sitting") present++;
+      if (patron.state === "seated" || patron.state === "arriving" || patron.state === "sitting")
+        present++;
       if (patron.state !== "empty" && patron.state !== "seated") moving = true;
     }
     const target = this.#target();
     // At closing time nobody new comes in (unless sent in with "now").
-    if (present < target && clock >= this.#nextArrival && !moving && !Number.isFinite(this.#callAt)) this.#arrive(false);
+    if (present < target && clock >= this.#nextArrival && !moving && !Number.isFinite(this.#callAt))
+      this.#arrive(false);
     if (present > target && clock >= this.#nextLeave) {
       let first: Patron | undefined;
       for (const patron of this.#patrons) {
@@ -664,7 +721,10 @@ class BarEvening implements SceneSim {
         patron.facingTo = -1;
         if (patron.x <= DOOR_X) {
           Object.assign(patron, blankPatron());
-          this.#nextArrival = Math.max(this.#nextArrival, clock + this.#rng.range(ARRIVAL_GAP[0], ARRIVAL_GAP[1]) * (1 + this.#lateness()));
+          this.#nextArrival = Math.max(
+            this.#nextArrival,
+            clock + this.#rng.range(ARRIVAL_GAP[0], ARRIVAL_GAP[1]) * (1 + this.#lateness()),
+          );
         }
         break;
       }
@@ -693,14 +753,22 @@ class BarEvening implements SceneSim {
       const r = this.#rng.next();
       const left = this.#patrons[seat - 1]?.state === "seated";
       const right = this.#patrons[seat + 1]?.state === "seated";
-      if (r < LOOK_NEIGHBOUR && (left || right)) patron.turnTo = left && (!right || this.#rng.next() < 0.5) ? -1 : 1;
+      if (r < LOOK_NEIGHBOUR && (left || right))
+        patron.turnTo = left && (!right || this.#rng.next() < 0.5) ? -1 : 1;
       else if (r < LOOK_NEIGHBOUR + LOOK_WINDOW) patron.turnTo = -1.4;
       else patron.turnTo = (this.#rng.next() - 0.5) * 0.3;
       patron.nextLook = clock + this.#rng.range(LOOK_GAP[0], LOOK_GAP[1]);
     }
     // Being served: they face the bartender.
     if (this.#bar.seat === seat && this.#bar.act === ACT.chat) patron.turnTo = 0;
-    if (drink && drink.fill > 0.05 && !drink.abandoned && !sipping && clock >= patron.nextSip && !this.#planned(seat)) {
+    if (
+      drink &&
+      drink.fill > 0.05 &&
+      !drink.abandoned &&
+      !sipping &&
+      clock >= patron.nextSip &&
+      !this.#planned(seat)
+    ) {
       patron.sipAt = clock;
       patron.sipDrunk = false;
       patron.turnTo = 0;
@@ -709,7 +777,12 @@ class BarEvening implements SceneSim {
     if (!patron.sipDrunk && clock - patron.sipAt > SIP_TIME * 0.5 && drink && drink.fill > -0.5) {
       drink.fill = Math.max(0.02, drink.fill - this.#rng.range(SIP_DRINK[0], SIP_DRINK[1]));
       patron.sipDrunk = true;
-      if (drink.fill < 0.1 && patron.leaveAt - clock > 50 && patron.wantsAt === Number.POSITIVE_INFINITY) patron.wantsAt = clock + this.#rng.range(4, 15);
+      if (
+        drink.fill < 0.1 &&
+        patron.leaveAt - clock > 50 &&
+        patron.wantsAt === Number.POSITIVE_INFINITY
+      )
+        patron.wantsAt = clock + this.#rng.range(4, 15);
     }
     if (clock >= patron.leaveAt && !sipping && !this.#planned(seat)) {
       this.#enter(patron, "rising", clock);
@@ -724,8 +797,16 @@ class BarEvening implements SceneSim {
       if (!patron) continue;
       const left = this.#patrons[seat - 1];
       const right = this.#patrons[seat + 1];
-      const withLeft = patron.turnTo < -0.5 && patron.turnTo > -1.2 && left?.state === "seated" && left.turnTo > 0.5;
-      const withRight = patron.turnTo > 0.5 && right?.state === "seated" && right.turnTo < -0.5 && right.turnTo > -1.2;
+      const withLeft =
+        patron.turnTo < -0.5 &&
+        patron.turnTo > -1.2 &&
+        left?.state === "seated" &&
+        left.turnTo > 0.5;
+      const withRight =
+        patron.turnTo > 0.5 &&
+        right?.state === "seated" &&
+        right.turnTo < -0.5 &&
+        right.turnTo > -1.2;
       const talking = patron.state === "seated" && (withLeft || withRight);
       patron.talk = ease(patron.talk, talking ? 1 : 0, STEP, TALK_TIME);
     }
@@ -745,7 +826,14 @@ class BarEvening implements SceneSim {
 
     // Where he looks: at whoever he is serving or chatting with (straight ahead, across the counter),
     // at you when he comes over, otherwise now and then along the bar or out at the rain.
-    if (bar.act === ACT.chat || bar.act === ACT.pour || bar.act === ACT.strain || bar.act === ACT.clear || bar.act === ACT.bell) bar.lookTo = 0;
+    if (
+      bar.act === ACT.chat ||
+      bar.act === ACT.pour ||
+      bar.act === ACT.strain ||
+      bar.act === ACT.clear ||
+      bar.act === ACT.bell
+    )
+      bar.lookTo = 0;
     else if (clock >= bar.nextLook) {
       const r = this.#rng.next();
       bar.lookTo = r < 0.2 ? -1 : r < 0.55 ? (this.#rng.next() - 0.5) * 1.2 : 0;
@@ -774,18 +862,36 @@ class BarEvening implements SceneSim {
         break;
       case ACT.pour:
         if (drink && bar.age >= POUR_SET && (drink.fill < -0.5 || drink.abandoned)) {
-          Object.assign(drink, { fill: 0, kind: this.#pourKind, source: bar.taken, abandoned: false } satisfies Partial<Drink>);
+          Object.assign(drink, {
+            fill: 0,
+            kind: this.#pourKind,
+            source: bar.taken,
+            abandoned: false,
+          } satisfies Partial<Drink>);
         }
-        if (drink && drink.fill > -0.5 && bar.age > POUR_FLOW[0]) drink.fill = Math.max(drink.fill, bar.pourTo * smoothstep(POUR_FLOW[0], POUR_FLOW[1], bar.age));
+        if (drink && drink.fill > -0.5 && bar.age > POUR_FLOW[0])
+          drink.fill = Math.max(
+            drink.fill,
+            bar.pourTo * smoothstep(POUR_FLOW[0], POUR_FLOW[1], bar.age),
+          );
         break;
       case ACT.shake:
         bar.carry = CARRY.shaker;
         break;
       case ACT.strain:
         if (drink && bar.age >= STRAIN_SET && (drink.fill < -0.5 || drink.abandoned)) {
-          Object.assign(drink, { fill: 0, kind: GLASS.coupe, source: -1, abandoned: false } satisfies Partial<Drink>);
+          Object.assign(drink, {
+            fill: 0,
+            kind: GLASS.coupe,
+            source: -1,
+            abandoned: false,
+          } satisfies Partial<Drink>);
         }
-        if (drink && drink.fill > -0.5 && bar.age > STRAIN_FLOW[0]) drink.fill = Math.max(drink.fill, bar.pourTo * smoothstep(STRAIN_FLOW[0], STRAIN_FLOW[1], bar.age));
+        if (drink && drink.fill > -0.5 && bar.age > STRAIN_FLOW[0])
+          drink.fill = Math.max(
+            drink.fill,
+            bar.pourTo * smoothstep(STRAIN_FLOW[0], STRAIN_FLOW[1], bar.age),
+          );
         if (bar.age >= bar.dur - 0.4) bar.carry = CARRY.none;
         break;
       case ACT.clear:
@@ -819,8 +925,12 @@ class BarEvening implements SceneSim {
     bar.age = 0;
     bar.seat = step.seat;
     bar.target = step.x;
-    bar.dur = step.act === ACT.walk ? Math.max(0.6, Math.abs(step.x - bar.x) / BARTENDER_PACE + 0.3) : step.dur;
-    if (step.act === ACT.pour || step.act === ACT.strain) bar.pourTo = 0.72 + 0.18 * this.#rng.next();
+    bar.dur =
+      step.act === ACT.walk
+        ? Math.max(0.6, Math.abs(step.x - bar.x) / BARTENDER_PACE + 0.3)
+        : step.dur;
+    if (step.act === ACT.pour || step.act === ACT.strain)
+      bar.pourTo = 0.72 + 0.18 * this.#rng.next();
     if (step.act === ACT.bell) this.#startCall();
   }
 
@@ -861,14 +971,21 @@ class BarEvening implements SceneSim {
       this.#cocktail = false;
       let nearest = -1;
       this.#patrons.forEach((patron, seat) => {
-        if (patron.state === "seated" && (nearest < 0 || Math.abs(pourX(seat) - bar.x) < Math.abs(pourX(nearest) - bar.x))) nearest = seat;
+        if (
+          patron.state === "seated" &&
+          (nearest < 0 || Math.abs(pourX(seat) - bar.x) < Math.abs(pourX(nearest) - bar.x))
+        )
+          nearest = seat;
       });
       const seat = order >= 0 ? order : nearest;
       if (seat >= 0) {
         this.#serve(seat, true);
         return;
       }
-      plan.push({ act: ACT.shake, dur: 5, x: bar.x, seat: -1 }, { act: ACT.strain, dur: 3.2, x: bar.x, seat: -1 });
+      plan.push(
+        { act: ACT.shake, dur: 5, x: bar.x, seat: -1 },
+        { act: ACT.strain, dur: 3.2, x: bar.x, seat: -1 },
+      );
       return;
     }
     if (order >= 0) {
@@ -876,10 +993,16 @@ class BarEvening implements SceneSim {
       return;
     }
     // A glass left behind by someone who has gone.
-    const stale = this.#drinks.findIndex((drink, seat) => drink.fill > -0.5 && (drink.abandoned || this.#patrons[seat]?.state === "empty"));
+    const stale = this.#drinks.findIndex(
+      (drink, seat) =>
+        drink.fill > -0.5 && (drink.abandoned || this.#patrons[seat]?.state === "empty"),
+    );
     if (stale >= 0) {
       walkTo(pourX(stale));
-      plan.push({ act: ACT.clear, dur: 2.2, x: bar.x, seat: stale }, { act: ACT.wipe, dur: this.#rng.range(4, 7), x: bar.x, seat: -1 });
+      plan.push(
+        { act: ACT.clear, dur: 2.2, x: bar.x, seat: stale },
+        { act: ACT.wipe, dur: this.#rng.range(4, 7), x: bar.x, seat: -1 },
+      );
       return;
     }
     // Meanwhile: polishing, wiping (more toward last call), a stroll along the bar, a word with someone.
@@ -890,7 +1013,8 @@ class BarEvening implements SceneSim {
       if (patron.state === "seated") seated.push(seat);
     });
     if (r < wipe) {
-      if (this.#rng.next() < 0.5) walkTo(BARTENDER_MIN + (BARTENDER_MAX - BARTENDER_MIN) * this.#rng.next());
+      if (this.#rng.next() < 0.5)
+        walkTo(BARTENDER_MIN + (BARTENDER_MAX - BARTENDER_MIN) * this.#rng.next());
       plan.push({ act: ACT.wipe, dur: this.#rng.range(6, 12), x: bar.x, seat: -1 });
     } else if (r < wipe + 0.15 && seated.length > 0) {
       const seat = seated[Math.floor(this.#rng.next() * seated.length)] ?? 0;
@@ -921,7 +1045,11 @@ class BarEvening implements SceneSim {
       // The glass suits what he pours: a tumbler, a wine glass or a highball (set down at the pour).
       const kinds = [GLASS.tumbler, GLASS.wine, GLASS.highball] as const;
       this.#pourKind = kinds[Math.floor(this.#rng.next() * kinds.length)] ?? GLASS.tumbler;
-      plan.push({ act: ACT.fetch, dur: 2.6, x, seat }, { act: ACT.pour, dur: 4, x, seat }, { act: ACT.put, dur: 2.4, x, seat });
+      plan.push(
+        { act: ACT.fetch, dur: 2.6, x, seat },
+        { act: ACT.pour, dur: 4, x, seat },
+        { act: ACT.put, dur: 2.4, x, seat },
+      );
     }
   }
 
@@ -945,11 +1073,23 @@ class BarEvening implements SceneSim {
       const sipU = clamp((clock - patron.sipAt) / SIP_TIME, 0, 1);
       const sip = smoothstep(0, 0.3, sipU) * (1 - smoothstep(0.7, 1, sipU));
       this.#put(2 + seat, patron.x, patron.z, patron.sit, (patron.stride % GAIT) / GAIT);
-      this.#put(6 + seat, patron.state === "empty" ? 0 : patron.seed, patron.facing, patron.turn, sip);
+      this.#put(
+        6 + seat,
+        patron.state === "empty" ? 0 : patron.seed,
+        patron.facing,
+        patron.turn,
+        sip,
+      );
       this.#put(10 + seat, patron.talk, patron.umbrella, patron.wet, 0);
       this.#put(14 + seat, drink.fill, drink.kind, drink.x, drink.source);
     }
-    this.#put(18, this.#draftX, this.#draftY, this.#fanAngle, Number.isFinite(this.#callAt) ? Math.min(this.#clock - this.#callAt, 60) : -1);
+    this.#put(
+      18,
+      this.#draftX,
+      this.#draftY,
+      this.#fanAngle,
+      Number.isFinite(this.#callAt) ? Math.min(this.#clock - this.#callAt, 60) : -1,
+    );
     this.#texture.upload(this.#data);
   }
 }

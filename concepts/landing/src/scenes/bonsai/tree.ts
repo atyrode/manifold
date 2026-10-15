@@ -8,7 +8,13 @@
 // taper. Then the nebari (surface roots) over the moss, and for pines sometimes a jin of bleached
 // deadwood. Tufts of foliage sit on the outer twigs. Deterministic for a species and seed.
 import { mulberry32 } from "../../sims/random.ts";
-import { BONSAI_MAPLE, BONSAI_REGION, BONSAI_SOIL_Y, BONSAI_TRUNK, bonsaiMound } from "./geometry.ts";
+import {
+  BONSAI_MAPLE,
+  BONSAI_REGION,
+  BONSAI_SOIL_Y,
+  BONSAI_TRUNK,
+  bonsaiMound,
+} from "./geometry.ts";
 
 export type NodeKind = "trunk" | "branch" | "twig" | "root" | "jin";
 
@@ -90,9 +96,72 @@ interface Shape {
 
 /** Japanese black pine, Japanese maple, flowering cherry. */
 const SHAPES: readonly Shape[] = [
-  { height: 0.5, baseRadius: 0.048, topRadius: 0.011, bend: 0.075, bends: 2.4, primaries: [8, 10], firstAt: 0.27, spread: 0.43, droop: 0.42, rise: 0.22, padTall: 0.036, apexWide: 0.1, apexTall: 0.05, tuft: 0.037, flat: 0.52, tropism: 0.08, step: 0.013, attract: 1, tip: 0.0026, jin: 0.75 },
-  { height: 0.5, baseRadius: 0.052, topRadius: 0.011, bend: 0.05, bends: 1.8, primaries: [8, 11], firstAt: 0.29, spread: 0.41, droop: 0.14, rise: 0.36, padTall: 0.05, apexWide: 0.13, apexTall: 0.07, tuft: 0.034, flat: 0.7, tropism: 0.22, step: 0.012, attract: 1.1, tip: 0.0022, jin: 0 },
-  { height: 0.47, baseRadius: 0.048, topRadius: 0.012, bend: 0.06, bends: 2, primaries: [7, 9], firstAt: 0.3, spread: 0.43, droop: 0.08, rise: 0.3, padTall: 0.05, apexWide: 0.12, apexTall: 0.066, tuft: 0.034, flat: 0.72, tropism: 0.18, step: 0.013, attract: 0.95, tip: 0.0024, jin: 0.15 },
+  {
+    height: 0.5,
+    baseRadius: 0.048,
+    topRadius: 0.011,
+    bend: 0.075,
+    bends: 2.4,
+    primaries: [8, 10],
+    firstAt: 0.27,
+    spread: 0.43,
+    droop: 0.42,
+    rise: 0.22,
+    padTall: 0.036,
+    apexWide: 0.1,
+    apexTall: 0.05,
+    tuft: 0.037,
+    flat: 0.52,
+    tropism: 0.08,
+    step: 0.013,
+    attract: 1,
+    tip: 0.0026,
+    jin: 0.75,
+  },
+  {
+    height: 0.5,
+    baseRadius: 0.052,
+    topRadius: 0.011,
+    bend: 0.05,
+    bends: 1.8,
+    primaries: [8, 11],
+    firstAt: 0.29,
+    spread: 0.41,
+    droop: 0.14,
+    rise: 0.36,
+    padTall: 0.05,
+    apexWide: 0.13,
+    apexTall: 0.07,
+    tuft: 0.034,
+    flat: 0.7,
+    tropism: 0.22,
+    step: 0.012,
+    attract: 1.1,
+    tip: 0.0022,
+    jin: 0,
+  },
+  {
+    height: 0.47,
+    baseRadius: 0.048,
+    topRadius: 0.012,
+    bend: 0.06,
+    bends: 2,
+    primaries: [7, 9],
+    firstAt: 0.3,
+    spread: 0.43,
+    droop: 0.08,
+    rise: 0.3,
+    padTall: 0.05,
+    apexWide: 0.12,
+    apexTall: 0.066,
+    tuft: 0.034,
+    flat: 0.72,
+    tropism: 0.18,
+    step: 0.013,
+    attract: 0.95,
+    tip: 0.0024,
+    jin: 0.15,
+  },
 ];
 
 /** The pipe model's exponent. */
@@ -126,7 +195,8 @@ class Grower {
     const phase = rand() * Math.PI * 2;
     const phaseZ = rand() * Math.PI * 2;
     const apexShift = (rand() - 0.5) * 0.08;
-    const raw = (u: number): number => s.bend * Math.sin(Math.PI * s.bends * u + phase) * Math.pow(1 - u, 0.5) * Math.min(1, u * 6);
+    const raw = (u: number): number =>
+      s.bend * Math.sin(Math.PI * s.bends * u + phase) * Math.pow(1 - u, 0.5) * Math.min(1, u * 6);
     const end = raw(1);
     const count = 28;
     const indices: number[] = [];
@@ -135,19 +205,43 @@ class Grower {
     for (let i = 0; i <= count; i++) {
       const u = i / count;
       const x = BONSAI_TRUNK.x + raw(u) - end * u + apexShift * u * u;
-      const z = BONSAI_TRUNK.z + 0.6 * s.bend * Math.sin(Math.PI * 1.3 * u + phaseZ) * u * (1 - u) * 2 - 0.035 * u * u;
-      const taper = s.baseRadius * (1 - 0.74 * Math.pow(u, 0.8)) + s.baseRadius * 0.4 * Math.exp(-u * 16);
+      const z =
+        BONSAI_TRUNK.z +
+        0.6 * s.bend * Math.sin(Math.PI * 1.3 * u + phaseZ) * u * (1 - u) * 2 -
+        0.035 * u * u;
+      const taper =
+        s.baseRadius * (1 - 0.74 * Math.pow(u, 0.8)) + s.baseRadius * 0.4 * Math.exp(-u * 16);
       const gnarl = 1 + 0.1 * Math.sin(u * 23 + phase) * (1 - u);
-      parent = this.add(x, base + u * s.height, z, parent, "trunk", -1, Math.max(s.topRadius, taper * gnarl));
+      parent = this.add(
+        x,
+        base + u * s.height,
+        z,
+        parent,
+        "trunk",
+        -1,
+        Math.max(s.topRadius, taper * gnarl),
+      );
       indices.push(parent);
     }
     return indices;
   }
 
   /** A pad: an ellipsoid of foliage, kept inside the map. */
-  pad(x: number, y: number, z: number, ux: number, uz: number, long: number, side: number, tall: number): number {
+  pad(
+    x: number,
+    y: number,
+    z: number,
+    ux: number,
+    uz: number,
+    long: number,
+    side: number,
+    tall: number,
+  ): number {
     const room = Math.min(x - BONSAI_REGION.x0 - MARGIN, BONSAI_REGION.x1 - MARGIN - x);
-    const fit = Math.max(0.4, Math.min(1, room / Math.max(Math.abs(ux) * long + Math.abs(uz) * side, 1e-3)));
+    const fit = Math.max(
+      0.4,
+      Math.min(1, room / Math.max(Math.abs(ux) * long + Math.abs(uz) * side, 1e-3)),
+    );
     const top = BONSAI_REGION.y1 - MARGIN - tall;
     this.pads.push({ x, y: Math.min(y, top), z, ux, uz, long: long * fit, side: side * fit, tall });
     return this.pads.length - 1;
@@ -160,7 +254,10 @@ class Grower {
     const [lo, hi] = s.primaries;
     const count = lo + Math.floor(rand() * (hi - lo + 1));
     const first = s.firstAt + 0.04 * rand();
-    const weights = Array.from({ length: count }, (_, i) => Math.pow(0.84, i) * (0.85 + 0.3 * rand()));
+    const weights = Array.from(
+      { length: count },
+      (_, i) => Math.pow(0.84, i) * (0.85 + 0.3 * rand()),
+    );
     const total = weights.reduce((a, b) => a + b, 0);
     const start = rand() < 0.5 ? 1 : -1;
     // Right, left, back, then round again: never straight at the viewer.
@@ -168,9 +265,13 @@ class Grower {
     let u = first;
     for (let i = 0; i < count; i++) {
       const side = pattern[i % pattern.length] ?? 1;
-      const theta = side === 0 ? Math.PI / 2 + (rand() < 0.5 ? -1 : 1) * (0.45 + 0.4 * rand()) : (side > 0 ? 0 : Math.PI) + (rand() - 0.5) * 0.7 - side * 0.12;
+      const theta =
+        side === 0
+          ? Math.PI / 2 + (rand() < 0.5 ? -1 : 1) * (0.45 + 0.4 * rand())
+          : (side > 0 ? 0 : Math.PI) + (rand() - 0.5) * 0.7 - side * 0.12;
       const climb = (u - first) / Math.max(0.93 - first, 1e-3);
-      const length = s.spread * (1 - 0.62 * climb) * (0.85 + 0.25 * rand()) * (side === 0 ? 0.72 : 1);
+      const length =
+        s.spread * (1 - 0.62 * climb) * (0.85 + 0.25 * rand()) * (side === 0 ? 0.72 : 1);
       const at = trunk[Math.min(trunk.length - 2, Math.round(u * (trunk.length - 1)))] ?? 0;
       this.#branch(at, theta, length, rand);
       u += ((0.93 - first) * (weights[i] ?? 0)) / total;
@@ -178,7 +279,16 @@ class Grower {
     // The apex: a dome over the trunk's top, grown from its last few nodes.
     const top = this.nodes[trunk[trunk.length - 1] ?? 0];
     if (top) {
-      const pad = this.pad(top.x, top.y + s.apexTall * 0.35, top.z, 1, 0, s.apexWide, s.apexWide * 0.85, s.apexTall);
+      const pad = this.pad(
+        top.x,
+        top.y + s.apexTall * 0.35,
+        top.z,
+        1,
+        0,
+        s.apexWide,
+        s.apexWide * 0.85,
+        s.apexTall,
+      );
       this.colonize(pad, trunk.slice(-4));
     }
   }
@@ -209,11 +319,21 @@ class Grower {
     }
     const pads = length > 0.3 ? [0.55, 0.97] : [0.85];
     for (const [k, at2] of pads.entries()) {
-      const node = this.nodes[path[Math.min(path.length - 1, Math.round(at2 * (path.length - 1)))] ?? 0];
+      const node =
+        this.nodes[path[Math.min(path.length - 1, Math.round(at2 * (path.length - 1)))] ?? 0];
       if (!node) continue;
       const share = pads.length > 1 ? (k === 0 ? 0.5 : 0.62) : 1;
       const long = (0.5 * length * share + 0.035) * (0.9 + 0.2 * rand());
-      const pad = this.pad(node.x + hx * 0.02, node.y + s.padTall * 0.45, node.z + hz * 0.02, hx, hz, long, long * 0.78, s.padTall * (0.9 + 0.25 * rand()));
+      const pad = this.pad(
+        node.x + hx * 0.02,
+        node.y + s.padTall * 0.45,
+        node.z + hz * 0.02,
+        hx,
+        hz,
+        long,
+        long * 0.78,
+        s.padTall * (0.9 + 0.25 * rand()),
+      );
       const p = this.pads[pad];
       if (!p) continue;
       const seeds = path.filter((index) => {
@@ -336,13 +456,39 @@ class Grower {
       const terminal = n.children.length === 0;
       if (!terminal && (n.y < p.y || rand() > 0.3)) continue;
       const r = s.tuft * (0.8 + 0.4 * rand());
-      this.tufts.push({ x: n.x, y: n.y + 0.35 * r * s.flat, z: n.z, r, flat: s.flat * (0.9 + 0.2 * rand()), node: index, pad, r1: rand(), r2: rand(), outer: 0, removed: false, regrow: false });
+      this.tufts.push({
+        x: n.x,
+        y: n.y + 0.35 * r * s.flat,
+        z: n.z,
+        r,
+        flat: s.flat * (0.9 + 0.2 * rand()),
+        node: index,
+        pad,
+        r1: rand(),
+        r2: rand(),
+        outer: 0,
+        removed: false,
+        regrow: false,
+      });
     }
     if (grown.length === 0) {
       // Nothing grew (a tiny pad): one tuft on its seed so it still reads as foliage.
       const index = seeds[seeds.length - 1] ?? 0;
       const r = s.tuft;
-      this.tufts.push({ x: p.x, y: p.y, z: p.z, r, flat: s.flat, node: index, pad, r1: rand(), r2: rand(), outer: 0, removed: false, regrow: false });
+      this.tufts.push({
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        r,
+        flat: s.flat,
+        node: index,
+        pad,
+        r1: rand(),
+        r2: rand(),
+        outer: 0,
+        removed: false,
+        regrow: false,
+      });
     }
   }
 
@@ -365,7 +511,15 @@ class Grower {
         const x = BONSAI_TRUNK.x + Math.cos(angle + 0.15 * Math.sin(f * 5 + k)) * reach;
         const z = BONSAI_TRUNK.z + Math.sin(angle) * reach * 0.8;
         const y = BONSAI_SOIL_Y + bonsaiMound(x, z) * 0.85 + 0.007 * (1 - f) - 0.012 * f * f;
-        parent = this.add(x, y, z, parent, "root", -1, Math.max(0.0028, r0 * Math.pow(1 - 0.85 * f, 1.4)));
+        parent = this.add(
+          x,
+          y,
+          z,
+          parent,
+          "root",
+          -1,
+          Math.max(0.0028, r0 * Math.pow(1 - 0.85 * f, 1.4)),
+        );
       }
     }
   }
@@ -417,7 +571,8 @@ class Grower {
     const base = this.nodes[trunk[0] ?? 0]?.r ?? s.baseRadius;
     for (const [i, n] of this.nodes.entries()) {
       if (n.kind === "trunk") n.flex = 0.04 * (i / Math.max(1, trunk.length - 1));
-      else if (n.kind === "branch" || n.kind === "twig") n.flex = Math.pow(Math.max(0, Math.min(1, 1 - n.r / (0.32 * base))), 0.8);
+      else if (n.kind === "branch" || n.kind === "twig")
+        n.flex = Math.pow(Math.max(0, Math.min(1, 1 - n.r / (0.32 * base))), 0.8);
       else n.flex = 0;
     }
   }
@@ -425,8 +580,10 @@ class Grower {
   /** Each tuft's place out from the trunk, 0..1. */
   outerness(): void {
     let far = 1e-3;
-    for (const t of this.tufts) far = Math.max(far, Math.hypot(t.x - BONSAI_TRUNK.x, (t.y - 0.3) * 0.7));
-    for (const t of this.tufts) t.outer = Math.min(1, Math.hypot(t.x - BONSAI_TRUNK.x, (t.y - 0.3) * 0.7) / far);
+    for (const t of this.tufts)
+      far = Math.max(far, Math.hypot(t.x - BONSAI_TRUNK.x, (t.y - 0.3) * 0.7));
+    for (const t of this.tufts)
+      t.outer = Math.min(1, Math.hypot(t.x - BONSAI_TRUNK.x, (t.y - 0.3) * 0.7) / far);
   }
 }
 
@@ -434,7 +591,9 @@ class Grower {
 export function growTree(species: number, seed: number, maxTufts: number): Tree {
   const shape = SHAPES[species] ?? SHAPES[BONSAI_MAPLE] ?? SHAPES[0];
   if (!shape) throw new Error("bonsai: no tree shapes");
-  const rand = mulberry32(0x62736169 ^ Math.imul(seed + 1, 0x9e3779b1) ^ Math.imul(species + 7, 0x85ebca6b));
+  const rand = mulberry32(
+    0x62736169 ^ Math.imul(seed + 1, 0x9e3779b1) ^ Math.imul(species + 7, 0x85ebca6b),
+  );
   const grower = new Grower(shape, rand);
   const trunk = grower.trunk();
   grower.roots(trunk[0] ?? 0);

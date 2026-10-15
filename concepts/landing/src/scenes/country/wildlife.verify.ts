@@ -80,11 +80,14 @@ export function verifyCountryWildlife(gl: WebGL2RenderingContext): Record<string
   const result: Record<string, unknown> = {};
   const scene = program(
     gl,
-    fragmentSourceFor({
-      ...sceneDefs.country,
-      entry: "regressionWildlife",
-      glsl: sceneDefs.country.glsl + wrapper,
-    }, COUNTRY_FULL),
+    fragmentSourceFor(
+      {
+        ...sceneDefs.country,
+        entry: "regressionWildlife",
+        glsl: sceneDefs.country.glsl + wrapper,
+      },
+      COUNTRY_FULL,
+    ),
   );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;

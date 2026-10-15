@@ -37,7 +37,8 @@ const GOLDEN = 2.399963229728653;
 /** Move apart every pair of live discs that has sunk in deeper than `give`; see the file header. */
 export function separateDiscs(discs: readonly Disc[], options: SeparateOptions): void {
   const { give, limit } = options;
-  if (!(give >= 0 && give < 1) || !(limit > 0)) throw new DiscsError(`discs: give must be in [0, 1) and limit > 0, got ${give}, ${limit}`);
+  if (!(give >= 0 && give < 1) || !(limit > 0))
+    throw new DiscsError(`discs: give must be in [0, 1) and limit > 0, got ${give}, ${limit}`);
   for (let i = 0; i < discs.length; i++) {
     const a = discs[i];
     if (!a?.alive) continue;

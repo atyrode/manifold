@@ -3,7 +3,12 @@ import { Boids, BOIDS_MAX_EXAMINED, type BoidRules, boidRules } from "./boids.ts
 import { Random } from "./random.ts";
 
 /** A flock of n boids scattered uniformly in a box `size` across, at rest or at random velocities `speed`. */
-function cloud(n: number, size: { x: number; y: number; z: number }, seed: number, speed = 0): Boids {
+function cloud(
+  n: number,
+  size: { x: number; y: number; z: number },
+  seed: number,
+  speed = 0,
+): Boids {
   const random = new Random(seed);
   const boids = new Boids(n);
   boids.count = n;
@@ -11,7 +16,15 @@ function cloud(n: number, size: { x: number; y: number; z: number }, seed: numbe
     const a = random.next() * Math.PI * 2;
     const c = random.next() * 2 - 1;
     const s = Math.sqrt(1 - c * c);
-    boids.place(i, random.next() * size.x, random.next() * size.y, random.next() * size.z, speed * s * Math.cos(a), speed * s * Math.sin(a), speed * c);
+    boids.place(
+      i,
+      random.next() * size.x,
+      random.next() * size.y,
+      random.next() * size.z,
+      speed * s * Math.cos(a),
+      speed * s * Math.sin(a),
+      speed * c,
+    );
   }
   return boids;
 }
@@ -39,7 +52,11 @@ function nearestDistances(boids: Boids): number[] {
 }
 
 const distance = (boids: Boids, i: number, j: number): number =>
-  Math.hypot((boids.x[j] ?? 0) - (boids.x[i] ?? 0), (boids.y[j] ?? 0) - (boids.y[i] ?? 0), (boids.z[j] ?? 0) - (boids.z[i] ?? 0));
+  Math.hypot(
+    (boids.x[j] ?? 0) - (boids.x[i] ?? 0),
+    (boids.y[j] ?? 0) - (boids.y[i] ?? 0),
+    (boids.z[j] ?? 0) - (boids.z[i] ?? 0),
+  );
 
 /**
  * Local order: how well each boid's heading agrees with its neighbours', averaged over the flock (the
@@ -213,7 +230,8 @@ test("a startle relays along the neighbours once, as a front at one hop per rela
   let previous = Array.from(boids.alarm);
   for (let s = 1; s <= 600; s++) {
     boids.step(step, rules, random);
-    for (let i = 0; i < n; i++) if ((boids.alarm[i] ?? 0) < (previous[i] ?? 0)) startledAt[i]?.push(s);
+    for (let i = 0; i < n; i++)
+      if ((boids.alarm[i] ?? 0) < (previous[i] ?? 0)) startledAt[i]?.push(s);
     previous = Array.from(boids.alarm);
   }
   // Each boid after the first once, in order along the line: it catches the startle on the step its

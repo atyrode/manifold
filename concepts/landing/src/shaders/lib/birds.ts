@@ -403,12 +403,23 @@ BirdHit birdBelowHit(vec3 ro, vec3 rd, vec3 pos, vec3 vel, float kind, float sem
 `;
 
 /** The species a scene can fly, by the `birdKind` label: the GLSL kinds (BIRD_CROW = 0...). */
-export const BIRD_KIND = { rooks: 0, swallows: 1, gulls: 2, geese: 3, buzzard: 4, pigeons: 5, swifts: 6 } as const;
+export const BIRD_KIND = {
+  rooks: 0,
+  swallows: 1,
+  gulls: 2,
+  geese: 3,
+  buzzard: 4,
+  pigeons: 5,
+  swifts: 6,
+} as const;
 
 export type BirdKind = keyof typeof BIRD_KIND;
 
 /** The `birdKind` choice's options, in BIRD_KIND's order. */
-export const BIRD_KINDS: readonly Option[] = Object.entries(BIRD_KIND).map(([label, value]) => ({ label, value }));
+export const BIRD_KINDS: readonly Option[] = Object.entries(BIRD_KIND).map(([label, value]) => ({
+  label,
+  value,
+}));
 
 /** The `birdFormation` choice: the GLSL formation is the value - 1 (BIRD_SOLO = 0...; -1 the species' own). */
 export const BIRD_FORMATIONS = [
@@ -446,15 +457,43 @@ export type BirdOptions = {
  */
 export function birdKnobs(options: BirdOptions): ParamDef[] {
   const group = options.group ?? "birds";
-  const kinds: Option[] = options.mixed === undefined ? [...BIRD_KINDS] : [{ label: "mixed", value: -1 }, ...BIRD_KINDS];
+  const kinds: Option[] =
+    options.mixed === undefined ? [...BIRD_KINDS] : [{ label: "mixed", value: -1 }, ...BIRD_KINDS];
   const kind = options.kind === "mixed" ? -1 : BIRD_KIND[options.kind];
   const mixed = options.mixed === undefined ? "" : `Mixed: ${options.mixed} `;
   return [
-    feature(group, "birds", "birds", options.on ?? false, "how often", options.often ?? 0.5, `${options.help} The amount is how often a flight passes.`),
-    choice(group, "birdKind", "which birds", kinds, kind, `${mixed}Rooks rowing in loose parties, swallows flickering low and near, pale gulls on crooked wings, geese in a V far and high, a buzzard circling on a thermal, pigeons wheeling in a flock, swifts sailing on stiff scythe wings.`, { when: "birds" }),
-    choice(group, "birdFormation", "formation", BIRD_FORMATIONS, 0, "How they fly: as that kind usually does, alone, as a loose party, in a V, or circling on a thermal (a party wheels round one circle).", { when: "birds" }),
+    feature(
+      group,
+      "birds",
+      "birds",
+      options.on ?? false,
+      "how often",
+      options.often ?? 0.5,
+      `${options.help} The amount is how often a flight passes.`,
+    ),
+    choice(
+      group,
+      "birdKind",
+      "which birds",
+      kinds,
+      kind,
+      `${mixed}Rooks rowing in loose parties, swallows flickering low and near, pale gulls on crooked wings, geese in a V far and high, a buzzard circling on a thermal, pigeons wheeling in a flock, swifts sailing on stiff scythe wings.`,
+      { when: "birds" },
+    ),
+    choice(
+      group,
+      "birdFormation",
+      "formation",
+      BIRD_FORMATIONS,
+      0,
+      "How they fly: as that kind usually does, alone, as a loose party, in a V, or circling on a thermal (a party wheels round one circle).",
+      { when: "birds" },
+    ),
   ];
 }
 
 /** Lab heading for the default "birds" group. */
-export const birdsGroup: Blurb = { title: "Birds", blurb: "Flights of birds crossing the sky: which, how they fly, and how often." };
+export const birdsGroup: Blurb = {
+  title: "Birds",
+  blurb: "Flights of birds crossing the sky: which, how they fly, and how often.",
+};

@@ -5,7 +5,20 @@
 // a black scratch cell so its cuts and holes cannot erase anything, then made crisp (one material per
 // texel) and copied into its cell.
 
-import { bananaLeaf, fernFrond, frangipaniFlower, grassTuft, hibiscusFlower, Material, monsteraLeaf, pothosLeaf, type Brush, type Context, type MaterialId, type Rand } from "./botany.ts";
+import {
+  bananaLeaf,
+  fernFrond,
+  frangipaniFlower,
+  grassTuft,
+  hibiscusFlower,
+  Material,
+  monsteraLeaf,
+  pothosLeaf,
+  type Brush,
+  type Context,
+  type MaterialId,
+  type Rand,
+} from "./botany.ts";
 import { PLANT_ATLAS_SHADE, type PlantSheetFamily } from "./sims/plantsheet.ts";
 import { mulberry32 } from "./sims/random.ts";
 
@@ -21,7 +34,10 @@ export interface CanopyConfig {
 export const CANOPY_MARGIN = 0.25;
 
 export function canopyKey(config: CanopyConfig): string {
-  return [config.coverage, ...config.sides].map((value) => value.toFixed(3)).concat(String(config.seed)).join("|");
+  return [config.coverage, ...config.sides]
+    .map((value) => value.toFixed(3))
+    .concat(String(config.seed))
+    .join("|");
 }
 
 /**
@@ -34,7 +50,14 @@ export function pondRandom(seed: number): Rand {
 }
 
 /** Draw in a local frame (origin, heading, scale, optional mirror) on the scratch sheet, then lay it down. */
-type Stamp = (x: number, y: number, angle: number, scale: number, flip: boolean, draw: (local: Context) => void) => void;
+type Stamp = (
+  x: number,
+  y: number,
+  angle: number,
+  scale: number,
+  flip: boolean,
+  draw: (local: Context) => void,
+) => void;
 
 function stamper(ctx: Context, size: number): Stamp {
   const scratch = new OffscreenCanvas(size, size);
@@ -79,13 +102,61 @@ interface AtlasFamily {
 
 /** Every family, in atlas order; the first three in 256-pixel cells, the rest in 128-pixel ones. */
 const FAMILIES: readonly AtlasFamily[] = [
-  { material: Material.monstera, count: 16, cell: BIG, box: [-0.3, -0.66, 1.1, 0.66], draw: (ctx, brush, rand, k) => monsteraLeaf(ctx, brush, rand, k < MONSTERA_MATURE ? 0.45 + (0.55 * k) / (MONSTERA_MATURE - 1) : 0.1) },
-  { material: Material.fern, count: 12, cell: BIG, box: [-0.1, -0.6, 1.25, 0.6], draw: (ctx, brush, rand) => fernFrond(ctx, brush, rand) },
-  { material: Material.banana, count: 8, cell: BIG, box: [-0.1, -0.32, 1.15, 0.32], draw: (ctx, brush, rand, k) => bananaLeaf(ctx, brush, rand, k / 7) },
-  { material: Material.pothos, count: 12, cell: SMALL, box: [-0.3, -0.52, 1.1, 0.52], draw: (ctx, brush, rand) => pothosLeaf(ctx, brush, rand) },
-  { material: Material.hibiscus, count: 8, cell: SMALL, box: [-1.3, -1.3, 1.3, 1.3], draw: (ctx, brush, rand) => hibiscusFlower(ctx, brush, rand) },
-  { material: Material.frangipani, count: 8, cell: SMALL, box: [-1.3, -1.3, 1.3, 1.3], draw: (ctx, brush, rand) => frangipaniFlower(ctx, brush, rand) },
-  { material: Material.grass, count: 8, cell: SMALL, box: [-0.5, -1.05, 1.15, 1.05], draw: (ctx, brush, rand) => grassTuft(ctx, brush, rand, 16 + Math.floor(rand() * 16)) },
+  {
+    material: Material.monstera,
+    count: 16,
+    cell: BIG,
+    box: [-0.3, -0.66, 1.1, 0.66],
+    draw: (ctx, brush, rand, k) =>
+      monsteraLeaf(
+        ctx,
+        brush,
+        rand,
+        k < MONSTERA_MATURE ? 0.45 + (0.55 * k) / (MONSTERA_MATURE - 1) : 0.1,
+      ),
+  },
+  {
+    material: Material.fern,
+    count: 12,
+    cell: BIG,
+    box: [-0.1, -0.6, 1.25, 0.6],
+    draw: (ctx, brush, rand) => fernFrond(ctx, brush, rand),
+  },
+  {
+    material: Material.banana,
+    count: 8,
+    cell: BIG,
+    box: [-0.1, -0.32, 1.15, 0.32],
+    draw: (ctx, brush, rand, k) => bananaLeaf(ctx, brush, rand, k / 7),
+  },
+  {
+    material: Material.pothos,
+    count: 12,
+    cell: SMALL,
+    box: [-0.3, -0.52, 1.1, 0.52],
+    draw: (ctx, brush, rand) => pothosLeaf(ctx, brush, rand),
+  },
+  {
+    material: Material.hibiscus,
+    count: 8,
+    cell: SMALL,
+    box: [-1.3, -1.3, 1.3, 1.3],
+    draw: (ctx, brush, rand) => hibiscusFlower(ctx, brush, rand),
+  },
+  {
+    material: Material.frangipani,
+    count: 8,
+    cell: SMALL,
+    box: [-1.3, -1.3, 1.3, 1.3],
+    draw: (ctx, brush, rand) => frangipaniFlower(ctx, brush, rand),
+  },
+  {
+    material: Material.grass,
+    count: 8,
+    cell: SMALL,
+    box: [-0.5, -1.05, 1.15, 1.05],
+    draw: (ctx, brush, rand) => grassTuft(ctx, brush, rand, 16 + Math.floor(rand() * 16)),
+  },
 ];
 
 /** Each family's cells in atlas order: [family, variant, left, top] (atlas pixels). */
@@ -97,7 +168,12 @@ function atlasCells(): [AtlasFamily, number, number, number][] {
     const across = PLANT_ATLAS_SIZE / family.cell;
     for (let k = 0; k < family.count; k++) {
       const index = family.cell === BIG ? big++ : small++;
-      cells.push([family, k, (index % across) * family.cell, (family.cell === BIG ? 0 : SMALL_TOP) + Math.floor(index / across) * family.cell]);
+      cells.push([
+        family,
+        k,
+        (index % across) * family.cell,
+        (family.cell === BIG ? 0 : SMALL_TOP) + Math.floor(index / across) * family.cell,
+      ]);
     }
   }
   return cells;
@@ -110,11 +186,20 @@ function atlasCells(): [AtlasFamily, number, number, number][] {
 export function plantAtlasFamilies(): (PlantSheetFamily | undefined)[] {
   const cells = FAMILIES.map((): (readonly [number, number, number, number])[] => []);
   for (const [family, , left, top] of atlasCells()) {
-    cells[FAMILIES.indexOf(family)]?.push([left / PLANT_ATLAS_SIZE, 1 - top / PLANT_ATLAS_SIZE, (left + family.cell) / PLANT_ATLAS_SIZE, 1 - (top + family.cell) / PLANT_ATLAS_SIZE]);
+    cells[FAMILIES.indexOf(family)]?.push([
+      left / PLANT_ATLAS_SIZE,
+      1 - top / PLANT_ATLAS_SIZE,
+      (left + family.cell) / PLANT_ATLAS_SIZE,
+      1 - (top + family.cell) / PLANT_ATLAS_SIZE,
+    ]);
   }
   const families: (PlantSheetFamily | undefined)[] = [];
   FAMILIES.forEach((family, f) => {
-    families[family.material] = { material: family.material, cells: cells[f] ?? [], box: family.box };
+    families[family.material] = {
+      material: family.material,
+      cells: cells[f] ?? [],
+      box: family.box,
+    };
   });
   return families;
 }
@@ -135,7 +220,14 @@ export function* paintAtlas(ctx: Context, width: number, height: number): Genera
     local.globalCompositeOperation = "source-over";
     local.fillStyle = "#000";
     local.fillRect(0, 0, size, size);
-    local.setTransform(size / (x1 - x0), 0, 0, size / (y1 - y0), (-x0 * size) / (x1 - x0), (-y0 * size) / (y1 - y0));
+    local.setTransform(
+      size / (x1 - x0),
+      0,
+      0,
+      size / (y1 - y0),
+      (-x0 * size) / (x1 - x0),
+      (-y0 * size) / (y1 - y0),
+    );
     family.draw(local, brush, pondRandom(1009 * (family.material + 1) + 31 * k + 7), k);
     local.setTransform(1, 0, 0, 1, 0, 0);
     yield* crisp(local, size, size);
@@ -147,7 +239,8 @@ export function* paintAtlas(ctx: Context, width: number, height: number): Genera
 /** Valid material codes: material × 16 + layer × 4 + 2, layers 0..2. */
 function snapCode(code: number): number | undefined {
   const step = Math.round((code - 2) / 4);
-  if (Math.abs(code - (step * 4 + 2)) > 1.2 || step % 4 === 3 || step < 0 || step > 10 * 4 + 2) return undefined;
+  if (Math.abs(code - (step * 4 + 2)) > 1.2 || step % 4 === 3 || step < 0 || step > 10 * 4 + 2)
+    return undefined;
   return step * 4 + 2;
 }
 
@@ -175,7 +268,8 @@ function* crisp(ctx: Context, width: number, height: number): Generator<void, vo
     codes[px] = snapCode(((d[i + 2] ?? 0) * 255) / r) ?? -2;
   }
   yield;
-  const at = (x: number, y: number) => (x < 0 || y < 0 || x >= width || y >= height ? -1 : codes[y * width + x] ?? -1);
+  const at = (x: number, y: number) =>
+    x < 0 || y < 0 || x >= width || y >= height ? -1 : (codes[y * width + x] ?? -1);
   for (let y = 0; y < height; y++) {
     if (y % 64 === 0) yield;
     for (let x = 0; x < width; x++) {
@@ -184,7 +278,10 @@ function* crisp(ctx: Context, width: number, height: number): Generator<void, vo
       if (code === -1) continue;
       const left = at(x - 1, y);
       const up = at(x, y - 1);
-      const seam = code === -2 || (code !== left && code !== at(x + 1, y)) || (code !== up && code !== at(x, y + 1));
+      const seam =
+        code === -2 ||
+        (code !== left && code !== at(x + 1, y)) ||
+        (code !== up && code !== at(x, y + 1));
       if (seam) code = left >= 0 ? left : up >= 0 ? up : Math.max(at(x + 1, y), at(x, y + 1), 2);
       if (code < 0) code = 2;
       codes[px] = code;
@@ -215,7 +312,13 @@ function* crisp(ctx: Context, width: number, height: number): Generator<void, vo
       const px = y * width + x;
       const code = codes[px] ?? -1;
       if (code < 0) continue;
-      if (at(x - 1, y) === code && at(x + 1, y) === code && at(x, y - 1) === code && at(x, y + 1) === code) continue;
+      if (
+        at(x - 1, y) === code &&
+        at(x + 1, y) === code &&
+        at(x, y - 1) === code &&
+        at(x, y + 1) === code
+      )
+        continue;
       counts.clear();
       for (let dy = -2; dy <= 2; dy++) {
         for (let dx = -2; dx <= 2; dx++) {
@@ -230,7 +333,8 @@ function* crisp(ctx: Context, width: number, height: number): Generator<void, vo
         if (n < code && c > (counts.get(below) ?? 0)) below = n;
         if (n > code && c > (counts.get(above) ?? 0)) above = n;
       }
-      if (below >= 0 && above >= 0) codes[px] = (counts.get(below) ?? 0) >= (counts.get(above) ?? 0) ? below : above;
+      if (below >= 0 && above >= 0)
+        codes[px] = (counts.get(below) ?? 0) >= (counts.get(above) ?? 0) ? below : above;
     }
   }
   for (let px = 0; px < width * height; px++) {
@@ -244,7 +348,13 @@ function* crisp(ctx: Context, width: number, height: number): Generator<void, vo
  * Paint the overhead canopy: big leaves scattered across and beyond the frame. Only its shadow is
  * ever seen, so only coverage matters. `span` is how many frames wide the sheet is.
  */
-export function* paintCanopy(ctx: Context, width: number, height: number, config: CanopyConfig, span: number): Generator<void, void> {
+export function* paintCanopy(
+  ctx: Context,
+  width: number,
+  height: number,
+  config: CanopyConfig,
+  span: number,
+): Generator<void, void> {
   const rand = pondRandom(911 + config.seed * 53);
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = "#000";

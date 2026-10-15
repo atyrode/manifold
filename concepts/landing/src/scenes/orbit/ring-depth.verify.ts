@@ -18,13 +18,19 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     return shader;
   });
   const linked = gl.createProgram();
   for (const shader of shaders) gl.attachShader(linked, shader);
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
@@ -62,7 +68,10 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
     gl.uniform1fv(at("uTriggers"), triggers);
     gl.uniform1f(at("uTime"), time);
     gl.uniform1f(at("uMotionTime"), time);
-    gl.uniform1fv(at("uParams"), Float32Array.from(renderSettings(defaultsFor("orbit"), { ...scene, ...knobs }).params));
+    gl.uniform1fv(
+      at("uParams"),
+      Float32Array.from(renderSettings(defaultsFor("orbit"), { ...scene, ...knobs }).params),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -76,7 +85,10 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
 
   // At motion time 281 the inner moon is crossing the near side of the ring, which lies well in
   // front of it, while the outer (third) moon sits over the far side, well behind it.
-  const moons = (count: number) => ({ moons: count > 0 ? 1 : 0, "moons-amount": Math.max(count, 1) });
+  const moons = (count: number) => ({
+    moons: count > 0 ? 1 : 0,
+    "moons-amount": Math.max(count, 1),
+  });
   const bare = draw({ ring: 0, ...moons(0) }, 281);
   const inner = draw({ ring: 0, ...moons(1) }, 281);
   const two = draw({ ring: 0, ...moons(2) }, 281);
@@ -86,8 +98,14 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
   const ringed = (index: number) => (ring[index + BLUE] ?? 0) >= (bare[index + BLUE] ?? 0) + 32;
   const before = pixelsWhere((index) => inner[index + RED] !== bare[index + RED] && ringed(index));
   const behind = pixelsWhere((index) => three[index + RED] !== two[index + RED] && ringed(index));
-  check(before.length >= 3, `Fixture lost the inner moon behind the near ring: ${before.length} pixels`);
-  check(behind.length >= 8, `Fixture lost the outer moon over the far ring: ${behind.length} pixels`);
+  check(
+    before.length >= 3,
+    `Fixture lost the inner moon behind the near ring: ${before.length} pixels`,
+  );
+  check(
+    behind.length >= 8,
+    `Fixture lost the outer moon over the far ring: ${behind.length} pixels`,
+  );
   for (const index of behind) {
     check(
       [0, 1, 2].every((channel) => both[index + channel] === three[index + channel]),
@@ -113,7 +131,10 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
       (meteor[index + RED] ?? 0) > (quiet[index + RED] ?? 0) &&
       (ringQuiet[index + BLUE] ?? 0) >= (quiet[index + BLUE] ?? 0) + 32,
   );
-  check(trail.length >= 6, `Fixture lost the captured meteor behind the ring: ${trail.length} pixels`);
+  check(
+    trail.length >= 6,
+    `Fixture lost the captured meteor behind the ring: ${trail.length} pixels`,
+  );
   for (const index of trail) {
     check(
       (ringMeteor[index + RED] ?? 0) < (meteor[index + RED] ?? 0),
@@ -121,5 +142,9 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
     );
   }
   gl.deleteProgram(linked);
-  return { ringBehindMoonPixels: behind.length, ringBeforeMoonPixels: before.length, ringBeforeMeteorPixels: trail.length };
+  return {
+    ringBehindMoonPixels: behind.length,
+    ringBeforeMoonPixels: before.length,
+    ringBeforeMeteorPixels: trail.length,
+  };
 }

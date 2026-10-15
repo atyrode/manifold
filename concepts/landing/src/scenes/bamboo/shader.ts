@@ -37,7 +37,8 @@ import {
 /** A number as a GLSL float literal. */
 const f = (value: number): string => value.toFixed(4);
 /** One number per depth layer, as a GLSL float array. */
-const layerFloats = (pick: (layer: BambooLayer) => number): string => `float[${BAMBOO_LAYERS.length}](${BAMBOO_LAYERS.map((layer) => f(pick(layer))).join(", ")})`;
+const layerFloats = (pick: (layer: BambooLayer) => number): string =>
+  `float[${BAMBOO_LAYERS.length}](${BAMBOO_LAYERS.map((layer) => f(pick(layer))).join(", ")})`;
 const LAYERS = BAMBOO_LAYERS.length;
 
 export const bambooGlsl = `

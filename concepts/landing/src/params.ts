@@ -37,7 +37,16 @@ export interface Option {
 export type ParamDef =
   | (Base & { kind: "range"; min: number; max: number; step: number; value: number })
   | (Base & { kind: "toggle"; value: number })
-  | (Base & { kind: "feature"; on: boolean; amountLabel: string; min: number; max: number; step: number; value: number; options?: readonly Option[] })
+  | (Base & {
+      kind: "feature";
+      on: boolean;
+      amountLabel: string;
+      min: number;
+      max: number;
+      step: number;
+      value: number;
+      options?: readonly Option[];
+    })
   | (Base & { kind: "choice"; options: readonly Option[]; value: number })
   | (Base & { kind: "seed"; value: number });
 
@@ -48,44 +57,121 @@ export const MAX_SEED = 999;
 export const MAX_PARAMS = 64;
 export const MAX_TRIGGERS = 8;
 
-interface Extra { when?: string; trigger?: number; steady?: boolean }
+interface Extra {
+  when?: string;
+  trigger?: number;
+  steady?: boolean;
+}
 const extra = (options: Extra) => ({
   ...(options.when === undefined ? {} : { when: options.when }),
   ...(options.trigger === undefined ? {} : { trigger: options.trigger }),
   ...(options.steady === undefined ? {} : { steady: options.steady }),
 });
 
-export const range = (group: string, key: string, label: string, value: number, help: string, options: Extra & { min?: number; max?: number; step?: number } = {}): ParamDef => ({
-  kind: "range", group, key, label, value, help,
-  min: options.min ?? 0, max: options.max ?? 1, step: options.step ?? 0.05, ...extra(options),
+export const range = (
+  group: string,
+  key: string,
+  label: string,
+  value: number,
+  help: string,
+  options: Extra & { min?: number; max?: number; step?: number } = {},
+): ParamDef => ({
+  kind: "range",
+  group,
+  key,
+  label,
+  value,
+  help,
+  min: options.min ?? 0,
+  max: options.max ?? 1,
+  step: options.step ?? 0.05,
+  ...extra(options),
 });
 
-export const toggle = (group: string, key: string, label: string, on: boolean, help: string, options: Extra = {}): ParamDef => ({
-  kind: "toggle", group, key, label, value: on ? 1 : 0, help, ...extra(options),
+export const toggle = (
+  group: string,
+  key: string,
+  label: string,
+  on: boolean,
+  help: string,
+  options: Extra = {},
+): ParamDef => ({
+  kind: "toggle",
+  group,
+  key,
+  label,
+  value: on ? 1 : 0,
+  help,
+  ...extra(options),
 });
 
 export const feature = (
-  group: string, key: string, label: string, on: boolean, amountLabel: string, value: number, help: string,
+  group: string,
+  key: string,
+  label: string,
+  on: boolean,
+  amountLabel: string,
+  value: number,
+  help: string,
   options: Extra & { min?: number; max?: number; step?: number; options?: readonly Option[] } = {},
 ): ParamDef => ({
-  kind: "feature", group, key, label, on, amountLabel, value, help,
+  kind: "feature",
+  group,
+  key,
+  label,
+  on,
+  amountLabel,
+  value,
+  help,
   // Segmented amounts take their bounds from the choices, so counts like 8 survive URL parsing.
-  min: options.options ? Math.min(...options.options.map((option) => option.value)) : options.min ?? 0.05,
-  max: options.options ? Math.max(...options.options.map((option) => option.value)) : options.max ?? 1,
+  min: options.options
+    ? Math.min(...options.options.map((option) => option.value))
+    : (options.min ?? 0.05),
+  max: options.options
+    ? Math.max(...options.options.map((option) => option.value))
+    : (options.max ?? 1),
   step: options.step ?? 0.05,
   ...(options.options === undefined ? {} : { options: options.options }),
   ...extra(options),
 });
 
-export const choice = (group: string, key: string, label: string, options: readonly Option[], value: number, help: string, more: Extra = {}): ParamDef => ({
-  kind: "choice", group, key, label, options, value, help, ...extra(more),
+export const choice = (
+  group: string,
+  key: string,
+  label: string,
+  options: readonly Option[],
+  value: number,
+  help: string,
+  more: Extra = {},
+): ParamDef => ({
+  kind: "choice",
+  group,
+  key,
+  label,
+  options,
+  value,
+  help,
+  ...extra(more),
 });
 
-export const seed = (group: string, key: string, label: string, help: string, more: Extra = {}): ParamDef => ({
-  kind: "seed", group, key, label, value: 0, help, ...extra(more),
+export const seed = (
+  group: string,
+  key: string,
+  label: string,
+  help: string,
+  more: Extra = {},
+): ParamDef => ({
+  kind: "seed",
+  group,
+  key,
+  label,
+  value: 0,
+  help,
+  ...extra(more),
 });
 
-export const counts = (...values: number[]): Option[] => values.map((value) => ({ label: String(value), value }));
+export const counts = (...values: number[]): Option[] =>
+  values.map((value) => ({ label: String(value), value }));
 
 /** The value a knob hands to the shader. */
 export function effective(def: ParamDef, params: Record<string, number>): number {
@@ -126,7 +212,11 @@ export function knobDef(owner: string, params: readonly ParamDef[], key: string)
  * Knob `key` as the shader reads it, from raw knobs keyed as in the URL (what `SceneDef.theme`
  * receives): `effective` looked up by key. Throws KnobError for a key the scene lacks.
  */
-export function knobValue(params: readonly ParamDef[], values: Readonly<Record<string, number>>, key: string): number {
+export function knobValue(
+  params: readonly ParamDef[],
+  values: Readonly<Record<string, number>>,
+  key: string,
+): number {
   return effective(knobDef("knobValue", params, key), values);
 }
 
@@ -169,7 +259,12 @@ export class KnobReader<K extends string> {
       const index = params.findIndex((def) => def.key === key);
       const def = params[index];
       if (def === undefined) throw new KnobError(`${owner}: the scene has no '${key}' knob`);
-      slots.set(key, { index, def, amountKey: def.kind === "feature" ? `${key}-amount` : undefined, initial: effective(def, {}) });
+      slots.set(key, {
+        index,
+        def,
+        amountKey: def.kind === "feature" ? `${key}-amount` : undefined,
+        initial: effective(def, {}),
+      });
     }
     this.#owner = owner;
     this.#slots = slots;
@@ -203,7 +298,8 @@ export class KnobReader<K extends string> {
   /** The knob's slot in `frame.triggers` (its "now" button); throws KnobError if it has none. */
   trigger(key: K): number {
     const trigger = this.#slot(key).def.trigger;
-    if (trigger === undefined) throw new KnobError(`${this.#owner}: the '${key}' knob has no trigger slot`);
+    if (trigger === undefined)
+      throw new KnobError(`${this.#owner}: the '${key}' knob has no trigger slot`);
     return trigger;
   }
 
@@ -214,7 +310,10 @@ export class KnobReader<K extends string> {
 
   #slot(key: K): KnobSlot {
     const slot = this.#slots.get(key);
-    if (slot === undefined) throw new KnobError(`${this.#owner}: '${key}' is not one of the knobs this reader was built with`);
+    if (slot === undefined)
+      throw new KnobError(
+        `${this.#owner}: '${key}' is not one of the knobs this reader was built with`,
+      );
     return slot;
   }
 }

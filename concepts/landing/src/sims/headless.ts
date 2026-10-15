@@ -95,15 +95,30 @@ export class HeadlessGl {
       // (target, level, internal, format, type, source): its size is kept, its pixels are not.
       texImage2D: (...args: unknown[]): void => {
         const texture = this.#texture();
-        const source = args.length === 6 ? (args[5] as { width: number; height: number }) : undefined;
+        const source =
+          args.length === 6 ? (args[5] as { width: number; height: number }) : undefined;
         const pixels = args[8];
         texture.width = source ? source.width : (args[3] as number);
         texture.height = source ? source.height : (args[4] as number);
-        texture.data = pixels instanceof Float32Array || pixels instanceof Uint8Array ? pixels.slice() : undefined;
+        texture.data =
+          pixels instanceof Float32Array || pixels instanceof Uint8Array
+            ? pixels.slice()
+            : undefined;
       },
-      texSubImage2D: (_target: number, _level: number, x: number, y: number, width: number, height: number, _format: number, _type: number, data: Float32Array | Uint8Array): void => {
+      texSubImage2D: (
+        _target: number,
+        _level: number,
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+        _format: number,
+        _type: number,
+        data: Float32Array | Uint8Array,
+      ): void => {
         const texture = this.#texture();
-        if (x !== 0 || y !== 0 || width !== texture.width || height !== texture.height) throw new HeadlessError("headless: only whole-texture uploads are kept");
+        if (x !== 0 || y !== 0 || width !== texture.width || height !== texture.height)
+          throw new HeadlessError("headless: only whole-texture uploads are kept");
         texture.data = data.slice();
       },
     };
@@ -119,7 +134,8 @@ export class HeadlessGl {
 
   /** The texture's size and its last upload (a copy); throws if there is none. */
   upload(texture: WebGLTexture | undefined): HeadlessUpload {
-    if (!(texture instanceof HeadlessTexture) || texture.data === undefined) throw new HeadlessError("headless: that texture has not been uploaded");
+    if (!(texture instanceof HeadlessTexture) || texture.data === undefined)
+      throw new HeadlessError("headless: that texture has not been uploaded");
     return { width: texture.width, height: texture.height, data: texture.data };
   }
 
@@ -167,7 +183,8 @@ export class HeadlessSim {
 
   constructor(scene: SceneDef, gl?: WebGL2RenderingContext) {
     const id = sceneIds.find((candidate) => candidate === scene.id);
-    if (id === undefined) throw new HeadlessError(`headless: '${scene.id}' is not a registered scene`);
+    if (id === undefined)
+      throw new HeadlessError(`headless: '${scene.id}' is not a registered scene`);
     if (scene.sim === undefined) throw new HeadlessError(`headless: '${scene.id}' has no sim`);
     this.#scene = scene;
     this.#defaults = paramDefaults(id);
@@ -220,7 +237,15 @@ export class HeadlessSim {
       params,
       triggers: this.#triggers,
       fired: this.#fired,
-      pointer: { x: 0.5, y: 0.5, inside: true, down: false, pressed: false, released: false, ...options.pointer },
+      pointer: {
+        x: 0.5,
+        y: 0.5,
+        inside: true,
+        down: false,
+        pressed: false,
+        released: false,
+        ...options.pointer,
+      },
       parallax: { x: 0, y: 0, ...options.parallax },
       passage: { enter: 1, exit: 0, ...options.passage },
     });
@@ -235,7 +260,8 @@ export class HeadlessSim {
 
   upload(slot: number): HeadlessUpload {
     const texture = this.#textures[slot];
-    if (texture === undefined) throw new HeadlessError(`headless: '${this.#scene.id}' left slot ${slot} empty`);
+    if (texture === undefined)
+      throw new HeadlessError(`headless: '${this.#scene.id}' left slot ${slot} empty`);
     return this.#standIn().upload(texture);
   }
 
@@ -250,7 +276,10 @@ export class HeadlessSim {
   }
 
   #standIn(): HeadlessGl {
-    if (this.#headless === undefined) throw new HeadlessError("headless: a sim on a real context keeps its uploads there; use frame");
+    if (this.#headless === undefined)
+      throw new HeadlessError(
+        "headless: a sim on a real context keeps its uploads there; use frame",
+      );
     return this.#headless;
   }
 }

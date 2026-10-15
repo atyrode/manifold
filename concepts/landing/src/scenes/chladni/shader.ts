@@ -7,7 +7,14 @@
 // Knobs read here: K_shape, K_tone, K_sand, K_lamp, K_lampHue, K_shimmer, K_grainSize (its look:
 // the sim reads its physics); the rest drive the sim.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
-import { CHLADNI_HUB, CHLADNI_MARK_SIZE, CHLADNI_MARK_Y, CHLADNI_PLATE, CHLADNI_PLATE_FIT, CHLADNI_SAND_TEXELS } from "./sim.ts";
+import {
+  CHLADNI_HUB,
+  CHLADNI_MARK_SIZE,
+  CHLADNI_MARK_Y,
+  CHLADNI_PLATE,
+  CHLADNI_PLATE_FIT,
+  CHLADNI_SAND_TEXELS,
+} from "./sim.ts";
 
 export interface ChladniColor {
   label: string;
@@ -61,19 +68,35 @@ const float CHLADNI_DUST = 4.0;                         // grains per texel for 
 const vec3 CHLADNI_LAMP_DIR = vec3(-0.4998, 0.6247, 0.6); // unit: toward the lamp, 37 degrees above the plate
 
 vec3 chladniSandColor() {
-${glslPick("sand", chladniSands.map((sand) => glslVec3(sand.color)), "vec3(0.9)")}
+${glslPick(
+  "sand",
+  chladniSands.map((sand) => glslVec3(sand.color)),
+  "vec3(0.9)",
+)}
 }
 
 vec3 chladniLampHue() {
-${glslPick("lampHue", chladniLamps.map((lamp) => glslVec3(lamp.color)), "vec3(1.0)")}
+${glslPick(
+  "lampHue",
+  chladniLamps.map((lamp) => glslVec3(lamp.color)),
+  "vec3(1.0)",
+)}
 }
 
 vec3 chladniMetal() {
-${glslPick("tone", chladniMetals.map((metal) => glslVec3(metal.base)), "vec3(0.08)")}
+${glslPick(
+  "tone",
+  chladniMetals.map((metal) => glslVec3(metal.base)),
+  "vec3(0.08)",
+)}
 }
 
 vec3 chladniSheen() {
-${glslPick("tone", chladniMetals.map((metal) => glslVec3(metal.sheen)), "vec3(0.8)")}
+${glslPick(
+  "tone",
+  chladniMetals.map((metal) => glslVec3(metal.sheen)),
+  "vec3(0.8)",
+)}
 }
 
 // Signed distance to the plate's edge in plate units: the unit disc, or the unit square with its

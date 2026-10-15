@@ -15,7 +15,13 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, ScenePassageProgress, SimFactory, SimFrame } from "../types.ts";
+import type {
+  PointerState,
+  SceneSim,
+  ScenePassageProgress,
+  SimFactory,
+  SimFrame,
+} from "../types.ts";
 
 // ---- Complex numbers ------------------------------------------------------------------------------
 
@@ -30,13 +36,15 @@ const ONE = complex(1);
 const I = complex(0, 1);
 const plus = (a: Complex, b: Complex): Complex => complex(a.re + b.re, a.im + b.im);
 const minus = (a: Complex, b: Complex): Complex => complex(a.re - b.re, a.im - b.im);
-const times = (a: Complex, b: Complex): Complex => complex(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re);
+const times = (a: Complex, b: Complex): Complex =>
+  complex(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re);
 const scaled = (a: Complex, k: number): Complex => complex(a.re * k, a.im * k);
 const conj = (a: Complex): Complex => complex(a.re, -a.im);
 const norm = (a: Complex): number => a.re * a.re + a.im * a.im;
 const size = (a: Complex): number => Math.hypot(a.re, a.im);
 const angle = (a: Complex): number => Math.atan2(a.im, a.re);
-const polar = (radius: number, theta: number): Complex => complex(radius * Math.cos(theta), radius * Math.sin(theta));
+const polar = (radius: number, theta: number): Complex =>
+  complex(radius * Math.cos(theta), radius * Math.sin(theta));
 
 function quotient(a: Complex, b: Complex): Complex {
   const d = norm(b);
@@ -74,7 +82,10 @@ const STILL: Motion = { a: ONE, b: ZERO };
 
 /** f after g. */
 function compose(f: Motion, g: Motion): Motion {
-  return { a: plus(times(f.a, g.a), times(f.b, conj(g.b))), b: plus(times(f.a, g.b), times(f.b, conj(g.a))) };
+  return {
+    a: plus(times(f.a, g.a), times(f.b, conj(g.b))),
+    b: plus(times(f.a, g.b), times(f.b, conj(g.a))),
+  };
 }
 
 function inverse(f: Motion): Motion {
@@ -108,8 +119,14 @@ interface Velocity {
 }
 
 const REST: Velocity = { turn: 0, push: ZERO };
-const sum = (u: Velocity, v: Velocity): Velocity => ({ turn: u.turn + v.turn, push: plus(u.push, v.push) });
-const faster = (v: Velocity, k: number): Velocity => ({ turn: v.turn * k, push: scaled(v.push, k) });
+const sum = (u: Velocity, v: Velocity): Velocity => ({
+  turn: u.turn + v.turn,
+  push: plus(u.push, v.push),
+});
+const faster = (v: Velocity, k: number): Velocity => ({
+  turn: v.turn * k,
+  push: scaled(v.push, k),
+});
 
 /** exp(tX): X² = (|push|² − turn²)·1, so the series sums to cosh / cos and sinh / sin. */
 function after(v: Velocity, t: number): Motion {
@@ -138,7 +155,10 @@ function seenFrom(m: Motion, v: Velocity): Velocity {
   const { a, b } = m;
   const x = v.push;
   const turn = v.turn * (norm(a) + norm(b)) + 2 * times(times(conj(a), b), conj(x)).im;
-  const push = minus(minus(times(times(a, a), x), times(times(b, b), conj(x))), times(complex(0, 2 * v.turn), times(a, b)));
+  const push = minus(
+    minus(times(times(a, a), x), times(times(b, b), conj(x))),
+    times(complex(0, 2 * v.turn), times(a, b)),
+  );
   return { turn, push };
 }
 
@@ -164,10 +184,24 @@ const UNMIRRORED: Mirrors = { a: ONE, b: ZERO, c: ZERO, d: ONE, flip: false, edg
 /** The mirror along the real axis. */
 const ACROSS_AXIS: Mirrors = { a: ONE, b: ZERO, c: ZERO, d: ONE, flip: true, edges: 0 };
 
-const rotation = (theta: number): Mirrors => ({ a: polar(1, theta / 2), b: ZERO, c: ZERO, d: polar(1, -theta / 2), flip: false, edges: 0 });
+const rotation = (theta: number): Mirrors => ({
+  a: polar(1, theta / 2),
+  b: ZERO,
+  c: ZERO,
+  d: polar(1, -theta / 2),
+  flip: false,
+  edges: 0,
+});
 
 /** The mirror in the central tile's edge across the positive real axis: z ↦ (c z̄ − 1) / (z̄ − c). */
-const acrossEdge = (t: Tiling): Mirrors => ({ a: complex(t.c), b: complex(-1), c: ONE, d: complex(-t.c), flip: true, edges: 1 });
+const acrossEdge = (t: Tiling): Mirrors => ({
+  a: complex(t.c),
+  b: complex(-1),
+  c: ONE,
+  d: complex(-t.c),
+  flip: true,
+  edges: 1,
+});
 
 /** f after g. */
 function mirrored(f: Mirrors, g: Mirrors): Mirrors {
@@ -352,7 +386,17 @@ function strandsOf(t: Tiling, motif: Motif, spread: number, weight: number): Str
   if (k === 0) {
     const body = 0.3 * weight * Math.min(t.half, t.inradius);
     const outline = body * HYPERBOLIC_SHADE.outline;
-    return { k, s: 0, rho: 0, side: 1, body, outline, spacing: t.inradius, markHalf: 0.62 * t.mid, average: tileAverage(t, k, 0, 0, 1, body, outline) };
+    return {
+      k,
+      s: 0,
+      rho: 0,
+      side: 1,
+      body,
+      outline,
+      spacing: t.inradius,
+      markHalf: 0.62 * t.mid,
+      average: tileAverage(t, k, 0, 0, 1, body, outline),
+    };
   }
   // The port on edge 0: the edge's midpoint slid along the edge (the line square to the real axis
   // there) by `spread` of half an edge.
@@ -376,15 +420,37 @@ function strandsOf(t: Tiling, motif: Motif, spread: number, weight: number): Str
   const outline = body * HYPERBOLIC_SHADE.outline;
   // The M fits in the clear middle of its tile where it can, and overlaps the strands where not.
   const free = Math.abs(Math.abs(s) - rho);
-  const markHalf = clamp(0.8 * (free - (outline * (1 - free * free)) / 2), 0.38 * t.mid, 0.62 * t.mid);
-  return { k, s, rho, side, body, outline, spacing, markHalf, average: tileAverage(t, k, s, rho, side, body, outline) };
+  const markHalf = clamp(
+    0.8 * (free - (outline * (1 - free * free)) / 2),
+    0.38 * t.mid,
+    0.62 * t.mid,
+  );
+  return {
+    k,
+    s,
+    rho,
+    side,
+    body,
+    outline,
+    spacing,
+    markHalf,
+    average: tileAverage(t, k, s, rho, side, body, outline),
+  };
 }
 
 /**
  * The tile's average colour, which its detail dissolves into as it shrinks toward the rim: sampled
  * over the fundamental triangle, weighted by hyperbolic area, shaded as the shader shades it.
  */
-function tileAverage(t: Tiling, k: number, s: number, rho: number, side: number, body: number, outline: number): [number, number, number, number] {
+function tileAverage(
+  t: Tiling,
+  k: number,
+  s: number,
+  rho: number,
+  side: number,
+  body: number,
+  outline: number,
+): [number, number, number, number] {
   const rows = 40;
   const columns = 16;
   const centres = Array.from({ length: t.p }, (_, j) => polar(s, ((2 * j + k) * Math.PI) / t.p));
@@ -473,7 +539,11 @@ function diskPoint(model: Model, q: Complex, aspect: number): Complex {
  * units one screen height spans there (`reach`; infinite on and past the rim), and how much the
  * map turns things there (`lean`, radians).
  */
-function screenPoint(model: Model, z: Complex, aspect: number): { q: Complex; reach: number; lean: number } {
+function screenPoint(
+  model: Model,
+  z: Complex,
+  aspect: number,
+): { q: Complex; reach: number; lean: number } {
   if (norm(z) >= 1) return { q: ZERO, reach: Number.POSITIVE_INFINITY, lean: 0 };
   switch (model) {
     case "disk": {
@@ -483,12 +553,20 @@ function screenPoint(model: Model, z: Complex, aspect: number): { q: Complex; re
     case "band": {
       const k = Math.PI / 4 / HYPERBOLIC_VIEW.band;
       const zeta = atanhOf(z);
-      return { q: scaled(zeta, 1 / k), reach: (2 * k) / Math.max(Math.cos(2 * zeta.im), 1e-9), lean: -angle(minus(ONE, times(z, z))) };
+      return {
+        q: scaled(zeta, 1 / k),
+        reach: (2 * k) / Math.max(Math.cos(2 * zeta.im), 1e-9),
+        lean: -angle(minus(ONE, times(z, z))),
+      };
     }
     case "half-plane": {
       const w = times(I, quotient(plus(ONE, z), minus(ONE, z)));
       const q = minus(scaled(w, 1 / HYPERBOLIC_VIEW.plane), complex(0, HYPERBOLIC_VIEW.horizon));
-      return { q, reach: HYPERBOLIC_VIEW.plane / Math.max(w.im, 1e-9), lean: Math.PI / 2 - 2 * angle(minus(ONE, z)) };
+      return {
+        q,
+        reach: HYPERBOLIC_VIEW.plane / Math.max(w.im, 1e-9),
+        lean: Math.PI / 2 - 2 * angle(minus(ONE, z)),
+      };
     }
     default: {
       const unreachable: never = model;
@@ -525,10 +603,70 @@ export interface HyperbolicPalette {
 }
 
 export const HYPERBOLIC_PALETTES: readonly HyperbolicPalette[] = [
-  { label: "indigo", paper: false, ground: "#0c1020", groundAlt: "#17233d", groundBreath: "#12293a", strand: "#e0d1ad", strandBreath: "#ecc79c", ink: "#04050a", back: "#030409", glow: "#4c6a9e", rim: "#93acdc", source: "#f2b46e", mark: "#ffb347", lamp: 0.72 },
-  { label: "jade", paper: false, ground: "#071311", groundAlt: "#0e2622", groundBreath: "#0c2229", strand: "#b4dcbe", strandBreath: "#cfe2ad", ink: "#020807", back: "#020605", glow: "#3f7f72", rim: "#8fd0bd", source: "#e6e59a", mark: "#ff8a6b", lamp: 0.72 },
-  { label: "ember", paper: false, ground: "#160809", groundAlt: "#2c110d", groundBreath: "#2b0c18", strand: "#f3bd6b", strandBreath: "#f7a35e", ink: "#070203", back: "#050102", glow: "#8a3a24", rim: "#e38f5c", source: "#ffd08a", mark: "#8fd8ff", lamp: 0.72 },
-  { label: "paper", paper: true, ground: "#e3d8c2", groundAlt: "#bcae95", groundBreath: "#b7ad9b", strand: "#faf6ec", strandBreath: "#f6eedb", ink: "#1d1b22", back: "#eee8db", glow: "#a39a8a", rim: "#2a2730", source: "#c8743e", mark: "#c4301f", lamp: 0.93 },
+  {
+    label: "indigo",
+    paper: false,
+    ground: "#0c1020",
+    groundAlt: "#17233d",
+    groundBreath: "#12293a",
+    strand: "#e0d1ad",
+    strandBreath: "#ecc79c",
+    ink: "#04050a",
+    back: "#030409",
+    glow: "#4c6a9e",
+    rim: "#93acdc",
+    source: "#f2b46e",
+    mark: "#ffb347",
+    lamp: 0.72,
+  },
+  {
+    label: "jade",
+    paper: false,
+    ground: "#071311",
+    groundAlt: "#0e2622",
+    groundBreath: "#0c2229",
+    strand: "#b4dcbe",
+    strandBreath: "#cfe2ad",
+    ink: "#020807",
+    back: "#020605",
+    glow: "#3f7f72",
+    rim: "#8fd0bd",
+    source: "#e6e59a",
+    mark: "#ff8a6b",
+    lamp: 0.72,
+  },
+  {
+    label: "ember",
+    paper: false,
+    ground: "#160809",
+    groundAlt: "#2c110d",
+    groundBreath: "#2b0c18",
+    strand: "#f3bd6b",
+    strandBreath: "#f7a35e",
+    ink: "#070203",
+    back: "#050102",
+    glow: "#8a3a24",
+    rim: "#e38f5c",
+    source: "#ffd08a",
+    mark: "#8fd8ff",
+    lamp: 0.72,
+  },
+  {
+    label: "paper",
+    paper: true,
+    ground: "#e3d8c2",
+    groundAlt: "#bcae95",
+    groundBreath: "#b7ad9b",
+    strand: "#faf6ec",
+    strandBreath: "#f6eedb",
+    ink: "#1d1b22",
+    back: "#eee8db",
+    glow: "#a39a8a",
+    rim: "#2a2730",
+    source: "#c8743e",
+    mark: "#c4301f",
+    lamp: 0.93,
+  },
 ];
 
 // ---- The state texture ----------------------------------------------------------------------------
@@ -714,7 +852,8 @@ export const HYPERBOLIC_DETAIL = {
   markTo: MARK_HIDE,
 } as const;
 
-type KnobKey = "tiling" | "motif" | "spread" | "weight" | "flow" | "speed" | "pulse" | "model" | "mark";
+type KnobKey =
+  "tiling" | "motif" | "spread" | "weight" | "flow" | "speed" | "pulse" | "model" | "mark";
 
 interface Knobs {
   tiling: TilingDef;
@@ -785,12 +924,32 @@ class HyperbolicSim implements SceneSim {
   #nextPulse = PULSE_FIRST;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#reader = new KnobReader<KnobKey>("hyperbolic", params, ["tiling", "motif", "spread", "weight", "flow", "speed", "pulse", "model", "mark"]);
+    this.#reader = new KnobReader<KnobKey>("hyperbolic", params, [
+      "tiling",
+      "motif",
+      "spread",
+      "weight",
+      "flow",
+      "speed",
+      "pulse",
+      "model",
+      "mark",
+    ]);
     this.#markTrigger = this.#reader.trigger("mark");
     this.#pulseTrigger = this.#reader.trigger("pulse");
     this.#tiling = tilingOf(FIRST_TILING);
-    this.#strands = strandsOf(this.#tiling, "weave", HYPERBOLIC_DEFAULTS.spread, HYPERBOLIC_DEFAULTS.weight);
-    this.#texture = new DataTexture(gl, { width: TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#strands = strandsOf(
+      this.#tiling,
+      "weave",
+      HYPERBOLIC_DEFAULTS.spread,
+      HYPERBOLIC_DEFAULTS.weight,
+    );
+    this.#texture = new DataTexture(gl, {
+      width: TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -810,16 +969,31 @@ class HyperbolicSim implements SceneSim {
     }
     this.#clock += glide;
     this.#settle();
-    this.#tendMark(knobs, frame.fired[this.#markTrigger] === true, dt, aspect, frame.height, ambient);
+    this.#tendMark(
+      knobs,
+      frame.fired[this.#markTrigger] === true,
+      dt,
+      aspect,
+      frame.height,
+      ambient,
+    );
     this.#tendPulse(knobs, frame.fired[this.#pulseTrigger] === true, dt, frame.motion);
 
     // The passage's extra travel on top of the glide (none at rest: the motion goes out as it is).
     const travel = this.#travel(frame.passage);
-    const seen = travel.speed > 0 ? compose(this.#motion, shift(scaled(this.#heading(knobs.model), Math.tanh(travel.lead / 2)))) : this.#motion;
+    const seen =
+      travel.speed > 0
+        ? compose(
+            this.#motion,
+            shift(scaled(this.#heading(knobs.model), Math.tanh(travel.lead / 2))),
+          )
+        : this.#motion;
     const flow = faster(ambient, this.#steer * clamp(frame.motion, 0, 1));
     const glow = knobs.mark > 0 ? knobs.mark : 0.5;
     const rimward = this.#source(knobs);
-    const pulseStrength = this.#pulsing ? smoothstep(0, 0.4, this.#pulseRadius) * (1 - smoothstep(2, PULSE_END, this.#pulseRadius)) : 0;
+    const pulseStrength = this.#pulsing
+      ? smoothstep(0, 0.4, this.#pulseRadius) * (1 - smoothstep(2, PULSE_END, this.#pulseRadius))
+      : 0;
     writeState(this.#data, {
       motion: seen,
       mark: this.#markTile === undefined ? undefined : compose(inverse(this.#markTile), seen),
@@ -831,7 +1005,10 @@ class HyperbolicSim implements SceneSim {
       pulse: carry(inverse(seen), this.#pulseAt),
       pulseRadius: this.#pulseRadius,
       pulseStrength,
-      breath: [Math.sin((2 * Math.PI * this.#clock) / BREATHS[0]), Math.sin((2 * Math.PI * this.#clock) / BREATHS[1] + 1.7)],
+      breath: [
+        Math.sin((2 * Math.PI * this.#clock) / BREATHS[0]),
+        Math.sin((2 * Math.PI * this.#clock) / BREATHS[1] + 1.7),
+      ],
       flip: this.#flip,
       flow,
     });
@@ -850,7 +1027,9 @@ class HyperbolicSim implements SceneSim {
     const leaving = clamp(passage.exit, 0, 1);
     // Cubic ease-out in, cubic ease-in out: the distance is reach · (1 − s)³ in, reach · u³ out.
     const lead = PASSAGE_IN_REACH * arriving ** 3 - PASSAGE_OUT_REACH * leaving ** 3;
-    const speed = (3 * PASSAGE_IN_REACH * arriving ** 2) / HYPERBOLIC_PASSAGE.enter + (3 * PASSAGE_OUT_REACH * leaving ** 2) / HYPERBOLIC_PASSAGE.exit;
+    const speed =
+      (3 * PASSAGE_IN_REACH * arriving ** 2) / HYPERBOLIC_PASSAGE.enter +
+      (3 * PASSAGE_OUT_REACH * leaving ** 2) / HYPERBOLIC_PASSAGE.exit;
     return { lead, speed };
   }
 
@@ -889,7 +1068,11 @@ class HyperbolicSim implements SceneSim {
     }
     const spread = Math.round(knobs.spread * 1000);
     const weight = Math.round(knobs.weight * 1000);
-    if (knobs.motif !== this.#strandMotif || spread !== this.#strandSpread || weight !== this.#strandWeight) {
+    if (
+      knobs.motif !== this.#strandMotif ||
+      spread !== this.#strandSpread ||
+      weight !== this.#strandWeight
+    ) {
       this.#strandMotif = knobs.motif;
       this.#strandSpread = spread;
       this.#strandWeight = weight;
@@ -920,7 +1103,9 @@ class HyperbolicSim implements SceneSim {
 
   /** The disk glides along a slowly wheeling line; the band and the half-plane along their axis. */
   #heading(model: Model): Complex {
-    return model === "disk" ? polar(1, GLIDE_HEADING + (2 * Math.PI * this.#clock) / WANDER_PERIOD) : ONE;
+    return model === "disk"
+      ? polar(1, GLIDE_HEADING + (2 * Math.PI * this.#clock) / WANDER_PERIOD)
+      : ONE;
   }
 
   /** The rim point tiles come from, and how brightly it glows. */
@@ -990,7 +1175,8 @@ class HyperbolicSim implements SceneSim {
     this.#motion = compose(this.#motion, step);
     if (dt > 0) {
       const length = size(m);
-      const log: Velocity = length > 1e-12 ? { turn: 0, push: scaled(m, Math.atanh(length) / length) } : REST;
+      const log: Velocity =
+        length > 1e-12 ? { turn: 0, push: scaled(m, Math.atanh(length) / length) } : REST;
       // The picture moved last → now: the inverse step, per second.
       const velocity = faster(seenFrom(toNow, log), -1 / dt);
       const k = 1 - Math.exp(-dt / DRAG_SMOOTH);
@@ -1024,7 +1210,13 @@ class HyperbolicSim implements SceneSim {
     const at = screenPoint(model, z, aspect);
     const x = at.q.re / aspect + 0.5;
     const y = at.q.im + 0.5;
-    return !(at.reach / Math.max(1, height) < MARK_HIDE) || x < -0.05 || x > 1.05 || y < -0.05 || y > 1.05;
+    return (
+      !(at.reach / Math.max(1, height) < MARK_HIDE) ||
+      x < -0.05 ||
+      x > 1.05 ||
+      y < -0.05 ||
+      y > 1.05
+    );
   }
 
   /**
@@ -1032,7 +1224,14 @@ class HyperbolicSim implements SceneSim {
    * screen; it rides the glide out to the rim, and while the knob is on, comes back on a tile far
    * upstream, out of sight, that the glide will bring through the middle again.
    */
-  #tendMark(knobs: Knobs, now: boolean, dt: number, aspect: number, height: number, ambient: Velocity): void {
+  #tendMark(
+    knobs: Knobs,
+    now: boolean,
+    dt: number,
+    aspect: number,
+    height: number,
+    ambient: Velocity,
+  ): void {
     const on = knobs.mark > 0;
     if (now || (on && !this.#markWasOn)) {
       this.#seatMark(ZERO, knobs.model, aspect);
@@ -1079,7 +1278,12 @@ class HyperbolicSim implements SceneSim {
    * The first point upstream of the screen's centre that is out of sight, and the seconds of glide
    * it takes to reach the centre (the centre itself if the flow never hides it).
    */
-  #upstream(ambient: Velocity, model: Model, aspect: number, height: number): { at: Complex; after: number } {
+  #upstream(
+    ambient: Velocity,
+    model: Model,
+    aspect: number,
+    height: number,
+  ): { at: Complex; after: number } {
     const fast = pace(ambient);
     if (fast < 1e-6) return { at: ZERO, after: 0 };
     const stride = 0.3 / fast;
@@ -1107,7 +1311,8 @@ class HyperbolicSim implements SceneSim {
     this.#pulseRadius += dt * Math.max(clamp(motion, 0, 1), this.#pulseNow ? 1 : 0) * PULSE_SPEED;
     if (this.#pulseRadius > PULSE_END) {
       this.#pulsing = false;
-      const gap = PULSE_GAP_LONGEST + (PULSE_GAP_SHORTEST - PULSE_GAP_LONGEST) * clamp(knobs.pulse, 0, 1);
+      const gap =
+        PULSE_GAP_LONGEST + (PULSE_GAP_SHORTEST - PULSE_GAP_LONGEST) * clamp(knobs.pulse, 0, 1);
       this.#nextPulse = this.#clock + gap * (0.75 + 0.5 * this.#random());
     }
   }

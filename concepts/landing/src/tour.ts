@@ -55,13 +55,21 @@ export function readTour(query: URLSearchParams): Tour | undefined {
   }
   if (steps.length === 0) return undefined;
   const dwell = query.get(sessionKeys.dwell);
-  return { steps, dwell: dwell === null || dwell === "" ? TOUR_DWELL.fallback : clampDwell(Number(dwell)) };
+  return {
+    steps,
+    dwell: dwell === null || dwell === "" ? TOUR_DWELL.fallback : clampDwell(Number(dwell)),
+  };
 }
 
 /** Add the tour's keys to a query (the inverse of readTour). */
 export function writeTour(tour: Tour, query: URLSearchParams): void {
   if (tour.steps.length === 0) return;
-  query.set(sessionKeys.tour, tour.steps.map((step) => (step.dwell === undefined ? step.scene : `${step.scene}-${step.dwell}`)).join("."));
+  query.set(
+    sessionKeys.tour,
+    tour.steps
+      .map((step) => (step.dwell === undefined ? step.scene : `${step.scene}-${step.dwell}`))
+      .join("."),
+  );
   if (tour.dwell !== TOUR_DWELL.fallback) query.set(sessionKeys.dwell, String(tour.dwell));
 }
 
@@ -108,7 +116,10 @@ export class TourPlayer {
    */
   tick(seconds: number, paused: boolean): SceneId | undefined {
     if (!this.playing || paused) return undefined;
-    this.#elapsed = Math.min(this.dwell, this.#elapsed + Math.min(TOUR_FRAME_CAP, Math.max(0, seconds)));
+    this.#elapsed = Math.min(
+      this.dwell,
+      this.#elapsed + Math.min(TOUR_FRAME_CAP, Math.max(0, seconds)),
+    );
     if (this.#elapsed < this.dwell - DWELL_SLACK || this.#tour.steps.length < 2) return undefined;
     return this.skip(1);
   }

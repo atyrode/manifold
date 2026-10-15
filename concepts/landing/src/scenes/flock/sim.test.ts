@@ -74,16 +74,20 @@ test("switching flight either way hands the birds over where they are, without a
 const FLIGHT_TIMEOUT = 30_000;
 
 for (const birds of [1500, 5000]) {
-  test(`emergent birds keep to the sky over the frame, all of them drawn (${birds} birds)`, () => {
-    const sim = new HeadlessSim(flockScene);
-    let least = Number.POSITIVE_INFINITY;
-    for (let f = 0; f < 900; f++) {
-      sim.step({ knobs: { ...EMERGENT, birds } });
-      if (f >= 300 && f % 30 === 0) least = Math.min(least, totals(density(sim)).birds);
-    }
-    // Each bird lays down about its own ink once the trail has filled: none of them off the frame.
-    expect(least).toBeGreaterThan(0.85 * birds);
-  }, { timeout: FLIGHT_TIMEOUT });
+  test(
+    `emergent birds keep to the sky over the frame, all of them drawn (${birds} birds)`,
+    () => {
+      const sim = new HeadlessSim(flockScene);
+      let least = Number.POSITIVE_INFINITY;
+      for (let f = 0; f < 900; f++) {
+        sim.step({ knobs: { ...EMERGENT, birds } });
+        if (f >= 300 && f % 30 === 0) least = Math.min(least, totals(density(sim)).birds);
+      }
+      // Each bird lays down about its own ink once the trail has filled: none of them off the frame.
+      expect(least).toBeGreaterThan(0.85 * birds);
+    },
+    { timeout: FLIGHT_TIMEOUT },
+  );
 }
 
 test("the falcon's strike starts a startle that runs through the boids and dies away", () => {

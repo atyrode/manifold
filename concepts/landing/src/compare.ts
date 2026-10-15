@@ -34,7 +34,8 @@ export function readComparison(query: URLSearchParams): Comparison | undefined {
   if (live === undefined) return undefined;
   const prefix = `${otherSlot(live)}.`;
   const other = new URLSearchParams();
-  for (const [key, value] of query) if (key.startsWith(prefix)) other.append(key.slice(prefix.length), value);
+  for (const [key, value] of query)
+    if (key.startsWith(prefix)) other.append(key.slice(prefix.length), value);
   return { live, other: canonicalSetup(other) };
 }
 
@@ -42,7 +43,8 @@ export function readComparison(query: URLSearchParams): Comparison | undefined {
 export function writeComparison(comparison: Comparison, query: URLSearchParams): void {
   query.set(sessionKeys.compare, comparison.live);
   const prefix = `${otherSlot(comparison.live)}.`;
-  for (const [key, value] of new URLSearchParams(comparison.other)) query.append(`${prefix}${key}`, value);
+  for (const [key, value] of new URLSearchParams(comparison.other))
+    query.append(`${prefix}${key}`, value);
 }
 
 /**

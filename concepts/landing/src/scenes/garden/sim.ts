@@ -46,7 +46,15 @@ import { AgeField, dryingPace } from "../../sims/agefield.ts";
 import { FlutterPlates } from "../../sims/flutter.ts";
 import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
 import { clamp, fract, hash31, lerp, smoothstep } from "../../sims/math.ts";
-import { PLANT_SUMMER, PlantHabit, PlantRole, PlantTexture, plantClimate, RootedPlants, type PlantSpecies } from "../../sims/plants.ts";
+import {
+  PLANT_SUMMER,
+  PlantHabit,
+  PlantRole,
+  PlantTexture,
+  plantClimate,
+  RootedPlants,
+  type PlantSpecies,
+} from "../../sims/plants.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { gustPulse, windSign } from "../../sims/wind.ts";
@@ -97,7 +105,15 @@ export const GARDEN_PAPER = { from: 0.26, to: 0.745, rain: 0.35 } as const;
  * width in M heights, and how far the slate stands above the gravel: a few centimetres, nearly
  * flush.
  */
-export const GARDEN_MARK = { x: 1.5, y: 0.36, reserve: 0.32, small: 0.12, grow: 0.16, stroke: 0.055, slate: 0.004 } as const;
+export const GARDEN_MARK = {
+  x: 1.5,
+  y: 0.36,
+  reserve: 0.32,
+  small: 0.12,
+  grow: 0.16,
+  stroke: 0.055,
+  slate: 0.004,
+} as const;
 
 /** Moss: a low cushion out to clear × (base + grow × moss knob). */
 export const GARDEN_MOSS = { height: 0.009, base: 0.25, grow: 0.7 } as const;
@@ -140,7 +156,14 @@ export const GARDEN_WOODS = {
  * plane Y = `y` between the gravel's curb and the wall, at most `reach` tall. Plant frame: garden X,
  * height above the gutter. Bin b's organs are records `first` + `organs` · b + 0..organs - 1.
  */
-export const GARDEN_BORDER = { pitch: 0.1, bins: 24, organs: 7, y: 1.015, reach: 0.07, first: 2 * GARDEN_WOODS.crowns } as const;
+export const GARDEN_BORDER = {
+  pitch: 0.1,
+  bins: 24,
+  organs: 7,
+  y: 1.015,
+  reach: 0.07,
+  first: 2 * GARDEN_WOODS.crowns,
+} as const;
 
 /** Islands and stones per island the stone texture holds (the shader's loops and struct match). */
 export const GARDEN_ISLANDS = 4;
@@ -247,14 +270,51 @@ interface LeafSpec {
 }
 
 const SPECS: Readonly<Record<LeafKind, LeafSpec>> = {
-  [GARDEN_LEAF_KIND.maple]: { radius: 0.013, chord: 0.046, pace: 0.17, flutter: [0.2, 0.42], tumble: [0.72, 0.9], tumbling: 0.15, life: [45, 85] },
-  [GARDEN_LEAF_KIND.petal]: { radius: 0.0068, chord: 0.024, pace: 0.13, flutter: [0.12, 0.3], tumble: [0.6, 0.75], tumbling: 0.08, life: [25, 50] },
-  [GARDEN_LEAF_KIND.green]: { radius: 0.0135, chord: 0.046, pace: 0.17, flutter: [0.25, 0.45], tumble: [0.72, 0.9], tumbling: 0.12, life: [45, 85] },
-  [GARDEN_LEAF_KIND.withered]: { radius: 0.0115, chord: 0.034, pace: 0.15, flutter: [0.35, 0.55], tumble: [0.7, 0.9], tumbling: 0.4, life: [60, 100] },
+  [GARDEN_LEAF_KIND.maple]: {
+    radius: 0.013,
+    chord: 0.046,
+    pace: 0.17,
+    flutter: [0.2, 0.42],
+    tumble: [0.72, 0.9],
+    tumbling: 0.15,
+    life: [45, 85],
+  },
+  [GARDEN_LEAF_KIND.petal]: {
+    radius: 0.0068,
+    chord: 0.024,
+    pace: 0.13,
+    flutter: [0.12, 0.3],
+    tumble: [0.6, 0.75],
+    tumbling: 0.08,
+    life: [25, 50],
+  },
+  [GARDEN_LEAF_KIND.green]: {
+    radius: 0.0135,
+    chord: 0.046,
+    pace: 0.17,
+    flutter: [0.25, 0.45],
+    tumble: [0.72, 0.9],
+    tumbling: 0.12,
+    life: [45, 85],
+  },
+  [GARDEN_LEAF_KIND.withered]: {
+    radius: 0.0115,
+    chord: 0.034,
+    pace: 0.15,
+    flutter: [0.35, 0.55],
+    tumble: [0.7, 0.9],
+    tumbling: 0.4,
+    life: [60, 100],
+  },
 };
 
 /** Leaves let go per second at the leaf-fall knob's full travel, by season. */
-const FALL_RATE: Readonly<Record<GardenSeason, number>> = { spring: 1.6, summer: 0.2, autumn: 1.0, winter: 0.1 };
+const FALL_RATE: Readonly<Record<GardenSeason, number>> = {
+  spring: 1.6,
+  summer: 0.2,
+  autumn: 1.0,
+  winter: 0.1,
+};
 const SEASON_KIND: Readonly<Record<GardenSeason, LeafKind>> = {
   spring: GARDEN_LEAF_KIND.petal,
   summer: GARDEN_LEAF_KIND.green,
@@ -327,7 +387,12 @@ const PLANT_EDDY = 0.6;
 /** Seconds of still air (no wind, no gust about) after which the woods and the border are set exactly at rest. */
 const PLANT_SETTLE = 6;
 /** The plant component's year (0..1 from the start of spring) for the season knob: mid-spring, high summer, mid-autumn, deep winter. */
-const PLANT_SEASON: Readonly<Record<GardenSeason, number>> = { spring: 0.15, summer: PLANT_SUMMER, autumn: 0.66, winter: 0.88 };
+const PLANT_SEASON: Readonly<Record<GardenSeason, number>> = {
+  spring: 0.15,
+  summer: PLANT_SUMMER,
+  autumn: 0.66,
+  winter: 0.88,
+};
 /** The border's species, as its records' form: the shader draws a fern's fronds with plantFrond, mondo grass's blades with plantArc. */
 export const GARDEN_BORDER_FORM = { fern: 0, mondo: 1 } as const;
 /** The plants' builds draw no randomness of their own (the layout and hashes place everything). */
@@ -428,7 +493,11 @@ function growWoods(woods: RootedPlants): void {
   for (const [kind, row] of [GARDEN_WOODS.far, GARDEN_WOODS.near].entries()) {
     for (let k = 0; k < GARDEN_WOODS.crowns; k++) {
       const x = (k + 0.5 - 0.5 * row.wobble) / row.rate;
-      woods.add(WOODS_TREE, { x, y: row.foot, heading: Math.PI / 2, kind, slot: kind * GARDEN_WOODS.crowns + k }, NO_DRAWS);
+      woods.add(
+        WOODS_TREE,
+        { x, y: row.foot, heading: Math.PI / 2, kind, slot: kind * GARDEN_WOODS.crowns + k },
+        NO_DRAWS,
+      );
     }
   }
 }
@@ -445,7 +514,15 @@ function growBorder(border: RootedPlants, fullness: number): void {
     if (hash31(bin, 1, 0x626f) >= fullness) continue;
     const species = hash31(bin, 2, 0x626f) < 0.4 ? BORDER_FERN : BORDER_MONDO;
     const x = (bin + 0.5 + 0.5 * (hash31(bin, 3, 0x626f) - 0.5)) * GARDEN_BORDER.pitch;
-    const site = { x, y: 0, heading: Math.PI / 2, moisture: 0.8, lush: 0.7 + 0.3 * hash31(bin, 4, 0x626f), kind: bin, slot: GARDEN_BORDER.first + GARDEN_BORDER.organs * bin };
+    const site = {
+      x,
+      y: 0,
+      heading: Math.PI / 2,
+      moisture: 0.8,
+      lush: 0.7 + 0.3 * hash31(bin, 4, 0x626f),
+      kind: bin,
+      slot: GARDEN_BORDER.first + GARDEN_BORDER.organs * bin,
+    };
     border.add(species, site, NO_DRAWS);
   }
 }
@@ -520,10 +597,17 @@ function stoneHeight(stone: GardenStone, x: number, y: number): number {
   const qx = (c * dx + s * dy) / stone.rx;
   const qy = (-s * dx + c * dy) / stone.ry;
   const angle = Math.atan2(qy, qx);
-  const r = Math.hypot(qx, qy) / (1 + 0.1 * Math.sin(3 * angle + TAU * stone.seed) + 0.06 * Math.sin(5 * angle + 2 * TAU * stone.seed));
+  const r =
+    Math.hypot(qx, qy) /
+    (1 +
+      0.1 * Math.sin(3 * angle + TAU * stone.seed) +
+      0.06 * Math.sin(5 * angle + 2 * TAU * stone.seed));
   if (r >= 1) return 0;
   const tilt = TAU * stone.seed * 3.1;
-  let h = Math.min(1.25 * Math.pow(1 - Math.pow(r, 2.6), 0.45), 0.88 + 0.14 * (qx * Math.cos(tilt) + qy * Math.sin(tilt)));
+  let h = Math.min(
+    1.25 * Math.pow(1 - Math.pow(r, 2.6), 0.45),
+    0.88 + 0.14 * (qx * Math.cos(tilt) + qy * Math.sin(tilt)),
+  );
   for (let k = 0; k < 3; k++) {
     const a = TAU * (stone.seed + k / 3) + 0.4 * Math.sin(17 * stone.seed + k);
     h = Math.min(h, 2.2 * (1.08 - (qx * Math.cos(a) + qy * Math.sin(a))));
@@ -535,7 +619,9 @@ function stoneHeight(stone: GardenStone, x: number, y: number): number {
 function defaultIslands(): GardenIsland[] {
   return [
     {
-      x: 0.8, y: 0.66, clear: 0.135,
+      x: 0.8,
+      y: 0.66,
+      clear: 0.135,
       stones: [
         { x: 0.805, y: 0.675, rx: 0.043, ry: 0.034, height: 0.105, angle: 0.35, seed: 0.13 },
         { x: 0.735, y: 0.632, rx: 0.03, ry: 0.024, height: 0.05, angle: -0.4, seed: 0.61 },
@@ -543,18 +629,24 @@ function defaultIslands(): GardenIsland[] {
       ],
     },
     {
-      x: 1.3, y: 0.86, clear: 0.1,
+      x: 1.3,
+      y: 0.86,
+      clear: 0.1,
       stones: [
         { x: 1.285, y: 0.858, rx: 0.06, ry: 0.028, height: 0.033, angle: -0.15, seed: 0.82 },
         { x: 1.355, y: 0.872, rx: 0.027, ry: 0.024, height: 0.076, angle: 0.6, seed: 0.45 },
       ],
     },
     {
-      x: 0.95, y: 0.3, clear: 0.075,
+      x: 0.95,
+      y: 0.3,
+      clear: 0.075,
       stones: [{ x: 0.95, y: 0.3, rx: 0.036, ry: 0.028, height: 0.04, angle: 1.1, seed: 0.29 }],
     },
     {
-      x: 1.74, y: 0.72, clear: 0.1,
+      x: 1.74,
+      y: 0.72,
+      clear: 0.1,
       stones: [
         { x: 1.735, y: 0.73, rx: 0.036, ry: 0.03, height: 0.088, angle: -0.5, seed: 0.71 },
         { x: 1.8, y: 0.69, rx: 0.022, ry: 0.02, height: 0.034, angle: 0.2, seed: 0.05 },
@@ -627,7 +719,12 @@ function strokeOf(points: readonly number[]): Stroke {
   const xy = Float64Array.from(points);
   const at = new Float64Array(n);
   for (let i = 1; i < n; i++) {
-    at[i] = (at[i - 1] ?? 0) + Math.hypot((xy[2 * i] ?? 0) - (xy[2 * i - 2] ?? 0), (xy[2 * i + 1] ?? 0) - (xy[2 * i - 1] ?? 0));
+    at[i] =
+      (at[i - 1] ?? 0) +
+      Math.hypot(
+        (xy[2 * i] ?? 0) - (xy[2 * i - 2] ?? 0),
+        (xy[2 * i + 1] ?? 0) - (xy[2 * i - 1] ?? 0),
+      );
   }
   return { xy, at, length: at[n - 1] ?? 0 };
 }
@@ -654,7 +751,8 @@ function inRingZone(layout: Layout, x: number, y: number, grad: Float64Array): b
 }
 
 /** Within the raked part of the field (a margin beyond the sides, so the edges are raked through). */
-const inField = (x: number, y: number): boolean => x > -0.06 && x < GA + 0.06 && y > PASS_FIRST - 0.06 && y < 1.0;
+const inField = (x: number, y: number): boolean =>
+  x > -0.06 && x < GA + 0.06 && y > PASS_FIRST - 0.06 && y < 1.0;
 
 /**
  * Trace the closed contour at distance r around the M (marching along the level set, pulled back
@@ -678,7 +776,11 @@ function markContour(mark: number, r: number, grad: Float64Array): number[] {
     y -= (d - r) * (grad[1] ?? 0);
     travelled += PLAN_STEP;
     points.push(x, y);
-    if (travelled > 2 * mark && Math.hypot(x - (points[0] ?? 0), y - (points[1] ?? 0)) < 1.5 * PLAN_STEP) break;
+    if (
+      travelled > 2 * mark &&
+      Math.hypot(x - (points[0] ?? 0), y - (points[1] ?? 0)) < 1.5 * PLAN_STEP
+    )
+      break;
   }
   // Close it, and run on past the start so the lap's ends overlap.
   for (let k = 0; k < 16 && k < points.length; k++) points.push(points[k] ?? 0);
@@ -686,7 +788,13 @@ function markContour(mark: number, r: number, grad: Float64Array): number[] {
 }
 
 /** A circle around (cx, cy), kept only where `keep` says, split into strokes. */
-function ringStrokes(cx: number, cy: number, r: number, keep: (x: number, y: number) => boolean, strokes: Stroke[]): boolean {
+function ringStrokes(
+  cx: number,
+  cy: number,
+  r: number,
+  keep: (x: number, y: number) => boolean,
+  strokes: Stroke[],
+): boolean {
   const n = Math.max(12, Math.ceil((TAU * r) / PLAN_STEP));
   const kept: boolean[] = [];
   for (let i = 0; i < n; i++) {
@@ -728,17 +836,28 @@ function buildPlan(layout: Layout): Stroke[] {
   if (layout.pattern === "circles") {
     // Rings spread out from every stone (and the M) at once, lap by lap, each kept to the gravel
     // nearer its own centre than any other (a power diagram on the clear radii).
-    const own = (k: number) => (x: number, y: number): boolean => {
-      if (!inField(x, y)) return false;
-      const mine = k < islands.length ? Math.hypot(x - (islands[k]?.x ?? 0), y - (islands[k]?.y ?? 0)) - (islands[k]?.clear ?? 0) : markField(x, y, layout.mark, grad) - markSlate(layout.mark);
-      for (let j = 0; j < islands.length; j++) {
-        const o = islands[j];
-        if (j === k || o === undefined) continue;
-        if (Math.hypot(x - o.x, y - o.y) - o.clear < mine) return false;
-      }
-      if (k < islands.length && layout.mark > 0 && markField(x, y, layout.mark, grad) - markSlate(layout.mark) < mine) return false;
-      return true;
-    };
+    const own =
+      (k: number) =>
+      (x: number, y: number): boolean => {
+        if (!inField(x, y)) return false;
+        const mine =
+          k < islands.length
+            ? Math.hypot(x - (islands[k]?.x ?? 0), y - (islands[k]?.y ?? 0)) -
+              (islands[k]?.clear ?? 0)
+            : markField(x, y, layout.mark, grad) - markSlate(layout.mark);
+        for (let j = 0; j < islands.length; j++) {
+          const o = islands[j];
+          if (j === k || o === undefined) continue;
+          if (Math.hypot(x - o.x, y - o.y) - o.clear < mine) return false;
+        }
+        if (
+          k < islands.length &&
+          layout.mark > 0 &&
+          markField(x, y, layout.mark, grad) - markSlate(layout.mark) < mine
+        )
+          return false;
+        return true;
+      };
     const centres = islands.length + (layout.mark > 0 ? 1 : 0);
     const live = new Array<boolean>(centres).fill(true);
     for (let lap = 0; lap < 40 && live.includes(true); lap++) {
@@ -746,7 +865,13 @@ function buildPlan(layout: Layout): Stroke[] {
         if (live[k] !== true) continue;
         const island = islands[k];
         if (island !== undefined) {
-          live[k] = ringStrokes(island.x, island.y, island.clear + RING_FIRST + lap * SWATH, own(k), strokes);
+          live[k] = ringStrokes(
+            island.x,
+            island.y,
+            island.clear + RING_FIRST + lap * SWATH,
+            own(k),
+            strokes,
+          );
         } else {
           const r = markSlate(layout.mark) + RING_FIRST + lap * SWATH;
           const run: number[] = [];
@@ -806,7 +931,11 @@ function buildPlan(layout: Layout): Stroke[] {
   }
   if (layout.mark > 0) {
     for (let lap = 0; lap < RING_LAPS; lap++) {
-      const contour = markContour(layout.mark, markSlate(layout.mark) + RING_FIRST + lap * SWATH, grad);
+      const contour = markContour(
+        layout.mark,
+        markSlate(layout.mark) + RING_FIRST + lap * SWATH,
+        grad,
+      );
       strokes.push(strokeOf(contour));
     }
   }
@@ -841,13 +970,15 @@ function phaseAt(layout: Layout, x: number, y: number, grad: Float64Array): numb
   // Later strokes win where ring zones overlap: the M, then the islands from last to first.
   if (markOn) {
     const d = markField(x, y, layout.mark, grad);
-    if (d < markReach(layout.mark)) return d < slate ? Number.NaN : (d - slate - RING_GAP) / RAKE.spacing;
+    if (d < markReach(layout.mark))
+      return d < slate ? Number.NaN : (d - slate - RING_GAP) / RAKE.spacing;
   }
   for (let i = islands.length - 1; i >= 0; i--) {
     const island = islands[i];
     if (island === undefined) continue;
     const d = Math.hypot(x - island.x, y - island.y);
-    if (d < ringReach(island)) return d < island.clear ? Number.NaN : (d - island.clear - RING_GAP) / RAKE.spacing;
+    if (d < ringReach(island))
+      return d < island.clear ? Number.NaN : (d - island.clear - RING_GAP) / RAKE.spacing;
   }
   return (y - (layout.pattern === "waves" ? waveAt(x) : 0) - LINE_FIRST) / RAKE.spacing;
 }
@@ -867,8 +998,41 @@ function grooveProfile(phase: number): number {
 
 // ---- the simulation ------------------------------------------------------------------------------
 
-type GardenKnob = "pattern" | "speed" | "soften" | "drying" | "moss" | "border" | "growth" | "stones" | "season" | "leaves" | "camera" | "time" | "cycle" | "rain" | "wind" | "mark";
-const KNOBS: readonly GardenKnob[] = ["pattern", "speed", "soften", "drying", "moss", "border", "growth", "stones", "season", "leaves", "camera", "time", "cycle", "rain", "wind", "mark"];
+type GardenKnob =
+  | "pattern"
+  | "speed"
+  | "soften"
+  | "drying"
+  | "moss"
+  | "border"
+  | "growth"
+  | "stones"
+  | "season"
+  | "leaves"
+  | "camera"
+  | "time"
+  | "cycle"
+  | "rain"
+  | "wind"
+  | "mark";
+const KNOBS: readonly GardenKnob[] = [
+  "pattern",
+  "speed",
+  "soften",
+  "drying",
+  "moss",
+  "border",
+  "growth",
+  "stones",
+  "season",
+  "leaves",
+  "camera",
+  "time",
+  "cycle",
+  "rain",
+  "wind",
+  "mark",
+];
 
 interface Settings {
   pattern: GardenPattern;
@@ -1007,7 +1171,8 @@ class GardenSim implements SceneSim {
   readonly #pos = new Float64Array(3);
   readonly #frame = new Float64Array(9);
   /** Where a falling leaf touches down: on the gravel, a moss cushion or a stone, as it lies there. */
-  readonly #floor = (x: number, y: number): number => this.#groundAt(x, y, this.#current.moss) + LEAF_LIFT;
+  readonly #floor = (x: number, y: number): number =>
+    this.#groundAt(x, y, this.#current.moss) + LEAF_LIFT;
   readonly #radius = new Float64Array(GARDEN_LEAF_SLOTS);
   readonly #hue = new Float64Array(GARDEN_LEAF_SLOTS);
   /** Seconds since it landed. */
@@ -1044,15 +1209,40 @@ class GardenSim implements SceneSim {
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("garden", params, KNOBS);
     this.#gustSlot = this.#knobs.trigger("leaves");
-    this.#heights = new DataTexture(gl, { width: GARDEN.cols, height: GARDEN.rows, format: "r16f" });
-    this.#freshTexture = new DataTexture(gl, { width: GARDEN_FRESH.cols, height: GARDEN_FRESH.rows, format: "r16f" });
-    this.#records = new PlantTexture(gl, RECORDS, { width: RECORD_WIDTH, rowBase: GARDEN_RECORD_ROW });
-    this.#leafTexture = new DataTexture(gl, { width: 4, height: GARDEN_LEAF_SLOTS, format: "rgba16f", filter: "nearest" });
-    this.#textures = [this.#heights.texture, this.#records.texture, this.#leafTexture.texture, this.#freshTexture.texture];
+    this.#heights = new DataTexture(gl, {
+      width: GARDEN.cols,
+      height: GARDEN.rows,
+      format: "r16f",
+    });
+    this.#freshTexture = new DataTexture(gl, {
+      width: GARDEN_FRESH.cols,
+      height: GARDEN_FRESH.rows,
+      format: "r16f",
+    });
+    this.#records = new PlantTexture(gl, RECORDS, {
+      width: RECORD_WIDTH,
+      rowBase: GARDEN_RECORD_ROW,
+    });
+    this.#leafTexture = new DataTexture(gl, {
+      width: 4,
+      height: GARDEN_LEAF_SLOTS,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#textures = [
+      this.#heights.texture,
+      this.#records.texture,
+      this.#leafTexture.texture,
+      this.#freshTexture.texture,
+    ];
     // The gust's front where an organ is: the woods' x across the frame taken at the wall, the
     // border's garden X as it is.
     this.#woodsAir.wind = (x, _y, out) => {
-      out[0] = (out[0] ?? 0) + this.#gustFront(OX + ((x - 0.5 * this.#aspect) * (GARDEN.wallY - GARDEN.eyeY)) / GARDEN.focal);
+      out[0] =
+        (out[0] ?? 0) +
+        this.#gustFront(
+          OX + ((x - 0.5 * this.#aspect) * (GARDEN.wallY - GARDEN.eyeY)) / GARDEN.focal,
+        );
     };
     this.#borderAir.wind = (x, _y, out) => {
       out[0] = (out[0] ?? 0) + this.#gustFront(x);
@@ -1102,8 +1292,10 @@ class GardenSim implements SceneSim {
     this.#sway(air, frame, settings);
     if (this.#gustAge < GUST_BUSY) this.#gustAge += dt;
 
-    if (now - this.#heightsAt >= UPLOAD_EVERY_MS && this.#field.upload(this.#heights)) this.#heightsAt = now;
-    if (now - this.#freshAt >= UPLOAD_EVERY_MS && this.#fresh.upload(this.#freshTexture)) this.#freshAt = now;
+    if (now - this.#heightsAt >= UPLOAD_EVERY_MS && this.#field.upload(this.#heights))
+      this.#heightsAt = now;
+    if (now - this.#freshAt >= UPLOAD_EVERY_MS && this.#fresh.upload(this.#freshTexture))
+      this.#freshAt = now;
     this.#packIslandsAndPlants();
     this.#packLeaves();
     return this.#textures;
@@ -1172,7 +1364,8 @@ class GardenSim implements SceneSim {
   #relay(settings: Settings): void {
     this.#signature = settings.signature;
     this.#pending = settings.signature;
-    const islands = settings.seed === this.#layoutSeed ? this.#layout.islands : layIslands(settings.seed);
+    const islands =
+      settings.seed === this.#layoutSeed ? this.#layout.islands : layIslands(settings.seed);
     this.#layoutSeed = settings.seed;
     this.#layout = { pattern: settings.pattern, islands, mark: settings.mark };
     this.#plan = buildPlan(this.#layout);
@@ -1188,7 +1381,10 @@ class GardenSim implements SceneSim {
     for (const stroke of this.#plan) {
       const n = stroke.xy.length >> 1;
       for (let i = 0; i < n; i++) {
-        const d = Math.hypot((stroke.xy[2 * i] ?? 0) - LIVE_START.x, (stroke.xy[2 * i + 1] ?? 0) - LIVE_START.y);
+        const d = Math.hypot(
+          (stroke.xy[2 * i] ?? 0) - LIVE_START.x,
+          (stroke.xy[2 * i + 1] ?? 0) - LIVE_START.y,
+        );
         if (d < best) {
           best = d;
           start = offset + (stroke.at[i] ?? 0);
@@ -1257,7 +1453,15 @@ class GardenSim implements SceneSim {
     if (!(step > 0)) return;
     if (settings.speed > 0) {
       this.#advance(settings.speed * step);
-      if (this.#rakeOn) this.#sweep(this.#rakeX, this.#rakeY, this.#rakeDX, this.#rakeDY, LEVEL_HALF, settings.speed);
+      if (this.#rakeOn)
+        this.#sweep(
+          this.#rakeX,
+          this.#rakeY,
+          this.#rakeDX,
+          this.#rakeDY,
+          LEVEL_HALF,
+          settings.speed,
+        );
     } else {
       this.#rakeOn = false;
     }
@@ -1296,7 +1500,13 @@ class GardenSim implements SceneSim {
         this.#pieces(stroke, s0, Math.min(s0 + LEAD, stroke.length), this.#vertex, false);
         this.#landing = false;
       }
-      this.#pieces(stroke, Math.min(s0 + LEAD, stroke.length), Math.min(s1 + LEAD, stroke.length), this.#vertex, false);
+      this.#pieces(
+        stroke,
+        Math.min(s0 + LEAD, stroke.length),
+        Math.min(s1 + LEAD, stroke.length),
+        this.#vertex,
+        false,
+      );
       this.#vertex = this.#pieces(stroke, s0, s1, this.#vertex, true);
       budget -= s1 - s0;
       this.#along = s1;
@@ -1404,7 +1614,10 @@ class GardenSim implements SceneSim {
   /** Drag on the gravel: rake your own lines with a hand rake. */
   #handRake(pointer: PointerState, settings: Settings): void {
     const at = this.#ground;
-    if (!(pointer.inside && pointer.down && this.#groundUnder(pointer.x, pointer.y, at)) || this.#onStone(at[0] ?? 0, at[1] ?? 0)) {
+    if (
+      !(pointer.inside && pointer.down && this.#groundUnder(pointer.x, pointer.y, at)) ||
+      this.#onStone(at[0] ?? 0, at[1] ?? 0)
+    ) {
       this.#handOn = false;
       return;
     }
@@ -1421,7 +1634,14 @@ class GardenSim implements SceneSim {
     this.#level(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
     this.#field.rake(this.#handX / GA, this.#handY, x / GA, y, HAND);
     this.#fresh.stamp(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
-    this.#sweep(x, y, (x - this.#handX) / length, (y - this.#handY) / length, HAND_LEVEL_HALF, Math.max(settings.speed, 0.05));
+    this.#sweep(
+      x,
+      y,
+      (x - this.#handX) / length,
+      (y - this.#handY) / length,
+      HAND_LEVEL_HALF,
+      Math.max(settings.speed, 0.05),
+    );
     this.#handX = x;
     this.#handY = y;
   }
@@ -1431,7 +1651,10 @@ class GardenSim implements SceneSim {
     for (const island of this.#layout.islands) {
       if (Math.hypot(x - island.x, y - island.y) < island.clear * 0.85) return true;
     }
-    return this.#layout.mark > 0 && markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark) + 0.01;
+    return (
+      this.#layout.mark > 0 &&
+      markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark) + 0.01
+    );
   }
 
   /** The garden point under screen uv (u, v) into `out` (x, y); false off the gravel. */
@@ -1458,11 +1681,17 @@ class GardenSim implements SceneSim {
   #project(x: number, y: number, z: number): { u: number; v: number } | undefined {
     if (this.#overhead) {
       const s = GARDEN.overheadHeight / Math.max(GARDEN.overheadHeight - z, 1e-3);
-      return { u: 0.5 + ((x - OX) * s) / GARDEN.span / this.#aspect, v: 0.5 + ((y - GARDEN.overheadY) * s) / GARDEN.span };
+      return {
+        u: 0.5 + ((x - OX) * s) / GARDEN.span / this.#aspect,
+        v: 0.5 + ((y - GARDEN.overheadY) * s) / GARDEN.span,
+      };
     }
     const depth = y - GARDEN.eyeY;
     if (depth <= 0.02) return undefined;
-    return { u: 0.5 + (GARDEN.focal * (x - OX)) / depth / this.#aspect, v: GARDEN.horizon + (GARDEN.focal * (z - GARDEN.eyeHeight)) / depth };
+    return {
+      u: 0.5 + (GARDEN.focal * (x - OX)) / depth / this.#aspect,
+      v: GARDEN.horizon + (GARDEN.focal * (z - GARDEN.eyeHeight)) / depth,
+    };
   }
 
   // ---- islands -------------------------------------------------------------------------------------
@@ -1481,7 +1710,11 @@ class GardenSim implements SceneSim {
       }
       for (const stone of island.stones) top = Math.max(top, stoneHeight(stone, x, y));
     }
-    if (this.#layout.mark > 0 && markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark)) top = Math.max(top, GARDEN_MARK.slate);
+    if (
+      this.#layout.mark > 0 &&
+      markField(x, y, this.#layout.mark, this.#grad) < markSlate(this.#layout.mark)
+    )
+      top = Math.max(top, GARDEN_MARK.slate);
     return top;
   }
 
@@ -1548,7 +1781,9 @@ class GardenSim implements SceneSim {
    */
   #gustFront(x: number): number {
     const from = clamp(this.#gustSign > 0 ? x : GA - x, 0, GA);
-    return this.#gustSign * GUST_PUSH * gustPulse(this.#gustAge - from / GUST_FRONT, GARDEN_GUST_RISE);
+    return (
+      this.#gustSign * GUST_PUSH * gustPulse(this.#gustAge - from / GUST_FRONT, GARDEN_GUST_RISE)
+    );
   }
 
   /**
@@ -1565,7 +1800,9 @@ class GardenSim implements SceneSim {
     // Dither cells per unit, for the organs' tiers: the woods' unit is a screen height, the border's a
     // garden depth, seen across the garden from the veranda or from above.
     const cells = frame.height > 0 ? frame.height : woods.cells;
-    const borderCells = cells * (settings.overhead ? 1 / GARDEN.span : GARDEN.focal / (GARDEN_BORDER.y - GARDEN.eyeY));
+    const borderCells =
+      cells *
+      (settings.overhead ? 1 / GARDEN.span : GARDEN.focal / (GARDEN_BORDER.y - GARDEN.eyeY));
     const retier = cells !== woods.cells || borderCells !== border.cells;
     woods.cells = cells;
     border.cells = borderCells;
@@ -1578,7 +1815,9 @@ class GardenSim implements SceneSim {
     const still = settings.wind === 0 && !(this.#gustAge < GUST_BUSY);
     this.#stillFor = still ? this.#stillFor + h : 0;
     if (!still) this.#rested = false;
-    let settle = this.#plantWind === undefined || (h === 0 && (settings.wind !== this.#plantWind || settings.season !== this.#plantSeason));
+    let settle =
+      this.#plantWind === undefined ||
+      (h === 0 && (settings.wind !== this.#plantWind || settings.season !== this.#plantSeason));
     if (!settle && h > 0) {
       woods.step(this.#woodsAir);
       border.step(this.#borderAir);
@@ -1620,7 +1859,10 @@ class GardenSim implements SceneSim {
       if (enter >= 1) {
         this.#arriving = false;
       } else {
-        const total = settings.leaves > 0 ? Math.round(ENTRANCE_LEAVES * Math.min(1, 2 * FALL_RATE[settings.season])) : 0;
+        const total =
+          settings.leaves > 0
+            ? Math.round(ENTRANCE_LEAVES * Math.min(1, 2 * FALL_RATE[settings.season]))
+            : 0;
         const seconds = enter * GARDEN_PASSAGE.enter;
         while (this.#strewn < total && seconds >= ENTRANCE_FIRST + ENTRANCE_GAP * this.#strewn) {
           this.#strewn++;
@@ -1636,7 +1878,10 @@ class GardenSim implements SceneSim {
         this.#gustPush = FLURRY_BOOST;
       }
       this.#gustAge = seconds;
-      while (this.#flurried < FLURRY_LEAVES && seconds >= (FLURRY_SPAN * this.#flurried) / FLURRY_LEAVES) {
+      while (
+        this.#flurried < FLURRY_LEAVES &&
+        seconds >= (FLURRY_SPAN * this.#flurried) / FLURRY_LEAVES
+      ) {
         this.#flurried++;
         this.#spawn(settings, false, this.#passageRand, "flurry");
       }
@@ -1672,12 +1917,14 @@ class GardenSim implements SceneSim {
     // The shower comes down over the gust's first moments, as slots free up (the gust blows some
     // lying leaves away).
     if (this.#shower > 0 && this.#gustAge < GUST_SHAKE + 3) {
-      const due = this.#gustAge < GUST_SHAKE ? Math.ceil(GUST_SHOWER * (1 - this.#gustAge / GUST_SHAKE)) : 0;
+      const due =
+        this.#gustAge < GUST_SHAKE ? Math.ceil(GUST_SHOWER * (1 - this.#gustAge / GUST_SHAKE)) : 0;
       while (this.#shower > due && this.#spawn(settings, true) !== undefined) this.#shower--;
     }
     // Keep room in the air: past LANDED_MAX on the ground, the oldest starts to fade.
     let landed = 0;
-    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++) if (this.#state[i] === LANDED && (this.#lain[i] ?? 0) < (this.#life[i] ?? 0)) landed++;
+    for (let i = 0; i < GARDEN_LEAF_SLOTS; i++)
+      if (this.#state[i] === LANDED && (this.#lain[i] ?? 0) < (this.#life[i] ?? 0)) landed++;
     if (landed > LANDED_MAX) this.#retireOldest();
 
     const gust = gustPulse(this.#gustAge, GARDEN_GUST_RISE) * this.#gustSign;
@@ -1726,7 +1973,12 @@ class GardenSim implements SceneSim {
    * let go from the boughs over the gravel's left half, an exit's are blown in low, from upwind.
    * Returns its slot, if one was free.
    */
-  #spawn(settings: Settings, gust: boolean, rand: () => number = this.#leafRand, mode?: SpawnMode): number | undefined {
+  #spawn(
+    settings: Settings,
+    gust: boolean,
+    rand: () => number = this.#leafRand,
+    mode?: SpawnMode,
+  ): number | undefined {
     const i = this.#slot();
     if (i === undefined) return undefined;
     const kind = SEASON_KIND[settings.season];
@@ -1735,14 +1987,16 @@ class GardenSim implements SceneSim {
     if (mode === "entrance" && !settings.overhead) {
       // Over the gravel's left, under the boughs swinging in, above the veranda's frame.
       const y = 0.08 + 0.4 * rand();
-      const half = 0.5 * this.#aspect * (y - GARDEN.eyeY) / GARDEN.focal;
+      const half = (0.5 * this.#aspect * (y - GARDEN.eyeY)) / GARDEN.focal;
       this.#x[i] = OX + half * (1.5 * rand() - 1);
       this.#y[i] = y;
       this.#z[i] = GARDEN.eyeHeight + 0.03 + 0.03 * (y - GARDEN.eyeY) + 0.05 * rand();
     } else if (mode === "flurry") {
       // Past the frame's upwind edge, low: the gust carries it across.
       const y = 0.12 + 0.6 * rand();
-      const half = settings.overhead ? 0.5 * this.#aspect * GARDEN.span : 0.5 * this.#aspect * (y - GARDEN.eyeY) / GARDEN.focal;
+      const half = settings.overhead
+        ? 0.5 * this.#aspect * GARDEN.span
+        : (0.5 * this.#aspect * (y - GARDEN.eyeY)) / GARDEN.focal;
       this.#x[i] = OX - this.#gustSign * (half + 0.02 + 0.2 * rand());
       this.#y[i] = y;
       this.#z[i] = 0.08 + 0.2 * rand();
@@ -1755,13 +2009,16 @@ class GardenSim implements SceneSim {
     } else if (gust && zone > 0.7) {
       // Blown in from upwind, past the frame's edge.
       const y = 0.25 + 0.6 * rand();
-      const half = settings.overhead ? 0.5 * this.#aspect * GARDEN.span : 0.5 * this.#aspect * (y - GARDEN.eyeY) / GARDEN.focal;
+      const half = settings.overhead
+        ? 0.5 * this.#aspect * GARDEN.span
+        : (0.5 * this.#aspect * (y - GARDEN.eyeY)) / GARDEN.focal;
       this.#x[i] = OX - this.#gustSign * (half + 0.05);
       this.#y[i] = y;
       this.#z[i] = 0.12 + 0.12 * rand();
     } else {
       // From inside a clump of the maple, on the garden's side of the wall.
-      const [cx, cy, cz, r] = GARDEN_CANOPY[Math.floor(rand() * GARDEN_CANOPY.length)] ?? ([0.5, 1, 0.2, 0.08] as const);
+      const [cx, cy, cz, r] =
+        GARDEN_CANOPY[Math.floor(rand() * GARDEN_CANOPY.length)] ?? ([0.5, 1, 0.2, 0.08] as const);
       const a = rand() * TAU;
       const d = 0.6 * r * Math.sqrt(rand());
       this.#x[i] = cx + Math.cos(a) * d;
@@ -1820,7 +2077,14 @@ class GardenSim implements SceneSim {
     const y = this.#y[i] ?? 0;
     const seen = this.#project(x, y, 0);
     const offGravel = y < 0 || y > GARDEN.wallY - 0.01;
-    if (seen === undefined || offGravel || seen.u < -0.05 || seen.u > 1.05 || seen.v < -0.05 || seen.v > 1.05) {
+    if (
+      seen === undefined ||
+      offGravel ||
+      seen.u < -0.05 ||
+      seen.u > 1.05 ||
+      seen.v < -0.05 ||
+      seen.v > 1.05
+    ) {
       this.#state[i] = FREE;
       return;
     }
@@ -1896,10 +2160,14 @@ class GardenSim implements SceneSim {
       const depth = y - GARDEN.eyeY;
       this.#x[i] = OX + (2 * rand() - 1) * 0.5 * depth;
       this.#y[i] = y;
-      this.#z[i] = Math.max(0.1, GARDEN.eyeHeight + ((0.72 + 0.26 * rand() - GARDEN.horizon) * depth) / GARDEN.focal);
+      this.#z[i] = Math.max(
+        0.1,
+        GARDEN.eyeHeight + ((0.72 + 0.26 * rand() - GARDEN.horizon) * depth) / GARDEN.focal,
+      );
       // Let it fall a moment, so it is in its swing.
       const seconds = 0.5 + 0.8 * rand();
-      for (let t = 0; t < seconds && this.#state[i] === FALLING; t += 0.05) this.#fall(i, 0.05, settings.wind * WIND_DRIFT, 0, settings);
+      for (let t = 0; t < seconds && this.#state[i] === FALLING; t += 0.05)
+        this.#fall(i, 0.05, settings.wind * WIND_DRIFT, 0, settings);
       this.#alpha[i] = 1;
     }
     for (let n = 0; n < PREWARM_LANDED; n++) {
@@ -1955,7 +2223,10 @@ class GardenSim implements SceneSim {
       data[o + 10] = f[5] ?? 0;
       data[o + 11] = this.#kind[i] ?? 0;
       data[o + 12] = this.#hue[i] ?? 0;
-      data[o + 13] = state === FALLING ? 0 : clamp((this.#lain[i] ?? 0) / Math.max(this.#life[i] ?? 60, 1), 0, 1);
+      data[o + 13] =
+        state === FALLING
+          ? 0
+          : clamp((this.#lain[i] ?? 0) / Math.max(this.#life[i] ?? 60, 1), 0, 1);
       data[o + 14] = state === FALLING ? 0 : 1;
       data[o + 15] = 0;
     }

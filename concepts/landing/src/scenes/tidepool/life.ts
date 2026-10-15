@@ -16,7 +16,15 @@
 import { BLENNY, FishGroup, packFish } from "../../sims/fish.ts";
 import { fract, glslHash22 } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
-import { PlantHabit, PlantRole, PlantTexture, plantClimate, RootedPlants, type PlantBuilder, type PlantSpecies } from "../../sims/plants.ts";
+import {
+  PlantHabit,
+  PlantRole,
+  PlantTexture,
+  plantClimate,
+  RootedPlants,
+  type PlantBuilder,
+  type PlantSpecies,
+} from "../../sims/plants.ts";
 import type { PointerState } from "../types.ts";
 import type { TidepoolLayout } from "./layout.ts";
 
@@ -43,7 +51,8 @@ function frondBuild(plant: PlantBuilder): void {
     const spread = (i - 0.5 * (hold.blades - 1)) * (hold.grass ? 0.18 : 0.42);
     plant.organ({
       angle: plant.site.heading + spread,
-      length: hold.len * (hold.grass ? 1.15 : 1) * (0.75 + 0.25 * fract(hold.salt * 3.3 + i * 0.37)),
+      length:
+        hold.len * (hold.grass ? 1.15 : 1) * (0.75 + 0.25 * fract(hold.salt * 3.3 + i * 0.37)),
       // a: the flutter's phase; b: the holdfast's rank against the density knob.
       a: i * 2.1 + hold.phase,
       b: hold.rank,
@@ -68,7 +77,12 @@ const KELP: PlantSpecies = {
 };
 
 /** Surfgrass: perennial, combed flat by every surge. */
-const SURFGRASS: PlantSpecies = { ...KELP, id: "surfgrass", sway: { hz: 0.5, damping: 0.5, give: 3, limit: 2.8 }, year: { shed: 0.15, turn: 0.62, bloom: [0, 0] } };
+const SURFGRASS: PlantSpecies = {
+  ...KELP,
+  id: "surfgrass",
+  sway: { hz: 0.5, damping: 0.5, give: 3, limit: 2.8 },
+  year: { shed: 0.15, turn: 0.62, bloom: [0, 0] },
+};
 
 /** An anemone: an upright column leaning with the water; r its disc's radius, a giant 0..1, b its rank. */
 const ANEMONE: PlantSpecies = {
@@ -80,21 +94,34 @@ const ANEMONE: PlantSpecies = {
   life: { unfold: 1, span: 1 },
   detail: { simple: 3, min: 1 },
   build(plant) {
-    plant.organ({ angle: 0, length: hold.len, a: hold.salt, b: hold.rank, form: TIDEPOOL_FORMS.anemone, habit: PlantHabit.upright, slot: 0 });
+    plant.organ({
+      angle: 0,
+      length: hold.len,
+      a: hold.salt,
+      b: hold.rank,
+      form: TIDEPOOL_FORMS.anemone,
+      habit: PlantHabit.upright,
+      slot: 0,
+    });
   },
 };
 
 /** The layout's rgba (bed, still depth, inside the basin, in the channel) at frame point (x, y), bilinear. */
 function siteAt(layout: TidepoolLayout, x: number, y: number, out: Float64Array): void {
-  const gx = Math.min(Math.max((x / (layout.columns / layout.rows)) * layout.columns - 0.5, 0), layout.columns - 1);
+  const gx = Math.min(
+    Math.max((x / (layout.columns / layout.rows)) * layout.columns - 0.5, 0),
+    layout.columns - 1,
+  );
   const gy = Math.min(Math.max(y * layout.rows - 0.5, 0), layout.rows - 1);
   const i = Math.min(Math.floor(gx), layout.columns - 2);
   const j = Math.min(Math.floor(gy), layout.rows - 2);
   const fx = gx - i;
   const fy = gy - j;
   for (let c = 0; c < 4; c++) {
-    const at = (r: number, k: number) => layout.texture[((j + r) * layout.columns + i + k) * 4 + c] ?? 0;
-    out[c] = (at(0, 0) * (1 - fx) + at(0, 1) * fx) * (1 - fy) + (at(1, 0) * (1 - fx) + at(1, 1) * fx) * fy;
+    const at = (r: number, k: number) =>
+      layout.texture[((j + r) * layout.columns + i + k) * 4 + c] ?? 0;
+    out[c] =
+      (at(0, 0) * (1 - fx) + at(0, 1) * fx) * (1 - fy) + (at(1, 0) * (1 - fx) + at(1, 1) * fx) * fy;
   }
 }
 
@@ -156,7 +183,12 @@ export class TidepoolLife {
         const y = (j + 0.2 + 0.6 * hy) * G;
         siteAt(layout, x, y, site);
         const grass = (site[3] ?? 0) > 0.4;
-        const zone = grass ? 1 : Math.max(((site[1] ?? 0) >= 0.3 ? 1 : 0) * (site[2] ?? 0), (site[0] ?? 0) >= -2.6 && (site[0] ?? 0) <= 0.6 ? 1 : 0);
+        const zone = grass
+          ? 1
+          : Math.max(
+              ((site[1] ?? 0) >= 0.3 ? 1 : 0) * (site[2] ?? 0),
+              (site[0] ?? 0) >= -2.6 && (site[0] ?? 0) <= 0.6 ? 1 : 0,
+            );
         if (zone < 0.5) continue;
         hold.len = G * (0.7 + 0.6 * fract(hx * 13.1));
         hold.salt = hx;
@@ -165,7 +197,11 @@ export class TidepoolLife {
         hold.blades = grass ? 4 : 3;
         hold.grass = grass;
         const slot = ((j + 1) * this.#frondColumns + (i + 1)) * TIDEPOOL_BLADES;
-        plants.add(grass ? SURFGRASS : KELP, { x, y, heading: hx * 40, moisture: 1, submerged: true, slot }, () => 0);
+        plants.add(
+          grass ? SURFGRASS : KELP,
+          { x, y, heading: hx * 40, moisture: 1, submerged: true, slot },
+          () => 0,
+        );
       }
     }
     const frondRecords = this.#frondColumns * TIDEPOOL_FROND_ROWS * TIDEPOOL_BLADES;
@@ -181,18 +217,34 @@ export class TidepoolLife {
         const x = (i + 0.3 + 0.4 * hx) * A;
         const y = (j + 0.3 + 0.4 * hy) * A;
         siteAt(layout, x, y, site);
-        const fits = ((site[1] ?? 0) > 0.5 && (site[2] ?? 0) > 0.2) || ((site[0] ?? 0) > -1.8 && (site[0] ?? 0) < 0.5 && (site[1] ?? 0) < 0.05);
+        const fits =
+          ((site[1] ?? 0) > 0.5 && (site[2] ?? 0) > 0.2) ||
+          ((site[0] ?? 0) > -1.8 && (site[0] ?? 0) < 0.5 && (site[1] ?? 0) < 0.05);
         if (!fits) continue;
         const giant = fract(hx * 17);
         hold.len = A * (giant > 0.55 ? 0.13 + 0.05 * hy : 0.07 + 0.03 * hy);
         hold.salt = giant;
         hold.rank = fract(hy * 9.1);
-        plants.add(ANEMONE, { x, y, heading: 0, moisture: 1, submerged: true, slot: frondRecords + j * this.#anemoneColumns + i }, () => 0);
+        plants.add(
+          ANEMONE,
+          {
+            x,
+            y,
+            heading: 0,
+            moisture: 1,
+            submerged: true,
+            slot: frondRecords + j * this.#anemoneColumns + i,
+          },
+          () => 0,
+        );
       }
     }
     const records = frondRecords + this.#anemoneColumns * anemoneRows;
     this.#records?.dispose();
-    this.#records = new PlantTexture(this.#gl, records, { width: TIDEPOOL_LIFE_WIDTH, rowBase: TIDEPOOL_LIFE_HEADER + 1 + this.flowRows });
+    this.#records = new PlantTexture(this.#gl, records, {
+      width: TIDEPOOL_LIFE_WIDTH,
+      rowBase: TIDEPOOL_LIFE_HEADER + 1 + this.flowRows,
+    });
     plants.settle(this.#climate);
     // Fish: scattered over the basin's floor, each its own size and weave.
     const rand = mulberry32((Math.imul(seed + 1, 0x9e3779b1) ^ 0x5f15) >>> 0);
@@ -200,7 +252,15 @@ export class TidepoolLife {
     for (let k = 0; k < this.#fish.capacity; k++) {
       const a = rand() * Math.PI * 2;
       const r = 0.6 * Math.sqrt(rand());
-      this.#fish.place(k, pool.x + Math.cos(a) * r * pool.rx, pool.y + Math.sin(a) * r * pool.ry, rand() * Math.PI * 2, BLENNY.cruise, 0.016 + 0.012 * rand(), rand());
+      this.#fish.place(
+        k,
+        pool.x + Math.cos(a) * r * pool.rx,
+        pool.y + Math.sin(a) * r * pool.ry,
+        rand() * Math.PI * 2,
+        BLENNY.cruise,
+        0.016 + 0.012 * rand(),
+        rand(),
+      );
     }
   }
 
@@ -208,7 +268,12 @@ export class TidepoolLife {
    * One frame: the fish swim (dt seconds of motion), the plants stream in the flow (`flow` as last
    * read back), then everything is packed and uploaded.
    */
-  step(dt: number, time: number, knobs: { response: number; fish: number; season: number; growth: number }, pointer: PointerState): void {
+  step(
+    dt: number,
+    time: number,
+    knobs: { response: number; fish: number; season: number; growth: number },
+    pointer: PointerState,
+  ): void {
     const records = this.#records;
     const layout = this.#layout;
     if (!records || !layout) return;
@@ -281,20 +346,37 @@ export class TidepoolLife {
       fish.clear(count);
       for (let i = 0; i < count; i++) {
         fish.wander(i, time + s * h);
-        fish.within(i, pool.x - pool.rx, pool.y - pool.ry, pool.x + pool.rx, pool.y + pool.ry, 0.4 * Math.min(pool.rx, pool.ry));
+        fish.within(
+          i,
+          pool.x - pool.rx,
+          pool.y - pool.ry,
+          pool.x + pool.rx,
+          pool.y + pool.ry,
+          0.4 * Math.min(pool.rx, pool.ry),
+        );
         this.#flowAt(fish.x[i] ?? 0, fish.y[i] ?? 0, probe);
         // Out of the water's depth: back toward the middle of the basin.
         if ((probe[2] ?? 0) < 0.4) fish.gather(i, pool.x, pool.y, 0.05, 2);
         // A hard surge (or a touch) sends it darting off.
         const surge = Math.hypot(probe[0] ?? 0, probe[1] ?? 0);
-        if (surge > 14) fish.flee(i, (fish.x[i] ?? 0) - (probe[0] ?? 0) * 0.001, (fish.y[i] ?? 0) - (probe[1] ?? 0) * 0.001, 0.05, 1);
+        if (surge > 14)
+          fish.flee(
+            i,
+            (fish.x[i] ?? 0) - (probe[0] ?? 0) * 0.001,
+            (fish.y[i] ?? 0) - (probe[1] ?? 0) * 0.001,
+            0.05,
+            1,
+          );
         if (this.#startle > 0) fish.flee(i, this.#startleX, this.#startleY, 0.25, 2.5);
       }
       fish.space(count);
       fish.swim(count, h);
       for (let i = 0; i < count; i++) {
         // tag.x: the tail beat's phase, quicker the faster it swims.
-        fish.tag[4 * i] = ((fish.tag[4 * i] ?? 0) + h * (3 + (2.5 * (fish.speed[i] ?? 0)) / Math.max(fish.length[i] ?? 0.02, 1e-3))) % (Math.PI * 200);
+        fish.tag[4 * i] =
+          ((fish.tag[4 * i] ?? 0) +
+            h * (3 + (2.5 * (fish.speed[i] ?? 0)) / Math.max(fish.length[i] ?? 0.02, 1e-3))) %
+          (Math.PI * 200);
       }
     }
   }

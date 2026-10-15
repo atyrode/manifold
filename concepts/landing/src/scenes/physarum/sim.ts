@@ -65,7 +65,14 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { runBudgeted } from "../../sims/clock.ts";
-import { GpuCompute, gridSize, type Pass, type PingPong, type RenderTarget, type Scatter } from "../../sims/gpu.ts";
+import {
+  GpuCompute,
+  gridSize,
+  type Pass,
+  type PingPong,
+  type RenderTarget,
+  type Scatter,
+} from "../../sims/gpu.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -170,7 +177,11 @@ const GAMMA_MAX = 1.2;
 
 /** The view pass's tone curve (see VIEW): `level` in trunk levels, `share` a filament's share of it. */
 function tone(level: number, share: number): number {
-  const gamma = clamp(Math.log(LACE_TONE) / Math.log(clamp(share, SHARE_MIN, SHARE_MAX)), GAMMA_MIN, GAMMA_MAX);
+  const gamma = clamp(
+    Math.log(LACE_TONE) / Math.log(clamp(share, SHARE_MIN, SHARE_MAX)),
+    GAMMA_MIN,
+    GAMMA_MAX,
+  );
   return Math.pow(Math.max(level, 1e-6), gamma);
 }
 
@@ -213,7 +224,8 @@ const PREWARM_MS = 130;
 const PREWARM_FIRST = 2;
 const PREWARM_CHUNK = 8;
 /** 320 steps, rounded up to whole chunks. */
-const PREWARM_STEPS = PREWARM_FIRST + PREWARM_CHUNK * Math.ceil((320 - PREWARM_FIRST) / PREWARM_CHUNK);
+const PREWARM_STEPS =
+  PREWARM_FIRST + PREWARM_CHUNK * Math.ceil((320 - PREWARM_FIRST) / PREWARM_CHUNK);
 
 // ---- the sketch -------------------------------------------------------------------------------
 
@@ -360,16 +372,55 @@ const CITIES: readonly (readonly [string, number, number])[] = [
  * the Boso peninsula and up its Pacific coast to Choshi, closed far out to sea.
  */
 const COAST: readonly (readonly [number, number])[] = [
-  [138.95, 34.67], [139.1, 34.97], [139.075, 35.095], [139.14, 35.155], [139.165, 35.245],
-  [139.25, 35.29], [139.31, 35.305], [139.4, 35.315], [139.48, 35.3], [139.545, 35.305],
-  [139.58, 35.265], [139.605, 35.19], [139.62, 35.135], [139.68, 35.14], [139.715, 35.22],
-  [139.745, 35.256], [139.67, 35.29], [139.63, 35.33], [139.635, 35.41], [139.665, 35.43],
-  [139.645, 35.455], [139.695, 35.49], [139.75, 35.515], [139.79, 35.545], [139.755, 35.6],
-  [139.775, 35.645], [139.83, 35.64], [139.905, 35.63], [139.985, 35.685], [140.035, 35.645],
-  [140.1, 35.595], [140.085, 35.52], [140.03, 35.48], [139.95, 35.44], [139.89, 35.38],
-  [139.78, 35.315], [139.82, 35.17], [139.85, 34.99], [139.89, 34.9], [140.1, 35.1],
-  [140.32, 35.15], [140.39, 35.26], [140.4, 35.45], [140.46, 35.54], [140.58, 35.66],
-  [140.87, 35.73], [141.6, 35.75], [141.6, 34.0], [138.8, 34.0],
+  [138.95, 34.67],
+  [139.1, 34.97],
+  [139.075, 35.095],
+  [139.14, 35.155],
+  [139.165, 35.245],
+  [139.25, 35.29],
+  [139.31, 35.305],
+  [139.4, 35.315],
+  [139.48, 35.3],
+  [139.545, 35.305],
+  [139.58, 35.265],
+  [139.605, 35.19],
+  [139.62, 35.135],
+  [139.68, 35.14],
+  [139.715, 35.22],
+  [139.745, 35.256],
+  [139.67, 35.29],
+  [139.63, 35.33],
+  [139.635, 35.41],
+  [139.665, 35.43],
+  [139.645, 35.455],
+  [139.695, 35.49],
+  [139.75, 35.515],
+  [139.79, 35.545],
+  [139.755, 35.6],
+  [139.775, 35.645],
+  [139.83, 35.64],
+  [139.905, 35.63],
+  [139.985, 35.685],
+  [140.035, 35.645],
+  [140.1, 35.595],
+  [140.085, 35.52],
+  [140.03, 35.48],
+  [139.95, 35.44],
+  [139.89, 35.38],
+  [139.78, 35.315],
+  [139.82, 35.17],
+  [139.85, 34.99],
+  [139.89, 34.9],
+  [140.1, 35.1],
+  [140.32, 35.15],
+  [140.39, 35.26],
+  [140.4, 35.45],
+  [140.46, 35.54],
+  [140.58, 35.66],
+  [140.87, 35.73],
+  [141.6, 35.75],
+  [141.6, 34.0],
+  [138.8, 34.0],
 ];
 
 // ---- small helpers ----------------------------------------------------------------------------
@@ -467,7 +518,18 @@ class Grid {
 
 // ---- knobs ------------------------------------------------------------------------------------
 
-const PHYSARUM_KNOBS = ["agents", "angle", "reach", "decay", "tempo", "layout", "feeding", "foodSeed", "salt", "mark"] as const;
+const PHYSARUM_KNOBS = [
+  "agents",
+  "angle",
+  "reach",
+  "decay",
+  "tempo",
+  "layout",
+  "feeding",
+  "foodSeed",
+  "salt",
+  "mark",
+] as const;
 type PhysarumKnob = (typeof PHYSARUM_KNOBS)[number];
 
 type Layout = "random" | "grid" | "cities";
@@ -497,7 +559,8 @@ interface Settings {
   markNow: number;
 }
 
-const markHeight = (amount: number): number => MARK_MIN + (MARK_MAX - MARK_MIN) * clamp(amount, 0, 1);
+const markHeight = (amount: number): number =>
+  MARK_MIN + (MARK_MAX - MARK_MIN) * clamp(amount, 0, 1);
 
 function readSettings(knobs: KnobReader<PhysarumKnob>, frame: SimFrame): Settings {
   const agents = physarumAgentCounts[Math.round(knobs.value(frame, "agents"))] ?? REFERENCE_AGENTS;
@@ -510,10 +573,12 @@ function readSettings(knobs: KnobReader<PhysarumKnob>, frame: SimFrame): Setting
     loss: LOSS_MIN * Math.pow(LOSS_MAX / LOSS_MIN, clamp(knobs.value(frame, "decay"), 0, 1)),
     tempo: clamp(knobs.value(frame, "tempo"), 0, 4),
     layout: LAYOUTS[Math.round(knobs.value(frame, "layout"))] ?? "random",
-    feedEvery: feeding > 0 ? FEED_SLOW * Math.pow(FEED_FAST / FEED_SLOW, clamp(feeding, 0, 1)) : undefined,
+    feedEvery:
+      feeding > 0 ? FEED_SLOW * Math.pow(FEED_FAST / FEED_SLOW, clamp(feeding, 0, 1)) : undefined,
     seed: Math.round(knobs.value(frame, "foodSeed")),
     salt: knobs.value(frame, "salt") > 0,
-    saltSeconds: SALT_SHORT * Math.pow(SALT_LONG / SALT_SHORT, clamp(knobs.amount(frame, "salt"), 0, 1)),
+    saltSeconds:
+      SALT_SHORT * Math.pow(SALT_LONG / SALT_SHORT, clamp(knobs.amount(frame, "salt"), 0, 1)),
     mark: mark > 0 ? markHeight(mark) : undefined,
     markNow: markHeight(knobs.amount(frame, "mark")),
   };
@@ -571,13 +636,23 @@ function hexSites(aspect: number): { sites: Point[]; heart: number } {
 }
 
 /** The cities in view, inside the dish and on land (screen uv); Tokyo, the heart, first. */
-function citySites(map: CityMap | undefined, aspect: number, sea: SeaSampler): { sites: Point[]; heart: number } {
+function citySites(
+  map: CityMap | undefined,
+  aspect: number,
+  sea: SeaSampler,
+): { sites: Point[]; heart: number } {
   const sites: Point[] = [];
   if (map === undefined) return { sites, heart: 0 };
   const inside = dishRadius(aspect) - EDGE_GAP;
   for (const [, lat, lon] of CITIES) {
     const p = project(map, lon, lat);
-    if (p.x < CITY_GAP / aspect || p.x > 1 - CITY_GAP / aspect || p.y < CITY_GAP || p.y > 1 - CITY_GAP) continue;
+    if (
+      p.x < CITY_GAP / aspect ||
+      p.x > 1 - CITY_GAP / aspect ||
+      p.y < CITY_GAP ||
+      p.y > 1 - CITY_GAP
+    )
+      continue;
     if (Math.hypot((p.x - 0.5) * aspect, p.y - 0.5) > inside) continue;
     if (sea(p.x, p.y) > 0.2) continue;
     if (sites.some((s) => Math.hypot((s.x - p.x) * aspect, s.y - p.y) < CITY_MIN_GAP)) continue;
@@ -587,7 +662,11 @@ function citySites(map: CityMap | undefined, aspect: number, sea: SeaSampler): {
 }
 
 /** Coverage 0..1 of a closed polygon (even–odd) over a width × height grid, rows bottom to top. */
-function fillPolygon(points: readonly (readonly [number, number])[], width: number, height: number): Float32Array {
+function fillPolygon(
+  points: readonly (readonly [number, number])[],
+  width: number,
+  height: number,
+): Float32Array {
   const cover = new Float32Array(width * height);
   const SUB = 4;
   const xs: number[] = [];
@@ -708,7 +787,14 @@ class FoodBook {
   }
 
   /** A fresh dish: the layout's flakes all laid (or set aside under an M laid at once). */
-  reset(layout: Layout, seed: number, aspect: number, map: CityMap | undefined, sea: SeaSampler, mark: number | undefined): void {
+  reset(
+    layout: Layout,
+    seed: number,
+    aspect: number,
+    map: CityMap | undefined,
+    sea: SeaSampler,
+    mark: number | undefined,
+  ): void {
     this.nodes = [];
     this.#pending = [];
     this.#saved = [];
@@ -730,7 +816,14 @@ class FoodBook {
       case "random": {
         this.#target = Math.round(clamp(aspect * RANDOM_PER_ASPECT, RANDOM_MIN, RANDOM_MAX));
         // The heart lands somewhere in the middle; the rest spread out from it as far as they can.
-        specs.push(this.#flake(0.5 + (this.#rand() - 0.5) * 0.4, 0.5 + (this.#rand() - 0.5) * 0.36, -1, HEART_SCALE));
+        specs.push(
+          this.#flake(
+            0.5 + (this.#rand() - 0.5) * 0.4,
+            0.5 + (this.#rand() - 0.5) * 0.36,
+            -1,
+            HEART_SCALE,
+          ),
+        );
         while (specs.length < this.#target) {
           const at = this.#freeSpot(specs);
           specs.push(this.#flake(at.x, at.y, -1, 1));
@@ -746,9 +839,15 @@ class FoodBook {
           specs.push(this.#flake(0.5, 0.5, -1, HEART_SCALE));
           break;
         }
-        const empty = Math.min(layout === "grid" ? Math.round(sites.length * GRID_VACANT) : CITY_VACANT, Math.max(0, sites.length - 2));
+        const empty = Math.min(
+          layout === "grid" ? Math.round(sites.length * GRID_VACANT) : CITY_VACANT,
+          Math.max(0, sites.length - 2),
+        );
         this.#target = sites.length - empty;
-        const others = shuffled(sites.map((_, i) => i).filter((i) => i !== heart), this.#rand);
+        const others = shuffled(
+          sites.map((_, i) => i).filter((i) => i !== heart),
+          this.#rand,
+        );
         this.#vacant = others.slice(0, empty);
         for (const site of [heart, ...others.slice(empty)]) {
           const at = item(sites, site);
@@ -781,17 +880,20 @@ class FoodBook {
     this.#time += dt;
     for (const node of this.nodes) {
       // Landing over FADE_IN seconds, eaten over its own fadeOut.
-      node.strength = node.target > node.strength
-        ? Math.min(node.target, node.strength + dt / FADE_IN)
-        : Math.max(node.target, node.strength - dt / node.fadeOut);
+      node.strength =
+        node.target > node.strength
+          ? Math.min(node.target, node.strength + dt / FADE_IN)
+          : Math.max(node.target, node.strength - dt / node.fadeOut);
     }
     let kept = 0;
-    for (const node of this.nodes) if (node.target > 0 || node.strength > 0) this.nodes[kept++] = node;
+    for (const node of this.nodes)
+      if (node.target > 0 || node.strength > 0) this.nodes[kept++] = node;
     this.nodes.length = kept;
     this.#placePending();
-    this.#markShown = this.#markSize === undefined
-      ? Math.max(0, this.#markShown - dt / MARK_FADE)
-      : Math.min(1, this.#markShown + dt / MARK_FADE);
+    this.#markShown =
+      this.#markSize === undefined
+        ? Math.max(0, this.#markShown - dt / MARK_FADE)
+        : Math.min(1, this.#markShown + dt / MARK_FADE);
     if (feedEvery === undefined || this.#markSize !== undefined) {
       this.#nextFeed = -1;
       return;
@@ -824,7 +926,8 @@ class FoodBook {
       const r = CONSTELLATION_RADIUS * Math.sqrt(this.#rand());
       const x = centre.x + (Math.cos(a) * r) / aspect;
       const y = centre.y + Math.sin(a) * r;
-      if (x < EDGE_GAP / aspect || x > 1 - EDGE_GAP / aspect || y < EDGE_GAP || y > 1 - EDGE_GAP) continue;
+      if (x < EDGE_GAP / aspect || x > 1 - EDGE_GAP / aspect || y < EDGE_GAP || y > 1 - EDGE_GAP)
+        continue;
       if (this.#beyondDish(x, y, EDGE_GAP)) continue;
       if (this.#sea(x, y) > 0.05) continue;
       if (placed.some((p) => Math.hypot((p.x - x) * aspect, p.y - y) < CONSTELLATION_GAP)) continue;
@@ -871,7 +974,11 @@ class FoodBook {
     for (const node of this.nodes) {
       if (node.target <= 0) continue;
       if (node.id === this.#heart) heart = points.length;
-      points.push({ x: grid.trailX(node.x), y: grid.trailY(node.y), r: node.radius * FEED_SCALE * grid.perHeight });
+      points.push({
+        x: grid.trailX(node.x),
+        y: grid.trailY(node.y),
+        r: node.radius * FEED_SCALE * grid.perHeight,
+      });
     }
     return { points, heart };
   }
@@ -923,8 +1030,15 @@ class FoodBook {
 
   #flake(x: number, y: number, site: number, scale: number): FoodSpec {
     return {
-      x, y, radius: FLAKE_RADIUS * scale * (0.9 + 0.2 * this.#rand()), kind: "flake", site, mark: false,
-      rot: this.#rand() * TAU, elong: 0.55 + 0.25 * this.#rand(), grain: this.#rand(),
+      x,
+      y,
+      radius: FLAKE_RADIUS * scale * (0.9 + 0.2 * this.#rand()),
+      kind: "flake",
+      site,
+      mark: false,
+      rot: this.#rand() * TAU,
+      elong: 0.55 + 0.25 * this.#rand(),
+      grain: this.#rand(),
     };
   }
 
@@ -973,7 +1087,12 @@ class FoodBook {
     let oldest: FoodNode | undefined;
     for (const node of this.nodes) {
       if (node.target <= 0 || node.mark || node.id === this.#heart) continue;
-      if (oldest === undefined || node.born < oldest.born || (node.born === oldest.born && node.id < oldest.id)) oldest = node;
+      if (
+        oldest === undefined ||
+        node.born < oldest.born ||
+        (node.born === oldest.born && node.id < oldest.id)
+      )
+        oldest = node;
     }
     return oldest;
   }
@@ -1047,14 +1166,26 @@ class FoodBook {
   #layMark(size: number, now: boolean): void {
     const aspect = this.#aspect;
     // The M's corners lie 0.47 heights out across, 0.69 from its centre (per unit of height).
-    const height = Math.min(size, (aspect / 2 - EDGE_GAP) / 0.47, (this.#dish - EDGE_GAP) / Math.hypot(0.47, 0.5));
+    const height = Math.min(
+      size,
+      (aspect / 2 - EDGE_GAP) / 0.47,
+      (this.#dish - EDGE_GAP) / Math.hypot(0.47, 0.5),
+    );
     const lay = (vx: number, vy: number, kind: FoodKind): FoodNode =>
-      this.#plant({
-        x: 0.5 + (vx * height) / aspect, y: 0.5 + vy * height,
-        radius: kind === "crumb" ? CRUMB_RADIUS * (0.85 + 0.3 * this.#rand()) : FLAKE_RADIUS,
-        kind, site: -1, mark: true,
-        rot: this.#rand() * TAU, elong: kind === "crumb" ? 0.7 + 0.25 * this.#rand() : 0.55 + 0.25 * this.#rand(), grain: this.#rand(),
-      }, now);
+      this.#plant(
+        {
+          x: 0.5 + (vx * height) / aspect,
+          y: 0.5 + vy * height,
+          radius: kind === "crumb" ? CRUMB_RADIUS * (0.85 + 0.3 * this.#rand()) : FLAKE_RADIUS,
+          kind,
+          site: -1,
+          mark: true,
+          rot: this.#rand() * TAU,
+          elong: kind === "crumb" ? 0.7 + 0.25 * this.#rand() : 0.55 + 0.25 * this.#rand(),
+          grain: this.#rand(),
+        },
+        now,
+      );
     // Corners first, so they take the free slots before the crumbs.
     MARK_VERTICES.forEach(([vx, vy], i) => {
       const node = lay(vx, vy, "flake");
@@ -1064,7 +1195,8 @@ class FoodBook {
       const [ax, ay] = markVertex(s);
       const [bx, by] = markVertex(s + 1);
       const pieces = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / MARK_SPACING));
-      for (let k = 1; k < pieces; k++) lay(ax + ((bx - ax) * k) / pieces, ay + ((by - ay) * k) / pieces, "crumb");
+      for (let k = 1; k < pieces; k++)
+        lay(ax + ((bx - ax) * k) / pieces, ay + ((by - ay) * k) / pieces, "crumb");
     }
     this.#markHeight = height;
   }
@@ -1079,7 +1211,8 @@ class FoodBook {
     });
     this.#saved = [];
     this.#savedHeart = -1;
-    this.#heart = heart >= 0 ? heart : (this.nodes.find((node) => node.target > 0 && !node.mark)?.id ?? 0);
+    this.#heart =
+      heart >= 0 ? heart : (this.nodes.find((node) => node.target > 0 && !node.mark)?.id ?? 0);
     this.#nextFeed = -1;
     this.#trim();
   }
@@ -1180,7 +1313,10 @@ function neighbourhood(points: readonly Point[]): (readonly [number, number])[] 
 }
 
 /** Prim's tree over the points from `root`: each point's parent (-1 for the root) and the size of its subtree. */
-function flowTree(points: readonly Point[], root: number): { parent: Int32Array; size: Float64Array } {
+function flowTree(
+  points: readonly Point[],
+  root: number,
+): { parent: Int32Array; size: Float64Array } {
   const n = points.length;
   const parent = new Int32Array(n).fill(-1);
   const size = new Float64Array(n).fill(1);
@@ -1190,7 +1326,9 @@ function flowTree(points: readonly Point[], root: number): { parent: Int32Array;
   best[root] = 0;
   for (let round = 0; round < n; round++) {
     let next = -1;
-    for (let i = 0; i < n; i++) if (inTree[i] === 0 && (next < 0 || (best[i] ?? Infinity) < (best[next] ?? Infinity))) next = i;
+    for (let i = 0; i < n; i++)
+      if (inTree[i] === 0 && (next < 0 || (best[i] ?? Infinity) < (best[next] ?? Infinity)))
+        next = i;
     if (next < 0) break;
     inTree[next] = 1;
     order.push(next);
@@ -1231,7 +1369,12 @@ function patchNoise(x: number, y: number, scale: number, seed: number): number {
  * flakes (the spacing shrinks to WEB_FINE of itself round the flakes and toward the wall, where the
  * mould's fans advance), none in blocked ground.
  */
-function scatterLace(flakes: readonly SketchNode[], grid: Grid, blocked: Blocked, rand: () => number): Point[] {
+function scatterLace(
+  flakes: readonly SketchNode[],
+  grid: Grid,
+  blocked: Blocked,
+  rand: () => number,
+): Point[] {
   const cx = grid.trailX(0.5);
   const cy = grid.trailY(0.5);
   const dish = grid.dish - 3;
@@ -1242,14 +1385,17 @@ function scatterLace(flakes: readonly SketchNode[], grid: Grid, blocked: Blocked
   const cells: number[][] = Array.from({ length: cols * rows }, () => []);
   const all: Point[] = [];
   const put = (p: Point): void => {
-    const cell = clamp(Math.floor(p.y / base), 0, rows - 1) * cols + clamp(Math.floor(p.x / base), 0, cols - 1);
+    const cell =
+      clamp(Math.floor(p.y / base), 0, rows - 1) * cols +
+      clamp(Math.floor(p.x / base), 0, cols - 1);
     item(cells, cell).push(all.length);
     all.push(p);
   };
   for (const flake of flakes) put({ x: flake.x, y: flake.y });
   const spacing = (x: number, y: number): number => {
     let near = Infinity;
-    for (const flake of flakes) near = Math.min(near, Math.hypot(x - flake.x, y - flake.y) - flake.r);
+    for (const flake of flakes)
+      near = Math.min(near, Math.hypot(x - flake.x, y - flake.y) - flake.r);
     const round = 1 - smoothstep(0.05 * perHeight, 0.16 * perHeight, near);
     const rim = smoothstep(0.7 * dish, 0.97 * dish, Math.hypot(x - cx, y - cy));
     return base * (1 - (1 - WEB_FINE) * Math.max(round, rim));
@@ -1358,7 +1504,7 @@ function delaunay(points: readonly Point[]): (readonly [number, number])[] {
     const py = ys[p] ?? 0;
     hole.clear();
     // The triangles whose circle holds the point go; the hole they leave is fanned out from it.
-    for (let t = 0; t < va.length; ) {
+    for (let t = 0; t < va.length;) {
       const dx = px - (ox[t] ?? 0);
       const dy = py - (oy[t] ?? 0);
       if (dx * dx + dy * dy >= (or2[t] ?? 0)) {
@@ -1406,7 +1552,13 @@ function delaunay(points: readonly Point[]): (readonly [number, number])[] {
 }
 
 /** The cheapest chain of mesh edges from `from` to `to` (edge indices; empty if there is none). */
-function shortestRoute(adjacent: readonly (readonly number[])[], ends: Int32Array, cost: Float64Array, from: number, to: number): number[] {
+function shortestRoute(
+  adjacent: readonly (readonly number[])[],
+  ends: Int32Array,
+  cost: Float64Array,
+  from: number,
+  to: number,
+): number[] {
   const dist = new Float64Array(adjacent.length).fill(Infinity);
   const via = new Int32Array(adjacent.length).fill(-1);
   // A binary heap of (distance, node), stale entries skipped as they surface.
@@ -1457,7 +1609,7 @@ function shortestRoute(adjacent: readonly (readonly number[])[], ends: Int32Arra
   }
   const route: number[] = [];
   if (!Number.isFinite(dist[to] ?? Infinity)) return route;
-  for (let at = to; at !== from; ) {
+  for (let at = to; at !== from;) {
     const e = via[at] ?? -1;
     route.push(e);
     const a = ends[2 * e] ?? 0;
@@ -1467,7 +1619,14 @@ function shortestRoute(adjacent: readonly (readonly number[])[], ends: Int32Arra
 }
 
 /** A line from a to b wandering off to its side: a bow and two slow waves, pinned at both ends. */
-function wander(ax: number, ay: number, bx: number, by: number, amplitude: number, rand: () => number): { xs: Float64Array; ys: Float64Array; length: number } {
+function wander(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  amplitude: number,
+  rand: () => number,
+): { xs: Float64Array; ys: Float64Array; length: number } {
   const dx = bx - ax;
   const dy = by - ay;
   const span = Math.max(Math.hypot(dx, dy), 1e-6);
@@ -1486,7 +1645,10 @@ function wander(ax: number, ay: number, bx: number, by: number, amplitude: numbe
   let py = ay;
   for (let k = 0; k <= n; k++) {
     const t = k / n;
-    const side = span * Math.sin(Math.PI * t) * (bow + a1 * Math.sin(TAU * f1 * t + p1) + a2 * Math.sin(TAU * f2 * t + p2));
+    const side =
+      span *
+      Math.sin(Math.PI * t) *
+      (bow + a1 * Math.sin(TAU * f1 * t + p1) + a2 * Math.sin(TAU * f2 * t + p2));
     const x = ax + dx * t - (dy / span) * side;
     const y = ay + dy * t + (dx / span) * side;
     length += Math.hypot(x - px, y - py);
@@ -1499,7 +1661,18 @@ function wander(ax: number, ay: number, bx: number, by: number, amplitude: numbe
 }
 
 /** A vein from a leaving along (tax, tay) to b arriving against (tbx, tby): a Hermite curve, wandering a little off it. */
-function curve(ax: number, ay: number, bx: number, by: number, tax: number, tay: number, tbx: number, tby: number, amplitude: number, rand: () => number): { xs: Float64Array; ys: Float64Array; length: number } {
+function curve(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  tax: number,
+  tay: number,
+  tbx: number,
+  tby: number,
+  amplitude: number,
+  rand: () => number,
+): { xs: Float64Array; ys: Float64Array; length: number } {
   const dx = bx - ax;
   const dy = by - ay;
   const span = Math.max(Math.hypot(dx, dy), 1e-6);
@@ -1538,7 +1711,13 @@ function curve(ax: number, ay: number, bx: number, by: number, tax: number, tay:
 }
 
 /** The web: junctions (the flakes first) and the veins and lace between them. */
-function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, blocked: Blocked, seed: number): { nodes: Point[]; edges: Path[] } {
+function buildWeb(
+  flakes: readonly SketchNode[],
+  heart: number,
+  grid: Grid,
+  blocked: Blocked,
+  seed: number,
+): { nodes: Point[]; edges: Path[] } {
   const rand = mulberry32(seed);
   const perHeight = grid.perHeight;
   const n = flakes.length;
@@ -1554,7 +1733,12 @@ function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, bloc
     const b = item(nodes, j);
     const length = Math.hypot(a.x - b.x, a.y - b.y);
     if (length > WEB_LONGEST * perHeight) continue;
-    if (blocked((a.x + b.x) / 2, (a.y + b.y) / 2) || blocked(a.x * 0.75 + b.x * 0.25, a.y * 0.75 + b.y * 0.25) || blocked(a.x * 0.25 + b.x * 0.75, a.y * 0.25 + b.y * 0.75)) continue;
+    if (
+      blocked((a.x + b.x) / 2, (a.y + b.y) / 2) ||
+      blocked(a.x * 0.75 + b.x * 0.25, a.y * 0.75 + b.y * 0.25) ||
+      blocked(a.x * 0.25 + b.x * 0.75, a.y * 0.25 + b.y * 0.75)
+    )
+      continue;
     ea.push(i);
     eb.push(j);
     lengths.push(length);
@@ -1607,13 +1791,16 @@ function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, bloc
     for (const c of candidates) {
       if (hubs >= WEB_HUBS) break;
       const p = item(nodes, c);
-      const ranked = tied.map((t) => ({ t, d: Math.hypot(item(nodes, t).x - p.x, item(nodes, t).y - p.y) })).sort((x, y) => x.d - y.d);
+      const ranked = tied
+        .map((t) => ({ t, d: Math.hypot(item(nodes, t).x - p.x, item(nodes, t).y - p.y) }))
+        .sort((x, y) => x.d - y.d);
       if (ranked.some((r) => r.t >= n && r.d < HUB_GAP * perHeight)) continue;
       const first = ranked[0];
       const second = ranked[1];
       if (first === undefined) continue;
       links.push({ a: first.t, b: c, flow: HUB_FLOW });
-      if (second !== undefined && second.d < 0.3 * perHeight) links.push({ a: second.t, b: c, flow: HUB_LOOP });
+      if (second !== undefined && second.d < 0.3 * perHeight)
+        links.push({ a: second.t, b: c, flow: HUB_LOOP });
       tied.push(c);
       hubs++;
     }
@@ -1661,12 +1848,21 @@ function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, bloc
     const b = item(nodes, eb[e] ?? 0);
     const mx = (a.x + b.x) / 2;
     const my = (a.y + b.y) / 2;
-    const patch = patchNoise(mx, my, 0.3 * perHeight, noiseSeed) * 0.6 + patchNoise(mx, my, 0.11 * perHeight, noiseSeed + 5) * 0.4;
+    const patch =
+      patchNoise(mx, my, 0.3 * perHeight, noiseSeed) * 0.6 +
+      patchNoise(mx, my, 0.11 * perHeight, noiseSeed + 5) * 0.4;
     const near = Math.min(hop[ea[e] ?? 0] ?? 9, hop[eb[e] ?? 0] ?? 9);
-    const keep = LACE_KEEP + 0.35 * smoothstep(0.3, 0.7, patch) + (near === 0 ? 0.25 : near === 1 ? 0.1 : 0);
+    const keep =
+      LACE_KEEP + 0.35 * smoothstep(0.3, 0.7, patch) + (near === 0 ? 0.25 : near === 1 ? 0.1 : 0);
     if (rand() > keep) continue;
     kept[e] = 1;
-    level[e] = Math.min(FEEDER_MAX, LACE_LEVEL * (0.75 + 0.5 * rand()) * (0.6 + 0.6 * patch) * (near === 0 ? 1.7 : near === 1 ? 1.3 : 1));
+    level[e] = Math.min(
+      FEEDER_MAX,
+      LACE_LEVEL *
+        (0.75 + 0.5 * rand()) *
+        (0.6 + 0.6 * patch) *
+        (near === 0 ? 1.7 : near === 1 ? 1.3 : 1),
+    );
     sigma[e] = 0.6;
   }
   // Straighten the veins: a junction with just two veins through it moves toward the middle of their
@@ -1692,8 +1888,10 @@ function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, bloc
   }
   for (let v = n; v < total; v++) {
     const p = item(spot, v);
-    p.x += (patchNoise(p.x, p.y, 0.4 * perHeight, noiseSeed + 11) - 0.5) * 2 * WEB_DRIFT * perHeight;
-    p.y += (patchNoise(p.x, p.y, 0.4 * perHeight, noiseSeed + 23) - 0.5) * 2 * WEB_DRIFT * perHeight;
+    p.x +=
+      (patchNoise(p.x, p.y, 0.4 * perHeight, noiseSeed + 11) - 0.5) * 2 * WEB_DRIFT * perHeight;
+    p.y +=
+      (patchNoise(p.x, p.y, 0.4 * perHeight, noiseSeed + 23) - 0.5) * 2 * WEB_DRIFT * perHeight;
   }
   for (let e = 0; e < count; e++) {
     const a = item(spot, ea[e] ?? 0);
@@ -1739,7 +1937,8 @@ function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, bloc
     let bestScore = -Infinity;
     for (const e of around.slice(1)) {
       const [ux, uy] = outward(e, v);
-      const score = -(u1x * ux + u1y * uy) + 0.5 * ((level[e] ?? 0) / Math.max(level[first] ?? 1, 1e-6));
+      const score =
+        -(u1x * ux + u1y * uy) + 0.5 * ((level[e] ?? 0) / Math.max(level[first] ?? 1, 1e-6));
       if (score > bestScore) {
         bestScore = score;
         second = e;
@@ -1765,14 +1964,38 @@ function buildWeb(flakes: readonly SketchNode[], heart: number, grid: Grid, bloc
     if (kept[e] === 0) continue;
     const a = item(spot, ea[e] ?? 0);
     const b = item(spot, eb[e] ?? 0);
-    const line = curve(a.x, a.y, b.x, b.y, tangent[4 * e] ?? 0, tangent[4 * e + 1] ?? 0, tangent[4 * e + 2] ?? 0, tangent[4 * e + 3] ?? 0, (flow[e] ?? 0) > 0 ? WEB_WANDER : 0.6 * WEB_WANDER, rand);
-    edges.push({ ...line, from: ea[e] ?? 0, to: eb[e] ?? 0, level: level[e] ?? 0, sigma: sigma[e] ?? 0.6 });
+    const line = curve(
+      a.x,
+      a.y,
+      b.x,
+      b.y,
+      tangent[4 * e] ?? 0,
+      tangent[4 * e + 1] ?? 0,
+      tangent[4 * e + 2] ?? 0,
+      tangent[4 * e + 3] ?? 0,
+      (flow[e] ?? 0) > 0 ? WEB_WANDER : 0.6 * WEB_WANDER,
+      rand,
+    );
+    edges.push({
+      ...line,
+      from: ea[e] ?? 0,
+      to: eb[e] ?? 0,
+      level: level[e] ?? 0,
+      sigma: sigma[e] ?? 0.6,
+    });
   }
   return { nodes: spot, edges };
 }
 
 /** The sketch's web and the fans of tributaries leaving each flake; `seed` fixes the web, `rand` the fans. */
-function sketchPaths(points: readonly SketchNode[], heart: number, grid: Grid, blocked: Blocked, seed: number, rand: () => number): SketchPaths {
+function sketchPaths(
+  points: readonly SketchNode[],
+  heart: number,
+  grid: Grid,
+  blocked: Blocked,
+  seed: number,
+  rand: () => number,
+): SketchPaths {
   const web = buildWeb(points, heart, grid, blocked, seed);
   const fans: Path[] = [];
   points.forEach((p, i) => {
@@ -1782,7 +2005,13 @@ function sketchPaths(points: readonly SketchNode[], heart: number, grid: Grid, b
       const reach = (FAN_SHORT + (FAN_LONG - FAN_SHORT) * rand()) * grid.perHeight;
       const x = p.x + Math.cos(a) * p.r;
       const y = p.y + Math.sin(a) * p.r;
-      fans.push({ ...wander(x, y, x + Math.cos(a) * reach, y + Math.sin(a) * reach, FAN_WANDER, rand), from: i, to: -1, level: 0.35, sigma: 0.8 });
+      fans.push({
+        ...wander(x, y, x + Math.cos(a) * reach, y + Math.sin(a) * reach, FAN_WANDER, rand),
+        from: i,
+        to: -1,
+        level: 0.35,
+        sigma: 0.8,
+      });
     }
   });
   return { nodes: web.nodes, edges: web.edges, fans };
@@ -1791,7 +2020,13 @@ function sketchPaths(points: readonly SketchNode[], heart: number, grid: Grid, b
 /** The lit sea is closed to the sketch (not once an M has put the lights out). */
 function seaBlocked(cover: Float32Array, grid: Grid, lit: boolean): Blocked {
   if (!lit) return () => false;
-  return (x, y) => seaAt(cover, grid, (x - PHYSARUM_MARGIN) / grid.frameWidth, (y - PHYSARUM_MARGIN) / grid.frameHeight) > 0.15;
+  return (x, y) =>
+    seaAt(
+      cover,
+      grid,
+      (x - PHYSARUM_MARGIN) / grid.frameWidth,
+      (y - PHYSARUM_MARGIN) / grid.frameHeight,
+    ) > 0.15;
 }
 
 /** The random numbers for a sketch of the dish with this seed: one number fixing the web, a stream for the rest. */
@@ -1801,7 +2036,14 @@ function sketchSeeds(seed: number): { web: number; rand: () => number } {
 }
 
 /** A soft dot of sketch trail at (x, y) (trail texels), keeping the larger value. */
-function splat(field: Float32Array, grid: Grid, x: number, y: number, level: number, sigma: number): void {
+function splat(
+  field: Float32Array,
+  grid: Grid,
+  x: number,
+  y: number,
+  level: number,
+  sigma: number,
+): void {
   const reach = Math.ceil(3 * sigma);
   const x0 = Math.max(0, Math.floor(x - reach));
   const x1 = Math.min(grid.width - 1, Math.ceil(x + reach));
@@ -1837,7 +2079,8 @@ function clipToDish(field: Float32Array, grid: Grid): void {
   const cy = grid.trailY(0.5);
   const dish = grid.dish;
   for (let y = 0; y < grid.height; y++) {
-    for (let x = 0; x < grid.width; x++) if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) > dish) field[y * grid.width + x] = 0;
+    for (let x = 0; x < grid.width; x++)
+      if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) > dish) field[y * grid.width + x] = 0;
   }
 }
 
@@ -1868,7 +2111,8 @@ function stampFilm(paths: SketchPaths, grid: Grid): Float32Array {
     const level = filmLevel(path.level);
     if (level > 0) stampPath(field, grid, { ...path, level }, false);
   }
-  for (const path of paths.fans) stampPath(field, grid, { ...path, level: filmLevel(path.level) }, true);
+  for (const path of paths.fans)
+    stampPath(field, grid, { ...path, level: filmLevel(path.level) }, true);
   clipToDish(field, grid);
   return field;
 }
@@ -1894,7 +2138,12 @@ function sketchLevel(sketch: Float32Array): { level: number; share: number } {
 }
 
 /** Distance along the sketch's veins from the heart (screen heights) at half resolution; PHYSARUM_FAR elsewhere. */
-function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart: number, grid: Grid): Float32Array {
+function stampDistance(
+  paths: SketchPaths,
+  points: readonly SketchNode[],
+  heart: number,
+  grid: Grid,
+): Float32Array {
   const ew = grid.envWidth;
   const eh = grid.envHeight;
   const field = new Float32Array(ew * eh).fill(PHYSARUM_FAR);
@@ -1916,7 +2165,13 @@ function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart:
   along[heart] = 0;
   for (;;) {
     let next = -1;
-    for (let i = 0; i < n; i++) if (done[i] === 0 && Number.isFinite(along[i] ?? Infinity) && (next < 0 || (along[i] ?? 0) < (along[next] ?? 0))) next = i;
+    for (let i = 0; i < n; i++)
+      if (
+        done[i] === 0 &&
+        Number.isFinite(along[i] ?? Infinity) &&
+        (next < 0 || (along[i] ?? 0) < (along[next] ?? 0))
+      )
+        next = i;
     if (next < 0) break;
     done[next] = 1;
     for (const path of item(joined, next)) {
@@ -1946,7 +2201,12 @@ function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart:
     const count = path.xs.length;
     for (let k = 0; k < count; k++) {
       const t = k / (count - 1);
-      stamp((path.xs[k] ?? 0) * sx, (path.ys[k] ?? 0) * sy, Math.min(from + t * span, to + (1 - t) * span), 2.5);
+      stamp(
+        (path.xs[k] ?? 0) * sx,
+        (path.ys[k] ?? 0) * sy,
+        Math.min(from + t * span, to + (1 - t) * span),
+        2.5,
+      );
     }
   }
   points.forEach((p, i) => {
@@ -1962,7 +2222,13 @@ function stampDistance(paths: SketchPaths, points: readonly SketchNode[], heart:
  * out, the rest anywhere on the dish, any way; ages spread so they do not all starve at once. Also
  * returns the trail level (raw units per sketch unit) they will keep up, to scale the seeded trail by.
  */
-function seedAgents(shape: { width: number; height: number }, paths: SketchPaths, points: readonly SketchNode[], grid: Grid, rand: () => number): { data: Float32Array; level: number } {
+function seedAgents(
+  shape: { width: number; height: number },
+  paths: SketchPaths,
+  points: readonly SketchNode[],
+  grid: Grid,
+  rand: () => number,
+): { data: Float32Array; level: number } {
   const total = shape.width * shape.height;
   const data = new Float32Array(total * 4);
   const edges = paths.edges;
@@ -2007,7 +2273,8 @@ function seedAgents(shape: { width: number; height: number }, paths: SketchPaths
       const side = (rand() - 0.5) * 2.4;
       x = x0 - (ty / tl) * side;
       y = y0 + (tx / tl) * side;
-      heading = Math.atan2(ty, tx) + (path.to >= 0 && rand() < 0.5 ? Math.PI : 0) + (rand() - 0.5) * 0.3;
+      heading =
+        Math.atan2(ty, tx) + (path.to >= 0 && rand() < 0.5 ? Math.PI : 0) + (rand() - 0.5) * 0.3;
     } else if (i < atFlakes) {
       const p = item(points, Math.min(points.length - 1, Math.floor(rand() * points.length)));
       const a = rand() * TAU;
@@ -2029,7 +2296,8 @@ function seedAgents(shape: { width: number; height: number }, paths: SketchPaths
     data[o + 3] = LIFE * (0.2 + 0.8 * rand());
   }
   // Specks per texel along a vein of level 1, each keeping up AGENT_UNIT × REF / N over about three texels' width.
-  const level = mass > 0 ? (AGENT_UNIT * REFERENCE_AGENTS * onEdges) / (total * 3 * mass) : AGENT_UNIT;
+  const level =
+    mass > 0 ? (AGENT_UNIT * REFERENCE_AGENTS * onEdges) / (total * 3 * mass) : AGENT_UNIT;
   return { data, level };
 }
 
@@ -2065,7 +2333,7 @@ class PulseClock {
     this.#time += dt;
     const s = Math.sin((TAU * this.#time) / SHUTTLE_PERIOD + SHUTTLE_START);
     const flow = s / Math.sqrt(s * s + SHUTTLE_SOFT);
-    this.phase = ((((this.phase + (dt * PULSE_SPEED * flow) / PHYSARUM_WAVE) % 1) + 1) % 1);
+    this.phase = (((this.phase + (dt * PULSE_SPEED * flow) / PHYSARUM_WAVE) % 1) + 1) % 1;
   }
 }
 
@@ -2461,7 +2729,11 @@ class PhysarumSim implements SceneSim {
     const field = { width: grid.width, height: grid.height };
     const half = { width: grid.envWidth, height: grid.envHeight };
     this.#agentCount = REFERENCE_AGENTS;
-    this.#agents = gpu.pingPong({ ...agentShape(REFERENCE_AGENTS), format: "rgba32f", filter: "nearest" });
+    this.#agents = gpu.pingPong({
+      ...agentShape(REFERENCE_AGENTS),
+      format: "rgba32f",
+      filter: "nearest",
+    });
     this.#trail = gpu.pingPong({ ...field, format: "r16f" });
     this.#film = gpu.target({ ...field, format: "r16f" });
     this.#view = gpu.pingPong({ ...field, format: "rg16f" });
@@ -2472,7 +2744,12 @@ class PhysarumSim implements SceneSim {
     this.#sums = gpu.target({ ...sumSize(grid), format: "rgba32f", filter: "nearest" });
     this.#level = gpu.pingPong({ width: 1, height: 1, format: "rg32f", filter: "nearest" });
     this.#seaCover = new Float32Array(half.width * half.height);
-    this.#foodTexture = new DataTexture(gl, { width: PHYSARUM_MAX_FOOD, height: 3, format: "rgba16f", filter: "nearest" });
+    this.#foodTexture = new DataTexture(gl, {
+      width: PHYSARUM_MAX_FOOD,
+      height: 3,
+      format: "rgba16f",
+      filter: "nearest",
+    });
 
     this.#move = gpu.pass(MOVE, "physarum move");
     this.#deposit = gpu.scatter(DEPOSIT, { name: "physarum deposit" });
@@ -2484,9 +2761,19 @@ class PhysarumSim implements SceneSim {
     this.#sumPass = gpu.pass(SUMS, "physarum sums");
     this.#levelPass = gpu.pass(LEVEL, "physarum level");
 
-    this.#move.bind({ uAgents: this.#agents, uTrail: this.#trail, uEnv: this.#env, uRef: this.#level });
+    this.#move.bind({
+      uAgents: this.#agents,
+      uTrail: this.#trail,
+      uEnv: this.#env,
+      uRef: this.#level,
+    });
     this.#deposit.bind({ uAgents: this.#agents });
-    this.#diffuse.bind({ uTrail: this.#trail, uEnv: this.#env, uFilm: this.#film, uRef: this.#level });
+    this.#diffuse.bind({
+      uTrail: this.#trail,
+      uEnv: this.#env,
+      uFilm: this.#film,
+      uRef: this.#level,
+    });
     this.#envPass.bind({ uSalt: this.#salt, uSea: this.#sea });
     this.#saltPass.bind({ uSalt: this.#salt });
     this.#distPass.bind({ uDist: this.#dist, uView: this.#view });
@@ -2512,7 +2799,8 @@ class PhysarumSim implements SceneSim {
     } else {
       if (!grid.same(this.#grid)) {
         this.#stretch(grid);
-        if (Math.abs(frame.aspect / this.#layoutAspect - 1) > RELAYOUT) this.#resetIn = RELAYOUT_FRAMES;
+        if (Math.abs(frame.aspect / this.#layoutAspect - 1) > RELAYOUT)
+          this.#resetIn = RELAYOUT_FRAMES;
       }
       if (this.#resetIn > 0) {
         this.#resetIn -= 1;
@@ -2590,7 +2878,14 @@ class PhysarumSim implements SceneSim {
 
     const { points, heart } = this.#food.sketchNodes(grid);
     const seeds = sketchSeeds(settings.seed);
-    const paths = sketchPaths(points, heart, grid, seaBlocked(this.#seaCover, grid, mark === undefined), seeds.web, seeds.rand);
+    const paths = sketchPaths(
+      points,
+      heart,
+      grid,
+      seaBlocked(this.#seaCover, grid, mark === undefined),
+      seeds.web,
+      seeds.rand,
+    );
     const sketch = stampSketch(paths, points, grid);
     const agents = seedAgents(this.#agents, paths, points, grid, seeds.rand);
     this.#agents.seed(agents.data);
@@ -2683,7 +2978,11 @@ class PhysarumSim implements SceneSim {
   #replaceAgents(count: number): void {
     if (count === this.#agentCount) return;
     this.#agents.dispose();
-    this.#agents = this.#gpu.pingPong({ ...agentShape(count), format: "rgba32f", filter: "nearest" });
+    this.#agents = this.#gpu.pingPong({
+      ...agentShape(count),
+      format: "rgba32f",
+      filter: "nearest",
+    });
     this.#agentCount = count;
     this.#move.bind({ uAgents: this.#agents });
     this.#deposit.bind({ uAgents: this.#agents });
@@ -2695,7 +2994,14 @@ class PhysarumSim implements SceneSim {
     const { points, heart } = this.#food.sketchNodes(this.#grid);
     const seeds = sketchSeeds(this.#seed);
     const rand = mulberry32((Math.imul(count, 0x9e3779b1) ^ this.#stepCount) >>> 0);
-    const paths = sketchPaths(points, heart, this.#grid, seaBlocked(this.#seaCover, this.#grid, this.#food.markSize === undefined), seeds.web, seeds.rand);
+    const paths = sketchPaths(
+      points,
+      heart,
+      this.#grid,
+      seaBlocked(this.#seaCover, this.#grid, this.#food.markSize === undefined),
+      seeds.web,
+      seeds.rand,
+    );
     this.#agents.seed(seedAgents(this.#agents, paths, points, this.#grid, rand).data);
   }
 
@@ -2734,7 +3040,11 @@ class PhysarumSim implements SceneSim {
     }
     const press = this.#press;
     if (press === undefined) return;
-    if (!press.dragging && Math.hypot((pointer.x - press.x) * aspect, pointer.y - press.y) > DRAG_START) press.dragging = true;
+    if (
+      !press.dragging &&
+      Math.hypot((pointer.x - press.x) * aspect, pointer.y - press.y) > DRAG_START
+    )
+      press.dragging = true;
     if (press.dragging && salt) {
       const grid = this.#grid;
       this.#segment[0] = grid.envX(this.#saltX);
@@ -2788,7 +3098,8 @@ class PhysarumSim implements SceneSim {
     if (heart !== undefined && heart.strength > 0.5) {
       this.#heartUniform[0] = grid.domainX(heart.x);
       this.#heartUniform[1] = grid.domainY(heart.y);
-      this.#heartUniform[2] = heart.radius * FEED_SCALE * grid.perHeight * (grid.envWidth / grid.width);
+      this.#heartUniform[2] =
+        heart.radius * FEED_SCALE * grid.perHeight * (grid.envWidth / grid.width);
       this.#heartUniform[3] = 1;
     }
     this.#stepHeight[0] = grid.width / grid.envWidth / grid.perHeight;
@@ -2805,7 +3116,9 @@ class PhysarumSim implements SceneSim {
       uFood: this.#foodUniform,
       uFoodCount: count,
     });
-    this.#deposit.set({ uDeposit: (settings.loss * AGENT_UNIT * REFERENCE_AGENTS) / this.#agentCount });
+    this.#deposit.set({
+      uDeposit: (settings.loss * AGENT_UNIT * REFERENCE_AGENTS) / this.#agentCount,
+    });
     this.#diffuse.set({ uKeep: 1 - settings.loss, uFilmGain: FILM_GAIN * (1 - food.markShown) });
     this.#envPass.set({
       uGrid: this.#gridUniform,
@@ -2868,7 +3181,12 @@ class PhysarumStill implements SceneSim {
 
   constructor(gl: WebGL2RenderingContext, knobs: KnobReader<PhysarumKnob>) {
     this.#knobs = knobs;
-    this.#foodTexture = new DataTexture(gl, { width: PHYSARUM_MAX_FOOD, height: 3, format: "rgba16f", filter: "nearest" });
+    this.#foodTexture = new DataTexture(gl, {
+      width: PHYSARUM_MAX_FOOD,
+      height: 3,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#view = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
     this.#dist = new DataTexture(gl, { width: 1, height: 1, format: "r16f" });
     this.#env = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
@@ -2881,7 +3199,13 @@ class PhysarumStill implements SceneSim {
       this.#grid = new Grid(frame.aspect);
     }
     const grid = this.#grid;
-    if (settings.layout !== this.#layout || settings.seed !== this.#seed || settings.mark !== this.#mark || grid.width !== this.#width || grid.height !== this.#height) {
+    if (
+      settings.layout !== this.#layout ||
+      settings.seed !== this.#seed ||
+      settings.mark !== this.#mark ||
+      grid.width !== this.#width ||
+      grid.height !== this.#height
+    ) {
       this.#build(settings, grid, frame.aspect);
     }
     this.#pulse.advance(Math.max(0, frame.dt) * clamp(frame.motion, 0, 1) * settings.tempo);
@@ -2905,10 +3229,24 @@ class PhysarumStill implements SceneSim {
     this.#height = grid.height;
     const map = settings.layout === "cities" ? cityMap(aspect) : undefined;
     const cover = seaCover(map, grid);
-    this.#food.reset(settings.layout, settings.seed, aspect, map, (u, v) => seaAt(cover, grid, u, v), settings.mark);
+    this.#food.reset(
+      settings.layout,
+      settings.seed,
+      aspect,
+      map,
+      (u, v) => seaAt(cover, grid, u, v),
+      settings.mark,
+    );
     const { points, heart } = this.#food.sketchNodes(grid);
     const seeds = sketchSeeds(settings.seed);
-    const paths = sketchPaths(points, heart, grid, seaBlocked(cover, grid, settings.mark === undefined), seeds.web, seeds.rand);
+    const paths = sketchPaths(
+      points,
+      heart,
+      grid,
+      seaBlocked(cover, grid, settings.mark === undefined),
+      seeds.web,
+      seeds.rand,
+    );
     const sketch = stampSketch(paths, points, grid);
     const measured = sketchLevel(sketch);
     const view = new Float32Array(sketch.length * 2);
@@ -2919,7 +3257,8 @@ class PhysarumStill implements SceneSim {
     // Under an M the lights over the sea are out, as in the live dish.
     const light = settings.mark === undefined ? 255 : 0;
     const env = new Uint8Array(cover.length * 4);
-    for (let i = 0; i < cover.length; i++) env[4 * i + 3] = Math.round(clamp(cover[i] ?? 0, 0, 1) * light);
+    for (let i = 0; i < cover.length; i++)
+      env[4 * i + 3] = Math.round(clamp(cover[i] ?? 0, 0, 1) * light);
     this.#view.resize(grid.width, grid.height);
     this.#view.upload(view);
     this.#dist.resize(grid.envWidth, grid.envHeight);

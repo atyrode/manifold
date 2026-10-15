@@ -30,24 +30,40 @@ function fail(message: string): never {
   throw new Error(`motion clock: ${message}`);
 }
 
-export function compile(gl: WebGL2RenderingContext, scene: SceneDef, entry: string, glsl: string): WebGLProgram {
+export function compile(
+  gl: WebGL2RenderingContext,
+  scene: SceneDef,
+  entry: string,
+  glsl: string,
+): WebGLProgram {
   const linked = gl.createProgram();
-  for (const [type, source] of [[gl.VERTEX_SHADER, vertexSource], [gl.FRAGMENT_SHADER, fragmentSourceFor({ ...scene, entry, glsl: scene.glsl + glsl })]] as const) {
+  for (const [type, source] of [
+    [gl.VERTEX_SHADER, vertexSource],
+    [gl.FRAGMENT_SHADER, fragmentSourceFor({ ...scene, entry, glsl: scene.glsl + glsl })],
+  ] as const) {
     const shader = gl.createShader(type);
     if (!shader) fail("shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) fail(`${scene.id}: ${gl.getShaderInfoLog(shader) ?? "compile failed"}`);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      fail(`${scene.id}: ${gl.getShaderInfoLog(shader) ?? "compile failed"}`);
     gl.attachShader(linked, shader);
     gl.deleteShader(shader);
   }
   gl.linkProgram(linked);
-  if (!gl.getProgramParameter(linked, gl.LINK_STATUS)) fail(`${scene.id}: ${gl.getProgramInfoLog(linked) ?? "link failed"}`);
+  if (!gl.getProgramParameter(linked, gl.LINK_STATUS))
+    fail(`${scene.id}: ${gl.getProgramInfoLog(linked) ?? "link failed"}`);
   return linked;
 }
 
 /** One source-view frame of `linked` at `clocks` with the knobs `values`, uSim0 = `sim` if given. */
-export function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, values: readonly number[], sim: WebGLTexture | undefined, clocks: Clocks): Uint8Array {
+export function draw(
+  gl: WebGL2RenderingContext,
+  linked: WebGLProgram,
+  values: readonly number[],
+  sim: WebGLTexture | undefined,
+  clocks: Clocks,
+): Uint8Array {
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -76,27 +92,50 @@ export function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, values: r
 
 function differing(a: Uint8Array, b: Uint8Array): number {
   let count = 0;
-  for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) count++;
+  for (let i = 0; i < a.length; i += 4)
+    if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) count++;
   return count;
 }
 
 /** Frames at BASE's motion clock under other motion amounts and another scene clock must equal
  *  BASE's; an hour more on the motion clock must not. Returns the pixels that hour changed. */
-function invariance(gl: WebGL2RenderingContext, label: string, linked: WebGLProgram, values: readonly number[], sim?: WebGLTexture): number {
+function invariance(
+  gl: WebGL2RenderingContext,
+  label: string,
+  linked: WebGLProgram,
+  values: readonly number[],
+  sim?: WebGLTexture,
+): number {
   const base = draw(gl, linked, values, sim, BASE);
-  for (const clocks of [{ ...BASE, motion: 0.25 }, { ...BASE, motion: 0 }, { ...BASE, time: 900, motion: 0.25 }]) {
+  for (const clocks of [
+    { ...BASE, motion: 0.25 },
+    { ...BASE, motion: 0 },
+    { ...BASE, time: 900, motion: 0.25 },
+  ]) {
     const changed = differing(base, draw(gl, linked, values, sim, clocks));
-    if (changed > 0) fail(`${label}: ${changed} of ${WIDTH * HEIGHT} pixels jumped at the same motion clock (uTime ${clocks.time}, uMotion ${clocks.motion})`);
+    if (changed > 0)
+      fail(
+        `${label}: ${changed} of ${WIDTH * HEIGHT} pixels jumped at the same motion clock (uTime ${clocks.time}, uMotion ${clocks.motion})`,
+      );
   }
   // At cycle 1 a day takes 240 s of motion clock: 10 s more is an hour later.
-  const later = differing(base, draw(gl, linked, values, sim, { ...BASE, motionTime: BASE.motionTime + 10 }));
-  if (later === 0) fail(`${label}: an hour on the motion clock changed nothing (the check would be vacuous)`);
+  const later = differing(
+    base,
+    draw(gl, linked, values, sim, { ...BASE, motionTime: BASE.motionTime + 10 }),
+  );
+  if (later === 0)
+    fail(`${label}: an hour on the motion clock changed nothing (the check would be vacuous)`);
   return later;
 }
 
 /** The knobs at `time` of day with the day cycle running a day per four minutes. */
 function dayCycle(id: "street" | "train", time: number): readonly number[] {
-  return renderSettings(defaultsFor(id), { ...paramDefaults(id), time, cycle: 1, "cycle-amount": 1 }).params;
+  return renderSettings(defaultsFor(id), {
+    ...paramDefaults(id),
+    time,
+    cycle: 1,
+    "cycle-amount": 1,
+  }).params;
 }
 
 /** Street at midnight: the upper floors of the far right block, their windows switching on and off
@@ -159,7 +198,12 @@ function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
   events.set([20, 100, 0, 4], 0);
   events.set([20, 15, 170, TRAIN_STATION, 0.3, 220, 0, 0], 8);
   events.set([20, 100, 0, TRAIN_CROSSING, 0.3, 130, 0, 0], 16);
-  const sim = new DataTexture(gl, { width: TRAIN_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+  const sim = new DataTexture(gl, {
+    width: TRAIN_TEXELS,
+    height: 1,
+    format: "rgba16f",
+    filter: "nearest",
+  });
   sim.upload(events);
   const part = gl.getUniformLocation(linked, "regressionPart");
   try {
@@ -171,7 +215,8 @@ function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
     const face = draw(gl, linked, midnight, sim.texture, BASE);
     let atClock = 0;
     for (let i = 1; i < face.length; i += 4) if ((face[i] ?? 0) > 127) atClock++;
-    if (atClock < 0.2 * WIDTH * HEIGHT) fail(`the station clock is not in view (${atClock} pixels at its depth)`);
+    if (atClock < 0.2 * WIDTH * HEIGHT)
+      fail(`the station clock is not in view (${atClock} pixels at its depth)`);
     const stationClock = invariance(gl, "train station clock", linked, midnight, sim.texture);
     gl.uniform1i(part, 2);
     const flashers = invariance(gl, "train crossing flashers", linked, midnight, sim.texture);

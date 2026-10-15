@@ -62,8 +62,10 @@ export class FixedStep {
   #count = 0;
 
   constructor(step: number, maxSteps: number) {
-    if (!(step > 0 && Number.isFinite(step))) throw new ClockError(`a fixed step must be a positive number of seconds, got ${step}`);
-    if (!(Number.isInteger(maxSteps) && maxSteps >= 1)) throw new ClockError(`maxSteps must be a whole number ≥ 1, got ${maxSteps}`);
+    if (!(step > 0 && Number.isFinite(step)))
+      throw new ClockError(`a fixed step must be a positive number of seconds, got ${step}`);
+    if (!(Number.isInteger(maxSteps) && maxSteps >= 1))
+      throw new ClockError(`maxSteps must be a whole number ≥ 1, got ${maxSteps}`);
     this.step = step;
     this.maxSteps = maxSteps;
     this.#cap = maxSteps * step;
@@ -97,7 +99,8 @@ export class FixedStep {
   /** Seconds still owed after step i (0 ≤ i < the last advance()'s count). */
   lag(i: number): number {
     const lag = Number.isInteger(i) && i < this.#count ? this.#lags[i] : undefined;
-    if (lag === undefined) throw new ClockError(`lag(${i}) is outside the last advance's ${this.#count} steps`);
+    if (lag === undefined)
+      throw new ClockError(`lag(${i}) is outside the last advance's ${this.#count} steps`);
     return lag;
   }
 
@@ -114,8 +117,15 @@ export class FixedStep {
  * where to resume: maxSteps when finished (all steps run, or settled), else the next index. Runs at
  * least one chunk while any steps are left. See the header for the warm-up policy this serves.
  */
-export function runBudgeted(step: (i: number) => boolean | void, budgetMs: number, maxSteps: number, from = 0, chunk = 1): number {
-  if (!(Number.isInteger(chunk) && chunk >= 1)) throw new ClockError(`chunk must be a whole number ≥ 1, got ${chunk}`);
+export function runBudgeted(
+  step: (i: number) => boolean | void,
+  budgetMs: number,
+  maxSteps: number,
+  from = 0,
+  chunk = 1,
+): number {
+  if (!(Number.isInteger(chunk) && chunk >= 1))
+    throw new ClockError(`chunk must be a whole number ≥ 1, got ${chunk}`);
   const started = performance.now();
   let i = from;
   while (i < maxSteps) {

@@ -4,7 +4,13 @@
 //   - a green organ's phenology byte is exactly 128 (the pond's colour path is untouched);
 //   - a breeze stepped through RootedPlants moves the stroke's tip on the sheet.
 import { PlantSheet, type PlantSheetFamily } from "../../sims/plantsheet.ts";
-import { PlantHabit, PlantRole, RootedPlants, plantClimate, type PlantSpecies } from "../../sims/plants.ts";
+import {
+  PlantHabit,
+  PlantRole,
+  RootedPlants,
+  plantClimate,
+  type PlantSpecies,
+} from "../../sims/plants.ts";
 
 const SIZE = 64;
 
@@ -17,7 +23,8 @@ export function verifyPondPlants(gl: WebGL2RenderingContext): Record<string, unk
   const atlas = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, atlas);
   const texels = new Uint8Array(8 * 8 * 4);
-  for (let y = 0; y < 8; y++) for (let x = 0; x < 4; x++) texels.set([255, 128, 3 * 16 + 2, 255], (y * 8 + x) * 4);
+  for (let y = 0; y < 8; y++)
+    for (let x = 0; x < 4; x++) texels.set([255, 128, 3 * 16 + 2, 255], (y * 8 + x) * 4);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 8, 8, 0, gl.RGBA, gl.UNSIGNED_BYTE, texels);
@@ -33,8 +40,24 @@ export function verifyPondPlants(gl: WebGL2RenderingContext): Record<string, unk
     detail: { simple: 2, min: 0.5 },
     build(plant) {
       // A stem up the left of the sheet (material 8, layer 1), a sprite low on the right (layer 2).
-      plant.organ({ angle: Math.PI / 2, length: 0.6, width: 0.06, a: 1, form: 8, layer: 1, shade: 0.5 });
-      plant.organ({ angle: 0, length: 0.3, form: 3, layer: 2, shade: 0.5, role: PlantRole.leaf, habit: PlantHabit.rigid });
+      plant.organ({
+        angle: Math.PI / 2,
+        length: 0.6,
+        width: 0.06,
+        a: 1,
+        form: 8,
+        layer: 1,
+        shade: 0.5,
+      });
+      plant.organ({
+        angle: 0,
+        length: 0.3,
+        form: 3,
+        layer: 2,
+        shade: 0.5,
+        role: PlantRole.leaf,
+        habit: PlantHabit.rigid,
+      });
     },
   };
   const plants = new RootedPlants(8);
@@ -60,15 +83,22 @@ export function verifyPondPlants(gl: WebGL2RenderingContext): Record<string, unk
   try {
     const rest = read();
     // Sheet x right, y down: row r of the readback is sheet y = SIZE - 1 - r.
-    const at = (bytes: Uint8Array, x: number, y: number) => Array.from(bytes.subarray(((SIZE - 1 - y) * SIZE + x) * 4, ((SIZE - 1 - y) * SIZE + x) * 4 + 4));
+    const at = (bytes: Uint8Array, x: number, y: number) =>
+      Array.from(
+        bytes.subarray(((SIZE - 1 - y) * SIZE + x) * 4, ((SIZE - 1 - y) * SIZE + x) * 4 + 4),
+      );
     const stem = at(rest, Math.round(0.2 * SIZE), Math.round(0.5 * SIZE));
-    if (stem[0] !== 255 || stem[2] !== 8 * 16 + 4 + 2) fail(`the stem's texel reads ${stem.join(",")}, not covered stem material on layer 1`);
+    if (stem[0] !== 255 || stem[2] !== 8 * 16 + 4 + 2)
+      fail(`the stem's texel reads ${stem.join(",")}, not covered stem material on layer 1`);
     if (stem[3] !== 128) fail(`a green organ's phenology byte is ${stem[3]}, not 128`);
-    if (at(rest, Math.round(0.45 * SIZE), Math.round(0.5 * SIZE))[0] !== 0) fail("the stem covers the sheet beside it");
+    if (at(rest, Math.round(0.45 * SIZE), Math.round(0.5 * SIZE))[0] !== 0)
+      fail("the stem covers the sheet beside it");
     // The sprite: covered where its cell is (the left of its box, along its first half), bare beyond.
     const leaf = at(rest, Math.round(0.6 * SIZE + 0.07 * SIZE), Math.round(0.7 * SIZE));
-    if (leaf[0] !== 255 || leaf[2] !== 3 * 16 + 8 + 2) fail(`the sprite's texel reads ${leaf.join(",")}, not its cell's material on layer 2`);
-    if (at(rest, Math.round(0.6 * SIZE + 0.25 * SIZE), Math.round(0.7 * SIZE))[0] !== 0) fail("the sprite covers the bare half of its cell");
+    if (leaf[0] !== 255 || leaf[2] !== 3 * 16 + 8 + 2)
+      fail(`the sprite's texel reads ${leaf.join(",")}, not its cell's material on layer 2`);
+    if (at(rest, Math.round(0.6 * SIZE + 0.25 * SIZE), Math.round(0.7 * SIZE))[0] !== 0)
+      fail("the sprite covers the bare half of its cell");
     // A breeze toward +x bends the upright stem: its tip leaves where it stood.
     climate.air.x = 1;
     climate.dt = 1 / 60;
@@ -77,8 +107,10 @@ export function verifyPondPlants(gl: WebGL2RenderingContext): Record<string, unk
       plants.step(climate);
     }
     const blown = read();
-    const tip = (bytes: Uint8Array) => at(bytes, Math.round(0.2 * SIZE), Math.round(0.78 * SIZE))[0];
-    if (tip(rest) !== 255 || tip(blown) !== 0) fail(`the stem's tip did not move in the breeze (${tip(rest)} → ${tip(blown)})`);
+    const tip = (bytes: Uint8Array) =>
+      at(bytes, Math.round(0.2 * SIZE), Math.round(0.78 * SIZE))[0];
+    if (tip(rest) !== 255 || tip(blown) !== 0)
+      fail(`the stem's tip did not move in the breeze (${tip(rest)} → ${tip(blown)})`);
     return { stem, leaf, bend: plants.theta[0] };
   } finally {
     sheet.dispose();

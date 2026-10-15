@@ -66,8 +66,18 @@ export const TRAIN_LINES = [
 // ---- The timetable ----
 
 type Kind = "station" | "crossing" | "bridge" | "tunnel";
-type TrainKnob = "speed" | "stations" | "crossings" | "bridges" | "tunnels" | "cars" | "route" | "line";
-const KNOB_KEYS: readonly TrainKnob[] = ["speed", "stations", "crossings", "bridges", "tunnels", "cars", "route", "line"];
+type TrainKnob =
+  "speed" | "stations" | "crossings" | "bridges" | "tunnels" | "cars" | "route" | "line";
+const KNOB_KEYS: readonly TrainKnob[] = [
+  "speed",
+  "stations",
+  "crossings",
+  "bridges",
+  "tunnels",
+  "cars",
+  "route",
+  "line",
+];
 
 interface KindSpec {
   readonly code: number;
@@ -82,8 +92,22 @@ interface KindSpec {
 }
 
 const KINDS: Readonly<Record<Kind, KindSpec>> = {
-  station: { code: TRAIN_STATION, knob: "stations", perKm: 0.8, before: 220, after: 150, lead: 100 },
-  crossing: { code: TRAIN_CROSSING, knob: "crossings", perKm: 1.2, before: 130, after: 70, lead: 85 },
+  station: {
+    code: TRAIN_STATION,
+    knob: "stations",
+    perKm: 0.8,
+    before: 220,
+    after: 150,
+    lead: 100,
+  },
+  crossing: {
+    code: TRAIN_CROSSING,
+    knob: "crossings",
+    perKm: 1.2,
+    before: 130,
+    after: 70,
+    lead: 85,
+  },
   bridge: { code: TRAIN_BRIDGE, knob: "bridges", perKm: 0.5, before: 130, after: 90, lead: 95 },
   tunnel: { code: TRAIN_TUNNEL, knob: "tunnels", perKm: 0.5, before: 120, after: 120, lead: 115 },
 };
@@ -210,7 +234,11 @@ class TrainJourney implements SceneSim {
   readonly #events: TrainEvent[] = [];
   /** The events handed to the shader this frame (kept to avoid an array a frame). */
   readonly #shown: TrainEvent[] = [];
-  readonly #cars: Car[] = Array.from({ length: TRAIN_CAR_SLOTS }, () => ({ rel: 0, speed: 0, alive: false }));
+  readonly #cars: Car[] = Array.from({ length: TRAIN_CAR_SLOTS }, () => ({
+    rel: 0,
+    speed: 0,
+    alive: false,
+  }));
   #route = Number.NaN;
   #lineIndex = Number.NaN;
   #line: LineSpec = LINES[0];
@@ -230,9 +258,16 @@ class TrainJourney implements SceneSim {
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("train", params, KNOB_KEYS);
-    this.#nowKinds = KIND_ORDER.map((kind) => [this.#knobs.trigger(KINDS[kind].knob), kind] as const);
+    this.#nowKinds = KIND_ORDER.map(
+      (kind) => [this.#knobs.trigger(KINDS[kind].knob), kind] as const,
+    );
     this.#carTrigger = this.#knobs.trigger("cars");
-    this.#texture = new DataTexture(gl, { width: TRAIN_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: TRAIN_TEXELS,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -249,7 +284,8 @@ class TrainJourney implements SceneSim {
       const before = this.#v;
       this.#v += (cruise * this.#slowing() - this.#v) * (1 - Math.exp(-advance / SPEED_EASE));
       this.#s += 0.5 * (before + this.#v) * advance;
-      this.#accel += ((this.#v - before) / advance - this.#accel) * (1 - Math.exp(-advance / ACCEL_EASE));
+      this.#accel +=
+        ((this.#v - before) / advance - this.#accel) * (1 - Math.exp(-advance / ACCEL_EASE));
       this.#schedule(frame);
       this.#driveCars(frame, advance);
     }
@@ -284,7 +320,13 @@ class TrainJourney implements SceneSim {
       const [shortest, longest] = this.#line.kinds.station.length;
       const length = clamp(FIRST_PLATFORM, shortest, longest);
       const start = Math.round(this.#s + FIRST_STATION);
-      const first: TrainEvent = { kind: "station", start, length, braking: spec.before, seed: Math.floor(random() * 256) };
+      const first: TrainEvent = {
+        kind: "station",
+        start,
+        length,
+        braking: spec.before,
+        seed: Math.floor(random() * 256),
+      };
       this.#events.push(first);
       const last = this.#follow(first);
       this.#cursor = Math.max(this.#cursor, this.#span(last)[1] + GAP);
@@ -300,7 +342,8 @@ class TrainJourney implements SceneSim {
   /** A "now" button: one of its kind as soon as the track allows, or a car overtaking. */
   #watchTriggers(frame: SimFrame): void {
     for (const [slot, kind] of this.#nowKinds) if (frame.fired[slot] === true) this.#now(kind);
-    if (frame.fired[this.#carTrigger] === true) this.#launchCar(-(this.#roadHalfWidth() + CAR_MARGIN), this.#v + 2.4);
+    if (frame.fired[this.#carTrigger] === true)
+      this.#launchCar(-(this.#roadHalfWidth() + CAR_MARGIN), this.#v + 2.4);
   }
 
   /** Track (m) an event claims: from the start of its approach to the end of its run-out. */
@@ -326,7 +369,13 @@ class TrainJourney implements SceneSim {
       if (next === undefined || this.#random() >= next.chance) break;
       const length = this.#length(next.kind);
       const gap = Math.round(next.gap[0] + (next.gap[1] - next.gap[0]) * this.#random());
-      const event: TrainEvent = { kind: next.kind, start: last.start + last.length + gap, length, braking: KINDS[next.kind].before, seed: Math.floor(this.#random() * 256) };
+      const event: TrainEvent = {
+        kind: next.kind,
+        start: last.start + last.length + gap,
+        length,
+        braking: KINDS[next.kind].before,
+        seed: Math.floor(this.#random() * 256),
+      };
       this.#events.push(event);
       last = event;
     }
@@ -368,10 +417,16 @@ class TrainJourney implements SceneSim {
   /** Commit events up to the horizon: a Poisson process in distance at the knobs' current rates. */
   #schedule(frame: SimFrame): void {
     const kinds = this.#line.kinds;
-    const rates = KIND_ORDER.map((kind) => (KINDS[kind].perKm / 1000) * kinds[kind].rate * Math.max(0, this.#knobs.value(frame, KINDS[kind].knob)));
+    const rates = KIND_ORDER.map(
+      (kind) =>
+        (KINDS[kind].perKm / 1000) *
+        kinds[kind].rate *
+        Math.max(0, this.#knobs.value(frame, KINDS[kind].knob)),
+    );
     const total = rates.reduce((sum, rate) => sum + rate, 0);
     const target = this.#s + HORIZON;
-    for (const event of this.#events) this.#cursor = Math.max(this.#cursor, this.#span(event)[1] + GAP);
+    for (const event of this.#events)
+      this.#cursor = Math.max(this.#cursor, this.#span(event)[1] + GAP);
     while (this.#cursor < target) {
       const room = target - this.#cursor;
       if (total <= 0 || total * room < this.#hazard) {
@@ -393,14 +448,21 @@ class TrainJourney implements SceneSim {
       const spec = KINDS[kind];
       const length = this.#length(kind);
       const start = Math.round(at + spec.before);
-      const head: TrainEvent = { kind, start, length, braking: spec.before, seed: Math.floor(this.#random() * 256) };
+      const head: TrainEvent = {
+        kind,
+        start,
+        length,
+        braking: spec.before,
+        seed: Math.floor(this.#random() * 256),
+      };
       this.#events.push(head);
       this.#cursor = this.#span(this.#follow(head))[1] + GAP;
     }
     // Forget what is well behind.
     for (let i = this.#events.length - 1; i >= 0; i--) {
       const event = this.#events[i];
-      if (event !== undefined && this.#span(event)[1] < this.#s - SEEN_BEHIND - 200) this.#events.splice(i, 1);
+      if (event !== undefined && this.#span(event)[1] < this.#s - SEEN_BEHIND - 200)
+        this.#events.splice(i, 1);
     }
   }
 

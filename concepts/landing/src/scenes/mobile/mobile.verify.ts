@@ -6,7 +6,14 @@
 // an eye, each against the same picture worked out on the CPU from `Mobile.plateFrame` and
 // `mobilePlateDistance`.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
-import { Mobile, MobileTexture, mobileGlsl, mobilePlateDistance, type MobileDesign, type MobilePlateDesign } from "../../sims/mobile.ts";
+import {
+  Mobile,
+  MobileTexture,
+  mobileGlsl,
+  mobilePlateDistance,
+  type MobileDesign,
+  type MobilePlateDesign,
+} from "../../sims/mobile.ts";
 import type { Vec3 } from "../../sims/verlet.ts";
 import { mobileScene } from "./index.ts";
 
@@ -27,7 +34,18 @@ const plates: [MobilePlateDesign, MobilePlateDesign] = [
 ];
 const design: MobileDesign = {
   anchor: [0, 2.3, 0],
-  arms: [{ parent: -1, end: 0, depth: 0, link: 0.3, reach: [0.35, 0.25], loop: 0.03, heading: 0.6, plates }],
+  arms: [
+    {
+      parent: -1,
+      end: 0,
+      depth: 0,
+      link: 0.3,
+      reach: [0.35, 0.25],
+      loop: 0.03,
+      heading: 0.6,
+      plates,
+    },
+  ],
 };
 
 function compile(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
@@ -40,12 +58,14 @@ function compile(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("mobile: shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? "mobile: compile failed");
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      throw new Error(gl.getShaderInfoLog(shader) ?? "mobile: compile failed");
     gl.attachShader(program, shader);
     gl.deleteShader(shader);
   }
   gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? "mobile: link failed");
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(program) ?? "mobile: link failed");
   return program;
 }
 
@@ -58,11 +78,19 @@ function hitsPlate(mobile: Mobile, from: Vec3, dir: Vec3, limit: number): boolea
     if (plate === undefined) continue;
     const dn = dir[0] * (f[9] ?? 0) + dir[1] * (f[10] ?? 0) + dir[2] * (f[11] ?? 0);
     if (Math.abs(dn) < 1e-9) continue;
-    const t = (((f[0] ?? 0) - from[0]) * (f[9] ?? 0) + ((f[1] ?? 0) - from[1]) * (f[10] ?? 0) + ((f[2] ?? 0) - from[2]) * (f[11] ?? 0)) / dn;
+    const t =
+      (((f[0] ?? 0) - from[0]) * (f[9] ?? 0) +
+        ((f[1] ?? 0) - from[1]) * (f[10] ?? 0) +
+        ((f[2] ?? 0) - from[2]) * (f[11] ?? 0)) /
+      dn;
     if (!(t > 0 && t < limit)) continue;
     const x = [0, 1, 2].map((c) => (from[c] ?? 0) + (dir[c] ?? 0) * t - (f[c] ?? 0));
-    const qx = ((x[0] ?? 0) * (f[3] ?? 0) + (x[1] ?? 0) * (f[4] ?? 0) + (x[2] ?? 0) * (f[5] ?? 0)) / plate.size;
-    const qy = ((x[0] ?? 0) * (f[6] ?? 0) + (x[1] ?? 0) * (f[7] ?? 0) + (x[2] ?? 0) * (f[8] ?? 0)) / plate.size;
+    const qx =
+      ((x[0] ?? 0) * (f[3] ?? 0) + (x[1] ?? 0) * (f[4] ?? 0) + (x[2] ?? 0) * (f[5] ?? 0)) /
+      plate.size;
+    const qy =
+      ((x[0] ?? 0) * (f[6] ?? 0) + (x[1] ?? 0) * (f[7] ?? 0) + (x[2] ?? 0) * (f[8] ?? 0)) /
+      plate.size;
     if (mobilePlateDistance(plate.shape, qx, qy) < 0) return true;
   }
   return false;
@@ -120,7 +148,11 @@ Shade regressionMobile(vec2 uv, vec2 cell, float t) {
         const v = (j + 0.5) / HEIGHT;
         let expected: boolean;
         if (mode === 0) {
-          const P: Vec3 = [PATCH[0] + (PATCH[2] - PATCH[0]) * u, PATCH[1] + (PATCH[3] - PATCH[1]) * v, WALL];
+          const P: Vec3 = [
+            PATCH[0] + (PATCH[2] - PATCH[0]) * u,
+            PATCH[1] + (PATCH[3] - PATCH[1]) * v,
+            WALL,
+          ];
           expected = hitsPlate(mobile, P, [LAMP[0] - P[0], LAMP[1] - P[1], LAMP[2] - P[2]], 1);
         } else {
           const x = VIEW[0] * (2 * u - 1);
@@ -135,8 +167,14 @@ Shade regressionMobile(vec2 uv, vec2 cell, float t) {
     }
     // Pixels whose centre lies within a hair of an outline may fall either way, and a wire's shadow
     // may darken a pixel or two; anything more is the two pictures parting.
-    if (covered < 60) throw new Error(`mobile: the ${mode === 0 ? "shadow" : "plates"} fixture covers only ${covered} pixels`);
-    if (mismatched > Math.max(6, 0.04 * covered)) throw new Error(`mobile: GPU ${mode === 0 ? "shadow" : "plates"} differ from the CPU twin in ${mismatched} of ${covered} covered pixels`);
+    if (covered < 60)
+      throw new Error(
+        `mobile: the ${mode === 0 ? "shadow" : "plates"} fixture covers only ${covered} pixels`,
+      );
+    if (mismatched > Math.max(6, 0.04 * covered))
+      throw new Error(
+        `mobile: GPU ${mode === 0 ? "shadow" : "plates"} differ from the CPU twin in ${mismatched} of ${covered} covered pixels`,
+      );
     result[mode === 0 ? "shadow" : "plates"] = { covered, mismatched };
   }
   gl.deleteProgram(program);

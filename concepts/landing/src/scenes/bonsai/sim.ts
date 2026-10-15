@@ -45,7 +45,13 @@ import {
   bonsaiSurface,
 } from "./geometry.ts";
 import { type LitterMark, TreeMaps, drawSprite, eraseLitter, stampLitter } from "./raster.ts";
-import { bonsaiBlossom, bonsaiHue, bonsaiLeafiness, bonsaiPetalFall, bonsaiShedding } from "./season.ts";
+import {
+  bonsaiBlossom,
+  bonsaiHue,
+  bonsaiLeafiness,
+  bonsaiPetalFall,
+  bonsaiShedding,
+} from "./season.ts";
 import { type Tree, growTree, subtree } from "./tree.ts";
 
 const TAU = Math.PI * 2;
@@ -80,7 +86,11 @@ const FLURRY = 45;
 
 // ---- falling things ----
 /** Leaves (petals, needles) coming down over a whole season at the knob's middle. */
-const LEAVES_PER_YEAR: Readonly<Record<number, number>> = { [BONSAI_PINE]: 34, [BONSAI_MAPLE]: 130, [BONSAI_SAKURA]: 110 };
+const LEAVES_PER_YEAR: Readonly<Record<number, number>> = {
+  [BONSAI_PINE]: 34,
+  [BONSAI_MAPLE]: 130,
+  [BONSAI_SAKURA]: 110,
+};
 const PETALS_PER_YEAR = 260;
 /** Litter lifetimes, in years. */
 const LEAF_LIFE = 0.42;
@@ -105,7 +115,8 @@ const SLIDE_PUSH = 0.2;
 /** Leaves a leaving stand shakes loose over its first half. */
 const SHAKEN_LEAVES = 5;
 
-type KnobKey = "species" | "treeSeed" | "breeze" | "growth" | "season" | "year" | "leaves" | "snowfall";
+type KnobKey =
+  "species" | "treeSeed" | "breeze" | "growth" | "season" | "year" | "leaves" | "snowfall";
 
 export class BonsaiSimError extends Error {}
 
@@ -283,15 +294,62 @@ class BonsaiSim implements SceneSim {
       leaves: index("leaves"),
       snowfall: index("snowfall"),
     };
-    this.#woodTexture = new DataTexture(gl, { width: BONSAI_MAP.width, height: BONSAI_MAP.height, format: "rgba16f" });
-    this.#leafTexture = new DataTexture(gl, { width: BONSAI_MAP.width, height: BONSAI_MAP.height, format: "rgba16f" });
-    this.#atlasTexture = new DataTexture(gl, { width: BONSAI_ATLAS.width, height: BONSAI_ATLAS.height, format: "rgba16f", filter: "nearest" });
-    this.#dataTexture = new DataTexture(gl, { width: FW, height: BONSAI_ROWS.total, format: "rgba16f" });
+    this.#woodTexture = new DataTexture(gl, {
+      width: BONSAI_MAP.width,
+      height: BONSAI_MAP.height,
+      format: "rgba16f",
+    });
+    this.#leafTexture = new DataTexture(gl, {
+      width: BONSAI_MAP.width,
+      height: BONSAI_MAP.height,
+      format: "rgba16f",
+    });
+    this.#atlasTexture = new DataTexture(gl, {
+      width: BONSAI_ATLAS.width,
+      height: BONSAI_ATLAS.height,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#dataTexture = new DataTexture(gl, {
+      width: FW,
+      height: BONSAI_ROWS.total,
+      format: "rgba16f",
+    });
     for (let i = 0; i < BONSAI_MAX_MOTES; i++) {
-      this.#motes.push({ live: false, kind: 0, x: 0, y: 0, z: 0, x0: 0, phase: 0, rate: 1, amp: 0, sink: 0, dive: 0, tilt: 0, spin: 0, size: 0, hue: 0, angle: 0, flip: 1 });
+      this.#motes.push({
+        live: false,
+        kind: 0,
+        x: 0,
+        y: 0,
+        z: 0,
+        x0: 0,
+        phase: 0,
+        rate: 1,
+        amp: 0,
+        sink: 0,
+        dive: 0,
+        tilt: 0,
+        spin: 0,
+        size: 0,
+        hue: 0,
+        angle: 0,
+        flip: 1,
+      });
     }
-    for (let i = 0; i < 2; i++) this.#twigs.push({ live: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, angle: 0, spin: 0, reach: 0.05 });
-    for (let i = 0; i < BONSAI_LITTER_SLOTS; i++) this.#slots.push({ used: false, age: 0, life: 1, bounds: [0, 0, -1, -1] });
+    for (let i = 0; i < 2; i++)
+      this.#twigs.push({
+        live: false,
+        x: 0,
+        y: 0,
+        z: 0,
+        vx: 0,
+        vy: 0,
+        angle: 0,
+        spin: 0,
+        reach: 0.05,
+      });
+    for (let i = 0; i < BONSAI_LITTER_SLOTS; i++)
+      this.#slots.push({ used: false, age: 0, life: 1, bounds: [0, 0, -1, -1] });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -315,7 +373,12 @@ class BonsaiSim implements SceneSim {
       this.#atlasWait = 0.25;
     }
     this.#dataTexture.upload(this.#data);
-    return [this.#woodTexture.texture, this.#leafTexture.texture, this.#atlasTexture.texture, this.#dataTexture.texture];
+    return [
+      this.#woodTexture.texture,
+      this.#leafTexture.texture,
+      this.#atlasTexture.texture,
+      this.#dataTexture.texture,
+    ];
   }
 
   dispose(): void {
@@ -353,7 +416,18 @@ class BonsaiSim implements SceneSim {
       this.#tree = growTree(species, seed, BONSAI_MAX_TUFTS);
       this.#pads = this.#tree.pads.map((pad, i) => {
         const size = Math.min(1, pad.long / 0.25);
-        return { omega: TAU * (PAD_HZ[1] + (PAD_HZ[0] - PAD_HZ[1]) * size) * (0.9 + 0.2 * this.#random()), x: 0, vx: 0, y: 0, vy: 0, phase: i * 1.7 + this.#random() * TAU, sx: pad.x, sy: pad.y + BONSAI_TILT * pad.z, rx: Math.max(pad.long, pad.side), ry: pad.tall * 1.6 + 0.02 };
+        return {
+          omega: TAU * (PAD_HZ[1] + (PAD_HZ[0] - PAD_HZ[1]) * size) * (0.9 + 0.2 * this.#random()),
+          x: 0,
+          vx: 0,
+          y: 0,
+          vy: 0,
+          phase: i * 1.7 + this.#random() * TAU,
+          sx: pad.x,
+          sy: pad.y + BONSAI_TILT * pad.z,
+          rx: Math.max(pad.long, pad.side),
+          ry: pad.tall * 1.6 + 0.02,
+        };
       });
       this.#redraw();
       this.#writeTufts();
@@ -426,8 +500,10 @@ class BonsaiSim implements SceneSim {
     const y = (pointer.y - place.y) / place.scale;
     if (this.#pointerX !== undefined && dt > 0) {
       const k = 1 - Math.exp(-dt / 0.1);
-      this.#pointerVX += (Math.max(-3, Math.min(3, (x - this.#pointerX) / dt)) - this.#pointerVX) * k;
-      this.#pointerVY += (Math.max(-3, Math.min(3, (y - this.#pointerY) / dt)) - this.#pointerVY) * k;
+      this.#pointerVX +=
+        (Math.max(-3, Math.min(3, (x - this.#pointerX) / dt)) - this.#pointerVX) * k;
+      this.#pointerVY +=
+        (Math.max(-3, Math.min(3, (y - this.#pointerY) / dt)) - this.#pointerVY) * k;
     }
     this.#pointerX = x;
     this.#pointerY = y;
@@ -483,7 +559,10 @@ class BonsaiSim implements SceneSim {
     const q = Math.min(1, Math.max(0, frame.passage.exit));
     const before = this.#shift;
     this.#shift = SLIDE * (rest * rest * rest + q * q);
-    this.#push = SLIDE_PUSH * SLIDE * ((6 * rest) / (enter * enter) + (q > 0 ? (2 * smoothstep(0, 0.12, q)) / (exit * exit) : 0));
+    this.#push =
+      SLIDE_PUSH *
+      SLIDE *
+      ((6 * rest) / (enter * enter) + (q > 0 ? (2 * smoothstep(0, 0.12, q)) / (exit * exit) : 0));
     if (q <= 0) return;
     if (!this.#leaving) {
       this.#leaving = true;
@@ -551,15 +630,25 @@ class BonsaiSim implements SceneSim {
   /** This year's shoots: from outer tufts on the tops and sides of the pads, outward and up. */
   #growShoots(index: number): void {
     this.#shoots = [];
-    const rand = mulberry32(0x73686f6f ^ Math.imul(this.#seed + 11, 0x9e3779b1) ^ Math.imul(index + 1013, 0x85ebca6b));
+    const rand = mulberry32(
+      0x73686f6f ^ Math.imul(this.#seed + 11, 0x9e3779b1) ^ Math.imul(index + 1013, 0x85ebca6b),
+    );
     const species = this.#species;
     const tufts = this.#tree.tufts;
     const pads = this.#tree.pads;
-    const candidates = tufts.map((_, i) => i).filter((i) => {
-      const t = tufts[i];
-      const pad = pads[t?.pad ?? -1];
-      return t !== undefined && pad !== undefined && !t.removed && t.outer > 0.45 && t.y > pad.y - 0.2 * pad.tall;
-    });
+    const candidates = tufts
+      .map((_, i) => i)
+      .filter((i) => {
+        const t = tufts[i];
+        const pad = pads[t?.pad ?? -1];
+        return (
+          t !== undefined &&
+          pad !== undefined &&
+          !t.removed &&
+          t.outer > 0.45 &&
+          t.y > pad.y - 0.2 * pad.tall
+        );
+      });
     const count = Math.min(BONSAI_MAX_SHOOTS, SHOOTS_PER_YEAR, candidates.length);
     for (let k = 0; k < count; k++) {
       const pick = Math.floor(rand() * candidates.length);
@@ -577,9 +666,27 @@ class BonsaiSim implements SceneSim {
       const length = species === BONSAI_PINE ? 0.026 + 0.02 * rand() : 0.045 + 0.04 * rand();
       const startX = t.x + Math.cos(angle) * t.r * 0.55;
       const startY = t.y + BONSAI_TILT * (t.z - t.r * 0.5) + Math.sin(angle) * t.r * t.flat * 0.55;
-      const start = species === BONSAI_PINE ? 0.02 + 0.04 * rand() : species === BONSAI_SAKURA ? 0.12 + 0.05 * rand() : 0.05 + 0.06 * rand();
+      const start =
+        species === BONSAI_PINE
+          ? 0.02 + 0.04 * rand()
+          : species === BONSAI_SAKURA
+            ? 0.12 + 0.05 * rand()
+            : 0.05 + 0.06 * rand();
       const trim = species === BONSAI_PINE ? 0.23 + 0.08 * rand() : 0.3 + 0.24 * rand();
-      this.#shoots.push({ x: startX, y: startY, angle, length, bend: species === BONSAI_PINE ? (rand() - 0.5) * 0.15 : (rand() - 0.5) * 0.9, start, trim, hash: rand(), pad: t.pad, cut: false, grown: 0, leaves: 0 });
+      this.#shoots.push({
+        x: startX,
+        y: startY,
+        angle,
+        length,
+        bend: species === BONSAI_PINE ? (rand() - 0.5) * 0.15 : (rand() - 0.5) * 0.9,
+        start,
+        trim,
+        hash: rand(),
+        pad: t.pad,
+        cut: false,
+        grown: 0,
+        leaves: 0,
+      });
     }
     // The shoot grid: each cell lists up to four shoots whose reach overlaps it.
     const grid = BONSAI_ROWS.grid * FW * 4;
@@ -590,10 +697,22 @@ class BonsaiSim implements SceneSim {
       const ex = mx + Math.cos(s.angle + s.bend) * s.length * 0.5;
       const ey = my + Math.sin(s.angle + s.bend) * s.length * 0.5;
       const pad = 0.02;
-      const g0 = Math.max(0, Math.floor((Math.min(s.x, mx, ex) - pad - BONSAI_REGION.x0) / BONSAI_GRID_CELL));
-      const g1 = Math.min(BONSAI_GRID.width - 1, Math.floor((Math.max(s.x, mx, ex) + pad - BONSAI_REGION.x0) / BONSAI_GRID_CELL));
-      const h0 = Math.max(0, Math.floor((Math.min(s.y, my, ey) - pad - BONSAI_REGION.y0) / BONSAI_GRID_CELL));
-      const h1 = Math.min(BONSAI_GRID.height - 1, Math.floor((Math.max(s.y, my, ey) + pad - BONSAI_REGION.y0) / BONSAI_GRID_CELL));
+      const g0 = Math.max(
+        0,
+        Math.floor((Math.min(s.x, mx, ex) - pad - BONSAI_REGION.x0) / BONSAI_GRID_CELL),
+      );
+      const g1 = Math.min(
+        BONSAI_GRID.width - 1,
+        Math.floor((Math.max(s.x, mx, ex) + pad - BONSAI_REGION.x0) / BONSAI_GRID_CELL),
+      );
+      const h0 = Math.max(
+        0,
+        Math.floor((Math.min(s.y, my, ey) - pad - BONSAI_REGION.y0) / BONSAI_GRID_CELL),
+      );
+      const h1 = Math.min(
+        BONSAI_GRID.height - 1,
+        Math.floor((Math.max(s.y, my, ey) + pad - BONSAI_REGION.y0) / BONSAI_GRID_CELL),
+      );
       for (let gy = h0; gy <= h1; gy++) {
         for (let gx = g0; gx <= g1; gx++) {
           const o = grid + (gy * BONSAI_GRID.width + gx) * 4;
@@ -626,7 +745,8 @@ class BonsaiSim implements SceneSim {
     if (this.#breeze <= 0) return;
     if (this.#clock >= this.#nextGust) {
       this.#launchGust(0.8 + 0.6 * this.#random());
-      this.#nextGust = this.#clock + (34 - 22 * Math.min(1, this.#breeze)) * (0.6 + 0.8 * this.#random());
+      this.#nextGust =
+        this.#clock + (34 - 22 * Math.min(1, this.#breeze)) * (0.6 + 0.8 * this.#random());
     }
   }
 
@@ -646,7 +766,12 @@ class BonsaiSim implements SceneSim {
       if (!pad) continue;
       // The breeze: slow waves rolling across from the left, each pad feeling them a little late.
       const lag = t - pad.x * 1.6;
-      const wind = calm * (0.5 * Math.sin(0.62 * lag + s.phase * 0.25) + 0.3 * Math.sin(1.07 * lag + 1.3) + 0.2 * Math.sin(0.29 * lag + s.phase)) + 1.6 * gustPulse(t - this.#gustAt - pad.x * 1.2) * this.#gustStrength;
+      const wind =
+        calm *
+          (0.5 * Math.sin(0.62 * lag + s.phase * 0.25) +
+            0.3 * Math.sin(1.07 * lag + 1.3) +
+            0.2 * Math.sin(0.29 * lag + s.phase)) +
+        1.6 * gustPulse(t - this.#gustAt - pad.x * 1.2) * this.#gustStrength;
       let fx = s.omega * s.omega * amp * wind * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
       let fy = s.omega * s.omega * amp * 0.3 * calm * Math.sin(0.83 * lag + s.phase);
       if (push !== 0) fx -= push * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
@@ -678,7 +803,11 @@ class BonsaiSim implements SceneSim {
         [0.775 + 0.02 * rand(), 0.035 + 0.015 * rand(), 0.7 + 0.3 * rand()],
         [0.87 + 0.03 * rand(), 0.03 + 0.02 * rand(), 0.6 + 0.4 * rand()],
       ];
-      for (const [start, span, strength] of falls) falling += strength * smoothstep(start, start + 0.006, y) * (1 - smoothstep(start + span - 0.006, start + span, y));
+      for (const [start, span, strength] of falls)
+        falling +=
+          strength *
+          smoothstep(start, start + 0.006, y) *
+          (1 - smoothstep(start + span - 0.006, start + span, y));
       if (this.#flurryLeft > 0) {
         this.#flurryLeft -= dt;
         const f = this.#flurryLeft / FLURRY;
@@ -711,7 +840,12 @@ class BonsaiSim implements SceneSim {
     const perYear = 1 / this.#yearSeconds;
     const scale = this.#leafAmount / 0.5;
     const leaves = (LEAVES_PER_YEAR[this.#species] ?? 100) * (shed / tufts.length);
-    return (leaves + PETALS_PER_YEAR * (petals / tufts.length)) * perYear * scale * (this.#minutes > 0 ? 1 : 0);
+    return (
+      (leaves + PETALS_PER_YEAR * (petals / tufts.length)) *
+      perYear *
+      scale *
+      (this.#minutes > 0 ? 1 : 0)
+    );
   }
 
   /** Send one leaf (petal, needle) down from a tuft that is losing them; `any` takes any leafy tuft. */
@@ -746,13 +880,33 @@ class BonsaiSim implements SceneSim {
     mote.z = t.z - 0.4 * t.r;
     mote.phase = rand() * TAU;
     mote.rate = kind === MOTE_NEEDLE ? 0 : 1.5 + rand() * (kind === MOTE_PETAL ? 1.6 : 1.0);
-    mote.amp = kind === MOTE_PETAL ? 0.012 + 0.012 * rand() : kind === MOTE_NEEDLE ? 0.004 : 0.018 + 0.02 * rand();
-    mote.sink = kind === MOTE_PETAL ? 0.03 + 0.012 * rand() : kind === MOTE_NEEDLE ? 0.1 + 0.03 * rand() : 0.045 + 0.02 * rand();
+    mote.amp =
+      kind === MOTE_PETAL
+        ? 0.012 + 0.012 * rand()
+        : kind === MOTE_NEEDLE
+          ? 0.004
+          : 0.018 + 0.02 * rand();
+    mote.sink =
+      kind === MOTE_PETAL
+        ? 0.03 + 0.012 * rand()
+        : kind === MOTE_NEEDLE
+          ? 0.1 + 0.03 * rand()
+          : 0.045 + 0.02 * rand();
     mote.dive = kind === MOTE_NEEDLE ? 0 : mote.sink * 0.8;
     mote.tilt = (rand() - 0.5) * 0.8;
     mote.spin = kind === MOTE_NEEDLE ? (rand() - 0.5) * 3 : rand() * TAU;
-    mote.size = kind === MOTE_PETAL ? 0.0065 + 0.0015 * rand() : kind === MOTE_NEEDLE ? 0.013 : (species === BONSAI_SAKURA ? 0.0115 : 0.0105) * (0.85 + 0.3 * rand());
-    mote.hue = kind === MOTE_PETAL ? 0.15 + 0.3 * rand() : kind === MOTE_NEEDLE ? 0.75 + 0.2 * rand() : bonsaiHue(species, y, t.r1, t.r2, t.outer);
+    mote.size =
+      kind === MOTE_PETAL
+        ? 0.0065 + 0.0015 * rand()
+        : kind === MOTE_NEEDLE
+          ? 0.013
+          : (species === BONSAI_SAKURA ? 0.0115 : 0.0105) * (0.85 + 0.3 * rand());
+    mote.hue =
+      kind === MOTE_PETAL
+        ? 0.15 + 0.3 * rand()
+        : kind === MOTE_NEEDLE
+          ? 0.75 + 0.2 * rand()
+          : bonsaiHue(species, y, t.r1, t.r2, t.outer);
     mote.angle = mote.tilt;
     mote.flip = 1;
     return mote;
@@ -773,7 +927,19 @@ class BonsaiSim implements SceneSim {
     const ground = bonsaiSurface(m.x, m.z);
     if (m.y <= ground) {
       m.live = false;
-      this.#lay({ x: m.x, y: ground + BONSAI_TILT * m.z, angle: this.#random() * TAU, size: m.size, kind: m.kind, hue: m.hue, slot: 0 }, m.kind === MOTE_PETAL ? PETAL_LIFE : LEAF_LIFE, 0);
+      this.#lay(
+        {
+          x: m.x,
+          y: ground + BONSAI_TILT * m.z,
+          angle: this.#random() * TAU,
+          size: m.size,
+          kind: m.kind,
+          hue: m.hue,
+          slot: 0,
+        },
+        m.kind === MOTE_PETAL ? PETAL_LIFE : LEAF_LIFE,
+        0,
+      );
     }
   }
 
@@ -838,7 +1004,10 @@ class BonsaiSim implements SceneSim {
       const n3 = Math.ceil(tufts.length / 3);
       const leaves = total * (shed / n3) * (span / 90);
       const flowers = petals * (fall / n3) * (span / 90);
-      for (const [count, kind, life] of [[leaves, species === BONSAI_PINE ? MOTE_NEEDLE : MOTE_LEAF, LEAF_LIFE], [flowers, MOTE_PETAL, PETAL_LIFE]] as const) {
+      for (const [count, kind, life] of [
+        [leaves, species === BONSAI_PINE ? MOTE_NEEDLE : MOTE_LEAF, LEAF_LIFE],
+        [flowers, MOTE_PETAL, PETAL_LIFE],
+      ] as const) {
         if (ageYears >= life) continue;
         let n = Math.floor(count + rand());
         while (n-- > 0) {
@@ -847,9 +1016,23 @@ class BonsaiSim implements SceneSim {
           const x = t.x + (rand() - 0.5) * 0.08;
           const z = t.z - 0.4 * t.r;
           const ground = bonsaiSurface(x, z);
-          const hue = kind === MOTE_PETAL ? 0.15 + 0.3 * rand() : kind === MOTE_NEEDLE ? 0.75 + 0.2 * rand() : bonsaiHue(species, yy, t.r1, t.r2, t.outer);
-          const size = kind === MOTE_PETAL ? 0.007 : kind === MOTE_NEEDLE ? 0.013 : 0.0105 * (0.85 + 0.3 * rand());
-          this.#lay({ x, y: ground + BONSAI_TILT * z, angle: rand() * TAU, size, kind, hue, slot: 0 }, life, ageYears * this.#yearSeconds);
+          const hue =
+            kind === MOTE_PETAL
+              ? 0.15 + 0.3 * rand()
+              : kind === MOTE_NEEDLE
+                ? 0.75 + 0.2 * rand()
+                : bonsaiHue(species, yy, t.r1, t.r2, t.outer);
+          const size =
+            kind === MOTE_PETAL
+              ? 0.007
+              : kind === MOTE_NEEDLE
+                ? 0.013
+                : 0.0105 * (0.85 + 0.3 * rand());
+          this.#lay(
+            { x, y: ground + BONSAI_TILT * z, angle: rand() * TAU, size, kind, hue, slot: 0 },
+            life,
+            ageYears * this.#yearSeconds,
+          );
         }
       }
     }
@@ -881,7 +1064,11 @@ class BonsaiSim implements SceneSim {
     let node = -1;
     for (const t of this.#tree.tufts) {
       if (t.removed) continue;
-      if (bonsaiLeafiness(this.#species, year, t.r1, t.outer, t.regrow) < 0.25 && bonsaiBlossom(this.#species, year, t.r1) < 0.25) continue;
+      if (
+        bonsaiLeafiness(this.#species, year, t.r1, t.outer, t.regrow) < 0.25 &&
+        bonsaiBlossom(this.#species, year, t.r1) < 0.25
+      )
+        continue;
       const qx = (x - t.x) / t.r;
       const qy = (y - t.y - BONSAI_TILT * t.z) / (t.r * t.flat);
       if (qx * qx + qy * qy < 1 && t.z - t.r < front) {
@@ -906,7 +1093,13 @@ class BonsaiSim implements SceneSim {
   /** The invisible gardener's snip, on demand: the longest shoot, else a random outer twig. */
   #gardenerSnip(): void {
     let longest: Shoot | undefined;
-    for (const s of this.#shoots) if (!s.cut && s.grown > 0.3 && s.grown * s.length > (longest ? longest.grown * longest.length : 0)) longest = s;
+    for (const s of this.#shoots)
+      if (
+        !s.cut &&
+        s.grown > 0.3 &&
+        s.grown * s.length > (longest ? longest.grown * longest.length : 0)
+      )
+        longest = s;
     if (longest) {
       this.#cutShoot(longest);
       return;
@@ -927,8 +1120,22 @@ class BonsaiSim implements SceneSim {
     const twig = this.#twigs[slot];
     if (!twig) return;
     this.#drawShootSprite(slot, s, ex, ey);
-    Object.assign(twig, { live: true, x: ex, y: ey, z: -0.05, vx: (this.#random() - 0.5) * 0.06, vy: 0.03, angle: 0, spin: (this.#random() - 0.5) * 2.5, reach: reach * 0.5 });
-    this.#snip = { x: s.x + Math.cos(s.angle) * 0.004, y: s.y + Math.sin(s.angle) * 0.004, at: this.#clock };
+    Object.assign(twig, {
+      live: true,
+      x: ex,
+      y: ey,
+      z: -0.05,
+      vx: (this.#random() - 0.5) * 0.06,
+      vy: 0.03,
+      angle: 0,
+      spin: (this.#random() - 0.5) * 2.5,
+      reach: reach * 0.5,
+    });
+    this.#snip = {
+      x: s.x + Math.cos(s.angle) * 0.004,
+      y: s.y + Math.sin(s.angle) * 0.004,
+      at: this.#clock,
+    };
     const pad = this.#pads[s.pad];
     if (pad) pad.vx += (this.#random() - 0.5) * 0.05;
   }
@@ -941,20 +1148,30 @@ class BonsaiSim implements SceneSim {
       const n = tree.nodes[root];
       const p = tree.nodes[n?.parent ?? -1];
       if (!n || !p || p.kind !== "twig") break;
-      const count = tree.tufts.filter((t) => !t.removed && subtree(tree, root).includes(t.node)).length;
+      const count = tree.tufts.filter(
+        (t) => !t.removed && subtree(tree, root).includes(t.node),
+      ).length;
       if (count >= 3) break;
       root = n.parent;
     }
     const nodes = subtree(tree, root).filter((i) => !tree.nodes[i]?.removed);
     const set = new Set(nodes);
-    const tufts = tree.tufts.map((_, i) => i).filter((i) => {
-      const t = tree.tufts[i];
-      return t !== undefined && !t.removed && set.has(t.node);
-    });
+    const tufts = tree.tufts
+      .map((_, i) => i)
+      .filter((i) => {
+        const t = tree.tufts[i];
+        return t !== undefined && !t.removed && set.has(t.node);
+      });
     const padIndex = tree.nodes[root]?.pad ?? -1;
     const padTufts = tree.tufts.filter((t) => t.pad === padIndex);
     const gone = padTufts.filter((t) => t.removed).length + tufts.length;
-    if (tufts.length > 12 || nodes.length > 60 || gone > 0.4 * padTufts.length || this.#cutsThisYear >= 24) return;
+    if (
+      tufts.length > 12 ||
+      nodes.length > 60 ||
+      gone > 0.4 * padTufts.length ||
+      this.#cutsThisYear >= 24
+    )
+      return;
     // Where it falls from: the middle of what was cut, in screen terms.
     let cx = 0;
     let cy = 0;
@@ -979,7 +1196,12 @@ class BonsaiSim implements SceneSim {
       },
       leafiness: (i) => {
         const t = tree.tufts[i];
-        return t ? Math.max(bonsaiLeafiness(this.#species, year, t.r1, t.outer, t.regrow), bonsaiBlossom(this.#species, year, t.r1)) : 0;
+        return t
+          ? Math.max(
+              bonsaiLeafiness(this.#species, year, t.r1, t.outer, t.regrow),
+              bonsaiBlossom(this.#species, year, t.r1),
+            )
+          : 0;
       },
     });
     this.#atlasDirty = true;
@@ -1001,9 +1223,23 @@ class BonsaiSim implements SceneSim {
         const n = tree.nodes[i];
         if (n) reach = Math.max(reach, Math.hypot(n.x - cx, n.y + BONSAI_TILT * n.z - cy));
       }
-      Object.assign(twig, { live: true, x: cx, y: cy, z: cut.z, vx: (this.#random() - 0.5) * 0.05, vy: 0.02, angle: 0, spin: (this.#random() - 0.5) * 1.6, reach: Math.min(reach, BONSAI_SPRITE.span * 0.45) });
+      Object.assign(twig, {
+        live: true,
+        x: cx,
+        y: cy,
+        z: cut.z,
+        vx: (this.#random() - 0.5) * 0.05,
+        vy: 0.02,
+        angle: 0,
+        spin: (this.#random() - 0.5) * 1.6,
+        reach: Math.min(reach, BONSAI_SPRITE.span * 0.45),
+      });
       const parent = tree.nodes[cut.parent];
-      this.#snip = { x: parent ? (parent.x + cut.x) / 2 : cut.x, y: parent ? (parent.y + cut.y + BONSAI_TILT * (parent.z + cut.z)) / 2 : cut.y, at: this.#clock };
+      this.#snip = {
+        x: parent ? (parent.x + cut.x) / 2 : cut.x,
+        y: parent ? (parent.y + cut.y + BONSAI_TILT * (parent.z + cut.z)) / 2 : cut.y,
+        at: this.#clock,
+      };
     }
     const pad = this.#pads[padIndex];
     if (pad) pad.vx += (this.#random() - 0.5) * 0.08;
@@ -1015,7 +1251,8 @@ class BonsaiSim implements SceneSim {
     const size = BONSAI_SPRITE.size;
     const x0 = BONSAI_LITTER.width + slot * size;
     const year = this.#year;
-    const hue = this.#species === BONSAI_PINE ? 0.25 : bonsaiHue(this.#species, year, s.hash, s.hash, 1);
+    const hue =
+      this.#species === BONSAI_PINE ? 0.25 : bonsaiHue(this.#species, year, s.hash, s.hash, 1);
     const reach = s.grown * s.length;
     const ax = s.x - px;
     const ay = s.y - py;
@@ -1027,8 +1264,13 @@ class BonsaiSim implements SceneSim {
         const x = (i + 0.5) / BONSAI_PER_UNIT - BONSAI_SPRITE.span / 2;
         const ex = bx - ax;
         const ey = by - ay;
-        const t = Math.min(1, Math.max(0, ((x - ax) * ex + (y - ay) * ey) / Math.max(ex * ex + ey * ey, 1e-9)));
-        const d = Math.hypot(x - ax - ex * t, y - ay - ey * t) - (this.#species === BONSAI_PINE ? 0.0045 : 0.0022);
+        const t = Math.min(
+          1,
+          Math.max(0, ((x - ax) * ex + (y - ay) * ey) / Math.max(ex * ex + ey * ey, 1e-9)),
+        );
+        const d =
+          Math.hypot(x - ax - ex * t, y - ay - ey * t) -
+          (this.#species === BONSAI_PINE ? 0.0045 : 0.0022);
         const leaf = s.leaves * (1 - Math.hypot(x - bx, y - by) / 0.016) - 0.2;
         const o = (j * BONSAI_ATLAS.width + x0 + i) * 4;
         this.#atlas[o] = d;
@@ -1096,9 +1338,11 @@ class BonsaiSim implements SceneSim {
         if (ti < 0 || tj < 0 || ti >= BONSAI_LITTER.width || tj >= BONSAI_LITTER.height) continue;
         const wood = (this.#atlas[o] ?? 1) < 0;
         const t = (tj * BONSAI_ATLAS.width + ti) * 4;
-        this.#atlas[t] = wood ? (MOTE_WOOD + 0.5) / 4 : (MOTE_LEAF + Math.min(0.999, this.#atlas[o + 2] ?? 0)) / 4;
+        this.#atlas[t] = wood
+          ? (MOTE_WOOD + 0.5) / 4
+          : (MOTE_LEAF + Math.min(0.999, this.#atlas[o + 2] ?? 0)) / 4;
         this.#atlas[t + 1] = litterSlot;
-        this.#atlas[t + 2] = 0.3 + 0.4 * ((ti * 7 + tj * 13) % 10) / 10;
+        this.#atlas[t + 2] = 0.3 + (0.4 * ((ti * 7 + tj * 13) % 10)) / 10;
         this.#atlas[t + 3] = 0.85;
         i0 = Math.min(i0, ti);
         j0 = Math.min(j0, tj);
@@ -1174,7 +1418,8 @@ class BonsaiSim implements SceneSim {
     }
     // Litter decay per slot.
     const litterRow = BONSAI_ROWS.litter * FW * 4;
-    for (const [i, s] of this.#slots.entries()) data[litterRow + i] = s.used ? Math.min(1, s.age / Math.max(s.life, 1e-3)) : 1;
+    for (const [i, s] of this.#slots.entries())
+      data[litterRow + i] = s.used ? Math.min(1, s.age / Math.max(s.life, 1e-3)) : 1;
     // State.
     let leafy = 0;
     let blossom = 0;
@@ -1234,7 +1479,10 @@ function shootDistance(s: Shoot, x: number, y: number): number {
 function segment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const ex = bx - ax;
   const ey = by - ay;
-  const t = Math.min(1, Math.max(0, ((px - ax) * ex + (py - ay) * ey) / Math.max(ex * ex + ey * ey, 1e-12)));
+  const t = Math.min(
+    1,
+    Math.max(0, ((px - ax) * ex + (py - ay) * ey) / Math.max(ex * ex + ey * ey, 1e-12)),
+  );
   return Math.hypot(px - ax - ex * t, py - ay - ey * t);
 }
 

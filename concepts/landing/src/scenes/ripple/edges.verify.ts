@@ -32,7 +32,10 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: COLUMNS, height: ROWS, format: "rgba32f", filter: "nearest" });
-  const sample = gpu.pass("uniform sampler2D uView; void main() { fragColor = texture(uView, vUv); }", "ripple edges sample");
+  const sample = gpu.pass(
+    "uniform sampler2D uView; void main() { fragColor = texture(uView, vUv); }",
+    "ripple edges sample",
+  );
   const view = new Float32Array(COLUMNS * ROWS * 4);
 
   /** The slope at each sample, and its RMS near the edges (0.06..0.14) and in the middle (over 0.35). */
@@ -54,7 +57,8 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
         const x = ((i + 0.5) / COLUMNS) * ASPECT;
         const y = (j + 0.5) / ROWS;
         const edge = Math.min(x, ASPECT - x, y, 1 - y);
-        const band = edge >= 0.06 && edge <= 0.14 ? sums.edge : edge > 0.35 ? sums.middle : undefined;
+        const band =
+          edge >= 0.06 && edge <= 0.14 ? sums.edge : edge > 0.35 ? sums.middle : undefined;
         if (!band) continue;
         band[0] = (band[0] ?? 0) + sx * sx + sy * sy;
         band[1] = (band[1] ?? 0) + 1;
@@ -74,7 +78,9 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
         const y = (j + 0.5) / ROWS;
         if (Math.min(x, ASPECT - x, y, 1 - y) <= 0.35) continue;
         const k = j * COLUMNS + i;
-        sum += ((a[2 * k] ?? 0) - (b[2 * k] ?? 0)) ** 2 + ((a[2 * k + 1] ?? 0) - (b[2 * k + 1] ?? 0)) ** 2;
+        sum +=
+          ((a[2 * k] ?? 0) - (b[2 * k] ?? 0)) ** 2 +
+          ((a[2 * k + 1] ?? 0) - (b[2 * k + 1] ?? 0)) ** 2;
         count++;
       }
     }
@@ -127,8 +133,17 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
   };
   // Measured in software WebGL: edge band 0.163 (beaches) / 0.221 (walls), middle 0.390, reflected
   // 0.100, first-frame difference 0.
-  check(result.firstDifference <= 0.01 * result.firstMiddle, `Edge absorption changed the open water at once: ${result.firstDifference}`);
-  check(result.edgeWalls > 1.2 * result.edgeBeaches, `Bare walls did not raise the waves along the edges: ${result.edgeWalls} vs ${result.edgeBeaches}`);
-  check(result.reflected > 0.15 * result.middle, `Bare walls sent no reflections into the tank: ${result.reflected} vs ${result.middle}`);
+  check(
+    result.firstDifference <= 0.01 * result.firstMiddle,
+    `Edge absorption changed the open water at once: ${result.firstDifference}`,
+  );
+  check(
+    result.edgeWalls > 1.2 * result.edgeBeaches,
+    `Bare walls did not raise the waves along the edges: ${result.edgeWalls} vs ${result.edgeBeaches}`,
+  );
+  check(
+    result.reflected > 0.15 * result.middle,
+    `Bare walls sent no reflections into the tank: ${result.reflected} vs ${result.middle}`,
+  );
   return result;
 }

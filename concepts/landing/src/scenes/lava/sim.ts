@@ -242,11 +242,23 @@ interface WaxBody {
   blend: number;
 }
 /** Silky, runny wax: loose and far-reaching bonds, slipping through itself, long tails, smooth merges. */
-const SILKY: Readonly<WaxBody> = { cohesion: 0.35, reach: 1.3, viscosity: 0.15, stretch: 1.7, blend: 1.15 };
+const SILKY: Readonly<WaxBody> = {
+  cohesion: 0.35,
+  reach: 1.3,
+  viscosity: 0.15,
+  stretch: 1.7,
+  blend: 1.15,
+};
 /** The classic wax every constant above was tuned on, at the knob's middle. */
 const CLASSIC: Readonly<WaxBody> = { cohesion: 1, reach: 1, viscosity: 1, stretch: 1, blend: 1 };
 /** Chunky, stiff wax: hard, short bonds that snap early, moving in lumps that keep their knobbly parcels. */
-const CHUNKY: Readonly<WaxBody> = { cohesion: 3, reach: 0.9, viscosity: 6, stretch: 0.45, blend: 0.86 };
+const CHUNKY: Readonly<WaxBody> = {
+  cohesion: 3,
+  reach: 0.9,
+  viscosity: 6,
+  stretch: 0.45,
+  blend: 0.86,
+};
 
 /** Your hand on the glass: its warmth (1/s toward HAND_T) and reach (glass units). */
 const HAND_RATE = 0.9;
@@ -331,7 +343,9 @@ function glassRadius(s: number): number {
     const a = 1 - t / SHAPE.wideAt;
     return SHAPE.glassBottom + (SHAPE.glassWide - SHAPE.glassBottom) * (1 - a * a);
   }
-  return SHAPE.glassWide + ((SHAPE.glassTop - SHAPE.glassWide) * (t - SHAPE.wideAt)) / (1 - SHAPE.wideAt);
+  return (
+    SHAPE.glassWide + ((SHAPE.glassTop - SHAPE.glassWide) * (t - SHAPE.wideAt)) / (1 - SHAPE.wideAt)
+  );
 }
 
 /** The liquid's half-width at glass height gy (glass units). */
@@ -340,7 +354,10 @@ function innerRadius(gy: number): number {
 }
 
 /** The liquid's area in the picture (glass units²): what the wax's share of the glass is out of. */
-const GLASS_AREA = Array.from({ length: 64 }, (_, j) => (2 * innerRadius((j + 0.5) / 64)) / 64).reduce((sum, a) => sum + a, 0);
+const GLASS_AREA = Array.from(
+  { length: 64 },
+  (_, j) => (2 * innerRadius((j + 0.5) / 64)) / 64,
+).reduce((sum, a) => sum + a, 0);
 
 /** The warm liquid's temperature at height gy, `warm` of the way through its warm-up. */
 function liquidTemperature(gy: number, warm: number): number {
@@ -350,7 +367,13 @@ function liquidTemperature(gy: number, warm: number): number {
 
 /** The Manifold M as target points (glass units): its five corners and `count - 5` more along its strokes. */
 function markTargets(count: number): { x: number; y: number }[] {
-  const corners = [[-0.47, -0.5], [-0.47, 0.5], [0, -0.08], [0.47, 0.5], [0.47, -0.5]] as const;
+  const corners = [
+    [-0.47, -0.5],
+    [-0.47, 0.5],
+    [0, -0.08],
+    [0.47, 0.5],
+    [0.47, -0.5],
+  ] as const;
   const strokes = corners.slice(0, 4).map((a, k) => {
     const b = corners[k + 1] ?? a;
     return { a, b, length: Math.hypot(b[0] - a[0], b[1] - a[1]) };
@@ -361,20 +384,26 @@ function markTargets(count: number): { x: number; y: number }[] {
   const shares = strokes.map((stroke) => (spare * stroke.length) / total);
   const inner = shares.map(Math.floor);
   let left = spare - inner.reduce((sum, n) => sum + n, 0);
-  const order = shares.map((share, k) => ({ k, rest: share - Math.floor(share) })).sort((p, q) => q.rest - p.rest);
+  const order = shares
+    .map((share, k) => ({ k, rest: share - Math.floor(share) }))
+    .sort((p, q) => q.rest - p.rest);
   for (const { k } of order) {
     if (left <= 0) break;
     inner[k] = (inner[k] ?? 0) + 1;
     left -= 1;
   }
   const points: { x: number; y: number }[] = [];
-  const place = (x: number, y: number) => points.push({ x: MARK_X + x * MARK_SIZE, y: MARK_Y + y * MARK_SIZE });
+  const place = (x: number, y: number) =>
+    points.push({ x: MARK_X + x * MARK_SIZE, y: MARK_Y + y * MARK_SIZE });
   strokes.forEach((stroke, k) => {
     place(stroke.a[0], stroke.a[1]);
     const n = inner[k] ?? 0;
     for (let i = 1; i <= n; i++) {
       const f = i / (n + 1);
-      place(stroke.a[0] + (stroke.b[0] - stroke.a[0]) * f, stroke.a[1] + (stroke.b[1] - stroke.a[1]) * f);
+      place(
+        stroke.a[0] + (stroke.b[0] - stroke.a[0]) * f,
+        stroke.a[1] + (stroke.b[1] - stroke.a[1]) * f,
+      );
     }
   });
   const last = corners[4];
@@ -385,7 +414,16 @@ function markTargets(count: number): { x: number; y: number }[] {
 // ---- knobs -------------------------------------------------------------------------------------
 
 type LavaKnob = "heat" | "fill" | "viscosity" | "cold" | "pour" | "hand" | "twin" | "mark";
-const LAVA_KNOBS: readonly LavaKnob[] = ["heat", "fill", "viscosity", "cold", "pour", "hand", "twin", "mark"];
+const LAVA_KNOBS: readonly LavaKnob[] = [
+  "heat",
+  "fill",
+  "viscosity",
+  "cold",
+  "pour",
+  "hand",
+  "twin",
+  "mark",
+];
 
 interface Settings {
   /** 0..1 bulb heat: how hot the coil runs and how fast it heats the wax on it. */
@@ -433,7 +471,21 @@ interface Wax {
 }
 
 const blankWax = (): Wax => ({
-  x: 0, y: 0, vx: 0, vy: 0, r: 0, size: R0, present: false, T: 0, inMark: false, tx: 0, ty: 0, glow: 0, ax: 0, ay: 0, dT: 0,
+  x: 0,
+  y: 0,
+  vx: 0,
+  vy: 0,
+  r: 0,
+  size: R0,
+  present: false,
+  T: 0,
+  inMark: false,
+  tx: 0,
+  ty: 0,
+  glow: 0,
+  ax: 0,
+  ay: 0,
+  dT: 0,
 });
 
 /** How the passage bends a lamp's physics this step: all neutral (and absent) at rest. */
@@ -577,7 +629,8 @@ class Lamp {
     if (count < 5) return;
     const targets = markTargets(count);
     const pairs: { w: Wax; t: { x: number; y: number }; d: number }[] = [];
-    for (const w of candidates) for (const t of targets) pairs.push({ w, t, d: Math.hypot(w.x - t.x, w.y - t.y) });
+    for (const w of candidates)
+      for (const t of targets) pairs.push({ w, t, d: Math.hypot(w.x - t.x, w.y - t.y) });
     pairs.sort((a, b) => a.d - b.d);
     const taken = new Set<Wax>();
     const filled = new Set<{ x: number; y: number }>();
@@ -605,14 +658,20 @@ class Lamp {
   markPull(): number {
     const age = this.markAge;
     if (age < 0) return 0;
-    return smoothstep(0, MARK_GATHER * 0.6, age) * (1 - smoothstep(MARK_GATHER + MARK_HOLD, MARK_GATHER + MARK_HOLD + MARK_RELEASE, age));
+    return (
+      smoothstep(0, MARK_GATHER * 0.6, age) *
+      (1 - smoothstep(MARK_GATHER + MARK_HOLD, MARK_GATHER + MARK_HOLD + MARK_RELEASE, age))
+    );
   }
 
   /** How brightly the gathered wax glows now, 0..1: it lights as the M forms and fades as it lets go. */
   markGlow(): number {
     const age = this.markAge;
     if (age < 0) return 0;
-    return smoothstep(MARK_GATHER * 0.4, MARK_GATHER, age) * (1 - smoothstep(MARK_GATHER + MARK_HOLD, MARK_GATHER + MARK_HOLD + 0.6 * MARK_RELEASE, age));
+    return (
+      smoothstep(MARK_GATHER * 0.4, MARK_GATHER, age) *
+      (1 - smoothstep(MARK_GATHER + MARK_HOLD, MARK_GATHER + MARK_HOLD + 0.6 * MARK_RELEASE, age))
+    );
   }
 
   /** Count down to the next M and age the one running (it plays out even if the M is switched off,
@@ -664,7 +723,14 @@ class Lamp {
    * and the wax on its coil faster and hotter, stirs the liquid a little more and lifts warm wax a
    * little harder (a lazy lamp sends up fewer blobs, not weaker ones).
    */
-  step(h: number, heat: number, hand: Hand | undefined, markPull: number, settling = false, stage?: Stage): void {
+  step(
+    h: number,
+    heat: number,
+    hand: Hand | undefined,
+    markPull: number,
+    settling = false,
+    stage?: Stage,
+  ): void {
     const wax = this.wax;
     const n = this.used;
     const quick = 0.75 + 0.5 * heat;
@@ -694,7 +760,8 @@ class Lamp {
           const d2 = (w.x - hand.x) ** 2 + (w.y - hand.y) ** 2;
           dT += HAND_RATE * Math.exp(-d2 / (HAND_REACH * HAND_REACH)) * (HAND_T - w.T);
         }
-        if (stage !== undefined) dT += stage.warm * (liquidTemperature(w.y, warm) - w.T) + stage.cool * (EXIT_T - w.T);
+        if (stage !== undefined)
+          dT += stage.warm * (liquidTemperature(w.y, warm) - w.T) + stage.cool * (EXIT_T - w.T);
         if (w.inMark) dT += 2 * markPull * (NEUTRAL - w.T);
         w.dT = dT;
       }
@@ -702,7 +769,11 @@ class Lamp {
       // at the floor, so it never lifts the heap), the M's pull.
       const hold = w.inMark ? markPull : 0;
       const solid = settling ? 0 : 1 - smoothstep(SOLID_LO, SOLID_HI, w.T);
-      const drag = DRAG * Math.sqrt(scale) * (1 + SOLID_DRAG * solid) * (stage === undefined ? 1 : 1 + EXIT_DRAG * stage.fall);
+      const drag =
+        DRAG *
+        Math.sqrt(scale) *
+        (1 + SOLID_DRAG * solid) *
+        (stage === undefined ? 1 : 1 + EXIT_DRAG * stage.fall);
       const R = innerRadius(w.y);
       const xi = clamp(w.x / R, -1, 1);
       const yc = clamp(w.y, 0, 1);
@@ -713,7 +784,10 @@ class Lamp {
       const T = settling ? 0 : w.T;
       const neutral = NEUTRAL + (RELEASE - NEUTRAL) * smoothstep(COIL_REACH, 0, w.y - w.r);
       // The passage's exit: the wax grows heavy and falls, easing toward the pool.
-      const fallV = stage === undefined ? 0 : EXIT_FALL * stage.fall * smoothstep(EXIT_FALL_POOL[0], EXIT_FALL_POOL[1], w.y);
+      const fallV =
+        stage === undefined
+          ? 0
+          : EXIT_FALL * stage.fall * smoothstep(EXIT_FALL_POOL[0], EXIT_FALL_POOL[1], w.y);
       w.ax += drag * (fx - w.vx);
       w.ay += drag * (fy - fallV - w.vy) + lift * (T - neutral) * (1 - hold);
       if (hold > 0) {
@@ -755,7 +829,7 @@ class Lamp {
         const m = Math.min(ma, mb);
         const solid = settling ? 1 : 1 - smoothstep(SOLID_LO, SOLID_HI, Math.min(a.T, b.T));
         // While the M holds, its parcels let go of the rest and of each other: the M keeps its shape.
-        const held = (a.inMark || b.inMark) ? markPull : 0;
+        const held = a.inMark || b.inMark ? markPull : 0;
         const bond = (1 + COLD_BOND * solid) * (1 - held);
         // Rising (warm) and sinking (cool) wax pass each other at different depths in the glass: in
         // the picture they slide through one another instead of jamming, and a warm blob holds on to
@@ -817,7 +891,7 @@ class Lamp {
   writeParcels(data: Float32Array, row: number): void {
     for (const [i, w] of this.wax.entries()) {
       const o = (row * LAVA_MAX + i) * 4;
-      const v = (o + LAVA_MAX * 4);
+      const v = o + LAVA_MAX * 4;
       const on = w.r > 1e-4;
       data[o] = w.x;
       data[o + 1] = w.y;
@@ -930,9 +1004,23 @@ class LavaSim implements SceneSim {
 
   constructor(gl: WebGL2RenderingContext, knobs: KnobReader<LavaKnob>) {
     this.#knobs = knobs;
-    this.#parcels = new DataTexture(gl, { width: LAVA_MAX, height: 4, format: "rgba16f", filter: "nearest" });
-    this.#grid = new DataTexture(gl, { width: LAVA_GRID_X, height: 2 * LAVA_GRID_Y, format: "rg16f" });
-    this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#parcels = new DataTexture(gl, {
+      width: LAVA_MAX,
+      height: 4,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#grid = new DataTexture(gl, {
+      width: LAVA_GRID_X,
+      height: 2 * LAVA_GRID_Y,
+      format: "rg16f",
+    });
+    this.#state = new DataTexture(gl, {
+      width: 3,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     for (const lamp of this.#lamps) lamp.body = this.#body;
   }
 
@@ -983,7 +1071,8 @@ class LavaSim implements SceneSim {
 
     const dt = Math.max(frame.dt, 0);
     const signature = `${frame.values.join(",")}|${frame.aspect}`;
-    if (this.#primed && dt === 0 && !fired.some(Boolean) && signature === this.#signature) return textures;
+    if (this.#primed && dt === 0 && !fired.some(Boolean) && signature === this.#signature)
+      return textures;
     this.#signature = signature;
 
     // The bulbs on the scene clock; once dark, the restart swaps in the cold heaps.
@@ -1002,7 +1091,11 @@ class LavaSim implements SceneSim {
     const handB = pressing && settings.twin ? handOn(pointer, frame.aspect, 1) : undefined;
     const stage = this.#stage(enter, exit);
     // A passage plays in real time whatever the motion, and the lamp hurries through it.
-    this.#carry += dt * (stage === undefined ? Math.max(0, frame.motion) : Math.max(1, frame.motion) * this.#pace(enter, exit));
+    this.#carry +=
+      dt *
+      (stage === undefined
+        ? Math.max(0, frame.motion)
+        : Math.max(1, frame.motion) * this.#pace(enter, exit));
     let steps = 0;
     while (this.#carry >= STEP && steps < MAX_STEPS) {
       if (stage === undefined) a.tickMark(STEP, settings.markEvery);
@@ -1021,7 +1114,20 @@ class LavaSim implements SceneSim {
     const shareB = b.writeGrid(this.#gridData, LAVA_GRID_Y, this.#dens, this.#light);
     const state = this.#stateData;
     const body = this.#body;
-    state.set([a.used, a.bulb, a.warm, shareA, b.used, b.bulb, b.warm, shareB, body.blend, body.stretch, 0, 0]);
+    state.set([
+      a.used,
+      a.bulb,
+      a.warm,
+      shareA,
+      b.used,
+      b.bulb,
+      b.warm,
+      shareB,
+      body.blend,
+      body.stretch,
+      0,
+      0,
+    ]);
     this.#parcels.upload(this.#parcelData);
     this.#grid.upload(this.#gridData);
     this.#state.upload(state);
@@ -1040,12 +1146,15 @@ class LavaSim implements SceneSim {
     const mark = knobs.value(frame, "mark");
     return {
       heat,
-      count: Math.round(COUNT_MIN + (COUNT_MAX - COUNT_MIN) * clamp(knobs.value(frame, "fill"), 0, 1)),
+      count: Math.round(
+        COUNT_MIN + (COUNT_MAX - COUNT_MIN) * clamp(knobs.value(frame, "fill"), 0, 1),
+      ),
       cold: knobs.value(frame, "cold") > 0.5,
       seed: Math.round(knobs.value(frame, "pour")),
       hand: knobs.value(frame, "hand") > 0.5,
       twin: knobs.value(frame, "twin") > 0.5,
-      markEvery: mark > 0 ? MARK_EVERY_RARE + (MARK_EVERY_OFTEN - MARK_EVERY_RARE) * clamp(mark, 0, 1) : 0,
+      markEvery:
+        mark > 0 ? MARK_EVERY_RARE + (MARK_EVERY_OFTEN - MARK_EVERY_RARE) * clamp(mark, 0, 1) : 0,
       viscosity: clamp(knobs.value(frame, "viscosity"), 0, 1),
     };
   }
@@ -1062,12 +1171,21 @@ class LavaSim implements SceneSim {
     if (exit > 0) {
       const t = exit * LAVA_PASSAGE.exit;
       const cool = smoothstep(0, EXIT_COIL_OFF, t);
-      return { coil: 1 - cool, warm: 0, cool: EXIT_COOL * cool, fall: smoothstep(EXIT_FALL_IN[0], EXIT_FALL_IN[1], t) };
+      return {
+        coil: 1 - cool,
+        warm: 0,
+        cool: EXIT_COOL * cool,
+        fall: smoothstep(EXIT_FALL_IN[0], EXIT_FALL_IN[1], t),
+      };
     }
     if (this.#arriving && enter < 1) {
       const t = enter * LAVA_PASSAGE.enter;
-      const warm = smoothstep(ENTER_WARM_IN[0], ENTER_WARM_IN[1], t) * (1 - smoothstep(ENTER_WARM_OUT[0], ENTER_WARM_OUT[1], t));
-      const coil = smoothstep(ENTER_COIL_IN[0], ENTER_COIL_IN[1], t) * (1 - smoothstep(ENTER_COIL_OUT[0], ENTER_COIL_OUT[1], t));
+      const warm =
+        smoothstep(ENTER_WARM_IN[0], ENTER_WARM_IN[1], t) *
+        (1 - smoothstep(ENTER_WARM_OUT[0], ENTER_WARM_OUT[1], t));
+      const coil =
+        smoothstep(ENTER_COIL_IN[0], ENTER_COIL_IN[1], t) *
+        (1 - smoothstep(ENTER_COIL_OUT[0], ENTER_COIL_OUT[1], t));
       return { coil: 1 + ENTER_COIL * coil, warm: ENTER_WARM * warm, cool: 0, fall: 0 };
     }
     return undefined;

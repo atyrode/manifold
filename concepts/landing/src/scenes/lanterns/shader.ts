@@ -50,10 +50,28 @@
 // river's mirror.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN_HALF, LANTERN_TALL, MAX_LANTERNS, ROCK_DOWNSTREAM, ROCKS } from "./sim.ts";
+import {
+  CURRENT_FAST,
+  CURRENT_SLOW,
+  EYE,
+  FAR_BANK,
+  FOCAL,
+  FOV,
+  HORIZON,
+  LANTERN_HALF,
+  LANTERN_TALL,
+  MAX_LANTERNS,
+  ROCK_DOWNSTREAM,
+  ROCKS,
+} from "./sim.ts";
 
-const rocks = ROCKS.map((rock) => `vec4(${glslFloat(rock.x)}, ${glslFloat(rock.z)}, ${glslFloat(rock.radius)}, ${glslFloat(rock.height)})`).join(", ");
-const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFloat(d.z)})`).join(", ");
+const rocks = ROCKS.map(
+  (rock) =>
+    `vec4(${glslFloat(rock.x)}, ${glslFloat(rock.z)}, ${glslFloat(rock.radius)}, ${glslFloat(rock.height)})`,
+).join(", ");
+const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFloat(d.z)})`).join(
+  ", ",
+);
 
 /** The shared stars' default density (K_stars); the scene's own sparse stars thin out below it. */
 export const LANTERNS_STARS = 0.55;

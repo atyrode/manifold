@@ -197,7 +197,8 @@ const MARK_FIRST = FROST_START + 25;
 
 /** A lattice hash to 0..1, after the murmur3 finaliser. */
 function hash(x: number, y: number, salt: number): number {
-  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(salt | 0, 0x9e3779b1);
+  let h =
+    Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(salt | 0, 0x9e3779b1);
   h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
@@ -264,7 +265,18 @@ class Skeleton {
     this.span = span;
   }
 
-  add(x: number, y: number, dx: number, dy: number, t: number, along: number, barbs: number, width: number, bright: number, kin: number): number {
+  add(
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+    t: number,
+    along: number,
+    barbs: number,
+    width: number,
+    bright: number,
+    kin: number,
+  ): number {
     if ((this.count + 1) * STRIDE > this.data.length) {
       const grown = new Float32Array(this.data.length * 2);
       grown.set(this.data);
@@ -347,7 +359,11 @@ interface Tip {
  * Grow the branches for one pattern on a width × height texel grid (one frame height = height
  * texels), yielding after every lockstep round. Deterministic for a seed and size.
  */
-function* growSkeleton(pattern: number, width: number, height: number): Generator<undefined, Skeleton, undefined> {
+function* growSkeleton(
+  pattern: number,
+  width: number,
+  height: number,
+): Generator<undefined, Skeleton, undefined> {
   const unit = height;
   const frame = FROST_FRAME * unit;
   const rand = mulberry32(Math.imul(pattern + 1, 0x9e3779b1) ^ 0x5bd1e995);
@@ -363,7 +379,19 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
     if ((owner[k] ?? 0) < 0) owner[k] = id;
   };
   /** Record a point of branch `id` at texel coordinates (x, y), and claim the texels round it. */
-  const plant = (x: number, y: number, dx: number, dy: number, t: number, along: number, barbs: number, w: number, bright: number, kin: number, id: number): number => {
+  const plant = (
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+    t: number,
+    along: number,
+    barbs: number,
+    w: number,
+    bright: number,
+    kin: number,
+    id: number,
+  ): number => {
     const px = Math.floor(x);
     const py = Math.floor(y);
     claim(px, py, id);
@@ -376,7 +404,17 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
 
   const tips: Tip[] = [];
   let nextId = 0;
-  const sprout = (x: number, y: number, angle: number, length: number, start: number, level: number, parent: Tip | undefined, origin: number, probe = false): void => {
+  const sprout = (
+    x: number,
+    y: number,
+    angle: number,
+    length: number,
+    start: number,
+    level: number,
+    parent: Tip | undefined,
+    origin: number,
+    probe = false,
+  ): void => {
     const spec = LEVELS[level];
     if (!spec) return;
     const id = nextId++;
@@ -396,7 +434,9 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
       walked: 0,
       start,
       speed: parent ? parent.speed * 0.8 : STEM_SPEED * unit,
-      curl: parent ? parent.curl * 0.4 + (rand() - 0.5) * (0.3 / length) : (rand() - 0.5) * (2.2 / length),
+      curl: parent
+        ? parent.curl * 0.4 + (rand() - 0.5) * (0.3 / length)
+        : (rand() - 0.5) * (2.2 / length),
       wobble: spec.wobble,
       grace,
       nextSprout: grace + spacing * range(0.4, 0.8),
@@ -428,9 +468,23 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
     let last = -1;
     for (let s = -length / 2; s <= length / 2; s += STEP) {
       const heading = angle + Math.atan((2 * bend * s) / length);
-      const x = cx + Math.cos(angle) * s + Math.cos(angle + Math.PI / 2) * bend * (s * s) / length;
-      const y = cy + Math.sin(angle) * s + Math.sin(angle + Math.PI / 2) * bend * (s * s) / length;
-      const index = plant(x, y, Math.cos(heading), Math.sin(heading), t + Math.abs(s) * 0.02, s + length / 2, 0.004, 0.0012, 0.6, kin, id);
+      const x =
+        cx + Math.cos(angle) * s + (Math.cos(angle + Math.PI / 2) * bend * (s * s)) / length;
+      const y =
+        cy + Math.sin(angle) * s + (Math.sin(angle + Math.PI / 2) * bend * (s * s)) / length;
+      const index = plant(
+        x,
+        y,
+        Math.cos(heading),
+        Math.sin(heading),
+        t + Math.abs(s) * 0.02,
+        s + length / 2,
+        0.004,
+        0.0012,
+        0.6,
+        kin,
+        id,
+      );
       if (last < 0) skeleton.mark(index, ROOT);
       last = index;
       points.push({ x, y, heading });
@@ -451,7 +505,16 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
   const bottom = Math.max(2, Math.round(along / (0.12 * unit)));
   for (let i = 0; i < bottom; i++) {
     const x = frame + ((i + range(0.2, 0.8)) / bottom) * along;
-    sprout(x, frame + 1, Math.PI / 2 + (rand() - 0.5) * 1.7, range(0.25, 0.45) * unit, range(-14, 8), 0, undefined, -1);
+    sprout(
+      x,
+      frame + 1,
+      Math.PI / 2 + (rand() - 0.5) * 1.7,
+      range(0.25, 0.45) * unit,
+      range(-14, 8),
+      0,
+      undefined,
+      -1,
+    );
   }
   for (const [x, y, toward, start] of [
     [frame + 1, frame + 1, 0, -12],
@@ -467,15 +530,36 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
       sprout(x, y, angle, length, start + range(0, 12), 0, undefined, -1);
     }
   }
-  for (const [x, inward] of [[frame + 1, 0], [width - frame - 1, Math.PI]] as const) {
+  for (const [x, inward] of [
+    [frame + 1, 0],
+    [width - frame - 1, Math.PI],
+  ] as const) {
     for (let j = 0; j < 3; j++) {
-      sprout(x, ((j + range(0.2, 0.8)) / 3) * (height - 2 * frame) + frame, inward + (rand() - 0.5) * 1.2, range(0.18, 0.3) * unit, range(2, 24), 0, undefined, -1);
+      sprout(
+        x,
+        ((j + range(0.2, 0.8)) / 3) * (height - 2 * frame) + frame,
+        inward + (rand() - 0.5) * 1.2,
+        range(0.18, 0.3) * unit,
+        range(2, 24),
+        0,
+        undefined,
+        -1,
+      );
     }
   }
   const top = Math.max(1, Math.round(along / (0.25 * unit)));
   for (let i = 0; i < top; i++) {
     const x = frame + ((i + range(0.2, 0.8)) / top) * along;
-    sprout(x, height - frame - 1, -Math.PI / 2 + (rand() - 0.5) * 1.2, range(0.12, 0.25) * unit, range(14, 34), 0, undefined, -1);
+    sprout(
+      x,
+      height - frame - 1,
+      -Math.PI / 2 + (rand() - 0.5) * 1.2,
+      range(0.12, 0.25) * unit,
+      range(14, 34),
+      0,
+      undefined,
+      -1,
+    );
   }
 
   // Nuclei behind the frost front: as the front creeps in from the edges, fronds sprout from the
@@ -507,7 +591,17 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
         dy += w * uy;
       }
       const arrival = first - FRONT_BLEND * Math.log(weight);
-      sprout(fx * unit, fy * unit, Math.atan2(dy, dx) + (rand() - 0.5) * 1.2, range(0.1, 0.24) * unit, arrival + range(-3, 3), 0, undefined, -1, true);
+      sprout(
+        fx * unit,
+        fy * unit,
+        Math.atan2(dy, dx) + (rand() - 0.5) * 1.2,
+        range(0.1, 0.24) * unit,
+        arrival + range(-3, 3),
+        0,
+        undefined,
+        -1,
+        true,
+      );
     }
   }
 
@@ -523,7 +617,13 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
         const ahead = tip.grace + 3;
         const px = Math.floor(tip.x + Math.cos(tip.angle) * ahead);
         const py = Math.floor(tip.y + Math.sin(tip.angle) * ahead);
-        if (px < 0 || py < 0 || px >= width || py >= height || (owner[py * width + px] ?? -1) >= 0) {
+        if (
+          px < 0 ||
+          py < 0 ||
+          px >= width ||
+          py >= height ||
+          (owner[py * width + px] ?? -1) >= 0
+        ) {
           tip.alive = false;
           continue;
         }
@@ -534,7 +634,8 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
         tip.walked += STEP;
         const s = tip.walked;
         const f = s / tip.length;
-        tip.heading = tip.angle + tip.curl * s + tip.wobble * 2 * (noise(s / (0.05 * unit), tip.id, 5) - 0.5);
+        tip.heading =
+          tip.angle + tip.curl * s + tip.wobble * 2 * (noise(s / (0.05 * unit), tip.id, 5) - 0.5);
         const dx = Math.cos(tip.heading);
         const dy = Math.sin(tip.heading);
         tip.x += dx * STEP;
@@ -558,7 +659,19 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
         const arrival = tip.start + s / tip.speed;
         // Barbs longest a little way out from the root, shortening to nothing at the tip.
         const barbs = spec.barbs * Math.sqrt(1 - f) * (0.5 + 0.5 * Math.min(1, f / 0.12));
-        const index = plant(tip.x, tip.y, dx, dy, arrival, s, barbs, spec.width * (1 - 0.45 * f), spec.bright, tip.kin, tip.id);
+        const index = plant(
+          tip.x,
+          tip.y,
+          dx,
+          dy,
+          arrival,
+          s,
+          barbs,
+          spec.width * (1 - 0.45 * f),
+          spec.bright,
+          tip.kin,
+          tip.id,
+        );
         if (tip.last < 0) skeleton.mark(index, ROOT);
         tip.last = index;
         // Side branches: longest a little way up the branch, shortening toward its tip, as on a
@@ -590,7 +703,11 @@ function* growSkeleton(pattern: number, width: number, height: number): Generato
  * takes the nearest skeleton point and measures itself against that point's branch: across it
  * (signed), along it, and past its root or tip, where the line ends.
  */
-function* rasterize(skeleton: Skeleton, width: number, height: number): Generator<undefined, GrowthField, undefined> {
+function* rasterize(
+  skeleton: Skeleton,
+  width: number,
+  height: number,
+): Generator<undefined, GrowthField, undefined> {
   const count = width * height;
   const points = skeleton.data;
   // Texel centres in frame heights.
@@ -689,15 +806,21 @@ function* rasterize(skeleton: Skeleton, width: number, height: number): Generato
       const along = ox * dx + oy * dy;
       const side = oy * dx - ox * dy;
       const ends = points[o + P_ENDS] ?? 0;
-      const past = (ends & TIP) !== 0 && along > 0 ? along : (ends & ROOT) !== 0 && along < 0 ? along : 0;
-      const dist = Math.max(Math.sqrt(side * side + past * past), Math.sqrt(ox * ox + oy * oy) - slack);
+      const past =
+        (ends & TIP) !== 0 && along > 0 ? along : (ends & ROOT) !== 0 && along < 0 ? along : 0;
+      const dist = Math.max(
+        Math.sqrt(side * side + past * past),
+        Math.sqrt(ox * ox + oy * oy) - slack,
+      );
       data[q] = points[o + P_T] ?? 0;
       data[q + 1] = side < 0 ? -dist : dist;
       data[q + 2] = (points[o + P_ALONG] ?? 0) + along;
       data[q + 3] = points[o + P_BARBS] ?? 0;
       // The fur's distance, roughened so it fills in by irregular, crystalline fronts, and
       // shortened low on the pane, where the glass is coldest.
-      const rough = 0.55 + 0.9 * (0.6 * noise(cx / 0.05, cy / 0.05, 21) + 0.4 * noise(cx / 0.018, cy / 0.018, 22));
+      const rough =
+        0.55 +
+        0.9 * (0.6 * noise(cx / 0.05, cy / 0.05, 21) + 0.4 * noise(cx / 0.018, cy / 0.018, 22));
       const lag = Math.min(1 / FUR_SCALE, dist * rough * cold);
       detail[q] = Math.round(lag * FUR_SCALE * 255);
       detail[q + 1] = Math.round(Math.min(1, (points[o + P_WIDTH] ?? 0) / WIDTH_SCALE) * 255);
@@ -714,9 +837,16 @@ function* rasterize(skeleton: Skeleton, width: number, height: number): Generato
  * The crystal field for one pattern and frame shape: the branches, then a quick half-resolution
  * field (yielded), then the full one (returned). Yields undefined between slices of work.
  */
-function* growFrost(pattern: number, size: Size): Generator<GrowthField | undefined, GrowthField, undefined> {
+function* growFrost(
+  pattern: number,
+  size: Size,
+): Generator<GrowthField | undefined, GrowthField, undefined> {
   const skeleton = yield* growSkeleton(pattern, size.width, size.height);
-  yield yield* rasterize(skeleton, Math.max(16, Math.round(size.width / COARSE_DIVISOR)), Math.max(16, Math.round(size.height / COARSE_DIVISOR)));
+  yield yield* rasterize(
+    skeleton,
+    Math.max(16, Math.round(size.width / COARSE_DIVISOR)),
+    Math.max(16, Math.round(size.height / COARSE_DIVISOR)),
+  );
   return yield* rasterize(skeleton, size.width, size.height);
 }
 
@@ -745,7 +875,8 @@ class MeltField {
     this.#regrow = new Float32Array(width * height);
     this.#mark = new Float32Array(width * height);
     this.#pace = new Float32Array(width * height);
-    for (let k = 0; k < this.#pace.length; k++) this.#pace[k] = 0.55 + 0.9 * hash(k % width, Math.floor(k / width), 31);
+    for (let k = 0; k < this.#pace.length; k++)
+      this.#pace[k] = 0.55 + 0.9 * hash(k % width, Math.floor(k / width), 31);
   }
 
   /**
@@ -774,13 +905,22 @@ class MeltField {
         } else if (level > 0 && warmth < 0.05) {
           // Only texels beside frozen glass (or the frame) refreeze quickly: the front moves inward.
           const front =
-            x === 0 || y === 0 || x === width - 1 || y === height - 1 ||
-            (melt[k - 1] ?? 0) < MELT_CLEAR || (melt[k + 1] ?? 0) < MELT_CLEAR ||
-            (melt[k - width] ?? 0) < MELT_CLEAR || (melt[k + width] ?? 0) < MELT_CLEAR;
-          level = Math.max(0, level - (front ? FRONT_RATE : BULK_RATE) * (this.#pace[k] ?? 1) * cool);
+            x === 0 ||
+            y === 0 ||
+            x === width - 1 ||
+            y === height - 1 ||
+            (melt[k - 1] ?? 0) < MELT_CLEAR ||
+            (melt[k + 1] ?? 0) < MELT_CLEAR ||
+            (melt[k - width] ?? 0) < MELT_CLEAR ||
+            (melt[k + width] ?? 0) < MELT_CLEAR;
+          level = Math.max(
+            0,
+            level - (front ? FRONT_RATE : BULK_RATE) * (this.#pace[k] ?? 1) * cool,
+          );
         }
         melt[k] = level;
-        const young = level >= MELT_CLEAR ? 1 : Math.max(0, (regrow[k] ?? 0) - cool / REGROW_SECONDS);
+        const young =
+          level >= MELT_CLEAR ? 1 : Math.max(0, (regrow[k] ?? 0) - cool / REGROW_SECONDS);
         regrow[k] = young;
         const traceMark = traced > MELT_ONSET ? 1 : Math.min(mark[k] ?? 0, young);
         mark[k] = traceMark;
@@ -833,7 +973,12 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
   return (gl): SceneSim => {
     const growthTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
     const meltTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
-    const clockTexture = new DataTexture(gl, { width: 1, height: 1, format: "r16f", filter: "nearest" });
+    const clockTexture = new DataTexture(gl, {
+      width: 1,
+      height: 1,
+      format: "r16f",
+      filter: "nearest",
+    });
     const detailTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
     const clockData = new Float32Array(1);
     let field: GrowthField | undefined;
@@ -879,11 +1024,23 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
       const moved = hasLast ? Math.hypot((pointer.x - lastX) * aspect, pointer.y - lastY) : 0;
       if (pointer.pressed) glass.heat.lift();
       if (pointer.down) {
-        glass.heat.stroke(pointer.x, pointer.y, radius, Math.min(1, dt * 40) * (0.55 + 0.45 * warmth), aspect);
+        glass.heat.stroke(
+          pointer.x,
+          pointer.y,
+          radius,
+          Math.min(1, dt * 40) * (0.55 + 0.45 * warmth),
+          aspect,
+        );
       } else if (moved > 1e-3) {
         // Warmth in proportion to the distance moved, so passing over the glass leaves it below
         // the melting point however slowly the pointer goes; rubbing back and forth does melt it.
-        glass.heat.stroke(pointer.x, pointer.y, radius * 1.25, 0.22 * Math.min(1, moved / radius), aspect);
+        glass.heat.stroke(
+          pointer.x,
+          pointer.y,
+          radius * 1.25,
+          0.22 * Math.min(1, moved / radius),
+          aspect,
+        );
       }
       lastX = pointer.x;
       lastY = pointer.y;
@@ -899,7 +1056,12 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         traceStart = frame.time;
       }
       if (size <= 0) nextTrace = undefined;
-      else if (traceStart === undefined && clock >= MARK_FIRST && (nextTrace === undefined || frame.time >= nextTrace)) traceStart = frame.time;
+      else if (
+        traceStart === undefined &&
+        clock >= MARK_FIRST &&
+        (nextTrace === undefined || frame.time >= nextTrace)
+      )
+        traceStart = frame.time;
       if (traceStart === undefined) return;
       const elapsed = frame.time - traceStart;
       if (elapsed < 0) {
@@ -948,9 +1110,15 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
       }
       if (frame.dt <= 0) return;
       const { pointer, aspect } = frame;
-      breath ??= pointer.inside ? { x: pointer.x, y: pointer.y } : { x: BREATH_AT[0], y: BREATH_AT[1] };
-      const far = Math.hypot(Math.max(breath.x, 1 - breath.x) * aspect, Math.max(breath.y, 1 - breath.y));
-      const radius = BREATH_START + (BREATH_REACH * far - BREATH_START) * smoothstep(0, 1, exit / BREATH_SPREAD);
+      breath ??= pointer.inside
+        ? { x: pointer.x, y: pointer.y }
+        : { x: BREATH_AT[0], y: BREATH_AT[1] };
+      const far = Math.hypot(
+        Math.max(breath.x, 1 - breath.x) * aspect,
+        Math.max(breath.y, 1 - breath.y),
+      );
+      const radius =
+        BREATH_START + (BREATH_REACH * far - BREATH_START) * smoothstep(0, 1, exit / BREATH_SPREAD);
       glass.heat.lift();
       glass.heat.stroke(breath.x, breath.y, radius, Math.min(1, frame.dt * 40) * 0.9, aspect);
       glass.heat.lift();
@@ -959,11 +1127,17 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
     return {
       frame(frame) {
         const now = performance.now();
-        const interval = lastFrame === undefined ? 16 : Math.min(1000, Math.max(0, now - lastFrame));
+        const interval =
+          lastFrame === undefined ? 16 : Math.min(1000, Math.max(0, now - lastFrame));
         lastFrame = now;
         const { aspect } = frame;
         if (!(aspect > 0) || !Number.isFinite(aspect)) {
-          return [field ? growthTexture.texture : undefined, melt ? meltTexture.texture : undefined, clockTexture.texture, field ? detailTexture.texture : undefined];
+          return [
+            field ? growthTexture.texture : undefined,
+            melt ? meltTexture.texture : undefined,
+            clockTexture.texture,
+            field ? detailTexture.texture : undefined,
+          ];
         }
 
         // A new pattern frosts over afresh from the opening state; a new frame shape regrows it.
@@ -1011,9 +1185,17 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
 
         // The growth clock: real time between frames while the scene runs (see MAX_FRAME_SECONDS),
         // paced by the speed knob and the lab's motion, held once all is frosted.
-        const elapsed = frame.dt > 0 ? Math.max(frame.dt, Math.min(interval / 1000, MAX_FRAME_SECONDS)) : 0;
+        const elapsed =
+          frame.dt > 0 ? Math.max(frame.dt, Math.min(interval / 1000, MAX_FRAME_SECONDS)) : 0;
         clock += elapsed * frame.motion * knobs.value(frame, "speed");
-        if (field) clock = Math.min(clock, Math.max(RIME_GROWN, field.latest + field.reach * furSlowness(knobs.value(frame, "style")) + FUR_RIPEN + 5));
+        if (field)
+          clock = Math.min(
+            clock,
+            Math.max(
+              RIME_GROWN,
+              field.latest + field.reach * furSlowness(knobs.value(frame, "style")) + FUR_RIPEN + 5,
+            ),
+          );
         clock = Math.min(clock, 60000);
         const shown = clock - enterLead(frame);
         if (shown !== uploadedClock) {
@@ -1035,7 +1217,12 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         trace(frame, melt);
         if (melt.step(frame.dt, frame.dt * frame.motion)) meltTexture.upload(melt.bytes);
 
-        return [field ? growthTexture.texture : undefined, meltTexture.texture, clockTexture.texture, field ? detailTexture.texture : undefined];
+        return [
+          field ? growthTexture.texture : undefined,
+          meltTexture.texture,
+          clockTexture.texture,
+          field ? detailTexture.texture : undefined,
+        ];
       },
       dispose() {
         growthTexture.dispose();

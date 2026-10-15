@@ -11,7 +11,12 @@ import { paintAtlas, paintCanopy, type CanopyConfig } from "./decor.ts";
 /** What to paint: the plant atlas, or the canopy sheet spanning `span` frames. */
 export type SheetJob = { kind: "atlas" } | { kind: "canopy"; config: CanopyConfig; span: number };
 
-export function paintJob(ctx: OffscreenCanvasRenderingContext2D, width: number, height: number, job: SheetJob): Generator<void, void> {
+export function paintJob(
+  ctx: OffscreenCanvasRenderingContext2D,
+  width: number,
+  height: number,
+  job: SheetJob,
+): Generator<void, void> {
   switch (job.kind) {
     case "atlas":
       return paintAtlas(ctx, width, height);
@@ -45,7 +50,10 @@ class SheetWorkerError extends Error {}
 /** The one worker both sheets share, started on first use. */
 class SheetWorker {
   readonly #worker: Worker;
-  readonly #pending = new Map<number, { resolve: (reply: SheetReply) => void; reject: (error: Error) => void }>();
+  readonly #pending = new Map<
+    number,
+    { resolve: (reply: SheetReply) => void; reject: (error: Error) => void }
+  >();
   #next = 1;
   #failed = false;
 
@@ -61,7 +69,8 @@ class SheetWorker {
       event.preventDefault();
       console.error("evt=landing.sheet_worker.failed", event.message);
       this.#failed = true;
-      for (const { reject } of this.#pending.values()) reject(new SheetWorkerError(event.message || "sheet worker failed"));
+      for (const { reject } of this.#pending.values())
+        reject(new SheetWorkerError(event.message || "sheet worker failed"));
       this.#pending.clear();
     };
   }
@@ -174,7 +183,8 @@ export class SheetPainter {
     worker.paint(order.job, order.width, order.height).then(
       (reply) => {
         this.#returned();
-        if (this.#key === order.key) this.#upload(order.key, reply.width, reply.height, new Uint8Array(reply.pixels));
+        if (this.#key === order.key)
+          this.#upload(order.key, reply.width, reply.height, new Uint8Array(reply.pixels));
       },
       () => {
         this.#returned();
@@ -222,7 +232,12 @@ export class SheetPainter {
     while (performance.now() - start < budget) {
       if (job.steps.next().done) {
         this.#local = undefined;
-        this.#upload(job.key, job.sheet.width, job.sheet.height, new Uint8Array(job.ctx.getImageData(0, 0, job.sheet.width, job.sheet.height).data.buffer));
+        this.#upload(
+          job.key,
+          job.sheet.width,
+          job.sheet.height,
+          new Uint8Array(job.ctx.getImageData(0, 0, job.sheet.width, job.sheet.height).data.buffer),
+        );
         return;
       }
     }
@@ -232,7 +247,12 @@ export class SheetPainter {
     const sheet = new OffscreenCanvas(order.width, order.height);
     const ctx = sheet.getContext("2d");
     if (!ctx) throw new Error("landing: 2d canvas unavailable");
-    this.#local = { key: order.key, sheet, ctx, steps: paintJob(ctx, order.width, order.height, order.job) };
+    this.#local = {
+      key: order.key,
+      sheet,
+      ctx,
+      steps: paintJob(ctx, order.width, order.height, order.job),
+    };
   }
 
   #upload(key: string, width: number, height: number, pixels: Uint8Array): void {

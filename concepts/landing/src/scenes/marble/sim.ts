@@ -59,11 +59,29 @@ export interface MarblePalette {
 
 // Ebru's pigments, kept clear and saturated so the dither keeps them rich: deep indigo, ochre gold,
 // madder rust, cream and lamp black.
-const EBRU: MarblePalette = { label: "ebru", inks: ["#1f3a96", "#dca12c", "#b5401f", "#f2e4c2", "#151419"], accent: "#1f3a96", practice: "ebru", basin: false };
+const EBRU: MarblePalette = {
+  label: "ebru",
+  inks: ["#1f3a96", "#dca12c", "#b5401f", "#f2e4c2", "#151419"],
+  accent: "#1f3a96",
+  practice: "ebru",
+  basin: false,
+};
 // Sumi and indigo, each pushed out into a ring by a drop of clear water.
-const SUMINAGASHI: MarblePalette = { label: "suminagashi", inks: ["#1d1c21", "#2c3a6e"], accent: "#2c3a6e", practice: "suminagashi", basin: true };
+const SUMINAGASHI: MarblePalette = {
+  label: "suminagashi",
+  inks: ["#1d1c21", "#2c3a6e"],
+  accent: "#2c3a6e",
+  practice: "suminagashi",
+  basin: true,
+};
 // Risograph spot inks: fluorescent pink, teal, sunflower, medium blue, midnight.
-const RISO: MarblePalette = { label: "riso", inks: ["#ff5c98", "#00a29a", "#ffd03d", "#3e52d0", "#1e1b3b"], accent: "#3e52d0", practice: "ebru", basin: false };
+const RISO: MarblePalette = {
+  label: "riso",
+  inks: ["#ff5c98", "#00a29a", "#ffd03d", "#3e52d0", "#1e1b3b"],
+  accent: "#3e52d0",
+  practice: "ebru",
+  basin: false,
+};
 
 /** In `palette` knob order. */
 export const marblePalettes: readonly MarblePalette[] = [EBRU, SUMINAGASHI, RISO];
@@ -203,7 +221,16 @@ function circle(x: number, y: number, finalRadius: number, color: string | null)
     xy[2 * i] = x + SPAWN_RADIUS * Math.cos(a);
     xy[2 * i + 1] = y + SPAWN_RADIUS * Math.sin(a);
   }
-  return { xy, n, color, fresh: true, minX: x - SPAWN_RADIUS, minY: y - SPAWN_RADIUS, maxX: x + SPAWN_RADIUS, maxY: y + SPAWN_RADIUS };
+  return {
+    xy,
+    n,
+    color,
+    fresh: true,
+    minX: x - SPAWN_RADIUS,
+    minY: y - SPAWN_RADIUS,
+    maxX: x + SPAWN_RADIUS,
+    maxY: y + SPAWN_RADIUS,
+  };
 }
 
 /** A slice of Lu et al.'s ink drop at (cx, cy): every |p - c|² grows by dr2. */
@@ -314,8 +341,21 @@ function swirl(blobs: readonly Blob[], op: SwirlOp, amount: number): void {
 }
 
 /** Whether the segment touches the view rectangle |x| <= hw, |y| <= hh (Liang–Barsky clipping). */
-function segmentMeetsRect(x0: number, y0: number, x1: number, y1: number, hw: number, hh: number): boolean {
-  if ((x0 < -hw && x1 < -hw) || (x0 > hw && x1 > hw) || (y0 < -hh && y1 < -hh) || (y0 > hh && y1 > hh)) return false;
+function segmentMeetsRect(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  hw: number,
+  hh: number,
+): boolean {
+  if (
+    (x0 < -hw && x1 < -hw) ||
+    (x0 > hw && x1 > hw) ||
+    (y0 < -hh && y1 < -hh) ||
+    (y0 > hh && y1 > hh)
+  )
+    return false;
   const dx = x1 - x0;
   const dy = y1 - y0;
   let t0 = 0;
@@ -409,11 +449,41 @@ function glide(p: number): number {
 const dropSeconds = (radius: number): number => 0.35 + 3.5 * radius;
 
 function drop(start: number, x: number, y: number, radius: number, color: string | null): DropOp {
-  return { kind: "drop", start, duration: dropSeconds(radius), done: 0, x, y, r2: radius * radius, color, blob: undefined };
+  return {
+    kind: "drop",
+    start,
+    duration: dropSeconds(radius),
+    done: 0,
+    x,
+    y,
+    r2: radius * radius,
+    color,
+    blob: undefined,
+  };
 }
 
-function line(ox: number, oy: number, mx: number, my: number, alpha: number, lambda: number, tines: Partial<Pick<Tool, "spacing" | "amp" | "wave" | "phase" | "range">> = {}): Tool {
-  return { ox, oy, mx, my, alpha, lambda, spacing: tines.spacing ?? 0, amp: tines.amp ?? 0, wave: tines.wave ?? 0, phase: tines.phase ?? 0, range: tines.range ?? Infinity };
+function line(
+  ox: number,
+  oy: number,
+  mx: number,
+  my: number,
+  alpha: number,
+  lambda: number,
+  tines: Partial<Pick<Tool, "spacing" | "amp" | "wave" | "phase" | "range">> = {},
+): Tool {
+  return {
+    ox,
+    oy,
+    mx,
+    my,
+    alpha,
+    lambda,
+    spacing: tines.spacing ?? 0,
+    amp: tines.amp ?? 0,
+    wave: tines.wave ?? 0,
+    phase: tines.phase ?? 0,
+    range: tines.range ?? Infinity,
+  };
 }
 
 function stroke(start: number, tool: Tool, from: number, to: number, speed: number): StrokeOp {
@@ -504,7 +574,15 @@ function sprinkleStones(ops: Op[], spec: RoutineSpec): number {
     const span = 1.5 + count * 0.03;
     for (let i = 0; i < count; i++) {
       const radius = r * (0.75 + 0.5 * rand());
-      ops.push(drop(t + rand() * span, (2 * rand() - 1) * reachX, (2 * rand() - 1) * reachY, radius, color));
+      ops.push(
+        drop(
+          t + rand() * span,
+          (2 * rand() - 1) * reachX,
+          (2 * rand() - 1) * reachY,
+          radius,
+          color,
+        ),
+      );
     }
     t += span + 0.5;
   });
@@ -531,7 +609,9 @@ function sprinkleRings(ops: Op[], spec: RoutineSpec): number {
       const color = j % 2 === 0 ? (inks[(j / 2 + site) % inks.length] ?? null) : null;
       const jitter = r * 0.12;
       const start = t0 + j * 0.3;
-      ops.push(drop(start, cx + (2 * rand() - 1) * jitter, cy + (2 * rand() - 1) * jitter, r, color));
+      ops.push(
+        drop(start, cx + (2 * rand() - 1) * jitter, cy + (2 * rand() - 1) * jitter, r, color),
+      );
       end = Math.max(end, start + dropSeconds(r));
     }
   }
@@ -574,7 +654,13 @@ function gelGit(ops: Op[], spec: RoutineSpec, start: number): number {
   const first = -0.5 + g * (0.35 + 0.3 * spec.rand());
   let t = start;
   for (let k = 0; k < lines; k++) {
-    const pass = stroke(t, line(0, first + g * k, k % 2 === 0 ? 1 : -1, 0, alpha, 0.3 * g, { range: 2 * g }), -reach, reach, STYLUS_SPEED);
+    const pass = stroke(
+      t,
+      line(0, first + g * k, k % 2 === 0 ? 1 : -1, 0, alpha, 0.3 * g, { range: 2 * g }),
+      -reach,
+      reach,
+      STYLUS_SPEED,
+    );
     ops.push(pass);
     t += pass.duration + 0.2;
   }
@@ -586,7 +672,13 @@ function nonpareil(ops: Op[], spec: RoutineSpec, start: number): number {
   const c = 0.045 * spec.scale;
   const alpha = c;
   const reach = 0.5 + 0.12 + windowWidth(alpha);
-  const pass = stroke(start, line(spec.rand() * c, 0, 0, 1, alpha, 0.12 * c, { spacing: c }), -reach, reach, COMB_SPEED);
+  const pass = stroke(
+    start,
+    line(spec.rand() * c, 0, 0, 1, alpha, 0.12 * c, { spacing: c }),
+    -reach,
+    reach,
+    COMB_SPEED,
+  );
   ops.push(pass);
   return start + pass.duration;
 }
@@ -597,7 +689,12 @@ function bouquet(ops: Op[], spec: RoutineSpec, start: number): number {
   const alpha = 1.4 * c;
   const amp = 0.5 * c;
   const reach = 0.5 + 0.12 + windowWidth(alpha) + amp;
-  const tool = line(spec.rand() * c, 0, 0, -1, alpha, 0.1 * c, { spacing: c, amp, wave: TAU / (0.14 * spec.scale), phase: spec.rand() * TAU });
+  const tool = line(spec.rand() * c, 0, 0, -1, alpha, 0.1 * c, {
+    spacing: c,
+    amp,
+    wave: TAU / (0.14 * spec.scale),
+    phase: spec.rand() * TAU,
+  });
   const pass = stroke(start, tool, -reach, reach, COMB_SPEED * 0.8);
   ops.push(pass);
   return start + pass.duration;
@@ -610,8 +707,20 @@ function chevron(ops: Op[], spec: RoutineSpec, start: number): number {
   const lambda = 0.08 * c;
   const reach = 0.5 + 0.12 + windowWidth(alpha);
   const x0 = spec.rand() * c;
-  const up = stroke(start, line(x0, 0, 0, 1, alpha, lambda, { spacing: c }), -reach, reach, COMB_SPEED);
-  const down = stroke(start + up.duration + 0.6, line(x0 + c / 2, 0, 0, -1, alpha, lambda, { spacing: c }), -reach, reach, COMB_SPEED);
+  const up = stroke(
+    start,
+    line(x0, 0, 0, 1, alpha, lambda, { spacing: c }),
+    -reach,
+    reach,
+    COMB_SPEED,
+  );
+  const down = stroke(
+    start + up.duration + 0.6,
+    line(x0 + c / 2, 0, 0, -1, alpha, lambda, { spacing: c }),
+    -reach,
+    reach,
+    COMB_SPEED,
+  );
   ops.push(up, down);
   return down.start + down.duration;
 }
@@ -630,7 +739,13 @@ function markStrokes(height: number, start: number): StrokeOp[] {
     const dx = (b[0] - a[0]) * height;
     const dy = (b[1] - a[1]) * height;
     const length = Math.hypot(dx, dy);
-    const pass = stroke(t, line(ax, ay, dx / length, dy / length, alpha, lambda, { range: 0.3 * height }), 0, length, MARK_SPEED);
+    const pass = stroke(
+      t,
+      line(ax, ay, dx / length, dy / length, alpha, lambda, { range: 0.3 * height }),
+      0,
+      length,
+      MARK_SPEED,
+    );
     out.push(pass);
     t += pass.duration;
   }
@@ -692,7 +807,10 @@ class Timeline {
 
   /** Schedule more ops, their start on this clock. */
   add(ops: readonly Op[]): void {
-    this.#ops = this.#ops.slice(this.#next).concat(ops).sort((a, b) => a.start - b.start);
+    this.#ops = this.#ops
+      .slice(this.#next)
+      .concat(ops)
+      .sort((a, b) => a.start - b.start);
     this.#next = 0;
   }
 
@@ -713,7 +831,11 @@ class Timeline {
   advance(dt: number, apply: (op: Op, from: number, to: number) => void): boolean {
     if (!(dt > 0)) return false;
     this.clock += dt;
-    for (let op = this.#ops[this.#next]; op !== undefined && op.start <= this.clock; op = this.#ops[this.#next]) {
+    for (
+      let op = this.#ops[this.#next];
+      op !== undefined && op.start <= this.clock;
+      op = this.#ops[this.#next]
+    ) {
       this.#active.push(op);
       this.#next++;
     }
@@ -732,7 +854,8 @@ class Timeline {
 
 // ---- the simulation ----------------------------------------------------------------------------
 
-type MarbleKnob = "pattern" | "palette" | "practice" | "tempo" | "scale" | "renew" | "sheetSeed" | "stylus";
+type MarbleKnob =
+  "pattern" | "palette" | "practice" | "tempo" | "scale" | "renew" | "sheetSeed" | "stylus";
 
 interface Settings {
   pattern: MarblePattern;
@@ -825,7 +948,13 @@ class MarbleSim implements SceneSim {
   #sheet = 0;
   #signature: string | undefined;
   /** What the previous frame's settings were, so the unchanged frame builds no signature string. */
-  readonly #seen: { pattern: MarblePattern | undefined; palette: MarblePalette | undefined; practice: MarblePractice | undefined; scale: number; seed: number } = {
+  readonly #seen: {
+    pattern: MarblePattern | undefined;
+    palette: MarblePalette | undefined;
+    practice: MarblePractice | undefined;
+    scale: number;
+    seed: number;
+  } = {
     pattern: undefined,
     palette: undefined,
     practice: undefined,
@@ -833,7 +962,17 @@ class MarbleSim implements SceneSim {
     seed: Number.NaN,
   };
   /** The frame's settings, rewritten in place each frame. */
-  readonly #settings: Settings = { pattern: "bouquet", palette: EBRU, practice: "ebru", tempo: 1, scale: 1, seed: 0, rest: undefined, mark: 0, markNow: 0 };
+  readonly #settings: Settings = {
+    pattern: "bouquet",
+    palette: EBRU,
+    practice: "ebru",
+    tempo: 1,
+    scale: 1,
+    seed: 0,
+    rest: undefined,
+    mark: 0,
+    markNow: 0,
+  };
   readonly #renewSlot: number;
   readonly #stylusSlot: number;
   /** Whether the fast-forward step in progress moved the ink. */
@@ -865,7 +1004,12 @@ class MarbleSim implements SceneSim {
     if (ctx === null) throw new Error("marble: no 2D canvas context for the ink");
     this.#ctx = ctx;
     this.#ink = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
-    this.#state = new DataTexture(gl, { width: 2, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#state = new DataTexture(gl, {
+      width: 2,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -879,8 +1023,10 @@ class MarbleSim implements SceneSim {
     this.#exiting = frame.passage.exit > 0;
     this.#follow(settings);
 
-    if (frame.fired[this.#renewSlot] === true) this.#startLift(settings, QUICK_LIFT_SECONDS, true, false);
-    if (frame.fired[this.#stylusSlot] === true) this.#events.add(markStrokes(settings.markNow, this.#events.clock + 0.3));
+    if (frame.fired[this.#renewSlot] === true)
+      this.#startLift(settings, QUICK_LIFT_SECONDS, true, false);
+    if (frame.fired[this.#stylusSlot] === true)
+      this.#events.add(markStrokes(settings.markNow, this.#events.clock + 0.3));
 
     let moved = this.#play(frame.pointer, settings);
     this.#idle += dt;
@@ -888,7 +1034,8 @@ class MarbleSim implements SceneSim {
     moved = this.#events.advance(dt * settings.tempo, this.#apply) || moved;
     moved = this.#user.advance(dt, this.#apply) || moved;
     // A prerolled sheet fades up once it is laid; paused or frozen, it shows at once.
-    if (!this.#prerolling) this.#arrive = dt > 0 ? Math.min(1, this.#arrive + dt / ARRIVE_SECONDS) : 1;
+    if (!this.#prerolling)
+      this.#arrive = dt > 0 ? Math.min(1, this.#arrive + dt / ARRIVE_SECONDS) : 1;
     if (moved) {
       this.#refine();
       this.#dirty = true;
@@ -943,7 +1090,14 @@ class MarbleSim implements SceneSim {
   /** A new pattern, palette, practice, scale or seed lifts the sheet at once and starts the new one. */
   #follow(settings: Settings): void {
     const seen = this.#seen;
-    if (seen.pattern === settings.pattern && seen.palette === settings.palette && seen.practice === settings.practice && seen.scale === settings.scale && seen.seed === settings.seed) return;
+    if (
+      seen.pattern === settings.pattern &&
+      seen.palette === settings.palette &&
+      seen.practice === settings.practice &&
+      seen.scale === settings.scale &&
+      seen.seed === settings.seed
+    )
+      return;
     seen.pattern = settings.pattern;
     seen.palette = settings.palette;
     seen.practice = settings.practice;
@@ -988,7 +1142,8 @@ class MarbleSim implements SceneSim {
     let moved = false;
     this.#idle = 0;
     if (pointer.down) {
-      if (!this.#dragging && Math.hypot(at.x - press.x, at.y - press.y) > DRAG_START) this.#dragging = true;
+      if (!this.#dragging && Math.hypot(at.x - press.x, at.y - press.y) > DRAG_START)
+        this.#dragging = true;
       if (this.#dragging) {
         moved = this.#comb(this.#last, at, settings.scale);
         if (moved) {
@@ -1011,7 +1166,15 @@ class MarbleSim implements SceneSim {
     const dy = to.y - from.y;
     const length = Math.hypot(dx, dy);
     if (length < 1e-5) return false;
-    const tool = line(from.x, from.y, dx / length, dy / length, DRAG_ALPHA * scale, DRAG_LAMBDA * scale, { range: DRAG_RANGE * scale });
+    const tool = line(
+      from.x,
+      from.y,
+      dx / length,
+      dy / length,
+      DRAG_ALPHA * scale,
+      DRAG_LAMBDA * scale,
+      { range: DRAG_RANGE * scale },
+    );
     sweep(this.#blobs, tool, 0, length);
     this.#dragTool = tool;
     return true;
@@ -1020,7 +1183,8 @@ class MarbleSim implements SceneSim {
   #dropAt(at: { x: number; y: number }, settings: Settings): void {
     const inks = settings.palette.inks;
     // Suminagashi alternates each ink with clear water, so repeated clicks raise rings.
-    const sequence: readonly (string | null)[] = settings.practice === "suminagashi" ? inks.flatMap((ink) => [ink, null]) : inks;
+    const sequence: readonly (string | null)[] =
+      settings.practice === "suminagashi" ? inks.flatMap((ink) => [ink, null]) : inks;
     const color = sequence[this.#nextInk % sequence.length] ?? null;
     this.#nextInk++;
     const radius = CLICK_RADIUS * settings.scale * (0.85 + 0.3 * this.#jitter());
@@ -1068,7 +1232,10 @@ class MarbleSim implements SceneSim {
    * (the canvas is only drawn once it is done, and the sheet then fades up from the bare tray).
    */
   #fastForward(): boolean {
-    const budget = Math.min(PREROLL_BUDGET_MAX_MS, Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs));
+    const budget = Math.min(
+      PREROLL_BUDGET_MAX_MS,
+      Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs),
+    );
     // The sprinkle is a count of steps, the same on every machine; the budget only spreads them over frames.
     const steps = Math.ceil((this.#prerollTo - this.#routine.clock) / PREROLL_STEP) + 1;
     this.#prerollMoved = false;
@@ -1086,7 +1253,10 @@ class MarbleSim implements SceneSim {
     const target = sprinkleAt(this.#stageClock, this.#lead, this.#prerollTo);
     if (this.#routine.clock >= target - 1e-6) return false;
     this.#stageTarget = target;
-    const budget = Math.min(PREROLL_BUDGET_MAX_MS, Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs));
+    const budget = Math.min(
+      PREROLL_BUDGET_MAX_MS,
+      Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs),
+    );
     const steps = Math.ceil((this.#prerollTo - this.#routine.clock) / PREROLL_STEP) + 1;
     this.#prerollMoved = false;
     runBudgeted(this.#sprinkleStep, budget, steps);
@@ -1207,7 +1377,13 @@ class MarbleSim implements SceneSim {
     let total = 0;
     for (const blob of this.#blobs) {
       if (!this.#resample(blob, hw, maxEdge, insert)) continue;
-      if (blob.maxX < -hw - CULL_MARGIN || blob.minX > hw + CULL_MARGIN || blob.maxY < -0.5 - CULL_MARGIN || blob.minY > 0.5 + CULL_MARGIN) continue;
+      if (
+        blob.maxX < -hw - CULL_MARGIN ||
+        blob.minX > hw + CULL_MARGIN ||
+        blob.maxY < -0.5 - CULL_MARGIN ||
+        blob.minY > 0.5 + CULL_MARGIN
+      )
+        continue;
       kept.push(blob);
       total += blob.n;
     }
@@ -1322,7 +1498,8 @@ class MarbleSim implements SceneSim {
       shown.spacing = 0;
       following = true;
     } else {
-      const op = this.#events.stroke ?? (this.#phase === "routine" ? this.#routine.stroke : undefined);
+      const op =
+        this.#events.stroke ?? (this.#phase === "routine" ? this.#routine.stroke : undefined);
       if (op !== undefined) {
         tipInto(op, shown);
         shown.mx = op.tool.mx;
@@ -1394,7 +1571,10 @@ class MarbleSim implements SceneSim {
     data[0] = shown.x / this.#aspect + 0.5;
     data[1] = shown.y + 0.5;
     data[2] = shown.on;
-    data[3] = Math.max(this.#phase === "lift" ? smoothstep(0, 1, this.#lift) : 0, 1 - smoothstep(0, 1, this.#arrive));
+    data[3] = Math.max(
+      this.#phase === "lift" ? smoothstep(0, 1, this.#lift) : 0,
+      1 - smoothstep(0, 1, this.#arrive),
+    );
     data[4] = shown.mx;
     data[5] = shown.my;
     data[6] = shown.spacing;
@@ -1405,6 +1585,15 @@ class MarbleSim implements SceneSim {
 
 /** The marbling tray, for a scene whose `params` carry the knobs `MarbleKnob` names. */
 export function marbleSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<MarbleKnob>("marble", params, ["pattern", "palette", "practice", "tempo", "scale", "renew", "sheetSeed", "stylus"]);
+  const knobs = new KnobReader<MarbleKnob>("marble", params, [
+    "pattern",
+    "palette",
+    "practice",
+    "tempo",
+    "scale",
+    "renew",
+    "sheetSeed",
+    "stylus",
+  ]);
   return (gl) => new MarbleSim(gl, knobs);
 }

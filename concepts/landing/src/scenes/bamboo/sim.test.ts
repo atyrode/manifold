@@ -30,7 +30,12 @@ function knocks(knobs: Record<string, number>, seconds: number): Knock[] {
         // A falling leaf at the water clock's depth (as the float texture holds it), still fading
         // in: it has only just let go.
         const row = i * 8;
-        if (leaves[row + 7] === 1 && leaves[row + 5] === Math.fround(BAMBOO_DEVICE_DEPTH) && (leaves[row + 6] ?? 1) < 0.05) startled++;
+        if (
+          leaves[row + 7] === 1 &&
+          leaves[row + 5] === Math.fround(BAMBOO_DEVICE_DEPTH) &&
+          (leaves[row + 6] ?? 1) < 0.05
+        )
+          startled++;
       }
       out.push({ at: sim.time, strength: device[5] ?? 0, startled });
     }
@@ -42,7 +47,9 @@ function knocks(knobs: Record<string, number>, seconds: number): Knock[] {
 
 /** The knocks that end a swing back, without the bounces that follow them within a second. */
 function swings(list: readonly Knock[]): Knock[] {
-  return list.filter((knock, i) => i === 0 || knock.at - (list[i - 1]?.at ?? Number.NEGATIVE_INFINITY) > 1);
+  return list.filter(
+    (knock, i) => i === 0 || knock.at - (list[i - 1]?.at ?? Number.NEGATIVE_INFINITY) > 1,
+  );
 }
 
 test("on bare stone the tube clacks hard, bounces, and its knock startles leaves above the basin", () => {

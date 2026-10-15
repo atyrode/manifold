@@ -234,7 +234,13 @@ export interface PlantClimate {
 
 /** A still climate in high summer, for a scene to fill in each frame. */
 export function plantClimate(): PlantClimate {
-  return { dt: 0, time: 0, growth: 0, season: PLANT_SUMMER, air: { x: 0, y: 0, eddy: 0, calm: 0, gusts: 0, gustNow: false, front: 1 } };
+  return {
+    dt: 0,
+    time: 0,
+    growth: 0,
+    season: PLANT_SUMMER,
+    air: { x: 0, y: 0, eddy: 0, calm: 0, gusts: 0, gustNow: false, front: 1 },
+  };
 }
 
 /** How well a species does at a moisture: 1 inside its band, 0 beyond 0.25 outside it. */
@@ -354,7 +360,11 @@ export class RootedPlants {
     this.pheno = new Float32Array(n);
     this.tier = new Int8Array(n);
     this.cycle = new Int32Array(n);
-    this.#gusts = new GustTrain(mulberry32(Math.imul(seed + 1, 0x9e3779b1) ^ 0x51a7), GUST_RISE, GUST_EVERY[0] * 0.5);
+    this.#gusts = new GustTrain(
+      mulberry32(Math.imul(seed + 1, 0x9e3779b1) ^ 0x51a7),
+      GUST_RISE,
+      GUST_EVERY[0] * 0.5,
+    );
     const site = () => this.#buildSite;
     const rand = () => this.#buildRand;
     const vigour = () => this.#buildVigour;
@@ -428,7 +438,8 @@ export class RootedPlants {
       return -1;
     }
     const parent = spec.parent ?? -1;
-    if (parent >= this.count || (parent >= 0 && this.plantOf[parent] !== p)) throw new PlantError(`plants: organ parent ${parent} is not an organ of this plant`);
+    if (parent >= this.count || (parent >= 0 && this.plantOf[parent] !== p))
+      throw new PlantError(`plants: organ parent ${parent} is not an organ of this plant`);
     const species = this.speciesOf(p);
     const i = this.count++;
     const length = Math.max(spec.length, 1e-6);
@@ -450,7 +461,8 @@ export class RootedPlants {
     this.side[i] = (spec.side ?? 1) < 0 ? -1 : 1;
     this.layer[i] = spec.layer ?? 0;
     this.shade[i] = spec.shade ?? 0.5;
-    this.slot[i] = spec.slot === undefined ? i : spec.slot < 0 ? -1 : (this.#buildSite.slot ?? 0) + spec.slot;
+    this.slot[i] =
+      spec.slot === undefined ? i : spec.slot < 0 ? -1 : (this.#buildSite.slot ?? 0) + spec.slot;
     this.offsetX[i] = parent < 0 ? (spec.offset?.[0] ?? 0) : 0;
     this.offsetY[i] = parent < 0 ? (spec.offset?.[1] ?? 0) : 0;
     this.#give[i] = species.sway.give * (spec.give ?? 1) * (role === PlantRole.root ? 0.1 : 1);
@@ -514,7 +526,14 @@ export class RootedPlants {
       this.grown[i] = grown;
       const species = this.#species[plant];
       const cells = grown * (site?.cells ?? this.cells);
-      this.tier[i] = (this.size[i] ?? 0) <= 0 || !species ? 0 : cells >= species.detail.simple ? 2 : cells >= species.detail.min ? 1 : 0;
+      this.tier[i] =
+        (this.size[i] ?? 0) <= 0 || !species
+          ? 0
+          : cells >= species.detail.simple
+            ? 2
+            : cells >= species.detail.min
+              ? 1
+              : 0;
     }
   }
 
@@ -538,7 +557,12 @@ export class RootedPlants {
     const air = climate.air;
     const power = GUST_POWER[0] + (GUST_POWER[1] - GUST_POWER[0]) * air.gusts;
     const every = GUST_EVERY[0] + (GUST_EVERY[1] - GUST_EVERY[0]) * air.gusts;
-    if (air.gustNow) this.#gusts.start(1, Math.max(power, GUST_POWER[0] + 0.5 * (GUST_POWER[1] - GUST_POWER[0])), every);
+    if (air.gustNow)
+      this.#gusts.start(
+        1,
+        Math.max(power, GUST_POWER[0] + 0.5 * (GUST_POWER[1] - GUST_POWER[0])),
+        every,
+      );
     if (dt > 0) {
       this.#growth += dt * PLANT_GROWTH_PACE * climate.growth;
       this.#gusts.step(dt, air.gusts > 0 ? every : Infinity, 1, power);
@@ -564,11 +588,17 @@ export class RootedPlants {
         }
         const w0 = this.#omega0[i] ?? 1;
         const zeta = this.#species[this.plantOf[i] ?? 0]?.sway.damping ?? 1;
-        const omega = (this.#omega[i] ?? 0) + (w0 * w0 * (target - (this.theta[i] ?? 0)) - 2 * zeta * w0 * (this.#omega[i] ?? 0)) * h;
+        const omega =
+          (this.#omega[i] ?? 0) +
+          (w0 * w0 * (target - (this.theta[i] ?? 0)) - 2 * zeta * w0 * (this.#omega[i] ?? 0)) * h;
         this.#omega[i] = omega;
         this.theta[i] = (this.theta[i] ?? 0) + omega * h;
         if (upright) {
-          const rate = (this.#leanRate[i] ?? 0) + (w0 * w0 * ((push[1] ?? 0) - (this.lean[i] ?? 0)) - 2 * zeta * w0 * (this.#leanRate[i] ?? 0)) * h;
+          const rate =
+            (this.#leanRate[i] ?? 0) +
+            (w0 * w0 * ((push[1] ?? 0) - (this.lean[i] ?? 0)) -
+              2 * zeta * w0 * (this.#leanRate[i] ?? 0)) *
+              h;
           this.#leanRate[i] = rate;
           this.lean[i] = (this.lean[i] ?? 0) + rate * h;
         }
@@ -607,7 +637,11 @@ export class RootedPlants {
       const flow = this.#flow;
       flow[0] = 0;
       flow[1] = 0;
-      climate.current?.((this.x[i] ?? 0) + dx * 0.5 * grown, (this.y[i] ?? 0) + dy * 0.5 * grown, flow);
+      climate.current?.(
+        (this.x[i] ?? 0) + dx * 0.5 * grown,
+        (this.y[i] ?? 0) + dy * 0.5 * grown,
+        flow,
+      );
       const speed = Math.hypot(flow[0] ?? 0, flow[1] ?? 0);
       px = speed * (flow[0] ?? 0) + air.calm * wanderX;
       py = speed * (flow[1] ?? 0) + air.calm * wanderY;
@@ -641,7 +675,10 @@ export class RootedPlants {
     const flutter = species.sway.flutter ?? 0;
     if (flutter > 0 && this.role[i] !== PlantRole.axis) {
       const salt = this.#salt[i] ?? 0;
-      across += (flutter / give) * Math.hypot(px, py) * Math.sin((climate.time + late) * (1.1 + 0.8 * salt) + salt * TAU);
+      across +=
+        (flutter / give) *
+        Math.hypot(px, py) *
+        Math.sin((climate.time + late) * (1.1 + 0.8 * salt) + salt * TAU);
     }
     out[0] = limit * Math.tanh((give * across) / limit);
   }
@@ -674,10 +711,14 @@ export class RootedPlants {
       if (role === PlantRole.leaf) {
         const year = species.year;
         const turnAt = year.turn + 0.08 * (salt - 0.5);
-        const turning = smoothstep(turnAt, turnAt + 0.12, season) + 0.6 * smoothstep(turnAt + 0.12, turnAt + 0.22, season);
+        const turning =
+          smoothstep(turnAt, turnAt + 0.12, season) +
+          0.6 * smoothstep(turnAt + 0.12, turnAt + 0.22, season);
         if (fract(salt * 7.31 + 0.13) < year.shed) {
           // Out in spring, down after turning; bare through winter.
-          size *= smoothstep(0.02 + 0.08 * salt, 0.14 + 0.08 * salt, season) * (1 - smoothstep(turnAt + 0.14, turnAt + 0.22, season));
+          size *=
+            smoothstep(0.02 + 0.08 * salt, 0.14 + 0.08 * salt, season) *
+            (1 - smoothstep(turnAt + 0.14, turnAt + 0.22, season));
           pheno += turning / 1.6 - 0.6 * (1 - smoothstep(0.08, 0.22, season));
         } else {
           // Evergreen: a dulling through autumn and winter, a flush of young leaves in spring.
@@ -686,14 +727,17 @@ export class RootedPlants {
       } else if (role === PlantRole.bloom) {
         const [from, to] = species.year.bloom;
         const jitter = 0.04 * (salt - 0.5);
-        size *= smoothstep(from + jitter, from + jitter + 0.05, season) * (1 - smoothstep(to + jitter - 0.05, to + jitter, season));
+        size *=
+          smoothstep(from + jitter, from + jitter + 0.05, season) *
+          (1 - smoothstep(to + jitter - 0.05, to + jitter, season));
         pheno = 0;
       }
       // A child of a leaf or bloom goes with it.
       const parent = this.parent[i] ?? -1;
       if (parent >= 0) {
         const parentRole = this.role[parent] ?? 0;
-        if (parentRole === PlantRole.leaf || parentRole === PlantRole.bloom) size *= this.size[parent] ?? 1;
+        if (parentRole === PlantRole.leaf || parentRole === PlantRole.bloom)
+          size *= this.size[parent] ?? 1;
       }
       this.size[i] = size;
       this.pheno[i] = clamp(pheno, -1, 1);
@@ -711,13 +755,22 @@ export class PlantTexture {
   readonly data: Float32Array;
   readonly #texture: DataTexture;
 
-  constructor(gl: WebGL2RenderingContext, records: number, options: { width?: number; rowBase?: number } = {}) {
+  constructor(
+    gl: WebGL2RenderingContext,
+    records: number,
+    options: { width?: number; rowBase?: number } = {},
+  ) {
     this.records = records;
     this.width = options.width ?? Math.min(512, Math.max(1, records));
     this.rowBase = options.rowBase ?? 0;
     const height = this.rowBase + 4 * Math.ceil(records / this.width);
     this.data = new Float32Array(this.width * height * 4);
-    this.#texture = new DataTexture(gl, { width: this.width, height, format: "rgba16f", filter: "nearest" });
+    this.#texture = new DataTexture(gl, {
+      width: this.width,
+      height,
+      format: "rgba16f",
+      filter: "nearest",
+    });
   }
 
   get texture(): WebGLTexture {

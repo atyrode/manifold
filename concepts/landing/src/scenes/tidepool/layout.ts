@@ -19,7 +19,13 @@ export const TIDEPOOL_RELIEF = 4;
 /** The wave maker's band along the top edge, in frame heights; the sea outside the frame. */
 export const TIDEPOOL_SEA_BAND = 0.1;
 /** Heights (cells): the sea floor at the top edge, the platform round the pool, the rim's crest and the notch's sill. */
-export const TIDEPOOL_HEIGHTS = { seaFloor: -8, platform: 1.5, rim: 2.4, notch: 0.9, floor: -2.6 } as const;
+export const TIDEPOOL_HEIGHTS = {
+  seaFloor: -8,
+  platform: 1.5,
+  rim: 2.4,
+  notch: 0.9,
+  floor: -2.6,
+} as const;
 /** Steps round the basin's outline its wander is worked out at. */
 const OUTLINE = 256;
 /** Still water thinner than this (cells) is dry rock. */
@@ -55,7 +61,13 @@ export interface TidepoolLayout {
  * The rock for a grid of columns × rows square cells (rows spanning the frame's height), a seed and a
  * pool size 0..1, with still water for the sea standing at `sea` (cells).
  */
-export function layTidepool(columns: number, rows: number, seed: number, size: number, sea: number): TidepoolLayout {
+export function layTidepool(
+  columns: number,
+  rows: number,
+  seed: number,
+  size: number,
+  sea: number,
+): TidepoolLayout {
   const n = columns * rows;
   const aspect = columns / rows;
   const rand = mulberry32(Math.imul(Math.round(seed) + 1, 0x9e3779b1) ^ 0x7d1e9a3);
@@ -84,7 +96,12 @@ export function layTidepool(columns: number, rows: number, seed: number, size: n
   for (let i = 0; i < boulderCount; i++) {
     const angle = rand() * Math.PI * 2;
     const reach = 0.25 + 0.5 * rand();
-    boulders.push(pool.x + Math.cos(angle) * pool.rx * reach, pool.y + Math.sin(angle) * pool.ry * reach, 0.025 + 0.025 * rand(), -0.6 + 1.9 * rand());
+    boulders.push(
+      pool.x + Math.cos(angle) * pool.rx * reach,
+      pool.y + Math.sin(angle) * pool.ry * reach,
+      0.025 + 0.025 * rand(),
+      -0.6 + 1.9 * rand(),
+    );
   }
   const potholes: number[] = [];
   const potholeCount = Math.floor(rand() * 4);
@@ -99,13 +116,17 @@ export function layTidepool(columns: number, rows: number, seed: number, size: n
   // Noise along one line each, worked out once: the shoreline's wander by column, the channel's by
   // row, and the basin's outline by bearing (OUTLINE steps round, read linearly).
   const shore = new Float32Array(columns);
-  for (let i = 0; i < columns; i++) shore[i] = (valueNoise(((i + 0.5) / rows) * 3.5, 0.5, noiseSeed) - 0.5) * 0.12;
+  for (let i = 0; i < columns; i++)
+    shore[i] = (valueNoise(((i + 0.5) / rows) * 3.5, 0.5, noiseSeed) - 0.5) * 0.12;
   const wander = new Float32Array(rows);
-  for (let j = 0; j < rows; j++) wander[j] = (valueNoise(((j + 0.5) / rows) * 9, 2.5, noiseSeed + 13) - 0.5) * 0.04;
+  for (let j = 0; j < rows; j++)
+    wander[j] = (valueNoise(((j + 0.5) / rows) * 9, 2.5, noiseSeed + 13) - 0.5) * 0.04;
   const outlines = new Float32Array(OUTLINE + 1);
   for (let a = 0; a <= OUTLINE; a++) {
     const angle = (a / OUTLINE) * Math.PI * 2;
-    outlines[a] = 1 + 0.32 * (fbm(Math.cos(angle) * 1.4 + 5, Math.sin(angle) * 1.4 + 5, noiseSeed + 11, 3) - 0.5);
+    outlines[a] =
+      1 +
+      0.32 * (fbm(Math.cos(angle) * 1.4 + 5, Math.sin(angle) * 1.4 + 5, noiseSeed + 11, 3) - 0.5);
   }
 
   const bed = new Float32Array(n);
@@ -119,7 +140,8 @@ export function layTidepool(columns: number, rows: number, seed: number, size: n
       // The shelf: sea floor at the top edge, a shoreline wandering along x, the platform rising
       // toward the bottom. s is how far from the top edge, moved by the shoreline's wander.
       const s = 1 - y + (shore[i] ?? 0);
-      let z = lerp(h.seaFloor, h.platform, smoothstep(0.06, 0.4, s)) + 1.2 * smoothstep(0.4, 1.05, s);
+      let z =
+        lerp(h.seaFloor, h.platform, smoothstep(0.06, 0.4, s)) + 1.2 * smoothstep(0.4, 1.05, s);
       // Rock relief: long reefs and gullies running down to the sea, lumps, and cracks.
       const reefs = fbm(x * 7, y * 2.2, noiseSeed + 3, 3) - 0.5;
       const lumps = fbm(x * 18, y * 18, noiseSeed + 5, 3) - 0.5;
@@ -136,12 +158,16 @@ export function layTidepool(columns: number, rows: number, seed: number, size: n
       const outline = lerp(outlines[a0] ?? 1, outlines[a0 + 1] ?? 1, step - a0);
       const d = Math.sqrt(dx * dx + dy * dy) / outline;
       // The notch: a dip in the crest about its bearing (the turn from it wrapped to -π..π).
-      const off = angle - pool.notch - Math.PI * 2 * Math.round((angle - pool.notch) / (Math.PI * 2));
+      const off =
+        angle - pool.notch - Math.PI * 2 * Math.round((angle - pool.notch) / (Math.PI * 2));
       const notch = Math.exp(-(off * off) / 0.04);
       const crest = lerp(h.rim + 0.5 * lumps, h.notch, notch);
       if (d < 1.45) {
         const floor = h.floor - 0.9 * (1 - Math.min(d * d, 1)) + 0.5 * lumps + 0.4 * reefs;
-        const rimmed = d < 1 ? lerp(floor, crest, smoothstep(0.78, 1, d)) : lerp(crest, Math.min(z, crest + 0.3), smoothstep(1, 1.45, d));
+        const rimmed =
+          d < 1
+            ? lerp(floor, crest, smoothstep(0.78, 1, d))
+            : lerp(crest, Math.min(z, crest + 0.3), smoothstep(1, 1.45, d));
         z = d < 1 ? rimmed : Math.max(z, rimmed);
         if (d >= 1 && notch > 0.2) z = Math.min(z, lerp(z, crest, notch));
       }
@@ -150,7 +176,8 @@ export function layTidepool(columns: number, rows: number, seed: number, size: n
         const bx = (x - (boulders[b] ?? 0)) / (boulders[b + 2] ?? 1);
         const by = (y - (boulders[b + 1] ?? 0)) / (boulders[b + 2] ?? 1);
         const r2 = bx * bx + by * by;
-        if (r2 < 1) z = Math.max(z, lerp(z, (boulders[b + 3] ?? 0) + 0.6 * lumps, Math.pow(1 - r2, 0.6)));
+        if (r2 < 1)
+          z = Math.max(z, lerp(z, (boulders[b + 3] ?? 0) + 0.6 * lumps, Math.pow(1 - r2, 0.6)));
       }
 
       // The surge channel, its bed falling from the notch's sill to below the sea.
@@ -169,7 +196,8 @@ export function layTidepool(columns: number, rows: number, seed: number, size: n
         const px = x - (potholes[p] ?? 0);
         const py = y - (potholes[p + 1] ?? 0);
         const r = Math.sqrt(px * px + py * py) / (potholes[p + 2] ?? 1);
-        if (r < 1.5) z += -1.6 * Math.max(0, 1 - r * r) + 0.35 * Math.exp(-((r - 1.1) * (r - 1.1)) / 0.04);
+        if (r < 1.5)
+          z += -1.6 * Math.max(0, 1 - r * r) + 0.35 * Math.exp(-((r - 1.1) * (r - 1.1)) / 0.04);
       }
       bed[k] = z;
     }
@@ -203,7 +231,18 @@ export function layTidepool(columns: number, rows: number, seed: number, size: n
       open ||= outlet[k] === 1;
       const x = k % columns;
       for (let side = 0; side < 4; side++) {
-        const j = side === 0 ? (x > 0 ? k - 1 : -1) : side === 1 ? (x < columns - 1 ? k + 1 : -1) : side === 2 ? k - columns : k + columns;
+        const j =
+          side === 0
+            ? x > 0
+              ? k - 1
+              : -1
+            : side === 1
+              ? x < columns - 1
+                ? k + 1
+                : -1
+              : side === 2
+                ? k - columns
+                : k + columns;
         if (j < 0 || j >= n || seen[j] === 1 || (rest[j] ?? 0) <= WET) continue;
         seen[j] = 1;
         queue[tail++] = j;

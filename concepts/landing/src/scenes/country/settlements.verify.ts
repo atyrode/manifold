@@ -61,12 +61,18 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     gl.attachShader(linked, shader);
     gl.deleteShader(shader);
   });
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   return linked;
 }
 
@@ -113,15 +119,25 @@ function footings(built: Uint8Array, land: Uint8Array, label: string, api = fals
     const where = `${at % W},${Math.floor(at / W)}`;
     check(below.ridge !== 6, `${label}: a building floats over the sky at ${where}`);
     if (below.ridge !== self.ridge) continue;
-    check(below.kind === 0, `${label}: a building on ridge ${self.ridge} stands on ${KINDS[below.kind]} at ${where}`);
-    if (api) check(below.clear < 0.15, `${label}: countrySettlementDistance misses the building at ${where} (${below.clear.toFixed(2)})`);
+    check(
+      below.kind === 0,
+      `${label}: a building on ridge ${self.ridge} stands on ${KINDS[below.kind]} at ${where}`,
+    );
+    if (api)
+      check(
+        below.clear < 0.15,
+        `${label}: countrySettlementDistance misses the building at ${where} (${below.clear.toFixed(2)})`,
+      );
     checked++;
   }
   return checked;
 }
 
 /** Connected groups of pixels (8-neighbours, gaps up to `reach` bridged) and their extents. */
-function groups(mask: Uint8Array, reach = 2): { n: number; x0: number; x1: number; y0: number; y1: number }[] {
+function groups(
+  mask: Uint8Array,
+  reach = 2,
+): { n: number; x0: number; x1: number; y0: number; y1: number }[] {
   const seen = new Uint8Array(W * H);
   const out: { n: number; x0: number; x1: number; y0: number; y1: number }[] = [];
   for (let start = 0; start < W * H; start++) {
@@ -157,7 +173,10 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   const result: Record<string, unknown> = {};
   const linked = program(
     gl,
-    fragmentSourceFor({ ...sceneDefs.country, entry: "settleRegression", glsl: sceneDefs.country.glsl + wrapper }, COUNTRY_FULL),
+    fragmentSourceFor(
+      { ...sceneDefs.country, entry: "settleRegression", glsl: sceneDefs.country.glsl + wrapper },
+      COUNTRY_FULL,
+    ),
   );
   gl.canvas.width = W;
   gl.canvas.height = H;
@@ -183,7 +202,10 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
     gl.uniform1i(u("uColor"), 0);
     gl.uniform2f(u("uWeather"), 0, 0);
     const values = { ...paramDefaults("country"), ...knobs };
-    gl.uniform1fv(u("uParams"), Float32Array.from(renderSettings(defaultsFor("country"), values).params));
+    gl.uniform1fv(
+      u("uParams"),
+      Float32Array.from(renderSettings(defaultsFor("country"), values).params),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(W * H * 4);
     gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -219,15 +241,23 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   const sizes: number[] = [];
   for (const village of [6, 11, 18, 26]) {
     const grown = changed(draw({ ...day, ...bare, village }), smallest);
-    check(count(grown) > count(last), `Village ${village} covers no more than the smaller one: ${count(grown)}`);
-    check(kept(last, grown) > 0.99, `Village ${village} moved cottages of the smaller one (${kept(last, grown)})`);
+    check(
+      count(grown) > count(last),
+      `Village ${village} covers no more than the smaller one: ${count(grown)}`,
+    );
+    check(
+      kept(last, grown) > 0.99,
+      `Village ${village} moved cottages of the smaller one (${kept(last, grown)})`,
+    );
     sizes.push(count(grown));
     last = grown;
   }
   result.villageCoverage = sizes;
   // Its lit windows at dusk and its chimney smoke grow with it.
   const dusk = { ...bare, time: 0.8, clouds: 0, wind: 0, fog: 0 };
-  const [few = 0, some = 0, many = 0] = [2, 11, 26].map((village) => lamps(draw({ ...dusk, village }, 0, true)));
+  const [few = 0, some = 0, many = 0] = [2, 11, 26].map((village) =>
+    lamps(draw({ ...dusk, village }, 0, true)),
+  );
   check(few < some && some < many, `Village lights do not grow with it: ${few}, ${some}, ${many}`);
   const [hamlet = 0, town = 0] = [6, 26].map((village) => {
     const still = { ...day, ...bare, village };
@@ -242,7 +272,10 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   const open = { ...day, ...bare, woodland: 0 };
   const castle = changed(draw({ ...open, castle: 1 }), draw(open));
   const parts = groups(castle);
-  check(parts.length === 1 && (parts[0]?.n ?? 0) >= 150, `Castle is not one structure: ${JSON.stringify(parts)}`);
+  check(
+    parts.length === 1 && (parts[0]?.n ?? 0) >= 150,
+    `Castle is not one structure: ${JSON.stringify(parts)}`,
+  );
   const land = draw(open, 1);
   let skyline = 0;
   for (let x = 0; x < W; x++) {
@@ -271,9 +304,16 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   const hamlets: number[] = [];
   for (const n of [1, 2, 3]) {
     const added = changed(draw({ ...quiet, hamlets: n }), before);
-    check(count(added) >= count(last) && kept(last, added) > 0.99, `Hamlets ${n} moved or lost buildings`);
+    check(
+      count(added) >= count(last) && kept(last, added) > 0.99,
+      `Hamlets ${n} moved or lost buildings`,
+    );
     for (let at = 0; at < W * H; at++) {
-      if (added[at]) check(surface(nearLand, at).ridge >= 3, `A hamlet shows in front of ridge ${surface(nearLand, at).ridge} at ${at % W},${Math.floor(at / W)}`);
+      if (added[at])
+        check(
+          surface(nearLand, at).ridge >= 3,
+          `A hamlet shows in front of ridge ${surface(nearLand, at).ridge} at ${at % W},${Math.floor(at / W)}`,
+        );
     }
     hamlets.push(count(added));
     last = added;
@@ -290,9 +330,16 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   const farms: number[] = [];
   for (const amount of [0.6, 0.7, 1]) {
     const added = changed(draw({ ...fields, farms: amount }), empty);
-    check(count(added) > count(last) && kept(last, added) > 0.99, `Farms ${amount} moved or lost buildings`);
+    check(
+      count(added) > count(last) && kept(last, added) > 0.99,
+      `Farms ${amount} moved or lost buildings`,
+    );
     for (let at = 0; at < W * H; at++) {
-      if (added[at]) check(surface(fieldLand, at).ridge >= 1, `A farm shows on the nearest field at ${at % W},${Math.floor(at / W)}`);
+      if (added[at])
+        check(
+          surface(fieldLand, at).ridge >= 1,
+          `A farm shows on the nearest field at ${at % W},${Math.floor(at / W)}`,
+        );
     }
     farms.push(count(added));
     last = added;
@@ -302,7 +349,10 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   // At dusk, the hamlets, farms and castle light windows of their own.
   const villageOnly = lamps(draw({ ...dusk }, 0, true));
   const everyone = lamps(draw({ ...dusk, hamlets: 3, farms: 1, castle: 1 }, 0, true));
-  check(everyone > villageOnly, `Settlements light no windows at dusk: ${everyone} vs ${villageOnly}`);
+  check(
+    everyone > villageOnly,
+    `Settlements light no windows at dusk: ${everyone} vs ${villageOnly}`,
+  );
   result.duskLamps = { village: villageOnly, all: everyone };
 
   gl.deleteProgram(linked);

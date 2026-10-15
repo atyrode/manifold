@@ -110,7 +110,12 @@ class ShanshuiSim implements SceneSim {
     this.#knobs = new KnobReader("shanshui", params, ["speed", "drift", "birds", "seal", "seed"]);
     this.#geeseSlot = this.#knobs.trigger("birds");
     this.#sealSlot = this.#knobs.trigger("seal");
-    this.#state = new DataTexture(gl, { width: 4, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#state = new DataTexture(gl, {
+      width: 4,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#trailTexture = new DataTexture(gl, { width: 1, height: 1, format: "r8" });
   }
 
@@ -206,7 +211,8 @@ class ShanshuiSim implements SceneSim {
    * A skein in the air keeps flying, slowly, even while motion is held at zero.
    */
   #flyGeese(dt: number, motion: number, birds: number, aspect: number, now: boolean): void {
-    if (now && (!Number.isFinite(this.#geeseX) || this.#geeseX < aspect * 0.5)) this.#launchGeese(aspect);
+    if (now && (!Number.isFinite(this.#geeseX) || this.#geeseX < aspect * 0.5))
+      this.#launchGeese(aspect);
     if (Number.isFinite(this.#geeseX)) {
       this.#geeseX -= dt * Math.max(motion, 0.35) * GEESE_SPEED;
       // The skein trails up to ~0.45 heights behind (to the right of) its leader.
@@ -219,7 +225,8 @@ class ShanshuiSim implements SceneSim {
     }
     const often = Math.min(1, Math.max(0, birds));
     const interval = GEESE_RARE + (GEESE_OFTEN - GEESE_RARE) * often * often * (3 - 2 * often);
-    if (!Number.isFinite(this.#nextGeese)) this.#nextGeese = this.#clock + interval * (0.6 + 0.8 * this.#random.next());
+    if (!Number.isFinite(this.#nextGeese))
+      this.#nextGeese = this.#clock + interval * (0.6 + 0.8 * this.#random.next());
     else if (this.#clock >= this.#nextGeese) {
       this.#nextGeese = Number.NaN;
       this.#launchGeese(aspect);
@@ -271,7 +278,9 @@ class ShanshuiSim implements SceneSim {
     const trail = this.#trail;
     const pointer = frame.pointer;
     if (pointer.inside) {
-      const travel = Number.isNaN(this.#lastX) ? 0 : Math.hypot((pointer.x - this.#lastX) * aspect, pointer.y - this.#lastY);
+      const travel = Number.isNaN(this.#lastX)
+        ? 0
+        : Math.hypot((pointer.x - this.#lastX) * aspect, pointer.y - this.#lastY);
       const strength = Math.min(0.6, travel * TRAIL_PER_TRAVEL);
       if (strength > 0.002) trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, strength, aspect);
       this.#lastX = pointer.x;

@@ -27,7 +27,10 @@ export function incenseVentVerify(gl: WebGL2RenderingContext): Record<string, un
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: COLUMNS, height: ROWS, format: "rgba32f", filter: "nearest" });
-  const sample = gpu.pass("uniform sampler2D uField; void main() { fragColor = texture(uField, vUv); }", "incense vent sample");
+  const sample = gpu.pass(
+    "uniform sampler2D uField; void main() { fragColor = texture(uField, vUv); }",
+    "incense vent sample",
+  );
   const pixels = new Float32Array(COLUMNS * ROWS * 4);
   const read = (texture: WebGLTexture | undefined, channel: number): Float32Array => {
     if (texture === undefined) throw new Error("Incense fluid missing");
@@ -106,11 +109,22 @@ export function incenseVentVerify(gl: WebGL2RenderingContext): Record<string, un
   gpu.dispose();
   // Measured in software WebGL (frame heights per second): the vent moves the ceiling layer 0.077 and
   // the thread's air 0.0003; the draft from 0.4 to 1 moves the layer 0.024 and the thread 0.0052.
-  check(vent.ceiling > 0.04, `The ceiling vent did not draw the layer under the ceiling along: ${vent.ceiling}`);
-  check(vent.thread < 0.05 * vent.ceiling, `The ceiling vent bent the thread: ${vent.thread} against ${vent.ceiling} under the ceiling`);
+  check(
+    vent.ceiling > 0.04,
+    `The ceiling vent did not draw the layer under the ceiling along: ${vent.ceiling}`,
+  );
+  check(
+    vent.thread < 0.05 * vent.ceiling,
+    `The ceiling vent bent the thread: ${vent.thread} against ${vent.ceiling} under the ceiling`,
+  );
   check(
     vent.thread / vent.ceiling < 0.1 * (draft.thread / draft.ceiling),
     `The vent bent the thread nearly as a draft does: ${vent.thread / vent.ceiling} vs ${draft.thread / draft.ceiling}`,
   );
-  return { ventCeiling: vent.ceiling, ventThread: vent.thread, draftCeiling: draft.ceiling, draftThread: draft.thread };
+  return {
+    ventCeiling: vent.ceiling,
+    ventThread: vent.thread,
+    draftCeiling: draft.ceiling,
+    draftThread: draft.thread,
+  };
 }

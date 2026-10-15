@@ -14,8 +14,23 @@ function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
 }
 
-function settings(scene: SceneId, knobs: Params = paramDefaults(scene), look: Partial<LabState> = {}): RenderSettings {
-  return renderSettings({ ...defaultsFor(scene), pixel: 1, motion: 1, view: "source", mouse: "still", transitions: "off", ...look }, knobs);
+function settings(
+  scene: SceneId,
+  knobs: Params = paramDefaults(scene),
+  look: Partial<LabState> = {},
+): RenderSettings {
+  return renderSettings(
+    {
+      ...defaultsFor(scene),
+      pixel: 1,
+      motion: 1,
+      view: "source",
+      mouse: "still",
+      transitions: "off",
+      ...look,
+    },
+    knobs,
+  );
 }
 
 export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unknown> {
@@ -42,7 +57,14 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     return location;
   };
   const methods = gl as unknown as Record<string, (...args: unknown[]) => void>;
-  for (const method of ["uniform1i", "uniform1f", "uniform2f", "uniform3f", "uniform4f", "uniform1fv"]) {
+  for (const method of [
+    "uniform1i",
+    "uniform1f",
+    "uniform2f",
+    "uniform3f",
+    "uniform4f",
+    "uniform1fv",
+  ]) {
     const send = methods[method]?.bind(gl);
     if (!send) throw new Error(`Missing ${method}`);
     methods[method] = (location: unknown, ...args: unknown[]) => {
@@ -69,7 +91,8 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     gl.readPixels(x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
     return bytes;
   };
-  const same = (a: Uint8Array, b: Uint8Array): boolean => a.every((value, index) => value === b[index]);
+  const same = (a: Uint8Array, b: Uint8Array): boolean =>
+    a.every((value, index) => value === b[index]);
 
   // Dunes with a stand-in sim: it supplies no texture (the shader draws flat sand, so only its
   // response to the press shows), records what it is given, and throws on demand.
@@ -114,21 +137,41 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     const time = uniform("uTime");
     const motionTime = uniform("uMotionTime");
     const rect = canvas.getBoundingClientRect();
-    const at = { clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.7, isPrimary: true, button: 0, bubbles: true };
+    const at = {
+      clientX: rect.left + rect.width * 0.5,
+      clientY: rect.top + rect.height * 0.7,
+      isPrimary: true,
+      button: 0,
+      bubbles: true,
+    };
     canvas.dispatchEvent(new PointerEvent("pointermove", at));
     canvas.dispatchEvent(new PointerEvent("pointerdown", at));
     frame((now += 16));
-    check((uniform("uMouse") as Float32Array)[2] === 1 && !same(band(), before), "Dunes drew no pouring streak while the button was held");
+    check(
+      (uniform("uMouse") as Float32Array)[2] === 1 && !same(band(), before),
+      "Dunes drew no pouring streak while the button was held",
+    );
     canvas.dispatchEvent(new PointerEvent("pointerup", at));
     for (let i = 0; i < 7; i++) frame((now += 100));
-    const age = (uniform("uTime") as number) - ((uniform("uMouse") as Float32Array)[3] ?? Number.NaN);
-    check(uniform("uTime") === time && uniform("uMotionTime") === motionTime, "Reduced motion let the scene or motion clock run");
-    check(age > 0.65 && age < 0.8, `Press age ${age} s, not the ~0.72 s since the press, under reduced motion`);
-    check(same(band(), before), "Dunes' pouring streak persisted after release under reduced motion");
+    const age =
+      (uniform("uTime") as number) - ((uniform("uMouse") as Float32Array)[3] ?? Number.NaN);
+    check(
+      uniform("uTime") === time && uniform("uMotionTime") === motionTime,
+      "Reduced motion let the scene or motion clock run",
+    );
+    check(
+      age > 0.65 && age < 0.8,
+      `Press age ${age} s, not the ~0.72 s since the press, under reduced motion`,
+    );
+    check(
+      same(band(), before),
+      "Dunes' pouring streak persisted after release under reduced motion",
+    );
     // Paused, every age holds.
     renderer.setPaused(true);
     for (let i = 0; i < 2; i++) frame((now += 100));
-    const pausedAge = (uniform("uTime") as number) - ((uniform("uMouse") as Float32Array)[3] ?? Number.NaN);
+    const pausedAge =
+      (uniform("uTime") as number) - ((uniform("uMouse") as Float32Array)[3] ?? Number.NaN);
     check(Math.abs(pausedAge - age) < 1e-6, `A paused frame let the press age: ${pausedAge} s`);
     renderer.setPaused(false);
     // A "now" trigger ages the same way for sims, and each press fires once even though the scene
@@ -142,8 +185,14 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
       }
     }
     const triggerAge = seen.time - seen.trigger;
-    check(fires.join() === "true,false,false,true,false,false", `Trigger presses fired ${fires.join()} under reduced motion`);
-    check(triggerAge > 0.25 && triggerAge < 0.35, `Trigger age ${triggerAge} s, not 0.3 s, under reduced motion`);
+    check(
+      fires.join() === "true,false,false,true,false,false",
+      `Trigger presses fired ${fires.join()} under reduced motion`,
+    );
+    check(
+      triggerAge > 0.25 && triggerAge < 0.35,
+      `Trigger age ${triggerAge} s, not 0.3 s, under reduced motion`,
+    );
     result.reducedMotion = { pressAge: age, triggerAge, streakCleared: true };
 
     // F7: a scene that throws keeps the frame loop alive, says why, and recovers. Small from here.
@@ -156,7 +205,10 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     };
     const n = Number.parseInt(settings("dunes").bg.slice(1), 16);
     const background = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-    const blank = () => image().every((value, index) => index % 4 === 3 || Math.abs(value - (background[index % 4] ?? -9)) <= 1);
+    const blank = () =>
+      image().every(
+        (value, index) => index % 4 === 3 || Math.abs(value - (background[index % 4] ?? -9)) <= 1,
+      );
     const logged: string[] = [];
     console.error = (...args: unknown[]) => {
       logged.push(String(args[0]));
@@ -174,19 +226,33 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     check(escaped === undefined, `A simulation fault escaped the frame loop: ${String(escaped)}`);
     check(next, "No next frame was scheduled after a simulation fault");
     const failure = renderer.failure;
-    check(failure?.scene === "dunes" && failure.stage === "frame" && failure.message === "injected sim fault", `Wrong failure state: ${JSON.stringify(failure)}`);
-    check(logged.includes("evt=landing.renderer.scene_failed scene=dunes stage=frame"), `Fault not logged as an event: ${logged.join(" | ")}`);
+    check(
+      failure?.scene === "dunes" &&
+        failure.stage === "frame" &&
+        failure.message === "injected sim fault",
+      `Wrong failure state: ${JSON.stringify(failure)}`,
+    );
+    check(
+      logged.includes("evt=landing.renderer.scene_failed scene=dunes stage=frame"),
+      `Fault not logged as an event: ${logged.join(" | ")}`,
+    );
     check(disposed === 1, `The failed simulation was disposed ${disposed} times`);
     check(frame((now += 16)) && blank(), "The failed scene did not leave the background drawing");
     fault = undefined;
     renderer.retry();
     frame((now += 16));
-    check(renderer.failure === undefined && built === 2 && drawn(), "Retry did not bring the scene back");
+    check(
+      renderer.failure === undefined && built === 2 && drawn(),
+      "Retry did not bring the scene back",
+    );
     // A shader that does not build is reported too, and retry builds it again once it is fixed.
     aurora.glsl = `${auroraGlsl}\n#error injected build fault\n`;
     renderer.update(settings("aurora"));
     check(frame((now += 16)), "No next frame was scheduled after a shader failed to build");
-    check(renderer.failure?.stage === "build", `Build fault not reported: ${JSON.stringify(renderer.failure)}`);
+    check(
+      renderer.failure?.stage === "build",
+      `Build fault not reported: ${JSON.stringify(renderer.failure)}`,
+    );
     aurora.glsl = auroraGlsl;
     renderer.retry();
     frame((now += 16));
@@ -199,14 +265,20 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     fault = undefined;
     renderer.update(settings("aurora"));
     frame((now += 16));
-    check(renderer.failure === undefined && drawn(), "Switching scene did not recover from a failure");
+    check(
+      renderer.failure === undefined && drawn(),
+      "Switching scene did not recover from a failure",
+    );
     // A simulation that throws while starting.
     dunes.sim = () => {
       throw new Error("injected start fault");
     };
     renderer.update(settings("dunes"));
     check(frame((now += 16)), "No next frame was scheduled after a simulation failed to start");
-    check(renderer.failure?.stage === "start", `Start fault not reported: ${JSON.stringify(renderer.failure)}`);
+    check(
+      renderer.failure?.stage === "start",
+      `Start fault not reported: ${JSON.stringify(renderer.failure)}`,
+    );
     dunes.sim = standIn;
     renderer.retry();
     frame((now += 16));
@@ -219,8 +291,17 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     frame((now += 16));
     const base = { ...sends };
     for (let i = 0; i < 4; i++) frame((now += 16));
-    const steady = Object.fromEntries(Object.entries(sends).map(([name, count]) => [name, count - (base[name] ?? 0)]));
-    check(steady.uTime === 4 && steady.uParams === 0 && steady.uLevels === 0 && steady.uDither === 0 && steady.uTriggers === 0, `Unchanged state was sent again: ${JSON.stringify(steady)}`);
+    const steady = Object.fromEntries(
+      Object.entries(sends).map(([name, count]) => [name, count - (base[name] ?? 0)]),
+    );
+    check(
+      steady.uTime === 4 &&
+        steady.uParams === 0 &&
+        steady.uLevels === 0 &&
+        steady.uDither === 0 &&
+        steady.uTriggers === 0,
+      `Unchanged state was sent again: ${JSON.stringify(steady)}`,
+    );
     const knobs = paramDefaults("aurora");
     const index = aurora.params.findIndex((def) => def.kind === "range");
     const knob = aurora.params[index];
@@ -231,18 +312,28 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     check(changed.params[index] !== original, "The knob change was a no-op");
     renderer.update(changed);
     frame((now += 16));
-    check(sends.uParams === (base.uParams ?? 0) + 1 && uniform(`uParams[${index}]`) === Math.fround(changed.params[index] ?? Number.NaN), "A changed knob did not reach the shader");
+    check(
+      sends.uParams === (base.uParams ?? 0) + 1 &&
+        uniform(`uParams[${index}]`) === Math.fround(changed.params[index] ?? Number.NaN),
+      "A changed knob did not reach the shader",
+    );
     // A look change made while another program draws reaches this one when it draws again.
     renderer.update(settings("dunes", paramDefaults("dunes"), { levels: 5 }));
     frame((now += 16));
     renderer.update(settings("aurora", knobs, { levels: 5 }));
     frame((now += 16));
-    check(uniform("uLevels") === 5, "A look change made on another scene left this scene's program stale");
+    check(
+      uniform("uLevels") === 5,
+      "A look change made on another scene left this scene's program stale",
+    );
     // A trigger's stamp reaches the shader as it moves (aurora reads slot 0 through sinceTrigger).
     renderer.trigger(0);
     for (let i = 0; i < 3; i++) frame((now += 100));
     const sinceTrigger = (uniform("uTime") as number) - (uniform("uTriggers[0]") as number);
-    check(sinceTrigger > 0.25 && sinceTrigger < 0.35, `Shader trigger age ${sinceTrigger} s, not 0.3 s, under reduced motion`);
+    check(
+      sinceTrigger > 0.25 && sinceTrigger < 0.35,
+      `Shader trigger age ${sinceTrigger} s, not 0.3 s, under reduced motion`,
+    );
     result.uniformSends = { steadyFrames: 4, steady };
 
     // Q2: main.ts reads `lab` inside `apply`, declared `const` after it; applying while the Lab is

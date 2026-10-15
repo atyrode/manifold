@@ -17,7 +17,10 @@ test("the ground's drop below the horizon and its depth undo each other and agre
     }
     // Farther ground shows closer under the horizon, and a nearer eye sees it closer still.
     expect(camera.groundDrop(40)).toBeLessThan(camera.groundDrop(4));
-    expect(new LevelCamera({ ...view, eye: 0.5 * view.eye }).groundDrop(4)).toBeCloseTo(0.5 * camera.groundDrop(4), 12);
+    expect(new LevelCamera({ ...view, eye: 0.5 * view.eye }).groundDrop(4)).toBeCloseTo(
+      0.5 * camera.groundDrop(4),
+      12,
+    );
   }
 });
 

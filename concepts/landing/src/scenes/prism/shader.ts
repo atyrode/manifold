@@ -19,7 +19,9 @@ import {
 } from "./sim.ts";
 
 // The wavelengths' colours are written to four places, as the picture was tuned with.
-const spectrum = prismSpectrum.map((c) => `vec3(${c.map((v) => v.toFixed(4)).join(", ")})`).join(",\n  ");
+const spectrum = prismSpectrum
+  .map((c) => `vec3(${c.map((v) => v.toFixed(4)).join(", ")})`)
+  .join(",\n  ");
 
 export const prismGlsl = `
 const int PRISM_FANS = ${PRISM_FANS};

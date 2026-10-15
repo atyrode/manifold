@@ -25,7 +25,9 @@ import { windWaterGlsl } from "../windWater.ts";
 /** The water tiers, cheapest first; a tier includes every one below it (SceneDef.features WATER_TIER). */
 export const WATER_TIERS = { flat: 0, ripples: 1, mirror: 2, flow: 3, caustics: 4 } as const;
 
-const tierDefines = Object.entries(WATER_TIERS).map(([name, value]) => `#define WATER_${name.toUpperCase()} ${value}`).join("\n");
+const tierDefines = Object.entries(WATER_TIERS)
+  .map(([name, value]) => `#define WATER_${name.toUpperCase()} ${value}`)
+  .join("\n");
 
 export const waterGlsl = `
 // ---- water (shaders/lib/water.ts) ----

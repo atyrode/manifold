@@ -28,7 +28,10 @@ test("between two stops the loop eases from one regime to the next, never past e
     for (let k = 1; k < 10; k++) {
       const [feed, kill] = at(stop + k / 10);
       // Share of the way along, measured on whichever rate changes more between the two.
-      const share = Math.abs(to.feed - from.feed) > Math.abs(to.kill - from.kill) ? (feed - from.feed) / (to.feed - from.feed) : (kill - from.kill) / (to.kill - from.kill);
+      const share =
+        Math.abs(to.feed - from.feed) > Math.abs(to.kill - from.kill)
+          ? (feed - from.feed) / (to.feed - from.feed)
+          : (kill - from.kill) / (to.kill - from.kill);
       expect(share).toBeGreaterThan(last);
       expect(share).toBeLessThan(1);
       last = share;

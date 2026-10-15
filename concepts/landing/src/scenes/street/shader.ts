@@ -179,7 +179,8 @@ function buildRow(random: Random, corner: Building, length: number, side: boolea
     const width = 5 + 5.5 * random.next();
     const r = random.next();
     // Mostly tiled and concrete fronts; now and then a dark glass office tower.
-    const tone = random.next() < 0.1 ? 5 : [0, 1, 2, 3, 4, 6, 7][Math.floor(random.next() * 7)] ?? 1;
+    const tone =
+      random.next() < 0.1 ? 5 : ([0, 1, 2, 3, 4, 6, 7][Math.floor(random.next() * 7)] ?? 1);
     const pick = random.next();
     const shops = side ? SIDE_SHOPS : AVENUE_SHOPS;
     const shop = shops.find(([share]) => pick <= share)?.[1] ?? SHUTTER;
@@ -201,9 +202,27 @@ function buildRow(random: Random, corner: Building, length: number, side: boolea
 
 const cityRandom = new Random(0x0c17e5);
 /** The left corner: a ramen shop under red lanterns, its sign turning the corner. */
-const RAMEN: Building = { u0: 0, u1: 8.5, height: 26, tone: 3, shop: IZAKAYA, sign: 2, signTop: 8.8, seed: 0.37 };
+const RAMEN: Building = {
+  u0: 0,
+  u1: 8.5,
+  height: 26,
+  tone: 3,
+  shop: IZAKAYA,
+  sign: 2,
+  signTop: 8.8,
+  seed: 0.37,
+};
 /** The right corner: the konbini, glass all along both fronts. */
-const KONBINI_CORNER: Building = { u0: 0, u1: 12, height: 19, tone: 4, shop: KONBINI, sign: 0, signTop: 0, seed: 0.61 };
+const KONBINI_CORNER: Building = {
+  u0: 0,
+  u1: 12,
+  height: 19,
+  tone: 4,
+  shop: KONBINI,
+  sign: 0,
+  signTop: 0,
+  seed: 0.61,
+};
 const FACADES: readonly (readonly Building[])[] = [
   buildRow(cityRandom, RAMEN, AVENUE_LENGTH, false),
   buildRow(cityRandom, KONBINI_CORNER, AVENUE_LENGTH, false),
@@ -213,12 +232,18 @@ const FACADES: readonly (readonly Building[])[] = [
 const BUILDINGS = FACADES.flat();
 const firsts = FACADES.map((_, i) => FACADES.slice(0, i).reduce((sum, row) => sum + row.length, 0));
 
-const buildingA = BUILDINGS.map((b) => `vec4(${f(b.u0)}, ${f(b.u1)}, ${f(b.height)}, ${f(b.tone)})`).join(",\n  ");
-const buildingB = BUILDINGS.map((b) => `vec4(${f(b.shop)}, ${f(b.sign)}, ${f(b.signTop)}, ${f(b.seed)})`).join(",\n  ");
+const buildingA = BUILDINGS.map(
+  (b) => `vec4(${f(b.u0)}, ${f(b.u1)}, ${f(b.height)}, ${f(b.tone)})`,
+).join(",\n  ");
+const buildingB = BUILDINGS.map(
+  (b) => `vec4(${f(b.shop)}, ${f(b.sign)}, ${f(b.signTop)}, ${f(b.seed)})`,
+).join(",\n  ");
 
 // ---- Street furniture ----
 
-const lamps = LAMPS.map((l) => `vec4(${f(l.x)}, ${f(l.z)}, ${f(l.height)}, ${l.warm ? "1.0" : "0.0"})`).join(", ");
+const lamps = LAMPS.map(
+  (l) => `vec4(${f(l.x)}, ${f(l.z)}, ${f(l.height)}, ${l.warm ? "1.0" : "0.0"})`,
+).join(", ");
 const lampHeads = LAMPS.map((l) => `vec2(${f(l.hx)}, ${f(l.hz)})`).join(", ");
 const poles = SIGNAL_POLES.map((p) => `vec3(${f(p.x)}, ${f(p.z)}, ${f(p.height)})`).join(", ");
 const vending = VENDING.map((v) => `vec4(${v.map(f).join(", ")})`).join(", ");
@@ -239,9 +264,13 @@ const WALK_HEADS = [
   { x: -6.22, z: 47.6, fx: 1, fz: 0 },
   { x: 6.22, z: 47.6, fx: -1, fz: 0 },
 ] as const;
-const carHeads = CAR_HEADS.map((h) => `vec4(${f(h.x)}, ${f(h.z)}, ${f(h.fx)}, ${f(h.fz)})`).join(", ");
+const carHeads = CAR_HEADS.map((h) => `vec4(${f(h.x)}, ${f(h.z)}, ${f(h.fx)}, ${f(h.fz)})`).join(
+  ", ",
+);
 const carHeadMeta = CAR_HEADS.map((h) => `ivec2(${h.pole}, ${h.group})`).join(", ");
-const walkHeads = WALK_HEADS.map((h) => `vec4(${f(h.x)}, ${f(h.z)}, ${f(h.fx)}, ${f(h.fz)})`).join(", ");
+const walkHeads = WALK_HEADS.map((h) => `vec4(${f(h.x)}, ${f(h.z)}, ${f(h.fx)}, ${f(h.fz)})`).join(
+  ", ",
+);
 
 /** Manholes on the road: x, z, radius. */
 const MANHOLES = [
@@ -253,7 +282,9 @@ const MANHOLES = [
 ] as const;
 const manholes = MANHOLES.map((m) => `vec3(${m.map(f).join(", ")})`).join(", ");
 
-const sizes = SHAPES.map((s) => `vec4(${f(s.length)}, ${f(s.width)}, ${f(s.body)}, ${f(s.top)})`).join(", ");
+const sizes = SHAPES.map(
+  (s) => `vec4(${f(s.length)}, ${f(s.width)}, ${f(s.body)}, ${f(s.top)})`,
+).join(", ");
 const cabins = SHAPES.map((s) => `vec2(${f(s.cabinBack)}, ${f(s.cabinFront)})`).join(", ");
 
 export const streetGlsl = `

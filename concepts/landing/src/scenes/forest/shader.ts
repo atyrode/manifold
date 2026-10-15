@@ -47,7 +47,9 @@ import {
 
 /** A number as a GLSL float literal. */
 const f = (value: number): string => value.toFixed(4);
-const stones = FOREST_STONES.map((s) => `vec4(${f(s.z)}, ${f(s.offset)}, ${f(s.radius)}, ${f(s.height)})`).join(", ");
+const stones = FOREST_STONES.map(
+  (s) => `vec4(${f(s.z)}, ${f(s.offset)}, ${f(s.radius)}, ${f(s.height)})`,
+).join(", ");
 
 export const forestGlsl = `
 // ---- forest ----

@@ -56,7 +56,8 @@ async function runCheck(name: string): Promise<Outcome> {
       ))`,
       returnByValue: true,
     });
-    if (started.error !== undefined) throw new Error(`cdp Runtime.evaluate: ${started.error.message}`);
+    if (started.error !== undefined)
+      throw new Error(`cdp Runtime.evaluate: ${started.error.message}`);
     // verify-browser.ts `run` reports exactly this shape.
     return JSON.parse(await reported.promise) as Outcome;
   } finally {

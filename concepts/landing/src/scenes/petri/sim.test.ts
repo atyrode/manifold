@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import { grayScottAlong, grayScottRegimes } from "../../sims/grayscott.ts";
 import { petriFeedKill } from "./sim.ts";
 
-const feedKill = (drift: number, hold: { feed: number; kill: number } | undefined, arrived: number): number[] => {
+const feedKill = (
+  drift: number,
+  hold: { feed: number; kill: number } | undefined,
+  arrived: number,
+): number[] => {
   const out = new Float32Array(4);
   petriFeedKill(out, drift, hold, arrived);
   return Array.from(out);

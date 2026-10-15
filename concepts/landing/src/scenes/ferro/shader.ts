@@ -6,7 +6,15 @@
 //          2 M height; 3.. the pool's blobs: xy, radius, weight
 // Knobs read here: K_camera (0 above, 1 three-quarter), K_sharpness, K_gel, K_lights.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
-import { FERRO_BLOBS, FERRO_PASSAGE, FERRO_RIPPLE, FERRO_SHAPE, FERRO_SPAN, FERRO_STATE_HEAD, FERRO_VIEW } from "./sim.ts";
+import {
+  FERRO_BLOBS,
+  FERRO_PASSAGE,
+  FERRO_RIPPLE,
+  FERRO_SHAPE,
+  FERRO_SPAN,
+  FERRO_STATE_HEAD,
+  FERRO_VIEW,
+} from "./sim.ts";
 
 /** The studio light colours a gel can give the right-hand panel; the first is a plain studio. */
 export const ferroGels = [
@@ -16,7 +24,11 @@ export const ferroGels = [
   { label: "violet", color: "#9a63ff" },
 ] as const;
 
-const gelChoices = glslPick("gel", ferroGels.map((gel) => glslVec3(gel.color)), "vec3(1.0)");
+const gelChoices = glslPick(
+  "gel",
+  ferroGels.map((gel) => glslVec3(gel.color)),
+  "vec3(1.0)",
+);
 const [targetX, targetY, targetZ] = FERRO_VIEW.target;
 
 export const ferroGlsl = `

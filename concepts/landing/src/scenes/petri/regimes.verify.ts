@@ -103,7 +103,8 @@ export function petriRegimesVerify(gl: WebGL2RenderingContext): Record<string, u
       const pixels = new Float32Array(size * size * 4);
       gl.readPixels(0, 0, size, size, gl.RGBA, gl.FLOAT, pixels);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      if (gl.getError() !== gl.NO_ERROR) throw new Error(`Petri ${regime.label}: view readback failed`);
+      if (gl.getError() !== gl.NO_ERROR)
+        throw new Error(`Petri ${regime.label}: view readback failed`);
       results[regime.label] = census(pixels, size);
     } finally {
       sim.dispose();
@@ -115,9 +116,11 @@ export function petriRegimesVerify(gl: WebGL2RenderingContext): Record<string, u
     if (found.cover < 0.1) failures.push(`${label} left a bare dish`);
   }
   const { spots, coral, holes } = results;
-  if (!spots || spots.parts < 12 || spots.largest > 0.2) failures.push("spots did not break into many small spots");
+  if (!spots || spots.parts < 12 || spots.largest > 0.2)
+    failures.push("spots did not break into many small spots");
   if (!coral || coral.largest < 0.6) failures.push("coral did not grow one branching network");
   if (!holes || holes.cover < 0.55) failures.push("holes did not swell round dark holes");
-  if (failures.length > 0) throw new Error(`Petri regimes: ${failures.join("; ")}: ${JSON.stringify(results)}`);
+  if (failures.length > 0)
+    throw new Error(`Petri regimes: ${failures.join("; ")}: ${JSON.stringify(results)}`);
   return results;
 }

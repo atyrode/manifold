@@ -121,10 +121,19 @@ export class FuelBed {
   #tendAt = Number.POSITIVE_INFINITY;
 
   constructor(slots: number, seed: number) {
-    if (!(Number.isInteger(slots) && slots >= 1)) throw new FuelError(`a fuel bed needs a whole number of log slots ≥ 1, got ${slots}`);
+    if (!(Number.isInteger(slots) && slots >= 1))
+      throw new FuelError(`a fuel bed needs a whole number of log slots ≥ 1, got ${slots}`);
     this.#seed = seed;
     this.#random = new Random(seed);
-    this.#logs = Array.from({ length: slots }, () => ({ mass: 0, lit: 0, char: 0, settle: 0, placed: 1, slumps: 0, thresholds: SLUMPS.slice() }));
+    this.#logs = Array.from({ length: slots }, () => ({
+      mass: 0,
+      lit: 0,
+      char: 0,
+      settle: 0,
+      placed: 1,
+      slumps: 0,
+      thresholds: SLUMPS.slice(),
+    }));
   }
 
   /** The log slots, in the order the bed was built with; read them, don't keep them. */
@@ -245,7 +254,8 @@ export class FuelBed {
   /** The flames of the logs resting in the bed. */
   #flames(): number {
     let sum = 0;
-    for (const log of this.#logs) if (log.mass > 0 && log.placed >= 1) sum += flames(log.mass, log.lit);
+    for (const log of this.#logs)
+      if (log.mass > 0 && log.placed >= 1) sum += flames(log.mass, log.lit);
     return sum;
   }
 
@@ -257,7 +267,8 @@ export class FuelBed {
     log.settle = 0;
     log.placed = 0;
     log.slumps = 0;
-    for (const [k, at] of SLUMPS.entries()) log.thresholds[k] = at + this.#random.range(-SLUMP_JITTER, SLUMP_JITTER);
+    for (const [k, at] of SLUMPS.entries())
+      log.thresholds[k] = at + this.#random.range(-SLUMP_JITTER, SLUMP_JITTER);
   }
 
   /** Count the slumps the log has burnt past: each new one bursts sparks (`settled`: all at once, quietly). */

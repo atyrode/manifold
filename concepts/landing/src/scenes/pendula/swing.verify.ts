@@ -13,17 +13,22 @@ const CYCLE = 100;
 
 function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   const program = gl.createProgram();
-  for (const [type, source] of [[gl.VERTEX_SHADER, vertexSource], [gl.FRAGMENT_SHADER, fragment]] as const) {
+  for (const [type, source] of [
+    [gl.VERTEX_SHADER, vertexSource],
+    [gl.FRAGMENT_SHADER, fragment],
+  ] as const) {
     const shader = gl.createShader(type);
     if (!shader) throw new Error("pendula: shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(`pendula: ${gl.getShaderInfoLog(shader) ?? "compile failed"}`);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      throw new Error(`pendula: ${gl.getShaderInfoLog(shader) ?? "compile failed"}`);
     gl.attachShader(program, shader);
     gl.deleteShader(shader);
   }
   gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`pendula: ${gl.getProgramInfoLog(program) ?? "link failed"}`);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+    throw new Error(`pendula: ${gl.getProgramInfoLog(program) ?? "link failed"}`);
   return program;
 }
 
@@ -59,19 +64,38 @@ export function verifyPendulaSwing(gl: WebGL2RenderingContext): Record<string, u
     gl.uniform1f(gl.getUniformLocation(program, "uMotionTime"), cycles * CYCLE);
     gl.uniform1fv(
       gl.getUniformLocation(program, "uParams"),
-      Float32Array.from(renderSettings(defaultsFor("pendula"), { ...paramDefaults("pendula"), count: COUNT, cycle: CYCLE, swing: 0.5, ...knobs }).params),
+      Float32Array.from(
+        renderSettings(defaultsFor("pendula"), {
+          ...paramDefaults("pendula"),
+          count: COUNT,
+          cycle: CYCLE,
+          swing: 0.5,
+          ...knobs,
+        }).params,
+      ),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(COUNT * 4);
     gl.readPixels(0, 0, COUNT, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
-    return Array.from({ length: COUNT }, (_, i) => (((bytes[i * 4] ?? 0) + (bytes[i * 4 + 1] ?? 0) / 255) / 255 - 0.5) * SPAN);
+    return Array.from(
+      { length: COUNT },
+      (_, i) => (((bytes[i * 4] ?? 0) + (bytes[i * 4 + 1] ?? 0) / 255) / 255 - 0.5) * SPAN,
+    );
   };
-  const close = (got: readonly number[], want: (i: number) => number, tolerance: number, message: string): number => {
+  const close = (
+    got: readonly number[],
+    want: (i: number) => number,
+    tolerance: number,
+    message: string,
+  ): number => {
     let worst = 0;
     got.forEach((angle, i) => {
       worst = Math.max(worst, Math.abs(angle - want(i)));
     });
-    if (worst > tolerance) throw new Error(`${message}: off by ${worst.toFixed(5)} rad (${got.map((a) => a.toFixed(3)).join(", ")})`);
+    if (worst > tolerance)
+      throw new Error(
+        `${message}: off by ${worst.toFixed(5)} rad (${got.map((a) => a.toFixed(3)).join(", ")})`,
+      );
     return worst;
   };
   const { least, most, decay } = PENDULA_SWING;
@@ -81,23 +105,53 @@ export function verifyPendulaSwing(gl: WebGL2RenderingContext): Record<string, u
 
   // Ideal (the default): every bob back at its release angle each time the row lines up, and half a
   // cycle in every other bob swung the other way.
-  result.idealRealigned = close(angles({}, 3), () => amp, 2e-4, "The ideal row did not line up after a full release");
-  result.idealRunDown = close(angles({}, 1), () => amp * Math.exp(-decay), 2e-4, "The ideal row did not line up a cycle in");
-  result.idealHalfway = close(angles({ release: 0 }, 0.5), (i) => (i % 2 === 0 ? amp : -amp), 2e-4, "The ideal row was not alternating half a cycle in");
+  result.idealRealigned = close(
+    angles({}, 3),
+    () => amp,
+    2e-4,
+    "The ideal row did not line up after a full release",
+  );
+  result.idealRunDown = close(
+    angles({}, 1),
+    () => amp * Math.exp(-decay),
+    2e-4,
+    "The ideal row did not line up a cycle in",
+  );
+  result.idealHalfway = close(
+    angles({ release: 0 }, 0.5),
+    (i) => (i % 2 === 0 ? amp : -amp),
+    2e-4,
+    "The ideal row was not alternating half a cycle in",
+  );
 
   // Real: a board draws every bob back as far as the longest swings (thread n0² / k² of the longest),
   // so each swings at its own angle and is slowed by its own stretch. A GPU's sin and cos may be off
   // by 2e-4 (SwiftShader's), some 50 swings in: hence 5e-3 rad, against misses of a tenth and more.
   const board = (i: number): number => Math.asin(Math.min(((n0 + i) / n0) ** 2 * Math.sin(amp), 1));
-  result.realReleased = close(angles({ physics: 1, release: 0 }, 0), board, 1e-3, "The real row was not let go from the board");
+  result.realReleased = close(
+    angles({ physics: 1, release: 0 }, 0),
+    board,
+    1e-3,
+    "The real row was not let go from the board",
+  );
   const real = angles({ physics: 1, release: 0 }, 1);
-  result.realSteady = close(real, (i) => pendulumAngle(board(i), (n0 + i) / pendulumStretch(board(i))), 5e-3, "The real row strayed from the pendulum maths");
+  result.realSteady = close(
+    real,
+    (i) => pendulumAngle(board(i), (n0 + i) / pendulumStretch(board(i))),
+    5e-3,
+    "The real row strayed from the pendulum maths",
+  );
   const miss = Math.max(...real.map((angle, i) => Math.abs(angle - board(i))));
-  if (miss < 0.1) throw new Error(`The real row lined up as if ideal (largest miss ${miss.toFixed(3)} rad)`);
+  if (miss < 0.1)
+    throw new Error(`The real row lined up as if ideal (largest miss ${miss.toFixed(3)} rad)`);
   result.realMiss = miss;
   result.realRunningDown = close(
     angles({ physics: 1 }, 1.5),
-    (i) => pendulumAngle(board(i) * Math.exp(-decay * 1.5), (n0 + i) * pendulumFadingSwings(board(i), decay, 1.5)),
+    (i) =>
+      pendulumAngle(
+        board(i) * Math.exp(-decay * 1.5),
+        (n0 + i) * pendulumFadingSwings(board(i), decay, 1.5),
+      ),
     5e-3,
     "The real row running down strayed from the pendulum maths",
   );

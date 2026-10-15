@@ -133,7 +133,9 @@ export class HeightField {
   /** A flat field (height 0) of width × height texels over a view of the given aspect. */
   constructor(width: number, height: number, aspect = width / height) {
     if (!(Number.isInteger(width) && Number.isInteger(height) && width >= 2 && height >= 2)) {
-      throw new HeightFieldError(`a height field needs at least 2×2 whole texels, got ${width}×${height}`);
+      throw new HeightFieldError(
+        `a height field needs at least 2×2 whole texels, got ${width}×${height}`,
+      );
     }
     if (!(aspect > 0)) throw new HeightFieldError(`aspect must be positive, got ${aspect}`);
     this.width = width;
@@ -340,7 +342,15 @@ export class HeightField {
    * every texel inside a tine's capsule down to the tine's round bottom and weighs the banks; pass 1
    * spreads exactly the removed volume over them.
    */
-  #cut(x0: number, y0: number, x1: number, y1: number, tines: number, spacing: number, options: GrooveOptions): void {
+  #cut(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    tines: number,
+    spacing: number,
+    options: GrooveOptions,
+  ): void {
     const width = options.width;
     const depth = options.depth;
     if (!(width > 0) || !(depth > 0)) return;

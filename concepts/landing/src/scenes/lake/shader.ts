@@ -29,11 +29,37 @@
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
-import { ABOVE_RANGE, DIST_RANGE, DRIFT_MAX, EYE, FIELD_FU, FIELD_FV, FIELD_H, FIELD_W, FOCAL, HORIZON, ICE_DEPTH, ICE_INDEX, LAKE_PASSAGE, MARK_ID, SNOW_MAX } from "./sim.ts";
+import {
+  ABOVE_RANGE,
+  DIST_RANGE,
+  DRIFT_MAX,
+  EYE,
+  FIELD_FU,
+  FIELD_FV,
+  FIELD_H,
+  FIELD_W,
+  FOCAL,
+  HORIZON,
+  ICE_DEPTH,
+  ICE_INDEX,
+  LAKE_PASSAGE,
+  MARK_ID,
+  SNOW_MAX,
+} from "./sim.ts";
 
 /** The aurora's colours by the `hue` knob (green, teal, storm, crimson): its low light and its high fringe. */
-const AURORA_LOW = ["vec3(0.25, 1.0, 0.55)", "vec3(0.2, 0.95, 0.88)", "vec3(0.38, 1.0, 0.48)", "vec3(1.0, 0.3, 0.38)"] as const;
-const AURORA_HIGH = ["vec3(0.78, 0.2, 0.58)", "vec3(0.38, 0.32, 1.0)", "vec3(1.0, 0.14, 0.26)", "vec3(0.72, 0.06, 0.24)"] as const;
+const AURORA_LOW = [
+  "vec3(0.25, 1.0, 0.55)",
+  "vec3(0.2, 0.95, 0.88)",
+  "vec3(0.38, 1.0, 0.48)",
+  "vec3(1.0, 0.3, 0.38)",
+] as const;
+const AURORA_HIGH = [
+  "vec3(0.78, 0.2, 0.58)",
+  "vec3(0.38, 0.32, 1.0)",
+  "vec3(1.0, 0.14, 0.26)",
+  "vec3(0.72, 0.06, 0.24)",
+] as const;
 
 /** Trigger slot of the shooting stars' "now" button (0 substorms, 1 singing ice, 2 the M). */
 export const LAKE_METEOR_TRIGGER = 3;

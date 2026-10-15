@@ -35,11 +35,32 @@ export interface Grain {
 }
 
 /** Fine dry sand, about 0.1 mm: thin, crisp lines, slow to gather. */
-export const FINE_SAND: Readonly<Grain> = { diameter: 0.1, talus: 0.58, grip: 0.55, spread: 4, hop: 0.55, pace: 0.75 };
+export const FINE_SAND: Readonly<Grain> = {
+  diameter: 0.1,
+  talus: 0.58,
+  grip: 0.55,
+  spread: 4,
+  hop: 0.55,
+  pace: 0.75,
+};
 /** Dry sand, about 0.3 mm: the reference every scene's constants were tuned on. */
-export const SAND: Readonly<Grain> = { diameter: 0.3, talus: 0.62, grip: 1, spread: 3, hop: 1, pace: 1 };
+export const SAND: Readonly<Grain> = {
+  diameter: 0.3,
+  talus: 0.62,
+  grip: 1,
+  spread: 3,
+  hop: 1,
+  pace: 1,
+};
 /** Grit, about 2 mm: broad, rough bands, grains thrown far and quick to arrive. */
-export const GRIT: Readonly<Grain> = { diameter: 2, talus: 0.78, grip: 1.7, spread: 2, hop: 1.8, pace: 1.3 };
+export const GRIT: Readonly<Grain> = {
+  diameter: 2,
+  talus: 0.78,
+  grip: 1.7,
+  spread: 2,
+  hop: 1.8,
+  pace: 1.3,
+};
 
 /** The grain `size` of the way from fine sand (0) through dry sand (0.5, exactly SAND) to grit (1). */
 export function grainAt(size: number, out?: Grain): Grain {

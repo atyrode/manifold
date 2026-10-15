@@ -1,19 +1,37 @@
 import { expect, test } from "bun:test";
 import { mulberry32 } from "../../sims/random.ts";
-import { buildRoutine, marblePalettes, marblePatterns, marblePractice, marblePractices, type MarblePattern, type MarblePractice } from "./sim.ts";
+import {
+  buildRoutine,
+  marblePalettes,
+  marblePatterns,
+  marblePractice,
+  marblePractices,
+  type MarblePattern,
+  type MarblePractice,
+} from "./sim.ts";
 
 const ASPECT = 16 / 9;
 
 function routine(pattern: MarblePattern, palette: number, practice: MarblePractice) {
   const inks = marblePalettes[palette];
   if (!inks) throw new Error(`no palette ${palette}`);
-  return buildRoutine({ pattern, palette: inks, practice, scale: 1, aspect: ASPECT, mark: 0, rand: mulberry32(1234) });
+  return buildRoutine({
+    pattern,
+    palette: inks,
+    practice,
+    scale: 1,
+    aspect: ASPECT,
+    mark: 0,
+    rand: mulberry32(1234),
+  });
 }
 
 test("'by inks' follows each palette's own practice; the named practices override it", () => {
   for (const palette of marblePalettes) {
     expect(marblePractice(0, palette)).toBe(palette.practice);
-    marblePractices.forEach((practice, index) => expect(marblePractice(index + 1, palette)).toBe(practice));
+    marblePractices.forEach((practice, index) =>
+      expect(marblePractice(index + 1, palette)).toBe(practice),
+    );
   }
 });
 
@@ -39,7 +57,8 @@ test("the practice decides how ink is laid, whatever the inks", () => {
 });
 
 test("an uncombed suminagashi sheet is turned by breath and fan; combs replace it, and ebru stones stay still", () => {
-  const kinds = (pattern: MarblePattern, practice: MarblePractice) => new Set(routine(pattern, 2, practice).ops.map((op) => op.kind));
+  const kinds = (pattern: MarblePattern, practice: MarblePractice) =>
+    new Set(routine(pattern, 2, practice).ops.map((op) => op.kind));
   const fanned = kinds("stone", "suminagashi");
   expect(fanned.has("swirl")).toBe(true);
   expect(fanned.has("stroke")).toBe(false);

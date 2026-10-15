@@ -28,7 +28,18 @@ export const DELTA_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit
  * (uv) a bank of cloud travels to leave the frame; rest: how far into the frame the exit's bank has
  * come when it ends.
  */
-const VIEW = { zoomIn: 0.2, zoomOut: 0.18, driftX: 0.04, driftY: 0.02, settle: 1.2, parallax: 1.5, windX: 1, windY: 0.3, slide: 1.8, rest: 0.55 } as const;
+const VIEW = {
+  zoomIn: 0.2,
+  zoomOut: 0.18,
+  driftX: 0.04,
+  driftY: 0.02,
+  settle: 1.2,
+  parallax: 1.5,
+  windX: 1,
+  windY: 0.3,
+  slide: 1.8,
+  rest: 0.55,
+} as const;
 
 export const deltaGlsl = `
 // Sunlight from the upper left (north-west), some 35 degrees up.

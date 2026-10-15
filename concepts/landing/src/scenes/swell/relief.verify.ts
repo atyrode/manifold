@@ -19,13 +19,19 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     return shader;
   });
   const linked = gl.createProgram();
   for (const shader of shaders) gl.attachShader(linked, shader);
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
 }
@@ -75,15 +81,27 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
   const cases = [
     { name: "default", knobs: { relief: 1 }, camera: [1, 0, 0], atRest: true },
     { name: "tallest", knobs: { relief: 1, height: 1, chop: 1 }, camera: [1, 0, 0], atRest: true },
-    { name: "entranceTallest", knobs: { relief: 1, height: 1, chop: 1 }, camera: [0.35, 1.6, 10], atRest: false },
+    {
+      name: "entranceTallest",
+      knobs: { relief: 1, height: 1, chop: 1 },
+      camera: [0.35, 1.6, 10],
+      atRest: false,
+    },
     // A calm sea, so the rolling wave alone sets how high the relief may go below the low camera.
-    { name: "entranceCalm", knobs: { relief: 1, height: 0.05 }, camera: [0.35, 1.6, 10], atRest: false },
+    {
+      name: "entranceCalm",
+      knobs: { relief: 1, height: 0.05 },
+      camera: [0.35, 1.6, 10],
+      atRest: false,
+    },
   ] as const;
   const result: Record<string, unknown> = {};
   for (const { name, knobs, camera, atRest } of cases) {
     gl.uniform1fv(
       at("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("swell"), { ...paramDefaults("swell"), ...knobs }).params),
+      Float32Array.from(
+        renderSettings(defaultsFor("swell"), { ...paramDefaults("swell"), ...knobs }).params,
+      ),
     );
     gl.uniform3f(at("regressionCamera"), camera[0], camera[1], camera[2]);
     let offSea = 0;
@@ -103,8 +121,14 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
     }
     const rays = 2 * WIDTH * HEIGHT;
     check(swamped === 0, `Swell relief (${name}) lifted the waves to the camera`);
-    check(skipped <= rays / 1000, `Swell relief (${name}) stepped over crests on ${skipped} of ${rays} rays`);
-    check(!atRest || offSea <= rays / 100, `Swell relief (${name}) stopped short of the sea on ${offSea} of ${rays} rays`);
+    check(
+      skipped <= rays / 1000,
+      `Swell relief (${name}) stepped over crests on ${skipped} of ${rays} rays`,
+    );
+    check(
+      !atRest || offSea <= rays / 100,
+      `Swell relief (${name}) stopped short of the sea on ${offSea} of ${rays} rays`,
+    );
     result[name] = { rays, skipped, offSea };
   }
   gl.deleteProgram(linked);

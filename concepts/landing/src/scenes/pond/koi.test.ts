@@ -45,7 +45,11 @@ function pond(knobs: Record<string, number>, motion = 1) {
 }
 
 /** The pointer hovering in small circles about (0.7, 0.6) in uv at scene time t. */
-const hover = (t: number): Pointer => ({ x: 0.7 + 0.04 * Math.cos(t * 1.3), y: 0.6 + 0.04 * Math.sin(t * 1.3), inside: true });
+const hover = (t: number): Pointer => ({
+  x: 0.7 + 0.04 * Math.cos(t * 1.3),
+  y: 0.6 + 0.04 * Math.sin(t * 1.3),
+  inside: true,
+});
 const away: Pointer = { x: 0.5, y: 0.5, inside: false };
 
 /** Smallest centre distance between two of the first `count` koi, in their mean body length. */
@@ -67,7 +71,10 @@ function offLoop(koi: PondKoi, motionTime: number, swim: number): number {
   let far = 0;
   loops.forEach((loop, i) => {
     koiLoop(loop, motionTime * (0.6 + 2.4 * swim) + i * 11, ASPECT, at);
-    far = Math.max(far, Math.hypot((koi.group.x[i] ?? 0) - (at[0] ?? 0), (koi.group.y[i] ?? 0) - (at[1] ?? 0)));
+    far = Math.max(
+      far,
+      Math.hypot((koi.group.x[i] ?? 0) - (at[0] ?? 0), (koi.group.y[i] ?? 0) - (at[1] ?? 0)),
+    );
   });
   return far;
 }
@@ -103,7 +110,9 @@ describe("pond koi drawn to the pointer", () => {
       const lx = (hover(14).x - 0.5) * ASPECT;
       const ly = hover(14).y - 0.5;
       let near = 0;
-      for (let i = 0; i < 8; i++) if (Math.hypot((run.koi.group.x[i] ?? 0) - lx, (run.koi.group.y[i] ?? 0) - ly) < 0.3) near++;
+      for (let i = 0; i < 8; i++)
+        if (Math.hypot((run.koi.group.x[i] ?? 0) - lx, (run.koi.group.y[i] ?? 0) - ly) < 0.3)
+          near++;
       return { near, piled: piled / frames };
     };
     const spaced = crowding(0.5);

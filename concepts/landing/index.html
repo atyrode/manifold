@@ -6,7 +6,10 @@
     <meta name="robots" content="noindex" />
     <meta name="color-scheme" content="dark" />
     <title>manifold</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2307080b'/%3E%3Cpath d='M9 23V9l7 8 7-8v14' fill='none' stroke='%23e8e6df' stroke-width='3' stroke-linecap='square'/%3E%3C/svg%3E" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2307080b'/%3E%3Cpath d='M9 23V9l7 8 7-8v14' fill='none' stroke='%23e8e6df' stroke-width='3' stroke-linecap='square'/%3E%3C/svg%3E"
+    />
     <link rel="stylesheet" href="./src/styles.css" />
     <link rel="stylesheet" href="./src/lab.css" />
   </head>
@@ -30,17 +33,23 @@
         <p class="eyebrow">a shared spatial workspace</p>
         <h1>One canvas for the people and agents doing the work.</h1>
         <p class="lede">
-          An infinite canvas with embedded terminals and live presence, where agents and humans
-          are first-class principals. Self-hosted, open, and yours.
+          An infinite canvas with embedded terminals and live presence, where agents and humans are
+          first-class principals. Self-hosted, open, and yours.
         </p>
         <div class="actions">
-          <a class="button primary" href="https://github.com/atyrode/manifold/blob/main/docs/SELF-HOST.md">Run your own</a>
+          <a
+            class="button primary"
+            href="https://github.com/atyrode/manifold/blob/main/docs/SELF-HOST.md"
+            >Run your own</a
+          >
           <a class="button" href="https://github.com/atyrode/manifold">Read the source</a>
         </div>
       </main>
 
       <section class="loading" data-show="loading" aria-live="polite">
-        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 25V7l9 10 9-10v18" /></svg>
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M7 25V7l9 10 9-10v18" />
+        </svg>
         <div class="bar" id="bar" role="progressbar" aria-label="Loading manifold"></div>
         <p class="status" id="status">resolving hub</p>
       </section>
@@ -49,7 +58,9 @@
         <div class="card">
           <p class="eyebrow">private instance</p>
           <h2 id="instance-name">tyrode</h2>
-          <p class="lede">This Manifold is invite-only. Sign in with an account the owner has admitted.</p>
+          <p class="lede">
+            This Manifold is invite-only. Sign in with an account the owner has admitted.
+          </p>
           <a class="button primary" href="#">Sign in</a>
           <p class="fine">Powered by <a href="https://github.com/atyrode/manifold">manifold</a></p>
         </div>
@@ -58,7 +69,14 @@
       <footer class="credit" id="credit" data-show="landing instance"></footer>
     </div>
 
-    <button class="lab-opener" id="lab-open" type="button" aria-controls="lab" aria-expanded="false" title="Open the lab (l)">
+    <button
+      class="lab-opener"
+      id="lab-open"
+      type="button"
+      aria-controls="lab"
+      aria-expanded="false"
+      title="Open the lab (l)"
+    >
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" /></svg>
       <span>lab</span>
     </button>

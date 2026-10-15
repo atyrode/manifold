@@ -104,12 +104,18 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
     if (!shader) throw new Error("Shader allocation failed");
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
-    check(Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)), gl.getShaderInfoLog(shader) ?? "compile failed");
+    check(
+      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
+      gl.getShaderInfoLog(shader) ?? "compile failed",
+    );
     gl.attachShader(linked, shader);
     gl.deleteShader(shader);
   });
   gl.linkProgram(linked);
-  check(Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)), gl.getProgramInfoLog(linked) ?? "link failed");
+  check(
+    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
+    gl.getProgramInfoLog(linked) ?? "link failed",
+  );
   return linked;
 }
 
@@ -178,7 +184,10 @@ function footings(built: Uint8Array, bare: Uint8Array, label: string): number {
     if (!built[at] || built[at - W] || !built[at - 1] || !built[at + 1]) continue;
     const below = land(bare, at - W);
     if (below.ridge !== land(bare, at).ridge) continue;
-    check(below.kind === 0, `${label}: a building on ridge ${below.ridge} stands on ${KINDS[below.kind]} at ${where(at)}`);
+    check(
+      below.kind === 0,
+      `${label}: a building on ridge ${below.ridge} stands on ${KINDS[below.kind]} at ${where(at)}`,
+    );
     checked++;
   }
   return checked;
@@ -188,7 +197,14 @@ export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<strin
   // Every optional part compiled in, and the same without the farm tracks: the buildings are told
   // from the farm tracks that come with them, and what a farm track changes is what tells them apart.
   const source = (features: Record<string, number>): string =>
-    fragmentSourceFor({ ...sceneDefs.country, entry: "coherenceRegression", glsl: sceneDefs.country.glsl + wrapper }, features);
+    fragmentSourceFor(
+      {
+        ...sceneDefs.country,
+        entry: "coherenceRegression",
+        glsl: sceneDefs.country.glsl + wrapper,
+      },
+      features,
+    );
   const spurs = program(gl, source(COUNTRY_FULL));
   const plain = program(gl, source({ ...COUNTRY_FULL, COUNTRY_HAS_SPURS: 0 }));
   gl.canvas.width = W;
@@ -206,14 +222,22 @@ export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<strin
   }
   // A still, clear afternoon, unlit windows and no smoke: what changes is what the knobs add.
   const day = { time: 0.55, clouds: 0, shadows: 0, wind: 0, fog: 0, lights: 0, smoke: 0 };
-  const draw = (knobs: Record<string, number>, mode = 0, motionTime = 6, linked = spurs): Uint8Array => {
+  const draw = (
+    knobs: Record<string, number>,
+    mode = 0,
+    motionTime = 6,
+    linked = spurs,
+  ): Uint8Array => {
     gl.useProgram(linked);
     const u = (name: string) => gl.getUniformLocation(linked, name);
     gl.uniform1i(u("coherenceMode"), mode);
     gl.uniform1f(u("uMotionTime"), motionTime);
     gl.uniform1fv(
       u("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("country"), { ...paramDefaults("country"), ...day, ...knobs }).params),
+      Float32Array.from(
+        renderSettings(defaultsFor("country"), { ...paramDefaults("country"), ...day, ...knobs })
+          .params,
+      ),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(W * H * 4);
@@ -240,9 +264,16 @@ export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<strin
     let first: Uint8Array | undefined;
     for (const width of widths) {
       const scene = { landscape, ...width };
-      const built = changed(draw({ ...scene, ...added }, 0, 6, plain), draw({ ...scene, ...original }, 0, 6, plain));
+      const built = changed(
+        draw({ ...scene, ...added }, 0, 6, plain),
+        draw({ ...scene, ...original }, 0, 6, plain),
+      );
       const label = `landscape ${landscape}, river ${width.river}, tracks ${width.tracks}`;
-      if (first) check(first.every((v, at) => v === built[at]), `${label}: the buildings moved with the river or the tracks`);
+      if (first)
+        check(
+          first.every((v, at) => v === built[at]),
+          `${label}: the buildings moved with the river or the tracks`,
+        );
       first ??= built;
       feet += footings(built, draw({ ...scene, ...added }, 1, 6, plain), label);
     }
@@ -254,7 +285,10 @@ export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<strin
     for (let at = 0; at < W * H; at++) {
       const now = land(after, at);
       if (now.kind === 1 || now.kind === 2) footprint++;
-      check(!now.inside || land(before, at).inside, `landscape ${landscape}: a building's footprint covers ${KINDS[now.kind]} at ${where(at)}`);
+      check(
+        !now.inside || land(before, at).inside,
+        `landscape ${landscape}: a building's footprint covers ${KINDS[now.kind]} at ${where(at)}`,
+      );
     }
   }
   check(feet >= 150, `Settlement fixture too thin: ${feet} feet`);
@@ -276,11 +310,19 @@ export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<strin
       const label = `landscape ${landscape}, tracks ${tracks}`;
       const bare = draw(scene, 1);
       const spur = pixels(bare, (pixel) => pixel.kind === 4);
-      for (let at = 0; at < W * H; at++) check(!land(bare, at).inside, `${label}: a farm track crosses the river at ${where(at)}`);
+      for (let at = 0; at < W * H; at++)
+        check(!land(bare, at).inside, `${label}: a farm track crosses the river at ${where(at)}`);
       const effect = changed(draw(scene), draw(scene, 0, 6, plain));
       // Under the woods too, where it shows between the crowns.
-      const near = grown(pixels(bare, (pixel) => pixel.spur), 10);
-      for (let at = 0; at < W * H; at++) check(!effect[at] || near[at] === 1, `${label}: a farm track changes the scene far from it at ${where(at)}`);
+      const near = grown(
+        pixels(bare, (pixel) => pixel.spur),
+        10,
+      );
+      for (let at = 0; at < W * H; at++)
+        check(
+          !effect[at] || near[at] === 1,
+          `${label}: a farm track changes the scene far from it at ${where(at)}`,
+        );
       // Its own farm's buildings stand in front of a farm track's end.
       const built = changed(draw(scene, 0, 6, plain), draw({ ...scene, ...original }, 0, 6, plain));
       for (let at = 0; at < W * H; at++) {
@@ -290,15 +332,24 @@ export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<strin
       }
       const trees = draw(scene, 3);
       for (let at = 0; at < W * H; at++) {
-        check((trees[at * 4] ?? 0) < 128, `${label}: a hedgerow tree stands on a farm track at ${where(at)}`);
+        check(
+          (trees[at * 4] ?? 0) < 128,
+          `${label}: a hedgerow tree stands on a farm track at ${where(at)}`,
+        );
         if ((trees[at * 4 + 1] ?? 0) > 127) clearedTreePixels++;
       }
     }
     const none = { landscape, river: 0.5, tracks: 0, ...added, crops: 50, pasture: 50, herd: 1 };
-    check(count(changed(draw(none), draw(none, 0, 6, plain))) === 0, `landscape ${landscape}: farm tracks show without the tracks`);
+    check(
+      count(changed(draw(none), draw(none, 0, 6, plain))) === 0,
+      `landscape ${landscape}: farm tracks show without the tracks`,
+    );
   }
   check(farmTracks >= 150, `Farm track fixture too thin: ${farmTracks} pixels`);
-  check(drawn >= 0.85 * farmTracks, `Farm tracks hidden on open ground: ${drawn} of ${farmTracks} pixels drawn`);
+  check(
+    drawn >= 0.85 * farmTracks,
+    `Farm tracks hidden on open ground: ${drawn} of ${farmTracks} pixels drawn`,
+  );
   check(clearedTreePixels > 0, "Farm track fixture has no hedgerow tree rooted on a farm track");
   result.coherenceFarmTracks = { pixels: farmTracks, drawn, clearedTreePixels };
 
@@ -324,7 +375,10 @@ export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<strin
       for (let at = 0; at < W * H; at++) {
         if (!drawn[at]) continue;
         const under = land(bare, at);
-        check(under.kind !== 1 && under.kind !== 2 && under.kind !== 4, `landscape ${landscape}, river ${river}, tracks ${tracks}: an animal at ${motionTime} s stands on ${KINDS[under.kind]} at ${where(at)}`);
+        check(
+          under.kind !== 1 && under.kind !== 2 && under.kind !== 4,
+          `landscape ${landscape}, river ${river}, tracks ${tracks}: an animal at ${motionTime} s stands on ${KINDS[under.kind]} at ${where(at)}`,
+        );
       }
       animals += count(drawn);
     }

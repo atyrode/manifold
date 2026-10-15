@@ -2,7 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { effective } from "../../params.ts";
 import type { SimFrame } from "../types.ts";
 import { kelpScene } from "./index.ts";
-import { KELP_LAYERS, KELP_ORIGIN, KELP_POINT_ROW, KELP_POINTS, KELP_ROW, KELP_SEGMENTS, KELP_STATE_WIDTH, KELP_STIPES, KELP_VIEW } from "./sim.ts";
+import {
+  KELP_LAYERS,
+  KELP_ORIGIN,
+  KELP_POINT_ROW,
+  KELP_POINTS,
+  KELP_ROW,
+  KELP_SEGMENTS,
+  KELP_STATE_WIDTH,
+  KELP_STIPES,
+  KELP_VIEW,
+} from "./sim.ts";
 
 /** What the kelp sim last uploaded: its point texture (positions) and its state rows. */
 interface Uploads {
@@ -17,9 +27,17 @@ function recordingGl(uploads: Uploads): WebGL2RenderingContext {
     if (data?.length === KELP_POINT_ROW * 4) uploads.points = data;
     else if (data?.length === KELP_STATE_WIDTH * 6 * 4) uploads.state = data;
   };
-  const stub = new Proxy({}, {
-    get: (_target, key) => (key === "texImage2D" || key === "texSubImage2D" ? keep : typeof key === "string" && /^[A-Z0-9_]+$/.test(key) ? 0 : () => ({})),
-  });
+  const stub = new Proxy(
+    {},
+    {
+      get: (_target, key) =>
+        key === "texImage2D" || key === "texSubImage2D"
+          ? keep
+          : typeof key === "string" && /^[A-Z0-9_]+$/.test(key)
+            ? 0
+            : () => ({}),
+    },
+  );
   // The sim only creates, binds and fills textures; the stand-in answers every call, so it is a
   // WebGL2 context as far as the sim can tell.
   return stub as unknown as WebGL2RenderingContext;
@@ -34,8 +52,17 @@ function grow(knobs: Record<string, number>, seconds: number): Uploads {
   const values = kelpScene.params.map((def) => effective(def, params));
   for (let k = 0; k < seconds * 60; k++) {
     const frame: SimFrame = {
-      dt: 1 / 60, time: k / 60, motionTime: k / 60, motion: 1, width: 960, height: 540, aspect: 16 / 9, values, params,
-      triggers: new Array<number>(8).fill(-1e4), fired: new Array<boolean>(8).fill(false),
+      dt: 1 / 60,
+      time: k / 60,
+      motionTime: k / 60,
+      motion: 1,
+      width: 960,
+      height: 540,
+      aspect: 16 / 9,
+      values,
+      params,
+      triggers: new Array<number>(8).fill(-1e4),
+      fired: new Array<boolean>(8).fill(false),
       pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
       passage: { enter: 1, exit: 0 },
     };
@@ -45,10 +72,14 @@ function grow(knobs: Record<string, number>, seconds: number): Uploads {
   return uploads;
 }
 
-const stateAt = (u: Uploads, row: number, stipe: number, c: number): number => u.state?.[(row * KELP_STATE_WIDTH + stipe) * 4 + c] ?? Number.NaN;
+const stateAt = (u: Uploads, row: number, stipe: number, c: number): number =>
+  u.state?.[(row * KELP_STATE_WIDTH + stipe) * 4 + c] ?? Number.NaN;
 const node = (u: Uploads, stipe: number, j: number): [number, number] => {
   const p = stipe * KELP_POINTS + j;
-  return [(u.points?.[8 * p] ?? Number.NaN) + KELP_ORIGIN[0], (u.points?.[8 * p + 1] ?? Number.NaN) + KELP_ORIGIN[1]];
+  return [
+    (u.points?.[8 * p] ?? Number.NaN) + KELP_ORIGIN[0],
+    (u.points?.[8 * p + 1] ?? Number.NaN) + KELP_ORIGIN[1],
+  ];
 };
 
 /** For each shown plant of the nearest layer: how far its stipe bows off the chord, over the chord, and its top's height over the water's depth. */
@@ -67,7 +98,12 @@ function nearPlants(u: Uploads): { bow: number; top: number }[] {
       const [x, y] = node(u, stipe, j);
       bow = Math.max(bow, Math.abs((x - rx) * (ty - ry) - (y - ry) * (tx - rx)) / chord);
     }
-    plants.push({ bow: bow / chord, top: (ty - (KELP_VIEW.horizon - KELP_VIEW.floor * s)) / ((KELP_VIEW.floor + KELP_VIEW.surface) * s) });
+    plants.push({
+      bow: bow / chord,
+      top:
+        (ty - (KELP_VIEW.horizon - KELP_VIEW.floor * s)) /
+        ((KELP_VIEW.floor + KELP_VIEW.surface) * s),
+    });
   }
   return plants;
 }
@@ -94,7 +130,8 @@ describe("kelp species", () => {
         bulls++;
         continue;
       }
-      for (let j = 0; j <= KELP_SEGMENTS; j++) expect(node(mixed, stipe, j)).toEqual(node(giant, stipe, j));
+      for (let j = 0; j <= KELP_SEGMENTS; j++)
+        expect(node(mixed, stipe, j)).toEqual(node(giant, stipe, j));
     }
     expect(bulls / KELP_STIPES).toBeGreaterThan(0.25);
     expect(bulls / KELP_STIPES).toBeLessThan(0.65);

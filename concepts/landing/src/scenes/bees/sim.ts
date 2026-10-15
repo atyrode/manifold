@@ -76,7 +76,15 @@ export function beesStage(aspect: number): number {
 }
 
 /** A box hive on its stand, metres: stand height, one box, boxes, roof, width, slot height, board thickness. */
-export const BEES_HIVE = { stand: 0.3, box: 0.3, boxes: 2, roof: 0.1, width: 0.52, slot: 0.04, board: 0.02 } as const;
+export const BEES_HIVE = {
+  stand: 0.3,
+  box: 0.3,
+  boxes: 2,
+  roof: 0.1,
+  width: 0.52,
+  slot: 0.04,
+  board: 0.02,
+} as const;
 /** Half the landing board's width, metres. */
 export const BEES_BOARD_HALF = 0.17;
 /** Hives are built this many times larger than the metres above, so the entrances read. */
@@ -256,16 +264,65 @@ interface Butterfly {
 
 function newBee(hive: number): Bee {
   return {
-    hive, mode: "inside", hold: 0, t: 0, age: 0, x: 0, z: 10, h: 0, vx: 0, vz: 0, vh: 0, tx: 0, tz: 10, th: 0, patch: 0,
-    visits: 0, load: 0, phase: 0, pace: 1, newbie: false, resting: false, fly: false, via: false, pour: false, cx: Number.NaN, cy: Number.NaN,
+    hive,
+    mode: "inside",
+    hold: 0,
+    t: 0,
+    age: 0,
+    x: 0,
+    z: 10,
+    h: 0,
+    vx: 0,
+    vz: 0,
+    vh: 0,
+    tx: 0,
+    tz: 10,
+    th: 0,
+    patch: 0,
+    visits: 0,
+    load: 0,
+    phase: 0,
+    pace: 1,
+    newbie: false,
+    resting: false,
+    fly: false,
+    via: false,
+    pour: false,
+    cx: Number.NaN,
+    cy: Number.NaN,
   };
 }
 
 function newButterfly(kind: number): Butterfly {
   return {
-    active: false, kind, mode: "fly", t: 0, hold: 0, x: 0, z: 8, h: 1, vx: 0, vz: 0, vh: 0, tx: 0, tz: 8, th: 1, patch: 0,
-    flap: 0, pace: 1, glide: 0, glideLeft: 2, gliding: false, wayLeft: 3, open: 1, openStart: 1, age: 0, phase: 0, quiet: 0,
-    cx: Number.NaN, cy: Number.NaN,
+    active: false,
+    kind,
+    mode: "fly",
+    t: 0,
+    hold: 0,
+    x: 0,
+    z: 8,
+    h: 1,
+    vx: 0,
+    vz: 0,
+    vh: 0,
+    tx: 0,
+    tz: 8,
+    th: 1,
+    patch: 0,
+    flap: 0,
+    pace: 1,
+    glide: 0,
+    glideLeft: 2,
+    gliding: false,
+    wayLeft: 3,
+    open: 1,
+    openStart: 1,
+    age: 0,
+    phase: 0,
+    quiet: 0,
+    cx: Number.NaN,
+    cy: Number.NaN,
   };
 }
 
@@ -276,7 +333,10 @@ function depthPace(z: number): number {
 
 const PATCH_WEIGHTS: readonly number[] = BEES_PATCHES.map((patch) => patch.weight);
 const PATCH_WEIGHT_TOTAL = PATCH_WEIGHTS.reduce((sum, w) => sum + w, 0);
-const GROUND_WEIGHT_TOTAL = PATCH_WEIGHTS.slice(0, BEES_GROUND_PATCHES).reduce((sum, w) => sum + w, 0);
+const GROUND_WEIGHT_TOTAL = PATCH_WEIGHTS.slice(0, BEES_GROUND_PATCHES).reduce(
+  (sum, w) => sum + w,
+  0,
+);
 
 class BeesSim implements SceneSim {
   readonly #knobs: KnobReader<BeesKnob>;
@@ -284,8 +344,12 @@ class BeesSim implements SceneSim {
   readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #clock = new FixedStep(STEP, MAX_STEPS);
   readonly #random = new Random(0x5eed);
-  readonly #bees: Bee[] = Array.from({ length: BEES_MAX_BEES }, (_, i) => newBee(i % BEES_HIVES.length));
-  readonly #butterflies: Butterfly[] = Array.from({ length: BEES_MAX_BUTTERFLIES }, (_, i) => newButterfly(i % 3));
+  readonly #bees: Bee[] = Array.from({ length: BEES_MAX_BEES }, (_, i) =>
+    newBee(i % BEES_HIVES.length),
+  );
+  readonly #butterflies: Butterfly[] = Array.from({ length: BEES_MAX_BUTTERFLIES }, (_, i) =>
+    newButterfly(i % 3),
+  );
   /** The hive last asked about: world position of its entrance, its landing board and how wide it is. */
   readonly #geo = { x: 0, z: 0, landZ: 0, landH: 0, half: 0 };
   readonly #pt = { x: 0, z: 0, h: 0 };
@@ -316,7 +380,11 @@ class BeesSim implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const knobs = this.#knobs;
     this.#beeCount = clamp(Math.round(knobs.value(frame, "bees")), 0, BEES_MAX_BEES);
-    this.#butterflyCount = clamp(Math.round(knobs.value(frame, "butterflies")), 0, BEES_MAX_BUTTERFLIES);
+    this.#butterflyCount = clamp(
+      Math.round(knobs.value(frame, "butterflies")),
+      0,
+      BEES_MAX_BUTTERFLIES,
+    );
     const width = Math.max(1, Math.round(frame.width));
     const height = Math.max(1, Math.round(frame.height));
     if (width !== this.#specks.width || height !== this.#specks.height) {
@@ -572,9 +640,19 @@ class BeesSim implements SceneSim {
     const uz = dz / dist;
     const uh = dh / dist;
     const pace = depthPace(b.z);
-    const go = speed * pace * b.pace * (0.12 + 0.88 * smoothstep(0, 0.7, dist)) * (0.25 + 0.75 * smoothstep(0, 0.9, b.t));
+    const go =
+      speed *
+      pace *
+      b.pace *
+      (0.12 + 0.88 * smoothstep(0, 0.7, dist)) *
+      (0.25 + 0.75 * smoothstep(0, 0.9, b.t));
     const far = smoothstep(0.3, 1.4, dist);
-    const lateral = weave * pace * (0.55 * Math.sin(TAU * 0.37 * b.age + b.phase) + 0.25 * Math.sin(TAU * 1.3 * b.age + 2 * b.phase)) * far;
+    const lateral =
+      weave *
+      pace *
+      (0.55 * Math.sin(TAU * 0.37 * b.age + b.phase) +
+        0.25 * Math.sin(TAU * 1.3 * b.age + 2 * b.phase)) *
+      far;
     const wobble = 0.3 * weave * pace * Math.sin(TAU * 0.53 * b.age + 1.7 * b.phase) * far;
     const flat = Math.hypot(ux, uz) + 1e-6;
     const k = 1 - Math.exp(-dt / 0.22);
@@ -595,9 +673,9 @@ class BeesSim implements SceneSim {
     const dist = Math.hypot(dx, dz, dh) + 1e-6;
     const go = Math.min(maxSpeed, dist / tau);
     const k = 1 - Math.exp(-dt / 0.2);
-    b.vx += (dx / dist * go - b.vx) * k;
-    b.vz += (dz / dist * go - b.vz) * k;
-    b.vh += (dh / dist * go - b.vh) * k;
+    b.vx += ((dx / dist) * go - b.vx) * k;
+    b.vz += ((dz / dist) * go - b.vz) * k;
+    b.vh += ((dh / dist) * go - b.vh) * k;
     b.x += b.vx * dt;
     b.z += b.vz * dt;
     b.h = Math.max(0, b.h + b.vh * dt);
@@ -809,9 +887,9 @@ class BeesSim implements SceneSim {
     const dist = Math.hypot(dx, dz, dh) + 1e-6;
     const go = MILL_SPEED * b.pace * smoothstep(0, 0.2, dist);
     const k = 1 - Math.exp(-dt / 0.3);
-    b.vx += (dx / dist * go - b.vx) * k;
-    b.vz += (dz / dist * go - b.vz) * k;
-    b.vh += (dh / dist * go - b.vh) * k;
+    b.vx += ((dx / dist) * go - b.vx) * k;
+    b.vz += ((dz / dist) * go - b.vz) * k;
+    b.vh += ((dh / dist) * go - b.vh) * k;
     b.x += b.vx * dt;
     b.z += b.vz * dt;
     b.h += b.vh * dt;
@@ -823,7 +901,12 @@ class BeesSim implements SceneSim {
     const rand = this.#random;
     const a = rand.next() * TAU;
     const r = rand.range(0.2, 0.55);
-    this.#patchCoords(b.patch, b.x + Math.cos(a) * r, b.z + Math.sin(a) * r, b.h + (rand.next() - 0.5) * 0.15);
+    this.#patchCoords(
+      b.patch,
+      b.x + Math.cos(a) * r,
+      b.z + Math.sin(a) * r,
+      b.h + (rand.next() - 0.5) * 0.15,
+    );
     let ex = this.#pc.ex;
     let ey = this.#pc.ey;
     const e = Math.hypot(ex, ey);
@@ -874,7 +957,7 @@ class BeesSim implements SceneSim {
       g.vz *= Math.exp(-dt * 6);
       g.vh *= Math.exp(-dt * 6);
       // The wings sit open and close again, slowly, with a pause at the top.
-      const slow = 0.5 + 0.5 * Math.cos(TAU * g.t / 6.5 + g.phase);
+      const slow = 0.5 + 0.5 * Math.cos((TAU * g.t) / 6.5 + g.phase);
       const toward = smoothstep(0, 1.2, g.t);
       g.open = lerp(g.openStart, 0.08 + 0.92 * smoothstep(0.05, 0.75, slow), toward);
       if (g.hold <= 0) {
@@ -918,7 +1001,10 @@ class BeesSim implements SceneSim {
     const uz = dz / dist;
     const uh = dh / dist;
     const flat = Math.hypot(ux, uz) + 1e-6;
-    const meander = (0.5 * Math.sin(TAU * 0.31 * g.age + g.phase) + 0.3 * Math.sin(TAU * 0.83 * g.age + 2.1 * g.phase)) * (g.mode === "approach" ? smoothstep(0.2, 1.2, dist) : 1);
+    const meander =
+      (0.5 * Math.sin(TAU * 0.31 * g.age + g.phase) +
+        0.3 * Math.sin(TAU * 0.83 * g.age + 2.1 * g.phase)) *
+      (g.mode === "approach" ? smoothstep(0.2, 1.2, dist) : 1);
     const k = 1 - Math.exp(-dt / (this.#leaving ? 0.3 : 0.55));
     g.vx += (ux * speed * pace - (uz / flat) * meander * pace - g.vx) * k;
     g.vz += (uz * speed * pace + (ux / flat) * meander * pace - g.vz) * k;
@@ -952,7 +1038,12 @@ class BeesSim implements SceneSim {
       const depth = Math.min(255, Math.round(b.z * BEES_DEPTH_STEP));
       const n = (BEE_LENGTH * h * CAMERA.focal) / b.z;
       if (n < 1.7) {
-        specks.plot(b.cx, b.cy, n >= 0.8 ? BEES_CODE.bee : n >= 0.5 ? BEES_CODE.beeDim : BEES_CODE.beeFaint, depth);
+        specks.plot(
+          b.cx,
+          b.cy,
+          n >= 0.8 ? BEES_CODE.bee : n >= 0.5 ? BEES_CODE.beeDim : BEES_CODE.beeFaint,
+          depth,
+        );
         continue;
       }
       // Close to the lens: a dark body two or three cells long (two tall when very near), golden at the back with pollen, and a glint of wing above it in flight.

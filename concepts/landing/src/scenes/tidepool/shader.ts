@@ -19,7 +19,15 @@ import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { fishGlsl } from "../../sims/fish.ts";
 import { TIDEPOOL_RELIEF } from "./layout.ts";
-import { TIDEPOOL_ANEMONE_GRID, TIDEPOOL_BLADES, TIDEPOOL_FISH_MAX, TIDEPOOL_FROND_GRID, TIDEPOOL_FROND_ROWS, TIDEPOOL_LIFE_HEADER, TIDEPOOL_LIFE_WIDTH } from "./life.ts";
+import {
+  TIDEPOOL_ANEMONE_GRID,
+  TIDEPOOL_BLADES,
+  TIDEPOOL_FISH_MAX,
+  TIDEPOOL_FROND_GRID,
+  TIDEPOOL_FROND_ROWS,
+  TIDEPOOL_LIFE_HEADER,
+  TIDEPOOL_LIFE_WIDTH,
+} from "./life.ts";
 import { TIDEPOOL_ROWS } from "./sim.ts";
 
 /** Seconds of the scene's entrance and exit (SceneDef.passage). */

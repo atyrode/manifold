@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 import { marchHeight, sampleRepeat, type HeightMarch, type RayHit } from "./heightray.ts";
 
-const MARCH: HeightMarch = { top: 16, far: 900, slope: 0.75, minStep: 0.02, relStep: 0.01, steps: 48, refine: 5 };
+const MARCH: HeightMarch = {
+  top: 16,
+  far: 900,
+  slope: 0.75,
+  minStep: 0.02,
+  relStep: 0.01,
+  steps: 48,
+  refine: 5,
+};
 
 function unit(x: number, y: number, z: number): [number, number, number] {
   const l = Math.hypot(x, y, z);

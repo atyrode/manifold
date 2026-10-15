@@ -313,7 +313,8 @@ const MARK_TRACK = (() => {
   }
   return track;
 })();
-const MARK_TRACK_LENGTH = (MARK_TRACK[MARK_TRACK.length - 2] ?? 0) + (MARK_TRACK[MARK_TRACK.length - 1] ?? 0);
+const MARK_TRACK_LENGTH =
+  (MARK_TRACK[MARK_TRACK.length - 2] ?? 0) + (MARK_TRACK[MARK_TRACK.length - 1] ?? 0);
 const MARK_OUTWARD_LENGTH = MARK_TRACK_LENGTH / 2;
 
 type KnobKey = "birds" | "cohesion" | "chaos" | "speed" | "predator" | "wind" | "mark" | "emergent";
@@ -326,13 +327,24 @@ type KnobKey = "birds" | "cohesion" | "chaos" | "speed" | "predator" | "wind" | 
  * that many neighbours.
  */
 export interface FlockSetup {
-  readonly knobs: Readonly<Record<Exclude<KnobKey, "emergent">, string | number> & { emergent?: string | number }>;
+  readonly knobs: Readonly<
+    Record<Exclude<KnobKey, "emergent">, string | number> & { emergent?: string | number }
+  >;
   readonly sky: Readonly<{ low: number; high: number }>;
 }
 
 /** The Murmuration scene: every control a knob of its own name, the sky above its skyline. */
 const MURMURATION: FlockSetup = {
-  knobs: { birds: "birds", cohesion: "cohesion", chaos: "chaos", speed: "speed", predator: "predator", wind: "wind", mark: "mark", emergent: "emergent" },
+  knobs: {
+    birds: "birds",
+    cohesion: "cohesion",
+    chaos: "chaos",
+    speed: "speed",
+    predator: "predator",
+    wind: "wind",
+    mark: "mark",
+    emergent: "emergent",
+  },
   sky: { low: SKY_LOW, high: SKY_HIGH },
 };
 
@@ -340,7 +352,8 @@ const MURMURATION: FlockSetup = {
 const IDLE: readonly (WebGLTexture | undefined)[] = [];
 
 /** One slow swing of the choreography: a sine of the clock with the given period (s) and phase. */
-const swing = (clock: number, period: number, phase: number): number => Math.sin((clock / period) * TAU + phase);
+const swing = (clock: number, period: number, phase: number): number =>
+  Math.sin((clock / period) * TAU + phase);
 
 class FlockSim implements SceneSim {
   readonly #density: DataTexture;
@@ -350,7 +363,16 @@ class FlockSim implements SceneSim {
   readonly #knobs: KnobReader<string>;
   readonly #attackSlot: number;
   readonly #markSlot: number;
-  readonly #knob: Record<KnobKey, number> = { birds: 3000, cohesion: 0.55, chaos: 0.35, speed: 0.5, predator: 0, wind: 0, mark: 0, emergent: 0 };
+  readonly #knob: Record<KnobKey, number> = {
+    birds: 3000,
+    cohesion: 0.55,
+    chaos: 0.35,
+    speed: 0.5,
+    predator: 0,
+    wind: 0,
+    mark: 0,
+    emergent: 0,
+  };
   readonly #random = new Random();
   // Emergent flight: the birds as boids, the rules the knobs set for them, and their noise.
   readonly #boids = new Boids(MAX_BIRDS);
@@ -450,12 +472,19 @@ class FlockSim implements SceneSim {
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[], setup: FlockSetup) {
     this.#setup = setup;
-    const keys = Object.values(setup.knobs).filter((source): source is string => typeof source === "string");
+    const keys = Object.values(setup.knobs).filter(
+      (source): source is string => typeof source === "string",
+    );
     this.#knobs = new KnobReader<string>("flock", params, keys);
     this.#attackSlot = this.#triggerOf("predator");
     this.#markSlot = this.#triggerOf("mark");
     this.#density = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
-    this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#state = new DataTexture(gl, {
+      width: 3,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     // The boids' rules the knobs leave alone (#flyBoids sets the rest every step).
     const rules = this.#rules;
     rules.refresh = BOIDS_REFRESH;
@@ -599,7 +628,9 @@ class FlockSim implements SceneSim {
         const angle = random.next() * TAU;
         a = r * Math.cos(angle);
         b = r * Math.sin(angle);
-        lag = stray ? STRAY_LAG_MIN + (STRAY_LAG_MAX - STRAY_LAG_MIN) * random.next() : 0.5 * LAG_SPAN * (1 - clamp(a, -1, 1)) + 0.15 * random.next();
+        lag = stray
+          ? STRAY_LAG_MIN + (STRAY_LAG_MAX - STRAY_LAG_MIN) * random.next()
+          : 0.5 * LAG_SPAN * (1 - clamp(a, -1, 1)) + 0.15 * random.next();
       }
       this.#sheetA[i] = a;
       this.#sheetB[i] = b;
@@ -633,12 +664,17 @@ class FlockSim implements SceneSim {
     const loose = 1 - this.#cohesion;
     const aspect = this.#aspect;
     // It stretches into a ribbon and gathers again, keeping its area (and breathing a little).
-    const area = (AREA_TIGHT + (AREA_LOOSE - AREA_TIGHT) * loose) * (1 + 0.1 * swing(clock, 8.1, 0.6));
-    const elongation = (ELONGATION_TIGHT + (ELONGATION_LOOSE - ELONGATION_TIGHT) * loose) * Math.exp(0.55 * swing(clock, 10.3, 2.2) + 0.2 * swing(clock, 4.3, 0.9));
+    const area =
+      (AREA_TIGHT + (AREA_LOOSE - AREA_TIGHT) * loose) * (1 + 0.1 * swing(clock, 8.1, 0.6));
+    const elongation =
+      (ELONGATION_TIGHT + (ELONGATION_LOOSE - ELONGATION_TIGHT) * loose) *
+      Math.exp(0.55 * swing(clock, 10.3, 2.2) + 0.2 * swing(clock, 4.3, 0.9));
     const length = Math.sqrt((area * elongation) / Math.PI);
     const width = Math.sqrt(area / (Math.PI * elongation));
     // Every quarter minute it parts into two lobes for a few seconds, readily when loose or restless.
-    const split = smoothstep(0.2, 0.85, swing(clock, 15, -3.04)) * Math.min(1, 0.45 + 0.7 * loose + 0.3 * chaos);
+    const split =
+      smoothstep(0.2, 0.85, swing(clock, 15, -3.04)) *
+      Math.min(1, 0.45 + 0.7 * loose + 0.3 * chaos);
     // Banked about its long axis and twisted along it: where it turns edge-on it reads dark.
     const bank = 0.6 + (0.4 + 0.25 * chaos) * swing(clock, 13, 0.3) + 0.2 * swing(clock, 5.3, 4.1);
     const twist = (0.55 + 1.1 * chaos) * swing(clock, 11, 1.9) + 0.2 * swing(clock, 4.7, 0.5);
@@ -650,7 +686,8 @@ class FlockSim implements SceneSim {
     const cup = (0.6 + 0.9 * chaos) * (0.75 + 0.25 * swing(clock, 14.3, 0.8));
     const curl = 0.28 * swing(clock, 12.5, 3.7) + 0.12 * swing(clock, 5.9, 0.2);
     // Which way its long axis lies on screen.
-    const heading = 0.45 * swing(clock, 17, 1.1) + 0.22 * swing(clock, 6.7, 3.3) + 0.08 * swing(clock, 3.1, 5.2);
+    const heading =
+      0.45 * swing(clock, 17, 1.1) + 0.22 * swing(clock, 6.7, 3.3) + 0.08 * swing(clock, 3.1, 5.2);
     const cosYaw = Math.cos(yaw);
     const sinYaw = Math.sin(yaw);
     const cosHeading = Math.cos(heading);
@@ -659,7 +696,8 @@ class FlockSim implements SceneSim {
     // Fit it into its band of sky (its outline is about an ellipse with these half-axes), then let it
     // roam the room left over.
     const along = length * (1 + SPLIT_GAP * split);
-    const across = width * (1 + SPLIT_SHEAR * split + cup) + (0.67 * Math.abs(curl) + bend) * length + THICKNESS;
+    const across =
+      width * (1 + SPLIT_SHEAR * split + cup) + (0.67 * Math.abs(curl) + bend) * length + THICKNESS;
     const seen = Math.hypot(along * cosYaw, across * sinYaw);
     const reachX = 1.1 * Math.hypot(seen * cosHeading, across * sinHeading);
     const reachY = 1.1 * Math.hypot(seen * sinHeading, across * cosHeading);
@@ -668,7 +706,9 @@ class FlockSim implements SceneSim {
     const roomY = (sky.high - sky.low) / 2;
     const fit = Math.min(1, roomX / reachX, roomY / reachY);
     const wind = this.#wind;
-    const roamX = (0.7 * swing(clock, 27, 2.5) + 0.3 * swing(clock, 9.7, 0.4) + 0.45 * wind) / (1 + 0.45 * Math.abs(wind));
+    const roamX =
+      (0.7 * swing(clock, 27, 2.5) + 0.3 * swing(clock, 9.7, 0.4) + 0.45 * wind) /
+      (1 + 0.45 * Math.abs(wind));
     const roamY = 0.6 * swing(clock, 19, 4.4) + 0.4 * swing(clock, 7.3, 1.5);
 
     shapes[at + SH_X] = aspect / 2 + Math.max(0, roomX - reachX * fit) * roamX;
@@ -701,7 +741,8 @@ class FlockSim implements SceneSim {
     this.#wind += (knob.wind - this.#wind) * ease;
     this.#rate += (RATE_SLOW + (RATE_FAST - RATE_SLOW) * knob.speed - this.#rate) * ease;
     this.#clock += STEP * this.#rate;
-    for (let k = 0; k < LAG_LEVELS; k++) this.#shapeAt(this.#clock - k * LAG_LEVEL * this.#rate, k * SHAPE);
+    for (let k = 0; k < LAG_LEVELS; k++)
+      this.#shapeAt(this.#clock - k * LAG_LEVEL * this.#rate, k * SHAPE);
     this.#events(t);
     this.#fidget();
     const waveAge = this.#waveAge;
@@ -767,20 +808,28 @@ class FlockSim implements SceneSim {
         const da = (a - (waveA[k] ?? 0)) * length;
         const db = (b - (waveB[k] ?? 0)) * width;
         const front = (Math.sqrt(da * da + db * db) - WAVE_SPEED * age) / WAVE_WIDTH;
-        if (front * front < 9) startle = Math.max(startle, Math.exp(-front * front) * (1 - smoothstep(0.6 * WAVE_LIFE, WAVE_LIFE, age)));
+        if (front * front < 9)
+          startle = Math.max(
+            startle,
+            Math.exp(-front * front) * (1 - smoothstep(0.6 * WAVE_LIFE, WAVE_LIFE, age)),
+          );
       }
 
       // On the sheet: parted across a curved seam (the birds near it string out into a sparse
       // bridge between the lobes), bowed in its plane, bent, cupped, and a few birds deep.
       const seam = Math.tanh((a - SPLIT_CURVE * b * b) / SPLIT_SEAM);
       const u = length * (a + SPLIT_GAP * split * seam);
-      const v = width * (b * (1 - SPLIT_PINCH * split * (1 - seam * seam)) + SPLIT_SHEAR * split * seam) + (shapes[o + SH_CURL] ?? 0) * (a * a - 1 / 3);
+      const v =
+        width * (b * (1 - SPLIT_PINCH * split * (1 - seam * seam)) + SPLIT_SHEAR * split * seam) +
+        (shapes[o + SH_CURL] ?? 0) * (a * a - 1 / 3);
       const w =
-        (shapes[o + SH_BEND] ?? 0) * Math.sin(BEND_WAVENUMBER * a - (shapes[o + SH_BEND_PHASE] ?? 0)) +
+        (shapes[o + SH_BEND] ?? 0) *
+          Math.sin(BEND_WAVENUMBER * a - (shapes[o + SH_BEND_PHASE] ?? 0)) +
         (shapes[o + SH_CUP] ?? 0) * (b * b - 1 / 3) +
         ((depth[i] ?? 0) * THICKNESS + startle * WAVE_LIFT) * fit;
       // Banked about the long axis (twisting along it, the lobes apart), then turned into depth.
-      const bank = (shapes[o + SH_BANK] ?? 0) + (shapes[o + SH_TWIST] ?? 0) * a + SPLIT_BANK * split * seam;
+      const bank =
+        (shapes[o + SH_BANK] ?? 0) + (shapes[o + SH_TWIST] ?? 0) * a + SPLIT_BANK * split * seam;
       const cosBank = Math.cos(bank);
       const sinBank = Math.sin(bank);
       const y1 = v * cosBank - w * sinBank;
@@ -873,7 +922,8 @@ class FlockSim implements SceneSim {
     const chaos = this.#chaos;
     rules.neighbours = this.#knob.emergent;
     // A bigger flock packs closer: it reads darker, as the sheet's does.
-    rules.spacing = lerp(BOIDS_SPACING_LOOSE, BOIDS_SPACING_TIGHT, tight) * Math.cbrt(BOIDS_REFERENCE_BIRDS / n);
+    rules.spacing =
+      lerp(BOIDS_SPACING_LOOSE, BOIDS_SPACING_TIGHT, tight) * Math.cbrt(BOIDS_REFERENCE_BIRDS / n);
     rules.cohesion = lerp(BOIDS_COHESION_LOOSE, BOIDS_COHESION_TIGHT, tight);
     rules.alignment = lerp(BOIDS_ALIGN_CALM, BOIDS_ALIGN_CHAOS, chaos);
     rules.noise = lerp(BOIDS_NOISE_CALM, BOIDS_NOISE_CHAOS, chaos);
@@ -988,7 +1038,9 @@ class FlockSim implements SceneSim {
     // Birds leave for the M head first and let go of it in the same order.
     const markAge = this.#markAge;
     const delay = MARK_STAGGER * clamp(0.5 * (1 - (this.#sheetA[i] ?? 0)), 0, 1);
-    const pull = smoothstep(delay, delay + MARK_FLY, markAge) * (1 - smoothstep(MARK_HOLD + delay, MARK_HOLD + delay + MARK_FLY, markAge));
+    const pull =
+      smoothstep(delay, delay + MARK_FLY, markAge) *
+      (1 - smoothstep(MARK_HOLD + delay, MARK_HOLD + delay + MARK_FLY, markAge));
     if (pull > 0) {
       const track = this.#trackPoint;
       markTrackAt((this.#markPlace[i] ?? 0) + this.#markRun, track);
@@ -1046,7 +1098,8 @@ class FlockSim implements SceneSim {
 
     if (knob.predator > 0) {
       const interval = ATTACK_RARE + (ATTACK_OFTEN - ATTACK_RARE) * knob.predator;
-      if (!Number.isFinite(this.#nextAttack)) this.#nextAttack = t + interval * (0.3 + 0.3 * random.next());
+      if (!Number.isFinite(this.#nextAttack))
+        this.#nextAttack = t + interval * (0.3 + 0.3 * random.next());
       else if (t >= this.#nextAttack && !this.#falcon) {
         this.#attackNow = true;
         this.#nextAttack = t + interval * (0.6 + 0.8 * random.next());
@@ -1062,7 +1115,8 @@ class FlockSim implements SceneSim {
       if (!Number.isFinite(this.#nextMark)) this.#nextMark = t + MARK_FIRST;
       else if (t >= this.#nextMark && !this.#mark) {
         this.#markNow = true;
-        this.#nextMark = t + (MARK_RARE + (MARK_OFTEN - MARK_RARE) * knob.mark) * (0.7 + 0.6 * random.next());
+        this.#nextMark =
+          t + (MARK_RARE + (MARK_OFTEN - MARK_RARE) * knob.mark) * (0.7 + 0.6 * random.next());
       }
     } else this.#nextMark = Number.POSITIVE_INFINITY;
     if (this.#markNow) {
@@ -1071,8 +1125,11 @@ class FlockSim implements SceneSim {
     }
     if (this.#mark) {
       const age = (this.#markAge += STEP);
-      this.#markRun += (STEP * (MARK_STREAM_SLOW + (MARK_STREAM_FAST - MARK_STREAM_SLOW) * knob.speed)) / MARK_SIZE;
-      this.#markStrength = smoothstep(0, MARK_GATHER, age) * (1 - smoothstep(MARK_HOLD, MARK_END, age));
+      this.#markRun +=
+        (STEP * (MARK_STREAM_SLOW + (MARK_STREAM_FAST - MARK_STREAM_SLOW) * knob.speed)) /
+        MARK_SIZE;
+      this.#markStrength =
+        smoothstep(0, MARK_GATHER, age) * (1 - smoothstep(MARK_HOLD, MARK_END, age));
       // Letting go: a ripple runs out from the middle of the flock as the birds scatter.
       if (age - STEP < MARK_HOLD && age >= MARK_HOLD) {
         if (this.#flying) this.#boids.startle(this.#centralBird());
@@ -1159,8 +1216,13 @@ class FlockSim implements SceneSim {
     this.#falconVY = Math.sin(angle) * v;
     this.#falconX += this.#falconVX * STEP;
     this.#falconY += this.#falconVY * STEP;
-    this.#wingOpen += ((this.#falconStoop ? 0.1 : 1) - this.#wingOpen) * (1 - Math.exp(-STEP / 0.25));
-    const out = this.#falconX < -0.15 || this.#falconX > this.#aspect + 0.15 || this.#falconY < -0.15 || this.#falconY > 1.2;
+    this.#wingOpen +=
+      ((this.#falconStoop ? 0.1 : 1) - this.#wingOpen) * (1 - Math.exp(-STEP / 0.25));
+    const out =
+      this.#falconX < -0.15 ||
+      this.#falconX > this.#aspect + 0.15 ||
+      this.#falconY < -0.15 ||
+      this.#falconY > 1.2;
     if ((out && this.#falconAge > 0.6) || this.#falconAge > 9) this.#falcon = false;
   }
 
@@ -1200,7 +1262,10 @@ class FlockSim implements SceneSim {
       cursor[b] = rank + 1;
       const across = (rank + 0.5) / n;
       // Alternate birds take the outward lane (left to right) and the return lane (right to left).
-      this.#markPlace[i] = (i & 1) === 0 ? across * MARK_OUTWARD_LENGTH : MARK_TRACK_LENGTH - across * MARK_OUTWARD_LENGTH;
+      this.#markPlace[i] =
+        (i & 1) === 0
+          ? across * MARK_OUTWARD_LENGTH
+          : MARK_TRACK_LENGTH - across * MARK_OUTWARD_LENGTH;
     }
     this.#mark = true;
     this.#markAge = 0;
@@ -1254,10 +1319,17 @@ class FlockSim implements SceneSim {
         const other = (phaseB[i] ?? 0) / TAU;
         if (arriving) {
           // From a file beyond the edge to its place in the sheet, slowing as it folds in.
-          const q = clamp((enter - (ENTER_LEAD + ENTER_STAGGER * back + ENTER_SCATTER * luck)) / ENTER_FLIGHT, 0, 1);
+          const q = clamp(
+            (enter - (ENTER_LEAD + ENTER_STAGGER * back + ENTER_SCATTER * luck)) / ENTER_FLIGHT,
+            0,
+            1,
+          );
           if (q < 1) {
             const e = q * (2 - q);
-            const startX = side < 0 ? -(ENTER_BEYOND + ENTER_DEPTH * other) : aspect + ENTER_BEYOND + ENTER_DEPTH * other;
+            const startX =
+              side < 0
+                ? -(ENTER_BEYOND + ENTER_DEPTH * other)
+                : aspect + ENTER_BEYOND + ENTER_DEPTH * other;
             const sheetY = flying ? this.#centreY : (shapes[o + SH_Y] ?? 0);
             const startY = sheetY + 0.5 * (yi - sheetY) + (sheetB[i] ?? 0) * ENTER_SPREAD;
             const flyX = startX + (xi - startX) * e;
@@ -1274,7 +1346,9 @@ class FlockSim implements SceneSim {
             const heading = flying ? this.#headingX : (shapes[o + SH_HEADING_COS] ?? 1);
             const gather = smoothstep(0, 0.85, q);
             const roost = EXIT_ROOST_LOW + EXIT_ROOST_SPREAD * other;
-            xi += (centre + (xi - centre) * EXIT_FUNNEL - xi) * gather + EXIT_SWOOP * heading * Math.sin(Math.PI * q);
+            xi +=
+              (centre + (xi - centre) * EXIT_FUNNEL - xi) * gather +
+              EXIT_SWOOP * heading * Math.sin(Math.PI * q);
             yi += (roost - yi) * q ** EXIT_POWER;
           }
         }

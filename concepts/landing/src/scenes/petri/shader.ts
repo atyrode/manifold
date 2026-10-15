@@ -12,7 +12,18 @@
 // pair of turning spirals (BZ) drawn here.
 // Knobs read here: K_chemistry, K_palette, K_relief, K_lightbox, K_size, K_mark, K_pattern.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { PETRI_ARRIVAL_TEXEL, PETRI_BUBBLES, PETRI_FIT, PETRI_MARK, PETRI_MARK_GLSL, PETRI_PASSAGE, PETRI_RADIUS, PETRI_RIDGE_TEXEL, PETRI_RIPPLE, PETRI_RIPPLES } from "./sim.ts";
+import {
+  PETRI_ARRIVAL_TEXEL,
+  PETRI_BUBBLES,
+  PETRI_FIT,
+  PETRI_MARK,
+  PETRI_MARK_GLSL,
+  PETRI_PASSAGE,
+  PETRI_RADIUS,
+  PETRI_RIDGE_TEXEL,
+  PETRI_RIPPLE,
+  PETRI_RIPPLES,
+} from "./sim.ts";
 
 export const petriGlsl = `
 const float PETRI_RADIUS = ${glslFloat(PETRI_RADIUS)};

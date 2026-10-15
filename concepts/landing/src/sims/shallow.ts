@@ -86,7 +86,15 @@
 //     water.view();
 //     return [water.surface.texture];                                 // read it every frame
 //   }
-import { GpuError, type GpuCompute, type Pass, type PingPong, type RenderTarget, type TextureSource, type UniformValue } from "./gpu.ts";
+import {
+  GpuError,
+  type GpuCompute,
+  type Pass,
+  type PingPong,
+  type RenderTarget,
+  type TextureSource,
+  type UniformValue,
+} from "./gpu.ts";
 
 export interface ShallowOptions {
   /** Grid size in cells (square: `gridSize(aspect, short)`). */
@@ -202,13 +210,17 @@ void main() {
     shallowPipe(c + ivec2(1, 0), bed, level, flow.y),
     shallowPipe(c - ivec2(0, 1), bed, level, flow.z),
     shallowPipe(c + ivec2(0, 1), bed, level, flow.w));
-${forcing === undefined ? "" : `  // Forced: the outflows ease toward the target velocity's over the target depth.
+${
+  forcing === undefined
+    ? ""
+    : `  // Forced: the outflows ease toward the target velocity's over the target depth.
   vec4 force = shallowForcing(vUv, bed);
   if (force.w > 0.0) {
     vec4 target = open * vec4(max(-force.y, 0.0), max(force.y, 0.0), max(-force.z, 0.0), max(force.z, 0.0)) * max(force.x - bed, 0.0);
     q = mix(q, target, 1.0 - exp(-force.w * uDt));
   }
-`}  // No cell gives away more than it holds.
+`
+}  // No cell gives away more than it holds.
   float total = q.x + q.y + q.z + q.w;
   fragColor = total > 0.0 ? q * min(1.0, depth / (uDt * total)) : vec4(0.0);
 }
@@ -234,9 +246,13 @@ void main() {
   vec2 velocity = 0.5 * vec2(inL - f.x + f.y - inR, inB - f.z + f.w - inT) / max(0.5 * (w.x + depth), ${MIN_DEPTH.toFixed(2)});
   float speed = length(velocity);
   if (speed > uMaxSpeed) velocity *= uMaxSpeed / speed;
-${forcing === undefined ? "" : `  vec4 force = shallowForcing(vUv, bed);
+${
+  forcing === undefined
+    ? ""
+    : `  vec4 force = shallowForcing(vUv, bed);
   if (force.w > 0.0) depth = mix(depth, max(force.x - bed, 0.0), 1.0 - exp(-force.w * uDt));
-`}  fragColor = vec4(depth, velocity, 0.0);
+`
+}  fragColor = vec4(depth, velocity, 0.0);
 }
 `;
 
@@ -345,9 +361,12 @@ export class ShallowWater {
   constructor(gpu: GpuCompute, options: ShallowOptions) {
     const { width, height } = options;
     if (!(Number.isInteger(width) && Number.isInteger(height) && width >= 2 && height >= 2)) {
-      throw new ShallowError(`shallow: the grid must be whole cells, at least 2×2, got ${width}×${height}`);
+      throw new ShallowError(
+        `shallow: the grid must be whole cells, at least 2×2, got ${width}×${height}`,
+      );
     }
-    if (!(options.gravity > 0)) throw new ShallowError(`shallow: gravity must be positive, got ${options.gravity}`);
+    if (!(options.gravity > 0))
+      throw new ShallowError(`shallow: gravity must be positive, got ${options.gravity}`);
     this.gpu = gpu;
     this.width = width;
     this.height = height;
@@ -362,7 +381,8 @@ export class ShallowWater {
     try {
       this.#flux = pass(FLUX(options.forcing), "shallow flux");
       this.#water = pass(WATER(options.forcing), "shallow water");
-      this.#carry = options.carry === undefined ? undefined : pass(CARRY(options.carry), "shallow carry");
+      this.#carry =
+        options.carry === undefined ? undefined : pass(CARRY(options.carry), "shallow carry");
       this.#surface = pass(SURFACE, "shallow surface");
       this.#splat = pass(SPLAT, "shallow splat");
     } catch (error: unknown) {
@@ -375,13 +395,19 @@ export class ShallowWater {
     this.bed = gpu.target({ ...size, format: "r32f", filter: "nearest" });
     this.water = gpu.pingPong({ ...size, format: "rgba32f", filter: "nearest" });
     this.flux = gpu.pingPong({ ...size, format: "rgba32f", filter: "nearest" });
-    this.carried = options.carry === undefined ? undefined : gpu.pingPong({ ...size, format: "rgba16f" });
+    this.carried =
+      options.carry === undefined ? undefined : gpu.pingPong({ ...size, format: "rgba16f" });
     this.surface = gpu.target({ ...size, format: "rgba16f" });
 
     const gravity = options.gravity;
-    for (const built of all) built.bind({ uBed: this.bed, uWater: this.water }).set({ uGravity: gravity });
-    this.#flux.bind({ uFlux: this.flux }).set({ uFriction: options.friction ?? DEFAULT_FRICTION, uViscosity: options.viscosity ?? 0 });
-    this.#water.bind({ uFlux: this.flux }).set({ uMaxSpeed: options.maxSpeed ?? DEFAULT_MAX_SPEED });
+    for (const built of all)
+      built.bind({ uBed: this.bed, uWater: this.water }).set({ uGravity: gravity });
+    this.#flux
+      .bind({ uFlux: this.flux })
+      .set({ uFriction: options.friction ?? DEFAULT_FRICTION, uViscosity: options.viscosity ?? 0 });
+    this.#water
+      .bind({ uFlux: this.flux })
+      .set({ uMaxSpeed: options.maxSpeed ?? DEFAULT_MAX_SPEED });
     if (this.#carry && this.carried) this.#carry.bind({ uCarry: this.carried });
     this.#surface.set({ uRefraction: options.refraction ?? DEFAULT_REFRACTION });
   }
@@ -465,16 +491,26 @@ export class ShallowWater {
 
   #flushSplats(): void {
     if (this.#splatCount === 0) return;
-    this.#splat.run(this.water, { uniforms: { uSplat: this.#splats, uSplatCount: this.#splatCount } });
+    this.#splat.run(this.water, {
+      uniforms: { uSplat: this.#splats, uSplatCount: this.#splatCount },
+    });
     this.#splatCount = 0;
   }
 
   /** Hand a snippet's own uniforms and samplers to the passes that compile it (a typo throws). */
-  #snippet(uniforms: Readonly<Record<string, UniformValue>> | undefined, textures: Readonly<Record<string, TextureSource>> | undefined, ...passes: Pass[]): void {
+  #snippet(
+    uniforms: Readonly<Record<string, UniformValue>> | undefined,
+    textures: Readonly<Record<string, TextureSource>> | undefined,
+    ...passes: Pass[]
+  ): void {
     for (const values of [uniforms, textures]) {
       for (const name in values) {
-        if (RESERVED[name] === true) throw new ShallowError(`shallow: ${name} is the solver's own uniform`);
-        if (!passes.some((pass) => pass.declares(name))) throw new ShallowError(`shallow: the ${passes[0]?.name ?? "shallow"} snippet declares no ${name}`);
+        if (RESERVED[name] === true)
+          throw new ShallowError(`shallow: ${name} is the solver's own uniform`);
+        if (!passes.some((pass) => pass.declares(name)))
+          throw new ShallowError(
+            `shallow: the ${passes[0]?.name ?? "shallow"} snippet declares no ${name}`,
+          );
       }
     }
     for (const pass of passes) {
@@ -485,7 +521,9 @@ export class ShallowWater {
 
   #checkLength(data: Float32Array, what: string): void {
     if (data.length !== this.width * this.height) {
-      throw new ShallowError(`shallow: ${what} has ${data.length} values for a ${this.width}×${this.height} grid`);
+      throw new ShallowError(
+        `shallow: ${what} has ${data.length} values for a ${this.width}×${this.height} grid`,
+      );
     }
   }
 
@@ -505,9 +543,16 @@ export class ShallowWater {
  * algorithm for digital elevation models", Computers & Geosciences 62, 2014), 4-connected, O(n log n).
  * Without any outlet every cell keeps its bed.
  */
-export function stillWater(bed: Float32Array, width: number, height: number, outlet: Uint8Array, level: number): Float32Array {
+export function stillWater(
+  bed: Float32Array,
+  width: number,
+  height: number,
+  outlet: Uint8Array,
+  level: number,
+): Float32Array {
   const n = width * height;
-  if (bed.length !== n || outlet.length !== n) throw new ShallowError(`stillWater: bed and outlet need ${width}×${height} values`);
+  if (bed.length !== n || outlet.length !== n)
+    throw new ShallowError(`stillWater: bed and outlet need ${width}×${height} values`);
   const out = Float32Array.from(bed);
   const done = new Uint8Array(n);
   const heap = new LevelHeap(n);
@@ -528,7 +573,22 @@ export function stillWater(bed: Float32Array, width: number, height: number, out
     const x = i % width;
     const y = (i - x) / width;
     for (let k = 0; k < 4; k++) {
-      const j = k === 0 ? (x > 0 ? i - 1 : -1) : k === 1 ? (x < width - 1 ? i + 1 : -1) : k === 2 ? (y > 0 ? i - width : -1) : y < height - 1 ? i + width : -1;
+      const j =
+        k === 0
+          ? x > 0
+            ? i - 1
+            : -1
+          : k === 1
+            ? x < width - 1
+              ? i + 1
+              : -1
+            : k === 2
+              ? y > 0
+                ? i - width
+                : -1
+              : y < height - 1
+                ? i + width
+                : -1;
       if (j < 0 || done[j] === 1) continue;
       done[j] = 1;
       const ground = bed[j] ?? 0;

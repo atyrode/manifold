@@ -60,7 +60,8 @@ class Evening {
   }
 
   get seated(): number {
-    return Array.from({ length: SEATS }, (_, i) => this.texel(2 + i, 2)).filter((sit) => sit > 0.99).length;
+    return Array.from({ length: SEATS }, (_, i) => this.texel(2 + i, 2)).filter((sit) => sit > 0.99)
+      .length;
   }
 }
 

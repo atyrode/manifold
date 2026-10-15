@@ -30,7 +30,13 @@ export class TrailField {
     const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / Math.max(radius * 0.5, 1e-4)));
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      this.#splat(from.x + (x - from.x) * t, from.y + (y - from.y) * t, radius, strength / Math.sqrt(steps), aspect);
+      this.#splat(
+        from.x + (x - from.x) * t,
+        from.y + (y - from.y) * t,
+        radius,
+        strength / Math.sqrt(steps),
+        aspect,
+      );
     }
     this.version++;
   }
@@ -74,7 +80,10 @@ export class TrailField {
     const data = this.data;
     for (let j = y0; j <= y1; j++) {
       for (let i = x0; i <= x1; i++) {
-        const d = Math.hypot((i + 0.5 - cx) / Math.max(rx, 1e-3), (j + 0.5 - cy) / Math.max(ry, 1e-3));
+        const d = Math.hypot(
+          (i + 0.5 - cx) / Math.max(rx, 1e-3),
+          (j + 0.5 - cy) / Math.max(ry, 1e-3),
+        );
         if (d >= 1) continue;
         const k = j * w + i;
         const fall = (1 - d * d) * (1 - d * d);

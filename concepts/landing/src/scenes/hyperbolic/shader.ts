@@ -25,20 +25,44 @@ const tilings = HYPERBOLIC_TILINGS.map((def) => {
   const t = tilingOf(def);
   return `HyperbolicTiling(${fixed6(t.p)}, ${fixed6(t.c)}, ${fixed6(t.r)}, ${fixed6(t.corner)}, ${t.q % 2 === 0})`;
 });
-const tilingTable = glslPick("tiling", tilings, tilings[tilings.length - 1] ?? "HyperbolicTiling(7.0, 2.0, 1.7, 0.3, false)");
+const tilingTable = glslPick(
+  "tiling",
+  tilings,
+  tilings[tilings.length - 1] ?? "HyperbolicTiling(7.0, 2.0, 1.7, 0.3, false)",
+);
 
 const palettes = HYPERBOLIC_PALETTES.map((p) => {
-  const colors = [p.ground, p.groundAlt, p.groundBreath, p.strand, p.strandBreath, p.ink, p.back, p.glow, p.rim, p.source, p.mark].map(glslVec3);
+  const colors = [
+    p.ground,
+    p.groundAlt,
+    p.groundBreath,
+    p.strand,
+    p.strandBreath,
+    p.ink,
+    p.back,
+    p.glow,
+    p.rim,
+    p.source,
+    p.mark,
+  ].map(glslVec3);
   return `HyperbolicPalette(${colors.join(", ")}, ${glslFloat(p.lamp)})`;
 });
 const paletteTable = glslPick(
   "palette",
   palettes,
-  palettes[palettes.length - 1] ?? "HyperbolicPalette(vec3(0.0), vec3(0.0), vec3(0.0), vec3(1.0), vec3(1.0), vec3(0.0), vec3(0.0), vec3(0.5), vec3(1.0), vec3(1.0), vec3(1.0), 1.0)",
+  palettes[palettes.length - 1] ??
+    "HyperbolicPalette(vec3(0.0), vec3(0.0), vec3(0.0), vec3(1.0), vec3(1.0), vec3(0.0), vec3(0.0), vec3(0.5), vec3(1.0), vec3(1.0), vec3(1.0), 1.0)",
 );
 
 const fallback = hyperbolicFallback();
-const fallbackTexels = Array.from({ length: fallback.length / 4 }, (_, i) => `vec4(${fallback.slice(i * 4, i * 4 + 4).map(fixed6).join(", ")})`);
+const fallbackTexels = Array.from(
+  { length: fallback.length / 4 },
+  (_, i) =>
+    `vec4(${fallback
+      .slice(i * 4, i * 4 + 4)
+      .map(fixed6)
+      .join(", ")})`,
+);
 
 const T = HYPERBOLIC_TEXELS;
 const D = HYPERBOLIC_DETAIL;

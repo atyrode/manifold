@@ -37,7 +37,13 @@ import { GpuReadback } from "../../sims/readback.ts";
 import { ShallowWater } from "../../sims/shallow.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { layTidepool, TIDEPOOL_HEIGHTS, TIDEPOOL_RELIEF, TIDEPOOL_SEA_BAND, type TidepoolLayout } from "./layout.ts";
+import {
+  layTidepool,
+  TIDEPOOL_HEIGHTS,
+  TIDEPOOL_RELIEF,
+  TIDEPOOL_SEA_BAND,
+  type TidepoolLayout,
+} from "./layout.ts";
 import { TIDEPOOL_LIFE_WIDTH, TidepoolLife } from "./life.ts";
 
 /** Grid rows over the frame's height (columns follow the aspect). */
@@ -77,7 +83,22 @@ const TAP = { radius: 3, height: 1.6, reach: 12 } as const;
 /** A drag: a ripple every so many cells along the path. */
 const DRAG = { radius: 2.2, height: 0.5, spacing: 2.5 } as const;
 
-export const TIDEPOOL_SIM_KNOBS = ["tide", "tideCycle", "swell", "period", "heading", "sets", "pace", "foam", "poolSize", "rock", "response", "fish", "season", "growth"] as const;
+export const TIDEPOOL_SIM_KNOBS = [
+  "tide",
+  "tideCycle",
+  "swell",
+  "period",
+  "heading",
+  "sets",
+  "pace",
+  "foam",
+  "poolSize",
+  "rock",
+  "response",
+  "fish",
+  "season",
+  "growth",
+] as const;
 type Knob = (typeof TIDEPOOL_SIM_KNOBS)[number];
 
 /** The water's flow, averaged onto the life's coarse grid: velocity (cells/s) and depth. */
@@ -91,7 +112,11 @@ void main() {
 `;
 
 /** The life's knobs for this frame, into `out` (the plant knobs' season: high summer while off). */
-function readLifeKnobs(knobs: KnobReader<Knob>, frame: SimFrame, out: { response: number; fish: number; season: number; growth: number }): void {
+function readLifeKnobs(
+  knobs: KnobReader<Knob>,
+  frame: SimFrame,
+  out: { response: number; fish: number; season: number; growth: number },
+): void {
   out.response = knobs.value(frame, "response");
   out.fish = knobs.value(frame, "fish");
   out.season = knobs.on(frame, "season") ? knobs.amount(frame, "season") : PLANT_SUMMER;
@@ -160,7 +185,8 @@ export function tidepoolSet(time: number, every: number, seed: number): number {
   for (let k = slot - 1; k <= slot; k++) {
     const start = (k + 0.1 + 0.6 * hash31(k, seed, 41)) * every;
     const age = (time - start) / SET_LENGTH;
-    if (age > 0 && age < 1) level = Math.max(level, Math.sin(Math.PI * age) ** 2 * (0.6 + 0.4 * hash31(k, seed, 43)));
+    if (age > 0 && age < 1)
+      level = Math.max(level, Math.sin(Math.PI * age) ** 2 * (0.6 + 0.4 * hash31(k, seed, 43)));
   }
   return level;
 }
@@ -183,7 +209,10 @@ class Swell {
     // Waves over the band's floor run at sqrt(g · depth); each train's phase is kept in double
     // precision and handed over wrapped, so the GPU's float never loses it over a long visit.
     const speed = Math.sqrt(GRAVITY * Math.max(sea - TIDEPOOL_HEIGHTS.seaFloor, 1));
-    const trains = [[u.uSwellA, wavelength, heading], [u.uSwellB, wavelength * SECOND.length, heading + SECOND.turn]] as const;
+    const trains = [
+      [u.uSwellA, wavelength, heading],
+      [u.uSwellB, wavelength * SECOND.length, heading + SECOND.turn],
+    ] as const;
     for (const [train, length, turn] of trains) {
       const k = (2 * Math.PI) / length;
       train[0] = Math.sin(turn);
@@ -205,10 +234,21 @@ function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>): SceneSim
   const lifeFrame = { response: 0, fish: 0, season: PLANT_SUMMER, growth: 0 };
   return {
     frame(frame) {
-      const want: LayoutKey = { columns: Math.max(32, Math.round(TIDEPOOL_ROWS * frame.aspect)), rows: TIDEPOOL_ROWS, seed: knobs.value(frame, "rock"), size: knobs.value(frame, "poolSize") };
+      const want: LayoutKey = {
+        columns: Math.max(32, Math.round(TIDEPOOL_ROWS * frame.aspect)),
+        rows: TIDEPOOL_ROWS,
+        seed: knobs.value(frame, "rock"),
+        size: knobs.value(frame, "poolSize"),
+      };
       if (key === undefined || !sameKey(key, want)) {
         key = want;
-        const layout = layTidepool(want.columns, want.rows, want.seed, want.size, knobs.value(frame, "tide") * TIDE_RANGE);
+        const layout = layTidepool(
+          want.columns,
+          want.rows,
+          want.seed,
+          want.size,
+          knobs.value(frame, "tide") * TIDE_RANGE,
+        );
         const n = want.columns * want.rows;
         const surface = new Float32Array(n * 4);
         const carried = new Float32Array(n * 4);
@@ -221,7 +261,11 @@ function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>): SceneSim
         for (const texture of made) texture.dispose();
         made.length = 0;
         for (const data of [surface, carried, layout.texture]) {
-          const texture = new DataTexture(gl, { width: want.columns, height: want.rows, format: "rgba16f" });
+          const texture = new DataTexture(gl, {
+            width: want.columns,
+            height: want.rows,
+            format: "rgba16f",
+          });
           texture.upload(data);
           made.push(texture);
         }
@@ -276,20 +320,37 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
     const writeSwell = (frame: SimFrame, at: number): void => {
       const cycle = knobs.value(frame, "tideCycle");
       const period = lerp(TIDE_PERIOD[0], TIDE_PERIOD[1], cycle);
-      const sea = TIDE_RANGE * (cycle > 0 ? Math.max(-1, Math.min(1, knobs.value(frame, "tide") + Math.sin((2 * Math.PI * at) / period))) : knobs.value(frame, "tide"));
+      const sea =
+        TIDE_RANGE *
+        (cycle > 0
+          ? Math.max(
+              -1,
+              Math.min(1, knobs.value(frame, "tide") + Math.sin((2 * Math.PI * at) / period)),
+            )
+          : knobs.value(frame, "tide"));
       const sets = knobs.value(frame, "sets");
       // The sets that come by themselves, and the one "now" started.
       const age = (at - setStart) / SET_LENGTH;
-      const set = Math.max(sets > 0 ? tidepoolSet(at, lerp(SET_EVERY[0], SET_EVERY[1], sets), key?.seed ?? 0) : 0, age > 0 && age < 1 ? Math.sin(Math.PI * age) ** 2 : 0);
+      const set = Math.max(
+        sets > 0 ? tidepoolSet(at, lerp(SET_EVERY[0], SET_EVERY[1], sets), key?.seed ?? 0) : 0,
+        age > 0 && age < 1 ? Math.sin(Math.PI * age) ** 2 : 0,
+      );
       const height = SWELL * knobs.value(frame, "swell") * (1 + SET_GAIN * set);
-      const wavelength = lerp(WAVELENGTH[0], WAVELENGTH[1], knobs.value(frame, "period")) * TIDEPOOL_ROWS;
+      const wavelength =
+        lerp(WAVELENGTH[0], WAVELENGTH[1], knobs.value(frame, "period")) * TIDEPOOL_ROWS;
       swell.write(at, sea, height, wavelength, HEADING * knobs.value(frame, "heading"));
     };
 
     /** Lay the rock out afresh for `want` and still its water; the frame then runs the warm-up. */
     const relayout = (frame: SimFrame, want: LayoutKey): ShallowWater => {
       const sea = TIDE_RANGE * knobs.value(frame, "tide");
-      const layout: TidepoolLayout = layTidepool(want.columns, want.rows, want.seed, want.size, sea);
+      const layout: TidepoolLayout = layTidepool(
+        want.columns,
+        want.rows,
+        want.seed,
+        want.size,
+        sea,
+      );
       if (water === undefined || water.width !== want.columns || water.height !== want.rows) {
         water?.dispose();
         water = new ShallowWater(gpu, {
@@ -304,7 +365,11 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
           carry: CARRY,
         });
         layoutTexture?.dispose();
-        layoutTexture = new DataTexture(gl, { width: want.columns, height: want.rows, format: "rgba16f" });
+        layoutTexture = new DataTexture(gl, {
+          width: want.columns,
+          height: want.rows,
+          format: "rgba16f",
+        });
       }
       water.setBed(layout.bed);
       water.reset(layout.rest);
@@ -315,7 +380,12 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
       if (flow === undefined || flow.height !== life.flowRows) {
         flow?.dispose();
         readback?.dispose();
-        flow = gpu.target({ width: TIDEPOOL_LIFE_WIDTH, height: life.flowRows, format: "rgba32f", filter: "nearest" });
+        flow = gpu.target({
+          width: TIDEPOOL_LIFE_WIDTH,
+          height: life.flowRows,
+          format: "rgba32f",
+          filter: "nearest",
+        });
         readback = new GpuReadback(gl, TIDEPOOL_LIFE_WIDTH, life.flowRows);
       }
       warmed = 0;
@@ -326,7 +396,11 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
     };
 
     /** The textures, once the life has stepped `seconds` (its fish and plants) in the latest flow read back. */
-    const show = (sim: ShallowWater, frame: SimFrame, seconds: number): readonly (WebGLTexture | undefined)[] => {
+    const show = (
+      sim: ShallowWater,
+      frame: SimFrame,
+      seconds: number,
+    ): readonly (WebGLTexture | undefined)[] => {
       if (flow && readback) {
         probe.run(flow, { textures: { uWater: sim.water } });
         readback.poll(life.flow);
@@ -356,7 +430,8 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
         }
         let sim = water;
         if (sim === undefined || key === undefined) sim = relayout(frame, want);
-        else if (!sameKey(key, want) && now - pendingSince >= RELAYOUT_MS) sim = relayout(frame, want);
+        else if (!sameKey(key, want) && now - pendingSince >= RELAYOUT_MS)
+          sim = relayout(frame, want);
         carry.uFoam = knobs.value(frame, "foam");
 
         // The warm-up: a fixed count of steps from sim second 0, over as many frames as it takes. The
@@ -364,15 +439,21 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
         // work rather than how fast commands queue up.
         if (warmed < PREWARM_STEPS) {
           const warming = sim;
-          warmed = runBudgeted((i) => {
-            writeSwell(frame, (i + 1) * STEP);
-            step.time = (i + 1) * STEP;
-            warming.step(step);
-            if ((i + 1) % PREWARM_CHUNK === 0) {
-              warming.carry(PREWARM_CHUNK * STEP, step.time, carry);
-              gl.finish();
-            }
-          }, PREWARM_MS, PREWARM_STEPS, warmed, PREWARM_CHUNK);
+          warmed = runBudgeted(
+            (i) => {
+              writeSwell(frame, (i + 1) * STEP);
+              step.time = (i + 1) * STEP;
+              warming.step(step);
+              if ((i + 1) % PREWARM_CHUNK === 0) {
+                warming.carry(PREWARM_CHUNK * STEP, step.time, carry);
+                gl.finish();
+              }
+            },
+            PREWARM_MS,
+            PREWARM_STEPS,
+            warmed,
+            PREWARM_CHUNK,
+          );
           if (warmed < PREWARM_STEPS) {
             sim.view();
             return show(sim, frame, 0);
@@ -395,7 +476,8 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
             lastY = y;
           } else {
             const gap = Math.hypot(x - lastX, y - lastY);
-            for (let s = DRAG.spacing; s <= gap; s += DRAG.spacing) sim.splat(lerp(lastX, x, s / gap), lerp(lastY, y, s / gap), DRAG.radius, DRAG.height);
+            for (let s = DRAG.spacing; s <= gap; s += DRAG.spacing)
+              sim.splat(lerp(lastX, x, s / gap), lerp(lastY, y, s / gap), DRAG.radius, DRAG.height);
             if (gap >= DRAG.spacing) {
               lastX = x;
               lastY = y;

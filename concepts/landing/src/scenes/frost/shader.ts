@@ -9,7 +9,19 @@
 // (SKY_MOON_PHASE), the aurora and shooting stars, each hidden by the cloud deck and whatever stands
 // in front, softened by the blur, and lighting the snow, the air and the frost.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { FROST_EMERGE_FROM, FROST_EMERGE_TO, FROST_FRAME, FROST_START, FUR_RIPEN, FUR_SCALE, FUR_SLOW_FERN, FUR_SLOW_FUR, MELT_CLEAR, RIME_GROWN, WIDTH_SCALE } from "./sim.ts";
+import {
+  FROST_EMERGE_FROM,
+  FROST_EMERGE_TO,
+  FROST_FRAME,
+  FROST_START,
+  FUR_RIPEN,
+  FUR_SCALE,
+  FUR_SLOW_FERN,
+  FUR_SLOW_FUR,
+  MELT_CLEAR,
+  RIME_GROWN,
+  WIDTH_SCALE,
+} from "./sim.ts";
 
 /** Trigger slot of the shooting stars' "now" button (slot 0 is the traced M's). */
 export const FROST_METEOR_TRIGGER = 1;

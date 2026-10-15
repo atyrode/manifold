@@ -82,7 +82,15 @@ export const SANDTABLE = {
 } as const;
 
 export const sandtableMachines = ["ball", "pendulum"] as const;
-export const sandtablePatterns = ["cycle", "spiral", "clover", "rose", "star", "waves", "loops"] as const;
+export const sandtablePatterns = [
+  "cycle",
+  "spiral",
+  "clover",
+  "rose",
+  "star",
+  "waves",
+  "loops",
+] as const;
 export const sandtableFigures = ["cycle", "1:1", "1:2", "2:3", "3:4"] as const;
 type Machine = (typeof sandtableMachines)[number];
 type Pattern = (typeof sandtablePatterns)[number];
@@ -117,7 +125,16 @@ const TALUS = 0.62;
 
 // ---- knobs ---------------------------------------------------------------------------------------
 
-const SANDTABLE_KNOBS = ["machine", "pattern", "figure", "speed", "renew", "drawings", "depth", "mark"] as const;
+const SANDTABLE_KNOBS = [
+  "machine",
+  "pattern",
+  "figure",
+  "speed",
+  "renew",
+  "drawings",
+  "depth",
+  "mark",
+] as const;
 type Knob = (typeof SANDTABLE_KNOBS)[number];
 
 interface Settings {
@@ -258,8 +275,10 @@ class TrackBuilder {
    */
   follow(track: Track, from: number, segment: number): void {
     const shift = this.#length - from;
-    for (let i = segment + 1; i < track.count; i++) this.#line(track.xy[2 * i] ?? 0, track.xy[2 * i + 1] ?? 0);
-    for (const stop of track.stops) if (stop.at >= from) this.#stops.push({ at: stop.at + shift, seconds: stop.seconds });
+    for (let i = segment + 1; i < track.count; i++)
+      this.#line(track.xy[2 * i] ?? 0, track.xy[2 * i + 1] ?? 0);
+    for (const stop of track.stops)
+      if (stop.at >= from) this.#stops.push({ at: stop.at + shift, seconds: stop.seconds });
   }
 
   build(pace: number, kind: TrackKind, lead = 0, drawn = 0): Track {
@@ -370,7 +389,17 @@ function clover(b: TrackBuilder, rand: Rand): void {
 }
 
 /** Rhodonea r = cos(n/d θ): overlapping petals through the centre. */
-const ROSES: readonly (readonly [number, number])[] = [[3, 2], [5, 2], [5, 3], [7, 3], [4, 3], [5, 4], [7, 4], [8, 5], [7, 2]];
+const ROSES: readonly (readonly [number, number])[] = [
+  [3, 2],
+  [5, 2],
+  [5, 3],
+  [7, 3],
+  [4, 3],
+  [5, 4],
+  [7, 4],
+  [8, 5],
+  [7, 2],
+];
 
 /**
  * A rose, closed after π·d (n·d odd) or 2π·d, so it ends on the rim where it began. A short one is
@@ -395,12 +424,23 @@ function rose(b: TrackBuilder, rand: Rand): void {
       const r = Math.cos(k * theta);
       b.to(r * Math.cos(theta + offset), r * Math.sin(theta + offset));
     }
-    if (pass === 0) passes = clamp(Math.round((BUDGET * SANDTABLE.track) / (b.length - start)), 1, 3);
+    if (pass === 0)
+      passes = clamp(Math.round((BUDGET * SANDTABLE.track) / (b.length - start)), 1, 3);
   }
 }
 
 /** Star polygons {n/k}. */
-const STARS: readonly (readonly [number, number])[] = [[5, 2], [7, 2], [7, 3], [8, 3], [9, 2], [9, 4], [11, 3], [11, 4], [12, 5]];
+const STARS: readonly (readonly [number, number])[] = [
+  [5, 2],
+  [7, 2],
+  [7, 3],
+  [8, 3],
+  [9, 2],
+  [9, 4],
+  [11, 3],
+  [11, 4],
+  [12, 5],
+];
 
 /**
  * Star vortex: a star polygon's chords, each vertex a little nearer the centre and turned a little
@@ -464,7 +504,10 @@ function loops(b: TrackBuilder, rand: Rand): void {
   const steps = turns * (m + 1) * 120;
   for (let i = 1; i <= steps; i++) {
     const t = (TAU * turns * i) / steps;
-    b.to((1 - beta) * Math.cos(t) + beta * Math.cos(c * t), (1 - beta) * Math.sin(t) + beta * Math.sin(c * t));
+    b.to(
+      (1 - beta) * Math.cos(t) + beta * Math.cos(c * t),
+      (1 - beta) * Math.sin(t) + beta * Math.sin(c * t),
+    );
   }
 }
 
@@ -514,7 +557,13 @@ type Job =
   | { kind: "mark"; size: number };
 
 /** The drawings the cycle brings round, an erase spiral between each. */
-const ROTATION: readonly Exclude<Drawing, "spiral">[] = ["clover", "rose", "star", "waves", "loops"];
+const ROTATION: readonly Exclude<Drawing, "spiral">[] = [
+  "clover",
+  "rose",
+  "star",
+  "waves",
+  "loops",
+];
 
 /** Even drawings are erase spirals; the odd ones the chosen pattern, or the cycle's next. */
 function drawingAt(pattern: Pattern, index: number): Drawing {
@@ -622,7 +671,8 @@ const SWEEP_FROM = 0.3;
 /** The last stretch behind the ball's wipe is levelled again each step (field units): slumping may creep in behind it. */
 const SWEEP_BACK = 0.012;
 
-const aspectOf = (frame: SimFrame): number => (Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9);
+const aspectOf = (frame: SimFrame): number =>
+  Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9;
 
 /** Half the frame's width and height in field units (the shader's mapping, inverted). */
 function frameHalf(aspect: number): { w: number; h: number } {
@@ -707,8 +757,16 @@ const SALT_ERASE = 0xe2a5;
 class Ball {
   readonly #field: HeightField;
   /** The ball's tools, drawing and erasing; kept and only retuned, as HeightField asks. */
-  readonly #groove: GrooveOptions = { width: SANDTABLE.groove, depth: depthOf(0.5), ridge: 0.75 * SANDTABLE.groove };
-  readonly #erase: GrooveOptions = { width: SANDTABLE.groove, depth: ERASE_DEPTH * depthOf(0.5), ridge: 0.75 * SANDTABLE.groove };
+  readonly #groove: GrooveOptions = {
+    width: SANDTABLE.groove,
+    depth: depthOf(0.5),
+    ridge: 0.75 * SANDTABLE.groove,
+  };
+  readonly #erase: GrooveOptions = {
+    width: SANDTABLE.groove,
+    depth: ERASE_DEPTH * depthOf(0.5),
+    ridge: 0.75 * SANDTABLE.groove,
+  };
   #track: Track | undefined;
   #phase: "draw" | "rest" = "draw";
   /** Distance along the track (field units), its segment, the next stop, time left waiting there. */
@@ -790,12 +848,21 @@ class Ball {
       this.#next(settings);
       const track = this.#track;
       if (aspect === undefined) this.#drive(PREWARM_LEAD, GROOVE_STEP);
-      else if (track !== undefined) this.#beginEntry(aspect, Math.min(track.length, PREWARM_LEAD * BALL_SPEED * track.pace));
+      else if (track !== undefined)
+        this.#beginEntry(aspect, Math.min(track.length, PREWARM_LEAD * BALL_SPEED * track.pace));
     }
     for (let pass = 0; pass < 2; pass++) this.#field.relax(TALUS, 30, 1);
   }
 
-  frame(dt: number, motion: number, touch: Touch, settings: Settings, next: boolean, markNow: boolean, passage: Passage): void {
+  frame(
+    dt: number,
+    motion: number,
+    touch: Touch,
+    settings: Settings,
+    next: boolean,
+    markNow: boolean,
+    passage: Passage,
+  ): void {
     this.#retune(settings);
     if (passage.leave > 0) {
       this.#leave(passage);
@@ -852,7 +919,8 @@ class Ball {
       this.#next(settings);
     } else if (this.#phase === "rest" && settings.pause !== undefined) {
       this.#rested += dt * motion;
-      const rest = this.#track?.kind === "mark" ? Math.max(MARK_REST, settings.pause) : settings.pause;
+      const rest =
+        this.#track?.kind === "mark" ? Math.max(MARK_REST, settings.pause) : settings.pause;
       if (this.#rested >= rest) this.#next(settings);
     }
     // The M is an event and plays on the scene clock; the drawings follow the lab's motion.
@@ -904,7 +972,11 @@ class Ball {
     }
     const index = this.#drawing++;
     this.#sinceMark++;
-    this.#queue.push({ kind: "drawing", drawing: drawingAt(settings.pattern, index), seed: seedOf(settings.seed, index, SALT_DRAWING) });
+    this.#queue.push({
+      kind: "drawing",
+      drawing: drawingAt(settings.pattern, index),
+      seed: seedOf(settings.seed, index, SALT_DRAWING),
+    });
   }
 
   /**
@@ -914,7 +986,10 @@ class Ball {
   #planMark(size: number, seed: number): void {
     this.#sinceMark = 0;
     const index = this.#drawing++;
-    this.#queue = [{ kind: "erase", seed: seedOf(seed, index, SALT_ERASE) }, { kind: "mark", size }];
+    this.#queue = [
+      { kind: "erase", seed: seedOf(seed, index, SALT_ERASE) },
+      { kind: "mark", size },
+    ];
   }
 
   /** The M at once, over whatever the table holds; an erase spiral comes after it. */
@@ -928,7 +1003,11 @@ class Ball {
     if (this.#queue.length === 0) this.#plan(settings);
     const job = this.#queue.shift();
     if (job === undefined) throw new SandtableError("sandtable: nothing planned for the ball");
-    const track = buildTrack(job, this.#magnet.x / SANDTABLE.track, this.#magnet.y / SANDTABLE.track);
+    const track = buildTrack(
+      job,
+      this.#magnet.x / SANDTABLE.track,
+      this.#magnet.y / SANDTABLE.track,
+    );
     if (job.kind === "mark") {
       this.#markLive = true;
       this.#markFading = false;
@@ -951,7 +1030,8 @@ class Ball {
 
   /** Draw on to distance `until` along the track (Infinity: its end), in slices, out of sight. */
   #runOut(until: number): void {
-    while (this.#phase === "draw" && this.#s < until) this.#drive(PREWARM_SLICE, PREWARM_GROOVE_STEP);
+    while (this.#phase === "draw" && this.#s < until)
+      this.#drive(PREWARM_SLICE, PREWARM_GROOVE_STEP);
     this.#carve(0);
   }
 
@@ -1072,7 +1152,12 @@ class Ball {
     let turn = Math.atan2(this.#point.y, this.#point.x) - theta0;
     turn -= TAU * Math.round(turn / TAU);
     const b = new TrackBuilder(fromX, fromY);
-    b.sweep(theta0, theta0 + turn, Math.min(1, Math.hypot(fromX, fromY)), Math.hypot(this.#point.x, this.#point.y));
+    b.sweep(
+      theta0,
+      theta0 + turn,
+      Math.min(1, Math.hypot(fromX, fromY)),
+      Math.hypot(this.#point.x, this.#point.y),
+    );
     const lead = b.length + Math.max(0, track.lead - this.#s);
     const drawn = track.drawn + Math.max(0, this.#s - track.lead);
     b.follow(track, this.#s, this.#segment);
@@ -1152,7 +1237,8 @@ class Ball {
     this.#entry = undefined;
     this.#rollTo(entry, track, entry.total);
     let passed = 0;
-    while (passed < track.stops.length && (track.stops[passed]?.at ?? Infinity) <= entry.run) passed++;
+    while (passed < track.stops.length && (track.stops[passed]?.at ?? Infinity) <= entry.run)
+      passed++;
     this.#stop = passed;
     this.#wait = 0;
     this.#cut.x = this.#ball.x;
@@ -1169,7 +1255,9 @@ class Ball {
     this.#held = false;
     this.#away = false;
     const wipe = this.#wipe ?? this.#beginWipe(passage.aspect);
-    const sweep = departEase(clamp((passage.leave - BALL_SWEEP_FROM) / (1 - BALL_SWEEP_FROM), 0, 1));
+    const sweep = departEase(
+      clamp((passage.leave - BALL_SWEEP_FROM) / (1 - BALL_SWEEP_FROM), 0, 1),
+    );
     const lead = wipe.lead0 + (wipe.end - wipe.lead0) * sweep;
     if (lead > wipe.lead) {
       flatten(this.#field, wipe.nx, wipe.ny, wipe.lead - SWEEP_BACK, lead, this.#span);
@@ -1191,10 +1279,19 @@ class Ball {
     const b = this.#ball;
     const across = aspect < 1;
     const nx = across ? (b.x < 0 ? -1 : 1) : 0;
-    const ny = across ? 0 : (b.y < 0 ? -1 : 1);
+    const ny = across ? 0 : b.y < 0 ? -1 : 1;
     const support = across ? half.w : half.h;
     const lead0 = -(support + SANDTABLE.edge + OFF_FRAME);
-    const wipe: Wipe = { nx, ny, bx: b.x, by: b.y, bn: nx * b.x + ny * b.y, lead0, end: support + OFF_FRAME, lead: lead0 };
+    const wipe: Wipe = {
+      nx,
+      ny,
+      bx: b.x,
+      by: b.y,
+      bn: nx * b.x + ny * b.y,
+      lead0,
+      end: support + OFF_FRAME,
+      lead: lead0,
+    };
     this.#wipe = wipe;
     return wipe;
   }
@@ -1234,15 +1331,28 @@ const SALT_FIGURE = 0xf16e;
 const SALT_EDGE = 0xed9e;
 
 const FIGURE_ROTATION: readonly Ratio[] = ["1:1", "2:3", "3:4", "1:2"];
-const RATIOS: Readonly<Record<Ratio, readonly [number, number]>> = { "1:1": [1, 1], "1:2": [1, 2], "2:3": [2, 3], "3:4": [3, 4] };
+const RATIOS: Readonly<Record<Ratio, readonly [number, number]>> = {
+  "1:1": [1, 1],
+  "1:2": [1, 2],
+  "2:3": [2, 3],
+  "3:4": [3, 4],
+};
 
 const flowOf = (depth: number): number => FLOW * (0.4 + 1.2 * depth);
 /** The berm's cross-section, heaped against the edge: u = 0 at its face, 1 at the berm's front. */
 const bermProfile = (u: number): number => (u < 1 ? (1 - u) * (1 - u) : 0);
-const laneOf = (t: number): number => clamp(Math.floor(((t + LANE_SPAN) / (2 * LANE_SPAN)) * LANES), 0, LANES - 1);
+const laneOf = (t: number): number =>
+  clamp(Math.floor(((t + LANE_SPAN) / (2 * LANE_SPAN)) * LANES), 0, LANES - 1);
 
 /** The columns of a texel row whose centres may lie in a band a ≤ n·p < b (empty: from > to). */
-function bandColumns(nx: number, ny: number, y: number, a: number, b: number, out: { from: number; to: number }): void {
+function bandColumns(
+  nx: number,
+  ny: number,
+  y: number,
+  a: number,
+  b: number,
+  out: { from: number; to: number },
+): void {
   const grid = SANDTABLE.grid;
   if (Math.abs(nx) < 1e-6) {
     const d = ny * y;
@@ -1260,7 +1370,14 @@ function bandColumns(nx: number, ny: number, y: number, a: number, b: number, ou
  * Level the sand behind a straight edge's face: every texel whose coordinate along (nx, ny) lies
  * from `from` up to `to` is set to the bed's height.
  */
-function flatten(field: HeightField, nx: number, ny: number, from: number, to: number, span: { from: number; to: number }): void {
+function flatten(
+  field: HeightField,
+  nx: number,
+  ny: number,
+  from: number,
+  to: number,
+  span: { from: number; to: number },
+): void {
   const grid = SANDTABLE.grid;
   const data = field.data;
   let any = false;
@@ -1368,7 +1485,14 @@ class Pendulum {
     if (aspect !== undefined) this.#beginArrival(aspect);
   }
 
-  frame(dt: number, motion: number, pointer: Touch, settings: Settings, next: boolean, passage: Passage): void {
+  frame(
+    dt: number,
+    motion: number,
+    pointer: Touch,
+    settings: Settings,
+    next: boolean,
+    passage: Passage,
+  ): void {
     if (passage.leave > 0) {
       this.#leave(dt, motion, settings, passage);
       return;
@@ -1376,7 +1500,8 @@ class Pendulum {
     // A new figure or run starts over: wipe, and swing the first of the new choice.
     const signature = `${settings.figure}|${settings.seed}`;
     // That, or a press of "next", ends the entrance where it is; and no hand takes the funnel on its way in.
-    if (this.#arrival !== undefined && (signature !== this.#signature || next)) this.#carryIn(Infinity);
+    if (this.#arrival !== undefined && (signature !== this.#signature || next))
+      this.#carryIn(Infinity);
     const touch = this.#arrival === undefined ? pointer : NO_TOUCH;
     if (signature !== this.#signature) {
       this.#signature = signature;
@@ -1397,7 +1522,11 @@ class Pendulum {
     const phase = this.#phase;
     switch (phase) {
       case "swing": {
-        this.#stream = approach(this.#stream, this.#fill > 0 && this.#arrival === undefined ? 1 : 0, time / STREAM_FADE);
+        this.#stream = approach(
+          this.#stream,
+          this.#fill > 0 && this.#arrival === undefined ? 1 : 0,
+          time / STREAM_FADE,
+        );
         this.#swing(time, flow, this.#held ? touch : undefined);
         // Both axes' amplitudes together: the turn trades swing between them but does no work, so
         // this dies away evenly, on time.
@@ -1465,7 +1594,10 @@ class Pendulum {
   #setup(settings: Settings): void {
     const index = this.#figure++;
     const rand = mulberry32(seedOf(settings.seed, index, SALT_FIGURE));
-    const ratio = settings.figure === "cycle" ? FIGURE_ROTATION[index % FIGURE_ROTATION.length] ?? "1:1" : settings.figure;
+    const ratio =
+      settings.figure === "cycle"
+        ? (FIGURE_ROTATION[index % FIGURE_ROTATION.length] ?? "1:1")
+        : settings.figure;
     const [p, q] = RATIOS[ratio];
     const slow = TAU / PERIOD;
     this.#wu = slow;
@@ -1550,7 +1682,13 @@ class Pendulum {
       if (flow > 0 && this.#stream > 0 && this.#fill > 0) {
         const x = this.#cos * u - this.#sin * v;
         const y = this.#sin * u + this.#cos * v;
-        this.#field.stamp(0.5 + x, 0.5 + y, STREAM_RADIUS, domeProfile, flow * this.#stream * h * Math.min(1, 6 * this.#fill));
+        this.#field.stamp(
+          0.5 + x,
+          0.5 + y,
+          STREAM_RADIUS,
+          domeProfile,
+          flow * this.#stream * h * Math.min(1, 6 * this.#fill),
+        );
         this.#fill = Math.max(0, this.#fill - this.#stream * h * this.#drain);
       }
     }
@@ -1604,7 +1742,7 @@ class Pendulum {
     const half = frameHalf(aspect);
     const sideways = aspect >= 1;
     const dx = sideways ? (this.#x < 0 ? -1 : 1) : 0;
-    const dy = sideways ? 0 : (this.#y < 0 ? -1 : 1);
+    const dy = sideways ? 0 : this.#y < 0 ? -1 : 1;
     this.#stream = 0;
     this.#arrival = { dx, dy, reach: (sideways ? half.w : half.h) + OFF_FRAME + SANDTABLE.track };
     this.#carryIn(0);
@@ -1638,14 +1776,18 @@ class Pendulum {
     this.#carryIn(Infinity);
     this.#held = false;
     const leaving = this.#leaving ?? this.#beginLeave(passage.aspect);
-    if (this.#phase !== "launch") this.#swing(dt * motion * settings.speed, flowOf(settings.depth), undefined);
+    if (this.#phase !== "launch")
+      this.#swing(dt * motion * settings.speed, flowOf(settings.depth), undefined);
     this.#stream = approach(this.#stream, 0, dt / SHUT_SECONDS);
     const carried = clamp((passage.leave - CARRY_FROM) / (CARRY_TO - CARRY_FROM), 0, 1);
     const away = leaving.reach * carried * carried;
     this.#offX = leaving.nx * away;
     this.#offY = leaving.ny * away;
     const edge = this.#edge;
-    const lead = leaving.lead0 + (edge.end - leaving.lead0) * departEase(clamp((passage.leave - SWEEP_FROM) / (1 - SWEEP_FROM), 0, 1));
+    const lead =
+      leaving.lead0 +
+      (edge.end - leaving.lead0) *
+        departEase(clamp((passage.leave - SWEEP_FROM) / (1 - SWEEP_FROM), 0, 1));
     if (lead > edge.lead) {
       this.#scrape(edge.lead, lead);
       edge.lead = lead;
@@ -1659,13 +1801,18 @@ class Pendulum {
     if (this.#phase !== "wipe") {
       const across = aspect < 1;
       edge.nx = across ? (this.#x < 0 ? -1 : 1) : 0;
-      edge.ny = across ? 0 : (this.#y < 0 ? -1 : 1);
+      edge.ny = across ? 0 : this.#y < 0 ? -1 : 1;
       edge.lead = -((across ? half.w : half.h) + SANDTABLE.edge + OFF_FRAME);
     }
     const support = half.w * Math.abs(edge.nx) + half.h * Math.abs(edge.ny);
     edge.end = support + OFF_FRAME;
     edge.shown = 1;
-    const leaving: Leaving = { nx: edge.nx, ny: edge.ny, reach: support + OFF_FRAME + SANDTABLE.track, lead0: edge.lead };
+    const leaving: Leaving = {
+      nx: edge.nx,
+      ny: edge.ny,
+      reach: support + OFF_FRAME + SANDTABLE.track,
+      lead0: edge.lead,
+    };
     this.#leaving = leaving;
     return leaving;
   }
@@ -1714,7 +1861,8 @@ class Pendulum {
         if (d < to || d >= front || x * x + y * y > sand2) continue;
         const lane = laneOf(nx * y - ny * x);
         const weight = weights[lane] ?? 0;
-        if (weight > 0) data[j * grid + i] = ((lanes[lane] ?? 0) * bermProfile((d - to) / BERM)) / weight;
+        if (weight > 0)
+          data[j * grid + i] = ((lanes[lane] ?? 0) * bermProfile((d - to) / BERM)) / weight;
       }
     }
     this.#field.touch();
@@ -1751,7 +1899,17 @@ class SandtableSim implements SceneSim {
   readonly #pendulum: Pendulum;
   readonly #touch: Touch = { x: 0, y: 0, pressed: false, down: false };
   /** The knobs as settings, rewritten each frame. */
-  readonly #settings: Settings = { machine: "ball", pattern: "cycle", figure: "cycle", speed: 1, pause: undefined, seed: 0, depth: 0, mark: 0, markNow: 0 };
+  readonly #settings: Settings = {
+    machine: "ball",
+    pattern: "cycle",
+    figure: "cycle",
+    speed: 1,
+    pause: undefined,
+    seed: 0,
+    depth: 0,
+    mark: 0,
+    markNow: 0,
+  };
   /** Trigger slots of the "next drawing" and "M track" knobs. */
   readonly #nextSlot: number;
   readonly #markSlot: number;
@@ -1771,8 +1929,17 @@ class SandtableSim implements SceneSim {
     this.#knobs = knobs;
     this.#nextSlot = knobs.trigger("renew");
     this.#markSlot = knobs.trigger("mark");
-    this.#heights = new DataTexture(gl, { width: SANDTABLE.grid, height: SANDTABLE.grid, format: "r16f" });
-    this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#heights = new DataTexture(gl, {
+      width: SANDTABLE.grid,
+      height: SANDTABLE.grid,
+      format: "r16f",
+    });
+    this.#state = new DataTexture(gl, {
+      width: 3,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     this.#textures = [this.#heights.texture, this.#state.texture];
     this.#ball = new Ball(this.#field);
     this.#pendulum = new Pendulum(this.#field);
@@ -1805,11 +1972,26 @@ class SandtableSim implements SceneSim {
     const machine = settings.machine;
     switch (machine) {
       case "ball":
-        this.#ball.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true, frame.fired[this.#markSlot] === true, passage);
+        this.#ball.frame(
+          dt,
+          frame.motion,
+          touch,
+          settings,
+          frame.fired[this.#nextSlot] === true,
+          frame.fired[this.#markSlot] === true,
+          passage,
+        );
         this.#ball.write(this.#stateData);
         break;
       case "pendulum":
-        this.#pendulum.frame(dt, frame.motion, touch, settings, frame.fired[this.#nextSlot] === true, passage);
+        this.#pendulum.frame(
+          dt,
+          frame.motion,
+          touch,
+          settings,
+          frame.fired[this.#nextSlot] === true,
+          passage,
+        );
         this.#pendulum.write(this.#stateData);
         break;
       default: {
@@ -1863,7 +2045,8 @@ class SandtableSim implements SceneSim {
     const touch = this.#touch;
     touch.x = ((pointer.x - 0.5) * aspect) / scale;
     touch.y = (pointer.y - 0.5) / scale;
-    touch.pressed = pointer.pressed && pointer.inside && Math.hypot(touch.x, touch.y) <= SANDTABLE.sand;
+    touch.pressed =
+      pointer.pressed && pointer.inside && Math.hypot(touch.x, touch.y) <= SANDTABLE.sand;
     touch.down = pointer.down;
     return touch;
   }

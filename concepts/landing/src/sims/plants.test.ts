@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { HeadlessGl } from "./headless.ts";
-import { PLANT_SUMMER, PlantHabit, PlantRole, PlantTexture, RootedPlants, plantClimate, plantFitness, type PlantClimate, type PlantSpecies } from "./plants.ts";
+import {
+  PLANT_SUMMER,
+  PlantHabit,
+  PlantRole,
+  PlantTexture,
+  RootedPlants,
+  plantClimate,
+  plantFitness,
+  type PlantClimate,
+  type PlantSpecies,
+} from "./plants.ts";
 
 const H = 1 / 60;
 
@@ -15,8 +25,23 @@ function stalked(overrides: Partial<PlantSpecies> = {}): PlantSpecies {
     detail: { simple: 4, min: 1 },
     build(plant) {
       const stalk = plant.organ({ angle: plant.site.heading, length: 0.2, width: 0.01, form: 1 });
-      plant.organ({ parent: stalk, angle: 0.4, length: 0.08, form: 2, role: PlantRole.leaf, habit: PlantHabit.rigid });
-      plant.organ({ parent: stalk, at: 0.5, angle: -0.3, length: 0.02, form: 3, role: PlantRole.bloom, habit: PlantHabit.rigid });
+      plant.organ({
+        parent: stalk,
+        angle: 0.4,
+        length: 0.08,
+        form: 2,
+        role: PlantRole.leaf,
+        habit: PlantHabit.rigid,
+      });
+      plant.organ({
+        parent: stalk,
+        at: 0.5,
+        angle: -0.3,
+        length: 0.02,
+        form: 3,
+        role: PlantRole.bloom,
+        habit: PlantHabit.rigid,
+      });
     },
     ...overrides,
   };
@@ -25,7 +50,8 @@ function stalked(overrides: Partial<PlantSpecies> = {}): PlantSpecies {
 /** `count` plants along the x axis, `gap` apart, growing up. */
 function row(species: PlantSpecies, count: number, gap = 0.3): RootedPlants {
   const plants = new RootedPlants(64, 3);
-  for (let i = 0; i < count; i++) plants.add(species, { x: i * gap, y: 0, heading: Math.PI / 2, moisture: 0.5 }, () => 0.5);
+  for (let i = 0; i < count; i++)
+    plants.add(species, { x: i * gap, y: 0, heading: Math.PI / 2, moisture: 0.5 }, () => 0.5);
   return plants;
 }
 
@@ -64,7 +90,9 @@ describe("RootedPlants", () => {
         continue;
       }
       plants.pointAt(parent, plants.at[i] ?? 1, at);
-      expect(Math.hypot((plants.x[i] ?? 0) - (at[0] ?? 0), (plants.y[i] ?? 0) - (at[1] ?? 0))).toBeLessThan(1e-9);
+      expect(
+        Math.hypot((plants.x[i] ?? 0) - (at[0] ?? 0), (plants.y[i] ?? 0) - (at[1] ?? 0)),
+      ).toBeLessThan(1e-9);
     }
   });
 
@@ -223,7 +251,9 @@ describe("RootedPlants", () => {
       out[0] = x > 1 ? 0.5 : 0;
     };
     plants.settle(climate);
-    expect([plants.x[0], plants.y[0], plants.x[1], plants.y[1]].map((v) => Number((v ?? 0).toFixed(9)))).toEqual([0.9, 0.1, 1.1, 0.1]);
+    expect(
+      [plants.x[0], plants.y[0], plants.x[1], plants.y[1]].map((v) => Number((v ?? 0).toFixed(9))),
+    ).toEqual([0.9, 0.1, 1.1, 0.1]);
     run(plants, climate, 12);
     expect(plants.theta[0] ?? 1).toBe(0);
     expect(plants.theta[1] ?? 0).toBeCloseTo(0.6 * Math.tanh((0.2 * -0.5) / 0.6), 2);
@@ -253,7 +283,13 @@ describe("PlantTexture", () => {
     const { width, height, data } = headless.upload(records.texture);
     expect([width, height]).toEqual([4, 2 + 8]);
     // Default slots are the organ indices: the stalk at record 0, the blade at 1; the flower (tier 0) hidden.
-    const texel = (r: number, k: number) => Array.from(data.subarray(((2 + 4 * Math.floor(r / 4) + k) * 4 + (r % 4)) * 4, ((2 + 4 * Math.floor(r / 4) + k) * 4 + (r % 4)) * 4 + 4));
+    const texel = (r: number, k: number) =>
+      Array.from(
+        data.subarray(
+          ((2 + 4 * Math.floor(r / 4) + k) * 4 + (r % 4)) * 4,
+          ((2 + 4 * Math.floor(r / 4) + k) * 4 + (r % 4)) * 4 + 4,
+        ),
+      );
     const [xh = 0, xl = 0, yh = 0, yl = 0] = texel(0, 0);
     expect(Math.abs(xh + xl - 1.2345)).toBeLessThan(1e-6);
     expect(Math.abs(yh + yl + 0.4321)).toBeLessThan(1e-6);

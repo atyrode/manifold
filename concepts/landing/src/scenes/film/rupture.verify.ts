@@ -8,7 +8,12 @@ import { sceneDefs } from "../index.ts";
 /** A square view, so the film is 320 × 320 texels. */
 const SIDE = 320;
 
-function readFilm(gl: WebGL2RenderingContext, texture: WebGLTexture, width: number, height: number): Float32Array {
+function readFilm(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  width: number,
+  height: number,
+): Float32Array {
   const framebuffer = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
@@ -96,7 +101,8 @@ export function verifyFilmRupture(gl: WebGL2RenderingContext): Record<string, un
       if ((state[3] ?? 0) < 0.5) throw new Error("film: the film did not burst on 'now'");
       const after = readFilm(gl, now, SIDE, SIDE);
       const mask = new Uint8Array(SIDE * SIDE);
-      for (let i = 0; i < mask.length; i++) mask[i] = (before[i * 4 + 1] ?? 0) > 0.9 && (after[i * 4 + 1] ?? 1) < 0.5 ? 1 : 0;
+      for (let i = 0; i < mask.length; i++)
+        mask[i] = (before[i * 4 + 1] ?? 0) > 0.9 && (after[i * 4 + 1] ?? 1) < 0.5 ? 1 : 0;
       const { piece, sizes } = pieces(mask, SIDE);
       // The break's piece: the first one met in a widening square round the break.
       const bx = Math.round(((state[0] ?? 0) + 0.5) * SIDE - 0.5);
@@ -111,11 +117,14 @@ export function verifyFilmRupture(gl: WebGL2RenderingContext): Record<string, un
       }
       const loose = sizes.filter((size, id) => id !== broken && size >= 4);
       if (loose.length > 0) {
-        throw new Error(`film: ${(state[2] ?? 0).toFixed(3)} s after the break the hole was in ${loose.length + 1} pieces (${loose.join(", ")} texels away from the break)`);
+        throw new Error(
+          `film: ${(state[2] ?? 0).toFixed(3)} s after the break the hole was in ${loose.length + 1} pieces (${loose.join(", ")} texels away from the break)`,
+        );
       }
       gone = sizes[broken] ?? 0;
     }
-    if (gone < 0.15 * SIDE * SIDE) throw new Error(`film: the hole reached only ${gone} texels in 0.4 s`);
+    if (gone < 0.15 * SIDE * SIDE)
+      throw new Error(`film: the hole reached only ${gone} texels in 0.4 s`);
     return { framesChecked: frames, holeTexels: gone };
   } finally {
     sim.dispose();

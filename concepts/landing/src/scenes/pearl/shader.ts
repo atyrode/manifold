@@ -28,13 +28,41 @@ export interface PearlPalette {
 export const pearlPalettes: readonly PearlPalette[] = [
   // Silver flakes in blue-black, with a vermilion thread. (The deeps stay just off black, so a
   // band turned edge-on reads as dark fluid, not a hole.)
-  { label: "midnight", deep: "#070c1a", milk: "#1a2440", sheen: "#b3c1dd", pigment: "#e0583a", paper: false },
+  {
+    label: "midnight",
+    deep: "#070c1a",
+    milk: "#1a2440",
+    sheen: "#b3c1dd",
+    pigment: "#e0583a",
+    paper: false,
+  },
   // Gilt flakes in dark amber, with ultramarine.
-  { label: "gold", deep: "#0e0905", milk: "#3b2711", sheen: "#f2d08a", pigment: "#2f4fc4", paper: false },
+  {
+    label: "gold",
+    deep: "#0e0905",
+    milk: "#3b2711",
+    sheen: "#f2d08a",
+    pigment: "#2f4fc4",
+    paper: false,
+  },
   // Pale flakes in deep green, with coral.
-  { label: "jade", deep: "#05100e", milk: "#123129", sheen: "#b0ead0", pigment: "#e8644c", paper: false },
+  {
+    label: "jade",
+    deep: "#05100e",
+    milk: "#123129",
+    sheen: "#b0ead0",
+    pigment: "#e8644c",
+    paper: false,
+  },
   // Mother-of-pearl, white on dove grey, with indigo.
-  { label: "pearl", deep: "#76737e", milk: "#c3c0c6", sheen: "#fdfaf4", pigment: "#2c3f94", paper: true },
+  {
+    label: "pearl",
+    deep: "#76737e",
+    milk: "#c3c0c6",
+    sheen: "#fdfaf4",
+    pigment: "#2c3f94",
+    paper: true,
+  },
 ];
 
 const last = pearlPalettes.length - 1;

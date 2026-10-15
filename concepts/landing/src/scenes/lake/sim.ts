@@ -253,7 +253,15 @@ function noise2(x: number, y: number, salt: number): number {
  * One octave of the snow patches at (x, z) on the ice (m): noise stretched sx by sz metres, eased to
  * its mean where a texel spans more than about a third of it (`across` by `along` metres).
  */
-function patchOctave(x: number, z: number, across: number, along: number, sx: number, sz: number, salt: number): number {
+function patchOctave(
+  x: number,
+  z: number,
+  across: number,
+  along: number,
+  sx: number,
+  sz: number,
+  salt: number,
+): number {
   const keep = 1 - smoothstep(0.3, 0.8, Math.max(across / sx, along / sz));
   return 0.5 + (noise2(x / sx, z / sz, salt) - 0.5) * keep;
 }
@@ -317,7 +325,11 @@ class Crack {
     this.s = new Array<number>(n);
     let run = 0;
     for (let i = 0; i < n; i++) {
-      if (i > 0) run += Math.hypot((this.u[i] ?? 0) - (this.u[i - 1] ?? 0), (this.v[i] ?? 0) - (this.v[i - 1] ?? 0));
+      if (i > 0)
+        run += Math.hypot(
+          (this.u[i] ?? 0) - (this.u[i - 1] ?? 0),
+          (this.v[i] ?? 0) - (this.v[i - 1] ?? 0),
+        );
       this.s[i] = run;
     }
     this.length = run;
@@ -370,9 +382,21 @@ class CrackField {
   }
 
   /** One segment of crack `crackId` from (u0, v0) to (u1, v1), `a0`..`a1` along it (0..1). */
-  stamp(u0: number, v0: number, u1: number, v1: number, a0: number, a1: number, crackId: number, crackCls: number): void {
+  stamp(
+    u0: number,
+    v0: number,
+    u1: number,
+    v1: number,
+    a0: number,
+    a1: number,
+    crackId: number,
+    crackCls: number,
+  ): void {
     const i0 = Math.max(0, Math.floor((Math.min(u0, u1) - DIST_RANGE + FIELD_FU) / TEXEL_U - 0.5));
-    const i1 = Math.min(FIELD_W - 1, Math.ceil((Math.max(u0, u1) + DIST_RANGE + FIELD_FU) / TEXEL_U - 0.5));
+    const i1 = Math.min(
+      FIELD_W - 1,
+      Math.ceil((Math.max(u0, u1) + DIST_RANGE + FIELD_FU) / TEXEL_U - 0.5),
+    );
     const j0 = Math.max(0, Math.floor((Math.min(v0, v1) - DIST_RANGE) / TEXEL_V - 0.5));
     const j1 = Math.min(FIELD_H - 1, Math.ceil((Math.max(v0, v1) + DIST_RANGE) / TEXEL_V - 0.5));
     if (i0 > i1 || j0 > j1) return;
@@ -455,14 +479,30 @@ class CrackField {
 }
 
 /** Upload rectangle (x, y, w, h) of a FIELD_W-wide rgba8 array into its texture. */
-function uploadRect(gl: WebGL2RenderingContext, texture: WebGLTexture, data: Uint8Array, rect: Int32Array): void {
+function uploadRect(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Uint8Array,
+  rect: Int32Array,
+): void {
   const x = rect[0] ?? 0;
   const y = rect[1] ?? 0;
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.pixelStorei(gl.UNPACK_ROW_LENGTH, FIELD_W);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, rect[2] ?? 0, rect[3] ?? 0, gl.RGBA, gl.UNSIGNED_BYTE, data, (y * FIELD_W + x) * 4);
+  gl.texSubImage2D(
+    gl.TEXTURE_2D,
+    0,
+    x,
+    y,
+    rect[2] ?? 0,
+    rect[3] ?? 0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    data,
+    (y * FIELD_W + x) * 4,
+  );
   gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
 }
 
@@ -579,8 +619,16 @@ class DriftingSnow {
     const reach = SWEEP_RADIUS * SWEEP_HEAP;
     const zNear = Math.max(Math.min(z0, z1) - reach, 0.5);
     const zFar = Math.max(z0, z1) + reach;
-    const jA = clamp(Math.floor((CAMERA.groundDrop(zFar) / FIELD_FV) * SNOW_H - 0.5), 0, SNOW_H - 1);
-    const jB = clamp(Math.ceil((CAMERA.groundDrop(zNear) / FIELD_FV) * SNOW_H - 0.5), 0, SNOW_H - 1);
+    const jA = clamp(
+      Math.floor((CAMERA.groundDrop(zFar) / FIELD_FV) * SNOW_H - 0.5),
+      0,
+      SNOW_H - 1,
+    );
+    const jB = clamp(
+      Math.ceil((CAMERA.groundDrop(zNear) / FIELD_FV) * SNOW_H - 0.5),
+      0,
+      SNOW_H - 1,
+    );
     const xMin = Math.min(x0, x1) - reach;
     const xMax = Math.max(x0, x1) + reach;
     const dx = x1 - x0;
@@ -592,8 +640,16 @@ class DriftingSnow {
       for (let j = jA; j <= jB; j++) {
         const fv = ((j + 0.5) / SNOW_H) * FIELD_FV;
         const z = CAMERA.groundDepth(fv);
-        const iA = clamp(Math.floor((CAMERA.screenX(xMin, z) + FIELD_FU) / SNOW_TEXEL_U - 0.5), 0, SNOW_W - 1);
-        const iB = clamp(Math.ceil((CAMERA.screenX(xMax, z) + FIELD_FU) / SNOW_TEXEL_U - 0.5), 0, SNOW_W - 1);
+        const iA = clamp(
+          Math.floor((CAMERA.screenX(xMin, z) + FIELD_FU) / SNOW_TEXEL_U - 0.5),
+          0,
+          SNOW_W - 1,
+        );
+        const iB = clamp(
+          Math.ceil((CAMERA.screenX(xMax, z) + FIELD_FU) / SNOW_TEXEL_U - 0.5),
+          0,
+          SNOW_W - 1,
+        );
         for (let i = iA; i <= iB; i++) {
           const k = j * SNOW_W + i;
           const px = (this.#x[k] ?? 0) - x0;
@@ -608,13 +664,19 @@ class DriftingSnow {
               removed += (h + l) * take;
               this.hard[k] = h * (1 - take);
               this.loose[k] = l * (1 - take);
-              this.drift[k] = Math.min((this.drift[k] ?? 0) + (h + l) * take * SWEEP_PUFF, DRIFT_MAX);
+              this.drift[k] = Math.min(
+                (this.drift[k] ?? 0) + (h + l) * take * SWEEP_PUFF,
+                DRIFT_MAX,
+              );
             } else if (d < reach) {
               ring += 1 - (d - SWEEP_RADIUS) / (reach - SWEEP_RADIUS);
             }
           } else if (d >= SWEEP_RADIUS && d < reach && ring > 0) {
             const share = (1 - (d - SWEEP_RADIUS) / (reach - SWEEP_RADIUS)) / ring;
-            this.loose[k] = Math.min((this.loose[k] ?? 0) + removed * (1 - SWEEP_PUFF) * share, LOOSE_MAX);
+            this.loose[k] = Math.min(
+              (this.loose[k] ?? 0) + removed * (1 - SWEEP_PUFF) * share,
+              LOOSE_MAX,
+            );
           }
         }
       }
@@ -705,10 +767,30 @@ class FrozenLake implements SceneSim {
       mark: index("mark"),
     };
     this.#gl = gl;
-    this.#nearTexture = new DataTexture(gl, { width: FIELD_W, height: FIELD_H, format: "rgba8", filter: "linear" });
-    this.#idTexture = new DataTexture(gl, { width: FIELD_W, height: FIELD_H, format: "rgba8", filter: "nearest" });
-    this.#stateTexture = new DataTexture(gl, { width: CRACK_SLOTS, height: 2, format: "rgba16f", filter: "nearest" });
-    this.#snowTexture = new DataTexture(gl, { width: SNOW_W, height: SNOW_H, format: "rgba8", filter: "linear" });
+    this.#nearTexture = new DataTexture(gl, {
+      width: FIELD_W,
+      height: FIELD_H,
+      format: "rgba8",
+      filter: "linear",
+    });
+    this.#idTexture = new DataTexture(gl, {
+      width: FIELD_W,
+      height: FIELD_H,
+      format: "rgba8",
+      filter: "nearest",
+    });
+    this.#stateTexture = new DataTexture(gl, {
+      width: CRACK_SLOTS,
+      height: 2,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#snowTexture = new DataTexture(gl, {
+      width: SNOW_W,
+      height: SNOW_H,
+      format: "rgba8",
+      filter: "linear",
+    });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -769,10 +851,13 @@ class FrozenLake implements SceneSim {
 
     // The ice sings on its own schedule.
     if (songs <= 0) this.#nextSong = Number.POSITIVE_INFINITY;
-    else if (!Number.isFinite(this.#nextSong)) this.#nextSong = this.#clock + SONG_FIRST * (0.8 + 0.4 * this.#songs.next());
+    else if (!Number.isFinite(this.#nextSong))
+      this.#nextSong = this.#clock + SONG_FIRST * (0.8 + 0.4 * this.#songs.next());
     if (this.#clock >= this.#nextSong) {
       this.#sing();
-      this.#nextSong = this.#clock + SONG_RARE * Math.pow(SONG_OFTEN / SONG_RARE, songs) * (0.6 + 0.8 * this.#songs.next());
+      this.#nextSong =
+        this.#clock +
+        SONG_RARE * Math.pow(SONG_OFTEN / SONG_RARE, songs) * (0.6 + 0.8 * this.#songs.next());
     }
     this.#zip(dt);
     this.#auroraStep(dt, mdt, substorm);
@@ -783,7 +868,12 @@ class FrozenLake implements SceneSim {
     this.#snow.step(mdt, this.#wind, drift, snowfall, this.#gustOffset);
 
     this.#upload();
-    return [this.#nearTexture.texture, this.#idTexture.texture, this.#stateTexture.texture, this.#snowTexture.texture];
+    return [
+      this.#nearTexture.texture,
+      this.#idTexture.texture,
+      this.#stateTexture.texture,
+      this.#snowTexture.texture,
+    ];
   }
 
   dispose(): void {
@@ -794,7 +884,14 @@ class FrozenLake implements SceneSim {
   }
 
   /** The first frame: grow the network, lay and settle the snow, schedule the first surge and the M. */
-  #prime(seed: number, fractures: number, markOn: boolean, wind: number, drift: number, snowfall: number): void {
+  #prime(
+    seed: number,
+    fractures: number,
+    markOn: boolean,
+    wind: number,
+    drift: number,
+    snowfall: number,
+  ): void {
     this.#primed = true;
     this.#seed = seed;
     this.#fractures = fractures;
@@ -840,7 +937,14 @@ class FrozenLake implements SceneSim {
       if (!crack) break;
       const back = new Crack(crack.id, crack.cls);
       this.#walk(crack, { x, z, angle, cls: 1, reach: 4, parent: 0 }, true, sprouts, 0, random);
-      this.#walk(back, { x, z, angle: angle + Math.PI, cls: 1, reach: 4, parent: 0 }, true, sprouts, 0, random);
+      this.#walk(
+        back,
+        { x, z, angle: angle + Math.PI, cls: 1, reach: 4, parent: 0 },
+        true,
+        sprouts,
+        0,
+        random,
+      );
       crack.prepend(back);
     }
     // Their branches, and the branches' branches.
@@ -900,7 +1004,16 @@ class FrozenLake implements SceneSim {
     const length = Math.max(crack.length, 1e-6);
     while (crack.stamped < n && (crack.s[crack.stamped] ?? 0) < crack.front) {
       const i = crack.stamped;
-      this.#field.stamp(crack.u[i] ?? 0, crack.v[i] ?? 0, crack.u[i + 1] ?? 0, crack.v[i + 1] ?? 0, (crack.s[i] ?? 0) / length, (crack.s[i + 1] ?? 0) / length, crack.id, crack.cls);
+      this.#field.stamp(
+        crack.u[i] ?? 0,
+        crack.v[i] ?? 0,
+        crack.u[i + 1] ?? 0,
+        crack.v[i + 1] ?? 0,
+        (crack.s[i] ?? 0) / length,
+        (crack.s[i + 1] ?? 0) / length,
+        crack.id,
+        crack.cls,
+      );
       crack.stamped++;
     }
   }
@@ -910,7 +1023,14 @@ class FrozenLake implements SceneSim {
    * stops where it meets another crack of class `stopBelow` or more (not its parent at the start),
    * leaves the ice in view, or has covered its reach. Branches go to `sprouts`.
    */
-  #walk(crack: Crack, sprout: Sprout, stamp: boolean, sprouts: Sprout[] | undefined, stopBelow: number, random: Random): void {
+  #walk(
+    crack: Crack,
+    sprout: Sprout,
+    stamp: boolean,
+    sprouts: Sprout[] | undefined,
+    stopBelow: number,
+    random: Random,
+  ): void {
     const field = this.#field;
     let x = sprout.x;
     let z = sprout.z;
@@ -1020,7 +1140,14 @@ class FrozenLake implements SceneSim {
         const u = side * (this.#aspect / 2 + 0.02);
         const v = 0.05 + 0.27 * random.next();
         const z = CAMERA.groundDepth(v);
-        sprout = { x: CAMERA.worldX(u, z), z, angle: (side > 0 ? Math.PI : 0) + (random.next() - 0.5) * 0.9, cls: 0.85, reach: 4, parent: 0 };
+        sprout = {
+          x: CAMERA.worldX(u, z),
+          z,
+          angle: (side > 0 ? Math.PI : 0) + (random.next() - 0.5) * 0.9,
+          cls: 0.85,
+          reach: 4,
+          parent: 0,
+        };
         stopBelow = 0.7;
       }
       if (sprout && this.#songFrom(sprout, stopBelow)) return;
@@ -1034,11 +1161,25 @@ class FrozenLake implements SceneSim {
     const angle = random.next() * Math.PI;
     if (this.#nextId + 1 < MARK_ID) {
       this.#songFrom({ x, z, angle, cls: 0.7, reach: 0.2 + 0.25 * random.next(), parent: 0 }, 0);
-      this.#songFrom({ x, z, angle: angle + Math.PI + (random.next() - 0.5) * 0.6, cls: 0.7, reach: 0.2 + 0.25 * random.next(), parent: 0 }, 0);
+      this.#songFrom(
+        {
+          x,
+          z,
+          angle: angle + Math.PI + (random.next() - 0.5) * 0.6,
+          cls: 0.7,
+          reach: 0.2 + 0.25 * random.next(),
+          parent: 0,
+        },
+        0,
+      );
       return;
     }
     const k = this.#field.at(CAMERA.screenX(x, z), CAMERA.groundDrop(z));
-    this.#singAgain(k >= 0 && (this.#field.dist[k] ?? 1) < DIST_RANGE ? this.#byId[this.#field.id[k] ?? 0] : undefined);
+    this.#singAgain(
+      k >= 0 && (this.#field.dist[k] ?? 1) < DIST_RANGE
+        ? this.#byId[this.#field.id[k] ?? 0]
+        : undefined,
+    );
   }
 
   /** Walk a new crack from `sprout` against the ice as it is now and set it zipping; false if it came to nothing. */
@@ -1127,7 +1268,10 @@ class FrozenLake implements SceneSim {
       for (let s = 1; s <= steps; s++) {
         const t = s / steps;
         const jag = s < steps ? random.gauss() * MARK_JAG : 0;
-        crack.add(u0 + (u1 - u0) * t + ((v1 - v0) / len) * jag, v0 + (v1 - v0) * t - ((u1 - u0) / len) * jag);
+        crack.add(
+          u0 + (u1 - u0) * t + ((v1 - v0) / len) * jag,
+          v0 + (v1 - v0) * t - ((u1 - u0) / len) * jag,
+        );
       }
     }
     crack.finish();
@@ -1189,15 +1333,23 @@ class FrozenLake implements SceneSim {
 
   #auroraStep(dt: number, mdt: number, frequency: number): void {
     if (frequency <= 0) this.#nextStorm = Number.POSITIVE_INFINITY;
-    else if (!Number.isFinite(this.#nextStorm)) this.#nextStorm = this.#clock + SUBSTORM_FIRST * (0.8 + 0.4 * this.#storms.next());
+    else if (!Number.isFinite(this.#nextStorm))
+      this.#nextStorm = this.#clock + SUBSTORM_FIRST * (0.8 + 0.4 * this.#storms.next());
     if (this.#clock >= this.#nextStorm) {
       this.#stormAge = 0;
-      this.#nextStorm = this.#clock + SUBSTORM_RARE * Math.pow(SUBSTORM_OFTEN / SUBSTORM_RARE, frequency) * (0.6 + 0.8 * this.#storms.next());
+      this.#nextStorm =
+        this.#clock +
+        SUBSTORM_RARE *
+          Math.pow(SUBSTORM_OFTEN / SUBSTORM_RARE, frequency) *
+          (0.6 + 0.8 * this.#storms.next());
     }
     this.#stormAge += dt;
     const a = this.#stormAge;
-    const breakup = smoothstep(0, BREAKUP, a) * (a < ACTIVE ? 1 : Math.exp(-(a - ACTIVE) / RECOVERY));
-    const growth = Number.isFinite(this.#nextStorm) ? GROWTH_SHARE * smoothstep(GROWTH, 0, this.#nextStorm - this.#clock) : 0;
+    const breakup =
+      smoothstep(0, BREAKUP, a) * (a < ACTIVE ? 1 : Math.exp(-(a - ACTIVE) / RECOVERY));
+    const growth = Number.isFinite(this.#nextStorm)
+      ? GROWTH_SHARE * smoothstep(GROWTH, 0, this.#nextStorm - this.#clock)
+      : 0;
     const target = Math.max(breakup, growth);
     this.#surge += (target - this.#surge) * (1 - Math.exp(-dt / SURGE_EASE));
     this.#auroraClock += mdt * (1 + PACE_SURGE * this.#surge);
@@ -1226,7 +1378,8 @@ class FrozenLake implements SceneSim {
       }
       const length = Math.max(crack.length, 1e-6);
       state[o] = crack.delay > 0 ? 0 : Math.min(crack.front / length, 1);
-      state[o + 1] = crack.delay > 0 ? 0 : crack.front < crack.length ? 1 : Math.exp(-crack.since / crack.fade);
+      state[o + 1] =
+        crack.delay > 0 ? 0 : crack.front < crack.length ? 1 : Math.exp(-crack.since / crack.fade);
       state[o + 2] = GLOW_REACH / length;
       state[o + 3] = 0;
     }

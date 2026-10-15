@@ -122,7 +122,15 @@ export class FlutterPlates {
    * read and written. Returns true when it came down on floor(a, b), checked after each step: it stops
    * there (at[2] = the floor). At most 64 steps a call; what is still owed is kept, up to two steps.
    */
-  fly(i: number, dt: number, at: Float64Array, airA: number, airB: number, airUp: number, floor: FlutterFloor): boolean {
+  fly(
+    i: number,
+    dt: number,
+    at: Float64Array,
+    airA: number,
+    airB: number,
+    airUp: number,
+    floor: FlutterFloor,
+  ): boolean {
     const m = this.mass[i] ?? 0;
     const chord = this.chord[i] ?? 0;
     const pace = this.pace[i] ?? 0;

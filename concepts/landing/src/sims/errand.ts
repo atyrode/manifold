@@ -40,7 +40,13 @@ export interface ErrandPlan {
   readonly closeSeconds: number;
 }
 
-export const ERRAND_PLAN: ErrandPlan = { trips: [3, 5], loads: [2, 3], loadSeconds: 3, dropSeconds: 4.5, closeSeconds: 2.5 };
+export const ERRAND_PLAN: ErrandPlan = {
+  trips: [3, 5],
+  loads: [2, 3],
+  loadSeconds: 3,
+  dropSeconds: 4.5,
+  closeSeconds: 2.5,
+};
 
 /** Where an errand gets its dice: a seeded generator with range(lo, hi). */
 export interface ErrandRandom {
@@ -75,7 +81,8 @@ export class Errand {
   start(random: ErrandRandom, plan: Partial<ErrandPlan> = {}): void {
     this.#plan = { ...ERRAND_PLAN, ...plan };
     const [least, most] = this.#plan.trips;
-    if (least < 1 || most < least) throw new ErrandError(`errand: trips must be 1 or more, least first (got ${least}..${most})`);
+    if (least < 1 || most < least)
+      throw new ErrandError(`errand: trips must be 1 or more, least first (got ${least}..${most})`);
     this.#random = random;
     this.stage = "arriving";
     this.goal = "vehicle";
@@ -104,7 +111,12 @@ export class Errand {
       return;
     }
     // Just got there: stand for as long as the job takes.
-    this.dwell = this.goal === "vehicle" ? plan.loadSeconds : this.goal === "door" ? plan.dropSeconds : plan.closeSeconds;
+    this.dwell =
+      this.goal === "vehicle"
+        ? plan.loadSeconds
+        : this.goal === "door"
+          ? plan.dropSeconds
+          : plan.closeSeconds;
   }
 
   stop(): void {

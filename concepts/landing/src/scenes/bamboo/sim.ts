@@ -79,14 +79,32 @@ export const BAMBOO_SWAY_HEIGHT = 8;
  * mouth is cut obliquely over `cut`; it rests mouth up at `rest` (radians) on the striking stone and
  * tips no lower than `low`. At full size the tube spans about a quarter of a 16:9 frame's width.
  */
-export const BAMBOO_TUBE = { x: -0.31, y: 0.22, back: 0.15, front: 0.22, radius: 0.022, cut: 0.055, rest: 0.38, low: -0.4 } as const;
+export const BAMBOO_TUBE = {
+  x: -0.31,
+  y: 0.22,
+  back: 0.15,
+  front: 0.22,
+  radius: 0.022,
+  cut: 0.055,
+  rest: 0.38,
+  low: -0.4,
+} as const;
 /** Where the tube's closed end strikes: the top of the stone under it at rest. */
 export const BAMBOO_STRIKE = {
   x: BAMBOO_TUBE.x - BAMBOO_TUBE.back * Math.cos(BAMBOO_TUBE.rest),
-  top: BAMBOO_TUBE.y - BAMBOO_TUBE.back * Math.sin(BAMBOO_TUBE.rest) - BAMBOO_TUBE.radius * Math.cos(BAMBOO_TUBE.rest),
+  top:
+    BAMBOO_TUBE.y -
+    BAMBOO_TUBE.back * Math.sin(BAMBOO_TUBE.rest) -
+    BAMBOO_TUBE.radius * Math.cos(BAMBOO_TUBE.rest),
 } as const;
 /** The spout (kakei): a thin cane from beyond the right edge to its cut end. */
-export const BAMBOO_SPOUT = { fromX: 0.05, fromY: 0.367, toX: -0.135, toY: 0.356, radius: 0.012 } as const;
+export const BAMBOO_SPOUT = {
+  fromX: 0.05,
+  fromY: 0.367,
+  toX: -0.135,
+  toY: 0.356,
+  radius: 0.012,
+} as const;
 /** The spout's lower lip, where the trickle leaves it: the cane's end, one radius below its axis. */
 export const BAMBOO_LIP = (() => {
   const dx = BAMBOO_SPOUT.toX - BAMBOO_SPOUT.fromX;
@@ -95,7 +113,10 @@ export const BAMBOO_LIP = (() => {
   // The cane's "up" normal: its direction turned a quarter toward +y.
   const upX = dy / length;
   const upY = -dx / length;
-  return { x: BAMBOO_SPOUT.toX - BAMBOO_SPOUT.radius * upX, y: BAMBOO_SPOUT.toY - BAMBOO_SPOUT.radius * upY } as const;
+  return {
+    x: BAMBOO_SPOUT.toX - BAMBOO_SPOUT.radius * upX,
+    y: BAMBOO_SPOUT.toY - BAMBOO_SPOUT.radius * upY,
+  } as const;
 })();
 /** The post the spout is tied to. */
 export const BAMBOO_POST_X = -0.035;
@@ -119,7 +140,10 @@ export const BAMBOO_CORNER_FIT = { aspect: 1.5, smallest: 0.55, size: 1.25 } as 
 
 /** The corner group's scale (screen heights per device unit) for a frame of this aspect. */
 export function bambooDeviceScale(aspect: number): number {
-  return BAMBOO_CORNER_FIT.size * Math.min(1, Math.max(BAMBOO_CORNER_FIT.smallest, aspect / BAMBOO_CORNER_FIT.aspect));
+  return (
+    BAMBOO_CORNER_FIT.size *
+    Math.min(1, Math.max(BAMBOO_CORNER_FIT.smallest, aspect / BAMBOO_CORNER_FIT.aspect))
+  );
 }
 
 /**
@@ -409,19 +433,67 @@ class BambooSim implements SceneSim {
   #pointerSpeed = 0;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader("bamboo", params, ["clock", "knock", "gusts", "leaves", "groveSeed", "wind"]);
-    this.#groveTexture = new DataTexture(gl, { width: BAMBOO_CELLS, height: BAMBOO_LAYERS.length, format: "rg16f" });
-    this.#deviceTexture = new DataTexture(gl, { width: 2 + BAMBOO_RIPPLES, height: 1, format: "rgba16f", filter: "nearest" });
-    this.#leafTexture = new DataTexture(gl, { width: 2, height: BAMBOO_MAX_LEAVES, format: "rgba16f", filter: "nearest" });
+    this.#knobs = new KnobReader("bamboo", params, [
+      "clock",
+      "knock",
+      "gusts",
+      "leaves",
+      "groveSeed",
+      "wind",
+    ]);
+    this.#groveTexture = new DataTexture(gl, {
+      width: BAMBOO_CELLS,
+      height: BAMBOO_LAYERS.length,
+      format: "rg16f",
+    });
+    this.#deviceTexture = new DataTexture(gl, {
+      width: 2 + BAMBOO_RIPPLES,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#leafTexture = new DataTexture(gl, {
+      width: 2,
+      height: BAMBOO_MAX_LEAVES,
+      format: "rgba16f",
+      filter: "nearest",
+    });
     for (const [layer, { depth, spacing }] of BAMBOO_LAYERS.entries()) {
       for (let cell = 0; cell < BAMBOO_CELLS; cell++) {
-        this.#culms.push({ layer, depth, x: (cell - BAMBOO_CELLS / 2 + 0.5) * spacing, omega: 1, deflect: 0, rate: 0, gust: 0, push: 0 });
+        this.#culms.push({
+          layer,
+          depth,
+          x: (cell - BAMBOO_CELLS / 2 + 0.5) * spacing,
+          omega: 1,
+          deflect: 0,
+          rate: 0,
+          gust: 0,
+          push: 0,
+        });
       }
     }
     for (let i = 0; i < BAMBOO_MAX_LEAVES; i++) {
-      this.#leaves.push({ state: "free", near: false, x: 0, y: 0, z: 1, phase: 0, swingRate: 1, swing: 0, spin: 0, spinRate: 0, tilt: 0, size: 0, age: 0, u: 0, v: 0, turn: 0 });
+      this.#leaves.push({
+        state: "free",
+        near: false,
+        x: 0,
+        y: 0,
+        z: 1,
+        phase: 0,
+        swingRate: 1,
+        swing: 0,
+        spin: 0,
+        spinRate: 0,
+        tilt: 0,
+        size: 0,
+        age: 0,
+        u: 0,
+        v: 0,
+        turn: 0,
+      });
     }
-    for (let i = 0; i < BAMBOO_RIPPLES; i++) this.#ripples.push({ u: 0, v: 0, born: -1e4, strength: 0 });
+    for (let i = 0; i < BAMBOO_RIPPLES; i++)
+      this.#ripples.push({ u: 0, v: 0, born: -1e4, strength: 0 });
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -452,7 +524,11 @@ class BambooSim implements SceneSim {
     if (advance > 0) this.#advance(advance, aspect);
     // The water arrives with the stream and fills the tube (a floor: a "now" can still fill it faster).
     if (arriving) {
-      this.#fill = Math.max(this.#fill, this.#restFill * smoothstep(BAMBOO_STREAM_START + STREAM_REACH, BAMBOO_PASSAGE.enter, entering));
+      this.#fill = Math.max(
+        this.#fill,
+        this.#restFill *
+          smoothstep(BAMBOO_STREAM_START + STREAM_REACH, BAMBOO_PASSAGE.enter, entering),
+      );
     }
     if (advance > 0 || this.#dirty) {
       this.#pack(aspect);
@@ -487,7 +563,8 @@ class BambooSim implements SceneSim {
       for (const [i, culm] of this.#culms.entries()) {
         const cell = i % BAMBOO_CELLS;
         // Thick near stems a little slower; each its own pace, so they drift out of step.
-        culm.omega = TAU * (0.2 + 0.16 * hash31(seed, culm.layer, cell)) * (0.88 + 0.04 * culm.layer);
+        culm.omega =
+          TAU * (0.2 + 0.16 * hash31(seed, culm.layer, cell)) * (0.88 + 0.04 * culm.layer);
       }
       this.#dirty = true;
     }
@@ -503,7 +580,11 @@ class BambooSim implements SceneSim {
     for (const culm of this.#culms) culm.deflect = heading * sway * 0.28;
     const mid = BAMBOO_LAYERS[2]?.depth ?? 6.4;
     const crossing = mid * SKEW_SIN - 0.15 * aspect * mid * SKEW_COS;
-    this.#launchGust(crossing - windSpeed(this.#wind) * PREWARM_SECONDS, Number.NEGATIVE_INFINITY, 0.9);
+    this.#launchGust(
+      crossing - windSpeed(this.#wind) * PREWARM_SECONDS,
+      Number.NEGATIVE_INFINITY,
+      0.9,
+    );
     const steps = Math.round(PREWARM_SECONDS / GROVE_STEP);
     for (let s = 0; s < steps; s++) {
       this.#clock += GROVE_STEP;
@@ -522,7 +603,11 @@ class BambooSim implements SceneSim {
     if (fired[knobs.trigger("clock")] === true) this.#gushLeft = GUSH_LIMIT;
     if (fired[knobs.trigger("gusts")] === true) {
       // Felt even in still air: at least half a metre of sway at its crest.
-      this.#launchGust(this.#gustStart(aspect), Number.NEGATIVE_INFINITY, Math.max(1, 0.55 / windSway(this.#wind)));
+      this.#launchGust(
+        this.#gustStart(aspect),
+        Number.NEGATIVE_INFINITY,
+        Math.max(1, 0.55 / windSway(this.#wind)),
+      );
     }
     if (fired[knobs.trigger("leaves")] === true) {
       this.#release(aspect, true);
@@ -549,7 +634,8 @@ class BambooSim implements SceneSim {
     for (const culm of this.#culms) {
       const base = BAMBOO_HORIZON - BAMBOO_EYE / culm.depth;
       const off = (culm.x / culm.depth - px) / BRUSH_REACH;
-      culm.push = py > base && off * off < 9 ? BRUSH_GAIN * this.#pointerSpeed * Math.exp(-off * off) : 0;
+      culm.push =
+        py > base && off * off < 9 ? BRUSH_GAIN * this.#pointerSpeed * Math.exp(-off * off) : 0;
     }
     if (pointer.pressed) this.#press(px, py, aspect);
   }
@@ -575,7 +661,12 @@ class BambooSim implements SceneSim {
     return far * (SKEW_SIN - (aspect / 2 + 0.3) * SKEW_COS) - 2;
   }
 
-  #launchGust(from: number, origin: number, strength: number, speed: number = windSpeed(this.#wind)): void {
+  #launchGust(
+    from: number,
+    origin: number,
+    strength: number,
+    speed: number = windSpeed(this.#wind),
+  ): void {
     const tail = 4 + 3 * this.#random();
     this.#gusts.push({
       born: this.#clock,
@@ -598,7 +689,12 @@ class BambooSim implements SceneSim {
       this.#rushLeft = EXIT_RUSH_TIME;
     }
     if (this.#gustRate > 0) {
-      this.#launchGust(this.#gustStart(aspect), Number.NEGATIVE_INFINITY, Math.max(1, EXIT_GUST_SWAY / windSway(this.#wind)), EXIT_GUST_SPEED);
+      this.#launchGust(
+        this.#gustStart(aspect),
+        Number.NEGATIVE_INFINITY,
+        Math.max(1, EXIT_GUST_SWAY / windSway(this.#wind)),
+        EXIT_GUST_SPEED,
+      );
     }
     if (this.#leafAmount > 0) {
       this.#release(aspect, false);
@@ -615,7 +711,11 @@ class BambooSim implements SceneSim {
       const mean = 18 - 13 * Math.min(1, rate);
       if (!Number.isFinite(this.#nextGust)) this.#nextGust = this.#clock + this.#wait(mean);
       if (this.#clock >= this.#nextGust) {
-        this.#launchGust(this.#gustStart(aspect), Number.NEGATIVE_INFINITY, 0.7 + 0.3 * this.#random());
+        this.#launchGust(
+          this.#gustStart(aspect),
+          Number.NEGATIVE_INFINITY,
+          0.7 + 0.3 * this.#random(),
+        );
         this.#nextGust = this.#clock + this.#wait(mean);
       }
     }
@@ -624,7 +724,8 @@ class BambooSim implements SceneSim {
     const end = far * (SKEW_SIN + (aspect / 2 + 0.3) * SKEW_COS);
     for (let i = this.#gusts.length - 1; i >= 0; i--) {
       const gust = this.#gusts[i];
-      if (gust && gust.from + gust.speed * (this.#clock - gust.born) - end > 8 * gust.tail) this.#gusts.splice(i, 1);
+      if (gust && gust.from + gust.speed * (this.#clock - gust.born) - end > 8 * gust.tail)
+        this.#gusts.splice(i, 1);
     }
   }
 
@@ -678,7 +779,11 @@ class BambooSim implements SceneSim {
     if (this.#outflow > 0.3 && this.#clock - this.#lastPourRipple > RIPPLE_EVERY) {
       this.#lastPourRipple = this.#clock;
       const landing = (bambooPourLanding(this.#angle) - BAMBOO_BASIN.x) / BAMBOO_BASIN.rx;
-      this.#addRipple(landing + 0.08 * (this.#random() - 0.5), 0.3 * (this.#random() - 0.5), 0.4 + 0.6 * Math.min(1, this.#outflow / POUR_FULL));
+      this.#addRipple(
+        landing + 0.08 * (this.#random() - 0.5),
+        0.3 * (this.#random() - 0.5),
+        0.4 + 0.6 * Math.min(1, this.#outflow / POUR_FULL),
+      );
     }
 
     // Leaves let go: a few in still air, many more in a gust.
@@ -700,7 +805,10 @@ class BambooSim implements SceneSim {
     let counted = 0;
     for (const culm of this.#culms) {
       const along = heading * culm.x * SKEW_COS + culm.depth * SKEW_SIN;
-      const breeze = 0.28 + 0.12 * Math.sin(BREEZE_LONG * (along - speed * t)) + 0.08 * Math.sin(BREEZE_SHORT * (along - 0.8 * speed * t) + 1.7);
+      const breeze =
+        0.28 +
+        0.12 * Math.sin(BREEZE_LONG * (along - speed * t)) +
+        0.08 * Math.sin(BREEZE_SHORT * (along - 0.8 * speed * t) + 1.7);
       const gust = this.#gustAt(culm.x, culm.depth);
       const target = sway * (heading * breeze + gust) + culm.push;
       const w = culm.omega;
@@ -722,11 +830,16 @@ class BambooSim implements SceneSim {
     const settle = waterDown(this.#fill) + (waterUp(this.#fill) - waterDown(this.#fill)) * upright;
     this.#slosh += (settle - this.#slosh) * (1 - Math.exp(-h / SLOSH_TIME));
     const inertia = TUBE_INERTIA + mass * this.#slosh * this.#slosh;
-    let torque = -GRAVITY * Math.cos(this.#angle) * (TUBE_MOMENT + mass * this.#slosh) - (PIVOT_DAMPING + WATER_DRAG * mass) * this.#spin;
+    let torque =
+      -GRAVITY * Math.cos(this.#angle) * (TUBE_MOMENT + mass * this.#slosh) -
+      (PIVOT_DAMPING + WATER_DRAG * mass) * this.#spin;
     const pad = 1 - this.#knock;
     if (pad > 0 && this.#spin > 0) {
       // Coming back down onto the moss: the deeper it squashes the pad, the harder the pad holds it back.
-      const squash = Math.min(1, Math.max(0, (this.#angle - BAMBOO_TUBE.rest + PAD_SPAN) / PAD_SPAN));
+      const squash = Math.min(
+        1,
+        Math.max(0, (this.#angle - BAMBOO_TUBE.rest + PAD_SPAN) / PAD_SPAN),
+      );
       torque -= PAD_DAMPING * pad * squash * this.#spin;
     }
     this.#spin += (torque / inertia) * h;
@@ -760,7 +873,8 @@ class BambooSim implements SceneSim {
     // The knock carries through the stones: a soft ring across the basin.
     this.#addRipple(0, 0, 0.45 * strength);
     // A full clack sometimes startles a leaf above the basin into letting go.
-    if (strength > 0.6 && this.#leafAmount > 0 && this.#random() < 0.3 + 0.6 * this.#leafAmount) this.#release(aspect, true);
+    if (strength > 0.6 && this.#leafAmount > 0 && this.#random() < 0.3 + 0.6 * this.#leafAmount)
+      this.#release(aspect, true);
   }
 
   #addRipple(u: number, v: number, strength: number): void {
@@ -957,7 +1071,9 @@ class BambooSim implements SceneSim {
           // Lying on the ground it is seen nearly edge-on; falling it turns about its long axis.
           leaves[o + 4] = falling ? 0.35 + 0.65 * Math.abs(Math.cos(leaf.spin)) : 0.45;
           leaves[o + 5] = leaf.z;
-          leaves[o + 6] = falling ? Math.min(1, leaf.age / LEAF_FADE_IN) : 1 - smoothstep(LEAF_REST, LEAF_REST + LEAF_FADE, leaf.age);
+          leaves[o + 6] = falling
+            ? Math.min(1, leaf.age / LEAF_FADE_IN)
+            : 1 - smoothstep(LEAF_REST, LEAF_REST + LEAF_FADE, leaf.age);
           leaves[o + 7] = 1;
           break;
         }
