@@ -18,6 +18,8 @@
 //          twig k (x, y, angle, alpha), (active, -, -, -);
 //          then the shoot grid (up to four shoot indices + 1 per cell).
 import type { ParamDef } from "../../params.ts";
+import { smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
@@ -44,7 +46,7 @@ import {
 } from "./geometry.ts";
 import { type LitterMark, TreeMaps, drawSprite, eraseLitter, stampLitter } from "./raster.ts";
 import { bonsaiBlossom, bonsaiHue, bonsaiLeafiness, bonsaiPetalFall, bonsaiShedding } from "./season.ts";
-import { type Tree, growTree, mulberry32, subtree } from "./tree.ts";
+import { type Tree, growTree, subtree } from "./tree.ts";
 
 const TAU = Math.PI * 2;
 const FW = BONSAI_FIELD.width;
@@ -1207,11 +1209,6 @@ class BonsaiSim implements SceneSim {
       data[o + 4] = twig.live ? 1 : 0;
     }
   }
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
 }
 
 /** A gust's swell and fade over its age in seconds: up in 1.5 s, gone over ~6. */

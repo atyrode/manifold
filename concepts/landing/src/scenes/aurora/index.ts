@@ -5,6 +5,7 @@
 // clock; there is no simulation.
 import { choice, feature, range, toggle, type ParamDef } from "../../params.ts";
 import { birdKnobs } from "../../shaders/lib/birds.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { auroraGlsl } from "./shader.ts";
@@ -54,4 +55,6 @@ export const auroraScene: SceneDef = {
   // Entering, the camera comes down from the stars while the curtains unfurl and the smoke climbs;
   // leaving, the curtains roll up into faint arcs and the camera lifts to the stars.
   passage: { enter: 2.8, exit: 1.4 },
+  // The fjord: the breeze's cat's-paws breaking up its screen-space mirror (windRipples, windMirror).
+  features: { WATER_TIER: WATER_TIERS.ripples },
 };

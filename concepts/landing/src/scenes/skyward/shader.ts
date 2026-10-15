@@ -17,11 +17,16 @@
 // contrail beyond the clouds.
 //
 // Knobs (index.ts): K_towers, K_windows, K_greenery, K_traffic, K_citySeed (city); K_time, K_cycle,
-// K_stars (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind, K_snowOverhead (weather); K_mark.
+// K_stars, K_moon, K_meteors (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind,
+// K_snowOverhead (weather); K_mark. The shared sky components (src/scenes/README.md, "Composing
+// components"): the stars, the moon in its phase (SKY_MOON_PHASE) and shooting stars.
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 
 /** Seconds of the entrance (the view tips back from street level to the zenith) and the exit (it tips down toward the street again) (SceneDef.passage). */
 export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+
+/** Trigger slot of the shooting stars' "now" button. */
+export const SKYWARD_METEOR_TRIGGER = 0;
 
 export const skywardGlsl = `
 ${birdsGlsl}
@@ -36,6 +41,10 @@ const float SKYWARD_STREET = 1.05;   // the pitch the entrance starts at and the
 const float SKYWARD_WALK = 3.0;      // the sidewalks' width along the facades, m
 const float SKYWARD_SKY_YAW = -3.19;
 const float SKYWARD_LOT = 26.0;
+// Where shooting stars set out, in the camera's frame (screen heights from the middle of the view):
+// the upper half of the strip of sky.
+const int SKYWARD_METEOR_SLOT = ${SKYWARD_METEOR_TRIGGER};
+const vec4 SKYWARD_METEOR_FIELD = vec4(-0.6, 0.1, 1.2, 0.3);
 const float SKYWARD_FAR = 100000.0;
 const float SKYWARD_HP = 10500.0;    // airliners' altitude, m
 const float SKYWARD_PLANE_V = 140.0; // m/s
@@ -148,8 +157,18 @@ vec3 skywardSkyLight(vec3 dir) {
   return skywardCloudsOver(dir, skywardSkyBase(dir));
 }
 
+// Seen directly (or in the wet road's mirror), shooting stars cross the sky beyond the planes and the
+// clouds, in the camera's own frame (rd's point on the image plane; none behind it).
 vec3 skywardSkyDirect(vec3 rd) {
-  return skywardCloudsOver(rd, skywardPlanes(rd, skywardSkyBase(rd)));
+  vec3 c = skywardSkyBase(rd);
+  float ahead = dot(rd, skywardF);
+  if (ahead > 0.05) {
+    float meteorSeed;
+    float meteorAt = meteorAge(uMotionTime, K_meteors, SKYWARD_METEOR_SLOT, meteorSeed);
+    vec2 q = vec2(dot(rd, skywardR), dot(rd, skywardU)) * (SKYWARD_FOCAL / ahead);
+    c += METEOR_TINT * hardEdge(meteorStreak(q, SKYWARD_METEOR_FIELD, meteorAt, meteorSeed, 1.0 / uRes.y) * skywardSky.night * (1.0 - skywardOver));
+  }
+  return skywardCloudsOver(rd, skywardPlanes(rd, c));
 }
 
 // ---- Lots ----
@@ -957,7 +976,7 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   skywardThC = edgeThreshold(cell, vec2(11.0, 5.0));
 
   // The hour, and the weather over it: rain and snow close the sky, flatten and dim the light.
-  skywardSky = skyFacing(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), SKYWARD_SKY_YAW);
+  skywardSky = skyFacing(skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon), SKYWARD_SKY_YAW);
   skywardStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
   skywardOver = weatherOvercast(K_rain, K_snow);
   skywardCover = clamp(max(K_clouds, skywardOver), 0.0, 1.0);

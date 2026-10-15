@@ -42,6 +42,8 @@ describe("CI impact policy", () => {
       "budgets",
       "pwa",
       "axioms",
+      "landing-concept",
+      "landing-webgl",
       "runtime-jobs",
       "runtime-browser",
       "preview-environment",
@@ -271,6 +273,53 @@ describe("CI impact policy", () => {
     expect(selected.risk).toBe("standard");
     expect(selected.checks).toEqual(MANDATORY_CHECKS);
     expect(selected.unitPaths).toEqual([unitPath]);
+  });
+
+  test.each([
+    "concepts/landing/src/sims/boids.ts",
+    "concepts/landing/src/sims/boids.test.ts",
+    "concepts/landing/src/lab.css",
+    "concepts/landing/index.html",
+    "concepts/landing/verify.ts",
+  ])("landing concept change %s selects only the lab's own proof", (path) => {
+    const selected = plan([{ status: "M", path }]);
+    expect(selected.risk).toBe("standard");
+    expect(selected.checks).toEqual([...MANDATORY_CHECKS, "landing-concept", "landing-webgl"]);
+    expect(selected.reasons).toContain(`landing concept lab: ${path}`);
+    // landing-concept runs the lab's whole suite; the targeted runner admits no concept path.
+    expect(selected.unitPaths).toEqual(["packages/protocol/test"]);
+  });
+
+  test("a dependency the landing lab imports selects the lab's proof", () => {
+    const graph: DependencyGraph = {
+      holes: [],
+      importers: new Map([
+        ["packages/ui/src/palette.ts", new Set(["concepts/landing/src/lab.ts"])],
+        ["concepts/landing/src/lab.ts", new Set(["concepts/landing/src/lab.test.ts"])],
+      ]),
+    };
+    const selected = plan([{ status: "M", path: "packages/ui/src/palette.ts" }], graph);
+    expect(selected.risk).toBe("standard");
+    expect(selected.checks).toEqual([...MANDATORY_CHECKS, "landing-concept", "landing-webgl"]);
+    expect(selected.reasons).toContain(
+      "landing concept lab: packages/ui/src/palette.ts -> concepts/landing/src/lab.ts -> concepts/landing/src/lab.test.ts",
+    );
+    expect(selected.unitPaths).toEqual(["packages/ui"]);
+  });
+
+  test("the landing lab's browser driver keeps the complete plan", () => {
+    const selected = plan([{ status: "M", path: "scripts/cdp.ts" }]);
+    expect(selected.risk).toBe("high");
+    expect(selected.checks).toEqual(ALL_CHECKS);
+  });
+
+  test("the real landing lab graph is complete enough to plan without fallback", async () => {
+    const selected = plan(
+      [{ status: "M", path: "concepts/landing/src/sims/math.ts" }],
+      await buildDependencyGraph(),
+    );
+    expect(selected.risk).toBe("standard");
+    expect(selected.checks).toEqual([...MANDATORY_CHECKS, "landing-concept", "landing-webgl"]);
   });
 
   test("CI and toolchain inputs always select a complete high-risk plan", () => {

@@ -13,7 +13,7 @@ All of the ideas below have a first implementation in the lab:
 | Above the clouds | `clouds` | Aurora and lightning come from the shared weather layer. |
 | Waterfall | `falls` | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. Optional birds (the shared birds): swifts crossing the gorge, hidden behind the cliff they fly beyond. |
 | Countryside | `country` | Relative weights for seasonal crops, wildflower meadows, lavender rows and sunflowers; reproducible landscape seeds. |
-| Murmuration | `flock` | CPU boids, topological neighbours. |
+| Murmuration | `flock` | Authored deforming sheet on the CPU; optional emergent topological boids (`Boids`). |
 | Paper marbling | `marble` | Mathematical marbling engine. |
 | Dunes | `dunes` | Werner slab model. |
 | Ice and frost | `frost` | Frost on a window pane; snowfall from the weather layer; the shared sky components (stars, moon phase, aurora, shooting stars) in the window. |
@@ -22,8 +22,13 @@ All of the ideas below have a first implementation in the lab:
 | Window sill | `sill` | |
 
 The shared options became libraries every outdoor scene can use: sky and time of day, weather,
-lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`).
-The notes below are the original briefs.
+lightning and aurora (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`). The
+giant ringed planet is an opt-in one (`src/shaders/lib/planet.ts`, included by the scenes that draw
+it; knobs `src/scenes/planet.ts`): `orbit` draws it as its subject with every feature (belts,
+clouds, storms, aurora, city lights, day cycle, banded rings, moons), `campfire` as scenery over its
+pines.
+lightning, aurora and water in tiers (`src/shaders/lib/`), with shared lab knobs
+(`src/scenes/atmosphere.ts`). The notes below are the original briefs.
 
 ## Zen batch
 
@@ -32,11 +37,11 @@ mathematics. All have a first implementation in the lab:
 
 | Idea | Scene id | Simulation | Shared engine |
 |---|---|---|---|
-| Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves; fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms | `HeightField`, `AgeField` |
-| Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube; a moss pad on its stone softens the knock for a quiet clock | |
-| Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step; optional birds over the far bank, mirrored in the rippled river | `separateDiscs`, birds |
-| Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population | |
-| Kelp forest | `kelp` | Buoyant Verlet stipes in surge, boids school | `VerletSystem` |
+| Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves on the shared gust pulse (the maple sways with its GLSL twin); fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms | `HeightField`, `AgeField`, `FlutterPlates`, `gustPulse` |
+| Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube; a moss pad on its stone softens the knock for a quiet clock; rain cloud, rays and gap sky under the leaves from the shared canopy weather | `canopyWeather` |
+| Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step; the river's ripples ride the current; optional birds over the far bank, mirrored in the rippled river | `separateDiscs`, water `flow` tier (`rippleSpectrum`, `waterDrift`, `waterMirror`), birds |
+| Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population; the lights nearer than the bank move in the world in front of the eye | `LevelCamera` |
+| Kelp forest | `kelp` | Buoyant Verlet stipes in surge: giant kelp, or bull kelp held up by one gas bulb (or a mix); boids school | `VerletSystem`, `fishGlsl` |
 | Spider web at dawn | `dew` | Verlet orb web, dew drops creeping and falling; paged bin lists keep the dense hub whole | `VerletSystem`, `BinLists` |
 | Meadow in the wind (honami) | `meadow` | Gust fronts shared by shader and sim, dandelion seeds carried in the world along the gust direction; optional birds over the field, behind the grass nearer than them | `LevelCamera`, birds |
 | Ink-wash landscape scroll (shan shui) | `shanshui` | Procedural handscroll, drifting mist, four seasons' washes; painted in sections joined by mounting silk so days of unrolling stay precise | |
@@ -60,12 +65,12 @@ A third batch built on the shared foundations (weather in the world, hard edges,
 | Idea | Scene id | Simulation |
 |---|---|---|
 | Late-night bar | `bar` | Patrons arrive, sip and leave; the bartender pours, shakes, polishes; rain and traffic outside the window. Last call (the time-of-night "now"): a hand bell and two blinks of the lamps (just the blinks with the bartender off), last sips, one for the road or a word with you if the bar is empty, then closing time until the time of night is moved |
-| City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain; optional late delivery (a van at the kerb past the crossing, hazards on, its driver wheeling crates to the konbini through the crowd, cyclists swinging out round it) |
-| Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint; everything that moves with the motion clock (clouds, lamps, flashers, station clock, the carriage's rock) keeps its phase when Motion changes |
-| Mystic forest | `forest` | Kodama spirits appearing and turning their heads, curious of the pointer or (a tunable share) shy of it and ducking into the moss (`sims/temperament.ts`); spores on curl-noise air, a stag crossing |
+| City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain; optional late delivery (a van at the kerb past the crossing, hazards on, its driver wheeling crates to the konbini through the crowd, cyclists swinging out round it). Seen from a window pitched down at the crossing, rain and snow both fall along paths that close in below the street (`rainFallSeen`, `snowFallSeen`) |
+| Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint; everything that moves with the motion clock (clouds, lamps, flashers, station clock, the carriage's rock) keeps its phase when Motion changes. A `line` choice sets the country and its timetable together: country (as always), rural (low farmland, frequent halts with a crossing at the platform's end, crossings everywhere, short stream bridges, no tunnels, slower) or mountain (high hills and peaks, long tunnels chained over stone viaducts across deep gorges, few stations or crossings, slower still); the shared stars and moon phase are knobs, and the shared birds (off by default) fly the line's own kinds by day |
+| Mystic forest | `forest` | Kodama spirits appearing and turning their heads, curious of the pointer or (a tunable share) shy of it and ducking into the moss (`sims/temperament.ts`); spores on curl-noise air, a stag crossing; rain cloud, shafts and gap sky under the canopy from the shared canopy weather (`shaders/lib/canopy.ts`, as bamboo's) |
 | Ripple tank | `ripple` | GPU wave equation: interference, double slit, lens, Doppler, standing waves; projected caustics; edge absorption from beaches that swallow every wave to bare walls that reflect them, apart from open-water damping |
 | Lava lamp | `lava` | Heated wax blobs with buoyancy, necks and merging; a wax body from silky (smaller blobs slipping through each other, long tails, smooth merges) to chunky (fewer, slower, knobbly lumps) |
-| Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles; lying snow from wind-packed crust to fresh powder at the same cover; optional birds (geese by default) mirrored in the ice |
+| Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles; lying snow from wind-packed crust to fresh powder at the same cover. The crack and snow fields are laid out on the ice as the eye at rest sees it (`LevelCamera`); optional birds (geese by default) mirrored in the ice |
 | Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning; with the breeze off the pads hang still until a gust, snip or hover |
 
 ## Quiet places and small machines
@@ -75,17 +80,31 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Idea | Scene id | Simulation |
 |---|---|---|
 | Harmonograph | `harmonograph` | Damped, slightly detuned pendulums drive a pen; the figure precesses and spirals inward, then a fresh sheet slides in |
-| Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out |
+| Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out. The giant planet is the shared one (`shaders/lib/planet.ts`, decoration tier): optional moons on its ring plane (crossing in front of and behind it, casting shadows), an aurora, night-side city lights and its own day cycle |
 | Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment; or real ones, released by a board and slowed by their own wide swing (`sims/pendulum.ts`), drifting off the realignment |
-| A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below |
-| Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: `shaders/windWater.ts`), a red cabin, falling and lying snow; optional birds (a skein of geese by default) mirrored in the fjord |
-| Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies. Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it |
+| A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain seen from above converges below; the sea is the shared water's `mirror` tier (four hand-placed ripple trains) |
+| Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: the shared water's `ripples` tier, `shaders/windWater.ts`), a red cabin, falling and lying snow; optional birds (a skein of geese by default) mirrored in the fjord |
+| Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies, all flying in the garden's world and projected through its eye (`LevelCamera`). Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it |
 | Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, pigeons and swifts (the shared birds seen from below); rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`) |
-| Autumn park | `autumn` | Leaves flutter and tumble down (quasi-steady plate model), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts lift swirls of the top leaves off the path |
+| Autumn park | `autumn` | Leaves flutter and tumble down (the shared plate model `sims/flutter.ts`, as the garden's), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts (the shared pulse, `sims/wind.ts`) lift swirls of the top leaves off the path |
 | Hanging mobile | `mobile` | Balanced arms on links as coupled Verlet pendulums, plate drag in drafts, gusts and eddies, plate contacts, shadows from one or two lamps on the wall |
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
-sees it (`rainFallSeen`), whatever the calm of the rest of the scene.
+sees it (`rainFallSeen`), whatever the calm of the rest of the scene; snow does the same where the
+camera tilts (`snowFallSeen`: skyward looking up, street looking down).
+
+## Pond plants
+
+`pond`'s border is grown by the shared plant component (`src/sims/plants.ts`, issue #1082 M11):
+every clump, stem, stalk, vine, frond, tuft and flower of the old painted border, laid out draw for
+draw from the same seed, is now a rooted plant whose stems and stalks bend on their own springs
+and carry their leaves, drawn each frame on the GPU from a botany sprite atlas (`plantsheet.ts`).
+Visible differences at rest: leaves are drawn from a fixed set of variants per species instead of
+each its own, their outlines come from a 128–256-pixel atlas cell (a touch softer up close), and
+the sheet follows the frame's resolution. In the breeze each organ sways on its own (nearer layers
+more) instead of whole layers sliding together. New, all off: seasons (the year turns and sheds the
+plants, flowers keep their season), growth (leaves unfold, age and are replaced) and gusts (fronts
+crossing the pond, "now").
 
 ## Tide pool
 
@@ -102,10 +121,18 @@ top. Prototype (issue #1082, N1), built from shared parts rather than scene code
   hard surge or a touch closes the anemones; they reopen over ~10 s) and wetness (rock drying over
   half a minute). Kelp and surfgrass stream and flutter with the flow at their holdfasts; anemones
   lean with it and close when the water leaves them.
-- **Caustics:** `src/shaders/caustics.ts`: the swell's caustic focus from the sim's surface Hessian
-  times analytic wind ripples', both det(I + D·H), D a quarter of the depth.
+- **Caustics:** the shared water's `caustics` tier (`src/shaders/lib/water.ts` over
+  `src/shaders/caustics.ts`): the swell's caustic focus from the sim's surface Hessian times
+  analytic wind ripples', both det(I + D·H), D a quarter of the depth (`waterCaustic`).
 - **Passage:** entering, the last of a wave's white water drains back up the frame and the anemones
   unfurl; leaving, a wave breaks in from the sea and sweeps down over everything.
+- **Plants and fish (#1082 M11, M12):** kelp, surfgrass and anemones stand where the shader always
+  placed them but are rooted plants of the shared component: the water's flow is averaged onto a
+  coarse grid and read back each frame without stalling (`src/sims/readback.ts`), and blades stream
+  and anemones lean on springs in it (a frame or two late) instead of following the flow cell by
+  cell. Optional rock pool fish (`fish`, the shared `src/sims/fish.ts` with a `BLENNY` species)
+  idle over the basin's floor and dart from a touch or a hard surge; seasons and growth (off) turn
+  and replace the fronds.
 - Knobs: tide (and a tide cycle), swell, wave length, direction, sets (with "now"), pace, foam;
   caustics, glints, breeze; sky time and rain; anemones (and shyness), kelp, surfgrass, sea lettuce,
   sea stars, urchins, sway; rock type, mussels/barnacles, coralline, pool size, arrangement;
@@ -123,6 +150,11 @@ The view from a plane window: a sea of clouds below, open sky above.
 - Options: **aurora** over the night side (reuse orbit's aurora curtains, seen from inside the
   atmosphere), **lightning** flickering inside distant cumulonimbus (trigger + random), the moon,
   contrails, a distant wingtip in the corner.
+- Level of detail: the march steps grow with distance, and the cauliflower relief that shapes the
+  tops' normals fades out as a cell's footprint on the deck grows; once fully faded it is not
+  computed at all, for the same picture. The macro field the march, normals and shadows trace keeps
+  its full shape at every distance: fading it would reshape the far deck, and a projected-size floor
+  under the march step saves only a few percent of steps, even skimming low over a full deck.
 
 ## Waterfall
 
@@ -132,6 +164,10 @@ A cliff face with a waterfall as the focus.
   pool with ripples.
 - Rock strata, moss and ferns on the ledges (reuse the pond's botany), rainbow in the spray when
   the sun is behind the viewer.
+- The near bank's ferns are rooted plants of the shared component (`falls/sim.ts`): the same clumps
+  and fronds, each frond bending on its own spring under the wind, the fall's stir and gusts (new
+  `gusts` knob, off), turning and shedding with the year (`season`, off), replaced with `growth`
+  (off). The ledge ferns draw the same shared frond (`plantFrond`) from hashes, unchanged.
 - Gorges (`gorge`): the layered forms share one bedding model with different beds, dip, folds,
   ledges and stone: basalt flows on rusty ash (the default), or thin, level sandstone ledges on
   shale, cross-bedded. The pale limestone slot is a different form: a few thick, flush beds fluted
@@ -200,9 +236,41 @@ A Calder mobile turning in a quiet room, its shadows thrown large across the wal
 
 A sky scene whose subject is a starling murmuration.
 
-- Simulation: boids (separation, alignment, cohesion) with the topological rule of starlings
-  (each bird tracks ~7 neighbours), predator passes as a trigger, the flock folding and pulsing.
-- Thousands of birds: GPU simulation in textures, or CPU for a few thousand with spatial hashing.
+- Simulation, by default: an authored sheet on the CPU (`flock/sim.ts`). Each bird keeps a place on
+  a disc that slow sums of sines carry through the sky in 3D: stretched into a ribbon and gathered,
+  bowed, cupped, bent by a travelling wave, banked and twisted, turned into depth, parted into two
+  lobes and merged. Turns sweep head to tail (Attanasi et al. 2014), agitation rings run over the
+  sheet (Procaccini et al. 2011), and the falcon pushes birds aside on springs. No bird reacts to
+  another: the shape is choreographed.
+- Emergent flight (`emergent`, off by default; its amount, 3–12, is how many neighbours each bird
+  watches, 7 by default): the same birds as topological boids (`src/sims/boids.ts`). Each steers by
+  separation, cohesion and alignment with its K nearest (Ballerini et al. 2008), found through a
+  spatial hash whose search is bounded (at most 96 candidates) and refreshed by a third of the
+  flock each step. It also cruises at the speed knob's pace, holds a level plane seen from below,
+  is pulled back over the band of sky, drifts downwind and flees the falcon, and startles relay bird
+  to bird as a wave. Cohesion sets the spacing and pull, chaos the noise and how weakly the birds
+  align. The ink, falcon, M and passage are shared with the sheet, and switching either way hands
+  the birds over where they are.
+- Comparison (measured headless on a shared 12-core machine at load ~32, so absolute numbers run
+  high; the modes ran interleaved, median of three runs of 1200 frames at 60 fps):
+
+  | Birds | Sheet ms/frame (median, CPU mean) | Boids ms/frame (median, CPU mean) |
+  |---|---|---|
+  | 1500 | 0.33, 0.37 | 0.95, 0.94 |
+  | 3000 | 0.59, 0.65 | 1.85, 1.71 |
+  | 5000 | 1.01, 0.98 | 3.37, 2.95 |
+
+  Boids that search every step instead of by turns take a median 1.9, 5.3 and 9.4 ms. Visually, the
+  sheet is sculptural: a smooth veil with crisp dark folds and rims, always framed, its pace
+  calm and predictable. The boids have life the sheet lacks. Birds stream through the flock, which
+  wheels at the edges of its sky and knots dark as it turns. It strings into streams that part and
+  rejoin, and startles visibly travel. They are grainier (clumps speckle under the dither), have no
+  folds or edge-on darks (nothing banks), sometimes mill into rings, and cannot be paced.
+- Decision: the authored sheet stays the default, unchanged byte for byte. It is the dependable,
+  readable and cheaper silhouette a landing page needs. Emergent flight is adopted as an optional
+  mode, through the lab, its URL and its reset, and `Boids` is shared for any CPU flock or school.
+  The countryside flies the sheet (its FlockSetup omits `emergent`) and could name the control to
+  fly boids.
 - Sky at dusk; a low skyline at the bottom edge, never the focus.
 
 ## Paper marbling
@@ -213,6 +281,44 @@ Ink dropped on water, combed and swirled, as in ebru / suminagashi.
   drops and tine strokes are closed-form deformations of the ink boundaries, so patterns stay crisp.
 - Interaction: click to drop ink, drag to comb; presets for traditional patterns (nonpareil,
   chevron, bouquet).
+- Practice, inks and pattern are independent. `practice` picks how the ink is laid: ebru (a
+  ground colour over the tray, then brush-flicked stones) or suminagashi (an ink brush and a water
+  brush touched in turn, raising rings; an uncombed sheet is turned only by breath and a fan).
+  "By inks" (the default) keeps each palette's own practice, so existing setups are unchanged;
+  clicks follow the practice. The ground follows the inks, not the practice: suminagashi's sumi
+  and indigo float on clear water over a pale tray, the other palettes on dark size.
+
+## Petri dish
+
+Gray–Scott Turing patterns or Belousov–Zhabotinsky spirals in a glass dish (`petri`).
+
+- Regimes: `regime` holds the Turing dish at one of Pearson's classes, from the shared catalogue
+  in `src/sims/grayscott.ts` (fingerprints, coral, worms, mitosis, spots, mazes, holes); "wander"
+  (the default) drifts through them as before. A new regime starts a fresh dish: its labyrinth
+  seed settles at the loop's start and is eased over to the regime in four chemistry seconds,
+  because most classes starve a fresh seed at once, and a settled dish of one class often dies
+  outright when switched to another (holes to anything sparser, mazes to coral).
+- Advanced: `own feed & kill` (off by default) sets the two rates by hand, in thousandths (feed
+  10–90, kill 45–70, starting at fingerprints' 37 and 60). Switching it on starts a fresh dish; the
+  sliders then move the living one. Most of the map grows nothing or a solid wash.
+
+## Slime mould
+
+Jeff Jones's agent model of Physarum linking oat flakes on agar (`physarum`).
+
+- Habits: sensor reach, sensor angle and evaporation act together, and three coupled settings
+  read as distinct networks (proposed as lab presets rather than a knob, so the three sliders stay
+  the only controls):
+  - lace: reach 4, angle 60°, evaporation 15%. A fine, curly lace over the whole dish; the flakes
+    pool gold with thin links between some of them.
+  - woven: reach 9, angle 12°, evaporation 10%. Straight threads knit an even, open polygon mesh;
+    pooled flakes, thin links.
+  - routes: reach 18, angle 22°, evaporation 75%. A few bold trunks meeting in star-shaped
+    junctions at the flakes, and almost no lace; with the Tokyo food and the rail palette, a
+    transit map.
+  The default (reach 9, angle 35°, evaporation 40%) sits between: trunks over a faint lace. At
+  short and middle reach, low evaporation lets the lace win and trunks barely form; a wide angle
+  curls the filaments and a narrow one straightens them.
 
 ## Dunes
 
@@ -247,6 +353,12 @@ Wind over a sand sea.
 - **Bioluminescence** as an option: blue glow where water is disturbed (breaking waves, the
   pointer stirring the water, fish darting).
 - Day mode as an ordinary seaside scene.
+- Every wave is intersected in full wherever it shows: rows of surf too far out to stand two cells
+  tall take about 3% of the intersection work at the default wave size (under 10% at the smallest),
+  too little to justify a cheaper path beside the near breakers.
+- The open sea's wind ripples and mirror are the shared water's `mirror` tier (`rippleSpectrum`
+  over four trains by the golden angle, `waterMirror`); the breakers, swash and glitter are the
+  scene's own.
 
 ## Window sill
 
@@ -270,8 +382,8 @@ the spirit of lo-fi study streams.
   trigger with a "now" button like the meteors.
 - **Weather and time of day** as a common layer across outdoor scenes.
 - **Birds** (built: `shaders/lib/birds.ts` with `birdKnobs`): seven species, four formations,
-  side-on, mirrored in still water or seen from below; flown by country, skyward, meadow, falls,
-  swell, aurora, lake and lanterns, each scene giving its camera, lanes, occlusion and light.
+  side-on, mirrored in still water or seen from below; flown by country, skyward, train, meadow,
+  falls, swell, aurora, lake and lanterns, each scene giving its camera, lanes, occlusion and light.
 
 ## Lab: comparing setups and touring scenes
 

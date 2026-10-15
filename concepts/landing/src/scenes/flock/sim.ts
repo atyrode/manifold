@@ -1,10 +1,11 @@
 // The murmuration: a few thousand starlings flown on the CPU, splatted into a density field the
-// shader inks as the flock.
+// shader inks as the flock. By default the flock is authored (a choreographed sheet, below); with
+// the `emergent` control on it flies as genuine topological boids instead (see "Emergent flight").
 //
 // Seen from the ground, a murmuration is a thin sheet of birds, a few deep and hundreds across,
 // that bends, twists and folds as it sweeps over the sky. In projection most of it is a pale,
 // translucent veil; it turns dark only where the sheet is edge-on to us or folds back over itself,
-// its rim is sharp, and single birds show around it. So the flock is flown as such a sheet:
+// its rim is sharp, and single birds show around it. So the authored flock is flown as such a sheet:
 // - Every bird keeps a place on a disc (sheet coordinates a along the flock, b across it, both in
 //   -1..1), laid out on a jittered sunflower spiral so the birds are evenly spread, never clumped.
 // - The disc is carried through the sky in 3D: stretched into a ribbon and gathered again (its area
@@ -29,6 +30,19 @@
 //   stream in head first from beyond a side edge and fold into the sheet, and at the end pour down
 //   head first to roost behind the skyline. The flight itself runs on regardless.
 //
+// Emergent flight (the `emergent` control above 0, its value the neighbours each bird watches): the
+// same birds fly as topological boids (sims/boids.ts: separation, cohesion and alignment with their
+// K nearest found through a spatial hash, cruise speed, level flight, a roost) in a world of screen
+// heights with z away from the eye. They hold a level plane seen from below at BOIDS_ELEVATION, so
+// the flock flattens into a sheet a few birds deep, are pulled back inside the band of sky (the
+// roost they wheel over), drift downwind, flee the falcon, and pass startles from bird to bird as a
+// wave; nothing else steers them, so the flock's shape, its turns, its splits and its dark knots at
+// a turn are its own. The knobs set the rules: cohesion the spacing and pull, chaos the noise and how
+// weakly they align, speed the cruise. Drawing, the M, the falcon and the passage are shared with
+// the sheet. Switching hands the birds over where they are: to the boids on the level plane flying
+// along the sheet, back to the sheet with each bird pushed off its place by where it flew, so the
+// falcon's spring brings it home.
+//
 // Time runs in fixed steps of STEP seconds of simulated time, so the flight depends only on the
 // knobs and simulated time, not on the frame rate; positions are interpolated between the last two
 // steps for drawing. Every array is allocated up front for the largest flock (the density field
@@ -49,8 +63,9 @@
 //          heights).
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { Boids, boidRules } from "../../sims/boids.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -196,6 +211,43 @@ const MARK_LANE = 0.025;
 /** How far the birds of a lane spread across it (mark units). */
 const MARK_SCATTER = 0.025;
 
+// Emergent flight (the `emergent` knob): the same birds flown as topological boids (sims/boids.ts).
+/** The boids' world is the screen's (heights) with z away from the eye; its level plane is seen from below at this slant (rad). */
+const BOIDS_ELEVATION = 0.6;
+/** Spacing of a flock of BOIDS_REFERENCE_BIRDS at cohesion 0 and 1 (heights); it scales as the cube root of their share. */
+const BOIDS_SPACING_LOOSE = 0.019;
+const BOIDS_SPACING_TIGHT = 0.011;
+const BOIDS_REFERENCE_BIRDS = 3000;
+/** Steps a bird keeps the neighbours it found (a third of the flock searches each step). */
+const BOIDS_REFRESH = 3;
+/** Steering (see BoidRules): separation (heights/s²), cohesion at cohesion 0 and 1 (1/s²), alignment calm and restless (1/s). */
+const BOIDS_SEPARATION = 1.2;
+const BOIDS_COHESION_LOOSE = 3;
+const BOIDS_COHESION_TIGHT = 9;
+const BOIDS_ALIGN_CALM = 3;
+const BOIDS_ALIGN_CHAOS = 1.2;
+/** Each bird's random kicks (heights/s^1.5), calm and restless. */
+const BOIDS_NOISE_CALM = 0.01;
+const BOIDS_NOISE_CHAOS = 0.05;
+/** Cruise speed (heights per second of choreography rate) and how fast a bird returns to it (1/s). */
+const BOIDS_CRUISE = 0.13;
+const BOIDS_SPEED_HOLD = 1.5;
+const BOIDS_MAX_ACCEL = 1.5;
+/** Level flight (natural frequency, 1/s), the pull back into the band of sky (1/s²), and its depth either way (heights). */
+const BOIDS_LEVEL = 1.2;
+const BOIDS_HOME_PULL = 2;
+const BOIDS_DEPTH = 0.35;
+/** How far the home keeps the birds in from the band's sides and from its top and bottom (heights). */
+const BOIDS_INSET_X = 0.22;
+const BOIDS_INSET_Y = 0.12;
+/** Downwind drift at wind 1 (heights/s); the home holds the flock against it. */
+const BOIDS_WIND = 0.04;
+/** Flight from the falcon (heights/s²), and the startle relay: seconds to pass on, startled, before it can come again. */
+const BOIDS_FLEE = 6;
+const BOIDS_RELAY = 0.035;
+const BOIDS_STARTLED = 0.4;
+const BOIDS_REFRACTORY = 1.6;
+
 /**
  * Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the flock streams in
  * from beyond the nearer side edge, head first, in a loose file that folds into its sheet as the
@@ -264,21 +316,23 @@ const MARK_TRACK = (() => {
 const MARK_TRACK_LENGTH = (MARK_TRACK[MARK_TRACK.length - 2] ?? 0) + (MARK_TRACK[MARK_TRACK.length - 1] ?? 0);
 const MARK_OUTWARD_LENGTH = MARK_TRACK_LENGTH / 2;
 
-type KnobKey = "birds" | "cohesion" | "chaos" | "speed" | "predator" | "wind" | "mark";
+type KnobKey = "birds" | "cohesion" | "chaos" | "speed" | "predator" | "wind" | "mark" | "emergent";
 
 /**
  * How a scene flies the flock: for each control, the key of the scene knob that drives it (as the
  * shader reads it) or a number that holds it there (a fixed control never fires a "now" press); and
- * the band of sky the flock keeps to, in screen heights from the bottom of the frame.
+ * the band of sky the flock keeps to, in screen heights from the bottom of the frame. `emergent` may
+ * be left out: the flock then always flies its authored sheet; above 0, it flies as boids watching
+ * that many neighbours.
  */
 export interface FlockSetup {
-  readonly knobs: Readonly<Record<KnobKey, string | number>>;
+  readonly knobs: Readonly<Record<Exclude<KnobKey, "emergent">, string | number> & { emergent?: string | number }>;
   readonly sky: Readonly<{ low: number; high: number }>;
 }
 
 /** The Murmuration scene: every control a knob of its own name, the sky above its skyline. */
 const MURMURATION: FlockSetup = {
-  knobs: { birds: "birds", cohesion: "cohesion", chaos: "chaos", speed: "speed", predator: "predator", wind: "wind", mark: "mark" },
+  knobs: { birds: "birds", cohesion: "cohesion", chaos: "chaos", speed: "speed", predator: "predator", wind: "wind", mark: "mark", emergent: "emergent" },
   sky: { low: SKY_LOW, high: SKY_HIGH },
 };
 
@@ -296,8 +350,12 @@ class FlockSim implements SceneSim {
   readonly #knobs: KnobReader<string>;
   readonly #attackSlot: number;
   readonly #markSlot: number;
-  readonly #knob: Record<KnobKey, number> = { birds: 3000, cohesion: 0.55, chaos: 0.35, speed: 0.5, predator: 0, wind: 0, mark: 0 };
+  readonly #knob: Record<KnobKey, number> = { birds: 3000, cohesion: 0.55, chaos: 0.35, speed: 0.5, predator: 0, wind: 0, mark: 0, emergent: 0 };
   readonly #random = new Random();
+  // Emergent flight: the birds as boids, the rules the knobs set for them, and their noise.
+  readonly #boids = new Boids(MAX_BIRDS);
+  readonly #rules = boidRules();
+  readonly #boidRandom = new Random();
 
   // Fixed per bird: its place on the sheet (a along, b across, depth through it, -1..1), its lag
   // level, weight, slow wobble, and place on the M's racetrack (mark units of arclength).
@@ -383,6 +441,12 @@ class FlockSim implements SceneSim {
   #enter = 1;
   #exit = 0;
   #entrySide = 1;
+  // Flying as boids (else the sheet); the sheet taking the birds back from wherever the boids left
+  // them on its next step; the boids' mean heading across the screen (cos); a pulled bird's place.
+  #flying = false;
+  #catchUp = false;
+  #headingX = 1;
+  readonly #pulled = new Float64Array(2);
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[], setup: FlockSetup) {
     this.#setup = setup;
@@ -392,6 +456,23 @@ class FlockSim implements SceneSim {
     this.#markSlot = this.#triggerOf("mark");
     this.#density = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
     this.#state = new DataTexture(gl, { width: 3, height: 1, format: "rgba16f", filter: "nearest" });
+    // The boids' rules the knobs leave alone (#flyBoids sets the rest every step).
+    const rules = this.#rules;
+    rules.refresh = BOIDS_REFRESH;
+    rules.separation = BOIDS_SEPARATION;
+    rules.speedHold = BOIDS_SPEED_HOLD;
+    rules.maxAccel = BOIDS_MAX_ACCEL;
+    rules.level = BOIDS_LEVEL;
+    rules.up.x = 0;
+    rules.up.y = Math.cos(BOIDS_ELEVATION);
+    rules.up.z = Math.sin(BOIDS_ELEVATION);
+    rules.home.z = 0;
+    rules.reach.z = BOIDS_DEPTH;
+    rules.homePull = BOIDS_HOME_PULL;
+    rules.flee = BOIDS_FLEE;
+    rules.relay = BOIDS_RELAY;
+    rules.startled = BOIDS_STARTLED;
+    rules.refractory = BOIDS_REFRACTORY;
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -408,10 +489,17 @@ class FlockSim implements SceneSim {
     knob.predator = this.#read(frame, "predator");
     knob.wind = this.#read(frame, "wind");
     knob.mark = this.#read(frame, "mark");
+    knob.emergent = this.#read(frame, "emergent");
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#fitField(frame.width, frame.height);
     const n = Math.min(MAX_BIRDS, Math.max(1, Math.round(knob.birds)));
     if (n !== this.#n) this.#reset(n);
+    // Switching flight hands the birds over where they are, so the flock never jumps.
+    const emergent = knob.emergent > 0;
+    if (emergent !== this.#flying) {
+      if (emergent) this.#toBoids();
+      else this.#toSheet();
+    }
     // The "now" buttons: one frame of `fired` after a press (a fixed control has no slot: -1).
     if (frame.fired[this.#attackSlot]) this.#attackNow = true;
     if (frame.fired[this.#markSlot]) this.#markNow = true;
@@ -439,16 +527,16 @@ class FlockSim implements SceneSim {
     this.#state.dispose();
   }
 
-  /** A control as the shader reads its knob, or its fixed value. */
+  /** A control as the shader reads its knob, or its fixed value (0 for a control the setup leaves out). */
   #read(frame: SimFrame, control: KnobKey): number {
     const source = this.#setup.knobs[control];
-    return typeof source === "number" ? source : this.#knobs.value(frame, source);
+    return typeof source === "string" ? this.#knobs.value(frame, source) : (source ?? 0);
   }
 
   /** The trigger slot of a control's knob ("now"); -1, which never fires, for a fixed control. */
   #triggerOf(control: KnobKey): number {
     const source = this.#setup.knobs[control];
-    return typeof source === "number" ? -1 : this.#knobs.trigger(source);
+    return typeof source === "string" ? this.#knobs.trigger(source) : -1;
   }
 
   #fitField(width: number, height: number): void {
@@ -462,7 +550,10 @@ class FlockSim implements SceneSim {
     this.#dirty = true;
   }
 
-  /** Grow a fresh flock of n birds: lay them out on the sheet and place them on its first shape. */
+  /**
+   * Grow a fresh flock of n birds: lay them out on the sheet and place them on its first shape, from
+   * where emergent flight takes them over (frame).
+   */
   #reset(n: number): void {
     const random = this.#random;
     random.seed(SEED + n);
@@ -483,6 +574,8 @@ class FlockSim implements SceneSim {
     this.#nextAttack = Number.POSITIVE_INFINITY;
     this.#nextMark = Number.POSITIVE_INFINITY;
     this.#waveAge.fill(WAVE_LIFE);
+    this.#flying = false;
+    this.#catchUp = false;
 
     const rim = Math.round(n * RIM_SHARE);
     const strays = Math.round(n * STRAY_SHARE);
@@ -599,7 +692,6 @@ class FlockSim implements SceneSim {
   /** One fixed step of simulated time. */
   #step(): void {
     const knob = this.#knob;
-    const n = this.#n;
     this.#time += STEP;
     const t = this.#time;
     // The flock follows the knobs over a moment, so turning one reshapes it smoothly.
@@ -612,11 +704,18 @@ class FlockSim implements SceneSim {
     for (let k = 0; k < LAG_LEVELS; k++) this.#shapeAt(this.#clock - k * LAG_LEVEL * this.#rate, k * SHAPE);
     this.#events(t);
     this.#fidget();
+    const waveAge = this.#waveAge;
+    for (let k = 0; k < WAVES; k++) waveAge[k] = (waveAge[k] ?? WAVE_LIFE) + STEP;
+    if (this.#flying) this.#flyBoids();
+    else this.#flySheet(t);
+  }
+
+  /** The authored flight: every bird to its place on the sheet's shapes, pushed by the falcon, pulled to the M. */
+  #flySheet(t: number): void {
+    const n = this.#n;
     const waveA = this.#waveA;
     const waveB = this.#waveB;
     const waveAge = this.#waveAge;
-    for (let k = 0; k < WAVES; k++) waveAge[k] = (waveAge[k] ?? WAVE_LIFE) + STEP;
-
     const shapes = this.#shapes;
     const jitter = JITTER_CALM + (JITTER_CHAOS - JITTER_CALM) * this.#chaos;
     const springK = SPRING * SPRING;
@@ -625,11 +724,9 @@ class FlockSim implements SceneSim {
     const fx = this.#falconX;
     const fy = this.#falconY;
     const mark = this.#mark;
-    const markAge = this.#markAge;
-    const markRun = this.#markRun;
-    const markX = this.#markX;
-    const markY = this.#markY;
-    const track = this.#trackPoint;
+    const pulled = this.#pulled;
+    const catchUp = this.#catchUp;
+    this.#catchUp = false;
 
     const sheetA = this.#sheetA;
     const sheetB = this.#sheetB;
@@ -640,18 +737,18 @@ class FlockSim implements SceneSim {
     const phaseB = this.#phaseB;
     const rateA = this.#rateA;
     const rateB = this.#rateB;
-    const markPlace = this.#markPlace;
     const pushX = this.#pushX;
     const pushY = this.#pushY;
     const pushVX = this.#pushVX;
     const pushVY = this.#pushVY;
     const ink = this.#ink;
     const roll = this.#roll;
+    const cx = this.#x;
+    const cy = this.#y;
     const nx = this.#x2;
     const ny = this.#y2;
     let sumX = 0;
     let sumY = 0;
-
     for (let i = 0; i < n; i++) {
       const o = (lag[i] ?? 0) * SHAPE;
       const length = shapes[o + SH_LENGTH] ?? 0;
@@ -698,11 +795,18 @@ class FlockSim implements SceneSim {
       let px = (shapes[o + SH_X] ?? 0) + (x2 * cosHeading - y1 * sinHeading) * near;
       let py = (shapes[o + SH_Y] ?? 0) + (x2 * sinHeading + y1 * cosHeading) * near;
 
-      // The falcon pushes the bird aside; a spring brings it back to its place.
+      // The falcon pushes the bird aside; a spring brings it back to its place. Taken back from the
+      // boids, a bird starts pushed off to where it flew, at the speed it flew, and springs home.
       let ox = pushX[i] ?? 0;
       let oy = pushY[i] ?? 0;
       let vx = pushVX[i] ?? 0;
       let vy = pushVY[i] ?? 0;
+      if (catchUp) {
+        ox = (cx[i] ?? 0) - px;
+        oy = (cy[i] ?? 0) - py;
+        vx = ((cx[i] ?? 0) - (nx[i] ?? 0)) / STEP;
+        vy = ((cy[i] ?? 0) - (ny[i] ?? 0)) / STEP;
+      }
       let ax = -springK * ox - springC * vx;
       let ay = -springK * oy - springC * vy;
       let panic = 0;
@@ -729,17 +833,9 @@ class FlockSim implements SceneSim {
       py += oy;
 
       if (mark) {
-        // Birds leave for the M head first and let go of it in the same order.
-        const delay = MARK_STAGGER * clamp(0.5 * (1 - (sheetA[i] ?? 0)), 0, 1);
-        const pull = smoothstep(delay, delay + MARK_FLY, markAge) * (1 - smoothstep(MARK_HOLD + delay, MARK_HOLD + delay + MARK_FLY, markAge));
-        if (pull > 0) {
-          markTrackAt((markPlace[i] ?? 0) + markRun, track);
-          const spread = (sheetB[i] ?? 0) * MARK_SCATTER;
-          const tx = markX + ((track[0] ?? 0) + (track[3] ?? 0) * spread) * MARK_SIZE;
-          const ty = markY + ((track[1] ?? 0) - (track[2] ?? 0) * spread) * MARK_SIZE;
-          px += (tx - px) * pull;
-          py += (ty - py) * pull;
-        }
+        this.#towardMark(i, px, py);
+        px = pulled[0] ?? px;
+        py = pulled[1] ?? py;
       }
 
       nx[i] = px;
@@ -762,6 +858,168 @@ class FlockSim implements SceneSim {
     this.#y = ny;
   }
 
+  /**
+   * The emergent flight: the birds fly as topological boids (sims/boids.ts) under rules the knobs
+   * set, over the band of sky, and are seen from the ground with the sheet's perspective; the M
+   * pulls them as it pulls the sheet's birds.
+   */
+  #flyBoids(): void {
+    const n = this.#n;
+    const boids = this.#boids;
+    const rules = this.#rules;
+    const aspect = this.#aspect;
+    const sky = this.#setup.sky;
+    const tight = this.#cohesion;
+    const chaos = this.#chaos;
+    rules.neighbours = this.#knob.emergent;
+    // A bigger flock packs closer: it reads darker, as the sheet's does.
+    rules.spacing = lerp(BOIDS_SPACING_LOOSE, BOIDS_SPACING_TIGHT, tight) * Math.cbrt(BOIDS_REFERENCE_BIRDS / n);
+    rules.cohesion = lerp(BOIDS_COHESION_LOOSE, BOIDS_COHESION_TIGHT, tight);
+    rules.alignment = lerp(BOIDS_ALIGN_CALM, BOIDS_ALIGN_CHAOS, chaos);
+    rules.noise = lerp(BOIDS_NOISE_CALM, BOIDS_NOISE_CHAOS, chaos);
+    rules.speed = BOIDS_CRUISE * this.#rate;
+    rules.home.x = aspect / 2;
+    rules.home.y = (sky.low + sky.high) / 2;
+    rules.reach.x = Math.max(0.05, aspect / 2 - SIDE_MARGIN - BOIDS_INSET_X);
+    rules.reach.y = Math.max(0.05, (sky.high - sky.low) / 2 - BOIDS_INSET_Y);
+    rules.wind.x = BOIDS_WIND * this.#wind;
+    rules.threatRadius = this.#falcon ? FEAR_RADIUS : 0;
+    rules.threat.x = this.#falconX;
+    rules.threat.y = this.#falconY;
+    boids.step(STEP, rules, this.#boidRandom);
+
+    const { x, y, z, vx, vy, alarm } = boids;
+    const weight = this.#weight;
+    const ink = this.#ink;
+    const roll = this.#roll;
+    const mark = this.#mark;
+    const pulled = this.#pulled;
+    const nx = this.#x2;
+    const ny = this.#y2;
+    const eyeX = aspect / 2;
+    let sumX = 0;
+    let sumY = 0;
+    let headX = 0;
+    let headY = 0;
+    for (let i = 0; i < n; i++) {
+      // Seen from the ground: a little perspective about the middle of the frame.
+      const near = DISTANCE / Math.max(0.2, DISTANCE + (z[i] ?? 0));
+      let px = eyeX + ((x[i] ?? 0) - eyeX) * near;
+      let py = 0.5 + ((y[i] ?? 0) - 0.5) * near;
+      if (mark) {
+        this.#towardMark(i, px, py);
+        px = pulled[0] ?? px;
+        py = pulled[1] ?? py;
+      }
+      nx[i] = px;
+      ny[i] = py;
+      ink[i] = (weight[i] ?? 1) * near * near;
+      // A startled bird rolls and shows more wing, most as the startle reaches it.
+      const startled = alarm[i] ?? Number.POSITIVE_INFINITY;
+      roll[i] = startled < BOIDS_STARTLED ? 1 - startled / BOIDS_STARTLED : 0;
+      sumX += px;
+      sumY += py;
+      headX += vx[i] ?? 0;
+      headY += vy[i] ?? 0;
+    }
+    this.#centreX = sumX / n;
+    this.#centreY = sumY / n;
+    this.#headingX = headX / (Math.hypot(headX, headY) || 1);
+
+    this.#x2 = this.#x;
+    this.#y2 = this.#y;
+    this.#x = nx;
+    this.#y = ny;
+  }
+
+  /**
+   * Hand the birds to the boids where they are drawn: each where its line of sight meets the level
+   * plane the boids fly in (a few birds deep), flying along the sheet's long axis as the sheet moved
+   * it, kept level.
+   */
+  #toBoids(): void {
+    const n = this.#n;
+    const boids = this.#boids;
+    const up = this.#rules.up;
+    const sky = this.#setup.sky;
+    const homeY = (sky.low + sky.high) / 2;
+    const eyeX = this.#aspect / 2;
+    const cosHeading = this.#shapes[SH_HEADING_COS] ?? 1;
+    const sinHeading = this.#shapes[SH_HEADING_SIN] ?? 0;
+    const cruise = BOIDS_CRUISE * this.#rate;
+    const x = this.#x;
+    const y = this.#y;
+    const x2 = this.#x2;
+    const y2 = this.#y2;
+    this.#boidRandom.seed(Math.imul(SEED + n, 0x9e3779b1));
+    boids.count = n;
+    for (let i = 0; i < n; i++) {
+      const sx = x[i] ?? 0;
+      const sy = y[i] ?? 0;
+      const plane = ((homeY - sy) * up.y) / (up.z + ((sy - 0.5) * up.y) / DISTANCE);
+      const z = clamp(plane + (this.#depth[i] ?? 0) * THICKNESS, -BOIDS_DEPTH, BOIDS_DEPTH);
+      const far = (DISTANCE + z) / DISTANCE;
+      let vx = cruise * cosHeading + (sx - (x2[i] ?? sx)) / STEP;
+      let vy = cruise * sinHeading + (sy - (y2[i] ?? sy)) / STEP;
+      const climb = vx * up.x + vy * up.y;
+      vx -= up.x * climb;
+      vy -= up.y * climb;
+      boids.place(i, eyeX + (sx - eyeX) * far, 0.5 + (sy - 0.5) * far, z, vx, vy, -up.z * climb);
+      this.#pushX[i] = 0;
+      this.#pushY[i] = 0;
+      this.#pushVX[i] = 0;
+      this.#pushVY[i] = 0;
+    }
+    this.#flying = true;
+    this.#catchUp = false;
+  }
+
+  /** Hand the birds back to the sheet: on its next step each springs from where it flew to its place. */
+  #toSheet(): void {
+    this.#flying = false;
+    this.#catchUp = true;
+  }
+
+  /** Bird i's drawn place (px, py) pulled toward its place on the M's racetrack, into #pulled. */
+  #towardMark(i: number, px: number, py: number): void {
+    const pulled = this.#pulled;
+    pulled[0] = px;
+    pulled[1] = py;
+    // Birds leave for the M head first and let go of it in the same order.
+    const markAge = this.#markAge;
+    const delay = MARK_STAGGER * clamp(0.5 * (1 - (this.#sheetA[i] ?? 0)), 0, 1);
+    const pull = smoothstep(delay, delay + MARK_FLY, markAge) * (1 - smoothstep(MARK_HOLD + delay, MARK_HOLD + delay + MARK_FLY, markAge));
+    if (pull > 0) {
+      const track = this.#trackPoint;
+      markTrackAt((this.#markPlace[i] ?? 0) + this.#markRun, track);
+      const spread = (this.#sheetB[i] ?? 0) * MARK_SCATTER;
+      const tx = this.#markX + ((track[0] ?? 0) + (track[3] ?? 0) * spread) * MARK_SIZE;
+      const ty = this.#markY + ((track[1] ?? 0) - (track[2] ?? 0) * spread) * MARK_SIZE;
+      pulled[0] = px + (tx - px) * pull;
+      pulled[1] = py + (ty - py) * pull;
+    }
+  }
+
+  /** A startle setting out from bird i: a ring over the sheet from its place, or a relay through the boids. */
+  #startle(i: number): void {
+    if (this.#flying) this.#boids.startle(i);
+    else this.#launchWave(this.#sheetA[i] ?? 0, this.#sheetB[i] ?? 0);
+  }
+
+  /** The bird drawn nearest the flock's centre. */
+  #centralBird(): number {
+    let best = 0;
+    let nearest = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < this.#n; i++) {
+      const d = ((this.#x[i] ?? 0) - this.#centreX) ** 2 + ((this.#y[i] ?? 0) - this.#centreY) ** 2;
+      if (d < nearest) {
+        nearest = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
   /** Start an agitation wave running out over the sheet from (a, b), in place of the oldest one. */
   #launchWave(a: number, b: number): void {
     const age = this.#waveAge;
@@ -777,7 +1035,7 @@ class FlockSim implements SceneSim {
     const random = this.#random;
     if (random.next() < (STARTLE_CALM + (STARTLE_CHAOS - STARTLE_CALM) * this.#chaos) * STEP) {
       const i = Math.min(this.#n - 1, Math.floor(random.next() * this.#n));
-      this.#launchWave(this.#sheetA[i] ?? 0, this.#sheetB[i] ?? 0);
+      this.#startle(i);
     }
   }
 
@@ -816,7 +1074,10 @@ class FlockSim implements SceneSim {
       this.#markRun += (STEP * (MARK_STREAM_SLOW + (MARK_STREAM_FAST - MARK_STREAM_SLOW) * knob.speed)) / MARK_SIZE;
       this.#markStrength = smoothstep(0, MARK_GATHER, age) * (1 - smoothstep(MARK_HOLD, MARK_END, age));
       // Letting go: a ripple runs out from the middle of the flock as the birds scatter.
-      if (age - STEP < MARK_HOLD && age >= MARK_HOLD) this.#launchWave(0, 0);
+      if (age - STEP < MARK_HOLD && age >= MARK_HOLD) {
+        if (this.#flying) this.#boids.startle(this.#centralBird());
+        else this.#launchWave(0, 0);
+      }
       if (age >= MARK_END) {
         this.#mark = false;
         this.#markStrength = 0;
@@ -882,7 +1143,7 @@ class FlockSim implements SceneSim {
       cruise = FALCON_STOOP;
       if (Math.hypot(dx, dy) < 0.025 || dx * vx + dy * vy < 0) {
         this.#falconStoop = false;
-        this.#launchWave(this.#sheetA[prey] ?? 0, this.#sheetB[prey] ?? 0);
+        this.#startle(prey);
       }
     } else {
       goal = vx >= 0 ? 0.5 : Math.PI - 0.5;
@@ -969,6 +1230,8 @@ class FlockSim implements SceneSim {
     const side = this.#entrySide;
     const aspect = this.#aspect;
     const shapes = this.#shapes;
+    // The boids have no sheet: the passage follows the flock's own middle and heading.
+    const flying = this.#flying;
     const lag = this.#lag;
     const sheetA = this.#sheetA;
     const sheetB = this.#sheetB;
@@ -995,7 +1258,7 @@ class FlockSim implements SceneSim {
           if (q < 1) {
             const e = q * (2 - q);
             const startX = side < 0 ? -(ENTER_BEYOND + ENTER_DEPTH * other) : aspect + ENTER_BEYOND + ENTER_DEPTH * other;
-            const sheetY = shapes[o + SH_Y] ?? 0;
+            const sheetY = flying ? this.#centreY : (shapes[o + SH_Y] ?? 0);
             const startY = sheetY + 0.5 * (yi - sheetY) + (sheetB[i] ?? 0) * ENTER_SPREAD;
             const flyX = startX + (xi - startX) * e;
             const flyY = startY + (yi - startY) * e;
@@ -1007,8 +1270,8 @@ class FlockSim implements SceneSim {
           // Down to the roost behind the skyline, closing up about the flock's centre.
           const q = clamp((exit - (EXIT_STAGGER * back + EXIT_SCATTER * luck)) / EXIT_FALL, 0, 1);
           if (q > 0) {
-            const centre = shapes[o + SH_X] ?? 0;
-            const heading = shapes[o + SH_HEADING_COS] ?? 1;
+            const centre = flying ? this.#centreX : (shapes[o + SH_X] ?? 0);
+            const heading = flying ? this.#headingX : (shapes[o + SH_HEADING_COS] ?? 1);
             const gather = smoothstep(0, 0.85, q);
             const roost = EXIT_ROOST_LOW + EXIT_ROOST_SPREAD * other;
             xi += (centre + (xi - centre) * EXIT_FUNNEL - xi) * gather + EXIT_SWOOP * heading * Math.sin(Math.PI * q);

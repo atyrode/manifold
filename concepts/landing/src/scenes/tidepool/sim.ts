@@ -14,23 +14,31 @@
 // The pointer dips a finger: a tap drops a ring of ripples and startles the anemones around it,
 // a drag trails ripples behind it.
 //
+// The life in the pool (life.ts) answers the water from the CPU: each frame the flow is averaged
+// onto a coarse grid on the GPU and read back without stalling (sims/readback.ts), a frame or two
+// late, and the plants stream and the fish dart in it.
+//
 // Textures:
 //   uSim0  ShallowWater.surface: depth (cells), level slope xy, caustic focus (rgba16f linear)
 //   uSim1  foam, agitation, wetness, 0 (rgba16f linear)
 //   uSim2  the layout: bed (cells), still depth, inside the basin, in the surge channel (rgba16f linear)
-//   uSim3  ShallowWater.water: depth, velocity xy (cells/s), 0 (rgba32f nearest)
-// Without float render targets the layout's still water is shown, unmoving.
+//   uSim3  the life: fish, the coarse flow and the plants' records (life.ts; rgba16f nearest)
+// Without float render targets the layout's still water is shown, unmoving, its plants and fish
+// still alive in it.
 //
 // Heights are in cells, exaggerated TIDEPOOL_RELIEF times against the frame (layout.ts); the grid is
 // TIDEPOOL_ROWS rows over the frame's height at every aspect, so the physics is the same on a phone.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
-import { GpuCompute } from "../../sims/gpu.ts";
+import { GpuCompute, type RenderTarget } from "../../sims/gpu.ts";
 import { hash31, lerp } from "../../sims/math.ts";
+import { PLANT_SUMMER } from "../../sims/plants.ts";
+import { GpuReadback } from "../../sims/readback.ts";
 import { ShallowWater } from "../../sims/shallow.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { layTidepool, TIDEPOOL_HEIGHTS, TIDEPOOL_RELIEF, TIDEPOOL_SEA_BAND, type TidepoolLayout } from "./layout.ts";
+import { TIDEPOOL_LIFE_WIDTH, TidepoolLife } from "./life.ts";
 
 /** Grid rows over the frame's height (columns follow the aspect). */
 export const TIDEPOOL_ROWS = 200;
@@ -69,8 +77,26 @@ const TAP = { radius: 3, height: 1.6, reach: 12 } as const;
 /** A drag: a ripple every so many cells along the path. */
 const DRAG = { radius: 2.2, height: 0.5, spacing: 2.5 } as const;
 
-export const TIDEPOOL_SIM_KNOBS = ["tide", "tideCycle", "swell", "period", "heading", "sets", "pace", "foam", "poolSize", "rock"] as const;
+export const TIDEPOOL_SIM_KNOBS = ["tide", "tideCycle", "swell", "period", "heading", "sets", "pace", "foam", "poolSize", "rock", "response", "fish", "season", "growth"] as const;
 type Knob = (typeof TIDEPOOL_SIM_KNOBS)[number];
+
+/** The water's flow, averaged onto the life's coarse grid: velocity (cells/s) and depth. */
+const FLOW_PROBE = `
+uniform sampler2D uWater;
+void main() {
+  vec4 sum = vec4(0.0);
+  for (int k = 0; k < 4; k++) sum += texture(uWater, vUv + (vec2(float(k % 2), float(k / 2)) - 0.5) * 0.5 * uTexel);
+  fragColor = vec4(sum.y, sum.z, sum.x, 0.0) * 0.25;
+}
+`;
+
+/** The life's knobs for this frame, into `out` (the plant knobs' season: high summer while off). */
+function readLifeKnobs(knobs: KnobReader<Knob>, frame: SimFrame, out: { response: number; fish: number; season: number; growth: number }): void {
+  out.response = knobs.value(frame, "response");
+  out.fish = knobs.value(frame, "fish");
+  out.season = knobs.on(frame, "season") ? knobs.amount(frame, "season") : PLANT_SUMMER;
+  out.growth = knobs.value(frame, "growth");
+}
 
 const FORCING = `
 uniform float uSea;        // the sea's level (cells)
@@ -170,39 +196,47 @@ class Swell {
   }
 }
 
-/** Data textures for machines without float render targets: the layout's still water, unmoving. */
+/** Data textures for machines without float render targets: the layout's still water, unmoving, and its life. */
 function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>): SceneSim {
   let key: LayoutKey | undefined;
   const textures: (WebGLTexture | undefined)[] = [];
   const made: DataTexture[] = [];
+  const life = new TidepoolLife(gl);
+  const lifeFrame = { response: 0, fish: 0, season: PLANT_SUMMER, growth: 0 };
   return {
     frame(frame) {
       const want: LayoutKey = { columns: Math.max(32, Math.round(TIDEPOOL_ROWS * frame.aspect)), rows: TIDEPOOL_ROWS, seed: knobs.value(frame, "rock"), size: knobs.value(frame, "poolSize") };
-      if (key !== undefined && sameKey(key, want)) return textures;
-      key = want;
-      const layout = layTidepool(want.columns, want.rows, want.seed, want.size, knobs.value(frame, "tide") * TIDE_RANGE);
-      const n = want.columns * want.rows;
-      const surface = new Float32Array(n * 4);
-      const carried = new Float32Array(n * 4);
-      for (let k = 0; k < n; k++) {
-        const depth = layout.rest[k] ?? 0;
-        surface[k * 4] = depth;
-        surface[k * 4 + 3] = 1;
-        carried[k * 4 + 2] = depth > 0 ? 1 : 0;
+      if (key === undefined || !sameKey(key, want)) {
+        key = want;
+        const layout = layTidepool(want.columns, want.rows, want.seed, want.size, knobs.value(frame, "tide") * TIDE_RANGE);
+        const n = want.columns * want.rows;
+        const surface = new Float32Array(n * 4);
+        const carried = new Float32Array(n * 4);
+        for (let k = 0; k < n; k++) {
+          const depth = layout.rest[k] ?? 0;
+          surface[k * 4] = depth;
+          surface[k * 4 + 3] = 1;
+          carried[k * 4 + 2] = depth > 0 ? 1 : 0;
+        }
+        for (const texture of made) texture.dispose();
+        made.length = 0;
+        for (const data of [surface, carried, layout.texture]) {
+          const texture = new DataTexture(gl, { width: want.columns, height: want.rows, format: "rgba16f" });
+          texture.upload(data);
+          made.push(texture);
+        }
+        life.relay(layout, want.seed);
       }
-      for (const texture of made) texture.dispose();
-      made.length = 0;
-      for (const data of [surface, carried, layout.texture, surface]) {
-        const texture = new DataTexture(gl, { width: want.columns, height: want.rows, format: "rgba16f" });
-        texture.upload(data);
-        made.push(texture);
-      }
+      readLifeKnobs(knobs, frame, lifeFrame);
+      life.step(frame.dt * frame.motion, frame.motionTime, lifeFrame, frame.pointer);
       textures.length = 0;
       for (const texture of made) textures.push(texture.texture);
+      textures.push(life.texture);
       return textures;
     },
     dispose() {
       for (const texture of made) texture.dispose();
+      life.dispose();
     },
   };
 }
@@ -219,6 +253,11 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
     const carry = { uPoke: new Float32Array(4), uFoam: 0 };
     const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
     const step = { dt: STEP, time: 0, uniforms: swell.uniforms };
+    const life = new TidepoolLife(gl);
+    const lifeFrame = { response: 0, fish: 0, season: PLANT_SUMMER, growth: 0 };
+    const probe = gpu.pass(FLOW_PROBE, "tidepool flow probe");
+    let flow: RenderTarget | undefined;
+    let readback: GpuReadback | undefined;
 
     let water: ShallowWater | undefined;
     let layoutTexture: DataTexture | undefined;
@@ -271,6 +310,14 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
       water.reset(layout.rest);
       layoutTexture?.upload(layout.texture);
       key = { ...want };
+      life.relay(layout, want.seed);
+      // The coarse flow the life reads back, on its grid.
+      if (flow === undefined || flow.height !== life.flowRows) {
+        flow?.dispose();
+        readback?.dispose();
+        flow = gpu.target({ width: TIDEPOOL_LIFE_WIDTH, height: life.flowRows, format: "rgba32f", filter: "nearest" });
+        readback = new GpuReadback(gl, TIDEPOOL_LIFE_WIDTH, life.flowRows);
+      }
       warmed = 0;
       time = 0;
       setStart = -Infinity;
@@ -278,11 +325,19 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
       return water;
     };
 
-    const show = (sim: ShallowWater): readonly (WebGLTexture | undefined)[] => {
+    /** The textures, once the life has stepped `seconds` (its fish and plants) in the latest flow read back. */
+    const show = (sim: ShallowWater, frame: SimFrame, seconds: number): readonly (WebGLTexture | undefined)[] => {
+      if (flow && readback) {
+        probe.run(flow, { textures: { uWater: sim.water } });
+        readback.poll(life.flow);
+        readback.request(flow.framebuffer);
+      }
+      readLifeKnobs(knobs, frame, lifeFrame);
+      life.step(seconds, frame.motionTime, lifeFrame, frame.pointer);
       textures[0] = sim.surface.texture;
       textures[1] = sim.carried?.texture;
       textures[2] = layoutTexture?.texture;
-      textures[3] = sim.water.texture;
+      textures[3] = life.texture;
       return textures;
     };
 
@@ -320,7 +375,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
           }, PREWARM_MS, PREWARM_STEPS, warmed, PREWARM_CHUNK);
           if (warmed < PREWARM_STEPS) {
             sim.view();
-            return show(sim);
+            return show(sim, frame, 0);
           }
           time = PREWARM_STEPS * STEP;
         }
@@ -365,11 +420,13 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
         }
         if (seconds > 0) sim.carry(seconds, time, carry);
         sim.view();
-        return show(sim);
+        return show(sim, frame, Math.max(0, frame.dt) * frame.motion);
       },
       dispose() {
         water?.dispose();
         layoutTexture?.dispose();
+        readback?.dispose();
+        life.dispose();
         gpu.dispose();
       },
     };

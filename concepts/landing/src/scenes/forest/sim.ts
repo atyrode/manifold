@@ -25,7 +25,8 @@
 //   uSim2  r16f, FOREST_FOG.width x FOREST_FOG.height over the screen's uv, linear: how thick the
 //          mist is here, about 1.
 import type { ParamDef } from "../../params.ts";
-import { hash31 } from "../../sims/math.ts";
+import { clamp, hash31, smoothstep } from "../../sims/math.ts";
+import { mulberry32 } from "../../sims/random.ts";
 import { atEase, facing, isShy, stepShrink, type Shrink } from "../../sims/temperament.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -318,35 +319,6 @@ const FOG_DEPTH = 6;
 /** How long the sim runs before the first frame (s): motes and mist already in motion. */
 const PREWARM_SECONDS = 1.5;
 
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-function clamp(x: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, x));
-}
-
-/** Mulberry32: a small seedable generator, so a seed always gives the same forest. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** A stable 0..1 number for three integers. */
-function hashUnit(a: number, b: number, c: number): number {
-  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ Math.imul(c | 0, 0x9e3779b1);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
 /** Smooth value noise 0..1 on the integer lattice. */
 function valueNoise(x: number, y: number, salt: number): number {
   const ix = Math.floor(x);
@@ -355,10 +327,10 @@ function valueNoise(x: number, y: number, salt: number): number {
   const fy = y - iy;
   const ux = fx * fx * (3 - 2 * fx);
   const uy = fy * fy * (3 - 2 * fy);
-  const a = hashUnit(ix, iy, salt);
-  const b = hashUnit(ix + 1, iy, salt);
-  const c = hashUnit(ix, iy + 1, salt);
-  const d = hashUnit(ix + 1, iy + 1, salt);
+  const a = hash31(ix, iy, salt);
+  const b = hash31(ix + 1, iy, salt);
+  const c = hash31(ix, iy + 1, salt);
+  const d = hash31(ix + 1, iy + 1, salt);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 

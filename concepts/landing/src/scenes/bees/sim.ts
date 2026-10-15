@@ -1,15 +1,15 @@
 // The hillside's living specks: dozens of bees working three hives and a handful of butterflies, flying
 // in the garden's own three-dimensional space and drawn at the size and place that space projects to.
 //
-// The world. The garden is a ground plane seen from the eye BEES_CAM metres above it, with its horizon
-// at uv height BEES_YH and a focal length of one screen height. A world point (X, Z, H) (metres: right,
-// away from the viewer, above the ground) therefore lies at screen (x, y) = (X / Z, BEES_YH - (BEES_CAM
-// - H) / Z) in screen heights from the middle of the view: the ground at depth Z is at BEES_YH -
-// BEES_CAM / Z, and a metre there is 1 / Z = beesScale(y) screen heights, the shader's own ground
-// mapping. Hives, flower drifts and the blossom in the orchard's crowns are laid out on screen as
-// fractions of the stage half width (shader.ts paints them there) and converted to world targets with
-// the same mapping, so a bee lands exactly on the landing board it is drawn next to and hovers at the
-// height of the flowers it works.
+// The world. The garden is a ground plane seen through CAMERA (a LevelCamera, sims/camera.ts): the eye
+// BEES_CAM metres above it, its horizon at uv height BEES_YH and a focal length of one screen height. A
+// world point (X, Z, H) (metres: right, away from the viewer, above the ground) therefore lies at
+// screen (x, y) = (X / Z, BEES_YH - (BEES_CAM - H) / Z) in screen heights from the middle of the view:
+// the ground at depth Z is at BEES_YH - BEES_CAM / Z, and a metre there is 1 / Z screen heights, the
+// shader's own ground mapping (beesS). Hives, flower drifts and the blossom in the orchard's crowns
+// are laid out on screen as fractions of the stage half width (shader.ts paints them there) and
+// converted to world targets through CAMERA, so a bee lands exactly on the landing board it is drawn
+// next to and hovers at the height of the flowers it works.
 //
 // Size. A worker is BEE_LENGTH long and a butterfly BUTTERFLY_SPAN across, so at the hives' distance a
 // bee is about one dither cell, and fewer the farther off: far traffic is one cell of a fainter dark,
@@ -46,6 +46,7 @@
 //   uSim0  rg8, one texel per dither cell (rows bottom to top, the shader's `cell`): R a BEES_CODE value
 //          (0 nothing), G the depth of what is drawn there in BEES_DEPTH_STEP-ths of a metre.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { LevelCamera } from "../../sims/camera.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
@@ -63,14 +64,11 @@ export const BEES_MAX_BEES = 64;
 export const BEES_MAX_BUTTERFLIES = 6;
 /** Bytes of depth per metre in the map's second channel. */
 export const BEES_DEPTH_STEP = 4;
+/** The garden's eye: everything flies in the world and is drawn where this projects it. */
+const CAMERA = new LevelCamera({ horizon: BEES_YH, eye: BEES_CAM, focal: 1 });
 
 /** Seconds the scene's entrance and its exit take (SceneDef.passage; the shader reads the same). */
 export const BEES_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
-
-/** Screen heights per metre of the garden at row y. */
-export function beesScale(y: number): number {
-  return Math.max(BEES_YH - y, 0.012) / BEES_CAM;
-}
 
 /** Half the width of the stage, screen heights: fractions `f` below are of this. */
 export function beesStage(aspect: number): number {
@@ -433,8 +431,8 @@ class BeesSim implements SceneSim {
     const def = BEES_HIVES[hive];
     if (def === undefined) throw new BeesSimError(`no hive ${hive}`);
     const g = this.#geo;
-    g.z = BEES_CAM / (BEES_YH - def.y);
-    g.x = def.f * this.#stage * g.z;
+    g.z = CAMERA.groundDepth(BEES_YH - def.y);
+    g.x = CAMERA.worldX(def.f * this.#stage, g.z);
     // The board is drawn at the hive's own depth; a bee on it stands a hair in front.
     g.landZ = g.z - 0.1;
     g.landH = (BEES_HIVE.stand + 0.004) * BEES_HIVE_SCALE;
@@ -461,13 +459,13 @@ class BeesSim implements SceneSim {
     const pt = this.#pt;
     if (patch.footY === undefined) {
       // On the ground: the point is the plant's foot at screen row sy, its head a little above it.
-      pt.z = BEES_CAM / (BEES_YH - sy);
-      pt.x = sx * pt.z;
+      pt.z = CAMERA.groundDepth(BEES_YH - sy);
+      pt.x = CAMERA.worldX(sx, pt.z);
       pt.h = patch.top + 0.05 + 0.12 * this.#random.next();
     } else {
-      pt.z = BEES_CAM / (BEES_YH - patch.footY);
-      pt.x = sx * pt.z;
-      pt.h = BEES_CAM - (BEES_YH - sy) * pt.z;
+      pt.z = CAMERA.groundDepth(BEES_YH - patch.footY);
+      pt.x = CAMERA.worldX(sx, pt.z);
+      pt.h = CAMERA.worldY(sy, pt.z);
     }
   }
 
@@ -475,8 +473,8 @@ class BeesSim implements SceneSim {
   #patchCoords(index: number, x: number, z: number, h: number): void {
     const patch = BEES_PATCHES[index];
     if (patch === undefined) throw new BeesSimError(`no patch ${index}`);
-    const sx = x / z;
-    const sy = patch.footY === undefined ? BEES_YH - BEES_CAM / z : BEES_YH - (BEES_CAM - h) / z;
+    const sx = CAMERA.screenX(x, z);
+    const sy = CAMERA.screenY(patch.footY === undefined ? 0 : h, z);
     this.#pc.ex = (sx / this.#stage - patch.f) / patch.rx;
     this.#pc.ey = (sy - patch.y) / patch.ry;
   }
@@ -949,10 +947,10 @@ class BeesSim implements SceneSim {
     for (const b of this.#bees) {
       if (b.mode === "inside" || b.z < 0.8) continue;
       // Its projection (the shader's own ground mapping) in cells, and its real size in cells there.
-      b.cx = followCell(b.cx, (b.x / b.z) * h + 0.5 * w);
-      b.cy = followCell(b.cy, (BEES_YH - (BEES_CAM - b.h) / b.z) * h);
+      b.cx = followCell(b.cx, CAMERA.screenX(b.x, b.z) * h + 0.5 * w);
+      b.cy = followCell(b.cy, CAMERA.screenY(b.h, b.z) * h);
       const depth = Math.min(255, Math.round(b.z * BEES_DEPTH_STEP));
-      const n = (BEE_LENGTH * h) / b.z;
+      const n = (BEE_LENGTH * h * CAMERA.focal) / b.z;
       if (n < 1.7) {
         specks.plot(b.cx, b.cy, n >= 0.8 ? BEES_CODE.bee : n >= 0.5 ? BEES_CODE.beeDim : BEES_CODE.beeFaint, depth);
         continue;
@@ -966,13 +964,13 @@ class BeesSim implements SceneSim {
     }
     for (const g of this.#butterflies) {
       if (!g.active || g.z < 0.8) continue;
-      g.cx = followCell(g.cx, (g.x / g.z) * h + 0.5 * w);
-      g.cy = followCell(g.cy, (BEES_YH - (BEES_CAM - g.h) / g.z) * h);
+      g.cx = followCell(g.cx, CAMERA.screenX(g.x, g.z) * h + 0.5 * w);
+      g.cy = followCell(g.cy, CAMERA.screenY(g.h, g.z) * h);
       const depth = Math.min(255, Math.round(g.z * BEES_DEPTH_STEP));
       const open = BUTTERFLY_OPEN[g.kind] ?? BEES_CODE.orange;
       const shut = BUTTERFLY_SHUT[g.kind] ?? BEES_CODE.orangeDim;
       // The wingbeat is the size of the speck: its half span in cells decides how many cells each wing is.
-      const half = 0.5 * (BUTTERFLY_SPAN * h) / g.z;
+      const half = (0.5 * (BUTTERFLY_SPAN * h) * CAMERA.focal) / g.z;
       if (half < 0.75) {
         specks.plot(g.cx, g.cy, g.open > 0.45 ? open : shut, depth);
       } else if (half < 1.5) {

@@ -7,16 +7,8 @@
 // far out on its pad it sits (outer 0..1): outer tufts turn and drop first, as on a real tree.
 // Hue is a position on the leaf palette: 0 deep summer green, 0.2 fresh green, 0.45 yellow,
 // 0.62 orange, 0.85 red, 1 deep crimson.
+import { lerp, smoothstep } from "../../sims/math.ts";
 import { BONSAI_MAPLE, BONSAI_PINE, BONSAI_SAKURA } from "./geometry.ts";
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-function mix(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
 
 /** When a deciduous tuft's leaves come out, turn and fall (year phase). */
 function timing(species: number, r1: number, outer: number): { out: number; turn: number; fall: number } {
@@ -62,12 +54,12 @@ export function bonsaiHue(species: number, y: number, r1: number, r2: number, ou
   const k = timing(species, r1, outer);
   // Japanese maple leaves open red-bronze and green over a few weeks; the cherry's open bronze-green.
   const opening = 1 - smoothstep(k.out + 0.03, k.out + 0.13, y);
-  let hue = mix(0.2, species === BONSAI_MAPLE ? 0.86 : 0.5, opening);
-  hue = mix(hue, 0.03 * r2, smoothstep(k.out + 0.1, 0.32, y));
+  let hue = lerp(0.2, species === BONSAI_MAPLE ? 0.86 : 0.5, opening);
+  hue = lerp(hue, 0.03 * r2, smoothstep(k.out + 0.1, 0.32, y));
   // Autumn: green to gold to orange to red; some tufts stop at orange.
-  const autumn = species === BONSAI_MAPLE ? mix(0.66, 0.97, r2) : mix(0.5, 0.82, r2);
+  const autumn = species === BONSAI_MAPLE ? lerp(0.66, 0.97, r2) : lerp(0.5, 0.82, r2);
   const turn = smoothstep(k.turn, k.turn + 0.1, y);
-  return mix(hue, autumn, turn);
+  return lerp(hue, autumn, turn);
 }
 
 /** Cherry blossom on a tuft, 0..1: opens before the leaves, then the petals fall. */

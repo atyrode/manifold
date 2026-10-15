@@ -15,7 +15,8 @@
 // stands in the grooves, drops burst on hard faces and drip from the eaves and the maple; snow
 // settles on whatever faces up, the gravel's crests first.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { GARDEN, GARDEN_CANOPY, GARDEN_GROOVE, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_PASSAGE, GARDEN_STONES } from "./sim.ts";
+import { gustPulseGlsl } from "../../sims/wind.ts";
+import { GARDEN, GARDEN_CANOPY, GARDEN_GROOVE, GARDEN_GUST_RISE, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_PASSAGE, GARDEN_STONES } from "./sim.ts";
 
 /**
  * The maple's limbs, garden space, as polylines of (x, y, z, radius): the trunk stands beyond the
@@ -68,6 +69,7 @@ const float GARDEN_SPAN = ${glslFloat(GARDEN.span)};
 const float GARDEN_HIGH = ${glslFloat(GARDEN.overheadHeight)};
 const float GARDEN_ABOVE_Y = ${glslFloat(GARDEN.overheadY)};
 const float GARDEN_EXIT = ${glslFloat(GARDEN_PASSAGE.exit)};
+const float GARDEN_GUST_RISE = ${glslFloat(GARDEN_GUST_RISE)};
 // Weather scales. The library's ground functions work in metres: a garden depth is ten. A splash
 // unit (garden depths: its crowns some 5-10 cm, larger than life so they hold a few cells); the
 // largest ripple ring in standing water (garden depths); drips' spacing along an edge, in cells
@@ -253,11 +255,9 @@ float gardenStoneShade(vec3 p, vec3 L, int skip) {
 
 // ---- the maple ----
 
-// A "now" gust (sim.ts gustAt): rises over a second, then dies away.
-float gardenGust(float age) {
-  if (age <= 0.0 || age >= 12.0) return 0.0;
-  return age * age * exp(2.0 * (1.0 - age));
-}
+// A "now" gust: the shared pulse (sims/wind.ts) at the sim's rise, as its leaves feel it:
+// windGustPulse(age, GARDEN_GUST_RISE).
+${gustPulseGlsl}
 
 // How far clump k of the foliage leans now: a slow sway on the breeze, livelier with the wind,
 // tossed by a gust (on the scene clock, so a gust plays with motion off).
@@ -433,13 +433,14 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   bool above = K_camera > 0.5;
   float season = floor(K_season + 0.5);
   float winter = step(2.5, season);
-  float gust = max(gardenGust(sinceTrigger(0)), gardenGust(passageOut() * GARDEN_EXIT)) * (K_wind < -0.05 ? -1.0 : 1.0);
+  float gust = max(windGustPulse(sinceTrigger(0), GARDEN_GUST_RISE), windGustPulse(passageOut() * GARDEN_EXIT, GARDEN_GUST_RISE)) * (K_wind < -0.05 ? -1.0 : 1.0);
   float markSize = K_mark > 0.0 ? GARDEN_MARK_SIZE.x + GARDEN_MARK_SIZE.y * K_mark : 0.0;
   float clock = texelFetch(uSim1, ivec2(GARDEN_ISLAND_COUNT, 0), 0).x;
 
   // Light. The key is the sun, or the moon once the sun is down. A low sun is weak on the flat but
   // strong on the flanks turned to it: expose it up as it sinks, as dunes does.
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
+  // The moon takes a phase (K_moon, SKY_MOON_PHASE): a slimmer one lights the gravel less at night.
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
   bool moonlit = sky.sun.y < -0.03;
   vec3 key = moonlit ? sky.moon : sky.sun;
   vec3 L = normalize(vec3(key.x, key.z, max(key.y, 0.004)));
@@ -656,12 +657,13 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   // ---- what the ray meets ----
   vec3 col;
   if (beyond) {
-    // Over the wall: the sky, and the woods of the temple grounds beyond, two rows of rounded
-    // crowns, dark green but lit by the sky, the farther row paler in the haze. Under cloud the
-    // sky is a grey deck drifting with the wind, darker bellied in heavy rain; and rain hangs in
+    // Over the wall: the woods of the temple grounds, two rows of rounded crowns, dark green but lit
+    // by the sky, the farther row paler in the haze, and between them only the haze of the sky just
+    // below the horizon (the horizon is the frame's top edge: no stars, moon or open sky show). Under
+    // cloud it is a grey deck drifting with the wind, darker bellied in heavy rain; and rain hangs in
     // grey shafts between here and the woods.
     vec3 dir = normalize(vec3(rd.x, rd.z, rd.y));
-    col = skyColor(sky, dir) + skyStars(sky, dir, 0.85) * vec3(0.92, 0.94, 1.0) * 1.2;
+    col = skyColor(sky, dir);
     vec3 haze = skyColor(sky, normalize(vec3(dir.x, 0.02, dir.z)));
     float x = uv.x * aspect;
     if (overcast > 0.0) {

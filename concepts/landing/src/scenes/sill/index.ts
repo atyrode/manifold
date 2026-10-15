@@ -6,7 +6,7 @@ import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef, SceneSim, SimFrame } from "../types.ts";
-import { SILL_PASSAGE, sillGlsl } from "./shader.ts";
+import { SILL_METEOR_TRIGGER, SILL_PASSAGE, sillGlsl } from "./shader.ts";
 
 /** How far (in screen heights) the pointer must stray from where the cat is looking before it turns. */
 const GAZE_SLACK = 0.05;
@@ -77,9 +77,9 @@ const params: readonly ParamDef[] = [
   toggle("room", "plant", "plant", true, "A potted plant at the end of the sill, its leaves nodding in the breeze."),
   feature("room", "curtain", "curtain", true, "breeze", 0.5, "A linen curtain beside the window, stirring as the air comes in; the wind stirs it more."),
   feature("city", "lights", "city lights", true, "lit", 0.45, "Windows across the city, each switching on or off now and then as the evening goes on: how many are lit."),
-  ...skyKnobs({ time: 0.8 }),
+  ...skyKnobs({ time: 0.8, stars: 0.5, moon: 1, meteors: { trigger: SILL_METEOR_TRIGGER } }),
   feature("sky", "clouds", "clouds", true, "cover", 0.35, "A cloud deck over the city, lit from below by its glow at night. Rain or snow closes it over whatever the cover, lower and darker the heavier they fall."),
-  ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 1 }),
+  ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 1, aurora: true }),
   toggle("weather", "drops", "drops on the glass", true, "Raindrops beading and running down the panes above the open sash, each holding a tiny upside-down picture of the lit city and catching the lamp along its edge.", { when: "rain" }),
   feature("manifold", "neon", "neon M", true, "brightness", 0.8, "A neon Manifold M on the roof across the street, humming in a soft glow; now and then one stroke winks out or stutters before it catches again. In the rain it glows in the wet air and shines back from the roof, the ledge and the sill; in snow it tints the snow on its frame. Now: a stutter.", { trigger: 2 }),
 ];
@@ -95,7 +95,7 @@ export const sillScene: SceneDef = {
     cat: { title: "Cat", blurb: "The cat on the sill: how big, how fidgety, and a look back at you." },
     room: { title: "Room", blurb: "Inside by the open window: the mug, the plant and the curtain." },
     city: { title: "City", blurb: "The skyline across the street, its windows lighting up and going dark." },
-    sky: atmosphereGroups.sky,
+    sky: atmosphereGroups.skyNight,
     weather: atmosphereGroups.weather,
     manifold: { title: "Manifold sign", blurb: "A landmark of its own: a neon M humming on the roof across the street." },
   },
@@ -104,4 +104,6 @@ export const sillScene: SceneDef = {
   sim: sillGaze,
   // Entrance: the cat hops up onto the sill and settles, its tail curling round. Exit: it stretches and hops down out of frame.
   passage: SILL_PASSAGE,
+  // The moon takes a phase (K_moon) in the shared sky.
+  features: { SKY_MOON_PHASE: 1 },
 };

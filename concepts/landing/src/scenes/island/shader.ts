@@ -823,6 +823,13 @@ vec4 islFarClouds(vec2 sp, float zScene) {
 
 // ---- the sea ----
 
+// The wind ripples: four trains crossing at odd angles, the longest 4 units, at a slowed .35 of the
+// deep-water pace.
+const RippleTable ISL_RIPPLES = RippleTable(4,
+  vec4[RIPPLE_TRAINS](vec4(4.0, 0.03, 0.35, 1.0), vec4(1.5, 0.035, 0.35, 0.0), vec4(0.9, 0.03, 0.35, 2.0), vec4(0.55, 0.025, 0.35, 4.0), vec4(0.0)),
+  vec2[RIPPLE_TRAINS](normalize(vec2(0.25, 1.0)), normalize(vec2(1.0, 0.35)), normalize(vec2(-0.5, 1.0)), normalize(vec2(0.7, -0.7)), vec2(0.0)),
+  vec2(7.0, 14.0));
+
 vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   // Past ~140 units everything below is faded flat anyway; keep the coordinates sane.
   vec3 P = t > 140.0 ? islRo + rd * 140.0 : Pfull;
@@ -835,7 +842,8 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   float wd = smoothstep(0.8, 3.6, dsh);
 
   // What one dither cell covers on the water, across and along the depth: every noise below fades
-  // out (to its mean) once a cell outgrows its features, so the far sea never crawls.
+  // out (to its mean) once a cell outgrows its features, so the far sea never crawls. A detail whose
+  // fade has reached 0 adds exactly nothing, so it is not evaluated at all there.
   vec2 foot = vec2(1.0, 1.0 / max(-rd.y, 0.1)) * t / (ISL_FOCAL * uRes.y);
   float fl = max(foot.x, foot.y);
   float lodB = 1.0 - smoothstep(0.1, 0.3, fl / 3.0);
@@ -847,14 +855,16 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   // absorbed first; seagrass patches in the middle depths; deep blue-green beyond.
   float depth = 0.04 + 0.55 * clamp(dsh, 0.0, 2.0) + 0.7 * max(dsh - 2.0, 0.0);
   vec3 trans = exp(-vec3(2.4, 0.9, 0.6) * depth);
-  float grassP = smoothstep(0.55, 0.68, vnoise(q.xz * 1.1 + 7.0)) * smoothstep(0.3, 0.9, dsh) * (1.0 - smoothstep(1.6, 2.4, dsh)) * lodW;
+  float grassP = lodW > 0.0 ? smoothstep(0.55, 0.68, vnoise(q.xz * 1.1 + 7.0)) * smoothstep(0.3, 0.9, dsh) * (1.0 - smoothstep(1.6, 2.4, dsh)) * lodW : 0.0;
   vec3 bed = mix(vec3(0.86, 0.76, 0.57), vec3(0.28, 0.40, 0.28), 0.75 * grassP);
   vec3 scatter = mix(vec3(0.10, 0.36, 0.40), vec3(0.04, 0.20, 0.30), smoothstep(0.3, 3.0, dsh));
   vec3 base = bed * trans + scatter * (1.0 - trans);
-  base *= 1.0 + 0.1 * (vnoise(P.xz * 0.35 + vec2(islT * 0.02, 0.0)) - 0.5) * lodB;
+  if (lodB > 0.0) base *= 1.0 + 0.1 * (vnoise(P.xz * 0.35 + vec2(islT * 0.02, 0.0)) - 0.5) * lodB;
   // Lighter swell bands drifting slowly across it, cut per cell.
-  float wv = vnoise(P.xz * vec2(0.9, 1.3) + vec2(islT * 0.05, islT * 0.03));
-  base = mix(base, base * 1.15 + vec3(0.025, 0.035, 0.035), 0.5 * hardEdge(smoothstep(0.6, 0.72, wv) * lodW));
+  if (lodW > 0.0) {
+    float wv = vnoise(P.xz * vec2(0.9, 1.3) + vec2(islT * 0.05, islT * 0.03));
+    base = mix(base, base * 1.15 + vec3(0.025, 0.035, 0.035), 0.5 * hardEdge(smoothstep(0.6, 0.72, wv) * lodW));
+  }
 
   // Light: the island and the clouds, the gull and the balloon all shade the water.
   float cs = max(islCloudShadow(P, islCover * (1.0 - islStorm)) * smoothstep(0.02, 0.25, islLdir.y), islAirShadow(P));
@@ -865,21 +875,18 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   vec3 col = base * lm * 1.1;
 
   // Wind ripples and a long swell: the slope tilts the mirror of the sky; the rain rings add their own.
-  vec3 sl = rippleTrain(P.xz, islT, foot, 4.0, normalize(vec2(0.25, 1.0)), 0.03, 0.35, 1.0, vec2(7.0, 14.0))
-          + rippleTrain(P.xz, islT, foot, 1.5, normalize(vec2(1.0, 0.35)), 0.035, 0.35, 0.0, vec2(7.0, 14.0))
-          + rippleTrain(P.xz, islT, foot, 0.9, normalize(vec2(-0.5, 1.0)), 0.03, 0.35, 2.0, vec2(7.0, 14.0))
-          + rippleTrain(P.xz, islT, foot, 0.55, normalize(vec2(0.7, -0.7)), 0.025, 0.35, 4.0, vec2(7.0, 14.0));
+  vec3 sl = rippleSpectrum(P.xz, islT, foot, 1.0, ISL_RIPPLES);
   float ringFade = 1.0 - smoothstep(10.0, 20.0, t);
   vec3 rr3 = vec3(0.0);
   if (K_rain > 0.0) {
     rr3 = rainRipples(P.xz * 2.4, islTime, K_rain);
     sl.xy += rr3.xy * 0.5 * ringFade;
   }
-  vec3 nrm = normalize(vec3(-sl.x, 1.0, -sl.y));
-  vec3 rr = reflect(rd, nrm);
+  WaterMirror sea = waterMirror(rd, sl.xy, 0.12);
+  vec3 rr = sea.ray;
   rr.y = max(rr.y, 0.02);
   rr = normalize(rr);
-  float fres = clamp(1.3 * fresnelSchlick(dot(nrm, -rd), 0.02, 0.12), 0.0, 0.9);
+  float fres = clamp(1.3 * sea.fresnel, 0.0, 0.9);
   col = mix(col, islSkyCol(rr), fres);
 
   // Foam: a ragged swash lapping the beach, a thin line at the waterline, and long soft swell
@@ -890,10 +897,12 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   float fr = (0.03 + 0.17 * (0.5 + 0.5 * sin(ph))) * edgeN;
   float lace = smoothstep(0.25, 0.6, vnoise(vec2(ang * 16.0, dsh * 22.0 - islT * 0.25)));
   float foam = max(bell((dsh + 0.01) / 0.035) * 0.55 * (0.6 + 0.4 * lace), bell((dsh - fr) / (0.035 + 0.03 * edgeN)) * (0.35 + 0.65 * lace));
-  float wph = dsh * 1.5 + islT * 0.09 + 0.9 * vnoise(vec2(ang * 2.2 + 1.0, dsh * 0.5 + islT * 0.01));
-  float crest = 0.5 - 0.5 * cos(TAU * wph);
-  float broken = smoothstep(0.35, 0.7, vnoise(vec2(ang * 4.0 + floor(wph) * 3.1, 2.0)));
-  foam = max(foam, 0.5 * smoothstep(0.86, 0.985, crest) * broken * smoothstep(0.15, 0.6, dsh) * (1.0 - smoothstep(1.2, 4.5, dsh)) * lodL);
+  if (lodL > 0.0) {
+    float wph = dsh * 1.5 + islT * 0.09 + 0.9 * vnoise(vec2(ang * 2.2 + 1.0, dsh * 0.5 + islT * 0.01));
+    float crest = 0.5 - 0.5 * cos(TAU * wph);
+    float broken = smoothstep(0.35, 0.7, vnoise(vec2(ang * 4.0 + floor(wph) * 3.1, 2.0)));
+    foam = max(foam, 0.5 * smoothstep(0.86, 0.985, crest) * broken * smoothstep(0.15, 0.6, dsh) * (1.0 - smoothstep(1.2, 4.5, dsh)) * lodL);
+  }
   if (q.x > 1.9 && q.x < 4.4 && abs(q.z - ISL_PIER_Z) < 0.5) {
     vec2 pp = vec2(q.x - 2.25, abs(q.z - ISL_PIER_Z) - 0.2);
     float kx = clamp(floor(pp.x / 0.9 + 0.5), 0.0, 2.0);
@@ -924,15 +933,17 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
 
   // Sparkle: little stars that kindle and die over a second or two, cut per cell; none where a cell
   // is bigger than they are.
-  vec2 gs = P.xz / 0.42;
-  vec2 sid = floor(gs);
-  float hh = hash12(sid + 9.1);
-  float ph2 = fract(islT * (0.11 + 0.1 * fract(hh * 7.7)) + hh * 13.0);
-  float pulse = smoothstep(0.88, 0.93, ph2) * (1.0 - smoothstep(0.96, 1.0, ph2));
-  vec2 sc2 = 0.25 + 0.5 * hash22(sid + 4.4);
-  float spk = (1.0 - smoothstep(0.02, 0.06, length((fract(gs) - sc2) * 0.42))) * pulse * step(hh, 0.55) * lodS;
-  float spkL = clamp(dot(islLcol, vec3(0.5)) + dot(islAmb, vec3(0.2)), 0.12, 1.0);
-  col += vec3(1.0, 0.99, 0.92) * (spkL * 0.8 * hardEdge(spk * 1.1));
+  if (lodS > 0.0) {
+    vec2 gs = P.xz / 0.42;
+    vec2 sid = floor(gs);
+    float hh = hash12(sid + 9.1);
+    float ph2 = fract(islT * (0.11 + 0.1 * fract(hh * 7.7)) + hh * 13.0);
+    float pulse = smoothstep(0.88, 0.93, ph2) * (1.0 - smoothstep(0.96, 1.0, ph2));
+    vec2 sc2 = 0.25 + 0.5 * hash22(sid + 4.4);
+    float spk = (1.0 - smoothstep(0.02, 0.06, length((fract(gs) - sc2) * 0.42))) * pulse * step(hh, 0.55) * lodS;
+    float spkL = clamp(dot(islLcol, vec3(0.5)) + dot(islAmb, vec3(0.2)), 0.12, 1.0);
+    col += vec3(1.0, 0.99, 0.92) * (spkL * 0.8 * hardEdge(spk * 1.1));
+  }
 
   // The sun's or moon's glitter path on the broken mirror, in flecks; a tight glint, and the
   // lantern's long streak.
@@ -940,8 +951,10 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   if (lightL > 0.02) {
     float a = 1.0 - dot(rr, islLdir);
     col += islLcol * (0.9 * hardEdge(exp(-a * 380.0) * lightL * 1.3));
-    float fleck = smoothstep(0.35, 0.75, vnoise(P.xz * vec2(2.2, 3.2) + vec2(islT * 0.08, 0.0)));
-    col += islLcol * (0.45 * hardEdge(exp(-a * 22.0) * fleck * lodS * min(lightL * 1.6, 1.0)));
+    if (lodS > 0.0) {
+      float fleck = smoothstep(0.35, 0.75, vnoise(P.xz * vec2(2.2, 3.2) + vec2(islT * 0.08, 0.0)));
+      col += islLcol * (0.45 * hardEdge(exp(-a * 22.0) * fleck * lodS * min(lightL * 1.6, 1.0)));
+    }
   }
   if (islDark > 0.02) {
     vec3 tl = normalize(islLampL - P);

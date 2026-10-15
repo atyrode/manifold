@@ -17,14 +17,24 @@
 // the start of the entrance, tilting up into it at the exit), the canopy leans before the passage's gust, and
 // the leaves it blows come from the simulation. All of it is exactly off at rest.
 //
-// Knobs read here: K_species, K_season, K_parkSeed, K_lamp, K_time, K_cycle, K_clouds, K_rain, K_fog,
-// K_wind (the others, K_fall, K_gusts and K_mark, live in the simulation). Textures: see sim.ts.
+// Knobs read here: K_species, K_season, K_parkSeed, K_lamp, K_time, K_cycle, K_stars, K_moon, K_meteors,
+// K_clouds, K_rain, K_fog, K_wind, K_aurora (the others, K_fall, K_gusts and K_mark, live in the
+// simulation). Textures: see sim.ts. Over the far crowns the shared sky components (src/scenes/README.md,
+// "Composing components"): stars, the moon in its phase (SKY_MOON_PHASE), the aurora and shooting stars,
+// behind the clouds and the canopy.
 import { autumnLayoutGlsl } from "./layout.ts";
+
+/** Trigger slot of the shooting stars' "now" button (0 is the gusts', 1 the leaf M's). */
+export const AUTUMN_METEOR_TRIGGER = 2;
 
 export const autumnGlsl = `
 // ---- autumn ----
 ${autumnLayoutGlsl}
 const float AUTUMN_FOV = 0.9272952;   // 2 atan(0.5 / focal) for focal 1
+// Where shooting stars set out (skyAngles of the view ray: bearing, elevation, radians): the sky over
+// the far crowns, under the canopy's edge in a 16:9 frame.
+const int AUTUMN_METEOR_SLOT = ${AUTUMN_METEOR_TRIGGER};
+const vec4 AUTUMN_METEOR_FIELD = vec4(-0.5, 0.3, 1.0, 0.14);
 
 // This pixel's light and the season, set once at the top of sceneAutumn.
 Sky autumnSky;
@@ -374,9 +384,16 @@ vec4 autumnFarRow(vec2 p, float k) {
 
 vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, float t, out float depthZ) {
   vec3 sk = skyColor(autumnSky, dir);
-  sk += skyStarLight(autumnSky, dir, 0.5) * (1.0 - autumnOvercast);
+  sk += skyStarLight(autumnSky, dir, K_stars) * (1.0 - autumnOvercast);
+  // The aurora and shooting stars over the far crowns, behind the clouds; the rain's deck shuts them out.
+  float foot = 1.0 / (AUTUMN_FOCAL * uRes.y);
+  sk += auroraM(dir, autumnTm, K_aurora, foot) * auroraSeen(autumnSky, autumnOvercast);
   vec4 cl = skyClouds(autumnSky, dir, t, max(K_clouds, autumnOvercast), K_wind);
   sk = mix(sk, cl.rgb, cl.a);
+  float meteorSeed;
+  float meteorAt = meteorAge(autumnTm, K_meteors, AUTUMN_METEOR_SLOT, meteorSeed);
+  float meteor = meteorStreak(skyAngles(dir), AUTUMN_METEOR_FIELD, meteorAt, meteorSeed, foot);
+  sk += METEOR_TINT * hardEdge(meteor * auroraSeen(autumnSky, max(cl.a, autumnOvercast)));
   sk = greyed(sk, vec3(0.94, 0.96, 1.0), 0.55 * autumnOvercast);
   depthZ = 1e4;
   if (K_rain > 0.0) {
@@ -718,7 +735,7 @@ void autumnLoose(vec2 p, float opaqueZ) {
 
 void autumnSetup(float t) {
   autumnTm = uMotionTime;
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, autumnTm));
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, autumnTm)), K_moon);
   autumnSky = sky;
   autumnOvercast = weatherOvercast(K_rain, 0.0);
   autumnWet = clamp(uWeather.x, 0.0, 1.0);
@@ -740,7 +757,7 @@ void autumnSetup(float t) {
   vec3 amb = sky.ambient;
   amb = mix(amb, vec3(dot(amb, LUMA)) * vec3(1.04, 1.0, 0.92), 0.3);
   amb = greyed(amb, vec3(0.95, 0.97, 1.0), 0.6 * autumnOvercast);
-  autumnAmb = amb * (1.0 - 0.25 * autumnOvercast);
+  autumnAmb = amb * (1.0 - 0.25 * autumnOvercast) + auroraGlow(autumnTm, K_aurora) * auroraSeen(sky, autumnOvercast);
   float season = clamp(K_season, 0.0, 1.0);
   autumnThin = smoothstep(0.3, 1.0, season);
   autumnGreen = 1.0 - smoothstep(0.05, 0.4, season);

@@ -19,6 +19,9 @@ const registry = [
   "budgets\tbudgets",
   "pwa\tpwa",
   "axioms\taxioms",
+  "landing-concept\ttsc concepts/landing",
+  "landing-concept\tlanding concept tests",
+  "landing-webgl\tverify:landing-webgl",
   "nix\tverify:nix-packaging",
 ].join("\n");
 

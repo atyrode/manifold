@@ -6,6 +6,11 @@
 //   smoothstep(e0, e1, x)    GLSL smoothstep; smoothstep(0, 1, x) is the clamped `smooth(x)` too
 //   fract(x)                 x - floor(x) (GLSL fract)
 //   hash31(a, b, c)          a stable number in [0, 1) for three integers (a lattice hash)
+//   glslHash12(x, y)         common.ts `hash12(vec2(x, y))` in float32 steps, as the shader runs it:
+//                            for a sim that must agree with what its shader hashes (pond's koi
+//                            loops, falls' bank ferns)
+//   glslHash22(x, y, out)    common.ts `hash22(vec2(x, y))` the same way, into out[0], out[1] (tide
+//                            pool's holdfasts)
 //
 // Usage:
 //   const fade = smoothstep(0.2, 0.6, age / life);
@@ -48,4 +53,40 @@ export function hash31(a: number, b: number, c: number): number {
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+const f32 = Math.fround;
+
+/** common.ts `hash12(vec2(x, y))`, step by step in float32 as the shader runs it. */
+export function glslHash12(x: number, y: number): number {
+  const k = f32(0.1031);
+  const s = f32(33.33);
+  let a = f32(f32(f32(x) * k) - Math.floor(f32(f32(x) * k)));
+  let b = f32(f32(f32(y) * k) - Math.floor(f32(f32(y) * k)));
+  let c = a;
+  const d = f32(f32(f32(a * f32(b + s)) + f32(b * f32(c + s))) + f32(c * f32(a + s)));
+  a = f32(a + d);
+  b = f32(b + d);
+  c = f32(c + d);
+  const h = f32(f32(a + b) * c);
+  return f32(h - Math.floor(h));
+}
+
+/** common.ts `hash22(vec2(x, y))`, step by step in float32, into out[0] and out[1]. */
+export function glslHash22(x: number, y: number, out: Float64Array): void {
+  const fx = f32(f32(x) * f32(0.1031));
+  const fy = f32(f32(y) * f32(0.103));
+  const fz = f32(f32(x) * f32(0.0973));
+  let a = f32(fx - Math.floor(fx));
+  let b = f32(fy - Math.floor(fy));
+  let c = f32(fz - Math.floor(fz));
+  const s = f32(33.33);
+  const d = f32(f32(f32(a * f32(b + s)) + f32(b * f32(c + s))) + f32(c * f32(a + s)));
+  a = f32(a + d);
+  b = f32(b + d);
+  c = f32(c + d);
+  const u = f32(f32(a + b) * c);
+  const v = f32(f32(a + c) * b);
+  out[0] = f32(u - Math.floor(u));
+  out[1] = f32(v - Math.floor(v));
 }

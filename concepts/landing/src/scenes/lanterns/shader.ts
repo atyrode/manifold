@@ -44,7 +44,10 @@
 // image in the water, looked up along the same rippled reflection as the bank's.
 //
 // Knobs: K_ripple, K_reflection, K_mist (water), K_current (ripples drift with the stream; the
-// lanterns themselves are the sim's), K_time, K_cycle (sky), K_rain, K_wind (weather), the birds'.
+// lanterns themselves are the sim's), K_time, K_cycle, K_stars, K_meteors (sky), K_rain, K_wind,
+// K_aurora (weather), the birds'. The shared sky components (src/scenes/README.md, "Composing
+// components"): the stars, the aurora and shooting stars, in the sky and (but the stars) in the
+// river's mirror.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN_HALF, LANTERN_TALL, MAX_LANTERNS, ROCK_DOWNSTREAM, ROCKS } from "./sim.ts";
@@ -52,8 +55,18 @@ import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN
 const rocks = ROCKS.map((rock) => `vec4(${glslFloat(rock.x)}, ${glslFloat(rock.z)}, ${glslFloat(rock.radius)}, ${glslFloat(rock.height)})`).join(", ");
 const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFloat(d.z)})`).join(", ");
 
+/** The shared stars' default density (K_stars); the scene's own sparse stars thin out below it. */
+export const LANTERNS_STARS = 0.55;
+/** Trigger slot of the shooting stars' "now" button (0 is the flotillas', 1 the M lantern's). */
+export const LANTERNS_METEOR_TRIGGER = 2;
+
 export const lanternsGlsl = `
 ${birdsGlsl}
+const float LANTERNS_STARS = ${glslFloat(LANTERNS_STARS)};
+// Where shooting stars set out, in the frame of the young moon and the scene's own stars (screen
+// heights from the middle of the horizon): high over the far bank.
+const int LANTERNS_METEOR_SLOT = ${LANTERNS_METEOR_TRIGGER};
+const vec4 LANTERNS_METEOR_FIELD = vec4(-0.6, 0.3, 1.2, 0.08);
 const float LANTERNS_HORIZON = ${glslFloat(HORIZON)};
 const float LANTERNS_FOV = ${glslFloat(FOV)};
 const float LANTERNS_FOCAL = ${glslFloat(FOCAL)};
@@ -351,12 +364,13 @@ vec4 lanternsOvercast(vec2 e, vec3 haze, float tm, out float shaft) {
   return vec4(deck, cover);
 }
 
-// What a ray sees beyond the water: the sky (with a few stars when seen directly) and the young
-// moon, or the rain's deck of cloud and its shafts, the hills, a warm glow in the haze over the
-// temple grounds, the far bank where the ray crosses its plane (its tiles, lacquer and stone
-// glossy in the wet), and mist lying along the bank's foot. o is where the ray leaves (the eye, or
-// a point on the water); lift tips the sky lookup up a little for a rough mirror (and softens the
-// moon); foot is a cell's size at the bank (m), blur how far the water draws its lamps out.
+// What a ray sees beyond the water: the sky (with a few stars when seen directly), the aurora and
+// shooting stars, and the young moon, or the rain's deck of cloud and its shafts, the hills, a warm
+// glow in the haze over the temple grounds, the far bank where the ray crosses its plane (its tiles,
+// lacquer and stone glossy in the wet), and mist lying along the bank's foot. o is where the ray
+// leaves (the eye, or a point on the water); lift tips the sky lookup up a little for a rough mirror
+// (and softens the moon, the aurora and a meteor); foot is a cell's size at the bank (m), blur how
+// far the water draws its lamps out.
 // Returns the colour without the bank's lamps; lamp returns their light (x as seen, y drawn out),
 // faded in with the dusk and veiled by the mist, for the caller to lay on.
 vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, bool direct, out vec2 lamp) {
@@ -365,10 +379,17 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
   float ey = r.y / r.z * LANTERNS_FOCAL;
   float shaft;
   vec4 deck = lanternsOvercast(vec2(ex, ey), haze, tm, shaft);
+  // The aurora and shooting stars, mirrored too, softened by a rough mirror's lift; the deck drawn
+  // over them below hides them.
+  col += auroraM(r, tm, K_aurora, max(1.0 / (LANTERNS_FOCAL * uRes.y), lift)) * auroraSeen(sky, 0.0);
+  float meteorSeed;
+  float meteorAt = meteorAge(tm, K_meteors, LANTERNS_METEOR_SLOT, meteorSeed);
+  col += METEOR_TINT * hardEdge(meteorStreak(vec2(ex, ey), LANTERNS_METEOR_FIELD, meteorAt, meteorSeed, max(1.0 / uRes.y, lift)) * sky.night);
   if (direct) {
-    col += skyStarLight(sky, r, 0.55) * (1.0 - deck.w);
+    col += skyStarLight(sky, r, K_stars) * (1.0 - deck.w);
     float shown = (1.0 - sky.day) * clamp(0.35 + sky.night, 0.0, 1.0) * smoothstep(0.03, 0.09, ey) * (1.0 - deck.w);
     shown *= 1.0 - smoothstep(0.1, 0.3, dot(col, LUMA)); // lost in the afterglow
+    shown *= K_stars < LANTERNS_STARS ? K_stars / LANTERNS_STARS : 1.0; // fewer stars, fainter
     col += vec3(0.82, 0.87, 1.0) * 0.75 * lanternsStars(vec2(ex, ey)) * shown;
   }
   vec3 moon = lanternsMoon(vec2(ex, ey), 0.5 * lift);
@@ -417,22 +438,6 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
     lamp *= 1.0 - murk;
   }
   return col;
-}
-
-// The river's surface: five trains of ripples, crests mostly along the current, running slowly
-// across it and carried downstream by drift (m). Returns the slope (dh/dx, dh/dz) of the trains
-// these cells can draw and, in z, the slope variance of those too fine to draw, which roughen the
-// mirror instead (as LEAN mapping does, Olano & Baker 2010). A train is drawn only once its
-// wavelength spans a dozen cells; finer ones would crawl through the dither.
-vec3 lanternsRipples(vec2 p, float tm, vec2 cellSize, float amp, float drift) {
-  vec3 sum = vec3(0.0);
-  for (int i = 0; i < 5; i++) {
-    float fi = float(i);
-    float turn = 0.5 * sin(fi * 2.4 + 0.7);
-    // Deep-water waves, slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz.
-    sum += rippleTrain(p + vec2(drift, 0.0), tm, cellSize, 6.0 * pow(0.53, fi), vec2(sin(turn), cos(turn)), amp * (0.06 - 0.007 * fi), 0.14 * (1.0 - 0.1 * fi), fi * 1.9, vec2(7.0, 14.0));
-  }
-  return sum;
 }
 
 // Rows of wave facets that can catch a light. A light mirrored at a slope the ripples only now and
@@ -643,6 +648,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   // Rain comes under cloud: the light dimmer and flatter, the haze grey, the mist thicker.
   float overcast = sqrt(max(K_rain, 0.0));
   lit *= 1.0 - 0.35 * overcast;
+  lit += auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
   haze = greyed(haze, vec3(0.9), 0.55 * overcast);
   // Entering, the dusk light settles in from a deeper blue hour; leaving, it sinks again with the
   // flames. Exactly 1 once arrived and while staying.
@@ -703,7 +709,13 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     zp = g.p.y;
     cellX = g.foot.x;
     cellZ = g.foot.y;
-    vec3 rip = lanternsRipples(g.p, tm, g.foot, rippled, 0.6 * current * tm);
+    // The river's surface: five trains of ripples, crests mostly along the current (rocking half a
+    // radian about it), running slowly across it, carried downstream at 0.6 of the stream (toward
+    // -x), and slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz. xy: the
+    // slope the cells draw, z: the variance of the trains too fine to draw, which roughens the
+    // mirror instead (rippleSpectrum).
+    vec3 rip = rippleSpectrum(waterDrift(g.p, vec2(-0.6 * current, 0.0), tm), tm, g.foot, rippled,
+                              RippleFan(5, vec2(6.0, 0.53), vec2(0.06, 0.007), vec2(0.14, 0.1), vec2(0.0), vec3(0.5, 2.4, 0.7), 1.9, vec2(7.0, 14.0)));
     glint = lanternsGlitter(g.p, tm);
 
     // The stones: glassy water in the lee of each, a wake opening behind it in two arms that catch
@@ -748,11 +760,10 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
       hidden += K_rain * 0.008 * (1.0 - rainFade);
     }
 
-    vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
     float spread = sqrt(0.0012 + hidden + 0.003 * K_rain);
-    fres = fresnelSchlick(dot(n, -dir), 0.02, spread * 0.6);
-    refl = reflect(dir, n);
-    refl = vec3(refl.x, max(refl.y, 0.002), max(refl.z, 0.05));
+    WaterMirror river = waterMirror(dir, slope, spread * 0.6);
+    fres = river.fresnel;
+    refl = vec3(river.ray.x, max(river.ray.y, 0.002), max(river.ray.z, 0.05));
     sigma = (0.04 + 0.16 * K_reflection) * (0.45 + 0.55 * min(rippled, 1.0)) + 0.5 * spread;
     // The sky, hills and bank are mirrored by the same ripples tipped more steeply, so the long
     // swells fold the afterglow low over the bank and the dark bank and upper sky into broad

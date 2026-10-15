@@ -1,13 +1,14 @@
 // Kelp forest: side-on in mid-water among giant kelp, the sunlit surface above and the sea floor
 // below. Every stipe is a buoyant Verlet chain swaying in the swell's surge, its top floating along
 // the surface as the canopy; the fish school flies as boids and a sea lion passes now and then
-// (sim.ts). The shader (shader.ts) draws the kelp as stipes hung with long ribbon blades and lights
-// it all through the water: shafts through the canopy's gaps, caustics, Snell's window, haze.
-import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
+// (sim.ts). The shader (shader.ts) draws the kelp as stipes hung with long ribbon blades (or, as bull
+// kelp, bare stipes under a gas bulb and its fan of straps) and lights it all through the water:
+// shafts through the canopy's gaps, caustics, Snell's window, haze.
+import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { kelpGlsl } from "./shader.ts";
-import { KELP_PASSAGE, kelpSim } from "./sim.ts";
+import { KELP_PASSAGE, kelpSim, kelpSpecies } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range("sea", "surge", "surge", 0.3, "How far the swell's surge sways the forest back and forth. It travels across as a long, slow wave, so near and far plants lean in turn."),
@@ -16,6 +17,7 @@ const params: readonly ParamDef[] = [
   feature("sea", "swell", "big swells", true, "frequency", 0.3, "Now and then a big swell rolls through: the whole forest bows in a wave from one side to the other, swings back and settles.", { trigger: 0 }),
   range("forest", "density", "kelp density", 0.6, "How many plants stand in the forest, and how closely the canopy covers the surface. Low: a few stipes in open water. High: a dense forest that closes in on the middle of the frame."),
   seed("forest", "kelpSeed", "arrangement", "Where the plants stand; re-seed for another stretch of forest."),
+  choice("forest", "species", "kelp", kelpSpecies.map((label, value) => ({ label, value })), 0, "Giant: giant kelp, stipes hung with blades all the way up, the grown ones reaching the surface and trailing along it as a canopy. Bull: bull kelp, shorter bare stipes each held up by a single gas bulb with a fan of long strap blades streaming from it; the bulbs swing through the surge in wide arcs and the water above stays open. Mixed: some of each."),
   range("forest", "understory", "floor life", 0.6, "What grows on the sea floor between the holdfasts: boulders, some crusted pink, purple urchins, anemones and small kelp nodding in the surge."),
   range("forest", "haze", "depth haze", 0.5, "How quickly the forest fades into the blue-green distance."),
   feature("light", "rays", "light rays", true, "strength", 0.6, "Shafts of light falling through the gaps in the canopy and fanning down through the water."),

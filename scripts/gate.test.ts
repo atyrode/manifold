@@ -19,6 +19,8 @@ const requiredGroups = [
   "budgets",
   "pwa",
   "axioms",
+  "landing-concept",
+  "landing-webgl",
   "nix",
 ] as const;
 
@@ -184,6 +186,21 @@ describe("gate CLI", () => {
       "^(?!a revoked preview browser identity returns through production admission without clearing content$).*$",
       "^a revoked preview browser identity returns through production admission without clearing content$",
     ]);
+  });
+
+  test("landing slices type, test and render the whole concept lab", async () => {
+    const concept = await runSelectedTasks("landing-concept");
+    const webgl = await runSelectedTasks("landing-webgl");
+    for (const { result } of [concept, webgl]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+    }
+    expect(concept.invocations.map((invocation) => invocation.args.join(" ")).sort()).toEqual([
+      "test concepts/landing",
+      "tsc -p concepts/landing",
+    ]);
+    // Named checks would narrow the run; without any, the runner renders every registered check.
+    expect(webgl.invocations).toEqual([{ args: ["concepts/landing/verify.ts"] }]);
   });
 
   test.each([

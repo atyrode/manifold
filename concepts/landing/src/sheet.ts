@@ -1,17 +1,20 @@
-// Data textures painted on the CPU: the pond's plant and canopy sheets. Painting runs on a worker
-// thread so it never competes with the frame loop; if the worker is unavailable, it runs on the
-// page in small steps between frames instead. The last finished sheet stays bound meanwhile, and
-// outlives its painter for a while, so a scene entered again shows its sheets at once.
+// Data textures painted on the CPU: the pond's plant atlas (the sprites its simulated border plants
+// are drawn from, see decor.ts and sims/plantsheet.ts) and its canopy sheet. Painting runs on a
+// worker thread so it never competes with the frame loop; if the worker is unavailable, it runs on
+// the page in small steps between frames instead. The last finished sheet stays bound meanwhile, and
+// outlives its painter for a while, so a scene entered again shows its sheets at once. A painter
+// keeps one sheet at a time on the worker: requests that come while it paints (a slider dragged
+// through many values) wait, each replacing the last, so only the newest is painted next.
 
-import { paintCanopy, paintDecor, type CanopyConfig, type DecorConfig } from "./decor.ts";
+import { paintAtlas, paintCanopy, type CanopyConfig } from "./decor.ts";
 
-/** What to paint: the plant sheet, or the canopy sheet spanning `span` frames. */
-export type SheetJob = { kind: "decor"; config: DecorConfig } | { kind: "canopy"; config: CanopyConfig; span: number };
+/** What to paint: the plant atlas, or the canopy sheet spanning `span` frames. */
+export type SheetJob = { kind: "atlas" } | { kind: "canopy"; config: CanopyConfig; span: number };
 
 export function paintJob(ctx: OffscreenCanvasRenderingContext2D, width: number, height: number, job: SheetJob): Generator<void, void> {
   switch (job.kind) {
-    case "decor":
-      return paintDecor(ctx, width, height, job.config);
+    case "atlas":
+      return paintAtlas(ctx, width, height);
     case "canopy":
       return paintCanopy(ctx, width, height, job.config, job.span);
     default: {
@@ -94,6 +97,14 @@ function sheetWorker(): SheetWorker | undefined {
   return shared.failed ? undefined : shared;
 }
 
+/** A sheet as requested: what to paint, at what size, for which key. */
+interface Order {
+  key: string;
+  width: number;
+  height: number;
+  job: SheetJob;
+}
+
 interface LocalJob {
   key: string;
   sheet: OffscreenCanvas;
@@ -116,6 +127,10 @@ export class SheetPainter {
   #textureKey = "";
   #key = "";
   #local: LocalJob | undefined;
+  /** The key of this painter's sheet on the worker, "" while none is. */
+  #sent = "";
+  /** The newest request that came while that sheet was painting, sent once it is back. */
+  #waiting: Order | undefined;
 
   constructor(gl: WebGL2RenderingContext) {
     this.#gl = gl;
@@ -131,6 +146,7 @@ export class SheetPainter {
     if (key === this.#key) return;
     this.#key = key;
     this.#local = undefined;
+    this.#waiting = undefined;
     const ready = kept.get(key);
     if (ready !== undefined) {
       kept.delete(key);
@@ -139,19 +155,40 @@ export class SheetPainter {
       this.#textureKey = key;
       return;
     }
+    this.#send({ key, width, height, job });
+  }
+
+  /** Paint on the worker, after this painter's sheet already there if any; on the page without one. */
+  #send(order: Order): void {
     const worker = sheetWorker();
     if (!worker) {
-      this.#paintHere(key, width, height, job);
+      this.#paintHere(order);
       return;
     }
-    worker.paint(job, width, height).then(
+    if (this.#sent !== "") {
+      // Superseded requests are never painted; asking again for the sheet out there needs nothing more.
+      this.#waiting = order.key === this.#sent ? undefined : order;
+      return;
+    }
+    this.#sent = order.key;
+    worker.paint(order.job, order.width, order.height).then(
       (reply) => {
-        if (this.#key === key) this.#upload(key, reply.width, reply.height, new Uint8Array(reply.pixels));
+        this.#returned();
+        if (this.#key === order.key) this.#upload(order.key, reply.width, reply.height, new Uint8Array(reply.pixels));
       },
       () => {
-        if (this.#key === key) this.#paintHere(key, width, height, job);
+        this.#returned();
+        if (this.#key === order.key) this.#paintHere(order);
       },
     );
+  }
+
+  /** This painter's sheet is back from the worker: send the request that waited for it. */
+  #returned(): void {
+    this.#sent = "";
+    const next = this.#waiting;
+    this.#waiting = undefined;
+    if (next !== undefined) this.#send(next);
   }
 
   /**
@@ -162,6 +199,7 @@ export class SheetPainter {
   dispose(): void {
     this.#key = "";
     this.#local = undefined;
+    this.#waiting = undefined;
     const texture = this.#texture;
     this.#texture = undefined;
     if (texture === undefined) return;
@@ -190,11 +228,11 @@ export class SheetPainter {
     }
   }
 
-  #paintHere(key: string, width: number, height: number, job: SheetJob): void {
-    const sheet = new OffscreenCanvas(width, height);
+  #paintHere(order: Order): void {
+    const sheet = new OffscreenCanvas(order.width, order.height);
     const ctx = sheet.getContext("2d");
     if (!ctx) throw new Error("landing: 2d canvas unavailable");
-    this.#local = { key, sheet, ctx, steps: paintJob(ctx, width, height, job) };
+    this.#local = { key: order.key, sheet, ctx, steps: paintJob(ctx, order.width, order.height, order.job) };
   }
 
   #upload(key: string, width: number, height: number, pixels: Uint8Array): void {

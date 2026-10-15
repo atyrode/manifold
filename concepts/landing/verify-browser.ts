@@ -5,8 +5,11 @@ import { verifyCountryWildlife } from "./src/scenes/country/wildlife.verify.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyCountryAnimals } from "./src/scenes/country/animals.verify.ts";
+import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
+import { verifyCountryRoutes } from "./src/scenes/country/routes.verify.ts";
+import { verifyCountrySettlements } from "./src/scenes/country/settlements.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
 import { verifySwellRelief } from "./src/scenes/swell/relief.verify.ts";
@@ -18,13 +21,22 @@ import { verifyRuntime } from "./src/runtime.verify.ts";
 import { fallsGorgeCheck } from "./src/scenes/falls/gorge.verify.ts";
 import { skywardSnowCheck } from "./src/scenes/skyward/snow.verify.ts";
 import { mobileVerify } from "./src/scenes/mobile/mobile.verify.ts";
+import { verifyCloudsDetail } from "./src/scenes/clouds/detail.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
 import { verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
+import { verifyTrainLine } from "./src/scenes/train/line.verify.ts";
 import { verifyFilmRupture } from "./src/scenes/film/rupture.verify.ts";
 import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
 import { verifyFallsBirds } from "./src/scenes/falls/birds.verify.ts";
+import { petriRegimesVerify } from "./src/scenes/petri/regimes.verify.ts";
+import { verifyPondKoi } from "./src/scenes/pond/koi.verify.ts";
+import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
+import { streetSnowCheck } from "./src/scenes/street/snow.verify.ts";
+import { verifyCanopy } from "./src/scenes/forest/canopy.verify.ts";
+import { verifyWaterTiers } from "./src/scenes/island/water.verify.ts";
+import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -63,13 +75,8 @@ function pixels(gl: WebGL2RenderingContext, width: number, height: number): Uint
   return bytes;
 }
 
-/** Real WebGL outputs under controlled timing/state, not mocked helper calls. */
-export function verify(): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  const gl = context();
-  gl.bindVertexArray(gl.createVertexArray());
-
-  // Observe Forest's actual scene entry sky state, so a legacy caller regression fails this check.
+// Observe Forest's actual scene entry sky state, so a legacy caller regression fails this check.
+function forestClock(gl: WebGL2RenderingContext): number[] {
   const clock = program(
     gl,
     fragmentSourceFor({
@@ -107,10 +114,13 @@ export function verify(): Record<string, unknown> {
       clockValues.every((value) => value === clockValues[0]),
     `Motion changed Forest's accumulated day phase: ${clockValues.join(",")}`,
   );
-  result.clockBytes = clockValues;
   gl.deleteProgram(clock);
-  // Exercise actual GLSL selection: relative ratios, zero-weight exclusion, crop diversity,
-  // scale invariance and the all-zero fallback. This catches normalization/interval regressions.
+  return clockValues;
+}
+
+// Exercise actual GLSL selection: relative ratios, zero-weight exclusion, crop diversity,
+// scale invariance and the all-zero fallback. This catches normalization/interval regressions.
+function countryFields(gl: WebGL2RenderingContext): number[] {
   const fields = program(
     gl,
     fragmentSourceFor({
@@ -173,10 +183,13 @@ export function verify(): Record<string, unknown> {
     drawFields([0, 0, 1, 0]).every((crop) => crop === 7),
     "Isolated lavender included another type",
   );
-  result.fieldShares = counts;
   gl.deleteProgram(fields);
-  // Observe the actual scene entry away from canopy overlaps: changing species must not deform
-  // exposed ground, and fully pine woodland must remain evergreen through autumn, including LOD.
+  return counts;
+}
+
+// Observe the actual scene entry away from canopy overlaps: changing species must not deform
+// exposed ground, and fully pine woodland must remain evergreen through autumn, including LOD.
+function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
   const terrain = program(
     gl,
     fragmentSourceFor({
@@ -255,43 +268,29 @@ export function verify(): Record<string, unknown> {
     check(observed >= 20, `Surface fixture lacked the requested habitat: ${observed}`);
     return observed;
   };
-  result.exposedGroundPixels = compareSurface(
+  const exposedGroundPixels = compareSurface(
     drawTerrain(1, 0, 0),
     drawTerrain(1, 1, 0),
     "Tree species changed exposed countryside ground",
   );
-  result.evergreenPixels = compareSurface(
+  const evergreenPixels = compareSurface(
     drawTerrain(0, 1, 1),
     drawTerrain(2, 1, 1),
     "Pine woodland changed color in autumn",
   );
   // With woodland cleared, species must have nothing left to change anywhere on the far land.
-  result.clearedPixels = compareSurface(
+  const clearedPixels = compareSurface(
     drawTerrain(2, 0, 2, 0),
     drawTerrain(2, 1, 2, 0),
     "Woodland cover 0 left trees standing",
   );
   gl.deleteProgram(terrain);
-  result.mobile = mobileVerify(gl);
+  return { exposedGroundPixels, evergreenPixels, clearedPixels };
+}
 
-  result.orbitRingDepth = verifyOrbitRingDepth(gl);
-  result.swellRelief = verifySwellRelief(gl);
-  result.auroraRipples = verifyAuroraRipples(gl);
-  result.barLastCall = verifyBarLastCall(gl);
-  result.dewBins = verifyDewBins(gl);
-  result.tidepoolExchange = verifyTidepoolExchange(gl);
-  result.lakeFreshSnow = verifyLakeFreshSnow(gl);
-  result.shanshui = verifyShanshui(gl);
-  Object.assign(result, verifyCountryWildlife(gl));
-  result.materials = { rippleEdges: rippleEdgesVerify(gl), incenseVent: incenseVentVerify(gl) };
-  result.runtime = verifyRuntime(gl);
-  Object.assign(result, verifyCountryAnimals(gl));
-  result.skywardSnow = skywardSnowCheck(gl);
-  result.fallsGorge = fallsGorgeCheck(gl);
-  Object.assign(result, verifyMotionClocks(gl));
-  result.physics = { film: verifyFilmRupture(gl), pendula: verifyPendulaSwing(gl) };
-  result.frostSky = verifyFrostSky(gl);
-  result.fallsBirds = verifyFallsBirds(gl);
+// GpuCompute passes: every blend mode applies its own blending and leaves blending off, with the
+// default equation and factors, whatever the caller had set; a preserving resize does not inherit it.
+function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
@@ -324,7 +323,6 @@ export function verify(): Record<string, unknown> {
     );
     blends.push(value[0] ?? -1);
   }
-  result.blendValues = blends;
   target.clear(0.25);
   gl.enable(gl.BLEND);
   gl.blendEquation(gl.MAX);
@@ -339,11 +337,14 @@ export function verify(): Record<string, unknown> {
     "Preserving resize inherited blending",
   );
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  result.blendResizePreserved = true;
   gpu.dispose();
+  return { values: blends, resizePreserved: true };
+}
 
-  const frostGl = context();
-  const frost = sceneDefs.frost.sim?.(frostGl);
+// Frost's real melt sim: a press warms the pane; after a traced mark, reseeding while paused clears
+// every trace of warmth and resuming brings none of it back.
+function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
+  const frost = sceneDefs.frost.sim?.(gl);
   if (!frost) throw new Error("Frost simulation unavailable");
   const knobs = paramDefaults("frost");
   const frame: SimFrame = {
@@ -368,22 +369,22 @@ export function verify(): Record<string, unknown> {
     if (!texture) throw new Error("Missing frost mask");
     // Sample the complete mask through a fullscreen draw onto a fixed-size readable canvas.
     const sampler = program(
-      frostGl,
+      gl,
       `#version 300 es
       precision highp float; uniform sampler2D mask; out vec4 outColor;
       void main() { outColor = texture(mask, gl_FragCoord.xy / vec2(320.0, 200.0)); }`,
     );
-    frostGl.canvas.width = 320;
-    frostGl.canvas.height = 200;
-    frostGl.bindVertexArray(frostGl.createVertexArray());
-    frostGl.useProgram(sampler);
-    frostGl.activeTexture(frostGl.TEXTURE0);
-    frostGl.bindTexture(frostGl.TEXTURE_2D, texture);
-    frostGl.uniform1i(frostGl.getUniformLocation(sampler, "mask"), 0);
-    frostGl.viewport(0, 0, 320, 200);
-    frostGl.drawArrays(frostGl.TRIANGLES, 0, 3);
-    const bytes = pixels(frostGl, 320, 200);
-    frostGl.deleteProgram(sampler);
+    gl.canvas.width = 320;
+    gl.canvas.height = 200;
+    gl.bindVertexArray(gl.createVertexArray());
+    gl.useProgram(sampler);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(gl.getUniformLocation(sampler, "mask"), 0);
+    gl.viewport(0, 0, 320, 200);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const bytes = pixels(gl, 320, 200);
+    gl.deleteProgram(sampler);
     return bytes;
   }
   const pristine = mask();
@@ -422,15 +423,14 @@ export function verify(): Record<string, unknown> {
     resumed.every((value, index) => value === pristine[index]),
     "Old warmth reappeared after resume",
   );
-  result.frost = { heated: true, pristineOnReseed: true, pristineOnResume: true };
   frost.dispose();
+  return { heated: true, pristineOnReseed: true, pristineOnResume: true };
+}
 
-  const nativeRaf = window.requestAnimationFrame;
-  let tick: FrameRequestCallback | undefined;
-  window.requestAnimationFrame = (callback) => {
-    tick = callback;
-    return 1;
-  };
+// The real renderer on a hand-driven frame clock (its own canvas and context): 1 fps delivery
+// reports 1 fps, and the passage's saved outgoing frame is sampled exactly at larger, smaller,
+// aspect-changed and unchanged render sizes.
+function rendererDissolve(_gl: WebGL2RenderingContext): Record<string, unknown> {
   const canvas = document.createElement("canvas");
   canvas.style.cssText = "width:320px;height:200px";
   document.body.append(canvas);
@@ -462,6 +462,12 @@ export function verify(): Record<string, unknown> {
     if (holdSaved && location !== null && locations.has(location)) uniform(location, 1, 1);
     else uniform(location, x, y);
   };
+  const nativeRaf = window.requestAnimationFrame;
+  let tick: FrameRequestCallback | undefined;
+  window.requestAnimationFrame = (callback) => {
+    tick = callback;
+    return 1;
+  };
   function draw(now: number): void {
     if (!tick) throw new Error("RAF missing");
     tick(now);
@@ -471,7 +477,7 @@ export function verify(): Record<string, unknown> {
     draw(1000);
     draw(2000);
     check(Math.abs(renderer.fps - 1) < 1e-9, `1fps delivery reported ${renderer.fps}`);
-    result.fps = renderer.fps;
+    const fps = renderer.fps;
     renderer.replayPassage();
     draw(3000);
     draw(5000);
@@ -532,10 +538,78 @@ export function verify(): Record<string, unknown> {
         }
       resizeResults.push(`${width}x${height}`);
     }
-    result.dissolveSizes = resizeResults;
+    return { fps, dissolveSizes: resizeResults };
   } finally {
     window.requestAnimationFrame = nativeRaf;
     canvas.remove();
   }
-  return result;
+}
+
+/** A regression on real WebGL output: throws on failure, returns what it measured (as JSON). */
+type Check = readonly [name: string, check: (gl: WebGL2RenderingContext) => unknown];
+
+/**
+ * Every check, by name: real WebGL outputs under controlled timing/state, not mocked helper calls.
+ * verify.ts runs each on a freshly loaded page (`run`), so a check gets a context of its own and
+ * must restore any global it patches.
+ */
+export const checks: readonly Check[] = [
+  ["forestClock", forestClock],
+  ["countryFields", countryFields],
+  ["countrySurface", countrySurface],
+  ["gpuBlend", gpuBlend],
+  ["frostWarmth", frostWarmth],
+  ["rendererDissolve", rendererDissolve],
+  // Registered checks: one import above and one line here each, appended at the end.
+  ["mobile", mobileVerify],
+  ["orbitRingDepth", verifyOrbitRingDepth],
+  ["swellRelief", verifySwellRelief],
+  ["auroraRipples", verifyAuroraRipples],
+  ["barLastCall", verifyBarLastCall],
+  ["dewBins", verifyDewBins],
+  ["tidepoolExchange", verifyTidepoolExchange],
+  ["lakeFreshSnow", verifyLakeFreshSnow],
+  ["shanshui", verifyShanshui],
+  ["countryWildlife", verifyCountryWildlife],
+  ["rippleEdges", rippleEdgesVerify],
+  ["incenseVent", incenseVentVerify],
+  ["runtime", verifyRuntime],
+  ["countryAnimals", verifyCountryAnimals],
+  ["skywardSnow", skywardSnowCheck],
+  ["fallsGorge", fallsGorgeCheck],
+  ["motionClocks", verifyMotionClocks],
+  ["filmRupture", verifyFilmRupture],
+  ["pendulaSwing", verifyPendulaSwing],
+  ["frostSky", verifyFrostSky],
+  ["countryRoutes", verifyCountryRoutes],
+  ["cloudsDetail", verifyCloudsDetail],
+  ["petriRegimes", petriRegimesVerify],
+  ["pondKoi", verifyPondKoi],
+  ["planet", verifyPlanet],
+  ["streetSnow", streetSnowCheck],
+  ["countrySettlements", verifyCountrySettlements],
+  ["harmonographPrewarm", verifyHarmonographPrewarm],
+  ["trainLine", verifyTrainLine],
+  ["canopy", verifyCanopy],
+  ["waterTiers", verifyWaterTiers],
+  ["pondPlants", verifyPondPlants],
+  ["fallsBirds", verifyFallsBirds],
+];
+
+/**
+ * Runs the named check on a fresh WebGL2 context with a vertex array bound, and hands `report` its
+ * outcome as JSON, `{ result }` or `{ error }`. verify.ts passes a page binding as `report`, so the
+ * check may outlast any one protocol call.
+ */
+export async function run(name: string, report: (outcome: string) => void): Promise<void> {
+  try {
+    const entry = checks.find(([key]) => key === name);
+    if (!entry) throw new Error(`No check named ${name}`);
+    const gl = context();
+    gl.bindVertexArray(gl.createVertexArray());
+    report(JSON.stringify({ result: await entry[1](gl) }));
+  } catch (error) {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    report(JSON.stringify({ error: message }));
+  }
 }

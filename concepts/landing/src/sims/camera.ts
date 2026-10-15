@@ -12,6 +12,8 @@
 //   worldY(sy, z)            eye + (sy - horizon) · (z / focal)
 //   screenVX(x, z, vx, vz)   how fast screenX moves for a point moving at (vx, vz): d/dt of focal · x / z
 //   scale(z)                 focal / z: screen heights per world unit at depth z
+//   groundDrop(z)            eye · focal / z: how far below the horizon (screen heights) the ground at depth z shows
+//   groundDepth(drop)        eye · focal / drop: the depth of the ground seen `drop` below the horizon
 //
 // Moving a point in the world and projecting it each frame keeps perspective honest: a point that
 // recedes at a fixed height slides toward the horizon and the centre line, and the same world speed
@@ -25,7 +27,9 @@
 //   seed.x += vx * dt; seed.z += vz * dt;             // the air moves it in the world
 //   const u = camera.screenX(seed.x, seed.z) / aspect + 0.5;
 //
-// Scenes with this camera that still inline the formulas: autumn, bees, fireflies, lake.
+// Users: meadow (seeds), bees (bees, butterflies, the hives and flowers they fly to), fireflies (the
+// lights nearer than the bank), lake (the crack and snow fields are laid out by groundDrop). Autumn
+// still inlines the formulas.
 
 /** Where the eye stands and how the frame is cut. */
 export interface LevelView {
@@ -76,5 +80,15 @@ export class LevelCamera implements LevelView {
   /** Screen heights per world unit at depth z. */
   scale(z: number): number {
     return this.focal / z;
+  }
+
+  /** Screen heights below the horizon at which the ground (y = 0) at depth z shows. */
+  groundDrop(z: number): number {
+    return (this.eye * this.focal) / z;
+  }
+
+  /** Depth of the ground (y = 0) seen `drop` screen heights below the horizon. */
+  groundDepth(drop: number): number {
+    return (this.eye * this.focal) / drop;
   }
 }

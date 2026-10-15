@@ -17,7 +17,7 @@
 //          1  the sheet's centre x hi, lo; its tilt (radians); the pen's height above the paper
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { FixedStep } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { splitHalf } from "../../sims/half.ts";
 import { clamp, lerp } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
@@ -126,6 +126,16 @@ const DECAY_GROWTH = 3.5;
 const PREWARM_MIN = 30;
 const PREWARM_MAX = 90;
 const PREWARM_SHARE = 0.9;
+/**
+ * Wall time one frame may spend on that warm-up, ms. A sheet already on screen stays there, pen and
+ * all, until the warm-up is done, so a reseed or a new figure takes a few short frames instead of one
+ * long one; the first sheet has nothing to hold and gets the safety cap the other scenes' warm-ups
+ * use. The warm-up is a count of steps either way: a slow machine shows the same sheet, later.
+ */
+const PREWARM_BUDGET_MS = 6;
+const FIRST_PREWARM_BUDGET_MS = 90;
+/** Warm-up steps between two looks at the clock. */
+const PREWARM_CHUNK = 32;
 
 const RATIOS: readonly (readonly [number, number])[] = [[1, 2], [2, 3], [3, 4], [4, 5], [3, 5]];
 /** "Random" picks from here: the simple ratios twice, so the figures stay open and the rest are rare. */
@@ -425,6 +435,22 @@ class HarmonographSim implements SceneSim {
   #lastDown = false;
   #signSeconds = 1;
   #signSize = 0.23;
+  /**
+   * The first sheet's warm-up (#restart): steps done of #warmSteps (done when equal), drawn with the
+   * knobs as they were when it began, so what a slow machine draws over several frames is what a
+   * fast one draws in one.
+   */
+  #warmed = 0;
+  #warmSteps = 0;
+  readonly #warmSettings: Settings = { ...this.#settings };
+  /** One warm-up step, as runBudgeted calls it: true once the swing has died. */
+  readonly #warmStep = (): boolean => {
+    if (this.#swing.reach(this.#plan, ROTARY_RADIUS * this.#gain) < END_REACH) return true;
+    this.#drawStep(STEP, this.#warmSettings);
+    return false;
+  };
+  /** Set once the textures show a sheet: from then on a warm-up keeps it there until it is done. */
+  #shown = false;
 
   constructor(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>) {
     this.#knobs = knobs;
@@ -448,8 +474,10 @@ class HarmonographSim implements SceneSim {
     }
     this.#enterP = clamp(frame.passage.enter, 0, 1);
     if (frame.passage.exit > 0) {
+      // The sheet leaves as it is drawn: a warm-up still under way finishes at once.
+      if (this.#warmed < this.#warmSteps) this.#warmed = runBudgeted(this.#warmStep, Number.POSITIVE_INFINITY, this.#warmSteps, this.#warmed, PREWARM_CHUNK);
       this.#leave(frame);
-      this.#writeState();
+      this.#upload();
       return this.#textures;
     }
 
@@ -466,15 +494,17 @@ class HarmonographSim implements SceneSim {
       this.#restart(st);
     }
 
+    if (this.#warmed < this.#warmSteps) {
+      this.#warmed = runBudgeted(this.#warmStep, this.#shown ? PREWARM_BUDGET_MS : FIRST_PREWARM_BUDGET_MS, this.#warmSteps, this.#warmed, PREWARM_CHUNK);
+      // Until it is done the clock holds and the textures keep what they show.
+      if (this.#warmed < this.#warmSteps) return this.#textures;
+    }
+
     const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_FRAME);
     const steps = this.#clock.advance(dt * frame.motion);
     for (let i = 0; i < steps; i++) this.#step(STEP, st);
 
-    if (this.#ink.dirty) {
-      this.#inkTexture.upload(this.#ink.data);
-      this.#ink.dirty = false;
-    }
-    this.#writeState();
+    this.#upload();
     return this.#textures;
   }
 
@@ -498,10 +528,15 @@ class HarmonographSim implements SceneSim {
 
   // ---- sheets ------------------------------------------------------------------------------------
 
-  /** The first sheet of a run, already part way through its drawing so the picture is there at once. */
+  /**
+   * The first sheet of a run, already part way through its drawing so the picture is there at once;
+   * frame() runs the warm-up, within each frame's budget.
+   */
   #restart(st: Settings): void {
     const arriving = this.#arriving;
     this.#arriving = false;
+    this.#warmed = 0;
+    this.#warmSteps = 0;
     this.#sheet = 0;
     this.#plan = makePlan(st.seed, 0, st.figure, undefined);
     this.#next = undefined;
@@ -521,10 +556,15 @@ class HarmonographSim implements SceneSim {
     this.#clock.reset();
     const rate = this.#rate(st);
     const seconds = clamp(PREWARM_SHARE * (1 / rate), PREWARM_MIN, PREWARM_MAX);
-    const steps = Math.round(seconds / STEP);
-    for (let i = 0; i < steps; i++) {
-      if (this.#swing.reach(this.#plan, ROTARY_RADIUS * this.#gain) < END_REACH) break;
-      this.#drawStep(STEP, st);
+    this.#warmSteps = Math.round(seconds / STEP);
+    Object.assign(this.#warmSettings, st);
+    if (!this.#shown) {
+      // Nothing on screen yet: should the warm-up outlast the first frame, the blank sheet shows,
+      // the pen resting where the figure begins.
+      const start = this.#startOf(this.#plan);
+      this.#penX = start.x;
+      this.#penY = start.y;
+      this.#writeState();
     }
   }
 
@@ -830,6 +870,16 @@ class HarmonographSim implements SceneSim {
   }
 
   // ---- upload ------------------------------------------------------------------------------------
+
+  /** The ink, when it changed, and the pen and the sheet. */
+  #upload(): void {
+    if (this.#ink.dirty) {
+      this.#inkTexture.upload(this.#ink.data);
+      this.#ink.dirty = false;
+    }
+    this.#writeState();
+    this.#shown = true;
+  }
 
   #writeState(): void {
     const data = this.#stateData;

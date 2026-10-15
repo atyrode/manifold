@@ -20,7 +20,7 @@ const params: readonly ParamDef[] = [
   seed("grove", "groveSeed", "grove", "Where the stems stand and how each one sways; re-seed for another stretch of the grove."),
   feature("light", "shafts", "god rays", true, "strength", 0.6, "A few rays of sun, or of the moon at night, falling through gaps in the canopy: narrow where they leave the leaves, widening as they fall, combed by the shadows of stems, dust drifting in them. They gild what they cross and breathe in and out over a couple of minutes."),
   feature("light", "lantern", "lantern", true, "glow", 0.7, "A small stone lantern on its stepping stone beside the water clock, its paper window glowing as the light fails, haloed in the mist and warm on the water."),
-  ...skyKnobs({ time: 0.27 }),
+  ...skyKnobs({ time: 0.27, stars: 0.5, moon: 1 }),
   ...weatherKnobs({ rain: true, wind: true }),
   feature("manifold", "mark", "lantern M", false, "glow", 0.8, "The Manifold M shining through the lantern's paper window, as if cut into its screen. Now: it glows for a while, even by day.", { trigger: 2 }),
 ];
@@ -46,4 +46,6 @@ export const bambooScene: SceneDef = {
   // tips and clacks while a gust bows the grove.
   passage: BAMBOO_PASSAGE,
   sim: bambooSim(params),
+  // The moon takes a phase (K_moon) in the shared sky: in the gaps, and in its rays at night.
+  features: { SKY_MOON_PHASE: 1 },
 };

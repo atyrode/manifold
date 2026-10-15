@@ -34,11 +34,18 @@ import { ABOVE_RANGE, DIST_RANGE, DRIFT_MAX, EYE, FIELD_FU, FIELD_FV, FIELD_H, F
 const AURORA_LOW = ["vec3(0.25, 1.0, 0.55)", "vec3(0.2, 0.95, 0.88)", "vec3(0.38, 1.0, 0.48)", "vec3(1.0, 0.3, 0.38)"] as const;
 const AURORA_HIGH = ["vec3(0.78, 0.2, 0.58)", "vec3(0.38, 0.32, 1.0)", "vec3(1.0, 0.14, 0.26)", "vec3(0.72, 0.06, 0.24)"] as const;
 
+/** Trigger slot of the shooting stars' "now" button (0 substorms, 1 singing ice, 2 the M). */
+export const LAKE_METEOR_TRIGGER = 3;
+
 export const lakeGlsl = `
 ${birdsGlsl}
 const float LAKE_HORIZON = ${glslFloat(HORIZON)};
 const float LAKE_FOCAL = ${glslFloat(FOCAL)};
 const float LAKE_EYE = ${glslFloat(EYE)};
+// Shooting stars (the shared component, K_meteors) set out here, in skyAngles of the sky's
+// directions (bearing, elevation, radians): high over the mountains, and seen again in the ice.
+const int LAKE_METEOR_SLOT = ${LAKE_METEOR_TRIGGER};
+const vec4 LAKE_METEOR_FIELD = vec4(-0.6, 0.3, 1.2, 0.15);
 const float LAKE_ICE_N = ${glslFloat(ICE_INDEX)};
 const float LAKE_ICE_DEPTH = ${glslFloat(ICE_DEPTH)};
 const float LAKE_FU = ${glslFloat(FIELD_FU)};
@@ -88,6 +95,8 @@ float lakeOver;        // overcast 0..1
 float lakeCabinAz;     // the cabin's bearing (rad)
 float lakePar;         // the backdrop's parallax turn (rad)
 float lakeAccent;      // aurora light gathered by lakeSkyAt
+float lakeMeteorAt;    // seconds since the latest shooting star, and its id (meteorAge)
+float lakeMeteorSeed;
 
 // The coverage of something with a crisp edge, made all-or-nothing against this cell's threshold:
 // a soft edge would step its three channels through the levels at different moments.
@@ -159,8 +168,8 @@ vec3 lakeMoonAt(vec3 d, out float cover) {
 }
 
 // The night sky for a ray: the dome, moonlight in the air and the aurora's glow low in the north,
-// the Milky Way and stars (fainter in the mirror), our moon, the aurora, and cloud while it snows.
-// Adds the aurora's light that shows to lakeAccent.
+// the Milky Way and stars (fainter in the mirror), our moon, a shooting star, the aurora, and cloud
+// while it snows. Adds the aurora's light that shows to lakeAccent.
 vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   vec3 col = skyColor(lakeSky, d);
   float hh = max(d.y, 0.0);
@@ -175,6 +184,8 @@ vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   float disc;
   vec3 moon = lakeMoonAt(d, disc);
   col = col * (1.0 - 0.9 * disc) + moon;
+  float meteor = meteorStreak(skyAngles(d), LAKE_METEOR_FIELD, lakeMeteorAt, lakeMeteorSeed, max(1.0 / (LAKE_FOCAL * uRes.y), soft));
+  col += METEOR_TINT * hardEdge(meteor * lakeSky.night * (1.0 - disc)) * (mirror ? 0.6 : 1.0);
   vec3 aur = lakeAurora(d, soft);
   col += aur;
   float seen = dot(aur, LUMA);
@@ -702,6 +713,7 @@ void lakeSetup(float t, float aspect) {
   sky.moon = vec3(0.0, -1.0, 0.0);
   sky.moonColor = lakeMoonLight;
   lakeSky = sky;
+  lakeMeteorAt = meteorAge(lakeTm, K_meteors, LAKE_METEOR_SLOT, lakeMeteorSeed);
 
   vec4 au = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(0, 1), 0) : vec4(1.0, uMotionTime, 0.0, 0.0);
   lakeSurge = au.w;

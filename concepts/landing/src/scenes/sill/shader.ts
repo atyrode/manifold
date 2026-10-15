@@ -2,7 +2,9 @@
 // city at dusk; a cat on the sill watching it, a steaming mug, a plant, books, a stirring curtain;
 // three rows of skyline with windows switching on and off, and across the street a neon Manifold M.
 // Knobs arrive as K_<key> defines (see ./index.ts); the sky, weather and lightning come from the
-// shared libraries (src/shaders/lib/); the scene's own motion runs on uMotionTime.
+// shared libraries (src/shaders/lib/); the scene's own motion runs on uMotionTime. In the window the
+// shared sky components (src/scenes/README.md, "Composing components"): stars (K_stars), the moon in
+// its phase (K_moon, SKY_MOON_PHASE), the aurora (K_aurora) and shooting stars (K_meteors).
 // Rain and snow fall only outside the window, through the depth of the city, and the city answers
 // them: an overcast sky, wet roofs and brick, drips and splashes, snow settling (uWeather).
 // The cat's gaze is eased on the CPU (./index.ts) and read from uSim0.
@@ -16,7 +18,14 @@ import { glslFloat } from "../../shaders/glsl.ts";
  */
 export const SILL_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
 
+/** Trigger slot of the shooting stars' "now" button (0 is the cat's, 1 lightning's, 2 the neon's). */
+export const SILL_METEOR_TRIGGER = 3;
+
 export const sillGlsl = `
+// Where shooting stars set out: skyAngles of the view over the city (bearing, elevation, radians),
+// high in the window.
+const int SILL_METEOR_SLOT = ${SILL_METEOR_TRIGGER};
+const vec4 SILL_METEOR_FIELD = vec4(-0.5, 0.3, 1.0, 0.12);
 // Layout in screen heights from the centre, y up. The sill's top runs from the window (SILL_BACK)
 // to its front edge (SILL_FRONT), then the nosing; things on it stand at SILL_SEAT. The lower sash
 // is raised: its bottom rail spans SILL_RAIL..SILL_RAIL_TOP, open air below, glass above.
@@ -262,14 +271,23 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   vec2 sp = p + uPointer * vec2(0.03, 0.012);
   vec3 dir = viewRay(sp / vec2(aspect, 1.0) + 0.5, aspect, 0.5 + SILL_HORIZON, 1.0);
   vec3 col = skyColor(sky, dir);
-  col += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, 0.5) * (1.0 - 0.7 * smoothstep(0.001, 0.006, soft)) * (1.0 - ov.x);
+  col += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, K_stars) * (1.0 - 0.7 * smoothstep(0.001, 0.006, soft)) * (1.0 - ov.x);
+  // The aurora over the city, and shooting stars in the gaps of the deck, softened with the rest.
+  float foot = max(2.0 * tan(0.5) / uRes.y, soft);
+  col += auroraM(dir, tm, K_aurora, foot) * auroraSeen(sky, ov.x);
   vec3 deck = haze * (0.85 - 0.3 * ov.y) + vec3(0.3, 0.15, 0.1) * dark * (0.3 * ov.x + 0.25 * lying);
   col = mix(col, deck, 0.85 * ov.x);
   float clouds = max(K_clouds, ov.x);
+  float cloudCover = 0.0;
   if (clouds > 0.0) {
     vec4 cloud = skyClouds(sky, normalize(vec3(dir.x, dir.y * (1.0 + 1.5 * ov.y), dir.z)), t, clouds, K_wind);
     col = mix(col, (cloud.rgb + vec3(0.22, 0.11, 0.07) * dark * 0.5) * (1.0 - 0.4 * ov.y), cloud.a);
+    cloudCover = cloud.a;
   }
+  float meteorSeed;
+  float meteorAt = meteorAge(tm, K_meteors, SILL_METEOR_SLOT, meteorSeed);
+  float meteor = meteorStreak(skyAngles(dir), SILL_METEOR_FIELD, meteorAt, meteorSeed, foot);
+  col += METEOR_TINT * hardEdge(meteor * auroraSeen(sky, max(cloudCover, ov.x)) * (1.0 - 0.7 * smoothstep(0.001, 0.006, soft)));
   if (boltAge < 1.5) {
     vec2 top = vec2((hash12(vec2(boltSeed, 1.3)) - 0.5) * aspect * 0.8, 0.6);
     vec2 ground = vec2(top.x + (hash12(vec2(boltSeed, 2.7)) - 0.5) * 0.35, -0.05);
@@ -924,7 +942,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   // comes in through the window. Rain or snow closes the sky over (sillOvercast): sun and moon fade
   // behind the deck, the daylight flattens to grey and dims as the fall gets heavier, and the
   // city's lamps and the sign come into their own early in the gloom.
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
   vec2 ov = sillOvercast();
   sky.sunColor *= 1.0 - 0.8 * ov.x;
   sky.moonColor *= 1.0 - 0.7 * ov.x;
@@ -935,6 +953,8 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   haze = greyed(haze, vec3(1.0), 0.5 * ov.x) * (1.0 - 0.3 * ov.y);
   vec3 cool = mix(vec3(0.26, 0.31, 0.52), vec3(0.85, 0.88, 0.95), sky.day) + vec3(0.06, 0.03, 0.02) * dark;
   cool = greyed(cool, vec3(1.0), 0.4 * ov.x) * (1.0 - 0.3 * ov.y);
+  // On a clear night the aurora's green comes in through the window too.
+  cool += auroraGlow(tm, K_aurora) * auroraSeen(sky, ov.x);
   float boltSeed = 0.0;
   float boltAge = lightningAge(t, K_lightning, 1, boltSeed);
   float flash = lightningFlash(boltAge);

@@ -429,6 +429,41 @@ jobs:
           task: axioms
           dist: "true"
 
+  landing-concept:
+    name: landing-concept
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.checks), 'landing-concept')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: landing-concept
+
+  landing-webgl:
+    name: landing-webgl
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.checks), 'landing-webgl')
+    runs-on: ubuntu-latest
+    # Lab regressions render one after another in software WebGL, each within LANDING_CHECK_SECONDS.
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: landing-webgl
+
   runtime-jobs:
     name: runtime-jobs
     needs: plan
@@ -656,6 +691,8 @@ jobs:
       - budgets
       - pwa
       - axioms
+      - landing-concept
+      - landing-webgl
       - runtime-jobs
       - runtime-browser
       - preview-environment
@@ -670,7 +707,7 @@ jobs:
           EXPECTED_CHECKS: ${{ needs.plan.outputs.checks }}
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          universe='["build","types","style","smoke","targeted","trace","unit","e2e-rest","e2e-preview-recovery","convergence","terminal-selection","terminal-mirror","tile-drop","budgets","pwa","axioms","runtime-jobs","runtime-browser","preview-environment","nix"]'
+          universe='["build","types","style","smoke","targeted","trace","unit","e2e-rest","e2e-preview-recovery","convergence","terminal-selection","terminal-mirror","tile-drop","budgets","pwa","axioms","landing-concept","landing-webgl","runtime-jobs","runtime-browser","preview-environment","nix"]'
           mandatory='["build","types","style","smoke","targeted"]'
           failed=0
 

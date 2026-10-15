@@ -161,24 +161,6 @@ float shoreDrained(ShoreWave w, float runup, float e) {
   return w.swash >= at ? w.swash - at : 1e4;
 }
 
-// Wind ripples as a few travelling trains with deep-water dispersion (omega^2 = g k). Returns the
-// slope (dh/dx, dh/dz) of the trains these cells resolve and, in z, the slope variance of the ones
-// too fine to draw, which the glitter takes as roughness instead (as LEAN mapping does, Olano &
-// Baker 2010). A train is only drawn once its wavelength spans a dozen cells across its crests:
-// finer ones would sweep over the dither as flickering stripes. Their slopes stay small beside the
-// glitter's own roughness, so they ruffle the moon's path rather than chop it into flashing bands.
-// wind scales the slopes.
-vec3 shoreRipples(vec2 p, float tm, vec2 cellSize, float wind) {
-  vec3 ripples = vec3(0.0);
-  for (int i = 0; i < 4; i++) {
-    float fi = float(i);
-    float a = 1.7 + fi * 2.4; // golden-angle spread of directions
-    float s = (0.025 - 0.003 * fi) * wind; // steepest slope of this train
-    ripples += rippleTrain(p, tm, cellSize, 3.2 * pow(0.55, fi), vec2(sin(a), cos(a)), s, 1.0, fi * 1.7, vec2(8.0, 16.0));
-  }
-  return ripples;
-}
-
 // Moon or sun glitter: the share of surface facets tilted to mirror the light into the eye, for
 // facet slopes spread with variance s2 (a Beckmann distribution, after Cox & Munk's 1954 sea-slope
 // measurements). Normalised to 1 at the heart of the path, so a choppy sea draws a wider path
@@ -610,16 +592,23 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
       float sheet = topSwash >= 0.0 ? 1.0 - smoothstep(0.5, 3.0, edge) : 0.0;
       float choppy = 1.0 - 0.6 * sheet;
       float windy = 0.6 + 0.9 * abs(K_wind);
-      vec3 rip = shoreRipples(g, tm, vec2(cellX, cellZ), windy);
+      // Wind ripples: four trains spread by the golden angle with true deep-water dispersion, their
+      // slopes scaled by the wind (rippleSpectrum). The trains these cells resolve tilt the surface;
+      // the ones too fine to draw (z) give the glitter its roughness instead. Their slopes stay small
+      // beside the glitter's own roughness, so they ruffle the moon's path rather than chop it into
+      // flashing bands.
+      vec3 rip = rippleSpectrum(g, tm, vec2(cellX, cellZ), windy,
+                                RippleFan(4, vec2(3.2, 0.55), vec2(0.025, 0.003), vec2(1.0, 0.0), vec2(1.7, 2.4), vec3(0.0), 1.7, vec2(8.0, 16.0)));
       vec2 tilt = rip.xy * choppy + drops.xy * 0.5;
-      vec3 n = normalize(vec3(-tilt.x, 1.0, -(slopeZ + tilt.y)));
       // Facets too fine to draw still lean toward the eye: at a grazing view the sea mirrors sky
       // from higher up, and less of it, so it stays darker than the sky at the horizon.
       // Rain roughens it too, and a downpour beats it matte.
       float rough = 0.002 + 0.0015 * windy + rip.z * choppy + 0.003 * rain + 0.012 * cloud.heavy;
       float spread = sqrt(rough);
-      float fres = fresnelSchlick(dot(n, view), 0.02, spread * 0.8);
-      vec3 refl = reflect(dir, n);
+      WaterMirror ruffled = waterMirror(dir, vec2(tilt.x, slopeZ + tilt.y), spread * 0.8);
+      vec3 n = ruffled.normal;
+      float fres = ruffled.fresnel;
+      vec3 refl = ruffled.ray;
       mirror = shoreDome(skyM, cloud, normalize(vec3(refl.x, max(refl.y, 0.0) + spread * 1.5, refl.z))) + vec3(0.1, 0.11, 0.16) * flash;
       // The moon's path on the water (the sun's by day), broken by the swell into rows, and glints
       // in it: single facets catching the light for a moment. Around it a wide moonlit sheen, the

@@ -31,3 +31,68 @@ test("drying with the weather: rain stops it, the night slows it, more weatherin
   expect(dryingClock({ ...on, time: 0.5, soften: 1 }, 3)).toBeGreaterThan(2 * noon);
   expect(dryingClock({ ...on, time: 0.5, soften: 0 }, 3)).toBeLessThan(0.5 * noon);
 });
+
+// uSim2: 4 × GARDEN_LEAF_SLOTS rgba16f, a row per leaf: (x, y, z, alpha), (chord axis, radius),
+// (span axis, kind), (hue, age on the ground 0..1, landed 0..1, 0); alpha 0: no leaf.
+interface Leaf {
+  x: number;
+  chordUp: number;
+  spanUp: number;
+  hue: number;
+  age: number;
+  landed: boolean;
+}
+
+function leaves(sim: HeadlessSim): Leaf[] {
+  const data = sim.upload(2).data;
+  const out: Leaf[] = [];
+  for (let o = 0; o + 16 <= data.length; o += 16) {
+    if (!((data[o + 3] ?? 0) > 0)) continue;
+    out.push({ x: data[o] ?? 0, chordUp: data[o + 6] ?? 0, spanUp: data[o + 10] ?? 0, hue: data[o + 12] ?? 0, age: data[o + 13] ?? 0, landed: data[o + 14] === 1 });
+  }
+  return out;
+}
+
+test("leaves lying on the gravel lie flat, face up or face down", () => {
+  const sim = new HeadlessSim(gardenScene);
+  // Long enough down to have settled (age is the share of a life of at least 45 s).
+  const settled = leaves(sim.step({ pointer: { inside: false } })).filter((leaf) => leaf.landed && leaf.age > 0.02);
+  sim.dispose();
+  expect(settled.length).toBeGreaterThanOrEqual(5);
+  // Within the few degrees a leaf rests off flat (its rest pitch is within ±0.07 rad).
+  for (const leaf of settled) {
+    expect(Math.abs(leaf.chordUp)).toBeLessThan(0.0701);
+    expect(Math.abs(leaf.spanUp)).toBeLessThan(0.0701);
+  }
+});
+
+test("a 'now' gust blows the leaves lying on the gravel the way the wind is set", () => {
+  // The same garden with and without the gust: each leaf lying there from the start (known by its
+  // hue) ends up downwind of where it lies in the calm garden.
+  const drift = (wind: number): number[] => {
+    const calm = new HeadlessSim(gardenScene);
+    const blown = new HeadlessSim(gardenScene);
+    const knobs = { wind, leaves: 0 };
+    const lying = leaves(calm.step({ knobs, pointer: { inside: false } })).filter((leaf) => leaf.landed).map((leaf) => leaf.hue);
+    blown.step({ knobs, pointer: { inside: false } });
+    for (let n = 1; n < 3 * 60; n++) {
+      calm.step({ knobs, pointer: { inside: false } });
+      blown.step({ knobs, pointer: { inside: false }, now: n === 1 ? ["leaves"] : [] });
+    }
+    const still = leaves(calm);
+    const moved = leaves(blown);
+    calm.dispose();
+    blown.dispose();
+    return lying.flatMap((hue) => {
+      const a = still.find((leaf) => leaf.hue === hue);
+      const b = moved.find((leaf) => leaf.hue === hue);
+      return a && b ? [b.x - a.x] : [];
+    });
+  };
+  const left = drift(-0.7);
+  expect(left.length).toBeGreaterThanOrEqual(5);
+  for (const dx of left) expect(dx).toBeLessThan(0);
+  const right = drift(0.7);
+  expect(right.length).toBeGreaterThanOrEqual(5);
+  for (const dx of right) expect(dx).toBeGreaterThan(0);
+});

@@ -1,7 +1,7 @@
 // Murmuration: a starling flock folding over a dusk sky. The birds fly on the CPU as a thin sheet
-// that bends, twists, folds and splits (sim.ts); the shader (shader.ts) inks them from a density
-// field, pale where the sheet is stretched and black where it folds. The sky comes from the shared
-// library.
+// that bends, twists, folds and splits (sim.ts), or, with `emergent` on, as topological boids
+// (sims/boids.ts) whose shape is their own; the shader (shader.ts) inks them from a density field,
+// pale where the flock is stretched and black where it folds. The sky comes from the shared library.
 import { choice, counts, feature, range, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -14,6 +14,7 @@ const params: readonly ParamDef[] = [
   range("flock", "chaos", "chaos", 0.35, "Calm: the flock sweeps as one smooth sheet. Restless: it folds and splits, and ripples run through it now and then with no falcon in sight."),
   range("flock", "speed", "speed", 0.5, "How fast the flock sweeps across the sky and changes shape."),
   feature("flock", "predator", "falcon", true, "frequency", 0.35, "A peregrine dives through now and then: the birds flash apart around it and dark waves ripple out across the flock.", { trigger: 0 }),
+  feature("flock", "emergent", "emergent flight", false, "neighbours", 7, "Off: the flock flies as one choreographed sheet that stretches, banks, folds and parts on cue. On: every starling steers only by its nearest few neighbours, keeping its distance, matching their heading and closing on them, and the flock's shape, its turns and its splits come out of that alone; startles hop from bird to bird. The amount is how many neighbours each bird watches; real starlings watch about seven.", { min: 3, max: 12, step: 1 }),
   choice("skyline", "skyline", "skyline", [{ label: "city", value: 0 }, { label: "reeds", value: 1 }, { label: "sea", value: 2 }], 1, "The low silhouette along the bottom: rooftops, a reed bed on still water, or the sea under a headland. Lights come on as night falls."),
   ...skyKnobs({ time: 0.76 }),
   ...weatherKnobs({ wind: true }),
@@ -28,7 +29,7 @@ export const flockScene: SceneDef = {
   look: { color: "full", levels: 4 },
   params,
   groups: {
-    flock: { title: "Flock", blurb: "How many starlings, how tightly they keep together, how restless they are, and the falcon that scatters them." },
+    flock: { title: "Flock", blurb: "How many starlings, how tightly they keep together, how restless they are, the falcon that scatters them, and whether they fly a choreographed sheet or steer by their neighbours." },
     skyline: { title: "Skyline", blurb: "The thin silhouette that grounds the sky." },
     sky: atmosphereGroups.sky,
     weather: { title: atmosphereGroups.weather.title, blurb: "Wind carries the flock downwind, and stirs the reeds and the water." },

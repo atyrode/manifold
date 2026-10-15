@@ -25,7 +25,6 @@
 // or roll back up into them, and on the way in the chimney's smoke climbs. All gated to nothing at rest.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { windWaterGlsl } from "../../shaders/windWater.ts";
 
 /** The aurora's low (oxygen green) and high (violet, red) colours by the `hue` knob, where the change begins and ends, and its gain. */
 const AURORA_LOW = ["vec3(0.28, 1.0, 0.50)", "vec3(0.28, 1.0, 0.50)", "vec3(0.45, 1.0, 0.32)"] as const;
@@ -39,7 +38,6 @@ export const AURORA_HORIZON = 0.32;
 const FOV = 1.3;
 
 export const auroraGlsl = `
-${windWaterGlsl}
 ${birdsGlsl}
 const float AUR_HZ = ${glslFloat(AURORA_HORIZON)};
 const float AUR_F = ${glslFloat(0.5 / Math.tan(FOV / 2))};

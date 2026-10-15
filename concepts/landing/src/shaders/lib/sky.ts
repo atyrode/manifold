@@ -114,7 +114,7 @@ Sky skyMirror(Sky sky) {
 
 // How much of the moon's disc lies over dir, 0..1, its unlit part included: hide what the scene draws
 // behind the moon with it (its own star layers, a Milky Way, an asterism); skyStars already does.
-// 0 below the horizon, so also 0 for a sky whose moon is put away (moon = (0, -1, 0)).
+// 0 below the horizon, so also 0 for a sky whose moon is put away (skyMoonPhase 0).
 float skyMoonCover(Sky sky, vec3 dir) {
   return (1.0 - smoothstep(0.82 * SKY_MOON_RADIUS, SKY_MOON_RADIUS, length(dir - sky.moon))) * smoothstep(-0.004, 0.004, dir.y);
 }
@@ -134,9 +134,10 @@ float skyMoonPhaseLight(float phase) {
 }
 
 // The sky with its moon in a phase: 1 full (the sky unchanged), down to a thin crescent, 0 no moon
-// (put away below the horizon, as scenes without one do). Its light on the land (moonColor, its share
-// of ambient), the moonlit blue round it and its halo scale with skyMoonPhaseLight; skyColor draws
-// the lit share of the disc on the side toward the sun, skyStars lets stars nearer a dim moon.
+// (put away well below the horizon on its own bearing, so a scene keying its light off sky.moon still
+// gets a direction with a heading). Its light on the land (moonColor, its share of ambient), the
+// moonlit blue round it and its halo scale with skyMoonPhaseLight; skyColor draws the lit share of
+// the disc on the side toward the sun, skyStars lets stars nearer a dim moon.
 Sky skyMoonPhase(Sky sky, float phase) {
   if (phase >= 1.0) return sky;
   float p = max(phase, 0.0);
@@ -144,7 +145,7 @@ Sky skyMoonPhase(Sky sky, float phase) {
   sky.ambient += (light - sky.moonColor) * 0.3;
   sky.moonColor = light;
   sky.moonPhase = p;
-  if (p <= 0.0) sky.moon = vec3(0.0, -1.0, 0.0);
+  if (p <= 0.0) sky.moon = normalize(vec3(sky.moon.x, -2.0, sky.moon.z));
   return sky;
 }
 

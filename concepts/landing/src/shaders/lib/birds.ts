@@ -11,6 +11,10 @@
 // the depth of its own first surface) and the lighting (BirdHit.albedo under its sky light, hazed
 // by BirdHit.depth). The library decides what flies and how: the species' size, colour, wingbeat
 // and party, the formation, the lane each species keeps to within the scene's, the schedule.
+// For a murmuration, fly the Murmuration scene's flock instead (flockSim with a FlockSetup, inked
+// with flockSheet): its authored sheet, or with the setup's `emergent` control genuine topological
+// boids. Birds that must react to one another rather than fly hashed paths are a CPU job for `Boids`
+// (sims/boids.ts), drawn from a sim texture as the flock is.
 //
 // Side-on. The screen point p is (x across from the frame's centre, y = uv.y), both in screen
 // heights; the world is x across, y up from the ground datum, z away from the eye, in the scene's own
@@ -50,9 +54,6 @@
 // moves its birds itself (Skyward's pigeons wheeling over the street, its swifts looping above):
 //   BirdHit birdBelowHit(vec3 ro, vec3 rd, vec3 pos, vec3 vel, float kind, float semi, vec3 own, float tm, float px);
 //   float birdBelowShape(vec2 q, float open, float flap, BirdSpecies s);
-//
-// For a murmuration, fly the Murmuration scene's flock instead (flockSim with a FlockSetup, inked
-// with flockSheet).
 import { choice, feature, type Blurb, type Option, type ParamDef } from "../../params.ts";
 
 export const birdsGlsl = /* glsl */ `

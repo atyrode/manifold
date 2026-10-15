@@ -48,6 +48,7 @@
 //          (mean flash, breeze front x, breeze on 0/1, M strength 0..1).
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { LevelCamera } from "../../sims/camera.ts";
 import { runBudgeted } from "../../sims/clock.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
@@ -83,6 +84,8 @@ export const FIREFLIES_HORIZON = FIREFLIES_WATER + (FIREFLIES_EYE / FIREFLIES_BA
 export const FIREFLIES_STATE_LANTERN = FIREFLIES_NEAR;
 export const FIREFLIES_STATE_BANK = FIREFLIES_NEAR + 1;
 const STATE_TEXELS = FIREFLIES_NEAR + 2;
+/** The eye the lights nearer than the bank move about in front of (sims/camera.ts). */
+const CAMERA = new LevelCamera({ horizon: FIREFLIES_HORIZON, eye: FIREFLIES_EYE, focal: FIREFLIES_FOCAL });
 
 const TAU = Math.PI * 2;
 /** Widest frame aspect the lattice grows for; wider frames repeat the edge columns. */
@@ -761,7 +764,7 @@ class FirefliesSim implements SceneSim {
         const z = BOKEH_Z_MIN + (BOKEH_Z_MAX - BOKEH_Z_MIN) * near();
         const y = BOKEH_Y_MIN + (BOKEH_Y_MAX - BOKEH_Y_MIN) * near();
         this.#nearAnchorX[k] = 0.5 * side * (BOKEH_SIDE_MIN + (BOKEH_SIDE_MAX - BOKEH_SIDE_MIN) * near());
-        this.#nearAnchorY[k] = FIREFLIES_EYE + ((y - FIREFLIES_HORIZON) * z) / FIREFLIES_FOCAL;
+        this.#nearAnchorY[k] = CAMERA.worldY(y, z);
         this.#nearAnchorZ[k] = z;
       }
       for (let j = 0; j < 3; j++) {
@@ -1335,8 +1338,8 @@ class FirefliesSim implements SceneSim {
       const wanderZ = Math.sin(clock * (this.#nearWander[j * 6 + 5] ?? 0) + (this.#nearWander[j * 6 + 2] ?? 0));
       const z = (this.#nearAnchorZ[j] ?? 6) * (1 + (drifter ? DRIFT_WANDER_Z : BOKEH_WANDER_Z) * wanderZ);
       const height = (this.#nearAnchorY[j] ?? 1) + (drifter ? DRIFT_WANDER_Y : BOKEH_WANDER_Y) * wanderY;
-      const x = (this.#nearAnchorX[j] ?? 0) * this.#aspect + ((drifter ? DRIFT_WANDER_X : BOKEH_WANDER_X) * FIREFLIES_FOCAL * wanderX) / z;
-      const y = FIREFLIES_HORIZON + ((height - FIREFLIES_EYE) * FIREFLIES_FOCAL) / z;
+      const x = (this.#nearAnchorX[j] ?? 0) * this.#aspect + CAMERA.screenX((drifter ? DRIFT_WANDER_X : BOKEH_WANDER_X) * wanderX, z);
+      const y = CAMERA.screenY(height, z);
       this.#nearX[j] = x;
       this.#nearY[j] = y;
       const d = Math.hypot(x - this.#lanternX, y - this.#lanternY);

@@ -8,11 +8,11 @@ import { glslPick, glslVec3 } from "../../shaders/glsl.ts";
 import { marblePalettes } from "./sim.ts";
 
 const accentInks = glslPick("palette", marblePalettes.map((palette) => glslVec3(palette.accent)), "vec3(0.0)");
-const ringPalettes = glslPick("palette", marblePalettes.map((palette) => (palette.rings ? "true" : "false")), "false");
+const basinPalettes = glslPick("palette", marblePalettes.map((palette) => (palette.basin ? "true" : "false")), "false");
 
 export const marbleGlsl = `
 const vec3 MARBLE_SIZE = vec3(0.035, 0.047, 0.058);  // dark size in a dim studio (ebru, riso)
-const vec3 MARBLE_BASIN = vec3(0.64, 0.68, 0.69);    // clear water over a pale tray (suminagashi)
+const vec3 MARBLE_BASIN = vec3(0.64, 0.68, 0.69);    // clear water over a pale tray (suminagashi's dark inks)
 const vec3 MARBLE_PAPER = vec3(0.922, 0.886, 0.800); // the sheet the pattern is printed onto
 const vec3 MARBLE_FLOAT = vec3(0.8, 0.82, 0.86);     // the cool studio light the floating ink is seen in
 const vec3 MARBLE_STEEL = vec3(0.5, 0.53, 0.58);     // the stylus's needle and the comb's pins
@@ -26,9 +26,10 @@ ${accentInks}
   return vec3(0.0);
 }
 
-// Suminagashi is done on clear water over a pale tray; ebru on dark size.
-bool marbleRings() {
-${ringPalettes}
+// Dark inks (suminagashi's sumi and indigo) float on clear water over a pale tray; the rest on dark
+// size. The palette decides, not the practice: it is what keeps the inks legible.
+bool marbleBasin() {
+${basinPalettes}
   return false;
 }
 
@@ -203,7 +204,7 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   bool print = K_medium > 0.5;
-  bool rings = marbleRings();
+  bool basin = marbleBasin();
 
   // The exit's sheet of paper (none at rest: passageOut() is 0).
   float leave = passageOut();
@@ -270,7 +271,7 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
     col *= 1.0 - 0.35 * rim;
   } else {
     vec2 vq = p / vec2(0.5 * aspect, 0.5);
-    vec3 water = (rings ? MARBLE_BASIN : MARBLE_SIZE) * (1.0 - 0.18 * dot(vq, vq));
+    vec3 water = (basin ? MARBLE_BASIN : MARBLE_SIZE) * (1.0 - 0.18 * dot(vq, vq));
     col = mix(water, inkColor * MARBLE_FLOAT, inkCover);
     col *= 1.0 - 0.35 * rimCover;
     // The tool's wake catches the light from the window, high on the left.
@@ -285,7 +286,7 @@ Shade sceneMarble(vec2 uv, vec2 cell, float t) {
     if (print) {
       // The print is peeled off the bath: the pattern goes with it, the clean size shows behind.
       vec2 bq = p / vec2(0.5 * aspect, 0.5);
-      vec3 bath = (rings ? MARBLE_BASIN : MARBLE_SIZE) * (1.0 - 0.18 * dot(bq, bq)) + marbleSheen(p, aspect, vec2(0.0), vec2(0.0));
+      vec3 bath = (basin ? MARBLE_BASIN : MARBLE_SIZE) * (1.0 - 0.18 * dot(bq, bq)) + marbleSheen(p, aspect, vec2(0.0), vec2(0.0));
       col *= (1.0 + 0.22 * sheet.roll) * (1.0 + 0.18 * sheet.lip);
       col = mix(col, bath, sheet.off);
     } else {

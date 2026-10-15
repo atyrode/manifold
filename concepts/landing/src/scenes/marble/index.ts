@@ -5,11 +5,12 @@ import { choice, feature, knobValue, range, seed, type ParamDef } from "../../pa
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { marbleGlsl } from "./shader.ts";
-import { MARBLE_PASSAGE, marblePalettes, marblePatterns, marbleSim } from "./sim.ts";
+import { MARBLE_PASSAGE, marblePalettes, marblePatterns, marblePracticeChoices, marbleSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  choice("sheet", "pattern", "pattern", marblePatterns.map((label, value) => ({ label, value })), 3, "What the tray is worked into. Stone: drops alone, packed into veined stones. Gel-git: a stylus drawn back and forth across them. Nonpareil: then a fine comb, raising rows of small arches. Bouquet: then a wavy comb back down, fanning them into sprays. Chevron: a comb up and back down between its own tracks."),
-  choice("sheet", "palette", "inks", marblePalettes.map((palette, value) => ({ label: palette.label, value })), 0, "Ebru: indigo, ochre, rust, cream and black. Suminagashi: sumi and indigo in rings, each pushed out by a drop of clear water. Riso: fluorescent pink, teal, sunflower and blue."),
+  choice("sheet", "pattern", "pattern", marblePatterns.map((label, value) => ({ label, value })), 3, "What the tray is worked into. Stone: left uncombed, the drops packed into veined stones (suminagashi: its rings turned only by breath and a fan). Gel-git: a stylus drawn back and forth across them. Nonpareil: then a fine comb, raising rows of small arches. Bouquet: then a wavy comb back down, fanning them into sprays. Chevron: a comb up and back down between its own tracks."),
+  choice("sheet", "palette", "inks", marblePalettes.map((palette, value) => ({ label: palette.label, value })), 0, "Ebru: indigo, ochre, rust, cream and black, on dark size. Suminagashi: sumi and indigo, on clear water over a pale tray. Riso: fluorescent pink, teal, sunflower and blue, on dark size."),
+  choice("sheet", "practice", "practice", marblePracticeChoices.map((label, value) => ({ label, value })), 0, "How the ink is laid, whatever the inks and pattern. By inks: the practice the inks belong to (suminagashi for sumi and indigo, ebru for the others). Ebru: a ground colour spreads over the tray, then colours flicked from a brush pack it with stones. Suminagashi: an ink brush and a water brush touch the same spots in turn, each drop pushing the last out into rings; uncombed (stone), breath and a fan turn them. Clicks follow the practice too."),
   range("sheet", "tempo", "tempo", 1, "How quickly the drops fall and the stylus and combs travel.", { min: 0.25, max: 2 }),
   range("sheet", "scale", "scale", 0.5, "Size of the drops and spacing of the combs: small and fine to the left, large and bold to the right."),
   feature("sheet", "renew", "new sheet", true, "rest", 0.4, "When the pattern is done it rests a while, then the sheet is lifted off with the ink and a fresh tray begins. Off: the finished pattern stays.", { trigger: 0 }),
@@ -38,7 +39,7 @@ export const marbleScene: SceneDef = {
   entry: "sceneMarble",
   sim: marbleSim(params),
   passage: MARBLE_PASSAGE,
-  // Paper, and suminagashi's pale basin, are light: the page copy goes dark on them (the shader's
-  // `pagePaper()` follows this).
-  theme: paletteTheme(params, "medium", (medium, values) => medium > 0 || marblePalettes[Math.round(knobValue(params, values, "palette"))]?.rings === true),
+  // Paper, and the pale basin under suminagashi's dark inks, are light: the page copy goes dark on
+  // them (the shader's `pagePaper()` follows this).
+  theme: paletteTheme(params, "medium", (medium, values) => medium > 0 || marblePalettes[Math.round(knobValue(params, values, "palette"))]?.basin === true),
 };

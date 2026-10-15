@@ -6,7 +6,7 @@
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { SKYWARD_PASSAGE, skywardGlsl } from "./shader.ts";
+import { SKYWARD_METEOR_TRIGGER, SKYWARD_PASSAGE, skywardGlsl } from "./shader.ts";
 
 const params: readonly ParamDef[] = [
   range("city", "towers", "glass towers", 0.4, "The mix of the street: from old stone and brick houses with balconies and window boxes to glass towers that mirror the clouds, the opposite roofline and, now and then, the sun."),
@@ -14,7 +14,7 @@ const params: readonly ParamDef[] = [
   range("city", "greenery", "greenery", 0.6, "Window boxes and trailing plants on the balconies, and the leafy edge of the street tree in the corner of the sky."),
   range("city", "traffic", "traffic", 0.5, "The road you cannot see: buses and cars sweeping their shadows, headlights and glints along the lower floors, and a tram now and then, its pantograph sparking on the wire."),
   seed("city", "citySeed", "street", "Which buildings stand where: re-seed for another street."),
-  ...skyKnobs({ time: 0.58, stars: 0.3 }),
+  ...skyKnobs({ time: 0.58, stars: 0.3, moon: 1, meteors: { trigger: SKYWARD_METEOR_TRIGGER } }),
   range("air", "birds", "birds", 0.5, "A flock of pigeons wheeling over the street and a few swifts higher up, by day and in the golden hour."),
   feature("air", "planes", "airliners", true, "frequency", 0.4, "Planes crossing the strip of sky far overhead, a contrail growing behind each, spreading and fading over a minute or two."),
   ...weatherKnobs({ clouds: 0.35, rain: true, snow: true, fog: true, wind: true }),
@@ -31,7 +31,7 @@ export const skywardScene: SceneDef = {
   params,
   groups: {
     city: { title: "City", blurb: "The buildings round the crossroads, their windows and balconies, and the traffic that passes below." },
-    sky: atmosphereGroups.sky,
+    sky: atmosphereGroups.skyNight,
     air: { title: "In the air", blurb: "Who is up there with you." },
     weather: { title: atmosphereGroups.weather.title, blurb: "Rain comes down out of the strip of sky straight at you, streaks the glass and darkens the stone; snow drifts down, and settles on the ledges." },
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: the banner over the crossroads." },
@@ -43,4 +43,6 @@ export const skywardScene: SceneDef = {
   // Lying down, the view tips back from street level up to the zenith and the facades swing into
   // their lean; leaving, you sit back up and it tips down toward the street.
   passage: SKYWARD_PASSAGE,
+  // The moon takes a phase (K_moon) in the shared sky.
+  features: { SKY_MOON_PHASE: 1 },
 };

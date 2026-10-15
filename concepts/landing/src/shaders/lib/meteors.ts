@@ -8,6 +8,9 @@ export const meteorsGlsl = `
 // Seconds a shooting star takes to cross, head to fade.
 const float METEOR_FLIGHT = 0.9;
 
+// The cool white most scenes give a shooting star's streak.
+const vec3 METEOR_TINT = vec3(0.9, 0.95, 1.0);
+
 // Seconds since the latest shooting star, the random one's or the trigger's (slot; -1 for none),
 // whichever is more recent; 1e4 when there is none. The motion clock tm (uMotionTime) is cut into
 // windows of 60 s (rate near 0) down to 5 s (rate 1), each holding one meteor at a hashed moment in 80%
