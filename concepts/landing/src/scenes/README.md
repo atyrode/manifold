@@ -421,7 +421,8 @@ the component could be composed).
 | `tidepool` | the sky in the pools' mirror | — | full, mirrored | — | — |
 | `dew` | out-of-focus dawn backdrop | — | — | — | — |
 | `bonsai` | none (its light only) | — | — | — | — |
-| `orbit` †, `swell`, `fireflies` | their own skies | own | own (`fireflies`: moonless) | — | own (`orbit`'s captured meteors); `swell`, `fireflies`: open |
+| `orbit` †, `swell` | their own skies | own | own | — | own (`orbit`'s captured meteors); `swell`: open |
+| `fireflies` | its own moonless sky over the mangroves | own | — (moonless) | — | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,
@@ -454,13 +455,20 @@ The scene owns how they look: its projection, palette, light, what hides them an
   drawn; simplified organs follow their spring's balance instead of integrating it. Shapes taking
   `foot` fade detail finer than two cells to its mean (`plantKeep`) and are bit for bit unchanged
   where it is resolved.
+- **Composition.** An organ on the site may spring from a point `offset` from it (a tree's prop
+  roots along its crown); `PlantClimate.wind` adds air the scene moves itself (a breeze front of its
+  own) to the breeze; an organ with a negative slot is never packed (one the scene draws its own way,
+  as fireflies' crowns through the bank's profile); `PlantTexture.pack(a, b)` writes two systems
+  into one texture; `plantPoint` (GLSL) finds a point along a posed organ (a swaying stem's tip).
 - **Controls.** `plantKnobs({ group, season, growth, gusts })` gives `season`, `growth` and `gusts`
   (with its trigger), all off: adopting them never changes a picture.
 - **Consumers.** pond (sheet tier, the border), falls (the near bank's ferns per fragment; the
   ledge ferns draw the same `plantFrond` from hashes), tidepool (kelp, surfgrass and anemones in
-  the water's flow, read back from the GPU). Next: meadow (near grass and dandelion stems on its
-  own gust field), garden (border plantings, not the maple), country (near hedgerows only),
-  fireflies (prop roots, crowns stirring under the breeze), kelp (stipes stay on Verlet).
+  the water's flow, read back from the GPU), fireflies (every tree of the bank: a stem carrying its
+  crown's clumps, bowing to the breeze front through `wind`, and Rhizophora prop roots per fragment
+  from grid-slotted records). Next: meadow (near grass and dandelion stems on its own gust field),
+  garden (border plantings, not the maple), country (near hedgerows only), kelp (stipes stay on
+  Verlet).
 
 ### The giant planet (`src/shaders/lib/planet.ts`)
 One ringed gas giant, one implementation, that any sky composes: Orbit's subject and Campfire's

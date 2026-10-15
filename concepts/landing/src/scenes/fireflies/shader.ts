@@ -34,6 +34,9 @@ import {
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 
+/** The "now" slot of the shared shooting stars (K_meteors): the breeze has 0 and the M 1. */
+export const FIREFLIES_METEOR_TRIGGER = 2;
+
 export const firefliesGlsl = `
 ${plantsGlsl}
 const float FIREFLIES_CELL = ${glslFloat(FIREFLIES_CELL)};
@@ -49,6 +52,10 @@ const float FIREFLIES_FOCAL = ${glslFloat(FIREFLIES_FOCAL)};
 const float FIREFLIES_DISTANCE = ${glslFloat(FIREFLIES_BANK)};
 const float FIREFLIES_APERTURE = ${glslFloat(FIREFLIES_APERTURE)};
 const float FIREFLIES_ROOT_PITCH = ${glslFloat(FIREFLIES_ROOT_PITCH)};
+// Shooting stars set out in this band of the sky (screen heights from the middle: x, y, width,
+// height), high over the trees.
+const int FIREFLIES_METEOR_SLOT = ${FIREFLIES_METEOR_TRIGGER};
+const vec4 FIREFLIES_METEOR_FIELD = vec4(-0.6, 0.8, 1.2, 0.12);
 
 // The camera settling in on arriving and drifting on as the scene leaves: ZOOM is the share of the
 // frame given up (about the waterline), PAN the share of the room that zoom leaves at the edges the
@@ -166,6 +173,12 @@ vec3 firefliesBank(vec2 q, float x0, float span, float tm, float pulse, bool mir
   // Hills far behind the bank, a shade darker than the skyglow, seen through its gaps.
   float hill = 0.035 + 0.05 * vnoise(vec2(q.x * 2.1 + 3.0, 1.7)) + 0.012 * vnoise(vec2(q.x * 8.3, 4.1));
   if (h < hill) col = mix(col, FIREFLIES_HILLS, 0.65);
+  else if (!mirrored) {
+    // Now and then a shooting star (the shared meteors, K_meteors) over the hills, behind the trees.
+    float meteorSeed;
+    float meteorAt = meteorAge(tm, K_meteors, FIREFLIES_METEOR_SLOT, meteorSeed);
+    col += METEOR_TINT * hardEdge(meteorStreak(q, FIREFLIES_METEOR_FIELD, meteorAt, meteorSeed, 1.0 / uRes.y));
+  }
 
   // The mangroves, black: leafy round crowns over a gap of prop roots and Sonneratia trunks, or the
   // low mud bank.
@@ -243,7 +256,7 @@ float firefliesSwarm(vec2 q, float x0, float cols, float stretch, out float reac
 }
 
 // Knobs: coupling, density, period, drift, unrest, lantern and mark drive the simulation; here
-// K_near, K_seed, K_reflections, K_mist and K_stars are read.
+// K_near, K_seed, K_reflections, K_mist, K_stars and K_meteors are read.
 Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   vec2 ps = vec2((uv.x - 0.5) * aspect, uv.y);
