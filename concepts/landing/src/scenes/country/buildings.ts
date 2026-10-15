@@ -1,14 +1,22 @@
-// The countryside's buildings: near ones modelled, far ones the shared sprites (shaders/buildings.ts).
+// The countryside's buildings: near ones modelled, far ones the shared sprites (shaders/buildings.ts),
+// the castle always modelled (castle.ts).
 //
 // A cottage, barn or church whose gable spans more than COUNTRY_MODEL_CELLS dither cells is a solid
 // the eye ray meets in the building's own frame (x along its ridge, the record's facing; y up from
 // its terrace; z across): a block under a pitched roof (one convex solid, countryBlock), a cottage's
 // chimney stack on the ridge, a church's square tower at its west gable and the spire on it, so it
 // reads true from the vantage's oblique heading. Its faces carry the sprites' windows (at the same
-// places along the walls, lit by buildingWindow), its chimney the shared smoke. Smaller ones, and
-// the castle at any size, are the sprites projected from their footings, as before.
+// places along the walls, lit by buildingWindow), its chimney the shared smoke. Smaller ones are the
+// sprites projected from their footings, as before.
+//
+// Their life, each compiled in only while its knob is on: windows lighting one by one as dusk
+// falls and most going dark late at night, `lights` the share of them that ever light (a church's
+// and the castle's half that), warming the walls and the ground round a lit cottage or farmhouse
+// (COUNTRY_HAS_LIGHTS); smoke curling from the cottages' chimney stacks and leaning with the wind,
+// thicker as the light goes, `smoke` its density (COUNTRY_HAS_SMOKE).
 import { glslFloat } from "../../shaders/glsl.ts";
 import { TERRAIN_HOUSE, TERRAIN_MAX_COTTAGES, TERRAIN_MAX_PLACES } from "../../sims/terrain.ts";
+import { COUNTRY_CASTLE_REACH, countryCastleGlsl } from "./castle.ts";
 
 /** A building is modelled once its gable spans this many dither cells; smaller, it is a sprite. */
 export const COUNTRY_MODEL_CELLS = 6;
@@ -16,6 +24,12 @@ export const COUNTRY_MODEL_CELLS = 6;
 export const countryBuildingsGlsl = /* glsl */ `
 const float COUNTRY_HOUSE = ${glslFloat(TERRAIN_HOUSE)}; // metres a house unit (a cottage gable, drawn half again life size)
 const float COUNTRY_MODEL_CELLS = ${glslFloat(COUNTRY_MODEL_CELLS)};
+// The share of windows that ever light (the lights knob; none while it is off).
+#if COUNTRY_HAS_LIGHTS
+#define COUNTRY_LIGHTS K_lights
+#else
+#define COUNTRY_LIGHTS 0.0
+#endif
 
 // The ray (o, d) in a solid's frame against the solid |x| <= size.x, |z| <= size.y, y >= -sink,
 // under a roof y <= top - slope.x |x| - slope.y |z| (slope 0: flat; one slope: a gable roof; both:
@@ -64,24 +78,25 @@ float countryBlock(vec3 o, vec3 d, vec2 size, float sink, float top, vec2 slope,
 
 // A building's face under this pixel, nearer than zLimit (camera depth): its face (buildings.ts's
 // codes: 1 gable end, 2 long wall, 3 roof, 4 chimney, 5 tower, 6 tower side, 7 spire, 9 belfry; the
-// castle's own; 0 none), window, hash, kind, depth, a cell in its units, its normal (world) and the
-// point on the face (metres: along it, up it) for courses and tiles.
+// castle's own, castle.ts; 0 none), window, hash, kind, depth, a cell in its units (the castle's:
+// metres), its normal (world) and the point on the face (metres: along it, up it) for courses and
+// tiles.
 struct CountryFind { float face; float pane; float hash; float kind; float z; float px; vec3 n; vec2 wall; };
 
 CountryFind countryNoBuilding(float zLimit) {
   return CountryFind(0.0, 0.0, 0.0, 0.0, zLimit, 1.0, vec3(0.0, 1.0, 0.0), vec2(0.0));
 }
 
-// A building's unit (metres a gable), and its shape's proportions in units: length, eaves, ridge.
+// A house's unit (metres a gable), and its shape's proportions in units: length, eaves, ridge.
 float countryUnit(TerrainBuilding b) {
-  return b.kind > TERRAIN_BUILDING_CASTLE - 0.5 ? 5.5 : COUNTRY_HOUSE * (b.kind > TERRAIN_BUILDING_BARN - 0.5 ? 1.25 : 1.0);
+  return COUNTRY_HOUSE * (b.kind > TERRAIN_BUILDING_BARN - 0.5 ? 1.25 : 1.0);
 }
+${countryCastleGlsl}
 
-// Building b as the ray (eye, rd; q its pinhole point) meets it nearer than zLimit: modelled while
-// its gable spans more than COUNTRY_MODEL_CELLS cells (not the castle), else the sprite.
+// House b as the ray (eye, rd; q its pinhole point) meets it nearer than zLimit: modelled while its
+// gable spans more than COUNTRY_MODEL_CELLS cells, else the sprite.
 CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit) {
   CountryFind f = countryNoBuilding(zLimit);
-  bool castle = b.kind > TERRAIN_BUILDING_CASTLE - 0.5;
   bool church = b.kind > TERRAIN_BUILDING_CHURCH - 0.5 && b.kind < TERRAIN_BUILDING_CHURCH + 0.5;
   bool cottage = b.kind < 0.5;
   bool stack = cottage && fract(b.hash * 7.7) < 0.6;
@@ -91,7 +106,7 @@ CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float 
   float rise = church ? 0.62 : 0.55;
   vec2 l = vec2(cos(b.facing), sin(b.facing));
   vec3 db = b.at - eye;
-  if (!castle && unit / (dot(db, countryFwd) * pxl) > COUNTRY_MODEL_CELLS) {
+  if (unit / (dot(db, countryFwd) * pxl) > COUNTRY_MODEL_CELLS) {
     // Modelled: the ray in the building's frame, against its block, stack, tower and spire.
     vec3 along = vec3(l.x, 0.0, l.y);
     vec3 across = vec3(-l.y, 0.0, l.x);
@@ -148,8 +163,8 @@ CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float 
   if (dot(l, countryFwd.xz) < 0.0) l = -l;
   float lr = dot(l, countryRight.xz);
   float flip = lr < 0.0 ? -1.0 : 1.0;
-  float lenS = castle ? 1.0 : b.length * clamp(abs(lr), 0.35, 1.0);
-  vec3 dc = castle ? db : db - vec3(l.x, 0.0, l.y) * 0.5 * b.length * unit;
+  float lenS = b.length * clamp(abs(lr), 0.35, 1.0);
+  vec3 dc = db - vec3(l.x, 0.0, l.y) * 0.5 * b.length * unit;
   float zb = dot(dc, countryFwd);
   if (zb < 20.0 || zb > zLimit) return f;
   float scale = zb / unit;
@@ -157,47 +172,32 @@ CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float 
   float px = pxl * scale;
   float recede = clamp(-dc.y / zb * max(dot(l, countryFwd.xz), 0.0) / max(abs(lr), 0.35), 0.03, 0.9);
   float pane = 0.0;
-  float across = 0.0;
   float face = 0.0;
-  if (castle) {
-    if (abs(h.x) < 9.0 && h.y > -1.5 && h.y < 9.5) {
-      float slit = 0.0;
-      face = buildingCastle(h, 0.0, px, flip, step(0.45, fract(b.hash * 13.1)), across, slit);
-      pane = slit;
-    }
-  } else if (church) {
-    h.x *= flip;
+  h.x *= flip;
+  if (church) {
     if (h.x > -1.2 && h.x < 2.9 && h.y > -0.3 && h.y < 4.6) face = buildingChurch(h, recede, -0.3, px, pane);
-  } else {
-    h.x *= flip;
-    if (h.x > -1.15 && h.x < lenS + 0.15 && h.y > -0.3 && h.y < 0.75 + 0.55 + 0.6 + lenS * recede) {
-      face = buildingCottage(h, lenS, 0.75, 0.55, recede, cottage, -0.3, px, pane);
-    }
+  } else if (h.x > -1.15 && h.x < lenS + 0.15 && h.y > -0.3 && h.y < 0.75 + 0.55 + 0.6 + lenS * recede) {
+    face = buildingCottage(h, lenS, 0.75, 0.55, recede, cottage, -0.3, px, pane);
   }
   if (face < 0.5) return f;
   // The sprites' faces as the eye sees them (camera frame, mirrored with the sprite).
   vec3 nc = vec3(-0.62, 0.0, -0.78);
-  if (castle) {
-    // Castle faces: 1 wall, 2 round tower, 3 tops, 4 gate, 5 keep front, 6 keep side, 7 roofs.
-    nc = face > 2.5 && face < 3.5 ? vec3(0.0, 1.0, 0.0) : (face > 5.5 && face < 6.5 ? vec3(0.78, 0.0, -0.62) : normalize(vec3(across * 0.8, 0.0, -1.0)));
-    if (face > 6.5) nc = normalize(vec3(across, 0.6, -0.8));
-  } else {
-    if (face > 1.5 && face < 2.5 || face > 5.5 && face < 6.5) nc = vec3(0.78, 0.0, -0.62);
-    else if (face > 2.5 && face < 3.5) nc = normalize(vec3(0.42, 0.78, -0.46));
-    else if (face > 6.5 && face < 8.5) nc = face < 7.5 ? normalize(vec3(-0.55, 0.45, -0.7)) : normalize(vec3(0.6, 0.45, -0.66));
-    nc.x *= flip;
-  }
+  if (face > 1.5 && face < 2.5 || face > 5.5 && face < 6.5) nc = vec3(0.78, 0.0, -0.62);
+  else if (face > 2.5 && face < 3.5) nc = normalize(vec3(0.42, 0.78, -0.46));
+  else if (face > 6.5 && face < 8.5) nc = face < 7.5 ? normalize(vec3(-0.55, 0.45, -0.7)) : normalize(vec3(0.6, 0.45, -0.66));
+  nc.x *= flip;
   return CountryFind(face, pane, b.hash, b.kind, zb, px, normalize(countryToWorld(nc)), h * unit);
 }
 
 // The building under this pixel nearer than zLimit, and the glow of lit windows and the smoke of
-// chimneys around. The settlements near the pixel's column are walked for the two nearest buildings
+// chimneys around. The settlements near the pixel's column are walked for the two nearest houses
 // whose bounds hold the pixel, then only those two are drawn (countryBuilding), so the cost per pixel
-// stays two buildings' however many a village holds.
+// stays two buildings' however many a village holds; and the castle, where its bounds hold it.
 CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit, float tod, float dark, float wind, inout float glow, inout float smoke) {
   ivec2 counts = terrainCounts(uSim3);
   int first = -1;
   int second = -1;
+  int castleIndex = -1;
   float near1 = 1e9;
   float near2 = 1e9;
   for (int s = 0; s < ${TERRAIN_MAX_PLACES}; s++) {
@@ -214,29 +214,47 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
       if (k >= place.count) break;
       TerrainBuilding b = terrainBuilding(uSim3, place.first + k);
       bool castle = b.kind > TERRAIN_BUILDING_CASTLE - 0.5;
-      float unit = countryUnit(b);
       vec3 db = b.at - eye;
       float zm = dot(db, countryFwd);
       if (zm < 20.0) continue;
-      vec2 at = vec2(dot(db, countryRight), db.y) / zm;
-      vec2 l = vec2(cos(b.facing), sin(b.facing));
-      if (!castle) {
-        // Lit windows warm the walls and the ground around; a lit hearth smokes.
-        float lit = buildingWindow(fract(b.hash * 91.0 + 0.13), tod, dark, 0.7) + buildingWindow(fract(b.hash * 91.0 + 0.57), tod, dark, 0.7);
-        vec2 g = (q - at) * zm / unit - vec2(0.0, 0.4);
-        glow += lit * exp(-dot(g, g) * 0.3);
-        if (b.kind < 0.5 && fract(b.hash * 7.7) < 0.6) {
+      if (castle) {
+        // Its bounds on screen: its reach round its centre, seen at its near side and its far one.
+        float reachC = ${glslFloat(COUNTRY_CASTLE_REACH.radius)};
+        vec2 zs = vec2(max(zm - reachC, 20.0), zm + reachC);
+        float dx = dot(db, countryRight);
+        vec4 xs = vec4((dx - reachC) / zs, (dx + reachC) / zs);
+        vec4 ys = vec4((db.y - ${glslFloat(COUNTRY_CASTLE_REACH.sink)}) / zs, (db.y + ${glslFloat(COUNTRY_CASTLE_REACH.top)}) / zs);
+        if (zm - reachC > zLimit || q.x < min(min(xs.x, xs.y), min(xs.z, xs.w)) || q.x > max(max(xs.x, xs.y), max(xs.z, xs.w)) || q.y < min(min(ys.x, ys.y), min(ys.z, ys.w)) || q.y > max(max(ys.x, ys.y), max(ys.z, ys.w))) continue;
+        castleIndex = place.first + k;
+        continue;
+      } else {
+        float unit = countryUnit(b);
+        vec2 at = vec2(dot(db, countryRight), db.y) / zm;
+        vec2 l = vec2(cos(b.facing), sin(b.facing));
+#if COUNTRY_HAS_LIGHTS
+        // Lit windows warm the walls and the ground around (a barn has none lit, a church's half).
+        if (K_lights > 0.0 && (b.kind < TERRAIN_BUILDING_BARN - 0.5)) {
+          float share = b.kind > 0.5 ? 0.5 * K_lights : K_lights;
+          float lit = buildingWindow(fract(b.hash * 91.0 + 0.13), tod, dark, share) + buildingWindow(fract(b.hash * 91.0 + 0.57), tod, dark, share);
+          vec2 g = (q - at) * zm / unit - vec2(0.0, 0.4);
+          glow += lit * exp(-dot(g, g) * 0.3);
+        }
+#endif
+#if COUNTRY_HAS_SMOKE
+        // A lit hearth smokes from a cottage's stack, thicker as the light goes.
+        if (K_smoke > 0.0 && b.kind < 0.5 && fract(b.hash * 7.7) < 0.6) {
           vec3 top = db + vec3(l.x, 0.0, l.y) * 0.15 * b.length * unit + vec3(0.0, 1.6 * unit, 0.0);
           float zt = dot(top, countryFwd);
-          smoke = max(smoke, buildingSmoke(q, vec2(dot(top, countryRight), top.y) / zt, 9.0 * unit / zt, b.hash, uMotionTime, wind) * (0.4 + 0.6 * dark));
+          smoke = max(smoke, buildingSmoke(q, vec2(dot(top, countryRight), top.y) / zt, 9.0 * unit / zt, b.hash, uMotionTime, wind) * (0.4 + 0.6 * dark) * (0.35 + 0.85 * K_smoke));
         }
+#endif
+        // Its bounds on screen: its length as it runs across the view and a gable either side, its
+        // roof or tower above (the church's length is the nave's).
+        float run = 0.5 * (b.kind > 0.5 && b.kind < 1.5 ? 2.5 : b.length) * max(abs(dot(l, countryRight.xz)), 0.35) + 1.2;
+        float tall = (b.kind > 0.5 && b.kind < 1.5 ? 4.5 : 2.0) + 0.5 * b.length;
+        float low = 0.3 + 0.25 * b.length;
+        if (zm - run * unit > zLimit || abs(q.x - at.x) > run * unit / zm || q.y < at.y - low * unit / zm || q.y > at.y + tall * unit / zm) continue;
       }
-      // Its bounds on screen: its length as it runs across the view and a gable either side, its
-      // roof, tower or keep above (the church's length is the nave's).
-      float run = castle ? 9.5 : 0.5 * (b.kind > 0.5 && b.kind < 1.5 ? 2.5 : b.length) * max(abs(dot(l, countryRight.xz)), 0.35) + 1.2;
-      float tall = castle ? 9.6 : (b.kind > 0.5 && b.kind < 1.5 ? 4.5 : 2.0) + 0.5 * b.length;
-      float low = castle ? 1.5 : 0.3 + 0.25 * b.length;
-      if (zm - run * unit > zLimit || abs(q.x - at.x) > run * unit / zm || q.y < at.y - low * unit / zm || q.y > at.y + tall * unit / zm) continue;
       int index = place.first + k;
       if (zm < near1) {
         second = first;
@@ -255,12 +273,21 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
     CountryFind behind = countryBuilding(terrainBuilding(uSim3, second), eye, rd, q, pxl, f.z);
     if (behind.face > 0.5) f = behind;
   }
+  // A loop of at most one turn rather than an if: a software rasteriser runs every line of a
+  // branch whichever way its pixels go, but no turn of a loop none of them enters, so the castle
+  // costs only where it stands.
+  int castles = castleIndex >= 0 ? 1 : 0;
+  for (int i = 0; i < castles; i++) {
+    CountryFind castle = countryCastle(terrainBuilding(uSim3, castleIndex), eye, rd, pxl, f.z);
+    if (castle.face > 0.5) f = castle;
+  }
   return f;
 }
 
 // How a building's face looks: albedo, and through outs its lamp (a lit window), how much snow it
 // holds (-1: none of its own), how porous and how glossy it is wet.
 vec3 countryBuildingLook(CountryFind found, float tod, float dark, out float lamp, out float snowy, out float porous, out float glossy) {
+  if (found.kind > TERRAIN_BUILDING_CASTLE - 0.5) return countryCastleLook(found, tod, dark, COUNTRY_LIGHTS, lamp, snowy, porous, glossy);
   lamp = 0.0;
   snowy = 0.0;
   porous = 0.6;
@@ -269,8 +296,7 @@ vec3 countryBuildingLook(CountryFind found, float tod, float dark, out float lam
   float hr = fract(found.hash * 23.7);
   bool church = found.kind > 0.5 && found.kind < 1.5;
   bool barn = found.kind > 1.5 && found.kind < 2.5;
-  bool castle = found.kind > 2.5;
-  vec3 wall = church || castle ? vec3(0.7, 0.68, 0.62) : (hw < 0.35 ? vec3(0.84, 0.77, 0.62) : (hw < 0.6 ? vec3(0.88, 0.87, 0.82) : (hw < 0.85 ? vec3(0.62, 0.36, 0.26) : vec3(0.6, 0.6, 0.57))));
+  vec3 wall = church ? vec3(0.7, 0.68, 0.62) : (hw < 0.35 ? vec3(0.84, 0.77, 0.62) : (hw < 0.6 ? vec3(0.88, 0.87, 0.82) : (hw < 0.85 ? vec3(0.62, 0.36, 0.26) : vec3(0.6, 0.6, 0.57))));
   vec3 roof = church ? vec3(0.27, 0.29, 0.33) : (hr < 0.5 ? vec3(0.56, 0.26, 0.17) : (hr < 0.8 ? vec3(0.26, 0.28, 0.32) : vec3(0.58, 0.48, 0.3)));
   if (barn) {
     wall = hw < 0.4 ? vec3(0.34, 0.26, 0.2) : (hw < 0.7 ? vec3(0.55, 0.24, 0.17) : vec3(0.66, 0.62, 0.54));
@@ -278,16 +304,6 @@ vec3 countryBuildingLook(CountryFind found, float tod, float dark, out float lam
   }
   float f = found.face;
   vec3 albedo;
-  if (castle) {
-    albedo = f > 6.5 ? vec3(0.3, 0.3, 0.34) : (f > 3.5 && f < 4.5 ? vec3(0.12, 0.1, 0.09) : wall * (f > 5.5 ? 0.88 : 1.0));
-    if (found.pane > 0.5) {
-      float lit = buildingWindow(fract(found.pane * 0.37 + found.hash), tod, dark, 0.5);
-      if (lit > 0.5 || found.px < 0.3) albedo = vec3(0.08, 0.08, 0.1);
-      lamp = lit;
-    }
-    snowy = f > 2.5 && f < 3.5 ? 1.0 : (f > 6.5 ? 0.6 : 0.0);
-    return albedo;
-  }
   // Courses on the walls and tiles on the roofs, where a course spans a few cells.
   float held = smoothstep(0.08, 0.03, found.px);
   if (f < 2.5 || (f > 4.5 && f < 6.5)) {
@@ -306,7 +322,7 @@ vec3 countryBuildingLook(CountryFind found, float tod, float dark, out float lam
     albedo = vec3(0.08, 0.07, 0.07);
   }
   if (found.pane > 0.5 && !barn) {
-    float lit = buildingWindow(fract(found.hash * 91.0 + (found.pane < 1.5 ? 0.13 : (found.pane < 2.5 ? 0.57 : 0.89))), tod, dark, church ? 0.35 : 0.7);
+    float lit = buildingWindow(fract(found.hash * 91.0 + (found.pane < 1.5 ? 0.13 : (found.pane < 2.5 ? 0.57 : 0.89))), tod, dark, church ? 0.5 * COUNTRY_LIGHTS : COUNTRY_LIGHTS);
     if (found.px < 0.25 || lit > 0.5) {
       albedo = vec3(0.1, 0.12, 0.16);
       lamp = lit;
