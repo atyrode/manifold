@@ -126,9 +126,9 @@ export interface SceneDef {
   theme?: SceneTheme;
   /**
    * Seconds the scene's own entrance and exit take, when it choreographs them (read through
-   * `passageIn()` / `passageOut()` or `SimFrame.passage`). Every entrance also dissolves out of the
-   * previous scene's last frame over its first PASSAGE_DISSOLVE (0.9 s); without this the dissolve
-   * is the whole entrance and there is no exit.
+   * `passageIn()` / `passageOut()` or `SimFrame.passage`). Every entrance also takes the screen over
+   * from the leaving scene, still playing its exit, over the lab's blend length (1.5 s by default);
+   * without this the blend is the whole entrance and there is no exit.
    */
   passage?: { enter: number; exit: number };
   /**

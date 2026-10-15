@@ -813,6 +813,44 @@ export class Inspector {
     const replay = nowButton("this scene's exit, then its entrance", () =>
       this.#ctx.renderer()?.replayPassage(),
     );
+    const overlap = slider(
+      "Overlap",
+      0,
+      1,
+      0.05,
+      () => this.#state().overlap,
+      (value, commit) => change({ overlap: value }, commit),
+    );
+    const weave = slider(
+      "Blend length",
+      0.3,
+      4,
+      0.1,
+      () => this.#state().weave,
+      (value, commit) => change({ weave: value }, commit),
+    );
+    const blend = segments(
+      "Blend pattern",
+      [
+        { label: "middle first", value: "bloom" },
+        { label: "even fade", value: "fade" },
+        { label: "sweep", value: "sweep" },
+        { label: "grain", value: "grain" },
+      ],
+      () => this.#state().blend,
+      (value) => change({ blend: value }),
+    );
+    const slowmo = segments(
+      "Transition speed",
+      [
+        { label: "real time", value: "1" },
+        { label: "2× slower", value: "2" },
+        { label: "4× slower", value: "4" },
+        { label: "8× slower", value: "8" },
+      ],
+      () => String(this.#state().slowmo),
+      (value) => change({ slowmo: Number(value) }),
+    );
     const play = h("button", { type: "button", class: "text-button wide" });
     play.addEventListener("click", () => {
       const renderer = this.#ctx.renderer();
@@ -840,11 +878,45 @@ export class Inspector {
       }),
       row({
         label: "Transitions",
-        help: "Scenes come in and leave gracefully: the old frame dissolves away in dither order, and many scenes play their own entrance and exit (a camera settling, a fire catching, lanterns arriving). Off: a straight cut. Skipped at motion 0 and under reduced motion; now plays it anyway.",
+        help: "Scenes come in and leave gracefully: many play their own entrance and exit (a camera settling, a fire catching, lanterns arriving), and the next scene takes over part-way through the leaving one's exit, dot by dot, while both still move. Off: a straight cut. Skipped at motion 0 and under reduced motion; now plays it anyway.",
         icon: "transition",
         inline: [replay, transitions.el],
         modified: () => this.#state().transitions !== this.#base().transitions,
         reset: () => change({ transitions: this.#base().transitions }),
+      }),
+      row({
+        label: "Overlap",
+        help: "How much of the leaving scene's exit the next scene's entrance overlaps. While they overlap both scenes move, the next one taking over cell by cell. 0 waits for the whole exit; 1 enters as the exit begins. Try it with now above.",
+        icon: "transition",
+        block: overlap.el,
+        readout: () => `${Math.round(this.#state().overlap * 100)}%`,
+        modified: () => this.#state().overlap !== this.#base().overlap,
+        reset: () => change({ overlap: this.#base().overlap }),
+      }),
+      row({
+        label: "Blend length",
+        help: "Seconds the next scene takes to take over the whole screen from the leaving one.",
+        icon: "clock",
+        block: weave.el,
+        readout: () => `${this.#state().weave.toFixed(1)} s`,
+        modified: () => this.#state().weave !== this.#base().weave,
+        reset: () => change({ weave: this.#base().weave }),
+      }),
+      row({
+        label: "Blend pattern",
+        help: "The order in which dots change over: from the middle outward, evenly everywhere, sweeping in from the left, or in coarse grains.",
+        icon: "dither",
+        block: blend.el,
+        modified: () => this.#state().blend !== this.#base().blend,
+        reset: () => change({ blend: this.#base().blend }),
+      }),
+      row({
+        label: "Transition speed",
+        help: "Play transitions slower to study them: entrances, exits and the blend between them slow down, the scenes themselves do not.",
+        icon: "motion",
+        block: slowmo.el,
+        modified: () => this.#state().slowmo !== this.#base().slowmo,
+        reset: () => change({ slowmo: this.#base().slowmo }),
       }),
       row({
         label: "Clock",
@@ -853,6 +925,9 @@ export class Inspector {
         block: play,
       }),
     ];
+    // Overlap, blend length, pattern and speed tune transitions: shown only while they are on.
+    const tuning = rows.slice(3, 7);
+    const passageKeys = ["transitions", "overlap", "weave", "blend", "slowmo"] as const;
     const playIcon = icon("play");
     const pauseIcon = icon("pause");
     const playLabel = h("span");
@@ -861,12 +936,17 @@ export class Inspector {
       motion.sync,
       follow.sync,
       transitions.sync,
+      overlap.sync,
+      weave.sync,
+      blend.sync,
+      slowmo.sync,
       ...rows.map((built) => built.sync),
       () => {
         const paused = this.#ctx.renderer()?.paused ?? false;
         playIcon.style.display = paused ? "" : "none";
         pauseIcon.style.display = paused ? "none" : "";
         playLabel.textContent = paused ? "Play" : "Pause";
+        for (const built of tuning) built.el.hidden = this.#state().transitions !== "on";
       },
     );
     return this.#section({
@@ -891,12 +971,12 @@ export class Inspector {
       modified: () =>
         this.#state().motion !== this.#base().motion ||
         this.#state().mouse !== this.#base().mouse ||
-        this.#state().transitions !== this.#base().transitions,
+        passageKeys.some((key) => this.#state()[key] !== this.#base()[key]),
       reset: () =>
         change({
           motion: this.#base().motion,
           mouse: this.#base().mouse,
-          transitions: this.#base().transitions,
+          ...Object.fromEntries(passageKeys.map((key) => [key, this.#base()[key]])),
         }),
       syncers: this.#syncers,
     });

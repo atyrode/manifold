@@ -72,6 +72,10 @@ const SETTING_LABEL: Record<keyof LabState, string> = {
   dim: "dim",
   blur: "blur",
   transitions: "transitions",
+  overlap: "transition overlap",
+  weave: "transition blend length",
+  blend: "transition pattern",
+  slowmo: "transition slow motion",
 };
 
 const SHORTCUTS: readonly (readonly [string, string])[] = [

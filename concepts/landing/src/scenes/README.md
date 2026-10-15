@@ -103,13 +103,17 @@ edges and `fired`, but no time, so their response is one still step. Paused, eve
 ### Entrances and exits
 
 Switching scenes (or first loading the page) is a passage, not a cut. The outgoing scene plays its
-exit, drawn with its own settings. Its last frame is then kept, and the incoming scene, built afresh
-with a new sim, dissolves out of it over 0.9 s, cell by cell in ordered-dither order, the middle
-first. The entrance's clock starts on its second frame, because the first one is spent compiling the
-program and shows only the old frame. Every scene gets the dissolve for free.
-The saved frame is sampled in normalized stage coordinates with nearest filtering, so changing the
-viewport or pixel size during the dissolve stretches the whole saved image rather than fetching
-outside it.
+exit, drawn with its own settings, while the incoming scene's program builds in the background
+(the outgoing scene goes on moving rather than freezing for a compile). Part-way through that exit
+(the lab's overlap, half by default) the incoming scene, built afresh with a new sim, starts its
+entrance and takes the screen over cell by cell in ordered-dither order (the middle first by
+default) over the blend length, 1.5 s by default. Both scenes draw while they overlap: the outgoing
+one goes on playing its exit off screen at its own cell size, into the frame the incoming one
+dissolves out of, so both sides of the dissolve move. A switch made during the blend leaves for the
+newest scene once the blend is done. The entrance's clock starts on its second frame, because the
+first one may be spent compiling the program on the GPU. Every scene gets the blend for free.
+The outgoing frame is sampled in normalized stage coordinates with nearest filtering, so a different
+viewport or pixel size stretches the whole image rather than fetching outside it.
 
 Every scene makes the passage its own, in the world rather than by fading:
 
@@ -130,13 +134,16 @@ Every scene makes the passage its own, in the world rather than by fading:
   - `ferro` raises its spikes out of a flat pool.
 - A sim that warms up over several frames runs its growth on a clock of its own that starts after
   the warm-up (physarum's `GrowthClock`), so a slow first frame doesn't use up the entrance.
-- Put the readable part after ~0.5 s, which the dissolve half covers.
+- Put the readable part after ~0.5 s, which the blend half covers. The outgoing scene can still be
+  exiting then: an entrance that rises out of empty sky or dark water reads best over another
+  scene's exit.
 - At rest (`passageIn() == 1`, `passageOut() == 0`) the scene must be exactly what it was: gate
   every change, and keep the sim's prewarm and random draws as they were.
 
-Passages run in real time whatever the motion. The lab's Motion section switches them off (`&transitions=off`)
-and replays the current scene's exit and entrance with "now". They are skipped at motion 0 and under
-reduced motion.
+Passages run in real time whatever the motion. The lab's Motion section switches them off
+(`&transitions=off`), replays the current scene's exit and entrance with "now", and tunes the
+overlap (`&overlap=0..1`), blend length (`&weave=` seconds), blend pattern (`&blend=bloom|fade|sweep|grain`)
+and a slow motion for study (`&slowmo=2|4|8`). They are skipped at motion 0 and under reduced motion.
 
 ### Hard edges
 
@@ -1156,7 +1163,7 @@ Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) a
 
 Knob keys share the URL with the lab's own settings, so a knob may not be called `accent`,
 `scene`, `mode`, `dither`, `color`, `pixel`, `levels`, `motion`, `instance`, `mouse`, `view`,
-`dim`, `blur` or `transitions`, nor take the keys of the lab's session tools, `compare`, `tour`
+`dim`, `blur`, `transitions`, `overlap`, `weave`, `blend` or `slowmo`, nor take the keys of the lab's session tools, `compare`, `tour`
 and `dwell` (`state.ts` refuses to load such a scene).
 
 ## Art direction

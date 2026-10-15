@@ -269,9 +269,11 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
 }
 
 // The real renderer on a hand-driven frame clock (its own canvas and context): 1 fps delivery
-// reports 1 fps, and the passage's saved outgoing frame is sampled exactly at larger, smaller,
-// aspect-changed and unchanged render sizes.
-function rendererDissolve(_gl: WebGL2RenderingContext): Record<string, unknown> {
+// reports 1 fps; a replayed passage enters `overlap` of the way through the exit; while the blend
+// runs the leaving scene goes on drawing (its frame changes from one frame to the next), and the
+// screen samples it exactly at larger, smaller, aspect-changed and unchanged sizes, with the
+// incoming scene at a coarser cell size than the leaving one.
+function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
   const canvas = document.createElement("canvas");
   canvas.style.cssText = "width:320px;height:200px";
   document.body.append(canvas);
@@ -281,6 +283,8 @@ function rendererDissolve(_gl: WebGL2RenderingContext): Record<string, unknown> 
     motion: 1,
     view: "source" as const,
     transitions: "off" as const,
+    overlap: 0.5,
+    weave: 4,
   };
   const rendererGl = canvas.getContext("webgl2", { antialias: false, alpha: false });
   if (!rendererGl) throw new Error("Renderer context unavailable");
@@ -291,18 +295,20 @@ function rendererDissolve(_gl: WebGL2RenderingContext): Record<string, unknown> 
     if (location && name === "uDissolve") locations.add(location);
     return location;
   };
-  const renderer = new DitherRenderer(
-    canvas,
-    renderSettings(state, paramDefaults("country")),
-    false,
-  );
-  const uniform = rendererGl.uniform2f.bind(rendererGl);
-  let holdSaved = false;
-  // Freeze only the arrival seam; the outgoing frame must remain a real, nonuniform scene image.
-  rendererGl.uniform2f = (location, x, y) => {
-    if (holdSaved && location !== null && locations.has(location)) uniform(location, 1, 1);
-    else uniform(location, x, y);
+  const sent: number[][] = [];
+  const uniform = rendererGl.uniform3f.bind(rendererGl);
+  let holdLeaving = false;
+  // Record every dissolve sent; to read the leaving frame whole, show only it on screen (the leaving
+  // scene's own draw, into its frame, keeps its own).
+  rendererGl.uniform3f = (location, x, y, z) => {
+    const dissolve = location !== null && locations.has(location);
+    if (dissolve) sent.push([x, y, z]);
+    const onScreen = rendererGl.getParameter(rendererGl.FRAMEBUFFER_BINDING) === null;
+    if (dissolve && holdLeaving && onScreen) uniform(location, 1, 1, z);
+    else uniform(location, x, y, z);
   };
+  const params = paramDefaults("country");
+  const renderer = new DitherRenderer(canvas, renderSettings(state, params), false);
   const nativeRaf = window.requestAnimationFrame;
   let tick: FrameRequestCallback | undefined;
   window.requestAnimationFrame = (callback) => {
@@ -311,7 +317,24 @@ function rendererDissolve(_gl: WebGL2RenderingContext): Record<string, unknown> 
   };
   function draw(now: number): void {
     if (!tick) throw new Error("RAF missing");
+    sent.length = 0;
     tick(now);
+  }
+  /** The leaving scene's frame as last drawn: the texture on the uLeaving unit. */
+  function leavingFrame(): { bytes: Uint8Array; width: number; height: number } {
+    const gl = rendererGl;
+    if (!gl) throw new Error("Renderer context unavailable");
+    gl.activeTexture(gl.TEXTURE0 + 4);
+    const texture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture;
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const bytes = pixels(gl, width, height);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb);
+    return { bytes, width, height };
   }
   try {
     renderer.start();
@@ -319,45 +342,61 @@ function rendererDissolve(_gl: WebGL2RenderingContext): Record<string, unknown> 
     draw(2000);
     check(Math.abs(renderer.fps - 1) < 1e-9, `1fps delivery reported ${renderer.fps}`);
     const fps = renderer.fps;
+    const exit = sceneDefs.country.passage?.exit ?? 0;
+    check(exit > 0, "Countryside needs an exit for this check");
     renderer.replayPassage();
+    // The exit starts on the next frame; the entrance is due half-way through it.
     draw(3000);
-    draw(5000);
-    // Read the outgoing saved image before entering the fresh scene.
-    rendererGl.activeTexture(rendererGl.TEXTURE0 + 4);
-    const saved = rendererGl.getParameter(rendererGl.TEXTURE_BINDING_2D) as WebGLTexture;
-    const fb = rendererGl.createFramebuffer();
-    rendererGl.bindFramebuffer(rendererGl.FRAMEBUFFER, fb);
-    rendererGl.framebufferTexture2D(
-      rendererGl.FRAMEBUFFER,
-      rendererGl.COLOR_ATTACHMENT0,
-      rendererGl.TEXTURE_2D,
-      saved,
-      0,
-    );
-    const source = pixels(rendererGl, 320, 200);
+    draw(3000 + exit * 500 - 50);
     check(
-      source.some((value, index) => index % 4 !== 3 && value !== source[index % 4]),
-      "Saved scene must be nonuniform",
+      sent.length === 1 && sent[0]?.[0] === 0,
+      `Entered before the overlap: ${JSON.stringify(sent)}`,
     );
-    rendererGl.bindFramebuffer(rendererGl.FRAMEBUFFER, null);
-    rendererGl.deleteFramebuffer(fb);
-    holdSaved = true;
+    draw(3000 + exit * 500 + 50);
+    check(
+      sent.length === 2 && sent[1]?.[0] === 1 && sent[1][1] === 1,
+      `The entrance did not start over the leaving scene: ${JSON.stringify(sent)}`,
+    );
+    // The incoming scene at twice the leaving scene's cell size.
+    renderer.update(renderSettings({ ...state, pixel: 2 }, params));
+    holdLeaving = true;
+    let t = 3000 + exit * 500 + 150;
+    draw(t);
+    const first = leavingFrame();
+    check(
+      first.bytes.some((value, index) => index % 4 !== 3 && value !== first.bytes[index % 4]),
+      "Leaving frame must be nonuniform",
+    );
+    t += 100;
+    draw(t);
+    const second = leavingFrame();
+    let moved = 0;
+    for (let i = 0; i < second.bytes.length; i += 4)
+      if (second.bytes[i] !== first.bytes[i] || second.bytes[i + 1] !== first.bytes[i + 1]) moved++;
+    check(moved > 0, "The leaving scene stood still during the blend");
     const resizeResults: string[] = [];
-    for (const [width, height] of [
+    for (const [cssWidth, cssHeight] of [
       [480, 300],
       [160, 100],
       [480, 200],
       [320, 200],
     ]) {
-      if (width === undefined || height === undefined) throw new Error("Missing dimensions");
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      draw(5010);
+      if (cssWidth === undefined || cssHeight === undefined) throw new Error("Missing dimensions");
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+      t += 10;
+      draw(t);
+      // Read the screen first: reading the leaving frame binds another framebuffer.
+      const width = cssWidth / 2;
+      const height = cssHeight / 2;
       const output = pixels(rendererGl, width, height);
+      const source = leavingFrame();
+      const sw = source.width;
+      const sh = source.height;
       for (let y = 0; y < height; y++)
         for (let x = 0; x < width; x++) {
-          const sx = ((x + 0.5) * 320) / width;
-          const sy = ((y + 0.5) * 200) / height;
+          const sx = ((x + 0.5) * sw) / width;
+          const sy = ((y + 0.5) * sh) / height;
           // At an exact nearest-filter boundary, float UV rounding may choose either adjacent texel.
           const xs =
             Math.abs(sx - Math.round(sx)) < 1e-5
@@ -370,16 +409,27 @@ function rendererDissolve(_gl: WebGL2RenderingContext): Record<string, unknown> 
           const dst = (y * width + x) * 4;
           const matches = ys.some((yy) =>
             xs.some((xx) => {
-              if (xx < 0 || xx >= 320 || yy < 0 || yy >= 200) return false;
-              const src = (yy * 320 + xx) * 4;
-              return [0, 1, 2].every((channel) => output[dst + channel] === source[src + channel]);
+              if (xx < 0 || xx >= sw || yy < 0 || yy >= sh) return false;
+              const src = (yy * sw + xx) * 4;
+              return [0, 1, 2].every(
+                (channel) => output[dst + channel] === source.bytes[src + channel],
+              );
             }),
           );
-          check(matches, `Dissolve mismatch at ${width}x${height}:${x},${y}`);
+          check(matches, `Blend mismatch at ${width}x${height}:${x},${y}`);
         }
-      resizeResults.push(`${width}x${height}`);
+      resizeResults.push(`${width}x${height} over ${sw}x${sh}`);
     }
-    return { fps, dissolveSizes: resizeResults };
+    // The blend ends once the incoming scene shows alone; the leaving scene is then gone.
+    holdLeaving = false;
+    t += 4100;
+    draw(t);
+    draw(t + 10);
+    check(
+      sent.length === 1 && sent[0]?.[0] === 0,
+      `The blend did not end: ${JSON.stringify(sent)}`,
+    );
+    return { fps, movedTexels: moved, blendSizes: resizeResults };
   } finally {
     window.requestAnimationFrame = nativeRaf;
     canvas.remove();
@@ -398,7 +448,7 @@ export const checks: readonly Check[] = [
   ["forestClock", forestClock],
   ["gpuBlend", gpuBlend],
   ["frostWarmth", frostWarmth],
-  ["rendererDissolve", rendererDissolve],
+  ["rendererPassage", rendererPassage],
   // Registered checks: one import above and one line here each, appended at the end.
   ["mobile", mobileVerify],
   ["orbitRingDepth", verifyOrbitRingDepth],

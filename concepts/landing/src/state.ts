@@ -2,9 +2,11 @@
 // knobs live in `Params` (a feature also stores `<key>-amount`). URLs carry only non-defaults.
 import { effective, MAX_SEED } from "./params.ts";
 import {
+  blendIds,
   colorIds,
   ditherIds,
   viewIds,
+  type BlendId,
   type ColorId,
   type DitherId,
   type RenderSettings,
@@ -41,6 +43,14 @@ export interface LabState {
   blur: number;
   /** Whether scenes enter and leave with their passages, or cut. */
   transitions: PassageId;
+  /** 0..1: how much of the outgoing scene's exit the incoming scene's entrance overlaps. */
+  overlap: number;
+  /** Seconds over which the incoming scene takes over from the outgoing one. */
+  weave: number;
+  /** The order in which cells change over to the incoming scene. */
+  blend: BlendId;
+  /** How many times slower than real time passages play, to study them. */
+  slowmo: number;
 }
 
 export const defaults: LabState = {
@@ -58,6 +68,10 @@ export const defaults: LabState = {
   dim: 0,
   blur: 0,
   transitions: "on",
+  overlap: 0.5,
+  weave: 1.5,
+  blend: "bloom",
+  slowmo: 1,
 };
 
 export class KnobKeyError extends Error {}
@@ -161,6 +175,10 @@ export function readState(q: URLSearchParams): LabState {
     dim: readNumber(q.get("dim"), 0, 1, defaults.dim),
     blur: readNumber(q.get("blur"), 0, 1, defaults.blur),
     transitions: pick(passageIds, q.get("transitions"), defaults.transitions),
+    overlap: readNumber(q.get("overlap"), 0, 1, defaults.overlap),
+    weave: readNumber(q.get("weave"), 0.3, 4, defaults.weave),
+    blend: pick(blendIds, q.get("blend"), defaults.blend),
+    slowmo: readNumber(q.get("slowmo"), 1, 8, defaults.slowmo),
   };
 }
 
@@ -237,5 +255,9 @@ export function renderSettings(state: LabState, params: Params): RenderSettings 
     followPointer: state.mouse === "follow",
     view: state.view,
     passage: state.transitions === "on",
+    overlap: state.overlap,
+    weave: state.weave,
+    blend: state.blend,
+    slowmo: state.slowmo,
   };
 }
