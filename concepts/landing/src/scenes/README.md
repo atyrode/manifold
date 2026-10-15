@@ -382,7 +382,7 @@ before the functions that call it, so no other program pays for it:
 | `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train | "Birds"                            |
 | `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                        | the Milky Way row below            |
 | `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                              | "Rooted plants"                    |
-| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire                                                       | "The giant planet"                 |
+| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                               | "The giant planet"                 |
 | `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                               | "Figures, livestock and buildings" |
 | `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                               | "Figures, livestock and buildings" |
 | `buildingsGlsl` | `src/shaders/buildings.ts`     | country                                                               | "Figures, livestock and buildings" |
@@ -1034,8 +1034,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   out; stepped on the motion clock, it says how big the flames are, how the coals glow, how much it
   smokes and when sparks burst (campfire).
 - `Mobile`, `designMobile`, `MobileTexture`, `mobileGlsl` (`mobile.ts`): a balanced hanging mobile on
-  `VerletSystem` with plate drag and contacts, and GLSL tracing its plates, wires and links and the
-  shadows they throw from a round lamp (mobile).
+  `VerletSystem` with plates and balls, arms hung from a parent's end or loop, drag, contacts and
+  motors that hold an arm's rate (`drive`), and GLSL tracing its plates, balls, wires and links and
+  the shadows they throw from a round lamp (mobile's solar system).
 - `Boids` and `boidRules` (`boids.ts`): topological boids in 3D for flocks and schools of a few
   thousand: separation, cohesion and alignment with each boid's K nearest, found through a spatial
   hash with a bounded search (refreshed by turns), plus cruise, level flight, a home to wheel over,
