@@ -289,7 +289,6 @@ function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
 // GpuCompute passes: every blend mode applies its own blending and leaves blending off, with the
 // default equation and factors, whatever the caller had set; a preserving resize does not inherit it.
 function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
-  result.waterTiers = verifyWaterTiers(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });
@@ -590,6 +589,7 @@ export const checks: readonly Check[] = [
   ["harmonographPrewarm", verifyHarmonographPrewarm],
   ["trainLine", verifyTrainLine],
   ["canopy", verifyCanopy],
+  ["waterTiers", verifyWaterTiers],
 ];
 
 /**

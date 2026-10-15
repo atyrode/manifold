@@ -18,7 +18,9 @@
 // by the camera's true distance. All of it is exactly off at rest (forestCamD == 0).
 // The sim (sim.ts) moves the spirits, the stag, the motes and the mist field; its textures are
 // described there. Knobs read here: K_spirits (via the sim), K_mushrooms, K_spores, K_stream, K_mist,
-// K_shafts, K_forestSeed, K_time, K_cycle, K_rain, K_wind, K_mark; triggers 2 (the M) and 3 (spores).
+// K_shafts, K_forestSeed, K_time, K_cycle, K_stars and K_moon (the shared stars and the moon in its
+// phase, SKY_MOON_PHASE, in the canopy's gaps and its shafts), K_rain, K_wind, K_mark; triggers 2
+// (the M) and 3 (spores).
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   FOREST_BEARD_SPACING,
@@ -1170,7 +1172,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   float tm = t * uMotion;
   forestCamD = forestCamera();
   forestTh = threshold(cell);
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   // The rain's cloud closes over the sky as the rain sets in (the shared canopy weather): a drizzle
   // still lets some sun through, from about a quarter of the knob up the sun and moon are gone,
   // shafts and all. The deck is lit from above, so the light turns soft and grey but stays, dimming
@@ -1257,7 +1259,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec3 washed = mix(vec3(dot(sk, LUMA)), sk, 0.45) * 1.05 + sky.sunColor * FOREST_SUNLIT * 0.1;
     // Under rain cloud the gaps show the deck, grey-white and lit from above, with shafts of heavier
     // rain hanging from it, slanting with the wind.
-    vec3 gapCol = canopyGapSky(weather, washed, dir, 0.5, p, K_wind, K_forestSeed, 1.25);
+    vec3 gapCol = canopyGapSky(weather, washed, dir, K_stars, p, K_wind, K_forestSeed, 1.25);
     col = mix(col, max(gapCol, mist), smoothstep(0.78, 1.0, p.y));
     vec4 canopy = forestCanopy(p, tm);
     if (forestHard(canopy.a) > 0.0) {

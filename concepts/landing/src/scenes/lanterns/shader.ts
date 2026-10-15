@@ -40,14 +40,26 @@
 // the rain itself is made of falling drops. So the scene sets no shimmer.
 //
 // Knobs: K_ripple, K_reflection, K_mist (water), K_current (ripples drift with the stream; the
-// lanterns themselves are the sim's), K_time, K_cycle (sky), K_rain, K_wind (weather).
+// lanterns themselves are the sim's), K_time, K_cycle, K_stars, K_meteors (sky), K_rain, K_wind,
+// K_aurora (weather). The shared sky components (src/scenes/README.md, "Composing components"): the
+// stars, the aurora and shooting stars, in the sky and (but the stars) in the river's mirror.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN_HALF, LANTERN_TALL, MAX_LANTERNS, ROCK_DOWNSTREAM, ROCKS } from "./sim.ts";
 
 const rocks = ROCKS.map((rock) => `vec4(${glslFloat(rock.x)}, ${glslFloat(rock.z)}, ${glslFloat(rock.radius)}, ${glslFloat(rock.height)})`).join(", ");
 const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFloat(d.z)})`).join(", ");
 
+/** The shared stars' default density (K_stars); the scene's own sparse stars thin out below it. */
+export const LANTERNS_STARS = 0.55;
+/** Trigger slot of the shooting stars' "now" button (0 is the flotillas', 1 the M lantern's). */
+export const LANTERNS_METEOR_TRIGGER = 2;
+
 export const lanternsGlsl = `
+const float LANTERNS_STARS = ${glslFloat(LANTERNS_STARS)};
+// Where shooting stars set out, in the frame of the young moon and the scene's own stars (screen
+// heights from the middle of the horizon): high over the far bank.
+const int LANTERNS_METEOR_SLOT = ${LANTERNS_METEOR_TRIGGER};
+const vec4 LANTERNS_METEOR_FIELD = vec4(-0.6, 0.3, 1.2, 0.08);
 const float LANTERNS_HORIZON = ${glslFloat(HORIZON)};
 const float LANTERNS_FOV = ${glslFloat(FOV)};
 const float LANTERNS_FOCAL = ${glslFloat(FOCAL)};
@@ -345,12 +357,13 @@ vec4 lanternsOvercast(vec2 e, vec3 haze, float tm, out float shaft) {
   return vec4(deck, cover);
 }
 
-// What a ray sees beyond the water: the sky (with a few stars when seen directly) and the young
-// moon, or the rain's deck of cloud and its shafts, the hills, a warm glow in the haze over the
-// temple grounds, the far bank where the ray crosses its plane (its tiles, lacquer and stone
-// glossy in the wet), and mist lying along the bank's foot. o is where the ray leaves (the eye, or
-// a point on the water); lift tips the sky lookup up a little for a rough mirror (and softens the
-// moon); foot is a cell's size at the bank (m), blur how far the water draws its lamps out.
+// What a ray sees beyond the water: the sky (with a few stars when seen directly), the aurora and
+// shooting stars, and the young moon, or the rain's deck of cloud and its shafts, the hills, a warm
+// glow in the haze over the temple grounds, the far bank where the ray crosses its plane (its tiles,
+// lacquer and stone glossy in the wet), and mist lying along the bank's foot. o is where the ray
+// leaves (the eye, or a point on the water); lift tips the sky lookup up a little for a rough mirror
+// (and softens the moon, the aurora and a meteor); foot is a cell's size at the bank (m), blur how
+// far the water draws its lamps out.
 // Returns the colour without the bank's lamps; lamp returns their light (x as seen, y drawn out),
 // faded in with the dusk and veiled by the mist, for the caller to lay on.
 vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, bool direct, out vec2 lamp) {
@@ -359,10 +372,17 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
   float ey = r.y / r.z * LANTERNS_FOCAL;
   float shaft;
   vec4 deck = lanternsOvercast(vec2(ex, ey), haze, tm, shaft);
+  // The aurora and shooting stars, mirrored too, softened by a rough mirror's lift; the deck drawn
+  // over them below hides them.
+  col += auroraM(r, tm, K_aurora, max(1.0 / (LANTERNS_FOCAL * uRes.y), lift)) * auroraSeen(sky, 0.0);
+  float meteorSeed;
+  float meteorAt = meteorAge(tm, K_meteors, LANTERNS_METEOR_SLOT, meteorSeed);
+  col += METEOR_TINT * hardEdge(meteorStreak(vec2(ex, ey), LANTERNS_METEOR_FIELD, meteorAt, meteorSeed, max(1.0 / uRes.y, lift)) * sky.night);
   if (direct) {
-    col += skyStarLight(sky, r, 0.55) * (1.0 - deck.w);
+    col += skyStarLight(sky, r, K_stars) * (1.0 - deck.w);
     float shown = (1.0 - sky.day) * clamp(0.35 + sky.night, 0.0, 1.0) * smoothstep(0.03, 0.09, ey) * (1.0 - deck.w);
     shown *= 1.0 - smoothstep(0.1, 0.3, dot(col, LUMA)); // lost in the afterglow
+    shown *= K_stars < LANTERNS_STARS ? K_stars / LANTERNS_STARS : 1.0; // fewer stars, fainter
     col += vec3(0.82, 0.87, 1.0) * 0.75 * lanternsStars(vec2(ex, ey)) * shown;
   }
   vec3 moon = lanternsMoon(vec2(ex, ey), 0.5 * lift);
@@ -621,6 +641,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   // Rain comes under cloud: the light dimmer and flatter, the haze grey, the mist thicker.
   float overcast = sqrt(max(K_rain, 0.0));
   lit *= 1.0 - 0.35 * overcast;
+  lit += auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
   haze = greyed(haze, vec3(0.9), 0.55 * overcast);
   // Entering, the dusk light settles in from a deeper blue hour; leaving, it sinks again with the
   // flames. Exactly 1 once arrived and while staying.

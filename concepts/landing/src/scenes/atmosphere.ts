@@ -10,9 +10,7 @@
 import { effective, feature, knobDef, KnobError, range, type Blurb, type ParamDef } from "../params.ts";
 import type { SceneTheme } from "./types.ts";
 
-export interface SkyOptions {
-  /** Starting time of day, 0..1: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. */
-  time?: number;
+export interface SkyComponentOptions {
   /**
    * Adds K_stars, the density for `skyStars` (0 none .. 1 a dark-site sky), starting at this value:
    * give it the density the scene draws with. Omit to leave the knob out.
@@ -33,19 +31,19 @@ export interface SkyOptions {
   group?: string;
 }
 
+export interface SkyOptions extends SkyComponentOptions {
+  /** Starting time of day, 0..1: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. */
+  time?: number;
+}
+
 /**
- * K_time: time of day 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset).
- * K_cycle: day-cycle speed (0 = the clock stands at K_time); pass both with uMotionTime to `timeOfDayM`.
- * K_stars (only with `stars`): star density for `skyStars`.
- * K_moon (only with `moon`): the moon's phase for `skyMoonPhase`.
- * K_meteors (only with `meteors`): shooting-star frequency for `meteorAge`, trigger slot `meteors.trigger`.
+ * The opt-in sky components alone, without the clock: for a scene that keeps a night of its own (an
+ * hour knob, a fixed night, a painted sky) and composes components into it, most often shooting stars.
+ * K_stars, K_moon and K_meteors as for `skyKnobs`, in that order.
  */
-export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
+export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";
-  const knobs = [
-    range(group, "time", "time of day", options.time ?? 0.78, "Midnight at the left end, noon in the middle: sunrise, day, golden hour, dusk, night.", { steady: true }),
-    feature(group, "cycle", "day cycle", false, "speed", 0.3, "The sun and moon keep moving: days pass at this pace."),
-  ];
+  const knobs: ParamDef[] = [];
   if (options.stars !== undefined) knobs.push(range(group, "stars", "stars", options.stars, "How many stars come out once the sky is dark: none to the left, a dark country sky to the right."));
   if (options.moon !== undefined) {
     knobs.push(feature(group, "moon", "moon", true, "phase", options.moon, "The moon on its nightly path, from a thin crescent to full, its lit side toward the sun: a slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.", { min: 0.05, max: 1 }));
@@ -55,6 +53,22 @@ export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
     knobs.push(feature(group, "meteors", "shooting stars", on, "frequency", value, "Now and then a shooting star streaks across the open night sky: one every minute or two at the left end, every ten seconds or so at the right. Now: one at once.", { trigger }));
   }
   return knobs;
+}
+
+/**
+ * K_time: time of day 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset).
+ * K_cycle: day-cycle speed (0 = the clock stands at K_time); pass both with uMotionTime to `timeOfDayM`.
+ * K_stars (only with `stars`): star density for `skyStars`.
+ * K_moon (only with `moon`): the moon's phase for `skyMoonPhase`.
+ * K_meteors (only with `meteors`): shooting-star frequency for `meteorAge`, trigger slot `meteors.trigger`.
+ */
+export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
+  const group = options.group ?? "sky";
+  return [
+    range(group, "time", "time of day", options.time ?? 0.78, "Midnight at the left end, noon in the middle: sunrise, day, golden hour, dusk, night.", { steady: true }),
+    feature(group, "cycle", "day cycle", false, "speed", 0.3, "The sun and moon keep moving: days pass at this pace."),
+    ...skyComponentKnobs({ ...options, group }),
+  ];
 }
 
 export interface WeatherOptions {
@@ -99,9 +113,10 @@ export function weatherKnobs(options: WeatherOptions): ParamDef[] {
   return knobs;
 }
 
-/** Lab headings for the shared groups. */
-export const atmosphereGroups: Readonly<Record<"sky" | "weather", Blurb>> = {
+/** Lab headings for the shared groups: `skyNight` for a sky group that also holds sky components. */
+export const atmosphereGroups: Readonly<Record<"sky" | "skyNight" | "weather", Blurb>> = {
   sky: { title: "Sky", blurb: "Time of day, and whether the days pass." },
+  skyNight: { title: "Sky", blurb: "Time of day, whether the days pass, and the night sky: its stars, the moon's phase, the odd shooting star." },
   weather: { title: "Weather", blurb: "Rain, snow, fog, wind, lightning and aurora, shared by every outdoor scene." },
 };
 

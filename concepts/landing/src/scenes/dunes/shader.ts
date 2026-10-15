@@ -5,7 +5,10 @@
 // across it, y up, in cells; uSim0 holds heights, uSim1 slopes, curvature and hollowness. The
 // aerial camera turns its rays into grid space by DUNES_CAMERA.turn, so the wind blows left to right
 // and toward the viewer; the sky library's frame is the camera's turned by DUNES_CAMERA.look, and
-// its sun and moon are turned on into grid space to light the sand.
+// its sun and moon are turned on into grid space to light the sand. Over the dunes the shared sky
+// components (src/scenes/README.md, "Composing components"): K_stars, the moon in its phase (K_moon,
+// SKY_MOON_PHASE), and in the camera's own frame the aurora (K_aurora) and shooting stars (K_meteors),
+// all swallowed by the dust of a sandstorm.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { DUNES_CAMERA, DUNES_GRID, DUNES_MAP, DUNES_MARCH, DUNES_MARK, DUNES_SAND, DUNES_SLAB } from "./sim.ts";
 
@@ -16,7 +19,14 @@ import { DUNES_CAMERA, DUNES_GRID, DUNES_MAP, DUNES_MARCH, DUNES_MARK, DUNES_SAN
  */
 export const DUNES_PASSAGE = { enter: 2.6, exit: 1.5 } as const;
 
+/** Trigger slot of the shooting stars' "now" button. */
+export const DUNES_METEOR_TRIGGER = 0;
+
 export const dunesGlsl = `
+// Where shooting stars set out: skyAngles of the camera's view (bearing, elevation, radians), the
+// strip of sky over the dune sea.
+const int DUNES_METEOR_SLOT = ${DUNES_METEOR_TRIGGER};
+const vec4 DUNES_METEOR_FIELD = vec4(-0.5, 0.17, 1.0, 0.08);
 const float DUNES_GRID = ${glslFloat(DUNES_GRID)};
 // No sand stands higher than this (cells); rays above it and climbing can stop.
 const float DUNES_TOP = ${glslFloat(DUNES_MARCH.top)};
@@ -203,7 +213,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   float mean = (DUNES_SAND_SPARSE + (DUNES_SAND_PLENTY - DUNES_SAND_SPARSE) * K_sand * K_sand) * DUNES_SLAB;
   float markHeight = K_mark > 0.0 ? mix(DUNES_MARK_SMALL, DUNES_MARK_LARGE, K_mark) : 0.0;
 
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
   // One key light: the sun, or the moon once the sun is down. Both colours come pre-faded. The sky
   // library's frame is the camera's turned by DUNES_LOOK, so the setting sun stands in the picture.
   float moonlit = sky.sun.y > -0.03 ? 0.0 : 1.0;
@@ -223,7 +233,8 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   // dunes keep their light and shade at every hour. A high sun is held back a little, so the sand
   // turned to it does not burn out.
   vec3 sunlight = keyColor / (0.38 + 0.62 * max(key.y, 0.0)) * (1.0 - 0.2 * high * sky.day);
-  vec3 skylight = sky.ambient * 0.75;
+  // The aurora's green reaches the sand through clear air only.
+  vec3 skylight = sky.ambient * 0.75 + auroraGlow(tm, K_aurora) * auroraSeen(sky, storm);
   // A high sun on hot sand: the air wavers above the far dunes and the distance turns to mirage.
   float heat = K_heat * sky.day * smoothstep(0.3, 0.8, sky.sun.y);
 
@@ -399,7 +410,13 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     // Below the horizon but past the far field: the haze closes it.
     col = dust;
   } else {
-    col = skyColor(sky, skyward) + skyStars(sky, skyward, 1.0) * vec3(0.92, 0.94, 1.0) * 1.3;
+    col = skyColor(sky, skyward) + skyStars(sky, skyward, K_stars) * vec3(0.92, 0.94, 1.0) * 1.3;
+    float foot = 2.0 * tan(0.5 * DUNES_FOV) / uRes.y;
+    float open = auroraSeen(sky, storm);
+    col += auroraM(view, tm, K_aurora, foot) * open;
+    float meteorSeed;
+    float meteorAt = meteorAge(tm, K_meteors, DUNES_METEOR_SLOT, meteorSeed);
+    col += METEOR_TINT * hardEdge(meteorStreak(skyAngles(view), DUNES_METEOR_FIELD, meteorAt, meteorSeed, foot) * open);
     float low = exp(-max(view.y, 0.0) * mix(16.0, 3.0, K_fog));
     col = mix(col, dust, max((0.18 + 0.72 * K_fog) * low, 0.9 * storm));
   }

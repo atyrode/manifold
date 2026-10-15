@@ -439,7 +439,8 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
 
   // Light. The key is the sun, or the moon once the sun is down. A low sun is weak on the flat but
   // strong on the flanks turned to it: expose it up as it sinks, as dunes does.
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
+  // The moon takes a phase (K_moon, SKY_MOON_PHASE): a slimmer one lights the gravel less at night.
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
   bool moonlit = sky.sun.y < -0.03;
   vec3 key = moonlit ? sky.moon : sky.sun;
   vec3 L = normalize(vec3(key.x, key.z, max(key.y, 0.004)));
@@ -656,12 +657,13 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   // ---- what the ray meets ----
   vec3 col;
   if (beyond) {
-    // Over the wall: the sky, and the woods of the temple grounds beyond, two rows of rounded
-    // crowns, dark green but lit by the sky, the farther row paler in the haze. Under cloud the
-    // sky is a grey deck drifting with the wind, darker bellied in heavy rain; and rain hangs in
+    // Over the wall: the woods of the temple grounds, two rows of rounded crowns, dark green but lit
+    // by the sky, the farther row paler in the haze, and between them only the haze of the sky just
+    // below the horizon (the horizon is the frame's top edge: no stars, moon or open sky show). Under
+    // cloud it is a grey deck drifting with the wind, darker bellied in heavy rain; and rain hangs in
     // grey shafts between here and the woods.
     vec3 dir = normalize(vec3(rd.x, rd.z, rd.y));
-    col = skyColor(sky, dir) + skyStars(sky, dir, 0.85) * vec3(0.92, 0.94, 1.0) * 1.2;
+    col = skyColor(sky, dir);
     vec3 haze = skyColor(sky, normalize(vec3(dir.x, 0.02, dir.z)));
     float x = uv.x * aspect;
     if (overcast > 0.0) {

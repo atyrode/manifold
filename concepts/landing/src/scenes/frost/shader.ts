@@ -139,7 +139,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   float meteorSeed;
   float meteorAt = meteorAge(tm, K_meteors, FROST_METEOR_SLOT, meteorSeed);
   float meteor = meteorStreak(skyAngles(dir), FROST_METEOR_FIELD, meteorAt, meteorSeed, max(foot, 0.5 * blur));
-  col += vec3(0.9, 0.95, 1.0) * hardEdge(meteor * open * sharp);
+  col += METEOR_TINT * hardEdge(meteor * open * sharp);
   if (street) {
     // The town's light, caught low in the snowy air.
     col += vec3(0.55, 0.32, 0.16) * 0.12 * lights * exp(-max(uv.y - FROST_HORIZON, 0.0) * 5.0) * (0.5 + 0.5 * cloud.a);
