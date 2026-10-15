@@ -461,9 +461,10 @@ saves nothing there, only code that is not compiled in. Its companion `SceneDef.
 every gate on and each tier up to the highest a knob selects. That program draws every setting
 byte for byte as the setting's own does, because the shader's runtime tests of the knobs decide
 (on a GPU they are uniform branches, nearly free). The adopters are `country` (`countryFeatures` and
-`COUNTRY_ALL`: roads and tracks, rain, snow, fog, pine woods, flower fields, herds, walkers and carts,
-birds, the clouds' shadows tier and the moon's phase; `countryFeaturesAll` checks each gated
-setting) and `meadow` (its wildflowers).
+`COUNTRY_ALL`: roads and tracks, rain, snow, fog, pine woods, flower fields, herds, walkers and carts
+(and the snow they tread), birds, the harvest's bales, the clouds' shadows tier, the water's ripples
+tier and the moon's phase; `countryFeaturesAll` and `countrySeason` check each gated setting) and
+`meadow` (its wildflowers).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -831,15 +832,15 @@ full-detail picture. Pick the tier for what the water shows at its largest: a ri
 wide far off takes `ripples`, open water seen close takes `mirror` or `flow`, a pool seen from
 above `caustics`.
 
-| Scene      | Tier                 | Uses                                                                                                                                                       |
-| ---------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aurora`   | ripples              | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`)                                                                                           |
-| `country`  | flat (none selected) | its own value-noise shimmer on the river; wind ripples are a later module's                                                                                |
-| `island`   | mirror               | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`                                                                                 |
-| `shore`    | mirror               | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`                                                       |
-| `lanterns` | flow                 | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                            |
-| `tidepool` | caustics             | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                              |
-| `pond`     | caustics             | two layers of `causticCells` on the floor, light where their seams cross, carried by the current (`waterDrift`); its drop rings and refraction are its own |
+| Scene      | Tier               | Uses                                                                                                                                                       |
+| ---------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aurora`   | ripples            | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`)                                                                                           |
+| `country`  | ripples, else flat | `windRipples` on the river while `K_ripples` is up (`K_wind`): the cat's-paws tilt its reflected ray, their finer ripples jitter it cell by cell           |
+| `island`   | mirror             | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`                                                                                 |
+| `shore`    | mirror             | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`                                                       |
+| `lanterns` | flow               | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                            |
+| `tidepool` | caustics           | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                              |
+| `pond`     | caustics           | two layers of `causticCells` on the floor, light where their seams cross, carried by the current (`waterDrift`); its drop rings and refraction are its own |
 
 The rest of the lab's water is still drawn its own way: `lake`, `swell`, `falls`, `fireflies`,
 `bamboo`, `forest`, `kelp`, `delta`, `ripple`.
