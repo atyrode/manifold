@@ -1,10 +1,10 @@
 // Shared lab knobs for outdoor scenes: time of day, and the weather layer (rain, snow, fog, wind,
 // lightning, aurora), plus the opt-in sky components (star density, the Milky Way, the moon's phase,
-// shooting stars) and fair-weather cloud. Every scene that uses them gets the same keys, labels and
-// help, so a setting means the same thing everywhere; the GLSL side lives in src/shaders/lib/ and reads
-// them through the generated K_<key> defines (K_time, K_cycle, K_stars, K_milkyWay, K_moon, K_meteors,
-// K_clouds, K_rain, K_snow, K_fog, K_wind, K_lightning, K_aurora). How a scene composes them:
-// src/scenes/README.md.
+// shooting stars) and fair-weather cloud with its shadows. Every scene that uses them gets the same
+// keys, labels and help, so a setting means the same thing everywhere; the GLSL side lives in
+// src/shaders/lib/ and reads them through the generated K_<key> defines (K_time, K_cycle, K_stars,
+// K_milkyWay, K_moon, K_meteors, K_clouds, K_shadows, K_rain, K_snow, K_fog, K_wind, K_lightning,
+// K_aurora). How a scene composes them: src/scenes/README.md.
 //
 // The page theme is decided here too (skyTheme, paletteTheme), once, from the knobs: the shader reads
 // the outcome with pagePaper() instead of repeating the test.
@@ -90,6 +90,11 @@ export interface WeatherOptions {
    * Omit to leave the knob out.
    */
   clouds?: number;
+  /**
+   * Adds K_shadows, how dark the cloud deck's shadows fall on the ground (`skyCloudShadow`, the
+   * CLOUD_SHADOWS tier: darkness 0.6 while on, 0 off), off unless `on.shadows`.
+   */
+  shadows?: boolean;
   rain?: boolean;
   snow?: boolean;
   fog?: boolean;
@@ -98,21 +103,23 @@ export interface WeatherOptions {
   lightning?: number;
   aurora?: boolean;
   /** Which of them start on. */
-  on?: Partial<Record<"rain" | "snow" | "lightning" | "aurora", boolean>>;
+  on?: Partial<Record<"shadows" | "rain" | "snow" | "lightning" | "aurora", boolean>>;
 }
 
 /**
  * The weather layer, as far as a scene wants it:
- * K_clouds fair-weather cover 0..1, K_rain / K_snow amount (0 off; ~0.1 drizzle or a flurry .. 1 a
- * downpour or a blizzard), K_fog 0..1, K_wind -1..1 (left to right), K_lightning strike rate (0 off;
- * its trigger slot fires one strike now), K_aurora strength (0 off). The renderer follows the `rain`
- * and `snow` knobs with `uWeather` (how wet the world is, how much snow lies).
+ * K_clouds fair-weather cover 0..1, K_shadows the cloud shadows' darkness (0 off), K_rain / K_snow
+ * amount (0 off; ~0.1 drizzle or a flurry .. 1 a downpour or a blizzard), K_fog 0..1, K_wind -1..1
+ * (left to right), K_lightning strike rate (0 off; its trigger slot fires one strike now), K_aurora
+ * strength (0 off). The renderer follows the `rain` and `snow` knobs with `uWeather` (how wet the
+ * world is, how much snow lies).
  */
 export function weatherKnobs(options: WeatherOptions): ParamDef[] {
   const group = options.group ?? "weather";
   const on = options.on ?? {};
   const knobs: ParamDef[] = [];
   if (options.clouds !== undefined) knobs.push(range(group, "clouds", "cloud cover", options.clouds, "Cloud in fair weather, from a clear sky to a full deck; rain and snow close it further."));
+  if (options.shadows) knobs.push(feature(group, "shadows", "cloud shadows", on.shadows ?? false, "darkness", 0.6, "Shadows of the clouds drifting over the ground wherever the deck crosses the sun, and how dark they fall."));
   if (options.rain) knobs.push(feature(group, "rain", "rain", on.rain ?? false, "amount", 0.5, "Rain falling through the scene in depth, from drizzle to a downpour; surfaces get wet and drip."));
   if (options.snow) knobs.push(feature(group, "snow", "snow", on.snow ?? false, "amount", 0.5, "Snow falling through the scene in depth, from a flurry to a blizzard; it settles on the scene."));
   if (options.fog) knobs.push(range(group, "fog", "fog", 0, "Mist settling in: distance fades first."));

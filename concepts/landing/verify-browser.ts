@@ -39,6 +39,9 @@ import { verifyWaterTiers } from "./src/scenes/island/water.verify.ts";
 import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 import { islandSnowCheck } from "./src/scenes/island/snow.verify.ts";
 import { verifyCountryCoherence } from "./src/scenes/country/coherence.verify.ts";
+import { verifyCloudTiers } from "./src/scenes/clouds/tiers.verify.ts";
+import { verifyMilkyWay } from "./src/scenes/campfire/milkyway.verify.ts";
+import { verifyStarsKnob } from "./src/scenes/shore/stars.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -598,6 +601,9 @@ export const checks: readonly Check[] = [
   ["islandSnow", islandSnowCheck],
   ["fallsBirds", verifyFallsBirds],
   ["countryCoherence", verifyCountryCoherence],
+  ["cloudTiers", verifyCloudTiers],
+  ["milkyWay", verifyMilkyWay],
+  ["starsKnob", verifyStarsKnob],
 ];
 
 /**

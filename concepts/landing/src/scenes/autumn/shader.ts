@@ -18,10 +18,11 @@
 // the leaves it blows come from the simulation. All of it is exactly off at rest.
 //
 // Knobs read here: K_species, K_season, K_parkSeed, K_lamp, K_time, K_cycle, K_stars, K_moon, K_meteors,
-// K_clouds, K_rain, K_fog, K_wind, K_aurora (the others, K_fall, K_gusts and K_mark, live in the
-// simulation). Textures: see sim.ts. Over the far crowns the shared sky components (src/scenes/README.md,
-// "Composing components"): stars, the moon in its phase (SKY_MOON_PHASE), the aurora and shooting stars,
-// behind the clouds and the canopy.
+// K_clouds, K_shadows, K_rain, K_fog, K_wind, K_aurora (the others, K_fall, K_gusts and K_mark, live in
+// the simulation). Textures: see sim.ts. Over the far crowns the shared sky components
+// (src/scenes/README.md, "Composing components"): stars, the moon in its phase (SKY_MOON_PHASE), the
+// aurora and shooting stars, behind the clouds and the canopy; the clouds' shadows over the park are the
+// shared deck's (CLOUD_SHADOWS, skyCloudShadow).
 import { autumnLayoutGlsl } from "./layout.ts";
 
 /** Trigger slot of the shooting stars' "now" button (0 is the gusts', 1 the leaf M's). */
@@ -35,6 +36,9 @@ const float AUTUMN_FOV = 0.9272952;   // 2 atan(0.5 / focal) for focal 1
 // the far crowns, under the canopy's edge in a 16:9 frame.
 const int AUTUMN_METEOR_SLOT = ${AUTUMN_METEOR_TRIGGER};
 const vec4 AUTUMN_METEOR_FIELD = vec4(-0.5, 0.3, 1.0, 0.14);
+// The cloud deck's base over the park (m): the deck the sky shows, at a height that sends a shadow's
+// edge across the park in a few seconds in a breeze.
+const float AUTUMN_CLOUD_BASE = 300.0;
 
 // This pixel's light and the season, set once at the top of sceneAutumn.
 Sky autumnSky;
@@ -44,6 +48,7 @@ vec3 autumnSun;       // direct light
 vec3 autumnAmb;       // sky light
 vec3 autumnHaze;      // the haze the distance fades into, here
 float autumnOvercast;
+float autumnCover;    // the deck's cover: the fair-weather cloud, closed by the rain's
 float autumnWet;
 float autumnTm;       // the motion clock
 float autumnGust;     // signed gust strength
@@ -388,7 +393,7 @@ vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, float t, out float depthZ) {
   // The aurora and shooting stars over the far crowns, behind the clouds; the rain's deck shuts them out.
   float foot = 1.0 / (AUTUMN_FOCAL * uRes.y);
   sk += auroraM(dir, autumnTm, K_aurora, foot) * auroraSeen(autumnSky, autumnOvercast);
-  vec4 cl = skyClouds(autumnSky, dir, t, max(K_clouds, autumnOvercast), K_wind);
+  vec4 cl = skyClouds(autumnSky, dir, t, autumnCover, K_wind);
   sk = mix(sk, cl.rgb, cl.a);
   float meteorSeed;
   float meteorAt = meteorAge(autumnTm, K_meteors, AUTUMN_METEOR_SLOT, meteorSeed);
@@ -738,6 +743,7 @@ void autumnSetup(float t) {
   Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, autumnTm)), K_moon);
   autumnSky = sky;
   autumnOvercast = weatherOvercast(K_rain, 0.0);
+  autumnCover = max(K_clouds, autumnOvercast);
   autumnWet = clamp(uWeather.x, 0.0, 1.0);
   // The key light: the sun (or the moon once the sun is down), its direction kept but lifted so that
   // its shadows still fall on the park rather than far beyond it.
@@ -787,6 +793,13 @@ Shade sceneAutumn(vec2 screenUv, vec2 cell, float t) {
   vec3 dir = viewRay(uv, aspectE, AUTUMN_HORIZON, AUTUMN_FOV);
   autumnHaze = horizonHaze(autumnSky, dir, 0.03);
   autumnHaze = greyed(autumnHaze, vec3(0.97, 0.98, 1.0), 0.5 * autumnOvercast);
+  // Cloud shadows (K_shadows): the deck's shadow where this pixel's sight line reaches the park, on the
+  // ground it meets or, above the horizon, at the canopy's depth. A cloud's shadow is far larger than
+  // anything here, so that one point shades everything the pixel shows.
+  if (K_shadows > 0.0 && autumnSky.sun.y > 0.0) {
+    float z = uv.y < AUTUMN_HORIZON ? min(AUTUMN_EYE * AUTUMN_FOCAL / (AUTUMN_HORIZON - uv.y), 120.0) : AUTUMN_CANOPY.y;
+    autumnSun *= 1.0 - K_shadows * skyCloudShadow(autumnSky, dir * (z / dir.z), AUTUMN_CLOUD_BASE, t, autumnCover, K_wind);
+  }
 
   float markCov = 0.0;
   float hitZ = 1e4;

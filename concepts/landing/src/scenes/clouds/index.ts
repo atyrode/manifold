@@ -1,5 +1,6 @@
 // Above the clouds: the view from an airliner window at cruise altitude, time of day as the dial.
 import { feature, knobValue, range, toggle, type ParamDef } from "../../params.ts";
+import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { CLOUDS_PASSAGE, cloudsGlsl } from "./shader.ts";
@@ -38,4 +39,7 @@ export const cloudsScene: SceneDef = {
   // Entrance: climbing out through the deck, wisps streaming past and the tops sinking below as the
   // plane levels off; exit: banking and sinking back into the tops under streaming vapour.
   passage: CLOUDS_PASSAGE,
+  // The cloud sea: the shared clouds' ray-marched tops seen from above (cloudSeaMarch, cloudSeaTop,
+  // cloudSeaShadow); the light on them, the ocean and the haze are the scene's own.
+  features: { CLOUD_TIER: CLOUD_TIERS.volume },
 };

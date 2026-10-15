@@ -1,6 +1,7 @@
 // Above the clouds: the view from an airliner window at cruise altitude. A ray-marched sea of
-// cumulus tops below, the shared sky above, thunderheads on the horizon, a wingtip with its lights,
-// the occasional passing plane, all framed by the cabin's porthole.
+// cumulus tops below (the shared clouds' volume tier, shaders/lib/clouds.ts: the scene keeps its
+// lighting, ocean and haze), the shared sky above, thunderheads on the horizon, a wingtip with its
+// lights, the occasional passing plane, all framed by the cabin's porthole.
 //
 // Frames: the camera frame has x right, y up, z out through the window. The shared sky libraries
 // work in a world frame whose "ahead" is cloudsTurn to the right of the window's view, so the sun
@@ -18,7 +19,7 @@ export const cloudsGlsl = `
 const float cloudsHorizon = 0.08; // horizon line above the screen centre, in screen heights (~58% up)
 const float cloudsFocal = 1.2;    // lens: about 45 degrees of vertical field of view
 const float cloudsTurn = 0.82;    // the window looks this far (radians) left of the sky's "ahead"
-const float cloudsAmp = 0.45;     // height range of the cloud tops, world units (domes are ~1.6 across)
+const float cloudsAmp = 0.45;     // height range of the cloud tops (CloudSea.amp), world units
 const vec3 cloudsBoltLight = vec3(0.74, 0.78, 1.0);
 const float cloudsMoonGain = 1.8; // moonlit cloud is the brightest thing in a night sky: the eye adapts
 
@@ -51,98 +52,6 @@ vec3 cloudsWingTone(vec3 c) {
   float l = dot(c, LUMA);
   float t = l < 0.5 ? l : 0.5 + 0.4 * (1.0 - exp(-(l - 0.5) / 0.4));
   return c * (t / max(l, 1e-4));
-}
-
-// Henyey-Greenstein phase relative to isotropic scattering: about 19 straight into the light for
-// g = 0.7, a quarter side-on. Its forward lobe is what silvers cloud edges against a low sun
-// (Schneider & Vos, "The real-time volumetric cloudscapes of Horizon Zero Dawn", SIGGRAPH 2015).
-float cloudsPhase(float cosAngle, float g) {
-  float g2 = g * g;
-  return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * cosAngle, 1e-4), 1.5);
-}
-
-// Folded value noise |2n - 1|: rounded domes with sharp creases between them (Perlin's
-// "turbulence", 1985), which is how cumulus tops read from above.
-float cloudsBillow(vec2 p) {
-  return abs(2.0 * vnoise(p) - 1.0);
-}
-
-// The deck's large forms, 0 on the floor of a gap .. 1 on the highest domes. A slow coverage noise
-// opens gaps; a sine warp phased by it (cheap domain warping) breaks the value-noise lattice into
-// drifting, swirling billows, and 'boil' lets the tops change shape slowly.
-float cloudsMacro(vec2 w, float cover, float boil) {
-  float c = vnoise(w * 0.16 + vec2(11.3, 4.7));
-  vec2 q = w + 0.75 * vec2(sin(w.y * 0.47 + c * 5.0 + boil), sin(w.x * 0.39 - c * 4.0 - boil * 0.7));
-  float b = 0.62 * cloudsBillow(q * 0.6) + 0.38 * cloudsBillow(q * 1.37 + vec2(5.1, 2.3));
-  float lo = 0.8 - 0.85 * cover;
-  float deck = smoothstep(lo, lo + 0.2, c * 0.55 + b * 0.6);
-  return deck * (0.3 + 0.7 * pow(b, 0.6));
-}
-
-// Cauliflower detail on the domes, for normals only; 'detail' fades it out before it would alias.
-// Fully faded (most of the far deck from cruise height) it adds exactly nothing, so its two noise
-// octaves are not evaluated at all: the same picture for six fewer noise lookups per deck cell.
-float cloudsSurface(vec2 w, float cover, float boil, float detail) {
-  float h = cloudsMacro(w, cover, boil);
-  float relief = 0.0;
-  if (detail > 0.0) {
-    float fine = 0.62 * cloudsBillow(w * 3.3 + vec2(1.7, 8.2)) + 0.38 * cloudsBillow(w * 7.4 - vec2(3.3, 0.6));
-    relief = (fine - 0.4) * 0.16 * detail * smoothstep(0.1, 0.5, h);
-  }
-  return h + relief;
-}
-
-// The cloud-top height field against a ray from the camera at the origin; tops lie between
-// y = -drop (highest domes) and -drop - cloudsAmp (the floor of the gaps). Steps follow the vertical
-// gap to the surface as in terrain marching (Quilez, "Terrain raymarching", 2002), capped so a
-// step never jumps a whole dome and growing with distance where domes shrink below a cell; three
-// secant steps then settle the hit. Returns the distance, or -1 when the ray passes tFar first. A
-// ray that runs out of steps is skimming just over the tops, so where it stopped is taken as the hit.
-float cloudsMarch(vec3 rd, vec2 drift, float cover, float boil, float drop, float tFar) {
-  float t = drop / -rd.y;
-  float tEnd = min((drop + cloudsAmp) / -rd.y, tFar);
-  if (t >= tEnd) return -1.0;
-  float ta = t;
-  float ga = cloudsAmp;
-  for (int i = 0; i < 32; i++) {
-    vec3 at = rd * t;
-    float g = at.y + drop + cloudsAmp * (1.0 - cloudsMacro(at.xz + drift, cover, boil));
-    if (g <= 0.0) {
-      float tb = t;
-      float gb = g;
-      for (int k = 0; k < 3; k++) {
-        float ts = ta + (tb - ta) * ga / max(ga - gb, 1e-5);
-        vec3 mid = rd * ts;
-        float gm = mid.y + drop + cloudsAmp * (1.0 - cloudsMacro(mid.xz + drift, cover, boil));
-        if (gm > 0.0) {
-          ta = ts;
-          ga = gm;
-        } else {
-          tb = ts;
-          gb = gm;
-        }
-      }
-      return ta + (tb - ta) * ga / max(ga - gb, 1e-5);
-    }
-    if (t >= tEnd) break;
-    ta = t;
-    ga = g;
-    t = min(t + clamp(0.55 * g / -rd.y, 0.01 + 0.004 * t, 0.12 + 0.05 * t), tEnd);
-  }
-  return t < tEnd ? t : -1.0;
-}
-
-// Light reaching a point on the tops: two taps toward the light through the coarse field; the
-// depth of cloud the ray passes under dims it as Beer-Lambert extinction would. A low sun reaches
-// further, so long shadows stretch from the towers across the valleys at golden hour.
-float cloudsShadow(vec3 at, vec3 L, vec2 drift, float cover, float boil, float drop) {
-  float reach = clamp(0.14 / max(L.y, 0.04), 0.3, 1.8);
-  vec3 a = at + L * (reach * 0.3);
-  vec3 b = at + L * reach;
-  float ya = -drop - cloudsAmp * (1.0 - cloudsMacro(a.xz + drift, cover, boil));
-  float yb = -drop - cloudsAmp * (1.0 - cloudsMacro(b.xz + drift, cover, boil));
-  float depth = max(ya - a.y, 0.0) * 1.3 + max(yb - b.y, 0.0) * 0.8;
-  return exp(-depth * 9.0);
 }
 
 // The moon on a low arc of the scene's own: whatever the almanac says, the flight's heading puts
@@ -223,7 +132,7 @@ vec3 cloudsShadeTop(CloudsLight li, vec3 rd, vec3 n, float h, float sunlit) {
   float wrap = clamp((dot(n, li.dir) + 0.35) / 1.35, 0.0, 1.0);
   // Seen this obliquely every top is near grazing: measure the rim against a flat top's facing.
   float rim = clamp(1.0 - dot(n, -rd) / max(-rd.y * 1.3 + 0.08, 0.1), 0.0, 1.0);
-  float fwd = min(cloudsPhase(dot(rd, li.dir), 0.7), 12.0);
+  float fwd = min(cloudPhase(dot(rd, li.dir), 0.7), 12.0);
   vec3 c = 0.92 * (cloudsAmbient(li, n) * ao + li.key * (0.15 + 0.85 * wrap * wrap) * sunlit);
   c += li.key * fwd * (0.025 + 0.2 * rim * rim) * (0.25 + 0.75 * sunlit);
   return cloudsShoulder(c);
@@ -252,8 +161,8 @@ vec4 cloudsThunderhead(vec2 q, float seed, float lean, float aa, Sky sky, Clouds
   float wcol = 1.0;
   if (nearAxis) {
     float side = q.x < ax ? -1.0 : 1.0;
-    float lobes = 0.075 * cloudsBillow(vec2(q.y * 7.0 + seed * 11.0, side * 3.1 + seed * 5.0))
-                + 0.035 * detail * cloudsBillow(vec2(q.y * 16.0 + seed * 3.0, side * 7.3 - seed * 2.0));
+    float lobes = 0.075 * cloudBillow(vec2(q.y * 7.0 + seed * 11.0, side * 3.1 + seed * 5.0))
+                + 0.035 * detail * cloudBillow(vec2(q.y * 16.0 + seed * 3.0, side * 7.3 - seed * 2.0));
     float cap = clamp((q.y - 0.6) / 0.24, 0.0, 1.0);
     wcol = (mix(0.34, 0.22, smoothstep(0.0, 0.7, q.y)) + lobes) * sqrt(1.0 - cap * cap);
     dcol = abs(q.x - ax) - wcol;
@@ -305,7 +214,7 @@ vec4 cloudsThunderhead(vec2 q, float seed, float lean, float aa, Sky sky, Clouds
   float ao = mix(aoCol, mix(0.5, 1.0, v), wA);
   float thin = mix(1.0 - smoothstep(0.0, 0.06, -dcol), max(smoothstep(0.45, 1.0, u), 1.0 - smoothstep(0.0, 0.05, yTop - q.y)), wA);
   float albedo = mix(0.95, mix(0.42, 0.6, wA), storm);
-  float fwd = min(cloudsPhase(dot(rd, li.dir), 0.7), 12.0);
+  float fwd = min(cloudPhase(dot(rd, li.dir), 0.7), 12.0);
   vec3 c = albedo * (cloudsAmbient(li, n) * ao + key * (0.08 + 0.92 * wrap * wrap) * (0.4 + 0.6 * ao));
   c += key * fwd * (0.02 + 0.24 * thin * thin) * (1.0 - 0.5 * storm);
   // The anvil's flat top holds the low sun longest: reddened sunlight on it, the violet zenith
@@ -645,20 +554,16 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
     vec2 drift = vec2(tm * (0.45 * K_drift - 0.1 * K_wind), tm * 0.015);
     drift.x += 0.2 * cloudsStream();
     float boil = tm * (0.025 + 0.02 * abs(K_wind));
-    float tHit = cloudsMarch(rd, drift, K_cover, boil, drop, tFar);
+    CloudSea sea = CloudSea(drift, K_cover, boil, drop, cloudsAmp);
+    float tHit = cloudSeaMarch(rd, sea, tFar);
     if (tHit > 0.0) {
       vec3 at = rd * tHit;
-      vec2 wq = at.xz + drift;
-      // One cell's footprint on the deck, stretched by the grazing view: fine detail and normal
-      // spacing follow it, a cheap stand-in for a mip level.
-      float footprint = tHit * px / cloudsFocal;
-      float detail = 1.0 - smoothstep(0.04, 0.12, footprint / max(-rd.y, 0.05));
-      float e = max(0.012, footprint * 1.5);
-      float h0 = cloudsSurface(wq, K_cover, boil, detail);
-      float hx = cloudsSurface(wq + vec2(e, 0.0), K_cover, boil, detail);
-      float hz = cloudsSurface(wq + vec2(0.0, e), K_cover, boil, detail);
-      vec3 n = normalize(vec3(-(hx - h0) * cloudsAmp / e, 1.0, -(hz - h0) * cloudsAmp / e));
-      float sunlit = cloudsShadow(at, li.dir, drift, K_cover, boil, drop);
+      // One cell's footprint on the deck: fine detail and normal spacing follow it, a cheap stand-in
+      // for a mip level.
+      vec4 top = cloudSeaTop(at, rd, sea, tHit * px / cloudsFocal);
+      vec3 n = top.xyz;
+      float h0 = top.w;
+      float sunlit = cloudSeaShadow(at, li.dir, sea);
       vec3 c = cloudsShadeTop(li, rd, n, h0, sunlit);
       // Through the gaps, the ocean kilometres further down, half lost in the air between.
       vec3 ocean = vec3(0.012, 0.035, 0.07) + li.ambient * 0.08 + li.key * vec3(0.02, 0.05, 0.08);

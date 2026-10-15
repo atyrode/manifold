@@ -12,6 +12,7 @@
 // jolt) and, leaving, runs into one.
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
+import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { trainGlsl } from "./shader.ts";
@@ -68,6 +69,6 @@ export const trainScene: SceneDef = {
   sim: trainSim(params),
   // Entrance: out of a tunnel into the night country, the tea settling from the jolt. Exit: into a tunnel.
   passage: TRAIN_PASSAGE,
-  // The shared moon in its phase (K_moon).
-  features: { SKY_MOON_PHASE: 1 },
+  // The shared moon in its phase (K_moon); the shared clouds' calm deck (its own cover and light).
+  features: { SKY_MOON_PHASE: 1, CLOUD_TIER: CLOUD_TIERS.flat },
 };
