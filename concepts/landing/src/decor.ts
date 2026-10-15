@@ -7,6 +7,7 @@
 
 import { bananaLeaf, fernFrond, frangipaniFlower, grassTuft, hibiscusFlower, Material, monsteraLeaf, pothosLeaf, type Brush, type Context, type MaterialId, type Rand } from "./botany.ts";
 import { PLANT_ATLAS_SHADE, type PlantSheetFamily } from "./sims/plantsheet.ts";
+import { mulberry32 } from "./sims/random.ts";
 
 export interface CanopyConfig {
   /** 0..1: how much of the sky above the camera is leaves. */
@@ -23,16 +24,13 @@ export function canopyKey(config: CanopyConfig): string {
   return [config.coverage, ...config.sides].map((value) => value.toFixed(3)).concat(String(config.seed)).join("|");
 }
 
-/** Small deterministic PRNG so an arrangement is stable across rebuilds. */
-function random(seed: number): Rand {
-  let state = (seed * 2654435761) >>> 0 || 1;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+/**
+ * The pond foliage's seeded generator, for the atlas, the canopy and the border's layout
+ * (scenes/pond/plants.ts): the shared mulberry32 on the seed mixed as the pond always mixed it
+ * (times 2654435761, never 0), so every arrangement stays as it was.
+ */
+export function pondRandom(seed: number): Rand {
+  return mulberry32((seed * 2654435761) >>> 0 || 1);
 }
 
 /** Draw in a local frame (origin, heading, scale, optional mirror) on the scratch sheet, then lay it down. */
@@ -138,7 +136,7 @@ export function* paintAtlas(ctx: Context, width: number, height: number): Genera
     local.fillStyle = "#000";
     local.fillRect(0, 0, size, size);
     local.setTransform(size / (x1 - x0), 0, 0, size / (y1 - y0), (-x0 * size) / (x1 - x0), (-y0 * size) / (y1 - y0));
-    family.draw(local, brush, random(1009 * (family.material + 1) + 31 * k + 7), k);
+    family.draw(local, brush, pondRandom(1009 * (family.material + 1) + 31 * k + 7), k);
     local.setTransform(1, 0, 0, 1, 0, 0);
     yield* crisp(local, size, size);
     ctx.putImageData(local.getImageData(0, 0, size, size), left, top);
@@ -247,7 +245,7 @@ function* crisp(ctx: Context, width: number, height: number): Generator<void, vo
  * ever seen, so only coverage matters. `span` is how many frames wide the sheet is.
  */
 export function* paintCanopy(ctx: Context, width: number, height: number, config: CanopyConfig, span: number): Generator<void, void> {
-  const rand = random(911 + config.seed * 53);
+  const rand = pondRandom(911 + config.seed * 53);
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, width, height);
@@ -271,7 +269,7 @@ export function* paintCanopy(ctx: Context, width: number, height: number, config
     const flip = rand() < 0.5;
     if (rand() > density(x, y)) continue;
     stamp(x, y, angle, length, flip, (local) => {
-      const leafRand = random(seed * 1e6);
+      const leafRand = pondRandom(seed * 1e6);
       if (kind === 0) monsteraLeaf(local, brush, leafRand, 0.8);
       else if (kind === 1) bananaLeaf(local, brush, leafRand, 0.6);
       else fernFrond(local, brush, leafRand);
