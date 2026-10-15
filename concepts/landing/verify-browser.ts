@@ -46,6 +46,7 @@ import { verifyMeadowWildflowers } from "./src/scenes/meadow/wildflowers.verify.
 import { verifyCountryTerrain } from "./src/scenes/country/terrain.verify.ts";
 import { verifyCountryFeaturesAll, verifyCountryLife } from "./src/scenes/country/life.verify.ts";
 import { verifyCountryMurmuration, verifyCountryVerges } from "./src/scenes/country/wild.verify.ts";
+import { verifyCountrySeason } from "./src/scenes/country/season.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -440,6 +441,7 @@ export const checks: readonly Check[] = [
   ["countryFeaturesAll", verifyCountryFeaturesAll],
   ["countryMurmuration", verifyCountryMurmuration],
   ["countryVerges", verifyCountryVerges],
+  ["countrySeason", verifyCountrySeason],
 ];
 
 /**

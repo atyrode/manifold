@@ -125,6 +125,8 @@ export interface CountryDraw {
   motion?: number;
   /** uView: 1 the source picture (the default), 0 dithered. */
   view?: number;
+  /** uWeather: how wet the land is and how much snow lies on it (default none). */
+  weather?: readonly [number, number];
 }
 
 /** One frame of `program` over the built textures with these knobs, read back (RGBA bytes). */
@@ -148,6 +150,7 @@ export function countryDraw(
   gl.uniform1f(u("uMotion"), options.motion ?? 1);
   gl.uniform1f(u("uMotionTime"), options.motionTime ?? 30);
   gl.uniform2f(u("uPassage"), 1, 0);
+  gl.uniform2f(u("uWeather"), options.weather?.[0] ?? 0, options.weather?.[1] ?? 0);
   gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform1fv(u("uParams"), Float32Array.from(countryValues(knobs)));
   gl.uniform4f(u("uSimOn"), 1, 1, 1, 1);

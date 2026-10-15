@@ -295,10 +295,24 @@ replay at their pinned commits).
   whether or not it is built, so switching one settlement moves no other; a change re-runs only the
   settlement, road and parcel stages, reusing the carved river.
 - **River** (`river`, its amount the size): off, the river and its streams run dry, their beds pale
-  stones, the carved valley, banks and bridge kept (`packWater`, no rebuild).
+  stones, the carved valley, banks and bridge kept (`packWater`, no rebuild). `wind ripples`
+  (`country/ripples.ts`, 0 by default, the shared water's ripples tier compiled in only while up):
+  the breeze's cat's-paws (`windRipples`) tilt the river's reflected ray, their finer ripples
+  jitter it cell by cell into streaks, and the paws glitter.
+- **Season** (`season`, `country/season.ts`: summer, harvest by default, autumn): every crop parcel
+  keeps its kind and shows it as the season has it: wheat green, gold, then drilled in green rows;
+  barley green-gold, stubble with round bales, then mostly ploughed; rapeseed yellow, stubble, then
+  ploughed; hay standing in flower, then the mown aftermath; grazing lusher in summer, duller in
+  autumn. The flower fields take the shared fields' autumn, open grass turns tawnier, hedges russet
+  and the broadleaf trees (near crowns and far canopy) each their own autumn colour; pines stay
+  evergreen. Round bales (`COUNTRY_HAS_BALES`: harvest with crops on) lie on the barley's stubble,
+  one at most to a cell of a 26 × 18 m grid along the rows, where the field's clear core or its own
+  record looked up there lets them, each a cylinder met by the ray.
 - **Life**: pastures' herds (shared livestock, kept to each parcel's clear core; `herd size`),
   walkers and carts (shared figures) going out and back along the roads by arc length; birds
-  (shared `birdKnobs`, mixed).
+  (shared `birdKnobs`, mixed). Under lying snow walkers and carts tread the roads they use, all of
+  them (`country/trodden.ts`): packed grey but for a white rim, more the busier; snow still falling
+  fills the way back in, so it shows clearest once the snowfall is over, and clears first.
 - **Verges** (`verges`, off; `country/verges.ts`, the shared plant component): cow parsley, red
   campion and tussock grass at the foot of the hedges within 450 m of the vantage, slotted every
   5 m along each hedge as the shader's parcel lookup draws it (a fuller verge keeps a sparser
@@ -312,13 +326,13 @@ replay at their pinned commits).
 - Neither needs a sampler slot: the sim packs the flock's field and the verges' plants beside and
   above the terrain's records in one texture (`country/atlas.ts`), only while they are on.
 - Knobs: land shape, landscape (seed), relief, erosion; the land use mix (crops 60 and woodland 30
-  on, pasture 25, wildflowers, lavender and sunflowers 20 off) with pine mix, cattle share and herd
-  size; river; village, hamlets, farms, castle, roads, farm tracks; walkers, carts, birds; verges,
-  murmuration; time of day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Each optional
-  part is compiled in only while on (`countryFeatures`); `COUNTRY_ALL` is the all-features program
-  (`featuresAll`).
-  Pasture is off by default: its fences and herds stay out of the default program (a software
-  renderer runs every line), and the crops' catalogue already shows grazed grass.
+  on, pasture 25, wildflowers, lavender and sunflowers 20 off) with pine mix, cattle share, herd size
+  and season; river with its wind ripples; village, hamlets, farms, castle, roads, farm tracks;
+  walkers, carts, birds; verges, murmuration; time of day, stars, moon, clouds, cloud shadows, rain,
+  snow, fog, wind. Each optional part is compiled in only while on (`countryFeatures`);
+  `COUNTRY_ALL` is the all-features program (`featuresAll`). Pasture is off by default: its fences
+  and herds stay out of the default program (a software renderer runs every line), and the crops'
+  catalogue already shows grazed grass.
 - Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
   settlement, road grade bounded and cut into the ground, way points on their roads, clear cores
   inside their parcels, determinism and both reuses, the village's growth, settlements that never
@@ -331,16 +345,18 @@ replay at their pinned commits).
   for four settings; a use change one sim frame, timed; the river dry and full again);
   `countryLife` (every walker and cart on its road, every animal inside its own pasture and clear of
   the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll` (fourteen
-  gated settings drawn byte for byte as their own programs); `country/verges.test.ts` (every clump
-  at a hedge's foot, off roads, streams, water, yards, woods and pastures; a fuller verge keeping a
-  sparser one's clumps; the farming year; sway and an exact rest); `countryVerges` (every clump's
-  root, looked up by the shader in the atlas, at a hedge's foot on its ground; the scene draws
-  them); `countryMurmuration` (the flock shows at dusk and is never drawn over land nearer than it
-  as it pours down to roost).
-- Open (the layered-ridge Countryside's parts, each to be its own module): the farming year
-  (`season`) and autumn woods; the chalk M; village lights and chimney smoke as knobs; the castle's
-  model (a face-on sprite here); snow trodden along the roads; wind ripples on the river; gates in
-  the fences; the plateau's near table hides the gorge.
+  gated settings drawn byte for byte as their own programs); `countrySeason` (each season, the wind
+  ripples and walkers and carts over lying snow drawn byte for byte by the all-features program as
+  by their own; walkers tread the lying snow darker beyond the figures themselves, less while snow
+  still falls; autumn turns broadleaf woods orange and leaves pine woods and the harvest green);
+  `country/verges.test.ts` (every clump at a hedge's foot, off roads, streams, water, yards, woods
+  and pastures; a fuller verge keeping a sparser one's clumps; the farming year; sway and an exact
+  rest); `countryVerges` (every clump's root, looked up by the shader in the atlas, at a hedge's
+  foot on its ground; the scene draws them); `countryMurmuration` (the flock shows at dusk and is
+  never drawn over land nearer than it as it pours down to roost).
+- Open (the layered-ridge Countryside's parts, each to be its own module): the chalk M; village
+  lights and chimney smoke as knobs; the castle's model (a face-on sprite here); gates in the
+  fences; the plateau's near table hides the gorge.
 
 ## Hanging mobile
 

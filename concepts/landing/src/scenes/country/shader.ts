@@ -11,19 +11,18 @@
 // stone bridge (a box with an arch), or the land. The march meets the ground or the water over it,
 // or the trees' bounds; near enough, the trees are whole crowns found at the hit (trees.ts), and a
 // ray passing between them goes on to the ground. On the ground: each parcel as the land model
-// (sims/landuse.ts) uses it, read from its record (terrainParcel): crops of its kind, a flower field
-// (the shared fields' materials, shaders/lib/fields.ts), a pasture with its fence and herd
-// (life.ts), the floor of a wood, or open grassland; hedges where a farmed parcel meets another,
-// roads, yards and streams (dry while the river is off). The starling murmuration wheels over the
+// (sims/landuse.ts) uses it, read from its record (terrainParcel): crops of its kind as the farming
+// season has them (season.ts, the harvest's bales too), a flower field (the shared fields'
+// materials, shaders/lib/fields.ts), a pasture with its fence and herd (life.ts), the floor of a
+// wood, or open grassland; hedges where a farmed parcel meets another, roads (their snow trodden
+// where walkers and carts go: trodden.ts), yards and streams (dry while the river is off). The
+// river mirrors the sky, ruffled by the wind (ripples.ts). The starling murmuration wheels over the
 // far fields at dusk (murmuration.ts) and birds cross the sky in front of all.
 //
 // Hook points for the parts the layered-ridge Countryside had and this one does not yet (each a
-// module of its own): the farming season (countryField's colours and the crops' kinds), autumn
-// woods (countryLeaves and the far canopy's leaf colour), the chalk figure (a terrain-placed mark on
-// a parcel, drawn in the ground branch), lit windows and chimney smoke as knobs (countryBuildings'
-// glow and smoke, now always on), the castle's model (buildings.ts draws its sprite at any size),
-// snow trodden along the roads (the roads' surface under `buried`) and wind ripples on the river
-// (the water branch's tilt).
+// module of its own): the chalk figure (a terrain-placed mark on a parcel, drawn in the ground
+// branch), lit windows and chimney smoke as knobs (countryBuildings' glow and smoke, now always
+// on) and the castle's model (buildings.ts draws its sprite at any size).
 import { buildingsGlsl } from "../../shaders/buildings.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
@@ -35,9 +34,12 @@ import { treesGlsl } from "../../shaders/lib/trees.ts";
 import { countryBuildingsGlsl } from "./buildings.ts";
 import { countryLifeGlsl } from "./life.ts";
 import { countryMurmurationGlsl } from "./murmuration.ts";
+import { countryRipplesGlsl } from "./ripples.ts";
+import { countrySeasonGlsl } from "./season.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 import { countryTreesGlsl } from "./trees.ts";
 import { countryVergesGlsl } from "./verges.ts";
+import { countryTroddenGlsl } from "./trodden.ts";
 
 /** Seconds of the entrance (the camera comes down out of the sky and settles) and exit. */
 export const COUNTRY_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
@@ -93,6 +95,7 @@ vec3 countryToCamera(vec3 d) {
   return vec3(dot(d, countryRight), d.y, dot(d, countryFwd));
 }
 
+${countrySeasonGlsl}
 ${countryTreesGlsl}
 
 // The land and what stands on it (metres): the trees' bounds for the march, their rounded tents for
@@ -185,27 +188,6 @@ vec4 countryDeck(Sky sky, vec3 dir, float t, float cover, float wind, float rain
   return c;
 }
 
-// A crop field's colour and the relief of its rows. kind: LAND_CROP_* (a pasture's grass is
-// LAND_CROP_GRAZING); h: the parcel's hash; r: row space along and across its heading (metres);
-// foot: metres a cell covers there.
-vec3 countryField(float kind, float h, vec2 r, float foot, out float rows) {
-  float h2 = fract(h * 13.7);
-  float hold = smoothstep(2.5, 6.0, 3.2 / foot);
-  rows = 0.5 + 0.5 * hold * sin(r.y * TAU / 3.2);
-  float tram = smoothstep(4.0, 9.0, 24.0 / foot) * (1.0 - smoothstep(0.0, 0.7, abs(fract(r.y / 24.0) - 0.5) * 24.0 - 0.3));
-  vec3 c;
-  if (kind < 0.5) c = mix(vec3(0.74, 0.6, 0.28), vec3(0.82, 0.68, 0.33), h2);              // wheat
-  else if (kind < 1.5) c = mix(vec3(0.8, 0.74, 0.47), vec3(0.86, 0.8, 0.55), h2);          // barley
-  else if (kind < 2.5) c = mix(vec3(0.3, 0.46, 0.18), vec3(0.38, 0.52, 0.2), h2);          // grazing
-  else if (kind < 3.5) c = mix(vec3(0.44, 0.52, 0.22), vec3(0.52, 0.56, 0.26), h2);        // hay meadow
-  else if (kind < 4.5) c = mix(vec3(0.4, 0.29, 0.19), vec3(0.48, 0.35, 0.23), h2);         // ploughed
-  else c = mix(vec3(0.86, 0.78, 0.16), vec3(0.93, 0.84, 0.22), h2);                        // rapeseed
-  if (kind < 1.5 || kind > 4.5) c *= 0.92 + 0.14 * rows - 0.1 * tram;
-  else if (kind < 3.5) c *= 0.94 + 0.1 * hold * (0.5 + 0.5 * sin(r.y * TAU / 9.0));   // mowing stripes
-  else c *= 0.86 + 0.24 * rows;                                                             // furrows
-  return c;
-}
-
 // The bridge: a stone deck from 'from' to 'to' at deck height, its arch's crown under it, standing
 // in the water. Distance along the ray to it (-1 none) and its face normal.
 float countryBridge(TerrainBridge b, vec3 ro, vec3 rd, out vec3 n, out vec2 local) {
@@ -251,6 +233,8 @@ ${countryBuildingsGlsl}
 ${countryLifeGlsl}
 ${countryVergesGlsl}
 ${countryMurmurationGlsl}
+${countryTroddenGlsl}
+${countryRipplesGlsl}
 
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
@@ -461,6 +445,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         float pines = 0.0;
 #endif
         vec3 leaf = mix(vec3(0.17, 0.3, 0.11), vec3(0.23, 0.35, 0.13), vnoise(p.xz / 13.0));
+        leaf = countryCanopyTurn(leaf, p.xz, foot, countryLonePine(p.xz));
         leaf = mix(leaf, vec3(0.1, 0.2, 0.12), pines);
         albedo = leaf * (0.8 + 0.25 * vnoise(p.xz / 3.0));
         porous = 0.3;
@@ -479,6 +464,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         TerrainParcel parcel = terrainParcel(uSim2, uSim3, p.xz, COUNTRY_EXTENT);
         float h = fract(parcel.id * 0.618034);
         vec3 grass = mix(vec3(0.33, 0.47, 0.18), vec3(0.4, 0.52, 0.2), smoothstep(0.3, 0.7, vnoise(p.xz / 40.0)));
+        grass = countrySward(grass);
         albedo = grass;
         if (parcel.id > 0.5) {
           // The parcel as the land model uses it (its record): open grassland and the woods' floor
@@ -490,13 +476,13 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           float footAlong = foot / max(abs(rd.y), 0.12);
           float rows = 0.5;
           vec3 field = grass;
-          if (use == LAND_CROPS) field = countryField(parcel.attr, h, r, footAlong, rows);
-          else if (use == LAND_PASTURE) field = countryField(LAND_CROP_GRAZING, h, r, footAlong, rows);
+          // A pasture's grass is grazing's (one call: a software renderer runs every line).
+          if (use == LAND_CROPS || use == LAND_PASTURE) field = countryField(use == LAND_PASTURE ? LAND_CROP_GRAZING : parcel.attr, h, r, footAlong, rows);
 #if COUNTRY_HAS_FIELDS
           else if (use >= LAND_WILDFLOWERS && use <= LAND_SUNFLOWERS) {
             float relief = 0.5;
             float sheen = 0.0;
-            field = fieldFlowerMaterial(use - LAND_WILDFLOWERS + FIELD_WILDFLOWERS, h, 0.0, p.xz / COUNTRY_FIELD_UNIT, r / COUNTRY_FIELD_UNIT, vec2(footAlong / COUNTRY_FIELD_UNIT), wind, 1.0 - lying, tm, relief, sheen);
+            field = fieldFlowerMaterial(use - LAND_WILDFLOWERS + FIELD_WILDFLOWERS, h, K_season, p.xz / COUNTRY_FIELD_UNIT, r / COUNTRY_FIELD_UNIT, vec2(footAlong / COUNTRY_FIELD_UNIT), wind, 1.0 - lying, tm, relief, sheen);
           }
 #endif
           // Hedges where a farmed parcel meets another (none through a wood or across open
@@ -508,8 +494,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           float hedge = hedged ? hardFill(parcel.border - hedgeHalf, 0.5 * footAcross) * (1.0 - smoothstep(18.0, 40.0, footAcross)) : 0.0;
           float verge = hedged ? 1.0 - smoothstep(hedgeHalf, hedgeHalf + 2.5, parcel.border) : 0.0;
           albedo = mix(field, grass * 1.05, verge * 0.5);
-          albedo = mix(albedo, vec3(0.11, 0.19, 0.08), hedge);
-          porous = use == LAND_CROPS && parcel.attr == LAND_CROP_PLOUGHED ? 0.85 : 0.5;
+          albedo = mix(albedo, countryHedge(), hedge);
+          porous = use == LAND_CROPS ? countryFieldPorous(parcel.attr, h) : 0.5;
 #if COUNTRY_HAS_HERDS
           // A pasture's fence and its herd standing in front of the ground (life.ts).
           if (K_pasture > 0.0) {
@@ -535,6 +521,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
               porous = stock.porous;
             }
           }
+#endif
+#if COUNTRY_HAS_BALES
+          // Round bales on the harvest's stubble, standing in front of the ground (season.ts).
+          if (use == LAND_CROPS) countryBales(eye, rd, tHit, p, g, parcel, cellAngle, lying, sun, albedo, n, snowy, porous);
 #endif
         }
         // Yards and gardens round the buildings.
@@ -568,10 +558,14 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           float roadVerge = (1.0 - smoothstep(0.0, 2.4, c.x)) * step(0.0, c.x);
           vec3 gravel = mix(vec3(0.8, 0.74, 0.6), vec3(0.7, 0.64, 0.52), vnoise(p.xz / 3.0));
           albedo = mix(albedo, vec3(0.42, 0.52, 0.24), roadVerge * 0.7);
-          albedo = mix(albedo, vec3(0.11, 0.19, 0.08), roadHedge * (1.0 - road));
+          albedo = mix(albedo, countryHedge(), roadHedge * (1.0 - road));
           albedo = mix(albedo, gravel, road);
           porous = mix(porous, 0.3, road);
           glossy = mix(glossy, 0.25, road);
+#if COUNTRY_HAS_AGENTS
+          // Walkers and carts tread the lying snow down along the middle (trodden.ts).
+          countryTrod = countryTrodden(c.x, footRoad, road);
+#endif
           if (road > 0.5 && wet > 0.0) {
             float puddle = rainPuddles(p.xz, wet);
             if (puddle > 0.5) {
@@ -597,6 +591,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     shade *= sunShade;
     albedo = wetten(albedo, wet, porous);
     float buried = snowy >= 0.0 ? snowy : snowCover(n, p.xz * 0.25, lying) * (water ? 0.0 : 1.0);
+#if COUNTRY_HAS_ROADS && COUNTRY_HAS_AGENTS
+    countryTread(albedo, buried);
+#endif
     albedo = mix(albedo, COUNTRY_SNOW, buried);
     col = albedo * countryLight(sky, sun, moon, n, shade);
     if (water) {
@@ -604,6 +601,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       // rain rings break it.
       vec3 rings = rainRipples(p.xz * 2.0, t, rain);
       vec2 tilt = rings.xy * 0.4 + 0.03 * (vec2(vnoise(p.xz * 0.4 + vec2(tm * 0.3, 0.0)), vnoise(p.zx * 0.4 - vec2(0.0, tm * 0.25))) - 0.5);
+#if WATER_TIER >= WATER_RIPPLES
+      // The breeze's cat's-paws (ripples.ts) tilt it further.
+      vec3 paws = countryRipples(p, rd, seen * cellAngle);
+      tilt += paws.xy;
+#endif
       vec3 nw = normalize(vec3(tilt.x, 1.0, tilt.y));
       vec3 refl = reflect(rd, nw);
       refl.y = max(refl.y, 0.02);
@@ -616,6 +618,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       col = mix(col, mirror * 0.92, mirrorShare) + rings.z * 0.12 * mirror;
       glint = 0.4 * smoothstep(0.92, 1.0, dot(refl, sun)) * (1.0 - overcast);
       col += sky.sunColor * glint * 0.8;
+#if WATER_TIER >= WATER_RIPPLES
+      // The cat's-paws glitter in the dither.
+      glint = max(glint, smoothstep(0.3, 0.9, paws.z) * (1.0 - grey));
+#endif
     } else if (wet > 0.0) {
       col += haze * 0.12 * wetGloss(wet, n.y) * glossy * 3.0;
     }
