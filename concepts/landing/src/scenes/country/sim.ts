@@ -6,13 +6,15 @@
 //                           pines), yard (-1 a standing lone tree)
 //   uSim2  rgba8 nearest    the nearest two parcels per texel
 //   uSim3  rgba16f nearest  records: parcel sites with their use and attribute, buildings,
-//                           settlements, the bridge, the eye, the roads' way points
+//                           settlements, the bridge, the eye, the roads' way points, the chalk M's
+//                           site (chalk.ts)
 // Three tiers of change, cheapest last:
 //   the terrain (land shape, landscape, relief, erosion, the river's size, the settlements and
 //     roads): a new build over a few frames, reusing what the change leaves alone (terrain.ts); the
 //     last map stays on screen until it is done;
-//   the land's uses (the shares, the pine mix, the cattle share): the allocation (LandModel.allocate)
-//     and packLand within the frame, uploading only uSim1 and uSim3;
+//   the land's uses (the shares, the pine mix, the cattle share, the chalk M keeping its parcels
+//     open, its site looked for once per terrain): the allocation (LandModel.allocate) and packLand
+//     within the frame, uploading only uSim1 and uSim3;
 //   the river switched on or off: packWater within the frame, uploading uSim0 and uSim1.
 // Nothing is drawn before the first build: the shader shows the sky meanwhile, which the entrance
 // looks into.
@@ -30,6 +32,7 @@ import {
 } from "../../sims/terrain.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { type ChalkSite, chalkSite, keepChalkOpen, packChalk } from "./chalk.ts";
 
 /** The map: texels a side and metres a side. */
 export const COUNTRY_MAP = { size: 512, extent: 3200 } as const;
@@ -57,6 +60,7 @@ const KNOBS = [
   "tracks",
   "pines",
   "cows",
+  "chalk",
   ...LAND_SHARED,
 ] as const;
 type Knob = (typeof KNOBS)[number];
@@ -69,6 +73,8 @@ interface Land {
   /** The land options and river state last packed ("" none yet). */
   uses: string;
   water: boolean | undefined;
+  /** The chalk M's site (chalk.ts), looked for the first time the knob is on (null: none). */
+  chalk: ChalkSite | null | undefined;
 }
 
 class CountrySim implements SceneSim {
@@ -146,6 +152,7 @@ class CountrySim implements SceneSim {
           packed,
           uses: "",
           water: undefined,
+          chalk: undefined,
         };
         this.#parcels.upload(packed.parcels);
       }
@@ -160,12 +167,21 @@ class CountrySim implements SceneSim {
       pines: knobs.value(frame, "pines"),
       cows: knobs.value(frame, "cows"),
     };
-    const usesKey = JSON.stringify(uses);
+    const chalk = knobs.on(frame, "chalk");
+    const usesKey = JSON.stringify({ ...uses, chalk });
     const water = knobs.on(frame, "river");
     const allocate = usesKey !== land.uses;
     const flow = water !== land.water;
     if (allocate) {
-      packLand(land.packed, land.terrain, land.model.allocate(uses));
+      const allocation = land.model.allocate(uses);
+      if (chalk) {
+        if (land.chalk === undefined) {
+          land.chalk = chalkSite(land.terrain);
+          packChalk(land.packed, land.chalk);
+        }
+        keepChalkOpen(allocation, land.model, land.chalk);
+      }
+      packLand(land.packed, land.terrain, allocation);
       land.uses = usesKey;
     }
     if (flow) {

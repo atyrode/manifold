@@ -7,23 +7,22 @@
 // shows it and lights the land from there.
 //
 // What a ray meets, nearest first: a walker or cart on the roads (life.ts), a building (modelled
-// near, the shared sprite far: buildings.ts), the stone bridge (a box with an arch), or the land.
+// near, the shared sprite far, the castle always modelled: buildings.ts, castle.ts), the stone
+// bridge (a box with an arch), or the land.
 // The march meets the ground or the water over it, or the trees' bounds; near enough, the trees are
 // whole crowns found at the hit (trees.ts), and a ray passing between them goes on to the ground.
 // On the ground: each parcel as the land model (sims/landuse.ts) uses it, read from its record
 // (terrainParcel): crops of its kind, a flower field (the shared fields' materials,
 // shaders/lib/fields.ts), a pasture with its fence and herd (life.ts), the floor of a wood, or open
 // grassland; hedges where a farmed parcel meets another, roads, yards and streams (dry while the
-// river is off). Birds cross the sky in front of all.
+// river is off), the chalk M on its hillside (chalk.ts). Birds cross the sky in front of all.
 //
 // Hook points for the parts the layered-ridge Countryside had and this one does not yet (each a
 // module of its own): the farming season (countryField's colours and the crops' kinds), autumn
 // woods (countryLeaves and the far canopy's leaf colour), verges at the hedges' foot (the hedge and
 // verge masks in the ground branch), the murmuration (beside countryBirds, over the far fields),
-// the chalk figure (a terrain-placed mark on a parcel, drawn in the ground branch), lit windows and
-// chimney smoke as knobs (countryBuildings' glow and smoke, now always on), the castle's model
-// (buildings.ts draws its sprite at any size), snow trodden along the roads (the roads' surface
-// under `buried`) and wind ripples on the river (the water branch's tilt).
+// snow trodden along the roads (the roads' surface under `buried`) and wind ripples on the river
+// (the water branch's tilt).
 import { buildingsGlsl } from "../../shaders/buildings.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
@@ -33,6 +32,7 @@ import { livestockGlsl } from "../../shaders/lib/livestock.ts";
 import { terrainGlsl } from "../../shaders/lib/terrain.ts";
 import { treesGlsl } from "../../shaders/lib/trees.ts";
 import { countryBuildingsGlsl } from "./buildings.ts";
+import { countryChalkGlsl } from "./chalk.ts";
 import { countryLifeGlsl } from "./life.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 import { countryTreesGlsl } from "./trees.ts";
@@ -247,6 +247,7 @@ float countryBridge(TerrainBridge b, vec3 ro, vec3 rd, out vec3 n, out vec2 loca
 
 ${countryBuildingsGlsl}
 ${countryLifeGlsl}
+${countryChalkGlsl}
 
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
@@ -366,6 +367,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     float glossy = 0.05;
     float shade = 1.0;
     float lamp = 0.0;
+#if COUNTRY_HAS_CHALK
+    float chalk = 0.0;
+#endif
     float snowy = -1.0;   // snow on a building, tree or figure: its own cover; below 0 the land's
     bool water = false;
     float waterDepth = 0.0;
@@ -527,6 +531,14 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
             porous = 0.4;
           }
         }
+#if COUNTRY_HAS_CHALK
+        // The chalk M cut through the turf of its hillside (chalk.ts).
+        if (K_chalk > 0.5) {
+          chalk = countryChalk(p, foot);
+          albedo = mix(albedo, countryChalkWhite(p.xz), chalk);
+          porous = mix(porous, 0.3, chalk);
+        }
+#endif
 #if COUNTRY_HAS_ROADS
         if (K_roads > 0.5 || K_tracks > 0.5) {
           // The roads: pale gravel ribbons with a grass verge and a hedge either side (not in the
@@ -595,6 +607,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       col = mix(col, COUNTRY_AMBER, lamp);
       accent = lamp;
     }
+#if COUNTRY_HAS_CHALK
+    accent = max(accent, 0.75 * chalk);
+#endif
     // Atmospheric perspective: the far land paler and bluer, more so in haze, rain and fog.
     float thick = 1.0 / (5200.0 - 2600.0 * overcast - 2500.0 * K_fog);
     col = mix(col, haze * mix(vec3(1.0), vec3(0.84, 0.88, 0.95), grey), 1.0 - exp(-seen * thick));
