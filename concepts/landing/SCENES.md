@@ -367,14 +367,19 @@ Overlooking rolling hills with a village in the distance and forest around.
 A solar system hanging in a quiet room under a glowing Sun, the room's lamp (issue #1082, N3).
 
 - The mobile is the shared part (`src/sims/mobile.ts`) laid out by `mobile/solar.ts`: one arm per
-  planet, stacked down the Sun's axis, each hung on a short link from the loop of the arm above
-  (`end: 2`), so the arms are still coupled pendulums that swing and rock, each turning on its own.
-  The planet rides end 0 at a reach that grows with its orbit (half its rank, half the logarithm of
-  its distance), a brass weight on end 1 balances it by the lever rule, and the Earth hangs from its
-  arm's end with the Moon on a sub-arm. Each arm hangs as far below the one above as keeps it clear
-  of everything above it that it passes under; `clearance` scales those gaps (below 1 they knock).
-  Sizes are not to scale (radius about the 0.45 power of the real one): Jupiter and Saturn are
-  clearly the biggest, Mercury and the Moon still a few cells across.
+  planet, stacked on one axis, each hung on a short link from the loop of the arm above (`end: 2`),
+  so the arms are still coupled pendulums that swing and rock, each turning on its own. From the
+  top: the outer bodies outermost first, then the inner ones from Mercury out; the Sun is a globe
+  threaded on the axis at Mercury's loop, in the middle of the frame, so the arms radiate from it,
+  the inner planets circle it close to its height and the giants' wide arms hang a little above. A
+  planet rides end 0 at a reach that grows with its orbit (half its rank, half the logarithm of its
+  distance), a small brass weight near the axis on end 1 balances it by the lever rule, and the
+  Earth hangs from its arm's end with the Moon on a sub-arm. Each arm hangs as far below the one
+  above as keeps it clear of everything above it that it passes under; `clearance` scales those
+  gaps (below 1 they knock). Sizes are not to scale (radius about the 0.45 power of the real one):
+  Jupiter and Saturn are clearly the biggest, Mercury and the Moon still a few cells across. The
+  eye looks down on the planets' plane at about 26°, so every orbit is an ellipse round the Sun and
+  planets pass in front of it and behind it.
 - The shared part gained balls (globes and weights: drag along the relative air, contacts with
   other arms' balls, plates, wires and links), arms hung from a parent's loop, and a motor
   (`Mobile.drive`): a couple across an arm's ends that makes up for the damping, brings the turn to
@@ -382,14 +387,15 @@ A solar system hanging in a quiet room under a glowing Sun, the room's lamp (iss
   arm keeps its rate exactly over time while gusts and knocks still set it back for a while.
 - Motor (`motor`, on): each arm turns once in its planet's period, au^1.5 years (Kepler's third
   law), the Moon's once a sidereal month; the speed sets the Earth's year from 72 to 18 seconds of
-  the motion clock (36 at the middle, about a minute at the default motion). The arms start at the
-  planets' J2000 mean longitudes, turned 40° against the room so Jupiter and Saturn start behind
-  the Sun and the ice giants out to the right.
-- Light: the Sun (`Sun`) lights each planet from where it hangs, so phases change as the arms turn;
-  its light (`soft shadows`: the bulb inside the globe, up to the whole globe) throws the mobile's
-  shadows, Saturn's rings included, on the wall, the ceiling and the other planets (eclipses
-  happen). A dim window (`window light`) and the room's ambient keep the room and the night sides
-  readable; `room` is a dark room or a white one in daylight (paper theme).
+  the motion clock (36 at the middle, about a minute at the default motion). The arms start spread
+  round the Sun: Jupiter behind on the left, Saturn on the right, Uranus behind, Neptune in front.
+- Light: the Sun (`Sun`) lights each planet from where it hangs, so phases change as the arms turn:
+  full behind the Sun, a crescent in front of it. Its light (`soft shadows`: the bulb inside the
+  globe, up to the whole globe) throws the mobile's shadows on the other planets (eclipses happen)
+  and on the room, where they stay secondary: thrown from at least the whole globe, so they blur
+  and shrink with distance, and never taking more than half the Sun's light. Saturn's rings shadow
+  its globe and the wall. A dim window (`window light`) and the room's ambient keep the room and the
+  night sides readable; `room` is a dark room or a white one in daylight (paper theme).
 - Looks, from the shared planet (`src/shaders/lib/planet.ts`): Jupiter's and Saturn's belts in
   `planetBandColor` (Jupiter with its red spot), Venus's and Neptune's `planetBelts`, the Earth's
   oceans, land, ice caps and `planetClouds`, the rocky bodies' `planetFbm`, Saturn's tilted rings

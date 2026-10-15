@@ -1,6 +1,6 @@
 // The room the solar-system mobile hangs in, shared by the simulation (sim.ts) and the shader
-// (shader.ts): the Sun's hook, the wall its shadows fall on, the camera and the passage. Metres, y up,
-// z toward the viewer (sims/mobile.ts's convention); the wall is the plane z = WALL.
+// (shader.ts): where the Sun hangs, the wall its shadows fall on, the camera and the passage. Metres,
+// y up, z toward the viewer (sims/mobile.ts's convention); the wall is the plane z = WALL.
 import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
 import type { Vec3 } from "../../sims/verlet.ts";
 import { SOLAR_SUN_RADIUS } from "./solar.ts";
@@ -12,16 +12,19 @@ export const MOBILE_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 export const MOBILE_WALL = -1.4;
 export const MOBILE_CEILING = 3.6;
 
-/** The hook under the Sun the mobile hangs from; the Sun's centre is SOLAR_SUN_RADIUS above it. */
-export const MOBILE_ANCHOR: Vec3 = [0.25, 2.38, 0];
+/** The Sun's centre at rest, in the middle of the frame: the mobile's hook hangs above it to suit (solar.ts). */
+export const MOBILE_SUN_CENTRE: Vec3 = [0, 1.75, 0];
 /** The texture's origin: the middle of where the mobile hangs. */
-export const MOBILE_TEX_ORIGIN: Vec3 = [0.25, 1.85, 0];
+export const MOBILE_TEX_ORIGIN: Vec3 = [0, 1.8, 0];
 
-/** The eye, looking at the wall through `aim` (the pointer sways the eye a little). */
-export const MOBILE_EYE: Vec3 = [0, 1.25, 3.7];
-export const MOBILE_AIM: Vec3 = [0, 1.99, 0];
+/**
+ * The eye, above the planets' plane and looking down on it at about 26°, so each orbit shows as an
+ * ellipse round the Sun, looking at the wall through `aim` (the pointer sways the eye a little).
+ */
+export const MOBILE_EYE: Vec3 = [0, 3.3, 3.0];
+export const MOBILE_AIM: Vec3 = [0, 1.86, 0];
 /** Half the width and height (m) of the region at z = 0 the frame keeps in view. */
-export const MOBILE_FIT = { halfW: 1.5, halfH: 0.86 } as const;
+export const MOBILE_FIT = { halfW: 1.65, halfH: 1.0 } as const;
 
 /**
  * The camera without the pointer's sway, as the shader builds it: unit axes, and the focal length
@@ -69,7 +72,7 @@ export function mobileRay(px: number, py: number, aspect: number): Vec3 {
 export const MOBILE_SWAY = { x: 0.35, y: 0.15 } as const;
 
 /** The passage: how far above its place the mobile is lowered from (m), and how far it is hoisted. */
-export const MOBILE_LOWER = 1.8;
+export const MOBILE_LOWER = 2.2;
 export const MOBILE_HOIST = 2.6;
 
 export const mobileLayoutGlsl = `
