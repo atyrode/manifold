@@ -190,8 +190,9 @@ export function verifyCountryLife(gl: WebGL2RenderingContext): Record<string, un
 
 /**
  * Gated settings: each turns one or more of countryFeatures' gates or tiers on (or off). The land's
- * uses go through the sim (its allocation); the roads' change would rebuild the terrain, so they are
- * drawn over the land already built, as a frame during that build is.
+ * uses go through the sim (its allocation, the chalk M's open parcels too); the roads' change would
+ * rebuild the terrain, so they are drawn over the land already built, as a frame during that build
+ * is. Lit windows and smoke are drawn at dusk, where they show.
  */
 const GATED: readonly Record<string, number>[] = [
   {},
@@ -208,6 +209,9 @@ const GATED: readonly Record<string, number>[] = [
   { moon: 0.4 },
   { verges: 1 },
   { murmuration: 1, time: 0.72 },
+  { time: 0.8 },
+  { time: 0.8, lights: 0, smoke: 0 },
+  { chalk: 1 },
 ];
 
 export function verifyCountryFeaturesAll(gl: WebGL2RenderingContext): Record<string, unknown> {

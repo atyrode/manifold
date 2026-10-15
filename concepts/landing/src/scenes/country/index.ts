@@ -8,10 +8,11 @@
 // Knobs and what they rebuild (sim.ts): the land's shape, seed, relief and erosion rebuild the map
 // over a few frames (the last one stays on screen meanwhile); the river's size the river and what
 // stands near it; the settlements and roads only those and the parcels; the land's uses, the pine
-// mix and the cattle share only the allocation, packed and uploaded within the frame; the river
-// switched off only dries its bed. Herds' size, walkers, carts, birds, the season (its harvest's
-// bales) and the river's wind ripples are the shader's alone, each optional part compiled in only
-// while on (countryFeatures). The verges at the hedges' foot (verges.ts) and the starling
+// mix, the cattle share and the chalk M (which keeps the woods and fields off its hillside) only the
+// allocation, packed and uploaded within the frame; the river switched off only dries its bed.
+// Herds' size, walkers, carts, birds, the season (its harvest's bales), the river's wind ripples,
+// the lit windows and the chimney smoke are the shader's alone. Each optional part is compiled in
+// only while on (countryFeatures). The verges at the hedges' foot (verges.ts) and the starling
 // murmuration at dusk (murmuration.ts) are compiled in only while on too; the sim grows their
 // plants and flies their flock then, packed beside the terrain's records (atlas.ts).
 import type { IconName } from "../../lab/icons.ts";
@@ -197,7 +198,7 @@ const params = [
     "castle",
     "castle",
     true,
-    "A castle on a prominent hilltop in sight from the vantage, its walls and keep against the sky. Rebuilds the settlements and roads; the hilltop stays its own either way.",
+    "A castle on a prominent hilltop in sight from the vantage: battlemented curtain walls with a round tower at each corner, a gatehouse, a keep with its turret and a hall, a few windows lit after dark. The woods clear round it. Rebuilds the settlements and roads; the hilltop stays its own either way.",
   ),
   toggle(
     "settlements",
@@ -261,6 +262,31 @@ const params = [
     "Zero: the river's own gentle shimmer of the sky. Higher lets the wind (under Weather) ruffle it: cat's-paws drift downwind and break the mirrored sky into streaks, more of them the harder it blows.",
     { step: 0.05, when: "river" },
   ),
+  feature(
+    "settlements",
+    "lights",
+    "village lights",
+    true,
+    "windows lit",
+    0.7,
+    "Windows light up one by one as dusk falls, in the village, the hamlets, the farmhouses and the castle, and most go dark late at night; lit ones warm the walls and the ground around. The amount is the share of windows that ever light, the church's and the castle's half that.",
+  ),
+  feature(
+    "settlements",
+    "smoke",
+    "chimney smoke",
+    true,
+    "amount",
+    0.5,
+    "Smoke curling up from the cottages' chimneys and leaning with the wind, thicker as the evening draws in.",
+  ),
+  toggle(
+    "manifold",
+    "chalk",
+    "chalk M",
+    false,
+    "A giant M cut into the turf of a hillside facing the hill, in the manner of the Uffington White Horse: on the open slope that shows it best from here, clear of the woods, roads, yards and water, drawn out up the slope so it reads whole. The woods and fields there give way to open downland. None where no such slope is in sight.",
+  ),
 ];
 
 /**
@@ -291,6 +317,11 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     COUNTRY_HAS_BALES: values.season === 1 ? on("crops") : 0,
     // The river's wind ripples: the shared water's ripples tier, only while they are up.
     WATER_TIER: on("ripples") ? WATER_TIERS.ripples : WATER_TIERS.flat,
+    // Lit windows and their glow, chimney smoke (buildings.ts).
+    COUNTRY_HAS_LIGHTS: on("lights"),
+    COUNTRY_HAS_SMOKE: on("smoke"),
+    // The chalk M on its hillside (chalk.ts).
+    COUNTRY_HAS_CHALK: on("chalk"),
     CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
     ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
@@ -315,6 +346,9 @@ export const COUNTRY_ALL = countryFeatures({
   walkers: 1,
   birds: 1,
   shadows: 1,
+  lights: 1,
+  smoke: 1,
+  chalk: 1,
   moon: 0.5,
   verges: 1,
   murmuration: 1,
@@ -347,7 +381,7 @@ export const countryScene: SceneDef = {
     settlements: {
       title: "Settlements",
       blurb:
-        "The village, hamlets, farms and castle, and the roads and farm tracks between them; a change lays them out again without moving the hills or the river.",
+        "The village, hamlets, farms and castle, the roads and farm tracks between them, and their lit windows and chimney smoke; a change of where they stand lays them out again without moving the hills or the river.",
     },
     activity: {
       title: "People & carts",
@@ -356,6 +390,10 @@ export const countryScene: SceneDef = {
     birds: {
       ...birdsGroup,
       blurb: "Flights of birds crossing the valley by day, and a starling murmuration at dusk.",
+    },
+    manifold: {
+      title: "Manifold mark",
+      blurb: "A chalk figure of the M, cut into the turf of a hillside.",
     },
   },
   glsl: countryGlsl,
