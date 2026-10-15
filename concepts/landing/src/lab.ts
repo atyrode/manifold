@@ -1,6 +1,7 @@
 // The lab: a floating-inspector workspace over the scene, built entirely from the scene catalogue
-// and knob definitions. Three panels (lab/panels.ts): the scene browser (lab/browser.ts), the
-// inspector (lab/inspector.ts) and the transport bar, whose popovers (lab/transport.ts) hold the A/B
+// and knob definitions. Two panels (lab/panels.ts): the inspector, whose views (lab/views.ts) are
+// the scene picker (lab/gallery.ts), the presets (lab/presets.ts) and the controls
+// (lab/inspector.ts); and the transport bar, whose popovers (lab/transport.ts) hold the A/B
 // comparison (compare.ts), the scene tour (tour.ts), every "now" and the shortcuts. Every change goes
 // through the host as a URL query, so links, presets and undo all share one representation; the
 // session tools sit beside the setup in the URL (`sessionQuery`) and never inside it.
@@ -14,14 +15,17 @@ import {
   type Comparison,
   type Slot,
 } from "./compare.ts";
-import { SceneBrowser } from "./lab/browser.ts";
+import { SceneGallery } from "./lab/gallery.ts";
 import { iconButton, nowButton, row, slider, textButton } from "./lab/controls.ts";
 import { h, type LabContext, type Patch } from "./lab/dom.ts";
 import { icon } from "./lab/icons.ts";
 import { Inspector } from "./lab/inspector.ts";
 import { knobIcon } from "./lab/knobs.ts";
-import { panelIds, Workspace, type PanelLayout, type SheetState } from "./lab/panels.ts";
+import { Workspace, type PanelLayout } from "./lab/panels.ts";
+import { PREFS_KEY, readPrefs } from "./lab/prefs.ts";
+import { PresetsView } from "./lab/presets.ts";
 import { Popover, separator } from "./lab/transport.ts";
+import { Views } from "./lab/views.ts";
 import { MAX_SEED, type ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
@@ -82,53 +86,6 @@ const SHORTCUTS: readonly (readonly [string, string])[] = [
   ["Ctrl ⇧ Z", "redo"],
 ];
 
-interface Prefs {
-  open: boolean;
-  explain: boolean;
-  /** Open (true) or folded (false) per section id; missing means the section's default. */
-  sections: Record<string, boolean>;
-  /** Each panel's place, as the workspace saved it (checked as it loads). */
-  panels: Record<string, unknown>;
-  sheet: SheetState;
-}
-
-const PREFS_KEY = "landing.lab.v3";
-
-function loadPrefs(): Prefs {
-  const fallback: Prefs = {
-    open: false,
-    explain: false,
-    sections: {},
-    panels: {},
-    sheet: { tab: "inspector", open: true },
-  };
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
-    if (typeof raw !== "object" || raw === null) return fallback;
-    const record = raw as Partial<Record<keyof Prefs, unknown>>;
-    const object = (value: unknown) =>
-      typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-    const sheet = object(record.sheet);
-    return {
-      open: record.open === true,
-      explain: record.explain === true,
-      sections: Object.fromEntries(
-        Object.entries(object(record.sections)).filter(
-          (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
-        ),
-      ),
-      panels: object(record.panels),
-      sheet: {
-        tab: panelIds.find((id) => id === sheet.tab && id !== "transport") ?? fallback.sheet.tab,
-        open: sheet.open !== false,
-      },
-    };
-  } catch (error: unknown) {
-    console.error("evt=landing.lab_prefs.unreadable", error);
-    return fallback;
-  }
-}
-
 /** One slot's undo history: setups (minimal queries) before and after the committed one. */
 interface History {
   undo: string[];
@@ -150,13 +107,14 @@ export class Lab {
   readonly #root: HTMLElement;
   readonly #opener: HTMLButtonElement;
   readonly #host: LabHost;
-  readonly #prefs = loadPrefs();
+  readonly #prefs = readPrefs(localStorage.getItem(PREFS_KEY));
   readonly #ctx: LabContext;
   readonly #workspace: Workspace;
+  readonly #views: Views;
+  readonly #gallery: SceneGallery;
+  readonly #presets: PresetsView;
   readonly #inspector: Inspector;
-  readonly #browser: SceneBrowser;
   readonly #syncers: (() => void)[] = [];
-  readonly #setSub: (panel: "browser" | "inspector", text: string) => void;
   /** The undo history of the setup on screen (with a comparison, the live slot's). */
   #history: History;
   /** An A/B comparison, and the hidden slot's own undo history once it has been on screen. */
@@ -217,12 +175,8 @@ export class Lab {
     root.classList.toggle("explain", this.#prefs.explain);
 
     const save = () => this.#savePrefs();
-    this.#inspector = new Inspector(this.#ctx, {
-      sections: this.#prefs.sections,
-      save,
-    });
-    this.#browser = new SceneBrowser(this.#ctx, {
-      setScene: (scene) => this.#setScene(scene),
+    this.#gallery = new SceneGallery(this.#ctx, (scene) => this.#setScene(scene));
+    this.#presets = new PresetsView(this.#ctx, {
       load: (query) => {
         host.apply(new URLSearchParams(query));
         this.commit();
@@ -230,6 +184,37 @@ export class Lab {
       query: () => this.#query(),
       build: host.build,
     });
+    this.#inspector = new Inspector(this.#ctx, {
+      sections: this.#prefs.sections,
+      save,
+    });
+    this.#views = new Views(
+      [
+        {
+          id: "scenes",
+          label: "Scenes",
+          icon: "grid",
+          el: this.#gallery.el,
+          shown: () => this.#gallery.shown(),
+        },
+        {
+          id: "presets",
+          label: "Presets",
+          icon: "bookmark",
+          el: this.#presets.el,
+          shown: () => this.#presets.shown(),
+        },
+        {
+          id: "controls",
+          label: "Controls",
+          icon: "sliders",
+          el: this.#inspector.el,
+          shown: () => this.#inspector.shown(),
+        },
+      ],
+      () => this.#workspace.show("inspector"),
+      () => this.#pickScene(),
+    );
     this.#undoButton = iconButton("undo", "Undo (Ctrl Z)", () => this.undo());
     this.#redoButton = iconButton("redo", "Redo (Ctrl ⇧ Z)", () => this.redo());
 
@@ -243,64 +228,35 @@ export class Lab {
       },
       () => this.setOpen(false),
     );
-    const browserPanel = this.#workspace.add({
-      id: "browser",
-      title: "Scenes",
-      tab: "Scenes",
-      icon: "image",
-      docks: ["left", "right"],
-      bar: false,
-      min: { w: 200, h: 220 },
-      max: { w: 560 },
-      actions: [],
-      body: this.#browser.el,
-      initial: ({ h: vh }) => ({
-        dock: "float",
-        ax: "left",
-        x: 16,
-        ay: "top",
-        y: 16,
-        w: 252,
-        h: Math.round(vh - 16 - 76),
-        collapsed: false,
-      }),
-    });
-    const inspectorPanel = this.#workspace.add({
+    this.#workspace.add({
       id: "inspector",
       title: "Inspector",
-      tab: "Controls",
       icon: "sliders",
       docks: ["left", "right"],
       bar: false,
       min: { w: 280, h: 240 },
       max: { w: 560 },
-      actions: this.#inspector.actions(),
-      body: this.#inspector.el,
+      head: this.#views.head,
+      body: this.#views.body,
       initial: ({ h: vh }) => ({
         dock: "float",
         ax: "right",
         x: 16,
         ay: "top",
         y: 16,
-        w: 340,
+        w: 352,
         h: Math.round(vh - 16 - 76),
         collapsed: false,
       }),
     });
-    this.#setSub = (panel, text) => {
-      const sub = panel === "browser" ? browserPanel.sub : inspectorPanel.sub;
-      if (sub.textContent !== text) sub.textContent = text;
-    };
     this.#workspace.add({
       id: "transport",
       title: "Transport",
-      tab: "Transport",
       icon: "play",
       docks: ["top", "bottom"],
       bar: true,
       min: { w: 200, h: 40 },
       max: { w: 4000 },
-      actions: [],
       body: this.#transportBar(),
       initial: () => ({
         dock: "float",
@@ -346,7 +302,7 @@ export class Lab {
 
   focusSearch(): void {
     this.setOpen(true);
-    this.#workspace.show("inspector");
+    this.#views.show("controls");
     this.#inspector.focusSearch();
   }
 
@@ -355,12 +311,19 @@ export class Lab {
     const { state } = this.#current();
     // A step of the tour (its own switch or the user's) becomes the current one; another scene holds it.
     this.#tour?.follow(state.scene);
+    this.#gallery.sync();
+    this.#presets.sync();
     this.#inspector.sync();
-    this.#browser.sync();
     for (const sync of this.#syncers) sync();
-    this.#setSub("inspector", sceneDefs[state.scene].title);
-    this.#setSub("browser", `${sceneIds.indexOf(state.scene) + 1} / ${sceneIds.length}`);
+    const scene = sceneDefs[state.scene];
+    this.#views.setScene(scene.title, scene.accent);
     this.#syncHistory();
+  }
+
+  /** Open the scene picker: the inspector's Scenes view, the keyboard on the scene on screen. */
+  #pickScene(): void {
+    this.#views.show("scenes");
+    this.#gallery.focusCurrent();
   }
 
   /** Record the current setup as one undo step (sliders commit on release). */
@@ -508,6 +471,16 @@ export class Lab {
     const layer = this.#root;
     const state = () => this.#current().state;
 
+    // The scene picker: the scene on screen, a click from the inspector's Scenes view.
+    const sceneName = h("span", { class: "bar-scene-name" });
+    const scenePick = h(
+      "button",
+      { type: "button", class: "bar-scene" },
+      h("span", { class: "scene-dot" }),
+      sceneName,
+    );
+    scenePick.addEventListener("click", () => this.#pickScene());
+
     const playIcon = icon("play");
     const pauseIcon = icon("pause");
     const play = h("button", { type: "button", class: "icon-button" }, playIcon, pauseIcon);
@@ -632,6 +605,8 @@ export class Lab {
     const bar = h(
       "div",
       { class: "bar-items" },
+      scenePick,
+      separator(),
       play,
       motionBox,
       separator(),
@@ -676,6 +651,13 @@ export class Lab {
       explain.setAttribute("aria-pressed", String(this.#prefs.explain));
 
       const scene = state().scene;
+      const { title, accent } = sceneDefs[scene];
+      if (sceneName.textContent !== title) {
+        sceneName.textContent = title;
+        scenePick.style.setProperty("--dot", accent);
+        scenePick.title = `${title}: pick another scene ([ and ] step through them)`;
+        scenePick.setAttribute("aria-label", `Scene: ${title}. Pick another`);
+      }
       if (nowScene !== scene) {
         nowScene = scene;
         const triggers = sceneDefs[scene].params.filter(

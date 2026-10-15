@@ -186,15 +186,48 @@ body.lab-open .lab-opener {
 .grip:hover {
   color: var(--lab-ink);
 }
-.panel-icon {
-  display: inline-grid;
-  color: var(--lab-accent);
+/* the inspector's header: its views as segmented icons, the view's name, the scene on screen */
+.view-head {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
-.panel-icon .icon {
+.view-tabs {
+  display: flex;
+  flex: none;
+  gap: 1px;
+  padding: 2px;
+  background: var(--lab-raise);
+  border: 1px solid var(--lab-line);
+  border-radius: 5px;
+}
+.view-tab {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  color: var(--lab-muted);
+  background: none;
+  border: 0;
+  border-radius: 3px;
+}
+.view-tab .icon {
   width: 14px;
   height: 14px;
 }
-.panel-title {
+.view-tab:hover {
+  color: var(--lab-ink);
+  background: var(--lab-raise);
+}
+.view-tab[aria-selected="true"] {
+  color: var(--lab-on-accent);
+  background: var(--lab-accent);
+}
+.view-title {
+  flex: none;
   margin: 0;
   font: inherit;
   font-size: 11px;
@@ -202,16 +235,49 @@ body.lab-open .lab-opener {
   text-transform: uppercase;
   white-space: nowrap;
 }
-.panel-sub {
+.view-title::after {
+  content: "/";
+  margin-left: 8px;
+  color: var(--lab-faint);
+  letter-spacing: 0;
+}
+.view-scene {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
-  overflow: hidden;
+  margin-left: -6px;
+  padding: 3px 6px;
   color: var(--lab-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+.view-scene:hover {
+  color: var(--lab-ink);
+  border-color: var(--lab-line-strong);
+}
+.view-scene .scene-dot {
+  width: 6px;
+  height: 6px;
+}
+.view-scene-name {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.panel-sub:not(:empty)::before {
-  content: "/ ";
-  opacity: 0.5;
+/* a narrow inspector or sheet keeps the scene's name and lets the lit icon name the view */
+.panel:not(.is-bar),
+.sheet {
+  container-type: inline-size;
+}
+@container (max-width: 330px) {
+  .view-title {
+    display: none;
+  }
+  .view-scene {
+    margin-left: 0;
+  }
 }
 .panel-body {
   display: flex;
@@ -484,10 +550,10 @@ body.lab-open .lab-opener {
 /* search fields */
 .panel-search {
   display: flex;
-  flex: none;
+  flex: 1;
   align-items: center;
   gap: 8px;
-  margin: 10px 10px 6px;
+  min-width: 0;
   padding: 6px 9px;
   color: var(--lab-muted);
   border: 1px solid var(--lab-line);
@@ -511,66 +577,52 @@ body.lab-open .lab-opener {
   border: 0;
   outline: none;
 }
+/* the field's border shows the focus */
+.panel-search input:focus-visible {
+  outline: none;
+}
 .panel-search input::placeholder {
   color: var(--lab-faint);
 }
 
-/* the scene browser */
-.browser {
+/* the inspector's views: a toolbar, then the rail beside the scrolling body */
+.views,
+.view,
+.view-scenes,
+.view-presets,
+.view-controls {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
 }
-.tabs {
+.view-tools {
   display: flex;
   flex: none;
-  gap: 2px;
-  padding: 8px 10px 0;
-  border-bottom: 1px solid var(--lab-line);
-}
-.tab {
-  display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: -1px;
-  padding: 6px 10px 7px;
-  color: var(--lab-muted);
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
+  padding: 10px 10px 8px;
 }
-.tab .icon {
-  width: 13px;
-  height: 13px;
-}
-.tab:hover {
-  color: var(--lab-ink);
-}
-.tab[aria-selected="true"] {
-  color: var(--lab-ink);
-  border-bottom-color: var(--lab-accent);
-}
-.browser-scenes,
-.browser-presets {
-  display: flex;
+.view-main {
+  display: grid;
   flex: 1;
-  flex-direction: column;
+  grid-template-columns: 38px minmax(0, 1fr);
   min-height: 0;
+  border-top: 1px solid var(--lab-line);
 }
-.browser-presets {
-  gap: 10px;
-  padding: 10px;
-  overflow-y: auto;
-}
-.gallery {
-  flex: 1;
+.view-body {
+  position: relative;
   min-height: 0;
-  padding: 0 10px 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--lab-line-strong) transparent;
+}
+
+/* scenes and presets: shelves under sticky headings */
+.gallery,
+.preset-groups {
+  padding: 0 10px 14px;
 }
 .shelf + .shelf {
   margin-top: 6px;
@@ -582,14 +634,25 @@ body.lab-open .lab-opener {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 0;
-  padding: 8px 0 6px;
+  margin: 0 0 6px;
+  padding: 8px 0 4px;
   font: inherit;
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--lab-muted);
-  background: linear-gradient(rgb(11 12 16) 75%, transparent);
+  background: rgb(11 12 16);
+}
+/* the fade sits in the heading's margin at rest, over what scrolls under it once stuck */
+.shelf-title::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  height: 6px;
+  background: linear-gradient(rgb(11 12 16), transparent);
+  pointer-events: none;
 }
 .shelf-title .icon {
   width: 12px;
@@ -683,11 +746,17 @@ body.lab-open .lab-opener {
 }
 
 /* presets */
-.browser-note,
-.pop-note {
+.pop-note,
+.shelf-note {
   margin: 0;
   font: 12px/1.5 var(--sans);
   color: var(--lab-muted);
+}
+.shelf-note {
+  padding: 0 0 8px;
+}
+.preset-groups .lab-actions {
+  margin-top: 8px;
 }
 .presets {
   display: grid;
@@ -720,7 +789,8 @@ body.lab-open .lab-opener {
 .preset-main:hover .preset-name {
   color: var(--lab-accent);
 }
-.preset-name {
+.preset-name,
+.preset-meta span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -739,10 +809,6 @@ body.lab-open .lab-opener {
   height: 6px;
   background: var(--dot, var(--lab-faint));
 }
-.save-row {
-  display: flex;
-  gap: 6px;
-}
 .save-row input,
 .lab input[type="text"] {
   flex: 1;
@@ -755,7 +821,7 @@ body.lab-open .lab-opener {
 .import {
   display: grid;
   gap: 6px;
-  padding-top: 2px;
+  padding-top: 8px;
 }
 .import textarea {
   padding: 8px;
@@ -765,20 +831,7 @@ body.lab-open .lab-opener {
   border-radius: 4px;
 }
 
-/* the inspector */
-.inspector {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-.inspector-main {
-  display: grid;
-  flex: 1;
-  grid-template-columns: 38px minmax(0, 1fr);
-  min-height: 0;
-  border-top: 1px solid var(--lab-line);
-}
+/* the rail: a view's sections as icons */
 .rail {
   display: flex;
   flex-direction: column;
@@ -830,12 +883,6 @@ body.lab-open .lab-opener {
   background: var(--lab-line-strong);
 }
 .inspector-body {
-  position: relative;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--lab-line-strong) transparent;
   padding-bottom: 24px;
 }
 .global-divider {
@@ -855,7 +902,7 @@ body.lab-open .lab-opener {
   height: 1px;
   background: var(--lab-line);
 }
-.inspector.searching .global-divider {
+.view-controls.searching .global-divider {
   display: none;
 }
 
@@ -1812,6 +1859,27 @@ body.lab-open .lab-opener {
 .panel.is-bar[data-dock="bottom"] .bar-items {
   justify-content: center;
 }
+.bar-scene {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  max-width: 160px;
+  height: 28px;
+  margin-left: 2px;
+  padding: 0 10px;
+  background: var(--lab-raise);
+  border: 1px solid var(--lab-line);
+  border-radius: 5px;
+}
+.bar-scene:hover {
+  border-color: var(--lab-accent);
+}
+.bar-scene-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .bar-sep {
   flex: none;
   width: 1px;
@@ -1994,7 +2062,8 @@ body.lab-open .lab-opener {
   position: fixed;
   right: 14px;
   top: 14px;
-  z-index: 3;
+  /* under the lab's layer: a popover opening over it covers it */
+  z-index: 2;
   padding: 6px 10px;
   font: 12px var(--mono);
   color: var(--lab-ink);
@@ -2189,7 +2258,8 @@ kbd {
   color: var(--lab-muted);
 }
 
-/* Narrow screens: one bottom sheet, a tab per panel and the transport along its foot. */
+/* Narrow screens: one bottom sheet, the inspector's header along its top and the transport along
+   its foot. */
 .sheet {
   position: absolute;
   left: 0;
@@ -2214,7 +2284,7 @@ kbd {
   flex: none;
   align-items: center;
   gap: 6px;
-  padding: 4px 6px 0;
+  padding: 2px 6px 2px 0;
   border-bottom: 1px solid var(--lab-line);
 }
 .sheet-handle {
@@ -2235,25 +2305,10 @@ kbd {
 .sheet-handle:hover span {
   background: var(--lab-muted);
 }
-.sheet-tabs {
+.sheet-title {
   display: flex;
   flex: 1;
-  gap: 2px;
-}
-.sheet-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: -1px;
-  padding: 8px 10px;
-  color: var(--lab-muted);
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-}
-.sheet-tab[aria-selected="true"] {
-  color: var(--lab-ink);
-  border-bottom-color: var(--lab-accent);
+  min-width: 0;
 }
 .sheet-body {
   display: flex;

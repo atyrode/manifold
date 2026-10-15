@@ -1,5 +1,6 @@
-// The scene browser's families: every scene in exactly one, so the gallery reads as a handful of
-// shelves instead of fifty cards. `satisfies` makes a new scene without a family a type error.
+// The scene families: every scene in exactly one, so the Scenes view reads as a handful of shelves
+// instead of fifty cards (and the Presets view shelves the baseline the same way). `satisfies` makes
+// a new scene without a family a type error.
 import type { SceneId } from "../scenes/index.ts";
 import type { IconName } from "./icons.ts";
 
