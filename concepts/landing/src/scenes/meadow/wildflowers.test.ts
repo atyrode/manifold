@@ -29,7 +29,8 @@ function stems(sim: HeadlessSim): number[] {
 test("the wildflowers are off by default and then add nothing: no code, no texture, the meadow's own textures unchanged", () => {
   expect(sceneFeatures(meadowScene, shaderValues(meadowScene)).MEADOW_HAS_WILDFLOWERS).toBe(0);
   expect(
-    sceneFeatures(meadowScene, shaderValues(meadowScene, { wildflowers: 1 })).MEADOW_HAS_WILDFLOWERS,
+    sceneFeatures(meadowScene, shaderValues(meadowScene, { wildflowers: 1 }))
+      .MEADOW_HAS_WILDFLOWERS,
   ).toBe(1);
   const off = new HeadlessSim(meadowScene);
   const on = new HeadlessSim(meadowScene);

@@ -46,8 +46,7 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 /** How many pixels differ between two frames. */
 function changed(a: Uint8Array, b: Uint8Array): number {
   let n = 0;
-  for (let i = 0; i < W * H; i++)
-    if ([0, 1, 2].some((c) => a[i * 4 + c] !== b[i * 4 + c])) n++;
+  for (let i = 0; i < W * H; i++) if ([0, 1, 2].some((c) => a[i * 4 + c] !== b[i * 4 + c])) n++;
   return n;
 }
 
@@ -116,7 +115,10 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
   if (!still || !windy) throw new Error("Meadow simulation unavailable");
   const result: Record<string, unknown> = {};
   try {
-    check(run(still, calm, 0, 0) === undefined, "switched off, the sim still handed over a texture");
+    check(
+      run(still, calm, 0, 0) === undefined,
+      "switched off, the sim still handed over a texture",
+    );
     const rest = run(still, grown, 0, 0);
     check(rest !== undefined, "switched on, the sim handed over no texture");
     const bare = draw(plain, calm);

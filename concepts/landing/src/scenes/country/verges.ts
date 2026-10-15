@@ -144,8 +144,7 @@ function fieldSite(x: number, y: number, out: Float64Array): void {
 }
 
 /** Field (x, y)'s hash, as countryCells returns it (countryFieldCrop's input). */
-const fieldHash = (x: number, y: number): number =>
-  glslHash12(f32add(x, 0.71), f32add(y, 0.71));
+const fieldHash = (x: number, y: number): number => glslHash12(f32add(x, 0.71), f32add(y, 0.71));
 
 /** The landscape knob's field-space offset (countrySeed) into out. */
 function landscapeSeed(landscape: number, out: Float64Array): void {
