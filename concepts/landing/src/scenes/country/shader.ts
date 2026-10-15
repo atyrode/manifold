@@ -28,6 +28,8 @@
 // component, met in the near ridges' loop as the hedgerow trees are: the nearer root stands in
 // front.
 
+import { fieldsGlsl } from "../../shaders/lib/fields.ts";
+import { treesGlsl } from "../../shaders/lib/trees.ts";
 import { countryAnimalsGlsl } from "./animals.ts";
 import { countryFieldsGlsl } from "./fields.ts";
 import { countryWildlifeGlsl } from "./wildlife.ts";
@@ -39,6 +41,8 @@ import { countryVergesGlsl } from "./verges.ts";
 export const COUNTRY_METEOR_TRIGGER = 1;
 
 export const countryGlsl = /* glsl */ `
+${treesGlsl}
+${fieldsGlsl}
 const float COUNTRY_HORIZON = 0.62;      // eye level, uv.y
 const float COUNTRY_EYE = 0.36;          // eye height above the valley floor (world unit: a screen height at depth 1)
 const float COUNTRY_FOV = 0.9273;        // 2 atan(1/2): viewRay's focal length is one screen height
@@ -131,12 +135,6 @@ float countryGroundCrest(float i, float x, vec2 spots) {
 // A stable species draw, independent of season and canopy density.
 bool countryPine(float h) {
   return fract(h * 83.17 + 0.19) < K_pines;
-}
-
-// Tiered, tapered boughs in crown coordinates (y up); evergreen structure, not a tinted dome.
-float countryPineWidth(float y) {
-  float taper = clamp((1.4 - y) / 2.4, 0.0, 1.0);
-  return 0.82 * taper * (0.78 + 0.22 * fract((1.4 - y) * 2.0));
 }
 
 // One woodland tree's size (0.7..1.3, most near 1), varied so stands never read as planted rows.
@@ -240,13 +238,6 @@ vec2 countryCells(vec2 f, out vec2 site, out vec2 other, out vec2 axis) {
   return vec2(dot(0.5 * (s1 + s2) - g, axis), hash12(id + 0.71));
 }
 
-// How well a texture of this period (world) holds up in the dither: 0 when one period spans fewer
-// than ~3 cells along its direction (it would shimmer), 1 from ~5 cells. px: world size of a cell
-// across and down the slope.
-float countryHold(float period, vec2 dir, vec2 px) {
-  return smoothstep(2.5, 5.0, period / (abs(dir.x) * px.x + abs(dir.y) * px.y));
-}
-
 // A field's crop for its hash and the season (0 summer, 1 harvest, 2 autumn): 0 wheat, 1 pasture,
 // 2 ploughed, 3 rapeseed, 4 stubble, 5 meadow (summer hay; at harvest the green aftermath growing
 // back; in autumn, new shoots of winter wheat).
@@ -254,12 +245,6 @@ float countryCrop(float h, float season) {
   if (season < 0.5) return h < 0.3 ? 0.0 : (h < 0.62 ? 1.0 : (h < 0.76 ? 3.0 : (h < 0.92 ? 5.0 : 2.0)));
   if (season < 1.5) return h < 0.36 ? 0.0 : (h < 0.62 ? 1.0 : (h < 0.82 ? 4.0 : (h < 0.9 ? 2.0 : 5.0)));
   return h < 0.34 ? 2.0 : (h < 0.68 ? 1.0 : (h < 0.82 ? 4.0 : 5.0));
-}
-
-// Crop rows: a soft ridge-and-trough profile 0..1 across rows of this period (world) in row space
-// r; dir is the rows' unit normal in r. Settles to its mean where the rows get too fine to hold.
-float countryRows(vec2 r, vec2 dir, float period, vec2 px) {
-  return 0.5 + 0.5 * countryHold(period, dir, px) * sin(dot(r, dir) * TAU / period);
 }
 
 ${countryFieldsGlsl}
@@ -281,7 +266,7 @@ vec3 countryCropColor(float crop, float h, float season, vec2 w, vec2 r, vec2 px
   // sides), stretched across the wind, with finer ripples riding on them.
   float drift = t * wind * 0.35;
   float gust = vnoise(vec2((w.x - drift) * 3.2, w.y * 1.4 + h * 9.0)) - 0.5;
-  float ripple = (vnoise(vec2((w.x - drift * 1.7) * 9.0, w.y * 4.0 + 5.0)) - 0.5) * countryHold(0.11, vec2(1.0, 0.0), px);
+  float ripple = (vnoise(vec2((w.x - drift * 1.7) * 9.0, w.y * 4.0 + 5.0)) - 0.5) * fieldHold(0.11, vec2(1.0, 0.0), px);
   float wave = (gust + 0.6 * ripple) * (0.14 + 0.5 * abs(wind)) * sway;
   // Richer and leaner patches within a field, a little more golden or more green.
   float rich = vnoise(w * 3.3 + h * 17.0);
@@ -290,38 +275,38 @@ vec3 countryCropColor(float crop, float h, float season, vec2 w, vec2 r, vec2 px
   vec3 col = vec3(0.0);
   if (crop < 0.5) {
     // Wheat: green-gold in summer, gold at harvest; the gusts bend it into soft sheen.
-    relief = countryRows(r, dir, 0.03, px);
+    relief = fieldRows(r, dir, 0.03, px);
     vec3 ear = season < 0.5 ? vec3(0.6, 0.66, 0.28) : vec3(0.93, 0.74, 0.3);
     col = ear * (0.84 + 0.22 * relief) * (1.0 + 0.6 * wave);
     sheen = 0.35 + 0.65 * smoothstep(-0.1, 0.15, wave);
   } else if (crop < 1.5) {
     // Grazed grass, mown in broad lighter and darker stripes.
-    relief = countryRows(r, dir, 0.09, px);
+    relief = fieldRows(r, dir, 0.09, px);
     vec3 grass = season < 0.5 ? vec3(0.32, 0.55, 0.2) : (season < 1.5 ? vec3(0.38, 0.56, 0.22) : vec3(0.32, 0.5, 0.2));
     col = grass * (0.93 + 0.1 * relief);
   } else if (crop < 2.5) {
     // Ploughed: furrows whose ridges catch the light.
-    relief = countryRows(r, dir, 0.024, px);
+    relief = fieldRows(r, dir, 0.024, px);
     vec3 earth = season > 1.5 ? vec3(0.44, 0.29, 0.19) : vec3(0.52, 0.37, 0.24);
     col = earth * (0.7 + 0.45 * relief);
   } else if (crop < 3.5) {
-    relief = countryRows(r, dir, 0.035, px);
+    relief = fieldRows(r, dir, 0.035, px);
     col = vec3(0.95, 0.82, 0.16) * (0.9 + 0.14 * relief) * (1.0 + 0.4 * wave);
     sheen = 0.3;
   } else if (crop < 4.5) {
     // Stubble: the combine's passes as alternating paler and darker swaths, the cut rows in them.
-    relief = countryRows(r, dir, 0.022, px);
-    float swath = countryRows(r, dir, 0.07, px);
+    relief = fieldRows(r, dir, 0.022, px);
+    float swath = fieldRows(r, dir, 0.07, px);
     vec3 straw = season > 1.5 ? vec3(0.76, 0.66, 0.44) : vec3(0.9, 0.77, 0.47);
     col = straw * (0.86 + 0.12 * swath + 0.08 * relief);
   } else if (season < 1.5) {
     // Hay meadow flecked with flowers where the dither can hold them; at harvest the aftermath.
-    float fleck = season < 0.5 ? step(0.8, vnoise(w * 70.0)) * countryHold(0.015, vec2(0.7), px) : 0.0;
+    float fleck = season < 0.5 ? step(0.8, vnoise(w * 70.0)) * fieldHold(0.015, vec2(0.7), px) : 0.0;
     vec3 hay = season < 0.5 ? vec3(0.5, 0.62, 0.28) : vec3(0.44, 0.6, 0.25);
     col = mix(hay * (1.0 + 0.6 * wave), vec3(0.86, 0.82, 0.9), 0.5 * fleck);
   } else {
     // Winter wheat coming up: green drill rows on brown earth.
-    relief = countryRows(r, dir, 0.022, px);
+    relief = fieldRows(r, dir, 0.022, px);
     col = mix(vec3(0.48, 0.34, 0.21), vec3(0.34, 0.52, 0.22), relief);
   }
   return col * (0.9 + 0.12 * h3) * vec3(0.93 + 0.14 * rich, 0.95 + 0.1 * rich, 0.97);
@@ -431,7 +416,7 @@ vec4 countryCanopy(vec2 c, float ridge, float depth, float lift, vec2 near, out 
       float dd;
       if (countryPine(h)) {
         vec2 pinePoint = vec2(d.x / 1.3, -d.y) * 2.0 / size;
-        dd = max(abs(pinePoint.x) / max(countryPineWidth(pinePoint.y), 0.01),
+        dd = max(abs(pinePoint.x) / max(treePineWidth(pinePoint.y), 0.01),
                  abs((pinePoint.y - 0.2) / 1.2));
       } else {
         dd = length(d) / (0.62 * size);
@@ -449,7 +434,7 @@ vec4 countryCanopy(vec2 c, float ridge, float depth, float lift, vec2 near, out 
   float h = hash12(id + 2.3);
   vec2 r = rel / (0.62 * size1);
   vec3 normal = countryPine(h)
-    ? normalize(vec3(rel.x / max(size1 * countryPineWidth(-rel.y * 2.0 / size1), 0.06), 0.38, -0.75))
+    ? normalize(vec3(rel.x / max(size1 * treePineWidth(-rel.y * 2.0 / size1), 0.06), 0.38, -0.75))
     : normalize(vec3(r.x, -r.y + 0.2, -sqrt(max(1.0 - dot(r, r), 0.05))));
   return vec4(normal, h);
 }
@@ -942,7 +927,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       // A hedgerow tree: a leafy dome lit on the sun's side, darker underneath; in autumn each
       // turns its own colour.
       vec2 dc = crown.xy;
-      n = normalize(vec3(dc.x, dc.y * 0.8 + 0.25, -sqrt(max(1.0 - dot(dc, dc), 0.0)) - 0.2));
+      n = treeDomeNormal(dc);
       float th = fract(crown.w * 41.0);
       vec3 leaf = season < 0.5 ? vec3(0.2, 0.37, 0.13) : vec3(0.23, 0.36, 0.12);
       if (season > 1.5) leaf = th < 0.3 ? vec3(0.62, 0.36, 0.1) : (th < 0.55 ? vec3(0.5, 0.22, 0.08) : (th < 0.75 ? vec3(0.7, 0.56, 0.17) : vec3(0.2, 0.3, 0.11)));
@@ -965,7 +950,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       albedo = crop < 5.5
         ? countryCropColor(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen)
         : (crop < 8.5
-          ? countryFlowerMaterial(crop, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen)
+          ? fieldFlowerMaterial(crop - 5.0, field.y, season, w, rows, pxr, wind, 1.0 - buried, tm, relief, sheen)
           : countryPastureColor(field.y, season, w, pxr, relief, sheen));
 #else
       // Crops alone while the other field weights are zero (countryFieldCrop).
