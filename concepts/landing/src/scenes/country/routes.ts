@@ -20,6 +20,13 @@
 // narrow with depth; narrower than the dither holds, a track thins instead of breaking up. Where it
 // hides behind a nearer ridge or over a crest, the next part comes out of hiding in line with it.
 //
+// Farm tracks: with farmsteads and tracks both on, each farm whose yard lies near the network gets a
+// short straight spur from its yard to the nearest point of a track's centre line, shown as plainly
+// as that track is there, so it comes in with its track (settlements.ts, countryFarmSpurs).
+// sceneCountry looks up the spurs that can reach its pixel once per ridge (countrySpursFor), and
+// countryRouteDistance counts them as tracks, so the hedgerow trees, fences and herds keep off them
+// as they keep off the tracks. Compiled in only while both knobs are on (COUNTRY_HAS_SPURS).
+//
 // Walkers and carts (K_walkers, K_carts) follow ways along these routes, analytically: position =
 // f(route parameter, the motion clock, a hash), out and back with rests at the ends (figureShuttle),
 // walkers stopping now and then (figureStroll), easing up the steep lower slopes. Hard caps: at most
@@ -269,6 +276,72 @@ vec4 countryRouteAt(float i, vec2 w, float s, float crest, vec2 spots, float tra
   return best;
 }
 
+#if COUNTRY_HAS_SPURS
+// ---- farm tracks ----
+
+const float COUNTRY_SPUR = 0.8 * COUNTRY_LANE;   // a farm track's half-width, world units
+const int COUNTRY_SPURS = 5;                     // farm slots one lookup of farm tracks covers
+
+// The farm tracks that can reach the pixel on ridge countrySpurRidge (-1: none looked up), filled by
+// countrySpursFor (settlements.ts): xy a track's yard end, zw where it meets the network (slope
+// points, world), and how plainly it shows (0: no track in that slot).
+float countrySpurRidge = -1.0;
+vec4 countrySpurLine[COUNTRY_SPURS];
+float countrySpurShow[COUNTRY_SPURS];
+
+// The nearest of the farm tracks \`line\` (shown as plainly as \`show\`) to slope point w on a ridge at
+// depth d, measured as countryRouteAt measures, across at the ground's own depth: x the across
+// distance (world, signed), y the half-width, z how plainly it shows (0 with none, x then 1e3); axis
+// gets the across direction.
+vec4 countrySpurNearest(vec2 w, float d, vec4 line[COUNTRY_SPURS], float show[COUNTRY_SPURS], out vec2 axis) {
+  axis = vec2(1.0, 0.0);
+  vec4 best = vec4(1e3, COUNTRY_SPUR, 0.0, 0.0);
+  float k = countryFaceDepth(countryDrop(max(w.y, 0.0), d), d) / d;
+  vec2 g = vec2(w.x * k, w.y);
+  for (int j = 0; j < COUNTRY_SPURS; j++) {
+    if (show[j] <= 0.0) continue;
+    vec2 a = vec2(line[j].x * k, line[j].y);
+    vec2 ab = vec2(line[j].z * k, line[j].w) - a;
+    vec2 off = g - a - ab * clamp(dot(g - a, ab) / dot(ab, ab), 0.0, 1.0);
+    float dist = length(off);
+    if (dist < abs(best.x)) {
+      float side = dot(off, vec2(-ab.y, ab.x)) < 0.0 ? -1.0 : 1.0;
+      best = vec4(side * dist, COUNTRY_SPUR, show[j], 0.0);
+      axis = dist > 1e-6 ? side * off / dist : normalize(vec2(-ab.y, ab.x));
+    }
+  }
+  return best;
+}
+
+// The nearest farm track looked up for ridge \`ridge\` (countrySpursFor) to slope point w, as
+// countrySpurNearest; none on any other ridge.
+vec4 countrySpurAt(float ridge, vec2 w, out vec2 axis) {
+  axis = vec2(1.0, 0.0);
+  if (ridge != countrySpurRidge) return vec4(1e3, COUNTRY_SPUR, 0.0, 0.0);
+  return countrySpurNearest(w, countryLayer(ridge).x, countrySpurLine, countrySpurShow, axis);
+}
+
+// The point of the whole network's centre lines (as K_tracks 1 shows it) nearest slope point w on
+// ridge i, where a farm track meets it: two steps along countryRouteAt's across direction, exact on
+// a straight track and close on its gentle bends. show gets how plainly the track there shows now
+// (0 while K_tracks has not brought it in, or where no track runs through the point found: past a
+// track's end).
+vec2 countryTrackFoot(float i, vec2 w, vec2 spots, out float show) {
+  float d = countryLayer(i).x;
+  vec2 at = w;
+  vec4 route = vec4(0.0);
+  for (int n = 0; n < 3; n++) {
+    float s = countryDrop(max(at.y, 0.0), d);
+    float crest = i > 1.5 && i < 2.5 ? countryGroundCrest(i, at.x / d, spots) : 0.0;
+    vec2 axis = vec2(0.0);
+    route = countryRouteAt(i, at, s, crest, spots, n < 2 ? 1.0 : K_tracks, axis);
+    if (n < 2) at -= route.x * axis / vec2(countryFaceDepth(s, d) / d, 1.0);
+  }
+  show = route.z > 0.0 && abs(route.x) < 0.25 * route.y ? route.z : 0.0;
+  return at;
+}
+#endif
+
 // World distance from slope point w (x at the ridge's depth d, v down the slope) on ridge \`ridge\`
 // to the nearest centre line of a track shown there with the tracks knob at \`tracks\`; 1e3 with none.
 float countryTrackDistance(float ridge, vec2 w, vec2 spots, float tracks) {
@@ -282,9 +355,15 @@ float countryTrackDistance(float ridge, vec2 w, vec2 spots, float tracks) {
 }
 
 // The same for the tracks shown now (the lane on ridge 0 always, the rest as K_tracks brings them
-// in): for keeping animals and fences off the tracks.
+// in) and the farm tracks on to them: for keeping hedgerow trees, fences and animals off them.
 float countryRouteDistance(float ridge, vec2 w, vec2 spots) {
-  return countryTrackDistance(ridge, w, spots, K_tracks);
+  float best = countryTrackDistance(ridge, w, spots, K_tracks);
+#if COUNTRY_HAS_SPURS
+  vec2 axis = vec2(0.0);
+  vec4 spur = countrySpurAt(ridge, w, axis);
+  if (spur.z > 0.0) best = min(best, abs(spur.x));
+#endif
+  return best;
 }
 
 // The same for the whole network, as K_tracks 1 shows it: for placing buildings, which keep clear
@@ -346,7 +425,8 @@ vec4 countryBridge(vec2 w, float z, float down, vec2 spots) {
 
 // Set before each countryTrees lookup (countryClearing): the ridge (-1: nothing to clear), the world
 // point of the lookup's field-space origin, and the scene's spots. A hedgerow tree whose root falls
-// on a shown track (while K_tracks brings the network in) or in a broadened river gives way.
+// on a shown track or farm track (while K_tracks brings the network in) or in a broadened river
+// gives way.
 float countryClearRidge = -1.0;
 vec2 countryClearOrigin = vec2(0.0);
 vec2 countryClearSpots = vec2(0.0);
@@ -362,12 +442,7 @@ void countryClearing(float i, vec2 origin, vec2 spots) {
 bool countryTreeCleared(vec2 root, vec2 f) {
   if (countryClearRidge < 0.0) return false;
   vec2 w = countryClearOrigin + (root - f) / COUNTRY_FIELDS;
-  if (K_tracks > 0.0) {
-    vec2 axis = vec2(0.0);
-    float d = countryLayer(countryClearRidge).x;
-    vec4 route = countryRouteNear(countryClearRidge, w, countryFaceDepth(countryDrop(max(w.y, 0.0), d), d) / d, countryClearSpots, K_tracks, axis);
-    if (route.z > 0.0 && abs(route.x) < route.y + 0.016) return true;
-  }
+  if (K_tracks > 0.0 && countryRouteDistance(countryClearRidge, w, countryClearSpots) < COUNTRY_LANE + 0.016) return true;
   float broad = countryRiverScale();
   if (broad > 1.0) {
     float bank = countryRiverBank(max(w.y, 0.0));

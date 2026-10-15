@@ -222,6 +222,7 @@ vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind); // the lit 
 float skyCloudField(vec2 p, float foot, float t);         // its density at a deck point, octaves faded to their mean below ~3 cells
 // CLOUD_SHADOWS
 float skyCloudShadow(Sky sky, vec3 ground, float base, float t, float cover, float wind); // 0..1 its shadow at ground (eye-relative), the deck base above the eye
+float skyCloudShadow(Sky sky, vec3 ground, float base, float low, float t, float cover, float wind); // the same under a deck rain brought down to base / low
 // CLOUD_VOLUME: a sea of tops below the eye (drift, cover, boil: the tops' slow change, drop: the highest domes' depth, amp: their height range)
 struct CloudSea { vec2 drift; float cover; float boil; float drop; float amp; };
 float cloudSeaMarch(vec3 rd, CloudSea sea, float tFar);   // distance to the tops along rd, -1 past tFar
@@ -693,7 +694,7 @@ no feature. Calling a function of a higher tier fails to compile.
 |---|---|---|
 | `flat` | `CLOUD_FLAT` 0 | the deck's plane and drift (`cloudDeckPoint`: 0.09 cloud-base heights a second with the wind, creeping 0.01 toward the eye) and the calm deck (`cloudFlatField`: two broad octaves, the finer dropped toward the horizon by `cloudFlatFine`), which the scene thresholds and lights |
 | `lit` | `CLOUD_LIT` 1 | the deck lit by the sky, seen from below: `skyClouds` (domain-warped fbm; the sun on the flanks facing it, silver linings, gold and pink undersides round sunset, moonlight), rgb and coverage |
-| `shadows` | `CLOUD_SHADOWS` 2 | its shadow on the ground: `skyCloudShadow`, the deck's cover where the sun's ray from a ground point meets it, as the sky shows it there |
+| `shadows` | `CLOUD_SHADOWS` 2 | its shadow on the ground: `skyCloudShadow`, the deck's cover where the sun's ray from a ground point meets it, as the sky shows it there; with `low`, under a deck rain has brought down to `base / low`, for a scene whose sky shows it by squashing the ray's height by `low` |
 | `volume` | `CLOUD_VOLUME` 3 | a sea of cumulus tops seen from above, ray-marched: `cloudSeaMarch` (terrain marching, secant steps), `cloudSeaTop` (the relief and the normal), `cloudSeaShadow` (Beer-Lambert light through the domes), `cloudPhase`, `cloudBillow` |
 The shared parts own what the cloud is and how light gets through it: the deck's plane and drift,
 its fields, the march and the self-shadowing. The scene owns its numbers (cover, height, the
@@ -706,14 +707,10 @@ at all: far cloud costs little, and resolved cloud is bit for bit the full-detai
 |---|---|---|
 | `clouds` | volume | the sea below the window (`CloudSea`: its drift, `K_cover`, the boil, `K_altitude`'s drop, amplitude 0.45); its thunderheads take `cloudBillow` and `cloudPhase` |
 | `autumn` | shadows | `skyCloudShadow` from its sky's deck, 300 m up, where each pixel's sight line meets the park (`K_shadows`, off by default) |
+| `country` | shadows while its `shadows` knob is on (`featuresFor`), lit while off | `skyClouds` by day, by night the calm deck (`cloudDeckPoint`, `cloudFlatFine`, `cloudFlatField`) lit by the moon; `skyCloudShadow` with its rain's `low` on every point of the land |
 | `train` | flat | `cloudDeckPoint` with the train's run under the deck, `cloudFlatField` lit as the night line's own deck |
-| `falls`, `frost`, `island`, `lake`, `meadow`, `shore`, `sill`, `skyward`, `country` | lit (none selected) | `skyClouds` over their own sky, greyed and lowered under rain each its own way |
+| `falls`, `frost`, `island`, `lake`, `meadow`, `shore`, `sill`, `skyward` | lit (none selected) | `skyClouds` over their own sky, greyed and lowered under rain each its own way |
 Not unified, on purpose:
-- `country`'s calm night deck (`countryClouds`) and deck shadows (`skyClouds(...).a` along the sun)
-  are this component's flat field and shadows written out in the scene, which another stream owned
-  this round: `cloudDeckPoint`, `cloudFlatFine` and `cloudFlatField` draw its night deck bit for bit,
-  and `skyCloudShadow` its shadows while it is dry (under rain it squashes the ray to lower the deck
-  first). It is the next adopter.
 - `bees`' cumulus are authored lobed billboards with drifting ground shadows of their own, a
   picture-book style rather than a deck; `island`'s far cumulus are toon billboards on the horizon,
   its ground shadows a lattice of puffs cut per cell to match them (its dome's deck is the lit tier).

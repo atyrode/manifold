@@ -3,9 +3,11 @@
 // mark through the renderer's weather state (uWeather): the land, the farm track and the roofs
 // wetten while it rains and dry after, and the land turns white while it snows and thaws after. Birds
 // cross the valley and a starling murmuration wheels over it at dusk when switched on (wildlife.ts).
-// The night sky composes the shared stars, the moon's phase and shooting stars; the river the
-// shared water's ripples tier when its wind ripples are up.
+// The night sky composes the shared stars, the moon's phase and shooting stars; the clouds are the
+// shared clouds' lit deck, calm deck by night and shadows; the river the shared water's ripples tier
+// when its wind ripples are up.
 import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
+import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { FLOCK_SIZES, flockSim } from "../flock/sim.ts";
@@ -40,7 +42,7 @@ const params = [
   range("village", "village", "cottages", 11, "How many cottages the village has around its church: 11 is the original village. Fewer leave the ones nearest the church; more fill, in this order, a lane up the knoll beside the church, a lane down toward the river and the ends of the street, so no cottage moves as it grows. Lit windows and chimney smoke come with them.", { min: 2, max: 26, step: 1 }),
   choice("settlements", "hamlets", "hamlets", counts(0, 1, 2, 3), 0, "Small clusters of three to six cottages, some with a chapel, on the far hills: each in its own third of the view, on open, gently sloping ground clear of the woods and in sight over the nearer hills (a third with no such ground has none). Their windows light up at dusk."),
   toggle("settlements", "castle", "castle", false, "A castle on the top of the chalk down, the prominent far hill right of the middle, against the sky: battlemented curtain walls, round towers, a gatehouse and a keep, a few windows lit after dark. The woods clear from the hilltop around it."),
-  range("settlements", "farms", "farmsteads", 0, "Outlying farms among the fields of the nearer hills: a farmhouse, most with a barn, or a lone house, each at the edge of its field, clear of the woods, the river and the village, some with smoke and lit windows. Zero has none; more adds farms without moving the others."),
+  range("settlements", "farms", "farmsteads", 0, "Outlying farms among the fields of the nearer hills: a farmhouse, most with a barn, or a lone house, each at the edge of its field, clear of the woods, the river and the village, some with smoke and lit windows. With tracks shown, a farm near one has a short farm track out to it. Zero has none; more adds farms without moving the others."),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 0 }),
   toggle("manifold", "chalk", "chalk M", false, "A giant M cut into the turf of a far hillside, in the manner of the Uffington White Horse."),
   range("fields", "crops", "crops weight", 100, "Relative weight of the original seasonal crops. Weights are normalized together: 2 crops and 1 wildflowers gives about two crop fields for each flower field. Zero excludes a type; all zero restores crops.", { max: 100, step: 1 }),
@@ -68,6 +70,8 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     // The village past its first eleven cottages (settlements.ts).
     COUNTRY_HAS_GROWTH: (values.village ?? 0) > 11 ? 1 : 0,
     COUNTRY_HAS_SETTLEMENTS: on("hamlets", "farms", "castle"),
+    // The farmsteads' farm tracks on to the network (settlements.ts, routes.ts).
+    COUNTRY_HAS_SPURS: (values.farms ?? 0) > 0 && (values.tracks ?? 0) > 0 ? 1 : 0,
     // Flower and pasture fields (fields.ts, animals.ts); the herds and fences in the pastures.
     COUNTRY_HAS_FIELDS: on("wildflowers", "lavender", "sunflowers", "pasture"),
     COUNTRY_HAS_HERDS: on("pasture"),
@@ -78,13 +82,15 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     COUNTRY_HAS_SNOW: on("snow"),
     COUNTRY_HAS_FOG: on("fog"),
     WATER_TIER: on("ripples") ? WATER_TIERS.ripples : WATER_TIERS.flat,
+    // The deck's shadows on the land (skyCloudShadow) only while they are on.
+    CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
     // The full moon is skyAt's own: the phase only for a lesser one (K_moon 0 while it is off).
     ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
 }
 
 /** Every optional part compiled in: for checks that draw many settings with one program. */
-export const COUNTRY_FULL = countryFeatures({ walkers: 1, tracks: 1, river: 1, village: 26, hamlets: 3, pasture: 1, songbirds: 1, chalk: 1, rain: 1, snow: 1, fog: 1, ripples: 1, moon: 0.5 });
+export const COUNTRY_FULL = countryFeatures({ walkers: 1, tracks: 1, river: 1, village: 26, hamlets: 3, farms: 1, pasture: 1, songbirds: 1, chalk: 1, rain: 1, snow: 1, fog: 1, ripples: 1, shadows: 1, moon: 0.5 });
 
 export const countryScene: SceneDef = {
   id: "country",

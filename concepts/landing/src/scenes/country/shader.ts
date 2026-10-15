@@ -482,15 +482,14 @@ vec3 countryMist(Sky sky, float x, float above, float overcast) {
 }
 
 // The cloud deck, straight rgb and alpha like skyClouds. By night the shared deck's domain-warped
-// detail reads as harsh moonlit swirls, so it gives way to a calm deck of the scene's own: two
-// broad octaves (the finer one dropped toward the horizon, where it would crawl), soft edges, a
-// gentle moonlit body silvered toward the moon, drifting with the wind like the day deck.
+// detail reads as harsh moonlit swirls, so it gives way to the shared calm deck (the clouds' flat
+// tier: two broad octaves, the finer one dropped toward the horizon, where it would crawl), with
+// soft edges and a gentle moonlit body silvered toward the moon, drifting with the wind like the
+// day deck.
 vec4 countryClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
   vec4 day = sky.night < 1.0 ? skyClouds(sky, dir, t, cover, wind) : vec4(0.0);
   if (sky.night <= 0.0 || dir.y <= 0.015 || cover <= 0.0) return day;
-  vec2 p = dir.xz / dir.y - vec2(0.09 * wind, -0.01) * uMotionTime;
-  float fine = 1.0 - smoothstep(0.08, 0.3, 1.3 / (uRes.y * dir.y * dir.y));
-  float n = 0.62 * vnoise(p * 0.55 + 4.3) + 0.38 * mix(0.5, vnoise(p * 1.3 + 9.1), fine);
+  float n = cloudFlatField(cloudDeckPoint(dir, vec2(0.0), uMotionTime, wind), cloudFlatFine(dir));
   float th = mix(0.66, 0.3, cover);
   float alpha = smoothstep(th - 0.06, th + 0.26, n) * smoothstep(0.015, 0.22, dir.y) * 0.92;
   float thick = smoothstep(th, th + 0.4, n);
@@ -646,6 +645,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   CountryVillage core = countryNoVillage();
   // How far off the surface the pixel sees is (world): the falling rain and snow stop there.
   float seen = 1e3;
+#if COUNTRY_HAS_SPURS
+  // The farm tracks that can reach this column of the second ridge, for its hedgerow trees, fences,
+  // herds and ground (settlements.ts); looked up again below for a farther ridge the pixel shows.
+  countrySpursFor(1.0, p.x * countryLayer(1.0).x + uPointer.x * m * 0.022, spots);
+#endif
   for (int k = 0; k < 2; k++) {
     float i = float(k);
     treeShadow = 0.0;
@@ -776,6 +780,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     seen = agentZ;
   }
 #endif
+#if COUNTRY_HAS_SPURS
+  if (hit == 2 || hit == 3) countrySpursFor(float(hit), q.x * countryLayer(float(hit)).x, spots);
+#endif
 
   vec3 col = vec3(0.0);
   float accent = 0.0;
@@ -823,13 +830,12 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     float buried = smoothstep(0.0, 0.35, lying * 1.4 - 0.3 * vnoise(w * 2.5 + 11.0) - 0.1 * (1.0 - i / 5.0));
     // The same front for the trees and buildings, which carry their own snow (snowCover).
     float lyingHere = clamp(lying * 1.4 - 0.1 * (1.0 - i / 5.0), 0.0, 1.0);
-    // Sunlight through the cloud deck: follow the sun from this point of ground up to the deck,
-    // brought down by rain as the sky shows it (countryDeck).
+    // Sunlight through the cloud deck (the clouds' shadows tier): the deck's cover where the sun's
+    // ray from this point of ground meets it, brought down by rain as the sky shows it (countryDeck).
     float sunShade = 1.0 - 0.75 * overcast;
-    if (K_shadows > 0.0 && sky.sun.y > 0.0) {
-      vec3 deck = ground + sky.sun * ((COUNTRY_CLOUD_BASE / low - ground.y) / max(sky.sun.y, 0.12));
-      sunShade *= 1.0 - K_shadows * skyClouds(sky, normalize(vec3(deck.x, deck.y * low, deck.z)), t, cover, wind).a;
-    }
+#if CLOUD_TIER >= CLOUD_SHADOWS
+    if (K_shadows > 0.0 && sky.sun.y > 0.0) sunShade *= 1.0 - K_shadows * skyCloudShadow(sky, ground, COUNTRY_CLOUD_BASE, low, t, cover, wind);
+#endif
 
     vec3 albedo = vec3(0.0);
     float settles = 1.0;   // how much of the lying snow shows here
@@ -840,12 +846,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     float lamp = 0.0;
     float chalk = 0.0;
     // What the river or a puddle here mirrors, looked up once below for both: the sky along
-    // mirrorDir with cloud cover mirrorCover, times mirrorGain, plus mirrorAdd (the rings of
-    // falling rain). The river's lookup takes the canopy's \`cover\` there (the woods' name hides the
-    // sky's inside the patchwork), so the river mirrors a clear sky, as it always has.
+    // mirrorDir under the cloud deck as it covers the sky (cover), times mirrorGain, plus mirrorAdd
+    // (the rings of falling rain).
     bool mirror = false;
     vec3 mirrorDir = vec3(0.0);
-    float mirrorCover = 0.0;
     float mirrorGain = 0.0;
     vec3 mirrorAdd = vec3(0.0);
     float relief = 0.5;    // crop rows: 1 on their ridges, where snow shows them
@@ -854,7 +858,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     float onLane = 0.0;    // 1 on the farm track
     float rut = 0.0;       // 1 in its wheel ruts
     vec2 lp = vec2(0.0);   // track space for its puddles: across, down the slope, ~0.007 world a unit
+    // How much snow the tracks hold: 0.95 (their ruts 0.55) untrodden; walkers and carts out on them
+    // tread it down, so the way they keep to still shows under lying snow.
+    float trackSnow = 0.95;
 #if COUNTRY_HAS_AGENTS
+    if (K_walkers > 0.0 || K_carts > 0.0) trackSnow = 0.6;
     if (object > 4.5) {
       // A walker or a cart (routes.ts): rain wets it like the land; snow settles only on a load's top.
       albedo = agent.albedo;
@@ -961,14 +969,14 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       float woods = treetop ? 1.0 : countryWoods(i, w.x, w.y, near);
       float crowns = smoothstep(2.5, 5.0, 0.0625 / px.x);
       float ao = 1.0;
-      float cover = 0.0;
+      float canopyCover = 0.0;
       vec4 canopy = vec4(0.0, 0.55, -0.835, 0.5);
       float stand = countryWoodStand(i, w.x, w.y, near);
       bool standing = treetop || stand > 0.45;
       if (crowns > 0.0 && standing)
-        canopy = countryCanopy(vec2(w.x, canopyDrop * d) * 16.0, i, d, crest - groundCrest, near, ao, cover);
-      if (treetop) cover = 1.0;
-      float trees = mix(woods, cover, crowns);
+        canopy = countryCanopy(vec2(w.x, canopyDrop * d) * 16.0, i, d, crest - groundCrest, near, ao, canopyCover);
+      if (treetop) canopyCover = 1.0;
+      float trees = mix(woods, canopyCover, crowns);
       if (trees > 0.0 || (crowns > 0.0 && standing)) {
         vec3 evergreen = vec3(0.085, 0.2, 0.145);
         vec3 leaf = vec3(0.12, 0.25, 0.11);
@@ -978,9 +986,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         vec3 mean = mix(broadleafMean, evergreen, K_pines);
         // Between resolved crowns inside a stand: shaded needles and leaf litter, not open field.
         vec3 floorColor = mix(albedo, albedo * 0.45 + vec3(0.02, 0.04, 0.02), step(0.53, stand));
-        vec3 resolved = mix(floorColor, leaf * (0.65 + 0.35 * ao), cover);
+        vec3 resolved = mix(floorColor, leaf * (0.65 + 0.35 * ao), canopyCover);
         albedo = mix(mix(albedo, mean, woods), resolved, crowns);
-        n = normalize(mix(n, canopy.xyz, cover * crowns));
+        n = normalize(mix(n, canopy.xyz, canopyCover * crowns));
         settles = mix(settles, 0.35 + 0.4 * max(canopy.y, 0.0), trees);
         porous = mix(porous, 0.35, trees);
         glossy = mix(glossy, 0.08, trees);
@@ -1004,7 +1012,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           track = mix(track, sward, 1.0 - smoothstep(0.16, 0.3, u));
           albedo = mix(albedo, track, onLane);
           n = normalize(mix(n, slope, onLane));
-          settles = mix(settles, 0.95 - 0.4 * rut, onLane);
+          settles = mix(settles, trackSnow - 0.4 * rut, onLane);
           relief = mix(relief, 0.5, onLane);
           sheen *= 1.0 - onLane;
           porous = mix(porous, 0.5, onLane);
@@ -1019,6 +1027,15 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       if (hit > 0 && K_tracks > 0.0) {
         vec2 axis = vec2(0.0);
         vec4 route = countryRouteAt(i, w, s, groundCrest, spots, K_tracks, axis);
+#if COUNTRY_HAS_SPURS
+        // Or a farmstead's farm track on to them, where it lies nearer (settlements.ts).
+        vec2 spurAxis = vec2(0.0);
+        vec4 spur = countrySpurAt(i, w, spurAxis);
+        if (spur.z > 0.0 && abs(spur.x) / spur.y < abs(route.x) / route.y) {
+          route = spur;
+          axis = spurAxis;
+        }
+#endif
         float cells = route.y * length(axis / vec2(z, down)) * uRes.y;
         float hold = min(cells / 0.7, 1.0);
         float u = abs(route.x) * hold / route.y;
@@ -1028,7 +1045,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           lp = vec2(route.x, w.x + w.y) * 150.0;
           albedo = mix(albedo, countryTrackColor(route.w, u, rut, lp, cells, season), onLane);
           n = normalize(mix(n, slope, onLane));
-          settles = mix(settles, 0.95 - 0.4 * rut, onLane);
+          settles = mix(settles, trackSnow - 0.4 * rut, onLane);
           relief = mix(relief, 0.5, onLane);
           sheen *= 1.0 - onLane;
           porous = mix(porous, route.w > 0.5 && route.w < 1.5 ? 0.25 : 0.5, onLane);
@@ -1085,7 +1102,6 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
             vec3 mirrored = normalize(vec3(q.x + shift.x, max(below + shift.y, 6e-4), 1.0));
             mirror = true;
             mirrorDir = mirrored;
-            mirrorCover = cover;
             // 0.95: the still river's mean brightness (0.82 + 0.25 times its shimmer's mean).
             mirrorGain = 0.95;
             mirrorAdd = dropCol * ring * 0.3;
@@ -1099,7 +1115,6 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
             float ripple = vnoise(vec2(w.x * 60.0, w.y * 25.0 - tm * 0.6));
             mirror = true;
             mirrorDir = mirrored;
-            mirrorCover = cover;
             mirrorGain = 0.82 + 0.25 * ripple;
             mirrorAdd = dropCol * ring * 0.3;
             glint = smoothstep(0.6, 0.9, ripple) * (1.0 - grey);
@@ -1194,7 +1209,6 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         vec3 mirrored = vec3(view.x, -view.y, view.z);
         mirror = true;
         mirrorDir = mirrored;
-        mirrorCover = cover;
         mirrorGain = 0.9;
         mirrorAdd = dropCol * ring * 0.25;
         water = 0.85 * puddle;
@@ -1202,7 +1216,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     }
     vec3 reflection = vec3(0.0);
     if (mirror) {
-      vec4 cloud = countryDeck(sky, mirrorDir, t, mirrorCover, wind, low, rain);
+      vec4 cloud = countryDeck(sky, mirrorDir, t, cover, wind, low, rain);
       reflection = mix(countryDome(sky, mirrorDir, rain), cloud.rgb, cloud.a) * mirrorGain + mirrorAdd;
     }
     col = mix(col, reflection, water);
