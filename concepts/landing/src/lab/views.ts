@@ -4,8 +4,7 @@
 import { h } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
-export const viewIds = ["scenes", "presets", "controls"] as const;
-export type ViewId = (typeof viewIds)[number];
+export type ViewId = "scenes" | "presets" | "controls";
 
 export interface View {
   id: ViewId;
@@ -25,11 +24,11 @@ export class Views {
   readonly #title = h("h2", { class: "view-title" });
   readonly #scene: HTMLButtonElement;
   readonly #sceneName = h("span", { class: "view-scene-name" });
-  readonly #onShow: (id: ViewId) => void;
+  readonly #onShow: () => void;
   #current: ViewId = "controls";
 
   /** `onShow`: a view was picked (the panel should come up); `onScene`: the scene's name was. */
-  constructor(views: readonly View[], onShow: (id: ViewId) => void, onScene: () => void) {
+  constructor(views: readonly View[], onShow: () => void, onScene: () => void) {
     this.#onShow = onShow;
     const tablist = h("div", { class: "view-tabs", role: "tablist", "aria-label": "Lab views" });
     this.#views = views.map((view) => {
@@ -82,16 +81,12 @@ export class Views {
     this.#render();
   }
 
-  get current(): ViewId {
-    return this.#current;
-  }
-
   /** Show view `id` and bring the panel up. */
   show(id: ViewId): void {
     const changed = id !== this.#current;
     this.#current = id;
     this.#render();
-    this.#onShow(id);
+    this.#onShow();
     if (changed) this.#views.find((entry) => entry.view.id === id)?.view.shown();
   }
 

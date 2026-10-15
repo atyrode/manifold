@@ -634,8 +634,9 @@ body.lab-open .lab-opener {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 0 0 6px;
-  padding: 8px 0 4px;
+  /* a little wider than the cards, so a marked card's ring does not show beside it */
+  margin: 0 -4px 6px;
+  padding: 8px 4px 4px;
   font: inherit;
   font-size: 10px;
   letter-spacing: 0.14em;
