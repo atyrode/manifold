@@ -1,9 +1,17 @@
-// The swell scene: open-ocean waves, and the shared birds over them (shaders/lib/birds.ts; K_birds,
-// K_birdKind, K_birdFormation, off by default).
+// The swell scene: open-ocean waves, the shared birds over them (shaders/lib/birds.ts; K_birds,
+// K_birdKind, K_birdFormation, off by default) and the shared shooting stars (K_meteors, off by
+// default; src/scenes/README.md "Composing components"), glinting in the waves below them.
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
+
+/** Trigger slot of the shooting stars' "now" button. */
+export const SWELL_METEOR_TRIGGER = 0;
 
 export const swellGlsl = `
 ${birdsGlsl}
+// Where shooting stars set out, in the screen frame of the moon and the stars (screen heights from
+// the middle, the horizon at -0.06): high over the sea, most fading before they reach the horizon.
+const int SWELL_METEOR_SLOT = ${SWELL_METEOR_TRIGGER};
+const vec4 SWELL_METEOR_FIELD = vec4(-0.6, 0.2, 1.2, 0.2);
 // The long swells and the short chop as plain trains of waves: the sea's shape, without its texture.
 float swellWaves(vec2 w, float t, float chop) {
   float s = 0.0;
@@ -123,6 +131,9 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
   float arrived = passageIn();
   float front = mix(34.0, -4.0, arrived);
   float rollAmp = 1.6 * smoothstep(0.0, 0.1, arrived) * (1.0 - smoothstep(0.7, 1.0, arrived));
+  // The latest shooting star, for the sky and its glints in the sea.
+  float meteorSeed;
+  float meteorAt = meteorAge(wt, K_meteors, SWELL_METEOR_SLOT, meteorSeed);
   Shade o = blankShade();
   float seaDist = 1e4; // camera heights ahead (z) to the sea under this cell (the sky: as far as it gets)
   if (p.y > horizon) {
@@ -133,6 +144,7 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
     o.ink = disc * (0.7 + 0.3 * craters) * (1.0 - 0.6 * maria) + exp(-md * 12.0 * 0.075 / moonRadius) * 0.16;
     o.ink += starfield(floor(p * uRes.y), 0.001 + 0.007 * K_stars, 0.3, 0.8) * (1.0 - disc);
     o.ink += 0.06 * smoothfall(0.25, 0.0, p.y - horizon);
+    o.ink += hardEdge(meteorStreak(p, SWELL_METEOR_FIELD, meteorAt, meteorSeed, 1.0 / uRes.y) * (1.0 - disc));
   } else {
     vec3 rd = normalize(vec3(p.x, p.y - horizon, 1.6));
     // With relief the waves have real height and crests hide the troughs behind them; 0 is the flat
@@ -156,6 +168,14 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
     o.ink = spec * 1.6 + fres * 0.1 + crest * 0.18 * fog;
     o.accent = (0.05 + 0.4 * smoothstep(0.0, 0.8, h)) * fog * (1.0 - min(spec * 2.0, 1.0));
     o.shimmer = min(spec, 1.0) * 0.3;
+    // The shooting star glints in the waves that face it: the sky point each one mirrors, in the sky's
+    // frame (as the moon's direction above), its cells as dense as the water reflects. The chop too
+    // fine to draw spreads the mirror: the streak is looked up at least 0.012 screen heights wide, so
+    // a cluster of glints, rather than one or two, flashes under it.
+    if (refl.y > 0.0) {
+      vec2 mirrored = refl.xy * (1.6 / max(refl.z, 1e-3)) + vec2(0.0, horizon);
+      o.ink += hardEdge(meteorStreak(mirrored, SWELL_METEOR_FIELD, meteorAt, meteorSeed, max(1.0 / uRes.y, 0.012)) * fres);
+    }
   }
   // Birds over the sea (gulls by default), pale where the moon lights them, dark against its disc;
   // in front of the sky, and of the sea where they lie nearer than the water under the cell (a

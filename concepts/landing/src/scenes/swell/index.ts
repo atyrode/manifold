@@ -1,8 +1,9 @@
 // A moonlit sea rolling toward the horizon.
 import { range, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
+import { skyComponentKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { swellGlsl } from "./shader.ts";
+import { SWELL_METEOR_TRIGGER, swellGlsl } from "./shader.ts";
 
 export const swellScene: SceneDef = {
   id: "swell",
@@ -15,13 +16,14 @@ export const swellScene: SceneDef = {
     range("sea", "chop", "chop", 0.5, "Small, fast waves on top of the swell."),
     range("sky", "moon", "moon", 0.5, "Moon size."),
     range("sky", "stars", "stars", 0.35, "How many stars."),
+    ...skyComponentKnobs({ meteors: { trigger: SWELL_METEOR_TRIGGER } }),
     toggle("manifold", "mmoon", "M on the moon", false, "The moon's dark seas form the Manifold M."),
     range("sea", "relief", "relief", 0, "0: the waves are painted on a flat sea. Higher gives the nearer waves real height: crests hide the troughs behind them and the arriving swell stands up. Far waves stay flat."),
     ...birdKnobs({ kind: "gulls", help: "Birds crossing over the night sea, gulls by default, pale in the moonlight and dark against the moon, now and then swooping down to skim the crests." }),
   ],
   groups: {
     sea: { title: "Sea", blurb: "The swell and its surface chop." },
-    sky: { title: "Sky", blurb: "Moon and stars." },
+    sky: { title: "Sky", blurb: "The moon, the stars, and the odd shooting star with its glints in the waves." },
     birds: birdsGroup,
     manifold: { title: "Manifold mark", blurb: "Ways the M can live in this night." },
   },

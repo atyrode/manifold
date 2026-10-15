@@ -415,7 +415,8 @@ the component could be composed).
 | `bamboo`, `forest` | canopy gaps | knob 0.5 | knob (phase; the gaps and the night rays) | — | — |
 | `street` | in reflections only | knob 0.55 (window glass) | knob (phase; the windows and wet street) | — | — |
 | `lake` | over the ice, mirrored | own `K_stars` + Milky Way | own phase, fixed bearing | knob (`aurora()` on the sim's substorm clock, rough-ice tap) | knob, trigger 3, mirrored |
-| `aurora` | the subject | own `K_stars` on a fixed night | own crescent | own curtains | open |
+| `aurora` | the subject, mirrored in the fjord | own `K_stars` on a fixed night | own crescent | own curtains | knob, trigger 1, mirrored |
+| `swell` | over the sea | own (`starfield`, `K_stars`) | own disc (`K_moon` sizes it) and glitter path | — | knob, trigger 0, screen frame, glints in the waves |
 | `clouds` † | above the cloud sea | fixed 0.75 | own bearing, drawn by `skyColor` | knob (`aurora()`, scene clock) | open |
 | `country` † | over the valley | fixed 0.4 | full | open | open |
 | `flock` † | the subject, mirrored in water | fixed 0.45 | full | open | open |
@@ -427,7 +428,7 @@ the component could be composed).
 | `tidepool` | the sky in the pools' mirror | — | full, mirrored | — | — |
 | `dew` | out-of-focus dawn backdrop | — | — | — | — |
 | `bonsai` | none (its light only) | — | — | — | — |
-| `orbit` †, `swell`, `fireflies` | their own skies | own | own (`fireflies`: moonless) | — | own (`orbit`'s captured meteors); `swell`, `fireflies`: open |
+| `orbit` †, `fireflies` | their own skies | own | own (`fireflies`: moonless) | — | own (`orbit`'s captured meteors); `fireflies`: open |
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,

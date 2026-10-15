@@ -20,6 +20,10 @@
 // and dark gaps; green low, violet or red toward the top. A corona (rays streaming from a point high
 // in the sky) gathers now and then. The sky's glow lights the snow and the cabin's walls.
 //
+// Shooting stars (K_meteors, the shared component, src/scenes/README.md "Composing components"; off
+// by default, "now" on AURORA_METEOR_TRIGGER) cross the sky between the curtains' rays, hidden by
+// the moon's disc, the mountains and the snow cloud, and are seen again in the water like the stars.
+//
 // Passage (aurPassage): the camera tilts between the stars and the fjord (a shift of uv, so every
 // layer, the mirrored water and the horizon move as one), the curtains unfurl from faint high arcs
 // or roll back up into them, and on the way in the chimney's smoke climbs. All gated to nothing at rest.
@@ -36,6 +40,8 @@ const AURORA_GAIN = [1.0, 1.0, 1.2] as const;
 /** Horizon (screen height, at rest) and vertical field of view (rad) of the pinhole camera. */
 export const AURORA_HORIZON = 0.32;
 const FOV = 1.3;
+/** Trigger slot of the shooting stars' "now" button (slot 0 is the corona's). */
+export const AURORA_METEOR_TRIGGER = 1;
 
 export const auroraGlsl = `
 ${birdsGlsl}
@@ -45,6 +51,10 @@ const float AUR_EYE = 1.7; // metres above the water
 const vec3 AUR_SNOW = vec3(0.86, 0.9, 1.0);
 const vec3 AUR_WINDOW = vec3(1.0, 0.62, 0.26);
 const vec3 AUR_WALL = vec3(0.80, 0.12, 0.08);
+// Where shooting stars set out: skyAngles of the camera's rays (bearing, elevation, radians), high
+// among the curtains' rays, low enough that most fall into the band the still water mirrors.
+const int AUR_METEOR_SLOT = ${AURORA_METEOR_TRIGGER};
+const vec4 AUR_METEOR_FIELD = vec4(-0.6, 0.36, 1.2, 0.2);
 
 // Set once per pixel by aurSetup.
 float aurT;          // the motion clock
@@ -71,6 +81,8 @@ float aurOver;       // cloud while it snows 0..1
 float aurVis;        // how much of the aurora and stars the cloud lets through
 Sky aurStars;
 float aurAccent;     // aurora light gathered by the sky
+float aurMeteorAt;   // seconds since the latest shooting star, and its id (meteorAge)
+float aurMeteorSeed;
 
 vec3 aurLowColour() {
 ${glslPick("hue", AURORA_LOW, AURORA_LOW[0])}
@@ -252,6 +264,10 @@ vec3 aurSky(vec2 q, bool mirror) {
   vec3 au = (aurAurora(q, aurT) + aurCoronaLight(d, aurT) + aurMarkLight(q, aurT)) * aurVis;
   float seen = dot(au, LUMA);
   col += stars * (1.0 - min(seen * 3.0, 1.0)) * (1.0 - cover) + au;
+  // A shooting star over the curtains (the moon's disc, drawn next, hides it), fainter in the water
+  // like the stars.
+  float meteor = meteorStreak(skyAngles(d), AUR_METEOR_FIELD, aurMeteorAt, aurMeteorSeed, aurPx / AUR_F);
+  col += METEOR_TINT * hardEdge(meteor * aurVis) * (mirror ? 0.6 : 1.0);
   col = mix(col, vec3(0.012, 0.016, 0.026), cover) + moon;
   aurAccent += seen;
   if (aurOver > 0.0) {
@@ -671,7 +687,8 @@ void aurPassage() {
   aurSmokeFront = 1.0 - (1.0 - sf) * (1.0 - sf);
 }
 
-// The night's frame: placements, aurora colours, the light on the land and the corona's envelope.
+// The night's frame: placements, aurora colours, the light on the land, the corona's envelope and
+// the latest shooting star.
 void aurSetup(float aspect) {
   aurT = uMotionTime;
   aurPassage();
@@ -694,6 +711,7 @@ void aurSetup(float aspect) {
   aurStars = skyAt(0.0);
   aurStars.moon = vec3(0.0, -1.0, 0.0);
   aurCorona = aurCoronaEnv() * aurVis;
+  aurMeteorAt = meteorAge(aurT, K_meteors, AUR_METEOR_SLOT, aurMeteorSeed);
 }
 
 Shade sceneAurora(vec2 screenUv, vec2 cell, float t) {
