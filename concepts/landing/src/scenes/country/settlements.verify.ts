@@ -80,11 +80,12 @@ function changed(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 const count = (mask: Uint8Array): number => mask.reduce((n, v) => n + v, 0);
 
-/** The share of `inner`'s pixels also in `outer`. */
+/** The share of `inner`'s pixels also in `outer` (all of none: 1). */
 function kept(inner: Uint8Array, outer: Uint8Array): number {
   let both = 0;
   for (let at = 0; at < W * H; at++) if (inner[at] && outer[at]) both++;
-  return both / Math.max(count(inner), 1);
+  const total = count(inner);
+  return total === 0 ? 1 : both / total;
 }
 
 function surface(land: Uint8Array, at: number): { kind: number; ridge: number; clear: number } {
@@ -213,7 +214,7 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
 
   // The village grows without moving a cottage: each size covers all a smaller one did, and more.
   const smallest = draw({ ...day, ...bare, village: 2 });
-  let last = new Uint8Array(W * H);
+  let last: Uint8Array = new Uint8Array(W * H);
   const sizes: number[] = [];
   for (const village of [6, 11, 18, 26]) {
     const grown = changed(draw({ ...day, ...bare, village }), smallest);
@@ -261,8 +262,8 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   result.castleFeet = castleFeet;
 
   // Hamlets only ever add, and stand behind the nearer ridges: none of their pixels lies on the land
-  // of ridges 0..2.
-  const quiet = { ...day, ...bare, landscape: 42 };
+  // of ridges 0..2. (A landscape where more than one third of the view has open ground for one.)
+  const quiet = { ...day, ...bare, landscape: 99 };
   const before = draw(quiet);
   const nearLand = draw(quiet, 1);
   last = new Uint8Array(W * H);
@@ -279,13 +280,14 @@ export function verifyCountrySettlements(gl: WebGL2RenderingContext): Record<str
   check((hamlets[2] ?? 0) > (hamlets[0] ?? 0), `Hamlets do not grow: ${hamlets}`);
   result.hamlets = hamlets;
 
-  // More farms add farms and never move one; none stands on the nearest ridge.
+  // More farms add farms and never move one; none stands on the nearest ridge. (At 0.35 the default
+  // landscape shows none yet.)
   const fields = { ...day, ...bare };
   const empty = draw(fields);
   const fieldLand = draw(fields, 1);
   last = new Uint8Array(W * H);
   const farms: number[] = [];
-  for (const amount of [0.35, 0.7, 1]) {
+  for (const amount of [0.6, 0.7, 1]) {
     const added = changed(draw({ ...fields, farms: amount }), empty);
     check(count(added) > count(last) && kept(last, added) > 0.99, `Farms ${amount} moved or lost buildings`);
     for (let at = 0; at < W * H; at++) {

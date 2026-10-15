@@ -550,8 +550,8 @@ vec2 countryShafts(vec2 p, float seen, float base, float tm, float rain, float w
 
 ${countryWildlifeGlsl}
 
-${countryAnimalsGlsl}
 ${countrySettlementsGlsl}
+${countryAnimalsGlsl}
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float m = uMotion;
   float tm = uMotionTime;
@@ -616,8 +616,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float object = 0.0;
   vec4 crown = vec4(0.0);
   float treeShadow = 0.0;
-  // The building hit, if any, and the smoke and window glow of every ridge passed (settlements.ts).
+  // The building hit, if any, and the smoke and window glow of every ridge passed (settlements.ts);
+  // core: the village's on the third ridge.
   CountryVillage village = countryNoVillage();
+  CountryVillage core = countryNoVillage();
   // How far off the surface the pixel sees is (world): the falling rain and snow stop there.
   float seen = 1e3;
   for (int k = 0; k < 6; k++) {
@@ -628,8 +630,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     vec2 qi = p + uPointer * m * vec2(0.022, 0.01) / L.x;
     float terrain = 0.0;
     float c = countryCrest(i, qi.x, spots, terrain);
-    // Buildings standing on this ridge: the village, hamlets, the castle, farms.
-    village = countryNearer(village, countrySettlements(i, qi, terrain, L, spots, tod, dark, uMotionTime, wind));
+    // The village standing on this ridge (settlements.ts); what the knobs add is looked for after.
+    if (k == 2) {
+      core = countryVillage(qi, spots.x, L.y + 0.012, terrain, spots, tod, dark, uMotionTime, wind);
+      village = countryNearer(village, core);
+    }
     if (k < 2) {
       // Hedgerow trees, rooted on the face below and standing up over it (and over the crest).
       float r = 0.018 / L.x;
@@ -677,12 +682,39 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     countrySeen[k] = vec4(qi, c, terrain);
     valley = max(valley, c);
   }
-  // A walker or cart (routes.ts) standing on the ground this pixel shows, or over the skyline of a
-  // nearer ridge, covers it.
+  // The hamlets, farms and castle the knobs add (settlements.ts), out of the loop above so that,
+  // switched off, their code leaves it lean: on the ridges passed, front to back as the loop meets
+  // them, one standing nearer than what the pixel shows covers it (in front of a hedgerow tree
+  // whose root lies behind it), and smoke and glow gather from every ridge up to the one shown.
+  if (K_hamlets > 0.5 || K_farms > 0.0 || K_castle > 0.5) {
+    CountryVillage passed = countryNoVillage();
+    for (int k = 0; k < 6; k++) {
+      if (k > hit) break;
+      float i = float(k);
+      vec4 L = countryLayer(i);
+      vec4 at = k < hit ? countrySeen[k] : vec4(q, crest, groundCrest);
+      CountryVillage here = countryNoVillage();
+      if (k == 2) here = core;
+      passed = countryNearer(passed, countrySettlements(i, at.xy, at.w, L, spots, tod, dark, uMotionTime, wind, here));
+      if (passed.hit > 0.5 && (k < hit || object < 0.5 || object > 1.5 || countryHidesCrown(passed, crown, at.y, 0.018 / L.x))) {
+        hit = k;
+        q = at.xy;
+        crest = at.z;
+        groundCrest = at.w;
+        object = 2.0;
+        seen = 0.9 * L.x;
+        treeShadow = 0.0;
+        break;
+      }
+    }
+    village = passed;
+  }
+  // A walker or cart (routes.ts) standing on the ground this pixel shows or in front of a building
+  // on it, or over the skyline of a nearer ridge, covers it.
   vec4 agentFrame = vec4(0.0);
   float agentRidge = 0.0;
   float agentZ = 0.0;
-  Figure agent = countryAgentAt(hit, object, q, crest, groundCrest, spots, dark, agentFrame, agentRidge, agentZ);
+  Figure agent = countryAgentAt(hit, object, village.front, q, crest, groundCrest, spots, dark, agentFrame, agentRidge, agentZ);
   if (agent.cover > 0.5) {
     hit = int(agentRidge);
     q = agentFrame.xy;
@@ -913,7 +945,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       // rather than breaking up; its grassy crown and ruts show only where they hold.
       if (hit > 0 && K_tracks > 0.0) {
         vec2 axis = vec2(0.0);
-        vec4 route = countryRouteAt(i, w, s, groundCrest, spots, axis);
+        vec4 route = countryRouteAt(i, w, s, groundCrest, spots, K_tracks, axis);
         float cells = route.y * length(axis / vec2(z, down)) * uRes.y;
         float hold = min(cells / 0.7, 1.0);
         float u = abs(route.x) * hold / route.y;

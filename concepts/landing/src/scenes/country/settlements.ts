@@ -25,6 +25,9 @@ const float COUNTRY_HOUSE = 0.045;      // one house unit (a cottage's gable end
 const float COUNTRY_CASTLE = 0.036;     // one castle unit (buildingCastle), world units
 const float COUNTRY_FARM_SLOT = 0.6;    // world units across a slope between possible farmsteads
 const float COUNTRY_CLEAR = 0.48;       // woodland stand below which no tree stands (they need 0.5 and more)
+const float COUNTRY_YARD = 0.006;       // open ground a building keeps in front of its foot, on screen
+const float COUNTRY_WAYSIDE = 0.03;     // from a track's centre line to a building's footprint, world
+const float COUNTRY_BANKSIDE = 0.01;    // from the broadest river's reeds to a building's footprint, world
 
 // The village's growth past its first eleven cottages, in the order it fills: up the knoll beside
 // the church, down a lane toward the river, out along the street's ends. x: offset from the
@@ -220,25 +223,74 @@ CountryVillage countryBuilding(CountryFind f, float tod, float dark, float light
   return v;
 }
 
-// Whether building c on ridge i would stand in a wood: any of its feet (the gable's far corner, the
-// front corner, the long wall's far corner, which lies farther up the slope, taken a house unit
-// higher still, as its wall reaches down to the crest where the brow falls away). crest: the bare
-// crest at its front corner, taken for all three.
-bool countryInWood(CountryHouse c, float i, float crest, vec2 spots) {
+// Whether building c on ridge i would stand in or against a wood: anywhere along its footing (the
+// gable's foot from its far corner to the front corner, then the long wall's, rising up the screen
+// to its far corner), each on the ground at its own column (down to the bare crest there, where the
+// brow falls away under a wall), and on the ground in front of it down to COUNTRY_YARD below on
+// screen. Far off and near a crest that strip spans a long way down the slope, and a wood in it
+// reads as the building standing in the wood.
+bool countryInWood(CountryHouse c, float i, vec2 spots) {
+  // No woods grow on the two near ridges or with the woodland off (countryWoodKeep).
+  if (i < 1.5 || K_woodland <= 0.0) return false;
   float d = countryLayer(i).x;
-  bool wooded = false;
-  for (int k = 0; k < 3; k++) {
-    float along = k == 0 ? -1.0 : (k == 1 ? 0.0 : c.len);
-    vec2 foot = c.base + c.size * vec2(c.side * along, max(along, 0.0) * COUNTRY_RECEDE + (k == 2 ? 1.0 : 0.0));
-    wooded = wooded || countryWoodStand(i, foot.x * d, countryDown(max(crest - foot.y, 0.0), d), countrySpots(foot.x, spots)) > COUNTRY_CLEAR;
+  for (int k = 0; k < 5; k++) {
+    float along = mix(-1.0, c.len, 0.25 * float(k));
+    vec2 foot = c.base + c.size * vec2(c.side * along, max(along, 0.0) * COUNTRY_RECEDE);
+    float drop = max(countryGroundCrest(i, foot.x, spots) - foot.y, 0.0);
+    vec2 near = countrySpots(foot.x, spots);
+    for (int j = 0; j < 3; j++) {
+      if (countryWoodStand(i, foot.x * d, countryDown(drop + 0.5 * float(j) * COUNTRY_YARD, d), near) > COUNTRY_CLEAR) return true;
+    }
   }
-  return wooded;
+  return false;
+}
+
+// The ground house c covers on a ridge at depth d (ground: the bare crest at its front corner), as
+// a disc around it behind its front corner: xy the centre (slope point, world), z the radius.
+vec3 countryHouseDisc(CountryHouse c, float ground, float d) {
+  float s = max(ground - c.base.y, 0.0);
+  float unit = c.size * d * (1.0 - 0.35 * smoothstep(0.0, 0.2, s));
+  return vec3(c.base.x * d + c.side * 0.5 * (c.len - 1.0) * unit, countryDown(s, d) - 0.5 * unit, 0.55 * (c.len + 1.0) * unit);
+}
+
+// Whether building c on ridge i (ground: the bare crest at its front corner) would stand on or by a
+// track or the river: its footprint within COUNTRY_WAYSIDE of a centre line of the whole network
+// (as K_tracks 1 shows it), or within COUNTRY_BANKSIDE of the broadest river's reeds. Measured
+// against the whole network and the broadest river, so neither knob ever moves or removes a building;
+// at the footprint's middle and across it either side (each against the footprint's half-chord
+// there), as a track along the contour bends with the crest it follows.
+bool countryOnWay(CountryHouse c, float i, float ground, vec2 spots) {
+  if (i > 3.5) return false;
+  vec3 disc = countryHouseDisc(c, ground, countryLayer(i).x);
+  for (int k = -1; k <= 1; k++) {
+    float a = 0.7 * float(k);
+    vec2 at = disc.xy + vec2(a * disc.z, 0.0);
+    float chord = sqrt(1.0 - a * a) * disc.z;
+    if (countryNetworkDistance(i, at, spots) < chord + COUNTRY_WAYSIDE || countryRiverReach(i, at, spots) < chord + COUNTRY_BANKSIDE) return true;
+  }
+  return false;
+}
+
+// Whether farm building c on ridge i (ground: the bare crest at its front corner) would reach into a
+// pasture enclosure (countryFieldCrop 9), among its herd or across its fence: the field under its
+// footprint's middle or, where the footprint reaches the border nearest it (the field warp's
+// stretch and the fence's set inside the hedge allowed for), the field across it.
+bool countryInPasture(CountryHouse c, float i, float ground) {
+  if (K_pasture <= 0.0) return false;
+  vec3 disc = countryHouseDisc(c, ground, countryLayer(i).x);
+  vec2 site = vec2(0.0);
+  vec2 other = vec2(0.0);
+  vec2 axis = vec2(0.0);
+  vec2 cell = countryCells(countryFieldSpace(i, disc.xy), site, other, axis);
+  if (countryFieldCrop(cell.y, K_season) > 8.5) return true;
+  // countryCells' hash for the field across the border: its site lies inside its own cell.
+  return cell.x < 1.3 * disc.z * length(axis * COUNTRY_FIELDS) + 0.05 && countryFieldCrop(hash12(floor(other) + 0.71), K_season) > 8.5;
 }
 
 // Cottage k of the village: 0..10 the original street across the knoll, either side of it; 11..25
 // its growth (COUNTRY_VILLAGE_MORE). knoll: the knoll's top on screen; vx: the village's middle.
-// The woodland keeps off the street (countryWoodKeep); the growth's places reaching a wood stay
-// empty (size 0).
+// The woodland keeps off the street (countryWoodKeep); the growth's places reaching a wood, a track
+// or the river stay empty (size 0).
 CountryHouse countryVillageHouse(float k, float vx, float knoll, vec2 spots) {
   CountryHouse c;
   float drop = 0.0;
@@ -265,7 +317,7 @@ CountryHouse countryVillageHouse(float k, float vx, float knoll, vec2 spots) {
   float crest = countryGroundCrest(2.0, c.base.x, spots);
   c.base.y = min(c.base.y, crest - drop);
   if (k > 10.5) c.size = 0.014 + 0.1 * max(knoll - c.base.y - 0.014, 0.0);
-  if (k > 10.5 && countryInWood(c, 2.0, crest, spots)) c.size = 0.0;
+  if (k > 10.5 && (countryInWood(c, 2.0, spots) || countryOnWay(c, 2.0, crest, spots))) c.size = 0.0;
   return c;
 }
 
@@ -313,9 +365,10 @@ CountryVillage countryVillage(vec2 q, float vx, float knoll, float ground, vec2 
 // Hamlet j's site within the screen x range win: the first of nine seeded places, taking the far
 // ridges (3, 4, 5) in turn from a seeded one, that is clear of the village's quarter and the
 // castle's down, gently sloping, in sight over the nearer ridges and mostly open where its houses
-// stand (houses that would stand in a wood are left out; a wood on the crest above may shelter
-// it). x: screen; y: the drop of its lane below the crest (screen); z: one house unit on screen;
-// w: its ridge, 0 where none was found.
+// stand, along its lane and in front of its nearer row (as countryInWood asks of each house; houses
+// that would still stand in a wood are left out; a wood on the crest above may shelter it).
+// x: screen; y: the drop of its lane below the crest (screen); z: one house unit on screen; w: its
+// ridge, 0 where none was found.
 vec4 countryHamletSite(float j, vec2 win, vec2 spots) {
   float first = floor(3.0 * hash12(vec2(j, 5.1) + countrySeed));
   for (int c = 0; c < 9; c++) {
@@ -340,13 +393,15 @@ vec4 countryHamletSite(float j, vec2 win, vec2 spots) {
     }
     if (g - hidden < 4.0 * unit || abs(lean) > 2.4 * unit) continue;
     float s = min(mix(1.5 * unit, g - hidden - 2.5 * unit, fract(h * 7.3)), 8.0 * unit);
-    // Open ground at its middle and along most of its lane.
+    // Open ground at its middle and along most of its lane, there and in front of its nearer row.
     float v = countryDown(s + 0.25 * unit, d);
+    float front = countryDown(s + 1.5 * unit + COUNTRY_YARD, d);
     float open = 0.0;
     bool middle = false;
     for (int k = 0; k < 5; k++) {
       float wx = (x + 2.2 * (float(k) - 2.0) * unit) * d;
-      bool clear = countryWoodStand(ridge, wx, v, countrySpots(wx / d, spots)) <= COUNTRY_CLEAR;
+      vec2 at = countrySpots(wx / d, spots);
+      bool clear = countryWoodStand(ridge, wx, v, at) <= COUNTRY_CLEAR && countryWoodStand(ridge, wx, front, at) <= COUNTRY_CLEAR;
       open += clear ? 1.0 : 0.0;
       middle = middle || (k == 2 && clear);
     }
@@ -360,36 +415,32 @@ float countryHamletHouses(float j) {
   return 3.0 + floor(3.99 * fract(hash12(vec2(j, 21.1) + countrySeed) * 5.3));
 }
 
-// House n of hamlet j (m houses) at site: either side of its lane, the odd ones a row nearer,
-// facing each other across it (size 0 where it would stand in a wood).
-CountryHouse countryHamletHouse(float j, float n, float m, vec4 site, vec2 spots) {
+// Building n of hamlet j (m cottages) at site: n < m its cottages, either side of its lane, the odd
+// ones a row nearer, facing each other across it; n = m its chapel, in some of them, at the back of
+// the lane behind the cottages, in church units. Size 0 where there is none, or where it would stand
+// in a wood or on or by the chalk track (the only track on the far ridges).
+CountryHouse countryHamletBuilding(float j, float n, float m, vec4 site, vec2 spots) {
   CountryHouse c;
-  float h = hash12(vec2(j * 8.0 + n, 31.3) + countrySeed);
-  c.side = mod(n, 2.0) < 0.5 ? 1.0 : -1.0;
-  c.base.x = site.x + ((n - 0.5 * (m - 1.0)) * 2.2 + 0.6 * (h - 0.5)) * site.z;
-  float drop = site.y + ((c.side < 0.0 ? 1.3 : 0.0) + 0.4 * (fract(h * 3.1) - 0.5)) * site.z;
+  bool chapel = n > m - 0.5;
+  float h = hash12(chapel ? vec2(j, 21.1) + countrySeed : vec2(j * 8.0 + n, 31.3) + countrySeed);
+  float drop = 0.0;
+  if (chapel) {
+    c.side = fract(h * 2.3) < 0.5 ? 1.0 : -1.0;
+    c.base.x = site.x + (fract(h * 2.7) - 0.5) * m * site.z;
+    drop = max(site.y - 0.8 * site.z, 0.3 * site.z);
+    c.size = fract(h * 9.1) < 0.45 ? 0.9 * site.z : 0.0;
+    c.len = 2.5;
+  } else {
+    c.side = mod(n, 2.0) < 0.5 ? 1.0 : -1.0;
+    c.base.x = site.x + ((n - 0.5 * (m - 1.0)) * 2.2 + 0.6 * (h - 0.5)) * site.z;
+    drop = site.y + ((c.side < 0.0 ? 1.3 : 0.0) + 0.4 * (fract(h * 3.1) - 0.5)) * site.z;
+    c.size = site.z;
+    c.len = 1.0 + 0.7 * fract(h * 7.1);
+  }
   float crest = countryGroundCrest(site.w, c.base.x, spots);
   c.base.y = crest - drop;
-  c.size = site.z;
-  c.len = 1.0 + 0.7 * fract(h * 7.1);
   c.which = h;
-  if (countryInWood(c, site.w, crest, spots)) c.size = 0.0;
-  return c;
-}
-
-// Hamlet j's chapel, in some of them: at the back of the lane, behind the cottages, in church units
-// (size 0 where there is none).
-CountryHouse countryHamletChapel(float j, float m, vec4 site, vec2 spots) {
-  CountryHouse c;
-  float h = hash12(vec2(j, 21.1) + countrySeed);
-  c.side = fract(h * 2.3) < 0.5 ? 1.0 : -1.0;
-  c.base.x = site.x + (fract(h * 2.7) - 0.5) * m * site.z;
-  float crest = countryGroundCrest(site.w, c.base.x, spots);
-  c.base.y = crest - max(site.y - 0.8 * site.z, 0.3 * site.z);
-  c.size = 0.9 * site.z;
-  c.len = 2.5;
-  c.which = h;
-  if (fract(h * 9.1) >= 0.45 || countryInWood(c, site.w, crest, spots)) c.size = 0.0;
+  if (c.size > 0.0 && (countryInWood(c, site.w, spots) || (site.w < 3.5 && countryOnWay(c, 3.0, crest, spots)))) c.size = 0.0;
   return c;
 }
 
@@ -417,18 +468,20 @@ void countryHamlets(vec2 q, float ground, float i, vec2 spots, float tod, float 
     float tall = 5.0 * unit;
     if (abs(q.x - site.x) > (1.1 * m + 3.0) * unit + 1.7 * tall) continue;
     float px = 1.0 / (uRes.y * unit);
-    CountryHouse chapel = countryHamletChapel(j, m, site, spots);
-    if (chapel.size > 0.0) {
-      vec2 c = (q - chapel.base) / chapel.size;
-      c.x *= chapel.side;
-      countryTryChurch(c, chapel.base.y, (ground - chapel.base.y) / chapel.size, px / 0.9, chapel.side, f);
-    }
-    for (int k2 = 0; k2 < 6; k2++) {
+    // Its cottages, then its chapel (countryHamletBuilding).
+    for (int k2 = 0; k2 < 7; k2++) {
       float n = float(k2);
-      if (n >= m) break;
-      if (abs(q.x - site.x - (n - 0.5 * (m - 1.0)) * 2.2 * unit) > 3.5 * unit + 1.7 * tall) continue;
-      CountryHouse c = countryHamletHouse(j, n, m, site, spots);
-      if (c.size > 0.0) countryCottageAt(q, c, ground, px, fract(c.which * 13.7) < 0.4, tall, tod, dark, t, wind, f, glow, smoke);
+      if (n > m) break;
+      if (n < m && abs(q.x - site.x - (n - 0.5 * (m - 1.0)) * 2.2 * unit) > 3.5 * unit + 1.7 * tall) continue;
+      CountryHouse c = countryHamletBuilding(j, n, m, site, spots);
+      if (c.size <= 0.0) continue;
+      if (n < m) {
+        countryCottageAt(q, c, ground, px, fract(c.which * 13.7) < 0.4, tall, tod, dark, t, wind, f, glow, smoke);
+      } else {
+        vec2 cq = (q - c.base) / c.size;
+        cq.x *= c.side;
+        countryTryChurch(cq, c.base.y, (ground - c.base.y) / c.size, px / 0.9, c.side, f);
+      }
     }
   }
 }
@@ -495,10 +548,10 @@ CountryVillage countryCastle(vec2 q, float ground, vec4 L, vec2 spots, float tod
 // Farm slot k on ridge i (COUNTRY_FARM_SLOT world units apart across the slope): where its
 // farmhouse stands (x across, y down the slope: world), its hash, and 1 where there is one: the slot
 // is taken (more as K_farms rises; none move), and the place is out of the village's quarter and off
-// the chalk down, clear of the hamlets near0/near1, in sight over the nearer ridges, at the margin of
-// a field (never on its hedge or in its middle) and clear of the river (countryFarmPlan keeps it out
-// of the woods). ceiling: the pixel's height on screen, above which the farm and its smoke cannot
-// reach it (skips the rest).
+// the chalk down, clear of the hamlets near0/near1, in sight over the nearer ridges and at the margin
+// of a field (never on its hedge or in its middle); countryFarmPlan keeps it out of the woods and
+// off the tracks and the river. ceiling: the pixel's height on screen, above which the farm and its
+// smoke cannot reach it (skips the rest).
 vec4 countryFarmSite(float i, float k, vec2 spots, vec4 near0, vec4 near1, float ceiling) {
   float h = hash12(vec2(k, 7.7 * i + 1.3) + countrySeed);
   if (h >= 0.7 * K_farms) return vec4(0.0);
@@ -538,18 +591,13 @@ vec4 countryFarmSite(float i, float k, vec2 spots, vec4 near0, vec4 near1, float
   float s = pow(v / (d * COUNTRY_SLOPE) + sqrt(COUNTRY_ROUND), 2.0) - COUNTRY_ROUND;
   // Pasture enclosures (crop 9, when the animals' fields are in) keep their herds to themselves.
   if (s > g - hidden - 1.0 * unit || cell.x < 0.12 || countryFieldCrop(cell.y, K_season) > 8.5) return vec4(0.0);
-  // The farmstead keeps a fifth of a world unit from the river, past its barn's side.
-  if (i < 1.5) {
-    vec2 river = countryRiver(v, (spots.x + 0.07) * d);
-    float side = fract(h * 17.9) < 0.5 ? 1.0 : -1.0;
-    if (abs(wx + side * 1.8 * COUNTRY_HOUSE - river.x) / sqrt(1.0 + river.y * river.y) < 0.24) return vec4(0.0);
-  }
   return vec4(wx, v, h, 1.0);
 }
 
 // The farmstead at site (countryFarmSite) on ridge i: its farmhouse, and on most a barn behind it to
-// one side (barn.size 0 for a lone house). A farmhouse whose feet would stand in a wood is not
-// built at all (house.size 0), nor a barn whose would.
+// one side (barn.size 0 for a lone house). A farmhouse that would stand in a wood, on or by a track,
+// by the river or reaching into a pasture enclosure is not built at all (house.size 0), nor a barn
+// that would.
 void countryFarmPlan(vec4 site, float i, vec2 spots, out CountryHouse house, out CountryHouse barn) {
   float d = countryLayer(i).x;
   float s = pow(site.y / (d * COUNTRY_SLOPE) + sqrt(COUNTRY_ROUND), 2.0) - COUNTRY_ROUND;
@@ -563,17 +611,17 @@ void countryFarmPlan(vec4 site, float i, vec2 spots, out CountryHouse house, out
   barn.side = house.side;
   barn.len = 2.1;
   barn.which = fract(h * 5.9);
-  // Each on the face below the bare crest at its own corner, the barn a little farther up.
+  // Each on the face below the bare crest at its own corner, the barn a little farther up; one
+  // check for both, so it is compiled once.
   for (int b = 0; b < 2; b++) {
     float x = site.x / d + float(b) * house.side * 2.3 * unit;
     float y = countryGroundCrest(i, x, spots);
-    if (b == 0) {
-      house.base = vec2(x, y - s);
-      if (countryInWood(house, i, y, spots)) house.size = 0.0;
-    } else {
-      barn.base = vec2(x, y - max(s - 0.8 * unit, 0.4 * unit));
-      if (barn.size > 0.0 && countryInWood(barn, i, y, spots)) barn.size = 0.0;
-    }
+    CountryHouse c = house;
+    if (b > 0) c = barn;
+    c.base = vec2(x, y - (b > 0 ? max(s - 0.8 * unit, 0.4 * unit) : s));
+    if (c.size > 0.0 && (countryInWood(c, i, spots) || countryOnWay(c, i, y, spots) || countryInPasture(c, i, y))) c.size = 0.0;
+    if (b > 0) barn = c;
+    else house = c;
   }
 }
 
@@ -604,10 +652,12 @@ void countryFarms(vec2 q, float ground, float i, vec4 L, vec2 spots, vec4 near0,
 }
 
 // The buildings standing on ridge i that cover the pixel q (in the ridge's frame; ground: its bare
-// crest at q.x; L: countryLayer(i)), and their smoke and window glow there.
-CountryVillage countrySettlements(float i, vec2 q, float ground, vec4 L, vec2 spots, float tod, float dark, float t, float wind) {
-  CountryVillage v = countryNoVillage();
-  if (i > 1.5 && i < 2.5) v = countryVillage(q, spots.x, L.y + 0.012, ground, spots, tod, dark, t, wind);
+// crest at q.x; L: countryLayer(i)), and their smoke and window glow there: v, the village's on this
+// ridge (countryVillage on the third, none elsewhere), with the hamlets, farms and castle the knobs
+// add. sceneCountry looks for the village in its ridge loop and for these after it, only where a knob
+// adds them, so with them off their code stays out of that loop (a software rasteriser such as
+// SwiftShader runs it markedly slower with it in, even untaken).
+CountryVillage countrySettlements(float i, vec2 q, float ground, vec4 L, vec2 spots, float tod, float dark, float t, float wind, CountryVillage v) {
   bool hamlets = K_hamlets > 0.5 && i > 2.5;
   bool farms = K_farms > 0.0 && i > 0.5 && i < 3.5;
   if (hamlets || farms) {
@@ -629,12 +679,10 @@ CountryVillage countrySettlements(float i, vec2 q, float ground, vec4 L, vec2 sp
 }
 
 // How far a house stands from slope point w on a ridge at depth d (world units, 0 inside its
-// footprint): a disc around the ground it covers behind its front corner.
+// footprint).
 float countryHouseDistance(CountryHouse c, float ground, float d, vec2 w) {
-  float s = max(ground - c.base.y, 0.0);
-  float unit = c.size * d * (1.0 - 0.35 * smoothstep(0.0, 0.2, s));
-  vec2 centre = vec2(c.base.x * d + c.side * 0.5 * (c.len - 1.0) * unit, countryDown(s, d) - 0.5 * unit);
-  return max(length(w - centre) - 0.55 * (c.len + 1.0) * unit, 0.0);
+  vec3 disc = countryHouseDisc(c, ground, d);
+  return max(length(w - disc.xy) - disc.z, 0.0);
 }
 
 // How far slope point w (world: across, x * depth, and down the slope, as in countryFieldSpace) on
@@ -677,11 +725,9 @@ float countrySettlementDistance(float ridge, vec2 w, vec2 spots) {
       if (near0.w < 0.5) near0 = site;
       else near1 = site;
       float m = countryHamletHouses(j);
-      CountryHouse chapel = countryHamletChapel(j, m, site, spots);
-      if (chapel.size > 0.0) best = min(best, countryHouseDistance(chapel, countryGroundCrest(ridge, chapel.base.x, spots), d, w));
-      for (int n = 0; n < 6; n++) {
-        if (float(n) >= m) break;
-        CountryHouse c = countryHamletHouse(j, float(n), m, site, spots);
+      for (int n = 0; n < 7; n++) {
+        if (float(n) > m) break;
+        CountryHouse c = countryHamletBuilding(j, float(n), m, site, spots);
         if (c.size > 0.0) best = min(best, countryHouseDistance(c, countryGroundCrest(ridge, c.base.x, spots), d, w));
       }
     }
