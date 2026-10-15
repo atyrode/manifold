@@ -2,11 +2,13 @@
 // (Noctiluca scintillans) flashes electric blue wherever the water is disturbed. By default the moon
 // has just risen over the sea, right of ahead, and lays its path across the breakers. By day it is
 // an ordinary turquoise seaside. The pointer's wake is tracked on the CPU (sim.ts) and read as uSim0.
+// The sky, the weather and the gulls are the shared world's (scenes/world.ts, shaders/lib/world.ts).
 import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
-import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
+import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { shoreGlsl } from "./shader.ts";
+import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
+import { SHORE_LIGHTNING_TRIGGER, SHORE_METEOR_TRIGGER, shoreGlsl } from "./shader.ts";
 import { SHORE_PASSAGE, shoreSim } from "./sim.ts";
 
 const params: ParamDef[] = [
@@ -60,9 +62,17 @@ const params: ParamDef[] = [
     "Now and then a school of fish darts through the shallows, leaving trails of light behind it at night.",
     { trigger: 0 },
   ),
-  // 0.82: the evening moon six degrees up, in frame (the shader turns the sky to face moonrise).
-  ...skyKnobs({ time: 0.82, stars: 0.6 }),
-  ...weatherKnobs({ rain: true, fog: true, wind: true, lightning: 1 }),
+  // The shared world: 0.82, the evening moon six degrees up, in frame (the shader turns the sky to
+  // face moonrise); fair-weather cloud; gulls by day.
+  ...worldKnobs({
+    time: 0.82,
+    meteors: { trigger: SHORE_METEOR_TRIGGER },
+    lightning: SHORE_LIGHTNING_TRIGGER,
+    birds: {
+      kind: "gulls",
+      help: "Gulls crossing over the sea by day, now and then swooping down to skim the water, dipping behind the breakers nearer than they are; mirrored in the wet sand a backwash leaves. Few fly in rain or snow.",
+    },
+  }),
   toggle(
     "manifold",
     "mark",
@@ -87,11 +97,16 @@ export const shoreScene: SceneDef = {
       blurb: "Plankton that light up when the water is stirred: by the surf, by fish, by you.",
     },
     sky: {
-      title: atmosphereGroups.sky.title,
+      title: worldGroups.sky.title,
       blurb:
-        "Time of day, whether the days pass, and the stars over the sea, glinting in the wet sand.",
+        "Time of day, whether the days pass, and the night sky over the sea: its stars and the Milky Way, glinting in the wet sand, the moon's phase, the odd shooting star.",
     },
-    weather: atmosphereGroups.weather,
+    weather: {
+      title: worldGroups.weather.title,
+      blurb:
+        "Cloud and its shadows on the sand and the sea, rain, snow, fog, wind, lightning out of a storm bank at sea and the aurora, all mirrored in the water and the wet sand. Rain greys the sky and hangs in shafts out at sea, rings the water and soaks the beach; snow settles on the dry sand.",
+    },
+    birds: worldGroups.birds,
     manifold: {
       title: "Manifold mark",
       blurb: "A landmark of its own: an M drawn in the sand where the waves reach it.",
@@ -109,6 +124,12 @@ export const shoreScene: SceneDef = {
   // follows the page (inkOf).
   theme: skyTheme(params),
   // The sea: wind ripples tilting a mirror of the sky and the moon's glitter (rippleSpectrum,
-  // waterMirror); the breakers and the swash are the scene's own.
-  features: { WATER_TIER: WATER_TIERS.mirror },
+  // waterMirror); the breakers and the swash are the scene's own. The moon's phase is compiled in
+  // at every setting, a full moon's too (where the world leaves it out): the glitter's narrow lobe
+  // magnifies the last bits of the moon's direction, which the phase code's presence shifts, so a
+  // full moon's own program would not draw byte for byte as the all-features one does.
+  features: { WATER_TIER: WATER_TIERS.mirror, SKY_MOON_PHASE: 1 },
+  // The world's parts only while their knobs can show them (worldFeatures).
+  featuresFor: worldFeatures,
+  featuresAll: WORLD_ALL,
 };

@@ -2,12 +2,12 @@
 // rolling across the field as travelling waves of paler light. One deterministic gust field, shared
 // by the shader (shader.ts) and the simulation (sim.ts), bows the near blades, rocks the dandelion
 // clocks, pulls their seeds off one by one and carries them glowing up and away; switched on, it
-// bows clumps of wildflowers too (wildflowers.ts, the shared plant component).
+// bows clumps of wildflowers too (wildflowers.ts, the shared plant component). The sky, the weather
+// and the birds are the shared world's (scenes/world.ts, shaders/lib/world.ts).
 import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
-import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { MEADOW_METEOR_TRIGGER, meadowGlsl } from "./shader.ts";
+import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
+import { MEADOW_LIGHTNING_TRIGGER, MEADOW_METEOR_TRIGGER, meadowGlsl } from "./shader.ts";
 import { GUST_TRIGGER, MARK_TRIGGER, MAX_CLOCKS, MEADOW_PASSAGE, meadowSim } from "./sim.ts";
 import { meadowFlowersSim } from "./wildflowers.ts";
 
@@ -51,7 +51,18 @@ const params: readonly ParamDef[] = [
     "arrangement",
     "Where the clocks stand, the lie of the grass and how the seeds let go; re-seed for another meadow.",
   ),
-  ...weatherKnobs({ group: "wind", wind: true }),
+  // The shared world: golden hour, the meadow's own light fair-weather cloud, swallows by day.
+  ...worldKnobs({
+    time: 0.72,
+    clouds: 0.2,
+    meteors: { trigger: MEADOW_METEOR_TRIGGER },
+    lightning: MEADOW_LIGHTNING_TRIGGER,
+    birds: {
+      kind: "swallows",
+      help: "Birds crossing over the field by day, swallows by default, now and then swooping down to skim the grass tops; the grass hides any that dip behind it, and few fly in rain or snow.",
+    },
+    groups: { wind: "wind" },
+  }),
   feature(
     "wind",
     "gusts",
@@ -69,7 +80,6 @@ const params: readonly ParamDef[] = [
     0.45,
     "How often a gust comes through: now and then to the left, one after another to the right.",
   ),
-  ...skyKnobs({ time: 0.72, stars: 0.6, moon: 1, meteors: { trigger: MEADOW_METEOR_TRIGGER } }),
   range(
     "weather",
     "haze",
@@ -77,11 +87,6 @@ const params: readonly ParamDef[] = [
     0.45,
     "Golden dust and pollen in the low light: the distance softens into warm haze and the air glows around the sun.",
   ),
-  ...weatherKnobs({ rain: true, aurora: true }),
-  ...birdKnobs({
-    kind: "swallows",
-    help: "Birds crossing over the field by day, swallows by default, now and then swooping down to skim the grass tops; the grass hides any that dip behind it, and few fly in the rain.",
-  }),
   feature(
     "manifold",
     "mown",
@@ -113,13 +118,13 @@ export const meadowScene: SceneDef = {
       title: "Wind",
       blurb: "Which way the wind blows, and the gusts it sends rolling across the field.",
     },
-    sky: atmosphereGroups.skyNight,
+    sky: worldGroups.sky,
     weather: {
       title: "Air",
       blurb:
-        "Golden haze, and rain: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds. On a clear night, the aurora over the hills.",
+        "Golden haze, cloud and its shadows, and the weather: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts; snow settling on the grass and the hills; fog filling the distance; lightning behind the hills. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds. On a clear night, the aurora over the hills.",
     },
-    birds: birdsGroup,
+    birds: worldGroups.birds,
     manifold: { title: "Manifold mark", blurb: "The M mown into a far hillside." },
   },
   glsl: meadowGlsl,
@@ -127,9 +132,11 @@ export const meadowScene: SceneDef = {
   passage: MEADOW_PASSAGE,
   entry: "sceneMeadow",
   sim: meadowFlowersSim(meadowSim(params), params),
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
-  // The wildflowers' code only while they are on (wildflowers.ts).
-  featuresFor: (values) => ({ MEADOW_HAS_WILDFLOWERS: (values.wildflowers ?? 0) > 0 ? 1 : 0 }),
-  featuresAll: { MEADOW_HAS_WILDFLOWERS: 1 },
+  // The world's parts only while their knobs can show them (worldFeatures), the wildflowers' code
+  // only while they are on (wildflowers.ts).
+  featuresFor: (values) => ({
+    ...worldFeatures(values),
+    MEADOW_HAS_WILDFLOWERS: (values.wildflowers ?? 0) > 0 ? 1 : 0,
+  }),
+  featuresAll: { ...WORLD_ALL, MEADOW_HAS_WILDFLOWERS: 1 },
 };

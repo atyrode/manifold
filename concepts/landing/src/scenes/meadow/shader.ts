@@ -1,15 +1,20 @@
-// The meadow's picture, back to front: the golden-hour sky from the shared library, soft hills in
-// the haze (the mown M on the nearer one), the tree line at the meadow's far edge with mist at its
-// feet, the sea of grass with the gusts sweeping across it as broad waves of paler light, then the
-// near grass, the dandelion clocks and the seeds in the air (from the simulation, sim.ts), the
-// nearest blades, and the rain falling through all of it at the depth of what each cell sees.
+// The meadow's picture, back to front: the golden-hour sky of the shared world (shaders/lib/world.ts:
+// the dome, the aurora, the cloud deck, the stars and the Milky Way, shooting stars, lightning), soft
+// hills in the haze (the mown M on the nearer one), the tree line at the meadow's far edge with mist
+// at its feet, the sea of grass with the gusts sweeping across it as broad waves of paler light, the
+// world's birds over it, then the near grass, the dandelion clocks and the seeds in the air (from the
+// simulation, sim.ts), the nearest blades, and the world's fog, rain and snow through all of it at
+// the depth of what each cell sees.
 //
-// Rain belongs to the sky here: the deck closes over and the light goes flat, grey and dim with the
-// amount. A drizzle is a soft grey mist over the distance; steady rain hangs in shafts over the far
-// hills; in a downpour the sky goes dark and low, the hills vanish, and the gusts drive curtains of
-// rain across the field with the honami bands. The grass gets wet (uWeather.x, which lingers after
-// the rain): darker and richer, glistening at the tops, the field sagging, the near blades bowing
-// with beads of water along them and their seed heads nodding and dripping; the clocks close.
+// Rain belongs to the sky here: the world's deck closes over and the light goes flat, grey and dim
+// with the amount, and the meadow's own overcast lowers and darkens its sky further. A drizzle is a
+// soft grey mist over the distance; steady rain hangs in shafts over the far hills; in a downpour the
+// sky goes dark and low, the hills vanish, and the gusts drive curtains of rain across the field
+// with the honami bands. The grass gets wet (uWeather.x, which lingers after the rain): darker and
+// richer, glistening at the tops, the field sagging, the near blades bowing with beads of water along
+// them and their seed heads nodding and dripping; the clocks close. Snow settles (uWeather.y, which
+// melts after it stops): on the grass tops and the ground between the stems, on the hills and the
+// trees, along the near blades.
 //
 // The sea of grass is drawn as grass: rows of blades at depths evenly spaced in log depth, each row
 // a fixed ground distance between blades, so the strokes are big and wide at the bottom of the frame
@@ -32,14 +37,16 @@
 // term of the gust field, in the sim too. At rest, none of it changes a pixel.
 //
 // Knobs read here: K_grassHeight, K_grassDensity, K_meadowSeed, K_wind, K_gusts (and its "now"),
-// K_gustRate, K_time, K_cycle, K_haze, K_rain, K_mown (and its "now"), K_birds, K_birdKind,
-// K_birdFormation (the shared birds, shaders/lib/birds.ts); uWeather.x for how wet the grass is.
-// K_dandelions only reaches the shader through the clocks the simulation grows. K_wildflowers and
-// its clumps (wildflowers.ts) are compiled in only while it is on (MEADOW_HAS_WILDFLOWERS). Over
-// the hills the shared sky components (src/scenes/README.md, "Composing components"): K_stars,
-// K_moon (SKY_MOON_PHASE), K_aurora and K_meteors (and its "now"), behind the clouds.
+// K_gustRate, K_haze, K_rain, K_mown (and its "now"); uWeather.x for how wet the grass is, uWeather.y
+// how much snow lies on it. K_dandelions only reaches the shader through the clocks the simulation
+// grows. K_wildflowers and its clumps (wildflowers.ts) are compiled in only while it is on
+// (MEADOW_HAS_WILDFLOWERS). The world's knobs (scenes/world.ts, read through shaders/lib/world.ts:
+// src/scenes/README.md, "World layers"): K_time, K_cycle, K_stars, K_milkyWay, K_moon, K_meteors
+// (and its "now"), K_clouds, K_shadows, K_rain, K_snow, K_fog, K_wind, K_lightning (and its "now"),
+// K_aurora, K_birds, K_birdKind, K_birdFormation, each part compiled in only while its knobs can
+// show it (worldFeatures); the meadow's own rain (its shafts, curtains and mist) with the world's.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
   GUST_TRIGGER,
   MARK_TRIGGER,
@@ -85,16 +92,16 @@ const LAYERS = MEADOW_LAYERS.length;
 const ROW = 0.1;
 const FIELD_NEAR = 3;
 
-/** Trigger slot of the shooting stars' "now" button (after the gusts' and the mown M's). */
+/** Trigger slots of the shooting stars' and the lightning's "now" buttons (after the gusts' and the mown M's). */
 export const MEADOW_METEOR_TRIGGER = 2;
+export const MEADOW_LIGHTNING_TRIGGER = 3;
 
 export const meadowGlsl = `
-${birdsGlsl}
+${worldGlsl}
 // ---- the view, the gust field and the near grass: constants shared with sim.ts ----
 const float MEADOW_HORIZON = ${glslFloat(MEADOW_HORIZON)};
 const float MEADOW_FOCAL = ${glslFloat(MEADOW_FOCAL)};
 const float MEADOW_GROUND = ${glslFloat(MEADOW_GROUND)};
-const float MEADOW_FOV = ${glslFloat(2 * Math.atan(0.5 / MEADOW_FOCAL))};
 const float MEADOW_TREES_Z = ${glslFloat(MEADOW_TREES_Z)};
 const int MEADOW_GUST_TRIGGER = ${GUST_TRIGGER};
 const int MEADOW_MARK_TRIGGER = ${MARK_TRIGGER};
@@ -102,6 +109,7 @@ const int MEADOW_MARK_TRIGGER = ${MARK_TRIGGER};
 // over the hills.
 const int MEADOW_METEOR_SLOT = ${MEADOW_METEOR_TRIGGER};
 const vec4 MEADOW_METEOR_FIELD = vec4(-0.55, 0.28, 1.1, 0.1);
+const int MEADOW_LIGHTNING_SLOT = ${MEADOW_LIGHTNING_TRIGGER};
 
 const float MEADOW_DIR_X = ${glslFloat(G.dirX)};
 const float MEADOW_DIR_Z = ${glslFloat(G.dirZ)};
@@ -198,6 +206,8 @@ const int MEADOW_SEED_GROUPS = ${SEED_GROUPS};
 // ---- the picture's own tuning ----
 // The view turns this far left (radians) of the sky library's 'ahead', toward the sinking sun.
 const float MEADOW_TURN = 0.8;
+// How far off the hills stand (world units, metres): where the cloud deck's shadows fall on them.
+const float MEADOW_HILLS_Z = 1500.0;
 // Grass density knob 0..1 maps onto this much of the near layers' full density and more.
 const float MEADOW_DENSITY_MIN = 0.15;
 // The near blades' natural lean.
@@ -276,15 +286,13 @@ const float MEADOW_BLUR_CELLS = 1.5;
 // Aerial haze per world unit: always, and at full haze.
 const float MEADOW_HAZE_BASE = 0.0025;
 const float MEADOW_HAZE_GAIN = 0.011;
-// Rain. Each cell hands the shared rain the depth of what it sees, 1 - exp(-z / MEADOW_RAIN_DEPTH)
-// (world units, as the library's layers are tuned): the near blades at ~0.05, the field ~0.1-0.6.
-const float MEADOW_RAIN_DEPTH = 30.0;
-// The rain's own extinction of the land per world unit, on top of the shared veil: a grey mist from
-// the first drizzle, then visibility falling with the square of the amount.
+// The rain's own extinction of the land per world unit, on top of the world's veil (worldPrecip,
+// which takes each cell's depth in world units, metres here): a grey mist from the first drizzle,
+// then visibility falling with the square of the amount.
 const float MEADOW_DRIZZLE_MIST = 0.004;
 const float MEADOW_RAIN_MIST = 0.016;
-// Overcast: how much the sun dims, how dark the sky gets low down and more overhead (x amount).
-const float MEADOW_OVERCAST_SUN = 0.88;
+// The meadow's own overcast under the world's deck: how dark the sky gets low down and more
+// overhead (x the storm's amount).
 const float MEADOW_OVERCAST_LOW = 0.3;
 const float MEADOW_OVERCAST_DARK = 0.35;
 // The bright sky the rain refracts and the wet grass mirrors: sampled this high (screen heights above
@@ -320,6 +328,12 @@ const float MEADOW_BEADS = 7.0;
 const float MEADOW_BEAD_SHARE = 0.55;
 const float MEADOW_DRIP_CELLS = 16.0;
 const float MEADOW_FOLD = 0.55;
+// Lying snow (uWeather.y): how much of it the grass tops hold (most toward their tips), the near
+// blades along their upper half, the hills and the tree line.
+const float MEADOW_SNOW_TOPS = 0.7;
+const float MEADOW_SNOW_NEAR = 0.45;
+const float MEADOW_SNOW_LAND = 0.85;
+const float MEADOW_SNOW_TREES = 0.35;
 // The breath over the field: reach (screen heights), how hard it presses and how far it leans the grass.
 const float MEADOW_BREATH_RADIUS = 0.09;
 const float MEADOW_BREATH_FIELD = 0.5;
@@ -365,6 +379,7 @@ const vec3 MEADOW_TREE = vec3(0.05, 0.08, 0.05);
 const vec3 MEADOW_HILL = vec3(0.12, 0.16, 0.1);
 const vec3 MEADOW_FAR = vec3(0.14, 0.16, 0.22);
 const vec3 MEADOW_STUBBLE = vec3(0.85, 0.74, 0.46);
+const vec3 MEADOW_SNOW = vec3(0.86, 0.88, 0.92);
 
 // ---- the gust field (sim.ts: meadowWind, meadowFront, meadowGust) ----
 struct MeadowWind {
@@ -509,17 +524,20 @@ float meadowShafts(float cx, float above, float tm, float rain) {
 // Hills fading into the haze, the mown M on the down, and the tree line at the meadow's far edge,
 // its leaves flashing pale as a gust runs along it and mist at its feet. above: height above the
 // horizon (negative down to the tree line's foot). In rain the land fades into the grey air by
-// 'far', and the shafts hang over the hills in front of it and behind the trees.
-vec3 meadowDistance(vec3 col, float cx, float above, float markX, vec3 haze, vec3 amb, vec3 sun, float sunNear, MeadowWind wind, float tm, float aa, float far, vec3 air, float shaft, vec3 shaftCol, inout float accent) {
+// 'far', and the shafts hang over the hills in front of it and behind the trees. The hills take the
+// sun as it reaches them (sunHills), the trees as it reaches the meadow's edge (sun). Lying snow
+// (lying, uWeather.y) whitens the hills and dusts the trees.
+vec3 meadowDistance(vec3 col, float cx, float above, float markX, vec3 haze, vec3 amb, vec3 sun, vec3 sunHills, float sunNear, MeadowWind wind, float tm, float aa, float far, vec3 air, float shaft, vec3 shaftCol, float lying, inout float accent) {
   if (above < meadowFarHill(cx)) {
-    col = mix(mix(haze, MEADOW_FAR * (amb * 0.7 + sun * 0.15), 0.28 - 0.14 * K_haze), air, far);
+    col = mix(mix(haze, mix(MEADOW_FAR * (amb * 0.7 + sunHills * 0.15), MEADOW_SNOW * (amb * 1.1 + sunHills * 0.4), MEADOW_SNOW_LAND * lying), 0.28 - 0.14 * K_haze), air, far);
     accent = 0.0;
   }
   float near = meadowNearHill(cx, markX);
   if (above < near) {
     // Slopes rising to the right face the low sun on the left.
     float slope = (meadowNearHill(cx + 0.01, markX) - meadowNearHill(cx - 0.01, markX)) * 50.0;
-    vec3 land = MEADOW_HILL * (amb * 0.6 + sun * (0.15 + 0.35 * clamp(slope * 3.0, 0.0, 1.0)));
+    vec3 land = MEADOW_HILL * (amb * 0.6 + sunHills * (0.15 + 0.35 * clamp(slope * 3.0, 0.0, 1.0)));
+    land = mix(land, MEADOW_SNOW * (amb * 1.1 + sunHills * (0.3 + 0.5 * clamp(slope * 3.0, 0.0, 1.0))), MEADOW_SNOW_LAND * lying);
     col = mix(haze, land, MEADOW_DOWN_CLEAR - 0.22 * K_haze);
     accent = 0.0;
     // The M mown into the down: a path of pale stubble four or five cells wide, lit gold by the low
@@ -536,7 +554,7 @@ vec3 meadowDistance(vec3 col, float cx, float above, float markX, vec3 haze, vec
       float stroke = 1.0 - smoothstep(halfWidth - 0.7 * aa, halfWidth + 0.7 * aa, d);
       float across = (cx - markX + 1.5 * MEADOW_MARK_SIZE - 0.06 * age) / (0.6 * MEADOW_MARK_SIZE);
       float glint = age < 0.0 ? 0.0 : exp(-across * across) * (1.0 - smoothstep(4.0, 6.0, age));
-      vec3 stubble = MEADOW_STUBBLE * (amb * 0.6 + sun * (MEADOW_PATH_SUN + 1.2 * glint));
+      vec3 stubble = MEADOW_STUBBLE * (amb * 0.6 + sunHills * (MEADOW_PATH_SUN + 1.2 * glint));
       col = mix(col, mix(haze, stubble, MEADOW_PATH_CLEAR - 0.25 * K_haze), stroke * mown);
       accent = max(accent, stroke * mown * (1.0 - far));
     }
@@ -547,6 +565,7 @@ vec3 meadowDistance(vec3 col, float cx, float above, float markX, vec3 haze, vec
   if (above < crown) {
     float gust = meadowGust(wind, vec2(cx * MEADOW_TREES_Z / MEADOW_FOCAL, MEADOW_TREES_Z), tm, 0.0);
     vec3 tree = MEADOW_TREE * (amb * 0.6 + sun * 0.12);
+    tree = mix(tree, MEADOW_SNOW * (amb * 0.9 + sun * 0.3), MEADOW_SNOW_TREES * lying);
     tree = mix(tree, tree * 1.7 + amb * 0.025, clamp(0.8 * gust, 0.0, 0.7));
     tree = mix(tree, haze, 0.2 + 0.3 * K_haze);
     // Low golden mist lying along the trees' feet, behind the far grass.
@@ -577,11 +596,12 @@ vec3 meadowFlower(float h) {
 // width, both in ground units at the blade), and rows whose blades are under two cells apart give way
 // to their average, which a golden veil of haze softens further toward the tree line. Leaning is a
 // warp of the lookup, the same for every blade of a row at a given height, so blades bend without
-// tearing; only blades several cells wide lean, and only a little.
+// tearing; only blades several cells wide lean, and only a little. Lying snow (lying, uWeather.y)
+// whitens the blades toward their tops and the ground between the stems.
 //
 // The loop is the scene's longest: (ln G / (G - tallest)) / MEADOW_ROW rows, 10 at the default grass
 // height, 15 at the tallest, most of them cheap (no blade, or the cell already covered).
-vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, float sunUp, float toward, vec3 amb, vec3 sun, vec3 haze, vec4 breath, float hScale, float wet, float rainExt, vec3 deck, float overcast, float aa, float eye, bool moving, out float zHit, out float gHit) {
+vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, float sunUp, float toward, vec3 amb, vec3 sun, vec3 haze, vec4 breath, float hScale, float wet, float lying, float rainExt, vec3 deck, float overcast, float aa, float eye, bool moving, out float zHit, out float gHit) {
   float zg = eye * MEADOW_FOCAL / (MEADOW_HORIZON - uv.y);
   float a = (uv.x - 0.5) * aspect / MEADOW_FOCAL; // the ray's slope across: ground x = a z
   float pixel = aa / MEADOW_FOCAL;                // a cell's width as a slope
@@ -618,6 +638,8 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
   vec3 straw = wetten(MEADOW_STRAW, wet, 0.5);
   vec3 seedCol = wetten(MEADOW_HEAD, wet, 0.7);
   gold += wetGloss(wet, MEADOW_TOP_UP) * (deck * MEADOW_WET_SHEEN + sun * (0.2 + 0.7 * glow));
+  vec3 snowLit = MEADOW_SNOW * (amb * 1.4 + sun * (0.4 + 0.6 * high + 0.4 * glow));
+  float snowTops = MEADOW_SNOW_TOPS * lying;
 
   // Patches: green and gone to straw; drifts of flowers, thickening far off into a band of colour
   // before the trees.
@@ -689,6 +711,7 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
               blade = mix(seedCol * lit, pale, 0.6 * press) + gold;
             }
           }
+          blade = mix(blade, snowLit, snowTops * smoothstep(0.3, 1.0, t));
           // Moving (the camera, not only the wind), a blade's edge is cut per cell.
           if (moving) c = hardEdge(c);
           premult = c * blade;
@@ -706,6 +729,7 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
       blade = blade * lit * mix(0.35, 1.0, sqrt(clamp(t, 0.0, 1.0)));
       blade = mix(blade, pale, press * (0.35 + 0.65 * t)) + gold * smoothstep(0.5, 1.0, tRow);
       blade = mix(blade, driftColour * (amb * 0.6 + sun * (0.35 + 0.9 * glow)), flowerShare * 2.5 * smoothstep(0.75, 1.0, t));
+      blade = mix(blade, snowLit, snowTops * smoothstep(0.3, 1.0, t));
       premult = mix(premult, share * blade, lod);
       c = mix(c, share, lod);
     }
@@ -727,6 +751,7 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
   if (zg < MEADOW_TREES_Z) {
     // Between the stems: the shaded depths of the grass, lighter where a gust opens it to the sky.
     vec3 floorCol = mix(green, straw, ripe) * (amb * 0.22 + sun * 0.15 * glow) * (1.0 + 0.8 * max(g, 0.0)) * rebound;
+    floorCol = mix(floorCol, snowLit * 0.6, lying);
     behind = mix(floorCol, veilCol, 1.0 - exp(-hazeDensity * zg) * (1.0 - veil * smoothstep(MEADOW_VEIL_NEAR, MEADOW_VEIL_FAR, zg)));
   }
   return acc + (1.0 - cover) * behind;
@@ -743,7 +768,8 @@ ${meadowWildflowersGlsl}
 // place in its column, leaning and curving its own way (a static lean and curve on top of the
 // column's sway), two to four cells thick at the root and thinning to the top, cut hard per cell. A
 // stalk carries a panicle (a rachis hung with fine spikelets), a plain ear of seeds, or nothing.
-void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, vec3 amb, vec3 sun, float behind, float sunNear, float sunX, float wet, vec3 deck, float aa, bool moving, inout vec3 col, inout float accent, inout float zHit) {
+// Lying snow (lying, uWeather.y) clings along their upper half.
+void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, vec3 amb, vec3 sun, float behind, float sunNear, float sunX, float wet, float lying, vec3 deck, float aa, bool moving, inout vec3 col, inout float accent, inout float zHit) {
   float yy = p.y - MEADOW_ROOT[layer];
   if (yy <= 0.0) return;
   float pitch = MEADOW_PITCH[layer];
@@ -832,6 +858,7 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
     shade += sun * MEADOW_THROUGH * pressed * (0.45 + behind) * 0.9;
     shade += sun * MEADOW_RIM * rim * (MEADOW_RIM_BASE + 1.1 * behind + 0.6 * sunNear);
     shade += gloss * (deck * 0.4 + sun * (0.15 + 0.8 * behind)) * facing;
+    shade = mix(shade, MEADOW_SNOW * (amb * 1.0 + sun * (0.25 + 0.6 * behind)), MEADOW_SNOW_NEAR * lying * smoothstep(0.4, 1.0, s));
     col = mix(col, shade, cover);
     accent *= 1.0 - cover;
     zHit = mix(zHit, layerZ, cover);
@@ -1058,11 +1085,11 @@ void meadowSeeds(vec2 uv, vec2 p, float aspect, vec3 amb, vec3 sun, float behind
   }
 }
 
-// The sky gone overcast under the rain: greyer, and lower and darker the heavier it falls, darkest
-// overhead. above: height above the horizon (screen heights).
-vec3 meadowDeck(vec3 col, float above, float overcast, float rain) {
+// The meadow's own overcast under the world's deck: greyer, and lower and darker the harder it rains
+// or snows (storm), darkest overhead. above: height above the horizon (screen heights).
+vec3 meadowDeck(vec3 col, float above, float overcast, float storm) {
   col = mix(col, vec3(dot(col, LUMA)) * vec3(0.92, 0.95, 1.0) + 0.02, 0.6 * overcast);
-  return col * (1.0 - rain * (MEADOW_OVERCAST_LOW + MEADOW_OVERCAST_DARK * smoothstep(0.0, 0.45, above)));
+  return col * (1.0 - storm * (MEADOW_OVERCAST_LOW + MEADOW_OVERCAST_DARK * smoothstep(0.0, 0.45, above)));
 }
 
 // Knobs read here: see the top of shader.ts.
@@ -1072,28 +1099,28 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   float cx = p.x - 0.5 * aspect;
   float tm = uMotionTime;
   float aa = 1.0 / uRes.y;
-  float rain = K_rain;
   float wet = uWeather.x;
+  float lying = uWeather.y;
   // Passage: the camera's height over rest (0 at rest, where nothing below changes). Moving, a cell
   // cuts its edges once the passage's share of cutting cells reaches its own threshold.
   float drop = meadowDrop();
   float eye = MEADOW_GROUND + drop;
   bool moving = meadowCut() > edgeThreshold(cell, vec2(41.0, 17.0));
-  // Rain comes from an overcast sky: the deck closes over with the first drizzle and the light goes
-  // flat, grey and dim; heavier rain darkens it further.
-  float overcast = 1.0 - pow(1.0 - clamp(rain, 0.0, 1.0), 3.0);
-  float heavy = smoothstep(0.35, 0.9, rain);
-
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
-  vec3 sun = sky.sunColor * (1.0 - MEADOW_OVERCAST_SUN * overcast);
-  vec3 amb = greyed(sky.ambient, vec3(1.0), 0.6 * overcast) * (1.0 - 0.3 * rain) + auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
-  Sky dull = sky;
-  dull.sunColor = sun;
-  dull.ambient = amb;
-  dull.twilight *= 1.0 - 0.7 * overcast;
+  // The shared world (shaders/lib/world.ts) through the meadow's camera, its frame turned toward the
+  // sinking sun from the sky's (world units are metres): the sky now and its light, the deck rain
+  // or snow closes over it with the first drizzle dimming and greying the light (overcast), darker
+  // the heavier it falls (heavy).
+  World world = worldAt(t, MEADOW_METEOR_SLOT, MEADOW_LIGHTNING_SLOT);
+  WorldView view = worldView(uv, MEADOW_HORIZON, MEADOW_FOCAL, eye, MEADOW_TURN, 1.0);
+  Sky sky = world.sky;
+  float rain = world.rain;
+  float overcast = world.overcast;
+  float heavy = world.heavy;
+  vec3 sun = sky.sunColor;
+  vec3 amb = sky.ambient;
   // The camera's own frame (cam, ground x and z) and the sky library's (dir), turned toward the sun.
-  vec3 cam = viewRay(uv, aspect, MEADOW_HORIZON, MEADOW_FOV);
-  vec3 dir = skyFacing(cam, MEADOW_TURN);
+  vec3 cam = view.ray;
+  vec3 dir = view.dir;
   vec3 sunCam = skyFacing(sky.sun, -MEADOW_TURN);
   float up = smoothstep(-0.03, 0.03, sky.sun.y);
   // Forward scattering: how much light comes through thin things between this cell and the sun.
@@ -1103,16 +1130,27 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   vec2 sunP = vec2(0.5 * aspect, MEADOW_HORIZON) + sunCam.xy / max(sunCam.z, 0.05) * MEADOW_FOCAL;
   float sunNear = sunCam.z > 0.05 ? exp(-length(p - sunP) / 0.2) * up : 0.0;
   // The low sky toward this bearing, gilded toward the sun by the haze; it closes the distance.
-  vec3 haze = horizonHaze(dull, dir, 0.012) + sun * K_haze * 0.22 * pow(toward, 6.0);
+  vec3 haze = horizonHaze(sky, dir, 0.012) + sun * K_haze * 0.22 * pow(toward, 6.0);
   haze = mix(haze, vec3(dot(haze, LUMA)) * 0.85 + 0.03, 0.55 * overcast);
-  // The air full of rain: the haze gone grey, darker the heavier it falls; how much it hides of the
-  // distance per world unit, and of the land at the meadow's edge and beyond.
+  // The air full of rain or snow: the haze gone grey, darker the heavier it falls; how much rain
+  // hides of the distance per world unit, and of the land at the meadow's edge and beyond.
   vec3 air = greyed(haze, vec3(0.94, 0.97, 1.02), 0.5 * overcast) * (1.0 - 0.25 * heavy);
+#if WORLD_RAIN
   float rainExt = rain > 0.0 ? MEADOW_DRIZZLE_MIST + MEADOW_RAIN_MIST * rain * rain : 0.0;
+#else
+  float rainExt = 0.0;
+#endif
   float far = 1.0 - exp(-rainExt * MEADOW_TREES_Z);
   // The bright sky (or overcast deck) above this bearing: what the rain refracts and the wet grass
-  // mirrors. Only looked up while there is rain or water about.
-  vec3 deck = rain > 0.0 || wet > 0.0 ? meadowDeck(horizonHaze(dull, dir, MEADOW_DECK_ABOVE / MEADOW_FOCAL * length(dir.xz)), MEADOW_DECK_ABOVE, overcast, rain) : vec3(0.0);
+  // mirrors. Only looked up while there is rain, snow or water about.
+  vec3 deck = world.storm > 0.0 || wet > 0.0 ? meadowDeck(horizonHaze(sky, dir, MEADOW_DECK_ABOVE / MEADOW_FOCAL * length(dir.xz)), MEADOW_DECK_ABOVE, overcast, world.storm) : vec3(0.0);
+  // The cloud deck's shadows (worldSunlit; off by default) on the land this cell sees: where its ray
+  // meets the field (or, above it, the tree line), on the hills beyond, and at the eye's feet for the
+  // near grass. The field and the trees are a small part of a cloud's shadow, the hills a broad one.
+  float zLand = uv.y < MEADOW_HORIZON ? min(eye * MEADOW_FOCAL / (MEADOW_HORIZON - uv.y), MEADOW_TREES_Z) : MEADOW_TREES_Z;
+  vec3 sunLand = sun * worldSunlit(world, view, vec3(cx * zLand / MEADOW_FOCAL, -eye, zLand));
+  vec3 sunHills = sun * worldSunlit(world, view, vec3(cx * MEADOW_HILLS_Z / MEADOW_FOCAL, -eye, MEADOW_HILLS_Z));
+  vec3 sunHere = sun * worldSunlit(world, view, vec3(0.0, -eye, 0.0));
 
   MeadowWind wind = meadowWind();
   vec4 breath = uSimOn.x > 0.5 ? texelFetch(uSim0, ivec2(MEADOW_SEED_GROUPS, 2), 0) : vec4(0.0);
@@ -1121,78 +1159,64 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   float fieldScale = hScale * (1.0 - MEADOW_WET_SAG * wet);
   float accent = 0.0;
   vec3 col = vec3(0.0);
-  float zHit = 1e4; // world units to what this cell sees (the sky: as far as it gets)
-  float gHit = 0.0; // the gust there, for the curtains of heavy rain
+  float zHit = WORLD_FAR; // world units to what this cell sees (the sky: as far as it gets)
+  float gHit = 0.0;       // the gust there, for the curtains of heavy rain
   // Above the tree line's foot: sky, hills and trees. Below the horizon the grass is drawn over them.
   if (uv.y >= MEADOW_HORIZON - eye * MEADOW_FOCAL / MEADOW_TREES_Z) {
     float above = uv.y - MEADOW_HORIZON;
-    col = skyColor(dull, dir);
-    // The aurora hangs ahead of the camera over the hills, behind the clouds; shooting stars in
-    // the gaps between them.
-    float foot = 1.0 / (MEADOW_FOCAL * uRes.y);
-    col += auroraM(cam, tm, K_aurora, foot) * auroraSeen(sky, overcast);
-    vec4 cloud = skyClouds(dull, dir, t, 0.2 + 0.8 * overcast, K_wind);
-    col = mix(col, cloud.rgb, cloud.a);
-    col += skyStarLight(sky, dir, K_stars) * (1.0 - cloud.a);
-    float meteorSeed;
-    float meteorAt = meteorAge(tm, K_meteors, MEADOW_METEOR_SLOT, meteorSeed);
-    float meteor = meteorStreak(skyAngles(cam), MEADOW_METEOR_FIELD, meteorAt, meteorSeed, foot);
-    col += METEOR_TINT * hardEdge(meteor * auroraSeen(sky, max(cloud.a, overcast)));
-    col = meadowDeck(col, above, overcast, rain);
-    accent = (1.0 - smoothstep(0.016, 0.021, length(dir - sky.sun))) * up * (1.0 - cloud.a) * (1.0 - overcast);
+    // The world's sky: the dome, the aurora ahead behind the clouds, the deck, the stars and the
+    // Milky Way in its gaps, shooting stars high over the hills; the meadow's own overcast over it,
+    // and the lightning over that, its bolts dropping behind the hills.
+    WorldSky heaven = worldSky(world, view, MEADOW_METEOR_FIELD);
+    col = meadowDeck(heaven.col, above, overcast, world.storm) + heaven.strike;
+    accent = (1.0 - smoothstep(0.016, 0.021, length(dir - sky.sun))) * up * (1.0 - heaven.cloud) * (1.0 - overcast);
+#if WORLD_RAIN
     float shaft = rain > 0.0 ? meadowShafts(cx, above, tm, rain) : 0.0;
+#else
+    float shaft = 0.0;
+#endif
     vec3 shaftCol = air * 0.8 + sun * 0.5 * pow(toward, 4.0);
-    if (above < 0.13) col = meadowDistance(col, cx, above, MEADOW_MARK_SHARE * aspect, haze, amb, sun, sunNear, wind, tm, aa, far, air, shaft, shaftCol, accent);
+    if (above < 0.13) col = meadowDistance(col, cx, above, MEADOW_MARK_SHARE * aspect, haze, amb, sunLand, sunHills, sunNear, wind, tm, aa, far, air, shaft, shaftCol, lying, accent);
     else col = mix(col, shaftCol, shaft);
+#if WORLD_RAIN || WORLD_SNOW
     if (heavy > 0.0) {
       // The curtains cross the sky where they cross the far edge of the field (meadowGrass's depth).
       float zc = MEADOW_TREES_Z * (1.0 - 0.3 * (MEADOW_GRASS_MIN + MEADOW_GRASS_MAX) * fieldScale / eye);
       float span = zc * aa / MEADOW_FOCAL;
       gHit = meadowGust(wind, vec2(cx * zc / MEADOW_FOCAL, zc), tm, MEADOW_BLUR_CELLS * (abs(wind.dir.x) * span + wind.dir.y * span * zc / eye));
     }
+#endif
   }
-  if (uv.y < MEADOW_HORIZON) col = meadowGrass(uv, aspect, col, wind, tm, sky.sun.y, toward, amb, sun, haze, breath, fieldScale, wet, rainExt, deck, overcast, aa, eye, moving, zHit, gHit);
-  // Birds over the field (the shared birds; off by default): by day, nearer than the tree line, so
-  // in front of the distance and behind any grass nearer than they are; few in the rain. A swooping
-  // party skims the grass tops at 1.6 m. Lit by the sky, hazed by their own distance.
-  if (K_birds > 0.0) {
-    BirdSky flights = birdSky(K_birds * smoothfall(0.5, 0.1, rain), K_birdKind, K_birdFormation - 1.0, vec2(12.0, 100.0), vec2(MEADOW_HORIZON + 0.04, 0.92), vec2(K_meadowSeed * 0.37, 5.1));
-    flights.hours = vec4(0.22, 0.26, 0.8, 0.84);
-    flights.clock = vec2(K_time, K_cycle);
-    flights.swoopTo = 1.6;
-    BirdHit bird = birdFlights(vec2(cx, uv.y), flights, BirdCamera(MEADOW_HORIZON, MEADOW_FOCAL, eye, 1.0, 1.5), tm, aa);
-    if (bird.cover > 0.5 && bird.depth < zHit) {
-      col = mix(bird.albedo * (amb * 1.2 + sun * 0.3), haze, 1.0 - exp(-bird.depth * (0.004 + rainExt)));
-      accent = 0.0;
-      zHit = bird.depth;
-    }
-  }
+  if (uv.y < MEADOW_HORIZON) col = meadowGrass(uv, aspect, col, wind, tm, sky.sun.y, toward, amb, sunLand, haze, breath, fieldScale, wet, lying, rainExt, deck, overcast, aa, eye, moving, zHit, gHit);
+  // The world's birds over the field: by day, nearer than the tree line, so in front of the distance
+  // and behind any grass nearer than they are; few in rain or snow. A swooping party skims the grass
+  // tops at 1.6 m. Lit by the sky, hazed by their own distance as the field is.
+  worldBirds(world, view, WorldFlyway(vec2(12.0, 100.0), vec2(MEADOW_HORIZON + 0.04, 0.92), vec2(K_meadowSeed * 0.37, 5.1), 1.6, 1.5), haze, 0.004 + rainExt, col, zHit, accent);
 #if MEADOW_HAS_WILDFLOWERS
   // Wildflowers standing out of the grass (wildflowers.ts), in front of whatever lies beyond them.
-  meadowWildflowers(p, aspect, eye, amb, sun, behind, sunNear, haze, MEADOW_HAZE_BASE + MEADOW_HAZE_GAIN * K_haze + rainExt, wet, aa, col, accent, zHit);
+  meadowWildflowers(p, aspect, eye, amb, sunLand, behind, sunNear, haze, MEADOW_HAZE_BASE + MEADOW_HAZE_GAIN * K_haze + rainExt, wet, aa, col, accent, zHit);
 #endif
   // Golden haze: light scattered toward the eye around the sun, over everything beyond the near grass.
   col += sun * (0.05 + 0.3 * K_haze) * exp(-5.0 * length(dir - sky.sun)) * (1.0 - overcast);
+#if WORLD_RAIN || WORLD_SNOW
   // Heavy rain: the gusts drive curtains of it across the field and the sky, with the honami bands.
   float curtain = heavy * smoothstep(MEADOW_CURTAIN_FROM, MEADOW_CURTAIN_TO, gHit);
   col = mix(col, air, MEADOW_CURTAIN * curtain);
+#endif
 
   float density = MEADOW_DENSITY_MIN + (1.0 - MEADOW_DENSITY_MIN) * K_grassDensity;
   // Lowered in the frame by the camera's height over rest: the nearer the layer, the more.
-  meadowLayer(1, p + vec2(0.0, MEADOW_FOCAL * drop / MEADOW_LAYER_Z[1]), aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, wet, deck, aa, moving, col, accent, zHit);
-  meadowClocks(p, aspect, amb, sun, behind, sunNear, wet, aa, moving, col, accent, zHit);
-  meadowSeeds(uv, p, aspect, amb, sun, behind, sunNear, aa, col, accent);
-  meadowLayer(0, p + vec2(0.0, MEADOW_FOCAL * drop / MEADOW_LAYER_Z[0]), aspect, hScale, density, amb, sun, behind, sunNear, sunP.x, wet, deck, aa, moving, col, accent, zHit);
+  meadowLayer(1, p + vec2(0.0, MEADOW_FOCAL * drop / MEADOW_LAYER_Z[1]), aspect, hScale, density, amb, sunHere, behind, sunNear, sunP.x, wet, lying, deck, aa, moving, col, accent, zHit);
+  meadowClocks(p, aspect, amb, sunHere, behind, sunNear, wet, aa, moving, col, accent, zHit);
+  meadowSeeds(uv, p, aspect, amb, sunHere, behind, sunNear, aa, col, accent);
+  meadowLayer(0, p + vec2(0.0, MEADOW_FOCAL * drop / MEADOW_LAYER_Z[0]), aspect, hScale, density, amb, sunHere, behind, sunNear, sunP.x, wet, lying, deck, aa, moving, col, accent, zHit);
 
-  if (rain > 0.0) {
-    // The shared rain at the depth of what this cell sees: drops hide behind the near blades, and
-    // the rain too far to make out closes in like fog. Veil first, then the drops, which are seen by
-    // the bright sky they refract and the low sun where it shines; the nearest, out of focus, dimmer.
-    Precip fall = rainFall(uv, aspect, t, rain, K_wind, 1.0 - exp(-zHit / MEADOW_RAIN_DEPTH));
-    vec3 dropLight = max(deck * MEADOW_DROP_SKY + sun * (0.3 + 2.5 * behind + 1.5 * sunNear), vec3(MEADOW_DROP_FLOOR)) * (1.0 - 0.15 * fall.near);
-    col = precipOver(col, air, dropLight, fall);
-    accent *= 1.0 - fall.veil;
-  }
+  // The world's fog, then its rain and snow, at the depth of what this cell sees: drops hide behind
+  // the near blades, and the rain too far to make out closes in like fog. The drops are seen by the
+  // bright sky they refract and the low sun where it shines.
+  worldFog(world, view, air, zHit, col, accent);
+  vec3 dropLight = max(deck * MEADOW_DROP_SKY + sun * (0.3 + 2.5 * behind + 1.5 * sunNear), vec3(MEADOW_DROP_FLOOR));
+  worldPrecip(world, view, air, dropLight, zHit, col, accent);
 
   return shadeOf(col, inkOf(col, 1.3, 1.0), clamp(accent, 0.0, 1.0));
 }

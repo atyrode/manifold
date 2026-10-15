@@ -38,6 +38,7 @@ import {
   verifyFeaturesAll,
   verifyFeatureToggles,
   verifySceneFeatures,
+  verifyWorldFeaturesAll,
 } from "./src/features.verify.ts";
 import { verifyCloudTiers } from "./src/scenes/clouds/tiers.verify.ts";
 import { verifyMilkyWay } from "./src/scenes/campfire/milkyway.verify.ts";
@@ -541,6 +542,7 @@ export const checks: readonly Check[] = [
   ["countryVerges", verifyCountryVerges],
   ["countrySeason", verifyCountrySeason],
   ["countryChalk", verifyCountryChalk],
+  ["worldFeaturesAll", verifyWorldFeaturesAll],
 ];
 
 /**

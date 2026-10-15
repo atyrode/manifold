@@ -199,7 +199,8 @@ adds `K_shadows` (how dark the cloud deck's shadows fall, for `skyCloudShadow`: 
 unless `on: { shadows: true }`). A scene with a night of its own (an hour knob, a painted sky) takes
 the components without the clock from `skyComponentKnobs({ stars, milkyWay, moon, meteors, group })`.
 Use `atmosphereGroups.sky` / `.weather` for their lab headings, `.skyNight` for a sky group that
-also holds components.
+also holds components. A scene that composes the whole shared world takes all of these, with the
+birds' below, from one call, `worldKnobs` (`src/scenes/world.ts`, see "World layers").
 
 Birds come with their library: `birdKnobs({ kind: "gulls", help })` from `src/shaders/lib/birds.ts`
 adds `K_birds` (how often a flight passes, off by default), `K_birdKind` (the species, the GLSL
@@ -444,18 +445,19 @@ aurora, meteors and the canopy weather (see "Shared libraries"). A component few
 a GLSL string of its own that each consumer interpolates into its `glsl`, at the top or at least
 before the functions that call it, so no other program pays for it:
 
-| String          | File                           | Composed by                                                           | See                                  |
-| --------------- | ------------------------------ | --------------------------------------------------------------------- | ------------------------------------ |
-| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train | "Birds"                              |
-| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                        | the Milky Way row below              |
-| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                              | "Rooted plants"                      |
-| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                               | "The giant planet"                   |
-| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                               | "Figures, livestock and buildings"   |
-| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                               | "Figures, livestock and buildings"   |
-| `buildingsGlsl` | `src/shaders/buildings.ts`     | country                                                               | "Figures, livestock and buildings"   |
-| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | country                                                               | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`    | `src/shaders/lib/fields.ts`    | country                                                               | the fields row below                 |
-| `treesGlsl`     | `src/shaders/lib/trees.ts`     | country                                                               | the trees row below                  |
+| String          | File                           | Composed by                                                                | See                                  |
+| --------------- | ------------------------------ | -------------------------------------------------------------------------- | ------------------------------------ |
+| `worldGlsl`     | `src/shaders/lib/world.ts`     | meadow, shore, dunes (it composes `birdsGlsl` and `milkyWayGlsl` itself)   | "World layers"                       |
+| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, skyward, swell, train; the world's | "Birds"                              |
+| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake; the world's                                                | the Milky Way row below              |
+| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                                   | "Rooted plants"                      |
+| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                                    | "The giant planet"                   |
+| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                                    | "Figures, livestock and buildings"   |
+| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                                    | "Figures, livestock and buildings"   |
+| `buildingsGlsl` | `src/shaders/buildings.ts`     | country                                                                    | "Figures, livestock and buildings"   |
+| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | country                                                                    | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`    | `src/shaders/lib/fields.ts`    | country                                                                    | the fields row below                 |
+| `treesGlsl`     | `src/shaders/lib/trees.ts`     | country                                                                    | the trees row below                  |
 
 - **Fields** (`fieldsGlsl`): `fieldHold` and `fieldRows` (row profiles that settle to their mean
   where the dither cannot hold them) and `fieldFlowerMaterial` (meadow, lavender and sunflower
@@ -495,7 +497,9 @@ byte for byte as the setting's own does, because the shader's runtime tests of t
 `COUNTRY_ALL`: roads and tracks, rain, snow, fog, pine woods, flower fields, herds, walkers and carts
 (and the snow they tread), birds, the harvest's bales, the verges, the murmuration, lit windows,
 chimney smoke, the chalk M, the clouds' shadows tier, the water's ripples tier and the moon's phase;
-`countryFeaturesAll` and `countrySeason` check each gated setting) and `meadow` (its wildflowers).
+`countryFeaturesAll` and `countrySeason` check each gated setting), `meadow` (its wildflowers,
+and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), and `shore` and
+`dunes` (the world's gates alone).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -521,9 +525,9 @@ for, keeping up to four per scene (the least recently drawn freed). Rules:
 - Check that the default picture is bit for bit what it was.
 - Give `featuresAll` every gate and tier `featuresFor` can select. `src/features.verify.ts` checks
   that it covers each knob's turn and, through the renderer, that it draws every gated setting
-  byte for byte as the setting's own program (`featuresAll`), that no change waits for a build or
-  builds a program after the first (`featureToggles`), and how the programs take over
-  (`sceneFeatures`).
+  byte for byte as the setting's own program (`featuresAll` for country, `worldFeaturesAll` for
+  the world's adopters), that no change waits for a build or builds a program after the first
+  (`featureToggles`), and how the programs take over (`sceneFeatures`).
 - Checks that draw many settings with one program compile with every gate on (`country`'s
   `COUNTRY_ALL`).
 
@@ -608,11 +612,12 @@ have **open** cells: an open night sky where the component could be composed.
 | `frost`            | through the window                                               | knob 0.5 (cabin ×1.7)                            | knob (phase)                                               | knob                                                              | knob, trigger 1                                                                      |
 | `autumn`           | over the park, under the canopy                                  | knob 0.5                                         | knob (phase; keys the night light)                         | knob, behind the clouds                                           | knob, trigger 2                                                                      |
 | `bees`             | over the valley                                                  | knob 0.6                                         | knob (phase)                                               | knob, behind the cumulus                                          | knob, trigger 0, screen frame                                                        |
-| `dunes`            | over the dune sea                                                | knob 1 (×1.3)                                    | knob (phase; keys the sand's light)                        | knob, under the dust                                              | knob, trigger 0                                                                      |
+| `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)        | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                              | knob, trigger 0, behind the clouds and the dust                                      |
 | `falls`            | above the cliff                                                  | knob 0.45                                        | knob (phase)                                               | knob, its arc lifted over the rim                                 | knob, trigger 0, falling behind the rim                                              |
 | `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                                | knob (phase; keys the night light)                         | —                                                                 | —                                                                                    |
 | `lanterns`         | over the river, mirrored                                         | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame                     | knob, mirrored                                                    | knob, trigger 2, mirrored                                                            |
-| `meadow`           | over the meadow                                                  | knob 0.6                                         | knob (phase)                                               | knob, behind the clouds                                           | knob, trigger 2                                                                      |
+| `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase)                                               | knob, behind the clouds                                           | knob, trigger 2                                                                      |
+| `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                 | knob, trigger 2, mirrored                                                            |
 | `sill`             | over the city                                                    | knob 0.5                                         | knob (phase)                                               | knob, light through the window                                    | knob, trigger 3                                                                      |
 | `skyward`          | a strip between roofs                                            | knob 0.3                                         | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view) | knob, trigger 0, camera frame                                                        |
 | `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                         | knob (phase; the gaps and the night rays)                  | —                                                                 | —                                                                                    |
@@ -624,7 +629,6 @@ have **open** cells: an open night sky where the component could be composed.
 | `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
 | `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                              | open                                                                                 |
 | `island` †         | round the island                                                 | knob 0.6                                         | full                                                       | open                                                              | open                                                                                 |
-| `shore` †          | over the sea, in wet sand                                        | knob 0.6 (sky and wet sand)                      | full (moonrise)                                            | open                                                              | open                                                                                 |
 | `campfire` †       | above the pines                                                  | knob 0.8 + shared Milky Way (knob)               | — (the giant planet replaces it)                           | open                                                              | own: `K_shooting`, trigger 0, under the planet                                       |
 | `kelp`             | Snell's window                                                   | —                                                | full, refracted                                            | —                                                                 | —                                                                                    |
 | `tidepool`         | the sky in the pools' mirror                                     | —                                                | full, mirrored                                             | —                                                                 | —                                                                                    |
@@ -656,17 +660,19 @@ and from below for a camera looking up (`birdBelowHit`, the scene moving its bir
 detail: a bird is never narrower than its species' `cells`, its strokes about a cell wide, so a far
 flight is a few clear marks rather than flicker.
 
-| Scene      | Birds                                                                                                           | Default                 | Hidden by                                                         | Mirrored in       |
-| ---------- | --------------------------------------------------------------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------- | ----------------- |
-| `country`  | `birdFlights` through its level pinhole (metres), `birdKnobs` (mixed: rooks, gulls, swallows...)                | off, mixed              | land, crowns, buildings, figures, by depth                        | —                 |
-| `skyward`  | `birdBelowHit` on the scene's own paths (pigeons wheeling over the street, swifts looping above); `birds` range | 0.5, pigeons and swifts | anything nearer along the ray                                     | —                 |
-| `meadow`   | `birdFlights`, `birdKnobs`                                                                                      | off, swallows           | the sea of grass by depth; the near blades and clocks             | —                 |
-| `falls`    | `birdFlights` (`fallsBirds`), `birdKnobs`                                                                       | off, swifts             | cliff, rim trees and slot walls by depth; spray and the near bank | —                 |
-| `swell`    | `birdFlights`, `birdKnobs`                                                                                      | off, gulls              | the sea by depth (crests, with relief)                            | —                 |
-| `aurora`   | `birdFlights` in `aurFar`, `birdKnobs`                                                                          | off, geese              | the near bank and birches                                         | the fjord         |
-| `lake`     | `birdFlights` in `lakeBeyond`, `birdKnobs`                                                                      | off, geese              | the cabin and the point's grove                                   | the black ice     |
-| `lanterns` | `birdFlights`, `birdKnobs`                                                                                      | off, geese              | (nearer than the far bank)                                        | the rippled river |
-| `train`    | `birdFlights`, `birdKnobs` (the `line` choice sets the mix)                                                     | off, mixed              | the line's land and structures (the scene's)                      | —                 |
+| Scene      | Birds                                                                                                           | Default                  | Hidden by                                                         | Mirrored in       |
+| ---------- | --------------------------------------------------------------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------- | ----------------- |
+| `country`  | `birdFlights` through its level pinhole (metres), `birdKnobs` (mixed: rooks, gulls, swallows...)                | off, mixed               | land, crowns, buildings, figures, by depth                        | —                 |
+| `skyward`  | `birdBelowHit` on the scene's own paths (pigeons wheeling over the street, swifts looping above); `birds` range | 0.5, pigeons and swifts  | anything nearer along the ray                                     | —                 |
+| `meadow`   | the world's (`worldBirds`, `worldKnobs`)                                                                        | on 0.35 by day, swallows | the sea of grass by depth; the near blades and clocks             | —                 |
+| `shore`    | the world's (`worldBirds`, `worldKnobs`); its image `worldBirdsMirrored`                                        | on 0.35 by day, gulls    | the surf by depth (a skimming gull dips behind a nearer breaker)  | the wet sand      |
+| `dunes`    | the world's (`worldBirds`, `worldKnobs`); none overhead                                                         | on 0.35 by day, buzzard  | the dunes and the M by depth; hazed by the dust                   | —                 |
+| `falls`    | `birdFlights` (`fallsBirds`), `birdKnobs`                                                                       | off, swifts              | cliff, rim trees and slot walls by depth; spray and the near bank | —                 |
+| `swell`    | `birdFlights`, `birdKnobs`                                                                                      | off, gulls               | the sea by depth (crests, with relief)                            | —                 |
+| `aurora`   | `birdFlights` in `aurFar`, `birdKnobs`                                                                          | off, geese               | the near bank and birches                                         | the fjord         |
+| `lake`     | `birdFlights` in `lakeBeyond`, `birdKnobs`                                                                      | off, geese               | the cabin and the point's grove                                   | the black ice     |
+| `lanterns` | `birdFlights`, `birdKnobs`                                                                                      | off, geese               | (nearer than the far bank)                                        | the rippled river |
+| `train`    | `birdFlights`, `birdKnobs` (the `line` choice sets the mix)                                                     | off, mixed               | the line's land and structures (the scene's)                      | —                 |
 
 #### Figures, livestock and buildings
 
@@ -904,13 +910,16 @@ deck drops its finer octave toward the horizon, and the sea's relief fades with 
 footprint and is then not worked out at all: far cloud costs little, and resolved cloud is bit for
 bit the full-detail picture.
 
-| Scene                                                                    | Tier                                                                  | Uses                                                                                                                                                                                |
-| ------------------------------------------------------------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `clouds`                                                                 | volume                                                                | the sea below the window (`CloudSea`: its drift, `K_cover`, the boil, `K_altitude`'s drop, amplitude 0.45); its thunderheads take `cloudBillow` and `cloudPhase`                    |
-| `autumn`                                                                 | shadows                                                               | `skyCloudShadow` from its sky's deck, 300 m up, where each pixel's sight line meets the park (`K_shadows`, off by default)                                                          |
-| `country`                                                                | shadows while its `shadows` knob is on (`featuresFor`), lit while off | `skyClouds` by day, by night the calm deck (`cloudDeckPoint`, `cloudFlatFine`, `cloudFlatField`) lit by the moon; `skyCloudShadow` with its rain's `low` on every point of the land |
-| `train`                                                                  | flat                                                                  | `cloudDeckPoint` with the train's run under the deck, `cloudFlatField` lit as the night line's own deck                                                                             |
-| `falls`, `frost`, `island`, `lake`, `meadow`, `shore`, `sill`, `skyward` | lit (none selected)                                                   | `skyClouds` over their own sky, greyed and lowered under rain each its own way                                                                                                      |
+| Scene                                                 | Tier                                                                    | Uses                                                                                                                                                                                     |
+| ----------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clouds`                                              | volume                                                                  | the sea below the window (`CloudSea`: its drift, `K_cover`, the boil, `K_altitude`'s drop, amplitude 0.45); its thunderheads take `cloudBillow` and `cloudPhase`                         |
+| `autumn`                                              | shadows                                                                 | `skyCloudShadow` from its sky's deck, 300 m up, where each pixel's sight line meets the park (`K_shadows`, off by default)                                                               |
+| `country`                                             | shadows while its `shadows` knob is on (`featuresFor`), lit while off   | `skyClouds` by day, by night the calm deck (`cloudDeckPoint`, `cloudFlatFine`, `cloudFlatField`) lit by the moon; `skyCloudShadow` with its rain's `low` on every point of the land      |
+| `meadow`                                              | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) under its own overcast tint; its shadows (`worldSunlit`) on the field and the tree line where each ray meets them, the hills 1500 m off and the near grass |
+| `shore`                                               | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) under its rain sky, mirrored (`worldMirrorSky`) in the sea and wet sand; its shadows (`worldSunlit`) on the sand and sea, dimming the sun and its glitter  |
+| `dunes`                                               | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`, greyed by `dunesOvercast`; none overhead); its shadows (`worldSunlit`) on the sand and the M, cast from the deck over the eye at rest, aerial or overhead  |
+| `train`                                               | flat                                                                    | `cloudDeckPoint` with the train's run under the deck, `cloudFlatField` lit as the night line's own deck                                                                                  |
+| `falls`, `frost`, `island`, `lake`, `sill`, `skyward` | lit (none selected)                                                     | `skyClouds` over their own sky, greyed and lowered under rain each its own way                                                                                                           |
 
 Not unified, on purpose:
 
@@ -919,11 +928,11 @@ Not unified, on purpose:
   its ground shadows a lattice of puffs cut per cell to match them (its dome's deck is the lit tier).
 - `delta` is seen from orbit: its puffs and their offset shadows are one top-down field.
 - Rain overcasts drawn as a tint or a flat grey sheet over the scene's own sky (`lanterns`,
-  `meadow`, `sill`, `garden`) have no cloud field to share; the canopy's deck is the canopy
+  `meadow`, `shore`, `sill`, `garden`) have no cloud field to share; the canopy's deck is the canopy
   component's (`canopy.ts`), the giant planet's cloud bands the planet's (`planetClouds`).
 - The clouds scene's thunderheads, wisps and contrails are authored towers and passage vapour, not a
-  deck. Scenes that lower the lit deck under rain (`falls`, `sill`, `shore`, `country`) squash the
-  ray before `skyClouds` each by their own amount; a shared helper would only rename a `normalize`.
+  deck. Scenes that lower the lit deck under rain (`falls`, `sill`, `country`) squash the ray
+  before `skyClouds` each by their own amount; a shared helper would only rename a `normalize`.
 
 ### Weather in the world
 
@@ -948,10 +957,10 @@ surfaces and change them. Never paste them over the frame as a flat layer.
   `mix(col, dropLight, p.cover)`. `air` is the scene's grey (rain) or pale (snow) haze, lit by
   lightning flashes and lamp halos. `cover` is calibrated so the mix crosses a dither level: about
   0.6–0.9 for near and mid streaks, down to ~0.3 far, a quarter less in drizzle. Start from it
-  unscaled. Some scenes scale it down (bamboo and shore thin their rain, frost and country weigh
-  their snow) so the weather never buries the subject, at the risk of faint streaks that no longer
-  cross a level: do that only for such a reason, with `p.cover *= ...` before `precipOver` and a
-  comment saying why.
+  unscaled. Some scenes scale it down (bamboo thins its rain, shore its rain and snow, frost and
+  country weigh their snow) so the weather never buries the subject, at the risk of faint streaks
+  that no longer cross a level: do that only for such a reason, with `p.cover *= ...` before
+  `precipOver` (a world adopter: `worldPrecipThinned`) and a comment saying why.
   - **dropLight.** Rain is seen because every drop refracts the bright sky: use about 1.2 × the
     sky's (or the overcast cloud base's) brightness, plus lamp, neon, lightning and low-sun light
     where they shine. Streaks then read as light lines against darker ground, trees and walls, and
@@ -991,11 +1000,208 @@ surfaces and change them. Never paste them over the frame as a flat layer.
   `rainFallSeen` / `snowFallSeen` with `rainVanish(rainFallDir(...))` / `rainVanish(snowFallDir(...))`
   and the camera's own axes, so rain and snow agree (tidepool for rain; skyward looking up, and
   street from a window and island from above looking down, for both, each through one vanishing
-  helper of its own, `streetVanish` and `islVanish`).
+  helper of its own, `streetVanish` and `islVanish`; dunes from overhead through the world's
+  `worldPrecipSeen`).
 - **Intensity.** Amount 0.1 is drizzle (slow faint streaks, mostly veil), 0.4 steady rain, 0.7
   heavy rain with near drops and gust sheets, and 1.0 a downpour: dense sheets sweeping with the
   wind, loud splashes, and visibility falling. Let the sky, the light, the wetness and the splashes
   follow the same scale.
+
+### World layers
+
+One world for every outdoor scene: the sky, its weather and what flies in it come from one state,
+read from one set of knobs and composed in one order, so the scenes differ only by their camera and
+what they put in the world. A setting means the same thing everywhere: rain 0.4 closes the sky as
+far, dims the sun as much and falls at the same depths in every scene that adopts it. The GLSL is
+`worldGlsl` (`src/shaders/lib/world.ts`, opt-in; it composes `birdsGlsl` and `milkyWayGlsl` itself,
+so an adopter does not include them again), the knobs and gates `src/scenes/world.ts`. The adopters
+are meadow (the first), shore and dunes.
+
+```glsl
+struct World {        // the world now: worldAt, once per pixel, before anything is drawn
+  Sky sky;            // clock, sun, moon in its phase; light under the deck (+ aurora glow, lightning flash)
+  float time, t, tm;  // time of day 0..1, the scene clock, the motion clock
+  float rain, snow, fog, wind;           // the knobs (0 while off or gated out)
+  float storm, overcast, heavy, cover;   // max(rain, 0.85 snow); weatherOvercast; heavy rain/snow; K_clouds thickened
+  vec3 glow;          // the aurora's light on the land (in sky.ambient)
+  float flash, boltAge, boltSeed, meteorAge, meteorSeed;
+};
+World worldAt(float t, int meteorSlot, int lightningSlot);
+struct WorldView {    // the scene's camera at this pixel: a level pinhole with a shifted lens, or its own ray on it
+  vec3 ray, dir;      // viewRay's frame (x right, y up, z ahead); the sky's frame, skyFacing(ray, yaw)
+  float yaw;          // camera frame -> sky frame
+  vec2 uv;            // the screen point, after any lens shift the scene gives its world
+  float aspect, foot; // uRes.x / uRes.y; radians a dither cell spans, 1 / (focal * uRes.y)
+  float horizon, focal, eye, unit; // the pinhole (eye in scene units) and scene units per metre
+};
+WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
+WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, float yaw, float unit); // the scene's own ray
+struct WorldSky { vec3 col; vec3 strike; float cloud; };
+WorldSky worldSky(World w, WorldView v, vec4 meteorField);   // behind everything
+float worldSunlit(World w, WorldView v, vec3 at);             // the deck's shadow: multiply the sun by it
+struct WorldFlyway { vec2 depths; vec2 band; vec2 seed; float swoopTo; float enlarge; };
+void worldBirds(World w, WorldView v, WorldFlyway f, vec3 haze, float thick, inout vec3 col, inout float z, inout float accent);
+void worldFog(World w, WorldView v, vec3 fogCol, float z, inout vec3 col, inout float accent);
+void worldPrecip(World w, WorldView v, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent);
+void worldPrecipSeen(World w, WorldView v, vec3 right, vec3 up, vec3 fwd, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent); // a tilted camera
+void worldPrecipThinned(World w, WorldView v, vec3 air, vec3 dropLight, float z, vec2 thin, inout vec3 col, inout float accent); // fewer drops and flakes
+void worldOver(World w, WorldView v, WorldFlyway f, vec3 haze, float thick, vec3 air, vec3 dropLight, inout vec3 col, inout float z, inout float accent);
+WorldView worldMirrorView(WorldView v, vec3 ray, float blur);  // a level mirror at the ground: water, a wet film
+WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField);
+void worldBirdsMirrored(World w, WorldView m, WorldFlyway f, vec3 haze, float thick, float still, inout vec3 col);
+const float WORLD_FAR;  // 1e4: the distance of open sky
+```
+
+- **The world** (`worldAt`). The clock is `timeOfDayM(K_time, K_cycle, uMotionTime)`, the moon takes
+  `K_moon` (under `SKY_MOON_PHASE`). Rain and snow close the sky by `weatherOvercast`; the deck's
+  cover is `max(K_clouds, overcast)`; `heavy` is `smoothstep(0.35, 0.9, storm)`. Under the deck the
+  sun's light fades by 0.88 × overcast, the ambient greys by 0.6 × overcast and darkens by
+  0.3 × storm, the twilight fades by 0.7 × overcast; the aurora's glow (behind the deck) and the
+  lightning's flash light are added to the ambient. With no weather, `w.sky` is the clear sky
+  exactly. Light the scene with `w.sky`; dim or tint it further as the scene needs.
+- **The view** (`worldView`, or fill the struct). `ray` is the camera's ray in the shared side-on
+  frame, `dir` the same ray in the sky's frame (`yaw`: the turn that takes one to the other), `foot`
+  the level of detail for the stars, the aurora and shooting stars. Distances handed to the world
+  (`z`) are in the scene's units, `WORLD_FAR` for open sky; `unit` turns metres into them, as
+  `BirdCamera.unit` does: rain and snow fall at `weatherDepth(z / unit)`, fog reckons in metres,
+  and the deck's shadows are cast from 1000 m up.
+- **The order.** `worldSky` first, behind everything: the dome (sun and moon discs), the aurora
+  ahead of the camera behind the clouds, the cloud deck, the Milky Way and the stars in its gaps,
+  shooting stars (from `meteorField`, `skyAngles` of the camera's ray), then the lightning, kept
+  apart in `strike` (the bolt from a cloud base ~12° up to the horizon, the flash's glow) so a scene
+  that tints its sky draws `tint(col) + strike`; `cloud` is the deck's alpha along the ray. Then
+  the scene's distance, land and near things, keeping `z`, the distance to the first opaque thing
+  in its cell. Then `worldBirds` where a bird is nearer than `z` (it takes the cell and `z`), lit by
+  the sky and hazed by `exp(-depth * thick)` into the scene's `haze`; anything the scene draws
+  nearer than the birds after them; then `worldFog` to `z` and `worldPrecip` to `z` (rain toward
+  the scene's `air` and `dropLight`, snow in the sky's and the sun's light), each fading the accent
+  under its veil. `worldOver` does the last three at once for a scene with nothing in between.
+- **Other cameras.** `worldViewOf` is `worldView` along a ray the scene gives (its camera's frame,
+  unit length), for rays bent or turned off the pinhole's own (heat shimmer, a pointer's parallax):
+  the sky, the aurora and shooting stars follow the ray; the bolt, the birds, the rain and the snow
+  keep to the pinhole's screen at `uv`. A camera that is not level draws the rain and snow with
+  `worldPrecipSeen`, given its axes (`right`, `up`, `fwd`) in the frame of a level camera facing the
+  same way (x right, along the wind; y up; z ahead): the paths meet where this camera sees the fall
+  converge (`rainFallSeen`, `snowFallSeen` through `rainVanish` at the view's focal), below the eye
+  looking down, overhead looking up. Level axes draw `worldPrecip`'s picture.
+- **Mirrors.** A level mirror at the ground (still water, the sea, a film of water on sand or a
+  road) shows the world along the ray it reflects. `worldMirrorView(v, ray, blur)` is that view:
+  `ray` in the camera's frame, tilted by the scene's own waves or ripples; its screen point where
+  that ray meets the screen (a level mirror's cell below the horizon looks up as far above it); its
+  footprint widened by `blur`, the radians the mirror's roughness spreads its image over (0 still).
+  `worldMirrorSky` is what the mirror shows there, in `worldSky`'s order: the dome with the moon
+  swung behind the viewer (`skyMirror`: draw the moon's path on the water as glitter), the aurora,
+  the deck lit by the true moon, the Milky Way and the stars, shooting stars, all at the mirror's
+  footprint (a rough one fades the stars to their glow and dims a streak); in `strike`, the bolt
+  where the mirror's lookup meets it, as dim, and the flash's glow. `worldBirdsMirrored` lays the
+  birds' image over it (`birdFlightsSeen`, mirrored), taking `still`'s share (0..1, how still the
+  mirror is). The scene mixes the image into its surface by its own Fresnel and draws the sun's and
+  the moon's glitter itself.
+- **Thinned drops.** `worldPrecipThinned` is `worldPrecip` with the drops' and flakes' cover scaled
+  from `thin.x` far to `thin.y` nearest; the veil and the depths stay the world's. Only for a scene
+  whose subject the weather would bury, saying why where it calls it ("Weather in the world").
+- **Gating.** `worldFeatures(values)` gives each part's gate, 0 or 1, on wherever its knobs can show
+  it; `WORLD_ALL` has them all on. Merge them into the scene's `featuresFor` and `featuresAll`. Each
+  part keeps its runtime test of its knob inside the gate, so with a knob off it returns its neutral
+  value exactly, compiled in or not (`featuresAll` draws every setting byte for byte as its own
+  program). The night's parts compile in only where night can fall (the day cycle on, or the hour
+  before sunrise or after sunset: between them the sky's `night` is exactly 0), the birds only
+  within their hours.
+
+  | Gate              | On while                                                           | Off: the part gives                  |
+  | ----------------- | ------------------------------------------------------------------ | ------------------------------------ |
+  | `WORLD_STARS`     | `stars` > 0, night can fall                                        | no stars                             |
+  | `WORLD_MILKYWAY`  | `milkyWay` and `stars` > 0, night can fall                         | no band; the stars exactly `K_stars` |
+  | `WORLD_METEORS`   | night can fall (its "now" shows one while the knob is off)         | no shooting stars                    |
+  | `WORLD_AURORA`    | `aurora` on, night can fall                                        | no curtains, no glow                 |
+  | `WORLD_CLOUDS`    | `clouds` > 0, or rain or snow on                                   | cover 0, `cloud` 0                   |
+  | `WORLD_SHADOWS`   | `shadows` on and `WORLD_CLOUDS` (with `CLOUD_TIER` at shadows)     | `worldSunlit` 1                      |
+  | `WORLD_BIRDS`     | `birds` on, the day cycle on or the hour within `WORLD_BIRD_HOURS` | no bird; `z` and the cell unchanged  |
+  | `WORLD_RAIN`      | `rain` on                                                          | rain 0, no drops                     |
+  | `WORLD_SNOW`      | `snow` on                                                          | snow 0, no flakes                    |
+  | `WORLD_FOG`       | `fog` > 0                                                          | no fog                               |
+  | `WORLD_LIGHTNING` | always (its "now" strikes while the knob is off)                   | no strike, flash 0                   |
+  | `SKY_MOON_PHASE`  | the moon off or short of full (left out, not 0, otherwise)         | the full moon of `skyColor`          |
+
+- **Knobs and defaults** (`worldKnobs(options)`, with `worldGroups` for the headings). The shared
+  builders' own keys, labels and help: `time`, `cycle`, `stars`, `milkyWay`, `moon`, `meteors`
+  (`skyKnobs`); `clouds`, `shadows`, `rain`, `snow`, `fog`, `lightning`, `aurora`, then `wind`
+  (`weatherKnobs`, wind in `groups.wind` if given); `birds`, `birdKind`, `birdFormation`
+  (`birdKnobs`). The scene gives its hour (`time`), its trigger slots (`meteors.trigger`,
+  `lightning`) and its birds (`kind`, `help`), and may change any default. The defaults are an
+  ambient world (`WORLD_DEFAULTS`): fair-weather cloud 0.25, stars 0.6, the moon full, the Milky
+  Way on at 1 (it shows on dark nights: moonlight washes it out), birds on at 0.35 by day; shooting
+  stars, cloud shadows, rain, snow, fog, lightning and the aurora off; wind 0.2.
+
+**Adopting it** (meadow, `meadow/index.ts` and `meadow/shader.ts`):
+
+```ts
+...worldKnobs({
+  time: 0.72,
+  clouds: 0.2, // its own fair-weather cover
+  meteors: { trigger: MEADOW_METEOR_TRIGGER },
+  lightning: MEADOW_LIGHTNING_TRIGGER,
+  birds: { kind: "swallows", help: "..." },
+  groups: { wind: "wind" },
+}),
+// in the SceneDef:
+groups: { sky: worldGroups.sky, birds: worldGroups.birds, ... },
+featuresFor: (values) => ({ ...worldFeatures(values), MEADOW_HAS_WILDFLOWERS: ... }),
+featuresAll: { ...WORLD_ALL, MEADOW_HAS_WILDFLOWERS: 1 },
+```
+
+```glsl
+${worldGlsl}   // at the top of the scene's GLSL
+// ... in the entry:
+World world = worldAt(t, MEADOW_METEOR_SLOT, MEADOW_LIGHTNING_SLOT);
+WorldView view = worldView(uv, MEADOW_HORIZON, MEADOW_FOCAL, eye, MEADOW_TURN, 1.0);  // metres
+vec3 sun = world.sky.sunColor * worldSunlit(world, view, groundPoint);
+float zHit = WORLD_FAR;
+WorldSky heaven = worldSky(world, view, MEADOW_METEOR_FIELD);
+col = meadowDeck(heaven.col, above, world.overcast, world.storm) + heaven.strike;
+// ... the hills, the trees, the sea of grass (zHit: the depth of what the cell sees)
+worldBirds(world, view, WorldFlyway(vec2(12.0, 100.0), band, seed, 1.6, 1.5), haze, thick, col, zHit, accent);
+// ... the wildflowers, the near grass, the clocks and the seeds, over the birds
+worldFog(world, view, air, zHit, col, accent);
+worldPrecip(world, view, air, dropLight, zHit, col, accent);
+```
+
+A scene provides: its camera (a level pinhole: horizon, focal, eye height, the yaw from its frame
+to the sky's, its units per metre; its own ray through `worldViewOf`, and its axes for
+`worldPrecipSeen` where it tilts), the distance to the first opaque thing in each cell, its trigger
+slots and meteor field, where its birds fly (`WorldFlyway`), its haze and aerial thickness, its rain
+air and drop light, the ground points it wants the deck's shadows at, its mirror's ray and
+roughness (`worldMirrorView`) and Fresnel, and what it does with the light (`w.sky`, `w.flash`) and
+the weather (`uWeather` on its surfaces).
+
+**What stays the scene's.**
+
+- Meadow keeps its overcast tint over the world's deck (`meadowDeck`), its hills, tree line and
+  mown M, its rain shafts and gust curtains and the rain's mist over the distance (all inside
+  `WORLD_RAIN`), its golden haze, its wet grass and the snow lying on its grass, hills and trees
+  (read from `uWeather`, compiled in always, so they dry and melt after the knob is off), its drop
+  light, and the ground points of the deck's shadows (the field and the tree line where each ray
+  meets them, the hills 1500 m off, the near grass at the eye's feet).
+- Shore keeps its storm bank out at sea and the bolts it drops (on the world's strike timing and
+  flash; it leaves out `strike`, whose bolt falls from ~12° up, outside the bank) with their image
+  in the sea; its rain sky over the world's deck (the grey haze, the light gap on the horizon, the
+  rain shafts); its thinned drops (`worldPrecipThinned`, 0.55 far to 0.35 near, so they never bury
+  the surf); and the moon's phase compiled in at every setting (`features: { SKY_MOON_PHASE: 1 }`:
+  the glitter magnifies the last bits of the moon's direction that the phase code shifts, so a full
+  moon's own program would not draw byte for byte as the all-features one).
+- Dunes' fog is the desert's dust: the shared `fog` knob drives its own haze (with a hard wind, the
+  sandstorm) and it never calls `worldFog`, whose fog assumes an eye near the ground (dunes' eye
+  flies ~80 m up, looking 1–4 km out). A grid cell is 5 m (`DUNES_UNIT`, 0.2 cells per metre);
+  its view is `worldViewOf` along the ray the heat shimmer bends and the pointer turns; a sandstorm
+  raises its copy of the world's overcast before `worldSky`, so the aurora and shooting stars fade
+  behind the dust. Overhead it takes the world's light, cloud shadows (cast from the deck over the
+  eye at rest), dust, rain and snow, but no sky, clouds, stars, Milky Way, meteors, bolts or birds;
+  its rain and snow fall as a camera pitched ~50° down sees them (`worldPrecipSeen`,
+  `DUNES_OVERHEAD_PITCH`): straight down, their paths would meet at the frame's middle, where
+  `rainFallSeen` cannot tell them apart.
+
+Not in the world yet: views from straight above (the world's sky and birds are drawn for a level
+camera, so dunes' overhead view has neither); a scene that needs them keeps its own for those parts.
 
 ## Simulations (`sim`)
 
@@ -1232,12 +1438,15 @@ the check. No change waits on a build (no status, log, uniform location or use o
 its completion or fence was seen). `sceneFeatures`, software: nothing is built ahead; a gated knob
 builds its own program in the background and switches to it once built, the old frame holding until
 then; several gated knobs at once build once; past four sets the least recently drawn program is
-freed. `featureToggles`, GPU, for the countryside and the meadow: the plain page builds only its
-own program; after the first gated change, which builds the all-features program in the
-background, no change builds a program; with changes expected that program is built ahead at rest,
-draws one frame without changing it, and the first change switches to it at once. `featuresAll`,
-GPU: that program draws every gated setting, dithered and as source, byte for byte as the
-setting's own.
+freed. `featureToggles`, GPU, for every scene with `featuresFor` (country, meadow, shore, dunes):
+the plain page builds only its own program; after the first gated change, which builds the
+all-features program in the background, no change builds a program; with changes expected that
+program is built ahead at rest, draws one frame without changing it, and the first change switches
+to it at once. `featuresAll` (country) and `worldFeaturesAll` (every other scene with
+`featuresFor`: meadow, shore, dunes), GPU, two checks to keep each well under the deadline: the
+all-features program draws every gated setting, dithered and as source, byte for byte as the
+setting's own (drawn on a renderer taken for a software rasteriser's that enters at the same
+starting setting, settles and switches the same way, so the sims share their history).
 
 The shared components have checks of their own:
 

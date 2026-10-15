@@ -1,11 +1,17 @@
 // Wind over a sand sea. The sand is a live simulation (sim.ts: Werner's slab model on a toroidal
 // grid, uploaded as uSim0 heights and uSim1 slopes), so the dunes really form, march downwind and
 // heal around a heap you drop on them; the shader ray-marches it low toward the horizon or shows it
-// from straight above, under the shared sky, with haze that turns into a sandstorm in a hard wind.
+// from straight above, under the shared world's sky, weather and birds (scenes/world.ts,
+// shaders/lib/world.ts), its fog the desert's dust, which turns into a sandstorm in a hard wind.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { DUNES_METEOR_TRIGGER, DUNES_PASSAGE, dunesGlsl } from "./shader.ts";
+import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
+import {
+  DUNES_LIGHTNING_TRIGGER,
+  DUNES_METEOR_TRIGGER,
+  DUNES_PASSAGE,
+  dunesGlsl,
+} from "./shader.ts";
 import { dunesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -50,9 +56,18 @@ const params: readonly ParamDef[] = [
     "Look low across the dune sea to the horizon, or straight down on it like a satellite picture.",
     { steady: true },
   ),
-  // The sky's own default star density (a dark desert sky, drawn 1.3x bright).
-  ...skyKnobs({ time: 0.74, stars: 1, moon: 1, meteors: { trigger: DUNES_METEOR_TRIGGER } }),
-  ...weatherKnobs({ wind: true, fog: true, aurora: true }),
+  // The shared world: sunset over the sand, every star of a dark desert sky by night, a buzzard on
+  // the thermals by day.
+  ...worldKnobs({
+    time: 0.74,
+    stars: 1,
+    meteors: { trigger: DUNES_METEOR_TRIGGER },
+    lightning: DUNES_LIGHTNING_TRIGGER,
+    birds: {
+      kind: "buzzard",
+      help: "Birds over the dune sea by day, a buzzard by default circling on the thermals the hot sand sends up; any dune or the M nearer hides them, the dust hazes them, and few fly in rain or snow. Not seen from overhead.",
+    },
+  }),
   range(
     "weather",
     "heat",
@@ -85,13 +100,14 @@ export const dunesScene: SceneDef = {
       blurb: "How much sand the wind has to work with, and the texture of its surface.",
     },
     view: { title: "View", blurb: "Across the dunes to the horizon, or from high above." },
-    sky: atmosphereGroups.skyNight,
-    // The shared heading, with what wind and haze mean out here.
+    sky: worldGroups.sky,
+    // The shared heading, with what the weather means out here.
     weather: {
-      ...atmosphereGroups.weather,
+      ...worldGroups.weather,
       blurb:
-        "The wind drives the dunes downwind and blows sand off their crests; the haze is desert dust, and with a hard wind it becomes a sandstorm.",
+        "Cloud and its shadows on the sand, rain, snow, wind, lightning and the aurora: one weather, shared by every outdoor scene. The wind drives the dunes downwind and blows sand off their crests; the fog is desert dust, and with a hard wind it becomes a sandstorm; rain darkens the sand and stills it, snow lies on the slopes, and a high sun on dry sand makes the distance shimmer.",
     },
+    birds: worldGroups.birds,
     manifold: {
       title: "Manifold M",
       blurb: "A landmark of its own: a weathered sandstone M out in the dunes.",
@@ -101,6 +117,7 @@ export const dunesScene: SceneDef = {
   entry: "sceneDunes",
   sim: dunesSim(params),
   passage: DUNES_PASSAGE,
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
+  // The world's parts only while their knobs can show them (worldFeatures).
+  featuresFor: worldFeatures,
+  featuresAll: WORLD_ALL,
 };

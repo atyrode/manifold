@@ -1,7 +1,8 @@
 // GPU regressions for knob-keyed compile-time features (SceneDef.featuresFor, featuresAll), through
 // the actual renderer. The countryside compiles its optional parts in only while their knobs are on
-// (countryFeatures), the meadow its wildflowers. The renderer is made to take its context for a
-// hardware GPU's or a software rasteriser's (`watched`), whatever renders the check. Registered in
+// (countryFeatures), the meadow its wildflowers and the shared world's parts (worldFeatures), the
+// shore and the dunes the world's parts. The renderer is made to take its context for a hardware
+// GPU's or a software rasteriser's (`watched`), whatever renders the check. Registered in
 // verify-browser.ts.
 //
 // sceneFeatures: the default countryside compiles in none of the parts whose knobs are off (flower
@@ -14,19 +15,24 @@
 // terrain); every page here is run until it shows (`landed`), so a frame that changes is a program's
 // doing, not the build's.
 //
-// featureToggles, on a GPU, for the countryside and the meadow: the plain page builds nothing but
-// the program it entered with; no knob change waits for a build (a compile or link status or log,
-// a uniform location or a use of a program before the renderer has seen it finish building); the
-// first gated change builds the all-features program in the background and no change after it
-// builds a program. With changes expected (the lab open) the all-features program is built ahead
-// once the scene is at rest and draws one frame without changing it, and the first change switches
-// to it at once.
+// featureToggles, on a GPU, for every scene with knob-keyed features (KNOB_KEYED): the plain page
+// builds nothing but the program it entered with; no knob change waits for a build (a compile or
+// link status or log, a uniform location or a use of a program before the renderer has seen it
+// finish building); the first gated change builds the all-features program in the background and
+// no change after it builds a program. With changes expected (the lab open) the all-features
+// program is built ahead once the scene is at rest and draws one frame without changing it, and the
+// first change switches to it at once.
 //
-// featuresAll, on a GPU: the all-features program draws every gated setting of the countryside and
-// the meadow, dithered and as source, byte for byte as that setting's own program does.
+// featuresAll (the countryside) and worldFeaturesAll (the shared world's adopters, the rest of
+// KNOB_KEYED), on a GPU: the all-features program draws every gated setting, dithered and as
+// source, byte for byte as that setting's own program does; two checks, so each stays well under
+// its deadline. The own program draws on a renderer taken for a software rasteriser's (which builds
+// a changed setting's own program): it enters at the same starting setting as the all-features
+// page, settles there and switches the same way, at the same frozen clocks, so the sims share their
+// history (the meadow's clocks close in the rain) and only the program differs.
 import type { ParamDef } from "./params.ts";
 import { DitherRenderer, type RenderSettings, type ViewId } from "./renderer.ts";
-import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import { featureKey, sceneFeatures, sceneFeaturesAll, shaderValues } from "./shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "./state.ts";
 
@@ -85,6 +91,9 @@ function gatedTurns(scene: SceneId): Params[] {
     .filter((knobs) => featureKey(sceneFeatures(def, shaderValues(def, knobs))) !== plain);
   return [...turns, Object.assign({}, ...turns) as Params];
 }
+
+/** Every scene with knob-keyed features (SceneDef.featuresFor), in lab order. */
+const KNOB_KEYED = sceneIds.filter((scene) => sceneDefs[scene].featuresFor !== undefined);
 
 /**
  * Frames on demand: rAF is held, and each renderer started here draws a frame only when the
@@ -342,6 +351,27 @@ async function landed(scene: SceneId, frame: () => void, context: Watched): Prom
   }
 }
 
+/** Frames a page draws at its starting setting before any change (see `settle`). */
+const SETTLE_FRAMES = 24;
+
+/**
+ * Frames at the starting setting until the sims' budgeted pre-runs are done (the meadow's spreads
+ * its pre-run over frames, up to 90 ms of it a frame, reading the knobs of each): at least
+ * SETTLE_FRAMES, the last three unchanged. Two pages that settle so and then make the same change
+ * at the same frozen clocks hold the same sim state, whatever setting each then draws.
+ */
+function settle(frame: () => void, context: Watched): void {
+  let last = context.image();
+  let still = 0;
+  for (let n = 0; n < SETTLE_FRAMES || still < 3; n++) {
+    check(n < 10 * SETTLE_FRAMES, "The picture did not settle at its starting setting");
+    frame();
+    const image = context.image();
+    still = changed(image, last).count === 0 ? still + 1 : 0;
+    last = image;
+  }
+}
+
 export async function verifySceneFeatures(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {
@@ -487,9 +517,9 @@ export async function verifySceneFeatures(
 
 const VIEWS: readonly ViewId[] = ["source", "dithered"];
 
-/** Contexts opened for a check, taken for a hardware GPU's (`watched`), each closed when done. */
+/** Contexts opened for a check, taken for a hardware GPU's unless asked (`watched`), each closed when done. */
 function contextPool(): {
-  open: () => Watched;
+  open: (gpu?: "hardware" | "software") => Watched;
   close: (context: Watched) => void;
   closeAll: () => void;
 } {
@@ -499,8 +529,8 @@ function contextPool(): {
     contexts.delete(context);
   };
   return {
-    open() {
-      const context = watched("hardware");
+    open(gpu = "hardware") {
+      const context = watched(gpu);
       contexts.add(context);
       return context;
     },
@@ -549,16 +579,20 @@ export async function verifyFeatureToggles(
   const pool = contextPool();
   const result: Record<string, unknown> = {};
   try {
-    for (const scene of ["country", "meadow"] as const) {
+    for (const scene of KNOB_KEYED) {
+      const started = performance.now();
       const turns = gatedTurns(scene);
       const [first = {}] = turns;
 
-      // The default page: entered with the program for its setting, it builds nothing more.
+      // The default page: entered with the program for its setting, it builds nothing more. It
+      // settles first (the dunes' sand warms up over frames), so a frame that changes from here on
+      // is a program's doing.
       const page = pool.open();
       const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
       const frame = clock.start(renderer);
       for (let i = 0; i < 4; i++) frame();
       await landed(scene, frame, page);
+      settle(frame, page);
       check(
         renderer.failure === undefined && page.links === 1,
         `${scene}: the default page built ${page.links} programs`,
@@ -599,6 +633,7 @@ export async function verifyFeatureToggles(
       const aheadFrame = clock.start(expecting);
       aheadFrame();
       await landed(scene, aheadFrame, ahead);
+      settle(aheadFrame, ahead);
       const entered = ahead.drawing();
       ahead.armed = true;
       expecting.expectChanges(true);
@@ -637,7 +672,9 @@ export async function verifyFeatureToggles(
         `${scene}: building ahead waited on a build: ${ahead.waits.join(", ")}`,
       );
       pool.close(ahead);
-      result[scene] = { settings: turns.length, heldFrames };
+      // Seconds to a tenth: each scene's share of the check's time.
+      const seconds = Math.round((performance.now() - started) / 100) / 10;
+      result[scene] = { settings: turns.length, heldFrames, seconds };
     }
     return result;
   } finally {
@@ -646,46 +683,72 @@ export async function verifyFeatureToggles(
   }
 }
 
+/** featuresAll for the countryside. */
 export async function verifyFeaturesAll(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {
+  return featuresAllOf(["country"]);
+}
+
+/** featuresAll for the shared world's adopters: every other scene with knob-keyed features. */
+export async function verifyWorldFeaturesAll(
+  _gl: WebGL2RenderingContext,
+): Promise<Record<string, unknown>> {
+  return featuresAllOf(KNOB_KEYED.filter((scene) => scene !== "country"));
+}
+
+/** featuresAll's and worldFeaturesAll's check of each of `scenes` (see the header). */
+async function featuresAllOf(scenes: readonly SceneId[]): Promise<Record<string, unknown>> {
   const clock = frameClock();
   const pool = contextPool();
   const result: Record<string, unknown> = {};
   try {
-    for (const scene of ["country", "meadow"] as const) {
+    for (const scene of scenes) {
+      const started = performance.now();
       const def = sceneDefs[scene];
       const turns = gatedTurns(scene);
       const [first = {}] = turns;
 
-      // Every gated setting, in two views, drawn with the all-features program.
+      // Every gated setting, in two views, drawn with the all-features program, after the page has
+      // settled at the starting setting.
       const page = pool.open();
       const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
       const frame = clock.start(renderer);
       frame();
       await landed(scene, frame, page);
+      settle(frame, page);
       const plain = page.drawing();
       renderer.update(settings(scene, first));
       await switchFrom(frame, page, plain, page.image());
       const drawn = drawTurns(scene, turns, renderer, frame, page, page.drawing());
       pool.close(page);
 
-      // Each setting's own program (the scene entered afresh with it) draws the same frames.
+      // Each setting's own program draws the same frames: on a renderer taken for a software
+      // rasteriser's, which builds a changed setting's own program in the background and never the
+      // all-features one. It enters at the same starting setting, settles there and switches from
+      // setting to setting in the same order at the same frozen clocks, so its sim has the
+      // all-features page's history and only the program differs.
       const byKey = new Map<string, number[]>();
       turns.forEach((knobs, index) => {
         const key = featureKey(sceneFeatures(def, shaderValues(def, knobs)));
         byKey.set(key, [...(byKey.get(key) ?? []), index]);
       });
       const mismatches: string[] = [];
-      for (const indices of byKey.values()) {
-        const reference = pool.open();
-        const own = new DitherRenderer(
-          reference.canvas,
-          settings(scene, turns[indices[0] ?? 0] ?? {}),
-          true,
-        );
-        const ownFrame = clock.start(own);
-        await landed(scene, ownFrame, reference);
+      const reference = pool.open("software");
+      const own = new DitherRenderer(reference.canvas, settings(scene, {}), true);
+      const ownFrame = clock.start(own);
+      ownFrame();
+      await landed(scene, ownFrame, reference);
+      settle(ownFrame, reference);
+      let current = featureKey(sceneFeatures(def));
+      let builds = 1;
+      for (const [key, indices] of byKey) {
+        own.update(settings(scene, turns[indices[0] ?? 0] ?? {}));
+        if (key !== current) {
+          await switchFrom(ownFrame, reference, reference.drawing(), reference.image());
+          current = key;
+          builds++;
+        }
         for (const view of VIEWS)
           for (const index of indices) {
             const knobs = turns[index] ?? {};
@@ -700,17 +763,19 @@ export async function verifyFeaturesAll(
                 `${view} ${JSON.stringify(knobs)}: ${difference.count} cells in ${difference.box.join(",")}`,
               );
           }
-        check(
-          own.failure === undefined && reference.links === 1,
-          `${scene}: a setting's own program took ${reference.links} builds: ${JSON.stringify(own.failure)}`,
-        );
-        pool.close(reference);
       }
+      check(
+        own.failure === undefined && reference.links === builds,
+        `${scene}: ${byKey.size} settings' own programs took ${reference.links - 1} builds: ${JSON.stringify(own.failure)}`,
+      );
+      pool.close(reference);
       check(
         mismatches.length === 0,
         `${scene}: the all-features program draws differently from each setting's own: ${mismatches.join("; ")}`,
       );
-      result[scene] = { settings: turns.length, programs: byKey.size };
+      // Seconds to a tenth: each scene's share of the check's time.
+      const seconds = Math.round((performance.now() - started) / 100) / 10;
+      result[scene] = { settings: turns.length, programs: byKey.size, seconds };
     }
     return result;
   } finally {

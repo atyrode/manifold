@@ -5,11 +5,18 @@
 // across it, y up, in cells; uSim0 holds heights, uSim1 slopes, curvature and hollowness. The
 // aerial camera turns its rays into grid space by DUNES_CAMERA.turn, so the wind blows left to right
 // and toward the viewer; the sky library's frame is the camera's turned by DUNES_CAMERA.look, and
-// its sun and moon are turned on into grid space to light the sand. Over the dunes the shared sky
-// components (src/scenes/README.md, "Composing components"): K_stars, the moon in its phase (K_moon,
-// SKY_MOON_PHASE), and in the camera's own frame the aurora (K_aurora) and shooting stars (K_meteors),
-// all swallowed by the dust of a sandstorm.
+// its sun and moon are turned on into grid space to light the sand.
+//
+// Over the dunes the shared world (shaders/lib/world.ts; src/scenes/README.md, "World layers"),
+// through the aerial camera's own rays (worldViewOf: bent by the heat, turned by the pointer) at a
+// cell of about 5 m (DUNES_UNIT): its sky (the dome, the aurora, the cloud deck, the Milky Way and
+// the stars, shooting stars, lightning) and its light, the deck's shadows on the sand, its birds
+// over the dune sea, its rain and snow (wetting the sand, lying on it) at the depth of what each
+// cell sees. The world's fog is the desert's dust: the haze the far dunes fade into, which a hard
+// wind turns into a sandstorm swallowing the sky and the sun. Seen from overhead: the light, the
+// deck's shadows, the dust and the sandstorm, and the rain and snow falling away from the eye.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
   DUNES_CAMERA,
   DUNES_GRID,
@@ -27,14 +34,18 @@ import {
  */
 export const DUNES_PASSAGE = { enter: 2.6, exit: 1.5 } as const;
 
-/** Trigger slot of the shooting stars' "now" button. */
+/** Trigger slots of the shooting stars' and the lightning's "now" buttons. */
 export const DUNES_METEOR_TRIGGER = 0;
+export const DUNES_LIGHTNING_TRIGGER = 1;
 
 export const dunesGlsl = `
+${worldGlsl}
+// ---- the dunes ----
 // Where shooting stars set out: skyAngles of the camera's view (bearing, elevation, radians), the
 // strip of sky over the dune sea.
 const int DUNES_METEOR_SLOT = ${DUNES_METEOR_TRIGGER};
 const vec4 DUNES_METEOR_FIELD = vec4(-0.5, 0.17, 1.0, 0.08);
+const int DUNES_LIGHTNING_SLOT = ${DUNES_LIGHTNING_TRIGGER};
 const float DUNES_GRID = ${glslFloat(DUNES_GRID)};
 // No sand stands higher than this (cells); rays above it and climbing can stop.
 const float DUNES_TOP = ${glslFloat(DUNES_MARCH.top)};
@@ -45,6 +56,8 @@ const float DUNES_EYE_HEIGHT = ${glslFloat(DUNES_CAMERA.height)};
 const float DUNES_EYE_RISE = ${glslFloat(DUNES_CAMERA.rise)};
 const float DUNES_HORIZON = ${glslFloat(DUNES_CAMERA.horizon)};
 const float DUNES_FOV = ${glslFloat(DUNES_CAMERA.fov)};
+// viewRay's image plane at that field, screen heights: the world's pinhole (WorldView.focal).
+const float DUNES_FOCAL = ${glslFloat(0.5 / Math.tan(0.5 * DUNES_CAMERA.fov))};
 const float DUNES_TURN = ${glslFloat(DUNES_CAMERA.turn)};
 const float DUNES_LOOK = ${glslFloat(DUNES_CAMERA.look)};
 const float DUNES_PARALLAX = ${glslFloat(DUNES_CAMERA.parallax)};
@@ -59,6 +72,22 @@ const float DUNES_MARK_SCOUR = ${glslFloat(DUNES_MARK.scour)};
 const float DUNES_SAND_SPARSE = ${glslFloat(DUNES_SAND.sparse)};
 const float DUNES_SAND_PLENTY = ${glslFloat(DUNES_SAND.plenty)};
 const float DUNES_SLAB = ${glslFloat(DUNES_SLAB)};
+// The sand sea's scale for the world (WorldView.unit): cells per metre. A cell is about 5 m, so the
+// dunes stand 10-50 m high a few hundred metres apart, the eye flies some 80 m over the sand and the
+// M is a butte 40-75 m tall; the rain and the snow fall at their depths in metres, and the deck's
+// shadows are cast from 1 km over the eye.
+const float DUNES_UNIT = 0.2;
+// The world's birds over the dune sea: flights cross 30-300 cells out, cruising above the horizon;
+// a swooping party comes down to skim the crests.
+const vec2 DUNES_BIRD_DEPTHS = vec2(30.0, 300.0);
+const vec2 DUNES_BIRD_BAND = vec2(DUNES_HORIZON + 0.03, 0.94);
+const float DUNES_BIRD_SWOOP = 12.0;
+// Lying snow, before the light.
+const vec3 DUNES_SNOW = vec3(0.88, 0.9, 0.94);
+// Overhead, the rain and the snow are drawn as a camera pitched this far down (radians, ~50 degrees)
+// sees them: their paths converge on a point about half a screen below the frame. Straight down,
+// that point would sit at the frame's middle, where rainFallSeen cannot tell the paths apart.
+const float DUNES_OVERHEAD_PITCH = 0.87;
 // The entrance's glide: the eye starts this many cells upwind of its place and this far lower, and
 // the overhead view starts this share farther out (cells per screen height).
 const float DUNES_PASSAGE_BACK = 34.0;
@@ -209,19 +238,33 @@ float dunesMarch(vec3 ro, vec3 rd, float t, out vec4 skim) {
   return 0.5 * (lo + hi);
 }
 
+// The dunes' sky under the world's deck: its colour greys and darkens as the world's light does
+// under rain or snow (worldAt's shares), down to the horizon the far sand fades into; the dome's
+// clear strip below the deck's edge would otherwise stay blue over a grey day.
+vec3 dunesOvercast(vec3 col, World w) {
+  return greyed(col, vec3(1.0), WORLD_DECK_GREY * w.overcast) * (1.0 - WORLD_DECK_DARK * w.storm);
+}
+
 Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   float tm = uMotionTime;
   bool overhead = K_camera > 0.5;
-  float windSign = K_wind < 0.0 ? -1.0 : 1.0;
-  // How hard it blows: drives the blowing sand, the ripples' creep and, with haze, a sandstorm.
-  float gale = min(abs(K_wind) / 0.8, 1.0);
-  float storm = K_fog * gale;
+  // The shared world now (shaders/lib/world.ts): the sky and its light, the deck rain or snow closes
+  // over it, the aurora's glow and the lightning's flash in that light.
+  World world = worldAt(t, DUNES_METEOR_SLOT, DUNES_LIGHTNING_SLOT);
+  Sky sky = world.sky;
+  float windSign = world.wind < 0.0 ? -1.0 : 1.0;
+  // How hard it blows: drives the blowing sand, the ripples' creep and, with the dust, a sandstorm.
+  float gale = min(abs(world.wind) / 0.8, 1.0);
+  // The world's fog is desert dust out here (see the haze below); a hard wind makes it a sandstorm.
+  float sandstorm = world.fog * gale;
+  // How wet the sand is and how much snow lies on it (drying and melting after the weather).
+  float wet = uWeather.x;
+  float lying = uWeather.y;
   float mean = (DUNES_SAND_SPARSE + (DUNES_SAND_PLENTY - DUNES_SAND_SPARSE) * K_sand * K_sand) * DUNES_SLAB;
   float markHeight = K_mark > 0.0 ? mix(DUNES_MARK_SMALL, DUNES_MARK_LARGE, K_mark) : 0.0;
 
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
   // One key light: the sun, or the moon once the sun is down. Both colours come pre-faded. The sky
   // library's frame is the camera's turned by DUNES_LOOK, so the setting sun stands in the picture.
   float moonlit = sky.sun.y > -0.03 ? 0.0 : 1.0;
@@ -234,17 +277,23 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   vec2 keyAcross = key.xz / max(length(key.xz), 1e-4);
   key.xz = normalize(mix(keyAcross, vec2(-0.9 * windSign, 0.44), 0.5 * high)) * length(key.xz);
   float relief = 1.0 + 0.5 * high;
-  // In a sandstorm the dust swallows most of the sun.
-  vec3 keyColor = (sky.sunColor + sky.moonColor) * (1.0 - 0.7 * storm);
+  // In a sandstorm the dust swallows most of the sun; under the world's deck the moon fades as the
+  // sun's light does (worldAt's).
+  vec3 moonlight = sky.moonColor * (1.0 - WORLD_DECK_SUN * world.overcast);
+  vec3 keyColor = (sky.sunColor + moonlight) * (1.0 - 0.7 * sandstorm);
   // A low sun is weak on flat ground but strong on the slopes turned to it, and outshines the sky
   // many times over: expose the direct light up as it sinks and keep the sky's fill modest, so
   // dunes keep their light and shade at every hour. A high sun is held back a little, so the sand
   // turned to it does not burn out.
   vec3 sunlight = keyColor / (0.38 + 0.62 * max(key.y, 0.0)) * (1.0 - 0.2 * high * sky.day);
-  // The aurora's green reaches the sand through clear air only.
-  vec3 skylight = sky.ambient * 0.75 + auroraGlow(tm, K_aurora) * auroraSeen(sky, storm);
-  // A high sun on hot sand: the air wavers above the far dunes and the distance turns to mirage.
-  float heat = K_heat * sky.day * smoothstep(0.3, 0.8, sky.sun.y);
+  // The world's ambient carries the aurora's glow (world.glow), which reaches the land through clear
+  // air only: the sky's light with as much of the glow as the dust lets through (ambient), and the
+  // sand's fill, the sky's own light at 0.75 and that glow whole.
+  vec3 ambient = sky.ambient - world.glow * sandstorm;
+  vec3 skylight = (sky.ambient - world.glow) * 0.75 + world.glow * (1.0 - sandstorm);
+  // A high sun on hot, dry sand: the air wavers above the far dunes and the distance turns to
+  // mirage. Not under the deck, nor once rain has wet the sand.
+  float heat = K_heat * sky.day * smoothstep(0.3, 0.8, sky.sun.y) * (1.0 - world.overcast) * (1.0 - wet);
 
   // Camera. Aerial: low over the sand, looking to the horizon. Heat bends rays near the horizon:
   // columns of hot air rising and wavering, a few rows up and down.
@@ -256,8 +305,10 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   vec2 at = overhead ? uv : uv + waver * vec2(0.004, 0.014) * band * heat;
   vec3 view = viewRay(at, aspect, DUNES_HORIZON, DUNES_FOV);
   view.xz = rotate(view.xz, -uPointer.x * DUNES_PARALLAX);
-  vec3 skyward = skyFacing(view, DUNES_LOOK);
-  vec3 ro = vec3(DUNES_EYE.x, DUNES_EYE_HEIGHT + DUNES_EYE_RISE * mean, DUNES_EYE.y);
+  // The eye at rest. The world's cloud deck casts its shadows about it, so they keep to the sand
+  // while the eye glides in, and lie where they do seen from overhead.
+  vec3 rest = vec3(DUNES_EYE.x, DUNES_EYE_HEIGHT + DUNES_EYE_RISE * mean, DUNES_EYE.y);
+  vec3 ro = rest;
   vec3 rd = skyFacing(view, DUNES_TURN);
   // Arriving and leaving. 'left' is how much of the entrance's glide remains: exactly 0 at rest,
   // where every passage term below is off or multiplied away.
@@ -284,6 +335,10 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     ro.y -= DUNES_PASSAGE_DROP * (1.0 - rise);
     ro.y = max(ro.y, dunesHeight(ro.xz) + 1.5);
   }
+  // The world through this camera: its own ray (heat-bent, turned by the pointer) in the sky's frame
+  // by DUNES_LOOK, the eye's height over the bed, in cells of DUNES_UNIT. Overhead, the ray is left
+  // unused: the world gives the light, the deck's shadows and the rain and snow falling past.
+  WorldView camera = worldViewOf(view, uv, DUNES_HORIZON, DUNES_FOCAL, ro.y, DUNES_LOOK, DUNES_UNIT);
 
   vec4 skim = vec4(0.0);
   float hitT = -1.0;
@@ -305,19 +360,21 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   // Cells per pixel here, to keep fine grain coarser than the dither.
   float footprint = length(fwidth(p.xz));
 
-  // Dust haze. The desert air is never quite clear; the haze knob thickens it, and with a hard wind
-  // on top it becomes a sandstorm closing in to a few dune lengths: ochre, and dimming the sun.
-  vec3 horizon = horizonHaze(sky, skyward, 0.0);
-  vec3 dustTint = vec3(0.82, 0.58, 0.38) * (sky.sunColor * 0.55 + sky.ambient * 1.1);
-  vec3 dust = mix(horizon, dustTint, 0.3 + 0.6 * storm);
-  float hazeDensity = 0.3 + 0.7 * K_fog + 2.0 * storm;
-  float hazeReach = mix(DUNES_FAR, 280.0, storm);
+  // Dust haze, the world's fog out here. The desert air is never quite clear; fog thickens it, and
+  // with a hard wind on top it becomes a sandstorm closing in to a few dune lengths: ochre, and
+  // dimming the sun. Under the world's deck the horizon it fades into greys as the light does.
+  vec3 horizon = dunesOvercast(horizonHaze(sky, camera.dir, 0.0), world);
+  vec3 dustTint = vec3(0.82, 0.58, 0.38) * (sky.sunColor * 0.55 + ambient * 1.1);
+  vec3 dust = mix(horizon, dustTint, 0.3 + 0.6 * sandstorm);
+  float hazeDensity = 0.3 + 0.7 * world.fog + 2.0 * sandstorm;
+  float hazeReach = mix(DUNES_FAR, 280.0, sandstorm);
   // Lit blowing sand, glowing when the sun is behind it.
   vec2 flatRd = rd.xz / max(length(rd.xz), 1e-4);
   vec2 flatKey = key.xz / max(length(key.xz), 1e-4);
   float against = overhead ? 0.0 : pow(max(dot(flatRd, flatKey), 0.0), 3.0);
-  vec3 grains = vec3(0.96, 0.76, 0.52) * (keyColor * (0.55 + 0.9 * against) + sky.ambient * 1.2);
-  float drift = K_drift * gale;
+  vec3 grains = vec3(0.96, 0.76, 0.52) * (keyColor * (0.55 + 0.9 * against) + ambient * 1.2);
+  // Wet or snowed-on sand stays put.
+  float drift = K_drift * gale * (1.0 - max(wet, lying));
 
   vec3 col;
   bool showMark = markT > 0.0 && (hitT < 0.0 || markT < hitT);
@@ -335,17 +392,22 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     stone *= 1.0 - 0.35 * varnish;
     stone = mix(stone, vec3(0.94, 0.74, 0.54), 0.35 * smoothfall(0.3, 0.0, my));
     n = normalize(n + 0.12 * (vec3(vnoise(q.yz * 2.0), vnoise(q.xz * 2.0 + 2.0), vnoise(q.xy * 2.0 + 4.0)) - 0.5));
+    // Rain darkens the sandstone a little; snow lies on its ledges and tops.
+    if (wet > 0.0) stone = wetten(stone, wet, 0.4);
+    if (lying > 0.0) stone = mix(stone, DUNES_SNOW, snowCover(n, q.xz * 0.3, lying));
     float ndl = max(dot(n, key), 0.0);
     float shade = key.y > 0.0 ? dunesShadow(q + n * 0.15, key, 0.0, 0.0) : 0.0;
+    // The world's cloud deck shades it too (worldSunlit), while the sun is the key.
+    if (moonlit < 0.5 && shade > 0.0) shade *= worldSunlit(world, camera, skyFacing(q - rest, -DUNES_TURN));
     // The sunlit sand around it lights its faces from below.
     vec3 bounce = keyColor * vec3(0.9, 0.62, 0.4) * 0.45 * clamp(key.y * 2.5, 0.0, 1.0) * (0.5 - 0.5 * n.y);
     // The sun is always somewhere ahead, so the face toward us is mostly in shade: a fuller sky fill
     // than the sand's keeps the stone's colour and strata legible.
-    col = stone * sunlight * ndl * shade + greyed(stone, vec3(1.0), 0.3) * sky.ambient * 0.9 * (0.55 + 0.45 * n.y) + stone * bounce;
+    col = stone * sunlight * ndl * shade + greyed(stone, vec3(1.0), 0.3) * ambient * 0.9 * (0.55 + 0.45 * n.y) + stone * bounce;
     // Backlit, its edges catch a thin line of the sun.
     col += stone * sunlight * pow(1.0 - max(dot(n, -rd), 0.0), 3.0) * against * shade * 0.6;
     col *= mix(vec3(1.0), vec3(0.7, 0.85, 1.3), sky.night * 0.75);
-    col = mix(col, dust, fogAmount(hazeDensity, overhead ? 0.25 * K_fog : markT / hazeReach, q.y / 22.0));
+    col = mix(col, dust, fogAmount(hazeDensity, overhead ? 0.25 * world.fog : markT / hazeReach, q.y / 22.0));
     o.accent = clamp(0.45 + 0.55 * ndl * shade, 0.0, 1.0);
   } else if (hitT > 0.0) {
     vec4 shape = dunesShape(p.xz);
@@ -374,11 +436,17 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     vec2 pan = rotate(p.xz, 0.6);
     vec3 bed = vec3(0.62, 0.46, 0.36) * (0.78 + 0.22 * vnoise(pan * 0.35) + 0.12 * vnoise(pan * 0.9 + 3.0)) * (1.0 + 0.12 * grain * (vnoise(pan * 2.5) - 0.5));
     vec3 albedo = mix(bed, sand, cover);
+    // Rain darkens the sand and deepens its colour; snow lies on it, the gentle slopes first.
+    if (wet > 0.0) albedo = wetten(albedo, wet, 0.8);
+    if (lying > 0.0) albedo = mix(albedo, DUNES_SNOW, snowCover(n, p.xz * 0.3, lying));
     // By moonlight the eye loses colour: sand reads grey-blue.
     albedo = greyed(albedo, vec3(1.0), 0.5 * sky.night);
 
     float ndl = max(dot(n, key), 0.0);
     float lit = ndl > 0.0 && key.y > 0.0 ? dunesShadow(p + vec3(0.0, 0.06, 0.0), key, markHeight, 0.004 * reach) : 0.0;
+    // The world's cloud deck's shadows drift over the sand (worldSunlit), while the sun is the key:
+    // from the same deck over the eye at rest, aerial or overhead.
+    if (moonlit < 0.5 && lit > 0.0) lit *= worldSunlit(world, camera, skyFacing(p - rest, -DUNES_TURN));
     // Sunlit sand throws light back into the shade: deserts are never black in shadow. Less of it
     // under a high sun, so the slip faces keep their shade.
     vec3 bounce = keyColor * albedo * 0.25 * clamp(key.y * 2.0, 0.0, 1.0) * clamp(1.0 - 0.6 * n.y, 0.0, 1.0) * (1.0 - 0.5 * high);
@@ -388,7 +456,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     col = albedo * sunlight * ndl * lit + greyed(albedo, vec3(1.0), 0.4) * skylight * fill + bounce * ao;
     // Crests catch the light when it comes from behind them; the moon lays a cool sheen along them.
     col += keyColor * albedo * crest * against * lit * 0.35;
-    col += sky.moonColor * (moonlit * sky.night * 0.6) * crest * ndl * lit;
+    col += moonlight * (moonlit * sky.night * 0.6) * crest * ndl * lit;
     // Out of the sun the sand takes the sky's colour: the slip faces under a high sun, and the hollows.
     vec3 skyHue = skylight / max(dot(skylight, LUMA), 1e-3);
     float cool = sky.day * (0.35 * slip * high + 0.3 * smoothstep(0.2, 1.4, shape.w));
@@ -413,20 +481,21 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
       col = mix(col, grains, veil * drift * near * 0.55);
     }
 
-    col = mix(col, dust, fogAmount(hazeDensity, overhead ? 0.25 * K_fog + 0.6 * storm : reach / hazeReach, p.y / 22.0));
+    col = mix(col, dust, fogAmount(hazeDensity, overhead ? 0.25 * world.fog + 0.6 * sandstorm : reach / hazeReach, p.y / 22.0));
   } else if (overhead || view.y < 0.0) {
     // Below the horizon but past the far field: the haze closes it.
     col = dust;
   } else {
-    col = skyColor(sky, skyward) + skyStars(sky, skyward, K_stars) * vec3(0.92, 0.94, 1.0) * 1.3;
-    float foot = 2.0 * tan(0.5 * DUNES_FOV) / uRes.y;
-    float open = auroraSeen(sky, storm);
-    col += auroraM(view, tm, K_aurora, foot) * open;
-    float meteorSeed;
-    float meteorAt = meteorAge(tm, K_meteors, DUNES_METEOR_SLOT, meteorSeed);
-    col += METEOR_TINT * hardEdge(meteorStreak(skyAngles(view), DUNES_METEOR_FIELD, meteorAt, meteorSeed, foot) * open);
-    float low = exp(-max(view.y, 0.0) * mix(16.0, 3.0, K_fog));
-    col = mix(col, dust, max((0.18 + 0.72 * K_fog) * low, 0.9 * storm));
+    // The world's sky (worldSky): the dome, the aurora ahead behind the clouds, the cloud deck, the
+    // Milky Way and the stars in its gaps, shooting stars over the dune sea, then the lightning. A
+    // sandstorm closes the night sky as the deck does (its overcast): the aurora and shooting stars
+    // fade behind the dust. Greyed under the deck rain or snow closes, then swallowed low down by
+    // the dust and whole by a sandstorm, the bolts too.
+    World through = world;
+    through.overcast = max(world.overcast, sandstorm);
+    WorldSky heaven = worldSky(through, camera, DUNES_METEOR_FIELD);
+    float low = exp(-max(view.y, 0.0) * mix(16.0, 3.0, world.fog));
+    col = mix(dunesOvercast(heaven.col, world) + heaven.strike, dust, max((0.18 + 0.72 * world.fog) * low, 0.9 * sandstorm));
   }
 
   // Mirage: under a high sun the far sand gives way to pools of shimmering sky along the horizon,
@@ -434,7 +503,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   if (!overhead && !showMark && heat > 0.0 && view.y < 0.0) {
     float pools = smoothstep(0.3, 0.7, vnoise(vec2(uv.x * 6.0 + 3.0, tm * 0.08)));
     float mirage = heat * smoothstep(200.0, 650.0, reach) * (0.4 + 0.6 * pools) * (0.8 + 0.2 * vnoise(vec2(uv.x * 40.0, tm * 1.5)));
-    col = mix(col, skyColor(sky, normalize(vec3(skyward.x, abs(skyward.y) + 0.01, skyward.z))), min(1.2 * mirage, 0.85));
+    col = mix(col, skyColor(sky, normalize(vec3(camera.dir.x, abs(camera.dir.y) + 0.01, camera.dir.z))), min(1.2 * mirage, 0.85));
   }
 
   // Sand blowing off the crests the ray skimmed, seen against the sky or the dunes beyond.
@@ -443,8 +512,19 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     col = mix(col, grains, wisp * drift * 0.5);
   }
 
+  // The distance to the first opaque thing this cell sees, cells (the world's z): the M, the sand,
+  // the far field the haze closes below the horizon, or open sky.
+  float z = showMark ? markT : hitT >= 0.0 || view.y < 0.0 ? reach : WORLD_FAR;
+  // The world's birds over the dune sea, by day (a buzzard circling on the thermals by default):
+  // behind any dune or the M nearer than they fly, hazed by the dust as the sand is. Not overhead:
+  // the world's birds are seen from below, by a level camera.
+  if (!overhead) {
+    WorldFlyway flyway = WorldFlyway(DUNES_BIRD_DEPTHS, DUNES_BIRD_BAND, vec2(K_seed * 0.37, 3.3), DUNES_BIRD_SWOOP, 1.5);
+    worldBirds(world, camera, flyway, dust, hazeDensity / hazeReach, col, z, o.accent);
+  }
+
   // A sandstorm: sheets of dust driven across the view at three depths, nearer ones faster.
-  if (storm > 0.0) {
+  if (sandstorm > 0.0) {
     float sheets = 0.0;
     for (int k = 0; k < 3; k++) {
       // Overhead the sheets hang a few cells above the sand; aerial, at 18, 40 and 87 cells out.
@@ -455,7 +535,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
       float n = fbm(flow * vec2(0.03, 0.08) + q.y * 0.1 + float(k) * 7.3);
       sheets += smoothstep(0.4, 0.75, n) * exp(-max(q.y, 0.0) / 14.0) * 0.6;
     }
-    col = mix(col, dust, clamp(sheets * storm * 1.3, 0.0, 0.9));
+    col = mix(col, dust, clamp(sheets * sandstorm * 1.3, 0.0, 0.9));
   }
 
   // The passage's veil: low drifts of blown sand hugging the ground and streaming off the crests,
@@ -508,6 +588,19 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     float stream = smoothfall(width, 0.0, abs(q.x)) * smoothstep(-0.015, 0.0, q.y) * smoothfall(0.24, 0.1, q.y);
     stream *= 0.55 + 0.45 * vnoise(vec2(q.x * 260.0, q.y * 50.0 + t * 12.0));
     col = mix(col, grains * vec3(0.95, 0.75, 0.5), stream * pouring);
+  }
+
+  // The world's rain and snow at the depth of what the cell sees: the veil toward the rain-washed
+  // horizon's grey, the drops lit by the sky they refract, the low sun and the lightning. Overhead
+  // they fall away from the eye, their paths closing in below the frame (DUNES_OVERHEAD_PITCH).
+  vec3 air = greyed(horizon, vec3(0.94, 0.97, 1.02), 0.5 * world.overcast) * (1.0 - 0.25 * world.heavy) + WORLD_FLASH_SKY * world.flash;
+  vec3 dropLight = max(horizon * 1.2 + sky.sunColor * 0.3 + WORLD_FLASH_LIGHT * world.flash, vec3(0.08));
+  if (overhead) {
+    float down = sin(DUNES_OVERHEAD_PITCH);
+    float ahead = cos(DUNES_OVERHEAD_PITCH);
+    worldPrecipSeen(world, camera, vec3(1.0, 0.0, 0.0), vec3(0.0, ahead, down), vec3(0.0, -down, ahead), air, dropLight, z, col, o.accent);
+  } else {
+    worldPrecip(world, camera, air, dropLight, z, col, o.accent);
   }
 
   col = clamp(col, 0.0, 1.0);
