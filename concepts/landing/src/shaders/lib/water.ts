@@ -12,12 +12,13 @@
 //   flow      WATER_FLOW 3      currents: patterns carried by a steady current (waterDrift) or by one
 //                               that changes from place to place (waterFlow)
 //   caustics  WATER_CAUSTICS 4  the bed lit through the surface: causticRipples' net (caustics.ts) times
-//                               a simulated surface's focus (ShallowWater.surface, sims/shallow.ts)
+//                               a simulated surface's focus (ShallowWater.surface, sims/shallow.ts);
+//                               or the stylised cellular net (causticCells) for water with no spectrum
 //
 // Projected size: every tier fades its detail to the area mean once a cell outgrows it and then stops
-// working it out (rippleTrain and causticRipples skip their trains), so far or small water costs
-// little more than the flat tier whatever tier the scene selects, and resolved water is bit for bit
-// the full-detail picture.
+// working it out (rippleTrain, causticRipples and causticCells skip their trains and seams), so far
+// or small water costs little more than the flat tier whatever tier the scene selects, and resolved
+// water is bit for bit the full-detail picture.
 import { causticsGlsl } from "../caustics.ts";
 import { windWaterGlsl } from "../windWater.ts";
 

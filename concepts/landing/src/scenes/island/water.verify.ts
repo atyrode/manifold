@@ -2,10 +2,11 @@
 // surface.ts), run by concepts/landing/verify-browser.ts on real WebGL output. A probe entry compiled
 // on Island's program (so it reads Island's own spectrum table) evaluates the library over grids into
 // a float target: the spectra the three open-water scenes draw are bit for bit the sums they drew
-// before they shared rippleSpectrum, the trains and caustic waves too fine to draw are skipped
-// without changing a value, and the mirror, the flow and the caustic light behave. Then the tiers:
-// each tier's functions exist from its tier up and not below, and each adopting scene compiles at
-// the tier it selects and not one lower.
+// before they shared rippleSpectrum, the pond's caustics are bit for bit the layer it drew before it
+// shared the cellular net, the trains, caustic waves and net seams too fine to draw are skipped
+// without changing a value (or leave only the net's mean), and the mirror, the flow and the caustic
+// light behave. Then the tiers: each tier's functions exist from its tier up and not below, and each
+// adopting scene compiles at the tier it selects and not one lower.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { sceneDefs } from "../index.ts";
@@ -105,6 +106,24 @@ vec2 probeCaustic(vec2 p, float tm, vec2 wind, float scale, float steep, float p
   return slope;
 }
 
+// The pond's caustic layer as it wrote it before the shared cellular net.
+float probeCells(vec2 x, float t) {
+  vec2 i = floor(x);
+  vec2 f = fract(x);
+  float f1 = 8.0;
+  float f2 = 8.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int k = -1; k <= 1; k++) {
+      vec2 g = vec2(float(k), float(y));
+      vec2 o = vec2(hash12(i + g), hash12(i + g + 19.1));
+      o = 0.5 + 0.45 * sin(t + TAU * o);
+      float d = length(g + o - f);
+      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+    }
+  }
+  return 1.0 - smoothstep(0.0, 0.06, f2 - f1);
+}
+
 float probePattern(vec2 q) {
   return sin(3.0 * q.x + 2.0 * q.y);
 }
@@ -155,6 +174,12 @@ Shade waterProbe(vec2 uv, vec2 cell, float t) {
     float weight;
     vec4 q = waterFlow(at, uProbeB.xy, time, uProbeB.z, weight);
     v = vec3(mix(probePattern(q.xy), probePattern(q.zw), weight), weight, max(length(q.xy - at), length(q.zw - at)));
+  } else if (uProbe == 6) {
+    // The cellular net against the pond's former layer, p in net cells, tm its wander: a row's
+    // footprint (2^-9 .. 2^4 net cells up the rows), or uProbeB.y throughout.
+    float cellFoot = uProbeB.y > 0.0 ? uProbeB.y : foot.x;
+    float net = causticCells(p, tm, cellFoot);
+    v = vec3(net != probeCells(p, tm) ? 1.0 : 0.0, net, cellFoot);
   } else {
     // The caustic light: still water; no focus at all (capped); half focus; a curved surface.
     float x = floor(cell.x);
@@ -297,6 +322,37 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   check(at(light, 4, 1, 0, 0) === 4, `an unfocused sim's caustic light is ${at(light, 4, 1, 0, 0)}, not capped at 4`);
   check(at(light, 4, 2, 0, 0) === 2, `half the sim's focus gives ${at(light, 4, 2, 0, 0)}, not 2`);
   check(Math.abs(at(light, 4, 3, 0, 0) - 1 / Math.max(Math.abs(at(light, 4, 3, 0, 1)), 0.1)) < 1e-6, "the caustic light is not the two Jacobians' product");
+
+  // The cellular net: where its seams span a cell or more, the pond's former layer bit for bit;
+  // under half a cell only the net's mean (CAUSTIC_CELLS_MEAN, as float32), and between a mix.
+  const netMean = Math.fround(0.078);
+  let seams = 0;
+  for (const tm of [3.7, 211.9]) {
+    const net = draw(gl, probe, W, H, { uProbe: [6], uProbeA: [-11.3, 4.9, 0.137, tm], uProbeB: [1, 0, 0, 0] });
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const cellFoot = at(net, W, x, y, 2);
+        const value = at(net, W, x, y, 1);
+        if (cellFoot <= 0.06) {
+          check(at(net, W, x, y, 0) === 0, `causticCells differs from the pond's former layer at (${x}, ${y}), ${tm} s`);
+          if (value > 0) seams++;
+        } else if (cellFoot >= 0.12) {
+          check(value === netMean, `a far cell (${x}, ${y}) is ${value}, not the net's mean ${netMean}`);
+        } else {
+          check(value >= 0 && value <= 1, `a fading cell (${x}, ${y}) leaves the net's range: ${value}`);
+        }
+      }
+    }
+  }
+  check(seams >= W, `near cells barely draw the net's seams: ${seams}`);
+  // Its mean is the resolved net's: averaged over a wide grid at two moments.
+  let sum = 0;
+  for (const tm of [57.3, 1203.1]) {
+    const wide = draw(gl, probe, 64, 64, { uProbe: [6], uProbeA: [3.1, -7.7, 0.613, tm], uProbeB: [1, 0.001, 0, 0] });
+    for (let i = 0; i < 64 * 64; i++) sum += wide[i * 4 + 1] ?? Number.NaN;
+  }
+  const netAverage = sum / (2 * 64 * 64);
+  check(Math.abs(netAverage - netMean) < 0.25 * netMean, `the net averages ${netAverage}, far from its mean ${netMean}`);
   gl.deleteProgram(probe);
 
   // The tiers: each tier's functions exist from that tier up and not below it; rippleSpectrum and
@@ -306,6 +362,7 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     ["mirror", "WaterMirror m = waterMirror(vec3(0.0, -0.3, 1.0), vec2(0.0), 0.0)"],
     ["flow", "float w; vec4 f = waterFlow(uv, vec2(1.0, 0.0), t, 2.0, w)"],
     ["caustics", "vec3 h; vec2 s = causticRipples(uv, t, vec2(1.0, 0.0), 0.1, 0.05, 0.3, 0.001, h)"],
+    ["caustics", "float c = causticCells(uv * 4.0, t, 0.001)"],
   ];
   for (const [tier, call] of calls) {
     const level = WATER_TIERS[tier];
@@ -319,7 +376,7 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
 
   // The adopters: each compiles at the tier it selects, and needs it (one tier lower fails).
   const adopters: readonly [keyof typeof sceneDefs, keyof typeof WATER_TIERS][] = [
-    ["aurora", "ripples"], ["island", "mirror"], ["shore", "mirror"], ["lanterns", "flow"], ["tidepool", "caustics"],
+    ["aurora", "ripples"], ["island", "mirror"], ["shore", "mirror"], ["lanterns", "flow"], ["tidepool", "caustics"], ["pond", "caustics"],
   ];
   for (const [id, tier] of adopters) {
     const def = sceneDefs[id];
@@ -327,5 +384,5 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     check(compiles(gl, fragmentSourceFor(def)), `${id} does not compile at its tier`);
     check(!compiles(gl, fragmentSourceFor({ ...def, features: { ...def.features, WATER_TIER: WATER_TIERS[tier] - 1 } })), `${id} compiles a tier lower: it does not use the ${tier} tier`);
   }
-  return { spectraCells: spectra, nearRippleCells: drawn, nearCausticCells: curved, flowLargestStep: Number(largest.toFixed(4)) };
+  return { spectraCells: spectra, nearRippleCells: drawn, nearCausticCells: curved, netSeamCells: seams, netAverage: Number(netAverage.toFixed(4)), flowLargestStep: Number(largest.toFixed(4)) };
 }
