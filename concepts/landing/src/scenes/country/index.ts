@@ -8,9 +8,10 @@
 // Knobs and what they rebuild (sim.ts): the land's shape, seed, relief and erosion rebuild the map
 // over a few frames (the last one stays on screen meanwhile); the river's size the river and what
 // stands near it; the settlements and roads only those and the parcels; the land's uses, the pine
-// mix and the cattle share only the allocation, packed and uploaded within the frame; the river
-// switched off only dries its bed. Herds' size, walkers, carts and birds are the shader's alone,
-// each compiled in only while on (countryFeatures).
+// mix, the cattle share and the chalk M (which keeps the woods and fields off its hillside) only the
+// allocation, packed and uploaded within the frame; the river switched off only dries its bed.
+// Herds' size, walkers, carts, birds, the lit windows and the chimney smoke are the shader's alone.
+// Each optional part is compiled in only while on (countryFeatures).
 import type { IconName } from "../../lab/icons.ts";
 import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
@@ -191,7 +192,7 @@ const params = [
     "castle",
     "castle",
     true,
-    "A castle on a prominent hilltop in sight from the vantage, its walls and keep against the sky. Rebuilds the settlements and roads; the hilltop stays its own either way.",
+    "A castle on a prominent hilltop in sight from the vantage: battlemented curtain walls with a round tower at each corner, a gatehouse, a keep with its turret and a hall, a few windows lit after dark. The woods clear round it. Rebuilds the settlements and roads; the hilltop stays its own either way.",
   ),
   toggle(
     "settlements",
@@ -233,6 +234,31 @@ const params = [
       "mostly rooks in loose parties, gulls up from the river, swallows low over the fields, now and then geese, pigeons, swifts or a buzzard circling on a thermal.",
     help: "Birds crossing the valley by day, hidden by the hills, trees and buildings nearer than them; none at night and fewer in snow and rain.",
   }),
+  feature(
+    "settlements",
+    "lights",
+    "village lights",
+    true,
+    "windows lit",
+    0.7,
+    "Windows light up one by one as dusk falls, in the village, the hamlets, the farmhouses and the castle, and most go dark late at night; lit ones warm the walls and the ground around. The amount is the share of windows that ever light, the church's and the castle's half that.",
+  ),
+  feature(
+    "settlements",
+    "smoke",
+    "chimney smoke",
+    true,
+    "amount",
+    0.5,
+    "Smoke curling up from the cottages' chimneys and leaning with the wind, thicker as the evening draws in.",
+  ),
+  toggle(
+    "manifold",
+    "chalk",
+    "chalk M",
+    false,
+    "A giant M cut into the turf of a hillside facing the hill, in the manner of the Uffington White Horse: on the open slope that shows it best from here, clear of the woods, roads, yards and water, drawn out up the slope so it reads whole. The woods and fields there give way to open downland. None where no such slope is in sight.",
+  ),
 ];
 
 /**
@@ -255,6 +281,11 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     COUNTRY_HAS_HERDS: on("pasture"),
     COUNTRY_HAS_AGENTS: on("walkers", "carts"),
     COUNTRY_HAS_BIRDS: on("birds"),
+    // Lit windows and their glow, chimney smoke (buildings.ts).
+    COUNTRY_HAS_LIGHTS: on("lights"),
+    COUNTRY_HAS_SMOKE: on("smoke"),
+    // The chalk M on its hillside (chalk.ts).
+    COUNTRY_HAS_CHALK: on("chalk"),
     CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
     ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
@@ -276,6 +307,9 @@ export const COUNTRY_ALL = countryFeatures({
   walkers: 1,
   birds: 1,
   shadows: 1,
+  lights: 1,
+  smoke: 1,
+  chalk: 1,
   moon: 0.5,
 });
 
@@ -306,13 +340,17 @@ export const countryScene: SceneDef = {
     settlements: {
       title: "Settlements",
       blurb:
-        "The village, hamlets, farms and castle, and the roads and farm tracks between them; a change lays them out again without moving the hills or the river.",
+        "The village, hamlets, farms and castle, the roads and farm tracks between them, and their lit windows and chimney smoke; a change of where they stand lays them out again without moving the hills or the river.",
     },
     activity: {
       title: "People & carts",
       blurb: "Walkers and carts going up and down the roads; they stand still while motion is off.",
     },
     birds: birdsGroup,
+    manifold: {
+      title: "Manifold mark",
+      blurb: "A chalk figure of the M, cut into the turf of a hillside.",
+    },
   },
   glsl: countryGlsl,
   entry: "sceneCountry",

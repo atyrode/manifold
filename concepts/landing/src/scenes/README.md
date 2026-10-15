@@ -462,8 +462,8 @@ every gate on and each tier up to the highest a knob selects. That program draws
 byte for byte as the setting's own does, because the shader's runtime tests of the knobs decide
 (on a GPU they are uniform branches, nearly free). The adopters are `country` (`countryFeatures` and
 `COUNTRY_ALL`: roads and tracks, rain, snow, fog, pine woods, flower fields, herds, walkers and carts,
-birds, the clouds' shadows tier and the moon's phase; `countryFeaturesAll` checks each gated
-setting) and `meadow` (its wildflowers).
+birds, lit windows, chimney smoke, the chalk M, the clouds' shadows tier and the moon's
+phase; `countryFeaturesAll` checks each gated setting) and `meadow` (its wildflowers).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -656,11 +656,11 @@ countryside composes all three.
   animal grazes, walks, stands about or lies down, by the hour and the weather (`livestockMood`),
   from one anchor of the scene's to the next. The scene supplies the anchors (its ground, walls and
   projection) and the shading (country's pasture enclosures).
-- `buildingsGlsl` (`src/shaders/buildings.ts`): a cottage, a church and a castle that sort a point
-  into faces in the shape's own units, with walls reaching down to the land's outline, details
-  dropping out or growing to a cell below `px`, windows lit by the time of day (`buildingWindow`)
-  and chimney smoke on the motion clock (`buildingSmoke`): country's village, hamlets, farms and
-  castle.
+- `buildingsGlsl` (`src/shaders/buildings.ts`): a cottage and a church that sort a point into faces
+  in the shape's own units, with walls reaching down to the land's outline, details dropping out or
+  growing to a cell below `px`, windows lit by the time of day (`buildingWindow`) and chimney smoke
+  on the motion clock (`buildingSmoke`): country's far houses (its near houses and its castle are
+  models of its own, `country/buildings.ts` and `country/castle.ts`).
 
 #### Rooted plants (`src/sims/plants.ts`, `src/shaders/lib/plants.ts`, `src/scenes/plants.ts`)
 
