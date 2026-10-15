@@ -29,6 +29,7 @@ export const sceneFamily = {
   island: "water",
   tidepool: "water",
   country: "land",
+  valley: "land",
   dunes: "land",
   meadow: "land",
   shanshui: "land",

@@ -96,7 +96,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Looking up at the city         | `skyward`      | Facades converging on the zenith, trams, planes and contrails, pigeons and swifts (the shared birds seen from below); rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`); in its strip of sky, beside the stars control, the shared moon's phase and shooting stars (no aurora: looking up, its curtains hang toward the horizon, out of view)                                                                                                                                                                   |
 | Autumn park                    | `autumn`       | Leaves flutter and tumble down (the shared plate model `sims/flutter.ts`, as the garden's), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts (the shared pulse, `sims/wind.ts`) lift swirls of the top leaves off the path; over the park, the shared sky components: a stars control, the moon's phase (which sets the night light), an aurora and shooting stars behind the clouds; optional cloud shadows sweeping the park (the shared clouds' `shadows` tier)                                                          |
 | Tide pool                      | `tidepool`     | GPU shallow water (`ShallowWater`, `sims/shallow.ts`) over a rock pool seen from straight above: the swell shoals, breaks over the reefs and in the sets pours through the notch in the basin's rim; anemones close in the surge, kelp and surfgrass stream as rooted plants, optional rock pool fish dart from a touch; the caustics are the shared water's caustics tier. A prototype: see "Tide pool"                                                                                                                                                    |
-| Hanging mobile                 | `mobile`       | A solar system on balanced arms stacked under a glowing Sun: coupled Verlet pendulums with balls, motors at the planets' real periods (Kepler's third law), ball drag in drafts, gusts and eddies, contacts, the Sun lighting each planet and throwing the mobile's shadows (Saturn's rings included) on the wall                                                                                                                                                                                                                              |
+| Hanging mobile                 | `mobile`       | A solar system on balanced arms stacked under a glowing Sun: coupled Verlet pendulums with balls, motors at the planets' real periods (Kepler's third law), ball drag in drafts, gusts and eddies, contacts, the Sun lighting each planet and throwing the mobile's shadows (Saturn's rings included) on the wall                                                                                                                                                                                                                                           |
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's
 camera sees it, whatever the calm of the rest of the scene: straight down the frame under a level
@@ -160,6 +160,48 @@ top. Prototype (issue #1082, N1), built from shared parts rather than scene code
   lies).
 - Open: the rock reads too dark and busy at the dither, the open sea reads as mottled rather than
   as swell, and the zonation needs art direction before this leaves the prototype stage.
+
+## Valley
+
+`valley`: a prototype of a shared terrain toolbox (issue #1082), the countryside's vantage over one
+coherent map instead of six 1D ridge silhouettes, so the river can lie level and carve the land and
+the roads can form a network. Countryside is unchanged until the prototype proves itself.
+
+- **Generation** (`src/sims/terrain.ts`, `TerrainBuilder`): a 3.2 km map at 512² texels (erosion at
+  256²), deterministic per seed and built in units a frame's budget spreads (a share of the time
+  between frames, so a software renderer builds in as few frames as a GPU). Relief: a valley axis
+  laid across the view (out of the far hills on one side, close past the vantage on the other), long
+  rolling slopes below the vantage, hills beyond, fractal and ridged value noise. Erosion: implicit
+  stream power over a priority-flood drainage (steepest-descent receivers, multiple-flow areas, so
+  no grid furrows), thermal slumping. River: the drainage tree's main path, meandering on gentle
+  ground, widening with its catchment, its level the ground's running minimum smoothed (never
+  rising), carved with a bed, banks and a floodplain. Streams, settlements (village, hamlets, farms,
+  a castle on a prominent hilltop) scored for flatness, water, distance and a clear line of sight,
+  roads (A\* over slope, curvature, floodplain and fords, water impassable) over a spanning tree with
+  a shortcut and a way out over the far hills, one bridge at the narrowest crossing, cut and fill no
+  steeper than one in eight, cottages along the roads on terraces, woodland suitability, contour- and
+  road-aligned field parcels, lone trees on hedges and banks.
+- **Rendering** (`src/shaders/lib/terrain.ts`, `valley/shader.ts`): a height-field march (ground,
+  water, the woods' canopy and lone trees) with a soft sun-shadow march, field parcels exact between
+  texels with hedges held to half a cell, roads likewise, the river mirroring the sky and its deck,
+  the shared buildings (`src/shaders/buildings.ts`) projected from their footings with lit windows and
+  smoke, a stone bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain,
+  snow, wetness, lying snow and valley mist. Entrance: the camera comes down out of the sky.
+- Base relief (`TerrainOptions.base`, the `land shape` knob): valley (default), coast (the valley
+  opening downstream into a bay, the sea flooded in from the map's edge with `stillWater`), plateau
+  (a high table over a steep-sided gorge) or rolling hills. Roads join the village, hamlets, castle
+  and the way out (a spanning tree); farms and a lane through the near field are spur tracks. Roads
+  are pale ribbons with a verge and a hedge either side, held to half a cell across.
+- Knobs: land shape, landscape (seed), relief, erosion, woodland (shader-only), river size, settlements, roads;
+  time of day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Rain, snow, fog, roads,
+  cloud shadows and a waning moon are compiled in only while on (`valleyFeatures`).
+- Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
+  settlement, road grade bounded and cut into the ground, determinism and reuse, build budget);
+  `valleyTerrain` (the real sim's textures through the scene's program: compiles, draws land, sky
+  and river, deterministic per landscape).
+- Open: lone trees are rounded tents rather than modelled crowns, and wood edges stay texel-coarse
+  close up; no gates or walls; buildings are side-on sprites; the plateau's near table hides the
+  gorge from the vantage; no herds, walkers, verges or wildlife yet.
 
 ## Above the clouds
 
@@ -331,14 +373,19 @@ Overlooking rolling hills with a village in the distance and forest around.
 A solar system hanging in a quiet room under a glowing Sun, the room's lamp (issue #1082, N3).
 
 - The mobile is the shared part (`src/sims/mobile.ts`) laid out by `mobile/solar.ts`: one arm per
-  planet, stacked down the Sun's axis, each hung on a short link from the loop of the arm above
-  (`end: 2`), so the arms are still coupled pendulums that swing and rock, each turning on its own.
-  The planet rides end 0 at a reach that grows with its orbit (half its rank, half the logarithm of
-  its distance), a brass weight on end 1 balances it by the lever rule, and the Earth hangs from its
-  arm's end with the Moon on a sub-arm. Each arm hangs as far below the one above as keeps it clear
-  of everything above it that it passes under; `clearance` scales those gaps (below 1 they knock).
-  Sizes are not to scale (radius about the 0.45 power of the real one): Jupiter and Saturn are
-  clearly the biggest, Mercury and the Moon still a few cells across.
+  planet, stacked on one axis, each hung on a short link from the loop of the arm above (`end: 2`),
+  so the arms are still coupled pendulums that swing and rock, each turning on its own. From the
+  top: the outer bodies outermost first, then the inner ones from Mercury out; the Sun is a globe
+  threaded on the axis at Mercury's loop, in the middle of the frame, so the arms radiate from it,
+  the inner planets circle it close to its height and the giants' wide arms hang a little above. A
+  planet rides end 0 at a reach that grows with its orbit (half its rank, half the logarithm of its
+  distance), a small brass weight near the axis on end 1 balances it by the lever rule, and the
+  Earth hangs from its arm's end with the Moon on a sub-arm. Each arm hangs as far below the one
+  above as keeps it clear of everything above it that it passes under; `clearance` scales those
+  gaps (below 1 they knock). Sizes are not to scale (radius about the 0.45 power of the real one):
+  Jupiter and Saturn are clearly the biggest, Mercury and the Moon still a few cells across. The
+  eye looks down on the planets' plane at about 26°, so every orbit is an ellipse round the Sun and
+  planets pass in front of it and behind it.
 - The shared part gained balls (globes and weights: drag along the relative air, contacts with
   other arms' balls, plates, wires and links), arms hung from a parent's loop, and a motor
   (`Mobile.drive`): a couple across an arm's ends that makes up for the damping, brings the turn to
@@ -346,14 +393,15 @@ A solar system hanging in a quiet room under a glowing Sun, the room's lamp (iss
   arm keeps its rate exactly over time while gusts and knocks still set it back for a while.
 - Motor (`motor`, on): each arm turns once in its planet's period, au^1.5 years (Kepler's third
   law), the Moon's once a sidereal month; the speed sets the Earth's year from 72 to 18 seconds of
-  the motion clock (36 at the middle, about a minute at the default motion). The arms start at the
-  planets' J2000 mean longitudes, turned 40° against the room so Jupiter and Saturn start behind
-  the Sun and the ice giants out to the right.
-- Light: the Sun (`Sun`) lights each planet from where it hangs, so phases change as the arms turn;
-  its light (`soft shadows`: the bulb inside the globe, up to the whole globe) throws the mobile's
-  shadows, Saturn's rings included, on the wall, the ceiling and the other planets (eclipses
-  happen). A dim window (`window light`) and the room's ambient keep the room and the night sides
-  readable; `room` is a dark room or a white one in daylight (paper theme).
+  the motion clock (36 at the middle, about a minute at the default motion). The arms start spread
+  round the Sun: Jupiter behind on the left, Saturn on the right, Uranus behind, Neptune in front.
+- Light: the Sun (`Sun`) lights each planet from where it hangs, so phases change as the arms turn:
+  full behind the Sun, a crescent in front of it. Its light (`soft shadows`: the bulb inside the
+  globe, up to the whole globe) throws the mobile's shadows on the other planets (eclipses happen)
+  and on the room, where they stay secondary: thrown from at least the whole globe, so they blur
+  and shrink with distance, and never taking more than half the Sun's light. Saturn's rings shadow
+  its globe and the wall. A dim window (`window light`) and the room's ambient keep the room and the
+  night sides readable; `room` is a dark room or a white one in daylight (paper theme).
 - Looks, from the shared planet (`src/shaders/lib/planet.ts`): Jupiter's and Saturn's belts in
   `planetBandColor` (Jupiter with its red spot), Venus's and Neptune's `planetBelts`, the Earth's
   oceans, land, ice caps and `planetClouds`, the rocky bodies' `planetFbm`, Saturn's tilted rings

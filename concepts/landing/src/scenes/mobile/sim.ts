@@ -33,7 +33,7 @@ import { Random } from "../../sims/random.ts";
 import { GustTrain, windNoise } from "../../sims/wind.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
-  MOBILE_ANCHOR,
+  MOBILE_SUN_CENTRE,
   MOBILE_EYE,
   MOBILE_HOIST,
   MOBILE_LOWER,
@@ -173,7 +173,7 @@ class MobileSim implements SceneSim {
     );
     this.#gustZ = 0;
     this.#busy = 0;
-    const solar = solarMobile(planets, clearance, MOBILE_ANCHOR);
+    const solar = solarMobile(planets, clearance, MOBILE_SUN_CENTRE);
     const mobile = new Mobile(solar.design);
     this.#solar = solar;
     this.#mobile = mobile;

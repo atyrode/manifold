@@ -53,7 +53,8 @@
 //
 // Still water (CPU): `stillWater(bed, width, height, outlet, level)` is where water settles with the
 // outlet cells (a sea, a drain) held at `level`: every pool fills to its lowest spill point and the
-// rest drains. Seed `reset` with its depths so a scene opens settled.
+// rest drains. Seed `reset` with its depths so a scene opens settled. `LevelHeap` is its min-heap of
+// cells by level (push(cell, level), pop() the lowest, size), for other priority floods.
 //
 // Cost per step at 356×200 (71k cells): two passes, ~16 reads per texel. A real GPU runs hundreds of
 // steps a frame; a software rasterizer (SwiftShader) a few. `carry` and `view` add one pass each and
@@ -606,9 +607,10 @@ export function stillWater(
 
 /**
  * A binary min-heap of cell indices by level. Ties may pop in any order: the flood's levels are the
- * lowest spill height over all paths, which no visiting order changes.
+ * lowest spill height over all paths, which no visiting order changes. Exported for other priority
+ * floods over a grid (sims/terrain.ts's drainage, which also keeps each cell's receiver).
  */
-class LevelHeap {
+export class LevelHeap {
   readonly #cells: Int32Array;
   readonly #levels: Float64Array;
   #size = 0;
