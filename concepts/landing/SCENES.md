@@ -10,23 +10,25 @@ All of the ideas below have a first implementation in the lab:
 
 | Idea | Scene id | Notes |
 |---|---|---|
-| Above the clouds | `clouds` | Aurora and lightning come from the shared weather layer. |
+| Above the clouds | `clouds` | Aurora and lightning come from the shared weather layer. The sea of cloud below is the shared clouds' volume tier (`cloudSeaMarch`, `CLOUD_TIER` volume); the stars over it are the shared stars control. |
 | Waterfall | `falls` | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. Optional birds (the shared birds): swifts crossing the gorge, hidden behind the cliff they fly beyond. The shared sky components over the rim: a stars control, the moon's phase, an aurora whose arc is lifted to show its lower edge over the rim, and shooting stars that fall behind it. |
 | Countryside | `country` | Relative weights for seasonal crops, wildflower meadows, lavender rows and sunflowers; reproducible landscape seeds. |
-| Murmuration | `flock` | Authored deforming sheet on the CPU; optional emergent topological boids (`Boids`). |
+| Murmuration | `flock` | Authored deforming sheet on the CPU; optional emergent topological boids (`Boids`). The stars after dusk are the shared stars control. |
 | Paper marbling | `marble` | Mathematical marbling engine. |
 | Dunes | `dunes` | Werner slab model. The shared sky components over the dune sea: a stars control (a dark desert sky, drawn 1.3x bright), the moon's phase (which lights the sand), an aurora under the dust and shooting stars. |
 | Ice and frost | `frost` | Frost on a window pane; snowfall from the weather layer; the shared sky components (stars, moon phase, aurora, shooting stars) in the window. |
 | Snow and rain | merged | Part of the shared weather layer, not a scene: rain, snow, rain on glass, ripples, fog. |
-| Sea shore and bioluminescent bay | `shore` | |
+| Sea shore and bioluminescent bay | `shore` | The stars over the sea and glinting in the wet sand are the shared stars control. |
 | Window sill | `sill` | The shared sky components over the city: a stars control, the moon's phase, an aurora whose light comes in through the window, and shooting stars, all behind the cloud deck. |
 
-The shared options became libraries every outdoor scene can use: sky and time of day, weather,
-lightning, aurora and water in tiers (`src/shaders/lib/`), with shared lab knobs
-(`src/scenes/atmosphere.ts`). The giant ringed planet is an opt-in one (`src/shaders/lib/planet.ts`,
-included by the scenes that draw it; knobs `src/scenes/planet.ts`): `orbit` draws it as its subject
-with every feature (belts, clouds, storms, aurora, city lights, day cycle, banded rings, moons),
-`campfire` as scenery over its pines. The notes below are the original briefs.
+The shared options became libraries every outdoor scene can use: sky and time of day, clouds in
+tiers (a calm deck, the lit deck, its shadows, a sea of tops seen from above), weather, lightning,
+aurora and water in tiers (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`).
+The giant ringed planet is an opt-in one (`src/shaders/lib/planet.ts`, included by the scenes that
+draw it; knobs `src/scenes/planet.ts`): `orbit` draws it as its subject with every feature (belts,
+clouds, storms, aurora, city lights, day cycle, banded rings, moons), `campfire` as scenery over its
+pines. So is the Milky Way (`src/shaders/lib/milkyway.ts`), over `campfire` and `lake`. The notes
+below are the original briefs.
 
 ## Zen batch
 
@@ -64,11 +66,11 @@ A third batch built on the shared foundations (weather in the world, hard edges,
 |---|---|---|
 | Late-night bar | `bar` | Patrons arrive, sip and leave; the bartender pours, shakes, polishes; rain and traffic outside the window. Last call (the time-of-night "now"): a hand bell and two blinks of the lamps (just the blinks with the bartender off), last sips, one for the road or a word with you if the bar is empty, then closing time until the time of night is moved |
 | City crossing at dusk | `street` | Social-force walkers, intelligent-driver traffic, a signal cycle with a scramble; umbrellas open in the rain; optional late delivery (a van at the kerb past the crossing, hazards on, its driver wheeling crates to the konbini through the crowd, cyclists swinging out round it). Seen from a window pitched down at the crossing, rain and snow both fall along paths that close in below the street (`rainFallSeen`, `snowFallSeen`). The sky shows only in reflections: a stars control in the window glass and the moon's phase in the windows and the wet street |
-| Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint; everything that moves with the motion clock (clouds, lamps, flashers, station clock, the carriage's rock) keeps its phase when Motion changes. A `line` choice sets the country and its timetable together: country (as always), rural (low farmland, frequent halts with a crossing at the platform's end, crossings everywhere, short stream bridges, no tunnels, slower) or mountain (high hills and peaks, long tunnels chained over stone viaducts across deep gorges, few stations or crossings, slower still); the shared stars and moon phase are knobs, and the shared birds (off by default) fly the line's own kinds by day |
+| Night train window | `train` | A journey with stations, level crossings, bridges and tunnels; tea rings at every rail joint; everything that moves with the motion clock (clouds, lamps, flashers, station clock, the carriage's rock) keeps its phase when Motion changes. A `line` choice sets the country and its timetable together: country (as always), rural (low farmland, frequent halts with a crossing at the platform's end, crossings everywhere, short stream bridges, no tunnels, slower) or mountain (high hills and peaks, long tunnels chained over stone viaducts across deep gorges, few stations or crossings, slower still); the shared stars and moon phase are knobs, the cloud deck is the shared clouds' calm deck (`CLOUD_TIER` flat), and the shared birds (off by default) fly the line's own kinds by day |
 | Mystic forest | `forest` | Kodama spirits appearing and turning their heads, curious of the pointer or (a tunable share) shy of it and ducking into the moss (`sims/temperament.ts`); spores on curl-noise air, a stag crossing; rain cloud, shafts and gap sky under the canopy from the shared canopy weather (`shaders/lib/canopy.ts`, as bamboo's), with a stars control and the moon's phase in the gaps and the night rays |
 | Ripple tank | `ripple` | GPU wave equation: interference, double slit, lens, Doppler, standing waves; projected caustics; edge absorption from beaches that swallow every wave to bare walls that reflect them, apart from open-water damping |
 | Lava lamp | `lava` | Heated wax blobs with buoyancy, necks and merging; a wax body from silky (smaller blobs slipping through each other, long tails, smooth merges) to chunky (fewer, slower, knobbly lumps) |
-| Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles; lying snow from wind-packed crust to fresh powder at the same cover. The crack and snow fields are laid out on the ice as the eye at rest sees it (`LevelCamera`); optional birds (geese by default) mirrored in the ice; optional shooting stars (the shared component without the clock, `skyComponentKnobs`: the lake keeps its own hour, stars and moon, and runs the shared aurora on its substorm clock) over the mountains and in the ice |
+| Frozen lake | `lake` | Aurora mirrored in black ice, singing cracks, drifting snow, frozen bubbles; lying snow from wind-packed crust to fresh powder at the same cover. The crack and snow fields are laid out on the ice as the eye at rest sees it (`LevelCamera`); optional birds (geese by default) mirrored in the ice; the shared Milky Way with its brightness control and optional shooting stars (the shared components without the clock, `skyComponentKnobs`: the lake keeps its own hour, stars and moon, and runs the shared aurora on its substorm clock) over the mountains and in the ice |
 | Bonsai through the seasons | `bonsai` | Space-colonisation growth, cloud pads on springs, leaf fall, snow, pruning; with the breeze off the pads hang still until a gust, snip or hover |
 
 ## Quiet places and small machines
@@ -78,13 +80,13 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Idea | Scene id | Simulation |
 |---|---|---|
 | Harmonograph | `harmonograph` | Damped, slightly detuned pendulums drive a pen; the figure precesses and spirals inward, then a fresh sheet slides in |
-| Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky. Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out. The giant planet is the shared one (`shaders/lib/planet.ts`, decoration tier): optional moons on its ring plane (crossing in front of and behind it, casting shadows), an aurora, night-side city lights and its own day cycle |
+| Campfire under a ringed planet | `campfire` | Licking flame tongues, sparks, smoke, a toasting marshmallow, a vast starry sky with the shared Milky Way (`shaders/lib/milkyway.ts`, with a brightness control). Optional burning down (`FuelBed`, `src/sims/fuel.ts`): logs catch, char, thin, slump and crumble to embers, tended or left to go out. The giant planet is the shared one (`shaders/lib/planet.ts`, decoration tier): optional moons on its ring plane (crossing in front of and behind it, casting shadows), an aurora, night-side city lights and its own day cycle |
 | Pendulum wave | `pendula` | Exact small-angle pendulums with lengths for N + n swings per cycle: waves, helices, chaos, realignment; or real ones, released by a board and slowed by their own wide swing (`sims/pendulum.ts`), drifting off the realignment |
 | A small island | `island` | Raymarched island with surf, cloud shadows, a gull and weather; rain and snow seen from above both converge below the sea (`rainFallSeen`, `snowFallSeen` through one `islVanish`); the sea is the shared water's `mirror` tier (four hand-placed ripple trains) |
 | Aurora over a fjord | `aurora` | Draped ribbons with rays, mirrored in still water or ice (or, with the wind ripples knob, broken into streaks by drifting cat's-paws: the shared water's `ripples` tier, `shaders/windWater.ts`), a red cabin, falling and lying snow; optional birds (a skein of geese by default) mirrored in the fjord; optional shooting stars (the shared component without the clock, as the lake's: the fjord keeps its own night, stars, crescent and curtains) among the curtains and in the water |
 | Summer apiary | `bees` | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies, all flying in the garden's world and projected through its eye (`LevelCamera`). Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it. The shared sky components over the valley: a stars control, the moon's phase, an aurora and shooting stars behind the cumulus |
 | Looking up at the city | `skyward` | Facades converging on the zenith, trams, planes and contrails, pigeons and swifts (the shared birds seen from below); rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`); in its strip of sky, beside the stars control, the shared moon's phase and shooting stars (no aurora: looking up, its curtains hang toward the horizon, out of view) |
-| Autumn park | `autumn` | Leaves flutter and tumble down (the shared plate model `sims/flutter.ts`, as the garden's), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts (the shared pulse, `sims/wind.ts`) lift swirls of the top leaves off the path; over the park, the shared sky components: a stars control, the moon's phase (which sets the night light), an aurora and shooting stars behind the clouds |
+| Autumn park | `autumn` | Leaves flutter and tumble down (the shared plate model `sims/flutter.ts`, as the garden's), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts (the shared pulse, `sims/wind.ts`) lift swirls of the top leaves off the path; over the park, the shared sky components: a stars control, the moon's phase (which sets the night light), an aurora and shooting stars behind the clouds; optional cloud shadows sweeping the park (the shared clouds' `shadows` tier) |
 | Hanging mobile | `mobile` | Balanced arms on links as coupled Verlet pendulums, plate drag in drafts, gusts and eddies, plate contacts, shadows from one or two lamps on the wall |
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
@@ -436,13 +438,18 @@ the spirit of lo-fi study streams.
 - **Birds** (built: `shaders/lib/birds.ts` with `birdKnobs`): seven species, four formations,
   side-on, mirrored in still water or seen from below; flown by country, skyward, train, meadow,
   falls, swell, aurora, lake and lanterns, each scene giving its camera, lanes, occlusion and light.
-- **Sky components** (built: stars, the moon's phase, the aurora and shooting stars in
-  `src/shaders/lib/`, with `skyKnobs` and, for a scene that keeps its own night,
+- **Sky components** (built: stars, the Milky Way, the moon's phase, the aurora and shooting stars
+  in `src/shaders/lib/`, with `skyKnobs` and, for a scene that keeps its own night,
   `skyComponentKnobs` in `src/scenes/atmosphere.ts`): each an optional knob that starts at the
   picture the scene drew before, or off. A scene composes what its sky shows in its own frame,
   behind what stands in front of it, and mirrored where its water mirrors the sky (lanterns, lake
   and aurora; glints in swell's waves). Which scene composes which: "Sky capabilities by scene" in
   `src/scenes/README.md`.
+- **Clouds** (built: `src/shaders/lib/clouds.ts`, in tiers by `CLOUD_TIER`): the deck's plane and a
+  calm deck (the night train's), the lit deck every sky draws, its shadows on the ground (autumn's
+  optional cloud shadows, `weatherKnobs({ shadows })`) and a ray-marched sea of tops seen from above
+  (the clouds scene). Which scene draws which tier, and the cloud look-alikes kept apart: "Clouds"
+  in `src/scenes/README.md`.
 
 ## Lab: comparing setups and touring scenes
 

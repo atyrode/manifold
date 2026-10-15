@@ -17,7 +17,7 @@ const params: ParamDef[] = [
   toggle("glow", "stir", "stir with pointer", true, "Moving the pointer over the water or the wet sand stirs the plankton into glowing swirls.", { when: "glow" }),
   feature("glow", "fish", "fish", false, "frequency", 0.3, "Now and then a school of fish darts through the shallows, leaving trails of light behind it at night.", { trigger: 0 }),
   // 0.82: the evening moon six degrees up, in frame (the shader turns the sky to face moonrise).
-  ...skyKnobs({ time: 0.82 }),
+  ...skyKnobs({ time: 0.82, stars: 0.6 }),
   ...weatherKnobs({ rain: true, fog: true, wind: true, lightning: 1 }),
   toggle("manifold", "mark", "M in the sand", false, "An M drawn in the wet sand: every wave that washes over it lights it up blue, then it fades until the next."),
 ];
@@ -33,7 +33,7 @@ export const shoreScene: SceneDef = {
   groups: {
     surf: { title: "Surf", blurb: "The breakers: how big they stand and how often they come in." },
     glow: { title: "Bioluminescence", blurb: "Plankton that light up when the water is stirred: by the surf, by fish, by you." },
-    sky: atmosphereGroups.sky,
+    sky: { title: atmosphereGroups.sky.title, blurb: "Time of day, whether the days pass, and the stars over the sea, glinting in the wet sand." },
     weather: atmosphereGroups.weather,
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: an M drawn in the sand where the waves reach it." },
   },
