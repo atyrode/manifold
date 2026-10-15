@@ -10,7 +10,7 @@
 // Units: frame heights, x right and y down from the frame's top-left corner (a canvas's), as the
 // sheet is drawn: the frame is aspect wide and 1 high; plants root just beyond its edges.
 import { Material, type MaterialId } from "../../botany.ts";
-import { MONSTERA_MATURE } from "../../decor.ts";
+import { MONSTERA_MATURE, pondRandom } from "../../decor.ts";
 import { type PlantBuilder, PlantHabit, PlantRole, type PlantSite, type PlantSpecies, type RootedPlants } from "../../sims/plants.ts";
 
 /** Plants that grow in clumps along the edges. */
@@ -38,18 +38,6 @@ export interface PondPlantConfig {
 
 /** Most organs the border can hold (the lushest, bushiest layout on the widest frame uses ~2500). */
 export const POND_ORGANS = 4096;
-
-/** Small deterministic PRNG, the layout's own (seeded as it always was). */
-function random(seed: number): () => number {
-  let state = (seed * 2654435761) >>> 0 || 1;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /** How each kind of plant sways, lives and turns with the year (sims/plants.ts). */
 const SWAY = {
@@ -92,7 +80,7 @@ function arcLength(chord: number, turn: number): number {
  */
 export function growPondPlants(plants: RootedPlants, config: PondPlantConfig, aspect: number): Int32Array {
   plants.clear();
-  const rand = random(17 + config.seed * 101);
+  const rand = pondRandom(17 + config.seed * 101);
   const width = aspect;
   const kinds: readonly ClumpSpecies[] = config.kinds.length > 0 ? config.kinds : clumpSpecies;
   const pick = (prefer: readonly ClumpSpecies[]): ClumpSpecies => {

@@ -59,6 +59,8 @@
 // M re-stamps the whole field (~10 ms). Nothing is allocated per frame outside those events.
 import type { ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
+import { clamp, hash31, smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -232,43 +234,6 @@ type KnobKey = "substorm" | "cracks" | "fractures" | "drift" | "iceSeed" | "wind
 /** The simulation was set up wrong: a knob it reads is missing. */
 export class LakeSimError extends Error {}
 
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
-
-const smoothstep = (edge0: number, edge1: number, x: number): number => {
-  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-};
-
-/** mulberry32: a small seeded generator, so the same seed always gives the same night. */
-class Random {
-  #state = 0;
-
-  seed(seed: number): void {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
-  /** Roughly normal, mean 0, standard deviation 1 (three uniforms). */
-  gauss(): number {
-    return (this.next() + this.next() + this.next() - 1.5) * 2;
-  }
-}
-
-/** A hash of a lattice point to 0..1. */
-function hash2(i: number, j: number, salt: number): number {
-  let h = Math.imul(i, 0x27d4eb2d) ^ Math.imul(j, 0x165667b1) ^ Math.imul(salt, 0x9e3779b1);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
 /** Smooth value noise 0..1. */
 function noise2(x: number, y: number, salt: number): number {
   const i = Math.floor(x);
@@ -277,10 +242,10 @@ function noise2(x: number, y: number, salt: number): number {
   const fy = y - j;
   const ux = fx * fx * (3 - 2 * fx);
   const uy = fy * fy * (3 - 2 * fy);
-  const a = hash2(i, j, salt);
-  const b = hash2(i + 1, j, salt);
-  const c = hash2(i, j + 1, salt);
-  const d = hash2(i + 1, j + 1, salt);
+  const a = hash31(i, j, salt);
+  const b = hash31(i + 1, j, salt);
+  const c = hash31(i, j + 1, salt);
+  const d = hash31(i + 1, j + 1, salt);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 
@@ -551,7 +516,7 @@ class DriftingSnow {
       this.loose[k] = 0.2 * hard + 0.02;
       this.drift[k] = 0;
     }
-    for (let g = 0; g < GUST_CELLS; g++) this.#gusts[g] = hash2(g, 17, salt);
+    for (let g = 0; g < GUST_CELLS; g++) this.#gusts[g] = hash31(g, 17, salt);
   }
 
   /** How hard the wind blows here, as a share of its mean: gust fronts riding downwind. */

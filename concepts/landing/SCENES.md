@@ -104,6 +104,15 @@ more) instead of whole layers sliding together. New, all off: seasons (the year 
 plants, flowers keep their season), growth (leaves unfold, age and are replaced) and gusts (fronts
 crossing the pond, "now").
 
+## Pond water
+
+`pond`'s caustics are the shared water's `caustics` tier (issue #1082 M13): two layers of its
+cellular net (`causticCells`, `src/shaders/caustics.ts`), light where their seams cross, carried by
+the current with the `flow` tier's `waterDrift`; the same picture as the pond's own layers drew.
+Where the seams would be thinner than a dither cell (the pond drawn under ~94 cells high, only at
+the coarsest pixel sizes) they fade to an even glow instead of flickering. The drop rings and the
+refraction they bend the floor with stay the pond's own.
+
 ## Tide pool
 
 `tidepool`: a rock pool on a basalt platform, seen from straight above, with the open sea along the
