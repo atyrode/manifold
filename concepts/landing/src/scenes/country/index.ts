@@ -5,7 +5,8 @@
 // cross the valley and a starling murmuration wheels over it at dusk when switched on (wildlife.ts).
 // The night sky composes the shared stars, the moon's phase and shooting stars; the clouds are the
 // shared clouds' lit deck, calm deck by night and shadows; the river the shared water's ripples tier
-// when its wind ripples are up.
+// when its wind ripples are up. Verges of cow parsley, campion and grass at the hedges' foot on the
+// near ridges are rooted plants of the shared plant component (verges.ts), when switched on.
 import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
@@ -13,6 +14,7 @@ import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { FLOCK_SIZES, flockSim } from "../flock/sim.ts";
 import type { SceneDef } from "../types.ts";
 import { COUNTRY_METEOR_TRIGGER, countryGlsl } from "./shader.ts";
+import { countrySim } from "./verges.ts";
 import { COUNTRY_FLIGHTS, countryMurmuration } from "./wildlife.ts";
 
 const params = [
@@ -44,6 +46,15 @@ const params = [
     ],
     1,
     "The farming year, separate from field weights. Summer: green wheat and yellow rapeseed. Harvest: golden wheat, stubble and bales. Autumn: ploughed earth and broadleaf trees on the turn; pines remain evergreen.",
+  ),
+  feature(
+    "fields",
+    "verges",
+    "verges",
+    false,
+    "fullness",
+    0.6,
+    "Clumps of cow parsley, red campion and tussock grass at the foot of the hedges on the two nearest hills. They sway in the wind and bow as its gusts roll across the fields, follow the farming year (the parsley's white umbels in summer, gone to seed at harvest with the campion still in flower, everything browning in autumn) and carry the snow; they keep off the tracks, the river, the farmsteads and the grazed pastures. Fullness: how many clumps, from one here and there to one either side of most hedges' middles.",
   ),
   range(
     "livestock",
@@ -275,6 +286,8 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     // Flower and pasture fields (fields.ts, animals.ts); the herds and fences in the pastures.
     COUNTRY_HAS_FIELDS: on("wildflowers", "lavender", "sunflowers", "pasture"),
     COUNTRY_HAS_HERDS: on("pasture"),
+    // The clumps at the hedges' foot (verges.ts).
+    COUNTRY_HAS_VERGES: on("verges"),
     COUNTRY_HAS_WILDLIFE: on("songbirds", "murmuration"),
     COUNTRY_HAS_CHALK: on("chalk"),
     // Rain and snow falling, and the valley mist (what lies wet or white follows uWeather, always in).
@@ -289,7 +302,11 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
   };
 }
 
-/** Every optional part compiled in: for checks that draw many settings with one program. */
+/**
+ * Every optional part but the verges compiled in: for checks that draw many settings with one
+ * program. The verges' own check (verges.verify.ts) compiles them in; here they would only slow
+ * every draw.
+ */
 export const COUNTRY_FULL = countryFeatures({
   walkers: 1,
   tracks: 1,
@@ -325,7 +342,7 @@ export const countryScene: SceneDef = {
     fields: {
       title: "Fields",
       blurb:
-        "Mix crops, flowers and pasture enclosures with relative weights, follow the farming year, and re-seed the valley. Zero excludes a type; all zero uses crops. Shares are approximate across the visible fields, not exact screen-area percentages.",
+        "Mix crops, flowers and pasture enclosures with relative weights, follow the farming year, grow wild flowers along the hedges, and re-seed the valley. Zero excludes a type; all zero uses crops. Shares are approximate across the visible fields, not exact screen-area percentages.",
     },
     woodland: {
       title: "Woodland",
@@ -367,8 +384,9 @@ export const countryScene: SceneDef = {
   },
   glsl: countryGlsl,
   entry: "sceneCountry",
-  // The starling murmuration (wildlife.ts): the Murmuration scene's flock, idle while it is off.
-  sim: flockSim(params, countryMurmuration),
+  // The starling murmuration (wildlife.ts): the Murmuration scene's flock, idle while it is off;
+  // the verges' plants (verges.ts), none grown while they are off.
+  sim: countrySim(flockSim(params, countryMurmuration), params),
   // Enter: the camera comes down from the sky and settles on the valley as the haze thins. Exit: it
   // drifts back up toward the clouds as the light goes grey.
   passage: { enter: 2.6, exit: 1.4 },

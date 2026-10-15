@@ -261,6 +261,20 @@ describe("RootedPlants", () => {
     expect([plants.x[0], plants.x[1]].map((v) => Number((v ?? 0).toFixed(9)))).toEqual([0.9, 1.1]);
   });
 
+  test("the scene's own air is asked for each organ's plant", () => {
+    const plants = row(stalked(), 3);
+    const climate = plantClimate();
+    // Air only the middle plant stands in, wherever its organs are.
+    climate.wind = (_x, _y, out, plant) => {
+      out[0] = plant === 1 ? 0.5 : 0;
+    };
+    plants.settle(climate);
+    // Each plant's stalk is its first organ: 0, 3 and 6.
+    expect(Math.abs(plants.theta[0] ?? 1)).toBe(0);
+    expect(Math.abs(plants.theta[6] ?? 1)).toBe(0);
+    expect(plants.theta[3] ?? 0).toBeCloseTo(0.6 * Math.tanh((0.2 * -0.5) / 0.6), 6);
+  });
+
   test("fitness fades out over a quarter beyond the band", () => {
     const species = stalked();
     expect(plantFitness(species, 0.5)).toBe(1);
