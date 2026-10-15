@@ -288,13 +288,15 @@ bool countryInPasture(CountryHouse c, float i, float ground) {
 }
 
 // Cottage k of the village: 0..10 the original street across the knoll, either side of it; 11..25
-// its growth (COUNTRY_VILLAGE_MORE). knoll: the knoll's top on screen; vx: the village's middle.
-// The woodland keeps off the street (countryWoodKeep); the growth's places reaching a wood, a track
-// or the river stay empty (size 0).
+// its growth (COUNTRY_VILLAGE_MORE, compiled in with COUNTRY_HAS_GROWTH). knoll: the knoll's top on
+// screen; vx: the village's middle. The woodland keeps off the street (countryWoodKeep); the
+// growth's places reaching a wood, a track or the river stay empty (size 0).
 CountryHouse countryVillageHouse(float k, float vx, float knoll, vec2 spots) {
   CountryHouse c;
   float drop = 0.0;
+#if COUNTRY_HAS_GROWTH
   if (k < 10.5) {
+#endif
     float hj = hash12(vec2(k, 4.3) + countrySeed);
     float u = (k - 5.0) / 5.0;
     c.side = mod(k, 2.0) < 0.5 ? 1.0 : -1.0;
@@ -303,6 +305,7 @@ CountryHouse countryVillageHouse(float k, float vx, float knoll, vec2 spots) {
     c.size = 0.014 + 0.1 * (down - 0.014);
     c.len = 1.2 + 0.8 * fract(hj * 7.1);
     c.which = hj;
+#if COUNTRY_HAS_GROWTH
   } else {
     vec3 slot = COUNTRY_VILLAGE_MORE[int(k) - 11];
     float hj = hash12(vec2(k, 8.9) + countrySeed);
@@ -312,12 +315,15 @@ CountryHouse countryVillageHouse(float k, float vx, float knoll, vec2 spots) {
     c.len = 1.1 + 0.8 * fract(hj * 7.1);
     c.which = hj;
   }
+#endif
   // On the knoll's face: the street never above the bare crest under its corner, whatever the
   // landscape; the growth its drop below it.
   float crest = countryGroundCrest(2.0, c.base.x, spots);
   c.base.y = min(c.base.y, crest - drop);
+#if COUNTRY_HAS_GROWTH
   if (k > 10.5) c.size = 0.014 + 0.1 * max(knoll - c.base.y - 0.014, 0.0);
   if (k > 10.5 && (countryInWood(c, 2.0, spots) || countryOnWay(c, 2.0, crest, spots))) c.size = 0.0;
+#endif
   return c;
 }
 
@@ -330,7 +336,11 @@ CountryVillage countryVillage(vec2 q, float vx, float knoll, float ground, vec2 
   CountryVillage v = countryNoVillage();
   float n = K_village;
   bool street = !(abs(q.x - vx) > 0.26 || q.y < knoll - 0.1 || q.y > knoll + 0.18);
+#if COUNTRY_HAS_GROWTH
   bool grown = n > 11.5 && abs(q.x - vx) < 0.36 && q.y > knoll - 0.17 && q.y < knoll + 0.2;
+#else
+  bool grown = false;
+#endif
   if (!street && !grown) return v;
   CountryFind f = countryNoFind();
   float smoke = 0.0;

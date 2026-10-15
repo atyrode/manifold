@@ -27,11 +27,14 @@
 // those COUNTRY_AGENTS candidates, skipping any not on the ridge in question or more than one figure
 // width away across the screen before the one crest lookup that places its feet. Figures are drawn
 // by the shared figures library at their world size (a walker about 1.7 m), so nearby they are a
-// few cells tall and far off one faint cell or nothing.
+// few cells tall and far off one faint cell or nothing. They and the library are compiled in only
+// while either knob is on (COUNTRY_HAS_AGENTS, index.ts).
 import { figuresGlsl } from "../../shaders/lib/figures.ts";
 
 export const countryRoutesGlsl = /* glsl */ `
+#if COUNTRY_HAS_AGENTS
 ${figuresGlsl}
+#endif
 
 // Both defined further on in shader.ts.
 vec2 countryRiver(float v, float start);
@@ -373,6 +376,12 @@ bool countryTreeCleared(vec2 root, vec2 f) {
   return false;
 }
 
+// The frame each ridge in front of the one a pixel shows had there (sceneCountry fills it, ridge by
+// ridge, while walkers, carts or the knobs' settlements read it): x, y the point in the ridge's
+// frame, z its visible crest, w its bare crest.
+vec4 countrySeen[6];
+
+#if COUNTRY_HAS_AGENTS
 // ---- walkers and carts ----
 
 // The legs walkers and carts keep to, each on one ridge, its ends out of sight (behind a nearer
@@ -531,10 +540,6 @@ void countryWayAlong(inout CountryWay way, vec2 spots, vec2 joins) {
   way.stride = walk.x * TAU * 0.95 + 6.0 * h;
 }
 
-// The frame each ridge in front of the one a pixel shows had there (sceneCountry fills it, ridge by
-// ridge): x, y the point in the ridge's frame, z its visible crest, w its bare crest.
-vec4 countrySeen[6];
-
 // The walker or cart covering the pixel: standing on the ground it shows (ridge \`hit\`, point q,
 // visible crest \`crest\`, bare crest \`terrain\`) unless a tree stands there (object 1) or a building
 // does (object 2) whose base on screen (front) lies lower than its feet, or poking over the skyline
@@ -662,4 +667,5 @@ Figure countryAgentAt(int hit, float object, float front, vec2 q, float crest, f
   if (best.cover < 0.5 && ridge < float(hit) - 0.5) best = figureNone();
   return best;
 }
+#endif
 `;

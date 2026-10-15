@@ -5,6 +5,7 @@ import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
 import { sceneDefs } from "../index.ts";
 import type { SimFrame } from "../types.ts";
+import { COUNTRY_FULL } from "./index.ts";
 
 const WIDTH = 192;
 const HEIGHT = 108;
@@ -83,7 +84,7 @@ export function verifyCountryWildlife(gl: WebGL2RenderingContext): Record<string
       ...sceneDefs.country,
       entry: "regressionWildlife",
       glsl: sceneDefs.country.glsl + wrapper,
-    }),
+    }, COUNTRY_FULL),
   );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;

@@ -18,11 +18,14 @@
 // Drawing follows countryDots: the screen offset from the foot at the ridge's depth d and the
 // slope's own down-slope rate, with the crest's lean undone so the animals stand upright on any
 // hillside. Up close they have legs, heads and markings; a couple of cells long they become soft
-// specks; beyond the third ridge the enclosure keeps its grass alone.
+// specks; beyond the third ridge the enclosure keeps its grass alone. The herds, the fences and the
+// livestock library are compiled in only while pasture has a weight (COUNTRY_HAS_HERDS, index.ts).
 import { livestockGlsl } from "../../shaders/lib/livestock.ts";
 
 export const countryAnimalsGlsl = /* glsl */ `
+#if COUNTRY_HAS_HERDS
 ${livestockGlsl}
+#endif
 
 const float COUNTRY_FENCE_HIGH = 0.008;  // post-and-rail fence height, world units
 const float COUNTRY_FENCE_POST = 0.0018; // post width
@@ -51,6 +54,7 @@ vec3 countryPastureColor(float h, float season, vec2 w, vec2 px, out float relie
   return col;
 }
 
+#if COUNTRY_HAS_HERDS
 // countryFieldSpace inverted: the slope point (world) of field-space point f on ridge i, with in
 // f0 the unwarped field coordinate it comes from. Three fixed-point steps of the gentle warp.
 vec2 countryFieldPoint(float i, vec2 f, out vec2 f0) {
@@ -463,4 +467,5 @@ CountryStock countryStock(float i, vec2 q, float s, float lean, vec2 w, float do
   }
   return st;
 }
+#endif
 `;

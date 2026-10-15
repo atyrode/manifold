@@ -4,6 +4,7 @@
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { sceneDefs } from "../index.ts";
+import { COUNTRY_FULL } from "./index.ts";
 
 // Large enough that the nearest herds draw whole bodies (a cow ~2.4 cells long) and farther ones
 // specks; only the land below the horizon is drawn and compared.
@@ -98,7 +99,7 @@ export function verifyCountryAnimals(gl: WebGL2RenderingContext): Record<string,
         }
         return shadeOf(vec3(0.0), 0.0, 0.0);
       }`,
-    }),
+    }, COUNTRY_FULL),
   );
   gl.useProgram(scene);
   const uniform = (name: string) => gl.getUniformLocation(scene, name);

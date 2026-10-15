@@ -3,7 +3,7 @@
 //
 // Shader: each scene compiles to its own WebGL2 program:
 //   common preamble (uniforms, noise, dithering helpers, Shade)   — src/shaders/common.ts
-//   + one `#define <NAME> <n>` per compile-time library feature, from `features`
+//   + one `#define <NAME> <n>` per compile-time feature, from `features` and `featuresFor(knobs)`
 //   + shared libraries (sky, weather, surface, water, lightning, aurora, meteors) — src/shaders/lib/
 //   + one `#define K_<key> uParams[i]` per knob, generated from `params`
 //   + the scene's `glsl`, which defines `Shade <entry>(vec2 uv, vec2 cell, float t)`
@@ -137,6 +137,18 @@ export interface SceneDef {
    * Names and meanings: the "Composing components" section of src/scenes/README.md.
    */
   features?: Readonly<Record<string, number>>;
+  /**
+   * Compile-time features keyed by the knobs (merged over `features`): from every knob as the shader
+   * reads it (`K_<key>`, keyed by knob key), the defines this setting needs, so code behind a knob
+   * that is off is not in the program at all (a software rasteriser runs every line of a program,
+   * taken or not). The renderer builds one program per distinct set (a few kept per scene), in the
+   * background where the browser can; until it is built the program on screen goes on drawing the
+   * settings it drew last. A gate holds wherever its knobs can show the part (`K_x > 0.0` in GLSL:
+   * `x > 0` here), and the shader keeps its own runtime test of the knobs inside it. Name each gate
+   * and define it 0 or 1 every time, tested with `#if`; a library feature tested with `#ifdef` is
+   * left out instead. See "Composing components" in src/scenes/README.md.
+   */
+  featuresFor?: (values: Readonly<Record<string, number>>) => Readonly<Record<string, number>>;
 }
 
 export type PageTheme = "night" | "paper";
