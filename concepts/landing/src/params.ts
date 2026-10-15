@@ -44,9 +44,12 @@ interface Base {
  *              knobs sharing `mix` (the bar's name) make one stacked bar, this knob its segment named
  *              `part`, coloured `swatch`, drawn while it is in (a range above zero, a feature while
  *              on); a feature part also gets an on/off chip, and keeps its amount while off
- *   sky        a part of the sky dial: `time` the time of day (a range over 0..1, 0 midnight),
- *              `cycle` the day cycle and `moon` the moon's phase (features); the dial stands where
- *              its group has a `time` part, and without one the others are plain controls
+ *   sky        a part of the almanac (the sky dial): `time` the time of day (a range over 0..1, 0
+ *              midnight), `cycle` the day cycle and `moon` the moon's phase (features), `season`
+ *              where the year stands (see `SeasonYear`) and `year` the year's cycle (a feature); the
+ *              dial stands where a group has a `time` part, gathering the scene's `season` and
+ *              `year` parts from any group; without a `time` part the season parts make a season
+ *              wheel in their own group and the others are plain controls
  *   direction  a signed strength (a range from below 0 to above 0), min to the left and max to
  *              the right, on a vector pad
  *   compass    a heading (a range over 0..1: a turn counter-clockwise from the right) on a vector
@@ -57,10 +60,20 @@ interface Base {
  */
 export type Widget =
   | { kind: "mix"; mix: string; part: string; swatch: string }
-  | { kind: "sky"; part: "time" | "cycle" | "moon" }
+  | { kind: "sky"; part: "time" | "cycle" | "moon" | "year" }
+  | { kind: "sky"; part: "season"; year: SeasonYear }
   | { kind: "direction" }
   | { kind: "compass"; strength: string }
   | { kind: "position"; y: string; screen?: readonly [number, number] };
+
+/**
+ * Where a season knob puts the year, as a year position 0..1 (wrapping): 0 the start of spring,
+ * 0.25 of summer, 0.5 of autumn, 0.75 of winter. `span` for a range, or a feature's amount: the
+ * positions at its min and max, linear between (a feature that is off stands at `off`). `at` for a
+ * choice: each option's position in option order, null for one that is not a time of year.
+ */
+export type SeasonYear =
+  { span: readonly [number, number]; off?: number } | { at: readonly (number | null)[] };
 
 export interface Option {
   label: string;

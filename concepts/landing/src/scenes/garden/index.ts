@@ -73,6 +73,7 @@ const params: readonly ParamDef[] = [
     gardenSeasons.map((label, value) => ({ label, value })),
     2,
     "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, snow on the stones, the moss and the wall; turn on snow (Weather) to have it falling. The border planting (Garden) follows it.",
+    { widget: { kind: "sky", part: "season", year: { at: [0.125, 0.375, 0.625, 0.875] } } },
   ),
   range(
     "maple",

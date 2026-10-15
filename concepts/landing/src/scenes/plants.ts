@@ -35,7 +35,11 @@ export function plantKnobs(options: PlantKnobOptions): ParamDef[] {
         "time of year",
         options.season,
         "The year turns the plants: a flush of pale young leaves in spring, everything out and green in summer, leaves turning gold and brown and the deciduous ones falling in autumn, bare stems among the evergreens in winter; flowers open only in their season. Spring at the left end, then summer, autumn and winter. Off: high summer.",
-        { ...when, steady: true },
+        {
+          ...when,
+          steady: true,
+          widget: { kind: "sky", part: "season", year: { span: [0, 1], off: 0.375 } },
+        },
       ),
     );
   }

@@ -32,6 +32,7 @@ const params: readonly ParamDef[] = [
     "season progress",
     0.35,
     "How far autumn has come. Early: leaves just turning, some still green, a thin carpet. Middle: a full golden canopy and a growing carpet. Late: browning, the canopy thinning to sky and boughs, the ground deep in leaves.",
+    { widget: { kind: "sky", part: "season", year: { span: [0.5, 0.75] } } },
   ),
   seed(
     "tree",

@@ -55,6 +55,7 @@ const params: readonly ParamDef[] = [
     ],
     0,
     "Light colour washed over the ink, as Guo Xi saw the year: spring hills pale as if smiling, blossom pink at the foot and young green up the slopes, with peach blossom among the dots; summer hills a deep green as if dripping; autumn hills clear and bright as if made up, ochre turning russet toward the crests, with maple leaves among the dots; winter hills asleep under snow, left as bare paper on the tops and ledges while the sky and water are washed grey. Over the blue-green palette the season lies as a glaze. None: the palette alone.",
+    { widget: { kind: "sky", part: "season", year: { at: [null, 0.125, 0.375, 0.625, 0.875] } } },
   ),
   range(
     "ink",

@@ -253,6 +253,7 @@ const params = [
     ],
     1,
     "The farming year; each field keeps its crop and shows it as the season has it. Summer: green wheat and barley, yellow rapeseed in flower, the hay standing. Harvest: golden wheat, the barley and rapeseed cut to stubble and the barley's straw in round bales. Autumn: ploughed earth and winter wheat drilled in green rows, the grass duller, the hedges russet and the broadleaf trees on the turn, each its own colour, while the pines stay evergreen; the flower fields gone over.",
+    { widget: { kind: "sky", part: "season", year: { at: [0.375, 0.47, 0.6] } } },
   ),
   range(
     "water",

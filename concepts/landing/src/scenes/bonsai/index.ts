@@ -81,7 +81,7 @@ const params: readonly ParamDef[] = [
     "season",
     0.58,
     "Where the year stands: spring at the left end, then summer, autumn and winter.",
-    { steady: true },
+    { steady: true, widget: { kind: "sky", part: "season", year: { span: [0, 1] } } },
   ),
   feature(
     "seasons",
@@ -91,7 +91,7 @@ const params: readonly ParamDef[] = [
     "minutes per season",
     3,
     "The year turns at this pace: buds and new leaves, full summer pads, autumn colour and leaf fall, bare branches and snow.",
-    { min: 0.5, max: 10, step: 0.5 },
+    { min: 0.5, max: 10, step: 0.5, widget: { kind: "sky", part: "year" } },
   ),
   feature(
     "seasons",
