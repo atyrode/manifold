@@ -133,10 +133,15 @@ float countryTreeHit(vec3 ro, vec3 rd, CountryTree tree, float t, out vec3 n, ou
   return -1.0;
 }
 
+// A lone tree's hash, by its yard texel: its place, size and species.
+float countryLoneHash(ivec2 at) {
+  return hash12(vec2(at) * 0.731 + 5.3);
+}
+
 // The lone tree of the yard texel at (i, j), if it holds one: placed and sized by its hash.
 CountryTree countryLoneTree(ivec2 at, vec2 p, vec4 g) {
   CountryTree tree;
-  float h = hash12(vec2(at) * 0.731 + 5.3);
+  float h = countryLoneHash(at);
   vec2 foot = (vec2(at) + 0.5) * (COUNTRY_EXTENT / float(textureSize(uSim1, 0).x)) + 1.6 * (hash22(vec2(at)) - 0.5);
   float s = 0.85 + 0.15 * fract(h * 7.1);
   tree.pine = countryPine(h);
@@ -145,6 +150,13 @@ CountryTree countryLoneTree(ivec2 at, vec2 p, vec4 g) {
   tree.foot = vec3(foot.x, terrainSurface(g) + dot(g.zw, foot - p), foot.y);
   tree.hash = h;
   return tree;
+}
+
+// Whether p's yard texel holds a lone pine: the far canopy's species where it is a lone tree's.
+bool countryLonePine(vec2 p) {
+  ivec2 size = textureSize(uSim1, 0);
+  ivec2 at = clamp(ivec2(floor(p / COUNTRY_EXTENT * vec2(size))), ivec2(0), size - 1);
+  return texelFetch(uSim1, at, 0).w < -0.5 && countryPine(countryLoneHash(at));
 }
 
 // The woods' tree of crown cell \`cell\`: it stands (radius > 0) where the woods at its root outgrow
@@ -253,15 +265,15 @@ float countryCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out CountryTre
   return hit;
 }
 
-// A crown's leaves: broadleaf greens varied tree by tree, pines a dark blue-green; darker low in the
-// crown and between its clumps where they resolve (foot: metres a cell spans there). A trunk
-// (up < 0): bark.
+// A crown's leaves: broadleaf greens varied tree by tree (turned in autumn: season.ts), pines a dark
+// blue-green the year round; darker low in the crown and between its clumps where they resolve
+// (foot: metres a cell spans there). A trunk (up < 0): bark.
 vec3 countryLeaves(CountryTree tree, vec3 at, float up, float foot) {
   if (up < 0.0) return vec3(0.27, 0.22, 0.17);
   float h = tree.hash;
   vec3 leaf = tree.pine
     ? mix(vec3(0.11, 0.21, 0.14), vec3(0.15, 0.26, 0.15), fract(h * 3.3))
-    : mix(vec3(0.21, 0.35, 0.12), vec3(0.32, 0.44, 0.15), fract(h * 9.7));
+    : countryTurn(mix(vec3(0.21, 0.35, 0.12), vec3(0.32, 0.44, 0.15), fract(h * 9.7)), h);
   float clumps = vnoise(at.xz * 0.9 + at.y * 0.7 + h * 40.0);
   leaf *= mix(1.0, 0.75 + 0.45 * clumps, smoothstep(1.2, 0.4, foot));
   return leaf * (0.7 + 0.3 * smoothstep(0.0, 0.65, up));

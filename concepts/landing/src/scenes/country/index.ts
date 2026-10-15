@@ -9,12 +9,14 @@
 // over a few frames (the last one stays on screen meanwhile); the river's size the river and what
 // stands near it; the settlements and roads only those and the parcels; the land's uses, the pine
 // mix and the cattle share only the allocation, packed and uploaded within the frame; the river
-// switched off only dries its bed. Herds' size, walkers, carts and birds are the shader's alone,
-// each compiled in only while on (countryFeatures).
+// switched off only dries its bed. Herds' size, walkers, carts, birds, the season (its harvest's
+// bales) and the river's wind ripples are the shader's alone, each optional part compiled in only
+// while on (countryFeatures).
 import type { IconName } from "../../lab/icons.ts";
 import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { TERRAIN_BASES, TERRAIN_MAX_COTTAGES, TERRAIN_MAX_FARMS } from "../../sims/terrain.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -233,6 +235,26 @@ const params = [
       "mostly rooks in loose parties, gulls up from the river, swallows low over the fields, now and then geese, pigeons, swifts or a buzzard circling on a thermal.",
     help: "Birds crossing the valley by day, hidden by the hills, trees and buildings nearer than them; none at night and fewer in snow and rain.",
   }),
+  choice(
+    "land",
+    "season",
+    "season",
+    [
+      { label: "summer", value: 0 },
+      { label: "harvest", value: 1 },
+      { label: "autumn", value: 2 },
+    ],
+    1,
+    "The farming year; each field keeps its crop and shows it as the season has it. Summer: green wheat and barley, yellow rapeseed in flower, the hay standing. Harvest: golden wheat, the barley and rapeseed cut to stubble and the barley's straw in round bales. Autumn: ploughed earth and winter wheat drilled in green rows, the grass duller, the hedges russet and the broadleaf trees on the turn, each its own colour, while the pines stay evergreen; the flower fields gone over.",
+  ),
+  range(
+    "water",
+    "ripples",
+    "wind ripples",
+    0,
+    "Zero: the river's own gentle shimmer of the sky. Higher lets the wind (under Weather) ruffle it: cat's-paws drift downwind and break the mirrored sky into streaks, more of them the harder it blows.",
+    { step: 0.05, when: "river" },
+  ),
 ];
 
 /**
@@ -253,8 +275,13 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     COUNTRY_HAS_FIELDS: on("wildflowers", "lavender", "sunflowers"),
     // The pastures' fences and herds (the shared livestock).
     COUNTRY_HAS_HERDS: on("pasture"),
+    // Walkers and carts on the roads, and the lying snow they tread there.
     COUNTRY_HAS_AGENTS: on("walkers", "carts"),
     COUNTRY_HAS_BIRDS: on("birds"),
+    // Round bales on the barley's stubble: at harvest, with crops.
+    COUNTRY_HAS_BALES: values.season === 1 ? on("crops") : 0,
+    // The river's wind ripples: the shared water's ripples tier, only while they are up.
+    WATER_TIER: on("ripples") ? WATER_TIERS.ripples : WATER_TIERS.flat,
     CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
     ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
@@ -266,6 +293,9 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
  */
 export const COUNTRY_ALL = countryFeatures({
   roads: 1,
+  crops: 1,
+  season: 1,
+  ripples: 1,
   rain: 1,
   snow: 1,
   fog: 1,
