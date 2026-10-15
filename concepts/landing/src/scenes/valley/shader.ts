@@ -4,15 +4,26 @@
 // World frame: map metres, x east, z north, y up. The camera stands at the vantage (the records'
 // eye) looking along VALLEY_HEADING, level, through the shared viewRay (horizon VALLEY_HORIZON,
 // focal one screen height); the sky library's frame is the camera's, so the sun sets where the sky
-// shows it and lights the land from there. The surface a ray meets is the ground or the water over
-// it, plus the woods' canopy where the woodland knob grows them; buildings are the shared shapes
-// (shaders/buildings.ts) drawn on the screen at the projection of their footing and hidden by any
-// nearer land; the bridge is a stone box with an arch.
+// shows it and lights the land from there.
+//
+// What a ray meets, nearest first: a walker or cart on the roads (life.ts), a building (modelled
+// near, the shared sprite far: buildings.ts), the stone bridge (a box with an arch), or the land.
+// The march meets the ground or the water over it, or the trees' bounds; near enough, the trees are
+// whole crowns found at the hit (trees.ts), and a ray passing between them goes on to the ground.
+// On the ground: the fields (the shared fields' mix, shaders/lib/fields.ts), hedges, roads, yards
+// and streams, and in a pasture its fence and herd (life.ts). Birds cross the sky in front of all.
 import { buildingsGlsl } from "../../shaders/buildings.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { fieldsGlsl } from "../../shaders/lib/fields.ts";
+import { figuresGlsl } from "../../shaders/lib/figures.ts";
+import { livestockGlsl } from "../../shaders/lib/livestock.ts";
 import { terrainGlsl } from "../../shaders/lib/terrain.ts";
-import { TERRAIN_HOUSE } from "../../sims/terrain.ts";
+import { treesGlsl } from "../../shaders/lib/trees.ts";
+import { valleyBuildingsGlsl } from "./buildings.ts";
+import { valleyLifeGlsl } from "./life.ts";
 import { VALLEY_MAP } from "./sim.ts";
+import { valleyTreesGlsl } from "./trees.ts";
 
 /** Seconds of the entrance (the camera comes down out of the sky and settles) and exit. */
 export const VALLEY_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
@@ -31,14 +42,26 @@ export const VALLEY_MARCH = {
 export const valleyGlsl = /* glsl */ `
 ${terrainGlsl}
 ${buildingsGlsl}
+${treesGlsl}
+#if VALLEY_HAS_FIELDS
+${fieldsGlsl}
+#endif
+#if VALLEY_HAS_HERDS
+${livestockGlsl}
+#endif
+#if VALLEY_HAS_AGENTS
+${figuresGlsl}
+#endif
+#if VALLEY_HAS_BIRDS
+${birdsGlsl}
+#endif
 const float VALLEY_EXTENT = ${glslFloat(VALLEY_MAP.extent)};
 const float VALLEY_HORIZON = 0.63;
 const float VALLEY_FOV = 0.78;          // a little long, so the middle distance reads at the dither
 const float VALLEY_FOCAL = 1.2138;      // viewRay's focal length there, screen heights: 0.5 / tan(fov / 2)
 const vec2 VALLEY_HEADING = vec2(0.70710678, 0.70710678);
-const float VALLEY_CANOPY = 15.0;       // woodland canopy over the ground, metres
-const float VALLEY_HOUSE = ${glslFloat(TERRAIN_HOUSE)}; // metres a house unit (a cottage gable, drawn half again life size)
 const float VALLEY_CLOUD_BASE = 900.0;  // the cloud deck over the eye, metres
+const float VALLEY_FIELD_UNIT = 60.0;   // metres a unit of the shared fields' materials (rows, patches)
 const float VALLEY_TOP = ${glslFloat(VALLEY_MARCH.top)};
 const float VALLEY_FAR = ${glslFloat(VALLEY_MARCH.far)};
 const vec3 VALLEY_AMBER = vec3(1.0, 0.7, 0.3);
@@ -58,28 +81,14 @@ vec3 valleyToCamera(vec3 d) {
   return vec3(dot(d, valleyRight), d.y, dot(d, valleyFwd));
 }
 
-// How much of the woods stands here, 0..1: the woodland suitability over the knob's threshold,
-// cleared from water, streams, roads (while drawn) and yards.
-float valleyWoods(vec4 ground, vec4 cover) {
-  if (K_woodland <= 0.0) return 0.0;
-  float on = smoothstep(valleyWoodTh, valleyWoodTh + 0.14, cover.z - 1.5 * max(cover.w, 0.0));
-  on *= smoothstep(0.5, 3.5, cover.y) * smoothstep(-0.3, -1.5, terrainWater(ground));
-  if (K_roads > 0.5) on *= smoothstep(1.5, 5.0, cover.x);
-  return on;
-}
+${valleyTreesGlsl}
 
-// What stands on the ground: the woods' canopy (crowns about 7 m across) or a lone tree in a hedge
-// or on a bank (the yard channel's -1 texels, rounded by the filtering), metres.
-float valleyCanopy(vec2 p, vec4 cover, float woods) {
-  // A lone tree's texel filters to a tent; its square root rounds it into a crown.
-  float lone = K_woodland > 0.0 ? 11.0 * sqrt(clamp((-cover.w - 0.1) / 0.9, 0.0, 1.0)) : 0.0;
-  return max(woods * VALLEY_CANOPY * (0.62 + 0.38 * vnoise(p / 6.5)), lone);
-}
-
-float valleyHeight(vec2 p) {
+// The land and what stands on it (metres): the trees' bounds for the march, their rounded tents for
+// the sun's shadows (valleyCanopy).
+float valleyHeight(vec2 p, bool bound) {
   vec4 g = terrainGround(uSim0, p, VALLEY_EXTENT);
   vec4 c = terrainCover(uSim1, p, VALLEY_EXTENT);
-  return terrainSurface(g) + valleyCanopy(p, c, valleyWoods(g, c));
+  return terrainSurface(g) + valleyCanopy(p, c, terrainWater(g), bound);
 }
 
 // March the land from the eye (slope-bound steps, never shorter than a share of the distance), then
@@ -95,7 +104,7 @@ float valleyMarch(vec3 ro, vec3 rd) {
   for (int i = 0; i < ${VALLEY_MARCH.steps}; i++) {
     vec3 p = ro + rd * t;
     if (p.x < -40.0 || p.z < -40.0 || p.x > VALLEY_EXTENT + 40.0 || p.z > VALLEY_EXTENT + 40.0) return -1.0;
-    float gap = p.y - valleyHeight(p.xz);
+    float gap = p.y - valleyHeight(p.xz, true);
     if (gap < 0.0) {
       hit = true;
       break;
@@ -111,7 +120,7 @@ float valleyMarch(vec3 ro, vec3 rd) {
   for (int i = 0; i < ${VALLEY_MARCH.refine}; i++) {
     float mid = 0.5 * (lo + hi);
     vec3 p = ro + rd * mid;
-    if (p.y > valleyHeight(p.xz)) lo = mid;
+    if (p.y > valleyHeight(p.xz, true)) lo = mid;
     else hi = mid;
   }
   return 0.5 * (lo + hi);
@@ -125,7 +134,7 @@ float valleyShadow(vec3 p, vec3 l) {
   for (int i = 0; i < 18; i++) {
     vec3 q = p + l * t;
     if (q.y > VALLEY_TOP) break;
-    float gap = q.y - valleyHeight(q.xz);
+    float gap = q.y - valleyHeight(q.xz, false);
     lit = min(lit, 6.0 * gap / t);
     if (lit < 0.01) break;
     t += clamp(gap * 0.7, 2.0 + 0.05 * t, 260.0);
@@ -225,92 +234,8 @@ float valleyBridge(TerrainBridge b, vec3 ro, vec3 rd, out vec3 n, out vec2 local
   return enter;
 }
 
-// The building under this pixel, nearer than zLimit (camera depth): its face (buildings.ts's codes,
-// 0 none), window, how it faces (flip), its hash, kind, depth and a cell in its units; the glow of
-// lit windows and the smoke of chimneys around.
-struct ValleyFind { float face; float pane; float flip; float hash; float kind; float z; float px; float across; };
-
-ValleyFind valleyBuildings(vec3 eye, vec2 q, float pxl, float zLimit, float tod, float dark, float t, float wind, inout float glow, inout float smoke) {
-  ValleyFind f;
-  f.face = 0.0;
-  f.pane = 0.0;
-  f.flip = 1.0;
-  f.hash = 0.0;
-  f.kind = 0.0;
-  f.z = zLimit;
-  f.px = 1.0;
-  f.across = 0.0;
-  ivec2 counts = terrainCounts(uSim3);
-  for (int s = 0; s < 16; s++) {
-    if (s >= counts.x) break;
-    TerrainPlace place = terrainPlace(uSim3, s);
-    vec3 d = place.at - eye;
-    float zc = dot(d, valleyFwd);
-    if (zc < 30.0) continue;
-    vec2 centre = vec2(dot(d, valleyRight), d.y) / zc;
-    float reach = (place.radius + 70.0) / zc;
-    if (abs(q.x - centre.x) > reach || q.y < centre.y - reach || q.y > centre.y + reach + 80.0 / zc) continue;
-    for (int k = 0; k < 24; k++) {
-      if (k >= place.count) break;
-      TerrainBuilding b = terrainBuilding(uSim3, place.first + k);
-      bool castle = b.kind > TERRAIN_BUILDING_CASTLE - 0.5;
-      float unit = castle ? 5.5 : VALLEY_HOUSE * (b.kind > TERRAIN_BUILDING_BARN - 0.5 ? 1.25 : 1.0);
-      vec2 l = vec2(cos(b.facing), sin(b.facing));
-      if (dot(l, valleyFwd.xz) < 0.0) l = -l;
-      float lr = dot(l, valleyRight.xz);
-      float flip = lr < 0.0 ? -1.0 : 1.0;
-      float len = castle ? 1.0 : b.length * clamp(abs(lr), 0.35, 1.0);
-      // Its front corner: half its length back toward us along the long wall.
-      vec3 base = castle ? b.at : b.at - vec3(l.x, 0.0, l.y) * 0.5 * b.length * unit;
-      vec3 db = base - eye;
-      float zb = dot(db, valleyFwd);
-      if (zb < 20.0 || zb > f.z) continue;
-      vec2 at = vec2(dot(db, valleyRight), db.y) / zb;
-      float scale = zb / unit;
-      vec2 h = (q - at) * scale;
-      float px = pxl * scale;
-      float recede = clamp(-db.y / zb * max(dot(l, valleyFwd.xz), 0.0) / max(abs(lr), 0.35), 0.03, 0.9);
-      float pane = 0.0;
-      float across = 0.0;
-      float face = 0.0;
-      if (castle) {
-        if (abs(h.x) < 9.0 && h.y > -1.5 && h.y < 9.5) {
-          float slit = 0.0;
-          face = buildingCastle(h, 0.0, px, flip, step(0.45, fract(b.hash * 13.1)), across, slit);
-          pane = slit;
-        }
-      } else if (b.kind > TERRAIN_BUILDING_CHURCH - 0.5 && b.kind < TERRAIN_BUILDING_CHURCH + 0.5) {
-        h.x *= flip;
-        if (h.x > -1.2 && h.x < 2.9 && h.y > -0.3 && h.y < 4.6) face = buildingChurch(h, recede, -0.3, px, pane);
-      } else {
-        h.x *= flip;
-        if (h.x > -1.15 && h.x < len + 0.15 && h.y > -0.3 && h.y < 0.75 + 0.55 + 0.6 + len * recede) {
-          face = buildingCottage(h, len, 0.75, 0.55, recede, b.kind < 0.5, -0.3, px, pane);
-        }
-        // Lit windows warm the walls and the ground around; a lit hearth smokes.
-        float lit = buildingWindow(fract(b.hash * 91.0 + 0.13), tod, dark, 0.7) + buildingWindow(fract(b.hash * 91.0 + 0.57), tod, dark, 0.7);
-        vec2 g = h - vec2(0.3, 0.4);
-        glow += lit * exp(-dot(g, g) * 0.3);
-        if (b.kind < 0.5 && fract(b.hash * 7.7) < 0.6) {
-          vec2 top = buildingStack(len, 0.75, 0.55, recede);
-          vec2 topScreen = at + vec2(flip * top.x, top.y) / scale;
-          smoke = max(smoke, buildingSmoke(q, topScreen, 9.0 / scale, b.hash, uMotionTime, wind) * (0.4 + 0.6 * dark));
-        }
-      }
-      if (face > 0.5) {
-        f.face = face;
-        f.pane = pane;
-        f.flip = flip;
-        f.hash = b.hash;
-        f.kind = b.kind;
-        f.z = zb;
-        f.px = px;
-        f.across = across;
-      }
-    }
-  }
-  return f;
-}
+${valleyBuildingsGlsl}
+${valleyLifeGlsl}
 
 Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
@@ -354,6 +279,7 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
 
   vec3 dirCam = viewRay(uv, aspect, VALLEY_HORIZON, VALLEY_FOV);
   vec3 rd = valleyToWorld(dirCam);
+  float ahead = dot(rd, valleyFwd);
   bool mapped = uSimOn.x > 0.5 && uSimOn.w > 0.5;
   vec3 eye = mapped ? terrainEye(uSim3) : vec3(200.0, 300.0, 200.0);
   eye.y += 220.0 * lift;
@@ -361,7 +287,31 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
   // The horizon in this heading: the colour the land fades into.
   vec3 haze = valleySkyDome(sky, normalize(vec3(dirCam.x, 0.015, 1.0)), rain) + sky.night * vec3(0.03, 0.04, 0.07);
   float tHit = mapped ? valleyMarch(eye, rd) : -1.0;
-  float zLimit = tHit > 0.0 ? tHit * dot(rd, valleyFwd) : 1e6;
+
+  // Where the march met a tree's bound near enough for a crown to span a cell or so, the crown
+  // itself (trees.ts), or the ground behind it between the crowns (taken flat there); farther off,
+  // the canopy shaded whole.
+  bool crown = false;
+  bool canopy = false;
+  ValleyTree tree;
+  vec3 crownN = vec3(0.0, 1.0, 0.0);
+  float crownUp = 0.5;
+  if (tHit > 0.0) {
+    vec3 p = eye + rd * tHit;
+    vec4 g = terrainGround(uSim0, p.xz, VALLEY_EXTENT);
+    float ground = terrainSurface(g);
+    if (p.y > ground + 0.3) {
+      float fall = dot(g.zw, rd.xz) - rd.y;
+      if (3.0 / (tHit * cellAngle) < 1.2 || fall < 0.02) {
+        canopy = true;
+      } else {
+        float tc = valleyCrowns(eye, rd, tHit, p, g, tree, crownN, crownUp);
+        crown = tc > 0.0;
+        tHit = crown ? tc : tHit + (p.y - ground) / fall;
+      }
+    }
+  }
+  float zLimit = tHit > 0.0 ? tHit * ahead : 1e6;
 
   vec3 col = vec3(0.0);
   float accent = 0.0;
@@ -376,18 +326,29 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
   float tBridge = -1.0;
   ValleyFind found;
   found.face = 0.0;
+  found.z = zLimit;
   if (mapped) {
 #if VALLEY_HAS_ROADS
     if (K_roads > 0.5) {
       tBridge = valleyBridge(terrainBridge(uSim3), eye, rd, bridgeN, bridgeLocal);
-      if (tBridge > 0.0 && (tHit < 0.0 || tBridge < tHit)) zLimit = tBridge * dot(rd, valleyFwd);
+      if (tBridge > 0.0 && (tHit < 0.0 || tBridge < tHit)) zLimit = tBridge * ahead;
       else tBridge = -1.0;
     }
 #endif
-    found = valleyBuildings(eye, q, cellAngle, zLimit, tod, dark, t, wind, glow, smoke);
+    found = valleyBuildings(eye, rd, q, cellAngle, zLimit, tod, dark, wind, glow, smoke);
   }
 
-  if (found.face > 0.5 || tBridge > 0.0 || tHit > 0.0) {
+  // A walker or cart standing in front of all that (life.ts).
+#if VALLEY_HAS_AGENTS
+  float zAgent = 1e9;
+  Figure agent = figureNone();
+  if (mapped && (K_walkers > 0.0 || K_carts > 0.0)) agent = valleyAgentAt(eye, q, cellAngle, found.z, dark, zAgent);
+  bool walking = agent.cover > 0.5;
+#else
+  bool walking = false;
+#endif
+
+  if (walking || found.face > 0.5 || tBridge > 0.0 || tHit > 0.0) {
     vec3 n;
     vec3 albedo;
     vec3 p;
@@ -395,72 +356,29 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
     float glossy = 0.05;
     float shade = 1.0;
     float lamp = 0.0;
-    float snowy = -1.0;   // snow on a building: its own cover; below 0 the land's
+    float snowy = -1.0;   // snow on a building, tree or figure: its own cover; below 0 the land's
     bool water = false;
     float waterDepth = 0.0;
-    float ripple = 0.0;
-    if (found.face > 0.5) {
-      // A building: walls, roofs, windows (as the countryside paints them).
-      float zb = found.z;
-      seen = zb / max(dot(rd, valleyFwd), 1e-3);
+#if VALLEY_HAS_AGENTS
+    if (walking) {
+      // A walker or cart: rain wets it like the land; snow settles only on a load's top.
+      seen = zAgent / ahead;
       p = eye + rd * seen;
-      float hw = fract(found.hash * 11.3);
-      float hr = fract(found.hash * 23.7);
-      bool church = found.kind > 0.5 && found.kind < 1.5;
-      bool barn = found.kind > 1.5 && found.kind < 2.5;
-      bool castle = found.kind > 2.5;
-      vec3 wall = church || castle ? vec3(0.7, 0.68, 0.62) : (hw < 0.35 ? vec3(0.84, 0.77, 0.62) : (hw < 0.6 ? vec3(0.88, 0.87, 0.82) : (hw < 0.85 ? vec3(0.62, 0.36, 0.26) : vec3(0.6, 0.6, 0.57))));
-      vec3 roof = church ? vec3(0.27, 0.29, 0.33) : (hr < 0.5 ? vec3(0.56, 0.26, 0.17) : (hr < 0.8 ? vec3(0.26, 0.28, 0.32) : vec3(0.58, 0.48, 0.3)));
-      if (barn) {
-        wall = hw < 0.4 ? vec3(0.34, 0.26, 0.2) : (hw < 0.7 ? vec3(0.55, 0.24, 0.17) : vec3(0.66, 0.62, 0.54));
-        roof = hr < 0.5 ? vec3(0.27, 0.28, 0.31) : vec3(0.46, 0.3, 0.22);
-      }
-      vec3 gableN = vec3(-0.62, 0.0, -0.78);
-      vec3 wallN = vec3(0.78, 0.0, -0.62);
-      vec3 nc = gableN;
-      float f = found.face;
-      if (castle) {
-        // Castle faces: 1 wall, 2 round tower, 3 tops, 4 gate, 5 keep front, 6 keep side, 7 roofs.
-        albedo = f > 6.5 ? vec3(0.3, 0.3, 0.34) : (f > 3.5 && f < 4.5 ? vec3(0.12, 0.1, 0.09) : wall * (f > 5.5 ? 0.88 : 1.0));
-        nc = f > 2.5 && f < 3.5 ? vec3(0.0, 1.0, 0.0) : (f > 5.5 && f < 6.5 ? wallN : normalize(vec3(found.across * 0.8, 0.0, -1.0)));
-        if (f > 6.5) nc = normalize(vec3(found.across, 0.6, -0.8));
-        if (found.pane > 0.5) {
-          float lit = buildingWindow(fract(found.pane * 0.37 + found.hash), tod, dark, 0.5);
-          if (lit > 0.5 || found.px < 0.3) albedo = vec3(0.08, 0.08, 0.1);
-          lamp = lit;
-        }
-        snowy = f > 2.5 && f < 3.5 ? 1.0 : (f > 6.5 ? 0.6 : 0.0);
-      } else {
-        if (f < 1.5 || (f > 4.5 && f < 5.5)) {
-          albedo = wall;
-        } else if (f < 2.5 || (f > 5.5 && f < 6.5)) {
-          albedo = wall * 0.97;
-          nc = wallN;
-        } else if (f < 3.5) {
-          albedo = roof;
-          nc = normalize(vec3(0.42, 0.78, -0.46));
-          snowy = 1.0;
-          glossy = 0.2;
-          porous = 0.1;
-        } else if (f < 4.5) {
-          albedo = vec3(0.5, 0.3, 0.22);
-        } else if (f < 8.5) {
-          albedo = vec3(0.45, 0.47, 0.5);
-          nc = f < 7.5 ? normalize(vec3(-0.55, 0.45, -0.7)) : normalize(vec3(0.6, 0.45, -0.66));
-          snowy = 0.5;
-        } else {
-          albedo = vec3(0.08, 0.07, 0.07);
-        }
-        if (found.pane > 0.5 && !barn) {
-          float lit = buildingWindow(fract(found.hash * 91.0 + (found.pane < 1.5 ? 0.13 : (found.pane < 2.5 ? 0.57 : 0.89))), tod, dark, church ? 0.35 : 0.7);
-          if (found.px < 0.25 || lit > 0.5) {
-            albedo = vec3(0.1, 0.12, 0.16);
-            lamp = lit;
-          }
-        }
-        nc.x *= found.flip;
-      }
-      n = normalize(valleyToWorld(nc));
+      albedo = agent.albedo;
+      n = agent.normal;
+      lamp = agent.lamp;
+      porous = 0.5;
+      glossy = 0.12;
+      snowy = agent.top * snowCover(n, p.xz * 2.0, lying);
+      shade = valleyShadow(p + vec3(0.0, 1.5, 0.0), sun);
+    } else
+#endif
+    if (found.face > 0.5) {
+      // A building: walls, roofs, windows (buildings.ts).
+      seen = found.z / max(ahead, 1e-3);
+      p = eye + rd * seen;
+      albedo = valleyBuildingLook(found, tod, dark, lamp, snowy, porous, glossy);
+      n = found.n;
       shade = mapped ? valleyShadow(p + n * 1.5, sun) : 1.0;
       if (snowy > 0.0) snowy *= snowCover(n, p.xz * 0.3, lying);
     } else if (tBridge > 0.0) {
@@ -475,36 +393,48 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
       glossy = 0.1;
       shade = valleyShadow(p + n * 1.0, sun);
       snowy = smoothstep(0.6, 0.9, n.y);
+    } else if (crown) {
+      // A tree's crown, lit by its own shape (the shadow side away from the sun); the sun reaches
+      // it from over the woods' and the lone trees' bounds.
+      seen = tHit;
+      p = eye + rd * tHit;
+      n = crownN;
+      albedo = valleyLeaves(tree, p, crownUp, tHit * cellAngle);
+      porous = 0.3;
+      glossy = 0.08;
+      shade = valleyShadow(vec3(p.x, tree.foot.y + VALLEY_WOOD_TOP + 0.5, p.z), sun);
+      snowy = snowCover(n, p.xz * 0.7 + tree.hash * 31.0, lying) * (tree.pine ? 1.0 : 0.85);
     } else {
       seen = tHit;
       p = eye + rd * tHit;
       vec4 g = terrainGround(uSim0, p.xz, VALLEY_EXTENT);
       vec4 c = terrainCover(uSim1, p.xz, VALLEY_EXTENT);
-      float woods = valleyWoods(g, c);
       float foot = tHit * cellAngle;
-      vec3 ground = terrainNormal(g);
-      float over = valleyCanopy(p.xz, c, woods);
       waterDepth = terrainWater(g);
-      if (over > 1.5 && p.y > terrainSurface(g) + 0.45 * over) {
-        // The woods or a lone tree: crowns lit on their sunward sides, darker in between (the
-        // surface's own slope, over a cell or more), broadleaf and pine.
+      if (canopy) {
+        // The woods or a lone tree far off, whole: the canopy lit on its sunward sides, darker in
+        // between (its own slope over a cell or more), broadleaf and pines in their mix's share.
         float e = max(1.6, foot);
-        vec2 slope = vec2(valleyHeight(p.xz + vec2(e, 0.0)) - valleyHeight(p.xz - vec2(e, 0.0)), valleyHeight(p.xz + vec2(0.0, e)) - valleyHeight(p.xz - vec2(0.0, e))) / (2.0 * e);
+        vec2 slope = vec2(valleyHeight(p.xz + vec2(e, 0.0), false) - valleyHeight(p.xz - vec2(e, 0.0), false), valleyHeight(p.xz + vec2(0.0, e), false) - valleyHeight(p.xz - vec2(0.0, e), false)) / (2.0 * e);
         n = normalize(vec3(-slope.x, 1.0, -slope.y));
-        float species = vnoise(p.xz / 40.0 + 3.7);
+#if VALLEY_HAS_PINES
+        float pines = clamp(K_pines + 0.6 * (vnoise(p.xz / 40.0 + 3.7) - 0.5), 0.0, 1.0);
+#else
+        float pines = 0.0;
+#endif
         vec3 leaf = mix(vec3(0.17, 0.3, 0.11), vec3(0.23, 0.35, 0.13), vnoise(p.xz / 13.0));
-        leaf = mix(leaf, vec3(0.1, 0.2, 0.12), smoothstep(0.62, 0.75, species));
+        leaf = mix(leaf, vec3(0.1, 0.2, 0.12), pines);
         albedo = leaf * (0.8 + 0.25 * vnoise(p.xz / 3.0));
         porous = 0.3;
         glossy = 0.08;
-        shade = valleyShadow(vec3(p.x, terrainSurface(g) + over + 0.5, p.z), sun);
+        shade = valleyShadow(p + vec3(0.0, 0.5, 0.0), sun);
       } else if (waterDepth > 0.02) {
         water = true;
         n = vec3(0.0, 1.0, 0.0);
         albedo = mix(vec3(0.16, 0.2, 0.15), vec3(0.06, 0.1, 0.1), smoothstep(0.0, 2.0, waterDepth));
         shade = valleyShadow(p + vec3(0.0, 0.5, 0.0), sun);
       } else {
-        n = ground;
+        n = terrainNormal(g);
         // Fine relief the map is too coarse for, where a cell is small enough to show it.
         vec3 bump = vnoiseD(p.xz / 9.0);
         n = normalize(n + vec3(-bump.y, 0.0, -bump.z) * 0.3 * smoothstep(1.5, 0.4, foot));
@@ -512,12 +442,28 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
         float h = fract(parcel.id * 0.618034);
         vec3 grass = mix(vec3(0.33, 0.47, 0.18), vec3(0.4, 0.52, 0.2), smoothstep(0.3, 0.7, vnoise(p.xz / 40.0)));
         albedo = grass;
+#if VALLEY_HAS_FIELDS
+        // The fields' mix (the shared fields' weights over each field's hash; crops keep the
+        // valley's own catalogue, the field's kind).
+        vec4 weights = vec4(K_crops, K_wildflowers, K_lavender, K_sunflowers);
+        float type = fieldMix(h, weights, K_pasture).x;
+#else
+        float type = 0.0;
+#endif
         if (parcel.id > 0.5) {
           vec2 r = vec2(dot(p.xz - parcel.site, parcel.axis), dot(p.xz - parcel.site, vec2(-parcel.axis.y, parcel.axis.x)));
           vec2 nb = vec2(dot(parcel.normal, valleyRight.xz), dot(parcel.normal, valleyFwd.xz));
           float footAcross = foot * length(vec2(nb.x, nb.y / max(abs(rd.y), 0.08)));
+          float footAlong = foot / max(abs(rd.y), 0.12);
           float rows = 0.5;
-          vec3 field = valleyField(parcel.kind, h, r, foot / max(abs(rd.y), 0.12), rows);
+          vec3 field = valleyField(type > 3.5 ? TERRAIN_FIELD_PASTURE : parcel.kind, h, r, footAlong, rows);
+#if VALLEY_HAS_FIELDS
+          if (type > 0.5 && type < 3.5) {
+            float relief = 0.5;
+            float sheen = 0.0;
+            field = fieldFlowerMaterial(type, h, 0.0, p.xz / VALLEY_FIELD_UNIT, r / VALLEY_FIELD_UNIT, vec2(footAlong / VALLEY_FIELD_UNIT), wind, 1.0 - lying, tm, relief, sheen);
+          }
+#endif
           // Hedges along the borders, never thinner than half a cell across so the patchwork holds
           // far off, fading out once fields shrink to a few cells; a greener verge either side.
           float hedgeHalf = max(1.3, 0.45 * footAcross);
@@ -525,11 +471,40 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
           float verge = 1.0 - smoothstep(hedgeHalf, hedgeHalf + 2.5, parcel.border);
           albedo = mix(field, grass * 1.05, verge * 0.5);
           albedo = mix(albedo, vec3(0.11, 0.19, 0.08), hedge);
-          porous = parcel.kind > 3.5 && parcel.kind < 4.5 ? 0.85 : 0.5;
+          porous = parcel.kind > 3.5 && parcel.kind < 4.5 && type < 0.5 ? 0.85 : 0.5;
+#if VALLEY_HAS_HERDS
+          // A pasture's fence and its herd standing in front of the ground (life.ts).
+          if (K_pasture > 0.0) {
+            bool pen = type > 3.5;
+            bool beyond = parcel.other > 0.5 && fieldMix(fract(parcel.other * 0.618034), weights, K_pasture).x > 3.5;
+            float zFence = 1e9;
+            vec4 fence = (pen || beyond) ? valleyFence(eye, rd, tHit, p, g, parcel, pen, beyond, cellAngle, zFence) : vec4(0.0);
+            ValleyStock stock;
+            stock.cover = 0.0;
+            stock.shadow = 0.0;
+            stock.z = 1e9;
+            if (pen) stock = valleyHerdAt(eye, q, cellAngle, tHit * ahead, parcel.id, terrainCore(uSim3, parcel.id));
+            albedo *= 1.0 - stock.shadow;
+            if (fence.a > 0.5 && zFence < stock.z) {
+              albedo = fence.rgb;
+              n = normalize(vec3(parcel.normal.x, 0.3, parcel.normal.y));
+              snowy = 0.3;
+              porous = 0.6;
+            } else if (stock.cover > 0.0) {
+              albedo = mix(albedo, stock.albedo, stock.cover);
+              n = normalize(mix(n, stock.n, stock.cover));
+              snowy = stock.snow * stock.cover;
+              porous = stock.porous;
+            }
+          }
+#endif
         }
         // Yards and gardens round the buildings.
         float yard = smoothstep(0.35, 0.8, c.w);
         albedo = mix(albedo, mix(vec3(0.38, 0.45, 0.22), vec3(0.52, 0.47, 0.37), step(0.55, vnoise(p.xz / 7.0))), yard);
+        // Under the trees, between their crowns, the floor lies dark in their shade.
+        float under = max(valleyWoods(c, waterDepth, false), smoothstep(0.1, 0.6, -c.w));
+        albedo = mix(albedo, vec3(0.1, 0.12, 0.07), 0.6 * under);
         // Streams: a ribbon of water mirroring the sky.
         if (c.y < 0.0) {
           water = true;
@@ -561,6 +536,11 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
             }
           }
         }
+#endif
+#if VALLEY_HAS_AGENTS
+        // A walker or cart too small to draw tints the ground it stands on; nearer ones shade it
+        // at their feet.
+        albedo = mix(albedo * (1.0 - 0.45 * agent.shadow), agent.albedo, agent.faint);
 #endif
         shade = valleyShadow(p + n * 1.0, sun);
       }
@@ -633,6 +613,17 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
   col += VALLEY_AMBER * min(glow, 2.0) * 0.1 * dark * (1.0 + wet);
   vec3 air = sky.ambient + 0.5 * sky.sunColor + 0.4 * sky.moonColor;
   col = mix(col, vec3(0.8, 0.8, 0.83) * air, clamp(smoke, 0.0, 1.0) * 0.7);
+
+  // Birds crossing the valley, in front of whatever lies farther along the ray (life.ts).
+#if VALLEY_HAS_BIRDS
+  if (K_birds > 0.0) {
+    BirdHit bird = valleyBirds(uv, aspect, eye, rain, K_snow, pxl);
+    if (bird.cover > 0.5 && bird.depth < (seen < 7999.0 ? seen * ahead : 1e9)) {
+      vec3 lit = bird.albedo * (sky.ambient * 1.3 + 0.5 * sky.sunColor + 0.3 * sky.moonColor);
+      col = mix(lit, haze, 1.0 - exp(-bird.depth / 5200.0));
+    }
+  }
+#endif
 
   // Rain and snow through the air, as far as the first surface (compressed: the land lies far off).
 #if VALLEY_HAS_RAIN

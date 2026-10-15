@@ -87,6 +87,8 @@ export const TERRAIN_MAX_PARCELS = 2048;
 export const TERRAIN_MAX_BUILDINGS = 128;
 /** Settlements a build can hold (village, castle, the outlying ones). */
 export const TERRAIN_MAX_PLACES = 16;
+/** Points of the roads resampled for walkers and carts the records hold (terrainWays). */
+export const TERRAIN_MAX_WAY_POINTS = 2048;
 /** Kinds of field, by `TerrainParcels.kind`. */
 export const TERRAIN_PARCEL_KINDS = [
   "wheat",
@@ -223,6 +225,13 @@ export interface TerrainParcels {
   wood: Float32Array;
   /** Per texel the nearest and second-nearest site, id = index + 1 (0 none): [2·k], [2·k + 1]. */
   ids: Uint16Array;
+  /**
+   * Per site its clear core: the widest disc inside the parcel that keeps clear of its border,
+   * water, roads, streams, yards and lone trees (a herd's ground). Centre, metres; radius 0: none.
+   */
+  coreX: Float32Array;
+  coreZ: Float32Array;
+  coreRadius: Float32Array;
 }
 
 export interface Terrain {
@@ -273,6 +282,10 @@ const PARCEL_SPACING = 96;
 const MAX_ROUTES = TERRAIN_MAX_SETTLEMENTS + 6;
 /** The river's catchment beyond the map, in extents², entering at its source. */
 const RIVER_INFLOW = 0.6;
+/** How far (metres, from the edge) a parcel's clear core keeps off roads and streams. */
+const CORE_CLEAR = { road: 5, stream: 4 } as const;
+/** The least spacing (metres) of the points a road is resampled at for the records. */
+const WAY_SPACING = 8;
 
 /** Bilinear sample of a size × size grid spread over `extent` metres (texel centres), clamped. */
 export function sampleGrid(
@@ -890,6 +903,8 @@ export class TerrainBuilder {
     stages.push(["parcels", () => this.#parcelSites()]);
     stages.push(["parcels", () => this.#parcelIds(0, size >> 1)]);
     stages.push(["parcels", () => this.#parcelIds(size >> 1, size)]);
+    stages.push(["trees", () => this.#trees()]);
+    stages.push(["cores", () => this.#cores()]);
     stages.push(["finish", () => this.#finish()]);
     this.#stages = stages;
     this.units = stages.length;
@@ -2667,6 +2682,9 @@ export class TerrainBuilder {
       kind,
       wood: new Float32Array(count),
       ids: this.#ids,
+      coreX: new Float32Array(count),
+      coreZ: new Float32Array(count),
+      coreRadius: new Float32Array(count),
     };
     // The sampling's buckets serve the lookup.
     this.#siteGrid = { grid: heads, nb, bucket, next: Int32Array.from(links) };
@@ -2749,15 +2767,16 @@ export class TerrainBuilder {
 
   #woodTexels = new Int32Array(TERRAIN_MAX_PARCELS);
 
-  #finish(): void {
+  #trees(): void {
     const parcels = this.#parcels;
-    const river = this.#river;
-    if (!parcels || !river) throw new TerrainError("terrain: a stage was skipped");
+    if (!parcels) throw new TerrainError("terrain: a stage was skipped");
     const m = this.#m;
     // Woods take whole fields more often than not: each texel's suitability leans to its parcel's.
+    // No tree stands in the water.
     for (let q = 0; q < m * m; q++) {
       const id = this.#ids[2 * q] ?? 0;
       if (id > 0) this.#wood[q] = 0.45 * (this.#wood[q] ?? 0) + 0.55 * (parcels.wood[id - 1] ?? 0);
+      if ((this.#level[q] ?? 0) > (this.#ground[q] ?? 0) - 0.3) this.#wood[q] = 0;
     }
     // Lone trees: along the hedges (some hedges lined with them, some bare) and the river's banks,
     // a texel each, written into the yard channel as -1 (see Terrain.yard).
@@ -2782,6 +2801,62 @@ export class TerrainBuilder {
         if (chance > 0 && hash31(i, j, seed + 61) < chance) this.#yard[q] = -1;
       }
     }
+  }
+
+  /**
+   * Each parcel's clear core (TerrainParcels.coreX..): its texel farthest from every texel that is
+   * not clear ground of its own (beside another parcel's texel or the map's edge, water, a road or
+   * stream with its verge, a yard, a lone tree), at that distance less 1.5 texels, the most the
+   * parcels' exact border (terrainParcel) strays from its texel outline.
+   */
+  #cores(): void {
+    const parcels = this.#parcels;
+    if (!parcels) throw new TerrainError("terrain: a stage was skipped");
+    const m = this.#m;
+    const cellF = this.#cellF;
+    const ids = this.#ids;
+    const blocked = new Uint8Array(m * m);
+    for (let j = 0; j < m; j++) {
+      for (let i = 0; i < m; i++) {
+        const q = j * m + i;
+        const id = ids[2 * q] ?? 0;
+        const edge =
+          id === 0 ||
+          i === 0 ||
+          j === 0 ||
+          i === m - 1 ||
+          j === m - 1 ||
+          ids[2 * (q - 1)] !== id ||
+          ids[2 * (q + 1)] !== id ||
+          ids[2 * (q - m)] !== id ||
+          ids[2 * (q + m)] !== id;
+        const taken =
+          (this.#level[q] ?? 0) > (this.#ground[q] ?? 0) - 0.3 ||
+          (this.#road[q] ?? FAR) < CORE_CLEAR.road ||
+          (this.#stream[q] ?? FAR) < CORE_CLEAR.stream ||
+          Math.abs(this.#yard[q] ?? 0) > 0.02;
+        blocked[q] = edge || taken ? 1 : 0;
+      }
+    }
+    const clear = distanceField(blocked, m);
+    const best = new Float32Array(parcels.count);
+    for (let q = 0; q < m * m; q++) {
+      if (blocked[q] === 1) continue;
+      const s = (ids[2 * q] ?? 0) - 1;
+      const d = clear[q] ?? 0;
+      if (d <= (best[s] ?? 0)) continue;
+      best[s] = d;
+      parcels.coreX[s] = ((q % m) + 0.5) * cellF;
+      parcels.coreZ[s] = (Math.floor(q / m) + 0.5) * cellF;
+    }
+    for (let s = 0; s < parcels.count; s++)
+      parcels.coreRadius[s] = Math.max(0, ((best[s] ?? 0) - 1.5) * cellF);
+  }
+
+  #finish(): void {
+    const parcels = this.#parcels;
+    const river = this.#river;
+    if (!parcels || !river) throw new TerrainError("terrain: a stage was skipped");
     const eye = this.#eye();
     this.#terrain = {
       size: this.#m,
@@ -2817,6 +2892,74 @@ export function generateTerrain(options: TerrainOptions): Terrain {
   return builder.terrain;
 }
 
+/** A road resampled evenly (terrainWays): its points `first` .. `first + count - 1`, `spacing` apart. */
+export interface TerrainWay {
+  kind: "road" | "track";
+  first: number;
+  count: number;
+  /** Metres between consecutive points: the road's length over count - 1. */
+  spacing: number;
+}
+
+export interface TerrainWays {
+  ways: TerrainWay[];
+  /** x, y (the road's surface: its cut-and-fill profile, the bridge's deck), z per point, metres. */
+  points: Float32Array;
+}
+
+/**
+ * Every road and track (bridge included) as points spaced evenly along it, its ends kept, as near
+ * WAY_SPACING apart as its length divides into (never farther): what walkers and carts follow by
+ * arc length (terrainWayAt in GLSL). The spacing grows for a network too long for
+ * TERRAIN_MAX_WAY_POINTS. A point between two consecutive ones lies on the road's centreline within
+ * the chord of an 8 m arc of a smoothed road.
+ */
+export function terrainWays(t: Terrain): TerrainWays {
+  const lengths = t.roads.map((road) => {
+    let length = 0;
+    for (let k = 1; k < road.x.length; k++)
+      length += Math.hypot(
+        (road.x[k] ?? 0) - (road.x[k - 1] ?? 0),
+        (road.z[k] ?? 0) - (road.z[k - 1] ?? 0),
+      );
+    return length;
+  });
+  const total = lengths.reduce((sum, length) => sum + length, 0);
+  // ceil(L / ds) + 1 points a road, so at most total / ds + 2 a road: within the records.
+  const ds = Math.max(WAY_SPACING, total / (TERRAIN_MAX_WAY_POINTS - 2 * t.roads.length));
+  const ways: TerrainWay[] = [];
+  const points: number[] = [];
+  t.roads.forEach((road, index) => {
+    const length = lengths[index] ?? 0;
+    const steps = Math.max(1, Math.ceil(length / ds));
+    const spacing = length / steps;
+    ways.push({ kind: road.kind, first: points.length / 3, count: steps + 1, spacing });
+    let k = 0;
+    let start = 0;
+    for (let step = 0; step <= steps; step++) {
+      const s = step === steps ? length : step * spacing;
+      for (;;) {
+        const seg = Math.hypot(
+          (road.x[k + 1] ?? 0) - (road.x[k] ?? 0),
+          (road.z[k + 1] ?? 0) - (road.z[k] ?? 0),
+        );
+        if (k + 2 >= road.x.length || start + seg >= s) {
+          const f = seg > 0 ? clamp((s - start) / seg, 0, 1) : 0;
+          points.push(
+            lerp(road.x[k] ?? 0, road.x[k + 1] ?? 0, f),
+            lerp(road.y[k] ?? 0, road.y[k + 1] ?? 0, f),
+            lerp(road.z[k] ?? 0, road.z[k + 1] ?? 0, f),
+          );
+          break;
+        }
+        start += seg;
+        k++;
+      }
+    }
+  });
+  return { ways, points: Float32Array.from(points) };
+}
+
 /**
  * The records texture's layout (rgba16f, nearest; read with texelFetch). Positions are split into
  * two halves each (half.ts) for ~22 bits. Rows from 0:
@@ -2825,16 +2968,22 @@ export function generateTerrain(options: TerrainOptions): Terrain {
  *              (hash, settlement, 0, 0), unused
  *   places     2 texels a settlement: (x hi, x lo, z hi, z lo), (y, radius, first building, count)
  *   misc       the bridge (x0, z0 split), (x1, z1 split), (deck0, deck1, half width, water level);
- *              the eye (x, z split), (y, settlements, bridge 1/0, buildings)
+ *              the eye (x, z split), (y, settlements, bridge 1/0, buildings); (ways, 0, 0, 0)
+ *   cores      a texel a parcel site, 64 a row: its clear core's centre less the site (dx, dz),
+ *              radius (0 none), 0
+ *   ways       a texel a road (terrainWays): (first point, count, spacing, kind 0 road / 1 track)
+ *   points     2 texels a way point, 32 a row: (x hi, x lo, z hi, z lo), (y, 0, 0, 0)
  */
-export const TERRAIN_RECORDS = {
-  width: 64,
-  sites: 0,
-  buildings: TERRAIN_MAX_PARCELS / 32,
-  places: TERRAIN_MAX_PARCELS / 32 + TERRAIN_MAX_BUILDINGS / 16,
-  misc: TERRAIN_MAX_PARCELS / 32 + TERRAIN_MAX_BUILDINGS / 16 + 1,
-  height: TERRAIN_MAX_PARCELS / 32 + TERRAIN_MAX_BUILDINGS / 16 + 2,
-} as const;
+export const TERRAIN_RECORDS = (() => {
+  const buildings = TERRAIN_MAX_PARCELS / 32;
+  const places = buildings + TERRAIN_MAX_BUILDINGS / 16;
+  const misc = places + 1;
+  const cores = misc + 1;
+  const ways = cores + TERRAIN_MAX_PARCELS / 64;
+  const points = ways + 1;
+  const height = points + TERRAIN_MAX_WAY_POINTS / 32;
+  return { width: 64, sites: 0, buildings, places, misc, cores, ways, points, height } as const;
+})();
 
 /** A terrain laid out for upload: four textures, `size` square but for the records. */
 export interface TerrainPacked {
@@ -2891,6 +3040,11 @@ export function packTerrain(t: Terrain): TerrainPacked {
     records[o + 5] = p.elongation[s] ?? 1;
     records[o + 6] = p.kind[s] ?? 0;
     records[o + 7] = p.wood[s] ?? 0;
+    const c = texel(L.cores + Math.floor(s / 64), s % 64);
+    if ((p.coreRadius[s] ?? 0) <= 0) continue;
+    records[c] = (p.coreX[s] ?? 0) - (p.x[s] ?? 0);
+    records[c + 1] = (p.coreZ[s] ?? 0) - (p.z[s] ?? 0);
+    records[c + 2] = p.coreRadius[s] ?? 0;
   }
   t.buildings.forEach((b, index) => {
     const o = texel(L.buildings + Math.floor(index / 16), 4 * (index % 16));
@@ -2930,5 +3084,20 @@ export function packTerrain(t: Terrain): TerrainPacked {
   records[misc + 17] = t.settlements.length;
   records[misc + 18] = bridge ? 1 : 0;
   records[misc + 19] = t.buildings.length;
+  const { ways, points } = terrainWays(t);
+  records[misc + 20] = ways.length;
+  ways.forEach((way, index) => {
+    const o = texel(L.ways, index);
+    records[o] = way.first;
+    records[o + 1] = way.count;
+    records[o + 2] = way.spacing;
+    records[o + 3] = way.kind === "road" ? 0 : 1;
+  });
+  for (let k = 0; k < points.length / 3; k++) {
+    const o = texel(L.points + Math.floor(k / 32), 2 * (k % 32));
+    splitHalf(records, o, points[3 * k] ?? 0);
+    splitHalf(records, o + 2, points[3 * k + 2] ?? 0);
+    records[o + 4] = points[3 * k + 1] ?? 0;
+  }
   return { size: m, ground, cover, parcels, records };
 }
