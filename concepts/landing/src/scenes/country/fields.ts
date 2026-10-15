@@ -1,58 +1,13 @@
-// Flower-field materials and rooted plants. Coordinates and LOD follow the countryside slope,
-// not the screen: rows converge, nearby heads have structure, distant plants become field masses.
+// Flower fields' rooted plants, and the field type for a field's hash. The type mapping and the
+// flower fields' materials are the shared fields component's (shaders/lib/fields.ts: fieldMix,
+// fieldFlowerMaterial). Coordinates and LOD follow the countryside slope, not the screen: rows
+// converge, nearby heads have structure, distant plants become field masses.
 export const countryFieldsGlsl = /* glsl */ `
 // 6 wildflower meadow, 7 lavender, 8 sunflowers, 9 pasture enclosure (animals.ts); 0..5 remain the
-// seasonal crop catalogue.
+// seasonal crop catalogue (the crops' share remapped over it, so a small share keeps every crop).
 float countryFieldCrop(float h, float season) {
-  vec4 weights = vec4(K_crops, K_wildflowers, K_lavender, K_sunflowers);
-  float total = dot(weights, vec4(1.0)) + K_pasture;
-  if (total <= 0.0) return countryCrop(h, season);
-  vec3 edges = vec3(weights.x, weights.x + weights.y, weights.x + weights.y + weights.z) / total;
-  // Keep the field hash/layout fixed while tuning. Remap the crop interval so a small crop share
-  // still includes the full seasonal catalogue, rather than only its lowest-hash crop.
-  if (h < edges.x) return countryCrop(h / edges.x, season);
-  if (h < edges.y) return 6.0;
-  if (h < edges.z) return 7.0;
-  // Pasture takes the top of the range, so a zero weight leaves every other field as it was.
-  if (K_pasture <= 0.0 || h < 1.0 - K_pasture / total) return 8.0;
-  return 9.0;
-}
-
-vec3 countryFlowerMaterial(float crop, float h, float season, vec2 w, vec2 r, vec2 px,
-                          float wind, float sway, float tm, out float relief, out float sheen) {
-  float autumn = step(1.5, season);
-  float drift = tm * wind * 0.22;
-  float gust = vnoise(vec2((w.x - drift) * 3.2, w.y * 1.4 + h * 9.0)) - 0.5;
-  float wave = gust * (0.12 + 0.3 * abs(wind)) * sway;
-  float rich = vnoise(w * 4.0 + h * 17.0);
-  relief = 0.5;
-  sheen = 0.1;
-  if (crop < 6.5) {
-    // Uneven meadow islands, not drill rows: tall grass, flower-rich patches and sparse green gaps.
-    float flowers = smoothstep(0.32, 0.68, rich);
-    vec3 grass = mix(vec3(0.27, 0.43, 0.16), vec3(0.43, 0.5, 0.24), autumn);
-    vec3 bloom = mix(vec3(0.62, 0.52, 0.57), vec3(0.48, 0.4, 0.25), autumn);
-    relief = 0.3 + 0.5 * flowers;
-    return mix(grass * (0.9 + 0.2 * rich), bloom, (0.12 + 0.28 * flowers) * (1.0 - 0.45 * autumn)) * (1.0 + wave);
-  }
-  vec2 dir = normalize(vec2(1.0, 0.14 * (h - 0.5)));
-  if (crop < 7.5) {
-    // Broad rounded lavender bushes with open earth between rows, fading to the same area mean.
-    float held = countryHold(0.052, dir, px);
-    float row = 0.5 + 0.5 * cos(dot(r, dir) * TAU / 0.052);
-    row = mix(0.48, smoothstep(0.25, 0.8, row), held);
-    relief = row;
-    vec3 soil = vec3(0.39, 0.32, 0.22);
-    vec3 leaf = mix(vec3(0.4, 0.36, 0.56), vec3(0.36, 0.37, 0.34), autumn);
-    return mix(soil, leaf * (0.82 + 0.22 * rich + wave), row);
-  }
-  // Sunflowers: green, broad-leaf rows. Golden heads remain as a subdued canopy at distance.
-  float row = countryRows(r, dir, 0.045, px);
-  relief = row;
-  sheen = 0.22;
-  vec3 green = mix(vec3(0.29, 0.43, 0.15), vec3(0.4, 0.39, 0.19), autumn);
-  vec3 heads = mix(vec3(0.78, 0.61, 0.17), vec3(0.47, 0.35, 0.19), autumn);
-  return mix(green * (0.8 + 0.25 * row + wave), heads, 0.22 + 0.09 * rich);
+  vec2 field = fieldMix(h, vec4(K_crops, K_wildflowers, K_lavender, K_sunflowers), K_pasture);
+  return field.x < 0.5 ? countryCrop(field.y, season) : 5.0 + field.x;
 }
 
 // Bounded 3x3 rooted-plant neighbourhood. Screen delta uses actual depth and down-slope rate;

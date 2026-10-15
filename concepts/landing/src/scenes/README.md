@@ -409,16 +409,28 @@ aurora, meteors and the canopy weather (see "Shared libraries"). A component few
 a GLSL string of its own that each consumer interpolates into its `glsl`, at the top or at least
 before the functions that call it, so no other program pays for it:
 
-| String          | File                           | Composed by                                                           | See                                  |
-| --------------- | ------------------------------ | --------------------------------------------------------------------- | ------------------------------------ |
-| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train | "Birds"                              |
-| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                        | the Milky Way row below              |
-| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                              | "Rooted plants"                      |
-| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                               | "The giant planet"                   |
-| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                               | "Figures, livestock and buildings"   |
-| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                               | "Figures, livestock and buildings"   |
-| `buildingsGlsl` | `src/shaders/buildings.ts`     | country, valley                                                       | "Figures, livestock and buildings"   |
-| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | valley                                                                | `TerrainBuilder` under "Simulations" |
+| String          | File                           | Composed by                                                                   | See                                  |
+| --------------- | ------------------------------ | ----------------------------------------------------------------------------- | ------------------------------------ |
+| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train, valley | "Birds"                              |
+| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                                | the Milky Way row below              |
+| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                                      | "Rooted plants"                      |
+| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                                       | "The giant planet"                   |
+| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country, valley                                                               | "Figures, livestock and buildings"   |
+| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country, valley                                                               | "Figures, livestock and buildings"   |
+| `buildingsGlsl` | `src/shaders/buildings.ts`     | country, valley                                                               | "Figures, livestock and buildings"   |
+| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | valley                                                                        | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`    | `src/shaders/lib/fields.ts`    | country, valley                                                               | the fields row below                 |
+| `treesGlsl`     | `src/shaders/lib/trees.ts`     | country, valley                                                               | the trees row below                  |
+
+- **Fields** (`fieldsGlsl`): `fieldMix(h, weights, pasture)` maps a field's hash onto the relative
+  weights of crops, wildflowers, lavender, sunflowers and pasture (pasture at the top of the range,
+  the crops' share remapped over their own catalogue, all zero crops); `fieldHold` and `fieldRows`
+  (row profiles that settle to their mean where the dither cannot hold them) and
+  `fieldFlowerMaterial` (meadow, lavender and sunflower materials). The countryside's
+  `countryFieldCrop` and the valley's parcels both map their weights through it.
+- **Trees** (`treesGlsl`): `treePineWidth(y)`, a pine's tiered, tapered outline, and
+  `treeDomeNormal(dc)`, a broadleaf dome's normal in the eye's frame: the countryside's woods and
+  hedgerow trees, the valley's crowns.
 
 Such a component reads no knob defines (they are the scene's own): the scene passes every value as
 an argument, and its knobs come from the component's builder where it has one (`birdKnobs`,
@@ -448,7 +460,9 @@ every gate on and each tier up to the highest a knob selects. That program draws
 byte for byte as the setting's own does, because the shader's runtime tests of the knobs decide
 (on a GPU they are uniform branches, nearly free). The adopters are `country` (`countryFeatures`
 and `COUNTRY_ALL`: its optional parts, the river's water tier, the clouds' shadows tier and the
-moon's phase below full) and `meadow` (its wildflowers).
+moon's phase below full), `meadow` (its wildflowers) and `valley` (`valleyFeatures` and
+`VALLEY_ALL`: roads, rain, snow, fog, pines, the fields' mix, herds, walkers and carts, birds, the
+clouds' shadows tier and the moon's phase; `valleyFeaturesAll` checks each gated setting).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -613,6 +627,7 @@ flight is a few clear marks rather than flicker.
 | Scene      | Birds                                                                                                           | Default                 | Hidden by                                                         | Mirrored in       |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------- | ----------------- |
 | `country`  | own loop (`countryBirds`: mixed by season and hour, swoops down to its ridges); `songbirds`, `flights`          | off, mixed              | ridges, trees, buildings, by depth                                | —                 |
+| `valley`   | `birdFlights` through its level pinhole (metres), `birdKnobs` (mixed: rooks, gulls, swallows...)                | off, mixed              | land, crowns, buildings, figures, by depth                        | —                 |
 | `skyward`  | `birdBelowHit` on the scene's own paths (pigeons wheeling over the street, swifts looping above); `birds` range | 0.5, pigeons and swifts | anything nearer along the ray                                     | —                 |
 | `meadow`   | `birdFlights`, `birdKnobs`                                                                                      | off, swallows           | the sea of grass by depth; the near blades and clocks             | —                 |
 | `falls`    | `birdFlights` (`fallsBirds`), `birdKnobs`                                                                       | off, swifts             | cliff, rim trees and slot walls by depth; spray and the near bank | —                 |
@@ -1018,11 +1033,15 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   (A\*, 16 directions) over a spanning tree of them with a shortcut and a way out, one bridge at the
   narrowest crossing, each road's profile cut and fill under `TERRAIN_ROAD_MAX_SLOPE` and its bed cut
   into the ground; buildings on terraces along the roads; woodland suitability; field parcels
-  stretched along the contours or roads; lone trees on hedges and banks. `packTerrain` lays it into
-  four textures (ground and water level with slopes; road and stream signed distances, woodland,
-  yards; the nearest two parcels; records of sites, buildings, settlements, the bridge, the eye),
-  which `terrainGlsl` reads: `terrainGround`, `terrainCover`, `terrainParcel` (exact field borders
-  between texels), `terrainBuilding`, `terrainPlace`, `terrainBridge`, `terrainEye` (valley).
+  stretched along the contours or roads, each with its clear core (the widest disc clear of its
+  border, water, roads, streams, yards and lone trees: a herd's ground); lone trees on hedges and
+  banks; the roads resampled evenly for walkers and carts (`terrainWays`). `packTerrain` lays it
+  into four textures (ground and water level with slopes; road and stream signed distances,
+  woodland, yards; the nearest two parcels; records of sites, buildings, settlements, the bridge,
+  the eye, cores, ways and way points), which `terrainGlsl` reads: `terrainGround`, `terrainCover`,
+  `terrainParcel` (exact field borders between texels, and the neighbour's id), `terrainCore`,
+  `terrainBuilding`, `terrainPlace`, `terrainBridge`, `terrainEye`, `terrainWay` and
+  `terrainWayAt` (a point by arc length along a road, always on it) (valley).
 - `grayScottRegimes`, `grayScottAlong` and `grayScottGlsl` (`grayscott.ts`): Gray–Scott
   reaction–diffusion's curated Pearson classes (feed, kill, what grows), an eased loop through them,
   and the reaction step for a `GpuCompute` pass (petri). Seed a dish at the first regime's levels

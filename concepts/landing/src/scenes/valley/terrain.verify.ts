@@ -1,14 +1,11 @@
 // GPU check (verify-browser.ts, `valleyTerrain`): the valley's real sim builds the terrain toolbox's
-// textures, and the scene's program (every optional part compiled in) draws them: the land, the
-// river and the sky all show, the same frame draws bit for bit the same twice, and another
-// landscape draws another picture. Sizes are small: software WebGL runs every line of the march.
+// textures, and the scene's all-features program (featuresAll: every optional part compiled in)
+// draws them: the land, the river and the sky all show, the same frame draws bit for bit the same
+// twice, and another landscape draws another picture. Sizes are small: software WebGL runs every
+// line of the march. The helpers (a program, the real sim's textures, a frame drawn with them) serve
+// the valley's other checks too (life.verify.ts).
 import { paramDefaults, renderSettings, defaultsFor } from "../../state.ts";
-import {
-  fragmentSourceFor,
-  sceneFeatures,
-  shaderValues,
-  vertexSource,
-} from "../../shaders/index.ts";
+import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
 import type { SimFrame } from "../types.ts";
 import { valleyScene } from "./index.ts";
 
@@ -25,19 +22,8 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string): WebG
   return shader;
 }
 
-/** FNV-1a over the bytes. */
-function fnv(bytes: Uint8Array): string {
-  let h = 0x811c9dc5;
-  for (const byte of bytes) h = Math.imul(h ^ byte, 0x01000193);
-  return (h >>> 0).toString(16).padStart(8, "0");
-}
-
-export function verifyValleyTerrain(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const everything = { rain: 1, snow: 1, fog: 1, shadows: 1, roads: 1, moon: 0.5 };
-  const fragment = fragmentSourceFor(
-    valleyScene,
-    sceneFeatures(valleyScene, shaderValues(valleyScene, everything)),
-  );
+/** A linked program for a fragment source (the dither pass's own vertex shader). */
+export function valleyProgram(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   const shaders = [
     compile(gl, gl.VERTEX_SHADER, vertexSource),
     compile(gl, gl.FRAGMENT_SHADER, fragment),
@@ -48,64 +34,123 @@ export function verifyValleyTerrain(gl: WebGL2RenderingContext): Record<string, 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS))
     throw new Error(gl.getProgramInfoLog(program) ?? "valley: link failed");
   for (const shader of shaders) gl.deleteShader(shader);
+  return program;
+}
 
+/** FNV-1a over the bytes. */
+export function fnv(bytes: Uint8Array): string {
+  let h = 0x811c9dc5;
+  for (const byte of bytes) h = Math.imul(h ^ byte, 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/** The knobs as the shader reads them (`uParams`) for raw knobs over the valley's defaults. */
+export function valleyValues(knobs: Record<string, number>): readonly number[] {
+  return renderSettings(defaultsFor("valley"), { ...paramDefaults("valley"), ...knobs }).params;
+}
+
+export interface ValleyBuilt {
+  textures: readonly (WebGLTexture | undefined)[];
+  /** Sim frames the build took. */
+  frames: number;
+  dispose(): void;
+}
+
+/** The valley's real sim, run until its terrain is built, for these knobs over the defaults. */
+export function valleyBuild(
+  gl: WebGL2RenderingContext,
+  knobs: Record<string, number>,
+): ValleyBuilt {
+  const params = { ...paramDefaults("valley"), ...knobs };
+  const frame: SimFrame = {
+    dt: 0,
+    time: 30,
+    motionTime: 30,
+    motion: 1,
+    width: WIDTH,
+    height: HEIGHT,
+    aspect: WIDTH / HEIGHT,
+    values: valleyValues(knobs),
+    params,
+    triggers: new Array(8).fill(-1e4),
+    fired: new Array(8).fill(false),
+    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    passage: { enter: 1, exit: 0 },
+  };
+  const sim = valleyScene.sim?.(gl);
+  if (!sim) throw new Error("valley: no sim");
+  // The build runs a budget of units a call; nothing is bound until it is done.
+  let textures = sim.frame(frame);
+  let frames = 1;
+  while (textures.length === 0 && frames < 2000) {
+    textures = sim.frame(frame);
+    frames++;
+  }
+  if (textures.length !== 4) {
+    sim.dispose();
+    throw new Error(`valley: the sim bound ${textures.length} textures`);
+  }
+  return { textures, frames, dispose: () => sim.dispose() };
+}
+
+export interface ValleyDraw {
+  width?: number;
+  height?: number;
+  time?: number;
+  motionTime?: number;
+  motion?: number;
+  /** uView: 1 the source picture (the default), 0 dithered. */
+  view?: number;
+}
+
+/** One frame of `program` over the built textures with these knobs, read back (RGBA bytes). */
+export function valleyDraw(
+  gl: WebGL2RenderingContext,
+  program: WebGLProgram,
+  built: ValleyBuilt,
+  knobs: Record<string, number>,
+  options: ValleyDraw = {},
+): Uint8Array {
+  const width = options.width ?? WIDTH;
+  const height = options.height ?? HEIGHT;
+  gl.canvas.width = width;
+  gl.canvas.height = height;
+  gl.viewport(0, 0, width, height);
+  gl.useProgram(program);
+  const u = (name: string) => gl.getUniformLocation(program, name);
+  gl.uniform2f(u("uRes"), width, height);
+  gl.uniform1i(u("uView"), options.view ?? 1);
+  gl.uniform1f(u("uTime"), options.time ?? 30);
+  gl.uniform1f(u("uMotion"), options.motion ?? 1);
+  gl.uniform1f(u("uMotionTime"), options.motionTime ?? 30);
+  gl.uniform2f(u("uPassage"), 1, 0);
+  gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
+  gl.uniform1fv(u("uParams"), Float32Array.from(valleyValues(knobs)));
+  gl.uniform4f(u("uSimOn"), 1, 1, 1, 1);
+  try {
+    built.textures.forEach((texture, slot) => {
+      gl.uniform1i(u(`uSim${slot}`), slot);
+      gl.activeTexture(gl.TEXTURE0 + slot);
+      gl.bindTexture(gl.TEXTURE_2D, texture ?? null);
+    });
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const bytes = new Uint8Array(width * height * 4);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+    if (gl.getError() !== gl.NO_ERROR) throw new Error("valley: GL error");
+    return bytes;
+  } finally {
+    gl.activeTexture(gl.TEXTURE0);
+  }
+}
+
+export function verifyValleyTerrain(gl: WebGL2RenderingContext): Record<string, unknown> {
+  const program = valleyProgram(gl, fragmentSourceFor(valleyScene, sceneFeaturesAll(valleyScene)));
   const draw = (landscape: number): { bytes: Uint8Array; frames: number } => {
-    const knobs = { ...paramDefaults("valley"), landscape };
-    const settings = renderSettings(defaultsFor("valley"), knobs);
-    const frame: SimFrame = {
-      dt: 0,
-      time: 30,
-      motionTime: 30,
-      motion: 1,
-      width: WIDTH,
-      height: HEIGHT,
-      aspect: WIDTH / HEIGHT,
-      values: settings.params,
-      params: knobs,
-      triggers: new Array(8).fill(-1e4),
-      fired: new Array(8).fill(false),
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
-      passage: { enter: 1, exit: 0 },
-    };
-    const sim = valleyScene.sim?.(gl);
-    if (!sim) throw new Error("valley: no sim");
+    const built = valleyBuild(gl, { landscape });
     try {
-      // The build runs a budget of units a call; nothing is bound until it is done.
-      let textures = sim.frame(frame);
-      let frames = 1;
-      while (textures.length === 0 && frames < 2000) {
-        textures = sim.frame(frame);
-        frames++;
-      }
-      if (textures.length !== 4)
-        throw new Error(`valley: the sim bound ${textures.length} textures`);
-      gl.canvas.width = WIDTH;
-      gl.canvas.height = HEIGHT;
-      gl.viewport(0, 0, WIDTH, HEIGHT);
-      gl.useProgram(program);
-      const u = (name: string) => gl.getUniformLocation(program, name);
-      gl.uniform2f(u("uRes"), WIDTH, HEIGHT);
-      gl.uniform1i(u("uView"), 1);
-      gl.uniform1f(u("uTime"), 30);
-      gl.uniform1f(u("uMotion"), 1);
-      gl.uniform1f(u("uMotionTime"), 30);
-      gl.uniform2f(u("uPassage"), 1, 0);
-      gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
-      gl.uniform1fv(u("uParams"), Float32Array.from(settings.params));
-      gl.uniform4f(u("uSimOn"), 1, 1, 1, 1);
-      textures.forEach((texture, slot) => {
-        gl.uniform1i(u(`uSim${slot}`), slot);
-        gl.activeTexture(gl.TEXTURE0 + slot);
-        gl.bindTexture(gl.TEXTURE_2D, texture ?? null);
-      });
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
-      gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
-      if (gl.getError() !== gl.NO_ERROR) throw new Error("valley: GL error");
-      return { bytes, frames };
+      return { bytes: valleyDraw(gl, program, built, { landscape }), frames: built.frames };
     } finally {
-      sim.dispose();
-      gl.activeTexture(gl.TEXTURE0);
+      built.dispose();
     }
   };
 

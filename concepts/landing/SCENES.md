@@ -182,26 +182,53 @@ the roads can form a network. Countryside is unchanged until the prototype prove
   steeper than one in eight, cottages along the roads on terraces, woodland suitability, contour- and
   road-aligned field parcels, lone trees on hedges and banks.
 - **Rendering** (`src/shaders/lib/terrain.ts`, `valley/shader.ts`): a height-field march (ground,
-  water, the woods' canopy and lone trees) with a soft sun-shadow march, field parcels exact between
-  texels with hedges held to half a cell, roads likewise, the river mirroring the sky and its deck,
-  the shared buildings (`src/shaders/buildings.ts`) projected from their footings with lit windows and
-  smoke, a stone bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain,
-  snow, wetness, lying snow and valley mist. Entrance: the camera comes down out of the sky.
+  water and the trees' bounds) with a soft sun-shadow march, field parcels exact between texels with
+  hedges held to half a cell, roads likewise, the river mirroring the sky and its deck, a stone
+  bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain, snow, wetness,
+  lying snow and valley mist. Entrance: the camera comes down out of the sky.
+- **Trees** (`valley/trees.ts`, the shared `treesGlsl`): the march meets bounds (the woods'
+  envelope, each lone tree's steepened tent); near enough for a crown to span a cell, the crowns
+  are found exactly at the hit: lone trees from the four yard texels round it (centre plus a hash
+  jitter), the woods' trees cell by cell along the ray (one a 7 m cell, standing where the woods
+  reach its root), each a sphere lit with the shared dome normal or a pine's tiered cone
+  (`treePineWidth`), with a trunk; a ray between crowns goes on to the ground, so a wood's edge is a
+  row of whole crowns at pixel 1. Farther off the bound is shaded as the canopy.
+- **Buildings** (`valley/buildings.ts`): a cottage, barn or church whose gable spans over 6 cells
+  is a solid met in its own frame (a block under a pitched roof, the chimney stack, the church's
+  tower and spire), with the sprites' windows, lit at dusk; smaller ones and the castle are the
+  shared sprites. Only the two nearest buildings whose bounds hold a pixel are drawn there.
 - Base relief (`TerrainOptions.base`, the `land shape` knob): valley (default), coast (the valley
   opening downstream into a bay, the sea flooded in from the map's edge with `stillWater`), plateau
   (a high table over a steep-sided gorge) or rolling hills. Roads join the village, hamlets, castle
   and the way out (a spanning tree); farms and a lane through the near field are spur tracks. Roads
   are pale ribbons with a verge and a hedge either side, held to half a cell across.
-- Knobs: land shape, landscape (seed), relief, erosion, woodland (shader-only), river size, settlements, roads;
-  time of day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Rain, snow, fog, roads,
-  cloud shadows and a waning moon are compiled in only while on (`valleyFeatures`).
+- **Life** (`valley/life.ts`, all off by default): the field-type mix (`crops` .. `pasture`
+  weights, the shared `fieldMix` on each parcel's hash; flower fields with the shared materials);
+  pasture enclosures fenced inside their borders with herds (shared livestock) kept to each
+  parcel's clear core (`cattle share`, `herd size`); walkers and carts (shared figures) going out
+  and back along the roads by arc length over the resampled way points (`walkers`, `carts`); birds
+  (shared `birdKnobs`, mixed); `pine mix` (0.25) for the woods and the hedges.
+- Knobs: land shape, landscape (seed), relief, erosion, woodland cover, pine mix, river size,
+  settlements, roads, field weights, cattle share, herd size, walkers, carts, birds; time of day,
+  stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Each optional part is compiled in only
+  while on (`valleyFeatures`); `VALLEY_ALL` is the all-features program (`featuresAll`).
 - Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
-  settlement, road grade bounded and cut into the ground, determinism and reuse, build budget);
-  `valleyTerrain` (the real sim's textures through the scene's program: compiles, draws land, sky
-  and river, deterministic per landscape).
-- Open: lone trees are rounded tents rather than modelled crowns, and wood edges stay texel-coarse
-  close up; no gates or walls; buildings are side-on sprites; the plateau's near table hides the
-  gorge from the vantage; no herds, walkers, verges or wildlife yet.
+  settlement, road grade bounded and cut into the ground, way points on their roads, clear cores
+  inside their parcels by the exact metric, determinism and reuse, build budget); `valleyTerrain`
+  (the all-features program over the real sim: land, sky and river, deterministic per landscape);
+  `valleyLife` (through the scene's GLSL: every walker and cart at 64 motion times within its
+  road's half width of the generator's centreline, every animal of every herd inside its own field
+  and clear of the fence, roads and water; the frame with life deterministic and still at motion
+  0); `valleyFeaturesAll` (the all-features program draws eleven gated settings byte for byte as
+  their own programs).
+- Cost (SwiftShader, 640×360 cells, frames timed in alternation on a loaded host): the default
+  valley ≈ 0.77× the previous valley's frame (the building pass now draws two candidates a pixel),
+  ≈ 1.46× the countryside's.
+- Open (for full Countryside parity): the farming year (`season`) and its crops' catalogue and
+  stubble, bales and dots; verges (rooted plants need explicit border segments); the murmuration;
+  the chalk M; village growth and hamlet/farm/castle knobs on a stable building list; tracks knob
+  and farm-track spurs; gates in the fences and walls; the castle is still a face-on sprite; trees'
+  autumn colours; walkers' trodden snow; the plateau's near table hides the gorge.
 
 ## Above the clouds
 

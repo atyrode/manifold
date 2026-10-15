@@ -17,7 +17,10 @@
 //       heading and stretch, and `border`, the distance (metres, first order) to the field's edge:
 //       the nearest two sites by each site's stretched metric among the eight the four texels
 //       around p list, so borders are exact lines between texels, not texel steps; `normal` the
-//       unit direction across the border (toward the neighbour)
+//       unit direction across the border (toward the neighbour), `other` the neighbour's id
+//   vec3 terrainCore(sampler2D records, float id)                parcel id's clear core (a herd's
+//                                                                ground): centre xy, radius z
+//                                                                (metres; 0 none)
 //   vec4 terrainRecord(sampler2D records, int row, int column)   one record texel (TERRAIN_*_ROW)
 //   vec2 terrainSplit(vec4 v)                                    a position written as two half pairs
 //   TerrainBuilding terrainBuilding(sampler2D records, int i)    position, base, heading, kind, length, hash
@@ -25,6 +28,11 @@
 //   TerrainBridge terrainBridge(sampler2D records)               the bridge (on 0: none)
 //   vec3 terrainEye(sampler2D records)                           the vantage's eye (metres)
 //   ivec2 terrainCounts(sampler2D records)                       settlements, buildings
+//   int terrainWayCount(sampler2D records)                       roads resampled (terrainWays)
+//   TerrainWay terrainWay(sampler2D records, int i)              road i: points, spacing, kind
+//   vec3 terrainWayAt(sampler2D records, TerrainWay way, float s, out vec2 heading)
+//       the point s metres along a road (clamped to its ends) on its surface, and its unit heading
+//       on the map: between two of its evenly spaced points, so always on the road
 import {
   TERRAIN_BUILDING_KINDS,
   TERRAIN_PARCEL_KINDS,
@@ -42,6 +50,9 @@ const int TERRAIN_SITES_ROW = ${TERRAIN_RECORDS.sites};
 const int TERRAIN_BUILDINGS_ROW = ${TERRAIN_RECORDS.buildings};
 const int TERRAIN_PLACES_ROW = ${TERRAIN_RECORDS.places};
 const int TERRAIN_MISC_ROW = ${TERRAIN_RECORDS.misc};
+const int TERRAIN_CORES_ROW = ${TERRAIN_RECORDS.cores};
+const int TERRAIN_WAYS_ROW = ${TERRAIN_RECORDS.ways};
+const int TERRAIN_POINTS_ROW = ${TERRAIN_RECORDS.points};
 ${kinds(TERRAIN_PARCEL_KINDS, "TERRAIN_FIELD")}
 ${kinds(TERRAIN_BUILDING_KINDS, "TERRAIN_BUILDING")}
 
@@ -73,7 +84,7 @@ vec2 terrainSplit(vec4 v) {
   return vec2(v.x + v.y, v.z + v.w);
 }
 
-struct TerrainParcel { float id; float kind; float wood; float border; vec2 normal; vec2 site; vec2 axis; float elongation; };
+struct TerrainParcel { float id; float other; float kind; float wood; float border; vec2 normal; vec2 site; vec2 axis; float elongation; };
 
 // Site id's stretched distance from p and its gradient: (d, dd/dx, dd/dz); fills the site's data.
 vec3 terrainSiteDistance(sampler2D records, float id, vec2 p, out vec4 data, out vec2 site) {
@@ -93,6 +104,7 @@ vec3 terrainSiteDistance(sampler2D records, float id, vec2 p, out vec4 data, out
 TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float extent) {
   TerrainParcel parcel;
   parcel.id = 0.0;
+  parcel.other = 0.0;
   parcel.kind = 0.0;
   parcel.wood = 0.0;
   parcel.border = 1e3;
@@ -105,6 +117,7 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
   float best = 1e9;
   float next = 1e9;
   float bestId = 0.0;
+  float nextId = 0.0;
   vec2 bestGrad = vec2(0.0);
   vec2 nextGrad = vec2(0.0);
   vec4 bestData = vec4(0.0);
@@ -122,6 +135,7 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
         if (bestId > 0.5) {
           next = best;
           nextGrad = bestGrad;
+          nextId = bestId;
         }
         best = d.x;
         bestId = id;
@@ -131,11 +145,13 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
       } else if (d.x < next) {
         next = d.x;
         nextGrad = d.yz;
+        nextId = id;
       }
     }
   }
   if (bestId < 0.5) return parcel;
   parcel.id = bestId;
+  parcel.other = nextId;
   parcel.kind = bestData.z;
   parcel.wood = bestData.w;
   parcel.site = bestSite;
@@ -146,6 +162,13 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
   parcel.border = next < 1e8 ? (next - best) / max(length(closing), 0.05) : 1e3;
   parcel.normal = length(closing) > 1e-4 ? normalize(closing) : vec2(1.0, 0.0);
   return parcel;
+}
+
+vec3 terrainCore(sampler2D records, float id) {
+  int s = int(id) - 1;
+  vec2 site = terrainSplit(terrainRecord(records, TERRAIN_SITES_ROW + s / 32, 2 * (s - (s / 32) * 32)));
+  vec4 core = terrainRecord(records, TERRAIN_CORES_ROW + s / 64, s - (s / 64) * 64);
+  return vec3(site + core.xy, core.z);
 }
 
 struct TerrainBuilding { vec3 at; float facing; float kind; float length; float hash; };
@@ -201,5 +224,33 @@ vec3 terrainEye(sampler2D records) {
 ivec2 terrainCounts(sampler2D records) {
   vec4 a = terrainRecord(records, TERRAIN_MISC_ROW, 4);
   return ivec2(int(a.y + 0.5), int(a.w + 0.5));
+}
+
+int terrainWayCount(sampler2D records) {
+  return int(terrainRecord(records, TERRAIN_MISC_ROW, 5).x + 0.5);
+}
+
+struct TerrainWay { int first; int count; float spacing; float kind; };
+
+TerrainWay terrainWay(sampler2D records, int i) {
+  vec4 a = terrainRecord(records, TERRAIN_WAYS_ROW, i);
+  return TerrainWay(int(a.x + 0.5) * 64 + int(a.y + 0.5), int(a.z + 0.5), abs(a.w), a.w < 0.0 ? 1.0 : 0.0);
+}
+
+vec3 terrainWayPoint(sampler2D records, int k) {
+  int row = TERRAIN_POINTS_ROW + k / 32;
+  int column = 2 * (k - (k / 32) * 32);
+  vec2 xz = terrainSplit(terrainRecord(records, row, column));
+  return vec3(xz.x, terrainRecord(records, row, column + 1).x, xz.y);
+}
+
+vec3 terrainWayAt(sampler2D records, TerrainWay way, float s, out vec2 heading) {
+  float f = clamp(s / way.spacing, 0.0, float(way.count - 1));
+  int k = min(int(f), way.count - 2);
+  vec3 a = terrainWayPoint(records, way.first + k);
+  vec3 b = terrainWayPoint(records, way.first + k + 1);
+  vec2 run = b.xz - a.xz;
+  heading = length(run) > 1e-4 ? normalize(run) : vec2(1.0, 0.0);
+  return mix(a, b, f - float(k));
 }
 `;
