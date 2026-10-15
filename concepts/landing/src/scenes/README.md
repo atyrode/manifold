@@ -160,7 +160,9 @@ the scene draws with as its default: `skyKnobs({ stars: 0.6 })` adds `K_stars` (
 `skyMoonPhase`, 1 full, 0 while switched off: no moon), `skyKnobs({ meteors: { trigger: 1 } })` adds
 `K_meteors` (shooting stars for `meteorAge`, off by default, "now" on that slot), and
 `weatherKnobs({ clouds: 0.3 })` adds `K_clouds` (fair-weather cover 0..1, which rain and snow
-thicken). Use `atmosphereGroups.sky` / `.weather` for their lab headings.
+thicken). A scene with a night of its own (an hour knob, a painted sky) takes the components without
+the clock from `skyComponentKnobs({ meteors, group })`. Use `atmosphereGroups.sky` / `.weather` for
+their lab headings, `.skyNight` for a sky group that also holds components.
 
 A knob with `trigger: n` gets a "now" button that stamps `uTriggers[n]` with the scene clock;
 read it with `sinceTrigger(n)` (huge while idle) in GLSL and `frame.fired[n]` in a sim. Use slots
@@ -256,6 +258,7 @@ vec3 aurora(vec3 dir, float t, float strength);                  // auroraM on t
 // Shooting stars: when, and the streak in the scene's own flat sky frame (skyAngles for a dome).
 float meteorAge(float tm, float rate, int slot, out float seed); // seconds since the latest one (random at `rate` while motion > 0, or slot's "now")
 float meteorStreak(vec2 q, vec4 field, float age, float seed, float foot); // 0..1 coverage; starts in field (xy corner, zw size)
+const vec3 METEOR_TINT;                                          // the streak's cool white, times hardEdge(coverage)
 ```
 
 Name scene-local GLSL functions with the scene id as a prefix (`dunesHeight`, `sillCat`) so they can
@@ -310,7 +313,7 @@ Random events stop at motion 0 (still pictures, reduced motion), and "now" still
 | Stars | `skyKnobs({ stars })`: `K_stars` | | `skyStars(sky, dir, density, foot)` coverage, `SKY_STAR_TINT`; `skyStarFade` |
 | Moon | `skyKnobs({ moon })`: `K_moon` | `SKY_MOON_PHASE` | `skyMoonPhase(sky, K_moon)`: the disc and halo in `skyColor`, the light in `sky.moonColor` and `sky.ambient`, the glare in `skyStars`; `skyMoonCover(sky, dir)` coverage |
 | Aurora | `weatherKnobs({ aurora })`: `K_aurora` | `AURORA_CURTAINS` (3) | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility |
-| Meteors | `skyKnobs({ meteors: { trigger } })`: `K_meteors` | | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome) |
+| Meteors | `skyKnobs({ meteors: { trigger } })` (`skyComponentKnobs` without the clock): `K_meteors` | | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome, screen heights for a flat backdrop), `METEOR_TINT` |
 
 Frost composes all four in the sky through its window (`frost/index.ts`, `frost/shader.ts`):
 
@@ -333,7 +336,7 @@ float open = auroraSeen(sky, cloud.a);
 col += auroraM(dir, uMotionTime, K_aurora, max(foot, blur)) * open;
 float seed;
 float age = meteorAge(uMotionTime, K_meteors, FROST_METEOR_SLOT, seed);
-col += vec3(0.9, 0.95, 1.0) * hardEdge(meteorStreak(skyAngles(dir), FROST_METEOR_FIELD, age, seed, max(foot, 0.5 * blur)) * open * sharp);
+col += METEOR_TINT * hardEdge(meteorStreak(skyAngles(dir), FROST_METEOR_FIELD, age, seed, max(foot, 0.5 * blur)) * open * sharp);
 // ... then houses, trees and lamps over it, lit by
 lit += auroraGlow(uMotionTime, K_aurora) * auroraSeen(sky, overcast);   // the snow cloud shuts it out
 ```
@@ -344,40 +347,41 @@ defaults: full moon, aurora and meteors off.
 
 #### Sky capabilities by scene
 
-What each scene with a sky does with the components today. **knob**: wired to the shared knob.
-**fixed n**: drawn by the shared component at a fixed value; `skyKnobs({ stars: n })` with `K_stars`
-in place of the number exposes it without changing the default. **full**: the ordinary full moon
-of `skyColor`, ready for `SKY_MOON_PHASE`. **open**: an open night sky where the component could
-be composed (no knob yet). **own**: a scene-specific version kept on purpose. **—**: not applicable,
-no knob.
+What each scene with a sky does with the components. **knob**: wired to the shared knob (every one
+changes the picture at night; the default is the value the scene drew before). **fixed n**: drawn by
+the shared component at a fixed value. **full**: the ordinary full moon of `skyColor`, not exposed.
+**own**: a scene-specific version kept on purpose. **—**: not applicable, no knob. Rows marked † are
+scenes owned elsewhere this round, left as they were (their **open** cells: an open night sky where
+the component could be composed).
 
 | Scene | Sky seen | Stars | Moon | Aurora | Meteors |
 |---|---|---|---|---|---|
-| `frost` | through the window | knob (cabin ×1.7) | knob (phase) | knob | knob, trigger 1 |
-| `autumn` | over the park | fixed 0.5 | full | open | open |
-| `bees` | over the valley | fixed 0.6 | full | open | open |
-| `clouds` | above the cloud sea | fixed 0.75 | own bearing, drawn by `skyColor` | knob (`aurora()`, scene clock) | open |
-| `country` | over the valley | fixed 0.4 | full | open | open |
-| `dunes` | over the dune sea | fixed 1 (×1.3) | full | open | open |
-| `falls` | above the cliff | fixed 0.45 | full | open | open |
-| `flock` | the subject, mirrored in water | fixed 0.45 | full | open | open |
-| `garden` | over the wall | fixed 0.85 (×1.2) | full | open | open |
-| `island` | round the island | knob 0.6 | full | open | open |
-| `lanterns` | over the river, mirrored | fixed 0.55 + own | full (`skyMirror`) | open | open |
-| `meadow` | over the meadow | fixed 0.6 | full | open | open |
-| `shore` | over the sea, in wet sand | fixed 0.6 | full (moonrise) | open | open |
-| `sill` | over the city | fixed 0.5 | full | open | open |
-| `skyward` | a strip between roofs | knob 0.3 | full | open | open |
-| `train` | through the window | fixed 0.75 | full + night glow | knob (`aurora()`) | own: `K_meteors`, trigger 5, window and tunnel |
-| `campfire` | above the pines | knob 0.8 + own Milky Way | — (the giant planet replaces it) | open | own: `K_shooting`, trigger 0, under the planet |
-| `lake` | over the ice, mirrored | own `K_stars` + Milky Way | own phase, fixed bearing | knob (`aurora()` on the sim's substorm clock, rough-ice tap) | open |
+| `frost` | through the window | knob 0.5 (cabin ×1.7) | knob (phase) | knob | knob, trigger 1 |
+| `autumn` | over the park, under the canopy | knob 0.5 | knob (phase; keys the night light) | knob, behind the clouds | knob, trigger 2 |
+| `bees` | over the valley | knob 0.6 | knob (phase) | knob, behind the cumulus | knob, trigger 0, screen frame |
+| `dunes` | over the dune sea | knob 1 (×1.3) | knob (phase; keys the sand's light) | knob, under the dust | knob, trigger 0 |
+| `falls` | above the cliff | knob 0.45 | knob (phase) | knob, its arc lifted over the rim | knob, trigger 0, falling behind the rim |
+| `garden` | the haze over the wall (the horizon is the frame's top edge) | — | knob (phase; keys the night light) | — | — |
+| `lanterns` | over the river, mirrored | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame | knob, mirrored | knob, trigger 2, mirrored |
+| `meadow` | over the meadow | knob 0.6 | knob (phase) | knob, behind the clouds | knob, trigger 2 |
+| `sill` | over the city | knob 0.5 | knob (phase) | knob, light through the window | knob, trigger 3 |
+| `skyward` | a strip between roofs | knob 0.3 | knob (phase) | — (looking up: the curtains hang toward the horizon, out of view) | knob, trigger 0, camera frame |
+| `bamboo`, `forest` | canopy gaps | knob 0.5 | knob (phase; the gaps and the night rays) | — | — |
+| `street` | in reflections only | knob 0.55 (window glass) | knob (phase; the windows and wet street) | — | — |
+| `lake` | over the ice, mirrored | own `K_stars` + Milky Way | own phase, fixed bearing | knob (`aurora()` on the sim's substorm clock, rough-ice tap) | knob, trigger 3, mirrored |
 | `aurora` | the subject | own `K_stars` on a fixed night | own crescent | own curtains | open |
-| `bamboo`, `forest` | canopy gaps | fixed 0.5 | full | — | — |
-| `street` | in reflections only | fixed 0.55 | full | — | — |
-| `kelp` | Snell's window | — | full, refracted | — | — |
+| `clouds` † | above the cloud sea | fixed 0.75 | own bearing, drawn by `skyColor` | knob (`aurora()`, scene clock) | open |
+| `country` † | over the valley | fixed 0.4 | full | open | open |
+| `flock` † | the subject, mirrored in water | fixed 0.45 | full | open | open |
+| `island` † | round the island | knob 0.6 | full | open | open |
+| `shore` † | over the sea, in wet sand | fixed 0.6 | full (moonrise) | open | open |
+| `train` † | through the window | fixed 0.75 | full + night glow | knob (`aurora()`) | own: `K_meteors`, trigger 5, window and tunnel |
+| `campfire` † | above the pines | knob 0.8 + own Milky Way | — (the giant planet replaces it) | open | own: `K_shooting`, trigger 0, under the planet |
+| `kelp` † | Snell's window | — | full, refracted | — | — |
+| `tidepool` | the sky in the pools' mirror | — | full, mirrored | — | — |
 | `dew` | out-of-focus dawn backdrop | — | — | — | — |
 | `bonsai` | none (its light only) | — | — | — | — |
-| `orbit`, `swell`, `fireflies` | their own skies | own | own (`fireflies`: moonless) | — | own (`orbit`'s captured meteors) |
+| `orbit` †, `swell`, `fireflies` | their own skies | own | own (`fireflies`: moonless) | — | own (`orbit`'s captured meteors); `swell`, `fireflies`: open |
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,

@@ -21,7 +21,8 @@
 // way out the clouds drift on a little. At rest every term is exactly 0.
 //
 // Knobs read here: K_time, K_cycle, K_clouds, K_wind, K_scenerySeed, K_mark (the M painted on the
-// middle hive's front).
+// middle hive's front), and the shared sky components over the valley (src/scenes/README.md, "Composing
+// components"): K_stars, K_moon (SKY_MOON_PHASE), K_aurora and K_meteors, behind the cumulus.
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   BEES_BOARD_HALF,
@@ -89,7 +90,13 @@ const CLOUDS: readonly (readonly [number, number, number, number, number])[] = [
 ];
 const CLOUD_PUFFS = 3;
 
+/** Trigger slot of the shooting stars' "now" button. */
+export const BEES_METEOR_TRIGGER = 0;
+
 export const beesGlsl = `
+// Where shooting stars set out, in screen heights (p): the sky over the hills, among the cumulus.
+const int BEES_METEOR_SLOT = ${BEES_METEOR_TRIGGER};
+const vec4 BEES_METEOR_FIELD = vec4(-0.55, 0.8, 1.1, 0.12);
 const float BEES_YH = ${glslFloat(BEES_YH)};
 const float BEES_CAM = ${glslFloat(BEES_CAM)};
 const float BEES_STAGE_MIN = ${glslFloat(BEES_STAGE_MIN)};
@@ -280,7 +287,11 @@ vec4 beesCloudAt(vec2 p, float cx, float by, float s, float tall, float seed) {
 }
 
 vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
-  vec3 col = skyColor(sky, dir);
+  // The aurora and shooting stars first, so the cumulus pass in front of them.
+  vec3 col = skyColor(sky, dir) + auroraM(dir, tm, K_aurora, beesAa) * auroraSeen(sky, 0.0);
+  float meteorSeed;
+  float meteorAt = meteorAge(tm, K_meteors, BEES_METEOR_SLOT, meteorSeed);
+  col += METEOR_TINT * hardEdge(meteorStreak(p, BEES_METEOR_FIELD, meteorAt, meteorSeed, beesAa) * sky.night);
   float span = 2.0 * beesW + 1.7;
   float cover = clamp(K_clouds, 0.0, 1.0);
   for (int i = 0; i < BEES_CLOUD_N; i++) {
@@ -292,7 +303,7 @@ vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
     vec4 cl = beesCloudAt(p, x, BEES_CLOUD_Y[i], s, BEES_CLOUD_T[i], BEES_CLOUD_SEED[i]);
     col = mix(col, cl.rgb, cl.a);
   }
-  return col + skyStarLight(sky, dir, 0.6);
+  return col + skyStarLight(sky, dir, K_stars);
 }
 
 // The shadow of the clouds on the land, drifting slowly: 1 in shadow, per cell.
@@ -885,9 +896,9 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   vec2 p = vec2((uv.x - 0.5) * beesAspect, uv.y);
   float y = p.y;
 
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
   beesSun = sky.sunColor * vec3(1.15, 1.05, 0.88);
-  beesAmb = sky.ambient * vec3(1.05, 0.98, 0.88) + vec3(0.04);
+  beesAmb = sky.ambient * vec3(1.05, 0.98, 0.88) + vec3(0.04) + auroraGlow(tm, K_aurora) * auroraSeen(sky, 0.0);
   vec3 cam = viewRay(uv, beesAspect, BEES_YH, BEES_FOV);
   vec3 dir = skyFacing(cam, BEES_TURN);
   vec3 sunCam = skyFacing(sky.sun, -BEES_TURN);

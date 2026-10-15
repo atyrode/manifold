@@ -8,7 +8,8 @@
 // darkens and glosses every surface, pools on the floor and keeps the leaves dripping as it dries.
 // The sim (sim.ts) moves the culms, the tube, the leaves and the ripples; its textures are described
 // there. Knobs read here: K_stems, K_mist, K_groveSeed, K_shafts, K_lantern, K_knock, K_time,
-// K_cycle, K_rain, K_wind, K_mark (trigger 2 summons the M).
+// K_cycle, K_stars and K_moon (the shared stars and the moon in its phase, SKY_MOON_PHASE, in the
+// canopy's gaps), K_rain, K_wind, K_mark (trigger 2 summons the M).
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   BAMBOO_BASIN,
@@ -1069,7 +1070,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   bambooExitT = passOut * BAMBOO_EXIT;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   float tm = uMotionTime;
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   // The rain's cloud closes over the sky as the rain sets in: a drizzle still lets some sun through,
   // and from about a quarter of the rain knob up the sun and moon are gone, rays and all. The cloud
   // deck is lit from above, so the grove's light turns soft and grey but stays bright: as much as
@@ -1159,7 +1160,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
     vec3 dir = viewRay(uv, aspect, BAMBOO_HORIZON, 1.0);
     vec3 sk = skyColor(sky, dir);
     vec3 gapCol = mix(vec3(dot(sk, LUMA)), sk, 0.3) * vec3(0.95, 1.02, 0.92) * 1.1 + sky.sunColor * BAMBOO_FILTER * 0.12;
-    gapCol += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, 0.5) * (1.0 - bambooOvercast);
+    gapCol += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, K_stars) * (1.0 - bambooOvercast);
     // Under rain cloud the gaps show the cloud deck, grey-white and lit from above, a little darker
     // in the heaviest rain, with shafts of heavier rain hanging from it, slanting with the wind.
     float shafts = smoothstep(0.45, 0.8, vnoise(vec2((p.x - K_wind * 0.3 * p.y) * 5.0 + K_groveSeed, 3.7)));

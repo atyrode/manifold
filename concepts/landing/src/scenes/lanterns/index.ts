@@ -5,7 +5,7 @@
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { lanternsGlsl } from "./shader.ts";
+import { LANTERNS_METEOR_TRIGGER, LANTERNS_STARS, lanternsGlsl } from "./shader.ts";
 import { LANTERN_COUNTS, PASSAGE_ENTER, PASSAGE_EXIT, lanternsSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -16,8 +16,8 @@ const params: readonly ParamDef[] = [
   range("water", "ripple", "water ripple", 0.45, "Glassy calm to the left: the river is a mirror. To the right a breeze ruffles it and every reflection breaks into wavering bands."),
   range("water", "reflection", "reflection length", 0.55, "How far each lantern's light runs down the water toward you: a few glints under it, or long trails of trembling amber dashes."),
   range("water", "mist", "mist", 0.35, "Mist lying on the river: the far bank fades into it, and each lantern wears a halo."),
-  ...skyKnobs({ time: 0.79 }),
-  ...weatherKnobs({ rain: true, wind: true }),
+  ...skyKnobs({ time: 0.79, stars: LANTERNS_STARS, meteors: { trigger: LANTERNS_METEOR_TRIGGER } }),
+  ...weatherKnobs({ rain: true, wind: true, aurora: true }),
   toggle("manifold", "mark", "M lantern", false, "One lantern of indigo paper with the Manifold M cut through it, glowing amber. Set on the water from this bank as it comes on, it keeps to the near water where the M reads, turns back to face you, and comes round again soon after it has drifted away. Now: set it on the water again.", { trigger: 1 }),
 ];
 
@@ -31,8 +31,8 @@ export const lanternsScene: SceneDef = {
   groups: {
     river: { title: "River", blurb: "The lanterns and the current carrying them. Click the water to set a lantern down; hold and drag to push the water along." },
     water: { title: "Water", blurb: "How the river's surface moves and mirrors the lights, and the mist lying on it." },
-    sky: atmosphereGroups.sky,
-    weather: { title: atmosphereGroups.weather.title, blurb: "Rain brings cloud down over the dusk, rings the whole river, glistens on the temple roofs and streaks amber only where it falls through the lantern light; in a downpour the far bank fades and candles gutter. Wind slants it, ruffles the river and leans on the lanterns." },
+    sky: { title: atmosphereGroups.sky.title, blurb: "Time of day, whether the days pass, and the night over the temple: its stars, and the odd shooting star, seen again in the river." },
+    weather: { title: atmosphereGroups.weather.title, blurb: "Rain brings cloud down over the dusk, rings the whole river, glistens on the temple roofs and streaks amber only where it falls through the lantern light; in a downpour the far bank fades and candles gutter. Wind slants it, ruffles the river and leans on the lanterns. On a clear night the aurora hangs over the temple, trembling in the water." },
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: one lantern among the others, its indigo paper cut with the M." },
   },
   glsl: lanternsGlsl,

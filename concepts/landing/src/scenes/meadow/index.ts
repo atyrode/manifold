@@ -5,7 +5,7 @@
 import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { meadowGlsl } from "./shader.ts";
+import { MEADOW_METEOR_TRIGGER, meadowGlsl } from "./shader.ts";
 import { GUST_TRIGGER, MARK_TRIGGER, MAX_CLOCKS, MEADOW_PASSAGE, meadowSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -16,9 +16,9 @@ const params: readonly ParamDef[] = [
   ...weatherKnobs({ group: "wind", wind: true }),
   feature("wind", "gusts", "gusts", true, "strength", 0.7, "Gusts sweeping across the field: the grass bows and shows its paler side, so each one travels as a broad wave of light. 'Now' sends a big one across the whole field, through the grass around you.", { trigger: GUST_TRIGGER }),
   range("wind", "gustRate", "gust frequency", 0.45, "How often a gust comes through: now and then to the left, one after another to the right."),
-  ...skyKnobs({ time: 0.72 }),
+  ...skyKnobs({ time: 0.72, stars: 0.6, moon: 1, meteors: { trigger: MEADOW_METEOR_TRIGGER } }),
   range("weather", "haze", "haze", 0.45, "Golden dust and pollen in the low light: the distance softens into warm haze and the air glows around the sun."),
-  ...weatherKnobs({ rain: true }),
+  ...weatherKnobs({ rain: true, aurora: true }),
   feature("manifold", "mown", "mown M", false, "visibility", 0.7, "The Manifold M mown into the down beyond the trees, a path of pale stubble. 'Now' brings it out for a while and the low sun glints along it.", { trigger: MARK_TRIGGER }),
 ];
 
@@ -33,8 +33,8 @@ export const meadowScene: SceneDef = {
   groups: {
     meadow: { title: "Meadow", blurb: "The grass around you and the dandelion clocks in it. Move over the page to breathe on the grass; click to blow seeds off a clock." },
     wind: { title: "Wind", blurb: "Which way the wind blows, and the gusts it sends rolling across the field." },
-    sky: atmosphereGroups.sky,
-    weather: { title: "Air", blurb: "Golden haze, and rain: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds." },
+    sky: atmosphereGroups.skyNight,
+    weather: { title: "Air", blurb: "Golden haze, and rain: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds. On a clear night, the aurora over the hills." },
     manifold: { title: "Manifold mark", blurb: "The M mown into a far hillside." },
   },
   glsl: meadowGlsl,
@@ -42,4 +42,6 @@ export const meadowScene: SceneDef = {
   passage: MEADOW_PASSAGE,
   entry: "sceneMeadow",
   sim: meadowSim(params),
+  // The moon takes a phase (K_moon) in the shared sky.
+  features: { SKY_MOON_PHASE: 1 },
 };

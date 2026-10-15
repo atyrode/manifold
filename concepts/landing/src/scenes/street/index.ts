@@ -17,7 +17,7 @@ const params: readonly ParamDef[] = [
   feature("traffic", "delivery", "late delivery", false, "how often", 0.4, "Now and then a white van comes along the avenue, crosses the junction and pulls in at the far kerb past the konbini, clear of the crossing. Its hazards blink while the driver wheels stacks of crates across the sidewalk to the shop's service door and back, a few trips; walkers step round the trolley, cyclists swing out round the van, and it pulls out when the lane behind is clear. How often: from about every ten minutes to every two. Now: one sets out.", { trigger: 2 }),
   range("city", "signs", "sign glow", 0.7, "How brightly the blade signs, the fascias, the konbini and the shop windows glow, and how much light they spill onto the sidewalks."),
   range("city", "windows", "lit windows", 0.5, "Windows lit in the rooms over the shops, switching on and off now and then; in the rain the wet street mirrors them too."),
-  ...skyKnobs({ time: 0.81 }),
+  ...skyKnobs({ time: 0.81, stars: 0.55, moon: 1 }),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true }),
   toggle("manifold", "mark", "zebra M", false, "The diagonal crosswalks repainted as a V between the two straight ones, so that from up here the zebras spell the Manifold M across the crossing, in the accent colour; the crowd still crosses over it every way."),
 ];
@@ -43,6 +43,8 @@ export const streetScene: SceneDef = {
   // Entrance: the camera comes down from the skyline onto the crossing as the crowd walks in along its
   // sidewalks to gather. Exit: the camera tilts up to the skyline again (the rain follows the pitch).
   passage: STREET_PASSAGE,
+  // The moon takes a phase (K_moon) in the shared sky: the windows and the wet street mirror it.
+  features: { SKY_MOON_PHASE: 1 },
   // A sunlit street is bright paving and paint: the copy needs dark ink on it, from the time the
   // sun is about 12 degrees up until it sinks back there. With the day cycle running the light keeps
   // changing, so the page stays on the night theme. The shader repeats this test to turn its ink

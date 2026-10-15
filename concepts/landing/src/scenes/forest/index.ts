@@ -24,7 +24,7 @@ const params: readonly ParamDef[] = [
   range("forest", "mist", "mist", 0.55, "How thick the mist hangs between the trunks: the farther ones fade into it first. Its banks drift slowly and swirl where the pointer passes, and it is what makes the light shafts show."),
   seed("forest", "forestSeed", "forest", "Where the far trunks stand, where the light shafts fall, how the air swirls; re-seed for another stretch of the forest."),
   feature("light", "shafts", "light shafts", true, "strength", 0.65, "Shafts of sun falling through gaps in the canopy, or of the moon at night: narrow at the gap and widening as they fall, slanting with the light, combed by the shadows of branches, breathing in and out. They gild what they cross and light the dust drifting in them."),
-  ...skyKnobs({ time: 0.82 }),
+  ...skyKnobs({ time: 0.82, stars: 0.5, moon: 1 }),
   ...weatherKnobs({ rain: true, wind: true }),
   feature("manifold", "mark", "root M", false, "glow", 0.7, "The great cedar's roots have grown into a Manifold M across the face of the boulder they grip, and pale fungus glows along it at dusk. Now: the roots draw the M (even while it is off) and it glows for a while, even by day, breathing out spores.", { trigger: 2 }),
 ];
@@ -48,4 +48,6 @@ export const forestScene: SceneDef = {
   passage: FOREST_PASSAGE,
   entry: "sceneForest",
   sim: forestSim(params),
+  // The moon takes a phase (K_moon) in the shared sky: in the gaps, and in its shafts at night.
+  features: { SKY_MOON_PHASE: 1 },
 };

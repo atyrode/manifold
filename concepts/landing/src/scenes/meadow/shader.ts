@@ -32,7 +32,9 @@
 //
 // Knobs read here: K_grassHeight, K_grassDensity, K_meadowSeed, K_wind, K_gusts (and its "now"),
 // K_gustRate, K_time, K_cycle, K_haze, K_rain, K_mown (and its "now"); uWeather.x for how wet the
-// grass is. K_dandelions only reaches the shader through the clocks the simulation grows.
+// grass is. K_dandelions only reaches the shader through the clocks the simulation grows. Over the
+// hills the shared sky components (src/scenes/README.md, "Composing components"): K_stars, K_moon
+// (SKY_MOON_PHASE), K_aurora and K_meteors (and its "now"), behind the clouds.
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   GUST_TRIGGER,
@@ -78,6 +80,9 @@ const LAYERS = MEADOW_LAYERS.length;
 const ROW = 0.1;
 const FIELD_NEAR = 3;
 
+/** Trigger slot of the shooting stars' "now" button (after the gusts' and the mown M's). */
+export const MEADOW_METEOR_TRIGGER = 2;
+
 export const meadowGlsl = `
 // ---- the view, the gust field and the near grass: constants shared with sim.ts ----
 const float MEADOW_HORIZON = ${glslFloat(MEADOW_HORIZON)};
@@ -87,6 +92,10 @@ const float MEADOW_FOV = ${glslFloat(2 * Math.atan(0.5 / MEADOW_FOCAL))};
 const float MEADOW_TREES_Z = ${glslFloat(MEADOW_TREES_Z)};
 const int MEADOW_GUST_TRIGGER = ${GUST_TRIGGER};
 const int MEADOW_MARK_TRIGGER = ${MARK_TRIGGER};
+// Where shooting stars set out: skyAngles of the camera's ray (bearing, elevation, radians), high
+// over the hills.
+const int MEADOW_METEOR_SLOT = ${MEADOW_METEOR_TRIGGER};
+const vec4 MEADOW_METEOR_FIELD = vec4(-0.55, 0.28, 1.1, 0.1);
 
 const float MEADOW_DIR_X = ${glslFloat(G.dirX)};
 const float MEADOW_DIR_Z = ${glslFloat(G.dirZ)};
@@ -1053,9 +1062,9 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   float overcast = 1.0 - pow(1.0 - clamp(rain, 0.0, 1.0), 3.0);
   float heavy = smoothstep(0.35, 0.9, rain);
 
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   vec3 sun = sky.sunColor * (1.0 - MEADOW_OVERCAST_SUN * overcast);
-  vec3 amb = greyed(sky.ambient, vec3(1.0), 0.6 * overcast) * (1.0 - 0.3 * rain);
+  vec3 amb = greyed(sky.ambient, vec3(1.0), 0.6 * overcast) * (1.0 - 0.3 * rain) + auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
   Sky dull = sky;
   dull.sunColor = sun;
   dull.ambient = amb;
@@ -1096,9 +1105,17 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   if (uv.y >= MEADOW_HORIZON - eye * MEADOW_FOCAL / MEADOW_TREES_Z) {
     float above = uv.y - MEADOW_HORIZON;
     col = skyColor(dull, dir);
+    // The aurora hangs ahead of the camera over the hills, behind the clouds; shooting stars in
+    // the gaps between them.
+    float foot = 1.0 / (MEADOW_FOCAL * uRes.y);
+    col += auroraM(cam, tm, K_aurora, foot) * auroraSeen(sky, overcast);
     vec4 cloud = skyClouds(dull, dir, t, 0.2 + 0.8 * overcast, K_wind);
     col = mix(col, cloud.rgb, cloud.a);
-    col += skyStarLight(sky, dir, 0.6) * (1.0 - cloud.a);
+    col += skyStarLight(sky, dir, K_stars) * (1.0 - cloud.a);
+    float meteorSeed;
+    float meteorAt = meteorAge(tm, K_meteors, MEADOW_METEOR_SLOT, meteorSeed);
+    float meteor = meteorStreak(skyAngles(cam), MEADOW_METEOR_FIELD, meteorAt, meteorSeed, foot);
+    col += METEOR_TINT * hardEdge(meteor * auroraSeen(sky, max(cloud.a, overcast)));
     col = meadowDeck(col, above, overcast, rain);
     accent = (1.0 - smoothstep(0.016, 0.021, length(dir - sky.sun))) * up * (1.0 - cloud.a) * (1.0 - overcast);
     float shaft = rain > 0.0 ? meadowShafts(cx, above, tm, rain) : 0.0;

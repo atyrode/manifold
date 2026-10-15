@@ -50,8 +50,9 @@
 // windows light at dusk), and the far end of the avenue and the side street fade into the haze. All of
 // it is gated on the tilt, which is exactly 0 at rest.
 //
-// Knobs: K_signs, K_windows (the city), K_mark (the zebra M), K_time, K_cycle, K_rain, K_snow,
-// K_fog, K_wind; the crowd, traffic and lights are the simulation's.
+// Knobs: K_signs, K_windows (the city), K_mark (the zebra M), K_time, K_cycle, K_stars and K_moon (the
+// shared stars and the moon in its phase, SKY_MOON_PHASE, as the windows and wet street mirror the
+// sky), K_rain, K_snow, K_fog, K_wind; the crowd, traffic and lights are the simulation's.
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   BEAM_REACH,
@@ -785,7 +786,7 @@ void streetFacade(int f, float u, float y, vec2 blur, bool mirrored, out vec3 al
 // The sky, as the puddles and windows mirror it: overcast under rain, stars on a clear night.
 vec3 streetSkyLight(vec3 dir) {
   vec3 c = skyColor(streetSky, dir);
-  c += vec3(skyStars(streetSky, dir, 0.55)) * (1.0 - streetOver);
+  c += vec3(skyStars(streetSky, dir, K_stars)) * (1.0 - streetOver);
   return mix(c, streetDeck, streetOver * 0.92);
 }
 
@@ -1910,7 +1911,7 @@ float streetTiltAt() {
 // globals above for everything the cell then draws.
 void streetHour() {
   streetTm = uMotionTime;
-  streetSky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  streetSky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   streetStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
   streetOver = clamp(streetStorm * 8.0, 0.0, 1.0) * (0.65 + 0.35 * streetStorm);
   streetSky.sunColor *= 1.0 - 0.85 * streetOver;

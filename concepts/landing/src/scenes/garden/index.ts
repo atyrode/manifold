@@ -20,7 +20,7 @@ const params: readonly ParamDef[] = [
   range("maple", "dapple", "dappled shade", 0.6, "The maple's shadow on the gravel, pierced by round flecks of sun; it shows when the sun stands high enough to throw it into the garden."),
   choice("view", "camera", "view", [{ label: "veranda", value: 0 }, { label: "above", value: 1 }], 0, "Sit on the temple veranda looking across the garden to its earthen wall, or look straight down on it like a plan. Drag on the gravel to rake your own lines.", { steady: true }),
   // 0.735: golden hour, the sun low on the left behind the wall, raking across the grooves.
-  ...skyKnobs({ time: 0.735 }),
+  ...skyKnobs({ time: 0.735, moon: 1 }),
   ...weatherKnobs({ rain: true, snow: true, wind: true }),
   feature("manifold", "mark", "M stone", false, "size", 0.5, "A low slab of grey-blue slate in the shape of the Manifold M, set nearly flush in the gravel: worn pale at its edges, lichen on it, a fringe of moss round it, and rings raked round it in its own shape, as round the other stones. The garden is laid out afresh round it."),
 ];
@@ -49,4 +49,6 @@ export const gardenScene: SceneDef = {
   // just after sunrise to just before sunset, on a still clock, unless steady rain greys it. The
   // shader follows the page (pagePaper in inkOf).
   theme: skyTheme(params, { from: GARDEN_PAPER.from, to: GARDEN_PAPER.to, rainBelow: GARDEN_PAPER.rain }),
+  // The moon takes a phase (K_moon) in the shared sky: it keys the garden's light at night.
+  features: { SKY_MOON_PHASE: 1 },
 };
