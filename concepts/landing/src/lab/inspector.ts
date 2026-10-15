@@ -12,7 +12,14 @@ import { dice, iconButton, nowButton, row, segments, slider, switchControl } fro
 import { skyDial } from "./dial.ts";
 import { h, reveal, type Built, type LabContext } from "./dom.ts";
 import { icon, iconFromWords, type IconName } from "./icons.ts";
-import { knobIcon, knobKeys, Knobs, type FeatureDef, type RangeDef, type SwitchDef } from "./knobs.ts";
+import {
+  knobIcon,
+  knobKeys,
+  Knobs,
+  type FeatureDef,
+  type RangeDef,
+  type SwitchDef,
+} from "./knobs.ts";
 import { mixBar, type MixPart } from "./mix.ts";
 import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts";
 
@@ -67,7 +74,11 @@ export class Inspector {
   readonly #body: HTMLElement;
   readonly #sceneSlot = h("div", { class: "groups" });
   readonly #globalSlot = h("div", { class: "groups" });
-  readonly #empty = h("p", { class: "lab-empty" }, "Nothing matches. Try another word, or press Esc.");
+  readonly #empty = h(
+    "p",
+    { class: "lab-empty" },
+    "Nothing matches. Try another word, or press Esc.",
+  );
   readonly #syncers: (() => void)[] = [];
   #sceneSyncers: (() => void)[] = [];
   #sceneSections: Section[] = [];
@@ -143,6 +154,7 @@ export class Inspector {
     this.#fold.title = label;
     this.#fold.setAttribute("aria-label", label);
     this.filter();
+    this.#spy();
   }
 
   #allOpen(): boolean {
@@ -196,7 +208,11 @@ export class Inspector {
       offNote,
       ...spec.content,
     );
-    const body = h("div", { class: "reveal", id: bodyId }, h("div", { class: "reveal-inner" }, inner));
+    const body = h(
+      "div",
+      { class: "reveal", id: bodyId },
+      h("div", { class: "reveal-inner" }, inner),
+    );
     const el = h(
       "section",
       { class: "group", "data-id": spec.id, "data-title": spec.title.toLowerCase() },
@@ -204,8 +220,11 @@ export class Inspector {
       body,
     );
     toggle.addEventListener("click", () => {
-      this.#prefs.sections[spec.id] = !isOpen();
+      const opening = !isOpen();
+      this.#prefs.sections[spec.id] = opening;
       this.#prefs.save();
+      // A group opened from its header is the one in hand: the rail marks it.
+      this.#pinned = opening ? spec.id : undefined;
       this.sync();
     });
     const sync = () => {
@@ -270,18 +289,27 @@ export class Inspector {
     this.#spy();
   }
 
-  /** Mark the rail button of the group at the top of the scrolled body. */
+  /**
+   * Mark the rail button of the group in view: the one the rail or a header just opened while it
+   * shows, otherwise the one taking up most of the scrolled body.
+   */
   #spy(): void {
-    const top = this.#body.scrollTop + 12;
-    const sections = [...this.#sceneSections, ...this.#globalSections];
-    let current = sections.find((section) => section.id === this.#pinned && !section.el.hidden)?.id;
-    if (current === undefined)
-      for (const section of sections) {
-        if (section.el.hidden) continue;
-        if (section.el.offsetTop <= top || current === undefined) current = section.id;
-      }
+    const top = this.#body.scrollTop;
+    const bottom = top + this.#body.clientHeight;
+    const sections = [...this.#sceneSections, ...this.#globalSections].filter(
+      (section) => !section.el.hidden,
+    );
+    const shown = (section: Section) =>
+      Math.min(bottom, section.el.offsetTop + section.el.offsetHeight) -
+      Math.max(top, section.el.offsetTop);
+    const pinned = sections.find((section) => section.id === this.#pinned);
+    let current = pinned && shown(pinned) > 0 ? pinned : undefined;
+    for (const section of sections)
+      if (current === undefined || (current !== pinned && shown(section) > shown(current)))
+        current = section;
+    const id = current?.id;
     for (const el of this.#rail.querySelectorAll<HTMLElement>(".rail-button")) {
-      if (el.dataset.id === current) el.setAttribute("aria-current", "true");
+      if (el.dataset.id === id) el.setAttribute("aria-current", "true");
       else el.removeAttribute("aria-current");
     }
   }
@@ -531,8 +559,7 @@ export class Inspector {
   /** A range, choice or seed as a row, with its "now" when it has a trigger. */
   #knobRow(knobs: Knobs, def: Exclude<ParamDef, SwitchDef>): Built {
     const slot = def.trigger;
-    const now =
-      slot === undefined ? [] : [nowButton(def.label, () => knobs.fire(slot))];
+    const now = slot === undefined ? [] : [nowButton(def.label, () => knobs.fire(slot))];
     const common = {
       label: def.label,
       help: def.help,
@@ -625,7 +652,8 @@ export class Inspector {
           break;
         case "range":
         case "seed":
-          if (value !== knobs.default(def.key)) parts.push(`${def.label} ${formatValue(def, value)}`);
+          if (value !== knobs.default(def.key))
+            parts.push(`${def.label} ${formatValue(def, value)}`);
           break;
         default: {
           const unreachable: never = def;
@@ -769,7 +797,10 @@ export class Inspector {
         const state = this.#state();
         for (const swatch of swatches) {
           swatch.setAttribute("aria-pressed", String(swatch.dataset.value === state.accent));
-          swatch.style.setProperty("--swatch", swatch.dataset.value || sceneDefs[state.scene].accent);
+          swatch.style.setProperty(
+            "--swatch",
+            swatch.dataset.value || sceneDefs[state.scene].accent,
+          );
         }
         if (document.activeElement !== custom) custom.value = accentOf(state);
       },
@@ -865,12 +896,18 @@ export class Inspector {
     const pauseIcon = icon("pause");
     const playLabel = h("span");
     play.append(playIcon, pauseIcon, playLabel);
-    this.#syncers.push(motion.sync, follow.sync, transitions.sync, ...rows.map((built) => built.sync), () => {
-      const paused = this.#ctx.renderer()?.paused ?? false;
-      playIcon.style.display = paused ? "" : "none";
-      pauseIcon.style.display = paused ? "none" : "";
-      playLabel.textContent = paused ? "Play" : "Pause";
-    });
+    this.#syncers.push(
+      motion.sync,
+      follow.sync,
+      transitions.sync,
+      ...rows.map((built) => built.sync),
+      () => {
+        const paused = this.#ctx.renderer()?.paused ?? false;
+        playIcon.style.display = paused ? "" : "none";
+        pauseIcon.style.display = paused ? "none" : "";
+        playLabel.textContent = paused ? "Play" : "Pause";
+      },
+    );
     return this.#section({
       id: "motion",
       title: "Motion",

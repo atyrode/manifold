@@ -105,7 +105,10 @@ export function directionPad(knobs: Knobs, def: RangeDef, iconName: IconName): B
       flow.style.setProperty("--flow-to", `${share < 0 ? -24 : 24}px`);
       flow.classList.toggle("still", value === 0);
       pad.setAttribute("aria-valuenow", String(value));
-      pad.setAttribute("aria-valuetext", `${describe(value)} ${value < 0 ? "to the left" : value > 0 ? "to the right" : ""}`.trim());
+      pad.setAttribute(
+        "aria-valuetext",
+        `${describe(value)} ${value < 0 ? "to the left" : value > 0 ? "to the right" : ""}`.trim(),
+      );
     },
   };
 }
@@ -178,7 +181,12 @@ export function compassPad(knobs: Knobs, heading: RangeDef, strength: Strength):
         const reach = Math.min(1, Math.hypot(x, y) / R);
         patch = {
           [heading.key]: snap(turn, heading.min, heading.max, heading.step),
-          [powerKey]: snap(power.min + reach * (power.max - power.min), power.min, power.max, power.step),
+          [powerKey]: snap(
+            power.min + reach * (power.max - power.min),
+            power.min,
+            power.max,
+            power.step,
+          ),
         };
         knobs.set(patch, false);
       },
@@ -193,7 +201,8 @@ export function compassPad(knobs: Knobs, heading: RangeDef, strength: Strength):
       const next = turn + (event.key === "ArrowLeft" ? heading.step : -heading.step) * big;
       patch = { [heading.key]: snap(((next % 1) + 1) % 1, heading.min, heading.max, heading.step) };
     } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-      const next = knobs.value(powerKey) + (event.key === "ArrowUp" ? power.step : -power.step) * big;
+      const next =
+        knobs.value(powerKey) + (event.key === "ArrowUp" ? power.step : -power.step) * big;
       patch = { [powerKey]: snap(next, power.min, power.max, power.step) };
     }
     if (!patch) return;
@@ -254,7 +263,10 @@ export function positionPad(
   } else frame.classList.add("whole");
   const [firstX] = x.label.split(" ");
   const [firstY] = y.label.split(" ");
-  const label = firstX !== undefined && firstX === firstY && x.label.includes(" ") ? `${firstX} position` : "position";
+  const label =
+    firstX !== undefined && firstX === firstY && x.label.includes(" ")
+      ? `${firstX} position`
+      : "position";
   const pad = h(
     "div",
     {
@@ -334,7 +346,10 @@ export function positionPad(
       up.style.left = left;
       across.style.top = top;
       pad.setAttribute("aria-valuenow", String(knobs.value(x.key)));
-      pad.setAttribute("aria-valuetext", `${x.label} ${formatValue(x, knobs.value(x.key))}, ${y.label} ${formatValue(y, knobs.value(y.key))}`);
+      pad.setAttribute(
+        "aria-valuetext",
+        `${x.label} ${formatValue(x, knobs.value(x.key))}, ${y.label} ${formatValue(y, knobs.value(y.key))}`,
+      );
     },
   };
 }

@@ -21,7 +21,6 @@ import { icon } from "./lab/icons.ts";
 import { Inspector } from "./lab/inspector.ts";
 import { knobIcon } from "./lab/knobs.ts";
 import { panelIds, Workspace, type PanelLayout, type SheetState } from "./lab/panels.ts";
-import { Thumbs } from "./lab/thumbs.ts";
 import { Popover, separator } from "./lab/transport.ts";
 import { MAX_SEED, type ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
@@ -82,12 +81,6 @@ const SHORTCUTS: readonly (readonly [string, string])[] = [
   ["Ctrl Z", "undo"],
   ["Ctrl ⇧ Z", "redo"],
 ];
-
-/** Seconds a scene settles on screen (after its entrance) before its thumbnail is taken. */
-const THUMB_SETTLE = 2.5;
-/** While the stage still shows the frame the switch left: tries, and seconds between them. */
-const THUMB_TRIES = 8;
-const THUMB_RETRY = 2;
 
 interface Prefs {
   open: boolean;
@@ -162,7 +155,6 @@ export class Lab {
   readonly #workspace: Workspace;
   readonly #inspector: Inspector;
   readonly #browser: SceneBrowser;
-  readonly #thumbs = new Thumbs();
   readonly #syncers: (() => void)[] = [];
   readonly #setSub: (panel: "browser" | "inspector", text: string) => void;
   /** The undo history of the setup on screen (with a comparison, the live slot's). */
@@ -194,10 +186,6 @@ export class Lab {
   readonly #status = h("span", { class: "bar-status" });
   readonly #statusLong = h("p", { class: "keys-status" });
   readonly #failure: { el: HTMLElement; sync: () => void };
-  /** The scene the thumbnail waits on, its timer, and a print of the frame its switch left. */
-  #thumbScene: SceneId | undefined;
-  #thumbTimer: number | undefined;
-  #thumbBefore: Uint8ClampedArray | undefined;
 
   constructor(root: HTMLElement, opener: HTMLButtonElement, host: LabHost) {
     this.#root = root;
@@ -233,19 +221,15 @@ export class Lab {
       sections: this.#prefs.sections,
       save,
     });
-    this.#browser = new SceneBrowser(
-      this.#ctx,
-      {
-        setScene: (scene) => this.#setScene(scene),
-        load: (query) => {
-          host.apply(new URLSearchParams(query));
-          this.commit();
-        },
-        query: () => this.#query(),
-        build: host.build,
+    this.#browser = new SceneBrowser(this.#ctx, {
+      setScene: (scene) => this.#setScene(scene),
+      load: (query) => {
+        host.apply(new URLSearchParams(query));
+        this.commit();
       },
-      this.#thumbs,
-    );
+      query: () => this.#query(),
+      build: host.build,
+    });
     this.#undoButton = iconButton("undo", "Undo (Ctrl Z)", () => this.undo());
     this.#redoButton = iconButton("redo", "Redo (Ctrl ⇧ Z)", () => this.redo());
 
@@ -277,7 +261,7 @@ export class Lab {
         ay: "top",
         y: 16,
         w: 252,
-        h: Math.round(Math.min(560, vh * 0.48)),
+        h: Math.round(vh - 16 - 76),
         collapsed: false,
       }),
     });
@@ -377,7 +361,6 @@ export class Lab {
     this.#setSub("inspector", sceneDefs[state.scene].title);
     this.#setSub("browser", `${sceneIds.indexOf(state.scene) + 1} / ${sceneIds.length}`);
     this.#syncHistory();
-    this.#scheduleThumb(state.scene);
   }
 
   /** Record the current setup as one undo step (sliders commit on release). */
@@ -484,35 +467,6 @@ export class Lab {
     this.#failure.sync();
   }
 
-  /**
-   * After a scene has settled on screen, keep a snapshot of it for the scene browser. A program
-   * still building leaves the old frame up for a while, so the snapshot waits until the stage no
-   * longer looks like the frame the switch left (a few tries).
-   */
-  #scheduleThumb(scene: SceneId): void {
-    if (this.#thumbScene === scene) return;
-    this.#thumbScene = scene;
-    window.clearTimeout(this.#thumbTimer);
-    const stage = document.querySelector("#stage");
-    if (!(stage instanceof HTMLCanvasElement) || !this.#host.renderer()) return;
-    // Every frame callback below is asked for after the renderer's own, so it runs right after that
-    // frame is drawn, before WebGL clears it.
-    requestAnimationFrame(() => {
-      this.#thumbBefore = this.#thumbs.print(stage);
-    });
-    const attempt = (tries: number) => {
-      const renderer = this.#host.renderer();
-      if (!renderer || renderer.failure || this.#current().state.scene !== scene) return;
-      requestAnimationFrame(() => {
-        if (this.#current().state.scene !== scene) return;
-        if (this.#thumbs.capture(scene, stage, this.#thumbBefore) === "kept" || tries <= 1) return;
-        this.#thumbTimer = window.setTimeout(() => attempt(tries - 1), THUMB_RETRY * 1000);
-      });
-    };
-    const settle = (sceneDefs[scene].passage?.enter ?? 0) + THUMB_SETTLE;
-    this.#thumbTimer = window.setTimeout(() => attempt(THUMB_TRIES), settle * 1000);
-  }
-
   /** Shown while the scene on screen has failed (polled with the status): what broke, a retry, and a way on. */
   #failureAlert(): { el: HTMLElement; sync: () => void } {
     const what = h("p");
@@ -523,7 +477,9 @@ export class Lab {
     });
     const next = textButton("next", "Next scene", "Go on to the next scene", () => {
       const { state } = this.#current();
-      this.#setScene(sceneIds[(sceneIds.indexOf(state.scene) + 1) % sceneIds.length] ?? state.scene);
+      this.#setScene(
+        sceneIds[(sceneIds.indexOf(state.scene) + 1) % sceneIds.length] ?? state.scene,
+      );
       el.hidden = true;
     });
     const el = h(
@@ -580,12 +536,16 @@ export class Lab {
     const transitions = iconButton("transition", "Scene transitions", () =>
       this.#change({ transitions: state().transitions === "on" ? "off" : "on" }, true),
     );
-    const replay = iconButton("replay", "Replay this scene's exit, then its entrance, now", (button) => {
-      this.#host.renderer()?.replayPassage();
-      button.classList.remove("firing");
-      void button.offsetWidth;
-      button.classList.add("firing");
-    });
+    const replay = iconButton(
+      "replay",
+      "Replay this scene's exit, then its entrance, now",
+      (button) => {
+        this.#host.renderer()?.replayPassage();
+        button.classList.remove("firing");
+        void button.offsetWidth;
+        button.classList.add("firing");
+      },
+    );
     replay.addEventListener("animationend", () => replay.classList.remove("firing"));
 
     // Every "now" of the scene, in one list.
@@ -597,7 +557,11 @@ export class Lab {
       icon: "bolt",
       label: "Now: set off one of this scene's events",
       content: [
-        h("p", { class: "pop-note" }, "One of each event right now, whether or not it is switched on."),
+        h(
+          "p",
+          { class: "pop-note" },
+          "One of each event right now, whether or not it is switched on.",
+        ),
         nowList,
       ],
     });
@@ -681,7 +645,9 @@ export class Lab {
       separator(),
       this.#undoButton,
       this.#redoButton,
-      iconButton("shuffle", "Shuffle this scene's knobs (framing stays put)", () => this.#shuffle()),
+      iconButton("shuffle", "Shuffle this scene's knobs (framing stays put)", () =>
+        this.#shuffle(),
+      ),
       iconButton("reset", "Reset this scene to its defaults", () =>
         this.#change({ scene: state().scene }, true, true),
       ),
@@ -856,13 +822,20 @@ export class Lab {
       const scene = sceneIds.find((id) => id === picker.value);
       if (scene) this.#editTour([...(this.#tour?.tour.steps ?? []), { scene }]);
     });
-    const addAll = textButton("plus", "All", "Add every scene not on the tour yet, in the lab's order", () => {
-      const on = this.#tour?.tour.steps ?? [];
-      this.#editTour([
-        ...on,
-        ...sceneIds.filter((id) => !on.some((step) => step.scene === id)).map((scene) => ({ scene })),
-      ]);
-    });
+    const addAll = textButton(
+      "plus",
+      "All",
+      "Add every scene not on the tour yet, in the lab's order",
+      () => {
+        const on = this.#tour?.tour.steps ?? [];
+        this.#editTour([
+          ...on,
+          ...sceneIds
+            .filter((id) => !on.some((step) => step.scene === id))
+            .map((scene) => ({ scene })),
+        ]);
+      },
+    );
     const scenesRow = row({
       label: "Scenes",
       help: "The tour plays these in order and starts over after the last. Give a scene its own seconds, or leave it empty for the tour's. Click a name to go there now.",

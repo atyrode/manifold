@@ -219,44 +219,67 @@ body.lab-open .lab-opener {
   flex-direction: column;
   min-height: 0;
 }
+/* resize: the inner side edge (x), the bottom edge (y) and the corner (both); docked: width only */
 .panel-resize {
   position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+.panel-resize[data-axis="both"] {
   right: 0;
   bottom: 0;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   cursor: nwse-resize;
-  touch-action: none;
   background:
-    linear-gradient(135deg, transparent 55%, var(--lab-line-strong) 55% 62%, transparent 62%),
-    linear-gradient(135deg, transparent 75%, var(--lab-line-strong) 75% 82%, transparent 82%);
+    linear-gradient(135deg, transparent 50%, var(--lab-muted) 50% 57%, transparent 57%),
+    linear-gradient(135deg, transparent 70%, var(--lab-muted) 70% 77%, transparent 77%);
+  opacity: 0.6;
 }
-.panel[data-anchor="right"][data-dock="float"] .panel-resize {
+.panel-resize[data-axis="both"]:hover {
+  opacity: 1;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--lab-accent) 50% 57%, transparent 57%),
+    linear-gradient(135deg, transparent 70%, var(--lab-accent) 70% 77%, transparent 77%);
+}
+.panel-resize[data-axis="x"] {
+  top: 38px;
+  right: -3px;
+  bottom: 18px;
+  width: 7px;
+  cursor: ew-resize;
+}
+.panel-resize[data-axis="y"] {
+  right: 18px;
+  bottom: -3px;
+  left: 18px;
+  height: 7px;
+  cursor: ns-resize;
+}
+.panel-resize[data-axis="x"]:hover {
+  background: linear-gradient(90deg, transparent 2px, var(--lab-accent) 2px 4px, transparent 4px);
+}
+.panel-resize[data-axis="y"]:hover {
+  background: linear-gradient(transparent 2px, var(--lab-accent) 2px 4px, transparent 4px);
+}
+.panel[data-anchor="right"][data-dock="float"] .panel-resize[data-axis="both"] {
   right: auto;
   left: 0;
   cursor: nesw-resize;
   transform: scaleX(-1);
 }
-.panel[data-dock="left"] .panel-resize,
-.panel[data-dock="right"] .panel-resize {
-  top: 0;
-  width: 8px;
-  height: auto;
-  cursor: ew-resize;
-  background: none;
-  transform: none;
-}
-.panel[data-dock="left"] .panel-resize {
-  right: -4px;
-  left: auto;
-}
-.panel[data-dock="right"] .panel-resize {
+.panel[data-anchor="right"][data-dock="float"] .panel-resize[data-axis="x"],
+.panel[data-dock="right"] .panel-resize[data-axis="x"] {
   right: auto;
-  left: -4px;
+  left: -3px;
 }
-.panel[data-dock="left"] .panel-resize:hover,
-.panel[data-dock="right"] .panel-resize:hover {
-  background: linear-gradient(90deg, transparent 3px, var(--lab-accent) 3px 5px, transparent 5px);
+.panel[data-dock="left"] .panel-resize[data-axis="x"],
+.panel[data-dock="right"] .panel-resize[data-axis="x"] {
+  top: 0;
+  bottom: 0;
+}
+.panel:not([data-dock="float"]) .panel-resize:not([data-axis="x"]) {
+  display: none;
 }
 .panel-chip {
   position: absolute;
@@ -611,11 +634,11 @@ body.lab-open .lab-opener {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  image-rendering: pixelated;
   transition: transform 260ms ease;
 }
-.thumb img.shot {
-  image-rendering: auto;
+/* the stand-in is a few dozen pixels, kept crisp */
+.thumb img[src^="data:"] {
+  image-rendering: pixelated;
 }
 .card-title {
   display: flex;
@@ -1096,7 +1119,11 @@ body.lab-open .lab-opener {
 }
 .lab input[type="range"]::-webkit-slider-runnable-track {
   height: 2px;
-  background: linear-gradient(to right, var(--lab-accent) var(--fill), var(--lab-line-strong) var(--fill));
+  background: linear-gradient(
+    to right,
+    var(--lab-accent) var(--fill),
+    var(--lab-line-strong) var(--fill)
+  );
 }
 .lab input[type="range"]::-moz-range-track {
   height: 2px;
@@ -1555,10 +1582,10 @@ body.lab-open .lab-opener {
   inset: 0;
   opacity: calc(0.15 + var(--strength, 0) * 0.5);
   background:
-    linear-gradient(90deg, transparent 14px, rgb(232 230 223 / 0.4) 14px 20px, transparent 20px)
-      0 28% / 24px 1px repeat-x,
-    linear-gradient(90deg, transparent 4px, rgb(232 230 223 / 0.3) 4px 14px, transparent 14px)
-      0 72% / 24px 1px repeat-x;
+    linear-gradient(90deg, transparent 14px, rgb(232 230 223 / 0.4) 14px 20px, transparent 20px) 0
+      28% / 24px 1px repeat-x,
+    linear-gradient(90deg, transparent 4px, rgb(232 230 223 / 0.3) 4px 14px, transparent 14px) 0
+      72% / 24px 1px repeat-x;
   animation: pad-flow calc(2.4s - var(--strength, 0) * 1.9s) linear infinite;
 }
 .pad-flow.still {
@@ -2171,7 +2198,10 @@ kbd {
   display: flex;
   flex-direction: column;
   max-height: 64vh;
-  background: rgb(11 12 16 / 0.97);
+  z-index: 6;
+  isolation: isolate;
+  background: #0b0c10;
+  backdrop-filter: blur(18px);
   border-top: 1px solid var(--lab-line-strong);
   border-radius: 12px 12px 0 0;
   box-shadow: 0 -10px 30px rgb(0 0 0 / 0.4);
