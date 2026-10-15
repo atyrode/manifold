@@ -29,7 +29,7 @@ const params: readonly ParamDef[] = [
     "current",
     0.35,
     "A steady current through the forest, to the left or the right: the kelp leans downstream, the floating tops trail along the surface with it and the snow drifts with it.",
-    { min: -1, max: 1 },
+    { min: -1, max: 1, widget: { kind: "direction" } },
   ),
   feature(
     "sea",

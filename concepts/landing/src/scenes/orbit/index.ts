@@ -81,7 +81,12 @@ export const orbitScene: SceneDef = {
       "across",
       0.36,
       "Where the planet sits horizontally: -1 left edge, 1 right edge.",
-      { min: -1, max: 1, steady: true },
+      {
+        min: -1,
+        max: 1,
+        steady: true,
+        widget: { kind: "position", y: "planetY", screen: [-1, 1] },
+      },
     ),
     range(
       "camera",

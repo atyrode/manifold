@@ -1,0 +1,67 @@
+// The scene browser's families: every scene in exactly one, so the gallery reads as a handful of
+// shelves instead of fifty cards. `satisfies` makes a new scene without a family a type error.
+import type { SceneId } from "../scenes/index.ts";
+import type { IconName } from "./icons.ts";
+
+export const families = [
+  { id: "sky", title: "Sky & space", icon: "stars" },
+  { id: "water", title: "Water", icon: "waves" },
+  { id: "land", title: "Land", icon: "mountain" },
+  { id: "matter", title: "Matter & patterns", icon: "pattern" },
+  { id: "life", title: "Rooms & life", icon: "house" },
+] as const satisfies readonly { id: string; title: string; icon: IconName }[];
+
+export type FamilyId = (typeof families)[number]["id"];
+
+export const sceneFamily = {
+  orbit: "sky",
+  clouds: "sky",
+  flock: "sky",
+  aurora: "sky",
+  skyward: "sky",
+  swell: "water",
+  pond: "water",
+  falls: "water",
+  shore: "water",
+  lanterns: "water",
+  kelp: "water",
+  lake: "water",
+  island: "water",
+  tidepool: "water",
+  country: "land",
+  dunes: "land",
+  meadow: "land",
+  shanshui: "land",
+  bamboo: "land",
+  garden: "land",
+  delta: "land",
+  forest: "land",
+  campfire: "land",
+  autumn: "land",
+  marble: "matter",
+  frost: "matter",
+  prism: "matter",
+  ferro: "matter",
+  chladni: "matter",
+  hyperbolic: "matter",
+  pearl: "matter",
+  fractal: "matter",
+  petri: "matter",
+  physarum: "matter",
+  film: "matter",
+  sandtable: "matter",
+  ripple: "matter",
+  harmonograph: "matter",
+  pendula: "matter",
+  sill: "life",
+  fireflies: "life",
+  dew: "life",
+  incense: "life",
+  lava: "life",
+  bonsai: "life",
+  street: "life",
+  train: "life",
+  bar: "life",
+  bees: "life",
+  mobile: "life",
+} as const satisfies Record<SceneId, FamilyId>;

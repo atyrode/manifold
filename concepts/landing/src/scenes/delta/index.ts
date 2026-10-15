@@ -69,7 +69,7 @@ const params: readonly ParamDef[] = [
     "longshore current",
     0.35,
     "The sea drifting along the coast, to the right (to the left below the middle), trailing the silt plumes downstream.",
-    { min: -1, max: 1 },
+    { min: -1, max: 1, widget: { kind: "direction" } },
   ),
   feature(
     "coast",

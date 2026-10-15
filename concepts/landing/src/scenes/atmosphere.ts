@@ -93,7 +93,7 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         "phase",
         options.moon,
         "The moon on its nightly path, from a thin crescent to full, its lit side toward the sun: a slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.",
-        { min: 0.05, max: 1 },
+        { min: 0.05, max: 1, widget: { kind: "sky", part: "moon" } },
       ),
     );
   }
@@ -132,7 +132,7 @@ export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
       "time of day",
       options.time ?? 0.78,
       "Midnight at the left end, noon in the middle: sunrise, day, golden hour, dusk, night.",
-      { steady: true },
+      { steady: true, widget: { kind: "sky", part: "time" } },
     ),
     feature(
       group,
@@ -142,6 +142,7 @@ export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
       "speed",
       0.3,
       "The sun and moon keep moving: days pass at this pace.",
+      { widget: { kind: "sky", part: "cycle" } },
     ),
     ...skyComponentKnobs({ ...options, group }),
   ];
@@ -239,7 +240,7 @@ export function weatherKnobs(options: WeatherOptions): ParamDef[] {
         "wind",
         0.2,
         "Which way and how hard the wind blows: slants rain, drifts snow and cloud.",
-        { min: -1, max: 1 },
+        { min: -1, max: 1, widget: { kind: "direction" } },
       ),
     );
   if (options.lightning !== undefined) {

@@ -10,8 +10,12 @@
 //   choice   segmented buttons; the shader reads the chosen value
 //   seed     an arrangement number with a "re-seed" button; the shader reads it
 //
+// Any knob may also name a purpose-built lab widget (`widget`, see `Widget`) and an icon (`icon`);
+// both only change how the lab draws it, never its URL keys, values or defaults.
+//
 // Reading knobs back in TS: a sim uses a KnobReader (slots resolved once, by key), a page theme or
 // other one-off reader uses knobValue; both read what the shader reads (see `effective`).
+import type { IconName } from "./lab/icons.ts";
 import type { SimFrame } from "./scenes/types.ts";
 
 interface Base {
@@ -27,7 +31,33 @@ interface Base {
   trigger?: number;
   /** Shuffle leaves this knob alone (framing that would otherwise lose the subject). */
   steady?: boolean;
+  /** A purpose-built lab widget for this knob (and the knobs it names). */
+  widget?: Widget;
+  /** The lab icon for its chip or heading; default: the first word of its key or label naming one. */
+  icon?: IconName;
 }
+
+/**
+ * How the lab draws a knob beyond its kind's own control (see "Lab widgets" in scenes/README.md):
+ *   mix        one part of relative weights (a range): the group's knobs sharing `mix` (the bar's
+ *              name) make one stacked bar, this knob its segment named `part`, coloured `swatch`
+ *   sky        a part of the sky dial: `time` the time of day (a range over 0..1, 0 midnight),
+ *              `cycle` the day cycle and `moon` the moon's phase (features); the dial stands where
+ *              its group has a `time` part, and without one the others are plain controls
+ *   direction  a signed strength (a range from below 0 to above 0), min to the left and max to
+ *              the right, on a vector pad
+ *   compass    a heading (a range over 0..1: a turn counter-clockwise from the right) on a vector
+ *              pad whose length is knob `strength` (a range, or a feature's amount)
+ *   position   the across coordinate of a point (a range) whose height is range knob `y`: both on
+ *              one XY pad, the whole pad the frame unless `screen` gives the values (on both
+ *              axes) where the frame's edges lie, for a point that may leave it
+ */
+export type Widget =
+  | { kind: "mix"; mix: string; part: string; swatch: string }
+  | { kind: "sky"; part: "time" | "cycle" | "moon" }
+  | { kind: "direction" }
+  | { kind: "compass"; strength: string }
+  | { kind: "position"; y: string; screen?: readonly [number, number] };
 
 export interface Option {
   label: string;
@@ -61,11 +91,15 @@ interface Extra {
   when?: string;
   trigger?: number;
   steady?: boolean;
+  widget?: Widget;
+  icon?: IconName;
 }
 const extra = (options: Extra) => ({
   ...(options.when === undefined ? {} : { when: options.when }),
   ...(options.trigger === undefined ? {} : { trigger: options.trigger }),
   ...(options.steady === undefined ? {} : { steady: options.steady }),
+  ...(options.widget === undefined ? {} : { widget: options.widget }),
+  ...(options.icon === undefined ? {} : { icon: options.icon }),
 });
 
 export const range = (
@@ -184,6 +218,8 @@ export function effective(def: ParamDef, params: Record<string, number>): number
 export interface Blurb {
   title: string;
   blurb: string;
+  /** The heading's lab icon; default: the first word of the group's key or title naming one. */
+  icon?: IconName;
 }
 
 /** How a knob's value reads in the lab. */
