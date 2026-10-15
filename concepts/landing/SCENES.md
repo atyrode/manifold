@@ -217,6 +217,18 @@ Overlooking rolling hills with a village in the distance and forest around.
   ground's fields and lighting follow only the bare terrain, and pixels inside the treeline are
   always canopy. Unresolved distant crowns use an area-mean colour instead of per-crown detail.
 - Day cycle and weather (cloud shadows sweeping over the fields).
+- Night sky: the shared components: `stars` (density, 0.4 the original sky), the `moon`'s phase
+  (full by default; it lights the land, clouds and river less as it wanes) and `shooting stars`
+  (off by default, "now" on trigger 1) streaking through the gaps of the deck over the far hills.
+- River: `wind ripples` (0 by default: the original value-noise shimmer) brings in the shared
+  water's ripples tier: cat's-paws drifting downwind break the mirrored sky into streaks.
+- Cost: every optional part (walkers and carts, the track network, hedgerow clearing, village
+  growth, hamlets, farms and castle, flower and pasture fields, herds and fences, birds and the
+  murmuration, the chalk M, falling rain and snow, fog, wind ripples, a moon below full) is compiled
+  into the program only while its knobs are on (`countryFeatures`, SceneDef.featuresFor); turning
+  one on builds that program once, the old frame holding meanwhile. The default program draws
+  the same picture bit for bit at about the cost of the countryside before its woodland, routes,
+  settlements and herds were added (SwiftShader, 640×400).
 - Fields: independently weight original seasonal crops, wildflowers, lavender and sunflowers from
   0–100. Weights are relative, not area percentages: 2:1:1:0 gives approximately half crop fields,
   a quarter wildflowers and a quarter lavender, with no sunflowers. All zero falls back to crops.

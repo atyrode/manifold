@@ -8,6 +8,7 @@
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { sceneDefs } from "../index.ts";
+import { COUNTRY_FULL } from "./index.ts";
 
 const W = 320;
 const H = 200;
@@ -111,7 +112,7 @@ function footings(built: Uint8Array, bare: Uint8Array, label: string): number {
 export function verifyCountryCoherence(gl: WebGL2RenderingContext): Record<string, unknown> {
   const linked = program(
     gl,
-    fragmentSourceFor({ ...sceneDefs.country, entry: "coherenceRegression", glsl: sceneDefs.country.glsl + wrapper }),
+    fragmentSourceFor({ ...sceneDefs.country, entry: "coherenceRegression", glsl: sceneDefs.country.glsl + wrapper }, COUNTRY_FULL),
   );
   gl.canvas.width = W;
   gl.canvas.height = H;

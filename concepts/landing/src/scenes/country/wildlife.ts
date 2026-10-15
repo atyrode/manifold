@@ -22,7 +22,8 @@
 // they lie nearer than that surface (`seen`, world units), so a nearer hill, tree crown or building
 // hides them; they then become the surface the rain and snow stop at. Every bird is nearer than the
 // murmuration. Both use the lens-shifted uv of the passage and the ridges' pointer parallax for their
-// depth, so they stay in the world while the camera moves.
+// depth, so they stay in the world while the camera moves. Both, with the birds library and the
+// flock's ink, are compiled in only while one of their knobs is on (COUNTRY_HAS_WILDLIFE, index.ts).
 //
 // Butterflies and bees are not drawn: at ~120 m a world unit, a 5 cm butterfly on the nearest field
 // (the bottom of the frame, about 0.65 world units away) is 0.00064 screen heights across, 0.35 of a
@@ -61,6 +62,7 @@ export const countryMurmuration: FlockSetup = {
 };
 
 export const countryWildlifeGlsl = /* glsl */ `
+#if COUNTRY_HAS_WILDLIFE
 ${birdsGlsl}
 ${flockInkGlsl}
 
@@ -87,8 +89,8 @@ float countryFlightFloor(float D, float x, vec2 spots) {
 // crests under a low flight).
 BirdHit countryBirds(vec2 p, float tm, vec2 parallax, vec2 spots) {
   BirdHit near = birdNone();
-  // The scene's camera; a world unit is some 120 m.
-  BirdCamera cam = BirdCamera(COUNTRY_HORIZON, 1.0, COUNTRY_EYE, 1.0 / 120.0, 2.0);
+  // The scene's camera; a world unit is some 120 m (COUNTRY_METRES).
+  BirdCamera cam = BirdCamera(COUNTRY_HORIZON, 1.0, COUNTRY_EYE, 1.0 / COUNTRY_METRES, 2.0);
   float aspect = uRes.x / uRes.y;
   float calm = smoothfall(0.5, 0.1, K_rain) * (1.0 - 0.5 * smoothstep(0.2, 0.8, K_snow));
   for (int j = 0; j < 4; j++) {
@@ -158,4 +160,5 @@ void countryWildlife(inout vec3 col, inout float seen, inout float accent, vec2 
     }
   }
 }
+#endif
 `;

@@ -4,6 +4,7 @@
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { sceneDefs } from "../index.ts";
+import { COUNTRY_FULL } from "./index.ts";
 
 const WIDTH = 320;
 const HEIGHT = 180;
@@ -57,7 +58,7 @@ function link(gl: WebGL2RenderingContext, entry: string, glsl: string): WebGLPro
   const scene = { ...sceneDefs.country, entry, glsl: sceneDefs.country.glsl + glsl };
   for (const [type, source] of [
     [gl.VERTEX_SHADER, vertexSource],
-    [gl.FRAGMENT_SHADER, fragmentSourceFor(scene)],
+    [gl.FRAGMENT_SHADER, fragmentSourceFor(scene, COUNTRY_FULL)],
   ] as const) {
     const shader = gl.createShader(type);
     if (!shader) fail("shader allocation failed");

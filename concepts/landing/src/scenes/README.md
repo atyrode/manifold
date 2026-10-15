@@ -321,6 +321,23 @@ parts, all inside the existing scene contract (no registry, render pass or engin
    features are for what changes a function every scene calls (the moon's phase inside `skyColor`)
    or for a cheaper tier of a costly loop (`AURORA_CURTAINS`). A scene that reads a component's knob
    without selecting its feature fails to compile (`skyMoonPhase` does not exist), never silently.
+
+   **Knob-keyed features** extend the tiers to the knobs: `SceneDef.featuresFor(values)` gets every
+   knob as the shader reads it (`K_<key>`, keyed by knob key) and returns more defines, merged over
+   `features`, so a part behind a knob that is off is not in the program at all. This matters
+   because a software rasteriser (SwiftShader, the lab's fallback and its checks) runs every line
+   of a program whatever branches a pixel takes, and a loop's body at least once: an early-out
+   saves nothing there, only code that is not compiled in. The renderer builds one program per
+   distinct feature set (`featureKey`), keeps up to four per scene (the least recently drawn
+   freed), and builds a new one off the main thread where KHR_parallel_shader_compile allows; until
+   it is built the program on screen goes on drawing the settings it drew last, then the new one
+   takes over. A lab change, URL, reset or preset is one settings change, so turning several gated
+   knobs on builds once. Rules: gate each part on a superset of where its knobs show it (`x > 0`
+   for `K_x > 0.0`), keep the shader's own runtime test inside the gate, define each gate 0 or 1
+   every time and test it with `#if` (a library feature tested with `#ifdef` is left out instead),
+   leave in anything a "now" button can show while its knob is off, and check the default picture
+   is bit for bit what it was. Checks that draw many settings with one program compile with every
+   gate on (`country`'s `COUNTRY_FULL`); `src/features.verify.ts` covers the renderer's side.
 3. **Outputs.** GLSL functions in `src/shaders/lib/` that return explicit values:
    - *coverage* 0..1: multiply it by the scene's own occlusion, then cut moving edges with `hardEdge`;
    - *radiance*: light added to the sky before the scene draws what stands in front of it;
@@ -418,7 +435,7 @@ the component could be composed).
 | `aurora` | the subject, mirrored in the fjord | own `K_stars` on a fixed night | own crescent | own curtains | knob, trigger 1, mirrored |
 | `swell` | over the sea | own (`starfield`, `K_stars`) | own disc (`K_moon` sizes it) and glitter path | — | knob, trigger 0, screen frame, glints in the waves |
 | `clouds` † | above the cloud sea | fixed 0.75 | own bearing, drawn by `skyColor` | knob (`aurora()`, scene clock) | open |
-| `country` † | over the valley | fixed 0.4 | full | open | open |
+| `country` | over the valley | knob 0.4 | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open | knob, trigger 1 (lightning keeps 0), over the far hills |
 | `flock` † | the subject, mirrored in water | fixed 0.45 | full | open | open |
 | `island` † | round the island | knob 0.6 | full | open | open |
 | `shore` † | over the sea, in wet sand | fixed 0.6 | full (moonrise) | open | open |
@@ -628,9 +645,9 @@ takes `ripples`, open water seen close takes `mirror` or `flow`, a pool seen fro
 | `shore` | mirror | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror` |
 | `lanterns` | flow | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror` |
 | `tidepool` | caustics | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way |
-The rest of the lab's water is still drawn its own way: `country`'s river (its ripple a value
-noise: the `ripples` tier is its way in), `lake`, `swell`, `falls`, `pond`, `fireflies`, `bamboo`,
-`forest`, `kelp`, `delta`, `ripple`.
+| `country` | ripples while its `ripples` knob is up (`featuresFor`), flat at 0 | `windRipples`, `windMirror` on the river (`K_ripples`, `K_wind`); at 0 its own value-noise shimmer, as before |
+The rest of the lab's water is still drawn its own way: `lake`, `swell`, `falls`, `pond`,
+`fireflies`, `bamboo`, `forest`, `kelp`, `delta`, `ripple`.
 ### Weather in the world
 
 Rain and snow belong to the scene: they come from its sky, fall through its depth, stop at its
