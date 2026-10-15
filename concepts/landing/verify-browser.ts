@@ -45,6 +45,7 @@ import { verifyMilkyWay } from "./src/scenes/campfire/milkyway.verify.ts";
 import { verifyStarsKnob } from "./src/scenes/shore/stars.verify.ts";
 import { verifyCountryVerges } from "./src/scenes/country/verges.verify.ts";
 import { verifyMeadowWildflowers } from "./src/scenes/meadow/wildflowers.verify.ts";
+import { verifyValleyTerrain } from "./src/scenes/valley/terrain.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -610,6 +611,7 @@ export const checks: readonly Check[] = [
   ["starsKnob", verifyStarsKnob],
   ["countryVerges", verifyCountryVerges],
   ["meadowWildflowers", verifyMeadowWildflowers],
+  ["valleyTerrain", verifyValleyTerrain],
 ];
 
 /**
