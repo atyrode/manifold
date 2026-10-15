@@ -222,7 +222,11 @@ const params = [
     "crops weight",
     100,
     "Relative weight of the original seasonal crops. Weights are normalized together: 2 crops and 1 wildflowers gives about two crop fields for each flower field. Zero excludes a type; all zero restores crops.",
-    { max: 100, step: 1 },
+    {
+      max: 100,
+      step: 1,
+      widget: { kind: "mix", mix: "field types", part: "crops", swatch: "#c8a05a" },
+    },
   ),
   range(
     "fields",
@@ -230,7 +234,11 @@ const params = [
     "wildflowers weight",
     0,
     "Relative weight of colourful meadow fields among all fields; zero excludes them.",
-    { max: 100, step: 1 },
+    {
+      max: 100,
+      step: 1,
+      widget: { kind: "mix", mix: "field types", part: "wildflowers", swatch: "#e0719e" },
+    },
   ),
   range(
     "fields",
@@ -238,7 +246,11 @@ const params = [
     "lavender weight",
     0,
     "Relative weight of purple lavender-row fields among all fields; zero excludes them.",
-    { max: 100, step: 1 },
+    {
+      max: 100,
+      step: 1,
+      widget: { kind: "mix", mix: "field types", part: "lavender", swatch: "#9b86d6" },
+    },
   ),
   range(
     "fields",
@@ -246,7 +258,11 @@ const params = [
     "sunflowers weight",
     0,
     "Relative weight of golden sunflower fields among all fields; zero excludes them.",
-    { max: 100, step: 1 },
+    {
+      max: 100,
+      step: 1,
+      widget: { kind: "mix", mix: "field types", part: "sunflowers", swatch: "#f2c41d" },
+    },
   ),
   range(
     "fields",
@@ -254,7 +270,11 @@ const params = [
     "pasture weight",
     0,
     "Relative weight of fenced pasture enclosures, where herds of cattle or sheep graze, among all fields; zero excludes them. Enclosure fields take the place of other fields without moving any field border.",
-    { max: 100, step: 1 },
+    {
+      max: 100,
+      step: 1,
+      widget: { kind: "mix", mix: "field types", part: "pasture", swatch: "#6fae5c" },
+    },
   ),
   seed(
     "fields",

@@ -177,9 +177,33 @@ plus one, 0 the species' own), with `birdsGroup` as their heading (see "Birds" b
 component's knobs come from `plantKnobs` (`src/scenes/plants.ts`, see "Rooted plants") and the giant
 planet's from `planetKnobs` (`src/scenes/planet.ts`, see "The giant planet").
 
-A knob with `trigger: n` gets a "now" button that stamps `uTriggers[n]` with the scene clock;
-read it with `sinceTrigger(n)` (huge while idle) in GLSL and `frame.fired[n]` in a sim. Use slots
-0..7; lightning takes the slot you give `weatherKnobs`.
+A knob with `trigger: n` gets a "now" button (a lightning bolt, whatever the knob's kind) that stamps
+`uTriggers[n]` with the scene clock; read it with `sinceTrigger(n)` (huge while idle) in GLSL and
+`frame.fired[n]` in a sim. Use slots 0..7; lightning takes the slot you give `weatherKnobs`. The lab's
+transport lists every "now" of the scene as well.
+
+### Lab widgets
+
+The lab (`src/lab.ts`, `src/lab/`) is a workspace of floating panels: the scene browser, the
+inspector (the scene's groups, then Look, Motion and Page) and the transport bar. It lays a group out
+from its knobs' metadata, never from scene ids: a switch (toggle or feature) is an icon chip whose
+amount opens under the chips while it is on, and ranges, choices and seeds are rows. A knob names a
+purpose-built widget with `widget` (`Widget` in `src/params.ts`); widgets only change how the lab
+draws the knob, never its URL keys, values, reset, shuffle or presets:
+
+- `{ kind: "mix", mix, part, swatch }` on range knobs of one group: one stacked bar of relative
+  weights named `mix`, each knob a segment (country's field types).
+- `{ kind: "sky", part }`: the sky dial. `skyKnobs` sets it on `time`, `cycle` and `moon`; the dial
+  stands where a group holds a `time` part.
+- `{ kind: "direction" }` on a range from below 0 to above 0: a vector pad, min to the left
+  (`weatherKnobs`' wind, kelp's and delta's currents).
+- `{ kind: "compass", strength }` on a heading (a turn 0..1 counter-clockwise from the right): a
+  vector pad whose length is knob `strength`, a range or a feature's amount (pond's current).
+- `{ kind: "position", y, screen? }` on the across range of a point whose height is range `y`: one
+  XY pad; `screen` gives the values where the frame's edges lie when the point may leave it.
+
+Icons come from `src/lab/icons.ts`, one line set: a knob's `icon` (or a group's `Blurb.icon`) picks
+one, otherwise the first word of its key or label that names one does.
 
 ### Page theme
 

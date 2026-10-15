@@ -70,7 +70,12 @@ const params: readonly ParamDef[] = [
     "sun across",
     0.15,
     "Where the sun is, left to right; beyond the edges puts it off screen.",
-    { min: -0.5, max: 1.5, steady: true },
+    {
+      min: -0.5,
+      max: 1.5,
+      steady: true,
+      widget: { kind: "position", y: "sunY", screen: [0, 1] },
+    },
   ),
   range(
     "light",
@@ -322,7 +327,7 @@ const params: readonly ParamDef[] = [
     "direction",
     0.1,
     "Which way the water flows, as a turn of the compass.",
-    { when: "current" },
+    { when: "current", widget: { kind: "compass", strength: "current" } },
   ),
   range("current", "turbulence", "turbulence", 0.4, "Eddies that jostle the pads and petals.", {
     when: "current",
@@ -361,6 +366,7 @@ const params: readonly ParamDef[] = [
     max: 1,
     when: "stone",
     steady: true,
+    widget: { kind: "position", y: "stoneY" },
   }),
   range("manifold", "stoneY", "height", -0.2, "Where the stone stands, bottom to top.", {
     min: -1,

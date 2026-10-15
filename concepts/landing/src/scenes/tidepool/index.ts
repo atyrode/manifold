@@ -223,6 +223,7 @@ const params: readonly ParamDef[] = [
   range("manifold", "markX", "across", 0.5, "Where the pebbles lie, left to right.", {
     when: "mark",
     steady: true,
+    widget: { kind: "position", y: "markY" },
   }),
   range("manifold", "markY", "height", 0.4, "Where the pebbles lie, bottom to top.", {
     when: "mark",
