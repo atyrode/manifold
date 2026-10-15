@@ -10,7 +10,9 @@
 // stands near it; the settlements and roads only those and the parcels; the land's uses, the pine
 // mix and the cattle share only the allocation, packed and uploaded within the frame; the river
 // switched off only dries its bed. Herds' size, walkers, carts and birds are the shader's alone,
-// each compiled in only while on (countryFeatures).
+// each compiled in only while on (countryFeatures). The verges at the hedges' foot (verges.ts) and
+// the starling murmuration at dusk (murmuration.ts) are compiled in only while on too; the sim
+// grows their plants and flies their flock then, packed beside the terrain's records (atlas.ts).
 import type { IconName } from "../../lab/icons.ts";
 import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
@@ -18,8 +20,10 @@ import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { TERRAIN_BASES, TERRAIN_MAX_COTTAGES, TERRAIN_MAX_FARMS } from "../../sims/terrain.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
+import { countryMurmurationKnob } from "./murmuration.ts";
 import { COUNTRY_PASSAGE, countryGlsl } from "./shader.ts";
 import { countrySim } from "./sim.ts";
+import { countryVergesKnob } from "./verges.ts";
 
 /** One part of the land's uses: a relative share (the lab's "land use" bar), switched on or off. */
 const landUse = (
@@ -233,6 +237,8 @@ const params = [
       "mostly rooks in loose parties, gulls up from the river, swallows low over the fields, now and then geese, pigeons, swifts or a buzzard circling on a thermal.",
     help: "Birds crossing the valley by day, hidden by the hills, trees and buildings nearer than them; none at night and fewer in snow and rain.",
   }),
+  countryVergesKnob,
+  countryMurmurationKnob,
 ];
 
 /**
@@ -255,6 +261,9 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     COUNTRY_HAS_HERDS: on("pasture"),
     COUNTRY_HAS_AGENTS: on("walkers", "carts"),
     COUNTRY_HAS_BIRDS: on("birds"),
+    // The clumps at the hedges' foot (verges.ts) and the starlings at dusk (murmuration.ts).
+    COUNTRY_HAS_VERGES: on("verges"),
+    COUNTRY_HAS_MURMURATION: on("murmuration"),
     CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
     ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
@@ -277,6 +286,8 @@ export const COUNTRY_ALL = countryFeatures({
   birds: 1,
   shadows: 1,
   moon: 0.5,
+  verges: 1,
+  murmuration: 1,
 });
 
 export const countryScene: SceneDef = {
@@ -312,7 +323,10 @@ export const countryScene: SceneDef = {
       title: "People & carts",
       blurb: "Walkers and carts going up and down the roads; they stand still while motion is off.",
     },
-    birds: birdsGroup,
+    birds: {
+      ...birdsGroup,
+      blurb: "Flights of birds crossing the valley by day, and a starling murmuration at dusk.",
+    },
   },
   glsl: countryGlsl,
   entry: "sceneCountry",

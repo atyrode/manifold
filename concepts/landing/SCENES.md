@@ -299,11 +299,24 @@ replay at their pinned commits).
 - **Life**: pastures' herds (shared livestock, kept to each parcel's clear core; `herd size`),
   walkers and carts (shared figures) going out and back along the roads by arc length; birds
   (shared `birdKnobs`, mixed).
+- **Verges** (`verges`, off; `country/verges.ts`, the shared plant component): cow parsley, red
+  campion and tussock grass at the foot of the hedges within 450 m of the vantage, slotted every
+  5 m along each hedge as the shader's parcel lookup draws it (a fuller verge keeps a sparser
+  one's clumps), never in a pasture or a wood, by a road, stream, water or yard, nor across a
+  pasture's hedge from the eye; swaying on springs under the wind and the flower fields' gust
+  bands, following `season` where the scene has it (else the harvest), carrying snow. Drawn per
+  fragment from bearing bins, nearest first.
+- **Murmuration** (`murmuration`, off; `country/murmuration.ts`): the Murmuration scene's flock
+  (`Flock`) at 2.4 km over the far fields from late afternoon to its roost at dusk, carried by the
+  wind, absent in steady rain, hidden by any land nearer than it.
+- Neither needs a sampler slot: the sim packs the flock's field and the verges' plants beside and
+  above the terrain's records in one texture (`country/atlas.ts`), only while they are on.
 - Knobs: land shape, landscape (seed), relief, erosion; the land use mix (crops 60 and woodland 30
   on, pasture 25, wildflowers, lavender and sunflowers 20 off) with pine mix, cattle share and herd
-  size; river; village, hamlets, farms, castle, roads, farm tracks; walkers, carts, birds; time of
-  day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Each optional part is compiled in
-  only while on (`countryFeatures`); `COUNTRY_ALL` is the all-features program (`featuresAll`).
+  size; river; village, hamlets, farms, castle, roads, farm tracks; walkers, carts, birds; verges,
+  murmuration; time of day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Each optional
+  part is compiled in only while on (`countryFeatures`); `COUNTRY_ALL` is the all-features program
+  (`featuresAll`).
   Pasture is off by default: its fences and herds stay out of the default program (a software
   renderer runs every line), and the crops' catalogue already shows grazed grass.
 - Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
@@ -317,13 +330,17 @@ replay at their pinned commits).
   map points the shader finds each parcel with the land model's use and the woods only on woodland,
   for four settings; a use change one sim frame, timed; the river dry and full again);
   `countryLife` (every walker and cart on its road, every animal inside its own pasture and clear of
-  the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll` (twelve
-  gated settings drawn byte for byte as their own programs).
+  the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll` (fourteen
+  gated settings drawn byte for byte as their own programs); `country/verges.test.ts` (every clump
+  at a hedge's foot, off roads, streams, water, yards, woods and pastures; a fuller verge keeping a
+  sparser one's clumps; the farming year; sway and an exact rest); `countryVerges` (every clump's
+  root, looked up by the shader in the atlas, at a hedge's foot on its ground; the scene draws
+  them); `countryMurmuration` (the flock shows at dusk and is never drawn over land nearer than it
+  as it pours down to roost).
 - Open (the layered-ridge Countryside's parts, each to be its own module): the farming year
-  (`season`) and autumn woods; verges at the hedges' foot; the starling murmuration; the chalk M;
-  village lights and chimney smoke as knobs; the castle's model (a face-on sprite here); snow
-  trodden along the roads; wind ripples on the river; gates in the fences; the plateau's near table
-  hides the gorge.
+  (`season`) and autumn woods; the chalk M; village lights and chimney smoke as knobs; the castle's
+  model (a face-on sprite here); snow trodden along the roads; wind ripples on the river; gates in
+  the fences; the plateau's near table hides the gorge.
 
 ## Hanging mobile
 
@@ -417,7 +434,8 @@ A sky scene whose subject is a starling murmuration.
   readable and cheaper silhouette a landing page needs. Emergent flight is adopted as an optional
   mode, through the lab, its URL and its reset, and `Boids` is shared for any CPU flock or school.
   The countryside flies the sheet (its FlockSetup omits `emergent`) and could name the control to
-  fly boids.
+  fly boids; it flies a `Flock` (the flight without its two textures, which `flockSim` wraps) and
+  packs the field into its own records texture, inking it with the same `flockInk`.
 - Sky at dusk; a low skyline at the bottom edge, never the focus.
 
 ## Paper marbling

@@ -6,24 +6,24 @@
 // focal one screen height); the sky library's frame is the camera's, so the sun sets where the sky
 // shows it and lights the land from there.
 //
-// What a ray meets, nearest first: a walker or cart on the roads (life.ts), a building (modelled
-// near, the shared sprite far: buildings.ts), the stone bridge (a box with an arch), or the land.
-// The march meets the ground or the water over it, or the trees' bounds; near enough, the trees are
-// whole crowns found at the hit (trees.ts), and a ray passing between them goes on to the ground.
-// On the ground: each parcel as the land model (sims/landuse.ts) uses it, read from its record
-// (terrainParcel): crops of its kind, a flower field (the shared fields' materials,
-// shaders/lib/fields.ts), a pasture with its fence and herd (life.ts), the floor of a wood, or open
-// grassland; hedges where a farmed parcel meets another, roads, yards and streams (dry while the
-// river is off). Birds cross the sky in front of all.
+// What a ray meets, nearest first: a walker or cart on the roads (life.ts), a clump of the verges at
+// a hedge's foot (verges.ts), a building (modelled near, the shared sprite far: buildings.ts), the
+// stone bridge (a box with an arch), or the land. The march meets the ground or the water over it,
+// or the trees' bounds; near enough, the trees are whole crowns found at the hit (trees.ts), and a
+// ray passing between them goes on to the ground. On the ground: each parcel as the land model
+// (sims/landuse.ts) uses it, read from its record (terrainParcel): crops of its kind, a flower field
+// (the shared fields' materials, shaders/lib/fields.ts), a pasture with its fence and herd
+// (life.ts), the floor of a wood, or open grassland; hedges where a farmed parcel meets another,
+// roads, yards and streams (dry while the river is off). The starling murmuration wheels over the
+// far fields at dusk (murmuration.ts) and birds cross the sky in front of all.
 //
 // Hook points for the parts the layered-ridge Countryside had and this one does not yet (each a
 // module of its own): the farming season (countryField's colours and the crops' kinds), autumn
-// woods (countryLeaves and the far canopy's leaf colour), verges at the hedges' foot (the hedge and
-// verge masks in the ground branch), the murmuration (beside countryBirds, over the far fields),
-// the chalk figure (a terrain-placed mark on a parcel, drawn in the ground branch), lit windows and
-// chimney smoke as knobs (countryBuildings' glow and smoke, now always on), the castle's model
-// (buildings.ts draws its sprite at any size), snow trodden along the roads (the roads' surface
-// under `buried`) and wind ripples on the river (the water branch's tilt).
+// woods (countryLeaves and the far canopy's leaf colour), the chalk figure (a terrain-placed mark on
+// a parcel, drawn in the ground branch), lit windows and chimney smoke as knobs (countryBuildings'
+// glow and smoke, now always on), the castle's model (buildings.ts draws its sprite at any size),
+// snow trodden along the roads (the roads' surface under `buried`) and wind ripples on the river
+// (the water branch's tilt).
 import { buildingsGlsl } from "../../shaders/buildings.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
@@ -34,8 +34,10 @@ import { terrainGlsl } from "../../shaders/lib/terrain.ts";
 import { treesGlsl } from "../../shaders/lib/trees.ts";
 import { countryBuildingsGlsl } from "./buildings.ts";
 import { countryLifeGlsl } from "./life.ts";
+import { countryMurmurationGlsl } from "./murmuration.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 import { countryTreesGlsl } from "./trees.ts";
+import { countryVergesGlsl } from "./verges.ts";
 
 /** Seconds of the entrance (the camera comes down out of the sky and settles) and exit. */
 export const COUNTRY_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
@@ -247,6 +249,8 @@ float countryBridge(TerrainBridge b, vec3 ro, vec3 rd, out vec3 n, out vec2 loca
 
 ${countryBuildingsGlsl}
 ${countryLifeGlsl}
+${countryVergesGlsl}
+${countryMurmurationGlsl}
 
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
@@ -347,18 +351,28 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
 #endif
     found = countryBuildings(eye, rd, q, cellAngle, zLimit, tod, dark, wind, glow, smoke);
   }
+  // A clump of the verges at a hedge's foot standing in front of all that (verges.ts); zFront: the
+  // nearest surface yet.
+#if COUNTRY_HAS_VERGES
+  CountryVerge verge = countryVergeAt(mapped, eye, q, cellAngle, found.z);
+  bool verged = verge.cover > 0.5;
+  float zFront = verge.z;
+#else
+  bool verged = false;
+  float zFront = found.z;
+#endif
 
   // A walker or cart standing in front of all that (life.ts).
 #if COUNTRY_HAS_AGENTS
   float zAgent = 1e9;
   Figure agent = figureNone();
-  if (mapped && (K_walkers > 0.0 || K_carts > 0.0)) agent = countryAgentAt(eye, q, cellAngle, found.z, dark, zAgent);
+  if (mapped && (K_walkers > 0.0 || K_carts > 0.0)) agent = countryAgentAt(eye, q, cellAngle, zFront, dark, zAgent);
   bool walking = agent.cover > 0.5;
 #else
   bool walking = false;
 #endif
 
-  if (walking || found.face > 0.5 || tBridge > 0.0 || tHit > 0.0) {
+  if (walking || verged || found.face > 0.5 || tBridge > 0.0 || tHit > 0.0) {
     vec3 n;
     vec3 albedo;
     vec3 p;
@@ -381,6 +395,20 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       glossy = 0.12;
       snowy = agent.top * snowCover(n, p.xz * 2.0, lying);
       shade = countryShadow(p + vec3(0.0, 1.5, 0.0), sun);
+    } else
+#endif
+#if COUNTRY_HAS_VERGES
+    if (verged) {
+      // A clump of the verges (verges.ts): lit from above as the field it stands in, a little
+      // toward us; snow on its heads and the tops of its leaves.
+      seen = verge.z / ahead;
+      p = eye + rd * seen;
+      albedo = verge.albedo;
+      n = normalize(vec3(0.0, 1.0, 0.0) + countryFwd * (0.4 * verge.up - 0.6));
+      porous = 0.35;
+      glossy = 0.12;
+      snowy = verge.up * snowCover(vec3(0.0, 1.0, 0.0), p.xz * 2.0, lying);
+      shade = countryShadow(verge.root + vec3(0.0, 1.5, 0.0), sun);
     } else
 #endif
     if (found.face > 0.5) {
@@ -629,6 +657,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   col += COUNTRY_AMBER * min(glow, 2.0) * 0.1 * dark * (1.0 + wet);
   vec3 air = sky.ambient + 0.5 * sky.sunColor + 0.4 * sky.moonColor;
   col = mix(col, vec3(0.8, 0.8, 0.83) * air, clamp(smoke, 0.0, 1.0) * 0.7);
+
+  // The starlings over the far fields at dusk, in front of whatever lies farther (murmuration.ts).
+#if COUNTRY_HAS_MURMURATION
+  if (mapped) countryMurmuration(col, seen, accent, uv, ahead, sky, haze, tod, rain, overcast);
+#endif
 
   // Birds crossing the country, in front of whatever lies farther along the ray (life.ts).
 #if COUNTRY_HAS_BIRDS
