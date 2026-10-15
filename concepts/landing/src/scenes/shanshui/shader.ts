@@ -872,12 +872,12 @@ struct ShanUnroll {
 
 // How far the scroll is open: 0 rolled up, 1 laid out. The pull starts briskly (about four fifths
 // of the way out after a third of the entrance), runs past a little and settles back; the winding
-// up eases in and out.
+// up starts gently and gathers pace until the scroll is shut.
 float shanOpen() {
   float v = clamp(passageIn(), 0.0, 1.0) - 1.0;
   float arrive = 1.0 + 1.9 * v * v * v + 0.9 * v * v;
   float x = clamp(passageOut(), 0.0, 1.0);
-  return arrive * (1.0 - x * x * (3.0 - 2.0 * x));
+  return arrive * (1.0 - x * x);
 }
 
 ShanUnroll shanUnroll(float aspect) {

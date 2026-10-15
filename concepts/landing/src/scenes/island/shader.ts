@@ -989,9 +989,9 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
 
 // ---- passage ----
 
-// 0 -> 1 as k does: slow start, a brisk middle and a gentle settle that overshoots by about 5%.
+// 0 -> 1 as k does: arriving at full speed and settling with an overshoot of about 5%, at rest at 1.
 float islSettle(float k) {
-  float m = smoothstep(0.0, 1.0, k) - 1.0;
+  float m = clamp(k, 0.0, 1.0) - 1.0;
   return 1.0 + 2.2 * m * m * m + 1.2 * m * m;
 }
 
@@ -1141,7 +1141,7 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   float D = 7.0 * max(1.0, 1.65 / aspect);
   if (passing) {
     float swoop = 1.0 - islSettle(pin);
-    float away = smoothstep(0.0, 1.0, pout);
+    float away = pout * pout;
     float pitch = ISL_PITCH + swoop * ISL_SWOOP_PITCH + away * ISL_LIFT_PITCH;
     sinP = sin(pitch);
     cosP = cos(pitch);
@@ -1166,7 +1166,7 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
       islGullAhead += gOff + 0.6 * gVel;
     }
     if (islBallOn > 0.0) {
-      float fb = 1.0 - clamp((tin - 0.2) / (ISL_ENTER - 0.2), 0.0, 1.0);
+      float fb = 1.0 - pin;
       islBall += vec3(-islBallDir * 14.0, 0.6, 0.0) * (fb * fb) + vec3(islBallDir * 5.0, 5.0, 0.0) * (pout * pout);
     }
   }

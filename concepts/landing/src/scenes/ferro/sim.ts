@@ -7,10 +7,11 @@
 // a hexagonal lattice centred on the magnet and lights the fluid as a black mirror in a studio.
 //
 // The passage (FERRO_PASSAGE): the magnet's field is gated. Coming in, the pool lies flat with no
-// spikes, then the field comes on and the crown rises from the middle (where it passes the
-// threshold first), each spike on its usual spring, the pool drawing in as it pulls. Going out the
-// field switches off and the spikes sink on critically damped springs while the shader runs a
-// ripple over the pool. At rest the gate is exactly 1 and nothing else differs.
+// spikes and the field comes on from the strength where the crown begins, so the crown rises from
+// the middle (where it passes the threshold first) at once, each spike on its usual spring, the pool
+// drawing in as it pulls. Going out the field fades, ever faster, over the whole exit: the crown
+// falls in from its rim to its middle, the spikes sinking on critically damped springs, while the
+// shader runs a ripple over the pool. At rest the gate is exactly 1 and nothing else differs.
 //
 //   uSim0  rgba16f, FERRO_GRID² texels over dish coordinates [-FERRO_SPAN, FERRO_SPAN]² (the dish's
 //          radius is 1, y away from the three-quarter camera): r the height of a spike standing
@@ -147,12 +148,11 @@ const EPISODE_FALL = 3;
 /** Easing time constants (seconds): the M amount, and pressing the magnet closer. */
 const MARK_EASE = 0.6;
 const PRESS_EASE = 0.3;
-/** Entrance: the pool lies flat, then the field comes on between these seconds (the spikes stand
- * where it passes the threshold, middle first). Exit: the field is gone within `FIELD_OFF` seconds,
- * and the spikes sink on stiffer, critically damped springs: no ringing under the flat pool. */
-const FIELD_ON_FROM = 0.55;
-const FIELD_ON_TO = 2.3;
-const FIELD_OFF = 0.55;
+/** Entrance: the pool lies flat, then the field comes on over `FIELD_ON` seconds from where the
+ * crown begins (the spikes stand where it passes the threshold, middle first), quick at first and
+ * settling. Exit: the field fades over the whole exit, ever faster, and the spikes sink on stiffer,
+ * critically damped springs: no ringing under the flat pool. */
+const FIELD_ON = 2.3;
 const SLUMP_OMEGA = 6.5;
 const SLUMP_DAMPING = 1;
 
@@ -163,6 +163,19 @@ const TAU = Math.PI * 2;
 /** Move `value` toward `target` with time constant `tau` over `dt` seconds. */
 const approach = (value: number, target: number, dt: number, tau: number): number =>
   value + (target - value) * (1 - Math.exp(-dt / tau));
+
+/**
+ * The passage's gate on the magnet's field (exactly 1 at rest), for a field of `field` (1 at full
+ * strength over the magnet) without it. Coming in it opens from where the crown's middle passes the
+ * threshold, so the spikes start to rise at once, quick at first and settling; going out it closes
+ * over the whole exit, ever faster, so the crown is still falling in as the exit ends.
+ */
+function fieldGate(enterSeconds: number, exitSeconds: number, field: number): number {
+  const onset = field > THRESHOLD ? THRESHOLD / field : 0;
+  const rising = 1 - clamp(enterSeconds / FIELD_ON, 0, 1);
+  const falling = clamp(exitSeconds / FERRO_PASSAGE.exit, 0, 1);
+  return (1 - (1 - onset) * rising * rising * rising) * (1 - falling * falling);
+}
 
 /** Xorshift32 stream in [0, 1), seeded from the pour knob. */
 function ferroRandom(seed: number): () => number {
@@ -356,8 +369,9 @@ class FerroSim implements SceneSim {
     markEvery: 0,
   };
   readonly #lastValues: number[] = [];
-  /** The field's passage gate last frame (see `frame`). */
-  #lastGate = 1;
+  /** The passage's progress last frame, seconds into the entrance and the exit (see `frame`). */
+  #lastEnter: number = FERRO_PASSAGE.enter;
+  #lastExit = 0;
   #lastAspect = Number.NaN;
   /** Idle clock (scene time × motion): the drift and the pool's own swell. */
   #clock = 0;
@@ -408,13 +422,11 @@ class FerroSim implements SceneSim {
     const dt = Math.min(Math.max(frame.dt, 0), MAX_DT);
     const enterSeconds = clamp(frame.passage.enter, 0, 1) * FERRO_PASSAGE.enter;
     const exitSeconds = clamp(frame.passage.exit, 0, 1) * FERRO_PASSAGE.exit;
-    // The passage gate on the magnet's field: 0 while the pool lies flat, 1 at rest.
-    const gate =
-      smoothstep(FIELD_ON_FROM, FIELD_ON_TO, enterSeconds) *
-      (1 - smoothstep(0, FIELD_OFF, exitSeconds));
     const leaving = exitSeconds > 0;
-    const unchanged = this.#sameAsLast(frame) && gate === this.#lastGate;
-    this.#lastGate = gate;
+    const unchanged =
+      this.#sameAsLast(frame) && enterSeconds === this.#lastEnter && exitSeconds === this.#lastExit;
+    this.#lastEnter = enterSeconds;
+    this.#lastExit = exitSeconds;
     // Paused with nothing changed: the textures already hold this frame.
     if (this.#primed && dt === 0 && unchanged && !fired) return this.#textures;
 
@@ -427,21 +439,19 @@ class FerroSim implements SceneSim {
       if (this.#episode > EPISODE_LENGTH) this.#episode = -1;
     }
 
+    // The magnet's field: it breathes (or holds), an M breath lets it rest, a press boosts it, and
+    // the passage gates it (1 at rest).
     const breath = breathCurve(this.#phase);
+    const breathField = settings.breathing ? (this.#markBreath ? 0 : breath) : 1;
+    const breathing = settings.peak * (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField);
+    const gate = fieldGate(enterSeconds, exitSeconds, breathing);
     const markTarget = Math.max(this.#markBreath ? breath : 0, episodeShow(this.#episode)) * gate;
     this.#mark = this.#primed ? approach(this.#mark, markTarget, dt, MARK_EASE) : markTarget;
     const mark = this.#mark;
     const pointer = frame.pointer;
     const pressing = settings.follow && pointer.inside && pointer.down;
     this.#press = approach(this.#press, pressing ? 1 : 0, dt, PRESS_EASE);
-
-    // The magnet's field: it breathes (or holds), an M breath lets it rest, a press boosts it.
-    const breathField = settings.breathing ? (this.#markBreath ? 0 : breath) : 1;
-    const field =
-      settings.peak *
-      (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField) *
-      (1 + PRESS_BOOST * this.#press) *
-      gate;
+    const field = breathing * (1 + PRESS_BOOST * this.#press) * gate;
     const pull = clamp((field - 0.3) / 0.9, 0, 1) * (1 - mark);
 
     this.#move(frame, settings, dt, mark, pull);

@@ -151,9 +151,9 @@ export const FOREST_FOG = { width: 64, height: 36 } as const;
 /**
  * The scene's passage (SceneDef.passage), one source for index.ts, the shader and the sim. Coming in,
  * the camera starts `back` m behind where it rests and dollies forward between the trunks over `settle`
- * s (slow start, a small overshoot, a settle), and the spirits pop up on their perches one after
- * another as it comes to rest; going out, the spirits turn their heads and vanish one by one while the
- * camera drifts `drift` m back into the mist.
+ * s (arriving at speed and braking, a small overshoot, a settle), and the spirits pop up on their
+ * perches one after another as it comes to rest; going out, the spirits turn their heads and vanish
+ * one by one while the camera drifts `drift` m back into the mist, gathering speed.
  */
 export const FOREST_PASSAGE = { enter: 3.2, exit: 1.6 } as const;
 export const FOREST_DOLLY = { back: 2.6, settle: 2.0, drift: 1.4 } as const;

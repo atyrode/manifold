@@ -40,15 +40,16 @@
 // waning and turning about over a minute or two.
 //
 // The passage (SceneDef.passage, PEARL_ENTER / PEARL_EXIT). A sim built while the scene comes in plays
-// an entrance: the tank stands calm and uniform (the shader shows the flakes as a milky jumble) until a
-// glass rod is drawn in from the left edge in a gentle arc and stirs it. A bow wave runs just ahead of
-// the rod and on to the far corners; behind it the satin currents unfold (the shader reveals the flakes
-// cell by cell along that front, PEARL_REVEAL_*), the rod's real wake winding fresh bands. The rod lifts
-// out at the end of its arc. The entrance runs on its own clock, started once the pour's prewarm is done,
-// and the fluid keeps pace 1 until it eases back to the speed knob. On the way out a strong swirl is
-// forced over the whole tank (a wide Gaussian vortex force swelling over the exit) and sweeps the fluid
-// and the flakes round. Neither touches the pour or its random draws; at rest every passage term is
-// exactly neutral (no grip, no sweep, the whole tank shown).
+// an entrance: the tank stands calm and uniform (the shader shows the flakes as a milky jumble) and a
+// glass rod is drawn in from the left edge from the first moment, in a gentle arc, slowing as it
+// stirs. A bow wave runs just ahead of the rod and on to the far corners; behind it the satin
+// currents unfold (the shader reveals the flakes cell by cell along that front, PEARL_REVEAL_*), the
+// rod's real wake winding fresh bands. The rod lifts out at the end of its arc. The entrance runs on
+// its own clock, started once the pour's prewarm is done, and the fluid keeps pace 1 until it eases
+// back to the speed knob. On the way out a strong swirl is forced over the whole tank (a wide
+// Gaussian vortex force swelling over the exit, so the fluid spins ever faster to the end) and
+// sweeps the fluid and the flakes round. Neither touches the pour or its random draws; at rest every
+// passage term is exactly neutral (no grip, no sweep, the whole tank shown).
 //
 // Textures: uSim0 the flakes (rg16f q), uSim1 the dye (rgba16f), uSim2 the props (rgba32f, 7×1):
 // texels 0–2 the braid rods and 3 the Manifold rod (x, y in frame heights, shown 0..1, radius),
@@ -166,13 +167,12 @@ export const PEARL_ENTER = 3;
 export const PEARL_EXIT = 1.5;
 
 /**
- * Entrance, on the arrival clock (seconds since the pour was ready). The stirring rod: radius, when
- * it starts to move, how long its stroke takes, how long it takes to lift out afterwards, where it
- * starts (frame heights; off the left edge), how far it reaches (share of the width), the height of
- * its stroke and how far the stroke arcs up.
+ * Entrance, on the arrival clock (seconds since the pour was ready). The stirring rod: radius, how
+ * long its stroke takes (it is drawn in from the first moment, at its fastest, and slows to a stop),
+ * how long it takes to lift out afterwards, where it starts (frame heights; off the left edge), how
+ * far it reaches (share of the width), the height of its stroke and how far the stroke arcs up.
  */
 const PADDLE_RADIUS = 0.03;
-const PADDLE_FROM = 0.25;
 const PADDLE_SECONDS = 1.7;
 const PADDLE_LIFT = 0.4;
 const PADDLE_X0 = -0.06;
@@ -182,15 +182,14 @@ const PADDLE_ARC = 0.16;
 /**
  * The front of unfolded satin: a circle about (PEARL_REVEAL_X, PEARL_REVEAL_Y), its edge a band
  * PEARL_REVEAL_BAND wide cut cell by cell, bent by a fixed ripple of up to PEARL_REVEAL_WOBBLE. It
- * runs REVEAL_LEAD ahead of the rod (arriving over REVEAL_LEAD_FROM..TO), then spreads on to the far
- * corners over REVEAL_SPREAD_FROM..TO.
+ * runs REVEAL_LEAD ahead of the rod (gaining it over the first REVEAL_LEAD_TO, fast at first), then
+ * spreads on to the far corners over REVEAL_SPREAD_FROM..TO.
  */
 export const PEARL_REVEAL_X = -0.12;
 export const PEARL_REVEAL_Y = 0.4;
 export const PEARL_REVEAL_BAND = 0.12;
 export const PEARL_REVEAL_WOBBLE = 0.035;
 const REVEAL_LEAD = 0.12;
-const REVEAL_LEAD_FROM = 0.3;
 const REVEAL_LEAD_TO = 0.9;
 const REVEAL_SPREAD_FROM = 0.9;
 const REVEAL_SPREAD_TO = 2.8;
@@ -485,20 +484,20 @@ function braidRods(time: number, aspect: number, a: Rod, b: Rod, c: Rod): void {
 }
 
 /**
- * The entrance's stirring rod at arrival time `time`: drawn in from the left edge along an arc, eased
- * in and out, then lifted out (`shown` falls to 0 once it stops).
+ * The entrance's stirring rod at arrival time `time`: drawn in from the left edge along an arc, at
+ * its fastest at first and slowing to a stop (ease-out), then lifted out (`shown` falls to 0 once it
+ * stops).
  */
 function paddleRod(time: number, aspect: number, out: Rod): void {
-  const u = clamp((time - PADDLE_FROM) / PADDLE_SECONDS, 0, 1);
-  const e = 0.5 - 0.5 * Math.cos(Math.PI * u);
-  const de = u > 0 && u < 1 ? (0.5 * Math.PI * Math.sin(Math.PI * u)) / PADDLE_SECONDS : 0;
+  const u = clamp(time / PADDLE_SECONDS, 0, 1);
+  const e = 1 - (1 - u) * (1 - u);
+  const de = u < 1 ? (2 * (1 - u)) / PADDLE_SECONDS : 0;
   const reach = PADDLE_REACH * aspect - PADDLE_X0;
   out.x = PADDLE_X0 + reach * e;
   out.y = PADDLE_Y + PADDLE_ARC * Math.sin(Math.PI * e);
   out.vx = reach * de;
   out.vy = PADDLE_ARC * Math.PI * Math.cos(Math.PI * e) * de;
-  const stop = PADDLE_FROM + PADDLE_SECONDS;
-  out.shown = 1 - smoothstep(stop, stop + PADDLE_LIFT, time);
+  out.shown = 1 - smoothstep(PADDLE_SECONDS, PADDLE_SECONDS + PADDLE_LIFT, time);
 }
 
 /**
@@ -512,13 +511,14 @@ function revealRadius(time: number, aspect: number, probe: Rod): number {
   const start = Math.hypot(probe.x - PEARL_REVEAL_X, probe.y - PEARL_REVEAL_Y);
   paddleRod(time, aspect, probe);
   const run = Math.hypot(probe.x - PEARL_REVEAL_X, probe.y - PEARL_REVEAL_Y) - start;
-  paddleRod(PADDLE_FROM + PADDLE_SECONDS, aspect, probe);
+  paddleRod(PADDLE_SECONDS, aspect, probe);
   const runEnd = Math.hypot(probe.x - PEARL_REVEAL_X, probe.y - PEARL_REVEAL_Y) - start;
   const far = Math.hypot(aspect - PEARL_REVEAL_X, Math.max(PEARL_REVEAL_Y, 1 - PEARL_REVEAL_Y));
   const spread = Math.max(0, far + PEARL_REVEAL_WOBBLE + PEARL_REVEAL_BAND - runEnd - REVEAL_LEAD);
+  const lead = 1 - clamp(time / REVEAL_LEAD_TO, 0, 1);
   return (
     run +
-    REVEAL_LEAD * smoothstep(REVEAL_LEAD_FROM, REVEAL_LEAD_TO, time) +
+    REVEAL_LEAD * (1 - lead * lead) +
     spread * smoothstep(REVEAL_SPREAD_FROM, REVEAL_SPREAD_TO, time)
   );
 }

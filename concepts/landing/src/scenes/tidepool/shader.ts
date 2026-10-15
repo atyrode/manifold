@@ -443,16 +443,19 @@ float tpWash(vec2 q, float aspect, float tm, out vec2 flow) {
   float edge = 0.08 * (fbm3(vec2(q.x * 5.0, 2.0)) - 0.5);
   float cover = 0.0;
   if (pin < 1.0) {
-    // The front draws back up the frame from 0.4 s, gone by 2.6 s.
-    float front = mix(-0.15, 1.2, smoothstep(0.4, 2.6, tin));
+    // The front draws back up the frame from the start, quick at first and slowing, gone by 2.6 s.
+    float drain = 1.0 - clamp(tin / 2.6, 0.0, 1.0);
+    float front = mix(1.2, -0.15, drain * drain);
     float behind = smoothstep(front - 0.02, front + 0.12, q.y + edge);
     cover = behind * mix(0.55, 1.0, smoothstep(front + 0.35, front + 0.05, q.y)) * smoothstep(0.25, 0.65, lace + 0.25 * behind);
-    flow = vec2(0.0, 0.5) * (1.0 - smoothstep(0.8, 2.6, tin));
+    flow = vec2(0.0, 0.5) * drain * drain;
   }
   if (pout > 0.0) {
-    // A wave from the sea: its front sweeps down the frame from 0.05 s and covers it by 1.5 s.
-    float front = mix(1.2, -0.25, smoothstep(0.05, 1.45, tout));
-    float behind = smoothstep(front + 0.02, front - 0.1, q.y - edge);
+    // A wave from the sea, the white water behind its front: the front sweeps down the frame from
+    // 0.05 s, gathering speed, and covers it just as the exit ends.
+    float sweep = clamp((tout - 0.05) / (TP_EXIT - 0.05), 0.0, 1.0);
+    float front = mix(1.2, -0.06, sweep * sweep);
+    float behind = smoothstep(front - 0.1, front + 0.02, q.y - edge);
     cover = max(cover, behind * smoothstep(0.3, 0.6, lace + 0.3 * behind));
     flow = vec2(0.0, -0.7) * smoothstep(0.0, 0.5, tout);
   }
@@ -478,10 +481,12 @@ Shade sceneTidepool(vec2 uv, vec2 cell, float t) {
   tpLightCol = (moonlit ? tpSky.moonColor * 1.4 : tpSky.sunColor * 1.15) * (1.0 - 0.75 * storm);
   tpAmbient = greyed(tpSky.ambient, vec3(0.95, 0.98, 1.04), 0.4 * storm) * 0.9;
 
-  // Passage: the anemones unfurl as the wash drains away, and snap shut as the wave comes in.
+  // Passage: the anemones unfurl as the wash drains away (quick at first, settling open by 2.8 s), and
+  // snap shut as the wave comes in.
   float pin = passageIn();
   float pout = passageOut();
-  tpOpen = smoothstep(1.0, 2.8, pin * TP_ENTER) * (1.0 - smoothstep(0.0, 0.6, pout * TP_EXIT));
+  float furled = 1.0 - clamp(pin * TP_ENTER / 2.8, 0.0, 1.0);
+  tpOpen = (1.0 - furled * furled) * (1.0 - smoothstep(0.0, 0.6, pout * TP_EXIT));
   vec2 washFlow;
   float wash = tpWash(q, aspect, tm, washFlow);
   tpLean = washFlow;

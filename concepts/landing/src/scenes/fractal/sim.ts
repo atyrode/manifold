@@ -15,7 +15,7 @@
 //   texel 0   the wipe: front centre (content units), radius, softness (radius ≥ 1e3: one layer)
 //   texel 1   drag pan (content units), M strength 0..1, M size knob
 //   texel 2   the passage: scale about the focus (0 at rest, else < 1), focus (content units),
-//             e-folds of zoom per second
+//             e-folds per second the picture is smeared at (#advancePassage)
 //   then one block of FRACTAL_LAYER_TEXELS per layer, incoming first:
 //     +0      mode, iterations, ripple phase, a mode's scalar (Julia, garden: z units per content
 //             unit; dive: the zoom's speed, 1/s)
@@ -44,6 +44,9 @@ export const FRACTAL_GLOBAL_TEXELS = 3;
 export const FRACTAL_LAYER_TEXELS = 12;
 export const FRACTAL_TEXELS = FRACTAL_GLOBAL_TEXELS + 2 * FRACTAL_LAYER_TEXELS;
 
+/** Seconds of travel a moving feature is smeared over (shader.ts). */
+export const FRACTAL_SMEAR = 0.7;
+
 const TAU = Math.PI * 2;
 const MODE_JULIA = 0;
 const MODE_DIVE = 1;
@@ -64,8 +67,12 @@ const LOOP_SOFT = 0.35;
 // loop phase runs deeper than usual and back (the self-similarity keeps the framing exact at rest).
 /** Seconds the entrance and exit take (SceneDef.passage). */
 export const FRACTAL_PASSAGE: NonNullable<SceneDef["passage"]> = { enter: 2.8, exit: 1.4 };
-/** The fall is a power of the time left (entrance) or gone (exit): it rushes, then settles softly. */
-const PASSAGE_CURVE = 2.2;
+/**
+ * The camera's depth is a power of the time left (entrance) or gone (exit): it rises at its fastest
+ * and settles softly, or sets off softly and falls ever faster.
+ */
+const PASSAGE_ENTER_CURVE = 4;
+const PASSAGE_EXIT_CURVE = 3.5;
 /** The share of the iterations the entrance starts with, rising to all of them over its last 85%. */
 const PASSAGE_ITER_FROM = 0.15;
 const PASSAGE_MIN_ITERATIONS = 10;
@@ -478,10 +485,11 @@ class FractalSim implements SceneSim {
   #started = false;
   /** Seconds of drift: every mode's breath is a sine of it, each with its own period. */
   #breathClock = 0;
-  // The passage: how many e-folds deeper than the usual framing the camera is, how fast that
-  // changes (per second), and the share of the iterations in use. 0, 0 and 1 at rest.
+  // The passage: how many e-folds deeper than the usual framing the camera is, how fast in e-folds
+  // per second the picture is smeared (#advancePassage), and the share of the iterations in use. 0,
+  // 0 and 1 at rest.
   #depth = 0;
-  #depthRate = 0;
+  #smearRate = 0;
   #iterShare = 1;
 
   // Layers and the wipe between them.
@@ -923,22 +931,30 @@ class FractalSim implements SceneSim {
         Math.min(Math.abs(target - this.#markStrength), real / MARK_FADE);
   }
 
-  /** The camera's depth, its speed and the iterations' share, from how far in and out the scene is. */
+  /**
+   * The camera's depth, its smear and the iterations' share, from how far in and out the scene is.
+   * The picture is smeared like any moving one, but never over more than the way it has come from
+   * its place at rest (leaving) or has still to go to it (entering): the smear sets in and clears
+   * with the camera's travel instead of all at once as the speed leaves or reaches 0.
+   */
   #advancePassage(passage: Readonly<ScenePassageProgress>): void {
     const reach = PASSAGE_REACH[this.#incoming.mode] ?? PASSAGE_NONE;
     const entered = clamp(passage.enter, 0, 1);
     const left = clamp(passage.exit, 0, 1);
     const coming = 1 - entered;
     this.#depth =
-      reach.enter * Math.pow(coming, PASSAGE_CURVE) + reach.exit * Math.pow(left, PASSAGE_CURVE);
+      reach.enter * Math.pow(coming, PASSAGE_ENTER_CURVE) +
+      reach.exit * Math.pow(left, PASSAGE_EXIT_CURVE);
     let rate = 0;
     if (coming > 0)
       rate +=
-        (reach.enter * PASSAGE_CURVE * Math.pow(coming, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.enter;
+        (reach.enter * PASSAGE_ENTER_CURVE * Math.pow(coming, PASSAGE_ENTER_CURVE - 1)) /
+        FRACTAL_PASSAGE.enter;
     if (left > 0)
       rate +=
-        (reach.exit * PASSAGE_CURVE * Math.pow(left, PASSAGE_CURVE - 1)) / FRACTAL_PASSAGE.exit;
-    this.#depthRate = rate;
+        (reach.exit * PASSAGE_EXIT_CURVE * Math.pow(left, PASSAGE_EXIT_CURVE - 1)) /
+        FRACTAL_PASSAGE.exit;
+    this.#smearRate = Math.min(rate, -Math.expm1(-this.#depth) / FRACTAL_SMEAR);
     this.#iterShare =
       coming > 0 ? reach.floor + (1 - reach.floor) * smoothstep(PASSAGE_ITER_FROM, 1, entered) : 1;
   }
@@ -1030,7 +1046,7 @@ class FractalSim implements SceneSim {
     );
     if (this.#depth > 0 && this.#incoming.mode !== MODE_DIVE) {
       const fall = this.#passageFocus();
-      data.set([Math.exp(-this.#depth), fall[0], fall[1], this.#depthRate], 8);
+      data.set([Math.exp(-this.#depth), fall[0], fall[1], this.#smearRate], 8);
     }
 
     this.#writeLayer(this.#incoming, FRACTAL_GLOBAL_TEXELS);
@@ -1121,7 +1137,7 @@ class FractalSim implements SceneSim {
         Math.hypot(dive.logScale[0], dive.logScale[1]) *
         this.#motion *
         this.#knobs.pace +
-      this.#depthRate * deeper * Math.hypot(dive.logScale[0], dive.logScale[1]);
+      this.#smearRate * deeper * Math.hypot(dive.logScale[0], dive.logScale[1]);
     data.set([MODE_DIVE, iterations, 0, speed], at);
     data.set([dive.nucleus[0], dive.nucleus[1], centre[0], centre[1]], at + 4);
     data.set([step[0], step[1], dive.scale[0], dive.scale[1]], at + 8);

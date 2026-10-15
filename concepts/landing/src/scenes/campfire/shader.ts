@@ -64,6 +64,18 @@ float campfireSmin(float a, float b, float k) {
   return mix(b, a, h) - k * h * (1.0 - h);
 }
 
+// The passage's eases between progress lo and hi: in, from rest and fastest at hi (u²); out, fastest
+// at lo and coming to rest at hi (1 - (1 - u)²). Both exactly 0 before lo and 1 after hi.
+float campfireEaseIn(float lo, float hi, float x) {
+  float u = clamp((x - lo) / (hi - lo), 0.0, 1.0);
+  return u * u;
+}
+
+float campfireEaseOut(float lo, float hi, float x) {
+  float u = 1.0 - clamp((x - lo) / (hi - lo), 0.0, 1.0);
+  return 1.0 - u * u;
+}
+
 // Firelight reaching p: 1 at the fire, falling off. lift 0 is flat ground (distances foreshortened),
 // 1 an upright surface.
 float campfireLight(vec2 p, float lift) {
@@ -90,14 +102,15 @@ void campfireSetup(float aspect) {
   float lick = vnoise1(campfireTm * 0.8, 11.0).x;
   campfireBreath = (0.55 + 0.45 * campfireS) * (0.90 + 0.06 * slow + 0.06 * (lick - 0.5));
   // Passage (all exactly 1 at rest). Entrance: embers in a dark night, a flame catches and grows, the
-  // firelight spreads, then sparks and smoke. Exit: sparks go, the flame dies down, the light withdraws,
-  // a last curl of smoke. The sky is never touched.
+  // firelight spreads, then smoke and sparks start up at once and settle to the fire's own. Exit:
+  // sparks go, the flame dies down, the light withdraws, a last curl of smoke, each going faster
+  // and faster, the light and the smoke until the very end. The sky is never touched.
   float pin = passageIn();
   float pout = passageOut();
-  campfireFlameG = smoothstep(0.20, 0.72, pin) * (1.0 - smoothstep(0.10, 0.70, pout));
-  campfireLit = smoothstep(0.24, 0.98, pin) * (1.0 - smoothstep(0.30, 1.00, pout));
-  campfireSparkG = smoothstep(0.58, 1.00, pin) * (1.0 - smoothstep(0.00, 0.35, pout));
-  campfireSmokeG = smoothstep(0.40, 0.90, pin) * (1.0 - smoothstep(0.62, 1.00, pout));
+  campfireFlameG = smoothstep(0.20, 0.72, pin) * (1.0 - campfireEaseIn(0.10, 0.70, pout));
+  campfireLit = smoothstep(0.24, 0.98, pin) * (1.0 - campfireEaseIn(0.30, 1.00, pout));
+  campfireSparkG = campfireEaseOut(0.58, 1.00, pin) * (1.0 - campfireEaseIn(0.00, 0.35, pout));
+  campfireSmokeG = campfireEaseOut(0.40, 0.90, pin) * (1.0 - campfireEaseIn(0.62, 1.00, pout));
   campfireCoalK = mix(0.6, 1.0, campfireLit);
   campfireBreath *= mix(0.12, 1.0, campfireLit);
   campfireAmb *= mix(0.6, 1.0, campfireLit);

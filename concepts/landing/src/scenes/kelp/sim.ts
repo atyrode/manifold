@@ -170,17 +170,17 @@ export const KELP_MARK = { scale: 0.62, x: 0.52, low: 0.15, high: 0.32, halfWidt
 export const KELP_PASSAGE = { enter: 3, exit: 1.8 } as const;
 /**
  * The camera's passage, in world units of height above its resting place (the shader works out the
- * parallax): the entrance starts it `drop` up, just under the surface, after `delay` seconds it
- * sinks into place, settling `dip` past it from `dipFrom` seconds on; the exit lifts it `rise`
- * toward the light.
+ * parallax): the entrance starts it `drop` up, just under the surface, already sinking, and brakes
+ * into place, settling `dip` past it from `dipFrom` seconds on; the exit lifts it `rise` toward the
+ * light, gathering speed.
  */
-export const KELP_CAMERA = { delay: 0.3, dipFrom: 1.5, drop: 0.3, dip: 0.025, rise: 0.3 } as const;
+export const KELP_CAMERA = { dipFrom: 1.5, drop: 0.3, dip: 0.025, rise: 0.3 } as const;
 /**
  * The passage's surge (world units/s at the nearest layer, along the current's way). Arriving, a
  * pulse of `speed` · sin(2πq) · sin²(πq) (the forest is pushed over, then swings back) rolls
  * through from upstream: it starts `start` seconds in, reaches the far side `delay` later and lasts
  * `span` seconds at each place (q runs 0 to 1 over it), all inside KELP_PASSAGE.enter. Leaving, a
- * sweep of `speed` · smoothstep(q) that builds over `span` seconds, `delay` later downstream.
+ * sweep of `speed` · q² that builds over `span` seconds, `delay` later downstream, and stays.
  */
 const ENTRY_SURGE = { speed: 0.9, start: 0.1, delay: 0.6, span: 1.9 } as const;
 const EXIT_SURGE = { speed: 0.6, delay: 0.4, span: 1.0 } as const;
@@ -347,8 +347,8 @@ const FISH_FADE = 1.2;
 /**
  * Passage: the school swims in (and out) over ARRIVE_TIME (LEAVE_TIME) seconds, each fish after a
  * delay of up to ARRIVE_STAGGER (LEAVE_STAGGER), from (to) FISH_EDGE beyond the frame's edge plus
- * up to FISH_ROW more, FISH_ARC off its height; leaving, a fish accelerates as q^LEAVE_POWER.
- * Both finish inside KELP_PASSAGE.
+ * up to FISH_ROW more, FISH_ARC off its height; arriving, a fish comes in at speed and brakes into
+ * place (1 - (1 - q)²), leaving, it accelerates as q^LEAVE_POWER. Both finish inside KELP_PASSAGE.
  */
 const ARRIVE_TIME = 2.3;
 const ARRIVE_STAGGER = 0.45;
@@ -481,8 +481,8 @@ class School {
     const u = this.#phase[i] ?? 0;
     const late = ((this.#spread[i] ?? 1) - 0.7) / 0.6;
     const q = clamp((seconds - ARRIVE_STAGGER * late) / ARRIVE_TIME, 0, 1);
-    const e = q * q * (3 - 2 * q);
-    const de = (6 * q * (1 - q)) / ARRIVE_TIME;
+    const e = 1 - (1 - q) * (1 - q);
+    const de = (2 * (1 - q)) / ARRIVE_TIME;
     const dx = side * (0.5 * aspect + FISH_EDGE + FISH_ROW * u) - x;
     const dy = FISH_ARC * (2 * u - 1);
     pose.x = x + (1 - e) * dx;
@@ -958,8 +958,8 @@ class KelpSim implements SceneSim {
   #passageFlow(xw: number): number {
     const along = clamp((this.#downstream * xw + HALF_SPAN) / (2 * HALF_SPAN), 0, 1);
     if (this.#exitT > 0) {
-      const q = (this.#exitT - EXIT_SURGE.delay * along) / EXIT_SURGE.span;
-      return this.#downstream * EXIT_SURGE.speed * smoothstep(0, 1, q);
+      const q = clamp((this.#exitT - EXIT_SURGE.delay * along) / EXIT_SURGE.span, 0, 1);
+      return this.#downstream * EXIT_SURGE.speed * q * q;
     }
     const q = (this.#enterT - ENTRY_SURGE.start - ENTRY_SURGE.delay * along) / ENTRY_SURGE.span;
     if (q <= 0 || q >= 1) return 0;

@@ -236,17 +236,17 @@ float barHard(float cover) {
 
 // ---- Passage (the entrance and exit: you sit down in the booth, you stand up to leave)
 
-// Ease-out with a gentle overshoot: 0 at x = 0, a few percent past 1 near the end, exactly 1 from x = 1.
+// Ease-out with a gentle overshoot: 0 at x = 0 and moving fastest there, past 1 near the end, braking
+// to rest at exactly 1 from x = 1.
 float barSettle(float x) {
-  float u = clamp(x, 0.0, 1.0);
-  u = u * u * (3.0 - 2.0 * u);
-  float d = u - 1.0;
+  float d = clamp(x, 0.0, 1.0) - 1.0;
   return 1.0 + 3.2 * d * d * d + 2.2 * d * d;
 }
 
 // The camera's passage: the eye's lift (m, into barEye) and the view's turn (screen heights, added
-// to p). Sitting down, the eye starts high and looking down toward the door, and lowers and turns
-// to rest with a little give; leaving, it rises and turns to the door again. Both exactly zero at rest.
+// to p). Sitting down, the eye starts high and looking down toward the door, already on its way, and
+// lowers and turns to rest with a little give; leaving, it rises and turns to the door again, faster
+// and faster to the end. Both exactly zero at rest.
 void barPassage() {
   barPassEye = vec2(0.0);
   barPassTurn = vec2(0.0);
@@ -254,13 +254,15 @@ void barPassage() {
   float pout = passageOut();
   if (pin < 1.0) {
     float tin = pin * BAR_ENTER;
-    barPassEye.y += 0.13 * (1.0 - barSettle((tin - 0.2) / 2.2));
-    barPassTurn += vec2(-0.05, -0.02) * (1.0 - barSettle((tin - 0.4) / 2.2));
+    barPassEye.y += 0.13 * (1.0 - barSettle(tin / 2.4));
+    barPassTurn += vec2(-0.05, -0.02) * (1.0 - barSettle(tin / 2.6));
   }
   if (pout > 0.0) {
     float tout = pout * BAR_EXIT;
-    barPassEye.y += 0.18 * smoothstep(0.0, 1.0, clamp((tout - 0.1) / 1.5, 0.0, 1.0));
-    barPassTurn += vec2(-0.06, 0.025) * smoothstep(0.0, 1.0, clamp((tout - 0.3) / 1.4, 0.0, 1.0));
+    float rise = clamp((tout - 0.1) / 1.6, 0.0, 1.0);
+    float turn = clamp((tout - 0.3) / 1.4, 0.0, 1.0);
+    barPassEye.y += 0.18 * rise * rise;
+    barPassTurn += vec2(-0.06, 0.025) * turn * turn;
   }
 }
 

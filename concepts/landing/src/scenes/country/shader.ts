@@ -239,9 +239,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float pxl = 1.0 / uRes.y;
   float tm = uMotionTime;
   // Entrance and exit: the camera comes down out of the sky and tilts down onto the valley (a
-  // vertical lens shift with the eye easing down), and leaves the same way. 0 at rest.
-  float arrive = 1.0 - smoothstep(0.0, 1.0, passageIn());
-  float leave = smoothstep(0.0, 1.0, passageOut());
+  // vertical lens shift with the eye easing down), and leaves the same way. 0 at rest. Arriving it
+  // is already on its way down and settles (ease-out); leaving it gathers speed to the end (ease-in).
+  float arrive = (1.0 - passageIn()) * (1.0 - passageIn());
+  float leave = passageOut() * passageOut();
   float lift = arrive * arrive + 0.6 * leave * leave;
   vec2 uv = screenUv + vec2(0.0, 0.34 * arrive + 0.3 * leave);
   // The screen point in the pinhole's plane at unit distance (x right, y up), and a cell there.

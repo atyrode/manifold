@@ -148,11 +148,14 @@ const float MEADOW_ENTER = ${glslFloat(MEADOW_PASSAGE.enter)};
 const float MEADOW_EXIT = ${glslFloat(MEADOW_PASSAGE.exit)};
 const float MEADOW_DROP_IN = ${glslFloat(MEADOW_MOVE.dropIn)};
 const float MEADOW_DROP_OUT = ${glslFloat(MEADOW_MOVE.dropOut)};
-const float MEADOW_DESCENT_FROM = ${glslFloat(MEADOW_MOVE.descentFrom)};
+const float MEADOW_NEAR = ${glslFloat(MEADOW_MOVE.near)};
 const float MEADOW_DESCENT_LENGTH = ${glslFloat(MEADOW_MOVE.descentLength)};
 const float MEADOW_SETTLE = ${glslFloat(MEADOW_MOVE.settle)};
 const float MEADOW_LIFT_FROM = ${glslFloat(MEADOW_MOVE.liftFrom)};
 const float MEADOW_LIFT_LENGTH = ${glslFloat(MEADOW_MOVE.liftLength)};
+// The share of the descent (its end) and of the lift (its start) over which the cells take up or let
+// go of cutting their edges per cell, one by one, so the change of edges never lands on one frame.
+const float MEADOW_CUT_FADE = 0.25;
 const float MEADOW_PASS_FROM = ${glslFloat(MEADOW_MOVE.gustFrom)};
 const float MEADOW_PASS_GAIN = ${glslFloat(MEADOW_MOVE.gustGain)};
 const float MEADOW_PASS_EDGE = ${glslFloat(MEADOW_MOVE.gustEdge)};
@@ -391,13 +394,23 @@ void meadowPassageGust(inout MeadowWind w) {
 }
 
 // How far above its rest height the camera is, world units (sim.ts: meadowDrop): 0 at rest. It lowers
-// into the grass as the scene arrives, settling a little past rest, and rises out of it, speeding
-// up, as the scene leaves.
+// into the grass as the scene arrives, on its way from the first frame and braking to settle a
+// little past rest, and rises out of it, speeding up to the end, as the scene leaves; eased in the
+// height as the picture sees it, drop / (drop + MEADOW_NEAR).
 float meadowDrop() {
-  float a = clamp((passageIn() * MEADOW_ENTER - MEADOW_DESCENT_FROM) / MEADOW_DESCENT_LENGTH, 0.0, 1.0);
-  float down = a * a * (3.0 - 2.0 * a);
+  float a = clamp(passageIn() * MEADOW_ENTER / MEADOW_DESCENT_LENGTH, 0.0, 1.0);
+  float down = 1.0 - (1.0 - a) * (1.0 - a);
   float up = clamp((passageOut() * MEADOW_EXIT - MEADOW_LIFT_FROM) / MEADOW_LIFT_LENGTH, 0.0, 1.0);
-  return MEADOW_DROP_IN * (1.0 - down) * cos(down * MEADOW_SETTLE) + MEADOW_DROP_OUT * up * up;
+  float seen = MEADOW_DROP_IN / (MEADOW_DROP_IN + MEADOW_NEAR) * (1.0 - down) * cos(down * MEADOW_SETTLE) + MEADOW_DROP_OUT / (MEADOW_DROP_OUT + MEADOW_NEAR) * up * up;
+  return MEADOW_NEAR * seen / (1.0 - seen);
+}
+
+// The share of cells that cut their edges for the camera's motion (0 at rest): all of them while it
+// moves, taken up as the lift starts and let go as the descent settles (MEADOW_CUT_FADE).
+float meadowCut() {
+  float a = clamp(passageIn() * MEADOW_ENTER / MEADOW_DESCENT_LENGTH, 0.0, 1.0);
+  float up = clamp((passageOut() * MEADOW_EXIT - MEADOW_LIFT_FROM) / MEADOW_LIFT_LENGTH, 0.0, 1.0);
+  return clamp(max(1.0 - a, up) / MEADOW_CUT_FADE, 0.0, 1.0);
 }
 
 MeadowWind meadowWind() {
@@ -1061,10 +1074,11 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   float aa = 1.0 / uRes.y;
   float rain = K_rain;
   float wet = uWeather.x;
-  // Passage: the camera's height over rest (0 at rest, where nothing below changes).
+  // Passage: the camera's height over rest (0 at rest, where nothing below changes). Moving, a cell
+  // cuts its edges once the passage's share of cutting cells reaches its own threshold.
   float drop = meadowDrop();
   float eye = MEADOW_GROUND + drop;
-  bool moving = drop != 0.0;
+  bool moving = meadowCut() > edgeThreshold(cell, vec2(41.0, 17.0));
   // Rain comes from an overcast sky: the deck closes over with the first drizzle and the light goes
   // flat, grey and dim; heavier rain darkens it further.
   float overcast = 1.0 - pow(1.0 - clamp(rain, 0.0, 1.0), 3.0);

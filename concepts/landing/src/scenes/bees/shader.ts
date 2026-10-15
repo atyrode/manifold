@@ -18,7 +18,7 @@
 // Passage (BEES_PASSAGE): the cumulus (and their shadows) drift in from the sides and settle, then the
 // near foxgloves, poppies, daisies and blades of grass at the bottom edge spring up into the frame, each
 // after its own delay, with a small overshoot; the bees and butterflies are the simulation's. On the
-// way out the clouds drift on a little. At rest every term is exactly 0.
+// way out the clouds drift on a little, gathering speed. At rest every term is exactly 0.
 //
 // Knobs read here: K_time, K_cycle, K_clouds, K_wind, K_scenerySeed, K_mark (the M painted on the
 // middle hive's front), and the shared sky components over the valley (src/scenes/README.md, "Composing
@@ -204,6 +204,13 @@ float beesDriftIn() {
   return u * u * u;
 }
 
+// Ease-in square of the exit: how far the cumulus have drifted on, 0 at rest up to 1, still gathering
+// speed as the scene goes.
+float beesDriftOut() {
+  float u = passageOut();
+  return u * u;
+}
+
 // How far a plant of the foreground is still below the frame, as a share of its travel: 1 while it waits,
 // then down through 0 (a little below, the overshoot) as it springs up, 0 for good once arrived. 'key'
 // sets its delay (0.4 to 0.8 s into the entrance) so they do not rise as one.
@@ -300,7 +307,7 @@ vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
     bool puff = i < BEES_CLOUD_PUFFS;
     if (!puff && i == BEES_CLOUD_N - 2 && cover < 0.2) continue;
     float s = BEES_CLOUD_S[i] * (puff ? 1.0 : mix(0.65, 1.08, cover));
-    float lead = (0.22 + 0.04 * float(i)) * beesDriftIn() + 0.1 * smoothstep(0.0, 1.0, passageOut());
+    float lead = (0.22 + 0.04 * float(i)) * beesDriftIn() + 0.1 * beesDriftOut();
     float x = mod(BEES_CLOUD_F[i] * beesW + tm * 0.0035 + 0.5 * span, span) - 0.5 * span + sign(BEES_CLOUD_F[i]) * lead;
     vec4 cl = beesCloudAt(p, x, BEES_CLOUD_Y[i], s, BEES_CLOUD_T[i], BEES_CLOUD_SEED[i]);
     col = mix(col, cl.rgb, cl.a);
@@ -310,7 +317,7 @@ vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
 
 // The shadow of the clouds on the land, drifting slowly: 1 in shadow, per cell.
 float beesCloudShadow(vec2 p, float tm) {
-  vec2 q = vec2(p.x * 0.75 - tm * 0.011 + 0.2 * (beesDriftIn() + 0.5 * smoothstep(0.0, 1.0, passageOut())), p.y * 2.4);
+  vec2 q = vec2(p.x * 0.75 - tm * 0.011 + 0.2 * (beesDriftIn() + 0.5 * beesDriftOut()), p.y * 2.4);
   float n = 0.65 * vnoise(q + vec2(5.0 + beesSeed, 1.0)) + 0.35 * vnoise(q * 2.3 + vec2(9.0, 3.0));
   return hardEdge(smoothstep(0.54, 0.7, n));
 }

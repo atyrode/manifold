@@ -660,12 +660,12 @@ vec4 aurForeground(vec2 p, out float depth) {
   return vec4(0.0);
 }
 
-// The passage, in the world: on the way in the camera comes down from the stars and settles on the
-// fjord (a touch of overshoot) while the three curtains unfurl one after another, each sweeping
-// along its arc from a faint high arc to its full drape as the rays drop ray by ray; the cabin's
-// smoke then climbs. On the way out the curtains roll back up into faint arcs (the far end first)
-// and the camera lifts to the stars. Everything keeps its rest value (tilt 0, unfurl 1, smoke 1,
-// glow gate 1) when nothing is passing.
+// The passage, in the world: on the way in the camera comes down from the stars already moving and
+// settles on the fjord (a touch of overshoot) while the three curtains unfurl one after another, each
+// sweeping along its arc from a faint high arc to its full drape as the rays drop ray by ray; the
+// cabin's smoke then climbs. On the way out the curtains roll back up into faint arcs (the far end
+// first) until the exit ends, and the camera lifts to the stars, ever faster. Everything keeps its
+// rest value (tilt 0, unfurl 1, smoke 1, glow gate 1) when nothing is passing.
 void aurPassage() {
   aurTilt = 0.0;
   aurUnfurl[0] = 1.0;
@@ -676,17 +676,15 @@ void aurPassage() {
   float pin = passageIn();
   float pout = passageOut();
   if (pin >= 1.0 && pout <= 0.0) return;
-  float x = clamp(pin / 0.82, 0.0, 1.0);
-  float x2 = x * x * (3.0 - 2.0 * x);
-  float back = x2 - 1.0;
+  float back = clamp(pin / 0.82, 0.0, 1.0) - 1.0;
   float settle = 1.0 + 2.1 * back * back * back + 1.1 * back * back;
-  float leave = pout * pout * (3.0 - 2.0 * pout);
+  float leave = pout * pout;
   aurTilt = 0.22 * (1.0 - settle) + 0.26 * leave;
   float glow = 0.0;
   for (int i = 0; i < 3; i++) {
     float fi = float(i);
     float inU = clamp((pin - 0.10 - 0.08 * fi) / 0.62, 0.0, 1.0);
-    float outU = 1.0 - clamp((pout - 0.06 * fi) / 0.70, 0.0, 1.0);
+    float outU = 1.0 - clamp((pout - 0.06 * fi) / (1.0 - 0.06 * fi), 0.0, 1.0);
     aurUnfurl[i] = min(inU, outU);
     glow += aurUnfurl[i] / 3.0;
   }

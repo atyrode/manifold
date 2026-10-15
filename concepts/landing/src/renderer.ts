@@ -60,6 +60,8 @@ export interface RenderSettings {
 /** Texture units: `uSim0..uSim3`, one per sim slot, then `uLeaving`. */
 const SIM_SLOTS = 4;
 const LEAVING_UNIT = SIM_SLOTS;
+/** Passage-clock seconds a passage waits at most for the incoming sim to be ready (SceneSim.ready). */
+const READY_WAIT = 3;
 /** Scene-clock time of a trigger or press that has not happened. */
 const NEVER = -1e4;
 /**
@@ -200,6 +202,14 @@ interface Leaving {
   length: number;
   /** The incoming program once drawn (see `#prime`). */
   primed: SceneProgram | undefined;
+  /**
+   * The incoming scene, created once its program is ready and run off screen while the exit plays
+   * (its sim stepping, one cell drawn), so it enters already running: a sim that builds its world
+   * over several frames has it ready rather than popping it in during the entrance.
+   */
+  next: ActiveScene | undefined;
+  /** Passage-clock time `next` was created. */
+  ahead: number;
   woven: { scene: ActiveScene; into: RenderSettings } | undefined;
 }
 
@@ -214,6 +224,8 @@ interface SceneDraw {
   triggers: readonly number[];
   fired: readonly boolean[];
   pressedAt: number;
+  /** Draw one cell only: a scene run off screen before it enters (see `Leaving.next`). */
+  oneCell: boolean;
   /** `uDissolve`: share of the outgoing frame still showing, whether that is the outgoing scene (else the bare page), and the blend. */
   dissolve: number;
   fromScene: boolean;
@@ -554,6 +566,18 @@ export class DitherRenderer {
     return this.#scene?.failure;
   }
 
+  /**
+   * Where a passage stands: "preparing" while the leaving scene idles for the incoming one to be
+   * ready, "exiting" while it plays its exit before the incoming one enters, "blending" while both
+   * draw; "settled" otherwise.
+   */
+  get passagePhase(): "settled" | "preparing" | "exiting" | "blending" {
+    const leaving = this.#leaving;
+    if (leaving === undefined) return "settled";
+    if (leaving.woven !== undefined) return "blending";
+    return Number.isNaN(leaving.start) ? "preparing" : "exiting";
+  }
+
   /** After a failure, enter the scene again from scratch on the next frame (a cut), rebuilding its program if that failed. */
   retry(): void {
     const failure = this.#scene?.failure;
@@ -699,9 +723,10 @@ export class DitherRenderer {
     kept.set(key, built);
     const drawing = this.#scene?.program;
     const leaving = this.#leaving?.woven?.scene.program;
+    const next = this.#leaving?.next?.program;
     for (const [old, entry] of kept) {
       if (kept.size <= PROGRAMS_PER_SCENE) break;
-      if (entry === drawing || entry === leaving) continue;
+      if (entry === drawing || entry === leaving || entry === next) continue;
       kept.delete(old);
       if ("program" in entry) this.#gl.deleteProgram(entry.program);
     }
@@ -787,11 +812,11 @@ export class DitherRenderer {
   }
 
   /**
-   * Enter the scene `s` sets, with the program for its features (built now if need be). A program
-   * that fails to build or a simulation that throws while starting leaves the scene entered but
+   * A scene for `s`, with the program for its features (built now if need be) and a fresh
+   * simulation. A program that fails to build or a simulation that throws while starting leaves it
    * failed (see `failure`).
    */
-  #enter(s: RenderSettings): ActiveScene {
+  #create(s: RenderSettings): ActiveScene {
     const id = s.scene;
     const built = this.#programNow(id, this.#want(s));
     const params = sceneDefs[id].params;
@@ -805,7 +830,6 @@ export class DitherRenderer {
       weather: { wet: 0, lying: 0 },
       passage: { enter: 1, exit: 0 },
     };
-    this.#scene = scene;
     if (scene.program !== undefined) {
       try {
         scene.sim = sceneDefs[id].sim?.(this.#gl);
@@ -813,6 +837,17 @@ export class DitherRenderer {
         this.#fail(scene, "start", error);
       }
     }
+    return scene;
+  }
+
+  /** Enter the scene `s` sets: the one run ahead for it during the exit (`Leaving.next`), else a new one. */
+  #enter(s: RenderSettings): ActiveScene {
+    const leaving = this.#leaving;
+    const next = leaving?.next;
+    if (leaving !== undefined) leaving.next = undefined;
+    const scene = next !== undefined && next.id === s.scene ? next : this.#create(s);
+    if (scene !== next) this.#release(next);
+    this.#scene = scene;
     return scene;
   }
 
@@ -975,6 +1010,8 @@ export class DitherRenderer {
 
     // The leaving scene goes on first, off screen, into the frame the incoming one dissolves out of,
     // at its own cell size (the dissolve maps it over the screen), playing the rest of its exit.
+    // Before that, while it exits on screen, the incoming scene runs ahead of its entrance: its sim
+    // steps and it draws one cell, which the leaving scene's frame then covers.
     if (leaving !== undefined && woven !== undefined) {
       const out = woven.scene;
       const os = leaving.settings;
@@ -987,6 +1024,7 @@ export class DitherRenderer {
         target: this.#leavingTarget,
         width: ow,
         height: oh,
+        oneCell: false,
         fresh: false,
         triggers: this.#quietTriggers,
         fired: this.#quietFired,
@@ -994,6 +1032,25 @@ export class DitherRenderer {
         dissolve: 0,
         fromScene: false,
         blend: os.blend,
+      });
+    } else if (leaving?.next !== undefined) {
+      // Running ahead it gets ready without playing: dt 0, entrance not begun (see SimFrame.passage).
+      const next = leaving.next;
+      const ns = this.#settings;
+      next.passage.enter = 0;
+      next.passage.exit = 0;
+      this.#render(next, ns, next.program, 0, pointer, {
+        target: null,
+        width: Math.max(1, Math.ceil(this.#canvas.clientWidth / ns.pixel)),
+        height: Math.max(1, Math.ceil(this.#canvas.clientHeight / ns.pixel)),
+        oneCell: true,
+        fresh: true,
+        triggers: this.#quietTriggers,
+        fired: this.#quietFired,
+        pressedAt: NEVER,
+        dissolve: 0,
+        fromScene: false,
+        blend: ns.blend,
       });
     }
 
@@ -1022,6 +1079,7 @@ export class DitherRenderer {
       target: null,
       width,
       height,
+      oneCell: false,
       fresh: entered,
       triggers: shown,
       fired: this.#fired,
@@ -1061,20 +1119,33 @@ export class DitherRenderer {
     const into = this.#settings;
     const exit = sceneDefs[scene.id].passage?.exit ?? 0;
     if (scene.program !== undefined && scene.failure === undefined) {
-      if (Number.isNaN(leaving.start)) {
-        const wanted = this.#want(into);
-        const next = this.#keptFor(into.scene, wanted);
-        if (next === undefined) {
-          this.#buildAhead(into.scene, wanted);
-          return leaving;
-        }
-        if ("program" in next && leaving.primed !== next) {
-          this.#prime(scene.program, next, leaving.settings);
-          leaving.primed = next;
-          return leaving;
-        }
-        this.#begin(leaving, exit, into, seconds);
+      // The incoming program, built in the background and drawn once; then its scene, run ahead
+      // off screen until its sim has what it shows (`SceneSim.ready`). Until all that is done the
+      // leaving scene idles if its exit has not begun (so nothing moves until the passage can run
+      // through) and exits on if it has; the incoming scene enters `overlap` of the way through.
+      const wanted = this.#want(into);
+      const built = this.#keptFor(into.scene, wanted);
+      if (built === undefined) {
+        this.#buildAhead(into.scene, wanted);
+        return leaving;
       }
+      if ("program" in built && leaving.primed !== built) {
+        this.#prime(scene.program, built, leaving.settings);
+        leaving.primed = built;
+        return leaving;
+      }
+      let next = leaving.next;
+      const program = "program" in built ? built : undefined;
+      if (next === undefined || next.id !== into.scene || next.program !== program) {
+        this.#release(next);
+        next = this.#create(into);
+        leaving.next = next;
+        leaving.ahead = seconds;
+      }
+      // A sim that never reports ready (a worker that never answers) holds the passage for at most
+      // READY_WAIT seconds.
+      if (next.sim?.ready?.() === false && seconds - leaving.ahead < READY_WAIT) return leaving;
+      if (Number.isNaN(leaving.start)) this.#begin(leaving, exit, into, seconds);
       if (seconds - leaving.start < (1 - into.overlap) * exit) return leaving;
     } else if (Number.isNaN(leaving.start)) {
       this.#begin(leaving, exit, into, seconds);
@@ -1086,7 +1157,15 @@ export class DitherRenderer {
 
   /** A scene starting to leave with the settings `s`: it idles until the next one is ready. */
   #leave(s: RenderSettings): Leaving {
-    return { settings: s, start: Number.NaN, length: 0, primed: undefined, woven: undefined };
+    return {
+      settings: s,
+      start: Number.NaN,
+      length: 0,
+      primed: undefined,
+      next: undefined,
+      ahead: 0,
+      woven: undefined,
+    };
   }
 
   /**
@@ -1165,6 +1244,7 @@ export class DitherRenderer {
     const gl = this.#gl;
     const { target, width, height } = draw;
     if (program === undefined || scene.failure !== undefined) {
+      if (draw.oneCell) return false;
       gl.bindFramebuffer(gl.FRAMEBUFFER, target);
       gl.viewport(0, 0, width, height);
       gl.clearColor(...rgb(s.bg), 1);
@@ -1216,7 +1296,7 @@ export class DitherRenderer {
       }) ?? [];
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, target);
-    gl.viewport(0, 0, width, height);
+    gl.viewport(0, 0, draw.oneCell ? 1 : width, draw.oneCell ? 1 : height);
     gl.useProgram(program.program);
     for (let slot = 0; slot < SIM_SLOTS; slot++) {
       gl.activeTexture(gl.TEXTURE0 + slot);

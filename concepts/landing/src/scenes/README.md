@@ -103,18 +103,22 @@ edges and `fired`, but no time, so their response is one still step. Paused, eve
 ### Entrances and exits
 
 Switching scenes (or first loading the page) is a passage, not a cut. The outgoing scene first
-idles on while the incoming scene's program builds in the background and is drawn once off to the
-side, because many drivers finish compiling a program at its first draw and hold the GPU up while
-they do. Any such pause therefore comes right at the switch, before anything moves, never in the
-middle of the passage. Then the outgoing scene plays its exit, drawn with its own settings. Part-way
-through that exit (the lab's overlap, half by default) the incoming scene, built afresh with a new
-sim, starts its entrance and takes the screen over cell by cell in ordered-dither order (the middle
-first by default) over the blend length, 1.5 s by default. Both scenes draw while they overlap: the
-outgoing one goes on playing its exit off screen at its own cell size, into the frame the incoming
-one dissolves out of, so both sides of the dissolve move. An exit that would end before the blend
-does is drawn out to end with it, so the outgoing scene never stands still under the incoming one.
-A switch made during the blend leaves for the newest scene once the blend is done. The entrance's
-clock starts on its second frame. Every scene gets the blend for free.
+idles on while the incoming scene gets ready: its program builds in the background and is drawn
+once off to the side (many drivers finish compiling a program at its first draw and hold the GPU
+up while they do), then the incoming scene itself is created and runs ahead off screen, its sim
+stepping with `dt` 0 and `enter` 0 and drawing one cell, until the sim reports `ready()` (a sim
+that builds its world over several frames or on a worker: the countryside's land, the pond's plant
+sheets; at most 3 s). Any pause therefore comes right at the switch, before anything moves, never
+in the middle of the passage, and the scene enters with its world in place. Then the outgoing
+scene plays its exit, drawn with its own settings. Part-way through that exit (the lab's overlap,
+half by default) the incoming scene, the one run ahead, starts its entrance and takes the screen
+over cell by cell in ordered-dither order (the middle first by default) over the blend length,
+1.5 s by default. Both scenes draw while they overlap: the outgoing one goes on playing its exit
+off screen at its own cell size, into the frame the incoming one dissolves out of, so both sides
+of the dissolve move. An exit that would end before the blend does is drawn out to end with it,
+so the outgoing scene never stands still under the incoming one. A switch made during the blend
+leaves for the newest scene once the blend is done. The entrance's clock starts on its second
+frame. Every scene gets the blend for free.
 The outgoing frame is sampled in normalized stage coordinates with nearest filtering, so a different
 viewport or pixel size stretches the whole image rather than fetching outside it.
 
@@ -126,7 +130,20 @@ Every scene makes the passage its own, in the world rather than by fading:
   - `passageIn()` runs linearly 0→1 over `enter` and then stays 1.
   - `passageOut()` is 0 until the scene leaves, then 0→1 over its exit (stretched to the blend if
     that is longer).
-  - Ease them yourself.
+  - Ease them yourself, so that the passage carries its speed across the seam (below).
+- Passages carry their speed, so that a switch reads as one continuous movement:
+  - an exit starts gently from rest and accelerates away, still at or near full speed when
+    `passageOut()` reaches 1 (`pout²`, `pout³`; never an ease-in-out such as `smoothstep`, and
+    never motion that finishes early and then holds);
+  - an entrance arrives moving and settles, at or near full speed at `passageIn()` 0 and at rest at
+    1 (`1 - (1 - pin)²`, a settle with a small overshoot; never a start from rest or a hold before
+    the motion begins); light and fade accents may still be staged.
+  - `bun concepts/landing/verify.ts passageSpeeds` measures it on the real renderer at motion 0:
+    the picture change over the last steps of the exit and the first steps of the entrance as a
+    share of the passage's fastest step (`LANDING_PASSAGE_SCENES=a,b` limits it to some scenes).
+    It fails a scene below 0.35 on either side unless that side is exempt in
+    `src/passage-speed.verify.ts` with its reason (an object leaving the frame at full speed, a
+    passage that is a process or a light change, or one that only plays with motion).
 - Things move into place, enter or leave the frame, a camera settles, a process starts up; light
   changes are at most an accent. Some examples:
   - The border plants of `pond` close in from the edges as the koi swim into view.
@@ -137,7 +154,10 @@ Every scene makes the passage its own, in the world rather than by fading:
   - `shanshui` unrolls its scroll.
   - `ferro` raises its spikes out of a flat pool.
 - A sim that warms up over several frames runs its growth on a clock of its own that starts after
-  the warm-up (physarum's `GrowthClock`), so a slow first frame doesn't use up the entrance.
+  the warm-up (physarum's `GrowthClock`), so a slow first frame doesn't use up the entrance. A sim
+  run ahead gets `dt` 0, so a clock summed from `dt` holds; a clock keyed to `time` or wall time
+  starts once `enter` is above 0. A sim that shows nothing until a build is done implements
+  `ready()`.
 - Put the readable part after ~0.5 s, which the blend half covers. The outgoing scene can still be
   exiting then: an entrance that rises out of empty sky or dark water reads best over another
   scene's exit.

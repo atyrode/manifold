@@ -576,6 +576,9 @@ class HarmonographSim implements SceneSim {
     const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_FRAME);
     const steps = this.#clock.advance(dt * frame.motion);
     for (let i = 0; i < steps; i++) this.#step(STEP, st);
+    // The blank sheet slides in on the passage clock whatever the motion: arriving at speed, it
+    // settles in its place.
+    if (this.#phase === "arrive") this.#u = (1 - clamp(this.#enterP / ARRIVE_SHARE, 0, 1)) ** 2;
 
     this.#upload();
     return this.#textures;
@@ -586,7 +589,7 @@ class HarmonographSim implements SceneSim {
     this.#stateTexture.dispose();
   }
 
-  /** The scene's exit: the pen lifts and the finished sheet slides off, whatever it was doing. */
+  /** The scene's exit: the pen lifts and the finished sheet slides off, gathering speed, whatever it was doing. */
   #leave(frame: SimFrame): void {
     if (this.#leaveFrom === undefined) {
       this.#leaveFrom = this.#u;
@@ -596,7 +599,7 @@ class HarmonographSim implements SceneSim {
     const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_FRAME);
     this.#bob += dt * TAU * 0.31;
     this.#lift += (this.#liftTarget - this.#lift) * (1 - Math.exp(-dt * LIFT_RATE));
-    this.#u = lerp(this.#leaveFrom, -1, ease(clamp(frame.passage.exit, 0, 1)));
+    this.#u = lerp(this.#leaveFrom, -1, clamp(frame.passage.exit, 0, 1) ** 3);
   }
 
   // ---- sheets ------------------------------------------------------------------------------------
@@ -917,13 +920,11 @@ class HarmonographSim implements SceneSim {
   }
 
   #stepArrive(): void {
-    const s = clamp(this.#enterP / ARRIVE_SHARE, 0, 1);
-    this.#u = 1 - ease(s);
     this.#liftTarget = 1;
     const start = this.#startOf(this.#plan);
     this.#penX = start.x;
     this.#penY = start.y;
-    if (s < 1) return;
+    if (this.#enterP < ARRIVE_SHARE) return;
     this.#u = 0;
     this.#phase = "lower";
     this.#phaseT = 0;

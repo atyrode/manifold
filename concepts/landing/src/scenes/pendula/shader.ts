@@ -132,7 +132,7 @@ const vec3 PENDULA_STEEL = ${glslVec3(pendulaSteel)};
 const float PENDULA_ENTER = ${glslFloat(PENDULA_PASSAGE.enter)};
 const float PENDULA_EXIT = ${glslFloat(PENDULA_PASSAGE.exit)};
 const float PENDULA_DROP = 0.9;        // entrance: seconds a bob takes to drop (a longer thread takes longer)
-const float PENDULA_BUILD = 1.5;       // entrance: seconds the swing takes to build up once a bob is falling
+const float PENDULA_BUILD = 1.5;       // entrance: the swing has built up this many seconds after half a bob's drop
 const float PENDULA_RIPPLE = 0.4;      // exit: seconds the hoist's start is spread along the row
 const float PENDULA_HUNG = 0.06;       // gap between the beam and a hoisted bob's top
 
@@ -268,7 +268,9 @@ float pendulaBack(float u) {
 }
 
 // The passage's effect on pendulum fi of the row (thread length L): x the thread's length, y the
-// factor on the swing. Exactly (L, 1) once arrived and not leaving.
+// factor on the swing. Exactly (L, 1) once arrived and not leaving. Entering, the bobs drop and the
+// swing builds at once, both easing out; leaving, each bob is hoisted from its moment in the ripple,
+// gathering speed until the whole row reaches the beam as the exit ends.
 vec2 pendulaPassage(float L, float br, float fi, float cnt) {
   float pin = passageIn();
   float pout = passageOut();
@@ -279,12 +281,14 @@ vec2 pendulaPassage(float L, float br, float fi, float cnt) {
     float tin = pin * PENDULA_ENTER;
     float fall = PENDULA_DROP + 0.5 * sqrt(L / PENDULA_LMAX);
     hang = pendulaBack(clamp(tin / fall, 0.0, 1.0));
-    swing = smoothstep(0.5 * fall, 0.5 * fall + PENDULA_BUILD, tin);
+    float build = 1.0 - clamp(tin / (0.5 * fall + PENDULA_BUILD), 0.0, 1.0);
+    swing = 1.0 - build * build;
   }
   if (pout > 0.0) {
-    float u = clamp((pout * PENDULA_EXIT - PENDULA_RIPPLE * fi / max(cnt - 1.0, 1.0)) / (PENDULA_EXIT - PENDULA_RIPPLE), 0.0, 1.0);
-    hang *= 1.0 - smoothstep(0.0, 1.0, u);
-    swing *= 1.0 - smoothstep(0.0, 0.8, u);
+    float delay = PENDULA_RIPPLE * fi / max(cnt - 1.0, 1.0);
+    float u = clamp((pout * PENDULA_EXIT - delay) / (PENDULA_EXIT - delay), 0.0, 1.0);
+    hang *= 1.0 - u * u;
+    swing *= 1.0 - u * u;
   }
   float hung = br + PENDULA_HUNG;
   return vec2(hung + (L - hung) * hang, swing);

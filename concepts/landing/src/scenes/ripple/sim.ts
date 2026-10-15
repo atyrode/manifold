@@ -759,9 +759,10 @@ class RippleLab implements SceneSim {
   /**
    * The passage's rate (× real time) and the dippers' strength for this frame, in `#rate` and
    * `#drive`: both 1 at rest. Entering: the clock runs on frame time once the tank is built; the
-   * rate rises from 1 to PASSAGE_RATE and back as a sine's square, and the dippers swell up over
-   * PASSAGE_SWELL beats of the time-lapsed water. Leaving (the exit's own progress): the rate rises
-   * to PASSAGE_RATE over the first EXIT_EASE of it, and the dippers stop over PASSAGE_STOP of a beat.
+   * rate starts at PASSAGE_RATE and eases back to 1 as the square of what is left of the entrance,
+   * and the dippers swell up over PASSAGE_SWELL beats of the time-lapsed water, quick at first.
+   * Leaving (the exit's own progress): the rate rises to PASSAGE_RATE over the first EXIT_EASE of
+   * it and stays there, and the dippers stop over PASSAGE_STOP of a beat.
    */
   #passage(frame: SimFrame, seconds: number, created: boolean): void {
     const beat = TAU / this.#need().omega;
@@ -797,9 +798,11 @@ class RippleLab implements SceneSim {
       this.#drive = 1;
       return;
     }
-    this.#rate = 1 + (PASSAGE_RATE - 1) * Math.sin((Math.PI * this.#arrived) / RIPPLE_ENTER) ** 2;
+    const left = 1 - this.#arrived / RIPPLE_ENTER;
+    this.#rate = 1 + (PASSAGE_RATE - 1) * left * left;
     if (!created) this.#lapse += seconds * this.#rate;
-    this.#drive = smoothstep(0, PASSAGE_SWELL * beat, this.#lapse);
+    const swell = 1 - Math.min(1, this.#lapse / (PASSAGE_SWELL * beat));
+    this.#drive = 1 - swell * swell;
   }
 
   #value(frame: SimFrame, index: number): number {

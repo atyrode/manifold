@@ -12,10 +12,11 @@
 // darkens and glosses every surface, pools on the floor, rings the stream and keeps the beards, the
 // torii and the canopy dripping as it dries.
 // The passage is the camera's: coming in it starts FOREST_DOLLY.back m behind its resting place and
-// dollies forward between the trunks (slow start, a small overshoot, a settle) while the spirits (the
-// sim's) pop up one by one; going out it drifts back into the mist. Every layer is placed at its own
-// depth by forestAt (nearer things slide further, the pointer's parallax too), the floor and the mist
-// by the camera's true distance. All of it is exactly off at rest (forestCamD == 0).
+// dollies forward between the trunks (arriving at speed and braking, a small overshoot, a settle)
+// while the spirits (the sim's) pop up one by one; going out it drifts back into the mist, gathering
+// speed. Every layer is placed at its own depth by forestAt (nearer things slide further, the
+// pointer's parallax too), the floor and the mist by the camera's true distance. All of it is
+// exactly off at rest (forestCamD == 0).
 // The sim (sim.ts) moves the spirits, the stag, the motes and the mist field; its textures are
 // described there. Knobs read here: K_spirits (via the sim), K_mushrooms, K_spores, K_stream, K_mist,
 // K_shafts, K_forestSeed, K_time, K_cycle, K_stars and K_moon (the shared stars and the moon in its
@@ -172,12 +173,13 @@ float forestToriiX;    // world x (m) of the torii's centre
 float forestCamD;      // the camera's advance (m) from where it rests: 0 at rest, - while it is behind
 float forestCamMove;   // 0..1: how fast it is moving (the floor's fine pattern would crawl past, so it calms)
 
-// The dolly's progress 0..1 over x = 0..1: a slow start, an arrival a little early with a small
-// overshoot (to about 1.05) and a settle back, exactly 1 from x = 1.
+// The dolly's progress 0..1 over x = 0..1: arriving at speed and braking (an ease-out), an arrival a
+// little early with a small overshoot (to about 1.05) and a settle back, exactly 1 from x = 1.
 float forestSettle(float x) {
   x = clamp(x, 0.0, 1.0);
   float bob = smoothstep(0.5, 1.0, x);
-  return smoothstep(0.0, 0.8, x) + 0.05 * sin(0.5 * TAU * bob);
+  float u = 1.0 - min(x / 0.8, 1.0);
+  return 1.0 - u * u + 0.05 * sin(0.5 * TAU * bob);
 }
 
 // The camera's advance (m) from where it rests, set once at the top of sceneForest (with forestCamMove):
@@ -192,11 +194,12 @@ float forestCamera() {
     float x = pin * FOREST_ENTER / FOREST_DOLLY.y;
     float u = clamp(x / 0.8, 0.0, 1.0);
     d -= FOREST_DOLLY.x * (1.0 - forestSettle(x));
-    forestCamMove = 4.0 * u * (1.0 - u);
+    forestCamMove = 1.0 - u;
   }
   if (pout > 0.0) {
-    d -= FOREST_DOLLY.z * pout * pout * (3.0 - 2.0 * pout);
-    forestCamMove = max(forestCamMove, 4.0 * pout * (1.0 - pout));
+    // Drifting back from rest and still gathering speed as the scene goes (an ease-in).
+    d -= FOREST_DOLLY.z * pout * pout;
+    forestCamMove = max(forestCamMove, pout);
   }
   return d;
 }

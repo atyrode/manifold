@@ -129,7 +129,7 @@ export const ferroScene: SceneDef = {
   entry: "sceneFerro",
   sim: ferroSim(params),
   // The pool lies flat as a mirror, then the field comes on and the crown of spikes rises out of it,
-  // middle first; on the way out the field switches off and the spikes slump back into a flat pool
+  // middle first; on the way out the field fades and the spikes slump back, rim first, into a pool
   // that a ripple crosses (sim.ts gates the field, shader.ts ripples the surface).
   passage: FERRO_PASSAGE,
 };

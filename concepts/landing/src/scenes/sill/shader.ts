@@ -743,6 +743,10 @@ vec4 sillCurtain(vec2 p, float aspect, float tm, float breeze, float xw0, vec3 l
 const float SILL_ENTER = ${glslFloat(SILL_PASSAGE.enter)};
 const float SILL_EXIT = ${glslFloat(SILL_PASSAGE.exit)};
 
+// How far below the frame's bottom edge (cat units) the cat starts its hop up and ends its drop
+// down: its stretched height, just out of sight.
+const float SILL_HIDE = 1.2;
+
 // The cat's passage pose, lengths in cat units (its sitting height is 1) and all of it identity at rest
 // (passageIn() 1, passageOut() 0): lift above its place on the sill, squash and stretch about its
 // foot, the head tipped up, the tail raised and curling, how much its outline is moving (0..1) and
@@ -757,10 +761,12 @@ struct SillHop {
   float shade;
 };
 
-// In: it springs up from below the frame (stretching as it rises, tail held up), tops out a little
-// above the sill, lands with a squash that rings out, and the tail comes down and hooks round as it
-// settles. Out: it rises into a long stretch, crouches, springs, and drops away below the frame.
-SillHop sillPassage() {
+// In: it springs up from just below the frame (already rising as the entrance starts, stretching as
+// it rises, tail held up), tops out a little above the sill, lands with a squash that rings out, and
+// the tail comes down and hooks round as it settles. Out: it rises into a long stretch, crouches,
+// springs, and drops away below the frame, still falling as the exit ends. 'edge' is the frame's
+// bottom edge in cat units from the sill's seat (negative).
+SillHop sillPassage(float edge) {
   SillHop h;
   h.lift = 0.0;
   h.scale = vec2(1.0);
@@ -771,6 +777,7 @@ SillHop sillPassage() {
   h.shade = 1.0;
   float pin = passageIn();
   float pout = passageOut();
+  float hidden = edge - SILL_HIDE;
   if (pout > 0.0) {
     float s = pout * SILL_EXIT;
     float stretch = smoothstep(0.0, 0.5, s);
@@ -779,23 +786,22 @@ SillHop sillPassage() {
     float u = clamp((s - 0.64) / (SILL_EXIT - 0.64), 0.0, 1.0);
     sy = mix(sy, 1.16, smoothstep(0.0, 0.1, u));
     sy = mix(sy, 1.04, smoothstep(0.1, 0.6, u));
-    h.lift = 1.4 * u - 4.4 * u * u;
+    h.lift = 1.4 * u - (1.4 - hidden) * u * u;
     h.scale = vec2(inversesqrt(sy), sy);
     h.look = 0.55 * stretch;
     h.up = max(0.35 * stretch, 0.8 * smoothstep(0.1, 0.5, u));
     h.move = clamp(6.0 * abs(sy - 1.0) + 3.0 * h.up + abs(h.lift), 0.0, 1.0);
   } else if (pin < 1.0) {
     float s = pin * SILL_ENTER;
-    float launch = 0.1;
     float apexAt = 0.95;
     float apex = 0.35;
-    float g = (apex + 3.2) / ((apexAt - launch) * (apexAt - launch));
+    float g = (apex - hidden) / (apexAt * apexAt);
     float land = apexAt + sqrt(apex / g);
     float sy = 1.0;
     float air = 0.0;
     float tau = max(s - land, 0.0);
     if (s < land) {
-      float tt = max(s, launch) - apexAt;
+      float tt = s - apexAt;
       h.lift = apex - g * tt * tt;
       sy = 1.0 + 0.016 * clamp(-2.0 * g * tt, 0.0, 9.0);
       air = 1.0;
@@ -1033,7 +1039,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   float S = 0.29 * mix(0.72, 1.28, K_cat) * clamp(0.3 + 0.6 * aspect, 0.72, 1.0);
   // The passage: the cat hops up onto the sill and settles, or stretches and hops down out of frame.
   // Identity at rest.
-  SillHop hop = sillPassage();
+  SillHop hop = sillPassage((-0.5 - SILL_SEAT) / S);
 
   if (!(inOpen || inGlass)) {
     if (p.y < SILL_BACK) {

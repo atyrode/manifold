@@ -74,11 +74,15 @@ vec3 mobileSunCentre() {
   return mobileAt(mobileSunArm(), 2);
 }
 
-// How lit the Sun is: 1 at rest. Coming in it glows like an ember as it is lowered and lights up as
-// it comes to rest; going out it cools back to an ember as it is hoisted away.
+// How lit the Sun is: 1 at rest. Coming in it glows like an ember and warms as it is lowered, fastest
+// at first, lighting up fully as it comes to rest; going out it cools back to an ember as it is
+// hoisted away, ever faster.
 float mobileSunWarm() {
-  if (passageIn() >= 1.0 && passageOut() <= 0.0) return 1.0;
-  return mix(0.3, 1.0, smoothstep(0.45, 0.85, passageIn()) * smoothfall(0.8, 0.0, passageOut()));
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return 1.0;
+  float coming = 1.0 - min(pin / 0.85, 1.0);
+  return mix(0.3, 1.0, (1.0 - coming * coming * coming) * (1.0 - pout * pout * pout));
 }
 
 // The Sun's light (colour times strength at 1 m): an ember's red while it warms, then gold-white.

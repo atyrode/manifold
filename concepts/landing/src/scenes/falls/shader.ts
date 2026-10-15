@@ -808,21 +808,16 @@ vec3 fallsSlotMirror(vec4 slot, FallsLight L, vec3 haze, float rainWet) {
 }
 
 // ---- passage ----
-// The entrance: the camera starts up at the lip and tilts down the fall to the pool (a lens shift of
-// uv, as the countryside does), settling a touch past rest and back; then the ferns on the bank
-// spring up and the spray rises, the rainbow forming in it. The exit tilts the camera back up the
-// fall while the spray surges up the cliff to meet it. At rest (passageIn() == 1, passageOut() == 0)
-// every term below is exactly 1 or 0.
+// The entrance: the camera starts up at the lip and, already moving, tilts down the fall to the pool
+// (a lens shift of uv, as the countryside does), settling a touch past rest and back; then the ferns
+// on the bank spring up and the spray rises, the rainbow forming in it. The exit tilts the camera
+// back up the fall, ever faster, while the spray surges up the cliff to meet it. At rest
+// (passageIn() == 1, passageOut() == 0) every term below is exactly 1 or 0.
 const float FALLS_TILT_IN = 0.4;   // screen heights the frame starts above its rest view
 const float FALLS_TILT_OUT = 0.34; // and how far the exit lifts it
 
-// The camera's way down: eases in and out, then overshoots a little (x = 1 is rest) and settles.
-float fallsSettle(float x) {
-  float e = smoothstep(0.0, 1.0, x);
-  return e + 0.07 * smoothstep(0.55, 0.85, x) * (1.0 - smoothstep(0.85, 1.0, x));
-}
-
-// Something springing up: 0 at x = 0, a gentle overshoot past 1, exactly 1 at x = 1.
+// Something springing up, or the camera coming to rest: 0 at x = 0 and already moving, a gentle
+// overshoot past 1, exactly 1 (and still) at x = 1.
 float fallsSpring(float x) {
   float u = clamp(x, 0.0, 1.0) - 1.0;
   return 1.0 + u * u * (2.2 * u + 1.2);
@@ -852,11 +847,11 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   float arrive = passageIn();
   float leave = passageOut();
   // Everything below, projection and rain included, looks through the shifted frame.
-  vec2 uv = screenUv + vec2(0.0, FALLS_TILT_IN * (1.0 - fallsSettle(clamp(arrive / 0.85, 0.0, 1.0))) + FALLS_TILT_OUT * smoothstep(0.0, 1.0, leave));
+  vec2 uv = screenUv + vec2(0.0, FALLS_TILT_IN * (1.0 - fallsSpring(arrive / 0.85)) + FALLS_TILT_OUT * leave * leave);
   vec2 q = vec2((uv.x - 0.5) * aspect, uv.y);
   float flow = K_flow;
   // The spray is held low until the camera has come down, then rises; at the exit it surges up.
-  float mistAmount = K_mist * (1.0 - 0.75 * (1.0 - smoothstep(0.3, 0.9, arrive))) * (1.0 + 0.9 * smoothstep(0.0, 1.0, leave));
+  float mistAmount = K_mist * (1.0 - 0.75 * (1.0 - smoothstep(0.3, 0.9, arrive))) * (1.0 + 0.9 * leave * leave);
   float green = K_greenery;
   float rain = K_rain;
   float rainWet = uWeather.x;

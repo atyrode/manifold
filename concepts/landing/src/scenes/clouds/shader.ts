@@ -401,24 +401,26 @@ vec4 cloudsWing(vec2 w, float cellW, vec3 rdCam, Sky sky, CloudsLight li, float 
 // reverse: a bank and a sinking back into the tops under streaming vapour. At rest (passageIn() 1,
 // passageOut() 0) every term below is exactly 0.
 
-// Climb progress 0..1 (1 at rest); the dissolve over the first moments is spent in the cloud.
+// Climb progress 0..1 (1 at rest), under way from the entrance's first frame and level a little
+// before its end.
 float cloudsLevel() {
-  return clamp((passageIn() - 0.05) / 0.9, 0.0, 1.0);
+  return clamp(passageIn() / 0.95, 0.0, 1.0);
 }
 
-// 1 deep in the tops (starting the climb, ending the dive) .. 0 at cruise altitude.
+// 1 deep in the tops (starting the climb, ending the dive) .. 0 at cruise altitude: the climb leaves
+// them fast and slows as it levels off; the dive gathers pace into them.
 float cloudsSink() {
-  float x = cloudsLevel();
+  float a = 1.0 - cloudsLevel();
   float po = passageOut();
-  return clamp(1.0 - x * x * (3.0 - 2.0 * x) + po * po, 0.0, 1.0);
+  return clamp(a * a * a + po * po, 0.0, 1.0);
 }
 
 // How far the world has slid past: grows through the exit (accelerating into the cloud), and runs
 // forward through the entrance from a negative start, slowing as the aircraft levels off.
 float cloudsStream() {
-  float x = cloudsLevel();
+  float a = 1.0 - cloudsLevel();
   float po = passageOut();
-  return 2.0 * po * po - 2.6 * (1.0 - x * x * (3.0 - 2.0 * x));
+  return 2.0 * po * po - 2.6 * a * a * a;
 }
 
 // The horizon's extra roll in radians: the climb's tilt rocks level past a hair, the exit banks.
@@ -438,9 +440,12 @@ float cloudsWingFlex() {
   return 0.08 * a * a * cos(3.5 * x) - 0.05 * po * po;
 }
 
-// How much vapour is about: thick when the climb starts, thinning away; building through the exit.
+// How much vapour is about: thick when the climb starts, thinning away fast and then slowly as the
+// tops sink below; building ever faster through the exit.
 float cloudsWispAmount() {
-  return max(1.0 - smoothstep(0.2, 0.85, passageIn()), smoothstep(0.3, 1.0, passageOut()));
+  float a = 1.0 - cloudsLevel();
+  float x = clamp((passageOut() - 0.3) / 0.7, 0.0, 1.0);
+  return max(a * a * a, x * x);
 }
 
 // Streaks of vapour streaming sideways over the pane in two layers, the nearer one faster. Coverage

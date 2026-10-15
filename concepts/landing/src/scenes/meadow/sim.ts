@@ -147,9 +147,13 @@ export const MEADOW_PASSAGE = { enter: 3, exit: 1.6 } as const;
 /**
  * The passage's choreography (shared with shader.ts), in seconds into the entrance or the exit.
  * The camera's height above rest, world units: it starts `dropIn` up (the sky and the far field in
- * view, the near grass below the frame), lowers into the grass from `descentFrom` over
- * `descentLength`, eased and settling a little past rest (`settle`: the phase of the cosine that
- * overshoots); and leaving it rises from `liftFrom` over `liftLength`, accelerating, to `dropOut`.
+ * view, the near grass below the frame) already on its way down, lowers into the grass over the
+ * first `descentLength` seconds, braking (ease-out) and settling a little past rest (`settle`: the
+ * phase of the cosine that overshoots); and leaving it rises from `liftFrom` over `liftLength`,
+ * accelerating to the end, to `dropOut`. Both are eased in the height as the picture sees it,
+ * drop / (drop + `near`): the near grass fills the view while the eye is within `near` of rest and
+ * moves the picture far more than the same rise does higher up, so a height eased in that measure
+ * moves the picture at the pace the ease gives (fastest as the scene arrives, and as it leaves).
  * The passage gust is a front like the 'now' gust (its shape, wobble and the same ground), with its
  * own gain, leading edge and short tail so it is a wave and not a flood: it starts `gustFrom` along
  * the wind (clear of the view, to the left), sweeps at `gustInSpeed` from `gustInAt` while arriving
@@ -159,8 +163,8 @@ export const MEADOW_PASSAGE = { enter: 3, exit: 1.6 } as const;
 export const MEADOW_MOVE = {
   dropIn: 1.35,
   dropOut: 2.4,
-  descentFrom: 0.35,
-  descentLength: 2.2,
+  near: 0.5,
+  descentLength: 2.55,
   settle: 0.8 * Math.PI,
   liftFrom: 0.25,
   liftLength: 1.35,
@@ -181,9 +185,14 @@ export const MEADOW_MOVE = {
 /** How far above its rest height the camera is, world units: 0 at rest. Shader: meadowDrop. */
 export function meadowDrop(enter: number, exit: number): number {
   const M = MEADOW_MOVE;
-  const down = smoothstep(0, 1, (enter * MEADOW_PASSAGE.enter - M.descentFrom) / M.descentLength);
+  const a = clamp((enter * MEADOW_PASSAGE.enter) / M.descentLength, 0, 1);
+  const down = 1 - (1 - a) * (1 - a);
   const up = clamp((exit * MEADOW_PASSAGE.exit - M.liftFrom) / M.liftLength, 0, 1);
-  return M.dropIn * (1 - down) * Math.cos(down * M.settle) + M.dropOut * up * up;
+  // The height as the picture sees it (drop / (drop + near)), eased, and back to world units.
+  const seen =
+    (M.dropIn / (M.dropIn + M.near)) * (1 - down) * Math.cos(down * M.settle) +
+    (M.dropOut / (M.dropOut + M.near)) * up * up;
+  return (M.near * seen) / (1 - seen);
 }
 
 /** The passage gust's front (ground distance along the wind) and amplitude (0: none, as at rest). */

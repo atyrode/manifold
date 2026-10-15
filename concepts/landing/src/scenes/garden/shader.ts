@@ -30,7 +30,6 @@ import {
   GARDEN_LEAF_SLOTS,
   GARDEN_MARK,
   GARDEN_MOSS,
-  GARDEN_PASSAGE,
   GARDEN_RECORD_ROW,
   GARDEN_STONES,
   GARDEN_WOODS,
@@ -108,7 +107,6 @@ const float GARDEN_EYE_Y = ${glslFloat(GARDEN.eyeY)};
 const float GARDEN_SPAN = ${glslFloat(GARDEN.span)};
 const float GARDEN_HIGH = ${glslFloat(GARDEN.overheadHeight)};
 const float GARDEN_ABOVE_Y = ${glslFloat(GARDEN.overheadY)};
-const float GARDEN_EXIT = ${glslFloat(GARDEN_PASSAGE.exit)};
 const float GARDEN_GUST_RISE = ${glslFloat(GARDEN_GUST_RISE)};
 // Weather scales. The library's ground functions work in metres: a garden depth is ten. A splash
 // unit (garden depths: its crowns some 5-10 cm, larger than life so they hold a few cells); the
@@ -327,11 +325,13 @@ vec3 gardenSway(int k, float tm, float t, float gust) {
 }
 
 // How far from where they hang the maple's boughs stand at point p while the scene comes in or goes
-// out (nothing at rest: the early return keeps every term exact). They swing in from over the top
-// of the frame, those reaching furthest from the trunk a little later, overshoot a touch and settle
-// with a last sway; on leaving, the gust takes the far ones first and carries them off up and
-// downwind. The same offset for any point of a bough, so limbs and foliage stay joined. Veranda: up
-// and aside; from above: away from the veranda, up the frame.
+// out (nothing at rest: the early return keeps every term exact). They swing in from just over the
+// top of the frame, already on their way down (the spring is picked up a share of the way in, where
+// the lowest leaves reach the edge), all at once, those reaching furthest from the trunk settling a
+// little later, overshoot a touch and settle with a last sway; on leaving, the gust takes the far
+// ones first and carries them up and downwind, faster and faster, the lowest leaves reaching the
+// top of the frame as the exit ends. The same offset for any point of a bough, so limbs and foliage
+// stay joined. Veranda: up and aside; from above: away from the veranda, up the frame.
 vec3 gardenBough(vec3 p) {
   float pin = passageIn();
   float pout = passageOut();
@@ -340,17 +340,17 @@ vec3 gardenBough(vec3 p) {
   float weight = 0.55 + 0.45 * reach;
   float dir = K_wind < -0.05 ? -1.0 : 1.0;
   // In: how far still out (1 .. 0, past 0 a little), and the settling sway.
-  float xin = clamp((pin - 0.2 * reach) / 0.8, 0.0, 1.0);
+  float xin = 0.2 + 0.8 * clamp(pin / (0.8 + 0.2 * reach), 0.0, 1.0);
   float u = xin - 1.0;
   float away = -(2.7 * u * u * u + 1.7 * u * u);
   float rock = sin(xin * 11.0 + 2.0 * reach) * (1.0 - xin) * (1.0 - xin);
   // Out: how far gone (0 .. 1), and the toss as the gust takes them.
   float xout = clamp((pout - 0.18 * (1.0 - reach)) / 0.82, 0.0, 1.0);
-  float gone = xout * xout * (3.0 - 2.0 * xout);
+  float gone = xout * xout * xout;
   float toss = sin(xout * 9.0 + 3.0 * reach) * 4.0 * xout * (1.0 - xout);
   float aside = -0.12 * away + 0.03 * rock + dir * (0.1 * gone + 0.03 * toss);
-  if (K_camera > 0.5) return weight * vec3(aside, 0.4 * away + 0.45 * gone, 0.0);
-  return weight * vec3(aside, 0.0, 0.3 * away + 0.012 * rock + 0.34 * gone);
+  if (K_camera > 0.5) return weight * vec3(aside, 0.4 * away + 0.225 * gone, 0.0);
+  return weight * vec3(aside, 0.0, 0.3 * away + 0.012 * rock + 0.17 * gone);
 }
 
 // Screen uv of garden point p in this view, and screen heights per garden depth there (z).
@@ -579,7 +579,8 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   bool above = K_camera > 0.5;
   float season = floor(K_season + 0.5);
   float winter = step(2.5, season);
-  float gust = max(windGustPulse(sinceTrigger(0), GARDEN_GUST_RISE), windGustPulse(passageOut() * GARDEN_EXIT, GARDEN_GUST_RISE)) * (K_wind < -0.05 ? -1.0 : 1.0);
+  // The exit's gust rises over the whole exit, at its strongest as the scene goes (sim.ts #passage).
+  float gust = max(windGustPulse(sinceTrigger(0), GARDEN_GUST_RISE), windGustPulse(passageOut() * GARDEN_GUST_RISE, GARDEN_GUST_RISE)) * (K_wind < -0.05 ? -1.0 : 1.0);
   float markSize = K_mark > 0.0 ? GARDEN_MARK_SIZE.x + GARDEN_MARK_SIZE.y * K_mark : 0.0;
   float clock = texelFetch(uSim1, ivec2(GARDEN_ISLAND_COUNT, 0), 0).x;
 

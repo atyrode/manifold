@@ -180,35 +180,36 @@ const POUR_RADIUS = 0.03;
 export const CHLADNI_ENTER = 3;
 export const CHLADNI_EXIT = 1.6;
 /**
- * The entrance, in seconds: sand is poured over the still plate in a front sweeping down the slope
- * (POUR_FRONT of a grain's landing time follows the front, the rest is its own), then the plate
+ * The entrance, in seconds: sand is poured over the still plate from the first moment, in a front
+ * sweeping down the slope that sets off fast and slows toward the foot (POUR_FRONT of a grain's
+ * landing time follows the front, the rest is its own; the last land by POUR_SPAN), then the plate
  * begins to sing and its swing swells to full, and the sand runs into the lines at ARRIVE_PACE
  * times its pace, easing back to 1 as the entrance ends. The sparse strewn sand is drawn as
  * single grains (the shader's veil) until it has gathered, VEIL_FROM..VEIL_TO.
  */
-const POUR_FROM = 0.4;
 const POUR_SPAN = 0.9;
 const POUR_FRONT = 0.8;
-const SING_FROM = 1.15;
-const SING_TO = 2.1;
+const SING_FROM = 0.3;
+const SING_TO = 1.25;
 const ARRIVE_PACE = 3.5;
 const VEIL_FROM = 2;
 const VEIL_TO = 2.9;
 /**
- * The exit: the plate stops singing and tilts down toward SLIDE (a unit vector, plate units) and
- * the sand lets go: a grain slips from SLIP_FROM + SLIP_SPAN·(its slot on the slope, mostly: the
- * downhill sand first, then a little by its own grip), then slides at SLIDE_ACCEL (plate units
- * per s²) off the plate's edge. SLIDE_SPAN is the plate's longest reach along SLIDE.
+ * The exit: the plate stops singing and tilts down toward SLIDE (a unit vector, plate units),
+ * ever faster, and the sand lets go: a grain slips from SLIP_FROM + SLIP_SPAN·(its slot on the
+ * slope, mostly: the downhill sand first, then a little by its own grip), then slides at
+ * SLIDE_ACCEL (plate units per s²) off the plate's edge. SLIDE_SPAN is the plate's longest reach
+ * along SLIDE. The sand high on the slope is still sliding, at its fastest, as the exit ends.
  */
 const SLIDE_X = 0.3827;
 const SLIDE_Y = -0.9239;
 const SLIDE_SPAN = 1.31;
-const SLIDE_ACCEL = 5;
+const SLIDE_ACCEL = 2;
 const SLIP_FROM = 0.1;
-const SLIP_SPAN = 0.4;
+const SLIP_SPAN = 0.7;
 const SLIP_ROW = 0.7;
 /** Memory (s) of the sand field as shown while it comes and goes: closer to the grains than SHOWN_MEMORY. */
-const PASSAGE_MEMORY = 0.3;
+const PASSAGE_MEMORY = 0.15;
 /** The grain count the shader's veil is tuned for; it is scaled for other counts. */
 const STREW_REFERENCE = 25000;
 
@@ -602,7 +603,7 @@ class ChladniSim implements SceneSim {
         // The plate begins to sing, its swing swelling to the knob's.
         this.#amp *= smoothstep(SING_FROM, SING_TO, this.#clock);
         this.#pace = 1 + (ARRIVE_PACE - 1) * (1 - smoothstep(0.8, 1, enter));
-        if (this.#clock >= POUR_FROM + POUR_SPAN) this.#landing = false;
+        if (this.#clock >= POUR_SPAN) this.#landing = false;
       }
     }
 
@@ -677,13 +678,14 @@ class ChladniSim implements SceneSim {
     // The plate stops singing as it tilts.
     state[2] = leaving ? this.#amp * (1 - smoothstep(0, 0.25, exit)) : this.#amp;
     state[3] = this.#fromMark * (1 - s) + this.#toMark * s;
-    // The strewn veil: the sand drawn as single grains while it is spread thin, and the plate's tilt.
+    // The strewn veil: the sand drawn as single grains while it is spread thin, and the plate's tilt
+    // (gathering speed to the end).
     state[4] = leaving
       ? smoothstep(0, 0.2, exit)
       : this.#arriving
         ? 1 - smoothstep(VEIL_FROM, VEIL_TO, this.#clock)
         : 0;
-    state[5] = leaving ? smoothstep(0, 0.7, exit) : 0;
+    state[5] = leaving ? exit * exit : 0;
     state[6] = (STREW_REFERENCE / this.#count) * (this.#round ? 4 / Math.PI : 1);
     state[7] = this.#grain.talus / SAND.talus;
     this.#stateTexture.upload(state);
@@ -770,8 +772,10 @@ class ChladniSim implements SceneSim {
         0,
         1,
       );
-      this.#land[i] =
-        POUR_FROM + POUR_SPAN * (POUR_FRONT * row + (1 - POUR_FRONT) * hash31(i, 0, 0x51ed));
+      // The front reaches share `reach` of the way down at POUR_SPAN·(1 - ∛(1 - reach)): it
+      // covers 1 - (1 - t / POUR_SPAN)³ by t, fast at first and slowing toward the foot.
+      const reach = POUR_FRONT * row + (1 - POUR_FRONT) * hash31(i, 0, 0x51ed);
+      this.#land[i] = POUR_SPAN * (1 - Math.cbrt(1 - reach));
     }
   }
 

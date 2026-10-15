@@ -651,9 +651,8 @@ interface Passage {
   aspect: number;
 }
 
-/** The machine sets off this long after the table is laid and takes this long to arrive (well inside the entrance). */
-const ARRIVE_DELAY = 0.15;
-const ARRIVE_SECONDS = 1.7;
+/** The machine sets off as the table is laid and takes this long to arrive (well inside the entrance). */
+const ARRIVE_SECONDS = 1.85;
 /** How far past the frame's edge (field units) a machine starts from, and the straight edge starts and ends. */
 const OFF_FRAME = 0.08;
 /** The ball ploughs its roll-in in strokes this long (field units). */
@@ -680,10 +679,10 @@ function frameHalf(aspect: number): { w: number; h: number } {
   return { w: (0.5 * aspect) / scale, h: 0.5 / scale };
 }
 
-/** Rolls in fast and settles: the mean of an ease-out and a smoothstep. */
-const settleEase = (u: number): number => 0.5 * (smoothstep(0, 1, u) + 1 - (1 - u) * (1 - u));
-/** Sets off gently and goes on at pace: the mean of an ease-in and a smoothstep. */
-const departEase = (u: number): number => 0.5 * (smoothstep(0, 1, u) + u * u);
+/** Comes in at speed and settles. */
+const settleEase = (u: number): number => 1 - (1 - u) * (1 - u);
+/** Sets off gently and gathers pace to the end. */
+const departEase = (u: number): number => u * u;
 
 /**
  * The ball's roll-in: from off the frame's side to where its track starts, then along the track as
@@ -1198,7 +1197,7 @@ class Ball {
     const entry = this.#entry;
     const track = this.#track;
     if (entry === undefined || track === undefined) return;
-    const u = clamp((arrive - ARRIVE_DELAY) / ARRIVE_SECONDS, 0, 1);
+    const u = clamp(arrive / ARRIVE_SECONDS, 0, 1);
     const from = entry.at;
     const goal = Math.max(from, settleEase(u) * entry.total);
     const n = Math.max(1, Math.ceil((goal - from) / ROLL_STEP));
@@ -1755,7 +1754,7 @@ class Pendulum {
   #carryIn(arrive: number): void {
     const arrival = this.#arrival;
     if (arrival === undefined) return;
-    const u = clamp((arrive - ARRIVE_DELAY) / ARRIVE_SECONDS, 0, 1);
+    const u = clamp(arrive / ARRIVE_SECONDS, 0, 1);
     if (u >= 1) {
       this.#arrival = undefined;
       this.#offX = 0;

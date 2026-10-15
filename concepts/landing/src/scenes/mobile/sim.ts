@@ -129,8 +129,8 @@ class MobileSim implements SceneSim {
     const passing = enter < 1 || exit > 0;
     const motor = knobs.value(frame, "motor");
     const mobile = this.#build(frame, motor);
-    // On the way out the motors wind down.
-    this.#drive(mobile, motor, exit > 0 ? 1 - smoothstep(0, 0.8, exit) : 1);
+    // On the way out the motors wind down, ever faster, until the exit ends.
+    this.#drive(mobile, motor, exit > 0 ? 1 - exit * exit : 1);
     const gusts = knobs.value(frame, "gusts");
     const power = 0.55 + 0.45 * knobs.amount(frame, "gusts");
     const mean = gustMean(knobs.amount(frame, "gusts"));

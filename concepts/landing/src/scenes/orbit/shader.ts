@@ -143,12 +143,20 @@ void orbitRingOver(inout Shade o, float ring, float ringInk) {
   else o.accent = max(o.accent, ring * 0.75);
 }
 
-// Share of a body's way still to go as the camera swings it in and settles: 1 at the start, easing
-// out through a slight overshoot (about 2%) to exactly 0 once s reaches 0.85 of the entrance.
-float orbitSettle(float s) {
-  float w = smoothstep(0.0, 0.85, s);
-  float u = 1.0 - w;
-  return u * u * (1.0 - 1.9 * w);
+// Share of a body's way still to go as the camera swings it in and settles: 1 at the start, where
+// it is moving fastest, easing out through a slight overshoot (about 3%) to exactly 0 once s
+// reaches end.
+float orbitSettle(float s, float end) {
+  float a = 1.0 - min(s / end, 1.0);
+  float u = a * a;
+  return u * u * (1.0 - 1.9 * (1.0 - u));
+}
+
+// Half the width the planet and its glow (0.15 beyond the limb) show across the rows |y| <= halfH
+// with its centre at height cy: how far past the frame's side the planet stands just out of sight.
+float orbitReach(float cy, float r, float halfH) {
+  float off = max(abs(cy) - halfH, 0.0);
+  return sqrt(max((r + 0.15) * (r + 0.15) - off * off, 0.0));
 }
 
 // How far the camera pulls back as the planet leaves (planet-space scale at the end: 1 + this).
@@ -157,13 +165,13 @@ const float ORBIT_PULL = 0.35;
 const float ORBIT_SPIN_IN = 6.0;
 const float ORBIT_SPIN_OUT = 5.0;
 
-// The planet's turn during the passage, with inertia: entering, it is flung in spinning, the spin
-// peaking just after the slide's fastest and coasting on past the moment it settles before it
-// slows to its own rotation; leaving, it starts from that rotation and spins up faster and faster
-// as it goes. drag 0 is the surface, 1 the cloud decks, which are dragged round a little behind it.
-// Exactly 0 at rest; turns the same way as its own rotation and its travel.
+// The planet's turn during the passage, with inertia: entering, it is flung in spinning at its
+// fastest and coasts on past the moment the slide settles before it slows to its own rotation;
+// leaving, it starts from that rotation and spins up faster and faster as it goes. drag 0 is the
+// surface, 1 the cloud decks, which are dragged round a little behind it. Exactly 0 at rest; turns
+// the same way as its own rotation and its travel.
 float orbitSpin(float enter, float leave, float drag) {
-  float coast = 1.0 - smoothstep(0.1 * drag, 1.0, enter);
+  float coast = pow(1.0 - enter, 2.0 - 0.4 * drag);
   float spinUp = leave * leave * (1.0 - 0.15 * drag);
   return ORBIT_SPIN_OUT * spinUp - ORBIT_SPIN_IN * coast;
 }
@@ -178,10 +186,11 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   float r = 1.12 * K_planet;
   vec2 c = vec2(K_planetX * aspect * 0.5, K_planetY);
 
-  // Passage: the camera swings round so the planet slides in from the right and settles, the moons
-  // catch up along their orbits; leaving, the camera pulls back as the planet slides off to the
-  // left. cam shifts the planet, zoom pulls the camera back, spin turns the surface (and, lagging,
-  // the clouds) with inertia along with the swing. All of it is exactly 0 / 1 at rest.
+  // Passage: the camera swings round so the planet slides in from just past the right edge and
+  // settles, the moons catch up along their orbits; leaving, the camera pulls back as the planet
+  // slides off to the left, just out of sight as the exit ends. cam shifts the planet, zoom pulls
+  // the camera back, spin turns the surface (and, lagging, the clouds) with inertia along with the
+  // swing. All of it is exactly 0 / 1 at rest.
   vec2 cam = vec2(0.0);
   float zoom = 1.0;
   float spin = 0.0;
@@ -189,15 +198,15 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   float moonIn = 0.0;
   float moonOut = 0.0;
   if (passageIn() < 1.0 || passageOut() > 0.0) {
-    float settle = orbitSettle(passageIn());
-    float leave = smoothstep(0.0, 1.0, passageOut());
-    vec2 fromSide = vec2(aspect * 0.5 + r + 0.15 - c.x, -0.12);
-    vec2 toSide = vec2(c.x + (1.0 + ORBIT_PULL) * aspect * 0.5 + r + 0.15, 0.0);
+    float settle = orbitSettle(passageIn(), 0.85);
+    float leave = passageOut() * passageOut() * passageOut();
+    vec2 fromSide = vec2(aspect * 0.5 + orbitReach(c.y - 0.12, r, 0.5) - c.x, -0.12);
+    vec2 toSide = vec2(c.x + (1.0 + ORBIT_PULL) * aspect * 0.5 + orbitReach(c.y, r, 0.5 + 0.5 * ORBIT_PULL), 0.0);
     cam = fromSide * settle - toSide * leave;
     zoom = 1.0 + ORBIT_PULL * leave;
     spin = orbitSpin(passageIn(), passageOut(), 0.0);
     cloudSpin = orbitSpin(passageIn(), passageOut(), 1.0);
-    moonIn = orbitSettle(clamp((passageIn() - 0.12) / 0.88, 0.0, 1.0));
+    moonIn = orbitSettle(passageIn(), 0.87);
     moonOut = leave;
     c += cam;
   }

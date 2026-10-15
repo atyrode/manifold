@@ -3,7 +3,8 @@
 //   uSim0  the film: r thickness (µm), g cover 0..1; missing without float render targets, when
 //          filmAnalytic stands in
 //   uSim1  the interference colours by thickness (linear sRGB, 1 = the first-order white)
-//   uSim2  texel 0: the break (q), seconds since, 1 while bursting
+//   uSim2  texel 0: the break (q), seconds since, 1 while bursting (2 while the exit paces the
+//          burst: z is then the share of the rim's way to the film's far point, sim.ts filmFarPoint)
 //          texel 1: the drawing line (or the blown bubble's radius), 1 while drawing, unused, 1 while there is a film
 //   uSim3  r: seconds after the break the burst's rim reaches each point, made as the film breaks
 //          (missing without float render targets: the rim then runs straight out at the local speed)
@@ -91,6 +92,13 @@ Shade sceneFilm(vec2 uv, vec2 cell, float t) {
   if (uSimOn.z > 0.5) {
     hole = texelFetch(uSim2, ivec2(0, 0), 0);
     life = texelFetch(uSim2, ivec2(1, 0), 0);
+  }
+  // A burst the exit paces: its rim clock is the given share of when the rim reaches the far point.
+  if (hole.w > 1.5) {
+    vec2 far = filmFarPoint(hole.xy, shape, ol);
+    hole.z *= uSimOn.w > 0.5
+      ? texture(uSim3, vec2(far.x / aspect + 0.5, far.y + 0.5)).r
+      : distance(far, hole.xy) / filmRimSpeed(filmAnalytic(far, ol, K_filmSeed, uMotionTime));
   }
   bool drawing = life.y > 0.5;
   // A bubble being blown grows from nothing.

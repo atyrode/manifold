@@ -149,10 +149,12 @@ vec3 marbleSheen(vec2 p, float aspect, vec2 swell, vec2 wake) {
 
 // The exit's sheet of paper: laid on the tray from one edge, then peeled off from that edge,
 // taking the ink and leaving a clean bath. Both fronts sweep the frame along a slightly tilted
-// line whose edge wanders a little (still: it never crawls). Shares of passageOut(): the sheet is
-// down by MARBLE_LAID and starts to peel at MARBLE_LIFT (a print is already down, so it peels from
-// MARBLE_PRINT_LIFT); the strip rolled up behind the peeling edge, MARBLE_CURL wide, shows the
-// pattern on the sheet's underside.
+// line whose edge wanders a little (still: it never crawls), each setting off at half its mean
+// pace while still beyond the near edge and gathering speed to one and a half times it as it
+// leaves the far one, so the peel takes over as the sheet comes down and is at full speed as the
+// exit ends. Shares of passageOut(): the sheet is down by MARBLE_LAID and starts to peel at
+// MARBLE_LIFT (a print is already down, so it peels from MARBLE_PRINT_LIFT); the strip rolled up
+// behind the peeling edge, MARBLE_CURL wide, shows the pattern on the sheet's underside.
 const float MARBLE_LAID = 0.42;
 const float MARBLE_LIFT = 0.36;
 const float MARBLE_PRINT_LIFT = 0.06;
@@ -178,8 +180,9 @@ MarbleSheet marbleSheet(vec2 p, vec2 cell, float pout, bool print) {
   float layT = print ? 1.0 : clamp(pout / MARBLE_LAID, 0.0, 1.0);
   float liftFrom = print ? MARBLE_PRINT_LIFT : MARBLE_LIFT;
   float liftT = clamp((pout - liftFrom) / (1.0 - liftFrom), 0.0, 1.0);
-  float front = mix(-reach - 0.1, reach + 0.1, smoothstep(0.0, 1.0, layT));
-  float peel = mix(-reach - MARBLE_CURL - 0.08, reach + 0.08, smoothstep(0.0, 1.0, liftT));
+  // Each front ends just past the far edge (the wander reaches 0.033), still moving as it leaves.
+  float front = mix(-reach - 0.1, reach + 0.05, layT * (0.5 + 0.5 * layT));
+  float peel = mix(-reach - MARBLE_CURL - 0.08, reach + 0.05, liftT * (0.5 + 0.5 * liftT));
   float th2 = edgeThreshold(cell, vec2(17.0, 5.0));
 
   MarbleSheet sh;

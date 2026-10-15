@@ -145,14 +145,20 @@ const ARRIVE_SECONDS = 0.8;
 export const MARBLE_PASSAGE: { enter: number; exit: number } = { enter: 3.2, exit: 1.6 };
 /**
  * An entered scene plays the first sheet's sprinkling live instead of prerolling it out of sight and
- * fading it up. It starts SPRINKLE_DELAY in, spreads the ground drop alone over SPRINKLE_LEAD_SECONDS
- * (it is the bath the colours land on), then lands the rest at a nearly even rate over the remaining
- * time, leaving SPRINKLE_SETTLE of the entrance for the last drops to spread out.
+ * fading it up. From the first moment it spreads the ground drop alone over SPRINKLE_LEAD_SECONDS
+ * (it is the bath the colours land on), then lands the rest over the remaining time, fastest at
+ * first and slowing to the end, leaving SPRINKLE_SETTLE of the entrance for the last drops to
+ * spread out. The ground drop has covered the view by SPRINKLE_GROUND_VIEW of its routine time
+ * (whatever the aspect and where it lands). That much takes SPRINKLE_GROUND_SHARE of the lead,
+ * square in time: a drop's area grows with its routine time, so its rim sets off at an even pace
+ * (not in one jump) and slows as it fills the view. The rest, out of sight, is made up in the
+ * lead's last moments, so the colours follow as the flood fills the view.
  */
-const SPRINKLE_DELAY = 0.1;
 const SPRINKLE_SETTLE = 0.2;
 const SPRINKLE_LEAD_SECONDS = 0.8;
-const SPRINKLE_SECONDS = MARBLE_PASSAGE.enter - SPRINKLE_DELAY - SPRINKLE_SETTLE;
+const SPRINKLE_SECONDS = MARBLE_PASSAGE.enter - SPRINKLE_SETTLE;
+const SPRINKLE_GROUND_VIEW = 0.35;
+const SPRINKLE_GROUND_SHARE = 0.9;
 /** Tool fade in and out, seconds. */
 const TOOL_FADE = 0.3;
 /** Share of a stroke's time the tool spends getting up to its even pace, and again slowing down. */
@@ -877,16 +883,25 @@ const markHeight = (amount: number): number => 0.35 + 0.45 * amount;
 
 /**
  * Routine time the entrance's sprinkling has reached `seconds` into the entrance: the ground drop
- * spreads alone for SPRINKLE_LEAD_SECONDS, then the drops flicked onto it land at a nearly even
- * rate (a touch slower at both ends, so the first are seen singly and the last settle).
+ * spreads alone for SPRINKLE_LEAD_SECONDS (in view for most of it, see SPRINKLE_GROUND_VIEW), then
+ * the drops flicked onto it land fastest at first and ever slower, so they arrive on the flood's
+ * heels and the last settle.
  */
 function sprinkleAt(seconds: number, lead: number, sprinkled: number): number {
-  const t = seconds - SPRINKLE_DELAY;
-  if (!(t > 0)) return 0;
+  if (!(seconds > 0)) return 0;
   const leadSeconds = lead > 0 ? SPRINKLE_LEAD_SECONDS : 0;
-  if (t < leadSeconds) return lead * (t / leadSeconds);
-  const u = clamp((t - leadSeconds) / (SPRINKLE_SECONDS - leadSeconds), 0, 1);
-  return lead + (sprinkled - lead) * (0.7 * u + 0.3 * smoothstep(0, 1, u));
+  if (seconds < leadSeconds) {
+    const u = seconds / leadSeconds;
+    const v = u / SPRINKLE_GROUND_SHARE;
+    const shown =
+      v < 1
+        ? SPRINKLE_GROUND_VIEW * v * v
+        : SPRINKLE_GROUND_VIEW +
+          ((1 - SPRINKLE_GROUND_VIEW) * (u - SPRINKLE_GROUND_SHARE)) / (1 - SPRINKLE_GROUND_SHARE);
+    return lead * shown;
+  }
+  const u = clamp((seconds - leadSeconds) / (SPRINKLE_SECONDS - leadSeconds), 0, 1);
+  return lead + (sprinkled - lead) * (1 - (1 - u) * (1 - u));
 }
 
 interface ShownTool {

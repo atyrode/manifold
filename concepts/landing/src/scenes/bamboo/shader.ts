@@ -81,10 +81,10 @@ const int BAMBOO_RIPPLES = ${BAMBOO_RIPPLES};
 const int BAMBOO_LEAVES = ${BAMBOO_MAX_LEAVES};
 
 // Passage (BAMBOO_PASSAGE, in seconds). The entrance: culms near the frame's edges start leaned out
-// of frame (BAMBOO_LEAN_IN metres of deflection at BAMBOO_SWAY_HEIGHT) and sway in, settling with a
-// small swing past upright, side by side layer by layer; the spout's first water leaves its lip at
-// BAMBOO_STREAM_START and falls into the tube. The exit: a gust front sweeps downwind across the
-// grove and leaves the culms bowed BAMBOO_LEAN_OUT metres.
+// of frame (BAMBOO_LEAN_IN metres of deflection at BAMBOO_SWAY_HEIGHT) and sway in, already moving,
+// settling with a small swing past upright, side by side layer by layer; the spout's first water
+// leaves its lip at BAMBOO_STREAM_START and falls into the tube. The exit: a gust front sweeps
+// downwind across the grove and bows the culms, faster and faster, to BAMBOO_LEAN_OUT metres.
 const float BAMBOO_ENTER = ${glslFloat(BAMBOO_PASSAGE.enter)};
 const float BAMBOO_EXIT = ${glslFloat(BAMBOO_PASSAGE.exit)};
 const float BAMBOO_STREAM_START = ${glslFloat(BAMBOO_STREAM_START)};
@@ -229,25 +229,26 @@ vec3 bambooLeafColor(float tone, vec2 at, float z) {
 // of a stem standing at screen x xs in layer 'layer'; exactly 0 at rest. Stems are moved whole, per
 // culm, so their edges are hardened per cell like the sway's.
 // Entrance: stems in the outer half of the frame start leaned out of it, more the nearer the edge,
-// and sway in with a small swing past upright; the right edge a beat after the left, near rows first
-// (done by 2.75 s). Exit: a gust front crosses the grove downwind (upwind edge at 0.1 s, the far
-// edge by 1.4 s), each stem bowing to BAMBOO_LEAN_OUT with a little spring past it.
+// and sway in at speed, braking, with a small swing past upright; all set off together, the right
+// edge settling a beat after the left, near rows first (done by 2.6 s). Exit: a gust front crosses
+// the grove downwind (upwind edge at 0.1 s, the far edge by 0.8 s), each stem bowing from where it
+// stands, gathering speed until the exit ends, to BAMBOO_LEAN_OUT.
 float bambooPassLean(float xs, int layer) {
   float fl = float(layer);
   float lean = 0.0;
   if (bambooEnterT < BAMBOO_ENTER) {
     float edgeW = smoothstep(0.2, 1.0, clamp(abs(xs) / (0.5 * bambooAspect), 0.0, 1.0));
-    float delay = (xs > 0.0 ? 0.3 : 0.0) + 0.05 * fl;
-    float a = clamp((bambooEnterT - 0.15 - delay) / 2.1, 0.0, 1.0);
-    float e = a * a * (3.0 - 2.0 * a);
+    float span = 2.1 + (xs > 0.0 ? 0.3 : 0.0) + 0.05 * fl;
+    float a = clamp(bambooEnterT / span, 0.0, 1.0);
+    float e = 1.0 - (1.0 - a) * (1.0 - a);
     lean += (xs > 0.0 ? 1.0 : -1.0) * BAMBOO_LEAN_IN * edgeW * (1.0 - e) * cos(3.0 * e);
   }
   if (bambooExitT > 0.0) {
     float heading = K_wind < 0.0 ? -1.0 : 1.0;
     float pos = clamp(0.5 + heading * xs / bambooAspect, 0.0, 1.0);
-    float b = clamp((bambooExitT - 0.1 - 0.55 * pos - 0.04 * fl) / 0.7, 0.0, 1.0);
-    float c = b - 1.0;
-    lean += heading * BAMBOO_LEAN_OUT * (1.0 + 2.3 * c * c * c + 1.3 * c * c);
+    float from = 0.1 + 0.55 * pos + 0.04 * fl;
+    float b = clamp((bambooExitT - from) / (BAMBOO_EXIT - from), 0.0, 1.0);
+    lean += heading * BAMBOO_LEAN_OUT * b * b;
   }
   return lean;
 }

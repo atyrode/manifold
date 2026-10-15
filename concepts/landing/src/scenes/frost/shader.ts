@@ -442,8 +442,10 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   // The moon in its phase: its disc, halo and light on the land, the clouds and the room follow.
   Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : FROST_START;
-  // 0 on the glass as the entrance opens, exactly 1 for every clock at rest.
-  float emerge = smoothstep(FROST_EMERGE_FROM, FROST_EMERGE_TO, clock);
+  // 0 on the glass as the entrance opens, forming fast at first and settling; exactly 1 for every
+  // clock at rest.
+  float unformed = 1.0 - clamp((clock - FROST_EMERGE_FROM) / (FROST_EMERGE_TO - FROST_EMERGE_FROM), 0.0, 1.0);
+  float emerge = 1.0 - unformed * unformed;
   // Seconds the fur frost takes to spread a frame height: the style knob, fern to fur.
   float slow = FROST_FUR_FERN * pow(FROST_FUR_FUR / FROST_FUR_FERN, K_style);
 

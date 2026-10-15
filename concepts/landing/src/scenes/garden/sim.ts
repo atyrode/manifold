@@ -359,10 +359,9 @@ const GUST_CARRY = 0.4;
 type SpawnMode = "entrance" | "flurry";
 
 /**
- * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the exit's, to
- * time the gust). Entrance: the maple's boughs sway in from the top of the frame and a few leaves
- * drift down and land. Exit: a gust blows a flurry of leaves across the gravel while the boughs
- * sway out of the frame.
+ * Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the maple's boughs sway
+ * in from the top of the frame and a few leaves drift down and land. Exit: a gust, rising over the
+ * whole exit, blows a flurry of leaves across the gravel while the boughs sway up out of the frame.
  */
 export const GARDEN_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 /**
@@ -1848,9 +1847,10 @@ class GardenSim implements SceneSim {
 
   /**
    * The scene's passage. A sim built while the scene comes in lets a few leaves go from the boughs
-   * as it arrives; once it leaves, a gust (the "now" gust, on the exit's clock, so the shader's
-   * boughs lean with it) blows a flurry of leaves in from upwind and carries off the ones lying on
-   * the gravel. Nothing here runs at rest.
+   * as it arrives; once it leaves, a gust (the "now" gust, its rise drawn out over the whole exit so
+   * it is at its strongest as the scene goes; the shader's boughs lean with it on the same clock)
+   * blows a flurry of leaves in from upwind and carries off the ones lying on the gravel. Nothing
+   * here runs at rest.
    */
   #passage(frame: SimFrame, settings: Settings): void {
     const { enter, exit } = frame.passage;
@@ -1877,7 +1877,7 @@ class GardenSim implements SceneSim {
         this.#gustSign = windSign(settings.wind);
         this.#gustPush = FLURRY_BOOST;
       }
-      this.#gustAge = seconds;
+      this.#gustAge = exit * GARDEN_GUST_RISE;
       while (
         this.#flurried < FLURRY_LEAVES &&
         seconds >= (FLURRY_SPAN * this.#flurried) / FLURRY_LEAVES

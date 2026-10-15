@@ -15,13 +15,14 @@
 // no relief, so a flake never reads as a glossy bead. Knobs read here: K_palette (0 agar, 1 ink,
 // 2 rail), K_pulse, K_relief, K_slime.
 //
-// Entrance: oat flakes land on the dish on passageIn(), staggered, the heart's first; then the mould
-// grows out of the heart along its veins (the sim's distance field) on the sim's own growth clock,
-// which starts once its prewarm is done and ignores slow frames, so a slow first frame cannot use it
-// up: strands reach out thin and thicken behind the front, the fine lace filling in after. Cut per
-// cell, never faded. Exit
-// (passageOut): the lace thins away, then the strands thin and draw back into the nearest flakes,
-// leaving the slime they laid; the flakes stay. At rest none of it is drawn.
+// Entrance: oat flakes land on the dish on passageIn(), staggered, the heart's first and from the
+// start; then the mould grows out of the heart along its veins (the sim's distance field) on the
+// sim's own growth clock, which starts once its prewarm is done and ignores slow frames, so a slow
+// first frame cannot use it up: strands reach out thin, quick at first and slowing, and thicken
+// behind the front, the fine lace filling in after. Cut per cell, never faded. Exit (passageOut):
+// the strands thin, gathering pace, and draw back into the nearest flakes, the lace first, still at
+// full speed as the exit ends, leaving the slime they laid; the flakes stay. At rest none of it is
+// drawn.
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   PHYSARUM_DISH,
@@ -43,16 +44,17 @@ const float PHYSARUM_WALL = 0.014;
 
 // The entrance, in seconds of it: each flake lands over LAND_SECONDS, starting at LAND_FROM plus its
 // own share of LAND_SPREAD (the heart's LAND_HEART); the veins' front runs from GROW_FROM over
-// GROW_SECONDS, the lace's from LACE_FROM over LACE_SECONDS. Fronts are in screen heights.
+// GROW_SECONDS, the lace's from LACE_FROM over LACE_SECONDS, each quick at first and settling. Fronts
+// are in screen heights.
 const float PHYSARUM_ENTER = ${glslFloat(PHYSARUM_PASSAGE.enter)};
-const float PHYSARUM_LAND_FROM = 0.4;
+const float PHYSARUM_LAND_FROM = 0.1;
 const float PHYSARUM_LAND_SPREAD = 0.75;
-const float PHYSARUM_LAND_HEART = 0.3;
+const float PHYSARUM_LAND_HEART = 0.0;
 const float PHYSARUM_LAND_SECONDS = 0.5;
-const float PHYSARUM_GROW_FROM = 0.8;
-const float PHYSARUM_GROW_SECONDS = 2.1;
-const float PHYSARUM_LACE_FROM = 1.2;
-const float PHYSARUM_LACE_SECONDS = 1.9;
+const float PHYSARUM_GROW_FROM = 0.3;
+const float PHYSARUM_GROW_SECONDS = 2.6;
+const float PHYSARUM_LACE_FROM = 0.7;
+const float PHYSARUM_LACE_SECONDS = 2.4;
 // The exit's farthest strand from any flake (heights) before it starts to draw back, and the share
 // of the veins' thickness the strands keep once thinned.
 const float PHYSARUM_DRAW = 1.2;
@@ -308,8 +310,8 @@ void physarumPassage(inout PhysarumField f, vec2 p, vec2 cell, float aspect, flo
     float along = f.dist < 0.9 * PHYSARUM_FAR ? f.dist : 1.35 * away + 0.15;
     float sv = clamp((t - PHYSARUM_GROW_FROM) / PHYSARUM_GROW_SECONDS, 0.0, 1.0);
     float sl = clamp((t - PHYSARUM_LACE_FROM) / PHYSARUM_LACE_SECONDS, 0.0, 1.0);
-    float fv = (2.0 * dishR + 0.2) * sv * sv * (3.0 - 2.0 * sv);
-    float fl = (1.9 * dishR + 0.2) * sl * sl * (3.0 - 2.0 * sl);
+    float fv = (2.0 * dishR + 0.2) * (1.0 - (1.0 - sv) * (1.0 - sv));
+    float fl = (1.9 * dishR + 0.2) * (1.0 - (1.0 - sl) * (1.0 - sl));
     float coverVein = smoothstep(0.0, 0.1, fv - along);
     float coverLace = smoothstep(0.0, 0.3, fl - 1.25 * away);
     reached *= hardEdge(mix(coverLace, coverVein, vt), th);
@@ -318,13 +320,15 @@ void physarumPassage(inout PhysarumField f, vec2 p, vec2 cell, float aspect, flo
     thick *= mix(PHYSARUM_THIN, 1.0, hardEdge(thicken, th2));
   }
   if (tout > 0.0) {
-    float e = 1.0 - pow(1.0 - tout, 2.2);
+    // The strands thin, gathering pace, until the draw-back reaches them, so the mould never stands
+    // still in between; the draw-back runs at a steady pace in from beyond the farthest strand, the
+    // lace first (it counts as farther from food), and is at full speed as the exit ends.
+    float thin = min(pow(tout, 2.2) / 0.7, 1.0);
     float gap = uSimOn.z > 0.5 ? physarumFoodDistance(p, aspect) : length(p - heart);
-    // The lace goes first (it counts as farther from food), then the strands draw back.
     float lag = gap * mix(1.6, 1.0, vt);
-    float coverBack = smoothstep(0.0, 0.08, PHYSARUM_DRAW * (1.0 - e) - lag);
+    float coverBack = smoothstep(0.0, 0.08, PHYSARUM_DRAW * (1.0 - tout) - lag);
     reached *= hardEdge(coverBack, th);
-    thick *= mix(PHYSARUM_THIN, 1.0, hardEdge(1.0 - smoothstep(0.0, 0.55, e), th2));
+    thick *= mix(PHYSARUM_THIN, 1.0, hardEdge(1.0 - thin, th2));
   }
   float shown = reached * thick;
   f.dens *= shown;

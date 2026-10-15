@@ -11,7 +11,8 @@
 //        (i / (LUT_SIZE - 1)) × LUT_MAX µm thick in white light, scaled so REFLECT_PEAK is 1
 // uSim2  the film's life, rgba16f 2×1:
 //          texel 0  the break (q: frame heights from the view's centre, y up), seconds since it
-//                   broke, 1 while the hole is opening
+//                   broke, 1 while the hole is opening (2 while the exit paces it: the seconds are
+//                   then a share of when the rim reaches the far point, see filmFarPoint)
 //          texel 1  the liquid line drawing a new film (its height where it meets the wire), or the
 //                   radius of a bubble being blown; 1 while drawing; unused; 1 while there is a film
 // uSim3  the burst's arrival field (sims/front.ts), rg16f at the film's size, made as the film breaks:
@@ -43,10 +44,11 @@
 // top that left the bath first (a bubble is blown again, growing from its middle).
 //
 // Passage: entered through one, the scene opens on the bare wire and the same liquid line draws the
-// film up from the bottom wire over FILM_PASSAGE.enter seconds (no prewarm: the fluid starts empty);
-// leaving, the film bursts at its top, its rim racing a little faster than a film's own so that it
-// is gone by FILM_PASSAGE.exit, and no new film is drawn. Both run on frame time, whatever the
-// motion amount. Without a passage nothing changes.
+// film up from the bottom wire over FILM_PASSAGE.enter seconds, rising fastest at first and slowing
+// to the top (no prewarm: the fluid starts empty); leaving, the film bursts at its top and the exit
+// paces the burst: its rim sets off slowly and gathers speed, reaching the film's farthest point
+// as the exit ends (EXIT_RIM_POWER), and no new film is drawn. Both run whatever the motion amount
+// (the entrance on frame time). Without a passage nothing changes.
 //
 // Without float render targets the shader draws an analytic film (filmAnalytic) that still lives
 // the life above, which runs here on the CPU either way.
@@ -135,7 +137,13 @@ const DRAW_SECONDS = 4.5;
  * blown) in as long, and the exit pops the film.
  */
 export const FILM_PASSAGE = { enter: 3, exit: 1.6 } as const;
-/** The exit's burst runs this much faster than a film's own, so the film is gone with the exit. */
+/**
+ * The exit paces a burst it begins: the rim's clock stands at exit^EXIT_RIM_POWER of the time the
+ * rim takes to reach the film's farthest point (filmFarPoint), so the hole opens slowly and the rim
+ * is still racing through the last of the film as the exit ends.
+ */
+const EXIT_RIM_POWER = 2;
+/** A burst already under way when the exit begins runs this much faster than a film's own. */
 const EXIT_PACE = 1.3;
 /** A film lasts LIFETIME_LONG seconds at the pop knob's least, LIFETIME_SHORT at its most, give or take a quarter. */
 const LIFETIME_LONG = 400;
@@ -275,6 +283,23 @@ float filmMarkDistance(vec2 q, vec3 m) {
 // The rim of a hole in film h µm thick runs at this many frame heights per second (Taylor–Culick).
 float filmRimSpeed(float h) {
   return FILM_RIM_SPEED * sqrt(FILM_RIM_REF / (max(h, 0.0) + FILM_RIM_SOFT));
+}
+
+// Where a burst from p reaches last: the outline's farthest point (the film breaks near its top: a
+// lower corner of a frame, or the point of a loop or bubble straight across), read a little inside
+// the wire. A burst the exit began (the life's hole.w 2) is paced by the exit: its hole.z is then
+// the share of the rim's way here, and the rim clock that share of when it reaches this point.
+vec2 filmFarPoint(vec2 p, float shape, vec4 o) {
+  vec2 far;
+  if (shape < 0.5) {
+    vec2 left = vec2(o.x - o.z, o.y - o.w);
+    vec2 right = vec2(o.x + o.z, o.y - o.w);
+    far = distance(left, p) > distance(right, p) ? left : right;
+  } else {
+    vec2 d = o.xy - p;
+    far = o.xy + d * (o.z / max(length(d), 1e-5));
+  }
+  return filmInside(far, shape, o, 0.02);
 }
 
 // A film below the black-film onset, collapsed to common black film.
@@ -447,9 +472,15 @@ void main() {
   }
 
   // A burst: the film is gone wherever the rim has passed. ahead: how far the rim still has to come,
-  // its arrival time from now at the speed it will have here.
+  // its arrival time from now at the speed it will have here (a burst the exit paces: see
+  // filmFarPoint).
   if (uFilmHole.w > 0.5) {
-    float ahead = (texture(uFilmArrival, vUv).r - uFilmHole.z) * filmRimSpeed(h * present);
+    float clock = uFilmHole.z;
+    if (uFilmHole.w > 1.5) {
+      vec2 far = filmFarPoint(uFilmHole.xy, uFilmShape, o);
+      clock *= texture(uFilmArrival, far / uFilmDomain + 0.5).r;
+    }
+    float ahead = (texture(uFilmArrival, vUv).r - clock) * filmRimSpeed(h * present);
     float gone = 1.0 - smoothstep(-uTexel.y, uTexel.y, ahead);
     present *= 1.0 - gone;
     h *= 1.0 - gone;
@@ -699,6 +730,10 @@ class FilmLife {
   entering = false;
   /** Whether the scene is being left: the film pops and stays gone. */
   leaving = false;
+  /** The exit's progress, 0..1 (0 until the scene leaves). */
+  exit = 0;
+  /** The burst under way began with the exit, which paces it (see packState). */
+  #paced = false;
   readonly #plumes: Plume[] = [];
   #rand: () => number = mulberry32(0);
   #seed = 0;
@@ -726,7 +761,9 @@ class FilmLife {
   /** The scene is leaving: burst the film (if it has not burst already) and never draw another. */
   leave(o: Outline): void {
     this.leaving = true;
+    if (this.phase !== "film" && this.phase !== "draw") return;
     this.burst(o);
+    this.#paced = true;
   }
 
   /** Break the film at the top of its outline (only while there is one to break). */
@@ -770,6 +807,8 @@ class FilmLife {
           this.burst(tuning.outline);
         break;
       case "burst":
+        // A burst the exit began runs on the exit's progress, and lasts as long as the scene does.
+        if (this.#paced) break;
         this.since += this.leaving ? dt * EXIT_PACE : dt;
         if (this.since >= this.#burstSeconds) {
           this.phase = "empty";
@@ -829,8 +868,8 @@ class FilmLife {
     const drawing = this.phase === "draw";
     target[0] = this.breakX;
     target[1] = this.breakY;
-    target[2] = bursting ? this.since : 0;
-    target[3] = bursting ? 1 : 0;
+    target[2] = bursting ? (this.#paced ? this.exit ** EXIT_RIM_POWER : this.since) : 0;
+    target[3] = bursting ? (this.#paced ? 2 : 1) : 0;
     target[4] = drawing ? this.front : 0;
     target[5] = drawing ? 1 : 0;
     target[6] = 0;
@@ -847,13 +886,16 @@ class FilmLife {
     this.#plumeDue = -Math.log(1 - this.#rand());
   }
 
-  /** The drawing line rises from below the bottom wire to above the top one; a bubble grows from its middle. */
+  /**
+   * The drawing line rises from below the bottom wire to above the top one (eased in and out; while
+   * the scene enters, fastest at first and slowing to the top); a bubble grows from its middle.
+   */
   #frontAt(o: Outline): number {
     const p = Math.min(this.since / (this.entering ? FILM_PASSAGE.enter : DRAW_SECONDS), 1);
     if (o.shape === "bubble") return o.hw * (1 - (1 - p) ** 3);
     const from = o.y - o.hh - 0.02;
     const to = o.y + o.hh + SAG + 0.02;
-    return from + (to - from) * p * p * (3 - 2 * p);
+    return from + (to - from) * (this.entering ? 1 - (1 - p) ** 3 : p * p * (3 - 2 * p));
   }
 
   #advancePlumes(dt: number, tuning: Tuning): void {
@@ -1181,6 +1223,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
         if (resized || tuning.shape !== shownShape || tuning.seed !== shownSeed) restart(arriving);
 
         // The exit: the film pops, and no new one is drawn.
+        life.exit = clamp(frame.passage.exit, 0, 1);
         if (frame.passage.exit > 0 && !life.leaving) life.leave(tuning.outline);
 
         // "now": burst the film at once (a film still being drawn too).

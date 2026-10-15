@@ -79,7 +79,10 @@ export interface SimFrame {
   /**
    * How far the scene has come in (`enter`, 0→1 over `SceneDef.passage.enter` seconds of real time,
    * then 1; always 1 when passages are off) and gone out (`exit`, 0 until it leaves, then 0→1), as
-   * the shader's `passageIn()` and `passageOut()`. A sim is built afresh for every entrance.
+   * the shader's `passageIn()` and `passageOut()`. A sim is built afresh for every entrance, and
+   * during a passage it runs ahead off screen while the leaving scene exits: those frames have
+   * `enter` 0 and `dt` 0, for building and prewarming without starting any clock. A clock keyed to
+   * `time` or wall time should start once `enter` is above 0.
    */
   passage: Readonly<ScenePassageProgress>;
 }
@@ -96,6 +99,12 @@ export interface ScenePassageProgress {
 export interface SceneSim {
   /** Advance and (re)upload; return the textures to bind this frame, in slot order. */
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[];
+  /**
+   * False while the sim is still building what it shows (over several frames, showing nothing of
+   * it until done). A passage runs the incoming sim ahead until it is true before its exit starts,
+   * so the scene enters with its world in place. Absent: always ready.
+   */
+  ready?(): boolean;
   /** Release GL resources; called when the lab leaves the scene. */
   dispose(): void;
 }

@@ -128,7 +128,7 @@ export const pearlScene: SceneDef = {
   glsl: pearlGlsl,
   entry: "scenePearl",
   sim: pearlSim(params),
-  // Entrance: the tank stands calm and uniform until a glass rod is drawn in from the left edge and stirs it, and the satin currents unfold behind it. Exit: a strong swirl sweeps everything round.
+  // Entrance: a glass rod is drawn in from the left edge across the calm, uniform tank and stirs it, and the satin currents unfold behind it. Exit: a strong swirl sweeps everything round.
   passage: { enter: PEARL_ENTER, exit: PEARL_EXIT },
   // Pearl is a light fluid: the page copy goes dark on it (the shader's `pagePaper()` follows this).
   theme: paletteTheme(params, "palette", (palette) => pearlPalettes[palette]?.paper === true),

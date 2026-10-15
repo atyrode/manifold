@@ -37,8 +37,8 @@
 // waterline with them) is one rigid pattern, and the entrance has it stand out to sea (SHORE_SURGE_IN
 // metres) and run in on a decelerating curve, the way a swash runs up the sand and stops, while the
 // plankton in the disturbed water flashes, and the camera, which starts tilted down at the sand,
-// comes up to the horizon with a touch of give. The exit draws the pattern back out to sea
-// (SHORE_SURGE_OUT), the sand it uncovers still wet and, where the plankton is stranded, sparking.
+// comes up to the horizon with a touch of give. The exit draws the pattern back out to sea, ever
+// faster (SHORE_SURGE_OUT), the sand it uncovers still wet and, where the plankton is stranded, sparking.
 // The camera is a vertical lens shift of the whole frame (the sky, the moon, the lightning and the
 // rain are all built from the shifted uv, so they stay in one projection with the sea). All of it is
 // exactly 0 at rest, where uv == screenUv, and none of it touches the waves' own clock.
@@ -362,8 +362,8 @@ float shoreFish(vec2 p, float age, float seed, float camX, float halfSpan, float
 }
 
 // The passage, in the beach (see the header). How far out to sea of its place the whole surf stands,
-// in metres: it runs in on a decelerating curve like a swash, and goes back out accelerating then
-// easing, as the sea is drawn out. Exactly 0 at rest.
+// in metres: it runs in on a decelerating curve like a swash, and goes back out accelerating, as the
+// sea is drawn out. Exactly 0 at rest.
 float shoreSurge() {
   float pin = passageIn();
   float pout = passageOut();
@@ -372,16 +372,17 @@ float shoreSurge() {
     float u = 1.0 - pin;
     surge += SHORE_SURGE_IN * u * u;
   }
-  if (pout > 0.0) surge += SHORE_SURGE_OUT * pout * pout * (3.0 - 2.0 * pout);
+  if (pout > 0.0) surge += SHORE_SURGE_OUT * pout * pout;
   return surge;
 }
 
 // The camera's vertical lens shift in screen heights: starts tilted down at the sand (the frame's
-// content is read lower in uv) and comes up to the horizon, with a little overshoot. 0 at rest.
+// content is read lower in uv), already moving, and comes up to the horizon with a little overshoot.
+// 0 at rest.
 float shoreLens() {
   float pin = passageIn();
   if (pin >= 1.0) return 0.0;
-  float u = clamp((pin - 0.04) / 0.96, 0.0, 1.0) - 1.0;
+  float u = pin - 1.0;
   float settle = 1.0 + 2.7 * u * u * u + 1.7 * u * u; // ease out with a little overshoot
   return -SHORE_TILT * (1.0 - settle);
 }

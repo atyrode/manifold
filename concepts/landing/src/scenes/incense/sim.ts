@@ -308,10 +308,9 @@ const VEIL_FROM = 0.22;
 const VEIL_STEP = 0.02;
 const VEIL_BLOBS = 5;
 
-/** The exit's draught: speed (frame heights per second), how firmly the air follows, and shares of the exit: it rises over, its front crosses the room in, it cuts the ember's smoke off in. */
+/** The exit's draught: speed (frame heights per second), how firmly the air follows, and shares of the exit: its front crosses the room in, it cuts the ember's smoke off in. */
 const DRAUGHT_SPEED = 0.9;
 const DRAUGHT_RATE = 5;
-const DRAUGHT_RISE = 0.25;
 const DRAUGHT_SWEEP = 0.3;
 const DRAUGHT_BREAK = 0.18;
 
@@ -1180,12 +1179,13 @@ class Plume {
 
   /**
    * The exit: a draught from the left, its front crossing the room within DRAUGHT_SWEEP of the exit
-   * and its wind rising over DRAUGHT_RISE. It takes the force snippet's uGust (a door's draft's
-   * place), so the same wind bends the candle's flame and fans the ember.
+   * and its wind gathering all the way through it, so the smoke is still being carried off as the
+   * exit ends. It takes the force snippet's uGust (a door's draft's place), so the same wind bends
+   * the candle's flame and fans the ember.
    */
   #blow(aspect: number): void {
     const leave = this.#leave;
-    const strength = smoothstep(0, DRAUGHT_RISE, leave);
+    const strength = leave * leave;
     const draught = this.#draught;
     draught[0] = DRAUGHT_SPEED * strength;
     draught[1] = -FRONT_SOFT + (aspect + 2 * FRONT_SOFT) * clamp(leave / DRAUGHT_SWEEP, 0, 1);

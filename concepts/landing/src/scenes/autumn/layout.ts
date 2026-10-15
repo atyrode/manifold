@@ -19,35 +19,34 @@
 //            camera lowers from the boughs onto the path; at the exit a stronger gust whirls the leaves
 //            up across the frame as the camera tilts up into the canopy
 import { glslFloat } from "../../shaders/glsl.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
 
 /** Seconds the entrance and the exit take (SceneDef.passage). */
 export const AUTUMN_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 
 /**
- * The entrance's gust, as a strength 0..1 by seconds into the entrance: it rises from `rise0` to `rise1`
- * (mostly under the dissolve, so that the leaves are already streaming when the new scene shows), holds,
- * and dies away from `fall0` to nothing at the entrance's end.
+ * The entrance's gust, as a strength 0..1 by seconds into the entrance: it rises from the first frame,
+ * fastest at once and easing in to full strength at `rise` (so that the leaves are already streaming when
+ * the new scene shows through the dissolve), holds, and dies away from `fall` to nothing at the
+ * entrance's end.
  */
-export const AUTUMN_FLURRY = { rise0: 0.2, rise1: 1.1, fall0: 1.7 } as const;
+export const AUTUMN_FLURRY = { rise: 1.1, fall: 1.7 } as const;
 
 /** The entrance's gust strength `seconds` into the entrance (exactly 0 at its end); the shader repeats this. */
 export function autumnFlurry(seconds: number): number {
-  return (
-    smoothstep(AUTUMN_FLURRY.rise0, AUTUMN_FLURRY.rise1, seconds) *
-    (1 - smoothstep(AUTUMN_FLURRY.fall0, AUTUMN_PASSAGE.enter, seconds))
-  );
+  const still = 1 - clamp(seconds / AUTUMN_FLURRY.rise, 0, 1);
+  return (1 - still * still) * (1 - smoothstep(AUTUMN_FLURRY.fall, AUTUMN_PASSAGE.enter, seconds));
 }
 
 /** The exit's gust rises over the first `rise` of the exit; `canopy` is how hard it leans the canopy, against the entrance's gust at 1. */
 export const AUTUMN_WHIRL = { rise: 0.3, canopy: 1.3 } as const;
 
 /**
- * The camera's lens shift (screen heights, up): the entrance starts this far up in the canopy after `delay`
- * seconds (the dissolve hides the first moments) and settles down onto the path; the exit rises this far
- * from `exitFrom` of its progress.
+ * The camera's lens shift (screen heights, up): the entrance starts this far up in the canopy, already
+ * coming down, and settles onto the path; the exit rises this far from `exitFrom` of its progress,
+ * gathering speed to the end.
  */
-export const AUTUMN_TILT = { enter: 0.24, delay: 0.3, exit: 0.24, exitFrom: 0.15 } as const;
+export const AUTUMN_TILT = { enter: 0.24, exit: 0.24, exitFrom: 0.15 } as const;
 
 export const AUTUMN_VIEW = { horizon: 0.36, eye: 1.5, focal: 1.0 } as const;
 
@@ -112,9 +111,9 @@ const vec2 AUTUMN_MARK_AT = vec2(${glslFloat(AUTUMN_MARK.x)}, ${glslFloat(AUTUMN
 const vec2 AUTUMN_MARK_SIZE = vec2(${glslFloat(AUTUMN_MARK.width / 0.94)}, ${glslFloat(AUTUMN_MARK.depth)});
 const int AUTUMN_SLOTS = ${AUTUMN_SLOTS};
 const vec2 AUTUMN_PASSAGE = vec2(${glslFloat(AUTUMN_PASSAGE.enter)}, ${glslFloat(AUTUMN_PASSAGE.exit)});
-const vec3 AUTUMN_FLURRY = vec3(${glslFloat(AUTUMN_FLURRY.rise0)}, ${glslFloat(AUTUMN_FLURRY.rise1)}, ${glslFloat(AUTUMN_FLURRY.fall0)});
+const vec2 AUTUMN_FLURRY = vec2(${glslFloat(AUTUMN_FLURRY.rise)}, ${glslFloat(AUTUMN_FLURRY.fall)});
 const vec2 AUTUMN_WHIRL = vec2(${glslFloat(AUTUMN_WHIRL.rise)}, ${glslFloat(AUTUMN_WHIRL.canopy)});
-const vec4 AUTUMN_TILT = vec4(${glslFloat(AUTUMN_TILT.enter)}, ${glslFloat(AUTUMN_TILT.delay)}, ${glslFloat(AUTUMN_TILT.exit)}, ${glslFloat(AUTUMN_TILT.exitFrom)});
+const vec3 AUTUMN_TILT = vec3(${glslFloat(AUTUMN_TILT.enter)}, ${glslFloat(AUTUMN_TILT.exit)}, ${glslFloat(AUTUMN_TILT.exitFrom)});
 
 // The gust of the scene's passage, 0 at rest: the entrance's flurry (0..1, autumnFlurry in layout.ts) or
 // the exit's whirl (0..AUTUMN_WHIRL.y). The canopy leans before it.
@@ -124,23 +123,25 @@ float autumnPassageBlow() {
   float blow = 0.0;
   if (pin < 1.0) {
     float s = pin * AUTUMN_PASSAGE.x;
-    blow = smoothstep(AUTUMN_FLURRY.x, AUTUMN_FLURRY.y, s) * (1.0 - smoothstep(AUTUMN_FLURRY.z, AUTUMN_PASSAGE.x, s));
+    float still = 1.0 - clamp(s / AUTUMN_FLURRY.x, 0.0, 1.0);
+    blow = (1.0 - still * still) * (1.0 - smoothstep(AUTUMN_FLURRY.y, AUTUMN_PASSAGE.x, s));
   }
   if (pout > 0.0) blow = max(blow, AUTUMN_WHIRL.y * smoothstep(0.0, AUTUMN_WHIRL.x, pout));
   return blow;
 }
 
 // The camera's lens shift in screen heights, up, 0 at rest: it starts the entrance raised into the
-// canopy and settles onto the path (easing out into a long, gentle tail); at the exit it tilts back up.
+// canopy, already coming down, and settles onto the path (easing out into a long, gentle tail); at
+// the exit it tilts back up, gathering speed to the end.
 float autumnLensShift() {
   float pin = passageIn();
   float pout = passageOut();
   float shift = 0.0;
-  if (pin < 1.0) {
-    float t = clamp((pin * AUTUMN_PASSAGE.x - AUTUMN_TILT.y) / (AUTUMN_PASSAGE.x - AUTUMN_TILT.y), 0.0, 1.0);
-    shift += AUTUMN_TILT.x * pow(max(1.0 - smoothstep(0.0, 1.0, t), 0.0), 1.7);
+  if (pin < 1.0) shift += AUTUMN_TILT.x * (1.0 - pin) * (1.0 - pin) * (1.0 - pin);
+  if (pout > 0.0) {
+    float t = clamp((pout - AUTUMN_TILT.z) / (1.0 - AUTUMN_TILT.z), 0.0, 1.0);
+    shift += AUTUMN_TILT.y * t * t;
   }
-  if (pout > 0.0) shift += AUTUMN_TILT.z * smoothstep(AUTUMN_TILT.w, 1.0, pout);
   return shift;
 }
 

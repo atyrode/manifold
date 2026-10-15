@@ -93,10 +93,10 @@ const vec3 TRAIN_SNOW = vec3(0.86, 0.9, 0.97);
 const float TRAIN_ENTER = ${glslFloat(TRAIN_PASSAGE.enter)};  // seconds the entrance takes
 const float TRAIN_EXIT = ${glslFloat(TRAIN_PASSAGE.exit)};    // and the exit
 const float TRAIN_ENTER_MOUTH = 1.05; // the second the tunnel's mouth sweeps across the window
-const float TRAIN_ENTER_LAMP = 0.6;   // the second a tunnel lamp flicks by before it
+const float TRAIN_ENTER_LAMP = 0.15;  // the second a tunnel lamp flicks by before it (on its way at the start)
 const float TRAIN_ENTER_SINK = 1.2;   // seconds the cutting's rim takes to sink away after the mouth
-const float TRAIN_EXIT_MOUTH = 0.95;  // the second the mouth sweeps in across the window
-const float TRAIN_EXIT_RISE = 0.9;    // seconds the cutting takes to rise before it
+const float TRAIN_EXIT_MOUTH = 1.25;  // the second the mouth sweeps in across the window
+const float TRAIN_EXIT_RISE = 1.4;    // seconds the cutting rises from the exit's start, its rim leaving the window as the mouth arrives
 const float TRAIN_RIM_HIGH = 4.5;     // the cutting's rim above the eye (m): over the window / below it
 const float TRAIN_RIM_LOW = -4.0;
 const float TRAIN_PASS_LEN = 600.0;   // the passage tunnel's length (m)
@@ -238,12 +238,13 @@ void trainRead(float t) {
 }
 
 // The passage, in the world. The train comes out of a tunnel: the window is first all tunnel wall
-// (the mortar courses holding still, a lamp flicking by), then the mouth sweeps across it at the
-// train's speed, the cutting's rock beyond sinks away to open the country, and the jolt of coming
-// out sets the tea sloshing. Leaving, the cutting rises, the mouth sweeps in the other way and the
-// wall takes the window. The tunnel is a virtual one laid over the timetable (the sim commits real
-// ones a kilometre ahead, never in view at the start) and is skipped if the train is in a real one;
-// the cutting's rim follows the passage's own clock so it does not depend on the speed. Must follow
+// (the mortar courses holding still, a lamp flicking by from the start), then the mouth sweeps
+// across it at the train's speed, the cutting's rock beyond sinks away to open the country (fastest
+// as the mouth clears, settling), and the jolt of coming out sets the tea sloshing. Leaving, the
+// cutting rises, gathering speed, the mouth sweeps in the other way and the wall takes the window as
+// the exit ends. The tunnel is a virtual one laid over the timetable (the sim commits real ones a
+// kilometre ahead, never in view at the start) and is skipped if the train is in a real one; the
+// cutting's rim follows the passage's own clock so it does not depend on the speed. Must follow
 // trainRead; nothing at rest.
 void trainPassage() {
   trainPassCut = TRAIN_NO_CUT;
@@ -260,7 +261,8 @@ void trainPassage() {
   if (pout > 0.0) {
     float s = pout * TRAIN_EXIT;
     if (!real) {
-      trainPassCut = mix(TRAIN_RIM_LOW, TRAIN_RIM_HIGH, smoothstep(0.0, TRAIN_EXIT_RISE, s));
+      float rise = clamp(s / TRAIN_EXIT_RISE, 0.0, 1.0);
+      trainPassCut = mix(TRAIN_RIM_LOW, TRAIN_RIM_HIGH, rise * rise);
       trainTunnel = vec4(-run * (s - TRAIN_EXIT_MOUTH), TRAIN_PASS_LEN, 0.5, 0.0);
     }
     age = s - TRAIN_EXIT_MOUTH;
@@ -268,7 +270,8 @@ void trainPassage() {
   } else {
     float s = pin * TRAIN_ENTER;
     if (!real) {
-      trainPassCut = mix(TRAIN_RIM_HIGH, TRAIN_RIM_LOW, smoothstep(TRAIN_ENTER_MOUTH, TRAIN_ENTER_MOUTH + TRAIN_ENTER_SINK, s));
+      float sink = 1.0 - clamp((s - TRAIN_ENTER_MOUTH) / TRAIN_ENTER_SINK, 0.0, 1.0);
+      trainPassCut = mix(TRAIN_RIM_HIGH, TRAIN_RIM_LOW, 1.0 - sink * sink);
       // The tunnel's lamps are 48 m apart; the length puts one run * (MOUTH - LAMP) m inside the mouth,
       // so that it flicks by at TRAIN_ENTER_LAMP whatever the speed.
       float len = TRAIN_PASS_LEN + run * (TRAIN_ENTER_MOUTH - TRAIN_ENTER_LAMP);

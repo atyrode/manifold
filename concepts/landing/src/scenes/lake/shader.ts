@@ -673,30 +673,30 @@ vec3 lakeIce(vec2 uv, float aspect, vec3 dir, float range, out float glow) {
   return col;
 }
 
-// The camera arriving from the aurora: the share of the tilt still to go at progress p. A damped
-// spring from the sky down onto the ice, settling a little past level (the overshoot eased out by
-// the end, so it lands on exactly zero).
+// The camera arriving from the aurora: the share of the tilt still to go at progress p. It comes
+// down from the sky already moving fast and settles a little past level and back, landing on
+// exactly zero at rest.
 float lakeArrive(float p) {
-  float q = clamp(p, 0.0, 1.0);
-  float e = 1.0 - exp(-4.0 * q) * (cos(3.6 * q) + (4.0 / 3.6) * sin(3.6 * q));
-  return (1.0 - e) * (1.0 - smoothstep(0.88, 1.0, q));
+  float a = 1.0 - clamp(p, 0.0, 1.0);
+  return a * a * a * (2.5 * a - 1.5);
 }
 
-// The camera leaving toward the aurora: the share of the tilt done at progress p, easing in once
-// the gust has begun.
+// The camera leaving toward the aurora: the share of the tilt done at progress p, gathering pace
+// once the gust has begun and still at full pace as the exit ends.
 float lakeLeave(float p) {
   float q = clamp((p - 0.1) / 0.9, 0.0, 1.0);
-  return q * q * (3.0 - 2.0 * q);
+  return q * q * q;
 }
 
 // A gust of blown snow, 0..1 at this uv (the camera's, tilt included): its head crosses the frame
-// downwind, and behind it low streamers ride the ice in rows of the screen, the nearer rows faster,
-// thinning to nothing over the horizon; a haze of fine snow between them. Each row's streamers slide
-// along it (no noise crawl); the caller cuts the density against the cell's threshold.
+// downwind at a steady pace from beyond its edge, and behind it low streamers ride the ice in rows
+// of the screen, the nearer rows faster, thinning to nothing over the horizon; a haze of fine snow
+// between them. Each row's streamers slide along it (no noise crawl); the caller cuts the density
+// against the cell's threshold.
 float lakeGust(vec2 uv, float aspect, float gp) {
   float fv = LAKE_HORIZON - uv.y;
   float uu = (K_wind < -0.05 ? -1.0 : 1.0) * (uv.x - 0.5) * aspect;
-  float head = mix(-0.5 * aspect - 0.3, 0.5 * aspect + 1.2, smoothstep(0.0, 0.9, gp));
+  float head = mix(-0.5 * aspect - 0.3, 0.5 * aspect + 1.2, gp);
   float behind = head - uu;
   float cover = smoothstep(0.0, 0.2, behind) * (1.0 - 0.45 * smoothstep(0.3, 1.8, behind));
   float low = fv >= 0.0 ? 1.0 : exp(fv / 0.06);

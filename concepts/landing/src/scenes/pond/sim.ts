@@ -95,6 +95,8 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
   let layoutKey = "";
   let order: Int32Array = new Int32Array(0);
   let drawn = false;
+  /** A frame has run (the knobs read, the sheets asked for). */
+  let framed = false;
 
   /** Rebuild the plants and the canopy's request from this frame's knobs. */
   function request(read: (key: Knob) => number, aspect: number): void {
@@ -141,6 +143,7 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
 
   return {
     frame(frame) {
+      framed = true;
       let moved = false;
       let relayout = false;
       for (let slot = 0; slot < KNOBS.length; slot++) {
@@ -197,6 +200,10 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
       textures[1] = leaves ? canopy.texture : undefined;
       textures[2] = koi.frame(frame);
       return textures;
+    },
+    // The plant and canopy sheets are painted on a worker: ready once those it shows are back.
+    ready() {
+      return framed && (!plantsOn || drawn) && (!leaves || canopy.texture !== undefined);
     },
     dispose() {
       atlas.dispose();

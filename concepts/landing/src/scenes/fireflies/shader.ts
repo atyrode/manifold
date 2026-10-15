@@ -261,14 +261,14 @@ Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   vec2 ps = vec2((uv.x - 0.5) * aspect, uv.y);
   // The camera. Arriving, it starts a little in, looking to the left of where it rests, and glides
-  // right and out to a stop (the bank slides left and widens); leaving, it drifts on the same way.
-  // The zoom is about the waterline and only ever zooms in, so the lattice and the forest profile
-  // always cover the view, and the pan stays inside what the zoom leaves. 'pan' is the offset of
-  // the bank's x, kept for the nearer lights. Both are exactly 0 at rest, where p == ps.
+  // right and out to a stop (the bank slides left and widens); leaving, it drifts on the same way,
+  // gathering speed. The zoom is about the waterline and only ever zooms in, so the lattice and the
+  // forest profile always cover the view, and the pan stays inside what the zoom leaves. 'pan' is
+  // the offset of the bank's x, kept for the nearer lights. Both are exactly 0 at rest, where p == ps.
   vec2 p = ps;
   float pan = 0.0;
   float arrive = pow(max(1.0 - passageIn(), 0.0), 2.5);
-  float leave = smoothstep(0.0, 1.0, passageOut());
+  float leave = passageOut() * passageOut();
   if (arrive + leave > 0.0) {
     float zoom = FIREFLIES_ZOOM_IN * arrive + FIREFLIES_ZOOM_OUT * leave;
     pan = 0.5 * aspect * FIREFLIES_PAN * (FIREFLIES_ZOOM_OUT * leave - FIREFLIES_ZOOM_IN * arrive);

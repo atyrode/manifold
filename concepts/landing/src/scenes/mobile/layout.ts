@@ -71,9 +71,13 @@ export function mobileRay(px: number, py: number, aspect: number): Vec3 {
 /** The pointer's sway of the eye (m) at uPointer = ±1. */
 export const MOBILE_SWAY = { x: 0.35, y: 0.15 } as const;
 
-/** The passage: how far above its place the mobile is lowered from (m), and how far it is hoisted. */
-export const MOBILE_LOWER = 2.2;
-export const MOBILE_HOIST = 2.6;
+/**
+ * The passage: how far above its place the mobile is lowered from (m), from just above a landscape
+ * frame so it is in sight as it starts down; and how far it is hoisted, just out of that frame as the
+ * exit ends.
+ */
+export const MOBILE_LOWER = 1.4;
+export const MOBILE_HOIST = 1.4;
 
 export const mobileLayoutGlsl = `
 const float MOBILE_WALL = ${glslFloat(MOBILE_WALL)};

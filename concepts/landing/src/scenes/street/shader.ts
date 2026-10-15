@@ -1926,16 +1926,15 @@ void streetLamps(float code, vec3 p, vec3 n, vec3 ro, vec3 rd, float tHit, float
 }
 
 // The passage's tilt of the camera (rad above its rest pitch; sim.ts passageTilt is its twin): coming
-// down from the skyline with a touch of overshoot, then settled; going out it eases up. 0 at rest.
+// down from the skyline, on its way from the first frame and braking into a touch of overshoot, then
+// settled; going out it rises faster and faster. 0 at rest.
 float streetTiltAt() {
   float pin = passageIn();
   float pout = passageOut();
   if (pin >= 1.0 && pout <= 0.0) return 0.0;
-  float x = clamp(pin / STREET_TILT_ARRIVE, 0.0, 1.0);
-  float back = x * x * (3.0 - 2.0 * x) - 1.0;
+  float back = clamp(pin / STREET_TILT_ARRIVE, 0.0, 1.0) - 1.0;
   float settle = 1.0 + 1.8 * back * back * back + 0.8 * back * back;
-  float leave = pout * pout * (3.0 - 2.0 * pout);
-  return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * leave;
+  return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * pout * pout;
 }
 
 // Where rain or snow falling along dir seems to come from or go to, seen from the window: the

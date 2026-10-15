@@ -106,9 +106,9 @@ export const DEW_WALK = { from: 0.7, to: 2.4, start: 1.25 } as const;
 /** The swing's pendulum: its length above the hub (frame heights), and the angle's phase (radians) that brings the web over the middle a third of the way through. */
 const SWING_LENGTH = 6;
 const SWING_PHI = 4.9;
-/** Seconds the lowest points of the web lag the highest, and the room (frame heights) left beyond the frame's edge when the web is out. */
+/** Seconds the lowest points of the web lag the highest, and the room (frame heights) left beyond the frame's edge when the web is out: just enough that none of it shows (its perspective and blur included), so the swing is in sight from the first moment of the entrance to the last of the exit. */
 const SWING_LAG = 0.16;
-const SWING_MARGIN = 0.25;
+const SWING_MARGIN = 0.05;
 /** The gusts of the entrance (as it dies away) and the exit (as it takes hold), × a full gust's pressure. */
 const ENTER_GUST = 0.7;
 const EXIT_GUST = 0.9;
@@ -1348,10 +1348,10 @@ class DewSim implements SceneSim {
    * The passage's swing, applied to the drawn points. The web hangs from a long pendulum above the
    * frame; a gust has carried it out past the right edge, and the entrance brings it back in, over
    * the middle with a small overshoot and to rest (swingIn), while the exit is the next gust taking it
-   * out the same way (swingOut). The moorings stay on their stems and the twig, so the anchor threads
-   * stretch and the web comes in on them; the beads and the drops on it go along. Lower points lag the
-   * upper ones a little, so the web flexes instead of turning as a board. The sim's own points are
-   * not touched.
+   * out the same way (swingOut), every point gathering speed until it is out as the exit ends. The
+   * moorings stay on their stems and the twig, so the anchor threads stretch and the web comes in on
+   * them; the beads and the drops on it go along. Lower points lag the upper ones a little, so the web
+   * flexes instead of turning as a board. The sim's own points are not touched.
    */
   #swingWeb(drawn: Float32Array): void {
     const web = this.#web;
@@ -1375,7 +1375,7 @@ class DewSim implements SceneSim {
       if (this.#exit > 0)
         s +=
           (1 - s) *
-          swingOut(Math.min(1, Math.max(0, (outSeconds - lag) / (DEW_PASSAGE.exit - SWING_LAG))));
+          swingOut(Math.min(1, Math.max(0, (outSeconds - lag) / (DEW_PASSAGE.exit - lag))));
       const theta = theta0 * s;
       const c = Math.cos(theta);
       const sn = Math.sin(theta);

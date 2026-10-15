@@ -21,6 +21,10 @@ interface Outcome {
 const build = await Bun.build({
   entrypoints: [new URL("./verify-browser.ts", import.meta.url).pathname],
   target: "browser",
+  // LANDING_PASSAGE_SCENES=a,b limits the passage speed check to those scenes while tuning them.
+  define: {
+    LANDING_PASSAGE_SCENES: JSON.stringify(process.env.LANDING_PASSAGE_SCENES ?? ""),
+  },
 });
 if (!build.success || !build.outputs[0]) throw new Error(build.logs.map(String).join("\n"));
 const bundle = await build.outputs[0].text();

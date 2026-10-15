@@ -608,7 +608,8 @@ class PrismSim implements SceneSim {
       this.#lightX = this.#markX - (4 - along) * this.#lightDX;
       this.#lightY = this.#markY - (4 - along) * this.#lightDY;
     }
-    this.#leaveTurn = leave > 0 ? -EXIT_TURN * smoothstep(0, 1, leave) : 0;
+    // Leaving, the glass turns ever faster (ease-in), still at full speed as the exit ends.
+    this.#leaveTurn = leave > 0 ? -EXIT_TURN * leave * leave : 0;
   }
 
   /** A "now" button fires its feature's one occurrence at once (frame.fired is true on the frame after the press). */

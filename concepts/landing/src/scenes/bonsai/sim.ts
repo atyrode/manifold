@@ -545,9 +545,10 @@ class BonsaiSim implements SceneSim {
 
   /**
    * Where the stand stands: entering it eases out of SLIDE to rest (cubic, braking all the way),
-   * leaving it accelerates back out to SLIDE (quadratic); zero exactly once arrived and not leaving.
-   * Leaves in the air stay where they are in the room as the stand goes, so they are moved the other
-   * way in the stand's own frame; leaves still in the air as it arrives ride in with it.
+   * leaving it accelerates back out to SLIDE (cubic, from rest and fastest as the exit ends); zero
+   * exactly once arrived and not leaving. Leaves in the air stay where they are in the room as the
+   * stand goes, so they are moved the other way in the stand's own frame; leaves still in the air as
+   * it arrives ride in with it.
    */
   #stepPassage(frame: SimFrame): void {
     const enter = BONSAI_PASSAGE.enter;
@@ -558,11 +559,8 @@ class BonsaiSim implements SceneSim {
     const rest = this.#arriving ? 1 - this.#arrived / enter : 0;
     const q = Math.min(1, Math.max(0, frame.passage.exit));
     const before = this.#shift;
-    this.#shift = SLIDE * (rest * rest * rest + q * q);
-    this.#push =
-      SLIDE_PUSH *
-      SLIDE *
-      ((6 * rest) / (enter * enter) + (q > 0 ? (2 * smoothstep(0, 0.12, q)) / (exit * exit) : 0));
+    this.#shift = SLIDE * (rest * rest * rest + q * q * q);
+    this.#push = SLIDE_PUSH * SLIDE * ((6 * rest) / (enter * enter) + (6 * q) / (exit * exit));
     if (q <= 0) return;
     if (!this.#leaving) {
       this.#leaving = true;

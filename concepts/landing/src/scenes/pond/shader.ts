@@ -104,9 +104,10 @@ const float POND_EXIT = ${glslFloat(POND_PASSAGE.exit)};
 
 // Koi i's glide in from, or out beyond, the frame's edge while the scene passes. 'base' is where its
 // swim path has it; the koi comes and goes along a fixed bearing of its own, from or to just clear of
-// the frame, with an eased glide. 'slideVel' is the glide's velocity, for the heading.
-// Entrance: starts 0.5-1.0 s, glides for 2.1 s, so each has arrived by 3.1 s, as the plants settle.
-// Exit: starts 0-0.3 s, glides for 1.4 s, so each is gone by 1.7 s.
+// the frame. 'slideVel' is the glide's velocity, for the heading.
+// Entrance: sets off out of sight at once, glides in at speed and settles, arriving by 2.6-3.1 s
+// (each its own), as the plants settle. Exit: starts 0-0.3 s, gathers speed and is just clear of
+// the frame as the exit ends.
 vec2 pondKoiPassage(float fi, vec2 base, float len, float aspect, out vec2 slideVel) {
   float tin = passageIn() * POND_ENTER;
   float tout = passageOut() * POND_EXIT;
@@ -117,33 +118,37 @@ vec2 pondKoiPassage(float fi, vec2 base, float len, float aspect, out vec2 slide
   vec2 reach = vec2(aspect * 0.5, 0.5) + (len * 1.05 + 0.04);
   vec2 room = (reach - base * sign(n)) / max(abs(n), vec2(1e-4));
   float clear = max(min(room.x, room.y), 0.0);
-  float arrive = clamp((tin - 0.5 - 0.5 * stagger) / 2.1, 0.0, 1.0);
-  float leave = clamp((tout - 0.3 * stagger) / 1.4, 0.0, 1.0);
+  float arriveFor = 2.6 + 0.5 * stagger;
+  float arrive = clamp(tin / arriveFor, 0.0, 1.0);
+  float leaveFor = POND_EXIT - 0.3 * stagger;
+  float leave = clamp((tout - 0.3 * stagger) / leaveFor, 0.0, 1.0);
   float comingIn = arrive > 0.0 && arrive < 1.0 ? 1.0 : 0.0;
   float goingOut = leave > 0.0 && leave < 1.0 ? 1.0 : 0.0;
-  slideVel = n * clear * (-2.0 * (1.0 - arrive) / 2.1 * comingIn + 6.0 * leave * (1.0 - leave) / 1.4 * goingOut);
-  return n * clear * ((1.0 - arrive) * (1.0 - arrive) + leave * leave * (3.0 - 2.0 * leave));
+  float rest = 1.0 - arrive;
+  slideVel = n * clear * (-3.0 * rest * rest / arriveFor * comingIn + 3.0 * leave * leave / leaveFor * goingOut);
+  return n * clear * (rest * rest * rest + leave * leave * leave);
 }
 
-// A lily pad's drift while the scene passes: settling in from a little way off (done by 2.7 s),
-// then carried off downwind with the breeze.
+// A lily pad's drift while the scene passes: settling in from a little way off (moving from the
+// start, done by 2.7 s), then carried off downwind with the breeze, gathering speed.
 vec2 pondPadPassage(float fi) {
-  float settle = 1.0 - clamp((passageIn() * POND_ENTER - 0.3) / 2.4, 0.0, 1.0);
+  float settle = 1.0 - clamp(passageIn() * POND_ENTER / 2.7, 0.0, 1.0);
   float bearing = hash12(vec2(fi, 73.0)) * TAU;
-  float gust = smoothstep(0.0, 1.0, passageOut());
+  float gust = passageOut() * passageOut();
   return vec2(cos(bearing), sin(bearing)) * (0.04 + 0.04 * hash12(vec2(fi, 74.0))) * settle * settle
     + vec2(0.9, 0.4) * (0.02 + 0.02 * hash12(vec2(fi, 75.0))) * gust;
 }
 
 // How far the foliage at each edge (left, right, bottom, top, in sheet UV) is held out beyond the
-// frame: 'amount' at the start of the entrance, easing in to 0 with a small overshoot past rest, edge
-// by edge (each runs 1.9 s from its own delay, plus 'lag'); and out again on exit.
+// frame: 'amount' at the start of the entrance, coming in at speed and easing in to 0 with a small
+// overshoot past rest, edge by edge (all set off at once; each settles 1.9 s after its own delay,
+// plus 'lag'); and out again on exit, gathering speed to the exit's end.
 vec4 pondFoliageShift(float tin, float tout, float lag, float amount) {
   vec4 delay = vec4(0.0, 0.25, 0.4, 0.1);
-  vec4 a = clamp((vec4(tin) - delay - lag) / 1.9, 0.0, 1.0);
-  vec4 u = a * a * (3.0 - 2.0 * a);
-  vec4 b = clamp((vec4(tout) - 0.5 * delay) / 1.3, 0.0, 1.0);
-  return amount * ((1.0 - u) * cos(u * 2.51327) + b * b);
+  vec4 a = clamp(vec4(tin) / (1.9 + delay + lag), 0.0, 1.0);
+  vec4 u = 1.0 - (1.0 - a) * (1.0 - a) * (1.0 - a);
+  vec4 b = clamp((vec4(tout) - 0.5 * delay) / (POND_EXIT - 0.5 * delay), 0.0, 1.0);
+  return amount * ((1.0 - u) * cos(u * 2.51327) + b * b * b);
 }
 
 // One edge's push on a lookup, strongest at the edge and gone 0.4 into the frame. Overshoot (the
@@ -191,13 +196,13 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   vec4 plantShift = vec4(0.0);
   vec4 canopyShift = vec4(0.0);
   if (passing) {
-    float up = smoothstep(0.0, 1.0, pin);
-    float down = smoothstep(0.0, 1.0, pout);
+    float up = 1.0 - (1.0 - pin) * (1.0 - pin);
+    float down = pout * pout;
     // Barely a breath of light: the motion carries the passage.
     lightK = mix(0.96, 1.0, up) * mix(1.0, 0.96, down);
     causticK = mix(0.95, 1.0, up) * mix(1.0, 0.95, down);
     plantShift = pondFoliageShift(tin, tout, 0.0, 0.2);
-    // The canopy lowers in a moment after the plants.
+    // The canopy settles a moment after the plants.
     canopyShift = pondFoliageShift(tin, tout, 0.5, 0.12);
   }
 
@@ -392,10 +397,11 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     }
     float len = 0.11 + 0.06 * hash12(vec2(fi, 6.0));
     if (passing) {
-      // Gliding in from or out past the frame's edge: head the way it is actually going.
+      // Gliding in from or out past the frame's edge: head the way it is actually going. Before
+      // and after its glide it keeps its own heading, so nothing turns at the passage's ends.
       vec2 slide;
       pos += pondKoiPassage(fi, pos, len, aspect, slide);
-      dir = normalize(vel + slide + 1e-5);
+      if (slide != vec2(0.0)) dir = normalize(vel + slide + 1e-5);
     }
     vec2 side = vec2(-dir.y, dir.x);
     float swim = tm * (3.0 + 4.0 * K_swim) + fi;

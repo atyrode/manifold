@@ -191,6 +191,11 @@ class CountrySim implements SceneSim {
     return [this.#ground.texture, this.#cover.texture, this.#parcels.texture, records];
   }
 
+  /** Ready once the first land is built (a later rebuild keeps showing the previous land). */
+  ready(): boolean {
+    return this.#land !== undefined;
+  }
+
   dispose(): void {
     this.#ground.dispose();
     this.#cover.dispose();

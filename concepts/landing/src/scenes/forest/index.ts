@@ -5,9 +5,9 @@
 // roots, stones and branches, rattling their heads round and fading, glowing mushrooms, drifting
 // spores, and now and then a great stag crossing far off between the trunks. The spirits, the stag,
 // the spores and the mist's banks live in sim.ts; shader.ts paints the forest around them.
-// Passage: the camera dollies slowly forward between the trunks and settles, then the spirits pop up
+// Passage: the camera glides in between the trunks, braking, and settles, then the spirits pop up
 // one by one on their perches; on the way out they turn their heads and vanish one by one while the
-// camera drifts back into the mist (FOREST_PASSAGE in sim.ts).
+// camera drifts back into the mist, gathering speed (FOREST_PASSAGE in sim.ts).
 import { feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";

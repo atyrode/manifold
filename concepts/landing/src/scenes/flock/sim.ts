@@ -259,24 +259,24 @@ const BOIDS_REFRACTORY = 1.6;
  */
 export const FLOCK_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.5 };
 /**
- * Entrance, as shares of its progress: a bird sets off after LEAD plus STAGGER × how far back it
- * flies in the sheet plus up to SCATTER of its own, and takes FLIGHT to arrive (they add up to 1).
- * It starts BEYOND the edge plus up to DEPTH (heights) out, in a file about SPREAD tall following
+ * Entrance, as shares of its progress: every bird is on its way from the first moment, at its
+ * fastest, and takes FLIGHT plus STAGGER × how far back it flies in the sheet plus up to SCATTER of
+ * its own to arrive (they add up to 1), so the head of the file arrives first.
+ * It starts at the edge or up to DEPTH (heights) beyond it, in a file about SPREAD tall following
  * the sheet's height; the file sways by SWAY (heights) with SWAY_WAVE radians per height.
  */
-const ENTER_LEAD = 0.04;
 const ENTER_STAGGER = 0.26;
 const ENTER_SCATTER = 0.08;
-const ENTER_FLIGHT = 0.62;
-const ENTER_BEYOND = 0.06;
-const ENTER_DEPTH = 0.4;
+const ENTER_FLIGHT = 0.66;
+const ENTER_DEPTH = 0.3;
 const ENTER_SPREAD = 0.05;
 const ENTER_SWAY = 0.07;
 const ENTER_SWAY_WAVE = 4;
 /**
- * Exit, same shares: the birds fall FALL of it, accelerating, down to a roost between ROOST_LOW and
- * ROOST_LOW + ROOST_SPREAD (heights, under the horizon), closing to FUNNEL of their width about the
- * flock's centre and swooping SWOOP (heights) along its heading on the way.
+ * Exit, same shares (eased in as a whole, see #paint): the birds fall FALL of it, accelerating,
+ * down to a roost between ROOST_LOW and ROOST_LOW + ROOST_SPREAD (heights, under the horizon),
+ * closing to FUNNEL of their width about the flock's centre and swooping SWOOP (heights) along its
+ * heading on the way.
  */
 const EXIT_STAGGER = 0.28;
 const EXIT_SCATTER = 0.1;
@@ -1306,7 +1306,9 @@ export class Flock {
     const sy = h;
     const f = clamp(between, 0, 1);
     const enter = this.#enter;
-    const exit = this.#exit;
+    // The exit gathers pace as a whole, on top of each bird's own accelerating fall, so the flock
+    // pours down ever faster to the end.
+    const exit = this.#exit ** 4;
     const arriving = enter < 1;
     const leaving = exit > 0;
     const side = this.#entrySide;
@@ -1335,18 +1337,16 @@ export class Flock {
         const luck = (phaseA[i] ?? 0) / TAU;
         const other = (phaseB[i] ?? 0) / TAU;
         if (arriving) {
-          // From a file beyond the edge to its place in the sheet, slowing as it folds in.
+          // From a file at or beyond the edge to its place in the sheet: at its fastest at first,
+          // slowing as it folds in.
           const q = clamp(
-            (enter - (ENTER_LEAD + ENTER_STAGGER * back + ENTER_SCATTER * luck)) / ENTER_FLIGHT,
+            enter / (ENTER_FLIGHT + ENTER_STAGGER * back + ENTER_SCATTER * luck),
             0,
             1,
           );
           if (q < 1) {
-            const e = q * (2 - q);
-            const startX =
-              side < 0
-                ? -(ENTER_BEYOND + ENTER_DEPTH * other)
-                : aspect + ENTER_BEYOND + ENTER_DEPTH * other;
+            const e = 1 - (1 - q) ** 4;
+            const startX = side < 0 ? -ENTER_DEPTH * other : aspect + ENTER_DEPTH * other;
             const sheetY = flying ? this.#centreY : (shapes[o + SH_Y] ?? 0);
             const startY = sheetY + 0.5 * (yi - sheetY) + (sheetB[i] ?? 0) * ENTER_SPREAD;
             const flyX = startX + (xi - startX) * e;

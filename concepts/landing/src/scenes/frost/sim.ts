@@ -86,13 +86,13 @@ export const FROST_EMERGE_FROM = FROST_START - ENTER_LEAD;
 export const FROST_EMERGE_TO = FROST_START - 0.3 * ENTER_LEAD;
 /**
  * The breath: where on the pane it lands when the pointer is not on it (uv), the radius it starts
- * from (frame heights), how far it spreads as a multiple of the distance to the pane's farthest
- * corner (the cleared edge runs behind the warmth's reach), and the share of the exit it takes.
+ * from (frame heights), and how far it spreads by the end of the exit as a multiple of the distance
+ * to the pane's farthest corner. The cleared edge runs behind the warmth's reach, so it is still
+ * sweeping the last of the pane's corners as the exit ends.
  */
 const BREATH_AT = [0.46, 0.5] as const;
 const BREATH_START = 0.05;
-const BREATH_REACH = 1.7;
-const BREATH_SPREAD = 0.8;
+const BREATH_REACH = 1.3;
 /** uSim3 scales: fur lag in frame heights × FUR_SCALE; half-width in units of WIDTH_SCALE. */
 export const FUR_SCALE = 4;
 export const WIDTH_SCALE = 0.004;
@@ -1086,8 +1086,9 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
 
     /**
      * Growth seconds the shown clock is behind the real one: FROST_EMERGE_FROM's worth at the start
-     * of the entrance, easing to exactly 0 over FROST_PASSAGE.enter seconds that begin once the first
-     * field is up (so a slow first frame does not use the entrance up). 0 when not entered with a passage.
+     * of the entrance, running down fast at first and easing to exactly 0 over FROST_PASSAGE.enter
+     * seconds that begin once the first field is up (so a slow first frame does not use the entrance
+     * up). 0 when not entered with a passage.
      */
     const enterLead = (frame: SimFrame): number => {
       if (arriving === undefined) arriving = frame.passage.enter < 1;
@@ -1098,10 +1099,13 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         arriving = false;
         return 0;
       }
-      return ENTER_LEAD * (1 - progress) * (1 - progress);
+      return ENTER_LEAD * (1 - progress) ** 3;
     };
 
-    /** The exit: a warm breath lands on the glass and its warmth spreads, melting the frost out of its way. */
+    /**
+     * The exit: a warm breath lands on the glass and its warmth spreads, gathering pace and still
+     * spreading as the exit ends, melting the frost out of its way.
+     */
     const breathe = (frame: SimFrame, glass: MeltField): void => {
       const { exit } = frame.passage;
       if (!(exit > 0)) {
@@ -1117,8 +1121,8 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         Math.max(breath.x, 1 - breath.x) * aspect,
         Math.max(breath.y, 1 - breath.y),
       );
-      const radius =
-        BREATH_START + (BREATH_REACH * far - BREATH_START) * smoothstep(0, 1, exit / BREATH_SPREAD);
+      const spread = Math.min(1, exit);
+      const radius = BREATH_START + (BREATH_REACH * far - BREATH_START) * spread * spread;
       glass.heat.lift();
       glass.heat.stroke(breath.x, breath.y, radius, Math.min(1, frame.dt * 40) * 0.9, aspect);
       glass.heat.lift();

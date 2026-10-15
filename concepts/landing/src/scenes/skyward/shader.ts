@@ -992,16 +992,17 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   skywardLying = uWeather.y;
 
   // The camera lies on its back, tilted toward the feet, the screen's top toward the heading h.
-  // The entrance tips the view back from street level to the zenith, buildings swinging into their
-  // lean (a short settle past the mark); the exit sits up again, tipping it down toward the street.
-  // Both are exactly 0 at rest.
+  // The entrance tips the view back from street level to the zenith, on its way from the first frame
+  // and braking as the buildings swing into their lean (a short settle past the mark); the exit sits
+  // up again, tipping it down toward the street faster and faster. Both are exactly 0 at rest.
   bool passing = passageIn() < 1.0 || passageOut() > 0.0;
   float tilt = 0.0;
   if (passing) {
     float pin = passageIn();
     float sx = clamp((pin - 0.7) / 0.3, 0.0, 1.0);
-    float arrived = smoothstep(0.0, 0.8, pin) + 0.06 * sin(3.14159265 * sx) * sin(3.14159265 * sx);
-    tilt = (SKYWARD_STREET - SKYWARD_PITCH) * ((1.0 - arrived) + smoothstep(0.0, 1.0, passageOut()));
+    float back = 1.0 - clamp(pin / 0.8, 0.0, 1.0);
+    float arrived = 1.0 - back * back + 0.06 * sin(3.14159265 * sx) * sin(3.14159265 * sx);
+    tilt = (SKYWARD_STREET - SKYWARD_PITCH) * ((1.0 - arrived) + passageOut() * passageOut());
   }
   float yaw = SKYWARD_YAW + 0.05 * uPointer.x;
   float pitch = SKYWARD_PITCH + 0.04 * uPointer.y + tilt;

@@ -195,11 +195,13 @@ vec2 petriRipples(vec2 g, out float crest) {
 }
 
 // The dish slides over the bench, which stays where it is: in from the right over PETRI_SLIDE
-// seconds, settling with a touch of overshoot, and out to the left gathering speed. Frame heights
-// from where the dish rests; exactly 0 at rest.
+// seconds, arriving at speed and settling with a touch of overshoot, and out to the left gathering
+// speed to the end. Frame heights from where the dish rests; exactly 0 at rest. The reach takes the
+// dish and its shadow (out to 1.2 R on the trailing side) just out of the frame, so it is still
+// crossing the edge as the exit ends and is on its way in from the first frame of the entrance.
 vec2 petriSlide(float pin, float pout, float aspect, float R) {
   vec2 slide = vec2(0.0);
-  float reach = 0.5 * aspect + 1.5 * R + 0.05;
+  float reach = 0.5 * aspect + 1.25 * R;
   if (pin < 1.0) {
     float u = clamp(pin * PETRI_ENTER / PETRI_SLIDE, 0.0, 1.0) - 1.0;
     slide += vec2(reach, -0.1) * -(u * u * (1.7 * u + 0.7));

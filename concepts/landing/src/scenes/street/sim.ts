@@ -683,20 +683,18 @@ export const TILT_OUT = 0.55;
 export const TILT_ARRIVE = 0.8;
 
 /** How far the camera is raised above its rest pitch (rad), from the passage's progress (0..1 each):
- *  coming in it comes down with a little overshoot, then settles; going out it eases up. Exactly 0 at rest. */
+ *  coming in it is on its way down from the first frame, braking into a little overshoot, then
+ *  settles; going out it rises faster and faster to the end. Exactly 0 at rest. */
 export function passageTilt(enter: number, exit: number): number {
   if (enter >= 1 && exit <= 0) return 0;
-  const eased = smoothstep(0, TILT_ARRIVE, enter);
-  const back = eased - 1;
+  const back = clamp(enter / TILT_ARRIVE, 0, 1) - 1;
   const settle = 1 + 1.8 * back * back * back + 0.8 * back * back;
-  const leave = smoothstep(0, 1, exit);
-  return TILT_IN * (1 - settle) + TILT_OUT * leave;
+  return TILT_IN * (1 - settle) + TILT_OUT * exit * exit;
 }
 
-/** The crowd's walk-in: each walker sets off after at most this share of the entrance, arrives between
- *  the second and third shares, at a pace in this range (m/s), so it comes in from that far along its
- *  sidewalk (a few metres). */
-const ARRIVE_START_MAX = 0.12;
+/** The crowd's walk-in: every walker is already on its way at the entrance's first frame and arrives
+ *  between these shares of the entrance, at a pace in this range (m/s), so it comes in from that far
+ *  along its sidewalk (a few metres). */
 const ARRIVE_END_MIN = 0.72;
 const ARRIVE_END_MAX = 0.94;
 const ARRIVE_PACE_MIN = 1.15;
@@ -2646,11 +2644,10 @@ class StreetCrossing implements SceneSim {
       const at = this.#walkers.indexOf(walker.partner);
       if (at >= 0 && at < key) key = at;
     }
-    const start = ARRIVE_START_MAX * hash01(key, 1);
     const end = ARRIVE_END_MIN + (ARRIVE_END_MAX - ARRIVE_END_MIN) * hash01(key, 2);
     const pace = ARRIVE_PACE_MIN + (ARRIVE_PACE_MAX - ARRIVE_PACE_MIN) * hash01(key, 3);
-    const done = clamp((enter - start) / (end - start), 0, 1);
-    const left = pace * (end - start) * STREET_PASSAGE.enter * (1 - done);
+    const done = clamp(enter / end, 0, 1);
+    const left = pace * end * STREET_PASSAGE.enter * (1 - done);
     const sideStreet = z > FACADE_FAR && Math.abs(x) < SIDE_FACADE;
     const dx = sideStreet ? 0 : x < CAM_X ? -1 : 1;
     const dz = sideStreet ? 1 : 0;

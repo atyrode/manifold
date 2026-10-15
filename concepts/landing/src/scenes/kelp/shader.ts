@@ -121,8 +121,7 @@ const float KELP_SWELL_START = ${num(KELP_SWELL.start)};
 const float KELP_SWELL_SPEED = ${num(KELP_SWELL.speed)};
 
 // ---- the camera's passage (sim.ts KELP_CAMERA, KELP_PASSAGE) ----
-const float KELP_ENTER_FROM = ${glslFloat(KELP_CAMERA.delay / KELP_PASSAGE.enter)};   // entrance progress the camera starts sinking at
-const float KELP_DIP_FROM = ${glslFloat(KELP_CAMERA.dipFrom / KELP_PASSAGE.enter)};   // and where it starts to settle past its mark
+const float KELP_DIP_FROM = ${glslFloat(KELP_CAMERA.dipFrom / KELP_PASSAGE.enter)};   // entrance progress it starts to settle past its mark at
 const float KELP_DROP = ${glslFloat(KELP_CAMERA.drop)};                                // world units above its place it starts, just under the surface
 const float KELP_DIP = ${glslFloat(KELP_CAMERA.dip)};                                  // how far below its place it settles
 const float KELP_RISE = ${glslFloat(KELP_CAMERA.rise)};                                // how far up it goes on leaving
@@ -1156,13 +1155,14 @@ Shade sceneKelp(vec2 uv, vec2 cell, float t) {
   float aa = 1.0 / uRes.y;
   float tc = uMotionTime;
   kelpTh = edgeThreshold(cell, vec2(2.0, 7.0));
-  // The camera. Entering, it sinks from just under the surface and settles a hair below its mark;
-  // leaving, it rises toward the light. Every term is exactly 0 at rest.
+  // The camera. Entering, it sinks from just under the surface, already on its way down, braking,
+  // and settles a hair below its mark; leaving, it rises toward the light, gathering speed. Every
+  // term is exactly 0 at rest.
   float arrive = passageIn();
-  float sink = 1.0 - smoothstep(KELP_ENTER_FROM, 1.0, arrive);
+  float sink = (1.0 - arrive) * (1.0 - arrive);
   float settle = clamp((arrive - KELP_DIP_FROM) / (1.0 - KELP_DIP_FROM), 0.0, 1.0);
-  float lift = smoothstep(0.0, 1.0, passageOut());
-  kelpDrop = KELP_DROP * sink - KELP_DIP * 4.0 * settle * (1.0 - settle) + KELP_RISE * lift;
+  float leave = passageOut();
+  kelpDrop = KELP_DROP * sink - KELP_DIP * 16.0 * settle * settle * (1.0 - settle) * (1.0 - settle) + KELP_RISE * leave * leave;
   KelpEnv e = kelpEnvironment(tc);
   vec3 water = kelpWater(P, e);
   bool wantStir = e.night * K_plankton > 0.01;

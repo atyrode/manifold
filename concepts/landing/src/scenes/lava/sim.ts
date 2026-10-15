@@ -303,14 +303,15 @@ const ENTER_COIL_IN = [0.35, 0.8] as const;
 const ENTER_COIL_OUT = [2.2, 3] as const;
 const ENTER_PACE = 0.9;
 /** Exit: the coil lets go (over this many seconds), every parcel cools toward EXIT_T (1/s at most)
- * and the wax grows heavy: between these seconds it falls at up to EXIT_FALL (glass units/s), its
- * drag rising by EXIT_DRAG times that share so it gets up to speed, slowing toward the pool (between
- * these heights). The M lets go at once. The lamp runs a little quicker through it. */
+ * and the wax grows heavy: from EXIT_FALL_FROM seconds to the exit's end it falls at up to EXIT_FALL
+ * (glass units/s), ever more of it, its drag rising by EXIT_DRAG times that share so it gets up to
+ * speed, slowing toward the pool (between these heights). The M lets go at once. The lamp runs a
+ * little quicker through it. */
 const EXIT_T = 0.27;
 const EXIT_COOL = 3.5;
 const EXIT_COIL_OFF = 0.3;
 const EXIT_FALL = 0.8;
-const EXIT_FALL_IN = [0.05, 0.45] as const;
+const EXIT_FALL_FROM = 0.05;
 const EXIT_DRAG = 2;
 const EXIT_FALL_POOL = [0.02, 0.4] as const;
 const EXIT_PACE = 0.4;
@@ -1171,11 +1172,12 @@ class LavaSim implements SceneSim {
     if (exit > 0) {
       const t = exit * LAVA_PASSAGE.exit;
       const cool = smoothstep(0, EXIT_COIL_OFF, t);
+      const fallen = clamp((t - EXIT_FALL_FROM) / (LAVA_PASSAGE.exit - EXIT_FALL_FROM), 0, 1);
       return {
         coil: 1 - cool,
         warm: 0,
         cool: EXIT_COOL * cool,
-        fall: smoothstep(EXIT_FALL_IN[0], EXIT_FALL_IN[1], t),
+        fall: fallen * fallen,
       };
     }
     if (this.#arriving && enter < 1) {

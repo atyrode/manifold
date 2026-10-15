@@ -48,6 +48,7 @@ import { verifyCountryFeaturesAll, verifyCountryLife } from "./src/scenes/countr
 import { verifyCountryMurmuration, verifyCountryVerges } from "./src/scenes/country/wild.verify.ts";
 import { verifyCountrySeason } from "./src/scenes/country/season.verify.ts";
 import { verifyCountryChalk } from "./src/scenes/country/chalk.verify.ts";
+import { passageSpeeds } from "./src/passage-speed.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -298,12 +299,16 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
     return location;
   };
   const sent: number[][] = [];
-  /** The exit each draw into the leaving frame was sent. */
+  /** The exit each draw into the leaving frame was sent, and the last one sent on screen. */
   const leavingExits: number[] = [];
+  let screenExit = 0;
   const uniform2 = rendererGl.uniform2f.bind(rendererGl);
   rendererGl.uniform2f = (location, x, y) => {
     const offScreen = rendererGl.getParameter(rendererGl.FRAMEBUFFER_BINDING) !== null;
-    if (location !== null && passageLocations.has(location) && offScreen) leavingExits.push(y);
+    if (location !== null && passageLocations.has(location)) {
+      if (offScreen) leavingExits.push(y);
+      else screenExit = y;
+    }
     uniform2(location, x, y);
   };
   const uniform = rendererGl.uniform3f.bind(rendererGl);
@@ -361,12 +366,25 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
       sent.length === 1 && sent[0]?.[0] === 0,
       `Blended while preparing: ${JSON.stringify(sent)}`,
     );
-    // The exit starts on the next frame; the entrance is due half-way through it.
-    const start = 3100;
-    draw(start);
+    // Then the incoming scene runs ahead off screen (one cell, no blend) while the leaving one
+    // still idles, until its sim has built its land: only then does the exit start.
+    let at = 3000;
+    let waited = 0;
+    for (; waited < 400; waited++) {
+      at += 20;
+      draw(at);
+      check(
+        sent.every((dissolve) => dissolve[0] === 0),
+        `Blended while running ahead: ${JSON.stringify(sent)}`,
+      );
+      if (screenExit > 0) break;
+    }
+    check(waited > 2 && screenExit > 0, `The exit did not wait for the land (${waited} frames)`);
+    // It began on the frame before; the entrance is due half-way through it.
+    const start = at - 20;
     draw(start + exit * 500 - 50);
     check(
-      sent.length === 1 && sent[0]?.[0] === 0,
+      sent.length === 2 && sent.every((dissolve) => dissolve[0] === 0),
       `Entered before the overlap: ${JSON.stringify(sent)}`,
     );
     draw(start + exit * 500 + 50);
@@ -477,6 +495,7 @@ export const checks: readonly Check[] = [
   ["gpuBlend", gpuBlend],
   ["frostWarmth", frostWarmth],
   ["rendererPassage", rendererPassage],
+  ["passageSpeeds", passageSpeeds],
   // Registered checks: one import above and one line here each, appended at the end.
   ["mobile", mobileVerify],
   ["orbitRingDepth", verifyOrbitRingDepth],

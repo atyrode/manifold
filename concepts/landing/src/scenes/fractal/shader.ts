@@ -19,8 +19,8 @@
 //
 // uSim0 is the sim's state row (layout in sim.ts). Knobs read here: K_palette, K_lines, K_glow,
 // K_ripples, K_rays, K_filigree, K_trap.
-import { glslPick, glslVec3 } from "../../shaders/glsl.ts";
-import { FRACTAL_GLOBAL_TEXELS, FRACTAL_LAYER_TEXELS } from "./sim.ts";
+import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
+import { FRACTAL_GLOBAL_TEXELS, FRACTAL_LAYER_TEXELS, FRACTAL_SMEAR } from "./sim.ts";
 
 interface FractalPalette {
   label: string;
@@ -126,7 +126,7 @@ const float FRACTAL_BAIL = 4096.0;
 const float FRACTAL_LN2 = 0.6931472;
 // Seconds of travel a moving feature is smeared over (it then never crosses a cell faster than the
 // dither can follow).
-const float FRACTAL_SMEAR = 0.7;
+const float FRACTAL_SMEAR = ${glslFloat(FRACTAL_SMEAR)};
 // Newton's method has converged within this many z units of a stone.
 const float FRACTAL_NEWTON_TOL = 0.002;
 // How strongly the garden's braid is inked in the outline colour: a fine pen line, not a white surf.
@@ -196,7 +196,8 @@ vec2 fractalSqrt(vec2 a) {
 // fractal. fractalLayer scales content units about that point (a mode then draws a little of its
 // own world, just as it does at rest): fractalPassK is the scale, so a screen cell spans that
 // much less content, and fractalPassSpeed is how fast the picture streams past the pixel, in cells
-// per second, smeared away like any other motion. At rest: 1 and 0.
+// per second, smeared away like any other motion (but never over more than the way it has come or
+// has still to go, sim.ts). At rest: 1 and 0.
 float fractalPassK = 1.0;
 float fractalPassSpeed = 0.0;
 
