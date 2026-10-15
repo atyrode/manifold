@@ -242,6 +242,8 @@ Overlooking rolling hills with a village in the distance and forest around.
   own bank of the river and never moves a building; it opens the hedges it crosses, hedgerow trees
   rooted on it give way, fences leave a gap and herds keep off it (their wall along it, and
   `countryRouteDistance` for every animal), as for the tracks.
+- Walkers and carts keep to the tracks in any weather: lamps lit after dark and under a heavy sky,
+  wetted by rain, and under lying snow the tracks they use show trodden down through it.
 - Cost: every optional part (walkers and carts, the track network, hedgerow clearing, village
   growth, hamlets, farms and castle, the farm tracks, flower and pasture fields, herds and fences,
   birds and the murmuration, the chalk M, falling rain and snow, fog, wind ripples, a moon below

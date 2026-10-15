@@ -858,7 +858,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     float onLane = 0.0;    // 1 on the farm track
     float rut = 0.0;       // 1 in its wheel ruts
     vec2 lp = vec2(0.0);   // track space for its puddles: across, down the slope, ~0.007 world a unit
+    // How much snow the tracks hold: 0.95 (their ruts 0.55) untrodden; walkers and carts out on them
+    // tread it down, so the way they keep to still shows under lying snow.
+    float trackSnow = 0.95;
 #if COUNTRY_HAS_AGENTS
+    if (K_walkers > 0.0 || K_carts > 0.0) trackSnow = 0.6;
     if (object > 4.5) {
       // A walker or a cart (routes.ts): rain wets it like the land; snow settles only on a load's top.
       albedo = agent.albedo;
@@ -1008,7 +1012,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           track = mix(track, sward, 1.0 - smoothstep(0.16, 0.3, u));
           albedo = mix(albedo, track, onLane);
           n = normalize(mix(n, slope, onLane));
-          settles = mix(settles, 0.95 - 0.4 * rut, onLane);
+          settles = mix(settles, trackSnow - 0.4 * rut, onLane);
           relief = mix(relief, 0.5, onLane);
           sheen *= 1.0 - onLane;
           porous = mix(porous, 0.5, onLane);
@@ -1041,7 +1045,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           lp = vec2(route.x, w.x + w.y) * 150.0;
           albedo = mix(albedo, countryTrackColor(route.w, u, rut, lp, cells, season), onLane);
           n = normalize(mix(n, slope, onLane));
-          settles = mix(settles, 0.95 - 0.4 * rut, onLane);
+          settles = mix(settles, trackSnow - 0.4 * rut, onLane);
           relief = mix(relief, 0.5, onLane);
           sheen *= 1.0 - onLane;
           porous = mix(porous, route.w > 0.5 && route.w < 1.5 ? 0.25 : 0.5, onLane);
