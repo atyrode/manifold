@@ -1,18 +1,21 @@
 # Scene backlog
 
-Scene ideas beyond the first three (orbit, swell, pond). Each is a dithered shader
-scene: animated, tweakable in the lab, with a standalone Manifold landmark that fits the scene.
-How to write one: `src/scenes/README.md`.
+The lab's scenes, one row each in the tables below: the first three (orbit, swell, pond) and the
+ideas that followed them. Each is a dithered shader scene: animated, tweakable in the lab, with a
+standalone Manifold landmark that fits the scene. How to write one: `src/scenes/README.md`.
 
 ## Status
 
-All of the ideas below have a first implementation in the lab:
+The first three and all of the ideas below have a first implementation in the lab:
 
 | Idea                             | Scene id  | Notes                                                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Planet in orbit                  | `orbit`   | The shared giant planet as the subject (`shaders/lib/planet.ts`, hero tier), every feature a knob: clouds, storms, aurora, city lights, a day cycle, moons and the banded ring system. Behind it real constellations (with figure lines), shooting stars, captured meteors, a nebula and a drifting starfield; the M as night-side city lights or an asterism.                                      |
+| Moonlit swell                    | `swell`   | Open-ocean swell and chop rolling toward the horizon, painted flat or, with `relief`, standing up near by; its own moon (`moon` sizes it; an M in its seas as an option) and stars. Optional birds (the shared birds, gulls by default) over the night sea, hidden by the crests, and optional shooting stars (the shared meteors) glinting in the waves.                                           |
+| Koi pond                         | `pond`    | Koi seen from above, drawn with the shared fish (`sims/fish.ts`) and steered by it while drawn to the pointer; lily pads, ripples, five floor beds, water weeds, caustics (the shared water's caustics tier, "Pond water") and god rays. The border plants are the shared plant component ("Pond plants"); optional: a canopy, a current carrying petals and a paper boat, a manifold stone.        |
 | Above the clouds                 | `clouds`  | Aurora and lightning come from the shared weather layer. The sea of cloud below is the shared clouds' volume tier (`cloudSeaMarch`, `CLOUD_TIER` volume); the stars over it are the shared stars control.                                                                                                                                                                                           |
 | Waterfall                        | `falls`   | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. Optional birds (the shared birds): swifts crossing the gorge, hidden behind the cliff they fly beyond. The shared sky components over the rim: a stars control, the moon's phase, an aurora whose arc is lifted to show its lower edge over the rim, and shooting stars that fall behind it. |
-| Countryside                      | `country` | Relative weights for seasonal crops, wildflower meadows, lavender rows and sunflowers; reproducible landscape seeds.                                                                                                                                                                                                                                                                                |
+| Countryside                      | `country` | Relative weights for seasonal crops, wildflower meadows, lavender rows, sunflowers and pasture enclosures with herds; reproducible landscape seeds. Its optional parts are compiled in only while their knobs are on (`featuresFor`).                                                                                                                                                               |
 | Murmuration                      | `flock`   | Authored deforming sheet on the CPU; optional emergent topological boids (`Boids`). The stars after dusk are the shared stars control.                                                                                                                                                                                                                                                              |
 | Paper marbling                   | `marble`  | Mathematical marbling engine.                                                                                                                                                                                                                                                                                                                                                                       |
 | Dunes                            | `dunes`   | Werner slab model. The shared sky components over the dune sea: a stars control (a dark desert sky, drawn 1.3x bright), the moon's phase (which lights the sand), an aurora under the dust and shooting stars.                                                                                                                                                                                      |
@@ -21,14 +24,19 @@ All of the ideas below have a first implementation in the lab:
 | Sea shore and bioluminescent bay | `shore`   | The stars over the sea and glinting in the wet sand are the shared stars control.                                                                                                                                                                                                                                                                                                                   |
 | Window sill                      | `sill`    | The shared sky components over the city: a stars control, the moon's phase, an aurora whose light comes in through the window, and shooting stars, all behind the cloud deck.                                                                                                                                                                                                                       |
 
-The shared options became libraries every outdoor scene can use: sky and time of day, clouds in
-tiers (a calm deck, the lit deck, its shadows, a sea of tops seen from above), weather, lightning,
-aurora and water in tiers (`src/shaders/lib/`), with shared lab knobs (`src/scenes/atmosphere.ts`).
-The giant ringed planet is an opt-in one (`src/shaders/lib/planet.ts`, included by the scenes that
-draw it; knobs `src/scenes/planet.ts`): `orbit` draws it as its subject with every feature (belts,
-clouds, storms, aurora, city lights, day cycle, banded rings, moons), `campfire` as scenery over its
-pines. So is the Milky Way (`src/shaders/lib/milkyway.ts`), over `campfire` and `lake`. The notes
-below are the original briefs.
+The shared options became libraries every outdoor scene can use, compiled into every program: sky
+and time of day (stars, the moon's phase, shooting stars), clouds in tiers (a calm deck, the lit
+deck, its shadows, a sea of tops seen from above), weather, lightning, aurora, the weather under a
+closed canopy and water in tiers (`src/shaders/lib/`), with shared lab knobs
+(`src/scenes/atmosphere.ts`). Others are opt-in, included only by the scenes that draw them: the
+giant ringed planet (`src/shaders/lib/planet.ts`, knobs `src/scenes/planet.ts`), which `orbit`
+draws as its subject with every feature (belts, clouds, storms, aurora, city lights, day cycle,
+banded rings, moons) and `campfire` as scenery over its pines; the Milky Way
+(`src/shaders/lib/milkyway.ts`), over `campfire` and `lake`; the birds (`src/shaders/lib/birds.ts`);
+the rooted plants (`src/sims/plants.ts`, `src/shaders/lib/plants.ts`, knobs `src/scenes/plants.ts`);
+and the countryside's figures, livestock and buildings. Which scene composes which: "Composing
+components" in `src/scenes/README.md`. The sections after the tables keep the original briefs, with
+notes on what was built.
 
 ## Zen batch
 
@@ -37,10 +45,10 @@ mathematics. All have a first implementation in the lab:
 
 | Idea                                         | Scene id     | Simulation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Shared engine                                                                                             |
 | -------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| Dry stone garden (karesansui)                | `garden`     | Raked gravel height field, falling-plate maple leaves on the shared gust pulse (the maple sways with its GLSL twin); fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms; at night the shared moon's phase sets the light (no stars: the horizon is the frame's top edge); the woods over the wall and an optional border along its foot are rooted plants swaying in the wind and the gust's front | `HeightField`, `AgeField`, `FlutterPlates`, `gustPulse`, `RootedPlants`                                   |
+| Dry stone garden (karesansui)                | `garden`     | Raked gravel height field, falling-plate maple leaves on the shared gust pulse (the maple sways with its GLSL twin); fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms; at night the shared moon's phase sets the light (no stars: the horizon is the frame's top edge); the woods over the wall and an optional border along its foot are rooted plants swaying in the wind and the gust's front | `HeightField`, `AgeField`, `FlutterPlates`, `gustPulse`, `RootedPlants`, sky components                   |
 | Bamboo grove and water clock (shishi-odoshi) | `bamboo`     | Damped culm springs under gust fronts, tipping tube; a moss pad on its stone softens the knock for a quiet clock; rain cloud, rays and gap sky under the leaves from the shared canopy weather, with a stars control and the moon's phase in the gaps and the night rays                                                                                                                                                                                                                   | `canopyWeather`, sky components                                                                           |
 | Lantern river (tōrō nagashi)                 | `lanterns`   | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step; the river's ripples ride the current; optional birds over the far bank, mirrored in the rippled river; a stars control (the scene's own sparse stars thin out below it), and an aurora over the temple and shooting stars, both mirrored in the river (its young crescent stays the scene's own)                                                                 | `separateDiscs`, water `flow` tier (`rippleSpectrum`, `waterDrift`, `waterMirror`), birds, sky components |
-| Synchronous fireflies                        | `fireflies`  | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population; the lights nearer than the bank move in the world in front of the eye                                                                                                                                                                                                                                                                                                                          | `LevelCamera`                                                                                             |
+| Synchronous fireflies                        | `fireflies`  | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population; the lights nearer than the bank move in the world in front of the eye; the mangroves are rooted plants bowing to the breeze ("Fireflies mangroves"); optional shooting stars over the hills                                                                                                                                                                                                    | `LevelCamera`, `RootedPlants`, meteors                                                                    |
 | Kelp forest                                  | `kelp`       | Buoyant Verlet stipes in surge: giant kelp, or bull kelp held up by one gas bulb (or a mix); boids school                                                                                                                                                                                                                                                                                                                                                                                  | `VerletSystem`, `fishGlsl`                                                                                |
 | Spider web at dawn                           | `dew`        | Verlet orb web, dew drops creeping and falling; paged bin lists keep the dense hub whole                                                                                                                                                                                                                                                                                                                                                                                                   | `VerletSystem`, `BinLists`                                                                                |
 | Meadow in the wind (honami)                  | `meadow`     | Gust fronts shared by shader and sim, dandelion seeds carried in the world along the gust direction; optional birds over the field, behind the grass nearer than them; a stars control, the moon's phase, an aurora and shooting stars behind the clouds                                                                                                                                                                                                                                   | `LevelCamera`, birds, sky components                                                                      |
@@ -51,7 +59,7 @@ mathematics. All have a first implementation in the lab:
 | Ferrofluid                                   | `ferro`      | Rosensweig spike lattice, sloshing blob                                                                                                                                                                                                                                                                                                                                                                                                                                                    |                                                                                                           |
 | Soap film                                    | `film`       | Thin-film interference, gravity drainage, pops whose rim crosses the film from the break in least time                                                                                                                                                                                                                                                                                                                                                                                     | `FluidSim`, `ArrivalField`                                                                                |
 | Pearlescent fluid (rheoscopic)               | `pearl`      | Flake orientation advected and turned by the flow                                                                                                                                                                                                                                                                                                                                                                                                                                          | `FluidSim`                                                                                                |
-| Petri dish                                   | `petri`      | Gray–Scott Turing patterns, Barkley BZ spirals                                                                                                                                                                                                                                                                                                                                                                                                                                             | `GpuCompute`                                                                                              |
+| Petri dish                                   | `petri`      | Gray–Scott Turing patterns, Barkley BZ spirals                                                                                                                                                                                                                                                                                                                                                                                                                                             | `GpuCompute`, `grayScottRegimes`                                                                          |
 | Slime mould network (Physarum)               | `physarum`   | Jones agent model linking oat flakes                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `GpuCompute`                                                                                              |
 | Hyperbolic tiling                            | `hyperbolic` | Möbius glide over a {p,q} weave; drags re-grip when the map or screen shape changes                                                                                                                                                                                                                                                                                                                                                                                                        |                                                                                                           |
 | River delta from above                       | `delta`      | Shallow water erosion and deposition                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `GpuCompute`                                                                                              |
@@ -87,11 +95,14 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Summer apiary                  | `bees`         | A hillside garden of hives, lavender rows and orchard under cumulus; bees are specks whose flight tells the story (beelines between hive and flowers, hovering, crowds at the entrances), with fluttering butterflies, all flying in the garden's world and projected through its eye (`LevelCamera`). Each dither cell shows its nearest insect (`SpeckMap`, `src/sims/specks.ts`), so scenery hides only what is behind it. The shared sky components over the valley: a stars control, the moon's phase, an aurora and shooting stars behind the cumulus |
 | Looking up at the city         | `skyward`      | Facades converging on the zenith, trams, planes and contrails, pigeons and swifts (the shared birds seen from below); rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`); in its strip of sky, beside the stars control, the shared moon's phase and shooting stars (no aurora: looking up, its curtains hang toward the horizon, out of view)                                                                                                                                                                   |
 | Autumn park                    | `autumn`       | Leaves flutter and tumble down (the shared plate model `sims/flutter.ts`, as the garden's), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts (the shared pulse, `sims/wind.ts`) lift swirls of the top leaves off the path; over the park, the shared sky components: a stars control, the moon's phase (which sets the night light), an aurora and shooting stars behind the clouds; optional cloud shadows sweeping the park (the shared clouds' `shadows` tier)                                                          |
+| Tide pool                      | `tidepool`     | GPU shallow water (`ShallowWater`, `sims/shallow.ts`) over a rock pool seen from straight above: the swell shoals, breaks over the reefs and in the sets pours through the notch in the basin's rim; anemones close in the surge, kelp and surfgrass stream as rooted plants, optional rock pool fish dart from a touch; the caustics are the shared water's caustics tier. A prototype: see "Tide pool"                                                                                                                                                    |
 | Hanging mobile                 | `mobile`       | Balanced arms on links as coupled Verlet pendulums, plate drag in drafts, gusts and eddies, plate contacts, shadows from one or two lamps on the wall                                                                                                                                                                                                                                                                                                                                                                                                       |
 
-Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's camera
-sees it (`rainFallSeen`), whatever the calm of the rest of the scene; snow does the same where the
-camera tilts (`snowFallSeen`: skyward looking up, street and island looking down).
+Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's
+camera sees it, whatever the calm of the rest of the scene: straight down the frame under a level
+camera (`rainFall`), toward a vanishing point under a tilted one (`rainFallSeen`: tidepool, skyward,
+street, island). Snow does the same where the camera tilts (`snowFallSeen`: skyward looking up,
+street and island looking down).
 
 ## Pond plants
 
@@ -143,9 +154,10 @@ top. Prototype (issue #1082, N1), built from shared parts rather than scene code
   idle over the basin's floor and dart from a touch or a hard surge; seasons and growth (off) turn
   and replace the fronds.
 - Knobs: tide (and a tide cycle), swell, wave length, direction, sets (with "now"), pace, foam;
-  caustics, glints, breeze; sky time and rain; anemones (and shyness), kelp, surfgrass, sea lettuce,
-  sea stars, urchins, sway; rock type, mussels/barnacles, coralline, pool size, arrangement;
-  bioluminescence; a pebble M.
+  caustics, glints, breeze; time of day (and a day cycle) and rain; anemones (and shyness), kelp,
+  surfgrass, sea lettuce, sea stars, urchins, sway, fish, seasons and growth; rock type, mussels
+  (and barnacles), coralline, pool size, arrangement; bioluminescence; a pebble M (and where it
+  lies).
 - Open: the rock reads too dark and busy at the dither, the open sea reads as mottled rather than
   as swell, and the zonation needs art direction before this leaves the prototype stage.
 
@@ -155,10 +167,12 @@ The view from a plane window: a sea of clouds below, open sky above.
 
 - Time of day/night as the main dial: dawn, noon, golden hour, sunset glow lighting cloud tops from
   below the horizon, blue hour, moonlit night with stars.
-- Cloud layer: raymarched or layered fbm density with a sun-dependent silver lining; slow drift.
-- Options: **aurora** over the night side (reuse orbit's aurora curtains, seen from inside the
-  atmosphere), **lightning** flickering inside distant cumulonimbus (trigger + random), the moon,
-  contrails, a distant wingtip in the corner.
+- Cloud layer: a ray-marched sea of tops (the shared clouds' volume tier) with a sun-dependent
+  silver lining, sliding past below; its cover, the plane's height above it and its drift are knobs.
+- Options: **aurora** over the night side (the shared aurora, seen from inside the atmosphere),
+  **lightning** flickering inside distant thunderheads (random, and "now"), the thunderheads
+  themselves, a passing plane's contrail, the window frame and the wing (with an M on its winglet
+  as an option). The moon has no knob: it keeps its own bearing.
 - Level of detail: the march steps grow with distance, and the cauliflower relief that shapes the
   tops' normals fades out as a cell's footprint on the deck grows; once fully faded it is not
   computed at all, for the same picture. The macro field the march, normals and shadows trace keeps
@@ -200,8 +214,8 @@ A cliff face with a waterfall as the focus.
 
 - Falling water as streaks advected down a flow field, foam and spray mist at the base, a plunge
   pool with ripples.
-- Rock strata, moss and ferns on the ledges (reuse the pond's botany), rainbow in the spray when
-  the sun is behind the viewer.
+- Rock strata, moss and ferns on the ledges, rainbow in the spray when the sun is behind the
+  viewer.
 - The near bank's ferns are rooted plants of the shared component (`falls/sim.ts`): the same clumps
   and fronds, each frond bending on its own spring under the wind, the fall's stir and gusts (new
   `gusts` knob, off), turning and shedding with the year (`season`, off), replaced with `growth`
@@ -219,7 +233,11 @@ A cliff face with a waterfall as the focus.
 Overlooking rolling hills with a village in the distance and forest around.
 
 - Layered hills with atmospheric perspective, patchwork fields, hedgerows, a winding road or river.
-- Village: a few roofs and a church spire, chimney smoke.
+- Village: cottages round a church with its spire (`cottages`, 11 the original village; more fill
+  lanes outward without moving any), windows lighting up at dusk (`village lights`) and chimney
+  smoke. Beyond it, optional settlements: hamlets on the far hills, a castle on the chalk down and
+  farmsteads among the nearer fields (`hamlets`, `castle`, `farmsteads`), all drawn with the shared
+  buildings (`src/shaders/buildings.ts`).
 - Woodland: `woodland cover` grows or clears the distant woods at their edges (50% is the original
   valley, 0 clears every wood); `pine mix` sets how many trees are tapered evergreen pines (25% by
   default). Woods are drawn as whole trees of varied size, with up to two per crown cell, ragged
@@ -232,29 +250,46 @@ Overlooking rolling hills with a village in the distance and forest around.
 - Night sky: the shared components: `stars` (density, 0.4 the original sky), the `moon`'s phase
   (full by default; it lights the land, clouds and river less as it wanes) and `shooting stars`
   (off by default, "now" on trigger 1) streaking through the gaps of the deck over the far hills.
-- River: it mirrors the sky as the cloud deck covers it, as the puddles on the tracks do (it used
-  to mirror a cloudless sky whatever the cover: the woods' canopy cover shadowed the sky's under
-  one name). `wind ripples` (0 by default: the original value-noise shimmer) brings in the shared
-  water's ripples tier: cat's-paws drifting downwind break the mirrored sky into streaks.
+- River: `river width` (50% the original stream) narrows it to a brook or dries it up, or widens it
+  into a broad river with shingle and reed beds. It mirrors the sky as the cloud deck covers it, as
+  the puddles on the tracks do (it used to mirror a cloudless sky whatever the cover: the woods'
+  canopy cover shadowed the sky's under one name). `wind ripples` (0 by default: the original
+  value-noise shimmer) brings in the shared water's ripples tier: cat's-paws drifting downwind break
+  the mirrored sky into streaks.
+- Tracks: `tracks` (0 by default: only the farm track over the near field) brings in the network,
+  first the track on to the village, from 20% the valley road and a farm track over a stone bridge,
+  from 40% a hill track and a chalk track up the far down, each plainer toward 100%; hedges open and
+  hedgerow trees give way where they pass.
 - Farm tracks: with farmsteads and tracks both on, a farm whose yard lies near the network gets a
   short straight farm track from just outside its house and barn to the nearest point of the
   nearest track, coming in as plainly as that track does as `tracks` brings it in. It keeps to its
   own bank of the river and never moves a building; it opens the hedges it crosses, hedgerow trees
   rooted on it give way, fences leave a gap and herds keep off it (their wall along it, and
   `countryRouteDistance` for every animal), as for the tracks.
-- Walkers and carts keep to the tracks in any weather: lamps lit after dark and under a heavy sky,
-  wetted by rain, and under lying snow the tracks they use show trodden down through it.
+- Walkers and carts (`walkers`, `carts`, off by default; the shared figures,
+  `src/shaders/lib/figures.ts`) keep to the tracks in any weather: lamps lit after dark and under a
+  heavy sky, wetted by rain, and under lying snow the tracks they use show trodden down through it.
+- Livestock: pasture enclosures (`pasture weight`, under Fields) hold herds of cattle or sheep
+  (`cattle share`, `herd size`) that graze, wander, lie down in the warm afternoon and at night and
+  bunch up standing in rain and snow, each inside its fence, on the shared livestock schedule
+  (`src/shaders/lib/livestock.ts`).
+- Wildlife: birds crossing the valley by day (`birds`, off by default; `which birds`: mixed by the
+  farming year and the hour, or one kind), the shared birds' species on the scene's own loop, and a
+  starling murmuration at dusk (`murmuration`, off by default, 1500 to 5000 starlings): the
+  Murmuration scene's sheet.
 - Cost: every optional part (walkers and carts, the track network, hedgerow clearing, village
   growth, hamlets, farms and castle, the farm tracks, flower and pasture fields, herds and fences,
-  birds and the murmuration, the chalk M, falling rain and snow, fog, wind ripples, a moon below
-  full) is compiled into the program only while its knobs are on (`countryFeatures`,
-  SceneDef.featuresFor); turning one on builds that program once, the old frame holding
-  meanwhile. The default program draws the same picture bit for bit at about the cost of the
-  countryside before its woodland, routes, settlements and herds were added (SwiftShader,
+  birds and the murmuration, the chalk M, falling rain and snow, fog, wind ripples, the clouds'
+  shadows, a moon below full) is compiled into the program only while its knobs are on
+  (`countryFeatures`, SceneDef.featuresFor); turning one on builds that program once, the old frame
+  holding meanwhile. The default program draws the same picture bit for bit at about the cost of
+  the countryside before its woodland, routes, settlements and herds were added (SwiftShader,
   640×400).
-- Fields: independently weight original seasonal crops, wildflowers, lavender and sunflowers from
-  0–100. Weights are relative, not area percentages: 2:1:1:0 gives approximately half crop fields,
-  a quarter wildflowers and a quarter lavender, with no sunflowers. All zero falls back to crops.
+- Fields: independently weight original seasonal crops, wildflowers, lavender, sunflowers and
+  pasture from 0–100, through the farming year (`season`: summer, harvest, autumn). Weights are
+  relative, not area percentages: crops 2, wildflowers 1, lavender 1 and the rest 0 give
+  approximately half crop fields, a quarter wildflowers and a quarter lavender. All zero falls back
+  to crops.
   Whole fields retain one material and the seed/layout remains fixed while weights change. The
   crop share retains its full seasonal catalogue, even when flowers dominate. Nearby plants have
   rooted stems, flower heads, spikes or leaves; distant detail resolves to field material.
@@ -345,8 +380,8 @@ Ink dropped on water, combed and swirled, as in ebru / suminagashi.
 
 - Mathematical marbling (Lu, Jaffer, Jin, Zhao & Mao, "Mathematical Marbling", IEEE CG&A 2012):
   drops and tine strokes are closed-form deformations of the ink boundaries, so patterns stay crisp.
-- Interaction: click to drop ink, drag to comb; presets for traditional patterns (nonpareil,
-  chevron, bouquet).
+- Interaction: click to drop ink, drag to comb; a `pattern` choice of traditional ones (stone,
+  gel-git, nonpareil, bouquet, chevron).
 - Practice, inks and pattern are independent. `practice` picks how the ink is laid: ebru (a
   ground colour over the tray, then brush-flicked stones) or suminagashi (an ink brush and a water
   brush touched in turn, raising rings; an uncombed sheet is turned only by breath and a fan).
@@ -383,7 +418,7 @@ Jeff Jones's agent model of Physarum linking oat flakes on agar (`physarum`).
   - routes: reach 18, angle 22°, evaporation 75%. A few bold trunks meeting in star-shaped
     junctions at the flakes, and almost no lace; with the Tokyo food and the rail palette, a
     transit map.
-    The default (reach 9, angle 35°, evaporation 40%) sits between: trunks over a faint lace. At
+  - the default: reach 9, angle 35°, evaporation 40%. Between them: trunks over a faint lace. At
     short and middle reach, low evaporation lets the lace win and trunks barely form; a wide angle
     curls the filaments and a narrow one straightens them.
 
@@ -392,7 +427,8 @@ Jeff Jones's agent model of Physarum linking oat flakes on agar (`physarum`).
 Wind over a sand sea.
 
 - Ripples and dune crests migrating downwind, sand blowing off the crests, long low-sun shadows.
-- Possibly a height-field simulation (saltation and avalanching).
+- A height-field simulation: Werner's slab model (saltation and avalanching), whose sand supply
+  picks lone barchans, barchanoid ridges or transverse dunes.
 - Clicks pour where the pointer's line of sight meets the sand as drawn (`marchHeight` with the
   shader's own march numbers, turned with the pointer parallax), or at the sandstone M's face.
 
@@ -400,7 +436,8 @@ Wind over a sand sea.
 
 - Frost crystals growing across a pane (diffusion-limited aggregation or a phase-field model),
   melting from a warm point under the pointer.
-- Or a frozen lake: cracks, trapped bubbles, snow drifting across the surface.
+- Or a frozen lake: cracks, trapped bubbles, snow drifting across the surface (built as a scene of
+  its own, `lake`).
 - Built: the pane (`frost`). Behind it, the night composes the shared sky components
   (src/scenes/README.md, "Composing components"): a star knob (the cabin, away from the town's
   lights, shows 1.7x the street's stars), the moon's phase (`SKY_MOON_PHASE`: disc, halo, its light
@@ -444,10 +481,13 @@ the spirit of lo-fi study streams.
 
 ## Shared options worth building once
 
-- **Aurora** (orbit has one; adapt it for ground- and plane-level views).
-- **Lightning**: branching bolts (stochastic L-system or dielectric-breakdown model), sky flash,
-  trigger with a "now" button like the meteors.
-- **Weather and time of day** as a common layer across outdoor scenes.
+- **Aurora** (built: `shaders/lib/aurora.ts` with `weatherKnobs({ aurora })`): curtains for ground-
+  and plane-level views, their light on the land and what hides them; orbit's oval is the giant
+  planet's own (`planetAurora`).
+- **Lightning** (built: `shaders/lib/lightning.ts`): forked bolts and the sky-wide flash, random or
+  on a "now" trigger like the meteors.
+- **Weather and time of day** (built: `shaders/lib/sky.ts` and `weather.ts`, with `skyKnobs` and
+  `weatherKnobs`) as a common layer across outdoor scenes.
 - **Birds** (built: `shaders/lib/birds.ts` with `birdKnobs`): seven species, four formations,
   side-on, mirrored in still water or seen from below; flown by country, skyward, train, meadow,
   falls, swell, aurora, lake and lanterns, each scene giving its camera, lanes, occlusion and light.
