@@ -499,18 +499,24 @@ The scene owns how they look: its projection, palette, light, what hides them an
   where it is resolved.
 - **Composition.** An organ on the site may spring from a point `offset` from it (a tree's prop
   roots along its crown); `PlantClimate.wind` adds air the scene moves itself (a breeze front of its
-  own) to the breeze; an organ with a negative slot is never packed (one the scene draws its own way,
-  as fireflies' crowns through the bank's profile); `PlantTexture.pack(a, b)` writes two systems
-  into one texture; `plantPoint` (GLSL) finds a point along a posed organ (a swaying stem's tip).
+  own, the garden's gust crossing as a front) to the breeze; an organ with a negative slot is never
+  packed (one the scene draws its own way, as fireflies' crowns through the bank's profile);
+  `PlantTexture.pack(a, b)` writes two systems into one texture (the garden's woods and border, each
+  in its own frame, after the scene's own rows); `plantPoint` (GLSL) finds a point along a posed
+  organ (a swaying stem's tip).
 - **Controls.** `plantKnobs({ group, season, growth, gusts })` gives `season`, `growth` and `gusts`
-  (with its trigger), all off: adopting them never changes a picture.
+  (with its trigger), all off: adopting them never changes a picture. A scene with a season of its
+  own leaves `season` out and maps its own onto the year (garden's season choice).
 - **Consumers.** pond (sheet tier, the border), falls (the near bank's ferns per fragment; the
   ledge ferns draw the same `plantFrond` from hashes), tidepool (kelp, surfgrass and anemones in
   the water's flow, read back from the GPU), fireflies (every tree of the bank: a stem carrying its
   crown's clumps, bowing to the breeze front through `wind`, and Rhizophora prop roots per fragment
-  from grid-slotted records). Next: meadow (near grass and dandelion stems on its own gust field),
-  garden (border plantings, not the maple), country (near hedgerows only), kelp (stipes stay on
-  Verlet).
+  from grid-slotted records), garden (a stem under every crown of the woods over the wall, the
+  shader drawing its old silhouette where the stems' tips carry the crowns, `plantPoint`; and an
+  optional border of fern and mondo grass in the wall-foot gutter, binned records drawn per fragment
+  with `plantFrond` and `plantArc`, following the maple's season choice; not the maple). Next: meadow
+  (near grass and dandelion stems on its own gust field), country (near hedgerows only), kelp
+  (stipes stay on Verlet).
 
 ### The giant planet (`src/shaders/lib/planet.ts`)
 One ringed gas giant, one implementation, that any sky composes: Orbit's subject and Campfire's
@@ -792,8 +798,8 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   them and reports arrivals (street's late delivery).
 - `gustPulse`, `gustPulseGlsl`, `GustTrain`, `windSign`, `gustWait`, `windNoise` (`wind.ts`): the
   lab's wind conventions (K_wind -1..1, gusts blowing with it), the gust pulse garden and autumn use
-  (garden's maple sways with its GLSL twin), a seeded gust scheduler with "now", and smooth eddy
-  noise (mobile).
+  (garden's maple sways with its GLSL twin; its woods and border take it as a front through the plant
+  component's `wind`), a seeded gust scheduler with "now", and smooth eddy noise (mobile).
 - `FlutterPlates` (`flutter.ts`): falling leaves and petals as rigid plates that flutter or tumble
   (Andersen, Pesavento & Wang's quasi-steady model, fixed midpoint steps), carried by the scene's air
   onto the scene's floor, then eased flat; per-slot state in typed arrays the scene seeds in its own

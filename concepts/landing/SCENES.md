@@ -35,7 +35,7 @@ mathematics. All have a first implementation in the lab:
 
 | Idea | Scene id | Simulation | Shared engine |
 |---|---|---|---|
-| Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves on the shared gust pulse (the maple sways with its GLSL twin); fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms; at night the shared moon's phase sets the light (no stars: the horizon is the frame's top edge) | `HeightField`, `AgeField`, `FlutterPlates`, `gustPulse`, `skyMoonPhase` |
+| Dry stone garden (karesansui) | `garden` | Raked gravel height field, falling-plate maple leaves on the shared gust pulse (the maple sways with its GLSL twin); fresh gravel dries on an `AgeField` clock, optionally with the weather (weathering, sun, wind, rain), damp lingering in the groove bottoms; at night the shared moon's phase sets the light (no stars: the horizon is the frame's top edge); the woods over the wall and an optional border along its foot are rooted plants swaying in the wind and the gust's front | `HeightField`, `AgeField`, `FlutterPlates`, `gustPulse`, `RootedPlants` |
 | Bamboo grove and water clock (shishi-odoshi) | `bamboo` | Damped culm springs under gust fronts, tipping tube; a moss pad on its stone softens the knock for a quiet clock; rain cloud, rays and gap sky under the leaves from the shared canopy weather, with a stars control and the moon's phase in the gaps and the night rays | `canopyWeather`, sky components |
 | Lantern river (tōrō nagashi) | `lanterns` | Lanterns in potential flow round stones, eddies, soft contacts; stones and deep lantern overlaps settled after each step; the river's ripples ride the current; optional birds over the far bank, mirrored in the rippled river; a stars control (the scene's own sparse stars thin out below it), and an aurora over the temple and shooting stars, both mirrored in the river (its young crescent stays the scene's own) | `separateDiscs`, water `flow` tier (`rippleSpectrum`, `waterDrift`, `waterMirror`), birds, sky components |
 | Synchronous fireflies | `fireflies` | Pulse-coupled oscillators on a lattice; dense-crown or open-bank habitat at one population; the lights nearer than the bank move in the world in front of the eye | `LevelCamera` |
@@ -166,6 +166,22 @@ mud at a crown's edge is no longer drawn; when the breeze crosses, the crowns bo
 after tree (a few cells at the top of the tall Sonneratia) and swing back, then stand exactly as
 laid out; between breezes the trees stand still, as before. New, off: shooting stars (the shared
 meteors, `meteors` with "now"), over the hills behind the trees.
+
+## Garden woods and border
+
+`garden`'s woods over the wall are grown by the shared plant component (issue #1082 M11): every
+crown of both rows is a tree, one stem from behind the wall up to the crown tops, and the shader
+draws its old silhouette for each crown where its stem's tip carries it. In still air (wind 0, no
+gust about) the woods are exactly the old picture. Visible difference, the only one by default:
+in a breeze the crowns lean downwind and stir crown by crown (about a cell's lean at the default
+wind, 540 cells high), and the leaves' "now" gust and the exit's flurry cross them as a front from
+the garden's upwind end, the trees bowing one after another (5 to 7 cells at the peak) and swinging
+back; once the air has been still for six seconds they stand exactly as laid out again. New, off:
+a border planting (`border`, its fullness, with the plants' `growth`), clumps of shield fern and
+mondo grass in the gutter at the wall's foot, swaying with the wind and the gust and following the
+season choice (pale young fronds in spring, ferns turning gold in autumn and half of them gone in
+winter, the evergreen grass dulling, snow on them); from above they lie out toward the gravel. The
+maple, moss, rake, leaves and drying are unchanged.
 
 ## Waterfall
 
