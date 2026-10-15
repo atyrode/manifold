@@ -422,15 +422,13 @@ the component could be composed).
 | `flock` † | the subject, mirrored in water | fixed 0.45 | full | open | open |
 | `island` † | round the island | knob 0.6 | full | open | open |
 | `shore` † | over the sea, in wet sand | fixed 0.6 | full (moonrise) | open | open |
-| `train` † | through the window | fixed 0.75 | full + night glow | knob (`aurora()`) | own: `K_meteors`, trigger 5, window and tunnel |
 | `campfire` † | above the pines | knob 0.8 + own Milky Way | — (the giant planet replaces it) | open | own: `K_shooting`, trigger 0, under the planet |
 | `kelp` † | Snell's window | — | full, refracted | — | — |
 | `tidepool` | the sky in the pools' mirror | — | full, mirrored | — | — |
 | `dew` | out-of-focus dawn backdrop | — | — | — | — |
 | `bonsai` | none (its light only) | — | — | — | — |
-| `orbit` †, `swell` | their own skies | own | own | — | own (`orbit`'s captured meteors); `swell`: open |
+| `orbit` † | its own sky | own | own | — | own (captured meteors) |
 | `fireflies` | its own moonless sky over the mangroves | own | — (moonless) | — | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
-| `orbit` †, `fireflies` | their own skies | own | own (`fireflies`: moonless) | — | own (`orbit`'s captured meteors); `fireflies`: open |
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,
