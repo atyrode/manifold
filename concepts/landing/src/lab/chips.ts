@@ -1,7 +1,7 @@
 // Icon chips: a group's switches (toggles and features) as a grid of icon toggles. A chip with a
 // trigger carries its "now"; a feature that is on opens its amount in a row under the grid, under the
 // same icon. A chip that depends on another switch (`when`) shows only while that one is on.
-import { formatValue, type Option } from "../params.ts";
+import { formatValue, type Option, type ParamDef } from "../params.ts";
 import { nowButton, row, segments, slider } from "./controls.ts";
 import { h, reveal, type Built } from "./dom.ts";
 import { icon } from "./icons.ts";
@@ -16,18 +16,23 @@ export interface Chips {
   amounts: Built;
 }
 
+/** A switch's chip, showing its icon and `label` (its own by default); its owner sets aria-checked. */
+export function chipButton(def: ParamDef, label = def.label): HTMLButtonElement {
+  return h(
+    "button",
+    { type: "button", class: "chip", role: "switch", "aria-label": def.label, title: def.help },
+    h("span", { class: "chip-icon" }, icon(knobIcon(def))),
+    h("span", { class: "chip-label" }, label),
+  );
+}
+
 export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[]): Chips {
   const syncs: (() => void)[] = [];
   const amountSyncs: (() => void)[] = [];
   const amountRows: HTMLElement[] = [];
   const cells = defs.map((def) => {
     const name = knobIcon(def);
-    const chip = h(
-      "button",
-      { type: "button", class: "chip", role: "switch", "aria-label": def.label, title: def.help },
-      h("span", { class: "chip-icon" }, icon(name)),
-      h("span", { class: "chip-label" }, def.label),
-    );
+    const chip = chipButton(def);
     chip.addEventListener("click", () =>
       knobs.set({ [def.key]: knobs.value(def.key) > 0.5 ? 0 : 1 }, true),
     );
