@@ -1,9 +1,11 @@
 // A dry stone garden (karesansui): white gravel raked into lines and rings around islands of
 // weathered stones and moss, always being re-raked by an unseen hand, under a maple letting go of
-// its leaves. The gravel, the rake and the falling leaves are simulated in sim.ts; shader.ts lights
-// it all from the veranda or from straight above.
+// its leaves, the temple woods swaying over its wall. The gravel, the rake, the falling leaves and
+// the plants (the woods' trees, an optional border along the wall's foot) are simulated in sim.ts;
+// shader.ts lights it all from the veranda or from straight above.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
+import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
 import { gardenGlsl } from "./shader.ts";
 import { GARDEN_PAPER, GARDEN_PASSAGE, gardenPatterns, gardenSeasons, gardenSim } from "./sim.ts";
@@ -14,9 +16,12 @@ const params: readonly ParamDef[] = [
   range("garden", "soften", "weathering", 0.4, "How quickly grooves slump and soften once raked: crisp just behind the rake, gentler the longer since it passed. Drying with the weather, fresh gravel dries faster or slower with it too."),
   feature("garden", "drying", "drying with weather", false, "dampness", 0.5, "Freshly turned gravel dries with the weather instead of over a fixed minute or two: its damp lingers in the groove bottoms while the crests pale first, faster with more weathering, in sun and wind, slower toward dusk and at night, and not at all in the rain. Dampness: how dark the fresh gravel shows. Off: it is evenly a little darker and dries back over a minute or two."),
   range("garden", "moss", "moss", 0.6, "Moss cushions round the stones: none leaves bare stones in smooth gravel; full gives deep green collars, creeping up the stones' feet."),
+  feature("garden", "border", "border planting", false, "fullness", 0.6, "Ferns and tufts of mondo grass planted along the foot of the wall, in the gutter of dark pebbles: they sway in the wind, bow one after another as a gust crosses, and follow the season (pale young fronds in spring, ferns turning gold in autumn and half of them gone in winter, the evergreen grass dulling). Fullness: how much of the gutter is planted, from a clump here and there to an unbroken border."),
+  // The border's growth (scenes/plants.ts), off; it follows the maple's season choice.
+  ...plantKnobs({ group: "garden", growth: 0.4, when: "border" }),
   seed("garden", "stones", "stones", "Another arrangement of the stone islands; the garden is raked afresh round them."),
-  choice("maple", "season", "season", gardenSeasons.map((label, value) => ({ label, value })), 2, "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, snow on the stones, the moss and the wall; turn on snow (Weather) to have it falling."),
-  range("maple", "leaves", "leaf fall", 0.5, "How often a leaf lets go. Light ones flutter, swinging from side to side and gliding up at the end of each swing; heavier ones tumble end over end. They lie on the gravel a while, then fade or are raked away. Now: a gust shakes a shower loose and blows lying leaves along the gravel.", { trigger: 0 }),
+  choice("maple", "season", "season", gardenSeasons.map((label, value) => ({ label, value })), 2, "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, snow on the stones, the moss and the wall; turn on snow (Weather) to have it falling. The border planting (Garden) follows it."),
+  range("maple", "leaves", "leaf fall", 0.5, "How often a leaf lets go. Light ones flutter, swinging from side to side and gliding up at the end of each swing; heavier ones tumble end over end. They lie on the gravel a while, then fade or are raked away. Now: a gust shakes a shower loose, blows lying leaves along the gravel and crosses the woods over the wall, bowing the trees one after another.", { trigger: 0 }),
   range("maple", "dapple", "dappled shade", 0.6, "The maple's shadow on the gravel, pierced by round flecks of sun; it shows when the sun stands high enough to throw it into the garden."),
   choice("view", "camera", "view", [{ label: "veranda", value: 0 }, { label: "above", value: 1 }], 0, "Sit on the temple veranda looking across the garden to its earthen wall, or look straight down on it like a plan. Drag on the gravel to rake your own lines.", { steady: true }),
   // 0.735: golden hour, the sun low on the left behind the wall, raking across the grooves.
@@ -33,12 +38,12 @@ export const gardenScene: SceneDef = {
   look: { color: "full", levels: 4 },
   params,
   groups: {
-    garden: { title: "Garden", blurb: "The raked pattern, the unseen rake's pace, the stones and their moss. Drag on the gravel to rake your own lines." },
+    garden: { title: "Garden", blurb: "The raked pattern, the unseen rake's pace, the stones and their moss, and a border planting along the wall. Drag on the gravel to rake your own lines." },
     maple: { title: "Maple", blurb: "The season, and the leaves it lets fall on the gravel." },
     view: { title: "View", blurb: "From the veranda, or from above." },
     sky: atmosphereGroups.sky,
     // The shared heading, with what the weather does here.
-    weather: { ...atmosphereGroups.weather, blurb: "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; drizzle is a soft grey mist, a downpour closes the garden in. Snow settles, crests and stone tops first. Wind sways the maple and carries its leaves." },
+    weather: { ...atmosphereGroups.weather, blurb: "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; drizzle is a soft grey mist, a downpour closes the garden in. Snow settles, crests and stone tops first. Wind sways the maple and the woods over the wall and carries the leaves." },
     manifold: { title: "Manifold M", blurb: "A landmark of its own: a slate M among the stones, the gravel raked round it." },
   },
   glsl: gardenGlsl,

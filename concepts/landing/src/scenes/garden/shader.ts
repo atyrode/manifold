@@ -1,5 +1,6 @@
 // The dry garden scene: raked gravel (sim.ts's height field, uSim0), stone islands with moss
-// collars (uSim1), the leaves in the air and on the ground (uSim2) and when each spot was last raked
+// collars (uSim1, which also holds the plant records of the woods over the wall and of the border
+// along its foot), the leaves in the air and on the ground (uSim2) and when each spot was last raked
 // (uSim3), seen from the temple veranda across to the earthen wall, or from straight above.
 //
 // Everything is worked in garden space (sim.ts GARDEN): X right, Y away from the veranda, Z up, in
@@ -15,8 +16,25 @@
 // stands in the grooves, drops burst on hard faces and drip from the eaves and the maple; snow
 // settles on whatever faces up, the gravel's crests first.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { gustPulseGlsl } from "../../sims/wind.ts";
-import { GARDEN, GARDEN_CANOPY, GARDEN_GROOVE, GARDEN_GUST_RISE, GARDEN_ISLANDS, GARDEN_LEAF_KIND, GARDEN_LEAF_SLOTS, GARDEN_MARK, GARDEN_MOSS, GARDEN_PASSAGE, GARDEN_STONES } from "./sim.ts";
+import {
+  GARDEN,
+  GARDEN_BORDER,
+  GARDEN_BORDER_FORM,
+  GARDEN_CANOPY,
+  GARDEN_GROOVE,
+  GARDEN_GUST_RISE,
+  GARDEN_ISLANDS,
+  GARDEN_LEAF_KIND,
+  GARDEN_LEAF_SLOTS,
+  GARDEN_MARK,
+  GARDEN_MOSS,
+  GARDEN_PASSAGE,
+  GARDEN_RECORD_ROW,
+  GARDEN_STONES,
+  GARDEN_WOODS,
+} from "./sim.ts";
 
 /**
  * The maple's limbs, garden space, as polylines of (x, y, z, radius): the trunk stands beyond the
@@ -54,6 +72,7 @@ function mapleLow(above: boolean): number {
 }
 
 export const gardenGlsl = `
+${plantsGlsl}
 const float GARDEN_ASPECT = ${glslFloat(GARDEN.aspect)};
 const vec2 GARDEN_CENTRE = vec2(${glslFloat(GARDEN.aspect / 2)}, 0.5);
 const vec2 GARDEN_TEXEL = vec2(${(1 / GARDEN.cols).toFixed(6)}, ${(1 / GARDEN.rows).toFixed(6)});
@@ -109,6 +128,23 @@ const vec4 GARDEN_LIMB_A[${SEGMENTS.length}] = vec4[${SEGMENTS.length}](
 const vec4 GARDEN_LIMB_B[${SEGMENTS.length}] = vec4[${SEGMENTS.length}](
   ${vec4s(SEGMENTS.map(([, b]) => b))}
 );
+// The plant records in uSim1 after its rows of islands and stones (sim.ts GARDEN_WOODS,
+// GARDEN_BORDER): the woods' stems, a row's crown k at first + k, the far row's (rate, wobble) and
+// the near row's; then the border's clumps along the wall's foot, binned along X, standing in the
+// plane Y = GARDEN_BORDER_Y and at most GARDEN_BORDER_REACH tall; from above they lie
+// GARDEN_BORDER_LIE over the ground, laid out toward the gravel.
+const int GARDEN_RECORD_ROW = ${GARDEN_RECORD_ROW};
+const int GARDEN_WOODS_CROWNS = ${GARDEN_WOODS.crowns};
+const vec2 GARDEN_WOODS_FAR = vec2(${glslFloat(GARDEN_WOODS.far.rate)}, ${glslFloat(GARDEN_WOODS.far.wobble)});
+const vec2 GARDEN_WOODS_NEAR = vec2(${glslFloat(GARDEN_WOODS.near.rate)}, ${glslFloat(GARDEN_WOODS.near.wobble)});
+const float GARDEN_BORDER_PITCH = ${glslFloat(GARDEN_BORDER.pitch)};
+const int GARDEN_BORDER_BINS = ${GARDEN_BORDER.bins};
+const int GARDEN_BORDER_ORGANS = ${GARDEN_BORDER.organs};
+const int GARDEN_BORDER_FIRST = ${GARDEN_BORDER.first};
+const float GARDEN_BORDER_Y = ${glslFloat(GARDEN_BORDER.y)};
+const float GARDEN_BORDER_REACH = ${glslFloat(GARDEN_BORDER.reach)};
+const float GARDEN_BORDER_LIE = 0.01;
+const float GARDEN_FERN = ${glslFloat(GARDEN_BORDER_FORM.fern)};
 
 // ---- the gravel, the islands ----
 
@@ -327,6 +363,95 @@ float gardenDapple(vec3 p, vec3 L, float tm, float t, float gust) {
     shade = min(shade, 1.0 - 0.8 * blot * (1.0 - fleck));
   }
   return mix(1.0, shade, K_dapple * smoothstep(0.1, 0.3, L.z));
+}
+
+// ---- the woods over the wall, the border along its foot (the plant records in uSim1) ----
+
+// How far the stem of a row's crown k (record first + k) carries the crown now: where the stem's tip
+// stands minus where it stands unbent, in screen heights; exactly 0 without a record or unbent.
+vec2 gardenCrownShift(int first, int k) {
+  if (uSimOn.y < 0.5 || k < 0 || k >= GARDEN_WOODS_CROWNS) return vec2(0.0);
+  PlantOrgan o = plantOrgan(uSim1, GARDEN_RECORD_ROW, first + k);
+  if (o.tier < 0.5 || o.bend == 0.0) return vec2(0.0);
+  return plantPoint(o, o.bend, 1.0) - plantPoint(o, 0.0, 1.0);
+}
+
+// The top (uv height) of a row of the woods' crowns at x (screen heights from the frame's left
+// edge), as the woods have always been drawn: crown k spans [k, k + 1) of the phase x * row.x +
+// row.y * vnoise(x * shape.x, shape.y), a bump amp high over the row's line, base + 0.03 * vnoise(x
+// * line.x, line.y). Each crown stands where its stem carries it (gardenCrownShift), so with every
+// stem unbent the row is that silhouette exactly; where swaying crowns part, the line shows between
+// them. shift: how far across the crown on top at x is carried (0 over the bare line).
+float gardenCrowns(float x, int first, vec2 row, vec2 shape, float base, vec2 line, float amp, out float shift) {
+  float phase = x * row.x + row.y * vnoise(vec2(x * shape.x, shape.y));
+  float k = floor(phase);
+  int ik = int(k);
+  vec2 dl = gardenCrownShift(first, ik - 1);
+  vec2 dc = gardenCrownShift(first, ik);
+  vec2 dr = gardenCrownShift(first, ik + 1);
+  shift = 0.0;
+  if (dl == vec2(0.0) && dc == vec2(0.0) && dr == vec2(0.0)) {
+    float w = 2.0 * fract(phase) - 1.0;
+    return base + 0.03 * vnoise(vec2(x * line.x, line.y)) + amp * (1.0 - w * w);
+  }
+  float top = base + 0.03 * vnoise(vec2(x * line.x, line.y));
+  for (int i = -1; i <= 1; i++) {
+    vec2 d = i < 0 ? dl : (i > 0 ? dr : dc);
+    float xs = x - d.x;
+    float ps = xs * row.x + row.y * vnoise(vec2(xs * shape.x, shape.y));
+    if (floor(ps) != k + float(i)) continue;
+    float w = 2.0 * fract(ps) - 1.0;
+    float crown = base + 0.03 * vnoise(vec2(xs * line.x, line.y)) + amp * (1.0 - w * w) + d.y;
+    if (crown > top) {
+      top = crown;
+      shift = d.x;
+    }
+  }
+  return top;
+}
+
+// The border's clumps at q = (garden X, height above the gutter) in the plane they stand in; foot: a
+// cell there. A fern's fronds are plantFronds, the spring's turn lifting or lowering their tips (as
+// falls' bank ferns); mondo grass's blades are arcs turning their curl (a) plus the bend, tapering
+// toward the tip and at least a cell wide. A clump in bin b reaches no further than the next bins.
+// Returns coverage; tip: how far along the organ on top (0 root .. 1 tip), pheno its phenology, form
+// its species (GARDEN_FERN or mondo grass).
+float gardenBorder(vec2 q, float foot, out float tip, out float pheno, out float form) {
+  tip = 0.0;
+  pheno = 0.0;
+  form = 0.0;
+  float cover = 0.0;
+  int b0 = int(floor(q.x / GARDEN_BORDER_PITCH));
+  for (int i = -1; i <= 1; i++) {
+    int b = b0 + i;
+    if (b < 0 || b >= GARDEN_BORDER_BINS) continue;
+    for (int j = 0; j < GARDEN_BORDER_ORGANS; j++) {
+      PlantOrgan o = plantOrgan(uSim1, GARDEN_RECORD_ROW, GARDEN_BORDER_FIRST + GARDEN_BORDER_ORGANS * b + j);
+      if (o.tier < 0.5) continue;
+      vec2 rel = q - o.at;
+      if (dot(rel, rel) > 4.0 * o.len * o.len) continue;
+      float c = 0.0;
+      float u = 0.0;
+      if (abs(o.form - GARDEN_FERN) < 0.5) {
+        float under = 0.0;
+        c = plantFrond(rel, o.side, o.len, o.a, o.b, o.side * o.bend * length(vec2(1.0, o.a - o.b)), foot, u, under);
+      } else {
+        float s = 0.0;
+        float d = plantArc(plantLocal(q, o), o.len, o.a + o.bend, s);
+        if (s < 0.0 || s > 1.0) continue;
+        float w = max(0.5 * o.width * (1.0 - 0.7 * s), 0.6 * foot);
+        c = smoothfall(w + 0.5 * foot, w - 0.5 * foot, abs(d));
+        u = s;
+      }
+      if (c > cover) {
+        cover = c;
+        tip = u;
+        pheno = o.pheno;
+        form = o.form;
+      }
+    }
+  }
+  return cover;
 }
 
 // ---- leaves ----
@@ -579,6 +704,39 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
     }
   }
 
+  // ---- the border along the wall's foot (K_border): fern and mondo grass in the gutter, side-on
+  // in the plane they stand in from the veranda (in front of the wall and the gutter behind them,
+  // behind whatever the ray meets first), laid out toward the gravel from above ----
+  float borderCov = 0.0;
+  float borderTip = 0.0;
+  float borderPheno = 0.0;
+  float borderForm = 0.0;
+  vec2 borderQ = vec2(0.0);  // the point in the plants' frame: garden X, height above the gutter
+  vec3 borderAt = vec3(0.0); // where that is in the garden
+  if (K_border > 0.0 && uSimOn.y > 0.5 && !beyond) {
+    float along;
+    float borderFoot;
+    if (above) {
+      borderQ = vec2(S.x, GARDEN_BORDER_Y - S.y);
+      along = (ro.z - GARDEN_BORDER_LIE) / -rd.z * rdLength;
+      borderFoot = max(foot.x, foot.y);
+      borderAt = vec3(S.xy, GARDEN_BORDER_LIE);
+    } else {
+      float tB = (GARDEN_BORDER_Y - ro.y) / rd.y;
+      borderQ = vec2(ro.x + rd.x * tB, ro.z + rd.z * tB);
+      along = tB * rdLength;
+      borderFoot = pixel * along;
+      borderAt = vec3(borderQ.x, GARDEN_BORDER_Y, borderQ.y);
+    }
+    if (borderQ.y >= 0.0 && borderQ.y < GARDEN_BORDER_REACH && along < depth && (!above || (hit < 0 && slate <= 0.0))) {
+      borderCov = gardenBorder(borderQ, borderFoot, borderTip, borderPheno, borderForm);
+      if (borderCov > 0.5) {
+        depth = along;
+        opaque = along;
+      }
+    }
+  }
+
   // ---- leaves: the nearest one in front along this ray, and their shadows on what it meets ----
   float leafCov = 0.0;
   float leafT = 1e9;
@@ -659,9 +817,10 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   if (beyond) {
     // Over the wall: the woods of the temple grounds, two rows of rounded crowns, dark green but lit
     // by the sky, the farther row paler in the haze, and between them only the haze of the sky just
-    // below the horizon (the horizon is the frame's top edge: no stars, moon or open sky show). Under
-    // cloud it is a grey deck drifting with the wind, darker bellied in heavy rain; and rain hangs in
-    // grey shafts between here and the woods.
+    // below the horizon (the horizon is the frame's top edge: no stars, moon or open sky show). Each
+    // crown is a tree swaying on its stem (sim.ts), carrying the snow lying on it. Under cloud it is
+    // a grey deck drifting with the wind, darker bellied in heavy rain; and rain hangs in grey shafts
+    // between here and the woods.
     vec3 dir = normalize(vec3(rd.x, rd.z, rd.y));
     col = skyColor(sky, dir);
     vec3 haze = skyColor(sky, normalize(vec3(dir.x, 0.02, dir.z)));
@@ -674,17 +833,16 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       haze = mix(haze, cloudLight * 0.95, overcast);
     }
     float capTop = GARDEN_HORIZON + GARDEN_FOCAL * (GARDEN_WALL_H + GARDEN_CAP_H - GARDEN_EYE_H) / (GARDEN_WALL_Y - GARDEN_EYE_Y);
-    float bumpFarW = 2.0 * fract(x * 6.0 + 0.4 * vnoise(vec2(x * 2.0, 4.0))) - 1.0;
-    float bumpNearW = 2.0 * fract(x * 9.0 + 0.5 * vnoise(vec2(x * 3.0, 9.0))) - 1.0;
-    float bumpsFar = 1.0 - bumpFarW * bumpFarW;
-    float bumpsNear = 1.0 - bumpNearW * bumpNearW;
-    float far = capTop + 0.05 + 0.03 * vnoise(vec2(x * 2.5, 1.7)) + 0.018 * bumpsFar;
-    float near = capTop + 0.012 + 0.03 * vnoise(vec2(x * 4.0, 1.3)) + 0.022 * bumpsNear;
-    vec3 foliage = vec3(0.12, 0.2, 0.1) * (fill * 1.3 + glow * 0.7) + vec3(0.1, 0.09, 0.04) * sun * L.z;
-    foliage = mix(foliage, mix(fill, snowWhite * 0.7, 0.5) * (0.6 + 0.4 * vnoise(vec2(x * 50.0, uv.y * 120.0))), 0.55 * smoothstep(0.2, 0.8, lying));
-    float shaft = rain * (0.35 + 0.65 * smoothstep(0.35, 0.75, vnoise(vec2((x + (1.0 - uv.y) * 2.0 * K_wind) * 2.2 - 0.02 * tm, 9.1))));
+    float shiftFar;
+    float shiftNear;
+    float far = gardenCrowns(x, 0, GARDEN_WOODS_FAR, vec2(2.0, 4.0), capTop + 0.05, vec2(2.5, 1.7), 0.018, shiftFar);
+    float near = gardenCrowns(x, GARDEN_WOODS_CROWNS, GARDEN_WOODS_NEAR, vec2(3.0, 9.0), capTop + 0.012, vec2(4.0, 1.3), 0.022, shiftNear);
     float farRow = smoothfall(far + 0.003, far - 0.003, uv.y);
     float nearRow = smoothfall(near + 0.003, near - 0.003, uv.y);
+    float xc = x - (nearRow > 0.5 ? shiftNear : shiftFar);
+    vec3 foliage = vec3(0.12, 0.2, 0.1) * (fill * 1.3 + glow * 0.7) + vec3(0.1, 0.09, 0.04) * sun * L.z;
+    foliage = mix(foliage, mix(fill, snowWhite * 0.7, 0.5) * (0.6 + 0.4 * vnoise(vec2(xc * 50.0, uv.y * 120.0))), 0.55 * smoothstep(0.2, 0.8, lying));
+    float shaft = rain * (0.35 + 0.65 * smoothstep(0.35, 0.75, vnoise(vec2((x + (1.0 - uv.y) * 2.0 * K_wind) * 2.2 - 0.02 * tm, 9.1))));
     col = mix(col, mix(foliage, haze, min(0.55 + 0.4 * shaft, 1.0)), farRow);
     col = mix(col, mix(foliage, haze, min(0.22 + 0.5 * shaft, 1.0)), nearRow);
     opaque = nearRow > 0.5 ? 3.0 : (farRow > 0.5 ? 6.0 : 1e9);
@@ -944,6 +1102,16 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       float crown = rainSplashes(S.xy / unit, t, splashRate) * hard * smoothstep(0.4, 0.8, n.z) * (1.0 - snowHere);
       col = mix(col, dropLight * 1.1, crown);
     }
+  }
+  // The border over what lies behind it: fern a fresh green, mondo grass near black-green, turned by
+  // the year and paler toward the tips; lit by the sky, the low sky's glow, the gravel's bounce and
+  // the sun through the maple's dapple; darker wet, flecked with lying snow.
+  if (borderCov > 0.0) {
+    vec3 green = abs(borderForm - GARDEN_FERN) < 0.5 ? vec3(0.2, 0.38, 0.1) : vec3(0.06, 0.15, 0.07);
+    vec3 albedo = wetten(plantPhenology(green, borderPheno) * (0.8 + 0.35 * borderTip), wet, 0.3);
+    vec3 lit = albedo * (sun * max(L.z, 0.0) * 0.8 * gardenDapple(borderAt, L, tm, t, gust) + fill * 1.1 + glow * 0.5 + bounce * 0.5);
+    vec3 snowLit = snowWhite * (fill * 1.2 + glow * 0.4 + sun * 0.3 * max(L.z, 0.0));
+    col = mix(col, mix(lit, snowLit, 0.7 * snowCover(vec3(0.0, 1.0, 0.0), borderQ / GARDEN_METRE, lying)), borderCov);
   }
   // By moonlight the eye loses colour: the garden reads silver-blue.
   col = greyed(col, vec3(0.75, 0.88, 1.2), 0.6 * sky.night);

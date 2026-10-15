@@ -27,15 +27,26 @@
 // fade, or are pushed away by the rake. The leaves are packed into an rgba16f texture, four texels a
 // leaf.
 //
-// Uploads: uSim0 r16f heights (GARDEN.cols × rows); uSim1 rgba16f islands and stones (8 × 4) plus
-// the drying clock; uSim2 rgba16f leaves (4 × GARDEN_LEAF_SLOTS); uSim3 r16f when each spot was
-// last raked, on the drying clock (half resolution).
+// The woods over the wall and the border planting along its foot are rooted plants of the shared
+// plant component (sims/plants.ts). Every crown of the woods' two rows is a tree: one stem from where
+// its trunk stands behind the wall up to the row's crown tops, its crown drawn by the shader where
+// the stem's tip carries it. The border (off unless its knob is on) is clumps of fern and mondo grass
+// rooted in the gutter, following the season and, with growth, replacing their fronds and blades.
+// Both sway with the wind knob and its eddies, and the garden's gust (the leaves' "now", the exit's
+// flurry) crosses them as a front from the garden's upwind end. In still air, once they have swung
+// out, they are set exactly at rest: the woods then stand exactly as the shader always drew them.
+//
+// Uploads: uSim0 r16f heights (GARDEN.cols × rows); uSim1 a PlantTexture (RECORD_WIDTH wide, rgba16f)
+// whose first GARDEN_RECORD_ROW rows are the scene's own, islands and stones (8 × 4) plus the drying
+// clock, then the plant records (GARDEN_WOODS, GARDEN_BORDER); uSim2 rgba16f leaves (4 ×
+// GARDEN_LEAF_SLOTS); uSim3 r16f when each spot was last raked, on the drying clock (half resolution).
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { AgeField, dryingPace } from "../../sims/agefield.ts";
 import { FlutterPlates } from "../../sims/flutter.ts";
 import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
-import { clamp, lerp, smoothstep } from "../../sims/math.ts";
+import { clamp, fract, hash31, lerp, smoothstep } from "../../sims/math.ts";
+import { PLANT_SUMMER, PlantHabit, PlantRole, PlantTexture, plantClimate, RootedPlants, type PlantSpecies } from "../../sims/plants.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { gustPulse, windSign } from "../../sims/wind.ts";
@@ -109,13 +120,40 @@ export const GARDEN_CANOPY: readonly (readonly [number, number, number, number])
   [0.38, 1.14, 0.15, 0.08],
 ];
 
+/**
+ * The woods over the wall, as the shader draws them (x in screen heights from the frame's left edge,
+ * y in uv height): two rows of rounded crowns, crown k of a row spanning [k, k + 1) of the phase
+ * x · rate + wobble · noise (the shader's, 0..1), the far row 6 to a screen height, the near row 9.
+ * Each crown is a tree: one stem from `foot`, where its trunk stands behind the wall, `length` up to
+ * the row's crown tops. The far row's crown k is record k, the near row's `crowns` + k; crowns past
+ * `crowns` (a frame over 4.4 screen heights wide) stand still.
+ */
+export const GARDEN_WOODS = {
+  crowns: 40,
+  far: { rate: 6, wobble: 0.4, foot: 0.875, length: 0.113 },
+  near: { rate: 9, wobble: 0.5, foot: 0.815, length: 0.137 },
+} as const;
+
+/**
+ * The border planting along the wall's foot (off unless its knob is on): in some of the gutter's
+ * `bins` bins, `pitch` garden depths along X each, a clump of fern or mondo grass, standing in the
+ * plane Y = `y` between the gravel's curb and the wall, at most `reach` tall. Plant frame: garden X,
+ * height above the gutter. Bin b's organs are records `first` + `organs` · b + 0..organs - 1.
+ */
+export const GARDEN_BORDER = { pitch: 0.1, bins: 24, organs: 7, y: 1.015, reach: 0.07, first: 2 * GARDEN_WOODS.crowns } as const;
+
 /** Islands and stones per island the stone texture holds (the shader's loops and struct match). */
 export const GARDEN_ISLANDS = 4;
 export const GARDEN_STONES = 3;
 export const GARDEN_LEAF_SLOTS = 24;
-/** uSim1's size: a row of islands (and the drying clock), then a row per stone, two texels each. */
-const STONE_COLUMNS = 2 * GARDEN_ISLANDS;
-const STONE_ROWS = 1 + GARDEN_STONES;
+/**
+ * uSim1, a PlantTexture RECORD_WIDTH texels wide: its first GARDEN_RECORD_ROW rows are the scene's own
+ * (a row of islands and the drying clock, then a row per stone, two texels each), then the plant
+ * records, the woods' stems and the border's organs.
+ */
+export const GARDEN_RECORD_ROW = 1 + GARDEN_STONES;
+const RECORD_WIDTH = 64;
+const RECORDS = GARDEN_BORDER.first + GARDEN_BORDER.bins * GARDEN_BORDER.organs;
 /** The "when was it raked" grid (an AgeField): half the height field's resolution. */
 const GARDEN_FRESH = { cols: 336, rows: 140 } as const;
 
@@ -278,6 +316,139 @@ const ENTRANCE_GAP = 0.2;
 const FLURRY_LEAVES = 14;
 const FLURRY_SPAN = 0.6;
 const FLURRY_BOOST = 4;
+
+// ---- the woods and the border (the shared plant component) ---------------------------------------
+
+/** How fast the gust's front crosses the garden from its upwind end (garden depths per second), and its push at its peak (push units). */
+const GUST_FRONT = 1.6;
+const GUST_PUSH = 1.0;
+/** The breeze's eddies on the woods and the border, as a share of it; in still air they stand still. */
+const PLANT_EDDY = 0.6;
+/** Seconds of still air (no wind, no gust about) after which the woods and the border are set exactly at rest. */
+const PLANT_SETTLE = 6;
+/** The plant component's year (0..1 from the start of spring) for the season knob: mid-spring, high summer, mid-autumn, deep winter. */
+const PLANT_SEASON: Readonly<Record<GardenSeason, number>> = { spring: 0.15, summer: PLANT_SUMMER, autumn: 0.66, winter: 0.88 };
+/** The border's species, as its records' form: the shader draws a fern's fronds with plantFrond, mondo grass's blades with plantArc. */
+export const GARDEN_BORDER_FORM = { fern: 0, mondo: 1 } as const;
+/** The plants' builds draw no randomness of their own (the layout and hashes place everything). */
+const NO_DRAWS = (): number => 0;
+
+/** A tree of the temple woods (cedar, camphor): one stem carrying its crown, which the shader draws; evergreen. */
+const WOODS_TREE: PlantSpecies = {
+  id: "temple tree",
+  moisture: [0, 1],
+  sway: { hz: 0.45, damping: 0.25, give: 0.12, limit: 0.3 },
+  year: { shed: 0, turn: 2, bloom: [0, 0] },
+  life: { unfold: 10, span: 600 },
+  detail: { simple: 2, min: 0.5 },
+  build(plant) {
+    const row = plant.site.kind === 1 ? GARDEN_WOODS.near : GARDEN_WOODS.far;
+    plant.organ({ angle: Math.PI / 2, length: row.length, form: 0, slot: 0 });
+  },
+};
+
+/**
+ * A shield fern in the gutter (Dryopteris): five to seven rigid fronds from its crown, in pairs from
+ * the outside in, the inner ones shorter and more upright; half of them die back over winter. Its
+ * record's a and b are a frond's lift and droop (plantFrond).
+ */
+const BORDER_FERN: PlantSpecies = {
+  id: "shield fern",
+  moisture: [0.5, 1],
+  sway: { hz: 0.6, damping: 0.4, give: 0.14, limit: 0.5 },
+  year: { shed: 0.5, turn: 0.58, bloom: [0, 0] },
+  life: { unfold: 10, span: 120 },
+  detail: { simple: 6, min: 1.5 },
+  build(plant) {
+    const bin = plant.site.kind ?? 0;
+    const fronds = 5 + Math.floor(3 * hash31(bin, 0, 0x6665));
+    const scale = 0.6 + 0.4 * plant.vigour;
+    for (let j = 0; j < fronds; j++) {
+      const h = hash31(bin, j + 1, 0x6665);
+      const inner = Math.floor(j / 2);
+      const lift = 1.4 + 0.35 * inner + 0.6 * h;
+      const droop = 1.3 + 0.7 * fract(h * 7.3);
+      const side = j % 2 === 0 ? -1 : 1;
+      plant.organ({
+        angle: Math.atan2(lift - droop, side),
+        length: (0.036 + 0.014 * fract(h * 3.1)) * (1 - 0.14 * inner) * scale,
+        a: lift,
+        b: droop,
+        form: GARDEN_BORDER_FORM.fern,
+        variant: j,
+        side,
+        role: PlantRole.leaf,
+        habit: PlantHabit.rigid,
+        slot: j,
+      });
+    }
+  },
+};
+
+/**
+ * A tuft of mondo grass (Ophiopogon): seven narrow evergreen blades fanning out of the root and
+ * arching over, the outer ones furthest. Its record's a is a blade's curl (its turn at rest).
+ */
+const BORDER_MONDO: PlantSpecies = {
+  id: "mondo grass",
+  moisture: [0.3, 1],
+  sway: { hz: 0.8, damping: 0.35, give: 0.2, limit: 0.6 },
+  year: { shed: 0, turn: 0.7, bloom: [0, 0] },
+  life: { unfold: 8, span: 90 },
+  detail: { simple: 4, min: 1 },
+  build(plant) {
+    const bin = plant.site.kind ?? 0;
+    const scale = 0.7 + 0.3 * plant.vigour;
+    for (let j = 0; j < GARDEN_BORDER.organs; j++) {
+      const h = hash31(bin, j, 0x6d6f);
+      // Across the tuft: -1 leaning left .. 1 leaning right.
+      const lean = (j - 3) / 3 + 0.25 * (h - 0.5);
+      plant.organ({
+        angle: Math.PI / 2 - 0.6 * lean,
+        length: (0.017 + 0.009 * fract(h * 5.1)) * scale,
+        width: 0.0016,
+        curl: -1.5 * lean,
+        a: -1.5 * lean,
+        form: GARDEN_BORDER_FORM.mondo,
+        variant: j,
+        role: PlantRole.leaf,
+        slot: j,
+      });
+    }
+  },
+};
+
+/**
+ * The woods' trees: a stem for every crown of both rows, rooted under the middle of its crown as the
+ * shader's phase places it on average (its noise moves a crown by under a twelfth of a screen height,
+ * which only shifts when the gust's front reaches it).
+ */
+function growWoods(woods: RootedPlants): void {
+  woods.clear();
+  for (const [kind, row] of [GARDEN_WOODS.far, GARDEN_WOODS.near].entries()) {
+    for (let k = 0; k < GARDEN_WOODS.crowns; k++) {
+      const x = (k + 0.5 - 0.5 * row.wobble) / row.rate;
+      woods.add(WOODS_TREE, { x, y: row.foot, heading: Math.PI / 2, kind, slot: kind * GARDEN_WOODS.crowns + k }, NO_DRAWS);
+    }
+  }
+}
+
+/**
+ * The border for its knob's fullness (0: off, nothing planted): a clump in each bin the fullness
+ * plants (the bins' own hashes decide which, so a fuller border keeps the clumps of a sparser one),
+ * a fern in two bins of five, mondo grass in the rest, rooted off the bin's middle.
+ */
+function growBorder(border: RootedPlants, fullness: number): void {
+  border.clear();
+  if (!(fullness > 0)) return;
+  for (let bin = 0; bin < GARDEN_BORDER.bins; bin++) {
+    if (hash31(bin, 1, 0x626f) >= fullness) continue;
+    const species = hash31(bin, 2, 0x626f) < 0.4 ? BORDER_FERN : BORDER_MONDO;
+    const x = (bin + 0.5 + 0.5 * (hash31(bin, 3, 0x626f) - 0.5)) * GARDEN_BORDER.pitch;
+    const site = { x, y: 0, heading: Math.PI / 2, moisture: 0.8, lush: 0.7 + 0.3 * hash31(bin, 4, 0x626f), kind: bin, slot: GARDEN_BORDER.first + GARDEN_BORDER.organs * bin };
+    border.add(species, site, NO_DRAWS);
+  }
+}
 
 // ---- small helpers -------------------------------------------------------------------------------
 
@@ -696,8 +867,8 @@ function grooveProfile(phase: number): number {
 
 // ---- the simulation ------------------------------------------------------------------------------
 
-type GardenKnob = "pattern" | "speed" | "soften" | "drying" | "moss" | "stones" | "season" | "leaves" | "camera" | "time" | "cycle" | "rain" | "wind" | "mark";
-const KNOBS: readonly GardenKnob[] = ["pattern", "speed", "soften", "drying", "moss", "stones", "season", "leaves", "camera", "time", "cycle", "rain", "wind", "mark"];
+type GardenKnob = "pattern" | "speed" | "soften" | "drying" | "moss" | "border" | "growth" | "stones" | "season" | "leaves" | "camera" | "time" | "cycle" | "rain" | "wind" | "mark";
+const KNOBS: readonly GardenKnob[] = ["pattern", "speed", "soften", "drying", "moss", "border", "growth", "stones", "season", "leaves", "camera", "time", "cycle", "rain", "wind", "mark"];
 
 interface Settings {
   pattern: GardenPattern;
@@ -712,6 +883,10 @@ interface Settings {
   /** "Drying with weather": its dampness while on, 0 while off. */
   drying: number;
   moss: number;
+  /** The border planting's fullness while on, 0 while off. */
+  border: number;
+  /** The plants' growth pace while on, 0 while off. */
+  growth: number;
   /** Leaf-fall knob 0..1. */
   leaves: number;
   overhead: boolean;
@@ -740,6 +915,8 @@ class GardenSim implements SceneSim {
     weathering: 0,
     drying: 0,
     moss: 0,
+    border: 0,
+    growth: 0,
     leaves: 0,
     overhead: false,
     time: 0,
@@ -768,9 +945,22 @@ class GardenSim implements SceneSim {
   #freshAt = -Infinity;
   #heightsAt = -Infinity;
 
-  // Islands and stones.
-  readonly #stoneData = new Float32Array(STONE_COLUMNS * STONE_ROWS * 4);
-  readonly #stoneTexture: DataTexture;
+  // uSim1: the islands and stones, then the plant records.
+  readonly #records: PlantTexture;
+  // The woods over the wall (in the frame: screen heights from its left edge, uv height) and the
+  // border (garden X, height above the gutter), each in its own air, which the gust's front crosses.
+  readonly #woods = new RootedPlants(2 * GARDEN_WOODS.crowns, 0);
+  readonly #border = new RootedPlants(GARDEN_BORDER.bins * GARDEN_BORDER.organs, 1);
+  readonly #woodsAir = plantClimate();
+  readonly #borderAir = plantClimate();
+  /** The fullness the border was planted for (0: nothing planted). */
+  #fullness = 0;
+  /** Seconds the air has been still (no wind, no gust about), and whether the plants were set at rest in it since. */
+  #stillFor = 0;
+  #rested = false;
+  /** The wind and season the plants last moved in; undefined before the first frame. */
+  #plantWind: number | undefined = undefined;
+  #plantSeason: GardenSeason = "autumn";
 
   // The plan and the rake on it.
   #layout: Layout = { pattern: "waves", islands: [], mark: 0 };
@@ -856,12 +1046,27 @@ class GardenSim implements SceneSim {
     this.#gustSlot = this.#knobs.trigger("leaves");
     this.#heights = new DataTexture(gl, { width: GARDEN.cols, height: GARDEN.rows, format: "r16f" });
     this.#freshTexture = new DataTexture(gl, { width: GARDEN_FRESH.cols, height: GARDEN_FRESH.rows, format: "r16f" });
-    this.#stoneTexture = new DataTexture(gl, { width: STONE_COLUMNS, height: STONE_ROWS, format: "rgba16f", filter: "nearest" });
+    this.#records = new PlantTexture(gl, RECORDS, { width: RECORD_WIDTH, rowBase: GARDEN_RECORD_ROW });
     this.#leafTexture = new DataTexture(gl, { width: 4, height: GARDEN_LEAF_SLOTS, format: "rgba16f", filter: "nearest" });
-    this.#textures = [this.#heights.texture, this.#stoneTexture.texture, this.#leafTexture.texture, this.#freshTexture.texture];
-    // Lay out the default garden now, so the first frame already shows it raked, with leaves.
+    this.#textures = [this.#heights.texture, this.#records.texture, this.#leafTexture.texture, this.#freshTexture.texture];
+    // The gust's front where an organ is: the woods' x across the frame taken at the wall, the
+    // border's garden X as it is.
+    this.#woodsAir.wind = (x, _y, out) => {
+      out[0] = (out[0] ?? 0) + this.#gustFront(OX + ((x - 0.5 * this.#aspect) * (GARDEN.wallY - GARDEN.eyeY)) / GARDEN.focal);
+    };
+    this.#borderAir.wind = (x, _y, out) => {
+      out[0] = (out[0] ?? 0) + this.#gustFront(x);
+    };
+    // Lay out the default garden now, so the first frame already shows it raked, with leaves, and
+    // its plants standing in the air.
     const settings = this.#settings(undefined);
     this.#season = settings.season;
+    growWoods(this.#woods);
+    this.#plantAir(0, 0, settings);
+    this.#fullness = settings.border;
+    growBorder(this.#border, settings.border);
+    this.#woods.settle(this.#woodsAir);
+    this.#border.settle(this.#borderAir);
     this.#relay(settings);
     this.#prewarmLeaves(settings);
   }
@@ -892,12 +1097,14 @@ class GardenSim implements SceneSim {
     this.#handRake(frame.pointer, settings);
     // A "now" gust plays even with motion off.
     const busy = this.#gustAge < GUST_BUSY;
-    this.#leaves(dt * Math.max(frame.motion, busy ? 1 : 0), settings);
+    const air = dt * Math.max(frame.motion, busy ? 1 : 0);
+    this.#leaves(air, settings);
+    this.#sway(air, frame, settings);
     if (this.#gustAge < GUST_BUSY) this.#gustAge += dt;
 
     if (now - this.#heightsAt >= UPLOAD_EVERY_MS && this.#field.upload(this.#heights)) this.#heightsAt = now;
     if (now - this.#freshAt >= UPLOAD_EVERY_MS && this.#fresh.upload(this.#freshTexture)) this.#freshAt = now;
-    this.#packStones();
+    this.#packIslandsAndPlants();
     this.#packLeaves();
     return this.#textures;
   }
@@ -905,7 +1112,7 @@ class GardenSim implements SceneSim {
   dispose(): void {
     this.#heights.dispose();
     this.#freshTexture.dispose();
-    this.#stoneTexture.dispose();
+    this.#records.dispose();
     this.#leafTexture.dispose();
   }
 
@@ -925,6 +1132,8 @@ class GardenSim implements SceneSim {
     s.weathering = clamp(this.#knob(frame, "soften"), 0, 1);
     s.drying = this.#knob(frame, "drying");
     s.moss = clamp(this.#knob(frame, "moss"), 0, 1);
+    s.border = this.#knob(frame, "border");
+    s.growth = this.#knob(frame, "growth");
     s.leaves = clamp(this.#knob(frame, "leaves"), 0, 1);
     s.overhead = this.#knob(frame, "camera") > 0.5;
     s.time = this.#knob(frame, "time");
@@ -971,7 +1180,7 @@ class GardenSim implements SceneSim {
     this.#fresh.reset();
     this.#smoothDue = SMOOTH_EVERY;
     this.#rakeOn = false;
-    this.#packStones();
+    this.#packIslandsAndPlants();
     // The rake begins at the plan point nearest LIVE_START, where both views see it at work.
     let best = Infinity;
     let start = 0;
@@ -1277,14 +1486,16 @@ class GardenSim implements SceneSim {
   }
 
   /**
-   * uSim1, STONE_COLUMNS × STONE_ROWS rgba16f. Row 0: island i at column i (x, y relative to the
-   * garden's centre, clear radius, tallest stone; clear 0 = none), then at column GARDEN_ISLANDS
+   * uSim1, a PlantTexture RECORD_WIDTH texels a row. Row 0: island i at column i (x, y relative to
+   * the garden's centre, clear radius, tallest stone; clear 0 = none), then at column GARDEN_ISLANDS
    * (drying clock, 0, 0, 0). Row 1 + j: stone j of island i at columns 2i (x, y, rx, ry) and 2i + 1
-   * (height, angle, seed, 0); height 0 = none.
+   * (height, angle, seed, 0); height 0 = none. From row GARDEN_RECORD_ROW on: the records of the
+   * woods' stems and of the border's organs (GARDEN_WOODS, GARDEN_BORDER).
    */
-  #packStones(): void {
-    const data = this.#stoneData;
-    data.fill(0);
+  #packIslandsAndPlants(): void {
+    const records = this.#records;
+    const data = records.data;
+    data.fill(0, 0, GARDEN_RECORD_ROW * RECORD_WIDTH * 4);
     const islands = this.#layout.islands;
     for (let i = 0; i < GARDEN_ISLANDS; i++) {
       const island = islands[i];
@@ -1294,7 +1505,7 @@ class GardenSim implements SceneSim {
         const stone = island.stones[j];
         if (stone === undefined) continue;
         tallest = Math.max(tallest, stone.height);
-        const a = ((1 + j) * STONE_COLUMNS + 2 * i) * 4;
+        const a = ((1 + j) * RECORD_WIDTH + 2 * i) * 4;
         data[a] = stone.x - OX;
         data[a + 1] = stone.y - OY;
         data[a + 2] = stone.rx;
@@ -1310,7 +1521,81 @@ class GardenSim implements SceneSim {
       data[k + 3] = 1.03 * tallest + 0.004;
     }
     data[GARDEN_ISLANDS * 4] = this.#fresh.clock;
-    this.#stoneTexture.upload(data);
+    records.pack(this.#woods, this.#border);
+    records.upload();
+  }
+
+  // ---- the woods and the border --------------------------------------------------------------------
+
+  /** The air both plant systems stand in for `h` seconds at the motion clock `time` (see #sway). */
+  #plantAir(h: number, time: number, settings: Settings): void {
+    for (let n = 0; n < 2; n++) {
+      const climate = n === 0 ? this.#woodsAir : this.#borderAir;
+      climate.dt = h;
+      climate.time = time;
+      climate.season = PLANT_SEASON[settings.season];
+      climate.growth = settings.growth;
+      climate.air.x = settings.wind;
+      climate.air.eddy = PLANT_EDDY;
+    }
+  }
+
+  /**
+   * The garden's gust at garden X: a front setting out from the garden's upwind end as the gust
+   * begins (a "now", the exit's flurry) and crossing it at GUST_FRONT, so the plants bow one after
+   * another, reaching what stands beyond either end with that end; signed with the gust, GUST_PUSH
+   * at its peak. It is over everywhere within GUST_BUSY.
+   */
+  #gustFront(x: number): number {
+    const from = clamp(this.#gustSign > 0 ? x : GA - x, 0, GA);
+    return this.#gustSign * GUST_PUSH * gustPulse(this.#gustAge - from / GUST_FRONT, GARDEN_GUST_RISE);
+  }
+
+  /**
+   * The woods and the border for `h` seconds in the garden's air: the wind knob's breeze with its
+   * eddies, and the gust's front. They swing while the air moves them; once the air is still (no
+   * wind, no gust about) they are set exactly at rest, after PLANT_SETTLE seconds of swinging out or
+   * at once while time stands still (h = 0), and stepping then keeps them there. On the first frame,
+   * and with time standing still when the wind or the season changes, they are set at rest in the
+   * air as it is (a still step). The border is planted afresh when its fullness changes.
+   */
+  #sway(h: number, frame: SimFrame, settings: Settings): void {
+    const woods = this.#woods;
+    const border = this.#border;
+    // Dither cells per unit, for the organs' tiers: the woods' unit is a screen height, the border's a
+    // garden depth, seen across the garden from the veranda or from above.
+    const cells = frame.height > 0 ? frame.height : woods.cells;
+    const borderCells = cells * (settings.overhead ? 1 / GARDEN.span : GARDEN.focal / (GARDEN_BORDER.y - GARDEN.eyeY));
+    const retier = cells !== woods.cells || borderCells !== border.cells;
+    woods.cells = cells;
+    border.cells = borderCells;
+    this.#plantAir(h, frame.motionTime, settings);
+    if (settings.border !== this.#fullness) {
+      this.#fullness = settings.border;
+      growBorder(border, settings.border);
+      border.settle(this.#borderAir);
+    }
+    const still = settings.wind === 0 && !(this.#gustAge < GUST_BUSY);
+    this.#stillFor = still ? this.#stillFor + h : 0;
+    if (!still) this.#rested = false;
+    let settle = this.#plantWind === undefined || (h === 0 && (settings.wind !== this.#plantWind || settings.season !== this.#plantSeason));
+    if (!settle && h > 0) {
+      woods.step(this.#woodsAir);
+      border.step(this.#borderAir);
+      settle = still && !this.#rested && this.#stillFor >= PLANT_SETTLE;
+    } else if (!settle) {
+      settle = still && !this.#rested;
+    }
+    if (settle) {
+      woods.settle(this.#woodsAir);
+      border.settle(this.#borderAir);
+      this.#rested = still;
+    } else if (h === 0 && retier) {
+      woods.pose();
+      border.pose();
+    }
+    this.#plantWind = settings.wind;
+    this.#plantSeason = settings.season;
   }
 
   // ---- leaves --------------------------------------------------------------------------------------
