@@ -5,7 +5,7 @@ import type { SceneDef } from "../types.ts";
 import { CLOUDS_PASSAGE, cloudsGlsl } from "./shader.ts";
 
 const params: ParamDef[] = [
-  ...skyKnobs({ time: 0.72 }),
+  ...skyKnobs({ time: 0.72, stars: 0.75 }),
   range("clouds", "cover", "cloud cover", 0.75, "How much of the sea below is cloud: lower opens gaps down to the ocean, higher is an unbroken white floor."),
   range("clouds", "altitude", "height above", 0.5, "How far above the cloud tops the plane flies: low skims over big billows, high looks down on a fine-grained sea."),
   range("clouds", "drift", "drift speed", 0.35, "How fast the cloud sea slides past below as the plane flies on."),
@@ -25,7 +25,7 @@ export const cloudsScene: SceneDef = {
   look: { color: "full", levels: 4 },
   params,
   groups: {
-    sky: atmosphereGroups.sky,
+    sky: { title: atmosphereGroups.sky.title, blurb: "Time of day, whether the days pass, and the stars over the cloud sea at night." },
     clouds: { title: "Cloud sea", blurb: "The deck below: how much cloud, how far down, how fast it passes, and storms on the horizon." },
     seat: { title: "Window seat", blurb: "What frames the view: the porthole, the wing, and the odd plane passing far off." },
     weather: atmosphereGroups.weather,

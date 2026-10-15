@@ -30,8 +30,8 @@
 // cell's threshold, so each cell lights once and goes dark once.
 //
 // Knobs: K_size, K_period (surf); K_glow, K_sparkles, K_stir, K_fish (bioluminescence; fish fire
-// on trigger 0); K_time, K_cycle (sky); K_rain, K_fog, K_wind, K_lightning (weather; lightning on
-// trigger 1); K_mark (the M in the sand). uWeather.x: how wet the beach is from the rain.
+// on trigger 0); K_time, K_cycle, K_stars (sky); K_rain, K_fog, K_wind, K_lightning (weather;
+// lightning on trigger 1); K_mark (the M in the sand). uWeather.x: how wet the beach is from the rain.
 //
 // The passage is played in the beach itself. The whole surf (every crest, bore, swash and the
 // waterline with them) is one rigid pattern, and the entrance has it stand out to sea (SHORE_SURGE_IN
@@ -469,7 +469,7 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
   if (dir.y >= 0.0) {
     float az = dir.x / dir.z;
     float el = dir.y / dir.z;
-    col = skyColor(sky, dir) + skyStarLight(sky, dir, 0.6);
+    col = skyColor(sky, dir) + skyStarLight(sky, dir, K_stars);
     if (rain > 0.0) col = shoreRainSky(col, sky, cloud, dir, az, el, t, rain, K_wind, flash);
     if (storm > 0.0) {
       float bank = shoreStormBank(az, el, tm * 0.004 * K_wind) * storm;
@@ -808,7 +808,7 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
       float fres = fresnelSchlick(cv, 0.02, 0.0);
       vec3 refl = reflect(dir, n);
       refl = normalize(vec3(refl.x, max(refl.y, 0.01), refl.z));
-      mirror = shoreDome(skyM, cloud, refl) + vec3(0.9, 0.95, 1.0) * skyStars(sky, refl, 0.6) * gloss * (1.0 - cloud.overcast) + vec3(0.1, 0.11, 0.16) * flash;
+      mirror = shoreDome(skyM, cloud, refl) + vec3(0.9, 0.95, 1.0) * skyStars(sky, refl, K_stars) * gloss * (1.0 - cloud.overcast) + vec3(0.1, 0.11, 0.16) * flash;
       float rough = 0.002 + 0.012 * (1.0 - gloss);
       // By day damp sand keeps a soft sheen of the bright sky; by night only the glossy band shows.
       float soak = wet * mix(1.0, 0.2, dark);

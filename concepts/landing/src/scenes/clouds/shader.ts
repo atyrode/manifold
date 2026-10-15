@@ -7,9 +7,9 @@
 // sets inside the window at golden hour; directions turn into that frame only to read the sky. The
 // moon keeps a low arc of the scene's own (cloudsMoon) so it crosses the porthole around midnight.
 //
-// Knobs (index.ts): K_time, K_cycle (sky); K_cover, K_altitude, K_drift, K_thunderheads (cloud
-// sea); K_window, K_wing, K_contrail (window seat, trigger slot 1); K_wind, K_lightning (trigger
-// slot 0), K_aurora (weather); K_livery (manifold).
+// Knobs (index.ts): K_time, K_cycle, K_stars (sky); K_cover, K_altitude, K_drift, K_thunderheads
+// (cloud sea); K_window, K_wing, K_contrail (window seat, trigger slot 1); K_wind, K_lightning
+// (trigger slot 0), K_aurora (weather); K_livery (manifold).
 
 /** Seconds of the climb out of the deck and of the sinking back in (SceneDef.passage). */
 export const CLOUDS_PASSAGE = { enter: 3.0, exit: 1.5 } as const;
@@ -578,7 +578,7 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
 
   if (rd.y > 0.0) {
     vec3 dw = cloudsToWorld(rd);
-    stars = skyStars(sky, dw, 0.75);
+    stars = skyStars(sky, dw, K_stars);
     col += vec3(0.88, 0.92, 1.0) * stars;
     if (K_aurora > 0.0) col += aurora(dw, t, K_aurora) * sky.night;
   }

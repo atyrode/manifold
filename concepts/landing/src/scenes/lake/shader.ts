@@ -4,7 +4,7 @@
 // forest, low hills and snowy mountains behind; a point reaches out from the left with a log
 // cabin on it, its window lit and smoke rising until it flattens under the cold air above. The
 // aurora hangs over the north (the shared library, recoloured, paced by the sim's substorms and
-// spreading overhead in a surge), with stars, the Milky Way and our own moon with its phase.
+// spreading overhead in a surge), with stars, the shared Milky Way and our own moon with its phase.
 //
 // The ice is clear and black where the wind has swept it: a mirror of everything above (tipped a
 // little by the frozen undulations of the surface and softened, as rough ice does, by a second tap
@@ -28,6 +28,7 @@
 // cut per cell. At rest none of it is drawn and uv is the screen's.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
 import { ABOVE_RANGE, DIST_RANGE, DRIFT_MAX, EYE, FIELD_FU, FIELD_FV, FIELD_H, FIELD_W, FOCAL, HORIZON, ICE_DEPTH, ICE_INDEX, LAKE_PASSAGE, MARK_ID, SNOW_MAX } from "./sim.ts";
 
 /** The aurora's colours by the `hue` knob (green, teal, storm, crimson): its low light and its high fringe. */
@@ -39,6 +40,7 @@ export const LAKE_METEOR_TRIGGER = 3;
 
 export const lakeGlsl = `
 ${birdsGlsl}
+${milkyWayGlsl}
 const float LAKE_HORIZON = ${glslFloat(HORIZON)};
 const float LAKE_FOCAL = ${glslFloat(FOCAL)};
 const float LAKE_EYE = ${glslFloat(EYE)};
@@ -67,8 +69,8 @@ const vec3 LAKE_WINDOW = vec3(1.0, 0.58, 0.24);
 const vec3 LAKE_SNOW = vec3(0.86, 0.9, 1.0);
 const vec3 LAKE_FLASH = vec3(0.78, 0.93, 1.0);
 const vec3 LAKE_WATER = vec3(0.003, 0.009, 0.012);
-// The Milky Way's pole: the band rises from low on the right to high over the middle.
-const vec3 LAKE_GALAXY = vec3(-0.2984, -0.7957, 0.5272);
+// The Milky Way's band: it rises from low on the right to high over the middle.
+const MilkyWayBand LAKE_GALAXY = MILKY_WAY_BAND(vec3(-0.2984, -0.7957, 0.5272));
 // Depths (m) of the layers of frozen bubbles, and the spacing of the seeps on the lake bed (m).
 const float LAKE_LAYER[5] = float[5](0.04, 0.13, 0.26, 0.42, 0.62);
 const float LAKE_SEEP = 1.1;
@@ -129,20 +131,6 @@ vec3 lakeAurora(vec3 d, float soft) {
   return (low * lakeAurLow + fringe * lakeAurHigh) * lakeAurVis;
 }
 
-// The Milky Way: a band of soft star clouds across the sky with a dark dust lane down it, 0..~1.3.
-float lakeMilkyWay(vec3 d) {
-  float b = dot(d, LAKE_GALAXY);
-  if (d.y <= 0.0 || abs(b) > 0.35) return 0.0;
-  vec3 e1 = normalize(cross(LAKE_GALAXY, vec3(0.0, 0.0, 1.0)));
-  vec3 e2 = cross(LAKE_GALAXY, e1);
-  float l = atan(dot(d, e2), dot(d, e1));
-  float band = exp(-b * b / 0.014);
-  float clouds = 0.55 * vnoise(vec2(l * 8.0, b * 26.0)) + 0.45 * vnoise(vec2(l * 21.0 + 3.0, b * 60.0));
-  float lane = (b - 0.02 - 0.015 * sin(l * 5.0)) / 0.016;
-  float dust = 1.0 - 0.75 * exp(-lane * lane) * smoothstep(0.25, 0.6, vnoise(vec2(l * 4.0, 7.0)));
-  return band * (0.35 + 0.9 * clouds) * dust * smoothstep(0.0, 0.15, d.y);
-}
-
 // Our moon: a disc in its phase (the lit limb toward the sun, down to the left), its dark part
 // faint with earthshine, and a halo. Returns light for the sky; cover how much of the disc hides
 // the stars behind it.
@@ -177,9 +165,9 @@ vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   col += lakeAurLight * 0.6 * exp(-hh * 8.0);
   Sky starry = lakeSky;
   starry.moon = lakePhase > 0.0 ? lakeMoon : vec3(0.0, -1.0, 0.0);
-  float mw = lakeMilkyWay(d) * K_stars * lakeSky.night * (1.0 - 0.75 * lakePhase);
+  float mw = milkyWay(d, LAKE_GALAXY) * K_milkyWay * K_stars * lakeSky.night * (1.0 - 0.75 * lakePhase);
   col += vec3(0.045, 0.048, 0.064) * mw;
-  float density = K_stars * (0.7 + 0.8 * mw) * (1.0 - 0.6 * lakePhase);
+  float density = milkyWayStars(K_stars, mw) * (1.0 - 0.6 * lakePhase);
   col += skyStarLight(starry, d, mirror ? 0.5 * density : density) * (mirror ? 0.6 : 1.0);
   float disc;
   vec3 moon = lakeMoonAt(d, disc);

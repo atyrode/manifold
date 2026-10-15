@@ -6,7 +6,8 @@
 // the odd shooting star. The picture is procedural in shader.ts: the flames, sparks and smoke are noise
 // and analytic arcs advected slowly, cut per cell so nothing shimmers under the dither. With `fuel` on,
 // sim.ts burns the logs down (sims/fuel.ts) and the shader follows it. The planet is the shared one
-// (shaders/lib/planet.ts, knobs from ../planet.ts), composed as scenery with a few of its features.
+// (shaders/lib/planet.ts, knobs from ../planet.ts), composed as scenery with a few of its features;
+// the Milky Way too (shaders/lib/milkyway.ts, its knob from skyKnobs).
 import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import { planetKnobs } from "../planet.ts";
@@ -24,7 +25,7 @@ const params: readonly ParamDef[] = [
   toggle("fire", "tend", "tend the fire", true, "Someone lays a fresh log on whenever one has burnt away: it smokes until it catches, then flares. Off: the fire burns down to embers and goes out. Now: lay a log on at once.", { when: "fuel", trigger: 1 }),
   range("camp", "reach", "firelight reach", 0.5, "How far the firelight carries: a tight pool on the stones, or a warm glow reaching the tent, the bench and the pack."),
   toggle("camp", "camp", "tent & pack", true, "A little tent at the edge of the light with a lantern glowing inside, and a backpack leaning by the stones."),
-  ...skyKnobs({ time: 0.8, stars: 0.8 }),
+  ...skyKnobs({ time: 0.8, stars: 0.8, milkyWay: { on: true } }),
   feature("planet", "planet", "giant planet", true, "size", 0.55, "A giant banded planet with a storm swirl and a thin ring, low over the far pines, half hidden by the trees; it fades into the sky by day.", { min: 0.2, max: 1 }),
   // The shared planet's features this sky composes, all off: no clouds, storms or ring system.
   ...planetKnobs({ prefix: "planet", groups: { planet: "planet", moons: "planet" }, when: "planet", aurora: true, lights: true, daycycle: true, moons: true }),

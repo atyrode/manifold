@@ -1,10 +1,10 @@
 // The campfire's picture, back to front: the night sky (dusk to deep night from the shared sky, the
-// Milky Way, stars, the shared giant ringed planet, shooting stars), two rows of far pines fading into
-// the haze, the ground (soil, and a flat rocky outcrop under the fire) lit by the fire, two big pines
-// framing the view, the tent with its lantern and the backpack at the edge of the light, the far half
-// of the stone ring, the coals, the back log, the flames (four nested layers of licking tongues), the
-// smoke column, the two front logs, the near stones, the mug, the marshmallow stick, the log bench
-// (with the M carved in it when it is on) and the sparks.
+// shared Milky Way, stars, the shared giant ringed planet, shooting stars), two rows of far pines
+// fading into the haze, the ground (soil, and a flat rocky outcrop under the fire) lit by the fire,
+// two big pines framing the view, the tent with its lantern and the backpack at the edge of the
+// light, the far half of the stone ring, the coals, the back log, the flames (four nested layers of
+// licking tongues), the smoke column, the two front logs, the near stones, the mug, the marshmallow
+// stick, the log bench (with the M carved in it when it is on) and the sparks.
 //
 // Space: p = (x in view heights from the centre, y up from the bottom), one cell = 1 / uRes.y. The
 // fire stands at campfireF; ground distances are foreshortened (a circle on the ground is an ellipse
@@ -18,22 +18,24 @@
 // firelight, the coals, the smoke and the sparks follow the bed, and each log chars, thins, slumps and
 // crumbles away; off, the fire is exactly the steady one it always was.
 // Knobs read here: K_flame, K_lively, K_sparks, K_smoke, K_marshmallow, K_fuel (K_tend: sim.ts,
-// trigger 1), K_reach, K_camp, K_time, K_cycle, K_stars, K_planet and its shared options
+// trigger 1), K_reach, K_camp, K_time, K_cycle, K_stars, K_milkyWay, K_planet and its shared options
 // (K_planetMoons, K_planetEclipses, K_planetAurora, K_planetAuroraSize, K_planetLights,
 // K_planetLightsTwinkle, K_planetDaycycle), K_shooting (trigger 0), K_wind, K_fog, K_mark.
+import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
 import { planetGlsl } from "../../shaders/lib/planet.ts";
 import { CAMPFIRE_LOGS } from "./sim.ts";
 
 export const campfireGlsl = `
 ${planetGlsl}
+${milkyWayGlsl}
 // ---- campfire ----
 const int CAMPFIRE_LOGS = ${CAMPFIRE_LOGS};      // the fuel's log texels (sim.ts), the bed's after them
 const float CAMPFIRE_HORIZON = 0.37;   // screen height of the far horizon (the pines hide it)
 const float CAMPFIRE_FOV = 1.0;
 const float CAMPFIRE_FLAME = 0.30;     // the full flame's height, in the fire's own units
 const vec3 CAMPFIRE_WARM = vec3(1.0, 0.52, 0.18);
-// The Milky Way's pole: the band runs from low on the left up to the top right.
-const vec3 CAMPFIRE_GALAXY = vec3(0.5, -0.82, 0.28);
+// The Milky Way's band: it runs from low on the left up to the top right.
+const MilkyWayBand CAMPFIRE_GALAXY = MILKY_WAY_BAND(vec3(0.5, -0.82, 0.28));
 
 Sky campfireSkyState;
 vec3 campfireAmb;       // light from the sky on upturned surfaces
@@ -124,26 +126,12 @@ void campfireSetup(float aspect) {
 
 // ---- the sky ----
 
-// A band of soft star clouds with a dark dust lane down it, 0..~1.3.
-float campfireMilkyWay(vec3 d) {
-  float b = dot(d, CAMPFIRE_GALAXY);
-  if (d.y <= 0.0 || abs(b) > 0.35) return 0.0;
-  vec3 e1 = normalize(cross(CAMPFIRE_GALAXY, vec3(0.0, 0.0, 1.0)));
-  vec3 e2 = cross(CAMPFIRE_GALAXY, e1);
-  float l = atan(dot(d, e2), dot(d, e1));
-  float band = exp(-b * b / 0.014);
-  float clouds = 0.55 * vnoise(vec2(l * 8.0, b * 26.0)) + 0.45 * vnoise(vec2(l * 21.0 + 3.0, b * 60.0));
-  float lane = (b - 0.02 - 0.015 * sin(l * 5.0)) / 0.016;
-  float dust = 1.0 - 0.75 * exp(-lane * lane) * smoothstep(0.25, 0.6, vnoise(vec2(l * 4.0, 7.0)));
-  return band * (0.35 + 0.9 * clouds) * dust * smoothstep(0.0, 0.15, d.y);
-}
-
 vec3 campfireSkyAt(vec3 d) {
   Sky sky = campfireSkyState;
   vec3 col = skyColor(sky, d);
-  float mw = campfireMilkyWay(d) * K_stars * sky.night;
+  float mw = milkyWay(d, CAMPFIRE_GALAXY) * K_milkyWay * K_stars * sky.night;
   col += vec3(0.085, 0.080, 0.110) * mw;
-  col += skyStarLight(sky, d, K_stars * (0.7 + 0.8 * mw));
+  col += skyStarLight(sky, d, milkyWayStars(K_stars, mw));
   // A faint skyglow along the horizon, so the pines keep a backdrop even in the deepest night.
   col += vec3(0.09, 0.10, 0.15) * exp(-max(d.y, 0.0) * 5.0) * sky.night;
   return col;
