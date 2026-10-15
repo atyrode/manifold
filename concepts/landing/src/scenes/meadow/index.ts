@@ -1,13 +1,15 @@
 // Meadow in the wind (honami): standing in tall grass at golden hour, the low sun ahead, gusts
 // rolling across the field as travelling waves of paler light. One deterministic gust field, shared
 // by the shader (shader.ts) and the simulation (sim.ts), bows the near blades, rocks the dandelion
-// clocks, pulls their seeds off one by one and carries them glowing up and away.
+// clocks, pulls their seeds off one by one and carries them glowing up and away; switched on, it
+// bows clumps of wildflowers too (wildflowers.ts, the shared plant component).
 import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { MEADOW_METEOR_TRIGGER, meadowGlsl } from "./shader.ts";
 import { GUST_TRIGGER, MARK_TRIGGER, MAX_CLOCKS, MEADOW_PASSAGE, meadowSim } from "./sim.ts";
+import { meadowFlowersSim } from "./wildflowers.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -33,6 +35,15 @@ const params: readonly ParamDef[] = [
     3,
     "Seed heads on long stalks. The gusts pull their seeds off one by one and carry them glowing into the light; a bare clock wilts and a new one opens nearby. Click to blow on the nearest one.",
     { options: counts(...Array.from({ length: MAX_CLOCKS }, (_, i) => i + 1)) },
+  ),
+  feature(
+    "meadow",
+    "wildflowers",
+    "wildflowers",
+    false,
+    "how many",
+    0.5,
+    "Clumps of ox-eye daisies, buttercups, knapweed and field scabious standing up out of the grass. Each gust bows them as it reaches them and they swing back after it, the near grass hiding their feet. The amount is how many clumps; fewer keep some of more.",
   ),
   seed(
     "meadow",
@@ -115,7 +126,9 @@ export const meadowScene: SceneDef = {
   // Arriving, the camera lowers into the grass and a first gust lifts the seeds; leaving, a strong gust carries a burst of them and the camera rises over the grass.
   passage: MEADOW_PASSAGE,
   entry: "sceneMeadow",
-  sim: meadowSim(params),
+  sim: meadowFlowersSim(meadowSim(params), params),
   // The moon takes a phase (K_moon) in the shared sky.
   features: { SKY_MOON_PHASE: 1 },
+  // The wildflowers' code only while they are on (wildflowers.ts).
+  featuresFor: (values) => ({ MEADOW_HAS_WILDFLOWERS: (values.wildflowers ?? 0) > 0 ? 1 : 0 }),
 };

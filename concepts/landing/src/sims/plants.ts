@@ -228,8 +228,10 @@ export interface PlantClimate {
   /**
    * Air the scene moves itself at a point (push units), added into out[0], out[1] on top of the
    * breeze, its eddies and gusts, for land species: a breeze front of the scene's own crossing it.
+   * `plant` is the organ's plant (the index `add` returned), for air that differs from plant to
+   * plant (the countryside's verges: the gust bands of the field each clump stands in).
    */
-  wind?: (x: number, y: number, out: Float32Array) => void;
+  wind?: (x: number, y: number, out: Float32Array, plant: number) => void;
 }
 
 /** A still climate in high summer, for a scene to fill in each frame. */
@@ -660,7 +662,12 @@ export class RootedPlants {
         const own = this.#flow;
         own[0] = 0;
         own[1] = 0;
-        climate.wind((this.x[i] ?? 0) + dx * 0.5 * grown, (this.y[i] ?? 0) + dy * 0.5 * grown, own);
+        climate.wind(
+          (this.x[i] ?? 0) + dx * 0.5 * grown,
+          (this.y[i] ?? 0) + dy * 0.5 * grown,
+          own,
+          plant,
+        );
         px += own[0] ?? 0;
         py += own[1] ?? 0;
       }

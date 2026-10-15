@@ -23,12 +23,17 @@
 // SKY_MOON_PHASE only while it is less than full) and shooting stars (K_meteors and its "now"). Most
 // optional parts are compiled in only while their knobs can show them (countryFeatures, index.ts):
 // each sits under its COUNTRY_HAS_* gate here and in the files it comes from.
+//
+// The verges at the hedges' foot on the two near ridges (verges.ts) are clumps of the shared plant
+// component, met in the near ridges' loop as the hedgerow trees are: the nearer root stands in
+// front.
 
 import { countryAnimalsGlsl } from "./animals.ts";
 import { countryFieldsGlsl } from "./fields.ts";
 import { countryWildlifeGlsl } from "./wildlife.ts";
 import { countryRoutesGlsl } from "./routes.ts";
 import { countrySettlementsGlsl } from "./settlements.ts";
+import { countryVergesGlsl } from "./verges.ts";
 
 /** Trigger slot of the shooting stars' "now" button (0 is lightning's). */
 export const COUNTRY_METEOR_TRIGGER = 1;
@@ -568,6 +573,7 @@ ${countryWildlifeGlsl}
 
 ${countrySettlementsGlsl}
 ${countryAnimalsGlsl}
+${countryVergesGlsl}
 Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float m = uMotion;
   float tm = uMotionTime;
@@ -645,6 +651,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   CountryVillage core = countryNoVillage();
   // How far off the surface the pixel sees is (world): the falling rain and snow stop there.
   float seen = 1e3;
+#if COUNTRY_HAS_VERGES
+  // The verge clump hit, if any (verges.ts).
+  CountryVerge verge = countryVergeNone();
+#endif
 #if COUNTRY_HAS_SPURS
   // The farm tracks that can reach this column of the second ridge, for its hedgerow trees, fences,
   // herds and ground (settlements.ts); looked up again below for a farther ridge the pixel shows.
@@ -659,6 +669,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     // No woods grow on the two near ridges: their outline is the bare crest (countryCrest).
     float terrain = countryGroundCrest(i, qi.x, spots);
     float c = terrain;
+#if COUNTRY_HAS_VERGES
+    // A verge clump at the hedges' foot standing over this pixel (verges.ts).
+    CountryVerge here = countryVerge(i, qi, c, spots);
+#endif
     // Hedgerow trees, rooted on the face below and standing up over it (and over the crest).
     float r = 0.018 / L.x;
     float lift = r * 1.2;
@@ -674,8 +688,15 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
 #endif
       float density = 0.3 * (1.0 - 0.8 * countrySpots(qi.x, spots).x);
       crown = countryTrees(fQ, scale, r, density, max(-sQ, 0.0), sky.sun, treeShadow);
+#if COUNTRY_HAS_VERGES
+      // A building standing nearer than the tree's root hides it, and so does a verge clump rooted
+      // nearer (lower on screen) than it.
+      bool clump = here.cover > 0.5 && here.drop > crown.y * r * (0.7 + 0.3 * fract(crown.w * 17.3)) + 1.2 * r;
+      if (crown.z > 0.5 && !countryHidesCrown(village, crown, qi.y, r) && !clump) {
+#else
       // A building standing nearer than the tree's root hides it.
       if (crown.z > 0.5 && !countryHidesCrown(village, crown, qi.y, r)) {
+#endif
         hit = k;
         crest = c;
         groundCrest = terrain;
@@ -685,6 +706,18 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         break;
       }
     }
+#if COUNTRY_HAS_VERGES
+    if (here.cover > 0.5) {
+      hit = k;
+      crest = c;
+      groundCrest = terrain;
+      q = qi;
+      object = 3.0;
+      verge = here;
+      seen = here.z;
+      break;
+    }
+#endif
     if (qi.y < c) {
       hit = k;
       crest = c;
@@ -750,7 +783,13 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       CountryVillage here = countryNoVillage();
       if (k == 2) here = core;
       passed = countryNearer(passed, countrySettlements(i, at.xy, at.w, L, spots, tod, dark, uMotionTime, wind, here));
+#if COUNTRY_HAS_VERGES
+      // A verge clump (object 3) is hidden only by a building whose base lies nearer than its root.
+      bool nearer = object > 2.5 && object < 3.5 ? passed.front < at.y - verge.drop : object < 0.5 || object > 1.5 || countryHidesCrown(passed, crown, at.y, 0.018 / L.x);
+      if (passed.hit > 0.5 && (k < hit || nearer)) {
+#else
       if (passed.hit > 0.5 && (k < hit || object < 0.5 || object > 1.5 || countryHidesCrown(passed, crown, at.y, 0.018 / L.x))) {
+#endif
         hit = k;
         q = at.xy;
         crest = at.z;
@@ -770,7 +809,12 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   vec4 agentFrame = vec4(0.0);
   float agentRidge = 0.0;
   float agentZ = 0.0;
+#if COUNTRY_HAS_VERGES
+  // In front of a verge clump only where its feet stand lower than the clump's root.
+  Figure agent = countryAgentAt(hit, object, object > 2.5 && object < 3.5 ? q.y - verge.drop : village.front, q, crest, groundCrest, spots, dark, agentFrame, agentRidge, agentZ);
+#else
   Figure agent = countryAgentAt(hit, object, village.front, q, crest, groundCrest, spots, dark, agentFrame, agentRidge, agentZ);
+#endif
   if (agent.cover > 0.5) {
     hit = int(agentRidge);
     q = agentFrame.xy;
@@ -871,6 +915,18 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       porous = 0.5;
       glossy = 0.12;
       snowy = agent.top * snowCover(n, q * 40.0, lyingHere);
+      shadow = 0.0;
+    } else
+#endif
+#if COUNTRY_HAS_VERGES
+    if (object > 2.5 && object < 3.5) {
+      // A verge clump (verges.ts): lit from above as the field it stands in, a little toward us,
+      // snow on its heads and the tops of its leaves, its stems dark against it.
+      albedo = verge.albedo;
+      n = normalize(vec3(0.0, 1.0, 0.4 * verge.up - 0.6));
+      porous = 0.35;
+      glossy = 0.12;
+      snowy = verge.up * snowCover(vec3(0.0, 1.0, 0.0), q * 40.0, lyingHere);
       shadow = 0.0;
     } else
 #endif

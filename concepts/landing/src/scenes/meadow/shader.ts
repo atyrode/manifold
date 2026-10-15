@@ -20,7 +20,8 @@
 // The gust field `meadowGust` here is sim.ts's `meadowGust` line for line, built from the same
 // constants, so a wave of light crossing the field is the gust that bows the near blades and lifts
 // the seeds. Textures (see sim.ts): uSim0 the seeds and the pointer's breath, uSim1 the bend of each
-// column of near grass, uSim2 the clocks.
+// column of near grass, uSim2 the clocks; uSim3 the wildflowers' plant records (wildflowers.ts),
+// only while they are on.
 //
 // Passage (entrance and exit): the camera's height over its rest height (`meadowDrop`, sim.ts's
 // `meadowDrop` line for line). The sea of grass is drawn from that height (`eye` stands for
@@ -33,9 +34,10 @@
 // Knobs read here: K_grassHeight, K_grassDensity, K_meadowSeed, K_wind, K_gusts (and its "now"),
 // K_gustRate, K_time, K_cycle, K_haze, K_rain, K_mown (and its "now"), K_birds, K_birdKind,
 // K_birdFormation (the shared birds, shaders/lib/birds.ts); uWeather.x for how wet the grass is.
-// K_dandelions only reaches the shader through the clocks the simulation grows. Over the hills the
-// shared sky components (src/scenes/README.md, "Composing components"): K_stars, K_moon
-// (SKY_MOON_PHASE), K_aurora and K_meteors (and its "now"), behind the clouds.
+// K_dandelions only reaches the shader through the clocks the simulation grows. K_wildflowers and
+// its clumps (wildflowers.ts) are compiled in only while it is on (MEADOW_HAS_WILDFLOWERS). Over
+// the hills the shared sky components (src/scenes/README.md, "Composing components"): K_stars,
+// K_moon (SKY_MOON_PHASE), K_aurora and K_meteors (and its "now"), behind the clouds.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import {
@@ -64,6 +66,7 @@ import {
   SEED_GROUPS,
   type MeadowLayer,
 } from "./sim.ts";
+import { meadowWildflowersGlsl } from "./wildflowers.ts";
 
 /** A const float array initialiser. */
 function floats(values: readonly number[]): string {
@@ -716,6 +719,8 @@ vec3 meadowGrass(vec2 uv, float aspect, vec3 behind, MeadowWind wind, float tm, 
   return acc + (1.0 - cover) * behind;
 }
 
+${meadowWildflowersGlsl}
+
 // ---- the near grass ----
 // One layer of blades and flowering stalks rooted below the frame, bent as the simulation bends
 // their column (uSim1: lean, bow away from the viewer). Tall at the sides and short in the middle,
@@ -1148,6 +1153,10 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
       zHit = bird.depth;
     }
   }
+#if MEADOW_HAS_WILDFLOWERS
+  // Wildflowers standing out of the grass (wildflowers.ts), in front of whatever lies beyond them.
+  meadowWildflowers(p, aspect, eye, amb, sun, behind, sunNear, haze, MEADOW_HAZE_BASE + MEADOW_HAZE_GAIN * K_haze + rainExt, wet, aa, col, accent, zHit);
+#endif
   // Golden haze: light scattered toward the eye around the sun, over everything beyond the near grass.
   col += sun * (0.05 + 0.3 * K_haze) * exp(-5.0 * length(dir - sky.sun)) * (1.0 - overcast);
   // Heavy rain: the gusts drive curtains of it across the field and the sky, with the honami bands.
