@@ -19,6 +19,11 @@
 //                                  an organ turning `turn` radians over its length, l in its frame:
 //                                  s how far along (0 base .. 1 tip; outside: past the ends), returns
 //                                  the distance to the left of its spine (l's units)
+//   vec2 plantPoint(PlantOrgan o, float turn, float s)
+//                                  where the spine of an organ turning `turn` radians over its length
+//                                  (in the scene's frame: its curl + o.bend if flexible, 0 if rigid)
+//                                  lies a share s along, in scene units (RootedPlants.pointAt): a
+//                                  swaying stem's tip, a point to hang things from
 //   float plantFrond(vec2 rel, float side, float len, float lift, float droop, float bend, float foot,
 //                    out float u, out float under)
 //                                  a fern frond from its root (rel = point - root, y up): the spine a
@@ -78,6 +83,16 @@ float plantArc(vec2 l, float len, float turn, out float s) {
   vec2 w = v / r;
   s = atan(w.x, -w.y) / turn;
   return r - sign(r) * length(v);
+}
+
+vec2 plantPoint(PlantOrgan o, float turn, float s) {
+  // The chord from the base: s len sinc(h) long, turned h = turn s / 2 from the base direction, so
+  // nothing cancels however little it bends.
+  float h = 0.5 * turn * s;
+  float chord = o.len * s * (abs(h) < 1e-4 ? 1.0 : sin(h) / h);
+  float c = cos(h);
+  float n = sin(h);
+  return o.at + chord * vec2(o.dir.x * c - o.dir.y * n, o.dir.x * n + o.dir.y * c);
 }
 
 float plantKeep(float period, float foot) {

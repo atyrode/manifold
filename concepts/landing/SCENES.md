@@ -156,6 +156,19 @@ The view from a plane window: a sea of clouds below, open sky above.
   its full shape at every distance: fading it would reshape the far deck, and a projected-size floor
   under the march step saves only a few percent of steps, even skimming low over a full deck.
 
+## Fireflies mangroves
+
+`fireflies`' bank is grown by the shared plant component (issue #1082 M11): every tree is a rooted
+plant, a stem carrying the clumps of its crown, with Rhizophora prop roots in pairs from apexes on
+the lattice the shader always hashed them on (same hashes, same sizes, each pair belonging to the
+tree above it), drawn per fragment from the plant records (`plantArc`). Habitat choice and swarm
+behaviour are unchanged. Visible differences: each root is now a circular arc from its apex down
+into the water, so tall narrow arches are pointed where they were elliptical, and a root over open
+mud at a crown's edge is no longer drawn; when the breeze crosses, the crowns bow downwind tree
+after tree (a few cells at the top of the tall Sonneratia) and swing back, then stand exactly as
+laid out; between breezes the trees stand still, as before. New, off: shooting stars (the shared
+meteors, `meteors` with "now"), over the hills behind the trees.
+
 ## Waterfall
 
 A cliff face with a waterfall as the focus.

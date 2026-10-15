@@ -12,11 +12,12 @@
 // Structure. `add(species, site, rand)` runs the species' `build`, which calls `organ(spec)` from the
 // root up: an organ hangs on its parent (or the site) a share `at` along it, turned `angle` from the
 // parent's direction there (from the scene's x axis on the site), `length` long and `width` wide,
-// curled `curl` radians over its length at rest. A flexible organ bends along its length (an arc),
-// a rigid one turns about its base (a sprite or a stiff shape), an upright one stands out of the
-// scene's plane (an anemone's column seen from above) and leans as a whole: its deflection is a
-// vector. `a` and `b` are the species' own shape numbers for its drawing (a frond's lift and droop),
-// passed through untouched.
+// curled `curl` radians over its length at rest. An organ on the site springs from the site itself,
+// or from a point `offset` from it (a tree's prop roots along its crown, a clump's stems). A flexible
+// organ bends along its length (an arc), a rigid one turns about its base (a sprite or a stiff
+// shape), an upright one stands out of the scene's plane (an anemone's column seen from above) and
+// leans as a whole: its deflection is a vector. `a` and `b` are the species' own shape numbers for
+// its drawing (a frond's lift and droop), passed through untouched.
 //
 // Roles: `axis` organs persist; `leaf` organs unfold, age and are replaced on the growth clock, turn
 // colour and (the deciduous share) fall in autumn and come back in spring; `bloom` organs open in
@@ -27,9 +28,10 @@
 // an organ 0.1 units long; ∝ 1/√length) and damping ratio `sway.damping`, where
 //   θ_eq = limit · tanh(give · push⊥ / limit)
 // and push⊥ is the push across the organ (positive turns it counterclockwise in the scene's frame):
-// in the air the breeze plus eddies plus the gust a front crossing the scene brings to the plant; under
-// water |u| u for the current u (quadratic drag). An upright organ leans by the same law along both
-// axes of the push. Small organs (detail tier below full) follow θ_eq at once.
+// in the air the breeze plus eddies plus the gust a front crossing the scene brings to the plant, plus
+// any air the scene moves itself (`wind`: a breeze front of its own); under water |u| u for the
+// current u (quadratic drag). An upright organ leans by the same law along both axes of the push.
+// Small organs (detail tier below full) follow θ_eq at once.
 //
 // The year: `season` 0..1 from the start of spring (summer 0.25..0.5, autumn 0.5..0.75, winter
 // 0.75..1); PLANT_SUMMER (0.35) is high summer, every organ out and green, the picture a scene shows
@@ -47,7 +49,10 @@
 //                                              of its direction (radians toward x and y)
 //   2  bend θ, a, b, phenology
 //   3  form, variant, side, tier               tier 0: nothing to draw
-// A scene may reserve rows below the records for its own data (the tide pool's fish and flow).
+// A scene may reserve rows below the records for its own data (the tide pool's fish and flow), and
+// pack two systems into one texture (`pack(a, b)`: the garden's far woods and its border, each in its
+// own frame). An organ with a negative slot is never packed: one the scene draws its own way
+// (fireflies' crowns, through the bank's profile).
 //
 // Usage (ferns along a bank, rooted once, swaying every frame):
 //   const plants = new RootedPlants(256, seed);
@@ -176,8 +181,10 @@ export interface OrganSpec {
   habit?: PlantHabitId;
   /** Push it takes, as a share of the species' give (default 1). */
   give?: number;
-  /** Its record slot, from the site's `slot` on (grid-indexed drawing); default its index. */
+  /** Its record slot, from the site's `slot` on (grid-indexed drawing); default its index; negative: never packed. */
   slot?: number;
+  /** For an organ on the site: where it springs from, relative to the site (scene units); default the site. */
+  offset?: readonly [number, number];
 }
 
 /** What `build` gets: the site, its randomness, and `organ` to add organs. */
@@ -218,6 +225,11 @@ export interface PlantClimate {
   air: PlantAir;
   /** The water's flow at a point (scene units per second) into out[0], out[1], for aquatic species. */
   current?: (x: number, y: number, out: Float32Array) => void;
+  /**
+   * Air the scene moves itself at a point (push units), added into out[0], out[1] on top of the
+   * breeze, its eddies and gusts, for land species: a breeze front of the scene's own crossing it.
+   */
+  wind?: (x: number, y: number, out: Float32Array) => void;
 }
 
 /** A still climate in high summer, for a scene to fill in each frame. */
@@ -262,6 +274,9 @@ export class RootedPlants {
   readonly layer: Uint8Array;
   readonly shade: Float32Array;
   readonly slot: Int32Array;
+  /** Where an organ on the site springs from, relative to the site (0 for the rest). */
+  readonly offsetX: Float64Array;
+  readonly offsetY: Float64Array;
   readonly #give: Float32Array;
   readonly #omega0: Float32Array;
   readonly #salt: Float32Array;
@@ -321,6 +336,8 @@ export class RootedPlants {
     this.layer = new Uint8Array(n);
     this.shade = new Float32Array(n);
     this.slot = new Int32Array(n);
+    this.offsetX = new Float64Array(n);
+    this.offsetY = new Float64Array(n);
     this.#give = new Float32Array(n);
     this.#omega0 = new Float32Array(n);
     this.#salt = new Float32Array(n);
@@ -433,7 +450,9 @@ export class RootedPlants {
     this.side[i] = (spec.side ?? 1) < 0 ? -1 : 1;
     this.layer[i] = spec.layer ?? 0;
     this.shade[i] = spec.shade ?? 0.5;
-    this.slot[i] = spec.slot !== undefined ? (this.#buildSite.slot ?? 0) + spec.slot : i;
+    this.slot[i] = spec.slot === undefined ? i : spec.slot < 0 ? -1 : (this.#buildSite.slot ?? 0) + spec.slot;
+    this.offsetX[i] = parent < 0 ? (spec.offset?.[0] ?? 0) : 0;
+    this.offsetY[i] = parent < 0 ? (spec.offset?.[1] ?? 0) : 0;
     this.#give[i] = species.sway.give * (spec.give ?? 1) * (role === PlantRole.root ? 0.1 : 1);
     this.#omega0[i] = Math.min(TAU * species.sway.hz * Math.sqrt(0.1 / length), 40);
     // Salts come from the indices, not from the build's randomness: a species' build owns its
@@ -476,8 +495,8 @@ export class RootedPlants {
       const p = this.parent[i] ?? -1;
       const plant = this.plantOf[i] ?? 0;
       const site = this.#site[plant];
-      let bx = site?.x ?? 0;
-      let by = site?.y ?? 0;
+      let bx = (site?.x ?? 0) + (this.offsetX[i] ?? 0);
+      let by = (site?.y ?? 0) + (this.offsetY[i] ?? 0);
       let ba = this.rest[i] ?? 0;
       if (p >= 0) {
         this.pointAt(p, this.at[i] ?? 1, at);
@@ -602,6 +621,15 @@ export class RootedPlants {
       const gust = this.#gusts.strength(delay - late);
       px = air.x + eddy * wanderX + bx * gust;
       py = air.y + eddy * wanderY + by * gust;
+      if (climate.wind) {
+        // The scene's own air, where the organ's middle is.
+        const own = this.#flow;
+        own[0] = 0;
+        own[1] = 0;
+        climate.wind((this.x[i] ?? 0) + dx * 0.5 * grown, (this.y[i] ?? 0) + dy * 0.5 * grown, own);
+        px += own[0] ?? 0;
+        py += own[1] ?? 0;
+      }
     }
     const limit = species.sway.limit;
     if (habit === PlantHabit.upright) {
@@ -696,11 +724,16 @@ export class PlantTexture {
     return this.#texture.texture;
   }
 
-  /** Every record hidden, then each drawable organ of `plants` written at its slot. */
-  pack(plants: RootedPlants): void {
+  /** Every record hidden, then each drawable organ of `plants` (and of `also`, another system) written at its slot. */
+  pack(plants: RootedPlants, also?: RootedPlants): void {
+    this.data.fill(0, this.rowBase * this.width * 4);
+    this.#write(plants);
+    if (also) this.#write(also);
+  }
+
+  #write(plants: RootedPlants): void {
     const data = this.data;
     const width = this.width;
-    data.fill(0, this.rowBase * width * 4);
     for (let i = 0; i < plants.count; i++) {
       const tier = plants.tier[i] ?? 0;
       const r = plants.slot[i] ?? i;

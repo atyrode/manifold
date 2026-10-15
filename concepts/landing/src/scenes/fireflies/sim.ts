@@ -33,6 +33,13 @@
 // strokes gather onto them and lock half a cycle away from the forest, so the M flashes alone in
 // the dark between the pulses for a few beats, then lets go.
 //
+// The trees are rooted plants of the shared plant component (sims/plants.ts): each a stem carrying
+// the clumps of its crown, and Rhizophora prop roots arching from under the crown down into the
+// water, in pairs from apexes on the lattice the shader always drew them on (a root bin every
+// FIREFLIES_ROOT_PITCH, the same hashes), each pair belonging to the tree above it. The breeze pushes
+// them as it crosses: the stems bow downwind one after another and swing back, carrying their
+// crowns, and the roots barely give. Between breezes they stand still, the bank exactly as laid out.
+//
 // Units: x in screen heights from the middle of the view, y in uv height (0 bottom, 1 top).
 //
 // Textures:
@@ -41,16 +48,21 @@
 //          it is drawing the M); B its light (flash × its own brightness); A its soft halo, the
 //          light of the 3×3 cells around it over 9 (sampled smoothly, it glows through the crowns).
 //   uSim1  rgba16f, cols·FIREFLIES_PROFILE_RES × 2, linear: the far bank. Row 0: canopy top, canopy
-//          underside (uv heights), crown tone 0..1, prop roots 0..1. Row 1: R trunk 0..1.
+//          underside (uv heights), crown tone 0..1, 0. Row 1: R trunk 0..1. While the crowns sway it
+//          is the bank's profile with every crown where its stem carries it.
 //   uSim2  rgba16f, (FIREFLIES_NEAR + 2) × 1, nearest: the lights nearer than the bank (x, y on
 //          screen, distance in metres, negative for a drifter left out, flash): FIREFLIES_DRIFTERS
 //          drifters, then the out-of-focus ones; then the lantern (x, y, shown, flare) and the bank
 //          (mean flash, breeze front x, breeze on 0/1, M strength 0..1).
+//   uSim3  rgba16f PlantTexture (sims/plants.ts) of the prop roots, after one row of its own whose
+//          first texel is (first root bin, bins, 0, 0): bin k's left root at record 2 (k - first),
+//          its right root at the next (tier 0: none); a and the record's bend give each its turn.
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
 import { runBudgeted } from "../../sims/clock.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
+import { PlantHabit, PlantRole, PlantTexture, plantClimate, RootedPlants, type PlantBuilder, type PlantSpecies } from "../../sims/plants.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -178,6 +190,21 @@ const TRUNK_HALF = 0.0055;
 /** The open bank's share of lone Sonneratia among its scrub, and the chance of open mud after each clump. */
 const OPEN_GRAND = 0.12;
 const OPEN_GAPS = 0.6;
+
+// The trees as rooted plants.
+/** The prop roots' lattice (screen heights): an apex now and then in each bin, as the shader always hashed them. */
+export const FIREFLIES_ROOT_PITCH = 0.012;
+/** Bins either side of the lattice's span: a root reaches at most 2.4 pitches from its own. */
+const ROOT_MARGIN = 3;
+/** How far a root goes on below the waterline, so its foot stays in the water as it gives. */
+const ROOT_SINK = 0.003;
+/** Root records: a left and a right root per bin, for the widest lattice. */
+const ROOT_RECORDS = 2 * (Math.floor((MAX_COLS * FIREFLIES_CELL) / FIREFLIES_ROOT_PITCH) + 2 * ROOT_MARGIN + 2);
+/** The plants' organs: every tree's stem and crown clumps, every root. */
+const TREE_ORGANS = 4096;
+/** The breeze's push on the trees at its middle (push units), and how long they swing on after it (s). */
+const BREEZE_PUSH = 1;
+const SWAY_SETTLE = 12;
 
 // The lantern.
 /** Spring that the hanging lantern follows the pointer with (rad/s) and its damping ratio. */
@@ -439,31 +466,48 @@ interface Profile {
   texels: Float32Array;
 }
 
-const emptyProfile: Profile = { top: new Float32Array(0), under: new Float32Array(0), host: new Float32Array(0), treeAt: new Int32Array(0), texels: new Float32Array(0) };
+function blankProfile(width: number): Profile {
+  return { top: new Float32Array(width), under: new Float32Array(width), host: new Float32Array(width), treeAt: new Int32Array(width), texels: new Float32Array(width * 2 * 4) };
+}
+
+const emptyProfile: Profile = blankProfile(0);
 
 function profileOf(bank: Bank, cols: number, seed: number): Profile {
+  const profile = blankProfile(cols * FIREFLIES_PROFILE_RES);
+  paintProfile(profile, bank, cols, seed);
+  return profile;
+}
+
+/**
+ * Paints `profile` (sized for `cols`) from the bank, its crowns' clumps where they stand, or, given
+ * `centres` (x, y per clump), where their stems carry them.
+ */
+function paintProfile(profile: Profile, bank: Bank, cols: number, seed: number, centres?: Float64Array): void {
   const res = FIREFLIES_PROFILE_RES;
   const width = cols * res;
   const x0 = -0.5 * cols * FIREFLIES_CELL;
   const dx = FIREFLIES_CELL / res;
-  const top = new Float32Array(width).fill(-1);
-  const under = new Float32Array(width).fill(2);
-  const host = new Float32Array(width);
-  const treeAt = new Int32Array(width).fill(-1);
-  const texels = new Float32Array(width * 2 * 4);
-  for (const lump of bank.lumps) {
-    const tree = bank.trees[lump.tree];
-    if (tree === undefined) continue;
-    const k0 = Math.max(0, Math.ceil((lump.x - lump.r - x0) / dx - 0.5));
-    const k1 = Math.min(width - 1, Math.floor((lump.x + lump.r - x0) / dx - 0.5));
+  const { top, under, host, treeAt, texels } = profile;
+  top.fill(-1);
+  under.fill(2);
+  host.fill(0);
+  treeAt.fill(-1);
+  texels.fill(0);
+  for (let l = 0; l < bank.lumps.length; l++) {
+    const lump = bank.lumps[l];
+    const tree = lump === undefined ? undefined : bank.trees[lump.tree];
+    if (lump === undefined || tree === undefined) continue;
+    const lx = centres ? (centres[2 * l] ?? lump.x) : lump.x;
+    const ly = centres ? (centres[2 * l + 1] ?? lump.y) : lump.y;
+    const k0 = Math.max(0, Math.ceil((lx - lump.r - x0) / dx - 0.5));
+    const k1 = Math.min(width - 1, Math.floor((lx + lump.r - x0) / dx - 0.5));
     for (let k = k0; k <= k1; k++) {
-      const off = x0 + (k + 0.5) * dx - lump.x;
-      const crown = lump.y + Math.sqrt(Math.max(0, lump.r * lump.r - off * off));
+      const off = x0 + (k + 0.5) * dx - lx;
+      const crown = ly + Math.sqrt(Math.max(0, lump.r * lump.r - off * off));
       if (crown > (top[k] ?? -1)) {
         top[k] = crown;
         treeAt[k] = lump.tree;
         texels[4 * k + 2] = tree.shade;
-        texels[4 * k + 3] = tree.roots;
       }
       under[k] = Math.min(under[k] ?? 2, tree.base);
       host[k] = Math.max(host[k] ?? 0, tree.host);
@@ -487,7 +531,6 @@ function profileOf(bank: Bank, cols: number, seed: number): Profile {
       // No crown here: the mud bank, solid to the water.
       t = Math.max(t, low);
       u = low;
-      texels[4 * k + 3] = 0;
       host[k] = 0;
     } else {
       u = Math.max(u, FIREFLIES_WATER + GAP_MIN);
@@ -497,7 +540,103 @@ function profileOf(bank: Bank, cols: number, seed: number): Profile {
     texels[4 * k] = t;
     texels[4 * k + 1] = u;
   }
-  return { top, under, host, treeAt, texels };
+}
+
+// ---- the trees as rooted plants ------------------------------------------------------------------
+
+/** A pair of prop roots: its bin (from the first), its apex (x, height above the water) and how far out its feet land. */
+interface RootApex {
+  bin: number;
+  x: number;
+  rise: number;
+  spread: number;
+}
+
+/** The bank the trees grow on, for their builds: each tree's clumps and root apexes, and the organ each clump becomes. */
+interface TreeLayout {
+  bank: Bank;
+  lumpsOf: number[][];
+  apexesOf: RootApex[][];
+  lumpOrgan: Int32Array;
+}
+
+/**
+ * A tree of the bank (site.kind: its index in layout.bank.trees): a stem from the waterline to its
+ * crown's top, its crown's clumps held out from it at their heights (they ride the stem's bend, with
+ * no give of their own), and its prop roots. Each root is a circular arc from its apex, leaving
+ * outward and down and turning toward the vertical, so the pair lands `spread` either side at the
+ * waterline and a little below: tall narrow apexes leave steeply, low wide ones rise first. Stems and
+ * clumps are never packed (the shader draws the crowns through the bank's profile).
+ */
+function buildTree(plant: PlantBuilder, layout: TreeLayout): void {
+  const t = plant.site.kind ?? 0;
+  const bank = layout.bank;
+  const tree = bank.trees[t];
+  if (tree === undefined) return;
+  const lumps = layout.lumpsOf[t] ?? [];
+  let height = 0.02;
+  for (const l of lumps) height = Math.max(height, (bank.lumps[l]?.y ?? 0) - FIREFLIES_WATER);
+  const stem = plant.organ({ angle: Math.PI / 2, length: height, form: 0, slot: -1 });
+  for (const l of lumps) {
+    const lump = bank.lumps[l];
+    if (lump === undefined) continue;
+    const dx = lump.x - tree.x;
+    layout.lumpOrgan[l] = plant.organ({ parent: stem, at: (lump.y - FIREFLIES_WATER) / height, angle: dx >= 0 ? -Math.PI / 2 : Math.PI / 2, length: Math.abs(dx), habit: PlantHabit.rigid, give: 0, form: 0, slot: -1 });
+  }
+  for (const apex of layout.apexesOf[t] ?? []) {
+    const drop = apex.rise + ROOT_SINK;
+    // Leaving at beta below the horizontal and turning (pi/2 - beta) to the vertical, an arc of
+    // radius R falls R cos(beta) as it reaches R (1 - sin(beta)) out.
+    const beta = 2 * Math.atan(drop / apex.spread) - Math.PI / 2;
+    const turn = Math.PI / 2 - beta;
+    const length = (drop / Math.cos(beta)) * turn;
+    const offset = [apex.x - tree.x, apex.rise] as const;
+    plant.organ({ offset, angle: Math.PI + beta, length, curl: turn, a: turn, form: 0, side: -1, role: PlantRole.root, slot: 2 * apex.bin });
+    plant.organ({ offset, angle: -beta, length, curl: -turn, a: -turn, form: 0, side: 1, role: PlantRole.root, slot: 2 * apex.bin + 1 });
+  }
+}
+
+/** The bank's two kinds of tree, building from `layout`: Rhizophora, and the tall Sonneratia (trunk: true). */
+function mangroves(layout: TreeLayout): { rhizophora: PlantSpecies; sonneratia: PlantSpecies } {
+  const build = (plant: PlantBuilder): void => buildTree(plant, layout);
+  const evergreen = { shed: 0, turn: 2, bloom: [0, 0] as const };
+  const life = { unfold: 10, span: 600 };
+  const detail = { simple: 3, min: 1.5 };
+  return {
+    rhizophora: { id: "rhizophora", moisture: [0.8, 1], sway: { hz: 0.6, damping: 0.3, give: 0.07, limit: 0.25 }, year: evergreen, life, detail, build },
+    sonneratia: { id: "sonneratia", moisture: [0.7, 1], sway: { hz: 0.5, damping: 0.25, give: 0.08, limit: 0.25 }, year: evergreen, life, detail, build },
+  };
+}
+
+/** The trees' builds draw no randomness of their own (the bank and the hashes place everything). */
+const NO_DRAWS = (): number => 0;
+
+/**
+ * The root apexes over a lattice of `cols` columns, from the bank's profile, into layout.apexesOf: in
+ * every bin of FIREFLIES_ROOT_PITCH the shader's hashes place an apex, keep it as rooty trees allow
+ * (fewer under a Sonneratia, none over open mud) and size it to the root gap above the water there.
+ * Returns the first bin and how many there are.
+ */
+function layRoots(layout: TreeLayout, profile: Profile, cols: number): { first: number; bins: number } {
+  const res = FIREFLIES_PROFILE_RES;
+  const width = cols * res;
+  const x0 = -0.5 * cols * FIREFLIES_CELL;
+  const dx = FIREFLIES_CELL / res;
+  const first = Math.floor(x0 / FIREFLIES_ROOT_PITCH) - ROOT_MARGIN;
+  const last = Math.floor((x0 + cols * FIREFLIES_CELL) / FIREFLIES_ROOT_PITCH) + ROOT_MARGIN;
+  for (let k = first; k <= last; k++) {
+    const h2 = glslHash12(k, 62.7);
+    const x = (k + 0.5 + 0.6 * (h2 - 0.5)) * FIREFLIES_ROOT_PITCH;
+    const texel = clamp(Math.floor((x - x0) / dx), 0, width - 1);
+    const t = profile.treeAt[texel] ?? -1;
+    const tree = layout.bank.trees[t];
+    const top = profile.top[texel] ?? 0;
+    const under = profile.under[texel] ?? 0;
+    if (tree === undefined || top - under < 0.004 || glslHash12(k, 61.3) > 0.15 + 0.55 * tree.roots) continue;
+    const rise = (under - FIREFLIES_WATER) * (0.8 + 0.4 * h2) + 0.004;
+    layout.apexesOf[t]?.push({ bin: k - first, x, rise, spread: FIREFLIES_ROOT_PITCH * (0.9 + 1.5 * glslHash12(k, 64.1)) });
+  }
+  return { first, bins: last - first + 1 };
 }
 
 class FirefliesSim implements SceneSim {
@@ -509,7 +648,7 @@ class FirefliesSim implements SceneSim {
   /** The trigger slots of the breeze's and the M's "now". */
   readonly #breezeSlot: number;
   readonly #markSlot: number;
-  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
+  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
   /** One prewarm step, as runBudgeted calls it. */
   readonly #warmStep = (): void => this.#step(MAX_STEP, this.#knobs);
   #warmed = 0;
@@ -525,6 +664,23 @@ class FirefliesSim implements SceneSim {
   /** The profiles over the lattice: the bank on show, and the dense crowns', which set how many live. */
   #shown: Profile = emptyProfile;
   #crownProfile: Profile = emptyProfile;
+
+  // The bank's trees as rooted plants: stems, crown clumps and prop roots (uSim3), and the profile
+  // with the crowns where their stems carry them while they sway.
+  readonly #trees = new RootedPlants(TREE_ORGANS, 0);
+  readonly #roots: PlantTexture;
+  readonly #treeClimate = plantClimate();
+  readonly #layout: TreeLayout = { bank: { lumps: [], trees: [] }, lumpsOf: [], apexesOf: [], lumpOrgan: new Int32Array(0) };
+  readonly #species = mangroves(this.#layout);
+  #rootFirst = 0;
+  #rootBins = 0;
+  #drawn: Profile = emptyProfile;
+  #centres = new Float64Array(0);
+  readonly #point = new Float64Array(3);
+  /** Seconds the trees swing on (SWAY_SETTLE after a breeze); 0: at rest, the bank as laid out. */
+  #swaying = 0;
+  /** Dither cells per screen height the roots' tiers were set for. */
+  #treeCells = 0;
 
   // The lattice: cols × FIREFLIES_ROWS cells, row-major from the waterline up.
   #cols = 0;
@@ -623,6 +779,13 @@ class FirefliesSim implements SceneSim {
     this.#swarmTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
     this.#forestTexture = new DataTexture(gl, { width: 1, height: 2, format: "rgba16f" });
     this.#stateTexture = new DataTexture(gl, { width: STATE_TEXELS, height: 1, format: "rgba16f", filter: "nearest" });
+    this.#roots = new PlantTexture(gl, ROOT_RECORDS, { rowBase: 1 });
+    // The breeze is the trees' only air: a front crossing the bank, pushing downwind.
+    this.#treeClimate.wind = (x, _y, out) => {
+      if (!this.#breeze) return;
+      const u = (x - this.#breezeFront) / BREEZE_WIDTH;
+      out[0] = this.#breezeDir * BREEZE_PUSH * Math.exp(-u * u);
+    };
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -631,8 +794,17 @@ class FirefliesSim implements SceneSim {
     this.#arrive = clamp(frame.passage.enter, 0, 1);
     this.#leave = clamp(frame.passage.exit, 0, 1);
     const dt = Math.max(0, frame.dt);
+    const cells = frame.height > 0 ? frame.height : this.#treeCells;
+    const retier = cells !== this.#treeCells;
+    this.#treeCells = cells;
+    this.#trees.cells = cells;
     if (knobs.seed !== this.#seed) this.#grow(knobs);
     else this.#fit(knobs);
+    if (retier) {
+      // The roots' tiers follow the frame's resolution.
+      this.#trees.pose();
+      this.#showTrees();
+    }
     // The opening seconds run in whole steps (a few frames of them on a slow machine) before the
     // swarm moves on its own.
     if (this.#warmed < PREWARM_STEPS) this.#warmed = runBudgeted(this.#warmStep, PREWARM_BUDGET_MS, PREWARM_STEPS, this.#warmed);
@@ -652,6 +824,10 @@ class FirefliesSim implements SceneSim {
       }
       if (this.#scatterAt) this.#scatterPhases(this.#scatterAt.x, this.#scatterAt.y);
       this.#scatterAt = undefined;
+      // The trees swing while a breeze crosses and for a while after (at the breeze's pace while
+      // motion is 0); then they stand exactly as laid out.
+      if (this.#breeze) this.#swaying = SWAY_SETTLE;
+      if (this.#swaying > 0 && dt > 0) this.#swayTrees(dt * (frame.motion > 0 ? frame.motion : 1));
     }
 
     if (dt > 0 || this.#dirty) {
@@ -664,6 +840,7 @@ class FirefliesSim implements SceneSim {
     this.#textures[0] = this.#swarmTexture.texture;
     this.#textures[1] = this.#forestTexture.texture;
     this.#textures[2] = this.#stateTexture.texture;
+    this.#textures[3] = this.#roots.texture;
     return this.#textures;
   }
 
@@ -671,6 +848,7 @@ class FirefliesSim implements SceneSim {
     this.#swarmTexture.dispose();
     this.#forestTexture.dispose();
     this.#stateTexture.dispose();
+    this.#roots.dispose();
   }
 
   #read(frame: SimFrame): Knobs {
@@ -749,6 +927,9 @@ class FirefliesSim implements SceneSim {
     this.#crowns = growForest(knobs.seed, false);
     this.#openBank = growForest(knobs.seed, true);
     this.#cols = 0;
+    // A new stretch of river starts calm: its trees grow (in #fit) standing still.
+    this.#breeze = false;
+    this.#swaying = 0;
     this.#fit(knobs);
     const near = mulberry32((Math.imul(knobs.seed + 7, 0x85ebca6b) ^ 0x2545f491) >>> 0);
     for (let k = 0; k < FIREFLIES_NEAR; k++) {
@@ -775,7 +956,6 @@ class FirefliesSim implements SceneSim {
       this.#nearPhase[k] = near();
     }
     this.#clock = 0;
-    this.#breeze = false;
     this.#mark = false;
     this.#markStrength = 0;
     this.#gusts = 0;
@@ -879,12 +1059,73 @@ class FirefliesSim implements SceneSim {
     this.#dirty = true;
   }
 
-  /** The bank on show and the dense crowns over the lattice's span; uploads the one on show as uSim1. */
+  /** The bank on show and the dense crowns over the lattice's span; its trees grown on the one on show (uSim1, uSim3). */
   #paintForest(): void {
     this.#crownProfile = profileOf(this.#crowns, this.#cols, this.#seed);
     this.#shown = this.#open ? profileOf(this.#openBank, this.#cols, this.#seed) : this.#crownProfile;
     this.#forestTexture.resize(this.#cols * FIREFLIES_PROFILE_RES, 2);
-    this.#forestTexture.upload(this.#shown.texels);
+    this.#growTrees();
+  }
+
+  /** The bank on show as rooted plants: a plant per tree, its roots in their bins over this lattice, at rest in the air now. */
+  #growTrees(): void {
+    const bank = this.#open ? this.#openBank : this.#crowns;
+    const layout = this.#layout;
+    layout.bank = bank;
+    layout.lumpsOf = bank.trees.map(() => []);
+    layout.apexesOf = bank.trees.map(() => []);
+    layout.lumpOrgan = new Int32Array(bank.lumps.length).fill(-1);
+    bank.lumps.forEach((lump, l) => layout.lumpsOf[lump.tree]?.push(l));
+    const { first, bins } = layRoots(layout, this.#shown, this.#cols);
+    this.#rootFirst = first;
+    this.#rootBins = bins;
+    const trees = this.#trees;
+    trees.clear();
+    bank.trees.forEach((tree, t) => {
+      trees.add(tree.trunk ? this.#species.sonneratia : this.#species.rhizophora, { x: tree.x, y: FIREFLIES_WATER, heading: Math.PI / 2, moisture: 1, kind: t, slot: 0 }, NO_DRAWS);
+    });
+    this.#drawn = blankProfile(this.#cols * FIREFLIES_PROFILE_RES);
+    this.#centres = new Float64Array(2 * bank.lumps.length);
+    trees.settle(this.#treeClimate);
+    this.#showTrees();
+  }
+
+  /**
+   * The trees to the shader: the bank's profile (as laid out at rest, else with every crown clump
+   * where its stem carries it) and the roots' records.
+   */
+  #showTrees(): void {
+    if (this.#swaying > 0) {
+      const lumps = this.#layout.bank.lumps;
+      const centres = this.#centres;
+      const point = this.#point;
+      for (let l = 0; l < lumps.length; l++) {
+        const organ = this.#layout.lumpOrgan[l] ?? -1;
+        if (organ >= 0) this.#trees.pointAt(organ, 1, point);
+        centres[2 * l] = organ >= 0 ? (point[0] ?? 0) : (lumps[l]?.x ?? 0);
+        centres[2 * l + 1] = organ >= 0 ? (point[1] ?? 0) : (lumps[l]?.y ?? 0);
+      }
+      paintProfile(this.#drawn, this.#layout.bank, this.#cols, this.#seed, centres);
+      this.#forestTexture.upload(this.#drawn.texels);
+    } else {
+      this.#forestTexture.upload(this.#shown.texels);
+    }
+    const roots = this.#roots;
+    roots.pack(this.#trees);
+    roots.data[0] = this.#rootFirst;
+    roots.data[1] = this.#rootBins;
+    roots.upload();
+  }
+
+  /** h seconds of the trees in the breeze; once they have swung out, they are set exactly at rest. */
+  #swayTrees(h: number): void {
+    const climate = this.#treeClimate;
+    climate.dt = h;
+    climate.time = this.#clock;
+    this.#trees.step(climate);
+    if (!this.#breeze) this.#swaying = Math.max(0, this.#swaying - h);
+    if (this.#swaying <= 0) this.#trees.settle(climate);
+    this.#showTrees();
   }
 
   /** How much a cell of the dense crowns suits a firefly (0..1): the crowns' outer leaves, a few in the air and roots. */

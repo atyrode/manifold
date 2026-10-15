@@ -206,6 +206,31 @@ describe("RootedPlants", () => {
     expect(Array.from(plants.tier.subarray(0, 3))).toEqual([2, 1, 0]);
   });
 
+  test("organs on the site spring from their offsets, and the scene's own air bends them where it blows", () => {
+    // Two stalks from one site: one a little left of it, one a little right, both 0.1 above.
+    const pair: PlantSpecies = {
+      ...stalked(),
+      build(plant) {
+        plant.organ({ offset: [-0.1, 0.1], angle: Math.PI / 2, length: 0.2, form: 1 });
+        plant.organ({ offset: [0.1, 0.1], angle: Math.PI / 2, length: 0.2, form: 1 });
+      },
+    };
+    const plants = new RootedPlants(8, 2);
+    plants.add(pair, { x: 1, y: 0, heading: Math.PI / 2 }, () => 0.5);
+    const climate = plantClimate();
+    // Air of the scene's own, blowing right only right of x = 1: a front that has reached one stalk.
+    climate.wind = (x, _y, out) => {
+      out[0] = x > 1 ? 0.5 : 0;
+    };
+    plants.settle(climate);
+    expect([plants.x[0], plants.y[0], plants.x[1], plants.y[1]].map((v) => Number((v ?? 0).toFixed(9)))).toEqual([0.9, 0.1, 1.1, 0.1]);
+    run(plants, climate, 12);
+    expect(plants.theta[0] ?? 1).toBe(0);
+    expect(plants.theta[1] ?? 0).toBeCloseTo(0.6 * Math.tanh((0.2 * -0.5) / 0.6), 2);
+    // The bases stay where they spring from.
+    expect([plants.x[0], plants.x[1]].map((v) => Number((v ?? 0).toFixed(9)))).toEqual([0.9, 1.1]);
+  });
+
   test("fitness fades out over a quarter beyond the band", () => {
     const species = stalked();
     expect(plantFitness(species, 0.5)).toBe(1);
@@ -237,5 +262,35 @@ describe("PlantTexture", () => {
     expect(texel(2, 3)).toEqual([0, 0, 0, 0]);
     // The scene's own rows stay as it wrote them.
     expect(Array.from(data.subarray(0, 32)).every((v) => v === 0)).toBe(true);
+  });
+
+  test("two systems share one texture, each at its slots; an organ with a negative slot is never packed", () => {
+    const headless = new HeadlessGl();
+    const species = stalked();
+    const near = new RootedPlants(8, 1);
+    near.add(species, { x: 0.5, y: 0, heading: Math.PI / 2, slot: 0 }, () => 0.5);
+    const far: PlantSpecies = {
+      ...species,
+      build(plant) {
+        const stem = plant.organ({ angle: Math.PI / 2, length: 0.3, form: 7, slot: -1 });
+        plant.organ({ parent: stem, angle: 0.2, length: 0.1, form: 8, slot: 0 });
+      },
+    };
+    const back = new RootedPlants(8, 2);
+    back.add(far, { x: 3, y: 1, heading: Math.PI / 2, slot: 4 }, () => 0.5);
+    for (const plants of [near, back]) {
+      plants.cells = 100;
+      plants.settle(plantClimate());
+    }
+    const records = new PlantTexture(headless.gl, 8, { width: 8 });
+    records.pack(near, back);
+    records.upload();
+    const { data } = headless.upload(records.texture);
+    const form = (r: number): number => data[(3 * 8 + r) * 4] ?? -1;
+    const tier = (r: number): number => data[(3 * 8 + r) * 4 + 3] ?? -1;
+    // The near stalk, blade and flower at their records 0..2, the far system's blade at 4; its stem nowhere.
+    expect([0, 1, 2, 3, 4, 5, 6, 7].map(form)).toEqual([1, 2, 3, 0, 8, 0, 0, 0]);
+    expect(tier(4)).toBe(2);
+    expect(Math.abs((data[4 * 4] ?? 0) + (data[4 * 4 + 1] ?? 0) - 3)).toBeLessThan(1e-6);
   });
 });

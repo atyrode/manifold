@@ -3,8 +3,9 @@
 // way Pteroptyx do along Malaysian rivers. The bank, the mirror of the water, the foreground bokeh
 // and the lantern the pointer carries are drawn in shader.ts.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { skyComponentKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { firefliesGlsl } from "./shader.ts";
+import { FIREFLIES_METEOR_TRIGGER, firefliesGlsl } from "./shader.ts";
 import { FIREFLIES_PASSAGE, firefliesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -20,6 +21,8 @@ const params: readonly ParamDef[] = [
   range("river", "reflections", "reflections", 0.85, "How clearly the still river mirrors the skyglow, the trees and their lights."),
   range("river", "mist", "mist", 0.35, "Mist lying on the water and under the trees, glowing green with each pulse."),
   range("river", "stars", "stars", 0.5, "Sparse stars high over the trees."),
+  // The shared shooting stars (scenes/atmosphere.ts), off: the moonless night sky is the scene's own.
+  ...skyComponentKnobs({ meteors: { trigger: FIREFLIES_METEOR_TRIGGER }, group: "river" }),
   feature("manifold", "mark", "M of fireflies", false, "beats", 5, "A few seconds after you switch it on, and every minute after, the fireflies along the strokes of a Manifold M gather onto them, glowing faintly, and flash half a beat apart from the forest, so the M lights up alone between the pulses for a few beats, mirrored in the river, then lets go.", { trigger: 1, options: counts(3, 5, 8) }),
 ];
 
@@ -33,7 +36,7 @@ export const firefliesScene: SceneDef = {
   groups: {
     swarm: { title: "Fireflies", blurb: "Each firefly flashes on its own clock and is nudged by the flashes it sees, until the whole bank pulses together. The breeze breaks the beat now and then." },
     lantern: { title: "Lantern", blurb: "The light you carry along the river." },
-    river: { title: "River & sky", blurb: "The mirror of the water, the mist and the stars." },
+    river: { title: "River & sky", blurb: "The mirror of the water, the mist, the stars and shooting stars." },
     manifold: { title: "Manifold mark", blurb: "The fireflies themselves draw the M, flashing out of step with the forest." },
   },
   glsl: firefliesGlsl,

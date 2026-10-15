@@ -13,8 +13,9 @@
 // follows the pulse, a faint green in the sky, the mist and the water, touches the green channel
 // only, so it too crosses at most one level up and back. The source view gets the smooth picture.
 //
-// uSim0 (per firefly: place in its cell, light, soft halo), uSim1 (the bank's profile) and uSim2
-// (nearer lights, lantern, bank) are laid out in sim.ts.
+// uSim0 (per firefly: place in its cell, light, soft halo), uSim1 (the bank's profile), uSim2
+// (nearer lights, lantern, bank) and uSim3 (the prop roots, records of the shared plant component)
+// are laid out in sim.ts.
 import {
   FIREFLIES_APERTURE,
   FIREFLIES_BANK,
@@ -24,14 +25,20 @@ import {
   FIREFLIES_FOCAL,
   FIREFLIES_HORIZON,
   FIREFLIES_NEAR,
+  FIREFLIES_ROOT_PITCH,
   FIREFLIES_ROWS,
   FIREFLIES_STATE_BANK,
   FIREFLIES_STATE_LANTERN,
   FIREFLIES_WATER,
 } from "./sim.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
+import { plantsGlsl } from "../../shaders/lib/plants.ts";
+
+/** The "now" slot of the shared shooting stars (K_meteors): the breeze has 0 and the M 1. */
+export const FIREFLIES_METEOR_TRIGGER = 2;
 
 export const firefliesGlsl = `
+${plantsGlsl}
 const float FIREFLIES_CELL = ${glslFloat(FIREFLIES_CELL)};
 const float FIREFLIES_WATER = ${glslFloat(FIREFLIES_WATER)};
 const int FIREFLIES_ROWS = ${FIREFLIES_ROWS};
@@ -44,6 +51,11 @@ const float FIREFLIES_EYE = ${glslFloat(FIREFLIES_EYE)};
 const float FIREFLIES_FOCAL = ${glslFloat(FIREFLIES_FOCAL)};
 const float FIREFLIES_DISTANCE = ${glslFloat(FIREFLIES_BANK)};
 const float FIREFLIES_APERTURE = ${glslFloat(FIREFLIES_APERTURE)};
+const float FIREFLIES_ROOT_PITCH = ${glslFloat(FIREFLIES_ROOT_PITCH)};
+// Shooting stars set out in this band of the sky (screen heights from the middle: x, y, width,
+// height), high over the trees.
+const int FIREFLIES_METEOR_SLOT = ${FIREFLIES_METEOR_TRIGGER};
+const vec4 FIREFLIES_METEOR_FIELD = vec4(-0.6, 0.8, 1.2, 0.12);
 
 // The camera settling in on arriving and drifting on as the scene leaves: ZOOM is the share of the
 // frame given up (about the waterline), PAN the share of the room that zoom leaves at the edges the
@@ -101,27 +113,35 @@ const vec3 FIREFLIES_BOKEH = vec3(0.72, 1.00, 0.28);
 const vec3 FIREFLIES_LAMP = vec3(1.00, 0.84, 0.56);
 const vec3 FIREFLIES_WARM = vec3(1.00, 0.52, 0.16);
 
-// Rhizophora prop roots: overlapping arches springing from under the canopy and curving down into
-// the water, two to three cells thick. 'gap' is the canopy's underside above the water, 'amount'
-// how rooty the trees here are. Returns coverage.
-float firefliesRoots(vec2 q, float gap, float amount) {
-  const float pitch = 0.012;
-  float y = q.y - FIREFLIES_WATER;
+// One prop root (a record of uSim3: an arc from its apex down into the water, its turn the curl in
+// a plus the breeze's bend, mirrored with its side), two to three cells thick, rounded at the apex.
+float firefliesRoot(vec2 q, PlantOrgan o, float w) {
+  if (o.tier < 0.5) return 0.0;
+  vec2 l = plantLocal(q, o);
+  float reach = o.len + 2.0 * w;
+  if (dot(l, l) > reach * reach) return 0.0;
+  float s;
+  float d = plantArc(l, o.len, o.side * (o.a + o.bend), s);
+  float dist = s < 0.0 ? length(l) : (s > 1.0 ? 1.0 : abs(d));
+  return smoothfall(1.5 * w, 0.8 * w, dist);
+}
+
+// Rhizophora prop roots: overlapping arches springing in pairs from under the canopy and curving
+// down into the water, each pair the sim's (sim.ts) in its bin of FIREFLIES_ROOT_PITCH. An apex to the
+// right of q's bin reaches back with its left root, one to the left with its right root, at most
+// three bins. Returns coverage.
+float firefliesRoots(vec2 q) {
+  if (uSimOn.w < 0.5) return 0.0;
+  vec4 head = texelFetch(uSim3, ivec2(0, 0), 0);
+  int bins = int(head.y + 0.5);
+  int k0 = int(floor(q.x / FIREFLIES_ROOT_PITCH)) - int(round(head.x));
   float w = 1.0 / uRes.y;
-  float k0 = floor(q.x / pitch);
   float cover = 0.0;
   for (int i = -3; i <= 3; i++) {
-    float k = k0 + float(i);
-    if (hash12(vec2(k, 61.3)) > 0.15 + 0.55 * amount) continue;
-    float h2 = hash12(vec2(k, 62.7));
-    float h3 = hash12(vec2(k, 64.1));
-    float centre = (k + 0.5 + 0.6 * (h2 - 0.5)) * pitch;
-    float spread = pitch * (0.9 + 1.5 * h3);
-    float rise = gap * (0.8 + 0.4 * h2) + 0.004;
-    vec2 d = vec2((q.x - centre) / spread, y / rise);
-    // Distance to the ellipse to first order: its implicit value over its gradient.
-    float dist = abs(dot(d, d) - 1.0) / max(2.0 * length(vec2(d.x / spread, d.y / rise)), 1e-3);
-    cover = max(cover, smoothfall(1.5 * w, 0.8 * w, dist));
+    int k = k0 + i;
+    if (k < 0 || k >= bins) continue;
+    if (i >= 0) cover = max(cover, firefliesRoot(q, plantOrgan(uSim3, 1, 2 * k), w));
+    if (i <= 0) cover = max(cover, firefliesRoot(q, plantOrgan(uSim3, 1, 2 * k + 1), w));
   }
   return cover;
 }
@@ -153,6 +173,12 @@ vec3 firefliesBank(vec2 q, float x0, float span, float tm, float pulse, bool mir
   // Hills far behind the bank, a shade darker than the skyglow, seen through its gaps.
   float hill = 0.035 + 0.05 * vnoise(vec2(q.x * 2.1 + 3.0, 1.7)) + 0.012 * vnoise(vec2(q.x * 8.3, 4.1));
   if (h < hill) col = mix(col, FIREFLIES_HILLS, 0.65);
+  else if (!mirrored) {
+    // Now and then a shooting star (the shared meteors, K_meteors) over the hills, behind the trees.
+    float meteorSeed;
+    float meteorAt = meteorAge(tm, K_meteors, FIREFLIES_METEOR_SLOT, meteorSeed);
+    col += METEOR_TINT * hardEdge(meteorStreak(q, FIREFLIES_METEOR_FIELD, meteorAt, meteorSeed, 1.0 / uRes.y));
+  }
 
   // The mangroves, black: leafy round crowns over a gap of prop roots and Sonneratia trunks, or the
   // low mud bank.
@@ -177,7 +203,7 @@ vec3 firefliesBank(vec2 q, float x0, float span, float tm, float pulse, bool mir
       float up = clamp(h / max(base - FIREFLIES_WATER, 1e-3), 0.0, 1.0);
       col = mix(FIREFLIES_GAPGLOW, FIREFLIES_LEAVES, sqrt(up));
       float trunk = uSimOn.y > 0.5 ? texture(uSim1, vec2((q.x - x0) / span, 0.75)).r : 0.0;
-      roots = max(firefliesRoots(q, prof.y - FIREFLIES_WATER, prof.w), smoothstep(0.4, 0.6, trunk));
+      roots = max(firefliesRoots(q), smoothstep(0.4, 0.6, trunk));
       col = mix(col, FIREFLIES_LEAVES, roots);
       leaves = 0.5;
     }
@@ -230,7 +256,7 @@ float firefliesSwarm(vec2 q, float x0, float cols, float stretch, out float reac
 }
 
 // Knobs: coupling, density, period, drift, unrest, lantern and mark drive the simulation; here
-// K_near, K_seed, K_reflections, K_mist and K_stars are read.
+// K_near, K_seed, K_reflections, K_mist, K_stars and K_meteors are read.
 Shade sceneFireflies(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   vec2 ps = vec2((uv.x - 0.5) * aspect, uv.y);
