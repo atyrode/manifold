@@ -206,6 +206,8 @@ const GATED: readonly Record<string, number>[] = [
   { snow: 0.6 },
   { shadows: 0 },
   { moon: 0.4 },
+  { verges: 1 },
+  { murmuration: 1, time: 0.72 },
 ];
 
 export function verifyCountryFeaturesAll(gl: WebGL2RenderingContext): Record<string, unknown> {
