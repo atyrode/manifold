@@ -9,6 +9,8 @@
 //     pick(items)        one of `items`, by int(items.length); throws RandomError when empty
 //     wait(rate)         seconds to the next event of a Poisson process at `rate` per second:
 //                        -ln(1 - next()) / rate, Infinity (and no draw) for a rate of 0 or less
+//     gauss()            roughly normal, mean 0 and standard deviation 1: twice the sum of three
+//                        draws less 1.5, so never beyond ±3 (lake's crack walks)
 //
 // A seed is taken as its low 32 bits (`seed >>> 0`), and both forms give the identical sequence for
 // the identical seed, bit for bit the same as the copies the scenes carried, so existing seeds keep
@@ -79,5 +81,10 @@ export class Random {
   /** Seconds to the next event of a Poisson process at `rate` per second; Infinity, drawing nothing, when `rate` <= 0. */
   wait(rate: number): number {
     return rate > 0 ? -Math.log(1 - this.next()) / rate : Number.POSITIVE_INFINITY;
+  }
+
+  /** Roughly normal, mean 0 and standard deviation 1: (three draws summed − 1.5) · 2, never beyond ±3. */
+  gauss(): number {
+    return (this.next() + this.next() + this.next() - 1.5) * 2;
   }
 }
