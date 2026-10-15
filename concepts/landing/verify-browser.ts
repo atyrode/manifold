@@ -39,7 +39,11 @@ import { verifyWaterTiers } from "./src/scenes/island/water.verify.ts";
 import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 import { islandSnowCheck } from "./src/scenes/island/snow.verify.ts";
 import { verifyCountryCoherence } from "./src/scenes/country/coherence.verify.ts";
-import { verifySceneFeatures } from "./src/features.verify.ts";
+import {
+  verifyFeaturesAll,
+  verifyFeatureToggles,
+  verifySceneFeatures,
+} from "./src/features.verify.ts";
 import { verifyCloudTiers } from "./src/scenes/clouds/tiers.verify.ts";
 import { verifyMilkyWay } from "./src/scenes/campfire/milkyway.verify.ts";
 import { verifyStarsKnob } from "./src/scenes/shore/stars.verify.ts";
@@ -612,6 +616,8 @@ export const checks: readonly Check[] = [
   ["countryVerges", verifyCountryVerges],
   ["meadowWildflowers", verifyMeadowWildflowers],
   ["valleyTerrain", verifyValleyTerrain],
+  ["featureToggles", verifyFeatureToggles],
+  ["featuresAll", verifyFeaturesAll],
 ];
 
 /**

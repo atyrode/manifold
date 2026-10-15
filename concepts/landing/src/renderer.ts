@@ -2,7 +2,13 @@ import { constellationUniforms } from "./constellations.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import type { PointerState, SceneSim } from "./scenes/types.ts";
-import { featureKey, fragmentSourceFor, sceneFeatures, vertexSource } from "./shaders/index.ts";
+import {
+  featureKey,
+  fragmentSourceFor,
+  sceneFeatures,
+  sceneFeaturesAll,
+  vertexSource,
+} from "./shaders/index.ts";
 import type { Params } from "./state.ts";
 
 export const ditherIds = ["bayer8", "bayer4", "ign", "none"] as const;
@@ -42,12 +48,15 @@ export const PASSAGE_DISSOLVE = 0.9;
 /** Scene-clock time of a trigger or press that has not happened. */
 const NEVER = -1e4;
 /**
- * Programs kept per scene, one per compile-time feature set (`SceneDef.featuresFor`): turning a knob
- * back finds its program built; past this many the least recently drawn one is freed.
+ * Programs kept per scene: those it entered with, one per compile-time feature set
+ * (`SceneDef.featuresFor`), and its all-features program (`SceneDef.featuresAll`); past this many
+ * the least recently drawn one is freed.
  */
 const PROGRAMS_PER_SCENE = 4;
 /** Presses on these belong to the lab or the page's own controls, not to the scene. */
 const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [role=switch]";
+/** Renderer strings of software rasterisers: SwiftShader, Mesa's llvmpipe and softpipe, WARP. */
+const SOFTWARE_RENDERER = /SwiftShader|llvmpipe|softpipe|Basic Render Driver|software/i;
 
 const uniformNames = [
   "uRes",
@@ -105,20 +114,33 @@ interface SceneProgram {
   };
 }
 
-/** A program compiling and linking, in the background where KHR_parallel_shader_compile allows. */
+/** A compile-time feature set and its key (`featureKey`). */
+interface FeatureSet {
+  features: Readonly<Record<string, number>>;
+  key: string;
+}
+
+/**
+ * A program compiling and linking. One built in the background is done once the driver says so
+ * (KHR_parallel_shader_compile) or, without that extension, once `fence`, set after the link, has
+ * signalled; until then nothing may ask about it, which would wait for the driver.
+ */
 interface Building {
   id: SceneId;
   key: string;
   program: WebGLProgram;
   fragment: WebGLShader;
   source: string;
+  fence: WebGLSync | null;
 }
 
-/** The feature set a settings object asks of its scene's program, and its key. */
-interface Wanted {
+/**
+ * The feature set a settings object asks of its scene's program, and the scene's all-features set
+ * (undefined for a scene without knob-keyed features).
+ */
+interface Wanted extends FeatureSet {
   settings: RenderSettings | undefined;
-  features: Readonly<Record<string, number>>;
-  key: string;
+  all: FeatureSet | undefined;
 }
 
 /** Why the scene on screen is not drawing: the background shows instead and the frame loop goes on. */
@@ -132,9 +154,9 @@ export interface SceneFailure {
 
 /**
  * The scene being drawn: the program it draws with (undefined when it failed to build; while the
- * program for changed knobs builds, still the one on screen), its simulation, what stopped it (see
- * `DitherRenderer.failure`), and where its `rain` and `snow` knobs sit in `params` (-1 when it has
- * none, which reads as 0).
+ * all-features program for changed knobs builds, still the one on screen), its simulation, what
+ * stopped it (see `DitherRenderer.failure`), and where its `rain` and `snow` knobs sit in `params`
+ * (-1 when it has none, which reads as 0).
  */
 interface ActiveScene {
   id: SceneId;
@@ -203,8 +225,21 @@ export class DitherRenderer {
   readonly #parallel: { readonly COMPLETION_STATUS_KHR: number } | null;
   /** The one program building in the background, if any. */
   #building: Building | undefined;
+  /**
+   * A scene's all-features program just built in the background that the scene does not draw with
+   * yet: the next frame of that scene draws with it once (see `#draw`).
+   */
+  #warm: { id: SceneId; program: SceneProgram } | undefined;
+  /** Knob changes are likely (see `expectChanges`). */
+  #expecting = false;
+  /**
+   * The context renders in software: it runs every line of a program whatever branch a pixel
+   * takes, and compiling the countryside's all-features program takes it some 20 s (its own
+   * programs 2-5 s), so a knob change builds the setting's own program instead (`#programSoon`).
+   */
+  readonly #software: boolean;
   /** The feature set the latest settings ask for (see `#want`). */
-  readonly #wanted: Wanted = { settings: undefined, features: {}, key: "" };
+  readonly #wanted: Wanted = { settings: undefined, features: {}, key: "", all: undefined };
   #scene: ActiveScene | undefined;
   /** Set by `retry`: the next frame enters the current scene afresh. */
   #rebuild = false;
@@ -308,6 +343,7 @@ export class DitherRenderer {
       ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
       : gl.getParameter(gl.RENDERER);
     this.glInfo = `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`;
+    this.#software = SOFTWARE_RENDERER.test(String(gpu));
 
     this.#blank = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
@@ -392,6 +428,16 @@ export class DitherRenderer {
     this.#progress = progress;
   }
 
+  /**
+   * Whether knob changes are likely (the lab is open). A scene with knob-keyed features then builds
+   * its all-features program in the background once it has arrived, so the first change that needs
+   * it switches at once instead of waiting for a build; the plain page never builds it, and nor does
+   * a software rasteriser (`#software`).
+   */
+  expectChanges(expect: boolean): void {
+    this.#expecting = expect;
+  }
+
   /** Play the current scene's exit, then its entrance with a fresh simulation, even with passages off. */
   replayPassage(): void {
     if (this.#scene === undefined || this.#leaving !== undefined || this.#frozen) return;
@@ -458,7 +504,10 @@ export class DitherRenderer {
     this.#rebuild = true;
   }
 
-  /** The compile-time features `s` asks of its scene's program (see `sceneFeatures`), worked out once per settings object. */
+  /**
+   * The compile-time features `s` asks of its scene's program (see `sceneFeatures`) and the scene's
+   * all-features set (`sceneFeaturesAll`), worked out once per settings object.
+   */
   #want(s: RenderSettings): Wanted {
     const wanted = this.#wanted;
     if (wanted.settings !== s) {
@@ -469,32 +518,40 @@ export class DitherRenderer {
           : Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]));
       wanted.features = sceneFeatures(def, values);
       wanted.key = featureKey(wanted.features);
+      const all = sceneFeaturesAll(def);
+      wanted.all = all === undefined ? undefined : { features: all, key: featureKey(all) };
       wanted.settings = s;
     }
     return wanted;
   }
 
-  /** Start building `id`'s program with the wanted features: compile and link, without waiting for either. */
-  #build(id: SceneId, wanted: Wanted): Building | SceneFailure {
+  /**
+   * Start building `id`'s program with a feature set: compile and link, without waiting for either.
+   * A build `ahead` (in the background) gets a fence after the link where the browser lacks
+   * KHR_parallel_shader_compile, to learn without waiting when the driver is done.
+   */
+  #build(id: SceneId, set: FeatureSet, ahead: boolean): Building | SceneFailure {
     const gl = this.#gl;
-    const source = fragmentSourceFor(sceneDefs[id], wanted.features);
+    const source = fragmentSourceFor(sceneDefs[id], set.features);
     const fragment = gl.createShader(gl.FRAGMENT_SHADER);
     if (!fragment)
-      return this.#failed(
-        id,
-        wanted.key,
-        new RendererError(`scene ${id}: could not allocate shader`),
-      );
+      return this.#failed(id, set.key, new RendererError(`scene ${id}: could not allocate shader`));
     gl.shaderSource(fragment, source);
     gl.compileShader(fragment);
     const program = gl.createProgram();
     gl.attachShader(program, this.#vertex);
     gl.attachShader(program, fragment);
     gl.linkProgram(program);
-    return { id, key: wanted.key, program, fragment, source };
+    const fence =
+      ahead && this.#parallel === null ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
+    if (ahead) gl.flush();
+    return { id, key: set.key, program, fragment, source, fence };
   }
 
-  /** A built program, its constant uniforms set (waits for the driver); throws RendererError (with the info log) on failure. */
+  /**
+   * A built program, its constant uniforms set (waits for the driver unless the build is done);
+   * throws RendererError (with the info log) on failure.
+   */
   #link(building: Building): SceneProgram {
     const gl = this.#gl;
     const { id, program, fragment } = building;
@@ -542,6 +599,7 @@ export class DitherRenderer {
   /** Finish a build and keep what came of it: the program, or why it failed to build. */
   #finish(building: Building | SceneFailure): SceneProgram | SceneFailure {
     if ("stage" in building) return building;
+    if (building.fence !== null) this.#gl.deleteSync(building.fence);
     try {
       const built = this.#link(building);
       this.#keep(building.id, building.key, built);
@@ -591,40 +649,73 @@ export class DitherRenderer {
     return entry;
   }
 
-  /** Keep the background build once the driver has finished it. */
-  #settle(): void {
-    const building = this.#building;
-    if (building === undefined || this.#parallel === null) return;
-    if (
-      this.#gl.getProgramParameter(building.program, this.#parallel.COMPLETION_STATUS_KHR) !== true
-    )
-      return;
-    this.#building = undefined;
-    this.#finish(building);
-  }
-
-  /** `id`'s program (or failure) with the wanted features, built now if need be (finishing its background build if that is the one). */
-  #programNow(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure {
-    const kept = this.#kept(id, wanted.key);
-    if (kept !== undefined) return kept;
-    const building = this.#building;
-    if (building !== undefined && building.id === id && building.key === wanted.key) {
-      this.#building = undefined;
-      return this.#finish(building);
-    }
-    return this.#finish(this.#build(id, wanted));
+  /** A kept program (or failure) that draws `wanted`: its own set's, else the all-features one. */
+  #keptFor(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure | undefined {
+    return (
+      this.#kept(id, wanted.key) ??
+      (wanted.all === undefined ? undefined : this.#kept(id, wanted.all.key))
+    );
   }
 
   /**
-   * The same without waiting where the browser builds in the background: undefined until the
-   * program is ready. One build at a time: one started for a set no longer wanted finishes first.
+   * Keep the background build once the driver has finished it, asked without waiting (the
+   * completion status, or the fence after the link). A scene's all-features program then draws
+   * one frame of it at once (`#warm`).
+   */
+  #settle(): void {
+    const building = this.#building;
+    if (building === undefined) return;
+    const gl = this.#gl;
+    const done =
+      this.#parallel !== null
+        ? gl.getProgramParameter(building.program, this.#parallel.COMPLETION_STATUS_KHR) === true
+        : building.fence === null ||
+          gl.getSyncParameter(building.fence, gl.SYNC_STATUS) === gl.SIGNALED;
+    if (!done) return;
+    this.#building = undefined;
+    const built = this.#finish(building);
+    const all = sceneFeaturesAll(sceneDefs[building.id]);
+    if ("program" in built && all !== undefined && featureKey(all) === building.key)
+      this.#warm = { id: building.id, program: built };
+  }
+
+  /**
+   * `id`'s program (or failure) for the wanted features, on entering the scene: the set's own or
+   * the all-features one if kept, else the set's own built now (finishing a background build of
+   * either if that is the one).
+   */
+  #programNow(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure {
+    const kept = this.#keptFor(id, wanted);
+    if (kept !== undefined) return kept;
+    const building = this.#building;
+    if (
+      building !== undefined &&
+      building.id === id &&
+      (building.key === wanted.key || building.key === wanted.all?.key)
+    ) {
+      this.#building = undefined;
+      return this.#finish(building);
+    }
+    return this.#finish(this.#build(id, wanted, false));
+  }
+
+  /**
+   * The same for a knob change, never waiting: undefined while a program for it builds in the
+   * background, started here if need be. That is the scene's all-features program, so a change
+   * never builds one for its own set, except on a software rasteriser (`#software`), where it is
+   * the set's own. One build at a time: one started for another set or scene finishes first.
    */
   #programSoon(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure | undefined {
-    const kept = this.#kept(id, wanted.key);
-    if (kept !== undefined) return kept;
-    if (this.#parallel === null) return this.#finish(this.#build(id, wanted));
+    return (
+      this.#keptFor(id, wanted) ??
+      this.#buildAhead(id, this.#software ? wanted : (wanted.all ?? wanted))
+    );
+  }
+
+  /** Start building `id`'s program for `set` in the background unless a build is under way. */
+  #buildAhead(id: SceneId, set: FeatureSet): SceneFailure | undefined {
     if (this.#building !== undefined) return undefined;
-    const started = this.#build(id, wanted);
+    const started = this.#build(id, set, true);
     if ("stage" in started) return started;
     this.#building = started;
     return undefined;
@@ -773,10 +864,14 @@ export class DitherRenderer {
           ? 1
           : Math.min(1, (seconds - leaving.start) / (choreography?.exit ?? 1));
     const dissolve = Math.max(0, 1 - since / PASSAGE_DISSOLVE);
-    // Knobs that change the program's compile-time features (SceneDef.featuresFor): until the
-    // program for the new set is built, the one on screen goes on drawing the settings it drew last
-    // (the old frame, moving on), then the new one takes over with the new settings; one that fails
-    // to build stops the scene as entering it would.
+    // Knobs that change the program's compile-time features (SceneDef.featuresFor): the scene draws
+    // the new setting with a program it entered with for exactly that set, else with its
+    // all-features program (SceneDef.featuresAll), built once in the background and never waited
+    // for; a change never builds a program of its own (but on a software rasteriser, see
+    // `#software`). Until the program is built the one on screen goes on drawing the settings it
+    // drew last (the old frame, moving on); one that fails to build stops the scene as entering it
+    // would. With changes expected (`expectChanges`) the all-features program is built ahead,
+    // once the scene has arrived.
     this.#settle();
     if (scene.program !== undefined && scene.failure === undefined) {
       const wanted = this.#want(s);
@@ -789,16 +884,32 @@ export class DitherRenderer {
         this.#release(scene);
       } else {
         scene.program = next;
+        const all = wanted.all;
+        if (
+          this.#expecting &&
+          !this.#software &&
+          all !== undefined &&
+          leaving === undefined &&
+          passage.enter >= 1 &&
+          this.#programs.get(scene.id)?.has(all.key) !== true
+        )
+          this.#buildAhead(scene.id, all);
       }
     }
-    const program = scene.program;
-    if (program === undefined || scene.failure !== undefined) {
+    const chosen = scene.program;
+    if (chosen === undefined || scene.failure !== undefined) {
       gl.viewport(0, 0, width, height);
       gl.clearColor(...rgb(s.bg), 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (leaving !== undefined) this.#left(width, height);
       return;
     }
+    // A program just built in the background draws this one frame in the chosen one's place (the
+    // same picture), so a driver that compiles a program at its first draw does it now rather than
+    // when a change needs it.
+    const warm = this.#warm;
+    this.#warm = undefined;
+    const program = warm !== undefined && warm.id === scene.id ? warm.program : chosen;
     // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
     // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
     // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s

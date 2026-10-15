@@ -8,7 +8,7 @@
 // Builds come from `git archive`, so uncommitted edits never reach the public origin, and a saved
 // setup can always be replayed on the commit it was tuned on. Bun's HMR server refuses any
 // Host/Origin but its bind address, so --dev only works when browsing the loopback port.
-import { mkdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import index from "./index.html";
@@ -100,6 +100,13 @@ async function buildCommit(sha: string): Promise<string> {
       });
       if (!workerResult.success) throw new BuildError(workerResult.logs.map(String).join("\n"));
     }
+    // The scene browser's thumbnails ride along as committed (builds before them have none, and
+    // the lab draws stand-ins).
+    const thumbs = join(source, "thumbs");
+    for (const name of await readdir(thumbs).catch(() => [])) {
+      if (/^[a-z]+\.webp$/.test(name))
+        await Bun.write(join(work, "out", "thumbs", name), Bun.file(join(thumbs, name)));
+    }
     const html = await Bun.file(join(work, "out", "index.html")).text();
     await Bun.write(
       join(work, "out", "index.html"),
@@ -144,9 +151,11 @@ async function committed(request: Request): Promise<Response> {
     const sha = await head();
     if (!sha) return new Response(`no committed lab on ${branch}`, { status: 503 });
     if (url.pathname === "/") return await serveFile(await built(sha), "", false);
-    // The head page is served from the root, so its worker loads from there.
+    // The head page is served from the root, so its worker and thumbnails load from there.
     if (url.pathname === "/sheet-worker.js")
       return await serveFile(await built(sha), "sheet-worker.js", false);
+    if (/^\/thumbs\/[a-z]+\.webp$/.test(url.pathname))
+      return await serveFile(await built(sha), url.pathname.slice(1), false);
     return new Response("not found", { status: 404 });
   } catch (error: unknown) {
     console.error("evt=landing.build_failed", error);
@@ -172,6 +181,10 @@ const server = args.includes("--dev")
             headers: { "content-type": "text/javascript", "cache-control": "no-store" },
           });
         },
+        "/thumbs/:file": (request) =>
+          /^[a-z]+\.webp$/.test(request.params.file)
+            ? serveFile(new URL("./thumbs", import.meta.url).pathname, request.params.file, false)
+            : new Response("not found", { status: 404 }),
       },
       fetch: () => new Response("not found", { status: 404 }),
     })

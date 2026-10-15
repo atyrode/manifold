@@ -141,14 +141,21 @@ export interface SceneDef {
    * Compile-time features keyed by the knobs (merged over `features`): from every knob as the shader
    * reads it (`K_<key>`, keyed by knob key), the defines this setting needs, so code behind a knob
    * that is off is not in the program at all (a software rasteriser runs every line of a program,
-   * taken or not). The renderer builds one program per distinct set (a few kept per scene), in the
-   * background where the browser can; until it is built the program on screen goes on drawing the
-   * settings it drew last. A gate holds wherever its knobs can show the part (`K_x > 0.0` in GLSL:
-   * `x > 0` here), and the shader keeps its own runtime test of the knobs inside it. Name each gate
-   * and define it 0 or 1 every time, tested with `#if`; a library feature tested with `#ifdef` is
-   * left out instead. See "Composing components" in src/scenes/README.md.
+   * taken or not). The program a scene enters with is built for its setting; on a GPU a knob
+   * change that needs another set draws with the scene's one all-features program (`featuresAll`),
+   * built once in the background, instead of building a program per set (a software rasteriser
+   * builds the set's own, in the background). A gate holds wherever its knobs can show the part
+   * (`K_x > 0.0` in GLSL: `x > 0` here), and the shader keeps its own runtime test of the knobs
+   * inside it. Name each gate and define it 0 or 1 every time, tested with `#if`; a library feature
+   * tested with `#ifdef` is left out instead. See "Composing components" in src/scenes/README.md.
    */
   featuresFor?: (values: Readonly<Record<string, number>>) => Readonly<Record<string, number>>;
+  /**
+   * Required with `featuresFor` (merged over `features`): every gate it can turn on, on, and each
+   * tier at the highest it can select. Its program must draw every setting byte for byte as that
+   * setting's own program does: the shader's runtime tests of the knobs inside the gates decide.
+   */
+  featuresAll?: Readonly<Record<string, number>>;
 }
 
 export type PageTheme = "night" | "paper";

@@ -131,4 +131,5 @@ export const meadowScene: SceneDef = {
   features: { SKY_MOON_PHASE: 1 },
   // The wildflowers' code only while they are on (wildflowers.ts).
   featuresFor: (values) => ({ MEADOW_HAS_WILDFLOWERS: (values.wildflowers ?? 0) > 0 ? 1 : 0 }),
+  featuresAll: { MEADOW_HAS_WILDFLOWERS: 1 },
 };
