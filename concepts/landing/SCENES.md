@@ -170,8 +170,11 @@ Overlooking rolling hills with a village in the distance and forest around.
   selected arrangement. Weights and landscape round-trip through URLs and saved setups. Previously
   saved `fieldType` recipes migrate on read unless any new weight is explicit; rewritten URLs contain
   only weights. Historical revision-pinned replay keeps its original controls and render.
-- Presets: the original crop baseline, flower valley, lavender rows, sunflowers and mixed patchwork.
-  Their replay arrows point to the actual feature revision on which these setups were tuned.
+- Presets: the original crop baseline, flower valley, lavender rows, sunflowers and mixed patchwork;
+  woodland valley (autumn woods at full cover with a pine mix over grazed pasture, a buzzard
+  circling) and riverside (the broad river, the whole track network with walkers and carts, cattle
+  pasture, rooks and the murmuration at dusk). Their replay arrows point to the actual feature
+  revision on which these setups were tuned.
 
 ## Hanging mobile
 
@@ -276,8 +279,9 @@ Gray–Scott Turing patterns or Belousov–Zhabotinsky spirals in a glass dish (
 Jeff Jones's agent model of Physarum linking oat flakes on agar (`physarum`).
 
 - Habits: sensor reach, sensor angle and evaporation act together, and three coupled settings
-  read as distinct networks (proposed as lab presets rather than a knob, so the three sliders stay
-  the only controls):
+  read as distinct networks (lab presets rather than a knob, so the three sliders stay the only
+  controls: lace, ink lace, routes and Tokyo rail routes ship as presets; woven stays a recipe, as
+  its open mesh reads dim and sparse for the first minutes):
   - lace: reach 4, angle 60°, evaporation 15%. A fine, curly lace over the whole dish; the flakes
     pool gold with thin links between some of them.
   - woven: reach 9, angle 12°, evaporation 10%. Straight threads knit an even, open polygon mesh;
