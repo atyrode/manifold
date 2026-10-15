@@ -51,8 +51,9 @@
 //   3  form, variant, side, tier               tier 0: nothing to draw
 // A scene may reserve rows below the records for its own data (the tide pool's fish and flow), and
 // pack two systems into one texture (`pack(a, b)`: the garden's far woods and its border, each in its
-// own frame). An organ with a negative slot is never packed: one the scene draws its own way
-// (fireflies' crowns, through the bank's profile).
+// own frame). `writePlantRecords` writes the same records into a texture the scene lays out itself
+// (the countryside's records atlas). An organ with a negative slot is never packed: one the scene
+// draws its own way (fireflies' crowns, through the bank's profile).
 //
 // Usage (ferns along a bank, rooted once, swaying every frame):
 //   const plants = new RootedPlants(256, seed);
@@ -753,6 +754,50 @@ export class RootedPlants {
   }
 }
 
+/**
+ * Writes each drawable organ of `plants` at its record slot into `data`, the rgba texels of a
+ * texture `width` wide, the records from row `rowBase` (PlantTexture's layout, see the header); a
+ * slot at or past `records` is left out. For a scene that packs the records into a texture of its
+ * own rather than a PlantTexture's (the countryside's records atlas).
+ */
+export function writePlantRecords(
+  plants: RootedPlants,
+  data: Float32Array,
+  width: number,
+  rowBase: number,
+  records: number,
+): void {
+  for (let i = 0; i < plants.count; i++) {
+    const tier = plants.tier[i] ?? 0;
+    const r = plants.slot[i] ?? i;
+    if (tier <= 0 || r < 0 || r >= records) continue;
+    const t0 = ((rowBase + 4 * Math.floor(r / width)) * width + (r % width)) * 4;
+    const t1 = t0 + width * 4;
+    const t2 = t1 + width * 4;
+    const t3 = t2 + width * 4;
+    splitHalf(data, t0, plants.x[i] ?? 0);
+    splitHalf(data, t0 + 2, plants.y[i] ?? 0);
+    if (plants.habit[i] === PlantHabit.upright) {
+      data[t1] = plants.theta[i] ?? 0;
+      data[t1 + 1] = plants.lean[i] ?? 0;
+    } else {
+      const angle = plants.angle[i] ?? 0;
+      data[t1] = Math.cos(angle);
+      data[t1 + 1] = Math.sin(angle);
+    }
+    data[t1 + 2] = plants.grown[i] ?? 0;
+    data[t1 + 3] = (plants.width[i] ?? 0) * (plants.size[i] ?? 0);
+    data[t2] = plants.theta[i] ?? 0;
+    data[t2 + 1] = plants.a[i] ?? 0;
+    data[t2 + 2] = plants.b[i] ?? 0;
+    data[t2 + 3] = plants.pheno[i] ?? 0;
+    data[t3] = plants.form[i] ?? 0;
+    data[t3 + 1] = (plants.variant[i] ?? 0) + (plants.cycle[i] ?? 0);
+    data[t3 + 2] = plants.side[i] ?? 1;
+    data[t3 + 3] = tier;
+  }
+}
+
 /** Organ records for the GLSL (see the header): `records` of them, `width` a row, after `rowBase` rows of the scene's own. */
 export class PlantTexture {
   readonly records: number;
@@ -787,42 +832,8 @@ export class PlantTexture {
   /** Every record hidden, then each drawable organ of `plants` (and of `also`, another system) written at its slot. */
   pack(plants: RootedPlants, also?: RootedPlants): void {
     this.data.fill(0, this.rowBase * this.width * 4);
-    this.#write(plants);
-    if (also) this.#write(also);
-  }
-
-  #write(plants: RootedPlants): void {
-    const data = this.data;
-    const width = this.width;
-    for (let i = 0; i < plants.count; i++) {
-      const tier = plants.tier[i] ?? 0;
-      const r = plants.slot[i] ?? i;
-      if (tier <= 0 || r < 0 || r >= this.records) continue;
-      const t0 = ((this.rowBase + 4 * Math.floor(r / width)) * width + (r % width)) * 4;
-      const t1 = t0 + width * 4;
-      const t2 = t1 + width * 4;
-      const t3 = t2 + width * 4;
-      splitHalf(data, t0, plants.x[i] ?? 0);
-      splitHalf(data, t0 + 2, plants.y[i] ?? 0);
-      if (plants.habit[i] === PlantHabit.upright) {
-        data[t1] = plants.theta[i] ?? 0;
-        data[t1 + 1] = plants.lean[i] ?? 0;
-      } else {
-        const angle = plants.angle[i] ?? 0;
-        data[t1] = Math.cos(angle);
-        data[t1 + 1] = Math.sin(angle);
-      }
-      data[t1 + 2] = plants.grown[i] ?? 0;
-      data[t1 + 3] = (plants.width[i] ?? 0) * (plants.size[i] ?? 0);
-      data[t2] = plants.theta[i] ?? 0;
-      data[t2 + 1] = plants.a[i] ?? 0;
-      data[t2 + 2] = plants.b[i] ?? 0;
-      data[t2 + 3] = plants.pheno[i] ?? 0;
-      data[t3] = plants.form[i] ?? 0;
-      data[t3 + 1] = (plants.variant[i] ?? 0) + (plants.cycle[i] ?? 0);
-      data[t3 + 2] = plants.side[i] ?? 1;
-      data[t3 + 3] = tier;
-    }
+    writePlantRecords(plants, this.data, this.width, this.rowBase, this.records);
+    if (also) writePlantRecords(also, this.data, this.width, this.rowBase, this.records);
   }
 
   upload(): void {

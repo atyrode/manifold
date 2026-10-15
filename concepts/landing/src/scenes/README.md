@@ -462,8 +462,8 @@ every gate on and each tier up to the highest a knob selects. That program draws
 byte for byte as the setting's own does, because the shader's runtime tests of the knobs decide
 (on a GPU they are uniform branches, nearly free). The adopters are `country` (`countryFeatures` and
 `COUNTRY_ALL`: roads and tracks, rain, snow, fog, pine woods, flower fields, herds, walkers and carts,
-birds, the clouds' shadows tier and the moon's phase; `countryFeaturesAll` checks each gated
-setting) and `meadow` (its wildflowers).
+birds, the verges, the murmuration, the clouds' shadows tier and the moon's phase;
+`countryFeaturesAll` checks each gated setting) and `meadow` (its wildflowers).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -691,8 +691,9 @@ The scene owns how they look: its projection, palette, light, what hides them an
   at each clump's foot); an organ with a negative slot is never packed (one the scene draws its own
   way, as fireflies' crowns through the bank's profile);
   `PlantTexture.pack(a, b)` writes two systems into one texture (the garden's woods and border, each
-  in its own frame, after the scene's own rows); `plantPoint` (GLSL) finds a point along a posed
-  organ (a swaying stem's tip).
+  in its own frame, after the scene's own rows); `writePlantRecords` writes the same records into a
+  texture the scene lays out itself (the countryside's verges, in its records atlas); `plantPoint`
+  (GLSL) finds a point along a posed organ (a swaying stem's tip).
 - **Controls.** `plantKnobs({ group, season, growth, gusts })` gives `season`, `growth` and `gusts`
   (with its trigger), all off: adopting them never changes a picture. A scene with a season of its
   own leaves `season` out and maps its own onto the year (garden's season choice).
@@ -705,8 +706,10 @@ The scene owns how they look: its projection, palette, light, what hides them an
   optional border of fern and mondo grass in the wall-foot gutter, binned records drawn per fragment
   with `plantFrond` and `plantArc`, following the maple's season choice; not the maple),
   meadow (optional `wildflowers`: clumps of daisies, buttercups, knapweed and scabious bowed by its
-  own gust field, compiled in only while on). Next: meadow's near grass and dandelion stems (on
-  their own springs), kelp (stipes stay on Verlet).
+  own gust field, compiled in only while on), country (optional `verges`: cow parsley, campion and
+  tussock grass at the near hedges' foot, binned by bearing and drawn per fragment with `plantArc`
+  from its records atlas, bowed by the flower fields' gust bands, compiled in only while on). Next:
+  meadow's near grass and dandelion stems (on their own springs), kelp (stipes stay on Verlet).
 
 #### The giant planet (`src/shaders/lib/planet.ts`)
 
@@ -970,6 +973,11 @@ motionTime, motion, size, knob values, raw params, triggers, fired, pointer, par
 binds the returned textures as `uSim0..uSim3` (`uSimOn` says which are set). `parallax` is the
 shader's `uPointer`: a sim casting the pointer through a camera the shader turns with it turns it too.
 Simulation catch-up is capped at 0.1 s per frame; the FPS footer measures uncapped frame delivery.
+A sim with more to hand over than four slots packs it into one texture read with `texelFetch`
+(which no filter touches), a linear filter left for the one field read with `texture`: bonsai's
+field rows under its tables, the countryside's records atlas (`country/atlas.ts`: the terrain's
+records, the murmuration's density field beside them and the verges' plants above, each part only
+while it is on).
 Reseeding a stateful scene must reset its associated interaction history as well as its geometry:
 Frost starts a fresh pane with no old warmth, melt mask, finger stroke, or active mark trace, even
 when the seed changes while paused.
@@ -1050,11 +1058,12 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   walls) for a species' speeds and turning, packed for the shader; GLSL to read their poses and draw
   them from above with a koi coat or side-on (pond, kelp). The scene supplies the water and light.
   Species: `KOI` (pond), `BLENNY` with `FISH_BLENNY` (the tide pool's rock pool fish).
-- `RootedPlants`, `PlantTexture`, `plantClimate` (`plants.ts`): the plant component (see "Rooted
-  plants" above): persistent plants rooted at the scene's sites, organs on springs under wind, gust
-  fronts or current, a growth clock, the year, and a detail tier per organ from its projected size;
-  records for `plantsGlsl`. `PlantSheet` (`plantsheet.ts`): the same organs rasterised on the GPU
-  into a mipmapped RGBA8 sheet from a sprite atlas, for hundreds of organs (pond).
+- `RootedPlants`, `PlantTexture`, `writePlantRecords`, `plantClimate` (`plants.ts`): the plant
+  component (see "Rooted plants" above): persistent plants rooted at the scene's sites, organs on
+  springs under wind, gust fronts or current, a growth clock, the year, and a detail tier per organ
+  from its projected size; records for `plantsGlsl`. `PlantSheet` (`plantsheet.ts`): the same
+  organs rasterised on the GPU into a mipmapped RGBA8 sheet from a sprite atlas, for hundreds of
+  organs (pond).
 - `GpuReadback` (`readback.ts`): a small float target copied back to the CPU behind a fence and
   picked up a frame or two later, without stalling (the tide pool's flow for its plants and fish).
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies

@@ -8,7 +8,8 @@
 // the reference density seen face-on; M strength / centre / height (see sim.ts).
 
 // The flock's sheet inked from the simulation's density field: shared with every scene that flies
-// the flock (flockSim), so the birds read the same wherever they fly.
+// the flock (flockSim, or a Flock packed into a texture of the scene's own, which samples its field
+// itself and inks it with flockInk), so the birds read the same wherever they fly.
 export const flockInkGlsl = `
 /**
  * Ink of the flock's sheet: coverage 1 - exp(-GAIN * density^CURVE), density 1 being the reference
@@ -19,23 +20,30 @@ const float FLOCK_INK_CURVE = 1.25;
 /** A lone bird's speck: coverage per bird of excess over its neighbourhood, in birds per texel. */
 const float FLOCK_SPECK_GAIN = 2.2;
 
-// The flock at uv from uSim0 (and uSim1's reference density): x how much it covers 0..1, y how hard
-// the birds there roll 0..1. Its density is read through a wide footprint where the birds are
-// sparse, so a moving veil stays smooth under the dither, and a sharp one where they crowd, so rims
-// and folds stay crisp: a stretched sheet is a pale veil, face-on it is grey, edge-on or folded back
-// black, and a startle wave a dark band. Where birds thin out, each one's excess over its
-// neighbourhood shows as a speck of its own. Call it only while uSimOn.x is set.
+// The flock's ink from its density field sampled at a point (fine: rg there; wide: the mean of rg
+// one texel off along both diagonals) and the reference density (birds per texel of the reference
+// sheet): x how much it covers 0..1, y how hard the birds there roll 0..1. Its density is read
+// through the wide footprint where the birds are sparse, so a moving veil stays smooth under the
+// dither, and the sharp one where they crowd, so rims and folds stay crisp: a stretched sheet is a
+// pale veil, face-on it is grey, edge-on or folded back black, and a startle wave a dark band.
+// Where birds thin out, each one's excess over its neighbourhood shows as a speck of its own.
+vec2 flockInk(vec2 fine, vec2 wide, float reference) {
+  float sheet = mix(wide.r, fine.r, smoothstep(0.8, 2.5, wide.r)) / reference;
+  float roll = clamp(wide.g / max(wide.r, 0.15), 0.0, 1.0);
+  float body = 1.0 - exp(-FLOCK_INK_GAIN * pow(sheet, FLOCK_INK_CURVE) * (1.0 + 0.9 * roll));
+  float speck = clamp((fine.r - wide.r) * FLOCK_SPECK_GAIN, 0.0, 1.0) * (1.0 - smoothstep(0.3, 0.8, wide.r / reference));
+  return vec2(1.0 - (1.0 - body) * (1.0 - speck), roll);
+}
+
+// The flock at uv from uSim0 (and uSim1's reference density), inked (flockInk). Call it only while
+// uSimOn.x is set.
 vec2 flockSheet(vec2 uv) {
   vec2 texel = 1.0 / vec2(textureSize(uSim0, 0));
   vec2 fine = texture(uSim0, uv).rg;
   vec2 wide = 0.25 * (texture(uSim0, uv - texel).rg + texture(uSim0, uv + texel).rg
     + texture(uSim0, uv + vec2(texel.x, -texel.y)).rg + texture(uSim0, uv + vec2(-texel.x, texel.y)).rg);
   float reference = uSimOn.y > 0.5 ? max(texelFetch(uSim1, ivec2(1, 0), 0).w, 0.01) : 1.0;
-  float sheet = mix(wide.r, fine.r, smoothstep(0.8, 2.5, wide.r)) / reference;
-  float roll = clamp(wide.g / max(wide.r, 0.15), 0.0, 1.0);
-  float body = 1.0 - exp(-FLOCK_INK_GAIN * pow(sheet, FLOCK_INK_CURVE) * (1.0 + 0.9 * roll));
-  float speck = clamp((fine.r - wide.r) * FLOCK_SPECK_GAIN, 0.0, 1.0) * (1.0 - smoothstep(0.3, 0.8, wide.r / reference));
-  return vec2(1.0 - (1.0 - body) * (1.0 - speck), roll);
+  return flockInk(fine, wide, reference);
 }
 `;
 

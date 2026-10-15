@@ -5,8 +5,10 @@
 //   uSim1  rgba16f linear   road and stream signed distance, the woods' canopy (negative under
 //                           pines), yard (-1 a standing lone tree)
 //   uSim2  rgba8 nearest    the nearest two parcels per texel
-//   uSim3  rgba16f nearest  records: parcel sites with their use and attribute, buildings,
-//                           settlements, the bridge, the eye, the roads' way points
+//   uSim3  rgba16f linear   records: parcel sites with their use and attribute, buildings,
+//                           settlements, the bridge, the eye, the roads' way points (texelFetch);
+//                           beside and above them the murmuration's field and the verges' plants
+//                           while they are on (the records atlas, atlas.ts)
 // Three tiers of change, cheapest last:
 //   the terrain (land shape, landscape, relief, erosion, the river's size, the settlements and
 //     roads): a new build over a few frames, reusing what the change leaves alone (terrain.ts); the
@@ -23,13 +25,13 @@ import {
   packTerrain,
   packWater,
   TERRAIN_BASES,
-  TERRAIN_RECORDS,
   type Terrain,
   TerrainBuilder,
   type TerrainPacked,
 } from "../../sims/terrain.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { CountryAtlas } from "./atlas.ts";
 
 /** The map: texels a side and metres a side. */
 export const COUNTRY_MAP = { size: 512, extent: 3200 } as const;
@@ -76,7 +78,7 @@ class CountrySim implements SceneSim {
   readonly #ground: DataTexture;
   readonly #cover: DataTexture;
   readonly #parcels: DataTexture;
-  readonly #records: DataTexture;
+  readonly #atlas: CountryAtlas;
   #builder: TerrainBuilder | undefined;
   #key = "";
   #next = 0;
@@ -95,12 +97,7 @@ class CountrySim implements SceneSim {
       format: "rgba8",
       filter: "nearest",
     });
-    this.#records = new DataTexture(gl, {
-      width: TERRAIN_RECORDS.width,
-      height: TERRAIN_RECORDS.height,
-      format: "rgba16f",
-      filter: "nearest",
-    });
+    this.#atlas = new CountryAtlas(gl, params);
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -174,20 +171,15 @@ class CountrySim implements SceneSim {
       this.#ground.upload(land.packed.ground);
     }
     if (allocate || flow) this.#cover.upload(land.packed.cover);
-    if (allocate) this.#records.upload(land.packed.records);
-    return [
-      this.#ground.texture,
-      this.#cover.texture,
-      this.#parcels.texture,
-      this.#records.texture,
-    ];
+    const records = this.#atlas.frame(frame, land.terrain, land.packed, allocate);
+    return [this.#ground.texture, this.#cover.texture, this.#parcels.texture, records];
   }
 
   dispose(): void {
     this.#ground.dispose();
     this.#cover.dispose();
     this.#parcels.dispose();
-    this.#records.dispose();
+    this.#atlas.dispose();
   }
 }
 

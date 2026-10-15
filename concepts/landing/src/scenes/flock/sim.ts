@@ -52,15 +52,17 @@
 // that holds it fixed) and the band of sky the flock keeps to; the Murmuration scene's own knobs and
 // sky are the default. With no birds (the control at 0, a switch that is off) the flock is idle: it
 // steps nothing, paints nothing and hands the shader no textures, and grows afresh when birds return.
+// `flockSim` hands the shader the two textures below; a scene that packs them into a texture of its
+// own (the countryside's records atlas) flies a `Flock`, which keeps them as arrays.
 //
 // Textures:
 //   uSim0  rg16f, about FIELD_PER_CELL texels per cell (at most FIELD_ROWS rows): R birds per texel
 //          (a short exponential trail smooths their motion), G the same weighted by how hard the
-//          birds roll.
+//          birds roll. (Flock.field, fieldWidth × fieldHeight.)
 //   uSim1  rgba16f 3×1, nearest: texel 0 falcon (uv xy, heading cos, sin); texel 1 falcon (shown,
 //          wings open 0..1, wingbeat sin) and, in w, the birds per texel of a sheet at
 //          REFERENCE_DENSITY; texel 2 Manifold M (strength 0..1, centre uv xy, height in screen
-//          heights).
+//          heights). (Flock.state.)
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { Boids, boidRules } from "../../sims/boids.ts";
@@ -355,9 +357,11 @@ const IDLE: readonly (WebGLTexture | undefined)[] = [];
 const swing = (clock: number, period: number, phase: number): number =>
   Math.sin((clock / period) * TAU + phase);
 
-class FlockSim implements SceneSim {
-  readonly #density: DataTexture;
-  readonly #state: DataTexture;
+/**
+ * The flock without textures (see the header): flown and painted each frame into `field` and
+ * `state`, the two textures' data, for a scene that uploads them itself.
+ */
+export class Flock {
   readonly #stateData = new Float32Array(12);
   readonly #setup: FlockSetup;
   readonly #knobs: KnobReader<string>;
@@ -469,8 +473,10 @@ class FlockSim implements SceneSim {
   #catchUp = false;
   #headingX = 1;
   readonly #pulled = new Float64Array(2);
+  /** The latest frame repainted the field and the state. */
+  #painted = false;
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[], setup: FlockSetup) {
+  constructor(params: readonly ParamDef[], setup: FlockSetup) {
     this.#setup = setup;
     const keys = Object.values(setup.knobs).filter(
       (source): source is string => typeof source === "string",
@@ -478,13 +484,6 @@ class FlockSim implements SceneSim {
     this.#knobs = new KnobReader<string>("flock", params, keys);
     this.#attackSlot = this.#triggerOf("predator");
     this.#markSlot = this.#triggerOf("mark");
-    this.#density = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
-    this.#state = new DataTexture(gl, {
-      width: 3,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
     // The boids' rules the knobs leave alone (#flyBoids sets the rest every step).
     const rules = this.#rules;
     rules.refresh = BOIDS_REFRESH;
@@ -504,13 +503,38 @@ class FlockSim implements SceneSim {
     rules.refractory = BOIDS_REFRACTORY;
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  /** The birds per texel and their roll (rg), fieldWidth × fieldHeight texels, rows bottom to top. */
+  get field(): Float32Array {
+    return this.#field;
+  }
+
+  get fieldWidth(): number {
+    return this.#fieldW;
+  }
+
+  get fieldHeight(): number {
+    return this.#fieldH;
+  }
+
+  /** The state texels: falcon, falcon and reference density, M (3 × rgba). */
+  get state(): Float32Array {
+    return this.#stateData;
+  }
+
+  /** Whether the latest frame repainted `field` and `state` (they then need uploading). */
+  get painted(): boolean {
+    return this.#painted;
+  }
+
+  /** Flies the flock for this frame; false while it is idle (no birds), when it paints nothing. */
+  frame(frame: SimFrame): boolean {
     const knob = this.#knob;
     knob.birds = this.#read(frame, "birds");
+    this.#painted = false;
     // No birds: idle, and grow a fresh flock when they return.
     if (knob.birds < 1) {
       this.#n = 0;
-      return IDLE;
+      return false;
     }
     knob.cohesion = this.#read(frame, "cohesion");
     knob.chaos = this.#read(frame, "chaos");
@@ -544,16 +568,10 @@ class FlockSim implements SceneSim {
     for (let i = 0; i < steps; i++) this.#step();
     if (advance > 0 || this.#dirty) {
       this.#paint(this.#dirty ? 0 : Math.exp(-advance / TRAIL), this.#steps.alpha);
-      this.#density.upload(this.#field);
-      this.#state.upload(this.#stateData);
+      this.#painted = true;
       this.#dirty = false;
     }
-    return [this.#density.texture, this.#state.texture];
-  }
-
-  dispose(): void {
-    this.#density.dispose();
-    this.#state.dispose();
+    return true;
   }
 
   /** A control as the shader reads its knob, or its fixed value (0 for a control the setup leaves out). */
@@ -575,7 +593,6 @@ class FlockSim implements SceneSim {
     this.#fieldW = w;
     this.#fieldH = h;
     this.#field = new Float32Array(w * h * 2);
-    this.#density.resize(w, h);
     this.#dirty = true;
   }
 
@@ -1413,6 +1430,40 @@ function markTrackAt(u: number, out: Float32Array): void {
   out[1] = ay + (by - ay) * f;
   out[2] = (bx - ax) / length;
   out[3] = (by - ay) / length;
+}
+
+/** A Flock with its two textures (uSim0, uSim1), uploaded whenever it repaints them. */
+class FlockSim implements SceneSim {
+  readonly #flock: Flock;
+  readonly #density: DataTexture;
+  readonly #state: DataTexture;
+
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[], setup: FlockSetup) {
+    this.#flock = new Flock(params, setup);
+    this.#density = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
+    this.#state = new DataTexture(gl, {
+      width: 3,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+  }
+
+  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+    const flock = this.#flock;
+    if (!flock.frame(frame)) return IDLE;
+    if (flock.painted) {
+      this.#density.resize(flock.fieldWidth, flock.fieldHeight);
+      this.#density.upload(flock.field);
+      this.#state.upload(flock.state);
+    }
+    return [this.#density.texture, this.#state.texture];
+  }
+
+  dispose(): void {
+    this.#density.dispose();
+    this.#state.dispose();
+  }
 }
 
 /** The murmuration's simulation for a scene whose knobs are `params` (looked up by key), flown as `setup` says. */
