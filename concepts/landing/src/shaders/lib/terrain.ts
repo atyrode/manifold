@@ -234,7 +234,7 @@ struct TerrainWay { int first; int count; float spacing; float kind; };
 
 TerrainWay terrainWay(sampler2D records, int i) {
   vec4 a = terrainRecord(records, TERRAIN_WAYS_ROW, i);
-  return TerrainWay(int(a.x + 0.5), int(a.y + 0.5), a.z, a.w);
+  return TerrainWay(int(a.x + 0.5) * 64 + int(a.y + 0.5), int(a.z + 0.5), abs(a.w), a.w < 0.0 ? 1.0 : 0.0);
 }
 
 vec3 terrainWayPoint(sampler2D records, int k) {

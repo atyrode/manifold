@@ -88,7 +88,7 @@ export const TERRAIN_MAX_BUILDINGS = 128;
 /** Settlements a build can hold (village, castle, the outlying ones). */
 export const TERRAIN_MAX_PLACES = 16;
 /** Points of the roads resampled for walkers and carts the records hold (terrainWays). */
-export const TERRAIN_MAX_WAY_POINTS = 2048;
+export const TERRAIN_MAX_WAY_POINTS = 4096;
 /** Kinds of field, by `TerrainParcels.kind`. */
 export const TERRAIN_PARCEL_KINDS = [
   "wheat",
@@ -285,7 +285,7 @@ const RIVER_INFLOW = 0.6;
 /** How far (metres, from the edge) a parcel's clear core keeps off roads and streams. */
 const CORE_CLEAR = { road: 5, stream: 4 } as const;
 /** The least spacing (metres) of the points a road is resampled at for the records. */
-const WAY_SPACING = 8;
+const WAY_SPACING = 4;
 
 /** Bilinear sample of a size × size grid spread over `extent` metres (texel centres), clamped. */
 export function sampleGrid(
@@ -2911,8 +2911,9 @@ export interface TerrainWays {
  * Every road and track (bridge included) as points spaced evenly along it, its ends kept, as near
  * WAY_SPACING apart as its length divides into (never farther): what walkers and carts follow by
  * arc length (terrainWayAt in GLSL). The spacing grows for a network too long for
- * TERRAIN_MAX_WAY_POINTS. A point between two consecutive ones lies on the road's centreline within
- * the chord of an 8 m arc of a smoothed road.
+ * TERRAIN_MAX_WAY_POINTS. A point between two consecutive ones lies on the road: off its smoothed
+ * centreline by at most the sag of a 4 m chord (the roads' own vertex spacing) over a kink, within
+ * its half width (terrain.test.ts).
  */
 export function terrainWays(t: Terrain): TerrainWays {
   const lengths = t.roads.map((road) => {
@@ -2971,7 +2972,8 @@ export function terrainWays(t: Terrain): TerrainWays {
  *              the eye (x, z split), (y, settlements, bridge 1/0, buildings); (ways, 0, 0, 0)
  *   cores      a texel a parcel site, 64 a row: its clear core's centre less the site (dx, dz),
  *              radius (0 none), 0
- *   ways       a texel a road (terrainWays): (first point, count, spacing, kind 0 road / 1 track)
+ *   ways       a texel a road (terrainWays): (first point / 64, first point % 64, count, spacing;
+ *              negative for a track)
  *   points     2 texels a way point, 32 a row: (x hi, x lo, z hi, z lo), (y, 0, 0, 0)
  */
 export const TERRAIN_RECORDS = (() => {
@@ -3088,10 +3090,11 @@ export function packTerrain(t: Terrain): TerrainPacked {
   records[misc + 20] = ways.length;
   ways.forEach((way, index) => {
     const o = texel(L.ways, index);
-    records[o] = way.first;
-    records[o + 1] = way.count;
-    records[o + 2] = way.spacing;
-    records[o + 3] = way.kind === "road" ? 0 : 1;
+    // Half floats hold integers exactly only up to 2048: the first point as 64s and the rest.
+    records[o] = Math.floor(way.first / 64);
+    records[o + 1] = way.first % 64;
+    records[o + 2] = way.count;
+    records[o + 3] = way.kind === "road" ? way.spacing : -way.spacing;
   });
   for (let k = 0; k < points.length / 3; k++) {
     const o = texel(L.points + Math.floor(k / 32), 2 * (k % 32));

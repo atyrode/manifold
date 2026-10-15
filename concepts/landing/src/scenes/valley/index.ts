@@ -199,6 +199,23 @@ export function valleyFeatures(values: Readonly<Record<string, number>>): Record
   };
 }
 
+/**
+ * Every optional part compiled in (SceneDef.featuresAll): each part's runtime test of its knobs
+ * decides, so this program draws every setting as that setting's own program does.
+ */
+export const VALLEY_ALL = valleyFeatures({
+  roads: 1,
+  rain: 1,
+  snow: 1,
+  fog: 1,
+  pines: 1,
+  pasture: 1,
+  walkers: 1,
+  birds: 1,
+  shadows: 1,
+  moon: 0.5,
+});
+
 export const valleyScene: SceneDef = {
   id: "valley",
   title: "Valley",
@@ -246,4 +263,5 @@ export const valleyScene: SceneDef = {
   // Exit: it rises back toward the clouds.
   passage: VALLEY_PASSAGE,
   featuresFor: valleyFeatures,
+  featuresAll: VALLEY_ALL,
 };

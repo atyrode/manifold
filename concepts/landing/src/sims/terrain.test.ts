@@ -8,6 +8,7 @@ import {
   TERRAIN_ROAD_MAX_SLOPE,
   TERRAIN_BASES,
   TerrainBuilder,
+  terrainWays,
 } from "./terrain.ts";
 
 // Small maps keep the suite quick; the budget test builds the scene's own size.
@@ -151,6 +152,95 @@ describe("terrain", () => {
     }
   });
 
+  test("the roads' way points lie on their roads, evenly spaced, ends kept", () => {
+    // At the scene's size: a coarser map's roads kink sharply enough for an 8 m chord to cut them.
+    for (const seed of [0, 3]) {
+      const t = generateTerrain({ seed, size: 512 });
+      const { ways, points } = terrainWays(t);
+      expect(ways.length).toBe(t.roads.length);
+      ways.forEach((way, index) => {
+        const road = t.roads[index];
+        if (!road) throw new Error("no road");
+        for (let k = 0; k < way.count; k++) {
+          const px = points[3 * (way.first + k)] ?? 0;
+          const pz = points[3 * (way.first + k) + 2] ?? 0;
+          // The point and the middle of the chord to the next lie on the road (within its half width).
+          for (const f of k + 1 < way.count ? [0, 0.5] : [0]) {
+            const qx = px + f * ((points[3 * (way.first + k + 1)] ?? 0) - px);
+            const qz = pz + f * ((points[3 * (way.first + k + 1) + 2] ?? 0) - pz);
+            let near = Infinity;
+            for (let s = 0; s + 1 < road.x.length; s++) {
+              const ax = road.x[s] ?? 0;
+              const az = road.z[s] ?? 0;
+              const dx = (road.x[s + 1] ?? 0) - ax;
+              const dz = (road.z[s + 1] ?? 0) - az;
+              const u = Math.max(
+                0,
+                Math.min(1, ((qx - ax) * dx + (qz - az) * dz) / (dx * dx + dz * dz || 1)),
+              );
+              near = Math.min(near, Math.hypot(qx - ax - u * dx, qz - az - u * dz));
+            }
+            expect(near).toBeLessThan(road.halfWidth);
+          }
+          if (k > 0) {
+            const run = Math.hypot(
+              px - (points[3 * (way.first + k - 1)] ?? 0),
+              pz - (points[3 * (way.first + k - 1) + 2] ?? 0),
+            );
+            expect(run).toBeLessThanOrEqual(way.spacing + 1e-3);
+          }
+        }
+        expect(points[3 * way.first] ?? 0).toBeCloseTo(road.x[0] ?? 0, 3);
+        expect(points[3 * (way.first + way.count - 1)] ?? 0).toBeCloseTo(
+          road.x[road.x.length - 1] ?? 0,
+          3,
+        );
+      });
+    }
+  });
+
+  test("each parcel's clear core lies inside it, by the exact stretched metric, off roads and water", () => {
+    const t = built(0);
+    const p = t.parcels;
+    const owner = (x: number, z: number): number => {
+      let best = Infinity;
+      let id = -1;
+      for (let s = 0; s < p.count; s++) {
+        const dx = x - (p.x[s] ?? 0);
+        const dz = z - (p.z[s] ?? 0);
+        const a = p.angle[s] ?? 0;
+        const u = (dx * Math.cos(a) + dz * Math.sin(a)) / (p.elongation[s] ?? 1);
+        const w = -dx * Math.sin(a) + dz * Math.cos(a);
+        const d = Math.hypot(u, w);
+        if (d < best) {
+          best = d;
+          id = s;
+        }
+      }
+      return id;
+    };
+    let cores = 0;
+    for (let s = 0; s < p.count; s++) {
+      const r = p.coreRadius[s] ?? 0;
+      if (r <= 0) continue;
+      cores++;
+      const cx = p.coreX[s] ?? 0;
+      const cz = p.coreZ[s] ?? 0;
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * 2 * Math.PI;
+        for (const f of [0, 0.5, 1]) {
+          const x = cx + f * r * Math.cos(a);
+          const z = cz + f * r * Math.sin(a);
+          expect(owner(x, z)).toBe(s);
+          expect(sampleGrid(t.road, t.size, t.extent, x, z)).toBeGreaterThan(0);
+          expect(sampleGrid(t.level, t.size, t.extent, x, z)).toBeLessThan(
+            sampleGrid(t.ground, t.size, t.extent, x, z),
+          );
+        }
+      }
+    }
+    expect(cores).toBeGreaterThan(0.5 * p.count);
+  });
   test("a seed always builds the same valley, and another seed another", () => {
     const a = generateTerrain({ seed: 7, size: 128 });
     const b = generateTerrain({ seed: 7, size: 128 });

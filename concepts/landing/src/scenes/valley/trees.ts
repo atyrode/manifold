@@ -165,13 +165,29 @@ ValleyTree valleyWoodTree(vec2 cell, vec2 p, vec4 g) {
   return tree;
 }
 
-// The crown the ray (ro, rd) meets beyond the bound it met at tHit (point p, ground g, cover c
+// Where the ray meets the tree's trunk, a post 0.7 m across (drawn large, as the crowns are) from
+// the ground up into its crown; -1 none.
+float valleyTrunk(vec3 ro, vec3 rd, ValleyTree tree) {
+  vec2 o = ro.xz - tree.foot.xz;
+  float a = dot(rd.xz, rd.xz);
+  float b = dot(o, rd.xz);
+  float h = b * b - a * (dot(o, o) - 0.35 * 0.35);
+  if (h < 0.0 || a < 1e-6) return -1.0;
+  float t = (-b - sqrt(h)) / a;
+  float y = ro.y + rd.y * t - tree.foot.y;
+  float top = tree.pine ? tree.top - 2.4 * tree.radius / 0.82 + 0.8 : tree.top - 1.6 * tree.radius;
+  return t > 0.0 && y > -0.5 && y < top ? t : -1.0;
+}
+
+// The crown (or trunk) the ray (ro, rd) meets beyond the bound it met at tHit (point p, ground g
 // there): the lone trees of the four texels round p and the woods' trees in the next crown cells
-// along the ray. t: the hit (-1 none), n its normal, up how high up its crown.
+// along the ray. t: the hit (-1 none), n its normal (world), up how high up its crown (-1: the trunk).
 float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree tree, out vec3 n, out float up) {
   n = vec3(0.0, 1.0, 0.0);
   up = 0.5;
   float best = 1e9;
+  float trunk = 1e9;
+  ValleyTree post;
   ivec2 size = textureSize(uSim1, 0);
   ivec2 base = ivec2(floor(p.xz / VALLEY_EXTENT * vec2(size) - 0.5));
   for (int k = 0; k < 4; k++) {
@@ -182,6 +198,11 @@ float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree 
     if (t > 0.0 && t < best) {
       best = t;
       tree = lone;
+    }
+    t = valleyTrunk(ro, rd, lone);
+    if (t > 0.0 && t < trunk) {
+      trunk = t;
+      post = lone;
     }
   }
   // The woods, crown cell by crown cell from just short of the hit (2D DDA over the cells).
@@ -200,8 +221,13 @@ float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree 
         best = t;
         tree = wood;
       }
-      // Crowns stay inside their cells, so the first one met is the nearest the woods hold.
-      if (t > 0.0) break;
+      float tt = valleyTrunk(ro, rd, wood);
+      if (tt > 0.0 && tt < trunk) {
+        trunk = tt;
+        post = wood;
+      }
+      // Trees stay inside their cells, so the first one met is the nearest the woods hold.
+      if (t > 0.0 || tt > 0.0) break;
     }
     if (edge.x < edge.y) {
       cell.x += stepDir.x;
@@ -211,19 +237,28 @@ float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree 
       edge.y += delta.y;
     }
   }
-  if (best > 1e8) return -1.0;
-  return valleyTreeHit(ro, rd, tree, best, n, up);
+  float hit = best < 1e8 ? valleyTreeHit(ro, rd, tree, best, n, up) : -1.0;
+  if (trunk < 1e8 && (hit < 0.0 || trunk < hit)) {
+    tree = post;
+    vec2 side = normalize(ro.xz + rd.xz * trunk - post.foot.xz);
+    n = vec3(side.x, 0.0, side.y);
+    up = -1.0;
+    return trunk;
+  }
+  return hit;
 }
 
 // A crown's leaves: broadleaf greens varied tree by tree, pines a dark blue-green; darker low in the
-// crown and between its clumps where they resolve (foot: metres a cell spans there).
+// crown and between its clumps where they resolve (foot: metres a cell spans there). A trunk
+// (up < 0): bark.
 vec3 valleyLeaves(ValleyTree tree, vec3 at, float up, float foot) {
+  if (up < 0.0) return vec3(0.27, 0.22, 0.17);
   float h = tree.hash;
   vec3 leaf = tree.pine
-    ? mix(vec3(0.09, 0.18, 0.12), vec3(0.12, 0.22, 0.13), fract(h * 3.3))
-    : mix(vec3(0.16, 0.29, 0.1), vec3(0.25, 0.37, 0.13), fract(h * 9.7));
+    ? mix(vec3(0.11, 0.21, 0.14), vec3(0.15, 0.26, 0.15), fract(h * 3.3))
+    : mix(vec3(0.21, 0.35, 0.12), vec3(0.32, 0.44, 0.15), fract(h * 9.7));
   float clumps = vnoise(at.xz * 0.9 + at.y * 0.7 + h * 40.0);
-  leaf *= mix(1.0, 0.8 + 0.35 * clumps, smoothstep(1.2, 0.4, foot));
-  return leaf * (0.72 + 0.28 * smoothstep(0.0, 0.65, up));
+  leaf *= mix(1.0, 0.75 + 0.45 * clumps, smoothstep(1.2, 0.4, foot));
+  return leaf * (0.7 + 0.3 * smoothstep(0.0, 0.65, up));
 }
 `;

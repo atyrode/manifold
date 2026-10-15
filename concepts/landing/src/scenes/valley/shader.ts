@@ -418,7 +418,7 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
         vec2 slope = vec2(valleyHeight(p.xz + vec2(e, 0.0), false) - valleyHeight(p.xz - vec2(e, 0.0), false), valleyHeight(p.xz + vec2(0.0, e), false) - valleyHeight(p.xz - vec2(0.0, e), false)) / (2.0 * e);
         n = normalize(vec3(-slope.x, 1.0, -slope.y));
 #if VALLEY_HAS_PINES
-        float pines = clamp(K_pines + 0.6 * (vnoise(p.xz / 40.0 + 3.7) - 0.5), 0.0, 1.0);
+        float pines = K_pines > 0.0 ? clamp(K_pines + 0.6 * (vnoise(p.xz / 40.0 + 3.7) - 0.5), 0.0, 1.0) : 0.0;
 #else
         float pines = 0.0;
 #endif
@@ -605,7 +605,7 @@ Shade sceneValley(vec2 screenUv, vec2 cell, float t) {
     if (e < ridge.y) col = mix(col, ridgeFar, hardEdge(1.0 - smoothstep(ridge.y - cellAngle, ridge.y + cellAngle, e)));
     if (e < ridge.x) col = mix(col, ridgeNear, hardEdge(1.0 - smoothstep(ridge.x - cellAngle, ridge.x + cellAngle, e)));
 #if VALLEY_HAS_FOG
-    col = mix(col, haze * 1.05 + 0.03, fogAmount(K_fog, 1.0, max(e, 0.0) * 30.0) * 0.6);
+    if (K_fog > 0.0) col = mix(col, haze * 1.05 + 0.03, fogAmount(K_fog, 1.0, max(e, 0.0) * 30.0) * 0.6);
 #endif
   }
 
