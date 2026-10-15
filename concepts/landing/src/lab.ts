@@ -342,6 +342,9 @@ export class Lab {
     this.#savePrefs();
     if (open) this.#workspace.arrange();
     else Popover.closeAll();
+    // Knob changes are likely while the lab is open: on a GPU, scenes with knob-keyed features get
+    // their all-features program built ahead (DitherRenderer.expectChanges).
+    this.#host.renderer()?.expectChanges(open);
   }
 
   focusSearch(): void {
